@@ -6,7 +6,10 @@
 # so you can test locally before pushing.
 #
 # Usage: ./scripts/test-ci-locally.sh [target]
-#   linux         Test Linux build via Docker (matches ubuntu-22.04)
+#   linux         Test Linux lite build via Docker (matches ubuntu-22.04)
+#   linux-xla     Test Linux XLA lane via Docker
+#   linux-cuda    Test Linux CUDA lane via Docker
+#   matrix        Validate workflow matrix metadata and Linux matrix lanes
 #   macos         Test macOS build natively
 #   release       Test full release workflow
 #   homebrew      Test Homebrew formula update process
@@ -27,6 +30,7 @@ NC='\033[0m'
 
 TARGET="${1:-all}"
 VERSION="${ESHKOL_VERSION:-1.0.0}"
+LLVM_MAJOR="${ESHKOL_REQUIRED_LLVM_MAJOR:-21}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
@@ -67,35 +71,34 @@ test_linux_ci() {
     echo "Building CI test image..."
 
     # Create a temporary Dockerfile that exactly matches CI
-    cat > /tmp/Dockerfile.ci-test << 'DOCKERFILE'
+    cat > /tmp/Dockerfile.ci-test << DOCKERFILE
 FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Add LLVM 17 repository (required - not in Ubuntu 22.04 default repos)
+# Add the requested LLVM repository (required - not in Ubuntu 22.04 default repos)
 RUN apt-get update && apt-get install -y \
     wget gnupg software-properties-common \
     && wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc \
-    && echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-17 main" >> /etc/apt/sources.list.d/llvm.list \
+    && echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-${LLVM_MAJOR} main" >> /etc/apt/sources.list.d/llvm.list \
     && apt-get update
 
 # Install build dependencies - matching GitHub Actions CI
 RUN apt-get install -y \
     cmake ninja-build \
-    llvm-17-dev llvm-17 \
+    llvm-${LLVM_MAJOR}-dev llvm-${LLVM_MAJOR} \
     libreadline-dev \
     g++ \
     file \
-    pkg-config
-
-# Create symlinks for LLVM tools
-RUN ln -sf /usr/bin/llvm-config-17 /usr/bin/llvm-config
+    pkg-config \
+    libssl-dev \
+    libncurses-dev
 
 WORKDIR /app
 COPY . .
 
 # Configure
-RUN cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+RUN cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DESHKOL_REQUIRED_LLVM_MAJOR=${LLVM_MAJOR} -DLLVM_CONFIG_EXECUTABLE=/usr/bin/llvm-config-${LLVM_MAJOR}
 
 # Build
 RUN cmake --build build --parallel
@@ -134,6 +137,89 @@ DOCKERFILE
     log_pass "linux-ci"
 }
 
+test_linux_backend_ci() {
+    local backend_name="$1"
+    local build_dir="$2"
+    local xla_enabled="$3"
+    local gpu_enabled="$4"
+    local suite_command="$5"
+
+    echo -e "${BLUE}=== Testing Linux ${backend_name} lane (ubuntu-22.04) ===${NC}"
+
+    if ! command -v docker &> /dev/null; then
+        echo -e "${RED}Docker not found - cannot test Linux ${backend_name} lane${NC}"
+        log_fail "linux-${backend_name}"
+        return 1
+    fi
+
+    local docker_image="eshkol-${backend_name}-ci-test"
+    local dockerfile="/tmp/Dockerfile.${backend_name}.ci-test"
+
+    cat > "$dockerfile" << DOCKERFILE
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y \\
+    wget gnupg software-properties-common \\
+    && wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc \\
+    && echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-${LLVM_MAJOR} main" >> /etc/apt/sources.list.d/llvm.list \\
+    && apt-get update
+
+RUN apt-get install -y \\
+    cmake ninja-build \\
+    llvm-${LLVM_MAJOR} llvm-${LLVM_MAJOR}-dev \\
+    libreadline-dev pkg-config \\
+    libssl-dev libncurses-dev \\
+    git python3
+
+WORKDIR /app
+COPY . .
+
+RUN cmake -S . -B ${build_dir} -G Ninja \\
+    -DCMAKE_BUILD_TYPE=Release \\
+    -DESHKOL_REQUIRED_LLVM_MAJOR=${LLVM_MAJOR} \\
+    -DLLVM_CONFIG_EXECUTABLE=/usr/bin/llvm-config-${LLVM_MAJOR} \\
+    -DESHKOL_XLA_ENABLED=${xla_enabled} \\
+    -DESHKOL_GPU_ENABLED=${gpu_enabled}
+
+RUN cmake --build ${build_dir} --parallel
+ENV BUILD_DIR=${build_dir}
+RUN ${suite_command}
+DOCKERFILE
+
+    if docker build --platform linux/amd64 -t "$docker_image" -f "$dockerfile" .; then
+        log_pass "linux-${backend_name}"
+    else
+        log_fail "linux-${backend_name}"
+        rm -f "$dockerfile"
+        return 1
+    fi
+
+    rm -f "$dockerfile"
+}
+
+test_workflow_matrix() {
+    echo -e "${BLUE}=== Validating workflow matrix metadata ===${NC}"
+
+    if ruby -e 'require "yaml"; YAML.load_file(".github/workflows/ci.yml"); YAML.load_file(".github/workflows/release.yml")'; then
+        log_pass "workflow-yaml"
+    else
+        log_fail "workflow-yaml"
+        return 1
+    fi
+
+    if command -v act &> /dev/null; then
+        if act -W .github/workflows/ci.yml -l; then
+            log_pass "workflow-act-list"
+        else
+            log_fail "workflow-act-list"
+        fi
+    else
+        echo -e "${YELLOW}act not found - skipping workflow listing${NC}"
+    fi
+}
+
 # =============================================================================
 # macOS CI Test (matches .github/workflows/ci.yml build-macos-arm job)
 # =============================================================================
@@ -148,10 +234,10 @@ test_macos_ci() {
     ARCH=$(uname -m)
     echo "Architecture: $ARCH"
 
-    # Check dependencies (matching CI: brew install llvm@17 cmake ninja readline)
+    # Check dependencies (matching CI: brew install llvm@${LLVM_MAJOR} cmake ninja readline)
     echo "Checking dependencies..."
     DEPS_OK=true
-    for dep in llvm@17 cmake ninja readline; do
+    for dep in llvm@"$LLVM_MAJOR" cmake ninja readline; do
         if brew list "$dep" &>/dev/null; then
             echo -e "  ${GREEN}[OK]${NC} $dep"
         else
@@ -161,7 +247,7 @@ test_macos_ci() {
     done
 
     if [ "$DEPS_OK" = false ]; then
-        echo "Install missing dependencies: brew install llvm@17 cmake ninja readline"
+        echo "Install missing dependencies: brew install llvm@${LLVM_MAJOR} cmake ninja readline"
         log_fail "macos-ci-deps"
         return 1
     fi
@@ -169,9 +255,9 @@ test_macos_ci() {
 
     # Set PATH exactly as CI does
     if [ "$ARCH" = "arm64" ]; then
-        export PATH="/opt/homebrew/opt/llvm@17/bin:$PATH"
+        export PATH="/opt/homebrew/opt/llvm@${LLVM_MAJOR}/bin:$PATH"
     else
-        export PATH="/usr/local/opt/llvm@17/bin:$PATH"
+        export PATH="/usr/local/opt/llvm@${LLVM_MAJOR}/bin:$PATH"
     fi
 
     # Clean build
@@ -180,7 +266,7 @@ test_macos_ci() {
 
     # Configure - exactly as CI does
     echo "Configuring..."
-    if cmake -B "$BUILD_DIR" -G Ninja -DCMAKE_BUILD_TYPE=Release; then
+    if cmake -B "$BUILD_DIR" -G Ninja -DCMAKE_BUILD_TYPE=Release -DESHKOL_REQUIRED_LLVM_MAJOR="${LLVM_MAJOR}" -DLLVM_CONFIG_EXECUTABLE="$(command -v llvm-config)"; then
         log_pass "macos-ci-configure"
     else
         log_fail "macos-ci-configure"
@@ -250,23 +336,20 @@ FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Add LLVM 17 repository
+# Add the requested LLVM repository
 RUN apt-get update && apt-get install -y wget gnupg software-properties-common \\
     && wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc \\
-    && echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-17 main" >> /etc/apt/sources.list.d/llvm.list \\
+    && echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-${LLVM_MAJOR} main" >> /etc/apt/sources.list.d/llvm.list \\
     && apt-get update
 
 RUN apt-get install -y \\
-    cmake ninja-build llvm-17 llvm-17-dev libreadline-dev dpkg-dev g++ file pkg-config
-
-# Create symlinks for LLVM tools
-RUN ln -sf /usr/bin/llvm-config-17 /usr/bin/llvm-config
+    cmake ninja-build llvm-${LLVM_MAJOR} llvm-${LLVM_MAJOR}-dev libreadline-dev dpkg-dev g++ file pkg-config
 
 WORKDIR /app
 COPY . .
 
 # Build
-RUN cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+RUN cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DESHKOL_REQUIRED_LLVM_MAJOR=${LLVM_MAJOR} -DLLVM_CONFIG_EXECUTABLE=/usr/bin/llvm-config-${LLVM_MAJOR}
 RUN cmake --build build --parallel
 
 # Run subset of tests
@@ -367,6 +450,18 @@ case "$TARGET" in
     linux)
         test_linux_ci
         ;;
+    linux-xla)
+        test_linux_backend_ci "xla" "build-xla" "ON" "OFF" "./scripts/run_xla_tests.sh"
+        ;;
+    linux-cuda)
+        test_linux_backend_ci "cuda" "build-cuda" "OFF" "ON" "./scripts/run_gpu_tests.sh"
+        ;;
+    matrix)
+        test_workflow_matrix
+        test_linux_ci
+        test_linux_backend_ci "xla" "build-xla" "ON" "OFF" "./scripts/run_xla_tests.sh"
+        test_linux_backend_ci "cuda" "build-cuda" "OFF" "ON" "./scripts/run_gpu_tests.sh"
+        ;;
     macos)
         test_macos_ci
         ;;
@@ -377,14 +472,17 @@ case "$TARGET" in
         test_homebrew
         ;;
     all)
+        test_workflow_matrix
         test_linux_ci
+        test_linux_backend_ci "xla" "build-xla" "ON" "OFF" "./scripts/run_xla_tests.sh"
+        test_linux_backend_ci "cuda" "build-cuda" "OFF" "ON" "./scripts/run_gpu_tests.sh"
         test_macos_ci
         test_release
         test_homebrew
         ;;
     *)
         echo "Unknown target: $TARGET"
-        echo "Usage: $0 [linux|macos|release|homebrew|all]"
+        echo "Usage: $0 [linux|linux-xla|linux-cuda|matrix|macos|release|homebrew|all]"
         exit 1
         ;;
 esac

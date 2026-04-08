@@ -1,189 +1,426 @@
 stages:
-  - build
   - test
 
 variables:
   GIT_SUBMODULE_STRATEGY: recursive
+  GIT_LFS_SKIP_SMUDGE: "1"
+  ESHKOL_REQUIRED_LLVM_MAJOR: "21"
+  WINDOWS_LLVM_SDK_VERSION: "21.1.8"
+  HOMEBREW_NO_AUTO_UPDATE: "1"
+  ENABLE_GITLAB_HOSTED_GPU: "0"
+  ENABLE_GITLAB_HOSTED_MACOS: "0"
+  ENABLE_SELF_HOSTED_MATRIX: "0"
 
-# =============================================================================
-# Hidden job templates (prefixed with . so they don't run directly)
-# =============================================================================
+.linux-test-script: &linux_test_script |
+  set -euxo pipefail
+  cmake -S . -B "${BUILD_DIR}" -G Ninja \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DESHKOL_REQUIRED_LLVM_MAJOR="${ESHKOL_REQUIRED_LLVM_MAJOR}" \
+    -DLLVM_CONFIG_EXECUTABLE="/usr/bin/llvm-config-${ESHKOL_REQUIRED_LLVM_MAJOR}" \
+    -DESHKOL_XLA_ENABLED="${XLA_ENABLED}" \
+    -DESHKOL_GPU_ENABLED="${GPU_ENABLED}"
+  cmake --build "${BUILD_DIR}" --parallel
+  case "${BACKEND}" in
+    lite)
+      ln -sfn "${BUILD_DIR}" build
+      ./scripts/run_all_tests.sh
+      ;;
+    xla)
+      BUILD_DIR="${BUILD_DIR}" ./scripts/run_xla_tests.sh
+      ;;
+    cuda)
+      BUILD_DIR="${BUILD_DIR}" ./scripts/run_gpu_tests.sh
+      ;;
+    *)
+      echo "Unknown backend: ${BACKEND}"
+      exit 1
+      ;;
+  esac
 
-.linux-base:
-  image: ubuntu:22.04
+.linux-hosted:
+  stage: test
   before_script:
     - apt-get update
     - apt-get install -y wget gnupg lsb-release software-properties-common
     - wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
-    - echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-17 main" | tee /etc/apt/sources.list.d/llvm.list
+    - echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-${ESHKOL_REQUIRED_LLVM_MAJOR} main" | tee /etc/apt/sources.list.d/llvm.list
     - apt-get update
-    - apt-get install -y cmake ninja-build llvm-17 llvm-17-dev libreadline-dev pkg-config build-essential libssl-dev libncurses-dev
-    - ln -sf /usr/bin/llvm-config-17 /usr/bin/llvm-config
+    - apt-get install -y cmake ninja-build llvm-${ESHKOL_REQUIRED_LLVM_MAJOR} llvm-${ESHKOL_REQUIRED_LLVM_MAJOR}-dev clang-${ESHKOL_REQUIRED_LLVM_MAJOR} libreadline-dev pkg-config build-essential libssl-dev libncurses-dev git python3
+    - ln -sf /usr/bin/llvm-config-${ESHKOL_REQUIRED_LLVM_MAJOR} /usr/bin/llvm-config
+    - ln -sf /usr/bin/clang-${ESHKOL_REQUIRED_LLVM_MAJOR} /usr/bin/clang
+    - ln -sf /usr/bin/clang++-${ESHKOL_REQUIRED_LLVM_MAJOR} /usr/bin/clang++
+  script:
+    - *linux_test_script
 
-.linux-test-base:
-  image: ubuntu:22.04
+.windows-hosted:
   stage: test
+  tags:
+    - saas-windows-medium-amd64
+  retry:
+    max: 1
+    when:
+      - runner_system_failure
+      - stuck_or_timeout_failure
   before_script:
-    - apt-get update
-    - apt-get install -y wget gnupg
-    - wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
-    - echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-17 main" | tee /etc/apt/sources.list.d/llvm.list
-    - apt-get update
-    - apt-get install -y llvm-17 llvm-17-dev clang-17 libreadline-dev build-essential libssl-dev libncurses-dev
-    - ln -sf /usr/bin/llvm-config-17 /usr/bin/llvm-config
-    - ln -sf /usr/bin/clang-17 /usr/bin/clang
-    - ln -sf /usr/bin/clang++-17 /usr/bin/clang++
+    - |
+      $ErrorActionPreference = 'Stop'
+      $llvmVersion = $env:WINDOWS_LLVM_SDK_VERSION
+      $llvmRoot = "C:\src\clang+llvm-$llvmVersion-x86_64-pc-windows-msvc"
+      $llvmArchive = "$env:TEMP\clang+llvm-$llvmVersion-x86_64-pc-windows-msvc.tar.xz"
+      New-Item -ItemType Directory -Force -Path 'C:\src' | Out-Null
 
-# =============================================================================
-# Build jobs
-# =============================================================================
+      if (-not (Test-Path "$llvmRoot\lib\cmake\llvm\LLVMConfig.cmake")) {
+        Invoke-WebRequest -Uri "https://github.com/llvm/llvm-project/releases/download/llvmorg-$llvmVersion/clang+llvm-$llvmVersion-x86_64-pc-windows-msvc.tar.xz" -OutFile $llvmArchive
+        tar -xf $llvmArchive -C C:\src
+      }
 
-build-linux-debug:
-  extends: .linux-base
-  stage: build
+      $llvmConfig = Join-Path $llvmRoot 'lib\cmake\llvm\LLVMConfig.cmake'
+      if (-not (Test-Path $llvmConfig)) {
+        throw "LLVMConfig.cmake not found under $llvmRoot"
+      }
+
+      $env:LLVM_DIR = Split-Path -Parent $llvmConfig
+      $env:PATH = "$(Join-Path $llvmRoot 'bin');$env:PATH"
   script:
-    - cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
-    - cmake --build build --parallel
-  artifacts:
-    paths:
-      - build/
-    expire_in: 1 hour
+    - |
+      $ErrorActionPreference = 'Stop'
+      Write-Host "=== Windows configure phase ==="
+      cmake -S . -B $env:BUILD_DIR `
+        -G 'Visual Studio 17 2022' `
+        -A x64 `
+        -T ClangCL `
+        -DBUILD_REPL=ON `
+        -DESHKOL_BUILD_TESTS=OFF `
+        -DESHKOL_REQUIRED_LLVM_MAJOR=$env:ESHKOL_REQUIRED_LLVM_MAJOR `
+        -DESHKOL_XLA_ENABLED=$env:XLA_ENABLED `
+        -DESHKOL_GPU_ENABLED=$env:GPU_ENABLED `
+        -DLLVM_DIR="$env:LLVM_DIR"
+      Write-Host "=== Windows build phase ==="
+      $targets = @('eshkol-run', 'eshkol-repl')
+      if ($env:BACKEND -eq 'xla') {
+        $targets += 'xla_codegen_test'
+      }
+      Write-Host ("Building targets: {0}" -f ($targets -join ', '))
+      cmake --build $env:BUILD_DIR --config Release --target @($targets) --parallel -- /m /verbosity:normal
+      Write-Host "=== Windows test phase ==="
+      & .\scripts\run_all_tests.ps1 -BuildDir ".\$env:BUILD_DIR" -SkipConfigureBuild -Mode $env:TEST_MODE
+      if ($LASTEXITCODE -ne 0) {
+        exit $LASTEXITCODE
+      }
 
-build-linux-release:
-  extends: .linux-base
-  stage: build
+.macos-hosted:
+  stage: test
+  tags:
+    - saas-macos-medium-m1
+  image: macos-15-xcode-16
+  retry:
+    max: 1
+    when:
+      - runner_system_failure
+      - stuck_or_timeout_failure
+  before_script:
+    - brew install llvm@${ESHKOL_REQUIRED_LLVM_MAJOR} cmake ninja readline
   script:
-    - cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-    - cmake --build build --parallel
-  artifacts:
-    paths:
-      - build/
-    expire_in: 1 week
+    - |
+      set -euxo pipefail
+      LLVM_PREFIX="$(brew --prefix llvm@${ESHKOL_REQUIRED_LLVM_MAJOR})"
+      export PATH="${LLVM_PREFIX}/bin:${PATH}"
+      cmake -S . -B "${BUILD_DIR}" -G Ninja \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_OSX_ARCHITECTURES=arm64 \
+        -DESHKOL_REQUIRED_LLVM_MAJOR="${ESHKOL_REQUIRED_LLVM_MAJOR}" \
+        -DLLVM_CONFIG_EXECUTABLE="${LLVM_PREFIX}/bin/llvm-config" \
+        -DESHKOL_XLA_ENABLED="${XLA_ENABLED}" \
+        -DESHKOL_GPU_ENABLED=OFF
+      cmake --build "${BUILD_DIR}" --parallel
+      case "${BACKEND}" in
+        lite)
+          ln -sfn "${BUILD_DIR}" build
+          ./scripts/run_all_tests.sh
+          ;;
+        xla)
+          BUILD_DIR="${BUILD_DIR}" ./scripts/run_xla_tests.sh
+          ;;
+        *)
+          echo "Unknown backend: ${BACKEND}"
+          exit 1
+          ;;
+      esac
 
-# =============================================================================
-# Test jobs - Debug build
-# =============================================================================
+.self-hosted-gated:
+  stage: test
+  rules:
+    - if: '$ENABLE_SELF_HOSTED_MATRIX == "1"'
+      when: on_success
+    - when: never
 
-test-types-debug:
-  extends: .linux-test-base
-  needs: [build-linux-debug]
+test-linux-amd64-hosted:
+  extends:
+    - .linux-hosted
+  image: ubuntu:22.04
+  tags:
+    - saas-linux-small-amd64
+  parallel:
+    matrix:
+      - BACKEND: "lite"
+        BUILD_DIR: "build-linux-amd64-lite"
+        XLA_ENABLED: "OFF"
+        GPU_ENABLED: "OFF"
+      - BACKEND: "xla"
+        BUILD_DIR: "build-linux-amd64-xla"
+        XLA_ENABLED: "ON"
+        GPU_ENABLED: "OFF"
+
+test-linux-arm64-hosted:
+  extends:
+    - .linux-hosted
+  image: ubuntu:22.04
+  tags:
+    - saas-linux-small-arm64
+  parallel:
+    matrix:
+      - BACKEND: "lite"
+        BUILD_DIR: "build-linux-arm64-lite"
+        XLA_ENABLED: "OFF"
+        GPU_ENABLED: "OFF"
+      - BACKEND: "xla"
+        BUILD_DIR: "build-linux-arm64-xla"
+        XLA_ENABLED: "ON"
+        GPU_ENABLED: "OFF"
+
+test-linux-cuda-hosted:
+  extends:
+    - .linux-hosted
+  image: nvidia/cuda:12.4.1-devel-ubuntu22.04
+  tags:
+    - saas-linux-medium-amd64-gpu-standard
+  rules:
+    - if: '$ENABLE_GITLAB_HOSTED_GPU == "1"'
+      when: on_success
+    - when: never
+  variables:
+    BACKEND: "cuda"
+    BUILD_DIR: "build-linux-amd64-cuda"
+    XLA_ENABLED: "OFF"
+    GPU_ENABLED: "ON"
+
+test-windows-amd64-hosted:
+  extends:
+    - .windows-hosted
+  parallel:
+    matrix:
+      - BACKEND: "lite"
+        BUILD_DIR: "build-windows-amd64-lite"
+        XLA_ENABLED: "OFF"
+        GPU_ENABLED: "OFF"
+        TEST_MODE: "all"
+      - BACKEND: "xla"
+        BUILD_DIR: "build-windows-amd64-xla"
+        XLA_ENABLED: "ON"
+        GPU_ENABLED: "OFF"
+        TEST_MODE: "xla"
+
+test-macos-arm64-hosted:
+  extends:
+    - .macos-hosted
+  rules:
+    - if: '$ENABLE_GITLAB_HOSTED_MACOS == "1"'
+      when: on_success
+    - when: never
+  parallel:
+    matrix:
+      - BACKEND: "lite"
+        BUILD_DIR: "build-macos-arm64-lite"
+        XLA_ENABLED: "OFF"
+      - BACKEND: "xla"
+        BUILD_DIR: "build-macos-arm64-xla"
+        XLA_ENABLED: "ON"
+
+test-linux-arm64-cuda-self-hosted:
+  extends:
+    - .self-hosted-gated
+  tags:
+    - self-hosted
+    - linux
+    - arm64
+    - cuda
   script:
-    - ./scripts/run_types_tests.sh
+    - |
+      set -euxo pipefail
+      LLVM_CONFIG="${LLVM_CONFIG_EXECUTABLE:-/usr/bin/llvm-config-${ESHKOL_REQUIRED_LLVM_MAJOR}}"
+      cmake -S . -B build-linux-arm64-cuda -G Ninja \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DESHKOL_REQUIRED_LLVM_MAJOR="${ESHKOL_REQUIRED_LLVM_MAJOR}" \
+        -DLLVM_CONFIG_EXECUTABLE="${LLVM_CONFIG}" \
+        -DESHKOL_XLA_ENABLED=OFF \
+        -DESHKOL_GPU_ENABLED=ON
+      cmake --build build-linux-arm64-cuda --parallel
+      BUILD_DIR=build-linux-arm64-cuda ./scripts/run_gpu_tests.sh
 
-test-cpp-types-debug:
-  extends: .linux-test-base
-  needs: [build-linux-debug]
+test-windows-arm64-self-hosted:
+  extends:
+    - .self-hosted-gated
+  tags:
+    - self-hosted
+    - windows
+    - arm64
+  parallel:
+    matrix:
+      - TARGET_ARCH: "ARM64"
+        BACKEND: "lite"
+        BUILD_DIR: "build-windows-arm64-lite"
+        XLA_ENABLED: "OFF"
+        GPU_ENABLED: "OFF"
+        TEST_MODE: "all"
+      - TARGET_ARCH: "ARM64"
+        BACKEND: "xla"
+        BUILD_DIR: "build-windows-arm64-xla"
+        XLA_ENABLED: "ON"
+        GPU_ENABLED: "OFF"
+        TEST_MODE: "xla"
+      - TARGET_ARCH: "ARM64"
+        BACKEND: "cuda"
+        BUILD_DIR: "build-windows-arm64-cuda"
+        XLA_ENABLED: "OFF"
+        GPU_ENABLED: "ON"
+        TEST_MODE: "gpu"
   script:
-    - ./scripts/run_cpp_type_tests.sh
+    - |
+      $ErrorActionPreference = 'Stop'
+      $llvmDir = $env:LLVM_DIR
+      if (-not $llvmDir) {
+        $candidateRoots = @(
+          'C:\Program Files\LLVM',
+          'C:\LLVM'
+        )
+        foreach ($root in $candidateRoots) {
+          $candidate = Join-Path $root 'lib\cmake\llvm\LLVMConfig.cmake'
+          if (Test-Path $candidate) {
+            $llvmDir = Split-Path -Parent $candidate
+            $env:PATH = "$(Join-Path $root 'bin');$env:PATH"
+            break
+          }
+        }
+      }
 
-test-list-debug:
-  extends: .linux-test-base
-  needs: [build-linux-debug]
+      if (-not $llvmDir) {
+        throw 'LLVM_DIR must be set or LLVM must be installed under C:\Program Files\LLVM or C:\LLVM'
+      }
+
+      cmake -S . -B $env:BUILD_DIR `
+        -G 'Visual Studio 17 2022' `
+        -A $env:TARGET_ARCH `
+        -T ClangCL `
+        -DBUILD_REPL=ON `
+        -DESHKOL_BUILD_TESTS=OFF `
+        -DESHKOL_REQUIRED_LLVM_MAJOR=$env:ESHKOL_REQUIRED_LLVM_MAJOR `
+        -DESHKOL_XLA_ENABLED=$env:XLA_ENABLED `
+        -DESHKOL_GPU_ENABLED=$env:GPU_ENABLED `
+        -DLLVM_DIR="$llvmDir"
+
+      $targets = @('eshkol-run', 'eshkol-repl')
+      if ($env:BACKEND -eq 'xla') {
+        $targets += 'xla_codegen_test'
+      }
+      cmake --build $env:BUILD_DIR --config Release --target @($targets) --parallel
+      & .\scripts\run_all_tests.ps1 -BuildDir ".\$env:BUILD_DIR" -SkipConfigureBuild -Mode $env:TEST_MODE
+      if ($LASTEXITCODE -ne 0) {
+        exit $LASTEXITCODE
+      }
+
+test-windows-amd64-cuda-self-hosted:
+  extends:
+    - .self-hosted-gated
+  tags:
+    - self-hosted
+    - windows
+    - amd64
+    - cuda
+  variables:
+    TARGET_ARCH: "x64"
+    BACKEND: "cuda"
+    BUILD_DIR: "build-windows-amd64-cuda"
+    XLA_ENABLED: "OFF"
+    GPU_ENABLED: "ON"
+    TEST_MODE: "gpu"
   script:
-    - ./scripts/run_list_tests.sh
+    - |
+      $ErrorActionPreference = 'Stop'
+      $llvmDir = $env:LLVM_DIR
+      if (-not $llvmDir) {
+        $candidateRoots = @(
+          'C:\Program Files\LLVM',
+          'C:\LLVM'
+        )
+        foreach ($root in $candidateRoots) {
+          $candidate = Join-Path $root 'lib\cmake\llvm\LLVMConfig.cmake'
+          if (Test-Path $candidate) {
+            $llvmDir = Split-Path -Parent $candidate
+            $env:PATH = "$(Join-Path $root 'bin');$env:PATH"
+            break
+          }
+        }
+      }
 
-test-autodiff-debug:
-  extends: .linux-test-base
-  needs: [build-linux-debug]
+      if (-not $llvmDir) {
+        throw 'LLVM_DIR must be set or LLVM must be installed under C:\Program Files\LLVM or C:\LLVM'
+      }
+
+      cmake -S . -B $env:BUILD_DIR `
+        -G 'Visual Studio 17 2022' `
+        -A $env:TARGET_ARCH `
+        -T ClangCL `
+        -DBUILD_REPL=ON `
+        -DESHKOL_BUILD_TESTS=OFF `
+        -DESHKOL_REQUIRED_LLVM_MAJOR=$env:ESHKOL_REQUIRED_LLVM_MAJOR `
+        -DESHKOL_XLA_ENABLED=$env:XLA_ENABLED `
+        -DESHKOL_GPU_ENABLED=$env:GPU_ENABLED `
+        -DLLVM_DIR="$llvmDir"
+
+      cmake --build $env:BUILD_DIR --config Release --target @('eshkol-run', 'eshkol-repl') --parallel
+      & .\scripts\run_all_tests.ps1 -BuildDir ".\$env:BUILD_DIR" -SkipConfigureBuild -Mode $env:TEST_MODE
+      if ($LASTEXITCODE -ne 0) {
+        exit $LASTEXITCODE
+      }
+
+test-macos-x64-self-hosted:
+  extends:
+    - .self-hosted-gated
+  tags:
+    - self-hosted
+    - macos
+    - x64
+  parallel:
+    matrix:
+      - BACKEND: "lite"
+        BUILD_DIR: "build-macos-x64-lite"
+        XLA_ENABLED: "OFF"
+      - BACKEND: "xla"
+        BUILD_DIR: "build-macos-x64-xla"
+        XLA_ENABLED: "ON"
   script:
-    - ./scripts/run_autodiff_tests.sh
-
-test-memory-debug:
-  extends: .linux-test-base
-  needs: [build-linux-debug]
-  script:
-    - ./scripts/run_memory_tests.sh
-
-test-modules-debug:
-  extends: .linux-test-base
-  needs: [build-linux-debug]
-  script:
-    - ./scripts/run_modules_tests.sh
-
-test-stdlib-debug:
-  extends: .linux-test-base
-  needs: [build-linux-debug]
-  script:
-    - ./scripts/run_stdlib_tests.sh
-
-test-features-debug:
-  extends: .linux-test-base
-  needs: [build-linux-debug]
-  script:
-    - ./scripts/run_features_tests.sh
-
-test-ml-debug:
-  extends: .linux-test-base
-  needs: [build-linux-debug]
-  script:
-    - ./scripts/run_ml_tests.sh
-
-test-neural-debug:
-  extends: .linux-test-base
-  needs: [build-linux-debug]
-  script:
-    - ./scripts/run_neural_tests.sh
-
-# =============================================================================
-# Test jobs - Release build
-# =============================================================================
-
-test-types-release:
-  extends: .linux-test-base
-  needs: [build-linux-release]
-  script:
-    - ./scripts/run_types_tests.sh
-
-test-cpp-types-release:
-  extends: .linux-test-base
-  needs: [build-linux-release]
-  script:
-    - ./scripts/run_cpp_type_tests.sh
-
-test-list-release:
-  extends: .linux-test-base
-  needs: [build-linux-release]
-  script:
-    - ./scripts/run_list_tests.sh
-
-test-autodiff-release:
-  extends: .linux-test-base
-  needs: [build-linux-release]
-  script:
-    - ./scripts/run_autodiff_tests.sh
-
-test-memory-release:
-  extends: .linux-test-base
-  needs: [build-linux-release]
-  script:
-    - ./scripts/run_memory_tests.sh
-
-test-modules-release:
-  extends: .linux-test-base
-  needs: [build-linux-release]
-  script:
-    - ./scripts/run_modules_tests.sh
-
-test-stdlib-release:
-  extends: .linux-test-base
-  needs: [build-linux-release]
-  script:
-    - ./scripts/run_stdlib_tests.sh
-
-test-features-release:
-  extends: .linux-test-base
-  needs: [build-linux-release]
-  script:
-    - ./scripts/run_features_tests.sh
-
-test-ml-release:
-  extends: .linux-test-base
-  needs: [build-linux-release]
-  script:
-    - ./scripts/run_ml_tests.sh
-
-test-neural-release:
-  extends: .linux-test-base
-  needs: [build-linux-release]
-  script:
-    - ./scripts/run_neural_tests.sh
+    - |
+      set -euxo pipefail
+      LLVM_PREFIX="/usr/local/opt/llvm@${ESHKOL_REQUIRED_LLVM_MAJOR}"
+      export PATH="${LLVM_PREFIX}/bin:${PATH}"
+      cmake -S . -B "${BUILD_DIR}" -G Ninja \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_OSX_ARCHITECTURES=x86_64 \
+        -DESHKOL_REQUIRED_LLVM_MAJOR="${ESHKOL_REQUIRED_LLVM_MAJOR}" \
+        -DLLVM_CONFIG_EXECUTABLE="${LLVM_PREFIX}/bin/llvm-config" \
+        -DESHKOL_XLA_ENABLED="${XLA_ENABLED}" \
+        -DESHKOL_GPU_ENABLED=OFF
+      cmake --build "${BUILD_DIR}" --parallel
+      case "${BACKEND}" in
+        lite)
+          ln -sfn "${BUILD_DIR}" build
+          arch -x86_64 ./scripts/run_all_tests.sh
+          ;;
+        xla)
+          arch -x86_64 env BUILD_DIR="${BUILD_DIR}" ./scripts/run_xla_tests.sh
+          ;;
+        *)
+          echo "Unknown backend: ${BACKEND}"
+          exit 1
+          ;;
+      esac

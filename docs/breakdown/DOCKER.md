@@ -9,7 +9,7 @@
 
 Eshkol provides five Docker images for building the compiler in different configurations. These images are primarily used by the release CI pipeline to produce platform-specific artifacts, but they are also useful for local development and testing.
 
-All images are based on Debian or Ubuntu and include LLVM 17, CMake, Ninja, and the necessary system libraries.
+All images are based on Debian or Ubuntu and include LLVM 21, CMake, Ninja, and the necessary system libraries.
 
 ---
 
@@ -49,7 +49,7 @@ docker build -f docker/debian/debug/Dockerfile -t eshkol-debug .
 
 **Additional packages:** `gdb`, `libopenblas-dev`.
 
-**Notes:** LLVM 17 is installed from the `bookworm` LLVM repository (not `jammy`).
+**Notes:** LLVM 21 is installed from the `bookworm` LLVM repository (not `jammy`).
 
 ---
 
@@ -91,7 +91,7 @@ docker build -f docker/ubuntu/release/Dockerfile -t eshkol-ubuntu .
 
 **Base image:** `ubuntu:22.04`
 
-Builds Eshkol with StableHLO/MLIR support for XLA tensor operations. Includes MLIR 17 tools and development libraries.
+Builds Eshkol with StableHLO/MLIR support for XLA tensor operations. Includes MLIR 21 tools and development libraries.
 
 **When to use:** When deploying tensor-heavy workloads that benefit from the XLA compilation pipeline, or when you need StableHLO interoperability.
 
@@ -100,7 +100,7 @@ Builds Eshkol with StableHLO/MLIR support for XLA tensor operations. Includes ML
 docker build -f docker/xla/Dockerfile -t eshkol-xla .
 ```
 
-**Additional packages:** `mlir-17-tools`, `libmlir-17-dev`, `libopenblas-dev`, `curl`, `pkg-config`.
+**Additional packages:** `mlir-21-tools`, `libmlir-21-dev`, `libopenblas-dev`, `curl`, `pkg-config`.
 
 ---
 
@@ -108,8 +108,8 @@ docker build -f docker/xla/Dockerfile -t eshkol-xla .
 
 All Dockerfiles follow the same structure:
 
-1. Add the LLVM 17 apt repository from `apt.llvm.org`
-2. Install build dependencies (CMake, Ninja, LLVM 17, g++, readline)
+1. Add the LLVM 21 apt repository from `apt.llvm.org`
+2. Install build dependencies (CMake, Ninja, LLVM 21, g++, readline)
 3. Copy the source tree into the container
 4. Configure with CMake (Ninja generator, Release mode)
 5. Build in parallel

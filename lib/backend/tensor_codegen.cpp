@@ -21,7 +21,7 @@
 #include <llvm/Config/llvm-config.h>
 
 // LLVM VERSION COMPATIBILITY
-#if LLVM_VERSION_MAJOR >= 18
+#if LLVM_VERSION_MAJOR >= 21
 #define ESHKOL_GET_INTRINSIC(mod, id, types) llvm::Intrinsic::getOrInsertDeclaration(mod, id, types)
 #else
 #define ESHKOL_GET_INTRINSIC(mod, id, types) llvm::Intrinsic::getDeclaration(mod, id, types)
@@ -32,6 +32,36 @@
 #endif
 
 namespace eshkol {
+
+namespace {
+
+llvm::Value* taggedNumericToDouble(CodegenContext& ctx, TaggedValueCodegen& tagged, llvm::Value* value) {
+    if (!value) {
+        return nullptr;
+    }
+
+    if (value->getType() == ctx.taggedValueType()) {
+        llvm::Value* type_tag = ctx.builder().CreateExtractValue(value, {0});
+        llvm::Value* is_int64 = ctx.builder().CreateICmpEQ(
+            type_tag,
+            llvm::ConstantInt::get(ctx.int8Type(), ESHKOL_VALUE_INT64)
+        );
+        llvm::Value* int_as_double = ctx.builder().CreateSIToFP(
+            tagged.unpackInt64(value),
+            ctx.doubleType()
+        );
+        llvm::Value* raw_double = tagged.unpackDouble(value);
+        return ctx.builder().CreateSelect(is_int64, int_as_double, raw_double);
+    }
+
+    if (value->getType()->isIntegerTy()) {
+        return ctx.builder().CreateSIToFP(value, ctx.doubleType());
+    }
+
+    return value;
+}
+
+} // namespace
 
 TensorCodegen::TensorCodegen(CodegenContext& ctx, TaggedValueCodegen& tagged, MemoryCodegen& mem)
     : ctx_(ctx)
@@ -7913,7 +7943,10 @@ llvm::Value* TensorCodegen::makeTensor(const eshkol_operations_t* op) {
 
     // Check if first arg is a list/cons (shape) or a scalar (element)
     // If it's a list → shape+fill mode; if scalar → element-literal mode
+    llvm::BasicBlock* heap_dispatch = llvm::BasicBlock::Create(ctx_.context(), "mt_heap_dispatch", current_func);
     llvm::BasicBlock* list_path = llvm::BasicBlock::Create(ctx_.context(), "mt_list", current_func);
+    llvm::BasicBlock* vector_path = llvm::BasicBlock::Create(ctx_.context(), "mt_vector", current_func);
+    llvm::BasicBlock* tensor_path = llvm::BasicBlock::Create(ctx_.context(), "mt_tensor_shape", current_func);
     llvm::BasicBlock* scalar_path = llvm::BasicBlock::Create(ctx_.context(), "mt_scalar", current_func);
 
     if (shape_arg->getType() == ctx_.taggedValueType()) {
@@ -7922,11 +7955,30 @@ llvm::Value* TensorCodegen::makeTensor(const eshkol_operations_t* op) {
         // Lists are HEAP_PTR (cons cells)
         llvm::Value* is_heap = builder.CreateICmpEQ(base_type,
             llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
-        builder.CreateCondBr(is_heap, list_path, scalar_path);
+        builder.CreateCondBr(is_heap, heap_dispatch, scalar_path);
     } else {
         // Raw value — not a list, use element-literal mode
         builder.CreateBr(scalar_path);
     }
+
+    builder.SetInsertPoint(heap_dispatch);
+    llvm::Value* shape_ptr_int = tagged_.unpackInt64(shape_arg);
+    llvm::Value* shape_ptr = builder.CreateIntToPtr(shape_ptr_int, ctx_.ptrType());
+    llvm::Value* shape_header_ptr = builder.CreateGEP(
+        ctx_.int8Type(), shape_ptr, llvm::ConstantInt::get(ctx_.int64Type(), -8));
+    llvm::Value* shape_subtype = builder.CreateLoad(ctx_.int8Type(), shape_header_ptr);
+    llvm::Value* is_vector_shape = builder.CreateICmpEQ(
+        shape_subtype,
+        llvm::ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_VECTOR));
+    llvm::Value* is_tensor_shape = builder.CreateICmpEQ(
+        shape_subtype,
+        llvm::ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_TENSOR));
+    llvm::BasicBlock* heap_subtype_check = llvm::BasicBlock::Create(
+        ctx_.context(), "mt_heap_subtype_check", current_func);
+    builder.CreateCondBr(is_vector_shape, vector_path, heap_subtype_check);
+
+    builder.SetInsertPoint(heap_subtype_check);
+    builder.CreateCondBr(is_tensor_shape, tensor_path, list_path);
 
     // SCALAR PATH: treat as 2-element tensor (fallback to tensor())
     builder.SetInsertPoint(scalar_path);
@@ -8018,22 +8070,22 @@ llvm::Value* TensorCodegen::makeTensor(const eshkol_operations_t* op) {
     // MERGE dimensions
     builder.SetInsertPoint(mt_merge);
 
-    llvm::PHINode* ndims_phi = builder.CreatePHI(ctx_.int64Type(), 3, "mt_ndims");
+    llvm::PHINode* ndims_phi = builder.CreatePHI(ctx_.int64Type(), 9, "mt_ndims");
     ndims_phi->addIncoming(llvm::ConstantInt::get(ctx_.int64Type(), 1), list_1d_exit);
     ndims_phi->addIncoming(llvm::ConstantInt::get(ctx_.int64Type(), 2), list_2d_exit);
     ndims_phi->addIncoming(llvm::ConstantInt::get(ctx_.int64Type(), 3), list_3d_exit);
 
-    llvm::PHINode* d1_phi = builder.CreatePHI(ctx_.int64Type(), 3, "mt_d1");
+    llvm::PHINode* d1_phi = builder.CreatePHI(ctx_.int64Type(), 9, "mt_d1");
     d1_phi->addIncoming(dim1, list_1d_exit);
     d1_phi->addIncoming(dim1, list_2d_exit);
     d1_phi->addIncoming(dim1, list_3d_exit);
 
-    llvm::PHINode* d2_phi = builder.CreatePHI(ctx_.int64Type(), 3, "mt_d2");
+    llvm::PHINode* d2_phi = builder.CreatePHI(ctx_.int64Type(), 9, "mt_d2");
     d2_phi->addIncoming(llvm::ConstantInt::get(ctx_.int64Type(), 1), list_1d_exit);
     d2_phi->addIncoming(dim2, list_2d_exit);
     d2_phi->addIncoming(dim2, list_3d_exit);
 
-    llvm::PHINode* d3_phi = builder.CreatePHI(ctx_.int64Type(), 3, "mt_d3");
+    llvm::PHINode* d3_phi = builder.CreatePHI(ctx_.int64Type(), 9, "mt_d3");
     d3_phi->addIncoming(llvm::ConstantInt::get(ctx_.int64Type(), 1), list_1d_exit);
     d3_phi->addIncoming(llvm::ConstantInt::get(ctx_.int64Type(), 1), list_2d_exit);
     d3_phi->addIncoming(dim3, list_3d_exit);
@@ -8082,7 +8134,146 @@ llvm::Value* TensorCodegen::makeTensor(const eshkol_operations_t* op) {
     builder.CreateBr(final_merge);
     llvm::BasicBlock* list_done_exit = builder.GetInsertBlock();
 
-    // FINAL MERGE: scalar path or list path
+    // VECTOR PATH: Extract dimensions from Scheme vector #(d1 d2 d3)
+    builder.SetInsertPoint(vector_path);
+    llvm::Value* vector_ptr_int = tagged_.unpackInt64(shape_arg);
+    llvm::Value* vector_ptr = builder.CreateIntToPtr(vector_ptr_int, ctx_.ptrType());
+    llvm::Value* vector_len = builder.CreateLoad(ctx_.int64Type(), vector_ptr);
+    llvm::Value* vector_elems = builder.CreateGEP(
+        ctx_.int8Type(), vector_ptr, llvm::ConstantInt::get(ctx_.int64Type(), 8));
+    llvm::Value* vector_elems_typed = builder.CreatePointerCast(vector_elems, ctx_.ptrType());
+
+    llvm::Value* vec_dim1_ptr = builder.CreateGEP(
+        ctx_.taggedValueType(), vector_elems_typed, llvm::ConstantInt::get(ctx_.int64Type(), 0));
+    llvm::Value* vec_dim1_tagged = builder.CreateLoad(ctx_.taggedValueType(), vec_dim1_ptr);
+    llvm::Value* vec_dim1 = tagged_.safeExtractInt64(vec_dim1_tagged);
+
+    llvm::Value* vec_has_dim2 = builder.CreateICmpUGT(
+        vector_len, llvm::ConstantInt::get(ctx_.int64Type(), 1));
+    llvm::BasicBlock* mt_vec_has_dim2 = llvm::BasicBlock::Create(ctx_.context(), "mt_vec_has_dim2", current_func);
+    llvm::BasicBlock* mt_vec_1d = llvm::BasicBlock::Create(ctx_.context(), "mt_vec_1d", current_func);
+    builder.CreateCondBr(vec_has_dim2, mt_vec_has_dim2, mt_vec_1d);
+
+    builder.SetInsertPoint(mt_vec_1d);
+    builder.CreateBr(mt_merge);
+    llvm::BasicBlock* vec_1d_exit = builder.GetInsertBlock();
+
+    builder.SetInsertPoint(mt_vec_has_dim2);
+    llvm::Value* vec_dim2_ptr = builder.CreateGEP(
+        ctx_.taggedValueType(), vector_elems_typed, llvm::ConstantInt::get(ctx_.int64Type(), 1));
+    llvm::Value* vec_dim2_tagged = builder.CreateLoad(ctx_.taggedValueType(), vec_dim2_ptr);
+    llvm::Value* vec_dim2 = tagged_.safeExtractInt64(vec_dim2_tagged);
+
+    llvm::Value* vec_has_dim3 = builder.CreateICmpUGT(
+        vector_len, llvm::ConstantInt::get(ctx_.int64Type(), 2));
+    llvm::BasicBlock* mt_vec_has_dim3 = llvm::BasicBlock::Create(ctx_.context(), "mt_vec_has_dim3", current_func);
+    llvm::BasicBlock* mt_vec_2d = llvm::BasicBlock::Create(ctx_.context(), "mt_vec_2d", current_func);
+    builder.CreateCondBr(vec_has_dim3, mt_vec_has_dim3, mt_vec_2d);
+
+    builder.SetInsertPoint(mt_vec_2d);
+    builder.CreateBr(mt_merge);
+    llvm::BasicBlock* vec_2d_exit = builder.GetInsertBlock();
+
+    builder.SetInsertPoint(mt_vec_has_dim3);
+    llvm::Value* vec_dim3_ptr = builder.CreateGEP(
+        ctx_.taggedValueType(), vector_elems_typed, llvm::ConstantInt::get(ctx_.int64Type(), 2));
+    llvm::Value* vec_dim3_tagged = builder.CreateLoad(ctx_.taggedValueType(), vec_dim3_ptr);
+    llvm::Value* vec_dim3 = tagged_.safeExtractInt64(vec_dim3_tagged);
+    builder.CreateBr(mt_merge);
+    llvm::BasicBlock* vec_3d_exit = builder.GetInsertBlock();
+
+    ndims_phi->addIncoming(llvm::ConstantInt::get(ctx_.int64Type(), 1), vec_1d_exit);
+    ndims_phi->addIncoming(llvm::ConstantInt::get(ctx_.int64Type(), 2), vec_2d_exit);
+    ndims_phi->addIncoming(llvm::ConstantInt::get(ctx_.int64Type(), 3), vec_3d_exit);
+
+    d1_phi->addIncoming(vec_dim1, vec_1d_exit);
+    d1_phi->addIncoming(vec_dim1, vec_2d_exit);
+    d1_phi->addIncoming(vec_dim1, vec_3d_exit);
+
+    d2_phi->addIncoming(llvm::ConstantInt::get(ctx_.int64Type(), 1), vec_1d_exit);
+    d2_phi->addIncoming(vec_dim2, vec_2d_exit);
+    d2_phi->addIncoming(vec_dim2, vec_3d_exit);
+
+    d3_phi->addIncoming(llvm::ConstantInt::get(ctx_.int64Type(), 1), vec_1d_exit);
+    d3_phi->addIncoming(llvm::ConstantInt::get(ctx_.int64Type(), 1), vec_2d_exit);
+    d3_phi->addIncoming(vec_dim3, vec_3d_exit);
+
+    // TENSOR SHAPE PATH: #(...) literals are parsed as numeric tensors.
+    // Use their element list as the requested output shape.
+    builder.SetInsertPoint(tensor_path);
+    llvm::Value* tensor_ptr_int = tagged_.unpackInt64(shape_arg);
+    llvm::Value* tensor_ptr = builder.CreateIntToPtr(tensor_ptr_int, ctx_.ptrType());
+    llvm::Value* tensor_total_field = builder.CreateStructGEP(ctx_.tensorType(), tensor_ptr, 3);
+    llvm::Value* tensor_shape_len = builder.CreateLoad(ctx_.int64Type(), tensor_total_field);
+    llvm::Value* tensor_elems_field = builder.CreateStructGEP(ctx_.tensorType(), tensor_ptr, 2);
+    llvm::Value* tensor_elems = builder.CreateLoad(ctx_.ptrType(), tensor_elems_field);
+
+    llvm::Value* tensor_dim1_bits = builder.CreateLoad(
+        ctx_.int64Type(),
+        builder.CreateGEP(ctx_.int64Type(), tensor_elems,
+            llvm::ConstantInt::get(ctx_.int64Type(), 0)));
+    llvm::Value* tensor_dim1_double = builder.CreateBitCast(tensor_dim1_bits, ctx_.doubleType());
+    llvm::Value* tensor_dim1 = builder.CreateFPToSI(tensor_dim1_double, ctx_.int64Type());
+
+    llvm::Value* tensor_has_dim2 = builder.CreateICmpUGT(
+        tensor_shape_len, llvm::ConstantInt::get(ctx_.int64Type(), 1));
+    llvm::BasicBlock* mt_tensor_has_dim2 = llvm::BasicBlock::Create(
+        ctx_.context(), "mt_tensor_has_dim2", current_func);
+    llvm::BasicBlock* mt_tensor_1d = llvm::BasicBlock::Create(
+        ctx_.context(), "mt_tensor_1d", current_func);
+    builder.CreateCondBr(tensor_has_dim2, mt_tensor_has_dim2, mt_tensor_1d);
+
+    builder.SetInsertPoint(mt_tensor_1d);
+    builder.CreateBr(mt_merge);
+    llvm::BasicBlock* tensor_1d_exit = builder.GetInsertBlock();
+
+    builder.SetInsertPoint(mt_tensor_has_dim2);
+    llvm::Value* tensor_dim2_bits = builder.CreateLoad(
+        ctx_.int64Type(),
+        builder.CreateGEP(ctx_.int64Type(), tensor_elems,
+            llvm::ConstantInt::get(ctx_.int64Type(), 1)));
+    llvm::Value* tensor_dim2_double = builder.CreateBitCast(tensor_dim2_bits, ctx_.doubleType());
+    llvm::Value* tensor_dim2 = builder.CreateFPToSI(tensor_dim2_double, ctx_.int64Type());
+
+    llvm::Value* tensor_has_dim3 = builder.CreateICmpUGT(
+        tensor_shape_len, llvm::ConstantInt::get(ctx_.int64Type(), 2));
+    llvm::BasicBlock* mt_tensor_has_dim3 = llvm::BasicBlock::Create(
+        ctx_.context(), "mt_tensor_has_dim3", current_func);
+    llvm::BasicBlock* mt_tensor_2d = llvm::BasicBlock::Create(
+        ctx_.context(), "mt_tensor_2d", current_func);
+    builder.CreateCondBr(tensor_has_dim3, mt_tensor_has_dim3, mt_tensor_2d);
+
+    builder.SetInsertPoint(mt_tensor_2d);
+    builder.CreateBr(mt_merge);
+    llvm::BasicBlock* tensor_2d_exit = builder.GetInsertBlock();
+
+    builder.SetInsertPoint(mt_tensor_has_dim3);
+    llvm::Value* tensor_dim3_bits = builder.CreateLoad(
+        ctx_.int64Type(),
+        builder.CreateGEP(ctx_.int64Type(), tensor_elems,
+            llvm::ConstantInt::get(ctx_.int64Type(), 2)));
+    llvm::Value* tensor_dim3_double = builder.CreateBitCast(tensor_dim3_bits, ctx_.doubleType());
+    llvm::Value* tensor_dim3 = builder.CreateFPToSI(tensor_dim3_double, ctx_.int64Type());
+    builder.CreateBr(mt_merge);
+    llvm::BasicBlock* tensor_3d_exit = builder.GetInsertBlock();
+
+    ndims_phi->addIncoming(llvm::ConstantInt::get(ctx_.int64Type(), 1), tensor_1d_exit);
+    ndims_phi->addIncoming(llvm::ConstantInt::get(ctx_.int64Type(), 2), tensor_2d_exit);
+    ndims_phi->addIncoming(llvm::ConstantInt::get(ctx_.int64Type(), 3), tensor_3d_exit);
+
+    d1_phi->addIncoming(tensor_dim1, tensor_1d_exit);
+    d1_phi->addIncoming(tensor_dim1, tensor_2d_exit);
+    d1_phi->addIncoming(tensor_dim1, tensor_3d_exit);
+
+    d2_phi->addIncoming(llvm::ConstantInt::get(ctx_.int64Type(), 1), tensor_1d_exit);
+    d2_phi->addIncoming(tensor_dim2, tensor_2d_exit);
+    d2_phi->addIncoming(tensor_dim2, tensor_3d_exit);
+
+    d3_phi->addIncoming(llvm::ConstantInt::get(ctx_.int64Type(), 1), tensor_1d_exit);
+    d3_phi->addIncoming(llvm::ConstantInt::get(ctx_.int64Type(), 1), tensor_2d_exit);
+    d3_phi->addIncoming(tensor_dim3, tensor_3d_exit);
+
+    // FINAL MERGE: scalar path or heap-shape path
     builder.SetInsertPoint(final_merge);
     llvm::PHINode* result = builder.CreatePHI(ctx_.ptrType(), 2, "mt_result");
     result->addIncoming(scalar_tensor, scalar_exit);
@@ -12530,8 +12721,8 @@ llvm::Value* TensorCodegen::xavierUniform(const eshkol_operations_t* op) {
     if (!tensor_tagged || !fan_in_tagged || !fan_out_tagged) return nullptr;
 
     llvm::Value* tensor_ptr = tagged_.unpackPtr(tensor_tagged);
-    llvm::Value* fan_in = tagged_.unpackDouble(fan_in_tagged);
-    llvm::Value* fan_out = tagged_.unpackDouble(fan_out_tagged);
+    llvm::Value* fan_in = taggedNumericToDouble(ctx_, tagged_, fan_in_tagged);
+    llvm::Value* fan_out = taggedNumericToDouble(ctx_, tagged_, fan_out_tagged);
 
     llvm::StructType* tensor_type = ctx_.tensorType();
     llvm::Value* total_ptr = builder.CreateStructGEP(tensor_type, tensor_ptr, 3);
@@ -12601,8 +12792,8 @@ llvm::Value* TensorCodegen::xavierNormal(const eshkol_operations_t* op) {
     if (!tensor_tagged || !fan_in_tagged || !fan_out_tagged) return nullptr;
 
     llvm::Value* tensor_ptr = tagged_.unpackPtr(tensor_tagged);
-    llvm::Value* fan_in = tagged_.unpackDouble(fan_in_tagged);
-    llvm::Value* fan_out = tagged_.unpackDouble(fan_out_tagged);
+    llvm::Value* fan_in = taggedNumericToDouble(ctx_, tagged_, fan_in_tagged);
+    llvm::Value* fan_out = taggedNumericToDouble(ctx_, tagged_, fan_out_tagged);
 
     llvm::StructType* tensor_type = ctx_.tensorType();
     llvm::Value* total_ptr = builder.CreateStructGEP(tensor_type, tensor_ptr, 3);
@@ -12694,7 +12885,7 @@ llvm::Value* TensorCodegen::kaimingUniform(const eshkol_operations_t* op) {
     if (!tensor_tagged || !fan_in_tagged) return nullptr;
 
     llvm::Value* tensor_ptr = tagged_.unpackPtr(tensor_tagged);
-    llvm::Value* fan_in = tagged_.unpackDouble(fan_in_tagged);
+    llvm::Value* fan_in = taggedNumericToDouble(ctx_, tagged_, fan_in_tagged);
 
     llvm::StructType* tensor_type = ctx_.tensorType();
     llvm::Value* total_ptr = builder.CreateStructGEP(tensor_type, tensor_ptr, 3);
@@ -12760,7 +12951,7 @@ llvm::Value* TensorCodegen::kaimingNormal(const eshkol_operations_t* op) {
     if (!tensor_tagged || !fan_in_tagged) return nullptr;
 
     llvm::Value* tensor_ptr = tagged_.unpackPtr(tensor_tagged);
-    llvm::Value* fan_in = tagged_.unpackDouble(fan_in_tagged);
+    llvm::Value* fan_in = taggedNumericToDouble(ctx_, tagged_, fan_in_tagged);
 
     llvm::StructType* tensor_type = ctx_.tensorType();
     llvm::Value* total_ptr = builder.CreateStructGEP(tensor_type, tensor_ptr, 3);
@@ -12850,7 +13041,7 @@ llvm::Value* TensorCodegen::lecunNormal(const eshkol_operations_t* op) {
     if (!tensor_tagged || !fan_in_tagged) return nullptr;
 
     llvm::Value* tensor_ptr = tagged_.unpackPtr(tensor_tagged);
-    llvm::Value* fan_in = tagged_.unpackDouble(fan_in_tagged);
+    llvm::Value* fan_in = taggedNumericToDouble(ctx_, tagged_, fan_in_tagged);
 
     llvm::StructType* tensor_type = ctx_.tensorType();
     llvm::Value* total_ptr = builder.CreateStructGEP(tensor_type, tensor_ptr, 3);

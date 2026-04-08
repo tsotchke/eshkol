@@ -6,142 +6,338 @@ on:
   pull_request:
     branches: [master]
 
+env:
+  LLVM_MAJOR: '21'
+  WINDOWS_LLVM_SDK_VERSION: '21.1.8'
+
 jobs:
-  build-linux:
-    runs-on: ubuntu-22.04
+  unix-matrix:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
     strategy:
+      fail-fast: false
       matrix:
-        build_type: [Debug, Release]
+        include:
+          - name: linux-x64-lite
+            runner: ubuntu-22.04
+            build_dir: build
+            xla_enabled: 'OFF'
+            gpu_enabled: 'OFF'
+            test_command: ./scripts/run_all_tests.sh
+            upload_artifact: 'true'
+            artifact_name: eshkol-linux-x64
+          - name: linux-arm64-lite
+            runner: ubuntu-22.04-arm
+            build_dir: build
+            xla_enabled: 'OFF'
+            gpu_enabled: 'OFF'
+            test_command: ./scripts/run_all_tests.sh
+            upload_artifact: 'true'
+            artifact_name: eshkol-linux-arm64
+          - name: linux-x64-xla
+            runner: ubuntu-22.04
+            build_dir: build-xla
+            xla_enabled: 'ON'
+            gpu_enabled: 'OFF'
+            test_command: ./scripts/run_xla_tests.sh
+            upload_artifact: 'false'
+            artifact_name: ''
+          - name: linux-arm64-xla
+            runner: ubuntu-22.04-arm
+            build_dir: build-xla
+            xla_enabled: 'ON'
+            gpu_enabled: 'OFF'
+            test_command: ./scripts/run_xla_tests.sh
+            upload_artifact: 'false'
+            artifact_name: ''
+          - name: linux-x64-cuda
+            runner: ubuntu-22.04
+            build_dir: build-cuda
+            xla_enabled: 'OFF'
+            gpu_enabled: 'ON'
+            test_command: ./scripts/run_gpu_tests.sh
+            upload_artifact: 'false'
+            artifact_name: ''
+          - name: linux-arm64-cuda
+            runner: ubuntu-22.04-arm
+            build_dir: build-cuda
+            xla_enabled: 'OFF'
+            gpu_enabled: 'ON'
+            test_command: ./scripts/run_gpu_tests.sh
+            upload_artifact: 'false'
+            artifact_name: ''
+          - name: macos-arm64-lite
+            runner: macos-14
+            build_dir: build
+            xla_enabled: 'OFF'
+            gpu_enabled: 'OFF'
+            test_command: ./scripts/run_all_tests.sh
+            upload_artifact: 'true'
+            artifact_name: eshkol-macos-arm64
+          - name: macos-x64-lite
+            runner: macos-15-intel
+            build_dir: build
+            xla_enabled: 'OFF'
+            gpu_enabled: 'OFF'
+            test_command: ./scripts/run_all_tests.sh
+            upload_artifact: 'true'
+            artifact_name: eshkol-macos-x64
+          - name: macos-arm64-xla
+            runner: macos-14
+            build_dir: build-xla
+            xla_enabled: 'ON'
+            gpu_enabled: 'OFF'
+            test_command: ./scripts/run_xla_tests.sh
+            upload_artifact: 'false'
+            artifact_name: ''
+          - name: macos-x64-xla
+            runner: macos-15-intel
+            build_dir: build-xla
+            xla_enabled: 'ON'
+            gpu_enabled: 'OFF'
+            test_command: ./scripts/run_xla_tests.sh
+            upload_artifact: 'false'
+            artifact_name: ''
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Add LLVM 17 Repository
+      - name: Add LLVM Repository (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
         run: |
+          set -euxo pipefail
           wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
-          echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-17 main" | sudo tee /etc/apt/sources.list.d/llvm.list
+          echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-${LLVM_MAJOR} main" | sudo tee /etc/apt/sources.list.d/llvm.list
           sudo apt-get update
 
-      - name: Install Dependencies
+      - name: Install Dependencies (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
         run: |
+          set -euxo pipefail
           sudo apt-get install -y \
             cmake ninja-build \
-            llvm-17 llvm-17-dev \
+            llvm-${LLVM_MAJOR} llvm-${LLVM_MAJOR}-dev \
             libreadline-dev pkg-config \
-            libssl-dev libncurses-dev
-          sudo ln -sf /usr/bin/llvm-config-17 /usr/bin/llvm-config
+            libssl-dev libncurses-dev \
+            git python3
+
+      - name: Install Dependencies (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          brew install llvm@${LLVM_MAJOR} cmake ninja readline
 
       - name: Configure
+        shell: bash
         run: |
-          cmake -B build -G Ninja \
-            -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+          set -euxo pipefail
+          BUILD_DIR="${{ matrix.build_dir }}"
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            LLVM_PREFIX="$(brew --prefix llvm@${LLVM_MAJOR})"
+            export PATH="$LLVM_PREFIX/bin:$PATH"
+            LLVM_CONFIG="$LLVM_PREFIX/bin/llvm-config"
+          else
+            LLVM_CONFIG="/usr/bin/llvm-config-${LLVM_MAJOR}"
+          fi
+
+          cmake -S . -B "$BUILD_DIR" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DESHKOL_REQUIRED_LLVM_MAJOR="${LLVM_MAJOR}" \
+            -DLLVM_CONFIG_EXECUTABLE="$LLVM_CONFIG" \
+            -DESHKOL_XLA_ENABLED=${{ matrix.xla_enabled }} \
+            -DESHKOL_GPU_ENABLED=${{ matrix.gpu_enabled }}
 
       - name: Build
-        run: cmake --build build --parallel
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cmake --build "${{ matrix.build_dir }}" --parallel
 
-      - name: Run All Tests
-        run: ./scripts/run_all_tests.sh
+      - name: Run Tests
+        shell: bash
+        env:
+          BUILD_DIR: ${{ matrix.build_dir }}
+        run: |
+          set -euxo pipefail
+          ${{ matrix.test_command }}
 
       - name: Upload Artifacts
+        if: matrix.upload_artifact == 'true'
         uses: actions/upload-artifact@v4
-        if: matrix.build_type == 'Release'
         with:
-          name: eshkol-linux-x64
+          name: ${{ matrix.artifact_name }}
           path: |
-            build/eshkol-run
-            build/eshkol-repl
-            build/stdlib.o
+            ${{ matrix.build_dir }}/eshkol-run
+            ${{ matrix.build_dir }}/eshkol-repl
+            ${{ matrix.build_dir }}/stdlib.o
 
-  build-linux-arm64:
-    runs-on: ubuntu-22.04-arm
+  windows-matrix:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows-x64-lite
+            runner: windows-2022
+            arch: x64
+            build_dir: build
+            xla_enabled: 'OFF'
+            gpu_enabled: 'OFF'
+            test_mode: all
+            upload_artifact: 'true'
+            artifact_name: eshkol-windows-x64
+          - name: windows-arm64-lite
+            runner: windows-11-arm
+            arch: arm64
+            build_dir: build
+            xla_enabled: 'OFF'
+            gpu_enabled: 'OFF'
+            test_mode: all
+            upload_artifact: 'true'
+            artifact_name: eshkol-windows-arm64
+          - name: windows-x64-xla
+            runner: windows-2022
+            arch: x64
+            build_dir: build-xla
+            xla_enabled: 'ON'
+            gpu_enabled: 'OFF'
+            test_mode: xla
+            upload_artifact: 'false'
+            artifact_name: ''
+          - name: windows-arm64-xla
+            runner: windows-11-arm
+            arch: arm64
+            build_dir: build-xla
+            xla_enabled: 'ON'
+            gpu_enabled: 'OFF'
+            test_mode: xla
+            upload_artifact: 'false'
+            artifact_name: ''
+          - name: windows-x64-cuda
+            runner: windows-2022
+            arch: x64
+            build_dir: build-cuda
+            xla_enabled: 'OFF'
+            gpu_enabled: 'ON'
+            test_mode: gpu
+            upload_artifact: 'false'
+            artifact_name: ''
+          - name: windows-arm64-cuda
+            runner: windows-11-arm
+            arch: arm64
+            build_dir: build-cuda
+            xla_enabled: 'OFF'
+            gpu_enabled: 'ON'
+            test_mode: gpu
+            upload_artifact: 'false'
+            artifact_name: ''
+
     steps:
       - uses: actions/checkout@v4
 
-      - name: Add LLVM 17 Repository
+      - name: Install LLVM SDK
+        shell: pwsh
         run: |
-          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
-          echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-17 main" | sudo tee /etc/apt/sources.list.d/llvm.list
-          sudo apt-get update
+          $ErrorActionPreference = 'Stop'
+          $llvmVersion = '${{ env.WINDOWS_LLVM_SDK_VERSION }}'
+          $arch = '${{ matrix.arch }}'
+          $llvmDir = $null
+          $llvmBin = $null
+          $candidateRoots = @()
 
-      - name: Install Dependencies
-        run: |
-          sudo apt-get install -y \
-            cmake ninja-build \
-            llvm-17 llvm-17-dev \
-            libreadline-dev pkg-config \
-            libssl-dev libncurses-dev
-          sudo ln -sf /usr/bin/llvm-config-17 /usr/bin/llvm-config
+          if ($arch -eq 'x64') {
+            $llvmRoot = "C:\src\clang+llvm-$llvmVersion-x86_64-pc-windows-msvc"
+            $llvmArchive = "$env:RUNNER_TEMP\clang+llvm-$llvmVersion-x86_64-pc-windows-msvc.tar.xz"
+            New-Item -ItemType Directory -Force -Path 'C:\src' | Out-Null
+            if (-not (Test-Path "$llvmRoot\lib\cmake\llvm\LLVMConfig.cmake")) {
+              Invoke-WebRequest -Uri "https://github.com/llvm/llvm-project/releases/download/llvmorg-$llvmVersion/clang+llvm-$llvmVersion-x86_64-pc-windows-msvc.tar.xz" -OutFile $llvmArchive
+              tar -xf $llvmArchive -C C:\src
+            }
+            $candidateRoots += $llvmRoot
+          } else {
+            $winget = Get-Command winget -ErrorAction SilentlyContinue
+            if (-not $winget) {
+              throw "winget is required to provision LLVM on Windows ARM64 runners"
+            }
+            winget install --id LLVM.LLVM --version $llvmVersion --accept-package-agreements --accept-source-agreements --disable-interactivity --silent
+          }
+
+          $candidateRoots += @(
+            'C:\Program Files\LLVM',
+            'C:\LLVM'
+          )
+
+          foreach ($root in $candidateRoots) {
+            $candidate = Join-Path $root 'lib\cmake\llvm\LLVMConfig.cmake'
+            if (Test-Path $candidate) {
+              $llvmDir = Split-Path -Parent $candidate
+              $llvmBin = Join-Path $root 'bin'
+              break
+            }
+          }
+
+          if (-not $llvmDir) {
+            $fallback = Get-ChildItem -Path 'C:\Program Files', 'C:\src', 'C:\LLVM' -Filter LLVMConfig.cmake -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($fallback) {
+              $llvmDir = $fallback.Directory.FullName
+              $llvmRoot = [System.IO.Path]::GetFullPath((Join-Path $llvmDir '..\..\..'))
+              $llvmBin = Join-Path $llvmRoot 'bin'
+            }
+          }
+
+          if (-not $llvmDir) {
+            throw "LLVMConfig.cmake not found after LLVM installation"
+          }
+
+          "LLVM_DIR=$llvmDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "LLVM_HOME=$([System.IO.Path]::GetFullPath((Join-Path $llvmDir '..\\..\\..')))" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $llvmBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - name: Configure
+        shell: pwsh
         run: |
-          cmake -B build -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release
+          $ErrorActionPreference = 'Stop'
+          $platform = if ('${{ matrix.arch }}' -eq 'arm64') { 'ARM64' } else { 'x64' }
+          cmake -S . -B '${{ matrix.build_dir }}' `
+            -G 'Visual Studio 17 2022' `
+            -A $platform `
+            -T ClangCL `
+            -DBUILD_REPL=ON `
+            -DESHKOL_BUILD_TESTS=OFF `
+            -DESHKOL_REQUIRED_LLVM_MAJOR=${{ env.LLVM_MAJOR }} `
+            -DESHKOL_XLA_ENABLED=${{ matrix.xla_enabled }} `
+            -DESHKOL_GPU_ENABLED=${{ matrix.gpu_enabled }} `
+            -DLLVM_DIR="$env:LLVM_DIR"
 
       - name: Build
-        run: cmake --build build --parallel
-
-      - name: Run All Tests
-        run: ./scripts/run_all_tests.sh
-
-      - name: Upload Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: eshkol-linux-arm64
-          path: |
-            build/eshkol-run
-            build/eshkol-repl
-            build/stdlib.o
-
-  build-macos-arm:
-    runs-on: macos-14
-    env:
-      PATH: /opt/homebrew/opt/llvm@17/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Dependencies
-        run: brew install llvm@17 cmake ninja readline
-
-      - name: Build
+        shell: pwsh
         run: |
-          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-          cmake --build build --parallel
+          $ErrorActionPreference = 'Stop'
+          $targets = @('eshkol-run', 'eshkol-repl')
+          if ('${{ matrix.test_mode }}' -eq 'xla') {
+            $targets += 'xla_codegen_test'
+          }
+          cmake --build '${{ matrix.build_dir }}' --config Release --target @($targets) --parallel
 
-      - name: Run All Tests
-        run: ./scripts/run_all_tests.sh
-
-      - name: Upload Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: eshkol-macos-arm64
-          path: |
-            build/eshkol-run
-            build/eshkol-repl
-            build/stdlib.o
-
-  build-macos-intel:
-    runs-on: macos-15-large
-    env:
-      PATH: /usr/local/opt/llvm@17/bin:/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Dependencies
-        run: brew install llvm@17 cmake ninja readline
-
-      - name: Build
+      - name: Run Tests
+        shell: pwsh
         run: |
-          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-          cmake --build build --parallel
-
-      - name: Run All Tests
-        run: ./scripts/run_all_tests.sh
+          $ErrorActionPreference = 'Stop'
+          & .\scripts\run_all_tests.ps1 -BuildDir ".\${{ matrix.build_dir }}" -SkipConfigureBuild -Mode '${{ matrix.test_mode }}'
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
 
       - name: Upload Artifacts
+        if: matrix.upload_artifact == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: eshkol-macos-x64
+          name: ${{ matrix.artifact_name }}
           path: |
-            build/eshkol-run
-            build/eshkol-repl
-            build/stdlib.o
+            ${{ matrix.build_dir }}/Release/eshkol-run.exe
+            ${{ matrix.build_dir }}/Release/eshkol-repl.exe
+            ${{ matrix.build_dir }}/stdlib.o

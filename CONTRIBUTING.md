@@ -43,7 +43,7 @@ To set up your development environment for Eshkol, you'll need:
    - GCC 9.0+ or Clang 10.0+
    - On macOS: `brew install gcc` or use the default Clang
    - On Linux: `sudo apt install build-essential`
-   - On Windows: MSYS2 MinGW64
+   - On Windows: Visual Studio 2022 with Desktop development for C++ and Clang tools
 
 2. **CMake**
    - Version 3.14 or higher
@@ -52,11 +52,11 @@ To set up your development environment for Eshkol, you'll need:
    - On Windows: Download from [cmake.org](https://cmake.org/download/)
 
 3. **LLVM**
-   - Version 17 required (CI tests against LLVM 17)
-   - On macOS: `brew install llvm@17`
-   - On Linux: `sudo apt install llvm-17-dev`
-   - On Windows: Install via MSYS2 MinGW64: `pacman -S mingw-w64-x86_64-llvm`
-   - Ensure `llvm-config` is in your PATH
+   - Version 21 required for lite/native builds
+   - On macOS: `brew install llvm@21`
+   - On Linux: install `llvm-21` and `llvm-21-dev` from `apt.llvm.org`
+   - On Windows: install the official LLVM 21 SDK and point `LLVM_DIR` at its `lib/cmake/llvm` directory
+   - Ensure `llvm-config` is in your PATH on macOS/Linux, or set `LLVM_DIR` on native Windows
 
 4. **Git**
    - On macOS: `brew install git`
@@ -73,10 +73,8 @@ To set up your development environment for Eshkol, you'll need:
 
 2. Create a build directory and build the project:
    ```bash
-   mkdir -p build
-   cd build
-   cmake ..
-   make
+   cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+   cmake --build build --parallel
    ```
 
 ### Running Tests

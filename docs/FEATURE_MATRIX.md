@@ -245,7 +245,7 @@ This matrix documents all implemented and planned features for the Eshkol langua
 | S-expression parser | ✅ | Recursive descent | Fast |
 | Macro system | ✅ | Hygenic macros | `define-syntax` |
 | HoTT type checker | ✅ | Bidirectional | Gradual typing |
-| LLVM IR generation | ✅ | LLVM 17 | 34,928 lines |
+| LLVM IR generation | ✅ | LLVM 21 | 34,928 lines |
 | Native code emission | ✅ | x86-64, ARM64 | Object files |
 | Executable linking | ✅ | System linker | Standalone binaries |
 | **Optimizations** |
@@ -419,13 +419,13 @@ This matrix documents all implemented and planned features for the Eshkol langua
 | **Operating Systems** |
 | Linux | ✅ | x86-64, ARM64 | Primary platform |
 | macOS | ✅ | x86-64, ARM64 | Full support |
-| Windows | ✅ | x86-64 | MSYS2/MinGW64 native (PR #9, mattneel) |
+| Windows | ✅ | x86-64 | Native Visual Studio 2022 + ClangCL/LLVM 21 |
 | FreeBSD | 📋 | x86-64 | Planned |
 | **Architectures** |
 | x86-64 | ✅ | SSE2+ | AVX/AVX2/AVX-512 supported |
 | ARM64 | ✅ | Neon | Full support |
 | RISC-V | 📋 | - | Planned |
-| WebAssembly | ✅ | wasm32 | Via `--wasm` flag (LLVM 17 backend) |
+| WebAssembly | ✅ | wasm32 | Via `--wasm` flag (LLVM 21 backend) |
 | Web REPL | ✅ | Browser | `web/index.html` — interactive Eshkol in-browser |
 | **Build Systems** |
 | CMake | ✅ | 3.14+ | Primary (Ninja recommended) |
@@ -830,7 +830,7 @@ This matrix documents all implemented and planned features for the Eshkol langua
 1. **Single GPU dispatch** - One GPU at a time (multi-GPU planned v1.2)
 3. **Small ecosystem** - Growing standard library, but not as extensive as Python/Julia
 4. **Learning curve** - Functional programming + AD concepts require study
-5. **Platform support** - Linux, macOS, and Windows (MSYS2/MinGW64)
+5. **Platform support** - Linux, macOS, and native Windows x64
 
 ---
 

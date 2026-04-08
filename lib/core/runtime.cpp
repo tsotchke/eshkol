@@ -13,7 +13,12 @@
 #include <eshkol/eshkol.h>
 #include <eshkol/logger.h>
 
+#ifdef _WIN32
+#include <io.h>
+#include <process.h>
+#else
 #include <unistd.h>    // STDERR_FILENO, write(), _exit()
+#endif
 #include <atomic>
 #include <mutex>
 #include <vector>
@@ -34,6 +39,10 @@
 volatile sig_atomic_t g_eshkol_interrupt_flag = 0;
 
 namespace {
+
+#ifdef _WIN32
+constexpr int kEshkolStderrFd = 2;
+#endif
 
 // Runtime state (std::atomic for thread-safe API outside signal handlers)
 std::atomic<eshkol_runtime_state_t> g_runtime_state{ESHKOL_RUNTIME_INITIALIZING};
@@ -70,10 +79,31 @@ std::vector<InFlightOperation> g_in_flight_operations;
 std::atomic<uint32_t> g_next_operation_id{1};
 
 // Original signal handlers (for restoration)
+#ifdef _WIN32
+using eshkol_signal_handler_t = void (*)(int);
+eshkol_signal_handler_t g_old_sigint_handler = SIG_DFL;
+eshkol_signal_handler_t g_old_sigterm_handler = SIG_DFL;
+#ifdef SIGPIPE
+eshkol_signal_handler_t g_old_sigpipe_handler = SIG_DFL;
+#endif
+#else
 struct sigaction g_old_sigint_handler;
 struct sigaction g_old_sigterm_handler;
 struct sigaction g_old_sigpipe_handler;
+#endif
 bool g_signals_installed = false;
+
+inline void eshkol_signal_safe_write(const char* msg, size_t msg_len) {
+#ifdef _WIN32
+    (void)_write(kEshkolStderrFd, msg, (unsigned int)msg_len);
+#else
+    (void)write(STDERR_FILENO, msg, msg_len);
+#endif
+}
+
+[[noreturn]] inline void eshkol_signal_safe_exit(int code) {
+    _exit(code);
+}
 
 // ============================================================================
 // Signal Handler
@@ -107,14 +137,14 @@ void eshkol_signal_handler(int signum) {
     }
 
     // Use write() which is async-signal-safe
-    (void)write(STDERR_FILENO, msg, msg_len);
+    eshkol_signal_safe_write(msg, msg_len);
 
     // If we get a second signal during shutdown, force exit
     // Read from volatile sig_atomic_t (NOT std::atomic — not async-signal-safe)
     if (g_sig_runtime_state == (sig_atomic_t)ESHKOL_RUNTIME_SHUTTING_DOWN) {
         const char* force_msg = "[Eshkol] Second interrupt, forcing exit!\n";
-        (void)write(STDERR_FILENO, force_msg, 42);
-        _exit(128 + signum);  // Standard Unix exit code for signal termination
+        eshkol_signal_safe_write(force_msg, 42);
+        eshkol_signal_safe_exit(128 + signum);  // Standard Unix exit code for signal termination
     }
 
     // Mark as shutting down (signal-safe variable)
@@ -138,6 +168,27 @@ void eshkol_runtime_init_signals(void) {
         return;
     }
 
+#ifdef _WIN32
+    g_old_sigint_handler = std::signal(SIGINT, eshkol_signal_handler);
+    if (g_old_sigint_handler == SIG_ERR) {
+        eshkol_warn("Failed to install SIGINT handler");
+        g_old_sigint_handler = SIG_DFL;
+    }
+
+    g_old_sigterm_handler = std::signal(SIGTERM, eshkol_signal_handler);
+    if (g_old_sigterm_handler == SIG_ERR) {
+        eshkol_warn("Failed to install SIGTERM handler");
+        g_old_sigterm_handler = SIG_DFL;
+    }
+
+#ifdef SIGPIPE
+    g_old_sigpipe_handler = std::signal(SIGPIPE, SIG_IGN);
+    if (g_old_sigpipe_handler == SIG_ERR) {
+        eshkol_warn("Failed to install SIGPIPE handler");
+        g_old_sigpipe_handler = SIG_DFL;
+    }
+#endif
+#else
     struct sigaction sa;
     std::memset(&sa, 0, sizeof(sa));
     sa.sa_handler = eshkol_signal_handler;
@@ -161,6 +212,7 @@ void eshkol_runtime_init_signals(void) {
     if (sigaction(SIGPIPE, &sa_ignore, &g_old_sigpipe_handler) != 0) {
         eshkol_warn("Failed to install SIGPIPE handler");
     }
+#endif
 
     g_signals_installed = true;
     eshkol_debug("Signal handlers installed");
@@ -171,9 +223,17 @@ void eshkol_runtime_restore_signals(void) {
         return;
     }
 
+#ifdef _WIN32
+    std::signal(SIGINT, g_old_sigint_handler);
+    std::signal(SIGTERM, g_old_sigterm_handler);
+#ifdef SIGPIPE
+    std::signal(SIGPIPE, g_old_sigpipe_handler);
+#endif
+#else
     sigaction(SIGINT, &g_old_sigint_handler, nullptr);
     sigaction(SIGTERM, &g_old_sigterm_handler, nullptr);
     sigaction(SIGPIPE, &g_old_sigpipe_handler, nullptr);
+#endif
 
     g_signals_installed = false;
     eshkol_debug("Signal handlers restored");

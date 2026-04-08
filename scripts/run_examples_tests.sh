@@ -77,7 +77,7 @@ CURRENT=0
 
 # Run each test
 for test_file in examples/*.esk; do
-    ((CURRENT++))
+    ((++CURRENT))
     test_name=$(basename "$test_file")
 
     # Skip proprietary/unreleased examples

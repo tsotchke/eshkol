@@ -3,8 +3,14 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#ifdef _WIN32
+#include <winsock2.h>
+#include <process.h>
+typedef int pid_t;
+#else
 #include <unistd.h>
 #include <sys/time.h>
+#endif
 
 /**
  * @file quantum_rng.h

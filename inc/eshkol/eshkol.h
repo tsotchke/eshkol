@@ -1022,6 +1022,9 @@ void eshkol_unwind_dynamic_wind(void* saved_wind_mark);
 
 // ===== END FIRST-CLASS CONTINUATIONS =====
 
+// Initialize process/thread stack sizing for deep recursion support.
+void eshkol_init_stack_size(void);
+
 // ===== LAMBDA REGISTRY FOR HOMOICONICITY =====
 // Runtime table mapping function pointers to their S-expression representations
 // This enables full homoiconicity: (display (list double)) shows the lambda source

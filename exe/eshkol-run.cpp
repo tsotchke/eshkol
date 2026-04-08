@@ -8,6 +8,8 @@
 #include <eshkol/logger.h>
 #include <eshkol/core/runtime.h>
 #include <eshkol/core/resource_limits.h>
+#include <eshkol/build_config.h>
+#include <eshkol/platform_runtime.h>
 
 #include <eshkol/llvm_backend.h>
 #include "../lib/repl/repl_jit.h"
@@ -15,16 +17,11 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
+#ifndef _WIN32
 #include <getopt.h>
-#include <unistd.h>
+#endif
 #include <errno.h>
 #include <filesystem>
-#ifdef __APPLE__
-#include <mach-o/dyld.h>  // For _NSGetExecutablePath on macOS
-#endif
-#ifdef __linux__
-#include <linux/limits.h>  // For PATH_MAX on Linux
-#endif
 
 #include <string>
 #include <vector>
@@ -34,6 +31,206 @@
 #include <sstream>
 #include <cstring>
 #include <cstdlib>
+
+static constexpr char eshkol_path_separator =
+#ifdef _WIN32
+    ';';
+#else
+    ':';
+#endif
+
+static void append_host_runtime_link_args(std::vector<std::string>& link_args) {
+#ifdef _WIN32
+    std::stringstream stream(ESHKOL_HOST_RUNTIME_LINK_ARGS);
+    std::string item;
+
+    while (std::getline(stream, item, ';')) {
+        if (item.empty()) {
+            continue;
+        }
+
+        if (item.size() >= 3 &&
+            std::isalpha(static_cast<unsigned char>(item[0])) &&
+            item[1] == ':' &&
+            item[2] == '/') {
+            std::replace(item.begin(), item.end(), '/', '\\');
+        }
+
+        link_args.emplace_back(item);
+    }
+
+    const auto has_cudadevrt = std::any_of(link_args.begin(), link_args.end(), [](const std::string& arg) {
+        return std::filesystem::path(arg).filename() == "cudadevrt.lib";
+    });
+    if (!has_cudadevrt) {
+        for (const auto& arg : link_args) {
+            const auto path = std::filesystem::path(arg);
+            if (path.filename() == "cudart.lib") {
+                const auto candidate = path.parent_path() / "cudadevrt.lib";
+                std::error_code ec;
+                if (std::filesystem::exists(candidate, ec)) {
+                    link_args.emplace_back(candidate.string());
+                }
+                break;
+            }
+        }
+    }
+#else
+    for (const auto& runtime_arg : eshkol::platform::host_runtime_link_args()) {
+        link_args.emplace_back(runtime_arg);
+    }
+#endif
+}
+
+#ifdef _WIN32
+enum {
+    no_argument = 0,
+    required_argument = 1,
+    optional_argument = 2
+};
+
+struct option {
+    const char* name;
+    int has_arg;
+    int* flag;
+    int val;
+};
+
+char* optarg = nullptr;
+int optind = 1;
+int opterr = 1;
+int optopt = 0;
+
+static const char* g_short_option_cursor = nullptr;
+static int g_non_option_count = 0;
+
+static int getopt_long(int argc, char** argv, const char* shortopts,
+                       const struct option* longopts, int* longindex) {
+    optarg = nullptr;
+
+    if (optind <= 1 && !g_short_option_cursor) {
+        g_non_option_count = 0;
+    }
+
+    if (g_short_option_cursor && *g_short_option_cursor == '\0') {
+        g_short_option_cursor = nullptr;
+    }
+
+    while (!g_short_option_cursor) {
+        if (optind >= argc - g_non_option_count) {
+            return -1;
+        }
+
+        const char* current = argv[optind];
+        if (std::strcmp(current, "--") == 0) {
+            ++optind;
+            return -1;
+        }
+
+        if (current[0] != '-' || current[1] == '\0') {
+            char* positional = argv[optind];
+            for (int i = optind; i < argc - 1; ++i) {
+                argv[i] = argv[i + 1];
+            }
+            argv[argc - 1] = positional;
+            ++g_non_option_count;
+            continue;
+        }
+
+        if (current[1] == '-') {
+            const char* option_name = current + 2;
+            const char* option_value = std::strchr(option_name, '=');
+            std::string name = option_value
+                ? std::string(option_name, option_value - option_name)
+                : std::string(option_name);
+
+            for (int i = 0; longopts[i].name; ++i) {
+                if (name == longopts[i].name) {
+                    if (longindex) {
+                        *longindex = i;
+                    }
+
+                    if (longopts[i].has_arg == required_argument) {
+                        if (option_value) {
+                            optarg = const_cast<char*>(option_value + 1);
+                        } else if (optind + 1 < argc) {
+                            optarg = argv[++optind];
+                        } else {
+                            if (opterr) {
+                                std::fprintf(stderr, "Option '--%s' requires an argument\n", name.c_str());
+                            }
+                            ++optind;
+                            return '?';
+                        }
+                    } else if (option_value) {
+                        if (opterr) {
+                            std::fprintf(stderr, "Option '--%s' does not take an argument\n", name.c_str());
+                        }
+                        ++optind;
+                        return '?';
+                    }
+
+                    ++optind;
+                    if (longopts[i].flag) {
+                        *longopts[i].flag = longopts[i].val;
+                        return 0;
+                    }
+                    return longopts[i].val;
+                }
+            }
+
+            if (opterr) {
+                std::fprintf(stderr, "Unknown option: --%s\n", name.c_str());
+            }
+            ++optind;
+            return '?';
+        }
+
+        g_short_option_cursor = current + 1;
+    }
+
+    const char opt = *g_short_option_cursor++;
+    const char* spec = std::strchr(shortopts, opt);
+    if (!spec) {
+        optopt = opt;
+        if (*g_short_option_cursor == '\0') {
+            g_short_option_cursor = nullptr;
+            ++optind;
+        }
+        if (opterr) {
+            std::fprintf(stderr, "Unknown option: -%c\n", opt);
+        }
+        return '?';
+    }
+
+    if (spec[1] == ':') {
+        if (*g_short_option_cursor != '\0') {
+            optarg = const_cast<char*>(g_short_option_cursor);
+        } else if (optind + 1 < argc) {
+            optarg = argv[++optind];
+        } else {
+            optopt = opt;
+            if (opterr) {
+                std::fprintf(stderr, "Option '-%c' requires an argument\n", opt);
+            }
+            g_short_option_cursor = nullptr;
+            ++optind;
+            return '?';
+        }
+
+        g_short_option_cursor = nullptr;
+        ++optind;
+        return opt;
+    }
+
+    if (*g_short_option_cursor == '\0') {
+        g_short_option_cursor = nullptr;
+        ++optind;
+    }
+
+    return opt;
+}
+#endif
 
 static struct option long_options[] = {
     {"help", no_argument, nullptr, 'h'},
@@ -1286,148 +1483,105 @@ static void process_imports(std::vector<eshkol_ast_t>& asts, const std::string& 
 // Find the stdlib.esk file
 static std::string find_stdlib()
 {
-    // Check common locations
-    std::vector<std::string> stdlib_paths = {
-        // Relative to current directory (development)
-        "lib/stdlib.esk",
-        "../lib/stdlib.esk",
-        // Installation paths
-        "/usr/local/share/eshkol/stdlib.esk",
-        "/usr/share/eshkol/stdlib.esk",
+    auto cwd = eshkol::platform::current_directory();
+    auto exe_dir = eshkol::platform::executable_directory();
+
+    std::vector<std::filesystem::path> candidates = {
+        cwd / "lib/stdlib.esk",
+        cwd.parent_path() / "lib/stdlib.esk",
+        cwd / "share/eshkol/stdlib.esk",
+        cwd / "share/eshkol/lib/stdlib.esk",
+        exe_dir / "stdlib.esk",
+        exe_dir / "../lib/stdlib.esk",
+        exe_dir / "../share/eshkol/stdlib.esk",
+        exe_dir / "../share/eshkol/lib/stdlib.esk",
     };
 
-    // Also check relative to the executable
-    char exe_path[4096];
-    bool got_exe_path = false;
-
-#ifdef __linux__
-    ssize_t len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
-    if (len != -1) {
-        exe_path[len] = '\0';
-        got_exe_path = true;
-    }
-#elif defined(__APPLE__)
-    uint32_t size = sizeof(exe_path);
-    if (_NSGetExecutablePath(exe_path, &size) == 0) {
-        got_exe_path = true;
-    }
+#ifndef _WIN32
+    candidates.emplace_back("/usr/local/share/eshkol/stdlib.esk");
+    candidates.emplace_back("/usr/local/share/eshkol/lib/stdlib.esk");
+    candidates.emplace_back("/usr/share/eshkol/stdlib.esk");
+    candidates.emplace_back("/usr/share/eshkol/lib/stdlib.esk");
 #endif
 
-    if (got_exe_path) {
-        std::filesystem::path exe_dir = std::filesystem::path(exe_path).parent_path();
-        stdlib_paths.insert(stdlib_paths.begin(), (exe_dir / "../lib/stdlib.esk").string());
-        stdlib_paths.insert(stdlib_paths.begin(), (exe_dir / "stdlib.esk").string());
-    }
-
-    for (const auto& path : stdlib_paths) {
-        if (std::filesystem::exists(path)) {
-            return std::filesystem::canonical(path).string();
-        }
-    }
-
-    return "";  // Not found
+    return eshkol::platform::find_first_existing(candidates);
 }
 
 // Find the pre-compiled stdlib.o file
-static std::string find_stdlib_object()
+static void append_library_candidates(std::vector<std::filesystem::path>& candidates,
+                                      const std::vector<char*>& lib_paths,
+                                      const std::filesystem::path& leaf_name) {
+    for (const auto* lib_path : lib_paths) {
+        if (!lib_path || lib_path[0] == '\0') {
+            continue;
+        }
+        candidates.emplace_back(std::filesystem::path(lib_path) / leaf_name);
+    }
+}
+
+static std::string find_stdlib_object(const std::vector<char*>& lib_paths)
 {
-    std::vector<std::string> stdlib_paths = {
-        // Relative to current directory (development)
-        "stdlib.o",
-        "build/stdlib.o",
-        "../build/stdlib.o",
-        // Installation paths
-        "/usr/local/lib/eshkol/stdlib.o",
-        "/usr/local/lib/stdlib.o",
-        "/usr/lib/eshkol/stdlib.o",
-        // Homebrew paths
-        "/opt/homebrew/lib/eshkol/stdlib.o",
-        "/opt/homebrew/lib/stdlib.o",
-    };
+    auto cwd = eshkol::platform::current_directory();
+    auto exe_dir = eshkol::platform::executable_directory();
 
-    // Also check relative to the executable
-    char exe_path[4096];
-    bool got_exe_path = false;
+    std::vector<std::filesystem::path> candidates;
+    append_library_candidates(candidates, lib_paths, "stdlib.o");
 
-#ifdef __linux__
-    ssize_t len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
-    if (len != -1) {
-        exe_path[len] = '\0';
-        got_exe_path = true;
-    }
-#elif defined(__APPLE__)
-    uint32_t size = sizeof(exe_path);
-    if (_NSGetExecutablePath(exe_path, &size) == 0) {
-        got_exe_path = true;
-    }
+    candidates.insert(candidates.end(), {
+        exe_dir / "stdlib.o",
+        exe_dir / "../lib/stdlib.o",
+        exe_dir / "../lib/eshkol/stdlib.o",
+        cwd / "stdlib.o",
+        cwd / "build/stdlib.o",
+        cwd.parent_path() / "build/stdlib.o",
+    });
+
+#ifndef _WIN32
+    candidates.emplace_back("/usr/local/lib/eshkol/stdlib.o");
+    candidates.emplace_back("/usr/local/lib/stdlib.o");
+    candidates.emplace_back("/usr/lib/eshkol/stdlib.o");
+    candidates.emplace_back("/usr/lib/stdlib.o");
+    candidates.emplace_back("/opt/homebrew/lib/eshkol/stdlib.o");
+    candidates.emplace_back("/opt/homebrew/lib/stdlib.o");
 #endif
 
-    if (got_exe_path) {
-        std::filesystem::path exe_dir = std::filesystem::path(exe_path).parent_path();
-        stdlib_paths.insert(stdlib_paths.begin(), (exe_dir / "stdlib.o").string());
-        stdlib_paths.insert(stdlib_paths.begin(), (exe_dir / "../lib/stdlib.o").string());
-        stdlib_paths.insert(stdlib_paths.begin(), (exe_dir / "../lib/eshkol/stdlib.o").string());
-    }
-
-    for (const auto& path : stdlib_paths) {
-        if (std::filesystem::exists(path)) {
-            return std::filesystem::canonical(path).string();
-        }
-    }
-
-    return "";  // Not found
+    return eshkol::platform::find_first_existing(candidates);
 }
 
 // Find the runtime library (libeshkol-static.a)
-static std::string find_runtime_library()
+static std::string find_runtime_library(const std::vector<char*>& lib_paths)
 {
-    std::vector<std::string> lib_paths = {
-        // Relative to current directory (development)
-        "libeshkol-static.a",
-        "build/libeshkol-static.a",
-        "../build/libeshkol-static.a",
-        // Installation paths (Linux)
-        "/usr/local/lib/libeshkol-static.a",
-        "/usr/local/lib/eshkol/libeshkol-static.a",
-        "/usr/lib/libeshkol-static.a",
-        "/usr/lib/eshkol/libeshkol-static.a",
-        // Homebrew paths (macOS)
-        "/opt/homebrew/lib/libeshkol-static.a",
-        "/opt/homebrew/lib/eshkol/libeshkol-static.a",
-    };
+    auto cwd = eshkol::platform::current_directory();
+    auto exe_dir = eshkol::platform::executable_directory();
+    const auto library_name = eshkol::platform::static_library_name("eshkol-static");
 
-    // Also check relative to the executable
-    char exe_path[4096];
-    bool got_exe_path = false;
+    std::vector<std::filesystem::path> candidates;
 
-#ifdef __linux__
-    ssize_t len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
-    if (len != -1) {
-        exe_path[len] = '\0';
-        got_exe_path = true;
+    if (const char* env_lib = std::getenv("ESHKOL_LIB_DIR")) {
+        candidates.emplace_back(std::filesystem::path(env_lib) / library_name);
     }
-#elif defined(__APPLE__)
-    uint32_t size = sizeof(exe_path);
-    if (_NSGetExecutablePath(exe_path, &size) == 0) {
-        got_exe_path = true;
-    }
+
+    append_library_candidates(candidates, lib_paths, library_name);
+
+    candidates.insert(candidates.end(), {
+        exe_dir / library_name,
+        exe_dir / "../lib" / library_name,
+        exe_dir / "../lib/eshkol" / library_name,
+        cwd / library_name,
+        cwd / "build" / library_name,
+        cwd.parent_path() / "build" / library_name,
+    });
+
+#ifndef _WIN32
+    candidates.emplace_back("/usr/local/lib" / std::filesystem::path(library_name));
+    candidates.emplace_back("/usr/local/lib/eshkol" / std::filesystem::path(library_name));
+    candidates.emplace_back("/usr/lib" / std::filesystem::path(library_name));
+    candidates.emplace_back("/usr/lib/eshkol" / std::filesystem::path(library_name));
+    candidates.emplace_back("/opt/homebrew/lib" / std::filesystem::path(library_name));
+    candidates.emplace_back("/opt/homebrew/lib/eshkol" / std::filesystem::path(library_name));
 #endif
 
-    if (got_exe_path) {
-        std::filesystem::path exe_dir = std::filesystem::path(exe_path).parent_path();
-        // Check relative to executable
-        lib_paths.insert(lib_paths.begin(), (exe_dir / "libeshkol-static.a").string());
-        lib_paths.insert(lib_paths.begin(), (exe_dir / "../lib/libeshkol-static.a").string());
-        lib_paths.insert(lib_paths.begin(), (exe_dir / "../lib/eshkol/libeshkol-static.a").string());
-    }
-
-    for (const auto& path : lib_paths) {
-        if (std::filesystem::exists(path)) {
-            return std::filesystem::canonical(path).string();
-        }
-    }
-
-    return "";  // Not found
+    return eshkol::platform::find_first_existing(candidates);
 }
 
 // Check if any AST contains a require for stdlib or core.* modules
@@ -1449,46 +1603,24 @@ static bool requires_stdlib(const std::vector<eshkol_ast_t>& asts)
 // Find the library base directory (lib/)
 static std::string find_lib_dir()
 {
-    // Check common locations for the lib directory
-    std::vector<std::string> lib_dirs = {
-        // Relative to current directory (development)
-        "lib",
-        "../lib",
-        // Installation paths
-        "/usr/local/share/eshkol/lib",
-        "/usr/share/eshkol/lib",
+    auto cwd = eshkol::platform::current_directory();
+    auto exe_dir = eshkol::platform::executable_directory();
+
+    std::vector<std::filesystem::path> candidates = {
+        cwd / "lib",
+        cwd.parent_path() / "lib",
+        cwd / "share/eshkol/lib",
+        exe_dir / "lib",
+        exe_dir / "../lib",
+        exe_dir / "../share/eshkol/lib",
     };
 
-    // Also check relative to the executable
-    char exe_path[4096];
-    bool got_exe_path = false;
-
-#ifdef __linux__
-    ssize_t len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
-    if (len != -1) {
-        exe_path[len] = '\0';
-        got_exe_path = true;
-    }
-#elif defined(__APPLE__)
-    uint32_t size = sizeof(exe_path);
-    if (_NSGetExecutablePath(exe_path, &size) == 0) {
-        got_exe_path = true;
-    }
+#ifndef _WIN32
+    candidates.emplace_back("/usr/local/share/eshkol/lib");
+    candidates.emplace_back("/usr/share/eshkol/lib");
 #endif
 
-    if (got_exe_path) {
-        std::filesystem::path exe_dir = std::filesystem::path(exe_path).parent_path();
-        lib_dirs.insert(lib_dirs.begin(), (exe_dir / "../lib").string());
-        lib_dirs.insert(lib_dirs.begin(), (exe_dir / "lib").string());
-    }
-
-    for (const auto& dir : lib_dirs) {
-        if (std::filesystem::exists(dir) && std::filesystem::is_directory(dir)) {
-            return std::filesystem::canonical(dir).string();
-        }
-    }
-
-    return "";  // Not found
+    return eshkol::platform::find_first_existing(candidates);
 }
 
 // Convert symbolic module name to file path
@@ -1542,7 +1674,7 @@ static std::string resolve_module_path(const std::string& module_name, const std
     if (eshkol_path) {
         std::stringstream ss(eshkol_path);
         std::string search_dir;
-        while (std::getline(ss, search_dir, ':')) {
+        while (std::getline(ss, search_dir, eshkol_path_separator)) {
             std::filesystem::path env_path = std::filesystem::path(search_dir) / path_part;
             if (std::filesystem::exists(env_path)) {
                 return std::filesystem::canonical(env_path).string();
@@ -2516,7 +2648,7 @@ int main(int argc, char **argv)
 
         if (!has_stdlib) {
             // Try to find stdlib.o automatically
-            std::string stdlib_path = find_stdlib_object();
+            std::string stdlib_path = find_stdlib_object(lib_paths);
             if (!stdlib_path.empty()) {
                 eshkol_info("Auto-linking pre-compiled stdlib: %s", stdlib_path.c_str());
                 compiled_files.push_back(strdup(stdlib_path.c_str()));
@@ -2779,24 +2911,13 @@ int main(int argc, char **argv)
             // Default behavior: compile to executable
             // If we have object files to link (like stdlib.o), compile to temp .o first
             // then link everything together
-            std::string exe_name = output ? std::string(output) : "a.out";
+            std::string exe_name = eshkol::platform::with_executable_suffix(
+                output ? std::filesystem::path(output) : std::filesystem::path("a.out")
+            ).generic_string();
 
             if (!compiled_files.empty()) {
                 // Compile main program to temp .o, then link with stdlib.o etc.
-                // Use mkstemp for safe temp file creation (avoids symlink attacks)
-                const char* tmpdir = getenv("TMPDIR");
-                if (!tmpdir) tmpdir = P_tmpdir;  // POSIX fallback (usually /tmp)
-                std::string temp_template = std::string(tmpdir) + "/eshkol_XXXXXX.o";
-                std::vector<char> temp_buf(temp_template.begin(), temp_template.end());
-                temp_buf.push_back('\0');
-                int tmp_fd = mkstemps(temp_buf.data(), 2);  // 2 = strlen(".o")
-                if (tmp_fd < 0) {
-                    eshkol_error("Failed to create temp file: %s", strerror(errno));
-                    eshkol_dispose_llvm_module(llvm_module);
-                    return 1;
-                }
-                close(tmp_fd);  // eshkol_compile_llvm_ir_to_object opens by name
-                std::string temp_obj(temp_buf.data());
+                std::string temp_obj = exe_name + ".tmp.o";
                 eshkol_info("Compiling to temp object: %s", temp_obj.c_str());
                 if (eshkol_compile_llvm_ir_to_object(llvm_module, temp_obj.c_str()) != 0) {
                     eshkol_error("Object file compilation failed");
@@ -2804,8 +2925,9 @@ int main(int argc, char **argv)
                     return 1;
                 }
                 compiled_files.push_back(strdup(temp_obj.c_str()));
-                // Set output so the linking section runs
-                if (!output) output = strdup(exe_name.c_str());
+                // Normalize the final output path now so the later link step
+                // uses the platform executable suffix on Windows as well.
+                output = strdup(exe_name.c_str());
             } else {
                 // No object files to link, compile directly to executable
                 eshkol_info("Compiling to executable: %s", exe_name.c_str());
@@ -2838,22 +2960,26 @@ int main(int argc, char **argv)
     // Process compiled object files if we have them and an output target
     // Don't link in compile-only mode (-c flag) - user can link manually
     if (!compiled_files.empty() && output && !compile_only) {
-        std::string link_cmd = "c++ -fPIE";
+        std::vector<std::string> link_args;
+        link_args.push_back(eshkol::platform::cxx_compiler());
+#ifndef _WIN32
+        link_args.emplace_back("-fPIE");
+#endif
 
         // Add all object files
         for (const auto &compiled_file : compiled_files) {
-            link_cmd += " " + std::string(compiled_file);
+            link_args.emplace_back(compiled_file);
         }
 
         // Add library search paths
         for (const auto &lib_path : lib_paths) {
-            link_cmd += " -L" + std::string(lib_path);
+            link_args.emplace_back("-L" + std::string(lib_path));
         }
 
         // Add libeshkol-static.a (needed for arena functions)
-        std::string runtime_lib = find_runtime_library();
+        std::string runtime_lib = find_runtime_library(lib_paths);
         if (!runtime_lib.empty()) {
-            link_cmd += " " + runtime_lib;
+            link_args.emplace_back(runtime_lib);
         } else {
             eshkol_error("Could not find libeshkol-static.a");
             eshkol_error("Searched: ./build/, /usr/local/lib/, /opt/homebrew/lib/, and relative to executable");
@@ -2863,32 +2989,58 @@ int main(int argc, char **argv)
 
         // Add linked libraries
         for (const auto &linked_lib : linked_libs) {
-            link_cmd += " -l" + std::string(linked_lib);
+            link_args.emplace_back("-l" + std::string(linked_lib));
         }
 
         // Add BLAS framework/library (required for libeshkol-static.a BLAS functions)
 #ifdef __APPLE__
         // Link with Accelerate framework for BLAS (Apple Silicon optimized)
-        link_cmd += " -framework Accelerate";
-#elif defined(__linux__)
-        // Link with OpenBLAS on Linux
-        link_cmd += " -lopenblas";
+        link_args.emplace_back("-framework");
+        link_args.emplace_back("Accelerate");
 #endif
 
         // Add GPU frameworks/libraries (for GPU-accelerated tensor operations)
         // Metal: System framework on macOS, always safe to link (like Accelerate)
-        // CUDA: Not a system library, requires explicit detection (handled by cmake)
+        // CUDA: Added from build-config metadata captured by CMake.
 #ifdef __APPLE__
         // Metal and MetalPerformanceShaders for GPU on macOS
-        link_cmd += " -framework Metal -framework MetalPerformanceShaders -framework Foundation";
-        link_cmd += " -lobjc";  // Objective-C runtime
+        link_args.emplace_back("-framework");
+        link_args.emplace_back("Metal");
+        link_args.emplace_back("-framework");
+        link_args.emplace_back("MetalPerformanceShaders");
+        link_args.emplace_back("-framework");
+        link_args.emplace_back("Foundation");
+        link_args.emplace_back("-lobjc");  // Objective-C runtime
+#endif
+
+        append_host_runtime_link_args(link_args);
+
+#ifdef _WIN32
+        link_args.emplace_back("-Xlinker");
+        link_args.emplace_back("/STACK:536870912");
+#endif
+
+#ifdef __linux__
+        link_args.emplace_back("-Wl,-z,stack-size=536870912");
 #endif
 
         // Add output
-        link_cmd += " -o " + std::string(output) + " -lm";
-        
+        link_args.emplace_back("-o");
+        link_args.emplace_back(output);
+#ifndef _WIN32
+        link_args.emplace_back("-lm");
+#endif
+
+        std::string link_cmd;
+        for (const auto& arg : link_args) {
+            if (!link_cmd.empty()) {
+                link_cmd.push_back(' ');
+            }
+            link_cmd += eshkol::platform::shell_quote(arg);
+        }
+
         eshkol_info("Linking object files: %s", link_cmd.c_str());
-        int result = system(link_cmd.c_str());
+        int result = eshkol::platform::run_command(link_args);
 
         // Clean up temp object files (mkstemp-created files in TMPDIR)
         for (const auto &compiled_file : compiled_files) {
