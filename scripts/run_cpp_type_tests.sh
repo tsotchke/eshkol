@@ -29,6 +29,10 @@ echo "Using LLVM config: $LLVM_CONFIG"
 # Get LLVM configuration
 LLVM_CXXFLAGS_RAW=$($LLVM_CONFIG --cxxflags)
 LLVM_CXXFLAGS_RAW=$(printf '%s\n' "$LLVM_CXXFLAGS_RAW" | sed -E 's/(^|[[:space:]])-std=[^[:space:]]+//g; s/(^|[[:space:]])-fno-exceptions//g')
+LLVM_CXXFLAGS=()
+LLVM_LDFLAGS=()
+LLVM_LIBS=()
+LLVM_SYSTEM_LIBS=()
 read -r -a LLVM_CXXFLAGS <<< "$LLVM_CXXFLAGS_RAW"
 read -r -a LLVM_LDFLAGS <<< "$($LLVM_CONFIG --ldflags)"
 read -r -a LLVM_LIBS <<< "$($LLVM_CONFIG --libs all)"
@@ -56,10 +60,12 @@ compile_and_run_test() {
     # Compile the test
     if g++ -std=c++20 \
         -I"$PROJECT_DIR/inc" \
-        "${LLVM_CXXFLAGS[@]}" \
+        ${LLVM_CXXFLAGS[@]+"${LLVM_CXXFLAGS[@]}"} \
         $SOURCES \
         "$test_file" \
-        "${LLVM_LDFLAGS[@]}" "${LLVM_LIBS[@]}" "${LLVM_SYSTEM_LIBS[@]}" \
+        ${LLVM_LDFLAGS[@]+"${LLVM_LDFLAGS[@]}"} \
+        ${LLVM_LIBS[@]+"${LLVM_LIBS[@]}"} \
+        ${LLVM_SYSTEM_LIBS[@]+"${LLVM_SYSTEM_LIBS[@]}"} \
         -o "$output" 2>&1; then
 
         echo -e "${GREEN}OK${NC}"
