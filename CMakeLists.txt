@@ -40,10 +40,16 @@ if(ESHKOL_USING_MSVC AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
         RESULT_VARIABLE _eshkol_clang_resource_dir_result
         ERROR_QUIET
     )
+    set(_eshkol_clang_builtins_arch "x86_64")
+    if(CMAKE_VS_PLATFORM_NAME STREQUAL "ARM64" OR
+       CMAKE_SYSTEM_PROCESSOR MATCHES "^(ARM64|arm64|AARCH64|aarch64)$")
+        set(_eshkol_clang_builtins_arch "aarch64")
+    endif()
+
     if(_eshkol_clang_resource_dir_result EQUAL 0 AND NOT "${_eshkol_clang_resource_dir_raw}" STREQUAL "")
         file(TO_CMAKE_PATH "${_eshkol_clang_resource_dir_raw}" _eshkol_clang_resource_dir)
         set(_eshkol_clang_builtins_candidate
-            "${_eshkol_clang_resource_dir}/lib/windows/clang_rt.builtins-x86_64.lib")
+            "${_eshkol_clang_resource_dir}/lib/windows/clang_rt.builtins-${_eshkol_clang_builtins_arch}.lib")
         if(EXISTS "${_eshkol_clang_builtins_candidate}")
             set(ESHKOL_CLANG_BUILTINS_LIB "${_eshkol_clang_builtins_candidate}")
         endif()
@@ -52,7 +58,7 @@ if(ESHKOL_USING_MSVC AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
     if(NOT ESHKOL_CLANG_BUILTINS_LIB)
         get_filename_component(_eshkol_clang_root "${_eshkol_clang_bin_dir}" DIRECTORY)
         file(GLOB _eshkol_clang_builtins LIST_DIRECTORIES FALSE
-            "${_eshkol_clang_root}/lib/clang/*/lib/windows/clang_rt.builtins-x86_64.lib"
+            "${_eshkol_clang_root}/lib/clang/*/lib/windows/clang_rt.builtins-${_eshkol_clang_builtins_arch}.lib"
         )
         list(LENGTH _eshkol_clang_builtins _eshkol_clang_builtins_count)
         if(_eshkol_clang_builtins_count GREATER 0)
@@ -230,25 +236,38 @@ else()
         eshkol_validate_llvm_major("${LLVM_PACKAGE_VERSION}" "${LLVM_DIR}")
 
         if(TARGET LLVMDebugInfoPDB)
-            file(GLOB _eshkol_dia_sdk_libs LIST_DIRECTORIES FALSE
-                "C:/Program Files (x86)/Microsoft Visual Studio/*/*/DIA SDK/lib/amd64/diaguids.lib"
-            )
-            list(LENGTH _eshkol_dia_sdk_libs _eshkol_dia_sdk_count)
-            if(_eshkol_dia_sdk_count GREATER 0)
-                list(GET _eshkol_dia_sdk_libs 0 ESHKOL_DIAGUIDS_LIB)
-                get_target_property(_eshkol_pdb_link_libs LLVMDebugInfoPDB INTERFACE_LINK_LIBRARIES)
-                if(_eshkol_pdb_link_libs)
-                    set(_eshkol_pdb_link_libs_patched "")
-                    foreach(_llvm_dep IN LISTS _eshkol_pdb_link_libs)
-                        if(_llvm_dep MATCHES "DIA SDK/lib/amd64/diaguids\\.lib$")
-                            list(APPEND _eshkol_pdb_link_libs_patched "${ESHKOL_DIAGUIDS_LIB}")
-                        else()
-                            list(APPEND _eshkol_pdb_link_libs_patched "${_llvm_dep}")
-                        endif()
-                    endforeach()
-                    set_target_properties(LLVMDebugInfoPDB PROPERTIES
-                        INTERFACE_LINK_LIBRARIES "${_eshkol_pdb_link_libs_patched}")
+            set(_eshkol_diaguids_lib_amd64 "")
+            set(_eshkol_diaguids_lib_arm64 "")
+            foreach(_eshkol_dia_arch IN ITEMS amd64 arm64)
+                file(GLOB _eshkol_dia_sdk_libs LIST_DIRECTORIES FALSE
+                    "C:/Program Files/Microsoft Visual Studio/*/*/DIA SDK/lib/${_eshkol_dia_arch}/diaguids.lib"
+                    "C:/Program Files (x86)/Microsoft Visual Studio/*/*/DIA SDK/lib/${_eshkol_dia_arch}/diaguids.lib"
+                )
+                list(LENGTH _eshkol_dia_sdk_libs _eshkol_dia_sdk_count)
+                if(_eshkol_dia_sdk_count GREATER 0)
+                    list(GET _eshkol_dia_sdk_libs 0 _eshkol_diaguids_lib)
+                    if(_eshkol_dia_arch STREQUAL "amd64")
+                        set(_eshkol_diaguids_lib_amd64 "${_eshkol_diaguids_lib}")
+                    else()
+                        set(_eshkol_diaguids_lib_arm64 "${_eshkol_diaguids_lib}")
+                    endif()
                 endif()
+            endforeach()
+
+            get_target_property(_eshkol_pdb_link_libs LLVMDebugInfoPDB INTERFACE_LINK_LIBRARIES)
+            if(_eshkol_pdb_link_libs)
+                set(_eshkol_pdb_link_libs_patched "")
+                foreach(_llvm_dep IN LISTS _eshkol_pdb_link_libs)
+                    if(_llvm_dep MATCHES "DIA SDK/lib/amd64/diaguids\\.lib$" AND _eshkol_diaguids_lib_amd64)
+                        list(APPEND _eshkol_pdb_link_libs_patched "${_eshkol_diaguids_lib_amd64}")
+                    elseif(_llvm_dep MATCHES "DIA SDK/lib/arm64/diaguids\\.lib$" AND _eshkol_diaguids_lib_arm64)
+                        list(APPEND _eshkol_pdb_link_libs_patched "${_eshkol_diaguids_lib_arm64}")
+                    else()
+                        list(APPEND _eshkol_pdb_link_libs_patched "${_llvm_dep}")
+                    endif()
+                endforeach()
+                set_target_properties(LLVMDebugInfoPDB PROPERTIES
+                    INTERFACE_LINK_LIBRARIES "${_eshkol_pdb_link_libs_patched}")
             endif()
         endif()
 
@@ -1081,12 +1100,25 @@ if(REPL_SRC)
         LLVMTargetParser
         LLVMAsmPrinter
         LLVMCodeGen
-        LLVMX86CodeGen
-        LLVMX86AsmParser
-        LLVMX86Desc
-        LLVMX86Info
-        LLVMX86Disassembler
       )
+      if(CMAKE_VS_PLATFORM_NAME STREQUAL "ARM64" OR
+         CMAKE_SYSTEM_PROCESSOR MATCHES "^(ARM64|arm64|AARCH64|aarch64)$")
+        list(APPEND _eshkol_repl_target_libs
+          LLVMAArch64CodeGen
+          LLVMAArch64AsmParser
+          LLVMAArch64Desc
+          LLVMAArch64Info
+          LLVMAArch64Disassembler
+        )
+      else()
+        list(APPEND _eshkol_repl_target_libs
+          LLVMX86CodeGen
+          LLVMX86AsmParser
+          LLVMX86Desc
+          LLVMX86Info
+          LLVMX86Disassembler
+        )
+      endif()
       foreach(_llvm_repl_lib IN LISTS _eshkol_repl_target_libs)
         set(_llvm_repl_lib_path "${ESHKOL_LLVM_ROOT}/lib/${_llvm_repl_lib}.lib")
         if(EXISTS "${_llvm_repl_lib_path}")

@@ -174,8 +174,58 @@ jobs:
             ${{ matrix.build_dir }}/eshkol-repl
             ${{ matrix.build_dir }}/stdlib.o
 
+  windows-llvm-sdk:
+    name: windows-llvm-sdk-${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: windows-2022
+            llvm_suffix: x86_64
+          - arch: arm64
+            runner: windows-11-arm
+            llvm_suffix: aarch64
+
+    steps:
+      - name: Install LLVM SDK
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $llvmVersion = '${{ env.WINDOWS_LLVM_SDK_VERSION }}'
+          $llvmRoot = "C:\src\clang+llvm-$llvmVersion-${{ matrix.llvm_suffix }}-pc-windows-msvc"
+          $llvmCmakeDir = "$llvmRoot\lib\cmake\llvm"
+
+          New-Item -ItemType Directory -Force -Path 'C:\src' | Out-Null
+          if (-not (Test-Path "$llvmCmakeDir\LLVMConfig.cmake")) {
+            $archive = "$env:RUNNER_TEMP\llvm-${{ matrix.arch }}-$llvmVersion.tar.xz"
+            $url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-$llvmVersion/clang+llvm-$llvmVersion-${{ matrix.llvm_suffix }}-pc-windows-msvc.tar.xz"
+            Write-Host "Downloading $url"
+            Invoke-WebRequest -Uri $url -OutFile $archive -UseBasicParsing
+            Write-Host "Extracting..."
+            tar -xf $archive -C C:\src
+            if ($LASTEXITCODE -ne 0) { throw "tar extraction failed (exit $LASTEXITCODE)" }
+          }
+
+          if (-not (Test-Path "$llvmCmakeDir\LLVMConfig.cmake")) {
+            throw "LLVMConfig.cmake not found at $llvmCmakeDir — extraction may have failed"
+          }
+
+          Write-Host "LLVM $llvmVersion ${{ matrix.arch }} ready at $llvmRoot"
+
+      - name: Upload LLVM SDK
+        uses: actions/upload-artifact@v4
+        with:
+          name: llvm-sdk-windows-${{ matrix.arch }}
+          path: 'C:\src\clang+llvm-${{ env.WINDOWS_LLVM_SDK_VERSION }}-${{ matrix.llvm_suffix }}-pc-windows-msvc'
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
+
   windows-matrix:
     name: ${{ matrix.name }}
+    needs: windows-llvm-sdk
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -239,60 +289,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install LLVM SDK (x64)
-        if: matrix.arch == 'x64'
+      - name: Download LLVM SDK
+        uses: actions/download-artifact@v4
+        with:
+          name: llvm-sdk-windows-${{ matrix.arch }}
+          path: 'C:\src\llvm-sdk'
+
+      - name: Resolve LLVM SDK
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $llvmVersion = '${{ env.WINDOWS_LLVM_SDK_VERSION }}'
-          $llvmRoot    = "C:\src\clang+llvm-$llvmVersion-x86_64-pc-windows-msvc"
-          $llvmCmakeDir = "$llvmRoot\lib\cmake\llvm"
-
-          New-Item -ItemType Directory -Force -Path 'C:\src' | Out-Null
-          if (-not (Test-Path "$llvmCmakeDir\LLVMConfig.cmake")) {
-            $archive = "$env:RUNNER_TEMP\llvm-x64-$llvmVersion.tar.xz"
-            $url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-$llvmVersion/clang+llvm-$llvmVersion-x86_64-pc-windows-msvc.tar.xz"
-            Write-Host "Downloading $url"
-            Invoke-WebRequest -Uri $url -OutFile $archive -UseBasicParsing
-            Write-Host "Extracting..."
-            tar -xf $archive -C C:\src
-            if ($LASTEXITCODE -ne 0) { throw "tar extraction failed (exit $LASTEXITCODE)" }
+          $llvmConfig = Get-ChildItem -Path 'C:\src\llvm-sdk' -Filter LLVMConfig.cmake -Recurse -ErrorAction Stop | Select-Object -First 1
+          if (-not $llvmConfig) {
+            throw 'LLVMConfig.cmake not found after downloading LLVM SDK artifact'
           }
 
-          if (-not (Test-Path "$llvmCmakeDir\LLVMConfig.cmake")) {
-            throw "LLVMConfig.cmake not found at $llvmCmakeDir — extraction may have failed"
-          }
-
-          Write-Host "LLVM $llvmVersion x64 ready at $llvmRoot"
-          "LLVM_DIR=$llvmCmakeDir"   | Out-File -FilePath $env:GITHUB_ENV  -Encoding utf8 -Append
-          "LLVM_HOME=$llvmRoot"       | Out-File -FilePath $env:GITHUB_ENV  -Encoding utf8 -Append
-          "$llvmRoot\bin"             | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-
-      - name: Install LLVM SDK (arm64)
-        if: matrix.arch == 'arm64'
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $llvmVersion = '${{ env.WINDOWS_LLVM_SDK_VERSION }}'
-          $llvmRoot    = "C:\src\clang+llvm-$llvmVersion-aarch64-pc-windows-msvc"
-          $llvmCmakeDir = "$llvmRoot\lib\cmake\llvm"
-
-          New-Item -ItemType Directory -Force -Path 'C:\src' | Out-Null
-          if (-not (Test-Path "$llvmCmakeDir\LLVMConfig.cmake")) {
-            $archive = "$env:RUNNER_TEMP\llvm-arm64-$llvmVersion.tar.xz"
-            $url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-$llvmVersion/clang+llvm-$llvmVersion-aarch64-pc-windows-msvc.tar.xz"
-            Write-Host "Downloading $url"
-            Invoke-WebRequest -Uri $url -OutFile $archive -UseBasicParsing
-            Write-Host "Extracting..."
-            tar -xf $archive -C C:\src
-            if ($LASTEXITCODE -ne 0) { throw "tar extraction failed (exit $LASTEXITCODE)" }
-          }
-
-          if (-not (Test-Path "$llvmCmakeDir\LLVMConfig.cmake")) {
-            throw "LLVMConfig.cmake not found at $llvmCmakeDir — extraction may have failed"
-          }
-
-          Write-Host "LLVM $llvmVersion arm64 ready at $llvmRoot"
+          $llvmCmakeDir = $llvmConfig.Directory.FullName
+          $llvmRoot = [System.IO.Path]::GetFullPath((Join-Path $llvmCmakeDir '..\..\..'))
+          Write-Host "LLVM SDK restored at $llvmRoot"
           "LLVM_DIR=$llvmCmakeDir"   | Out-File -FilePath $env:GITHUB_ENV  -Encoding utf8 -Append
           "LLVM_HOME=$llvmRoot"       | Out-File -FilePath $env:GITHUB_ENV  -Encoding utf8 -Append
           "$llvmRoot\bin"             | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
