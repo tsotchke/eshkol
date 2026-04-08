@@ -27,6 +27,6 @@ EMSCRIPTEN_KEEPALIVE
 const char* repl_eval(const char* source) {
     if (!g_session) repl_init();
     if (!g_session) return "ERROR: VM init failed";
-    repl_session_eval(g_session, source, 0);
+    repl_session_eval(g_session, source, 1);
     return "";
 }

@@ -410,6 +410,47 @@ static void print_value(VM* vm, Value v) {
         }
         case VAL_BIGNUM: printf("<bignum>"); break;
         case VAL_DUAL: printf("<dual>"); break;
+        case VAL_TENSOR: {
+            HeapObject* obj = vm->heap.objects[v.as.ptr];
+            if (obj && obj->opaque.ptr) {
+                VmTensor* t = (VmTensor*)obj->opaque.ptr;
+                printf("<tensor:");
+                for (int i = 0; i < t->n_dims; i++) {
+                    if (i) printf("x");
+                    printf("%lld", (long long)t->shape[i]);
+                }
+                if (t->n_dims == 0) printf("%lld", (long long)t->total);
+                printf(">");
+            } else printf("<tensor>");
+            break;
+        }
+        case VAL_FACTOR_GRAPH: {
+            HeapObject* obj = vm->heap.objects[v.as.ptr];
+            if (obj && obj->opaque.ptr) {
+                VmFactorGraph* fg = (VmFactorGraph*)obj->opaque.ptr;
+                printf("<factor-graph: %d vars, %d factors>",
+                       fg->num_vars, fg->num_factors);
+            } else printf("<factor-graph>");
+            break;
+        }
+        case VAL_WORKSPACE: {
+            HeapObject* obj = vm->heap.objects[v.as.ptr];
+            if (obj && obj->opaque.ptr) {
+                VmWorkspace* ws = (VmWorkspace*)obj->opaque.ptr;
+                printf("<workspace: %d modules, dim=%d>",
+                       ws->n_modules, ws->dim);
+            } else printf("<workspace>");
+            break;
+        }
+        case VAL_KB:          printf("<knowledge-base>"); break;
+        case VAL_SUBST:       printf("<substitution>"); break;
+        case VAL_HASH:        printf("<hash-table>"); break;
+        case VAL_BYTEVECTOR:  printf("<bytevector>"); break;
+        case VAL_PARAMETER_OBJ: printf("<parameter>"); break;
+        case VAL_AD_TAPE:     printf("<ad-tape>"); break;
+        case VAL_ERROR_OBJ:   printf("<error-object>"); break;
+        case VAL_MANIFOLD:    printf("<manifold>"); break;
+        case VAL_PORT:        printf("<port>"); break;
         default: printf("<unknown>"); break;
     }
 }
@@ -522,7 +563,7 @@ typedef struct {
     vm_push((vm), (Value){.type = (val_type), .as.ptr = _hp}); \
 } while(0)
 
-#define VM_PUSH_TENSOR(vm, tptr) VM_PUSH_HEAP_OPAQUE(vm, HEAP_TENSOR, VAL_INT, tptr)
+#define VM_PUSH_TENSOR(vm, tptr) VM_PUSH_HEAP_OPAQUE(vm, HEAP_TENSOR, VAL_TENSOR, tptr)
 
 /*******************************************************************************
  * vm_dispatch_native — ALL native function dispatch in one place.

@@ -350,10 +350,28 @@ static int vm_string_ci_eq(const VmString* a, const VmString* b) {
 /* 563: string->number → parse numeric string, returns NaN on failure */
 static double vm_string_to_number(const VmString* s) {
     if (!s || s->byte_len == 0) return NAN;
+    const char* p = s->data;
+    /* Handle Scheme radix prefixes: #x (hex), #b (binary), #o (octal), #d (decimal) */
+    if (p[0] == '#' && p[1]) {
+        char pfx = (char)(p[1] | 32); /* to lowercase */
+        int radix = 0;
+        if      (pfx == 'x') { radix = 16; p += 2; }
+        else if (pfx == 'b') { radix =  2; p += 2; }
+        else if (pfx == 'o') { radix =  8; p += 2; }
+        else if (pfx == 'd') { radix = 10; p += 2; }
+        if (radix && *p) {
+            char* end;
+            long long iv = strtoll(p, &end, radix);
+            while (*end && isspace((unsigned char)*end)) end++;
+            if (*end == '\0') return (double)iv;
+            return NAN;
+        }
+        return NAN; /* unknown prefix */
+    }
+    /* Standard decimal/float parsing */
     char* end;
     errno = 0;
-    double val = strtod(s->data, &end);
-    /* Check that the entire string was consumed (skip trailing whitespace) */
+    double val = strtod(p, &end);
     while (*end && isspace((unsigned char)*end)) end++;
     if (*end != '\0' || errno == ERANGE) return NAN;
     return val;
