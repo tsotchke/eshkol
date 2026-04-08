@@ -21,6 +21,20 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 33: { Value b = vm_pop(vm); Value a = vm_pop(vm); double da=as_number_vm(vm,a),db=as_number_vm(vm,b); vm_push(vm, number_val(da<db?da:db)); break; }
     case 34: { Value b = vm_pop(vm); Value a = vm_pop(vm); double da=as_number_vm(vm,a),db=as_number_vm(vm,b); vm_push(vm, number_val(da>db?da:db)); break; }
     case 35: { Value a = vm_pop(vm); if (a.type==VAL_DUAL) { vm_push(vm,a); vm_dispatch_native(vm,383); } else vm_push(vm, number_val(fabs(as_number(a)))); break; }
+    /* modulo, remainder, quotient — first-class closure versions */
+    case 36: { Value b = vm_pop(vm); Value a = vm_pop(vm);
+        int64_t ia=(int64_t)as_number(a), ib=(int64_t)as_number(b);
+        if (ib==0){vm->error=1;break;}
+        int64_t r=ia%ib; if(r!=0&&((r^ib)<0)) r+=ib;
+        vm_push(vm, INT_VAL(r)); break; }
+    case 37: { Value b = vm_pop(vm); Value a = vm_pop(vm);
+        int64_t ia=(int64_t)as_number(a), ib=(int64_t)as_number(b);
+        if (ib==0){vm->error=1;break;}
+        vm_push(vm, INT_VAL(ia%ib)); break; }
+    case 38: { Value b = vm_pop(vm); Value a = vm_pop(vm);
+        int64_t ia=(int64_t)as_number(a), ib=(int64_t)as_number(b);
+        if (ib==0){vm->error=1;break;}
+        vm_push(vm, INT_VAL(ia/ib)); break; }
 
     /* ══════════════════════════════════════════════════════════════════════
      * Predicates (40-50)
@@ -40,11 +54,27 @@ static void vm_dispatch_native(VM* vm, int fid) {
     /* ══════════════════════════════════════════════════════════════════════
      * String operations (51-56) — legacy IDs
      * ══════════════════════════════════════════════════════════════════════ */
-    case 51: { /* number->string */
+    case 51: { /* number->string (n, radix) — radix defaults to 10 via prelude wrapper */
+        Value radix_val = vm_pop(vm);
         Value a = vm_pop(vm);
-        char buf[64];
-        if (a.type == VAL_INT) snprintf(buf, 64, "%lld", (long long)a.as.i);
-        else snprintf(buf, 64, "%.15g", as_number(a));
+        int radix = (radix_val.type == VAL_INT) ? (int)radix_val.as.i : 10;
+        char buf[128];
+        if (radix == 10 || radix <= 1 || radix > 16) {
+            if (a.type == VAL_INT) snprintf(buf, sizeof(buf), "%lld", (long long)a.as.i);
+            else snprintf(buf, sizeof(buf), "%.15g", as_number(a));
+        } else {
+            int64_t n = (a.type == VAL_INT) ? a.as.i : (int64_t)as_number(a);
+            if (n == 0) { buf[0] = '0'; buf[1] = '\0'; }
+            else {
+                static const char digits[] = "0123456789abcdef";
+                char tmp[128]; int pos = 0, neg = (n < 0);
+                uint64_t un = neg ? (uint64_t)(-(n + 1)) + 1 : (uint64_t)n;
+                while (un > 0) { tmp[pos++] = digits[un % (uint64_t)radix]; un /= (uint64_t)radix; }
+                if (neg) tmp[pos++] = '-';
+                for (int i = 0; i < pos; i++) buf[i] = tmp[pos - 1 - i];
+                buf[pos] = '\0';
+            }
+        }
         VmString* s = vm_string_from_cstr(&vm->heap.regions, buf);
         if (s) {
             int32_t ptr = heap_alloc(&vm->heap);
@@ -581,7 +611,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 390: { /* ad-tape-new */
         AdTape* tape = ad_tape_new(&vm->heap.regions);
         if (!tape) { vm_push(vm, NIL_VAL); break; }
-        VM_PUSH_HEAP_OPAQUE(vm, HEAP_AD_TAPE, VAL_INT, tape);
+        VM_PUSH_HEAP_OPAQUE(vm, HEAP_AD_TAPE, VAL_AD_TAPE, tape);
         break;
     }
     case 391: { /* ad-const(tape, value) */
@@ -929,6 +959,26 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 462: case 463: case 464: case 465: case 466: case 467: case 468: { /* activations: relu,sigmoid,tanh,leaky_relu,elu,gelu,swish */
         Value t_val = vm_pop(vm);
+        /* Scalar fallback: tensors now have dedicated VAL_TENSOR type.
+         * Plain VAL_INT and VAL_FLOAT are genuine scalars. */
+        int is_tensor = (t_val.type == VAL_TENSOR &&
+                         t_val.as.ptr >= 0 &&
+                         t_val.as.ptr < vm->heap.capacity &&
+                         vm->heap.objects[t_val.as.ptr]);
+        if (!is_tensor && (t_val.type == VAL_INT || t_val.type == VAL_FLOAT)) {
+            double x = as_number(t_val);
+            double r;
+            switch (fid) {
+                case 462: r = x > 0 ? x : 0; break;            /* relu */
+                case 464: r = 1.0 / (1.0 + exp(-x)); break;    /* sigmoid */
+                case 465: r = x > 0 ? x : 0.01 * x; break;     /* leaky_relu */
+                case 463: case 466: case 467: case 468:
+                default:  r = x; break;
+            }
+            vm_push(vm, (Value){.type = VAL_FLOAT, .as.f = r});
+            break;
+        }
+        if (!is_tensor) { vm_push(vm, NIL_VAL); break; }
         VmTensor* t = (VmTensor*)vm->heap.objects[t_val.as.ptr]->opaque.ptr;
         if (!t) { vm_push(vm, NIL_VAL); break; }
         VmTensor* out = NULL;
@@ -985,7 +1035,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 else { term.type = VM_VAL_INT64; term.data.int_val = b_val.as.i; }
                 VmSubstitution* extended = vm_subst_extend(&vm->heap.regions, subst, (uint64_t)a_val.as.i, &term);
                 if (extended) {
-                    VM_PUSH_HEAP_OPAQUE(vm, HEAP_SUBST, VAL_INT, extended);
+                    VM_PUSH_HEAP_OPAQUE(vm, HEAP_SUBST, VAL_SUBST, extended);
                     break;
                 }
             }
@@ -996,7 +1046,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 505: { /* make-substitution */
         VmSubstitution* s = vm_make_substitution(&vm->heap.regions, 16);
         if (!s) { vm_push(vm, NIL_VAL); break; }
-        VM_PUSH_HEAP_OPAQUE(vm, HEAP_SUBST, VAL_INT, s);
+        VM_PUSH_HEAP_OPAQUE(vm, HEAP_SUBST, VAL_SUBST, s);
         break;
     }
     case 506: { /* substitution? */
@@ -1008,7 +1058,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 509: { /* make-kb */
         VmKnowledgeBase* kb = vm_make_kb(&vm->heap.regions);
         if (!kb) { vm_push(vm, NIL_VAL); break; }
-        VM_PUSH_HEAP_OPAQUE(vm, HEAP_KB, VAL_INT, kb);
+        VM_PUSH_HEAP_OPAQUE(vm, HEAP_KB, VAL_KB, kb);
         break;
     }
     case 510: { /* kb? */
@@ -1188,7 +1238,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
         if (nd < nv) nv = nd;
         VmFactorGraph* fg = vm_make_factor_graph(&vm->heap.regions, nv, var_dims);
         if (!fg) { vm_push(vm, NIL_VAL); break; }
-        VM_PUSH_HEAP_OPAQUE(vm, HEAP_FACTOR_GRAPH, VAL_INT, fg);
+        VM_PUSH_HEAP_OPAQUE(vm, HEAP_FACTOR_GRAPH, VAL_FACTOR_GRAPH, fg);
         break;
     }
     case 521: { /* factor-graph? */
@@ -1337,7 +1387,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
         Value max_m = vm_pop(vm), dim_val = vm_pop(vm);
         VmWorkspace* ws = vm_ws_new(&vm->heap.regions, (int)as_number(dim_val), (int)as_number(max_m));
         if (!ws) { vm_push(vm, NIL_VAL); break; }
-        VM_PUSH_HEAP_OPAQUE(vm, HEAP_WORKSPACE, VAL_INT, ws);
+        VM_PUSH_HEAP_OPAQUE(vm, HEAP_WORKSPACE, VAL_WORKSPACE, ws);
         break;
     }
     case 541: { /* workspace? */
@@ -1378,7 +1428,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 if (tptr < 0 || !ct) { vm_push(vm, NIL_VAL); break; }
                 vm->heap.objects[tptr]->type = HEAP_TENSOR;
                 vm->heap.objects[tptr]->opaque.ptr = ct;
-                Value content_val = (Value){.type = VAL_INT, .as.ptr = tptr};
+                Value content_val = (Value){.type = VAL_TENSOR, .as.ptr = tptr};
 
                 /* Call each module's closure, collect salience + proposal */
                 int n_mod = ws->n_modules;
@@ -1429,7 +1479,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
                     if (ptr >= 0) {
                         vm->heap.objects[ptr]->type = HEAP_TENSOR;
                         vm->heap.objects[ptr]->opaque.ptr = t;
-                        vm_push(vm, (Value){.type = VAL_INT, .as.ptr = ptr});
+                        vm_push(vm, (Value){.type = VAL_TENSOR, .as.ptr = ptr});
                         break;
                     }
                 }
@@ -1649,7 +1699,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 if (ptr >= 0) {
                     vm->heap.objects[ptr]->type = HEAP_PORT;
                     vm->heap.objects[ptr]->opaque.ptr = p;
-                    vm_push(vm, (Value){.type = VAL_INT, .as.ptr = ptr});
+                    vm_push(vm, (Value){.type = VAL_PORT, .as.ptr = ptr});
                     break;
                 }
             }
@@ -1667,7 +1717,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 if (ptr >= 0) {
                     vm->heap.objects[ptr]->type = HEAP_PORT;
                     vm->heap.objects[ptr]->opaque.ptr = p;
-                    vm_push(vm, (Value){.type = VAL_INT, .as.ptr = ptr});
+                    vm_push(vm, (Value){.type = VAL_PORT, .as.ptr = ptr});
                     break;
                 }
             }
@@ -1763,7 +1813,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
             if (ptr >= 0) {
                 vm->heap.objects[ptr]->type = HEAP_PORT;
                 vm->heap.objects[ptr]->opaque.ptr = p;
-                vm_push(vm, (Value){.type = VAL_INT, .as.ptr = ptr});
+                vm_push(vm, (Value){.type = VAL_PORT, .as.ptr = ptr});
                 break;
             }
         }
@@ -1777,7 +1827,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
             if (ptr >= 0) {
                 vm->heap.objects[ptr]->type = HEAP_PORT;
                 vm->heap.objects[ptr]->opaque.ptr = p;
-                vm_push(vm, (Value){.type = VAL_INT, .as.ptr = ptr});
+                vm_push(vm, (Value){.type = VAL_PORT, .as.ptr = ptr});
                 break;
             }
         }
@@ -2051,7 +2101,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 660: { /* make-hash-table */
         VmHashTable* ht = vm_ht_make(&vm->heap.regions);
         if (!ht) { vm_push(vm, NIL_VAL); break; }
-        VM_PUSH_HEAP_OPAQUE(vm, HEAP_HASH, VAL_INT, ht);
+        VM_PUSH_HEAP_OPAQUE(vm, HEAP_HASH, VAL_HASH, ht);
         break;
     }
     case 661: { /* hash-ref(ht, key, default) */
@@ -2150,7 +2200,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
             if (ht) {
                 VmHashTable* copy = vm_ht_make(&vm->heap.regions);
                 if (copy) {
-                    VM_PUSH_HEAP_OPAQUE(vm, HEAP_HASH, VAL_INT, copy);
+                    VM_PUSH_HEAP_OPAQUE(vm, HEAP_HASH, VAL_HASH, copy);
                     break;
                 }
             }
@@ -2181,7 +2231,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
         Value fill = vm_pop(vm), n = vm_pop(vm);
         VmBytevector* bv = vm_bv_make(&vm->heap.regions, (int)as_number(n), (int)as_number(fill));
         if (!bv) { vm_push(vm, NIL_VAL); break; }
-        VM_PUSH_HEAP_OPAQUE(vm, HEAP_BYTEVECTOR, VAL_INT, bv);
+        VM_PUSH_HEAP_OPAQUE(vm, HEAP_BYTEVECTOR, VAL_BYTEVECTOR, bv);
         break;
     }
     case 681: { /* bytevector-length */
@@ -2217,7 +2267,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
             ? (VmBytevector*)vm->heap.objects[b_val.as.ptr]->opaque.ptr : NULL;
         if (a && b) {
             VmBytevector* r = vm_bv_append(&vm->heap.regions, a, b);
-            if (r) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_BYTEVECTOR, VAL_INT, r); break; }
+            if (r) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_BYTEVECTOR, VAL_BYTEVECTOR, r); break; }
         }
         vm_push(vm, NIL_VAL);
         break;
@@ -2249,7 +2299,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
         if (bv_val.as.ptr >= 0 && vm->heap.objects[bv_val.as.ptr]->type == HEAP_BYTEVECTOR) {
             VmBytevector* bv = (VmBytevector*)vm->heap.objects[bv_val.as.ptr]->opaque.ptr;
             VmBytevector* r = vm_bv_copy(&vm->heap.regions, bv, 0, bv->len);
-            if (r) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_BYTEVECTOR, VAL_INT, r); break; }
+            if (r) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_BYTEVECTOR, VAL_BYTEVECTOR, r); break; }
         }
         vm_push(vm, NIL_VAL);
         break;
@@ -2285,7 +2335,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 if (ptr >= 0) {
                     vm->heap.objects[ptr]->type = HEAP_BYTEVECTOR;
                     vm->heap.objects[ptr]->opaque.ptr = bv;
-                    vm_push(vm, (Value){.type = VAL_INT, .as.ptr = ptr});
+                    vm_push(vm, (Value){.type = VAL_BYTEVECTOR, .as.ptr = ptr});
                     break;
                 }
             }
@@ -2302,7 +2352,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
         VmParameter* p = vm_param_make(&vm->heap.regions,
             (void*)(uintptr_t)dflt.as.i, (void*)(uintptr_t)conv.as.i);
         if (!p) { vm_push(vm, NIL_VAL); break; }
-        VM_PUSH_HEAP_OPAQUE(vm, HEAP_PARAMETER, VAL_INT, p);
+        VM_PUSH_HEAP_OPAQUE(vm, HEAP_PARAMETER, VAL_PARAMETER_OBJ, p);
         break;
     }
     case 701: { /* parameter-ref */
@@ -2347,7 +2397,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
         (void)type; (void)msg;
         VmError* e = vm_error_make(&vm->heap.regions, "error", "runtime error", NULL, 0);
         if (!e) { vm_push(vm, NIL_VAL); break; }
-        VM_PUSH_HEAP_OPAQUE(vm, HEAP_ERROR, VAL_INT, e);
+        VM_PUSH_HEAP_OPAQUE(vm, HEAP_ERROR, VAL_ERROR_OBJ, e);
         break;
     }
     case 711: { /* error-message */
@@ -2542,10 +2592,58 @@ static void vm_dispatch_native(VM* vm, int fid) {
         break;
     }
 
-    case 142: { Value b = vm_pop(vm), a = vm_pop(vm); vm_push(vm, number_val(as_number(a) + as_number(b))); break; } /* add2 */
-    case 143: { Value b = vm_pop(vm), a = vm_pop(vm); vm_push(vm, number_val(as_number(a) - as_number(b))); break; } /* sub2 */
-    case 144: { Value b = vm_pop(vm), a = vm_pop(vm); vm_push(vm, number_val(as_number(a) * as_number(b))); break; } /* mul2 */
-    case 145: { Value b = vm_pop(vm), a = vm_pop(vm); vm_push(vm, number_val(as_number(a) / as_number(b))); break; } /* div2 */
+    case 142: { /* add2 — complex-aware */
+        Value b_val = vm_pop(vm), a_val = vm_pop(vm);
+        if (a_val.type == VAL_COMPLEX || b_val.type == VAL_COMPLEX) {
+            VmComplex a_z = {as_number(a_val), 0}, b_z = {as_number(b_val), 0};
+            if (a_val.type == VAL_COMPLEX) a_z = *(VmComplex*)vm->heap.objects[a_val.as.ptr]->opaque.ptr;
+            if (b_val.type == VAL_COMPLEX) b_z = *(VmComplex*)vm->heap.objects[b_val.as.ptr]->opaque.ptr;
+            VmComplex* r = vm_complex_add(&vm->heap.regions, &a_z, &b_z);
+            if (!r) { vm->error = 1; break; }
+            int32_t p = heap_alloc(&vm->heap); if (p < 0) { vm->error = 1; break; }
+            vm->heap.objects[p]->type = HEAP_COMPLEX; vm->heap.objects[p]->opaque.ptr = r;
+            vm_push(vm, (Value){.type = VAL_COMPLEX, .as.ptr = p});
+        } else { vm_push(vm, number_val(as_number(a_val) + as_number(b_val))); }
+        break; }
+    case 143: { /* sub2 — complex-aware */
+        Value b_val = vm_pop(vm), a_val = vm_pop(vm);
+        if (a_val.type == VAL_COMPLEX || b_val.type == VAL_COMPLEX) {
+            VmComplex a_z = {as_number(a_val), 0}, b_z = {as_number(b_val), 0};
+            if (a_val.type == VAL_COMPLEX) a_z = *(VmComplex*)vm->heap.objects[a_val.as.ptr]->opaque.ptr;
+            if (b_val.type == VAL_COMPLEX) b_z = *(VmComplex*)vm->heap.objects[b_val.as.ptr]->opaque.ptr;
+            VmComplex* r = vm_complex_sub(&vm->heap.regions, &a_z, &b_z);
+            if (!r) { vm->error = 1; break; }
+            int32_t p = heap_alloc(&vm->heap); if (p < 0) { vm->error = 1; break; }
+            vm->heap.objects[p]->type = HEAP_COMPLEX; vm->heap.objects[p]->opaque.ptr = r;
+            vm_push(vm, (Value){.type = VAL_COMPLEX, .as.ptr = p});
+        } else { vm_push(vm, number_val(as_number(a_val) - as_number(b_val))); }
+        break; }
+    case 144: { /* mul2 — complex-aware */
+        Value b_val = vm_pop(vm), a_val = vm_pop(vm);
+        if (a_val.type == VAL_COMPLEX || b_val.type == VAL_COMPLEX) {
+            VmComplex a_z = {as_number(a_val), 0}, b_z = {as_number(b_val), 0};
+            if (a_val.type == VAL_COMPLEX) a_z = *(VmComplex*)vm->heap.objects[a_val.as.ptr]->opaque.ptr;
+            if (b_val.type == VAL_COMPLEX) b_z = *(VmComplex*)vm->heap.objects[b_val.as.ptr]->opaque.ptr;
+            VmComplex* r = vm_complex_mul(&vm->heap.regions, &a_z, &b_z);
+            if (!r) { vm->error = 1; break; }
+            int32_t p = heap_alloc(&vm->heap); if (p < 0) { vm->error = 1; break; }
+            vm->heap.objects[p]->type = HEAP_COMPLEX; vm->heap.objects[p]->opaque.ptr = r;
+            vm_push(vm, (Value){.type = VAL_COMPLEX, .as.ptr = p});
+        } else { vm_push(vm, number_val(as_number(a_val) * as_number(b_val))); }
+        break; }
+    case 145: { /* div2 — complex-aware */
+        Value b_val = vm_pop(vm), a_val = vm_pop(vm);
+        if (a_val.type == VAL_COMPLEX || b_val.type == VAL_COMPLEX) {
+            VmComplex a_z = {as_number(a_val), 0}, b_z = {as_number(b_val), 0};
+            if (a_val.type == VAL_COMPLEX) a_z = *(VmComplex*)vm->heap.objects[a_val.as.ptr]->opaque.ptr;
+            if (b_val.type == VAL_COMPLEX) b_z = *(VmComplex*)vm->heap.objects[b_val.as.ptr]->opaque.ptr;
+            VmComplex* r = vm_complex_div(&vm->heap.regions, &a_z, &b_z);
+            if (!r) { vm->error = 1; break; }
+            int32_t p = heap_alloc(&vm->heap); if (p < 0) { vm->error = 1; break; }
+            vm->heap.objects[p]->type = HEAP_COMPLEX; vm->heap.objects[p]->opaque.ptr = r;
+            vm_push(vm, (Value){.type = VAL_COMPLEX, .as.ptr = p});
+        } else { vm_push(vm, number_val(as_number(a_val) / as_number(b_val))); }
+        break; }
     /* Comparison operators as first-class functions (for sort, map, fold, etc.) */
     case 146: { Value b = vm_pop(vm), a = vm_pop(vm); vm_push(vm, BOOL_VAL(as_number(a) < as_number(b))); break; }  /* < */
     case 147: { Value b = vm_pop(vm), a = vm_pop(vm); vm_push(vm, BOOL_VAL(as_number(a) > as_number(b))); break; }  /* > */
@@ -2577,15 +2675,34 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 212: { Value a = vm_pop(vm); print_value(vm, a); fflush(stdout); vm_push(vm, NIL_VAL); break; } /* write */
     case 213: { Value a = vm_pop(vm); vm_push(vm, FLOAT_VAL(as_number_vm(vm, a))); break; }  /* exact->inexact */
     case 214: { Value a = vm_pop(vm); vm_push(vm, INT_VAL((int64_t)as_number_vm(vm, a))); break; } /* inexact->exact */
-    case 215: { /* string->number */
+    case 215: { /* string->number — handles #x/#b/#o/#d prefixes */
         Value a = vm_pop(vm);
-        if (a.type == VAL_STRING) {
-            VmString* s = (VmString*)vm->heap.objects[a.as.ptr]->opaque.ptr;
-            if (s && s->data) {
-                double v = atof(s->data);
-                vm_push(vm, (v == (int64_t)v) ? INT_VAL((int64_t)v) : FLOAT_VAL(v));
-            } else vm_push(vm, NIL_VAL);
-        } else vm_push(vm, NIL_VAL);
+        if (a.type != VAL_STRING) { vm_push(vm, BOOL_VAL(0)); break; }
+        VmString* s215 = (VmString*)vm->heap.objects[a.as.ptr]->opaque.ptr;
+        if (!s215 || !s215->data || s215->data[0] == '\0') { vm_push(vm, BOOL_VAL(0)); break; }
+        const char* p215 = s215->data;
+        int radix215 = 10;
+        if (p215[0] == '#') {
+            char pfx = (char)(p215[1] | 32); /* lowercase */
+            if      (pfx == 'x') { radix215 = 16; p215 += 2; }
+            else if (pfx == 'b') { radix215 = 2;  p215 += 2; }
+            else if (pfx == 'o') { radix215 = 8;  p215 += 2; }
+            else if (pfx == 'd') { radix215 = 10; p215 += 2; }
+            else { vm_push(vm, BOOL_VAL(0)); break; }
+        }
+        char* end215 = NULL;
+        if (radix215 == 10) {
+            /* Try integer first; fall back to float */
+            long long iv = strtoll(p215, &end215, 10);
+            if (*end215 == '\0' && end215 != p215) { vm_push(vm, INT_VAL((int64_t)iv)); break; }
+            double dv = strtod(p215, &end215);
+            if (*end215 == '\0' && end215 != p215) { vm_push(vm, FLOAT_VAL(dv)); break; }
+            vm_push(vm, BOOL_VAL(0));
+        } else {
+            long long iv = strtoll(p215, &end215, radix215);
+            if (*end215 == '\0' && end215 != p215) { vm_push(vm, INT_VAL((int64_t)iv)); break; }
+            vm_push(vm, BOOL_VAL(0));
+        }
         break; }
     case 216: { Value a = vm_pop(vm); vm_push(vm, INT_VAL((int64_t)as_number(a))); break; } /* char->integer */
     case 217: { Value a = vm_pop(vm); vm_push(vm, INT_VAL((int64_t)as_number(a))); break; } /* integer->char */
@@ -2881,12 +2998,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 1697: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type == VAL_INT || a.type == VAL_FLOAT || a.type == VAL_RATIONAL)); break; }
     case 1698: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type == VAL_RATIONAL)); break; }
     case 1699: { Value a = vm_pop(vm);
-        int is_tensor = 0;
-        if (a.type == VAL_VECTOR && a.as.ptr >= 0 && a.as.ptr < vm->heap.next_free) {
-            HeapObject* obj = vm->heap.objects[a.as.ptr];
-            is_tensor = (obj->type == HEAP_TENSOR);
-        }
-        vm_push(vm, BOOL_VAL(is_tensor)); break; }
+        vm_push(vm, BOOL_VAL(a.type == VAL_TENSOR)); break; }
 
     /* ══════════════════════════════════════════════════════════════════════
      * Additional predicates (160-166)
@@ -2946,7 +3058,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 728: { /* input-port? */
         Value a = vm_pop(vm);
         int is_ip = 0;
-        if (a.as.ptr >= 0 && a.as.ptr < vm->heap.next_free && vm->heap.objects[a.as.ptr]->type == HEAP_PORT) {
+        if (a.type == VAL_PORT && a.as.ptr >= 0 && a.as.ptr < vm->heap.next_free) {
             VmPort* p = (VmPort*)vm->heap.objects[a.as.ptr]->opaque.ptr;
             is_ip = (p && p->dir == VM_PORT_INPUT);
         }
@@ -2954,15 +3066,14 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 729: { /* output-port? */
         Value a = vm_pop(vm);
         int is_op = 0;
-        if (a.as.ptr >= 0 && a.as.ptr < vm->heap.next_free && vm->heap.objects[a.as.ptr]->type == HEAP_PORT) {
+        if (a.type == VAL_PORT && a.as.ptr >= 0 && a.as.ptr < vm->heap.next_free) {
             VmPort* p = (VmPort*)vm->heap.objects[a.as.ptr]->opaque.ptr;
             is_op = (p && p->dir == VM_PORT_OUTPUT);
         }
         vm_push(vm, BOOL_VAL(is_op)); break; }
     case 730: { /* port? */
         Value a = vm_pop(vm);
-        int is_p = (a.as.ptr >= 0 && a.as.ptr < vm->heap.next_free && vm->heap.objects[a.as.ptr]->type == HEAP_PORT);
-        vm_push(vm, BOOL_VAL(is_p)); break; }
+        vm_push(vm, BOOL_VAL(a.type == VAL_PORT)); break; }
     case 740: { /* type-of */
         Value a = vm_pop(vm);
         const char* t = "unknown";
@@ -2986,7 +3097,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
         VmTensor* t = vm_tensor_zeros(&vm->heap.regions, shape, 2);
         if (!t) { vm_push(vm, NIL_VAL); break; }
         for (int i = 0; i < n; i++) t->data[i * n + i] = 1.0;
-        VM_PUSH_HEAP_OPAQUE(vm, HEAP_TENSOR, VAL_VECTOR, t);
+        VM_PUSH_HEAP_OPAQUE(vm, HEAP_TENSOR, VAL_TENSOR, t);
         break; }
     case 746: { /* linspace(start, stop, n) — n evenly spaced points */
         Value n_val = vm_pop(vm), stop_val = vm_pop(vm), start_val = vm_pop(vm);
@@ -2998,7 +3109,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
         if (!t) { vm_push(vm, NIL_VAL); break; }
         double step = (n > 1) ? (e - s) / (n - 1) : 0;
         for (int i = 0; i < n; i++) t->data[i] = s + i * step;
-        VM_PUSH_HEAP_OPAQUE(vm, HEAP_TENSOR, VAL_VECTOR, t);
+        VM_PUSH_HEAP_OPAQUE(vm, HEAP_TENSOR, VAL_TENSOR, t);
         break; }
 
     /* ══════════════════════════════════════════════════════════════════════

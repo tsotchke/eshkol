@@ -44,7 +44,16 @@ int main(void) {
         "(define + (lambda args (fold-left add2 0 args)))\n"
         "(define * (lambda args (fold-left mul2 1 args)))\n"
         "(define (- . args) (if (null? (cdr args)) (sub2 0 (car args)) (fold-left sub2 (car args) (cdr args))))\n"
-        "(define (/ . args) (if (null? (cdr args)) (div2 1 (car args)) (fold-left div2 (car args) (cdr args))))\n";
+        "(define (/ . args) (if (null? (cdr args)) (div2 1 (car args)) (fold-left div2 (car args) (cdr args))))\n"
+        "(define _append-2 append)\n"
+        "(define (append . lists) (fold-right _append-2 '() lists))\n"
+        "(define (number->string n . args) (_number->string-2 n (if (null? args) 10 (car args))))\n"
+        "(define (atan x . rest) (if (null? rest) (_atan1 x) (_atan2 x (car rest))))\n"
+        "(define (max a . rest) (fold-left _max2 a rest))\n"
+        "(define (min a . rest) (fold-left _min2 a rest))\n"
+        "(define (string-append . args) (fold-left _string-append-2 \"\" args))\n"
+        "(define (make-list n val) (let loop ((i 0) (acc (list))) (if (= i n) acc (loop (+ i 1) (cons val acc)))))\n"
+        "(define (make-factor-graph n . rest) (if (null? rest) (_make-fg2 n (make-list n 2)) (_make-fg2 n (car rest))))\n";
     src_ptr = scheme_prelude;
     while (1) {
         skip_ws(); if (!*src_ptr) break;

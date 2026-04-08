@@ -146,16 +146,19 @@ static const BuiltinDef BUILTINS[] = {
     {"sin", 20, 1}, {"cos", 21, 1}, {"tan", 22, 1},
     {"exp", 23, 1}, {"log", 24, 1}, {"sqrt", 25, 1},
     {"floor", 26, 1}, {"ceiling", 27, 1}, {"round", 28, 1},
-    {"asin", 29, 1}, {"acos", 30, 1}, {"atan", 31, 1},
+    {"asin", 29, 1}, {"acos", 30, 1},
+    {"_atan1", 31, 1},   /* 1-arg atan (internal); prelude defines variadic atan */
+    {"_atan2", 250, 2},  /* 2-arg atan2 (internal) */
     {"abs", 35, 1},
     /* Math (2 arg) — IDs 32-38 */
-    {"expt", 32, 2}, {"pow", 32, 2}, {"min", 33, 2}, {"max", 34, 2},
+    {"expt", 32, 2}, {"pow", 32, 2},
+    {"_min2", 33, 2}, {"_max2", 34, 2},  /* internal 2-arg; prelude defines variadic min/max */
     {"modulo", 36, 2}, {"remainder", 37, 2}, {"quotient", 38, 2},
     /* Predicates — IDs 40-44 */
     {"positive?", 40, 1}, {"negative?", 41, 1},
     {"odd?", 42, 1}, {"even?", 43, 1}, {"zero?", 44, 1},
-    /* Number->string — ID 51 */
-    {"number->string", 51, 1},
+    /* Number->string — ID 51, 2-arg (n, radix); prelude wraps as variadic */
+    {"_number->string-2", 51, 2},
     /* I/O — ID 60-61 */
     {"newline", 60, 0},
     /* Apply — ID 70; List — IDs 71-80 */
@@ -200,6 +203,12 @@ static const BuiltinDef BUILTINS[] = {
     {"vector-length", 221, 1},
     {"string->list", 222, 1}, {"list->string", 223, 1},
     {"gcd", 224, 2}, {"lcm", 225, 2}, {"make-string", 226, 2},
+    /* String operations — compiler opcodes cover inline use;
+     * these entries make them first-class closures for higher-order use */
+    {"substring", 553, 3},
+    {"_string-append-2", 554, 2},  /* 2-arg; prelude defines variadic string-append */
+    {"string-upcase", 557, 1}, {"string-downcase", 558, 1},
+    {"string-fill!", 556, 2}, {"string-copy", 566, 1},
     /* Misc — IDs 236-238 */
     {"boolean=?", 236, 2}, {"error", 237, 1}, {"void", 238, 0},
     {"symbol->string", 184, 1}, {"string->symbol", 185, 1},
@@ -243,7 +252,7 @@ static const BuiltinDef BUILTINS[] = {
     {"make-fact", 507, 1}, {"fact?", 508, 1},
     {"make-kb", 509, 0}, {"kb?", 510, 1},
     {"kb-assert!", 511, 2}, {"kb-query", 512, 2},
-    {"make-factor-graph", 520, 2}, {"factor-graph?", 521, 1},
+    {"_make-fg2", 520, 2}, {"factor-graph?", 521, 1},
     {"fg-add-factor!", 522, 3}, {"fg-infer!", 523, 3},
     {"fg-update-cpt!", 524, 3},
     {"free-energy", 525, 2}, {"expected-free-energy", 526, 3},
@@ -380,7 +389,17 @@ static void compile_and_run(const char* source) {
         "(define + (lambda args (fold-left add2 0 args)))\n"
         "(define * (lambda args (fold-left mul2 1 args)))\n"
         "(define (- . args) (if (null? (cdr args)) (sub2 0 (car args)) (fold-left sub2 (car args) (cdr args))))\n"
-        "(define (/ . args) (if (null? (cdr args)) (div2 1 (car args)) (fold-left div2 (car args) (cdr args))))\n";
+        "(define (/ . args) (if (null? (cdr args)) (div2 1 (car args)) (fold-left div2 (car args) (cdr args))))\n"
+        "(define _append-2 append)\n"
+        "(define (append . lists) (fold-right _append-2 '() lists))\n"
+        "(define (number->string n . args) (_number->string-2 n (if (null? args) 10 (car args))))\n"
+        /* Variadic wrappers: these shadow BUILTINS entries that were 2-arg only. */
+        "(define (atan x . rest) (if (null? rest) (_atan1 x) (_atan2 x (car rest))))\n"
+        "(define (max a . rest) (fold-left _max2 a rest))\n"
+        "(define (min a . rest) (fold-left _min2 a rest))\n"
+        "(define (string-append . args) (fold-left _string-append-2 \"\" args))\n"
+        "(define (make-list n val) (let loop ((i 0) (acc (list))) (if (= i n) acc (loop (+ i 1) (cons val acc)))))\n"
+        "(define (make-factor-graph n . rest) (if (null? rest) (_make-fg2 n (make-list n 2)) (_make-fg2 n (car rest))))\n";
     src_ptr = scheme_prelude;
     while (1) {
         skip_ws();
@@ -730,7 +749,16 @@ static void compile_and_run_source_to_chunk(const char* source, FuncChunk* chunk
         "(define + (lambda args (fold-left add2 0 args)))\n"
         "(define * (lambda args (fold-left mul2 1 args)))\n"
         "(define (- . args) (if (null? (cdr args)) (sub2 0 (car args)) (fold-left sub2 (car args) (cdr args))))\n"
-        "(define (/ . args) (if (null? (cdr args)) (div2 1 (car args)) (fold-left div2 (car args) (cdr args))))\n";
+        "(define (/ . args) (if (null? (cdr args)) (div2 1 (car args)) (fold-left div2 (car args) (cdr args))))\n"
+        "(define _append-2 append)\n"
+        "(define (append . lists) (fold-right _append-2 '() lists))\n"
+        "(define (number->string n . args) (_number->string-2 n (if (null? args) 10 (car args))))\n"
+        "(define (atan x . rest) (if (null? rest) (_atan1 x) (_atan2 x (car rest))))\n"
+        "(define (max a . rest) (fold-left _max2 a rest))\n"
+        "(define (min a . rest) (fold-left _min2 a rest))\n"
+        "(define (string-append . args) (fold-left _string-append-2 \"\" args))\n"
+        "(define (make-list n val) (let loop ((i 0) (acc (list))) (if (= i n) acc (loop (+ i 1) (cons val acc)))))\n"
+        "(define (make-factor-graph n . rest) (if (null? rest) (_make-fg2 n (make-list n 2)) (_make-fg2 n (car rest))))\n";
     src_ptr = prelude;
     while (1) {
         skip_ws(); if (!*src_ptr) break;
@@ -876,7 +904,16 @@ static ReplSession* repl_session_create(void) {
         "(define + (lambda args (fold-left add2 0 args)))\n"
         "(define * (lambda args (fold-left mul2 1 args)))\n"
         "(define (- . args) (if (null? (cdr args)) (sub2 0 (car args)) (fold-left sub2 (car args) (cdr args))))\n"
-        "(define (/ . args) (if (null? (cdr args)) (div2 1 (car args)) (fold-left div2 (car args) (cdr args))))\n";
+        "(define (/ . args) (if (null? (cdr args)) (div2 1 (car args)) (fold-left div2 (car args) (cdr args))))\n"
+        "(define _append-2 append)\n"
+        "(define (append . lists) (fold-right _append-2 '() lists))\n"
+        "(define (number->string n . args) (_number->string-2 n (if (null? args) 10 (car args))))\n"
+        "(define (atan x . rest) (if (null? rest) (_atan1 x) (_atan2 x (car rest))))\n"
+        "(define (max a . rest) (fold-left _max2 a rest))\n"
+        "(define (min a . rest) (fold-left _min2 a rest))\n"
+        "(define (string-append . args) (fold-left _string-append-2 \"\" args))\n"
+        "(define (make-list n val) (let loop ((i 0) (acc (list))) (if (= i n) acc (loop (+ i 1) (cons val acc)))))\n"
+        "(define (make-factor-graph n . rest) (if (null? rest) (_make-fg2 n (make-list n 2)) (_make-fg2 n (car rest))))\n";
     if (!cache_loaded) {
         src_ptr = scheme_prelude;
         while (1) {

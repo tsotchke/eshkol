@@ -15,11 +15,32 @@
 #include <math.h>
 #include "vm_arena.h"
 
-/* ── Extended Value Types (beyond base VM's VAL_INT/FLOAT/BOOL/PAIR/CLOSURE) ── */
-#define VAL_COMPLEX   10
-#define VAL_RATIONAL  11
-#define VAL_BIGNUM    12
-#define VAL_DUAL      13
+/* ── Extended Value Types (beyond base VM's VAL_INT/FLOAT/BOOL/PAIR/CLOSURE) ──
+ *
+ * Values 8-9 and 14 fill gaps in the base ValType enum (0-7, 15).
+ * Values 16+ extend beyond VAL_CONTINUATION (15).
+ *
+ * Each heap-allocated opaque type gets its own ValType so that print_value
+ * and type predicates can dispatch on .type without inspecting the heap.
+ * The .as.ptr field (union with .as.i) is the heap object index in all cases.
+ */
+#define VAL_TENSOR       8   /* heap-allocated VmTensor   (opaque)           */
+#define VAL_KB           9   /* heap-allocated VmKB       (opaque)           */
+#define VAL_COMPLEX     10   /* heap-allocated VmComplex  (opaque)           */
+#define VAL_RATIONAL    11   /* heap-allocated VmRational (opaque)           */
+#define VAL_BIGNUM      12   /* heap-allocated VmBignum   (opaque)           */
+#define VAL_DUAL        13   /* heap-allocated VmDual     (opaque)           */
+#define VAL_FACTOR_GRAPH 14  /* heap-allocated VmFactorGraph (opaque)       */
+/* 15 = VAL_CONTINUATION (defined in vm_core.c ValType enum)                */
+#define VAL_WORKSPACE   16   /* heap-allocated VmWorkspace   (opaque)       */
+#define VAL_SUBST       17   /* heap-allocated VmSubstitution (opaque)      */
+#define VAL_HASH        18   /* heap-allocated hash table    (opaque)       */
+#define VAL_BYTEVECTOR  19   /* heap-allocated bytevector    (opaque)       */
+#define VAL_PARAMETER_OBJ 20 /* heap-allocated dynamic parameter (opaque)  */
+#define VAL_AD_TAPE     21   /* heap-allocated AD tape       (opaque)       */
+#define VAL_ERROR_OBJ   22   /* heap-allocated error object  (opaque)      */
+#define VAL_MANIFOLD    23   /* heap-allocated Riemannian manifold (opaque) */
+#define VAL_PORT        24   /* heap-allocated I/O port      (opaque)       */
 
 /* ── Heap Subtypes ── */
 #define VM_SUBTYPE_COMPLEX   5

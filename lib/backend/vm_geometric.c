@@ -46,7 +46,7 @@ static void vm_push_manifold(VM* vm, void* manifold) {
     if (ptr < 0) { vm_push(vm, NIL_VAL); return; }
     vm->heap.objects[ptr]->type = HEAP_MANIFOLD;
     vm->heap.objects[ptr]->opaque.ptr = manifold;
-    vm_push(vm, (Value){.type = VAL_INT, .as.ptr = ptr});
+    vm_push(vm, (Value){.type = VAL_MANIFOLD, .as.ptr = ptr});
 }
 
 static void vm_dispatch_geometric(VM* vm, int fid) {
