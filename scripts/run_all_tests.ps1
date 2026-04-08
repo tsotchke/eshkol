@@ -207,7 +207,7 @@ function Join-ProcessOutput {
 
 function Format-ExitCodeLabel {
     param([int]$ExitCode)
-    $unsigned = [uint32]$ExitCode
+    $unsigned = ([int64]$ExitCode) -band 0xFFFFFFFFL
     return ("{0} / 0x{1:X8}" -f $ExitCode, $unsigned)
 }
 
