@@ -113,8 +113,25 @@ function Resolve-BuildDirectory {
         if (-not $candidate) {
             continue
         }
-        if (Test-Path (Join-Path $candidate "eshkol-run.exe")) {
-            return (Resolve-Path $candidate).Path
+
+        $resolvedCandidate = $null
+        try {
+            $resolvedCandidate = (Resolve-Path $candidate -ErrorAction Stop).Path
+        } catch {
+            continue
+        }
+
+        foreach ($binDir in @(
+            $resolvedCandidate,
+            (Join-Path $resolvedCandidate "Release"),
+            (Join-Path $resolvedCandidate "Debug")
+        )) {
+            if (Test-Path (Join-Path $binDir "eshkol-run.exe")) {
+                return [pscustomobject]@{
+                    RootDir   = $resolvedCandidate
+                    BinaryDir = $binDir
+                }
+            }
         }
     }
 
@@ -959,7 +976,7 @@ function Invoke-XlaSuite {
     Write-Section "Eshkol XLA/StableHLO Integration Tests"
     $suite = New-SuiteState "xla"
 
-    $xlaBin = Join-Path $script:BuildDir "xla_codegen_test.exe"
+    $xlaBin = Join-Path $script:BinaryDir "xla_codegen_test.exe"
     if (Test-Path $xlaBin) {
         $run = Invoke-ProcessCapture -FilePath $xlaBin -WorkingDirectory $script:ProjectRoot
         if ($run.ExitCode -eq 0) {
@@ -1030,9 +1047,12 @@ function Ensure-BuildArtifacts {
     param([string[]]$Targets)
     $missingTargets = @()
     foreach ($target in $Targets) {
-        $path = Join-Path $script:BuildDir ($target + ".exe")
+        $path = Join-Path $script:BinaryDir ($target + ".exe")
         if ($target -eq "stdlib") {
             $path = Join-Path $script:BuildDir "stdlib.o"
+            if (-not (Test-Path $path)) {
+                $path = Join-Path $script:BinaryDir "stdlib.o"
+            }
         }
         if (-not (Test-Path $path)) {
             $missingTargets += $target
@@ -1051,13 +1071,15 @@ function Ensure-BuildArtifacts {
 }
 
 $script:ProjectRoot = Get-ProjectRoot
-$script:BuildDir = Resolve-BuildDirectory -ProjectRoot $script:ProjectRoot -RequestedBuildDir $BuildDir
+$buildLayout = Resolve-BuildDirectory -ProjectRoot $script:ProjectRoot -RequestedBuildDir $BuildDir
+$script:BuildDir = $buildLayout.RootDir
+$script:BinaryDir = $buildLayout.BinaryDir
 $script:TempRoot = Join-Path $env:TEMP "eshkol-windows-suite"
 Ensure-NativeTempRoot -TempRoot $script:TempRoot
 
-$script:EshkolRun = Join-Path $script:BuildDir "eshkol-run.exe"
-$script:EshkolRepl = Join-Path $script:BuildDir "eshkol-repl.exe"
-$script:EshkolServer = Join-Path $script:BuildDir "eshkol-server.exe"
+$script:EshkolRun = Join-Path $script:BinaryDir "eshkol-run.exe"
+$script:EshkolRepl = Join-Path $script:BinaryDir "eshkol-repl.exe"
+$script:EshkolServer = Join-Path $script:BinaryDir "eshkol-server.exe"
 $env:ESHKOL_PATH = Join-Path $script:ProjectRoot "lib"
 
 if (-not $SkipConfigureBuild) {
@@ -1067,6 +1089,7 @@ if (-not $SkipConfigureBuild) {
 Write-Section "Eshkol Complete Windows Test Suite"
 Write-Host ("Project Root: {0}" -f $script:ProjectRoot)
 Write-Host ("Build Dir:    {0}" -f $script:BuildDir)
+Write-Host ("Binary Dir:   {0}" -f $script:BinaryDir)
 Write-Host ("Mode:         {0}" -f $Mode)
 Write-Host ""
 
