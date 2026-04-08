@@ -904,7 +904,7 @@ See [CONTRIBUTING.md](../CONTRIBUTING.md) for development guidelines.
 
 ---
 
-**Last Updated**: 2026-03-27
-**Document Version**: 1.1.11
+**Last Updated**: 2026-04-07
+**Document Version**: 1.1.12
 
 For detailed API documentation, see [API_REFERENCE.md](API_REFERENCE.md)

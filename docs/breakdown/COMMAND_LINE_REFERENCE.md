@@ -1,6 +1,6 @@
 # Command-Line Reference
 
-**Status:** Production (v1.1.11)
+**Status:** Production (v1.1.12)
 **Applies to:** Eshkol compiler v1.1-accelerate and later
 
 ---

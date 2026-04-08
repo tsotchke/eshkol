@@ -32,7 +32,7 @@ jobs:
             - **Exact arithmetic**: Bignums, rationals, complete R7RS numeric tower
             - **Consciousness engine**: 22 compiled primitives (logic, inference, workspace)
             - **Signal processing**: FFT, filters, Butterworth design
-            - **35 test suites, 430 test files, 100% pass rate**
+            - **35 test suites, 438 test files, 100% pass rate**
 
             ## Installation
 

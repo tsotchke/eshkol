@@ -1,6 +1,6 @@
 # CI/CD Pipelines
 
-**Status:** Production (v1.1.11)
+**Status:** Production (v1.1.12)
 **Applies to:** Eshkol compiler v1.1-accelerate and later
 
 ---
@@ -68,7 +68,7 @@ Release builds upload platform-specific artifacts:
 
 ### Trigger
 
-Push of a tag matching `v*` (e.g., `v1.1.11`, `v1.2.0-beta.1`).
+Push of a tag matching `v*` (e.g., `v1.1.12`, `v1.2.0-beta.1`).
 
 ### Jobs
 

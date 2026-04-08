@@ -1,7 +1,7 @@
-# Eshkol v1.1-accelerate Release Readiness Report
+# Eshkol v1.1.12-accelerate Release Readiness Report
 
-**Date**: March 27, 2026
-**Version**: 1.1.11-accelerate
+**Date**: April 7, 2026
+**Version**: v1.1.12-accelerate
 **Author**: tsotchke
 
 ---
@@ -630,7 +630,7 @@ Eshkol v1.1-accelerate is **READY FOR PRODUCTION RELEASE**. This assessment conf
 ### Build Verification
 
 - **CMake 3.14+** configuration tested
-- **LLVM 17** required (CI tests against LLVM 17)
+- **LLVM 21** required (CI tests against LLVM 21)
 - **GCC 8+** compilation successful
 - **Clang 6+** compilation successful
 - **Cross-platform** builds verified

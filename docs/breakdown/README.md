@@ -1,6 +1,6 @@
 # Eshkol Programming Language Documentation
 
-![Version](https://img.shields.io/badge/version-1.1.11--accelerate-blue)
+![Version](https://img.shields.io/badge/version-1.1.12--accelerate-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 > **Note**: This directory originally documented v1.0-foundation. For v1.1-accelerate

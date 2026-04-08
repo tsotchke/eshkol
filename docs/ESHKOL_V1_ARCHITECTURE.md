@@ -1,8 +1,8 @@
 # Eshkol System Architecture Reference
 
-**Version**: 1.1.11
-**Release**: v1.1-accelerate
-**Date**: March 2026
+**Version**: v1.1.12
+**Release**: v1.1.12-accelerate
+**Date**: April 2026
 **Status**: Production-ready compiler with GPU acceleration, consciousness engine, and exact arithmetic
 
 > **Note**: This document describes the **actual implemented system** based on comprehensive code analysis. Features marked as "planned" or "future" are documented separately in roadmap documents.

@@ -442,16 +442,18 @@ Eshkol v1.1-accelerate represents a **mature, production-ready implementation** 
 
 | Component | Lines | Files |
 |:---|---:|---:|
-| LLVM backend (main + modules) | 80,873 | 21 |
-| XLA/StableHLO backend | 4,003 | 5 |
-| GPU/Metal backend | 8,888 | 4 |
-| Frontend (parser, macro, types) | 10,400 | 3 |
-| Runtime (arena, logic, inference, workspace) | 14,920 | 5 |
-| REPL JIT | 3,110 | 3 |
-| Tools (LSP, package manager) | 1,739 | 2 |
-| **Total C/C++ compiler infrastructure** | **~232,000** | **43+** |
-| Standard library (.esk) | ~2,500 | 40 modules |
-| Test code (.esk) | 32,120 | 438 files |
+| LLVM backend (main + modules) | ~80,873 | 21 |
+| XLA/StableHLO backend | ~4,003 | 5 |
+| GPU/Metal backend | ~8,888 | 4 |
+| Frontend (parser, macro, types) | ~10,400 | 3 |
+| Runtime (arena, logic, inference, workspace) | ~14,400 | 14 |
+| REPL JIT | ~2,100 | 1 |
+| Tools (LSP, package manager, VS Code) | ~2,800 | 3+ |
+| Headers | ~16,000 | 52 |
+| Weight matrix transformer | ~2,300 | 1 |
+| **Total C/C++ compiler infrastructure** | **~232,000** | **130+** |
+| Standard library (.esk) | ~5,200 | 40 modules |
+| Test code (.esk) | ~34,000 | 438 files |
 
 ### Test Coverage
 
@@ -471,7 +473,7 @@ Eshkol v1.1-accelerate represents a **mature, production-ready implementation** 
 
 ### Competitive Technical Advantages
 
-**For gradient-based optimization and machine learning:** Three-mode AD with 32-level nested gradient support. 75+ compiler-level ML builtins covering the complete training pipeline (init → forward → loss → backward → clip → optimize → schedule). SIMD → cBLAS → GPU automatic dispatch.
+**For gradient-based optimization and machine learning:** Three-mode AD with 32-level nested gradient support. 555+ built-in functions including compiler-level ML operations covering the complete training pipeline (init → forward → loss → backward → clip → optimize → schedule). SIMD → cBLAS → GPU automatic dispatch.
 
 **For cognitive and agent-based systems:** 22 consciousness engine builtins implementing logic programming, active inference, and global workspace theory. No other compiled language provides these as first-class operations.
 

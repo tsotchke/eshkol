@@ -1,7 +1,7 @@
 # Eshkol Language - Complete Technical Specification
 
-**Version:** 1.1.11-accelerate
-**Generated:** 2026-03-27
+**Version:** v1.1.12-accelerate
+**Generated:** 2026-04-07
 **Status:** Comprehensive implementation documentation from source code
 
 ---
@@ -3851,9 +3851,10 @@ Keep original name (exported via `provide`)
 
 ## 26. Version Information
 
-**Current Version:** 1.1.11-accelerate
+**Current Version:** v1.1.12-accelerate
 
 **Version History:**
+- v1.1.12-accelerate - LLVM 21 toolchain unification, Windows VS 2022/ClangCL, ARM64 ABI fix, clean URL routing
 - v1.1.11-accelerate - Exact arithmetic, continuations, consciousness engine, parallelism, GPU dispatch, signal processing
 - v1.0.0-foundation - Initial stable release
   - Core Scheme compatibility
@@ -3958,7 +3959,7 @@ Dynamic binding of parameter objects. Parameters created with `make-parameter` a
 
 ## Conclusion
 
-This document provides a **complete** specification of the Eshkol programming language version 1.1.11-accelerate, documenting **every** feature, function, operator, and capability found in the implementation.
+This document provides a **complete** specification of the Eshkol programming language version v1.1.12-accelerate, documenting **every** feature, function, operator, and capability found in the implementation.
 
 **Total Coverage:**
 - All 101 special forms and parser operations
@@ -3975,7 +3976,7 @@ This document provides a **complete** specification of the Eshkol programming la
 - REPL JIT with precompiled stdlib
 - Quantum RNG (8-qubit circuit simulation)
 - GPU dispatch (Metal SF64 + CUDA, forward and backward)
-- Compilation pipeline (LLVM 17-21 compatible)
+- Compilation pipeline (LLVM 21 required)
 - Runtime architecture
 - Exact arithmetic (bignum, rational, numeric tower)
 - Complex number type with overflow-safe division
