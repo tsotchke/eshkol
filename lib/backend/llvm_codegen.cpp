@@ -714,9 +714,14 @@ private:
 
     // LIBRARY MODE: When true, skip main function creation and export all symbols
     bool library_mode;
+    bool fatal_codegen_error_;
 
     // Module prefix for unique lambda naming (prevents symbol collision when linking)
     std::string module_prefix;
+
+    void markFatalCodegenError() {
+        fatal_codegen_error_ = true;
+    }
 
     // DWARF DEBUG INFO: DIBuilder and metadata for source-level debugging
     std::unique_ptr<DIBuilder> di_builder_;
@@ -733,6 +738,7 @@ public:
         bool is_wasm32 = target_triple &&
                           std::string(target_triple).find("wasm32") != std::string::npos;
         library_mode = is_library_mode;
+        fatal_codegen_error_ = false;
         // Create a sanitized module prefix for lambda naming
         module_prefix = module_name;
         // Replace non-alphanumeric chars with underscore
@@ -1916,6 +1922,11 @@ public:
             if (emit_debug_info_ && di_builder_) {
                 di_builder_->finalize();
                 eshkol_debug("Finalized DWARF debug info");
+            }
+
+            if (fatal_codegen_error_) {
+                eshkol_error("Failed to generate LLVM IR due to earlier code generation errors");
+                return std::make_pair(nullptr, nullptr);
             }
 
             // Verify the module
@@ -4499,6 +4510,7 @@ private:
         // MODULE VISIBILITY: Check if symbol is private (not exported from its module)
         if (g_repl_private_symbols.find(func_name) != g_repl_private_symbols.end()) {
             eshkol_error("Function '%s' is private (not exported from its module)", func_name.c_str());
+            markFatalCodegenError();
             return nullptr;
         }
 
@@ -7012,6 +7024,7 @@ private:
             // MODULE VISIBILITY: Check if symbol is private (not exported from its module)
             if (g_repl_private_symbols.find(var_name) != g_repl_private_symbols.end()) {
                 eshkol_error("Variable '%s' is private (not exported from its module)", var_name.c_str());
+                markFatalCodegenError();
                 return nullptr;
             } else {
 
@@ -12517,35 +12530,14 @@ private:
                     return result;
                 } else {
                     // Not in symbol_table at all - truly unknown function
-                    // Generate runtime error instead of silently returning null
                     if (current_source_line > 0) {
                         eshkol_error("Unknown function: %s (line %u:%u)", func_name.c_str(),
                                     current_source_line, current_source_column);
                     } else {
                         eshkol_error("Unknown function: %s", func_name.c_str());
                     }
-
-                    // Generate code to print error and exit at runtime
-                    Function* printf_func = function_table["printf"];
-                    Function* exit_func = function_table["exit"];
-                    if (printf_func && exit_func) {
-                        // Create error message string
-                        std::string error_msg = "Error: Unknown function '" + func_name + "'";
-                        if (current_source_line > 0) {
-                            error_msg += " at line " + std::to_string(current_source_line);
-                        }
-                        error_msg += "\n";
-                        Value* error_str = builder->CreateGlobalString(error_msg, "unknown_func_error");
-                        builder->CreateCall(printf_func, {error_str});
-                        builder->CreateCall(exit_func, {ConstantInt::get(Type::getInt32Ty(*context), 1)});
-                        // Create unreachable and continue block for LLVM
-                        builder->CreateUnreachable();
-                        // Create a new block for any code that might follow (won't be reached)
-                        Function* current_func = builder->GetInsertBlock()->getParent();
-                        BasicBlock* dead_block = BasicBlock::Create(*context, "unreachable_continue", current_func);
-                        builder->SetInsertPoint(dead_block);
-                    }
-                    return packNullToTaggedValue();
+                    markFatalCodegenError();
+                    return nullptr;
                 }
             }
         }

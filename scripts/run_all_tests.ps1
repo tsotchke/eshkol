@@ -390,11 +390,11 @@ function Invoke-EshkolCompile {
     $exePath = $OutputBase + ".exe"
     Remove-Item $exePath, $OutputBase -Force -ErrorAction SilentlyContinue
 
-    $args = @($TestFile, "-L", $BuildDir)
+    $args = @("-L", $BuildDir, "-o", $OutputBase)
     if ($ExtraArgs.Count -gt 0) {
         $args += $ExtraArgs
     }
-    $args += @("-o", $OutputBase)
+    $args += @($TestFile)
 
     $captured = Invoke-ProcessCapture -FilePath $EshkolRun -Arguments $args -WorkingDirectory $BuildDir
 
@@ -1030,7 +1030,7 @@ function Invoke-WebSuite {
         $testName = Split-Path -Leaf $testFile
         $outputBase = New-OutputBase -TempRoot $script:TempRoot -SuiteName "web" -TestName $testName
         $wasmPath = $outputBase + ".wasm"
-        $args = @($testFile, "--wasm", "-o", $wasmPath)
+        $args = @("--wasm", "-o", $wasmPath, $testFile)
         $compile = Invoke-ProcessCapture -FilePath $script:EshkolRun -Arguments $args -WorkingDirectory $script:BuildDir
 
         if ($compile.ExitCode -eq 0 -and (Test-Path $wasmPath)) {
