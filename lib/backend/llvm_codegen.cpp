@@ -1762,6 +1762,17 @@ public:
                     builder->CreateCall(init_stack_func);
                 }
 
+                {
+                    FunctionType* runtime_init_type = FunctionType::get(builder->getInt32Ty(), false);
+                    Function* runtime_init_func = module->getFunction("eshkol_runtime_init");
+                    if (!runtime_init_func) {
+                        runtime_init_func = Function::Create(
+                            runtime_init_type, Function::ExternalLinkage,
+                            "eshkol_runtime_init", module.get());
+                    }
+                    builder->CreateCall(runtime_init_func, {}, "runtime_init");
+                }
+
                 // Store argc and argv to globals for (command-line)
                 GlobalVariable* g_argc = module->getGlobalVariable("__eshkol_argc");
                 GlobalVariable* g_argv = module->getGlobalVariable("__eshkol_argv");
@@ -3389,6 +3400,17 @@ private:
                 builder->CreateCall(init_stack_func);
             }
 
+            {
+                FunctionType* runtime_init_type = FunctionType::get(builder->getInt32Ty(), false);
+                Function* runtime_init_func = module->getFunction("eshkol_runtime_init");
+                if (!runtime_init_func) {
+                    runtime_init_func = Function::Create(
+                        runtime_init_type, Function::ExternalLinkage,
+                        "eshkol_runtime_init", module.get());
+                }
+                builder->CreateCall(runtime_init_func, {}, "runtime_init");
+            }
+
             // Store argc and argv to globals for (command-line)
             GlobalVariable* g_argc = module->getGlobalVariable("__eshkol_argc");
             GlobalVariable* g_argv = module->getGlobalVariable("__eshkol_argv");
@@ -3646,6 +3668,17 @@ private:
                         "eshkol_init_stack_size", module.get());
                 }
                 builder->CreateCall(init_stack_func);
+            }
+
+            {
+                FunctionType* runtime_init_type = FunctionType::get(builder->getInt32Ty(), false);
+                Function* runtime_init_func = module->getFunction("eshkol_runtime_init");
+                if (!runtime_init_func) {
+                    runtime_init_func = Function::Create(
+                        runtime_init_type, Function::ExternalLinkage,
+                        "eshkol_runtime_init", module.get());
+                }
+                builder->CreateCall(runtime_init_func, {}, "runtime_init");
             }
 
             // Store argc and argv to globals for (command-line)
@@ -28203,12 +28236,6 @@ private:
     }
 
     Value* allocaJmpBuf(const char* name) {
-#ifdef _WIN32
-        Function* current_func = builder->GetInsertBlock()->getParent();
-        IRBuilder<> entry_builder(&current_func->getEntryBlock(), current_func->getEntryBlock().begin());
-        Type* jmp_buf_type = ArrayType::get(builder->getInt8Ty(), 256);
-        AllocaInst* jmp_buf = entry_builder.CreateAlloca(jmp_buf_type, nullptr, name);
-#else
         FunctionType* size_type = FunctionType::get(int64_type, {}, false);
         Function* size_func = module->getFunction(eshkol::runtime::jmp_buf_size_symbol);
         if (!size_func) {
@@ -28221,19 +28248,17 @@ private:
 
         Value* size = builder->CreateCall(size_func, {}, std::string(name) + "_size");
         AllocaInst* jmp_buf = builder->CreateAlloca(builder->getInt8Ty(), size, name);
-#endif
         jmp_buf->setAlignment(Align(16));
         return jmp_buf;
     }
 
     Function* getOrDeclareSetjmpFunc() {
-#ifdef _WIN32
-        constexpr const char* setjmp_symbol = "_setjmpex";
-        FunctionType* setjmp_type = FunctionType::get(builder->getInt32Ty(), {builder->getPtrTy(), builder->getPtrTy()}, false);
-#else
-        constexpr const char* setjmp_symbol = "setjmp";
-        FunctionType* setjmp_type = FunctionType::get(builder->getInt32Ty(), {builder->getPtrTy()}, false);
-#endif
+        const Triple& target_triple = module->getTargetTriple();
+        const bool is_windows_target = target_triple.isOSWindows();
+        const char* setjmp_symbol = is_windows_target ? "_setjmpex" : "setjmp";
+        FunctionType* setjmp_type = is_windows_target
+            ? FunctionType::get(builder->getInt32Ty(), {builder->getPtrTy(), builder->getPtrTy()}, false)
+            : FunctionType::get(builder->getInt32Ty(), {builder->getPtrTy()}, false);
         Function* setjmp_func = module->getFunction(setjmp_symbol);
         if (!setjmp_func) {
             setjmp_func = Function::Create(
@@ -28248,18 +28273,27 @@ private:
 
     std::vector<Value*> makeSetjmpArgs(Value* jmp_buf_alloc) {
         std::vector<Value*> args = {jmp_buf_alloc};
-#ifdef _WIN32
-        // Native Windows x64 setjmp expects the address of the local variable
-        // area as a hidden second argument.
-        Function* localaddress = ESHKOL_GET_INTRINSIC(module.get(), Intrinsic::localaddress, {});
-        Value* local_area = builder->CreateCall(localaddress, {}, "setjmp_local_area");
-        Value* frame_ptr = builder->CreateInBoundsGEP(
-            builder->getInt8Ty(),
-            local_area,
-            ConstantInt::getSigned(int64_type, -128),
-            "setjmp_frame");
-        args.push_back(frame_ptr);
-#endif
+        const Triple& target_triple = module->getTargetTriple();
+        if (!target_triple.isOSWindows()) {
+            return args;
+        }
+
+        Value* setjmp_context = nullptr;
+        if (target_triple.getArch() == Triple::aarch64) {
+            // Windows ARM64 uses the function-entry SP as the hidden _setjmpex
+            // context argument. Match Clang's lowering here.
+            Function* sponentry = ESHKOL_GET_INTRINSIC(module.get(), Intrinsic::sponentry, {builder->getPtrTy()});
+            setjmp_context = builder->CreateCall(sponentry, {}, "setjmp_sponentry");
+        } else {
+            // Windows x64 lowers _setjmpex with the current frame address.
+            Function* frameaddress = ESHKOL_GET_INTRINSIC(module.get(), Intrinsic::frameaddress, {builder->getPtrTy()});
+            setjmp_context = builder->CreateCall(
+                frameaddress,
+                {ConstantInt::get(builder->getInt32Ty(), 0)},
+                "setjmp_frame");
+        }
+
+        args.push_back(setjmp_context);
         return args;
     }
 
