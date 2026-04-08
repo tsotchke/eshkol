@@ -1,4 +1,4 @@
-# ESHKOL v1.1-ACCELERATE — PRESS INFORMATION SHEET
+# ESHKOL v1.1.12-ACCELERATE — PRESS INFORMATION SHEET
 
 **For use by journalists and publications preparing coverage**
 
@@ -9,7 +9,7 @@
 | | |
 |---|---|
 | **Product** | Eshkol |
-| **Version** | v1.1-accelerate |
+| **Version** | v1.1.12-accelerate |
 | **Release Date** | April 7, 2026 |
 | **License** | MIT (open source) |
 | **Website** | https://eshkol.ai |
@@ -43,6 +43,7 @@ Eshkol is the first production programming language to integrate automatic diffe
 - Nested gradients up to 32 levels deep
 - Supports second-order optimization and meta-learning
 - Zero overhead when differentiation is not used
+- Works through the WebAssembly bytecode VM — gradient descent runs in the browser
 
 **Eight built-in vector calculus operators:**
 
@@ -76,11 +77,22 @@ These are language primitives, not library functions.
 
 ### Native Compilation
 
-- **Backend**: LLVM 21
+- **Backend**: LLVM 21 (unified across all platforms via `cmake/LLVMToolchain.cmake`)
 - **Targets**: x86-64, ARM64
-- **Platforms**: macOS (Intel and Apple Silicon), Linux, Windows (native x86-64 via VS 2022 + ClangCL, or MSYS2/MinGW64)
-- **Output**: Standalone native executables, object files for linking
+- **Platforms**: macOS (Intel and Apple Silicon), Linux (x86-64 and ARM64), Windows (native x86-64 via Visual Studio 2022 + ClangCL, or MSYS2/MinGW64)
+- **Output**: Standalone native executables, object files for linking, WebAssembly modules
 - **Startup time**: Sub-50ms (compared to seconds for interpreted alternatives)
+
+---
+
+### Web Platform
+
+Eshkol compiles to WebAssembly. The project website — [eshkol.ai](https://eshkol.ai) — is itself written entirely in Eshkol: 1,400 lines of Eshkol code compiled to a 484KB WebAssembly binary.
+
+- **Browser REPL**: A 63-opcode bytecode interpreter with 555+ built-in functions runs in the browser. Users evaluate Eshkol expressions without installing anything.
+- **Automatic differentiation in the browser**: Forward-mode AD via dual number propagation works through the bytecode VM. `(derivative (lambda (x) (* x x)) 3.0)` returns `6` in a browser tab.
+- **Interactive textbook**: 8-chapter tutorial with every example runnable live in the browser
+- **59 DOM bindings**: Create elements, handle events, draw on canvas — all from Eshkol code compiled to WebAssembly
 
 ---
 
@@ -112,9 +124,10 @@ No other compiled language maintains this property.
 
 - **Base**: R5RS/R7RS Scheme compatible
 - **Special forms**: 39 (define, lambda, let/let*/letrec, if/cond/case/match, quote/quasiquote, pattern matching)
-- **Built-in functions**: 300+
+- **Built-in functions**: 555+
 - **Macros**: Hygienic macros via syntax-rules with pattern matching
 - **Tail call optimization**: Direct elimination and trampoline-based constant-stack recursion
+- **Continuations**: `call/cc`, `dynamic-wind`, `values`/`call-with-values` with full R7RS §6.10 semantics
 
 ---
 
@@ -148,6 +161,7 @@ No other compiled language maintains this property.
 - Arbitrary-precision integers (bignums) with automatic int64 overflow promotion
 - Exact rational numbers with GCD simplification
 - Complete R7RS numeric tower: int64 → bignum → rational → double → complex
+- IEEE special values: `+nan.0`, `+inf.0`, `-inf.0`
 
 ---
 
@@ -168,24 +182,19 @@ No other compiled language maintains this property.
 
 ---
 
-### First-Class Continuations
-
-- `call/cc` and `dynamic-wind` with proper R7RS §6.10 semantics
-- `guard`/`raise` exception handling
-
----
-
 ## IMPLEMENTATION DETAILS
 
 | | |
 |---|---|
 | **Compiler written in** | C17 (runtime) + C++20 (compiler) |
-| **Parser** | Recursive descent, 5,487 lines |
-| **Type checker** | Bidirectional Hindley-Milner with HoTT extensions, 1,561 lines |
+| **Codebase** | ~232,000 lines across 130+ files |
+| **Parser** | Recursive descent, ~5,487 lines |
+| **Type checker** | Bidirectional Hindley-Milner with HoTT extensions, ~1,561 lines |
 | **Codegen** | 21 modular LLVM code generation components |
-| **Test suite** | 438 tests across 35 suites, all passing |
-| **Codebase** | ~232K lines |
-| **Bytecode VM** | 63-opcode VM, ESKB binary format, weight matrix transformer |
+| **Bytecode VM** | 63-opcode register+stack interpreter, ESKB binary format |
+| **Weight matrix transformer** | Programs as neural network weights, 307K parameters |
+| **Test suite** | 438 tests across 35 suites, 100% pass rate |
+| **Toolchain** | LLVM 21, unified via `cmake/LLVMToolchain.cmake` |
 
 **Runtime representation:**
 
@@ -197,20 +206,22 @@ No other compiled language maintains this property.
 
 ## DEVELOPMENT TOOLS INCLUDED
 
-- **eshkol-run**: Production compiler with executable, object file, and WebAssembly output
+- **eshkol-run**: Production compiler with executable, object file, and WebAssembly output modes
 - **eshkol-repl**: Interactive REPL with LLVM JIT compilation (16 commands, hot reload)
 - **eshkol-pkg**: Package manager with registry, dependency resolution, and versioning
 - **eshkol-lsp**: Language Server Protocol server for IDE integration
+- **VS Code extension**: Syntax highlighting, LSP integration, build tasks
 
-**Standard library** (300+ functions implemented in pure Eshkol):
+**Standard library** (~300 functions implemented in pure Eshkol):
 
 - 60+ list operations
 - 30+ string utilities
 - JSON parsing and generation
-- CSV processing
-- Base64 encoding/decoding
+- CSV processing, Base64 encoding/decoding
 - Linear algebra (LU decomposition, eigenvalue estimation, numerical integration)
 - Functional combinators (compose, curry, partial application)
+- Statistical distributions, optimization algorithms (Adam, L-BFGS, conjugate gradient)
+- FFT and signal processing filters
 
 ---
 
@@ -234,7 +245,7 @@ Eshkol was designed from first principles for mathematical and scientific comput
 
 Eshkol serves as foundational infrastructure for Tsotchke Corporation's products and research:
 
-- **Selene (qLLM)**: A semiclassical quantum large language model using geometric principles. Achieves 10-1000× parameter efficiency over conventional transformers through mixed-curvature embeddings (hyperbolic × spherical × Euclidean manifolds). Eshkol's native differentiation and geometric computing capabilities enable this architecture.
+- **Selene (qLLM)**: A semiclassical quantum large language model using geometric principles. Achieves 10–1000× parameter efficiency over conventional transformers through mixed-curvature embeddings (hyperbolic × spherical × Euclidean manifolds). Eshkol's native differentiation and geometric computing capabilities enable this architecture.
 
 - **Moonlab**: A quantum computing simulator with Bell-verified quantum behavior, exceeding 10,000× performance on Apple Silicon. Eshkol is used for circuit transpilation and optimization.
 
@@ -263,7 +274,7 @@ The language was developed to solve real problems encountered in building these 
 > — **tsotchke**, CEO of Tsotchke Corporation
 
 ---
- 
+
 ## ABOUT TSOTCHKE CORPORATION
 
 Tsotchke Corporation develops infrastructure for quantum computing, geometric artificial intelligence, and scientific computing applications.
@@ -289,9 +300,11 @@ Tsotchke Corporation develops infrastructure for quantum computing, geometric ar
 | Zero GC | ✓ | ✗ | ✗ | ✓ | ✗ |
 | Homoiconicity | ✓ (native compiled) | ✗ | Partial | ✗ | ✓ (interpreted) |
 | Native compilation | ✓ (LLVM) | ✓ (XLA) | ✓ | ✓ | ✗ |
+| WebAssembly output | ✓ | ✗ | Partial | ✓ | ✗ |
 | Dependent types | ✓ (HoTT) | ✗ | ✗ | ✗ | ✗ |
 | Vector calculus ops | ✓ (8 built-in) | Library | Library | ✗ | ✗ |
 | Deterministic latency | ✓ | ✗ | ✗ | ✓ | ✗ |
+| Consciousness engine | ✓ (22 primitives) | ✗ | ✗ | ✗ | ✗ |
 
 ---
 
@@ -299,7 +312,8 @@ Tsotchke Corporation develops infrastructure for quantum computing, geometric ar
 
 | Resource | Location |
 |----------|----------|
-| Technical documentation | https://eshkol.ai |
+| Website + interactive demos | https://eshkol.ai |
+| Browser REPL (no install) | https://eshkol.ai/learn |
 | Source code | https://github.com/tsotchke/eshkol |
 | Language reference | `ESHKOL_V1_LANGUAGE_REFERENCE.md` in repository |
 | Architecture guide | `docs/ESHKOL_V1_ARCHITECTURE.md` |
@@ -307,4 +321,4 @@ Tsotchke Corporation develops infrastructure for quantum computing, geometric ar
 
 ---
 
-*This document may be used freely for preparing news coverage of Eshkol v1.1-accelerate.*
+*This document may be used freely for preparing news coverage of Eshkol v1.1.12-accelerate.*
