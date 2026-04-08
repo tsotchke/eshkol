@@ -239,63 +239,63 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install LLVM SDK
+      - name: Install LLVM SDK (x64)
+        if: matrix.arch == 'x64'
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $llvmVersion = '${{ env.WINDOWS_LLVM_SDK_VERSION }}'
-          $arch = '${{ matrix.arch }}'
-          $llvmDir = $null
-          $llvmBin = $null
-          $candidateRoots = @()
+          $llvmRoot    = "C:\src\clang+llvm-$llvmVersion-x86_64-pc-windows-msvc"
+          $llvmCmakeDir = "$llvmRoot\lib\cmake\llvm"
 
-          if ($arch -eq 'x64') {
-            $llvmRoot = "C:\src\clang+llvm-$llvmVersion-x86_64-pc-windows-msvc"
-            $llvmArchive = "$env:RUNNER_TEMP\clang+llvm-$llvmVersion-x86_64-pc-windows-msvc.tar.xz"
-            New-Item -ItemType Directory -Force -Path 'C:\src' | Out-Null
-            if (-not (Test-Path "$llvmRoot\lib\cmake\llvm\LLVMConfig.cmake")) {
-              Invoke-WebRequest -Uri "https://github.com/llvm/llvm-project/releases/download/llvmorg-$llvmVersion/clang+llvm-$llvmVersion-x86_64-pc-windows-msvc.tar.xz" -OutFile $llvmArchive
-              tar -xf $llvmArchive -C C:\src
-            }
-            $candidateRoots += $llvmRoot
-          } else {
-            $winget = Get-Command winget -ErrorAction SilentlyContinue
-            if (-not $winget) {
-              throw "winget is required to provision LLVM on Windows ARM64 runners"
-            }
-            winget install --id LLVM.LLVM --version $llvmVersion --accept-package-agreements --accept-source-agreements --disable-interactivity --silent
+          New-Item -ItemType Directory -Force -Path 'C:\src' | Out-Null
+          if (-not (Test-Path "$llvmCmakeDir\LLVMConfig.cmake")) {
+            $archive = "$env:RUNNER_TEMP\llvm-x64-$llvmVersion.tar.xz"
+            $url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-$llvmVersion/clang+llvm-$llvmVersion-x86_64-pc-windows-msvc.tar.xz"
+            Write-Host "Downloading $url"
+            Invoke-WebRequest -Uri $url -OutFile $archive -UseBasicParsing
+            Write-Host "Extracting..."
+            tar -xf $archive -C C:\src
+            if ($LASTEXITCODE -ne 0) { throw "tar extraction failed (exit $LASTEXITCODE)" }
           }
 
-          $candidateRoots += @(
-            'C:\Program Files\LLVM',
-            'C:\LLVM'
-          )
-
-          foreach ($root in $candidateRoots) {
-            $candidate = Join-Path $root 'lib\cmake\llvm\LLVMConfig.cmake'
-            if (Test-Path $candidate) {
-              $llvmDir = Split-Path -Parent $candidate
-              $llvmBin = Join-Path $root 'bin'
-              break
-            }
+          if (-not (Test-Path "$llvmCmakeDir\LLVMConfig.cmake")) {
+            throw "LLVMConfig.cmake not found at $llvmCmakeDir — extraction may have failed"
           }
 
-          if (-not $llvmDir) {
-            $fallback = Get-ChildItem -Path 'C:\Program Files', 'C:\src', 'C:\LLVM' -Filter LLVMConfig.cmake -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
-            if ($fallback) {
-              $llvmDir = $fallback.Directory.FullName
-              $llvmRoot = [System.IO.Path]::GetFullPath((Join-Path $llvmDir '..\..\..'))
-              $llvmBin = Join-Path $llvmRoot 'bin'
-            }
+          Write-Host "LLVM $llvmVersion x64 ready at $llvmRoot"
+          "LLVM_DIR=$llvmCmakeDir"   | Out-File -FilePath $env:GITHUB_ENV  -Encoding utf8 -Append
+          "LLVM_HOME=$llvmRoot"       | Out-File -FilePath $env:GITHUB_ENV  -Encoding utf8 -Append
+          "$llvmRoot\bin"             | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Install LLVM SDK (arm64)
+        if: matrix.arch == 'arm64'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $llvmVersion = '${{ env.WINDOWS_LLVM_SDK_VERSION }}'
+          $llvmRoot    = "C:\src\clang+llvm-$llvmVersion-aarch64-pc-windows-msvc"
+          $llvmCmakeDir = "$llvmRoot\lib\cmake\llvm"
+
+          New-Item -ItemType Directory -Force -Path 'C:\src' | Out-Null
+          if (-not (Test-Path "$llvmCmakeDir\LLVMConfig.cmake")) {
+            $archive = "$env:RUNNER_TEMP\llvm-arm64-$llvmVersion.tar.xz"
+            $url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-$llvmVersion/clang+llvm-$llvmVersion-aarch64-pc-windows-msvc.tar.xz"
+            Write-Host "Downloading $url"
+            Invoke-WebRequest -Uri $url -OutFile $archive -UseBasicParsing
+            Write-Host "Extracting..."
+            tar -xf $archive -C C:\src
+            if ($LASTEXITCODE -ne 0) { throw "tar extraction failed (exit $LASTEXITCODE)" }
           }
 
-          if (-not $llvmDir) {
-            throw "LLVMConfig.cmake not found after LLVM installation"
+          if (-not (Test-Path "$llvmCmakeDir\LLVMConfig.cmake")) {
+            throw "LLVMConfig.cmake not found at $llvmCmakeDir — extraction may have failed"
           }
 
-          "LLVM_DIR=$llvmDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "LLVM_HOME=$([System.IO.Path]::GetFullPath((Join-Path $llvmDir '..\\..\\..')))" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          $llvmBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          Write-Host "LLVM $llvmVersion arm64 ready at $llvmRoot"
+          "LLVM_DIR=$llvmCmakeDir"   | Out-File -FilePath $env:GITHUB_ENV  -Encoding utf8 -Append
+          "LLVM_HOME=$llvmRoot"       | Out-File -FilePath $env:GITHUB_ENV  -Encoding utf8 -Append
+          "$llvmRoot\bin"             | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - name: Configure
         shell: pwsh
