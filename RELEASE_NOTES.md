@@ -1,3 +1,53 @@
+# Eshkol v1.1.12-accelerate — Toolchain Unification + Platform Hardening
+
+**Release Date**: April 7, 2026
+
+Eshkol v1.1.12-accelerate unifies the toolchain on LLVM 21 across all platforms, adds a native Windows build path via Visual Studio 2022 + ClangCL, fixes ARM64 and Windows x64 ABI issues in the runtime, adds clean URL routing to the website, and expands CI/CD coverage.
+
+## What's New in v1.1.12-accelerate
+
+### LLVM 21 Toolchain Unification
+
+- Standardized entire build on LLVM 21 across Linux, macOS, and Windows
+- New `cmake/LLVMToolchain.cmake`: authoritative LLVM version discovery and enforcement at configure time
+- New `scripts/lib/llvm21-env.sh`: platform-aware LLVM 21 activation for all shell scripts
+- Hard version check: configure fails with a clear error if LLVM major version is not exactly 21
+- Removed misleading `LLVM 18+` compatibility branches from backend codegen
+
+### Native Windows Build (Visual Studio 2022)
+
+- Full native build via Visual Studio 2022 + ClangCL + LLVM 21 SDK
+- Configures with `Visual Studio 17 2022` generator and `-T ClangCL`
+- `region_escape_tagged_value_into` ABI fix: passes `eshkol_tagged_value_t` by pointer to satisfy Windows x64 calling convention for 16-byte aggregates
+
+### ARM64 ABI Fix
+
+- Fixed `call_thunk_closure` in `arena_memory.cpp:3908`: ARM64 returns 16-byte structs in register pairs (x0:x1), not via hidden return buffer
+- Resolves dynamic-wind + call/cc thunk invocation on Apple Silicon and Linux ARM64
+
+### Mutual TCO Fix
+
+- `llvm_codegen.cpp`: version-gated tail call kind — `TCK_MustTail` on LLVM < 18, `TCK_Tail` on LLVM ≥ 18
+- Fixes "LLVM ERROR: cannot use musttail" on Linux with LLVM 21
+
+### Website — Clean URL Routing
+
+- Navigation now uses `/downloads`, `/learn`, `/docs` etc. instead of `/#/downloads`
+- GitHub Pages 404-redirect SPA routing for direct URL access
+- History API (`pushState`/`popstate`) replaces `hashchange`
+
+### CI/CD Expansion
+
+- New GitLab CI matrix: Linux x64/arm64 × lite/XLA/CUDA + macOS × lite/XLA + Windows
+- GitHub CI updated to LLVM 21 baseline across all runners
+- Docker parity images (`docker/debian/`, `docker/ubuntu/`) updated to LLVM 21
+
+### Test Results
+
+- 35/35 test suites, 438/438 tests, 100% pass rate (macOS ARM64, Linux x64)
+
+---
+
 # Eshkol v1.1.11-accelerate - Performance Acceleration Release
 
 **Release Date**: March 27, 2026

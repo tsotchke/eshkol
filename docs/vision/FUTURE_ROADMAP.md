@@ -6,7 +6,7 @@ This document outlines Eshkol's evolution from the **completed v1.0-foundation**
 
 **Status:** ✅ **Production Release**
 
-Eshkol v1.0-architecture delivers a complete, production-ready compiler with unprecedented integration of automatic differentiation, deterministic memory management, and homoiconic native code execution.
+Eshkol v1.0-foundation delivers a complete, production-ready compiler with unprecedented integration of automatic differentiation, deterministic memory management, and homoiconic native code execution.
 
 ### Completed Achievements
 
@@ -81,7 +81,7 @@ Eshkol v1.0-architecture delivers a complete, production-ready compiler with unp
 | **v1.5-intelligence** | **Q2-3 2026** | 📋 Planned | **Neuro-symbolic integration, advanced optimizers** |
 | **v2.0-quantum** | **Q4 2026+** | 🔬 Research | **Quantum computing, formal verification** |
 
-## v1.1-acceleration: Performance and Parallelism (Q1 2026)
+## v1.1-accelerate: Performance and Parallelism (Q1 2026)
 
 **Status:** ✅ **COMPLETE (Production Release)**
 

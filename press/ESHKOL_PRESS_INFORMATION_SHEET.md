@@ -10,7 +10,7 @@
 |---|---|
 | **Product** | Eshkol |
 | **Version** | v1.1-accelerate |
-| **Release Date** | March 27, 2026 |
+| **Release Date** | April 7, 2026 |
 | **License** | MIT (open source) |
 | **Website** | https://eshkol.ai |
 | **Source Code** | https://github.com/tsotchke/eshkol |
@@ -76,9 +76,9 @@ These are language primitives, not library functions.
 
 ### Native Compilation
 
-- **Backend**: LLVM 17
+- **Backend**: LLVM 21
 - **Targets**: x86-64, ARM64
-- **Platforms**: macOS (Intel and Apple Silicon), Linux, Windows (MSYS2/MinGW64)
+- **Platforms**: macOS (Intel and Apple Silicon), Linux, Windows (native x86-64 via VS 2022 + ClangCL, or MSYS2/MinGW64)
 - **Output**: Standalone native executables, object files for linking
 - **Startup time**: Sub-50ms (compared to seconds for interpreted alternatives)
 

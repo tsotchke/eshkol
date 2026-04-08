@@ -1,6 +1,6 @@
 # Eshkol Package Manager (eshkol-pkg)
 
-**Status:** Production — v1.1.11
+**Status:** Production — v1.1.12
 **Source:** `tools/pkg/eshkol_pkg.cpp` (722 lines)
 **Binary:** `eshkol-pkg`
 

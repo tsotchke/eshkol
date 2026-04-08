@@ -123,7 +123,7 @@ When implementing new language features:
 
 ## Project Status
 
-**Current**: v1.1.11-accelerate (production-ready)
+**Current**: v1.1.12-accelerate (production-ready)
 
 See [Roadmap](../breakdown/ROADMAP.md) for planned features.
 
