@@ -211,6 +211,15 @@ private:
     // is accessible in subsequent evaluations
     void* shared_arena_;
 
+    // REPL HOT RELOAD: Heap-allocated 16-byte tagged_value storage for every
+    // user-defined top-level variable. The codegen emits @<name> as a pure
+    // external declaration plus a __repl_var_<name> marker; addModule scans
+    // markers, allocates a slot on first definition, and registers @<name>
+    // as an absolute symbol pointing at it. Stores from any module write
+    // directly into the shared slot, so redefinition is just a normal store.
+    // Maps user variable name -> heap pointer (16-byte aligned).
+    std::unordered_map<std::string, void*> repl_var_storage_;
+
     // Initialize the JIT (called from constructor)
     void initializeJIT();
 
