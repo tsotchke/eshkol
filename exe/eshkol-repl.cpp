@@ -333,25 +333,6 @@ const char* get_defined_name(const eshkol_ast_t& ast) {
     return ast.operation.define_op.name;
 }
 
-// Helper: Check if AST defines a lambda/function
-const char* get_lambda_var_name(const eshkol_ast_t& ast) {
-    if (ast.type != ESHKOL_OP || ast.operation.op != ESHKOL_DEFINE_OP) {
-        return nullptr;
-    }
-
-    if (ast.operation.define_op.is_function) {
-        return ast.operation.define_op.name;
-    }
-
-    if (ast.operation.define_op.value &&
-        ast.operation.define_op.value->type == ESHKOL_OP &&
-        ast.operation.define_op.value->operation.op == ESHKOL_LAMBDA_OP) {
-        return ast.operation.define_op.name;
-    }
-
-    return nullptr;
-}
-
 // Print help message
 void print_help() {
     using namespace color;
@@ -477,12 +458,6 @@ bool load_file(const std::string& filename, eshkol::ReplJITContext& repl_ctx) {
                 eshkol_ast_clean(&ast);
                 expr_count++;
                 continue;
-            }
-
-            // Register lambda variables for cross-reference support
-            const char* lambda_var = get_lambda_var_name(ast);
-            if (lambda_var) {
-                repl_ctx.registerLambdaVar(lambda_var);
             }
 
             // Track defined symbols for :env display
@@ -1000,12 +975,6 @@ int main(int argc, char** argv) {
                 if (!found) {
                     g_defined_symbols.push_back(defined_name);
                 }
-            }
-
-            // Check if this defines a lambda variable
-            const char* lambda_var = get_lambda_var_name(ast);
-            if (lambda_var) {
-                repl_ctx.registerLambdaVar(lambda_var);
             }
 
             // Wrap expressions with display
