@@ -251,6 +251,9 @@ struct Manifest {
     std::vector<Dependency> dependencies;
 };
 
+bool is_valid_dependency_name(const std::string& name);
+void require_valid_dependency_name(const std::string& name);
+
 Manifest load_manifest(const fs::path& dir) {
     Manifest m;
     fs::path manifest_path = dir / "eshkol.toml";
@@ -285,6 +288,7 @@ Manifest load_manifest(const fs::path& dir) {
     // [dependencies] section
     if (data.count("dependencies")) {
         for (auto& [name, val] : data["dependencies"].table_val) {
+            require_valid_dependency_name(name);
             Dependency dep;
             dep.name = name;
             dep.version = val.str_val;
@@ -358,6 +362,30 @@ fs::path get_packages_dir() {
     fs::path pkgs = get_cache_dir() / "packages";
     fs::create_directories(pkgs);
     return pkgs;
+}
+
+bool is_valid_dependency_name(const std::string& name) {
+    if (name.empty()) return false;
+    if (!std::isalnum(static_cast<unsigned char>(name.front()))) return false;
+
+    for (char ch : name) {
+        unsigned char uch = static_cast<unsigned char>(ch);
+        if (std::isalnum(uch) || ch == '-' || ch == '_' || ch == '.') {
+            continue;
+        }
+        return false;
+    }
+
+    return true;
+}
+
+void require_valid_dependency_name(const std::string& name) {
+    if (!is_valid_dependency_name(name)) {
+        std::cerr << "Error: Invalid dependency name '" << name
+                  << "'. Use only letters, numbers, '.', '_' and '-'."
+                  << std::endl;
+        std::exit(1);
+    }
 }
 
 int run_command(const std::string& cmd) {
@@ -535,6 +563,7 @@ int cmd_add(int argc, char* argv[]) {
 
     std::string pkg_name = argv[0];
     std::string version = argc > 1 ? argv[1] : "*";
+    require_valid_dependency_name(pkg_name);
 
     fs::path dir = fs::current_path();
     Manifest m = load_manifest(dir);
