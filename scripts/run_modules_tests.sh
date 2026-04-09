@@ -51,7 +51,7 @@ for test_file in tests/modules/*.esk; do
     # Check if this is a negative test (expected to fail)
     if grep -q ";;; Expected: Error" "$test_file"; then
         # Negative test - should fail to compile OR fail at runtime
-        compile_output=$(./build/eshkol-run "$test_file" -L./build 2>&1)
+        compile_output=$(./build/eshkol-run -L./build "$test_file" 2>&1)
         compile_exit=$?
 
         # Check if compile failed OR compile output contains error (case-insensitive)
@@ -81,7 +81,7 @@ for test_file in tests/modules/*.esk; do
         fi
     else
         # Normal test - should compile and run successfully
-        if ./build/eshkol-run "$test_file" -L./build > /dev/null 2>&1; then
+        if ./build/eshkol-run -L./build "$test_file" > /dev/null 2>&1; then
             # Compilation succeeded, try to run
             if ./a.out > /tmp/test_output.txt 2>&1; then
                 # Check if there were any errors in output

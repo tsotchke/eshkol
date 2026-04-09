@@ -55,7 +55,7 @@ for test_file in tests/parser/*.esk; do
     fi
 
     # Try to compile
-    if ./build/eshkol-run "$test_file" -L./build > /dev/null 2>&1; then
+    if ./build/eshkol-run -L./build "$test_file" > /dev/null 2>&1; then
         # Compilation succeeded, try to run
         if ./a.out > /tmp/test_output.txt 2>&1; then
             # Check if there were any errors in output

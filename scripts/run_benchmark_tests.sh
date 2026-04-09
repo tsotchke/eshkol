@@ -43,7 +43,7 @@ for test_file in tests/benchmark/*.esk tests/benchmarks/*.esk; do
 
     rm -f a.out a.out.tmp.o
 
-    if ./build/eshkol-run "$test_file" -L./build > /dev/null 2>&1; then
+    if ./build/eshkol-run -L./build "$test_file" > /dev/null 2>&1; then
         if ./a.out > /tmp/test_output.txt 2>&1; then
             if grep -q "^FAIL" /tmp/test_output.txt; then
                 echo -e "${RED}❌ FAIL${NC}"
