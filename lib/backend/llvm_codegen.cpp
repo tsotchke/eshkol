@@ -2082,14 +2082,14 @@ private:
         // FILE I/O FUNCTIONS (from stdio.h)
         // ============================================================================
 
-        // fopen: FILE* fopen(const char* filename, const char* mode)
+        // fopen: FILE* eshkol_fopen(const char* filename, const char* mode)
         std::vector<Type*> fopen_args;
         fopen_args.push_back(PointerType::get(*context, 0));  // filename
         fopen_args.push_back(PointerType::get(*context, 0));  // mode
         FunctionType* fopen_type = FunctionType::get(
             PointerType::get(*context, 0), fopen_args, false);
         Function* fopen_func = Function::Create(
-            fopen_type, Function::ExternalLinkage, "fopen", module.get());
+            fopen_type, Function::ExternalLinkage, eshkol::runtime::fopen_symbol, module.get());
         function_table["fopen"] = fopen_func;
 
         // fclose: int fclose(FILE* stream)
@@ -2265,52 +2265,52 @@ private:
             usleep_type, Function::ExternalLinkage, "usleep", module.get());
         function_table["usleep"] = usleep_func;
 
-        // access: int access(const char* path, int mode) - check file access
+        // access: int eshkol_access(const char* path, int mode) - check file access
         std::vector<Type*> access_args;
         access_args.push_back(PointerType::get(*context, 0));  // path
         access_args.push_back(int32_type);                     // mode
         FunctionType* access_type = FunctionType::get(
             int32_type, access_args, false);
         Function* access_func = Function::Create(
-            access_type, Function::ExternalLinkage, "access", module.get());
+            access_type, Function::ExternalLinkage, eshkol::runtime::access_symbol, module.get());
         function_table["access"] = access_func;
 
-        // remove: int remove(const char* path) - delete file
+        // remove: int eshkol_remove(const char* path) - delete file
         std::vector<Type*> remove_args;
         remove_args.push_back(PointerType::get(*context, 0));  // path
         FunctionType* remove_type = FunctionType::get(
             int32_type, remove_args, false);
         Function* remove_func = Function::Create(
-            remove_type, Function::ExternalLinkage, "remove", module.get());
+            remove_type, Function::ExternalLinkage, eshkol::runtime::remove_symbol, module.get());
         function_table["remove"] = remove_func;
 
-        // rename: int rename(const char* old, const char* new)
+        // rename: int eshkol_rename(const char* old, const char* new)
         std::vector<Type*> rename_args;
         rename_args.push_back(PointerType::get(*context, 0));  // old path
         rename_args.push_back(PointerType::get(*context, 0));  // new path
         FunctionType* rename_type = FunctionType::get(
             int32_type, rename_args, false);
         Function* rename_func = Function::Create(
-            rename_type, Function::ExternalLinkage, "rename", module.get());
+            rename_type, Function::ExternalLinkage, eshkol::runtime::rename_symbol, module.get());
         function_table["rename"] = rename_func;
 
-        // mkdir: int mkdir(const char* path, mode_t mode)
+        // mkdir: int eshkol_mkdir(const char* path, mode_t mode)
         std::vector<Type*> mkdir_args;
         mkdir_args.push_back(PointerType::get(*context, 0));  // path
         mkdir_args.push_back(int32_type);                     // mode
         FunctionType* mkdir_type = FunctionType::get(
             int32_type, mkdir_args, false);
         Function* mkdir_func = Function::Create(
-            mkdir_type, Function::ExternalLinkage, "mkdir", module.get());
+            mkdir_type, Function::ExternalLinkage, eshkol::runtime::mkdir_symbol, module.get());
         function_table["mkdir"] = mkdir_func;
 
-        // rmdir: int rmdir(const char* path)
+        // rmdir: int eshkol_rmdir(const char* path)
         std::vector<Type*> rmdir_args;
         rmdir_args.push_back(PointerType::get(*context, 0));  // path
         FunctionType* rmdir_type = FunctionType::get(
             int32_type, rmdir_args, false);
         Function* rmdir_func = Function::Create(
-            rmdir_type, Function::ExternalLinkage, "rmdir", module.get());
+            rmdir_type, Function::ExternalLinkage, eshkol::runtime::rmdir_symbol, module.get());
         function_table["rmdir"] = rmdir_func;
 
         // getcwd: char* getcwd(char* buf, size_t size)
@@ -2323,32 +2323,32 @@ private:
             getcwd_type, Function::ExternalLinkage, "getcwd", module.get());
         function_table["getcwd"] = getcwd_func;
 
-        // chdir: int chdir(const char* path)
+        // chdir: int eshkol_chdir(const char* path)
         std::vector<Type*> chdir_args;
         chdir_args.push_back(PointerType::get(*context, 0));  // path
         FunctionType* chdir_type = FunctionType::get(
             int32_type, chdir_args, false);
         Function* chdir_func = Function::Create(
-            chdir_type, Function::ExternalLinkage, "chdir", module.get());
+            chdir_type, Function::ExternalLinkage, eshkol::runtime::chdir_symbol, module.get());
         function_table["chdir"] = chdir_func;
 
-        // stat: int stat(const char* path, struct stat* buf)
+        // stat: int eshkol_stat(const char* path, struct stat* buf)
         std::vector<Type*> stat_args;
         stat_args.push_back(PointerType::get(*context, 0));  // path
         stat_args.push_back(PointerType::get(*context, 0));  // stat buf
         FunctionType* stat_type = FunctionType::get(
             int32_type, stat_args, false);
         Function* stat_func = Function::Create(
-            stat_type, Function::ExternalLinkage, "stat", module.get());
+            stat_type, Function::ExternalLinkage, eshkol::runtime::stat_symbol, module.get());
         function_table["stat"] = stat_func;
 
-        // opendir: DIR* opendir(const char* name)
+        // opendir: DIR* eshkol_opendir(const char* name)
         std::vector<Type*> opendir_args;
         opendir_args.push_back(PointerType::get(*context, 0));  // name
         FunctionType* opendir_type = FunctionType::get(
             PointerType::get(*context, 0), opendir_args, false);
         Function* opendir_func = Function::Create(
-            opendir_type, Function::ExternalLinkage, "opendir", module.get());
+            opendir_type, Function::ExternalLinkage, eshkol::runtime::opendir_symbol, module.get());
         function_table["opendir"] = opendir_func;
 
         // readdir: struct dirent* readdir(DIR* dirp)
