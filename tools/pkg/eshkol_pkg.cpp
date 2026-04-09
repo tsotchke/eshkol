@@ -30,10 +30,43 @@
 #include <sstream>
 #include <iostream>
 #include <algorithm>
+#if defined(__has_include)
+#if __has_include(<filesystem>)
 #include <filesystem>
+#define ESHKOL_PKG_HAVE_STD_FILESYSTEM 1
+#elif __has_include(<experimental/filesystem>)
+#include <experimental/filesystem>
+#define ESHKOL_PKG_HAVE_EXPERIMENTAL_FILESYSTEM 1
+#endif
+#else
+#include <filesystem>
+#define ESHKOL_PKG_HAVE_STD_FILESYSTEM 1
+#endif
 #include <functional>
 
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#if defined(__has_include)
+#if __has_include(<windows.h>)
+#include <windows.h>
+#endif
+#else
+#include <windows.h>
+#endif
+#else
+#include <cerrno>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
+
+#if defined(ESHKOL_PKG_HAVE_STD_FILESYSTEM)
 namespace fs = std::filesystem;
+#else
+namespace fs = std::experimental::filesystem;
+#endif
 
 // ============================================================================
 // Minimal TOML Parser (supports tables, key=value, strings, arrays)
@@ -388,8 +421,110 @@ void require_valid_dependency_name(const std::string& name) {
     }
 }
 
-int run_command(const std::string& cmd) {
-    return std::system(cmd.c_str());
+namespace {
+
+#ifdef _WIN32
+std::wstring widen_utf8(const std::string& text) {
+    if (text.empty()) return {};
+    int size = MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, nullptr, 0);
+    if (size <= 0) return {};
+    std::wstring wide(static_cast<size_t>(size - 1), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, wide.data(), size);
+    return wide;
+}
+
+std::wstring build_windows_command_line(const std::vector<std::string>& args) {
+    std::wstring command_line;
+    for (size_t i = 0; i < args.size(); ++i) {
+        if (i > 0) command_line.push_back(L' ');
+        command_line.push_back(L'"');
+        const std::wstring arg = widen_utf8(args[i]);
+        for (wchar_t ch : arg) {
+            if (ch == L'\\' || ch == L'"') {
+                command_line.push_back(L'\\');
+            }
+            command_line.push_back(ch);
+        }
+        command_line.push_back(L'"');
+    }
+    return command_line;
+}
+#endif
+
+} // namespace
+
+int run_command(const std::vector<std::string>& args) {
+    if (args.empty()) {
+        return 1;
+    }
+
+#ifdef _WIN32
+    std::wstring command_line = build_windows_command_line(args);
+    std::vector<wchar_t> mutable_command_line(command_line.begin(), command_line.end());
+    mutable_command_line.push_back(L'\0');
+
+    STARTUPINFOW startup_info{};
+    startup_info.cb = sizeof(startup_info);
+
+    PROCESS_INFORMATION process_info{};
+    // Pass nullptr for lpApplicationName so CreateProcessW parses the
+    // executable from the start of the command line AND searches %PATH%
+    // (the docs note that an explicit lpApplicationName disables PATH
+    // search, which would break `git clone`, the user's compiler in PATH,
+    // etc. on Windows). Argument injection is still impossible because we
+    // pre-quote each argv element in build_windows_command_line.
+    if (!CreateProcessW(nullptr,
+                        mutable_command_line.data(),
+                        nullptr,
+                        nullptr,
+                        FALSE,
+                        0,
+                        nullptr,
+                        nullptr,
+                        &startup_info,
+                        &process_info)) {
+        return static_cast<int>(GetLastError());
+    }
+
+    WaitForSingleObject(process_info.hProcess, INFINITE);
+
+    DWORD exit_code = 1;
+    GetExitCodeProcess(process_info.hProcess, &exit_code);
+    CloseHandle(process_info.hThread);
+    CloseHandle(process_info.hProcess);
+    return static_cast<int>(exit_code);
+#else
+    std::vector<char*> argv;
+    argv.reserve(args.size() + 1);
+    for (const auto& arg : args) {
+        argv.push_back(const_cast<char*>(arg.c_str()));
+    }
+    argv.push_back(nullptr);
+
+    pid_t pid = fork();
+    if (pid == 0) {
+        execvp(argv[0], argv.data());
+        _exit(errno == ENOENT ? 127 : 126);
+    }
+    if (pid < 0) {
+        return errno;
+    }
+
+    int status = 0;
+    while (waitpid(pid, &status, 0) < 0) {
+        if (errno != EINTR) {
+            return errno;
+        }
+    }
+
+    if (WIFEXITED(status)) {
+        return WEXITSTATUS(status);
+    }
+    if (WIFSIGNALED(status)) {
+        return 128 + WTERMSIG(status);
+    }
+    return 1;
+#endif
 }
 
 // ============================================================================
@@ -464,7 +599,12 @@ int cmd_build(int argc, char* argv[]) {
     fs::path output = build_dir / m.name;
 
     // Build command
-    std::string cmd = compiler + " \"" + entry_path.string() + "\" -o \"" + output.string() + "\"";
+    std::vector<std::string> cmd = {
+        compiler,
+        entry_path.string(),
+        "-o",
+        output.string(),
+    };
 
     // Add dependency library paths
     fs::path deps_dir = dir / "eshkol_deps";
@@ -474,7 +614,8 @@ int cmd_build(int argc, char* argv[]) {
                 // Look for compiled .o files
                 for (auto& obj : fs::directory_iterator(dep_entry.path())) {
                     if (obj.path().extension() == ".o") {
-                        cmd += " --link \"" + obj.path().string() + "\"";
+                        cmd.push_back("--link");
+                        cmd.push_back(obj.path().string());
                     }
                 }
             }
@@ -501,7 +642,7 @@ int cmd_run(int argc, char* argv[]) {
     fs::path output = dir / "build" / m.name;
 
     std::cout << "\n--- Running " << m.name << " ---\n" << std::endl;
-    return run_command("\"" + output.string() + "\"");
+    return run_command({output.string()});
 }
 
 int cmd_install(int argc, char* argv[]) {
@@ -535,7 +676,9 @@ int cmd_install(int argc, char* argv[]) {
                 repo_url = "https://github.com/tsotchke/" + dep.name + ".git";
             }
 
-            std::string cmd = "git clone --depth 1 \"" + repo_url + "\" \"" + cached.string() + "\" 2>/dev/null";
+            std::vector<std::string> cmd = {
+                "git", "clone", "--depth", "1", repo_url, cached.string()
+            };
             if (run_command(cmd) != 0) {
                 std::cerr << "Warning: Could not fetch " << dep.name << " from " << repo_url << std::endl;
                 continue;

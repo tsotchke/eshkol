@@ -1208,6 +1208,15 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/pkg/eshkol_pkg.cpp")
             COMMAND eshkol-pkg-path-validation-test $<TARGET_FILE:eshkol-pkg>
         )
     endif()
+
+    if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/pkg/command_injection_test.cpp")
+        add_executable(eshkol-pkg-command-injection-test tests/pkg/command_injection_test.cpp)
+        target_compile_features(eshkol-pkg-command-injection-test PRIVATE cxx_std_17)
+        add_test(
+            NAME eshkol-pkg-command-injection
+            COMMAND eshkol-pkg-command-injection-test $<TARGET_FILE:eshkol-pkg>
+        )
+    endif()
 endif()
 
 # ===== LSP Server =====
