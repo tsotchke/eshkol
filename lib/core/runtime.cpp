@@ -14,6 +14,10 @@
 #include <eshkol/logger.h>
 
 #ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
 #include <io.h>
 #include <process.h>
 #else
@@ -30,6 +34,7 @@
 #include <cstring>
 #include <csignal>
 #include <cstdlib>
+#include <cstdio>
 
 // ============================================================================
 // Global State
@@ -42,6 +47,8 @@ namespace {
 
 #ifdef _WIN32
 constexpr int kEshkolStderrFd = 2;
+constexpr DWORD kEshkolStatusBadStack = 0xC0000028UL;
+using eshkol_exception_filter_t = LPTOP_LEVEL_EXCEPTION_FILTER;
 #endif
 
 // Runtime state (std::atomic for thread-safe API outside signal handlers)
@@ -83,6 +90,8 @@ std::atomic<uint32_t> g_next_operation_id{1};
 using eshkol_signal_handler_t = void (*)(int);
 eshkol_signal_handler_t g_old_sigint_handler = SIG_DFL;
 eshkol_signal_handler_t g_old_sigterm_handler = SIG_DFL;
+eshkol_exception_filter_t g_old_exception_filter = nullptr;
+std::atomic<bool> g_handling_unhandled_exception{false};
 #ifdef SIGPIPE
 eshkol_signal_handler_t g_old_sigpipe_handler = SIG_DFL;
 #endif
@@ -104,6 +113,52 @@ inline void eshkol_signal_safe_write(const char* msg, size_t msg_len) {
 [[noreturn]] inline void eshkol_signal_safe_exit(int code) {
     _exit(code);
 }
+
+#ifdef _WIN32
+const char* eshkol_exception_code_name(DWORD code) {
+    switch (code) {
+        case EXCEPTION_ACCESS_VIOLATION: return "EXCEPTION_ACCESS_VIOLATION";
+        case EXCEPTION_ARRAY_BOUNDS_EXCEEDED: return "EXCEPTION_ARRAY_BOUNDS_EXCEEDED";
+        case EXCEPTION_BREAKPOINT: return "EXCEPTION_BREAKPOINT";
+        case EXCEPTION_DATATYPE_MISALIGNMENT: return "EXCEPTION_DATATYPE_MISALIGNMENT";
+        case EXCEPTION_FLT_DIVIDE_BY_ZERO: return "EXCEPTION_FLT_DIVIDE_BY_ZERO";
+        case EXCEPTION_ILLEGAL_INSTRUCTION: return "EXCEPTION_ILLEGAL_INSTRUCTION";
+        case EXCEPTION_IN_PAGE_ERROR: return "EXCEPTION_IN_PAGE_ERROR";
+        case EXCEPTION_INT_DIVIDE_BY_ZERO: return "EXCEPTION_INT_DIVIDE_BY_ZERO";
+        case EXCEPTION_STACK_OVERFLOW: return "EXCEPTION_STACK_OVERFLOW";
+        case kEshkolStatusBadStack: return "STATUS_BAD_STACK";
+        default: return "UNKNOWN_EXCEPTION";
+    }
+}
+
+LONG WINAPI eshkol_unhandled_exception_filter(EXCEPTION_POINTERS* exception_info) {
+    bool expected = false;
+    if (!g_handling_unhandled_exception.compare_exchange_strong(expected, true)) {
+        TerminateProcess(GetCurrentProcess(), exception_info && exception_info->ExceptionRecord
+            ? exception_info->ExceptionRecord->ExceptionCode
+            : 1);
+    }
+
+    DWORD exception_code = exception_info && exception_info->ExceptionRecord
+        ? exception_info->ExceptionRecord->ExceptionCode
+        : 1;
+    void* exception_address = exception_info && exception_info->ExceptionRecord
+        ? exception_info->ExceptionRecord->ExceptionAddress
+        : nullptr;
+
+    std::fprintf(stderr,
+        "\n[Eshkol] Unhandled Windows exception 0x%08lX (%s) at %p\n",
+        static_cast<unsigned long>(exception_code),
+        eshkol_exception_code_name(exception_code),
+        exception_address);
+    eshkol_stacktrace(ESHKOL_ERROR);
+    eshkol_log_flush();
+    std::fflush(stderr);
+
+    TerminateProcess(GetCurrentProcess(), exception_code);
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+#endif
 
 // ============================================================================
 // Signal Handler
@@ -188,6 +243,8 @@ void eshkol_runtime_init_signals(void) {
         g_old_sigpipe_handler = SIG_DFL;
     }
 #endif
+
+    g_old_exception_filter = SetUnhandledExceptionFilter(eshkol_unhandled_exception_filter);
 #else
     struct sigaction sa;
     std::memset(&sa, 0, sizeof(sa));
@@ -226,6 +283,9 @@ void eshkol_runtime_restore_signals(void) {
 #ifdef _WIN32
     std::signal(SIGINT, g_old_sigint_handler);
     std::signal(SIGTERM, g_old_sigterm_handler);
+    SetUnhandledExceptionFilter(g_old_exception_filter);
+    g_old_exception_filter = nullptr;
+    g_handling_unhandled_exception.store(false, std::memory_order_release);
 #ifdef SIGPIPE
     std::signal(SIGPIPE, g_old_sigpipe_handler);
 #endif

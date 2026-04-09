@@ -4967,22 +4967,63 @@ llvm::Value* AutodiffCodegen::derivative(const eshkol_operations_t* op) {
             }
 
             if (found && storage) {
-                // MUTABLE CAPTURE FIX: Pass pointer instead of loaded value
-                // But first check if we need to create a temporary storage for pass-by-value
+                // MUTABLE CAPTURE FIX: The lambda body expects different argument
+                // shapes depending on what kind of variable was captured:
+                //
+                //   1. Function parameter (storage is a tagged_value VALUE, not a
+                //      pointer): the lambda expects a `ptr` to a tagged_value
+                //      containing the parameter's value DIRECTLY. The body does
+                //      a single `load tagged_value` to get the value.
+                //
+                //   2. Let-bound local / global / nested arena (storage is some
+                //      kind of `ptr`): the lambda treats this as a "mutable
+                //      capture" — it expects a `ptr` to a tagged_value with
+                //      type=INT64+REF and data=ptrtoint(real_storage). The body
+                //      first loads the tagged_value, extracts the data field as
+                //      an int64, casts back to ptr, then loads the actual value
+                //      from THAT pointer (double indirection).
+                //
+                // See llvm_codegen.cpp `was_alloca_capture` branch around line
+                // 18871 for the lambda-body side of this contract.
                 if (storage->getType()->isPointerTy()) {
-                    deriv_call_args.push_back(storage);
+                    // Wrap the storage pointer in a boxed reference tagged_value
+                    // so the lambda's double-indirection unwraps to the right alloca.
+                    Value* storage_int = ctx_.builder().CreatePtrToInt(storage, ctx_.int64Type());
+                    Value* boxed_ref = tagged_.packInt64(storage_int, true);
+                    Value* boxed_temp = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "deriv_capture_box");
+                    ctx_.builder().CreateStore(boxed_ref, boxed_temp);
+                    deriv_call_args.push_back(boxed_temp);
+                    eshkol_debug("Derivative: boxed pointer capture '%s' for mutable-capture lambda body", var_name.c_str());
                 } else {
-                    // Value is not a pointer - need to create temporary storage
-                    // This happens when capturing function parameters (pass-by-value)
+                    // Function-parameter capture: pass the value directly through
+                    // a temp slot, matching the single-indirection lambda body.
                     Value* temp_storage = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "capture_temp");
                     ctx_.builder().CreateStore(storage, temp_storage);
                     deriv_call_args.push_back(temp_storage);
                     eshkol_debug("Derivative: created temp storage for capture '%s'", var_name.c_str());
                 }
             } else {
-                // MUTABLE CAPTURE FIX: Push null pointer instead of packed zero
+                // TOP-LEVEL FUNCTION REFERENCE: When a lambda body references a
+                // top-level function by name (e.g. `(lambda (w) (loss w x y))`
+                // where `loss` is a `define`d function), the REPL's free-variable
+                // analysis sometimes lists that function in the lambda's
+                // captures even though the lambda body resolves it via a direct
+                // global function call rather than the captured slot. In that
+                // case the null fallback is correct and harmless — don't spam
+                // the user with a warning.
+                bool is_known_function = false;
+                if (function_table_) {
+                    auto fn_it = function_table_->find(var_name);
+                    if (fn_it != function_table_->end() && fn_it->second) {
+                        is_known_function = true;
+                    }
+                }
                 deriv_call_args.push_back(ConstantPointerNull::get(PointerType::getUnqual(ctx_.context())));
-                eshkol_warn("Derivative: capture '%s' not found, using null pointer", var_name.c_str());
+                if (!is_known_function) {
+                    eshkol_warn("Derivative: capture '%s' not found, using null pointer", var_name.c_str());
+                } else {
+                    eshkol_debug("Derivative: capture '%s' is a top-level function — null capture (resolved via direct call)", var_name.c_str());
+                }
             }
         }
     }

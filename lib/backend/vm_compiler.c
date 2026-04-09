@@ -1608,7 +1608,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
     if (is_sym(head, "display") && node->n_children == 2) {
         compile_expr(c, node->children[1], 0);
         chunk_emit(c, OP_PRINT, 0);
-        chunk_emit(c, OP_NIL, 0);  /* push return value (void → NIL) */
+        chunk_emit(c, OP_VOID, 0);  /* push unspecified return value */
         return;
     }
     /* Type predicates that need VM opcodes (not closures — these check types at opcode level) */
@@ -1697,10 +1697,37 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         chunk_emit(c, OP_CDR, 0); chunk_emit(c, OP_CDR, 0); chunk_emit(c, OP_CAR, 0);
         return;
     }
+    /* Remaining 3-level cXXXr forms */
+    if (is_sym(head, "caaar") && node->n_children == 2) { compile_expr(c, node->children[1], 0); chunk_emit(c, OP_CAR, 0); chunk_emit(c, OP_CAR, 0); chunk_emit(c, OP_CAR, 0); return; }
+    if (is_sym(head, "caadr") && node->n_children == 2) { compile_expr(c, node->children[1], 0); chunk_emit(c, OP_CDR, 0); chunk_emit(c, OP_CAR, 0); chunk_emit(c, OP_CAR, 0); return; }
+    if (is_sym(head, "cadar") && node->n_children == 2) { compile_expr(c, node->children[1], 0); chunk_emit(c, OP_CAR, 0); chunk_emit(c, OP_CDR, 0); chunk_emit(c, OP_CAR, 0); return; }
+    if (is_sym(head, "cdaar") && node->n_children == 2) { compile_expr(c, node->children[1], 0); chunk_emit(c, OP_CAR, 0); chunk_emit(c, OP_CAR, 0); chunk_emit(c, OP_CDR, 0); return; }
+    if (is_sym(head, "cdadr") && node->n_children == 2) { compile_expr(c, node->children[1], 0); chunk_emit(c, OP_CDR, 0); chunk_emit(c, OP_CAR, 0); chunk_emit(c, OP_CDR, 0); return; }
+    if (is_sym(head, "cddar") && node->n_children == 2) { compile_expr(c, node->children[1], 0); chunk_emit(c, OP_CAR, 0); chunk_emit(c, OP_CDR, 0); chunk_emit(c, OP_CDR, 0); return; }
+    if (is_sym(head, "cdddr") && node->n_children == 2) { compile_expr(c, node->children[1], 0); chunk_emit(c, OP_CDR, 0); chunk_emit(c, OP_CDR, 0); chunk_emit(c, OP_CDR, 0); return; }
+    /* 4-level cXXXXr forms (16 total) */
+    if (is_sym(head, "caaaar") && node->n_children == 2) { compile_expr(c, node->children[1], 0); chunk_emit(c, OP_CAR, 0); chunk_emit(c, OP_CAR, 0); chunk_emit(c, OP_CAR, 0); chunk_emit(c, OP_CAR, 0); return; }
+    if (is_sym(head, "caaadr") && node->n_children == 2) { compile_expr(c, node->children[1], 0); chunk_emit(c, OP_CDR, 0); chunk_emit(c, OP_CAR, 0); chunk_emit(c, OP_CAR, 0); chunk_emit(c, OP_CAR, 0); return; }
+    if (is_sym(head, "caadar") && node->n_children == 2) { compile_expr(c, node->children[1], 0); chunk_emit(c, OP_CAR, 0); chunk_emit(c, OP_CDR, 0); chunk_emit(c, OP_CAR, 0); chunk_emit(c, OP_CAR, 0); return; }
+    if (is_sym(head, "caaddr") && node->n_children == 2) { compile_expr(c, node->children[1], 0); chunk_emit(c, OP_CDR, 0); chunk_emit(c, OP_CDR, 0); chunk_emit(c, OP_CAR, 0); chunk_emit(c, OP_CAR, 0); return; }
+    if (is_sym(head, "cadaar") && node->n_children == 2) { compile_expr(c, node->children[1], 0); chunk_emit(c, OP_CAR, 0); chunk_emit(c, OP_CAR, 0); chunk_emit(c, OP_CDR, 0); chunk_emit(c, OP_CAR, 0); return; }
+    if (is_sym(head, "cadadr") && node->n_children == 2) { compile_expr(c, node->children[1], 0); chunk_emit(c, OP_CDR, 0); chunk_emit(c, OP_CAR, 0); chunk_emit(c, OP_CDR, 0); chunk_emit(c, OP_CAR, 0); return; }
+    if (is_sym(head, "caddar") && node->n_children == 2) { compile_expr(c, node->children[1], 0); chunk_emit(c, OP_CAR, 0); chunk_emit(c, OP_CDR, 0); chunk_emit(c, OP_CDR, 0); chunk_emit(c, OP_CAR, 0); return; }
+    if (is_sym(head, "cadddr") && node->n_children == 2) { compile_expr(c, node->children[1], 0); chunk_emit(c, OP_CDR, 0); chunk_emit(c, OP_CDR, 0); chunk_emit(c, OP_CDR, 0); chunk_emit(c, OP_CAR, 0); return; }
+    if (is_sym(head, "cdaaar") && node->n_children == 2) { compile_expr(c, node->children[1], 0); chunk_emit(c, OP_CAR, 0); chunk_emit(c, OP_CAR, 0); chunk_emit(c, OP_CAR, 0); chunk_emit(c, OP_CDR, 0); return; }
+    if (is_sym(head, "cdaadr") && node->n_children == 2) { compile_expr(c, node->children[1], 0); chunk_emit(c, OP_CDR, 0); chunk_emit(c, OP_CAR, 0); chunk_emit(c, OP_CAR, 0); chunk_emit(c, OP_CDR, 0); return; }
+    if (is_sym(head, "cdadar") && node->n_children == 2) { compile_expr(c, node->children[1], 0); chunk_emit(c, OP_CAR, 0); chunk_emit(c, OP_CDR, 0); chunk_emit(c, OP_CAR, 0); chunk_emit(c, OP_CDR, 0); return; }
+    if (is_sym(head, "cdaddr") && node->n_children == 2) { compile_expr(c, node->children[1], 0); chunk_emit(c, OP_CDR, 0); chunk_emit(c, OP_CDR, 0); chunk_emit(c, OP_CAR, 0); chunk_emit(c, OP_CDR, 0); return; }
+    if (is_sym(head, "cddaar") && node->n_children == 2) { compile_expr(c, node->children[1], 0); chunk_emit(c, OP_CAR, 0); chunk_emit(c, OP_CAR, 0); chunk_emit(c, OP_CDR, 0); chunk_emit(c, OP_CDR, 0); return; }
+    if (is_sym(head, "cddadr") && node->n_children == 2) { compile_expr(c, node->children[1], 0); chunk_emit(c, OP_CDR, 0); chunk_emit(c, OP_CAR, 0); chunk_emit(c, OP_CDR, 0); chunk_emit(c, OP_CDR, 0); return; }
+    if (is_sym(head, "cdddar") && node->n_children == 2) { compile_expr(c, node->children[1], 0); chunk_emit(c, OP_CAR, 0); chunk_emit(c, OP_CDR, 0); chunk_emit(c, OP_CDR, 0); chunk_emit(c, OP_CDR, 0); return; }
+    if (is_sym(head, "cddddr") && node->n_children == 2) { compile_expr(c, node->children[1], 0); chunk_emit(c, OP_CDR, 0); chunk_emit(c, OP_CDR, 0); chunk_emit(c, OP_CDR, 0); chunk_emit(c, OP_CDR, 0); return; }
     /* first through fifth */
     if (is_sym(head, "first") && node->n_children == 2) { compile_expr(c, node->children[1], 0); chunk_emit(c, OP_CAR, 0); return; }
     if (is_sym(head, "second") && node->n_children == 2) { compile_expr(c, node->children[1], 0); chunk_emit(c, OP_CDR, 0); chunk_emit(c, OP_CAR, 0); return; }
     if (is_sym(head, "third") && node->n_children == 2) { compile_expr(c, node->children[1], 0); chunk_emit(c, OP_CDR, 0); chunk_emit(c, OP_CDR, 0); chunk_emit(c, OP_CAR, 0); return; }
+    if (is_sym(head, "fourth") && node->n_children == 2) { compile_expr(c, node->children[1], 0); chunk_emit(c, OP_CDR, 0); chunk_emit(c, OP_CDR, 0); chunk_emit(c, OP_CDR, 0); chunk_emit(c, OP_CAR, 0); return; }
+    if (is_sym(head, "fifth") && node->n_children == 2) { compile_expr(c, node->children[1], 0); chunk_emit(c, OP_CDR, 0); chunk_emit(c, OP_CDR, 0); chunk_emit(c, OP_CDR, 0); chunk_emit(c, OP_CDR, 0); chunk_emit(c, OP_CAR, 0); return; }
 
     /* (cond (test1 expr1) (test2 expr2) ... (else exprN)) */
     if (is_sym(head, "cond") && node->n_children >= 2) { compile_form_cond(c, node, tail); return; }
@@ -1977,6 +2004,18 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         int jover = placeholder(c);
         int func_pc = c->code_len;
         c->constants[cfunc].as.i = func_pc;
+
+        /* Adjust nested CLOSURE PC constants: any lambda compiled inside the loop
+         * body has its func_pc stored as a constant in func's constant pool. When we
+         * inline func into c, those PC values must be offset by func_pc (same fix that
+         * compile_form_lambda_2 applies at lines 1313-1319). */
+        for (int i = 0; i < func.code_len; i++) {
+            if (func.code[i].op == OP_CLOSURE) {
+                int ci = func.code[i].operand & 0xFFFF;
+                int parent_ci = const_map_nl[ci];
+                c->constants[parent_ci].as.i += func_pc;
+            }
+        }
 
         for (int i = 0; i < func.code_len; i++) {
             Instr fi = func.code[i];

@@ -41,6 +41,7 @@
 #define VAL_ERROR_OBJ   22   /* heap-allocated error object  (opaque)      */
 #define VAL_MANIFOLD    23   /* heap-allocated Riemannian manifold (opaque) */
 #define VAL_PORT        24   /* heap-allocated I/O port      (opaque)       */
+#define VAL_VOID        25   /* unspecified return value (display, newline)  */
 
 /* ── Heap Subtypes ── */
 #define VM_SUBTYPE_COMPLEX   5

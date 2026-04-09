@@ -1,6 +1,6 @@
 # Runtime Configuration
 
-**Status:** Production (v1.1.12)
+**Status:** Production (v1.1.13)
 **Applies to:** Eshkol compiler v1.1-accelerate and later
 
 ---

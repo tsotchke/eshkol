@@ -1641,10 +1641,15 @@ static llvm::Function* getOrDeclareDisplayToPort(CodegenContext& ctx) {
 }
 
 static llvm::Function* getOrDeclareFopen(CodegenContext& ctx) {
-    if (auto* existing = ctx.module().getFunction("fopen")) return existing;
+    if (auto* existing = ctx.module().getFunction(runtime::fopen_symbol)) return existing;
     auto* ft = llvm::FunctionType::get(ctx.ptrType(),
         {ctx.ptrType(), ctx.ptrType()}, false);
-    return llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "fopen", ctx.module());
+    return llvm::Function::Create(
+        ft,
+        llvm::Function::ExternalLinkage,
+        runtime::fopen_symbol,
+        ctx.module()
+    );
 }
 
 // Helper to get or declare fgets

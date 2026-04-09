@@ -215,6 +215,12 @@ static Node* parse_sexp(void) {
         char buf[64]; int i = 0;
         if (*src_ptr == '-') buf[i++] = *src_ptr++;
         while ((isdigit(*src_ptr) || *src_ptr == '.') && i < 63) buf[i++] = *src_ptr++;
+        /* Scientific notation: e.g. 1e-6, 2.5E+10 */
+        if (i < 62 && (*src_ptr == 'e' || *src_ptr == 'E')) {
+            buf[i++] = *src_ptr++;
+            if (i < 62 && (*src_ptr == '+' || *src_ptr == '-')) buf[i++] = *src_ptr++;
+            while (isdigit(*src_ptr) && i < 63) buf[i++] = *src_ptr++;
+        }
         /* Check for rational literal: digits/digits */
         if (*src_ptr == '/' && isdigit(src_ptr[1])) {
             int64_t num = atoll(buf);

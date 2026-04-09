@@ -74,7 +74,7 @@ run_test_verbose() {
         # Try to compile and run with full output
         echo "COMPILATION OUTPUT:" >> "$output_file"
         echo "----------------------------------------" >> "$output_file"
-        ./build/eshkol-run "$test_file" >> "$output_file" 2>&1
+        ./build/eshkol-run -L./build "$test_file" >> "$output_file" 2>&1
         COMPILE_EXIT=$?
 
         if [ $COMPILE_EXIT -eq 0 ]; then
@@ -135,7 +135,7 @@ run_test_verbose() {
     # Try to compile with full output
     echo "COMPILATION OUTPUT:" >> "$output_file"
     echo "----------------------------------------" >> "$output_file"
-    if ./build/eshkol-run "$test_file" >> "$output_file" 2>&1; then
+    if ./build/eshkol-run -L./build "$test_file" >> "$output_file" 2>&1; then
         echo "----------------------------------------" >> "$output_file"
         echo "COMPILATION: SUCCESS" >> "$output_file"
         echo "" >> "$output_file"

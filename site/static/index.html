@@ -9,7 +9,24 @@
   <meta property="og:description" content="Compiler-native automatic differentiation. Zero garbage collection. GPU acceleration. Cross-platform.">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://eshkol.ai">
+  <meta property="og:image" content="https://eshkol.ai/img/og-image.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="Eshkol logo — a stylized grape cluster">
   <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Eshkol Programming Language">
+  <meta name="twitter:description" content="Compiler-native automatic differentiation. Zero garbage collection. GPU acceleration. Cross-platform.">
+  <meta name="twitter:image" content="https://eshkol.ai/img/og-image.png">
+  <meta name="theme-color" content="#7c3aed">
+  <link rel="icon" href="img/favicon.ico" sizes="any">
+  <link rel="icon" type="image/png" sizes="16x16" href="img/favicon-16.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="img/favicon-32.png">
+  <link rel="icon" type="image/png" sizes="48x48" href="img/favicon-48.png">
+  <link rel="icon" type="image/png" sizes="96x96" href="img/favicon-96.png">
+  <link rel="icon" type="image/png" sizes="192x192" href="img/favicon-192.png">
+  <link rel="icon" type="image/png" sizes="512x512" href="img/favicon-512.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="img/apple-touch-icon.png">
+  <link rel="manifest" href="img/site.webmanifest">
   <link rel="stylesheet" href="style.css">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
@@ -75,12 +92,17 @@
           }
         }, false);
         // Initialize the Eshkol bytecode VM for the browser REPL
-        // Capture stdout from Emscripten into a buffer for the REPL terminal
+        // Capture stdout AND stderr from Emscripten so the REPL sees compile/runtime
+        // warnings (e.g. "undefined variable 'foo'") instead of swallowing them silently.
         window._vmOutput = '';
+        window._vmStderr = '';
         if (typeof EshkolVM !== 'undefined') {
           EshkolVM({
             print: (text) => { window._vmOutput += text + '\n'; },
-            printErr: (text) => { console.warn('[VM]', text); }
+            printErr: (text) => {
+              window._vmStderr += text + '\n';
+              console.warn('[VM]', text);
+            }
           }).then(vm => {
             runtime._eshkolVM = vm;
             vm.ccall('repl_init', null, [], []);
@@ -104,13 +126,21 @@
             if (window._eshkolVM) {
               try {
                 window._vmOutput = '';
+                window._vmStderr = '';
                 const evalFn = window._eshkolVM.cwrap('repl_eval', 'string', ['string']);
                 evalFn(source);
-                if (window._vmOutput) {
+                // If the compiler produced warnings (e.g. "undefined variable"),
+                // show them as errors and SUPPRESS the NIL fallback output that
+                // followed — the user shouldn't see "()" right after an error.
+                if (window._vmStderr) {
+                  output.textContent += window._vmStderr.replace(/^WARNING: /gm, 'error: ');
+                } else if (window._vmOutput) {
                   output.textContent += window._vmOutput;
+                } else {
+                  output.textContent += 'error: could not parse expression\n';
                 }
               } catch(err) {
-                output.textContent += 'Error: ' + err.message + '\n';
+                output.textContent += 'error: ' + err.message + '\n';
               }
             } else {
               output.textContent += 'VM loading...\n';
@@ -148,16 +178,41 @@
             if (window._eshkolVM) {
               try {
                 window._vmOutput = '';
+                window._vmStderr = '';
                 const evalFn = window._eshkolVM.cwrap('repl_eval', 'string', ['string']);
                 evalFn(code);
-                output.textContent = window._vmOutput || '(no output)';
+                let txt = '';
+                if (window._vmStderr) {
+                  // suppress NIL fallback after a compile error
+                  txt = window._vmStderr.replace(/^WARNING: /gm, 'error: ');
+                } else if (window._vmOutput) {
+                  txt = window._vmOutput;
+                }
+                output.textContent = txt || '(no output)';
               } catch(err) {
-                output.textContent = 'Error: ' + err.message;
+                output.textContent = 'error: ' + err.message;
               }
             } else {
               output.textContent = 'VM loading \u2014 try again in a moment.';
             }
             return;
+          }
+        });
+
+        // Mobile hamburger menu — toggle .open on .site-nav-links
+        document.addEventListener('click', (e) => {
+          const toggle = e.target.closest('.site-nav-toggle');
+          if (toggle) {
+            e.preventDefault();
+            const links = document.querySelector('.site-nav-links');
+            if (links) links.classList.toggle('open');
+            return;
+          }
+          // Auto-close menu when a nav link is clicked
+          const navLink = e.target.closest('.site-nav-links a');
+          if (navLink) {
+            const links = document.querySelector('.site-nav-links');
+            if (links) links.classList.remove('open');
           }
         });
 

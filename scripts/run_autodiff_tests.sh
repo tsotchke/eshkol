@@ -49,7 +49,7 @@ for test_file in tests/autodiff/*.esk; do
     rm -f a.out a.out.tmp.o
 
     # Try to compile
-    if ./build/eshkol-run "$test_file" -L./build > /dev/null 2>&1; then
+    if ./build/eshkol-run -L./build "$test_file" > /dev/null 2>&1; then
         # Compilation succeeded, try to run
         if ./a.out > /tmp/test_output.txt 2>&1; then
             # Check if there were any errors in output
@@ -88,7 +88,7 @@ if [ -d "tests/autodiff_debug" ]; then
         rm -f a.out a.out.tmp.o
 
         # Try to compile
-        if ./build/eshkol-run "$test_file" -L./build > /dev/null 2>&1; then
+        if ./build/eshkol-run -L./build "$test_file" > /dev/null 2>&1; then
             # Compilation succeeded, try to run
             if ./a.out > /tmp/test_output.txt 2>&1; then
                 # Check if there were any errors in output

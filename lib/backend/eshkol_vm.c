@@ -241,9 +241,18 @@ static const BuiltinDef BUILTINS[] = {
     {"flatten", 416, 1}, {"zeros", 417, 1}, {"ones", 418, 1},
     {"arange", 419, 1},
     {"matmul", 440, 2},
-    {"tensor-sum", 445, 1}, {"tensor-mean", 446, 1},
-    {"tensor-dot", 449, 2},
+    {"tensor-add", 441, 2}, {"tensor-sub", 442, 2},
+    {"tensor-mul", 443, 2}, {"tensor-div", 444, 2},
+    {"tensor-pow", 445, 2}, {"tensor-maximum", 446, 2}, {"tensor-minimum", 447, 2},
+    {"batch-matmul", 448, 2}, {"tensor-dot", 449, 2},
+    {"tensor-neg", 450, 1}, {"tensor-abs", 451, 1}, {"tensor-sqrt", 452, 1},
+    {"tensor-exp", 453, 1}, {"tensor-log", 454, 1},
+    {"tensor-sin", 455, 1}, {"tensor-cos", 461, 1},
+    {"tensor-scale", 456, 2},
+    {"_tensor-reduce-sum", 457, 2}, {"_tensor-reduce-mean", 458, 2},
+    {"_tensor-reduce-max", 459, 2}, {"_tensor-reduce-min", 460, 2},
     {"relu", 462, 1}, {"softmax", 463, 1}, {"sigmoid", 464, 1},
+    {"eye", 745, 1}, {"linspace", 746, 3},
     /* ═══════════════════════════════════════════════════════════════
      * Consciousness Engine — IDs 500-549
      * ═══════════════════════════════════════════════════════════════ */
@@ -399,7 +408,11 @@ static void compile_and_run(const char* source) {
         "(define (min a . rest) (fold-left _min2 a rest))\n"
         "(define (string-append . args) (fold-left _string-append-2 \"\" args))\n"
         "(define (make-list n val) (let loop ((i 0) (acc (list))) (if (= i n) acc (loop (+ i 1) (cons val acc)))))\n"
-        "(define (make-factor-graph n . rest) (if (null? rest) (_make-fg2 n (make-list n 2)) (_make-fg2 n (car rest))))\n";
+        "(define (make-factor-graph n . rest) (if (null? rest) (_make-fg2 n (make-list n 2)) (_make-fg2 n (car rest))))\n"
+        "(define (tensor-sum t . args) (if (null? args) (_tensor-reduce-sum t -1) (_tensor-reduce-sum t (car args))))\n"
+        "(define (tensor-mean t . args) (if (null? args) (_tensor-reduce-mean t -1) (_tensor-reduce-mean t (car args))))\n"
+        "(define (tensor-max t . args) (if (null? args) (_tensor-reduce-max t -1) (_tensor-reduce-max t (car args))))\n"
+        "(define (tensor-min t . args) (if (null? args) (_tensor-reduce-min t -1) (_tensor-reduce-min t (car args))))\n";
     src_ptr = scheme_prelude;
     while (1) {
         skip_ws();
@@ -758,7 +771,11 @@ static void compile_and_run_source_to_chunk(const char* source, FuncChunk* chunk
         "(define (min a . rest) (fold-left _min2 a rest))\n"
         "(define (string-append . args) (fold-left _string-append-2 \"\" args))\n"
         "(define (make-list n val) (let loop ((i 0) (acc (list))) (if (= i n) acc (loop (+ i 1) (cons val acc)))))\n"
-        "(define (make-factor-graph n . rest) (if (null? rest) (_make-fg2 n (make-list n 2)) (_make-fg2 n (car rest))))\n";
+        "(define (make-factor-graph n . rest) (if (null? rest) (_make-fg2 n (make-list n 2)) (_make-fg2 n (car rest))))\n"
+        "(define (tensor-sum t . args) (if (null? args) (_tensor-reduce-sum t -1) (_tensor-reduce-sum t (car args))))\n"
+        "(define (tensor-mean t . args) (if (null? args) (_tensor-reduce-mean t -1) (_tensor-reduce-mean t (car args))))\n"
+        "(define (tensor-max t . args) (if (null? args) (_tensor-reduce-max t -1) (_tensor-reduce-max t (car args))))\n"
+        "(define (tensor-min t . args) (if (null? args) (_tensor-reduce-min t -1) (_tensor-reduce-min t (car args))))\n";
     src_ptr = prelude;
     while (1) {
         skip_ws(); if (!*src_ptr) break;
@@ -913,7 +930,11 @@ static ReplSession* repl_session_create(void) {
         "(define (min a . rest) (fold-left _min2 a rest))\n"
         "(define (string-append . args) (fold-left _string-append-2 \"\" args))\n"
         "(define (make-list n val) (let loop ((i 0) (acc (list))) (if (= i n) acc (loop (+ i 1) (cons val acc)))))\n"
-        "(define (make-factor-graph n . rest) (if (null? rest) (_make-fg2 n (make-list n 2)) (_make-fg2 n (car rest))))\n";
+        "(define (make-factor-graph n . rest) (if (null? rest) (_make-fg2 n (make-list n 2)) (_make-fg2 n (car rest))))\n"
+        "(define (tensor-sum t . args) (if (null? args) (_tensor-reduce-sum t -1) (_tensor-reduce-sum t (car args))))\n"
+        "(define (tensor-mean t . args) (if (null? args) (_tensor-reduce-mean t -1) (_tensor-reduce-mean t (car args))))\n"
+        "(define (tensor-max t . args) (if (null? args) (_tensor-reduce-max t -1) (_tensor-reduce-max t (car args))))\n"
+        "(define (tensor-min t . args) (if (null? args) (_tensor-reduce-min t -1) (_tensor-reduce-min t (car args))))\n";
     if (!cache_loaded) {
         src_ptr = scheme_prelude;
         while (1) {

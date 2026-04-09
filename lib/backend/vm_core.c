@@ -86,8 +86,9 @@ typedef enum {
     OP_PACK_REST = 60,    /* operand=n_fixed: pack args into list */
     OP_WIND_PUSH = 61,    /* push after thunk onto wind stack */
     OP_WIND_POP = 62,     /* pop from wind stack */
+    OP_VOID = 63,         /* push unspecified void value (return of display/newline) */
 
-    OP_COUNT = 63
+    OP_COUNT = 64
 } OpCode;
 
 typedef struct { uint8_t op; int32_t operand; } Instr;
@@ -451,6 +452,7 @@ static void print_value(VM* vm, Value v) {
         case VAL_ERROR_OBJ:   printf("<error-object>"); break;
         case VAL_MANIFOLD:    printf("<manifold>"); break;
         case VAL_PORT:        printf("<port>"); break;
+        case VAL_VOID:        break; /* unspecified — produces no output */
         default: printf("<unknown>"); break;
     }
 }

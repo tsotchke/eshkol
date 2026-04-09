@@ -94,7 +94,7 @@ for test_file in examples/*.esk; do
     run_log="$LOG_DIR/${test_name%.esk}_run.log"
 
     # Try to compile
-    if ./build/eshkol-run "$test_file" -L./build > "$compile_log" 2>&1; then
+    if ./build/eshkol-run -L./build "$test_file" > "$compile_log" 2>&1; then
         # Compilation succeeded, try to run
         if ./a.out > "$run_log" 2>&1; then
             exit_code=$?

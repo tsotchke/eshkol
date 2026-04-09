@@ -144,6 +144,17 @@ This roadmap tracks Eshkol's evolution from the **completed v1.0-foundation rele
 - [x] GitHub Pages deployment workflow
 - [x] R7RS control flow in VM: call/cc, guard/raise, dynamic-wind, values
 - [x] Exact arithmetic in VM: rational literals, +nan.0/+inf.0/-inf.0
+
+### v1.1.13 Additions (April 2026)
+- [x] Native Windows ARM64 build path (VS 2022 + ClangCL + LLVM 21 aarch64 SDK)
+- [x] 16-lane release matrix (linux/macos/windows × x64/arm64 × lite/xla/cuda)
+- [x] Per-arch LLVM SDK caching on Windows runners
+- [x] Two critical VM closure bug fixes (named-let nested closure PC offset, native 252 upvalue relay)
+- [x] Windows setjmp hardening: x64 frameaddress, ARM64 sponentry, dynamic jmp_buf sizing
+- [x] Runtime symbol renames (eshkol_fopen, eshkol_access, eshkol_remove, etc.) for MSVC POSIX shim disambiguation
+- [x] Codegen fatal error flag — fail hard on undefined functions instead of generating runtime stubs
+- [x] Mobile-responsive website (hamburger nav, internal scroll for code blocks, table responsiveness)
+- [x] Browser REPL error display for invalid input
 - [x] Consciousness engine in VM: KB pattern matching, factor graphs, workspace
 - [x] Top-level mutual recursion via letrec-style group compilation
 
@@ -348,7 +359,7 @@ Leverages OALR linear types (no-cloning theorem) and AD (variational circuits).
 
 | Version | Date | Theme | Key Deliverables |
 |---------|------|-------|-----------------|
-| **v1.1.12** | Apr 2026 | Accelerate | Production VM, web platform, browser AD |
+| **v1.1.13** | Apr 2026 | Accelerate | Windows ARM64, 16-lane release matrix, VM closure fixes, mobile site |
 | **v1.2** | May 2026 | Scale | Model serialization, Python bindings, image I/O |
 | **v1.3** | Jun 2026 | Evolve | R7RS libraries, string interpolation, PGO |
 | **v1.4** | Jul 2026 | Connection | Networking, TLS, event loop, linear resource types |
@@ -413,6 +424,13 @@ Leverages OALR linear types (no-cloning theorem) and AD (variational circuits).
 - ✅ Production Bytecode VM (555+ builtins, 176/176 tests, dual number AD) - Complete
 - ✅ eshkol.ai Website (Eshkol→WASM, browser REPL, interactive tutorials) - Complete
 - ✅ GitHub Pages Deployment - Complete
+
+### v1.1.13 Additions
+- ✅ Native Windows ARM64 (VS 2022 + ClangCL + LLVM 21 aarch64) - Complete
+- ✅ 16-lane release matrix with per-arch LLVM SDK caching - Complete
+- ✅ VM closure bug fixes (named-let nested closure PC + native 252 upvalue relay) - Complete
+- ✅ Windows setjmp hardening (x64 frameaddress, ARM64 sponentry) - Complete
+- ✅ Mobile-responsive website + browser REPL error display - Complete
 
 ### Planned (v1.2+)
 - 📋 Model Serialization + Python Bindings — v1.2
@@ -500,4 +518,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed contribution guidelines.
 
 *Last Updated: April 2026*
 
-*Eshkol v1.1-accelerate is complete with 47/47 roadmap items delivered plus the v1.1.12 additions (production VM, web platform, browser AD). The roadmap progresses through data & deployment (v1.2-scale), language maturity (v1.3-evolve), networking & resources (v1.4-connection), neuro-symbolic intelligence (v1.5-intelligence), symbolic reasoning (v1.6-reasoning), program synthesis (v1.7-synthesis), platform & hardware (v1.8-platform), advanced type theory (v1.9-types), and quantum computing with formal verification (v2.0-starlight).*
+*Eshkol v1.1-accelerate is complete with 47/47 roadmap items delivered plus the v1.1.12 and v1.1.13 additions (production VM, web platform, browser AD, Windows ARM64, mobile site). The roadmap progresses through data & deployment (v1.2-scale), language maturity (v1.3-evolve), networking & resources (v1.4-connection), neuro-symbolic intelligence (v1.5-intelligence), symbolic reasoning (v1.6-reasoning), program synthesis (v1.7-synthesis), platform & hardware (v1.8-platform), advanced type theory (v1.9-types), and quantum computing with formal verification (v2.0-starlight).*

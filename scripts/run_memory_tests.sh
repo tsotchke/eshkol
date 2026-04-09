@@ -52,7 +52,7 @@ for test_file in tests/memory/*.esk; do
     # Check if this is a negative test (expected to fail)
     if grep -q ";;; Expected: Error" "$test_file"; then
         # Negative test - should fail to compile
-        if ./build/eshkol-run "$test_file" -L./build > /dev/null 2>&1; then
+        if ./build/eshkol-run -L./build "$test_file" > /dev/null 2>&1; then
             # Compilation succeeded but should have failed
             echo -e "${RED}❌ SHOULD HAVE FAILED${NC}"
             FAILED_TESTS+=("$test_name (expected compile error)")
@@ -64,7 +64,7 @@ for test_file in tests/memory/*.esk; do
         fi
     else
         # Normal test - should compile and run successfully
-        if ./build/eshkol-run "$test_file" -L./build > /dev/null 2>&1; then
+        if ./build/eshkol-run -L./build "$test_file" > /dev/null 2>&1; then
             # Compilation succeeded, try to run
             if ./a.out > /tmp/test_output.txt 2>&1; then
                 # Check if there were any errors in output

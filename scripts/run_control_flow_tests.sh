@@ -52,7 +52,7 @@ for test_file in tests/control_flow/*.esk; do
     rm -f a.out a.out.tmp.o
 
     # Compile and run the test
-    if ./build/eshkol-run "$test_file" -L./build > /dev/null 2>&1; then
+    if ./build/eshkol-run -L./build "$test_file" > /dev/null 2>&1; then
         if ./a.out > /tmp/test_output.txt 2>&1; then
             # Check for failures in output
             if grep -q "FAIL:" /tmp/test_output.txt; then

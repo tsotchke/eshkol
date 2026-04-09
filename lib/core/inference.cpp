@@ -152,6 +152,7 @@ eshkol_factor_graph_t* eshkol_make_factor_graph(arena_t* arena,
     /* Message arrays will be allocated lazily when inference runs */
     fg->msg_fv = NULL;
     fg->msg_vf = NULL;
+    fg->observed = NULL;
 
     return fg;
 }

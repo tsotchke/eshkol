@@ -210,6 +210,7 @@
 
 (define (render-nav parent)
   (let ((nav (web-create-element "nav")))
+    (web-add-class nav "site-nav")
     (style! nav "position" "fixed")
     (style! nav "top" "0")
     (style! nav "left" "0")
@@ -226,6 +227,7 @@
 
     ;; Logo
     (let ((logo (create-text "a" "Eshkol" nav)))
+      (web-add-class logo "site-nav-logo")
       (style! logo "fontSize" "1.4rem")
       (style! logo "fontWeight" "800")
       (style! logo "color" "#7c3aed")
@@ -233,8 +235,14 @@
       (style! logo "letterSpacing" "-0.5px")
       (web-set-attribute logo "href" "/"))
 
+    ;; Hamburger toggle (visible on mobile via CSS)
+    (let ((toggle (create-text "button" "☰" nav)))
+      (web-add-class toggle "site-nav-toggle")
+      (web-set-attribute toggle "aria-label" "Toggle navigation"))
+
     ;; Nav links
     (let ((links (create-div nav)))
+      (web-add-class links "site-nav-links")
       (style! links "display" "flex")
       (style! links "gap" "24px")
       (style! links "alignItems" "center")
@@ -349,6 +357,7 @@
 
     ;; Split layout: left text, right runnable code
     (let ((split (create-div hero)))
+      (web-add-class split "hero-split")
       (style! split "display" "flex")
       (style! split "gap" "48px")
       (style! split "alignItems" "center")
@@ -356,6 +365,7 @@
 
       ;; Left side: text
       (let ((left (create-div split)))
+        (web-add-class left "hero-side")
         (style! left "flex" "1")
         (style! left "minWidth" "320px")
 
@@ -382,6 +392,7 @@
 
       ;; Right side: runnable code
       (let ((right (create-div split)))
+        (web-add-class right "hero-side")
         (style! right "flex" "1")
         (style! right "minWidth" "360px")
         (create-runnable-code-block right
@@ -719,8 +730,8 @@
         "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.85rem;line-height:1.6;color:#e8e8f0'><span style='color:#606078'>;; Bignums — no overflow</span>\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(expt</span> <span style='color:#00ff88'>2</span> <span style='color:#00ff88'>64</span><span style='color:#c084fc'>))</span>\n<span style='color:#606078'>;; => 18446744073709551616</span>\n\n<span style='color:#606078'>;; Exact rationals</span>\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(+</span> <span style='color:#00ff88'>1/3</span> <span style='color:#00ff88'>1/6</span><span style='color:#c084fc'>))</span>  <span style='color:#606078'>;; => 1/2</span>\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(*</span> <span style='color:#00ff88'>3/4</span> <span style='color:#00ff88'>4/3</span><span style='color:#c084fc'>))</span>  <span style='color:#606078'>;; => 1</span></pre>")
 
       (create-runnable-code-block ch4
-        "(display (make-rectangular 3.0 4.0))\n(newline)\n(display (magnitude (make-rectangular 3.0 4.0)))\n(newline)\n(display (+ 2+3i 1-1i))"
-        "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.85rem;line-height:1.6;color:#e8e8f0'><span style='color:#606078'>;; Complex numbers</span>\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(make-rectangular</span> <span style='color:#00ff88'>3.0</span> <span style='color:#00ff88'>4.0</span><span style='color:#c084fc'>))</span>  <span style='color:#606078'>;; => 3+4i</span>\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(magnitude</span> <span style='color:#c084fc'>(make-rectangular</span> <span style='color:#00ff88'>3.0</span> <span style='color:#00ff88'>4.0</span><span style='color:#c084fc'>)))</span>  <span style='color:#606078'>;; => 5.0</span>\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(+</span> <span style='color:#00ff88'>2+3i</span> <span style='color:#00ff88'>1-1i</span><span style='color:#c084fc'>))</span>  <span style='color:#606078'>;; => 3+2i</span></pre>")
+        "(define z (make-rectangular 3.0 4.0))\n(display z)\n(newline)\n(display (magnitude z))\n(newline)\n(display (+ z (make-rectangular 1.0 -1.0)))"
+        "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.85rem;line-height:1.6;color:#e8e8f0'><span style='color:#606078'>;; Complex numbers</span>\n<span style='color:#c084fc'>(define</span> z <span style='color:#c084fc'>(make-rectangular</span> <span style='color:#00ff88'>3.0</span> <span style='color:#00ff88'>4.0</span><span style='color:#c084fc'>))</span>\n<span style='color:#c084fc'>(display</span> z<span style='color:#c084fc'>)</span>  <span style='color:#606078'>;; => 3+4i</span>\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(magnitude</span> z<span style='color:#c084fc'>))</span>  <span style='color:#606078'>;; => 5.0</span>\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(+</span> z <span style='color:#c084fc'>(make-rectangular</span> <span style='color:#00ff88'>1.0</span> <span style='color:#00ff88'>-1.0</span><span style='color:#c084fc'>)))</span>  <span style='color:#606078'>;; => 4+3i</span></pre>")
 
       (create-runnable-code-block ch4
         "(display (number->string 255 16))\n(newline)\n(display (number->string 255 2))\n(newline)\n(display (string->number \"#xFF\"))\n(newline)\n(display (exact->inexact 1/3))"
@@ -1135,7 +1146,7 @@
 
         ;; Welcome message
         (web-set-inner-html output
-          "<span style='color:#7c3aed;font-weight:bold'>Eshkol Bytecode VM</span> <span style='color:#71717a'>v1.1-accelerate</span>\n<span style='color:#71717a'>63-opcode ISA | Arena memory (OALR) | R7RS Scheme</span>\n<span style='color:#71717a'>Type an expression and press Enter.</span>\n\n"))
+          "<span style='color:#7c3aed;font-weight:bold'>Eshkol Bytecode VM</span> <span style='color:#71717a'>v1.1.13-accelerate</span>\n<span style='color:#71717a'>63-opcode ISA | Arena memory (OALR) | R7RS Scheme</span>\n<span style='color:#71717a'>Type an expression and press Enter.</span>\n\n"))
 
       ;; Terminal input area
       (let ((input-row (create-div terminal)))

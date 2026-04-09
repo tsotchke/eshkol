@@ -1,5 +1,5 @@
 # Eshkol Programming Language - Complete Reference
-## Version v1.1.12-accelerate
+## Version v1.1.13-accelerate
 
 **A Comprehensive Guide to Every Feature in Pure Eshkol**
 
