@@ -183,37 +183,18 @@ jobs:
       max-parallel: 2
       matrix:
         include:
-          - name: windows-arm64-lite
-            runner: windows-11-arm
-            arch: arm64
-            llvm_suffix: aarch64
-            build_dir: build
+          # Temporarily keep only the lite x64 leg enabled until the shared
+          # x64 LLVM SDK cache is populated on GitHub-hosted Windows.
+          - name: windows-x64-lite
+            runner: windows-2022
+            arch: x64
+            llvm_suffix: x86_64
+            build_dir: build-x64
             xla_enabled: 'OFF'
             gpu_enabled: 'OFF'
             test_mode: all
             upload_artifact: 'true'
-            artifact_name: eshkol-windows-arm64
-          - name: windows-arm64-xla
-            runner: windows-11-arm
-            arch: arm64
-            llvm_suffix: aarch64
-            build_dir: build-xla
-            xla_enabled: 'ON'
-            gpu_enabled: 'OFF'
-            test_mode: xla
-            upload_artifact: 'false'
-            artifact_name: ''
-          - name: windows-arm64-cuda
-            runner: windows-11-arm
-            arch: arm64
-            llvm_suffix: aarch64
-            build_dir: build-cuda
-            xla_enabled: 'OFF'
-            gpu_enabled: 'ON'
-            test_mode: gpu
-            upload_artifact: 'false'
-            artifact_name: ''
-
+            artifact_name: eshkol-windows-x64
     steps:
       - uses: actions/checkout@v4
 
