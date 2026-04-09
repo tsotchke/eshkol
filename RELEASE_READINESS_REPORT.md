@@ -1,7 +1,7 @@
-# Eshkol v1.1.12-accelerate Release Readiness Report
+# Eshkol v1.1.13-accelerate Release Readiness Report
 
-**Date**: April 7, 2026
-**Version**: v1.1.12-accelerate
+**Date**: April 9, 2026
+**Version**: v1.1.13-accelerate
 **Author**: tsotchke
 
 ---

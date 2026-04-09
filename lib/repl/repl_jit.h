@@ -220,6 +220,9 @@ private:
     // Register stdlib symbols after loading via .bc or .o
     void registerStdlibSymbols();
 
+    // Load a module, optionally preferring the precompiled stdlib object path.
+    bool loadModule(const std::string& module_name, bool allow_precompiled_stdlib);
+
     // Inject external declarations for previously-defined symbols
     void injectPreviousSymbols(llvm::Module* module);
 };

@@ -1,4 +1,4 @@
-# Known Issues — Eshkol v1.1.12-accelerate
+# Known Issues — Eshkol v1.1.13-accelerate
 
 **Status**: Production release
 

@@ -15,6 +15,11 @@
 #include <string.h>
 #include <time.h>
 #ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <dbghelp.h>
 #include <io.h>
 #else
 #include <unistd.h>
@@ -125,6 +130,95 @@ static std::string escape_json(const char* str) {
     }
     return result;
 }
+
+#ifdef _WIN32
+struct eshkol_dbghelp_api_t {
+    HMODULE module = nullptr;
+    decltype(&SymInitialize) sym_initialize = nullptr;
+    decltype(&SymSetOptions) sym_set_options = nullptr;
+    decltype(&SymFromAddr) sym_from_addr = nullptr;
+    decltype(&SymGetLineFromAddr64) sym_get_line = nullptr;
+    bool initialized = false;
+};
+
+static eshkol_dbghelp_api_t& get_dbghelp_api() {
+    static eshkol_dbghelp_api_t api;
+    static std::once_flag once;
+    std::call_once(once, [] {
+        api.module = LoadLibraryA("dbghelp.dll");
+        if (!api.module) {
+            return;
+        }
+
+        api.sym_initialize = reinterpret_cast<decltype(&SymInitialize)>(
+            GetProcAddress(api.module, "SymInitialize"));
+        api.sym_set_options = reinterpret_cast<decltype(&SymSetOptions)>(
+            GetProcAddress(api.module, "SymSetOptions"));
+        api.sym_from_addr = reinterpret_cast<decltype(&SymFromAddr)>(
+            GetProcAddress(api.module, "SymFromAddr"));
+        api.sym_get_line = reinterpret_cast<decltype(&SymGetLineFromAddr64)>(
+            GetProcAddress(api.module, "SymGetLineFromAddr64"));
+
+        if (!api.sym_initialize || !api.sym_set_options || !api.sym_from_addr) {
+            return;
+        }
+
+        HANDLE process = GetCurrentProcess();
+        api.sym_set_options(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS | SYMOPT_LOAD_LINES);
+        api.initialized = api.sym_initialize(process, nullptr, TRUE) ? true : false;
+    });
+    return api;
+}
+
+static void output_windows_stacktrace(FILE* out, const char* prefix,
+                                      const char* color, const char* reset,
+                                      USHORT frames_to_skip = 0) {
+    constexpr USHORT max_frames = 62;
+    void* frames[max_frames] = {};
+    USHORT captured = CaptureStackBackTrace(frames_to_skip + 1, max_frames, frames, nullptr);
+    if (captured == 0) {
+        fprintf(out, "%s[%s]%s <no stack trace available>\n", color, prefix, reset);
+        return;
+    }
+
+    eshkol_dbghelp_api_t& dbghelp = get_dbghelp_api();
+    HANDLE process = GetCurrentProcess();
+
+    constexpr size_t symbol_buffer_size = sizeof(SYMBOL_INFO) + MAX_SYM_NAME;
+    unsigned char symbol_buffer[symbol_buffer_size];
+    std::memset(symbol_buffer, 0, sizeof(symbol_buffer));
+    SYMBOL_INFO* symbol = reinterpret_cast<SYMBOL_INFO*>(symbol_buffer);
+    symbol->SizeOfStruct = sizeof(SYMBOL_INFO);
+    symbol->MaxNameLen = MAX_SYM_NAME;
+
+    IMAGEHLP_LINE64 line_info;
+    std::memset(&line_info, 0, sizeof(line_info));
+    line_info.SizeOfStruct = sizeof(line_info);
+
+    for (USHORT i = 0; i < captured; ++i) {
+        DWORD64 address = reinterpret_cast<DWORD64>(frames[i]);
+        DWORD64 displacement = 0;
+        DWORD line_displacement = 0;
+
+        std::ostringstream line;
+        line << "#" << i << " 0x" << std::hex << address;
+
+        if (dbghelp.initialized && dbghelp.sym_from_addr(process, address, &displacement, symbol)) {
+            line << " " << symbol->Name;
+            if (displacement != 0) {
+                line << " + 0x" << std::hex << displacement;
+            }
+
+            if (dbghelp.sym_get_line &&
+                dbghelp.sym_get_line(process, address, &line_displacement, &line_info)) {
+                line << " (" << line_info.FileName << ":" << std::dec << line_info.LineNumber << ")";
+            }
+        }
+
+        fprintf(out, "%s[%s]%s %s\n", color, prefix, reset, line.str().c_str());
+    }
+}
+#endif
 
 static void output_text(eshkol_logger_t level, const char* msg) {
     FILE* out = get_output();
@@ -385,7 +479,16 @@ void eshkol_stacktrace(eshkol_logger_t level) {
         if (level > g_max_level) return;
     }
 
-#if defined(__APPLE__) || defined(__linux__)
+#if defined(_WIN32)
+    std::lock_guard<std::mutex> lock(g_log_mutex);
+
+    FILE* out = get_output();
+    const char* prefix = g_log_names[level];
+    const char* color = g_color_enabled ? g_log_colors[level] : "";
+    const char* reset = g_color_enabled ? RESET_COLOR : "";
+
+    output_windows_stacktrace(out, prefix, color, reset, 1);
+#elif defined(__APPLE__) || defined(__linux__)
     const uint64_t max_frames = 63;
     void* addrlist[max_frames + 1];
     int addrlen;

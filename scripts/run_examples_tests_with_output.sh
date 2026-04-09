@@ -67,7 +67,7 @@ for test_file in $FILES; do
     echo -e "${BLUE}[Compiling...]${NC}"
 
     # Try to compile (show output)
-    if ./build/eshkol-run "$test_file" -L./build 2>&1; then
+    if ./build/eshkol-run -L./build "$test_file" 2>&1; then
         echo ""
         echo -e "${BLUE}[Running...]${NC}"
 

@@ -1,6 +1,6 @@
 # CI/CD Pipelines
 
-**Status:** Production (v1.1.12)
+**Status:** Production (v1.1.13)
 **Applies to:** Eshkol compiler v1.1-accelerate and later
 
 ---
@@ -26,17 +26,33 @@ Eshkol uses three GitHub Actions workflows for continuous integration, release p
 
 ### Build Matrix
 
-The CI runs across five platform configurations:
+The CI runs as two matrix jobs: one Unix matrix and one Windows matrix.
 
-| Job | Runner | Architecture | Build Types |
-|-----|--------|-------------|-------------|
-| `build-linux` | `ubuntu-22.04` | x86-64 | Debug, Release |
-| `build-linux-arm64` | `ubuntu-22.04-arm` | ARM64 | Release |
-| `build-macos-arm` | `macos-14` | Apple Silicon (ARM64) | Release |
-| `build-macos-intel` | `macos-15-large` | Intel (x86-64) | Release |
-| `build-windows` | `windows-2022` | x86-64 | Release |
+#### Unix matrix
 
-The Linux x86-64 job tests both Debug and Release configurations. All other platforms test Release only.
+| Job | Runner | Variant |
+|-----|--------|---------|
+| `linux-x64-lite` | `ubuntu-22.04` | Lite |
+| `linux-arm64-lite` | `ubuntu-22.04-arm` | Lite |
+| `linux-x64-xla` | `ubuntu-22.04` | XLA |
+| `linux-arm64-xla` | `ubuntu-22.04-arm` | XLA |
+| `linux-x64-cuda` | `ubuntu-22.04` | CUDA |
+| `linux-arm64-cuda` | `ubuntu-22.04-arm` | CUDA |
+| `macos-arm64-lite` | `macos-14` | Lite |
+| `macos-x64-lite` | `macos-15-intel` | Lite |
+| `macos-arm64-xla` | `macos-14` | XLA |
+| `macos-x64-xla` | `macos-15-intel` | XLA |
+
+#### Windows matrix
+
+| Job | Runner | Variant |
+|-----|--------|---------|
+| `windows-x64-lite` | `windows-latest` | Lite |
+| `windows-arm64-lite` | `windows-11-arm` | Lite |
+| `windows-x64-xla` | `windows-latest` | XLA |
+| `windows-arm64-xla` | `windows-11-arm` | XLA |
+| `windows-x64-cuda` | `windows-latest` | CUDA |
+| `windows-arm64-cuda` | `windows-11-arm` | CUDA |
 
 ### Steps (per job)
 
@@ -47,8 +63,11 @@ The Linux x86-64 job tests both Debug and Release configurations. All other plat
    - Windows: Visual Studio 2022 + ClangCL, official LLVM 21 SDK archive, native CMake
 3. **Configure** with CMake (Ninja on Linux/macOS, Visual Studio generator on Windows)
 4. **Build** in parallel
-5. **Run all tests** via `./scripts/run_all_tests.sh` on Linux/macOS and native smoke checks on Windows
-6. **Upload artifacts** (Release builds only): `eshkol-run`, `eshkol-repl`, `stdlib.o`
+5. **Run tests** via the lane-appropriate suite:
+   - Lite: `run_all_tests.sh` or `run_all_tests.ps1`
+   - XLA: `run_xla_tests.sh` or `run_all_tests.ps1 -Mode xla`
+   - CUDA: `run_gpu_tests.sh` or `run_all_tests.ps1 -Mode gpu`
+6. **Upload artifacts** for lite lanes only: `eshkol-run`, `eshkol-repl`, `stdlib.o`
 
 ### Artifacts
 
@@ -61,6 +80,7 @@ Release builds upload platform-specific artifacts:
 | `eshkol-macos-arm64` | macOS Apple Silicon binaries |
 | `eshkol-macos-x64` | macOS Intel binaries |
 | `eshkol-windows-x64` | Windows x86-64 binaries |
+| `eshkol-windows-arm64` | Windows ARM64 binaries |
 
 ---
 
@@ -68,65 +88,100 @@ Release builds upload platform-specific artifacts:
 
 ### Trigger
 
-Push of a tag matching `v*` (e.g., `v1.1.12`, `v1.2.0-beta.1`).
+Push of an annotated or lightweight tag matching `v*` (for example `v1.1.13` or `v1.2.0-rc.1`).
+
+### How to Trigger It
+
+For a real release on the canonical repository:
+
+```bash
+git checkout master
+git pull --ff-only origin master
+git tag -a v1.1.13 -m "Eshkol v1.1.13"
+git push origin v1.1.13
+```
+
+For a dry run on a fork, push the tag to the fork remote instead:
+
+```bash
+git tag -a v1.1.13-rc.1 -m "Eshkol v1.1.13-rc.1"
+git push fork v1.1.13-rc.1
+```
+
+The workflow runs against the exact commit the tag points at. It is not manually dispatched and it does not wait for branch pushes. If you need to rerun it after changing `release.yml`, delete the tag locally and remotely, recreate it on the fixed commit, and push it again.
+
+```bash
+git tag -d v1.1.13-rc.1
+git push --delete fork v1.1.13-rc.1
+git tag -a v1.1.13-rc.1 -m "Eshkol v1.1.13-rc.1"
+git push fork v1.1.13-rc.1
+```
+
+Tags containing `alpha`, `beta`, or `rc` are published as GitHub pre-releases automatically.
 
 ### Jobs
 
-The release workflow consists of seven jobs:
+The release workflow consists of three logical stages:
 
-#### 1. create-release
+#### 1. `unix-release-matrix`
 
-Creates a GitHub Release with installation instructions and feature highlights. Tags containing `alpha`, `beta`, or `rc` are marked as pre-releases.
+Builds, tests, packages, and uploads release archives for:
 
-#### 2. build-and-upload
+- `linux-x64-lite`
+- `linux-arm64-lite`
+- `linux-x64-xla`
+- `linux-arm64-xla`
+- `linux-x64-cuda`
+- `linux-arm64-cuda`
+- `macos-arm64-lite`
+- `macos-x64-lite`
+- `macos-arm64-xla`
+- `macos-x64-xla`
 
-Builds on four platforms and uploads tarballs:
+Each Unix lane produces `eshkol-<tag>-<lane>.tar.gz`.
 
-| Platform | Artifact |
-|----------|----------|
-| Linux x86-64 | `eshkol-<tag>-linux-x64.tar.gz` |
-| Linux ARM64 | `eshkol-<tag>-linux-arm64.tar.gz` |
-| macOS Apple Silicon | `eshkol-<tag>-macos-arm64.tar.gz` |
-| macOS Intel | `eshkol-<tag>-macos-x64.tar.gz` |
+#### 2. `windows-release-matrix`
 
-Each tarball contains:
-- `bin/` -- `eshkol-run`, `eshkol-repl`
-- `lib/` -- `stdlib.o`, `libeshkol-static.a`
-- `share/eshkol/` -- standard library source files (`core/`, `math/`, `signal/`, `ml/`, `random/`, `web/`, `tensor/`)
-- `README.md`, `LICENSE`
+Builds, tests, packages, and uploads release archives for:
 
-#### 3. build-debian-package (x86-64)
+- `windows-x64-lite`
+- `windows-arm64-lite`
+- `windows-x64-xla`
+- `windows-arm64-xla`
+- `windows-x64-cuda`
+- `windows-arm64-cuda`
 
-Builds a `.deb` package for Debian/Ubuntu x86-64 systems using `scripts/build-deb.sh`.
+Each Windows lane produces `eshkol-<tag>-<lane>.zip`.
 
-#### 4. build-debian-package-arm64
+#### 3. `publish-release`
 
-Builds a `.deb` package for Debian/Ubuntu ARM64 systems.
-
-#### 5. build-xla
-
-Builds the XLA-enabled variant using `docker/xla/Dockerfile`. Produces `eshkol-<tag>-linux-x64-xla.tar.gz` with StableHLO/MLIR tensor operation support.
-
-#### 6. build-cuda
-
-Builds the CUDA-enabled variant using `docker/cuda/Dockerfile`. Produces `eshkol-<tag>-linux-x64-cuda.tar.gz` with native float64 GPU acceleration via CUDA.
-
-#### 7. update-homebrew
-
-Updates the Homebrew formula in the `tsotchke/homebrew-eshkol` tap repository. Only runs for stable releases (skips `alpha`, `beta`, `rc` tags). Computes the SHA256 of the source tarball and pushes an updated `Formula/eshkol.rb`.
+Downloads all packaged artifacts, generates `SHA256SUMS.txt`, and publishes a GitHub Release with auto-generated release notes.
 
 ### Release Artifacts Summary
 
-| File | Platform | Special Features |
-|------|----------|-----------------|
-| `eshkol-<tag>-linux-x64.tar.gz` | Linux x86-64 | Standard build |
-| `eshkol-<tag>-linux-arm64.tar.gz` | Linux ARM64 | Standard build |
-| `eshkol-<tag>-macos-arm64.tar.gz` | macOS ARM64 | Metal SF64 GPU support |
-| `eshkol-<tag>-macos-x64.tar.gz` | macOS Intel | Standard build |
-| `eshkol_<ver>_amd64.deb` | Debian/Ubuntu x64 | System package |
-| `eshkol_<ver>_arm64.deb` | Debian/Ubuntu ARM64 | System package |
-| `eshkol-<tag>-linux-x64-xla.tar.gz` | Linux x86-64 | XLA/MLIR tensor ops |
-| `eshkol-<tag>-linux-x64-cuda.tar.gz` | Linux x86-64 | CUDA GPU acceleration |
+| File Pattern | Platform | Format |
+|-------------|----------|--------|
+| `eshkol-<tag>-linux-*.tar.gz` | Linux x64/ARM64 | tar.gz |
+| `eshkol-<tag>-macos-*.tar.gz` | macOS x64/ARM64 | tar.gz |
+| `eshkol-<tag>-windows-*.zip` | Windows x64/ARM64 | zip |
+| `SHA256SUMS.txt` | All artifacts | text |
+
+Each packaged artifact contains:
+
+- `bin/` — `eshkol-run`, `eshkol-repl`, plus Windows runtime DLLs when present
+- `lib/stdlib.o`
+- `lib/eshkol/stdlib.o`
+- `share/eshkol/stdlib.esk`
+- `share/eshkol/math.esk` when present
+- `share/eshkol/lib/**/*.esk` for the standard library and module tree
+- `README.md`, `LICENSE`, `CHANGELOG.md` when present
+
+### Operational Notes
+
+- The release workflow rebuilds and retests artifacts on the tag; it does not download artifacts from the CI workflow.
+- Windows release lanes reuse the same per-architecture LLVM SDK cache keys as CI.
+- A failed lane prevents `publish-release` from creating or updating the GitHub Release.
+- Because the trigger is tag-based, changing `release.yml` alone does nothing until a matching tag is pushed.
 
 ---
 

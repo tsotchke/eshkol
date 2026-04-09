@@ -1,6 +1,6 @@
 # Eshkol Developer Tools Reference
 
-**Status:** Production (v1.1.12)
+**Status:** Production (v1.1.13)
 **Applies to:** Eshkol compiler v1.1-accelerate and later
 
 ---
@@ -21,7 +21,7 @@ This document covers the full architecture, feature set, configuration options, 
 |----------|-------|
 | Source file | `tools/lsp/eshkol_lsp.cpp` (1018 lines) |
 | Binary name | `eshkol-lsp` |
-| Version | `1.1.12` |
+| Version | `1.1.13` |
 | License | MIT |
 | External dependencies | None (JSON implemented inline) |
 
@@ -90,7 +90,7 @@ Advertised in the `initialize` response:
   },
   "serverInfo": {
     "name": "eshkol-lsp",
-    "version": "1.1.12"
+    "version": "1.1.13"
   }
 }
 ```
@@ -205,7 +205,7 @@ The server searches the open document for two patterns using `find_definition()`
 
 The search walks the raw document string and counts line/column numbers by scanning characters. The returned `Location` object contains the document URI and a zero-width range at the start of the name token.
 
-Limitation: go-to-definition is document-local only. Cross-file navigation (e.g. jumping to a `provide`d symbol in another module) is not supported in v1.1.12.
+Limitation: go-to-definition is document-local only. Cross-file navigation (e.g. jumping to a `provide`d symbol in another module) is not supported in v1.1.13.
 
 ---
 
@@ -219,7 +219,7 @@ Limitation: go-to-definition is document-local only. Cross-file navigation (e.g.
 | Entry point | `src/extension.ts` |
 | Publisher | `tsotchke` |
 | Extension ID | `tsotchke.eshkol` |
-| Version | `1.1.12` |
+| Version | `1.1.13` |
 | VSCode engine requirement | `^1.75.0` |
 | Runtime dependency | `vscode-languageclient ^9.0.1` |
 | Language | TypeScript (compiled to `out/extension.js`) |

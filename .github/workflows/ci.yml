@@ -179,11 +179,13 @@ jobs:
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
+      max-parallel: 2
       matrix:
         include:
           - name: windows-x64-lite
-            runner: windows-2022
+            runner: windows-latest
             arch: x64
+            llvm_suffix: x86_64
             build_dir: build
             xla_enabled: 'OFF'
             gpu_enabled: 'OFF'
@@ -193,6 +195,7 @@ jobs:
           - name: windows-arm64-lite
             runner: windows-11-arm
             arch: arm64
+            llvm_suffix: aarch64
             build_dir: build
             xla_enabled: 'OFF'
             gpu_enabled: 'OFF'
@@ -200,8 +203,9 @@ jobs:
             upload_artifact: 'true'
             artifact_name: eshkol-windows-arm64
           - name: windows-x64-xla
-            runner: windows-2022
+            runner: windows-latest
             arch: x64
+            llvm_suffix: x86_64
             build_dir: build-xla
             xla_enabled: 'ON'
             gpu_enabled: 'OFF'
@@ -211,6 +215,7 @@ jobs:
           - name: windows-arm64-xla
             runner: windows-11-arm
             arch: arm64
+            llvm_suffix: aarch64
             build_dir: build-xla
             xla_enabled: 'ON'
             gpu_enabled: 'OFF'
@@ -218,8 +223,9 @@ jobs:
             upload_artifact: 'false'
             artifact_name: ''
           - name: windows-x64-cuda
-            runner: windows-2022
+            runner: windows-latest
             arch: x64
+            llvm_suffix: x86_64
             build_dir: build-cuda
             xla_enabled: 'OFF'
             gpu_enabled: 'ON'
@@ -229,73 +235,76 @@ jobs:
           - name: windows-arm64-cuda
             runner: windows-11-arm
             arch: arm64
+            llvm_suffix: aarch64
             build_dir: build-cuda
             xla_enabled: 'OFF'
             gpu_enabled: 'ON'
             test_mode: gpu
             upload_artifact: 'false'
             artifact_name: ''
-
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install LLVM SDK (x64)
-        if: matrix.arch == 'x64'
+      - name: Restore LLVM SDK Cache
+        id: llvm-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: C:\src\clang+llvm-${{ env.WINDOWS_LLVM_SDK_VERSION }}-${{ matrix.llvm_suffix }}-pc-windows-msvc
+          key: windows-llvm-sdk-${{ matrix.arch }}-${{ env.WINDOWS_LLVM_SDK_VERSION }}
+
+      - name: Install LLVM SDK
+        if: steps.llvm-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $llvmVersion = '${{ env.WINDOWS_LLVM_SDK_VERSION }}'
-          $llvmRoot    = "C:\src\clang+llvm-$llvmVersion-x86_64-pc-windows-msvc"
+          $llvmRoot    = "C:\src\clang+llvm-$llvmVersion-${{ matrix.llvm_suffix }}-pc-windows-msvc"
           $llvmCmakeDir = "$llvmRoot\lib\cmake\llvm"
+          $archive = "$env:RUNNER_TEMP\llvm-${{ matrix.arch }}-$llvmVersion.tar.xz"
+          $url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-$llvmVersion/clang+llvm-$llvmVersion-${{ matrix.llvm_suffix }}-pc-windows-msvc.tar.xz"
 
           New-Item -ItemType Directory -Force -Path 'C:\src' | Out-Null
-          if (-not (Test-Path "$llvmCmakeDir\LLVMConfig.cmake")) {
-            $archive = "$env:RUNNER_TEMP\llvm-x64-$llvmVersion.tar.xz"
-            $url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-$llvmVersion/clang+llvm-$llvmVersion-x86_64-pc-windows-msvc.tar.xz"
-            Write-Host "Downloading $url"
-            Invoke-WebRequest -Uri $url -OutFile $archive -UseBasicParsing
-            Write-Host "Extracting..."
-            tar -xf $archive -C C:\src
-            if ($LASTEXITCODE -ne 0) { throw "tar extraction failed (exit $LASTEXITCODE)" }
+          if (Test-Path $llvmRoot) {
+            Remove-Item -LiteralPath $llvmRoot -Recurse -Force
           }
 
+          Write-Host "Downloading $url"
+          curl.exe --fail --location --retry 5 --retry-delay 5 --retry-all-errors --output $archive $url
+          if ($LASTEXITCODE -ne 0) { throw "curl download failed (exit $LASTEXITCODE)" }
+
+          Write-Host "Extracting..."
+          tar -xf $archive -C C:\src
+          if ($LASTEXITCODE -ne 0) { throw "tar extraction failed (exit $LASTEXITCODE)" }
+
           if (-not (Test-Path "$llvmCmakeDir\LLVMConfig.cmake")) {
-            throw "LLVMConfig.cmake not found at $llvmCmakeDir — extraction may have failed"
+            throw "LLVMConfig.cmake not found at $llvmCmakeDir - extraction may have failed"
           }
 
-          Write-Host "LLVM $llvmVersion x64 ready at $llvmRoot"
-          "LLVM_DIR=$llvmCmakeDir"   | Out-File -FilePath $env:GITHUB_ENV  -Encoding utf8 -Append
-          "LLVM_HOME=$llvmRoot"       | Out-File -FilePath $env:GITHUB_ENV  -Encoding utf8 -Append
-          "$llvmRoot\bin"             | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          Write-Host "LLVM $llvmVersion ${{ matrix.arch }} ready at $llvmRoot"
 
-      - name: Install LLVM SDK (arm64)
-        if: matrix.arch == 'arm64'
+      - name: Resolve LLVM SDK
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $llvmVersion = '${{ env.WINDOWS_LLVM_SDK_VERSION }}'
-          $llvmRoot    = "C:\src\clang+llvm-$llvmVersion-aarch64-pc-windows-msvc"
+          $llvmRoot    = "C:\src\clang+llvm-$llvmVersion-${{ matrix.llvm_suffix }}-pc-windows-msvc"
           $llvmCmakeDir = "$llvmRoot\lib\cmake\llvm"
 
-          New-Item -ItemType Directory -Force -Path 'C:\src' | Out-Null
           if (-not (Test-Path "$llvmCmakeDir\LLVMConfig.cmake")) {
-            $archive = "$env:RUNNER_TEMP\llvm-arm64-$llvmVersion.tar.xz"
-            $url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-$llvmVersion/clang+llvm-$llvmVersion-aarch64-pc-windows-msvc.tar.xz"
-            Write-Host "Downloading $url"
-            Invoke-WebRequest -Uri $url -OutFile $archive -UseBasicParsing
-            Write-Host "Extracting..."
-            tar -xf $archive -C C:\src
-            if ($LASTEXITCODE -ne 0) { throw "tar extraction failed (exit $LASTEXITCODE)" }
+            throw "LLVMConfig.cmake not found at $llvmCmakeDir - extraction may have failed"
           }
 
-          if (-not (Test-Path "$llvmCmakeDir\LLVMConfig.cmake")) {
-            throw "LLVMConfig.cmake not found at $llvmCmakeDir — extraction may have failed"
-          }
-
-          Write-Host "LLVM $llvmVersion arm64 ready at $llvmRoot"
+          Write-Host "LLVM $llvmVersion ${{ matrix.arch }} ready at $llvmRoot"
           "LLVM_DIR=$llvmCmakeDir"   | Out-File -FilePath $env:GITHUB_ENV  -Encoding utf8 -Append
           "LLVM_HOME=$llvmRoot"       | Out-File -FilePath $env:GITHUB_ENV  -Encoding utf8 -Append
           "$llvmRoot\bin"             | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Save LLVM SDK Cache
+        if: steps.llvm-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: C:\src\clang+llvm-${{ env.WINDOWS_LLVM_SDK_VERSION }}-${{ matrix.llvm_suffix }}-pc-windows-msvc
+          key: windows-llvm-sdk-${{ matrix.arch }}-${{ env.WINDOWS_LLVM_SDK_VERSION }}
 
       - name: Configure
         shell: pwsh

@@ -93,8 +93,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
     /* ══════════════════════════════════════════════════════════════════════
      * I/O (60-61)
      * ══════════════════════════════════════════════════════════════════════ */
-    case 60: printf("\n"); vm_push(vm, NIL_VAL); break;
-    case 61: { Value v = vm_pop(vm); print_value(vm, v); vm_push(vm, NIL_VAL); break; }
+    case 60: printf("\n"); fflush(stdout); vm_push(vm, (Value){.type = VAL_VOID}); break;
+    case 61: { Value v = vm_pop(vm); print_value(vm, v); fflush(stdout); vm_push(vm, (Value){.type = VAL_VOID}); break; }
 
     /* ══════════════════════════════════════════════════════════════════════
      * List/apply (70-73)
@@ -1756,7 +1756,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 586: { /* write-char(char, port) — write to stdout if no port */
         Value ch = vm_pop(vm);
         putchar((int)as_number(ch));
-        vm_push(vm, NIL_VAL);
+        fflush(stdout);
+        vm_push(vm, (Value){.type = VAL_VOID});
         break;
     }
     case 587: { /* write-string */
@@ -1764,8 +1765,9 @@ static void vm_dispatch_native(VM* vm, int fid) {
         if (str.type == VAL_STRING && vm->heap.objects[str.as.ptr]->opaque.ptr) {
             VmString* s = (VmString*)vm->heap.objects[str.as.ptr]->opaque.ptr;
             fwrite(s->data, 1, s->byte_len, stdout);
+            fflush(stdout);
         }
-        vm_push(vm, NIL_VAL);
+        vm_push(vm, (Value){.type = VAL_VOID});
         break;
     }
     case 588: { /* read — read a single char from stdin, return as integer */
@@ -2671,8 +2673,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 208: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type == VAL_BOOL)); break; }   /* boolean? */
     case 209: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type == VAL_CLOSURE)); break; }/* procedure? */
     case 210: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type == VAL_VECTOR)); break; } /* vector? */
-    case 211: { Value a = vm_pop(vm); print_value(vm, a); fflush(stdout); vm_push(vm, NIL_VAL); break; } /* display */
-    case 212: { Value a = vm_pop(vm); print_value(vm, a); fflush(stdout); vm_push(vm, NIL_VAL); break; } /* write */
+    case 211: { Value a = vm_pop(vm); print_value(vm, a); fflush(stdout); vm_push(vm, (Value){.type = VAL_VOID}); break; } /* display */
+    case 212: { Value a = vm_pop(vm); print_value(vm, a); fflush(stdout); vm_push(vm, (Value){.type = VAL_VOID}); break; } /* write */
     case 213: { Value a = vm_pop(vm); vm_push(vm, FLOAT_VAL(as_number_vm(vm, a))); break; }  /* exact->inexact */
     case 214: { Value a = vm_pop(vm); vm_push(vm, INT_VAL((int64_t)as_number_vm(vm, a))); break; } /* inexact->exact */
     case 215: { /* string->number — handles #x/#b/#o/#d prefixes */
@@ -2935,14 +2937,26 @@ static void vm_dispatch_native(VM* vm, int fid) {
         } else vm_push(vm, result);
         break;
     }
-    case 252: { /* propagate open slot: patch closure upvalue to reference parent's slot */
+    case 252: { /* propagate upvalue: copy parent closure's upvalue[slot] into child upvalue[uv_idx].
+                 * Called when a lambda inside a function captures a variable via the parent's upvalue
+                 * (is_local=false). The parent closure lives at stack[fp-1] per calling convention. */
         Value slot_v = vm_pop(vm), uv_idx_v = vm_pop(vm), cl_val = vm_pop(vm);
         if (cl_val.type == VAL_CLOSURE) {
             HeapObject* cl = vm->heap.objects[cl_val.as.ptr];
             int uv_idx = (int)as_number(uv_idx_v);
             int slot = (int)as_number(slot_v);
-            if (uv_idx >= 0 && uv_idx < cl->closure.n_upvalues && slot >= 0 && slot < vm->sp) {
-                cl->closure.upvalues[uv_idx] = vm->stack[vm->fp + slot];
+            /* Read from the PARENT closure's upvalue array, not the stack frame.
+             * Bug was: vm->stack[vm->fp + slot] reads local slot index `slot` which is
+             * wrong — `slot` is an upvalue index, not a stack-frame offset. */
+            if (vm->fp > 0) {
+                Value parent_val = vm->stack[vm->fp - 1];
+                if (parent_val.type == VAL_CLOSURE) {
+                    HeapObject* parent_cl = vm->heap.objects[parent_val.as.ptr];
+                    if (uv_idx >= 0 && uv_idx < cl->closure.n_upvalues &&
+                        slot >= 0 && slot < parent_cl->closure.n_upvalues) {
+                        cl->closure.upvalues[uv_idx] = parent_cl->closure.upvalues[slot];
+                    }
+                }
             }
         }
         vm_push(vm, NIL_VAL);

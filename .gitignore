@@ -114,6 +114,7 @@ docs/superpowers/
 examples-dep/
 build-lite/
 build-xla/
+build-*/
 deps/
 
 
@@ -122,7 +123,13 @@ compile_commands.json
 .claude/
 .cache/
 
-*.cmake
 *.tcl
 CMakeCache.txt
 CMakeFiles/
+# CMake generated artifacts at repo root (don't blanket-ignore *.cmake — that
+# would also catch tracked source files in cmake/).
+/CTestTestfile.cmake
+/CPackConfig.cmake
+/CPackSourceConfig.cmake
+/cmake_install.cmake
+/install_manifest.txt

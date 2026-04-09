@@ -69,7 +69,7 @@ for test_file in tests/lists/*.esk; do
     echo "" >> "$output_file"
     
     # Try to compile
-    if ./build/eshkol-run "$test_file" -L./build > "${output_file}.compile" 2>&1; then
+    if ./build/eshkol-run -L./build "$test_file" > "${output_file}.compile" 2>&1; then
         # Compilation succeeded, try to run
         echo "COMPILATION: SUCCESS" >> "$output_file"
         echo "" >> "$output_file"

@@ -295,7 +295,7 @@ The LLVM and VM backends share the same language semantics but use independent v
 
 ## Roadmap
 
-**v1.1.12-accelerate** -- COMPLETE. GPU acceleration, parallel primitives, consciousness engine, exact arithmetic, signal processing, continuations, XLA backend, web platform, REPL JIT, package manager.
+**v1.1.13-accelerate** -- COMPLETE. GPU acceleration, parallel primitives, consciousness engine, exact arithmetic, signal processing, continuations, XLA backend, web platform, REPL JIT, package manager, Windows ARM64, browser AD.
 
 **v1.2-scale** -- Next. Distributed training framework, model deployment tools, multi-shot continuations, expanded GPU support, database integration.
 

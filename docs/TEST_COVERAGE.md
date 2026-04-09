@@ -1,7 +1,7 @@
 # Eshkol v1.1-accelerate Test Coverage
 
-**Version**: v1.1.12-accelerate
-**Last Updated**: 2026-04-07
+**Version**: v1.1.13-accelerate
+**Last Updated**: 2026-04-09
 **Status**: 35 suites, 438 tests, 100% pass rate
 
 **Additional verification**: Bytecode VM passes 331/332 tests (99.7%), weight matrix transformer passes 55/55 tests with 3-way verification.

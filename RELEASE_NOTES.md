@@ -1,3 +1,79 @@
+# Eshkol v1.1.13-accelerate — Windows ARM64 + Release Workflow + VM Closure Fixes
+
+**Release Date**: April 9, 2026
+
+Eshkol v1.1.13-accelerate adds native Windows ARM64 support, rewrites the release workflow into a 16-lane build matrix that produces lite/XLA/CUDA variants for every supported platform, fixes two critical bytecode-VM closure bugs that affected the browser REPL and gradient descent demos, hardens setjmp/longjmp on Windows for both x64 and ARM64, and overhauls the website for full mobile responsiveness.
+
+## What's New in v1.1.13-accelerate
+
+### Windows ARM64 Native Support
+
+- Full build path for Windows ARM64 via VS 2022 + ClangCL + LLVM 21 aarch64 SDK
+- CMake auto-detects `clang_rt.builtins-{x86_64|aarch64}.lib` based on `CMAKE_VS_PLATFORM_NAME`
+- Multi-arch DIA SDK lookup: scans both `Program Files` and `Program Files (x86)` for both `amd64` and `arm64`
+- REPL JIT links the architecture-appropriate LLVM target libraries (`LLVMAArch64*` on ARM64, `LLVMX86*` on x64)
+- 16 release artifacts per tag: 6 Windows (x64/arm64 × lite/xla/cuda), 6 Linux, 4 macOS
+
+### setjmp/longjmp Cross-Platform Hardening
+
+- Windows ARM64: uses `Intrinsic::sponentry` as the hidden `_setjmpex` context (matches Clang lowering)
+- Windows x64: switched from `Intrinsic::localaddress` to `Intrinsic::frameaddress(0)` for the hidden context — produces stable, correctly-aligned frames
+- Removed all compile-time `#ifdef _WIN32` branches in favor of runtime `Triple::isOSWindows()` — proper cross-compilation
+- Dynamic `jmp_buf` sizing via `eshkol_jmp_buf_size()` runtime helper (no more hard-coded 256-byte buffers)
+
+### Runtime Symbol Renames
+
+POSIX shim functions are now renamed with an `eshkol_` prefix to disambiguate from MSVC's deprecated POSIX shims:
+
+`fopen → eshkol_fopen`, `access → eshkol_access`, `remove → eshkol_remove`, `rename → eshkol_rename`, `mkdir → eshkol_mkdir`, `rmdir → eshkol_rmdir`, `chdir → eshkol_chdir`, `stat → eshkol_stat`, `opendir → eshkol_opendir`
+
+Generated programs call `eshkol_runtime_init()` at start of `main()` (non-REPL mode).
+
+### Codegen Error Handling
+
+- New `fatal_codegen_error_` flag — codegen now fails hard on undefined-function/undefined-variable/private-symbol errors instead of silently emitting `printf`/`exit` runtime stubs
+- New `declared_functions_by_ast` map keyed by AST node identity — fixes function resolution when multiple `define`s share a name within the same module
+
+### VM Closure Bug Fixes (browser REPL + bytecode VM)
+
+Two critical closure-handling bugs in the bytecode VM that broke autodiff demos involving captured upvalues:
+
+- **Named-let nested closure PC offset**: When a lambda is created inside a `(let loop ...)` body, the loop's bytecode is inlined into the parent function with PC adjustments — but the inner lambda's `OP_CLOSURE` constant (its `func_pc`) was *not* offset by the loop's start position. The inner closure ended up jumping to a stale location with the wrong upvalue count, manifesting as "UPVALUE INDEX OUT OF BOUNDS" plus gradient always equal to 1 in named-let gradient descent.
+- **Native 252 upvalue relay**: When a lambda inside a function captures a variable via the parent's upvalue (`is_local=false`), native 252 was reading `vm->stack[vm->fp + slot]` — treating the upvalue index as a stack-frame offset, reading whichever local happened to be at that slot. Fix: read from `vm->stack[vm->fp - 1]` (the parent closure per the calling convention), then index into `parent_cl->closure.upvalues[slot]`.
+
+Together these restore correct gradients for **every** autodiff demo on the website. The "Train a Neural Network" front-page card now converges to ~0.891 over 3 data points, and the named-let gradient descent in `/learn` chapter 5 converges to `y/x`.
+
+### CI / Release Workflow Overhaul
+
+- Release workflow rewritten as two matrices: `unix-release-matrix` (10 jobs) + `windows-release-matrix` (6 jobs)
+- New `publish-release` job downloads all artifacts, generates `SHA256SUMS.txt`, and publishes the GitHub release
+- Per-architecture LLVM SDK caching on Windows runners (cache key includes `${arch}` and SDK version)
+- CI workflow updated: `windows-2022` → `windows-latest`, `max-parallel: 2` Windows throttling
+- Removed Docker-based XLA/CUDA build paths in favor of native CMake builds
+
+### Website — Mobile Responsiveness
+
+- Hamburger nav menu collapses the 7 top-level nav links on screens ≤720px; opens as a full-width dropdown; auto-closes when a link is clicked
+- `html, body { overflow-x: hidden }` plus `min-width: 0` on flex/grid children — no more horizontal page scroll on any viewport (verified across 5 viewport sizes × 6 routes)
+- Code blocks (`runnable-code` wrappers) now scroll horizontally *inside* the block instead of pushing the page wider
+- `.docs-layout` switched from `1fr` to `minmax(0, 1fr)` — fixes the docs page reporting 972px wide on a 375px viewport
+- `.comparison-table` becomes scrollable on ≤720px so the comparison table on `/downloads` doesn't push the page
+
+### Browser REPL Error Display
+
+- REPL now captures stderr (compile warnings, parse errors) into `_vmStderr` and displays them as `error: undefined variable 'foo'` instead of silently re-prompting
+- Suppresses the trailing `()` NIL fallback when a compile error fired
+- Shows `error: could not parse expression` when nothing parses
+- Same fix applied to runnable code blocks (Run ▶ buttons across the site)
+
+### Test Results
+
+- 35/35 test suites, 100% pass rate on macOS ARM64, Linux x64, Linux ARM64, Windows x64, Windows ARM64
+- 32/32 runnable site examples verified end-to-end in headless Chromium across mobile/tablet/desktop viewports
+- All 16 release-build lanes green on the v1.1.13-accelerate tag
+
+---
+
 # Eshkol v1.1.12-accelerate — Toolchain Unification + Platform Hardening
 
 **Release Date**: April 7, 2026

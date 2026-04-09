@@ -7,6 +7,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.13-accelerate] - 2026-04-09
+
+### Windows ARM64 + Release Workflow Overhaul + VM Closure Bug Fixes
+
+#### Windows ARM64 Native Support
+- Full build path for Windows ARM64 via VS 2022 + ClangCL + LLVM 21 aarch64 SDK
+- New CMake auto-detection of `clang_rt.builtins-{x86_64|aarch64}.lib` based on `CMAKE_VS_PLATFORM_NAME`
+- Multi-arch DIA SDK lookup (both `Program Files` and `Program Files (x86)` for both `amd64` and `arm64`)
+- REPL JIT now links the architecture-appropriate LLVM target libraries (`LLVMAArch64*` on ARM64, `LLVMX86*` on x64)
+
+#### setjmp/longjmp Cross-Platform Hardening
+- Windows ARM64: uses `Intrinsic::sponentry` as the hidden `_setjmpex` context (matches Clang lowering)
+- Windows x64: switched from `Intrinsic::localaddress` to `Intrinsic::frameaddress(0)` for the hidden `_setjmpex` context
+- Removed compile-time `#ifdef _WIN32` branches in favor of runtime `Triple::isOSWindows()` checks — proper cross-compilation
+- Dynamic `jmp_buf` sizing via `eshkol_jmp_buf_size()` runtime helper (no more hard-coded 256-byte buffers)
+
+#### Runtime Symbol Renames (Windows POSIX shim disambiguation)
+- `fopen` → `eshkol_fopen`, `access` → `eshkol_access`, `remove` → `eshkol_remove`, `rename` → `eshkol_rename`, `mkdir` → `eshkol_mkdir`, `rmdir` → `eshkol_rmdir`, `chdir` → `eshkol_chdir`, `stat` → `eshkol_stat`, `opendir` → `eshkol_opendir`
+- Avoids MSVC's deprecated POSIX shim warnings on Windows
+- Generated programs now call `eshkol_runtime_init()` at start of `main` (non-REPL mode)
+
+#### Codegen Error Handling
+- New `fatal_codegen_error_` flag — codegen now **fails hard** on undefined-function/undefined-variable/private-symbol errors instead of silently emitting `printf`/`exit` runtime stubs
+- New `declared_functions_by_ast` map keyed by AST node identity — fixes function resolution when multiple defines share a name within the same module
+
+#### VM Closure Bug Fixes (browser REPL + bytecode VM)
+- **Named-let nested closure PC offset**: When a lambda is created inside a `let loop` body, the loop's bytecode is inlined into the parent function with PC adjustments — but the inner lambda's `OP_CLOSURE` constant (its `func_pc`) was *not* offset by the loop's start position, causing the inner closure to jump to a stale location with the wrong upvalue count. Symptom: "UPVALUE INDEX OUT OF BOUNDS" + gradient always equal to 1 in named-let gradient descent
+- **Native 252 upvalue relay**: When a lambda inside a function captures a variable via the parent's upvalue (`is_local=false`), native 252 was reading `vm->stack[vm->fp + slot]` — treating the upvalue index as a stack-frame offset. Fix: read from `vm->stack[vm->fp - 1]` (the parent closure per the calling convention), then index into `parent_cl->closure.upvalues[slot]`. Together with the named-let fix, this restores correct gradients for all autodiff demos involving captured upvalues
+- Both fixes verified end-to-end: gradient descent converges, train demo returns ~0.891, named-let gradient descent converges to y/x
+
+#### CI / Release Workflow
+- Release workflow rewritten as two matrices (`unix-release-matrix` × 10 + `windows-release-matrix` × 6) plus a `publish-release` job that downloads all artifacts, generates `SHA256SUMS.txt`, and publishes the GitHub release
+- New release lanes: `windows-arm64-{lite,xla,cuda}`, `windows-x64-{lite,xla,cuda}`, `linux-{x64,arm64}-{lite,xla,cuda}`, `macos-{x64,arm64}-{lite,xla}` — 16 total per release
+- Per-architecture LLVM SDK caching on Windows runners (cache key includes `${arch}` and SDK version)
+- CI workflow updated: `windows-2022` → `windows-latest`, `max-parallel: 2` Windows throttling
+- Removed Docker-based XLA/CUDA build paths in favor of native CMake builds
+
+#### Website Mobile Responsiveness
+- Hamburger nav menu collapses 7 nav links on screens ≤720px; opens as full-width dropdown; auto-closes when a link is clicked
+- `html, body { overflow-x: hidden }` plus `min-width: 0` on flex/grid children — no more horizontal page scroll on any viewport
+- Code blocks (`runnable-code` wrappers) now scroll horizontally *inside* the block instead of pushing the page wider
+- `.docs-layout` switched from `1fr` to `minmax(0, 1fr)` — fixes the docs page being 972px wide on a 375px viewport
+- `.comparison-table` becomes scrollable on ≤720px so the comparison table on `/downloads` doesn't push the page
+
+#### Browser REPL Error Display
+- REPL now captures stderr (compile warnings, parse errors) into `_vmStderr` and displays them as `error: undefined variable 'foo'` instead of silently re-prompting
+- Suppresses the trailing `()` NIL fallback when a compile error fired
+- Shows `error: could not parse expression` when nothing parses
+- Same fix applied to runnable code blocks (Run ▶ buttons across the site)
+
+#### Test Results
+- 35/35 test suites, 100% pass rate (macOS ARM64, Linux x64, Windows x64, Windows ARM64)
+- 32/32 runnable site examples verified in headless Chromium across mobile/tablet/desktop viewports
+
 ### Bytecode VM — Production Complete
 
 The bytecode VM is now a fully production-grade execution engine with 555+ built-in functions, forward-mode automatic differentiation, R7RS control flow, exact arithmetic, and the consciousness engine.

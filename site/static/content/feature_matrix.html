@@ -4,7 +4,7 @@ Feature Matrix</h1>
 Planned | ❌ Not Planned</p>
 <p>This matrix documents all implemented and planned features for the
 Eshkol language ecosystem. All <strong>Production</strong> features are
-code-verified with extensive test coverage (35 test suites, 434 test
+code-verified with extensive test coverage (35 test suites, 438 test
 files).</p>
 <hr />
 <h2 id="core-language-features">Core Language Features</h2>
@@ -1287,7 +1287,7 @@ files).</p>
 <tr>
 <td>LLVM IR generation</td>
 <td>✅</td>
-<td>LLVM 17</td>
+<td>LLVM 21</td>
 <td>34,928 lines</td>
 </tr>
 <tr>
@@ -2189,7 +2189,7 @@ files).</p>
 <td>Windows</td>
 <td>✅</td>
 <td>x86-64</td>
-<td>MSYS2/MinGW64 native (PR #9, mattneel)</td>
+<td>Native Visual Studio 2022 + ClangCL/LLVM 21</td>
 </tr>
 <tr>
 <td>FreeBSD</td>
@@ -2225,7 +2225,7 @@ files).</p>
 <td>WebAssembly</td>
 <td>✅</td>
 <td>wasm32</td>
-<td>Via <code>--wasm</code> flag (LLVM 17 backend)</td>
+<td>Via <code>--wasm</code> flag (LLVM 21 backend)</td>
 </tr>
 <tr>
 <td>Web REPL</td>
@@ -3786,6 +3786,27 @@ logic, inference, workspace, hash, bytevector, parameter</td>
 <td>✅</td>
 <td>Type conversion (double↔︎float32) with AD integration</td>
 </tr>
+<tr>
+<td>Web Platform</td>
+<td>✅ Complete</td>
+<td>WebAssembly compilation, 59 DOM bindings, browser REPL,
+eshkol.ai</td>
+</tr>
+<tr>
+<td>VM Dual Number AD</td>
+<td>✅ Complete</td>
+<td>Forward-mode AD via dual numbers in bytecode VM</td>
+</tr>
+<tr>
+<td>VM Production</td>
+<td>✅ Complete</td>
+<td>176/176 tests, zero stubs, zero stdout contamination</td>
+</tr>
+<tr>
+<td>KB Pattern Matching</td>
+<td>✅ Complete</td>
+<td>Knowledge base queries with ?-wildcard pattern matching</td>
+</tr>
 </tbody>
 </table>
 <h2 id="tensor-linear-algebra-v1.1">Tensor Linear Algebra (v1.1)</h2>
@@ -3896,8 +3917,8 @@ planned v1.2)</li>
 as extensive as Python/Julia</li>
 <li><strong>Learning curve</strong> - Functional programming + AD
 concepts require study</li>
-<li><strong>Platform support</strong> - Linux, macOS, and Windows
-(MSYS2/MinGW64)</li>
+<li><strong>Platform support</strong> - Linux, macOS, and native Windows
+x64</li>
 </ol>
 <hr />
 <h2 id="strengths">Strengths</h2>
@@ -3927,7 +3948,7 @@ Parallel primitives with work-stealing thread pool - Arbitrary-precision
 arithmetic (bignums + rationals) - Consciousness engine (logic,
 inference, workspace) - Signal processing library (FFT, filters, window
 functions) - R7RS extensions (call/cc, dynamic-wind, bytevectors) - 700+
-builtins, 35 test suites, 434 test files</p>
+builtins, 35 test suites, 438 test files</p>
 <p><strong>Codebase</strong>: ~232,000 lines of production C/C++</p>
 <h3 id="v1.0-december-2025---foundation-release">v1.0 (December 2025) -
 Foundation Release</h3>
@@ -3953,7 +3974,7 @@ infrastructure) - Scheme community (language design inspiration) -
 JAX/PyTorch (AD implementation insights) - Julia (technical computing
 design patterns)</p>
 <hr />
-<p><strong>Last Updated</strong>: 2026-03-27 <strong>Document
-Version</strong>: 1.1.11</p>
+<p><strong>Last Updated</strong>: 2026-04-09 <strong>Document
+Version</strong>: 1.1.13</p>
 <p>For detailed API documentation, see <a
 href="API_REFERENCE.md">API_REFERENCE.md</a></p>

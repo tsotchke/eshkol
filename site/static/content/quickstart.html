@@ -5,6 +5,21 @@ practical examples. You’ll learn functions, lists, tensors, and
 automatic differentiation - the tools for scientific computing and AI
 systems programming.</p>
 <hr />
+<h2 id="try-without-installing">Try Without Installing</h2>
+<p>Visit <strong><a href="https://eshkol.ai">eshkol.ai</a></strong> to
+try Eshkol in your browser:</p>
+<ul>
+<li><strong>Playground</strong> — Full REPL with 63 opcodes and 555+
+built-in functions running in WebAssembly</li>
+<li><strong>Learn</strong> — 8-chapter interactive textbook where every
+code example is runnable</li>
+<li><strong>Examples</strong> — 10 complete programs you can run
+instantly</li>
+</ul>
+<p>No installation required. The REPL runs a bytecode interpreter
+compiled to WebAssembly via Emscripten. Automatic differentiation, exact
+arithmetic, knowledge bases, and more all work in the browser.</p>
+<hr />
 <h2 id="installation">Installation</h2>
 <h3 id="macos-homebrew">macOS (Homebrew)</h3>
 <pre class="bash"><code>brew tap tsotchke/eshkol
@@ -12,13 +27,15 @@ brew install eshkol</code></pre>
 <h3 id="linux-debianubuntu">Linux (Debian/Ubuntu)</h3>
 <pre class="bash"><code># Download .deb from https://github.com/tsotchke/eshkol/releases
 sudo dpkg -i eshkol_*.deb</code></pre>
-<h3 id="windows-msys2mingw64">Windows (MSYS2/MinGW64)</h3>
-<pre class="bash"><code># In MSYS2 MinGW64 shell:
-pacman -S mingw-w64-x86_64-llvm mingw-w64-x86_64-cmake mingw-w64-x86_64-ninja
+<h3 id="windows-visual-studio-2022-llvm-21">Windows (Visual Studio 2022
++ LLVM 21)</h3>
+<pre class="powershell"><code># In Developer PowerShell for VS 2022:
 git clone https://github.com/tsotchke/eshkol.git
 cd eshkol
-cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build build --parallel</code></pre>
+cmake -S . -B build -G &quot;Visual Studio 17 2022&quot; -A x64 -T ClangCL `
+  -DCMAKE_BUILD_TYPE=Release `
+  -DLLVM_DIR=&quot;C:/Program Files/LLVM/lib/cmake/llvm&quot;
+cmake --build build --config Release --parallel</code></pre>
 <h3 id="from-source-macoslinux">From Source (macOS/Linux)</h3>
 <pre class="bash"><code>git clone https://github.com/tsotchke/eshkol.git
 cd eshkol
@@ -32,11 +49,13 @@ eshkol-repl
 echo &#39;(display &quot;Hello, Eshkol!&quot;)&#39; &gt; hello.esk
 eshkol-run hello.esk -o hello
 ./hello</code></pre>
-<p><strong>Requirements</strong>: LLVM 17+, C++20 compiler, CMake 3.14+,
+<p><strong>Requirements</strong>: LLVM 21, C++20 compiler, CMake 3.14+,
 Ninja <strong>Platforms</strong>: Linux, macOS (x86-64, ARM64), Windows
-(MSYS2/MinGW64)</p>
-<p><strong>Web REPL</strong>: Open <code>web/index.html</code> in a
-browser for an interactive Eshkol environment without installation.</p>
+(native x86-64)</p>
+<p><strong>Web REPL</strong>: Visit <a
+href="https://eshkol.ai">eshkol.ai</a> for an interactive Eshkol
+environment without installation — includes a full REPL, tutorials, and
+runnable examples.</p>
 <p><strong>Bytecode</strong>: Emit portable ESKB bytecode alongside
 native compilation: <code>eshkol-run hello.esk -B hello.eskb</code></p>
 <hr />
@@ -940,7 +959,7 @@ href="."><code>docs/</code></a></li>
 <li><strong>Examples</strong>: <a
 href="../examples-dep"><code>examples-dep/</code></a></li>
 <li><strong>Tests</strong>: <a href="../tests"><code>tests/</code></a>
-(434 test files across 35 suites)</li>
+(438 test files across 35 suites)</li>
 </ul>
 <hr />
 <h2 id="community-support">Community &amp; Support</h2>
@@ -948,10 +967,27 @@ href="../examples-dep"><code>examples-dep/</code></a></li>
 <strong>Discussions</strong>: GitHub Discussions
 <strong>License</strong>: MIT</p>
 <hr />
-<p><strong>Next</strong>: Read the <a href="API_REFERENCE.md">API
-Reference</a> for complete function documentation, or dive into the <a
-href="breakdown/MACHINE_LEARNING.md">Machine Learning deep dive</a> for
-neural network training patterns.</p>
+<h2 id="next-steps-1">Next Steps</h2>
+<ul>
+<li><strong><a href="API_REFERENCE.md">API Reference</a></strong> —
+Complete function documentation (555+ builtins)</li>
+<li><strong><a href="../../examples/">Examples</a></strong> — Runnable
+programs demonstrating AD, tensors, parallelism, consciousness
+engine</li>
+<li><strong><a href="breakdown/CONSCIOUSNESS_ENGINE.md">Consciousness
+Engine</a></strong> — Logic programming, factor graphs, global
+workspace</li>
+<li><strong><a href="breakdown/AUTODIFF.md">Automatic
+Differentiation</a></strong> — Forward/reverse mode, vector calculus
+operators</li>
+<li><strong><a href="breakdown/MACHINE_LEARNING.md">Machine
+Learning</a></strong> — Neural network training, optimizers,
+activations</li>
+<li><strong><a href="../ESHKOL_LANGUAGE_GUIDE.md">Language
+Guide</a></strong> — Comprehensive language tutorial</li>
+<li><strong><a href="https://eshkol.ai">eshkol.ai</a></strong> —
+Interactive browser REPL with runnable tutorials</li>
+</ul>
 <hr />
 <p><strong>Copyright</strong> © 2025-2026 tsotchke
 <strong>License</strong>: MIT</p>

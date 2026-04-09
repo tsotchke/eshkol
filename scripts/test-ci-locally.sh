@@ -328,8 +328,8 @@ test_macos_ci() {
 test_release() {
     echo -e "${BLUE}=== Testing Release Workflow ===${NC}"
 
-    # Test Linux release build
-    echo "Testing Linux release package..."
+    # Test a representative release lane: linux-x64-lite
+    echo "Testing linux-x64-lite release package..."
 
     cat > /tmp/Dockerfile.release-test << DOCKERFILE
 FROM ubuntu:22.04
@@ -343,35 +343,45 @@ RUN apt-get update && apt-get install -y wget gnupg software-properties-common \
     && apt-get update
 
 RUN apt-get install -y \\
-    cmake ninja-build llvm-${LLVM_MAJOR} llvm-${LLVM_MAJOR}-dev libreadline-dev dpkg-dev g++ file pkg-config
+    cmake ninja-build llvm-${LLVM_MAJOR} llvm-${LLVM_MAJOR}-dev libreadline-dev g++ file pkg-config libssl-dev libncurses-dev git python3
 
 WORKDIR /app
 COPY . .
 
-# Build
-RUN cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DESHKOL_REQUIRED_LLVM_MAJOR=${LLVM_MAJOR} -DLLVM_CONFIG_EXECUTABLE=/usr/bin/llvm-config-${LLVM_MAJOR}
+# Configure and build
+RUN cmake -S . -B build -G Ninja \\
+    -DCMAKE_BUILD_TYPE=Release \\
+    -DESHKOL_REQUIRED_LLVM_MAJOR=${LLVM_MAJOR} \\
+    -DLLVM_CONFIG_EXECUTABLE=/usr/bin/llvm-config-${LLVM_MAJOR} \\
+    -DESHKOL_XLA_ENABLED=OFF \\
+    -DESHKOL_GPU_ENABLED=OFF
 RUN cmake --build build --parallel
 
-# Run subset of tests
-RUN ./scripts/run_types_tests.sh
-RUN ./scripts/run_list_tests.sh
-RUN ./scripts/run_autodiff_tests.sh
+# Run the lite test suite
+ENV BUILD_DIR=build
+RUN ./scripts/run_all_tests.sh
 
 # Package (matching release workflow)
-RUN mkdir -p pkg/bin pkg/lib pkg/share/eshkol
-RUN cp build/eshkol-run pkg/bin/
-RUN cp build/eshkol-repl pkg/bin/
-RUN cp build/stdlib.o pkg/lib/
-RUN cp lib/stdlib.esk pkg/share/eshkol/
-RUN if [ -d lib/core ]; then cp -r lib/core pkg/share/eshkol/; fi
-RUN cp README.md LICENSE pkg/ 2>/dev/null || true
-RUN cd pkg && tar -czvf /app/eshkol-v${VERSION}-linux-x64.tar.gz .
+RUN archive_root="eshkol-v${VERSION}-linux-x64-lite" \\
+    && pkg_dir="/tmp/\${archive_root}" \\
+    && mkdir -p "\${pkg_dir}/bin" "\${pkg_dir}/lib/eshkol" "\${pkg_dir}/share/eshkol/lib" \\
+    && cp build/eshkol-run "\${pkg_dir}/bin/" \\
+    && cp build/eshkol-repl "\${pkg_dir}/bin/" \\
+    && cp build/stdlib.o "\${pkg_dir}/lib/" \\
+    && cp build/stdlib.o "\${pkg_dir}/lib/eshkol/" \\
+    && cp lib/stdlib.esk "\${pkg_dir}/share/eshkol/" \\
+    && [ ! -f lib/math.esk ] || cp lib/math.esk "\${pkg_dir}/share/eshkol/" \\
+    && find lib -type f -name '*.esk' -print0 | while IFS= read -r -d '' source_file; do \\
+         rel_path="\${source_file#lib/}"; \\
+         dest_path="\${pkg_dir}/share/eshkol/lib/\${rel_path}"; \\
+         mkdir -p "$(dirname "\${dest_path}")"; \\
+         cp "\${source_file}" "\${dest_path}"; \\
+       done \\
+    && for doc in README.md LICENSE CHANGELOG.md; do [ ! -f "\${doc}" ] || cp "\${doc}" "\${pkg_dir}/"; done \\
+    && tar -czvf "/app/\${archive_root}.tar.gz" -C /tmp "\${archive_root}"
 
-# Build Debian package
-RUN ./scripts/build-deb.sh "${VERSION}"
-
-# Verify packages
-RUN ls -la /app/*.tar.gz /app/*.deb
+# Verify package
+RUN ls -la /app/*.tar.gz
 
 CMD ["echo", "Release build complete!"]
 DOCKERFILE
@@ -382,20 +392,13 @@ DOCKERFILE
         # Extract and verify artifacts
         CONTAINER_ID=$(docker create eshkol-release-test)
         mkdir -p dist/release-test
-        docker cp "$CONTAINER_ID:/app/eshkol-v${VERSION}-linux-x64.tar.gz" dist/release-test/ 2>/dev/null || true
-        docker cp "$CONTAINER_ID:/app/eshkol_${VERSION}_amd64.deb" dist/release-test/ 2>/dev/null || true
+        docker cp "$CONTAINER_ID:/app/eshkol-v${VERSION}-linux-x64-lite.tar.gz" dist/release-test/ 2>/dev/null || true
         docker rm "$CONTAINER_ID"
 
-        if [ -f "dist/release-test/eshkol-v${VERSION}-linux-x64.tar.gz" ]; then
+        if [ -f "dist/release-test/eshkol-v${VERSION}-linux-x64-lite.tar.gz" ]; then
             log_pass "release-linux-tarball"
         else
             log_fail "release-linux-tarball"
-        fi
-
-        if [ -f "dist/release-test/eshkol_${VERSION}_amd64.deb" ]; then
-            log_pass "release-linux-deb"
-        else
-            log_fail "release-linux-deb"
         fi
     else
         log_fail "release-linux-build"

@@ -591,6 +591,7 @@ private:
     std::unordered_map<std::string, Value*> symbol_table;
     std::unordered_map<std::string, Value*> global_symbol_table; // Persistent global symbols
     std::unordered_map<std::string, Function*> function_table;
+    std::unordered_map<const eshkol_ast_t*, Function*> declared_functions_by_ast;
     std::unordered_map<std::string, std::vector<std::string>> nested_function_captures; // Free vars for nested defines
     std::unordered_map<std::string, std::string> functions_returning_lambda; // Maps function name -> lambda name it returns
 
@@ -713,9 +714,14 @@ private:
 
     // LIBRARY MODE: When true, skip main function creation and export all symbols
     bool library_mode;
+    bool fatal_codegen_error_;
 
     // Module prefix for unique lambda naming (prevents symbol collision when linking)
     std::string module_prefix;
+
+    void markFatalCodegenError() {
+        fatal_codegen_error_ = true;
+    }
 
     // DWARF DEBUG INFO: DIBuilder and metadata for source-level debugging
     std::unique_ptr<DIBuilder> di_builder_;
@@ -732,6 +738,7 @@ public:
         bool is_wasm32 = target_triple &&
                           std::string(target_triple).find("wasm32") != std::string::npos;
         library_mode = is_library_mode;
+        fatal_codegen_error_ = false;
         // Create a sanitized module prefix for lambda naming
         module_prefix = module_name;
         // Replace non-alphanumeric chars with underscore
@@ -1608,7 +1615,7 @@ public:
                                 eshkol_debug("Generated S-expression for lambda %s", meta.lambda_name.c_str());
 
                                 // Register this lambda in the registry for homoiconic display
-                                Function* reg_lambda_func = module->getFunction(meta.lambda_name);
+                                Function* reg_lambda_func = resolveFunctionByLogicalName(meta.lambda_name);
                                 if (reg_lambda_func) {
                                     Value* reg_func_ptr_int = builder->CreatePtrToInt(reg_lambda_func, intptr_type);
                                     Value* reg_name_str = builder->CreateGlobalString(meta.lambda_name);
@@ -1620,7 +1627,7 @@ public:
                                 // Also create variable alias if this lambda was bound to a variable
                                 // CRITICAL FIX: Search for which variable maps to this lambda function
                                 // The variable is stored as "varname_func" -> Function*, where Function->getName() == meta.lambda_name
-                                Function* lambda_func_ref = module->getFunction(meta.lambda_name);
+                                Function* lambda_func_ref = resolveFunctionByLogicalName(meta.lambda_name);
                                 if (lambda_func_ref) {
                                     for (auto& entry : global_symbol_table) {
                                         // Look for keys ending in "_func"
@@ -1762,6 +1769,24 @@ public:
                     builder->CreateCall(init_stack_func);
                 }
 
+                // eshkol_runtime_init() is the native-binary entry hook: it
+                // installs signal handlers, configures stack size, sets up the
+                // global arena, etc. None of that applies to WebAssembly — the
+                // browser sandbox manages stack and memory itself, and there's
+                // no signal infrastructure to install handlers into. Skip the
+                // call entirely on wasm32 so the WASM module doesn't end up
+                // importing a symbol that the JS runtime would have to stub.
+                if (!g_repl_mode_enabled && !module->getTargetTriple().isWasm()) {
+                    FunctionType* runtime_init_type = FunctionType::get(builder->getInt32Ty(), false);
+                    Function* runtime_init_func = module->getFunction("eshkol_runtime_init");
+                    if (!runtime_init_func) {
+                        runtime_init_func = Function::Create(
+                            runtime_init_type, Function::ExternalLinkage,
+                            "eshkol_runtime_init", module.get());
+                    }
+                    builder->CreateCall(runtime_init_func, {}, "runtime_init");
+                }
+
                 // Store argc and argv to globals for (command-line)
                 GlobalVariable* g_argc = module->getGlobalVariable("__eshkol_argc");
                 GlobalVariable* g_argv = module->getGlobalVariable("__eshkol_argv");
@@ -1842,7 +1867,7 @@ public:
                         global_symbol_table[sexpr_key] = sexpr_global;
 
                         // Register this lambda in the registry for homoiconic display
-                        Function* lambda_func = module->getFunction(meta.lambda_name);
+                        Function* lambda_func = resolveFunctionByLogicalName(meta.lambda_name);
                         if (lambda_func) {
                             Value* func_ptr_int = builder->CreatePtrToInt(lambda_func, intptr_type);
                             Value* name_str = builder->CreateGlobalString(meta.lambda_name);
@@ -1904,6 +1929,11 @@ public:
             if (emit_debug_info_ && di_builder_) {
                 di_builder_->finalize();
                 eshkol_debug("Finalized DWARF debug info");
+            }
+
+            if (fatal_codegen_error_) {
+                eshkol_error("Failed to generate LLVM IR due to earlier code generation errors");
+                return std::make_pair(nullptr, nullptr);
             }
 
             // Verify the module
@@ -2059,14 +2089,14 @@ private:
         // FILE I/O FUNCTIONS (from stdio.h)
         // ============================================================================
 
-        // fopen: FILE* fopen(const char* filename, const char* mode)
+        // fopen: FILE* eshkol_fopen(const char* filename, const char* mode)
         std::vector<Type*> fopen_args;
         fopen_args.push_back(PointerType::get(*context, 0));  // filename
         fopen_args.push_back(PointerType::get(*context, 0));  // mode
         FunctionType* fopen_type = FunctionType::get(
             PointerType::get(*context, 0), fopen_args, false);
         Function* fopen_func = Function::Create(
-            fopen_type, Function::ExternalLinkage, "fopen", module.get());
+            fopen_type, Function::ExternalLinkage, eshkol::runtime::fopen_symbol, module.get());
         function_table["fopen"] = fopen_func;
 
         // fclose: int fclose(FILE* stream)
@@ -2242,52 +2272,52 @@ private:
             usleep_type, Function::ExternalLinkage, "usleep", module.get());
         function_table["usleep"] = usleep_func;
 
-        // access: int access(const char* path, int mode) - check file access
+        // access: int eshkol_access(const char* path, int mode) - check file access
         std::vector<Type*> access_args;
         access_args.push_back(PointerType::get(*context, 0));  // path
         access_args.push_back(int32_type);                     // mode
         FunctionType* access_type = FunctionType::get(
             int32_type, access_args, false);
         Function* access_func = Function::Create(
-            access_type, Function::ExternalLinkage, "access", module.get());
+            access_type, Function::ExternalLinkage, eshkol::runtime::access_symbol, module.get());
         function_table["access"] = access_func;
 
-        // remove: int remove(const char* path) - delete file
+        // remove: int eshkol_remove(const char* path) - delete file
         std::vector<Type*> remove_args;
         remove_args.push_back(PointerType::get(*context, 0));  // path
         FunctionType* remove_type = FunctionType::get(
             int32_type, remove_args, false);
         Function* remove_func = Function::Create(
-            remove_type, Function::ExternalLinkage, "remove", module.get());
+            remove_type, Function::ExternalLinkage, eshkol::runtime::remove_symbol, module.get());
         function_table["remove"] = remove_func;
 
-        // rename: int rename(const char* old, const char* new)
+        // rename: int eshkol_rename(const char* old, const char* new)
         std::vector<Type*> rename_args;
         rename_args.push_back(PointerType::get(*context, 0));  // old path
         rename_args.push_back(PointerType::get(*context, 0));  // new path
         FunctionType* rename_type = FunctionType::get(
             int32_type, rename_args, false);
         Function* rename_func = Function::Create(
-            rename_type, Function::ExternalLinkage, "rename", module.get());
+            rename_type, Function::ExternalLinkage, eshkol::runtime::rename_symbol, module.get());
         function_table["rename"] = rename_func;
 
-        // mkdir: int mkdir(const char* path, mode_t mode)
+        // mkdir: int eshkol_mkdir(const char* path, mode_t mode)
         std::vector<Type*> mkdir_args;
         mkdir_args.push_back(PointerType::get(*context, 0));  // path
         mkdir_args.push_back(int32_type);                     // mode
         FunctionType* mkdir_type = FunctionType::get(
             int32_type, mkdir_args, false);
         Function* mkdir_func = Function::Create(
-            mkdir_type, Function::ExternalLinkage, "mkdir", module.get());
+            mkdir_type, Function::ExternalLinkage, eshkol::runtime::mkdir_symbol, module.get());
         function_table["mkdir"] = mkdir_func;
 
-        // rmdir: int rmdir(const char* path)
+        // rmdir: int eshkol_rmdir(const char* path)
         std::vector<Type*> rmdir_args;
         rmdir_args.push_back(PointerType::get(*context, 0));  // path
         FunctionType* rmdir_type = FunctionType::get(
             int32_type, rmdir_args, false);
         Function* rmdir_func = Function::Create(
-            rmdir_type, Function::ExternalLinkage, "rmdir", module.get());
+            rmdir_type, Function::ExternalLinkage, eshkol::runtime::rmdir_symbol, module.get());
         function_table["rmdir"] = rmdir_func;
 
         // getcwd: char* getcwd(char* buf, size_t size)
@@ -2300,32 +2330,32 @@ private:
             getcwd_type, Function::ExternalLinkage, "getcwd", module.get());
         function_table["getcwd"] = getcwd_func;
 
-        // chdir: int chdir(const char* path)
+        // chdir: int eshkol_chdir(const char* path)
         std::vector<Type*> chdir_args;
         chdir_args.push_back(PointerType::get(*context, 0));  // path
         FunctionType* chdir_type = FunctionType::get(
             int32_type, chdir_args, false);
         Function* chdir_func = Function::Create(
-            chdir_type, Function::ExternalLinkage, "chdir", module.get());
+            chdir_type, Function::ExternalLinkage, eshkol::runtime::chdir_symbol, module.get());
         function_table["chdir"] = chdir_func;
 
-        // stat: int stat(const char* path, struct stat* buf)
+        // stat: int eshkol_stat(const char* path, struct stat* buf)
         std::vector<Type*> stat_args;
         stat_args.push_back(PointerType::get(*context, 0));  // path
         stat_args.push_back(PointerType::get(*context, 0));  // stat buf
         FunctionType* stat_type = FunctionType::get(
             int32_type, stat_args, false);
         Function* stat_func = Function::Create(
-            stat_type, Function::ExternalLinkage, "stat", module.get());
+            stat_type, Function::ExternalLinkage, eshkol::runtime::stat_symbol, module.get());
         function_table["stat"] = stat_func;
 
-        // opendir: DIR* opendir(const char* name)
+        // opendir: DIR* eshkol_opendir(const char* name)
         std::vector<Type*> opendir_args;
         opendir_args.push_back(PointerType::get(*context, 0));  // name
         FunctionType* opendir_type = FunctionType::get(
             PointerType::get(*context, 0), opendir_args, false);
         Function* opendir_func = Function::Create(
-            opendir_type, Function::ExternalLinkage, "opendir", module.get());
+            opendir_type, Function::ExternalLinkage, eshkol::runtime::opendir_symbol, module.get());
         function_table["opendir"] = opendir_func;
 
         // readdir: struct dirent* readdir(DIR* dirp)
@@ -3062,6 +3092,7 @@ private:
         }
 
         registerContextFunction(func_name, function);
+        declared_functions_by_ast[ast] = function;
         eshkol_debug("Created polymorphic function declaration: %s with %llu tagged_value parameters%s",
                     func_name, (unsigned long long)num_params, is_variadic ? " (variadic)" : "");
     }
@@ -3278,7 +3309,7 @@ private:
                 global_symbol_table[sexpr_key] = sexpr_global;
 
                 // Register this lambda in the registry for homoiconic display
-                Function* lambda_func = module->getFunction(meta.lambda_name);
+                Function* lambda_func = resolveFunctionByLogicalName(meta.lambda_name);
                 if (lambda_func) {
                     Value* func_ptr_int = builder->CreatePtrToInt(lambda_func, intptr_type);
                     Value* name_str = builder->CreateGlobalString(meta.lambda_name);
@@ -3389,6 +3420,17 @@ private:
                 builder->CreateCall(init_stack_func);
             }
 
+            if (!g_repl_mode_enabled) {
+                FunctionType* runtime_init_type = FunctionType::get(builder->getInt32Ty(), false);
+                Function* runtime_init_func = module->getFunction("eshkol_runtime_init");
+                if (!runtime_init_func) {
+                    runtime_init_func = Function::Create(
+                        runtime_init_type, Function::ExternalLinkage,
+                        "eshkol_runtime_init", module.get());
+                }
+                builder->CreateCall(runtime_init_func, {}, "runtime_init");
+            }
+
             // Store argc and argv to globals for (command-line)
             GlobalVariable* g_argc = module->getGlobalVariable("__eshkol_argc");
             GlobalVariable* g_argv = module->getGlobalVariable("__eshkol_argv");
@@ -3466,7 +3508,7 @@ private:
                     eshkol_debug("Generated S-expression for lambda %s", meta.lambda_name.c_str());
 
                     // Register this lambda in the registry for homoiconic display
-                    Function* lambda_func = module->getFunction(meta.lambda_name);
+                    Function* lambda_func = resolveFunctionByLogicalName(meta.lambda_name);
                     if (lambda_func) {
                         Value* func_ptr_int = builder->CreatePtrToInt(lambda_func, intptr_type);
                         Value* name_str = builder->CreateGlobalString(meta.lambda_name);
@@ -3648,6 +3690,17 @@ private:
                 builder->CreateCall(init_stack_func);
             }
 
+            if (!g_repl_mode_enabled) {
+                FunctionType* runtime_init_type = FunctionType::get(builder->getInt32Ty(), false);
+                Function* runtime_init_func = module->getFunction("eshkol_runtime_init");
+                if (!runtime_init_func) {
+                    runtime_init_func = Function::Create(
+                        runtime_init_type, Function::ExternalLinkage,
+                        "eshkol_runtime_init", module.get());
+                }
+                builder->CreateCall(runtime_init_func, {}, "runtime_init");
+            }
+
             // Store argc and argv to globals for (command-line)
             GlobalVariable* g_argc = module->getGlobalVariable("__eshkol_argc");
             GlobalVariable* g_argv = module->getGlobalVariable("__eshkol_argv");
@@ -3736,7 +3789,7 @@ private:
                     eshkol_debug("Generated S-expression for lambda %s (top-level case)", meta.lambda_name.c_str());
 
                     // Register this lambda in the registry for homoiconic display
-                    Function* lambda_func = module->getFunction(meta.lambda_name);
+                    Function* lambda_func = resolveFunctionByLogicalName(meta.lambda_name);
                     if (lambda_func) {
                         Value* func_ptr_int = builder->CreatePtrToInt(lambda_func, intptr_type);
                         Value* name_str = builder->CreateGlobalString(meta.lambda_name);
@@ -4444,6 +4497,14 @@ private:
         }
     }
 
+    Function* resolveFunctionByLogicalName(const std::string& name) {
+        auto it = function_table.find(name);
+        if (it != function_table.end() && it->second) {
+            return it->second;
+        }
+        return module->getFunction(name);
+    }
+
     // REPL MODE: Check if a function exists in the global REPL context and create external declaration
     Function* tryResolveReplFunction(const std::string& func_name) {
         // Only check REPL symbols if REPL mode is enabled
@@ -4456,6 +4517,7 @@ private:
         // MODULE VISIBILITY: Check if symbol is private (not exported from its module)
         if (g_repl_private_symbols.find(func_name) != g_repl_private_symbols.end()) {
             eshkol_error("Function '%s' is private (not exported from its module)", func_name.c_str());
+            markFatalCodegenError();
             return nullptr;
         }
 
@@ -6436,6 +6498,9 @@ private:
                 return codegenVariable(ast);
                 
             case ESHKOL_OP:
+                if (ast->operation.op == ESHKOL_DEFINE_OP) {
+                    return codegenDefine(ast);
+                }
                 return codegenOperation(&ast->operation);
                 
             case ESHKOL_CONS:
@@ -6966,6 +7031,7 @@ private:
             // MODULE VISIBILITY: Check if symbol is private (not exported from its module)
             if (g_repl_private_symbols.find(var_name) != g_repl_private_symbols.end()) {
                 eshkol_error("Variable '%s' is private (not exported from its module)", var_name.c_str());
+                markFatalCodegenError();
                 return nullptr;
             } else {
 
@@ -7257,12 +7323,17 @@ private:
         }
     }
     
-    Value* codegenDefine(const eshkol_operations_t* op) {
+    Value* codegenDefine(const eshkol_ast_t* ast) {
+        if (!ast || ast->type != ESHKOL_OP || ast->operation.op != ESHKOL_DEFINE_OP) {
+            return nullptr;
+        }
+
+        const eshkol_operations_t* op = &ast->operation;
         const char* name = op->define_op.name;
         if (!name) return nullptr;
 
         if (op->define_op.is_function) {
-            return codegenFunctionDefinition(op);
+            return codegenFunctionDefinition(ast);
         } else {
             // EXTERNAL VARIABLE FIX: For external variables from pre-compiled modules,
             // just create an external GlobalVariable declaration - don't evaluate/store
@@ -7292,9 +7363,55 @@ private:
         }
     }
 
-    Value* codegenFunctionDefinition(const eshkol_operations_t* op) {
+    Value* codegenDefine(const eshkol_operations_t* op) {
+        if (!op) {
+            return nullptr;
+        }
+
+        const char* name = op->define_op.name;
+        if (!name) return nullptr;
+
+        if (op->define_op.is_function) {
+            eshkol_error("Function definition '%s' requires AST-context codegen", name);
+            return nullptr;
+        }
+
+        if (op->define_op.is_external) {
+            GlobalVariable* gv = module->getNamedGlobal(name);
+            if (!gv) {
+                gv = new GlobalVariable(
+                    *module,
+                    tagged_value_type,
+                    false,
+                    GlobalValue::ExternalLinkage,
+                    nullptr,
+                    name
+                );
+                gv->setAlignment(Align(16));
+                eshkol_debug("External variable declaration: %s", name);
+            }
+            symbol_table[name] = gv;
+            global_symbol_table[name] = gv;
+            return packNullToTaggedValue();
+        }
+
+        return binding_->define(op);
+    }
+
+    Value* codegenFunctionDefinition(const eshkol_ast_t* ast) {
+        if (!ast || ast->type != ESHKOL_OP || ast->operation.op != ESHKOL_DEFINE_OP) {
+            return nullptr;
+        }
+
+        const eshkol_operations_t* op = &ast->operation;
         const char* func_name = op->define_op.name;
-        Function* function = function_table[func_name];
+        Function* function = nullptr;
+        auto declared_it = declared_functions_by_ast.find(ast);
+        if (declared_it != declared_functions_by_ast.end()) {
+            function = declared_it->second;
+        } else {
+            function = function_table[func_name];
+        }
 
         if (!function) {
             // This is a nested function definition - generate it like a lambda with closure support
@@ -7535,6 +7652,7 @@ private:
 
         return function;
     }
+
 
     // Generate a nested function definition as a closure (like a lambda)
     Value* codegenNestedFunctionDefinition(const eshkol_operations_t* op) {
@@ -12419,35 +12537,14 @@ private:
                     return result;
                 } else {
                     // Not in symbol_table at all - truly unknown function
-                    // Generate runtime error instead of silently returning null
                     if (current_source_line > 0) {
                         eshkol_error("Unknown function: %s (line %u:%u)", func_name.c_str(),
                                     current_source_line, current_source_column);
                     } else {
                         eshkol_error("Unknown function: %s", func_name.c_str());
                     }
-
-                    // Generate code to print error and exit at runtime
-                    Function* printf_func = function_table["printf"];
-                    Function* exit_func = function_table["exit"];
-                    if (printf_func && exit_func) {
-                        // Create error message string
-                        std::string error_msg = "Error: Unknown function '" + func_name + "'";
-                        if (current_source_line > 0) {
-                            error_msg += " at line " + std::to_string(current_source_line);
-                        }
-                        error_msg += "\n";
-                        Value* error_str = builder->CreateGlobalString(error_msg, "unknown_func_error");
-                        builder->CreateCall(printf_func, {error_str});
-                        builder->CreateCall(exit_func, {ConstantInt::get(Type::getInt32Ty(*context), 1)});
-                        // Create unreachable and continue block for LLVM
-                        builder->CreateUnreachable();
-                        // Create a new block for any code that might follow (won't be reached)
-                        Function* current_func = builder->GetInsertBlock()->getParent();
-                        BasicBlock* dead_block = BasicBlock::Create(*context, "unreachable_continue", current_func);
-                        builder->SetInsertPoint(dead_block);
-                    }
-                    return packNullToTaggedValue();
+                    markFatalCodegenError();
+                    return nullptr;
                 }
             }
         }
@@ -28203,12 +28300,6 @@ private:
     }
 
     Value* allocaJmpBuf(const char* name) {
-#ifdef _WIN32
-        Function* current_func = builder->GetInsertBlock()->getParent();
-        IRBuilder<> entry_builder(&current_func->getEntryBlock(), current_func->getEntryBlock().begin());
-        Type* jmp_buf_type = ArrayType::get(builder->getInt8Ty(), 256);
-        AllocaInst* jmp_buf = entry_builder.CreateAlloca(jmp_buf_type, nullptr, name);
-#else
         FunctionType* size_type = FunctionType::get(int64_type, {}, false);
         Function* size_func = module->getFunction(eshkol::runtime::jmp_buf_size_symbol);
         if (!size_func) {
@@ -28221,19 +28312,17 @@ private:
 
         Value* size = builder->CreateCall(size_func, {}, std::string(name) + "_size");
         AllocaInst* jmp_buf = builder->CreateAlloca(builder->getInt8Ty(), size, name);
-#endif
         jmp_buf->setAlignment(Align(16));
         return jmp_buf;
     }
 
     Function* getOrDeclareSetjmpFunc() {
-#ifdef _WIN32
-        constexpr const char* setjmp_symbol = "_setjmpex";
-        FunctionType* setjmp_type = FunctionType::get(builder->getInt32Ty(), {builder->getPtrTy(), builder->getPtrTy()}, false);
-#else
-        constexpr const char* setjmp_symbol = "setjmp";
-        FunctionType* setjmp_type = FunctionType::get(builder->getInt32Ty(), {builder->getPtrTy()}, false);
-#endif
+        const Triple& target_triple = module->getTargetTriple();
+        const bool is_windows_target = target_triple.isOSWindows();
+        const char* setjmp_symbol = is_windows_target ? "_setjmpex" : "setjmp";
+        FunctionType* setjmp_type = is_windows_target
+            ? FunctionType::get(builder->getInt32Ty(), {builder->getPtrTy(), builder->getPtrTy()}, false)
+            : FunctionType::get(builder->getInt32Ty(), {builder->getPtrTy()}, false);
         Function* setjmp_func = module->getFunction(setjmp_symbol);
         if (!setjmp_func) {
             setjmp_func = Function::Create(
@@ -28248,18 +28337,27 @@ private:
 
     std::vector<Value*> makeSetjmpArgs(Value* jmp_buf_alloc) {
         std::vector<Value*> args = {jmp_buf_alloc};
-#ifdef _WIN32
-        // Native Windows x64 setjmp expects the address of the local variable
-        // area as a hidden second argument.
-        Function* localaddress = ESHKOL_GET_INTRINSIC(module.get(), Intrinsic::localaddress, {});
-        Value* local_area = builder->CreateCall(localaddress, {}, "setjmp_local_area");
-        Value* frame_ptr = builder->CreateInBoundsGEP(
-            builder->getInt8Ty(),
-            local_area,
-            ConstantInt::getSigned(int64_type, -128),
-            "setjmp_frame");
-        args.push_back(frame_ptr);
-#endif
+        const Triple& target_triple = module->getTargetTriple();
+        if (!target_triple.isOSWindows()) {
+            return args;
+        }
+
+        Value* setjmp_context = nullptr;
+        if (target_triple.getArch() == Triple::aarch64) {
+            // Windows ARM64 uses the function-entry SP as the hidden _setjmpex
+            // context argument. Match Clang's lowering here.
+            Function* sponentry = ESHKOL_GET_INTRINSIC(module.get(), Intrinsic::sponentry, {builder->getPtrTy()});
+            setjmp_context = builder->CreateCall(sponentry, {}, "setjmp_sponentry");
+        } else {
+            // Windows x64 lowers _setjmpex with the current frame address.
+            Function* frameaddress = ESHKOL_GET_INTRINSIC(module.get(), Intrinsic::frameaddress, {builder->getPtrTy()});
+            setjmp_context = builder->CreateCall(
+                frameaddress,
+                {ConstantInt::get(builder->getInt32Ty(), 0)},
+                "setjmp_frame");
+        }
+
+        args.push_back(setjmp_context);
         return args;
     }
 

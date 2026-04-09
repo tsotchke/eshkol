@@ -1,4 +1,4 @@
-# ESHKOL v1.1.12-ACCELERATE — PRESS INFORMATION SHEET
+# ESHKOL v1.1.13-ACCELERATE — PRESS INFORMATION SHEET
 
 **For use by journalists and publications preparing coverage**
 
@@ -9,8 +9,8 @@
 | | |
 |---|---|
 | **Product** | Eshkol |
-| **Version** | v1.1.12-accelerate |
-| **Release Date** | April 7, 2026 |
+| **Version** | v1.1.13-accelerate |
+| **Release Date** | April 9, 2026 |
 | **License** | MIT (open source) |
 | **Website** | https://eshkol.ai |
 | **Source Code** | https://github.com/tsotchke/eshkol |
@@ -321,4 +321,4 @@ Tsotchke Corporation develops infrastructure for quantum computing, geometric ar
 
 ---
 
-*This document may be used freely for preparing news coverage of Eshkol v1.1.12-accelerate.*
+*This document may be used freely for preparing news coverage of Eshkol v1.1.13-accelerate.*

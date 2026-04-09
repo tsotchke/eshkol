@@ -82,8 +82,10 @@ for test_file in "$TCO_TEST_DIR"/*.esk; do
 
     # Compile
     TEMP_BIN=$(mktemp /tmp/tco_test_XXXXXX)
+    set +e
     COMPILE_OUTPUT=$(./$BUILD_DIR/eshkol-run "$test_file" -o "$TEMP_BIN" 2>&1)
     COMPILE_EXIT=$?
+    set -e
 
     if [ $COMPILE_EXIT -ne 0 ]; then
         echo -e "${RED}COMPILE FAIL${NC}"

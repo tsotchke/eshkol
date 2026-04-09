@@ -113,12 +113,51 @@ function Resolve-BuildDirectory {
         if (-not $candidate) {
             continue
         }
-        if (Test-Path (Join-Path $candidate "eshkol-run.exe")) {
-            return (Resolve-Path $candidate).Path
+
+        $resolvedCandidate = $null
+        try {
+            $resolvedCandidate = (Resolve-Path $candidate -ErrorAction Stop).Path
+        } catch {
+            continue
+        }
+
+        foreach ($binDir in @(
+            $resolvedCandidate,
+            (Join-Path $resolvedCandidate "Release"),
+            (Join-Path $resolvedCandidate "Debug")
+        )) {
+            if (Test-Path (Join-Path $binDir "eshkol-run.exe")) {
+                return [pscustomobject]@{
+                    RootDir   = $resolvedCandidate
+                    BinaryDir = $binDir
+                }
+            }
         }
     }
 
     throw "No native Windows build directory with eshkol-run.exe was found. Pass -BuildDir or build the native tree first."
+}
+
+function Get-BuildConfiguration {
+    param(
+        [string]$RootDir,
+        [string]$BinaryDir
+    )
+
+    if (-not $RootDir -or -not $BinaryDir) {
+        return $null
+    }
+
+    if ([string]::Equals($RootDir, $BinaryDir, [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $null
+    }
+
+    $leaf = Split-Path -Leaf $BinaryDir
+    if ($leaf -in @("Debug", "Release", "RelWithDebInfo", "MinSizeRel")) {
+        return $leaf
+    }
+
+    return $null
 }
 
 function Ensure-NativeTempRoot {
@@ -150,6 +189,137 @@ function Get-Text {
     return [System.IO.File]::ReadAllText($Path)
 }
 
+function Join-ProcessOutput {
+    param(
+        [string]$StdOut = "",
+        [string]$StdErr = ""
+    )
+
+    $parts = @()
+    if ($StdOut) {
+        $parts += $StdOut.TrimEnd()
+    }
+    if ($StdErr) {
+        $parts += $StdErr.TrimEnd()
+    }
+    return ($parts -join [Environment]::NewLine)
+}
+
+function Format-ExitCodeLabel {
+    param([int]$ExitCode)
+    $unsigned = ([int64]$ExitCode) -band 0xFFFFFFFFL
+    return ("{0} / 0x{1:X8}" -f $ExitCode, $unsigned)
+}
+
+function Show-ProcessFailureDetails {
+    param(
+        [string]$TestName,
+        [string]$Phase,
+        $Result,
+        [int]$MaxLines = 60
+    )
+
+    if (-not $Result) {
+        return
+    }
+
+    $sections = @()
+    if ($Result.StdErr) {
+        $sections += [pscustomobject]@{
+            Label = "stderr"
+            Text  = $Result.StdErr
+        }
+    }
+    if ($Result.StdOut) {
+        $sections += [pscustomobject]@{
+            Label = "stdout"
+            Text  = $Result.StdOut
+        }
+    }
+    if ($sections.Count -eq 0 -and $Result.Output) {
+        $sections += [pscustomobject]@{
+            Label = "output"
+            Text  = $Result.Output
+        }
+    }
+
+    if ($sections.Count -eq 0) {
+        return
+    }
+
+    Write-Host ("  {0} {1} details:" -f $TestName, $Phase) -ForegroundColor DarkGray
+    foreach ($section in $sections) {
+        $allLines = @($section.Text -split "`r?`n")
+        $lines = @($allLines | Where-Object { $_ -ne $null })
+        if ($lines.Count -gt $MaxLines) {
+            Write-Host ("    [{0}] showing last {1} of {2} lines" -f $section.Label, $MaxLines, $lines.Count) -ForegroundColor DarkGray
+            $lines = $lines[($lines.Count - $MaxLines)..($lines.Count - 1)]
+        } else {
+            Write-Host ("    [{0}]" -f $section.Label) -ForegroundColor DarkGray
+        }
+
+        foreach ($line in $lines) {
+            Write-Host ("      {0}" -f $line)
+        }
+    }
+}
+
+function Get-ProcessTaskText {
+    param(
+        $Task,
+        [string]$Label
+    )
+
+    if (-not $Task) {
+        return ""
+    }
+
+    try {
+        return $Task.GetAwaiter().GetResult()
+    } catch [System.OperationCanceledException] {
+        return ""
+    } catch [System.ObjectDisposedException] {
+        return ""
+    } catch [System.AggregateException] {
+        $messages = @(
+            $_.Exception.Flatten().InnerExceptions |
+                Where-Object {
+                    $_ -isnot [System.OperationCanceledException] -and
+                    $_ -isnot [System.ObjectDisposedException]
+                } |
+                ForEach-Object { $_.Message }
+        )
+        if ($messages.Count -eq 0) {
+            return ""
+        }
+        return ("[process {0} capture failed: {1}]" -f $Label, ($messages -join "; "))
+    } catch {
+        return ("[process {0} capture failed: {1}]" -f $Label, $_.Exception.Message)
+    }
+}
+
+function New-ProcessCaptureResult {
+    param(
+        [System.Diagnostics.Process]$Process,
+        $StdOutTask,
+        $StdErrTask,
+        [int]$ExitCode,
+        [bool]$TimedOut
+    )
+
+    $null = $Process.WaitForExit()
+    $stdout = Get-ProcessTaskText -Task $StdOutTask -Label "stdout"
+    $stderr = Get-ProcessTaskText -Task $StdErrTask -Label "stderr"
+
+    return [pscustomobject]@{
+        ExitCode = $ExitCode
+        TimedOut = $TimedOut
+        StdOut   = $stdout
+        StdErr   = $stderr
+        Output   = Join-ProcessOutput -StdOut $stdout -StdErr $stderr
+    }
+}
+
 function Invoke-ProcessCapture {
     param(
         [string]$FilePath,
@@ -164,80 +334,46 @@ function Invoke-ProcessCapture {
         $effectiveWorkingDirectory = $script:BuildDir
     }
 
-    if ($TimeoutSec -le 0) {
-        Push-Location $effectiveWorkingDirectory
-        try {
-            $previousErrorAction = $ErrorActionPreference
-            $ErrorActionPreference = "Continue"
-            try {
-                if ($InputText -ne "") {
-                    $outputLines = $InputText | & $FilePath @Arguments 2>&1 | ForEach-Object { $_.ToString() }
-                } else {
-                    $outputLines = & $FilePath @Arguments 2>&1 | ForEach-Object { $_.ToString() }
-                }
-                $output = $outputLines -join [Environment]::NewLine
-                $exitCode = $LASTEXITCODE
-            } finally {
-                $ErrorActionPreference = $previousErrorAction
-            }
-        } finally {
-            Pop-Location
-        }
-        [pscustomobject]@{
-            ExitCode = $exitCode
-            TimedOut = $false
-            StdOut   = $output
-            StdErr   = ""
-            Output   = $output
-        }
-        return
+    $psi = [System.Diagnostics.ProcessStartInfo]::new()
+    $psi.FileName = $FilePath
+    $psi.WorkingDirectory = $effectiveWorkingDirectory
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.RedirectStandardInput = ($InputText -ne "")
+    $psi.CreateNoWindow = $true
+
+    foreach ($arg in $Arguments) {
+        [void]$psi.ArgumentList.Add([string]$arg)
     }
 
-    $job = Start-Job -ScriptBlock {
-        param($FilePath, $Arguments, $WorkingDirectory, $InputText)
-        Set-Location $WorkingDirectory
-        $previousErrorAction = $ErrorActionPreference
-        $ErrorActionPreference = "Continue"
-        try {
-            if ($InputText -ne "") {
-                $outputLines = $InputText | & $FilePath @Arguments 2>&1 | ForEach-Object { $_.ToString() }
-            } else {
-                $outputLines = & $FilePath @Arguments 2>&1 | ForEach-Object { $_.ToString() }
-            }
-            [pscustomobject]@{
-                ExitCode = $LASTEXITCODE
-                Output   = $outputLines -join [Environment]::NewLine
-            }
-        } finally {
-            $ErrorActionPreference = $previousErrorAction
-        }
-    } -ArgumentList @($FilePath, $Arguments, $effectiveWorkingDirectory, $InputText)
+    $process = [System.Diagnostics.Process]::new()
+    $process.StartInfo = $psi
 
     try {
-        $completed = Wait-Job -Id $job.Id -Timeout $TimeoutSec
-        if (-not $completed) {
-            Stop-Job -Id $job.Id -ErrorAction SilentlyContinue
-            Receive-Job -Id $job.Id -ErrorAction SilentlyContinue | Out-Null
-            [pscustomobject]@{
-                ExitCode = 124
-                TimedOut = $true
-                StdOut   = ""
-                StdErr   = ""
-                Output   = ""
-            }
-            return
+        [void]$process.Start()
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+
+        if ($InputText -ne "") {
+            $process.StandardInput.Write($InputText)
+            $process.StandardInput.Close()
         }
 
-        $result = Receive-Job -Id $job.Id
-        [pscustomobject]@{
-            ExitCode = if ($null -ne $result.ExitCode) { $result.ExitCode } else { 1 }
-            TimedOut = $false
-            StdOut   = $result.Output
-            StdErr   = ""
-            Output   = $result.Output
+        if ($TimeoutSec -gt 0) {
+            $completed = $process.WaitForExit($TimeoutSec * 1000)
+            if (-not $completed) {
+                try {
+                    $process.Kill($true)
+                } catch {
+                }
+                return (New-ProcessCaptureResult -Process $process -StdOutTask $stdoutTask -StdErrTask $stderrTask -ExitCode 124 -TimedOut $true)
+            }
         }
+
+        return (New-ProcessCaptureResult -Process $process -StdOutTask $stdoutTask -StdErrTask $stderrTask -ExitCode $process.ExitCode -TimedOut $false)
     } finally {
-        Remove-Job -Id $job.Id -Force -ErrorAction SilentlyContinue
+        $process.Dispose()
     }
 }
 
@@ -254,31 +390,21 @@ function Invoke-EshkolCompile {
     $exePath = $OutputBase + ".exe"
     Remove-Item $exePath, $OutputBase -Force -ErrorAction SilentlyContinue
 
-    $args = @($TestFile, "-L", $BuildDir)
+    $args = @("-L", $BuildDir, "-o", $OutputBase)
     if ($ExtraArgs.Count -gt 0) {
         $args += $ExtraArgs
     }
-    $args += @("-o", $OutputBase)
+    $args += @($TestFile)
 
-    Push-Location $BuildDir
-    try {
-        $previousErrorAction = $ErrorActionPreference
-        $ErrorActionPreference = "Continue"
-        try {
-            $outputLines = & $EshkolRun @args 2>&1 | ForEach-Object { $_.ToString() }
-            $exitCode = $LASTEXITCODE
-            $outputText = ($outputLines -join [Environment]::NewLine)
-        } finally {
-            $ErrorActionPreference = $previousErrorAction
-        }
-    } finally {
-        Pop-Location
-    }
+    $captured = Invoke-ProcessCapture -FilePath $EshkolRun -Arguments $args -WorkingDirectory $BuildDir
 
     [pscustomobject]@{
-        ExitCode = $exitCode
-        Success  = ($exitCode -eq 0 -and (Test-Path $exePath))
-        Output   = $outputText
+        ExitCode = $captured.ExitCode
+        TimedOut = $captured.TimedOut
+        Success  = ($captured.ExitCode -eq 0 -and (Test-Path $exePath))
+        StdOut   = $captured.StdOut
+        StdErr   = $captured.StdErr
+        Output   = $captured.Output
         ExePath  = $exePath
     }
 }
@@ -341,6 +467,7 @@ function Invoke-SimpleCompileRunSuite {
         $compile = Invoke-EshkolCompile -EshkolRun $script:EshkolRun -ProjectRoot $script:ProjectRoot -BuildDir $script:BuildDir -TestFile $testFile -OutputBase $outputBase
         if (-not $compile.Success) {
             Format-TestStatus $testName "COMPILE FAIL" Red
+            Show-ProcessFailureDetails -TestName $testName -Phase "compile" -Result $compile
             Add-Fail $suite $testName
             continue
         }
@@ -352,7 +479,8 @@ function Invoke-SimpleCompileRunSuite {
             continue
         }
         if ($run.ExitCode -ne 0) {
-            Format-TestStatus $testName ("RUNTIME FAIL (exit {0})" -f $run.ExitCode) Red
+            Format-TestStatus $testName ("RUNTIME FAIL (exit {0})" -f (Format-ExitCodeLabel $run.ExitCode)) Red
+            Show-ProcessFailureDetails -TestName $testName -Phase "runtime" -Result $run
             Add-Fail $suite $testName
             continue
         }
@@ -399,17 +527,25 @@ function Invoke-MemorySuite {
 
         if (-not $compile.Success) {
             Format-TestStatus $testName "COMPILE FAIL" Red
+            Show-ProcessFailureDetails -TestName $testName -Phase "compile" -Result $compile
             Add-Fail $suite $testName
             continue
         }
 
         $run = Invoke-ProcessCapture -FilePath $compile.ExePath -WorkingDirectory $script:ProjectRoot
         if ($run.ExitCode -ne 0) {
-            Format-TestStatus $testName ("RUNTIME FAIL (exit {0})" -f $run.ExitCode) Red
+            Format-TestStatus $testName ("RUNTIME FAIL (exit {0})" -f (Format-ExitCodeLabel $run.ExitCode)) Red
+            Show-ProcessFailureDetails -TestName $testName -Phase "runtime" -Result $run
             Add-Fail $suite $testName
         } elseif ($run.Output -match "error:") {
-            Format-TestStatus $testName "RUNTIME ERROR" Yellow
-            Add-Fail $suite $testName
+            if ($expectsError) {
+                Format-TestStatus $testName "PASS (expected error)" Green
+                Add-Pass $suite
+            } else {
+                Format-TestStatus $testName "RUNTIME ERROR" Yellow
+                Show-ProcessFailureDetails -TestName $testName -Phase "runtime" -Result $run
+                Add-Fail $suite $testName
+            }
         } else {
             Format-TestStatus $testName "PASS" Green
             Add-Pass $suite
@@ -456,17 +592,25 @@ function Invoke-ModulesSuite {
 
         if (-not $compile.Success) {
             Format-TestStatus $testName "COMPILE FAIL" Red
+            Show-ProcessFailureDetails -TestName $testName -Phase "compile" -Result $compile
             Add-Fail $suite $testName
             continue
         }
 
         $run = Invoke-ProcessCapture -FilePath $compile.ExePath -WorkingDirectory $script:ProjectRoot
         if ($run.ExitCode -ne 0) {
-            Format-TestStatus $testName ("RUNTIME FAIL (exit {0})" -f $run.ExitCode) Red
+            Format-TestStatus $testName ("RUNTIME FAIL (exit {0})" -f (Format-ExitCodeLabel $run.ExitCode)) Red
+            Show-ProcessFailureDetails -TestName $testName -Phase "runtime" -Result $run
             Add-Fail $suite $testName
         } elseif ($run.Output -match "error:") {
-            Format-TestStatus $testName "RUNTIME ERROR" Yellow
-            Add-Fail $suite $testName
+            if ($expectsError) {
+                Format-TestStatus $testName "PASS (expected error)" Green
+                Add-Pass $suite
+            } else {
+                Format-TestStatus $testName "RUNTIME ERROR" Yellow
+                Show-ProcessFailureDetails -TestName $testName -Phase "runtime" -Result $run
+                Add-Fail $suite $testName
+            }
         } else {
             Format-TestStatus $testName "PASS" Green
             Add-Pass $suite
@@ -495,6 +639,7 @@ function Invoke-ParserSuite {
                 Add-Pass $suite
             } else {
                 Format-TestStatus $testName "COMPILE FAIL" Red
+                Show-ProcessFailureDetails -TestName $testName -Phase "compile" -Result $compile
                 Add-Fail $suite $testName
             }
             continue
@@ -506,12 +651,19 @@ function Invoke-ParserSuite {
                 Format-TestStatus $testName "PASS (expected error)" Green
                 Add-Pass $suite
             } else {
-                Format-TestStatus $testName ("RUNTIME FAIL (exit {0})" -f $run.ExitCode) Red
+                Format-TestStatus $testName ("RUNTIME FAIL (exit {0})" -f (Format-ExitCodeLabel $run.ExitCode)) Red
+                Show-ProcessFailureDetails -TestName $testName -Phase "runtime" -Result $run
                 Add-Fail $suite $testName
             }
         } elseif ($run.Output -match "error:") {
-            Format-TestStatus $testName "RUNTIME ERROR" Yellow
-            Add-Fail $suite $testName
+            if ($expectsError) {
+                Format-TestStatus $testName "PASS (expected error)" Green
+                Add-Pass $suite
+            } else {
+                Format-TestStatus $testName "RUNTIME ERROR" Yellow
+                Show-ProcessFailureDetails -TestName $testName -Phase "runtime" -Result $run
+                Add-Fail $suite $testName
+            }
         } else {
             Format-TestStatus $testName "PASS" Green
             Add-Pass $suite
@@ -544,7 +696,7 @@ function Invoke-TypesystemSuite {
 
         $outputBase = New-OutputBase -TempRoot $script:TempRoot -SuiteName "typesystem" -TestName $testName
         $compile = Invoke-EshkolCompile -EshkolRun $script:EshkolRun -ProjectRoot $script:ProjectRoot -BuildDir $script:BuildDir -TestFile $testFile -OutputBase $outputBase -ExtraArgs $extraArgs
-        $stderr = $compile.Output
+        $stderr = $compile.StdErr
         $passed = $true
 
         foreach ($line in $sourceLines) {
@@ -567,6 +719,7 @@ function Invoke-TypesystemSuite {
             Add-Pass $suite
         } else {
             Format-TestStatus $testName "FAIL" Red
+            Show-ProcessFailureDetails -TestName $testName -Phase "compile" -Result $compile
             Add-Fail $suite $testName
         }
     }
@@ -587,12 +740,15 @@ function Invoke-ReplSuite {
 
         if ($run.TimedOut) {
             Format-TestStatus $testName "TIMEOUT" Yellow
+            Show-ProcessFailureDetails -TestName $testName -Phase "runtime" -Result $run
             Add-Fail $suite "$testName (timeout)"
         } elseif ($run.Output -match "error:") {
             Format-TestStatus $testName "RUNTIME ERROR" Red
+            Show-ProcessFailureDetails -TestName $testName -Phase "runtime" -Result $run
             Add-Fail $suite $testName
         } elseif ($run.Output -match "Segmentation fault") {
             Format-TestStatus $testName "SEGFAULT" Red
+            Show-ProcessFailureDetails -TestName $testName -Phase "runtime" -Result $run
             Add-Fail $suite $testName
         } else {
             Format-TestStatus $testName "PASS" Green
@@ -616,6 +772,7 @@ function Invoke-LogicSuite {
 
         if (-not $compile.Success) {
             Write-Host ("  {0,-30} FAIL (compile error)" -f $testName) -ForegroundColor Red
+            Show-ProcessFailureDetails -TestName $testName -Phase "compile" -Result $compile
             Add-Fail $suite "$testName (compile)"
             continue
         }
@@ -625,7 +782,8 @@ function Invoke-LogicSuite {
             Write-Host ("  {0,-30} PASS" -f $testName) -ForegroundColor Green
             Add-Pass $suite
         } else {
-            Write-Host ("  {0,-30} FAIL (runtime error)" -f $testName) -ForegroundColor Red
+            Write-Host ("  {0,-30} FAIL (runtime error {1})" -f $testName, (Format-ExitCodeLabel $run.ExitCode)) -ForegroundColor Red
+            Show-ProcessFailureDetails -TestName $testName -Phase "runtime" -Result $run
             Add-Fail $suite "$testName (runtime)"
         }
     }
@@ -656,6 +814,7 @@ function Invoke-TimedCompileRunSuite {
 
         if (-not $compile.Success) {
             Write-Host "COMPILE FAIL" -ForegroundColor Red
+            Show-ProcessFailureDetails -TestName $testName -Phase "compile" -Result $compile
             Add-Fail $suite "$testName (compile)"
             continue
         }
@@ -667,7 +826,8 @@ function Invoke-TimedCompileRunSuite {
             continue
         }
         if ($run.ExitCode -ne 0) {
-            Write-Host ("RUNTIME FAIL (exit {0})" -f $run.ExitCode) -ForegroundColor Red
+            Write-Host ("RUNTIME FAIL (exit {0})" -f (Format-ExitCodeLabel $run.ExitCode)) -ForegroundColor Red
+            Show-ProcessFailureDetails -TestName $testName -Phase "runtime" -Result $run
             Add-Fail $suite "$testName (runtime exit $($run.ExitCode))"
             continue
         }
@@ -714,16 +874,19 @@ function Invoke-ExamplesSuite {
 
         if (-not $compile.Success) {
             Write-Host "COMPILE FAIL" -ForegroundColor Red
+            Show-ProcessFailureDetails -TestName $testName -Phase "compile" -Result $compile
             Add-Fail $suite $testName
             continue
         }
 
         $run = Invoke-ProcessCapture -FilePath $compile.ExePath -WorkingDirectory $script:ProjectRoot
         if ($run.ExitCode -ne 0) {
-            Write-Host ("RUNTIME FAIL (exit {0})" -f $run.ExitCode) -ForegroundColor Red
+            Write-Host ("RUNTIME FAIL (exit {0})" -f (Format-ExitCodeLabel $run.ExitCode)) -ForegroundColor Red
+            Show-ProcessFailureDetails -TestName $testName -Phase "runtime" -Result $run
             Add-Fail $suite "$testName (exit $($run.ExitCode))"
         } elseif ($run.Output -match "(?i)error|segmentation fault|abort") {
             Write-Host "RUNTIME ERROR" -ForegroundColor Yellow
+            Show-ProcessFailureDetails -TestName $testName -Phase "runtime" -Result $run
             Add-Fail $suite $testName
         } else {
             Write-Host "PASS" -ForegroundColor Green
@@ -831,6 +994,12 @@ function Invoke-CppTypeSuite {
         }
         if ($compileExit -ne 0) {
             Write-Host "COMPILE FAILED" -ForegroundColor Red
+            if ($compileOutput) {
+                Write-Host ("  {0} compile details:" -f $testName) -ForegroundColor DarkGray
+                foreach ($line in ($compileOutput -split "`r?`n" | Select-Object -Last 60)) {
+                    Write-Host ("    {0}" -f $line)
+                }
+            }
             Add-Fail $suite "$testName (compile)"
             continue
         }
@@ -843,6 +1012,7 @@ function Invoke-CppTypeSuite {
             Add-Pass $suite
         } else {
             Write-Host "FAILED" -ForegroundColor Red
+            Show-ProcessFailureDetails -TestName $testName -Phase "runtime" -Result $run
             Add-Fail $suite "$testName (runtime)"
         }
     }
@@ -857,7 +1027,12 @@ function Invoke-WebSuite {
 
     if (-not (Test-Path $script:EshkolServer)) {
         Write-Host "Building eshkol-server..." -ForegroundColor Yellow
-        & cmake --build $script:BuildDir --target eshkol-server --parallel
+        $buildArgs = @("--build", $script:BuildDir)
+        if ($script:BuildConfig) {
+            $buildArgs += @("--config", $script:BuildConfig)
+        }
+        $buildArgs += @("--target", "eshkol-server", "--parallel")
+        & cmake @buildArgs
         if ($LASTEXITCODE -ne 0 -or -not (Test-Path $script:EshkolServer)) {
             Add-Fail $suite "eshkol-server build"
             Show-SuiteSummary $suite
@@ -870,22 +1045,10 @@ function Invoke-WebSuite {
         $testName = Split-Path -Leaf $testFile
         $outputBase = New-OutputBase -TempRoot $script:TempRoot -SuiteName "web" -TestName $testName
         $wasmPath = $outputBase + ".wasm"
-        $args = @($testFile, "--wasm", "-o", $wasmPath)
-        Push-Location $script:BuildDir
-        try {
-            $previousErrorAction = $ErrorActionPreference
-            $ErrorActionPreference = "Continue"
-            try {
-                & $script:EshkolRun @args *> $null
-                $exitCode = $LASTEXITCODE
-            } finally {
-                $ErrorActionPreference = $previousErrorAction
-            }
-        } finally {
-            Pop-Location
-        }
+        $args = @("--wasm", "-o", $wasmPath, $testFile)
+        $compile = Invoke-ProcessCapture -FilePath $script:EshkolRun -Arguments $args -WorkingDirectory $script:BuildDir
 
-        if ($exitCode -eq 0 -and (Test-Path $wasmPath)) {
+        if ($compile.ExitCode -eq 0 -and (Test-Path $wasmPath)) {
             $bytes = [System.IO.File]::ReadAllBytes($wasmPath)
             if ($bytes.Length -ge 4 -and $bytes[0] -eq 0x00 -and $bytes[1] -eq 0x61 -and $bytes[2] -eq 0x73 -and $bytes[3] -eq 0x6D) {
                 Format-TestStatus $testName "PASS" Green
@@ -896,6 +1059,7 @@ function Invoke-WebSuite {
             }
         } else {
             Format-TestStatus $testName "COMPILE FAIL" Red
+            Show-ProcessFailureDetails -TestName $testName -Phase "compile" -Result $compile
             Add-Fail $suite "$testName (wasm compile)"
         }
     }
@@ -908,6 +1072,13 @@ function Invoke-WebSuite {
     Start-Sleep -Seconds 2
     $server.Refresh()
     if ($server.HasExited) {
+        if (Test-Path $serverStderr) {
+            Show-ProcessFailureDetails -TestName "eshkol-server" -Phase "startup" -Result ([pscustomobject]@{
+                StdOut = Get-Text $serverStdout
+                StdErr = Get-Text $serverStderr
+                Output = Join-ProcessOutput -StdOut (Get-Text $serverStdout) -StdErr (Get-Text $serverStderr)
+            })
+        }
         Add-Fail $suite "server start"
         Show-SuiteSummary $suite
         return $suite
@@ -959,12 +1130,13 @@ function Invoke-XlaSuite {
     Write-Section "Eshkol XLA/StableHLO Integration Tests"
     $suite = New-SuiteState "xla"
 
-    $xlaBin = Join-Path $script:BuildDir "xla_codegen_test.exe"
+    $xlaBin = Join-Path $script:BinaryDir "xla_codegen_test.exe"
     if (Test-Path $xlaBin) {
         $run = Invoke-ProcessCapture -FilePath $xlaBin -WorkingDirectory $script:ProjectRoot
         if ($run.ExitCode -eq 0) {
             Add-Pass $suite
         } else {
+            Show-ProcessFailureDetails -TestName "xla_codegen_test.exe" -Phase "runtime" -Result $run
             Add-Fail $suite "C++ Unit Tests"
         }
     } else {
@@ -978,18 +1150,22 @@ function Invoke-XlaSuite {
         $compile = Invoke-EshkolCompile -EshkolRun $script:EshkolRun -ProjectRoot $script:ProjectRoot -BuildDir $script:BuildDir -TestFile $testFile -OutputBase $outputBase
         if (-not $compile.Success) {
             Format-TestStatus $testName "COMPILE FAIL" Red
+            Show-ProcessFailureDetails -TestName $testName -Phase "compile" -Result $compile
             Add-Fail $suite $testName
             continue
         }
         $run = Invoke-ProcessCapture -FilePath $compile.ExePath -WorkingDirectory $script:ProjectRoot -TimeoutSec 60
         if ($run.TimedOut) {
             Format-TestStatus $testName "TIMEOUT" Red
+            Show-ProcessFailureDetails -TestName $testName -Phase "runtime" -Result $run
             Add-Fail $suite "$testName (timeout)"
         } elseif ($run.ExitCode -ne 0) {
-            Format-TestStatus $testName ("RUNTIME FAIL (exit {0})" -f $run.ExitCode) Red
+            Format-TestStatus $testName ("RUNTIME FAIL (exit {0})" -f (Format-ExitCodeLabel $run.ExitCode)) Red
+            Show-ProcessFailureDetails -TestName $testName -Phase "runtime" -Result $run
             Add-Fail $suite $testName
         } elseif ($run.Output -match "^FAIL:" -or ($run.Output -notmatch "PASS" -and $run.Output -match "(?i)error:")) {
             Format-TestStatus $testName "ASSERTION FAIL" Red
+            Show-ProcessFailureDetails -TestName $testName -Phase "runtime" -Result $run
             Add-Fail $suite $testName
         } else {
             Format-TestStatus $testName "PASS" Green
@@ -1012,10 +1188,12 @@ function Invoke-XlaSuite {
     $perfOutputBase = New-OutputBase -TempRoot $script:TempRoot -SuiteName "xla" -TestName "performance_sanity"
     $perfCompile = Invoke-EshkolCompile -EshkolRun $script:EshkolRun -ProjectRoot $script:ProjectRoot -BuildDir $script:BuildDir -TestFile $perfSource -OutputBase $perfOutputBase
     if (-not $perfCompile.Success) {
+        Show-ProcessFailureDetails -TestName "performance_sanity" -Phase "compile" -Result $perfCompile
         Add-Fail $suite "performance_sanity"
     } else {
         $perfRun = Invoke-ProcessCapture -FilePath $perfCompile.ExePath -WorkingDirectory $script:ProjectRoot -TimeoutSec 60
         if ($perfRun.TimedOut -or $perfRun.ExitCode -ne 0) {
+            Show-ProcessFailureDetails -TestName "performance_sanity" -Phase "runtime" -Result $perfRun
             Add-Fail $suite "performance_sanity"
         } else {
             Add-Pass $suite
@@ -1030,9 +1208,12 @@ function Ensure-BuildArtifacts {
     param([string[]]$Targets)
     $missingTargets = @()
     foreach ($target in $Targets) {
-        $path = Join-Path $script:BuildDir ($target + ".exe")
+        $path = Join-Path $script:BinaryDir ($target + ".exe")
         if ($target -eq "stdlib") {
             $path = Join-Path $script:BuildDir "stdlib.o"
+            if (-not (Test-Path $path)) {
+                $path = Join-Path $script:BinaryDir "stdlib.o"
+            }
         }
         if (-not (Test-Path $path)) {
             $missingTargets += $target
@@ -1044,20 +1225,30 @@ function Ensure-BuildArtifacts {
     }
 
     Write-Host ("Building missing targets: {0}" -f ($missingTargets -join ", ")) -ForegroundColor Yellow
-    & cmake --build $script:BuildDir --target @($missingTargets) --parallel
+    $buildArgs = @("--build", $script:BuildDir)
+    if ($script:BuildConfig) {
+        $buildArgs += @("--config", $script:BuildConfig)
+    }
+    $buildArgs += "--target"
+    $buildArgs += @($missingTargets)
+    $buildArgs += "--parallel"
+    & cmake @buildArgs
     if ($LASTEXITCODE -ne 0) {
         throw "Failed to build required targets: $($missingTargets -join ', ')"
     }
 }
 
 $script:ProjectRoot = Get-ProjectRoot
-$script:BuildDir = Resolve-BuildDirectory -ProjectRoot $script:ProjectRoot -RequestedBuildDir $BuildDir
+$buildLayout = Resolve-BuildDirectory -ProjectRoot $script:ProjectRoot -RequestedBuildDir $BuildDir
+$script:BuildDir = $buildLayout.RootDir
+$script:BinaryDir = $buildLayout.BinaryDir
+$script:BuildConfig = Get-BuildConfiguration -RootDir $script:BuildDir -BinaryDir $script:BinaryDir
 $script:TempRoot = Join-Path $env:TEMP "eshkol-windows-suite"
 Ensure-NativeTempRoot -TempRoot $script:TempRoot
 
-$script:EshkolRun = Join-Path $script:BuildDir "eshkol-run.exe"
-$script:EshkolRepl = Join-Path $script:BuildDir "eshkol-repl.exe"
-$script:EshkolServer = Join-Path $script:BuildDir "eshkol-server.exe"
+$script:EshkolRun = Join-Path $script:BinaryDir "eshkol-run.exe"
+$script:EshkolRepl = Join-Path $script:BinaryDir "eshkol-repl.exe"
+$script:EshkolServer = Join-Path $script:BinaryDir "eshkol-server.exe"
 $env:ESHKOL_PATH = Join-Path $script:ProjectRoot "lib"
 
 if (-not $SkipConfigureBuild) {
@@ -1067,6 +1258,8 @@ if (-not $SkipConfigureBuild) {
 Write-Section "Eshkol Complete Windows Test Suite"
 Write-Host ("Project Root: {0}" -f $script:ProjectRoot)
 Write-Host ("Build Dir:    {0}" -f $script:BuildDir)
+Write-Host ("Binary Dir:   {0}" -f $script:BinaryDir)
+Write-Host ("Build Config: {0}" -f $(if ($script:BuildConfig) { $script:BuildConfig } else { "<default>" }))
 Write-Host ("Mode:         {0}" -f $Mode)
 Write-Host ""
 

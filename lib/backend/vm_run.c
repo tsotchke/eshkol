@@ -73,6 +73,7 @@ static void vm_run(VM* vm) {
         [OP_PACK_REST]     = &&lbl_PACK_REST,
         [OP_WIND_PUSH]     = &&lbl_WIND_PUSH,
         [OP_WIND_POP]      = &&lbl_WIND_POP,
+        [OP_VOID]          = &&lbl_VOID,
     };
 
     #define DISPATCH() do { \
@@ -355,11 +356,17 @@ static void vm_run(VM* vm) {
 
     lbl_PRINT: {
         Value v = vm_pop(vm);
-        print_value(vm, v);
-        printf("\n"); fflush(stdout);
-        if (vm->n_outputs < 256) vm->outputs[vm->n_outputs++] = v;
+        if (v.type != VAL_VOID) {
+            print_value(vm, v);
+            printf("\n"); fflush(stdout);
+            if (vm->n_outputs < 256) vm->outputs[vm->n_outputs++] = v;
+        }
         DISPATCH();
     }
+
+    lbl_VOID:
+        vm_push(vm, (Value){.type = VAL_VOID});
+        DISPATCH();
 
     lbl_HALT:
         vm->halted = 1;
@@ -861,16 +868,19 @@ vm_exit:
         /* I/O */
         case OP_PRINT: {
             Value v = vm_pop(vm);
-            fprintf(stderr, "[PRINT] type=%d i=%lld f=%f sp=%d fp=%d\n",
-                    v.type, (long long)v.as.i, v.as.f, vm->sp, vm->fp);
-            print_value(vm, v);
-            printf("\n");
-            if (vm->n_outputs < 256) vm->outputs[vm->n_outputs++] = v;
+            if (v.type != VAL_VOID) {
+                print_value(vm, v);
+                printf("\n");
+                if (vm->n_outputs < 256) vm->outputs[vm->n_outputs++] = v;
+            }
             break;
         }
 
+        case OP_VOID:
+            vm_push(vm, (Value){.type = VAL_VOID});
+            break;
+
         case OP_HALT:
-            fprintf(stderr, "[HALT] at sp=%d fp=%d frames=%d\n", vm->sp, vm->fp, vm->frame_count);
             vm->halted = 1;
             break;
 
