@@ -10,298 +10,428 @@ permissions:
 
 env:
   LLVM_MAJOR: '21'
+  WINDOWS_LLVM_SDK_VERSION: '21.1.8'
 
 jobs:
-  create-release:
-    runs-on: ubuntu-22.04
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Create Release
-        uses: softprops/action-gh-release@v2
-        with:
-          name: Eshkol ${{ github.ref_name }}
-          body: |
-            See CHANGELOG.md for full details.
-
-            ## Highlights
-
-            - **GPU acceleration**: Metal (Apple Silicon SF64) and CUDA (native float64)
-            - **XLA backend**: Dual-mode StableHLO/MLIR + LLVM-direct tensor operations
-            - **Parallel primitives**: Work-stealing thread pool (parallel-map, future/force)
-            - **Exact arithmetic**: Bignums, rationals, complete R7RS numeric tower
-            - **Consciousness engine**: 22 compiled primitives (logic, inference, workspace)
-            - **Signal processing**: FFT, filters, Butterworth design
-            - **35 test suites, 438 test files, 100% pass rate**
-
-            ## Installation
-
-            **macOS (Homebrew — recommended):**
-            ```bash
-            brew tap tsotchke/eshkol
-            brew install eshkol
-            ```
-
-            **macOS (manual):**
-            Download `eshkol-*-macos-arm64.tar.gz` (Apple Silicon) or `eshkol-*-macos-x64.tar.gz` (Intel).
-
-            **Linux x64 (Debian/Ubuntu .deb):**
-            ```bash
-            sudo dpkg -i eshkol_*.deb
-            ```
-
-            **Linux x64/ARM64 (tarball):**
-            Download `eshkol-*-linux-x64.tar.gz` or `eshkol-*-linux-arm64.tar.gz`.
-
-            **Linux x64 with GPU/XLA acceleration:**
-            - CUDA (NVIDIA GPUs): `eshkol-*-linux-x64-cuda.tar.gz`
-            - XLA (StableHLO/MLIR): `eshkol-*-linux-x64-xla.tar.gz`
-
-            **From Source:**
-            ```bash
-            git clone https://github.com/tsotchke/eshkol.git
-            cd eshkol
-            cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-            cmake --build build --parallel
-            ```
-          draft: false
-          prerelease: ${{ contains(github.ref_name, 'alpha') || contains(github.ref_name, 'beta') || contains(github.ref_name, 'rc') }}
-
-  build-and-upload:
-    needs: create-release
+  unix-release-matrix:
+    name: release-${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
     strategy:
+      fail-fast: false
       matrix:
         include:
-          - os: ubuntu-22.04
-            name: linux-x64
-          - os: ubuntu-22.04-arm
-            name: linux-arm64
-          - os: macos-14
-            name: macos-arm64
-          - os: macos-15-intel
-            name: macos-x64
-
-    runs-on: ${{ matrix.os }}
+          - name: linux-x64-lite
+            runner: ubuntu-22.04
+            build_dir: build
+            xla_enabled: 'OFF'
+            gpu_enabled: 'OFF'
+            test_command: ./scripts/run_all_tests.sh
+          - name: linux-arm64-lite
+            runner: ubuntu-22.04-arm
+            build_dir: build
+            xla_enabled: 'OFF'
+            gpu_enabled: 'OFF'
+            test_command: ./scripts/run_all_tests.sh
+          - name: linux-x64-xla
+            runner: ubuntu-22.04
+            build_dir: build-xla
+            xla_enabled: 'ON'
+            gpu_enabled: 'OFF'
+            test_command: ./scripts/run_xla_tests.sh
+          - name: linux-arm64-xla
+            runner: ubuntu-22.04-arm
+            build_dir: build-xla
+            xla_enabled: 'ON'
+            gpu_enabled: 'OFF'
+            test_command: ./scripts/run_xla_tests.sh
+          - name: linux-x64-cuda
+            runner: ubuntu-22.04
+            build_dir: build-cuda
+            xla_enabled: 'OFF'
+            gpu_enabled: 'ON'
+            test_command: ./scripts/run_gpu_tests.sh
+          - name: linux-arm64-cuda
+            runner: ubuntu-22.04-arm
+            build_dir: build-cuda
+            xla_enabled: 'OFF'
+            gpu_enabled: 'ON'
+            test_command: ./scripts/run_gpu_tests.sh
+          - name: macos-arm64-lite
+            runner: macos-14
+            build_dir: build
+            xla_enabled: 'OFF'
+            gpu_enabled: 'OFF'
+            test_command: ./scripts/run_all_tests.sh
+          - name: macos-x64-lite
+            runner: macos-15-intel
+            build_dir: build
+            xla_enabled: 'OFF'
+            gpu_enabled: 'OFF'
+            test_command: ./scripts/run_all_tests.sh
+          - name: macos-arm64-xla
+            runner: macos-14
+            build_dir: build-xla
+            xla_enabled: 'ON'
+            gpu_enabled: 'OFF'
+            test_command: ./scripts/run_xla_tests.sh
+          - name: macos-x64-xla
+            runner: macos-15-intel
+            build_dir: build-xla
+            xla_enabled: 'ON'
+            gpu_enabled: 'OFF'
+            test_command: ./scripts/run_xla_tests.sh
 
     steps:
       - uses: actions/checkout@v4
 
       - name: Add LLVM Repository (Linux)
         if: runner.os == 'Linux'
+        shell: bash
         run: |
+          set -euxo pipefail
           wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
           echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-${LLVM_MAJOR} main" | sudo tee /etc/apt/sources.list.d/llvm.list
           sudo apt-get update
 
       - name: Install Dependencies (Linux)
         if: runner.os == 'Linux'
+        shell: bash
         run: |
-          sudo apt-get install -y cmake ninja-build llvm-${LLVM_MAJOR} llvm-${LLVM_MAJOR}-dev libreadline-dev pkg-config libssl-dev libncurses-dev
+          set -euxo pipefail
+          sudo apt-get install -y \
+            cmake ninja-build \
+            llvm-${LLVM_MAJOR} llvm-${LLVM_MAJOR}-dev \
+            libreadline-dev pkg-config \
+            libssl-dev libncurses-dev \
+            git python3
 
       - name: Install Dependencies (macOS)
         if: runner.os == 'macOS'
-        run: brew install llvm@${LLVM_MAJOR} cmake ninja readline
-
-      - name: Build
+        shell: bash
         run: |
+          set -euxo pipefail
+          brew install llvm@${LLVM_MAJOR} cmake ninja readline
+
+      - name: Configure
+        shell: bash
+        run: |
+          set -euxo pipefail
+          BUILD_DIR="${{ matrix.build_dir }}"
           if [[ "$RUNNER_OS" == "macOS" ]]; then
             LLVM_PREFIX="$(brew --prefix llvm@${LLVM_MAJOR})"
             export PATH="$LLVM_PREFIX/bin:$PATH"
-            LLVM_FLAG="-DLLVM_CONFIG_EXECUTABLE=$LLVM_PREFIX/bin/llvm-config"
+            LLVM_CONFIG="$LLVM_PREFIX/bin/llvm-config"
           else
-            LLVM_FLAG="-DLLVM_CONFIG_EXECUTABLE=/usr/bin/llvm-config-${LLVM_MAJOR}"
+            LLVM_CONFIG="/usr/bin/llvm-config-${LLVM_MAJOR}"
           fi
-          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DESHKOL_REQUIRED_LLVM_MAJOR=${LLVM_MAJOR} "$LLVM_FLAG"
-          cmake --build build --parallel
+
+          cmake -S . -B "$BUILD_DIR" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DESHKOL_REQUIRED_LLVM_MAJOR="${LLVM_MAJOR}" \
+            -DLLVM_CONFIG_EXECUTABLE="$LLVM_CONFIG" \
+            -DESHKOL_XLA_ENABLED=${{ matrix.xla_enabled }} \
+            -DESHKOL_GPU_ENABLED=${{ matrix.gpu_enabled }}
+
+      - name: Build
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cmake --build "${{ matrix.build_dir }}" --parallel
 
       - name: Run Tests
-        run: ./scripts/run_all_tests.sh
-
-      - name: Package
+        shell: bash
+        env:
+          BUILD_DIR: ${{ matrix.build_dir }}
         run: |
-          mkdir -p pkg/bin pkg/lib pkg/share/eshkol
-          cp build/eshkol-run pkg/bin/
-          cp build/eshkol-repl pkg/bin/
-          cp build/stdlib.o pkg/lib/
-          cp build/libeshkol-static.a pkg/lib/ || true
-          cp lib/stdlib.esk pkg/share/eshkol/
-          for dir in core math signal ml random web tensor; do
-            if [ -d "lib/$dir" ]; then
-              cp -r "lib/$dir" "pkg/share/eshkol/$dir"
+          set -euxo pipefail
+          ${{ matrix.test_command }}
+
+      - name: Package Release Asset
+        shell: bash
+        run: |
+          set -euxo pipefail
+          archive_root="eshkol-${{ github.ref_name }}-${{ matrix.name }}"
+          pkg_dir="$RUNNER_TEMP/$archive_root"
+          mkdir -p "$pkg_dir/bin" "$pkg_dir/lib/eshkol" "$pkg_dir/share/eshkol/lib"
+
+          cp "${{ matrix.build_dir }}/eshkol-run" "$pkg_dir/bin/"
+          cp "${{ matrix.build_dir }}/eshkol-repl" "$pkg_dir/bin/"
+          cp "${{ matrix.build_dir }}/stdlib.o" "$pkg_dir/lib/"
+          cp "${{ matrix.build_dir }}/stdlib.o" "$pkg_dir/lib/eshkol/"
+
+          cp "lib/stdlib.esk" "$pkg_dir/share/eshkol/"
+          if [[ -f "lib/math.esk" ]]; then
+            cp "lib/math.esk" "$pkg_dir/share/eshkol/"
+          fi
+
+          while IFS= read -r -d '' source_file; do
+            rel_path="${source_file#lib/}"
+            dest_path="$pkg_dir/share/eshkol/lib/$rel_path"
+            mkdir -p "$(dirname "$dest_path")"
+            cp "$source_file" "$dest_path"
+          done < <(find lib -type f -name '*.esk' -print0)
+
+          for doc in README.md LICENSE CHANGELOG.md; do
+            if [[ -f "$doc" ]]; then
+              cp "$doc" "$pkg_dir/"
             fi
           done
-          cp README.md LICENSE pkg/
-          tar -czvf eshkol-${{ github.ref_name }}-${{ matrix.name }}.tar.gz -C pkg .
 
-      - name: Upload Release Asset
-        uses: softprops/action-gh-release@v2
+          tar -czf "$RUNNER_TEMP/$archive_root.tar.gz" -C "$RUNNER_TEMP" "$archive_root"
+
+      - name: Upload Packaged Asset
+        uses: actions/upload-artifact@v4
         with:
-          files: eshkol-${{ github.ref_name }}-${{ matrix.name }}.tar.gz
-          fail_on_unmatched_files: true
+          name: release-asset-${{ matrix.name }}
+          path: ${{ runner.temp }}/eshkol-${{ github.ref_name }}-${{ matrix.name }}.tar.gz
+          if-no-files-found: error
 
-  build-debian-package:
-    needs: create-release
-    runs-on: ubuntu-22.04
+  windows-release-matrix:
+    name: release-${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include:
+          - name: windows-x64-lite
+            runner: windows-latest
+            arch: x64
+            llvm_suffix: x86_64
+            build_dir: build
+            xla_enabled: 'OFF'
+            gpu_enabled: 'OFF'
+            test_mode: all
+          - name: windows-arm64-lite
+            runner: windows-11-arm
+            arch: arm64
+            llvm_suffix: aarch64
+            build_dir: build
+            xla_enabled: 'OFF'
+            gpu_enabled: 'OFF'
+            test_mode: all
+          - name: windows-x64-xla
+            runner: windows-latest
+            arch: x64
+            llvm_suffix: x86_64
+            build_dir: build-xla
+            xla_enabled: 'ON'
+            gpu_enabled: 'OFF'
+            test_mode: xla
+          - name: windows-arm64-xla
+            runner: windows-11-arm
+            arch: arm64
+            llvm_suffix: aarch64
+            build_dir: build-xla
+            xla_enabled: 'ON'
+            gpu_enabled: 'OFF'
+            test_mode: xla
+          - name: windows-x64-cuda
+            runner: windows-latest
+            arch: x64
+            llvm_suffix: x86_64
+            build_dir: build-cuda
+            xla_enabled: 'OFF'
+            gpu_enabled: 'ON'
+            test_mode: gpu
+          - name: windows-arm64-cuda
+            runner: windows-11-arm
+            arch: arm64
+            llvm_suffix: aarch64
+            build_dir: build-cuda
+            xla_enabled: 'OFF'
+            gpu_enabled: 'ON'
+            test_mode: gpu
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Add LLVM Repository
-        run: |
-          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
-          echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-${LLVM_MAJOR} main" | sudo tee /etc/apt/sources.list.d/llvm.list
-          sudo apt-get update
+      - name: Restore LLVM SDK Cache
+        id: llvm-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: C:\src\clang+llvm-${{ env.WINDOWS_LLVM_SDK_VERSION }}-${{ matrix.llvm_suffix }}-pc-windows-msvc
+          key: windows-llvm-sdk-${{ matrix.arch }}-${{ env.WINDOWS_LLVM_SDK_VERSION }}
 
-      - name: Install Dependencies
+      - name: Install LLVM SDK
+        if: steps.llvm-cache.outputs.cache-hit != 'true'
+        shell: pwsh
         run: |
-          sudo apt-get install -y cmake ninja-build llvm-${LLVM_MAJOR} llvm-${LLVM_MAJOR}-dev libreadline-dev dpkg-dev pkg-config libssl-dev libncurses-dev
+          $ErrorActionPreference = 'Stop'
+          $llvmVersion = '${{ env.WINDOWS_LLVM_SDK_VERSION }}'
+          $llvmRoot = "C:\src\clang+llvm-$llvmVersion-${{ matrix.llvm_suffix }}-pc-windows-msvc"
+          $llvmCmakeDir = "$llvmRoot\lib\cmake\llvm"
+          $archive = "$env:RUNNER_TEMP\llvm-${{ matrix.arch }}-$llvmVersion.tar.xz"
+          $url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-$llvmVersion/clang+llvm-$llvmVersion-${{ matrix.llvm_suffix }}-pc-windows-msvc.tar.xz"
+
+          New-Item -ItemType Directory -Force -Path 'C:\src' | Out-Null
+          if (Test-Path $llvmRoot) {
+            Remove-Item -LiteralPath $llvmRoot -Recurse -Force
+          }
+
+          Write-Host "Downloading $url"
+          curl.exe --fail --location --retry 5 --retry-delay 5 --retry-all-errors --output $archive $url
+          if ($LASTEXITCODE -ne 0) { throw "curl download failed (exit $LASTEXITCODE)" }
+
+          Write-Host "Extracting..."
+          tar -xf $archive -C C:\src
+          if ($LASTEXITCODE -ne 0) { throw "tar extraction failed (exit $LASTEXITCODE)" }
+
+          if (-not (Test-Path "$llvmCmakeDir\LLVMConfig.cmake")) {
+            throw "LLVMConfig.cmake not found at $llvmCmakeDir - extraction may have failed"
+          }
+
+          Write-Host "LLVM $llvmVersion ${{ matrix.arch }} ready at $llvmRoot"
+
+      - name: Resolve LLVM SDK
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $llvmVersion = '${{ env.WINDOWS_LLVM_SDK_VERSION }}'
+          $llvmRoot = "C:\src\clang+llvm-$llvmVersion-${{ matrix.llvm_suffix }}-pc-windows-msvc"
+          $llvmCmakeDir = "$llvmRoot\lib\cmake\llvm"
+
+          if (-not (Test-Path "$llvmCmakeDir\LLVMConfig.cmake")) {
+            throw "LLVMConfig.cmake not found at $llvmCmakeDir - extraction may have failed"
+          }
+
+          Write-Host "LLVM $llvmVersion ${{ matrix.arch }} ready at $llvmRoot"
+          "LLVM_DIR=$llvmCmakeDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "LLVM_HOME=$llvmRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "$llvmRoot\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Save LLVM SDK Cache
+        if: steps.llvm-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: C:\src\clang+llvm-${{ env.WINDOWS_LLVM_SDK_VERSION }}-${{ matrix.llvm_suffix }}-pc-windows-msvc
+          key: windows-llvm-sdk-${{ matrix.arch }}-${{ env.WINDOWS_LLVM_SDK_VERSION }}
+
+      - name: Configure
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $platform = if ('${{ matrix.arch }}' -eq 'arm64') { 'ARM64' } else { 'x64' }
+          cmake -S . -B '${{ matrix.build_dir }}' `
+            -G 'Visual Studio 17 2022' `
+            -A $platform `
+            -T ClangCL `
+            -DBUILD_REPL=ON `
+            -DESHKOL_BUILD_TESTS=OFF `
+            -DESHKOL_REQUIRED_LLVM_MAJOR=${{ env.LLVM_MAJOR }} `
+            -DESHKOL_XLA_ENABLED=${{ matrix.xla_enabled }} `
+            -DESHKOL_GPU_ENABLED=${{ matrix.gpu_enabled }} `
+            -DLLVM_DIR="$env:LLVM_DIR"
 
       - name: Build
+        shell: pwsh
         run: |
-          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DESHKOL_REQUIRED_LLVM_MAJOR=${LLVM_MAJOR} -DLLVM_CONFIG_EXECUTABLE=/usr/bin/llvm-config-${LLVM_MAJOR}
-          cmake --build build --parallel
+          $ErrorActionPreference = 'Stop'
+          $targets = @('eshkol-run', 'eshkol-repl')
+          if ('${{ matrix.test_mode }}' -eq 'xla') {
+            $targets += 'xla_codegen_test'
+          }
+          cmake --build '${{ matrix.build_dir }}' --config Release --target @($targets) --parallel
 
-      - name: Build Debian Package
-        id: deb
+      - name: Run Tests
+        shell: pwsh
         run: |
-          VERSION=$(echo "${{ github.ref_name }}" | sed 's/^v//')
-          ./scripts/build-deb.sh "$VERSION"
-          ARCH=$(dpkg --print-architecture)
-          echo "deb_file=eshkol_${VERSION}_${ARCH}.deb" >> $GITHUB_OUTPUT
+          $ErrorActionPreference = 'Stop'
+          & .\scripts\run_all_tests.ps1 -BuildDir ".\${{ matrix.build_dir }}" -SkipConfigureBuild -Mode '${{ matrix.test_mode }}'
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
 
-      - name: Upload Debian Package
-        uses: softprops/action-gh-release@v2
+      - name: Package Release Asset
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $archiveRoot = "eshkol-${{ github.ref_name }}-${{ matrix.name }}"
+          $pkgDir = Join-Path $env:RUNNER_TEMP $archiveRoot
+          $binDir = Join-Path $pkgDir 'bin'
+          $libDir = Join-Path $pkgDir 'lib'
+          $libEshkolDir = Join-Path $libDir 'eshkol'
+          $shareDir = Join-Path $pkgDir 'share\eshkol'
+          $shareLibDir = Join-Path $shareDir 'lib'
+          $binaryDir = Join-Path '${{ matrix.build_dir }}' 'Release'
+          $stdlibObject = Join-Path '${{ matrix.build_dir }}' 'stdlib.o'
+
+          New-Item -ItemType Directory -Force -Path $binDir, $libDir, $libEshkolDir, $shareDir, $shareLibDir | Out-Null
+
+          Copy-Item -LiteralPath (Join-Path $binaryDir 'eshkol-run.exe') -Destination $binDir
+          Copy-Item -LiteralPath (Join-Path $binaryDir 'eshkol-repl.exe') -Destination $binDir
+
+          Get-ChildItem -Path (Join-Path $binaryDir '*.dll') -ErrorAction SilentlyContinue | ForEach-Object {
+            Copy-Item -LiteralPath $_.FullName -Destination $binDir
+          }
+
+          Copy-Item -LiteralPath $stdlibObject -Destination $libDir
+          Copy-Item -LiteralPath $stdlibObject -Destination $libEshkolDir
+
+          Copy-Item -LiteralPath 'lib\stdlib.esk' -Destination $shareDir
+          if (Test-Path 'lib\math.esk') {
+            Copy-Item -LiteralPath 'lib\math.esk' -Destination $shareDir
+          }
+
+          $libRoot = (Resolve-Path 'lib').Path
+          Get-ChildItem -Path 'lib' -Recurse -File -Filter '*.esk' | ForEach-Object {
+            $relativePath = [System.IO.Path]::GetRelativePath($libRoot, $_.FullName)
+            $destinationPath = Join-Path $shareLibDir $relativePath
+            $destinationDir = Split-Path -Parent $destinationPath
+            if (-not (Test-Path $destinationDir)) {
+              New-Item -ItemType Directory -Force -Path $destinationDir | Out-Null
+            }
+            Copy-Item -LiteralPath $_.FullName -Destination $destinationPath
+          }
+
+          foreach ($doc in @('README.md', 'LICENSE', 'CHANGELOG.md')) {
+            if (Test-Path $doc) {
+              Copy-Item -LiteralPath $doc -Destination $pkgDir
+            }
+          }
+
+          $archivePath = Join-Path $env:RUNNER_TEMP "$archiveRoot.zip"
+          if (Test-Path $archivePath) {
+            Remove-Item -LiteralPath $archivePath -Force
+          }
+          Compress-Archive -Path $pkgDir -DestinationPath $archivePath -CompressionLevel Optimal
+
+      - name: Upload Packaged Asset
+        uses: actions/upload-artifact@v4
         with:
-          files: ${{ steps.deb.outputs.deb_file }}
-          fail_on_unmatched_files: true
+          name: release-asset-${{ matrix.name }}
+          path: ${{ runner.temp }}\eshkol-${{ github.ref_name }}-${{ matrix.name }}.zip
+          if-no-files-found: error
 
-  build-debian-package-arm64:
-    needs: create-release
-    runs-on: ubuntu-22.04-arm
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Add LLVM Repository
-        run: |
-          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
-          echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-${LLVM_MAJOR} main" | sudo tee /etc/apt/sources.list.d/llvm.list
-          sudo apt-get update
-
-      - name: Install Dependencies
-        run: |
-          sudo apt-get install -y cmake ninja-build llvm-${LLVM_MAJOR} llvm-${LLVM_MAJOR}-dev libreadline-dev dpkg-dev pkg-config libssl-dev libncurses-dev
-
-      - name: Build
-        run: |
-          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DESHKOL_REQUIRED_LLVM_MAJOR=${LLVM_MAJOR} -DLLVM_CONFIG_EXECUTABLE=/usr/bin/llvm-config-${LLVM_MAJOR}
-          cmake --build build --parallel
-
-      - name: Build Debian Package
-        id: deb
-        run: |
-          VERSION=$(echo "${{ github.ref_name }}" | sed 's/^v//')
-          ./scripts/build-deb.sh "$VERSION"
-          ARCH=$(dpkg --print-architecture)
-          echo "deb_file=eshkol_${VERSION}_${ARCH}.deb" >> $GITHUB_OUTPUT
-
-      - name: Upload Debian Package
-        uses: softprops/action-gh-release@v2
-        with:
-          files: ${{ steps.deb.outputs.deb_file }}
-          fail_on_unmatched_files: true
-
-  build-xla:
-    needs: create-release
+  publish-release:
+    name: publish-release
     runs-on: ubuntu-22.04
+    needs:
+      - unix-release-matrix
+      - windows-release-matrix
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Download Packaged Assets
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: release-asset-*
+          merge-multiple: true
 
-      - name: Build XLA Docker Image
-        run: docker build -f docker/xla/Dockerfile --build-arg VERSION=$(echo "${{ github.ref_name }}" | sed 's/^v//') --build-arg LLVM_MAJOR=${LLVM_MAJOR} -t eshkol-xla .
-
-      - name: Extract XLA Artifacts
+      - name: Generate Checksums
+        shell: bash
         run: |
-          docker create --name xla-extract eshkol-xla
-          mkdir -p pkg/bin pkg/lib pkg/share/eshkol
-          docker cp xla-extract:/app/build/eshkol-run pkg/bin/
-          docker cp xla-extract:/app/build/eshkol-repl pkg/bin/
-          docker cp xla-extract:/app/build/stdlib.o pkg/lib/
-          docker cp xla-extract:/app/lib/stdlib.esk pkg/share/eshkol/
-          docker cp xla-extract:/app/lib/core pkg/share/eshkol/core || true
-          cp README.md LICENSE pkg/
-          tar -czvf eshkol-${{ github.ref_name }}-linux-x64-xla.tar.gz -C pkg .
-          docker rm xla-extract
+          set -euxo pipefail
+          cd dist
+          sha256sum * > SHA256SUMS.txt
 
-      - name: Upload XLA Release Asset
+      - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: eshkol-${{ github.ref_name }}-linux-x64-xla.tar.gz
+          name: Eshkol ${{ github.ref_name }}
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, 'alpha') || contains(github.ref_name, 'beta') || contains(github.ref_name, 'rc') }}
           fail_on_unmatched_files: true
-
-  build-cuda:
-    needs: create-release
-    runs-on: ubuntu-22.04
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Build CUDA Docker Image
-        run: docker build -f docker/cuda/Dockerfile --build-arg VERSION=$(echo "${{ github.ref_name }}" | sed 's/^v//') --build-arg LLVM_MAJOR=${LLVM_MAJOR} -t eshkol-cuda .
-
-      - name: Extract CUDA Artifacts
-        run: |
-          docker create --name cuda-extract eshkol-cuda
-          mkdir -p pkg/bin pkg/lib pkg/share/eshkol
-          docker cp cuda-extract:/app/build/eshkol-run pkg/bin/
-          docker cp cuda-extract:/app/build/eshkol-repl pkg/bin/
-          docker cp cuda-extract:/app/build/stdlib.o pkg/lib/
-          docker cp cuda-extract:/app/lib/stdlib.esk pkg/share/eshkol/
-          docker cp cuda-extract:/app/lib/core pkg/share/eshkol/core || true
-          cp README.md LICENSE pkg/
-          tar -czvf eshkol-${{ github.ref_name }}-linux-x64-cuda.tar.gz -C pkg .
-          docker rm cuda-extract
-
-      - name: Upload CUDA Release Asset
-        uses: softprops/action-gh-release@v2
-        with:
-          files: eshkol-${{ github.ref_name }}-linux-x64-cuda.tar.gz
-          fail_on_unmatched_files: true
-
-  update-homebrew:
-    needs: create-release
-    runs-on: ubuntu-22.04
-    # Only update Homebrew for stable releases (not alpha/beta/rc)
-    if: ${{ !contains(github.ref_name, 'alpha') && !contains(github.ref_name, 'beta') && !contains(github.ref_name, 'rc') }}
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Calculate SHA256
-        id: sha
-        run: |
-          SHA256=$(curl -sL https://github.com/tsotchke/eshkol/archive/${{ github.ref_name }}.tar.gz | shasum -a 256 | cut -d ' ' -f 1)
-          echo "sha256=$SHA256" >> $GITHUB_OUTPUT
-
-      - name: Update Homebrew Formula
-        run: |
-          VERSION=${{ github.ref_name }}
-          SHA256=${{ steps.sha.outputs.sha256 }}
-
-          # Update the formula file
-          sed -i "s|url \"https://github.com/tsotchke/eshkol/archive/.*\.tar\.gz\"|url \"https://github.com/tsotchke/eshkol/archive/${VERSION}.tar.gz\"|" packaging/homebrew/eshkol.rb
-          sed -i "s|sha256 \".*\"|sha256 \"${SHA256}\"|" packaging/homebrew/eshkol.rb
-
-      - name: Push to Homebrew Tap
-        env:
-          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-        run: |
-          git clone https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/tsotchke/homebrew-eshkol.git tap
-          cp packaging/homebrew/eshkol.rb tap/Formula/eshkol.rb
-          cd tap
-          git config user.name "GitHub Actions"
-          git config user.email "actions@github.com"
-          git add Formula/eshkol.rb
-          git commit -m "Update eshkol to ${{ github.ref_name }}"
-          git push
+          files: |
+            dist/*
