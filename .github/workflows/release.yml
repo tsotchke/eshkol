@@ -327,7 +327,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $targets = @('eshkol-run', 'eshkol-repl')
+          $targets = @('eshkol-run', 'eshkol-repl', 'stdlib')
           if ('${{ matrix.test_mode }}' -eq 'xla') {
             $targets += 'xla_codegen_test'
           }
@@ -356,6 +356,14 @@ jobs:
           $shareLibDir = Join-Path $shareDir 'lib'
           $binaryDir = Join-Path '${{ matrix.build_dir }}' 'Release'
           $stdlibObject = Join-Path '${{ matrix.build_dir }}' 'stdlib.o'
+          if (-not (Test-Path $stdlibObject)) {
+            $stdlibCandidate = Join-Path $binaryDir 'stdlib.o'
+            if (Test-Path $stdlibCandidate) {
+              $stdlibObject = $stdlibCandidate
+            } else {
+              throw "stdlib.o was not found in '${{ matrix.build_dir }}' or '$binaryDir'"
+            }
+          }
 
           New-Item -ItemType Directory -Force -Path $binDir, $libDir, $libEshkolDir, $shareDir, $shareLibDir | Out-Null
 
