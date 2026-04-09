@@ -1,9 +1,58 @@
-; REPL Test: Hot Reload (function redefinition)
+; REPL Test: Hot Reload
+; Covers every form of top-level redefinition the REPL supports.
+; The architecture: every top-level binding is held in a host-owned heap slot
+; that all modules resolve through, so redefinition is just a slot update.
+; See lib/backend/llvm_codegen.cpp / lib/repl/repl_jit.cpp for details.
+
+; ─── Top-level function redefinition ────────────────────────────────────────
 (define (f x) (* x 2))
-(f 5)
+(f 5)                              ; expects 10
 (define (f x) (* x 3))
-(f 5)
+(f 5)                              ; expects 15
+
 (define (g x) (+ x 10))
-(g 5)
+(g 5)                              ; expects 15
 (define (g x) (- x 10))
-(g 20)
+(g 20)                             ; expects 10
+
+; ─── Plain variable redefinition ────────────────────────────────────────────
+(define x 5)
+x                                  ; expects 5
+(define x 10)
+x                                  ; expects 10
+
+; ─── Type-changing variable redefinition ────────────────────────────────────
+(define y 42)
+y                                  ; expects 42
+(define y "hello")
+y                                  ; expects "hello"
+(define y (list 1 2 3))
+y                                  ; expects (1 2 3)
+
+; ─── Lambda variable redefinition ───────────────────────────────────────────
+(define h (lambda (x) (* x 2)))
+(h 5)                              ; expects 10
+(define h (lambda (x) (* x 3)))
+(h 5)                              ; expects 15
+
+; ─── Cross-namespace redefinition (function ↔ variable) ─────────────────────
+(define (k x) (* x 2))
+(k 5)                              ; expects 10
+(define k 99)
+k                                  ; expects 99
+(define (k x) (* x 100))
+(k 5)                              ; expects 500
+
+; ─── Mutual recursion across redefinition ───────────────────────────────────
+(define (e? n) (if (= n 0) #t (o? (- n 1))))
+(define (o? n) (if (= n 0) #f (e? (- n 1))))
+(e? 4)                             ; expects #t
+(define (e? n) (if (= n 0) 'EVEN (o? (- n 1))))
+(e? 4)                             ; expects EVEN — new e? takes effect
+
+; ─── R7RS dynamic lookup: closures see latest top-level binding ─────────────
+(define (sq x) (* x x))
+(define cube (lambda () (sq 5)))
+(cube)                             ; expects 25
+(define (sq x) (+ x 100))
+(cube)                             ; expects 105 — uses NEW sq, not snapshot

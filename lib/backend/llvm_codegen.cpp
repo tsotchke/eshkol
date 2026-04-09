@@ -217,6 +217,8 @@ static void optimizeModule(llvm::Module& module, llvm::TargetMachine* TM, bool i
 #include <algorithm>
 #include <cctype>
 #include <stack>
+#include <atomic>
+#include <mutex>
 #ifdef __APPLE__
 #include <mach-o/dyld.h>  /* _NSGetExecutablePath */
 #endif
@@ -256,6 +258,40 @@ namespace {
     std::unordered_map<std::string, std::vector<std::string>> g_repl_lambda_captures;  // lambda_name -> capture variable names
     std::unordered_map<std::string, std::pair<size_t, bool>> g_repl_variadic_functions;  // func_name -> (fixed_params, is_variadic)
     std::unordered_set<std::string> g_repl_private_symbols;                // Private symbols (not exported from modules)
+    // ── REPL HOT RELOAD ──────────────────────────────────────────────────────
+    // The REPL implements live redefinition for ALL top-level bindings using
+    // PLT/GOT-style indirection: every reachable binding name resolves at the
+    // JIT linker level to a heap slot owned by the REPL host. Redefinition
+    // updates the slot's contents; previously-compiled callers automatically
+    // pick up the new value on their next access.
+    //
+    //   Functions  ((define (f x) ...))         → __repl_fwd_<name> slot holds
+    //                                              a function pointer; the call
+    //                                              site does load+indirect call.
+    //                                              Each definition compiles a
+    //                                              uniquely-named body
+    //                                              (`<name>__rv<N>`) so JIT
+    //                                              materialization never sees a
+    //                                              symbol clash.
+    //
+    //   Variables  ((define x 5),                → @<name> is emitted as a pure
+    //               (define f (lambda ...)))       external declaration. The
+    //                                              REPL host allocates a 16-byte
+    //                                              tagged_value heap slot on
+    //                                              first definition and registers
+    //                                              `@<name>` as an absolute JIT
+    //                                              symbol pointing to it. Stores
+    //                                              and loads of `@<name>` then
+    //                                              naturally write to / read from
+    //                                              that shared heap location, so
+    //                                              redefinition is just a store.
+    //                                              The marker global
+    //                                              `__repl_var_<name>` tells the
+    //                                              host which externals to back
+    //                                              with heap storage.
+    std::unordered_set<std::string> g_repl_user_function_names;
+    std::unordered_set<std::string> g_repl_user_variable_names;
+    std::atomic<int> g_repl_define_counter{0};                             // Monotonic version counter for REPL user functions
     std::mutex g_repl_mutex;  // Thread safety for REPL symbol access
 
     // External library function registry
@@ -1500,21 +1536,64 @@ public:
             }
 
             // Step 1.5: Pre-declare global variables so functions can reference them
-            // This creates GlobalVariables for non-function top-level defines
+            // This creates GlobalVariables for non-function top-level defines.
+            //
+            // REPL HOT RELOAD: in REPL mode the variable storage is owned by
+            // the REPL host as a heap-allocated absolute symbol — see the
+            // hot-reload comment block near g_repl_user_variable_names. Each
+            // module emits @<name> as a pure external declaration plus a
+            // __repl_var_<name> marker that addModule consumes to allocate
+            // the shared 16-byte tagged_value slot on first definition.
             for (size_t i = 0; i < num_asts_to_use; i++) {
                 if (asts_to_use[i].type == ESHKOL_OP && asts_to_use[i].operation.op == ESHKOL_DEFINE_OP &&
                     !asts_to_use[i].operation.define_op.is_function) {
                     const char* var_name = asts_to_use[i].operation.define_op.name;
                     if (var_name && !module->getNamedGlobal(var_name)) {
-                        // Create GlobalVariable with tagged_value type for maximum compatibility
-                        GlobalVariable* global_var = new GlobalVariable(
-                            *module,
-                            tagged_value_type,
-                            false, // not constant
-                            GlobalValue::ExternalLinkage,
-                            UndefValue::get(tagged_value_type),
-                            var_name
-                        );
+                        GlobalVariable* global_var = nullptr;
+                        if (g_repl_mode_enabled) {
+                            global_var = new GlobalVariable(
+                                *module,
+                                tagged_value_type,
+                                false,                          // not constant
+                                GlobalValue::ExternalLinkage,
+                                nullptr,                        // no initializer = external decl
+                                var_name
+                            );
+                            global_var->setAlignment(Align(16));
+                            {
+                                // Mutually-exclusive with the function namespace —
+                                // see createFunctionDeclaration for the inverse.
+                                std::lock_guard<std::mutex> lock(g_repl_mutex);
+                                g_repl_user_variable_names.insert(var_name);
+                                g_repl_user_function_names.erase(var_name);
+                                g_repl_function_addresses.erase(var_name);
+                                g_repl_function_arities.erase(var_name);
+                                g_repl_lambda_names.erase(var_name);
+                            }
+                            // Marker so addModule knows to back this external
+                            // declaration with a heap-allocated absolute symbol.
+                            std::string marker_name = std::string("__repl_var_") + var_name;
+                            if (!module->getNamedGlobal(marker_name)) {
+                                new GlobalVariable(
+                                    *module,
+                                    int8_type,
+                                    true,                                 // constant
+                                    GlobalValue::WeakODRLinkage,
+                                    ConstantInt::get(int8_type, 1),
+                                    marker_name
+                                );
+                            }
+                        } else {
+                            global_var = new GlobalVariable(
+                                *module,
+                                tagged_value_type,
+                                false, // not constant
+                                GlobalValue::ExternalLinkage,
+                                UndefValue::get(tagged_value_type),
+                                var_name
+                            );
+                            global_var->setAlignment(Align(16));
+                        }
                         symbol_table[var_name] = global_var;
                         global_symbol_table[var_name] = global_var;
                         eshkol_debug("Pre-declared global variable: %s", var_name);
@@ -3025,10 +3104,32 @@ private:
             false // not varargs - we handle variadics by passing a list
         );
 
+        // REPL HOT RELOAD: In REPL mode, give each top-level function definition
+        // a unique LLVM symbol name (e.g. "f__rv0", "f__rv1") so the JIT does not
+        // collapse redefinitions via linkonce/weak "first def wins". Calls reach
+        // the latest version through the __repl_fwd_<name> slot indirection that
+        // registerContextFunction sets up below. Use ExternalLinkage on the
+        // versioned name (each version is a unique JIT symbol).
+        //
+        // The function/variable namespaces are mutually exclusive — defining
+        // `f` as a function clears any prior variable registration so reads
+        // and calls of `f` see a function, not a stale value or closure.
+        std::string llvm_func_name = func_name;
+        GlobalValue::LinkageTypes link = publicDefinitionLinkage(library_mode);
+        if (g_repl_mode_enabled) {
+            int v = g_repl_define_counter.fetch_add(1, std::memory_order_relaxed);
+            llvm_func_name = std::string(func_name) + "__rv" + std::to_string(v);
+            link = GlobalValue::ExternalLinkage;
+            std::lock_guard<std::mutex> lock(g_repl_mutex);
+            g_repl_user_function_names.insert(func_name);
+            g_repl_user_variable_names.erase(func_name);
+            g_repl_symbol_addresses.erase(func_name);
+        }
+
         Function* function = Function::Create(
             func_type,
-            publicDefinitionLinkage(library_mode),
-            func_name,
+            link,
+            llvm_func_name,
             module.get()
         );
 
@@ -6977,14 +7078,26 @@ private:
         // REPL MODE: Check if variable exists in REPL registries
         // Variables from previous REPL evaluations are stored here
         if (g_repl_mode_enabled) {
+            // REPL HOT RELOAD: if `var_name` was last bound as a user variable
+            // (via (define x ...) or (define f (lambda ...))) — even if there
+            // was an earlier function binding by the same name — prefer the
+            // variable storage. The function namespace is mutually exclusive
+            // with the variable namespace; the latest definition wins.
+            bool prefer_variable;
+            {
+                std::lock_guard<std::mutex> lock(g_repl_mutex);
+                prefer_variable = g_repl_user_variable_names.count(var_name) > 0;
+            }
+
             // First check if it's a lambda function (stored in g_repl_function_addresses)
             // Don't hold lock while calling tryResolveReplFunction (it acquires its own lock)
-            Function* repl_func = tryResolveReplFunction(var_name);
+            Function* repl_func = prefer_variable ? nullptr : tryResolveReplFunction(var_name);
             if (repl_func) {
                 // FIRST-CLASS FUNCTION FIX: Wrap REPL functions in closures like other user functions
                 // This ensures they work correctly when passed as arguments to other functions
                 // Get the arity from the REPL registry
                 size_t num_params = 0;
+                bool is_repl_user_func;
                 {
                     std::lock_guard<std::mutex> lock(g_repl_mutex);
                     auto arity_it = g_repl_function_arities.find(var_name);
@@ -6997,10 +7110,40 @@ private:
                             num_params = arity_it->second;
                         }
                     }
+                    is_repl_user_func = g_repl_user_function_names.count(var_name) > 0;
                 }
 
-                // Wrap in closure for proper first-class function use
-                Value* func_ptr_int = builder->CreatePtrToInt(repl_func, intptr_type);
+                // REPL HOT RELOAD: For top-level user functions, load the
+                // function pointer DYNAMICALLY from the __repl_fwd_<name> slot
+                // every time we wrap a closure value. This is what makes
+                //   (define (sq x) (* x x))
+                //   (define old-map (lambda (lst) (map sq lst)))
+                //   (define (sq x) (+ x 100))
+                //   (old-map ...)         ; sees the new sq — R7RS-correct
+                // work: every invocation of old-map allocates a fresh closure
+                // whose function pointer reflects the current sq binding,
+                // because the IR loads from the slot rather than baking in a
+                // particular `sq__rv<N>`. For non-REPL-user functions (e.g.
+                // stdlib) we keep the baked-in pointer for efficiency.
+                Value* func_ptr_int;
+                if (is_repl_user_func) {
+                    std::string slot_name = "__repl_fwd_" + var_name;
+                    GlobalVariable* slot = module->getNamedGlobal(slot_name);
+                    if (!slot) {
+                        slot = new GlobalVariable(
+                            *module,
+                            ptr_type,
+                            false,                              // not constant
+                            GlobalValue::ExternalLinkage,
+                            nullptr,                            // external — slot owned by host
+                            slot_name
+                        );
+                    }
+                    Value* loaded_fp = builder->CreateLoad(ptr_type, slot, var_name + "_dyn_fp");
+                    func_ptr_int = builder->CreatePtrToInt(loaded_fp, intptr_type);
+                } else {
+                    func_ptr_int = builder->CreatePtrToInt(repl_func, intptr_type);
+                }
                 Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
 
                 // Pack closure info: no captures, arity in bits 16-31
@@ -7683,6 +7826,20 @@ private:
         auto self_it = std::find(free_vars.begin(), free_vars.end(), orig_name);
         if (self_it != free_vars.end()) {
             free_vars.erase(self_it);
+        }
+
+        // REPL HOT RELOAD: top-level user bindings are looked up dynamically
+        // through the host-owned slots, never captured. See codegenLambda for
+        // the full rationale (R7RS section 4.1.4).
+        if (g_repl_mode_enabled && !free_vars.empty()) {
+            std::lock_guard<std::mutex> lock(g_repl_mutex);
+            free_vars.erase(
+                std::remove_if(free_vars.begin(), free_vars.end(),
+                    [&](const std::string& v) {
+                        return g_repl_user_function_names.count(v) > 0 ||
+                               g_repl_user_variable_names.count(v) > 0;
+                    }),
+                free_vars.end());
         }
 
         eshkol_debug("Nested function %s found %zu free variables", func_name.c_str(), free_vars.size());
@@ -12068,6 +12225,82 @@ private:
         // Step 2: Check global function_table if not found locally
         if (!callee) {
             callee = function_table[func_name];
+        }
+
+        // REPL HOT RELOAD: For cross-module calls to a previously-defined REPL
+        // user function, ALWAYS go through the __repl_fwd_<name> slot. The slot
+        // is updated each time the function is redefined, so the call picks up
+        // the latest version. Same-module calls use direct call via function_table
+        // above (function pointers within one module are stable for that module).
+        //
+        // If `func_name` was redefined as a *variable* (e.g. (define f 42) after
+        // (define (f x) ...)), the function namespace no longer owns the name —
+        // fall through and let the closure-call path on the variable's storage
+        // produce a runtime error if the user actually tries to invoke a non-
+        // procedure value.
+        if (!callee && g_repl_mode_enabled) {
+            bool is_repl_user_func;
+            bool is_repl_user_var;
+            {
+                std::lock_guard<std::mutex> lock(g_repl_mutex);
+                is_repl_user_func = g_repl_user_function_names.count(func_name) > 0;
+                is_repl_user_var  = g_repl_user_variable_names.count(func_name) > 0;
+            }
+            if (is_repl_user_func && !is_repl_user_var) {
+                size_t arity = op->call_op.num_vars;
+
+                // Get-or-create the external __repl_fwd_<func_name> slot in this module.
+                std::string global_ptr_name = "__repl_fwd_" + func_name;
+                GlobalVariable* func_ptr_global = module->getGlobalVariable(global_ptr_name);
+                if (!func_ptr_global) {
+                    func_ptr_global = new GlobalVariable(
+                        *module,
+                        ptr_type,
+                        false,                            // not constant — slot value can change
+                        GlobalValue::ExternalLinkage,
+                        nullptr,                          // external — resolved by JIT host
+                        global_ptr_name
+                    );
+                }
+
+                // Track arity in the REPL registry so subsequent compilations know it.
+                {
+                    std::lock_guard<std::mutex> lock(g_repl_mutex);
+                    g_repl_function_arities[func_name] = arity;
+                }
+
+                // Generate arguments.
+                std::vector<Type*> param_types(arity, tagged_value_type);
+                FunctionType* func_type = FunctionType::get(tagged_value_type, param_types, false);
+
+                std::vector<Value*> call_args;
+                for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
+                    Value* arg = codegenAST(&op->call_op.variables[i]);
+                    if (!arg) {
+                        if (builder->GetInsertBlock()->getTerminator()) return nullptr;
+                        arg = packNullToTaggedValue();
+                    }
+                    if (arg->getType() != tagged_value_type) {
+                        if (arg->getType()->isIntegerTy(64)) {
+                            arg = packInt64ToTaggedValue(arg, true);
+                        } else if (arg->getType()->isDoubleTy()) {
+                            arg = packDoubleToTaggedValue(arg);
+                        } else {
+                            TypedValue tv = detectValueType(arg);
+                            arg = typedValueToTaggedValue(tv);
+                        }
+                    }
+                    call_args.push_back(arg);
+                }
+
+                // Load the latest function pointer from the slot and indirect-call.
+                Value* func_ptr = builder->CreateLoad(ptr_type, func_ptr_global, func_name + "_ptr");
+                Value* result = builder->CreateCall(func_type, func_ptr, call_args, func_name + "_result");
+
+                eshkol_debug("REPL hot-reload: indirect call to user function %s via %s (arity %zu)",
+                             func_name.c_str(), global_ptr_name.c_str(), arity);
+                return result;
+            }
         }
 
         // Step 3: Check global symbol table and REPL context if still not found
@@ -18533,6 +18766,26 @@ private:
                 free_vars.erase(it);
                 eshkol_debug("Removed rest param '%s' from free variables", rest_param_name.c_str());
             }
+        }
+
+        // REPL HOT RELOAD: top-level user-defined functions and variables are
+        // NOT captured by closures. They are looked up dynamically through the
+        // host-owned slot at every call site (see __repl_fwd_<name> for
+        // functions, @<name> external for variables). Capturing them would
+        // freeze the value at closure-creation time, which violates R7RS
+        // section 4.1.4: "the saved environment is used to determine the
+        // values of any free occurrences of variables in the lambda
+        // expression" — and that environment is the *current* top-level
+        // bindings, not a snapshot.
+        if (g_repl_mode_enabled && !free_vars.empty()) {
+            std::lock_guard<std::mutex> lock(g_repl_mutex);
+            free_vars.erase(
+                std::remove_if(free_vars.begin(), free_vars.end(),
+                    [&](const std::string& v) {
+                        return g_repl_user_function_names.count(v) > 0 ||
+                               g_repl_user_variable_names.count(v) > 0;
+                    }),
+                free_vars.end());
         }
 
         eshkol_debug("Lambda %s found %zu free variables", lambda_name.c_str(), free_vars.size());
@@ -29532,6 +29785,9 @@ void eshkol_repl_disable() {
     g_repl_symbol_addresses.clear();
     g_repl_function_addresses.clear();
     g_repl_function_arities.clear();
+    g_repl_user_function_names.clear();
+    g_repl_user_variable_names.clear();
+    g_repl_define_counter.store(0, std::memory_order_relaxed);
 }
 
 void eshkol_repl_register_symbol(const char* name, uint64_t address) {
@@ -29575,6 +29831,27 @@ bool eshkol_repl_is_private_symbol(const char* name) {
     if (!name) return false;
     std::lock_guard<std::mutex> lock(g_repl_mutex);
     return g_repl_private_symbols.find(name) != g_repl_private_symbols.end();
+}
+
+void eshkol_repl_mark_user_variable(const char* name) {
+    if (!name) return;
+    std::lock_guard<std::mutex> lock(g_repl_mutex);
+    g_repl_user_variable_names.insert(name);
+    // Mutual exclusion: shed any prior function-binding metadata so the
+    // latest definition wins (the slot itself is left in place for old
+    // compiled code, but lookups for `name` now find a variable).
+    g_repl_user_function_names.erase(name);
+    g_repl_function_addresses.erase(name);
+    g_repl_function_arities.erase(name);
+    g_repl_lambda_names.erase(name);
+}
+
+void eshkol_repl_mark_user_function(const char* name) {
+    if (!name) return;
+    std::lock_guard<std::mutex> lock(g_repl_mutex);
+    g_repl_user_function_names.insert(name);
+    g_repl_user_variable_names.erase(name);
+    g_repl_symbol_addresses.erase(name);
 }
 
 void eshkol_register_external_functions(const eshkol_ast_t* asts, size_t num_asts) {

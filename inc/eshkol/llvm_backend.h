@@ -229,6 +229,21 @@ void eshkol_repl_register_private_symbol(const char* name);
  */
 bool eshkol_repl_is_private_symbol(const char* name);
 
+/*
+ * REPL Mode: Mark a top-level binding as a user-defined variable for hot
+ * reload. Mutually exclusive with eshkol_repl_mark_user_function() — calling
+ * this also clears any prior function-binding metadata for `name` so the
+ * latest definition wins. Used by codegen to drive PLT/GOT-style indirection
+ * for live redefinition of variables (and lambda variables).
+ */
+void eshkol_repl_mark_user_variable(const char* name);
+
+/*
+ * REPL Mode: Mark a top-level binding as a user-defined function for hot
+ * reload. Mutually exclusive with eshkol_repl_mark_user_variable().
+ */
+void eshkol_repl_mark_user_function(const char* name);
+
 #else
 
 // Stub implementations when LLVM backend is disabled
@@ -256,6 +271,8 @@ bool eshkol_repl_is_private_symbol(const char* name);
 #define eshkol_repl_register_sexpr(sexpr_name, sexpr_value) do {} while(0)
 #define eshkol_repl_register_private_symbol(name) do {} while(0)
 #define eshkol_repl_is_private_symbol(name) (false)
+#define eshkol_repl_mark_user_variable(name) do {} while(0)
+#define eshkol_repl_mark_user_function(name) do {} while(0)
 
 #endif // ESHKOL_LLVM_BACKEND_ENABLED
 

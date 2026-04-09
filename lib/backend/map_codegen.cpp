@@ -581,8 +581,48 @@ Value* MapCodegen::mapSingleList(Function* proc_func, Value* list) {
     size_t first_capture_idx = is_indirect_call ? 2 : 1;
     loadCapturedValues(proc_func, func_name, first_capture_idx, proc_args);
 
-    // Apply procedure
-    Value* proc_result = ctx_.builder().CreateCall(proc_func, proc_args);
+    // REPL HOT RELOAD: when the procedure is a top-level user function in REPL
+    // mode, its LLVM symbol carries a `__rv<N>` version suffix. Calling that
+    // versioned symbol directly bakes the snapshot into the loop, so a future
+    // (define (sq x) ...) redefinition would not affect this loop. Instead,
+    // dispatch through the host-owned __repl_fwd_<unversioned> slot at every
+    // iteration so the call always resolves to the latest definition — which
+    // is what R7RS section 4.1.4 requires for free top-level references in
+    // closure bodies.
+    Value* proc_result = nullptr;
+    {
+        std::string user_name;
+        auto rv_pos = func_name.rfind("__rv");
+        if (rv_pos != std::string::npos && rv_pos > 0) {
+            bool digits_only = true;
+            for (size_t i = rv_pos + 4; i < func_name.size(); i++) {
+                if (func_name[i] < '0' || func_name[i] > '9') { digits_only = false; break; }
+            }
+            if (digits_only && rv_pos + 4 < func_name.size()) {
+                user_name = func_name.substr(0, rv_pos);
+            }
+        }
+        if (!user_name.empty()) {
+            std::string slot_name = std::string("__repl_fwd_") + user_name;
+            auto& mod = ctx_.module();
+            GlobalVariable* slot = mod.getNamedGlobal(slot_name);
+            if (!slot) {
+                slot = new GlobalVariable(
+                    mod,
+                    ctx_.ptrType(),
+                    false,
+                    GlobalValue::ExternalLinkage,
+                    nullptr,
+                    slot_name
+                );
+            }
+            Value* loaded_fp = ctx_.builder().CreateLoad(ctx_.ptrType(), slot, user_name + "_dyn_fp");
+            proc_result = ctx_.builder().CreateCall(
+                proc_func->getFunctionType(), loaded_fp, proc_args);
+        } else {
+            proc_result = ctx_.builder().CreateCall(proc_func, proc_args);
+        }
+    }
 
     // Create new cons cell for result
     Value* cdr_null_tagged = tagged_.packNull();
@@ -717,8 +757,43 @@ Value* MapCodegen::mapMultiList(Function* proc_func, const std::vector<Value*>& 
     eshkol_debug("MultiMap: About to call %s function with %zu arguments",
                 func_name.c_str(), proc_args.size());
 
-    // Apply procedure
-    Value* proc_result = ctx_.builder().CreateCall(proc_func, proc_args);
+    // REPL HOT RELOAD: see mapSingleList — version-suffixed user functions
+    // dispatch through __repl_fwd_<unversioned> so the loop picks up the
+    // latest definition on every iteration.
+    Value* proc_result = nullptr;
+    {
+        std::string user_name;
+        auto rv_pos = func_name.rfind("__rv");
+        if (rv_pos != std::string::npos && rv_pos > 0) {
+            bool digits_only = true;
+            for (size_t i = rv_pos + 4; i < func_name.size(); i++) {
+                if (func_name[i] < '0' || func_name[i] > '9') { digits_only = false; break; }
+            }
+            if (digits_only && rv_pos + 4 < func_name.size()) {
+                user_name = func_name.substr(0, rv_pos);
+            }
+        }
+        if (!user_name.empty()) {
+            std::string slot_name = std::string("__repl_fwd_") + user_name;
+            auto& mod = ctx_.module();
+            GlobalVariable* slot = mod.getNamedGlobal(slot_name);
+            if (!slot) {
+                slot = new GlobalVariable(
+                    mod,
+                    ctx_.ptrType(),
+                    false,
+                    GlobalValue::ExternalLinkage,
+                    nullptr,
+                    slot_name
+                );
+            }
+            Value* loaded_fp = ctx_.builder().CreateLoad(ctx_.ptrType(), slot, user_name + "_dyn_fp");
+            proc_result = ctx_.builder().CreateCall(
+                proc_func->getFunctionType(), loaded_fp, proc_args);
+        } else {
+            proc_result = ctx_.builder().CreateCall(proc_func, proc_args);
+        }
+    }
 
     // Create new cons cell for result
     Value* cdr_null_tagged = tagged_.packNull();

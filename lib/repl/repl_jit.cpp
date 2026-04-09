@@ -41,7 +41,11 @@
 #include <fstream>
 #include <sstream>
 #include <cstdlib>
+#include <cstring>
 #include <cmath>
+#ifdef _WIN32
+#include <malloc.h>           // _aligned_malloc / _aligned_free
+#endif
 #include <filesystem>
 #include <set>
 #include <vector>
@@ -561,6 +565,23 @@ static bool is_repl_runtime_global(const llvm::GlobalVariable& global_var) {
            name == "__repl_shared_arena";
 }
 
+// REPL HOT RELOAD: derive the user-visible name from a versioned LLVM symbol
+// emitted by createFunctionDeclaration. Top-level user functions are emitted
+// as "<name>__rv<N>" so each redefinition is a unique JIT symbol — this helper
+// recovers the original "<name>" so we can register both forms in the REPL
+// registries (versioned for direct JIT lookup, unversioned for code that uses
+// the function as a value, e.g. (map sq lst)). Returns "" if `vname` is not
+// in versioned form.
+static std::string strip_repl_version_suffix(const std::string& vname) {
+    auto pos = vname.rfind("__rv");
+    if (pos == std::string::npos || pos == 0) return "";
+    if (pos + 4 >= vname.size()) return "";
+    for (size_t i = pos + 4; i < vname.size(); i++) {
+        if (vname[i] < '0' || vname[i] > '9') return "";
+    }
+    return vname.substr(0, pos);
+}
+
 void ReplJITContext::addModule(std::unique_ptr<Module> module, std::unique_ptr<LLVMContext> module_context) {
     if (!jit_) {
         initializeJIT();
@@ -580,21 +601,94 @@ void ReplJITContext::addModule(std::unique_ptr<Module> module, std::unique_ptr<L
     // Collect forward references and definitions to handle
     std::vector<std::pair<std::string, std::string>> forward_ref_updates;  // (ptr_name, func_name)
 
-    // STEP 1: Scan for globals that define previously forward-referenced functions
-    // These need to be converted to external declarations, and we'll update the pointer slot later
+    // STEP 1: Scan for __repl_fwd_<X> globals with initializers — these are
+    // codegen-emitted markers that say "the slot named X should now point at
+    // function Y". This is the universal hot-reload mechanism: every REPL user
+    // function definition emits one of these, and we strip the IR-level global
+    // so the absolute heap slot defined in STEP 2 owns the symbol. STEP 3
+    // updates the slot once the new function has been materialized in the JIT.
     for (auto& gv : module->globals()) {
         if (gv.hasInitializer()) {
             std::string name = gv.getName().str();
-            if (name.find("__repl_fwd_") == 0 && pending_forward_refs_.count(name)) {
-                // This module defines a function that was previously forward-referenced
-                // Get the function name from the initializer
+            if (name.find("__repl_fwd_") == 0) {
                 if (auto* func = dyn_cast<Function>(gv.getInitializer())) {
                     forward_ref_updates.push_back({name, func->getName().str()});
                 }
-                // Remove the initializer so it becomes an external declaration
-                // This prevents duplicate symbol errors
+                // Strip the initializer and force ExternalLinkage so the symbol
+                // is resolved against the absolute heap slot, not defined inline.
                 gv.setInitializer(nullptr);
+                gv.setLinkage(GlobalValue::ExternalLinkage);
                 gv.setExternallyInitialized(false);
+            }
+        }
+    }
+
+    // STEP 1B: Scan for __repl_var_<X> markers — codegen emits these whenever
+    // a top-level user variable @X is declared as an external in this module.
+    // For each marker we (1) ensure a 16-byte tagged_value heap slot exists for
+    // X (allocated lazily on first definition; reused on redefinition), (2)
+    // register `@X` as an absolute JIT symbol pointing at that slot, so all
+    // present and future modules' load/store of `@X` go through shared host
+    // storage, and (3) drop the marker from IR so the JIT does not materialize
+    // it. The marker itself carries no data — its sole purpose is to identify
+    // host-managed variable externals so we don't accidentally back random
+    // unresolved externals (runtime symbols, builtin globals, etc.).
+    {
+        std::vector<std::string> var_markers;
+        for (auto& gv : module->globals()) {
+            std::string name = gv.getName().str();
+            if (name.find("__repl_var_") == 0) {
+                var_markers.push_back(name);
+            }
+        }
+        for (const std::string& marker : var_markers) {
+            std::string var_name = marker.substr(strlen("__repl_var_"));
+
+            if (repl_var_storage_.count(var_name) == 0) {
+                // First definition: allocate a 16-byte aligned tagged_value
+                // slot, zero-initialize it, and register the variable's name
+                // as an absolute symbol pointing at the slot. Subsequent
+                // definitions reuse the same address, so a store from any
+                // module's entry function writes to shared storage.
+#ifdef _WIN32
+                void* storage = _aligned_malloc(16, 16);
+#else
+                void* storage = nullptr;
+                if (posix_memalign(&storage, 16, 16) != 0) storage = nullptr;
+#endif
+                if (!storage) {
+                    std::cerr << "REPL: failed to allocate storage for variable " << var_name << std::endl;
+                    continue;
+                }
+                std::memset(storage, 0, 16);
+                repl_var_storage_[var_name] = storage;
+
+                orc::SymbolMap sym;
+                sym[jit_->mangleAndIntern(var_name)] = {
+                    orc::ExecutorAddr::fromPtr(storage),
+                    JITSymbolFlags::Exported
+                };
+                auto& main_dylib = jit_->getMainJITDylib();
+                if (auto err = main_dylib.define(orc::absoluteSymbols(sym))) {
+                    std::string err_msg;
+                    raw_string_ostream err_stream(err_msg);
+                    err_stream << err;
+                    consumeError(std::move(err));
+                    std::cerr << "REPL: failed to register absolute symbol for "
+                              << var_name << ": " << err_msg << std::endl;
+                }
+
+                // Register in the codegen-visible symbol map so future
+                // modules' variable read paths see this name and emit an
+                // external @<name> declaration that resolves to our slot.
+                defined_globals_.insert(var_name);
+                eshkol_repl_register_symbol(
+                    var_name.c_str(),
+                    reinterpret_cast<uint64_t>(storage));
+            }
+
+            if (auto* gv = module->getNamedGlobal(marker)) {
+                gv->eraseFromParent();
             }
         }
     }
@@ -718,21 +812,50 @@ void ReplJITContext::addModule(std::unique_ptr<Module> module, std::unique_ptr<L
         throw std::runtime_error("Failed to add module to JIT");
     }
 
-    // STEP 3: Update forward reference pointers to point to the real functions
+    // STEP 3: Update (or create) forward reference pointer slots so they point
+    // at the real function addresses we just materialized in the JIT.
+    //
+    // For first-time definitions, the slot doesn't exist yet — STEP 2 only
+    // creates slots for *external* references. So we may need to allocate the
+    // slot here and register it as an absolute symbol (so future modules that
+    // reference __repl_fwd_<X> can resolve against this address).
     for (const auto& [ptr_name, func_name] : forward_ref_updates) {
         auto func_symbol = jit_->lookup(func_name);
-        if (func_symbol) {
-            // Update the pointer slot to point to the real function
-            auto it = forward_ref_slots_.find(ptr_name);
-            if (it != forward_ref_slots_.end()) {
-                void** ptr_slot = it->second;
-                *ptr_slot = func_symbol->toPtr<void*>();
-                pending_forward_refs_.erase(ptr_name);
-            }
-        } else {
+        if (!func_symbol) {
             consumeError(func_symbol.takeError());
             std::cerr << "Warning: Could not resolve forward reference to " << func_name << std::endl;
+            continue;
         }
+
+        void* func_addr = func_symbol->toPtr<void*>();
+
+        auto it = forward_ref_slots_.find(ptr_name);
+        if (it != forward_ref_slots_.end()) {
+            // Slot already exists (created earlier by STEP 2 for this or a prior
+            // module). Update in place — any prior caller that loaded the slot
+            // address gets the new function pointer on its next call.
+            *it->second = func_addr;
+        } else {
+            // First definition of this REPL user function. Allocate the slot,
+            // initialise it with the new function, and define the slot's address
+            // as an absolute JIT symbol. This satisfies both the current module's
+            // freshly-stripped external reference and any future module's
+            // external reference to __repl_fwd_<X>.
+            void** ptr_slot = new void*;
+            *ptr_slot = func_addr;
+            forward_ref_slots_[ptr_name] = ptr_slot;
+
+            orc::SymbolMap stub_symbol;
+            stub_symbol[jit_->mangleAndIntern(ptr_name)] = {
+                orc::ExecutorAddr::fromPtr(ptr_slot),
+                JITSymbolFlags::Exported
+            };
+            auto& main_dylib = jit_->getMainJITDylib();
+            if (auto err = main_dylib.define(orc::absoluteSymbols(stub_symbol))) {
+                consumeError(std::move(err));
+            }
+        }
+        pending_forward_refs_.erase(ptr_name);
     }
 }
 
@@ -1489,6 +1612,17 @@ void* ReplJITContext::executeBatch(std::vector<eshkol_ast_t>& asts, bool silent)
         defined_lambdas_[func_name_export] = {func_name_export, arity};
         eshkol_repl_register_function(func_name_export.c_str(), func_addr_export, arity);
         registered_lambdas_.insert(func_name_export);
+
+        // REPL HOT RELOAD: also register under the unversioned user name so
+        // function-as-value paths (e.g. (map sq lst)) can resolve "sq" to the
+        // current __rv<N> definition. The lambda_names mapping tells codegen
+        // which JIT symbol the user name actually points at. On redefinition
+        // these are overwritten so the latest version wins.
+        std::string user_name = strip_repl_version_suffix(func_name_export);
+        if (!user_name.empty()) {
+            eshkol_repl_register_function(user_name.c_str(), func_addr_export, arity);
+            eshkol_repl_register_lambda_name(user_name.c_str(), func_name_export.c_str());
+        }
     }
 
     // Register all lambda functions
@@ -1838,6 +1972,15 @@ void* ReplJITContext::execute(eshkol_ast_t* ast) {
         defined_lambdas_[func_name_export] = {func_name_export, arity};
         eshkol_repl_register_function(func_name_export.c_str(), func_addr_export, arity);
         registered_lambdas_.insert(func_name_export);
+
+        // REPL HOT RELOAD: also register under the unversioned user name (see
+        // executeBatch comment) so function-as-value paths and cross-module
+        // first-class function references resolve to the latest definition.
+        std::string user_name = strip_repl_version_suffix(func_name_export);
+        if (!user_name.empty()) {
+            eshkol_repl_register_function(user_name.c_str(), func_addr_export, arity);
+            eshkol_repl_register_lambda_name(user_name.c_str(), func_name_export.c_str());
+        }
     }
 
     // REPL MODE: Register all lambda functions from this module with global REPL context

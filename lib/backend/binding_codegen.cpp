@@ -7,6 +7,7 @@
  */
 
 #include <eshkol/backend/binding_codegen.h>
+#include <eshkol/llvm_backend.h>      // for eshkol_repl_mark_user_variable
 
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
 
@@ -235,16 +236,45 @@ Value* BindingCodegen::define(const eshkol_operations_t* op) {
             // Pre-declare global variable
             GlobalVariable* gv = ctx_.module().getNamedGlobal(var_name);
             if (!gv) {
-                Constant* zero_init = ConstantAggregateZero::get(ctx_.taggedValueType());
-                gv = new GlobalVariable(
-                    ctx_.module(),
-                    ctx_.taggedValueType(),
-                    false,
-                    (is_lib_init || is_repl) ? GlobalValue::LinkOnceODRLinkage : GlobalValue::ExternalLinkage,
-                    zero_init,
-                    var_name
-                );
-                gv->setAlignment(Align(16));
+                if (is_repl) {
+                    // REPL HOT RELOAD: emit @<name> as a pure external
+                    // declaration. The REPL host backs it with a 16-byte
+                    // tagged_value heap slot registered as an absolute symbol,
+                    // so redefinition is just a store into shared storage.
+                    gv = new GlobalVariable(
+                        ctx_.module(),
+                        ctx_.taggedValueType(),
+                        false,
+                        GlobalValue::ExternalLinkage,
+                        nullptr,            // no initializer = external decl
+                        var_name
+                    );
+                    gv->setAlignment(Align(16));
+                    // Marker so addModule knows to allocate the heap slot.
+                    std::string marker_name = std::string("__repl_var_") + var_name;
+                    if (!ctx_.module().getNamedGlobal(marker_name)) {
+                        new GlobalVariable(
+                            ctx_.module(),
+                            ctx_.int8Type(),
+                            true,           // constant
+                            GlobalValue::WeakODRLinkage,
+                            ConstantInt::get(ctx_.int8Type(), 1),
+                            marker_name
+                        );
+                    }
+                    eshkol_repl_mark_user_variable(var_name);
+                } else {
+                    Constant* zero_init = ConstantAggregateZero::get(ctx_.taggedValueType());
+                    gv = new GlobalVariable(
+                        ctx_.module(),
+                        ctx_.taggedValueType(),
+                        false,
+                        is_lib_init ? GlobalValue::LinkOnceODRLinkage : GlobalValue::ExternalLinkage,
+                        zero_init,
+                        var_name
+                    );
+                    gv->setAlignment(Align(16));
+                }
             }
             pre_declared_binding = gv;
             if (symbol_table_) (*symbol_table_)[var_name] = gv;
@@ -330,17 +360,51 @@ Value* BindingCodegen::define(const eshkol_operations_t* op) {
     if (use_global) {
         // Create or get GlobalVariable
         GlobalVariable* gv = ctx_.module().getNamedGlobal(var_name);
+        // REPL HOT RELOAD: every top-level variable definition (re)claims the
+        // user-variable namespace, even when Step 1.5 / the lambda branch
+        // already created the external decl. This handles the (define f ...)
+        // following (define (f x) ...) case where `gv` is non-null but the
+        // function namespace still owned `f`.
+        if (is_repl) {
+            eshkol_repl_mark_user_variable(var_name);
+        }
         if (!gv) {
-            Constant* zero_init = ConstantAggregateZero::get(ctx_.taggedValueType());
-            gv = new GlobalVariable(
-                ctx_.module(),
-                ctx_.taggedValueType(),
-                false,
-                (is_lib_init || is_repl) ? GlobalValue::LinkOnceODRLinkage : GlobalValue::ExternalLinkage,
-                zero_init,
-                var_name
-            );
-            gv->setAlignment(Align(16));
+            if (is_repl) {
+                // REPL HOT RELOAD: see lambda branch above — variable storage
+                // is host-owned heap registered as an absolute symbol.
+                gv = new GlobalVariable(
+                    ctx_.module(),
+                    ctx_.taggedValueType(),
+                    false,
+                    GlobalValue::ExternalLinkage,
+                    nullptr,                // no initializer = external decl
+                    var_name
+                );
+                gv->setAlignment(Align(16));
+                std::string marker_name = std::string("__repl_var_") + var_name;
+                if (!ctx_.module().getNamedGlobal(marker_name)) {
+                    new GlobalVariable(
+                        ctx_.module(),
+                        ctx_.int8Type(),
+                        true,               // constant
+                        GlobalValue::WeakODRLinkage,
+                        ConstantInt::get(ctx_.int8Type(), 1),
+                        marker_name
+                    );
+                }
+                eshkol_repl_mark_user_variable(var_name);
+            } else {
+                Constant* zero_init = ConstantAggregateZero::get(ctx_.taggedValueType());
+                gv = new GlobalVariable(
+                    ctx_.module(),
+                    ctx_.taggedValueType(),
+                    false,
+                    is_lib_init ? GlobalValue::LinkOnceODRLinkage : GlobalValue::ExternalLinkage,
+                    zero_init,
+                    var_name
+                );
+                gv->setAlignment(Align(16));
+            }
         }
 
         ctx_.builder().CreateStore(tagged_val, gv);
