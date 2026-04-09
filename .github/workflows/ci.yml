@@ -12,7 +12,6 @@ env:
 
 jobs:
   unix-matrix:
-    if: ${{ false }} # TEMP: focus CI on Windows ARM64 while debugging hosted-runner issues
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -183,18 +182,66 @@ jobs:
       max-parallel: 2
       matrix:
         include:
-          # Temporarily keep only the lite x64 leg enabled until the shared
-          # x64 LLVM SDK cache is populated on GitHub-hosted Windows.
           - name: windows-x64-lite
             runner: windows-latest
             arch: x64
             llvm_suffix: x86_64
-            build_dir: build-x64
+            build_dir: build
             xla_enabled: 'OFF'
             gpu_enabled: 'OFF'
             test_mode: all
             upload_artifact: 'true'
             artifact_name: eshkol-windows-x64
+          - name: windows-arm64-lite
+            runner: windows-11-arm
+            arch: arm64
+            llvm_suffix: aarch64
+            build_dir: build
+            xla_enabled: 'OFF'
+            gpu_enabled: 'OFF'
+            test_mode: all
+            upload_artifact: 'true'
+            artifact_name: eshkol-windows-arm64
+          - name: windows-x64-xla
+            runner: windows-latest
+            arch: x64
+            llvm_suffix: x86_64
+            build_dir: build-xla
+            xla_enabled: 'ON'
+            gpu_enabled: 'OFF'
+            test_mode: xla
+            upload_artifact: 'false'
+            artifact_name: ''
+          - name: windows-arm64-xla
+            runner: windows-11-arm
+            arch: arm64
+            llvm_suffix: aarch64
+            build_dir: build-xla
+            xla_enabled: 'ON'
+            gpu_enabled: 'OFF'
+            test_mode: xla
+            upload_artifact: 'false'
+            artifact_name: ''
+          - name: windows-x64-cuda
+            runner: windows-latest
+            arch: x64
+            llvm_suffix: x86_64
+            build_dir: build-cuda
+            xla_enabled: 'OFF'
+            gpu_enabled: 'ON'
+            test_mode: gpu
+            upload_artifact: 'false'
+            artifact_name: ''
+          - name: windows-arm64-cuda
+            runner: windows-11-arm
+            arch: arm64
+            llvm_suffix: aarch64
+            build_dir: build-cuda
+            xla_enabled: 'OFF'
+            gpu_enabled: 'ON'
+            test_mode: gpu
+            upload_artifact: 'false'
+            artifact_name: ''
     steps:
       - uses: actions/checkout@v4
 
@@ -226,16 +273,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "curl download failed (exit $LASTEXITCODE)" }
 
           Write-Host "Extracting..."
-          $extractedEntries = 0
-          tar -xvf $archive -C C:\src 2>&1 | ForEach-Object {
-            $extractedEntries++
-            if ($extractedEntries -le 5 -or ($extractedEntries % 1000) -eq 0) {
-              Write-Host ("tar[{0}] {1}" -f $extractedEntries, $_)
-            }
-          }
-          $tarExit = $LASTEXITCODE
-          Write-Host "Extraction processed $extractedEntries archive entries"
-          if ($tarExit -ne 0) { throw "tar extraction failed (exit $tarExit)" }
+          tar -xf $archive -C C:\src
+          if ($LASTEXITCODE -ne 0) { throw "tar extraction failed (exit $LASTEXITCODE)" }
 
           if (-not (Test-Path "$llvmCmakeDir\LLVMConfig.cmake")) {
             throw "LLVMConfig.cmake not found at $llvmCmakeDir - extraction may have failed"
