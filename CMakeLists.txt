@@ -90,6 +90,10 @@ option(ESHKOL_BUILD_INTEGRATION_TESTS "Build integration tests" OFF)
 option(ESHKOL_ENABLE_ASAN "Enable Address Sanitizer" OFF)
 option(ESHKOL_ENABLE_UBSAN "Enable Undefined Behavior Sanitizer" OFF)
 
+if(ESHKOL_BUILD_TESTS)
+    enable_testing()
+endif()
+
 # XLA Backend Support (optional, default OFF)
 # When enabled, provides accelerated tensor operations via XLA/StableHLO
 # Requires MLIR and StableHLO libraries
@@ -1195,6 +1199,15 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/pkg/eshkol_pkg.cpp")
     target_compile_features(eshkol-pkg PRIVATE cxx_std_17)
 
     install(TARGETS eshkol-pkg DESTINATION bin)
+
+    if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/pkg/command_injection_test.cpp")
+        add_executable(eshkol-pkg-command-injection-test tests/pkg/command_injection_test.cpp)
+        target_compile_features(eshkol-pkg-command-injection-test PRIVATE cxx_std_17)
+        add_test(
+            NAME eshkol-pkg-command-injection
+            COMMAND eshkol-pkg-command-injection-test $<TARGET_FILE:eshkol-pkg>
+        )
+    endif()
 endif()
 
 # ===== LSP Server =====
