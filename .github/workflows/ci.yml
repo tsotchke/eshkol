@@ -186,7 +186,7 @@ jobs:
           # Temporarily keep only the lite x64 leg enabled until the shared
           # x64 LLVM SDK cache is populated on GitHub-hosted Windows.
           - name: windows-x64-lite
-            runner: windows-2022
+            runner: windows-latest
             arch: x64
             llvm_suffix: x86_64
             build_dir: build-x64
