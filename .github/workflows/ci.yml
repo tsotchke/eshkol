@@ -226,8 +226,16 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "curl download failed (exit $LASTEXITCODE)" }
 
           Write-Host "Extracting..."
-          tar -xf $archive -C C:\src
-          if ($LASTEXITCODE -ne 0) { throw "tar extraction failed (exit $LASTEXITCODE)" }
+          $extractedEntries = 0
+          tar -xvf $archive -C C:\src 2>&1 | ForEach-Object {
+            $extractedEntries++
+            if ($extractedEntries -le 5 -or ($extractedEntries % 1000) -eq 0) {
+              Write-Host ("tar[{0}] {1}" -f $extractedEntries, $_)
+            }
+          }
+          $tarExit = $LASTEXITCODE
+          Write-Host "Extraction processed $extractedEntries archive entries"
+          if ($tarExit -ne 0) { throw "tar extraction failed (exit $tarExit)" }
 
           if (-not (Test-Path "$llvmCmakeDir\LLVMConfig.cmake")) {
             throw "LLVMConfig.cmake not found at $llvmCmakeDir - extraction may have failed"
