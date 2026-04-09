@@ -636,48 +636,55 @@ void ReplJITContext::addModule(std::unique_ptr<Module> module, std::unique_ptr<L
         }
     }
 
-    // HOT RELOAD: Only remove user-defined symbols being redefined.
-    // Skip LinkOnceODR (shared codegen like builtin_+_2arg) and internal functions.
+    // HOT RELOAD: Collect the set of user-defined top-level symbols this new
+    // module is about to (re)define. For each one that was previously defined,
+    // remove its ResourceTracker so the old module (containing the stale
+    // definition) is fully evicted from the JIT — this frees JIT memory AND
+    // invalidates the dylib's cached symbol resolution, so the new module can
+    // register a fresh definition without hitting a duplicate-symbol error.
+    //
+    // Previous approach: call JITDylib::remove(SymbolNameSet) directly. This
+    // is unreliable across LLVM versions — on Windows ARM64 (LLVM 21) the
+    // dylib's internal symbol-resolution cache would still serve the old
+    // address after a subsequent definition, and on Linux/macOS the new
+    // module's addIRModule sometimes saw the old symbol as still-defined and
+    // failed with "duplicate definition of symbol". ResourceTracker is the
+    // LLVM-recommended canonical API for incremental hot-reload.
+    std::vector<std::string> redefined_symbol_names;
     {
-        orc::SymbolNameSet to_remove;
         for (auto& func : *module) {
             if (func.isDeclaration() || func.hasLocalLinkage()) continue;
             if (func.getName().starts_with("llvm.")) continue;
             if (func.getLinkage() == GlobalValue::LinkOnceODRLinkage) continue;
             std::string fname = func.getName().str();
             if (fname.starts_with("__repl_") || fname.starts_with("lambda_")) continue;
-            if (defined_lambdas_.count(fname) == 0) continue;
-            auto sym = jit_->lookup(func.getName());
-            if (sym) {
-                to_remove.insert(jit_->mangleAndIntern(func.getName()));
-            } else {
-                consumeError(sym.takeError());
-            }
+            redefined_symbol_names.push_back(fname);
         }
         for (auto& gv : module->globals()) {
             if (!gv.hasInitializer() || gv.hasLocalLinkage()) continue;
             if (gv.getName().starts_with("llvm.")) continue;
             if (gv.getLinkage() == GlobalValue::LinkOnceODRLinkage) continue;
             std::string gvname = gv.getName().str();
-            bool is_user_global = false;
-            for (const auto& [var_name, lambda_info] : defined_lambdas_) {
-                if (gvname == var_name + "_sexpr") {
-                    is_user_global = true;
-                    break;
-                }
-            }
-            if (!is_user_global) continue;
-            auto sym = jit_->lookup(gv.getName());
-            if (sym) {
-                to_remove.insert(jit_->mangleAndIntern(gv.getName()));
-            } else {
-                consumeError(sym.takeError());
-            }
+            if (gvname.starts_with("__repl_") || gvname.starts_with("lambda_")) continue;
+            redefined_symbol_names.push_back(gvname);
         }
-        if (!to_remove.empty()) {
-            if (auto err = jit_->getMainJITDylib().remove(to_remove)) {
+
+        // For each previously-defined symbol, remove its tracker so the old
+        // module is fully evicted. If the symbol was never defined before,
+        // there's no tracker to remove (it'll get one when we add the module
+        // below).
+        for (const auto& name : redefined_symbol_names) {
+            auto it = symbol_trackers_.find(name);
+            if (it == symbol_trackers_.end()) continue;
+            if (auto err = it->second->remove()) {
                 consumeError(std::move(err));
             }
+            symbol_trackers_.erase(it);
+            // Also clear the cached lookup address / registration state so
+            // subsequent lookups re-resolve to the new definition.
+            symbol_table_.erase(name);
+            defined_lambdas_.erase(name);
+            registered_lambdas_.erase(name);
         }
     }
 
@@ -709,13 +716,27 @@ void ReplJITContext::addModule(std::unique_ptr<Module> module, std::unique_ptr<L
     auto ts_ctx = orc::ThreadSafeContext(std::move(module_context));
     auto tsm = ThreadSafeModule(std::move(module), ts_ctx);
 
-    auto err = jit_->addIRModule(std::move(tsm));
+    // Create a fresh ResourceTracker for this module so that if any of the
+    // symbols it defines get redefined in a future REPL eval, we can cleanly
+    // evict this entire module via tracker->remove(). Without a tracker,
+    // addIRModule uses the JITDylib's default resource set and we lose the
+    // ability to unload.
+    auto& main_jd_for_tracker = jit_->getMainJITDylib();
+    auto module_tracker = main_jd_for_tracker.createResourceTracker();
+
+    auto err = jit_->addIRModule(module_tracker, std::move(tsm));
     if (err) {
         std::string err_msg;
         raw_string_ostream err_stream(err_msg);
         err_stream << err;
         std::cerr << "Failed to add module to JIT: " << err_msg << std::endl;
         throw std::runtime_error("Failed to add module to JIT");
+    }
+
+    // Register the tracker for every top-level symbol this module defines so
+    // future redefinitions can cleanly evict it.
+    for (const auto& name : redefined_symbol_names) {
+        symbol_trackers_[name] = module_tracker;
     }
 
     // STEP 3: Update forward reference pointers to point to the real functions

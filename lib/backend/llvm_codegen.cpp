@@ -386,14 +386,22 @@ static bool isLambdaName(const std::string& name) {
 }
 
 static GlobalValue::LinkageTypes publicDefinitionLinkage(bool library_mode) {
+    // REPL mode: use ExternalLinkage so the ResourceTracker-based hot-reload
+    // path in ReplJITContext::addModule can actually replace definitions on
+    // redefine. linkonce_odr would cause LLVM ORC to silently keep the first
+    // definition (the "one definition rule" semantics), which defeats hot
+    // reload — redefined functions would still point to the old code.
+    if (g_repl_mode_enabled) {
+        return GlobalValue::ExternalLinkage;
+    }
 #ifdef _WIN32
-    if (library_mode || g_repl_mode_enabled) {
+    if (library_mode) {
         // COFF treats linkonce_odr as an ODR contract, which is too strict for
         // stdlib symbols that user code is allowed to redefine.
         return GlobalValue::WeakAnyLinkage;
     }
 #endif
-    return (library_mode || g_repl_mode_enabled)
+    return library_mode
         ? GlobalValue::LinkOnceODRLinkage
         : GlobalValue::ExternalLinkage;
 }
