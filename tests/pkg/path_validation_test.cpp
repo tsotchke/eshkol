@@ -1,17 +1,20 @@
+// Regression test for the path-traversal vulnerability that allowed a
+// dependency named "../outside_link" in eshkol.toml to escape the project's
+// eshkol_deps/ directory. The fix is in tools/pkg/eshkol_pkg.cpp:
+// is_valid_dependency_name() — names must be 1–64 chars of [A-Za-z0-9._-],
+// must start with an alphanumeric, and must not be '.', '..', or a Windows
+// reserved name.
+//
+// We exercise the binary end-to-end by writing a hostile manifest, calling
+// `eshkol-pkg install`, and asserting that (a) the binary exits non-zero
+// and (b) no file appears at the would-be-escaped path.
+
+#include <eshkol/pkg/subprocess.h>
+
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <string>
-#include <vector>
-
-#ifdef _WIN32
-#include <windows.h>
-#else
-#include <cerrno>
-#include <sys/types.h>
-#include <sys/wait.h>
-#include <unistd.h>
-#endif
 
 namespace fs = std::filesystem;
 
@@ -20,81 +23,6 @@ namespace {
 int fail(const std::string& message) {
     std::cerr << "FAIL: " << message << std::endl;
     return 1;
-}
-
-#ifdef _WIN32
-std::wstring widen_utf8(const std::string& text) {
-    if (text.empty()) return {};
-    int size = MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, nullptr, 0);
-    if (size <= 0) return {};
-    std::wstring wide(static_cast<size_t>(size - 1), L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, wide.data(), size);
-    return wide;
-}
-
-std::wstring build_command_line(const std::vector<std::string>& args) {
-    std::wstring command_line;
-    for (size_t i = 0; i < args.size(); ++i) {
-        if (i > 0) command_line.push_back(L' ');
-        command_line.push_back(L'"');
-        for (wchar_t ch : widen_utf8(args[i])) {
-            if (ch == L'\\' || ch == L'"') command_line.push_back(L'\\');
-            command_line.push_back(ch);
-        }
-        command_line.push_back(L'"');
-    }
-    return command_line;
-}
-#endif
-
-int run_command(const std::vector<std::string>& args, const fs::path& cwd) {
-    if (args.empty()) return 1;
-
-#ifdef _WIN32
-    std::wstring application = widen_utf8(args.front());
-    std::wstring command_line = build_command_line(args);
-    std::vector<wchar_t> mutable_command_line(command_line.begin(), command_line.end());
-    mutable_command_line.push_back(L'\0');
-
-    STARTUPINFOW startup_info{};
-    startup_info.cb = sizeof(startup_info);
-    PROCESS_INFORMATION process_info{};
-    std::wstring working_dir = widen_utf8(cwd.string());
-
-    if (!CreateProcessW(application.c_str(), mutable_command_line.data(), nullptr, nullptr,
-                        FALSE, 0, nullptr, working_dir.c_str(), &startup_info, &process_info)) {
-        return static_cast<int>(GetLastError());
-    }
-
-    WaitForSingleObject(process_info.hProcess, INFINITE);
-    DWORD exit_code = 1;
-    GetExitCodeProcess(process_info.hProcess, &exit_code);
-    CloseHandle(process_info.hThread);
-    CloseHandle(process_info.hProcess);
-    return static_cast<int>(exit_code);
-#else
-    std::vector<char*> argv;
-    argv.reserve(args.size() + 1);
-    for (const auto& arg : args) argv.push_back(const_cast<char*>(arg.c_str()));
-    argv.push_back(nullptr);
-
-    pid_t pid = fork();
-    if (pid == 0) {
-        if (chdir(cwd.c_str()) != 0) _exit(125);
-        execvp(argv[0], argv.data());
-        _exit(errno == ENOENT ? 127 : 126);
-    }
-    if (pid < 0) return errno;
-
-    int status = 0;
-    while (waitpid(pid, &status, 0) < 0) {
-        if (errno != EINTR) return errno;
-    }
-
-    if (WIFEXITED(status)) return WEXITSTATUS(status);
-    if (WIFSIGNALED(status)) return 128 + WTERMSIG(status);
-    return 1;
-#endif
 }
 
 } // namespace
@@ -124,7 +52,8 @@ int main(int argc, char** argv) {
     source << ";; dependency path validation regression\n";
     source.close();
 
-    const int exit_code = run_command({pkg_binary.string(), "install"}, project_dir);
+    const int exit_code = eshkol::pkg::run_subprocess(
+        {pkg_binary.string(), "install"}, &project_dir);
     if (exit_code == 0) {
         return fail("eshkol-pkg install accepted an invalid dependency name");
     }

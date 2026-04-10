@@ -30,43 +30,14 @@
 #include <sstream>
 #include <iostream>
 #include <algorithm>
-#if defined(__has_include)
-#if __has_include(<filesystem>)
 #include <filesystem>
-#define ESHKOL_PKG_HAVE_STD_FILESYSTEM 1
-#elif __has_include(<experimental/filesystem>)
-#include <experimental/filesystem>
-#define ESHKOL_PKG_HAVE_EXPERIMENTAL_FILESYSTEM 1
-#endif
-#else
-#include <filesystem>
-#define ESHKOL_PKG_HAVE_STD_FILESYSTEM 1
-#endif
-#include <functional>
 
-#ifdef _WIN32
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#if defined(__has_include)
-#if __has_include(<windows.h>)
-#include <windows.h>
-#endif
-#else
-#include <windows.h>
-#endif
-#else
-#include <cerrno>
-#include <sys/types.h>
-#include <sys/wait.h>
-#include <unistd.h>
-#endif
+// All subprocess launching is centralised in this header so the production
+// code and the regression tests share a single implementation. The header
+// is also responsible for the platform-specific Windows / POSIX glue.
+#include <eshkol/pkg/subprocess.h>
 
-#if defined(ESHKOL_PKG_HAVE_STD_FILESYSTEM)
 namespace fs = std::filesystem;
-#else
-namespace fs = std::experimental::filesystem;
-#endif
 
 // ============================================================================
 // Minimal TOML Parser (supports tables, key=value, strings, arrays)
@@ -286,6 +257,7 @@ struct Manifest {
 
 bool is_valid_dependency_name(const std::string& name);
 void require_valid_dependency_name(const std::string& name);
+bool is_safe_git_url(const std::string& url);
 
 Manifest load_manifest(const fs::path& dir) {
     Manifest m;
@@ -397,8 +369,52 @@ fs::path get_packages_dir() {
     return pkgs;
 }
 
+// ─── Dependency-name validation ─────────────────────────────────────────────
+//
+// Dep names show up in three risky places — file system paths under
+// `eshkol_deps/`, lookup keys in our package cache, and arguments to git
+// clone — so we restrict them up front to a small, portable subset:
+//
+//   1. Length cap (matches cargo's 64-char limit) so a runaway TOML can't
+//      blow out path buffers or denial-of-service the cache.
+//   2. Must start with an alphanumeric character (so leading '.', '-', '_'
+//      can't form hidden files or option-like tokens).
+//   3. Body characters limited to [A-Za-z0-9._-] — explicitly excludes
+//      slashes, backslashes, NULs, whitespace, and shell metacharacters.
+//   4. The literal strings "." and ".." are rejected because they would
+//      otherwise pass rule (3) and refer to the current/parent directory.
+//   5. Windows reserved device names (CON, NUL, AUX, PRN, COM1-9, LPT1-9)
+//      are rejected case-insensitively because creating a file with one of
+//      those names succeeds on POSIX but breaks every Windows toolchain.
+
+constexpr size_t kMaxDependencyNameLength = 64;
+
+namespace {
+
+bool is_windows_reserved_name(const std::string& name) {
+    static const std::string reserved[] = {
+        "con", "nul", "aux", "prn",
+        "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9",
+        "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+    };
+    // The reserved-name check applies to the part before any extension dot.
+    size_t dot = name.find('.');
+    std::string stem = (dot == std::string::npos) ? name : name.substr(0, dot);
+    std::string lower = stem;
+    std::transform(lower.begin(), lower.end(), lower.begin(),
+                   [](unsigned char c) { return std::tolower(c); });
+    for (const auto& r : reserved) {
+        if (lower == r) return true;
+    }
+    return false;
+}
+
+} // namespace
+
 bool is_valid_dependency_name(const std::string& name) {
     if (name.empty()) return false;
+    if (name.size() > kMaxDependencyNameLength) return false;
+    if (name == "." || name == "..") return false;
     if (!std::isalnum(static_cast<unsigned char>(name.front()))) return false;
 
     for (char ch : name) {
@@ -409,122 +425,77 @@ bool is_valid_dependency_name(const std::string& name) {
         return false;
     }
 
+    if (is_windows_reserved_name(name)) return false;
+
     return true;
 }
 
 void require_valid_dependency_name(const std::string& name) {
     if (!is_valid_dependency_name(name)) {
         std::cerr << "Error: Invalid dependency name '" << name
-                  << "'. Use only letters, numbers, '.', '_' and '-'."
+                  << "'. Names must be 1–" << kMaxDependencyNameLength
+                  << " characters of [A-Za-z0-9._-], start with an alphanumeric,"
+                     " and must not be '.', '..', or a Windows reserved name."
                   << std::endl;
         std::exit(1);
     }
 }
 
-namespace {
+// ─── Dependency-URL validation ──────────────────────────────────────────────
+//
+// PR #13 closed the std::system() shell-injection hole, but the URLs we hand
+// to `git clone` still come straight out of the dependency manifest. Git
+// itself supports several URL schemes that can execute commands on clone
+// (the historic `--upload-pack=…`, `ext::` transports, scp-style targets
+// that get passed through ssh, file:// pointing at a hostile repo with a
+// post-checkout hook, …). We constrain dependency URLs to schemes that
+// don't have those properties, as a defence-in-depth layer for the same
+// "malicious manifest" threat model:
+//
+//   • https://       — TLS, no shell, no exec.
+//   • git@host:path  — scp-style ssh, but only when the user-portion is
+//                      exactly "git@" (matches GitHub/GitLab/Bitbucket/etc.).
+//                      ssh keys are still required, so a hostile manifest
+//                      can't unilaterally make the user authenticate.
+//
+// Anything else (file://, ssh://, ext::, ftp://, no scheme, embedded
+// option-looking strings) is rejected.
 
-#ifdef _WIN32
-std::wstring widen_utf8(const std::string& text) {
-    if (text.empty()) return {};
-    int size = MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, nullptr, 0);
-    if (size <= 0) return {};
-    std::wstring wide(static_cast<size_t>(size - 1), L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, wide.data(), size);
-    return wide;
-}
+bool is_safe_git_url(const std::string& url) {
+    if (url.empty()) return false;
+    // Reject anything that looks like a `git clone` option (--upload-pack=…
+    // and friends), even if it would otherwise pass the scheme check.
+    if (url.front() == '-') return false;
 
-std::wstring build_windows_command_line(const std::vector<std::string>& args) {
-    std::wstring command_line;
-    for (size_t i = 0; i < args.size(); ++i) {
-        if (i > 0) command_line.push_back(L' ');
-        command_line.push_back(L'"');
-        const std::wstring arg = widen_utf8(args[i]);
-        for (wchar_t ch : arg) {
-            if (ch == L'\\' || ch == L'"') {
-                command_line.push_back(L'\\');
-            }
-            command_line.push_back(ch);
+    if (url.compare(0, 8, "https://") == 0) {
+        // No NULs, no embedded newlines, no whitespace.
+        for (char ch : url) {
+            unsigned char uch = static_cast<unsigned char>(ch);
+            if (uch < 0x20 || uch == 0x7f) return false;
         }
-        command_line.push_back(L'"');
+        return true;
     }
-    return command_line;
+
+    // git@<host>:<path>  — scp-style. We anchor on "git@" so a manifest
+    // can't substitute an arbitrary username (e.g. "$(rm -rf /)@host:foo").
+    if (url.compare(0, 4, "git@") == 0) {
+        auto colon = url.find(':');
+        if (colon == std::string::npos || colon == 4) return false;
+        for (char ch : url) {
+            unsigned char uch = static_cast<unsigned char>(ch);
+            if (uch < 0x20 || uch == 0x7f) return false;
+        }
+        return true;
+    }
+
+    return false;
 }
-#endif
 
-} // namespace
-
+// Adapter that lets the rest of the file keep calling `run_command(argv)`
+// while the implementation lives in eshkol/pkg/subprocess.h. The CWD-aware
+// overload is what the regression tests use directly.
 int run_command(const std::vector<std::string>& args) {
-    if (args.empty()) {
-        return 1;
-    }
-
-#ifdef _WIN32
-    std::wstring command_line = build_windows_command_line(args);
-    std::vector<wchar_t> mutable_command_line(command_line.begin(), command_line.end());
-    mutable_command_line.push_back(L'\0');
-
-    STARTUPINFOW startup_info{};
-    startup_info.cb = sizeof(startup_info);
-
-    PROCESS_INFORMATION process_info{};
-    // Pass nullptr for lpApplicationName so CreateProcessW parses the
-    // executable from the start of the command line AND searches %PATH%
-    // (the docs note that an explicit lpApplicationName disables PATH
-    // search, which would break `git clone`, the user's compiler in PATH,
-    // etc. on Windows). Argument injection is still impossible because we
-    // pre-quote each argv element in build_windows_command_line.
-    if (!CreateProcessW(nullptr,
-                        mutable_command_line.data(),
-                        nullptr,
-                        nullptr,
-                        FALSE,
-                        0,
-                        nullptr,
-                        nullptr,
-                        &startup_info,
-                        &process_info)) {
-        return static_cast<int>(GetLastError());
-    }
-
-    WaitForSingleObject(process_info.hProcess, INFINITE);
-
-    DWORD exit_code = 1;
-    GetExitCodeProcess(process_info.hProcess, &exit_code);
-    CloseHandle(process_info.hThread);
-    CloseHandle(process_info.hProcess);
-    return static_cast<int>(exit_code);
-#else
-    std::vector<char*> argv;
-    argv.reserve(args.size() + 1);
-    for (const auto& arg : args) {
-        argv.push_back(const_cast<char*>(arg.c_str()));
-    }
-    argv.push_back(nullptr);
-
-    pid_t pid = fork();
-    if (pid == 0) {
-        execvp(argv[0], argv.data());
-        _exit(errno == ENOENT ? 127 : 126);
-    }
-    if (pid < 0) {
-        return errno;
-    }
-
-    int status = 0;
-    while (waitpid(pid, &status, 0) < 0) {
-        if (errno != EINTR) {
-            return errno;
-        }
-    }
-
-    if (WIFEXITED(status)) {
-        return WEXITSTATUS(status);
-    }
-    if (WIFSIGNALED(status)) {
-        return 128 + WTERMSIG(status);
-    }
-    return 1;
-#endif
+    return eshkol::pkg::run_subprocess(args);
 }
 
 // ============================================================================
@@ -674,6 +645,17 @@ int cmd_install(int argc, char* argv[]) {
             } else {
                 // Try the package registry
                 repo_url = "https://github.com/tsotchke/" + dep.name + ".git";
+            }
+
+            // Defence-in-depth: even though we're now passing the URL as a
+            // separate argv element (no shell), git itself supports URL
+            // schemes that can execute commands on clone. Restrict to
+            // schemes we trust before invoking it.
+            if (!is_safe_git_url(repo_url)) {
+                std::cerr << "Warning: refusing to fetch " << dep.name
+                          << " — unsupported or unsafe URL '" << repo_url
+                          << "'. Use https:// or git@host:path." << std::endl;
+                continue;
             }
 
             std::vector<std::string> cmd = {
