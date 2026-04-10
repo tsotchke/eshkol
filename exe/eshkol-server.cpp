@@ -8,6 +8,7 @@
  */
 
 #include "eshkol/eshkol.h"
+#include "eshkol/http_request_utils.h"
 #include <eshkol/llvm_backend.h>
 #include <eshkol/logger.h>
 
@@ -241,6 +242,8 @@ struct HttpRequest {
     std::string path;
     std::unordered_map<std::string, std::string> headers;
     std::string body;
+    bool malformed = false;
+    std::string error_message;
 };
 
 HttpRequest parse_request(const std::string& raw) {
@@ -281,7 +284,12 @@ HttpRequest parse_request(const std::string& raw) {
     // Trim body to Content-Length if specified
     auto it = req.headers.find("Content-Length");
     if (it != req.headers.end()) {
-        size_t len = std::stoul(it->second);
+        size_t len = 0;
+        if (!eshkol_parse_content_length(it->second, len)) {
+            req.malformed = true;
+            req.error_message = "Invalid Content-Length";
+            return req;
+        }
         if (req.body.size() > len) {
             req.body = req.body.substr(0, len);
         }
@@ -393,8 +401,23 @@ void handle_client(socket_handle_t client_socket) {
             size_t cl_pos = request_data.find("Content-Length:");
             if (cl_pos != std::string::npos) {
                 size_t cl_end = request_data.find("\r\n", cl_pos);
+                if (cl_end == std::string::npos) {
+                    std::string response = build_response(400, "application/json",
+                        json_error("Invalid Content-Length"));
+                    send(client_socket, response.c_str(), static_cast<int>(response.size()), 0);
+                    close_socket(client_socket);
+                    return;
+                }
+
                 std::string cl_str = request_data.substr(cl_pos + 15, cl_end - cl_pos - 15);
-                size_t content_length = std::stoul(cl_str);
+                size_t content_length = 0;
+                if (!eshkol_parse_content_length(cl_str, content_length)) {
+                    std::string response = build_response(400, "application/json",
+                        json_error("Invalid Content-Length"));
+                    send(client_socket, response.c_str(), static_cast<int>(response.size()), 0);
+                    close_socket(client_socket);
+                    return;
+                }
                 size_t body_start = header_end + 4;
                 if (request_data.size() >= body_start + content_length) {
                     break;
@@ -412,6 +435,13 @@ void handle_client(socket_handle_t client_socket) {
 
     HttpRequest req = parse_request(request_data);
     std::string response;
+
+    if (req.malformed) {
+        response = build_response(400, "application/json", json_error(req.error_message));
+        send(client_socket, response.c_str(), static_cast<int>(response.size()), 0);
+        close_socket(client_socket);
+        return;
+    }
 
     // Handle CORS preflight
     if (req.method == "OPTIONS") {
