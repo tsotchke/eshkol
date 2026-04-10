@@ -42,4 +42,4 @@ These examples demonstrate research-grade capabilities and may require additiona
 
 ## Try in the Browser
 
-Visit **[eshkol.ai](https://eshkol.ai)** to run Eshkol code without installing anything. The website includes a REPL, 8 interactive tutorials, and 10 runnable examples.
+Visit **[eshkol.ai](https://eshkol.ai)** to run Eshkol code without installing anything. The website includes a REPL, 27 tutorials, and 11 runnable examples.

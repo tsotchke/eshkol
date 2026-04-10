@@ -216,13 +216,15 @@
           }
         });
 
-        // Doc sidebar — click handler for documentation links
+        // Doc/tutorial sidebar — click handler for documentation links
+        // Targets whichever content area exists on the current page
         document.addEventListener('click', (e) => {
           const tab = e.target.closest('[data-url]');
           if (tab) {
             e.preventDefault();
             const url = tab.getAttribute('data-url') || tab.getAttribute('href');
-            const area = document.getElementById('doc-content-area');
+            const area = document.getElementById('doc-content-area')
+                      || document.getElementById('tutorial-content-area');
             if (area && url) {
               // Update active state on sidebar items
               document.querySelectorAll('[data-url]').forEach(el => el.classList.remove('active'));

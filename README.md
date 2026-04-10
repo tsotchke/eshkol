@@ -63,10 +63,10 @@ Eshkol brings **mathematical computing to Lisp** and delivers what other languag
 **No installation required.** Visit **[eshkol.ai](https://eshkol.ai)** to try Eshkol in your browser:
 
 - **Playground** — Full REPL with 63 opcodes and 555+ built-in functions, running in WebAssembly
-- **Learn** — 8-chapter interactive textbook where every code example is runnable
-- **Examples** — 10 complete programs you can run instantly (AD, neural networks, ODE solving, logic programming)
+- **Learn** — interactive textbook with runnable code examples, plus 27 in-depth tutorials
+- **Examples** — 11 complete programs you can run instantly (AD, neural networks, ODE solving, logic programming)
 
-The website itself is written in Eshkol (1,400 lines) compiled to a 502KB WASM binary. Automatic differentiation works in the browser:
+The website itself is written in Eshkol (1,500+ lines) compiled to a 502KB WASM binary. Automatic differentiation works in the browser:
 
 ```scheme
 (derivative (lambda (x) (* x x x)) 2.0)  ;; => 12.0 (3x² at x=2)
@@ -673,10 +673,16 @@ Eshkol occupies a unique position combining the **mathematical rigor of Julia**,
 
 ## Documentation
 
+### Tutorials
+- **[First 5 Minutes](docs/tutorials/00_FIRST_5_MINUTES.md)**: Install, hello world, 5 wow moments
+- **[Why Eshkol?](docs/tutorials/WHY_ESHKOL.md)**: Side-by-side comparison vs Python and JavaScript
+- **[Cookbook](docs/tutorials/COOKBOOK.md)**: 30 copy-paste recipes for common tasks
+- **[All 27 Tutorials](docs/tutorials/README.md)**: Feature guides + complete project tutorials (neural networks, expert systems, self-improving programs)
+
 ### For Users
+- **[Language Guide](ESHKOL_LANGUAGE_GUIDE.md)**: Tutorial-style introduction to the language
 - **[Language Reference](ESHKOL_V1_LANGUAGE_REFERENCE.md)**: Complete function and syntax reference
-- **[Architecture Guide](docs/ESHKOL_V1_ARCHITECTURE.md)**: Technical implementation overview  
-- **[Quickstart Tutorial](docs/QUICKSTART.md)**: Hands-on introduction with examples
+- **[Quickstart](docs/QUICKSTART.md)**: Hands-on introduction with examples
 - **[API Reference](docs/API_REFERENCE.md)**: Comprehensive function documentation
 
 ### For Researchers

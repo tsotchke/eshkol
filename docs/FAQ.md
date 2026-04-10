@@ -141,4 +141,4 @@ eshkol-run program.esk -o program
 
 ### Can Eshkol run in the browser?
 
-Yes. Eshkol compiles to WebAssembly. The project website ([eshkol.ai](https://eshkol.ai)) is itself written in Eshkol — 1,400 lines compiled to a 502KB WASM binary. A bytecode VM REPL also runs in the browser for interactive evaluation.
+Yes. Eshkol compiles to WebAssembly. The project website ([eshkol.ai](https://eshkol.ai)) is itself written in Eshkol — 1,500+ lines compiled to a 502KB WASM binary. A bytecode VM REPL also runs in the browser for interactive evaluation.

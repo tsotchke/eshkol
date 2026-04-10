@@ -11,7 +11,7 @@ This hands-on tutorial introduces Eshkol's core features through practical examp
 Visit **[eshkol.ai](https://eshkol.ai)** to try Eshkol in your browser:
 
 - **Playground** — Full REPL with 63 opcodes and 555+ built-in functions running in WebAssembly
-- **Learn** — 8-chapter interactive textbook where every code example is runnable
+- **Learn** — interactive textbook with runnable code examples, plus 27 in-depth tutorials
 - **Examples** — 10 complete programs you can run instantly
 
 No installation required. The REPL runs a bytecode interpreter compiled to WebAssembly via Emscripten. Automatic differentiation, exact arithmetic, knowledge bases, and more all work in the browser.

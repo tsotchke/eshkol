@@ -50,7 +50,7 @@ This roadmap tracks Eshkol's evolution from the **completed v1.0-foundation rele
 - [x] Interactive REPL with LLVM ORC JIT
 - [x] Standalone compiler (eshkol-run)
 - [x] Library compilation mode
-- [x] Comprehensive test suite (170+ files)
+- [x] Comprehensive test suite (430+ files)
 - [x] CMake build system
 - [x] Docker containers
 
