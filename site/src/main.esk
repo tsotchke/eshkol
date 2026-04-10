@@ -824,7 +824,7 @@
       (style! links "gap" "16px")
       (style! links "marginBottom" "32px")
 
-      (let ((make-link-card (lambda (title desc url)
+      (let ((make-link-card (lambda (title desc route)
               (let ((card (create-div links)))
                 (web-add-class card "card")
                 (style! card "cursor" "pointer")
@@ -835,34 +835,32 @@
                 (let ((p (create-text "p" desc card)))
                   (style! p "color" "#71717a")
                   (style! p "fontSize" "0.85rem"))
-                (web-add-event-listener card "click"
-                  (lambda (e)
-                    (web-set-attribute (web-create-element "a") "href" url)))
-                (let ((a (create-text "a" url card)))
-                  (web-set-attribute a "href" url)
-                  (web-set-attribute a "target" "_blank")
+                (let ((a (create-text "a" route card)))
+                  (web-set-attribute a "href" route)
                   (style! a "fontSize" "0.75rem")
-                  (style! a "color" "#606078"))
+                  (style! a "color" "#606078")
+                  (style! a "marginTop" "8px")
+                  (style! a "display" "block"))
                 card))))
 
         (make-link-card "First 5 Minutes"
           "Install, hello world, 5 wow moments"
-          "https://github.com/tsotchke/eshkol/blob/master/docs/tutorials/00_FIRST_5_MINUTES.md")
+          "/tutorials")
         (make-link-card "Why Eshkol?"
           "Side-by-side comparison vs Python and JavaScript"
-          "https://github.com/tsotchke/eshkol/blob/master/docs/tutorials/WHY_ESHKOL.md")
+          "/tutorials")
         (make-link-card "Cookbook"
           "30 copy-paste recipes for common tasks"
-          "https://github.com/tsotchke/eshkol/blob/master/docs/tutorials/COOKBOOK.md")
+          "/tutorials")
         (make-link-card "Train a Neural Network"
           "Complete XOR network trained with autodiff"
-          "https://github.com/tsotchke/eshkol/blob/master/docs/tutorials/21_PROJECT_NEURAL_NETWORK.md")
+          "/tutorials")
         (make-link-card "Self-Improving Programs"
           "Differentiable self-optimisation + active inference"
-          "https://github.com/tsotchke/eshkol/blob/master/docs/tutorials/26_PROJECT_SELF_IMPROVING.md")
+          "/tutorials")
         (make-link-card "All 27 Tutorials"
           "Complete tutorial index with feature + project guides"
-          "https://github.com/tsotchke/eshkol/blob/master/docs/tutorials/README.md")))
+          "/tutorials")))
 
     (render-footer page)))
 
