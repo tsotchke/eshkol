@@ -1,7 +1,7 @@
 ;;; core/list/higher_order.esk
 ;;; Higher-order list functions
 
-(provide map1 map2 map3 fold fold-right for-each any every)
+(provide map1 map2 map3 fold fold-left foldl fold-right foldr for-each any every)
 
 ;;; map1: Apply proc to each element of a single list
 ;;; (map1 double '(1 2 3)) => (2 4 6)
@@ -41,6 +41,15 @@
       init
       (fold proc (proc init (car lst)) (cdr lst))))
 
+;;; fold-left: R6RS / SRFI-1 / Haskell name for left fold.
+;;; Synonym for `fold` so user code written against either spelling works.
+(define (fold-left proc init lst)
+  (fold proc init lst))
+
+;;; foldl: Racket / Clojure / common-Scheme spelling for left fold.
+(define (foldl proc init lst)
+  (fold proc init lst))
+
 ;;; fold-right: Right fold (foldr)
 ;;; Applies proc to each element and accumulator from right to left
 ;;; (fold-right cons '() '(1 2 3)) => (1 2 3)
@@ -48,6 +57,10 @@
   (if (null? lst)
       init
       (proc (car lst) (fold-right proc init (cdr lst)))))
+
+;;; foldr: Haskell / Racket spelling for right fold.
+(define (foldr proc init lst)
+  (fold-right proc init lst))
 
 ;;; for-each: Apply proc to each element for side effects
 ;;; Returns undefined (void)
