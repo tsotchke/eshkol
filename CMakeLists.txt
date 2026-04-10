@@ -1197,12 +1197,14 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/pkg/eshkol_pkg.cpp")
 
     add_executable(eshkol-pkg tools/pkg/eshkol_pkg.cpp)
     target_compile_features(eshkol-pkg PRIVATE cxx_std_17)
+    target_include_directories(eshkol-pkg PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
 
     install(TARGETS eshkol-pkg DESTINATION bin)
 
     if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/pkg/path_validation_test.cpp")
         add_executable(eshkol-pkg-path-validation-test tests/pkg/path_validation_test.cpp)
         target_compile_features(eshkol-pkg-path-validation-test PRIVATE cxx_std_17)
+        target_include_directories(eshkol-pkg-path-validation-test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
         add_test(
             NAME eshkol-pkg-path-validation
             COMMAND eshkol-pkg-path-validation-test $<TARGET_FILE:eshkol-pkg>
@@ -1212,6 +1214,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/pkg/eshkol_pkg.cpp")
     if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/pkg/command_injection_test.cpp")
         add_executable(eshkol-pkg-command-injection-test tests/pkg/command_injection_test.cpp)
         target_compile_features(eshkol-pkg-command-injection-test PRIVATE cxx_std_17)
+        target_include_directories(eshkol-pkg-command-injection-test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
         add_test(
             NAME eshkol-pkg-command-injection
             COMMAND eshkol-pkg-command-injection-test $<TARGET_FILE:eshkol-pkg>
