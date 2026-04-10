@@ -4,59 +4,59 @@ This roadmap tracks Eshkol's evolution from the **completed v1.0-foundation rele
 
 ---
 
-## ✅ v1.0-foundation (2025) - COMPLETED
+## v1.0-foundation (2025) - COMPLETED
 
 **Production Release Delivered**
 
 ### Completed Core Implementation
-- ✅ LLVM-based modular backend with 21 specialized codegen modules
-- ✅ Recursive descent parser with HoTT type expression support
-- ✅ Bidirectional type checker with gradual typing
-- ✅ Ownership and escape analysis for memory optimization
-- ✅ Module system with dependency resolution and cycle detection
-- ✅ Hygienic macro system (syntax-rules)
-- ✅ R7RS Scheme compatibility (subset)
+- [x] LLVM-based modular backend with 21 specialized codegen modules
+- [x] Recursive descent parser with HoTT type expression support
+- [x] Bidirectional type checker with gradual typing
+- [x] Ownership and escape analysis for memory optimization
+- [x] Module system with dependency resolution and cycle detection
+- [x] Hygienic macro system (syntax-rules)
+- [x] R7RS Scheme compatibility (subset)
 
 ### Completed Automatic Differentiation
-- ✅ Forward-mode AD (dual numbers)
-- ✅ Reverse-mode AD (computational graphs)
-- ✅ Nested gradients (32-level tape stack)
-- ✅ Vector calculus operators (8 total): derivative, gradient, jacobian, hessian, divergence, curl, laplacian, directional-derivative
-- ✅ Polymorphic arithmetic (int64/double/dual/tensor/AD-node)
+- [x] Forward-mode AD (dual numbers)
+- [x] Reverse-mode AD (computational graphs)
+- [x] Nested gradients (32-level tape stack)
+- [x] Vector calculus operators (8 total): derivative, gradient, jacobian, hessian, divergence, curl, laplacian, directional-derivative
+- [x] Polymorphic arithmetic (int64/double/dual/tensor/AD-node)
 
 ### Completed Memory Management
-- ✅ Arena allocation with OALR (Ownership-Aware Lexical Regions)
-- ✅ Escape analysis (stack/region/shared allocation decisions)
-- ✅ with-region syntax for lexical memory scopes
-- ✅ Ownership tracking (owned, moved, borrowed states)
-- ✅ Zero garbage collection - fully deterministic
+- [x] Arena allocation with OALR (Ownership-Aware Lexical Regions)
+- [x] Escape analysis (stack/region/shared allocation decisions)
+- [x] with-region syntax for lexical memory scopes
+- [x] Ownership tracking (owned, moved, borrowed states)
+- [x] Zero garbage collection - fully deterministic
 
 ### Completed Data Structures
-- ✅ 16-byte tagged values with consolidated types
-- ✅ 32-byte cons cells supporting mixed-type lists
-- ✅ N-dimensional tensors with autodiff integration
-- ✅ Hash tables (FNV-1a hashing, open addressing)
-- ✅ Heterogeneous vectors
-- ✅ Exception handling (guard/raise)
+- [x] 16-byte tagged values with consolidated types
+- [x] 32-byte cons cells supporting mixed-type lists
+- [x] N-dimensional tensors with autodiff integration
+- [x] Hash tables (FNV-1a hashing, open addressing)
+- [x] Heterogeneous vectors
+- [x] Exception handling (guard/raise)
 
 ### Completed Standard Library
-- ✅ 60+ list operations
-- ✅ 30+ string utilities
-- ✅ Functional programming (compose, curry, flip)
-- ✅ JSON/CSV/Base64 support
-- ✅ Math library (linear algebra, numerical methods, statistics)
+- [x] 60+ list operations
+- [x] 30+ string utilities
+- [x] Functional programming (compose, curry, flip)
+- [x] JSON/CSV/Base64 support
+- [x] Math library (linear algebra, numerical methods, statistics)
 
 ### Completed Development Tools
-- ✅ Interactive REPL with LLVM ORC JIT
-- ✅ Standalone compiler (eshkol-run)
-- ✅ Library compilation mode
-- ✅ Comprehensive test suite (170+ files)
-- ✅ CMake build system
-- ✅ Docker containers
+- [x] Interactive REPL with LLVM ORC JIT
+- [x] Standalone compiler (eshkol-run)
+- [x] Library compilation mode
+- [x] Comprehensive test suite (170+ files)
+- [x] CMake build system
+- [x] Docker containers
 
 ---
 
-## ✅ v1.1-accelerate (Q1 2026) - COMPLETED
+## v1.1-accelerate (Q1 2026) - COMPLETED
 
 **Focus:** Performance acceleration through XLA, SIMD, and parallelism
 
@@ -195,7 +195,7 @@ v1.6 ─────────────────────────
                                ├ Knowledge graphs (requires KB + embeddings from v1.5)
                                └ Constraint solving (requires logic engine)
                                      │
-v1.7 ────────���───────────────────────┤ Neural-guided search (requires v1.5 bridge)
+v1.7 ────────────────────────────────┤ Neural-guided search (requires v1.5 bridge)
                                      ├ GNN (requires graph + tensor ops)
                                      └ Program synthesis (requires type system)
                                            │
@@ -215,7 +215,7 @@ v2.0 ─────────────────────────
 
 ---
 
-## 📋 v1.2-scale (May 2026) - PLANNED
+## v1.2-scale (May 2026) - PLANNED
 
 **Focus:** Get models into production. Save them, load them, deploy them.
 
@@ -229,7 +229,7 @@ v2.0 ─────────────────────────
 
 ---
 
-## 📋 v1.3-evolve (June 2026) - PLANNED
+## v1.3-evolve (June 2026) - PLANNED
 
 **Focus:** Make the language a joy to use day-to-day.
 
@@ -242,7 +242,7 @@ v2.0 ─────────────────────────
 
 ---
 
-## 📋 v1.4-connection (July 2026) - PLANNED
+## v1.4-connection (July 2026) - PLANNED
 
 **Focus:** Connect to the outside world with compile-time safety.
 
@@ -256,7 +256,7 @@ v2.0 ─────────────────────────
 
 ---
 
-## 📋 v1.5-intelligence (August 2026) - PLANNED
+## v1.5-intelligence (August 2026) - PLANNED
 
 **Focus:** Neural and symbolic computation flow bidirectionally.
 
@@ -271,7 +271,7 @@ Informed by the [Neuro-Symbolic Architecture](docs/future/NEURO_SYMBOLIC_COMPLET
 
 ---
 
-## 📋 v1.6-reasoning (September 2026) - PLANNED
+## v1.6-reasoning (September 2026) - PLANNED
 
 **Focus:** Make the logic engine production-grade.
 
@@ -283,7 +283,7 @@ Informed by the [Neuro-Symbolic Architecture](docs/future/NEURO_SYMBOLIC_COMPLET
 
 ---
 
-## 📋 v1.7-synthesis (October 2026) - PLANNED
+## v1.7-synthesis (October 2026) - PLANNED
 
 **Focus:** Programs that write and improve programs.
 
@@ -295,7 +295,7 @@ Informed by the [Neuro-Symbolic Architecture](docs/future/NEURO_SYMBOLIC_COMPLET
 
 ---
 
-## 📋 v1.8-platform (November 2026) - PLANNED
+## v1.8-platform (November 2026) - PLANNED
 
 **Focus:** Eshkol runs on everything, controls everything.
 
@@ -311,7 +311,7 @@ Informed by the [Multimedia System Architecture](docs/future/MULTIMEDIA_SYSTEM_A
 
 ---
 
-## 📋 v1.9-types (December 2026) - PLANNED
+## v1.9-types (December 2026) - PLANNED
 
 **Focus:** The type system becomes a proof system.
 
@@ -325,7 +325,7 @@ Informed by the [Multimedia System Architecture](docs/future/MULTIMEDIA_SYSTEM_A
 
 ---
 
-## 🔬 v2.0-starlight (Q1 2027) - RESEARCH
+## v2.0-starlight (Q1 2027) - RESEARCH
 
 **Focus:** Quantum computing meets formal verification.
 
@@ -375,73 +375,73 @@ Leverages OALR linear types (no-cloning theorem) and AD (variational circuits).
 ## Component Status
 
 ### Core Compiler
-- ✅ Parser - Complete
-- ✅ Type Checker - Complete
-- ✅ LLVM Backend - Complete (34,928 lines)
-- ✅ Module System - Complete
-- ✅ Macro System - Complete
+- [x] Parser - Complete
+- [x] Type Checker - Complete
+- [x] LLVM Backend - Complete (34,928 lines)
+- [x] Module System - Complete
+- [x] Macro System - Complete
 
 ### Automatic Differentiation
-- ✅ Forward Mode - Complete
-- ✅ Reverse Mode - Complete
-- ✅ Nested Gradients - Complete (32-level tape stack)
-- ✅ Vector Calculus - Complete (8 operators)
+- [x] Forward Mode - Complete
+- [x] Reverse Mode - Complete
+- [x] Nested Gradients - Complete (32-level tape stack)
+- [x] Vector Calculus - Complete (8 operators)
 
 ### Memory Management
-- ✅ Arena Allocation - Complete
-- ✅ OALR System - Complete
-- ✅ Ownership Tracking - Complete
-- ✅ Escape Analysis - Complete
+- [x] Arena Allocation - Complete
+- [x] OALR System - Complete
+- [x] Ownership Tracking - Complete
+- [x] Escape Analysis - Complete
 
 ### Standard Library (v1.1)
-- ✅ Core Functions (60+ list ops, 30+ string utils) - Complete
-- ✅ Math Library (linear algebra, statistics, ODE solvers) - Complete
-- ✅ Signal Processing (FFT, filters, window functions) - Complete
-- ✅ ML Library (optimizers, activations, normalization) - Complete
-- ✅ Web Platform (80+ DOM API functions, WASM target) - Complete
-- ✅ JSON/CSV/Base64 Support - Complete
+- [x] Core Functions (60+ list ops, 30+ string utils) - Complete
+- [x] Math Library (linear algebra, statistics, ODE solvers) - Complete
+- [x] Signal Processing (FFT, filters, window functions) - Complete
+- [x] ML Library (optimizers, activations, normalization) - Complete
+- [x] Web Platform (80+ DOM API functions, WASM target) - Complete
+- [x] JSON/CSV/Base64 Support - Complete
 
 ### Development Tools
-- ✅ REPL with JIT (stdlib preloading, cross-eval persistence) - Complete
-- ✅ Compiler (eshkol-run, AOT + script mode) - Complete
-- ✅ Package Manager (eshkol-pkg, TOML manifest) - Complete
-- ✅ LSP Server (diagnostics, completion, hover) - Complete
-- ✅ VSCode Extension (syntax highlighting, LSP client) - Complete
-- ✅ Test Suite (35 suites, 438 tests) - Complete
+- [x] REPL with JIT (stdlib preloading, cross-eval persistence) - Complete
+- [x] Compiler (eshkol-run, AOT + script mode) - Complete
+- [x] Package Manager (eshkol-pkg, TOML manifest) - Complete
+- [x] LSP Server (diagnostics, completion, hover) - Complete
+- [x] VSCode Extension (syntax highlighting, LSP client) - Complete
+- [x] Test Suite (35 suites, 438 tests) - Complete
 
 ### v1.1-accelerate (Complete)
-- ✅ XLA Backend (StableHLO/MLIR + LLVM-direct) - Complete
-- ✅ GPU Acceleration (Metal SF64 + CUDA cuBLAS) - Complete
-- ✅ SIMD Vectorization (SSE/AVX/NEON) - Complete
-- ✅ Parallel Primitives (work-stealing thread pool) - Complete
-- ✅ Exact Arithmetic (bignums + rationals + complex) - Complete
-- ✅ Consciousness Engine (logic, inference, workspace — 22 builtins) - Complete
-- ✅ ML Framework (75+ builtins: activations, losses, optimizers, CNN, transformers) - Complete
-- ✅ Signal Processing (FFT, filters, window functions) - Complete
-- ✅ R7RS Extensions (call/cc, dynamic-wind, bytevectors) - Complete
+- [x] XLA Backend (StableHLO/MLIR + LLVM-direct) - Complete
+- [x] GPU Acceleration (Metal SF64 + CUDA cuBLAS) - Complete
+- [x] SIMD Vectorization (SSE/AVX/NEON) - Complete
+- [x] Parallel Primitives (work-stealing thread pool) - Complete
+- [x] Exact Arithmetic (bignums + rationals + complex) - Complete
+- [x] Consciousness Engine (logic, inference, workspace — 22 builtins) - Complete
+- [x] ML Framework (75+ builtins: activations, losses, optimizers, CNN, transformers) - Complete
+- [x] Signal Processing (FFT, filters, window functions) - Complete
+- [x] R7RS Extensions (call/cc, dynamic-wind, bytevectors) - Complete
 
 ### v1.1.12 Additions
-- ✅ Production Bytecode VM (555+ builtins, 176/176 tests, dual number AD) - Complete
-- ✅ eshkol.ai Website (Eshkol→WASM, browser REPL, interactive tutorials) - Complete
-- ✅ GitHub Pages Deployment - Complete
+- [x] Production Bytecode VM (555+ builtins, 176/176 tests, dual number AD) - Complete
+- [x] eshkol.ai Website (Eshkol→WASM, browser REPL, interactive tutorials) - Complete
+- [x] GitHub Pages Deployment - Complete
 
 ### v1.1.13 Additions
-- ✅ Native Windows ARM64 (VS 2022 + ClangCL + LLVM 21 aarch64) - Complete
-- ✅ 16-lane release matrix with per-arch LLVM SDK caching - Complete
-- ✅ VM closure bug fixes (named-let nested closure PC + native 252 upvalue relay) - Complete
-- ✅ Windows setjmp hardening (x64 frameaddress, ARM64 sponentry) - Complete
-- ✅ Mobile-responsive website + browser REPL error display - Complete
+- [x] Native Windows ARM64 (VS 2022 + ClangCL + LLVM 21 aarch64) - Complete
+- [x] 16-lane release matrix with per-arch LLVM SDK caching - Complete
+- [x] VM closure bug fixes (named-let nested closure PC + native 252 upvalue relay) - Complete
+- [x] Windows setjmp hardening (x64 frameaddress, ARM64 sponentry) - Complete
+- [x] Mobile-responsive website + browser REPL error display - Complete
 
 ### Planned (v1.2+)
-- 📋 Model Serialization + Python Bindings — v1.2
-- 📋 R7RS Library System + String Interpolation — v1.3
-- 📋 Networking + Linear Resource Types — v1.4
-- 📋 Neuro-Symbolic Bridge — v1.5
-- 📋 Backward Chaining + Knowledge Graphs — v1.6
-- 📋 Program Synthesis + Neural Search — v1.7
-- 📋 Platform Abstraction (windows, audio, embedded) — v1.8
-- 📋 Advanced Type Theory (dependent, effects, algebraic) — v1.9
-- 📋 Quantum Computing + Formal Verification — v2.0
+- [ ] Model Serialization + Python Bindings — v1.2
+- [ ] R7RS Library System + String Interpolation — v1.3
+- [ ] Networking + Linear Resource Types — v1.4
+- [ ] Neuro-Symbolic Bridge — v1.5
+- [ ] Backward Chaining + Knowledge Graphs — v1.6
+- [ ] Program Synthesis + Neural Search — v1.7
+- [ ] Platform Abstraction (windows, audio, embedded) — v1.8
+- [ ] Advanced Type Theory (dependent, effects, algebraic) — v1.9
+- [ ] Quantum Computing + Formal Verification — v2.0
 
 ---
 
