@@ -811,6 +811,57 @@
         "(define fg (make-factor-graph 3))\n(display (factor-graph? fg))\n(newline)\n(display fg)"
         "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.85rem;line-height:1.6;color:#e8e8f0'><span style='color:#606078'>;; Factor graphs for probabilistic reasoning</span>\n<span style='color:#c084fc'>(define</span> fg <span style='color:#c084fc'>(make-factor-graph</span> <span style='color:#00ff88'>3</span><span style='color:#c084fc'>)</span><span style='color:#c084fc'>)</span>\n\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(factor-graph?</span> fg<span style='color:#c084fc'>))</span>  <span style='color:#606078'>;; => #t</span>\n<span style='color:#c084fc'>(display</span> fg<span style='color:#c084fc'>)</span></pre>"))
 
+    ;; Go Deeper section
+    (create-divider page)
+    (section-subheading page "Go Deeper")
+    (body-text page "These 8 chapters scratch the surface. The full tutorial collection covers 20 feature areas and 6 complete project tutorials.")
+
+    (let ((links (create-div page)))
+      (style! links "display" "grid")
+      (style! links "gridTemplateColumns" "repeat(auto-fit, minmax(280px, 1fr))")
+      (style! links "gap" "16px")
+      (style! links "marginBottom" "32px")
+
+      (let ((make-link-card (lambda (title desc url)
+              (let ((card (create-div links)))
+                (web-add-class card "card")
+                (style! card "cursor" "pointer")
+                (let ((h (create-text "h4" title card)))
+                  (style! h "color" "#a78bfa")
+                  (style! h "fontSize" "1rem")
+                  (style! h "marginBottom" "4px"))
+                (let ((p (create-text "p" desc card)))
+                  (style! p "color" "#71717a")
+                  (style! p "fontSize" "0.85rem"))
+                (web-add-event-listener card "click"
+                  (lambda (e)
+                    (web-set-attribute (web-create-element "a") "href" url)))
+                (let ((a (create-text "a" url card)))
+                  (web-set-attribute a "href" url)
+                  (web-set-attribute a "target" "_blank")
+                  (style! a "fontSize" "0.75rem")
+                  (style! a "color" "#606078"))
+                card))))
+
+        (make-link-card "First 5 Minutes"
+          "Install, hello world, 5 wow moments"
+          "https://github.com/tsotchke/eshkol/blob/master/docs/tutorials/00_FIRST_5_MINUTES.md")
+        (make-link-card "Why Eshkol?"
+          "Side-by-side comparison vs Python and JavaScript"
+          "https://github.com/tsotchke/eshkol/blob/master/docs/tutorials/WHY_ESHKOL.md")
+        (make-link-card "Cookbook"
+          "30 copy-paste recipes for common tasks"
+          "https://github.com/tsotchke/eshkol/blob/master/docs/tutorials/COOKBOOK.md")
+        (make-link-card "Train a Neural Network"
+          "Complete XOR network trained with autodiff"
+          "https://github.com/tsotchke/eshkol/blob/master/docs/tutorials/21_PROJECT_NEURAL_NETWORK.md")
+        (make-link-card "Self-Improving Programs"
+          "Differentiable self-optimisation + active inference"
+          "https://github.com/tsotchke/eshkol/blob/master/docs/tutorials/26_PROJECT_SELF_IMPROVING.md")
+        (make-link-card "All 27 Tutorials"
+          "Complete tutorial index with feature + project guides"
+          "https://github.com/tsotchke/eshkol/blob/master/docs/tutorials/README.md")))
+
     (render-footer page)))
 
 ;; ═══════════════════════════════════════════════════════════
@@ -945,8 +996,28 @@
 
         ;; Getting Started
         (let ((g1 (render-sidebar-group sidebar "GETTING STARTED")))
+          (render-sidebar-item g1 "First 5 Minutes" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/00_FIRST_5_MINUTES.md")
+          (render-sidebar-item g1 "Why Eshkol?" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/WHY_ESHKOL.md")
           (render-sidebar-item g1 "Quick Start" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/QUICKSTART.md")
-          (render-sidebar-item g1 "Quick Reference" "https://raw.githubusercontent.com/tsotchke/eshkol/master/ESHKOL_QUICK_REFERENCE.md"))
+          (render-sidebar-item g1 "Cookbook" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/COOKBOOK.md"))
+
+        ;; Tutorials
+        (let ((gt (render-sidebar-group sidebar "TUTORIALS")))
+          (render-sidebar-item gt "Autodiff & ML" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/01_AUTODIFF_AND_ML.md")
+          (render-sidebar-item gt "Bytecode VM" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/02_BYTECODE_VM.md")
+          (render-sidebar-item gt "Weight Transformer" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/03_WEIGHT_MATRIX_TRANSFORMER.md")
+          (render-sidebar-item gt "Consciousness Engine" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/04_CONSCIOUSNESS_ENGINE.md")
+          (render-sidebar-item gt "Signal Processing" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/05_SIGNAL_PROCESSING.md")
+          (render-sidebar-item gt "Exact Arithmetic" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/06_EXACT_ARITHMETIC.md")
+          (render-sidebar-item gt "Parallel Computing" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/07_PARALLEL_COMPUTING.md")
+          (render-sidebar-item gt "All Tutorials" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/README.md"))
+
+        ;; Projects
+        (let ((gp (render-sidebar-group sidebar "PROJECTS")))
+          (render-sidebar-item gp "Neural Network" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/21_PROJECT_NEURAL_NETWORK.md")
+          (render-sidebar-item gp "Expert System" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/22_PROJECT_EXPERT_SYSTEM.md")
+          (render-sidebar-item gp "Data Pipeline" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/23_PROJECT_DATA_PIPELINE.md")
+          (render-sidebar-item gp "Self-Improving" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/26_PROJECT_SELF_IMPROVING.md"))
 
         ;; Language
         (let ((g2 (render-sidebar-group sidebar "LANGUAGE")))
