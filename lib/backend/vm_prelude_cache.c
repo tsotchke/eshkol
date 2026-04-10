@@ -26,39 +26,9 @@ int main(void) {
     FuncChunk chunk; chunk_init_arrays(&chunk);
     emit_builtin_preamble(&chunk);
 
-    /* Compile the standard prelude */
-    static const char* scheme_prelude =
-        "(define (map f lst) (let loop ((l lst) (acc (list))) (if (null? l) (reverse acc) (loop (cdr l) (cons (f (car l)) acc)))))\n"
-        "(define (filter pred lst) (let loop ((l lst) (acc (list))) (if (null? l) (reverse acc) (if (pred (car l)) (loop (cdr l) (cons (car l) acc)) (loop (cdr l) acc)))))\n"
-        "(define (fold-left f init lst) (let loop ((l lst) (acc init)) (if (null? l) acc (loop (cdr l) (f acc (car l))))))\n"
-        "(define (fold-right f init lst) (if (null? lst) init (f (car lst) (fold-right f init (cdr lst)))))\n"
-        "(define (for-each f lst) (if (null? lst) 0 (begin (f (car lst)) (for-each f (cdr lst)))))\n"
-        "(define (any pred lst) (if (null? lst) #f (if (pred (car lst)) #t (any pred (cdr lst)))))\n"
-        "(define (every pred lst) (if (null? lst) #t (if (pred (car lst)) (every pred (cdr lst)) #f)))\n"
-        "(define (find pred lst) (if (null? lst) #f (if (pred (car lst)) (car lst) (find pred (cdr lst)))))\n"
-        "(define (take n lst) (if (= n 0) (list) (if (null? lst) (list) (cons (car lst) (take (- n 1) (cdr lst))))))\n"
-        "(define (drop n lst) (if (= n 0) lst (if (null? lst) (list) (drop (- n 1) (cdr lst)))))\n"
-        "(define (reduce f init lst) (fold-left f init lst))\n"
-        "(define (merge compare a b) (cond ((null? a) b) ((null? b) a) ((compare (car a) (car b)) (cons (car a) (merge compare (cdr a) b))) (else (cons (car b) (merge compare a (cdr b))))))\n"
-        "(define (sort compare lst) (if (or (null? lst) (null? (cdr lst))) lst (let ((half (quotient (length lst) 2))) (merge compare (sort compare (take half lst)) (sort compare (drop half lst))))))\n"
-        "(define + (lambda args (fold-left add2 0 args)))\n"
-        "(define * (lambda args (fold-left mul2 1 args)))\n"
-        "(define (- . args) (if (null? (cdr args)) (sub2 0 (car args)) (fold-left sub2 (car args) (cdr args))))\n"
-        "(define (/ . args) (if (null? (cdr args)) (div2 1 (car args)) (fold-left div2 (car args) (cdr args))))\n"
-        "(define _append-2 append)\n"
-        "(define (append . lists) (fold-right _append-2 '() lists))\n"
-        "(define (number->string n . args) (_number->string-2 n (if (null? args) 10 (car args))))\n"
-        "(define (atan x . rest) (if (null? rest) (_atan1 x) (_atan2 x (car rest))))\n"
-        "(define (max a . rest) (fold-left _max2 a rest))\n"
-        "(define (min a . rest) (fold-left _min2 a rest))\n"
-        "(define (string-append . args) (fold-left _string-append-2 \"\" args))\n"
-        "(define (make-list n val) (let loop ((i 0) (acc (list))) (if (= i n) acc (loop (+ i 1) (cons val acc)))))\n"
-        "(define (make-factor-graph n . rest) (if (null? rest) (_make-fg2 n (make-list n 2)) (_make-fg2 n (car rest))))\n"
-        "(define (tensor-sum t . args) (if (null? args) (_tensor-reduce-sum t -1) (_tensor-reduce-sum t (car args))))\n"
-        "(define (tensor-mean t . args) (if (null? args) (_tensor-reduce-mean t -1) (_tensor-reduce-mean t (car args))))\n"
-        "(define (tensor-max t . args) (if (null? args) (_tensor-reduce-max t -1) (_tensor-reduce-max t (car args))))\n"
-        "(define (tensor-min t . args) (if (null? args) (_tensor-reduce-min t -1) (_tensor-reduce-min t (car args))))\n";
-    src_ptr = scheme_prelude;
+    /* Compile the canonical prelude — same string as the runtime sites in
+     * eshkol_vm.c (they all #include "vm_prelude_source.h"). */
+    src_ptr = ESHKOL_VM_PRELUDE_SOURCE;
     while (1) {
         skip_ws(); if (!*src_ptr) break;
         Node* expr = parse_sexp(); if (!expr) break;
