@@ -5,6 +5,16 @@
  *
  * Eshkol WASM Compilation Server
  * A minimal HTTP server that compiles Eshkol Scheme code to WebAssembly.
+ *
+ * Security hardening (v1.1.13):
+ *   - Content-Length validation + max body size cap (413 Payload Too Large)
+ *   - Case-insensitive header lookup (RFC 7230)
+ *   - Path traversal defence with percent-decode + component check
+ *   - Bounded request accumulation (headers + body)
+ *   - Connection limiter (atomic counter, kMaxConcurrentConnections)
+ *   - Thread-safe session ID generation
+ *   - Partial-send loop for large responses
+ *   - Increased listen backlog (SOMAXCONN)
  */
 
 #include "eshkol/eshkol.h"
@@ -106,18 +116,34 @@ bool path_exists(const char* path) {
 #endif
 }
 
+// Send the full response, handling partial writes.
+bool send_all(socket_handle_t sock, const std::string& data) {
+    size_t total_sent = 0;
+    while (total_sent < data.size()) {
+        int chunk = send(sock, data.c_str() + total_sent,
+                         static_cast<int>(data.size() - total_sent), 0);
+        if (chunk <= 0) return false;
+        total_sent += static_cast<size_t>(chunk);
+    }
+    return true;
+}
+
 } // namespace
 
 static std::atomic<bool> g_running{true};
 static socket_handle_t g_server_socket = k_invalid_socket;
 
-// Generate a random session ID
+// Connection limiter — prevents unbounded thread creation under load.
+static std::atomic<int> g_active_connections{0};
+
+// Thread-safe session ID generator.
 std::string generate_session_id() {
-    static std::random_device rd;
-    static std::mt19937 gen(rd());
+    static std::mutex rng_mutex;
+    static std::mt19937 gen(std::random_device{}());
     static std::uniform_int_distribution<> dis(0, 15);
     static const char* hex = "0123456789abcdef";
 
+    std::lock_guard<std::mutex> lock(rng_mutex);
     std::string id;
     for (int i = 0; i < 32; ++i) {
         id += hex[dis(gen)];
@@ -134,8 +160,11 @@ std::string build_response(int status, const std::string& content_type,
     switch (status) {
         case 200: status_text = "OK"; break;
         case 400: status_text = "Bad Request"; break;
+        case 403: status_text = "Forbidden"; break;
         case 404: status_text = "Not Found"; break;
+        case 413: status_text = "Payload Too Large"; break;
         case 500: status_text = "Internal Server Error"; break;
+        case 503: status_text = "Service Unavailable"; break;
         default: status_text = "Unknown"; break;
     }
 
@@ -161,7 +190,16 @@ std::string json_escape(const std::string& s) {
             case '\n': result += "\\n"; break;
             case '\r': result += "\\r"; break;
             case '\t': result += "\\t"; break;
-            default: result += c; break;
+            default:
+                if (static_cast<unsigned char>(c) < 0x20) {
+                    // Escape control characters as \u00XX
+                    char buf[8];
+                    snprintf(buf, sizeof(buf), "\\u%04x", static_cast<unsigned char>(c));
+                    result += buf;
+                } else {
+                    result += c;
+                }
+                break;
         }
     }
     return result;
@@ -236,13 +274,14 @@ std::string compile_to_wasm(const std::string& code, const std::string& session_
     return response;
 }
 
-// Parse HTTP request (minimal implementation)
+// Parse HTTP request
 struct HttpRequest {
     std::string method;
     std::string path;
     std::unordered_map<std::string, std::string> headers;
     std::string body;
     bool malformed = false;
+    int error_status = 400;
     std::string error_message;
 };
 
@@ -263,12 +302,12 @@ HttpRequest parse_request(const std::string& raw) {
         req.path = line.substr(space1 + 1, space2 - space1 - 1);
     }
 
-    // Parse headers
+    // Parse headers — normalise names to lowercase (RFC 7230 sec 3.2)
     while (std::getline(stream, line) && line != "\r" && !line.empty()) {
         if (line.back() == '\r') line.pop_back();
         size_t colon = line.find(':');
         if (colon != std::string::npos) {
-            std::string key = line.substr(0, colon);
+            std::string key = eshkol_normalize_header_name(line.substr(0, colon));
             std::string value = line.substr(colon + 1);
             // Trim leading whitespace
             while (!value.empty() && value[0] == ' ') value.erase(0, 1);
@@ -281,13 +320,20 @@ HttpRequest parse_request(const std::string& raw) {
     body_stream << stream.rdbuf();
     req.body = body_stream.str();
 
-    // Trim body to Content-Length if specified
-    auto it = req.headers.find("Content-Length");
+    // Validate and enforce Content-Length (now case-insensitive)
+    auto it = req.headers.find("content-length");
     if (it != req.headers.end()) {
         size_t len = 0;
         if (!eshkol_parse_content_length(it->second, len)) {
             req.malformed = true;
+            req.error_status = 400;
             req.error_message = "Invalid Content-Length";
+            return req;
+        }
+        if (len > kMaxRequestBodySize) {
+            req.malformed = true;
+            req.error_status = 413;
+            req.error_message = "Payload too large";
             return req;
         }
         if (req.body.size() > len) {
@@ -345,6 +391,7 @@ std::string get_mime_type(const std::string& path) {
     if (ext == ".jpg" || ext == ".jpeg") return "image/jpeg";
     if (ext == ".svg") return "image/svg+xml";
     if (ext == ".wasm") return "application/wasm";
+    if (ext == ".ico") return "image/x-icon";
     return "text/plain";
 }
 
@@ -360,8 +407,8 @@ std::string read_file(const std::string& path) {
 
 // Serve static file
 std::string serve_static(const std::string& url_path) {
-    // Security: prevent directory traversal
-    if (url_path.find("..") != std::string::npos) {
+    // Security: reject path traversal (percent-encoded, backslash, null bytes)
+    if (!eshkol_is_safe_url_path(url_path)) {
         return build_response(403, "text/plain", "Forbidden");
     }
 
@@ -374,14 +421,24 @@ std::string serve_static(const std::string& url_path) {
 
     std::string content = read_file(file_path);
     if (content.empty()) {
-        return build_response(404, "text/plain", "File not found: " + url_path);
+        return build_response(404, "text/plain", "Not found");
     }
 
     return build_response(200, get_mime_type(file_path), content);
 }
 
+// RAII guard for the connection counter.
+struct ConnectionGuard {
+    ConnectionGuard() { g_active_connections.fetch_add(1, std::memory_order_relaxed); }
+    ~ConnectionGuard() { g_active_connections.fetch_sub(1, std::memory_order_relaxed); }
+    ConnectionGuard(const ConnectionGuard&) = delete;
+    ConnectionGuard& operator=(const ConnectionGuard&) = delete;
+};
+
 // Handle client connection
 void handle_client(socket_handle_t client_socket) {
+    ConnectionGuard guard;
+
     // Read request
     char buffer[65536];
     std::string request_data;
@@ -389,32 +446,57 @@ void handle_client(socket_handle_t client_socket) {
 
     set_socket_receive_timeout(client_socket, 5);
 
-    // Read until we have the full request
+    // Read until we have the full request (bounded by kMaxRequestTotalSize)
     while ((bytes_read = recv(client_socket, buffer, sizeof(buffer) - 1, 0)) > 0) {
         buffer[bytes_read] = '\0';
         request_data += buffer;
 
+        // Bound total request size to prevent OOM from unbounded header
+        // accumulation or oversized bodies.
+        if (request_data.size() > kMaxRequestTotalSize) {
+            std::string response = build_response(413, "application/json",
+                json_error("Request too large"));
+            send_all(client_socket, response);
+            close_socket(client_socket);
+            return;
+        }
+
         // Check if we have the complete request
         size_t header_end = request_data.find("\r\n\r\n");
         if (header_end != std::string::npos) {
-            // Check Content-Length
-            size_t cl_pos = request_data.find("Content-Length:");
+            // Case-insensitive Content-Length search in raw data.
+            // We need to find it before full header parsing because the read
+            // loop uses it to decide when the body is complete.
+            // Include the trailing \r\n\r\n so the last header's \r\n is findable.
+            std::string lower_data = request_data.substr(0, header_end + 4);
+            std::transform(lower_data.begin(), lower_data.end(), lower_data.begin(),
+                           [](unsigned char c) { return std::tolower(c); });
+
+            size_t cl_pos = lower_data.find("content-length:");
             if (cl_pos != std::string::npos) {
-                size_t cl_end = request_data.find("\r\n", cl_pos);
+                size_t cl_end = lower_data.find("\r\n", cl_pos);
                 if (cl_end == std::string::npos) {
                     std::string response = build_response(400, "application/json",
                         json_error("Invalid Content-Length"));
-                    send(client_socket, response.c_str(), static_cast<int>(response.size()), 0);
+                    send_all(client_socket, response);
                     close_socket(client_socket);
                     return;
                 }
 
+                // Extract from the ORIGINAL data (preserving case for the value)
                 std::string cl_str = request_data.substr(cl_pos + 15, cl_end - cl_pos - 15);
                 size_t content_length = 0;
                 if (!eshkol_parse_content_length(cl_str, content_length)) {
                     std::string response = build_response(400, "application/json",
                         json_error("Invalid Content-Length"));
-                    send(client_socket, response.c_str(), static_cast<int>(response.size()), 0);
+                    send_all(client_socket, response);
+                    close_socket(client_socket);
+                    return;
+                }
+                if (content_length > kMaxRequestBodySize) {
+                    std::string response = build_response(413, "application/json",
+                        json_error("Payload too large"));
+                    send_all(client_socket, response);
                     close_socket(client_socket);
                     return;
                 }
@@ -437,8 +519,9 @@ void handle_client(socket_handle_t client_socket) {
     std::string response;
 
     if (req.malformed) {
-        response = build_response(400, "application/json", json_error(req.error_message));
-        send(client_socket, response.c_str(), static_cast<int>(response.size()), 0);
+        response = build_response(req.error_status, "application/json",
+                                  json_error(req.error_message));
+        send_all(client_socket, response);
         close_socket(client_socket);
         return;
     }
@@ -476,8 +559,8 @@ void handle_client(socket_handle_t client_socket) {
         response = build_response(404, "application/json", json_error("Not found"));
     }
 
-    // Send response
-    send(client_socket, response.c_str(), static_cast<int>(response.size()), 0);
+    // Send response (handles partial writes)
+    send_all(client_socket, response);
     close_socket(client_socket);
 }
 
@@ -569,8 +652,8 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    // Listen
-    if (listen(g_server_socket, 10) < 0) {
+    // Listen with a reasonable backlog
+    if (listen(g_server_socket, SOMAXCONN) < 0) {
         std::cerr << "Failed to listen\n";
         close_socket(g_server_socket);
         shutdown_socket_runtime();
@@ -593,6 +676,15 @@ int main(int argc, char** argv) {
             if (g_running) {
                 std::cerr << "Accept failed\n";
             }
+            continue;
+        }
+
+        // Connection limiter — reject with 503 if at capacity.
+        if (g_active_connections.load(std::memory_order_relaxed) >= kMaxConcurrentConnections) {
+            std::string response = build_response(503, "application/json",
+                json_error("Server at capacity"));
+            send(client_socket, response.c_str(), static_cast<int>(response.size()), 0);
+            close_socket(client_socket);
             continue;
         }
 
