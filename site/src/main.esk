@@ -248,6 +248,7 @@
       (style! links "alignItems" "center")
 
       (create-nav-link "Learn" "/learn" links)
+      (create-nav-link "Tutorials" "/tutorials" links)
       (create-nav-link "Examples" "/examples" links)
       (create-nav-link "Docs" "/docs" links)
       (create-nav-link "Downloads" "/downloads" links)
@@ -309,6 +310,7 @@
           (style! h "marginBottom" "12px")
           (style! h "fontSize" "0.85rem"))
         (create-ext-link "Learn" "/learn" nav-col)
+        (create-ext-link "Tutorials" "/tutorials" nav-col)
         (create-ext-link "Examples" "/examples" nav-col)
         (create-ext-link "Documentation" "/docs" nav-col)
         (create-ext-link "Downloads" "/downloads" nav-col))
@@ -982,11 +984,14 @@
     (web-set-attribute item "data-url" url)
     item))
 
-(define (render-docs-page content)
+;; ═══════════════════════════════════════════════════════════
+;; PAGE: TUTORIALS
+;; ═══════════════════════════════════════════════════════════
+
+(define (render-tutorials-page content)
   (let ((page (create-div content)))
     (style! page "paddingTop" "32px")
 
-    ;; Docs layout: sidebar + content
     (let ((layout (create-div page)))
       (web-add-class layout "docs-layout")
 
@@ -998,11 +1003,10 @@
         (let ((g1 (render-sidebar-group sidebar "GETTING STARTED")))
           (render-sidebar-item g1 "First 5 Minutes" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/00_FIRST_5_MINUTES.md")
           (render-sidebar-item g1 "Why Eshkol?" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/WHY_ESHKOL.md")
-          (render-sidebar-item g1 "Quick Start" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/QUICKSTART.md")
           (render-sidebar-item g1 "Cookbook" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/COOKBOOK.md"))
 
-        ;; Tutorials
-        (let ((gt (render-sidebar-group sidebar "TUTORIALS")))
+        ;; Feature Tutorials
+        (let ((gt (render-sidebar-group sidebar "FEATURE TUTORIALS")))
           (render-sidebar-item gt "Autodiff & ML" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/01_AUTODIFF_AND_ML.md")
           (render-sidebar-item gt "Bytecode VM" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/02_BYTECODE_VM.md")
           (render-sidebar-item gt "Weight Transformer" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/03_WEIGHT_MATRIX_TRANSFORMER.md")
@@ -1010,14 +1014,52 @@
           (render-sidebar-item gt "Signal Processing" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/05_SIGNAL_PROCESSING.md")
           (render-sidebar-item gt "Exact Arithmetic" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/06_EXACT_ARITHMETIC.md")
           (render-sidebar-item gt "Parallel Computing" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/07_PARALLEL_COMPUTING.md")
-          (render-sidebar-item gt "All Tutorials" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/README.md"))
+          (render-sidebar-item gt "Continuations" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/08_CONTINUATIONS_AND_EXCEPTIONS.md")
+          (render-sidebar-item gt "Module System" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/09_MODULE_SYSTEM.md")
+          (render-sidebar-item gt "Macros" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/10_MACROS.md")
+          (render-sidebar-item gt "Tensors" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/11_TENSORS_AND_LINEAR_ALGEBRA.md")
+          (render-sidebar-item gt "Lists" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/12_LISTS.md")
+          (render-sidebar-item gt "Strings & I/O" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/13_STRINGS_AND_IO.md")
+          (render-sidebar-item gt "Data Formats" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/14_DATA_FORMATS.md")
+          (render-sidebar-item gt "Pattern Matching" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/15_PATTERN_MATCHING.md")
+          (render-sidebar-item gt "Hash Tables" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/16_HASH_TABLES.md")
+          (render-sidebar-item gt "Functional Programming" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/17_FUNCTIONAL_PROGRAMMING.md")
+          (render-sidebar-item gt "Web Platform" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/18_WEB_PLATFORM.md")
+          (render-sidebar-item gt "GPU Acceleration" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/19_GPU_ACCELERATION.md")
+          (render-sidebar-item gt "Bitwise & System" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/20_BITWISE_AND_SYSTEM.md"))
 
-        ;; Projects
-        (let ((gp (render-sidebar-group sidebar "PROJECTS")))
+        ;; Project Tutorials
+        (let ((gp (render-sidebar-group sidebar "PROJECT TUTORIALS")))
           (render-sidebar-item gp "Neural Network" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/21_PROJECT_NEURAL_NETWORK.md")
           (render-sidebar-item gp "Expert System" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/22_PROJECT_EXPERT_SYSTEM.md")
           (render-sidebar-item gp "Data Pipeline" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/23_PROJECT_DATA_PIPELINE.md")
-          (render-sidebar-item gp "Self-Improving" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/26_PROJECT_SELF_IMPROVING.md"))
+          (render-sidebar-item gp "Optimisation" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/24_PROJECT_OPTIMISATION.md")
+          (render-sidebar-item gp "Interpreter" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/25_PROJECT_INTERPRETER.md")
+          (render-sidebar-item gp "Self-Improving" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/26_PROJECT_SELF_IMPROVING.md")))
+
+      ;; Content area
+      (let ((doc-area (create-div layout)))
+        (web-add-class doc-area "doc-content")
+        (web-set-attribute doc-area "id" "tutorial-content-area")
+
+        ;; Load First 5 Minutes by default
+        (web-load-content "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/00_FIRST_5_MINUTES.md" doc-area)))))
+
+;; ═══════════════════════════════════════════════════════════
+;; PAGE: DOCS
+;; ═══════════════════════════════════════════════════════════
+
+(define (render-docs-page content)
+  (let ((page (create-div content)))
+    (style! page "paddingTop" "32px")
+
+    ;; Docs layout: sidebar + content
+    (let ((layout (create-div page)))
+      (web-add-class layout "docs-layout")
+
+      ;; Sidebar
+      (let ((sidebar (create-div layout)))
+        (web-add-class sidebar "docs-sidebar")
 
         ;; Language
         (let ((g2 (render-sidebar-group sidebar "LANGUAGE")))
@@ -1057,8 +1099,8 @@
         (web-set-attribute doc-area "id" "doc-content-area")
         (style! doc-area "minHeight" "600px")
 
-        ;; Load Quick Start by default
-        (web-load-content "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/QUICKSTART.md" doc-area)
+        ;; Load Language Guide by default
+        (web-load-content "https://raw.githubusercontent.com/tsotchke/eshkol/master/ESHKOL_LANGUAGE_GUIDE.md" doc-area)
 
         (let ((hint (create-text "p" "Select a document from the sidebar to load it." doc-area)))
           (style! hint "color" "#71717a")
@@ -1442,6 +1484,8 @@
       (cond
         ((string=? route-buf "/learn")
          (render-learn-page content))
+        ((string=? route-buf "/tutorials")
+         (render-tutorials-page content))
         ((string=? route-buf "/examples")
          (render-examples-page content))
         ((string=? route-buf "/docs")

@@ -235,4 +235,4 @@ intelligence that improves itself.
 
 ---
 
-*This is Tutorial 26 in the [Eshkol Tutorial Series](README.md).*
+*This is Tutorial 26 in the [Eshkol Tutorial Series](https://github.com/tsotchke/eshkol/blob/master/docs/tutorials/README.md).*
