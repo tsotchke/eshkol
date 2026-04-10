@@ -999,42 +999,45 @@
 
 (define (render-downloads-page content)
   (let ((page (create-section content)))
-    (create-page-header page "Downloads" "Install Eshkol on macOS, Linux, or build from source.")
+    (create-page-header page "Downloads" "Install Eshkol on macOS, Linux, Windows, or build from source. Every release ships 16 pre-built binaries across 3 platforms, 2 architectures, and 3 acceleration tiers.")
 
-    ;; macOS Homebrew
+    ;; ── macOS ──────────────────────────────────────────────────
     (section-subheading page "macOS (Homebrew)")
-    (body-text page "The fastest way to install on macOS. Supports both Apple Silicon (M1/M2/M3/M4) and Intel.")
+    (body-text page "The fastest way to install on macOS. Supports both Apple Silicon (M1/M2/M3/M4) and Intel x86_64.")
     (let ((cmd (create-div page)))
       (web-add-class cmd "install-cmd")
       (web-set-text-content cmd "brew tap tsotchke/eshkol && brew install eshkol"))
 
-    ;; Linux
-    (section-subheading page "Linux (Debian / Ubuntu)")
-    (body-text page "Download the .deb package for your architecture.")
+    ;; ── Linux ──────────────────────────────────────────────────
+    (section-subheading page "Linux")
+    (body-text page "Download a .tar.gz archive from the latest release, extract, and add to your PATH.")
     (create-code-block page
-      "<code style='color:#22c55e'>$</code> wget https://github.com/tsotchke/eshkol/releases/latest/download/eshkol_amd64.deb\n<code style='color:#22c55e'>$</code> sudo dpkg -i eshkol_amd64.deb")
+      "<code style='color:#22c55e'>$</code> curl -LO https://github.com/tsotchke/eshkol/releases/latest\n<code style='color:#606078'># download the linux-x64-lite or linux-arm64-lite .tar.gz</code>\n<code style='color:#22c55e'>$</code> tar xzf eshkol-*.tar.gz\n<code style='color:#22c55e'>$</code> sudo cp eshkol-run eshkol-repl /usr/local/bin/")
 
-    ;; Platform table
-    (section-subheading page "Platform Downloads")
-    (body-text page "Download pre-built binaries from GitHub Releases.")
+    ;; ── Windows ────────────────────────────────────────────────
+    (section-subheading page "Windows")
+    (body-text page "Native Windows builds via Visual Studio 2022 + ClangCL + LLVM 21 SDK. Supports both x86_64 and ARM64.")
+    (create-code-block page
+      "<code style='color:#606078'>:: Download the .zip for your architecture from GitHub Releases</code>\n<code style='color:#606078'>:: Extract and add the directory to your PATH</code>\n<code style='color:#22c55e'>&gt;</code> eshkol-run hello.esk -o hello.exe\n<code style='color:#22c55e'>&gt;</code> hello.exe\n<span style='color:#a78bfa'>Hello, world!</span>")
+
+    ;; ── Release Artifacts Table ────────────────────────────────
+    (section-subheading page "Release Artifacts")
+    (body-text page "Each release includes three build tiers per platform. All link to the latest release on GitHub.")
 
     (let ((tbl (web-create-element "table")))
       (web-add-class tbl "comparison-table")
-      (web-set-inner-html tbl "<thead><tr><th>Platform</th><th>Architecture</th><th>Package</th><th>Link</th></tr></thead><tbody><tr><td>macOS</td><td>Apple Silicon (arm64)</td><td>Homebrew</td><td><a href='https://github.com/tsotchke/eshkol/releases/latest' target='_blank'>Latest Release</a></td></tr><tr><td>macOS</td><td>Intel (x86_64)</td><td>Homebrew</td><td><a href='https://github.com/tsotchke/eshkol/releases/latest' target='_blank'>Latest Release</a></td></tr><tr><td>Linux</td><td>x86_64</td><td>.tar.gz</td><td><a href='https://github.com/tsotchke/eshkol/releases/latest' target='_blank'>Latest Release</a></td></tr><tr><td>Linux</td><td>ARM64</td><td>.tar.gz</td><td><a href='https://github.com/tsotchke/eshkol/releases/latest' target='_blank'>Latest Release</a></td></tr><tr><td>Windows</td><td>x86_64</td><td>.zip</td><td><a href='https://github.com/tsotchke/eshkol/releases/latest' target='_blank'>Latest Release</a></td></tr><tr><td>Windows</td><td>ARM64</td><td>.zip</td><td><a href='https://github.com/tsotchke/eshkol/releases/latest' target='_blank'>Latest Release</a></td></tr><tr><td>WebAssembly</td><td>Any</td><td>WASM</td><td><a href='#/playground'>Try in Browser</a></td></tr></tbody>")
+      (web-set-inner-html tbl "<thead><tr><th>Platform</th><th>Architecture</th><th>Lite</th><th>XLA</th><th>CUDA</th></tr></thead><tbody><tr><td><strong>macOS</strong></td><td>Apple Silicon (arm64)</td><td><a href='https://github.com/tsotchke/eshkol/releases/latest' target='_blank'>.tar.gz</a></td><td><a href='https://github.com/tsotchke/eshkol/releases/latest' target='_blank'>.tar.gz</a></td><td>-</td></tr><tr><td><strong>macOS</strong></td><td>Intel (x86_64)</td><td><a href='https://github.com/tsotchke/eshkol/releases/latest' target='_blank'>.tar.gz</a></td><td><a href='https://github.com/tsotchke/eshkol/releases/latest' target='_blank'>.tar.gz</a></td><td>-</td></tr><tr><td><strong>Linux</strong></td><td>x86_64</td><td><a href='https://github.com/tsotchke/eshkol/releases/latest' target='_blank'>.tar.gz</a></td><td><a href='https://github.com/tsotchke/eshkol/releases/latest' target='_blank'>.tar.gz</a></td><td><a href='https://github.com/tsotchke/eshkol/releases/latest' target='_blank'>.tar.gz</a></td></tr><tr><td><strong>Linux</strong></td><td>ARM64</td><td><a href='https://github.com/tsotchke/eshkol/releases/latest' target='_blank'>.tar.gz</a></td><td><a href='https://github.com/tsotchke/eshkol/releases/latest' target='_blank'>.tar.gz</a></td><td><a href='https://github.com/tsotchke/eshkol/releases/latest' target='_blank'>.tar.gz</a></td></tr><tr><td><strong>Windows</strong></td><td>x86_64</td><td><a href='https://github.com/tsotchke/eshkol/releases/latest' target='_blank'>.zip</a></td><td><a href='https://github.com/tsotchke/eshkol/releases/latest' target='_blank'>.zip</a></td><td><a href='https://github.com/tsotchke/eshkol/releases/latest' target='_blank'>.zip</a></td></tr><tr><td><strong>Windows</strong></td><td>ARM64</td><td><a href='https://github.com/tsotchke/eshkol/releases/latest' target='_blank'>.zip</a></td><td><a href='https://github.com/tsotchke/eshkol/releases/latest' target='_blank'>.zip</a></td><td><a href='https://github.com/tsotchke/eshkol/releases/latest' target='_blank'>.zip</a></td></tr><tr><td><strong>WebAssembly</strong></td><td>Any</td><td><a href='#/playground'>Try in Browser</a></td><td>-</td><td>-</td></tr></tbody>")
       (web-append-child page tbl))
 
-    ;; Releases container (populated by JS in index.html)
-    (let ((rc (create-div page)))
-      (web-set-attribute rc "id" "releases-container")
-      (style! rc "marginTop" "32px"))
+    (body-text page "<strong>Lite</strong> &mdash; core compiler + REPL + stdlib. No GPU dependencies. Best for most users.<br><strong>XLA</strong> &mdash; adds StableHLO/XLA backend for accelerated tensor operations.<br><strong>CUDA</strong> &mdash; adds NVIDIA GPU acceleration via CUDA + Metal on macOS.")
 
-    ;; From source
+    ;; ── Build from Source ──────────────────────────────────────
     (section-subheading page "Build from Source")
-    (body-text page "Requires LLVM 21+, a C++20 compiler, and CMake 3.14+.")
+    (body-text page "Requires LLVM 21+, a C++17 compiler, and CMake 3.14+.")
     (create-code-block page
       "<code style='color:#22c55e'>$</code> git clone https://github.com/tsotchke/eshkol.git\n<code style='color:#22c55e'>$</code> cd eshkol && mkdir build && cd build\n<code style='color:#22c55e'>$</code> cmake .. -DCMAKE_BUILD_TYPE=Release\n<code style='color:#22c55e'>$</code> make -j$(nproc)\n<code style='color:#22c55e'>$</code> sudo make install")
 
-    ;; Verify
+    ;; ── Verify ──────────────────────────────────────────────────
     (section-subheading page "Verify Installation")
     (body-text page "Compile and run a simple program to confirm everything works.")
     (create-code-block page
@@ -1056,6 +1059,8 @@
         (make-badge "macOS (Intel)" "badge-stable")
         (make-badge "Linux (x86_64)" "badge-stable")
         (make-badge "Linux (ARM64)" "badge-stable")
+        (make-badge "Windows (x64)" "badge-stable")
+        (make-badge "Windows (ARM64)" "badge-stable")
         (make-badge "WebAssembly" "badge-pre")))
 
     (create-divider page)
