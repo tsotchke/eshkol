@@ -143,6 +143,38 @@ PY
     return 127
 }
 
+http_raw_request() {
+    local host="$1"
+    local port="$2"
+    local request="$3"
+
+    if command -v python3 >/dev/null 2>&1; then
+        python3 - "$host" "$port" "$request" <<'PY'
+import socket
+import sys
+
+host = sys.argv[1]
+port = int(sys.argv[2])
+request = sys.argv[3].encode("utf-8")
+
+with socket.create_connection((host, port), timeout=5) as sock:
+    sock.sendall(request)
+    sock.shutdown(socket.SHUT_WR)
+    chunks = []
+    while True:
+        data = sock.recv(4096)
+        if not data:
+            break
+        chunks.append(data)
+
+sys.stdout.write(b"".join(chunks).decode("utf-8", errors="replace"))
+PY
+        return
+    fi
+
+    return 127
+}
+
 echo "========================================="
 echo "  Eshkol Web/WASM Test Suite"
 echo "========================================="
@@ -221,6 +253,16 @@ if echo "$HEALTH" | grep -q '"status":"ok"'; then
     log_pass "health check"
 else
     log_fail "health check: $HEALTH"
+fi
+
+# Test: malformed Content-Length should return 400 without crashing the server
+printf "Testing %-45s " "invalid Content-Length handling"
+RAW_REQUEST=$'POST /compile HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: abc\r\n\r\n{"code":"(define x 1)"}'
+RESULT=$(http_raw_request "127.0.0.1" "$PORT" "$RAW_REQUEST" 2>/dev/null || echo "")
+if echo "$RESULT" | grep -q "400 Bad Request" && kill -0 "$SERVER_PID" 2>/dev/null; then
+    log_pass "invalid Content-Length"
+else
+    log_fail "invalid Content-Length: $RESULT"
 fi
 
 # Test: Compile simple function

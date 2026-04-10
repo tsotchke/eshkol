@@ -1245,6 +1245,14 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/lsp/eshkol_lsp.cpp")
     install(TARGETS eshkol-lsp DESTINATION bin)
 endif()
 
+# ===== HTTP Request Utility Tests =====
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/web/content_length_parse_test.cpp")
+    add_executable(content_length_parse_test tests/web/content_length_parse_test.cpp)
+    target_compile_features(content_length_parse_test PRIVATE cxx_std_17)
+    target_include_directories(content_length_parse_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    add_test(NAME content_length_parse_test COMMAND content_length_parse_test)
+endif()
+
 # ===== XLA Integration Tests =====
 if(ESHKOL_XLA_ENABLED AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/xla/xla_codegen_test.cpp")
     message(STATUS "Building XLA integration tests")
