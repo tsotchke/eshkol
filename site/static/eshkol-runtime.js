@@ -78,28 +78,148 @@ class EshkolRuntime {
     // === Markdown Renderer ===
     // Lightweight markdown-to-HTML converter (no external dependencies)
 
+    // Single-pass Scheme/Eshkol tokenizer used by the markdown highlighter.
+    //
+    // History note: an earlier version did syntax highlighting by chaining
+    // .replace() calls — first wrapping comments in a span, then strings,
+    // then numbers, etc. That was self-corrupting because each later regex
+    // happily matched substrings the earlier passes had ALREADY inserted
+    // into the output. The string regex matched the literal "color:#606078"
+    // attribute the comment pass had just added, and the number regex then
+    // matched "606078" inside *that* attribute, producing
+    //
+    //     <span style=<span ...>"color:#<span ...>606078</span>"</span>>...
+    //
+    // which the browser then displayed as raw text, leaving things like
+    //     "color:#606078">; Integers are exact
+    // visible in the rendered docs.
+    //
+    // The fix is to walk the source ONCE, recognise each token (comment,
+    // string, number, hash literal, keyword, identifier, other), and emit
+    // its HTML in one shot. Once a region of the source has been emitted
+    // as a span, it cannot be re-tokenised, so the cross-corruption is
+    // architecturally impossible.
+    //
+    // Returns an HTML string with all `<`, `>`, `&` properly escaped.
+    static highlightScheme(source) {
+        const KEYWORDS = new Set([
+            'define','lambda','let','let*','letrec','letrec*','if','cond','begin',
+            'set!','when','unless','do','case','match','and','or','not','quote',
+            'quasiquote','unquote','unquote-splicing','require','provide','extern',
+            'gradient','derivative','jacobian','hessian','divergence','curl','laplacian',
+        ]);
+        const COL_COMMENT = '#606078';
+        const COL_KEYWORD = '#c084fc';
+        const COL_STRING  = '#a78bfa';
+        const COL_NUMBER  = '#00ff88';
+        const escape = (s) =>
+            s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        const span = (color, text) =>
+            `<span style="color:${color}">${escape(text)}</span>`;
+        const isDigit  = (c) => c >= '0' && c <= '9';
+        const isIdent  = (c) =>
+            (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+            (c >= '0' && c <= '9') ||
+            '!$%&*+-./:<=>?@^_~'.indexOf(c) !== -1;
+        const isIdentStart = (c) =>
+            (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+            '!$%&*+-./:<=>?@^_~'.indexOf(c) !== -1;
+        let out = '';
+        let i = 0;
+        while (i < source.length) {
+            const c = source[i];
+
+            // Line comment: ; ... \n
+            if (c === ';') {
+                let j = i;
+                while (j < source.length && source[j] !== '\n') j++;
+                out += span(COL_COMMENT, source.slice(i, j));
+                i = j;
+                continue;
+            }
+
+            // String literal: "...", honoring \" escapes
+            if (c === '"') {
+                let j = i + 1;
+                while (j < source.length) {
+                    if (source[j] === '\\' && j + 1 < source.length) { j += 2; continue; }
+                    if (source[j] === '"') { j++; break; }
+                    j++;
+                }
+                out += span(COL_STRING, source.slice(i, j));
+                i = j;
+                continue;
+            }
+
+            // Hash literal: #t, #f, #\char
+            if (c === '#' && i + 1 < source.length) {
+                const n = source[i + 1];
+                if (n === 't' || n === 'f') {
+                    out += span(COL_NUMBER, source.slice(i, i + 2));
+                    i += 2;
+                    continue;
+                }
+                if (n === '\\' && i + 2 < source.length) {
+                    out += span(COL_NUMBER, source.slice(i, i + 3));
+                    i += 3;
+                    continue;
+                }
+            }
+
+            // Number literal: digits with optional fraction
+            // Treats a leading '-' or '+' as numeric only when followed by a digit
+            // and the previous emitted character is whitespace or an opening paren,
+            // so things like (- x 1) keep the '-' as an identifier/operator.
+            if (isDigit(c) || ((c === '-' || c === '+') && i + 1 < source.length && isDigit(source[i + 1]))) {
+                let j = i + 1;
+                let sawDot = false;
+                while (j < source.length) {
+                    const cj = source[j];
+                    if (isDigit(cj)) { j++; continue; }
+                    if (cj === '.' && !sawDot) { sawDot = true; j++; continue; }
+                    break;
+                }
+                out += span(COL_NUMBER, source.slice(i, j));
+                i = j;
+                continue;
+            }
+
+            // Identifier or keyword
+            if (isIdentStart(c)) {
+                let j = i + 1;
+                while (j < source.length && isIdent(source[j])) j++;
+                const word = source.slice(i, j);
+                if (KEYWORDS.has(word)) {
+                    out += span(COL_KEYWORD, word);
+                } else {
+                    out += escape(word);
+                }
+                i = j;
+                continue;
+            }
+
+            // Anything else (parens, whitespace, punctuation) — just escape
+            out += escape(c);
+            i++;
+        }
+        return out;
+    }
+
     renderMarkdown(md) {
         let html = md;
         // Extract code blocks FIRST to protect them from markdown transforms
         const codeBlocks = [];
+        const SCHEME_LANGS = new Set(['scheme', 'eshkol', 'lisp', 'scm', '']);
         html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
-            const escaped = code.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-            let block;
-            if (lang === 'scheme' || lang === 'eshkol' || lang === 'lisp' || lang === 'scm' || lang === 'bash' || lang === '') {
-                let highlighted = escaped;
-                if (lang === 'scheme' || lang === 'eshkol' || lang === 'lisp' || lang === 'scm' || lang === '') {
-                    highlighted = escaped
-                        .replace(/;[^\n]*/g, m => `<span style="color:#606078">${m}</span>`)
-                        .replace(/\b(define|lambda|let|let\*|letrec|if|cond|begin|set!|when|unless|do|case|match|and|or|not|quote|require|provide|extern|gradient|derivative|jacobian|hessian|divergence|curl|laplacian)\b/g,
-                            m => `<span style="color:#c084fc">${m}</span>`)
-                        .replace(/"[^"]*"/g, m => `<span style="color:#a78bfa">${m}</span>`)
-                        .replace(/\b\d+\.?\d*\b/g, m => `<span style="color:#00ff88">${m}</span>`)
-                        .replace(/#t\b|#f\b|#\\./g, m => `<span style="color:#00ff88">${m}</span>`);
-                }
-                block = `<pre style="background:#0a0a14;border:1px solid #27272a;border-radius:8px;padding:16px 20px;overflow-x:auto;margin:1em 0"><code style="font-family:'JetBrains Mono',monospace;font-size:0.85rem;line-height:1.6">${highlighted}</code></pre>`;
+            let body;
+            if (SCHEME_LANGS.has(lang)) {
+                // Single-pass tokeniser handles its own escaping.
+                body = EshkolRuntime.highlightScheme(code);
             } else {
-                block = `<pre style="background:#0a0a14;border:1px solid #27272a;border-radius:8px;padding:16px 20px;overflow-x:auto;margin:1em 0"><code style="font-family:'JetBrains Mono',monospace;font-size:0.85rem;line-height:1.6;color:#d4d4d8">${escaped}</code></pre>`;
+                // Other languages — just escape, no highlighting.
+                body = code.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
             }
+            const block = `<pre style="background:#0a0a14;border:1px solid #27272a;border-radius:8px;padding:16px 20px;overflow-x:auto;margin:1em 0"><code style="font-family:'JetBrains Mono',monospace;font-size:0.85rem;line-height:1.6;color:#d4d4d8">${body}</code></pre>`;
             codeBlocks.push(block);
             return `\x00CODEBLOCK${codeBlocks.length - 1}\x00`;
         });
