@@ -247,11 +247,11 @@
       (style! links "gap" "24px")
       (style! links "alignItems" "center")
 
+      (create-nav-link "Downloads" "/downloads" links)
       (create-nav-link "Learn" "/learn" links)
       (create-nav-link "Tutorials" "/tutorials" links)
       (create-nav-link "Examples" "/examples" links)
       (create-nav-link "Docs" "/docs" links)
-      (create-nav-link "Downloads" "/downloads" links)
       (create-nav-link "Playground" "/playground" links)
       (create-nav-link "Community" "/community" links)
 
@@ -653,7 +653,7 @@
 
 (define (render-learn-page content)
   (let ((page (create-section content)))
-    (create-page-header page "Learn Eshkol" "From hello world to automatic differentiation in 8 chapters.")
+    (create-page-header page "Learn Eshkol" "From hello world to automatic differentiation — interactive code examples you can run in the browser.")
 
     ;; Prerequisites note
     (let ((note (create-div page)))
@@ -1491,6 +1491,8 @@
         ((string=? route-buf "/docs")
          (render-docs-page content))
         ((string=? route-buf "/downloads")
+         (render-downloads-page content))
+        ((string=? route-buf "/download")
          (render-downloads-page content))
         ((string=? route-buf "/playground")
          (render-playground-page content))
