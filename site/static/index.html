@@ -40,7 +40,8 @@
   <script src="eshkol-runtime.js"></script>
   <script src="eshkol-vm.js"></script>
   <script>
-    // Restore clean URL after 404.html redirect (GitHub Pages SPA trick)
+    // ─── GitHub Pages SPA redirect ─────────────────────────────────────
+    // 404.html encodes the original path in the query string; restore it.
     (function(l) {
       if (l.search[1] === '/') {
         var decoded = l.search.slice(1).split('&').map(function(s) {
@@ -64,17 +65,101 @@
         );
         runtime.setInstance(instance);
         if (loadingEl) loadingEl.remove();
-        if (instance.exports.main) {
-          instance.exports.main(0, 0);
-        }
-        // SPA routing: re-call scheme_main on popstate (back/forward)
-        window.addEventListener('popstate', () => {
+
+        // ─── Navigation helper ─────────────────────────────────────────
+        // Calls scheme_main which re-reads pathname and renders the page.
+        const navigate = () => {
           if (instance.exports.scheme_main) {
             instance.exports.scheme_main(0);
           }
-        });
-        // Intercept internal link clicks — use pushState instead of full navigation
-        document.addEventListener('click', function(e) {
+          if (window.location.pathname === '/downloads' ||
+              window.location.pathname === '/download') {
+            setTimeout(loadReleases, 100);
+          }
+        };
+
+        // Initial render
+        if (instance.exports.main) {
+          instance.exports.main(0, 0);
+        }
+
+        // Back / forward
+        window.addEventListener('popstate', navigate);
+
+        // ─── Single unified click handler ──────────────────────────────
+        // Priority order prevents interference between handlers:
+        //   1. Hamburger menu toggle
+        //   2. Run-code button
+        //   3. Sidebar content loader (data-url)
+        //   4. Internal page navigation (href="/...")
+        // Lower-priority handlers never fire if a higher-priority one
+        // already handled the event.
+        document.addEventListener('click', (e) => {
+
+          // 1. Mobile hamburger toggle
+          if (e.target.closest('.site-nav-toggle')) {
+            e.preventDefault();
+            const links = document.querySelector('.site-nav-links');
+            if (links) links.classList.toggle('open');
+            return;
+          }
+
+          // 2. Run-code button
+          const runBtn = e.target.closest('button[data-run-code]');
+          if (runBtn) {
+            e.preventDefault();
+            const code = runBtn.dataset.runCode;
+            const wrapper = runBtn.closest('.runnable-code');
+            const output = wrapper ? wrapper.querySelector('[data-run-output]') : null;
+            if (!output) return;
+            output.style.display = 'block';
+            output.textContent = 'Running\u2026';
+            if (window._eshkolVM) {
+              try {
+                window._vmOutput = '';
+                window._vmStderr = '';
+                window._eshkolVM.cwrap('repl_eval', 'string', ['string'])(code);
+                if (window._vmStderr) {
+                  output.textContent = window._vmStderr.replace(/^WARNING: /gm, 'error: ');
+                } else if (window._vmOutput) {
+                  output.textContent = window._vmOutput;
+                } else {
+                  output.textContent = '(no output)';
+                }
+              } catch(err) {
+                output.textContent = 'error: ' + err.message;
+              }
+            } else {
+              output.textContent = 'VM loading \u2014 try again in a moment.';
+            }
+            return;
+          }
+
+          // 3. Sidebar content loader (doc/tutorial pages)
+          const tab = e.target.closest('[data-url]');
+          if (tab) {
+            e.preventDefault();
+            const url = tab.getAttribute('data-url') || tab.getAttribute('href');
+            const area = document.getElementById('doc-content-area')
+                      || document.getElementById('tutorial-content-area');
+            if (area && url) {
+              document.querySelectorAll('[data-url]').forEach(el => el.classList.remove('active'));
+              tab.classList.add('active');
+              area.innerHTML = '<p style="color:#71717a;font-style:italic">Loading...</p>';
+              fetch(url).then(r => {
+                if (!r.ok) throw new Error('HTTP ' + r.status);
+                return r.text();
+              }).then(md => {
+                area.innerHTML = runtime.renderMarkdown(md);
+                area.scrollTop = 0;
+              }).catch(err => {
+                area.innerHTML = '<p style="color:#ff4444">Failed to load: ' + err.message + '</p>';
+              });
+            }
+            return;  // Don't let the nav handler also fire
+          }
+
+          // 4. Internal page navigation
           var target = e.target;
           while (target && target.tagName !== 'A') target = target.parentElement;
           if (!target) return;
@@ -82,18 +167,18 @@
           if (!href) return;
           if (href.startsWith('/') && !href.startsWith('//')) {
             e.preventDefault();
+            // Close mobile menu on nav
+            const links = document.querySelector('.site-nav-links');
+            if (links) links.classList.remove('open');
+            // Navigate
             if (window.location.pathname !== href) {
               history.pushState(null, '', href);
             }
-            if (instance.exports.scheme_main) {
-              instance.exports.scheme_main(0);
-            }
-            if (href === '/downloads') setTimeout(loadReleases, 100);
+            navigate();
           }
-        }, false);
-        // Initialize the Eshkol bytecode VM for the browser REPL
-        // Capture stdout AND stderr from Emscripten so the REPL sees compile/runtime
-        // warnings (e.g. "undefined variable 'foo'") instead of swallowing them silently.
+        });
+
+        // ─── Bytecode VM for browser REPL ──────────────────────────────
         window._vmOutput = '';
         window._vmStderr = '';
         if (typeof EshkolVM !== 'undefined') {
@@ -110,7 +195,8 @@
             window._eshkolVM = vm;
           }).catch(e => console.warn('VM load deferred:', e.message));
         }
-        // REPL input handler (Enter key evaluates, Up/Down for history)
+
+        // ─── REPL keyboard handler ─────────────────────────────────────
         const replHistory = [];
         let historyIdx = -1;
         document.addEventListener('keydown', (e) => {
@@ -127,11 +213,7 @@
               try {
                 window._vmOutput = '';
                 window._vmStderr = '';
-                const evalFn = window._eshkolVM.cwrap('repl_eval', 'string', ['string']);
-                evalFn(source);
-                // If the compiler produced warnings (e.g. "undefined variable"),
-                // show them as errors and SUPPRESS the NIL fallback output that
-                // followed — the user shouldn't see "()" right after an error.
+                window._eshkolVM.cwrap('repl_eval', 'string', ['string'])(source);
                 if (window._vmStderr) {
                   output.textContent += window._vmStderr.replace(/^WARNING: /gm, 'error: ');
                 } else if (window._vmOutput) {
@@ -164,86 +246,8 @@
             }
           }
         });
-        // Run button click handler for runnable code examples
-        document.addEventListener('click', (e) => {
-          const btn = e.target.closest('button[data-run-code]');
-          if (btn) {
-            e.preventDefault();
-            const code = btn.dataset.runCode;
-            const wrapper = btn.closest('.runnable-code');
-            const output = wrapper ? wrapper.querySelector('[data-run-output]') : null;
-            if (!output) return;
-            output.style.display = 'block';
-            output.textContent = 'Running\u2026';
-            if (window._eshkolVM) {
-              try {
-                window._vmOutput = '';
-                window._vmStderr = '';
-                const evalFn = window._eshkolVM.cwrap('repl_eval', 'string', ['string']);
-                evalFn(code);
-                let txt = '';
-                if (window._vmStderr) {
-                  // suppress NIL fallback after a compile error
-                  txt = window._vmStderr.replace(/^WARNING: /gm, 'error: ');
-                } else if (window._vmOutput) {
-                  txt = window._vmOutput;
-                }
-                output.textContent = txt || '(no output)';
-              } catch(err) {
-                output.textContent = 'error: ' + err.message;
-              }
-            } else {
-              output.textContent = 'VM loading \u2014 try again in a moment.';
-            }
-            return;
-          }
-        });
 
-        // Mobile hamburger menu — toggle .open on .site-nav-links
-        document.addEventListener('click', (e) => {
-          const toggle = e.target.closest('.site-nav-toggle');
-          if (toggle) {
-            e.preventDefault();
-            const links = document.querySelector('.site-nav-links');
-            if (links) links.classList.toggle('open');
-            return;
-          }
-          // Auto-close menu when a nav link is clicked
-          const navLink = e.target.closest('.site-nav-links a');
-          if (navLink) {
-            const links = document.querySelector('.site-nav-links');
-            if (links) links.classList.remove('open');
-          }
-        });
-
-        // Doc/tutorial sidebar — click handler for documentation links
-        // Targets whichever content area exists on the current page
-        document.addEventListener('click', (e) => {
-          const tab = e.target.closest('[data-url]');
-          if (tab) {
-            e.preventDefault();
-            const url = tab.getAttribute('data-url') || tab.getAttribute('href');
-            const area = document.getElementById('doc-content-area')
-                      || document.getElementById('tutorial-content-area');
-            if (area && url) {
-              // Update active state on sidebar items
-              document.querySelectorAll('[data-url]').forEach(el => el.classList.remove('active'));
-              tab.classList.add('active');
-              area.innerHTML = '<p style="color:#71717a;font-style:italic">Loading...</p>';
-              fetch(url).then(r => {
-                if (!r.ok) throw new Error('HTTP ' + r.status);
-                return r.text();
-              }).then(md => {
-                area.innerHTML = runtime.renderMarkdown(md);
-                area.scrollTop = 0;
-              }).catch(err => {
-                area.innerHTML = '<p style="color:#ff4444">Failed to load: ' + err.message + '</p>';
-              });
-            }
-          }
-        });
-
-        // GitHub Releases API — populate downloads page
+        // ─── GitHub Releases API ───────────────────────────────────────
         const loadReleases = () => {
           const container = document.getElementById('releases-container');
           if (!container) return;
@@ -274,11 +278,11 @@
             })
             .catch(err => { container.innerHTML = '<p style="color:#71717a">Could not load releases. <a href="https://github.com/tsotchke/eshkol/releases">View on GitHub</a></p>'; });
         };
-        // Load releases when navigating to downloads page
-        window.addEventListener('popstate', () => {
-          if (window.location.pathname === '/downloads') setTimeout(loadReleases, 100);
-        });
-        setTimeout(loadReleases, 500);
+        // Load releases on initial page load (if on /downloads)
+        if (window.location.pathname === '/downloads' ||
+            window.location.pathname === '/download') {
+          setTimeout(loadReleases, 500);
+        }
       } catch (e) {
         console.error('Eshkol WASM error:', e);
         if (loadingEl) {
