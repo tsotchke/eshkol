@@ -137,9 +137,9 @@ $ ./hello
 
 | I want to... | Start here |
 |---|---|
-| Learn the basics | [Tutorial 12: Lists](12_LISTS.md), [Tutorial 17: Functional Programming](17_FUNCTIONAL_PROGRAMMING.md) |
-| Do machine learning | [Tutorial 1: Autodiff and ML](01_AUTODIFF_AND_ML.md), [Project: Neural Network](21_PROJECT_NEURAL_NETWORK.md) |
-| Build something for the web | [Tutorial 18: Web Platform](18_WEB_PLATFORM.md) |
-| Understand the unique features | [Tutorial 3: Weight Transformer](03_WEIGHT_MATRIX_TRANSFORMER.md), [Tutorial 4: Consciousness Engine](04_CONSCIOUSNESS_ENGINE.md) |
-| See complete working programs | [Project tutorials](README.md#project-tutorials) |
+| Learn the basics | [Tutorial 12: Lists](https://github.com/tsotchke/eshkol/blob/master/docs/tutorials/12_LISTS.md), [Tutorial 17: Functional Programming](https://github.com/tsotchke/eshkol/blob/master/docs/tutorials/17_FUNCTIONAL_PROGRAMMING.md) |
+| Do machine learning | [Tutorial 1: Autodiff and ML](https://github.com/tsotchke/eshkol/blob/master/docs/tutorials/01_AUTODIFF_AND_ML.md), [Project: Neural Network](https://github.com/tsotchke/eshkol/blob/master/docs/tutorials/21_PROJECT_NEURAL_NETWORK.md) |
+| Build something for the web | [Tutorial 18: Web Platform](https://github.com/tsotchke/eshkol/blob/master/docs/tutorials/18_WEB_PLATFORM.md) |
+| Understand the unique features | [Tutorial 3: Weight Transformer](https://github.com/tsotchke/eshkol/blob/master/docs/tutorials/03_WEIGHT_MATRIX_TRANSFORMER.md), [Tutorial 4: Consciousness Engine](https://github.com/tsotchke/eshkol/blob/master/docs/tutorials/04_CONSCIOUSNESS_ENGINE.md) |
+| See complete working programs | [Project tutorials](https://github.com/tsotchke/eshkol/blob/master/docs/tutorials/README.md#project-tutorials) |
 | Just explore | Paste code into the REPL at [eshkol.ai](https://eshkol.ai) |
