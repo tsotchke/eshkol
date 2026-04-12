@@ -245,6 +245,9 @@ static bool g_uses_stdlib = false;
 static bool g_emit_debug_info = false;
 static std::string g_debug_source_filename;
 static std::string g_debug_source_directory;
+// Source text + filepath for structured error messages with caret display
+static std::string g_source_text;
+static std::string g_source_filepath;
 
 // REPL MODE: Global symbol persistence across CodeGenerator instances
 // When REPL mode is enabled, symbols persist across evaluations
@@ -12780,12 +12783,11 @@ private:
                     return result;
                 } else {
                     // Not in symbol_table at all - truly unknown function
-                    if (current_source_line > 0) {
-                        eshkol_error("Unknown function: %s (line %u:%u)", func_name.c_str(),
-                                    current_source_line, current_source_column);
-                    } else {
-                        eshkol_error("Unknown function: %s", func_name.c_str());
-                    }
+                    eshkol_error_at(
+                        g_source_filepath.empty() ? nullptr : g_source_filepath.c_str(),
+                        current_source_line, current_source_column,
+                        g_source_text.empty() ? nullptr : g_source_text.c_str(),
+                        "Unknown function: %s", func_name.c_str());
                     markFatalCodegenError();
                     return nullptr;
                 }
@@ -29772,6 +29774,11 @@ void eshkol_disable_debug_info(void) {
     g_emit_debug_info = false;
     g_debug_source_filename.clear();
     g_debug_source_directory.clear();
+}
+
+void eshkol_set_source_context(const char* filepath, const char* source_text) {
+    g_source_filepath = filepath ? filepath : "";
+    g_source_text = source_text ? source_text : "";
 }
 
 void eshkol_set_optimization_level(int level) {

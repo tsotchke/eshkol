@@ -563,4 +563,100 @@ void eshkol_stacktrace(eshkol_logger_t level) {
     }
 }
 
+// ============================================================================
+// Source-location-aware diagnostic output (clang/gcc style)
+// ============================================================================
+//
+// Output format:
+//   file.esk:12:5: error: undeclared variable 'x'
+//    12 |   (define y (+ x 1))
+//       |                ^
+//
+// When source_text is NULL, the source line and caret are omitted.
+
+static void eshkol_diagnostic_at(eshkol_logger_t level,
+                                  const char* file, unsigned line, unsigned column,
+                                  const char* source_text, const char* msg, va_list ap) {
+    FILE* out = get_output();
+    char buffer[4096];
+    vsnprintf(buffer, sizeof(buffer), msg, ap);
+
+    const char* level_str = (level <= ESHKOL_ERROR) ? "error" : "warning";
+    const char* level_color = "";
+    const char* loc_color = "";
+    const char* reset = "";
+    if (g_color_enabled) {
+        level_color = (level <= ESHKOL_ERROR) ? "\033[1;31m" : "\033[1;33m"; /* red / yellow */
+        loc_color = "\033[1m"; /* bold */
+        reset = "\033[0m";
+    }
+
+    const char* fname = file ? file : "<unknown>";
+
+    /* file:line:col: error: message */
+    if (line > 0 && column > 0) {
+        fprintf(out, "%s%s:%u:%u:%s %s%s:%s %s\n",
+                loc_color, fname, line, column, reset,
+                level_color, level_str, reset,
+                buffer);
+    } else if (line > 0) {
+        fprintf(out, "%s%s:%u:%s %s%s:%s %s\n",
+                loc_color, fname, line, reset,
+                level_color, level_str, reset,
+                buffer);
+    } else {
+        fprintf(out, "%s%s:%s %s%s:%s %s\n",
+                loc_color, fname, reset,
+                level_color, level_str, reset,
+                buffer);
+    }
+
+    /* Source line + caret */
+    if (source_text && line > 0) {
+        /* Find the relevant line in source_text */
+        const char* p = source_text;
+        unsigned cur_line = 1;
+        while (*p && cur_line < line) {
+            if (*p == '\n') cur_line++;
+            p++;
+        }
+        /* p now points to start of the target line */
+        const char* line_end = p;
+        while (*line_end && *line_end != '\n') line_end++;
+        int line_len = (int)(line_end - p);
+
+        /* Print line number gutter + source line */
+        fprintf(out, " %*u | %.*s\n", 4, line, line_len, p);
+
+        /* Caret line */
+        if (column > 0) {
+            fprintf(out, "      | ");
+            for (unsigned i = 1; i < column; i++) {
+                /* Preserve tabs for alignment */
+                if (i - 1 < (unsigned)line_len && p[i - 1] == '\t')
+                    fputc('\t', out);
+                else
+                    fputc(' ', out);
+            }
+            fprintf(out, "%s^%s\n", level_color, reset);
+        }
+    }
+}
+
+void eshkol_error_at(const char* file, unsigned line, unsigned column,
+                     const char* source_text, const char* msg, ...) {
+    va_list ap;
+    va_start(ap, msg);
+    eshkol_diagnostic_at(ESHKOL_ERROR, file, line, column, source_text, msg, ap);
+    va_end(ap);
+}
+
+void eshkol_warn_at(const char* file, unsigned line, unsigned column,
+                    const char* source_text, const char* msg, ...) {
+    va_list ap;
+    va_start(ap, msg);
+    eshkol_diagnostic_at(ESHKOL_WARNING, file, line, column, source_text, msg, ap);
+    va_end(ap);
+}
+
 } // extern "C"
