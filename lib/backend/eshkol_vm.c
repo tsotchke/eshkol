@@ -245,6 +245,14 @@ static const BuiltinDef BUILTINS[] = {
     {"gradient", 750, 2}, {"jacobian", 751, 2}, {"hessian", 752, 2},
     {"divergence", 753, 2}, {"curl", 754, 2},
     {"laplacian", 755, 2}, {"directional-derivative", 756, 3},
+    {"reverse-gradient", 1840, 2},
+    /* Low-level reverse-mode tape API */
+    {"ad-tape-new", 390, 0}, {"ad-const", 391, 2}, {"ad-var", 392, 2},
+    {"ad-add", 394, 3}, {"ad-sub", 395, 3}, {"ad-mul", 396, 3}, {"ad-div", 397, 3},
+    {"ad-sin", 398, 2}, {"ad-cos", 399, 2}, {"ad-exp", 400, 2},
+    {"ad-log", 401, 2}, {"ad-sqrt", 402, 2}, {"ad-neg", 403, 2},
+    {"ad-abs", 404, 2}, {"ad-relu", 405, 2}, {"ad-sigmoid", 406, 2}, {"ad-tanh", 407, 2},
+    {"ad-pow", 397, 3}, {"ad-backward", 408, 2}, {"ad-gradient", 409, 2},
     /* ═══════════════════════════════════════════════════════════════
      * Tensors — IDs 410-470
      * ═══════════════════════════════════════════════════════════════ */

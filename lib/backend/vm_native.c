@@ -4953,6 +4953,100 @@ static void vm_dispatch_native(VM* vm, int fid) {
 
 #undef TENSOR_FILE_MAGIC
 
+    case 1840: { /* reverse-gradient(f, point) → tensor of gradients
+                  * Uses reverse-mode AD via Wengert tape tracing.
+                  * Activates the tape, calls f with traced inputs,
+                  * runs backward pass, returns gradient tensor.
+                  * Single backward pass → O(1) regardless of input dimension. */
+        Value x_val = vm_pop(vm), f_val = vm_pop(vm);
+
+        double point[64];
+        int n = 0;
+        if (x_val.type == VAL_PAIR) {
+            Value cur = x_val;
+            while (cur.type == VAL_PAIR && n < 64) {
+                point[n++] = as_number(vm->heap.objects[cur.as.ptr]->cons.car);
+                cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
+            }
+        } else if (x_val.type == VAL_TENSOR && x_val.as.ptr >= 0) {
+            VmTensor* t = (VmTensor*)vm->heap.objects[x_val.as.ptr]->opaque.ptr;
+            if (t && t->data) {
+                n = (int)(t->total < 64 ? t->total : 64);
+                for (int i = 0; i < n; i++) point[i] = t->data[i];
+            }
+        } else {
+            point[0] = as_number(x_val);
+            n = 1;
+        }
+
+        if (n == 0) { vm_push(vm, FLOAT_VAL(0)); break; }
+
+        /* Create tape and variable nodes */
+        AdTape* tape = ad_tape_new(&vm->heap.regions);
+        if (!tape) { vm_push(vm, FLOAT_VAL(0)); break; }
+
+        int var_nodes[64];
+        Value args[64];
+        for (int i = 0; i < n; i++) {
+            var_nodes[i] = ad_var(tape, point[i]);
+            args[i] = FLOAT_VAL(point[i]);
+        }
+
+        /* Activate tape tracing on VM */
+        void* saved_tape = vm->active_tape;
+        vm->active_tape = tape;
+
+        /* Set up ad_node_map for the argument slots.
+         * The closure bridge pushes: closure, arg0, arg1, ..., argN-1
+         * at stack positions sp, sp+1, ..., sp+N.
+         * After frame setup, locals start at fp = sp+N-N = sp.
+         * So arg[i] is at stack position (current_sp + 1 + i). */
+        int base_sp = vm->sp + 1; /* +1 for closure push */
+        for (int i = 0; i < n; i++) {
+            if (base_sp + i < STACK_SIZE)
+                vm->ad_node_map[base_sp + i] = var_nodes[i];
+        }
+
+        /* Call f(x1, x2, ..., xn) — arithmetic will record on tape */
+        Value result = vm_call_closure_from_native(vm, f_val, args, n);
+
+        /* Capture result's tape node (it's at the return value position) */
+        /* The closure bridge captures result from stack[sp-1] before restoring sp.
+         * At that point, ad_node_map[sp-1] holds the result node. But since sp
+         * was already restored by the bridge, we need to find the output node.
+         * The last node on the tape IS the output (tape nodes are appended in order). */
+        int output_node = tape->len - 1;
+
+        /* Deactivate tape */
+        vm->active_tape = saved_tape;
+
+        if (output_node < 0) {
+            /* Function didn't produce any tape operations — constant function */
+            int64_t shape[1] = { n };
+            VmTensor* zt = vm_tensor_zeros(&vm->heap.regions, shape, 1);
+            if (zt) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_TENSOR, VAL_TENSOR, zt); }
+            else { vm_push(vm, NIL_VAL); }
+            break;
+        }
+
+        /* Run backward pass */
+        ad_backward(tape, output_node);
+
+        /* Collect gradients from variable nodes */
+        if (n == 1) {
+            vm_push(vm, FLOAT_VAL(ad_gradient(tape, var_nodes[0])));
+        } else {
+            double grads[64];
+            for (int i = 0; i < n; i++)
+                grads[i] = ad_gradient(tape, var_nodes[i]);
+            int64_t shape[1] = { n };
+            VmTensor* t = vm_tensor_from_data(&vm->heap.regions, grads, shape, 1);
+            if (t) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_TENSOR, VAL_TENSOR, t); }
+            else { vm_push(vm, NIL_VAL); }
+        }
+        break;
+    }
+
     case 1830: { /* tensor-from-stack(count, v1, v2, ..., vN) → tensor
                   * Internal: compiler emits this for all-numeric #(...) literals.
                   * Stack: [count, val0, val1, ..., valN-1] (count pushed first) */

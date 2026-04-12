@@ -104,31 +104,65 @@ static void vm_run(VM* vm) {
     lbl_POP:   vm_pop(vm);               DISPATCH();
     lbl_DUP:   vm_push(vm, vm_peek(vm, 0)); DISPATCH();
 
-    /* --- Arithmetic --- */
+    /* --- Arithmetic ---
+     *
+     * Reverse-mode AD tracing: when vm->active_tape is set, binary/unary
+     * operations record on the Wengert tape in addition to computing values.
+     * ad_node_map[stack_slot] tracks which tape node corresponds to each
+     * stack value (-1 = untracked). Untracked operands that interact with
+     * tracked ones are promoted to ad_const nodes on the tape.
+     */
 
-    lbl_ADD: { Value b = vm_pop(vm), a = vm_pop(vm);
+#define VM_AD_BINARY(vm, a_sp, b_sp, tape_fn, result_val) do { \
+    if ((vm)->active_tape) { \
+        AdTape* _t = (AdTape*)(vm)->active_tape; \
+        int _an = (vm)->ad_node_map[(a_sp)]; \
+        int _bn = (vm)->ad_node_map[(b_sp)]; \
+        if (_an != -1 || _bn != -1) { \
+            if (_an == -1) _an = ad_const(_t, as_number((vm)->stack[(a_sp)])); \
+            if (_bn == -1) _bn = ad_const(_t, as_number((vm)->stack[(b_sp)])); \
+            (vm)->ad_node_map[(vm)->sp] = tape_fn(_t, _an, _bn); \
+        } else { (vm)->ad_node_map[(vm)->sp] = -1; } \
+    } else { (vm)->ad_node_map[(vm)->sp] = -1; } \
+} while(0)
+
+#define VM_AD_UNARY(vm, a_sp, tape_fn) do { \
+    if ((vm)->active_tape) { \
+        AdTape* _t = (AdTape*)(vm)->active_tape; \
+        int _an = (vm)->ad_node_map[(a_sp)]; \
+        if (_an != -1) { \
+            (vm)->ad_node_map[(vm)->sp] = tape_fn(_t, _an); \
+        } else { (vm)->ad_node_map[(vm)->sp] = -1; } \
+    } else { (vm)->ad_node_map[(vm)->sp] = -1; } \
+} while(0)
+
+    lbl_ADD: { int b_sp = vm->sp - 1, a_sp = vm->sp - 2;
+        Value b = vm_pop(vm), a = vm_pop(vm);
         if (a.type == VAL_DUAL || b.type == VAL_DUAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 373); }
         else if (a.type == VAL_RATIONAL || b.type == VAL_RATIONAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 331); }
         else if (a.type == VAL_COMPLEX || b.type == VAL_COMPLEX) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 307); }
-        else vm_push(vm, number_val(as_number(a) + as_number(b))); DISPATCH(); }
-    lbl_SUB: { Value b = vm_pop(vm), a = vm_pop(vm);
+        else { VM_AD_BINARY(vm, a_sp, b_sp, ad_add, 0); vm_push(vm, number_val(as_number(a) + as_number(b))); } DISPATCH(); }
+    lbl_SUB: { int b_sp = vm->sp - 1, a_sp = vm->sp - 2;
+        Value b = vm_pop(vm), a = vm_pop(vm);
         if (a.type == VAL_DUAL || b.type == VAL_DUAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 374); }
         else if (a.type == VAL_RATIONAL || b.type == VAL_RATIONAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 332); }
         else if (a.type == VAL_COMPLEX || b.type == VAL_COMPLEX) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 308); }
-        else vm_push(vm, number_val(as_number(a) - as_number(b))); DISPATCH(); }
-    lbl_MUL: { Value b = vm_pop(vm), a = vm_pop(vm);
+        else { VM_AD_BINARY(vm, a_sp, b_sp, ad_sub, 0); vm_push(vm, number_val(as_number(a) - as_number(b))); } DISPATCH(); }
+    lbl_MUL: { int b_sp = vm->sp - 1, a_sp = vm->sp - 2;
+        Value b = vm_pop(vm), a = vm_pop(vm);
         if (a.type == VAL_DUAL || b.type == VAL_DUAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 375); }
         else if (a.type == VAL_RATIONAL || b.type == VAL_RATIONAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 333); }
         else if (a.type == VAL_COMPLEX || b.type == VAL_COMPLEX) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 309); }
-        else vm_push(vm, number_val(as_number(a) * as_number(b))); DISPATCH(); }
-    lbl_DIV: { Value b = vm_pop(vm), a = vm_pop(vm);
+        else { VM_AD_BINARY(vm, a_sp, b_sp, ad_mul, 0); vm_push(vm, number_val(as_number(a) * as_number(b))); } DISPATCH(); }
+    lbl_DIV: { int b_sp = vm->sp - 1, a_sp = vm->sp - 2;
+        Value b = vm_pop(vm), a = vm_pop(vm);
         if (a.type == VAL_DUAL || b.type == VAL_DUAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 376); }
         else if (a.type == VAL_RATIONAL || b.type == VAL_RATIONAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 334); }
         else if (a.type == VAL_COMPLEX || b.type == VAL_COMPLEX) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 310); }
         else {
         double bd = as_number(b);
         if (bd == 0) { fprintf(stderr, "DIVIDE BY ZERO\n"); vm->error = 1; goto vm_exit; }
-        vm_push(vm, number_val(as_number(a) / bd)); } DISPATCH(); }
+        VM_AD_BINARY(vm, a_sp, b_sp, ad_div, 0); vm_push(vm, number_val(as_number(a) / bd)); } DISPATCH(); }
     lbl_MOD: {
         Value b = vm_pop(vm), a = vm_pop(vm);
         double bd = as_number(b);
@@ -138,12 +172,12 @@ static void vm_run(VM* vm) {
         vm_push(vm, number_val(r));
         DISPATCH();
     }
-    lbl_NEG: { Value a = vm_pop(vm);
+    lbl_NEG: { int a_sp = vm->sp - 1; Value a = vm_pop(vm);
         if (a.type == VAL_DUAL) { vm_push(vm, a); vm_dispatch_native(vm, 384); }
-        else vm_push(vm, number_val(-as_number(a))); DISPATCH(); }
-    lbl_ABS: { Value a = vm_pop(vm);
+        else { VM_AD_UNARY(vm, a_sp, ad_neg); vm_push(vm, number_val(-as_number(a))); } DISPATCH(); }
+    lbl_ABS: { int a_sp = vm->sp - 1; Value a = vm_pop(vm);
         if (a.type == VAL_DUAL) { vm_push(vm, a); vm_dispatch_native(vm, 383); }
-        else vm_push(vm, number_val(fabs(as_number(a)))); DISPATCH(); }
+        else { VM_AD_UNARY(vm, a_sp, ad_abs); vm_push(vm, number_val(fabs(as_number(a)))); } DISPATCH(); }
 
     /* --- Comparison --- */
 
@@ -156,13 +190,17 @@ static void vm_run(VM* vm) {
 
     /* --- Variables --- */
 
-    lbl_GET_LOCAL:
-        vm_push(vm, vm->stack[vm->fp + instr.operand]);
-        DISPATCH();
-    lbl_SET_LOCAL:
-        vm->stack[vm->fp + instr.operand] = vm_peek(vm, 0);
+    lbl_GET_LOCAL: {
+        int src = vm->fp + instr.operand;
+        vm->ad_node_map[vm->sp] = vm->ad_node_map[src]; /* propagate tape node */
+        vm_push(vm, vm->stack[src]);
+        DISPATCH(); }
+    lbl_SET_LOCAL: {
+        int dst = vm->fp + instr.operand;
+        vm->ad_node_map[dst] = vm->ad_node_map[vm->sp - 1]; /* propagate tape node */
+        vm->stack[dst] = vm_peek(vm, 0);
         vm_pop(vm);
-        DISPATCH();
+        DISPATCH(); }
     lbl_GET_UPVALUE: {
         Value closure_val = vm->stack[vm->fp - 1];
         if (closure_val.type == VAL_CLOSURE) {
@@ -688,9 +726,11 @@ vm_exit:
         case OP_NOT: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(!is_truthy(a))); break; }
 
         /* Variables */
-        case OP_GET_LOCAL:
-            vm_push(vm, vm->stack[vm->fp + instr.operand]);
-            break;
+        case OP_GET_LOCAL: {
+            int src = vm->fp + instr.operand;
+            vm->ad_node_map[vm->sp] = vm->ad_node_map[src];
+            vm_push(vm, vm->stack[src]);
+            break; }
         case OP_SET_LOCAL:
             vm->stack[vm->fp + instr.operand] = vm_peek(vm, 0);
             vm_pop(vm);
