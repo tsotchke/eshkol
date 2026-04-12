@@ -281,6 +281,14 @@ typedef struct {
     /* Status */
     int halted;
     int error;
+
+    /* Reverse-mode AD tracing context.
+     * When active_tape != NULL, arithmetic operations (+,-,*,/,sin,cos,...)
+     * record on the tape. Each stack value that flows through tape-aware ops
+     * gets tracked via ad_node_map: maps stack slot → tape node index.
+     * This enables transparent reverse-mode gradient computation. */
+    void* active_tape;                /* AdTape* or NULL */
+    int   ad_node_map[STACK_SIZE];    /* stack slot → tape node index (-1 = not tracked) */
 } VM;
 
 /* Command-line arguments (set in main, read by native 602) */
@@ -291,6 +299,8 @@ static void vm_set_command_line(int argc, char** argv) { g_vm_argc = argc; g_vm_
 static void vm_init(VM* vm) {
     memset(vm, 0, sizeof(VM));
     heap_init(&vm->heap);
+    vm->active_tape = NULL;
+    memset(vm->ad_node_map, -1, sizeof(vm->ad_node_map));
 }
 
 /* Validate a heap pointer */
