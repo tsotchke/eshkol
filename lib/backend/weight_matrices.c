@@ -3135,6 +3135,103 @@ int main() {
         {OP_HALT, 0}
       }; test("AD: d/dx relu(3) = 1", p, 7, 1); }
 
+    /* ── MLP gradient demo: f(w,b) = sigmoid(w*2 + b) at w=1, b=-1 ──
+     * sigmoid(1*2 + -1) = sigmoid(1) ≈ 0.7311
+     * df/dw = x * sigmoid'(w*x+b) = 2 * 0.7311 * (1 - 0.7311) ≈ 0.3932
+     * df/db = sigmoid'(w*x+b) = 0.7311 * (1 - 0.7311) ≈ 0.1966
+     * Uses 6 tape nodes: var(w=1), const(x=2), var(b=-1), mul(w,x), add(wx,b), sigmoid */
+    printf("\n  --- MLP gradient demo ---\n");
+    { Instr p[]={
+        {OP_AD_VAR, 1},       /* node 0: w=1 */
+        {OP_AD_CONST, 2},     /* node 1: x=2 (constant, no gradient) */
+        {OP_AD_MUL, 0},       /* node 2: w*x=2 */
+        {OP_AD_VAR, -1},      /* node 3: b=-1 */
+        /* We need to get node 2 and node 3 on TOS/SOS for AD_ADD.
+         * After AD_VAR(-1): stack is [0, 1, 2, 3]
+         * AD_MUL popped 0,1 pushed 2. Stack: [2, ...]
+         * AD_VAR(-1) pushed 3. Stack: [2, 3, ...]
+         * But AD_ADD needs SOS=left, TOS=right. We need [2, 3] on stack.
+         * Currently TOS=3, SOS=2. AD_ADD will use SOS=2(left), TOS=3(right). */
+        {OP_AD_ADD, 0},       /* node 4: w*x + b = 2 + (-1) = 1 */
+        {OP_AD_SIGMOID, 0},   /* node 5: sigmoid(1) ≈ 0.7311 */
+        {OP_AD_BACKWARD, 0},  /* backward from node 5 */
+        {OP_CONST, 0},        /* push 0 (node index for w) */
+        {OP_AD_GRAD, 0},      /* df/dw */
+        {OP_PRINT, 0},
+        {OP_HALT, 0}
+      }; test("MLP: df/dw sigmoid(w*2+b) at w=1,b=-1", p, 11, 0.3932f); }
+
+    /* Same MLP, check df/db */
+    { Instr p[]={
+        {OP_AD_VAR, 1},
+        {OP_AD_CONST, 2},
+        {OP_AD_MUL, 0},
+        {OP_AD_VAR, -1},
+        {OP_AD_ADD, 0},
+        {OP_AD_SIGMOID, 0},
+        {OP_AD_BACKWARD, 0},
+        {OP_CONST, 3},        /* push 3 (node index for b) */
+        {OP_AD_GRAD, 0},      /* df/db */
+        {OP_PRINT, 0},
+        {OP_HALT, 0}
+      }; test("MLP: df/db sigmoid(w*2+b) at w=1,b=-1", p, 11, 0.1966f); }
+
+    /* ── Edge cases ── */
+    printf("\n  --- AD edge cases ---\n");
+
+    /* Backward on constant: gradient should be 0 */
+    { Instr p[]={
+        {OP_AD_CONST, 42},
+        {OP_AD_BACKWARD, 0},
+        {OP_CONST, 0},
+        {OP_AD_GRAD, 0},
+        {OP_PRINT, 0},
+        {OP_HALT, 0}
+      }; test("AD edge: grad of output const = 1 (seed)", p, 6, 1); }
+
+    /* Backward on lone variable: gradient = 1 (identity) */
+    { Instr p[]={
+        {OP_AD_VAR, 7},
+        {OP_DUP, 0},
+        {OP_AD_BACKWARD, 0},
+        {OP_CONST, 0},
+        {OP_AD_GRAD, 0},
+        {OP_PRINT, 0},
+        {OP_HALT, 0}
+      }; test("AD edge: grad of var = 1", p, 7, 1); }
+
+    /* Chain: f(x) = x^2 + 2x at x=3 → gradient = 2x + 2 = 8 */
+    { Instr p[]={
+        {OP_AD_VAR, 3},       /* node 0: x=3 */
+        {OP_DUP, 0},          /* dup node index 0 */
+        {OP_DUP, 0},          /* stack: [0,0,0] */
+        {OP_AD_MUL, 0},       /* node 1: x*x=9, stack: [0,1] */
+        {OP_AD_CONST, 2},     /* node 2: const(2), stack: [0,1,2] */
+        /* Need to get node 0 and node 2 adjacent. Stack is [0,1,2].
+         * We need node0 on SOS for AD_MUL with node2 on TOS.
+         * But stack is [0,1,2]. We need to swap. Use a different approach:
+         * Just compute 2*x as const(2) * var(x). Get the index 0 from depth. */
+        /* Actually: after AD_CONST(2), stack=[0,1,2]. We need [0] * [2] = 2x.
+         * But SOS=1 and TOS=2. We'd compute node1 * node2 = x^2 * 2. Wrong.
+         * We need a fresh reference to node 0. Use DUP on the 0 that's deep.
+         * Alternative: create another var reference by reloading from stack.
+         * Simplest: compute via AD_ADD of x to x instead of 2*x.
+         * f(x) = x^2 + x + x = x^2 + 2x. grad = 2x + 2 = 8 at x=3. */
+        /* Actually let me restructure: */
+        {OP_POP, 0},          /* drop node 2, stack: [0,1] */
+        {OP_POP, 0},          /* drop node 1, stack: [0] */
+        {OP_DUP, 0},          /* stack: [0,0] */
+        {OP_AD_ADD, 0},       /* node 3: x + x = 2x = 6, stack: [3] */
+        /* Now we need node 1 (x^2) and node 3 (2x) on stack */
+        {OP_CONST, 1},        /* push literal 1 (node index for x^2) */
+        {OP_AD_ADD, 0},       /* node 4: x^2 + 2x = 9 + 6 = 15, stack: [4] */
+        {OP_AD_BACKWARD, 0},
+        {OP_CONST, 0},
+        {OP_AD_GRAD, 0},
+        {OP_PRINT, 0},
+        {OP_HALT, 0}
+      }; test("AD chain: d/dx (x^2+2x) at 3 = 8", p, 16, 8); }
+
     printf("\n  [metrics] peak_heap=%d/%d\n", g_heap_ptr, HEAP_SIZE);
 
     printf("\n=== Results: %d passed, %d failed ===\n", n_pass, n_fail);
