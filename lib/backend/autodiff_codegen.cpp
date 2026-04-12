@@ -5071,10 +5071,97 @@ llvm::Value* AutodiffCodegen::hessian(const eshkol_operations_t* op) {
         return nullptr;
     }
 
+    // ── SCALAR HESSIAN ──────────────────────────────────────────────────
+    //
+    // For f: R → R, the Hessian is the scalar f''(x). Detect scalar input
+    // at the AST level (not runtime — avoids the tensor dispatch entirely)
+    // and compute via the three-point central difference formula on f
+    // itself:
+    //
+    //   f''(x) = (f(x+h) - 2f(x) + f(x-h)) / h²
+    //
+    // This uses THREE exact function evaluations and is O(h²) accurate.
+    // It's the same formula the VM uses (case 752) and matches the LLVM
+    // gradient's approach of using central differences for partials.
+    //
+    // A future upgrade path is nested dual numbers (dual-of-dual) for
+    // machine-precision second derivatives, but central differences are
+    // the current architectural baseline for second-order ops.
+    //
+    // We detect "scalar" by checking if the AST point node is a plain
+    // number (VAR, NUM, or OP returning scalar) rather than a tensor/vector
+    // literal. This is sound because the parser distinguishes tensor
+    // literals (#(...)) from scalar expressions at parse time.
+    {
+        bool is_scalar_input = (op->hessian_op.point->type == ESHKOL_INT64 ||
+                                op->hessian_op.point->type == ESHKOL_DOUBLE ||
+                                op->hessian_op.point->type == ESHKOL_VAR ||
+                                (op->hessian_op.point->type == ESHKOL_OP &&
+                                 op->hessian_op.point->operation.op != ESHKOL_CALL_OP));
+        // Also check: not a tensor literal, not a vector constructor
+        if (op->hessian_op.point->type == ESHKOL_TENSOR) is_scalar_input = false;
+        if (op->hessian_op.point->type == ESHKOL_OP &&
+            op->hessian_op.point->operation.op == ESHKOL_CALL_OP &&
+            op->hessian_op.point->operation.call_op.func &&
+            op->hessian_op.point->operation.call_op.func->type == ESHKOL_VAR) {
+            const char* fn = op->hessian_op.point->operation.call_op.func->variable.id;
+            if (fn && (strcmp(fn, "vector") == 0 || strcmp(fn, "list") == 0))
+                is_scalar_input = false;
+        }
+
+        if (is_scalar_input) {
+            eshkol_info("Hessian: scalar input detected, using f''(x) formula");
+
+            // Resolve to a direct Function* — avoids the closure call dispatch
+            // tree which has known PHI issues when called multiple times.
+            Value* func_val = resolve_lambda_callback_(op->hessian_op.function, 1, callback_context_);
+            Function* func_ptr = func_val ? dyn_cast<Function>(func_val) : nullptr;
+            if (!func_ptr) {
+                eshkol_error("Failed to resolve function for scalar Hessian");
+                return nullptr;
+            }
+
+            // Get the scalar point value as a double
+            Value* point_tagged = typed_raw_;
+            if (point_tagged->getType() != ctx_.taggedValueType()) {
+                if (point_tagged->getType()->isDoubleTy())
+                    point_tagged = tagged_.packDouble(point_tagged);
+                else if (point_tagged->getType()->isIntegerTy(64))
+                    point_tagged = tagged_.packInt64(point_tagged, true);
+            }
+            Value* x = tagged_.unpackDouble(point_tagged);
+
+            Value* h = ConstantFP::get(ctx_.doubleType(), 1e-5);
+
+            // Direct function calls: f(x+h), f(x), f(x-h)
+            Value* xph = tagged_.packDouble(ctx_.builder().CreateFAdd(x, h));
+            Value* xv  = tagged_.packDouble(x);
+            Value* xmh = tagged_.packDouble(ctx_.builder().CreateFSub(x, h));
+
+            Value* fxph = ctx_.builder().CreateCall(func_ptr, {xph});
+            Value* fx   = ctx_.builder().CreateCall(func_ptr, {xv});
+            Value* fxmh = ctx_.builder().CreateCall(func_ptr, {xmh});
+
+            Value* a = tagged_.unpackDouble(fxph);
+            Value* b = tagged_.unpackDouble(fx);
+            Value* c = tagged_.unpackDouble(fxmh);
+
+            // f''(x) = (a - 2b + c) / h²
+            Value* h2 = ctx_.builder().CreateFMul(h, h);
+            Value* numer = ctx_.builder().CreateFSub(
+                ctx_.builder().CreateFAdd(a, c),
+                ctx_.builder().CreateFMul(ConstantFP::get(ctx_.doubleType(), 2.0), b));
+            Value* result = ctx_.builder().CreateFDiv(numer, h2);
+
+            return tagged_.packDouble(result);
+        }
+    }
+
+    // ── VECTOR/TENSOR HESSIAN ───────────────────────────────────────────
+
     // Get arena for OALR-compliant tensor allocation
     Value* arena_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
 
-    // CRITICAL FIX: Handle Scheme VECTOR_PTR - convert to tensor format
     // Get current function for basic blocks
     Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
 
@@ -5180,8 +5267,18 @@ llvm::Value* AutodiffCodegen::hessian(const eshkol_operations_t* op) {
     ctx_.builder().CreateBr(hess_merge_input);
     BasicBlock* hess_scheme_exit = ctx_.builder().GetInsertBlock();
 
-    // TENSOR INPUT: Use as-is
+    // TENSOR INPUT: Ensure it's a tagged value (scalar inputs may arrive as raw doubles)
     ctx_.builder().SetInsertPoint(hess_tensor_input);
+    Value* hess_tensor_tagged = vector_val;
+    if (hess_tensor_tagged->getType() != ctx_.taggedValueType()) {
+        if (hess_tensor_tagged->getType()->isDoubleTy()) {
+            hess_tensor_tagged = tagged_.packDouble(hess_tensor_tagged);
+        } else if (hess_tensor_tagged->getType()->isIntegerTy(64)) {
+            hess_tensor_tagged = tagged_.packInt64(hess_tensor_tagged, true);
+        }
+        // If still not tagged after these checks, the type is already ptr/struct
+        // which will be handled downstream
+    }
     ctx_.builder().CreateBr(hess_merge_input);
     BasicBlock* hess_tensor_exit = ctx_.builder().GetInsertBlock();
 
@@ -5189,7 +5286,7 @@ llvm::Value* AutodiffCodegen::hessian(const eshkol_operations_t* op) {
     ctx_.builder().SetInsertPoint(hess_merge_input);
     PHINode* hess_actual_input = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2, "hess_input");
     hess_actual_input->addIncoming(hess_scheme_vector_tagged, hess_scheme_exit);
-    hess_actual_input->addIncoming(vector_val, hess_tensor_exit);
+    hess_actual_input->addIncoming(hess_tensor_tagged, hess_tensor_exit);
 
     // Extract tensor pointer from merged input
     Value* vector_ptr_int = tagged_.unpackInt64(hess_actual_input);
