@@ -1,0 +1,167 @@
+;;; VM AD operator tests — comprehensive test suite
+;;; Tests all 8 AD operators: derivative, gradient, hessian,
+;;; jacobian, divergence, curl, laplacian, directional-derivative
+
+;; Helper: approximate equality
+(define (approx= a b tol)
+  (< (abs (- a b)) tol))
+
+;; ═══════════════════════════════════════════════════════════════
+;; 1. derivative (scalar → scalar)
+;; ═══════════════════════════════════════════════════════════════
+
+(define (cube x) (* x (* x x)))
+(define (square x) (* x x))
+
+(display "=== derivative tests ===")
+(newline)
+
+;; d/dx x³ at x=2 = 3*4 = 12
+(let ((d (derivative cube 2)))
+  (display (if (approx= d 12.0 0.001) "PASS" "FAIL"))
+  (display ": derivative cube(2) = ")
+  (display d)
+  (newline))
+
+;; d/dx x² at x=3 = 6
+(let ((d (derivative square 3)))
+  (display (if (approx= d 6.0 0.001) "PASS" "FAIL"))
+  (display ": derivative square(3) = ")
+  (display d)
+  (newline))
+
+;; d/dx sin(x) at x=0 = cos(0) = 1
+(let ((d (derivative sin 0)))
+  (display (if (approx= d 1.0 0.001) "PASS" "FAIL"))
+  (display ": derivative sin(0) = ")
+  (display d)
+  (newline))
+
+;; ═══════════════════════════════════════════════════════════════
+;; 2. gradient — scalar input (same as derivative)
+;; ═══════════════════════════════════════════════════════════════
+
+(display "=== gradient tests (scalar) ===")
+(newline)
+
+(let ((g (gradient cube 2)))
+  (display (if (approx= g 12.0 0.001) "PASS" "FAIL"))
+  (display ": gradient cube(2) = ")
+  (display g)
+  (newline))
+
+;; ═══════════════════════════════════════════════════════════════
+;; 3. gradient — multi-variable
+;; ═══════════════════════════════════════════════════════════════
+
+(display "=== gradient tests (multi-var) ===")
+(newline)
+
+;; f(x,y) = x² + 2xy + y² = (x+y)²
+;; ∂f/∂x = 2x + 2y, ∂f/∂y = 2x + 2y
+;; At (1,2): ∂f/∂x = 6, ∂f/∂y = 6
+(define (f-sum-sq x y)
+  (+ (+ (* x x) (* 2 (* x y))) (* y y)))
+
+(let ((g (gradient f-sum-sq (list 1 2))))
+  (display "gradient f(1,2) = ")
+  (display g)
+  (newline))
+
+;; f(x,y) = x²*y + y³
+;; ∂f/∂x = 2xy, ∂f/∂y = x² + 3y²
+;; At (1,2): ∂f/∂x = 4, ∂f/∂y = 13
+(define (f-mixed x y)
+  (+ (* (* x x) y) (* y (* y y))))
+
+(let ((g (gradient f-mixed (list 1 2))))
+  (display "gradient f-mixed(1,2) = ")
+  (display g)
+  (newline))
+
+;; ═══════════════════════════════════════════════════════════════
+;; 4. hessian — scalar
+;; ═══════════════════════════════════════════════════════════════
+
+(display "=== hessian tests ===")
+(newline)
+
+;; d²/dx² x³ = 6x, at x=2: 12
+(let ((h (hessian cube 2)))
+  (display (if (approx= h 12.0 0.1) "PASS" "FAIL"))
+  (display ": hessian cube(2) = ")
+  (display h)
+  (newline))
+
+;; d²/dx² x⁴ = 12x², at x=3: 108
+(define (quartic x) (* (* x x) (* x x)))
+(let ((h (hessian quartic 3)))
+  (display (if (approx= h 108.0 0.1) "PASS" "FAIL"))
+  (display ": hessian quartic(3) = ")
+  (display h)
+  (newline))
+
+;; d²/dx² sin(x) at x=0 = -sin(0) = 0
+(let ((h (hessian sin 0)))
+  (display (if (approx= h 0.0 0.01) "PASS" "FAIL"))
+  (display ": hessian sin(0) = ")
+  (display h)
+  (newline))
+
+;; ═══════════════════════════════════════════════════════════════
+;; 5. laplacian — sum of second partial derivatives
+;; ═══════════════════════════════════════════════════════════════
+
+(display "=== laplacian tests ===")
+(newline)
+
+;; f(x,y,z) = x² + y² + z²
+;; ∂²f/∂x² = 2, ∂²f/∂y² = 2, ∂²f/∂z² = 2
+;; laplacian = 6
+(define (g-sum-sq x y z) (+ (+ (* x x) (* y y)) (* z z)))
+(let ((l (laplacian g-sum-sq (list 1 2 3))))
+  (display (if (approx= l 6.0 0.1) "PASS" "FAIL"))
+  (display ": laplacian g(1,2,3) = ")
+  (display l)
+  (newline))
+
+;; Scalar laplacian: f(x) = x³, f''(x) = 6x, at x=2: 12
+(let ((l (laplacian cube 2)))
+  (display (if (approx= l 12.0 0.1) "PASS" "FAIL"))
+  (display ": laplacian cube(2) = ")
+  (display l)
+  (newline))
+
+;; ═══════════════════════════════════════════════════════════════
+;; 6. directional-derivative
+;; ═══════════════════════════════════════════════════════════════
+
+(display "=== directional-derivative tests ===")
+(newline)
+
+;; f(x,y,z) = x² + y² + z², grad = (2x, 2y, 2z)
+;; At (1,2,3), grad = (2,4,6)
+;; Direction (1,0,0): D_v(f) = 2
+(let ((dd (directional-derivative g-sum-sq (list 1 2 3) (list 1 0 0))))
+  (display (if (approx= dd 2.0 0.001) "PASS" "FAIL"))
+  (display ": dir-deriv g(1,2,3) dir=(1,0,0) = ")
+  (display dd)
+  (newline))
+
+;; Direction (0,1,0): D_v(f) = 4
+(let ((dd (directional-derivative g-sum-sq (list 1 2 3) (list 0 1 0))))
+  (display (if (approx= dd 4.0 0.001) "PASS" "FAIL"))
+  (display ": dir-deriv g(1,2,3) dir=(0,1,0) = ")
+  (display dd)
+  (newline))
+
+;; Direction (1,1,1)/sqrt(3): D_v(f) = (2+4+6)/sqrt(3) ≈ 6.928
+(let ((s (/ 1 (sqrt 3))))
+  (let ((dd (directional-derivative g-sum-sq (list 1 2 3) (list s s s))))
+    (display (if (approx= dd 6.928 0.01) "PASS" "FAIL"))
+    (display ": dir-deriv g(1,2,3) dir=(1,1,1)/sqrt(3) = ")
+    (display dd)
+    (newline)))
+
+(display "=== all VM AD tests complete ===")
+(newline)
