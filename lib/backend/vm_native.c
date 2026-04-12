@@ -3890,6 +3890,986 @@ static void vm_dispatch_native(VM* vm, int fid) {
         if (r) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, r); }
         else vm_push(vm, NIL_VAL); break; }
 
+    /* ══════════════════════════════════════════════════════════════════════
+     * System Information (1700-1719)
+     * ══════════════════════════════════════════════════════════════════════ */
+
+    case 1700: { /* os-type → "darwin", "linux", "windows", etc. */
+#ifdef __APPLE__
+        const char* os = "darwin";
+#elif defined(_WIN32)
+        const char* os = "windows";
+#elif defined(__linux__)
+        const char* os = "linux";
+#elif defined(__FreeBSD__)
+        const char* os = "freebsd";
+#else
+        const char* os = "unknown";
+#endif
+        VmString* s = vm_string_from_cstr(&vm->heap.regions, os);
+        if (s) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, s); }
+        else { vm_push(vm, NIL_VAL); }
+        break;
+    }
+
+    case 1701: { /* os-arch → "arm64", "x86_64", etc. */
+#if defined(__aarch64__) || defined(_M_ARM64)
+        const char* arch = "arm64";
+#elif defined(__x86_64__) || defined(_M_X64)
+        const char* arch = "x86_64";
+#elif defined(__i386__) || defined(_M_IX86)
+        const char* arch = "x86";
+#elif defined(__riscv)
+        const char* arch = "riscv64";
+#else
+        const char* arch = "unknown";
+#endif
+        VmString* s = vm_string_from_cstr(&vm->heap.regions, arch);
+        if (s) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, s); }
+        else { vm_push(vm, NIL_VAL); }
+        break;
+    }
+
+    case 1702: { /* home-directory → "/Users/foo" or "/home/foo" */
+#ifndef ESHKOL_VM_WASM
+        const char* home = getenv("HOME");
+#ifdef _WIN32
+        if (!home) home = getenv("USERPROFILE");
+#endif
+        if (home) {
+            VmString* s = vm_string_from_cstr(&vm->heap.regions, home);
+            if (s) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, s); break; }
+        }
+#endif
+        vm_push(vm, NIL_VAL);
+        break;
+    }
+
+    case 1703: { /* current-directory → cwd string */
+#ifndef ESHKOL_VM_WASM
+        char cwd[4096];
+        if (getcwd(cwd, sizeof(cwd))) {
+            VmString* s = vm_string_from_cstr(&vm->heap.regions, cwd);
+            if (s) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, s); break; }
+        }
+#endif
+        vm_push(vm, NIL_VAL);
+        break;
+    }
+
+    case 1704: { /* set-current-directory!(path) → #t or #f */
+#ifndef ESHKOL_VM_WASM
+        Value path_val = vm_pop(vm);
+        if (path_val.type == VAL_STRING) {
+            VmString* ps = (VmString*)vm->heap.objects[path_val.as.ptr]->opaque.ptr;
+            if (ps && chdir(ps->data) == 0) { vm_push(vm, BOOL_VAL(1)); break; }
+        }
+#endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+    case 1705: { /* hostname → string */
+#ifndef ESHKOL_VM_WASM
+        char hostname[256];
+        if (gethostname(hostname, sizeof(hostname)) == 0) {
+            VmString* s = vm_string_from_cstr(&vm->heap.regions, hostname);
+            if (s) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, s); break; }
+        }
+#endif
+        vm_push(vm, NIL_VAL);
+        break;
+    }
+
+    case 1706: { /* username → string */
+#ifndef ESHKOL_VM_WASM
+        const char* user = getenv("USER");
+#ifdef _WIN32
+        if (!user) user = getenv("USERNAME");
+#endif
+        if (user) {
+            VmString* s = vm_string_from_cstr(&vm->heap.regions, user);
+            if (s) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, s); break; }
+        }
+#endif
+        vm_push(vm, NIL_VAL);
+        break;
+    }
+
+    case 1707: { /* cpu-count → integer */
+#ifndef ESHKOL_VM_WASM
+#ifdef _WIN32
+        SYSTEM_INFO si; GetSystemInfo(&si);
+        vm_push(vm, INT_VAL(si.dwNumberOfProcessors));
+#elif defined(_SC_NPROCESSORS_ONLN)
+        long n = sysconf(_SC_NPROCESSORS_ONLN);
+        vm_push(vm, INT_VAL(n > 0 ? n : 1));
+#else
+        vm_push(vm, INT_VAL(1));
+#endif
+#else
+        vm_push(vm, INT_VAL(1));
+#endif
+        break;
+    }
+
+    case 1708: { /* executable-exists?(name) → #t or #f */
+        Value name_val = vm_pop(vm);
+#ifndef ESHKOL_VM_WASM
+        if (name_val.type == VAL_STRING) {
+            VmString* ns = (VmString*)vm->heap.objects[name_val.as.ptr]->opaque.ptr;
+            if (ns) {
+                /* Search PATH for the executable */
+                const char* path_env = getenv("PATH");
+                if (path_env) {
+                    char buf[4096];
+                    strncpy(buf, path_env, sizeof(buf) - 1); buf[sizeof(buf) - 1] = 0;
+                    char* dir = strtok(buf, ":");
+                    while (dir) {
+                        char full[4096];
+                        snprintf(full, sizeof(full), "%s/%s", dir, ns->data);
+                        if (access(full, X_OK) == 0) {
+                            vm_push(vm, BOOL_VAL(1)); goto done_1708;
+                        }
+                        dir = strtok(NULL, ":");
+                    }
+                }
+            }
+        }
+#else
+        (void)name_val;
+#endif
+        vm_push(vm, BOOL_VAL(0));
+#ifndef ESHKOL_VM_WASM
+        done_1708:
+#endif
+        break;
+    }
+
+    case 1709: { /* current-time-ms → integer (milliseconds since epoch) */
+#ifndef ESHKOL_VM_WASM
+        struct timeval tv;
+        gettimeofday(&tv, NULL);
+        int64_t ms = (int64_t)tv.tv_sec * 1000 + (int64_t)tv.tv_usec / 1000;
+        vm_push(vm, INT_VAL(ms));
+#else
+        vm_push(vm, INT_VAL(0));
+#endif
+        break;
+    }
+
+    case 1710: { /* getpid → integer */
+#ifndef ESHKOL_VM_WASM
+        vm_push(vm, INT_VAL((int64_t)getpid()));
+#else
+        vm_push(vm, INT_VAL(0));
+#endif
+        break;
+    }
+
+    case 1711: { /* sleep-ms(milliseconds) → void */
+        Value ms_val = vm_pop(vm);
+#ifndef ESHKOL_VM_WASM
+        int64_t ms = (int64_t)as_number(ms_val);
+        if (ms > 0) {
+            struct timespec ts;
+            ts.tv_sec = ms / 1000;
+            ts.tv_nsec = (ms % 1000) * 1000000L;
+            nanosleep(&ts, NULL);
+        }
+#else
+        (void)ms_val;
+#endif
+        vm_push(vm, NIL_VAL);
+        break;
+    }
+
+    case 1712: { /* setenv(name, value) → #t or #f */
+        Value val_v = vm_pop(vm), name_v = vm_pop(vm);
+#ifndef ESHKOL_VM_WASM
+        if (name_v.type == VAL_STRING && val_v.type == VAL_STRING) {
+            VmString* ns = (VmString*)vm->heap.objects[name_v.as.ptr]->opaque.ptr;
+            VmString* vs = (VmString*)vm->heap.objects[val_v.as.ptr]->opaque.ptr;
+            if (ns && vs && setenv(ns->data, vs->data, 1) == 0) {
+                vm_push(vm, BOOL_VAL(1)); break;
+            }
+        }
+#else
+        (void)val_v; (void)name_v;
+#endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+    case 1713: { /* unsetenv(name) → #t or #f */
+        Value name_v = vm_pop(vm);
+#ifndef ESHKOL_VM_WASM
+        if (name_v.type == VAL_STRING) {
+            VmString* ns = (VmString*)vm->heap.objects[name_v.as.ptr]->opaque.ptr;
+            if (ns && unsetenv(ns->data) == 0) {
+                vm_push(vm, BOOL_VAL(1)); break;
+            }
+        }
+#else
+        (void)name_v;
+#endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+    case 1714: { /* current-error-port → port for stderr */
+        /* Return a pointer to the static vm_stderr_port (same pattern as current-output-port) */
+        VM_PUSH_HEAP_OPAQUE(vm, HEAP_PORT, VAL_PORT, &vm_stderr_port);
+        break;
+    }
+
+    case 1715: { /* get-environment-variable(name) → string or #f */
+        Value name_val = vm_pop(vm);
+#ifndef ESHKOL_VM_WASM
+        if (name_val.type == VAL_STRING) {
+            VmString* ns = (VmString*)vm->heap.objects[name_val.as.ptr]->opaque.ptr;
+            if (ns) {
+                const char* val = getenv(ns->data);
+                if (val) {
+                    VmString* s = vm_string_from_cstr(&vm->heap.regions, val);
+                    if (s) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, s); break; }
+                }
+            }
+        }
+#else
+        (void)name_val;
+#endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+    case 1716: { /* delete-file(path) — alias for 600 but with proper registration */
+        Value path_val = vm_pop(vm);
+#ifndef ESHKOL_VM_WASM
+        if (path_val.type == VAL_STRING) {
+            VmString* ps = (VmString*)vm->heap.objects[path_val.as.ptr]->opaque.ptr;
+            if (ps && unlink(ps->data) == 0) { vm_push(vm, BOOL_VAL(1)); break; }
+        }
+#else
+        (void)path_val;
+#endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+    /* ══════════════════════════════════════════════════════════════════════
+     * Path Manipulation (1720-1739)
+     * ══════════════════════════════════════════════════════════════════════ */
+
+    case 1720: { /* path-join(a, b) → string */
+        Value b_val = vm_pop(vm), a_val = vm_pop(vm);
+        if (a_val.type == VAL_STRING && b_val.type == VAL_STRING) {
+            VmString* as = (VmString*)vm->heap.objects[a_val.as.ptr]->opaque.ptr;
+            VmString* bs = (VmString*)vm->heap.objects[b_val.as.ptr]->opaque.ptr;
+            if (as && bs) {
+                char buf[4096];
+                int alen = (int)strlen(as->data);
+                if (alen > 0 && as->data[alen - 1] == '/')
+                    snprintf(buf, sizeof(buf), "%s%s", as->data, bs->data);
+                else
+                    snprintf(buf, sizeof(buf), "%s/%s", as->data, bs->data);
+                VmString* s = vm_string_from_cstr(&vm->heap.regions, buf);
+                if (s) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, s); break; }
+            }
+        }
+        vm_push(vm, NIL_VAL);
+        break;
+    }
+
+    case 1721: { /* path-dirname(path) → string */
+        Value path_val = vm_pop(vm);
+        if (path_val.type == VAL_STRING) {
+            VmString* ps = (VmString*)vm->heap.objects[path_val.as.ptr]->opaque.ptr;
+            if (ps) {
+                char buf[4096];
+                strncpy(buf, ps->data, sizeof(buf) - 1); buf[sizeof(buf) - 1] = 0;
+                /* Find last / */
+                char* last_slash = strrchr(buf, '/');
+                if (last_slash) {
+                    if (last_slash == buf) buf[1] = 0; /* root "/" */
+                    else *last_slash = 0;
+                } else {
+                    strcpy(buf, ".");
+                }
+                VmString* s = vm_string_from_cstr(&vm->heap.regions, buf);
+                if (s) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, s); break; }
+            }
+        }
+        vm_push(vm, NIL_VAL);
+        break;
+    }
+
+    case 1722: { /* path-basename(path) → string */
+        Value path_val = vm_pop(vm);
+        if (path_val.type == VAL_STRING) {
+            VmString* ps = (VmString*)vm->heap.objects[path_val.as.ptr]->opaque.ptr;
+            if (ps) {
+                const char* last_slash = strrchr(ps->data, '/');
+                const char* base = last_slash ? last_slash + 1 : ps->data;
+                VmString* s = vm_string_from_cstr(&vm->heap.regions, base);
+                if (s) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, s); break; }
+            }
+        }
+        vm_push(vm, NIL_VAL);
+        break;
+    }
+
+    case 1723: { /* path-extname(path) → string (e.g., ".txt") or "" */
+        Value path_val = vm_pop(vm);
+        if (path_val.type == VAL_STRING) {
+            VmString* ps = (VmString*)vm->heap.objects[path_val.as.ptr]->opaque.ptr;
+            if (ps) {
+                const char* base = strrchr(ps->data, '/');
+                if (!base) base = ps->data; else base++;
+                const char* dot = strrchr(base, '.');
+                const char* ext = (dot && dot != base) ? dot : "";
+                VmString* s = vm_string_from_cstr(&vm->heap.regions, ext);
+                if (s) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, s); break; }
+            }
+        }
+        vm_push(vm, NIL_VAL);
+        break;
+    }
+
+    case 1724: { /* path-is-absolute?(path) → #t or #f */
+        Value path_val = vm_pop(vm);
+        if (path_val.type == VAL_STRING) {
+            VmString* ps = (VmString*)vm->heap.objects[path_val.as.ptr]->opaque.ptr;
+            if (ps && ps->data[0] == '/') {
+                vm_push(vm, BOOL_VAL(1)); break;
+            }
+        }
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+    case 1725: { /* path-normalize(path) → string with resolved . and .. */
+        Value path_val = vm_pop(vm);
+        if (path_val.type == VAL_STRING) {
+            VmString* ps = (VmString*)vm->heap.objects[path_val.as.ptr]->opaque.ptr;
+            if (ps) {
+                /* Split by /, resolve . and .., reassemble */
+                char buf[4096];
+                strncpy(buf, ps->data, sizeof(buf) - 1); buf[sizeof(buf) - 1] = 0;
+                char* parts[256]; int nparts = 0;
+                int absolute = (buf[0] == '/');
+                char* tok = strtok(buf, "/");
+                while (tok && nparts < 256) {
+                    if (strcmp(tok, ".") == 0) { /* skip */ }
+                    else if (strcmp(tok, "..") == 0) { if (nparts > 0) nparts--; }
+                    else { parts[nparts++] = tok; }
+                    tok = strtok(NULL, "/");
+                }
+                char result[4096];
+                int pos = 0;
+                if (absolute) result[pos++] = '/';
+                for (int i = 0; i < nparts; i++) {
+                    if (i > 0) result[pos++] = '/';
+                    int len = (int)strlen(parts[i]);
+                    if (pos + len >= 4095) break;
+                    memcpy(result + pos, parts[i], len);
+                    pos += len;
+                }
+                if (pos == 0) { result[0] = '.'; pos = 1; }
+                result[pos] = 0;
+                VmString* s = vm_string_from_cstr(&vm->heap.regions, result);
+                if (s) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, s); break; }
+            }
+        }
+        vm_push(vm, NIL_VAL);
+        break;
+    }
+
+    case 1726: { /* realpath(path) → resolved absolute path string */
+        Value path_val = vm_pop(vm);
+#ifndef ESHKOL_VM_WASM
+        if (path_val.type == VAL_STRING) {
+            VmString* ps = (VmString*)vm->heap.objects[path_val.as.ptr]->opaque.ptr;
+            if (ps) {
+                char resolved[4096];
+                if (realpath(ps->data, resolved)) {
+                    VmString* s = vm_string_from_cstr(&vm->heap.regions, resolved);
+                    if (s) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, s); break; }
+                }
+            }
+        }
+#else
+        (void)path_val;
+#endif
+        vm_push(vm, NIL_VAL);
+        break;
+    }
+
+    /* ══════════════════════════════════════════════════════════════════════
+     * Filesystem Operations (1740-1769)
+     * ══════════════════════════════════════════════════════════════════════ */
+
+    case 1740: { /* file-size(path) → integer (bytes) or #f */
+        Value path_val = vm_pop(vm);
+#ifndef ESHKOL_VM_WASM
+        if (path_val.type == VAL_STRING) {
+            VmString* ps = (VmString*)vm->heap.objects[path_val.as.ptr]->opaque.ptr;
+            if (ps) {
+                struct stat st;
+                if (stat(ps->data, &st) == 0) {
+                    vm_push(vm, INT_VAL((int64_t)st.st_size));
+                    break;
+                }
+            }
+        }
+#else
+        (void)path_val;
+#endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+    case 1741: { /* file-stat(path) → list: (size mtime-sec type-char) or #f
+                  * type-char: 'f' = regular, 'd' = directory, 'l' = symlink, '?' = other */
+        Value path_val = vm_pop(vm);
+#ifndef ESHKOL_VM_WASM
+        if (path_val.type == VAL_STRING) {
+            VmString* ps = (VmString*)vm->heap.objects[path_val.as.ptr]->opaque.ptr;
+            if (ps) {
+                struct stat st;
+                if (lstat(ps->data, &st) == 0) {
+                    char type_ch = '?';
+                    if (S_ISREG(st.st_mode)) type_ch = 'f';
+                    else if (S_ISDIR(st.st_mode)) type_ch = 'd';
+                    else if (S_ISLNK(st.st_mode)) type_ch = 'l';
+
+                    /* Build list: (size mtime type-string) */
+                    char type_str[2] = { type_ch, 0 };
+                    VmString* ts = vm_string_from_cstr(&vm->heap.regions, type_str);
+                    if (!ts) { vm_push(vm, BOOL_VAL(0)); break; }
+
+                    /* Build cons cells: (type . nil) → (mtime . ...) → (size . ...) */
+                    int32_t t_sp = heap_alloc(&vm->heap); if (t_sp < 0) { vm_push(vm, BOOL_VAL(0)); break; }
+                    vm->heap.objects[t_sp]->type = HEAP_STRING;
+                    vm->heap.objects[t_sp]->opaque.ptr = ts;
+
+                    int32_t c3 = heap_alloc(&vm->heap); if (c3 < 0) { vm_push(vm, BOOL_VAL(0)); break; }
+                    vm->heap.objects[c3]->type = HEAP_CONS;
+                    vm->heap.objects[c3]->cons.car = (Value){.type = VAL_STRING, .as.ptr = t_sp};
+                    vm->heap.objects[c3]->cons.cdr = NIL_VAL;
+
+                    int32_t c2 = heap_alloc(&vm->heap); if (c2 < 0) { vm_push(vm, BOOL_VAL(0)); break; }
+                    vm->heap.objects[c2]->type = HEAP_CONS;
+                    vm->heap.objects[c2]->cons.car = INT_VAL((int64_t)st.st_mtime);
+                    vm->heap.objects[c2]->cons.cdr = PAIR_VAL(c3);
+
+                    int32_t c1 = heap_alloc(&vm->heap); if (c1 < 0) { vm_push(vm, BOOL_VAL(0)); break; }
+                    vm->heap.objects[c1]->type = HEAP_CONS;
+                    vm->heap.objects[c1]->cons.car = INT_VAL((int64_t)st.st_size);
+                    vm->heap.objects[c1]->cons.cdr = PAIR_VAL(c2);
+
+                    vm_push(vm, PAIR_VAL(c1));
+                    break;
+                }
+            }
+        }
+#else
+        (void)path_val;
+#endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+    case 1742: { /* file-rename(old, new) → #t or #f */
+        Value new_val = vm_pop(vm), old_val = vm_pop(vm);
+#ifndef ESHKOL_VM_WASM
+        if (old_val.type == VAL_STRING && new_val.type == VAL_STRING) {
+            VmString* os = (VmString*)vm->heap.objects[old_val.as.ptr]->opaque.ptr;
+            VmString* ns = (VmString*)vm->heap.objects[new_val.as.ptr]->opaque.ptr;
+            if (os && ns && rename(os->data, ns->data) == 0) {
+                vm_push(vm, BOOL_VAL(1)); break;
+            }
+        }
+#else
+        (void)new_val; (void)old_val;
+#endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+    case 1743: { /* file-copy(src, dst) → #t or #f */
+        Value dst_val = vm_pop(vm), src_val = vm_pop(vm);
+#ifndef ESHKOL_VM_WASM
+        if (src_val.type == VAL_STRING && dst_val.type == VAL_STRING) {
+            VmString* ss = (VmString*)vm->heap.objects[src_val.as.ptr]->opaque.ptr;
+            VmString* ds = (VmString*)vm->heap.objects[dst_val.as.ptr]->opaque.ptr;
+            if (ss && ds) {
+                FILE* fin = fopen(ss->data, "rb");
+                FILE* fout = fin ? fopen(ds->data, "wb") : NULL;
+                if (fin && fout) {
+                    char cbuf[8192];
+                    size_t n;
+                    while ((n = fread(cbuf, 1, sizeof(cbuf), fin)) > 0)
+                        fwrite(cbuf, 1, n, fout);
+                    fclose(fin); fclose(fout);
+                    vm_push(vm, BOOL_VAL(1)); break;
+                }
+                if (fin) fclose(fin);
+                if (fout) fclose(fout);
+            }
+        }
+#else
+        (void)dst_val; (void)src_val;
+#endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+    case 1744: { /* mkdir-recursive(path) → #t or #f */
+        Value path_val = vm_pop(vm);
+#ifndef ESHKOL_VM_WASM
+        if (path_val.type == VAL_STRING) {
+            VmString* ps = (VmString*)vm->heap.objects[path_val.as.ptr]->opaque.ptr;
+            if (ps) {
+                char buf[4096];
+                strncpy(buf, ps->data, sizeof(buf) - 1); buf[sizeof(buf) - 1] = 0;
+                /* Create each component */
+                int ok = 1;
+                for (char* p = buf + 1; *p; p++) {
+                    if (*p == '/') {
+                        *p = 0;
+                        if (mkdir(buf, 0755) != 0 && errno != EEXIST) { ok = 0; break; }
+                        *p = '/';
+                    }
+                }
+                if (ok && mkdir(buf, 0755) != 0 && errno != EEXIST) ok = 0;
+                if (ok || errno == EEXIST) { vm_push(vm, BOOL_VAL(1)); break; }
+            }
+        }
+#else
+        (void)path_val;
+#endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+    case 1745: { /* file-chmod(path, mode) → #t or #f (mode is integer, e.g. 0o755 = 493) */
+        Value mode_val = vm_pop(vm), path_val = vm_pop(vm);
+#ifndef ESHKOL_VM_WASM
+        if (path_val.type == VAL_STRING) {
+            VmString* ps = (VmString*)vm->heap.objects[path_val.as.ptr]->opaque.ptr;
+            if (ps && chmod(ps->data, (mode_t)as_number(mode_val)) == 0) {
+                vm_push(vm, BOOL_VAL(1)); break;
+            }
+        }
+#else
+        (void)mode_val; (void)path_val;
+#endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+    case 1746: { /* symlink-create(target, linkpath) → #t or #f */
+        Value link_val = vm_pop(vm), target_val = vm_pop(vm);
+#ifndef ESHKOL_VM_WASM
+        if (target_val.type == VAL_STRING && link_val.type == VAL_STRING) {
+            VmString* ts = (VmString*)vm->heap.objects[target_val.as.ptr]->opaque.ptr;
+            VmString* ls = (VmString*)vm->heap.objects[link_val.as.ptr]->opaque.ptr;
+            if (ts && ls && symlink(ts->data, ls->data) == 0) {
+                vm_push(vm, BOOL_VAL(1)); break;
+            }
+        }
+#else
+        (void)link_val; (void)target_val;
+#endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+    case 1747: { /* symlink-read(linkpath) → target string or #f */
+        Value path_val = vm_pop(vm);
+#ifndef ESHKOL_VM_WASM
+        if (path_val.type == VAL_STRING) {
+            VmString* ps = (VmString*)vm->heap.objects[path_val.as.ptr]->opaque.ptr;
+            if (ps) {
+                char buf[4096];
+                ssize_t len = readlink(ps->data, buf, sizeof(buf) - 1);
+                if (len > 0) {
+                    buf[len] = 0;
+                    VmString* s = vm_string_from_cstr(&vm->heap.regions, buf);
+                    if (s) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, s); break; }
+                }
+            }
+        }
+#else
+        (void)path_val;
+#endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+    case 1748: { /* directory-walk(path) → flat list of all file paths (recursive) */
+        Value path_val = vm_pop(vm);
+#ifndef ESHKOL_VM_WASM
+        if (path_val.type == VAL_STRING) {
+            VmString* ps = (VmString*)vm->heap.objects[path_val.as.ptr]->opaque.ptr;
+            if (ps) {
+                /* BFS using a simple stack of directories to visit */
+                Value result = NIL_VAL;
+                char dirs[256][4096];
+                int dir_count = 0;
+                strncpy(dirs[0], ps->data, 4095); dirs[0][4095] = 0;
+                dir_count = 1;
+                int dir_idx = 0;
+                while (dir_idx < dir_count && dir_count < 256) {
+                    DIR* d = opendir(dirs[dir_idx]);
+                    dir_idx++;
+                    if (!d) continue;
+                    struct dirent* ent;
+                    while ((ent = readdir(d)) != NULL) {
+                        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) continue;
+                        char full[4096];
+                        snprintf(full, sizeof(full), "%s/%s", dirs[dir_idx - 1], ent->d_name);
+                        struct stat st;
+                        if (stat(full, &st) == 0 && S_ISDIR(st.st_mode) && dir_count < 256) {
+                            strncpy(dirs[dir_count], full, 4095);
+                            dirs[dir_count][4095] = 0;
+                            dir_count++;
+                        }
+                        /* Add to result list */
+                        VmString* s = vm_string_from_cstr(&vm->heap.regions, full);
+                        if (!s) continue;
+                        int32_t sp = heap_alloc(&vm->heap); if (sp < 0) continue;
+                        vm->heap.objects[sp]->type = HEAP_STRING;
+                        vm->heap.objects[sp]->opaque.ptr = s;
+                        int32_t cp = heap_alloc(&vm->heap); if (cp < 0) continue;
+                        vm->heap.objects[cp]->type = HEAP_CONS;
+                        vm->heap.objects[cp]->cons.car = (Value){.type = VAL_STRING, .as.ptr = sp};
+                        vm->heap.objects[cp]->cons.cdr = result;
+                        result = PAIR_VAL(cp);
+                    }
+                    closedir(d);
+                }
+                vm_push(vm, result);
+                break;
+            }
+        }
+#else
+        (void)path_val;
+#endif
+        vm_push(vm, NIL_VAL);
+        break;
+    }
+
+    case 1749: { /* directory-delete-recursive(path) → #t or #f */
+        Value path_val = vm_pop(vm);
+#ifndef ESHKOL_VM_WASM
+        if (path_val.type == VAL_STRING) {
+            VmString* ps = (VmString*)vm->heap.objects[path_val.as.ptr]->opaque.ptr;
+            if (ps) {
+                /* Use system rm -rf (safe: path validated) */
+                char cmd[4096];
+                /* Basic path safety: reject if contains ; | & ` $ */
+                int safe = 1;
+                for (const char* c = ps->data; *c; c++) {
+                    if (*c == ';' || *c == '|' || *c == '&' || *c == '`' || *c == '$') {
+                        safe = 0; break;
+                    }
+                }
+                if (safe) {
+                    snprintf(cmd, sizeof(cmd), "rm -rf '%s'", ps->data);
+                    if (system(cmd) == 0) { vm_push(vm, BOOL_VAL(1)); break; }
+                }
+            }
+        }
+#else
+        (void)path_val;
+#endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+    case 1750: { /* mkstemp(template) → (fd . path) or #f
+                  * Template should end with XXXXXX */
+        Value tmpl_val = vm_pop(vm);
+#ifndef ESHKOL_VM_WASM
+        if (tmpl_val.type == VAL_STRING) {
+            VmString* ts = (VmString*)vm->heap.objects[tmpl_val.as.ptr]->opaque.ptr;
+            if (ts) {
+                char buf[4096];
+                strncpy(buf, ts->data, sizeof(buf) - 1); buf[sizeof(buf) - 1] = 0;
+                int fd = mkstemp(buf);
+                if (fd >= 0) {
+                    VmString* ps = vm_string_from_cstr(&vm->heap.regions, buf);
+                    if (ps) {
+                        int32_t sp = heap_alloc(&vm->heap); if (sp >= 0) {
+                            vm->heap.objects[sp]->type = HEAP_STRING;
+                            vm->heap.objects[sp]->opaque.ptr = ps;
+                            int32_t cp = heap_alloc(&vm->heap); if (cp >= 0) {
+                                vm->heap.objects[cp]->type = HEAP_CONS;
+                                vm->heap.objects[cp]->cons.car = INT_VAL(fd);
+                                vm->heap.objects[cp]->cons.cdr = (Value){.type = VAL_STRING, .as.ptr = sp};
+                                vm_push(vm, PAIR_VAL(cp)); break;
+                            }
+                        }
+                    }
+                    close(fd);
+                }
+            }
+        }
+#else
+        (void)tmpl_val;
+#endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+    case 1751: { /* mkdtemp(template) → path string or #f */
+        Value tmpl_val = vm_pop(vm);
+#ifndef ESHKOL_VM_WASM
+        if (tmpl_val.type == VAL_STRING) {
+            VmString* ts = (VmString*)vm->heap.objects[tmpl_val.as.ptr]->opaque.ptr;
+            if (ts) {
+                char buf[4096];
+                strncpy(buf, ts->data, sizeof(buf) - 1); buf[sizeof(buf) - 1] = 0;
+                if (mkdtemp(buf)) {
+                    VmString* s = vm_string_from_cstr(&vm->heap.regions, buf);
+                    if (s) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, s); break; }
+                }
+            }
+        }
+#else
+        (void)tmpl_val;
+#endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+    /* ══════════════════════════════════════════════════════════════════════
+     * Shell Utilities (1770-1779)
+     * ══════════════════════════════════════════════════════════════════════ */
+
+    case 1770: { /* shell-quote(str) → single-quoted shell-safe string */
+        Value str_val = vm_pop(vm);
+        if (str_val.type == VAL_STRING) {
+            VmString* ss = (VmString*)vm->heap.objects[str_val.as.ptr]->opaque.ptr;
+            if (ss) {
+                /* POSIX shell quoting: wrap in single quotes, escape internal ' as '\'' */
+                char buf[8192];
+                int pos = 0;
+                buf[pos++] = '\'';
+                for (const char* c = ss->data; *c && pos < 8180; c++) {
+                    if (*c == '\'') {
+                        buf[pos++] = '\''; buf[pos++] = '\\';
+                        buf[pos++] = '\''; buf[pos++] = '\'';
+                    } else {
+                        buf[pos++] = *c;
+                    }
+                }
+                buf[pos++] = '\'';
+                buf[pos] = 0;
+                VmString* s = vm_string_from_cstr(&vm->heap.regions, buf);
+                if (s) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, s); break; }
+            }
+        }
+        vm_push(vm, NIL_VAL);
+        break;
+    }
+
+    case 1771: { /* shell-split(str) → list of strings (basic word splitting) */
+        Value str_val = vm_pop(vm);
+        if (str_val.type == VAL_STRING) {
+            VmString* ss = (VmString*)vm->heap.objects[str_val.as.ptr]->opaque.ptr;
+            if (ss) {
+                Value result = NIL_VAL;
+                char buf[4096];
+                strncpy(buf, ss->data, sizeof(buf) - 1); buf[sizeof(buf) - 1] = 0;
+                /* Collect words in reverse, then reverse the list */
+                char* words[256]; int nwords = 0;
+                char* p = buf;
+                while (*p && nwords < 256) {
+                    while (*p == ' ' || *p == '\t') p++;
+                    if (!*p) break;
+                    char quote = 0;
+                    if (*p == '\'' || *p == '"') { quote = *p; p++; }
+                    char* start = p;
+                    if (quote) {
+                        while (*p && *p != quote) p++;
+                        if (*p) *p++ = 0;
+                    } else {
+                        while (*p && *p != ' ' && *p != '\t') p++;
+                        if (*p) *p++ = 0;
+                    }
+                    words[nwords++] = start;
+                }
+                /* Build list in order */
+                for (int i = nwords - 1; i >= 0; i--) {
+                    VmString* ws = vm_string_from_cstr(&vm->heap.regions, words[i]);
+                    if (!ws) continue;
+                    int32_t sp = heap_alloc(&vm->heap); if (sp < 0) continue;
+                    vm->heap.objects[sp]->type = HEAP_STRING;
+                    vm->heap.objects[sp]->opaque.ptr = ws;
+                    int32_t cp = heap_alloc(&vm->heap); if (cp < 0) continue;
+                    vm->heap.objects[cp]->type = HEAP_CONS;
+                    vm->heap.objects[cp]->cons.car = (Value){.type = VAL_STRING, .as.ptr = sp};
+                    vm->heap.objects[cp]->cons.cdr = result;
+                    result = PAIR_VAL(cp);
+                }
+                vm_push(vm, result);
+                break;
+            }
+        }
+        vm_push(vm, NIL_VAL);
+        break;
+    }
+
+    /* ══════════════════════════════════════════════════════════════════════
+     * Process Management (1780-1799)
+     * ══════════════════════════════════════════════════════════════════════ */
+
+    case 1780: { /* process-spawn(cmd, args-list, env-alist) → pid or #f
+                  * cmd: string, args: list of strings, env: alist of (name . value) or #f
+                  * Returns child PID on success, #f on failure */
+        Value env_val = vm_pop(vm), args_val = vm_pop(vm), cmd_val = vm_pop(vm);
+#ifndef ESHKOL_VM_WASM
+        if (cmd_val.type == VAL_STRING) {
+            VmString* cs = (VmString*)vm->heap.objects[cmd_val.as.ptr]->opaque.ptr;
+            if (cs) {
+                /* Build argv array */
+                char* argv[256];
+                int argc_local = 0;
+                argv[argc_local++] = cs->data;
+                Value acur = args_val;
+                while (acur.type == VAL_PAIR && argc_local < 255) {
+                    Value elem = vm->heap.objects[acur.as.ptr]->cons.car;
+                    if (elem.type == VAL_STRING) {
+                        VmString* es = (VmString*)vm->heap.objects[elem.as.ptr]->opaque.ptr;
+                        if (es) argv[argc_local++] = es->data;
+                    }
+                    acur = vm->heap.objects[acur.as.ptr]->cons.cdr;
+                }
+                argv[argc_local] = NULL;
+
+                /* Build environment if provided */
+                char* envp_buf[256];
+                char env_strs[256][512];
+                char** envp = NULL;
+                int envc = 0;
+                if (env_val.type == VAL_PAIR) {
+                    Value ecur = env_val;
+                    while (ecur.type == VAL_PAIR && envc < 255) {
+                        Value pair = vm->heap.objects[ecur.as.ptr]->cons.car;
+                        if (pair.type == VAL_PAIR) {
+                            Value key = vm->heap.objects[pair.as.ptr]->cons.car;
+                            Value val = vm->heap.objects[pair.as.ptr]->cons.cdr;
+                            if (key.type == VAL_STRING && val.type == VAL_STRING) {
+                                VmString* ks = (VmString*)vm->heap.objects[key.as.ptr]->opaque.ptr;
+                                VmString* vs = (VmString*)vm->heap.objects[val.as.ptr]->opaque.ptr;
+                                if (ks && vs) {
+                                    snprintf(env_strs[envc], 512, "%s=%s", ks->data, vs->data);
+                                    envp_buf[envc] = env_strs[envc];
+                                    envc++;
+                                }
+                            }
+                        }
+                        ecur = vm->heap.objects[ecur.as.ptr]->cons.cdr;
+                    }
+                    envp_buf[envc] = NULL;
+                    envp = envp_buf;
+                }
+
+                pid_t pid = fork();
+                if (pid == 0) {
+                    /* Child */
+                    if (envp) execve(argv[0], argv, envp);
+                    else execvp(argv[0], argv);
+                    _exit(127);
+                } else if (pid > 0) {
+                    vm_push(vm, INT_VAL((int64_t)pid));
+                    break;
+                }
+            }
+        }
+#else
+        (void)env_val; (void)args_val; (void)cmd_val;
+#endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+    case 1781: { /* process-wait(pid) → exit-status integer */
+        Value pid_val = vm_pop(vm);
+#ifndef ESHKOL_VM_WASM
+        int status = 0;
+        pid_t pid = (pid_t)as_number(pid_val);
+        if (waitpid(pid, &status, 0) >= 0) {
+            vm_push(vm, INT_VAL(WIFEXITED(status) ? WEXITSTATUS(status) : -1));
+        } else
+#else
+        (void)pid_val;
+#endif
+        { vm_push(vm, INT_VAL(-1)); }
+        break;
+    }
+
+    case 1782: { /* process-kill(pid, signal) → #t or #f */
+        Value sig_val = vm_pop(vm), pid_val = vm_pop(vm);
+#ifndef ESHKOL_VM_WASM
+        pid_t pid = (pid_t)as_number(pid_val);
+        int sig = (int)as_number(sig_val);
+        if (kill(pid, sig) == 0) { vm_push(vm, BOOL_VAL(1)); break; }
+#else
+        (void)sig_val; (void)pid_val;
+#endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+    case 1783: { /* io-poll(fd-list, timeout-ms) → list of ready fds or empty
+                  * fd-list: list of integer file descriptors
+                  * timeout-ms: integer (-1 = block forever, 0 = non-blocking) */
+        Value timeout_val = vm_pop(vm), fds_val = vm_pop(vm);
+#ifndef ESHKOL_VM_WASM
+        /* Count fds */
+        int nfds = 0;
+        Value cur = fds_val;
+        while (cur.type == VAL_PAIR && nfds < 256) {
+            nfds++;
+            cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
+        }
+        if (nfds > 0) {
+            struct pollfd pfds[256];
+            cur = fds_val;
+            for (int i = 0; i < nfds; i++) {
+                pfds[i].fd = (int)as_number(vm->heap.objects[cur.as.ptr]->cons.car);
+                pfds[i].events = POLLIN;
+                pfds[i].revents = 0;
+                cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
+            }
+            int timeout_ms = (int)as_number(timeout_val);
+            int ret = poll(pfds, (nfds_t)nfds, timeout_ms);
+            if (ret > 0) {
+                Value result = NIL_VAL;
+                for (int i = nfds - 1; i >= 0; i--) {
+                    if (pfds[i].revents & (POLLIN | POLLHUP | POLLERR)) {
+                        int32_t cp = heap_alloc(&vm->heap); if (cp < 0) continue;
+                        vm->heap.objects[cp]->type = HEAP_CONS;
+                        vm->heap.objects[cp]->cons.car = INT_VAL(pfds[i].fd);
+                        vm->heap.objects[cp]->cons.cdr = result;
+                        result = PAIR_VAL(cp);
+                    }
+                }
+                vm_push(vm, result);
+                break;
+            }
+        }
+#else
+        (void)timeout_val; (void)fds_val;
+#endif
+        vm_push(vm, NIL_VAL);
+        break;
+    }
+
     default:
         /* Check geometric manifold operations (804-843) */
         if (fid >= 804 && fid <= 843) {

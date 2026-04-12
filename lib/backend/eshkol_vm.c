@@ -28,6 +28,12 @@
 #ifndef ESHKOL_VM_WASM
 #include <dirent.h>
 #include <unistd.h>
+#include <sys/stat.h>
+#include <sys/time.h>
+#include <sys/wait.h>
+#include <signal.h>
+#include <poll.h>
+#include <errno.h>
 #endif
 
 /* ESKB binary format */
@@ -331,6 +337,43 @@ static const BuiltinDef BUILTINS[] = {
     {"string-reverse", 905, 1}, {"string-repeat", 906, 2},
     {"string-trim", 907, 1}, {"string-split", 908, 2},
     {"string-join", 909, 2},
+    /* ═══════════════════════════════════════════════════════════════
+     * System Information — IDs 1700-1719
+     * ═══════════════════════════════════════════════════════════════ */
+    {"os-type", 1700, 0}, {"os-arch", 1701, 0},
+    {"home-directory", 1702, 0}, {"current-directory", 1703, 0},
+    {"set-current-directory!", 1704, 1},
+    {"hostname", 1705, 0}, {"username", 1706, 0},
+    {"cpu-count", 1707, 0}, {"executable-exists?", 1708, 1},
+    {"current-time-ms", 1709, 0}, {"getpid", 1710, 0},
+    {"sleep-ms", 1711, 1}, {"setenv", 1712, 2}, {"unsetenv", 1713, 1},
+    {"current-error-port", 1714, 0},
+    {"get-environment-variable", 1715, 1},
+    /* ═══════════════════════════════════════════════════════════════
+     * Path Manipulation — IDs 1720-1739
+     * ═══════════════════════════════════════════════════════════════ */
+    {"path-join", 1720, 2}, {"path-dirname", 1721, 1},
+    {"path-basename", 1722, 1}, {"path-extname", 1723, 1},
+    {"path-is-absolute?", 1724, 1}, {"path-normalize", 1725, 1},
+    {"realpath", 1726, 1},
+    /* ═══════════════════════════════════════════════════════════════
+     * Filesystem — IDs 1740-1769
+     * ═══════════════════════════════════════════════════════════════ */
+    {"file-size", 1740, 1}, {"file-stat", 1741, 1},
+    {"file-rename", 1742, 2}, {"file-copy", 1743, 2},
+    {"mkdir-recursive", 1744, 1}, {"file-chmod", 1745, 2},
+    {"symlink-create", 1746, 2}, {"symlink-read", 1747, 1},
+    {"directory-walk", 1748, 1}, {"directory-delete-recursive", 1749, 1},
+    {"mkstemp", 1750, 1}, {"mkdtemp", 1751, 1},
+    /* ═══════════════════════════════════════════════════════════════
+     * Shell Utilities — IDs 1770-1779
+     * ═══════════════════════════════════════════════════════════════ */
+    {"shell-quote", 1770, 1}, {"shell-split", 1771, 1},
+    /* ═══════════════════════════════════════════════════════════════
+     * Process Management — IDs 1780-1799
+     * ═══════════════════════════════════════════════════════════════ */
+    {"process-spawn", 1780, 3}, {"process-wait", 1781, 1},
+    {"process-kill", 1782, 2}, {"io-poll", 1783, 2},
     /* Sentinel */
     {NULL, 0, 0}
 };
