@@ -232,11 +232,13 @@ static const BuiltinDef BUILTINS[] = {
     {"numerator", 346, 1}, {"denominator", 347, 1},
     {"rationalize", 345, 2},
     /* ═══════════════════════════════════════════════════════════════
-     * AD — new-style IDs 370-399, high-level 750-752
+     * AD — new-style IDs 370-399, high-level 750-756
      * ═══════════════════════════════════════════════════════════════ */
     {"make-dual", 370, 2}, {"dual-primal", 371, 1}, {"dual-tangent", 372, 1},
     {"dual?", 383, 1}, {"derivative", 393, 2}, {"diff", 393, 2},
     {"gradient", 750, 2}, {"jacobian", 751, 2}, {"hessian", 752, 2},
+    {"divergence", 753, 2}, {"curl", 754, 2},
+    {"laplacian", 755, 2}, {"directional-derivative", 756, 3},
     /* ═══════════════════════════════════════════════════════════════
      * Tensors — IDs 410-470
      * ═══════════════════════════════════════════════════════════════ */
