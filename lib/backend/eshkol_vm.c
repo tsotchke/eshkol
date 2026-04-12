@@ -250,6 +250,7 @@ static const BuiltinDef BUILTINS[] = {
      * ═══════════════════════════════════════════════════════════════ */
     {"make-tensor", 410, 2}, {"tensor", 410, 2},
     {"tensor-get", 411, 2}, {"tensor-ref", 411, 2},
+    {"tensor-set!", 412, 3},
     {"tensor-shape", 413, 1}, {"tensor-reshape", 414, 2}, {"reshape", 414, 2},
     {"tensor-transpose", 415, 1}, {"transpose", 415, 1},
     {"flatten", 416, 1}, {"zeros", 417, 1}, {"ones", 418, 1},
@@ -292,6 +293,7 @@ static const BuiltinDef BUILTINS[] = {
     {"eof-object?", 592, 1},
     {"open-input-string", 596, 1}, {"open-output-string", 597, 0},
     {"get-output-string", 598, 1}, {"file-exists?", 599, 1},
+    {"delete-file", 600, 1},
     {"directory-entries", 601, 1}, {"command-line", 602, 0},
     /* ═══════════════════════════════════════════════════════════════
      * Hash tables — IDs 660-670
@@ -374,6 +376,19 @@ static const BuiltinDef BUILTINS[] = {
      * ═══════════════════════════════════════════════════════════════ */
     {"process-spawn", 1780, 3}, {"process-wait", 1781, 1},
     {"process-kill", 1782, 2}, {"io-poll", 1783, 2},
+    /* ═══════════════════════════════════════════════════════════════
+     * KB Extensions — IDs 1800-1809
+     * ═══════════════════════════════════════════════════════════════ */
+    {"kb-count", 1800, 1}, {"kb-retract!", 1801, 2},
+    /* ═══════════════════════════════════════════════════════════════
+     * Factor Graph Extensions — IDs 1810-1819
+     * ═══════════════════════════════════════════════════════════════ */
+    {"fg-marginal", 1810, 2}, {"fg-entropy", 1811, 2},
+    /* ═══════════════════════════════════════════════════════════════
+     * Tensor/KB Persistence — IDs 1820-1829
+     * ═══════════════════════════════════════════════════════════════ */
+    {"tensor-save", 1820, 2}, {"tensor-load", 1821, 1},
+    {"kb-save", 1822, 2},
     /* Sentinel */
     {NULL, 0, 0}
 };

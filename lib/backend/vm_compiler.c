@@ -1624,10 +1624,25 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
      * are first-class closures defined in the preamble. They resolve via normal variable lookup
      * and are called via the standard CALL mechanism. No special-casing needed. */
 
-    /* Vector operations */
+    /* Vector / tensor literal: #(1 2 3)
+     * If ALL elements are numeric literals → create tensor (homogeneous doubles)
+     * Otherwise → create vector (heterogeneous tagged values) */
     if (is_sym(head, "vector")) {
-        for (int i = 1; i < node->n_children; i++) compile_expr(c, node->children[i], 0);
-        chunk_emit(c, OP_VEC_CREATE, node->n_children - 1);
+        int n_elems = node->n_children - 1;
+        int all_numeric = (n_elems > 0);
+        for (int i = 1; i < node->n_children; i++) {
+            if (node->children[i]->type != N_NUMBER) { all_numeric = 0; break; }
+        }
+        if (all_numeric) {
+            /* Tensor path: push count, then each value, call tensor-from-stack */
+            chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(n_elems)));
+            for (int i = 1; i < node->n_children; i++)
+                compile_expr(c, node->children[i], 0);
+            chunk_emit(c, OP_NATIVE_CALL, 1830); /* tensor-from-stack */
+        } else {
+            for (int i = 1; i < node->n_children; i++) compile_expr(c, node->children[i], 0);
+            chunk_emit(c, OP_VEC_CREATE, n_elems);
+        }
         return;
     }
     if (is_sym(head, "make-vector") && node->n_children >= 2) {
