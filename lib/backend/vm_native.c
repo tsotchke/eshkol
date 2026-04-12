@@ -4953,6 +4953,108 @@ static void vm_dispatch_native(VM* vm, int fid) {
 
 #undef TENSOR_FILE_MAGIC
 
+    /* ══════════════════════════════════════════════════════════════════════
+     * Image I/O (1850-1859) — stb_image based
+     * ══════════════════════════════════════════════════════════════════════ */
+
+    case 1850: { /* image-read(path) → tensor (H,W,C) or #f */
+        Value path_val = vm_pop(vm);
+#ifndef ESHKOL_VM_WASM
+        if (path_val.type == VAL_STRING) {
+            VmString* ps = (VmString*)vm->heap.objects[path_val.as.ptr]->opaque.ptr;
+            if (ps) {
+                int w, h, c;
+                extern double* eshkol_image_read(const char*, int*, int*, int*);
+                double* data = eshkol_image_read(ps->data, &w, &h, &c);
+                if (data) {
+                    int64_t shape[3] = { h, w, c };
+                    int ndims = (c == 1) ? 2 : 3;
+                    if (c == 1) { shape[0] = h; shape[1] = w; }
+                    VmTensor* t = vm_tensor_from_data(&vm->heap.regions, data, shape, ndims);
+                    free(data);
+                    if (t) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_TENSOR, VAL_TENSOR, t); break; }
+                }
+            }
+        }
+#else
+        (void)path_val;
+#endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+    case 1851: { /* image-write(path, tensor, format) → #t or #f */
+        Value fmt_val = vm_pop(vm), tensor_val = vm_pop(vm), path_val = vm_pop(vm);
+#ifndef ESHKOL_VM_WASM
+        if (path_val.type == VAL_STRING && tensor_val.type == VAL_TENSOR) {
+            VmString* ps = (VmString*)vm->heap.objects[path_val.as.ptr]->opaque.ptr;
+            VmTensor* t = (VmTensor*)vm->heap.objects[tensor_val.as.ptr]->opaque.ptr;
+            const char* fmt = "png";
+            if (fmt_val.type == VAL_STRING) {
+                VmString* fs = (VmString*)vm->heap.objects[fmt_val.as.ptr]->opaque.ptr;
+                if (fs) fmt = fs->data;
+            }
+            if (ps && t && t->data && t->n_dims >= 2) {
+                int h = (int)t->shape[0], w = (int)t->shape[1];
+                int c = (t->n_dims >= 3) ? (int)t->shape[2] : 1;
+                extern int eshkol_image_write(const char*, const double*, int, int, int, const char*);
+                if (eshkol_image_write(ps->data, t->data, w, h, c, fmt) == 0) {
+                    vm_push(vm, BOOL_VAL(1)); break;
+                }
+            }
+        }
+#else
+        (void)fmt_val; (void)tensor_val; (void)path_val;
+#endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+    case 1852: { /* image-to-grayscale(tensor) → tensor (H,W) or #f */
+        Value tensor_val = vm_pop(vm);
+        if (tensor_val.type == VAL_TENSOR) {
+            VmTensor* t = (VmTensor*)vm->heap.objects[tensor_val.as.ptr]->opaque.ptr;
+            if (t && t->data && t->n_dims >= 2) {
+                int h = (int)t->shape[0], w = (int)t->shape[1];
+                int c = (t->n_dims >= 3) ? (int)t->shape[2] : 1;
+                extern double* eshkol_image_to_grayscale(const double*, int, int, int);
+                double* gray = eshkol_image_to_grayscale(t->data, w, h, c);
+                if (gray) {
+                    int64_t shape[2] = { h, w };
+                    VmTensor* gt = vm_tensor_from_data(&vm->heap.regions, gray, shape, 2);
+                    free(gray);
+                    if (gt) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_TENSOR, VAL_TENSOR, gt); break; }
+                }
+            }
+        }
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+    case 1853: { /* image-resize(tensor, new-h, new-w) → tensor or #f */
+        Value nw_val = vm_pop(vm), nh_val = vm_pop(vm), tensor_val = vm_pop(vm);
+        if (tensor_val.type == VAL_TENSOR) {
+            VmTensor* t = (VmTensor*)vm->heap.objects[tensor_val.as.ptr]->opaque.ptr;
+            int new_h = (int)as_number(nh_val), new_w = (int)as_number(nw_val);
+            if (t && t->data && t->n_dims >= 2 && new_h > 0 && new_w > 0) {
+                int h = (int)t->shape[0], w = (int)t->shape[1];
+                int c = (t->n_dims >= 3) ? (int)t->shape[2] : 1;
+                extern double* eshkol_image_resize(const double*, int, int, int, int, int);
+                double* resized = eshkol_image_resize(t->data, w, h, c, new_w, new_h);
+                if (resized) {
+                    int64_t shape[3] = { new_h, new_w, c };
+                    int ndims = (c == 1) ? 2 : 3;
+                    if (c == 1) { shape[0] = new_h; shape[1] = new_w; }
+                    VmTensor* rt = vm_tensor_from_data(&vm->heap.regions, resized, shape, ndims);
+                    free(resized);
+                    if (rt) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_TENSOR, VAL_TENSOR, rt); break; }
+                }
+            }
+        }
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
     case 1840: { /* reverse-gradient(f, point) → tensor of gradients
                   * Uses reverse-mode AD via Wengert tape tracing.
                   * Activates the tape, calls f with traced inputs,
