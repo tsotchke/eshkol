@@ -459,12 +459,8 @@
 ;; Keys can be strings (hash-table lookup) or integers (list index)
 ;; Returns #f if any step fails
 
-(define (json-get-in-list-ref lst idx)
-  (if (or (< idx 0) (null? lst))
-      #f
-      (if (= idx 0)
-          (car lst)
-          (json-get-in-list-ref (cdr lst) (- idx 1)))))
+(define (json-get-in obj keys)
+  (json-get-in-loop obj keys #f))
 
 (define (json-get-in-loop obj keys default)
   (if (null? keys)
@@ -484,5 +480,9 @@
                  default)))
           (else default)))))
 
-(define (json-get-in obj keys)
-  (json-get-in-loop obj keys #f))
+(define (json-get-in-list-ref lst idx)
+  (if (or (< idx 0) (null? lst))
+      #f
+      (if (= idx 0)
+          (car lst)
+          (json-get-in-list-ref (cdr lst) (- idx 1)))))
