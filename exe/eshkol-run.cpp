@@ -2793,6 +2793,16 @@ int main(int argc, char **argv)
             eshkol_enable_debug_info(abs_source.string().c_str());
         }
 
+        // Set source context for structured error messages
+        if (!source_files.empty()) {
+            std::ifstream src_stream(source_files[0]);
+            if (src_stream.is_open()) {
+                std::string src_text((std::istreambuf_iterator<char>(src_stream)),
+                                     std::istreambuf_iterator<char>());
+                eshkol_set_source_context(source_files[0], src_text.c_str());
+            }
+        }
+
         // Generate LLVM IR (use library mode if --shared-lib flag is set)
         LLVMModuleRef llvm_module;
         if (shared_lib) {

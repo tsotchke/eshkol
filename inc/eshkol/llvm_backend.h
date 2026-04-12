@@ -75,6 +75,14 @@ void eshkol_disable_debug_info(void);
 void eshkol_set_optimization_level(int level);
 
 /*
+ * Set source context for structured error messages (file:line:col + caret).
+ * Must be called BEFORE eshkol_generate_llvm_ir().
+ * @param filepath Full path to the source file
+ * @param source_text Full source text (for caret display in error messages)
+ */
+void eshkol_set_source_context(const char* filepath, const char* source_text);
+
+/*
  * Get current LLVM optimization level
  * @return Current optimization level (0-3)
  */
@@ -253,6 +261,7 @@ void eshkol_repl_mark_user_function(const char* name);
 #define eshkol_enable_debug_info(source_filename) do {} while(0)
 #define eshkol_disable_debug_info() do {} while(0)
 #define eshkol_set_optimization_level(level) do {} while(0)
+#define eshkol_set_source_context(filepath, source_text) do {} while(0)
 #define eshkol_get_optimization_level() (0)
 #define eshkol_dump_llvm_ir_to_file(module, filename) (-1)
 #define eshkol_compile_llvm_ir_to_object(module, filename) (-1)

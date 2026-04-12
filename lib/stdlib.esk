@@ -41,6 +41,9 @@
 (require core.data.csv)
 (require core.data.base64)
 
+;;; Terminal plotting - sparklines, bar charts, histograms
+(require core.plot)
+
 ;;; Signal Processing - FFT/IFFT and FIR/IIR filters, windowing, Butterworth design
 (require signal.fft)
 (require signal.filters)
