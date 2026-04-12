@@ -4727,6 +4727,269 @@ static void vm_dispatch_native(VM* vm, int fid) {
      * Process Management (1780-1799)
      * ══════════════════════════════════════════════════════════════════════ */
 
+    /* ══════════════════════════════════════════════════════════════════════
+     * Knowledge Base Extensions (1800-1809)
+     * ══════════════════════════════════════════════════════════════════════ */
+
+    case 1800: { /* kb-count(kb) → integer (number of facts) */
+        Value kb_val = vm_pop(vm);
+        if (kb_val.as.ptr >= 0 && vm->heap.objects[kb_val.as.ptr]->type == HEAP_KB) {
+            VmKnowledgeBase* kb = (VmKnowledgeBase*)vm->heap.objects[kb_val.as.ptr]->opaque.ptr;
+            if (kb) { vm_push(vm, INT_VAL(kb->n_facts)); break; }
+        }
+        vm_push(vm, INT_VAL(0));
+        break;
+    }
+
+    case 1801: { /* kb-retract!(kb, fact) → #t or #f
+                  * Remove first matching fact from KB */
+        Value fact_val = vm_pop(vm), kb_val = vm_pop(vm);
+        if (kb_val.as.ptr >= 0 && vm->heap.objects[kb_val.as.ptr]->type == HEAP_KB &&
+            fact_val.as.ptr >= 0 && vm->heap.objects[fact_val.as.ptr]->type == HEAP_FACT) {
+            VmKnowledgeBase* kb = (VmKnowledgeBase*)vm->heap.objects[kb_val.as.ptr]->opaque.ptr;
+            VmFact* target = (VmFact*)vm->heap.objects[fact_val.as.ptr]->opaque.ptr;
+            if (kb && target) {
+                for (int i = 0; i < kb->n_facts; i++) {
+                    if (kb->facts[i] == target) {
+                        /* Shift remaining facts down */
+                        for (int j = i; j < kb->n_facts - 1; j++)
+                            kb->facts[j] = kb->facts[j + 1];
+                        kb->n_facts--;
+                        vm_push(vm, BOOL_VAL(1));
+                        goto done_1801;
+                    }
+                }
+            }
+        }
+        vm_push(vm, BOOL_VAL(0));
+        done_1801:
+        break;
+    }
+
+    /* ══════════════════════════════════════════════════════════════════════
+     * Factor Graph Extensions (1810-1819)
+     * ══════════════════════════════════════════════════════════════════════ */
+
+    case 1810: { /* fg-marginal(fg, var-idx) → tensor of belief probabilities */
+        Value idx_val = vm_pop(vm), fg_val = vm_pop(vm);
+        if (fg_val.as.ptr >= 0 && vm->heap.objects[fg_val.as.ptr]->type == HEAP_FACTOR_GRAPH) {
+            VmFactorGraph* fg = (VmFactorGraph*)vm->heap.objects[fg_val.as.ptr]->opaque.ptr;
+            int var = (int)as_number(idx_val);
+            if (fg && var >= 0 && var < fg->num_vars) {
+                int dim = fg->var_dims[var];
+                /* Convert log-beliefs to probabilities via softmax */
+                double probs[64];
+                double max_b = fg->beliefs[var][0];
+                for (int i = 1; i < dim && i < 64; i++)
+                    if (fg->beliefs[var][i] > max_b) max_b = fg->beliefs[var][i];
+                double sum = 0;
+                for (int i = 0; i < dim && i < 64; i++) {
+                    probs[i] = exp(fg->beliefs[var][i] - max_b);
+                    sum += probs[i];
+                }
+                if (sum > 0) for (int i = 0; i < dim && i < 64; i++) probs[i] /= sum;
+                int64_t shape[1] = { dim };
+                VmTensor* t = vm_tensor_from_data(&vm->heap.regions, probs, shape, 1);
+                if (t) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_TENSOR, VAL_TENSOR, t); break; }
+            }
+        }
+        vm_push(vm, NIL_VAL);
+        break;
+    }
+
+    case 1811: { /* fg-entropy(fg, var-idx) → scalar entropy H = -Σ p*log(p) */
+        Value idx_val = vm_pop(vm), fg_val = vm_pop(vm);
+        if (fg_val.as.ptr >= 0 && vm->heap.objects[fg_val.as.ptr]->type == HEAP_FACTOR_GRAPH) {
+            VmFactorGraph* fg = (VmFactorGraph*)vm->heap.objects[fg_val.as.ptr]->opaque.ptr;
+            int var = (int)as_number(idx_val);
+            if (fg && var >= 0 && var < fg->num_vars) {
+                int dim = fg->var_dims[var];
+                /* Softmax to get probabilities */
+                double max_b = fg->beliefs[var][0];
+                for (int i = 1; i < dim; i++)
+                    if (fg->beliefs[var][i] > max_b) max_b = fg->beliefs[var][i];
+                double sum = 0;
+                double probs[64];
+                for (int i = 0; i < dim && i < 64; i++) {
+                    probs[i] = exp(fg->beliefs[var][i] - max_b);
+                    sum += probs[i];
+                }
+                /* H = -Σ p*log(p) */
+                double entropy = 0;
+                for (int i = 0; i < dim && i < 64; i++) {
+                    double p = probs[i] / sum;
+                    if (p > 1e-15) entropy -= p * log(p);
+                }
+                vm_push(vm, FLOAT_VAL(entropy));
+                break;
+            }
+        }
+        vm_push(vm, FLOAT_VAL(0));
+        break;
+    }
+
+    /* ══════════════════════════════════════════════════════════════════════
+     * Tensor/KB Persistence (1820-1829)
+     * Binary format: [magic:4][version:4][ndims:4][shape:ndims*8][data:total*8]
+     * ══════════════════════════════════════════════════════════════════════ */
+
+#define TENSOR_FILE_MAGIC 0x45534B54 /* "ESKT" */
+
+    case 1820: { /* tensor-save(path, tensor) → #t or #f */
+        Value tensor_val = vm_pop(vm), path_val = vm_pop(vm);
+#ifndef ESHKOL_VM_WASM
+        if (path_val.type == VAL_STRING && tensor_val.type == VAL_TENSOR) {
+            VmString* ps = (VmString*)vm->heap.objects[path_val.as.ptr]->opaque.ptr;
+            VmTensor* t = (VmTensor*)vm->heap.objects[tensor_val.as.ptr]->opaque.ptr;
+            if (ps && t && t->data) {
+                FILE* f = fopen(ps->data, "wb");
+                if (f) {
+                    uint32_t magic = TENSOR_FILE_MAGIC;
+                    uint32_t version = 1;
+                    uint32_t ndims = (uint32_t)t->n_dims;
+                    fwrite(&magic, 4, 1, f);
+                    fwrite(&version, 4, 1, f);
+                    fwrite(&ndims, 4, 1, f);
+                    for (int i = 0; i < t->n_dims; i++) {
+                        int64_t dim = t->shape[i];
+                        fwrite(&dim, 8, 1, f);
+                    }
+                    fwrite(t->data, sizeof(double), (size_t)t->total, f);
+                    fclose(f);
+                    vm_push(vm, BOOL_VAL(1));
+                    break;
+                }
+            }
+        }
+#else
+        (void)tensor_val; (void)path_val;
+#endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+    case 1821: { /* tensor-load(path) → tensor or #f */
+        Value path_val = vm_pop(vm);
+#ifndef ESHKOL_VM_WASM
+        if (path_val.type == VAL_STRING) {
+            VmString* ps = (VmString*)vm->heap.objects[path_val.as.ptr]->opaque.ptr;
+            if (ps) {
+                FILE* f = fopen(ps->data, "rb");
+                if (f) {
+                    uint32_t magic, version, ndims;
+                    if (fread(&magic, 4, 1, f) == 1 && magic == TENSOR_FILE_MAGIC &&
+                        fread(&version, 4, 1, f) == 1 && version == 1 &&
+                        fread(&ndims, 4, 1, f) == 1 && ndims > 0 && ndims <= 8) {
+                        int64_t shape[8];
+                        int ok = 1;
+                        for (uint32_t i = 0; i < ndims; i++) {
+                            if (fread(&shape[i], 8, 1, f) != 1) { ok = 0; break; }
+                        }
+                        if (ok) {
+                            int64_t total = 1;
+                            for (uint32_t i = 0; i < ndims; i++) total *= shape[i];
+                            VmTensor* t = vm_tensor_new(&vm->heap.regions, shape, (int)ndims);
+                            if (t && t->data && (int64_t)fread(t->data, sizeof(double), (size_t)total, f) == total) {
+                                fclose(f);
+                                VM_PUSH_HEAP_OPAQUE(vm, HEAP_TENSOR, VAL_TENSOR, t);
+                                break;
+                            }
+                        }
+                    }
+                    fclose(f);
+                }
+            }
+        }
+#else
+        (void)path_val;
+#endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+    case 1822: { /* kb-save(path, kb) → #t or #f
+                  * Serializes KB: writes fact count + predicate hashes + arities as binary.
+                  * For facts with datum (list), writes the list repr.
+                  * Format: [magic:4][version:4][n_facts:4][per fact: predicate_hash:8, arity:4, datum_ptr:4] */
+        Value kb_val = vm_pop(vm), path_val = vm_pop(vm);
+#ifndef ESHKOL_VM_WASM
+        if (path_val.type == VAL_STRING && kb_val.as.ptr >= 0 &&
+            vm->heap.objects[kb_val.as.ptr]->type == HEAP_KB) {
+            VmString* ps = (VmString*)vm->heap.objects[path_val.as.ptr]->opaque.ptr;
+            VmKnowledgeBase* kb = (VmKnowledgeBase*)vm->heap.objects[kb_val.as.ptr]->opaque.ptr;
+            if (ps && kb) {
+                FILE* f = fopen(ps->data, "wb");
+                if (f) {
+                    uint32_t magic = 0x45534B42; /* "ESKB" */
+                    uint32_t version = 1;
+                    uint32_t nf = (uint32_t)kb->n_facts;
+                    fwrite(&magic, 4, 1, f);
+                    fwrite(&version, 4, 1, f);
+                    fwrite(&nf, 4, 1, f);
+                    for (int i = 0; i < kb->n_facts; i++) {
+                        VmFact* fact = kb->facts[i];
+                        if (!fact) { uint64_t z = 0; fwrite(&z, 8, 1, f); uint32_t za = 0; fwrite(&za, 4, 1, f); continue; }
+                        fwrite(&fact->predicate, 8, 1, f);
+                        uint32_t ar = (uint32_t)fact->arity;
+                        fwrite(&ar, 4, 1, f);
+                        /* Write each arg's type byte + data */
+                        for (int j = 0; j < fact->arity; j++) {
+                            fwrite(&fact->args[j].type, 1, 1, f);
+                            fwrite(&fact->args[j].data, 8, 1, f);
+                        }
+                    }
+                    fclose(f);
+                    vm_push(vm, BOOL_VAL(1));
+                    break;
+                }
+            }
+        }
+#else
+        (void)kb_val; (void)path_val;
+#endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+#undef TENSOR_FILE_MAGIC
+
+    case 1830: { /* tensor-from-stack(count, v1, v2, ..., vN) → tensor
+                  * Internal: compiler emits this for all-numeric #(...) literals.
+                  * Stack: [count, val0, val1, ..., valN-1] (count pushed first) */
+        /* Pop values in reverse (valN-1 is TOS) */
+        int n = 0;
+        /* We need to find the count on the stack. The compiler pushes:
+         * CONST(count), CONST(v0), CONST(v1), ..., CONST(vN-1), NATIVE_CALL
+         * So TOS-0 through TOS-(N-1) are values, TOS-N is count. */
+        /* Strategy: peek backwards to find the int count */
+        double vals[1024];
+        int found = 0;
+        for (int try_n = 0; try_n < 1024 && try_n < vm->sp; try_n++) {
+            int count_pos = vm->sp - try_n - 1;
+            if (count_pos >= 0 && vm->stack[count_pos].type == VAL_INT) {
+                int candidate = (int)vm->stack[count_pos].as.i;
+                if (candidate == try_n && candidate >= 0 && candidate < 1024) {
+                    n = candidate;
+                    found = 1;
+                    break;
+                }
+            }
+        }
+        if (found && n > 0) {
+            /* Pop the n values */
+            for (int i = n - 1; i >= 0; i--)
+                vals[i] = as_number(vm_pop(vm));
+            vm_pop(vm); /* pop count */
+            int64_t shape[1] = { n };
+            VmTensor* t = vm_tensor_from_data(&vm->heap.regions, vals, shape, 1);
+            if (t) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_TENSOR, VAL_TENSOR, t); break; }
+        } else if (found && n == 0) {
+            vm_pop(vm); /* pop count */
+        }
+        vm_push(vm, NIL_VAL);
+        break;
+    }
+
     case 1780: { /* process-spawn(cmd, args-list, env-alist) → pid or #f
                   * cmd: string, args: list of strings, env: alist of (name . value) or #f
                   * Returns child PID on success, #f on failure */

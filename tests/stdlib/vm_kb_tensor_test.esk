@@ -1,0 +1,67 @@
+;;; KB extensions, factor graph extensions, tensor persistence tests
+
+(display "=== KB Extensions ===") (newline)
+
+;; Create KB, assert facts, check count
+(define kb (make-kb))
+(kb-assert! kb (make-fact 'parent '(alice bob)))
+(kb-assert! kb (make-fact 'parent '(bob charlie)))
+(kb-assert! kb (make-fact 'likes '(alice cats)))
+
+(display "kb-count after 3 asserts: ")
+(display (kb-count kb))
+(newline)
+
+;; Retract a fact
+(define f1 (make-fact 'likes '(alice cats)))
+;; Note: kb-retract! matches by pointer identity, not structural equality
+;; So this won't match the fact we asserted above (different object)
+;; This tests that the operation is at least safe
+(kb-retract! kb f1)
+(display "kb-count after retract attempt: ")
+(display (kb-count kb))
+(newline)
+
+(display "=== Tensor Persistence ===") (newline)
+
+;; Create a tensor, save it, load it back
+(define t (make-tensor '(3) '(1.5 2.5 3.5)))
+(display "original tensor: ") (display t) (newline)
+
+(tensor-save "/tmp/eshkol-test-tensor.bin" t)
+(display "tensor-save: done") (newline)
+
+(define t2 (tensor-load "/tmp/eshkol-test-tensor.bin"))
+(display "tensor-load: ") (display t2) (newline)
+
+;; Verify values match
+(display "t2[0] = ") (display (tensor-ref t2 0)) (newline)
+(display "t2[1] = ") (display (tensor-ref t2 1)) (newline)
+(display "t2[2] = ") (display (tensor-ref t2 2)) (newline)
+
+;; Cleanup
+(delete-file "/tmp/eshkol-test-tensor.bin")
+
+(display "=== Factor Graph Extensions ===") (newline)
+
+;; Create a simple factor graph: 2 variables, 2 states each
+(define fg (make-factor-graph 2 '(2 2)))
+(display "factor-graph created") (newline)
+
+;; Add a factor connecting both variables
+(fg-add-factor! fg '(0 1) #(0.9 0.1 0.1 0.9))
+
+;; Run inference
+(fg-infer! fg 5 0.01)
+
+;; Get marginals
+(define m0 (fg-marginal fg 0))
+(define m1 (fg-marginal fg 1))
+(display "marginal var 0: ") (display m0) (newline)
+(display "marginal var 1: ") (display m1) (newline)
+
+;; Get entropy
+(define h0 (fg-entropy fg 0))
+(display "entropy var 0: ") (display h0) (newline)
+
+(display "=== ALL KB/TENSOR/FG TESTS DONE ===") (newline)
