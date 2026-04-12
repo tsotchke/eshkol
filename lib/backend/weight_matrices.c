@@ -1560,6 +1560,48 @@ static void exec_loop_postprocess(float x[D], const Instr* prog, int n_instr) {
                 }
                 /* All other runtime ID ranges: registered but float VM delegates to C exec_loop */
                 /* The weight matrix path handles basic opcodes; complex operations dispatch here */
+            } else if (opcode >= OP_AD_VAR && opcode <= OP_AD_SQRT) {
+                /* AD forward ops: Layer 3 weight matrices handle stack manipulation
+                 * and flag setting. The VALUE computation requires tape random-access
+                 * which is handled here for correctness. Layer 2 indicator neurons
+                 * could compute this in a fully weight-only path (future work). */
+                int tlen = (int)roundf(x[S_AD_TAPE_LEN]) - 1; /* already incremented by Layer 4 */
+                if (tlen >= 0 && tlen < AD_MAX_TAPE) {
+                    float op_type = x[S_AD_TAPE_BASE + tlen * AD_NODE_FIELDS + AD_F_OP];
+                    int li = (int)roundf(x[S_AD_TAPE_BASE + tlen * AD_NODE_FIELDS + AD_F_LEFT]);
+                    int ri = (int)roundf(x[S_AD_TAPE_BASE + tlen * AD_NODE_FIELDS + AD_F_RIGHT]);
+                    float lv = (li >= 0 && li < tlen) ? x[S_AD_TAPE_BASE + li * AD_NODE_FIELDS + AD_F_VALUE] : 0;
+                    float rv = (ri >= 0 && ri < tlen) ? x[S_AD_TAPE_BASE + ri * AD_NODE_FIELDS + AD_F_VALUE] : 0;
+                    float val = 0;
+                    if (fabsf(op_type - AD_OP_VAR) < 0.5f || fabsf(op_type - AD_OP_CONST) < 0.5f) {
+                        val = x[S_AD_TAPE_BASE + tlen * AD_NODE_FIELDS + AD_F_VALUE]; /* already set by operand */
+                    } else if (fabsf(op_type - AD_OP_ADD) < 0.5f) { val = lv + rv; }
+                    else if (fabsf(op_type - AD_OP_SUB) < 0.5f) { val = lv - rv; }
+                    else if (fabsf(op_type - AD_OP_MUL) < 0.5f) { val = lv * rv; }
+                    else if (fabsf(op_type - AD_OP_NEG) < 0.5f) { val = -lv; }
+                    else if (fabsf(op_type - AD_OP_ABS) < 0.5f) { val = fabsf(lv); }
+                    else if (fabsf(op_type - AD_OP_RELU) < 0.5f) { val = lv > 0 ? lv : 0; }
+                    else if (fabsf(op_type - AD_OP_SIGMOID) < 0.5f) { val = 1.0f/(1.0f+expf(-lv)); }
+                    else if (fabsf(op_type - AD_OP_TANH) < 0.5f) { val = tanhf(lv); }
+                    else if (fabsf(op_type - AD_OP_EXP) < 0.5f) { val = expf(lv); }
+                    else if (fabsf(op_type - AD_OP_LOG) < 0.5f) { val = logf(lv > 0 ? lv : 1e-15f); }
+                    else if (fabsf(op_type - AD_OP_SQRT) < 0.5f) { val = sqrtf(lv > 0 ? lv : 0); }
+                    x[S_AD_TAPE_BASE + tlen * AD_NODE_FIELDS + AD_F_VALUE] = val;
+                }
+            } else if (opcode == OP_AD_BACKWARD) {
+                /* Seed gradient for backward pass */
+                int output_idx = (int)roundf(x[S_AD_CURSOR]);
+                int tlen = (int)roundf(x[S_AD_TAPE_LEN]);
+                if (output_idx >= 0 && output_idx < tlen)
+                    x[S_AD_TAPE_BASE + output_idx * AD_NODE_FIELDS + AD_F_GRAD] = 1.0f;
+            } else if (opcode == OP_AD_GRAD) {
+                /* Read gradient of tape[TOS] */
+                int ni = (int)roundf(x[S_TOS]);
+                int tlen = (int)roundf(x[S_AD_TAPE_LEN]);
+                float grad = 0;
+                if (ni >= 0 && ni < tlen)
+                    grad = x[S_AD_TAPE_BASE + ni * AD_NODE_FIELDS + AD_F_GRAD];
+                x[S_TOS] = grad;
             }
         }
         x[S_IS_NATIVE] = 0;
@@ -1742,6 +1784,31 @@ static int add_gated_pair(InterpreterWeights* w, int L, int n,
     return n + 2;
 }
 
+/* Gated pair for AD opcodes — same as add_gated_pair but also gates on NOT backward */
+static int add_gated_pair_ad(InterpreterWeights* w, int L, int n,
+                              int op_id,
+                              int ud1, float us1, int ud2, float us2,
+                              int ud3, float us3, int ud4, float us4,
+                              float ubias,
+                              int out_dim, float coeff) {
+    for (int sign = 0; sign < 2; sign++) {
+        int j = n + sign;
+        float s = (sign == 0) ? 0.5f : -0.5f;
+        W(w->ff_gate[L], S_OPCODE, j, FFN_DIM) += SCALE;
+        W(w->ff_gate[L], S_HALT, j, FFN_DIM)   += -SCALE;
+        W(w->ff_gate[L], S_AD_IS_BACKWARD, j, FFN_DIM) += -SCALE; /* suppress during backward */
+        w->ff_gate_b[L][j] = SCALE * (-(float)op_id + s);
+        if (ud1 >= 0) W(w->ff_up[L], ud1, j, FFN_DIM) += us1;
+        if (ud2 >= 0) W(w->ff_up[L], ud2, j, FFN_DIM) += us2;
+        if (ud3 >= 0) W(w->ff_up[L], ud3, j, FFN_DIM) += us3;
+        if (ud4 >= 0) W(w->ff_up[L], ud4, j, FFN_DIM) += us4;
+        w->ff_up_b[L][j] = ubias;
+        float c = (sign == 0) ? coeff : -coeff;
+        W(w->ff_down[L], j, out_dim, D) += c;
+    }
+    return n + 2;
+}
+
 /* Unconditional (always-on) neuron */
 static int add_unconditional(InterpreterWeights* w, int L, int n,
                               int ud1, float us1, float ubias,
@@ -1887,10 +1954,11 @@ static void generate_weights(InterpreterWeights* w) {
         n = add_unconditional(w, L, n, S_OUTPUT, -1.0f, -1.0f, S_OUTPUT, 1.0f);
         /* Universal: clear HAS_OUT */
         n = add_unconditional(w, L, n, S_HAS_OUT, -1.0f, 0, S_HAS_OUT, 1.0f);
-        /* Universal: clear intermediate dims (16-31 only; type tags 32-35 persist) */
-        for (int d = S_OPCODE; d <= S_ABS_DELTA; d++) {
+        /* Universal: clear intermediate dims (Zone A: 16-31, Zone D: 112-127) */
+        for (int d = S_OPCODE; d <= S_ABS_DELTA; d++)
             n = add_unconditional(w, L, n, d, -1.0f, 0, d, 1.0f);
-        }
+        for (int d = S_AD_IS_FORWARD; d <= S_AD_SPARE8; d++)
+            n = add_unconditional(w, L, n, d, -1.0f, 0, d, 1.0f);
 
         /* OP_NOP (0): PC += 1 */
         n = add_gated_pair(w,L,n, 0, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
@@ -2179,11 +2247,207 @@ static void generate_weights(InterpreterWeights* w) {
         /* OP_HALT (36) */
         n = add_gated_pair(w,L,n, 36, -1,0,-1,0,-1,0,-1,0, 1.0f, S_HALT, 1.0f);
 
+        /* ── AD Forward Ops (64-78) ── */
+
+        /* OP_AD_VAR (64): push tape_len as tape index, set AD_CUR fields, AD_IS_FORWARD
+         * Stack: push down (R3←R2, R2←SOS, SOS←TOS, TOS←tape_len), depth++ */
+        n = add_gated_pair_ad(w,L,n, 64, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
+        n = add_gated_pair_ad(w,L,n, 64, S_AD_TAPE_LEN,1,S_TOS,-1,-1,0,-1,0, 0, S_TOS, 1.0f);
+        n = add_gated_pair_ad(w,L,n, 64, S_TOS,1,S_SOS,-1,-1,0,-1,0, 0, S_SOS, 1.0f);
+        n = add_gated_pair_ad(w,L,n, 64, S_SOS,1,S_R2,-1,-1,0,-1,0, 0, S_R2, 1.0f);
+        n = add_gated_pair_ad(w,L,n, 64, S_R2,1,S_R3,-1,-1,0,-1,0, 0, S_R3, 1.0f);
+        n = add_gated_pair_ad(w,L,n, 64, -1,0,-1,0,-1,0,-1,0, 1.0f, S_DEPTH, 1.0f);
+        n = add_gated_pair_ad(w,L,n, 64, -1,0,-1,0,-1,0,-1,0, (float)AD_OP_VAR, S_AD_CUR_OP, 1.0f);
+        n = add_gated_pair_ad(w,L,n, 64, S_OPERAND,1,-1,0,-1,0,-1,0, 0, S_AD_CUR_VALUE, 1.0f);
+        n = add_gated_pair_ad(w,L,n, 64, -1,0,-1,0,-1,0,-1,0, -1.0f, S_AD_CUR_LEFT, 1.0f);
+        n = add_gated_pair_ad(w,L,n, 64, -1,0,-1,0,-1,0,-1,0, -1.0f, S_AD_CUR_RIGHT, 1.0f);
+        n = add_gated_pair_ad(w,L,n, 64, -1,0,-1,0,-1,0,-1,0, 1.0f, S_AD_IS_FORWARD, 1.0f);
+        n = add_gated_pair_ad(w,L,n, 64, -1,0,-1,0,-1,0,-1,0, 1.0f, S_AD_MODE, 1.0f);
+        n = add_gated_pair_ad(w,L,n, 64, -1,0,-1,0,-1,0,-1,0, 1.0f, S_IS_NATIVE, 1.0f);
+
+        /* OP_AD_CONST (65): same as VAR but with AD_OP_CONST */
+        n = add_gated_pair_ad(w,L,n, 65, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
+        n = add_gated_pair_ad(w,L,n, 65, S_AD_TAPE_LEN,1,S_TOS,-1,-1,0,-1,0, 0, S_TOS, 1.0f);
+        n = add_gated_pair_ad(w,L,n, 65, S_TOS,1,S_SOS,-1,-1,0,-1,0, 0, S_SOS, 1.0f);
+        n = add_gated_pair_ad(w,L,n, 65, S_SOS,1,S_R2,-1,-1,0,-1,0, 0, S_R2, 1.0f);
+        n = add_gated_pair_ad(w,L,n, 65, S_R2,1,S_R3,-1,-1,0,-1,0, 0, S_R3, 1.0f);
+        n = add_gated_pair_ad(w,L,n, 65, -1,0,-1,0,-1,0,-1,0, 1.0f, S_DEPTH, 1.0f);
+        n = add_gated_pair_ad(w,L,n, 65, -1,0,-1,0,-1,0,-1,0, (float)AD_OP_CONST, S_AD_CUR_OP, 1.0f);
+        n = add_gated_pair_ad(w,L,n, 65, S_OPERAND,1,-1,0,-1,0,-1,0, 0, S_AD_CUR_VALUE, 1.0f);
+        n = add_gated_pair_ad(w,L,n, 65, -1,0,-1,0,-1,0,-1,0, -1.0f, S_AD_CUR_LEFT, 1.0f);
+        n = add_gated_pair_ad(w,L,n, 65, -1,0,-1,0,-1,0,-1,0, -1.0f, S_AD_CUR_RIGHT, 1.0f);
+        n = add_gated_pair_ad(w,L,n, 65, -1,0,-1,0,-1,0,-1,0, 1.0f, S_AD_IS_FORWARD, 1.0f);
+        n = add_gated_pair_ad(w,L,n, 65, -1,0,-1,0,-1,0,-1,0, 1.0f, S_AD_MODE, 1.0f);
+        n = add_gated_pair_ad(w,L,n, 65, -1,0,-1,0,-1,0,-1,0, 1.0f, S_IS_NATIVE, 1.0f);
+
+        /* OP_AD_ADD (66): binary. Pop 2, push tape_len. Set CUR fields.
+         * Note: value computation (left_val + right_val) happens in simulated
+         * layer3_ffn via direct tape access. The weight matrix path uses the
+         * same simulated code path for value computation — the gated pairs
+         * handle stack manipulation and flag setting only.
+         * The actual value is set by layer3_ffn's AD forward computation. */
+        n = add_gated_pair_ad(w,L,n, 66, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
+        n = add_gated_pair_ad(w,L,n, 66, S_AD_TAPE_LEN,1,S_TOS,-1,-1,0,-1,0, 0, S_TOS, 1.0f);
+        n = add_gated_pair_ad(w,L,n, 66, S_R2,1,S_SOS,-1,-1,0,-1,0, 0, S_SOS, 1.0f);
+        n = add_gated_pair_ad(w,L,n, 66, S_R3,1,S_R2,-1,-1,0,-1,0, 0, S_R2, 1.0f);
+        n = add_gated_pair_ad(w,L,n, 66, -1,0,-1,0,-1,0,-1,0, 0, S_R3, 1.0f); /* R3=0 */
+        n = add_gated_pair_ad(w,L,n, 66, -1,0,-1,0,-1,0,-1,0, -1.0f, S_DEPTH, 1.0f);
+        n = add_gated_pair_ad(w,L,n, 66, -1,0,-1,0,-1,0,-1,0, (float)AD_OP_ADD, S_AD_CUR_OP, 1.0f);
+        n = add_gated_pair_ad(w,L,n, 66, S_SOS,1,-1,0,-1,0,-1,0, 0, S_AD_CUR_LEFT, 1.0f);
+        n = add_gated_pair_ad(w,L,n, 66, S_TOS,1,-1,0,-1,0,-1,0, 0, S_AD_CUR_RIGHT, 1.0f);
+        n = add_gated_pair_ad(w,L,n, 66, -1,0,-1,0,-1,0,-1,0, 1.0f, S_AD_IS_FORWARD, 1.0f);
+        n = add_gated_pair_ad(w,L,n, 66, -1,0,-1,0,-1,0,-1,0, 1.0f, S_IS_NATIVE, 1.0f);
+
+        /* OP_AD_SUB (67): same stack pattern as ADD */
+        n = add_gated_pair_ad(w,L,n, 67, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
+        n = add_gated_pair_ad(w,L,n, 67, S_AD_TAPE_LEN,1,S_TOS,-1,-1,0,-1,0, 0, S_TOS, 1.0f);
+        n = add_gated_pair_ad(w,L,n, 67, S_R2,1,S_SOS,-1,-1,0,-1,0, 0, S_SOS, 1.0f);
+        n = add_gated_pair_ad(w,L,n, 67, S_R3,1,S_R2,-1,-1,0,-1,0, 0, S_R2, 1.0f);
+        n = add_gated_pair_ad(w,L,n, 67, -1,0,-1,0,-1,0,-1,0, 0, S_R3, 1.0f);
+        n = add_gated_pair_ad(w,L,n, 67, -1,0,-1,0,-1,0,-1,0, -1.0f, S_DEPTH, 1.0f);
+        n = add_gated_pair_ad(w,L,n, 67, -1,0,-1,0,-1,0,-1,0, (float)AD_OP_SUB, S_AD_CUR_OP, 1.0f);
+        n = add_gated_pair_ad(w,L,n, 67, S_SOS,1,-1,0,-1,0,-1,0, 0, S_AD_CUR_LEFT, 1.0f);
+        n = add_gated_pair_ad(w,L,n, 67, S_TOS,1,-1,0,-1,0,-1,0, 0, S_AD_CUR_RIGHT, 1.0f);
+        n = add_gated_pair_ad(w,L,n, 67, -1,0,-1,0,-1,0,-1,0, 1.0f, S_AD_IS_FORWARD, 1.0f);
+        n = add_gated_pair_ad(w,L,n, 67, -1,0,-1,0,-1,0,-1,0, 1.0f, S_IS_NATIVE, 1.0f);
+
+        /* OP_AD_MUL (68): same pattern */
+        n = add_gated_pair_ad(w,L,n, 68, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
+        n = add_gated_pair_ad(w,L,n, 68, S_AD_TAPE_LEN,1,S_TOS,-1,-1,0,-1,0, 0, S_TOS, 1.0f);
+        n = add_gated_pair_ad(w,L,n, 68, S_R2,1,S_SOS,-1,-1,0,-1,0, 0, S_SOS, 1.0f);
+        n = add_gated_pair_ad(w,L,n, 68, S_R3,1,S_R2,-1,-1,0,-1,0, 0, S_R2, 1.0f);
+        n = add_gated_pair_ad(w,L,n, 68, -1,0,-1,0,-1,0,-1,0, 0, S_R3, 1.0f);
+        n = add_gated_pair_ad(w,L,n, 68, -1,0,-1,0,-1,0,-1,0, -1.0f, S_DEPTH, 1.0f);
+        n = add_gated_pair_ad(w,L,n, 68, -1,0,-1,0,-1,0,-1,0, (float)AD_OP_MUL, S_AD_CUR_OP, 1.0f);
+        n = add_gated_pair_ad(w,L,n, 68, S_SOS,1,-1,0,-1,0,-1,0, 0, S_AD_CUR_LEFT, 1.0f);
+        n = add_gated_pair_ad(w,L,n, 68, S_TOS,1,-1,0,-1,0,-1,0, 0, S_AD_CUR_RIGHT, 1.0f);
+        n = add_gated_pair_ad(w,L,n, 68, -1,0,-1,0,-1,0,-1,0, 1.0f, S_AD_IS_FORWARD, 1.0f);
+        n = add_gated_pair_ad(w,L,n, 68, -1,0,-1,0,-1,0,-1,0, 1.0f, S_IS_NATIVE, 1.0f);
+
+        /* Unary AD ops (69-76): replace TOS with tape_len, set CUR fields */
+        for (int uop = 69; uop <= 76; uop++) {
+            float ad_op_type;
+            switch (uop) {
+                case 69: ad_op_type = AD_OP_NEG; break;
+                case 70: ad_op_type = AD_OP_ABS; break;
+                case 71: ad_op_type = AD_OP_RELU; break;
+                case 72: ad_op_type = AD_OP_SIGMOID; break;
+                case 73: ad_op_type = AD_OP_TANH; break;
+                case 74: ad_op_type = AD_OP_EXP; break;
+                case 75: ad_op_type = AD_OP_LOG; break;
+                case 76: ad_op_type = AD_OP_SQRT; break;
+                default: ad_op_type = 0; break;
+            }
+            n = add_gated_pair_ad(w,L,n, uop, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
+            n = add_gated_pair_ad(w,L,n, uop, S_AD_TAPE_LEN,1,S_TOS,-1,-1,0,-1,0, 0, S_TOS, 1.0f);
+            n = add_gated_pair_ad(w,L,n, uop, -1,0,-1,0,-1,0,-1,0, ad_op_type, S_AD_CUR_OP, 1.0f);
+            n = add_gated_pair_ad(w,L,n, uop, S_TOS,1,-1,0,-1,0,-1,0, 0, S_AD_CUR_LEFT, 1.0f);
+            n = add_gated_pair_ad(w,L,n, uop, -1,0,-1,0,-1,0,-1,0, -1.0f, S_AD_CUR_RIGHT, 1.0f);
+            n = add_gated_pair_ad(w,L,n, uop, -1,0,-1,0,-1,0,-1,0, 1.0f, S_AD_IS_FORWARD, 1.0f);
+            n = add_gated_pair_ad(w,L,n, uop, -1,0,-1,0,-1,0,-1,0, 1.0f, S_IS_NATIVE, 1.0f);
+        }
+
+        /* OP_AD_BACKWARD (77): set backward mode, seed gradient */
+        n = add_gated_pair_ad(w,L,n, 77, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
+        n = add_gated_pair_ad(w,L,n, 77, -1,0,-1,0,-1,0,-1,0, 2.0f, S_AD_MODE, 1.0f);
+        n = add_gated_pair_ad(w,L,n, 77, S_TOS,1,S_AD_CURSOR,-1,-1,0,-1,0, 0, S_AD_CURSOR, 1.0f);
+        n = add_gated_pair_ad(w,L,n, 77, -1,0,-1,0,-1,0,-1,0, 1.0f, S_AD_IS_BACKWARD, 1.0f);
+        /* Pop TOS */
+        n = add_gated_pair_ad(w,L,n, 77, S_SOS,1,S_TOS,-1,-1,0,-1,0, 0, S_TOS, 1.0f);
+        n = add_gated_pair_ad(w,L,n, 77, S_R2,1,S_SOS,-1,-1,0,-1,0, 0, S_SOS, 1.0f);
+        n = add_gated_pair_ad(w,L,n, 77, S_R3,1,S_R2,-1,-1,0,-1,0, 0, S_R2, 1.0f);
+        n = add_gated_pair_ad(w,L,n, 77, -1,0,-1,0,-1,0,-1,0, 0, S_R3, 1.0f);
+        n = add_gated_pair_ad(w,L,n, 77, -1,0,-1,0,-1,0,-1,0, -1.0f, S_DEPTH, 1.0f);
+        n = add_gated_pair_ad(w,L,n, 77, -1,0,-1,0,-1,0,-1,0, 1.0f, S_IS_NATIVE, 1.0f);
+
+        /* OP_AD_GRAD (78): replace TOS with gradient of tape[TOS] — IS_NATIVE for now */
+        n = add_gated_pair_ad(w,L,n, 78, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
+        n = add_gated_pair_ad(w,L,n, 78, -1,0,-1,0,-1,0,-1,0, 1.0f, S_IS_NATIVE, 1.0f);
+
+        /* AD delegated ops (79-82): IS_NATIVE */
+        for (int opc = 79; opc <= 82; opc++) {
+            n = add_gated_pair_ad(w,L,n, opc, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
+            n = add_gated_pair_ad(w,L,n, opc, -1,0,-1,0,-1,0,-1,0, 1.0f, S_IS_NATIVE, 1.0f);
+        }
+
         printf("[WEIGHT_GEN] Layer 3: %d neurons used out of %d\n", n, FFN_DIM);
     }
 
-    /* ── Layer 4: Frame management (gated FFN, currently no-op) ── */
-    w->ff_type[4] = 0;
+    /* ── Layer 4: AD tape write (gated FFN) ──
+     * When AD_IS_FORWARD is set, write AD_CUR_* fields into tape[tape_len].
+     * Uses indicator(tape_len, slot) gating. Also increments tape_len. */
+    {
+        const int L = 4;
+        w->ff_type[L] = 2;
+        int n = 0;
+
+        /* For each tape slot i: gate on indicator(AD_TAPE_LEN==i) * AD_IS_FORWARD
+         * Write AD_CUR_OP, AD_CUR_VALUE, AD_CUR_LEFT, AD_CUR_RIGHT, AD_CUR_SAVED to tape[i] */
+        for (int slot = 0; slot < AD_MAX_TAPE; slot++) {
+            /* Gate: sigmoid(SCALE*(AD_TAPE_LEN - slot + 0.5)) * sigmoid(SCALE*(AD_IS_FORWARD - 0.5))
+             * Combined: gate on both conditions via the gated neuron pattern.
+             * We use: gate_weight[AD_TAPE_LEN] = SCALE, gate_weight[AD_IS_FORWARD] = SCALE,
+             * gate_bias = SCALE*(-slot + 0.5 - 0.5) = SCALE*(-slot)
+             * This approximates: indicator(tape_len==slot) AND is_forward. */
+
+            /* op field */
+            W(w->ff_gate[L], S_AD_TAPE_LEN, n, FFN_DIM) = SCALE;
+            w->ff_gate_b[L][n] = SCALE * (-(float)slot + 0.5f);
+            W(w->ff_up[L], S_AD_CUR_OP, n, FFN_DIM) = 1.0f;
+            W(w->ff_down[L], n, S_AD_TAPE_BASE + slot * AD_NODE_FIELDS + AD_F_OP, D) = 1.0f;
+            n++;
+            W(w->ff_gate[L], S_AD_TAPE_LEN, n, FFN_DIM) = SCALE;
+            w->ff_gate_b[L][n] = SCALE * (-(float)slot - 0.5f);
+            W(w->ff_up[L], S_AD_CUR_OP, n, FFN_DIM) = 1.0f;
+            W(w->ff_down[L], n, S_AD_TAPE_BASE + slot * AD_NODE_FIELDS + AD_F_OP, D) = -1.0f;
+            n++;
+
+            /* value field */
+            W(w->ff_gate[L], S_AD_TAPE_LEN, n, FFN_DIM) = SCALE;
+            w->ff_gate_b[L][n] = SCALE * (-(float)slot + 0.5f);
+            W(w->ff_up[L], S_AD_CUR_VALUE, n, FFN_DIM) = 1.0f;
+            W(w->ff_down[L], n, S_AD_TAPE_BASE + slot * AD_NODE_FIELDS + AD_F_VALUE, D) = 1.0f;
+            n++;
+            W(w->ff_gate[L], S_AD_TAPE_LEN, n, FFN_DIM) = SCALE;
+            w->ff_gate_b[L][n] = SCALE * (-(float)slot - 0.5f);
+            W(w->ff_up[L], S_AD_CUR_VALUE, n, FFN_DIM) = 1.0f;
+            W(w->ff_down[L], n, S_AD_TAPE_BASE + slot * AD_NODE_FIELDS + AD_F_VALUE, D) = -1.0f;
+            n++;
+
+            /* left field */
+            W(w->ff_gate[L], S_AD_TAPE_LEN, n, FFN_DIM) = SCALE;
+            w->ff_gate_b[L][n] = SCALE * (-(float)slot + 0.5f);
+            W(w->ff_up[L], S_AD_CUR_LEFT, n, FFN_DIM) = 1.0f;
+            W(w->ff_down[L], n, S_AD_TAPE_BASE + slot * AD_NODE_FIELDS + AD_F_LEFT, D) = 1.0f;
+            n++;
+            W(w->ff_gate[L], S_AD_TAPE_LEN, n, FFN_DIM) = SCALE;
+            w->ff_gate_b[L][n] = SCALE * (-(float)slot - 0.5f);
+            W(w->ff_up[L], S_AD_CUR_LEFT, n, FFN_DIM) = 1.0f;
+            W(w->ff_down[L], n, S_AD_TAPE_BASE + slot * AD_NODE_FIELDS + AD_F_LEFT, D) = -1.0f;
+            n++;
+
+            /* right field */
+            W(w->ff_gate[L], S_AD_TAPE_LEN, n, FFN_DIM) = SCALE;
+            w->ff_gate_b[L][n] = SCALE * (-(float)slot + 0.5f);
+            W(w->ff_up[L], S_AD_CUR_RIGHT, n, FFN_DIM) = 1.0f;
+            W(w->ff_down[L], n, S_AD_TAPE_BASE + slot * AD_NODE_FIELDS + AD_F_RIGHT, D) = 1.0f;
+            n++;
+            W(w->ff_gate[L], S_AD_TAPE_LEN, n, FFN_DIM) = SCALE;
+            w->ff_gate_b[L][n] = SCALE * (-(float)slot - 0.5f);
+            W(w->ff_up[L], S_AD_CUR_RIGHT, n, FFN_DIM) = 1.0f;
+            W(w->ff_down[L], n, S_AD_TAPE_BASE + slot * AD_NODE_FIELDS + AD_F_RIGHT, D) = -1.0f;
+            n++;
+        }
+
+        /* Increment tape_len when IS_FORWARD is set */
+        W(w->ff_gate[L], S_AD_IS_FORWARD, n, FFN_DIM) = SCALE;
+        w->ff_gate_b[L][n] = SCALE * (-0.5f);
+        w->ff_up_b[L][n] = 1.0f;
+        W(w->ff_down[L], n, S_AD_TAPE_LEN, D) = 1.0f;
+        n++;
+
+        printf("[WEIGHT_GEN] Layer 4: %d neurons used out of %d\n", n, FFN_DIM);
+    }
 
     printf("[WEIGHT_GEN] d_model=%d, layers=%d, FFN=%d\n", D, N_LAYERS, FFN_DIM);
     printf("[WEIGHT_GEN] Weights: %zu params, %.1f KB\n",
@@ -2272,9 +2536,21 @@ static int run_with_weights(const InterpreterWeights* w,
     int n_out=0, step_count=0;
     for(int step=0;step<8192;step++){
         step_count++;
+        /* Clear transient dims at start of cycle */
+        for (int i = S_AD_CUR_OP; i <= S_AD_RIGHT_VALUE; i++) state[i] = 0;
+        state[S_AD_IS_FORWARD] = 0;
+        /* Keep S_AD_IS_BACKWARD */
+        for (int i = S_AD_GRAD_ACCUM; i <= S_AD_SPARE8; i++) state[i] = 0;
+
         float next[D];
-        forward_with_weights(w,state,pe,n_instr,next);
-        exec_loop_postprocess(next, prog, n_instr);
+        if (state[S_AD_IS_BACKWARD] > 0.5f) {
+            /* Backward: use ad_backward_step directly */
+            memcpy(next, state, sizeof(next));
+            ad_backward_step(next);
+        } else {
+            forward_with_weights(w,state,pe,n_instr,next);
+            exec_loop_postprocess(next, prog, n_instr);
+        }
         if(next[S_HAS_OUT]>0.5f&&n_out<max_out) outputs[n_out++]=next[S_OUTPUT];
         if(next[S_HALT]>0.5f) break;
         memcpy(state,next,sizeof(state));
@@ -2361,9 +2637,8 @@ static void test_ref(const char* name, const Instr* prog, int n, float expected)
 int main() {
     printf("=== Eshkol VM Weight Compiler ===\n\n");
 
-    /* Phase 1: skip weight generation (D=128 simulated/matrix not yet updated) */
-    g_weights = NULL; /* (InterpreterWeights*)calloc(1, sizeof(InterpreterWeights)); */
-    /* if (g_weights) generate_weights(g_weights); */
+    g_weights = (InterpreterWeights*)calloc(1, sizeof(InterpreterWeights));
+    if (g_weights) generate_weights(g_weights);
 
     printf("\n  Tests (ref=reference, sim=simulated, mat=matrix-based):\n\n");
 
@@ -2776,7 +3051,7 @@ int main() {
         {OP_AD_GRAD, 0},      /* push grad of node 0 */
         {OP_PRINT, 0},
         {OP_HALT, 0}
-      }; test_ref("AD: d/dx x^2 at 3 = 6", p, 9, 6); }
+      }; test("AD: d/dx x^2 at 3 = 6", p, 9, 6); }
 
     /* f(x) = x+x at x=5: grad = 2 (fan-out test) */
     { Instr p[]={
@@ -2789,7 +3064,7 @@ int main() {
         {OP_AD_GRAD, 0},
         {OP_PRINT, 0},
         {OP_HALT, 0}
-      }; test_ref("AD: d/dx (x+x) at 5 = 2", p, 9, 2); }
+      }; test("AD: d/dx (x+x) at 5 = 2", p, 9, 2); }
 
     /* f(x) = -x at x=7: grad = -1 */
     { Instr p[]={
@@ -2800,7 +3075,7 @@ int main() {
         {OP_AD_GRAD, 0},
         {OP_PRINT, 0},
         {OP_HALT, 0}
-      }; test_ref("AD: d/dx (-x) at 7 = -1", p, 7, -1); }
+      }; test("AD: d/dx (-x) at 7 = -1", p, 7, -1); }
 
     /* f(x,y) = x*y at (3,4): df/dx=4, df/dy=3.
      * We check df/dx. node 0=x=3, node 1=y=4, node 2=x*y */
@@ -2813,7 +3088,7 @@ int main() {
         {OP_AD_GRAD, 0},      /* grad of x = y = 4 */
         {OP_PRINT, 0},
         {OP_HALT, 0}
-      }; test_ref("AD: d(x*y)/dx at (3,4) = 4", p, 8, 4); }
+      }; test("AD: d(x*y)/dx at (3,4) = 4", p, 8, 4); }
 
     /* Same but check df/dy = 3 */
     { Instr p[]={
@@ -2825,7 +3100,7 @@ int main() {
         {OP_AD_GRAD, 0},
         {OP_PRINT, 0},
         {OP_HALT, 0}
-      }; test_ref("AD: d(x*y)/dy at (3,4) = 3", p, 8, 3); }
+      }; test("AD: d(x*y)/dy at (3,4) = 3", p, 8, 3); }
 
     /* f(x) = exp(0): grad = exp(0) = 1 */
     { Instr p[]={
@@ -2836,7 +3111,7 @@ int main() {
         {OP_AD_GRAD, 0},
         {OP_PRINT, 0},
         {OP_HALT, 0}
-      }; test_ref("AD: d/dx exp(0) = 1", p, 7, 1); }
+      }; test("AD: d/dx exp(0) = 1", p, 7, 1); }
 
     /* f(x) = sigmoid(0): grad = 0.25 */
     { Instr p[]={
@@ -2847,7 +3122,7 @@ int main() {
         {OP_AD_GRAD, 0},
         {OP_PRINT, 0},
         {OP_HALT, 0}
-      }; test_ref("AD: d/dx sigmoid(0) = 0.25", p, 7, 0.25f); }
+      }; test("AD: d/dx sigmoid(0) = 0.25", p, 7, 0.25f); }
 
     /* f(x) = relu(3): grad = 1 */
     { Instr p[]={
@@ -2858,7 +3133,7 @@ int main() {
         {OP_AD_GRAD, 0},
         {OP_PRINT, 0},
         {OP_HALT, 0}
-      }; test_ref("AD: d/dx relu(3) = 1", p, 7, 1); }
+      }; test("AD: d/dx relu(3) = 1", p, 7, 1); }
 
     printf("\n  [metrics] peak_heap=%d/%d\n", g_heap_ptr, HEAP_SIZE);
 
