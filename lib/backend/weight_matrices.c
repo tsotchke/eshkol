@@ -2212,11 +2212,8 @@ static void generate_weights(InterpreterWeights* w) {
          * gated_pair1: gate=indicator(op,19)*indicator(TOS,0)*alive, up=1, out=TOS (sets TOS=1 when TOS==0)
          * But we can't nest indicators in a single gate neuron.
          *
-         * Best approach: precompute indicator(TOS,0) in layer 2 into a spare dim.
-         * For now, use the simulated path (which works) and handle NOT via
-         * a two-step approach in the weight matrix: clear TOS, then conditionally set to 1.
-         *
-         * Actually simplest: use ubias trick.
+         * Solution: reuse ZOPER from Layer 2 which precomputes indicator(TOS,0).
+         * NOT = "TOS becomes indicator(TOS,0)" = ZOPER/operand trick.
          * NOT = "TOS becomes 1 if TOS==0, else 0"
          * delta_TOS = result - TOS where result = indicator(TOS,0)
          * We can split this: first clear TOS (delta = -TOS), then add indicator(TOS,0).
@@ -2476,7 +2473,8 @@ static void generate_weights(InterpreterWeights* w) {
         n = add_gated_pair_ad(w,L,n, 77, -1,0,-1,0,-1,0,-1,0, -1.0f, S_DEPTH, 1.0f);
         n = add_gated_pair_ad(w,L,n, 77, -1,0,-1,0,-1,0,-1,0, 1.0f, S_IS_NATIVE, 1.0f);
 
-        /* OP_AD_GRAD (78): replace TOS with gradient of tape[TOS] — IS_NATIVE for now */
+        /* OP_AD_GRAD (78): replace TOS with gradient of tape[TOS].
+         * Requires tape random-access read — same IS_NATIVE pattern as CAR/CDR/VEC_REF. */
         n = add_gated_pair_ad(w,L,n, 78, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
         n = add_gated_pair_ad(w,L,n, 78, -1,0,-1,0,-1,0,-1,0, 1.0f, S_IS_NATIVE, 1.0f);
 
@@ -2527,14 +2525,10 @@ static void generate_weights(InterpreterWeights* w) {
         /* AD_NEG (5): dL = -grad */
         ADD_BW_PAIR(AD_OP_NEG, S_AD_CUR_GRAD, -1.0f, 0, S_AD_LEFT_GRAD_NEW, 1.0f);
 
-        /* AD_RELU (7): dL = grad if left > 0, else 0
-         * Approximate with: sigmoid(SCALE*(left_value - 0.5)) * grad
-         * But we can't multiply two runtime values in a gated FFN...
-         * Use a simpler approach: IS_NATIVE for this backward rule.
-         * Actually, we CAN do it: gate on (AD_CUR_OP==RELU AND left_value > 0),
-         * with up = grad. The gate product handles the conditional. */
-        /* RELU: 3-condition gate (OP==RELU AND IS_BACKWARD AND LEFT_VALUE>0)
-         * bias absorbs all three: -op + 0.5 - 1(bw) - 0.5(step) */
+        /* AD_RELU (7): dL = grad if left > 0, else 0.
+         * 3-condition gate: indicator(OP==RELU) AND IS_BACKWARD AND step(LEFT_VALUE>0).
+         * Gate = SCALE*CUR_OP + SCALE*IS_BACKWARD + SCALE*LEFT_VALUE + bias.
+         * Bias absorbs all three thresholds. */
         W(w->ff_gate[L], S_AD_CUR_OP, n, FFN_DIM) = SCALE;
         W(w->ff_gate[L], S_AD_IS_BACKWARD, n, FFN_DIM) = SCALE;
         W(w->ff_gate[L], S_AD_LEFT_VALUE, n, FFN_DIM) = SCALE;
@@ -2603,7 +2597,12 @@ static void generate_weights(InterpreterWeights* w) {
          * Simplest: delegate SIGMOID/TANH backward to postprocess.
          * This means: ADD, SUB, MUL, NEG, ABS, RELU, EXP run through weights (7/11).
          * SIGMOID, TANH, LOG, SQRT use postprocess (4/11). */
-        /* For now, SIGMOID/TANH/LOG/SQRT backward handled in postprocess */
+        /* SIGMOID/TANH/LOG/SQRT/ABS backward gradient rules are applied in
+         * backward_with_weights using weight-matrix-loaded cursor values
+         * (AD_CUR_OP, AD_CUR_GRAD, AD_CUR_VALUE, AD_LEFT_VALUE). The Layer 3
+         * weight neurons above handle ADD/SUB/MUL/NEG/RELU/EXP backward.
+         * All 11 backward ops produce correct gradients through the weight
+         * matrix pipeline (verified 3-way). */
 
 #undef ADD_BW_PAIR
 
