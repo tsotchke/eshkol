@@ -52,7 +52,7 @@
 #define D 128
 #define H 16
 #define HD 2
-#define N_LAYERS 5
+#define N_LAYERS 6
 #define MEM_SIZE 4
 #define FFN_DIM 1024
 #define SCALE 100.0f
@@ -143,7 +143,7 @@ enum {
     S_AD_PROD_GRAD_RV=116,   /* precomputed: CUR_GRAD * RIGHT_VALUE */
     S_AD_LEFT_GRAD_NEW=117,  /* computed gradient delta for left parent */
     S_AD_RIGHT_GRAD_NEW=118, /* computed gradient delta for right parent */
-    S_AD_SPARE0=119,
+    S_AD_PROD_GRAD_CV=119,  /* precomputed: CUR_GRAD * CUR_VALUE (for EXP/SIGMOID/TANH bw) */
     S_AD_SPARE1=120, S_AD_SPARE2=121, S_AD_SPARE3=122, S_AD_SPARE4=123,
     S_AD_SPARE5=124, S_AD_SPARE6=125, S_AD_SPARE7=126, S_AD_SPARE8=127
 };
@@ -1848,6 +1848,37 @@ static void generate_weights(InterpreterWeights* w) {
         W(w->ff_down[1], 0, S_PRODUCT, D) =  0.5f;
         W(w->ff_down[1], 1, S_PRODUCT, D) = -0.5f;
         W(w->ff_down[1], 2, S_PRODUCT, D) = -0.5f;
+
+        /* AD backward products via SQUARE trick:
+         * Product 1: grad * right_value → AD_PROD_GRAD_LV (MUL dL = grad*R) */
+        int pn = 3; /* next neuron index */
+        W(w->ff_up[1], S_AD_CUR_GRAD, pn, FFN_DIM) = 1; W(w->ff_up[1], S_AD_RIGHT_VALUE, pn, FFN_DIM) = 1;
+        W(w->ff_up[1], S_AD_CUR_GRAD, pn+1, FFN_DIM) = 1;
+        W(w->ff_up[1], S_AD_RIGHT_VALUE, pn+2, FFN_DIM) = 1;
+        W(w->ff_down[1], pn, S_AD_PROD_GRAD_LV, D) = 0.5f;
+        W(w->ff_down[1], pn+1, S_AD_PROD_GRAD_LV, D) = -0.5f;
+        W(w->ff_down[1], pn+2, S_AD_PROD_GRAD_LV, D) = -0.5f;
+        pn += 3;
+
+        /* Product 2: grad * left_value → AD_PROD_GRAD_RV (MUL dR = grad*L) */
+        W(w->ff_up[1], S_AD_CUR_GRAD, pn, FFN_DIM) = 1; W(w->ff_up[1], S_AD_LEFT_VALUE, pn, FFN_DIM) = 1;
+        W(w->ff_up[1], S_AD_CUR_GRAD, pn+1, FFN_DIM) = 1;
+        W(w->ff_up[1], S_AD_LEFT_VALUE, pn+2, FFN_DIM) = 1;
+        W(w->ff_down[1], pn, S_AD_PROD_GRAD_RV, D) = 0.5f;
+        W(w->ff_down[1], pn+1, S_AD_PROD_GRAD_RV, D) = -0.5f;
+        W(w->ff_down[1], pn+2, S_AD_PROD_GRAD_RV, D) = -0.5f;
+        pn += 3;
+
+        /* Product 3: grad * cur_value → AD_PROD_GRAD_CV (EXP/SIGMOID/TANH backward) */
+        W(w->ff_up[1], S_AD_CUR_GRAD, pn, FFN_DIM) = 1; W(w->ff_up[1], S_AD_CUR_VALUE, pn, FFN_DIM) = 1;
+        W(w->ff_up[1], S_AD_CUR_GRAD, pn+1, FFN_DIM) = 1;
+        W(w->ff_up[1], S_AD_CUR_VALUE, pn+2, FFN_DIM) = 1;
+        W(w->ff_down[1], pn, S_AD_PROD_GRAD_CV, D) = 0.5f;
+        W(w->ff_down[1], pn+1, S_AD_PROD_GRAD_CV, D) = -0.5f;
+        W(w->ff_down[1], pn+2, S_AD_PROD_GRAD_CV, D) = -0.5f;
+        pn += 3;
+
+        printf("[WEIGHT_GEN] Layer 1: %d SQUARE neurons\n", pn);
     }
 
     /* ── Layer 2: Preprocessing (gated FFN) ── */
@@ -1940,6 +1971,31 @@ static void generate_weights(InterpreterWeights* w) {
         W(w->ff_up[2], S_TOS, n, FFN_DIM) = -2.0f;
         W(w->ff_down[2], n, S_ABS_DELTA, D) = 1.0f;
         n++;
+
+        /* ── AD backward: cursor load — gated on AD_IS_BACKWARD ──
+         * For each tape slot i: indicator(AD_CURSOR==i) * bw * tape[i].field → AD_CUR_FIELD */
+        for (int slot = 0; slot < AD_MAX_TAPE; slot++) {
+            int fields[] = { AD_F_OP, AD_F_VALUE, AD_F_GRAD, AD_F_LEFT, AD_F_RIGHT, AD_F_SAVED };
+            int targets[] = { S_AD_CUR_OP, S_AD_CUR_VALUE, S_AD_CUR_GRAD, S_AD_CUR_LEFT, S_AD_CUR_RIGHT, S_AD_CUR_SAVED };
+            for (int fi = 0; fi < 6; fi++) {
+                int src = S_AD_TAPE_BASE + slot * AD_NODE_FIELDS + fields[fi];
+                int dst = targets[fi];
+                /* Positive neuron: gate on indicator(CURSOR==slot) * bw_active */
+                W(w->ff_gate[2], S_AD_CURSOR, n, FFN_DIM) = SCALE;
+                W(w->ff_gate[2], S_AD_IS_BACKWARD, n, FFN_DIM) = 2*SCALE;
+                w->ff_gate_b[2][n] = SCALE * (-(float)slot + 0.5f) - SCALE;
+                W(w->ff_up[2], src, n, FFN_DIM) = 1.0f;
+                W(w->ff_down[2], n, dst, D) = 1.0f;
+                n++;
+                /* Negative neuron */
+                W(w->ff_gate[2], S_AD_CURSOR, n, FFN_DIM) = SCALE;
+                W(w->ff_gate[2], S_AD_IS_BACKWARD, n, FFN_DIM) = 2*SCALE;
+                w->ff_gate_b[2][n] = SCALE * (-(float)slot - 0.5f) - SCALE;
+                W(w->ff_up[2], src, n, FFN_DIM) = 1.0f;
+                W(w->ff_down[2], n, dst, D) = -1.0f;
+                n++;
+            }
+        }
 
         printf("[WEIGHT_GEN] Layer 2: %d neurons\n", n);
     }
@@ -2370,6 +2426,126 @@ static void generate_weights(InterpreterWeights* w) {
             n = add_gated_pair_ad(w,L,n, opc, -1,0,-1,0,-1,0,-1,0, 1.0f, S_IS_NATIVE, 1.0f);
         }
 
+        /* ── AD backward gradient rules (gated on AD_IS_BACKWARD + AD_CUR_OP) ──
+         * Each backward rule computes gradient deltas for AD_LEFT_GRAD_NEW / AD_RIGHT_GRAD_NEW.
+         * These use indicator(AD_CUR_OP == op_type) * bw_active as the gate. */
+
+        /* Helper macro: add a backward gradient neuron pair gated on AD_CUR_OP value + backward */
+#define ADD_BW_PAIR(op_val, in_dim, in_scale, bias, out_dim, coeff) do { \
+    W(w->ff_gate[L], S_AD_CUR_OP, n, FFN_DIM) = SCALE; \
+    W(w->ff_gate[L], S_AD_IS_BACKWARD, n, FFN_DIM) = SCALE; \
+    w->ff_gate_b[L][n] = SCALE * (-(op_val) + 0.5f - 0.5f); \
+    if ((in_dim) >= 0) W(w->ff_up[L], (in_dim), n, FFN_DIM) = (in_scale); \
+    w->ff_up_b[L][n] = (bias); \
+    W(w->ff_down[L], n, (out_dim), D) = (coeff); \
+    n++; \
+    W(w->ff_gate[L], S_AD_CUR_OP, n, FFN_DIM) = SCALE; \
+    W(w->ff_gate[L], S_AD_IS_BACKWARD, n, FFN_DIM) = SCALE; \
+    w->ff_gate_b[L][n] = SCALE * (-(op_val) - 0.5f - 0.5f); \
+    if ((in_dim) >= 0) W(w->ff_up[L], (in_dim), n, FFN_DIM) = (in_scale); \
+    w->ff_up_b[L][n] = (bias); \
+    W(w->ff_down[L], n, (out_dim), D) = -(coeff); \
+    n++; \
+} while(0)
+
+        /* AD_ADD (2): dL = grad, dR = grad */
+        ADD_BW_PAIR(AD_OP_ADD, S_AD_CUR_GRAD, 1.0f, 0, S_AD_LEFT_GRAD_NEW, 1.0f);
+        ADD_BW_PAIR(AD_OP_ADD, S_AD_CUR_GRAD, 1.0f, 0, S_AD_RIGHT_GRAD_NEW, 1.0f);
+
+        /* AD_SUB (3): dL = grad, dR = -grad */
+        ADD_BW_PAIR(AD_OP_SUB, S_AD_CUR_GRAD, 1.0f, 0, S_AD_LEFT_GRAD_NEW, 1.0f);
+        ADD_BW_PAIR(AD_OP_SUB, S_AD_CUR_GRAD, -1.0f, 0, S_AD_RIGHT_GRAD_NEW, 1.0f);
+
+        /* AD_MUL (4): dL = grad*right_value (precomputed in L1 as AD_PROD_GRAD_LV)
+         *             dR = grad*left_value  (precomputed in L1 as AD_PROD_GRAD_RV)
+         * Note: L1 SQUARE products use AD_CUR_GRAD and AD_RIGHT_VALUE/AD_LEFT_VALUE
+         * which are populated by L2 (cursor load) and L4 (parent load) before L1 runs
+         * in the backward layer order L2→L4→L1→L3→L5. */
+        ADD_BW_PAIR(AD_OP_MUL, S_AD_PROD_GRAD_LV, 1.0f, 0, S_AD_LEFT_GRAD_NEW, 1.0f);
+        ADD_BW_PAIR(AD_OP_MUL, S_AD_PROD_GRAD_RV, 1.0f, 0, S_AD_RIGHT_GRAD_NEW, 1.0f);
+
+        /* AD_NEG (5): dL = -grad */
+        ADD_BW_PAIR(AD_OP_NEG, S_AD_CUR_GRAD, -1.0f, 0, S_AD_LEFT_GRAD_NEW, 1.0f);
+
+        /* AD_RELU (7): dL = grad if left > 0, else 0
+         * Approximate with: sigmoid(SCALE*(left_value - 0.5)) * grad
+         * But we can't multiply two runtime values in a gated FFN...
+         * Use a simpler approach: IS_NATIVE for this backward rule.
+         * Actually, we CAN do it: gate on (AD_CUR_OP==RELU AND left_value > 0),
+         * with up = grad. The gate product handles the conditional. */
+        /* Gate includes: indicator(op==7) * bw * step(left_value) */
+        W(w->ff_gate[L], S_AD_CUR_OP, n, FFN_DIM) = SCALE;
+        W(w->ff_gate[L], S_AD_IS_BACKWARD, n, FFN_DIM) = SCALE;
+        W(w->ff_gate[L], S_AD_LEFT_VALUE, n, FFN_DIM) = SCALE; /* step function */
+        w->ff_gate_b[L][n] = SCALE * (-AD_OP_RELU + 0.5f - 0.5f - 0.5f);
+        W(w->ff_up[L], S_AD_CUR_GRAD, n, FFN_DIM) = 1.0f;
+        W(w->ff_down[L], n, S_AD_LEFT_GRAD_NEW, D) = 1.0f;
+        n++;
+        W(w->ff_gate[L], S_AD_CUR_OP, n, FFN_DIM) = SCALE;
+        W(w->ff_gate[L], S_AD_IS_BACKWARD, n, FFN_DIM) = SCALE;
+        W(w->ff_gate[L], S_AD_LEFT_VALUE, n, FFN_DIM) = SCALE;
+        w->ff_gate_b[L][n] = SCALE * (-AD_OP_RELU - 0.5f - 0.5f - 0.5f);
+        W(w->ff_up[L], S_AD_CUR_GRAD, n, FFN_DIM) = 1.0f;
+        W(w->ff_down[L], n, S_AD_LEFT_GRAD_NEW, D) = -1.0f;
+        n++;
+
+        /* AD_ABS (6): dL = grad * sign(left_value). Gate includes step(left_value) for positive case,
+         * and step(-left_value) for negative. Two separate neuron groups. */
+        /* Positive case: left > 0, dL = +grad */
+        W(w->ff_gate[L], S_AD_CUR_OP, n, FFN_DIM) = SCALE;
+        W(w->ff_gate[L], S_AD_IS_BACKWARD, n, FFN_DIM) = SCALE;
+        W(w->ff_gate[L], S_AD_LEFT_VALUE, n, FFN_DIM) = SCALE;
+        w->ff_gate_b[L][n] = SCALE * (-AD_OP_ABS + 0.5f - 1.0f);
+        W(w->ff_up[L], S_AD_CUR_GRAD, n, FFN_DIM) = 1.0f;
+        W(w->ff_down[L], n, S_AD_LEFT_GRAD_NEW, D) = 1.0f;
+        n++;
+        W(w->ff_gate[L], S_AD_CUR_OP, n, FFN_DIM) = SCALE;
+        W(w->ff_gate[L], S_AD_IS_BACKWARD, n, FFN_DIM) = SCALE;
+        W(w->ff_gate[L], S_AD_LEFT_VALUE, n, FFN_DIM) = SCALE;
+        w->ff_gate_b[L][n] = SCALE * (-AD_OP_ABS - 0.5f - 1.0f);
+        W(w->ff_up[L], S_AD_CUR_GRAD, n, FFN_DIM) = 1.0f;
+        W(w->ff_down[L], n, S_AD_LEFT_GRAD_NEW, D) = -1.0f;
+        n++;
+        /* Negative case: left < 0, dL = -grad */
+        W(w->ff_gate[L], S_AD_CUR_OP, n, FFN_DIM) = SCALE;
+        W(w->ff_gate[L], S_AD_IS_BACKWARD, n, FFN_DIM) = SCALE;
+        W(w->ff_gate[L], S_AD_LEFT_VALUE, n, FFN_DIM) = -SCALE;
+        w->ff_gate_b[L][n] = SCALE * (-AD_OP_ABS + 0.5f - 1.0f);
+        W(w->ff_up[L], S_AD_CUR_GRAD, n, FFN_DIM) = -1.0f;
+        W(w->ff_down[L], n, S_AD_LEFT_GRAD_NEW, D) = 1.0f;
+        n++;
+        W(w->ff_gate[L], S_AD_CUR_OP, n, FFN_DIM) = SCALE;
+        W(w->ff_gate[L], S_AD_IS_BACKWARD, n, FFN_DIM) = SCALE;
+        W(w->ff_gate[L], S_AD_LEFT_VALUE, n, FFN_DIM) = -SCALE;
+        w->ff_gate_b[L][n] = SCALE * (-AD_OP_ABS - 0.5f - 1.0f);
+        W(w->ff_up[L], S_AD_CUR_GRAD, n, FFN_DIM) = -1.0f;
+        W(w->ff_down[L], n, S_AD_LEFT_GRAD_NEW, D) = -1.0f;
+        n++;
+
+        /* AD_EXP (10): dL = grad * cur_value (precomputed as AD_PROD_GRAD_CV) */
+        ADD_BW_PAIR(AD_OP_EXP, S_AD_PROD_GRAD_CV, 1.0f, 0, S_AD_LEFT_GRAD_NEW, 1.0f);
+
+        /* AD_SIGMOID (8): dL = grad * val * (1 - val) = grad*val - grad*val^2
+         * = AD_PROD_GRAD_CV - AD_PROD_GRAD_CV * val
+         * This needs grad*val (= AD_PROD_GRAD_CV) and grad*val^2 which needs a 4th product.
+         * Alternative: use identity sigmoid'(x) = sigmoid(x)*(1-sigmoid(x)) = val - val^2
+         * Then dL = grad * (val - val^2). In the gated FFN:
+         * neuron 1: gate=bw*indicator(op==SIGMOID), up=AD_PROD_GRAD_CV → contributes +1
+         * neuron 2: gate=bw*indicator(op==SIGMOID), up=-AD_CUR_VALUE*AD_PROD_GRAD_CV
+         * But we can't multiply two runtime values in a gated neuron...
+         *
+         * Honest approach: add a 4th SQUARE product for grad*val^2 = (grad*val)*val.
+         * But we need (AD_PROD_GRAD_CV * AD_CUR_VALUE), which requires the output of
+         * Layer 1's SQUARE to be available. It IS available after L1 runs (in backward order).
+         * However, we'd need ANOTHER SQUARE pass. This is a chained product.
+         *
+         * Simplest: delegate SIGMOID/TANH backward to postprocess.
+         * This means: ADD, SUB, MUL, NEG, ABS, RELU, EXP run through weights (7/11).
+         * SIGMOID, TANH, LOG, SQRT use postprocess (4/11). */
+        /* For now, SIGMOID/TANH/LOG/SQRT backward handled in postprocess */
+
+#undef ADD_BW_PAIR
+
         printf("[WEIGHT_GEN] Layer 3: %d neurons used out of %d\n", n, FFN_DIM);
     }
 
@@ -2446,7 +2622,81 @@ static void generate_weights(InterpreterWeights* w) {
         W(w->ff_down[L], n, S_AD_TAPE_LEN, D) = 1.0f;
         n++;
 
+        /* ── AD backward: parent load — gated on AD_IS_BACKWARD ──
+         * For each tape slot i: indicator(AD_CUR_LEFT==i) * bw * tape[i].value → AD_LEFT_VALUE
+         * Same for AD_CUR_RIGHT → AD_RIGHT_VALUE */
+        for (int slot = 0; slot < AD_MAX_TAPE; slot++) {
+            int val_src = S_AD_TAPE_BASE + slot * AD_NODE_FIELDS + AD_F_VALUE;
+            /* Left parent value */
+            W(w->ff_gate[L], S_AD_CUR_LEFT, n, FFN_DIM) = SCALE;
+            W(w->ff_gate[L], S_AD_IS_BACKWARD, n, FFN_DIM) = SCALE;
+            w->ff_gate_b[L][n] = SCALE * (-(float)slot + 0.5f - 0.5f);
+            W(w->ff_up[L], val_src, n, FFN_DIM) = 1.0f;
+            W(w->ff_down[L], n, S_AD_LEFT_VALUE, D) = 1.0f;
+            n++;
+            W(w->ff_gate[L], S_AD_CUR_LEFT, n, FFN_DIM) = SCALE;
+            W(w->ff_gate[L], S_AD_IS_BACKWARD, n, FFN_DIM) = SCALE;
+            w->ff_gate_b[L][n] = SCALE * (-(float)slot - 0.5f - 0.5f);
+            W(w->ff_up[L], val_src, n, FFN_DIM) = 1.0f;
+            W(w->ff_down[L], n, S_AD_LEFT_VALUE, D) = -1.0f;
+            n++;
+            /* Right parent value */
+            W(w->ff_gate[L], S_AD_CUR_RIGHT, n, FFN_DIM) = SCALE;
+            W(w->ff_gate[L], S_AD_IS_BACKWARD, n, FFN_DIM) = SCALE;
+            w->ff_gate_b[L][n] = SCALE * (-(float)slot + 0.5f - 0.5f);
+            W(w->ff_up[L], val_src, n, FFN_DIM) = 1.0f;
+            W(w->ff_down[L], n, S_AD_RIGHT_VALUE, D) = 1.0f;
+            n++;
+            W(w->ff_gate[L], S_AD_CUR_RIGHT, n, FFN_DIM) = SCALE;
+            W(w->ff_gate[L], S_AD_IS_BACKWARD, n, FFN_DIM) = SCALE;
+            w->ff_gate_b[L][n] = SCALE * (-(float)slot - 0.5f - 0.5f);
+            W(w->ff_up[L], val_src, n, FFN_DIM) = 1.0f;
+            W(w->ff_down[L], n, S_AD_RIGHT_VALUE, D) = -1.0f;
+            n++;
+        }
+
         printf("[WEIGHT_GEN] Layer 4: %d neurons used out of %d\n", n, FFN_DIM);
+    }
+
+    /* ── Layer 5: AD backward gradient write-back (gated FFN) ──
+     * Write AD_LEFT_GRAD_NEW to tape[AD_CUR_LEFT].gradient
+     * Write AD_RIGHT_GRAD_NEW to tape[AD_CUR_RIGHT].gradient */
+    {
+        const int L = 5;
+        w->ff_type[L] = 2;
+        int n = 0;
+
+        for (int slot = 0; slot < AD_MAX_TAPE; slot++) {
+            int grad_dst = S_AD_TAPE_BASE + slot * AD_NODE_FIELDS + AD_F_GRAD;
+            /* Left gradient write: indicator(AD_CUR_LEFT==slot) * bw * AD_LEFT_GRAD_NEW */
+            W(w->ff_gate[L], S_AD_CUR_LEFT, n, FFN_DIM) = SCALE;
+            W(w->ff_gate[L], S_AD_IS_BACKWARD, n, FFN_DIM) = SCALE;
+            w->ff_gate_b[L][n] = SCALE * (-(float)slot + 0.5f - 0.5f);
+            W(w->ff_up[L], S_AD_LEFT_GRAD_NEW, n, FFN_DIM) = 1.0f;
+            W(w->ff_down[L], n, grad_dst, D) = 1.0f;
+            n++;
+            W(w->ff_gate[L], S_AD_CUR_LEFT, n, FFN_DIM) = SCALE;
+            W(w->ff_gate[L], S_AD_IS_BACKWARD, n, FFN_DIM) = SCALE;
+            w->ff_gate_b[L][n] = SCALE * (-(float)slot - 0.5f - 0.5f);
+            W(w->ff_up[L], S_AD_LEFT_GRAD_NEW, n, FFN_DIM) = 1.0f;
+            W(w->ff_down[L], n, grad_dst, D) = -1.0f;
+            n++;
+            /* Right gradient write: indicator(AD_CUR_RIGHT==slot) * bw * AD_RIGHT_GRAD_NEW */
+            W(w->ff_gate[L], S_AD_CUR_RIGHT, n, FFN_DIM) = SCALE;
+            W(w->ff_gate[L], S_AD_IS_BACKWARD, n, FFN_DIM) = SCALE;
+            w->ff_gate_b[L][n] = SCALE * (-(float)slot + 0.5f - 0.5f);
+            W(w->ff_up[L], S_AD_RIGHT_GRAD_NEW, n, FFN_DIM) = 1.0f;
+            W(w->ff_down[L], n, grad_dst, D) = 1.0f;
+            n++;
+            W(w->ff_gate[L], S_AD_CUR_RIGHT, n, FFN_DIM) = SCALE;
+            W(w->ff_gate[L], S_AD_IS_BACKWARD, n, FFN_DIM) = SCALE;
+            w->ff_gate_b[L][n] = SCALE * (-(float)slot - 0.5f - 0.5f);
+            W(w->ff_up[L], S_AD_RIGHT_GRAD_NEW, n, FFN_DIM) = 1.0f;
+            W(w->ff_down[L], n, grad_dst, D) = -1.0f;
+            n++;
+        }
+
+        printf("[WEIGHT_GEN] Layer 5: %d neurons used out of %d\n", n, FFN_DIM);
     }
 
     printf("[WEIGHT_GEN] d_model=%d, layers=%d, FFN=%d\n", D, N_LAYERS, FFN_DIM);
@@ -2464,6 +2714,47 @@ static void matvec_t(const float* x, const float* W, float* out, int rows, int c
     for (int i = 0; i < rows; i++)
         for (int j = 0; j < cols; j++)
             out[j] += x[i] * W[i * cols + j];
+}
+
+/* Apply a single FFN layer via actual weight matrices (W @ x + b).
+ * Supports type 0 (noop), 1 (SQUARE), 2 (gated sigmoid). */
+static void apply_ffn_layer(const InterpreterWeights* w, int L, float x[D]) {
+    float fo[D]; memset(fo, 0, sizeof(fo));
+    if (w->ff_type[L] == 1) {
+        float h[FFN_DIM];
+        matvec_t(x, w->ff_up[L], h, D, FFN_DIM);
+        for (int i = 0; i < FFN_DIM; i++) h[i] += w->ff_up_b[L][i];
+        for (int i = 0; i < FFN_DIM; i++) h[i] *= h[i]; /* SQUARE */
+        matvec_t(h, w->ff_down[L], fo, FFN_DIM, D);
+        for (int i = 0; i < D; i++) fo[i] += w->ff_down_b[L][i];
+    } else if (w->ff_type[L] == 2) {
+        float gate[FFN_DIM], up[FFN_DIM], h[FFN_DIM];
+        matvec_t(x, w->ff_gate[L], gate, D, FFN_DIM);
+        for (int i = 0; i < FFN_DIM; i++) gate[i] = sigmoidf(gate[i] + w->ff_gate_b[L][i]);
+        matvec_t(x, w->ff_up[L], up, D, FFN_DIM);
+        for (int i = 0; i < FFN_DIM; i++) up[i] += w->ff_up_b[L][i];
+        for (int i = 0; i < FFN_DIM; i++) h[i] = gate[i] * up[i];
+        matvec_t(h, w->ff_down[L], fo, FFN_DIM, D);
+        for (int i = 0; i < D; i++) fo[i] += w->ff_down_b[L][i];
+    }
+    for (int i = 0; i < D; i++) x[i] += fo[i];
+}
+
+/* Backward gradient propagation via weight matrices.
+ * Layer application order: L2 (cursor load) → L4 (parent load) →
+ * L1 (SQUARE products) → L3 (gradient rules) → L5 (gradient write-back).
+ * This reordering satisfies data dependencies:
+ *   L2 loads AD_CUR_LEFT/RIGHT from tape
+ *   L4 uses those indices to load parent values
+ *   L1 computes grad*left_value and grad*right_value via SQUARE trick
+ *   L3 dispatches gradient rules by AD_CUR_OP
+ *   L5 writes gradient deltas to parent tape nodes */
+static void backward_with_weights(const InterpreterWeights* w, float x[D]) {
+    apply_ffn_layer(w, 2, x);  /* cursor load */
+    apply_ffn_layer(w, 4, x);  /* parent load */
+    apply_ffn_layer(w, 1, x);  /* SQUARE products */
+    apply_ffn_layer(w, 3, x);  /* backward gradient rules */
+    apply_ffn_layer(w, 5, x);  /* gradient write-back */
 }
 
 static void forward_with_weights(const InterpreterWeights* w,
@@ -2501,26 +2792,8 @@ static void forward_with_weights(const InterpreterWeights* w,
         }
         for(int i=0;i<D;i++) x[i]+=ao[i];
 
-        /* FFN */
-        float fo[D]; memset(fo,0,sizeof(fo));
-        if (w->ff_type[L]==1) {
-            float h[FFN_DIM];
-            matvec_t(x, w->ff_up[L], h, D, FFN_DIM);
-            for(int i=0;i<FFN_DIM;i++) h[i]+=w->ff_up_b[L][i];
-            for(int i=0;i<FFN_DIM;i++) h[i]*=h[i]; /* SQUARE */
-            matvec_t(h, w->ff_down[L], fo, FFN_DIM, D);
-            for(int i=0;i<D;i++) fo[i]+=w->ff_down_b[L][i];
-        } else if (w->ff_type[L]==2) {
-            float gate[FFN_DIM], up[FFN_DIM], h[FFN_DIM];
-            matvec_t(x, w->ff_gate[L], gate, D, FFN_DIM);
-            for(int i=0;i<FFN_DIM;i++) gate[i]=sigmoidf(gate[i]+w->ff_gate_b[L][i]);
-            matvec_t(x, w->ff_up[L], up, D, FFN_DIM);
-            for(int i=0;i<FFN_DIM;i++) up[i]+=w->ff_up_b[L][i];
-            for(int i=0;i<FFN_DIM;i++) h[i]=gate[i]*up[i];
-            matvec_t(h, w->ff_down[L], fo, FFN_DIM, D);
-            for(int i=0;i<D;i++) fo[i]+=w->ff_down_b[L][i];
-        }
-        for(int i=0;i<D;i++) x[i]+=fo[i];
+        /* FFN (via shared helper) */
+        apply_ffn_layer(w, L, x);
     }
     memcpy(next, x, sizeof(float)*D);
 }
@@ -2544,21 +2817,43 @@ static int run_with_weights(const InterpreterWeights* w,
 
         float next[D];
         if (state[S_AD_IS_BACKWARD] > 0.5f) {
-            /* Backward: gradient propagation via ad_backward_step.
-             *
-             * Architecture note: the forward tape recording runs entirely
-             * through weight matrices (Layer 3 gated pairs + Layer 4 tape
-             * write). The backward gradient propagation uses the same
-             * ad_backward_step as the reference/simulated paths. This is
-             * consistent with the IS_NATIVE pattern: MUL backward requires
-             * grad*value products that need the SQUARE trick with Layer 1,
-             * but Layer 1 runs before Layer 2 (which loads cursor values).
-             * The layer ordering constraint makes pure-weight backward
-             * possible only with an additional SQUARE layer or a second
-             * pass, which would change the architecture from 5 to 6 layers.
-             * We choose correctness over purity here. */
+            /* Backward: gradient propagation through weight matrices.
+             * Layer order L2→L4→L1→L3→L5 satisfies data dependencies:
+             *   L2 loads cursor node, L4 loads parent values,
+             *   L1 computes SQUARE products (grad*value),
+             *   L3 dispatches gradient rules, L5 writes back to parents.
+             * Cursor decrement and termination handled after. */
             memcpy(next, state, sizeof(next));
-            ad_backward_step(next);
+            backward_with_weights(w, next);
+            /* Handle backward ops that need products not computable in weights:
+             * SIGMOID, TANH, EXP use grad*value; LOG, SQRT use grad/value; ABS uses grad*sign.
+             * ADD, SUB, MUL, NEG, RELU backward run fully through weights. */
+            float cur_op = next[S_AD_CUR_OP];
+            float cur_grad = next[S_AD_CUR_GRAD];
+            float cur_val = next[S_AD_CUR_VALUE];
+            float left_val = next[S_AD_LEFT_VALUE];
+            int cur_left = (int)roundf(next[S_AD_CUR_LEFT]);
+            if (fabsf(cur_op - AD_OP_ABS) < 0.5f && cur_left >= 0 && cur_left < AD_MAX_TAPE) {
+                float sign = (left_val > 0) ? 1.0f : (left_val < 0) ? -1.0f : 0.0f;
+                next[S_AD_TAPE_BASE + cur_left * AD_NODE_FIELDS + AD_F_GRAD] += cur_grad * sign;
+            } else if (fabsf(cur_op - AD_OP_SIGMOID) < 0.5f && cur_left >= 0 && cur_left < AD_MAX_TAPE) {
+                next[S_AD_TAPE_BASE + cur_left * AD_NODE_FIELDS + AD_F_GRAD] += cur_grad * cur_val * (1.0f - cur_val);
+            } else if (fabsf(cur_op - AD_OP_TANH) < 0.5f && cur_left >= 0 && cur_left < AD_MAX_TAPE) {
+                next[S_AD_TAPE_BASE + cur_left * AD_NODE_FIELDS + AD_F_GRAD] += cur_grad * (1.0f - cur_val * cur_val);
+            } else if (fabsf(cur_op - AD_OP_EXP) < 0.5f && cur_left >= 0 && cur_left < AD_MAX_TAPE) {
+                next[S_AD_TAPE_BASE + cur_left * AD_NODE_FIELDS + AD_F_GRAD] += cur_grad * cur_val;
+            } else if (fabsf(cur_op - AD_OP_LOG) < 0.5f && cur_left >= 0 && cur_left < AD_MAX_TAPE) {
+                next[S_AD_TAPE_BASE + cur_left * AD_NODE_FIELDS + AD_F_GRAD] += cur_grad / (fabsf(left_val) > 1e-15f ? left_val : 1e-15f);
+            } else if (fabsf(cur_op - AD_OP_SQRT) < 0.5f && cur_left >= 0 && cur_left < AD_MAX_TAPE) {
+                next[S_AD_TAPE_BASE + cur_left * AD_NODE_FIELDS + AD_F_GRAD] += cur_grad / (2.0f * (fabsf(cur_val) > 1e-15f ? cur_val : 1e-15f));
+            }
+
+            /* Decrement cursor and check completion */
+            next[S_AD_CURSOR] -= 1.0f;
+            if (next[S_AD_CURSOR] < -0.5f) {
+                next[S_AD_IS_BACKWARD] = 0;
+                next[S_AD_MODE] = 0;
+            }
         } else {
             forward_with_weights(w,state,pe,n_instr,next);
             exec_loop_postprocess(next, prog, n_instr);
