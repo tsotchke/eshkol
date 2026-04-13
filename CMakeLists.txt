@@ -873,6 +873,9 @@ endif()
 # Image I/O (stb_image — single-header, MIT/public domain)
 list(APPEND LIB_SRC lib/core/image_io.c)
 
+# C FFI (stable embedding API)
+list(APPEND LIB_SRC lib/ffi/eshkol_ffi.cpp)
+
 # Exclude XLA sources from main library when XLA is disabled
 if(NOT ESHKOL_XLA_ENABLED)
     list(FILTER LIB_SRC EXCLUDE REGEX "lib/backend/xla/.*")
