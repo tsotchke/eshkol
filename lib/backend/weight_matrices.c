@@ -2021,24 +2021,30 @@ static void generate_weights(InterpreterWeights* w) {
         W(w->ff_down[2], n, S_ABS_DELTA, D) = 1.0f;
         n++;
 
-        /* ── AD backward: cursor load — gated on AD_IS_BACKWARD ──
-         * For each tape slot i: indicator(AD_CURSOR==i) * bw * tape[i].field → AD_CUR_FIELD */
+        /* ── AD backward: cursor load — indicator pair with IS_BACKWARD ──
+         * Gate: SCALE*CURSOR + SCALE*IS_BACKWARD + bias
+         * Pair bias: +neuron = SCALE*(-slot + 0.5) - SCALE
+         *            -neuron = SCALE*(-slot - 0.5) - SCALE
+         * Proof: pair difference cancels adjacent-slot leakage:
+         *   C=s,BW=1: sigmoid(0.5S) - sigmoid(-0.5S) ≈ 1 ✓
+         *   C=s,BW=0: sigmoid(-0.5S) - sigmoid(-1.5S) ≈ 0 ✓
+         *   C=s±1,BW=1: sigmoid(±1.5S) - sigmoid(±0.5S) ≈ 0 ✓ */
         for (int slot = 0; slot < AD_MAX_TAPE; slot++) {
             int fields[] = { AD_F_OP, AD_F_VALUE, AD_F_GRAD, AD_F_LEFT, AD_F_RIGHT, AD_F_SAVED };
             int targets[] = { S_AD_CUR_OP, S_AD_CUR_VALUE, S_AD_CUR_GRAD, S_AD_CUR_LEFT, S_AD_CUR_RIGHT, S_AD_CUR_SAVED };
             for (int fi = 0; fi < 6; fi++) {
                 int src = S_AD_TAPE_BASE + slot * AD_NODE_FIELDS + fields[fi];
                 int dst = targets[fi];
-                /* Positive neuron: gate on indicator(CURSOR==slot) * bw_active */
+                /* Positive neuron */
                 W(w->ff_gate[2], S_AD_CURSOR, n, FFN_DIM) = SCALE;
-                W(w->ff_gate[2], S_AD_IS_BACKWARD, n, FFN_DIM) = 2*SCALE;
+                W(w->ff_gate[2], S_AD_IS_BACKWARD, n, FFN_DIM) = SCALE;
                 w->ff_gate_b[2][n] = SCALE * (-(float)slot + 0.5f) - SCALE;
                 W(w->ff_up[2], src, n, FFN_DIM) = 1.0f;
                 W(w->ff_down[2], n, dst, D) = 1.0f;
                 n++;
                 /* Negative neuron */
                 W(w->ff_gate[2], S_AD_CURSOR, n, FFN_DIM) = SCALE;
-                W(w->ff_gate[2], S_AD_IS_BACKWARD, n, FFN_DIM) = 2*SCALE;
+                W(w->ff_gate[2], S_AD_IS_BACKWARD, n, FFN_DIM) = SCALE;
                 w->ff_gate_b[2][n] = SCALE * (-(float)slot - 0.5f) - SCALE;
                 W(w->ff_up[2], src, n, FFN_DIM) = 1.0f;
                 W(w->ff_down[2], n, dst, D) = -1.0f;
@@ -2483,14 +2489,14 @@ static void generate_weights(InterpreterWeights* w) {
 #define ADD_BW_PAIR(op_val, in_dim, in_scale, bias, out_dim, coeff) do { \
     W(w->ff_gate[L], S_AD_CUR_OP, n, FFN_DIM) = SCALE; \
     W(w->ff_gate[L], S_AD_IS_BACKWARD, n, FFN_DIM) = SCALE; \
-    w->ff_gate_b[L][n] = SCALE * (-(op_val) + 0.5f - 0.5f); \
+    w->ff_gate_b[L][n] = SCALE * (-(op_val) + 0.5f) - SCALE; \
     if ((in_dim) >= 0) W(w->ff_up[L], (in_dim), n, FFN_DIM) = (in_scale); \
     w->ff_up_b[L][n] = (bias); \
     W(w->ff_down[L], n, (out_dim), D) = (coeff); \
     n++; \
     W(w->ff_gate[L], S_AD_CUR_OP, n, FFN_DIM) = SCALE; \
     W(w->ff_gate[L], S_AD_IS_BACKWARD, n, FFN_DIM) = SCALE; \
-    w->ff_gate_b[L][n] = SCALE * (-(op_val) - 0.5f - 0.5f); \
+    w->ff_gate_b[L][n] = SCALE * (-(op_val) - 0.5f) - SCALE; \
     if ((in_dim) >= 0) W(w->ff_up[L], (in_dim), n, FFN_DIM) = (in_scale); \
     w->ff_up_b[L][n] = (bias); \
     W(w->ff_down[L], n, (out_dim), D) = -(coeff); \
@@ -2522,18 +2528,19 @@ static void generate_weights(InterpreterWeights* w) {
          * Use a simpler approach: IS_NATIVE for this backward rule.
          * Actually, we CAN do it: gate on (AD_CUR_OP==RELU AND left_value > 0),
          * with up = grad. The gate product handles the conditional. */
-        /* Gate includes: indicator(op==7) * bw * step(left_value) */
+        /* RELU: 3-condition gate (OP==RELU AND IS_BACKWARD AND LEFT_VALUE>0)
+         * bias absorbs all three: -op + 0.5 - 1(bw) - 0.5(step) */
         W(w->ff_gate[L], S_AD_CUR_OP, n, FFN_DIM) = SCALE;
         W(w->ff_gate[L], S_AD_IS_BACKWARD, n, FFN_DIM) = SCALE;
-        W(w->ff_gate[L], S_AD_LEFT_VALUE, n, FFN_DIM) = SCALE; /* step function */
-        w->ff_gate_b[L][n] = SCALE * (-AD_OP_RELU + 0.5f - 0.5f - 0.5f);
+        W(w->ff_gate[L], S_AD_LEFT_VALUE, n, FFN_DIM) = SCALE;
+        w->ff_gate_b[L][n] = SCALE * (-AD_OP_RELU + 0.5f) - 2*SCALE;
         W(w->ff_up[L], S_AD_CUR_GRAD, n, FFN_DIM) = 1.0f;
         W(w->ff_down[L], n, S_AD_LEFT_GRAD_NEW, D) = 1.0f;
         n++;
         W(w->ff_gate[L], S_AD_CUR_OP, n, FFN_DIM) = SCALE;
         W(w->ff_gate[L], S_AD_IS_BACKWARD, n, FFN_DIM) = SCALE;
         W(w->ff_gate[L], S_AD_LEFT_VALUE, n, FFN_DIM) = SCALE;
-        w->ff_gate_b[L][n] = SCALE * (-AD_OP_RELU - 0.5f - 0.5f - 0.5f);
+        w->ff_gate_b[L][n] = SCALE * (-AD_OP_RELU - 0.5f) - 2*SCALE;
         W(w->ff_up[L], S_AD_CUR_GRAD, n, FFN_DIM) = 1.0f;
         W(w->ff_down[L], n, S_AD_LEFT_GRAD_NEW, D) = -1.0f;
         n++;
@@ -2671,34 +2678,32 @@ static void generate_weights(InterpreterWeights* w) {
         W(w->ff_down[L], n, S_AD_TAPE_LEN, D) = 1.0f;
         n++;
 
-        /* ── AD backward: parent load — gated on AD_IS_BACKWARD ──
-         * For each tape slot i: indicator(AD_CUR_LEFT==i) * bw * tape[i].value → AD_LEFT_VALUE
-         * Same for AD_CUR_RIGHT → AD_RIGHT_VALUE */
+        /* ── AD backward: parent load — same gating pattern as cursor load ── */
         for (int slot = 0; slot < AD_MAX_TAPE; slot++) {
             int val_src = S_AD_TAPE_BASE + slot * AD_NODE_FIELDS + AD_F_VALUE;
             /* Left parent value */
             W(w->ff_gate[L], S_AD_CUR_LEFT, n, FFN_DIM) = SCALE;
             W(w->ff_gate[L], S_AD_IS_BACKWARD, n, FFN_DIM) = SCALE;
-            w->ff_gate_b[L][n] = SCALE * (-(float)slot + 0.5f - 0.5f);
+            w->ff_gate_b[L][n] = SCALE * (-(float)slot + 0.5f) - SCALE;
             W(w->ff_up[L], val_src, n, FFN_DIM) = 1.0f;
             W(w->ff_down[L], n, S_AD_LEFT_VALUE, D) = 1.0f;
             n++;
             W(w->ff_gate[L], S_AD_CUR_LEFT, n, FFN_DIM) = SCALE;
             W(w->ff_gate[L], S_AD_IS_BACKWARD, n, FFN_DIM) = SCALE;
-            w->ff_gate_b[L][n] = SCALE * (-(float)slot - 0.5f - 0.5f);
+            w->ff_gate_b[L][n] = SCALE * (-(float)slot - 0.5f) - SCALE;
             W(w->ff_up[L], val_src, n, FFN_DIM) = 1.0f;
             W(w->ff_down[L], n, S_AD_LEFT_VALUE, D) = -1.0f;
             n++;
             /* Right parent value */
             W(w->ff_gate[L], S_AD_CUR_RIGHT, n, FFN_DIM) = SCALE;
             W(w->ff_gate[L], S_AD_IS_BACKWARD, n, FFN_DIM) = SCALE;
-            w->ff_gate_b[L][n] = SCALE * (-(float)slot + 0.5f - 0.5f);
+            w->ff_gate_b[L][n] = SCALE * (-(float)slot + 0.5f) - SCALE;
             W(w->ff_up[L], val_src, n, FFN_DIM) = 1.0f;
             W(w->ff_down[L], n, S_AD_RIGHT_VALUE, D) = 1.0f;
             n++;
             W(w->ff_gate[L], S_AD_CUR_RIGHT, n, FFN_DIM) = SCALE;
             W(w->ff_gate[L], S_AD_IS_BACKWARD, n, FFN_DIM) = SCALE;
-            w->ff_gate_b[L][n] = SCALE * (-(float)slot - 0.5f - 0.5f);
+            w->ff_gate_b[L][n] = SCALE * (-(float)slot - 0.5f) - SCALE;
             W(w->ff_up[L], val_src, n, FFN_DIM) = 1.0f;
             W(w->ff_down[L], n, S_AD_RIGHT_VALUE, D) = -1.0f;
             n++;
@@ -2717,29 +2722,29 @@ static void generate_weights(InterpreterWeights* w) {
 
         for (int slot = 0; slot < AD_MAX_TAPE; slot++) {
             int grad_dst = S_AD_TAPE_BASE + slot * AD_NODE_FIELDS + AD_F_GRAD;
-            /* Left gradient write: indicator(AD_CUR_LEFT==slot) * bw * AD_LEFT_GRAD_NEW */
+            /* Left gradient write */
             W(w->ff_gate[L], S_AD_CUR_LEFT, n, FFN_DIM) = SCALE;
             W(w->ff_gate[L], S_AD_IS_BACKWARD, n, FFN_DIM) = SCALE;
-            w->ff_gate_b[L][n] = SCALE * (-(float)slot + 0.5f - 0.5f);
+            w->ff_gate_b[L][n] = SCALE * (-(float)slot + 0.5f) - SCALE;
             W(w->ff_up[L], S_AD_LEFT_GRAD_NEW, n, FFN_DIM) = 1.0f;
             W(w->ff_down[L], n, grad_dst, D) = 1.0f;
             n++;
             W(w->ff_gate[L], S_AD_CUR_LEFT, n, FFN_DIM) = SCALE;
             W(w->ff_gate[L], S_AD_IS_BACKWARD, n, FFN_DIM) = SCALE;
-            w->ff_gate_b[L][n] = SCALE * (-(float)slot - 0.5f - 0.5f);
+            w->ff_gate_b[L][n] = SCALE * (-(float)slot - 0.5f) - SCALE;
             W(w->ff_up[L], S_AD_LEFT_GRAD_NEW, n, FFN_DIM) = 1.0f;
             W(w->ff_down[L], n, grad_dst, D) = -1.0f;
             n++;
-            /* Right gradient write: indicator(AD_CUR_RIGHT==slot) * bw * AD_RIGHT_GRAD_NEW */
+            /* Right gradient write */
             W(w->ff_gate[L], S_AD_CUR_RIGHT, n, FFN_DIM) = SCALE;
             W(w->ff_gate[L], S_AD_IS_BACKWARD, n, FFN_DIM) = SCALE;
-            w->ff_gate_b[L][n] = SCALE * (-(float)slot + 0.5f - 0.5f);
+            w->ff_gate_b[L][n] = SCALE * (-(float)slot + 0.5f) - SCALE;
             W(w->ff_up[L], S_AD_RIGHT_GRAD_NEW, n, FFN_DIM) = 1.0f;
             W(w->ff_down[L], n, grad_dst, D) = 1.0f;
             n++;
             W(w->ff_gate[L], S_AD_CUR_RIGHT, n, FFN_DIM) = SCALE;
             W(w->ff_gate[L], S_AD_IS_BACKWARD, n, FFN_DIM) = SCALE;
-            w->ff_gate_b[L][n] = SCALE * (-(float)slot - 0.5f - 0.5f);
+            w->ff_gate_b[L][n] = SCALE * (-(float)slot - 0.5f) - SCALE;
             W(w->ff_up[L], S_AD_RIGHT_GRAD_NEW, n, FFN_DIM) = 1.0f;
             W(w->ff_down[L], n, grad_dst, D) = -1.0f;
             n++;
@@ -2885,7 +2890,27 @@ static int run_with_weights(const InterpreterWeights* w,
              * tape structure management, and stack manipulation — runs
              * entirely through weight matrices (verified 3-way). */
             memcpy(next, state, sizeof(next));
-            ad_backward_step(next);
+            backward_with_weights(w, next);
+            /* SIGMOID/TANH/LOG/SQRT backward need chained products (grad*val*(1-val))
+             * that require two sequential SQUARE evaluations. These are handled here
+             * after the weight-matrix pass computes the simple backward rules. */
+            {
+                float cur_op = next[S_AD_CUR_OP];
+                float cur_grad = next[S_AD_CUR_GRAD];
+                float cur_val = next[S_AD_CUR_VALUE];
+                float left_val = next[S_AD_LEFT_VALUE];
+                int cur_left = (int)roundf(next[S_AD_CUR_LEFT]);
+                if (cur_left >= 0 && cur_left < AD_MAX_TAPE) {
+                    if (fabsf(cur_op - AD_OP_SIGMOID) < 0.5f)
+                        next[S_AD_TAPE_BASE + cur_left * AD_NODE_FIELDS + AD_F_GRAD] += cur_grad * cur_val * (1.0f - cur_val);
+                    else if (fabsf(cur_op - AD_OP_TANH) < 0.5f)
+                        next[S_AD_TAPE_BASE + cur_left * AD_NODE_FIELDS + AD_F_GRAD] += cur_grad * (1.0f - cur_val * cur_val);
+                    else if (fabsf(cur_op - AD_OP_LOG) < 0.5f)
+                        next[S_AD_TAPE_BASE + cur_left * AD_NODE_FIELDS + AD_F_GRAD] += cur_grad / (fabsf(left_val) > 1e-15f ? left_val : 1e-15f);
+                    else if (fabsf(cur_op - AD_OP_SQRT) < 0.5f)
+                        next[S_AD_TAPE_BASE + cur_left * AD_NODE_FIELDS + AD_F_GRAD] += cur_grad / (2.0f * (fabsf(cur_val) > 1e-15f ? cur_val : 1e-15f));
+                }
+            }
         } else {
             forward_with_weights(w,state,pe,n_instr,next);
             exec_loop_postprocess(next, prog, n_instr);
