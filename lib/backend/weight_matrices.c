@@ -680,10 +680,22 @@ static void layer2_ffn(const float x[D], float out[D]) {
     }
     /* Parent load moved to layer4_ffn (runs after L2 in backward sequence) */
 
-    /* Cursor decrement and completion check are in the outer execution loop
-     * (same as PC increment for forward ops). These are clock-tick operations,
-     * not gradient computations. Every gradient rule, product, and write-back
-     * runs through weight matrices (Layers 1-5). */
+    /* Cursor decrement: IS_BACKWARD → delta[CURSOR] = -1 */
+    if (bw_active > 0.5f) {
+        out[S_AD_CURSOR] += -1.0f;
+        /* Completion check: indicator(cursor == -1) AND IS_BACKWARD → clear IS_BACKWARD.
+         * Fires on the cycle AFTER the cursor goes below 0. At cursor=-1, the cursor
+         * load indicators are all ≈ 0 (no valid node), so L4/L1/L5 produce no output. */
+        float at_done = indicator(cursor, -1.0f);
+        out[S_AD_IS_BACKWARD] += -at_done * x[S_AD_IS_BACKWARD];
+        out[S_AD_MODE] += -at_done * x[S_AD_MODE];
+        /* Transient clear: zero cursor-loaded fields + Zone D scratch */
+        for (int d = S_AD_CUR_OP; d <= S_AD_RIGHT_VALUE; d++)
+            out[d] += -x[d];
+        out[S_AD_IS_FORWARD] += -x[S_AD_IS_FORWARD];
+        for (int d = S_AD_GRAD_ACCUM; d <= S_AD_SPARE8; d++)
+            out[d] += -x[d];
+    }
 }
 
 static void layer3_ffn(const float x[D], float out[D]) {
@@ -1762,12 +1774,8 @@ static int run_simulated(const Instr* prog, int n_instr, float* outputs, int max
             layer1_ffn(x, tmp); for(int i=0;i<D;i++) x[i]+=tmp[i];
             layer5_dispatch(x, tmp); for(int i=0;i<D;i++) x[i]+=tmp[i];
             layer5_writeback(x, tmp); for(int i=0;i<D;i++) x[i]+=tmp[i];
-            /* Clock tick: cursor decrement + completion (same as PC++ for forward) */
-            x[S_AD_CURSOR] -= 1.0f;
-            if (x[S_AD_CURSOR] < -0.5f) { x[S_AD_IS_BACKWARD] = 0; x[S_AD_MODE] = 0; }
-            for (int i = S_AD_CUR_OP; i <= S_AD_RIGHT_VALUE; i++) x[i] = 0;
-            x[S_AD_IS_FORWARD] = 0;
-            for (int i = S_AD_GRAD_ACCUM; i <= S_AD_SPARE8; i++) x[i] = 0;
+            /* Cursor decrement, completion check, and transient clear are
+             * in layer2_ffn (weight neurons). No inline C in backward loop. */
         } else {
             /* Normal execution: all 6 layers (skip L5 — backward only) */
             layer0_attention(x, pe, n_instr, tmp); for(int i=0;i<D;i++) x[i]+=tmp[i];
@@ -2106,6 +2114,62 @@ static void generate_weights(InterpreterWeights* w) {
                 W(w->ff_down[2], n, dst, D) = -1.0f;
                 n++;
             }
+        }
+
+        /* ── Cursor decrement: IS_BACKWARD → delta[CURSOR] = -1 ── */
+        W(w->ff_gate[2], S_AD_IS_BACKWARD, n, FFN_DIM) = SCALE;
+        w->ff_gate_b[2][n] = SCALE * (-0.5f);
+        w->ff_up_b[2][n] = -1.0f;
+        W(w->ff_down[2], n, S_AD_CURSOR, D) = 1.0f;
+        n++;
+
+        /* ── Completion check: indicator(CURSOR == -1) AND IS_BACKWARD → clear IS_BACKWARD ──
+         * Uses standard pair difference for multi-condition gate. */
+        W(w->ff_gate[2], S_AD_CURSOR, n, FFN_DIM) = SCALE;
+        W(w->ff_gate[2], S_AD_IS_BACKWARD, n, FFN_DIM) = SCALE;
+        w->ff_gate_b[2][n] = SCALE * (1.0f + 0.5f) - SCALE; /* indicator(cursor, -1): -(-1)+0.5 = 1.5 */
+        W(w->ff_up[2], S_AD_IS_BACKWARD, n, FFN_DIM) = -1.0f;
+        W(w->ff_down[2], n, S_AD_IS_BACKWARD, D) = 1.0f;
+        n++;
+        W(w->ff_gate[2], S_AD_CURSOR, n, FFN_DIM) = SCALE;
+        W(w->ff_gate[2], S_AD_IS_BACKWARD, n, FFN_DIM) = SCALE;
+        w->ff_gate_b[2][n] = SCALE * (1.0f - 0.5f) - SCALE; /* -(-1)-0.5 = 0.5 */
+        W(w->ff_up[2], S_AD_IS_BACKWARD, n, FFN_DIM) = -1.0f;
+        W(w->ff_down[2], n, S_AD_IS_BACKWARD, D) = -1.0f;
+        n++;
+        /* Also clear AD_MODE */
+        W(w->ff_gate[2], S_AD_CURSOR, n, FFN_DIM) = SCALE;
+        W(w->ff_gate[2], S_AD_IS_BACKWARD, n, FFN_DIM) = SCALE;
+        w->ff_gate_b[2][n] = SCALE * (1.0f + 0.5f) - SCALE;
+        W(w->ff_up[2], S_AD_MODE, n, FFN_DIM) = -1.0f;
+        W(w->ff_down[2], n, S_AD_MODE, D) = 1.0f;
+        n++;
+        W(w->ff_gate[2], S_AD_CURSOR, n, FFN_DIM) = SCALE;
+        W(w->ff_gate[2], S_AD_IS_BACKWARD, n, FFN_DIM) = SCALE;
+        w->ff_gate_b[2][n] = SCALE * (1.0f - 0.5f) - SCALE;
+        W(w->ff_up[2], S_AD_MODE, n, FFN_DIM) = -1.0f;
+        W(w->ff_down[2], n, S_AD_MODE, D) = -1.0f;
+        n++;
+
+        /* ── Transient clear: IS_BACKWARD → zero cursor-loaded + Zone D scratch ── */
+        for (int d = S_AD_CUR_OP; d <= S_AD_RIGHT_VALUE; d++) {
+            W(w->ff_gate[2], S_AD_IS_BACKWARD, n, FFN_DIM) = SCALE;
+            w->ff_gate_b[2][n] = SCALE * (-0.5f);
+            W(w->ff_up[2], d, n, FFN_DIM) = -1.0f;
+            W(w->ff_down[2], n, d, D) = 1.0f;
+            n++;
+        }
+        W(w->ff_gate[2], S_AD_IS_BACKWARD, n, FFN_DIM) = SCALE;
+        w->ff_gate_b[2][n] = SCALE * (-0.5f);
+        W(w->ff_up[2], S_AD_IS_FORWARD, n, FFN_DIM) = -1.0f;
+        W(w->ff_down[2], n, S_AD_IS_FORWARD, D) = 1.0f;
+        n++;
+        for (int d = S_AD_GRAD_ACCUM; d <= S_AD_SPARE8; d++) {
+            W(w->ff_gate[2], S_AD_IS_BACKWARD, n, FFN_DIM) = SCALE;
+            w->ff_gate_b[2][n] = SCALE * (-0.5f);
+            W(w->ff_up[2], d, n, FFN_DIM) = -1.0f;
+            W(w->ff_down[2], n, d, D) = 1.0f;
+            n++;
         }
 
         printf("[WEIGHT_GEN] Layer 2: %d neurons\n", n);
@@ -2965,14 +3029,11 @@ static int run_with_weights(const InterpreterWeights* w,
             /* Backward entirely through weight matrices: L2→L4→L1→L5→L5.
              * Layer 5 handles gradient dispatch, write-back, cursor decrement,
              * completion check, and transient clearing — no inline C. */
+            /* Backward entirely through weight matrices. Zero inline C.
+             * Cursor decrement + completion in L2. Gradient dispatch in L5 pass 1.
+             * Gradient write-back in L5 pass 2. */
             memcpy(next, state, sizeof(next));
             backward_with_weights(w, next);
-            /* Clock tick: cursor decrement + completion (same as PC++ for forward) */
-            next[S_AD_CURSOR] -= 1.0f;
-            if (next[S_AD_CURSOR] < -0.5f) { next[S_AD_IS_BACKWARD] = 0; next[S_AD_MODE] = 0; }
-            for (int i = S_AD_CUR_OP; i <= S_AD_RIGHT_VALUE; i++) next[i] = 0;
-            next[S_AD_IS_FORWARD] = 0;
-            for (int i = S_AD_GRAD_ACCUM; i <= S_AD_SPARE8; i++) next[i] = 0;
         } else {
             forward_with_weights(w,state,pe,n_instr,next);
             exec_loop_postprocess(next, prog, n_instr);
