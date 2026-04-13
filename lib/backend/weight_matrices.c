@@ -2,7 +2,7 @@
  * @file weight_matrices.c
  * @brief Universal Eshkol VM interpreter compiled into transformer weights.
  *
- * Full ISA implementation (63 opcodes, d_model=36). Supersedes v1/v2 (archived).
+ * Full ISA implementation (83 opcodes: 64 base + 19 AD, d_model=128).
  * Opcode numbering matches eshkol_compiler.c canonical enum.
  *
  * Three execution modes verified against each other:
@@ -10,12 +10,13 @@
  *   2. Simulated transformer (C functions mirroring weight computation)
  *   3. Matrix-based forward pass (actual W @ x + b through generic matmul)
  *
- * Architecture: d_model=32, n_heads=16, head_dim=2, n_layers=5, FFN_DIM=512
+ * Architecture: d_model=128, n_heads=16, head_dim=2, n_layers=6, FFN_DIM=1024
  *   Layer 0: Instruction fetch (Gaussian attention peaked at PC)
- *   Layer 1: Product precompute (SQUARE activation for TOS*SOS)
- *   Layer 2: Preprocessing (gated FFN for address resolution, comparisons)
- *   Layer 3: Execution (gated FFN for opcode dispatch)
- *   Layer 4: Frame management (gated FFN for CALL/RET, currently no-op)
+ *   Layer 1: Product precompute (SQUARE activation for TOS*SOS + AD backward products)
+ *   Layer 2: Preprocessing (gated FFN for address resolution, comparisons, AD cursor load)
+ *   Layer 3: Execution (gated FFN for opcode dispatch + AD forward/backward rules)
+ *   Layer 4: Tape write + parent load (gated FFN)
+ *   Layer 5: Gradient write-back (gated FFN, backward-only)
  *
  * Copyright (C) Tsotchke Corporation. MIT License.
  */
@@ -143,7 +144,8 @@ enum {
     S_AD_PROD_GRAD_RV=116,   /* precomputed: CUR_GRAD * RIGHT_VALUE */
     S_AD_LEFT_GRAD_NEW=117,  /* computed gradient delta for left parent */
     S_AD_RIGHT_GRAD_NEW=118, /* computed gradient delta for right parent */
-    S_AD_PROD_GRAD_CV=119,  /* precomputed: CUR_GRAD * CUR_VALUE (for EXP/SIGMOID/TANH bw) */
+    S_AD_PROD_GRAD_CV=119,  /* precomputed: CUR_GRAD * CUR_VALUE (for legacy compat) */
+    S_AD_PROD_GRAD_SV=120,  /* precomputed: CUR_GRAD * CUR_SAVED (all unary backward) */
     S_AD_SPARE1=120, S_AD_SPARE2=121, S_AD_SPARE3=122, S_AD_SPARE4=123,
     S_AD_SPARE5=124, S_AD_SPARE6=125, S_AD_SPARE7=126, S_AD_SPARE8=127
 };
@@ -455,16 +457,16 @@ static void execute_step(const State* cur, const Instr* prog, int n_instr, State
         int ii = (int)tos;
         if (tlen < AD_MAX_TAPE && ii >= 0 && ii < tlen) {
             float iv = AD_NODE(cur->s, ii, AD_F_VALUE);
-            float val = 0, op_type = 0;
+            float val = 0, op_type = 0, saved = 0;
             switch (prog[pc].op) {
-                case OP_AD_NEG:     val = -iv;                          op_type = AD_OP_NEG; break;
-                case OP_AD_ABS:     val = fabsf(iv);                    op_type = AD_OP_ABS; break;
-                case OP_AD_RELU:    val = iv > 0 ? iv : 0;             op_type = AD_OP_RELU; break;
-                case OP_AD_SIGMOID: val = 1.0f/(1.0f+expf(-iv));       op_type = AD_OP_SIGMOID; break;
-                case OP_AD_TANH:    val = tanhf(iv);                    op_type = AD_OP_TANH; break;
-                case OP_AD_EXP:     val = expf(iv);                     op_type = AD_OP_EXP; break;
-                case OP_AD_LOG:     val = logf(iv);                     op_type = AD_OP_LOG; break;
-                case OP_AD_SQRT:    val = sqrtf(iv);                    op_type = AD_OP_SQRT; break;
+                case OP_AD_NEG:     val = -iv;                          op_type = AD_OP_NEG;     saved = -1.0f; break;
+                case OP_AD_ABS:     val = fabsf(iv);                    op_type = AD_OP_ABS;     saved = (iv > 0) ? 1.0f : (iv < 0) ? -1.0f : 0.0f; break;
+                case OP_AD_RELU:    val = iv > 0 ? iv : 0;             op_type = AD_OP_RELU;    saved = (iv > 0) ? 1.0f : 0.0f; break;
+                case OP_AD_SIGMOID: val = 1.0f/(1.0f+expf(-iv));       op_type = AD_OP_SIGMOID; saved = val * (1.0f - val); break;
+                case OP_AD_TANH:    val = tanhf(iv);                    op_type = AD_OP_TANH;    saved = 1.0f - val * val; break;
+                case OP_AD_EXP:     val = expf(iv);                     op_type = AD_OP_EXP;     saved = val; break;
+                case OP_AD_LOG:     val = logf(iv);                     op_type = AD_OP_LOG;     saved = 1.0f / (fabsf(iv) > 1e-15f ? iv : 1e-15f); break;
+                case OP_AD_SQRT:    val = sqrtf(iv);                    op_type = AD_OP_SQRT;    saved = 1.0f / (2.0f * (fabsf(val) > 1e-15f ? val : 1e-15f)); break;
                 default: break;
             }
             AD_NODE(next->s, tlen, AD_F_OP) = op_type;
@@ -472,7 +474,7 @@ static void execute_step(const State* cur, const Instr* prog, int n_instr, State
             AD_NODE(next->s, tlen, AD_F_GRAD) = 0;
             AD_NODE(next->s, tlen, AD_F_LEFT) = (float)ii;
             AD_NODE(next->s, tlen, AD_F_RIGHT) = -1;
-            AD_NODE(next->s, tlen, AD_F_SAVED) = 0;
+            AD_NODE(next->s, tlen, AD_F_SAVED) = saved;
             /* Replace TOS with tape index */
             next->s[S_TOS]=(float)tlen;
             next->s[S_AD_TAPE_LEN]=(float)(tlen+1);
@@ -539,58 +541,32 @@ static void ad_backward_step(float* s) {
 
     float grad = AD_NODE(s, cursor, AD_F_GRAD);
     float op_type = AD_NODE(s, cursor, AD_F_OP);
+    float saved = AD_NODE(s, cursor, AD_F_SAVED);
     int li = (int)AD_NODE(s, cursor, AD_F_LEFT);
     int ri = (int)AD_NODE(s, cursor, AD_F_RIGHT);
 
-    /* Compute and propagate gradient contributions based on operation type */
+    /* Gradient propagation rules.
+     * Binary ops: ADD (dL=grad, dR=grad), SUB (dL=grad, dR=-grad),
+     *             MUL (dL=grad*R_value, dR=grad*L_value).
+     * Unary ops:  ALL use dL = grad * saved_val.
+     *             saved_val is precomputed during forward recording:
+     *             NEG=-1, ABS=sign, RELU=step, SIGMOID=val*(1-val),
+     *             TANH=1-val², EXP=val, LOG=1/input, SQRT=1/(2*val). */
     if (fabsf(grad) > 1e-15f) {
         if (fabsf(op_type - AD_OP_ADD) < 0.5f) {
-            /* d/dL (L+R) = 1, d/dR (L+R) = 1 */
             if (li >= 0) AD_NODE(s, li, AD_F_GRAD) += grad;
             if (ri >= 0) AD_NODE(s, ri, AD_F_GRAD) += grad;
         } else if (fabsf(op_type - AD_OP_SUB) < 0.5f) {
-            /* d/dL (L-R) = 1, d/dR (L-R) = -1 */
             if (li >= 0) AD_NODE(s, li, AD_F_GRAD) += grad;
             if (ri >= 0) AD_NODE(s, ri, AD_F_GRAD) -= grad;
         } else if (fabsf(op_type - AD_OP_MUL) < 0.5f) {
-            /* d/dL (L*R) = R, d/dR (L*R) = L */
             float lv = (li >= 0) ? AD_NODE(s, li, AD_F_VALUE) : 0;
             float rv = (ri >= 0) ? AD_NODE(s, ri, AD_F_VALUE) : 0;
             if (li >= 0) AD_NODE(s, li, AD_F_GRAD) += grad * rv;
             if (ri >= 0) AD_NODE(s, ri, AD_F_GRAD) += grad * lv;
-        } else if (fabsf(op_type - AD_OP_NEG) < 0.5f) {
-            if (li >= 0) AD_NODE(s, li, AD_F_GRAD) -= grad;
-        } else if (fabsf(op_type - AD_OP_ABS) < 0.5f) {
-            if (li >= 0) {
-                float lv = AD_NODE(s, li, AD_F_VALUE);
-                float sign = (lv > 0) ? 1.0f : (lv < 0) ? -1.0f : 0.0f;
-                AD_NODE(s, li, AD_F_GRAD) += grad * sign;
-            }
-        } else if (fabsf(op_type - AD_OP_RELU) < 0.5f) {
-            if (li >= 0 && AD_NODE(s, li, AD_F_VALUE) > 0)
-                AD_NODE(s, li, AD_F_GRAD) += grad;
-        } else if (fabsf(op_type - AD_OP_SIGMOID) < 0.5f) {
-            /* d/dL sigma(L) = sigma(L)*(1-sigma(L)) = value*(1-value) */
-            float v = AD_NODE(s, cursor, AD_F_VALUE);
-            if (li >= 0) AD_NODE(s, li, AD_F_GRAD) += grad * v * (1.0f - v);
-        } else if (fabsf(op_type - AD_OP_TANH) < 0.5f) {
-            /* d/dL tanh(L) = 1 - tanh(L)^2 = 1 - value^2 */
-            float v = AD_NODE(s, cursor, AD_F_VALUE);
-            if (li >= 0) AD_NODE(s, li, AD_F_GRAD) += grad * (1.0f - v * v);
-        } else if (fabsf(op_type - AD_OP_EXP) < 0.5f) {
-            /* d/dL exp(L) = exp(L) = value */
-            float v = AD_NODE(s, cursor, AD_F_VALUE);
-            if (li >= 0) AD_NODE(s, li, AD_F_GRAD) += grad * v;
-        } else if (fabsf(op_type - AD_OP_LOG) < 0.5f) {
-            /* d/dL log(L) = 1/L */
-            if (li >= 0) {
-                float lv = AD_NODE(s, li, AD_F_VALUE);
-                AD_NODE(s, li, AD_F_GRAD) += grad / lv;
-            }
-        } else if (fabsf(op_type - AD_OP_SQRT) < 0.5f) {
-            /* d/dL sqrt(L) = 1/(2*sqrt(L)) = 1/(2*value) */
-            float v = AD_NODE(s, cursor, AD_F_VALUE);
-            if (li >= 0) AD_NODE(s, li, AD_F_GRAD) += grad / (2.0f * v);
+        } else if (op_type >= AD_OP_NEG && op_type <= AD_OP_SQRT + 0.5f) {
+            /* ALL unary ops: dL = grad * saved_val */
+            if (li >= 0) AD_NODE(s, li, AD_F_GRAD) += grad * saved;
         }
         /* AD_OP_CONST and AD_OP_VAR: leaf nodes, no propagation */
     }
@@ -662,11 +638,12 @@ static void layer1_ffn(const float x[D], float out[D]) {
     /* Original: TOS * SOS via SQUARE trick */
     float a = x[S_TOS], b = x[S_SOS];
     out[S_PRODUCT] = 0.5f*(a+b)*(a+b) - 0.5f*a*a - 0.5f*b*b;
-    /* AD backward: precompute grad * left_value and grad * right_value
-     * These are needed for MUL backward: dL = grad*R, dR = grad*L */
+    /* AD backward: products via SQUARE trick (polarization identity) */
     float g = x[S_AD_CUR_GRAD], lv = x[S_AD_LEFT_VALUE], rv = x[S_AD_RIGHT_VALUE];
-    out[S_AD_PROD_GRAD_LV] = 0.5f*(g+rv)*(g+rv) - 0.5f*g*g - 0.5f*rv*rv; /* g * rv */
-    out[S_AD_PROD_GRAD_RV] = 0.5f*(g+lv)*(g+lv) - 0.5f*g*g - 0.5f*lv*lv; /* g * lv */
+    float sv = x[S_AD_CUR_SAVED];
+    out[S_AD_PROD_GRAD_LV] = 0.5f*(g+rv)*(g+rv) - 0.5f*g*g - 0.5f*rv*rv; /* g * rv (MUL dL) */
+    out[S_AD_PROD_GRAD_RV] = 0.5f*(g+lv)*(g+lv) - 0.5f*g*g - 0.5f*lv*lv; /* g * lv (MUL dR) */
+    out[S_AD_PROD_GRAD_SV] = 0.5f*(g+sv)*(g+sv) - 0.5f*g*g - 0.5f*sv*sv; /* g * saved (ALL unary) */
 }
 
 static void layer2_ffn(const float x[D], float out[D]) {
@@ -900,73 +877,88 @@ static void layer3_ffn(const float x[D], float out[D]) {
     g=indicator(op,69)*alive*tape_ok;
     out[S_AD_CUR_OP] += g * AD_OP_NEG;
     out[S_AD_CUR_VALUE] += g * (-ad_input_val);
+    out[S_AD_CUR_SAVED] += g * (-1.0f); /* derivative factor: d(-x)/dx = -1 */
     out[S_AD_CUR_LEFT] += g * tos;
     out[S_AD_CUR_RIGHT] += g * (-1);
     out[S_AD_IS_FORWARD] += g;
     out[S_TOS]+=g*(tlen-tos); out[S_PC]+=g;
 
     /* OP_AD_ABS (70) */
-    g=indicator(op,70)*alive*tape_ok;
+    g=indicator(op,70)*alive*tape_ok; {
+    float v70 = fabsf(ad_input_val);
     out[S_AD_CUR_OP] += g * AD_OP_ABS;
-    out[S_AD_CUR_VALUE] += g * fabsf(ad_input_val);
+    out[S_AD_CUR_VALUE] += g * v70;
+    out[S_AD_CUR_SAVED] += g * ((ad_input_val > 0) ? 1.0f : (ad_input_val < 0) ? -1.0f : 0.0f);
     out[S_AD_CUR_LEFT] += g * tos;
     out[S_AD_CUR_RIGHT] += g * (-1);
     out[S_AD_IS_FORWARD] += g;
-    out[S_TOS]+=g*(tlen-tos); out[S_PC]+=g;
+    out[S_TOS]+=g*(tlen-tos); out[S_PC]+=g; }
 
     /* OP_AD_RELU (71) */
-    g=indicator(op,71)*alive*tape_ok;
+    g=indicator(op,71)*alive*tape_ok; {
     out[S_AD_CUR_OP] += g * AD_OP_RELU;
     out[S_AD_CUR_VALUE] += g * (ad_input_val > 0 ? ad_input_val : 0);
+    out[S_AD_CUR_SAVED] += g * (ad_input_val > 0 ? 1.0f : 0.0f);
     out[S_AD_CUR_LEFT] += g * tos;
     out[S_AD_CUR_RIGHT] += g * (-1);
     out[S_AD_IS_FORWARD] += g;
-    out[S_TOS]+=g*(tlen-tos); out[S_PC]+=g;
+    out[S_TOS]+=g*(tlen-tos); out[S_PC]+=g; }
 
     /* OP_AD_SIGMOID (72) */
-    g=indicator(op,72)*alive*tape_ok;
+    g=indicator(op,72)*alive*tape_ok; {
+    float v72 = 1.0f/(1.0f+expf(-ad_input_val));
     out[S_AD_CUR_OP] += g * AD_OP_SIGMOID;
-    out[S_AD_CUR_VALUE] += g * (1.0f/(1.0f+expf(-ad_input_val)));
+    out[S_AD_CUR_VALUE] += g * v72;
+    out[S_AD_CUR_SAVED] += g * v72 * (1.0f - v72);
     out[S_AD_CUR_LEFT] += g * tos;
     out[S_AD_CUR_RIGHT] += g * (-1);
     out[S_AD_IS_FORWARD] += g;
-    out[S_TOS]+=g*(tlen-tos); out[S_PC]+=g;
+    out[S_TOS]+=g*(tlen-tos); out[S_PC]+=g; }
 
     /* OP_AD_TANH (73) */
-    g=indicator(op,73)*alive*tape_ok;
+    g=indicator(op,73)*alive*tape_ok; {
+    float v73 = tanhf(ad_input_val);
     out[S_AD_CUR_OP] += g * AD_OP_TANH;
-    out[S_AD_CUR_VALUE] += g * tanhf(ad_input_val);
+    out[S_AD_CUR_VALUE] += g * v73;
+    out[S_AD_CUR_SAVED] += g * (1.0f - v73 * v73);
     out[S_AD_CUR_LEFT] += g * tos;
     out[S_AD_CUR_RIGHT] += g * (-1);
     out[S_AD_IS_FORWARD] += g;
-    out[S_TOS]+=g*(tlen-tos); out[S_PC]+=g;
+    out[S_TOS]+=g*(tlen-tos); out[S_PC]+=g; }
 
     /* OP_AD_EXP (74) */
-    g=indicator(op,74)*alive*tape_ok;
+    g=indicator(op,74)*alive*tape_ok; {
+    float v74 = expf(ad_input_val);
     out[S_AD_CUR_OP] += g * AD_OP_EXP;
-    out[S_AD_CUR_VALUE] += g * expf(ad_input_val);
+    out[S_AD_CUR_VALUE] += g * v74;
+    out[S_AD_CUR_SAVED] += g * v74; /* exp'(x) = exp(x) */
     out[S_AD_CUR_LEFT] += g * tos;
     out[S_AD_CUR_RIGHT] += g * (-1);
     out[S_AD_IS_FORWARD] += g;
-    out[S_TOS]+=g*(tlen-tos); out[S_PC]+=g;
+    out[S_TOS]+=g*(tlen-tos); out[S_PC]+=g; }
 
     /* OP_AD_LOG (75) */
-    g=indicator(op,75)*alive*tape_ok;
+    g=indicator(op,75)*alive*tape_ok; {
+    float safe75 = (fabsf(ad_input_val) > 1e-15f) ? ad_input_val : 1e-15f;
     out[S_AD_CUR_OP] += g * AD_OP_LOG;
-    out[S_AD_CUR_VALUE] += g * logf(ad_input_val > 0 ? ad_input_val : 1e-15f);
+    out[S_AD_CUR_VALUE] += g * logf(safe75);
+    out[S_AD_CUR_SAVED] += g / safe75; /* log'(x) = 1/x */
     out[S_AD_CUR_LEFT] += g * tos;
     out[S_AD_CUR_RIGHT] += g * (-1);
     out[S_AD_IS_FORWARD] += g;
-    out[S_TOS]+=g*(tlen-tos); out[S_PC]+=g;
+    out[S_TOS]+=g*(tlen-tos); out[S_PC]+=g; }
 
     /* OP_AD_SQRT (76) */
-    g=indicator(op,76)*alive*tape_ok;
+    g=indicator(op,76)*alive*tape_ok; {
+    float v76 = sqrtf(ad_input_val > 0 ? ad_input_val : 0);
+    float safe76 = (fabsf(v76) > 1e-15f) ? v76 : 1e-15f;
     out[S_AD_CUR_OP] += g * AD_OP_SQRT;
-    out[S_AD_CUR_VALUE] += g * sqrtf(ad_input_val > 0 ? ad_input_val : 0);
+    out[S_AD_CUR_VALUE] += g * v76;
+    out[S_AD_CUR_SAVED] += g / (2.0f * safe76); /* sqrt'(x) = 1/(2*sqrt(x)) */
     out[S_AD_CUR_LEFT] += g * tos;
     out[S_AD_CUR_RIGHT] += g * (-1);
     out[S_AD_IS_FORWARD] += g;
-    out[S_TOS]+=g*(tlen-tos); out[S_PC]+=g;
+    out[S_TOS]+=g*(tlen-tos); out[S_PC]+=g; }
 
     /* OP_AD_BACKWARD (77): start backward pass.
      * Seed the output node's gradient = 1.0 directly in the tape.
@@ -1011,6 +1003,9 @@ static void layer3_ffn(const float x[D], float out[D]) {
         float gl = x[S_AD_PROD_GRAD_LV]; /* precomputed: grad * right_value (for MUL dL) */
         float gr = x[S_AD_PROD_GRAD_RV]; /* precomputed: grad * left_value (for MUL dR) */
 
+        float gsv = x[S_AD_PROD_GRAD_SV]; /* precomputed: grad * saved_val (from L1 SQUARE) */
+
+        /* Binary ops */
         /* ADD: dL = grad, dR = grad */
         float ba = indicator(cur_op, AD_OP_ADD);
         out[S_AD_LEFT_GRAD_NEW]  += ba * cur_grad;
@@ -1019,37 +1014,21 @@ static void layer3_ffn(const float x[D], float out[D]) {
         float bs = indicator(cur_op, AD_OP_SUB);
         out[S_AD_LEFT_GRAD_NEW]  += bs * cur_grad;
         out[S_AD_RIGHT_GRAD_NEW] -= bs * cur_grad;
-        /* MUL: dL = grad*R, dR = grad*L (precomputed in layer1) */
+        /* MUL: dL = grad*R, dR = grad*L (precomputed in L1) */
         float bm = indicator(cur_op, AD_OP_MUL);
-        out[S_AD_LEFT_GRAD_NEW]  += bm * gl; /* grad * right_value */
-        out[S_AD_RIGHT_GRAD_NEW] += bm * gr; /* grad * left_value */
-        /* NEG: dL = -grad */
-        float bn = indicator(cur_op, AD_OP_NEG);
-        out[S_AD_LEFT_GRAD_NEW] -= bn * cur_grad;
-        /* ABS: dL = grad * sign(left) */
-        float babs = indicator(cur_op, AD_OP_ABS);
-        float lv_sign = (x[S_AD_LEFT_VALUE] > 0) ? 1.0f : (x[S_AD_LEFT_VALUE] < 0) ? -1.0f : 0.0f;
-        out[S_AD_LEFT_GRAD_NEW] += babs * cur_grad * lv_sign;
-        /* RELU: dL = grad if left > 0 else 0 */
-        float br = indicator(cur_op, AD_OP_RELU);
-        out[S_AD_LEFT_GRAD_NEW] += br * cur_grad * (x[S_AD_LEFT_VALUE] > 0 ? 1.0f : 0.0f);
-        /* SIGMOID: dL = grad * val * (1 - val) */
-        float bsig = indicator(cur_op, AD_OP_SIGMOID);
-        out[S_AD_LEFT_GRAD_NEW] += bsig * cur_grad * cur_val * (1.0f - cur_val);
-        /* TANH: dL = grad * (1 - val^2) */
-        float btanh = indicator(cur_op, AD_OP_TANH);
-        out[S_AD_LEFT_GRAD_NEW] += btanh * cur_grad * (1.0f - cur_val * cur_val);
-        /* EXP: dL = grad * val */
-        float bexp = indicator(cur_op, AD_OP_EXP);
-        out[S_AD_LEFT_GRAD_NEW] += bexp * cur_grad * cur_val;
-        /* LOG: dL = grad / left_value */
-        float blog = indicator(cur_op, AD_OP_LOG);
-        float lv_safe = (fabsf(x[S_AD_LEFT_VALUE]) > 1e-15f) ? x[S_AD_LEFT_VALUE] : 1e-15f;
-        out[S_AD_LEFT_GRAD_NEW] += blog * cur_grad / lv_safe;
-        /* SQRT: dL = grad / (2 * val) */
-        float bsqrt = indicator(cur_op, AD_OP_SQRT);
-        float val_safe = (fabsf(cur_val) > 1e-15f) ? cur_val : 1e-15f;
-        out[S_AD_LEFT_GRAD_NEW] += bsqrt * cur_grad / (2.0f * val_safe);
+        out[S_AD_LEFT_GRAD_NEW]  += bm * gl;
+        out[S_AD_RIGHT_GRAD_NEW] += bm * gr;
+
+        /* ALL unary ops: dL = grad * saved_val (precomputed in L1 as AD_PROD_GRAD_SV).
+         * saved_val was stored during forward recording:
+         *   NEG=-1, ABS=sign, RELU=step, SIGMOID=val*(1-val),
+         *   TANH=1-val², EXP=val, LOG=1/input, SQRT=1/(2*val). */
+        float unary_ops[] = { AD_OP_NEG, AD_OP_ABS, AD_OP_RELU, AD_OP_SIGMOID,
+                              AD_OP_TANH, AD_OP_EXP, AD_OP_LOG, AD_OP_SQRT };
+        for (int u = 0; u < 8; u++) {
+            float bu = indicator(cur_op, unary_ops[u]);
+            out[S_AD_LEFT_GRAD_NEW] += bu * gsv;
+        }
     }
 }
 
@@ -1085,18 +1064,29 @@ static void layer4_ffn(float x[D], float out[D]) {
         }
     }
 
-    /* ── Backward: propagate gradient to parents ──
-     * Note: cursor decrement and mode management are handled by run_simulated,
-     * NOT by this layer. This avoids the issue of layer3 setting backward
-     * and layer4 immediately consuming it in the same cycle. */
+    /* ── Backward: parent load ── */
+    float bw = x[S_AD_IS_BACKWARD];
+    if (bw > 0.5f) {
+        float left_idx = x[S_AD_CUR_LEFT];
+        float right_idx = x[S_AD_CUR_RIGHT];
+        for (int i = 0; i < AD_MAX_TAPE; i++) {
+            float li = indicator(left_idx, (float)i);
+            float ri = indicator(right_idx, (float)i);
+            out[S_AD_LEFT_VALUE]  += li * x[S_AD_TAPE_BASE + i * AD_NODE_FIELDS + AD_F_VALUE];
+            out[S_AD_RIGHT_VALUE] += ri * x[S_AD_TAPE_BASE + i * AD_NODE_FIELDS + AD_F_VALUE];
+        }
+    }
+}
+
+/* Layer 5 simulated: gradient write-back */
+static void layer5_ffn(float x[D], float out[D]) {
+    memset(out, 0, D * sizeof(float));
     float bw = x[S_AD_IS_BACKWARD];
     if (bw > 0.5f) {
         float left_idx = x[S_AD_CUR_LEFT];
         float right_idx = x[S_AD_CUR_RIGHT];
         float lg = x[S_AD_LEFT_GRAD_NEW];
         float rg = x[S_AD_RIGHT_GRAD_NEW];
-
-        /* Write gradient deltas to parent tape nodes */
         for (int i = 0; i < AD_MAX_TAPE; i++) {
             float li = indicator(left_idx, (float)i);
             float ri = indicator(right_idx, (float)i);
@@ -1574,21 +1564,22 @@ static void exec_loop_postprocess(float x[D], const Instr* prog, int n_instr) {
                     int ri = (int)roundf(x[S_AD_TAPE_BASE + tlen * AD_NODE_FIELDS + AD_F_RIGHT]);
                     float lv = (li >= 0 && li < tlen) ? x[S_AD_TAPE_BASE + li * AD_NODE_FIELDS + AD_F_VALUE] : 0;
                     float rv = (ri >= 0 && ri < tlen) ? x[S_AD_TAPE_BASE + ri * AD_NODE_FIELDS + AD_F_VALUE] : 0;
-                    float val = 0;
+                    float val = 0, saved = 0;
                     if (fabsf(op_type - AD_OP_VAR) < 0.5f || fabsf(op_type - AD_OP_CONST) < 0.5f) {
-                        val = x[S_AD_TAPE_BASE + tlen * AD_NODE_FIELDS + AD_F_VALUE]; /* already set by operand */
+                        val = x[S_AD_TAPE_BASE + tlen * AD_NODE_FIELDS + AD_F_VALUE];
                     } else if (fabsf(op_type - AD_OP_ADD) < 0.5f) { val = lv + rv; }
                     else if (fabsf(op_type - AD_OP_SUB) < 0.5f) { val = lv - rv; }
                     else if (fabsf(op_type - AD_OP_MUL) < 0.5f) { val = lv * rv; }
-                    else if (fabsf(op_type - AD_OP_NEG) < 0.5f) { val = -lv; }
-                    else if (fabsf(op_type - AD_OP_ABS) < 0.5f) { val = fabsf(lv); }
-                    else if (fabsf(op_type - AD_OP_RELU) < 0.5f) { val = lv > 0 ? lv : 0; }
-                    else if (fabsf(op_type - AD_OP_SIGMOID) < 0.5f) { val = 1.0f/(1.0f+expf(-lv)); }
-                    else if (fabsf(op_type - AD_OP_TANH) < 0.5f) { val = tanhf(lv); }
-                    else if (fabsf(op_type - AD_OP_EXP) < 0.5f) { val = expf(lv); }
-                    else if (fabsf(op_type - AD_OP_LOG) < 0.5f) { val = logf(lv > 0 ? lv : 1e-15f); }
-                    else if (fabsf(op_type - AD_OP_SQRT) < 0.5f) { val = sqrtf(lv > 0 ? lv : 0); }
+                    else if (fabsf(op_type - AD_OP_NEG) < 0.5f)     { val = -lv;                          saved = -1.0f; }
+                    else if (fabsf(op_type - AD_OP_ABS) < 0.5f)     { val = fabsf(lv);                    saved = (lv > 0) ? 1.0f : (lv < 0) ? -1.0f : 0.0f; }
+                    else if (fabsf(op_type - AD_OP_RELU) < 0.5f)    { val = lv > 0 ? lv : 0;             saved = (lv > 0) ? 1.0f : 0.0f; }
+                    else if (fabsf(op_type - AD_OP_SIGMOID) < 0.5f) { val = 1.0f/(1.0f+expf(-lv));       saved = val * (1.0f - val); }
+                    else if (fabsf(op_type - AD_OP_TANH) < 0.5f)    { val = tanhf(lv);                    saved = 1.0f - val * val; }
+                    else if (fabsf(op_type - AD_OP_EXP) < 0.5f)     { val = expf(lv);                     saved = val; }
+                    else if (fabsf(op_type - AD_OP_LOG) < 0.5f)     { val = logf(lv > 0 ? lv : 1e-15f);  saved = 1.0f / (fabsf(lv) > 1e-15f ? lv : 1e-15f); }
+                    else if (fabsf(op_type - AD_OP_SQRT) < 0.5f)    { val = sqrtf(lv > 0 ? lv : 0);      saved = 1.0f / (2.0f * (fabsf(val) > 1e-15f ? val : 1e-15f)); }
                     x[S_AD_TAPE_BASE + tlen * AD_NODE_FIELDS + AD_F_VALUE] = val;
+                    x[S_AD_TAPE_BASE + tlen * AD_NODE_FIELDS + AD_F_SAVED] = saved;
                 }
             } else if (opcode == OP_AD_BACKWARD) {
                 /* Seed gradient for backward pass */
@@ -1718,13 +1709,26 @@ static int run_simulated(const Instr* prog, int n_instr, float* outputs, int max
         for (int i = S_AD_GRAD_ACCUM; i <= S_AD_SPARE8; i++) x[i] = 0;
 
         if (x[S_AD_IS_BACKWARD] > 0.5f) {
-            /* Backward mode: use ad_backward_step directly on the state.
-             * This matches the reference interpreter exactly. The layer-based
-             * backward (layers 2/3/4) will be used in Phase 3 for the matrix
-             * forward pass where direct C manipulation isn't available. */
-            ad_backward_step(x);
+            /* Backward: simulated layer functions mirroring backward_with_weights.
+             * Uses same layer math as weight matrices: indicator gating, SQUARE products,
+             * gradient dispatch — expressed as explicit C simulating the neuron computations. */
+            layer2_ffn(x, tmp); for(int i=0;i<D;i++) x[i]+=tmp[i]; /* L2: cursor load */
+            layer4_ffn(x, tmp); for(int i=0;i<D;i++) x[i]+=tmp[i]; /* L4: parent load */
+            layer1_ffn(x, tmp); for(int i=0;i<D;i++) x[i]+=tmp[i]; /* L1: SQUARE products */
+            layer3_ffn(x, tmp); for(int i=0;i<D;i++) x[i]+=tmp[i]; /* L3: gradient rules */
+            layer5_ffn(x, tmp); for(int i=0;i<D;i++) x[i]+=tmp[i]; /* L5: gradient write-back */
+            /* Cursor decrement + completion check */
+            x[S_AD_CURSOR] -= 1.0f;
+            if (x[S_AD_CURSOR] < -0.5f) {
+                x[S_AD_IS_BACKWARD] = 0;
+                x[S_AD_MODE] = 0;
+            }
+            /* Clear transient for next cycle */
+            for (int i = S_AD_CUR_OP; i <= S_AD_RIGHT_VALUE; i++) x[i] = 0;
+            x[S_AD_IS_FORWARD] = 0;
+            for (int i = S_AD_GRAD_ACCUM; i <= S_AD_SPARE8; i++) x[i] = 0;
         } else {
-            /* Normal execution: all 5 layers */
+            /* Normal execution: all 6 layers (skip L5 — backward only) */
             layer0_attention(x, pe, n_instr, tmp); for(int i=0;i<D;i++) x[i]+=tmp[i];
             layer1_ffn(x, tmp); for(int i=0;i<D;i++) x[i]+=tmp[i];
             layer2_ffn(x, tmp); for(int i=0;i<D;i++) x[i]+=tmp[i];
@@ -1920,13 +1924,22 @@ static void generate_weights(InterpreterWeights* w) {
         W(w->ff_down[1], pn+2, S_AD_PROD_GRAD_RV, D) = -0.5f;
         pn += 3;
 
-        /* Product 3: grad * cur_value → AD_PROD_GRAD_CV (EXP/SIGMOID/TANH backward) */
+        /* Product 3: grad * cur_value → AD_PROD_GRAD_CV */
         W(w->ff_up[1], S_AD_CUR_GRAD, pn, FFN_DIM) = 1; W(w->ff_up[1], S_AD_CUR_VALUE, pn, FFN_DIM) = 1;
         W(w->ff_up[1], S_AD_CUR_GRAD, pn+1, FFN_DIM) = 1;
         W(w->ff_up[1], S_AD_CUR_VALUE, pn+2, FFN_DIM) = 1;
         W(w->ff_down[1], pn, S_AD_PROD_GRAD_CV, D) = 0.5f;
         W(w->ff_down[1], pn+1, S_AD_PROD_GRAD_CV, D) = -0.5f;
         W(w->ff_down[1], pn+2, S_AD_PROD_GRAD_CV, D) = -0.5f;
+        pn += 3;
+
+        /* Product 4: grad * saved_val → AD_PROD_GRAD_SV (ALL unary backward rules) */
+        W(w->ff_up[1], S_AD_CUR_GRAD, pn, FFN_DIM) = 1; W(w->ff_up[1], S_AD_CUR_SAVED, pn, FFN_DIM) = 1;
+        W(w->ff_up[1], S_AD_CUR_GRAD, pn+1, FFN_DIM) = 1;
+        W(w->ff_up[1], S_AD_CUR_SAVED, pn+2, FFN_DIM) = 1;
+        W(w->ff_down[1], pn, S_AD_PROD_GRAD_SV, D) = 0.5f;
+        W(w->ff_down[1], pn+1, S_AD_PROD_GRAD_SV, D) = -0.5f;
+        W(w->ff_down[1], pn+2, S_AD_PROD_GRAD_SV, D) = -0.5f;
         pn += 3;
 
         printf("[WEIGHT_GEN] Layer 1: %d SQUARE neurons\n", pn);
@@ -2544,65 +2557,17 @@ static void generate_weights(InterpreterWeights* w) {
         W(w->ff_down[L], n, S_AD_LEFT_GRAD_NEW, D) = -1.0f;
         n++;
 
-        /* AD_ABS (6): dL = grad * sign(left_value). Gate includes step(left_value) for positive case,
-         * and step(-left_value) for negative. Two separate neuron groups. */
-        /* Positive case: left > 0, dL = +grad */
-        W(w->ff_gate[L], S_AD_CUR_OP, n, FFN_DIM) = SCALE;
-        W(w->ff_gate[L], S_AD_IS_BACKWARD, n, FFN_DIM) = SCALE;
-        W(w->ff_gate[L], S_AD_LEFT_VALUE, n, FFN_DIM) = SCALE;
-        w->ff_gate_b[L][n] = SCALE * (-AD_OP_ABS + 0.5f - 1.0f);
-        W(w->ff_up[L], S_AD_CUR_GRAD, n, FFN_DIM) = 1.0f;
-        W(w->ff_down[L], n, S_AD_LEFT_GRAD_NEW, D) = 1.0f;
-        n++;
-        W(w->ff_gate[L], S_AD_CUR_OP, n, FFN_DIM) = SCALE;
-        W(w->ff_gate[L], S_AD_IS_BACKWARD, n, FFN_DIM) = SCALE;
-        W(w->ff_gate[L], S_AD_LEFT_VALUE, n, FFN_DIM) = SCALE;
-        w->ff_gate_b[L][n] = SCALE * (-AD_OP_ABS - 0.5f - 1.0f);
-        W(w->ff_up[L], S_AD_CUR_GRAD, n, FFN_DIM) = 1.0f;
-        W(w->ff_down[L], n, S_AD_LEFT_GRAD_NEW, D) = -1.0f;
-        n++;
-        /* Negative case: left < 0, dL = -grad */
-        W(w->ff_gate[L], S_AD_CUR_OP, n, FFN_DIM) = SCALE;
-        W(w->ff_gate[L], S_AD_IS_BACKWARD, n, FFN_DIM) = SCALE;
-        W(w->ff_gate[L], S_AD_LEFT_VALUE, n, FFN_DIM) = -SCALE;
-        w->ff_gate_b[L][n] = SCALE * (-AD_OP_ABS + 0.5f - 1.0f);
-        W(w->ff_up[L], S_AD_CUR_GRAD, n, FFN_DIM) = -1.0f;
-        W(w->ff_down[L], n, S_AD_LEFT_GRAD_NEW, D) = 1.0f;
-        n++;
-        W(w->ff_gate[L], S_AD_CUR_OP, n, FFN_DIM) = SCALE;
-        W(w->ff_gate[L], S_AD_IS_BACKWARD, n, FFN_DIM) = SCALE;
-        W(w->ff_gate[L], S_AD_LEFT_VALUE, n, FFN_DIM) = -SCALE;
-        w->ff_gate_b[L][n] = SCALE * (-AD_OP_ABS - 0.5f - 1.0f);
-        W(w->ff_up[L], S_AD_CUR_GRAD, n, FFN_DIM) = -1.0f;
-        W(w->ff_down[L], n, S_AD_LEFT_GRAD_NEW, D) = -1.0f;
-        n++;
-
-        /* AD_EXP (10): dL = grad * cur_value (precomputed as AD_PROD_GRAD_CV) */
-        ADD_BW_PAIR(AD_OP_EXP, S_AD_PROD_GRAD_CV, 1.0f, 0, S_AD_LEFT_GRAD_NEW, 1.0f);
-
-        /* AD_SIGMOID (8): dL = grad * val * (1 - val) = grad*val - grad*val^2
-         * = AD_PROD_GRAD_CV - AD_PROD_GRAD_CV * val
-         * This needs grad*val (= AD_PROD_GRAD_CV) and grad*val^2 which needs a 4th product.
-         * Alternative: use identity sigmoid'(x) = sigmoid(x)*(1-sigmoid(x)) = val - val^2
-         * Then dL = grad * (val - val^2). In the gated FFN:
-         * neuron 1: gate=bw*indicator(op==SIGMOID), up=AD_PROD_GRAD_CV → contributes +1
-         * neuron 2: gate=bw*indicator(op==SIGMOID), up=-AD_CUR_VALUE*AD_PROD_GRAD_CV
-         * But we can't multiply two runtime values in a gated neuron...
-         *
-         * Honest approach: add a 4th SQUARE product for grad*val^2 = (grad*val)*val.
-         * But we need (AD_PROD_GRAD_CV * AD_CUR_VALUE), which requires the output of
-         * Layer 1's SQUARE to be available. It IS available after L1 runs (in backward order).
-         * However, we'd need ANOTHER SQUARE pass. This is a chained product.
-         *
-         * Simplest: delegate SIGMOID/TANH backward to postprocess.
-         * This means: ADD, SUB, MUL, NEG, ABS, RELU, EXP run through weights (7/11).
-         * SIGMOID, TANH, LOG, SQRT use postprocess (4/11). */
-        /* SIGMOID/TANH/LOG/SQRT/ABS backward gradient rules are applied in
-         * backward_with_weights using weight-matrix-loaded cursor values
-         * (AD_CUR_OP, AD_CUR_GRAD, AD_CUR_VALUE, AD_LEFT_VALUE). The Layer 3
-         * weight neurons above handle ADD/SUB/MUL/NEG/RELU/EXP backward.
-         * All 11 backward ops produce correct gradients through the weight
-         * matrix pipeline (verified 3-way). */
+        /* ALL unary ops: dL = grad * saved_val.
+         * saved_val is precomputed during forward recording (Option B):
+         *   NEG=-1, ABS=sign, RELU=step, SIGMOID=val*(1-val),
+         *   TANH=1-val², EXP=val, LOG=1/input, SQRT=1/(2*val).
+         * L1 SQUARE computes AD_PROD_GRAD_SV = grad * saved_val.
+         * Each unary op gets a gated pair that writes AD_PROD_GRAD_SV → LEFT_GRAD_NEW. */
+        for (int uop_i = 0; uop_i < 8; uop_i++) {
+            float uop_vals[] = { AD_OP_NEG, AD_OP_ABS, AD_OP_RELU, AD_OP_SIGMOID,
+                                 AD_OP_TANH, AD_OP_EXP, AD_OP_LOG, AD_OP_SQRT };
+            ADD_BW_PAIR(uop_vals[uop_i], S_AD_PROD_GRAD_SV, 1.0f, 0, S_AD_LEFT_GRAD_NEW, 1.0f);
+        }
 
 #undef ADD_BW_PAIR
 
@@ -2817,60 +2782,19 @@ static void apply_ffn_layer(const InterpreterWeights* w, int L, float x[D]) {
  * For ops where L1 SQUARE products suffice (MUL: grad*left, grad*right), L5 writes
  * the L1 products directly. For ops where L3 gradient rules are needed (ADD: grad
  * passthrough), L5 writes grad directly (no product needed). */
+/* Backward gradient propagation entirely through weight matrices.
+ * L2: cursor load (tape[cursor] → AD_CUR_*)
+ * L4: parent load (tape[CUR_LEFT/RIGHT] → AD_LEFT/RIGHT_VALUE)
+ * L1: SQUARE products (grad*right, grad*left, grad*saved — all via polarization identity)
+ * L3: gradient rule dispatch (gated pairs write LEFT/RIGHT_GRAD_NEW)
+ * L5: gradient write-back (indicator-gated write to parent tape nodes)
+ * Zero inline C. All operations through apply_ffn_layer (actual W @ x + b). */
 static void backward_with_weights(const InterpreterWeights* w, float x[D]) {
-    apply_ffn_layer(w, 2, x);  /* cursor load: tape[cursor] → AD_CUR_* */
-    apply_ffn_layer(w, 4, x);  /* parent load: tape[CUR_LEFT/RIGHT] → AD_LEFT/RIGHT_VALUE */
-    apply_ffn_layer(w, 1, x);  /* SQUARE products: grad*left, grad*right, grad*cur_value */
-
-    /* Gradient rules — applied directly using loaded cursor fields.
-     * This mirrors ad_backward_step but uses the weight-matrix-loaded values. */
-    float cur_op = x[S_AD_CUR_OP];
-    float cur_grad = x[S_AD_CUR_GRAD];
-    float cur_val = x[S_AD_CUR_VALUE];
-    int li = (int)roundf(x[S_AD_CUR_LEFT]);
-    int ri = (int)roundf(x[S_AD_CUR_RIGHT]);
-
-    if (fabsf(cur_grad) > 1e-15f) {
-        if (fabsf(cur_op - AD_OP_ADD) < 0.5f) {
-            if (li >= 0 && li < AD_MAX_TAPE) AD_NODE(x, li, AD_F_GRAD) += cur_grad;
-            if (ri >= 0 && ri < AD_MAX_TAPE) AD_NODE(x, ri, AD_F_GRAD) += cur_grad;
-        } else if (fabsf(cur_op - AD_OP_SUB) < 0.5f) {
-            if (li >= 0 && li < AD_MAX_TAPE) AD_NODE(x, li, AD_F_GRAD) += cur_grad;
-            if (ri >= 0 && ri < AD_MAX_TAPE) AD_NODE(x, ri, AD_F_GRAD) -= cur_grad;
-        } else if (fabsf(cur_op - AD_OP_MUL) < 0.5f) {
-            /* Use L1 SQUARE products: AD_PROD_GRAD_LV = grad*right, AD_PROD_GRAD_RV = grad*left */
-            if (li >= 0 && li < AD_MAX_TAPE) AD_NODE(x, li, AD_F_GRAD) += x[S_AD_PROD_GRAD_LV];
-            if (ri >= 0 && ri < AD_MAX_TAPE) AD_NODE(x, ri, AD_F_GRAD) += x[S_AD_PROD_GRAD_RV];
-        } else if (fabsf(cur_op - AD_OP_NEG) < 0.5f) {
-            if (li >= 0 && li < AD_MAX_TAPE) AD_NODE(x, li, AD_F_GRAD) -= cur_grad;
-        } else if (fabsf(cur_op - AD_OP_ABS) < 0.5f) {
-            if (li >= 0 && li < AD_MAX_TAPE) {
-                float sign = (x[S_AD_LEFT_VALUE] > 0) ? 1.0f : (x[S_AD_LEFT_VALUE] < 0) ? -1.0f : 0.0f;
-                AD_NODE(x, li, AD_F_GRAD) += cur_grad * sign;
-            }
-        } else if (fabsf(cur_op - AD_OP_RELU) < 0.5f) {
-            if (li >= 0 && li < AD_MAX_TAPE && x[S_AD_LEFT_VALUE] > 0)
-                AD_NODE(x, li, AD_F_GRAD) += cur_grad;
-        } else if (fabsf(cur_op - AD_OP_SIGMOID) < 0.5f) {
-            if (li >= 0 && li < AD_MAX_TAPE)
-                AD_NODE(x, li, AD_F_GRAD) += cur_grad * cur_val * (1.0f - cur_val);
-        } else if (fabsf(cur_op - AD_OP_TANH) < 0.5f) {
-            if (li >= 0 && li < AD_MAX_TAPE)
-                AD_NODE(x, li, AD_F_GRAD) += cur_grad * (1.0f - cur_val * cur_val);
-        } else if (fabsf(cur_op - AD_OP_EXP) < 0.5f) {
-            /* Use L1 product: AD_PROD_GRAD_CV = grad*cur_value = grad*exp(x) */
-            if (li >= 0 && li < AD_MAX_TAPE)
-                AD_NODE(x, li, AD_F_GRAD) += x[S_AD_PROD_GRAD_CV];
-        } else if (fabsf(cur_op - AD_OP_LOG) < 0.5f) {
-            if (li >= 0 && li < AD_MAX_TAPE) {
-                float lv = x[S_AD_LEFT_VALUE];
-                AD_NODE(x, li, AD_F_GRAD) += cur_grad / (fabsf(lv) > 1e-15f ? lv : 1e-15f);
-            }
-        } else if (fabsf(cur_op - AD_OP_SQRT) < 0.5f) {
-            if (li >= 0 && li < AD_MAX_TAPE)
-                AD_NODE(x, li, AD_F_GRAD) += cur_grad / (2.0f * (fabsf(cur_val) > 1e-15f ? cur_val : 1e-15f));
-        }
-    }
+    apply_ffn_layer(w, 2, x);  /* cursor load */
+    apply_ffn_layer(w, 4, x);  /* parent load */
+    apply_ffn_layer(w, 1, x);  /* SQUARE products */
+    apply_ffn_layer(w, 3, x);  /* gradient rule dispatch */
+    apply_ffn_layer(w, 5, x);  /* gradient write-back */
 }
 
 static void forward_with_weights(const InterpreterWeights* w,
