@@ -1601,18 +1601,27 @@ void arena_merge_to_parent(arena_t* dest, arena_t* src) {
 
     if (dest->thread_safe) arena_lock(dest);
 
-    /* Transfer all blocks from src to dest by linking chains.
-     * Walk src's chain to find the tail, then link dest's chain after it.
-     * This makes src's blocks the "older" blocks (searched last). */
+    /* Append src's blocks to the END of dest's chain.
+     * dest->current_block stays unchanged — dest continues allocating
+     * from its own newest block. Src's blocks become "old" blocks
+     * containing finalized data that won't be allocated into.
+     *
+     * This preserves dest's allocation invariants:
+     *   - dest->current_block->used reflects dest's allocation state
+     *   - New allocations go into dest->current_block (or new blocks)
+     *   - Src blocks are only read, never written to after merge */
     if (src->current_block) {
-        arena_block_t* src_tail = src->current_block;
-        while (src_tail->next) src_tail = src_tail->next;
+        if (dest->current_block) {
+            /* Find the end of dest's block chain */
+            arena_block_t* dest_tail = dest->current_block;
+            while (dest_tail->next) dest_tail = dest_tail->next;
+            /* Append src's entire chain after dest's tail */
+            dest_tail->next = src->current_block;
+        } else {
+            /* dest has no blocks — take src's chain */
+            dest->current_block = src->current_block;
+        }
 
-        /* Link dest's chain after src's tail */
-        src_tail->next = dest->current_block;
-        dest->current_block = src->current_block;
-
-        /* Update statistics */
         dest->total_allocated += src->total_allocated;
 
         /* Clear src without freeing blocks (now owned by dest) */
@@ -1623,12 +1632,16 @@ void arena_merge_to_parent(arena_t* dest, arena_t* src) {
     if (dest->thread_safe) arena_unlock(dest);
 }
 
+/* Worker thread detection — delegates to thread_pool's TLS flag.
+ * Weak symbol: returns 0 if thread_pool is not linked. */
+extern "C" int eshkol_thread_pool_is_worker(void) __attribute__((weak));
+
 int arena_is_worker_thread(void) {
-    // Check if thread_pool's tls_is_worker_thread is set
-    // This is defined in thread_pool.cpp — we use a weak symbol check
-    return __thread_local_arena != nullptr ? 0 : 0;
-    // Note: actual worker thread detection requires thread_pool linkage.
-    // For now, non-worker threads always return 0.
+    /* If thread_pool is linked, use its TLS flag. Otherwise return 0. */
+    if (eshkol_thread_pool_is_worker) {
+        return eshkol_thread_pool_is_worker();
+    }
+    return 0;
 }
 
 // Region creation

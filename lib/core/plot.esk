@@ -49,15 +49,19 @@
           (sparkline-build (cdr data) mn mx
                           (string-append acc (sparkline-char (inexact->exact (floor idx)))))))))
 
+;; Min/max: explicit recursion with direct < > comparison.
+;; Safe for data up to ~10K elements (Eshkol has 512MB stack).
 (define (sparkline-min lst)
   (if (null? (cdr lst))
       (car lst)
-      (min (car lst) (sparkline-min (cdr lst)))))
+      (let ((rest-min (sparkline-min (cdr lst))))
+        (if (< (car lst) rest-min) (car lst) rest-min))))
 
 (define (sparkline-max lst)
   (if (null? (cdr lst))
       (car lst)
-      (max (car lst) (sparkline-max (cdr lst)))))
+      (let ((rest-max (sparkline-max (cdr lst))))
+        (if (> (car lst) rest-max) (car lst) rest-max))))
 
 ;; ════════════════════════════════════════════════════════════════════
 ;; Bar Chart — horizontal bars with labels

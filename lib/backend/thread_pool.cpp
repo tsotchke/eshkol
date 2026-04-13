@@ -102,6 +102,11 @@ struct eshkol_thread_pool {
 // Thread-local arena for worker threads
 thread_local arena_t* tls_arena = nullptr;
 thread_local bool tls_is_worker_thread = false;
+
+/* Exported for arena_is_worker_thread() weak symbol linkage */
+extern "C" int eshkol_thread_pool_is_worker(void) {
+    return tls_is_worker_thread ? 1 : 0;
+}
 thread_local size_t tls_arena_size = 0;
 thread_local size_t tls_worker_id = SIZE_MAX;
 thread_local size_t tls_epoch_slot = SIZE_MAX;
