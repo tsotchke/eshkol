@@ -628,13 +628,12 @@ static void eshkol_diagnostic_at(eshkol_logger_t level,
         /* Print line number gutter + source line */
         fprintf(out, " %*u | %.*s\n", 4, line, line_len, p);
 
-        /* Caret line */
+        /* Caret line — expand tabs to 4 spaces for consistent alignment */
         if (column > 0) {
             fprintf(out, "      | ");
             for (unsigned i = 1; i < column; i++) {
-                /* Preserve tabs for alignment */
                 if (i - 1 < (unsigned)line_len && p[i - 1] == '\t')
-                    fputc('\t', out);
+                    fputs("    ", out);  /* 4-space tab stop */
                 else
                     fputc(' ', out);
             }

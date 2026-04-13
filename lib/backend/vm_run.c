@@ -192,12 +192,14 @@ static void vm_run(VM* vm) {
 
     lbl_GET_LOCAL: {
         int src = vm->fp + instr.operand;
-        vm->ad_node_map[vm->sp] = vm->ad_node_map[src]; /* propagate tape node */
+        if (src >= 0 && src < STACK_SIZE && vm->sp < STACK_SIZE)
+            vm->ad_node_map[vm->sp] = vm->ad_node_map[src];
         vm_push(vm, vm->stack[src]);
         DISPATCH(); }
     lbl_SET_LOCAL: {
         int dst = vm->fp + instr.operand;
-        vm->ad_node_map[dst] = vm->ad_node_map[vm->sp - 1]; /* propagate tape node */
+        if (dst >= 0 && dst < STACK_SIZE && vm->sp > 0)
+            vm->ad_node_map[dst] = vm->ad_node_map[vm->sp - 1];
         vm->stack[dst] = vm_peek(vm, 0);
         vm_pop(vm);
         DISPATCH(); }
@@ -728,7 +730,8 @@ vm_exit:
         /* Variables */
         case OP_GET_LOCAL: {
             int src = vm->fp + instr.operand;
-            vm->ad_node_map[vm->sp] = vm->ad_node_map[src];
+            if (src >= 0 && src < STACK_SIZE && vm->sp < STACK_SIZE)
+                vm->ad_node_map[vm->sp] = vm->ad_node_map[src];
             vm_push(vm, vm->stack[src]);
             break; }
         case OP_SET_LOCAL:
