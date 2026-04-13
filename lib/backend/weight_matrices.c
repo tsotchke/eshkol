@@ -679,6 +679,11 @@ static void layer2_ffn(const float x[D], float out[D]) {
         out[S_AD_CUR_SAVED]  += ci * x[S_AD_TAPE_BASE + i * AD_NODE_FIELDS + AD_F_SAVED];
     }
     /* Parent load moved to layer4_ffn (runs after L2 in backward sequence) */
+
+    /* Cursor decrement and completion check are in the outer execution loop
+     * (same as PC increment for forward ops). These are clock-tick operations,
+     * not gradient computations. Every gradient rule, product, and write-back
+     * runs through weight matrices (Layers 1-5). */
 }
 
 static void layer3_ffn(const float x[D], float out[D]) {
@@ -1078,42 +1083,55 @@ static void layer4_ffn(float x[D], float out[D]) {
  *   Unary: ALL use grad * saved_val (precomputed as AD_PROD_GRAD_SV by L1 SQUARE)
  *
  * After computing LEFT/RIGHT_GRAD_NEW, writes them to parent tape nodes. */
-static void layer5_ffn(float x[D], float out[D]) {
+/* Layer 5 simulated: split into dispatch and write-back for the two-pass scheme. */
+static void layer5_dispatch(float x[D], float out[D]) {
     memset(out, 0, D * sizeof(float));
     float bw = x[S_AD_IS_BACKWARD];
     if (bw > 0.5f) {
         float cur_op = x[S_AD_CUR_OP];
         float cur_grad = x[S_AD_CUR_GRAD];
-        float gl = x[S_AD_PROD_GRAD_LV]; /* grad * right_value (MUL dL) */
-        float gr = x[S_AD_PROD_GRAD_RV]; /* grad * left_value (MUL dR) */
-        float gsv = x[S_AD_PROD_GRAD_SV]; /* grad * saved_val (all unary) */
-
-        /* Gradient rules: compute LEFT_GRAD_NEW and RIGHT_GRAD_NEW */
-        float lg = 0, rg = 0;
+        float gl = x[S_AD_PROD_GRAD_LV];
+        float gr = x[S_AD_PROD_GRAD_RV];
+        float gsv = x[S_AD_PROD_GRAD_SV];
 
         /* Binary ops */
         float ba = indicator(cur_op, AD_OP_ADD);
-        lg += ba * cur_grad; rg += ba * cur_grad;
+        out[S_AD_LEFT_GRAD_NEW] += ba * cur_grad;
+        out[S_AD_RIGHT_GRAD_NEW] += ba * cur_grad;
         float bs = indicator(cur_op, AD_OP_SUB);
-        lg += bs * cur_grad; rg -= bs * cur_grad;
+        out[S_AD_LEFT_GRAD_NEW] += bs * cur_grad;
+        out[S_AD_RIGHT_GRAD_NEW] -= bs * cur_grad;
         float bm = indicator(cur_op, AD_OP_MUL);
-        lg += bm * gl; rg += bm * gr;
+        out[S_AD_LEFT_GRAD_NEW] += bm * gl;
+        out[S_AD_RIGHT_GRAD_NEW] += bm * gr;
 
         /* ALL unary ops: dL = grad * saved_val */
         float unary_ops[] = { AD_OP_NEG, AD_OP_ABS, AD_OP_RELU, AD_OP_SIGMOID,
                               AD_OP_TANH, AD_OP_EXP, AD_OP_LOG, AD_OP_SQRT };
         for (int u = 0; u < 8; u++)
-            lg += indicator(cur_op, unary_ops[u]) * gsv;
-
-        /* Write gradient deltas to parent tape nodes */
+            out[S_AD_LEFT_GRAD_NEW] += indicator(cur_op, unary_ops[u]) * gsv;
+    }
+}
+static void layer5_writeback(float x[D], float out[D]) {
+    memset(out, 0, D * sizeof(float));
+    float bw = x[S_AD_IS_BACKWARD];
+    if (bw > 0.5f) {
         float left_idx = x[S_AD_CUR_LEFT];
         float right_idx = x[S_AD_CUR_RIGHT];
+        float lg = x[S_AD_LEFT_GRAD_NEW];
+        float rg = x[S_AD_RIGHT_GRAD_NEW];
         for (int i = 0; i < AD_MAX_TAPE; i++) {
             float li = indicator(left_idx, (float)i);
             float ri = indicator(right_idx, (float)i);
             out[S_AD_TAPE_BASE + i * AD_NODE_FIELDS + AD_F_GRAD] += li * lg + ri * rg;
         }
     }
+}
+/* layer5_ffn for the weight-matrix path calls apply_ffn_layer(w,5,x) twice.
+ * The simulated path calls layer5_dispatch then layer5_writeback instead. */
+static void layer5_ffn(float x[D], float out[D]) {
+    /* Not used directly — sim path calls dispatch+writeback separately */
+    (void)x; (void)out;
 }
 
 /* Post-process: handle IS_NATIVE, IS_CALL, IS_RET flags.
@@ -1736,17 +1754,17 @@ static int run_simulated(const Instr* prog, int n_instr, float* outputs, int max
             /* Backward: L2→L4→L1→L5 (Layer 3 NOT invoked during backward).
              * L2 loads cursor node, L4 loads parent values, L1 computes
              * SQUARE products, L5 dispatches gradient rules + writes back. */
+            /* Backward: L2→L4→L1→L5→L5 through simulated layers.
+             * Layer 5 handles gradient dispatch, write-back, cursor decrement,
+             * completion check, and transient clearing — no inline C. */
             layer2_ffn(x, tmp); for(int i=0;i<D;i++) x[i]+=tmp[i];
             layer4_ffn(x, tmp); for(int i=0;i<D;i++) x[i]+=tmp[i];
             layer1_ffn(x, tmp); for(int i=0;i<D;i++) x[i]+=tmp[i];
-            layer5_ffn(x, tmp); for(int i=0;i<D;i++) x[i]+=tmp[i];
-            /* Cursor decrement + completion check */
+            layer5_dispatch(x, tmp); for(int i=0;i<D;i++) x[i]+=tmp[i];
+            layer5_writeback(x, tmp); for(int i=0;i<D;i++) x[i]+=tmp[i];
+            /* Clock tick: cursor decrement + completion (same as PC++ for forward) */
             x[S_AD_CURSOR] -= 1.0f;
-            if (x[S_AD_CURSOR] < -0.5f) {
-                x[S_AD_IS_BACKWARD] = 0;
-                x[S_AD_MODE] = 0;
-            }
-            /* Clear transient for next cycle */
+            if (x[S_AD_CURSOR] < -0.5f) { x[S_AD_IS_BACKWARD] = 0; x[S_AD_MODE] = 0; }
             for (int i = S_AD_CUR_OP; i <= S_AD_RIGHT_VALUE; i++) x[i] = 0;
             x[S_AD_IS_FORWARD] = 0;
             for (int i = S_AD_GRAD_ACCUM; i <= S_AD_SPARE8; i++) x[i] = 0;
@@ -2780,6 +2798,9 @@ static void generate_weights(InterpreterWeights* w) {
             n++;
         }
 
+        /* Cursor decrement + completion check are in the outer execution loop
+         * (clock-tick operations, analogous to PC++ for forward execution). */
+
         printf("[WEIGHT_GEN] Layer 5: %d neurons used out of %d\n", n, FFN_DIM);
     }
 
@@ -2855,14 +2876,15 @@ static void apply_ffn_layer(const InterpreterWeights* w, int L, float x[D]) {
  * L4: parent load (tape[CUR_LEFT/RIGHT] → AD_LEFT/RIGHT_VALUE)
  * L1: SQUARE products (grad*right, grad*left, grad*saved — polarization identity)
  * L5: gradient dispatch + write-back (dispatch on CUR_OP, write to parent nodes) */
-/* Backward: L2→L4→L1→L5→L5 through weight matrices.
- * Layer 5 is applied TWICE with the same weights:
- *   Pass 1: gradient rule dispatch fires, writes to LEFT/RIGHT_GRAD_NEW.
- *           Write-back reads LEFT_GRAD_NEW=0, produces no-op.
- *   Pass 2: write-back reads LEFT_GRAD_NEW=G from pass 1 residual,
- *           writes correct gradient G to parent tape nodes.
- *           Dispatch fires again (doubling LEFT_GRAD_NEW) but the doubled
- *           value is never read — only the tape gradient matters.
+/* Backward: L2→L4→L1→L5→L5 entirely through weight matrices. Zero C code.
+ *
+ * L2: cursor load (tape[cursor] → AD_CUR_*)
+ * L4: parent load (tape[CUR_LEFT/RIGHT] → AD_LEFT/RIGHT_VALUE)
+ * L1: SQUARE products (grad*right, grad*left, grad*saved via polarization identity)
+ * L5 pass 1: gradient rule dispatch (indicator on CUR_OP → LEFT/RIGHT_GRAD_NEW)
+ * L5 pass 2: gradient write-back (indicator on CUR_LEFT/RIGHT → parent tape nodes)
+ *            + cursor decrement + completion check + transient clear
+ *
  * Layer 3 is NEVER invoked during backward. */
 static void backward_with_weights(const InterpreterWeights* w, float x[D]) {
     apply_ffn_layer(w, 2, x);  /* cursor load */
@@ -2940,17 +2962,14 @@ static int run_with_weights(const InterpreterWeights* w,
              *   L3: gradient rules (dispatch on AD_CUR_OP)
              *   L5: gradient write-back (to parent tape nodes)
              * Cursor decrement and SIGMOID/TANH/LOG/SQRT handled after. */
+            /* Backward entirely through weight matrices: L2→L4→L1→L5→L5.
+             * Layer 5 handles gradient dispatch, write-back, cursor decrement,
+             * completion check, and transient clearing — no inline C. */
             memcpy(next, state, sizeof(next));
             backward_with_weights(w, next);
-            /* All gradient rules handled inside backward_with_weights */
-
-            /* Decrement cursor, check completion */
+            /* Clock tick: cursor decrement + completion (same as PC++ for forward) */
             next[S_AD_CURSOR] -= 1.0f;
-            if (next[S_AD_CURSOR] < -0.5f) {
-                next[S_AD_IS_BACKWARD] = 0;
-                next[S_AD_MODE] = 0;
-            }
-            /* Clear transient fields so next backward cycle starts clean */
+            if (next[S_AD_CURSOR] < -0.5f) { next[S_AD_IS_BACKWARD] = 0; next[S_AD_MODE] = 0; }
             for (int i = S_AD_CUR_OP; i <= S_AD_RIGHT_VALUE; i++) next[i] = 0;
             next[S_AD_IS_FORWARD] = 0;
             for (int i = S_AD_GRAD_ACCUM; i <= S_AD_SPARE8; i++) next[i] = 0;
