@@ -1218,13 +1218,15 @@ bool ReplJITContext::loadModule(const std::string& module_name, bool allow_preco
     // Store module exports for visibility checking
     module_exports_[module_name] = exported_symbols;
 
-    // Mark private symbols (defined but not exported) - only if module has provide
+    // Mark private symbols (defined but not exported) - only if module has provide.
+    // Delay registering them with codegen until after the module finishes compiling
+    // so internal forward references still work while loading the module itself.
+    std::vector<std::string> private_symbols_to_register;
     if (has_provide) {
         for (const auto& sym : defined_symbols) {
             if (exported_symbols.find(sym) == exported_symbols.end()) {
                 private_symbols_.insert(sym);
-                // Register with codegen so variable lookups will fail for private symbols
-                eshkol_repl_register_private_symbol(sym.c_str());
+                private_symbols_to_register.push_back(sym);
             }
         }
     }
@@ -1262,6 +1264,11 @@ bool ReplJITContext::loadModule(const std::string& module_name, bool allow_preco
         } catch (const std::exception& e) {
             std::cerr << "     error: " << e.what() << std::endl;
         }
+    }
+
+    for (const auto& sym : private_symbols_to_register) {
+        // Register after module compilation so only external accesses are blocked.
+        eshkol_repl_register_private_symbol(sym.c_str());
     }
 
     // Clean up ASTs
