@@ -1253,6 +1253,19 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/web/content_
     add_test(NAME content_length_parse_test COMMAND content_length_parse_test)
 endif()
 
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/repl/assoc_eval_test.cpp")
+    add_executable(assoc_eval_test tests/repl/assoc_eval_test.cpp)
+    target_compile_features(assoc_eval_test PRIVATE cxx_std_17)
+    add_dependencies(assoc_eval_test stdlib)
+    add_test(
+        NAME assoc_eval_test
+        COMMAND assoc_eval_test
+                $<TARGET_FILE:eshkol-run>
+                ${CMAKE_CURRENT_SOURCE_DIR}
+                ${STDLIB_OUTPUT}
+    )
+endif()
+
 # ===== XLA Integration Tests =====
 if(ESHKOL_XLA_ENABLED AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/xla/xla_codegen_test.cpp")
     message(STATUS "Building XLA integration tests")
