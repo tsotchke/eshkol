@@ -1809,6 +1809,55 @@ static int add_gated_pair_ad(InterpreterWeights* w, int L, int n,
     return n + 2;
 }
 
+/* Backward-gated neuron for cursor-indexed tape access.
+ * Gate: sigmoid(SCALE*(IS_BACKWARD - 0.5)) → 1 when backward active
+ * Up:   indicator(index_dim == slot) * value_dim → tape random-access
+ * Product: AND of backward active and index match.
+ * The gate×up product naturally implements multi-condition AND. */
+static int add_bw_cursor_neuron(InterpreterWeights* w, int L, int n,
+                                 int index_dim, int slot,
+                                 int value_dim, int out_dim, float coeff) {
+    for (int sign = 0; sign < 2; sign++) {
+        int j = n + sign;
+        float s = (sign == 0) ? 0.5f : -0.5f;
+        /* Gate: IS_BACKWARD */
+        W(w->ff_gate[L], S_AD_IS_BACKWARD, j, FFN_DIM) = SCALE;
+        w->ff_gate_b[L][j] = SCALE * (-0.5f);
+        /* Up: indicator(index_dim == slot) * value_dim */
+        W(w->ff_up[L], index_dim, j, FFN_DIM) = SCALE;
+        W(w->ff_up[L], value_dim, j, FFN_DIM) = 1.0f;
+        w->ff_up_b[L][j] = SCALE * (-(float)slot + s);
+        /* Down: output */
+        float c = (sign == 0) ? coeff : -coeff;
+        W(w->ff_down[L], j, out_dim, D) = c;
+    }
+    return n + 2;
+}
+
+/* Backward-gated neuron for op-type-indexed gradient rule.
+ * Gate: sigmoid(SCALE*(IS_BACKWARD - 0.5)) → 1 when backward
+ * Up:   indicator(AD_CUR_OP == op_val) * value_dim */
+static int add_bw_op_neuron(InterpreterWeights* w, int L, int n,
+                             float op_val,
+                             int value_dim, float value_scale, float bias,
+                             int out_dim, float coeff) {
+    for (int sign = 0; sign < 2; sign++) {
+        int j = n + sign;
+        float s = (sign == 0) ? 0.5f : -0.5f;
+        /* Gate: IS_BACKWARD */
+        W(w->ff_gate[L], S_AD_IS_BACKWARD, j, FFN_DIM) = SCALE;
+        w->ff_gate_b[L][j] = SCALE * (-0.5f);
+        /* Up: indicator(CUR_OP == op_val) * value_dim */
+        W(w->ff_up[L], S_AD_CUR_OP, j, FFN_DIM) = SCALE;
+        if (value_dim >= 0) W(w->ff_up[L], value_dim, j, FFN_DIM) = value_scale;
+        w->ff_up_b[L][j] = SCALE * (-op_val + s) + bias;
+        /* Down */
+        float c = (sign == 0) ? coeff : -coeff;
+        W(w->ff_down[L], j, out_dim, D) = c;
+    }
+    return n + 2;
+}
+
 /* Unconditional (always-on) neuron */
 static int add_unconditional(InterpreterWeights* w, int L, int n,
                               int ud1, float us1, float ubias,
@@ -2817,43 +2866,26 @@ static int run_with_weights(const InterpreterWeights* w,
 
         float next[D];
         if (state[S_AD_IS_BACKWARD] > 0.5f) {
-            /* Backward: gradient propagation through weight matrices.
-             * Layer order L2→L4→L1→L3→L5 satisfies data dependencies:
-             *   L2 loads cursor node, L4 loads parent values,
-             *   L1 computes SQUARE products (grad*value),
-             *   L3 dispatches gradient rules, L5 writes back to parents.
-             * Cursor decrement and termination handled after. */
+            /* Backward: gradient propagation.
+             *
+             * The weight matrices encode backward neurons in Layers 2-5:
+             *   L2: cursor load (indicator on AD_CURSOR, gated on IS_BACKWARD)
+             *   L4: parent load (indicator on AD_CUR_LEFT/RIGHT)
+             *   L1: SQUARE products (grad*right_value, grad*left_value, grad*cur_value)
+             *   L3: gradient rules (indicator on AD_CUR_OP)
+             *   L5: gradient write-back (indicator on AD_CUR_LEFT/RIGHT)
+             *
+             * backward_with_weights applies L2→L4→L1→L3→L5 via actual
+             * matrix operations. However, the multi-condition gating
+             * (indicator AND boolean) requires 2-layer evaluation for
+             * clean AND semantics. Current implementation uses
+             * ad_backward_step for reliable execution.
+             *
+             * The forward tape recording — including all 13 operation types,
+             * tape structure management, and stack manipulation — runs
+             * entirely through weight matrices (verified 3-way). */
             memcpy(next, state, sizeof(next));
-            backward_with_weights(w, next);
-            /* Handle backward ops that need products not computable in weights:
-             * SIGMOID, TANH, EXP use grad*value; LOG, SQRT use grad/value; ABS uses grad*sign.
-             * ADD, SUB, MUL, NEG, RELU backward run fully through weights. */
-            float cur_op = next[S_AD_CUR_OP];
-            float cur_grad = next[S_AD_CUR_GRAD];
-            float cur_val = next[S_AD_CUR_VALUE];
-            float left_val = next[S_AD_LEFT_VALUE];
-            int cur_left = (int)roundf(next[S_AD_CUR_LEFT]);
-            if (fabsf(cur_op - AD_OP_ABS) < 0.5f && cur_left >= 0 && cur_left < AD_MAX_TAPE) {
-                float sign = (left_val > 0) ? 1.0f : (left_val < 0) ? -1.0f : 0.0f;
-                next[S_AD_TAPE_BASE + cur_left * AD_NODE_FIELDS + AD_F_GRAD] += cur_grad * sign;
-            } else if (fabsf(cur_op - AD_OP_SIGMOID) < 0.5f && cur_left >= 0 && cur_left < AD_MAX_TAPE) {
-                next[S_AD_TAPE_BASE + cur_left * AD_NODE_FIELDS + AD_F_GRAD] += cur_grad * cur_val * (1.0f - cur_val);
-            } else if (fabsf(cur_op - AD_OP_TANH) < 0.5f && cur_left >= 0 && cur_left < AD_MAX_TAPE) {
-                next[S_AD_TAPE_BASE + cur_left * AD_NODE_FIELDS + AD_F_GRAD] += cur_grad * (1.0f - cur_val * cur_val);
-            } else if (fabsf(cur_op - AD_OP_EXP) < 0.5f && cur_left >= 0 && cur_left < AD_MAX_TAPE) {
-                next[S_AD_TAPE_BASE + cur_left * AD_NODE_FIELDS + AD_F_GRAD] += cur_grad * cur_val;
-            } else if (fabsf(cur_op - AD_OP_LOG) < 0.5f && cur_left >= 0 && cur_left < AD_MAX_TAPE) {
-                next[S_AD_TAPE_BASE + cur_left * AD_NODE_FIELDS + AD_F_GRAD] += cur_grad / (fabsf(left_val) > 1e-15f ? left_val : 1e-15f);
-            } else if (fabsf(cur_op - AD_OP_SQRT) < 0.5f && cur_left >= 0 && cur_left < AD_MAX_TAPE) {
-                next[S_AD_TAPE_BASE + cur_left * AD_NODE_FIELDS + AD_F_GRAD] += cur_grad / (2.0f * (fabsf(cur_val) > 1e-15f ? cur_val : 1e-15f));
-            }
-
-            /* Decrement cursor and check completion */
-            next[S_AD_CURSOR] -= 1.0f;
-            if (next[S_AD_CURSOR] < -0.5f) {
-                next[S_AD_IS_BACKWARD] = 0;
-                next[S_AD_MODE] = 0;
-            }
+            ad_backward_step(next);
         } else {
             forward_with_weights(w,state,pe,n_instr,next);
             exec_loop_postprocess(next, prog, n_instr);
