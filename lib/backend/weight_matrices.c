@@ -678,16 +678,7 @@ static void layer2_ffn(const float x[D], float out[D]) {
         out[S_AD_CUR_RIGHT]  += ci * x[S_AD_TAPE_BASE + i * AD_NODE_FIELDS + AD_F_RIGHT];
         out[S_AD_CUR_SAVED]  += ci * x[S_AD_TAPE_BASE + i * AD_NODE_FIELDS + AD_F_SAVED];
     }
-    /* Load parent values — only during backward */
-    float left_idx = x[S_AD_CUR_LEFT] + out[S_AD_CUR_LEFT];
-    float right_idx = x[S_AD_CUR_RIGHT] + out[S_AD_CUR_RIGHT];
-    for (int i = 0; i < AD_MAX_TAPE; i++) {
-        float li = indicator(left_idx, (float)i) * bw_active;
-        float ri = indicator(right_idx, (float)i) * bw_active;
-        out[S_AD_LEFT_VALUE]  += li * x[S_AD_TAPE_BASE + i * AD_NODE_FIELDS + AD_F_VALUE];
-        out[S_AD_LEFT_GRAD]   += li * x[S_AD_TAPE_BASE + i * AD_NODE_FIELDS + AD_F_GRAD];
-        out[S_AD_RIGHT_VALUE] += ri * x[S_AD_TAPE_BASE + i * AD_NODE_FIELDS + AD_F_VALUE];
-    }
+    /* Parent load moved to layer4_ffn (runs after L2 in backward sequence) */
 }
 
 static void layer3_ffn(const float x[D], float out[D]) {
