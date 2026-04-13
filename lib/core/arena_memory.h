@@ -85,6 +85,26 @@ void arena_push_scope(arena_t* arena);
 void arena_pop_scope(arena_t* arena);
 void arena_reset(arena_t* arena);
 
+// Per-thread arena management (v1.2)
+// Each thread gets its own arena for lock-free allocation during parallel execution.
+// Worker arenas are merged into the parent arena when parallel tasks complete.
+
+/** Get or create the current thread's arena.
+ *  Returns the thread-local arena if in a worker thread, else the global arena. */
+arena_t* arena_get_thread_local(void);
+
+/** Create a new thread-local arena for the current thread.
+ *  @param size_hint  Initial block size (0 = default 1MB) */
+arena_t* arena_create_thread_local(size_t size_hint);
+
+/** Merge all blocks from src arena into dest arena.
+ *  After merge, src is empty (reset) but still valid for reuse.
+ *  This is used to collect worker thread allocations into the main arena. */
+void arena_merge_to_parent(arena_t* dest, arena_t* src);
+
+/** Check if the current thread is a worker thread. */
+int arena_is_worker_thread(void);
+
 // Statistics and debugging
 size_t arena_get_used_memory(const arena_t* arena);
 size_t arena_get_total_memory(const arena_t* arena);

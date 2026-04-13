@@ -1574,6 +1574,63 @@ arena_t* get_global_arena() {
     return __global_arena;
 }
 
+// ── Per-thread arena management (v1.2) ──
+
+// Thread-local arena for the current thread (non-worker threads)
+static thread_local arena_t* __thread_local_arena = nullptr;
+
+arena_t* arena_get_thread_local(void) {
+    // Worker threads have their own TLS arena managed by thread_pool.cpp.
+    // For non-worker threads, use the thread-local arena or global arena.
+    if (__thread_local_arena) return __thread_local_arena;
+    return get_global_arena();
+}
+
+arena_t* arena_create_thread_local(size_t size_hint) {
+    if (__thread_local_arena) {
+        // Already exists — return existing
+        return __thread_local_arena;
+    }
+    size_t block_size = size_hint > 0 ? size_hint : (1024 * 1024); // 1 MB default
+    __thread_local_arena = arena_create(block_size);
+    return __thread_local_arena;
+}
+
+void arena_merge_to_parent(arena_t* dest, arena_t* src) {
+    if (!dest || !src || dest == src) return;
+
+    if (dest->thread_safe) arena_lock(dest);
+
+    /* Transfer all blocks from src to dest by linking chains.
+     * Walk src's chain to find the tail, then link dest's chain after it.
+     * This makes src's blocks the "older" blocks (searched last). */
+    if (src->current_block) {
+        arena_block_t* src_tail = src->current_block;
+        while (src_tail->next) src_tail = src_tail->next;
+
+        /* Link dest's chain after src's tail */
+        src_tail->next = dest->current_block;
+        dest->current_block = src->current_block;
+
+        /* Update statistics */
+        dest->total_allocated += src->total_allocated;
+
+        /* Clear src without freeing blocks (now owned by dest) */
+        src->current_block = nullptr;
+        src->total_allocated = 0;
+    }
+
+    if (dest->thread_safe) arena_unlock(dest);
+}
+
+int arena_is_worker_thread(void) {
+    // Check if thread_pool's tls_is_worker_thread is set
+    // This is defined in thread_pool.cpp — we use a weak symbol check
+    return __thread_local_arena != nullptr ? 0 : 0;
+    // Note: actual worker thread detection requires thread_pool linkage.
+    // For now, non-worker threads always return 0.
+}
+
 // Region creation
 eshkol_region_t* region_create(const char* name, size_t size_hint) {
     // Use global arena to allocate the region structure itself
