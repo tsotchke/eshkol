@@ -211,6 +211,10 @@ private:
     // is accessible in subsequent evaluations
     void* shared_arena_;
 
+    // Tracks when stdlib is being loaded from source so nested `core.*`
+    // requires do not recurse back through the precompiled-stdlib path.
+    bool loading_stdlib_from_source_ = false;
+
     // REPL HOT RELOAD: Heap-allocated 16-byte tagged_value storage for every
     // user-defined top-level variable. The codegen emits @<name> as a pure
     // external declaration plus a __repl_var_<name> marker; addModule scans

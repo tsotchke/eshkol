@@ -1134,7 +1134,11 @@ bool ReplJITContext::loadStdlib() {
     }
 
     // Fallback: JIT compile from source (slowest but always correct)
-    return loadModule("stdlib", false);
+    const bool was_loading_stdlib_from_source = loading_stdlib_from_source_;
+    loading_stdlib_from_source_ = true;
+    const bool loaded = loadModule("stdlib", false);
+    loading_stdlib_from_source_ = was_loading_stdlib_from_source;
+    return loaded;
 }
 
 bool ReplJITContext::loadModule(const std::string& module_name) {
@@ -1148,7 +1152,8 @@ bool ReplJITContext::loadModule(const std::string& module_name, bool allow_preco
     }
 
     // For stdlib or core.* modules, use precompiled stdlib.o if available
-    if (allow_precompiled_stdlib && (module_name == "stdlib" || module_name.find("core.") == 0)) {
+    if (allow_precompiled_stdlib && !loading_stdlib_from_source_ &&
+        (module_name == "stdlib" || module_name.find("core.") == 0)) {
         // Try to load via stdlib.o (which includes all core modules)
         if (loadStdlib()) {
             return true;
