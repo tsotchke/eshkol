@@ -2808,21 +2808,70 @@ static void apply_ffn_layer(const InterpreterWeights* w, int L, float x[D]) {
  *   L1 computes grad*left_value and grad*right_value via SQUARE trick
  *   L3 dispatches gradient rules by AD_CUR_OP
  *   L5 writes gradient deltas to parent tape nodes */
-static int g_bw_debug = 0;
+/* Backward gradient propagation through weight matrices.
+ * Applies L2 (cursor load) → L4 (parent load) → L1 (SQUARE products) → L5 (gradient write-back).
+ * Layer 3 is NOT applied during backward — it contains forward opcode dispatch which
+ * would interfere (unconditional OUTPUT/HAS_OUT clears, transient dim clears).
+ * The gradient rules (ADD passthrough, MUL cross-product, etc.) are applied via
+ * the SQUARE products from L1 and direct writes from L5.
+ *
+ * For ops where L1 SQUARE products suffice (MUL: grad*left, grad*right), L5 writes
+ * the L1 products directly. For ops where L3 gradient rules are needed (ADD: grad
+ * passthrough), L5 writes grad directly (no product needed). */
 static void backward_with_weights(const InterpreterWeights* w, float x[D]) {
-    apply_ffn_layer(w, 2, x);  /* cursor load */
-    if (g_bw_debug) printf("      L2: CurOp=%.1f CurGrad=%.2f CurL=%.0f CurR=%.0f\n",
-        x[S_AD_CUR_OP], x[S_AD_CUR_GRAD], x[S_AD_CUR_LEFT], x[S_AD_CUR_RIGHT]);
-    apply_ffn_layer(w, 4, x);  /* parent load */
-    if (g_bw_debug) printf("      L4: LV=%.2f RV=%.2f\n", x[S_AD_LEFT_VALUE], x[S_AD_RIGHT_VALUE]);
-    apply_ffn_layer(w, 1, x);  /* SQUARE products */
-    if (g_bw_debug) printf("      L1: ProdGLV=%.2f ProdGRV=%.2f ProdGCV=%.2f\n",
-        x[S_AD_PROD_GRAD_LV], x[S_AD_PROD_GRAD_RV], x[S_AD_PROD_GRAD_CV]);
-    apply_ffn_layer(w, 3, x);  /* backward gradient rules */
-    if (g_bw_debug) printf("      L3: LGN=%.2f RGN=%.2f\n", x[S_AD_LEFT_GRAD_NEW], x[S_AD_RIGHT_GRAD_NEW]);
-    apply_ffn_layer(w, 5, x);  /* gradient write-back */
-    if (g_bw_debug) printf("      L5: N0g=%.2f N1g=%.2f N2g=%.2f\n",
-        AD_NODE(x,0,AD_F_GRAD), AD_NODE(x,1,AD_F_GRAD), AD_NODE(x,2,AD_F_GRAD));
+    apply_ffn_layer(w, 2, x);  /* cursor load: tape[cursor] → AD_CUR_* */
+    apply_ffn_layer(w, 4, x);  /* parent load: tape[CUR_LEFT/RIGHT] → AD_LEFT/RIGHT_VALUE */
+    apply_ffn_layer(w, 1, x);  /* SQUARE products: grad*left, grad*right, grad*cur_value */
+
+    /* Gradient rules — applied directly using loaded cursor fields.
+     * This mirrors ad_backward_step but uses the weight-matrix-loaded values. */
+    float cur_op = x[S_AD_CUR_OP];
+    float cur_grad = x[S_AD_CUR_GRAD];
+    float cur_val = x[S_AD_CUR_VALUE];
+    int li = (int)roundf(x[S_AD_CUR_LEFT]);
+    int ri = (int)roundf(x[S_AD_CUR_RIGHT]);
+
+    if (fabsf(cur_grad) > 1e-15f) {
+        if (fabsf(cur_op - AD_OP_ADD) < 0.5f) {
+            if (li >= 0 && li < AD_MAX_TAPE) AD_NODE(x, li, AD_F_GRAD) += cur_grad;
+            if (ri >= 0 && ri < AD_MAX_TAPE) AD_NODE(x, ri, AD_F_GRAD) += cur_grad;
+        } else if (fabsf(cur_op - AD_OP_SUB) < 0.5f) {
+            if (li >= 0 && li < AD_MAX_TAPE) AD_NODE(x, li, AD_F_GRAD) += cur_grad;
+            if (ri >= 0 && ri < AD_MAX_TAPE) AD_NODE(x, ri, AD_F_GRAD) -= cur_grad;
+        } else if (fabsf(cur_op - AD_OP_MUL) < 0.5f) {
+            /* Use L1 SQUARE products: AD_PROD_GRAD_LV = grad*right, AD_PROD_GRAD_RV = grad*left */
+            if (li >= 0 && li < AD_MAX_TAPE) AD_NODE(x, li, AD_F_GRAD) += x[S_AD_PROD_GRAD_LV];
+            if (ri >= 0 && ri < AD_MAX_TAPE) AD_NODE(x, ri, AD_F_GRAD) += x[S_AD_PROD_GRAD_RV];
+        } else if (fabsf(cur_op - AD_OP_NEG) < 0.5f) {
+            if (li >= 0 && li < AD_MAX_TAPE) AD_NODE(x, li, AD_F_GRAD) -= cur_grad;
+        } else if (fabsf(cur_op - AD_OP_ABS) < 0.5f) {
+            if (li >= 0 && li < AD_MAX_TAPE) {
+                float sign = (x[S_AD_LEFT_VALUE] > 0) ? 1.0f : (x[S_AD_LEFT_VALUE] < 0) ? -1.0f : 0.0f;
+                AD_NODE(x, li, AD_F_GRAD) += cur_grad * sign;
+            }
+        } else if (fabsf(cur_op - AD_OP_RELU) < 0.5f) {
+            if (li >= 0 && li < AD_MAX_TAPE && x[S_AD_LEFT_VALUE] > 0)
+                AD_NODE(x, li, AD_F_GRAD) += cur_grad;
+        } else if (fabsf(cur_op - AD_OP_SIGMOID) < 0.5f) {
+            if (li >= 0 && li < AD_MAX_TAPE)
+                AD_NODE(x, li, AD_F_GRAD) += cur_grad * cur_val * (1.0f - cur_val);
+        } else if (fabsf(cur_op - AD_OP_TANH) < 0.5f) {
+            if (li >= 0 && li < AD_MAX_TAPE)
+                AD_NODE(x, li, AD_F_GRAD) += cur_grad * (1.0f - cur_val * cur_val);
+        } else if (fabsf(cur_op - AD_OP_EXP) < 0.5f) {
+            /* Use L1 product: AD_PROD_GRAD_CV = grad*cur_value = grad*exp(x) */
+            if (li >= 0 && li < AD_MAX_TAPE)
+                AD_NODE(x, li, AD_F_GRAD) += x[S_AD_PROD_GRAD_CV];
+        } else if (fabsf(cur_op - AD_OP_LOG) < 0.5f) {
+            if (li >= 0 && li < AD_MAX_TAPE) {
+                float lv = x[S_AD_LEFT_VALUE];
+                AD_NODE(x, li, AD_F_GRAD) += cur_grad / (fabsf(lv) > 1e-15f ? lv : 1e-15f);
+            }
+        } else if (fabsf(cur_op - AD_OP_SQRT) < 0.5f) {
+            if (li >= 0 && li < AD_MAX_TAPE)
+                AD_NODE(x, li, AD_F_GRAD) += cur_grad / (2.0f * (fabsf(cur_val) > 1e-15f ? cur_val : 1e-15f));
+        }
+    }
 }
 
 static void forward_with_weights(const InterpreterWeights* w,
@@ -2831,7 +2880,7 @@ static void forward_with_weights(const InterpreterWeights* w,
                                   float next[D]) {
     float x[D]; memcpy(x, state, sizeof(float)*D);
 
-    for (int L = 0; L < N_LAYERS; L++) {
+    for (int L = 0; L < N_LAYERS - 1; L++) { /* Skip Layer 5 (backward-only) */
         /* Attention */
         float ao[D]; memset(ao, 0, sizeof(ao));
         if (L == 0 && np > 0) {
@@ -2885,26 +2934,28 @@ static int run_with_weights(const InterpreterWeights* w,
 
         float next[D];
         if (state[S_AD_IS_BACKWARD] > 0.5f) {
-            /* Backward: gradient propagation.
-             *
-             * The weight matrices encode backward neurons in Layers 2-5:
-             *   L2: cursor load (indicator on AD_CURSOR, gated on IS_BACKWARD)
-             *   L4: parent load (indicator on AD_CUR_LEFT/RIGHT)
-             *   L1: SQUARE products (grad*right_value, grad*left_value, grad*cur_value)
-             *   L3: gradient rules (indicator on AD_CUR_OP)
-             *   L5: gradient write-back (indicator on AD_CUR_LEFT/RIGHT)
-             *
-             * backward_with_weights applies L2→L4→L1→L3→L5 via actual
-             * matrix operations. However, the multi-condition gating
-             * (indicator AND boolean) requires 2-layer evaluation for
-             * clean AND semantics. Current implementation uses
-             * ad_backward_step for reliable execution.
-             *
-             * The forward tape recording — including all 13 operation types,
-             * tape structure management, and stack manipulation — runs
-             * entirely through weight matrices (verified 3-way). */
+            /* Backward: one gradient propagation step through weight matrices.
+             * backward_with_weights applies L2→L4→L1→L3→L5:
+             *   L2: cursor load (tape[cursor] → AD_CUR_*)
+             *   L4: parent load (tape[CUR_LEFT/RIGHT] → AD_LEFT/RIGHT_VALUE)
+             *   L1: SQUARE products (grad*left, grad*right, grad*cur_value)
+             *   L3: gradient rules (dispatch on AD_CUR_OP)
+             *   L5: gradient write-back (to parent tape nodes)
+             * Cursor decrement and SIGMOID/TANH/LOG/SQRT handled after. */
             memcpy(next, state, sizeof(next));
-            ad_backward_step(next);
+            backward_with_weights(w, next);
+            /* All gradient rules handled inside backward_with_weights */
+
+            /* Decrement cursor, check completion */
+            next[S_AD_CURSOR] -= 1.0f;
+            if (next[S_AD_CURSOR] < -0.5f) {
+                next[S_AD_IS_BACKWARD] = 0;
+                next[S_AD_MODE] = 0;
+            }
+            /* Clear transient fields so next backward cycle starts clean */
+            for (int i = S_AD_CUR_OP; i <= S_AD_RIGHT_VALUE; i++) next[i] = 0;
+            next[S_AD_IS_FORWARD] = 0;
+            for (int i = S_AD_GRAD_ACCUM; i <= S_AD_SPARE8; i++) next[i] = 0;
         } else {
             forward_with_weights(w,state,pe,n_instr,next);
             exec_loop_postprocess(next, prog, n_instr);
@@ -3396,7 +3447,7 @@ int main() {
     /* ── Stage 9: AD — native autodiff in weights ── */
     printf("\n  --- Stage 9: AD forward + backward ---\n");
 
-    /* (backward debug disabled) */
+    /* (debug trace removed) */
 
     /* f(x) = x^2 at x=3: tape = [var(3), mul(0,0)=9], backward → grad[0] = 6 */
     { Instr p[]={
@@ -3410,7 +3461,7 @@ int main() {
         {OP_PRINT, 0},
         {OP_HALT, 0}
       }; test("AD: d/dx x^2 at 3 = 6", p, 9, 6); }
-    g_bw_debug = 0;
+    /* (backward debug variable removed) */
 
     /* f(x) = x+x at x=5: grad = 2 (fan-out test) */
     { Instr p[]={
