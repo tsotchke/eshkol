@@ -37,8 +37,9 @@
 ;;; JSON - parsing and serialization
 (require core.json)
 
-;;; Data formats - CSV, Base64
+;;; Data formats - CSV, Base64, DataFrame
 (require core.data.csv)
+(require core.data.dataframe)
 (require core.data.base64)
 
 ;;; Terminal plotting - sparklines, bar charts, histograms

@@ -1,0 +1,205 @@
+;;; data/dataframe.esk
+;;; DataFrame operations with type inference for CSV data
+;;; Extends core.data.csv with columnar operations
+;;;
+;;; A DataFrame is represented as: (header . rows)
+;;;   header: list of column name strings
+;;;   rows: list of rows, each row is a list of typed values
+;;;
+;;; Type inference: numeric strings → numbers, everything else → strings
+
+(require core.data.csv)
+(require core.list.transform)
+(require core.list.search)
+
+(provide csv-parse-typed csv-header csv-rows csv-column csv-column-idx
+         csv-select csv-filter csv-map-column csv-row-count csv-col-count
+         csv-describe)
+
+;; ═══════════════════════════════════════════════════════════════
+;; Type Inference
+;; ═══════════════════════════════════════════════════════════════
+
+;; Try to parse a string as a number. Returns the number or #f.
+(define (try-parse-number str)
+  (if (or (null? str) (not (string? str)) (string=? str ""))
+      #f
+      (let ((n (string->number str)))
+        (if n n #f))))
+
+;; Infer the type of a field and convert if numeric
+(define (infer-field val)
+  (if (null? val)
+      val
+      (let ((n (try-parse-number val)))
+        (if n n val))))
+
+;; Apply type inference to a single row
+(define (infer-row row)
+  (if (null? row)
+      '()
+      (cons (infer-field (car row)) (infer-row (cdr row)))))
+
+;; ═══════════════════════════════════════════════════════════════
+;; CSV Parsing with Type Inference
+;; ═══════════════════════════════════════════════════════════════
+
+;; Parse CSV string with type inference.
+;; First row is treated as header.
+;; Returns (header . typed-rows).
+(define (csv-parse-typed str)
+  (let ((rows (csv-parse str)))
+    (if (null? rows)
+        (cons '() '())
+        (let ((header (car rows))
+              (data (cdr rows)))
+          (cons header (csv-infer-rows data))))))
+
+(define (csv-infer-rows rows)
+  (if (null? rows)
+      '()
+      (cons (infer-row (car rows))
+            (csv-infer-rows (cdr rows)))))
+
+;; ═══════════════════════════════════════════════════════════════
+;; DataFrame Accessors
+;; ═══════════════════════════════════════════════════════════════
+
+;; Get the header (column names) from a DataFrame
+(define (csv-header df)
+  (car df))
+
+;; Get the data rows from a DataFrame
+(define (csv-rows df)
+  (cdr df))
+
+;; Get the number of rows
+(define (csv-row-count df)
+  (length (csv-rows df)))
+
+;; Get the number of columns
+(define (csv-col-count df)
+  (length (csv-header df)))
+
+;; Find the index of a column by name (0-based)
+(define (csv-column-idx df name)
+  (csv-find-idx (csv-header df) name 0))
+
+(define (csv-find-idx lst name idx)
+  (if (null? lst)
+      -1
+      (if (string=? (car lst) name)
+          idx
+          (csv-find-idx (cdr lst) name (+ idx 1)))))
+
+;; ═══════════════════════════════════════════════════════════════
+;; Column Operations
+;; ═══════════════════════════════════════════════════════════════
+
+;; Extract a column by name as a list of values
+(define (csv-column df name)
+  (let ((idx (csv-column-idx df name)))
+    (if (< idx 0)
+        '()
+        (csv-extract-col (csv-rows df) idx))))
+
+(define (csv-extract-col rows idx)
+  (if (null? rows)
+      '()
+      (cons (csv-list-ref (car rows) idx)
+            (csv-extract-col (cdr rows) idx))))
+
+(define (csv-list-ref lst idx)
+  (if (or (null? lst) (< idx 0))
+      '()
+      (if (= idx 0)
+          (car lst)
+          (csv-list-ref (cdr lst) (- idx 1)))))
+
+;; ═══════════════════════════════════════════════════════════════
+;; Row Selection and Filtering
+;; ═══════════════════════════════════════════════════════════════
+
+;; Select specific columns by name → new DataFrame
+(define (csv-select df names)
+  (let ((indices (csv-resolve-indices df names)))
+    (cons names
+          (csv-select-rows (csv-rows df) indices))))
+
+(define (csv-resolve-indices df names)
+  (if (null? names)
+      '()
+      (cons (csv-column-idx df (car names))
+            (csv-resolve-indices df (cdr names)))))
+
+(define (csv-select-rows rows indices)
+  (if (null? rows)
+      '()
+      (cons (csv-pick-fields (car rows) indices)
+            (csv-select-rows (cdr rows) indices))))
+
+(define (csv-pick-fields row indices)
+  (if (null? indices)
+      '()
+      (cons (csv-list-ref row (car indices))
+            (csv-pick-fields row (cdr indices)))))
+
+;; Filter rows by a predicate function
+;; pred takes a row (list of values) and returns #t or #f
+(define (csv-filter df pred)
+  (cons (csv-header df)
+        (csv-filter-rows (csv-rows df) pred)))
+
+(define (csv-filter-rows rows pred)
+  (if (null? rows)
+      '()
+      (if (pred (car rows))
+          (cons (car rows) (csv-filter-rows (cdr rows) pred))
+          (csv-filter-rows (cdr rows) pred))))
+
+;; Map a function over a specific column → new DataFrame
+;; f takes a value and returns a new value
+(define (csv-map-column df name f)
+  (let ((idx (csv-column-idx df name)))
+    (if (< idx 0)
+        df
+        (cons (csv-header df)
+              (csv-map-col-rows (csv-rows df) idx f)))))
+
+(define (csv-map-col-rows rows idx f)
+  (if (null? rows)
+      '()
+      (cons (csv-map-col-row (car rows) idx f 0)
+            (csv-map-col-rows (cdr rows) idx f))))
+
+(define (csv-map-col-row row idx f cur)
+  (if (null? row)
+      '()
+      (cons (if (= cur idx) (f (car row)) (car row))
+            (csv-map-col-row (cdr row) idx f (+ cur 1)))))
+
+;; ═══════════════════════════════════════════════════════════════
+;; Summary / Description
+;; ═══════════════════════════════════════════════════════════════
+
+;; Print a summary of the DataFrame
+(define (csv-describe df)
+  (display "DataFrame: ")
+  (display (csv-row-count df))
+  (display " rows x ")
+  (display (csv-col-count df))
+  (display " columns")
+  (newline)
+  (display "Columns: ")
+  (csv-describe-cols (csv-header df))
+  (newline))
+
+(define (csv-describe-cols cols)
+  (if (null? cols)
+      '()
+      (begin
+        (display (car cols))
+        (if (not (null? (cdr cols)))
+            (display ", ")
+            '())
+        (csv-describe-cols (cdr cols)))))
