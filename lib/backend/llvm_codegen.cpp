@@ -1025,6 +1025,8 @@ public:
         function_return_types["process-spawn"] = BuiltinTypes::Integer;
         function_return_types["process-wait"] = BuiltinTypes::Integer;
         function_return_types["poll-fd"] = BuiltinTypes::Boolean;
+        function_return_types["tensor-save"] = BuiltinTypes::Boolean;
+        function_return_types["tensor-load"] = BuiltinTypes::Value;
 
         // R7RS Wave 2 functions
         function_return_types["char-foldcase"] = BuiltinTypes::Value;  // char
@@ -10768,6 +10770,8 @@ private:
         if (func_name == "process-spawn") return system_->processSpawn(op);
         if (func_name == "process-wait") return system_->processWait(op);
         if (func_name == "poll-fd") return system_->pollFd(op);
+        if (func_name == "tensor-save") return system_->tensorSave(op);
+        if (func_name == "tensor-load") return system_->tensorLoad(op);
 
         // =========================================================================
         // R7RS ENVIRONMENT PRIMITIVES
@@ -17806,6 +17810,7 @@ private:
             "file-stat", "file-copy", "mkdir-recursive", "mkdtemp",
             "directory-delete-recursive",
             "shell-quote", "process-spawn", "process-wait", "poll-fd",
+            "tensor-save", "tensor-load",
             // Eval
             "eval",
         };

@@ -591,6 +591,87 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_poll_fd_v(eshkol_sysbuiltin_valu
 }
 
 /* ═══════════════════════════════════════════════════════════════════
+ * Tensor Persistence
+ * ═══════════════════════════════════════════════════════════════════ */
+
+/* Forward declaration for tensor type (from arena_memory.h) */
+typedef struct {
+    uint64_t num_dimensions;
+    uint64_t total_elements;
+    int64_t* shape;
+    int64_t* elements; /* doubles stored as int64 bit patterns */
+} eshkol_tensor_t_ffi;
+
+extern void* arena_allocate_tensor_full(void* arena, uint64_t ndims, uint64_t total);
+
+#define TENSOR_FILE_MAGIC 0x45534B54 /* "ESKT" */
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_tensor_save_v(eshkol_sysbuiltin_value_t path_val,
+                                                               eshkol_sysbuiltin_value_t tensor_val) {
+    const char* path = sys_extract_string(path_val);
+    if (!path || tensor_val.type != SYS_TYPE_HEAP_PTR) return sys_make_bool(0);
+    eshkol_tensor_t_ffi* t = (eshkol_tensor_t_ffi*)(uintptr_t)tensor_val.data;
+    if (!t || !t->elements) return sys_make_bool(0);
+#ifndef _WIN32
+    FILE* f = fopen(path, "wb");
+    if (!f) return sys_make_bool(0);
+    uint32_t magic = TENSOR_FILE_MAGIC;
+    uint32_t version = 1;
+    uint32_t ndims = (uint32_t)t->num_dimensions;
+    fwrite(&magic, 4, 1, f);
+    fwrite(&version, 4, 1, f);
+    fwrite(&ndims, 4, 1, f);
+    for (uint32_t i = 0; i < ndims; i++) {
+        fwrite(&t->shape[i], 8, 1, f);
+    }
+    /* Elements are int64 bit patterns of doubles, 8 bytes each */
+    fwrite(t->elements, 8, (size_t)t->total_elements, f);
+    fclose(f);
+    return sys_make_bool(1);
+#else
+    return sys_make_bool(0);
+#endif
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_tensor_load_v(eshkol_sysbuiltin_value_t path_val) {
+    const char* path = sys_extract_string(path_val);
+    if (!path) return sys_make_null();
+#ifndef _WIN32
+    FILE* f = fopen(path, "rb");
+    if (!f) return sys_make_null();
+    uint32_t magic, version, ndims;
+    if (fread(&magic, 4, 1, f) != 1 || magic != TENSOR_FILE_MAGIC ||
+        fread(&version, 4, 1, f) != 1 || version != 1 ||
+        fread(&ndims, 4, 1, f) != 1 || ndims == 0 || ndims > 8) {
+        fclose(f);
+        return sys_make_null();
+    }
+    int64_t shape[8];
+    for (uint32_t i = 0; i < ndims; i++) {
+        if (fread(&shape[i], 8, 1, f) != 1) { fclose(f); return sys_make_null(); }
+    }
+    int64_t total = 1;
+    for (uint32_t i = 0; i < ndims; i++) total *= shape[i];
+
+    void* arena = get_global_arena();
+    if (!arena) { fclose(f); return sys_make_null(); }
+    eshkol_tensor_t_ffi* t = (eshkol_tensor_t_ffi*)arena_allocate_tensor_full(arena, ndims, (uint64_t)total);
+    if (!t || !t->elements) { fclose(f); return sys_make_null(); }
+    if ((int64_t)fread(t->elements, 8, (size_t)total, f) != total) {
+        fclose(f);
+        return sys_make_null();
+    }
+    fclose(f);
+    eshkol_sysbuiltin_value_t v = {0, 0, 0, 0, 0};
+    v.type = SYS_TYPE_HEAP_PTR;
+    v.data = (uint64_t)t;
+    return v;
+#else
+    return sys_make_null();
+#endif
+}
+
+/* ═══════════════════════════════════════════════════════════════════
  * SRET Wrappers — called from LLVM-compiled code
  *
  * LLVM IR calls void func(tagged_value_t* out, ...) to avoid struct
@@ -628,3 +709,5 @@ void eshkol_builtin_shell_quote(sv_t* out, const sv_t* a) { *out = eshkol_builti
 void eshkol_builtin_process_spawn(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_process_spawn_v(*a, *b); }
 void eshkol_builtin_process_wait(sv_t* out, const sv_t* a) { *out = eshkol_builtin_process_wait_v(*a); }
 void eshkol_builtin_poll_fd(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_poll_fd_v(*a, *b); }
+void eshkol_builtin_tensor_save(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_tensor_save_v(*a, *b); }
+void eshkol_builtin_tensor_load(sv_t* out, const sv_t* a) { *out = eshkol_builtin_tensor_load_v(*a); }
