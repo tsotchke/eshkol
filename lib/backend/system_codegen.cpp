@@ -1332,6 +1332,12 @@ TWO_ARG_BUILTIN(pathResolve, "eshkol_builtin_path_resolve")
 ONE_ARG_BUILTIN(globExpand, "eshkol_builtin_glob_expand")
 TWO_ARG_BUILTIN(globMatch, "eshkol_builtin_glob_match")
 
+/* v1.2 batch 3: advanced process management */
+TWO_ARG_BUILTIN(processSetpgid, "eshkol_builtin_process_setpgid")
+TWO_ARG_BUILTIN(processKillTree, "eshkol_builtin_process_kill_tree")
+ONE_ARG_BUILTIN(processSpawnPty, "eshkol_builtin_process_spawn_pty")
+TWO_ARG_BUILTIN(processReadNonblocking, "eshkol_builtin_process_read_nonblocking")
+
 #undef ZERO_ARG_BUILTIN
 #undef ONE_ARG_BUILTIN
 #undef TWO_ARG_BUILTIN

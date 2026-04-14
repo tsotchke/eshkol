@@ -247,6 +247,12 @@ public:
     llvm::Value* globExpand(const eshkol_operations_t* op);
     llvm::Value* globMatch(const eshkol_operations_t* op);
 
+    /* v1.2 batch 3: advanced process management */
+    llvm::Value* processSetpgid(const eshkol_operations_t* op);
+    llvm::Value* processKillTree(const eshkol_operations_t* op);
+    llvm::Value* processSpawnPty(const eshkol_operations_t* op);
+    llvm::Value* processReadNonblocking(const eshkol_operations_t* op);
+
 private:
     CodegenContext& ctx_;
     TaggedValueCodegen& tagged_;
