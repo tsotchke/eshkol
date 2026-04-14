@@ -1265,6 +1265,17 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/model_i
     endif()
     target_link_libraries(model_io_test PRIVATE eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
     add_test(NAME model_io_test COMMAND model_io_test)
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/repl/assoc_eval_test.cpp")
+    add_executable(assoc_eval_test tests/repl/assoc_eval_test.cpp)
+    target_compile_features(assoc_eval_test PRIVATE cxx_std_17)
+    add_dependencies(assoc_eval_test stdlib)
+    add_test(
+        NAME assoc_eval_test
+        COMMAND assoc_eval_test
+                $<TARGET_FILE:eshkol-run>
+                ${CMAKE_CURRENT_SOURCE_DIR}
+                ${STDLIB_OUTPUT}
+    )
 endif()
 
 # ===== XLA Integration Tests =====
