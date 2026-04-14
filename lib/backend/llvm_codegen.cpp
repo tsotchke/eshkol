@@ -1027,6 +1027,21 @@ public:
         function_return_types["poll-fd"] = BuiltinTypes::Boolean;
         function_return_types["tensor-save"] = BuiltinTypes::Boolean;
         function_return_types["tensor-load"] = BuiltinTypes::Value;
+        // v1.2 batch 2
+        function_return_types["file-chmod"] = BuiltinTypes::Boolean;
+        function_return_types["symlink-create"] = BuiltinTypes::Boolean;
+        function_return_types["symlink-read"] = BuiltinTypes::String;
+        function_return_types["directory-walk"] = BuiltinTypes::String;
+        function_return_types["mkstemp"] = BuiltinTypes::String;
+        function_return_types["process-kill"] = BuiltinTypes::Boolean;
+        function_return_types["file-mtime"] = BuiltinTypes::Integer;
+        function_return_types["file-atime"] = BuiltinTypes::Integer;
+        function_return_types["file-lock"] = BuiltinTypes::Boolean;
+        function_return_types["file-unlock"] = BuiltinTypes::Boolean;
+        function_return_types["path-relative"] = BuiltinTypes::String;
+        function_return_types["path-resolve"] = BuiltinTypes::String;
+        function_return_types["glob-expand"] = BuiltinTypes::String;
+        function_return_types["glob-match"] = BuiltinTypes::Boolean;
 
         // R7RS Wave 2 functions
         function_return_types["char-foldcase"] = BuiltinTypes::Value;  // char
@@ -10772,6 +10787,21 @@ private:
         if (func_name == "poll-fd") return system_->pollFd(op);
         if (func_name == "tensor-save") return system_->tensorSave(op);
         if (func_name == "tensor-load") return system_->tensorLoad(op);
+        // v1.2 batch 2
+        if (func_name == "file-chmod") return system_->fileChmod(op);
+        if (func_name == "symlink-create") return system_->symlinkCreate(op);
+        if (func_name == "symlink-read") return system_->symlinkRead(op);
+        if (func_name == "directory-walk") return system_->directoryWalk(op);
+        if (func_name == "mkstemp") return system_->mkstempBuiltin(op);
+        if (func_name == "process-kill") return system_->processKill(op);
+        if (func_name == "file-mtime") return system_->fileMtime(op);
+        if (func_name == "file-atime") return system_->fileAtime(op);
+        if (func_name == "file-lock") return system_->fileLock(op);
+        if (func_name == "file-unlock") return system_->fileUnlock(op);
+        if (func_name == "path-relative") return system_->pathRelative(op);
+        if (func_name == "path-resolve") return system_->pathResolve(op);
+        if (func_name == "glob-expand") return system_->globExpand(op);
+        if (func_name == "glob-match") return system_->globMatch(op);
 
         // =========================================================================
         // R7RS ENVIRONMENT PRIMITIVES
@@ -17811,6 +17841,10 @@ private:
             "directory-delete-recursive",
             "shell-quote", "process-spawn", "process-wait", "poll-fd",
             "tensor-save", "tensor-load",
+            "file-chmod", "symlink-create", "symlink-read",
+            "directory-walk", "mkstemp", "process-kill",
+            "file-mtime", "file-atime", "file-lock", "file-unlock",
+            "path-relative", "path-resolve", "glob-expand", "glob-match",
             // Eval
             "eval",
         };
