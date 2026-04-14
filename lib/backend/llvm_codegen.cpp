@@ -1042,6 +1042,11 @@ public:
         function_return_types["path-resolve"] = BuiltinTypes::String;
         function_return_types["glob-expand"] = BuiltinTypes::String;
         function_return_types["glob-match"] = BuiltinTypes::Boolean;
+        // v1.2 batch 3
+        function_return_types["process-setpgid"] = BuiltinTypes::Boolean;
+        function_return_types["process-kill-tree"] = BuiltinTypes::Boolean;
+        function_return_types["process-spawn-pty"] = BuiltinTypes::Integer;
+        function_return_types["process-read-nonblocking"] = BuiltinTypes::String;
 
         // R7RS Wave 2 functions
         function_return_types["char-foldcase"] = BuiltinTypes::Value;  // char
@@ -10802,6 +10807,11 @@ private:
         if (func_name == "path-resolve") return system_->pathResolve(op);
         if (func_name == "glob-expand") return system_->globExpand(op);
         if (func_name == "glob-match") return system_->globMatch(op);
+        // v1.2 batch 3
+        if (func_name == "process-setpgid") return system_->processSetpgid(op);
+        if (func_name == "process-kill-tree") return system_->processKillTree(op);
+        if (func_name == "process-spawn-pty") return system_->processSpawnPty(op);
+        if (func_name == "process-read-nonblocking") return system_->processReadNonblocking(op);
 
         // =========================================================================
         // R7RS ENVIRONMENT PRIMITIVES
@@ -17845,6 +17855,8 @@ private:
             "directory-walk", "mkstemp", "process-kill",
             "file-mtime", "file-atime", "file-lock", "file-unlock",
             "path-relative", "path-resolve", "glob-expand", "glob-match",
+            "process-setpgid", "process-kill-tree",
+            "process-spawn-pty", "process-read-nonblocking",
             // Eval
             "eval",
         };
