@@ -2303,7 +2303,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 eshkol_ast_make_null(&else_expr);
                 has_else = false;
             } else if (token.type == TOKEN_EOF) {
-                eshkol_error("Unexpected end of input in if expression");
+                PARSE_ERROR_AT(token, "unexpected end of input in if expression");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             } else if (token.type == TOKEN_LPAREN) {
@@ -2328,7 +2328,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             if (has_else) {
                 token = tokenizer.nextToken();
                 if (token.type != TOKEN_RPAREN) {
-                    eshkol_error("Expected closing parenthesis after if expression");
+                    PARSE_ERROR_AT(token, "expected closing parenthesis after if expression");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
@@ -2388,7 +2388,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                     token = tokenizer.nextToken();
                     if (token.type == TOKEN_RPAREN) break;
                     if (token.type == TOKEN_EOF) {
-                        eshkol_error("Unexpected end of input in lambda parameter list");
+                        PARSE_ERROR_AT(token, "unexpected end of input in lambda parameter list");
                         ast.type = ESHKOL_INVALID;
                         return ast;
                     }
@@ -2398,7 +2398,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                         // Next token should be the rest parameter name
                         token = tokenizer.nextToken();
                         if (token.type != TOKEN_SYMBOL) {
-                            eshkol_error("Expected rest parameter name after '.'");
+                            PARSE_ERROR_AT(token, "expected rest parameter name after '.'");
                             ast.type = ESHKOL_INVALID;
                             return ast;
                         }
@@ -2421,7 +2421,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                     if (token.type == TOKEN_LPAREN) {
                         Token param_token = tokenizer.nextToken();
                         if (param_token.type != TOKEN_SYMBOL) {
-                            eshkol_error("Expected parameter name in typed lambda parameter");
+                            PARSE_ERROR_AT(token, "expected parameter name in typed lambda parameter");
                             ast.type = ESHKOL_INVALID;
                             return ast;
                         }
@@ -2468,7 +2468,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                         params.push_back(param);
                         param_types.push_back(nullptr);  // No type annotation
                     } else {
-                        eshkol_error("Expected parameter name in lambda");
+                        PARSE_ERROR_AT(token, "expected parameter name in lambda");
                         ast.type = ESHKOL_INVALID;
                         return ast;
                     }
@@ -2500,7 +2500,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 token = tokenizer.nextToken();
                 if (token.type == TOKEN_RPAREN) break;
                 if (token.type == TOKEN_EOF) {
-                    eshkol_error("Unexpected end of input in lambda body");
+                    PARSE_ERROR_AT(token, "unexpected end of input in lambda body");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
@@ -2628,13 +2628,13 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 token = tokenizer.nextToken();
                 if (token.type == TOKEN_RPAREN) break;
                 if (token.type == TOKEN_EOF) {
-                    eshkol_error("Unexpected end of input in let bindings");
+                    PARSE_ERROR_AT(token, "unexpected end of input in let bindings");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
 
                 if (token.type != TOKEN_LPAREN) {
-                    eshkol_error("let binding must be a list (variable value) or (variable : type value)");
+                    PARSE_ERROR_AT(token, "let binding must be a list (variable value) or (variable : type value)");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
@@ -2642,7 +2642,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 // Parse variable name
                 token = tokenizer.nextToken();
                 if (token.type != TOKEN_SYMBOL) {
-                    eshkol_error("let binding must start with variable name");
+                    PARSE_ERROR_AT(token, "let binding must start with variable name");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
@@ -2678,7 +2678,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 // Check for closing paren of binding
                 token = tokenizer.nextToken();
                 if (token.type != TOKEN_RPAREN) {
-                    eshkol_error("Expected closing parenthesis after let binding");
+                    PARSE_ERROR_AT(token, "expected closing parenthesis after let binding");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
@@ -2701,7 +2701,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 token = tokenizer.nextToken();
                 if (token.type == TOKEN_RPAREN) break;
                 if (token.type == TOKEN_EOF) {
-                    eshkol_error("Unexpected end of input in let body");
+                    PARSE_ERROR_AT(token, "unexpected end of input in let body");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
@@ -2722,7 +2722,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             }
             
             if (body_expressions.empty()) {
-                eshkol_error("let body cannot be empty");
+                PARSE_ERROR_AT(token, "let body cannot be empty");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
