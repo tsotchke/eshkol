@@ -1237,6 +1237,15 @@ TypeCheckResult TypeChecker::synthesizeApplication(eshkol_ast_t* expr) {
         if (func_name == "utf8->string") {
             return TypeCheckResult::ok(BuiltinTypes::String);
         }
+        if (func_name == "tensor-save" || func_name == "model-save") {
+            return TypeCheckResult::ok(BuiltinTypes::Boolean);
+        }
+        if (func_name == "tensor-load") {
+            return TypeCheckResult::ok(BuiltinTypes::Tensor);
+        }
+        if (func_name == "model-load") {
+            return TypeCheckResult::ok(BuiltinTypes::List);
+        }
 
         // Rational operations
         if (func_name == "rational?" || func_name == "exact-rational?") {

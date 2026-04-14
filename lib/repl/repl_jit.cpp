@@ -9,6 +9,7 @@
 #include <eshkol/llvm_backend.h>
 #include <eshkol/platform_runtime.h>
 #include <eshkol/runtime_exports.h>
+#include <eshkol/model_io.h>
 #include <eshkol/core/bignum.h>
 #include <eshkol/core/rational.h>
 #include <eshkol/types/hott_types.h>  // For TypeId decoding and BuiltinTypes
@@ -387,6 +388,10 @@ void ReplJITContext::registerRuntimeSymbols() {
     // ===== TENSOR MEMORY MANAGEMENT =====
     ADD_SYMBOL(arena_allocate_tensor_with_header);
     ADD_SYMBOL(arena_allocate_tensor_full);
+    ADD_SYMBOL(eshkol_tensor_save_tagged);
+    ADD_SYMBOL(eshkol_tensor_load_tagged);
+    ADD_SYMBOL(eshkol_model_save_tagged);
+    ADD_SYMBOL(eshkol_model_load_tagged);
     ADD_SYMBOL(eshkol_shapes_equal);
     ADD_SYMBOL(eshkol_broadcast_elementwise_f64);
 

@@ -1049,6 +1049,10 @@ public:
         function_return_types["bytevector?"] = BuiltinTypes::Boolean;
         function_return_types["utf8->string"] = BuiltinTypes::String;
         function_return_types["string->utf8"] = BuiltinTypes::Value;
+        function_return_types["tensor-save"] = BuiltinTypes::Boolean;
+        function_return_types["tensor-load"] = BuiltinTypes::Tensor;
+        function_return_types["model-save"] = BuiltinTypes::Boolean;
+        function_return_types["model-load"] = BuiltinTypes::List;
 
         // Complex number operations
         function_return_types["make-rectangular"] = BuiltinTypes::Complex128;  // Create complex from real,imag
@@ -11882,6 +11886,10 @@ private:
         // MIGRATED: tensor-shape, tensor-length - now delegated to TensorCodegen
         if (func_name == "tensor-shape") return tensor_->tensorShape(op);
         if (func_name == "tensor-length") return tensor_->tensorLength(op);
+        if (func_name == "tensor-save") return codegenTensorSave(op);
+        if (func_name == "tensor-load") return codegenTensorLoad(op);
+        if (func_name == "model-save") return codegenModelSave(op);
+        if (func_name == "model-load") return codegenModelLoad(op);
         // MIGRATED: tensor-apply and tensor-reduce - now delegated to TensorCodegen
         if (func_name == "tensor-apply") return tensor_->tensorApply(op);
         if (func_name == "tensor-reduce") {
@@ -28874,6 +28882,66 @@ private:
     }
 
     // ─── Active Inference: Factor Graph ──────────────────────────────────
+
+    Value* codegenTensorSave(const eshkol_operations_t* op) {
+        if (op->call_op.num_vars < 2) return packNullToTaggedValue();
+
+        Value* path = ensureTaggedValue(codegenAST(&op->call_op.variables[0]));
+        Value* tensor = ensureTaggedValue(codegenAST(&op->call_op.variables[1]));
+        Value* path_a = allocaAndStore(path, "tensor_save_path");
+        Value* tensor_a = allocaAndStore(tensor, "tensor_save_tensor");
+        Value* result_a = allocaResult("tensor_save_result");
+
+        FunctionType* fn_type = FunctionType::get(void_type,
+            {ptr_type, ptr_type, ptr_type, ptr_type}, false);
+        Function* func = getOrDeclareRuntimeFunc("eshkol_tensor_save_tagged", fn_type);
+        builder->CreateCall(func, {loadArenaPtr(), path_a, tensor_a, result_a});
+        return loadResult(result_a, "tensor_save_value");
+    }
+
+    Value* codegenTensorLoad(const eshkol_operations_t* op) {
+        if (op->call_op.num_vars < 1) return packNullToTaggedValue();
+
+        Value* path = ensureTaggedValue(codegenAST(&op->call_op.variables[0]));
+        Value* path_a = allocaAndStore(path, "tensor_load_path");
+        Value* result_a = allocaResult("tensor_load_result");
+
+        FunctionType* fn_type = FunctionType::get(void_type,
+            {ptr_type, ptr_type, ptr_type}, false);
+        Function* func = getOrDeclareRuntimeFunc("eshkol_tensor_load_tagged", fn_type);
+        builder->CreateCall(func, {loadArenaPtr(), path_a, result_a});
+        return loadResult(result_a, "tensor_load_value");
+    }
+
+    Value* codegenModelSave(const eshkol_operations_t* op) {
+        if (op->call_op.num_vars < 2) return packNullToTaggedValue();
+
+        Value* path = ensureTaggedValue(codegenAST(&op->call_op.variables[0]));
+        Value* entries = ensureTaggedValue(codegenAST(&op->call_op.variables[1]));
+        Value* path_a = allocaAndStore(path, "model_save_path");
+        Value* entries_a = allocaAndStore(entries, "model_save_entries");
+        Value* result_a = allocaResult("model_save_result");
+
+        FunctionType* fn_type = FunctionType::get(void_type,
+            {ptr_type, ptr_type, ptr_type, ptr_type}, false);
+        Function* func = getOrDeclareRuntimeFunc("eshkol_model_save_tagged", fn_type);
+        builder->CreateCall(func, {loadArenaPtr(), path_a, entries_a, result_a});
+        return loadResult(result_a, "model_save_value");
+    }
+
+    Value* codegenModelLoad(const eshkol_operations_t* op) {
+        if (op->call_op.num_vars < 1) return packNullToTaggedValue();
+
+        Value* path = ensureTaggedValue(codegenAST(&op->call_op.variables[0]));
+        Value* path_a = allocaAndStore(path, "model_load_path");
+        Value* result_a = allocaResult("model_load_result");
+
+        FunctionType* fn_type = FunctionType::get(void_type,
+            {ptr_type, ptr_type, ptr_type}, false);
+        Function* func = getOrDeclareRuntimeFunc("eshkol_model_load_tagged", fn_type);
+        builder->CreateCall(func, {loadArenaPtr(), path_a, result_a});
+        return loadResult(result_a, "model_load_value");
+    }
 
     Value* codegenMakeFactorGraph(const eshkol_operations_t* op) {
         // (make-factor-graph n-vars dims-tensor) → fg

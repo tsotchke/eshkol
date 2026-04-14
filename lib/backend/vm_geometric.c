@@ -1,6 +1,6 @@
 /**
  * @file vm_geometric.c
- * @brief VM geometric manifold dispatch — native IDs 800-859.
+ * @brief VM geometric manifold dispatch — native IDs 804-843.
  *
  * When ESHKOL_GEOMETRIC_ENABLED is defined, calls semiclassical_qllm.
  * Otherwise returns NIL for all operations.
@@ -53,27 +53,27 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
 #if defined(ESHKOL_GEOMETRIC_ENABLED)
     switch (fid) {
 
-    /* ═══ Manifold creation (800-804) ═══ */
-    case 800: { /* make-euclidean-manifold(dim) */
+    /* ═══ Manifold creation (804-808) ═══ */
+    case 804: { /* make-euclidean-manifold(dim) */
         int dim = (int)as_number(vm_pop(vm));
         qllm_manifold_options_t opts = {0}; opts.curvature = 0;
         vm_push_manifold(vm, qllm_manifold_euclidean_create(dim, &opts));
         break;
     }
-    case 801: { /* make-hyperbolic-manifold(dim, curvature) */
+    case 805: { /* make-hyperbolic-manifold(dim, curvature) */
         float c = (float)as_number(vm_pop(vm));
         int dim = (int)as_number(vm_pop(vm));
         qllm_manifold_options_t opts = {0}; opts.curvature = c;
         vm_push_manifold(vm, qllm_manifold_hyperbolic_create(dim, &opts));
         break;
     }
-    case 802: { /* make-spherical-manifold(dim) */
+    case 806: { /* make-spherical-manifold(dim) */
         int dim = (int)as_number(vm_pop(vm));
         qllm_manifold_options_t opts = {0}; opts.curvature = 1.0f;
         vm_push_manifold(vm, qllm_manifold_spherical_create(dim, &opts));
         break;
     }
-    case 803: { /* make-product-manifold(m1, m2) */
+    case 807: { /* make-product-manifold(m1, m2) */
         Value m2v = vm_pop(vm), m1v = vm_pop(vm);
         if (is_heap_type(vm, m1v, HEAP_MANIFOLD) && is_heap_type(vm, m2v, HEAP_MANIFOLD)) {
             qllm_manifold_t* ms[2] = {
@@ -84,7 +84,7 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         } else vm_push(vm, NIL_VAL);
         break;
     }
-    case 804: { /* manifold-curvature(m) */
+    case 808: { /* manifold-curvature(m) */
         Value mv = vm_pop(vm);
         if (is_heap_type(vm, mv, HEAP_MANIFOLD))
             vm_push_float(vm, qllm_manifold_get_curvature(
@@ -94,7 +94,7 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
     }
 
     /* ═══ Core manifold ops (805-809) ═══ */
-    case 805: { /* exp-map(base_tensor, tangent_tensor, curvature) */
+    case 809: { /* exp-map(base_tensor, tangent_tensor, curvature) */
         float c = (float)as_number(vm_pop(vm));
         VmTensor* tv = vm_get_tensor(vm, vm_pop(vm));
         VmTensor* bv = vm_get_tensor(vm, vm_pop(vm));
@@ -116,7 +116,7 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         vm_push(vm, NIL_VAL);
         break;
     }
-    case 806: { /* log-map(base_tensor, point_tensor, curvature) */
+    case 810: { /* log-map(base_tensor, point_tensor, curvature) */
         float c = (float)as_number(vm_pop(vm));
         VmTensor* pv = vm_get_tensor(vm, vm_pop(vm));
         VmTensor* bv = vm_get_tensor(vm, vm_pop(vm));
@@ -137,7 +137,7 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         vm_push(vm, NIL_VAL);
         break;
     }
-    case 807: { /* geodesic-distance(x_tensor, y_tensor, curvature) */
+    case 811: { /* geodesic-distance(x_tensor, y_tensor, curvature) */
         float c = (float)as_number(vm_pop(vm));
         VmTensor* yv = vm_get_tensor(vm, vm_pop(vm));
         VmTensor* xv = vm_get_tensor(vm, vm_pop(vm));
@@ -150,7 +150,7 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         } else vm_push(vm, NIL_VAL);
         break;
     }
-    case 808: { /* parallel-transport(x, y, v, curvature) */
+    case 812: { /* parallel-transport(x, y, v, curvature) */
         float c = (float)as_number(vm_pop(vm));
         VmTensor* vv = vm_get_tensor(vm, vm_pop(vm));
         VmTensor* yv = vm_get_tensor(vm, vm_pop(vm));
@@ -172,7 +172,7 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         vm_push(vm, NIL_VAL);
         break;
     }
-    case 809: { /* project(x_tensor, curvature) — project onto manifold */
+    case 813: { /* project(x_tensor, curvature) — project onto manifold */
         float c = (float)as_number(vm_pop(vm));
         VmTensor* xv = vm_get_tensor(vm, vm_pop(vm));
         if (xv) {
@@ -192,7 +192,7 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
     }
 
     /* ═══ Hyperbolic operations (810-814) ═══ */
-    case 810: { /* mobius-add(x, y, curvature) */
+    case 814: { /* mobius-add(x, y, curvature) */
         float c = (float)as_number(vm_pop(vm));
         VmTensor* yv = vm_get_tensor(vm, vm_pop(vm));
         VmTensor* xv = vm_get_tensor(vm, vm_pop(vm));
@@ -212,7 +212,7 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         vm_push(vm, NIL_VAL);
         break;
     }
-    case 811: { /* mobius-scalar-mul(r, x, curvature) */
+    case 815: { /* mobius-scalar-mul(r, x, curvature) */
         float c = (float)as_number(vm_pop(vm));
         VmTensor* xv = vm_get_tensor(vm, vm_pop(vm));
         float r = (float)as_number(vm_pop(vm));
@@ -231,7 +231,7 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         vm_push(vm, NIL_VAL);
         break;
     }
-    case 812: { /* poincare-distance(x, y, curvature) */
+    case 816: { /* poincare-distance(x, y, curvature) */
         float c = (float)as_number(vm_pop(vm));
         VmTensor* yv = vm_get_tensor(vm, vm_pop(vm));
         VmTensor* xv = vm_get_tensor(vm, vm_pop(vm));
@@ -244,7 +244,7 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         } else vm_push(vm, NIL_VAL);
         break;
     }
-    case 813: { /* frechet-mean(points_tensor, weights_tensor, curvature) */
+    case 817: { /* frechet-mean(points_tensor, weights_tensor, curvature) */
         float c = (float)as_number(vm_pop(vm));
         VmTensor* wv = vm_get_tensor(vm, vm_pop(vm));
         VmTensor* pv = vm_get_tensor(vm, vm_pop(vm));
@@ -269,7 +269,7 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
     }
 
     /* ═══ Spherical operations (815-819) ═══ */
-    case 815: { /* great-circle-distance(x, y) */
+    case 819: { /* great-circle-distance(x, y) */
         VmTensor* yv = vm_get_tensor(vm, vm_pop(vm));
         VmTensor* xv = vm_get_tensor(vm, vm_pop(vm));
         if (xv && yv && xv->total == yv->total) {
@@ -281,7 +281,7 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         } else vm_push(vm, NIL_VAL);
         break;
     }
-    case 816: { /* slerp(x, y, t) */
+    case 820: { /* slerp(x, y, t) */
         float t = (float)as_number(vm_pop(vm));
         VmTensor* yv = vm_get_tensor(vm, vm_pop(vm));
         VmTensor* xv = vm_get_tensor(vm, vm_pop(vm));
@@ -301,7 +301,7 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         vm_push(vm, NIL_VAL);
         break;
     }
-    case 817: { /* spherical-exp(base, tangent) */
+    case 821: { /* spherical-exp(base, tangent) */
         VmTensor* tv = vm_get_tensor(vm, vm_pop(vm));
         VmTensor* bv = vm_get_tensor(vm, vm_pop(vm));
         if (bv && tv) {
@@ -320,7 +320,7 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         vm_push(vm, NIL_VAL);
         break;
     }
-    case 818: { /* spherical-log(base, point) */
+    case 822: { /* spherical-log(base, point) */
         VmTensor* pv = vm_get_tensor(vm, vm_pop(vm));
         VmTensor* bv = vm_get_tensor(vm, vm_pop(vm));
         if (bv && pv) {
@@ -339,7 +339,7 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         vm_push(vm, NIL_VAL);
         break;
     }
-    case 819: { /* spherical-project(x) — project onto unit sphere */
+    case 823: { /* spherical-project(x) — project onto unit sphere */
         VmTensor* xv = vm_get_tensor(vm, vm_pop(vm));
         if (xv) {
             float* xf = vm_tensor_to_float(xv);
@@ -358,7 +358,7 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
     }
 
     /* ═══ Lie group operations (820-824) ═══ */
-    case 820: { /* so3-exp(omega_tensor) — axis-angle → rotation quaternion */
+    case 824: { /* so3-exp(omega_tensor) — axis-angle → rotation quaternion */
         VmTensor* omega = vm_get_tensor(vm, vm_pop(vm));
         if (omega && omega->total >= 3) {
             float* of = vm_tensor_to_float(omega);
@@ -373,7 +373,7 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         }
         vm_push(vm, NIL_VAL); break;
     }
-    case 821: { /* so3-log(quat_tensor) — rotation quaternion → axis-angle */
+    case 825: { /* so3-log(quat_tensor) — rotation quaternion → axis-angle */
         VmTensor* qv = vm_get_tensor(vm, vm_pop(vm));
         if (qv && qv->total >= 4) {
             float* qf = vm_tensor_to_float(qv);
@@ -387,7 +387,7 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         }
         vm_push(vm, NIL_VAL); break;
     }
-    case 822: { /* se3-exp(twist_tensor) — twist → rigid transform */
+    case 826: { /* se3-exp(twist_tensor) — twist → rigid transform */
         VmTensor* tv = vm_get_tensor(vm, vm_pop(vm));
         if (tv && tv->total >= 6) {
             float* tf = vm_tensor_to_float(tv);
@@ -408,7 +408,7 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         }
         vm_push(vm, NIL_VAL); break;
     }
-    case 823: { /* se3-log(pose_tensor) — rigid transform → twist */
+    case 827: { /* se3-log(pose_tensor) — rigid transform → twist */
         VmTensor* pv = vm_get_tensor(vm, vm_pop(vm));
         if (pv && pv->total >= 7) {
             float* pf = vm_tensor_to_float(pv);
@@ -427,7 +427,7 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         }
         vm_push(vm, NIL_VAL); break;
     }
-    case 824: { /* quaternion-mul(q1, q2) — Hamilton product */
+    case 828: { /* quaternion-mul(q1, q2) — Hamilton product */
         VmTensor* q2v = vm_get_tensor(vm, vm_pop(vm));
         VmTensor* q1v = vm_get_tensor(vm, vm_pop(vm));
         if (q1v && q2v && q1v->total >= 4 && q2v->total >= 4) {
@@ -446,7 +446,7 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
     }
 
     /* ═══ Differential geometry (825-829) ═══ */
-    case 825: { /* metric-tensor(manifold) — get metric at origin */
+    case 829: { /* metric-tensor(manifold) — get metric at origin */
         Value mv = vm_pop(vm);
         if (is_heap_type(vm, mv, HEAP_MANIFOLD)) {
             qllm_manifold_t* m = (qllm_manifold_t*)vm->heap.objects[mv.as.ptr]->opaque.ptr;
@@ -455,13 +455,13 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         } else vm_push(vm, NIL_VAL);
         break;
     }
-    case 826: { /* christoffel(manifold, point) — connection coefficients */
+    case 830: { /* christoffel(manifold, point) — connection coefficients */
         vm_pop(vm); vm_pop(vm); /* manifold, point */
         /* Full Christoffel symbols require creating a connection object.
          * Return scalar curvature as proxy for now. */
         vm_push(vm, FLOAT_VAL(0)); break;
     }
-    case 827: { /* riemann-curvature(manifold) */
+    case 831: { /* riemann-curvature(manifold) */
         Value mv = vm_pop(vm);
         if (is_heap_type(vm, mv, HEAP_MANIFOLD)) {
             float curv = qllm_manifold_get_curvature(
@@ -470,7 +470,7 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         } else vm_push(vm, NIL_VAL);
         break;
     }
-    case 828: { /* ricci-scalar(manifold) */
+    case 832: { /* ricci-scalar(manifold) */
         Value mv = vm_pop(vm);
         if (is_heap_type(vm, mv, HEAP_MANIFOLD)) {
             /* Ricci scalar = n*(n-1)*K for constant curvature K */
@@ -481,7 +481,7 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         } else vm_push(vm, NIL_VAL);
         break;
     }
-    case 829: { /* sectional-curvature(manifold, u, v) */
+    case 833: { /* sectional-curvature(manifold, u, v) */
         vm_pop(vm); vm_pop(vm); /* u, v vectors */
         Value mv = vm_pop(vm);
         if (is_heap_type(vm, mv, HEAP_MANIFOLD)) {
@@ -493,7 +493,7 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
     }
 
     /* ═══ Differential forms (830-834) ═══ */
-    case 830: { /* wedge-product(form_a, form_b) */
+    case 834: { /* wedge-product(form_a, form_b) */
         VmTensor* bv = vm_get_tensor(vm, vm_pop(vm));
         VmTensor* av = vm_get_tensor(vm, vm_pop(vm));
         if (av && bv) {
@@ -529,7 +529,7 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         }
         vm_push(vm, NIL_VAL); break;
     }
-    case 831: { /* exterior-derivative(form) */
+    case 835: { /* exterior-derivative(form) */
         VmTensor* fv = vm_get_tensor(vm, vm_pop(vm));
         if (fv) {
             int dim = (int)fv->total;
@@ -557,7 +557,7 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         }
         vm_push(vm, NIL_VAL); break;
     }
-    case 832: { /* hodge-star(form, metric) */
+    case 836: { /* hodge-star(form, metric) */
         vm_pop(vm); /* metric */
         VmTensor* fv = vm_get_tensor(vm, vm_pop(vm));
         if (fv) {
@@ -586,7 +586,7 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         }
         vm_push(vm, NIL_VAL); break;
     }
-    case 833: { /* interior-product(vector, form) */
+    case 837: { /* interior-product(vector, form) */
         VmTensor* fv = vm_get_tensor(vm, vm_pop(vm));
         VmTensor* vv = vm_get_tensor(vm, vm_pop(vm));
         if (vv && fv) {
@@ -610,13 +610,13 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         }
         vm_push(vm, NIL_VAL); break;
     }
-    case 834: { /* pullback(form, jacobian) — 2 args */
+    case 838: { /* pullback(form, jacobian) — 2 args */
         vm_pop(vm); vm_pop(vm); /* Pullback requires full Jacobian matrix — complex */
         vm_push(vm, NIL_VAL); break;
     }
 
     /* ═══ Riemannian optimization (835-839) ═══ */
-    case 835: { /* riemannian-sgd-step(point, gradient, lr, curvature) */
+    case 839: { /* riemannian-sgd-step(point, gradient, lr, curvature) */
         float c = (float)as_number(vm_pop(vm));
         float lr = (float)as_number(vm_pop(vm));
         VmTensor* gv = vm_get_tensor(vm, vm_pop(vm));
@@ -644,7 +644,7 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         }
         vm_push(vm, NIL_VAL); break;
     }
-    case 836: { /* riemannian-adam-step(point, gradient, lr, beta1, beta2, curvature) */
+    case 840: { /* riemannian-adam-step(point, gradient, lr, beta1, beta2, curvature) */
         float c = (float)as_number(vm_pop(vm));
         float b2 = (float)as_number(vm_pop(vm));
         float b1 = (float)as_number(vm_pop(vm));
@@ -675,7 +675,7 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         }
         vm_push(vm, NIL_VAL); break;
     }
-    case 837: { /* riemannian-grad(euclidean_grad, point, curvature) — project to tangent space */
+    case 841: { /* riemannian-grad(euclidean_grad, point, curvature) — project to tangent space */
         float c = (float)as_number(vm_pop(vm));
         VmTensor* pv = vm_get_tensor(vm, vm_pop(vm));
         VmTensor* gv = vm_get_tensor(vm, vm_pop(vm));
@@ -693,7 +693,7 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         }
         vm_push(vm, NIL_VAL); break;
     }
-    case 838: { /* retraction(base, tangent, curvature) — exp map */
+    case 842: { /* retraction(base, tangent, curvature) — exp map */
         float c = (float)as_number(vm_pop(vm));
         VmTensor* tv = vm_get_tensor(vm, vm_pop(vm));
         VmTensor* bv = vm_get_tensor(vm, vm_pop(vm));
@@ -712,7 +712,7 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         }
         vm_push(vm, NIL_VAL); break;
     }
-    case 839: { /* vector-transport(x, y, v, curvature) — parallel transport */
+    case 843: { /* vector-transport(x, y, v, curvature) — parallel transport */
         float c = (float)as_number(vm_pop(vm));
         VmTensor* vv = vm_get_tensor(vm, vm_pop(vm));
         VmTensor* yv = vm_get_tensor(vm, vm_pop(vm));
