@@ -1408,6 +1408,44 @@ if(ESHKOL_BUILD_AGENT_FFI)
     endif()
 endif()
 
+# ===== Python Bindings (pybind11) =====
+option(ESHKOL_PYTHON_BINDINGS "Build Python bindings via pybind11" OFF)
+
+if(ESHKOL_PYTHON_BINDINGS)
+    find_package(pybind11 QUIET)
+    if(pybind11_FOUND)
+        pybind11_add_module(eshkol_py bindings/python/eshkol_module.cpp)
+        target_include_directories(eshkol_py PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+        if(LLVM_LIBRARY_DIRS)
+            target_link_directories(eshkol_py PRIVATE ${LLVM_LIBRARY_DIRS})
+        endif()
+        # Force-load eshkol-static so JIT can resolve all runtime symbols
+        if(APPLE)
+            target_link_libraries(eshkol_py PRIVATE eshkol-repl-lib
+                "-Wl,-force_load" "$<TARGET_FILE:eshkol-static>"
+                ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+        else()
+            target_link_libraries(eshkol_py PRIVATE eshkol-repl-lib
+                "-Wl,--whole-archive" "$<TARGET_FILE:eshkol-static>" "-Wl,--no-whole-archive"
+                ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+        endif()
+        if(TARGET eshkol-agent-ffi)
+            target_link_libraries(eshkol_py PRIVATE eshkol-agent-ffi)
+        endif()
+        # Platform libraries
+        if(APPLE)
+            target_link_libraries(eshkol_py PRIVATE
+                "-framework Accelerate" "-framework Metal"
+                "-framework MetalPerformanceShaders" "-framework Foundation"
+                "-lobjc" "-lncurses")
+        endif()
+        set_target_properties(eshkol_py PROPERTIES OUTPUT_NAME "eshkol")
+        message(STATUS "Python bindings: ENABLED (pybind11 ${pybind11_VERSION})")
+    else()
+        message(STATUS "Python bindings: pybind11 not found, skipping")
+    endif()
+endif()
+
 # where to find our CMake modules
 set(CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(Packing)

@@ -81,6 +81,9 @@ extern "C" eshkol_ffi_context_t* eshkol_ffi_init(void) {
         return NULL;
     }
 
+    /* Load stdlib for the JIT context */
+    ctx->jit->loadStdlib();
+
     ctx->initialized = true;
     g_ffi_error[0] = 0;
     return ctx;
@@ -151,7 +154,6 @@ extern "C" int eshkol_ffi_eval(eshkol_ffi_context_t* ctx,
             last_result = ctx->jit->executeTagged(&asts[i]);
         } catch (const std::exception& e) {
             ffi_set_error("JIT execution failed: %s", e.what());
-            /* Clean up remaining ASTs */
             for (auto& a : asts) eshkol_ast_clean(&a);
             return -1;
         } catch (...) {
