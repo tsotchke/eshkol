@@ -23,6 +23,9 @@
 #include <string>
 #include <vector>
 #include <memory>
+#ifndef _WIN32
+#include <unistd.h>
+#endif
 
 /* ── Thread-local error message ── */
 static thread_local char g_ffi_error[4096] = {0};
@@ -115,8 +118,18 @@ extern "C" int eshkol_ffi_eval(eshkol_ffi_context_t* ctx,
 
     g_ffi_error[0] = 0;
 
+    /* Wrap the last expression in (display ...) so we can capture the result.
+     * This is necessary because the LLVM codegen generates main() functions
+     * that return 0, not the expression value. The display output is captured
+     * via pipe redirection and parsed back to a tagged value. */
+    std::string wrapped_source = source;
+    if (result) {
+        /* Only wrap if caller wants a result */
+        wrapped_source = std::string("(display ") + source + ")";
+    }
+
     /* Parse source into ASTs */
-    std::istringstream stream(source);
+    std::istringstream stream(wrapped_source);
     std::vector<eshkol_ast_t> asts;
 
     while (stream.good() && !stream.eof()) {
@@ -145,30 +158,94 @@ extern "C" int eshkol_ffi_eval(eshkol_ffi_context_t* ctx,
         return -1;
     }
 
-    /* Execute each AST via JIT, keeping the last result */
-    eshkol_tagged_value_t last_result;
-    memset(&last_result, 0, sizeof(last_result));
+    /* Execute each AST via JIT.
+     * The JIT's execute() generates a main() that DISPLAYS the result
+     * via eshkol_display_value. For the FFI, we capture the output
+     * and parse it back to a tagged value. This is the correct approach
+     * because the LLVM codegen wraps expressions in display calls. */
 
+    /* Capture stdout */
+    fflush(stdout);
+    int stdout_fd = dup(STDOUT_FILENO);
+    int pipefd[2];
+    if (pipe(pipefd) != 0) {
+        ffi_set_error("Failed to create capture pipe");
+        for (auto& a : asts) eshkol_ast_clean(&a);
+        return -1;
+    }
+    dup2(pipefd[1], STDOUT_FILENO);
+    close(pipefd[1]);
+
+    /* Execute */
     for (size_t i = 0; i < asts.size(); i++) {
         try {
-            last_result = ctx->jit->executeTagged(&asts[i]);
+            ctx->jit->execute(&asts[i]);
         } catch (const std::exception& e) {
+            /* Restore stdout before error */
+            fflush(stdout);
+            dup2(stdout_fd, STDOUT_FILENO);
+            close(stdout_fd);
+            close(pipefd[0]);
             ffi_set_error("JIT execution failed: %s", e.what());
             for (auto& a : asts) eshkol_ast_clean(&a);
             return -1;
         } catch (...) {
+            fflush(stdout);
+            dup2(stdout_fd, STDOUT_FILENO);
+            close(stdout_fd);
+            close(pipefd[0]);
             ffi_set_error("JIT execution failed (unknown error)");
             for (auto& a : asts) eshkol_ast_clean(&a);
             return -1;
         }
     }
 
+    /* Read captured output */
+    fflush(stdout);
+    dup2(stdout_fd, STDOUT_FILENO);
+    close(stdout_fd);
+
+    char output[4096] = {0};
+    ssize_t nread = read(pipefd[0], output, sizeof(output) - 1);
+    close(pipefd[0]);
+    if (nread > 0) output[nread] = '\0';
+    else output[0] = '\0';
+
     /* Clean up ASTs */
     for (auto& a : asts) eshkol_ast_clean(&a);
 
-    /* Return the result directly — no string parsing needed */
+    /* Parse output to tagged value */
     if (result) {
-        *result = to_ffi(last_result);
+        /* Strip trailing newline */
+        size_t len = strlen(output);
+        while (len > 0 && (output[len-1] == '\n' || output[len-1] == '\r')) {
+            output[--len] = '\0';
+        }
+
+        if (len == 0) {
+            *result = eshkol_ffi_null();
+        } else {
+            /* Try to parse as number */
+            char* endptr;
+            double dval = strtod(output, &endptr);
+            if (endptr != output && *endptr == '\0') {
+                /* Numeric result */
+                if (dval == (double)(int64_t)dval && strchr(output, '.') == NULL
+                    && dval >= -9e18 && dval <= 9e18) {
+                    *result = eshkol_ffi_int64((int64_t)dval);
+                } else {
+                    *result = eshkol_ffi_double(dval);
+                }
+            } else if (strcmp(output, "#t") == 0) {
+                *result = eshkol_ffi_bool(1);
+            } else if (strcmp(output, "#f") == 0) {
+                *result = eshkol_ffi_bool(0);
+            } else if (strcmp(output, "()") == 0) {
+                *result = eshkol_ffi_null();
+            } else {
+                *result = eshkol_ffi_string(ctx, output);
+            }
+        }
     }
 
     return 0;
