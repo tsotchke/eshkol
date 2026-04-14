@@ -228,6 +228,8 @@ public:
     llvm::Value* processSpawn(const eshkol_operations_t* op);
     llvm::Value* processWait(const eshkol_operations_t* op);
     llvm::Value* pollFd(const eshkol_operations_t* op);
+    llvm::Value* tensorSave(const eshkol_operations_t* op);
+    llvm::Value* tensorLoad(const eshkol_operations_t* op);
 
 private:
     CodegenContext& ctx_;

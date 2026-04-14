@@ -1312,6 +1312,10 @@ ONE_ARG_BUILTIN(processWait, "eshkol_builtin_process_wait")
 /* IO multiplexing */
 TWO_ARG_BUILTIN(pollFd, "eshkol_builtin_poll_fd")
 
+/* Tensor persistence */
+TWO_ARG_BUILTIN(tensorSave, "eshkol_builtin_tensor_save")
+ONE_ARG_BUILTIN(tensorLoad, "eshkol_builtin_tensor_load")
+
 #undef ZERO_ARG_BUILTIN
 #undef ONE_ARG_BUILTIN
 #undef TWO_ARG_BUILTIN
