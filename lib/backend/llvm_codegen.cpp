@@ -4577,9 +4577,11 @@ private:
         }
         function_table[name] = func;
 
-        // REPL FORWARD REFERENCE FIX: Create a global function pointer for this function
-        // This allows forward references from other modules to call this function
-        if (g_repl_mode_enabled) {
+        // Only top-level externally visible REPL functions need cross-module
+        // forward-ref slots. Local helper functions (for example builtin_* wrappers
+        // on Windows) are resolved within the same module and cannot be looked up
+        // by name after JIT insertion.
+        if (g_repl_mode_enabled && !func->hasLocalLinkage()) {
             std::string global_ptr_name = "__repl_fwd_" + name;
             Type* func_ptr_type = ptr_type;
 
