@@ -4,10 +4,8 @@
  *
  * This header provides a clean, stable C API for:
  *   - Initializing and shutting down the Eshkol runtime
- *   - Parsing Eshkol source code from strings
- *   - Compiling and JIT-executing Eshkol expressions
+ *   - Evaluating Eshkol expressions via in-process JIT
  *   - Constructing and inspecting Eshkol values (numbers, strings, lists, tensors)
- *   - Calling Eshkol closures from C
  *   - Error handling
  *
  * All functions use `extern "C"` linkage for cross-language compatibility.
@@ -43,21 +41,28 @@ extern "C" {
 typedef struct eshkol_ffi_context eshkol_ffi_context_t;
 
 /** Tagged value — the universal Eshkol value type (16 bytes).
- *  Layout: {type:8, flags:8, reserved:16, padding:32, data:64}
- *  Use the accessor functions below to construct and inspect values. */
+ *  Layout: {type:8, flags:8, reserved:16, data:64}
+ *  Use the accessor functions below to construct and inspect values.
+ *
+ *  This is ABI-compatible with the runtime's eshkol_tagged_value_t. */
 typedef struct {
     uint8_t  type;
     uint8_t  flags;
     uint16_t reserved;
-    uint32_t padding;
-    uint64_t data;
+    union {
+        int64_t  int_val;
+        double   double_val;
+        uint64_t ptr_val;
+        uint64_t raw_val;
+    } data;
 } eshkol_ffi_value_t;
 
 /* ============================================================================
  * Lifecycle
  * ============================================================================ */
 
-/** Initialize the Eshkol runtime. Must be called before any other FFI function.
+/** Initialize the Eshkol runtime with JIT compilation support.
+ *  Creates an in-process JIT context for evaluating expressions.
  *  @return Context handle, or NULL on failure. */
 eshkol_ffi_context_t* eshkol_ffi_init(void);
 
@@ -69,8 +74,8 @@ void eshkol_ffi_shutdown(eshkol_ffi_context_t* ctx);
  * Evaluation
  * ============================================================================ */
 
-/** Parse and evaluate an Eshkol expression string.
- *  This is the simplest way to execute Eshkol code from C.
+/** Parse and evaluate an Eshkol expression string via in-process JIT.
+ *  State (definitions, variables) persists across calls within the same context.
  *
  *  @param ctx     Context from eshkol_ffi_init()
  *  @param source  Eshkol source code (null-terminated)
@@ -142,7 +147,7 @@ eshkol_ffi_value_t eshkol_ffi_list(eshkol_ffi_context_t* ctx,
  * ============================================================================ */
 
 /** Get the type tag of a value.
- *  @return Type constant: 0=null, 1=int64, 2=double, 3=bool, 4=heap_ptr, etc. */
+ *  @return Type constant (ESHKOL_FFI_TYPE_*). */
 int eshkol_ffi_type(eshkol_ffi_value_t value);
 
 /** Extract an int64 from a value. Returns 0 if not an integer. */
@@ -153,6 +158,10 @@ double eshkol_ffi_to_double(eshkol_ffi_value_t value);
 
 /** Extract a boolean from a value. */
 int eshkol_ffi_to_bool(eshkol_ffi_value_t value);
+
+/** Extract the C string from a string value.
+ *  @return Pointer to string data (owned by arena, do not free), or NULL. */
+const char* eshkol_ffi_to_string(eshkol_ffi_value_t value);
 
 /** Check if a value is null/nil. */
 int eshkol_ffi_is_null(eshkol_ffi_value_t value);
@@ -173,37 +182,25 @@ void eshkol_ffi_display(eshkol_ffi_value_t value);
  * Tensor Operations
  * ============================================================================ */
 
-/** Create a tensor with the given shape, initialized to zero.
- *  @param ctx    Context
- *  @param shape  Array of dimension sizes
- *  @param ndims  Number of dimensions
- *  @return Tensor value, or null on failure. */
+/** Create a tensor with the given shape, initialized to zero. */
 eshkol_ffi_value_t eshkol_ffi_tensor_zeros(eshkol_ffi_context_t* ctx,
                                             const int64_t* shape,
                                             int ndims);
 
-/** Create a tensor from existing data (copies data).
- *  @param ctx    Context
- *  @param data   Flat array of doubles (row-major)
- *  @param shape  Array of dimension sizes
- *  @param ndims  Number of dimensions
- *  @return Tensor value, or null on failure. */
+/** Create a tensor from existing data (copies data). */
 eshkol_ffi_value_t eshkol_ffi_tensor_from_data(eshkol_ffi_context_t* ctx,
                                                 const double* data,
                                                 const int64_t* shape,
                                                 int ndims);
 
 /** Get a pointer to the tensor's data (read/write access).
- *  @param tensor  Tensor value
  *  @return Pointer to flat double array, or NULL if not a tensor. */
 double* eshkol_ffi_tensor_data(eshkol_ffi_value_t tensor);
 
-/** Get the total number of elements in a tensor.
- *  @return Element count, or 0 if not a tensor. */
+/** Get the total number of elements in a tensor. */
 int64_t eshkol_ffi_tensor_size(eshkol_ffi_value_t tensor);
 
-/** Get the number of dimensions of a tensor.
- *  @return Number of dimensions, or 0 if not a tensor. */
+/** Get the number of dimensions of a tensor. */
 int eshkol_ffi_tensor_ndims(eshkol_ffi_value_t tensor);
 
 /* ============================================================================
@@ -218,15 +215,23 @@ const char* eshkol_ffi_last_error(void);
 void eshkol_ffi_clear_error(void);
 
 /* ============================================================================
- * Type Constants
+ * Type Constants — match runtime eshkol_value_type_t exactly
  * ============================================================================ */
 
-#define ESHKOL_FFI_TYPE_NULL     0
-#define ESHKOL_FFI_TYPE_INT64    1
-#define ESHKOL_FFI_TYPE_DOUBLE   2
-#define ESHKOL_FFI_TYPE_BOOL     3
-#define ESHKOL_FFI_TYPE_HEAP_PTR 4
-#define ESHKOL_FFI_TYPE_CALLABLE 5
+#define ESHKOL_FFI_TYPE_NULL     0   /* Empty/null value */
+#define ESHKOL_FFI_TYPE_INT64    1   /* 64-bit signed integer */
+#define ESHKOL_FFI_TYPE_DOUBLE   2   /* Double-precision float */
+#define ESHKOL_FFI_TYPE_BOOL     3   /* Boolean (#t/#f) */
+#define ESHKOL_FFI_TYPE_CHAR     4   /* Unicode character */
+#define ESHKOL_FFI_TYPE_SYMBOL   5   /* Interned symbol */
+#define ESHKOL_FFI_TYPE_HEAP_PTR 8   /* Heap data: cons, string, vector, tensor */
+#define ESHKOL_FFI_TYPE_CALLABLE 9   /* Callables: closure, lambda, primitive */
+
+/* Heap subtype markers (stored in flags field for HEAP_PTR values) */
+#define ESHKOL_FFI_SUBTYPE_STRING  0x01
+#define ESHKOL_FFI_SUBTYPE_PAIR    0x02
+#define ESHKOL_FFI_SUBTYPE_TENSOR  0x03
+#define ESHKOL_FFI_SUBTYPE_VECTOR  0x04
 
 #ifdef __cplusplus
 }
