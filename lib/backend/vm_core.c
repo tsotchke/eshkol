@@ -176,6 +176,7 @@ typedef enum {
     HEAP_ERROR = 21,
     HEAP_BYTEVECTOR = 22,
     HEAP_PARAMETER = 23,
+    HEAP_HYPER_DUAL = 24,
 } HeapType;
 
 typedef struct {

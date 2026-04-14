@@ -42,6 +42,7 @@
 #define VAL_MANIFOLD    23   /* heap-allocated Riemannian manifold (opaque) */
 #define VAL_PORT        24   /* heap-allocated I/O port      (opaque)       */
 #define VAL_VOID        25   /* unspecified return value (display, newline)  */
+#define VAL_HYPER_DUAL  26   /* heap-allocated VmHyperDual (opaque)          */
 
 /* ── Heap Subtypes ── */
 #define VM_SUBTYPE_COMPLEX   5
@@ -90,6 +91,18 @@ typedef struct {
     double tangent;
 } VmDual;
 
+/* ── Hyper-Dual Number (exact second derivatives via ε₁, ε₂)  ──
+ * h = f + f₁·ε₁ + f₂·ε₂ + f₁₂·ε₁ε₂
+ * where ε₁² = ε₂² = 0.
+ * f₁₂ gives the exact mixed partial ∂²f/∂x₁∂x₂.
+ * For scalar hessian: seed (x, 1, 1, 0) → f₁₂ = f''(x). */
+typedef struct {
+    double f;      /* function value */
+    double f1;     /* ∂f/∂ε₁ */
+    double f2;     /* ∂f/∂ε₂ */
+    double f12;    /* ∂²f/∂ε₁∂ε₂ = exact second derivative */
+} VmHyperDual;
+
 /* ── Numeric Tower Promotion ──
  * int64 < bignum < rational < float64 < complex < dual
  * Promotion rules:
@@ -107,6 +120,8 @@ typedef struct {
 #define VM_NATIVE_RATIONAL_BASE  330
 #define VM_NATIVE_BIGNUM_BASE    350
 #define VM_NATIVE_DUAL_BASE      370
+#define VM_NATIVE_HYPER_DUAL_BASE 1860
+#define VM_SUBTYPE_HYPER_DUAL    14
 #define VM_NATIVE_AD_BASE        390
 #define VM_NATIVE_TENSOR_BASE    410
 #define VM_NATIVE_TENSOR_OP_BASE 440

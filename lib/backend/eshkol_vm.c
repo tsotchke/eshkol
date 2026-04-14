@@ -54,6 +54,7 @@
 #include "vm_rational.c"
 #include "vm_bignum.c"
 #include "vm_dual.c"
+#include "vm_hyperdual.c"
 #include "vm_autodiff.c"
 #include "vm_tensor.c"
 #include "vm_tensor_ops.c"
