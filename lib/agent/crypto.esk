@@ -13,7 +13,7 @@
 ;; High-level wrappers
 (define (hmac-sha256 key data)
   "Compute HMAC-SHA256. Returns 64-char hex string."
-  (let ((buf (make-string 65 #\nul)))
+  (let ((buf (make-string 65 #\space)))
     (let ((rc (hmac-sha256-raw key (string-length key)
                                 data (string-length data)
                                 buf 65)))
@@ -21,18 +21,18 @@
 
 (define (sha256 data)
   "Compute SHA256 hash. Returns 64-char hex string."
-  (let ((buf (make-string 65 #\nul)))
+  (let ((buf (make-string 65 #\space)))
     (let ((rc (sha256-raw data (string-length data) buf 65)))
       (if (= rc 0) (substring buf 0 64) #f))))
 
 (define (random-bytes len)
   "Generate cryptographically secure random bytes as a string."
-  (let ((buf (make-string len #\nul)))
+  (let ((buf (make-string len #\space)))
     (let ((rc (random-bytes-raw buf len)))
       (if (= rc 0) buf #f))))
 
 (define (random-hex hex-len)
   "Generate random hex string of given length."
-  (let ((buf (make-string (+ hex-len 1) #\nul)))
+  (let ((buf (make-string (+ hex-len 1) #\space)))
     (let ((rc (random-hex-raw buf hex-len)))
       (if (= rc 0) (substring buf 0 hex-len) #f))))
