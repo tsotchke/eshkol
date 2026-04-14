@@ -1348,6 +1348,7 @@ if(ESHKOL_BUILD_AGENT_FFI)
         set(AGENT_FFI_SOURCES
             ${AGENT_FFI_DIR}/agent_terminal.c
             ${AGENT_FFI_DIR}/agent_crypto.c
+            ${AGENT_FFI_DIR}/agent_subprocess.c
         )
 
         # Optional: PCRE2 for regex
