@@ -1139,11 +1139,7 @@ bool ReplJITContext::loadStdlib() {
     }
 
     // Fallback: JIT compile from source (slowest but always correct)
-    const bool was_loading_stdlib_from_source = loading_stdlib_from_source_;
-    loading_stdlib_from_source_ = true;
-    const bool loaded = loadModule("stdlib", false);
-    loading_stdlib_from_source_ = was_loading_stdlib_from_source;
-    return loaded;
+    return loadModule("stdlib", false);
 }
 
 bool ReplJITContext::loadModule(const std::string& module_name) {
@@ -1157,8 +1153,7 @@ bool ReplJITContext::loadModule(const std::string& module_name, bool allow_preco
     }
 
     // For stdlib or core.* modules, use precompiled stdlib.o if available
-    if (allow_precompiled_stdlib && !loading_stdlib_from_source_ &&
-        (module_name == "stdlib" || module_name.find("core.") == 0)) {
+    if (allow_precompiled_stdlib && (module_name == "stdlib" || module_name.find("core.") == 0)) {
         // Try to load via stdlib.o (which includes all core modules)
         if (loadStdlib()) {
             return true;
@@ -1223,15 +1218,13 @@ bool ReplJITContext::loadModule(const std::string& module_name, bool allow_preco
     // Store module exports for visibility checking
     module_exports_[module_name] = exported_symbols;
 
-    // Mark private symbols (defined but not exported) - only if module has provide.
-    // Delay registering them with codegen until after the module finishes compiling
-    // so internal forward references still work while loading the module itself.
-    std::vector<std::string> private_symbols_to_register;
+    // Mark private symbols (defined but not exported) - only if module has provide
     if (has_provide) {
         for (const auto& sym : defined_symbols) {
             if (exported_symbols.find(sym) == exported_symbols.end()) {
                 private_symbols_.insert(sym);
-                private_symbols_to_register.push_back(sym);
+                // Register with codegen so variable lookups will fail for private symbols
+                eshkol_repl_register_private_symbol(sym.c_str());
             }
         }
     }
@@ -1269,11 +1262,6 @@ bool ReplJITContext::loadModule(const std::string& module_name, bool allow_preco
         } catch (const std::exception& e) {
             std::cerr << "     error: " << e.what() << std::endl;
         }
-    }
-
-    for (const auto& sym : private_symbols_to_register) {
-        // Register after module compilation so only external accesses are blocked.
-        eshkol_repl_register_private_symbol(sym.c_str());
     }
 
     // Clean up ASTs
