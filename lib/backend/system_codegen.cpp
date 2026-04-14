@@ -1199,6 +1199,122 @@ llvm::Value* SystemCodegen::setCurrentDirectory(const eshkol_operations_t* op) {
     return tagged_.packBool(success);
 }
 
+/* ═══════════════════════════════════════════════════════════════════════════
+ * v1.2 System Builtins — delegate to C runtime (system_builtins.c)
+ *
+ * These functions are declared extern "C" in system_builtins.c and return
+ * eshkol_sysbuiltin_value_t which is layout-identical to eshkol_tagged_value_t.
+ * We declare them as returning the LLVM tagged value type and call directly.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+/* Helper: get or create a void C runtime function that writes result via pointer.
+ * On ARM64 (and some other platforms), returning a 16-byte struct by value uses
+ * different calling conventions between LLVM IR and C-compiled code. The sret
+ * pattern is the ABI-safe approach: the caller allocates stack space and passes
+ * a pointer, avoiding all struct-return convention mismatches. */
+llvm::Function* getOrDeclareRuntimeFuncSret(CodegenContext& ctx, llvm::Module* mod,
+                                             const std::string& name,
+                                             llvm::ArrayRef<llvm::Type*> extra_arg_types) {
+    llvm::Function* f = mod->getFunction(name);
+    if (f) return f;
+    std::vector<llvm::Type*> all_args;
+    all_args.push_back(ctx.ptrType()); /* sret pointer */
+    for (auto* t : extra_arg_types) all_args.push_back(t);
+    llvm::FunctionType* ft = llvm::FunctionType::get(
+        llvm::Type::getVoidTy(ctx.context()), all_args, false);
+    f = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, name, mod);
+    return f;
+}
+
+static llvm::Value* callSretRuntime(CodegenContext& ctx, llvm::Function* f,
+                                     llvm::ArrayRef<llvm::Value*> args) {
+    llvm::IRBuilder<>& builder = ctx.builder();
+    llvm::Value* result_ptr = builder.CreateAlloca(ctx.taggedValueType(), nullptr, "sret_out");
+    std::vector<llvm::Value*> call_args;
+    call_args.push_back(result_ptr);
+    for (auto* a : args) call_args.push_back(a);
+    builder.CreateCall(f, call_args);
+    return builder.CreateLoad(ctx.taggedValueType(), result_ptr);
+}
+
+/* Zero-arg builtin */
+#define ZERO_ARG_BUILTIN(method_name, c_func_name) \
+llvm::Value* SystemCodegen::method_name(const eshkol_operations_t* op) { \
+    (void)op; \
+    llvm::Module* mod = ctx_.builder().GetInsertBlock()->getParent()->getParent(); \
+    llvm::Function* f = getOrDeclareRuntimeFuncSret(ctx_, mod, c_func_name, {}); \
+    return callSretRuntime(ctx_, f, {}); \
+}
+
+/* One-arg builtin */
+#define ONE_ARG_BUILTIN(method_name, c_func_name) \
+llvm::Value* SystemCodegen::method_name(const eshkol_operations_t* op) { \
+    if (op->call_op.num_vars != 1) return tagged_.packNull(); \
+    if (!codegen_ast_callback_) return tagged_.packNull(); \
+    llvm::Value* arg = codegen_ast_callback_(&op->call_op.variables[0], callback_context_); \
+    if (!arg) return tagged_.packNull(); \
+    llvm::Module* mod = ctx_.builder().GetInsertBlock()->getParent()->getParent(); \
+    llvm::Function* f = getOrDeclareRuntimeFuncSret(ctx_, mod, c_func_name, {ctx_.taggedValueType()}); \
+    return callSretRuntime(ctx_, f, {arg}); \
+}
+
+/* Two-arg builtin */
+#define TWO_ARG_BUILTIN(method_name, c_func_name) \
+llvm::Value* SystemCodegen::method_name(const eshkol_operations_t* op) { \
+    if (op->call_op.num_vars != 2) return tagged_.packNull(); \
+    if (!codegen_ast_callback_) return tagged_.packNull(); \
+    llvm::Value* a = codegen_ast_callback_(&op->call_op.variables[0], callback_context_); \
+    llvm::Value* b = codegen_ast_callback_(&op->call_op.variables[1], callback_context_); \
+    if (!a || !b) return tagged_.packNull(); \
+    llvm::Module* mod = ctx_.builder().GetInsertBlock()->getParent()->getParent(); \
+    llvm::Function* f = getOrDeclareRuntimeFuncSret(ctx_, mod, c_func_name, \
+        {ctx_.taggedValueType(), ctx_.taggedValueType()}); \
+    return callSretRuntime(ctx_, f, {a, b}); \
+}
+
+/* System info */
+ZERO_ARG_BUILTIN(osType, "eshkol_builtin_os_type")
+ZERO_ARG_BUILTIN(osArch, "eshkol_builtin_os_arch")
+ZERO_ARG_BUILTIN(hostnameBuiltin, "eshkol_builtin_hostname")
+ZERO_ARG_BUILTIN(usernameBuiltin, "eshkol_builtin_username")
+ZERO_ARG_BUILTIN(cpuCount, "eshkol_builtin_cpu_count")
+ZERO_ARG_BUILTIN(getpidBuiltin, "eshkol_builtin_getpid")
+ZERO_ARG_BUILTIN(homeDirectory, "eshkol_builtin_home_directory")
+
+/* System ops with args */
+ONE_ARG_BUILTIN(sleepMs, "eshkol_builtin_sleep_ms")
+ONE_ARG_BUILTIN(executableExists, "eshkol_builtin_executable_exists")
+
+/* Path manipulation */
+TWO_ARG_BUILTIN(pathJoin, "eshkol_builtin_path_join")
+ONE_ARG_BUILTIN(pathDirname, "eshkol_builtin_path_dirname")
+ONE_ARG_BUILTIN(pathBasename, "eshkol_builtin_path_basename")
+ONE_ARG_BUILTIN(pathExtname, "eshkol_builtin_path_extname")
+ONE_ARG_BUILTIN(pathIsAbsolute, "eshkol_builtin_path_is_absolute")
+ONE_ARG_BUILTIN(pathNormalize, "eshkol_builtin_path_normalize")
+ONE_ARG_BUILTIN(realpathBuiltin, "eshkol_builtin_realpath")
+
+/* Filesystem */
+ONE_ARG_BUILTIN(fileStat, "eshkol_builtin_file_stat")
+TWO_ARG_BUILTIN(fileCopy, "eshkol_builtin_file_copy")
+ONE_ARG_BUILTIN(mkdirRecursive, "eshkol_builtin_mkdir_recursive")
+ONE_ARG_BUILTIN(mkdtempBuiltin, "eshkol_builtin_mkdtemp")
+ONE_ARG_BUILTIN(directoryDeleteRecursive, "eshkol_builtin_directory_delete_recursive")
+
+/* Shell */
+ONE_ARG_BUILTIN(shellQuote, "eshkol_builtin_shell_quote")
+
+/* Process */
+TWO_ARG_BUILTIN(processSpawn, "eshkol_builtin_process_spawn")
+ONE_ARG_BUILTIN(processWait, "eshkol_builtin_process_wait")
+
+/* IO multiplexing */
+TWO_ARG_BUILTIN(pollFd, "eshkol_builtin_poll_fd")
+
+#undef ZERO_ARG_BUILTIN
+#undef ONE_ARG_BUILTIN
+#undef TWO_ARG_BUILTIN
+
 } // namespace eshkol
 
 #endif // ESHKOL_LLVM_BACKEND_ENABLED

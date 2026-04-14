@@ -999,6 +999,33 @@ public:
         function_return_types["close-output-port"] = BuiltinTypes::Null;
         function_return_types["string-copy!"] = BuiltinTypes::Null;
 
+        // v1.2 system/path/process builtins
+        function_return_types["os-type"] = BuiltinTypes::String;
+        function_return_types["os-arch"] = BuiltinTypes::String;
+        function_return_types["hostname"] = BuiltinTypes::String;
+        function_return_types["username"] = BuiltinTypes::String;
+        function_return_types["cpu-count"] = BuiltinTypes::Integer;
+        function_return_types["getpid"] = BuiltinTypes::Integer;
+        function_return_types["home-directory"] = BuiltinTypes::String;
+        function_return_types["sleep-ms"] = BuiltinTypes::Null;
+        function_return_types["executable-exists?"] = BuiltinTypes::Boolean;
+        function_return_types["path-join"] = BuiltinTypes::String;
+        function_return_types["path-dirname"] = BuiltinTypes::String;
+        function_return_types["path-basename"] = BuiltinTypes::String;
+        function_return_types["path-extname"] = BuiltinTypes::String;
+        function_return_types["path-is-absolute?"] = BuiltinTypes::Boolean;
+        function_return_types["path-normalize"] = BuiltinTypes::String;
+        function_return_types["realpath"] = BuiltinTypes::String;
+        function_return_types["file-stat"] = BuiltinTypes::Integer;
+        function_return_types["file-copy"] = BuiltinTypes::Boolean;
+        function_return_types["mkdir-recursive"] = BuiltinTypes::Boolean;
+        function_return_types["mkdtemp"] = BuiltinTypes::String;
+        function_return_types["directory-delete-recursive"] = BuiltinTypes::Boolean;
+        function_return_types["shell-quote"] = BuiltinTypes::String;
+        function_return_types["process-spawn"] = BuiltinTypes::Integer;
+        function_return_types["process-wait"] = BuiltinTypes::Integer;
+        function_return_types["poll-fd"] = BuiltinTypes::Boolean;
+
         // R7RS Wave 2 functions
         function_return_types["char-foldcase"] = BuiltinTypes::Value;  // char
         function_return_types["string-foldcase"] = BuiltinTypes::String;
@@ -10714,6 +10741,35 @@ private:
         if (func_name == "append-file") return system_->appendFile(op);
 
         // =========================================================================
+        // v1.2 SYSTEM/PATH/PROCESS BUILTINS (delegated to SystemCodegen → C runtime)
+        // =========================================================================
+        if (func_name == "os-type") return system_->osType(op);
+        if (func_name == "os-arch") return system_->osArch(op);
+        if (func_name == "hostname") return system_->hostnameBuiltin(op);
+        if (func_name == "username") return system_->usernameBuiltin(op);
+        if (func_name == "cpu-count") return system_->cpuCount(op);
+        if (func_name == "getpid") return system_->getpidBuiltin(op);
+        if (func_name == "home-directory") return system_->homeDirectory(op);
+        if (func_name == "sleep-ms") return system_->sleepMs(op);
+        if (func_name == "executable-exists?") return system_->executableExists(op);
+        if (func_name == "path-join") return system_->pathJoin(op);
+        if (func_name == "path-dirname") return system_->pathDirname(op);
+        if (func_name == "path-basename") return system_->pathBasename(op);
+        if (func_name == "path-extname") return system_->pathExtname(op);
+        if (func_name == "path-is-absolute?") return system_->pathIsAbsolute(op);
+        if (func_name == "path-normalize") return system_->pathNormalize(op);
+        if (func_name == "realpath") return system_->realpathBuiltin(op);
+        if (func_name == "file-stat") return system_->fileStat(op);
+        if (func_name == "file-copy") return system_->fileCopy(op);
+        if (func_name == "mkdir-recursive") return system_->mkdirRecursive(op);
+        if (func_name == "mkdtemp") return system_->mkdtempBuiltin(op);
+        if (func_name == "directory-delete-recursive") return system_->directoryDeleteRecursive(op);
+        if (func_name == "shell-quote") return system_->shellQuote(op);
+        if (func_name == "process-spawn") return system_->processSpawn(op);
+        if (func_name == "process-wait") return system_->processWait(op);
+        if (func_name == "poll-fd") return system_->pollFd(op);
+
+        // =========================================================================
         // R7RS ENVIRONMENT PRIMITIVES
         // =========================================================================
         if (func_name == "null-environment") return codegenNullEnvironment(op);
@@ -17741,6 +17797,15 @@ private:
             "file-exists?", "delete-file",
             "current-second", "current-jiffy", "jiffies-per-second",
             "features",
+            // v1.2 system/path/process
+            "os-type", "os-arch", "hostname", "username",
+            "cpu-count", "getpid", "home-directory",
+            "sleep-ms", "executable-exists?",
+            "path-join", "path-dirname", "path-basename", "path-extname",
+            "path-is-absolute?", "path-normalize", "realpath",
+            "file-stat", "file-copy", "mkdir-recursive", "mkdtemp",
+            "directory-delete-recursive",
+            "shell-quote", "process-spawn", "process-wait", "poll-fd",
             // Eval
             "eval",
         };
