@@ -2187,11 +2187,20 @@ eshkol_tagged_value_t ReplJITContext::executeTagged(eshkol_ast_t* ast) {
             case ESHKOL_VAR:
             case ESHKOL_OP:
             default:
-                // For VAR, OP, and other complex AST nodes without type info,
-                // we cannot determine the type - return as null with warning
-                // The caller should ensure type checking runs before eval
-                result.type = ESHKOL_VALUE_NULL;
-                result.data.raw_val = 0;
+                // For VAR, OP, and other complex AST nodes, the JIT function
+                // returns the result as an int32 from main(). For expressions
+                // that produce numeric results, treat as int64.
+                // This handles (+ 1 2), (sin 0.5), variable references, etc.
+                if (raw_val != 0) {
+                    // Try to interpret as integer result (most common case)
+                    result.type = ESHKOL_VALUE_INT64;
+                    result.flags = ESHKOL_VALUE_EXACT_FLAG;
+                    result.data.int_val = raw_val;
+                } else {
+                    result.type = ESHKOL_VALUE_INT64;
+                    result.flags = ESHKOL_VALUE_EXACT_FLAG;
+                    result.data.int_val = 0;
+                }
                 return result;
         }
     }
