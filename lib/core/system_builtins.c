@@ -913,12 +913,18 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_glob_match_v(eshkol_sysbuiltin_v
  * Tensor Persistence
  * ═══════════════════════════════════════════════════════════════════ */
 
-/* Forward declaration for tensor type (from arena_memory.h) */
+/* Forward declaration for tensor type — MUST match arena_memory.h exactly:
+ * struct eshkol_tensor {
+ *     uint64_t* dimensions;     // idx 0
+ *     uint64_t  num_dimensions; // idx 1
+ *     int64_t*  elements;       // idx 2 (doubles as int64 bit patterns)
+ *     uint64_t  total_elements; // idx 3
+ * }; // 32 bytes */
 typedef struct {
-    uint64_t num_dimensions;
-    uint64_t total_elements;
-    int64_t* shape;
-    int64_t* elements; /* doubles stored as int64 bit patterns */
+    uint64_t* dimensions;
+    uint64_t  num_dimensions;
+    int64_t*  elements;
+    uint64_t  total_elements;
 } eshkol_tensor_t_ffi;
 
 extern void* arena_allocate_tensor_full(void* arena, uint64_t ndims, uint64_t total);
@@ -941,7 +947,7 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_tensor_save_v(eshkol_sysbuiltin_
     fwrite(&version, 4, 1, f);
     fwrite(&ndims, 4, 1, f);
     for (uint32_t i = 0; i < ndims; i++) {
-        fwrite(&t->shape[i], 8, 1, f);
+        fwrite(&t->dimensions[i], 8, 1, f);
     }
     /* Elements are int64 bit patterns of doubles, 8 bytes each */
     fwrite(t->elements, 8, (size_t)t->total_elements, f);
