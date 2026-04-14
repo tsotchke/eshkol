@@ -202,6 +202,33 @@ public:
      */
     llvm::Value* setCurrentDirectory(const eshkol_operations_t* op);
 
+    /* ── v1.2 system builtins (delegate to C runtime) ── */
+    llvm::Value* osType(const eshkol_operations_t* op);
+    llvm::Value* osArch(const eshkol_operations_t* op);
+    llvm::Value* hostnameBuiltin(const eshkol_operations_t* op);
+    llvm::Value* usernameBuiltin(const eshkol_operations_t* op);
+    llvm::Value* cpuCount(const eshkol_operations_t* op);
+    llvm::Value* getpidBuiltin(const eshkol_operations_t* op);
+    llvm::Value* homeDirectory(const eshkol_operations_t* op);
+    llvm::Value* sleepMs(const eshkol_operations_t* op);
+    llvm::Value* executableExists(const eshkol_operations_t* op);
+    llvm::Value* pathJoin(const eshkol_operations_t* op);
+    llvm::Value* pathDirname(const eshkol_operations_t* op);
+    llvm::Value* pathBasename(const eshkol_operations_t* op);
+    llvm::Value* pathExtname(const eshkol_operations_t* op);
+    llvm::Value* pathIsAbsolute(const eshkol_operations_t* op);
+    llvm::Value* pathNormalize(const eshkol_operations_t* op);
+    llvm::Value* realpathBuiltin(const eshkol_operations_t* op);
+    llvm::Value* fileStat(const eshkol_operations_t* op);
+    llvm::Value* fileCopy(const eshkol_operations_t* op);
+    llvm::Value* mkdirRecursive(const eshkol_operations_t* op);
+    llvm::Value* mkdtempBuiltin(const eshkol_operations_t* op);
+    llvm::Value* directoryDeleteRecursive(const eshkol_operations_t* op);
+    llvm::Value* shellQuote(const eshkol_operations_t* op);
+    llvm::Value* processSpawn(const eshkol_operations_t* op);
+    llvm::Value* processWait(const eshkol_operations_t* op);
+    llvm::Value* pollFd(const eshkol_operations_t* op);
+
 private:
     CodegenContext& ctx_;
     TaggedValueCodegen& tagged_;
