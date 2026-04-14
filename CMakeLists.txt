@@ -1171,6 +1171,11 @@ if(REPL_SRC)
   # ===== Link eshkol-run with REPL library for -e/--eval JIT support =====
   # This must come after eshkol-repl-lib is defined
   target_link_libraries(eshkol-run PRIVATE eshkol-repl-lib)
+
+  # Link agent FFI modules so extern declarations in .esk files resolve
+  if(TARGET eshkol-agent-ffi)
+    target_link_libraries(eshkol-run PRIVATE eshkol-agent-ffi)
+  endif()
   # Force-load eshkol-static for JIT symbol resolution (same as REPL)
   if(APPLE)
     target_link_options(eshkol-run PRIVATE
