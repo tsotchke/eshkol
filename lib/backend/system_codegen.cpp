@@ -1316,6 +1316,22 @@ TWO_ARG_BUILTIN(pollFd, "eshkol_builtin_poll_fd")
 TWO_ARG_BUILTIN(tensorSave, "eshkol_builtin_tensor_save")
 ONE_ARG_BUILTIN(tensorLoad, "eshkol_builtin_tensor_load")
 
+/* v1.2 batch 2: VM-parity + new builtins */
+TWO_ARG_BUILTIN(fileChmod, "eshkol_builtin_file_chmod")
+TWO_ARG_BUILTIN(symlinkCreate, "eshkol_builtin_symlink_create")
+ONE_ARG_BUILTIN(symlinkRead, "eshkol_builtin_symlink_read")
+ONE_ARG_BUILTIN(directoryWalk, "eshkol_builtin_directory_walk")
+ONE_ARG_BUILTIN(mkstempBuiltin, "eshkol_builtin_mkstemp")
+TWO_ARG_BUILTIN(processKill, "eshkol_builtin_process_kill")
+ONE_ARG_BUILTIN(fileMtime, "eshkol_builtin_file_mtime")
+ONE_ARG_BUILTIN(fileAtime, "eshkol_builtin_file_atime")
+ONE_ARG_BUILTIN(fileLock, "eshkol_builtin_file_lock")
+ONE_ARG_BUILTIN(fileUnlock, "eshkol_builtin_file_unlock")
+TWO_ARG_BUILTIN(pathRelative, "eshkol_builtin_path_relative")
+TWO_ARG_BUILTIN(pathResolve, "eshkol_builtin_path_resolve")
+ONE_ARG_BUILTIN(globExpand, "eshkol_builtin_glob_expand")
+TWO_ARG_BUILTIN(globMatch, "eshkol_builtin_glob_match")
+
 #undef ZERO_ARG_BUILTIN
 #undef ONE_ARG_BUILTIN
 #undef TWO_ARG_BUILTIN

@@ -27,6 +27,8 @@
 #include <time.h>
 #include <pwd.h>
 #include <fcntl.h>
+#include <glob.h>
+#include <fnmatch.h>
 #else
 #include <windows.h>
 #include <direct.h>
@@ -591,6 +593,323 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_poll_fd_v(eshkol_sysbuiltin_valu
 }
 
 /* ═══════════════════════════════════════════════════════════════════
+ * Additional Filesystem Operations (VM parity)
+ * ═══════════════════════════════════════════════════════════════════ */
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_file_chmod_v(eshkol_sysbuiltin_value_t path_val,
+                                                              eshkol_sysbuiltin_value_t mode_val) {
+    const char* path = sys_extract_string(path_val);
+    if (!path) return sys_make_bool(0);
+#ifndef _WIN32
+    int mode = (int)(int64_t)mode_val.data;
+    return sys_make_bool(chmod(path, (mode_t)mode) == 0);
+#else
+    (void)mode_val;
+    return sys_make_bool(0);
+#endif
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_symlink_create_v(eshkol_sysbuiltin_value_t target_val,
+                                                                  eshkol_sysbuiltin_value_t link_val) {
+    const char* target = sys_extract_string(target_val);
+    const char* link = sys_extract_string(link_val);
+    if (!target || !link) return sys_make_bool(0);
+#ifndef _WIN32
+    return sys_make_bool(symlink(target, link) == 0);
+#else
+    return sys_make_bool(0);
+#endif
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_symlink_read_v(eshkol_sysbuiltin_value_t path_val) {
+    const char* path = sys_extract_string(path_val);
+    if (!path) return sys_make_null();
+#ifndef _WIN32
+    char buf[PATH_MAX];
+    ssize_t len = readlink(path, buf, sizeof(buf) - 1);
+    if (len > 0) {
+        buf[len] = '\0';
+        return sys_make_string(buf);
+    }
+#endif
+    return sys_make_null();
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_directory_walk_v(eshkol_sysbuiltin_value_t path_val) {
+    /* Returns a flat list of all file paths under path (recursive BFS) */
+    const char* path = sys_extract_string(path_val);
+    if (!path) return sys_make_null();
+#ifndef _WIN32
+    /* BFS with stack of directories */
+    char dirs[256][PATH_MAX];
+    int dir_count = 0, dir_idx = 0;
+    strncpy(dirs[0], path, PATH_MAX - 1); dirs[0][PATH_MAX - 1] = '\0';
+    dir_count = 1;
+
+    /* Build result as a linked list of strings (reversed, then return) */
+    /* For simplicity, collect into a flat array first */
+    char* results[4096];
+    int result_count = 0;
+
+    while (dir_idx < dir_count && dir_count < 256) {
+        DIR* d = opendir(dirs[dir_idx]);
+        dir_idx++;
+        if (!d) continue;
+        struct dirent* ent;
+        while ((ent = readdir(d)) != NULL && result_count < 4096) {
+            if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) continue;
+            char full[PATH_MAX];
+            snprintf(full, sizeof(full), "%s/%s", dirs[dir_idx - 1], ent->d_name);
+            struct stat st;
+            if (stat(full, &st) == 0 && S_ISDIR(st.st_mode) && dir_count < 256) {
+                strncpy(dirs[dir_count], full, PATH_MAX - 1);
+                dirs[dir_count][PATH_MAX - 1] = '\0';
+                dir_count++;
+            }
+            results[result_count] = strdup(full);
+            result_count++;
+        }
+        closedir(d);
+    }
+
+    /* Build tagged value list (reversed — cons prepends) */
+    /* For LLVM path, we'd need to build proper cons cells.
+     * For now, return a simple string with newline-separated paths
+     * that can be split in Eshkol. */
+    if (result_count == 0) {
+        return sys_make_null();
+    }
+
+    /* Calculate total length */
+    size_t total_len = 0;
+    for (int i = 0; i < result_count; i++) {
+        total_len += strlen(results[i]) + 1; /* +1 for newline */
+    }
+
+    void* arena = get_global_arena();
+    char* buf = arena_allocate_string_with_header(arena, total_len);
+    if (!buf) {
+        for (int i = 0; i < result_count; i++) free(results[i]);
+        return sys_make_null();
+    }
+    char* p = buf;
+    for (int i = 0; i < result_count; i++) {
+        size_t len = strlen(results[i]);
+        memcpy(p, results[i], len);
+        p += len;
+        *p++ = '\n';
+        free(results[i]);
+    }
+    if (p > buf) p[-1] = '\0'; /* replace last newline with null */
+    else *p = '\0';
+
+    eshkol_sysbuiltin_value_t v = {0, 0, 0, 0, 0};
+    v.type = SYS_TYPE_HEAP_PTR;
+    v.data = (uint64_t)buf;
+    return v;
+#else
+    return sys_make_null();
+#endif
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_mkstemp_v(eshkol_sysbuiltin_value_t tmpl_val) {
+    const char* tmpl = sys_extract_string(tmpl_val);
+    if (!tmpl) return sys_make_null();
+#ifndef _WIN32
+    char* copy = strdup(tmpl);
+    if (!copy) return sys_make_null();
+    int fd = mkstemp(copy);
+    if (fd >= 0) {
+        /* Return the path string (caller gets the fd from the path via open) */
+        eshkol_sysbuiltin_value_t result = sys_make_string(copy);
+        free(copy);
+        close(fd);
+        return result;
+    }
+    free(copy);
+#endif
+    return sys_make_null();
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_process_kill_v(eshkol_sysbuiltin_value_t pid_val,
+                                                                eshkol_sysbuiltin_value_t sig_val) {
+    int64_t pid = (int64_t)pid_val.data;
+    int64_t sig = (int64_t)sig_val.data;
+#ifndef _WIN32
+    return sys_make_bool(kill((pid_t)pid, (int)sig) == 0);
+#else
+    (void)pid; (void)sig;
+    return sys_make_bool(0);
+#endif
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+ * New Builtins — not in VM yet either
+ * ═══════════════════════════════════════════════════════════════════ */
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_file_mtime_v(eshkol_sysbuiltin_value_t path_val) {
+    const char* path = sys_extract_string(path_val);
+    if (!path) return sys_make_null();
+#ifndef _WIN32
+    struct stat st;
+    if (stat(path, &st) == 0) {
+        return sys_make_int64((int64_t)st.st_mtime);
+    }
+#endif
+    return sys_make_null();
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_file_atime_v(eshkol_sysbuiltin_value_t path_val) {
+    const char* path = sys_extract_string(path_val);
+    if (!path) return sys_make_null();
+#ifndef _WIN32
+    struct stat st;
+    if (stat(path, &st) == 0) {
+        return sys_make_int64((int64_t)st.st_atime);
+    }
+#endif
+    return sys_make_null();
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_file_lock_v(eshkol_sysbuiltin_value_t fd_val) {
+    int64_t fd = (int64_t)fd_val.data;
+#ifndef _WIN32
+    struct flock fl;
+    memset(&fl, 0, sizeof(fl));
+    fl.l_type = F_WRLCK;
+    fl.l_whence = SEEK_SET;
+    return sys_make_bool(fcntl((int)fd, F_SETLK, &fl) != -1);
+#else
+    (void)fd;
+    return sys_make_bool(0);
+#endif
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_file_unlock_v(eshkol_sysbuiltin_value_t fd_val) {
+    int64_t fd = (int64_t)fd_val.data;
+#ifndef _WIN32
+    struct flock fl;
+    memset(&fl, 0, sizeof(fl));
+    fl.l_type = F_UNLCK;
+    fl.l_whence = SEEK_SET;
+    return sys_make_bool(fcntl((int)fd, F_SETLK, &fl) != -1);
+#else
+    (void)fd;
+    return sys_make_bool(0);
+#endif
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_path_relative_v(eshkol_sysbuiltin_value_t from_val,
+                                                                 eshkol_sysbuiltin_value_t to_val) {
+    const char* from = sys_extract_string(from_val);
+    const char* to = sys_extract_string(to_val);
+    if (!from || !to) return sys_make_null();
+
+    /* Simple relative path: strip common prefix */
+    size_t common = 0;
+    size_t last_sep = 0;
+    while (from[common] && to[common] && from[common] == to[common]) {
+        if (from[common] == '/') last_sep = common + 1;
+        common++;
+    }
+    /* If we stopped at a separator boundary, use common as-is */
+    if (from[common] == '/' || from[common] == '\0') last_sep = common + (from[common] == '/');
+    if (to[common] == '/' || to[common] == '\0') {
+        if (common > last_sep) last_sep = common + (to[common] == '/');
+    }
+
+    /* Count remaining directories in 'from' after common prefix */
+    int up_count = 0;
+    for (const char* p = from + last_sep; *p; p++) {
+        if (*p == '/') up_count++;
+    }
+    if (from[last_sep]) up_count++; /* count the last segment */
+
+    char buf[PATH_MAX];
+    buf[0] = '\0';
+    for (int i = 0; i < up_count; i++) {
+        strcat(buf, i > 0 ? "/.." : "..");
+    }
+    if (to[last_sep]) {
+        if (buf[0]) strcat(buf, "/");
+        strcat(buf, to + last_sep);
+    }
+    if (buf[0] == '\0') strcpy(buf, ".");
+    return sys_make_string(buf);
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_path_resolve_v(eshkol_sysbuiltin_value_t base_val,
+                                                                eshkol_sysbuiltin_value_t rel_val) {
+    const char* base = sys_extract_string(base_val);
+    const char* rel = sys_extract_string(rel_val);
+    if (!rel) return sys_make_null();
+    /* If rel is absolute, return it directly */
+    if (rel[0] == '/') return sys_make_string(rel);
+    if (!base) return sys_make_null();
+    /* Join base dir + rel, then normalize */
+    char buf[PATH_MAX];
+    /* Get directory of base (strip filename if base doesn't end with /) */
+    char base_copy[PATH_MAX];
+    strncpy(base_copy, base, PATH_MAX - 1); base_copy[PATH_MAX - 1] = '\0';
+    snprintf(buf, sizeof(buf), "%s/%s", base_copy, rel);
+
+    /* Normalize */
+    eshkol_sysbuiltin_value_t norm_input = sys_make_string(buf);
+    return eshkol_builtin_path_normalize_v(norm_input);
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_glob_expand_v(eshkol_sysbuiltin_value_t pattern_val) {
+    const char* pattern = sys_extract_string(pattern_val);
+    if (!pattern) return sys_make_null();
+#ifndef _WIN32
+    glob_t g;
+    memset(&g, 0, sizeof(g));
+    int ret = glob(pattern, GLOB_NOSORT | GLOB_TILDE, NULL, &g);
+    if (ret != 0) {
+        globfree(&g);
+        return sys_make_null();
+    }
+    /* Build newline-separated string of results */
+    size_t total_len = 0;
+    for (size_t i = 0; i < g.gl_pathc; i++) {
+        total_len += strlen(g.gl_pathv[i]) + 1;
+    }
+    if (total_len == 0) { globfree(&g); return sys_make_null(); }
+    void* arena = get_global_arena();
+    char* buf = arena_allocate_string_with_header(arena, total_len);
+    if (!buf) { globfree(&g); return sys_make_null(); }
+    char* p = buf;
+    for (size_t i = 0; i < g.gl_pathc; i++) {
+        size_t len = strlen(g.gl_pathv[i]);
+        memcpy(p, g.gl_pathv[i], len);
+        p += len;
+        *p++ = '\n';
+    }
+    if (p > buf) p[-1] = '\0';
+    else *p = '\0';
+    globfree(&g);
+    eshkol_sysbuiltin_value_t v = {0, 0, 0, 0, 0};
+    v.type = SYS_TYPE_HEAP_PTR;
+    v.data = (uint64_t)buf;
+    return v;
+#else
+    return sys_make_null();
+#endif
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_glob_match_v(eshkol_sysbuiltin_value_t pattern_val,
+                                                              eshkol_sysbuiltin_value_t str_val) {
+    const char* pattern = sys_extract_string(pattern_val);
+    const char* str = sys_extract_string(str_val);
+    if (!pattern || !str) return sys_make_bool(0);
+#ifndef _WIN32
+    return sys_make_bool(fnmatch(pattern, str, 0) == 0);
+#else
+    return sys_make_bool(0);
+#endif
+}
+
+/* ═══════════════════════════════════════════════════════════════════
  * Tensor Persistence
  * ═══════════════════════════════════════════════════════════════════ */
 
@@ -711,3 +1030,18 @@ void eshkol_builtin_process_wait(sv_t* out, const sv_t* a) { *out = eshkol_built
 void eshkol_builtin_poll_fd(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_poll_fd_v(*a, *b); }
 void eshkol_builtin_tensor_save(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_tensor_save_v(*a, *b); }
 void eshkol_builtin_tensor_load(sv_t* out, const sv_t* a) { *out = eshkol_builtin_tensor_load_v(*a); }
+/* v1.2 batch 2: VM-parity + new builtins */
+void eshkol_builtin_file_chmod(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_file_chmod_v(*a, *b); }
+void eshkol_builtin_symlink_create(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_symlink_create_v(*a, *b); }
+void eshkol_builtin_symlink_read(sv_t* out, const sv_t* a) { *out = eshkol_builtin_symlink_read_v(*a); }
+void eshkol_builtin_directory_walk(sv_t* out, const sv_t* a) { *out = eshkol_builtin_directory_walk_v(*a); }
+void eshkol_builtin_mkstemp(sv_t* out, const sv_t* a) { *out = eshkol_builtin_mkstemp_v(*a); }
+void eshkol_builtin_process_kill(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_process_kill_v(*a, *b); }
+void eshkol_builtin_file_mtime(sv_t* out, const sv_t* a) { *out = eshkol_builtin_file_mtime_v(*a); }
+void eshkol_builtin_file_atime(sv_t* out, const sv_t* a) { *out = eshkol_builtin_file_atime_v(*a); }
+void eshkol_builtin_file_lock(sv_t* out, const sv_t* a) { *out = eshkol_builtin_file_lock_v(*a); }
+void eshkol_builtin_file_unlock(sv_t* out, const sv_t* a) { *out = eshkol_builtin_file_unlock_v(*a); }
+void eshkol_builtin_path_relative(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_path_relative_v(*a, *b); }
+void eshkol_builtin_path_resolve(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_path_resolve_v(*a, *b); }
+void eshkol_builtin_glob_expand(sv_t* out, const sv_t* a) { *out = eshkol_builtin_glob_expand_v(*a); }
+void eshkol_builtin_glob_match(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_glob_match_v(*a, *b); }

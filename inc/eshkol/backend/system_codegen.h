@@ -231,6 +231,22 @@ public:
     llvm::Value* tensorSave(const eshkol_operations_t* op);
     llvm::Value* tensorLoad(const eshkol_operations_t* op);
 
+    /* v1.2 batch 2: VM-parity + new builtins */
+    llvm::Value* fileChmod(const eshkol_operations_t* op);
+    llvm::Value* symlinkCreate(const eshkol_operations_t* op);
+    llvm::Value* symlinkRead(const eshkol_operations_t* op);
+    llvm::Value* directoryWalk(const eshkol_operations_t* op);
+    llvm::Value* mkstempBuiltin(const eshkol_operations_t* op);
+    llvm::Value* processKill(const eshkol_operations_t* op);
+    llvm::Value* fileMtime(const eshkol_operations_t* op);
+    llvm::Value* fileAtime(const eshkol_operations_t* op);
+    llvm::Value* fileLock(const eshkol_operations_t* op);
+    llvm::Value* fileUnlock(const eshkol_operations_t* op);
+    llvm::Value* pathRelative(const eshkol_operations_t* op);
+    llvm::Value* pathResolve(const eshkol_operations_t* op);
+    llvm::Value* globExpand(const eshkol_operations_t* op);
+    llvm::Value* globMatch(const eshkol_operations_t* op);
+
 private:
     CodegenContext& ctx_;
     TaggedValueCodegen& tagged_;
