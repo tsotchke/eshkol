@@ -1207,32 +1207,34 @@ llvm::Value* SystemCodegen::setCurrentDirectory(const eshkol_operations_t* op) {
  * We declare them as returning the LLVM tagged value type and call directly.
  * ═══════════════════════════════════════════════════════════════════════════ */
 
-/* Helper: get or create a void C runtime function that writes result via pointer.
- * On ARM64 (and some other platforms), returning a 16-byte struct by value uses
- * different calling conventions between LLVM IR and C-compiled code. The sret
- * pattern is the ABI-safe approach: the caller allocates stack space and passes
- * a pointer, avoiding all struct-return convention mismatches. */
-llvm::Function* getOrDeclareRuntimeFuncSret(CodegenContext& ctx, llvm::Module* mod,
-                                             const std::string& name,
-                                             llvm::ArrayRef<llvm::Type*> extra_arg_types) {
+/* All-pointer calling convention for C runtime builtins.
+ * Both the result and all arguments are passed through pointers to avoid
+ * ALL struct passing ABI mismatches between LLVM IR and C on ARM64/etc.
+ * Signature: void c_func(tagged_value_t* out, tagged_value_t* arg1, ...) */
+llvm::Function* getOrDeclareRuntimeFuncAllPtr(CodegenContext& ctx, llvm::Module* mod,
+                                               const std::string& name, int nargs) {
     llvm::Function* f = mod->getFunction(name);
     if (f) return f;
-    std::vector<llvm::Type*> all_args;
-    all_args.push_back(ctx.ptrType()); /* sret pointer */
-    for (auto* t : extra_arg_types) all_args.push_back(t);
+    std::vector<llvm::Type*> arg_types(1 + nargs, ctx.ptrType());
     llvm::FunctionType* ft = llvm::FunctionType::get(
-        llvm::Type::getVoidTy(ctx.context()), all_args, false);
+        llvm::Type::getVoidTy(ctx.context()), arg_types, false);
     f = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, name, mod);
     return f;
 }
 
-static llvm::Value* callSretRuntime(CodegenContext& ctx, llvm::Function* f,
-                                     llvm::ArrayRef<llvm::Value*> args) {
+/* Store tagged value to alloca, call C function with pointers, load result */
+static llvm::Value* callPtrRuntime(CodegenContext& ctx, llvm::Function* f,
+                                    llvm::ArrayRef<llvm::Value*> args) {
     llvm::IRBuilder<>& builder = ctx.builder();
-    llvm::Value* result_ptr = builder.CreateAlloca(ctx.taggedValueType(), nullptr, "sret_out");
+    llvm::Value* result_ptr = builder.CreateAlloca(ctx.taggedValueType(), nullptr, "rt_out");
     std::vector<llvm::Value*> call_args;
     call_args.push_back(result_ptr);
-    for (auto* a : args) call_args.push_back(a);
+    for (auto* a : args) {
+        /* Store each tagged value arg to a stack slot, pass pointer */
+        llvm::Value* slot = builder.CreateAlloca(ctx.taggedValueType(), nullptr, "rt_arg");
+        builder.CreateStore(a, slot);
+        call_args.push_back(slot);
+    }
     builder.CreateCall(f, call_args);
     return builder.CreateLoad(ctx.taggedValueType(), result_ptr);
 }
@@ -1242,8 +1244,8 @@ static llvm::Value* callSretRuntime(CodegenContext& ctx, llvm::Function* f,
 llvm::Value* SystemCodegen::method_name(const eshkol_operations_t* op) { \
     (void)op; \
     llvm::Module* mod = ctx_.builder().GetInsertBlock()->getParent()->getParent(); \
-    llvm::Function* f = getOrDeclareRuntimeFuncSret(ctx_, mod, c_func_name, {}); \
-    return callSretRuntime(ctx_, f, {}); \
+    llvm::Function* f = getOrDeclareRuntimeFuncAllPtr(ctx_, mod, c_func_name, 0); \
+    return callPtrRuntime(ctx_, f, {}); \
 }
 
 /* One-arg builtin */
@@ -1254,8 +1256,8 @@ llvm::Value* SystemCodegen::method_name(const eshkol_operations_t* op) { \
     llvm::Value* arg = codegen_ast_callback_(&op->call_op.variables[0], callback_context_); \
     if (!arg) return tagged_.packNull(); \
     llvm::Module* mod = ctx_.builder().GetInsertBlock()->getParent()->getParent(); \
-    llvm::Function* f = getOrDeclareRuntimeFuncSret(ctx_, mod, c_func_name, {ctx_.taggedValueType()}); \
-    return callSretRuntime(ctx_, f, {arg}); \
+    llvm::Function* f = getOrDeclareRuntimeFuncAllPtr(ctx_, mod, c_func_name, 1); \
+    return callPtrRuntime(ctx_, f, {arg}); \
 }
 
 /* Two-arg builtin */
@@ -1267,9 +1269,8 @@ llvm::Value* SystemCodegen::method_name(const eshkol_operations_t* op) { \
     llvm::Value* b = codegen_ast_callback_(&op->call_op.variables[1], callback_context_); \
     if (!a || !b) return tagged_.packNull(); \
     llvm::Module* mod = ctx_.builder().GetInsertBlock()->getParent()->getParent(); \
-    llvm::Function* f = getOrDeclareRuntimeFuncSret(ctx_, mod, c_func_name, \
-        {ctx_.taggedValueType(), ctx_.taggedValueType()}); \
-    return callSretRuntime(ctx_, f, {a, b}); \
+    llvm::Function* f = getOrDeclareRuntimeFuncAllPtr(ctx_, mod, c_func_name, 2); \
+    return callPtrRuntime(ctx_, f, {a, b}); \
 }
 
 /* System info */
