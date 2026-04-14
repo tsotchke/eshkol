@@ -21,18 +21,19 @@
 ;; ═══════════════════════════════════════════════════════════════
 
 ;; Try to parse a string as a number. Returns the number or #f.
+;; Uses eq? to distinguish #f from 0 (which is falsy in boolean context).
 (define (try-parse-number str)
   (if (or (null? str) (not (string? str)) (string=? str ""))
       #f
       (let ((n (string->number str)))
-        (if n n #f))))
+        (if (eq? n #f) #f n))))
 
 ;; Infer the type of a field and convert if numeric
 (define (infer-field val)
   (if (null? val)
       val
       (let ((n (try-parse-number val)))
-        (if n n val))))
+        (if (eq? n #f) val n))))
 
 ;; Apply type inference to a single row
 (define (infer-row row)
@@ -97,10 +98,11 @@
 ;; ═══════════════════════════════════════════════════════════════
 
 ;; Extract a column by name as a list of values
+;; Raises an error if the column name does not exist.
 (define (csv-column df name)
   (let ((idx (csv-column-idx df name)))
     (if (< idx 0)
-        '()
+        (error "csv-column: unknown column" name)
         (csv-extract-col (csv-rows df) idx))))
 
 (define (csv-extract-col rows idx)
@@ -121,8 +123,10 @@
 ;; ═══════════════════════════════════════════════════════════════
 
 ;; Select specific columns by name → new DataFrame
+;; Raises an error if any column name does not exist.
 (define (csv-select df names)
   (let ((indices (csv-resolve-indices df names)))
+    (csv-validate-indices names indices)
     (cons names
           (csv-select-rows (csv-rows df) indices))))
 
@@ -131,6 +135,13 @@
       '()
       (cons (csv-column-idx df (car names))
             (csv-resolve-indices df (cdr names)))))
+
+(define (csv-validate-indices names indices)
+  (if (null? names)
+      #t
+      (if (< (car indices) 0)
+          (error "csv-select: unknown column" (car names))
+          (csv-validate-indices (cdr names) (cdr indices)))))
 
 (define (csv-select-rows rows indices)
   (if (null? rows)
