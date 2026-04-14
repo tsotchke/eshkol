@@ -1,5 +1,4 @@
 #include <filesystem>
-#include <fstream>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -10,8 +9,6 @@
 #else
 #include <cerrno>
 #include <cstdlib>
-#include <cstring>
-#include <fcntl.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -207,6 +204,7 @@ int main(int argc, char** argv) {
         "-e",
         "(display (assoc \"W1\" (list (cons \"W1\" 1))))"
     };
+
     const fs::path build_dir = run_binary.parent_path();
     ProcessResult precompiled = run_process_capture(assoc_eval, build_dir, lib_dir, true);
     if (int rc = assert_assoc_eval("precompiled-stdlib eval", precompiled, true)) {
