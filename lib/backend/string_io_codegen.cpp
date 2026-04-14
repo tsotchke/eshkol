@@ -725,8 +725,11 @@ llvm::Value* StringIOCodegen::makeString(const eshkol_operations_t* op) {
     llvm::Value* len = *reinterpret_cast<llvm::Value**>(len_tv_ptr);
     if (!len) return nullptr;
 
-    // Ensure length is i64
-    if (!len->getType()->isIntegerTy(64)) {
+    // Ensure length is i64 — may arrive as tagged value struct or raw int
+    if (len->getType() == ctx_.taggedValueType()) {
+        // Extract int64 data field from tagged value
+        len = tagged_.unpackInt64(len);
+    } else if (!len->getType()->isIntegerTy(64)) {
         len = ctx_.builder().CreateZExt(len, ctx_.int64Type());
     }
 
