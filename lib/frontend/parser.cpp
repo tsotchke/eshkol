@@ -693,7 +693,7 @@ static hott_type_expr_t* parseTypeExpression(SchemeTokenizer& tokenizer) {
     if (token.type == TOKEN_ARROW) {
         // Shorthand: -> without parens is a type constructor
         // This shouldn't happen in well-formed input, treat as error
-        eshkol_error("Unexpected -> in type expression");
+        PARSE_ERROR_AT(token, "unexpected -> in type expression");
         return nullptr;
     }
 
@@ -716,7 +716,7 @@ static hott_type_expr_t* parseTypeExpression(SchemeTokenizer& tokenizer) {
                     tokenizer.nextToken();  // consume the )
                     // End of arrow type - last element was return type
                     if (param_types.empty()) {
-                        eshkol_error("Arrow type requires at least a return type");
+                        PARSE_ERROR_AT(token, "arrow type requires at least a return type");
                         return nullptr;
                     }
                     // Pop last as return type
@@ -733,7 +733,7 @@ static hott_type_expr_t* parseTypeExpression(SchemeTokenizer& tokenizer) {
                     return result;
                 }
                 if (peek.type == TOKEN_EOF) {
-                    eshkol_error("Unexpected end of input in arrow type");
+                    PARSE_ERROR_AT(token, "unexpected end of input in arrow type");
                     for (auto* p : param_types) hott_free_type_expr(p);
                     return nullptr;
                 }
@@ -758,7 +758,7 @@ static hott_type_expr_t* parseTypeExpression(SchemeTokenizer& tokenizer) {
                 hott_type_expr_t* elem = parseTypeExpression(tokenizer);
                 Token rparen = tokenizer.nextToken();
                 if (rparen.type != TOKEN_RPAREN) {
-                    eshkol_error("Expected ) after list element type");
+                    PARSE_ERROR_AT(token, "expected ) after list element type");
                     hott_free_type_expr(elem);
                     return nullptr;
                 }
@@ -772,7 +772,7 @@ static hott_type_expr_t* parseTypeExpression(SchemeTokenizer& tokenizer) {
                 hott_type_expr_t* elem = parseTypeExpression(tokenizer);
                 Token rparen = tokenizer.nextToken();
                 if (rparen.type != TOKEN_RPAREN) {
-                    eshkol_error("Expected ) after vector element type");
+                    PARSE_ERROR_AT(token, "expected ) after vector element type");
                     hott_free_type_expr(elem);
                     return nullptr;
                 }
@@ -786,7 +786,7 @@ static hott_type_expr_t* parseTypeExpression(SchemeTokenizer& tokenizer) {
                 hott_type_expr_t* elem = parseTypeExpression(tokenizer);
                 Token rparen = tokenizer.nextToken();
                 if (rparen.type != TOKEN_RPAREN) {
-                    eshkol_error("Expected ) after tensor element type");
+                    PARSE_ERROR_AT(token, "expected ) after tensor element type");
                     hott_free_type_expr(elem);
                     return nullptr;
                 }
@@ -801,7 +801,7 @@ static hott_type_expr_t* parseTypeExpression(SchemeTokenizer& tokenizer) {
                 hott_type_expr_t* right = parseTypeExpression(tokenizer);
                 Token rparen = tokenizer.nextToken();
                 if (rparen.type != TOKEN_RPAREN) {
-                    eshkol_error("Expected ) after pair types");
+                    PARSE_ERROR_AT(token, "expected ) after pair types");
                     hott_free_type_expr(left);
                     hott_free_type_expr(right);
                     return nullptr;
@@ -818,7 +818,7 @@ static hott_type_expr_t* parseTypeExpression(SchemeTokenizer& tokenizer) {
                 hott_type_expr_t* right = parseTypeExpression(tokenizer);
                 Token rparen = tokenizer.nextToken();
                 if (rparen.type != TOKEN_RPAREN) {
-                    eshkol_error("Expected ) after product types");
+                    PARSE_ERROR_AT(token, "expected ) after product types");
                     hott_free_type_expr(left);
                     hott_free_type_expr(right);
                     return nullptr;
@@ -835,7 +835,7 @@ static hott_type_expr_t* parseTypeExpression(SchemeTokenizer& tokenizer) {
                 hott_type_expr_t* right = parseTypeExpression(tokenizer);
                 Token rparen = tokenizer.nextToken();
                 if (rparen.type != TOKEN_RPAREN) {
-                    eshkol_error("Expected ) after sum types");
+                    PARSE_ERROR_AT(token, "expected ) after sum types");
                     hott_free_type_expr(left);
                     hott_free_type_expr(right);
                     return nullptr;
@@ -850,7 +850,7 @@ static hott_type_expr_t* parseTypeExpression(SchemeTokenizer& tokenizer) {
                 // (forall (a b ...) body-type)
                 Token vars_start = tokenizer.nextToken();
                 if (vars_start.type != TOKEN_LPAREN) {
-                    eshkol_error("Expected ( after forall");
+                    PARSE_ERROR_AT(token, "expected ( after forall");
                     return nullptr;
                 }
 
@@ -859,7 +859,7 @@ static hott_type_expr_t* parseTypeExpression(SchemeTokenizer& tokenizer) {
                     Token var = tokenizer.nextToken();
                     if (var.type == TOKEN_RPAREN) break;
                     if (var.type != TOKEN_SYMBOL) {
-                        eshkol_error("Expected type variable name in forall");
+                        PARSE_ERROR_AT(token, "expected type variable name in forall");
                         for (auto* v : type_vars) free(v);
                         return nullptr;
                     }
@@ -869,7 +869,7 @@ static hott_type_expr_t* parseTypeExpression(SchemeTokenizer& tokenizer) {
                 hott_type_expr_t* body = parseTypeExpression(tokenizer);
                 Token rparen = tokenizer.nextToken();
                 if (rparen.type != TOKEN_RPAREN) {
-                    eshkol_error("Expected ) after forall body");
+                    PARSE_ERROR_AT(token, "expected ) after forall body");
                     for (auto* v : type_vars) free(v);
                     hott_free_type_expr(body);
                     return nullptr;
@@ -896,12 +896,12 @@ static hott_type_expr_t* parseTypeExpression(SchemeTokenizer& tokenizer) {
         }
 
         // Unexpected token in type expression
-        eshkol_error("Unexpected token in type expression");
+        PARSE_ERROR_AT(token, "unexpected token in type expression");
         return nullptr;
     }
 
     // Unexpected token
-    eshkol_error("Expected type expression");
+    PARSE_ERROR_AT(token, "expected type expression");
     return nullptr;
 }
 
@@ -944,7 +944,7 @@ static eshkol_ast_t parse_quoted_list_internal(SchemeTokenizer& tokenizer) {
         Token inner_token = tokenizer.nextToken();
         if (inner_token.type == TOKEN_RPAREN) break;
         if (inner_token.type == TOKEN_EOF) {
-            eshkol_error("Unexpected end of input in quoted list");
+            PARSE_ERROR_AT(token, "unexpected end of input in quoted list");
             return {.type = ESHKOL_INVALID};
         }
 
@@ -1052,7 +1052,7 @@ static eshkol_ast_t parse_quasiquoted_list_internal(SchemeTokenizer& tokenizer) 
         Token inner_token = tokenizer.nextToken();
         if (inner_token.type == TOKEN_RPAREN) break;
         if (inner_token.type == TOKEN_EOF) {
-            eshkol_error("Unexpected end of input in quasiquoted list");
+            PARSE_ERROR_AT(token, "unexpected end of input in quasiquoted list");
             return {.type = ESHKOL_INVALID};
         }
 
@@ -1429,7 +1429,7 @@ static eshkol_ast_t transformInternalDefinesToLetrec(const std::vector<eshkol_as
     if (after_defines.empty()) {
         // No body expressions after defines - this is an error
         // But for robustness, return null
-        eshkol_error("Internal defines must be followed by at least one expression");
+        PARSE_ERROR_AT(token, "internal defines must be followed by at least one expression");
         eshkol_ast_make_null(&body);
     } else if (after_defines.size() == 1) {
         body = after_defines[0];
@@ -1546,7 +1546,7 @@ static eshkol_ast_t parse_function_signature(SchemeTokenizer& tokenizer) {
 
     // First token should be the function name
     if (token.type != TOKEN_SYMBOL) {
-        eshkol_error("Expected function name in define");
+        PARSE_ERROR_AT(token, "expected function name in define");
         signature.type = ESHKOL_INVALID;
         return signature;
     }
@@ -1562,7 +1562,7 @@ static eshkol_ast_t parse_function_signature(SchemeTokenizer& tokenizer) {
         token = tokenizer.nextToken();
         if (token.type == TOKEN_RPAREN) break;
         if (token.type == TOKEN_EOF) {
-            eshkol_error("Unexpected end of input in function signature");
+            PARSE_ERROR_AT(token, "unexpected end of input in function signature");
             signature.type = ESHKOL_INVALID;
             return signature;
         }
@@ -1572,7 +1572,7 @@ static eshkol_ast_t parse_function_signature(SchemeTokenizer& tokenizer) {
             // Next token should be the rest parameter name
             token = tokenizer.nextToken();
             if (token.type != TOKEN_SYMBOL) {
-                eshkol_error("Expected rest parameter name after '.'");
+                PARSE_ERROR_AT(token, "expected rest parameter name after '.'");
                 signature.type = ESHKOL_INVALID;
                 return signature;
             }
@@ -1584,7 +1584,7 @@ static eshkol_ast_t parse_function_signature(SchemeTokenizer& tokenizer) {
             // Expect closing paren
             token = tokenizer.nextToken();
             if (token.type != TOKEN_RPAREN) {
-                eshkol_error("Expected ')' after rest parameter");
+                PARSE_ERROR_AT(token, "expected ')' after rest parameter");
                 signature.type = ESHKOL_INVALID;
                 return signature;
             }
@@ -1596,7 +1596,7 @@ static eshkol_ast_t parse_function_signature(SchemeTokenizer& tokenizer) {
             // Parse (param-name : type)
             Token param_token = tokenizer.nextToken();
             if (param_token.type != TOKEN_SYMBOL) {
-                eshkol_error("Expected parameter name in typed parameter");
+                PARSE_ERROR_AT(token, "expected parameter name in typed parameter");
                 signature.type = ESHKOL_INVALID;
                 return signature;
             }
@@ -1611,7 +1611,7 @@ static eshkol_ast_t parse_function_signature(SchemeTokenizer& tokenizer) {
             // Expect colon
             Token colon = tokenizer.nextToken();
             if (colon.type != TOKEN_COLON) {
-                eshkol_error("Expected ':' after parameter name in typed parameter");
+                PARSE_ERROR_AT(token, "expected ':' after parameter name in typed parameter");
                 signature.type = ESHKOL_INVALID;
                 return signature;
             }
@@ -1619,7 +1619,7 @@ static eshkol_ast_t parse_function_signature(SchemeTokenizer& tokenizer) {
             // Parse type expression
             hott_type_expr_t* type_expr = parseTypeExpression(tokenizer);
             if (!type_expr) {
-                eshkol_error("Failed to parse type in typed parameter");
+                PARSE_ERROR_AT(token, "failed to parse type in typed parameter");
                 signature.type = ESHKOL_INVALID;
                 return signature;
             }
@@ -1627,7 +1627,7 @@ static eshkol_ast_t parse_function_signature(SchemeTokenizer& tokenizer) {
             // Expect closing paren
             Token rparen = tokenizer.nextToken();
             if (rparen.type != TOKEN_RPAREN) {
-                eshkol_error("Expected ')' after type in typed parameter");
+                PARSE_ERROR_AT(token, "expected ')' after type in typed parameter");
                 hott_free_type_expr(type_expr);
                 signature.type = ESHKOL_INVALID;
                 return signature;
@@ -1649,7 +1649,7 @@ static eshkol_ast_t parse_function_signature(SchemeTokenizer& tokenizer) {
             params.push_back(param);
             param_types.push_back(nullptr);  // No type annotation
         } else {
-            eshkol_error("Expected parameter name in function signature");
+            PARSE_ERROR_AT(token, "expected parameter name in function signature");
             signature.type = ESHKOL_INVALID;
             return signature;
         }
@@ -1716,7 +1716,7 @@ static eshkol_pattern_t* parse_pattern(SchemeTokenizer& tokenizer) {
                 // Consume closing paren
                 token = tokenizer.nextToken();
                 if (token.type != TOKEN_RPAREN) {
-                    eshkol_error("Expected closing paren after cons pattern");
+                    PARSE_ERROR_AT(token, "expected closing paren after cons pattern");
                     pattern->type = PATTERN_INVALID;
                 }
             } else if (peek.value == "list") {
@@ -1752,7 +1752,7 @@ static eshkol_pattern_t* parse_pattern(SchemeTokenizer& tokenizer) {
                 // Consume closing paren
                 token = tokenizer.nextToken();
                 if (token.type != TOKEN_RPAREN) {
-                    eshkol_error("Expected closing paren after predicate pattern");
+                    PARSE_ERROR_AT(token, "expected closing paren after predicate pattern");
                     pattern->type = PATTERN_INVALID;
                 }
             } else if (peek.value == "or") {
@@ -1886,21 +1886,21 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
         // Parse: (: name type-expression)
         Token name_token = tokenizer.nextToken();
         if (name_token.type != TOKEN_SYMBOL) {
-            eshkol_error("Expected identifier after : in type annotation");
+            PARSE_ERROR_AT(token, "expected identifier after : in type annotation");
             ast.type = ESHKOL_INVALID;
             return ast;
         }
 
         hott_type_expr_t* type_expr = parseTypeExpression(tokenizer);
         if (!type_expr) {
-            eshkol_error("Failed to parse type expression in type annotation");
+            PARSE_ERROR_AT(token, "failed to parse type expression in type annotation");
             ast.type = ESHKOL_INVALID;
             return ast;
         }
 
         Token rparen = tokenizer.nextToken();
         if (rparen.type != TOKEN_RPAREN) {
-            eshkol_error("Expected ) after type annotation");
+            PARSE_ERROR_AT(token, "expected ) after type annotation");
             hott_free_type_expr(type_expr);
             ast.type = ESHKOL_INVALID;
             return ast;
@@ -1934,7 +1934,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Expect closing paren
             token = tokenizer.nextToken();
             if (token.type != TOKEN_RPAREN) {
-                eshkol_error("%s requires exactly one expression", first_symbol.c_str());
+                PARSE_ERROR_AT(token, "%s requires exactly one expression", first_symbol.c_str());
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -1991,7 +1991,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                     tokenizer.nextToken();  // consume ':'
                     func_signature.eshkol_func.return_type = parseTypeExpression(tokenizer);
                     if (!func_signature.eshkol_func.return_type) {
-                        eshkol_error("Failed to parse return type annotation in define");
+                        PARSE_ERROR_AT(token, "failed to parse return type annotation in define");
                         ast.type = ESHKOL_INVALID;
                         return ast;
                     }
@@ -2006,7 +2006,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                     token = tokenizer.nextToken();
                     if (token.type == TOKEN_RPAREN) break;
                     if (token.type == TOKEN_EOF) {
-                        eshkol_error("Unexpected end of input in function body");
+                        PARSE_ERROR_AT(token, "unexpected end of input in function body");
                         ast.type = ESHKOL_INVALID;
                         return ast;
                     }
@@ -2023,7 +2023,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 // Transform internal defines to letrec (if any)
                 // This handles: single expression, sequence, and internal defines
                 if (body_expressions.empty()) {
-                    eshkol_error("Function body cannot be empty");
+                    PARSE_ERROR_AT(token, "function body cannot be empty");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
@@ -2085,7 +2085,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 // Check for closing paren
                 token = tokenizer.nextToken();
                 if (token.type != TOKEN_RPAREN) {
-                    eshkol_error("Expected closing parenthesis after variable value");
+                    PARSE_ERROR_AT(token, "expected closing parenthesis after variable value");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
@@ -2177,7 +2177,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 // Parameterized type: (define-type (Name a b) type-expr)
                 token = tokenizer.nextToken();
                 if (token.type != TOKEN_SYMBOL) {
-                    eshkol_error("define-type requires type name");
+                    PARSE_ERROR_AT(token, "define-type requires type name");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
@@ -2188,14 +2188,14 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                     token = tokenizer.nextToken();
                     if (token.type == TOKEN_RPAREN) break;
                     if (token.type != TOKEN_SYMBOL) {
-                        eshkol_error("define-type parameters must be symbols");
+                        PARSE_ERROR_AT(token, "define-type parameters must be symbols");
                         ast.type = ESHKOL_INVALID;
                         return ast;
                     }
                     type_params.push_back(token.value);
                 }
             } else {
-                eshkol_error("define-type requires type name or (name params...)");
+                PARSE_ERROR_AT(token, "define-type requires type name or (name params...)");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -2203,7 +2203,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Parse type expression
             hott_type_expr_t* type_expr = parseTypeExpression(tokenizer);
             if (!type_expr) {
-                eshkol_error("Failed to parse type expression in define-type");
+                PARSE_ERROR_AT(token, "failed to parse type expression in define-type");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -2211,7 +2211,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Expect closing paren
             token = tokenizer.nextToken();
             if (token.type != TOKEN_RPAREN) {
-                eshkol_error("Expected ')' after define-type");
+                PARSE_ERROR_AT(token, "expected ')' after define-type");
                 hott_free_type_expr(type_expr);
                 ast.type = ESHKOL_INVALID;
                 return ast;
@@ -2410,7 +2410,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                         // Expect closing paren
                         token = tokenizer.nextToken();
                         if (token.type != TOKEN_RPAREN) {
-                            eshkol_error("Expected ')' after rest parameter");
+                            PARSE_ERROR_AT(token, "expected ')' after rest parameter");
                             ast.type = ESHKOL_INVALID;
                             return ast;
                         }
@@ -2434,21 +2434,21 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
 
                         Token colon = tokenizer.nextToken();
                         if (colon.type != TOKEN_COLON) {
-                            eshkol_error("Expected ':' after parameter name in typed lambda parameter");
+                            PARSE_ERROR_AT(token, "expected ':' after parameter name in typed lambda parameter");
                             ast.type = ESHKOL_INVALID;
                             return ast;
                         }
 
                         hott_type_expr_t* type_expr = parseTypeExpression(tokenizer);
                         if (!type_expr) {
-                            eshkol_error("Failed to parse type in typed lambda parameter");
+                            PARSE_ERROR_AT(token, "failed to parse type in typed lambda parameter");
                             ast.type = ESHKOL_INVALID;
                             return ast;
                         }
 
                         Token rparen = tokenizer.nextToken();
                         if (rparen.type != TOKEN_RPAREN) {
-                            eshkol_error("Expected ')' after type in typed lambda parameter");
+                            PARSE_ERROR_AT(token, "expected ')' after type in typed lambda parameter");
                             hott_free_type_expr(type_expr);
                             ast.type = ESHKOL_INVALID;
                             return ast;
@@ -2486,7 +2486,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 tokenizer.nextToken();  // consume ':'
                 ast.operation.lambda_op.return_type = parseTypeExpression(tokenizer);
                 if (!ast.operation.lambda_op.return_type) {
-                    eshkol_error("Failed to parse return type annotation in lambda");
+                    PARSE_ERROR_AT(token, "failed to parse return type annotation in lambda");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
@@ -2660,7 +2660,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                     tokenizer.nextToken();  // consume ':'
                     binding_type = parseTypeExpression(tokenizer);
                     if (!binding_type) {
-                        eshkol_error("Failed to parse type annotation in let binding");
+                        PARSE_ERROR_AT(token, "failed to parse type annotation in let binding");
                         ast.type = ESHKOL_INVALID;
                         return ast;
                     }
@@ -2774,7 +2774,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 token = tokenizer.nextToken();
                 if (token.type == TOKEN_RPAREN) break;
                 if (token.type == TOKEN_EOF) {
-                    eshkol_error("Unexpected end of input in values");
+                    PARSE_ERROR_AT(token, "unexpected end of input in values");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
@@ -2822,7 +2822,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Parse producer (a thunk that returns multiple values)
             token = tokenizer.nextToken();
             if (token.type == TOKEN_EOF) {
-                eshkol_error("call-with-values requires producer argument");
+                PARSE_ERROR_AT(token, "call-with-values requires producer argument");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -2842,7 +2842,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Parse consumer (a function that takes the multiple values)
             token = tokenizer.nextToken();
             if (token.type == TOKEN_EOF) {
-                eshkol_error("call-with-values requires consumer argument");
+                PARSE_ERROR_AT(token, "call-with-values requires consumer argument");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -2862,7 +2862,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Check for closing paren
             token = tokenizer.nextToken();
             if (token.type != TOKEN_RPAREN) {
-                eshkol_error("call-with-values takes exactly 2 arguments");
+                PARSE_ERROR_AT(token, "call-with-values takes exactly 2 arguments");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -2881,7 +2881,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Parse bindings list
             token = tokenizer.nextToken();
             if (token.type != TOKEN_LPAREN) {
-                eshkol_error("let-values requires bindings list as first argument");
+                PARSE_ERROR_AT(token, "let-values requires bindings list as first argument");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -2894,13 +2894,13 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 token = tokenizer.nextToken();
                 if (token.type == TOKEN_RPAREN) break;
                 if (token.type == TOKEN_EOF) {
-                    eshkol_error("Unexpected end of input in let-values bindings");
+                    PARSE_ERROR_AT(token, "unexpected end of input in let-values bindings");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
 
                 if (token.type != TOKEN_LPAREN) {
-                    eshkol_error("let-values binding must be a list ((vars ...) producer)");
+                    PARSE_ERROR_AT(token, "let-values binding must be a list ((vars ...) producer)");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
@@ -2908,7 +2908,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 // Parse variable list: (var1 var2 ...)
                 token = tokenizer.nextToken();
                 if (token.type != TOKEN_LPAREN) {
-                    eshkol_error("let-values binding must start with variable list");
+                    PARSE_ERROR_AT(token, "let-values binding must start with variable list");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
@@ -2918,12 +2918,12 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                     token = tokenizer.nextToken();
                     if (token.type == TOKEN_RPAREN) break;
                     if (token.type == TOKEN_EOF) {
-                        eshkol_error("Unexpected end of input in let-values variable list");
+                        PARSE_ERROR_AT(token, "unexpected end of input in let-values variable list");
                         ast.type = ESHKOL_INVALID;
                         return ast;
                     }
                     if (token.type != TOKEN_SYMBOL) {
-                        eshkol_error("let-values variable list must contain only symbols");
+                        PARSE_ERROR_AT(token, "let-values variable list must contain only symbols");
                         ast.type = ESHKOL_INVALID;
                         return ast;
                     }
@@ -2933,7 +2933,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 // Parse producer expression
                 token = tokenizer.nextToken();
                 if (token.type == TOKEN_EOF) {
-                    eshkol_error("Expected producer expression in let-values binding");
+                    PARSE_ERROR_AT(token, "expected producer expression in let-values binding");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
@@ -2961,7 +2961,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 // Check for closing paren of binding
                 token = tokenizer.nextToken();
                 if (token.type != TOKEN_RPAREN) {
-                    eshkol_error("Expected closing parenthesis after let-values binding");
+                    PARSE_ERROR_AT(token, "expected closing parenthesis after let-values binding");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
@@ -2977,7 +2977,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 token = tokenizer.nextToken();
                 if (token.type == TOKEN_RPAREN) break;
                 if (token.type == TOKEN_EOF) {
-                    eshkol_error("Unexpected end of input in let-values body");
+                    PARSE_ERROR_AT(token, "unexpected end of input in let-values body");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
@@ -2998,7 +2998,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             }
 
             if (body_expressions.empty()) {
-                eshkol_error("let-values body cannot be empty");
+                PARSE_ERROR_AT(token, "let-values body cannot be empty");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -3044,7 +3044,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Parse handler specification: (var clause ...)
             token = tokenizer.nextToken();
             if (token.type != TOKEN_LPAREN) {
-                eshkol_error("guard requires handler specification (var clause ...) as first argument");
+                PARSE_ERROR_AT(token, "guard requires handler specification (var clause ...) as first argument");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -3052,7 +3052,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Parse exception variable name
             token = tokenizer.nextToken();
             if (token.type != TOKEN_SYMBOL) {
-                eshkol_error("guard handler specification must start with variable name");
+                PARSE_ERROR_AT(token, "guard handler specification must start with variable name");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -3069,13 +3069,13 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 token = tokenizer.nextToken();
                 if (token.type == TOKEN_RPAREN) break;  // End of handler spec
                 if (token.type == TOKEN_EOF) {
-                    eshkol_error("Unexpected end of input in guard handler");
+                    PARSE_ERROR_AT(token, "unexpected end of input in guard handler");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
 
                 if (token.type != TOKEN_LPAREN) {
-                    eshkol_error("guard clause must be a list (test expr ...)");
+                    PARSE_ERROR_AT(token, "guard clause must be a list (test expr ...)");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
@@ -3087,7 +3087,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 // Parse test (first element)
                 token = tokenizer.nextToken();
                 if (token.type == TOKEN_EOF) {
-                    eshkol_error("guard clause cannot be empty");
+                    PARSE_ERROR_AT(token, "guard clause cannot be empty");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
@@ -3108,7 +3108,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                     token = tokenizer.nextToken();
                     if (token.type == TOKEN_RPAREN) break;
                     if (token.type == TOKEN_EOF) {
-                        eshkol_error("Unexpected end of input in guard clause body");
+                        PARSE_ERROR_AT(token, "unexpected end of input in guard clause body");
                         ast.type = ESHKOL_INVALID;
                         return ast;
                     }
@@ -3153,7 +3153,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 token = tokenizer.nextToken();
                 if (token.type == TOKEN_RPAREN) break;
                 if (token.type == TOKEN_EOF) {
-                    eshkol_error("Unexpected end of input in guard body");
+                    PARSE_ERROR_AT(token, "unexpected end of input in guard body");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
@@ -3168,7 +3168,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             }
 
             if (body_expressions.empty()) {
-                eshkol_error("guard body cannot be empty");
+                PARSE_ERROR_AT(token, "guard body cannot be empty");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -3191,7 +3191,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Parse exception expression
             token = tokenizer.nextToken();
             if (token.type == TOKEN_EOF || token.type == TOKEN_RPAREN) {
-                eshkol_error("raise requires an exception expression");
+                PARSE_ERROR_AT(token, "raise requires an exception expression");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -3214,7 +3214,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Expect closing paren
             token = tokenizer.nextToken();
             if (token.type != TOKEN_RPAREN) {
-                eshkol_error("raise takes exactly one argument");
+                PARSE_ERROR_AT(token, "raise takes exactly one argument");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -3229,7 +3229,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Parse key expression
             token = tokenizer.nextToken();
             if (token.type == TOKEN_EOF || token.type == TOKEN_RPAREN) {
-                eshkol_error("case requires a key expression");
+                PARSE_ERROR_AT(token, "case requires a key expression");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -3253,13 +3253,13 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 token = tokenizer.nextToken();
                 if (token.type == TOKEN_RPAREN) break;
                 if (token.type == TOKEN_EOF) {
-                    eshkol_error("Unexpected end of input in case expression");
+                    PARSE_ERROR_AT(token, "unexpected end of input in case expression");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
 
                 if (token.type != TOKEN_LPAREN) {
-                    eshkol_error("case clause must be a list");
+                    PARSE_ERROR_AT(token, "case clause must be a list");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
@@ -3289,7 +3289,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                         Token inner = tokenizer.nextToken();
                         if (inner.type == TOKEN_RPAREN) break;
                         if (inner.type == TOKEN_EOF) {
-                            eshkol_error("Unexpected end of input in case datums");
+                            PARSE_ERROR_AT(token, "unexpected end of input in case datums");
                             ast.type = ESHKOL_INVALID;
                             return ast;
                         }
@@ -3306,7 +3306,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                     // Store datums as a proper list
                     // Build the list from the datums
                     if (datums.empty()) {
-                        eshkol_error("case clause datums list cannot be empty");
+                        PARSE_ERROR_AT(token, "case clause datums list cannot be empty");
                         ast.type = ESHKOL_INVALID;
                         return ast;
                     }
@@ -3325,7 +3325,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                     clause.cons_cell.car = new eshkol_ast_t;
                     *clause.cons_cell.car = datums_list;
                 } else {
-                    eshkol_error("case clause must start with datums list or else");
+                    PARSE_ERROR_AT(token, "case clause must start with datums list or else");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
@@ -3337,7 +3337,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                     token = tokenizer.nextToken();
                     if (token.type == TOKEN_RPAREN) break;
                     if (token.type == TOKEN_EOF) {
-                        eshkol_error("Unexpected end of input in case clause body");
+                        PARSE_ERROR_AT(token, "unexpected end of input in case clause body");
                         ast.type = ESHKOL_INVALID;
                         return ast;
                     }
@@ -3398,7 +3398,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Parse expression to match against
             token = tokenizer.nextToken();
             if (token.type == TOKEN_EOF || token.type == TOKEN_RPAREN) {
-                eshkol_error("match requires an expression to match against");
+                PARSE_ERROR_AT(token, "match requires an expression to match against");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -3422,13 +3422,13 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 token = tokenizer.nextToken();
                 if (token.type == TOKEN_RPAREN) break;
                 if (token.type == TOKEN_EOF) {
-                    eshkol_error("Unexpected end of input in match expression");
+                    PARSE_ERROR_AT(token, "unexpected end of input in match expression");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
 
                 if (token.type != TOKEN_LPAREN) {
-                    eshkol_error("match clause must be a list (pattern body ...)");
+                    PARSE_ERROR_AT(token, "match clause must be a list (pattern body ...)");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
@@ -3439,7 +3439,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 // Parse pattern using the recursive pattern parser
                 clause.pattern = parse_pattern(tokenizer);
                 if (!clause.pattern || clause.pattern->type == PATTERN_INVALID) {
-                    eshkol_error("Invalid pattern in match clause");
+                    PARSE_ERROR_AT(token, "invalid pattern in match clause");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
@@ -3451,7 +3451,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                     token = tokenizer.nextToken();
                     if (token.type == TOKEN_RPAREN) break;
                     if (token.type == TOKEN_EOF) {
-                        eshkol_error("Unexpected end of input in match clause body");
+                        PARSE_ERROR_AT(token, "unexpected end of input in match clause body");
                         ast.type = ESHKOL_INVALID;
                         return ast;
                     }
@@ -3513,7 +3513,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Parse macro name
             token = tokenizer.nextToken();
             if (token.type != TOKEN_SYMBOL) {
-                eshkol_error("define-syntax requires a name");
+                PARSE_ERROR_AT(token, "define-syntax requires a name");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -3528,7 +3528,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Expect (syntax-rules ...)
             token = tokenizer.nextToken();
             if (token.type != TOKEN_LPAREN) {
-                eshkol_error("define-syntax requires (syntax-rules ...) as second argument");
+                PARSE_ERROR_AT(token, "define-syntax requires (syntax-rules ...) as second argument");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -3536,7 +3536,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Verify "syntax-rules"
             token = tokenizer.nextToken();
             if (token.type != TOKEN_SYMBOL || token.value != "syntax-rules") {
-                eshkol_error("define-syntax currently only supports syntax-rules");
+                PARSE_ERROR_AT(token, "define-syntax currently only supports syntax-rules");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -3544,7 +3544,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Parse literals list: (literal1 literal2 ...)
             token = tokenizer.nextToken();
             if (token.type != TOKEN_LPAREN) {
-                eshkol_error("syntax-rules requires literals list");
+                PARSE_ERROR_AT(token, "syntax-rules requires literals list");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -3554,7 +3554,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 token = tokenizer.nextToken();
                 if (token.type == TOKEN_RPAREN) break;
                 if (token.type == TOKEN_EOF) {
-                    eshkol_error("Unexpected end of input in syntax-rules literals");
+                    PARSE_ERROR_AT(token, "unexpected end of input in syntax-rules literals");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
@@ -3578,13 +3578,13 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 token = tokenizer.nextToken();
                 if (token.type == TOKEN_RPAREN) break;  // End of syntax-rules
                 if (token.type == TOKEN_EOF) {
-                    eshkol_error("Unexpected end of input in syntax-rules");
+                    PARSE_ERROR_AT(token, "unexpected end of input in syntax-rules");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
 
                 if (token.type != TOKEN_LPAREN) {
-                    eshkol_error("syntax-rules rule must be a list ((pattern) template)");
+                    PARSE_ERROR_AT(token, "syntax-rules rule must be a list ((pattern) template)");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
@@ -3596,7 +3596,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 // Parse pattern (which is itself a list)
                 token = tokenizer.nextToken();
                 if (token.type != TOKEN_LPAREN) {
-                    eshkol_error("syntax-rules pattern must be a list");
+                    PARSE_ERROR_AT(token, "syntax-rules pattern must be a list");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
@@ -3615,7 +3615,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                         token = tokenizer.nextToken();
                         if (token.type == TOKEN_RPAREN) break;
                         if (token.type == TOKEN_EOF) {
-                            eshkol_error("Unexpected end of input in macro pattern");
+                            PARSE_ERROR_AT(token, "unexpected end of input in macro pattern");
                             break;
                         }
                         auto* elem = new eshkol_macro_pattern_t;
@@ -3690,7 +3690,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 // Consume closing paren of rule
                 token = tokenizer.nextToken();
                 if (token.type != TOKEN_RPAREN) {
-                    eshkol_error("Expected closing paren after macro rule template");
+                    PARSE_ERROR_AT(token, "expected closing paren after macro rule template");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
@@ -3709,7 +3709,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Consume closing paren of define-syntax
             token = tokenizer.nextToken();
             if (token.type != TOKEN_RPAREN) {
-                eshkol_error("Expected closing paren after define-syntax");
+                PARSE_ERROR_AT(token, "expected closing paren after define-syntax");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -3726,7 +3726,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Parse bindings list: ((name1 (syntax-rules ...)) (name2 (syntax-rules ...)) ...)
             token = tokenizer.nextToken();
             if (token.type != TOKEN_LPAREN) {
-                eshkol_error("let-syntax requires bindings list");
+                PARSE_ERROR_AT(token, "let-syntax requires bindings list");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -3737,12 +3737,12 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 token = tokenizer.nextToken();
                 if (token.type == TOKEN_RPAREN) break;  // End of bindings list
                 if (token.type == TOKEN_EOF) {
-                    eshkol_error("Unexpected end of input in let-syntax bindings");
+                    PARSE_ERROR_AT(token, "unexpected end of input in let-syntax bindings");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
                 if (token.type != TOKEN_LPAREN) {
-                    eshkol_error("let-syntax binding must be (name (syntax-rules ...))");
+                    PARSE_ERROR_AT(token, "let-syntax binding must be (name (syntax-rules ...))");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
@@ -3750,7 +3750,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 // Parse macro name
                 token = tokenizer.nextToken();
                 if (token.type != TOKEN_SYMBOL) {
-                    eshkol_error("let-syntax binding requires a name");
+                    PARSE_ERROR_AT(token, "let-syntax binding requires a name");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
@@ -3765,14 +3765,14 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 // Expect (syntax-rules ...)
                 token = tokenizer.nextToken();
                 if (token.type != TOKEN_LPAREN) {
-                    eshkol_error("let-syntax binding value must be (syntax-rules ...)");
+                    PARSE_ERROR_AT(token, "let-syntax binding value must be (syntax-rules ...)");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
 
                 token = tokenizer.nextToken();
                 if (token.type != TOKEN_SYMBOL || token.value != "syntax-rules") {
-                    eshkol_error("let-syntax currently only supports syntax-rules transformers");
+                    PARSE_ERROR_AT(token, "let-syntax currently only supports syntax-rules transformers");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
@@ -3780,7 +3780,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 // Parse literals list
                 token = tokenizer.nextToken();
                 if (token.type != TOKEN_LPAREN) {
-                    eshkol_error("syntax-rules requires literals list");
+                    PARSE_ERROR_AT(token, "syntax-rules requires literals list");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
@@ -3790,7 +3790,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                     token = tokenizer.nextToken();
                     if (token.type == TOKEN_RPAREN) break;
                     if (token.type == TOKEN_EOF) {
-                        eshkol_error("Unexpected end of input in syntax-rules literals");
+                        PARSE_ERROR_AT(token, "unexpected end of input in syntax-rules literals");
                         ast.type = ESHKOL_INVALID;
                         return ast;
                     }
@@ -3814,13 +3814,13 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                     token = tokenizer.nextToken();
                     if (token.type == TOKEN_RPAREN) break;  // End of syntax-rules
                     if (token.type == TOKEN_EOF) {
-                        eshkol_error("Unexpected end of input in syntax-rules");
+                        PARSE_ERROR_AT(token, "unexpected end of input in syntax-rules");
                         ast.type = ESHKOL_INVALID;
                         return ast;
                     }
 
                     if (token.type != TOKEN_LPAREN) {
-                        eshkol_error("syntax-rules rule must be a list");
+                        PARSE_ERROR_AT(token, "syntax-rules rule must be a list");
                         ast.type = ESHKOL_INVALID;
                         return ast;
                     }
@@ -3832,7 +3832,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                     // Parse pattern
                     token = tokenizer.nextToken();
                     if (token.type != TOKEN_LPAREN) {
-                        eshkol_error("syntax-rules pattern must be a list");
+                        PARSE_ERROR_AT(token, "syntax-rules pattern must be a list");
                         ast.type = ESHKOL_INVALID;
                         return ast;
                     }
@@ -3848,7 +3848,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                             token = tokenizer.nextToken();
                             if (token.type == TOKEN_RPAREN) break;
                             if (token.type == TOKEN_EOF) {
-                                eshkol_error("Unexpected end of input in macro pattern");
+                                PARSE_ERROR_AT(token, "unexpected end of input in macro pattern");
                                 break;
                             }
                             auto* elem = new eshkol_macro_pattern_t;
@@ -3921,7 +3921,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                     // Consume closing paren of rule
                     token = tokenizer.nextToken();
                     if (token.type != TOKEN_RPAREN) {
-                        eshkol_error("Expected closing paren after macro rule template");
+                        PARSE_ERROR_AT(token, "expected closing paren after macro rule template");
                         ast.type = ESHKOL_INVALID;
                         return ast;
                     }
@@ -3940,7 +3940,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 // Consume closing paren of this binding: (name (syntax-rules ...))
                 token = tokenizer.nextToken();
                 if (token.type != TOKEN_RPAREN) {
-                    eshkol_error("Expected closing paren after let-syntax binding");
+                    PARSE_ERROR_AT(token, "expected closing paren after let-syntax binding");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
@@ -3954,7 +3954,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 token = tokenizer.nextToken();
                 if (token.type == TOKEN_RPAREN) break;  // End of let-syntax
                 if (token.type == TOKEN_EOF) {
-                    eshkol_error("Unexpected end of input in let-syntax body");
+                    PARSE_ERROR_AT(token, "unexpected end of input in let-syntax body");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
@@ -4018,7 +4018,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Consume closing paren
             token = tokenizer.nextToken();
             if (token.type != TOKEN_RPAREN) {
-                eshkol_error("call/cc expects exactly one argument");
+                PARSE_ERROR_AT(token, "call/cc expects exactly one argument");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -4064,7 +4064,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Consume closing paren
             token = tokenizer.nextToken();
             if (token.type != TOKEN_RPAREN) {
-                eshkol_error("dynamic-wind expects exactly three arguments");
+                PARSE_ERROR_AT(token, "dynamic-wind expects exactly three arguments");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -4080,7 +4080,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 token = tokenizer.nextToken();
                 if (token.type == TOKEN_RPAREN) break;
                 if (token.type == TOKEN_EOF) {
-                    eshkol_error("Unexpected end of input in syntax-error");
+                    PARSE_ERROR_AT(token, "unexpected end of input in syntax-error");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
@@ -4091,7 +4091,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 }
                 error_msg += " ";
             }
-            eshkol_error("%s", error_msg.c_str());
+            PARSE_ERROR_AT(token, "%s", error_msg.c_str());
             ast.type = ESHKOL_INVALID;
             return ast;
         }
@@ -4128,13 +4128,13 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 token = tokenizer.nextToken();
                 if (token.type == TOKEN_RPAREN) break;
                 if (token.type == TOKEN_EOF) {
-                    eshkol_error("Unexpected end of input in cond-expand");
+                    PARSE_ERROR_AT(token, "unexpected end of input in cond-expand");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
 
                 if (token.type != TOKEN_LPAREN) {
-                    eshkol_error("cond-expand clause must be a list");
+                    PARSE_ERROR_AT(token, "cond-expand clause must be a list");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
@@ -4191,7 +4191,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                     token = tokenizer.nextToken();
                     if (token.type == TOKEN_RPAREN) break;
                     if (token.type == TOKEN_EOF) {
-                        eshkol_error("Unexpected end of input in cond-expand clause");
+                        PARSE_ERROR_AT(token, "unexpected end of input in cond-expand clause");
                         ast.type = ESHKOL_INVALID;
                         return ast;
                     }
@@ -4243,13 +4243,13 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 token = tokenizer.nextToken();
                 if (token.type == TOKEN_RPAREN) break;
                 if (token.type == TOKEN_EOF) {
-                    eshkol_error("Unexpected end of input in include");
+                    PARSE_ERROR_AT(token, "unexpected end of input in include");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
 
                 if (token.type != TOKEN_STRING) {
-                    eshkol_error("include requires string filename arguments");
+                    PARSE_ERROR_AT(token, "include requires string filename arguments");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
@@ -4258,7 +4258,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 std::string filename = token.value;
                 std::ifstream inc_file(filename);
                 if (!inc_file.is_open()) {
-                    eshkol_error("include: cannot open file '%s'", filename.c_str());
+                    PARSE_ERROR_AT(token, "include: cannot open file '%s'", filename.c_str());
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
@@ -4374,12 +4374,12 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 token = tokenizer.nextToken();
                 if (token.type == TOKEN_RPAREN) break;
                 if (token.type == TOKEN_EOF) {
-                    eshkol_error("Unexpected end of input in case-lambda");
+                    PARSE_ERROR_AT(token, "unexpected end of input in case-lambda");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
                 if (token.type != TOKEN_LPAREN) {
-                    eshkol_error("case-lambda clause must be (formals body ...)");
+                    PARSE_ERROR_AT(token, "case-lambda clause must be (formals body ...)");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
@@ -4544,7 +4544,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Parse record type name
             token = tokenizer.nextToken();
             if (token.type != TOKEN_SYMBOL) {
-                eshkol_error("define-record-type requires a type name");
+                PARSE_ERROR_AT(token, "define-record-type requires a type name");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -4557,7 +4557,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Parse constructor: (make-name field1 field2 ...)
             token = tokenizer.nextToken();
             if (token.type != TOKEN_LPAREN) {
-                eshkol_error("define-record-type requires constructor specification");
+                PARSE_ERROR_AT(token, "define-record-type requires constructor specification");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -4589,7 +4589,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 token = tokenizer.nextToken();
                 if (token.type == TOKEN_RPAREN) break;
                 if (token.type == TOKEN_EOF) {
-                    eshkol_error("Unexpected end of input in define-record-type");
+                    PARSE_ERROR_AT(token, "unexpected end of input in define-record-type");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
@@ -4859,7 +4859,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             if (token.type == TOKEN_LPAREN) {
                 init_expr = parse_list(tokenizer);
             } else if (token.type == TOKEN_EOF || token.type == TOKEN_RPAREN) {
-                eshkol_error("make-parameter requires an initial value");
+                PARSE_ERROR_AT(token, "make-parameter requires an initial value");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             } else {
@@ -4994,7 +4994,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Parse bindings list
             token = tokenizer.nextToken();
             if (token.type != TOKEN_LPAREN) {
-                eshkol_error("parameterize requires bindings list");
+                PARSE_ERROR_AT(token, "parameterize requires bindings list");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -5006,12 +5006,12 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 token = tokenizer.nextToken();
                 if (token.type == TOKEN_RPAREN) break;
                 if (token.type == TOKEN_EOF) {
-                    eshkol_error("Unexpected end of input in parameterize bindings");
+                    PARSE_ERROR_AT(token, "unexpected end of input in parameterize bindings");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
                 if (token.type != TOKEN_LPAREN) {
-                    eshkol_error("parameterize binding must be (param value)");
+                    PARSE_ERROR_AT(token, "parameterize binding must be (param value)");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
@@ -5178,7 +5178,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Parse bindings list: ((var1 init1 step1) (var2 init2 step2) ...)
             token = tokenizer.nextToken();
             if (token.type != TOKEN_LPAREN) {
-                eshkol_error("do requires bindings list as first argument");
+                PARSE_ERROR_AT(token, "do requires bindings list as first argument");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -5190,13 +5190,13 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 token = tokenizer.nextToken();
                 if (token.type == TOKEN_RPAREN) break;
                 if (token.type == TOKEN_EOF) {
-                    eshkol_error("Unexpected end of input in do bindings");
+                    PARSE_ERROR_AT(token, "unexpected end of input in do bindings");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
 
                 if (token.type != TOKEN_LPAREN) {
-                    eshkol_error("do binding must be a list (variable init [step])");
+                    PARSE_ERROR_AT(token, "do binding must be a list (variable init [step])");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
@@ -5204,7 +5204,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 // Parse variable name
                 token = tokenizer.nextToken();
                 if (token.type != TOKEN_SYMBOL) {
-                    eshkol_error("do binding must start with variable name");
+                    PARSE_ERROR_AT(token, "do binding must start with variable name");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
@@ -5218,7 +5218,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 // Parse init expression
                 token = tokenizer.nextToken();
                 if (token.type == TOKEN_EOF || token.type == TOKEN_RPAREN) {
-                    eshkol_error("do binding requires init expression");
+                    PARSE_ERROR_AT(token, "do binding requires init expression");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
@@ -5256,7 +5256,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                     // Expect closing paren
                     token = tokenizer.nextToken();
                     if (token.type != TOKEN_RPAREN) {
-                        eshkol_error("Expected closing parenthesis after do binding");
+                        PARSE_ERROR_AT(token, "expected closing parenthesis after do binding");
                         ast.type = ESHKOL_INVALID;
                         return ast;
                     }
@@ -5286,7 +5286,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Parse test clause: ((test) result ...)
             token = tokenizer.nextToken();
             if (token.type != TOKEN_LPAREN) {
-                eshkol_error("do requires test clause as second argument");
+                PARSE_ERROR_AT(token, "do requires test clause as second argument");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -5294,7 +5294,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Parse test expression (first element of test clause)
             token = tokenizer.nextToken();
             if (token.type == TOKEN_EOF || token.type == TOKEN_RPAREN) {
-                eshkol_error("do test clause requires test expression");
+                PARSE_ERROR_AT(token, "do test clause requires test expression");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -5317,7 +5317,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 token = tokenizer.nextToken();
                 if (token.type == TOKEN_RPAREN) break;
                 if (token.type == TOKEN_EOF) {
-                    eshkol_error("Unexpected end of input in do test clause");
+                    PARSE_ERROR_AT(token, "unexpected end of input in do test clause");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
@@ -5342,7 +5342,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 token = tokenizer.nextToken();
                 if (token.type == TOKEN_RPAREN) break;
                 if (token.type == TOKEN_EOF) {
-                    eshkol_error("Unexpected end of input in do body");
+                    PARSE_ERROR_AT(token, "unexpected end of input in do body");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
@@ -5435,7 +5435,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 token = tokenizer.nextToken();
                 if (token.type == TOKEN_RPAREN) break;
                 if (token.type == TOKEN_EOF) {
-                    eshkol_error("Unexpected end of input in and expression");
+                    PARSE_ERROR_AT(token, "unexpected end of input in and expression");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
@@ -5479,7 +5479,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 token = tokenizer.nextToken();
                 if (token.type == TOKEN_RPAREN) break;
                 if (token.type == TOKEN_EOF) {
-                    eshkol_error("Unexpected end of input in or expression");
+                    PARSE_ERROR_AT(token, "unexpected end of input in or expression");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
@@ -5525,7 +5525,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                     token = tokenizer.nextToken();
                     if (token.type == TOKEN_RPAREN) break;
                     if (token.type == TOKEN_EOF) {
-                        eshkol_error("Unexpected end of input in vector literal");
+                        PARSE_ERROR_AT(token, "unexpected end of input in vector literal");
                         ast.type = ESHKOL_INVALID;
                         return ast;
                     }
@@ -5562,7 +5562,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 // Parse number of rows
                 token = tokenizer.nextToken();
                 if (token.type != TOKEN_NUMBER) {
-                    eshkol_error("matrix requires rows as first argument");
+                    PARSE_ERROR_AT(token, "matrix requires rows as first argument");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
@@ -5571,7 +5571,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 // Parse number of columns
                 token = tokenizer.nextToken();
                 if (token.type != TOKEN_NUMBER) {
-                    eshkol_error("matrix requires columns as second argument");
+                    PARSE_ERROR_AT(token, "matrix requires columns as second argument");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
@@ -5585,7 +5585,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                     token = tokenizer.nextToken();
                     if (token.type == TOKEN_RPAREN) {
                         if (i < expected_elements - 1) {
-                            eshkol_error("matrix has insufficient elements: expected %llu, got %llu", 
+                            PARSE_ERROR_AT(token, "matrix has insufficient elements: expected %llu, got %llu", 
                                        (unsigned long long)expected_elements, (unsigned long long)i);
                             ast.type = ESHKOL_INVALID;
                             return ast;
@@ -5593,7 +5593,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                         break;
                     }
                     if (token.type == TOKEN_EOF) {
-                        eshkol_error("Unexpected end of input in matrix literal");
+                        PARSE_ERROR_AT(token, "unexpected end of input in matrix literal");
                         ast.type = ESHKOL_INVALID;
                         return ast;
                     }
@@ -5611,7 +5611,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 if (tensor_elements.size() == expected_elements) {
                     token = tokenizer.nextToken();
                     if (token.type != TOKEN_RPAREN) {
-                        eshkol_error("Expected closing parenthesis after matrix elements");
+                        PARSE_ERROR_AT(token, "expected closing parenthesis after matrix elements");
                         ast.type = ESHKOL_INVALID;
                         return ast;
                     }
@@ -5679,7 +5679,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                         token = tokenizer.nextToken();
                         if (token.type == TOKEN_RPAREN) break;
                         if (token.type == TOKEN_EOF) {
-                            eshkol_error("Unexpected end of input in tensor literal");
+                            PARSE_ERROR_AT(token, "unexpected end of input in tensor literal");
                             ast.type = ESHKOL_INVALID;
                             return ast;
                         }
@@ -5733,7 +5733,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                     token = tokenizer.nextToken();
                     if (token.type == TOKEN_RPAREN) {
                         if (i < total_elements - 1) {
-                            eshkol_error("tensor has insufficient elements: expected %llu, got %llu", 
+                            PARSE_ERROR_AT(token, "tensor has insufficient elements: expected %llu, got %llu", 
                                        (unsigned long long)total_elements, (unsigned long long)i);
                             ast.type = ESHKOL_INVALID;
                             return ast;
@@ -5741,7 +5741,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                         break;
                     }
                     if (token.type == TOKEN_EOF) {
-                        eshkol_error("Unexpected end of input in tensor literal");
+                        PARSE_ERROR_AT(token, "unexpected end of input in tensor literal");
                         ast.type = ESHKOL_INVALID;
                         return ast;
                     }
@@ -5759,7 +5759,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 if (tensor_elements.size() == total_elements) {
                     token = tokenizer.nextToken();
                     if (token.type != TOKEN_RPAREN) {
-                        eshkol_error("Expected closing parenthesis after tensor elements");
+                        PARSE_ERROR_AT(token, "expected closing parenthesis after tensor elements");
                         ast.type = ESHKOL_INVALID;
                         return ast;
                     }
@@ -5790,7 +5790,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Parse the expression to differentiate
             token = tokenizer.nextToken();
             if (token.type == TOKEN_EOF) {
-                eshkol_error("diff requires expression as first argument");
+                PARSE_ERROR_AT(token, "diff requires expression as first argument");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -5814,7 +5814,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 token = tokenizer.nextToken();
             }
             if (token.type != TOKEN_SYMBOL) {
-                eshkol_error("diff requires variable name as second argument");
+                PARSE_ERROR_AT(token, "diff requires variable name as second argument");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -5822,7 +5822,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Check for closing paren
             Token close_token = tokenizer.nextToken();
             if (close_token.type != TOKEN_RPAREN) {
-                eshkol_error("Expected closing parenthesis after diff arguments");
+                PARSE_ERROR_AT(token, "expected closing parenthesis after diff arguments");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -5846,7 +5846,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Parse the function to differentiate (can be lambda or function reference)
             token = tokenizer.nextToken();
             if (token.type == TOKEN_EOF) {
-                eshkol_error("derivative requires function as first argument");
+                PARSE_ERROR_AT(token, "derivative requires function as first argument");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -5877,7 +5877,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             }
 
             if (token.type == TOKEN_EOF) {
-                eshkol_error("derivative requires evaluation point as second argument");
+                PARSE_ERROR_AT(token, "derivative requires evaluation point as second argument");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -5897,7 +5897,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Check for closing paren
             Token close_token = tokenizer.nextToken();
             if (close_token.type != TOKEN_RPAREN) {
-                eshkol_error("Expected closing parenthesis after derivative arguments");
+                PARSE_ERROR_AT(token, "expected closing parenthesis after derivative arguments");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -5922,7 +5922,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Parse the function to differentiate (can be lambda or function reference)
             token = tokenizer.nextToken();
             if (token.type == TOKEN_EOF) {
-                eshkol_error("gradient requires function as first argument");
+                PARSE_ERROR_AT(token, "gradient requires function as first argument");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -5952,7 +5952,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             }
 
             if (token.type == TOKEN_EOF) {
-                eshkol_error("gradient requires evaluation vector as second argument");
+                PARSE_ERROR_AT(token, "gradient requires evaluation vector as second argument");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -5992,7 +5992,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                     Token t = tokenizer.nextToken();
                     if (t.type == TOKEN_RPAREN) break;
                     if (t.type == TOKEN_EOF) {
-                        eshkol_error("Unterminated gradient expression");
+                        PARSE_ERROR_AT(token, "unterminated gradient expression");
                         ast.type = ESHKOL_INVALID;
                         return ast;
                     }
@@ -6039,7 +6039,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Parse the function to differentiate
             token = tokenizer.nextToken();
             if (token.type == TOKEN_EOF) {
-                eshkol_error("jacobian requires function as first argument");
+                PARSE_ERROR_AT(token, "jacobian requires function as first argument");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -6059,7 +6059,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Parse the evaluation point (vector)
             token = tokenizer.nextToken();
             if (token.type == TOKEN_EOF) {
-                eshkol_error("jacobian requires evaluation vector as second argument");
+                PARSE_ERROR_AT(token, "jacobian requires evaluation vector as second argument");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -6079,7 +6079,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Check for closing paren
             Token close_token = tokenizer.nextToken();
             if (close_token.type != TOKEN_RPAREN) {
-                eshkol_error("Expected closing parenthesis after jacobian arguments");
+                PARSE_ERROR_AT(token, "expected closing parenthesis after jacobian arguments");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -6102,7 +6102,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Parse the function to differentiate
             token = tokenizer.nextToken();
             if (token.type == TOKEN_EOF) {
-                eshkol_error("hessian requires function as first argument");
+                PARSE_ERROR_AT(token, "hessian requires function as first argument");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -6122,7 +6122,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Parse the evaluation point (vector)
             token = tokenizer.nextToken();
             if (token.type == TOKEN_EOF) {
-                eshkol_error("hessian requires evaluation vector as second argument");
+                PARSE_ERROR_AT(token, "hessian requires evaluation vector as second argument");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -6142,7 +6142,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Check for closing paren
             Token close_token = tokenizer.nextToken();
             if (close_token.type != TOKEN_RPAREN) {
-                eshkol_error("Expected closing parenthesis after hessian arguments");
+                PARSE_ERROR_AT(token, "expected closing parenthesis after hessian arguments");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -6165,7 +6165,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Parse the function (vector field F: ℝⁿ → ℝⁿ)
             token = tokenizer.nextToken();
             if (token.type == TOKEN_EOF) {
-                eshkol_error("divergence requires function as first argument");
+                PARSE_ERROR_AT(token, "divergence requires function as first argument");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -6185,7 +6185,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Parse the evaluation point (vector)
             token = tokenizer.nextToken();
             if (token.type == TOKEN_EOF) {
-                eshkol_error("divergence requires evaluation vector as second argument");
+                PARSE_ERROR_AT(token, "divergence requires evaluation vector as second argument");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -6205,7 +6205,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Check for closing paren
             Token close_token = tokenizer.nextToken();
             if (close_token.type != TOKEN_RPAREN) {
-                eshkol_error("Expected closing parenthesis after divergence arguments");
+                PARSE_ERROR_AT(token, "expected closing parenthesis after divergence arguments");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -6228,7 +6228,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Parse the function (vector field F: ℝ³ → ℝ³)
             token = tokenizer.nextToken();
             if (token.type == TOKEN_EOF) {
-                eshkol_error("curl requires function as first argument");
+                PARSE_ERROR_AT(token, "curl requires function as first argument");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -6248,7 +6248,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Parse the evaluation point (vector)
             token = tokenizer.nextToken();
             if (token.type == TOKEN_EOF) {
-                eshkol_error("curl requires evaluation vector as second argument");
+                PARSE_ERROR_AT(token, "curl requires evaluation vector as second argument");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -6268,7 +6268,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Check for closing paren
             Token close_token = tokenizer.nextToken();
             if (close_token.type != TOKEN_RPAREN) {
-                eshkol_error("Expected closing parenthesis after curl arguments");
+                PARSE_ERROR_AT(token, "expected closing parenthesis after curl arguments");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -6291,7 +6291,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Parse the function (scalar field f: ℝⁿ → ℝ)
             token = tokenizer.nextToken();
             if (token.type == TOKEN_EOF) {
-                eshkol_error("laplacian requires function as first argument");
+                PARSE_ERROR_AT(token, "laplacian requires function as first argument");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -6311,7 +6311,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Parse the evaluation point (vector)
             token = tokenizer.nextToken();
             if (token.type == TOKEN_EOF) {
-                eshkol_error("laplacian requires evaluation vector as second argument");
+                PARSE_ERROR_AT(token, "laplacian requires evaluation vector as second argument");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -6331,7 +6331,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Check for closing paren
             Token close_token = tokenizer.nextToken();
             if (close_token.type != TOKEN_RPAREN) {
-                eshkol_error("Expected closing parenthesis after laplacian arguments");
+                PARSE_ERROR_AT(token, "expected closing parenthesis after laplacian arguments");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -6354,7 +6354,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Parse the function (scalar field f: ℝⁿ → ℝ)
             token = tokenizer.nextToken();
             if (token.type == TOKEN_EOF) {
-                eshkol_error("directional-derivative requires function as first argument");
+                PARSE_ERROR_AT(token, "directional-derivative requires function as first argument");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -6374,7 +6374,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Parse the evaluation point (vector)
             token = tokenizer.nextToken();
             if (token.type == TOKEN_EOF) {
-                eshkol_error("directional-derivative requires evaluation point as second argument");
+                PARSE_ERROR_AT(token, "directional-derivative requires evaluation point as second argument");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -6394,7 +6394,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Parse the direction vector
             token = tokenizer.nextToken();
             if (token.type == TOKEN_EOF) {
-                eshkol_error("directional-derivative requires direction vector as third argument");
+                PARSE_ERROR_AT(token, "directional-derivative requires direction vector as third argument");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -6414,7 +6414,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Check for closing paren
             Token close_token = tokenizer.nextToken();
             if (close_token.type != TOKEN_RPAREN) {
-                eshkol_error("Expected closing parenthesis after directional-derivative arguments");
+                PARSE_ERROR_AT(token, "expected closing parenthesis after directional-derivative arguments");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -6439,7 +6439,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Parse type
             token = tokenizer.nextToken();
             if (token.type != TOKEN_SYMBOL) {
-                eshkol_error("extern requires return type as first argument");
+                PARSE_ERROR_AT(token, "extern requires return type as first argument");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -6451,7 +6451,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Parse variable name
             token = tokenizer.nextToken();
             if (token.type != TOKEN_SYMBOL) {
-                eshkol_error("extern requires function name as second argument");
+                PARSE_ERROR_AT(token, "extern requires function name as second argument");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -6467,7 +6467,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Parse return type
             token = tokenizer.nextToken();
             if (token.type != TOKEN_SYMBOL) {
-                eshkol_error("extern requires return type as first argument");
+                PARSE_ERROR_AT(token, "extern requires return type as first argument");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -6479,7 +6479,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Parse function name
             token = tokenizer.nextToken();
             if (token.type != TOKEN_SYMBOL) {
-                eshkol_error("extern requires function name as second argument");
+                PARSE_ERROR_AT(token, "extern requires function name as second argument");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -6500,7 +6500,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             while (true) {
                 if (token.type == TOKEN_RPAREN) break;
                 if (token.type == TOKEN_EOF) {
-                    eshkol_error("Unexpected end of input in extern declaration");
+                    PARSE_ERROR_AT(token, "unexpected end of input in extern declaration");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
@@ -6512,7 +6512,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                         // Parse the real function name
                         token = tokenizer.nextToken();
                         if (token.type != TOKEN_SYMBOL) {
-                            eshkol_error("extern :real requires function name as argument");
+                            PARSE_ERROR_AT(token, "extern :real requires function name as argument");
                             ast.type = ESHKOL_INVALID;
                             return ast;
                         }
@@ -6524,20 +6524,20 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                         // Expect closing paren after :real name
                         token = tokenizer.nextToken();
                         if (token.type != TOKEN_RPAREN) {
-                            eshkol_error(":real modifier must be at end of extern declaration");
+                            PARSE_ERROR_AT(token, ":real modifier must be at end of extern declaration");
                             ast.type = ESHKOL_INVALID;
                             return ast;
                         }
                         break;
                     } else {
-                        eshkol_error("Unexpected ':' in extern declaration (did you mean :real?)");
+                        PARSE_ERROR_AT(token, "unexpected ':' in extern declaration (did you mean :real?)");
                         ast.type = ESHKOL_INVALID;
                         return ast;
                     }
                 }
 
                 if (token.type != TOKEN_SYMBOL) {
-                    eshkol_error("extern parameter types must be symbols");
+                    PARSE_ERROR_AT(token, "extern parameter types must be symbols");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
@@ -6573,7 +6573,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Legacy syntax: (import "path/to/file.esk")
             token = tokenizer.nextToken();
             if (token.type != TOKEN_STRING) {
-                eshkol_error("import requires a string path as argument");
+                PARSE_ERROR_AT(token, "import requires a string path as argument");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -6585,7 +6585,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Expect closing paren
             token = tokenizer.nextToken();
             if (token.type != TOKEN_RPAREN) {
-                eshkol_error("import takes exactly one argument");
+                PARSE_ERROR_AT(token, "import takes exactly one argument");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -6600,7 +6600,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 token = tokenizer.nextToken();
                 if (token.type == TOKEN_RPAREN) break;
                 if (token.type == TOKEN_EOF) {
-                    eshkol_error("Unexpected end of input in require");
+                    PARSE_ERROR_AT(token, "unexpected end of input in require");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
@@ -6614,7 +6614,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                     for (char& c : path) { if (c == '/') c = '.'; }
                     modules.push_back(path);
                 } else if (token.type != TOKEN_SYMBOL) {
-                    eshkol_error("require expects symbolic module names (e.g., data.json)");
+                    PARSE_ERROR_AT(token, "require expects symbolic module names (e.g., data.json)");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 } else {
@@ -6623,7 +6623,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             }
 
             if (modules.empty()) {
-                eshkol_error("require expects at least one module name");
+                PARSE_ERROR_AT(token, "require expects at least one module name");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -6647,12 +6647,12 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 token = tokenizer.nextToken();
                 if (token.type == TOKEN_RPAREN) break;
                 if (token.type == TOKEN_EOF) {
-                    eshkol_error("Unexpected end of input in provide");
+                    PARSE_ERROR_AT(token, "unexpected end of input in provide");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
                 if (token.type != TOKEN_SYMBOL) {
-                    eshkol_error("provide expects symbol names to export");
+                    PARSE_ERROR_AT(token, "provide expects symbol names to export");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
@@ -6660,7 +6660,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             }
 
             if (exports.empty()) {
-                eshkol_error("provide expects at least one export name");
+                PARSE_ERROR_AT(token, "provide expects at least one export name");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -6689,7 +6689,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 // (with-region 'name body ...)
                 Token name_token = tokenizer.nextToken();
                 if (name_token.type != TOKEN_SYMBOL) {
-                    eshkol_error("with-region name must be a symbol");
+                    PARSE_ERROR_AT(token, "with-region name must be a symbol");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
@@ -6702,7 +6702,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                     // ('name size) - named region with size hint
                     Token name_token = tokenizer.nextToken();
                     if (name_token.type != TOKEN_SYMBOL) {
-                        eshkol_error("with-region name must be a symbol");
+                        PARSE_ERROR_AT(token, "with-region name must be a symbol");
                         ast.type = ESHKOL_INVALID;
                         return ast;
                     }
@@ -6715,7 +6715,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
 
                     Token close = tokenizer.nextToken();
                     if (close.type != TOKEN_RPAREN) {
-                        eshkol_error("Expected closing paren in with-region name/size spec");
+                        PARSE_ERROR_AT(token, "expected closing paren in with-region name/size spec");
                         ast.type = ESHKOL_INVALID;
                         return ast;
                     }
@@ -6743,7 +6743,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                             Token arg_token = tokenizer.nextToken();
                             if (arg_token.type == TOKEN_RPAREN) break;
                             if (arg_token.type == TOKEN_EOF) {
-                                eshkol_error("Unexpected end of input in with-region body list");
+                                PARSE_ERROR_AT(token, "unexpected end of input in with-region body list");
                                 ast.type = ESHKOL_INVALID;
                                 return ast;
                             }
@@ -6775,7 +6775,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                         token = tokenizer.nextToken();
                         if (token.type == TOKEN_RPAREN) break;  // End of with-region
                         if (token.type == TOKEN_EOF) {
-                            eshkol_error("Unexpected end of input in with-region");
+                            PARSE_ERROR_AT(token, "unexpected end of input in with-region");
                             ast.type = ESHKOL_INVALID;
                             return ast;
                         }
@@ -6801,7 +6801,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             std::vector<eshkol_ast_t> body_exprs;
             while (token.type != TOKEN_RPAREN) {
                 if (token.type == TOKEN_EOF) {
-                    eshkol_error("Unexpected end of input in with-region body");
+                    PARSE_ERROR_AT(token, "unexpected end of input in with-region body");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
@@ -6816,7 +6816,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             }
 
             if (body_exprs.empty()) {
-                eshkol_error("with-region requires at least one body expression");
+                PARSE_ERROR_AT(token, "with-region requires at least one body expression");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -6832,7 +6832,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Memory management syntax: (owned expr)
             token = tokenizer.nextToken();
             if (token.type == TOKEN_RPAREN) {
-                eshkol_error("owned requires exactly one argument");
+                PARSE_ERROR_AT(token, "owned requires exactly one argument");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -6849,7 +6849,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
 
             token = tokenizer.nextToken();
             if (token.type != TOKEN_RPAREN) {
-                eshkol_error("owned requires exactly one argument");
+                PARSE_ERROR_AT(token, "owned requires exactly one argument");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -6859,7 +6859,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Memory management syntax: (move value)
             token = tokenizer.nextToken();
             if (token.type == TOKEN_RPAREN) {
-                eshkol_error("move requires exactly one argument");
+                PARSE_ERROR_AT(token, "move requires exactly one argument");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -6876,7 +6876,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
 
             token = tokenizer.nextToken();
             if (token.type != TOKEN_RPAREN) {
-                eshkol_error("move requires exactly one argument");
+                PARSE_ERROR_AT(token, "move requires exactly one argument");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -6886,7 +6886,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Memory management syntax: (borrow value body ...)
             token = tokenizer.nextToken();
             if (token.type == TOKEN_RPAREN) {
-                eshkol_error("borrow requires a value and body expressions");
+                PARSE_ERROR_AT(token, "borrow requires a value and body expressions");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -6908,7 +6908,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 token = tokenizer.nextToken();
                 if (token.type == TOKEN_RPAREN) break;
                 if (token.type == TOKEN_EOF) {
-                    eshkol_error("Unexpected end of input in borrow body");
+                    PARSE_ERROR_AT(token, "unexpected end of input in borrow body");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
@@ -6922,7 +6922,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             }
 
             if (body_exprs.empty()) {
-                eshkol_error("borrow requires at least one body expression");
+                PARSE_ERROR_AT(token, "borrow requires at least one body expression");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -6938,7 +6938,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Memory management syntax: (shared expr)
             token = tokenizer.nextToken();
             if (token.type == TOKEN_RPAREN) {
-                eshkol_error("shared requires exactly one argument");
+                PARSE_ERROR_AT(token, "shared requires exactly one argument");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -6955,7 +6955,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
 
             token = tokenizer.nextToken();
             if (token.type != TOKEN_RPAREN) {
-                eshkol_error("shared requires exactly one argument");
+                PARSE_ERROR_AT(token, "shared requires exactly one argument");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -6965,7 +6965,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Memory management syntax: (weak-ref shared-value)
             token = tokenizer.nextToken();
             if (token.type == TOKEN_RPAREN) {
-                eshkol_error("weak-ref requires exactly one argument");
+                PARSE_ERROR_AT(token, "weak-ref requires exactly one argument");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -6982,7 +6982,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
 
             token = tokenizer.nextToken();
             if (token.type != TOKEN_RPAREN) {
-                eshkol_error("weak-ref requires exactly one argument");
+                PARSE_ERROR_AT(token, "weak-ref requires exactly one argument");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -6999,7 +6999,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 token = tokenizer.nextToken();
                 if (token.type == TOKEN_RPAREN) break;
                 if (token.type == TOKEN_EOF) {
-                    eshkol_error("Unexpected end of input in begin expression");
+                    PARSE_ERROR_AT(token, "unexpected end of input in begin expression");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
@@ -7027,7 +7027,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             }
 
             if (begin_expressions.empty()) {
-                eshkol_error("begin requires at least one expression");
+                PARSE_ERROR_AT(token, "begin requires at least one expression");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -7066,12 +7066,12 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
         if (ast.operation.op == ESHKOL_QUOTE_OP) {
             token = tokenizer.nextToken();
             if (token.type == TOKEN_RPAREN) {
-                eshkol_error("quote requires exactly one argument");
+                PARSE_ERROR_AT(token, "quote requires exactly one argument");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
             if (token.type == TOKEN_EOF) {
-                eshkol_error("Unexpected end of input in quote");
+                PARSE_ERROR_AT(token, "unexpected end of input in quote");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -7087,7 +7087,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Expect closing paren
             token = tokenizer.nextToken();
             if (token.type != TOKEN_RPAREN) {
-                eshkol_error("quote requires exactly one argument");
+                PARSE_ERROR_AT(token, "quote requires exactly one argument");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -7095,12 +7095,12 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Special handling for quasiquote - its argument can be any data, with unquote/unquote-splicing
             token = tokenizer.nextToken();
             if (token.type == TOKEN_RPAREN) {
-                eshkol_error("quasiquote requires exactly one argument");
+                PARSE_ERROR_AT(token, "quasiquote requires exactly one argument");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
             if (token.type == TOKEN_EOF) {
-                eshkol_error("Unexpected end of input in quasiquote");
+                PARSE_ERROR_AT(token, "unexpected end of input in quasiquote");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -7116,7 +7116,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Expect closing paren
             token = tokenizer.nextToken();
             if (token.type != TOKEN_RPAREN) {
-                eshkol_error("quasiquote requires exactly one argument");
+                PARSE_ERROR_AT(token, "quasiquote requires exactly one argument");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -7125,7 +7125,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 token = tokenizer.nextToken();
                 if (token.type == TOKEN_RPAREN) break;
                 if (token.type == TOKEN_EOF) {
-                    eshkol_error("Unexpected end of input in list");
+                    PARSE_ERROR_AT(token, "unexpected end of input in list");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
@@ -7192,7 +7192,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // quote takes exactly one argument - the expression to quote
             // Store it in call_op.variables[0] for codegenQuotedAST to access
             if (elements.size() != 1) {
-                eshkol_error("quote requires exactly one argument");
+                PARSE_ERROR_AT(token, "quote requires exactly one argument");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -7204,7 +7204,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // quasiquote takes exactly one argument - the expression to quasiquote
             // Store it in call_op.variables[0] for codegenQuasiquotedAST to access
             if (elements.size() != 1) {
-                eshkol_error("quasiquote requires exactly one argument");
+                PARSE_ERROR_AT(token, "quasiquote requires exactly one argument");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -7313,7 +7313,7 @@ static eshkol_ast_t parse_vector_body(SchemeTokenizer& tokenizer) {
         Token elem_token = tokenizer.nextToken();
         if (elem_token.type == TOKEN_RPAREN) break;
         if (elem_token.type == TOKEN_EOF) {
-            eshkol_error("Unexpected end of input in vector literal #(...)");
+            PARSE_ERROR_AT(token, "unexpected end of input in vector literal #(...)");
             ast.type = ESHKOL_INVALID;
             return ast;
         }
@@ -7358,7 +7358,7 @@ static eshkol_ast_t parse_vector_body(SchemeTokenizer& tokenizer) {
 
         for (size_t i = 1; i < elements.size(); i++) {
             if (elements[i].operation.tensor_op.num_dimensions != sub_ndim) {
-                eshkol_error("Nested vector dimension mismatch: element 0 has %llu dimensions, element %zu has %llu",
+                PARSE_ERROR_AT(token, "nested vector dimension mismatch: element 0 has %llu dimensions, element %zu has %llu",
                     (unsigned long long)sub_ndim, i,
                     (unsigned long long)elements[i].operation.tensor_op.num_dimensions);
                 ast.type = ESHKOL_INVALID;
@@ -7366,7 +7366,7 @@ static eshkol_ast_t parse_vector_body(SchemeTokenizer& tokenizer) {
             }
             for (uint64_t d = 0; d < sub_ndim; d++) {
                 if (elements[i].operation.tensor_op.dimensions[d] != sub_dims[d]) {
-                    eshkol_error("Nested vector shape mismatch at dimension %llu: element 0 has %llu, element %zu has %llu",
+                    PARSE_ERROR_AT(token, "nested vector shape mismatch at dimension %llu: element 0 has %llu, element %zu has %llu",
                         (unsigned long long)d, (unsigned long long)sub_dims[d], i,
                         (unsigned long long)elements[i].operation.tensor_op.dimensions[d]);
                     ast.type = ESHKOL_INVALID;
@@ -7424,7 +7424,7 @@ static eshkol_ast_t parse_expression(SchemeTokenizer& tokenizer) {
     // Stack space guard: detect actual remaining stack space using platform APIs.
     // This prevents segfaults from deeply nested input without imposing arbitrary limits.
     if (!check_stack_space()) {
-        eshkol_error("Stack space exhausted during parsing — expression nesting too deep");
+        PARSE_ERROR_AT(token, "stack space exhausted during parsing — expression nesting too deep");
         eshkol_ast_t invalid = {};
         invalid.type = ESHKOL_INVALID;
         return invalid;
@@ -7521,7 +7521,7 @@ static eshkol_ast_t parse_expression(SchemeTokenizer& tokenizer) {
             return parse_atom(token);
 
         case TOKEN_RPAREN:
-            eshkol_error("Unexpected closing parenthesis");
+            PARSE_ERROR_AT(token, "unexpected closing parenthesis");
             return {.type = ESHKOL_INVALID};
 
         case TOKEN_EOF:
