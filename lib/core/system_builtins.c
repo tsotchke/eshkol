@@ -99,7 +99,11 @@ static eshkol_sysbuiltin_value_t sys_make_string(const char* s) {
 }
 
 static const char* sys_extract_string(eshkol_sysbuiltin_value_t v) {
-    if (v.type == SYS_TYPE_HEAP_PTR && v.flags == 0x01) {
+    /* Strings from LLVM codegen have type=HEAP_PTR, flags=0 (subtype is in
+     * the object header at ptr-8, not in the tagged value flags byte).
+     * Strings from FFI/system_builtins have type=HEAP_PTR, flags=0x01.
+     * Accept both patterns. */
+    if (v.type == SYS_TYPE_HEAP_PTR && v.data != 0) {
         return (const char*)(uintptr_t)v.data;
     }
     return NULL;
@@ -505,10 +509,10 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_shell_quote_v(eshkol_sysbuiltin_
     if (!s) return sys_make_null();
     /* Single-quote wrapping with internal ' escaped as '\'' */
     size_t len = strlen(s);
-    size_t out_len = 3 + len * 4; /* worst case */
+    size_t out_len = 2 + len * 4; /* worst case */
     void* arena = get_global_arena();
     if (!arena) return sys_make_null();
-    char* buf = (char*)arena_allocate(arena, out_len);
+    char* buf = arena_allocate_string_with_header(arena, out_len);
     if (!buf) return sys_make_null();
     char* p = buf;
     *p++ = '\'';
@@ -521,9 +525,8 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_shell_quote_v(eshkol_sysbuiltin_
     }
     *p++ = '\'';
     *p = '\0';
-    eshkol_sysbuiltin_value_t v = {0};
+    eshkol_sysbuiltin_value_t v = {0, 0, 0, 0, 0};
     v.type = SYS_TYPE_HEAP_PTR;
-    v.flags = 0x01;
     v.data = (uint64_t)buf;
     return v;
 }
@@ -598,6 +601,8 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_poll_fd_v(eshkol_sysbuiltin_valu
 
 typedef eshkol_sysbuiltin_value_t sv_t;
 
+/* All-pointer interface: result AND args passed via pointer.
+ * This eliminates ALL struct ABI mismatches between LLVM IR and C. */
 void eshkol_builtin_os_type(sv_t* out) { *out = eshkol_builtin_os_type_v(); }
 void eshkol_builtin_os_arch(sv_t* out) { *out = eshkol_builtin_os_arch_v(); }
 void eshkol_builtin_hostname(sv_t* out) { *out = eshkol_builtin_hostname_v(); }
@@ -605,21 +610,21 @@ void eshkol_builtin_username(sv_t* out) { *out = eshkol_builtin_username_v(); }
 void eshkol_builtin_cpu_count(sv_t* out) { *out = eshkol_builtin_cpu_count_v(); }
 void eshkol_builtin_getpid(sv_t* out) { *out = eshkol_builtin_getpid_v(); }
 void eshkol_builtin_home_directory(sv_t* out) { *out = eshkol_builtin_home_directory_v(); }
-void eshkol_builtin_sleep_ms(sv_t* out, sv_t a) { *out = eshkol_builtin_sleep_ms_v(a); }
-void eshkol_builtin_executable_exists(sv_t* out, sv_t a) { *out = eshkol_builtin_executable_exists_v(a); }
-void eshkol_builtin_path_join(sv_t* out, sv_t a, sv_t b) { *out = eshkol_builtin_path_join_v(a, b); }
-void eshkol_builtin_path_dirname(sv_t* out, sv_t a) { *out = eshkol_builtin_path_dirname_v(a); }
-void eshkol_builtin_path_basename(sv_t* out, sv_t a) { *out = eshkol_builtin_path_basename_v(a); }
-void eshkol_builtin_path_extname(sv_t* out, sv_t a) { *out = eshkol_builtin_path_extname_v(a); }
-void eshkol_builtin_path_is_absolute(sv_t* out, sv_t a) { *out = eshkol_builtin_path_is_absolute_v(a); }
-void eshkol_builtin_path_normalize(sv_t* out, sv_t a) { *out = eshkol_builtin_path_normalize_v(a); }
-void eshkol_builtin_realpath(sv_t* out, sv_t a) { *out = eshkol_builtin_realpath_v(a); }
-void eshkol_builtin_file_stat(sv_t* out, sv_t a) { *out = eshkol_builtin_file_stat_v(a); }
-void eshkol_builtin_file_copy(sv_t* out, sv_t a, sv_t b) { *out = eshkol_builtin_file_copy_v(a, b); }
-void eshkol_builtin_mkdir_recursive(sv_t* out, sv_t a) { *out = eshkol_builtin_mkdir_recursive_v(a); }
-void eshkol_builtin_mkdtemp(sv_t* out, sv_t a) { *out = eshkol_builtin_mkdtemp_v(a); }
-void eshkol_builtin_directory_delete_recursive(sv_t* out, sv_t a) { *out = eshkol_builtin_directory_delete_recursive_v(a); }
-void eshkol_builtin_shell_quote(sv_t* out, sv_t a) { *out = eshkol_builtin_shell_quote_v(a); }
-void eshkol_builtin_process_spawn(sv_t* out, sv_t a, sv_t b) { *out = eshkol_builtin_process_spawn_v(a, b); }
-void eshkol_builtin_process_wait(sv_t* out, sv_t a) { *out = eshkol_builtin_process_wait_v(a); }
-void eshkol_builtin_poll_fd(sv_t* out, sv_t a, sv_t b) { *out = eshkol_builtin_poll_fd_v(a, b); }
+void eshkol_builtin_sleep_ms(sv_t* out, const sv_t* a) { *out = eshkol_builtin_sleep_ms_v(*a); }
+void eshkol_builtin_executable_exists(sv_t* out, const sv_t* a) { *out = eshkol_builtin_executable_exists_v(*a); }
+void eshkol_builtin_path_join(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_path_join_v(*a, *b); }
+void eshkol_builtin_path_dirname(sv_t* out, const sv_t* a) { *out = eshkol_builtin_path_dirname_v(*a); }
+void eshkol_builtin_path_basename(sv_t* out, const sv_t* a) { *out = eshkol_builtin_path_basename_v(*a); }
+void eshkol_builtin_path_extname(sv_t* out, const sv_t* a) { *out = eshkol_builtin_path_extname_v(*a); }
+void eshkol_builtin_path_is_absolute(sv_t* out, const sv_t* a) { *out = eshkol_builtin_path_is_absolute_v(*a); }
+void eshkol_builtin_path_normalize(sv_t* out, const sv_t* a) { *out = eshkol_builtin_path_normalize_v(*a); }
+void eshkol_builtin_realpath(sv_t* out, const sv_t* a) { *out = eshkol_builtin_realpath_v(*a); }
+void eshkol_builtin_file_stat(sv_t* out, const sv_t* a) { *out = eshkol_builtin_file_stat_v(*a); }
+void eshkol_builtin_file_copy(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_file_copy_v(*a, *b); }
+void eshkol_builtin_mkdir_recursive(sv_t* out, const sv_t* a) { *out = eshkol_builtin_mkdir_recursive_v(*a); }
+void eshkol_builtin_mkdtemp(sv_t* out, const sv_t* a) { *out = eshkol_builtin_mkdtemp_v(*a); }
+void eshkol_builtin_directory_delete_recursive(sv_t* out, const sv_t* a) { *out = eshkol_builtin_directory_delete_recursive_v(*a); }
+void eshkol_builtin_shell_quote(sv_t* out, const sv_t* a) { *out = eshkol_builtin_shell_quote_v(*a); }
+void eshkol_builtin_process_spawn(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_process_spawn_v(*a, *b); }
+void eshkol_builtin_process_wait(sv_t* out, const sv_t* a) { *out = eshkol_builtin_process_wait_v(*a); }
+void eshkol_builtin_poll_fd(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_poll_fd_v(*a, *b); }
