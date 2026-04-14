@@ -606,6 +606,91 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
 
     /* ══════════════════════════════════════════════════════════════════════
+     * Hyper-Dual Numbers (1900-1921) — exact second derivatives
+     * ══════════════════════════════════════════════════════════════════════ */
+    case 1900: case 1901: case 1902: case 1903: case 1904:
+    case 1905: case 1906: case 1907: case 1908: case 1909:
+    case 1910: case 1911: case 1912: case 1913: case 1914:
+    case 1915: case 1916: case 1917: case 1918: case 1919:
+    case 1920: case 1921: {
+        VmRegionStack* hd_rs = &vm->heap.regions;
+        switch (fid) {
+        case 1900: { /* make-hyper-dual(f, f1, f2, f12) */
+            Value f12v = vm_pop(vm), f2v = vm_pop(vm), f1v = vm_pop(vm), fv = vm_pop(vm);
+            VmHyperDual* h = vm_hd_make(hd_rs, as_number(fv), as_number(f1v), as_number(f2v), as_number(f12v));
+            if (!h) { vm_push(vm, NIL_VAL); break; }
+            VM_PUSH_HEAP_OPAQUE(vm, HEAP_HYPER_DUAL, VAL_HYPER_DUAL, h); break; }
+        case 1901: { Value v = vm_pop(vm); /* f component */
+            if (v.type == VAL_HYPER_DUAL) { VmHyperDual* h = (VmHyperDual*)vm->heap.objects[v.as.ptr]->opaque.ptr; vm_push(vm, FLOAT_VAL(h->f)); }
+            else vm_push(vm, FLOAT_VAL(as_number(v))); break; }
+        case 1902: { Value v = vm_pop(vm); /* f1 component */
+            if (v.type == VAL_HYPER_DUAL) { VmHyperDual* h = (VmHyperDual*)vm->heap.objects[v.as.ptr]->opaque.ptr; vm_push(vm, FLOAT_VAL(h->f1)); }
+            else vm_push(vm, FLOAT_VAL(0.0)); break; }
+        case 1903: { Value v = vm_pop(vm); /* f2 component */
+            if (v.type == VAL_HYPER_DUAL) { VmHyperDual* h = (VmHyperDual*)vm->heap.objects[v.as.ptr]->opaque.ptr; vm_push(vm, FLOAT_VAL(h->f2)); }
+            else vm_push(vm, FLOAT_VAL(0.0)); break; }
+        case 1904: { Value v = vm_pop(vm); /* f12 — the second derivative */
+            if (v.type == VAL_HYPER_DUAL) { VmHyperDual* h = (VmHyperDual*)vm->heap.objects[v.as.ptr]->opaque.ptr; vm_push(vm, FLOAT_VAL(h->f12)); }
+            else vm_push(vm, FLOAT_VAL(0.0)); break; }
+        case 1905: case 1906: case 1907: case 1908: { /* binary: add/sub/mul/div */
+            Value b_val = vm_pop(vm), a_val = vm_pop(vm);
+            VmHyperDual a_h = {as_number(a_val), 0, 0, 0}, b_h = {as_number(b_val), 0, 0, 0};
+            if (a_val.type == VAL_HYPER_DUAL) a_h = *(VmHyperDual*)vm->heap.objects[a_val.as.ptr]->opaque.ptr;
+            if (b_val.type == VAL_HYPER_DUAL) b_h = *(VmHyperDual*)vm->heap.objects[b_val.as.ptr]->opaque.ptr;
+            VmHyperDual* result = NULL;
+            switch (fid) {
+                case 1905: result = vm_hd_add(hd_rs, &a_h, &b_h); break;
+                case 1906: result = vm_hd_sub(hd_rs, &a_h, &b_h); break;
+                case 1907: result = vm_hd_mul(hd_rs, &a_h, &b_h); break;
+                case 1908: result = vm_hd_div(hd_rs, &a_h, &b_h); break;
+            }
+            if (!result) { vm_push(vm, NIL_VAL); break; }
+            VM_PUSH_HEAP_OPAQUE(vm, HEAP_HYPER_DUAL, VAL_HYPER_DUAL, result); break; }
+        case 1909: case 1910: case 1911: case 1912: case 1913:
+        case 1914: case 1916: case 1917: case 1918: case 1919: { /* unary */
+            Value v = vm_pop(vm);
+            VmHyperDual a_h = {as_number(v), 0, 0, 0};
+            if (v.type == VAL_HYPER_DUAL) a_h = *(VmHyperDual*)vm->heap.objects[v.as.ptr]->opaque.ptr;
+            VmHyperDual* result = NULL;
+            switch (fid) {
+                case 1909: result = vm_hd_neg(hd_rs, &a_h); break;
+                case 1910: result = vm_hd_sin(hd_rs, &a_h); break;
+                case 1911: result = vm_hd_cos(hd_rs, &a_h); break;
+                case 1912: result = vm_hd_exp(hd_rs, &a_h); break;
+                case 1913: result = vm_hd_log(hd_rs, &a_h); break;
+                case 1914: result = vm_hd_sqrt(hd_rs, &a_h); break;
+                case 1916: result = vm_hd_abs(hd_rs, &a_h); break;
+                case 1917: result = vm_hd_relu(hd_rs, &a_h); break;
+                case 1918: result = vm_hd_sigmoid(hd_rs, &a_h); break;
+                case 1919: result = vm_hd_tanh(hd_rs, &a_h); break;
+            }
+            if (!result) { vm_push(vm, NIL_VAL); break; }
+            VM_PUSH_HEAP_OPAQUE(vm, HEAP_HYPER_DUAL, VAL_HYPER_DUAL, result); break; }
+        case 1915: { /* pow(base, exp) */
+            Value exp_val = vm_pop(vm), base_val = vm_pop(vm);
+            VmHyperDual a_h = {as_number(base_val), 0, 0, 0};
+            if (base_val.type == VAL_HYPER_DUAL) a_h = *(VmHyperDual*)vm->heap.objects[base_val.as.ptr]->opaque.ptr;
+            VmHyperDual* result = vm_hd_pow(hd_rs, &a_h, as_number(exp_val));
+            if (!result) { vm_push(vm, NIL_VAL); break; }
+            VM_PUSH_HEAP_OPAQUE(vm, HEAP_HYPER_DUAL, VAL_HYPER_DUAL, result); break; }
+        case 1920: { /* from-double */
+            Value v = vm_pop(vm);
+            VmHyperDual* h = vm_hd_from_double(hd_rs, as_number(v));
+            if (!h) { vm_push(vm, NIL_VAL); break; }
+            VM_PUSH_HEAP_OPAQUE(vm, HEAP_HYPER_DUAL, VAL_HYPER_DUAL, h); break; }
+        case 1921: { /* scale(scalar, hd) */
+            Value hd_val = vm_pop(vm), scalar_val = vm_pop(vm);
+            VmHyperDual a_h = {as_number(hd_val), 0, 0, 0};
+            if (hd_val.type == VAL_HYPER_DUAL) a_h = *(VmHyperDual*)vm->heap.objects[hd_val.as.ptr]->opaque.ptr;
+            VmHyperDual* result = vm_hd_scale(hd_rs, as_number(scalar_val), &a_h);
+            if (!result) { vm_push(vm, NIL_VAL); break; }
+            VM_PUSH_HEAP_OPAQUE(vm, HEAP_HYPER_DUAL, VAL_HYPER_DUAL, result); break; }
+        default: vm_push(vm, NIL_VAL); break;
+        }
+        break;
+    }
+
+    /* ══════════════════════════════════════════════════════════════════════
      * AD Operations (390-409) — reverse-mode tape + forward-mode derivative
      * ══════════════════════════════════════════════════════════════════════ */
     case 390: { /* ad-tape-new */
@@ -2664,10 +2749,19 @@ static void vm_dispatch_native(VM* vm, int fid) {
         break;
     }
 
-    case 752: { /* hessian(f, point) → second derivative (scalar or matrix)
-                 * Scalar: f''(x) via central difference of exact gradient
-                 *   f''(x) ≈ (f'(x+h) - f'(x-h)) / (2h) where f' is exact (dual)
-                 * Multi-var: H[i][j] = ∂²f/∂xi∂xj via central diff on gradient */
+    case 752: { /* hessian(f, point) → EXACT second derivative via hyper-dual numbers
+                 * Scalar: seed x = (x,1,1,0) → f₁₂ = f''(x)
+                 * Multi-var: H[i][j] = ∂²f/∂xᵢ∂xⱼ via hyper-dual seeding
+                 * NO finite differences — mathematically exact. */
+#define VM_HD_MAKE(vm, fv, f1v, f2v, f12v, out) do { \
+    VmHyperDual* _h = vm_hd_make(&(vm)->heap.regions, (fv), (f1v), (f2v), (f12v)); \
+    if (!_h) { (out) = FLOAT_VAL(0); break; } \
+    int32_t _hp = heap_alloc(&(vm)->heap); \
+    if (_hp < 0) { (vm)->error = 1; (out) = FLOAT_VAL(0); break; } \
+    (vm)->heap.objects[_hp]->type = HEAP_HYPER_DUAL; \
+    (vm)->heap.objects[_hp]->opaque.ptr = _h; \
+    (out) = (Value){.type = VAL_HYPER_DUAL, .as.ptr = _hp}; \
+} while(0)
         Value x_val = vm_pop(vm), f_val = vm_pop(vm);
 
         double point[VM_AD_MAX_VARS];
@@ -2691,98 +2785,38 @@ static void vm_dispatch_native(VM* vm, int fid) {
 
         if (n == 0) { vm_push(vm, FLOAT_VAL(0)); break; }
 
-        /* Step size: optimal for central diff of gradient is h ≈ ε^(1/3) */
-        double h = 1e-5;
-
         if (n == 1) {
-            /* Scalar hessian: f''(x) = (f'(x+h) - f'(x-h)) / (2h)
-             * Also use three-point on values: f''(x) = (f(x+h) - 2f(x) + f(x-h)) / h²
-             * Average both for improved accuracy */
-            double grad_plus = 0, grad_minus = 0;
-            double f_plus = 0, f_center = 0, f_minus = 0;
-
-            /* f'(x+h) and f(x+h) */
-            Value dp;
-            VM_AD_MAKE_DUAL(vm, point[0] + h, 1.0, dp);
-            Value rp = vm_call_closure_from_native(vm, f_val, &dp, 1);
-            if (rp.type == VAL_DUAL && rp.as.ptr >= 0) {
-                VmDual* rd = (VmDual*)vm->heap.objects[rp.as.ptr]->opaque.ptr;
-                if (rd) { grad_plus = rd->tangent; f_plus = rd->primal; }
-            } else { f_plus = as_number(rp); }
-
-            /* f'(x-h) and f(x-h) */
-            Value dm;
-            VM_AD_MAKE_DUAL(vm, point[0] - h, 1.0, dm);
-            Value rm = vm_call_closure_from_native(vm, f_val, &dm, 1);
-            if (rm.type == VAL_DUAL && rm.as.ptr >= 0) {
-                VmDual* rd = (VmDual*)vm->heap.objects[rm.as.ptr]->opaque.ptr;
-                if (rd) { grad_minus = rd->tangent; f_minus = rd->primal; }
-            } else { f_minus = as_number(rm); }
-
-            /* f(x) for three-point formula */
-            Value dc;
-            VM_AD_MAKE_DUAL(vm, point[0], 1.0, dc);
-            Value rc = vm_call_closure_from_native(vm, f_val, &dc, 1);
-            if (rc.type == VAL_DUAL && rc.as.ptr >= 0) {
-                VmDual* rd = (VmDual*)vm->heap.objects[rc.as.ptr]->opaque.ptr;
-                if (rd) f_center = rd->primal;
-            } else { f_center = as_number(rc); }
-
-            /* Central difference on exact gradient (primary — higher accuracy) */
-            double hess_grad = (grad_plus - grad_minus) / (2.0 * h);
-            /* Three-point formula on values (secondary — cross-check) */
-            double hess_val = (f_plus - 2.0 * f_center + f_minus) / (h * h);
-
-            /* Use gradient-based result (more accurate since f' is exact) */
-            (void)hess_val; /* available for debugging */
-            vm_push(vm, FLOAT_VAL(hess_grad));
+            /* Scalar hessian via hyper-dual: seed (x, 1, 1, 0) → f₁₂ = f''(x) */
+            Value hd_arg;
+            VM_HD_MAKE(vm, point[0], 1.0, 1.0, 0.0, hd_arg);
+            Value result = vm_call_closure_from_native(vm, f_val, &hd_arg, 1);
+            if (result.type == VAL_HYPER_DUAL && result.as.ptr >= 0) {
+                VmHyperDual* rh = (VmHyperDual*)vm->heap.objects[result.as.ptr]->opaque.ptr;
+                vm_push(vm, FLOAT_VAL(rh ? rh->f12 : 0.0));
+            } else {
+                vm_push(vm, FLOAT_VAL(0.0));
+            }
         } else {
-            /* Multi-variable Hessian matrix: H[i][j] = ∂²f/∂xi∂xj
-             * Central difference on partial derivatives:
-             * H[i][j] = (∂f/∂xj(x + h*ei) - ∂f/∂xj(x - h*ei)) / (2h) */
+            /* Multi-variable Hessian via hyper-dual: H[i][j] = ∂²f/∂xᵢ∂xⱼ
+             * Seed xₖ = (point[k], δₖᵢ, δₖⱼ, 0) → result.f12 = H[i][j] */
             double* hess_data = (double*)vm_alloc(&vm->heap.regions,
                                                    (size_t)(n * n) * sizeof(double));
             if (!hess_data) { vm_push(vm, NIL_VAL); break; }
 
             for (int i = 0; i < n; i++) {
-                /* Compute gradient at x + h*ei */
-                double pt_plus[VM_AD_MAX_VARS], pt_minus[VM_AD_MAX_VARS];
-                for (int k = 0; k < n; k++) {
-                    pt_plus[k] = point[k] + ((k == i) ? h : 0);
-                    pt_minus[k] = point[k] - ((k == i) ? h : 0);
-                }
-
-                /* Gradient at x + h*ei */
-                double grad_plus[VM_AD_MAX_VARS];
-                for (int j = 0; j < n; j++) {
+                for (int j = i; j < n; j++) {
                     Value args[VM_AD_MAX_VARS];
                     for (int k = 0; k < n; k++) {
-                        VM_AD_MAKE_DUAL(vm, pt_plus[k], (k == j) ? 1.0 : 0.0, args[k]);
+                        VM_HD_MAKE(vm, point[k], (k==i)?1.0:0.0, (k==j)?1.0:0.0, 0.0, args[k]);
                     }
                     Value r = vm_call_closure_from_native(vm, f_val, args, n);
-                    if (r.type == VAL_DUAL && r.as.ptr >= 0) {
-                        VmDual* rd = (VmDual*)vm->heap.objects[r.as.ptr]->opaque.ptr;
-                        grad_plus[j] = rd ? rd->tangent : 0;
-                    } else { grad_plus[j] = 0; }
-                }
-
-                /* Gradient at x - h*ei */
-                double grad_minus[VM_AD_MAX_VARS];
-                for (int j = 0; j < n; j++) {
-                    Value args[VM_AD_MAX_VARS];
-                    for (int k = 0; k < n; k++) {
-                        VM_AD_MAKE_DUAL(vm, pt_minus[k], (k == j) ? 1.0 : 0.0, args[k]);
+                    double h_ij = 0.0;
+                    if (r.type == VAL_HYPER_DUAL && r.as.ptr >= 0) {
+                        VmHyperDual* rh = (VmHyperDual*)vm->heap.objects[r.as.ptr]->opaque.ptr;
+                        if (rh) h_ij = rh->f12;
                     }
-                    Value r = vm_call_closure_from_native(vm, f_val, args, n);
-                    if (r.type == VAL_DUAL && r.as.ptr >= 0) {
-                        VmDual* rd = (VmDual*)vm->heap.objects[r.as.ptr]->opaque.ptr;
-                        grad_minus[j] = rd ? rd->tangent : 0;
-                    } else { grad_minus[j] = 0; }
-                }
-
-                /* H[i][j] = (∂f/∂xj(x+h*ei) - ∂f/∂xj(x-h*ei)) / (2h) */
-                for (int j = 0; j < n; j++) {
-                    hess_data[i * n + j] = (grad_plus[j] - grad_minus[j]) / (2.0 * h);
+                    hess_data[i * n + j] = h_ij;
+                    hess_data[j * n + i] = h_ij;
                 }
             }
 
@@ -2791,6 +2825,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
             if (t) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_TENSOR, VAL_TENSOR, t); }
             else { vm_push(vm, NIL_VAL); }
         }
+#undef VM_HD_MAKE
         break;
     }
 
