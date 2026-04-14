@@ -20,6 +20,30 @@
 #include <pthread.h>
 #endif
 
+/* ── Parse context for diagnostic messages ── */
+static thread_local const char* g_parse_filename = "<unknown>";
+static thread_local const char* g_parse_source = NULL;
+
+/* Emit error with file:line:col + caret underline.
+ * Falls back to plain eshkol_error if source text unavailable. */
+#define PARSE_ERROR_AT(tok, ...) do { \
+    if (g_parse_source) { \
+        eshkol_error_at(g_parse_filename, (tok).line, (tok).column, \
+                        g_parse_source, __VA_ARGS__); \
+    } else { \
+        eshkol_error(__VA_ARGS__); \
+    } \
+} while(0)
+
+#define PARSE_WARN_AT(tok, ...) do { \
+    if (g_parse_source) { \
+        eshkol_warn_at(g_parse_filename, (tok).line, (tok).column, \
+                       g_parse_source, __VA_ARGS__); \
+    } else { \
+        eshkol_warn(__VA_ARGS__); \
+    } \
+} while(0)
+
 // Stack space check: detect remaining stack and bail before overflow.
 // Uses platform APIs to measure actual stack consumption rather than
 // imposing an arbitrary depth limit.
@@ -427,7 +451,7 @@ static eshkol_ast_t parse_atom(const Token& token) {
                     num = std::stoll(num_str);
                     den = std::stoll(den_str);
                 } catch (...) {
-                    eshkol_error("invalid rational literal: %s", token.value.c_str());
+                    PARSE_ERROR_AT(token, "invalid rational literal: %s", token.value.c_str());
                     break;
                 }
                 // Create (make-rational num den) call AST
@@ -451,7 +475,7 @@ static eshkol_ast_t parse_atom(const Token& token) {
                 char* endptr = nullptr;
                 double dval = strtod(token.value.c_str(), &endptr);
                 if (endptr == token.value.c_str()) {
-                    eshkol_error("invalid numeric literal: %s", token.value.c_str());
+                    PARSE_ERROR_AT(token, "invalid numeric literal: %s", token.value.c_str());
                     break;
                 }
                 eshkol_ast_make_double(&ast, dval);
@@ -1824,7 +1848,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             token = tokenizer.nextToken();
             if (token.type == TOKEN_RPAREN) break;
             if (token.type == TOKEN_EOF) {
-                eshkol_error("Unexpected end of input in list");
+                PARSE_ERROR_AT(token, "unexpected end of input in list");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -1947,7 +1971,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
         if (ast.operation.op == ESHKOL_DEFINE_OP) {
             token = tokenizer.nextToken();
             if (token.type == TOKEN_RPAREN) {
-                eshkol_error("define requires arguments");
+                PARSE_ERROR_AT(token, "define requires arguments");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -2081,7 +2105,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 return ast;
                 
             } else {
-                eshkol_error("define first argument must be a symbol or parameter list");
+                PARSE_ERROR_AT(token, "define first argument must be a symbol or parameter list");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -2092,13 +2116,13 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Syntax: (set! varname value)
             token = tokenizer.nextToken();
             if (token.type == TOKEN_RPAREN) {
-                eshkol_error("set! requires a variable name and value");
+                PARSE_ERROR_AT(token, "set! requires a variable name and value");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
 
             if (token.type != TOKEN_SYMBOL) {
-                eshkol_error("set! first argument must be a variable name");
+                PARSE_ERROR_AT(token, "set! first argument must be a variable name");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -2111,7 +2135,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Parse value
             token = tokenizer.nextToken();
             if (token.type == TOKEN_EOF || token.type == TOKEN_RPAREN) {
-                eshkol_error("set! requires a value");
+                PARSE_ERROR_AT(token, "set! requires a value");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -2129,7 +2153,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Expect closing paren
             token = tokenizer.nextToken();
             if (token.type != TOKEN_RPAREN) {
-                eshkol_error("set! takes exactly 2 arguments: variable name and value");
+                PARSE_ERROR_AT(token, "set! takes exactly 2 arguments: variable name and value");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -2223,7 +2247,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Parse condition
             token = tokenizer.nextToken();
             if (token.type == TOKEN_EOF) {
-                eshkol_error("if requires condition as first argument");
+                PARSE_ERROR_AT(token, "if requires condition as first argument");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -2247,7 +2271,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Parse then expression
             token = tokenizer.nextToken();
             if (token.type == TOKEN_EOF) {
-                eshkol_error("if requires then-expression as second argument");
+                PARSE_ERROR_AT(token, "if requires then-expression as second argument");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -2450,7 +2474,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                     }
                 }
             } else {
-                eshkol_error("lambda requires parameter list or rest parameter symbol");
+                PARSE_ERROR_AT(token, "lambda requires parameter list or rest parameter symbol");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -2509,7 +2533,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             }
 
             if (body_expressions.empty()) {
-                eshkol_error("lambda requires body expression");
+                PARSE_ERROR_AT(token, "lambda requires body expression");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -2591,7 +2615,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             }
 
             if (token.type != TOKEN_LPAREN) {
-                eshkol_error("let requires bindings list as first argument");
+                PARSE_ERROR_AT(token, "let requires bindings list as first argument");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -7224,7 +7248,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             token = tokenizer.nextToken();
             if (token.type == TOKEN_RPAREN) break;
             if (token.type == TOKEN_EOF) {
-                eshkol_error("Unexpected end of input in list");
+                PARSE_ERROR_AT(token, "unexpected end of input in list");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -7592,8 +7616,11 @@ eshkol_ast_t eshkol_parse_next_ast_from_stream(std::istream &in_stream)
         if (start != std::string::npos && end != std::string::npos) {
             input = input.substr(start, end - start + 1);
 
+            g_parse_source = input.c_str();
             SchemeTokenizer tokenizer(input);
-            return parse_expression(tokenizer);
+            eshkol_ast_t result = parse_expression(tokenizer);
+            g_parse_source = NULL;
+            return result;
         }
     }
 
