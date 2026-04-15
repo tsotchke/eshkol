@@ -38,8 +38,17 @@ This directory indexes Eshkol's architecture documentation.
 - Forward mode (dual numbers, 16 bytes)
 - Reverse mode (computational graph, 32-level tape)
 
+### Active Platform Architecture
+
+**[Freestanding / Platform Program](../platform/README.md)** - Working documentation for the founder-led platform effort that starts during `v1.2-scale` and converges into `v1.8-platform`. Includes:
+- Execution profile model
+- Hosted vs. freestanding runtime split
+- Low-level machine-facing language surface
+- Native freestanding and VM freestanding architecture
+- BSP contracts and downstream kernel handoff
+
 ## See Also
 
 - [API Reference](../API_REFERENCE.md) - Complete function reference
 - [Feature Matrix](../FEATURE_MATRIX.md) - Implementation status
-- [Overview](../aidocs/OVERVIEW.md) - Design philosophy and positioning
+- [Overview](../breakdown/OVERVIEW.md) - Design philosophy and positioning

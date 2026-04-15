@@ -2,6 +2,8 @@
 
 This roadmap tracks Eshkol's evolution from the **completed v1.0-foundation release** through upcoming versions that will establish Eshkol as the definitive platform for gradient-based computing and integrated AI.
 
+> **Parallel platform program**: The internal freestanding / kernel / embedded architecture work begins during `v1.2-scale` as a mergeable infrastructure program and converges publicly at `v1.8-platform`. See [docs/platform/README.md](docs/platform/README.md) and [docs/platform/ROADMAP_ALIGNMENT.md](docs/platform/ROADMAP_ALIGNMENT.md).
+
 ---
 
 ## v1.0-foundation (2025) - COMPLETED
