@@ -571,9 +571,34 @@ llvm::Value* StringIOCodegen::numberToString(const eshkol_operations_t* op) {
         return tagged_.packNull();
     }
 
-    if (op->call_op.num_vars != 1) {
-        eshkol_warn("number->string requires exactly 1 argument");
+    if (op->call_op.num_vars < 1 || op->call_op.num_vars > 2) {
+        eshkol_warn("number->string requires 1 or 2 arguments");
         return nullptr;
+    }
+
+    /* If 2 args, the second is the radix. Extract both as int64 in IR,
+     * pass to C runtime that returns string via sret. */
+    if (op->call_op.num_vars == 2) {
+        llvm::Value* num_arg = codegen_ast_callback_(&op->call_op.variables[0], callback_context_);
+        llvm::Value* radix_arg = codegen_ast_callback_(&op->call_op.variables[1], callback_context_);
+        if (!num_arg || !radix_arg) return nullptr;
+
+        /* Extract int64 values from tagged values */
+        llvm::Value* num_i64 = tagged_.unpackInt64(num_arg);
+        llvm::Value* rad_i64 = tagged_.unpackInt64(radix_arg);
+
+        /* Call: ptr eshkol_number_to_string_radix_raw(i64 num, i64 radix, ptr arena) */
+        llvm::Module* mod = ctx_.builder().GetInsertBlock()->getParent()->getParent();
+        llvm::Function* func = mod->getFunction("eshkol_number_to_string_radix_raw");
+        if (!func) {
+            llvm::FunctionType* ft = llvm::FunctionType::get(ctx_.ptrType(),
+                {ctx_.int64Type(), ctx_.int64Type(), ctx_.ptrType()}, false);
+            func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+                "eshkol_number_to_string_radix_raw", mod);
+        }
+        llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+        llvm::Value* result_ptr = ctx_.builder().CreateCall(func, {num_i64, rad_i64, arena_ptr});
+        return tagged_.packHeapPtr(result_ptr);
     }
 
     // Get typed value via callback

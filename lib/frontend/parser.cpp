@@ -375,6 +375,29 @@ private:
                     pos += 3;
                     column_ += 3;
                     return {TOKEN_CHAR, "\t", start, tok_line, tok_col};
+                } else if (pos + 2 < length && input.substr(pos, 3) == "nul") {
+                    // R7RS: #\null (4 chars) or #\nul (3 chars)
+                    if (pos + 3 < length && input[pos + 3] == 'l') {
+                        pos += 4; column_ += 4;
+                    } else {
+                        pos += 3; column_ += 3;
+                    }
+                    return {TOKEN_CHAR, std::string(1, '\0'), start, tok_line, tok_col};
+                } else if (pos + 5 < length && input.substr(pos, 6) == "return") {
+                    pos += 6; column_ += 6;
+                    return {TOKEN_CHAR, "\r", start, tok_line, tok_col};
+                } else if (pos + 4 < length && input.substr(pos, 5) == "alarm") {
+                    pos += 5; column_ += 5;
+                    return {TOKEN_CHAR, "\a", start, tok_line, tok_col};
+                } else if (pos + 8 < length && input.substr(pos, 9) == "backspace") {
+                    pos += 9; column_ += 9;
+                    return {TOKEN_CHAR, "\b", start, tok_line, tok_col};
+                } else if (pos + 5 < length && input.substr(pos, 6) == "delete") {
+                    pos += 6; column_ += 6;
+                    return {TOKEN_CHAR, std::string(1, '\x7f'), start, tok_line, tok_col};
+                } else if (pos + 5 < length && input.substr(pos, 6) == "escape") {
+                    pos += 6; column_ += 6;
+                    return {TOKEN_CHAR, std::string(1, '\x1b'), start, tok_line, tok_col};
                 } else {
                     // Single character
                     std::string value(1, input[pos]);
