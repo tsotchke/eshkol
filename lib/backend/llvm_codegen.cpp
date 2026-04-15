@@ -1095,6 +1095,7 @@ public:
         function_return_types["ad-backward"] = BuiltinTypes::Null;
         function_return_types["ad-gradient"] = BuiltinTypes::Value;
         function_return_types["ad-node-value"] = BuiltinTypes::Value;
+        function_return_types["onnx-export-tensor"] = BuiltinTypes::Boolean;
 
         // R7RS Wave 2 functions
         function_return_types["char-foldcase"] = BuiltinTypes::Value;  // char
@@ -10908,6 +10909,7 @@ private:
         if (func_name == "ad-backward") return system_->adBackward(op);
         if (func_name == "ad-gradient") return system_->adGradient(op);
         if (func_name == "ad-node-value") return system_->adNodeValue(op);
+        if (func_name == "onnx-export-tensor") return system_->onnxExportTensor(op);
 
         // =========================================================================
         // R7RS ENVIRONMENT PRIMITIVES
@@ -17966,6 +17968,7 @@ private:
             "ad-sin", "ad-cos", "ad-exp", "ad-log", "ad-sqrt",
             "ad-neg", "ad-abs", "ad-relu", "ad-sigmoid", "ad-tanh",
             "ad-backward", "ad-gradient", "ad-node-value",
+            "onnx-export-tensor",
             // Eval
             "eval",
         };

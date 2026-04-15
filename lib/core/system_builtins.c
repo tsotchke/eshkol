@@ -1176,20 +1176,43 @@ extern int eshkol_onnx_export(const char* path, const char** names,
                                const double** data, const int64_t* totals,
                                int n_tensors);
 
-/* onnx-export-tensor(path, name, tensor) → #t or #f
- * Export a single tensor to ONNX format. */
+/* onnx-export-tensor(path, tensor) → #t or #f
+ * Export a single named tensor to ONNX format. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_onnx_export_tensor_v(
         eshkol_sysbuiltin_value_t path_val,
-        eshkol_sysbuiltin_value_t name_val) {
-    /* Third arg (tensor) would need 3-arg calling convention.
-     * For now, this is a placeholder — full ONNX export requires
-     * list-of-pairs traversal like model-save, which is better
-     * implemented in the VM path or via the FFI eval pattern. */
+        eshkol_sysbuiltin_value_t tensor_val) {
     const char* path = sys_extract_string(path_val);
-    const char* name = sys_extract_string(name_val);
-    if (!path || !name) return sys_make_bool(0);
-    /* Would call eshkol_onnx_export here with tensor data */
-    return sys_make_bool(0); /* placeholder until tensor extraction is resolved */
+    if (!path || tensor_val.type != SYS_TYPE_HEAP_PTR) return sys_make_bool(0);
+
+    /* Extract tensor data */
+    void* t = (void*)(uintptr_t)tensor_val.data;
+    if (!t) return sys_make_bool(0);
+
+    /* Read tensor fields (must match eshkol_tensor_t layout) */
+    uint64_t* dimensions = *((uint64_t**)((char*)t + 0));
+    uint64_t num_dims = *((uint64_t*)((char*)t + 8));
+    int64_t* elements = *((int64_t**)((char*)t + 16));
+    uint64_t total = *((uint64_t*)((char*)t + 24));
+
+    if (!dimensions || !elements || total == 0) return sys_make_bool(0);
+
+    /* Convert int64 element bit patterns to doubles */
+    double* data = (double*)elements; /* same bit pattern */
+
+    /* Convert uint64 dims to int64 for the ONNX export API */
+    int64_t dims[8];
+    int ndims = (int)(num_dims < 8 ? num_dims : 8);
+    for (int i = 0; i < ndims; i++) dims[i] = (int64_t)dimensions[i];
+
+    const char* name = "tensor";
+    const char* names[] = { name };
+    const int64_t* dims_ptrs[] = { dims };
+    const int ndims_arr[] = { ndims };
+    const double* data_ptrs[] = { data };
+    const int64_t totals[] = { (int64_t)total };
+
+    int rc = eshkol_onnx_export(path, names, dims_ptrs, ndims_arr, data_ptrs, totals, 1);
+    return sys_make_bool(rc == 0);
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -1341,6 +1364,7 @@ void eshkol_builtin_file_munmap(sv_t* out, const sv_t* a) { *out = eshkol_builti
 void eshkol_builtin_kb_save(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_kb_save_v(*a, *b); }
 void eshkol_builtin_kb_load(sv_t* out, const sv_t* a) { *out = eshkol_builtin_kb_load_v(*a); }
 void eshkol_builtin_tensor_token_estimate(sv_t* out, const sv_t* a) { *out = eshkol_builtin_tensor_token_estimate_v(*a); }
+void eshkol_builtin_onnx_export_tensor(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_onnx_export_tensor_v(*a, *b); }
 /* v1.2 Noesis requirements: fg-marginal, fg-entropy, kb-retract! as LLVM builtins */
 /* These delegate to C++ implementations via tagged value pointers */
 extern void eshkol_fg_marginal_tagged(void* arena, const void* fg_tv, const void* idx_tv, void* result);

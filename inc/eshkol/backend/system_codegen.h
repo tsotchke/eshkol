@@ -292,6 +292,7 @@ public:
     llvm::Value* adBackward(const eshkol_operations_t* op);
     llvm::Value* adGradient(const eshkol_operations_t* op);
     llvm::Value* adNodeValue(const eshkol_operations_t* op);
+    llvm::Value* onnxExportTensor(const eshkol_operations_t* op);
 
 private:
     CodegenContext& ctx_;
