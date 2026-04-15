@@ -1054,6 +1054,10 @@ public:
         function_return_types["kb-save"] = BuiltinTypes::Boolean;
         function_return_types["kb-load"] = BuiltinTypes::Value;
         function_return_types["tensor-token-estimate"] = BuiltinTypes::Integer;
+        // Noesis requirements
+        function_return_types["fg-marginal"] = BuiltinTypes::Value;
+        function_return_types["fg-entropy"] = BuiltinTypes::Value;
+        function_return_types["kb-retract!"] = BuiltinTypes::Boolean;
 
         // R7RS Wave 2 functions
         function_return_types["char-foldcase"] = BuiltinTypes::Value;  // char
@@ -10826,6 +10830,10 @@ private:
         if (func_name == "kb-save") return system_->kbSave(op);
         if (func_name == "kb-load") return system_->kbLoad(op);
         if (func_name == "tensor-token-estimate") return system_->tensorTokenEstimate(op);
+        // Noesis requirements
+        if (func_name == "fg-marginal") return system_->fgMarginal(op);
+        if (func_name == "fg-entropy") return system_->fgEntropy(op);
+        if (func_name == "kb-retract!") return system_->kbRetract(op);
 
         // =========================================================================
         // R7RS ENVIRONMENT PRIMITIVES
@@ -17873,6 +17881,7 @@ private:
             "process-spawn-pty", "process-read-nonblocking",
             "process-pid", "file-mmap", "file-munmap",
             "kb-save", "kb-load", "tensor-token-estimate",
+            "fg-marginal", "fg-entropy", "kb-retract!",
             // Eval
             "eval",
         };

@@ -1341,6 +1341,39 @@ void eshkol_builtin_file_munmap(sv_t* out, const sv_t* a) { *out = eshkol_builti
 void eshkol_builtin_kb_save(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_kb_save_v(*a, *b); }
 void eshkol_builtin_kb_load(sv_t* out, const sv_t* a) { *out = eshkol_builtin_kb_load_v(*a); }
 void eshkol_builtin_tensor_token_estimate(sv_t* out, const sv_t* a) { *out = eshkol_builtin_tensor_token_estimate_v(*a); }
+/* v1.2 Noesis requirements: fg-marginal, fg-entropy, kb-retract! as LLVM builtins */
+/* These delegate to C++ implementations via tagged value pointers */
+extern void eshkol_fg_marginal_tagged(void* arena, const void* fg_tv, const void* idx_tv, void* result);
+extern void eshkol_fg_entropy_tagged(void* arena, const void* fg_tv, const void* idx_tv, void* result);
+extern void eshkol_kb_retract_tagged(void* arena, const void* kb_tv, const void* fact_tv, void* result);
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_fg_marginal_v(eshkol_sysbuiltin_value_t fg_val,
+                                                                eshkol_sysbuiltin_value_t idx_val) {
+    eshkol_sysbuiltin_value_t result = {0, 0, 0, 0, 0};
+    void* arena = get_global_arena();
+    eshkol_fg_marginal_tagged(arena, &fg_val, &idx_val, &result);
+    return result;
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_fg_entropy_v(eshkol_sysbuiltin_value_t fg_val,
+                                                               eshkol_sysbuiltin_value_t idx_val) {
+    eshkol_sysbuiltin_value_t result = {0, 0, 0, 0, 0};
+    void* arena = get_global_arena();
+    eshkol_fg_entropy_tagged(arena, &fg_val, &idx_val, &result);
+    return result;
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_kb_retract_v(eshkol_sysbuiltin_value_t kb_val,
+                                                               eshkol_sysbuiltin_value_t fact_val) {
+    eshkol_sysbuiltin_value_t result = {0, 0, 0, 0, 0};
+    void* arena = get_global_arena();
+    eshkol_kb_retract_tagged(arena, &kb_val, &fact_val, &result);
+    return result;
+}
+
+void eshkol_builtin_fg_marginal(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_fg_marginal_v(*a, *b); }
+void eshkol_builtin_fg_entropy(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_fg_entropy_v(*a, *b); }
+void eshkol_builtin_kb_retract(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_kb_retract_v(*a, *b); }
 /* v1.2 batch 3: advanced process management */
 void eshkol_builtin_process_setpgid(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_process_setpgid_v(*a, *b); }
 void eshkol_builtin_process_kill_tree(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_process_kill_tree_v(*a, *b); }
