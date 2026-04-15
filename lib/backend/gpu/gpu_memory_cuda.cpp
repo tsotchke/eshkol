@@ -756,34 +756,95 @@ int eshkol_gpu_normalize_f64(EshkolGPUBuffer* in, EshkolGPUBuffer* out,
     return 0;
 }
 
-// ===== Backward Pass GPU — CUDA (TODO: implement CUDA kernels) =====
+// ===== Backward Pass GPU — CUDA kernel dispatch =====
+
+// Forward declarations of CUDA kernel launchers (in gpu_cuda_kernels.cu)
+extern int cuda_conv2d_backward_input_f64(
+    const double*, const double*, double*,
+    int, int, int, int, int, int, int, int, int, int, int, cudaStream_t);
+extern int cuda_conv2d_backward_kernel_f64(
+    const double*, const double*, double*,
+    int, int, int, int, int, int, int, int, int, int, int, cudaStream_t);
+extern int cuda_batchnorm_backward_f64(
+    const double*, const double*, const double*, const double*, const double*,
+    double*, double*, double*, int, int, cudaStream_t);
+extern int cuda_layernorm_backward_f64(
+    const double*, const double*, const double*, const double*, const double*,
+    double*, int, int, cudaStream_t);
 
 int eshkol_gpu_conv2d_backward_input_f64(
-    EshkolGPUBuffer*, EshkolGPUBuffer*, EshkolGPUBuffer*,
-    uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
-    uint64_t, uint64_t, uint64_t, uint64_t, uint64_t) {
-    return -1;
+    EshkolGPUBuffer* grad_out, EshkolGPUBuffer* kernel_weights,
+    EshkolGPUBuffer* grad_input,
+    uint64_t in_h, uint64_t in_w, uint64_t k_h, uint64_t k_w,
+    uint64_t out_h, uint64_t out_w,
+    uint64_t stride_h, uint64_t stride_w,
+    uint64_t channels_in, uint64_t channels_out, uint64_t batch_size) {
+    if (g_active_backend != ESHKOL_GPU_CUDA) return -1;
+    return cuda_conv2d_backward_input_f64(
+        (const double*)grad_out->device_ptr,
+        (const double*)kernel_weights->device_ptr,
+        (double*)grad_input->device_ptr,
+        (int)in_h, (int)in_w, (int)k_h, (int)k_w,
+        (int)out_h, (int)out_w, (int)stride_h, (int)stride_w,
+        (int)channels_in, (int)channels_out, (int)batch_size,
+        g_cuda_stream);
 }
 
 int eshkol_gpu_conv2d_backward_kernel_f64(
-    EshkolGPUBuffer*, EshkolGPUBuffer*, EshkolGPUBuffer*,
-    uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
-    uint64_t, uint64_t, uint64_t, uint64_t, uint64_t) {
-    return -1;
+    EshkolGPUBuffer* grad_out, EshkolGPUBuffer* saved_input,
+    EshkolGPUBuffer* grad_kernel,
+    uint64_t in_h, uint64_t in_w, uint64_t k_h, uint64_t k_w,
+    uint64_t out_h, uint64_t out_w,
+    uint64_t stride_h, uint64_t stride_w,
+    uint64_t channels_in, uint64_t channels_out, uint64_t batch_size) {
+    if (g_active_backend != ESHKOL_GPU_CUDA) return -1;
+    return cuda_conv2d_backward_kernel_f64(
+        (const double*)grad_out->device_ptr,
+        (const double*)saved_input->device_ptr,
+        (double*)grad_kernel->device_ptr,
+        (int)in_h, (int)in_w, (int)k_h, (int)k_w,
+        (int)out_h, (int)out_w, (int)stride_h, (int)stride_w,
+        (int)channels_in, (int)channels_out, (int)batch_size,
+        g_cuda_stream);
 }
 
 int eshkol_gpu_batchnorm_backward_f64(
-    EshkolGPUBuffer*, EshkolGPUBuffer*, EshkolGPUBuffer*,
-    EshkolGPUBuffer*, EshkolGPUBuffer*, EshkolGPUBuffer*,
-    EshkolGPUBuffer*, EshkolGPUBuffer*, uint64_t, uint64_t) {
-    return -1;
+    EshkolGPUBuffer* grad_out,
+    EshkolGPUBuffer* saved_input, EshkolGPUBuffer* saved_mean,
+    EshkolGPUBuffer* saved_inv_std, EshkolGPUBuffer* saved_gamma,
+    EshkolGPUBuffer* grad_input, EshkolGPUBuffer* grad_gamma,
+    EshkolGPUBuffer* grad_beta,
+    uint64_t batch_size, uint64_t feature_size) {
+    if (g_active_backend != ESHKOL_GPU_CUDA) return -1;
+    return cuda_batchnorm_backward_f64(
+        (const double*)grad_out->device_ptr,
+        (const double*)saved_input->device_ptr,
+        (const double*)saved_mean->device_ptr,
+        (const double*)saved_inv_std->device_ptr,
+        (const double*)saved_gamma->device_ptr,
+        (double*)grad_input->device_ptr,
+        (double*)grad_gamma->device_ptr,
+        (double*)grad_beta->device_ptr,
+        (int)batch_size, (int)feature_size,
+        g_cuda_stream);
 }
 
 int eshkol_gpu_layernorm_backward_f64(
-    EshkolGPUBuffer*, EshkolGPUBuffer*, EshkolGPUBuffer*,
-    EshkolGPUBuffer*, EshkolGPUBuffer*, EshkolGPUBuffer*,
-    uint64_t, uint64_t) {
-    return -1;
+    EshkolGPUBuffer* grad_out,
+    EshkolGPUBuffer* saved_input, EshkolGPUBuffer* saved_mean,
+    EshkolGPUBuffer* saved_inv_std, EshkolGPUBuffer* saved_gamma,
+    EshkolGPUBuffer* grad_input,
+    uint64_t num_samples, uint64_t feature_size) {
+    if (g_active_backend != ESHKOL_GPU_CUDA) return -1;
+    return cuda_layernorm_backward_f64(
+        (const double*)grad_out->device_ptr,
+        (const double*)saved_input->device_ptr,
+        (const double*)saved_mean->device_ptr,
+        (const double*)saved_inv_std->device_ptr,
+        (const double*)saved_gamma->device_ptr,
+        (double*)grad_input->device_ptr,
+        (int)num_samples, (int)feature_size,
+        g_cuda_stream);
 }
 
 } // extern "C"

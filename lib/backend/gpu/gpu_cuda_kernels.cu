@@ -405,4 +405,233 @@ int cuda_launch_normalize_f64(const double* in, double* out,
     return 0;
 }
 
+// ============================================================================
+// Backward Pass Kernels
+// ============================================================================
+
+// Conv2d backward — grad_input: one thread per input element
+__global__ void conv2d_backward_input_f64_kernel(
+    const double* grad_out, const double* kernel_weights, double* grad_input,
+    int in_h, int in_w, int k_h, int k_w,
+    int out_h, int out_w, int stride_h, int stride_w,
+    int channels_in, int channels_out)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int total = blockIdx.z; // batch * channels_in encoded in grid z
+    int ci = total % channels_in;
+    int b = total / channels_in;
+    int ih = (idx / in_w);
+    int iw = idx % in_w;
+    if (ih >= in_h || iw >= in_w) return;
+
+    int in_spatial = in_h * in_w;
+    int out_spatial = out_h * out_w;
+    int kernel_spatial = k_h * k_w;
+
+    double sum = 0.0;
+    for (int co = 0; co < channels_out; co++) {
+        for (int kh = 0; kh < k_h; kh++) {
+            for (int kw = 0; kw < k_w; kw++) {
+                int oh_cand = ih - kh;
+                int ow_cand = iw - kw;
+                if (oh_cand < 0 || ow_cand < 0) continue;
+                if (oh_cand % stride_h != 0 || ow_cand % stride_w != 0) continue;
+                int oh = oh_cand / stride_h;
+                int ow = ow_cand / stride_w;
+                if (oh >= out_h || ow >= out_w) continue;
+
+                double g = grad_out[(b * channels_out + co) * out_spatial + oh * out_w + ow];
+                double k = kernel_weights[(co * channels_in + ci) * kernel_spatial + kh * k_w + kw];
+                sum += g * k;
+            }
+        }
+    }
+    grad_input[(b * channels_in + ci) * in_spatial + ih * in_w + iw] = sum;
+}
+
+// Conv2d backward — grad_kernel: one thread per kernel element
+__global__ void conv2d_backward_kernel_f64_kernel(
+    const double* grad_out, const double* saved_input, double* grad_kernel,
+    int in_h, int in_w, int k_h, int k_w,
+    int out_h, int out_w, int stride_h, int stride_w,
+    int channels_in, int channels_out, int batch_size)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int co_ci = blockIdx.z;
+    int ci = co_ci % channels_in;
+    int co = co_ci / channels_in;
+    if (co >= channels_out) return;
+
+    int kh_idx = idx / k_w;
+    int kw_idx = idx % k_w;
+    if (kh_idx >= k_h || kw_idx >= k_w) return;
+
+    int in_spatial = in_h * in_w;
+    int out_spatial = out_h * out_w;
+    int kernel_spatial = k_h * k_w;
+
+    double sum = 0.0;
+    for (int b = 0; b < batch_size; b++) {
+        for (int oh = 0; oh < out_h; oh++) {
+            for (int ow = 0; ow < out_w; ow++) {
+                int ih = oh * stride_h + kh_idx;
+                int iw = ow * stride_w + kw_idx;
+                double g = grad_out[(b * channels_out + co) * out_spatial + oh * out_w + ow];
+                double inp = saved_input[(b * channels_in + ci) * in_spatial + ih * in_w + iw];
+                sum += g * inp;
+            }
+        }
+    }
+    grad_kernel[(co * channels_in + ci) * kernel_spatial + kh_idx * k_w + kw_idx] = sum;
+}
+
+// BatchNorm backward — one thread per feature
+__global__ void batchnorm_backward_f64_kernel(
+    const double* grad_out, const double* saved_input,
+    const double* saved_mean, const double* saved_inv_std,
+    const double* saved_gamma,
+    double* grad_input, double* grad_gamma, double* grad_beta,
+    int batch_size, int feature_size)
+{
+    int f = blockIdx.x * blockDim.x + threadIdx.x;
+    if (f >= feature_size) return;
+
+    double mean_f = saved_mean[f];
+    double inv_std_f = saved_inv_std[f];
+    double gamma_f = saved_gamma[f];
+    double N = (double)batch_size;
+
+    double sum_g = 0.0, sum_gn = 0.0;
+    for (int b = 0; b < batch_size; b++) {
+        int idx = b * feature_size + f;
+        double g = grad_out[idx];
+        double normalized = (saved_input[idx] - mean_f) * inv_std_f;
+        sum_g += g;
+        sum_gn += g * normalized;
+    }
+    grad_beta[f] = sum_g;
+    grad_gamma[f] = sum_gn;
+
+    double coeff = gamma_f * inv_std_f / N;
+    for (int b = 0; b < batch_size; b++) {
+        int idx = b * feature_size + f;
+        double g = grad_out[idx];
+        double normalized = (saved_input[idx] - mean_f) * inv_std_f;
+        grad_input[idx] = coeff * (N * g - sum_g - normalized * sum_gn);
+    }
+}
+
+// LayerNorm backward — one thread per sample
+__global__ void layernorm_backward_f64_kernel(
+    const double* grad_out, const double* saved_input,
+    const double* saved_mean, const double* saved_inv_std,
+    const double* saved_gamma,
+    double* grad_input,
+    int num_samples, int feature_size)
+{
+    int s = blockIdx.x * blockDim.x + threadIdx.x;
+    if (s >= num_samples) return;
+
+    double mean_s = saved_mean[s];
+    double inv_std_s = saved_inv_std[s];
+    double D = (double)feature_size;
+
+    double sum_grad = 0.0, sum_grad_norm = 0.0;
+    for (int f = 0; f < feature_size; f++) {
+        int idx = s * feature_size + f;
+        double g = grad_out[idx] * saved_gamma[f];
+        double normalized = (saved_input[idx] - mean_s) * inv_std_s;
+        sum_grad += g;
+        sum_grad_norm += g * normalized;
+    }
+
+    double inv_D = inv_std_s / D;
+    for (int f = 0; f < feature_size; f++) {
+        int idx = s * feature_size + f;
+        double g = grad_out[idx] * saved_gamma[f];
+        double normalized = (saved_input[idx] - mean_s) * inv_std_s;
+        grad_input[idx] = inv_D * (D * g - sum_grad - normalized * sum_grad_norm);
+    }
+}
+
+// ============================================================================
+// Backward Pass Launch Wrappers
+// ============================================================================
+
+extern "C" int cuda_conv2d_backward_input_f64(
+    const double* grad_out, const double* kernel_weights, double* grad_input,
+    int in_h, int in_w, int k_h, int k_w,
+    int out_h, int out_w, int stride_h, int stride_w,
+    int channels_in, int channels_out, int batch_size,
+    cudaStream_t s)
+{
+    dim3 block(256);
+    dim3 grid((in_h * in_w + 255) / 256, 1, batch_size * channels_in);
+    conv2d_backward_input_f64_kernel<<<grid, block, 0, s>>>(
+        grad_out, kernel_weights, grad_input,
+        in_h, in_w, k_h, k_w, out_h, out_w,
+        stride_h, stride_w, channels_in, channels_out);
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) return -1;
+    cudaStreamSynchronize(s);
+    return 0;
+}
+
+extern "C" int cuda_conv2d_backward_kernel_f64(
+    const double* grad_out, const double* saved_input, double* grad_kernel,
+    int in_h, int in_w, int k_h, int k_w,
+    int out_h, int out_w, int stride_h, int stride_w,
+    int channels_in, int channels_out, int batch_size,
+    cudaStream_t s)
+{
+    dim3 block(256);
+    dim3 grid((k_h * k_w + 255) / 256, 1, channels_out * channels_in);
+    conv2d_backward_kernel_f64_kernel<<<grid, block, 0, s>>>(
+        grad_out, saved_input, grad_kernel,
+        in_h, in_w, k_h, k_w, out_h, out_w,
+        stride_h, stride_w, channels_in, channels_out, batch_size);
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) return -1;
+    cudaStreamSynchronize(s);
+    return 0;
+}
+
+extern "C" int cuda_batchnorm_backward_f64(
+    const double* grad_out, const double* saved_input,
+    const double* saved_mean, const double* saved_inv_std,
+    const double* saved_gamma,
+    double* grad_input, double* grad_gamma, double* grad_beta,
+    int batch_size, int feature_size,
+    cudaStream_t s)
+{
+    int block_size = 256;
+    int grid_size = (feature_size + block_size - 1) / block_size;
+    batchnorm_backward_f64_kernel<<<grid_size, block_size, 0, s>>>(
+        grad_out, saved_input, saved_mean, saved_inv_std, saved_gamma,
+        grad_input, grad_gamma, grad_beta, batch_size, feature_size);
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) return -1;
+    cudaStreamSynchronize(s);
+    return 0;
+}
+
+extern "C" int cuda_layernorm_backward_f64(
+    const double* grad_out, const double* saved_input,
+    const double* saved_mean, const double* saved_inv_std,
+    const double* saved_gamma,
+    double* grad_input,
+    int num_samples, int feature_size,
+    cudaStream_t s)
+{
+    int block_size = 256;
+    int grid_size = (num_samples + block_size - 1) / block_size;
+    layernorm_backward_f64_kernel<<<grid_size, block_size, 0, s>>>(
+        grad_out, saved_input, saved_mean, saved_inv_std, saved_gamma,
+        grad_input, num_samples, feature_size);
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) return -1;
+    cudaStreamSynchronize(s);
+    return 0;
+}
+
 } // extern "C"
