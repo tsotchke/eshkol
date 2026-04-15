@@ -1074,6 +1074,27 @@ public:
         function_return_types["make-workspace"] = BuiltinTypes::Value;
         function_return_types["ws-register!"] = BuiltinTypes::Boolean;
         function_return_types["ws-step!"] = BuiltinTypes::Value;
+        // Reverse-mode AD tape
+        function_return_types["ad-tape-new"] = BuiltinTypes::Value;
+        function_return_types["ad-const"] = BuiltinTypes::Integer;
+        function_return_types["ad-var"] = BuiltinTypes::Integer;
+        function_return_types["ad-add"] = BuiltinTypes::Integer;
+        function_return_types["ad-sub"] = BuiltinTypes::Integer;
+        function_return_types["ad-mul"] = BuiltinTypes::Integer;
+        function_return_types["ad-div"] = BuiltinTypes::Integer;
+        function_return_types["ad-sin"] = BuiltinTypes::Integer;
+        function_return_types["ad-cos"] = BuiltinTypes::Integer;
+        function_return_types["ad-exp"] = BuiltinTypes::Integer;
+        function_return_types["ad-log"] = BuiltinTypes::Integer;
+        function_return_types["ad-sqrt"] = BuiltinTypes::Integer;
+        function_return_types["ad-neg"] = BuiltinTypes::Integer;
+        function_return_types["ad-abs"] = BuiltinTypes::Integer;
+        function_return_types["ad-relu"] = BuiltinTypes::Integer;
+        function_return_types["ad-sigmoid"] = BuiltinTypes::Integer;
+        function_return_types["ad-tanh"] = BuiltinTypes::Integer;
+        function_return_types["ad-backward"] = BuiltinTypes::Null;
+        function_return_types["ad-gradient"] = BuiltinTypes::Value;
+        function_return_types["ad-node-value"] = BuiltinTypes::Value;
 
         // R7RS Wave 2 functions
         function_return_types["char-foldcase"] = BuiltinTypes::Value;  // char
@@ -10866,6 +10887,27 @@ private:
         if (func_name == "make-workspace") return system_->makeWorkspaceBuiltin(op);
         if (func_name == "ws-register!") return system_->wsRegisterBuiltin(op);
         if (func_name == "ws-step!") return system_->wsStepBuiltin(op);
+        // Reverse-mode AD tape
+        if (func_name == "ad-tape-new") return system_->adTapeNew(op);
+        if (func_name == "ad-const") return system_->adConst(op);
+        if (func_name == "ad-var") return system_->adVar(op);
+        if (func_name == "ad-add") return system_->adBinaryOp(op, "eshkol_ad_add_sret");
+        if (func_name == "ad-sub") return system_->adBinaryOp(op, "eshkol_ad_sub_sret");
+        if (func_name == "ad-mul") return system_->adBinaryOp(op, "eshkol_ad_mul_sret");
+        if (func_name == "ad-div") return system_->adBinaryOp(op, "eshkol_ad_div_sret");
+        if (func_name == "ad-sin") return system_->adUnaryOp(op, "eshkol_ad_sin_sret");
+        if (func_name == "ad-cos") return system_->adUnaryOp(op, "eshkol_ad_cos_sret");
+        if (func_name == "ad-exp") return system_->adUnaryOp(op, "eshkol_ad_exp_sret");
+        if (func_name == "ad-log") return system_->adUnaryOp(op, "eshkol_ad_log_sret");
+        if (func_name == "ad-sqrt") return system_->adUnaryOp(op, "eshkol_ad_sqrt_sret");
+        if (func_name == "ad-neg") return system_->adUnaryOp(op, "eshkol_ad_neg_sret");
+        if (func_name == "ad-abs") return system_->adUnaryOp(op, "eshkol_ad_abs_sret");
+        if (func_name == "ad-relu") return system_->adUnaryOp(op, "eshkol_ad_relu_sret");
+        if (func_name == "ad-sigmoid") return system_->adUnaryOp(op, "eshkol_ad_sigmoid_sret");
+        if (func_name == "ad-tanh") return system_->adUnaryOp(op, "eshkol_ad_tanh_sret");
+        if (func_name == "ad-backward") return system_->adBackward(op);
+        if (func_name == "ad-gradient") return system_->adGradient(op);
+        if (func_name == "ad-node-value") return system_->adNodeValue(op);
 
         // =========================================================================
         // R7RS ENVIRONMENT PRIMITIVES
@@ -17919,6 +17961,11 @@ private:
             "make-factor-graph", "fg-add-factor!", "fg-infer!",
             "free-energy", "expected-free-energy",
             "make-workspace", "ws-register!", "ws-step!",
+            "ad-tape-new", "ad-const", "ad-var",
+            "ad-add", "ad-sub", "ad-mul", "ad-div",
+            "ad-sin", "ad-cos", "ad-exp", "ad-log", "ad-sqrt",
+            "ad-neg", "ad-abs", "ad-relu", "ad-sigmoid", "ad-tanh",
+            "ad-backward", "ad-gradient", "ad-node-value",
             // Eval
             "eval",
         };

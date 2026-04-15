@@ -283,6 +283,16 @@ public:
     llvm::Value* wsRegisterBuiltin(const eshkol_operations_t* op);
     llvm::Value* wsStepBuiltin(const eshkol_operations_t* op);
 
+    /* Reverse-mode AD tape */
+    llvm::Value* adTapeNew(const eshkol_operations_t* op);
+    llvm::Value* adConst(const eshkol_operations_t* op);
+    llvm::Value* adVar(const eshkol_operations_t* op);
+    llvm::Value* adBinaryOp(const eshkol_operations_t* op, const char* func_name);
+    llvm::Value* adUnaryOp(const eshkol_operations_t* op, const char* func_name);
+    llvm::Value* adBackward(const eshkol_operations_t* op);
+    llvm::Value* adGradient(const eshkol_operations_t* op);
+    llvm::Value* adNodeValue(const eshkol_operations_t* op);
+
 private:
     CodegenContext& ctx_;
     TaggedValueCodegen& tagged_;

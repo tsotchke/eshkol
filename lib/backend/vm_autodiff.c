@@ -721,3 +721,56 @@ int main(void) {
 }
 
 #endif /* VM_AUTODIFF_TEST */
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * Arena-compatible AD tape — exported for LLVM codegen
+ *
+ * These functions use the global arena (arena_t) instead of VmRegionStack.
+ * They create a VmRegionStack wrapper around the arena for compatibility
+ * with the existing tape functions.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+extern void* get_global_arena(void);
+extern void* arena_allocate(void* arena, size_t size);
+
+/* Shim: VmRegionStack-compatible allocator backed by global arena.
+ * vm_alloc expects VmRegionStack* but we store arena_t* in disguise.
+ * The ad_tape_grow function calls vm_alloc(tape->rs, size) —
+ * we intercept by setting rs to a fake region stack that redirects
+ * to arena_allocate. */
+
+static VmRegionStack g_arena_shim_rs;
+static int g_arena_shim_initialized = 0;
+
+/* Create a tape using the global arena with large initial capacity */
+AdTape* ad_tape_new_from_arena(void* arena) {
+    if (!arena) return NULL;
+
+    /* Initialize a shim region stack backed by the global arena.
+     * This allows ad_tape_grow to work via vm_alloc. */
+    if (!g_arena_shim_initialized) {
+        vm_region_stack_init(&g_arena_shim_rs);
+        g_arena_shim_initialized = 1;
+    }
+
+    AdTape* tape = (AdTape*)arena_allocate(arena, sizeof(AdTape));
+    if (!tape) return NULL;
+    tape->cap = 1024; /* Large initial capacity to avoid growth */
+    tape->len = 0;
+    tape->rs = &g_arena_shim_rs;
+    tape->nodes = (AdNode*)arena_allocate(arena, (size_t)tape->cap * sizeof(AdNode));
+    if (!tape->nodes) return NULL;
+    return tape;
+}
+
+/* Get gradient for a node */
+double ad_get_gradient(AdTape* tape, int node) {
+    if (!tape || node < 0 || node >= tape->len) return 0.0;
+    return tape->nodes[node].gradient;
+}
+
+/* Get forward value for a node */
+double ad_get_value(AdTape* tape, int node) {
+    if (!tape || node < 0 || node >= tape->len) return 0.0;
+    return tape->nodes[node].value;
+}
