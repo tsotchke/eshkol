@@ -282,3 +282,25 @@ Add the machine integer family to the HoTT builtin type environment, builtin-nam
 - closure metadata and typed tagged-value extraction preserve those builtin type IDs instead of collapsing them immediately to `Value`
 - generic arithmetic still widens machine integer annotations through the existing `Int64` path until dedicated width-aware lowering is introduced
 - the next low-level language slices can build pointers, volatility, and native ABI lowering on top of a stable machine integer vocabulary
+
+---
+
+## D-0012
+
+- Date: 2026-04-15
+- Status: Accepted
+- Title: `runtime_exports.h` wrappers live in dedicated hosted runtime glue
+
+### Context
+
+`lib/core/platform_runtime.cpp` previously mixed host/process/toolchain services from `platform_runtime.h` with generated-code and JIT ABI wrappers exported through `runtime_exports.h`. That hid the boundary between platform runtime services and hosted wrapper glue needed by generated code.
+
+### Decision
+
+Keep `platform_runtime.cpp` focused on `platform_runtime.h`, and move the `runtime_exports.h` implementation into a dedicated hosted runtime unit: `lib/core/runtime_exports_hosted.cpp`.
+
+### Consequences
+
+- the hosted wrapper surface now has an explicit build boundary
+- later `runtime-core` and `runtime-freestanding` work can reason about `platform_runtime` and `runtime_exports` independently
+- generated-code ABI glue is not implicitly bundled into future freestanding runtime layers
