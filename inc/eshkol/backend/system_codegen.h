@@ -261,6 +261,11 @@ public:
     llvm::Value* kbLoad(const eshkol_operations_t* op);
     llvm::Value* tensorTokenEstimate(const eshkol_operations_t* op);
 
+    /* Noesis requirements */
+    llvm::Value* fgMarginal(const eshkol_operations_t* op);
+    llvm::Value* fgEntropy(const eshkol_operations_t* op);
+    llvm::Value* kbRetract(const eshkol_operations_t* op);
+
 private:
     CodegenContext& ctx_;
     TaggedValueCodegen& tagged_;

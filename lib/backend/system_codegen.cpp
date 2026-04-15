@@ -1338,6 +1338,11 @@ TWO_ARG_BUILTIN(processKillTree, "eshkol_builtin_process_kill_tree")
 ONE_ARG_BUILTIN(processSpawnPty, "eshkol_builtin_process_spawn_pty")
 TWO_ARG_BUILTIN(processReadNonblocking, "eshkol_builtin_process_read_nonblocking")
 
+/* Noesis requirements */
+TWO_ARG_BUILTIN(fgMarginal, "eshkol_builtin_fg_marginal")
+TWO_ARG_BUILTIN(fgEntropy, "eshkol_builtin_fg_entropy")
+TWO_ARG_BUILTIN(kbRetract, "eshkol_builtin_kb_retract")
+
 /* v1.2 batch 4 */
 ZERO_ARG_BUILTIN(processPid, "eshkol_builtin_process_pid")
 ONE_ARG_BUILTIN(fileMmap, "eshkol_builtin_file_mmap")
