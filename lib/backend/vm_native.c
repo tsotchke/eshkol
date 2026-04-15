@@ -2043,33 +2043,72 @@ static void vm_dispatch_native(VM* vm, int fid) {
     /* ══════════════════════════════════════════════════════════════════════
      * Parallel (620-628) — sequential fallback (VM is single-threaded)
      * ══════════════════════════════════════════════════════════════════════ */
-    case 620: { /* parallel-map(fn, list) — sequential via closure bridge (VM is single-threaded) */
+    case 620: { /* parallel-map(fn, list) — parallel via thread pool when available */
         Value list = vm_pop(vm), fn = vm_pop(vm);
-        /* Apply fn to each element, build result list in correct order */
-        Value rev_results = NIL_VAL;
+
+        /* Count elements */
+        int n = 0;
         Value cur = list;
-        while (cur.type == VAL_PAIR) {
-            Value elem = vm->heap.objects[cur.as.ptr]->cons.car;
-            Value mapped = vm_call_closure_from_native(vm, fn, &elem, 1);
-            int32_t p = heap_alloc(&vm->heap);
-            if (p < 0) break;
-            vm->heap.objects[p]->type = HEAP_CONS;
-            vm->heap.objects[p]->cons.car = mapped;
-            vm->heap.objects[p]->cons.cdr = rev_results;
-            rev_results = PAIR_VAL(p);
+        while (cur.type == VAL_PAIR && n < 4096) {
+            n++;
             cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
         }
-        /* Reverse to get correct order */
+
+        if (n == 0) { vm_push(vm, NIL_VAL); break; }
+
+        /* Extract elements into array */
+        Value* elems = (Value*)vm_alloc(&vm->heap.regions, (size_t)n * sizeof(Value));
+        if (!elems) { vm_push(vm, NIL_VAL); break; }
+        cur = list;
+        for (int i = 0; i < n; i++) {
+            elems[i] = vm->heap.objects[cur.as.ptr]->cons.car;
+            cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
+        }
+
+        /* Allocate results array */
+        Value* results = (Value*)vm_alloc(&vm->heap.regions, (size_t)n * sizeof(Value));
+        if (!results) { vm_push(vm, NIL_VAL); break; }
+
+        /* Use thread pool if available and list is large enough */
+        if (g_pool && n >= 4) {
+            VmParMapTask* tasks = (VmParMapTask*)vm_alloc(&vm->heap.regions,
+                                      (size_t)n * sizeof(VmParMapTask));
+            if (tasks) {
+                for (int i = 0; i < n; i++) {
+                    tasks[i].main_vm = vm;
+                    tasks[i].closure = fn;
+                    tasks[i].input = elems[i];
+                    tasks[i].output = NIL_VAL;
+                }
+                for (int i = 0; i < n; i++) {
+                    vm_pool_submit(g_pool, vm_parmap_task_fn, &tasks[i], NULL);
+                }
+                vm_pool_wait_all(g_pool);
+                for (int i = 0; i < n; i++) {
+                    results[i] = tasks[i].output;
+                }
+            } else {
+                /* Fallback: sequential */
+                for (int i = 0; i < n; i++) {
+                    results[i] = vm_call_closure_from_native(vm, fn, &elems[i], 1);
+                }
+            }
+        } else {
+            /* Sequential: small list or no pool */
+            for (int i = 0; i < n; i++) {
+                results[i] = vm_call_closure_from_native(vm, fn, &elems[i], 1);
+            }
+        }
+
+        /* Build result list from array (reverse order → cons → correct order) */
         Value result = NIL_VAL;
-        cur = rev_results;
-        while (cur.type == VAL_PAIR) {
+        for (int i = n - 1; i >= 0; i--) {
             int32_t p = heap_alloc(&vm->heap);
             if (p < 0) break;
             vm->heap.objects[p]->type = HEAP_CONS;
-            vm->heap.objects[p]->cons.car = vm->heap.objects[cur.as.ptr]->cons.car;
+            vm->heap.objects[p]->cons.car = results[i];
             vm->heap.objects[p]->cons.cdr = result;
             result = PAIR_VAL(p);
-            cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
         }
         vm_push(vm, result);
         break;
