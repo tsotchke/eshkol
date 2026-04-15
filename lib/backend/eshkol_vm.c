@@ -81,13 +81,13 @@
 /* Geometric manifold operations (Riemannian, geodesic, Lie groups) */
 #include "vm_geometric.c"
 
-/* Native function dispatch (550+ functions) */
-#include "vm_native.c"
-
-/* Thread pool and parallel primitives */
+/* Thread pool and parallel primitives (before vm_native so parallel-map can use g_pool) */
 #ifndef ESHKOL_VM_WASM
 #include "vm_parallel.c"
 #endif
+
+/* Native function dispatch (550+ functions) */
+#include "vm_native.c"
 
 /* VM interpreter: 63-opcode dispatch loop */
 #include "vm_run.c"
