@@ -65,18 +65,20 @@ static py::object ffi_value_to_python(eshkol_ffi_context_t* ctx, eshkol_ffi_valu
                 return result;
             }
 
-            /* Check for tensor */
+            /* Check for tensor — zero-copy via buffer protocol */
             double* tdata = eshkol_ffi_tensor_data(val);
             if (tdata) {
                 int64_t size = eshkol_ffi_tensor_size(val);
-                int ndims = eshkol_ffi_tensor_ndims(val);
-                if (ndims == 1 && size > 0) {
-                    /* 1D tensor → numpy array */
-                    return py::array_t<double>({(py::ssize_t)size}, tdata);
-                }
-                /* For now, flatten multi-dim tensors */
                 if (size > 0) {
-                    return py::array_t<double>({(py::ssize_t)size}, tdata);
+                    /* Zero-copy: create numpy array that views the arena memory.
+                     * The capsule prevents Python from freeing the data (arena owns it). */
+                    auto capsule = py::capsule(tdata, [](void*) { /* arena-managed, no free */ });
+                    return py::array_t<double>(
+                        {(py::ssize_t)size},            /* shape */
+                        {(py::ssize_t)sizeof(double)},  /* strides */
+                        tdata,                           /* data pointer */
+                        capsule                          /* prevent dealloc */
+                    );
                 }
             }
 

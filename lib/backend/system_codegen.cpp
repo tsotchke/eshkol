@@ -1485,6 +1485,7 @@ llvm::Value* SystemCodegen::adUnaryOp(const eshkol_operations_t* op, const char*
 TWO_ARG_BUILTIN(adBackward, "eshkol_ad_backward_sret")
 TWO_ARG_BUILTIN(adGradient, "eshkol_ad_gradient_sret")
 TWO_ARG_BUILTIN(adNodeValue, "eshkol_ad_node_value_sret")
+TWO_ARG_BUILTIN(onnxExportTensor, "eshkol_builtin_onnx_export_tensor")
 
 /* v1.2 batch 4 */
 ZERO_ARG_BUILTIN(processPid, "eshkol_builtin_process_pid")
