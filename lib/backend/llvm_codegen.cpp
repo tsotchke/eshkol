@@ -1107,6 +1107,10 @@ public:
         function_return_types["dual?"] = BuiltinTypes::Boolean;
         function_return_types["fg-update-cpt!"] = BuiltinTypes::Boolean;
         function_return_types["kb-count"] = BuiltinTypes::Integer;
+        // Image I/O
+        function_return_types["image-read"] = BuiltinTypes::Value;
+        function_return_types["image-write"] = BuiltinTypes::Boolean;
+        function_return_types["image-to-grayscale"] = BuiltinTypes::Value;
 
         // R7RS Wave 2 functions
         function_return_types["char-foldcase"] = BuiltinTypes::Value;  // char
@@ -10932,6 +10936,10 @@ private:
         if (func_name == "dual?") return system_->dualPred(op);
         if (func_name == "fg-update-cpt!") return system_->fgUpdateCpt(op);
         if (func_name == "kb-count") return system_->kbCount(op);
+        // Image I/O
+        if (func_name == "image-read") return system_->imageRead(op);
+        if (func_name == "image-write") return system_->imageWrite(op);
+        if (func_name == "image-to-grayscale") return system_->imageGrayscale(op);
 
         // =========================================================================
         // R7RS ENVIRONMENT PRIMITIVES
@@ -17994,6 +18002,7 @@ private:
             "logic-var?", "substitution?", "fact?", "kb?",
             "factor-graph?", "workspace?", "tensor?", "dual?",
             "fg-update-cpt!", "kb-count",
+            "image-read", "image-write", "image-to-grayscale",
             // Eval
             "eval",
         };

@@ -306,6 +306,11 @@ public:
     llvm::Value* fgUpdateCpt(const eshkol_operations_t* op);
     llvm::Value* kbCount(const eshkol_operations_t* op);
 
+    /* Image I/O */
+    llvm::Value* imageRead(const eshkol_operations_t* op);
+    llvm::Value* imageWrite(const eshkol_operations_t* op);
+    llvm::Value* imageGrayscale(const eshkol_operations_t* op);
+
 private:
     CodegenContext& ctx_;
     TaggedValueCodegen& tagged_;

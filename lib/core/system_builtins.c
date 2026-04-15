@@ -1423,6 +1423,86 @@ void eshkol_builtin_fg_update_cpt(sv_t* out, const sv_t* a, const sv_t* b, const
     eshkol_fg_update_cpt_tagged(arena, a, b, c);
     out->type = SYS_TYPE_BOOL; out->flags = 0; out->reserved = 0; out->padding = 0; out->data = 1;
 }
+/* Image I/O — wraps C functions from image_io.c */
+extern double* eshkol_image_read(const char* path, int* w, int* h, int* c);
+extern int eshkol_image_write(const char* path, const double* data, int w, int h, int c, const char* fmt);
+extern double* eshkol_image_to_grayscale(const double* data, int w, int h, int channels);
+extern double* eshkol_image_resize(const double* data, int w, int h, int channels, int new_w, int new_h);
+extern void* arena_allocate_tensor_full(void* arena, uint64_t ndims, uint64_t total);
+
+void eshkol_builtin_image_read_sret(sv_t* out, const sv_t* path_tv) {
+    const char* path = sys_extract_string(*path_tv);
+    if (!path) { *out = sys_make_null(); return; }
+    int w, h, c;
+    double* data = eshkol_image_read(path, &w, &h, &c);
+    if (!data) { *out = sys_make_null(); return; }
+    /* Create tensor (h, w, c) */
+    void* arena = get_global_arena();
+    int64_t total = (int64_t)w * h * c;
+    void* t = arena_allocate_tensor_full(arena, 3, (uint64_t)total);
+    if (!t) { free(data); *out = sys_make_null(); return; }
+    /* Copy pixel data to tensor elements */
+    int64_t* elements = *((int64_t**)((char*)t + 16));
+    for (int64_t i = 0; i < total; i++) {
+        memcpy(&elements[i], &data[i], sizeof(double));
+    }
+    /* Set dimensions */
+    uint64_t* dims = *((uint64_t**)((char*)t + 0));
+    dims[0] = (uint64_t)h; dims[1] = (uint64_t)w; dims[2] = (uint64_t)c;
+    free(data);
+    out->type = SYS_TYPE_HEAP_PTR; out->flags = 0; out->reserved = 0; out->padding = 0;
+    out->data = (uint64_t)t;
+}
+
+void eshkol_builtin_image_write_sret(sv_t* out, const sv_t* path_tv, const sv_t* tensor_tv, const sv_t* fmt_tv) {
+    const char* path = sys_extract_string(*path_tv);
+    const char* fmt = sys_extract_string(*fmt_tv);
+    if (!path || tensor_tv->type != SYS_TYPE_HEAP_PTR) { *out = sys_make_bool(0); return; }
+    void* t = (void*)(uintptr_t)tensor_tv->data;
+    if (!t) { *out = sys_make_bool(0); return; }
+    uint64_t* dims = *((uint64_t**)((char*)t + 0));
+    uint64_t ndims = *((uint64_t*)((char*)t + 8));
+    int64_t* elements = *((int64_t**)((char*)t + 16));
+    uint64_t total = *((uint64_t*)((char*)t + 24));
+    if (ndims < 2 || !elements) { *out = sys_make_bool(0); return; }
+    int h = (int)dims[0], w = (int)dims[1], c = ndims >= 3 ? (int)dims[2] : 1;
+    double* data = (double*)malloc(total * sizeof(double));
+    if (!data) { *out = sys_make_bool(0); return; }
+    for (uint64_t i = 0; i < total; i++) memcpy(&data[i], &elements[i], sizeof(double));
+    int rc = eshkol_image_write(path, data, w, h, c, fmt ? fmt : "png");
+    free(data);
+    *out = sys_make_bool(rc == 0);
+}
+
+void eshkol_builtin_image_grayscale_sret(sv_t* out, const sv_t* tensor_tv) {
+    if (tensor_tv->type != SYS_TYPE_HEAP_PTR) { *out = sys_make_null(); return; }
+    void* t = (void*)(uintptr_t)tensor_tv->data;
+    if (!t) { *out = sys_make_null(); return; }
+    uint64_t* dims = *((uint64_t**)((char*)t + 0));
+    uint64_t ndims = *((uint64_t*)((char*)t + 8));
+    int64_t* elements = *((int64_t**)((char*)t + 16));
+    uint64_t total = *((uint64_t*)((char*)t + 24));
+    if (ndims < 3 || !elements) { *out = sys_make_null(); return; }
+    int h = (int)dims[0], w = (int)dims[1], c = (int)dims[2];
+    double* data = (double*)malloc(total * sizeof(double));
+    if (!data) { *out = sys_make_null(); return; }
+    for (uint64_t i = 0; i < total; i++) memcpy(&data[i], &elements[i], sizeof(double));
+    double* gray = eshkol_image_to_grayscale(data, w, h, c);
+    free(data);
+    if (!gray) { *out = sys_make_null(); return; }
+    /* Create HxW tensor */
+    void* arena = get_global_arena();
+    int64_t gray_total = (int64_t)w * h;
+    void* gt = arena_allocate_tensor_full(arena, 2, (uint64_t)gray_total);
+    if (!gt) { free(gray); *out = sys_make_null(); return; }
+    int64_t* gel = *((int64_t**)((char*)gt + 16));
+    uint64_t* gdims = *((uint64_t**)((char*)gt + 0));
+    gdims[0] = (uint64_t)h; gdims[1] = (uint64_t)w;
+    for (int64_t i = 0; i < gray_total; i++) memcpy(&gel[i], &gray[i], sizeof(double));
+    free(gray);
+    out->type = SYS_TYPE_HEAP_PTR; out->data = (uint64_t)gt;
+}
+
 void eshkol_builtin_kb_count(sv_t* out, const sv_t* a) {
     /* KB count: read num_facts from the KB struct */
     if (a->type != SYS_TYPE_HEAP_PTR || a->data == 0) {

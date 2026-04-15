@@ -1499,6 +1499,11 @@ ONE_ARG_BUILTIN(dualPred, "eshkol_builtin_dual_p")
 THREE_ARG_BUILTIN(fgUpdateCpt, "eshkol_builtin_fg_update_cpt")
 ONE_ARG_BUILTIN(kbCount, "eshkol_builtin_kb_count")
 
+/* Image I/O */
+ONE_ARG_BUILTIN(imageRead, "eshkol_builtin_image_read_sret")
+THREE_ARG_BUILTIN(imageWrite, "eshkol_builtin_image_write_sret")
+ONE_ARG_BUILTIN(imageGrayscale, "eshkol_builtin_image_grayscale_sret")
+
 /* v1.2 batch 4 */
 ZERO_ARG_BUILTIN(processPid, "eshkol_builtin_process_pid")
 ONE_ARG_BUILTIN(fileMmap, "eshkol_builtin_file_mmap")
