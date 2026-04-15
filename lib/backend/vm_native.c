@@ -2113,34 +2113,57 @@ static void vm_dispatch_native(VM* vm, int fid) {
         vm_push(vm, result);
         break;
     }
-    case 621: { /* parallel-filter(pred, list) — sequential via closure bridge */
+    case 621: { /* parallel-filter(pred, list) — parallel predicate evaluation */
         Value list = vm_pop(vm), pred = vm_pop(vm);
-        Value rev_results = NIL_VAL;
+
+        /* Count and extract elements */
+        int n = 0;
         Value cur = list;
-        while (cur.type == VAL_PAIR) {
-            Value elem = vm->heap.objects[cur.as.ptr]->cons.car;
-            Value keep = vm_call_closure_from_native(vm, pred, &elem, 1);
-            if (is_truthy(keep)) {
+        while (cur.type == VAL_PAIR && n < 4096) { n++; cur = vm->heap.objects[cur.as.ptr]->cons.cdr; }
+        if (n == 0) { vm_push(vm, NIL_VAL); break; }
+
+        Value* elems = (Value*)vm_alloc(&vm->heap.regions, (size_t)n * sizeof(Value));
+        Value* preds = (Value*)vm_alloc(&vm->heap.regions, (size_t)n * sizeof(Value));
+        if (!elems || !preds) { vm_push(vm, NIL_VAL); break; }
+        cur = list;
+        for (int i = 0; i < n; i++) {
+            elems[i] = vm->heap.objects[cur.as.ptr]->cons.car;
+            cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
+        }
+
+        /* Evaluate predicates (parallel via pool if available) */
+        if (g_pool && n >= 4) {
+            VmParMapTask* tasks = (VmParMapTask*)vm_alloc(&vm->heap.regions,
+                                      (size_t)n * sizeof(VmParMapTask));
+            if (tasks) {
+                for (int i = 0; i < n; i++) {
+                    tasks[i].main_vm = vm; tasks[i].closure = pred;
+                    tasks[i].input = elems[i]; tasks[i].output = NIL_VAL;
+                }
+                for (int i = 0; i < n; i++)
+                    vm_pool_submit(g_pool, vm_parmap_task_fn, &tasks[i], NULL);
+                vm_pool_wait_all(g_pool);
+                for (int i = 0; i < n; i++) preds[i] = tasks[i].output;
+            } else {
+                for (int i = 0; i < n; i++)
+                    preds[i] = vm_call_closure_from_native(vm, pred, &elems[i], 1);
+            }
+        } else {
+            for (int i = 0; i < n; i++)
+                preds[i] = vm_call_closure_from_native(vm, pred, &elems[i], 1);
+        }
+
+        /* Build filtered list (correct order) */
+        Value result = NIL_VAL;
+        for (int i = n - 1; i >= 0; i--) {
+            if (is_truthy(preds[i])) {
                 int32_t p = heap_alloc(&vm->heap);
                 if (p < 0) break;
                 vm->heap.objects[p]->type = HEAP_CONS;
-                vm->heap.objects[p]->cons.car = elem;
-                vm->heap.objects[p]->cons.cdr = rev_results;
-                rev_results = PAIR_VAL(p);
+                vm->heap.objects[p]->cons.car = elems[i];
+                vm->heap.objects[p]->cons.cdr = result;
+                result = PAIR_VAL(p);
             }
-            cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
-        }
-        /* Reverse */
-        Value result = NIL_VAL;
-        cur = rev_results;
-        while (cur.type == VAL_PAIR) {
-            int32_t p = heap_alloc(&vm->heap);
-            if (p < 0) break;
-            vm->heap.objects[p]->type = HEAP_CONS;
-            vm->heap.objects[p]->cons.car = vm->heap.objects[cur.as.ptr]->cons.car;
-            vm->heap.objects[p]->cons.cdr = result;
-            result = PAIR_VAL(p);
-            cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
         }
         vm_push(vm, result);
         break;
@@ -2158,13 +2181,40 @@ static void vm_dispatch_native(VM* vm, int fid) {
         vm_push(vm, acc);
         break;
     }
-    case 623: { /* parallel-for-each(fn, list) — sequential via closure bridge */
+    case 623: { /* parallel-for-each(fn, list) — parallel side-effect execution */
         Value list = vm_pop(vm), fn = vm_pop(vm);
+
+        int n = 0;
         Value cur = list;
-        while (cur.type == VAL_PAIR) {
-            Value elem = vm->heap.objects[cur.as.ptr]->cons.car;
-            vm_call_closure_from_native(vm, fn, &elem, 1);
+        while (cur.type == VAL_PAIR && n < 4096) { n++; cur = vm->heap.objects[cur.as.ptr]->cons.cdr; }
+        if (n == 0) { vm_push(vm, NIL_VAL); break; }
+
+        Value* elems = (Value*)vm_alloc(&vm->heap.regions, (size_t)n * sizeof(Value));
+        if (!elems) { vm_push(vm, NIL_VAL); break; }
+        cur = list;
+        for (int i = 0; i < n; i++) {
+            elems[i] = vm->heap.objects[cur.as.ptr]->cons.car;
             cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
+        }
+
+        if (g_pool && n >= 4) {
+            VmParMapTask* tasks = (VmParMapTask*)vm_alloc(&vm->heap.regions,
+                                      (size_t)n * sizeof(VmParMapTask));
+            if (tasks) {
+                for (int i = 0; i < n; i++) {
+                    tasks[i].main_vm = vm; tasks[i].closure = fn;
+                    tasks[i].input = elems[i]; tasks[i].output = NIL_VAL;
+                }
+                for (int i = 0; i < n; i++)
+                    vm_pool_submit(g_pool, vm_parmap_task_fn, &tasks[i], NULL);
+                vm_pool_wait_all(g_pool);
+            } else {
+                for (int i = 0; i < n; i++)
+                    vm_call_closure_from_native(vm, fn, &elems[i], 1);
+            }
+        } else {
+            for (int i = 0; i < n; i++)
+                vm_call_closure_from_native(vm, fn, &elems[i], 1);
         }
         vm_push(vm, NIL_VAL);
         break;
