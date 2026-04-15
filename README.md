@@ -695,6 +695,7 @@ Eshkol occupies a unique position combining the **mathematical rigor of Julia**,
 - **[Contributing Guide](CONTRIBUTING.md)**: Architecture overview and development workflow
 - **[Test Coverage](docs/TEST_COVERAGE.md)**: Comprehensive test documentation
 - **[Overview](docs/breakdown/OVERVIEW.md)**: Start Here
+- **[Platform Program](docs/platform/README.md)**: Freestanding / kernel / embedded architecture plan aligned to the roadmap
 ---
 
 ## Future Directions
