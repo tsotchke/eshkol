@@ -294,6 +294,18 @@ public:
     llvm::Value* adNodeValue(const eshkol_operations_t* op);
     llvm::Value* onnxExportTensor(const eshkol_operations_t* op);
 
+    /* Type predicates */
+    llvm::Value* logicVarPred(const eshkol_operations_t* op);
+    llvm::Value* substitutionPred(const eshkol_operations_t* op);
+    llvm::Value* factPred(const eshkol_operations_t* op);
+    llvm::Value* kbPred(const eshkol_operations_t* op);
+    llvm::Value* factorGraphPred(const eshkol_operations_t* op);
+    llvm::Value* workspacePred(const eshkol_operations_t* op);
+    llvm::Value* tensorPred(const eshkol_operations_t* op);
+    llvm::Value* dualPred(const eshkol_operations_t* op);
+    llvm::Value* fgUpdateCpt(const eshkol_operations_t* op);
+    llvm::Value* kbCount(const eshkol_operations_t* op);
+
 private:
     CodegenContext& ctx_;
     TaggedValueCodegen& tagged_;

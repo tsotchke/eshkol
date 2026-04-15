@@ -1365,6 +1365,74 @@ void eshkol_builtin_kb_save(sv_t* out, const sv_t* a, const sv_t* b) { *out = es
 void eshkol_builtin_kb_load(sv_t* out, const sv_t* a) { *out = eshkol_builtin_kb_load_v(*a); }
 void eshkol_builtin_tensor_token_estimate(sv_t* out, const sv_t* a) { *out = eshkol_builtin_tensor_token_estimate_v(*a); }
 void eshkol_builtin_onnx_export_tensor(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_onnx_export_tensor_v(*a, *b); }
+
+/* Type predicates — check type tag of tagged value */
+static eshkol_sysbuiltin_value_t check_type(eshkol_sysbuiltin_value_t v, uint8_t type) {
+    eshkol_sysbuiltin_value_t r = {SYS_TYPE_BOOL, 0, 0, 0, 0};
+    r.data = (v.type == type) ? 1 : 0;
+    return r;
+}
+static eshkol_sysbuiltin_value_t check_heap_subtype(eshkol_sysbuiltin_value_t v, uint8_t expected) {
+    eshkol_sysbuiltin_value_t r = {SYS_TYPE_BOOL, 0, 0, 0, 0};
+    if (v.type != SYS_TYPE_HEAP_PTR || v.data == 0) { r.data = 0; return r; }
+    /* Check object header subtype at ptr - 8 */
+    uint8_t* ptr = (uint8_t*)(uintptr_t)v.data;
+    uint8_t subtype = *(ptr - 8); /* header byte 0 = subtype */
+    r.data = (subtype == expected) ? 1 : 0;
+    return r;
+}
+
+/* Heap subtypes from arena_memory.h / vm_numeric.h */
+#define HST_SUBSTITUTION 11
+#define HST_FACT         12
+#define HST_KB           15  /* HEAP_SUBTYPE_KNOWLEDGE_BASE */
+#define HST_FG           16  /* HEAP_SUBTYPE_FACTOR_GRAPH */
+#define HST_WORKSPACE    17
+#define HST_TENSOR        9
+#define HST_DUAL          8
+
+void eshkol_builtin_logic_var_p(sv_t* out, const sv_t* a) {
+    /* Logic vars have type 10 (ESHKOL_VALUE_LOGIC_VAR) */
+    *out = check_type(*a, 10);
+}
+void eshkol_builtin_substitution_p(sv_t* out, const sv_t* a) {
+    *out = check_heap_subtype(*a, HST_SUBSTITUTION);
+}
+void eshkol_builtin_fact_p(sv_t* out, const sv_t* a) {
+    *out = check_heap_subtype(*a, HST_FACT);
+}
+void eshkol_builtin_kb_p(sv_t* out, const sv_t* a) {
+    *out = check_heap_subtype(*a, HST_KB);
+}
+void eshkol_builtin_factor_graph_p(sv_t* out, const sv_t* a) {
+    *out = check_heap_subtype(*a, HST_FG);
+}
+void eshkol_builtin_workspace_p(sv_t* out, const sv_t* a) {
+    *out = check_heap_subtype(*a, HST_WORKSPACE);
+}
+void eshkol_builtin_tensor_p(sv_t* out, const sv_t* a) {
+    *out = check_heap_subtype(*a, HST_TENSOR);
+}
+void eshkol_builtin_dual_p(sv_t* out, const sv_t* a) {
+    *out = check_heap_subtype(*a, HST_DUAL);
+}
+void eshkol_builtin_fg_update_cpt(sv_t* out, const sv_t* a, const sv_t* b, const sv_t* c) {
+    /* Delegate to the existing tagged function */
+    extern void eshkol_fg_update_cpt_tagged(void*, const void*, const void*, const void*);
+    void* arena = get_global_arena();
+    eshkol_fg_update_cpt_tagged(arena, a, b, c);
+    out->type = SYS_TYPE_BOOL; out->flags = 0; out->reserved = 0; out->padding = 0; out->data = 1;
+}
+void eshkol_builtin_kb_count(sv_t* out, const sv_t* a) {
+    /* KB count: read num_facts from the KB struct */
+    if (a->type != SYS_TYPE_HEAP_PTR || a->data == 0) {
+        out->type = SYS_TYPE_INT64; out->data = 0; return;
+    }
+    /* num_facts is at offset 0 of eshkol_knowledge_base_t (uint32_t) */
+    uint32_t count = *((uint32_t*)(uintptr_t)a->data);
+    out->type = SYS_TYPE_INT64; out->flags = 0; out->reserved = 0; out->padding = 0;
+    out->data = (uint64_t)count;
+}
 /* v1.2 Noesis requirements: fg-marginal, fg-entropy, kb-retract! as LLVM builtins */
 /* These delegate to C++ implementations via tagged value pointers */
 extern void eshkol_fg_marginal_tagged(void* arena, const void* fg_tv, const void* idx_tv, void* result);

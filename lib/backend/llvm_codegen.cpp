@@ -1096,6 +1096,17 @@ public:
         function_return_types["ad-gradient"] = BuiltinTypes::Value;
         function_return_types["ad-node-value"] = BuiltinTypes::Value;
         function_return_types["onnx-export-tensor"] = BuiltinTypes::Boolean;
+        // Type predicates
+        function_return_types["logic-var?"] = BuiltinTypes::Boolean;
+        function_return_types["substitution?"] = BuiltinTypes::Boolean;
+        function_return_types["fact?"] = BuiltinTypes::Boolean;
+        function_return_types["kb?"] = BuiltinTypes::Boolean;
+        function_return_types["factor-graph?"] = BuiltinTypes::Boolean;
+        function_return_types["workspace?"] = BuiltinTypes::Boolean;
+        function_return_types["tensor?"] = BuiltinTypes::Boolean;
+        function_return_types["dual?"] = BuiltinTypes::Boolean;
+        function_return_types["fg-update-cpt!"] = BuiltinTypes::Boolean;
+        function_return_types["kb-count"] = BuiltinTypes::Integer;
 
         // R7RS Wave 2 functions
         function_return_types["char-foldcase"] = BuiltinTypes::Value;  // char
@@ -10910,6 +10921,17 @@ private:
         if (func_name == "ad-gradient") return system_->adGradient(op);
         if (func_name == "ad-node-value") return system_->adNodeValue(op);
         if (func_name == "onnx-export-tensor") return system_->onnxExportTensor(op);
+        // Type predicates
+        if (func_name == "logic-var?") return system_->logicVarPred(op);
+        if (func_name == "substitution?") return system_->substitutionPred(op);
+        if (func_name == "fact?") return system_->factPred(op);
+        if (func_name == "kb?") return system_->kbPred(op);
+        if (func_name == "factor-graph?") return system_->factorGraphPred(op);
+        if (func_name == "workspace?") return system_->workspacePred(op);
+        if (func_name == "tensor?") return system_->tensorPred(op);
+        if (func_name == "dual?") return system_->dualPred(op);
+        if (func_name == "fg-update-cpt!") return system_->fgUpdateCpt(op);
+        if (func_name == "kb-count") return system_->kbCount(op);
 
         // =========================================================================
         // R7RS ENVIRONMENT PRIMITIVES
@@ -17969,6 +17991,9 @@ private:
             "ad-neg", "ad-abs", "ad-relu", "ad-sigmoid", "ad-tanh",
             "ad-backward", "ad-gradient", "ad-node-value",
             "onnx-export-tensor",
+            "logic-var?", "substitution?", "fact?", "kb?",
+            "factor-graph?", "workspace?", "tensor?", "dual?",
+            "fg-update-cpt!", "kb-count",
             // Eval
             "eval",
         };
