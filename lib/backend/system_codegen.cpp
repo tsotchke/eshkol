@@ -1338,10 +1338,121 @@ TWO_ARG_BUILTIN(processKillTree, "eshkol_builtin_process_kill_tree")
 ONE_ARG_BUILTIN(processSpawnPty, "eshkol_builtin_process_spawn_pty")
 TWO_ARG_BUILTIN(processReadNonblocking, "eshkol_builtin_process_read_nonblocking")
 
+/* Three-arg builtin */
+#define THREE_ARG_BUILTIN(method_name, c_func_name) \
+llvm::Value* SystemCodegen::method_name(const eshkol_operations_t* op) { \
+    if (op->call_op.num_vars != 3) return tagged_.packNull(); \
+    if (!codegen_ast_callback_) return tagged_.packNull(); \
+    llvm::Value* a = codegen_ast_callback_(&op->call_op.variables[0], callback_context_); \
+    llvm::Value* b = codegen_ast_callback_(&op->call_op.variables[1], callback_context_); \
+    llvm::Value* c = codegen_ast_callback_(&op->call_op.variables[2], callback_context_); \
+    if (!a || !b || !c) return tagged_.packNull(); \
+    llvm::Module* mod = ctx_.builder().GetInsertBlock()->getParent()->getParent(); \
+    llvm::Function* f = getOrDeclareRuntimeFuncAllPtr(ctx_, mod, c_func_name, 3); \
+    return callPtrRuntime(ctx_, f, {a, b, c}); \
+}
+
 /* Noesis requirements */
 TWO_ARG_BUILTIN(fgMarginal, "eshkol_builtin_fg_marginal")
 TWO_ARG_BUILTIN(fgEntropy, "eshkol_builtin_fg_entropy")
 TWO_ARG_BUILTIN(kbRetract, "eshkol_builtin_kb_retract")
+
+/* Consciousness engine — uses existing tagged functions from logic.cpp/inference.cpp/workspace.cpp.
+ * These have signature: void func(arena_t* arena, const tv* arg1, ..., tv* result)
+ * Arena comes first, result comes last. Custom dispatch needed. */
+
+/* Helper: call arena-first tagged function with N args */
+static llvm::Value* callArenaTaggedFunc(CodegenContext& ctx, TaggedValueCodegen& tagged,
+                                         const std::string& name, int nargs,
+                                         llvm::ArrayRef<llvm::Value*> args) {
+    llvm::Module* mod = ctx.builder().GetInsertBlock()->getParent()->getParent();
+    llvm::Function* f = mod->getFunction(name);
+    if (!f) {
+        /* Signature: void func(ptr arena, [ptr arg1, ..., ptr argN,] ptr result) */
+        std::vector<llvm::Type*> param_types(2 + nargs, ctx.ptrType());
+        llvm::FunctionType* ft = llvm::FunctionType::get(
+            llvm::Type::getVoidTy(ctx.context()), param_types, false);
+        f = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, name, mod);
+    }
+
+    llvm::IRBuilder<>& builder = ctx.builder();
+    llvm::Value* result_ptr = builder.CreateAlloca(ctx.taggedValueType(), nullptr, "ce_result");
+    llvm::Value* arena = builder.CreateLoad(ctx.ptrType(), ctx.globalArena());
+
+    std::vector<llvm::Value*> call_args;
+    call_args.push_back(arena);
+    for (auto* a : args) {
+        llvm::Value* slot = builder.CreateAlloca(ctx.taggedValueType());
+        builder.CreateStore(a, slot);
+        call_args.push_back(slot);
+    }
+    call_args.push_back(result_ptr);
+
+    builder.CreateCall(f, call_args);
+    return builder.CreateLoad(ctx.taggedValueType(), result_ptr);
+}
+
+#define CE_ZERO_ARG(method_name, c_func_name) \
+llvm::Value* SystemCodegen::method_name(const eshkol_operations_t* op) { \
+    (void)op; \
+    return callArenaTaggedFunc(ctx_, tagged_, c_func_name, 0, {}); \
+}
+
+#define CE_TWO_ARG(method_name, c_func_name) \
+llvm::Value* SystemCodegen::method_name(const eshkol_operations_t* op) { \
+    if (op->call_op.num_vars != 2) return tagged_.packNull(); \
+    if (!codegen_ast_callback_) return tagged_.packNull(); \
+    llvm::Value* a = codegen_ast_callback_(&op->call_op.variables[0], callback_context_); \
+    llvm::Value* b = codegen_ast_callback_(&op->call_op.variables[1], callback_context_); \
+    if (!a || !b) return tagged_.packNull(); \
+    return callArenaTaggedFunc(ctx_, tagged_, c_func_name, 2, {a, b}); \
+}
+
+#define CE_THREE_ARG(method_name, c_func_name) \
+llvm::Value* SystemCodegen::method_name(const eshkol_operations_t* op) { \
+    if (op->call_op.num_vars != 3) return tagged_.packNull(); \
+    if (!codegen_ast_callback_) return tagged_.packNull(); \
+    llvm::Value* a = codegen_ast_callback_(&op->call_op.variables[0], callback_context_); \
+    llvm::Value* b = codegen_ast_callback_(&op->call_op.variables[1], callback_context_); \
+    llvm::Value* c = codegen_ast_callback_(&op->call_op.variables[2], callback_context_); \
+    if (!a || !b || !c) return tagged_.packNull(); \
+    return callArenaTaggedFunc(ctx_, tagged_, c_func_name, 3, {a, b, c}); \
+}
+
+#define CE_ONE_ARG(method_name, c_func_name) \
+llvm::Value* SystemCodegen::method_name(const eshkol_operations_t* op) { \
+    if (op->call_op.num_vars != 1) return tagged_.packNull(); \
+    if (!codegen_ast_callback_) return tagged_.packNull(); \
+    llvm::Value* a = codegen_ast_callback_(&op->call_op.variables[0], callback_context_); \
+    if (!a) return tagged_.packNull(); \
+    return callArenaTaggedFunc(ctx_, tagged_, c_func_name, 1, {a}); \
+}
+
+/* Logic engine */
+CE_ZERO_ARG(makeSubstitution, "eshkol_make_substitution_tagged")
+CE_ZERO_ARG(makeKbBuiltin, "eshkol_make_kb_tagged")
+CE_THREE_ARG(unifyBuiltin, "eshkol_unify_tagged")
+CE_TWO_ARG(walkBuiltin, "eshkol_walk_tagged")
+CE_TWO_ARG(makeFactBuiltin, "eshkol_make_fact_tagged")
+CE_TWO_ARG(kbAssertBuiltin, "eshkol_kb_assert_tagged")
+CE_TWO_ARG(kbQueryBuiltin, "eshkol_kb_query_tagged")
+
+/* Inference engine */
+CE_TWO_ARG(makeFactorGraphBuiltin, "eshkol_make_factor_graph_tagged")
+CE_THREE_ARG(fgAddFactorBuiltin, "eshkol_fg_add_factor_tagged")
+CE_THREE_ARG(fgInferBuiltin, "eshkol_fg_infer_tagged")
+CE_TWO_ARG(freeEnergyBuiltin, "eshkol_free_energy_tagged")
+CE_THREE_ARG(expectedFreeEnergyBuiltin, "eshkol_efe_tagged")
+
+/* Workspace */
+CE_TWO_ARG(makeWorkspaceBuiltin, "eshkol_make_workspace_tagged")
+CE_THREE_ARG(wsRegisterBuiltin, "eshkol_ws_register_tagged")
+CE_ONE_ARG(wsStepBuiltin, "eshkol_ws_step_tagged")
+
+#undef CE_ZERO_ARG
+#undef CE_ONE_ARG
+#undef CE_TWO_ARG
+#undef CE_THREE_ARG
 
 /* v1.2 batch 4 */
 ZERO_ARG_BUILTIN(processPid, "eshkol_builtin_process_pid")

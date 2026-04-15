@@ -266,6 +266,23 @@ public:
     llvm::Value* fgEntropy(const eshkol_operations_t* op);
     llvm::Value* kbRetract(const eshkol_operations_t* op);
 
+    /* Consciousness engine */
+    llvm::Value* makeSubstitution(const eshkol_operations_t* op);
+    llvm::Value* unifyBuiltin(const eshkol_operations_t* op);
+    llvm::Value* walkBuiltin(const eshkol_operations_t* op);
+    llvm::Value* makeFactBuiltin(const eshkol_operations_t* op);
+    llvm::Value* makeKbBuiltin(const eshkol_operations_t* op);
+    llvm::Value* kbAssertBuiltin(const eshkol_operations_t* op);
+    llvm::Value* kbQueryBuiltin(const eshkol_operations_t* op);
+    llvm::Value* makeFactorGraphBuiltin(const eshkol_operations_t* op);
+    llvm::Value* fgAddFactorBuiltin(const eshkol_operations_t* op);
+    llvm::Value* fgInferBuiltin(const eshkol_operations_t* op);
+    llvm::Value* freeEnergyBuiltin(const eshkol_operations_t* op);
+    llvm::Value* expectedFreeEnergyBuiltin(const eshkol_operations_t* op);
+    llvm::Value* makeWorkspaceBuiltin(const eshkol_operations_t* op);
+    llvm::Value* wsRegisterBuiltin(const eshkol_operations_t* op);
+    llvm::Value* wsStepBuiltin(const eshkol_operations_t* op);
+
 private:
     CodegenContext& ctx_;
     TaggedValueCodegen& tagged_;
