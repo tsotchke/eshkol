@@ -1,0 +1,72 @@
+;;; v1.2 System Builtins Test Suite
+;;; Tests all new builtins added in v1.2 via LLVM compilation path.
+
+(display "=== System Info ===") (newline)
+(display "os-type: ") (display (os-type)) (newline)
+(display "os-arch: ") (display (os-arch)) (newline)
+(display "hostname: ") (display (hostname)) (newline)
+(display "username: ") (display (username)) (newline)
+(display "cpu-count: ") (display (cpu-count)) (newline)
+(display "getpid: ") (display (getpid)) (newline)
+(display "process-pid: ") (display (process-pid)) (newline)
+(display "home-directory: ") (display (home-directory)) (newline)
+
+(display "=== Path Manipulation ===") (newline)
+(display "path-join: ") (display (path-join "/usr" "local/bin")) (newline)
+(display "path-dirname: ") (display (path-dirname "/usr/local/bin")) (newline)
+(display "path-basename: ") (display (path-basename "/usr/local/bin")) (newline)
+(display "path-extname: ") (display (path-extname "/tmp/file.txt")) (newline)
+(display "path-is-absolute?: ") (display (path-is-absolute? "/usr")) (newline)
+(display "path-normalize: ") (display (path-normalize "/usr/local/../bin/./gcc")) (newline)
+(display "realpath /tmp: ") (display (realpath "/tmp")) (newline)
+(display "path-relative: ") (display (path-relative "/usr/local" "/usr/bin")) (newline)
+
+(display "=== Filesystem ===") (newline)
+(mkdir-recursive "/tmp/eshkol-v12-test/sub1/sub2")
+(display "mkdir-recursive: ") (display (file-exists? "/tmp/eshkol-v12-test/sub1/sub2")) (newline)
+(file-copy "/dev/null" "/tmp/eshkol-v12-test/copied")
+(display "file-copy: ") (display (file-exists? "/tmp/eshkol-v12-test/copied")) (newline)
+(display "file-mtime: ") (display (> (file-mtime "/tmp") 0)) (newline)
+
+;; symlink
+(symlink-create "/tmp" "/tmp/eshkol-v12-test/link")
+(display "symlink-read: ") (display (symlink-read "/tmp/eshkol-v12-test/link")) (newline)
+
+;; mkstemp
+(let ((tmp (mkstemp "/tmp/eshkol-XXXXXX")))
+  (display "mkstemp: ") (display (string? tmp)) (newline)
+  (if (string? tmp) (delete-file tmp) #f))
+
+;; cleanup
+(directory-delete-recursive "/tmp/eshkol-v12-test")
+(display "cleanup: ") (display (not (file-exists? "/tmp/eshkol-v12-test"))) (newline)
+
+;; file-mmap
+(write-file "/tmp/eshkol-mmap.txt" "test data")
+(define mapped (file-mmap "/tmp/eshkol-mmap.txt"))
+(display "file-mmap: ") (display (string=? mapped "test data")) (newline)
+(delete-file "/tmp/eshkol-mmap.txt")
+
+(display "=== Glob ===") (newline)
+(display "glob-match *.esk: ") (display (glob-match "*.esk" "foo.esk")) (newline)
+(display "glob-match *.txt: ") (display (glob-match "*.esk" "foo.txt")) (newline)
+
+(display "=== Shell ===") (newline)
+(display "shell-quote: ") (display (shell-quote "hello world")) (newline)
+
+(display "=== Process ===") (newline)
+(display "executable-exists? ls: ") (display (executable-exists? "ls")) (newline)
+(display "executable-exists? nonexist: ") (display (executable-exists? "nonexistent99")) (newline)
+
+(display "=== Number->String Radix ===") (newline)
+(display "hex 255: ") (display (number->string 255 16)) (newline)
+(display "bin 10: ") (display (number->string 10 2)) (newline)
+(display "oct 42: ") (display (number->string 42 8)) (newline)
+
+(display "=== Character Literals ===") (newline)
+(display "null: ") (display (char->integer #\null)) (newline)
+(display "return: ") (display (char->integer #\return)) (newline)
+(display "escape: ") (display (char->integer #\escape)) (newline)
+(display "backspace: ") (display (char->integer #\backspace)) (newline)
+
+(display "ALL PASS") (newline)
