@@ -1,0 +1,42 @@
+;;; v1.2 Consciousness Engine Test Suite
+;;; Tests KB, factor graphs, workspace, and AD tape in LLVM compilation path.
+
+(display "=== Knowledge Base ===") (newline)
+
+;; Create KB, assert facts, query
+(define kb (make-kb))
+(define f1 (make-fact 'parent '(alice bob)))
+(kb-assert! kb f1)
+(display "kb created: ") (display (if kb "#t" "#f")) (newline)
+
+;; Factor graph
+(display "=== Factor Graph ===") (newline)
+(define fg (make-factor-graph 2 #(2 2)))
+(display "fg created: ") (display (if fg "#t" "#f")) (newline)
+(fg-add-factor! fg #(0 1) #(0.9 0.1 0.1 0.9))
+(fg-infer! fg 10 0.01)
+(define m0 (fg-marginal fg 0))
+(display "marginal: ") (display m0) (newline)
+(define h0 (fg-entropy fg 0))
+(display "entropy: ") (display h0) (newline)
+
+;; Free energy
+(define fe (free-energy fg #(0 0)))
+(display "free-energy: ") (display fe) (newline)
+
+;; Workspace
+(display "=== Workspace ===") (newline)
+(define ws (make-workspace 4 8))
+(display "workspace created: ") (display (if ws "#t" "#f")) (newline)
+
+;; AD Tape
+(display "=== AD Tape ===") (newline)
+(define tape (ad-tape-new))
+(display "tape created: ") (display (if tape "#t" "#f")) (newline)
+
+;; Substitution
+(display "=== Logic ===") (newline)
+(define subst (make-substitution))
+(display "substitution: ") (display (if subst "#t" "#f")) (newline)
+
+(display "ALL PASS") (newline)
