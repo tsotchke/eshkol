@@ -353,6 +353,51 @@ int eshkol_gpu_normalize_f64(EshkolGPUBuffer* in, EshkolGPUBuffer* out,
                               uint64_t num_slices, uint64_t slice_len,
                               double gamma, double beta, double epsilon);
 
+// ===== Backward Pass GPU Operations =====
+
+/**
+ * GPU conv2d backward — compute grad_input.
+ */
+int eshkol_gpu_conv2d_backward_input_f64(
+    EshkolGPUBuffer* grad_out, EshkolGPUBuffer* kernel_weights,
+    EshkolGPUBuffer* grad_input,
+    uint64_t in_h, uint64_t in_w, uint64_t k_h, uint64_t k_w,
+    uint64_t out_h, uint64_t out_w,
+    uint64_t stride_h, uint64_t stride_w,
+    uint64_t channels_in, uint64_t channels_out, uint64_t batch_size);
+
+/**
+ * GPU conv2d backward — compute grad_kernel.
+ */
+int eshkol_gpu_conv2d_backward_kernel_f64(
+    EshkolGPUBuffer* grad_out, EshkolGPUBuffer* saved_input,
+    EshkolGPUBuffer* grad_kernel,
+    uint64_t in_h, uint64_t in_w, uint64_t k_h, uint64_t k_w,
+    uint64_t out_h, uint64_t out_w,
+    uint64_t stride_h, uint64_t stride_w,
+    uint64_t channels_in, uint64_t channels_out, uint64_t batch_size);
+
+/**
+ * GPU batchnorm backward — compute grad_input, grad_gamma, grad_beta.
+ */
+int eshkol_gpu_batchnorm_backward_f64(
+    EshkolGPUBuffer* grad_out,
+    EshkolGPUBuffer* saved_input, EshkolGPUBuffer* saved_mean,
+    EshkolGPUBuffer* saved_inv_std, EshkolGPUBuffer* saved_gamma,
+    EshkolGPUBuffer* grad_input, EshkolGPUBuffer* grad_gamma,
+    EshkolGPUBuffer* grad_beta,
+    uint64_t batch_size, uint64_t feature_size);
+
+/**
+ * GPU layernorm backward — compute grad_input.
+ */
+int eshkol_gpu_layernorm_backward_f64(
+    EshkolGPUBuffer* grad_out,
+    EshkolGPUBuffer* saved_input, EshkolGPUBuffer* saved_mean,
+    EshkolGPUBuffer* saved_inv_std, EshkolGPUBuffer* saved_gamma,
+    EshkolGPUBuffer* grad_input,
+    uint64_t num_samples, uint64_t feature_size);
+
 // ===== Runtime Integration =====
 
 /**

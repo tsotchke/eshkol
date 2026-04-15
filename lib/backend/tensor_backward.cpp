@@ -24,6 +24,8 @@
 #include <omp.h>
 #endif
 
+#include <eshkol/backend/gpu/gpu_memory.h>
+
 #ifdef ESHKOL_BLAS_ENABLED
 #ifdef __APPLE__
 #include <Accelerate/Accelerate.h>
@@ -187,6 +189,40 @@ extern "C" void eshkol_backward_conv2d(
            (size_t)(batch_size * channels_in * in_spatial) * sizeof(double));
     memset(grad_kernel, 0,
            (size_t)(channels_out * channels_in * kernel_spatial) * sizeof(double));
+
+    /* Try GPU dispatch for large convolutions */
+    size_t total_ops = (size_t)(batch_size * channels_out * channels_in * out_h * out_w * k_h * k_w);
+    if (eshkol_gpu_should_use((int64_t)total_ops)) {
+        EshkolGPUBuffer buf_go, buf_kw, buf_gi, buf_si, buf_gk;
+        size_t go_size = (size_t)(batch_size * channels_out * out_spatial) * sizeof(double);
+        size_t gi_size = (size_t)(batch_size * channels_in * in_spatial) * sizeof(double);
+        size_t kw_size = (size_t)(channels_out * channels_in * kernel_spatial) * sizeof(double);
+
+        if (eshkol_gpu_wrap_host((void*)grad_out, go_size, &buf_go) == 0 &&
+            eshkol_gpu_wrap_host((void*)saved_kernel, kw_size, &buf_kw) == 0 &&
+            eshkol_gpu_wrap_host((void*)grad_input, gi_size, &buf_gi) == 0 &&
+            eshkol_gpu_wrap_host((void*)saved_input, gi_size, &buf_si) == 0 &&
+            eshkol_gpu_wrap_host((void*)grad_kernel, kw_size, &buf_gk) == 0) {
+
+            int rc1 = eshkol_gpu_conv2d_backward_input_f64(
+                &buf_go, &buf_kw, &buf_gi,
+                in_h, in_w, k_h, k_w, out_h, out_w,
+                stride_h, stride_w, channels_in, channels_out, batch_size);
+            int rc2 = eshkol_gpu_conv2d_backward_kernel_f64(
+                &buf_go, &buf_si, &buf_gk,
+                in_h, in_w, k_h, k_w, out_h, out_w,
+                stride_h, stride_w, channels_in, channels_out, batch_size);
+
+            eshkol_gpu_free(&buf_go);
+            eshkol_gpu_free(&buf_kw);
+            eshkol_gpu_free(&buf_gi);
+            eshkol_gpu_free(&buf_si);
+            eshkol_gpu_free(&buf_gk);
+
+            if (rc1 == 0 && rc2 == 0) return; /* GPU succeeded */
+        }
+        /* GPU failed — fall through to CPU */
+    }
 
     /* Parallel backward: batch dimension is embarrassingly parallel.
      * grad_input[b] is independent per batch element.

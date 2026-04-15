@@ -338,3 +338,33 @@ void eshkol_matmul_dispatch(const double* A, const double* B, double* C,
     // GPU not available — dispatch directly to BLAS/SIMD via eshkol_matmul_f64
     eshkol_matmul_f64(A, B, C, M, K, N);
 }
+
+// ===== Backward Pass GPU Stubs =====
+
+int eshkol_gpu_conv2d_backward_input_f64(
+    EshkolGPUBuffer*, EshkolGPUBuffer*, EshkolGPUBuffer*,
+    uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
+    uint64_t, uint64_t, uint64_t, uint64_t, uint64_t) {
+    return -1; // No GPU
+}
+
+int eshkol_gpu_conv2d_backward_kernel_f64(
+    EshkolGPUBuffer*, EshkolGPUBuffer*, EshkolGPUBuffer*,
+    uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
+    uint64_t, uint64_t, uint64_t, uint64_t, uint64_t) {
+    return -1;
+}
+
+int eshkol_gpu_batchnorm_backward_f64(
+    EshkolGPUBuffer*, EshkolGPUBuffer*, EshkolGPUBuffer*,
+    EshkolGPUBuffer*, EshkolGPUBuffer*, EshkolGPUBuffer*,
+    EshkolGPUBuffer*, EshkolGPUBuffer*, uint64_t, uint64_t) {
+    return -1;
+}
+
+int eshkol_gpu_layernorm_backward_f64(
+    EshkolGPUBuffer*, EshkolGPUBuffer*, EshkolGPUBuffer*,
+    EshkolGPUBuffer*, EshkolGPUBuffer*, EshkolGPUBuffer*,
+    uint64_t, uint64_t) {
+    return -1;
+}

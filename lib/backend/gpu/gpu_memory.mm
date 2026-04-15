@@ -3783,4 +3783,200 @@ int eshkol_gpu_normalize_f64(EshkolGPUBuffer* in, EshkolGPUBuffer* out,
     return 0;
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Backward Pass GPU Operations
+// ═══════════════════════════════════════════════════════════════════════════
+
+#if ESHKOL_GPU_METAL_AVAILABLE
+
+static id<MTLComputePipelineState> g_conv2d_backward_input_pipeline = nil;
+static id<MTLComputePipelineState> g_conv2d_backward_kernel_pipeline = nil;
+static id<MTLComputePipelineState> g_batchnorm_backward_pipeline = nil;
+static id<MTLComputePipelineState> g_layernorm_backward_pipeline = nil;
+
+static id<MTLComputePipelineState> get_backward_pipeline(const char* name) {
+    if (!g_metal_library) return nil;
+    NSError* error = nil;
+    id<MTLFunction> func = [g_metal_library newFunctionWithName:
+        [NSString stringWithUTF8String:name]];
+    if (!func) return nil;
+    id<MTLComputePipelineState> pipeline =
+        [g_metal_device newComputePipelineStateWithFunction:func error:&error];
+    return pipeline;
+}
+
+#endif // ESHKOL_GPU_METAL_AVAILABLE
+
+int eshkol_gpu_conv2d_backward_input_f64(
+    EshkolGPUBuffer* grad_out, EshkolGPUBuffer* kernel_weights,
+    EshkolGPUBuffer* grad_input,
+    uint64_t in_h, uint64_t in_w, uint64_t k_h, uint64_t k_w,
+    uint64_t out_h, uint64_t out_w,
+    uint64_t stride_h, uint64_t stride_w,
+    uint64_t channels_in, uint64_t channels_out, uint64_t batch_size) {
+#if ESHKOL_GPU_METAL_AVAILABLE
+    if (!g_conv2d_backward_input_pipeline) {
+        g_conv2d_backward_input_pipeline = get_backward_pipeline("conv2d_backward_input_sf64");
+    }
+    if (!g_conv2d_backward_input_pipeline) return -1;
+
+    @autoreleasepool {
+        id<MTLCommandBuffer> cmd = [g_metal_queue commandBuffer];
+        id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder];
+        [enc setComputePipelineState:g_conv2d_backward_input_pipeline];
+        [enc setBuffer:(__bridge id<MTLBuffer>)grad_out->backend_data offset:0 atIndex:0];
+        [enc setBuffer:(__bridge id<MTLBuffer>)kernel_weights->backend_data offset:0 atIndex:1];
+        [enc setBuffer:(__bridge id<MTLBuffer>)grad_input->backend_data offset:0 atIndex:2];
+        uint32_t params[] = {(uint32_t)in_h, (uint32_t)in_w, (uint32_t)k_h, (uint32_t)k_w,
+                             (uint32_t)out_h, (uint32_t)out_w, (uint32_t)stride_h, (uint32_t)stride_w,
+                             (uint32_t)channels_in, (uint32_t)channels_out};
+        for (int i = 0; i < 10; i++) {
+            [enc setBytes:&params[i] length:sizeof(uint32_t) atIndex:3+i];
+        }
+        MTLSize grid = MTLSizeMake(in_w, in_h, batch_size * channels_in);
+        MTLSize tg = MTLSizeMake(MIN(16u, (uint32_t)in_w), MIN(16u, (uint32_t)in_h), 1);
+        [enc dispatchThreads:grid threadsPerThreadgroup:tg];
+        [enc endEncoding];
+        [cmd commit];
+        [cmd waitUntilCompleted];
+    }
+    return 0;
+#else
+    (void)grad_out; (void)kernel_weights; (void)grad_input;
+    (void)in_h; (void)in_w; (void)k_h; (void)k_w;
+    (void)out_h; (void)out_w; (void)stride_h; (void)stride_w;
+    (void)channels_in; (void)channels_out; (void)batch_size;
+    return -1; // No GPU backend
+#endif
+}
+
+int eshkol_gpu_conv2d_backward_kernel_f64(
+    EshkolGPUBuffer* grad_out, EshkolGPUBuffer* saved_input,
+    EshkolGPUBuffer* grad_kernel,
+    uint64_t in_h, uint64_t in_w, uint64_t k_h, uint64_t k_w,
+    uint64_t out_h, uint64_t out_w,
+    uint64_t stride_h, uint64_t stride_w,
+    uint64_t channels_in, uint64_t channels_out, uint64_t batch_size) {
+#if ESHKOL_GPU_METAL_AVAILABLE
+    if (!g_conv2d_backward_kernel_pipeline) {
+        g_conv2d_backward_kernel_pipeline = get_backward_pipeline("conv2d_backward_kernel_sf64");
+    }
+    if (!g_conv2d_backward_kernel_pipeline) return -1;
+
+    @autoreleasepool {
+        id<MTLCommandBuffer> cmd = [g_metal_queue commandBuffer];
+        id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder];
+        [enc setComputePipelineState:g_conv2d_backward_kernel_pipeline];
+        [enc setBuffer:(__bridge id<MTLBuffer>)grad_out->backend_data offset:0 atIndex:0];
+        [enc setBuffer:(__bridge id<MTLBuffer>)saved_input->backend_data offset:0 atIndex:1];
+        [enc setBuffer:(__bridge id<MTLBuffer>)grad_kernel->backend_data offset:0 atIndex:2];
+        uint32_t params[] = {(uint32_t)in_h, (uint32_t)in_w, (uint32_t)k_h, (uint32_t)k_w,
+                             (uint32_t)out_h, (uint32_t)out_w, (uint32_t)stride_h, (uint32_t)stride_w,
+                             (uint32_t)channels_in, (uint32_t)channels_out, (uint32_t)batch_size};
+        for (int i = 0; i < 11; i++) {
+            [enc setBytes:&params[i] length:sizeof(uint32_t) atIndex:3+i];
+        }
+        MTLSize grid = MTLSizeMake(k_w, k_h, channels_out * channels_in);
+        MTLSize tg = MTLSizeMake(MIN(8u, (uint32_t)k_w), MIN(8u, (uint32_t)k_h), 1);
+        [enc dispatchThreads:grid threadsPerThreadgroup:tg];
+        [enc endEncoding];
+        [cmd commit];
+        [cmd waitUntilCompleted];
+    }
+    return 0;
+#else
+    (void)grad_out; (void)saved_input; (void)grad_kernel;
+    (void)in_h; (void)in_w; (void)k_h; (void)k_w;
+    (void)out_h; (void)out_w; (void)stride_h; (void)stride_w;
+    (void)channels_in; (void)channels_out; (void)batch_size;
+    return -1;
+#endif
+}
+
+int eshkol_gpu_batchnorm_backward_f64(
+    EshkolGPUBuffer* grad_out,
+    EshkolGPUBuffer* saved_input, EshkolGPUBuffer* saved_mean,
+    EshkolGPUBuffer* saved_inv_std, EshkolGPUBuffer* saved_gamma,
+    EshkolGPUBuffer* grad_input, EshkolGPUBuffer* grad_gamma,
+    EshkolGPUBuffer* grad_beta,
+    uint64_t batch_size, uint64_t feature_size) {
+#if ESHKOL_GPU_METAL_AVAILABLE
+    if (!g_batchnorm_backward_pipeline) {
+        g_batchnorm_backward_pipeline = get_backward_pipeline("batchnorm_backward_sf64");
+    }
+    if (!g_batchnorm_backward_pipeline) return -1;
+
+    @autoreleasepool {
+        id<MTLCommandBuffer> cmd = [g_metal_queue commandBuffer];
+        id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder];
+        [enc setComputePipelineState:g_batchnorm_backward_pipeline];
+        [enc setBuffer:(__bridge id<MTLBuffer>)grad_out->backend_data offset:0 atIndex:0];
+        [enc setBuffer:(__bridge id<MTLBuffer>)saved_input->backend_data offset:0 atIndex:1];
+        [enc setBuffer:(__bridge id<MTLBuffer>)saved_mean->backend_data offset:0 atIndex:2];
+        [enc setBuffer:(__bridge id<MTLBuffer>)saved_inv_std->backend_data offset:0 atIndex:3];
+        [enc setBuffer:(__bridge id<MTLBuffer>)saved_gamma->backend_data offset:0 atIndex:4];
+        [enc setBuffer:(__bridge id<MTLBuffer>)grad_input->backend_data offset:0 atIndex:5];
+        [enc setBuffer:(__bridge id<MTLBuffer>)grad_gamma->backend_data offset:0 atIndex:6];
+        [enc setBuffer:(__bridge id<MTLBuffer>)grad_beta->backend_data offset:0 atIndex:7];
+        uint32_t bs = (uint32_t)batch_size, fs = (uint32_t)feature_size;
+        [enc setBytes:&bs length:sizeof(uint32_t) atIndex:8];
+        [enc setBytes:&fs length:sizeof(uint32_t) atIndex:9];
+        MTLSize grid = MTLSizeMake(feature_size, 1, 1);
+        MTLSize tg = MTLSizeMake(MIN(256u, (uint32_t)feature_size), 1, 1);
+        [enc dispatchThreads:grid threadsPerThreadgroup:tg];
+        [enc endEncoding];
+        [cmd commit];
+        [cmd waitUntilCompleted];
+    }
+    return 0;
+#else
+    (void)grad_out; (void)saved_input; (void)saved_mean;
+    (void)saved_inv_std; (void)saved_gamma;
+    (void)grad_input; (void)grad_gamma; (void)grad_beta;
+    (void)batch_size; (void)feature_size;
+    return -1;
+#endif
+}
+
+int eshkol_gpu_layernorm_backward_f64(
+    EshkolGPUBuffer* grad_out,
+    EshkolGPUBuffer* saved_input, EshkolGPUBuffer* saved_mean,
+    EshkolGPUBuffer* saved_inv_std, EshkolGPUBuffer* saved_gamma,
+    EshkolGPUBuffer* grad_input,
+    uint64_t num_samples, uint64_t feature_size) {
+#if ESHKOL_GPU_METAL_AVAILABLE
+    if (!g_layernorm_backward_pipeline) {
+        g_layernorm_backward_pipeline = get_backward_pipeline("layernorm_backward_sf64");
+    }
+    if (!g_layernorm_backward_pipeline) return -1;
+
+    @autoreleasepool {
+        id<MTLCommandBuffer> cmd = [g_metal_queue commandBuffer];
+        id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder];
+        [enc setComputePipelineState:g_layernorm_backward_pipeline];
+        [enc setBuffer:(__bridge id<MTLBuffer>)grad_out->backend_data offset:0 atIndex:0];
+        [enc setBuffer:(__bridge id<MTLBuffer>)saved_input->backend_data offset:0 atIndex:1];
+        [enc setBuffer:(__bridge id<MTLBuffer>)saved_mean->backend_data offset:0 atIndex:2];
+        [enc setBuffer:(__bridge id<MTLBuffer>)saved_inv_std->backend_data offset:0 atIndex:3];
+        [enc setBuffer:(__bridge id<MTLBuffer>)saved_gamma->backend_data offset:0 atIndex:4];
+        [enc setBuffer:(__bridge id<MTLBuffer>)grad_input->backend_data offset:0 atIndex:5];
+        uint32_t ns = (uint32_t)num_samples, fs = (uint32_t)feature_size;
+        [enc setBytes:&ns length:sizeof(uint32_t) atIndex:6];
+        [enc setBytes:&fs length:sizeof(uint32_t) atIndex:7];
+        MTLSize grid = MTLSizeMake(num_samples, 1, 1);
+        MTLSize tg = MTLSizeMake(MIN(256u, (uint32_t)num_samples), 1, 1);
+        [enc dispatchThreads:grid threadsPerThreadgroup:tg];
+        [enc endEncoding];
+        [cmd commit];
+        [cmd waitUntilCompleted];
+    }
+    return 0;
+#else
+    (void)grad_out; (void)saved_input; (void)saved_mean;
+    (void)saved_inv_std; (void)saved_gamma; (void)grad_input;
+    (void)num_samples; (void)feature_size;
+    return -1;
+#endif
+}
+
 } // extern "C"
