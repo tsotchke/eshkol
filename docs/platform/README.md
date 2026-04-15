@@ -90,6 +90,7 @@ Program phase:
 - execution profile architecture is merged on `master`
 - runtime inventory baseline is documented on `master`
 - runtime-core and runtime-hosted internal source sets are explicit in CMake
+- hosted `runtime_exports.h` wrappers now live in a dedicated `runtime_exports_hosted.cpp` unit
 - deeper runtime/freestanding implementation remains staged on `feature/platform-freestanding`
 - embedded targets remain a public `v1.8-platform` milestone
 - early program work should remain merge-safe during roadmap releases before `v1.8`

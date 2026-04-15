@@ -1052,6 +1052,7 @@ set(ESHKOL_RUNTIME_HOSTED_SRC
   lib/backend/thread_pool.cpp
   lib/core/config.cpp
   lib/core/platform_runtime.cpp
+  lib/core/runtime_exports_hosted.cpp
   lib/core/system_builtins.c
 )
 

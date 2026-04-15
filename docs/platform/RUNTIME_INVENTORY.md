@@ -91,7 +91,8 @@ This inventory uses the following target families:
 
 | Path | Target family | Status | Notes |
 | --- | --- | --- | --- |
-| `lib/core/platform_runtime.cpp` | `runtime-hosted` | direct | Explicit host/process/toolchain implementation for `platform_runtime.h` and `runtime_exports.h`. |
+| `lib/core/platform_runtime.cpp` | `runtime-hosted` | direct | Explicit host/process/toolchain implementation for `platform_runtime.h`. |
+| `lib/core/runtime_exports_hosted.cpp` | `runtime-hosted` | direct | Dedicated hosted implementation for the `runtime_exports.h` generated-code ABI wrappers. |
 | `lib/core/system_builtins.c` | `runtime-hosted` | direct | Heavy OS dependency surface: env, path, temp files, directory traversal, fork/exec, wait, symlink, file copy, process spawn. |
 | `lib/core/config.cpp` | `runtime-hosted` | direct | Reads env, discovers home/config files, and binds host-facing optimization and logging controls. |
 | `lib/core/resource_limits.cpp` | split candidate | split required | Core policy can survive, but env loading, timers, warning logs, and watchdog behavior are hosted. |
@@ -199,7 +200,7 @@ This means the first extraction slices must preserve symbol names and link behav
 The runtime split should proceed in this order:
 
 1. Keep `runtime-core`, `runtime-hosted`, and `runtime-split-pending` explicit in CMake while still producing `eshkol-static`.
-2. Move `platform_runtime.cpp` and the `runtime_exports.h` wrapper implementation behind `runtime-hosted`.
+2. Keep `platform_runtime.cpp` and `runtime_exports_hosted.cpp` as distinct hosted runtime units instead of a fused host/runtime-export file.
 3. Split `runtime.cpp`, `logger.cpp`, `resource_limits.cpp`, `printer.cpp`, and `arena_memory.cpp` along host-dependent seams so they can leave `runtime-split-pending`.
 4. Add hosted-leakage tests that fail if `runtime-core` depends on env, files, temp streams, process control, or host threading primitives.
 5. Decompose `eshkol_vm.c` into `vm-core`, `vm-hosted`, and VM toolchain buckets.
