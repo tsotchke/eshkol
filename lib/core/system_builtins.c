@@ -545,13 +545,25 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_shell_quote_v(eshkol_sysbuiltin_
 static eshkol_sysbuiltin_value_t eshkol_builtin_process_spawn_v(eshkol_sysbuiltin_value_t cmd_val,
                                                         eshkol_sysbuiltin_value_t args_val) {
     const char* cmd = sys_extract_string(cmd_val);
+    const char* env_str = sys_extract_string(args_val); /* optional: env var "KEY=VAL" */
     if (!cmd) return sys_make_int64(-1);
 #ifndef _WIN32
     pid_t pid = fork();
     if (pid == 0) {
-        /* Child: build argv from the args list */
-        /* For now, simple exec without args list parsing */
-        execlp(cmd, cmd, (char*)NULL);
+        /* Child: set env if provided, then exec via shell */
+        if (env_str && env_str[0]) {
+            /* Parse "KEY=VAL KEY2=VAL2 ..." and set each */
+            char* env_copy = strdup(env_str);
+            if (env_copy) {
+                char* pair = strtok(env_copy, " ");
+                while (pair) {
+                    putenv(pair); /* putenv takes ownership of the string in the child */
+                    pair = strtok(NULL, " ");
+                }
+                /* Don't free env_copy — putenv uses it */
+            }
+        }
+        execlp("/bin/sh", "sh", "-c", cmd, (char*)NULL);
         _exit(127);
     }
     if (pid < 0) return sys_make_int64(-1);
@@ -1005,6 +1017,65 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_process_read_nonblocking_v(eshko
     (void)fd; (void)max_bytes;
     return sys_make_null();
 #endif
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+ * number->string with radix
+ * ═══════════════════════════════════════════════════════════════════ */
+
+/* Raw version: takes int64 values directly from LLVM IR.
+ * Avoids all struct passing ABI issues. Returns arena-allocated string. */
+char* eshkol_number_to_string_radix_raw(int64_t n, int64_t r, void* arena) {
+    if (r < 2 || r > 36 || !arena) return NULL;
+
+    static const char digits[] = "0123456789abcdefghijklmnopqrstuvwxyz";
+    char buf[68];
+    char* p = buf + sizeof(buf) - 1;
+    *p = '\0';
+
+    int neg = (n < 0);
+    uint64_t val = neg ? (uint64_t)(-n) : (uint64_t)n;
+
+    if (val == 0) {
+        *--p = '0';
+    } else {
+        while (val > 0) {
+            *--p = digits[val % (uint64_t)r];
+            val /= (uint64_t)r;
+        }
+    }
+    if (neg) *--p = '-';
+
+    size_t len = strlen(p);
+    char* result = arena_allocate_string_with_header(arena, len);
+    if (!result) return NULL;
+    memcpy(result, p, len + 1);
+    return result;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+ * ONNX Export
+ * ═══════════════════════════════════════════════════════════════════ */
+
+extern int eshkol_onnx_export(const char* path, const char** names,
+                               const int64_t** dims, const int* ndims,
+                               const double** data, const int64_t* totals,
+                               int n_tensors);
+
+/* onnx-export-tensor(path, name, tensor) → #t or #f
+ * Export a single tensor to ONNX format. */
+static eshkol_sysbuiltin_value_t eshkol_builtin_onnx_export_tensor_v(
+        eshkol_sysbuiltin_value_t path_val,
+        eshkol_sysbuiltin_value_t name_val) {
+    /* Third arg (tensor) would need 3-arg calling convention.
+     * For now, this is a placeholder — full ONNX export requires
+     * list-of-pairs traversal like model-save, which is better
+     * implemented in the VM path or via the FFI eval pattern. */
+    const char* path = sys_extract_string(path_val);
+    const char* name = sys_extract_string(name_val);
+    if (!path || !name) return sys_make_bool(0);
+    /* Would call eshkol_onnx_export here with tensor data */
+    return sys_make_bool(0); /* placeholder until tensor extraction is resolved */
 }
 
 /* ═══════════════════════════════════════════════════════════════════
