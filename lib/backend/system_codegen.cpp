@@ -1487,6 +1487,18 @@ TWO_ARG_BUILTIN(adGradient, "eshkol_ad_gradient_sret")
 TWO_ARG_BUILTIN(adNodeValue, "eshkol_ad_node_value_sret")
 TWO_ARG_BUILTIN(onnxExportTensor, "eshkol_builtin_onnx_export_tensor")
 
+/* Type predicates */
+ONE_ARG_BUILTIN(logicVarPred, "eshkol_builtin_logic_var_p")
+ONE_ARG_BUILTIN(substitutionPred, "eshkol_builtin_substitution_p")
+ONE_ARG_BUILTIN(factPred, "eshkol_builtin_fact_p")
+ONE_ARG_BUILTIN(kbPred, "eshkol_builtin_kb_p")
+ONE_ARG_BUILTIN(factorGraphPred, "eshkol_builtin_factor_graph_p")
+ONE_ARG_BUILTIN(workspacePred, "eshkol_builtin_workspace_p")
+ONE_ARG_BUILTIN(tensorPred, "eshkol_builtin_tensor_p")
+ONE_ARG_BUILTIN(dualPred, "eshkol_builtin_dual_p")
+THREE_ARG_BUILTIN(fgUpdateCpt, "eshkol_builtin_fg_update_cpt")
+ONE_ARG_BUILTIN(kbCount, "eshkol_builtin_kb_count")
+
 /* v1.2 batch 4 */
 ZERO_ARG_BUILTIN(processPid, "eshkol_builtin_process_pid")
 ONE_ARG_BUILTIN(fileMmap, "eshkol_builtin_file_mmap")
