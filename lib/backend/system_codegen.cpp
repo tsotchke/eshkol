@@ -1338,6 +1338,14 @@ TWO_ARG_BUILTIN(processKillTree, "eshkol_builtin_process_kill_tree")
 ONE_ARG_BUILTIN(processSpawnPty, "eshkol_builtin_process_spawn_pty")
 TWO_ARG_BUILTIN(processReadNonblocking, "eshkol_builtin_process_read_nonblocking")
 
+/* v1.2 batch 4 */
+ZERO_ARG_BUILTIN(processPid, "eshkol_builtin_process_pid")
+ONE_ARG_BUILTIN(fileMmap, "eshkol_builtin_file_mmap")
+ONE_ARG_BUILTIN(fileMunmap, "eshkol_builtin_file_munmap")
+TWO_ARG_BUILTIN(kbSave, "eshkol_builtin_kb_save")
+ONE_ARG_BUILTIN(kbLoad, "eshkol_builtin_kb_load")
+ONE_ARG_BUILTIN(tensorTokenEstimate, "eshkol_builtin_tensor_token_estimate")
+
 #undef ZERO_ARG_BUILTIN
 #undef ONE_ARG_BUILTIN
 #undef TWO_ARG_BUILTIN
