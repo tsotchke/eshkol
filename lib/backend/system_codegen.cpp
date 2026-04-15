@@ -1454,6 +1454,38 @@ CE_ONE_ARG(wsStepBuiltin, "eshkol_ws_step_tagged")
 #undef CE_TWO_ARG
 #undef CE_THREE_ARG
 
+/* Reverse-mode AD tape — all use sret pattern from system_builtins */
+ZERO_ARG_BUILTIN(adTapeNew, "eshkol_ad_tape_new_sret")
+TWO_ARG_BUILTIN(adConst, "eshkol_ad_const_sret")
+TWO_ARG_BUILTIN(adVar, "eshkol_ad_var_sret")
+
+llvm::Value* SystemCodegen::adBinaryOp(const eshkol_operations_t* op, const char* func_name) {
+    if (op->call_op.num_vars != 3) return tagged_.packNull();
+    if (!codegen_ast_callback_) return tagged_.packNull();
+    llvm::Value* tape = codegen_ast_callback_(&op->call_op.variables[0], callback_context_);
+    llvm::Value* left = codegen_ast_callback_(&op->call_op.variables[1], callback_context_);
+    llvm::Value* right = codegen_ast_callback_(&op->call_op.variables[2], callback_context_);
+    if (!tape || !left || !right) return tagged_.packNull();
+    llvm::Module* mod = ctx_.builder().GetInsertBlock()->getParent()->getParent();
+    llvm::Function* f = getOrDeclareRuntimeFuncAllPtr(ctx_, mod, func_name, 3);
+    return callPtrRuntime(ctx_, f, {tape, left, right});
+}
+
+llvm::Value* SystemCodegen::adUnaryOp(const eshkol_operations_t* op, const char* func_name) {
+    if (op->call_op.num_vars != 2) return tagged_.packNull();
+    if (!codegen_ast_callback_) return tagged_.packNull();
+    llvm::Value* tape = codegen_ast_callback_(&op->call_op.variables[0], callback_context_);
+    llvm::Value* node = codegen_ast_callback_(&op->call_op.variables[1], callback_context_);
+    if (!tape || !node) return tagged_.packNull();
+    llvm::Module* mod = ctx_.builder().GetInsertBlock()->getParent()->getParent();
+    llvm::Function* f = getOrDeclareRuntimeFuncAllPtr(ctx_, mod, func_name, 2);
+    return callPtrRuntime(ctx_, f, {tape, node});
+}
+
+TWO_ARG_BUILTIN(adBackward, "eshkol_ad_backward_sret")
+TWO_ARG_BUILTIN(adGradient, "eshkol_ad_gradient_sret")
+TWO_ARG_BUILTIN(adNodeValue, "eshkol_ad_node_value_sret")
+
 /* v1.2 batch 4 */
 ZERO_ARG_BUILTIN(processPid, "eshkol_builtin_process_pid")
 ONE_ARG_BUILTIN(fileMmap, "eshkol_builtin_file_mmap")
