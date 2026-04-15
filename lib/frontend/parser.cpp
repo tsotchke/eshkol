@@ -944,7 +944,7 @@ static eshkol_ast_t parse_quoted_list_internal(SchemeTokenizer& tokenizer) {
         Token inner_token = tokenizer.nextToken();
         if (inner_token.type == TOKEN_RPAREN) break;
         if (inner_token.type == TOKEN_EOF) {
-            PARSE_ERROR_AT(token, "unexpected end of input in quoted list");
+            PARSE_ERROR_AT(inner_token, "unexpected end of input in quoted list");
             return {.type = ESHKOL_INVALID};
         }
 
@@ -1052,7 +1052,7 @@ static eshkol_ast_t parse_quasiquoted_list_internal(SchemeTokenizer& tokenizer) 
         Token inner_token = tokenizer.nextToken();
         if (inner_token.type == TOKEN_RPAREN) break;
         if (inner_token.type == TOKEN_EOF) {
-            PARSE_ERROR_AT(token, "unexpected end of input in quasiquoted list");
+            PARSE_ERROR_AT(inner_token, "unexpected end of input in quasiquoted list");
             return {.type = ESHKOL_INVALID};
         }
 
@@ -1429,7 +1429,7 @@ static eshkol_ast_t transformInternalDefinesToLetrec(const std::vector<eshkol_as
     if (after_defines.empty()) {
         // No body expressions after defines - this is an error
         // But for robustness, return null
-        PARSE_ERROR_AT(token, "internal defines must be followed by at least one expression");
+        eshkol_error("internal defines must be followed by at least one expression");
         eshkol_ast_make_null(&body);
     } else if (after_defines.size() == 1) {
         body = after_defines[0];
@@ -7313,7 +7313,7 @@ static eshkol_ast_t parse_vector_body(SchemeTokenizer& tokenizer) {
         Token elem_token = tokenizer.nextToken();
         if (elem_token.type == TOKEN_RPAREN) break;
         if (elem_token.type == TOKEN_EOF) {
-            PARSE_ERROR_AT(token, "unexpected end of input in vector literal #(...)");
+            PARSE_ERROR_AT(elem_token, "unexpected end of input in vector literal #(...)");
             ast.type = ESHKOL_INVALID;
             return ast;
         }
@@ -7358,7 +7358,7 @@ static eshkol_ast_t parse_vector_body(SchemeTokenizer& tokenizer) {
 
         for (size_t i = 1; i < elements.size(); i++) {
             if (elements[i].operation.tensor_op.num_dimensions != sub_ndim) {
-                PARSE_ERROR_AT(token, "nested vector dimension mismatch: element 0 has %llu dimensions, element %zu has %llu",
+                eshkol_error( "nested vector dimension mismatch: element 0 has %llu dimensions, element %zu has %llu",
                     (unsigned long long)sub_ndim, i,
                     (unsigned long long)elements[i].operation.tensor_op.num_dimensions);
                 ast.type = ESHKOL_INVALID;
@@ -7366,7 +7366,7 @@ static eshkol_ast_t parse_vector_body(SchemeTokenizer& tokenizer) {
             }
             for (uint64_t d = 0; d < sub_ndim; d++) {
                 if (elements[i].operation.tensor_op.dimensions[d] != sub_dims[d]) {
-                    PARSE_ERROR_AT(token, "nested vector shape mismatch at dimension %llu: element 0 has %llu, element %zu has %llu",
+                    eshkol_error( "nested vector shape mismatch at dimension %llu: element 0 has %llu, element %zu has %llu",
                         (unsigned long long)d, (unsigned long long)sub_dims[d], i,
                         (unsigned long long)elements[i].operation.tensor_op.dimensions[d]);
                     ast.type = ESHKOL_INVALID;
@@ -7424,7 +7424,7 @@ static eshkol_ast_t parse_expression(SchemeTokenizer& tokenizer) {
     // Stack space guard: detect actual remaining stack space using platform APIs.
     // This prevents segfaults from deeply nested input without imposing arbitrary limits.
     if (!check_stack_space()) {
-        PARSE_ERROR_AT(token, "stack space exhausted during parsing — expression nesting too deep");
+        eshkol_error( "stack space exhausted during parsing — expression nesting too deep");
         eshkol_ast_t invalid = {};
         invalid.type = ESHKOL_INVALID;
         return invalid;
@@ -7521,7 +7521,7 @@ static eshkol_ast_t parse_expression(SchemeTokenizer& tokenizer) {
             return parse_atom(token);
 
         case TOKEN_RPAREN:
-            PARSE_ERROR_AT(token, "unexpected closing parenthesis");
+            eshkol_error( "unexpected closing parenthesis");
             return {.type = ESHKOL_INVALID};
 
         case TOKEN_EOF:
