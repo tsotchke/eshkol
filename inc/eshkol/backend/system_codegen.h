@@ -253,6 +253,14 @@ public:
     llvm::Value* processSpawnPty(const eshkol_operations_t* op);
     llvm::Value* processReadNonblocking(const eshkol_operations_t* op);
 
+    /* v1.2 batch 4 */
+    llvm::Value* processPid(const eshkol_operations_t* op);
+    llvm::Value* fileMmap(const eshkol_operations_t* op);
+    llvm::Value* fileMunmap(const eshkol_operations_t* op);
+    llvm::Value* kbSave(const eshkol_operations_t* op);
+    llvm::Value* kbLoad(const eshkol_operations_t* op);
+    llvm::Value* tensorTokenEstimate(const eshkol_operations_t* op);
+
 private:
     CodegenContext& ctx_;
     TaggedValueCodegen& tagged_;

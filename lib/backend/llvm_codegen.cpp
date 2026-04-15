@@ -1047,6 +1047,13 @@ public:
         function_return_types["process-kill-tree"] = BuiltinTypes::Boolean;
         function_return_types["process-spawn-pty"] = BuiltinTypes::Integer;
         function_return_types["process-read-nonblocking"] = BuiltinTypes::String;
+        // v1.2 batch 4
+        function_return_types["process-pid"] = BuiltinTypes::Integer;
+        function_return_types["file-mmap"] = BuiltinTypes::String;
+        function_return_types["file-munmap"] = BuiltinTypes::Boolean;
+        function_return_types["kb-save"] = BuiltinTypes::Boolean;
+        function_return_types["kb-load"] = BuiltinTypes::Value;
+        function_return_types["tensor-token-estimate"] = BuiltinTypes::Integer;
 
         // R7RS Wave 2 functions
         function_return_types["char-foldcase"] = BuiltinTypes::Value;  // char
@@ -10812,6 +10819,13 @@ private:
         if (func_name == "process-kill-tree") return system_->processKillTree(op);
         if (func_name == "process-spawn-pty") return system_->processSpawnPty(op);
         if (func_name == "process-read-nonblocking") return system_->processReadNonblocking(op);
+        // v1.2 batch 4
+        if (func_name == "process-pid") return system_->processPid(op);
+        if (func_name == "file-mmap") return system_->fileMmap(op);
+        if (func_name == "file-munmap") return system_->fileMunmap(op);
+        if (func_name == "kb-save") return system_->kbSave(op);
+        if (func_name == "kb-load") return system_->kbLoad(op);
+        if (func_name == "tensor-token-estimate") return system_->tensorTokenEstimate(op);
 
         // =========================================================================
         // R7RS ENVIRONMENT PRIMITIVES
@@ -17857,6 +17871,8 @@ private:
             "path-relative", "path-resolve", "glob-expand", "glob-match",
             "process-setpgid", "process-kill-tree",
             "process-spawn-pty", "process-read-nonblocking",
+            "process-pid", "file-mmap", "file-munmap",
+            "kb-save", "kb-load", "tensor-token-estimate",
             // Eval
             "eval",
         };

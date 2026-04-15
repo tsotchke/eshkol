@@ -926,6 +926,15 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_glob_match_v(eshkol_sysbuiltin_v
 #endif
 }
 
+/* process-pid: return current process ID (alias for getpid) */
+static eshkol_sysbuiltin_value_t eshkol_builtin_process_pid_v(void) {
+#ifndef _WIN32
+    return sys_make_int64((int64_t)getpid());
+#else
+    return sys_make_int64((int64_t)_getpid());
+#endif
+}
+
 /* ═══════════════════════════════════════════════════════════════════
  * Advanced Process Management
  * ═══════════════════════════════════════════════════════════════════ */
@@ -1017,6 +1026,99 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_process_read_nonblocking_v(eshko
     (void)fd; (void)max_bytes;
     return sys_make_null();
 #endif
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+ * KB Persistence — save/load knowledge bases
+ * ═══════════════════════════════════════════════════════════════════ */
+
+#define KB_FILE_MAGIC 0x45534B42 /* "ESKB" */
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_kb_save_v(eshkol_sysbuiltin_value_t path_val,
+                                                           eshkol_sysbuiltin_value_t kb_val) {
+    const char* path = sys_extract_string(path_val);
+    if (!path || kb_val.type != SYS_TYPE_HEAP_PTR) return sys_make_bool(0);
+
+    /* KB pointer is in the data field — but accessing C++ KB struct from C
+     * requires including logic.h. For now, delegate to a C++ function. */
+    /* TODO: implement via eshkol_kb_save_tagged once Gabriel's model_io pattern is available */
+    (void)kb_val;
+    return sys_make_bool(0); /* placeholder */
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_kb_load_v(eshkol_sysbuiltin_value_t path_val) {
+    const char* path = sys_extract_string(path_val);
+    if (!path) return sys_make_null();
+
+    /* TODO: implement via eshkol_kb_load_tagged */
+    return sys_make_null(); /* placeholder */
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+ * Tensor Token Estimation
+ * ═══════════════════════════════════════════════════════════════════ */
+
+/* Estimate number of tokens a tensor would produce if serialized as text.
+ * Useful for context window management in LLM agents. */
+/* Forward reference — eshkol_tensor_t_ffi defined below in Tensor Persistence section */
+struct eshkol_tensor_ffi_fwd;
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_tensor_token_estimate_v(eshkol_sysbuiltin_value_t tensor_val) {
+    if (tensor_val.type != SYS_TYPE_HEAP_PTR) return sys_make_int64(0);
+    /* Read total_elements (offset 24) and num_dimensions (offset 8) directly
+     * from the tensor struct without requiring the typedef in scope. */
+    void* t = (void*)(uintptr_t)tensor_val.data;
+    if (!t) return sys_make_int64(0);
+    uint64_t num_dims = *((uint64_t*)((char*)t + 8));   /* num_dimensions at offset 8 */
+    uint64_t total = *((uint64_t*)((char*)t + 24));      /* total_elements at offset 24 */
+    int64_t estimate = (int64_t)total * 8 + (int64_t)num_dims * 5 + 10;
+    return sys_make_int64(estimate);
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+ * Memory-mapped file I/O
+ * ═══════════════════════════════════════════════════════════════════ */
+
+#ifndef _WIN32
+#include <sys/mman.h>
+#endif
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_file_mmap_v(eshkol_sysbuiltin_value_t path_val) {
+    const char* path = sys_extract_string(path_val);
+    if (!path) return sys_make_null();
+#ifndef _WIN32
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return sys_make_null();
+    struct stat st;
+    if (fstat(fd, &st) != 0) { close(fd); return sys_make_null(); }
+    size_t len = (size_t)st.st_size;
+    void* mapped = mmap(NULL, len, PROT_READ, MAP_PRIVATE, fd, 0);
+    close(fd);
+    if (mapped == MAP_FAILED) return sys_make_null();
+
+    /* Copy mapped content to arena string so it's properly managed */
+    void* arena = get_global_arena();
+    if (!arena) { munmap(mapped, len); return sys_make_null(); }
+    char* copy = arena_allocate_string_with_header(arena, len);
+    if (!copy) { munmap(mapped, len); return sys_make_null(); }
+    memcpy(copy, mapped, len);
+    copy[len] = '\0';
+    munmap(mapped, len);
+
+    eshkol_sysbuiltin_value_t v = {0, 0, 0, 0, 0};
+    v.type = SYS_TYPE_HEAP_PTR;
+    v.data = (uint64_t)copy;
+    return v;
+#else
+    return sys_make_null();
+#endif
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_file_munmap_v(eshkol_sysbuiltin_value_t addr_val) {
+    /* Arena-managed strings don't need explicit munmap — this is a no-op.
+     * The actual mmap is already unmapped in file_mmap after copy. */
+    (void)addr_val;
+    return sys_make_bool(1);
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -1220,6 +1322,13 @@ void eshkol_builtin_path_relative(sv_t* out, const sv_t* a, const sv_t* b) { *ou
 void eshkol_builtin_path_resolve(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_path_resolve_v(*a, *b); }
 void eshkol_builtin_glob_expand(sv_t* out, const sv_t* a) { *out = eshkol_builtin_glob_expand_v(*a); }
 void eshkol_builtin_glob_match(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_glob_match_v(*a, *b); }
+/* v1.2 batch 4 */
+void eshkol_builtin_process_pid(sv_t* out) { *out = eshkol_builtin_process_pid_v(); }
+void eshkol_builtin_file_mmap(sv_t* out, const sv_t* a) { *out = eshkol_builtin_file_mmap_v(*a); }
+void eshkol_builtin_file_munmap(sv_t* out, const sv_t* a) { *out = eshkol_builtin_file_munmap_v(*a); }
+void eshkol_builtin_kb_save(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_kb_save_v(*a, *b); }
+void eshkol_builtin_kb_load(sv_t* out, const sv_t* a) { *out = eshkol_builtin_kb_load_v(*a); }
+void eshkol_builtin_tensor_token_estimate(sv_t* out, const sv_t* a) { *out = eshkol_builtin_tensor_token_estimate_v(*a); }
 /* v1.2 batch 3: advanced process management */
 void eshkol_builtin_process_setpgid(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_process_setpgid_v(*a, *b); }
 void eshkol_builtin_process_kill_tree(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_process_kill_tree_v(*a, *b); }
