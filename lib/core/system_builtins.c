@@ -1374,6 +1374,23 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_kb_retract_v(eshkol_sysbuiltin_v
 void eshkol_builtin_fg_marginal(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_fg_marginal_v(*a, *b); }
 void eshkol_builtin_fg_entropy(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_fg_entropy_v(*a, *b); }
 void eshkol_builtin_kb_retract(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_kb_retract_v(*a, *b); }
+
+/* Consciousness engine tagged wrappers — delegate to consciousness_builtins.cpp */
+extern void eshkol_make_substitution_tagged(void*, void*);
+extern void eshkol_unify_tagged(void*, const void*, const void*, const void*, void*);
+extern void eshkol_walk_tagged(void*, const void*, const void*, void*);
+extern void eshkol_make_fact_tagged(void*, const void*, const void*, void*);
+extern void eshkol_make_kb_tagged(void*, void*);
+extern void eshkol_kb_assert_tagged(void*, const void*, const void*, void*);
+extern void eshkol_kb_query_tagged(void*, const void*, const void*, void*);
+extern void eshkol_make_factor_graph_tagged(void*, const void*, const void*, void*);
+extern void eshkol_fg_add_factor_tagged(void*, const void*, const void*, const void*, void*);
+extern void eshkol_fg_infer_tagged(void*, const void*, const void*, const void*, void*);
+extern void eshkol_free_energy_tagged(void*, const void*, const void*, void*);
+extern void eshkol_expected_free_energy_tagged(void*, const void*, const void*, const void*, void*);
+extern void eshkol_make_workspace_tagged(void*, const void*, const void*, void*);
+extern void eshkol_ws_register_tagged(void*, const void*, const void*, const void*, void*);
+extern void eshkol_ws_step_tagged(void*, const void*, void*);
 /* v1.2 batch 3: advanced process management */
 void eshkol_builtin_process_setpgid(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_process_setpgid_v(*a, *b); }
 void eshkol_builtin_process_kill_tree(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_process_kill_tree_v(*a, *b); }

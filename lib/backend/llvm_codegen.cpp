@@ -1058,6 +1058,22 @@ public:
         function_return_types["fg-marginal"] = BuiltinTypes::Value;
         function_return_types["fg-entropy"] = BuiltinTypes::Value;
         function_return_types["kb-retract!"] = BuiltinTypes::Boolean;
+        // Consciousness engine
+        function_return_types["make-substitution"] = BuiltinTypes::Value;
+        function_return_types["unify"] = BuiltinTypes::Value;
+        function_return_types["walk"] = BuiltinTypes::Value;
+        function_return_types["make-fact"] = BuiltinTypes::Value;
+        function_return_types["make-kb"] = BuiltinTypes::Value;
+        function_return_types["kb-assert!"] = BuiltinTypes::Boolean;
+        function_return_types["kb-query"] = BuiltinTypes::Value;
+        function_return_types["make-factor-graph"] = BuiltinTypes::Value;
+        function_return_types["fg-add-factor!"] = BuiltinTypes::Boolean;
+        function_return_types["fg-infer!"] = BuiltinTypes::Boolean;
+        function_return_types["free-energy"] = BuiltinTypes::Value;
+        function_return_types["expected-free-energy"] = BuiltinTypes::Value;
+        function_return_types["make-workspace"] = BuiltinTypes::Value;
+        function_return_types["ws-register!"] = BuiltinTypes::Boolean;
+        function_return_types["ws-step!"] = BuiltinTypes::Value;
 
         // R7RS Wave 2 functions
         function_return_types["char-foldcase"] = BuiltinTypes::Value;  // char
@@ -10834,6 +10850,22 @@ private:
         if (func_name == "fg-marginal") return system_->fgMarginal(op);
         if (func_name == "fg-entropy") return system_->fgEntropy(op);
         if (func_name == "kb-retract!") return system_->kbRetract(op);
+        // Consciousness engine
+        if (func_name == "make-substitution") return system_->makeSubstitution(op);
+        if (func_name == "unify") return system_->unifyBuiltin(op);
+        if (func_name == "walk") return system_->walkBuiltin(op);
+        if (func_name == "make-fact") return system_->makeFactBuiltin(op);
+        if (func_name == "make-kb") return system_->makeKbBuiltin(op);
+        if (func_name == "kb-assert!") return system_->kbAssertBuiltin(op);
+        if (func_name == "kb-query") return system_->kbQueryBuiltin(op);
+        if (func_name == "make-factor-graph") return system_->makeFactorGraphBuiltin(op);
+        if (func_name == "fg-add-factor!") return system_->fgAddFactorBuiltin(op);
+        if (func_name == "fg-infer!") return system_->fgInferBuiltin(op);
+        if (func_name == "free-energy") return system_->freeEnergyBuiltin(op);
+        if (func_name == "expected-free-energy") return system_->expectedFreeEnergyBuiltin(op);
+        if (func_name == "make-workspace") return system_->makeWorkspaceBuiltin(op);
+        if (func_name == "ws-register!") return system_->wsRegisterBuiltin(op);
+        if (func_name == "ws-step!") return system_->wsStepBuiltin(op);
 
         // =========================================================================
         // R7RS ENVIRONMENT PRIMITIVES
@@ -17882,6 +17914,11 @@ private:
             "process-pid", "file-mmap", "file-munmap",
             "kb-save", "kb-load", "tensor-token-estimate",
             "fg-marginal", "fg-entropy", "kb-retract!",
+            "make-substitution", "unify", "walk",
+            "make-fact", "make-kb", "kb-assert!", "kb-query",
+            "make-factor-graph", "fg-add-factor!", "fg-infer!",
+            "free-energy", "expected-free-energy",
+            "make-workspace", "ws-register!", "ws-step!",
             // Eval
             "eval",
         };
