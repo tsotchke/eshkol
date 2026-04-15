@@ -20,6 +20,10 @@
 #include <cmath>
 #include <cstdlib>
 
+#if defined(_OPENMP)
+#include <omp.h>
+#endif
+
 #ifdef ESHKOL_BLAS_ENABLED
 #ifdef __APPLE__
 #include <Accelerate/Accelerate.h>
@@ -184,38 +188,111 @@ extern "C" void eshkol_backward_conv2d(
     memset(grad_kernel, 0,
            (size_t)(channels_out * channels_in * kernel_spatial) * sizeof(double));
 
-    for (int64_t b = 0; b < batch_size; b++) {
-        for (int64_t co = 0; co < channels_out; co++) {
-            for (int64_t ci = 0; ci < channels_in; ci++) {
-                const double* kernel_ptr =
-                    saved_kernel + (co * channels_in + ci) * kernel_spatial;
-                double* gk_ptr =
-                    grad_kernel + (co * channels_in + ci) * kernel_spatial;
+    /* Parallel backward: batch dimension is embarrassingly parallel.
+     * grad_input[b] is independent per batch element.
+     * grad_kernel is shared — use per-thread buffers and reduce. */
+    size_t kernel_total = (size_t)(channels_out * channels_in * kernel_spatial);
 
-                for (int64_t oh = 0; oh < out_h; oh++) {
-                    for (int64_t ow = 0; ow < out_w; ow++) {
-                        double g = grad_out[
-                            (b * channels_out + co) * out_spatial +
-                            oh * out_w + ow];
+#if defined(_OPENMP)
+    int n_threads = omp_get_max_threads();
+#else
+    int n_threads = 1;
+#endif
 
-                        for (int64_t kh = 0; kh < k_h; kh++) {
-                            for (int64_t kw = 0; kw < k_w; kw++) {
-                                int64_t ih = oh * stride_h + kh;
-                                int64_t iw = ow * stride_w + kw;
+    if (batch_size > 1 && n_threads > 1) {
+        /* Allocate per-thread kernel gradient buffers */
+        double** thread_gk = (double**)calloc((size_t)n_threads, sizeof(double*));
+        for (int t = 0; t < n_threads; t++) {
+            thread_gk[t] = (double*)calloc(kernel_total, sizeof(double));
+        }
 
-                                /* grad_input: full convolution of
-                                 * grad_out with flipped kernel */
-                                double in_val = saved_input[
-                                    (b * channels_in + ci) * in_spatial +
-                                    ih * in_w + iw];
-                                grad_input[
-                                    (b * channels_in + ci) * in_spatial +
-                                    ih * in_w + iw]
-                                    += g * kernel_ptr[kh * k_w + kw];
+#if defined(_OPENMP)
+        #pragma omp parallel for schedule(dynamic)
+#endif
+        for (int64_t b = 0; b < batch_size; b++) {
+#if defined(_OPENMP)
+            int tid = omp_get_thread_num();
+#else
+            int tid = 0;
+#endif
+            double* local_gk = thread_gk[tid];
 
-                                /* grad_kernel: cross-correlation of
-                                 * input with grad_out */
-                                gk_ptr[kh * k_w + kw] += g * in_val;
+            for (int64_t co = 0; co < channels_out; co++) {
+                for (int64_t ci = 0; ci < channels_in; ci++) {
+                    const double* kernel_ptr =
+                        saved_kernel + (co * channels_in + ci) * kernel_spatial;
+                    double* lgk_ptr =
+                        local_gk + (co * channels_in + ci) * kernel_spatial;
+
+                    for (int64_t oh = 0; oh < out_h; oh++) {
+                        for (int64_t ow = 0; ow < out_w; ow++) {
+                            double g = grad_out[
+                                (b * channels_out + co) * out_spatial +
+                                oh * out_w + ow];
+
+                            for (int64_t kh = 0; kh < k_h; kh++) {
+                                for (int64_t kw = 0; kw < k_w; kw++) {
+                                    int64_t ih = oh * stride_h + kh;
+                                    int64_t iw = ow * stride_w + kw;
+
+                                    double in_val = saved_input[
+                                        (b * channels_in + ci) * in_spatial +
+                                        ih * in_w + iw];
+                                    /* grad_input: per-batch, no contention */
+                                    grad_input[
+                                        (b * channels_in + ci) * in_spatial +
+                                        ih * in_w + iw]
+                                        += g * kernel_ptr[kh * k_w + kw];
+
+                                    /* grad_kernel: per-thread buffer */
+                                    lgk_ptr[kh * k_w + kw] += g * in_val;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        /* Reduce per-thread kernel gradients */
+        for (int t = 0; t < n_threads; t++) {
+            for (size_t i = 0; i < kernel_total; i++) {
+                grad_kernel[i] += thread_gk[t][i];
+            }
+            free(thread_gk[t]);
+        }
+        free(thread_gk);
+    } else {
+        /* Single-thread fallback (batch_size == 1 or no OpenMP) */
+        for (int64_t b = 0; b < batch_size; b++) {
+            for (int64_t co = 0; co < channels_out; co++) {
+                for (int64_t ci = 0; ci < channels_in; ci++) {
+                    const double* kernel_ptr =
+                        saved_kernel + (co * channels_in + ci) * kernel_spatial;
+                    double* gk_ptr =
+                        grad_kernel + (co * channels_in + ci) * kernel_spatial;
+
+                    for (int64_t oh = 0; oh < out_h; oh++) {
+                        for (int64_t ow = 0; ow < out_w; ow++) {
+                            double g = grad_out[
+                                (b * channels_out + co) * out_spatial +
+                                oh * out_w + ow];
+
+                            for (int64_t kh = 0; kh < k_h; kh++) {
+                                for (int64_t kw = 0; kw < k_w; kw++) {
+                                    int64_t ih = oh * stride_h + kh;
+                                    int64_t iw = ow * stride_w + kw;
+
+                                    double in_val = saved_input[
+                                        (b * channels_in + ci) * in_spatial +
+                                        ih * in_w + iw];
+                                    grad_input[
+                                        (b * channels_in + ci) * in_spatial +
+                                        ih * in_w + iw]
+                                        += g * kernel_ptr[kh * k_w + kw];
+
+                                    gk_ptr[kh * k_w + kw] += g * in_val;
+                                }
                             }
                         }
                     }
@@ -236,29 +313,31 @@ extern "C" void eshkol_backward_batchnorm(
 {
     double N = (double)batch_size;
 
-    /* Compute grad_beta = sum(grad_out, dim=batch) */
+    /* Compute grad_beta and grad_gamma with parallel reduction across features.
+     * Feature dimension is parallelized — each feature's sum is independent. */
     memset(grad_beta, 0, (size_t)feature_size * sizeof(double));
-    for (int64_t b = 0; b < batch_size; b++) {
-        for (int64_t f = 0; f < feature_size; f++) {
-            grad_beta[f] += grad_out[b * feature_size + f];
-        }
-    }
-
-    /* Compute grad_gamma = sum(grad_out * normalized, dim=batch) */
     memset(grad_gamma, 0, (size_t)feature_size * sizeof(double));
-    for (int64_t b = 0; b < batch_size; b++) {
-        for (int64_t f = 0; f < feature_size; f++) {
-            double normalized =
-                (saved_input[b * feature_size + f] - saved_mean[f])
-                * saved_inv_std[f];
-            grad_gamma[f] += grad_out[b * feature_size + f] * normalized;
+
+#if defined(_OPENMP)
+    #pragma omp parallel for schedule(static) if(feature_size > 64)
+#endif
+    for (int64_t f = 0; f < feature_size; f++) {
+        double sum_g = 0.0, sum_gn = 0.0;
+        for (int64_t b = 0; b < batch_size; b++) {
+            int64_t idx = b * feature_size + f;
+            double g = grad_out[idx];
+            double normalized = (saved_input[idx] - saved_mean[f]) * saved_inv_std[f];
+            sum_g += g;
+            sum_gn += g * normalized;
         }
+        grad_beta[f] = sum_g;
+        grad_gamma[f] = sum_gn;
     }
 
-    /* Compute grad_input using the standard batchnorm backward formula:
-     * grad_input = (gamma / (N * std)) *
-     *   (N * grad_out - sum(grad_out) - normalized * sum(grad_out * normalized))
-     */
+    /* Compute grad_input — parallelized across features */
+#if defined(_OPENMP)
+    #pragma omp parallel for schedule(static) if(feature_size > 64)
+#endif
     for (int64_t f = 0; f < feature_size; f++) {
         double gamma_f = saved_gamma[f];
         double inv_std_f = saved_inv_std[f];
@@ -287,14 +366,14 @@ extern "C" void eshkol_backward_layernorm(
 {
     double D = (double)feature_size;
 
-    /* Compute grad_beta and grad_gamma (accumulated across samples) */
+    /* Compute grad_beta and grad_gamma — reduce across samples per feature.
+     * Each feature's sum is independent → parallelizable. */
     memset(grad_beta, 0, (size_t)feature_size * sizeof(double));
     memset(grad_gamma, 0, (size_t)feature_size * sizeof(double));
 
     for (int64_t s = 0; s < num_samples; s++) {
         double mean_s = saved_mean[s];
         double inv_std_s = saved_inv_std[s];
-
         for (int64_t f = 0; f < feature_size; f++) {
             int64_t idx = s * feature_size + f;
             double normalized = (saved_input[idx] - mean_s) * inv_std_s;
@@ -303,13 +382,15 @@ extern "C" void eshkol_backward_layernorm(
         }
     }
 
-    /* Compute grad_input per-sample (same formula as batchnorm but
-     * applied per-sample across feature dimension) */
+    /* Compute grad_input per-sample — each sample is independent.
+     * Parallelized across samples. */
+#if defined(_OPENMP)
+    #pragma omp parallel for schedule(static) if(num_samples > 16)
+#endif
     for (int64_t s = 0; s < num_samples; s++) {
         double mean_s = saved_mean[s];
         double inv_std_s = saved_inv_std[s];
 
-        /* Per-sample sums */
         double sum_grad = 0.0;
         double sum_grad_norm = 0.0;
         for (int64_t f = 0; f < feature_size; f++) {
