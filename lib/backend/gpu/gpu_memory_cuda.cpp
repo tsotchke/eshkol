@@ -756,4 +756,34 @@ int eshkol_gpu_normalize_f64(EshkolGPUBuffer* in, EshkolGPUBuffer* out,
     return 0;
 }
 
+// ===== Backward Pass GPU — CUDA (TODO: implement CUDA kernels) =====
+
+int eshkol_gpu_conv2d_backward_input_f64(
+    EshkolGPUBuffer*, EshkolGPUBuffer*, EshkolGPUBuffer*,
+    uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
+    uint64_t, uint64_t, uint64_t, uint64_t, uint64_t) {
+    return -1;
+}
+
+int eshkol_gpu_conv2d_backward_kernel_f64(
+    EshkolGPUBuffer*, EshkolGPUBuffer*, EshkolGPUBuffer*,
+    uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
+    uint64_t, uint64_t, uint64_t, uint64_t, uint64_t) {
+    return -1;
+}
+
+int eshkol_gpu_batchnorm_backward_f64(
+    EshkolGPUBuffer*, EshkolGPUBuffer*, EshkolGPUBuffer*,
+    EshkolGPUBuffer*, EshkolGPUBuffer*, EshkolGPUBuffer*,
+    EshkolGPUBuffer*, EshkolGPUBuffer*, uint64_t, uint64_t) {
+    return -1;
+}
+
+int eshkol_gpu_layernorm_backward_f64(
+    EshkolGPUBuffer*, EshkolGPUBuffer*, EshkolGPUBuffer*,
+    EshkolGPUBuffer*, EshkolGPUBuffer*, EshkolGPUBuffer*,
+    uint64_t, uint64_t) {
+    return -1;
+}
+
 } // extern "C"
