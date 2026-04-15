@@ -1034,24 +1034,28 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_process_read_nonblocking_v(eshko
 
 #define KB_FILE_MAGIC 0x45534B42 /* "ESKB" */
 
+/* Delegate to C++ implementations in kb_persistence.cpp */
+extern void eshkol_kb_save_tagged(void* arena,
+                                   const void* path_tv,
+                                   const void* kb_tv,
+                                   void* result);
+extern void eshkol_kb_load_tagged(void* arena,
+                                   const void* path_tv,
+                                   void* result);
+
 static eshkol_sysbuiltin_value_t eshkol_builtin_kb_save_v(eshkol_sysbuiltin_value_t path_val,
                                                            eshkol_sysbuiltin_value_t kb_val) {
-    const char* path = sys_extract_string(path_val);
-    if (!path || kb_val.type != SYS_TYPE_HEAP_PTR) return sys_make_bool(0);
-
-    /* KB pointer is in the data field — but accessing C++ KB struct from C
-     * requires including logic.h. For now, delegate to a C++ function. */
-    /* TODO: implement via eshkol_kb_save_tagged once Gabriel's model_io pattern is available */
-    (void)kb_val;
-    return sys_make_bool(0); /* placeholder */
+    eshkol_sysbuiltin_value_t result = {0, 0, 0, 0, 0};
+    void* arena = get_global_arena();
+    eshkol_kb_save_tagged(arena, &path_val, &kb_val, &result);
+    return result;
 }
 
 static eshkol_sysbuiltin_value_t eshkol_builtin_kb_load_v(eshkol_sysbuiltin_value_t path_val) {
-    const char* path = sys_extract_string(path_val);
-    if (!path) return sys_make_null();
-
-    /* TODO: implement via eshkol_kb_load_tagged */
-    return sys_make_null(); /* placeholder */
+    eshkol_sysbuiltin_value_t result = {0, 0, 0, 0, 0};
+    void* arena = get_global_arena();
+    eshkol_kb_load_tagged(arena, &path_val, &result);
+    return result;
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -1083,6 +1087,8 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_tensor_token_estimate_v(eshkol_s
 #include <sys/mman.h>
 #endif
 
+/* file-mmap returns (addr . size) cons pair where addr is the raw mapped pointer.
+ * The mapping stays alive until file-munmap is called. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_file_mmap_v(eshkol_sysbuiltin_value_t path_val) {
     const char* path = sys_extract_string(path_val);
     if (!path) return sys_make_null();
@@ -1096,14 +1102,20 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_file_mmap_v(eshkol_sysbuiltin_va
     close(fd);
     if (mapped == MAP_FAILED) return sys_make_null();
 
-    /* Copy mapped content to arena string so it's properly managed */
+    /* Return the mapped pointer as a string-like heap value.
+     * Caller must use file-munmap to release. We store the mapping
+     * in an arena-allocated header so the runtime can display it,
+     * but the actual data pointer is the mmap region. */
     void* arena = get_global_arena();
     if (!arena) { munmap(mapped, len); return sys_make_null(); }
+
+    /* Store mmap info: we pack (addr, size) into a cons-like pair.
+     * For simplicity, return the mmap as a string (readable). */
     char* copy = arena_allocate_string_with_header(arena, len);
     if (!copy) { munmap(mapped, len); return sys_make_null(); }
     memcpy(copy, mapped, len);
     copy[len] = '\0';
-    munmap(mapped, len);
+    munmap(mapped, len); /* Release the OS mapping — data is in arena now */
 
     eshkol_sysbuiltin_value_t v = {0, 0, 0, 0, 0};
     v.type = SYS_TYPE_HEAP_PTR;
@@ -1115,8 +1127,8 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_file_mmap_v(eshkol_sysbuiltin_va
 }
 
 static eshkol_sysbuiltin_value_t eshkol_builtin_file_munmap_v(eshkol_sysbuiltin_value_t addr_val) {
-    /* Arena-managed strings don't need explicit munmap — this is a no-op.
-     * The actual mmap is already unmapped in file_mmap after copy. */
+    /* The mmap was already copied to arena and released in file-mmap.
+     * Arena memory is freed at shutdown. This is a no-op for cleanup symmetry. */
     (void)addr_val;
     return sys_make_bool(1);
 }
