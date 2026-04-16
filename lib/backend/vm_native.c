@@ -1,3 +1,12 @@
+/* Heap pointer validation — prevent OOB heap access from untrusted values.
+ * Used before any vm->heap.objects[val.as.ptr] dereference. */
+#define VM_VALIDATE_HEAP(vm, val) \
+    (is_valid_heap_ptr((vm), (val).as.ptr) ? \
+     (vm)->heap.objects[(val).as.ptr] : \
+     (fprintf(stderr, "HEAP ACCESS: invalid ptr %d (max %d)\n", \
+              (val).as.ptr, (vm)->heap.next_free), \
+      (vm)->error = 1, (HeapObject*)NULL))
+
 static void vm_dispatch_native(VM* vm, int fid) {
     switch (fid) {
     /* ══════════════════════════════════════════════════════════════════════
@@ -125,7 +134,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 71: { /* length */
         Value lst = vm_pop(vm);
         int len = 0;
-        while (lst.type == VAL_PAIR) { len++; lst = vm->heap.objects[lst.as.ptr]->cons.cdr; }
+        while (lst.type == VAL_PAIR) { len++; if (len > 1000000) { vm->error = 1; break; } lst = vm->heap.objects[lst.as.ptr]->cons.cdr; }
+        if (vm->error) break;
         vm_push(vm, INT_VAL(len));
         break;
     }
@@ -1468,12 +1478,10 @@ static void vm_dispatch_native(VM* vm, int fid) {
                         fg->beliefs[var_id][s] = (s == obs_state) ? 0.0 : -1e30;
                     }
                     /* Mark variable as observed (skip during belief update in fg-infer!).
-                     * Use calloc (not arena) because VmFactorGraph's lifetime may exceed
-                     * arena scope. The leak is bounded: one allocation per factor graph
-                     * (guarded by !fg->observed), num_vars * sizeof(bool) = typically 6-24 bytes.
-                     * Freed when the factor graph is destroyed or the process exits. */
+                     * Allocated via VM arena — lives as long as the factor graph. */
                     if (!fg->observed) {
-                        fg->observed = (bool*)calloc(fg->num_vars, sizeof(bool));
+                        fg->observed = (bool*)vm_alloc(&vm->heap.regions, fg->num_vars * sizeof(bool));
+                        if (fg->observed) memset(fg->observed, 0, fg->num_vars * sizeof(bool));
                     }
                     if (fg->observed) {
                         fg->observed[var_id] = true;
@@ -1540,9 +1548,11 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 /* Call each module's closure, collect salience + proposal */
                 int n_mod = ws->n_modules;
                 if (n_mod > 256) n_mod = 256;
-                double* saliences = (double*)calloc(n_mod, sizeof(double));
-                Value* proposals = (Value*)calloc(n_mod, sizeof(Value));
-                if (!saliences || !proposals) { free(saliences); free(proposals); vm_push(vm, NIL_VAL); break; }
+                double* saliences = (double*)vm_alloc(&vm->heap.regions, n_mod * sizeof(double));
+                Value* proposals = (Value*)vm_alloc(&vm->heap.regions, n_mod * sizeof(Value));
+                if (!saliences || !proposals) { vm_push(vm, NIL_VAL); break; }
+                memset(saliences, 0, n_mod * sizeof(double));
+                memset(proposals, 0, n_mod * sizeof(Value));
                 for (int i = 0; i < n_mod; i++) {
                     Value* closure_ptr = (Value*)ws->modules[i].process_fn;
                     if (closure_ptr && closure_ptr->type == VAL_CLOSURE) {
@@ -1565,7 +1575,6 @@ static void vm_dispatch_native(VM* vm, int fid) {
                     if (saliences[i] > saliences[winner]) winner = i;
                 ws->step_count++;
                 Value winner_proposal = proposals[winner];
-                free(saliences); free(proposals);
                 vm_push(vm, winner_proposal);
                 break;
             }
@@ -3529,9 +3538,9 @@ static void vm_dispatch_native(VM* vm, int fid) {
         Value ch = vm_pop(vm), n = vm_pop(vm);
         int sz = (int)as_number(n), c = (int)as_number(ch);
         if (sz < 0) sz = 0; if (sz > 65536) sz = 65536;
-        char* buf = (char*)malloc(sz + 1);
+        char* buf = (char*)vm_alloc(&vm->heap.regions, (size_t)(sz + 1));
         if (buf) { memset(buf, c > 0 && c < 128 ? c : ' ', sz); buf[sz] = 0;
-            VmString* s = vm_string_from_cstr(&vm->heap.regions, buf); free(buf);
+            VmString* s = vm_string_from_cstr(&vm->heap.regions, buf);
             if (s) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, s); break; }
         }
         vm_push(vm, NIL_VAL); break;
@@ -3932,9 +3941,9 @@ static void vm_dispatch_native(VM* vm, int fid) {
         if (s_val.type == VAL_STRING) {
             VmString* s = (VmString*)vm->heap.objects[s_val.as.ptr]->opaque.ptr;
             if (s && s->byte_len > 0) {
-                char* buf = (char*)malloc(s->byte_len + 1);
+                char* buf = (char*)vm_alloc(&vm->heap.regions, (size_t)(s->byte_len + 1));
                 if (buf) { for (int i = 0; i < s->byte_len; i++) buf[i] = s->data[s->byte_len - 1 - i]; buf[s->byte_len] = 0;
-                    VmString* r = vm_string_from_cstr(&vm->heap.regions, buf); free(buf);
+                    VmString* r = vm_string_from_cstr(&vm->heap.regions, buf);
                     if (r) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, r); break; } } }
         }
         vm_push(vm, s_val); break; }
@@ -3945,9 +3954,9 @@ static void vm_dispatch_native(VM* vm, int fid) {
             int n = (int)as_number(n_val);
             if (s && n > 0 && n < 10000 && s->byte_len > 0) {
                 int total = s->byte_len * n;
-                char* buf = (char*)malloc(total + 1);
+                char* buf = (char*)vm_alloc(&vm->heap.regions, (size_t)(total + 1));
                 if (buf) { for (int i = 0; i < n; i++) memcpy(buf + i * s->byte_len, s->data, s->byte_len); buf[total] = 0;
-                    VmString* r = vm_string_from_cstr(&vm->heap.regions, buf); free(buf);
+                    VmString* r = vm_string_from_cstr(&vm->heap.regions, buf);
                     if (r) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, r); break; } } }
         }
         vm_push(vm, s_val); break; }

@@ -11,6 +11,7 @@
 
 #include <eshkol/core/inference.h>
 #include <eshkol/eshkol.h>
+#include "arena_memory.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -57,8 +58,8 @@ static const double LOG_ZERO = -1e30;  /* Approximate -infinity for log-space */
 
 /* log-sum-exp: log(exp(a) + exp(b)) = max(a,b) + log(1 + exp(-|a-b|)) */
 static double logsumexp2(double a, double b) {
-    if (a == LOG_ZERO) return b;
-    if (b == LOG_ZERO) return a;
+    if (a <= LOG_ZERO + 1.0) return b;
+    if (b <= LOG_ZERO + 1.0) return a;
     double m = (a > b) ? a : b;
     return m + log(1.0 + exp(-(fabs(a - b))));
 }
@@ -138,7 +139,8 @@ eshkol_factor_graph_t* eshkol_make_factor_graph(arena_t* arena,
         fg->beliefs[i] = alloc_doubles(arena, var_dims[i]);
         if (!fg->beliefs[i]) return NULL;
         /* Initialize to uniform: log(1/dim) */
-        double log_uniform = -log((double)var_dims[i]);
+        uint32_t safe_dim = var_dims[i] > 0 ? var_dims[i] : 1;
+        double log_uniform = -log((double)safe_dim);
         for (uint32_t j = 0; j < var_dims[i]; j++) {
             fg->beliefs[i][j] = log_uniform;
         }
@@ -243,6 +245,7 @@ static bool allocate_messages(arena_t* arena, eshkol_factor_graph_t* fg) {
             if (!fg->msg_fv[msg_idx] || !fg->msg_vf[msg_idx]) return false;
 
             /* Initialize to uniform (log(1/dim)) */
+            if (dim <= 0) dim = 1;
             double log_uni = -log((double)dim);
             for (uint32_t s = 0; s < dim; s++) {
                 fg->msg_fv[msg_idx][s] = log_uni;
@@ -961,7 +964,7 @@ extern "C" void eshkol_fg_observe_tagged(arena_t* arena,
 
     /* Mark as observed (allocate observed array if needed) */
     if (!fg->observed) {
-        fg->observed = (bool*)calloc(fg->num_vars, sizeof(bool));
+        fg->observed = (bool*)arena_allocate_zeroed(get_global_arena(), fg->num_vars * sizeof(bool));
     }
     if (fg->observed) {
         fg->observed[var_id] = true;

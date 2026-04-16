@@ -2426,6 +2426,20 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
                 }
             }
 
+            // REPL MODE: cross-evaluation symbol registry (functions defined in prior JIT modules)
+            if (!var_value && repl_mode_enabled_ && *repl_mode_enabled_) {
+                std::lock_guard<std::mutex> lock(*repl_mutex_);
+                auto repl_it = repl_symbol_addresses_->find(func_name);
+                if (repl_it != repl_symbol_addresses_->end()) {
+                    GlobalVariable* gv = ctx_.module().getGlobalVariable(func_name);
+                    if (!gv) {
+                        gv = new GlobalVariable(ctx_.module(), ctx_.taggedValueType(), false,
+                                                GlobalValue::ExternalLinkage, nullptr, func_name);
+                    }
+                    var_value = gv;
+                }
+            }
+
             // ═══════════════════════════════════════════════════════════════
             // UNIFIED RUNTIME GRADIENT PATH
             // Consolidates 3 duplicate paths (Argument, Pointer, GlobalVariable)
@@ -2481,9 +2495,18 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
                 // Pointer-type captured Argument — load the tagged value
                 closure_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), var_value);
             } else if (var_value && isa<GlobalVariable>(var_value)) {
-                // GlobalVariable — load via the global's value type
+                // GlobalVariable — may be from a different module (REPL mode), so ensure we
+                // reference the symbol via the CURRENT module with ExternalLinkage if needed.
                 GlobalVariable* gv = cast<GlobalVariable>(var_value);
-                closure_val = ctx_.builder().CreateLoad(gv->getValueType(), var_value);
+                if (gv->getParent() != &ctx_.module()) {
+                    GlobalVariable* cur_gv = ctx_.module().getGlobalVariable(gv->getName());
+                    if (!cur_gv) {
+                        cur_gv = new GlobalVariable(ctx_.module(), gv->getValueType(), false,
+                                                    GlobalValue::ExternalLinkage, nullptr, gv->getName());
+                    }
+                    gv = cur_gv;
+                }
+                closure_val = ctx_.builder().CreateLoad(gv->getValueType(), gv);
             }
 
             // Step 2: Shared forward-mode gradient computation
@@ -4139,15 +4162,67 @@ llvm::Value* AutodiffCodegen::jacobian(const eshkol_operations_t* op) {
     
     // CRITICAL FIX: Must null-check before dyn_cast to avoid LLVM assertion
     Value* func = resolve_lambda_callback_(op->jacobian_op.function, 0, callback_context_);
-    if (!func) {
-        eshkol_error("Failed to resolve function for Jacobian computation");
-        return nullptr;
-    }
-    
-    Function* func_ptr = dyn_cast<Function>(func);
+
+    Function* func_ptr = func ? dyn_cast<Function>(func) : nullptr;
+
+    // CLOSURE FALLBACK: if resolve_lambda_callback_ returned nullptr or a non-Function*
+    // (e.g. the function is a top-level variable holding a runtime closure), load the
+    // closure value from the symbol tables and call through closure_call_callback_.
+    Value* closure_val = nullptr;
     if (!func_ptr) {
-        eshkol_error("Jacobian requires function, got non-function");
-        return nullptr;
+        const eshkol_ast_t* func_ast = op->jacobian_op.function;
+        if (func_ast && func_ast->type == ESHKOL_VAR) {
+            std::string func_name = func_ast->variable.id;
+            Value* var_value = nullptr;
+
+            // Try local symbol table first
+            auto lit = symbol_table_->find(func_name);
+            if (lit != symbol_table_->end() && lit->second) {
+                var_value = lit->second;
+            }
+            // Try global symbol table (top-level defines)
+            if (!var_value) {
+                auto git = global_symbol_table_->find(func_name);
+                if (git != global_symbol_table_->end() && git->second) {
+                    var_value = git->second;
+                }
+            }
+            // REPL MODE: look up in cross-evaluation symbol address registry
+            if (!var_value && repl_mode_enabled_ && *repl_mode_enabled_) {
+                std::lock_guard<std::mutex> lock(*repl_mutex_);
+                auto repl_it = repl_symbol_addresses_->find(func_name);
+                if (repl_it != repl_symbol_addresses_->end()) {
+                    GlobalVariable* gv = ctx_.module().getGlobalVariable(func_name);
+                    if (!gv) {
+                        gv = new GlobalVariable(
+                            ctx_.module(), ctx_.taggedValueType(), false,
+                            GlobalValue::ExternalLinkage, nullptr, func_name);
+                    }
+                    var_value = gv;
+                }
+            }
+
+            if (var_value) {
+                if (isa<GlobalVariable>(var_value)) {
+                    GlobalVariable* gv = cast<GlobalVariable>(var_value);
+                    closure_val = ctx_.builder().CreateLoad(gv->getValueType(), gv);
+                } else if (isa<AllocaInst>(var_value)) {
+                    closure_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), var_value);
+                } else if (isa<Argument>(var_value)) {
+                    if (var_value->getType()->isPointerTy()) {
+                        closure_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), var_value);
+                    } else {
+                        closure_val = var_value;
+                    }
+                } else if (var_value->getType() == ctx_.taggedValueType()) {
+                    closure_val = var_value;
+                }
+            }
+        }
+        if (!closure_val) {
+            eshkol_error("Failed to resolve function for Jacobian computation");
+            return nullptr;
+        }
     }
     
     llvm::Value* vector_val_raw = codegen_ast_callback_(op->jacobian_op.point, callback_context_);
@@ -4309,11 +4384,17 @@ llvm::Value* AutodiffCodegen::jacobian(const eshkol_operations_t* op) {
     // Call function once to determine output dimension m
     // CRITICAL FIX: Pack as TENSOR_PTR not INT64, so identity lambdas preserve type
     Value* vector_tagged = tagged_.packPtr(vector_ptr_int, ESHKOL_VALUE_HEAP_PTR);
-    // CLOSURE FIX: Load captures for function call
-    std::vector<Value*> test_call_args = {vector_tagged};
-    std::vector<Value*> jac_test_captures = loadCapturesForAutodiff(func_ptr, "Jacobian test call");
-    test_call_args.insert(test_call_args.end(), jac_test_captures.begin(), jac_test_captures.end());
-    Value* test_output_tagged = ctx_.builder().CreateCall(func_ptr, test_call_args);
+    Value* test_output_tagged;
+    if (func_ptr) {
+        // Compile-time resolved function: direct call with explicit captures
+        std::vector<Value*> test_call_args = {vector_tagged};
+        std::vector<Value*> jac_test_captures = loadCapturesForAutodiff(func_ptr, "Jacobian test call");
+        test_call_args.insert(test_call_args.end(), jac_test_captures.begin(), jac_test_captures.end());
+        test_output_tagged = ctx_.builder().CreateCall(func_ptr, test_call_args);
+    } else {
+        // Runtime closure path — captures are embedded inside the closure struct
+        test_output_tagged = closure_call_callback_(closure_val, {vector_tagged}, "jacobian-test", callback_context_);
+    }
 
     // ENHANCED TYPE CHECK: Accept tensors, AD tensors, AND Scheme vectors as valid outputs
     Value* output_type = tagged_.getType(test_output_tagged);
@@ -4607,15 +4688,21 @@ llvm::Value* AutodiffCodegen::jacobian(const eshkol_operations_t* op) {
     Value* jac_ad_tensor_int = ctx_.builder().CreatePtrToInt(typed_jac_ad_tensor, ctx_.int64Type());
     // CRITICAL FIX: Pack as TENSOR_PTR not INT64, so identity lambdas preserve type
     Value* jac_ad_tensor_tagged = tagged_.packPtr(jac_ad_tensor_int, ESHKOL_VALUE_HEAP_PTR);
-    
+
     // PHASE 1 FIX: Set AD mode flag to true before calling lambda
     ctx_.builder().CreateStore(ConstantInt::get(ctx_.int1Type(), 1), ctx_.adModeActive());
 
-    // CLOSURE FIX: Load captures for function call
-    std::vector<Value*> jac_call_args = {jac_ad_tensor_tagged};
-    std::vector<Value*> jac_captures = loadCapturesForAutodiff(func_ptr, "Jacobian AD call");
-    jac_call_args.insert(jac_call_args.end(), jac_captures.begin(), jac_captures.end());
-    Value* jac_output_tagged = ctx_.builder().CreateCall(func_ptr, jac_call_args);
+    Value* jac_output_tagged;
+    if (func_ptr) {
+        // Compile-time resolved function: direct call with explicit captures
+        std::vector<Value*> jac_call_args = {jac_ad_tensor_tagged};
+        std::vector<Value*> jac_captures = loadCapturesForAutodiff(func_ptr, "Jacobian AD call");
+        jac_call_args.insert(jac_call_args.end(), jac_captures.begin(), jac_captures.end());
+        jac_output_tagged = ctx_.builder().CreateCall(func_ptr, jac_call_args);
+    } else {
+        // Runtime closure path — captures are embedded inside the closure struct
+        jac_output_tagged = closure_call_callback_(closure_val, {jac_ad_tensor_tagged}, "jacobian-ad", callback_context_);
+    }
 
     // PHASE 1 FIX: Set AD mode flag back to false after lambda call
     ctx_.builder().CreateStore(ConstantInt::get(ctx_.int1Type(), 0), ctx_.adModeActive());
@@ -5054,15 +5141,58 @@ llvm::Value* AutodiffCodegen::hessian(const eshkol_operations_t* op) {
     
     // CRITICAL FIX: Must null-check before dyn_cast to avoid LLVM assertion
     Value* func = resolve_lambda_callback_(op->hessian_op.function, 0, callback_context_);
-    if (!func) {
-        eshkol_error("Failed to resolve function for Hessian computation");
-        return nullptr;
-    }
-    
-    Function* func_ptr = dyn_cast<Function>(func);
+    Function* func_ptr = func ? dyn_cast<Function>(func) : nullptr;
+
+    // Closure fallback: handle top-level (define f (lambda ...)) and REPL closures
+    Value* hessian_closure_val = nullptr;
     if (!func_ptr) {
-        eshkol_error("Hessian requires function");
-        return nullptr;
+        const eshkol_ast_t* func_ast = op->hessian_op.function;
+        if (func_ast && func_ast->type == ESHKOL_VAR) {
+            std::string func_name = func_ast->variable.id;
+            Value* var_value = nullptr;
+            auto lit = symbol_table_->find(func_name);
+            if (lit != symbol_table_->end() && lit->second) var_value = lit->second;
+            if (!var_value) {
+                auto git = global_symbol_table_->find(func_name);
+                if (git != global_symbol_table_->end() && git->second) var_value = git->second;
+            }
+            if (!var_value && repl_mode_enabled_ && *repl_mode_enabled_) {
+                std::lock_guard<std::mutex> lock(*repl_mutex_);
+                auto repl_it = repl_symbol_addresses_->find(func_name);
+                if (repl_it != repl_symbol_addresses_->end()) {
+                    GlobalVariable* gv = ctx_.module().getGlobalVariable(func_name);
+                    if (!gv) {
+                        gv = new GlobalVariable(ctx_.module(), ctx_.taggedValueType(), false,
+                                                GlobalValue::ExternalLinkage, nullptr, func_name);
+                    }
+                    var_value = gv;
+                }
+            }
+            if (var_value) {
+                if (isa<GlobalVariable>(var_value)) {
+                    GlobalVariable* gv = cast<GlobalVariable>(var_value);
+                    if (gv->getParent() != &ctx_.module()) {
+                        GlobalVariable* cur_gv = ctx_.module().getGlobalVariable(gv->getName());
+                        if (!cur_gv) cur_gv = new GlobalVariable(ctx_.module(), gv->getValueType(), false,
+                                                                  GlobalValue::ExternalLinkage, nullptr, gv->getName());
+                        gv = cur_gv;
+                    }
+                    hessian_closure_val = ctx_.builder().CreateLoad(gv->getValueType(), gv);
+                } else if (isa<AllocaInst>(var_value)) {
+                    hessian_closure_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), var_value);
+                } else if (var_value->getType() == ctx_.taggedValueType()) {
+                    hessian_closure_val = var_value;
+                } else if (isa<Argument>(var_value)) {
+                    hessian_closure_val = var_value->getType()->isPointerTy()
+                        ? ctx_.builder().CreateLoad(ctx_.taggedValueType(), var_value)
+                        : var_value;
+                }
+            }
+        }
+        if (!hessian_closure_val) {
+            eshkol_error("Failed to resolve function for Hessian computation");
+            return nullptr;
+        }
     }
     
     Value* typed_raw_ = codegen_ast_callback_(op->hessian_op.point, callback_context_);
@@ -5112,14 +5242,18 @@ llvm::Value* AutodiffCodegen::hessian(const eshkol_operations_t* op) {
         if (is_scalar_input) {
             eshkol_info("Hessian: scalar input detected, using f''(x) formula");
 
-            // Resolve to a direct Function* — avoids the closure call dispatch
-            // tree which has known PHI issues when called multiple times.
-            Value* func_val = resolve_lambda_callback_(op->hessian_op.function, 1, callback_context_);
-            Function* func_ptr = func_val ? dyn_cast<Function>(func_val) : nullptr;
-            if (!func_ptr) {
-                eshkol_error("Failed to resolve function for scalar Hessian");
-                return nullptr;
+            // Try to get a direct Function* for scalar hessian (avoids PHI issues with repeated calls).
+            // If not available (REPL closure), fall back to closure_call_callback_.
+            Function* scalar_func_ptr = nullptr;
+            if (func_ptr) {
+                Value* func_val2 = resolve_lambda_callback_(op->hessian_op.function, 1, callback_context_);
+                scalar_func_ptr = func_val2 ? dyn_cast<Function>(func_val2) : nullptr;
+                if (!scalar_func_ptr) {
+                    eshkol_error("Failed to resolve function for scalar Hessian");
+                    return nullptr;
+                }
             }
+            // If !func_ptr, scalar_func_ptr stays nullptr and hessian_closure_val is used below.
 
             // Get the scalar point value as a double
             Value* point_tagged = typed_raw_;
@@ -5133,14 +5267,21 @@ llvm::Value* AutodiffCodegen::hessian(const eshkol_operations_t* op) {
 
             Value* h = ConstantFP::get(ctx_.doubleType(), 1e-5);
 
-            // Direct function calls: f(x+h), f(x), f(x-h)
+            // Function calls: f(x+h), f(x), f(x-h) — dispatch to func_ptr or closure
             Value* xph = tagged_.packDouble(ctx_.builder().CreateFAdd(x, h));
             Value* xv  = tagged_.packDouble(x);
             Value* xmh = tagged_.packDouble(ctx_.builder().CreateFSub(x, h));
 
-            Value* fxph = ctx_.builder().CreateCall(func_ptr, {xph});
-            Value* fx   = ctx_.builder().CreateCall(func_ptr, {xv});
-            Value* fxmh = ctx_.builder().CreateCall(func_ptr, {xmh});
+            Value* fxph, *fx, *fxmh;
+            if (scalar_func_ptr) {
+                fxph = ctx_.builder().CreateCall(scalar_func_ptr, {xph});
+                fx   = ctx_.builder().CreateCall(scalar_func_ptr, {xv});
+                fxmh = ctx_.builder().CreateCall(scalar_func_ptr, {xmh});
+            } else {
+                fxph = closure_call_callback_(hessian_closure_val, {xph}, "hessian-scalar-xph", callback_context_);
+                fx   = closure_call_callback_(hessian_closure_val, {xv},  "hessian-scalar-x",   callback_context_);
+                fxmh = closure_call_callback_(hessian_closure_val, {xmh}, "hessian-scalar-xmh", callback_context_);
+            }
 
             Value* a = tagged_.unpackDouble(fxph);
             Value* b = tagged_.unpackDouble(fx);
@@ -5477,11 +5618,16 @@ llvm::Value* AutodiffCodegen::hessian(const eshkol_operations_t* op) {
     // PHASE 1 FIX: Set AD mode flag to true before calling lambda
     ctx_.builder().CreateStore(ConstantInt::get(ctx_.int1Type(), 1), ctx_.adModeActive());
 
-    // CLOSURE FIX: Load captures for function call
-    std::vector<Value*> bg_call_args = {bg_ad_tensor_tagged};
-    std::vector<Value*> bg_captures = loadCapturesForAutodiff(func_ptr, "Hessian backward call");
-    bg_call_args.insert(bg_call_args.end(), bg_captures.begin(), bg_captures.end());
-    Value* bg_output_tagged = ctx_.builder().CreateCall(func_ptr, bg_call_args);
+    // CLOSURE FIX: Load captures for function call (direct func_ptr) or use closure dispatch
+    Value* bg_output_tagged;
+    if (func_ptr) {
+        std::vector<Value*> bg_call_args = {bg_ad_tensor_tagged};
+        std::vector<Value*> bg_captures = loadCapturesForAutodiff(func_ptr, "Hessian backward call");
+        bg_call_args.insert(bg_call_args.end(), bg_captures.begin(), bg_captures.end());
+        bg_output_tagged = ctx_.builder().CreateCall(func_ptr, bg_call_args);
+    } else {
+        bg_output_tagged = closure_call_callback_(hessian_closure_val, {bg_ad_tensor_tagged}, "hessian-bg", callback_context_);
+    }
 
     // PHASE 1 FIX: Set AD mode flag back to false after lambda call
     ctx_.builder().CreateStore(ConstantInt::get(ctx_.int1Type(), 0), ctx_.adModeActive());
@@ -5682,11 +5828,16 @@ llvm::Value* AutodiffCodegen::hessian(const eshkol_operations_t* op) {
     ctx_.builder().CreateStore(ConstantInt::get(ctx_.int1Type(), 1), ctx_.adModeActive());
     ctx_.builder().CreateStore(pert_tape, ctx_.currentAdTape());
 
-    // CLOSURE FIX: Load captures for function call
-    std::vector<Value*> pert_call_args = {pert_ad_tensor_tagged};
-    std::vector<Value*> pert_captures = loadCapturesForAutodiff(func_ptr, "Hessian perturbation call");
-    pert_call_args.insert(pert_call_args.end(), pert_captures.begin(), pert_captures.end());
-    Value* pert_output_tagged = ctx_.builder().CreateCall(func_ptr, pert_call_args);
+    // CLOSURE FIX: Load captures for function call (direct func_ptr) or use closure dispatch
+    Value* pert_output_tagged;
+    if (func_ptr) {
+        std::vector<Value*> pert_call_args = {pert_ad_tensor_tagged};
+        std::vector<Value*> pert_captures = loadCapturesForAutodiff(func_ptr, "Hessian perturbation call");
+        pert_call_args.insert(pert_call_args.end(), pert_captures.begin(), pert_captures.end());
+        pert_output_tagged = ctx_.builder().CreateCall(func_ptr, pert_call_args);
+    } else {
+        pert_output_tagged = closure_call_callback_(hessian_closure_val, {pert_ad_tensor_tagged}, "hessian-pert", callback_context_);
+    }
 
     // Reset AD mode and tape
     ctx_.builder().CreateStore(ConstantInt::get(ctx_.int1Type(), 0), ctx_.adModeActive());
@@ -8359,13 +8510,20 @@ void AutodiffCodegen::pushTapeContext(llvm::Value* new_tape) {
         ctx_.builder().CreateCondBr(is_overflow, overflow_bb, safe_bb);
 
         ctx_.builder().SetInsertPoint(overflow_bb);
-        // Print error and abort
+        // Print error message to stderr and abort
         llvm::FunctionType* fprintf_type = llvm::FunctionType::get(ctx_.int32Type(),
             {ctx_.ptrType(), ctx_.ptrType()}, true);
         llvm::FunctionCallee fprintf_func = ctx_.module().getOrInsertFunction("fprintf", fprintf_type);
-        llvm::FunctionType* fdopen_type = llvm::FunctionType::get(ctx_.ptrType(),
-            {ctx_.int32Type(), ctx_.ptrType()}, false);
-        // Use stderr via global
+        // Get stderr via __stderrp (macOS) or stderr global
+        llvm::GlobalVariable* stderr_var = ctx_.module().getGlobalVariable("__stderrp");
+        if (!stderr_var) {
+            stderr_var = new llvm::GlobalVariable(ctx_.module(), ctx_.ptrType(), false,
+                llvm::GlobalValue::ExternalLinkage, nullptr, "__stderrp");
+        }
+        llvm::Value* stderr_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), stderr_var);
+        llvm::Value* err_msg = ctx_.builder().CreateGlobalStringPtr(
+            "AD tape stack overflow: nesting depth exceeds 32\n");
+        ctx_.builder().CreateCall(fprintf_func, {stderr_ptr, err_msg});
         llvm::FunctionCallee abort_func = ctx_.module().getOrInsertFunction("abort",
             llvm::FunctionType::get(ctx_.voidType(), false));
         ctx_.builder().CreateCall(abort_func);

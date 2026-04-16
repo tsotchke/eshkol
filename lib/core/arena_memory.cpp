@@ -36,13 +36,17 @@
 // Default alignment for memory allocations
 #define DEFAULT_ALIGNMENT 8
 
-// Global tape pointer for AD operations (shared across JIT modules in REPL)
-// NOTE: Not thread_local because REPL JIT resolves these via dlsym/ADD_DATA_SYMBOL.
-// For parallel-map with AD, the codegen should use per-task tape allocation.
+// Global tape pointer for AD operations.
+// NOTE: Not thread_local — LLVM ExternalLinkage globals cannot link against
+// C thread_local symbols portably (macOS ARM64 TLS ABI mismatch). Thread
+// safety is ensured by the AD tape STACK (__ad_tape_stack) which IS thread_local.
+// parallel-map workers don't perform AD internally; the main thread controls
+// AD mode. If parallel AD is needed (v1.2+), use per-task tape allocation.
 ad_tape_t* __current_ad_tape = nullptr;
 
-// Global AD mode flag (shared across JIT modules in REPL)
-// CRITICAL: This must be shared so lambdas from one module can see AD mode set by another
+// Global AD mode flag — same portability constraint as __current_ad_tape.
+// CRITICAL: Must be shared so lambdas from one LLVM module can see AD mode
+// set by another module (cross-module AD in REPL).
 bool __ad_mode_active = false;
 
 // ============================================================================
@@ -470,8 +474,8 @@ char* arena_allocate_string_with_header(arena_t* arena, size_t length) {
         return nullptr;
     }
 
-    // Overflow check: length + 1 can wrap at SIZE_MAX
-    if (length >= SIZE_MAX) {
+    // Overflow check: length + 1 + header must not wrap
+    if (length >= SIZE_MAX - sizeof(eshkol_object_header_t) - 8) {
         eshkol_error("String length overflow (length=%zu)", length);
         return nullptr;
     }
@@ -681,7 +685,7 @@ void arena_pop_scope(arena_t* arena) {
     if (!arena || !arena->current_scope) {
         eshkol_error("Attempted to pop arena scope with no matching push — "
                      "unbalanced scope operations risk memory corruption");
-        abort();  // Fatal: continuing with corrupted scope stack causes silent memory corruption
+        return;  // Graceful: skip the pop rather than kill the process
     }
     
     arena_scope_t* scope = arena->current_scope;
@@ -5145,6 +5149,45 @@ extern "C" void eshkol_concat_strided(
 }
 
 // ===== END LINEAR ALGEBRA RUNTIME FUNCTIONS =====
+
+// ===== BATCH MATRIX MULTIPLICATION RUNTIME =====
+
+/**
+ * eshkol_batch_matmul_f64 — batched GEMM with plain C loops.
+ *
+ * A: [batch, M, K]   B: [batch, K, N]   C: [batch, M, N]
+ *
+ * Each slice is: C[b,:,:] = A[b,:,:] @ B[b,:,:]
+ * Inner loop uses a simple triple-loop (i,j,k) that the compiler
+ * can auto-vectorise.
+ */
+extern "C" void eshkol_batch_matmul_f64(
+    const double* __restrict__ a,
+    const double* __restrict__ b,
+    double*       __restrict__ c,
+    int64_t batch, int64_t M, int64_t K, int64_t N)
+{
+    for (int64_t bs = 0; bs < batch; bs++) {
+        const double* A = a + bs * M * K;
+        const double* B = b + bs * K * N;
+        double*       C = c + bs * M * N;
+
+        // Initialise output slice to zero
+        for (int64_t idx = 0; idx < M * N; idx++) C[idx] = 0.0;
+
+        // Standard triple loop, cache-friendly for row-major B iteration
+        for (int64_t i = 0; i < M; i++) {
+            for (int64_t kk = 0; kk < K; kk++) {
+                double a_ik = A[i * K + kk];
+                for (int64_t j = 0; j < N; j++) {
+                    C[i * N + j] += a_ik * B[kk * N + j];
+                }
+            }
+        }
+    }
+}
+
+// ===== END BATCH MATRIX MULTIPLICATION RUNTIME =====
 
 // ===== STACK OVERFLOW PROTECTION =====
 

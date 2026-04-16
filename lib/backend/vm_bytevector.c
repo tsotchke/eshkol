@@ -145,7 +145,16 @@ VmString* vm_bv_utf8_to_string(VmRegionStack* rs, const VmBytevector* bv, int st
     if (!s) return NULL;
 #ifdef VM_STRING_C_INCLUDED
     s->byte_len = n;
-    s->char_len = n; /* approximate: assumes ASCII-like for raw bv->string */
+    /* Count UTF-8 characters: each lead byte starts a character.
+     * Lead bytes are NOT continuation bytes (0x80-0xBF). */
+    {
+        int char_count = 0;
+        for (int i = start; i < end; i++) {
+            uint8_t b = (uint8_t)bv->data[i];
+            if ((b & 0xC0) != 0x80) char_count++;  /* not a continuation byte */
+        }
+        s->char_len = char_count;
+    }
 #else
     s->len = n;
     s->cap = n + 1;

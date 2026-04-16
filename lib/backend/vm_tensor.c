@@ -143,6 +143,7 @@ static VmTensor* vm_tensor_reshape(VmRegionStack* rs, const VmTensor* t,
     int64_t new_total = 1;
     for (int i = 0; i < new_dims; i++) {
         if (new_shape[i] <= 0) return NULL;
+        if (new_total > INT64_MAX / new_shape[i]) return NULL;
         new_total *= new_shape[i];
     }
     if (new_total != t->total) return NULL;

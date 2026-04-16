@@ -331,6 +331,24 @@ private:
                 value += input[pos++];
                 column_++;
             }
+
+            // Check for extreme exponent values that may cause overflow/underflow
+            {
+                size_t e_pos = value.find_last_of("eE");
+                if (e_pos != std::string::npos) {
+                    std::string exp_str = value.substr(e_pos + 1);
+                    try {
+                        long exponent = std::stol(exp_str);
+                        if (exponent > 400 || exponent < -400) {
+                            eshkol_warn("extreme exponent %ld in number literal '%s' (may lose precision or overflow)",
+                                       exponent, value.c_str());
+                        }
+                    } catch (...) {
+                        // stol failed — exponent too large to even parse as long
+                        eshkol_warn("unparseable exponent in number literal '%s'", value.c_str());
+                    }
+                }
+            }
         }
 
         return {TOKEN_NUMBER, value, start, tok_line, tok_col};
@@ -475,6 +493,10 @@ static eshkol_ast_t parse_atom(const Token& token) {
                     den = std::stoll(den_str);
                 } catch (...) {
                     PARSE_ERROR_AT(token, "invalid rational literal: %s", token.value.c_str());
+                    break;
+                }
+                if (den == 0) {
+                    PARSE_ERROR_AT(token, "division by zero in rational literal");
                     break;
                 }
                 // Create (make-rational num den) call AST

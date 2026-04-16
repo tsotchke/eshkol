@@ -100,6 +100,38 @@ public:
      */
     llvm::Value* tensorArithmetic(const eshkol_operations_t* op, const std::string& operation);
 
+    // === Tensor Unary Operations ===
+
+    /** Element-wise negation: (tensor-neg t) */
+    llvm::Value* tensorNeg(const eshkol_operations_t* op);
+    /** Element-wise absolute value: (tensor-abs t) */
+    llvm::Value* tensorAbs(const eshkol_operations_t* op);
+    /** Element-wise square root: (tensor-sqrt t) */
+    llvm::Value* tensorSqrt(const eshkol_operations_t* op);
+    /** Element-wise exponential: (tensor-exp t) */
+    llvm::Value* tensorExp(const eshkol_operations_t* op);
+    /** Element-wise natural log: (tensor-log t) */
+    llvm::Value* tensorLog(const eshkol_operations_t* op);
+    /** Element-wise sine: (tensor-sin t) */
+    llvm::Value* tensorSin(const eshkol_operations_t* op);
+    /** Element-wise cosine: (tensor-cos t) */
+    llvm::Value* tensorCos(const eshkol_operations_t* op);
+
+    // === Tensor Binary Operations ===
+
+    /** Element-wise power: (tensor-pow a b) */
+    llvm::Value* tensorPow(const eshkol_operations_t* op);
+    /** Element-wise maximum: (tensor-maximum a b) */
+    llvm::Value* tensorMaximum(const eshkol_operations_t* op);
+    /** Element-wise minimum: (tensor-minimum a b) */
+    llvm::Value* tensorMinimum(const eshkol_operations_t* op);
+
+    /** Scalar multiplication: (tensor-scale t scalar) */
+    llvm::Value* tensorScale(const eshkol_operations_t* op);
+
+    /** Batched matrix multiplication: (batch-matmul A B) where A,B are 3D (batch,M,K)/(batch,K,N) */
+    llvm::Value* batchMatmul(const eshkol_operations_t* op);
+
     /**
      * Internal arithmetic implementation for two tagged values.
      * @param left Left operand (tagged)
@@ -1118,10 +1150,21 @@ private:
      * Falls back to scalar for tail elements (count % SIMD_WIDTH != 0).
      * @param tensor1 First tensor (tagged)
      * @param tensor2 Second tensor (tagged)
-     * @param operation One of "add", "sub", "mul", "div"
+     * @param operation One of "add", "sub", "mul", "div", "pow", "max", "min"
      * @return Result tensor (tagged)
      */
     llvm::Value* rawTensorArithmeticSIMD(llvm::Value* tensor1, llvm::Value* tensor2, const std::string& operation);
+
+    /**
+     * Generic element-wise unary operation using SIMD + scalar loops.
+     * @param tensor_val Tagged tensor value
+     * @param op_name Operation name for block labels
+     * @param intrinsic_id LLVM intrinsic ID (e.g. Intrinsic::sqrt)
+     * @param use_fneg If true, emit FNeg (for neg operation) instead of intrinsic
+     * @return Tagged tensor result
+     */
+    llvm::Value* emitTensorUnaryOp(llvm::Value* tensor_val, const std::string& op_name,
+                                   llvm::Intrinsic::ID intrinsic_id, bool use_fneg = false);
 
     /**
      * Attach LLVM loop vectorization/unroll metadata to a loop back-edge branch.

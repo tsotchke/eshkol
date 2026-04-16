@@ -82,6 +82,9 @@ void eshkol_set_timestamps(bool enabled);
 // ============================================================================
 
 // Log a message at the specified level
+#ifdef __GNUC__
+__attribute__((format(printf, 2, 3)))
+#endif
 void eshkol_printf(eshkol_logger_t level, const char *msg, ...);
 
 // Log a stacktrace at the specified level

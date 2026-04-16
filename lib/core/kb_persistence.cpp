@@ -160,6 +160,7 @@ void eshkol_kb_load_tagged(arena_t* arena,
             uint8_t type;
             uint64_t data;
             if (fread(&type, 1, 1, f) != 1 || fread(&data, 8, 1, f) != 1) break;
+            if (type >= 16) type = 0;
             args[j].type = type;
             args[j].flags = 0;
             args[j].reserved = 0;

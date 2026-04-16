@@ -4,6 +4,7 @@
  */
 
 #include "eshkol/types/type_checker.h"
+#include "../../lib/core/arena_memory.h"
 #include <cstdio>
 #include <sstream>
 #include <cstring>
@@ -78,11 +79,9 @@ std::optional<hott_type_expr_t*> Context::lookupTypeAlias(const std::string& nam
 
 // Helper function to allocate a type expression
 static hott_type_expr_t* allocTypeExpr(hott_type_kind_t kind) {
-    hott_type_expr_t* type = (hott_type_expr_t*)malloc(sizeof(hott_type_expr_t));
-    if (type) {
-        memset(type, 0, sizeof(hott_type_expr_t));
-        type->kind = kind;
-    }
+    void* mem = arena_allocate_zeroed(get_global_arena(), sizeof(hott_type_expr_t));
+    hott_type_expr_t* type = (hott_type_expr_t*)mem;
+    if (type) type->kind = kind;
     return type;
 }
 
@@ -114,7 +113,7 @@ static hott_type_expr_t* substituteTypeVars(
 
         case HOTT_TYPE_ARROW:
             if (type_expr->arrow.num_params > 0 && type_expr->arrow.param_types) {
-                result->arrow.param_types = (hott_type_expr_t**)malloc(
+                result->arrow.param_types = (hott_type_expr_t**)arena_allocate(get_global_arena(),
                     type_expr->arrow.num_params * sizeof(hott_type_expr_t*));
                 for (uint64_t i = 0; i < type_expr->arrow.num_params; i++) {
                     result->arrow.param_types[i] = substituteTypeVars(
@@ -129,7 +128,7 @@ static hott_type_expr_t* substituteTypeVars(
         case HOTT_TYPE_FORALL:
             // For forall types, we need to be careful not to substitute bound variables
             if (type_expr->forall.num_vars > 0 && type_expr->forall.type_vars) {
-                result->forall.type_vars = (char**)malloc(
+                result->forall.type_vars = (char**)arena_allocate(get_global_arena(),
                     type_expr->forall.num_vars * sizeof(char*));
                 // Create a modified substitution map excluding bound variables
                 std::map<std::string, hott_type_expr_t*> inner_subst = substitutions;

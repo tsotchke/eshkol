@@ -101,7 +101,7 @@ char* serialize_sexp_to_string(eshkol_tagged_value_t value) {
     }
     rewind(memstream);
 
-    char* buffer = static_cast<char*>(std::malloc(static_cast<size_t>(end_pos) + 1));
+    char* buffer = static_cast<char*>(arena_allocate(get_global_arena(), static_cast<size_t>(end_pos) + 1));
     if (!buffer) {
         fclose(memstream);
         return nullptr;
@@ -715,7 +715,7 @@ eshkol_tagged_value_t eshkol_eval_env(eshkol_tagged_value_t sexp,
         if (num_bindings > 0) {
             // Create let bindings array - each binding is a (var, value) pair
             eshkol_ast_t* bindings = static_cast<eshkol_ast_t*>(
-                malloc(num_bindings * 2 * sizeof(eshkol_ast_t)));
+                arena_allocate(get_global_arena(),num_bindings * 2 * sizeof(eshkol_ast_t)));
 
             current = env;
             size_t i = 0;
@@ -857,7 +857,7 @@ eshkol_tagged_value_t eshkol_compile_with_env(
     if (env && env->count > 0) {
         // Create let bindings array - each binding is a (var, value) pair
         eshkol_ast_t* bindings = static_cast<eshkol_ast_t*>(
-            malloc(env->count * 2 * sizeof(eshkol_ast_t)));
+            arena_allocate(get_global_arena(),env->count * 2 * sizeof(eshkol_ast_t)));
 
         for (size_t i = 0; i < env->count; i++) {
             // Variable name
@@ -1049,6 +1049,7 @@ eshkol_tagged_value_t eshkol_type_of(eshkol_tagged_value_t value) {
                             type_name = "workspace";
                             break;
                         default:
+                            eshkol_warn("unknown heap subtype: %d", header->subtype);
                             type_name = "heap-object";
                             break;
                     }
@@ -1080,6 +1081,7 @@ eshkol_tagged_value_t eshkol_type_of(eshkol_tagged_value_t value) {
                             type_name = "continuation";
                             break;
                         default:
+                            eshkol_warn("unknown callable subtype: %d", header->subtype);
                             type_name = "procedure";
                             break;
                     }
