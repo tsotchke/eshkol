@@ -1673,15 +1673,29 @@ llvm::Value* ArithmeticCodegen::extractAsDouble(llvm::Value* tagged_val) {
     ctx_.builder().CreateBr(merge_bb);
     rational_bb = ctx_.builder().GetInsertBlock();
 
-    // Bignum path: call eshkol_bignum_to_double(ptr)
+    // Bignum/other heap path: verify subtype is bignum before calling eshkol_bignum_to_double.
+    // Non-numeric heap types (strings, vectors, etc.) return 0.0 instead of crashing.
     ctx_.builder().SetInsertPoint(bignum_bb);
+    llvm::Value* is_bignum = ctx_.builder().CreateICmpEQ(subtype,
+        llvm::ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_BIGNUM));
+    llvm::BasicBlock* actual_bignum_bb = llvm::BasicBlock::Create(ctx_.context(), "ead_actual_bn", func);
+    llvm::BasicBlock* non_numeric_bb = llvm::BasicBlock::Create(ctx_.context(), "ead_non_numeric", func);
+    ctx_.builder().CreateCondBr(is_bignum, actual_bignum_bb, non_numeric_bb);
+
+    ctx_.builder().SetInsertPoint(actual_bignum_bb);
     llvm::FunctionType* bn_to_dbl_type = llvm::FunctionType::get(
         ctx_.doubleType(), {ctx_.ptrType()}, false);
     llvm::FunctionCallee bn_to_dbl = ctx_.module().getOrInsertFunction(
         "eshkol_bignum_to_double", bn_to_dbl_type);
     llvm::Value* bn_dbl = ctx_.builder().CreateCall(bn_to_dbl, {heap_ptr}, "bn_to_dbl");
     ctx_.builder().CreateBr(merge_bb);
-    bignum_bb = ctx_.builder().GetInsertBlock();
+    actual_bignum_bb = ctx_.builder().GetInsertBlock();
+
+    // Non-numeric heap type (string, vector, etc.) — return 0.0 to avoid crash
+    ctx_.builder().SetInsertPoint(non_numeric_bb);
+    llvm::Value* zero_fallback = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
+    ctx_.builder().CreateBr(merge_bb);
+    non_numeric_bb = ctx_.builder().GetInsertBlock();
 
     // Int path: SIToFP
     ctx_.builder().SetInsertPoint(int_bb);
@@ -1692,11 +1706,12 @@ llvm::Value* ArithmeticCodegen::extractAsDouble(llvm::Value* tagged_val) {
 
     // Merge
     ctx_.builder().SetInsertPoint(merge_bb);
-    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.doubleType(), 5, "as_double");
+    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.doubleType(), 6, "as_double");
     phi->addIncoming(ad_val, ad_bb);
     phi->addIncoming(dbl_val, dbl_bb);
     phi->addIncoming(rat_dbl, rational_bb);
-    phi->addIncoming(bn_dbl, bignum_bb);
+    phi->addIncoming(bn_dbl, actual_bignum_bb);
+    phi->addIncoming(zero_fallback, non_numeric_bb);
     phi->addIncoming(int_as_dbl, int_bb);
     return phi;
 }

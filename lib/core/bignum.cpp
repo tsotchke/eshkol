@@ -949,15 +949,24 @@ void eshkol_bignum_pow_tagged(arena_t* arena,
 
 void eshkol_string_to_number_tagged(arena_t* arena, const char* str,
     eshkol_tagged_value_t* result) {
+    /* R7RS: string->number returns #f if the string is not a valid number.
+     * #f is represented as ESHKOL_VALUE_BOOL with data = 0. */
+    eshkol_tagged_value_t false_val = {};
+    false_val.type = ESHKOL_VALUE_BOOL;
+    false_val.flags = 0;
+    false_val.reserved = 0;
+    false_val.data.int_val = 0;
+
     if (!str || !result) {
-        if (result) *result = eshkol_make_int64(0, true);
+        if (result) *result = false_val;
         return;
     }
 
     /* Skip leading whitespace */
-    while (*str == ' ' || *str == '\t') str++;
-    if (*str == '\0') {
-        *result = eshkol_make_int64(0, true);
+    const char* start = str;
+    while (*start == ' ' || *start == '\t') start++;
+    if (*start == '\0') {
+        *result = false_val;
         return;
     }
 
@@ -965,11 +974,20 @@ void eshkol_string_to_number_tagged(arena_t* arena, const char* str,
     bool is_float = false;
     bool is_rational = false;
     const char* slash_pos = nullptr;
-    const char* p = str;
+    const char* p = start;
     if (*p == '-' || *p == '+') p++;
+    /* Must start with a digit (or . for floats) */
+    if (!(*p >= '0' && *p <= '9') && *p != '.') {
+        *result = false_val;
+        return;
+    }
     while (*p) {
         if (*p == '/' && !is_float) { is_rational = true; slash_pos = p; break; }
         if (*p == '.' || *p == 'e' || *p == 'E') { is_float = true; break; }
+        if (!(*p >= '0' && *p <= '9')) { /* Non-digit, non-syntax char → not a number */
+            *result = false_val;
+            return;
+        }
         p++;
     }
 
@@ -977,7 +995,7 @@ void eshkol_string_to_number_tagged(arena_t* arena, const char* str,
     if (is_rational && slash_pos) {
         char* endptr = nullptr;
         errno = 0;
-        long long num = strtoll(str, &endptr, 10);
+        long long num = strtoll(start, &endptr, 10);
         if (endptr == slash_pos && errno != ERANGE) {
             errno = 0;
             long long denom = strtoll(slash_pos + 1, &endptr, 10);
@@ -990,31 +1008,39 @@ void eshkol_string_to_number_tagged(arena_t* arena, const char* str,
                 }
             }
         }
-        /* Fall through to double parse if rational parse fails */
+        *result = false_val;
+        return;
     }
 
     if (is_float) {
-        /* Parse as double */
+        /* Parse as double — MUST consume entire string */
         char* endptr = nullptr;
-        double val = strtod(str, &endptr);
+        double val = strtod(start, &endptr);
+        /* Skip trailing whitespace */
+        while (*endptr == ' ' || *endptr == '\t') endptr++;
+        if (*endptr != '\0' || endptr == start) {
+            *result = false_val;
+            return;
+        }
         *result = eshkol_make_double(val);
         return;
     }
 
-    /* Try parsing as int64 first */
+    /* Try parsing as int64 — MUST consume entire string */
     char* endptr = nullptr;
     errno = 0;
-    long long val = strtoll(str, &endptr, 10);
+    long long val = strtoll(start, &endptr, 10);
+    /* Skip trailing whitespace */
+    while (*endptr == ' ' || *endptr == '\t') endptr++;
 
-    if (errno != ERANGE && endptr != str && (*endptr == '\0' || *endptr == ' ')) {
-        /* Fits in int64 */
+    if (errno != ERANGE && endptr != start && *endptr == '\0') {
         *result = eshkol_make_int64((int64_t)val, true);
         return;
     }
 
-    /* Overflow or invalid — try bignum */
+    /* Overflow — try bignum */
     if (errno == ERANGE) {
-        eshkol_bignum_t* bn = eshkol_bignum_from_string(arena, str, strlen(str));
+        eshkol_bignum_t* bn = eshkol_bignum_from_string(arena, start, strlen(start));
         if (bn) {
             *result = eshkol_make_ptr((uint64_t)(void*)bn, ESHKOL_VALUE_HEAP_PTR);
             result->flags = ESHKOL_VALUE_EXACT_FLAG;
@@ -1022,9 +1048,8 @@ void eshkol_string_to_number_tagged(arena_t* arena, const char* str,
         }
     }
 
-    /* Fallback: parse as double */
-    double dval = strtod(str, nullptr);
-    *result = eshkol_make_double(dval);
+    /* Not a valid number */
+    *result = false_val;
 }
 
 /* ===== Display ===== */
