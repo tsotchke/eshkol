@@ -24,7 +24,7 @@ eshkol_vm.c (hub)
  ├─ vm_peephole.c   — peephole optimizer
  ├─ vm_symbolic_ad.c — symbolic automatic differentiation
  ├─ vm_parallel.c   — POSIX thread pool (work-stealing)
- ├─ vm_geometric.c  — Riemannian manifold operations (800-859)
+ ├─ vm_geometric.c  — Riemannian manifold operations (804-843)
  ├─ vm_gpu_dispatch.h — GPU tensor dispatch (Metal/CUDA)
  └─ Type modules:
     ├─ vm_complex.c, vm_rational.c, vm_bignum.c, vm_dual.c

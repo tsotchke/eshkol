@@ -858,6 +858,66 @@ Returns dimension sizes as Scheme list.
 
 ---
 
+#### `tensor-save`
+**Syntax**: `(tensor-save path tensor)`
+
+Writes a tensor checkpoint to disk.
+
+**Examples**:
+```scheme
+(tensor-save "/tmp/tensor.em" #(1 2 3))  ; => #t
+```
+
+**Type**: Serialization  
+**Returns**: `#t` on success, `#f` on failure
+
+---
+
+#### `tensor-load`
+**Syntax**: `(tensor-load path)`
+
+Loads a tensor checkpoint from disk.
+
+**Examples**:
+```scheme
+(tensor-load "/tmp/tensor.em")  ; => #(1 2 3)
+```
+
+**Type**: Serialization  
+**Returns**: Tensor on success, `()`/null-equivalent on failure
+
+---
+
+#### `model-save`
+**Syntax**: `(model-save path entries)`
+
+Writes a multi-tensor checkpoint to disk. `entries` is a list of `(name . tensor)` pairs.
+
+**Examples**:
+```scheme
+(model-save "/tmp/model.em" (list (cons "w" #(1 2)) (cons "b" #(3))))  ; => #t
+```
+
+**Type**: Serialization  
+**Returns**: `#t` on success, `#f` on failure
+
+---
+
+#### `model-load`
+**Syntax**: `(model-load path)`
+
+Loads a multi-tensor checkpoint from disk.
+
+**Examples**:
+```scheme
+(model-load "/tmp/model.em")  ; => (("w" . #(1 2)) ("b" . #(3)))
+```
+
+**Type**: Serialization  
+**Returns**: List of `(name . tensor)` pairs on success, `()`/null-equivalent on failure
+
+---
+
 ### Tensor Arithmetic
 
 #### `tensor-add`, `tensor-sub`, `tensor-mul`, `tensor-div`

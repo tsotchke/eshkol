@@ -117,7 +117,8 @@ The 63 core ISA opcodes — ADD, SUB, MUL, CONST, JUMP, etc. — compute their r
 - Consciousness engine (500-549): logic, inference, workspace
 - Tensor operations (410-470): matmul, reshape, reduce
 - Automatic differentiation (370-409): dual numbers, AD tape
-- Geometric manifolds (800-859): Riemannian operations
+- Model I/O (800-803): tensor/model checkpoint save-load
+- Geometric manifolds (804-843): Riemannian operations
 - String/list/hash/I/O operations
 
 ## Three-Way Verification

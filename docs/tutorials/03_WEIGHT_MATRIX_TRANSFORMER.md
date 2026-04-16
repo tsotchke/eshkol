@@ -80,7 +80,8 @@ function ID. The transformer detects it and delegates to C:
 | 370-409 | Automatic differentiation (dual numbers, AD tape) |
 | 410-470 | Tensor operations (matmul, reshape, reduce) |
 | 500-549 | Consciousness engine (logic, inference, workspace) |
-| 800-859 | Geometric manifolds (Riemannian operations) |
+| 800-803 | Model I/O (tensor/model checkpoint save-load) |
+| 804-843 | Geometric manifolds (Riemannian operations) |
 
 ---
 

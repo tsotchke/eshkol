@@ -2698,6 +2698,28 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         chunk_emit(c, OP_NATIVE_CALL, 463);
         return;
     }
+    if (is_sym(head, "tensor-save") && node->n_children == 3) {
+        compile_expr(c, node->children[1], 0);
+        compile_expr(c, node->children[2], 0);
+        chunk_emit(c, OP_NATIVE_CALL, 802);
+        return;
+    }
+    if (is_sym(head, "tensor-load") && node->n_children == 2) {
+        compile_expr(c, node->children[1], 0);
+        chunk_emit(c, OP_NATIVE_CALL, 803);
+        return;
+    }
+    if (is_sym(head, "model-save") && node->n_children == 3) {
+        compile_expr(c, node->children[1], 0);
+        compile_expr(c, node->children[2], 0);
+        chunk_emit(c, OP_NATIVE_CALL, 800);
+        return;
+    }
+    if (is_sym(head, "model-load") && node->n_children == 2) {
+        compile_expr(c, node->children[1], 0);
+        chunk_emit(c, OP_NATIVE_CALL, 801);
+        return;
+    }
 
     /***************************************************************************
      * Consciousness Engine builtins (native IDs 500-549)
@@ -5505,6 +5527,8 @@ static const BuiltinDef BUILTINS[] = {
     {"tensor-ref", 411, 2}, {"tensor-sum", 445, 1}, {"tensor-mean", 446, 1},
     {"tensor-dot", 449, 2}, {"transpose", 415, 1}, {"flatten", 416, 1},
     {"linspace", 746, 3}, {"eye", 745, 1},
+    {"model-save", 800, 2}, {"model-load", 801, 1},
+    {"tensor-save", 802, 2}, {"tensor-load", 803, 1},
     /* Missing hash */
     {"hash-clear!", 668, 1},
     /* gcd / lcm */
