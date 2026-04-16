@@ -1008,6 +1008,28 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
 
     /* ══════════════════════════════════════════════════════════════════════
+     * Model I/O (800-803)
+     * ══════════════════════════════════════════════════════════════════════ */
+    case 800: { /* model-save(path, entries) */
+        Value entries = vm_pop(vm), path = vm_pop(vm);
+        vm_push(vm, BOOL_VAL(vm_model_save_model_file(vm, path, entries)));
+        break;
+    }
+    case 801: { /* model-load(path) */
+        vm_model_model_load(vm);
+        break;
+    }
+    case 802: { /* tensor-save(path, tensor) */
+        Value tensor = vm_pop(vm), path = vm_pop(vm);
+        vm_push(vm, BOOL_VAL(vm_model_save_tensor_file(vm, path, tensor)));
+        break;
+    }
+    case 803: { /* tensor-load(path) */
+        vm_model_tensor_load(vm);
+        break;
+    }
+
+    /* ══════════════════════════════════════════════════════════════════════
      * Logic Operations (500-512)
      * ══════════════════════════════════════════════════════════════════════ */
     case 500: { /* make-logic-var(name) — name as int (id) */
@@ -3275,8 +3297,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
         else vm_push(vm, NIL_VAL); break; }
 
     default:
-        /* Check geometric manifold operations (800-859) */
-        if (fid >= 800 && fid <= 859) {
+        /* Check geometric manifold operations (804-843) */
+        if (fid >= 804 && fid <= 843) {
             vm_dispatch_geometric(vm, fid);
             break;
         }
@@ -3290,4 +3312,3 @@ static void vm_dispatch_native(VM* vm, int fid) {
 /*******************************************************************************
  * VM Execution
  ******************************************************************************/
-

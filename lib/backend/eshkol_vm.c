@@ -65,6 +65,9 @@
 /* VM core: types, heap, stack operations */
 #include "vm_core.c"
 
+/* Model serialization helpers */
+#include "vm_model_io.c"
+
 /* GPU tensor dispatch (threshold-based routing to Metal/CUDA) */
 #include "vm_gpu_dispatch.h"
 
@@ -256,6 +259,8 @@ static const BuiltinDef BUILTINS[] = {
     {"_tensor-reduce-max", 459, 2}, {"_tensor-reduce-min", 460, 2},
     {"relu", 462, 1}, {"softmax", 463, 1}, {"sigmoid", 464, 1},
     {"eye", 745, 1}, {"linspace", 746, 3},
+    {"model-save", 800, 2}, {"model-load", 801, 1},
+    {"tensor-save", 802, 2}, {"tensor-load", 803, 1},
     /* ═══════════════════════════════════════════════════════════════
      * Consciousness Engine — IDs 500-549
      * ═══════════════════════════════════════════════════════════════ */
