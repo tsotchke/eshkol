@@ -1135,9 +1135,9 @@ llvm::Value* SystemCodegen::directoryList(const eshkol_operations_t* op) {
 
     // Allocate cons cell with object header (consolidated pointer format)
     llvm::Value* cons = ctx_.builder().CreateCall(mem_.getArenaAllocateConsWithHeader(), {arena_ptr});
-    // Set car to string (is_cdr = 0 for car)
-    llvm::Value* is_car = llvm::ConstantInt::get(ctx_.int32Type(), 0);
-    llvm::Value* is_cdr = llvm::ConstantInt::get(ctx_.int32Type(), 1);
+    // Set car to string (is_cdr = false for car, true for cdr)
+    llvm::Value* is_car = llvm::ConstantInt::getFalse(ctx_.context());
+    llvm::Value* is_cdr = llvm::ConstantInt::getTrue(ctx_.context());
 
     // Create alloca for tagged values
     llvm::Value* str_ptr = ctx_.builder().CreateAlloca(ctx_.taggedValueType());
