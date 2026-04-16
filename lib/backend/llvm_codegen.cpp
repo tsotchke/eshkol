@@ -529,7 +529,16 @@ struct TypedValue {
     bool isHottInt64() const { return hott_type == eshkol::hott::BuiltinTypes::Int64; }
     bool isHottFloat64() const { return hott_type == eshkol::hott::BuiltinTypes::Float64; }
     bool isHottNumeric() const {
-        return hott_type == eshkol::hott::BuiltinTypes::Int64 ||
+        return hott_type == eshkol::hott::BuiltinTypes::Int8 ||
+               hott_type == eshkol::hott::BuiltinTypes::Int16 ||
+               hott_type == eshkol::hott::BuiltinTypes::Int32 ||
+               hott_type == eshkol::hott::BuiltinTypes::Int64 ||
+               hott_type == eshkol::hott::BuiltinTypes::ISize ||
+               hott_type == eshkol::hott::BuiltinTypes::UInt8 ||
+               hott_type == eshkol::hott::BuiltinTypes::UInt16 ||
+               hott_type == eshkol::hott::BuiltinTypes::UInt32 ||
+               hott_type == eshkol::hott::BuiltinTypes::UInt64 ||
+               hott_type == eshkol::hott::BuiltinTypes::USize ||
                hott_type == eshkol::hott::BuiltinTypes::Float64 ||
                hott_type == eshkol::hott::BuiltinTypes::Integer ||
                hott_type == eshkol::hott::BuiltinTypes::Real ||
@@ -5227,10 +5236,8 @@ private:
                     // Use HoTT type from symbol table to determine how to extract value
                     using namespace eshkol::hott;
 
-                    // For Int64 types (including Char), extract raw integer
-                    if (hott_type == BuiltinTypes::Int64 ||
-                        hott_type == BuiltinTypes::Char ||
-                        hott_type == BuiltinTypes::Natural) {
+                    // For immediate integer-like types, extract raw integer.
+                    if (isImmediateIntegerHottType(hott_type)) {
                         // Extract raw int64 from tagged value
                         Value* raw_int = unpackInt64FromTaggedValue(val);
                         if (param_type.has_value()) {
@@ -7087,6 +7094,111 @@ private:
     TypedValue makeErasedTypedValue(eshkol::hott::TypeId proof_type) {
         Value* placeholder = createErasedPlaceholder();
         return TypedValue::makeErasedWithPlaceholder(placeholder, proof_type);
+    }
+
+    bool isImmediateIntegerHottType(eshkol::hott::TypeId type_id) const {
+        using namespace eshkol::hott;
+        return type_id == BuiltinTypes::Int8 ||
+               type_id == BuiltinTypes::Int16 ||
+               type_id == BuiltinTypes::Int32 ||
+               type_id == BuiltinTypes::Int64 ||
+               type_id == BuiltinTypes::ISize ||
+               type_id == BuiltinTypes::Natural ||
+               type_id == BuiltinTypes::UInt8 ||
+               type_id == BuiltinTypes::UInt16 ||
+               type_id == BuiltinTypes::UInt32 ||
+               type_id == BuiltinTypes::UInt64 ||
+               type_id == BuiltinTypes::USize ||
+               type_id == BuiltinTypes::Char;
+    }
+
+    eshkol::hott::TypeId resolveDeclaredHottTypeId(const hott_type_expr_t* type_expr) const {
+        using namespace eshkol::hott;
+
+        if (!type_expr) {
+            return BuiltinTypes::Value;
+        }
+
+        switch (type_expr->kind) {
+            case HOTT_TYPE_INTEGER:
+                return BuiltinTypes::Int64;
+            case HOTT_TYPE_REAL:
+                return BuiltinTypes::Float64;
+            case HOTT_TYPE_NUMBER:
+                return BuiltinTypes::Number;
+            case HOTT_TYPE_BOOLEAN:
+                return BuiltinTypes::Boolean;
+            case HOTT_TYPE_STRING:
+                return BuiltinTypes::String;
+            case HOTT_TYPE_CHAR:
+                return BuiltinTypes::Char;
+            case HOTT_TYPE_SYMBOL:
+                return BuiltinTypes::Symbol;
+            case HOTT_TYPE_NULL:
+                return BuiltinTypes::Null;
+            case HOTT_TYPE_ANY:
+                return BuiltinTypes::Value;
+            case HOTT_TYPE_NOTHING:
+                return BuiltinTypes::Invalid;
+            case HOTT_TYPE_LIST:
+                return BuiltinTypes::List;
+            case HOTT_TYPE_VECTOR:
+                return BuiltinTypes::Vector;
+            case HOTT_TYPE_TENSOR:
+                return BuiltinTypes::Tensor;
+            case HOTT_TYPE_PAIR:
+            case HOTT_TYPE_PRODUCT:
+            case HOTT_TYPE_SUM:
+                return BuiltinTypes::Pair;
+            case HOTT_TYPE_ARROW:
+                return BuiltinTypes::Function;
+            case HOTT_TYPE_FORALL:
+                return type_expr->forall.body ? resolveDeclaredHottTypeId(type_expr->forall.body)
+                                              : BuiltinTypes::Value;
+            case HOTT_TYPE_VAR:
+                if (type_expr->var_name) {
+                    auto builtin = ctx_->hottTypes().lookupType(type_expr->var_name);
+                    if (builtin) {
+                        return *builtin;
+                    }
+                }
+                return BuiltinTypes::Value;
+            default:
+                return BuiltinTypes::Value;
+        }
+    }
+
+    uint8_t closureReturnCategoryForHottType(eshkol::hott::TypeId hott_type) const {
+        using namespace eshkol::hott;
+
+        if (hott_type == BuiltinTypes::Boolean) {
+            return CLOSURE_RETURN_BOOL;
+        }
+        if (hott_type == BuiltinTypes::String) {
+            return CLOSURE_RETURN_STRING;
+        }
+        if (hott_type == BuiltinTypes::Null || hott_type == BuiltinTypes::Invalid) {
+            return CLOSURE_RETURN_VOID;
+        }
+        if (ctx_->hottTypes().isFunctionType(hott_type) || hott_type == BuiltinTypes::Function) {
+            return CLOSURE_RETURN_FUNCTION;
+        }
+        if (hott_type == BuiltinTypes::Vector || hott_type == BuiltinTypes::Tensor) {
+            return CLOSURE_RETURN_VECTOR;
+        }
+        if (hott_type == BuiltinTypes::List || hott_type == BuiltinTypes::Pair) {
+            return CLOSURE_RETURN_LIST;
+        }
+        if (hott_type == BuiltinTypes::Value || hott_type == BuiltinTypes::Symbol) {
+            return CLOSURE_RETURN_UNKNOWN;
+        }
+        if (ctx_->hottTypes().isSubtype(hott_type, BuiltinTypes::Integer) ||
+            ctx_->hottTypes().isSubtype(hott_type, BuiltinTypes::Real) ||
+            hott_type == BuiltinTypes::Number ||
+            hott_type == BuiltinTypes::Char) {
+            return CLOSURE_RETURN_SCALAR;
+        }
+        return CLOSURE_RETURN_UNKNOWN;
     }
 
     // Robust helper to convert tagged_value to TypedValue with proper runtime type detection
@@ -15882,7 +15994,7 @@ private:
             Value* left_d = left_val;
             Value* right_d = right_val;
 
-            if (left.hott_type == BuiltinTypes::Int64 ||
+            if (isImmediateIntegerHottType(left.hott_type) ||
                 left.hott_type == BuiltinTypes::Integer) {
                 if (left_val->getType() != int64_type) {
                     left_val = builder->CreateSExt(left_val, int64_type);
@@ -15892,7 +16004,7 @@ private:
                 left_d = builder->CreateFPExt(left_val, double_type);
             }
 
-            if (right.hott_type == BuiltinTypes::Int64 ||
+            if (isImmediateIntegerHottType(right.hott_type) ||
                 right.hott_type == BuiltinTypes::Integer) {
                 if (right_val->getType() != int64_type) {
                     right_val = builder->CreateSExt(right_val, int64_type);
@@ -16181,12 +16293,12 @@ private:
             // Promote both to double
             Value* left_d = left_val;
             Value* right_d = right_val;
-            if (left_d->getType()->isIntegerTy(64)) {
+            if (left_d->getType()->isIntegerTy()) {
                 left_d = builder->CreateSIToFP(left_d, double_type, "hott_itof_l");
             } else if (!left_d->getType()->isDoubleTy()) {
                 return nullptr;  // Can't convert this type
             }
-            if (right_d->getType()->isIntegerTy(64)) {
+            if (right_d->getType()->isIntegerTy()) {
                 right_d = builder->CreateSIToFP(right_d, double_type, "hott_itof_r");
             } else if (!right_d->getType()->isDoubleTy()) {
                 return nullptr;  // Can't convert this type
@@ -22253,73 +22365,9 @@ private:
             uint8_t return_type_category = CLOSURE_RETURN_UNKNOWN;
             uint32_t hott_type_id = eshkol::hott::BuiltinTypes::Value.id;  // Default to Value (top type)
             if (op->lambda_op.return_type) {
-                hott_type_kind_t kind = op->lambda_op.return_type->kind;
-                switch (kind) {
-                    case HOTT_TYPE_INTEGER:
-                        return_type_category = CLOSURE_RETURN_SCALAR;
-                        hott_type_id = eshkol::hott::BuiltinTypes::Integer.id;
-                        break;
-                    case HOTT_TYPE_REAL:
-                        return_type_category = CLOSURE_RETURN_SCALAR;
-                        hott_type_id = eshkol::hott::BuiltinTypes::Real.id;
-                        break;
-                    case HOTT_TYPE_NUMBER:
-                        return_type_category = CLOSURE_RETURN_SCALAR;
-                        hott_type_id = eshkol::hott::BuiltinTypes::Number.id;
-                        break;
-                    case HOTT_TYPE_VECTOR:
-                        return_type_category = CLOSURE_RETURN_VECTOR;
-                        hott_type_id = eshkol::hott::BuiltinTypes::Vector.id;
-                        break;
-                    case HOTT_TYPE_TENSOR:
-                        return_type_category = CLOSURE_RETURN_VECTOR;
-                        hott_type_id = eshkol::hott::BuiltinTypes::Tensor.id;
-                        break;
-                    case HOTT_TYPE_LIST:
-                        return_type_category = CLOSURE_RETURN_LIST;
-                        hott_type_id = eshkol::hott::BuiltinTypes::List.id;
-                        break;
-                    case HOTT_TYPE_PAIR:
-                        return_type_category = CLOSURE_RETURN_LIST;
-                        hott_type_id = eshkol::hott::BuiltinTypes::Pair.id;
-                        break;
-                    case HOTT_TYPE_ARROW:
-                        return_type_category = CLOSURE_RETURN_FUNCTION;
-                        hott_type_id = eshkol::hott::BuiltinTypes::Function.id;
-                        break;
-                    case HOTT_TYPE_BOOLEAN:
-                        return_type_category = CLOSURE_RETURN_BOOL;
-                        hott_type_id = eshkol::hott::BuiltinTypes::Boolean.id;
-                        break;
-                    case HOTT_TYPE_STRING:
-                        return_type_category = CLOSURE_RETURN_STRING;
-                        hott_type_id = eshkol::hott::BuiltinTypes::String.id;
-                        break;
-                    case HOTT_TYPE_CHAR:
-                        return_type_category = CLOSURE_RETURN_SCALAR;
-                        hott_type_id = eshkol::hott::BuiltinTypes::Char.id;
-                        break;
-                    case HOTT_TYPE_SYMBOL:
-                        return_type_category = CLOSURE_RETURN_UNKNOWN;
-                        hott_type_id = eshkol::hott::BuiltinTypes::Symbol.id;
-                        break;
-                    case HOTT_TYPE_NULL:
-                        return_type_category = CLOSURE_RETURN_VOID;
-                        hott_type_id = eshkol::hott::BuiltinTypes::Null.id;
-                        break;
-                    case HOTT_TYPE_NOTHING:
-                        return_type_category = CLOSURE_RETURN_VOID;
-                        hott_type_id = eshkol::hott::BuiltinTypes::Invalid.id;
-                        break;
-                    case HOTT_TYPE_ANY:
-                        return_type_category = CLOSURE_RETURN_UNKNOWN;
-                        hott_type_id = eshkol::hott::BuiltinTypes::Value.id;
-                        break;
-                    default:
-                        return_type_category = CLOSURE_RETURN_UNKNOWN;
-                        hott_type_id = eshkol::hott::BuiltinTypes::Value.id;
-                        break;
-                }
+                eshkol::hott::TypeId declared_type = resolveDeclaredHottTypeId(op->lambda_op.return_type);
+                return_type_category = closureReturnCategoryForHottType(declared_type);
+                hott_type_id = declared_type.id;
             }
             uint64_t return_type_info = (uint64_t)return_type_category;
             return_type_info |= ((uint64_t)(op->lambda_op.num_params & 0xFF)) << 8;
@@ -22613,73 +22661,9 @@ private:
         uint8_t return_type_category = CLOSURE_RETURN_UNKNOWN;
         uint32_t hott_type_id = eshkol::hott::BuiltinTypes::Value.id;  // Default to Value (top type)
         if (op->lambda_op.return_type) {
-            hott_type_kind_t kind = op->lambda_op.return_type->kind;
-            switch (kind) {
-                case HOTT_TYPE_INTEGER:
-                    return_type_category = CLOSURE_RETURN_SCALAR;
-                    hott_type_id = eshkol::hott::BuiltinTypes::Integer.id;
-                    break;
-                case HOTT_TYPE_REAL:
-                    return_type_category = CLOSURE_RETURN_SCALAR;
-                    hott_type_id = eshkol::hott::BuiltinTypes::Real.id;
-                    break;
-                case HOTT_TYPE_NUMBER:
-                    return_type_category = CLOSURE_RETURN_SCALAR;
-                    hott_type_id = eshkol::hott::BuiltinTypes::Number.id;
-                    break;
-                case HOTT_TYPE_VECTOR:
-                    return_type_category = CLOSURE_RETURN_VECTOR;
-                    hott_type_id = eshkol::hott::BuiltinTypes::Vector.id;
-                    break;
-                case HOTT_TYPE_TENSOR:
-                    return_type_category = CLOSURE_RETURN_VECTOR;
-                    hott_type_id = eshkol::hott::BuiltinTypes::Tensor.id;
-                    break;
-                case HOTT_TYPE_LIST:
-                    return_type_category = CLOSURE_RETURN_LIST;
-                    hott_type_id = eshkol::hott::BuiltinTypes::List.id;
-                    break;
-                case HOTT_TYPE_PAIR:
-                    return_type_category = CLOSURE_RETURN_LIST;
-                    hott_type_id = eshkol::hott::BuiltinTypes::Pair.id;
-                    break;
-                case HOTT_TYPE_ARROW:
-                    return_type_category = CLOSURE_RETURN_FUNCTION;
-                    hott_type_id = eshkol::hott::BuiltinTypes::Function.id;
-                    break;
-                case HOTT_TYPE_BOOLEAN:
-                    return_type_category = CLOSURE_RETURN_BOOL;
-                    hott_type_id = eshkol::hott::BuiltinTypes::Boolean.id;
-                    break;
-                case HOTT_TYPE_STRING:
-                    return_type_category = CLOSURE_RETURN_STRING;
-                    hott_type_id = eshkol::hott::BuiltinTypes::String.id;
-                    break;
-                case HOTT_TYPE_CHAR:
-                    return_type_category = CLOSURE_RETURN_SCALAR;
-                    hott_type_id = eshkol::hott::BuiltinTypes::Char.id;
-                    break;
-                case HOTT_TYPE_SYMBOL:
-                    return_type_category = CLOSURE_RETURN_UNKNOWN;
-                    hott_type_id = eshkol::hott::BuiltinTypes::Symbol.id;
-                    break;
-                case HOTT_TYPE_NULL:
-                    return_type_category = CLOSURE_RETURN_VOID;
-                    hott_type_id = eshkol::hott::BuiltinTypes::Null.id;
-                    break;
-                case HOTT_TYPE_NOTHING:
-                    return_type_category = CLOSURE_RETURN_VOID;
-                    hott_type_id = eshkol::hott::BuiltinTypes::Invalid.id;
-                    break;
-                case HOTT_TYPE_ANY:
-                    return_type_category = CLOSURE_RETURN_UNKNOWN;
-                    hott_type_id = eshkol::hott::BuiltinTypes::Value.id;
-                    break;
-                default:
-                    return_type_category = CLOSURE_RETURN_UNKNOWN;
-                    hott_type_id = eshkol::hott::BuiltinTypes::Value.id;
-                    break;
-            }
+            eshkol::hott::TypeId declared_type = resolveDeclaredHottTypeId(op->lambda_op.return_type);
+            return_type_category = closureReturnCategoryForHottType(declared_type);
+            hott_type_id = declared_type.id;
         }
         uint64_t return_type_info_val = (uint64_t)return_type_category;
         return_type_info_val |= ((uint64_t)(op->lambda_op.num_params & 0xFF)) << 8;

@@ -40,6 +40,13 @@ Suggested location:
 - `tests/freestanding/types/`
 - `tests/freestanding/codegen/`
 
+Current guard:
+
+- `tests/toolchain/machine_integer_types_test.cpp`
+  - verifies machine integer aliases in the HoTT environment
+  - verifies builtin-name resolution for `u8`/`usize`-style annotations
+  - verifies parser + type-checker integration for annotated machine integer signatures
+
 ## 3. Runtime isolation tests
 
 Purpose:

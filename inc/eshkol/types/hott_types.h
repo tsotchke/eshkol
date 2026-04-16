@@ -70,7 +70,15 @@ enum TypeFlags : uint8_t {
  * This maps HoTT types to LLVM/C representations.
  */
 enum class RuntimeRep : uint8_t {
+    Int8,        // 8-bit signed integer
+    Int16,       // 16-bit signed integer
+    Int32,       // 32-bit signed integer
     Int64,       // 64-bit signed integer
+    UInt8,       // 8-bit unsigned integer
+    UInt16,      // 16-bit unsigned integer
+    UInt32,      // 32-bit unsigned integer
+    UInt64,      // 64-bit unsigned integer
+    Float32,     // IEEE 754 single-precision
     Float64,     // IEEE 754 double-precision
     Pointer,     // Pointer to heap object
     TaggedValue, // eshkol_tagged_value_t (16 bytes)
@@ -182,6 +190,15 @@ namespace BuiltinTypes {
     inline constexpr TypeId Int64{13, Universe::U0, TYPE_FLAG_EXACT};
     inline constexpr TypeId Natural{14, Universe::U0, TYPE_FLAG_EXACT};
     inline constexpr TypeId BigInt{24, Universe::U0, TYPE_FLAG_EXACT};  // Arbitrary-precision integer
+    inline constexpr TypeId Int8{28, Universe::U0, TYPE_FLAG_EXACT};
+    inline constexpr TypeId Int16{29, Universe::U0, TYPE_FLAG_EXACT};
+    inline constexpr TypeId Int32{30, Universe::U0, TYPE_FLAG_EXACT};
+    inline constexpr TypeId ISize{31, Universe::U0, TYPE_FLAG_EXACT};
+    inline constexpr TypeId UInt8{32, Universe::U0, TYPE_FLAG_EXACT};
+    inline constexpr TypeId UInt16{33, Universe::U0, TYPE_FLAG_EXACT};
+    inline constexpr TypeId UInt32{34, Universe::U0, TYPE_FLAG_EXACT};
+    inline constexpr TypeId UInt64{35, Universe::U0, TYPE_FLAG_EXACT};
+    inline constexpr TypeId USize{36, Universe::U0, TYPE_FLAG_EXACT};
     inline constexpr TypeId Real{15, Universe::U0, 0};
     inline constexpr TypeId Float64{16, Universe::U0, 0};
     inline constexpr TypeId Float32{17, Universe::U0, 0};  // Single precision float
