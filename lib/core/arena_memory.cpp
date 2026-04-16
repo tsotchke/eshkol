@@ -1559,6 +1559,9 @@ static std::once_flag global_arena_once;
 static pthread_once_t global_arena_once = PTHREAD_ONCE_INIT;
 #endif
 
+// Forward declaration — defined below in per-thread arena section
+static thread_local arena_t* __thread_local_arena;
+
 static void init_global_arena_internal() {
     // Create a thread-safe arena for global allocations
     __global_arena = arena_create_threadsafe(65536);  // 64KB default, thread-safe
@@ -1567,9 +1570,27 @@ static void init_global_arena_internal() {
     }
 }
 
-// Get or create the global arena (thread-safe)
+// Get the appropriate arena for the current thread.
+// Worker threads get their own per-thread arena (no lock contention).
+// Main thread gets the global thread-safe arena.
 arena_t* get_global_arena() {
     // Use platform once semantics for thread-safe initialization.
+#ifdef _WIN32
+    std::call_once(global_arena_once, init_global_arena_internal);
+#else
+    pthread_once(&global_arena_once, init_global_arena_internal);
+#endif
+
+    // On worker threads, use the per-thread arena if available.
+    // This eliminates mutex contention in parallel-map/fold/filter.
+    if (__thread_local_arena) return __thread_local_arena;
+
+    return __global_arena;
+}
+
+// Get the global arena specifically (bypasses per-thread override).
+// Used when allocation MUST go into the shared arena (e.g. result lists).
+arena_t* get_global_arena_shared() {
 #ifdef _WIN32
     std::call_once(global_arena_once, init_global_arena_internal);
 #else
@@ -1580,8 +1601,7 @@ arena_t* get_global_arena() {
 
 // ── Per-thread arena management (v1.2) ──
 
-// Thread-local arena for the current thread (non-worker threads)
-static thread_local arena_t* __thread_local_arena = nullptr;
+// __thread_local_arena is forward-declared above get_global_arena()
 
 arena_t* arena_get_thread_local(void) {
     // Worker threads have their own TLS arena managed by thread_pool.cpp.

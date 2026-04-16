@@ -236,7 +236,12 @@ extern char** __eshkol_argv;
 
 // Global arena for default allocations
 extern arena_t* __global_arena;
-arena_t* get_global_arena();
+arena_t* get_global_arena(void);
+
+/** Get the global shared arena, bypassing per-thread override.
+ *  Use when allocation MUST go into the shared arena (e.g. building result lists
+ *  that will be returned to the main thread). */
+arena_t* get_global_arena_shared(void);
 
 // Tape allocation and management
 ad_tape_t* arena_allocate_tape(arena_t* arena, size_t initial_capacity);

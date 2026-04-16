@@ -249,6 +249,27 @@ static std::string g_debug_source_directory;
 static std::string g_source_text;
 static std::string g_source_filepath;
 
+// Emit a codegen error with source location from an AST node.
+// Falls back to plain eshkol_error if no source location available.
+__attribute__((format(printf, 2, 3)))
+static void codegen_error_at(const eshkol_ast_t* ast, const char* msg, ...) {
+    char buffer[2048];
+    va_list ap;
+    va_start(ap, msg);
+    vsnprintf(buffer, sizeof(buffer), msg, ap);
+    va_end(ap);
+
+    if (ast && ast->line > 0) {
+        eshkol_error_at(
+            g_source_filepath.empty() ? nullptr : g_source_filepath.c_str(),
+            ast->line, ast->column,
+            g_source_text.empty() ? nullptr : g_source_text.c_str(),
+            "%s", buffer);
+    } else {
+        eshkol_error("%s", buffer);
+    }
+}
+
 // REPL MODE: Global symbol persistence across CodeGenerator instances
 // When REPL mode is enabled, symbols persist across evaluations
 namespace {
@@ -7320,8 +7341,7 @@ private:
         // NOTE: math_builtins are now handled at the top of this function
         // (before function_table check) with proper closure wrapping
 
-        eshkol_error("Undefined variable: %s (current_function: %s)", var_name.c_str(),
-                   current_function ? current_function->getName().str().c_str() : "null");
+        codegen_error_at(ast, "Undefined variable: %s", var_name.c_str());
         return nullptr;
     }
 

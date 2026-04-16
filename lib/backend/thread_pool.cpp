@@ -115,7 +115,9 @@ arena_t* get_thread_local_arena(void) {
     if (!tls_arena) {
         // Use reasonable default size
         size_t size = tls_arena_size > 0 ? tls_arena_size : (1024 * 1024);
-        tls_arena = arena_create(size);
+        // Create via the central API so get_global_arena() returns this
+        // arena when called from worker threads.
+        tls_arena = arena_create_thread_local(size);
         if (tls_arena) {
             eshkol_debug("Created thread-local arena (size: %zu)", size);
         } else {
