@@ -259,3 +259,26 @@ These are represented in CMake as internal object libraries while `eshkol-static
 - build ownership becomes explicit without destabilizing downstream link behavior
 - the remaining mixed files are visible instead of being silently misclassified
 - later runtime archive extraction can proceed incrementally from an already-structured build graph
+
+---
+
+## D-0011
+
+- Date: 2026-04-15
+- Status: Accepted
+- Title: Machine integer surface starts as a type-system and ABI slice, not a full arithmetic semantics split
+
+### Context
+
+The freestanding roadmap needs `u8`/`u16`/`u32`/`u64`/`usize` and signed counterparts, but the current Eshkol numeric pipeline still assumes generic integer arithmetic normalizes through the existing `Int64` / `Float64` paths. Forcing width-specific arithmetic semantics into this slice would spread through the parser, checker, runtime representation, arithmetic optimizer, and polymorphic runtime at once.
+
+### Decision
+
+Add the machine integer family to the HoTT builtin type environment, builtin-name resolution, closure type metadata, and typed-value extraction paths now, while keeping generic arithmetic promotion normalized to `Int64` for the integer family. Treat this first slice as the low-level type and ABI surface required for annotations and future freestanding lowering.
+
+### Consequences
+
+- Eshkol can now parse and resolve `i8`/`i16`/`i32`/`i64`/`isize` and `u8`/`u16`/`u32`/`u64`/`usize` in type annotations
+- closure metadata and typed tagged-value extraction preserve those builtin type IDs instead of collapsing them immediately to `Value`
+- generic arithmetic still widens machine integer annotations through the existing `Int64` path until dedicated width-aware lowering is introduced
+- the next low-level language slices can build pointers, volatility, and native ABI lowering on top of a stable machine integer vocabulary

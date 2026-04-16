@@ -1726,6 +1726,10 @@ TypeId TypeChecker::resolveType(const hott_type_expr_t* type_expr) {
                 if (alias) {
                     return resolveType(*alias);
                 }
+                auto builtin = env_.lookupType(type_expr->var_name);
+                if (builtin) {
+                    return *builtin;
+                }
             }
             return BuiltinTypes::Value;
         }

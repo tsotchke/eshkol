@@ -29,7 +29,15 @@ const char* universeToString(Universe u) {
 
 const char* runtimeRepToString(RuntimeRep rep) {
     switch (rep) {
+        case RuntimeRep::Int8: return "int8";
+        case RuntimeRep::Int16: return "int16";
+        case RuntimeRep::Int32: return "int32";
         case RuntimeRep::Int64: return "int64";
+        case RuntimeRep::UInt8: return "uint8";
+        case RuntimeRep::UInt16: return "uint16";
+        case RuntimeRep::UInt32: return "uint32";
+        case RuntimeRep::UInt64: return "uint64";
+        case RuntimeRep::Float32: return "float32";
         case RuntimeRep::Float64: return "float64";
         case RuntimeRep::Pointer: return "ptr";
         case RuntimeRep::TaggedValue: return "tagged";
@@ -76,10 +84,28 @@ void TypeEnvironment::initializeBuiltinTypes() {
     // Integer branch: exact numbers
     registerBuiltinType(Integer.id, "Integer", Universe::U0, TYPE_FLAG_EXACT,
                         RuntimeRep::Int64, Number);
+    registerBuiltinType(Int8.id, "Int8", Universe::U0, TYPE_FLAG_EXACT,
+                        RuntimeRep::Int8, Integer);
+    registerBuiltinType(Int16.id, "Int16", Universe::U0, TYPE_FLAG_EXACT,
+                        RuntimeRep::Int16, Integer);
+    registerBuiltinType(Int32.id, "Int32", Universe::U0, TYPE_FLAG_EXACT,
+                        RuntimeRep::Int32, Integer);
     registerBuiltinType(Int64.id, "Int64", Universe::U0, TYPE_FLAG_EXACT,
                         RuntimeRep::Int64, Integer);
-    registerBuiltinType(Natural.id, "Natural", Universe::U0, TYPE_FLAG_EXACT,
+    registerBuiltinType(ISize.id, "ISize", Universe::U0, TYPE_FLAG_EXACT,
                         RuntimeRep::Int64, Integer);
+    registerBuiltinType(Natural.id, "Natural", Universe::U0, TYPE_FLAG_EXACT,
+                        RuntimeRep::UInt64, Integer);
+    registerBuiltinType(UInt8.id, "UInt8", Universe::U0, TYPE_FLAG_EXACT,
+                        RuntimeRep::UInt8, Integer);
+    registerBuiltinType(UInt16.id, "UInt16", Universe::U0, TYPE_FLAG_EXACT,
+                        RuntimeRep::UInt16, Integer);
+    registerBuiltinType(UInt32.id, "UInt32", Universe::U0, TYPE_FLAG_EXACT,
+                        RuntimeRep::UInt32, Integer);
+    registerBuiltinType(UInt64.id, "UInt64", Universe::U0, TYPE_FLAG_EXACT,
+                        RuntimeRep::UInt64, Integer);
+    registerBuiltinType(USize.id, "USize", Universe::U0, TYPE_FLAG_EXACT,
+                        RuntimeRep::UInt64, Integer);
     registerBuiltinType(BigInt.id, "BigInt", Universe::U0, TYPE_FLAG_EXACT,
                         RuntimeRep::Pointer, Integer);  // Heap-allocated arbitrary precision
 
@@ -165,11 +191,29 @@ void TypeEnvironment::initializeBuiltinTypes() {
 
     // ===== Add common aliases =====
     name_to_id_["int"] = Int64;
+    name_to_id_["i8"] = Int8;
+    name_to_id_["int8"] = Int8;
+    name_to_id_["i16"] = Int16;
+    name_to_id_["int16"] = Int16;
+    name_to_id_["i32"] = Int32;
+    name_to_id_["int32"] = Int32;
+    name_to_id_["i64"] = Int64;
     name_to_id_["int64"] = Int64;
     name_to_id_["integer"] = Int64;
+    name_to_id_["isize"] = ISize;
+    name_to_id_["u8"] = UInt8;
+    name_to_id_["uint8"] = UInt8;
+    name_to_id_["u16"] = UInt16;
+    name_to_id_["uint16"] = UInt16;
+    name_to_id_["u32"] = UInt32;
+    name_to_id_["uint32"] = UInt32;
+    name_to_id_["u64"] = UInt64;
+    name_to_id_["uint64"] = UInt64;
+    name_to_id_["usize"] = USize;
     name_to_id_["float"] = Float64;
     name_to_id_["float64"] = Float64;
     name_to_id_["double"] = Float64;
+    name_to_id_["float32"] = Float32;
     name_to_id_["string"] = String;
     name_to_id_["str"] = String;
     name_to_id_["bool"] = Boolean;
@@ -416,7 +460,10 @@ TypeId TypeEnvironment::promoteForArithmetic(TypeId a, TypeId b) const {
         return Float64;
     }
 
-    // Both integers -> Int64
+    // Generic arithmetic currently normalizes the integer family to Int64.
+    // Width-specific machine integers are preserved for annotations, ABI
+    // descriptions, and future freestanding lowering, but generic numeric
+    // operators still execute through the existing Int64/Float64 paths.
     if (isSubtype(a, Integer) && isSubtype(b, Integer)) {
         return Int64;
     }
@@ -492,7 +539,12 @@ uint8_t TypeEnvironment::toRuntimeType(TypeId id) const {
 
     // Map HoTT TypeId to eshkol_value_type_t
     if (id == Null) return ESHKOL_VALUE_NULL;
-    if (id == Int64 || id == Integer || id == Natural) return ESHKOL_VALUE_INT64;
+    if (id == Int8 || id == Int16 || id == Int32 || id == Int64 ||
+        id == ISize || id == Integer || id == Natural ||
+        id == UInt8 || id == UInt16 || id == UInt32 ||
+        id == UInt64 || id == USize) {
+        return ESHKOL_VALUE_INT64;
+    }
     if (id == Float64 || id == Real) return ESHKOL_VALUE_DOUBLE;
     if (id == List) return ESHKOL_VALUE_CONS_PTR;
     if (id == String) return ESHKOL_VALUE_STRING_PTR;
