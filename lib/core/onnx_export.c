@@ -19,9 +19,11 @@
 #include <string.h>
 #include <stdint.h>
 
-/* Forward declarations */
-extern void* get_global_arena(void);
-extern char* arena_allocate_string_with_header(void* arena, size_t length);
+/* Arena allocation */
+typedef struct arena arena_t;
+extern arena_t* get_global_arena(void);
+extern void* arena_allocate(arena_t* arena, size_t size);
+extern char* arena_allocate_string_with_header(arena_t* arena, size_t length);
 
 /* ── Protobuf wire format helpers ── */
 
@@ -145,7 +147,7 @@ int eshkol_onnx_export(const char* path,
     if (!path || n_tensors <= 0) return -1;
 
     /* Compute total size of all TensorProto messages */
-    size_t* tensor_sizes = (size_t*)malloc((size_t)n_tensors * sizeof(size_t));
+    size_t* tensor_sizes = (size_t*)arena_allocate(get_global_arena(), (size_t)n_tensors * sizeof(size_t));
     if (!tensor_sizes) return -1;
 
     size_t total_tensor_bytes = 0;
@@ -185,8 +187,8 @@ int eshkol_onnx_export(const char* path,
     model_size += opset_size;
 
     /* Allocate buffer and write */
-    uint8_t* buf = (uint8_t*)malloc(model_size + 64); /* +64 for safety */
-    if (!buf) { free(tensor_sizes); return -1; }
+    uint8_t* buf = (uint8_t*)arena_allocate(get_global_arena(), model_size + 64);
+    if (!buf) return -1;
 
     size_t pos = 0;
 
@@ -213,11 +215,8 @@ int eshkol_onnx_export(const char* path,
 
     /* Write to file */
     FILE* f = fopen(path, "wb");
-    if (!f) { free(buf); free(tensor_sizes); return -1; }
+    if (!f) return -1;
     fwrite(buf, 1, pos, f);
     fclose(f);
-
-    free(buf);
-    free(tensor_sizes);
     return 0;
 }

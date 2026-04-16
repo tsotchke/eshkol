@@ -6,9 +6,19 @@
  */
 #include <eshkol/eshkol.h>
 #include <eshkol/logger.h>
+#include "arena_memory.h"
 #include <cstring>
 #include <cstdlib>
 #include <cmath>
+
+// Arena-aware strdup: allocate string copy in the global arena
+static char* arena_strdup(const char* s) {
+    if (!s) return nullptr;
+    size_t len = strlen(s);
+    char* copy = (char*)arena_allocate(get_global_arena(), len + 1);
+    if (copy) memcpy(copy, s, len + 1);
+    return copy;
+}
 
 void eshkol_ast_clean(eshkol_ast_t *ast)
 {
@@ -44,7 +54,7 @@ void eshkol_ast_clean(eshkol_ast_t *ast)
 // Memory management for symbolic AST nodes created during differentiation
 
 eshkol_ast_t* eshkol_alloc_symbolic_ast() {
-    eshkol_ast_t* node = (eshkol_ast_t*)malloc(sizeof(eshkol_ast_t));
+    eshkol_ast_t* node = (eshkol_ast_t*)arena_allocate(get_global_arena(),sizeof(eshkol_ast_t));
     memset(node, 0, sizeof(eshkol_ast_t));
     return node;
 }
@@ -53,7 +63,7 @@ eshkol_ast_t* eshkol_alloc_symbolic_ast() {
 eshkol_ast_t* eshkol_make_var_ast(const char* name) {
     eshkol_ast_t* ast = eshkol_alloc_symbolic_ast();
     ast->type = ESHKOL_VAR;
-    ast->variable.id = strdup(name);
+    ast->variable.id = arena_strdup(name);
     ast->variable.data = nullptr;
     return ast;
 }
@@ -87,7 +97,7 @@ eshkol_ast_t* eshkol_make_binary_op_ast(const char* op,
     
     // Create arguments array
     ast->operation.call_op.variables =
-        (eshkol_ast_t*)malloc(2 * sizeof(eshkol_ast_t));
+        (eshkol_ast_t*)arena_allocate(get_global_arena(),2 * sizeof(eshkol_ast_t));
     ast->operation.call_op.variables[0] = *left;
     ast->operation.call_op.variables[1] = *right;
     ast->operation.call_op.num_vars = 2;
@@ -103,7 +113,7 @@ eshkol_ast_t* eshkol_make_unary_call_ast(const char* func, eshkol_ast_t* arg) {
     
     ast->operation.call_op.func = eshkol_make_var_ast(func);
     ast->operation.call_op.variables =
-        (eshkol_ast_t*)malloc(sizeof(eshkol_ast_t));
+        (eshkol_ast_t*)arena_allocate(get_global_arena(),sizeof(eshkol_ast_t));
     ast->operation.call_op.variables[0] = *arg;
     ast->operation.call_op.num_vars = 1;
     
@@ -119,7 +129,7 @@ eshkol_ast_t* eshkol_copy_ast(const eshkol_ast_t* ast) {
     
     // Deep copy string fields if needed
     if (ast->type == ESHKOL_VAR && ast->variable.id) {
-        copy->variable.id = strdup(ast->variable.id);
+        copy->variable.id = arena_strdup(ast->variable.id);
     }
     if ((ast->type == ESHKOL_STRING || ast->type == ESHKOL_BIGNUM_LITERAL) && ast->str_val.ptr) {
         copy->str_val.ptr = new char[ast->str_val.size];
@@ -133,7 +143,7 @@ eshkol_ast_t* eshkol_copy_ast(const eshkol_ast_t* ast) {
         }
         if (ast->operation.call_op.variables && ast->operation.call_op.num_vars > 0) {
             copy->operation.call_op.variables =
-                (eshkol_ast_t*)malloc(ast->operation.call_op.num_vars * sizeof(eshkol_ast_t));
+                (eshkol_ast_t*)arena_allocate(get_global_arena(),ast->operation.call_op.num_vars * sizeof(eshkol_ast_t));
             for (uint64_t i = 0; i < ast->operation.call_op.num_vars; i++) {
                 copy->operation.call_op.variables[i] = *eshkol_copy_ast(&ast->operation.call_op.variables[i]);
             }
@@ -148,7 +158,7 @@ eshkol_ast_t* eshkol_copy_ast(const eshkol_ast_t* ast) {
 
 // Allocate and initialize a type expression with a given kind
 static hott_type_expr_t* hott_alloc_type_expr(hott_type_kind_t kind) {
-    hott_type_expr_t* type = (hott_type_expr_t*)malloc(sizeof(hott_type_expr_t));
+    hott_type_expr_t* type = (hott_type_expr_t*)arena_allocate(get_global_arena(),sizeof(hott_type_expr_t));
     memset(type, 0, sizeof(hott_type_expr_t));
     type->kind = kind;
     return type;
@@ -194,7 +204,7 @@ hott_type_expr_t* hott_make_nothing_type(void) {
 // Type variable constructor
 hott_type_expr_t* hott_make_type_var(const char* name) {
     hott_type_expr_t* type = hott_alloc_type_expr(HOTT_TYPE_VAR);
-    type->var_name = strdup(name);
+    type->var_name = arena_strdup(name);
     return type;
 }
 
@@ -206,7 +216,7 @@ hott_type_expr_t* hott_make_arrow_type(hott_type_expr_t** param_types,
 
     // Copy parameter types
     if (num_params > 0 && param_types) {
-        type->arrow.param_types = (hott_type_expr_t**)malloc(num_params * sizeof(hott_type_expr_t*));
+        type->arrow.param_types = (hott_type_expr_t**)arena_allocate(get_global_arena(),num_params * sizeof(hott_type_expr_t*));
         for (uint64_t i = 0; i < num_params; i++) {
             type->arrow.param_types[i] = hott_copy_type_expr(param_types[i]);
         }
@@ -268,9 +278,9 @@ hott_type_expr_t* hott_make_forall_type(char** type_vars,
     hott_type_expr_t* type = hott_alloc_type_expr(HOTT_TYPE_FORALL);
 
     if (num_vars > 0 && type_vars) {
-        type->forall.type_vars = (char**)malloc(num_vars * sizeof(char*));
+        type->forall.type_vars = (char**)arena_allocate(get_global_arena(),num_vars * sizeof(char*));
         for (uint64_t i = 0; i < num_vars; i++) {
-            type->forall.type_vars[i] = strdup(type_vars[i]);
+            type->forall.type_vars[i] = arena_strdup(type_vars[i]);
         }
     } else {
         type->forall.type_vars = nullptr;
@@ -289,12 +299,12 @@ hott_type_expr_t* hott_copy_type_expr(const hott_type_expr_t* type) {
 
     switch (type->kind) {
         case HOTT_TYPE_VAR:
-            copy->var_name = type->var_name ? strdup(type->var_name) : nullptr;
+            copy->var_name = type->var_name ? arena_strdup(type->var_name) : nullptr;
             break;
 
         case HOTT_TYPE_ARROW:
             if (type->arrow.num_params > 0 && type->arrow.param_types) {
-                copy->arrow.param_types = (hott_type_expr_t**)malloc(
+                copy->arrow.param_types = (hott_type_expr_t**)arena_allocate(get_global_arena(),
                     type->arrow.num_params * sizeof(hott_type_expr_t*));
                 for (uint64_t i = 0; i < type->arrow.num_params; i++) {
                     copy->arrow.param_types[i] = hott_copy_type_expr(type->arrow.param_types[i]);
@@ -306,9 +316,9 @@ hott_type_expr_t* hott_copy_type_expr(const hott_type_expr_t* type) {
 
         case HOTT_TYPE_FORALL:
             if (type->forall.num_vars > 0 && type->forall.type_vars) {
-                copy->forall.type_vars = (char**)malloc(type->forall.num_vars * sizeof(char*));
+                copy->forall.type_vars = (char**)arena_allocate(get_global_arena(),type->forall.num_vars * sizeof(char*));
                 for (uint64_t i = 0; i < type->forall.num_vars; i++) {
-                    copy->forall.type_vars[i] = strdup(type->forall.type_vars[i]);
+                    copy->forall.type_vars[i] = arena_strdup(type->forall.type_vars[i]);
                 }
             }
             copy->forall.num_vars = type->forall.num_vars;
@@ -343,62 +353,16 @@ hott_type_expr_t* hott_copy_type_expr(const hott_type_expr_t* type) {
     return copy;
 }
 
-// Free a type expression and all its children
+// Free a type expression and all its children.
+// No-op: all type expressions are arena-allocated and bulk-freed with the arena.
 void hott_free_type_expr(hott_type_expr_t* type) {
-    if (!type) return;
-
-    switch (type->kind) {
-        case HOTT_TYPE_VAR:
-            if (type->var_name) free(type->var_name);
-            break;
-
-        case HOTT_TYPE_ARROW:
-            if (type->arrow.param_types) {
-                for (uint64_t i = 0; i < type->arrow.num_params; i++) {
-                    hott_free_type_expr(type->arrow.param_types[i]);
-                }
-                free(type->arrow.param_types);
-            }
-            hott_free_type_expr(type->arrow.return_type);
-            break;
-
-        case HOTT_TYPE_FORALL:
-            if (type->forall.type_vars) {
-                for (uint64_t i = 0; i < type->forall.num_vars; i++) {
-                    free(type->forall.type_vars[i]);
-                }
-                free(type->forall.type_vars);
-            }
-            hott_free_type_expr(type->forall.body);
-            break;
-
-        case HOTT_TYPE_LIST:
-        case HOTT_TYPE_VECTOR:
-            hott_free_type_expr(type->container.element_type);
-            break;
-
-        case HOTT_TYPE_PAIR:
-        case HOTT_TYPE_PRODUCT:
-            hott_free_type_expr(type->pair.left);
-            hott_free_type_expr(type->pair.right);
-            break;
-
-        case HOTT_TYPE_SUM:
-            hott_free_type_expr(type->sum.left);
-            hott_free_type_expr(type->sum.right);
-            break;
-
-        default:
-            break;
-    }
-
-    free(type);
+    (void)type;
 }
 
 // Convert type expression to string (for display/error messages)
 // Returns a newly allocated string that must be freed by the caller
 char* hott_type_to_string(const hott_type_expr_t* type) {
-    if (!type) return strdup("null");
+    if (!type) return arena_strdup("null");
 
     char buffer[1024];
     size_t off = 0;
@@ -422,40 +386,38 @@ char* hott_type_to_string(const hott_type_expr_t* type) {
 
     switch (type->kind) {
         case HOTT_TYPE_INVALID:
-            return strdup("invalid");
+            return arena_strdup("invalid");
         case HOTT_TYPE_INTEGER:
-            return strdup("integer");
+            return arena_strdup("integer");
         case HOTT_TYPE_REAL:
-            return strdup("real");
+            return arena_strdup("real");
         case HOTT_TYPE_BOOLEAN:
-            return strdup("boolean");
+            return arena_strdup("boolean");
         case HOTT_TYPE_STRING:
-            return strdup("string");
+            return arena_strdup("string");
         case HOTT_TYPE_CHAR:
-            return strdup("char");
+            return arena_strdup("char");
         case HOTT_TYPE_SYMBOL:
-            return strdup("symbol");
+            return arena_strdup("symbol");
         case HOTT_TYPE_NULL:
-            return strdup("null");
+            return arena_strdup("null");
         case HOTT_TYPE_ANY:
-            return strdup("any");
+            return arena_strdup("any");
         case HOTT_TYPE_NOTHING:
-            return strdup("nothing");
+            return arena_strdup("nothing");
 
         case HOTT_TYPE_VAR:
-            return strdup(type->var_name ? type->var_name : "?");
+            return arena_strdup(type->var_name ? type->var_name : "?");
 
         case HOTT_TYPE_ARROW: {
             BUF_APPEND("(-> ");
             for (uint64_t i = 0; i < type->arrow.num_params; i++) {
                 char* param_str = hott_type_to_string(type->arrow.param_types[i]);
                 BUF_APPEND("%s ", param_str);
-                free(param_str);
             }
             char* ret_str = hott_type_to_string(type->arrow.return_type);
             BUF_APPEND("%s)", ret_str);
-            free(ret_str);
-            return strdup(buffer);
+            return arena_strdup(buffer);
         }
 
         case HOTT_TYPE_FORALL: {
@@ -467,24 +429,21 @@ char* hott_type_to_string(const hott_type_expr_t* type) {
             BUF_APPEND(") ");
             char* body_str = hott_type_to_string(type->forall.body);
             BUF_APPEND("%s)", body_str);
-            free(body_str);
-            return strdup(buffer);
+            return arena_strdup(buffer);
         }
 
         case HOTT_TYPE_LIST: {
             BUF_APPEND("(list ");
             char* elem_str = hott_type_to_string(type->container.element_type);
             BUF_APPEND("%s)", elem_str);
-            free(elem_str);
-            return strdup(buffer);
+            return arena_strdup(buffer);
         }
 
         case HOTT_TYPE_VECTOR: {
             BUF_APPEND("(vector ");
             char* elem_str = hott_type_to_string(type->container.element_type);
             BUF_APPEND("%s)", elem_str);
-            free(elem_str);
-            return strdup(buffer);
+            return arena_strdup(buffer);
         }
 
         case HOTT_TYPE_PAIR: {
@@ -492,9 +451,7 @@ char* hott_type_to_string(const hott_type_expr_t* type) {
             char* left_str = hott_type_to_string(type->pair.left);
             char* right_str = hott_type_to_string(type->pair.right);
             BUF_APPEND("%s %s)", left_str, right_str);
-            free(left_str);
-            free(right_str);
-            return strdup(buffer);
+            return arena_strdup(buffer);
         }
 
         case HOTT_TYPE_PRODUCT: {
@@ -502,9 +459,7 @@ char* hott_type_to_string(const hott_type_expr_t* type) {
             char* left_str = hott_type_to_string(type->pair.left);
             char* right_str = hott_type_to_string(type->pair.right);
             BUF_APPEND("%s %s)", left_str, right_str);
-            free(left_str);
-            free(right_str);
-            return strdup(buffer);
+            return arena_strdup(buffer);
         }
 
         case HOTT_TYPE_SUM: {
@@ -512,23 +467,21 @@ char* hott_type_to_string(const hott_type_expr_t* type) {
             char* left_str = hott_type_to_string(type->sum.left);
             char* right_str = hott_type_to_string(type->sum.right);
             BUF_APPEND("%s %s)", left_str, right_str);
-            free(left_str);
-            free(right_str);
-            return strdup(buffer);
+            return arena_strdup(buffer);
         }
 
         case HOTT_TYPE_UNIVERSE:
             snprintf(buffer, sizeof(buffer), "Type%u", type->universe.level);
-            return strdup(buffer);
+            return arena_strdup(buffer);
 
         case HOTT_TYPE_DEPENDENT:
-            return strdup("(Pi ...)");
+            return arena_strdup("(Pi ...)");
 
         case HOTT_TYPE_PATH:
-            return strdup("(Path ...)");
+            return arena_strdup("(Path ...)");
 
         default:
-            return strdup("unknown");
+            return arena_strdup("unknown");
     }
 
     #undef BUF_APPEND
@@ -548,7 +501,7 @@ eshkol_ast_t* eshkol_wrap_with_display(eshkol_ast_t* expr) {
     wrapper->operation.call_op.func = eshkol_make_var_ast("begin");
     wrapper->operation.call_op.num_vars = 2;
     wrapper->operation.call_op.variables =
-        (eshkol_ast_t*)malloc(2 * sizeof(eshkol_ast_t));
+        (eshkol_ast_t*)arena_allocate(get_global_arena(),2 * sizeof(eshkol_ast_t));
 
     // Element 1: (display expr)
     eshkol_ast_t* display_call = eshkol_alloc_symbolic_ast();
@@ -557,7 +510,7 @@ eshkol_ast_t* eshkol_wrap_with_display(eshkol_ast_t* expr) {
     display_call->operation.call_op.func = eshkol_make_var_ast("display");
     display_call->operation.call_op.num_vars = 1;
     display_call->operation.call_op.variables =
-        (eshkol_ast_t*)malloc(sizeof(eshkol_ast_t));
+        (eshkol_ast_t*)arena_allocate(get_global_arena(),sizeof(eshkol_ast_t));
     display_call->operation.call_op.variables[0] = *expr;
 
     // Element 2: (newline)

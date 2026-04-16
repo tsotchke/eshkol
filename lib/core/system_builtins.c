@@ -479,9 +479,11 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_mkdtemp_v(eshkol_sysbuiltin_valu
 }
 
 static int rmdir_recursive_impl(const char* path) {
+    static int depth = 0;
+    if (++depth > 100) { --depth; return -1; }
 #ifndef _WIN32
     DIR* d = opendir(path);
-    if (!d) return -1;
+    if (!d) { --depth; return -1; }
     struct dirent* ent;
     while ((ent = readdir(d))) {
         if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) continue;
@@ -495,9 +497,30 @@ static int rmdir_recursive_impl(const char* path) {
         }
     }
     closedir(d);
-    return rmdir(path);
+    int ret = rmdir(path);
+    --depth;
+    return ret;
 #else
-    return -1; /* TODO: Windows recursive delete */
+    /* Windows recursive delete using FindFirstFile/FindNextFile */
+    WIN32_FIND_DATAA fdata;
+    char search[MAX_PATH];
+    snprintf(search, sizeof(search), "%s\\*", path);
+    HANDLE h = FindFirstFileA(search, &fdata);
+    if (h == INVALID_HANDLE_VALUE) { --depth; return -1; }
+    do {
+        if (strcmp(fdata.cFileName, ".") == 0 || strcmp(fdata.cFileName, "..") == 0) continue;
+        char child[MAX_PATH];
+        snprintf(child, sizeof(child), "%s\\%s", path, fdata.cFileName);
+        if (fdata.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+            rmdir_recursive_impl(child);
+        } else {
+            DeleteFileA(child);
+        }
+    } while (FindNextFileA(h, &fdata));
+    FindClose(h);
+    int wret = RemoveDirectoryA(path) ? 0 : -1;
+    --depth;
+    return wret;
 #endif
 }
 
@@ -516,6 +539,7 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_shell_quote_v(eshkol_sysbuiltin_
     if (!s) return sys_make_null();
     /* Single-quote wrapping with internal ' escaped as '\'' */
     size_t len = strlen(s);
+    if (len > SIZE_MAX / 4 - 2) return sys_make_null();
     size_t out_len = 2 + len * 4; /* worst case */
     void* arena = get_global_arena();
     if (!arena) return sys_make_null();
@@ -569,7 +593,37 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_process_spawn_v(eshkol_sysbuilti
     if (pid < 0) return sys_make_int64(-1);
     return sys_make_int64((int64_t)pid);
 #else
-    return sys_make_int64(-1); /* TODO: Windows CreateProcess */
+    /* Windows process creation via CreateProcess + cmd /c */
+    STARTUPINFOA si;
+    PROCESS_INFORMATION pi;
+    memset(&si, 0, sizeof(si));
+    si.cb = sizeof(si);
+    memset(&pi, 0, sizeof(pi));
+
+    /* Build command line: cmd /c "command" */
+    char cmdline[32768];
+    snprintf(cmdline, sizeof(cmdline), "cmd /c %s", cmd);
+
+    /* Set environment if provided */
+    if (env_str && strlen(env_str) > 0) {
+        /* putenv each KEY=VAL pair before creating child */
+        char* env_copy = _strdup(env_str);
+        if (env_copy) {
+            char* pair = strtok(env_copy, " ");
+            while (pair) {
+                _putenv(pair);
+                pair = strtok(NULL, " ");
+            }
+            free(env_copy);
+        }
+    }
+
+    if (!CreateProcessA(NULL, cmdline, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
+        return sys_make_int64(-1);
+    }
+    CloseHandle(pi.hThread);
+    /* Return process ID — the handle is stored implicitly via the PID */
+    return sys_make_int64((int64_t)pi.dwProcessId);
 #endif
 }
 
@@ -583,7 +637,14 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_process_wait_v(eshkol_sysbuiltin
     if (WIFSIGNALED(status)) return sys_make_int64(128 + WTERMSIG(status));
     return sys_make_int64(-1);
 #else
-    return sys_make_int64(-1); /* TODO: Windows WaitForSingleObject */
+    /* Windows process wait via OpenProcess + WaitForSingleObject */
+    HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | SYNCHRONIZE, FALSE, (DWORD)pid);
+    if (!hProcess) return sys_make_int64(-1);
+    WaitForSingleObject(hProcess, INFINITE);
+    DWORD exit_code = 0;
+    GetExitCodeProcess(hProcess, &exit_code);
+    CloseHandle(hProcess);
+    return sys_make_int64((int64_t)exit_code);
 #endif
 }
 
@@ -657,33 +718,41 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_directory_walk_v(eshkol_sysbuilt
     const char* path = sys_extract_string(path_val);
     if (!path) return sys_make_null();
 #ifndef _WIN32
-    /* BFS with stack of directories */
-    char dirs[256][PATH_MAX];
-    int dir_count = 0, dir_idx = 0;
+    /* BFS with arena-allocated directory queue (no stack overflow risk) */
+    #define WALK_MAX_DIRS 4096
+    #define WALK_MAX_RESULTS 16384
+    void* walk_arena = get_global_arena();
+    char** dirs = (char**)arena_allocate(walk_arena, WALK_MAX_DIRS * sizeof(char*));
+    char** results = (char**)arena_allocate(walk_arena, WALK_MAX_RESULTS * sizeof(char*));
+    if (!dirs || !results) return sys_make_null();
+
+    int dir_count = 0, dir_idx = 0, result_count = 0;
+    dirs[0] = (char*)arena_allocate(walk_arena, PATH_MAX);
+    if (!dirs[0]) return sys_make_null();
     strncpy(dirs[0], path, PATH_MAX - 1); dirs[0][PATH_MAX - 1] = '\0';
     dir_count = 1;
 
-    /* Build result as a linked list of strings (reversed, then return) */
-    /* For simplicity, collect into a flat array first */
-    char* results[4096];
-    int result_count = 0;
-
-    while (dir_idx < dir_count && dir_count < 256) {
+    while (dir_idx < dir_count && dir_count < WALK_MAX_DIRS) {
         DIR* d = opendir(dirs[dir_idx]);
         dir_idx++;
         if (!d) continue;
         struct dirent* ent;
-        while ((ent = readdir(d)) != NULL && result_count < 4096) {
+        while ((ent = readdir(d)) != NULL && result_count < WALK_MAX_RESULTS) {
             if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) continue;
             char full[PATH_MAX];
             snprintf(full, sizeof(full), "%s/%s", dirs[dir_idx - 1], ent->d_name);
             struct stat st;
-            if (stat(full, &st) == 0 && S_ISDIR(st.st_mode) && dir_count < 256) {
+            if (stat(full, &st) == 0 && S_ISDIR(st.st_mode) && dir_count < WALK_MAX_DIRS) {
+                dirs[dir_count] = (char*)arena_allocate(walk_arena, PATH_MAX);
+                if (!dirs[dir_count]) break;
                 strncpy(dirs[dir_count], full, PATH_MAX - 1);
                 dirs[dir_count][PATH_MAX - 1] = '\0';
                 dir_count++;
             }
-            results[result_count] = strdup(full);
+            size_t full_len = strlen(full);
+            results[result_count] = (char*)arena_allocate(walk_arena, full_len + 1);
+            if (!results[result_count]) break;
+            memcpy(results[result_count], full, full_len + 1);
             result_count++;
         }
         closedir(d);
@@ -706,7 +775,7 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_directory_walk_v(eshkol_sysbuilt
     void* arena = get_global_arena();
     char* buf = arena_allocate_string_with_header(arena, total_len);
     if (!buf) {
-        for (int i = 0; i < result_count; i++) free(results[i]);
+        /* results are arena-allocated — no individual free needed */
         return sys_make_null();
     }
     char* p = buf;
@@ -715,7 +784,6 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_directory_walk_v(eshkol_sysbuilt
         memcpy(p, results[i], len);
         p += len;
         *p++ = '\n';
-        free(results[i]);
     }
     if (p > buf) p[-1] = '\0'; /* replace last newline with null */
     else *p = '\0';
@@ -1466,11 +1534,10 @@ void eshkol_builtin_image_write_sret(sv_t* out, const sv_t* path_tv, const sv_t*
     uint64_t total = *((uint64_t*)((char*)t + 24));
     if (ndims < 2 || !elements) { *out = sys_make_bool(0); return; }
     int h = (int)dims[0], w = (int)dims[1], c = ndims >= 3 ? (int)dims[2] : 1;
-    double* data = (double*)malloc(total * sizeof(double));
+    double* data = (double*)arena_allocate(get_global_arena(), total * sizeof(double));
     if (!data) { *out = sys_make_bool(0); return; }
     for (uint64_t i = 0; i < total; i++) memcpy(&data[i], &elements[i], sizeof(double));
     int rc = eshkol_image_write(path, data, w, h, c, fmt ? fmt : "png");
-    free(data);
     *out = sys_make_bool(rc == 0);
 }
 
@@ -1484,11 +1551,10 @@ void eshkol_builtin_image_grayscale_sret(sv_t* out, const sv_t* tensor_tv) {
     uint64_t total = *((uint64_t*)((char*)t + 24));
     if (ndims < 3 || !elements) { *out = sys_make_null(); return; }
     int h = (int)dims[0], w = (int)dims[1], c = (int)dims[2];
-    double* data = (double*)malloc(total * sizeof(double));
+    double* data = (double*)arena_allocate(get_global_arena(), total * sizeof(double));
     if (!data) { *out = sys_make_null(); return; }
     for (uint64_t i = 0; i < total; i++) memcpy(&data[i], &elements[i], sizeof(double));
     double* gray = eshkol_image_to_grayscale(data, w, h, c);
-    free(data);
     if (!gray) { *out = sys_make_null(); return; }
     /* Create HxW tensor */
     void* arena = get_global_arena();

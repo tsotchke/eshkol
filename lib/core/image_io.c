@@ -34,6 +34,12 @@
 #include <string.h>
 #include <math.h>
 
+/* Arena allocation — all image buffers use the global arena */
+typedef struct arena arena_t;
+extern arena_t* get_global_arena(void);
+extern void* arena_allocate(arena_t* arena, size_t size);
+extern void* arena_allocate_zeroed(arena_t* arena, size_t size);
+
 /* ── Read image file → flat double array (normalized 0-1) ── */
 
 double* eshkol_image_read(const char* path, int* out_w, int* out_h, int* out_c) {
@@ -49,7 +55,7 @@ double* eshkol_image_read(const char* path, int* out_w, int* out_h, int* out_c) 
 
     /* Convert to normalized doubles */
     size_t total = (size_t)w * (size_t)h * (size_t)channels;
-    double* result = (double*)malloc(total * sizeof(double));
+    double* result = (double*)arena_allocate(get_global_arena(),total * sizeof(double));
     if (!result) { stbi_image_free(data); return NULL; }
 
     for (size_t i = 0; i < total; i++) {
@@ -68,12 +74,12 @@ int eshkol_image_write(const char* path, const double* data,
 
     /* Convert doubles back to uint8 */
     size_t total = (size_t)w * (size_t)h * (size_t)channels;
-    unsigned char* pixels = (unsigned char*)malloc(total);
+    unsigned char* pixels = (unsigned char*)arena_allocate(get_global_arena(),total);
     if (!pixels) return -1;
 
     for (size_t i = 0; i < total; i++) {
         double v = data[i] * 255.0;
-        if (v < 0) v = 0;
+        if (!(v >= 0)) v = 0;
         if (v > 255) v = 255;
         pixels[i] = (unsigned char)(v + 0.5);
     }
@@ -89,7 +95,6 @@ int eshkol_image_write(const char* path, const double* data,
         result = stbi_write_tga(path, w, h, channels, pixels) ? 0 : -1;
     }
 
-    free(pixels);
     return result;
 }
 
@@ -100,14 +105,14 @@ double* eshkol_image_to_grayscale(const double* data, int w, int h, int channels
     if (channels == 1) {
         /* Already grayscale — copy */
         size_t total = (size_t)w * (size_t)h;
-        double* result = (double*)malloc(total * sizeof(double));
+        double* result = (double*)arena_allocate(get_global_arena(),total * sizeof(double));
         if (!result) return NULL;
         memcpy(result, data, total * sizeof(double));
         return result;
     }
 
     size_t pixels = (size_t)w * (size_t)h;
-    double* result = (double*)malloc(pixels * sizeof(double));
+    double* result = (double*)arena_allocate(get_global_arena(),pixels * sizeof(double));
     if (!result) return NULL;
 
     /* Luminance: Y = 0.2126*R + 0.7152*G + 0.0722*B (ITU-R BT.709) */
@@ -132,16 +137,15 @@ double* eshkol_image_resize(const double* data, int w, int h, int channels,
     /* Convert to uint8 for stbir */
     size_t src_total = (size_t)w * (size_t)h * (size_t)channels;
     size_t dst_total = (size_t)new_w * (size_t)new_h * (size_t)channels;
-    unsigned char* src_pixels = (unsigned char*)malloc(src_total);
-    unsigned char* dst_pixels = (unsigned char*)malloc(dst_total);
+    unsigned char* src_pixels = (unsigned char*)arena_allocate(get_global_arena(),src_total);
+    unsigned char* dst_pixels = (unsigned char*)arena_allocate(get_global_arena(),dst_total);
     if (!src_pixels || !dst_pixels) {
-        free(src_pixels); free(dst_pixels);
         return NULL;
     }
 
     for (size_t i = 0; i < src_total; i++) {
         double v = data[i] * 255.0;
-        if (v < 0) v = 0; if (v > 255) v = 255;
+        if (!(v >= 0)) v = 0; if (v > 255) v = 255;
         src_pixels[i] = (unsigned char)(v + 0.5);
     }
 
@@ -160,14 +164,12 @@ double* eshkol_image_resize(const double* data, int w, int h, int channels,
                                layout);
 
     /* Convert back to normalized doubles */
-    double* result = (double*)malloc(dst_total * sizeof(double));
-    if (!result) { free(src_pixels); free(dst_pixels); return NULL; }
+    double* result = (double*)arena_allocate(get_global_arena(),dst_total * sizeof(double));
+    if (!result) return NULL;
 
     for (size_t i = 0; i < dst_total; i++) {
         result[i] = (double)dst_pixels[i] / 255.0;
     }
 
-    free(src_pixels);
-    free(dst_pixels);
     return result;
 }

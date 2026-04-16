@@ -8,6 +8,7 @@
 
 #include <eshkol/core/rational.h>
 #include <eshkol/eshkol.h>
+#include <eshkol/logger.h>
 #include <cmath>
 #include <stdlib.h>
 #include <stdio.h>
@@ -23,6 +24,8 @@ extern "C" void* arena_allocate_string_with_header(void* arena, uint64_t size);
 static int64_t gcd(int64_t a, int64_t b) {
     if (a < 0) a = -a;
     if (b < 0) b = -b;
+    if (a == 0) return b;
+    if (b == 0) return a;
     while (b != 0) {
         int64_t t = b;
         b = a % b;
@@ -72,7 +75,8 @@ static void* rational_create_safe(void* arena, __int128_t num, __int128_t denom)
 
 extern "C" void* eshkol_rational_create(void* arena, int64_t num, int64_t denom) {
     if (denom == 0) {
-        /* Division by zero — return 0/1 as fallback */
+        eshkol_error("rational: division by zero (denominator is 0)");
+        /* Return 0/1 as safe fallback after error is reported */
         denom = 1;
         num = 0;
     }

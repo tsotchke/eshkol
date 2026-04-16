@@ -34,10 +34,16 @@ static size_t tensor_size(const int64_t* shape, size_t ndim) {
     return size;
 }
 
-/* Allocate zero-initialized gradient tensor */
+/* Arena allocation for gradient tensors */
+extern "C" {
+    typedef struct arena arena_t;
+    arena_t* get_global_arena(void);
+    void* arena_allocate_zeroed(arena_t* arena, size_t size);
+}
+
+/* Allocate zero-initialized gradient tensor (arena-scoped) */
 static double* alloc_grad(size_t n) {
-    double* g = (double*)calloc(n, sizeof(double));
-    return g;
+    return (double*)arena_allocate_zeroed(get_global_arena(), n * sizeof(double));
 }
 
 /* Accumulate gradient: dst += src */

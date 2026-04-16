@@ -1218,6 +1218,20 @@ public:
         function_return_types["tensor-dot"] = BuiltinTypes::Float64;        // Returns scalar
         function_return_types["tensor-norm"] = BuiltinTypes::Float64;       // Returns scalar
         function_return_types["tensor-svd"] = BuiltinTypes::List;          // Returns (U S V) list
+        // Tensor unary/binary ops — all return a tensor (Value = tagged heap ptr)
+        function_return_types["tensor-neg"]       = BuiltinTypes::Value;
+        function_return_types["tensor-abs"]       = BuiltinTypes::Value;
+        function_return_types["tensor-sqrt"]      = BuiltinTypes::Value;
+        function_return_types["tensor-exp"]       = BuiltinTypes::Value;
+        function_return_types["tensor-log"]       = BuiltinTypes::Value;
+        function_return_types["tensor-sin"]       = BuiltinTypes::Value;
+        function_return_types["tensor-cos"]       = BuiltinTypes::Value;
+        function_return_types["tensor-pow"]       = BuiltinTypes::Value;
+        function_return_types["tensor-maximum"]   = BuiltinTypes::Value;
+        function_return_types["tensor-minimum"]   = BuiltinTypes::Value;
+        function_return_types["tensor-scale"]     = BuiltinTypes::Value;
+        function_return_types["tensor-transpose"] = BuiltinTypes::Value;
+        function_return_types["batch-matmul"]     = BuiltinTypes::Value;
     }
     
     std::pair<std::unique_ptr<Module>, std::unique_ptr<LLVMContext>> generateIR(const eshkol_ast_t* asts, size_t num_asts) {
@@ -1329,53 +1343,33 @@ public:
             // CRITICAL BUG FIX: In REPL mode, use ExternalLinkage to share flag across JIT modules
             // This allows lambdas compiled in one module to see AD mode set by another module
             // Without this fix, gradient calls on the same function with different vectors crash
-            if (g_repl_mode_enabled) {
-                ad_mode_active = new GlobalVariable(
-                    *module,
-                    int1_type,
-                    false, // not constant
-                    GlobalValue::ExternalLinkage, // External - shared across REPL modules
-                    nullptr, // External - no initializer (defined in arena_memory.cpp)
-                    "__ad_mode_active"
-                );
-            } else {
-                // M1 CONSOLIDATION: Use ExternalLinkage even in compiled mode
-                // This links to the C runtime __ad_mode_active for debugging
-                ad_mode_active = new GlobalVariable(
-                    *module,
-                    int1_type,
-                    false, // not constant
-                    GlobalValue::ExternalLinkage, // External - linked to runtime
-                    nullptr, // External - no initializer (defined in arena_memory.cpp)
-                    "__ad_mode_active"
-                );
-                eshkol_debug("Created global AD mode flag: __ad_mode_active (external linkage)");
-            }
+            // AD mode flag — thread_local in C runtime.
+            // The IR declares these without TLS model on all platforms. The C runtime
+            // handles thread-locality via the platform's native thread_local support.
+            // In REPL mode, the JIT resolves via ADD_TLS_SYMBOL. In AOT mode, the
+            // linker resolves the extern symbol to the thread_local variable directly.
+            // NOTE: On macOS/Linux, C thread_local generates __tls_get_addr calls;
+            // LLVM extern globals without TLS model bind to the main-thread instance,
+            // which is correct for single-threaded compiled programs. For parallel-map,
+            // each worker thread inherits the main thread's value via fork semantics.
+            ad_mode_active = new GlobalVariable(
+                *module,
+                int1_type,
+                false,
+                GlobalValue::ExternalLinkage,
+                nullptr,
+                "__ad_mode_active"
+            );
 
-            // PHASE 1 AUTODIFF FIX: Create global tape pointer
-            // In REPL mode, use ExternalLinkage to share tape across JIT modules
-            // In compiler mode, use InternalLinkage with null initializer
-            if (g_repl_mode_enabled) {
-                current_ad_tape = new GlobalVariable(
-                    *module,
-                    PointerType::getUnqual(*context),
-                    false, // not constant
-                    GlobalValue::ExternalLinkage,
-                    nullptr, // External - no initializer (registered by REPL JIT)
-                    "__current_ad_tape"
-                );
-                eshkol_debug("Created global AD tape pointer: __current_ad_tape (external for REPL cross-module sharing)");
-            } else {
-                current_ad_tape = new GlobalVariable(
-                    *module,
-                    PointerType::getUnqual(*context),
-                    false, // not constant
-                    GlobalValue::InternalLinkage,
-                    ConstantPointerNull::get(PointerType::getUnqual(*context)), // Initialize to null
-                    "__current_ad_tape"
-                );
-                eshkol_debug("Created global AD tape pointer: __current_ad_tape (initialized to null)");
-            }
+            // AD tape pointer — same pattern as ad_mode_active.
+            current_ad_tape = new GlobalVariable(
+                *module,
+                PointerType::getUnqual(*context),
+                false,
+                GlobalValue::ExternalLinkage,
+                nullptr,
+                "__current_ad_tape"
+            );
 
             // NESTED GRADIENT FIX: Create tape stack and depth counter
             // These enable arbitrary-depth nested gradient operations
@@ -5514,7 +5508,7 @@ private:
 
         // Pre-allocate padded argument array at function entry
         // Note: Keep this small to avoid generating too many switch cases (MAX_CALL_ARGS * MAX_CAPTURES)
-        const int MAX_CALL_ARGS = 4;  // Maximum supported regular arguments for arity-mismatched calls
+        const int MAX_CALL_ARGS = 16;  // Maximum supported regular arguments for arity-mismatched calls
         IRBuilderBase::InsertPoint saved_ip_nonvar = builder->saveIP();
         builder->SetInsertPoint(&entry_block, entry_block.begin());
 
@@ -7326,7 +7320,7 @@ private:
         // NOTE: math_builtins are now handled at the top of this function
         // (before function_table check) with proper closure wrapping
 
-        eshkol_warn("Undefined variable: %s (current_function: %s)", var_name.c_str(),
+        eshkol_error("Undefined variable: %s (current_function: %s)", var_name.c_str(),
                    current_function ? current_function->getName().str().c_str() : "null");
         return nullptr;
     }
@@ -12116,6 +12110,23 @@ private:
         if (func_name == "tensor-mul") return tensor_->tensorArithmetic(op, "mul");
         if (func_name == "tensor-div") return tensor_->tensorArithmetic(op, "div");
         if (func_name == "tensor-dot") return tensor_->tensorDot(op);
+        // Unary element-wise tensor ops
+        if (func_name == "tensor-neg")  return tensor_->tensorNeg(op);
+        if (func_name == "tensor-abs")  return tensor_->tensorAbs(op);
+        if (func_name == "tensor-sqrt") return tensor_->tensorSqrt(op);
+        if (func_name == "tensor-exp")  return tensor_->tensorExp(op);
+        if (func_name == "tensor-log")  return tensor_->tensorLog(op);
+        if (func_name == "tensor-sin")  return tensor_->tensorSin(op);
+        if (func_name == "tensor-cos")  return tensor_->tensorCos(op);
+        // Binary element-wise tensor ops
+        if (func_name == "tensor-pow")     return tensor_->tensorPow(op);
+        if (func_name == "tensor-maximum") return tensor_->tensorMaximum(op);
+        if (func_name == "tensor-minimum") return tensor_->tensorMinimum(op);
+        if (func_name == "tensor-scale")   return tensor_->tensorScale(op);
+        // Batched matrix multiplication
+        if (func_name == "batch-matmul")   return tensor_->batchMatmul(op);
+        // tensor-transpose alias
+        if (func_name == "tensor-transpose") return tensor_->transpose(op);
         // MIGRATED: tensor-shape, tensor-length - now delegated to TensorCodegen
         if (func_name == "tensor-shape") return tensor_->tensorShape(op);
         if (func_name == "tensor-length") return tensor_->tensorLength(op);

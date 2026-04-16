@@ -852,7 +852,6 @@ list(FILTER LIB_SRC EXCLUDE REGEX "lib/agent/.*")
 # includes (vm_*.c, eskb_*.c are #included by eshkol_vm.c).
 # Only eshkol_vm.c is added back below (compiled in library mode).
 list(FILTER LIB_SRC EXCLUDE REGEX "lib/backend/[^/]*\\.c$")
-list(FILTER LIB_SRC EXCLUDE REGEX "lib/backend/archive/.*")
 
 # Exclude standalone .cpp programs with main()
 list(FILTER LIB_SRC EXCLUDE REGEX "lib/backend/weight_compiler\\.cpp$")

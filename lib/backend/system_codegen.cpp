@@ -13,6 +13,13 @@
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
 
 #include <eshkol/logger.h>
+#include <llvm/IR/Intrinsics.h>
+
+#if LLVM_VERSION_MAJOR >= 21
+#define SYS_GET_INTRINSIC(mod, id, types) llvm::Intrinsic::getOrInsertDeclaration(mod, id, types)
+#else
+#define SYS_GET_INTRINSIC(mod, id, types) llvm::Intrinsic::getDeclaration(mod, id, types)
+#endif
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/Function.h>
 
@@ -223,7 +230,16 @@ llvm::Value* SystemCodegen::sleep(const eshkol_operations_t* op) {
     // Convert seconds to microseconds
     llvm::Value* usec_double = ctx_.builder().CreateFMul(seconds_double,
         llvm::ConstantFP::get(ctx_.builder().getDoubleTy(), 1000000.0));
-    llvm::Value* usec_i64 = ctx_.builder().CreateFPToSI(usec_double, ctx_.int64Type());
+    // Clamp to valid int32 range before conversion to prevent UB
+    llvm::Value* clamped = ctx_.builder().CreateCall(
+        SYS_GET_INTRINSIC(&ctx_.module(),
+            llvm::Intrinsic::minnum, {ctx_.doubleType()}),
+        {usec_double, llvm::ConstantFP::get(ctx_.doubleType(), 2147483647.0)});
+    clamped = ctx_.builder().CreateCall(
+        SYS_GET_INTRINSIC(&ctx_.module(),
+            llvm::Intrinsic::maxnum, {ctx_.doubleType()}),
+        {clamped, llvm::ConstantFP::get(ctx_.doubleType(), 0.0)});
+    llvm::Value* usec_i64 = ctx_.builder().CreateFPToSI(clamped, ctx_.int64Type());
     llvm::Value* usec = ctx_.builder().CreateTrunc(usec_i64, ctx_.int32Type());
 
     // Call usleep
@@ -399,7 +415,16 @@ llvm::Value* SystemCodegen::exitProgram(const eshkol_operations_t* op) {
     // Convert to i32 if needed
     llvm::Value* code_i32;
     if (code->getType()->isDoubleTy()) {
-        code_i32 = ctx_.builder().CreateFPToSI(code, ctx_.int32Type());
+        // Clamp to valid exit code range [0, 255]
+        llvm::Value* clamped_code = ctx_.builder().CreateCall(
+            SYS_GET_INTRINSIC(&ctx_.module(),
+                llvm::Intrinsic::minnum, {ctx_.doubleType()}),
+            {code, llvm::ConstantFP::get(ctx_.doubleType(), 255.0)});
+        clamped_code = ctx_.builder().CreateCall(
+            SYS_GET_INTRINSIC(&ctx_.module(),
+                llvm::Intrinsic::maxnum, {ctx_.doubleType()}),
+            {clamped_code, llvm::ConstantFP::get(ctx_.doubleType(), 0.0)});
+        code_i32 = ctx_.builder().CreateFPToSI(clamped_code, ctx_.int32Type());
     } else if (code->getType()->isIntegerTy(64)) {
         code_i32 = ctx_.builder().CreateTrunc(code, ctx_.int32Type());
     } else {

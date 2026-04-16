@@ -1,0 +1,119 @@
+; v1.2 tensor ops test — tensor-neg, tensor-abs, tensor-sqrt, tensor-exp,
+; tensor-log, tensor-sin, tensor-cos, tensor-scale, tensor-pow,
+; tensor-maximum, tensor-minimum, tensor-transpose, batch-matmul
+
+(define passed 0)
+(define failed 0)
+
+(define (check name got expected tol)
+  (let ((ok (< (abs (- got expected)) tol)))
+    (if ok
+        (set! passed (+ passed 1))
+        (begin
+          (display "FAIL: ") (display name)
+          (display " got=") (display got)
+          (display " expected=") (display expected)
+          (newline)
+          (set! failed (+ failed 1))))))
+
+(define (check-vec name tv expected-list tol)
+  (let loop ((i 0) (lst expected-list))
+    (if (null? lst) #t
+        (begin
+          (check (string-append name "[" (number->string i) "]")
+                 (tensor-get tv i)
+                 (car lst)
+                 tol)
+          (loop (+ i 1) (cdr lst))))))
+
+(define pi 3.141592653589793)
+(define two-pi (* 2 pi))
+
+; --- Build a small test tensor [1.0, 4.0, 9.0, 16.0] ---
+(define t1 (tensor 1.0 4.0 9.0 16.0))
+
+; tensor-neg
+(define tneg (tensor-neg t1))
+(check-vec "tensor-neg" tneg '(-1.0 -4.0 -9.0 -16.0) 1e-12)
+
+; tensor-abs of negated
+(define tabs (tensor-abs tneg))
+(check-vec "tensor-abs" tabs '(1.0 4.0 9.0 16.0) 1e-12)
+
+; tensor-sqrt
+(define tsqrt (tensor-sqrt t1))
+(check-vec "tensor-sqrt" tsqrt '(1.0 2.0 3.0 4.0) 1e-10)
+
+; tensor-exp
+(define t_ones (tensor 0.0 1.0 2.0))
+(define texp (tensor-exp t_ones))
+(check "tensor-exp[0]" (tensor-get texp 0) 1.0 1e-10)
+(check "tensor-exp[1]" (tensor-get texp 1) 2.718281828459045 1e-9)
+(check "tensor-exp[2]" (tensor-get texp 2) 7.38905609893065 1e-8)
+
+; tensor-log (inverse of exp)
+(define tlog (tensor-log texp))
+(check-vec "tensor-log" tlog '(0.0 1.0 2.0) 1e-10)
+
+; tensor-sin
+(define t_angles (tensor 0.0 (/ pi 2.0) pi))
+(define tsin (tensor-sin t_angles))
+(check "tensor-sin[0]" (tensor-get tsin 0) 0.0 1e-10)
+(check "tensor-sin[1]" (tensor-get tsin 1) 1.0 1e-10)
+(check "tensor-sin[2]" (tensor-get tsin 2) 0.0 1e-10)
+
+; tensor-cos
+(define tcos (tensor-cos t_angles))
+(check "tensor-cos[0]" (tensor-get tcos 0) 1.0 1e-10)
+(check "tensor-cos[1]" (tensor-get tcos 1) 0.0 1e-10)
+(check "tensor-cos[2]" (tensor-get tcos 2) -1.0 1e-10)
+
+; tensor-scale
+(define tscaled (tensor-scale t1 2.5))
+(check-vec "tensor-scale" tscaled '(2.5 10.0 22.5 40.0) 1e-10)
+
+; tensor-pow: element-wise power
+(define t2 (tensor 2.0 3.0 4.0))
+(define tpow (tensor-pow t2 (tensor 2.0 2.0 2.0)))
+(check-vec "tensor-pow" tpow '(4.0 9.0 16.0) 1e-10)
+
+; tensor-maximum: element-wise max
+(define ta (tensor 1.0 5.0 3.0))
+(define tb (tensor 4.0 2.0 6.0))
+(define tmax (tensor-maximum ta tb))
+(check-vec "tensor-maximum" tmax '(4.0 5.0 6.0) 1e-10)
+
+; tensor-minimum: element-wise min
+(define tmin (tensor-minimum ta tb))
+(check-vec "tensor-minimum" tmin '(1.0 2.0 3.0) 1e-10)
+
+; tensor-transpose: 2D matrix
+; Build [[1 2] [3 4]]
+(define mat (reshape (tensor 1.0 2.0 3.0 4.0) 2 2))
+(define tmat (tensor-transpose mat))
+; After transpose: [[1 3] [2 4]]
+(check "tensor-transpose[0,0]" (tensor-get tmat 0 0) 1.0 1e-10)
+(check "tensor-transpose[0,1]" (tensor-get tmat 0 1) 3.0 1e-10)
+(check "tensor-transpose[1,0]" (tensor-get tmat 1 0) 2.0 1e-10)
+(check "tensor-transpose[1,1]" (tensor-get tmat 1 1) 4.0 1e-10)
+
+; batch-matmul: [1,2,3] @ [1,3,2] -> [1,2,2]
+; A[0] = [[1 2 3] [4 5 6]]  (2x3)
+; B[0] = [[1 2] [3 4] [5 6]]  (3x2)
+; C[0] = A@B = [[1+6+15, 2+8+18], [4+15+30, 8+20+36]] = [[22 28] [49 64]]
+(define A (reshape (tensor 1.0 2.0 3.0 4.0 5.0 6.0) 1 2 3))
+(define B (reshape (tensor 1.0 2.0 3.0 4.0 5.0 6.0) 1 3 2))
+(define C (batch-matmul A B))
+(check "batch-matmul[0,0]" (tensor-get C 0 0 0) 22.0 1e-10)
+(check "batch-matmul[0,1]" (tensor-get C 0 0 1) 28.0 1e-10)
+(check "batch-matmul[1,0]" (tensor-get C 0 1 0) 49.0 1e-10)
+(check "batch-matmul[1,1]" (tensor-get C 0 1 1) 64.0 1e-10)
+
+; ---- Summary ----
+(newline)
+(display passed) (display " passed, ") (display failed) (display " failed")
+(newline)
+(if (= failed 0)
+    (display "ALL PASS")
+    (display "SOME FAILURES"))
+(newline)

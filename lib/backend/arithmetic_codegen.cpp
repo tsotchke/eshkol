@@ -63,6 +63,7 @@ static llvm::Value* emitBignumPromotion(CodegenContext& ctx, TaggedValueCodegen&
     llvm::Value* arena_ptr = getArenaPtr(ctx);
     if (!arena_ptr) {
         // Fallback: promote to double if arena not available
+        eshkol_debug("bignum overflow: falling back to double (precision loss)");
         llvm::Value* l = ctx.builder().CreateSIToFP(left_int, ctx.doubleType());
         llvm::Value* r = ctx.builder().CreateSIToFP(right_int, ctx.doubleType());
         llvm::Value* result;
@@ -395,6 +396,7 @@ llvm::Value* ArithmeticCodegen::convertToComplex(llvm::Value* operand, llvm::Val
     ctx_.builder().CreateCondBr(is_heap, bignum_check_bb, normal_convert_bb);
 
     // Bignum → double path (intentionally lossy, complex uses floating-point)
+    eshkol_debug("complex: bignum->double conversion is lossy");
     ctx_.builder().SetInsertPoint(bignum_check_bb);
     llvm::Value* ptr_int = tagged_.unpackInt64(operand);
     llvm::Value* bn_ptr = ctx_.builder().CreateIntToPtr(ptr_int, llvm::PointerType::get(ctx_.context(), 0));

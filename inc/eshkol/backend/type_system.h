@@ -124,6 +124,10 @@ public:
     static constexpr unsigned AD_NODE_PARAMS_IDX = 12;          // [6 x i64] params union
     static constexpr unsigned AD_NODE_SHAPE_IDX = 13;           // int64_t* shape
     static constexpr unsigned AD_NODE_NDIM_IDX = 14;            // size_t ndim
+    // Total number of fields in the AD node struct (must match ad_node_t in eshkol.h)
+    static constexpr unsigned AD_NODE_FIELD_COUNT = 15;
+    static_assert(AD_NODE_NDIM_IDX == AD_NODE_FIELD_COUNT - 1,
+                  "AD node field count mismatch: update AD_NODE_FIELD_COUNT if fields are added/removed");
 
     // Tensor field indices
     static constexpr unsigned TENSOR_DIMENSIONS_IDX = 0;     // uint64_t* dimensions

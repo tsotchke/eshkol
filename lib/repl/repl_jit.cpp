@@ -76,6 +76,8 @@ extern "C" {
     void eshkol_type_error_with_value(const char* proc_name, const char* expected_type,
                                        const char* actual_type);
     int64_t eshkol_shapes_equal(const int64_t* shape_a, const int64_t* shape_b, int64_t rank);
+    void eshkol_batch_matmul_f64(const double* a, const double* b, double* c,
+                                  int64_t batch, int64_t M, int64_t K, int64_t N);
     int64_t eshkol_broadcast_elementwise_f64(
         const double* a_data, const int64_t* a_shape, int64_t a_rank,
         const double* b_data, const int64_t* b_shape, int64_t b_rank,
@@ -202,6 +204,18 @@ void ReplJITContext::initializeJIT() {
 
     jit_ = std::move(*jit_or_err);
 
+    // Install a custom error reporter that suppresses "became defunct" messages.
+    // These fire during JIT teardown when a resource tracker is invalidated while
+    // modules are still registered — the computation already completed successfully,
+    // so this is a harmless cleanup-ordering artifact, not a real error.
+    jit_->getExecutionSession().setErrorReporter([](Error Err) {
+        handleAllErrors(std::move(Err), [](ErrorInfoBase& EIB) {
+            if (EIB.message().find("became defunct") == std::string::npos) {
+                std::cerr << "JIT session error: " << EIB.message() << "\n";
+            }
+        });
+    });
+
     // Enable REPL mode in the compiler for cross-evaluation symbol persistence
     eshkol_repl_enable();
 
@@ -252,8 +266,21 @@ void ReplJITContext::registerRuntimeSymbols() {
         }
 
     // Helper macro to add a data symbol (global variable)
+    // NOTE: Regular (non-TLS) globals are found by DynamicLibrarySearchGenerator via dlsym,
+    // so the unmangled ES.intern name works (the generator handles the mangling internally).
     #define ADD_DATA_SYMBOL(name) \
         symbols[ES.intern(#name)] = { \
+            orc::ExecutorAddr::fromPtr((void*)&name), \
+            JITSymbolFlags::Exported \
+        }
+
+    // Helper macro for thread_local data symbols.
+    // DynamicLibrarySearchGenerator cannot find TLS symbols via dlsym, so we MUST register
+    // them here with the MANGLED name (MangleAndInterner adds the platform prefix, e.g. '_'
+    // on macOS, so @__foo in IR → "_" + "__foo" = "___foo" which matches the JIT lookup).
+    orc::MangleAndInterner Mangle(ES, DL);
+    #define ADD_TLS_SYMBOL(name) \
+        symbols[Mangle(#name)] = { \
             orc::ExecutorAddr::fromPtr((void*)&name), \
             JITSymbolFlags::Exported \
         }
@@ -394,6 +421,7 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_SYMBOL(eshkol_model_load_tagged);
     ADD_SYMBOL(eshkol_shapes_equal);
     ADD_SYMBOL(eshkol_broadcast_elementwise_f64);
+    ADD_SYMBOL(eshkol_batch_matmul_f64);
 
     // ===== BIGNUM / RATIONAL NUMERICS =====
     ADD_SYMBOL(eshkol_bignum_from_overflow);
@@ -504,8 +532,20 @@ void ReplJITContext::registerRuntimeSymbols() {
     // AD tape pointer (for gradient/jacobian operations)
     ADD_DATA_SYMBOL(__current_ad_tape);
 
-    // AD mode flag (CRITICAL: must be shared so lambdas see AD mode set by other modules)
+    // AD mode flag (shared so lambdas see AD mode set by other modules)
     ADD_DATA_SYMBOL(__ad_mode_active);
+
+    // Double-backward / higher-order AD globals (tape stack, outer AD state)
+    // These are thread_local — must use ADD_TLS_SYMBOL (mangled name) so the JIT can resolve them.
+    ADD_TLS_SYMBOL(__ad_tape_stack);
+    ADD_TLS_SYMBOL(__ad_tape_depth);
+    ADD_TLS_SYMBOL(__outer_ad_node_storage);
+    ADD_TLS_SYMBOL(__outer_ad_node_to_inner);
+    ADD_TLS_SYMBOL(__outer_grad_accumulator);
+    ADD_TLS_SYMBOL(__inner_var_node_ptr);
+    ADD_TLS_SYMBOL(__gradient_x_degree);
+    ADD_TLS_SYMBOL(__outer_ad_node_stack);
+    ADD_TLS_SYMBOL(__outer_ad_node_depth);
 
     // Shared arena pointer (persistent across REPL evaluations)
     ADD_DATA_SYMBOL(__repl_shared_arena);
@@ -533,6 +573,7 @@ void ReplJITContext::registerRuntimeSymbols() {
 
     #undef ADD_SYMBOL
     #undef ADD_DATA_SYMBOL
+    #undef ADD_TLS_SYMBOL
 
     // Add all symbols to the main dylib
     auto& main_dylib = jit_->getMainJITDylib();
@@ -1715,6 +1756,12 @@ void* ReplJITContext::execute(eshkol_ast_t* ast) {
                 canonical_path = std::filesystem::canonical(import_path).string();
             } catch (...) {
                 std::cerr << "Import file not found: " << import_path << std::endl;
+                return nullptr;
+            }
+
+            // X3: Reject paths that escape the project directory via ".." traversal
+            if (canonical_path.find("..") != std::string::npos) {
+                std::cerr << "Import path escapes project directory: " << canonical_path << std::endl;
                 return nullptr;
             }
 

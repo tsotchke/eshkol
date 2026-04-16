@@ -11,6 +11,7 @@
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
 
 #include <llvm/IR/Constants.h>
+#include <eshkol/logger.h>
 #include <vector>
 
 namespace eshkol {
@@ -114,6 +115,11 @@ void TypeSystem::createStructTypes() {
     ad_node_fields.push_back(ptr_type);    // 13: shape
     ad_node_fields.push_back(int64_type);  // 14: ndim
     ad_node_type = llvm::StructType::create(context, ad_node_fields, "ad_node");
+    // Verify field count matches the constant defined in TypeSystem
+    if (ad_node_fields.size() != AD_NODE_FIELD_COUNT) {
+        eshkol_error("AD node struct has %zu fields but AD_NODE_FIELD_COUNT is %u",
+                     ad_node_fields.size(), AD_NODE_FIELD_COUNT);
+    }
 
     // Tensor struct type for N-dimensional arrays
     // struct tensor {

@@ -213,11 +213,12 @@ ad_node_t* arena_allocate_ad_node(arena_t* arena);
 ad_node_t* arena_allocate_ad_node_with_header(arena_t* arena);  // For consolidated CALLABLE type
 ad_node_t* arena_allocate_ad_batch(arena_t* arena, size_t count);
 
-// Global tape pointer for AD operations (shared across JIT modules in REPL)
+// Global tape pointer for AD operations (shared across JIT modules in REPL).
+// Not thread_local due to cross-platform LLVM↔C TLS ABI constraints.
+// Thread safety: AD tape stack (__ad_tape_stack) is thread_local.
 extern ad_tape_t* __current_ad_tape;
 
-// Global AD mode flag (shared across JIT modules in REPL)
-// CRITICAL: This must be shared so lambdas from one module can see AD mode set by another
+// Global AD mode flag (shared across JIT modules in REPL).
 extern bool __ad_mode_active;
 
 // Debug helper to print AD mode state
@@ -266,6 +267,19 @@ struct eshkol_region {
 #define MAX_REGION_DEPTH 64
 extern thread_local eshkol_region_t* __region_stack[MAX_REGION_DEPTH];
 extern thread_local uint64_t __region_stack_depth;
+
+// Thread-local AD tape stack for nested gradient operations (double-backward)
+// MAX_TAPE_DEPTH must match arena_memory.cpp and codegen_context.h
+#define ESHKOL_ARENA_MAX_TAPE_DEPTH 32
+extern thread_local ad_tape_t* __ad_tape_stack[ESHKOL_ARENA_MAX_TAPE_DEPTH];
+extern thread_local uint64_t __ad_tape_depth;
+extern thread_local void* __outer_ad_node_storage;
+extern thread_local void* __outer_ad_node_to_inner;
+extern thread_local void* __outer_grad_accumulator;
+extern thread_local void* __inner_var_node_ptr;
+extern thread_local uint64_t __gradient_x_degree;
+extern thread_local void* __outer_ad_node_stack[ESHKOL_ARENA_MAX_TAPE_DEPTH];
+extern thread_local uint64_t __outer_ad_node_depth;
 
 // Region lifecycle functions
 eshkol_region_t* region_create(const char* name, size_t size_hint);
