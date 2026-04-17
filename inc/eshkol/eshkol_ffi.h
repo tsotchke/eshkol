@@ -182,18 +182,37 @@ void eshkol_ffi_display(eshkol_ffi_value_t value);
  * Tensor Operations
  * ============================================================================ */
 
-/** Create a tensor with the given shape, initialized to zero. */
+/** Create a tensor with the given shape, initialised to zero.
+ *  The tensor's backing storage lives in the Eshkol global arena —
+ *  callers must NOT free the pointer returned by eshkol_ffi_tensor_data()
+ *  on it. Lifetime is bounded by the arena (process-wide unless the host
+ *  explicitly resets/destroys it). */
 eshkol_ffi_value_t eshkol_ffi_tensor_zeros(eshkol_ffi_context_t* ctx,
                                             const int64_t* shape,
                                             int ndims);
 
-/** Create a tensor from existing data (copies data). */
+/** Create a tensor from existing data (copies data).
+ *
+ *  @param ctx    FFI context (unused for allocation but kept for symmetry).
+ *  @param data   Source pointer. Only READ during this call — the caller
+ *                retains ownership and may free/reuse @p data immediately
+ *                after the call returns. The returned tensor owns its own
+ *                freshly-allocated copy of the bytes.
+ *  @param shape  Dimension sizes, length @p ndims. Read-only.
+ *  @param ndims  Number of dimensions (1–8).
+ *  @return       Tensor value whose storage lives in the global arena
+ *                (lifetime managed by the arena, NOT the caller). Returns
+ *                the null value on allocation failure or invalid shape. */
 eshkol_ffi_value_t eshkol_ffi_tensor_from_data(eshkol_ffi_context_t* ctx,
                                                 const double* data,
                                                 const int64_t* shape,
                                                 int ndims);
 
 /** Get a pointer to the tensor's data (read/write access).
+ *  The pointer aliases into arena memory and is valid until the arena is
+ *  reset or destroyed. It must NOT be free()'d by the caller. Writes made
+ *  through this pointer are visible to subsequent Eshkol code that reads
+ *  the same tensor value.
  *  @return Pointer to flat double array, or NULL if not a tensor. */
 double* eshkol_ffi_tensor_data(eshkol_ffi_value_t tensor);
 

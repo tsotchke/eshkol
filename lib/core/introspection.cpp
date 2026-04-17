@@ -36,10 +36,6 @@ namespace {
 // Gensym counter for unique symbol generation
 std::atomic<uint64_t> g_gensym_counter{1};
 
-// Symbol interning table
-std::mutex g_symbol_mutex;
-std::unordered_map<std::string, eshkol_tagged_value_t> g_interned_symbols;
-
 // Eval JIT context (lazy-initialized singleton)
 std::mutex g_eval_jit_mutex;
 std::unique_ptr<eshkol::ReplJITContext> g_eval_jit_context;
@@ -160,9 +156,24 @@ inline bool is_pair(eshkol_tagged_value_t value) {
     return ESHKOL_IS_CONS_COMPAT(value);
 }
 
-// Check if value is a symbol
+// Check if value is a symbol.
+//
+// Symbols exist in two tagged-value encodings:
+//   legacy:       type == ESHKOL_VALUE_SYMBOL, data.ptr_val -> raw char*
+//   consolidated: type == ESHKOL_VALUE_HEAP_PTR with header.subtype == HEAP_SUBTYPE_SYMBOL
+//
+// New code produces the consolidated form so symbols participate in the
+// unified heap-object protocol (headers, equal?, GC); legacy readers stay
+// supported so cross-module boundaries (JIT, kb-load, quoted forms from
+// older modules) continue to work.
 inline bool is_symbol(eshkol_tagged_value_t value) {
-    return value.type == ESHKOL_VALUE_SYMBOL;
+    if (value.type == ESHKOL_VALUE_SYMBOL) return true;
+    if (value.type == ESHKOL_VALUE_HEAP_PTR && value.data.ptr_val) {
+        eshkol_object_header_t* hdr =
+            ESHKOL_GET_HEADER(reinterpret_cast<void*>(value.data.ptr_val));
+        return hdr && hdr->subtype == HEAP_SUBTYPE_SYMBOL;
+    }
+    return false;
 }
 
 // Check if value is a string
@@ -403,11 +414,14 @@ eshkol_tagged_value_t eshkol_gensym_prefix(const char* prefix, void* arena) {
              prefix ? prefix : "G",
              (unsigned long long)counter);
 
-    // Allocate symbol string in arena
+    // Allocate symbol string with a proper object header so ESHKOL_GET_HEADER
+    // can identify the subtype. The previous headerless allocation made
+    // ESHKOL_GET_HEADER read arena bookkeeping bytes as the header, producing
+    // garbage subtype values and occasional crashes in introspection code.
     arena_t* a = static_cast<arena_t*>(arena);
     size_t len = strlen(buffer);
     char* sym_str = static_cast<char*>(
-        arena_allocate_aligned(a, len + 1, 1)
+        arena_allocate_symbol_with_header(a, len)
     );
 
     if (!sym_str) {
@@ -416,9 +430,10 @@ eshkol_tagged_value_t eshkol_gensym_prefix(const char* prefix, void* arena) {
 
     memcpy(sym_str, buffer, len + 1);
 
-    // Create uninterned symbol (gensyms are unique, not interned)
+    // Gensym produces fresh (uninterned) symbols in the consolidated encoding
+    // so header.subtype == HEAP_SUBTYPE_SYMBOL is authoritative for readers.
     eshkol_tagged_value_t result;
-    result.type = ESHKOL_VALUE_SYMBOL;
+    result.type = ESHKOL_VALUE_HEAP_PTR;
     result.flags = 0;
     result.reserved = 0;
     result.data.ptr_val = reinterpret_cast<uint64_t>(sym_str);
@@ -467,43 +482,29 @@ eshkol_tagged_value_t eshkol_symbol_to_string(eshkol_tagged_value_t symbol, void
     return result;
 }
 
+/* Forward declaration of the C ABI intern helper (symbol_intern.cpp). */
+void* eshkol_intern_symbol_lookup(const char* name);
+
+static eshkol_tagged_value_t wrap_interned(const char* name, bool null_on_fail) {
+    void* ptr = name ? eshkol_intern_symbol_lookup(name) : nullptr;
+    if (!ptr) {
+        return null_on_fail ? make_null() : make_false();
+    }
+    eshkol_tagged_value_t tv;
+    tv.type = ESHKOL_VALUE_HEAP_PTR;
+    tv.flags = 0;
+    tv.reserved = 0;
+    tv.data.ptr_val = reinterpret_cast<uint64_t>(ptr);
+    return tv;
+}
+
 eshkol_tagged_value_t eshkol_string_to_symbol(eshkol_tagged_value_t str) {
     if (!is_string(str)) {
         return make_null();
     }
 
     const char* str_value = static_cast<const char*>(get_ptr(str));
-    if (!str_value) {
-        return make_null();
-    }
-
-    std::string key(str_value);
-
-    // Check if symbol is already interned
-    {
-        std::lock_guard<std::mutex> lock(g_symbol_mutex);
-        auto it = g_interned_symbols.find(key);
-        if (it != g_interned_symbols.end()) {
-            return it->second;
-        }
-    }
-
-    // Create new interned symbol
-    // Note: For interned symbols, we keep the original string pointer
-    // In a production implementation, we'd want to manage symbol lifetime
-    eshkol_tagged_value_t result;
-    result.type = ESHKOL_VALUE_SYMBOL;
-    result.flags = 0;
-    result.reserved = 0;
-    result.data.ptr_val = str.data.ptr_val;
-
-    // Intern the symbol
-    {
-        std::lock_guard<std::mutex> lock(g_symbol_mutex);
-        g_interned_symbols[key] = result;
-    }
-
-    return result;
+    return wrap_interned(str_value, /*null_on_fail=*/true);
 }
 
 bool eshkol_symbol_equal(eshkol_tagged_value_t sym1, eshkol_tagged_value_t sym2) {
@@ -620,6 +621,14 @@ eshkol_tagged_value_t eshkol_closure_params(eshkol_tagged_value_t closure, void*
     return pair_car(rest);
 }
 
+// eshkol_intern_symbol_lookup lives in symbol_intern.cpp — codegen-emitted
+// calls for symbol literals must not force introspection.cpp.o to be linked
+// into user binaries (ReplJITContext resolves only in eshkol-repl-lib).
+
+static eshkol_tagged_value_t intern_symbol_from_cstr(const char* name) {
+    return wrap_interned(name, /*null_on_fail=*/false);
+}
+
 eshkol_tagged_value_t eshkol_procedure_name(eshkol_tagged_value_t proc) {
     if (!is_callable(proc)) {
         return make_false();
@@ -629,13 +638,7 @@ eshkol_tagged_value_t eshkol_procedure_name(eshkol_tagged_value_t proc) {
     if (is_closure(proc)) {
         eshkol_closure_t* closure = eshkol_get_closure(proc);
         if (closure && closure->name) {
-            // Return the closure name as a symbol
-            eshkol_tagged_value_t result;
-            result.type = ESHKOL_VALUE_SYMBOL;
-            result.flags = 0;
-            result.reserved = 0;
-            result.data.ptr_val = reinterpret_cast<uint64_t>(closure->name);
-            return result;
+            return intern_symbol_from_cstr(closure->name);
         }
     }
 
@@ -643,13 +646,7 @@ eshkol_tagged_value_t eshkol_procedure_name(eshkol_tagged_value_t proc) {
     if (is_primitive(proc)) {
         eshkol_primitive_t* prim = get_primitive(proc);
         if (prim && prim->name) {
-            // Return the primitive name as a symbol
-            eshkol_tagged_value_t result;
-            result.type = ESHKOL_VALUE_SYMBOL;
-            result.flags = 0;
-            result.reserved = 0;
-            result.data.ptr_val = reinterpret_cast<uint64_t>(prim->name);
-            return result;
+            return intern_symbol_from_cstr(prim->name);
         }
     }
 
@@ -661,31 +658,108 @@ eshkol_tagged_value_t eshkol_procedure_name(eshkol_tagged_value_t proc) {
 // Runtime Evaluation API
 // ----------------------------------------------------------------------------
 
+// Per-process counter for unique eval-result global names. Each eshkol_eval
+// call wraps its AST in a (define __eshkol_eval_result_<N>__ <expr>) so the
+// JIT entry function (which otherwise discards expression values as exit-code-
+// only i32 returns) stores the value in a named global we can read back.
+static std::atomic<uint64_t> g_eval_result_counter{0};
+
 eshkol_tagged_value_t eshkol_eval(eshkol_tagged_value_t sexp, void* arena) {
+    (void)arena;
+
     // Direct S-expression to AST conversion (O(n) single-pass)
-    // Avoids serialize→parse overhead
-    eshkol_ast_t* ast = eshkol_sexp_to_ast(sexp);
-    if (!ast) {
+    eshkol_ast_t* inner = eshkol_sexp_to_ast(sexp);
+    if (!inner) {
         eshkol_error("eshkol_eval: Failed to convert S-expression to AST");
         return make_null();
     }
 
-    // Get or create the eval JIT context
     eshkol::ReplJITContext* jit = get_eval_jit();
     if (!jit) {
-        eshkol_free_sexp_ast(ast);
+        eshkol_free_sexp_ast(inner);
         eshkol_error("eshkol_eval: Failed to initialize JIT context");
         return make_null();
     }
 
-    // Execute the AST through the JIT
-    eshkol_tagged_value_t result = jit->executeTagged(ast);
+    // If the user expression itself is a top-level DEFINE (e.g., eval'ing
+    // `(define foo ...)`) just execute it as-is and return null — there's no
+    // expression value to capture. Same for imports/requires.
+    if (inner->type == ESHKOL_OP &&
+        (inner->operation.op == ESHKOL_DEFINE_OP ||
+         inner->operation.op == ESHKOL_IMPORT_OP ||
+         inner->operation.op == ESHKOL_REQUIRE_OP ||
+         inner->operation.op == ESHKOL_PROVIDE_OP)) {
+        jit->executeTagged(inner);
+        eshkol_free_sexp_ast(inner);
+        return make_null();
+    }
 
-    // Free the AST (JIT may have taken ownership of parts, but we allocated the root)
-    eshkol_free_sexp_ast(ast);
+    // Wrap in (define __eshkol_eval_result_N__ <expr>) so the JIT main writes
+    // the expression value into a named global we can read back afterwards.
+    // The JIT's current entry function returns i32 exit code; without the
+    // wrap we'd always see 0 regardless of the real expression value.
+    uint64_t id = g_eval_result_counter.fetch_add(1);
+    char name_buf[64];
+    snprintf(name_buf, sizeof(name_buf), "__eshkol_eval_result_%llu__",
+             (unsigned long long)id);
 
-    (void)arena;  // Arena passed for potential allocation needs
+    eshkol_ast_t* wrapper = eshkol_alloc_symbolic_ast();
+    if (!wrapper) {
+        eshkol_free_sexp_ast(inner);
+        return make_null();
+    }
+    wrapper->type = ESHKOL_OP;
+    wrapper->operation.op = ESHKOL_DEFINE_OP;
+    wrapper->operation.define_op.name = strdup(name_buf);
+    wrapper->operation.define_op.value = inner;
+    wrapper->operation.define_op.is_function = 0;
+    wrapper->operation.define_op.parameters = nullptr;
+    wrapper->operation.define_op.num_params = 0;
+    wrapper->operation.define_op.is_variadic = 0;
+    wrapper->operation.define_op.rest_param = nullptr;
+    wrapper->operation.define_op.is_external = 0;
+    wrapper->operation.define_op.return_type = nullptr;
+    wrapper->operation.define_op.param_types = nullptr;
+
+    // Execute — sets the global to the expression value as a side effect.
+    jit->executeTagged(wrapper);
+
+    // Read back the value from the named global's memory.
+    uint64_t addr = jit->lookupSymbol(name_buf);
+    eshkol_tagged_value_t result;
+    memset(&result, 0, sizeof(result));
+    if (addr != 0) {
+        result = *reinterpret_cast<eshkol_tagged_value_t*>(addr);
+    } else {
+        result.type = ESHKOL_VALUE_NULL;
+    }
+
+
+    // wrapper owns `inner` via define_op.value — freeing wrapper frees the tree.
+    // define_op.name was strdup'd; free_sexp_ast should handle it, but play safe.
+    eshkol_free_sexp_ast(wrapper);
+
     return result;
+}
+
+// SRET wrapper — used by LLVM JIT-compiled call sites to avoid struct-return
+// ABI mismatches between JIT-emitted IR and the C runtime. Passing pointers
+// on both sides sidesteps the aggregate-return calling convention entirely.
+extern "C" void eshkol_eval_sret(eshkol_tagged_value_t* result,
+                                  const eshkol_tagged_value_t* sexp,
+                                  void* arena) {
+    if (!result) return;
+    if (!sexp) { *result = make_null(); return; }
+    *result = eshkol_eval(*sexp, arena);
+}
+
+extern "C" void eshkol_eval_env_sret(eshkol_tagged_value_t* result,
+                                      const eshkol_tagged_value_t* sexp,
+                                      const eshkol_tagged_value_t* env,
+                                      void* arena) {
+    if (!result) return;
+    if (!sexp || !env) { *result = make_null(); return; }
+    *result = eshkol_eval_env(*sexp, *env, arena);
 }
 
 eshkol_tagged_value_t eshkol_eval_env(eshkol_tagged_value_t sexp,
@@ -1009,6 +1083,9 @@ eshkol_tagged_value_t eshkol_type_of(eshkol_tagged_value_t value) {
                         case HEAP_SUBTYPE_STRING:
                             type_name = "string";
                             break;
+                        case HEAP_SUBTYPE_SYMBOL:
+                            type_name = "symbol";
+                            break;
                         case HEAP_SUBTYPE_VECTOR:
                             type_name = "vector";
                             break;
@@ -1111,14 +1188,12 @@ eshkol_tagged_value_t eshkol_type_of(eshkol_tagged_value_t value) {
             break;
     }
 
-    // Return as interned symbol
-    eshkol_tagged_value_t result;
-    result.type = ESHKOL_VALUE_SYMBOL;
-    result.flags = 0;
-    result.reserved = 0;
-    result.data.ptr_val = reinterpret_cast<uint64_t>(type_name);
-
-    return result;
+    // Return as interned symbol in the consolidated HEAP_PTR encoding. The raw
+    // type_name pointer here is a static string literal — tagging it as a
+    // symbol directly would leave ESHKOL_GET_HEADER reading program data, so
+    // we route through the symbol-intern path which allocates a proper symbol
+    // header and ensures (eq? (type-of x) 'string) works.
+    return intern_symbol_from_cstr(type_name);
 }
 
 eshkol_tagged_value_t eshkol_source_location(eshkol_tagged_value_t proc, void* arena) {

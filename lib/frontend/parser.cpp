@@ -94,6 +94,7 @@ enum TokenType {
     TOKEN_VECTOR_START,  // #( for vector literals
     TOKEN_COLON,         // : for type annotations
     TOKEN_ARROW,         // -> for function types
+    TOKEN_KEYWORD,       // #:name Racket-style self-quoting keyword
     TOKEN_EOF
 };
 
@@ -375,6 +376,36 @@ private:
             return {TOKEN_BOOLEAN, value, start, tok_line, tok_col};
         }
 
+        // Racket-style keyword literal: #:name
+        //
+        // A keyword is a self-evaluating, interned symbol whose printed form
+        // begins with `#:`. We represent it as a regular symbol whose name
+        // starts with "#:" so existing symbol infrastructure (interning,
+        // symbol?, symbol->string, display) works unchanged. A dedicated
+        // keyword? predicate in stdlib distinguishes it from ordinary
+        // symbols. Parsing emits a QUOTE wrapper so the symbol is
+        // self-quoting in an evaluation context — i.e. `#:name` never tries
+        // to resolve `#:name` as a variable.
+        if (pos < length && input[pos] == ':') {
+            pos++;  // skip ':'
+            column_++;
+            std::string value = "#:";
+            while (pos < length && !std::isspace((unsigned char)input[pos]) &&
+                   input[pos] != '(' && input[pos] != ')' &&
+                   input[pos] != '[' && input[pos] != ']' &&
+                   input[pos] != ';' && input[pos] != ',' &&
+                   input[pos] != '`' && input[pos] != '\'' &&
+                   input[pos] != '"') {
+                value += input[pos];
+                pos++;
+                column_++;
+            }
+            // Emit as a dedicated KEYWORD token so the parser can quote it
+            // automatically; downstream codegen sees a quoted symbol whose
+            // name begins with "#:".
+            return {TOKEN_KEYWORD, value, start, tok_line, tok_col};
+        }
+
         // Check for character literal: #\x
         if (pos < length && input[pos] == '\\') {
             pos++; // skip backslash
@@ -544,6 +575,28 @@ static eshkol_ast_t parse_atom(const Token& token) {
             eshkol_ast_make_bool(&ast, token.value == "#t");
             break;
 
+        case TOKEN_KEYWORD: {
+            // `#:name` — Racket-style self-evaluating keyword literal. The
+            // token text includes the "#:" prefix so (symbol->string #:foo)
+            // returns "#:foo" (preserves round-trip print/read identity).
+            // We wrap in QUOTE_OP so the evaluator treats the keyword as a
+            // quoted symbol literal rather than a variable reference.
+            eshkol_ast_t sym_var = {};
+            sym_var.type = ESHKOL_VAR;
+            size_t _len = token.value.length();
+            sym_var.variable.id = new char[_len + 1];
+            memcpy(sym_var.variable.id, token.value.c_str(), _len + 1);
+            sym_var.variable.data = nullptr;
+
+            ast.type = ESHKOL_OP;
+            ast.operation.op = ESHKOL_QUOTE_OP;
+            ast.operation.call_op.func = nullptr;
+            ast.operation.call_op.num_vars = 1;
+            ast.operation.call_op.variables = new eshkol_ast_t[1];
+            ast.operation.call_op.variables[0] = sym_var;
+            break;
+        }
+
         case TOKEN_CHAR:
             eshkol_ast_make_char(&ast, static_cast<unsigned char>(token.value[0]));
             break;
@@ -652,6 +705,7 @@ static eshkol_op_t get_operator_type(const std::string& op) {
     if (op == "make-kb") return ESHKOL_MAKE_KB_OP;
     if (op == "kb-assert!") return ESHKOL_KB_ASSERT_OP;
     if (op == "kb-query") return ESHKOL_KB_QUERY_OP;
+    if (op == "kb-query-prefix") return ESHKOL_KB_QUERY_PREFIX_OP;
     if (op == "logic-var?") return ESHKOL_LOGIC_VAR_PRED_OP;
     if (op == "substitution?") return ESHKOL_SUBSTITUTION_PRED_OP;
     if (op == "kb?") return ESHKOL_KB_PRED_OP;
@@ -1028,6 +1082,10 @@ static eshkol_ast_t parse_quasiquoted_data(SchemeTokenizer& tokenizer);
 static eshkol_ast_t parse_quasiquoted_data_with_token(SchemeTokenizer& tokenizer, Token token);
 static eshkol_ast_t parse_quasiquoted_list_internal(SchemeTokenizer& tokenizer);
 
+// Forward declaration for parse_expression, needed because ,expr / ,@expr
+// escape from data-mode back to expression-mode per R7RS §4.2.8.
+static eshkol_ast_t parse_expression(SchemeTokenizer& tokenizer);
+
 // Parse quasiquoted data - similar to quoted data but handles unquote/unquote-splicing
 static eshkol_ast_t parse_quasiquoted_data(SchemeTokenizer& tokenizer) {
     Token token = tokenizer.nextToken();
@@ -1040,8 +1098,12 @@ static eshkol_ast_t parse_quasiquoted_data_with_token(SchemeTokenizer& tokenizer
         // Parse a list without requiring a symbol as first element
         return parse_quasiquoted_list_internal(tokenizer);
     } else if (token.type == TOKEN_COMMA) {
-        // Unquote: ,expr - parse as code (not data)
-        eshkol_ast_t inner = parse_quasiquoted_data(tokenizer);
+        // Unquote: ,expr escapes back to full expression mode. R7RS §4.2.8
+        // says the body of an unquote is evaluated, so parse it the same way
+        // we'd parse any other expression — `parse_quasiquoted_data` would
+        // instead treat `(* y 2)` as literal data, producing a
+        // (list * y 2) form rather than a multiplication.
+        eshkol_ast_t inner = parse_expression(tokenizer);
         eshkol_ast_t ast;
         ast.type = ESHKOL_OP;
         ast.operation.op = ESHKOL_UNQUOTE_OP;
@@ -1051,8 +1113,8 @@ static eshkol_ast_t parse_quasiquoted_data_with_token(SchemeTokenizer& tokenizer
         ast.operation.call_op.variables[0] = inner;
         return ast;
     } else if (token.type == TOKEN_COMMA_AT) {
-        // Unquote-splicing: ,@expr - parse as code
-        eshkol_ast_t inner = parse_quasiquoted_data(tokenizer);
+        // Unquote-splicing: ,@expr — same escape-to-expression rule as comma.
+        eshkol_ast_t inner = parse_expression(tokenizer);
         eshkol_ast_t ast;
         ast.type = ESHKOL_OP;
         ast.operation.op = ESHKOL_UNQUOTE_SPLICING_OP;
@@ -1743,10 +1805,22 @@ static eshkol_pattern_t* parse_pattern(SchemeTokenizer& tokenizer) {
         pattern->literal.value = new eshkol_ast_t;
         *pattern->literal.value = parse_atom(token);
     } else if (token.type == TOKEN_QUOTE) {
-        // Quoted literal pattern 'x
+        // Quoted literal pattern 'x → PATTERN_LITERAL comparing against the
+        // quoted datum. parse_quoted_data returns a bare atom (e.g. ESHKOL_VAR
+        // for a symbol), so we must wrap it in ESHKOL_QUOTE_OP — otherwise
+        // the codegen's PATTERN_LITERAL path calls codegenTypedAST on a
+        // VAR(a) node and tries to *look up* `a` as a variable, producing
+        // "Undefined variable: a" instead of comparing against the symbol.
         pattern->type = PATTERN_LITERAL;
-        pattern->literal.value = new eshkol_ast_t;
-        *pattern->literal.value = parse_quoted_data(tokenizer);
+        eshkol_ast_t inner_datum = parse_quoted_data(tokenizer);
+        eshkol_ast_t* wrapped = new eshkol_ast_t;
+        wrapped->type = ESHKOL_OP;
+        wrapped->operation.op = ESHKOL_QUOTE_OP;
+        wrapped->operation.call_op.func = nullptr;
+        wrapped->operation.call_op.num_vars = 1;
+        wrapped->operation.call_op.variables = new eshkol_ast_t[1];
+        wrapped->operation.call_op.variables[0] = inner_datum;
+        pattern->literal.value = wrapped;
     } else if (token.type == TOKEN_LPAREN) {
         // Complex pattern: (cons ...), (list ...), (? ...), (or ...), or literal list
         Token peek = tokenizer.nextToken();
@@ -2055,10 +2129,31 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                         ast.type = ESHKOL_INVALID;
                         return ast;
                     }
-                    
+
                     eshkol_ast_t expr;
                     if (token.type == TOKEN_LPAREN) {
                         expr = parse_list(tokenizer);
+                    } else if (token.type == TOKEN_QUOTE) {
+                        // (define (f ...) 'x) — quoted datum in body.
+                        eshkol_ast_t quoted = parse_quoted_data(tokenizer);
+                        expr.type = ESHKOL_OP;
+                        expr.operation.op = ESHKOL_QUOTE_OP;
+                        expr.operation.call_op.func = nullptr;
+                        expr.operation.call_op.num_vars = 1;
+                        expr.operation.call_op.variables = new eshkol_ast_t[1];
+                        expr.operation.call_op.variables[0] = quoted;
+                    } else if (token.type == TOKEN_BACKQUOTE) {
+                        // (define (f ...) `(...)) — quasiquoted datum in
+                        // body. Without this branch the parser would fall to
+                        // parse_atom(TOKEN_BACKQUOTE), corrupting the token
+                        // stream and silently producing the wrong body AST.
+                        eshkol_ast_t inner = parse_quasiquoted_data(tokenizer);
+                        expr.type = ESHKOL_OP;
+                        expr.operation.op = ESHKOL_QUASIQUOTE_OP;
+                        expr.operation.call_op.func = nullptr;
+                        expr.operation.call_op.num_vars = 1;
+                        expr.operation.call_op.variables = new eshkol_ast_t[1];
+                        expr.operation.call_op.variables[0] = inner;
                     } else {
                         expr = parse_atom(token);
                     }
@@ -2185,12 +2280,15 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 return ast;
             }
 
-            eshkol_ast_t value;
-            if (token.type == TOKEN_LPAREN) {
-                value = parse_list(tokenizer);
-            } else {
-                value = parse_atom(token);
-            }
+            // Push token back and let parse_expression handle it — covers
+            // TOKEN_LPAREN, atoms, TOKEN_QUOTE (for `'()`/`'sym`),
+            // TOKEN_BACKQUOTE, TOKEN_VECTOR_START (for `#(…)` literals),
+            // and TOKEN_KEYWORD. The old manual dispatch only covered
+            // LPAREN + atom, so `(set! var '())` / `(set! var #(1 2))`
+            // silently mis-parsed and tripped the "exactly 2 arguments"
+            // check on the stray tokens.
+            tokenizer.pushBack(token);
+            eshkol_ast_t value = parse_expression(tokenizer);
 
             ast.operation.set_op.value = new eshkol_ast_t;
             *ast.operation.set_op.value = value;
@@ -2523,6 +2621,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                     expr.operation.call_op.variables[0] = quoted;
                 } else if (token.type == TOKEN_BACKQUOTE) {
                     // Handle quasiquoted expressions in lambda body: (lambda () `expr)
+                    // Already uses parse_quasiquoted_data — this path is correct.
                     eshkol_ast_t inner = parse_quasiquoted_data(tokenizer);
                     expr.type = ESHKOL_OP;
                     expr.operation.op = ESHKOL_QUASIQUOTE_OP;
@@ -3407,9 +3506,32 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 return ast;
             }
 
+            // Parse the match subject expression. Previously a bare TOKEN_QUOTE
+            // / TOKEN_BACKQUOTE / TOKEN_COMMA passed to parse_atom(token)
+            // emitted a degenerate symbol AST and the subsequent datum got
+            // mis-parsed as a match clause, producing a silent parse hang
+            // (e.g. `(match 'foo (_ "x"))` would appear to freeze with no
+            // output). Route those token types through their proper
+            // quoted/quasiquoted/unquoted data parsers.
             eshkol_ast_t expr;
             if (token.type == TOKEN_LPAREN) {
                 expr = parse_list(tokenizer);
+            } else if (token.type == TOKEN_QUOTE) {
+                eshkol_ast_t quoted = parse_quoted_data(tokenizer);
+                expr.type = ESHKOL_OP;
+                expr.operation.op = ESHKOL_QUOTE_OP;
+                expr.operation.call_op.func = nullptr;
+                expr.operation.call_op.num_vars = 1;
+                expr.operation.call_op.variables = new eshkol_ast_t[1];
+                expr.operation.call_op.variables[0] = quoted;
+            } else if (token.type == TOKEN_BACKQUOTE) {
+                eshkol_ast_t inner = parse_quasiquoted_data(tokenizer);
+                expr.type = ESHKOL_OP;
+                expr.operation.op = ESHKOL_QUASIQUOTE_OP;
+                expr.operation.call_op.func = nullptr;
+                expr.operation.call_op.num_vars = 1;
+                expr.operation.call_op.variables = new eshkol_ast_t[1];
+                expr.operation.call_op.variables[0] = inner;
             } else {
                 expr = parse_atom(token);
             }
@@ -4689,9 +4811,87 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 defines.push_back(def);
             }
 
-            // Build predicate define
-            // (define (pred? obj) (and (vector? obj) (equal? (vector-ref obj 0) 'type-tag)))
+            // Build predicate define. R7RS §5.5 requires the predicate
+            // distinguish one record type from another, not simply identify
+            // any vector. The generated form is:
+            //   (define (pred? obj)
+            //     (if (vector? obj)
+            //         (if (> (vector-length obj) 0)
+            //             (equal? (vector-ref obj 0) 'type-tag)
+            //             #f)
+            //         #f))
+            // A bare `vector?` would false-positive on any vector, including
+            // other record types, which breaks the audit's requirement that
+            // (pt? (ma 1)) → #f for distinct record types `pt` and `a`.
             if (!pred_name.empty()) {
+                // Helpers.
+                auto drMakeVar = [](const char* name) -> eshkol_ast_t {
+                    eshkol_ast_t v = {};
+                    v.type = ESHKOL_VAR;
+                    size_t _len = strlen(name);
+                    v.variable.id = new char[_len + 1];
+                    memcpy(v.variable.id, name, _len + 1);
+                    v.variable.data = nullptr;
+                    return v;
+                };
+                auto drMakeCall = [&drMakeVar](const char* func,
+                                               std::vector<eshkol_ast_t> args) -> eshkol_ast_t {
+                    eshkol_ast_t call = {};
+                    call.type = ESHKOL_OP;
+                    call.operation.op = ESHKOL_CALL_OP;
+                    call.operation.call_op.func = new eshkol_ast_t;
+                    *call.operation.call_op.func = drMakeVar(func);
+                    call.operation.call_op.num_vars = args.size();
+                    if (!args.empty()) {
+                        call.operation.call_op.variables = new eshkol_ast_t[args.size()];
+                        for (size_t i = 0; i < args.size(); i++) {
+                            call.operation.call_op.variables[i] = args[i];
+                        }
+                    } else {
+                        call.operation.call_op.variables = nullptr;
+                    }
+                    return call;
+                };
+                auto drMakeInt = [](int64_t val) -> eshkol_ast_t {
+                    eshkol_ast_t lit = {};
+                    eshkol_ast_make_int64(&lit, val);
+                    return lit;
+                };
+                auto drMakeBool = [](int val) -> eshkol_ast_t {
+                    eshkol_ast_t lit = {};
+                    lit.type = ESHKOL_BOOL;
+                    lit.int64_val = val ? 1 : 0;
+                    return lit;
+                };
+                auto drMakeIf = [](eshkol_ast_t test, eshkol_ast_t then_ast,
+                                   eshkol_ast_t else_ast) -> eshkol_ast_t {
+                    eshkol_ast_t if_ast = {};
+                    if_ast.type = ESHKOL_OP;
+                    if_ast.operation.op = ESHKOL_IF_OP;
+                    if_ast.operation.call_op.func = nullptr;
+                    if_ast.operation.call_op.num_vars = 3;
+                    if_ast.operation.call_op.variables = new eshkol_ast_t[3];
+                    if_ast.operation.call_op.variables[0] = test;
+                    if_ast.operation.call_op.variables[1] = then_ast;
+                    if_ast.operation.call_op.variables[2] = else_ast;
+                    return if_ast;
+                };
+                auto drMakeQuotedSymbol = [](const std::string& name) -> eshkol_ast_t {
+                    eshkol_ast_t sym_var = {};
+                    sym_var.type = ESHKOL_VAR;
+                    sym_var.variable.id = new char[name.length() + 1];
+                    memcpy(sym_var.variable.id, name.c_str(), name.length() + 1);
+                    sym_var.variable.data = nullptr;
+                    eshkol_ast_t quoted = {};
+                    quoted.type = ESHKOL_OP;
+                    quoted.operation.op = ESHKOL_QUOTE_OP;
+                    quoted.operation.call_op.func = nullptr;
+                    quoted.operation.call_op.num_vars = 1;
+                    quoted.operation.call_op.variables = new eshkol_ast_t[1];
+                    quoted.operation.call_op.variables[0] = sym_var;
+                    return quoted;
+                };
+
                 eshkol_ast_t def = {};
                 def.type = ESHKOL_OP;
                 def.operation.op = ESHKOL_DEFINE_OP;
@@ -4706,29 +4906,34 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 def.operation.define_op.param_types = nullptr;
                 def.operation.define_op.num_params = 1;
                 def.operation.define_op.parameters = new eshkol_ast_t[1];
-                def.operation.define_op.parameters[0].type = ESHKOL_VAR;
-                def.operation.define_op.parameters[0].variable.id = new char[sizeof("obj")];
-                memcpy(def.operation.define_op.parameters[0].variable.id, "obj", sizeof("obj"));
-                def.operation.define_op.parameters[0].variable.data = nullptr;
+                def.operation.define_op.parameters[0] = drMakeVar("obj");
 
-                // Body: (vector? obj) — simplified predicate checking if it's a vector
-                // A full implementation would check the type tag, but for now we check vector?
-                // and compare the first element to the type tag symbol
+                // (equal? (vector-ref obj 0) 'type-name)
+                eshkol_ast_t tag_eq = drMakeCall("equal?", {
+                    drMakeCall("vector-ref", {drMakeVar("obj"), drMakeInt(0)}),
+                    drMakeQuotedSymbol(type_name)
+                });
+
+                // (if (> (vector-length obj) 0) tag_eq #f)
+                //   — guards against empty vector so vector-ref doesn't crash
+                eshkol_ast_t len_guard = drMakeIf(
+                    drMakeCall(">", {
+                        drMakeCall("vector-length", {drMakeVar("obj")}),
+                        drMakeInt(0)
+                    }),
+                    tag_eq,
+                    drMakeBool(0)
+                );
+
+                // (if (vector? obj) len_guard #f)
+                eshkol_ast_t body_val = drMakeIf(
+                    drMakeCall("vector?", {drMakeVar("obj")}),
+                    len_guard,
+                    drMakeBool(0)
+                );
+
                 eshkol_ast_t* body = new eshkol_ast_t;
-                body->type = ESHKOL_OP;
-                body->operation.op = ESHKOL_CALL_OP;
-                body->operation.call_op.func = new eshkol_ast_t;
-                body->operation.call_op.func->type = ESHKOL_VAR;
-                body->operation.call_op.func->variable.id = new char[sizeof("vector?")];
-                memcpy(body->operation.call_op.func->variable.id, "vector?", sizeof("vector?"));
-                body->operation.call_op.func->variable.data = nullptr;
-                body->operation.call_op.num_vars = 1;
-                body->operation.call_op.variables = new eshkol_ast_t[1];
-                body->operation.call_op.variables[0].type = ESHKOL_VAR;
-                body->operation.call_op.variables[0].variable.id = new char[sizeof("obj")];
-                memcpy(body->operation.call_op.variables[0].variable.id, "obj", sizeof("obj"));
-                body->operation.call_op.variables[0].variable.data = nullptr;
-
+                *body = body_val;
                 def.operation.define_op.value = body;
                 defines.push_back(def);
             }
@@ -7216,9 +7421,13 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             ast.operation.call_op.num_vars = 1;
             ast.operation.call_op.variables = new eshkol_ast_t[1];
             ast.operation.call_op.variables[0] = elements[0];
-        } else if (ast.operation.op >= ESHKOL_UNIFY_OP && ast.operation.op <= ESHKOL_WORKSPACE_PRED_OP) {
+        } else if ((ast.operation.op >= ESHKOL_UNIFY_OP && ast.operation.op <= ESHKOL_WORKSPACE_PRED_OP) ||
+                    ast.operation.op == ESHKOL_KB_QUERY_PREFIX_OP) {
             // Neuro-symbolic consciousness engine operations
             // All use call_op structure: func=nullptr, variables=arguments
+            // kb-query-prefix sits outside the contiguous UNIFY_OP..WORKSPACE_PRED_OP
+            // range (added later at end of enum to preserve ABI), so it needs an
+            // explicit opt-in here.
             ast.operation.call_op.func = nullptr;
             ast.operation.call_op.num_vars = elements.size();
             if (ast.operation.call_op.num_vars > 0) {
@@ -7464,8 +7673,17 @@ static eshkol_ast_t parse_expression(SchemeTokenizer& tokenizer) {
         }
 
         case TOKEN_BACKQUOTE: {
-            // Handle quasiquoted expressions - `expr becomes (quasiquote expr)
-            eshkol_ast_t inner_expr = parse_expression(tokenizer);
+            // Handle quasiquoted expressions - `expr becomes (quasiquote expr).
+            //
+            // Previously this used parse_expression, which parses `(a ,x b)`
+            // as a function call whose first atom `a` becomes the callee and
+            // the list-shape is lost. That made the codegen side build a
+            // (call a ,x b) tree instead of a quoted list, so the comma
+            // interpolation quietly produced the wrong output (`(a () b)`).
+            // Routing through parse_quasiquoted_data keeps the list as data
+            // and emits CALL_OP(list, [...]) with UNQUOTE_OP children that the
+            // codegen (codegenQuasiquote) can correctly splice into.
+            eshkol_ast_t inner_expr = parse_quasiquoted_data(tokenizer);
             if (inner_expr.type == ESHKOL_INVALID) {
                 return inner_expr;
             }
@@ -7522,6 +7740,7 @@ static eshkol_ast_t parse_expression(SchemeTokenizer& tokenizer) {
         case TOKEN_NUMBER:
         case TOKEN_BOOLEAN:
         case TOKEN_CHAR:
+        case TOKEN_KEYWORD:
             return parse_atom(token);
 
         case TOKEN_RPAREN:

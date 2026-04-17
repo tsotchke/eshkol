@@ -1102,7 +1102,8 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_process_read_nonblocking_v(eshko
 
 #define KB_FILE_MAGIC 0x45534B42 /* "ESKB" */
 
-/* Delegate to C++ implementations in kb_persistence.cpp */
+/* Delegate to C++ implementations in kb_persistence.cpp.
+ * Public surface: (kb-save path kb) — path first, kb second (matches VM and bench code). */
 extern void eshkol_kb_save_tagged(void* arena,
                                    const void* path_tv,
                                    const void* kb_tv,
@@ -1450,14 +1451,20 @@ static eshkol_sysbuiltin_value_t check_heap_subtype(eshkol_sysbuiltin_value_t v,
     return r;
 }
 
-/* Heap subtypes from arena_memory.h / vm_numeric.h */
-#define HST_SUBSTITUTION 11
-#define HST_FACT         12
-#define HST_KB           15  /* HEAP_SUBTYPE_KNOWLEDGE_BASE */
-#define HST_FG           16  /* HEAP_SUBTYPE_FACTOR_GRAPH */
-#define HST_WORKSPACE    17
-#define HST_TENSOR        9
-#define HST_DUAL          8
+/* Heap-subtype IDs — MUST stay in sync with HEAP_SUBTYPE_* in
+ * inc/eshkol/eshkol.h. Previous revisions of this file used local values
+ * (11/12/9/8) that drifted from the canonical table, causing tensor?,
+ * substitution?, fact?, and dual? to return #f for valid objects.
+ * Always cross-check inc/eshkol/eshkol.h:337-360 when adding or
+ * renumbering subtypes. */
+#define HST_TENSOR           3   /* HEAP_SUBTYPE_TENSOR */
+#define HST_SUBSTITUTION    12   /* HEAP_SUBTYPE_SUBSTITUTION */
+#define HST_FACT            13   /* HEAP_SUBTYPE_FACT */
+#define HST_KB              15   /* HEAP_SUBTYPE_KNOWLEDGE_BASE */
+#define HST_FG              16   /* HEAP_SUBTYPE_FACTOR_GRAPH */
+#define HST_WORKSPACE       17   /* HEAP_SUBTYPE_WORKSPACE */
+/* Dual numbers are NOT a heap subtype — they use their own tagged-value
+ * type ESHKOL_VALUE_DUAL_NUMBER (=6). See dual? predicate below. */
 
 void eshkol_builtin_logic_var_p(sv_t* out, const sv_t* a) {
     /* Logic vars have type 10 (ESHKOL_VALUE_LOGIC_VAR) */
@@ -1482,7 +1489,9 @@ void eshkol_builtin_tensor_p(sv_t* out, const sv_t* a) {
     *out = check_heap_subtype(*a, HST_TENSOR);
 }
 void eshkol_builtin_dual_p(sv_t* out, const sv_t* a) {
-    *out = check_heap_subtype(*a, HST_DUAL);
+    /* Dual numbers have type 6 (ESHKOL_VALUE_DUAL_NUMBER) — they do not
+     * live on the heap, so check_heap_subtype would always fail. */
+    *out = check_type(*a, 6);
 }
 void eshkol_builtin_fg_update_cpt(sv_t* out, const sv_t* a, const sv_t* b, const sv_t* c) {
     /* Delegate to the existing tagged function */
@@ -1502,13 +1511,17 @@ void eshkol_builtin_image_read_sret(sv_t* out, const sv_t* path_tv) {
     const char* path = sys_extract_string(*path_tv);
     if (!path) { *out = sys_make_null(); return; }
     int w, h, c;
+    /* eshkol_image_read returns ARENA-allocated storage (see image_io.c —
+     * the stb_image malloc result is freed internally and data copied into
+     * the global arena before return). Do NOT free() the returned pointer;
+     * doing so corrupts the arena free list. The arena reclaims it. */
     double* data = eshkol_image_read(path, &w, &h, &c);
     if (!data) { *out = sys_make_null(); return; }
     /* Create tensor (h, w, c) */
     void* arena = get_global_arena();
     int64_t total = (int64_t)w * h * c;
     void* t = arena_allocate_tensor_full(arena, 3, (uint64_t)total);
-    if (!t) { free(data); *out = sys_make_null(); return; }
+    if (!t) { *out = sys_make_null(); return; }
     /* Copy pixel data to tensor elements */
     int64_t* elements = *((int64_t**)((char*)t + 16));
     for (int64_t i = 0; i < total; i++) {
@@ -1517,7 +1530,6 @@ void eshkol_builtin_image_read_sret(sv_t* out, const sv_t* path_tv) {
     /* Set dimensions */
     uint64_t* dims = *((uint64_t**)((char*)t + 0));
     dims[0] = (uint64_t)h; dims[1] = (uint64_t)w; dims[2] = (uint64_t)c;
-    free(data);
     out->type = SYS_TYPE_HEAP_PTR; out->flags = 0; out->reserved = 0; out->padding = 0;
     out->data = (uint64_t)t;
 }
@@ -1554,18 +1566,21 @@ void eshkol_builtin_image_grayscale_sret(sv_t* out, const sv_t* tensor_tv) {
     double* data = (double*)arena_allocate(get_global_arena(), total * sizeof(double));
     if (!data) { *out = sys_make_null(); return; }
     for (uint64_t i = 0; i < total; i++) memcpy(&data[i], &elements[i], sizeof(double));
+    /* eshkol_image_to_grayscale returns ARENA-allocated storage. The result
+     * must NOT be free()'d — that would corrupt the global arena. The arena
+     * reclaims it on reset/destroy. Same pattern applies to image_read,
+     * image_resize, and any other image_io.c producer. */
     double* gray = eshkol_image_to_grayscale(data, w, h, c);
     if (!gray) { *out = sys_make_null(); return; }
     /* Create HxW tensor */
     void* arena = get_global_arena();
     int64_t gray_total = (int64_t)w * h;
     void* gt = arena_allocate_tensor_full(arena, 2, (uint64_t)gray_total);
-    if (!gt) { free(gray); *out = sys_make_null(); return; }
+    if (!gt) { *out = sys_make_null(); return; }
     int64_t* gel = *((int64_t**)((char*)gt + 16));
     uint64_t* gdims = *((uint64_t**)((char*)gt + 0));
     gdims[0] = (uint64_t)h; gdims[1] = (uint64_t)w;
     for (int64_t i = 0; i < gray_total; i++) memcpy(&gel[i], &gray[i], sizeof(double));
-    free(gray);
     out->type = SYS_TYPE_HEAP_PTR; out->data = (uint64_t)gt;
 }
 

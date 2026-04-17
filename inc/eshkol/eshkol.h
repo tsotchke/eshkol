@@ -1438,6 +1438,7 @@ typedef enum {
     ESHKOL_COND_EXPAND_OP,           // (cond-expand (feature body ...) ...) - transformed at parse time
     ESHKOL_INCLUDE_OP,               // (include "file" ...) - transformed at parse time
     ESHKOL_SYNTAX_ERROR_OP,          // (syntax-error "msg" datum ...) - handled at parse time
+    ESHKOL_KB_QUERY_PREFIX_OP,       // (kb-query-prefix kb pattern) -> list of substs (pattern arity ≤ fact arity)
 } eshkol_op_t;
 
 struct eshkol_ast;

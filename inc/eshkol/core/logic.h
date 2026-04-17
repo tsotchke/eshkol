@@ -181,6 +181,16 @@ eshkol_tagged_value_t eshkol_kb_query(arena_t* arena,
     const eshkol_knowledge_base_t* kb, const eshkol_fact_t* pattern,
     const eshkol_substitution_t* initial_subst);
 
+/*
+ * Prefix variant of eshkol_kb_query. Accepts patterns whose arity is <= the
+ * fact's arity, unifying only the first pattern-arity argument pairs. Useful
+ * for KBs with mixed arities or provenance-extended tails where the caller
+ * wants "match any fact with this head and these prefix args".
+ */
+eshkol_tagged_value_t eshkol_kb_query_prefix(arena_t* arena,
+    const eshkol_knowledge_base_t* kb, const eshkol_fact_t* pattern,
+    const eshkol_substitution_t* initial_subst);
+
 /* ===== Tagged Value Dispatch ===== */
 /* Called from LLVM codegen. Same alloca/store/call/load pattern as bignum. */
 

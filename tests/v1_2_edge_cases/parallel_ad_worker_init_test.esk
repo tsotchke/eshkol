@@ -1,0 +1,96 @@
+;; Worker-thread init regression test.
+;;
+;; Task #130: work_stealing_worker_func must initialise thread-local AD tape
+;; stack + per-worker arena before executing the first task, otherwise a
+;; parallel-map lambda that calls AD primitives may hit a null TLS slot on
+;; the worker thread.
+
+(require stdlib)
+
+(display "=== Parallel AD worker-init test ===") (newline)
+
+(define pass-count 0)
+(define fail-count 0)
+
+(define (check name cond)
+  (if cond
+      (begin
+        (set! pass-count (+ pass-count 1))
+        (display "PASS: ") (display name) (newline))
+      (begin
+        (set! fail-count (+ fail-count 1))
+        (display "FAIL: ") (display name) (newline))))
+
+;; ----------------------------------------------------------------------
+;; parallel-map with a lambda that allocates a fresh AD tape per worker.
+;; Touches __ad_tape_stack + __thread_local_arena on every worker. If the
+;; worker init regressed, the tape pointer or node allocations would be
+;; null and the lambda would either crash or return garbage.
+;; ----------------------------------------------------------------------
+(define (gradient-sin x)
+  (let* ((tape (ad-tape-new))
+         (v (ad-var tape x))
+         (y (ad-sin tape v)))
+    (ad-backward tape y)
+    (ad-gradient tape v)))
+
+(define inputs (list 0.0 0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 0.9 1.0))
+
+(check "parallel-map of per-task gradient returns list of 11"
+       (= (length (parallel-map gradient-sin inputs)) 11))
+
+(check "per-task gradient at x=0 is cos(0)=1"
+       (< (abs (- (car (parallel-map gradient-sin (list 0.0))) 1.0)) 0.001))
+
+(check "per-task gradient at x=pi/2 ≈ cos(pi/2) ≈ 0"
+       (< (abs (car (parallel-map gradient-sin (list 1.5707963)))) 0.001))
+
+;; Bigger N to force the work-stealing path (N >= 4 triggers thread pool).
+(define big-inputs '())
+(let loop ((i 0))
+  (if (< i 20)
+      (begin (set! big-inputs (cons (* i 0.1) big-inputs))
+             (loop (+ i 1)))))
+
+(check "parallel-map of 20 gradients exercises all workers"
+       (= (length (parallel-map gradient-sin big-inputs)) 20))
+
+;; ----------------------------------------------------------------------
+;; #127: parallel-map inside a defined function with let* (bench 06 shape).
+;; Used to emit "workers not registered" or hang; worker init now eager.
+;; ----------------------------------------------------------------------
+(define (bench06-shape xs)
+  (let* ((squares (parallel-map (lambda (x) (* x x)) xs))
+         (sum (apply + squares))
+         (n (length xs)))
+    (list sum n)))
+
+(check "#127: parallel-map inside let* inside defined function (N=5)"
+       (equal? (bench06-shape (list 1 2 3 4 5)) (list 55 5)))
+
+;; Scale up to trigger work-stealing path (N >= 4 goes through pool).
+(define (range n)
+  (let loop ((i 0) (acc '()))
+    (if (>= i n) (reverse acc)
+        (loop (+ i 1) (cons i acc)))))
+
+(check "#127: parallel-map at N=1000 returns correct sum"
+       (equal? (bench06-shape (range 1000)) (list 332833500 1000)))
+
+;; ----------------------------------------------------------------------
+;; #125: map immediately followed by parallel-map — previous deadlock case.
+;; ----------------------------------------------------------------------
+(define (map-then-par xs)
+  (let* ((ys (map (lambda (x) (+ x 1)) xs))
+         (zs (parallel-map (lambda (x) (* x 2)) ys)))
+    zs))
+
+(check "#125: map + parallel-map sequence in one let*"
+       (equal? (map-then-par (list 1 2 3 4 5)) (list 4 6 8 10 12)))
+
+(newline)
+(display "=== Summary ===") (newline)
+(display "Passed: ") (display pass-count) (newline)
+(display "Failed: ") (display fail-count) (newline)
+(display (if (= fail-count 0) "RESULT: ALL PASS" "RESULT: FAILURES DETECTED"))
+(newline)

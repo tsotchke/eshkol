@@ -105,6 +105,16 @@ void arena_merge_to_parent(arena_t* dest, arena_t* src);
 /** Check if the current thread is a worker thread. */
 int arena_is_worker_thread(void);
 
+/** Initialise all thread-local runtime state for a worker thread.
+ *  Eagerly creates the thread-local arena and touches AD tape stack / region
+ *  stack TLS slots so they are ready before the first task executes.
+ *  Safe to call multiple times (idempotent). */
+void eshkol_thread_init_worker(size_t arena_size_hint);
+
+/** Tear down all thread-local runtime state for a worker thread.
+ *  Destroys the thread-local arena. Safe to call multiple times. */
+void eshkol_thread_shutdown_worker(void);
+
 // Statistics and debugging
 size_t arena_get_used_memory(const arena_t* arena);
 size_t arena_get_total_memory(const arena_t* arena);

@@ -1247,17 +1247,25 @@ llvm::Function* getOrDeclareRuntimeFuncAllPtr(CodegenContext& ctx, llvm::Module*
     return f;
 }
 
-/* Store tagged value to alloca, call C function with pointers, load result */
+/* Store tagged value to alloca, call C function with pointers, load result.
+ *
+ * Architectural note: the AST callback may return a raw LLVM value (double,
+ * i64, i1, or pointer) rather than a tagged_value struct. Storing a raw
+ * scalar directly into the 16-byte tagged_value slot would leave the upper
+ * bytes uninitialized, which the sret callee then reads as garbage type/data
+ * fields. ensureTagged normalises every argument into a full tagged_value
+ * before the store, eliminating that whole class of ABI corruption. */
 static llvm::Value* callPtrRuntime(CodegenContext& ctx, llvm::Function* f,
                                     llvm::ArrayRef<llvm::Value*> args) {
     llvm::IRBuilder<>& builder = ctx.builder();
+    TaggedValueCodegen tagged(ctx);
     llvm::Value* result_ptr = builder.CreateAlloca(ctx.taggedValueType(), nullptr, "rt_out");
     std::vector<llvm::Value*> call_args;
     call_args.push_back(result_ptr);
     for (auto* a : args) {
-        /* Store each tagged value arg to a stack slot, pass pointer */
+        llvm::Value* tagged_arg = tagged.ensureTagged(a);
         llvm::Value* slot = builder.CreateAlloca(ctx.taggedValueType(), nullptr, "rt_arg");
-        builder.CreateStore(a, slot);
+        builder.CreateStore(tagged_arg, slot);
         call_args.push_back(slot);
     }
     builder.CreateCall(f, call_args);

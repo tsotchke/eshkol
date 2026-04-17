@@ -60,11 +60,19 @@ public:
     // === Parallel Operations ===
 
     /**
-     * Generate code for (parallel-map fn list)
+     * Generate code for (parallel-map fn list).
+     * Dispatches to the C runtime eshkol_parallel_map, which submits per-item
+     * tasks to the work-stealing thread pool — the actual parallel path.
      * @param op The operation AST node
      * @return Result tagged value (new list)
      */
     llvm::Value* parallelMap(const eshkol_operations_t* op);
+
+    /**
+     * Sequential inlined loop (prior implementation). Retained for testing
+     * and potential small-N fallback — NOT called by the default parallelMap.
+     */
+    llvm::Value* parallelMapSequentialInline(const eshkol_operations_t* op);
 
     /**
      * Generate code for (parallel-fold fn init list)

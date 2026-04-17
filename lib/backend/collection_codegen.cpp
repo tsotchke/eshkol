@@ -143,6 +143,14 @@ llvm::Value* CollectionCodegen::car(const eshkol_operations_t* op) {
     ctx_.builder().CreateBr(car_start);
     ctx_.builder().SetInsertPoint(car_start);
 
+    // Normalise raw scalar inputs (bool/int/double/pointer) into tagged_value
+    // form so the big dispatch below always runs. Previously raw inputs like
+    // `#t` (raw i1) fell through to a non-tagged fallback path that did no
+    // type checking and SIGSEGV'd on pointer dereference.
+    if (pair_val->getType() != ctx_.taggedValueType()) {
+        pair_val = tagged_.ensureTagged(pair_val);
+    }
+
     // VECTOR/TENSOR SUPPORT: Check if input is a vector or tensor type
     // With consolidated types, CONS/VECTOR/TENSOR all use HEAP_PTR - must check subtype in header
     if (pair_val->getType() == ctx_.taggedValueType()) {
@@ -153,12 +161,24 @@ llvm::Value* CollectionCodegen::car(const eshkol_operations_t* op) {
         llvm::Value* is_heap_ptr = ctx_.builder().CreateICmpEQ(input_base_type,
             llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
 
-        // If HEAP_PTR, we need to check the subtype in the object header
-        // Get pointer to the object
+        llvm::BasicBlock* vector_block = llvm::BasicBlock::Create(ctx_.context(), "car_vector", current_func);
+        llvm::BasicBlock* list_block = llvm::BasicBlock::Create(ctx_.context(), "car_list", current_func);
+        llvm::BasicBlock* car_final = llvm::BasicBlock::Create(ctx_.context(), "car_final", current_func);
+
+        // GUARD: if the input isn't a HEAP_PTR at all (e.g. a BOOL literal
+        // `#t` with type=5), we must NOT dereference its data field as a
+        // pointer. Previously the subtype-load at ptr-8 ran unconditionally
+        // and SIGSEGV'd on inttoptr(1 to ptr) - 8. Branch on is_heap_ptr
+        // first: non-HEAP_PTR goes straight to list_block, which raises.
+        llvm::BasicBlock* subtype_probe =
+            llvm::BasicBlock::Create(ctx_.context(), "car_subtype_probe", current_func);
+        ctx_.builder().CreateCondBr(is_heap_ptr, subtype_probe, list_block);
+
+        ctx_.builder().SetInsertPoint(subtype_probe);
+
+        // If HEAP_PTR, safe to read the subtype from the object header at ptr-8.
         llvm::Value* obj_ptr_int = tagged_.unpackInt64(pair_val);
         llvm::Value* obj_ptr = ctx_.builder().CreateIntToPtr(obj_ptr_int, ctx_.ptrType());
-
-        // Read subtype from object header at ptr-8
         llvm::Value* header_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), obj_ptr,
             llvm::ConstantInt::get(ctx_.int64Type(), -8));
         llvm::Value* subtype = ctx_.builder().CreateLoad(ctx_.int8Type(), header_ptr, "subtype");
@@ -168,16 +188,9 @@ llvm::Value* CollectionCodegen::car(const eshkol_operations_t* op) {
             llvm::ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_VECTOR));
         llvm::Value* is_tensor_subtype = ctx_.builder().CreateICmpEQ(subtype,
             llvm::ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_TENSOR));
-
-        // It's a vector/tensor type if HEAP_PTR AND (subtype==VECTOR OR subtype==TENSOR)
         llvm::Value* is_vector_or_tensor = ctx_.builder().CreateOr(is_vector_subtype, is_tensor_subtype);
-        llvm::Value* is_vector_type = ctx_.builder().CreateAnd(is_heap_ptr, is_vector_or_tensor);
 
-        llvm::BasicBlock* vector_block = llvm::BasicBlock::Create(ctx_.context(), "car_vector", current_func);
-        llvm::BasicBlock* list_block = llvm::BasicBlock::Create(ctx_.context(), "car_list", current_func);
-        llvm::BasicBlock* car_final = llvm::BasicBlock::Create(ctx_.context(), "car_final", current_func);
-
-        ctx_.builder().CreateCondBr(is_vector_type, vector_block, list_block);
+        ctx_.builder().CreateCondBr(is_vector_or_tensor, vector_block, list_block);
 
         // VECTOR/TENSOR: Extract element 0
         ctx_.builder().SetInsertPoint(vector_block);
@@ -297,29 +310,105 @@ llvm::Value* CollectionCodegen::car(const eshkol_operations_t* op) {
         ctx_.builder().CreateBr(car_final);
         llvm::BasicBlock* vector_merge_exit = ctx_.builder().GetInsertBlock();
 
-        // LIST: Fall through to original cons cell handling
+        // LIST: direct cell read — bypass the big type-dispatch below.
+        // Read the full tagged_value from the cell's car slot via a direct
+        // struct load from the cons cell's memory. The cell layout is
+        // [car:tagged_value(16B) | cdr:tagged_value(16B)], so the car lives
+        // at offset 0.
+        //
+        // Safety: before the load we verify that pair_val is actually a pair.
+        // Previously non-pairs like `#t` (pair_int_safe == 1) or the empty
+        // list (pair_int_safe == 0) fell straight into the pointer
+        // dereference and SIGSEGV'd. Now:
+        //   - type != HEAP_PTR and type != CONS_PTR         → raise
+        //   - header subtype != HEAP_SUBTYPE_CONS (HEAP_PTR) → raise
+        //   - pair_int_safe == 0 (null / empty list)        → raise
         ctx_.builder().SetInsertPoint(list_block);
+
+        // Accept both legacy CONS_PTR (=32) and consolidated HEAP_PTR (=8).
+        llvm::Value* list_type_tag = tagged_.getType(pair_val);
+        llvm::Value* list_base_type = tagged_.getBaseType(list_type_tag);
+        llvm::Value* is_legacy_cons = ctx_.builder().CreateICmpEQ(list_base_type,
+            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CONS_PTR));
+        llvm::Value* is_heap = ctx_.builder().CreateICmpEQ(list_base_type,
+            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
+        llvm::Value* is_cons_type = ctx_.builder().CreateOr(is_legacy_cons, is_heap);
+
+        llvm::BasicBlock* type_ok = llvm::BasicBlock::Create(ctx_.context(), "car_type_ok", current_func);
+        llvm::BasicBlock* not_pair = llvm::BasicBlock::Create(ctx_.context(), "car_not_pair", current_func);
+        ctx_.builder().CreateCondBr(is_cons_type, type_ok, not_pair);
+
+        // not_pair: call the runtime raise helper and mark unreachable.
+        ctx_.builder().SetInsertPoint(not_pair);
+        llvm::FunctionCallee raise_not_pair =
+            ctx_.module().getOrInsertFunction("eshkol_raise_not_pair",
+                llvm::FunctionType::get(ctx_.voidType(),
+                    {ctx_.ptrType()}, false));
+        llvm::Value* op_name_str = ctx_.builder().CreateGlobalStringPtr(
+            "car: argument is not a pair", "car_err_msg");
+        ctx_.builder().CreateCall(raise_not_pair, {op_name_str});
+        ctx_.builder().CreateUnreachable();
+
+        // type_ok: now do the pointer extraction + null check + subtype check.
+        // The existing null_block branch below is preserved (returns null)
+        // rather than raising, so the downstream PHI's addIncoming keeps its
+        // predecessor block. Only the "not_pair" and "wrong subtype" paths
+        // terminate with Unreachable. Empty-list semantics (raise vs null)
+        // can be fixed separately; the priority here is eliminating the
+        // SIGSEGV on genuinely mistyped inputs.
+        ctx_.builder().SetInsertPoint(type_ok);
         llvm::Value* pair_int_safe = tagged_.safeExtractInt64(pair_val);
 
-        // SAFETY CHECK: Ensure pair_int is not null (0) before dereferencing
-        llvm::Value* is_null = ctx_.builder().CreateICmpEQ(pair_int_safe, llvm::ConstantInt::get(ctx_.int64Type(), 0));
+        llvm::Value* is_null = ctx_.builder().CreateICmpEQ(pair_int_safe,
+            llvm::ConstantInt::get(ctx_.int64Type(), 0));
 
         llvm::BasicBlock* null_block = llvm::BasicBlock::Create(ctx_.context(), "car_null", current_func);
         llvm::BasicBlock* valid_block = llvm::BasicBlock::Create(ctx_.context(), "car_valid", current_func);
 
         ctx_.builder().CreateCondBr(is_null, null_block, valid_block);
 
-        // Null block: return 0 (null) for safety
         ctx_.builder().SetInsertPoint(null_block);
         llvm::Value* null_result = llvm::ConstantInt::get(ctx_.int64Type(), 0);
         llvm::Value* null_tagged = tagged_.packInt64(null_result, true);
         ctx_.builder().CreateBr(car_final);
         llvm::BasicBlock* null_exit = ctx_.builder().GetInsertBlock();
 
-        // Valid block: use TAGGED cons cell to extract car with proper type
+        // Subtype check: guard the load by reading the object header at
+        // ptr-8 and verifying HEAP_SUBTYPE_CONS. For legacy CONS_PTR (type=32)
+        // the header is still present (cons cells are always allocated with
+        // a header now), so the check is safe either way.
         ctx_.builder().SetInsertPoint(valid_block);
-
         llvm::Value* cons_ptr = ctx_.builder().CreateIntToPtr(pair_int_safe, ctx_.ptrType());
+        llvm::Value* hdr_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), cons_ptr,
+            llvm::ConstantInt::get(ctx_.int64Type(), -8));
+        llvm::Value* hdr_subtype = ctx_.builder().CreateLoad(ctx_.int8Type(), hdr_ptr, "car_hdr_subtype");
+        llvm::Value* is_cons_subtype = ctx_.builder().CreateICmpEQ(hdr_subtype,
+            llvm::ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_CONS));
+
+        llvm::BasicBlock* subtype_ok = llvm::BasicBlock::Create(ctx_.context(), "car_subtype_ok", current_func);
+        llvm::BasicBlock* subtype_bad = llvm::BasicBlock::Create(ctx_.context(), "car_subtype_bad", current_func);
+        ctx_.builder().CreateCondBr(is_cons_subtype, subtype_ok, subtype_bad);
+
+        ctx_.builder().SetInsertPoint(subtype_bad);
+        llvm::Value* bad_subtype_msg = ctx_.builder().CreateGlobalStringPtr(
+            "car: argument is not a pair (wrong heap subtype)",
+            "car_subtype_msg");
+        ctx_.builder().CreateCall(raise_not_pair, {bad_subtype_msg});
+        ctx_.builder().CreateUnreachable();
+
+        ctx_.builder().SetInsertPoint(subtype_ok);
+        // Direct struct load: car is at offset 0.
+        llvm::Value* car_tagged_direct = ctx_.builder().CreateLoad(
+            ctx_.taggedValueType(), cons_ptr, "car_direct");
+        ctx_.builder().CreateBr(car_final);
+        llvm::BasicBlock* direct_exit = ctx_.builder().GetInsertBlock();
+
+        // Below: legacy per-type dispatch retained as an unreachable branch.
+        // A future cleanup pass can delete it outright — for now keep the
+        // structure to preserve auxiliary allocations other codegen passes
+        // may still reference by name.
+        llvm::BasicBlock* dead_block = llvm::BasicBlock::Create(ctx_.context(), "car_legacy_dead", current_func);
+        ctx_.builder().SetInsertPoint(dead_block);
 
         // Get car type using arena_tagged_cons_get_type(cell, false)
         llvm::Value* is_cdr = llvm::ConstantInt::get(ctx_.int1Type(), 0); // false = car
@@ -497,9 +586,10 @@ llvm::Value* CollectionCodegen::car(const eshkol_operations_t* op) {
 
         // Final merge of all paths
         ctx_.builder().SetInsertPoint(car_final);
-        llvm::PHINode* final_phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 3);
+        llvm::PHINode* final_phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 4);
         final_phi->addIncoming(vector_phi, vector_merge_exit);
         final_phi->addIncoming(null_tagged, null_exit);
+        final_phi->addIncoming(car_tagged_direct, direct_exit);
         final_phi->addIncoming(car_tagged_phi, merge_exit);
 
         // Create continuation block so car_final stays clean with just the PHI
@@ -572,6 +662,13 @@ llvm::Value* CollectionCodegen::cdr(const eshkol_operations_t* op) {
     ctx_.builder().CreateBr(cdr_start);
     ctx_.builder().SetInsertPoint(cdr_start);
 
+    // Same safety normalisation as car — raw scalar inputs get boxed up so
+    // the dispatch below is uniform and the non-tagged fallback (which did
+    // no type checking) is unreachable.
+    if (pair_val->getType() != ctx_.taggedValueType()) {
+        pair_val = tagged_.ensureTagged(pair_val);
+    }
+
     // VECTOR/TENSOR SUPPORT: Check if input is a vector or tensor type
     // With consolidated types, CONS/VECTOR/TENSOR all use HEAP_PTR - must check subtype in header
     if (pair_val->getType() == ctx_.taggedValueType()) {
@@ -582,30 +679,34 @@ llvm::Value* CollectionCodegen::cdr(const eshkol_operations_t* op) {
         llvm::Value* is_heap_ptr = ctx_.builder().CreateICmpEQ(input_base_type,
             llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
 
-        // If HEAP_PTR, we need to check the subtype in the object header
-        llvm::Value* obj_ptr_int = tagged_.unpackInt64(pair_val);
-        llvm::Value* obj_ptr = ctx_.builder().CreateIntToPtr(obj_ptr_int, ctx_.ptrType());
-
-        // Read subtype from object header at ptr-8
-        llvm::Value* header_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), obj_ptr,
-            llvm::ConstantInt::get(ctx_.int64Type(), -8));
-        llvm::Value* subtype = ctx_.builder().CreateLoad(ctx_.int8Type(), header_ptr, "subtype");
-
-        // Check subtypes - HEAP_SUBTYPE_VECTOR=2, HEAP_SUBTYPE_TENSOR=3
-        llvm::Value* is_vector_subtype = ctx_.builder().CreateICmpEQ(subtype,
-            llvm::ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_VECTOR));
-        llvm::Value* is_tensor_subtype = ctx_.builder().CreateICmpEQ(subtype,
-            llvm::ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_TENSOR));
-
-        // It's a vector/tensor type if HEAP_PTR AND (subtype==VECTOR OR subtype==TENSOR)
-        llvm::Value* is_vector_or_tensor = ctx_.builder().CreateOr(is_vector_subtype, is_tensor_subtype);
-        llvm::Value* is_vector_type = ctx_.builder().CreateAnd(is_heap_ptr, is_vector_or_tensor);
-
         llvm::BasicBlock* vector_block = llvm::BasicBlock::Create(ctx_.context(), "cdr_vector", current_func);
         llvm::BasicBlock* list_block = llvm::BasicBlock::Create(ctx_.context(), "cdr_list", current_func);
         llvm::BasicBlock* cdr_final = llvm::BasicBlock::Create(ctx_.context(), "cdr_final", current_func);
 
-        ctx_.builder().CreateCondBr(is_vector_type, vector_block, list_block);
+        // GUARD: gate the header-subtype load on is_heap_ptr. Non-HEAP_PTR
+        // inputs (e.g. `(cdr 42)`) skip the dereference and fall through to
+        // list_block, which raises via eshkol_raise_not_pair. Same rationale
+        // as the identical guard in codegenCar.
+        llvm::BasicBlock* subtype_probe =
+            llvm::BasicBlock::Create(ctx_.context(), "cdr_subtype_probe", current_func);
+        ctx_.builder().CreateCondBr(is_heap_ptr, subtype_probe, list_block);
+
+        ctx_.builder().SetInsertPoint(subtype_probe);
+
+        // If HEAP_PTR, safe to read the subtype from the object header at ptr-8.
+        llvm::Value* obj_ptr_int = tagged_.unpackInt64(pair_val);
+        llvm::Value* obj_ptr = ctx_.builder().CreateIntToPtr(obj_ptr_int, ctx_.ptrType());
+        llvm::Value* header_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), obj_ptr,
+            llvm::ConstantInt::get(ctx_.int64Type(), -8));
+        llvm::Value* subtype = ctx_.builder().CreateLoad(ctx_.int8Type(), header_ptr, "subtype");
+
+        llvm::Value* is_vector_subtype = ctx_.builder().CreateICmpEQ(subtype,
+            llvm::ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_VECTOR));
+        llvm::Value* is_tensor_subtype = ctx_.builder().CreateICmpEQ(subtype,
+            llvm::ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_TENSOR));
+        llvm::Value* is_vector_or_tensor = ctx_.builder().CreateOr(is_vector_subtype, is_tensor_subtype);
+
+        ctx_.builder().CreateCondBr(is_vector_or_tensor, vector_block, list_block);
 
         // VECTOR/TENSOR: Create new vector with elements 1 through n-1
         ctx_.builder().SetInsertPoint(vector_block);
@@ -740,8 +841,35 @@ llvm::Value* CollectionCodegen::cdr(const eshkol_operations_t* op) {
         ctx_.builder().CreateBr(cdr_final);
         llvm::BasicBlock* vector_merge_exit = ctx_.builder().GetInsertBlock();
 
-        // LIST: Fall through to original cons cell handling
+        // LIST: handle cons cells. Non-pair inputs (types other than HEAP_PTR
+        // / CONS_PTR) reach list_block from the subtype_probe guard above —
+        // raise rather than dereferencing random pointer values.
         ctx_.builder().SetInsertPoint(list_block);
+
+        llvm::Value* cdr_list_type_tag = tagged_.getType(pair_val);
+        llvm::Value* cdr_list_base_type = tagged_.getBaseType(cdr_list_type_tag);
+        llvm::Value* cdr_is_legacy_cons = ctx_.builder().CreateICmpEQ(cdr_list_base_type,
+            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CONS_PTR));
+        llvm::Value* cdr_is_heap = ctx_.builder().CreateICmpEQ(cdr_list_base_type,
+            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
+        llvm::Value* cdr_is_cons_type = ctx_.builder().CreateOr(cdr_is_legacy_cons, cdr_is_heap);
+
+        llvm::BasicBlock* cdr_type_ok = llvm::BasicBlock::Create(ctx_.context(), "cdr_type_ok", current_func);
+        llvm::BasicBlock* cdr_not_pair = llvm::BasicBlock::Create(ctx_.context(), "cdr_not_pair", current_func);
+        ctx_.builder().CreateCondBr(cdr_is_cons_type, cdr_type_ok, cdr_not_pair);
+
+        ctx_.builder().SetInsertPoint(cdr_not_pair);
+        llvm::FunctionCallee cdr_raise_not_pair =
+            ctx_.module().getOrInsertFunction("eshkol_raise_not_pair",
+                llvm::FunctionType::get(ctx_.voidType(),
+                    {ctx_.ptrType()}, false));
+        llvm::Value* cdr_err_msg = ctx_.builder().CreateGlobalStringPtr(
+            "cdr: argument is not a pair", "cdr_err_msg");
+        ctx_.builder().CreateCall(cdr_raise_not_pair, {cdr_err_msg});
+        ctx_.builder().CreateUnreachable();
+
+        ctx_.builder().SetInsertPoint(cdr_type_ok);
+
         llvm::Value* pair_int_safe = tagged_.safeExtractInt64(pair_val);
 
         llvm::Value* is_null = ctx_.builder().CreateICmpEQ(pair_int_safe, llvm::ConstantInt::get(ctx_.int64Type(), 0));

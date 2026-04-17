@@ -871,6 +871,7 @@ TypeCheckResult TypeChecker::synthesizeOperation(eshkol_ast_t* expr) {
         case ESHKOL_MAKE_FACT_OP:
         case ESHKOL_MAKE_KB_OP:
         case ESHKOL_KB_QUERY_OP:
+        case ESHKOL_KB_QUERY_PREFIX_OP:
         case ESHKOL_MAKE_FACTOR_GRAPH_OP:
         case ESHKOL_FG_INFER_OP:
         case ESHKOL_FG_UPDATE_CPT_OP:

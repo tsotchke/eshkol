@@ -1235,6 +1235,65 @@ bool eshkol_deep_equal(const eshkol_tagged_value_t* val1, const eshkol_tagged_va
                                            val1->data.int_val) == 0;
     }
 
+    // Tensor vs tensor: compare dimensions + element-wise doubles.
+    // Two #(...) literals with identical contents must return #t under
+    // R7RS-style equal? even though they are distinct allocations.
+    auto is_tensor = [](uint8_t type, const eshkol_tagged_value_t* val) -> bool {
+        if (type == ESHKOL_VALUE_HEAP_PTR && val->data.ptr_val) {
+            eshkol_object_header_t* hdr = ESHKOL_GET_HEADER((void*)val->data.ptr_val);
+            return hdr->subtype == HEAP_SUBTYPE_TENSOR;
+        }
+        return false;
+    };
+    bool is_t1 = is_tensor(type1, val1);
+    bool is_t2 = is_tensor(type2, val2);
+    if (is_t1 && is_t2) {
+        if (val1->data.ptr_val == val2->data.ptr_val) return true;
+        eshkol_tensor_t* t1 = (eshkol_tensor_t*)val1->data.ptr_val;
+        eshkol_tensor_t* t2 = (eshkol_tensor_t*)val2->data.ptr_val;
+        if (!t1 || !t2) return t1 == t2;
+        if (t1->num_dimensions != t2->num_dimensions) return false;
+        if (t1->total_elements != t2->total_elements) return false;
+        for (uint64_t i = 0; i < t1->num_dimensions; i++) {
+            if (t1->dimensions[i] != t2->dimensions[i]) return false;
+        }
+        // Elements are doubles stored as int64 bit patterns — compare as doubles
+        // so NaN != NaN falls through correctly and -0.0 == 0.0.
+        for (uint64_t i = 0; i < t1->total_elements; i++) {
+            union { int64_t i; double d; } u1, u2;
+            u1.i = t1->elements[i];
+            u2.i = t2->elements[i];
+            if (u1.d != u2.d) return false;
+        }
+        return true;
+    }
+
+    // Vector vs vector: heterogeneous tagged elements. Compare each pair
+    // recursively via eshkol_deep_equal so nested structures match too.
+    auto is_vector = [](uint8_t type, const eshkol_tagged_value_t* val) -> bool {
+        if (type == ESHKOL_VALUE_HEAP_PTR && val->data.ptr_val) {
+            eshkol_object_header_t* hdr = ESHKOL_GET_HEADER((void*)val->data.ptr_val);
+            return hdr->subtype == HEAP_SUBTYPE_VECTOR;
+        }
+        return false;
+    };
+    bool is_v1 = is_vector(type1, val1);
+    bool is_v2 = is_vector(type2, val2);
+    if (is_v1 && is_v2) {
+        if (val1->data.ptr_val == val2->data.ptr_val) return true;
+        int64_t len1 = *(int64_t*)(uintptr_t)val1->data.ptr_val;
+        int64_t len2 = *(int64_t*)(uintptr_t)val2->data.ptr_val;
+        if (len1 != len2) return false;
+        eshkol_tagged_value_t* elems1 =
+            (eshkol_tagged_value_t*)((uint8_t*)(uintptr_t)val1->data.ptr_val + 8);
+        eshkol_tagged_value_t* elems2 =
+            (eshkol_tagged_value_t*)((uint8_t*)(uintptr_t)val2->data.ptr_val + 8);
+        for (int64_t i = 0; i < len1; i++) {
+            if (!eshkol_deep_equal(&elems1[i], &elems2[i])) return false;
+        }
+        return true;
+    }
+
     // Different types: not equal
     if (type1 != type2) {
         return false;
@@ -1618,6 +1677,81 @@ arena_t* arena_create_thread_local(size_t size_hint) {
     size_t block_size = size_hint > 0 ? size_hint : (1024 * 1024); // 1 MB default
     __thread_local_arena = arena_create(block_size);
     return __thread_local_arena;
+}
+
+/* Initialise all thread-local runtime state for a worker thread.
+ *
+ * Architectural purpose: parallel-map workers can execute user lambdas that
+ * call AD primitives (ad-tape-new, ad-var, ad-sin, ...) or OALR regions
+ * (with-region). Those primitives read/write the following thread_local
+ * variables declared above:
+ *
+ *   __ad_tape_stack[MAX_TAPE_DEPTH]   (line 105)
+ *   __ad_tape_depth                    (line 106)
+ *   __outer_ad_node_stack[MAX_TAPE_DEPTH]
+ *   __outer_ad_node_depth
+ *   __region_stack[MAX_REGION_DEPTH]   (line 1606)
+ *   __region_stack_depth                (line 1607)
+ *   __thread_local_arena                (line 1622)
+ *
+ * On POSIX+glibc, thread_local is lazily initialised on first access; on
+ * macOS Mach-O, it goes through __tlv_* wrappers. Explicitly touching each
+ * TLS slot at worker startup forces initialisation before the first user
+ * task runs, preventing any "silent zero" hazards where codegen reads a
+ * TLS slot before it has been materialised.
+ *
+ * We also eagerly allocate the thread-local arena so the first allocation
+ * call inside a task does not pay the creation cost (latency smoothing)
+ * and so any arena_* call made during a signal handler or ctor path is
+ * safe. */
+void eshkol_thread_init_worker(size_t arena_size_hint) {
+    /* AD tape TLS slots: explicit zero so readers get defined values even if
+     * the TLS image is not zero-filled (conservative; on POSIX it is). */
+    for (size_t i = 0; i < MAX_TAPE_DEPTH; ++i) {
+        __ad_tape_stack[i] = nullptr;
+        __outer_ad_node_stack[i] = nullptr;
+    }
+    __ad_tape_depth = 0;
+    __outer_ad_node_depth = 0;
+
+    /* Double-backward storage */
+    __outer_ad_node_storage = nullptr;
+    __outer_ad_node_to_inner = nullptr;
+    __outer_grad_accumulator = nullptr;
+    __inner_var_node_ptr = nullptr;
+    __gradient_x_degree = 0;
+
+    /* OALR region TLS slots */
+    for (size_t i = 0; i < MAX_REGION_DEPTH; ++i) {
+        __region_stack[i] = nullptr;
+    }
+    __region_stack_depth = 0;
+
+    /* Eagerly create the thread-local arena so the first arena_allocate
+     * in a worker task finds an arena ready. If one already exists (e.g.
+     * init called twice), arena_create_thread_local is a no-op. */
+    (void)arena_create_thread_local(arena_size_hint);
+}
+
+/* Destroy the thread-local arena and clear TLS handles. Safe to call
+ * multiple times (idempotent). */
+void eshkol_thread_shutdown_worker(void) {
+    if (__thread_local_arena) {
+        arena_destroy(__thread_local_arena);
+        __thread_local_arena = nullptr;
+    }
+    /* Clear tape + region stack pointers so stale tape pointers from a
+     * previous worker lifetime are never observed after pthread re-use. */
+    for (size_t i = 0; i < MAX_TAPE_DEPTH; ++i) {
+        __ad_tape_stack[i] = nullptr;
+        __outer_ad_node_stack[i] = nullptr;
+    }
+    __ad_tape_depth = 0;
+    __outer_ad_node_depth = 0;
+    for (size_t i = 0; i < MAX_REGION_DEPTH; ++i) {
+        __region_stack[i] = nullptr;
+    }
+    __region_stack_depth = 0;
 }
 
 void arena_merge_to_parent(arena_t* dest, arena_t* src) {
@@ -4298,17 +4432,23 @@ static eshkol_tagged_value_t make_symbol_tagged(arena_t* arena, const char* name
 
 static eshkol_tagged_value_t make_cons_tagged(arena_t* arena,
     eshkol_tagged_value_t car, eshkol_tagged_value_t cdr) {
-    arena_tagged_cons_cell_t* cell = arena_allocate_tagged_cons_cell(arena);
+    // Use the header-carrying cons allocator so every cons cell has a proper
+    // eshkol_object_header_t with HEAP_SUBTYPE_CONS. This lets pair?,
+    // equal?, kb-query, eval, and every consolidated-HEAP_PTR dispatch path
+    // treat read's output identically to code-constructed cons cells.
+    arena_tagged_cons_cell_t* cell = arena_allocate_cons_with_header(arena);
+    if (!cell) {
+        eshkol_tagged_value_t null_val;
+        memset(&null_val, 0, sizeof(null_val));
+        null_val.type = ESHKOL_VALUE_NULL;
+        return null_val;
+    }
     cell->car = car;
     cell->cdr = cdr;
     eshkol_tagged_value_t val;
     memset(&val, 0, sizeof(val));
     val.type = ESHKOL_VALUE_HEAP_PTR;
     val.data.int_val = (int64_t)(uintptr_t)cell;
-    // Need header for cons cells - use allocate_with_header approach
-    // Actually cons cells don't have headers in the current system,
-    // they use CONS_PTR type directly
-    val.type = ESHKOL_VALUE_CONS_PTR;
     return val;
 }
 
@@ -5238,6 +5378,117 @@ extern "C" void eshkol_decrement_recursion_depth(void) {
     if (__eshkol_recursion_depth > 0) {
         __eshkol_recursion_depth--;
     }
+}
+
+/* Safety guards emitted inline by the codegen for car / cdr / list-ref when
+ * the input argument's static type cannot be proven to be a pair. Previously
+ * these sites dereferenced whatever integer lived in the tagged value's data
+ * field, turning e.g. `(car #t)` (pair_int_safe == 1) into a load of address
+ * 0x1 and a SIGSEGV. Now the codegen calls into these helpers on the error
+ * branch and the runtime raises a typed exception that `guard` can catch. */
+extern "C" void eshkol_raise_not_pair(const char* op_name) {
+    eshkol_exception_t* exc = eshkol_make_exception(
+        ESHKOL_EXCEPTION_TYPE_ERROR,
+        op_name ? op_name : "car/cdr: argument is not a pair");
+    if (exc) eshkol_raise(exc);
+    /* If no handler is installed, eshkol_raise calls exit(1) itself. */
+    fprintf(stderr, "Eshkol: %s\n", op_name ? op_name : "not a pair");
+    exit(1);
+}
+
+/* Append `lhs` (expected to be a proper list) to `rhs`, returning the
+ * concatenated list. Used by the quasiquote codegen to implement
+ * `,@splice-list` — the parser emits a list-constructor call where a splicing
+ * element's runtime value must be appended to the rest of the list, not just
+ * consed. Allocates fresh cons cells in the global arena so the original
+ * lhs is not mutated. If lhs is not a proper cons list, it is treated as a
+ * single-element list (falls back to cons'ing onto rhs). */
+extern "C" void eshkol_append_tagged_sret(eshkol_tagged_value_t* out,
+                                          const eshkol_tagged_value_t* lhs,
+                                          const eshkol_tagged_value_t* rhs) {
+    if (!out) return;
+    if (!rhs) {
+        *out = (eshkol_tagged_value_t){};
+        out->type = ESHKOL_VALUE_NULL;
+        return;
+    }
+    if (!lhs || lhs->type == ESHKOL_VALUE_NULL) {
+        *out = *rhs;
+        return;
+    }
+
+    /* Is lhs a cons cell? Accept both legacy CONS_PTR and consolidated
+     * HEAP_PTR with HEAP_SUBTYPE_CONS. */
+    bool is_cons = false;
+    if (lhs->type == ESHKOL_VALUE_CONS_PTR) is_cons = true;
+    else if (lhs->type == ESHKOL_VALUE_HEAP_PTR && lhs->data.ptr_val) {
+        eshkol_object_header_t* h =
+            ESHKOL_GET_HEADER((void*)(uintptr_t)lhs->data.ptr_val);
+        if (h && h->subtype == HEAP_SUBTYPE_CONS) is_cons = true;
+    }
+
+    if (!is_cons) {
+        /* Non-list splice value — treat as a single element cons onto rhs. */
+        arena_t* arena = get_global_arena();
+        arena_tagged_cons_cell_t* cell = arena_allocate_cons_with_header(arena);
+        if (!cell) { *out = *rhs; return; }
+        cell->car = *lhs;
+        cell->cdr = *rhs;
+        out->type = ESHKOL_VALUE_HEAP_PTR;
+        out->flags = 0; out->reserved = 0;
+        out->data.ptr_val = (uint64_t)(uintptr_t)cell;
+        return;
+    }
+
+    /* Collect lhs elements front-to-back so we can rebuild onto rhs. */
+    std::vector<eshkol_tagged_value_t> elems;
+    eshkol_tagged_value_t cur = *lhs;
+    while (cur.type != ESHKOL_VALUE_NULL && cur.data.ptr_val != 0) {
+        bool cur_is_cons = false;
+        if (cur.type == ESHKOL_VALUE_CONS_PTR) cur_is_cons = true;
+        else if (cur.type == ESHKOL_VALUE_HEAP_PTR) {
+            eshkol_object_header_t* h =
+                ESHKOL_GET_HEADER((void*)(uintptr_t)cur.data.ptr_val);
+            if (h && h->subtype == HEAP_SUBTYPE_CONS) cur_is_cons = true;
+        }
+        if (!cur_is_cons) {
+            /* Improper list — store the tail atom as the last element. */
+            elems.push_back(cur);
+            break;
+        }
+        arena_tagged_cons_cell_t* cell =
+            (arena_tagged_cons_cell_t*)(uintptr_t)cur.data.ptr_val;
+        elems.push_back(cell->car);
+        cur = cell->cdr;
+    }
+
+    /* Build acc = rhs, then prepend elems in reverse. */
+    eshkol_tagged_value_t acc = *rhs;
+    arena_t* arena = get_global_arena();
+    for (auto it = elems.rbegin(); it != elems.rend(); ++it) {
+        arena_tagged_cons_cell_t* cell = arena_allocate_cons_with_header(arena);
+        if (!cell) { *out = acc; return; }
+        cell->car = *it;
+        cell->cdr = acc;
+        acc.type = ESHKOL_VALUE_HEAP_PTR;
+        acc.flags = 0; acc.reserved = 0;
+        acc.data.ptr_val = (uint64_t)(uintptr_t)cell;
+    }
+    *out = acc;
+}
+
+extern "C" void eshkol_raise_index_oob(const char* op_name, int64_t idx,
+                                        int64_t length) {
+    char buf[160];
+    snprintf(buf, sizeof(buf),
+             "%s: index %lld out of bounds (length=%lld)",
+             op_name ? op_name : "list-ref/vector-ref",
+             (long long)idx, (long long)length);
+    eshkol_exception_t* exc = eshkol_make_exception(
+        ESHKOL_EXCEPTION_ERROR, buf);
+    if (exc) eshkol_raise(exc);
+    fprintf(stderr, "Eshkol: %s\n", buf);
+    exit(1);
 }
 
 extern "C" void eshkol_reset_recursion_depth(void) {

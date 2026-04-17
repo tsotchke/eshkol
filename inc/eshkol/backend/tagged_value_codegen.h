@@ -104,6 +104,15 @@ public:
     llvm::Value* packDouble(llvm::Value* double_val);
 
     /**
+     * Ensure a raw LLVM value is packed as a tagged_value struct.
+     * Routing helper for codegen boundaries (e.g. runtime callsites) where
+     * the caller may have passed a raw double/int/pointer that must become
+     * a proper 16-byte tagged value before being stored into a tagged slot.
+     * No-op when the value is already tagged_value_type.
+     */
+    llvm::Value* ensureTagged(llvm::Value* val);
+
+    /**
      * Pack a pointer into a tagged value with static type.
      * @param ptr_val The LLVM pointer or i64 value
      * @param type The value type (e.g., ESHKOL_VALUE_CONS_PTR)

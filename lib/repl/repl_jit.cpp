@@ -1154,6 +1154,10 @@ void ReplJITContext::registerStdlibSymbols() {
 }
 
 bool ReplJITContext::loadStdlib() {
+    if (stdlib_object_loaded_) {
+        return true;  // Already loaded — idempotent.
+    }
+
     if (!jit_) {
         initializeJIT();
     }
@@ -1168,6 +1172,7 @@ bool ReplJITContext::loadStdlib() {
             if (!err) {
                 registerStdlibSymbols();
                 std::cerr << "[REPL] Loaded stdlib from: " << stdlib_obj_path << std::endl;
+                stdlib_object_loaded_ = true;
                 return true;
             } else {
                 std::string err_msg;
@@ -1184,6 +1189,9 @@ bool ReplJITContext::loadStdlib() {
     loading_stdlib_from_source_ = true;
     const bool loaded = loadModule("stdlib", false);
     loading_stdlib_from_source_ = was_loading_stdlib_from_source;
+    if (loaded) {
+        stdlib_object_loaded_ = true;
+    }
     return loaded;
 }
 
@@ -1197,12 +1205,20 @@ bool ReplJITContext::loadModule(const std::string& module_name, bool allow_preco
         return true;  // Already loaded via stdlib.o
     }
 
-    // For stdlib or core.* modules, use precompiled stdlib.o if available
+    // For stdlib or core.* modules, use precompiled stdlib.o if available.
+    // stdlib.o does NOT include every core.* module (core.testing is the
+    // obvious example — heavy state, not commonly used). After loading
+    // stdlib.o we re-check whether the requested name was registered by
+    // registerStdlibSymbols; if it wasn't, fall through to JIT compile
+    // the individual source file.
     if (allow_precompiled_stdlib && !loading_stdlib_from_source_ &&
         (module_name == "stdlib" || module_name.find("core.") == 0)) {
-        // Try to load via stdlib.o (which includes all core modules)
         if (loadStdlib()) {
-            return true;
+            if (loaded_modules.count(module_name)) {
+                return true;  // Module is genuinely in stdlib.o — done.
+            }
+            // Module name starts with core.* but stdlib.o doesn't carry
+            // it — JIT-compile the source below.
         }
         // If stdlib.o loading failed, fall through to JIT compilation
     }
@@ -1731,6 +1747,31 @@ void* ReplJITContext::executeBatch(std::vector<eshkol_ast_t>& asts, bool silent)
 void* ReplJITContext::execute(eshkol_ast_t* ast) {
     if (!ast) {
         throw std::runtime_error("Cannot execute null AST");
+    }
+
+    // TOP-LEVEL SEQUENCE FLATTENING (Noesis#3 / v1.2.1-hardened)
+    //
+    // define-record-type, make-parameter, and other macro-style parser
+    // expansions emit a SEQUENCE_OP wrapping multiple DEFINE_OPs. The
+    // single-module codegen path below treats SEQUENCE_OP as a function-
+    // body sequence, which makes inner DEFINEs behave like let-bindings
+    // (local) rather than top-level definitions. Symbols like `mk`, `p?`,
+    // `px` then fail to resolve in subsequent top-level expressions with
+    // the "called a forward-referenced function" diagnostic.
+    //
+    // Fix: when execute() sees SEQUENCE_OP at top level, recursively call
+    // execute() on each inner expression. This gives each DEFINE_OP its
+    // own module and registers the symbol in the shared JIT dylib as a
+    // first-class top-level binding. Returns the result of the last
+    // sub-expression (sequence-of-expressions semantics).
+    if (ast->type == ESHKOL_OP && ast->operation.op == ESHKOL_SEQUENCE_OP) {
+        void* last_result = nullptr;
+        for (uint64_t i = 0; i < ast->operation.sequence_op.num_expressions; i++) {
+            eshkol_ast_t* sub = &ast->operation.sequence_op.expressions[i];
+            if (sub->type == ESHKOL_INVALID) continue;
+            last_result = execute(sub);
+        }
+        return last_result;
     }
 
     // IMPORT/REQUIRE HANDLING: Load and execute imported files

@@ -45,9 +45,16 @@ inline bool is_pair(eshkol_tagged_value_t value) {
     return ESHKOL_IS_CONS_COMPAT(value);
 }
 
-// Check if value is a symbol
+// Check if value is a symbol (legacy ESHKOL_VALUE_SYMBOL or consolidated
+// HEAP_PTR with HEAP_SUBTYPE_SYMBOL header). Mirrors ESHKOL_IS_CONS_COMPAT.
 inline bool is_symbol(eshkol_tagged_value_t value) {
-    return value.type == ESHKOL_VALUE_SYMBOL;
+    if (value.type == ESHKOL_VALUE_SYMBOL) return true;
+    if (value.type == ESHKOL_VALUE_HEAP_PTR && value.data.ptr_val != 0) {
+        eshkol_object_header_t* hdr =
+            ESHKOL_GET_HEADER((void*)(uintptr_t)value.data.ptr_val);
+        return hdr->subtype == HEAP_SUBTYPE_SYMBOL;
+    }
+    return false;
 }
 
 // Check if value is a string
@@ -204,30 +211,24 @@ eshkol_ast_t* convert_lambda(eshkol_tagged_value_t sexp) {
         return nullptr;
     }
 
-    // Create lambda AST
+    // Create lambda AST — match the parser's shape exactly: ESHKOL_OP with
+    // ESHKOL_LAMBDA_OP. The codegen for call-with-inline-lambda and for
+    // first-class lambda values dispatches on (type == ESHKOL_OP && op ==
+    // ESHKOL_LAMBDA_OP). Producing the alternate ESHKOL_FUNC shape here
+    // bypassed those dispatch paths, so eval of any (lambda ...) form
+    // failed with "Call expression requires variable or inline lambda".
     eshkol_ast_t* ast = eshkol_alloc_symbolic_ast();
-    ast->type = ESHKOL_FUNC;
-    ast->eshkol_func.id = nullptr;  // Anonymous lambda
-    ast->eshkol_func.is_lambda = 1;
-    ast->eshkol_func.func_commands = static_cast<eshkol_operations_t*>(
-        arena_allocate(get_global_arena(),sizeof(eshkol_operations_t)));
-    ast->eshkol_func.func_commands->op = ESHKOL_LAMBDA_OP;
-    ast->eshkol_func.func_commands->lambda_op.parameters = params;
-    ast->eshkol_func.func_commands->lambda_op.num_params = num_params;
-    ast->eshkol_func.func_commands->lambda_op.body = body;
-    ast->eshkol_func.func_commands->lambda_op.captured_vars = nullptr;
-    ast->eshkol_func.func_commands->lambda_op.num_captured = 0;
-    ast->eshkol_func.func_commands->lambda_op.is_variadic = is_variadic;
-    ast->eshkol_func.func_commands->lambda_op.rest_param = rest_param;
-    ast->eshkol_func.func_commands->lambda_op.return_type = nullptr;
-    ast->eshkol_func.func_commands->lambda_op.param_types = nullptr;
-    ast->eshkol_func.variables = params;
-    ast->eshkol_func.num_variables = num_params;
-    ast->eshkol_func.size = 0;
-    ast->eshkol_func.is_variadic = is_variadic;
-    ast->eshkol_func.rest_param = rest_param;
-    ast->eshkol_func.param_types = nullptr;
-    ast->eshkol_func.return_type = nullptr;
+    ast->type = ESHKOL_OP;
+    ast->operation.op = ESHKOL_LAMBDA_OP;
+    ast->operation.lambda_op.parameters = params;
+    ast->operation.lambda_op.num_params = num_params;
+    ast->operation.lambda_op.body = body;
+    ast->operation.lambda_op.captured_vars = nullptr;
+    ast->operation.lambda_op.num_captured = 0;
+    ast->operation.lambda_op.is_variadic = is_variadic;
+    ast->operation.lambda_op.rest_param = rest_param;
+    ast->operation.lambda_op.return_type = nullptr;
+    ast->operation.lambda_op.param_types = nullptr;
 
     return ast;
 }
@@ -1053,7 +1054,73 @@ eshkol_ast_t* convert_sexp(eshkol_tagged_value_t sexp) {
         return ast;
     }
 
-    eshkol_error("sexp_to_ast: unhandled S-expression type: %d", sexp.type);
+    // HEAP_PTR dispatch: the consolidated type system uses HEAP_PTR (8) for
+    // cons cells, strings, vectors, tensors, etc. Dispatch on the header subtype.
+    // This is the CORRECT architectural handling — not a fallback.
+    if (sexp.type == ESHKOL_VALUE_HEAP_PTR && sexp.data.ptr_val != 0) {
+        eshkol_object_header_t* hdr = ESHKOL_GET_HEADER((void*)(uintptr_t)sexp.data.ptr_val);
+        switch (hdr->subtype) {
+        case HEAP_SUBTYPE_CONS: {
+            // Cons cell — list or special form
+            eshkol_tagged_value_t head = pair_car(sexp);
+            if (is_symbol(head)) {
+                const char* head_name = get_symbol_name(head);
+                if (strcmp(head_name, "lambda") == 0) return convert_lambda(sexp);
+                if (strcmp(head_name, "define") == 0) return convert_define(sexp);
+                if (strcmp(head_name, "if") == 0) return convert_if(sexp);
+                if (strcmp(head_name, "let") == 0) return convert_let(sexp, ESHKOL_LET_OP);
+                if (strcmp(head_name, "let*") == 0) return convert_let(sexp, ESHKOL_LET_STAR_OP);
+                if (strcmp(head_name, "letrec") == 0) return convert_let(sexp, ESHKOL_LETREC_OP);
+                if (strcmp(head_name, "letrec*") == 0) return convert_let(sexp, ESHKOL_LETREC_STAR_OP);
+                if (strcmp(head_name, "quote") == 0) return convert_quote(sexp);
+                if (strcmp(head_name, "begin") == 0) return convert_begin(sexp);
+                if (strcmp(head_name, "set!") == 0) return convert_set(sexp);
+                if (strcmp(head_name, "and") == 0) return convert_and(sexp);
+                if (strcmp(head_name, "or") == 0) return convert_or(sexp);
+                if (strcmp(head_name, "cond") == 0) return convert_cond(sexp);
+                if (strcmp(head_name, "case") == 0) return convert_case(sexp);
+                if (strcmp(head_name, "when") == 0) return convert_when(sexp);
+                if (strcmp(head_name, "unless") == 0) return convert_unless(sexp);
+                if (strcmp(head_name, "quasiquote") == 0) return convert_quasiquote(sexp);
+                if (strcmp(head_name, "unquote") == 0) return convert_unquote(sexp);
+                if (strcmp(head_name, "unquote-splicing") == 0) return convert_unquote_splicing(sexp);
+            }
+            return convert_call(sexp);
+        }
+        case HEAP_SUBTYPE_STRING: {
+            const char* str = (const char*)(uintptr_t)sexp.data.ptr_val;
+            eshkol_ast_t* ast = eshkol_alloc_symbolic_ast();
+            ast->type = ESHKOL_STRING;
+            size_t len = strlen(str);
+            ast->str_val.ptr = (char*)arena_allocate(get_global_arena(), len + 1);
+            if (ast->str_val.ptr) memcpy(ast->str_val.ptr, str, len + 1);
+            ast->str_val.size = len;
+            return ast;
+        }
+        case HEAP_SUBTYPE_VECTOR:
+        case HEAP_SUBTYPE_TENSOR:
+            // Vectors/tensors in eval context — return as literal
+            // (not yet supported — would need tensor literal AST node)
+            break;
+        default:
+            break;
+        }
+    }
+
+    // Null value
+    if (sexp.type == ESHKOL_VALUE_NULL || (sexp.type == 0 && sexp.data.raw_val == 0)) {
+        eshkol_ast_t* ast = eshkol_alloc_symbolic_ast();
+        eshkol_ast_make_null(ast);
+        return ast;
+    }
+
+    uint8_t diag_subtype = 0xFF;
+    if (sexp.type == ESHKOL_VALUE_HEAP_PTR && sexp.data.ptr_val != 0) {
+        eshkol_object_header_t* hdr = ESHKOL_GET_HEADER((void*)(uintptr_t)sexp.data.ptr_val);
+        diag_subtype = hdr->subtype;
+    }
+    eshkol_error("sexp_to_ast: unhandled S-expression type=%d subtype=%u",
+        sexp.type, (unsigned)diag_subtype);
     return nullptr;
 }
 

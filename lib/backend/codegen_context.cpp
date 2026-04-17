@@ -7,6 +7,7 @@
  */
 
 #include <eshkol/backend/codegen_context.h>
+#include <eshkol/eshkol.h>  // HEAP_SUBTYPE_SYMBOL, etc.
 
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
 
@@ -132,6 +133,38 @@ llvm::GlobalVariable* CodegenContext::lookupInternedString(const std::string& st
 }
 
 llvm::Value* CodegenContext::internStringWithHeader(const std::string& str, uint8_t subtype) {
+    // SYMBOL subtype is special: R7RS §6.5 requires every literal (quote sym)
+    // to denote the same object across the whole program. A per-module
+    // private constant (what the STRING path below produces) gives us a
+    // fresh pointer per module, and since each top-level form in the JIT
+    // compiles to its own module, `(define x 'foo) (define y 'foo)` ends
+    // up with `(eq? x y)` = #f — broken. Route symbol literals through a
+    // runtime helper that hashes the name into a process-global intern
+    // table, so every module observes the same canonical pointer.
+    //
+    // The helper eshkol_intern_symbol_lookup lives in introspection.cpp
+    // and shares g_interned_symbols with string->symbol / procedure-name /
+    // type-of, so all four interning paths converge.
+    if (subtype == HEAP_SUBTYPE_SYMBOL) {
+        // Name string constant (module-local; LLVM dedups these across the
+        // module naturally, so repeated references to the same symbol share
+        // a single underlying `.str` global).
+        llvm::Value* name_ptr = builder_.CreateGlobalStringPtr(str, ".sym_name");
+
+        // Declare the extern runtime helper.
+        llvm::Type* ptr_ty = llvm::PointerType::get(context_, 0);
+        llvm::FunctionType* fn_ty = llvm::FunctionType::get(ptr_ty, {ptr_ty}, false);
+        llvm::FunctionCallee fn =
+            module_.getOrInsertFunction("eshkol_intern_symbol_lookup", fn_ty);
+
+        // Emit the call. Result is the canonical symbol pointer — same
+        // representation as the module-local constant the STRING path
+        // produces (pointer to char data, with a HEAP_SUBTYPE_SYMBOL header
+        // at ptr-8), so all downstream packPtrToTaggedValue / eq? / etc.
+        // callers work unchanged.
+        return builder_.CreateCall(fn, {name_ptr}, "sym");
+    }
+
     // Check if already interned with header
     std::string key = str + "_hdr_" + std::to_string(subtype);
     auto it = headered_strings_.find(key);

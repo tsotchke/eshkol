@@ -242,6 +242,16 @@ extern "C" {
  *   (parallel-map fn list)
  *   (parallel-map (lambda (x) (* x x)) '(1 2 3 4 5))
  */
+/* SRET-style wrapper for the pointer-all ABI used by LLVM codegen in this
+ * codebase. Passes fn/list by pointer to sidestep struct-by-value ABI
+ * differences between LLVM and the C calling convention. The original
+ * by-value entry point is retained for callers outside LLVM. */
+extern "C" void eshkol_parallel_map_sret(
+    eshkol_tagged_value_t* out_result,
+    const eshkol_tagged_value_t* fn_ptr,
+    const eshkol_tagged_value_t* list_ptr,
+    arena_t* arena);
+
 void eshkol_parallel_map(
     eshkol_tagged_value_t fn,
     eshkol_tagged_value_t list,
@@ -330,6 +340,12 @@ void eshkol_parallel_map(
     // Submit LLVM worker to thread pool via function pointer
     // Key: void* arg crosses C/LLVM boundary (safe), tagged values stay in LLVM
     eshkol_debug("parallel-map: submitting %zu tasks to thread pool", n);
+    if (getenv("ESHKOL_DEBUG_PAR")) {
+        eshkol_thread_pool_metrics_t m;
+        thread_pool_get_metrics(pool, &m);
+        fprintf(stderr, "[par-map] pool=%p threads=%zu  active=%zu  submitting=%zu tasks\n",
+            (void*)pool, m.num_threads, m.active_workers, n);
+    }
     for (size_t i = 0; i < n; ++i) {
         futures[i] = thread_pool_submit(pool, g_parallel_map_worker, &tasks[i]);
         if (!futures[i]) {
@@ -345,8 +361,32 @@ void eshkol_parallel_map(
         }
     }
 
+    if (getenv("ESHKOL_DEBUG_PAR")) {
+        eshkol_thread_pool_metrics_t m;
+        thread_pool_get_metrics(pool, &m);
+        fprintf(stderr, "[par-map] done.  submitted=%zu  completed=%zu  peak_q=%zu  avg_task=%lluus\n",
+            m.tasks_submitted, m.tasks_completed, m.peak_queue_depth,
+            (unsigned long long)m.avg_task_time_us);
+    }
+
     eshkol_debug("parallel-map: all tasks completed, building result list");
     *out_result = vector_to_list(results, arena); return;
+}
+
+/* Pointer-argument entry point for LLVM codegen. */
+extern "C" void eshkol_parallel_map_sret(
+    eshkol_tagged_value_t* out_result,
+    const eshkol_tagged_value_t* fn_ptr,
+    const eshkol_tagged_value_t* list_ptr,
+    arena_t* arena)
+{
+    if (!out_result) return;
+    if (!fn_ptr || !list_ptr) {
+        memset(out_result, 0, sizeof(*out_result));
+        out_result->type = ESHKOL_VALUE_NULL;
+        return;
+    }
+    eshkol_parallel_map(*fn_ptr, *list_ptr, arena, out_result);
 }
 
 // ============================================================================

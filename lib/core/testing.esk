@@ -1,0 +1,158 @@
+;;; core/testing.esk
+
+;; run-tests walks (reverse *tests*) to run in source order; reverse lives
+;; in core.list.transform so we pull that module in. Keeping a narrow
+;; require list (not the full stdlib) so (require core.testing) does not
+;; force-load the entire stdlib graph into user programs.
+(require core.list.transform)
+;;;
+;;; Minimal testing framework for Eshkol.
+;;;
+;;; Usage:
+;;;   (require core.testing)
+;;;
+;;;   (register-test "addition works"
+;;;     (lambda ()
+;;;       (check-equal? (+ 2 2) 4)
+;;;       (check-equal? (+ 0 0) 0)))
+;;;
+;;;   (register-test "division by zero"
+;;;     (lambda ()
+;;;       (check-raises (lambda () (/ 1 0)))))
+;;;
+;;;   (run-tests)   ; runs every registered test, prints summary, sets exit
+;;;
+;;; Functions, not macros: Eshkol's `define-syntax` doesn't propagate macro
+;;; definitions across the precompiled-stdlib boundary — the parser has
+;;; already expanded testing.esk by the time user code sees
+;;; `(define-test …)`, so a macro-based API would fail to expand in user
+;;; source. Functions cross that boundary cleanly.
+;;;
+;;; For a one-liner parallel to an ergonomic macro, wrap check forms in a
+;;; (lambda () …) yourself — the name is the first arg, the thunk is the
+;;; second. `check-*` forms are ordinary procedures too.
+
+(provide register-test
+         check-equal? check-true check-false
+         check-approx check-raises
+         run-tests reset-tests!
+         *tests* *test-pass-count* *test-fail-count*
+         *current-test-fails* *current-test-name*)
+
+;; Test registry — list of (name thunk) pairs, newest last so run order
+;; matches source order.
+(define *tests* '())
+
+(define *test-pass-count* 0)
+(define *test-fail-count* 0)
+(define *current-test-name* "")
+(define *current-test-fails* 0)
+
+;; register-test: append a named test whose thunk is run on (run-tests).
+;; Thunk receives no arguments; body typically calls (check-*) forms.
+(define (register-test name thunk)
+  (set! *tests* (cons (list name thunk) *tests*)))
+
+;; Record a single check result. Called by every check-* procedure.
+;; msg is the failure diagnostic (only printed on fail).
+(define (record-check! ok? msg)
+  (if ok?
+      (set! *test-pass-count* (+ *test-pass-count* 1))
+      (begin
+        (set! *test-fail-count* (+ *test-fail-count* 1))
+        (set! *current-test-fails* (+ *current-test-fails* 1))
+        (display "    FAIL: ")
+        (display msg)
+        (newline))))
+
+;; check-equal?: compare via equal?.
+(define (check-equal? actual expected)
+  (if (equal? actual expected)
+      (record-check! #t "")
+      (begin
+        (set! *test-fail-count* (+ *test-fail-count* 1))
+        (set! *current-test-fails* (+ *current-test-fails* 1))
+        (display "    FAIL: expected ")
+        (write expected)
+        (display ", got ")
+        (write actual)
+        (newline))))
+
+(define (check-true v)
+  (if v
+      (record-check! #t "")
+      (begin
+        (set! *test-fail-count* (+ *test-fail-count* 1))
+        (set! *current-test-fails* (+ *current-test-fails* 1))
+        (display "    FAIL: expected truthy value, got ")
+        (write v) (newline))))
+
+(define (check-false v)
+  (if (not v)
+      (record-check! #t "")
+      (begin
+        (set! *test-fail-count* (+ *test-fail-count* 1))
+        (set! *current-test-fails* (+ *current-test-fails* 1))
+        (display "    FAIL: expected false, got ")
+        (write v) (newline))))
+
+;; check-approx: float equality within tolerance.
+(define (check-approx actual expected tol)
+  (if (< (abs (- actual expected)) tol)
+      (record-check! #t "")
+      (begin
+        (set! *test-fail-count* (+ *test-fail-count* 1))
+        (set! *current-test-fails* (+ *current-test-fails* 1))
+        (display "    FAIL: expected ≈ ") (write expected)
+        (display " (±") (write tol)
+        (display "), got ") (write actual) (newline))))
+
+;; check-raises: thunk MUST raise. If it returns normally, that's a failure.
+(define (check-raises thunk)
+  (let ((raised #f))
+    (guard (exn (#t (set! raised #t)))
+      (thunk))
+    (if raised
+        (record-check! #t "")
+        (begin
+          (set! *test-fail-count* (+ *test-fail-count* 1))
+          (set! *current-test-fails* (+ *current-test-fails* 1))
+          (display "    FAIL: expected thunk to raise, but it returned normally")
+          (newline)))))
+
+(define (reset-tests!)
+  (set! *tests* '())
+  (set! *test-pass-count* 0)
+  (set! *test-fail-count* 0)
+  (set! *current-test-name* "")
+  (set! *current-test-fails* 0))
+
+;; Run every registered test. Prints per-test + final summary.
+(define (run-tests)
+  (set! *test-pass-count* 0)
+  (set! *test-fail-count* 0)
+  ;; *tests* was cons'd in reverse (newest first); restore source order.
+  (let loop ((remaining (reverse *tests*)))
+    (if (null? remaining)
+        (begin
+          (newline)
+          (display "=== Test summary ===") (newline)
+          (display "  Passed: ") (display *test-pass-count*) (newline)
+          (display "  Failed: ") (display *test-fail-count*) (newline)
+          (if (= *test-fail-count* 0)
+              (begin (display "  RESULT: OK") (newline) #t)
+              (begin (display "  RESULT: FAILURES") (newline) #f)))
+        (let* ((entry (car remaining))
+               (name  (car entry))
+               (thunk (car (cdr entry))))
+          (set! *current-test-name* name)
+          (set! *current-test-fails* 0)
+          (display "  [test] ") (display name)
+          (guard (exn (#t (display " ERROR: ") (display exn) (newline)
+                          (set! *test-fail-count* (+ *test-fail-count* 1))))
+            (thunk))
+          (if (= *current-test-fails* 0)
+              (begin (display " … OK") (newline))
+              (begin (display " … FAIL (") (display *current-test-fails*)
+                     (display " check(s))") (newline)))
+          (loop (cdr remaining))))))

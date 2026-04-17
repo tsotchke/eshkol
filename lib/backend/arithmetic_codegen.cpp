@@ -697,6 +697,7 @@ llvm::Value* ArithmeticCodegen::add(llvm::Value* left, llvm::Value* right) {
 
         // Vector/tensor path
         ctx_.builder().SetInsertPoint(vector_path);
+        guardHeapOperandsNumeric(left, right, "+");
         llvm::Value* vec_result = tensor_.tensorArithmeticInternal(left, right, "add");
         ctx_.builder().CreateBr(merge);
         llvm::BasicBlock* vector_exit = ctx_.builder().GetInsertBlock();
@@ -866,6 +867,7 @@ llvm::Value* ArithmeticCodegen::sub(llvm::Value* left, llvm::Value* right) {
 
         // Vector/tensor path
         ctx_.builder().SetInsertPoint(vector_path);
+        guardHeapOperandsNumeric(left, right, "-");
         llvm::Value* vec_result = tensor_.tensorArithmeticInternal(left, right, "sub");
         ctx_.builder().CreateBr(merge);
         llvm::BasicBlock* vector_exit = ctx_.builder().GetInsertBlock();
@@ -1035,6 +1037,7 @@ llvm::Value* ArithmeticCodegen::mul(llvm::Value* left, llvm::Value* right) {
 
         // Vector/tensor path
         ctx_.builder().SetInsertPoint(vector_path);
+        guardHeapOperandsNumeric(left, right, "*");
         llvm::Value* vec_result = tensor_.tensorArithmeticInternal(left, right, "mul");
         ctx_.builder().CreateBr(merge);
         llvm::BasicBlock* vector_exit = ctx_.builder().GetInsertBlock();
@@ -1204,6 +1207,7 @@ llvm::Value* ArithmeticCodegen::div(llvm::Value* left, llvm::Value* right) {
 
         // Vector/tensor path
         ctx_.builder().SetInsertPoint(vector_path);
+        guardHeapOperandsNumeric(left, right, "/");
         llvm::Value* vec_result = tensor_.tensorArithmeticInternal(left, right, "div");
         ctx_.builder().CreateBr(merge);
         llvm::BasicBlock* vector_exit = ctx_.builder().GetInsertBlock();
@@ -2362,6 +2366,80 @@ void ArithmeticCodegen::emitOverflowError(const char* message) {
         llvm::ConstantInt::get(ctx_.int32Type(), ESHKOL_EXCEPTION_ERROR),
         error_msg
     }, "overflow_exception");
+    ctx_.builder().CreateCall(raise_func, {exc});
+    ctx_.builder().CreateUnreachable();
+}
+
+void ArithmeticCodegen::guardHeapOperandsNumeric(llvm::Value* left,
+                                                  llvm::Value* right,
+                                                  const char* op_name) {
+    // For each operand: if HEAP_PTR, subtype MUST be VECTOR or TENSOR.
+    // Anything else (string, cons, symbol, fact, ...) is a type error in
+    // arithmetic — catching it here prevents downstream code from treating
+    // the operand as a tensor layout and segfaulting.
+    llvm::Function* fn = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::BasicBlock* type_err_blk = llvm::BasicBlock::Create(
+        ctx_.context(), "arith_type_err", fn);
+    llvm::BasicBlock* ok_blk = llvm::BasicBlock::Create(
+        ctx_.context(), "arith_heap_ok", fn);
+
+    auto is_heap = [&](llvm::Value* tv) -> llvm::Value* {
+        llvm::Value* base = tagged_.getBaseType(tagged_.getType(tv));
+        return ctx_.builder().CreateICmpEQ(base,
+            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
+    };
+    auto is_numeric_heap = [&](llvm::Value* tv) -> llvm::Value* {
+        return ctx_.builder().CreateOr(tagged_.isVector(tv),
+                                       tagged_.isTensor(tv));
+    };
+
+    // Left check: either NOT heap, or heap-with-numeric-subtype
+    llvm::Value* l_ok = ctx_.builder().CreateOr(
+        ctx_.builder().CreateNot(is_heap(left)),
+        is_numeric_heap(left));
+    llvm::Value* r_ok = ctx_.builder().CreateOr(
+        ctx_.builder().CreateNot(is_heap(right)),
+        is_numeric_heap(right));
+    llvm::Value* all_ok = ctx_.builder().CreateAnd(l_ok, r_ok);
+    ctx_.builder().CreateCondBr(all_ok, ok_blk, type_err_blk);
+
+    // Type error branch — non-returning
+    ctx_.builder().SetInsertPoint(type_err_blk);
+    std::string msg = std::string(op_name) +
+        ": operand is not a number, vector, or tensor";
+    emitTypeError(msg.c_str());
+
+    // Continue in ok_blk
+    ctx_.builder().SetInsertPoint(ok_blk);
+}
+
+void ArithmeticCodegen::emitTypeError(const char* message) {
+    llvm::Function* make_exc_func = ctx_.module().getFunction("eshkol_make_exception_with_header");
+    if (!make_exc_func) {
+        llvm::FunctionType* make_type = llvm::FunctionType::get(
+            llvm::PointerType::getUnqual(ctx_.context()),
+            {ctx_.int32Type(), llvm::PointerType::getUnqual(ctx_.context())},
+            false);
+        make_exc_func = llvm::Function::Create(make_type,
+            llvm::Function::ExternalLinkage, "eshkol_make_exception_with_header", &ctx_.module());
+    }
+
+    llvm::Function* raise_func = ctx_.module().getFunction("eshkol_raise");
+    if (!raise_func) {
+        llvm::FunctionType* raise_type = llvm::FunctionType::get(
+            llvm::Type::getVoidTy(ctx_.context()),
+            {llvm::PointerType::getUnqual(ctx_.context())},
+            false);
+        raise_func = llvm::Function::Create(raise_type,
+            llvm::Function::ExternalLinkage, "eshkol_raise", &ctx_.module());
+        raise_func->setDoesNotReturn();
+    }
+
+    llvm::Value* error_msg = ctx_.builder().CreateGlobalString(message);
+    llvm::Value* exc = ctx_.builder().CreateCall(make_exc_func, {
+        llvm::ConstantInt::get(ctx_.int32Type(), ESHKOL_EXCEPTION_TYPE_ERROR),
+        error_msg
+    }, "type_err_exception");
     ctx_.builder().CreateCall(raise_func, {exc});
     ctx_.builder().CreateUnreachable();
 }
