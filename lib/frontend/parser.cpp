@@ -2289,52 +2289,21 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
         if (ast.operation.op == ESHKOL_IF_OP) {
             // Syntax: (if condition then-expr else-expr)
             
-            // Parse condition
-            token = tokenizer.nextToken();
-            if (token.type == TOKEN_EOF) {
+            // Parse condition — use parse_expression for full syntax support
+            // (handles #(...) vectors, quoted data, backquotes, etc.)
+            eshkol_ast_t condition = parse_expression(tokenizer);
+            if (condition.type == ESHKOL_INVALID) {
                 PARSE_ERROR_AT(token, "if requires condition as first argument");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
-            
-            eshkol_ast_t condition;
-            if (token.type == TOKEN_LPAREN) {
-                condition = parse_list(tokenizer);
-            } else if (token.type == TOKEN_QUOTE) {
-                // Handle quoted expressions in condition
-                eshkol_ast_t quoted = parse_quoted_data(tokenizer);
-                condition.type = ESHKOL_OP;
-                condition.operation.op = ESHKOL_QUOTE_OP;
-                condition.operation.call_op.func = nullptr;
-                condition.operation.call_op.num_vars = 1;
-                condition.operation.call_op.variables = new eshkol_ast_t[1];
-                condition.operation.call_op.variables[0] = quoted;
-            } else {
-                condition = parse_atom(token);
-            }
-            
-            // Parse then expression
-            token = tokenizer.nextToken();
-            if (token.type == TOKEN_EOF) {
+
+            // Parse then expression — same full expression support
+            eshkol_ast_t then_expr = parse_expression(tokenizer);
+            if (then_expr.type == ESHKOL_INVALID) {
                 PARSE_ERROR_AT(token, "if requires then-expression as second argument");
                 ast.type = ESHKOL_INVALID;
                 return ast;
-            }
-            
-            eshkol_ast_t then_expr;
-            if (token.type == TOKEN_LPAREN) {
-                then_expr = parse_list(tokenizer);
-            } else if (token.type == TOKEN_QUOTE) {
-                // Handle quoted expressions in then-branch
-                eshkol_ast_t quoted = parse_quoted_data(tokenizer);
-                then_expr.type = ESHKOL_OP;
-                then_expr.operation.op = ESHKOL_QUOTE_OP;
-                then_expr.operation.call_op.func = nullptr;
-                then_expr.operation.call_op.num_vars = 1;
-                then_expr.operation.call_op.variables = new eshkol_ast_t[1];
-                then_expr.operation.call_op.variables[0] = quoted;
-            } else {
-                then_expr = parse_atom(token);
             }
             
             // Parse else expression (optional in Scheme)
@@ -2351,21 +2320,11 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 PARSE_ERROR_AT(token, "unexpected end of input in if expression");
                 ast.type = ESHKOL_INVALID;
                 return ast;
-            } else if (token.type == TOKEN_LPAREN) {
-                else_expr = parse_list(tokenizer);
-                has_else = true;
-            } else if (token.type == TOKEN_QUOTE) {
-                // Handle quoted expressions in else-branch
-                eshkol_ast_t quoted = parse_quoted_data(tokenizer);
-                else_expr.type = ESHKOL_OP;
-                else_expr.operation.op = ESHKOL_QUOTE_OP;
-                else_expr.operation.call_op.func = nullptr;
-                else_expr.operation.call_op.num_vars = 1;
-                else_expr.operation.call_op.variables = new eshkol_ast_t[1];
-                else_expr.operation.call_op.variables[0] = quoted;
-                has_else = true;
             } else {
-                else_expr = parse_atom(token);
+                // Push back and use parse_expression for full syntax support
+                // (handles #(...) vectors, quotes, backquotes, etc.)
+                tokenizer.pushBack(token);
+                else_expr = parse_expression(tokenizer);
                 has_else = true;
             }
 
