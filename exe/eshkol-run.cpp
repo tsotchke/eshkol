@@ -2555,37 +2555,59 @@ int main(int argc, char **argv)
                 eshkol_info("JIT running: %s", filepath.c_str());
             }
 
-            // Parse and execute all expressions in the file
-            eshkol_ast_t ast = eshkol_parse_next_ast(file);
-            while (ast.type != ESHKOL_INVALID) {
-                if (debug_mode) {
-                    printf("=== AST ===\n");
-                    eshkol_ast_pretty_print(&ast, 0);
-                    printf("===========\n");
-                }
-
-                // Execute the AST (definitions don't print, expressions do via display)
-                bool is_define = (ast.type == ESHKOL_OP &&
-                    (ast.operation.op == ESHKOL_DEFINE_OP ||
-                     ast.operation.op == ESHKOL_REQUIRE_OP ||
-                     ast.operation.op == ESHKOL_IMPORT_OP));
-
-                // Check if it's a display/print call
-                bool is_output_call = false;
-                if (ast.type == ESHKOL_OP && ast.operation.op == ESHKOL_CALL_OP &&
-                    ast.operation.call_op.func && ast.operation.call_op.func->type == ESHKOL_VAR) {
-                    const char* name = ast.operation.call_op.func->variable.id;
-                    if (name && (strcmp(name, "display") == 0 || strcmp(name, "newline") == 0 ||
-                                 strcmp(name, "print") == 0 || strcmp(name, "write") == 0)) {
-                        is_output_call = true;
+            // Architectural fix for the per-form JIT module boundary class:
+            //
+            // Previously this loop compiled and executed each top-level form
+            // as its own LLVM module, matching REPL interactive semantics.
+            // That forced cross-module references for every define-then-use
+            // pattern (e.g. (define hw ...) then (parallel-map hw ...)),
+            // which tripped thread-pool/closure-capture state issues and
+            // hung benches that work cleanly in compiled mode.
+            //
+            // For file execution the right architectural choice is a single
+            // module containing every top-level form — identical to what
+            // compiled mode does — then one executeBatch call. require/
+            // import forms are still processed inline by the batch path
+            // (they load submodules synchronously).
+            std::vector<eshkol_ast_t> file_asts;
+            file_asts.reserve(64);
+            {
+                eshkol_ast_t ast = eshkol_parse_next_ast(file);
+                while (ast.type != ESHKOL_INVALID) {
+                    if (debug_mode) {
+                        printf("=== AST ===\n");
+                        eshkol_ast_pretty_print(&ast, 0);
+                        printf("===========\n");
                     }
+                    file_asts.push_back(ast);
+                    ast = eshkol_parse_next_ast(file);
                 }
-
-                jit_ctx.execute(&ast);
-
-                // Parse next expression
-                ast = eshkol_parse_next_ast(file);
             }
+
+            // Process require/import up front so their module contents are
+            // available as externally-resolvable symbols before batch codegen.
+            // Everything else gets batched into a single module.
+            std::vector<eshkol_ast_t> batch;
+            batch.reserve(file_asts.size());
+            for (auto& ast : file_asts) {
+                bool is_load = (ast.type == ESHKOL_OP &&
+                    (ast.operation.op == ESHKOL_REQUIRE_OP ||
+                     ast.operation.op == ESHKOL_IMPORT_OP));
+                if (is_load) {
+                    try { jit_ctx.execute(&ast); } catch (...) { /* continue */ }
+                } else {
+                    batch.push_back(ast);
+                }
+            }
+
+            if (!batch.empty()) {
+                try {
+                    jit_ctx.executeBatch(batch, /*silent=*/false);
+                } catch (const std::exception& e) {
+                    eshkol_error("JIT batch execution failed: %s", e.what());
+                }
+            }
+
             file.close();
         }
 

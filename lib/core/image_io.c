@@ -159,9 +159,18 @@ double* eshkol_image_resize(const double* data, int w, int h, int channels,
         default: layout = STBIR_RGB; break;
     }
 
-    stbir_resize_uint8_linear(src_pixels, w, h, w * channels,
-                               dst_pixels, new_w, new_h, new_w * channels,
-                               layout);
+    /* stbir_resize_uint8_linear returns a non-null destination pointer on
+     * success or NULL on failure (invalid layout / zero-size / OOM inside the
+     * resampler). Ignoring the return value would leave dst_pixels partially
+     * or wholly uninitialised, which we would then silently convert to
+     * doubles and hand back to the caller as a corrupted image. */
+    unsigned char* resize_ok = stbir_resize_uint8_linear(
+        src_pixels, w, h, w * channels,
+        dst_pixels, new_w, new_h, new_w * channels,
+        layout);
+    if (!resize_ok) {
+        return NULL;
+    }
 
     /* Convert back to normalized doubles */
     double* result = (double*)arena_allocate(get_global_arena(),dst_total * sizeof(double));

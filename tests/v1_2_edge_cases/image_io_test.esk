@@ -1,0 +1,68 @@
+;; Task #107: image I/O round-trip test.
+;;
+;; Regression: image-read/image-to-grayscale previously called free() on
+;; arena-allocated memory from image_io.c, corrupting the global arena and
+;; causing crashes on subsequent allocations. This test exercises the
+;; full pipeline (write → read → grayscale → write) to ensure the arena
+;; stays healthy.
+
+(require stdlib)
+
+(display "=== v1.2 Image I/O arena-safety test ===") (newline)
+
+(define pass-count 0)
+(define fail-count 0)
+(define (check name cond)
+  (if cond
+      (begin (set! pass-count (+ pass-count 1))
+             (display "PASS: ") (display name) (newline))
+      (begin (set! fail-count (+ fail-count 1))
+             (display "FAIL: ") (display name) (newline))))
+
+;; Build a 4x4x3 RGB tensor filled with mid-grey (0.5).
+;; make-tensor takes (shape-list fill-value) and returns a tensor of the
+;; given shape; it dispatches through the shape+fill path in TensorCodegen.
+(define test-tensor (make-tensor (list 4 4 3) 0.5))
+
+(define path "/tmp/eshkol_img_test.png")
+
+;; Write the test tensor as PNG.
+(check "image-write to PNG"
+       (image-write path test-tensor "png"))
+
+;; Read it back. tensor-shape returns a list like (4 4 3).
+(define img (image-read path))
+(check "image-read returns a tensor" (tensor? img))
+(check "image-read shape is (4 4 3)"
+       (equal? (tensor-shape img) (list 4 4 3)))
+
+;; Convert to grayscale.
+(define gray (image-to-grayscale img))
+(check "image-to-grayscale returns a tensor" (tensor? gray))
+(check "grayscale shape is (4 4)"
+       (equal? (tensor-shape gray) (list 4 4)))
+
+;; After all the above calls, the arena has been exercised heavily.
+;; Allocate more objects to ensure it's still healthy (regression for
+;; the free()-on-arena corruption).
+(define big-list '())
+(let loop ((i 0))
+  (if (< i 200)
+      (begin (set! big-list (cons (list i (* i 2) (* i 3)) big-list))
+             (loop (+ i 1)))))
+
+(check "arena healthy after image I/O (200-elem list)"
+       (= (length big-list) 200))
+
+(check "arena healthy: list contents correct"
+       (equal? (car (car big-list)) 199))
+
+;; Cleanup
+(delete-file path)
+
+(newline)
+(display "=== Summary ===") (newline)
+(display "Passed: ") (display pass-count) (newline)
+(display "Failed: ") (display fail-count) (newline)
+(display (if (= fail-count 0) "RESULT: ALL PASS" "RESULT: FAILURES DETECTED"))
+(newline)

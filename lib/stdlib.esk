@@ -45,6 +45,12 @@
 ;;; Terminal plotting - sparklines, bar charts, histograms
 (require core.plot)
 
+;; Note: core.testing is NOT auto-loaded. User code that wants the
+;; testing framework must (require core.testing) explicitly. Baking it
+;; into stdlib.o triggers the symbol-renamer / external-decl path
+;; interactions that currently mis-handle pre-compiled modules' internal
+;; state (duplicate `_*tests*` in user .o).
+
 ;;; Signal Processing - FFT/IFFT and FIR/IIR filters, windowing, Butterworth design
 (require signal.fft)
 (require signal.filters)

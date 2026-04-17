@@ -79,13 +79,28 @@ public:
     llvm::Value* applyCons(llvm::Value* list_int);
 
     /**
-     * Apply variadic arithmetic to list: (apply + '(1 2 3))
+     * Apply a variadic binary reduction to a list of numbers:
+     * (apply OP '(x1 x2 ... xn)) folds OP left-to-right over the list.
      *
-     * @param op Operation string (+, -, *, /)
+     * Supported ops: + - * / min max
+     *
+     * Operations with an identity element (+, -, *, /) return the identity
+     * on empty lists. Operations without an identity (min, max) raise a
+     * TYPE_ERROR exception on empty lists (matching R7RS).
+     *
+     * @param op Operation string
      * @param list_int Argument list as i64 pointer
-     * @return Result of folding operation over list
+     * @return Result tagged value
      */
-    llvm::Value* applyArithmetic(const std::string& op, llvm::Value* list_int);
+    llvm::Value* applyReduction(const std::string& op, llvm::Value* list_int);
+
+    /**
+     * @deprecated Old name retained as a thin forwarder for compatibility;
+     * prefer applyReduction.
+     */
+    llvm::Value* applyArithmetic(const std::string& op, llvm::Value* list_int) {
+        return applyReduction(op, list_int);
+    }
 
     /**
      * Apply user-defined function to list arguments.

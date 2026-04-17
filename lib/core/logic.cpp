@@ -352,29 +352,21 @@ static bool occurs(uint64_t var_id, const eshkol_tagged_value_t* term,
 
 /* ===== Tagged Value Comparison ===== */
 
+/* Canonical structural equality — defined in arena_memory.cpp.
+ * We delegate to it so unification sees the same equivalence as (equal? ...):
+ * strings compare by content, cons cells recursively, bignums by numeric value.
+ * Pointer equality is preserved as a fast-path inside eshkol_deep_equal. */
+extern "C" bool eshkol_deep_equal(const eshkol_tagged_value_t* val1,
+                                   const eshkol_tagged_value_t* val2);
+
 static bool tagged_values_equal(const eshkol_tagged_value_t* a,
                                 const eshkol_tagged_value_t* b) {
-    if (a->type != b->type) return false;
-    switch (a->type) {
-        case ESHKOL_VALUE_NULL:
-            return true;
-        case ESHKOL_VALUE_INT64:
-            return a->data.int_val == b->data.int_val;
-        case ESHKOL_VALUE_DOUBLE:
-            return a->data.double_val == b->data.double_val;
-        case ESHKOL_VALUE_BOOL:
-            return a->data.int_val == b->data.int_val;
-        case ESHKOL_VALUE_CHAR:
-            return a->data.int_val == b->data.int_val;
-        case ESHKOL_VALUE_LOGIC_VAR:
-            return a->data.int_val == b->data.int_val;
-        case ESHKOL_VALUE_HEAP_PTR:
-        case ESHKOL_VALUE_CALLABLE:
-            /* Pointer equality for heap objects (symbols are interned) */
-            return a->data.ptr_val == b->data.ptr_val;
-        default:
-            return false;
+    /* Logic variables unify by id — deep_equal does not know about them,
+     * so handle that case explicitly before delegating. */
+    if (a->type == ESHKOL_VALUE_LOGIC_VAR && b->type == ESHKOL_VALUE_LOGIC_VAR) {
+        return a->data.int_val == b->data.int_val;
     }
+    return eshkol_deep_equal(a, b);
 }
 
 /* ===== Unification ===== */
@@ -582,6 +574,74 @@ extern "C" eshkol_tagged_value_t eshkol_kb_query(arena_t* arena,
     return result_list;
 }
 
+/* Prefix variant: pattern arity must be <= fact arity. Unifies only the
+ * first pattern->arity argument pairs. Extra fact arguments are ignored.
+ * Motivation: KBs with mixed or provenance-extended arities where callers
+ * want "match any fact whose head+prefix matches" without enumerating
+ * arities. Strict equality semantics preserved in eshkol_kb_query. */
+extern "C" eshkol_tagged_value_t eshkol_kb_query_prefix(arena_t* arena,
+    const eshkol_knowledge_base_t* kb, const eshkol_fact_t* pattern,
+    const eshkol_substitution_t* initial_subst) {
+    eshkol_tagged_value_t null_val;
+    memset(&null_val, 0, sizeof(null_val));
+    null_val.type = ESHKOL_VALUE_NULL;
+
+    if (!arena || !kb || !pattern) return null_val;
+
+    const eshkol_substitution_t* base_subst = initial_subst;
+    eshkol_substitution_t* empty = NULL;
+    if (!base_subst) {
+        empty = eshkol_make_substitution(arena, 8);
+        base_subst = empty;
+    }
+
+    eshkol_tagged_value_t result_list = null_val;
+
+    for (uint32_t i = 0; i < kb->num_facts; i++) {
+        const eshkol_fact_t* fact = kb->facts[i];
+
+        if (pattern->predicate != 0 && fact->predicate != 0 &&
+            pattern->predicate != fact->predicate) {
+            continue;
+        }
+
+        /* Prefix semantics: pattern arity must be <= fact arity */
+        if (pattern->arity > fact->arity) continue;
+
+        eshkol_substitution_t* subst = (eshkol_substitution_t*)base_subst;
+        const eshkol_tagged_value_t* pat_args = FACT_ARGS(pattern);
+        const eshkol_tagged_value_t* fact_args = FACT_ARGS(fact);
+
+        bool success = true;
+        for (uint32_t j = 0; j < pattern->arity; j++) {
+            subst = eshkol_unify(arena, &pat_args[j], &fact_args[j], subst);
+            if (!subst) {
+                success = false;
+                break;
+            }
+        }
+
+        if (success && subst) {
+            size_t cons_size = 2 * sizeof(eshkol_tagged_value_t);
+            void* cons_data = arena_allocate_with_header(arena, cons_size,
+                HEAP_SUBTYPE_CONS, 0);
+            if (cons_data) {
+                eshkol_tagged_value_t* car = (eshkol_tagged_value_t*)cons_data;
+                eshkol_tagged_value_t* cdr = car + 1;
+                memset(car, 0, sizeof(*car));
+                car->type = ESHKOL_VALUE_HEAP_PTR;
+                car->data.ptr_val = (uint64_t)subst;
+                *cdr = result_list;
+                memset(&result_list, 0, sizeof(result_list));
+                result_list.type = ESHKOL_VALUE_HEAP_PTR;
+                result_list.data.ptr_val = (uint64_t)cons_data;
+            }
+        }
+    }
+
+    return result_list;
+}
+
 /* ===== Tagged Value Dispatch ===== */
 
 extern "C" void eshkol_unify_tagged(arena_t* arena,
@@ -701,6 +761,25 @@ extern "C" void eshkol_kb_query_tagged(arena_t* arena,
     const eshkol_fact_t* pattern = (const eshkol_fact_t*)pattern_tv->data.ptr_val;
 
     *result = eshkol_kb_query(arena, kb, pattern, NULL);
+}
+
+extern "C" void eshkol_kb_query_prefix_tagged(arena_t* arena,
+    const eshkol_tagged_value_t* kb_tv, const eshkol_tagged_value_t* pattern_tv,
+    eshkol_tagged_value_t* result) {
+    if (!result) return;
+    memset(result, 0, sizeof(*result));
+
+    if (!arena || !kb_tv || !pattern_tv ||
+        kb_tv->type != ESHKOL_VALUE_HEAP_PTR || !kb_tv->data.ptr_val ||
+        pattern_tv->type != ESHKOL_VALUE_HEAP_PTR || !pattern_tv->data.ptr_val) {
+        result->type = ESHKOL_VALUE_NULL;
+        return;
+    }
+
+    const eshkol_knowledge_base_t* kb = (const eshkol_knowledge_base_t*)kb_tv->data.ptr_val;
+    const eshkol_fact_t* pattern = (const eshkol_fact_t*)pattern_tv->data.ptr_val;
+
+    *result = eshkol_kb_query_prefix(arena, kb, pattern, NULL);
 }
 
 extern "C" void eshkol_make_substitution_tagged(arena_t* arena,

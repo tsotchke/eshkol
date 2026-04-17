@@ -11,6 +11,7 @@
 #include <eshkol/eshkol_ffi.h>
 #include <eshkol/eshkol.h>
 #include <eshkol/core/runtime.h>
+#include <eshkol/core/sexp_to_ast.h>
 #include "../../lib/core/arena_memory.h"
 #include "../../lib/repl/repl_jit.h"
 
@@ -18,6 +19,8 @@
 #include <cstdlib>
 #include <cstdio>
 #include <cstdarg>
+#include <cerrno>
+#include <csetjmp>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -26,6 +29,9 @@
 #ifndef _WIN32
 #include <unistd.h>
 #endif
+
+/* ── Forward declarations for runtime helpers not in the public header ── */
+extern "C" void eshkol_get_raised_value(eshkol_tagged_value_t* out);
 
 /* ── Thread-local error message ── */
 static thread_local char g_ffi_error[4096] = {0};
@@ -108,9 +114,21 @@ extern "C" void eshkol_ffi_shutdown(eshkol_ffi_context_t* ctx) {
  * Evaluation — in-process JIT via ReplJITContext
  * ============================================================================ */
 
+/* Unique-name counter for FFI result globals. The JIT entry function returns
+ * an i32 exit code, not the expression value, so to capture the value we wrap
+ * the last AST in (define __eshkol_ffi_result_N__ <expr>) and read the stored
+ * tagged_value out of that named global after execution. Thread-safety: atomic
+ * increment — concurrent FFI calls do not collide on counter values. */
+static std::atomic<uint64_t> g_ffi_result_counter{0};
+
 extern "C" int eshkol_ffi_eval(eshkol_ffi_context_t* ctx,
                                 const char* source,
                                 eshkol_ffi_value_t* result) {
+    /* Zero-initialise *result up front so every early-return error path
+     * leaves the caller's slot with a defined null tagged value. */
+    if (result) {
+        *result = eshkol_ffi_null();
+    }
     if (!ctx || !ctx->initialized || !ctx->jit || !source) {
         ffi_set_error("Invalid context or source");
         return -1;
@@ -118,22 +136,13 @@ extern "C" int eshkol_ffi_eval(eshkol_ffi_context_t* ctx,
 
     g_ffi_error[0] = 0;
 
-    /* Wrap the last expression in (display ...) so we can capture the result.
-     * This is necessary because the LLVM codegen generates main() functions
-     * that return 0, not the expression value. The display output is captured
-     * via pipe redirection and parsed back to a tagged value. */
-    std::string wrapped_source = source;
-    if (result) {
-        /* Only wrap if caller wants a result */
-        wrapped_source = std::string("(display ") + source + ")";
-    }
-
-    /* Parse source into ASTs */
-    std::istringstream stream(wrapped_source);
+    /* Parse source into ASTs. All but the last are executed for side
+     * effects; the last is what the caller wants the value of (if a
+     * result slot was provided). */
+    std::istringstream stream(source);
     std::vector<eshkol_ast_t> asts;
 
     while (stream.good() && !stream.eof()) {
-        /* Skip whitespace and comments */
         while (stream.good()) {
             int c = stream.peek();
             if (c == EOF) break;
@@ -158,95 +167,148 @@ extern "C" int eshkol_ffi_eval(eshkol_ffi_context_t* ctx,
         return -1;
     }
 
-    /* Execute each AST via JIT.
-     * The JIT's execute() generates a main() that DISPLAYS the result
-     * via eshkol_display_value. For the FFI, we capture the output
-     * and parse it back to a tagged value. This is the correct approach
-     * because the LLVM codegen wraps expressions in display calls. */
+    /* Determine which AST carries the value we want to return. If there is
+     * no result slot, every AST is executed purely for effect. Otherwise the
+     * LAST AST is wrapped in a unique (define __eshkol_ffi_result_N__ ...)
+     * so the JIT-emitted main stores its value into a named global that we
+     * can read back via lookupSymbol. This is the same pattern used by
+     * eshkol_eval (introspection.cpp:727); copying it here keeps the FFI
+     * aligned with the Scheme-level eval and avoids the old display+reparse
+     * round-trip that lost type information (lists → "(1 2 3)" strings). */
+    const size_t last = asts.size() - 1;
+    eshkol_ast_t* wrapper = nullptr;
+    std::string result_name;
 
-    /* Capture stdout */
-    fflush(stdout);
-    int stdout_fd = dup(STDOUT_FILENO);
-    int pipefd[2];
-    if (pipe(pipefd) != 0) {
-        ffi_set_error("Failed to create capture pipe");
-        for (auto& a : asts) eshkol_ast_clean(&a);
-        return -1;
-    }
-    dup2(pipefd[1], STDOUT_FILENO);
-    close(pipefd[1]);
-
-    /* Execute */
-    for (size_t i = 0; i < asts.size(); i++) {
-        try {
-            ctx->jit->execute(&asts[i]);
-        } catch (const std::exception& e) {
-            /* Restore stdout before error */
-            fflush(stdout);
-            dup2(stdout_fd, STDOUT_FILENO);
-            close(stdout_fd);
-            close(pipefd[0]);
-            ffi_set_error("JIT execution failed: %s", e.what());
-            for (auto& a : asts) eshkol_ast_clean(&a);
-            return -1;
-        } catch (...) {
-            fflush(stdout);
-            dup2(stdout_fd, STDOUT_FILENO);
-            close(stdout_fd);
-            close(pipefd[0]);
-            ffi_set_error("JIT execution failed (unknown error)");
-            for (auto& a : asts) eshkol_ast_clean(&a);
-            return -1;
+    /* Some top-level forms (define / import / require / provide) have no
+     * expression value — don't wrap them, the wrapper would be semantically
+     * invalid. */
+    bool last_is_valueless = false;
+    if (asts[last].type == ESHKOL_OP) {
+        uint64_t op = asts[last].operation.op;
+        if (op == ESHKOL_DEFINE_OP || op == ESHKOL_IMPORT_OP ||
+            op == ESHKOL_REQUIRE_OP || op == ESHKOL_PROVIDE_OP) {
+            last_is_valueless = true;
         }
     }
 
-    /* Read captured output */
-    fflush(stdout);
-    dup2(stdout_fd, STDOUT_FILENO);
-    close(stdout_fd);
+    if (result && !last_is_valueless) {
+        uint64_t id = g_ffi_result_counter.fetch_add(1, std::memory_order_relaxed);
+        char name_buf[64];
+        snprintf(name_buf, sizeof(name_buf), "__eshkol_ffi_result_%llu__",
+                 (unsigned long long)id);
+        result_name = name_buf;
 
-    char output[4096] = {0};
-    ssize_t nread = read(pipefd[0], output, sizeof(output) - 1);
-    close(pipefd[0]);
-    if (nread > 0) output[nread] = '\0';
-    else output[0] = '\0';
-
-    /* Clean up ASTs */
-    for (auto& a : asts) eshkol_ast_clean(&a);
-
-    /* Parse output to tagged value */
-    if (result) {
-        /* Strip trailing newline */
-        size_t len = strlen(output);
-        while (len > 0 && (output[len-1] == '\n' || output[len-1] == '\r')) {
-            output[--len] = '\0';
+        wrapper = eshkol_alloc_symbolic_ast();
+        if (!wrapper) {
+            ffi_set_error("Failed to allocate FFI result wrapper AST");
+            for (auto& a : asts) eshkol_ast_clean(&a);
+            return -1;
         }
+        /* The wrapper owns a heap-allocated copy of the original AST so the
+         * caller's vector-cleanup path stays intact. */
+        eshkol_ast_t* inner = eshkol_alloc_symbolic_ast();
+        if (!inner) {
+            eshkol_free_sexp_ast(wrapper);
+            ffi_set_error("Failed to allocate FFI inner AST");
+            for (auto& a : asts) eshkol_ast_clean(&a);
+            return -1;
+        }
+        *inner = asts[last];
+        /* Transfer ownership: clear the slot in the vector so
+         * eshkol_ast_clean below doesn't double-free the subtree. */
+        std::memset(&asts[last], 0, sizeof(eshkol_ast_t));
 
-        if (len == 0) {
-            *result = eshkol_ffi_null();
-        } else {
-            /* Try to parse as number */
-            char* endptr;
-            double dval = strtod(output, &endptr);
-            if (endptr != output && *endptr == '\0') {
-                /* Numeric result */
-                if (dval == (double)(int64_t)dval && strchr(output, '.') == NULL
-                    && dval >= -9e18 && dval <= 9e18) {
-                    *result = eshkol_ffi_int64((int64_t)dval);
-                } else {
-                    *result = eshkol_ffi_double(dval);
-                }
-            } else if (strcmp(output, "#t") == 0) {
-                *result = eshkol_ffi_bool(1);
-            } else if (strcmp(output, "#f") == 0) {
-                *result = eshkol_ffi_bool(0);
-            } else if (strcmp(output, "()") == 0) {
-                *result = eshkol_ffi_null();
-            } else {
-                *result = eshkol_ffi_string(ctx, output);
+        wrapper->type = ESHKOL_OP;
+        wrapper->operation.op = ESHKOL_DEFINE_OP;
+        wrapper->operation.define_op.name = strdup(name_buf);
+        wrapper->operation.define_op.value = inner;
+        wrapper->operation.define_op.is_function = 0;
+        wrapper->operation.define_op.parameters = nullptr;
+        wrapper->operation.define_op.num_params = 0;
+        wrapper->operation.define_op.is_variadic = 0;
+        wrapper->operation.define_op.rest_param = nullptr;
+        wrapper->operation.define_op.is_external = 0;
+        wrapper->operation.define_op.return_type = nullptr;
+        wrapper->operation.define_op.param_types = nullptr;
+    }
+
+    /* Execute all preceding ASTs for side effects, plus the last one (either
+     * as-is if no result is wanted, or through the DEFINE wrapper).
+     *
+     * Install a top-level exception handler so any unhandled Eshkol raise
+     * longjmps back here instead of calling exit(1) and killing the Python
+     * host process. On setjmp(...)==1 path, pull the raised value via
+     * eshkol_get_raised_value and translate to a C FFI error + -1 return. */
+    jmp_buf ffi_jmp;
+    bool unwound = false;
+    if (setjmp(ffi_jmp) != 0) {
+        /* Control returned from longjmp inside eshkol_raise. The Eshkol
+         * runtime pushed our handler and is about to exit(1); instead it
+         * jumped here. We do NOT pop here — longjmp bypasses normal
+         * unwinding, and the handler stack above ours may be in an
+         * inconsistent state. Clear the handler stack back to our saved
+         * top so subsequent FFI calls start fresh. */
+        unwound = true;
+    }
+
+    if (!unwound) {
+        eshkol_push_exception_handler(&ffi_jmp);
+    }
+
+    if (!unwound) {
+        for (size_t i = 0; i < asts.size(); i++) {
+            eshkol_ast_t* to_run = (i == last && wrapper) ? wrapper : &asts[i];
+            if (to_run->type == ESHKOL_INVALID) continue;
+            try {
+                ctx->jit->execute(to_run);
+            } catch (const std::exception& e) {
+                eshkol_pop_exception_handler();
+                ffi_set_error("JIT execution failed: %s", e.what());
+                for (auto& a : asts) eshkol_ast_clean(&a);
+                if (wrapper) eshkol_free_sexp_ast(wrapper);
+                return -1;
+            } catch (...) {
+                eshkol_pop_exception_handler();
+                ffi_set_error("JIT execution failed (unknown error)");
+                for (auto& a : asts) eshkol_ast_clean(&a);
+                if (wrapper) eshkol_free_sexp_ast(wrapper);
+                return -1;
             }
         }
+        eshkol_pop_exception_handler();
+    } else {
+        /* After longjmp the handler was consumed by the raise path; the
+         * current top-of-stack is whatever was below us before the push.
+         * Extract the raised value to build a descriptive error. */
+        eshkol_tagged_value_t raised;
+        std::memset(&raised, 0, sizeof(raised));
+        eshkol_get_raised_value(&raised);
+        const char* msg = "Eshkol runtime exception";
+        if (raised.type == ESHKOL_VALUE_HEAP_PTR && raised.data.ptr_val) {
+            /* If the raised value is an exception struct, dig out the message. */
+            eshkol_exception_t* exc =
+                reinterpret_cast<eshkol_exception_t*>(raised.data.ptr_val);
+            if (exc && exc->message) msg = exc->message;
+        }
+        ffi_set_error("Eshkol exception: %s", msg);
+        for (auto& a : asts) eshkol_ast_clean(&a);
+        if (wrapper) eshkol_free_sexp_ast(wrapper);
+        return -1;
     }
+
+    /* If we wrapped the last AST, read back the stored tagged_value. */
+    if (wrapper) {
+        uint64_t addr = ctx->jit->lookupSymbol(result_name);
+        if (addr != 0 && result) {
+            eshkol_tagged_value_t tv;
+            std::memcpy(&tv, reinterpret_cast<void*>(addr), sizeof(tv));
+            *result = to_ffi(tv);
+        }
+        eshkol_free_sexp_ast(wrapper);
+    }
+
+    /* Clean up the non-wrapped ASTs. */
+    for (auto& a : asts) eshkol_ast_clean(&a);
 
     return 0;
 }
@@ -389,11 +451,27 @@ extern "C" int eshkol_ffi_to_bool(eshkol_ffi_value_t value) {
     return value.data.raw_val != 0;
 }
 
+/* Inspect the HEAP_SUBTYPE byte from an object's header (at ptr-8), returning
+ * 0xFF if the pointer is null so callers can distinguish "no header" cleanly.
+ * All consolidated runtime values (JIT-returned cons, strings, tensors, ...)
+ * carry their subtype in this header. FFI-constructed values from
+ * eshkol_ffi_cons / eshkol_ffi_tensor_zeros additionally encode the subtype
+ * into the legacy `flags` byte so old callers that only checked flags still
+ * work. Detection below prefers the header when a non-null pointer is
+ * present; this keeps the runtime and FFI views of the world in sync. */
+static inline uint8_t ffi_header_subtype(eshkol_ffi_value_t value) {
+    if (value.type != ESHKOL_FFI_TYPE_HEAP_PTR) return 0xFF;
+    if (value.data.ptr_val == 0) return 0xFF;
+    uint8_t* hdr = (uint8_t*)(uintptr_t)value.data.ptr_val - 8;
+    return hdr[0];  // subtype is the first byte of eshkol_object_header_t
+}
+
 extern "C" const char* eshkol_ffi_to_string(eshkol_ffi_value_t value) {
-    if (value.type != ESHKOL_FFI_TYPE_HEAP_PTR ||
-        value.flags != ESHKOL_FFI_SUBTYPE_STRING) {
-        return NULL;
-    }
+    if (value.type != ESHKOL_FFI_TYPE_HEAP_PTR) return NULL;
+    uint8_t st = ffi_header_subtype(value);
+    bool is_str = (value.flags == ESHKOL_FFI_SUBTYPE_STRING) ||
+                  (st == 1 /* HEAP_SUBTYPE_STRING */);
+    if (!is_str) return NULL;
     return (const char*)value.data.ptr_val;
 }
 
@@ -402,12 +480,17 @@ extern "C" int eshkol_ffi_is_null(eshkol_ffi_value_t value) {
 }
 
 extern "C" int eshkol_ffi_is_pair(eshkol_ffi_value_t value) {
-    return value.type == ESHKOL_FFI_TYPE_HEAP_PTR &&
-           value.flags == ESHKOL_FFI_SUBTYPE_PAIR;
+    if (value.type != ESHKOL_FFI_TYPE_HEAP_PTR) return 0;
+    uint8_t st = ffi_header_subtype(value);
+    return (value.flags == ESHKOL_FFI_SUBTYPE_PAIR) ||
+           (st == 0 /* HEAP_SUBTYPE_CONS */);
 }
 
 extern "C" eshkol_ffi_value_t eshkol_ffi_car(eshkol_ffi_value_t pair) {
     if (!eshkol_ffi_is_pair(pair)) return eshkol_ffi_null();
+    /* Both FFI-side and runtime-side cons cells use 32-byte
+     * arena_tagged_cons_cell_t layout: [car:16][cdr:16]. Safe to read
+     * directly as a pair of eshkol_ffi_value_t (same 16-byte layout). */
     void* cell = (void*)pair.data.ptr_val;
     eshkol_ffi_value_t result;
     memcpy(&result, cell, sizeof(eshkol_ffi_value_t));
@@ -469,25 +552,33 @@ extern "C" eshkol_ffi_value_t eshkol_ffi_tensor_from_data(eshkol_ffi_context_t* 
     return v;
 }
 
+/* Accept either the legacy flags byte (=ESHKOL_FFI_SUBTYPE_TENSOR) or the
+ * header-subtype byte (=HEAP_SUBTYPE_TENSOR=3), the same dual-detection we
+ * use for pairs and strings. JIT-returned tensors only have the header;
+ * FFI-constructed tensors have both. */
+static inline bool ffi_is_tensor(eshkol_ffi_value_t v) {
+    if (v.type != ESHKOL_FFI_TYPE_HEAP_PTR) return false;
+    uint8_t st = ffi_header_subtype(v);
+    return (v.flags == ESHKOL_FFI_SUBTYPE_TENSOR) ||
+           (st == 3 /* HEAP_SUBTYPE_TENSOR */);
+}
+
 extern "C" double* eshkol_ffi_tensor_data(eshkol_ffi_value_t tensor) {
-    if (tensor.type != ESHKOL_FFI_TYPE_HEAP_PTR ||
-        tensor.flags != ESHKOL_FFI_SUBTYPE_TENSOR) return NULL;
+    if (!ffi_is_tensor(tensor)) return NULL;
     eshkol_tensor_t* t = (eshkol_tensor_t*)tensor.data.ptr_val;
     if (!t || !t->elements) return NULL;
     return (double*)t->elements;
 }
 
 extern "C" int64_t eshkol_ffi_tensor_size(eshkol_ffi_value_t tensor) {
-    if (tensor.type != ESHKOL_FFI_TYPE_HEAP_PTR ||
-        tensor.flags != ESHKOL_FFI_SUBTYPE_TENSOR) return 0;
+    if (!ffi_is_tensor(tensor)) return 0;
     eshkol_tensor_t* t = (eshkol_tensor_t*)tensor.data.ptr_val;
     if (!t) return 0;
     return (int64_t)t->total_elements;
 }
 
 extern "C" int eshkol_ffi_tensor_ndims(eshkol_ffi_value_t tensor) {
-    if (tensor.type != ESHKOL_FFI_TYPE_HEAP_PTR ||
-        tensor.flags != ESHKOL_FFI_SUBTYPE_TENSOR) return 0;
+    if (!ffi_is_tensor(tensor)) return 0;
     eshkol_tensor_t* t = (eshkol_tensor_t*)tensor.data.ptr_val;
     return t ? (int)t->num_dimensions : 0;
 }

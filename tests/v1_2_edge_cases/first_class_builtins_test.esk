@@ -1,0 +1,99 @@
+;; R7RS-2 #197: codegen builtins as first-class values.
+;;
+;; Previously (apply-op ad-mul a b) failed with "Undefined variable: ad-mul"
+;; because the codegen resolved ad-mul only at call sites. codegenVariable
+;; now consults a registry of sret-ABI builtins and synthesises a closure
+;; wrapper for any entry it finds, so the builtin is a first-class value.
+;; Arithmetic / comparison / math builtins already had this; the new
+;; registry extends coverage to AD ops and (progressively) other faculties.
+
+(require stdlib)
+
+(display "=== R7RS-2 first-class builtins suite ===") (newline)
+
+(define pass-count 0)
+(define fail-count 0)
+(define (check name cond)
+  (if cond
+      (begin (set! pass-count (+ pass-count 1))
+             (display "PASS: ") (display name) (newline))
+      (begin (set! fail-count (+ fail-count 1))
+             (display "FAIL: ") (display name) (newline))))
+
+;; ---- pre-existing coverage (+ / * / apply / map / < …) ----
+(check "(apply + (list 1 2 3)) = 6"
+       (= (apply + (list 1 2 3)) 6))
+(check "(map + '(1 2) '(10 20)) = (11 22)"
+       (equal? (map + (list 1 2) (list 10 20)) (list 11 22)))
+(define add-op +)
+(check "(define add-op +) (add-op 5 7) = 12"
+       (= (add-op 5 7) 12))
+
+;; ---- NEW: AD binops as first-class values ----
+(define tape (ad-tape-new))
+(define x (ad-var tape 2.0))
+(define y (ad-var tape 3.0))
+
+(define (apply-binop op a b) (op tape a b))
+(check "(apply-binop ad-add x y) succeeds"
+       (integer? (apply-binop ad-add x y)))
+(check "(apply-binop ad-mul x y) succeeds"
+       (integer? (apply-binop ad-mul x y)))
+(check "(apply-binop ad-sub x y) succeeds"
+       (integer? (apply-binop ad-sub x y)))
+
+;; ---- fold over AD binops ----
+(define (chain op initial rest)
+  (if (null? rest) initial
+      (chain op (op tape initial (car rest)) (cdr rest))))
+
+(define z (ad-var tape 4.0))
+(check "chain ad-add over (x y z) produces a node index"
+       (integer? (chain ad-add x (list y z))))
+(check "chain ad-mul over (x y z) produces a node index"
+       (integer? (chain ad-mul x (list y z))))
+
+;; ---- dispatch table keyed by symbol → builtin ----
+;; Most idiomatic Scheme pattern — map symbolic op to a function.
+(define (op-for sym)
+  (cond ((eq? sym (quote +)) ad-add)
+        ((eq? sym (quote *)) ad-mul)
+        ((eq? sym (quote -)) ad-sub)
+        ((eq? sym (quote /)) ad-div)
+        (else #f)))
+
+(define plus-op (op-for (quote +)))
+(define times-op (op-for (quote *)))
+(check "op-for '+ returns a callable" (procedure? plus-op))
+(check "op-for '* returns a callable" (procedure? times-op))
+
+(check "dispatched op-for '+ on (x y) is an AD node"
+       (integer? (plus-op tape x y)))
+(check "dispatched op-for '* on (x y) is an AD node"
+       (integer? (times-op tape x y)))
+
+;; ---- AD unary ops as first-class ----
+(define (apply-unary op v) (op tape v))
+(check "apply-unary ad-sin works" (integer? (apply-unary ad-sin x)))
+(check "apply-unary ad-cos works" (integer? (apply-unary ad-cos x)))
+(check "apply-unary ad-exp works" (integer? (apply-unary ad-exp x)))
+(check "apply-unary ad-tanh works" (integer? (apply-unary ad-tanh x)))
+
+;; ---- Mixed: dispatch on symbol THEN apply via fold ----
+(define (apply-by-name sym vals)
+  (let ((op (op-for sym)))
+    (if op (chain op (car vals) (cdr vals)) #f)))
+
+(check "apply-by-name '+ over (x y z) is an AD node"
+       (integer? (apply-by-name (quote +) (list x y z))))
+(check "apply-by-name '* over (x y z) is an AD node"
+       (integer? (apply-by-name (quote *) (list x y z))))
+(check "apply-by-name 'unknown returns #f"
+       (eq? (apply-by-name (quote unknown) (list x y z)) #f))
+
+(newline)
+(display "=== Summary ===") (newline)
+(display "Passed: ") (display pass-count) (newline)
+(display "Failed: ") (display fail-count) (newline)
+(display (if (= fail-count 0) "RESULT: ALL PASS" "RESULT: FAILURES DETECTED"))
+(newline)

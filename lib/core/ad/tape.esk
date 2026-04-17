@@ -21,3 +21,7 @@
          ad-sin ad-cos ad-exp ad-log ad-sqrt
          ad-neg ad-abs ad-relu ad-sigmoid ad-tanh
          ad-backward ad-gradient ad-node-value)
+
+;; Note: ad-value is exposed as a codegen builtin alias for ad-node-value
+;; (see llvm_codegen.cpp). This gives the user-facing name `ad-value`
+;; alongside the historical internal name `ad-node-value`.

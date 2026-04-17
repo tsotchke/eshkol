@@ -10,6 +10,8 @@
 
 #include <stdint.h>
 #include <string.h>
+#include <stdio.h>
+#include <stdlib.h>
 
 /* Tagged value struct matching LLVM IR layout */
 typedef struct {

@@ -75,9 +75,12 @@ Value* CallApplyCodegen::apply(const eshkol_operations_t* op) {
     if (func_arg->type == ESHKOL_VAR) {
         std::string func_name = func_arg->variable.id;
 
-        // Handle variadic built-in arithmetic operations
-        if (func_name == "+" || func_name == "-" || func_name == "*" || func_name == "/") {
-            return applyArithmetic(func_name, list_int);
+        // Variadic built-in reductions: arithmetic (+ - * /) and min/max.
+        // All share the same fold-over-list machinery; applyReduction
+        // dispatches on op name internally.
+        if (func_name == "+" || func_name == "-" || func_name == "*" || func_name == "/" ||
+            func_name == "min" || func_name == "max") {
+            return applyReduction(func_name, list_int);
         }
 
         // Handle list operation
@@ -336,43 +339,54 @@ Value* CallApplyCodegen::applyCons(Value* list_int) {
     return phi;
 }
 
-Value* CallApplyCodegen::applyArithmetic(const std::string& op, Value* list_int) {
+Value* CallApplyCodegen::applyReduction(const std::string& op, Value* list_int) {
     Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
     Function* cons_get_ptr = getTaggedConsGetPtrFunc();
     if (!cons_get_ptr) return tagged_.packNull();
 
-    // Determine identity element
-    Value* identity;
-    if (op == "+" || op == "-") {
-        identity = tagged_.packInt64(ConstantInt::get(ctx_.int64Type(), 0), true);
-    } else { // "*" or "/"
-        identity = tagged_.packInt64(ConstantInt::get(ctx_.int64Type(), 1), true);
+    // Identity elements for ops that have them. min/max have no identity:
+    // applying them to an empty list is a type error in R7RS.
+    const bool has_identity = (op == "+" || op == "-" || op == "*" || op == "/");
+    Value* identity = nullptr;
+    if (has_identity) {
+        if (op == "+" || op == "-") {
+            identity = tagged_.packInt64(ConstantInt::get(ctx_.int64Type(), 0), true);
+        } else { // "*" or "/"
+            identity = tagged_.packInt64(ConstantInt::get(ctx_.int64Type(), 1), true);
+        }
     }
 
-    // Check if list is empty
-    Value* is_empty = ctx_.builder().CreateICmpEQ(list_int, ConstantInt::get(ctx_.int64Type(), 0));
+    Value* is_empty = ctx_.builder().CreateICmpEQ(list_int,
+        ConstantInt::get(ctx_.int64Type(), 0));
 
-    BasicBlock* empty_block = BasicBlock::Create(ctx_.context(), "apply_arith_empty", current_func);
-    BasicBlock* non_empty = BasicBlock::Create(ctx_.context(), "apply_arith_non_empty", current_func);
-    BasicBlock* loop_cond = BasicBlock::Create(ctx_.context(), "apply_arith_cond", current_func);
-    BasicBlock* loop_body = BasicBlock::Create(ctx_.context(), "apply_arith_body", current_func);
-    BasicBlock* done_block = BasicBlock::Create(ctx_.context(), "apply_arith_done", current_func);
-    BasicBlock* loop_exit = BasicBlock::Create(ctx_.context(), "apply_arith_exit", current_func);
+    BasicBlock* empty_block = BasicBlock::Create(ctx_.context(), "apply_red_empty", current_func);
+    BasicBlock* non_empty   = BasicBlock::Create(ctx_.context(), "apply_red_non_empty", current_func);
+    BasicBlock* loop_cond   = BasicBlock::Create(ctx_.context(), "apply_red_cond", current_func);
+    BasicBlock* loop_body   = BasicBlock::Create(ctx_.context(), "apply_red_body", current_func);
+    BasicBlock* done_block  = BasicBlock::Create(ctx_.context(), "apply_red_done", current_func);
+    BasicBlock* loop_exit   = BasicBlock::Create(ctx_.context(), "apply_red_exit", current_func);
 
     ctx_.builder().CreateCondBr(is_empty, empty_block, non_empty);
 
-    // Empty list: return identity
+    // Empty list: return identity or raise for ops without one.
     ctx_.builder().SetInsertPoint(empty_block);
-    ctx_.builder().CreateBr(loop_exit);
+    if (has_identity) {
+        ctx_.builder().CreateBr(loop_exit);
+    } else {
+        std::string msg = "(apply " + op + " '()): " + op +
+            " requires at least one argument";
+        arith_.emitTypeError(msg.c_str());
+        // emitTypeError emits CreateUnreachable; guard with a sentinel branch
+        // so the block remains well-formed for later PHI incoming edges.
+    }
 
-    // Non-empty list: get first element as initial accumulator
+    // Non-empty list: first element as initial accumulator.
     ctx_.builder().SetInsertPoint(non_empty);
     Value* first_cons = ctx_.builder().CreateIntToPtr(list_int, ctx_.ptrType());
     Value* first_elem = extractConsCarAsTaggedValue(first_cons);
     Value* is_cdr = ConstantInt::get(ctx_.int1Type(), 1);
     Value* rest_list = ctx_.builder().CreateCall(cons_get_ptr, {first_cons, is_cdr});
 
-    // Allocate accumulator and current pointer
     Value* accum_ptr = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "apply_accum");
     ctx_.builder().CreateStore(first_elem, accum_ptr);
     Value* current_ptr = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "apply_current");
@@ -380,46 +394,46 @@ Value* CallApplyCodegen::applyArithmetic(const std::string& op, Value* list_int)
 
     ctx_.builder().CreateBr(loop_cond);
 
-    // Loop condition: check if current != null
     ctx_.builder().SetInsertPoint(loop_cond);
     Value* current_val = ctx_.builder().CreateLoad(ctx_.int64Type(), current_ptr);
-    Value* is_not_null = ctx_.builder().CreateICmpNE(current_val, ConstantInt::get(ctx_.int64Type(), 0));
+    Value* is_not_null = ctx_.builder().CreateICmpNE(current_val,
+        ConstantInt::get(ctx_.int64Type(), 0));
     ctx_.builder().CreateCondBr(is_not_null, loop_body, done_block);
 
-    // Loop body: apply operation
     ctx_.builder().SetInsertPoint(loop_body);
     Value* cons_ptr = ctx_.builder().CreateIntToPtr(current_val, ctx_.ptrType());
     Value* elem = extractConsCarAsTaggedValue(cons_ptr);
     Value* accum = ctx_.builder().CreateLoad(ctx_.taggedValueType(), accum_ptr);
 
-    // Apply the operation using ArithmeticCodegen
+    // Dispatch to the shared ArithmeticCodegen binary operation. All of these
+    // (add/sub/mul/div/min/max) return a tagged_value with correct type
+    // promotion (int → double, bignum, etc.).
     Value* new_accum;
-    if (op == "+") {
-        new_accum = arith_.add(accum, elem);
-    } else if (op == "-") {
-        new_accum = arith_.sub(accum, elem);
-    } else if (op == "*") {
-        new_accum = arith_.mul(accum, elem);
-    } else { // "/"
-        new_accum = arith_.div(accum, elem);
+    if      (op == "+")   new_accum = arith_.add(accum, elem);
+    else if (op == "-")   new_accum = arith_.sub(accum, elem);
+    else if (op == "*")   new_accum = arith_.mul(accum, elem);
+    else if (op == "/")   new_accum = arith_.div(accum, elem);
+    else if (op == "min") new_accum = arith_.min(accum, elem);
+    else if (op == "max") new_accum = arith_.max(accum, elem);
+    else {
+        eshkol_error("applyReduction: unsupported operation '%s'", op.c_str());
+        return tagged_.packNull();
     }
 
     ctx_.builder().CreateStore(new_accum, accum_ptr);
 
-    // Move to next element
     Value* next_val = ctx_.builder().CreateCall(cons_get_ptr, {cons_ptr, is_cdr});
     ctx_.builder().CreateStore(next_val, current_ptr);
     ctx_.builder().CreateBr(loop_cond);
 
-    // Done block: load final accumulator value
     ctx_.builder().SetInsertPoint(done_block);
     Value* final_accum = ctx_.builder().CreateLoad(ctx_.taggedValueType(), accum_ptr);
     ctx_.builder().CreateBr(loop_exit);
 
-    // Loop exit: return result
     ctx_.builder().SetInsertPoint(loop_exit);
-    PHINode* result = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2, "apply_result");
-    result->addIncoming(identity, empty_block);
+    PHINode* result = ctx_.builder().CreatePHI(ctx_.taggedValueType(),
+        has_identity ? 2 : 1, "apply_result");
+    if (has_identity) result->addIncoming(identity, empty_block);
     result->addIncoming(final_accum, done_block);
 
     return result;

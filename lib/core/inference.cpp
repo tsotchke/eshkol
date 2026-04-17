@@ -11,6 +11,7 @@
 
 #include <eshkol/core/inference.h>
 #include <eshkol/eshkol.h>
+#include <eshkol/logger.h>
 #include "arena_memory.h"
 #include <stdio.h>
 #include <string.h>
@@ -46,10 +47,43 @@ static inline void tensor_set(tensor_layout_t* t, uint32_t idx, double val) {
     t->elements[idx] = u.i;
 }
 
-/* Extract tensor_layout_t from a tagged value (HEAP_PTR to tensor) */
+/* Extract tensor_layout_t from a tagged value (HEAP_PTR to tensor).
+ * Validates the heap subtype so we don't alias-cast a vector/string/etc.
+ * into a tensor layout and read garbage. */
 static tensor_layout_t* extract_tensor(const eshkol_tagged_value_t* tv) {
     if (!tv || tv->type != ESHKOL_VALUE_HEAP_PTR || !tv->data.ptr_val) return NULL;
-    return (tensor_layout_t*)tv->data.ptr_val;
+    void* ptr = (void*)(uintptr_t)tv->data.ptr_val;
+    eshkol_object_header_t* hdr = ESHKOL_GET_HEADER(ptr);
+    if (hdr->subtype != HEAP_SUBTYPE_TENSOR) return NULL;
+    return (tensor_layout_t*)ptr;
+}
+
+/* Read N doubles from a heterogeneous vector's tagged-value elements.
+ * Layout (per arena_memory.cpp): [hdr | length:i64 | tagged_value[length] ].
+ * Returns false if the value isn't a vector or element count doesn't match;
+ * promotes INT64 elements to DOUBLE. Caller provides `out` of size `expected`. */
+static bool extract_doubles_from_vector(const eshkol_tagged_value_t* tv,
+                                         uint32_t expected, double* out) {
+    if (!tv || tv->type != ESHKOL_VALUE_HEAP_PTR || !tv->data.ptr_val) return false;
+    void* ptr = (void*)(uintptr_t)tv->data.ptr_val;
+    eshkol_object_header_t* hdr = ESHKOL_GET_HEADER(ptr);
+    if (hdr->subtype != HEAP_SUBTYPE_VECTOR) return false;
+
+    int64_t length = *(int64_t*)ptr;
+    if (length < 0 || (uint32_t)length != expected) return false;
+
+    eshkol_tagged_value_t* elems = (eshkol_tagged_value_t*)((uint8_t*)ptr + 8);
+    for (uint32_t i = 0; i < expected; i++) {
+        uint8_t t = elems[i].type & 0x0F; /* strip exactness flags */
+        if (t == ESHKOL_VALUE_DOUBLE) {
+            out[i] = elems[i].data.double_val;
+        } else if (t == ESHKOL_VALUE_INT64) {
+            out[i] = (double)elems[i].data.int_val;
+        } else {
+            return false; /* unsupported element type */
+        }
+    }
+    return true;
 }
 
 /* ===== Log-Space Arithmetic ===== */
@@ -668,10 +702,6 @@ void eshkol_fg_add_factor_tagged(arena_t* arena,
         var_indices[i] = (uint32_t)tensor_get(idx_tensor, i);
     }
 
-    /* Extract CPT from tensor */
-    tensor_layout_t* cpt_tensor = extract_tensor(cpt_tv);
-    if (!cpt_tensor) return;
-
     /* Build dims array from the factor graph's var_dims */
     uint32_t* dims = (uint32_t*)alloca(num_vars * sizeof(uint32_t));
     for (uint32_t i = 0; i < num_vars; i++) {
@@ -682,11 +712,27 @@ void eshkol_fg_add_factor_tagged(arena_t* arena,
         }
     }
 
-    /* Extract CPT data as doubles */
-    uint32_t cpt_size = (uint32_t)cpt_tensor->total_elements;
+    /* Compute expected CPT size = product of variable dimensions */
+    uint32_t cpt_size = 1;
+    for (uint32_t i = 0; i < num_vars; i++) cpt_size *= dims[i];
     double* cpt_data = (double*)alloca(cpt_size * sizeof(double));
-    for (uint32_t i = 0; i < cpt_size; i++) {
-        cpt_data[i] = tensor_get(cpt_tensor, i);
+
+    /* CPT may be a homogeneous tensor (#(…)) or a heterogeneous vector. */
+    tensor_layout_t* cpt_tensor = extract_tensor(cpt_tv);
+    if (cpt_tensor) {
+        if ((uint32_t)cpt_tensor->total_elements != cpt_size) {
+            eshkol_error(
+                "fg-add-factor!: tensor has %llu elements but factor expects %u",
+                (unsigned long long)cpt_tensor->total_elements, cpt_size);
+            return;
+        }
+        for (uint32_t i = 0; i < cpt_size; i++) {
+            cpt_data[i] = tensor_get(cpt_tensor, i);
+        }
+    } else if (!extract_doubles_from_vector(cpt_tv, cpt_size, cpt_data)) {
+        eshkol_error(
+            "fg-add-factor!: CPT must be a tensor or vector of %u numbers", cpt_size);
+        return;
     }
 
     eshkol_factor_t* factor = eshkol_make_factor(arena, var_indices, num_vars, cpt_data, dims);
@@ -873,28 +919,37 @@ void eshkol_fg_update_cpt_tagged(arena_t* arena,
         return;
     }
 
-    /* Extract new CPT from tensor */
-    tensor_layout_t* cpt_tensor = extract_tensor(new_cpt_tv);
-    if (!cpt_tensor) {
-        result->type = ESHKOL_VALUE_NULL;
-        return;
-    }
-
     eshkol_factor_t* f = fg->factors[factor_idx];
     if (!f) {
         result->type = ESHKOL_VALUE_NULL;
         return;
     }
 
-    /* Validate CPT size matches */
-    if ((uint32_t)cpt_tensor->total_elements != f->cpt_size) {
+    /* Accept either a homogeneous tensor (#(…)) or a heterogeneous vector
+     * ((vector …)). Tensors are the fast path (raw double bit-patterns);
+     * vectors are the ergonomic path when building CPTs from computed
+     * per-element expressions (bench 14 builds one via (vector w0 w1 w2)). */
+    tensor_layout_t* cpt_tensor = extract_tensor(new_cpt_tv);
+    if (cpt_tensor) {
+        if ((uint32_t)cpt_tensor->total_elements != f->cpt_size) {
+            eshkol_error(
+                "fg-update-cpt!: tensor has %llu elements but factor expects %u",
+                (unsigned long long)cpt_tensor->total_elements,
+                (unsigned)f->cpt_size);
+            result->type = ESHKOL_VALUE_NULL;
+            return;
+        }
+        for (uint32_t i = 0; i < f->cpt_size; i++) {
+            f->cpt[i] = tensor_get(cpt_tensor, i);
+        }
+    } else if (extract_doubles_from_vector(new_cpt_tv, f->cpt_size, f->cpt)) {
+        /* extract_doubles_from_vector already wrote f->cpt in place */
+    } else {
+        eshkol_error(
+            "fg-update-cpt!: CPT must be a tensor or vector of %u numbers",
+            (unsigned)f->cpt_size);
         result->type = ESHKOL_VALUE_NULL;
         return;
-    }
-
-    /* Copy new CPT data */
-    for (uint32_t i = 0; i < f->cpt_size; i++) {
-        f->cpt[i] = tensor_get(cpt_tensor, i);
     }
 
     /* Reset messages to force reconvergence on next fg-infer! */

@@ -1,0 +1,76 @@
+;; Task #111: type-safety / type-confusion regression tests.
+;;
+;; Each of these inputs would have SIGSEGV'd or silently corrupted data in
+;; earlier v1.x releases (see #109, #120, #126, #129 memory entries). They
+;; now all raise a recoverable Eshkol exception that `guard` can catch.
+
+(require stdlib)
+
+(display "=== v1.2 Type-safety suite ===") (newline)
+
+(define pass-count 0)
+(define fail-count 0)
+(define (check name cond)
+  (if cond
+      (begin (set! pass-count (+ pass-count 1))
+             (display "PASS: ") (display name) (newline))
+      (begin (set! fail-count (+ fail-count 1))
+             (display "FAIL: ") (display name) (newline))))
+
+;; ---- Arithmetic with non-numeric args ----
+(check "(+ \"str\" 3) raises, no crash"
+       (guard (exn (#t #t)) (+ "abc" 3) #f))
+(check "(- '(1 2 3) 5) raises, no crash"
+       (guard (exn (#t #t)) (- (list 1 2 3) 5) #f))
+(check "(/ \"abc\" 2) raises, no crash"
+       (guard (exn (#t #t)) (/ "abc" 2) #f))
+
+;; ---- Bad indices (string-ref has bounds, list-ref still tracked in #135) ----
+(check "(string-ref \"abc\" 10) raises"
+       (guard (exn (#t #t)) (string-ref "abc" 10) #f))
+
+;; ---- car/cdr on non-pairs (fixed in #135 partial: BOOL/INT args) ----
+(check "(car #t) raises, no crash"
+       (guard (exn (#t #t)) (car #t) #f))
+(check "(car 42) raises, no crash"
+       (guard (exn (#t #t)) (car 42) #f))
+(check "(car \"x\") raises, no crash"
+       (guard (exn (#t #t)) (car "x") #f))
+(check "(cdr #t) raises, no crash"
+       (guard (exn (#t #t)) (cdr #t) #f))
+(check "(cdr 42) raises, no crash"
+       (guard (exn (#t #t)) (cdr 42) #f))
+
+;; Real pairs still work.
+(check "(car '(1 2 3)) = 1" (= (car (list 1 2 3)) 1))
+(check "(cdr '(1 2 3)) = (2 3)" (equal? (cdr (list 1 2 3)) (list 2 3)))
+
+;; NOTE: (list-ref '(1 2 3) 5) still unchecked — tracked in #135.
+
+;; ---- Type predicates are consistent ----
+(check "number? 42 = #t" (number? 42))
+(check "number? \"42\" = #f" (not (number? "42")))
+(check "string? \"42\" = #t" (string? "42"))
+(check "string? 42 = #f" (not (string? 42)))
+(check "pair? '(1) = #t" (pair? (list 1)))
+(check "pair? 1 = #f" (not (pair? 1)))
+(check "null? '() = #t" (null? '()))
+(check "null? '(1) = #f" (not (null? (list 1))))
+(check "procedure? car = #t" (procedure? car))
+(check "procedure? 42 = #f" (not (procedure? 42)))
+(check "tensor? (make-tensor ...) = #t"
+       (tensor? (make-tensor (list 2 2) 0.0)))
+(check "tensor? 1.0 = #f" (not (tensor? 1.0)))
+
+;; ---- Context survives errors ----
+(check "after type error, normal code still works"
+       (begin
+         (guard (exn (#t #f)) (+ "x" 1))
+         (= (+ 1 2) 3)))
+
+(newline)
+(display "=== Summary ===") (newline)
+(display "Passed: ") (display pass-count) (newline)
+(display "Failed: ") (display fail-count) (newline)
+(display (if (= fail-count 0) "RESULT: ALL PASS" "RESULT: FAILURES DETECTED"))
+(newline)

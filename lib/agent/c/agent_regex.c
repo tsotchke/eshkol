@@ -176,3 +176,94 @@ void eshkol_regex_free(int64_t handle) {
         g_regex_handles[handle] = NULL;
     }
 }
+
+/*******************************************************************************
+ * Capture-group extraction (Noesis #167)
+ *
+ * The match / match-all routines above discard everything except group 0
+ * (the whole match). To support parsing workflows — JSON Schema (#172),
+ * CSV/LaTeX extraction, HTTP Link headers, etc. — callers need the
+ * per-group substrings. These helpers return a single flat null-separated
+ * buffer so the Scheme side (lib/agent/regex.esk) can split on NUL bytes
+ * into a list of strings. A dedicated count helper avoids a pre-allocation
+ * guess.
+ *
+ * Layout of out_buf (returned by eshkol_regex_match_groups):
+ *   "group0\0group1\0group2\0…\0groupN\0"
+ * where groupK is the captured substring for capture K (or empty string
+ * if that group didn't participate in the match).
+ ******************************************************************************/
+
+/* Return the number of capture groups (including group 0) on success;
+ * -1 on no match; 0 on invalid input. */
+int eshkol_regex_match_groups_count(int64_t handle, const char* subject) {
+    pcre2_code* code = get_handle(handle);
+    if (!code || !subject) return 0;
+
+    pcre2_match_data* md = pcre2_match_data_create_from_pattern(code, NULL);
+    if (!md) return 0;
+
+    int rc = pcre2_match(code, (PCRE2_SPTR)subject, PCRE2_ZERO_TERMINATED,
+                         0, 0, md, NULL);
+    pcre2_match_data_free(md);
+    return rc;
+}
+
+/* Fill out_buf with NUL-separated group substrings for the first match.
+ * Returns the number of groups written on success (including group 0),
+ * -1 if no match, 0 on invalid input or buffer overflow. */
+int eshkol_regex_match_groups(int64_t handle, const char* subject,
+                               char* out_buf, size_t buf_size) {
+    pcre2_code* code = get_handle(handle);
+    if (!code || !subject || !out_buf || buf_size == 0) return 0;
+
+    pcre2_match_data* md = pcre2_match_data_create_from_pattern(code, NULL);
+    if (!md) return 0;
+
+    int rc = pcre2_match(code, (PCRE2_SPTR)subject, PCRE2_ZERO_TERMINATED,
+                         0, 0, md, NULL);
+    if (rc < 1) {
+        pcre2_match_data_free(md);
+        return -1;
+    }
+
+    PCRE2_SIZE* ovector = pcre2_get_ovector_pointer(md);
+    size_t buf_pos = 0;
+
+    for (int i = 0; i < rc; i++) {
+        PCRE2_SIZE start = ovector[2 * i];
+        PCRE2_SIZE end   = ovector[2 * i + 1];
+
+        /* Unset group: pcre2 marks with PCRE2_UNSET. Emit empty string. */
+        size_t group_len = 0;
+        const char* src = "";
+        if (start != PCRE2_UNSET && end != PCRE2_UNSET && end >= start) {
+            group_len = end - start;
+            src = subject + start;
+        }
+        if (buf_pos + group_len + 1 > buf_size) {
+            pcre2_match_data_free(md);
+            return 0;  /* overflow */
+        }
+        memcpy(out_buf + buf_pos, src, group_len);
+        buf_pos += group_len;
+        out_buf[buf_pos++] = '\0';
+    }
+
+    pcre2_match_data_free(md);
+    return rc;
+}
+
+/* Count capture groups for a named group lookup. Returns the 1-based
+ * group number, or -1 if not found. */
+int eshkol_regex_named_group_number(int64_t handle, const char* name) {
+    pcre2_code* code = get_handle(handle);
+    if (!code || !name) return -1;
+    int num = pcre2_substring_number_from_name(code, (PCRE2_SPTR)name);
+    if (num < 0) return -1;
+    return num;
+}
+
+/* Replace with a callback. NOT implemented here — the Scheme layer can
+ * compose match-groups + regex-replace as a higher-level (regex-replace-fn).
+ * A dedicated pcre2_substitute_callback isn't part of PCRE2's stable API. */

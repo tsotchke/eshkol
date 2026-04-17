@@ -244,6 +244,13 @@ public:
     llvm::Value* emitRationalBinaryCall(llvm::Value* left, llvm::Value* right, int op_code);
     llvm::Value* emitRationalCompareCall(llvm::Value* left, llvm::Value* right, int op_code);
 
+    /**
+     * Emit code to raise a type error at runtime. Public so other codegen
+     * classes (e.g. CallApplyCodegen for (apply min '())) can surface the
+     * same architected exception instead of inventing their own mechanism.
+     */
+    void emitTypeError(const char* message);
+
 private:
     CodegenContext& ctx_;
     TaggedValueCodegen& tagged_;
@@ -292,6 +299,15 @@ private:
      * Creates an exception object and calls eshkol_raise(), then emits unreachable.
      */
     void emitOverflowError(const char* message);
+
+    /**
+     * Runtime guard for the tensor/vector arithmetic path: if either operand
+     * is a HEAP_PTR with a subtype that isn't HEAP_SUBTYPE_TENSOR or
+     * HEAP_SUBTYPE_VECTOR, raise a TYPE_ERROR exception with `op_name` in the
+     * message. Must be called before dispatch into tensorArithmeticInternal.
+     */
+    void guardHeapOperandsNumeric(llvm::Value* left, llvm::Value* right,
+                                  const char* op_name);
 
     /**
      * Convert a tagged value to a complex number.

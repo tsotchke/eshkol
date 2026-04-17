@@ -1,0 +1,182 @@
+;; v1.2 edge-case regression suite — covers every bug fixed in the v1.2
+;; hardening pass. If any of these fail in the future, one of the fixes has
+;; regressed. Intent: run this on every commit to catch silent regressions
+;; in the bug classes listed.
+
+(require stdlib)
+
+(display "=== v1.2 Edge-Case Regression Suite ===") (newline)
+
+(define pass-count 0)
+(define fail-count 0)
+
+(define (check name cond)
+  (if cond
+      (begin
+        (set! pass-count (+ pass-count 1))
+        (display "PASS: ") (display name) (newline))
+      (begin
+        (set! fail-count (+ fail-count 1))
+        (display "FAIL: ") (display name) (newline))))
+
+;; ---------------------------------------------------------------------------
+;; Bug 1: #(...) vector literals inside if consequent
+;; ---------------------------------------------------------------------------
+(check "Bug 1: #(...) in if-then branch"
+       (equal? (if #t #(1 2 3) #(4 5 6)) #(1 2 3)))
+(check "Bug 1: #(...) in if-else branch"
+       (equal? (if #f #(1 2 3) #(4 5 6)) #(4 5 6)))
+
+;; ---------------------------------------------------------------------------
+;; Bug 106: string->number returns #f for non-numeric (R7RS)
+;; ---------------------------------------------------------------------------
+(check "B1: string->number on garbage returns #f"
+       (eq? (string->number "hello") #f))
+(check "B1: string->number on valid returns number"
+       (= (string->number "42") 42))
+(check "B1: string->number float"
+       (= (string->number "3.14") 3.14))
+
+;; ---------------------------------------------------------------------------
+;; Bug 109: type error on arithmetic with non-numeric does not segfault
+;; ---------------------------------------------------------------------------
+(check "#109: (+ \"a\" 3) raises exception, does not crash"
+       (guard (exn (#t #t)) (+ "hello" 3) #f))
+(check "#109: (* \"a\" 1.0) raises exception, does not crash"
+       (guard (exn (#t #t)) (* "hello" 1.0) #f))
+
+;; ---------------------------------------------------------------------------
+;; Bug 118: set! with boolean stores #t/#f (not null)
+;; ---------------------------------------------------------------------------
+(define b118 #t)
+(set! b118 #f)
+(check "#118: set! x #f stores #f" (eq? b118 #f))
+(set! b118 #t)
+(check "#118: set! x #t stores #t" (eq? b118 #t))
+(check "#118: set! to #f preserves boolean type" (boolean? b118))
+
+;; ---------------------------------------------------------------------------
+;; Bug 4: kb-query returns bindings in all modes
+;; ---------------------------------------------------------------------------
+(define kb4 (make-kb))
+(kb-assert! kb4 (make-fact "likes" "alice" "math"))
+(kb-assert! kb4 (make-fact "likes" "bob" "physics"))
+(check "Bug 4: kb-query with logic var binds"
+       (not (null? (kb-query kb4 (make-fact "likes" "alice" ?x)))))
+(check "Bug 4: kb-query exact match succeeds"
+       (not (null? (kb-query kb4 (make-fact "likes" "alice" "math")))))
+(check "Bug 4: kb-query no match returns ()"
+       (null? (kb-query kb4 (make-fact "likes" "alice" "chemistry"))))
+
+;; ---------------------------------------------------------------------------
+;; Bug 119: kb-query-prefix — arity-flexible prefix match
+;; ---------------------------------------------------------------------------
+(define kb-prefix (make-kb))
+(kb-assert! kb-prefix (make-fact "knows" "alice" "bob"))
+(kb-assert! kb-prefix (make-fact "knows" "alice" "bob" "deeply"))
+(kb-assert! kb-prefix (make-fact "knows" "alice" "carol" "via-work" "2025"))
+(check "Bug 119: kb-query strict returns 1 match (arity 2)"
+       (= (length (kb-query kb-prefix (make-fact "knows" "alice" ?x))) 1))
+(check "Bug 119: kb-query-prefix returns all 3 matches"
+       (= (length (kb-query-prefix kb-prefix (make-fact "knows" "alice" ?x))) 3))
+
+;; ---------------------------------------------------------------------------
+;; Bug 117: kb persistence round-trip
+;; ---------------------------------------------------------------------------
+(define kb-save-test (make-kb))
+(kb-assert! kb-save-test (make-fact "p" "a" "b"))
+(kb-assert! kb-save-test (make-fact "q" "c"))
+(kb-save "/tmp/eshkol_v12_regression.kb" kb-save-test)
+(define kb-loaded (kb-load "/tmp/eshkol_v12_regression.kb"))
+(check "Bug 117: kb-load count matches" (= (kb-count kb-loaded) 2))
+(check "Bug 117: kb-query on loaded KB finds facts"
+       (not (null? (kb-query kb-loaded (make-fact "p" "a" ?x)))))
+(delete-file "/tmp/eshkol_v12_regression.kb")
+
+;; ---------------------------------------------------------------------------
+;; Bug A: apply min / apply max
+;; ---------------------------------------------------------------------------
+(check "Bug A: apply min on ints" (= (apply min (list 3 1 2)) 1))
+(check "Bug A: apply max on ints" (= (apply max (list 3 1 2)) 3))
+(check "Bug A: apply min on floats"
+       (= (apply min (list 0.5 0.1 0.7)) 0.1))
+(check "Bug A: apply max on floats"
+       (= (apply max (list 0.5 0.1 0.7)) 0.7))
+(check "Bug A: apply + on ints still works" (= (apply + (list 1 2 3)) 6))
+(check "Bug A: apply * on ints still works" (= (apply * (list 2 3 4)) 24))
+
+;; ---------------------------------------------------------------------------
+;; Bug B/C: AD node values and gradients (tagged-slot integrity)
+;; ---------------------------------------------------------------------------
+(let* ((tape (ad-tape-new))
+       (x (ad-var tape 1.0))
+       (y (ad-sin tape x)))
+  (check "Bug B: ad-node-value of var preserves value"
+         (= (ad-node-value tape x) 1.0))
+  (check "Bug B: ad-value alias works"
+         (= (ad-value tape x) 1.0))
+  (ad-backward tape y)
+  (let ((g (ad-gradient tape x)))
+    (check "Bug C: d/dx sin(1) ≈ cos(1) (0.540302)"
+           (< (abs (- g 0.540302)) 0.001))))
+
+;; ---------------------------------------------------------------------------
+;; Bug 6: fg-update-cpt! accepts both tensor and vector CPTs
+;; ---------------------------------------------------------------------------
+(define fg6 (make-factor-graph 2 #(3 3)))
+(fg-add-factor! fg6 #(0) (vector -1.0 -1.0 -1.0))
+(check "Bug 6: fg-add-factor! with (vector ...) CPT works"
+       (begin (fg-infer! fg6 10) #t))
+(fg-update-cpt! fg6 0 (vector -0.5 -0.5 -0.5))
+(check "Bug 6: fg-update-cpt! with (vector ...) CPT works"
+       (begin (fg-infer! fg6 10) #t))
+
+;; ---------------------------------------------------------------------------
+;; Bug 3: stdlib function captured inside a lambda call
+;; ---------------------------------------------------------------------------
+(define (builder-lambda)
+  (let loop ((i 0) (acc '()))
+    (if (>= i 5) (reverse acc)
+        (loop (+ i 1) (cons i acc)))))
+(check "Bug 3: reverse inside lambda returns correct list"
+       (equal? (builder-lambda) (list 0 1 2 3 4)))
+
+;; ---------------------------------------------------------------------------
+;; Bug 5: parallel-map with inline lambda
+;; ---------------------------------------------------------------------------
+(check "Bug 5: parallel-map (lambda) on small list"
+       (equal? (parallel-map (lambda (x) (* x x)) (list 1 2 3 4 5))
+               (list 1 4 9 16 25)))
+
+;; ---------------------------------------------------------------------------
+;; Bug 2: eval — direct call
+;; ---------------------------------------------------------------------------
+(check "Bug 2: (eval (quote 42)) returns 42"
+       (= (eval (quote 42)) 42))
+(check "Bug 2: (eval (quote (+ 1 2))) returns 3"
+       (= (eval (quote (+ 1 2))) 3))
+(check "Bug 2: (eval (quote (* 2 (+ 3 4)))) returns 14"
+       (= (eval (quote (* 2 (+ 3 4)))) 14))
+(check "Bug 2: (eval (read (open-input-string ...))) works"
+       (= (eval (read (open-input-string "(* 5 6)"))) 30))
+
+;; ---------------------------------------------------------------------------
+;; tagged_values_equal / Bug 4 deep structure
+;; ---------------------------------------------------------------------------
+(check "deep-equal: identical string literals equal"
+       (equal? "hello" "hello"))
+(check "deep-equal: identical int lists equal"
+       (equal? (list 1 2 3) (list 1 2 3)))
+(check "deep-equal: unequal strings not equal"
+       (not (equal? "hello" "world")))
+
+;; ---------------------------------------------------------------------------
+;; Summary
+;; ---------------------------------------------------------------------------
+(newline)
+(display "=== Summary ===") (newline)
+(display "Passed: ") (display pass-count) (newline)
+(display "Failed: ") (display fail-count) (newline)
+(display "Total:  ") (display (+ pass-count fail-count)) (newline)
+(display (if (= fail-count 0) "RESULT: ALL PASS" "RESULT: FAILURES DETECTED"))
+(newline)

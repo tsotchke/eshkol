@@ -106,6 +106,28 @@ llvm::Value* TaggedValueCodegen::packDouble(llvm::Value* double_val) {
     return buildTaggedValue(ESHKOL_VALUE_DOUBLE, ESHKOL_VALUE_INEXACT_FLAG, double_as_int64);
 }
 
+llvm::Value* TaggedValueCodegen::ensureTagged(llvm::Value* val) {
+    if (!val) {
+        return buildTaggedValue(ESHKOL_VALUE_NULL, 0,
+            llvm::ConstantInt::get(ctx_.int64Type(), 0));
+    }
+    llvm::Type* t = val->getType();
+    if (t == ctx_.taggedValueType()) return val;
+    if (t->isDoubleTy())             return packDouble(val);
+    if (t->isIntegerTy(64))          return packInt64(val, true);
+    if (t->isIntegerTy(1)) {
+        // i1 boolean → BOOL tagged. Extend to i64 so the data slot is filled.
+        llvm::Value* ext = ctx_.builder().CreateZExt(val, ctx_.int64Type());
+        return buildTaggedValue(ESHKOL_VALUE_BOOL, 0, ext);
+    }
+    if (t->isPointerTy())            return packPtr(val, ESHKOL_VALUE_HEAP_PTR, 0);
+    // Unknown type — warn and return a null tagged_value rather than
+    // writing partial bytes into a caller's 16-byte slot.
+    eshkol_warn("ensureTagged: unsupported raw LLVM type, returning null");
+    return buildTaggedValue(ESHKOL_VALUE_NULL, 0,
+        llvm::ConstantInt::get(ctx_.int64Type(), 0));
+}
+
 llvm::Value* TaggedValueCodegen::packPtr(
     llvm::Value* ptr_val,
     eshkol_value_type_t type,
