@@ -40,6 +40,49 @@ static uint64_t find_var_by_name(const char* name) {
 static char g_var_name_pool[LOGIC_VAR_MAX * 64]; /* 64 chars per name max */
 static std::atomic<size_t> g_var_name_pool_offset{0};
 
+/* ═══════════════════════════════════════════════════════════════════
+ * Predicate Interning — all fact predicates go through this table
+ * so pointer equality works in unification (critical for kb-load).
+ * ═══════════════════════════════════════════════════════════════════ */
+static constexpr size_t PRED_POOL_SIZE = 64 * 1024;  /* 64KB for predicate strings */
+static constexpr size_t PRED_TABLE_SIZE = 1024;       /* max distinct predicates */
+static char g_pred_pool[PRED_POOL_SIZE];
+static std::atomic<size_t> g_pred_pool_offset{0};
+static const char* g_pred_table[PRED_TABLE_SIZE];
+static std::atomic<size_t> g_pred_count{0};
+static std::mutex g_pred_mutex;
+
+extern "C" const char* eshkol_intern_predicate(const char* name) {
+    if (!name) return nullptr;
+    size_t len = strlen(name);
+
+    /* Check if already interned (lock for table scan) */
+    std::lock_guard<std::mutex> lock(g_pred_mutex);
+    size_t count = g_pred_count.load(std::memory_order_acquire);
+    for (size_t i = 0; i < count; i++) {
+        if (g_pred_table[i] && strcmp(g_pred_table[i], name) == 0) {
+            return g_pred_table[i];
+        }
+    }
+
+    /* Not found — intern into pool */
+    if (count >= PRED_TABLE_SIZE) {
+        eshkol_error("predicate table full (%zu predicates)", count);
+        return name;  /* fallback — strcmp will catch it */
+    }
+    size_t needed = len + 1;
+    size_t offset = g_pred_pool_offset.load(std::memory_order_relaxed);
+    if (offset + needed > PRED_POOL_SIZE) {
+        eshkol_error("predicate pool exhausted (%zu bytes)", offset);
+        return name;
+    }
+    g_pred_pool_offset.store(offset + needed, std::memory_order_release);
+    memcpy(g_pred_pool + offset, name, needed);
+    g_pred_table[count] = g_pred_pool + offset;
+    g_pred_count.store(count + 1, std::memory_order_release);
+    return g_pred_pool + offset;
+}
+
 static const char* intern_var_name(const char* name) {
     size_t len = strlen(name);
     if (len >= 63) len = 63; /* truncate to fit pool slot */
@@ -375,8 +418,15 @@ extern "C" eshkol_substitution_t* eshkol_unify(arena_t* arena,
             eshkol_fact_t* f1 = (eshkol_fact_t*)w1.data.ptr_val;
             eshkol_fact_t* f2 = (eshkol_fact_t*)w2.data.ptr_val;
 
-            /* Check predicate equality (pointer comparison for interned symbols) */
-            if (f1->predicate != f2->predicate) return NULL;
+            /* Check predicate equality — pointer comparison for interned predicates.
+             * All fact predicates MUST go through intern_predicate() so this is safe. */
+            if (f1->predicate != f2->predicate) {
+                /* Fallback: string comparison for non-interned predicates (e.g. kb-load).
+                 * This is the defensive path — intern_predicate should be used at creation. */
+                const char* p1 = (const char*)(uintptr_t)f1->predicate;
+                const char* p2 = (const char*)(uintptr_t)f2->predicate;
+                if (!p1 || !p2 || strcmp(p1, p2) != 0) return NULL;
+            }
             /* Check arity */
             if (f1->arity != f2->arity) return NULL;
 
@@ -583,7 +633,13 @@ extern "C" void eshkol_make_fact_tagged(arena_t* arena,
     /* Extract predicate pointer (should be a HEAP_PTR to interned symbol) */
     uint64_t predicate = 0;
     if (pred->type == ESHKOL_VALUE_HEAP_PTR) {
-        predicate = pred->data.ptr_val;
+        /* Intern the predicate string so pointer equality works in unification.
+         * The string data is at pred->data.ptr_val (after 8-byte object header). */
+        const char* pred_str = (const char*)(uintptr_t)pred->data.ptr_val;
+        if (pred_str) {
+            const char* interned = eshkol_intern_predicate(pred_str);
+            predicate = (uint64_t)(uintptr_t)interned;
+        }
     }
 
     eshkol_fact_t* fact = eshkol_make_fact(arena, predicate,

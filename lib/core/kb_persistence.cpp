@@ -143,14 +143,13 @@ void eshkol_kb_load_tagged(arena_t* arena,
             HEAP_SUBTYPE_FACT, 0);
         if (!fact) break;
 
-        /* Set predicate — allocate string in arena */
-        char* pred_str = arena_allocate_string_with_header(arena, name_len);
-        if (pred_str) {
-            memcpy(pred_str, name_buf, name_len + 1);
-            fact->predicate = (uint64_t)pred_str;
-        } else {
-            fact->predicate = 0;
-        }
+        /* Set predicate — intern through the predicate table so pointer equality
+         * works with facts created by make-fact at runtime. This is critical:
+         * without interning, kb-query on a kb-load'd KB would fail because
+         * different string allocations for the same name have different pointers. */
+        extern const char* eshkol_intern_predicate(const char* name);
+        const char* interned = eshkol_intern_predicate(name_buf);
+        fact->predicate = (uint64_t)(uintptr_t)interned;
         fact->arity = arity;
         fact->_pad = 0;
 
