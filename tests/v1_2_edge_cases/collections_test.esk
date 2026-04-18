@@ -1,0 +1,158 @@
+;;; collections_test.esk — #155 priority queues + sets + deques.
+
+(require core.collections)
+(require core.testing)
+
+(reset-tests!)
+
+;; ===== Priority queue =====
+
+(register-test "pq: empty"
+  (lambda ()
+    (let ((pq (make-pq)))
+      (check-true  (pq-empty? pq))
+      (check-equal? (pq-size pq) 0))))
+
+(register-test "pq: push then pop yields min first"
+  (lambda ()
+    (let ((pq (make-pq)))
+      (pq-push! pq 5 'five)
+      (pq-push! pq 1 'one)
+      (pq-push! pq 3 'three)
+      (pq-push! pq 2 'two)
+      (check-equal? (pq-size pq) 4)
+      (check-equal? (cdr (pq-pop! pq)) 'one)
+      (check-equal? (cdr (pq-pop! pq)) 'two)
+      (check-equal? (cdr (pq-pop! pq)) 'three)
+      (check-equal? (cdr (pq-pop! pq)) 'five)
+      (check-true (pq-empty? pq)))))
+
+(register-test "pq: peek doesn't mutate"
+  (lambda ()
+    (let ((pq (make-pq)))
+      (pq-push! pq 10 'x)
+      (pq-push! pq  3 'y)
+      (check-equal? (cdr (pq-peek pq)) 'y)
+      (check-equal? (pq-size pq) 2)
+      (check-equal? (cdr (pq-peek pq)) 'y))))
+
+(register-test "pq: pop-empty raises"
+  (lambda ()
+    (let ((pq (make-pq)))
+      (check-raises (lambda () (pq-pop! pq))))))
+
+(register-test "pq: grows beyond initial capacity"
+  (lambda ()
+    (let ((pq (make-pq)))
+      (let loop ((i 0))
+        (when (< i 100)
+          (pq-push! pq (- 100 i) i)
+          (loop (+ i 1))))
+      (check-equal? (pq-size pq) 100)
+      ;; First key popped should be 1 (inserted as priority 1 last).
+      (check-equal? (car (pq-pop! pq)) 1))))
+
+;; ===== Set =====
+
+(register-test "set: add / contains? / size"
+  (lambda ()
+    (let ((s (make-set)))
+      (check-equal? (set-size s) 0)
+      (set-add! s 'a)
+      (set-add! s 'b)
+      (set-add! s 'a)  ; dup
+      (check-equal? (set-size s) 2)
+      (check-true  (set-contains? s 'a))
+      (check-true  (set-contains? s 'b))
+      (check-false (set-contains? s 'c)))))
+
+(register-test "set: remove returns bool, is idempotent"
+  (lambda ()
+    (let ((s (make-set)))
+      (set-add! s 'x)
+      (check-true  (set-remove! s 'x))
+      (check-false (set-remove! s 'x))
+      (check-equal? (set-size s) 0))))
+
+(register-test "set-union merges"
+  (lambda ()
+    (let ((a (make-set)) (b (make-set)))
+      (set-add! a 1) (set-add! a 2)
+      (set-add! b 2) (set-add! b 3)
+      (let ((u (set-union a b)))
+        (check-equal? (set-size u) 3)
+        (check-true (set-contains? u 1))
+        (check-true (set-contains? u 2))
+        (check-true (set-contains? u 3))))))
+
+(register-test "set-intersect narrows"
+  (lambda ()
+    (let ((a (make-set)) (b (make-set)))
+      (set-add! a 1) (set-add! a 2) (set-add! a 3)
+      (set-add! b 2) (set-add! b 3) (set-add! b 4)
+      (let ((i (set-intersect a b)))
+        (check-equal? (set-size i) 2)
+        (check-true (set-contains? i 2))
+        (check-true (set-contains? i 3))
+        (check-false (set-contains? i 1))))))
+
+(register-test "set-difference removes b from a"
+  (lambda ()
+    (let ((a (make-set)) (b (make-set)))
+      (set-add! a 1) (set-add! a 2) (set-add! a 3)
+      (set-add! b 2)
+      (let ((d (set-difference a b)))
+        (check-equal? (set-size d) 2)
+        (check-true (set-contains? d 1))
+        (check-true (set-contains? d 3))
+        (check-false (set-contains? d 2))))))
+
+;; ===== Deque =====
+
+(register-test "deque: empty"
+  (lambda ()
+    (let ((dq (make-deque)))
+      (check-true (deque-empty? dq))
+      (check-equal? (deque-size dq) 0))))
+
+(register-test "deque: push-back / pop-front (queue semantics)"
+  (lambda ()
+    (let ((dq (make-deque)))
+      (deque-push-back! dq 1)
+      (deque-push-back! dq 2)
+      (deque-push-back! dq 3)
+      (check-equal? (deque-pop-front! dq) 1)
+      (check-equal? (deque-pop-front! dq) 2)
+      (check-equal? (deque-pop-front! dq) 3)
+      (check-true (deque-empty? dq)))))
+
+(register-test "deque: push-front / pop-back (stack on both ends)"
+  (lambda ()
+    (let ((dq (make-deque)))
+      (deque-push-front! dq 'a)
+      (deque-push-front! dq 'b)
+      (deque-push-back!  dq 'c)
+      ;; order is: b a c
+      (check-equal? (deque-peek-front dq) 'b)
+      (check-equal? (deque-peek-back  dq) 'c)
+      (check-equal? (deque-pop-front! dq) 'b)
+      (check-equal? (deque-pop-back!  dq) 'c)
+      (check-equal? (deque-pop-back!  dq) 'a)
+      (check-true (deque-empty? dq)))))
+
+(register-test "deque: pop-empty raises"
+  (lambda ()
+    (let ((dq (make-deque)))
+      (check-raises (lambda () (deque-pop-front! dq)))
+      (check-raises (lambda () (deque-pop-back!  dq))))))
+
+(register-test "deque->list preserves front-to-back order"
+  (lambda ()
+    (let ((dq (make-deque)))
+      (deque-push-back! dq 1)
+      (deque-push-back! dq 2)
+      (deque-push-front! dq 0)
+      ;; order: 0 1 2
+      (check-equal? (deque->list dq) '(0 1 2)))))
+
+(run-tests)

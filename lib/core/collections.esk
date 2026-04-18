@@ -1,0 +1,244 @@
+;;; core/collections.esk
+;;;
+;;; Priority queues, hash-sets, and deques. None of these exist in
+;;; stdlib yet and all three are hot paths for agent workflows
+;;; (scheduling, deduplication, BFS frontier). All three are pure
+;;; Scheme built on make-hash-table + vector / list.
+;;;
+;;; (require core.collections)
+;;;
+;;; Priority queue (min-heap by default):
+;;;   (make-pq)                 → empty min-heap
+;;;   (make-pq compare)         → heap with custom comparator
+;;;   (pq-push! pq key item)    → insert
+;;;   (pq-pop! pq)              → (values key item), or errors if empty
+;;;   (pq-peek pq)              → (values key item), no mutation
+;;;   (pq-size pq)              → current element count
+;;;   (pq-empty? pq)            → #t / #f
+;;;
+;;; Hash set:
+;;;   (make-set)                → empty set
+;;;   (set-add! s x) / set-remove! / set-contains? / set-size /
+;;;   set->list / set-clear! / set-union / set-intersect /
+;;;   set-difference
+;;;
+;;; Deque (double-ended queue, O(1) both ends):
+;;;   (make-deque)              → empty deque
+;;;   (deque-push-front! / push-back!)
+;;;   (deque-pop-front! / pop-back!)
+;;;   (deque-peek-front / peek-back)
+;;;   (deque-size / deque-empty?)
+;;;   (deque->list)
+
+(require core.list.higher_order)
+
+(provide
+  ;; priority queue
+  make-pq pq-push! pq-pop! pq-peek pq-size pq-empty?
+  ;; hash set
+  make-set set-add! set-remove! set-contains? set-size
+  set->list set-clear! set-union set-intersect set-difference
+  ;; deque
+  make-deque deque-push-front! deque-push-back!
+  deque-pop-front! deque-pop-back!
+  deque-peek-front deque-peek-back
+  deque-size deque-empty? deque->list)
+
+;; ---------------------------------------------------------------------------
+;; Priority queue — binary min-heap backed by a growable vector.
+;;
+;; Internally a pq is #(data-vector size compare).
+;; data-vector holds pairs (cons key item); capacity grows by 2x.
+;; compare is a 2-arg fn returning <0 / 0 / >0 for <, =, > — defaults
+;; to scalar `-` for numeric priorities.
+;; ---------------------------------------------------------------------------
+
+(define (make-pq)
+  (vector (make-vector 16 #f) 0 (lambda (a b) (- a b))))
+
+(define (pq-data pq)    (vector-ref pq 0))
+(define (pq-size pq)    (vector-ref pq 1))
+(define (pq-compare pq) (vector-ref pq 2))
+(define (pq-set-data! pq v) (vector-set! pq 0 v))
+(define (pq-set-size! pq n) (vector-set! pq 1 n))
+
+(define (pq-empty? pq) (= (pq-size pq) 0))
+
+(define (pq-ensure-capacity! pq want)
+  (let ((data (pq-data pq)))
+    (if (>= want (vector-length data))
+        (let* ((new-cap (* 2 (vector-length data)))
+               (new-vec (make-vector new-cap #f)))
+          (pq-copy-data data new-vec 0 (vector-length data))
+          (pq-set-data! pq new-vec)))))
+
+(define (pq-copy-data src dst i n)
+  (if (>= i n) #t
+      (begin (vector-set! dst i (vector-ref src i))
+             (pq-copy-data src dst (+ i 1) n))))
+
+(define (pq-push! pq key item)
+  (pq-ensure-capacity! pq (+ (pq-size pq) 1))
+  (let ((data (pq-data pq))
+        (n (pq-size pq)))
+    (vector-set! data n (cons key item))
+    (pq-set-size! pq (+ n 1))
+    (pq-sift-up pq n)))
+
+(define (pq-sift-up pq i)
+  (if (= i 0) #t
+      (let* ((parent (quotient (- i 1) 2))
+             (data (pq-data pq))
+             (cmp (pq-compare pq))
+             (ki (car (vector-ref data i)))
+             (kp (car (vector-ref data parent))))
+        (if (< (cmp ki kp) 0)
+            (let ((tmp (vector-ref data i)))
+              (vector-set! data i (vector-ref data parent))
+              (vector-set! data parent tmp)
+              (pq-sift-up pq parent))
+            #t))))
+
+(define (pq-pop! pq)
+  (if (pq-empty? pq)
+      (error "pq-pop!: priority queue is empty")
+      (let* ((data (pq-data pq))
+             (top (vector-ref data 0))
+             (n (pq-size pq)))
+        (vector-set! data 0 (vector-ref data (- n 1)))
+        (vector-set! data (- n 1) #f)
+        (pq-set-size! pq (- n 1))
+        (if (> (pq-size pq) 1) (pq-sift-down pq 0))
+        top)))
+
+(define (pq-sift-down pq i)
+  (let* ((data (pq-data pq))
+         (n (pq-size pq))
+         (l (+ (* 2 i) 1))
+         (r (+ (* 2 i) 2))
+         (cmp (pq-compare pq)))
+    (let ((smallest i))
+      (if (and (< l n)
+               (< (cmp (car (vector-ref data l))
+                       (car (vector-ref data smallest))) 0))
+          (set! smallest l))
+      (if (and (< r n)
+               (< (cmp (car (vector-ref data r))
+                       (car (vector-ref data smallest))) 0))
+          (set! smallest r))
+      (if (not (= smallest i))
+          (let ((tmp (vector-ref data i)))
+            (vector-set! data i (vector-ref data smallest))
+            (vector-set! data smallest tmp)
+            (pq-sift-down pq smallest))
+          #t))))
+
+(define (pq-peek pq)
+  (if (pq-empty? pq)
+      (error "pq-peek: priority queue is empty")
+      (vector-ref (pq-data pq) 0)))
+
+;; ---------------------------------------------------------------------------
+;; Hash set — thin wrapper around hash-table using the key as both
+;; key and marker value (the value slot is ignored). Not a bitset.
+;; ---------------------------------------------------------------------------
+
+(define (make-set) (make-hash-table))
+(define (set-add! s x) (hash-table-set! s x #t))
+(define (set-remove! s x)
+  (if (hash-table-contains? s x)
+      (begin (hash-table-delete! s x) #t)
+      #f))
+(define (set-contains? s x) (hash-table-contains? s x))
+(define (set-size s) (hash-table-size s))
+(define (set-clear! s) (hash-table-clear! s))
+(define (set->list s) (hash-table-keys s))
+
+;; Non-mutating binary ops return fresh sets.
+(define (set-union a b)
+  (let ((out (make-set)))
+    (for-each (lambda (k) (set-add! out k)) (set->list a))
+    (for-each (lambda (k) (set-add! out k)) (set->list b))
+    out))
+
+(define (set-intersect a b)
+  (let ((out (make-set)))
+    (for-each (lambda (k)
+                (if (set-contains? b k) (set-add! out k)))
+              (set->list a))
+    out))
+
+(define (set-difference a b)
+  (let ((out (make-set)))
+    (for-each (lambda (k)
+                (if (not (set-contains? b k)) (set-add! out k)))
+              (set->list a))
+    out))
+
+;; ---------------------------------------------------------------------------
+;; Deque — two-list implementation. front list is reversed so
+;; pop-front / push-front are O(1); back list is normal so
+;; push-back / peek-back are O(1). When the popped side empties we
+;; pay an O(n) amortised-constant rebalance — standard functional-
+;; queue technique.
+;;
+;; Represented as #(front back).
+;; ---------------------------------------------------------------------------
+
+(define (make-deque) (vector '() '()))
+
+(define (deque-front dq) (vector-ref dq 0))
+(define (deque-back  dq) (vector-ref dq 1))
+(define (deque-set-front! dq v) (vector-set! dq 0 v))
+(define (deque-set-back!  dq v) (vector-set! dq 1 v))
+
+(define (deque-size dq)
+  (+ (length (deque-front dq)) (length (deque-back dq))))
+
+(define (deque-empty? dq) (= (deque-size dq) 0))
+
+(define (deque-push-front! dq x)
+  (deque-set-front! dq (cons x (deque-front dq))))
+
+(define (deque-push-back! dq x)
+  (deque-set-back! dq (cons x (deque-back dq))))
+
+(define (deque-pop-front! dq)
+  (if (null? (deque-front dq))
+      (if (null? (deque-back dq))
+          (error "deque-pop-front!: deque is empty")
+          ;; Rebalance: move reversed back → front, keep one on back.
+          (let ((all (reverse (deque-back dq))))
+            (deque-set-front! dq (cdr all))
+            (deque-set-back! dq '())
+            (car all)))
+      (let ((top (car (deque-front dq))))
+        (deque-set-front! dq (cdr (deque-front dq)))
+        top)))
+
+(define (deque-pop-back! dq)
+  (if (null? (deque-back dq))
+      (if (null? (deque-front dq))
+          (error "deque-pop-back!: deque is empty")
+          (let ((all (reverse (deque-front dq))))
+            (deque-set-back! dq (cdr all))
+            (deque-set-front! dq '())
+            (car all)))
+      (let ((top (car (deque-back dq))))
+        (deque-set-back! dq (cdr (deque-back dq)))
+        top)))
+
+(define (deque-peek-front dq)
+  (cond
+    ((not (null? (deque-front dq))) (car (deque-front dq)))
+    ((not (null? (deque-back dq)))  (car (reverse (deque-back dq))))
+    (else (error "deque-peek-front: deque is empty"))))
+
+(define (deque-peek-back dq)
+  (cond
+    ((not (null? (deque-back dq))) (car (deque-back dq)))
+    ((not (null? (deque-front dq))) (car (reverse (deque-front dq))))
+    (else (error "deque-peek-back: deque is empty"))))
+
+(define (deque->list dq)
+  (append (deque-front dq) (reverse (deque-back dq))))
