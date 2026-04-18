@@ -1175,10 +1175,24 @@ if(REPL_SRC)
   if(TARGET eshkol-agent-ffi)
     target_link_libraries(eshkol-run PRIVATE eshkol-agent-ffi)
   endif()
-  # Force-load eshkol-static for JIT symbol resolution (same as REPL)
+  # Force-load eshkol-static for JIT symbol resolution (same as REPL).
+  # Also force-load eshkol-repl-lib so its strong eval_bridge_impl.cpp
+  # overrides (eshkol_eval_jit_get_*) beat the weak defaults in
+  # eshkol-static. Without force_load, ld64 skips the TU because no
+  # *other* symbol references it.
   if(APPLE)
+    # ld64's -force_load only applies to the single archive that
+    # immediately follows it. Combining the flag with two paths on the
+    # same line still force-loads only the first archive. Use the
+    # comma-prefixed -Wl,-force_load,PATH form so each archive gets its
+    # own flag. This matters for eshkol-repl-lib: its eval_bridge_impl
+    # TU has a static constructor that registers bridge pointers with
+    # eshkol-static, but with only `eshkol_eval_bridge_linked` as an
+    # external symbol the archive gets dead-stripped without
+    # force_load.
     target_link_options(eshkol-run PRIVATE
-      "-Wl,-force_load" "$<TARGET_FILE:eshkol-static>")
+      "-Wl,-force_load,$<TARGET_FILE:eshkol-static>"
+      "-Wl,-force_load,$<TARGET_FILE:eshkol-repl-lib>")
     target_link_options(eshkol-run PRIVATE "-Wl,-export_dynamic")
     # 512MB stack for deep recursion (main thread stack set at link time on macOS)
     target_link_options(eshkol-run PRIVATE "-Wl,-stack_size,0x20000000")
@@ -1188,7 +1202,7 @@ if(REPL_SRC)
     # accept GNU ld options here.
   else()
     target_link_options(eshkol-run PRIVATE
-      "-Wl,--whole-archive" "$<TARGET_FILE:eshkol-static>" "-Wl,--no-whole-archive")
+      "-Wl,--whole-archive" "$<TARGET_FILE:eshkol-static>" "$<TARGET_FILE:eshkol-repl-lib>" "-Wl,--no-whole-archive")
     target_link_options(eshkol-run PRIVATE "-Wl,--export-dynamic")
     # 512MB stack for deep recursion
     target_link_options(eshkol-run PRIVATE "-Wl,-z,stack-size=536870912")
