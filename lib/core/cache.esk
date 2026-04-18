@@ -1,0 +1,171 @@
+;;; core/cache.esk
+;;;
+;;; Bounded LRU (least-recently-used) cache + a simple memoizer built
+;;; on top of it. Key ideas:
+;;;
+;;;   (make-lru-cache capacity)     → cache handle
+;;;   (lru-get cache key [default]) → cached value or default
+;;;   (lru-set! cache key value)    → installs / touches
+;;;   (lru-has? cache key)          → #t / #f (no touch)
+;;;   (lru-delete! cache key)       → removes, returns #t if removed
+;;;   (lru-size cache)              → current entry count
+;;;   (lru-clear! cache)            → drop all entries
+;;;   (lru-capacity cache)          → configured max
+;;;   (memoize fn [capacity])       → returns a memoized version of fn
+;;;
+;;; Internal data structure: a hash-table of key → (cons value
+;;; timestamp). On every read/write we bump a monotonic counter and
+;;; stamp the entry; when we're full and need to evict, we walk the
+;;; table, pick the lowest timestamp, and delete it. O(n) eviction
+;;; trades constant-time hashing + simple code for strictly-bounded
+;;; memory — fine for the typical agent-workflow cache sizes (hundreds
+;;; to low thousands). Callers needing billion-entry-scale caches
+;;; should use an external store.
+;;;
+;;; (require core.cache)
+
+(require core.list.higher_order)
+
+(provide make-lru-cache lru-get lru-get/default lru-set! lru-has?
+         lru-delete! lru-size lru-capacity lru-clear!
+         memoize memoize/cap
+         memoize1 memoize1/cap memoize2 memoize2/cap)
+
+;; An LRU cache is a vector: #(capacity counter-box ht)
+(define (make-lru-cache capacity)
+  (if (or (not (integer? capacity)) (<= capacity 0))
+      (error "make-lru-cache: capacity must be a positive integer" capacity)
+      (vector capacity (list 0) (make-hash-table))))
+
+(define (lru-capacity cache) (vector-ref cache 0))
+(define (lru-counter-box cache) (vector-ref cache 1))
+(define (lru-table cache) (vector-ref cache 2))
+
+(define (lru-tick! cache)
+  (let ((box (lru-counter-box cache)))
+    (let ((next (+ (car box) 1)))
+      (set-car! box next)
+      next)))
+
+(define (lru-size cache)
+  (hash-table-size (lru-table cache)))
+
+(define (lru-has? cache key)
+  (hash-table-contains? (lru-table cache) key))
+
+(define (lru-get cache key)
+  "Return cached value for key, or #f if absent. Bumps its timestamp.
+   Use lru-get/default when you need a custom miss value."
+  (let ((ht (lru-table cache)))
+    (if (hash-table-contains? ht key)
+        (let ((entry (hash-table-ref ht key)))
+          (set-cdr! entry (lru-tick! cache))
+          (car entry))
+        #f)))
+
+(define (lru-get/default cache key default)
+  "Like lru-get but returns `default` instead of #f on miss. Still
+   bumps the timestamp on a hit."
+  (let ((ht (lru-table cache)))
+    (if (hash-table-contains? ht key)
+        (let ((entry (hash-table-ref ht key)))
+          (set-cdr! entry (lru-tick! cache))
+          (car entry))
+        default)))
+
+(define (lru-set! cache key value)
+  (let ((ht (lru-table cache)))
+    (cond
+      ((hash-table-contains? ht key)
+       ;; Existing key — update value + touch timestamp.
+       (let ((entry (hash-table-ref ht key)))
+         (set-car! entry value)
+         (set-cdr! entry (lru-tick! cache))))
+      (else
+       ;; New key — may need to evict first.
+       (when (>= (hash-table-size ht) (lru-capacity cache))
+         (lru-evict-oldest! cache))
+       (hash-table-set! ht key (cons value (lru-tick! cache)))))))
+
+(define (lru-delete! cache key)
+  (let ((ht (lru-table cache)))
+    (if (hash-table-contains? ht key)
+        (begin (hash-table-delete! ht key) #t)
+        #f)))
+
+(define (lru-clear! cache)
+  (hash-table-clear! (lru-table cache)))
+
+;; Walk the table, find the key with the lowest timestamp, delete it.
+;; Called only when we're at capacity and inserting a new key.
+(define (lru-evict-oldest! cache)
+  (let* ((ht (lru-table cache))
+         (keys (hash-table-keys ht)))
+    (if (not (null? keys))
+        (let loop ((rest (cdr keys))
+                   (oldest-key (car keys))
+                   (oldest-ts (cdr (hash-table-ref ht (car keys)))))
+          (if (null? rest)
+              (hash-table-delete! ht oldest-key)
+              (let ((ts (cdr (hash-table-ref ht (car rest)))))
+                (if (< ts oldest-ts)
+                    (loop (cdr rest) (car rest) ts)
+                    (loop (cdr rest) oldest-key oldest-ts))))))))
+
+;; memoize wraps an N-ary function and caches results keyed on the
+;; full argument list. The key is the list itself — hash-table
+;; comparison uses equal? so structural equality of argument vectors
+;; is sufficient. Capacity defaults to 1024 via memoize/cap for
+;; callers who want a custom bound.
+;; Fixed-arity memoizers.
+;;
+;; Variadic (lambda args …) capturing free variables interacts badly
+;; with the current closure-ABI codepath in compile-to-binary mode.
+;; Users who truly need to memoize a variadic function can wrap it in
+;; a fixed-arity adapter (common idiom: pre-curry the arguments into
+;; a single list). The helpers below cover the 99% case — scalar
+;; deterministic math / lookup.
+
+(define (memoize1 fn)
+  (memoize1/cap fn 1024))
+
+(define (memoize1/cap fn capacity)
+  (let ((cache (make-lru-cache capacity)))
+    (lambda (x)
+      (if (lru-has? cache x)
+          (lru-get cache x)
+          (let ((result (fn x)))
+            (lru-set! cache x result)
+            result)))))
+
+(define (memoize2 fn)
+  (memoize2/cap fn 1024))
+
+(define (memoize2/cap fn capacity)
+  ;; hash-table keys compare with eq? / pointer identity rather than
+  ;; equal?, so `(list x y)` allocated fresh each call wouldn't hit
+  ;; an existing entry. Encode the pair as a string via `write` + a
+  ;; separator — the resulting string gets interned on the Scheme
+  ;; side, so identical key strings do hash-equal.
+  (let ((cache (make-lru-cache capacity)))
+    (lambda (x y)
+      (let ((key (memoize-key2 x y)))
+        (if (lru-has? cache key)
+            (lru-get cache key)
+            (let ((result (fn x y)))
+              (lru-set! cache key result)
+              result))))))
+
+;; Build a string key from two argument values. Works for anything
+;; `display` can render to a port; numbers, symbols, strings, booleans
+;; are the expected cases. For mutable or complex structures the
+;; caller should pre-hash themselves.
+(define (memoize-key2 x y)
+  (let ((p (open-output-string)))
+    (display x p)
+    (display "\x00" p)
+    (display y p)
+    (get-output-string p)))
+
+(define (memoize fn) (memoize1 fn))
+(define (memoize/cap fn capacity) (memoize1/cap fn capacity))
