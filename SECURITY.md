@@ -47,25 +47,37 @@ stdlib harden:
 
 ## Embedding Constraints
 
-The Eshkol runtime uses several process-global singletons:
+The Eshkol runtime uses several process-global singletons. Each is
+designed so the common multi-surface embedding case (Python bindings +
+in-process REPL JIT + compiled-to-binary user code) works correctly
+without ceremony:
 
-- **Symbol interning table** (`lib/core/symbol_intern.cpp`) — process-global
-  `g_interned_symbols` map; canonical symbol char* pointers are allocated
-  from `get_global_arena()`.
-- **Logic-var / predicate registry** (`lib/core/logic.cpp`) — `g_var_names`,
-  `g_pred_pool`, `g_pred_table` are shared across all callers in the
-  process.
-- **AD tape stack** (`lib/core/arena_memory.cpp`) — the reverse-mode tape
-  stack is thread-local but the tape-node storage arena is global.
+- **Symbol interning table** (`lib/core/symbol_intern.cpp`) —
+  process-global `g_interned_symbols` map. Canonical symbol char*
+  pointers live in dedicated malloc-backed blocks, NOT the main arena,
+  so `eq?` on symbol literals across modules holds even across arena
+  resets, REPL session recycles, and independent `EshkolContext`
+  instances. The backing blocks are intentionally never freed
+  (process-lifetime).
+- **Logic-var / predicate registry** (`lib/core/logic.cpp`) —
+  `g_var_names`, `g_pred_pool`, `g_pred_table` are shared across all
+  callers in the process. Call `eshkol_logic_registry_reset()` (exposed
+  to Scheme as part of `(reset-tests!)` in `core/testing.esk`) between
+  independent test batches to clear stale logic-var IDs and predicate
+  canonical pointers.
+- **AD tape** (`lib/core/arena_memory.cpp`) — the reverse-mode tape
+  stack is **thread-local** so parallel workers keep isolated tapes.
+  The tape node storage itself lives in the main arena; if you reset
+  the arena, outstanding tape references go with it. Finalize gradient
+  computations before bulk-resetting the arena.
 
-Practical implication: **embed exactly one Eshkol runtime per process.**
-Loading Python bindings (`bindings/python/eshkol_module.cpp`) AND running
-an in-process REPL JIT is fine because both share the same global arena;
-loading two independent `EshkolContext` instances that each try to own
-their own arena will dangle symbol pointers when either arena is reset.
-Call `eshkol_logic_registry_reset()` between independent test batches to
-clear logic/predicate state; symbol state is deliberately
-process-lifetime.
+Practical implication: dual-instance embedding is now safe. A Python
+process that imports `eshkol` and also spawns an in-process JIT REPL
+will observe consistent symbol identity and can reset logic state per
+test batch without cross-contamination. What is **not** safe: holding
+a direct pointer into the arena (e.g. a tensor data buffer) across an
+arena reset — the arena owns that lifetime, and per-instance embedders
+need to coordinate resets.
 
 ## Known Risky Surfaces (use with care)
 
