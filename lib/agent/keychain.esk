@@ -6,8 +6,9 @@
 
 (define KEYCHAIN_SERVICE "eshkol-agent")
 
-(define (shell-escape s)
-  (string-append "'" (string-replace s "'" "'\"'\"'") "'"))
+;; Delegate to stdlib shell-quote builtin (see lib/agent/fs-watch.esk
+;; for rationale). Single source of truth for shell arg quoting.
+(define shell-escape shell-quote)
 
 (define (keychain-get account)
   "Retrieve a password from macOS Keychain."
