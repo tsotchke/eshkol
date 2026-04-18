@@ -141,8 +141,19 @@ public:
         }
     }
 
-    /* Compute derivative: derivative(f_source, x) */
+    /* Compute derivative: derivative(f_source, x)
+     *
+     * Security (#191): func_source is user-controlled Python input.
+     * Before v1.2 we snprintf'd it straight into "(derivative %s %g)",
+     * meaning a caller could pass "(begin (system \"rm -rf /\") x)"
+     * and run arbitrary Eshkol code at FFI invocation. Now we require
+     * func_source to be exactly one lambda expression — balanced
+     * parens, starts with "(lambda" or "(λ", and contains no unescaped
+     * double-quote / string-literal injection points. Anything else
+     * raises a ValueError on the Python side rather than reaching the
+     * interpreter. */
     double derivative(const std::string& func_source, double x) {
+        validate_lambda_source(func_source, "derivative");
         char buf[512];
         snprintf(buf, sizeof(buf), "(derivative %s %g)", func_source.c_str(), x);
         return eval_double(buf);
@@ -150,6 +161,7 @@ public:
 
     /* Compute gradient: gradient(f_source, point_list) */
     py::object gradient(const std::string& func_source, const std::vector<double>& point) {
+        validate_lambda_source(func_source, "gradient");
         std::string expr = "(gradient " + func_source + " (list";
         for (double v : point) {
             char num[64];
@@ -158,6 +170,66 @@ public:
         }
         expr += "))";
         return eval(expr);
+    }
+
+    /* Validate a user-supplied Scheme lambda source before embedding it
+     * into a larger expression. Must:
+     *   1. Be non-empty and start with '(' (a single S-expression form).
+     *   2. Start with "(lambda" or "(λ" after skipping leading whitespace.
+     *   3. Have balanced parentheses — no suffix garbage.
+     *   4. Contain no double-quote (prevents string-literal escape and
+     *      subsequent eval-arbitrary-text injection via stringified
+     *      primitives).
+     * All three fail with py::value_error so the Python caller sees a
+     * clear ValueError instead of Eshkol swallowing the payload. */
+    static void validate_lambda_source(const std::string& src, const char* caller) {
+        std::string s = src;
+        /* Strip leading/trailing whitespace. */
+        size_t start = s.find_first_not_of(" \t\n\r");
+        if (start == std::string::npos) {
+            throw py::value_error(std::string(caller) + ": empty func_source");
+        }
+        size_t end = s.find_last_not_of(" \t\n\r");
+        s = s.substr(start, end - start + 1);
+
+        if (s.empty() || s[0] != '(') {
+            throw py::value_error(std::string(caller) + ": func_source must be a lambda expression");
+        }
+
+        /* Quick head check — skip "(" + optional whitespace. */
+        size_t i = 1;
+        while (i < s.size() && (s[i] == ' ' || s[i] == '\t')) i++;
+        bool is_lambda = (s.compare(i, 6, "lambda") == 0);
+        bool is_lambda_unicode = (s.compare(i, 2, "\xce\xbb") == 0);  /* UTF-8 'λ' */
+        if (!is_lambda && !is_lambda_unicode) {
+            throw py::value_error(std::string(caller) + ": func_source must start with (lambda …)");
+        }
+
+        /* Paren balance + quote check. We treat a '"' as a hard stop
+         * because a well-formed lambda for autodiff has no business
+         * carrying string literals, and allowing one would re-open the
+         * injection hole via (lambda (x) (eval (string->symbol ".."))). */
+        int depth = 0;
+        for (size_t j = 0; j < s.size(); j++) {
+            char c = s[j];
+            if (c == '"') {
+                throw py::value_error(std::string(caller) + ": func_source cannot contain string literals");
+            }
+            if (c == '(') depth++;
+            else if (c == ')') {
+                depth--;
+                if (depth < 0) {
+                    throw py::value_error(std::string(caller) + ": func_source has unmatched ')'");
+                }
+                if (depth == 0 && j != s.size() - 1) {
+                    /* Paren balanced but there's trailing content — reject. */
+                    throw py::value_error(std::string(caller) + ": func_source has trailing garbage after lambda");
+                }
+            }
+        }
+        if (depth != 0) {
+            throw py::value_error(std::string(caller) + ": func_source has unmatched '('");
+        }
     }
 
 private:
