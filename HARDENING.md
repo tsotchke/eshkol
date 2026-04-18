@@ -73,6 +73,16 @@ each item is implied by "ASan-clean" / "UBSan-clean" etc.
 | Version string (was "1.1.0-accelerate")    | FIX    | Bumped to 1.2.0-scale to match the shipping branch.                              |
 | Embedding constraints doc                  | DOC    | `SECURITY.md` § Embedding Constraints — now states what's safe, not what's banned. |
 
+### Noesis residual audit (2026-04-18 v2) — landed 2026-04-18
+
+| Item                                                  | Status | Notes                                                                                           |
+| ----------------------------------------------------- | ------ | ----------------------------------------------------------------------------------------------- |
+| BUG 1 — `call-with-values` can't resolve stdlib list  | FIX    | Synthesized `builtin_list_varargs` / `builtin_values_varargs` in codegenVariable so the bare symbol has a first-class value with CLOSURE_FLAG_VARIADIC set. |
+| BUG 2 — `(define (f . args) args)` bound first arg only | FIX    | REPL hot-reload + forward-ref call paths now look up `g_repl_variadic_functions` and build the slot with (fixed_params+1) ABI + cons the tail into a Scheme list. |
+| BUG 3a — agent FFI symbols stripped under `-e`        | FIX    | `-force_load` / `--whole-archive` on `libeshkol-agent-ffi.a` + PUBLIC transitive deps (sqlite3, pcre2, Security framework, OpenSSL) + agent target-link moved after target definition. |
+| BUG 3b — PCRE2 pkg-config name mismatch (Homebrew)    | FIX    | CMake tries `libpcre2-8` first, falls back to `pcre2-8` for Debian-style distros. Uses PCRE2_AGENT_LINK_LIBRARIES (full paths) instead of short `-l` names. |
+| BUG 3c — regex.esk used nonexistent `char-set` in trim | FIX    | Replaced with explicit NUL-scan loop; PCRE2 match output is NUL-terminated anyway. |
+
 ---
 
 ## Still pending
