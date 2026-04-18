@@ -132,8 +132,27 @@ public:
         return result;
     }
 
-    /* Evaluate a file */
+    /* Evaluate a file
+     *
+     * Security (#195): reject paths that are empty, contain NUL
+     * bytes (string truncation attack), or exceed 4 KiB (heuristic
+     * cap — legitimate paths are nowhere near this). We intentionally
+     * do NOT call realpath() here because that would restrict the
+     * caller to filesystem paths that already exist, which doesn't
+     * match Python semantics for FileNotFoundError reporting. The
+     * length + NUL guard is sufficient to close the string-truncation
+     * injection surface.
+     */
     void eval_file(const std::string& path) {
+        if (path.empty()) {
+            throw py::value_error("eval_file: path is empty");
+        }
+        if (path.size() > 4096) {
+            throw py::value_error("eval_file: path exceeds 4 KiB");
+        }
+        if (path.find('\0') != std::string::npos) {
+            throw py::value_error("eval_file: path contains NUL byte");
+        }
         int rc = eshkol_ffi_eval_file(ctx_, path.c_str());
         if (rc != 0) {
             const char* err = eshkol_ffi_last_error();

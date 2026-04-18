@@ -75,6 +75,34 @@ int64_t eshkol_regex_compile(const char* pattern, int flags) {
     return handle;
 }
 
+/* #195 MEDIUM: ReDoS protection. A pattern like "(a+)+$" on a long
+ * subject of a's + one unmatched trailing char triggers exponential
+ * backtracking and freezes the thread. Without a match_limit, the
+ * regex engine will happily burn the CPU for minutes. Build a
+ * process-global match_context with a conservative limit (10M
+ * backtrack steps) and pass it into every pcre2_match / pcre2_
+ * substitute call. 10M is well below the "noticeably slow" threshold
+ * on modern hardware but easily enough for legitimate matches.
+ *
+ * Allocated lazily and never freed — the runtime is process-
+ * lifetime anyway, and reusing a single context is cheap and
+ * thread-safe per PCRE2 docs (the context is read-only during
+ * matching). */
+static pcre2_match_context* get_match_context(void) {
+    static pcre2_match_context* s_ctx = NULL;
+    if (!s_ctx) {
+        s_ctx = pcre2_match_context_create(NULL);
+        if (s_ctx) {
+            /* Backtrack ("match") and heap limits — empirically
+             * picked. 10M steps ≈ a few tens of ms on modern CPUs;
+             * heap limit guards pathological alternations. */
+            pcre2_set_match_limit(s_ctx, 10000000);
+            pcre2_set_depth_limit(s_ctx, 100000);
+        }
+    }
+    return s_ctx;
+}
+
 int eshkol_regex_match(int64_t handle, const char* subject,
                        char* match_buf, size_t buf_size) {
     pcre2_code* code = get_handle(handle);
@@ -84,7 +112,7 @@ int eshkol_regex_match(int64_t handle, const char* subject,
     if (!md) return 0;
 
     int rc = pcre2_match(code, (PCRE2_SPTR)subject, PCRE2_ZERO_TERMINATED,
-                         0, 0, md, NULL);
+                         0, 0, md, get_match_context());
 
     if (rc < 1) {
         pcre2_match_data_free(md);
@@ -120,7 +148,7 @@ int eshkol_regex_match_all(int64_t handle, const char* subject,
 
     while (count < max_matches && offset < subject_len) {
         int rc = pcre2_match(code, (PCRE2_SPTR)subject, subject_len,
-                             offset, 0, md, NULL);
+                             offset, 0, md, get_match_context());
         if (rc < 1) break;
 
         PCRE2_SIZE* ovector = pcre2_get_ovector_pointer(md);
@@ -204,7 +232,7 @@ int eshkol_regex_match_groups_count(int64_t handle, const char* subject) {
     if (!md) return 0;
 
     int rc = pcre2_match(code, (PCRE2_SPTR)subject, PCRE2_ZERO_TERMINATED,
-                         0, 0, md, NULL);
+                         0, 0, md, get_match_context());
     pcre2_match_data_free(md);
     return rc;
 }
@@ -221,7 +249,7 @@ int eshkol_regex_match_groups(int64_t handle, const char* subject,
     if (!md) return 0;
 
     int rc = pcre2_match(code, (PCRE2_SPTR)subject, PCRE2_ZERO_TERMINATED,
-                         0, 0, md, NULL);
+                         0, 0, md, get_match_context());
     if (rc < 1) {
         pcre2_match_data_free(md);
         return -1;
