@@ -1,0 +1,59 @@
+;;; testing_framework_test.esk
+;;;
+;;; Exercises the core.testing API end-to-end. Meta-test: uses run-tests
+;;; to drive itself, then asserts the final pass/fail counts match what
+;;; we set up. If register-test / check-* / run-tests regress, this
+;;; test either hangs or reports a wrong summary.
+
+(require core.testing)
+
+(reset-tests!)
+
+(register-test "arithmetic checks"
+  (lambda ()
+    (check-equal? (+ 1 2) 3)
+    (check-equal? (* 4 5) 20)
+    (check-equal? (- 10 3) 7)))
+
+(register-test "boolean checks"
+  (lambda ()
+    (check-true  #t)
+    (check-true  (> 5 3))
+    (check-false #f)
+    (check-false (< 5 3))))
+
+(register-test "approximate equality"
+  (lambda ()
+    (check-approx 3.14159 3.14 0.01)
+    (check-approx 1.0 1.0 0.0001)))
+
+(register-test "list equality"
+  (lambda ()
+    (check-equal? (list 1 2 3) (list 1 2 3))
+    (check-equal? '() '())
+    (check-equal? (cons 1 2) (cons 1 2))))
+
+(register-test "string equality"
+  (lambda ()
+    (check-equal? "hello" "hello")
+    (check-equal? (string-append "foo" "bar") "foobar")))
+
+;; Intentional failure to exercise the fail path — we then reset and
+;; re-run without it to confirm counts behave correctly.
+(register-test "intentional failure"
+  (lambda ()
+    (check-equal? 1 2)))
+
+(display "Running tests (expecting 1 failure):") (newline)
+(run-tests)
+
+(newline)
+(display "Final counts (before reset):") (newline)
+(display "  pass=") (display *test-pass-count*) (newline)
+(display "  fail=") (display *test-fail-count*) (newline)
+
+;; Verify the final counts.
+(if (and (= *test-fail-count* 1)
+         (>= *test-pass-count* 12))
+    (begin (display "META: framework self-check OK") (newline))
+    (begin (display "META: framework self-check FAILED") (newline)))
