@@ -1,0 +1,112 @@
+;;; cache_test.esk — #171 LRU cache + memoize.
+
+(require core.cache)
+(require core.testing)
+
+(reset-tests!)
+
+(register-test "empty cache has size 0"
+  (lambda ()
+    (let ((c (make-lru-cache 5)))
+      (check-equal? (lru-size c) 0)
+      (check-equal? (lru-capacity c) 5)
+      (check-false (lru-has? c 'anything)))))
+
+(register-test "set + get round-trip"
+  (lambda ()
+    (let ((c (make-lru-cache 3)))
+      (lru-set! c 'a 1)
+      (lru-set! c 'b 2)
+      (check-equal? (lru-get c 'a) 1)
+      (check-equal? (lru-get c 'b) 2)
+      (check-equal? (lru-size c) 2))))
+
+(register-test "miss returns #f by default"
+  (lambda ()
+    (let ((c (make-lru-cache 3)))
+      (check-false (lru-get c 'missing)))))
+
+(register-test "lru-get/default returns custom miss value"
+  (lambda ()
+    (let ((c (make-lru-cache 3)))
+      (check-equal? (lru-get/default c 'missing 'none) 'none)
+      (lru-set! c 'x 42)
+      (check-equal? (lru-get/default c 'x 'unused) 42))))
+
+(register-test "LRU eviction: untouched key is evicted first"
+  (lambda ()
+    (let ((c (make-lru-cache 3)))
+      (lru-set! c 'a 1)
+      (lru-set! c 'b 2)
+      (lru-set! c 'c 3)
+      (lru-get c 'a)   ; touch 'a
+      (lru-get c 'c)   ; touch 'c
+      (lru-set! c 'd 4) ; should evict 'b (coldest)
+      (check-equal? (lru-size c) 3)
+      (check-false (lru-has? c 'b))
+      (check-true  (lru-has? c 'a))
+      (check-true  (lru-has? c 'c))
+      (check-true  (lru-has? c 'd)))))
+
+(register-test "updating existing key doesn't trigger eviction"
+  (lambda ()
+    (let ((c (make-lru-cache 2)))
+      (lru-set! c 'a 1)
+      (lru-set! c 'b 2)
+      (lru-set! c 'a 10)   ; update, not insert
+      (check-equal? (lru-size c) 2)
+      (check-equal? (lru-get c 'a) 10)
+      (check-true  (lru-has? c 'b)))))
+
+(register-test "lru-delete! returns #t on hit, #f on miss"
+  (lambda ()
+    (let ((c (make-lru-cache 2)))
+      (lru-set! c 'a 1)
+      (check-true  (lru-delete! c 'a))
+      (check-false (lru-delete! c 'a))
+      (check-false (lru-has?   c 'a)))))
+
+(register-test "lru-clear! empties everything"
+  (lambda ()
+    (let ((c (make-lru-cache 3)))
+      (lru-set! c 'a 1)
+      (lru-set! c 'b 2)
+      (lru-clear! c)
+      (check-equal? (lru-size c) 0)
+      (check-false (lru-has? c 'a)))))
+
+(register-test "memoize1 caches 1-arg function results"
+  (lambda ()
+    (let* ((call-count 0)
+           (slow (lambda (x)
+                   (set! call-count (+ call-count 1))
+                   (* x x)))
+           (fast (memoize1 slow)))
+      (check-equal? (fast 5) 25)
+      (check-equal? (fast 5) 25)   ; cached
+      (check-equal? (fast 6) 36)   ; new
+      (check-equal? call-count 2)))) ; slow() ran twice, not three
+
+(register-test "memoize2 caches 2-arg results keyed on (list x y)"
+  (lambda ()
+    (let* ((call-count 0)
+           (slow (lambda (x y)
+                   (set! call-count (+ call-count 1))
+                   (+ x y)))
+           (fast (memoize2 slow)))
+      (check-equal? (fast 1 2) 3)
+      (check-equal? (fast 1 2) 3)
+      (check-equal? (fast 2 1) 3)  ; different key ordering
+      (check-equal? call-count 2))))
+
+(register-test "memoize alias points at memoize1"
+  (lambda ()
+    (let ((m (memoize (lambda (x) (* x 10)))))
+      (check-equal? (m 5) 50))))
+
+(register-test "make-lru-cache rejects non-positive capacity"
+  (lambda ()
+    (check-raises (lambda () (make-lru-cache 0)))
+    (check-raises (lambda () (make-lru-cache -5)))))
+
+(run-tests)
