@@ -202,6 +202,17 @@ eshkol_ast_t* convert_lambda(eshkol_tagged_value_t sexp) {
             eshkol_ast_t* expr = convert_sexp(body_sexps[i]);
             if (expr) {
                 seq->operation.sequence_op.expressions[i] = *expr;
+            } else {
+                /* #194 PATTERN A: without this, a failed convert_sexp
+                 * left expressions[i] uninitialized and the JIT tried
+                 * to compile memory garbage. Zero-init to ESHKOL_INVALID
+                 * and log which body slot failed so the user can find
+                 * the offending form. */
+                eshkol_error("sexp_to_ast: failed to convert lambda body expression %zu/%zu",
+                             i, body_sexps.size());
+                memset(&seq->operation.sequence_op.expressions[i], 0,
+                       sizeof(eshkol_ast_t));
+                seq->operation.sequence_op.expressions[i].type = ESHKOL_INVALID;
             }
         }
         body = seq;
@@ -303,6 +314,13 @@ eshkol_ast_t* convert_define(eshkol_tagged_value_t sexp) {
                 eshkol_ast_t* expr = convert_sexp(body_sexps[i]);
                 if (expr) {
                     seq->operation.sequence_op.expressions[i] = *expr;
+                } else {
+                    /* #194 PATTERN A: uninit AST slot poisons codegen. */
+                    eshkol_error("sexp_to_ast: failed to convert define body expression %zu/%zu",
+                                 i, body_sexps.size());
+                    memset(&seq->operation.sequence_op.expressions[i], 0,
+                           sizeof(eshkol_ast_t));
+                    seq->operation.sequence_op.expressions[i].type = ESHKOL_INVALID;
                 }
             }
             body = seq;
@@ -423,6 +441,13 @@ eshkol_ast_t* convert_let(eshkol_tagged_value_t sexp, eshkol_op_t let_type) {
             eshkol_ast_t* expr = convert_sexp(body_sexps[i]);
             if (expr) {
                 seq->operation.sequence_op.expressions[i] = *expr;
+            } else {
+                /* #194 PATTERN A: uninit AST slot poisons codegen. */
+                eshkol_error("sexp_to_ast: failed to convert let/let*/letrec body expression %zu/%zu",
+                             i, body_sexps.size());
+                memset(&seq->operation.sequence_op.expressions[i], 0,
+                       sizeof(eshkol_ast_t));
+                seq->operation.sequence_op.expressions[i].type = ESHKOL_INVALID;
             }
         }
         body = seq;

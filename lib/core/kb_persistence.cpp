@@ -329,13 +329,24 @@ void eshkol_kb_load_tagged(arena_t* arena,
     const char* path = (const char*)path_ptr;
 
     FILE* f = fopen(path, "rb");
-    if (!f) return;
+    if (!f) {
+        /* #194: don't swallow. kb-load returning () (set at line 315)
+         * looked identical to "file exists but is empty"; log the
+         * errno reason so operators can distinguish "no such file"
+         * from permission denied. */
+        eshkol_error("kb-load: cannot open '%s' (errno=%d)", path, errno);
+        return;
+    }
 
     uint32_t magic, version, num_facts, reserved;
-    if (!read_u32(f, &magic)   || magic != ESKB_MAGIC ||
-        !read_u32(f, &version) ||
+    if (!read_u32(f, &magic) || magic != ESKB_MAGIC) {
+        eshkol_error("kb-load: '%s' is not an ESKB file (bad magic)", path);
+        fclose(f); return;
+    }
+    if (!read_u32(f, &version) ||
         !read_u32(f, &num_facts) ||
         !read_u32(f, &reserved)) {
+        eshkol_error("kb-load: '%s' truncated in header", path);
         fclose(f); return;
     }
 
@@ -348,22 +359,37 @@ void eshkol_kb_load_tagged(arena_t* arena,
     }
 
     eshkol_knowledge_base_t* kb = eshkol_make_kb(arena);
-    if (!kb) { fclose(f); return; }
+    if (!kb) {
+        eshkol_error("kb-load: failed to allocate knowledge base");
+        fclose(f); return;
+    }
 
     char name_buf[256];
     for (uint32_t i = 0; i < num_facts; i++) {
         uint32_t name_len;
-        if (!read_u32(f, &name_len)) break;
+        if (!read_u32(f, &name_len)) {
+            eshkol_error("kb-load: truncated at fact %u/%u (name length)",
+                         (unsigned)i, (unsigned)num_facts);
+            break;
+        }
         if (name_len > 255) {
             eshkol_error("kb-load: predicate name too long (%u bytes)",
                 (unsigned)name_len);
             fclose(f); return;
         }
-        if (!read_bytes(f, name_buf, name_len)) break;
+        if (!read_bytes(f, name_buf, name_len)) {
+            eshkol_error("kb-load: truncated at fact %u/%u (predicate name)",
+                         (unsigned)i, (unsigned)num_facts);
+            break;
+        }
         name_buf[name_len] = '\0';
 
         uint32_t arity;
-        if (!read_u32(f, &arity)) break;
+        if (!read_u32(f, &arity)) {
+            eshkol_error("kb-load: truncated at fact %u/%u (arity)",
+                         (unsigned)i, (unsigned)num_facts);
+            break;
+        }
 
         /* #192 CRITICAL: arity comes straight out of an untrusted file.
          * The multiply (size_t)arity * sizeof(tagged_value_t) wraps for
@@ -386,7 +412,11 @@ void eshkol_kb_load_tagged(arena_t* arena,
             (size_t)arity * sizeof(eshkol_tagged_value_t);
         eshkol_fact_t* fact = (eshkol_fact_t*)arena_allocate_with_header(
             arena, fact_size, HEAP_SUBTYPE_FACT, 0);
-        if (!fact) break;
+        if (!fact) {
+            eshkol_error("kb-load: out of memory allocating fact %u/%u",
+                         (unsigned)i, (unsigned)num_facts);
+            break;
+        }
 
         /* Intern predicate so pointer equality works with runtime make-fact. */
         const char* interned = eshkol_intern_predicate(name_buf);
@@ -399,7 +429,11 @@ void eshkol_kb_load_tagged(arena_t* arena,
         for (uint32_t j = 0; j < arity; j++) {
             if (!read_arg(arena, f, &args[j])) { ok = false; break; }
         }
-        if (!ok) { fclose(f); return; }
+        if (!ok) {
+            eshkol_error("kb-load: truncated at fact %u/%u (args)",
+                         (unsigned)i, (unsigned)num_facts);
+            fclose(f); return;
+        }
 
         eshkol_kb_assert(arena, kb, fact);
     }
