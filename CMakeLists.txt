@@ -1231,10 +1231,10 @@ if(REPL_SRC)
   # This must come after eshkol-repl-lib is defined
   target_link_libraries(eshkol-run PRIVATE eshkol-repl-lib)
 
-  # Link agent FFI modules so extern declarations in .esk files resolve
-  if(TARGET eshkol-agent-ffi)
-    target_link_libraries(eshkol-run PRIVATE eshkol-agent-ffi)
-  endif()
+  # Agent FFI linkage is applied AFTER the eshkol-agent-ffi target is
+  # defined (see the block at the end of the agent-FFI section further
+  # down). At this point in the file the target doesn't exist yet, so
+  # if(TARGET …) would evaluate false and silently drop the linkage.
   # Force-load eshkol-static for JIT symbol resolution (same as REPL).
   # Also force-load eshkol-repl-lib so its strong eval_bridge_impl.cpp
   # overrides (eshkol_eval_jit_get_*) beat the weak defaults in
@@ -1253,6 +1253,12 @@ if(REPL_SRC)
     target_link_options(eshkol-run PRIVATE
       "-Wl,-force_load,$<TARGET_FILE:eshkol-static>"
       "-Wl,-force_load,$<TARGET_FILE:eshkol-repl-lib>")
+    # NOTE: agent-ffi force_load is applied separately AFTER the
+    # eshkol-agent-ffi target is defined later in this file (line
+    # 1467+ area). See the matching block at the bottom of the agent
+    # FFI section. This split is because `if(TARGET eshkol-agent-ffi)`
+    # here evaluates at configure time and the target doesn't exist
+    # yet.
     target_link_options(eshkol-run PRIVATE "-Wl,-export_dynamic")
     # 512MB stack for deep recursion (main thread stack set at link time on macOS)
     target_link_options(eshkol-run PRIVATE "-Wl,-stack_size,0x20000000")
@@ -1262,7 +1268,10 @@ if(REPL_SRC)
     # accept GNU ld options here.
   else()
     target_link_options(eshkol-run PRIVATE
-      "-Wl,--whole-archive" "$<TARGET_FILE:eshkol-static>" "$<TARGET_FILE:eshkol-repl-lib>" "-Wl,--no-whole-archive")
+      "-Wl,--whole-archive"
+      "$<TARGET_FILE:eshkol-static>"
+      "$<TARGET_FILE:eshkol-repl-lib>"
+      "-Wl,--no-whole-archive")
     target_link_options(eshkol-run PRIVATE "-Wl,--export-dynamic")
     # 512MB stack for deep recursion
     target_link_options(eshkol-run PRIVATE "-Wl,-z,stack-size=536870912")
@@ -1442,32 +1451,43 @@ if(ESHKOL_BUILD_AGENT_FFI)
             ${CMAKE_SOURCE_DIR}/include
         )
 
+        # NOTE: The following dependencies are declared PUBLIC rather
+        # than PRIVATE so they propagate transitively to any target
+        # that links eshkol-agent-ffi (most importantly eshkol-run).
+        # When eshkol-run uses -force_load / --whole-archive to keep
+        # agent FFI symbols alive for JIT dlsym, the linker also
+        # needs sqlite3 / pcre2 / Security framework / OpenSSL to
+        # resolve the symbols those agent objects reference
+        # internally — otherwise we get "Undefined symbols for
+        # architecture arm64: _sqlite3_exec, _SecRandomCopyBytes,
+        # etc." at eshkol-run's link step.
+
         # Terminal needs ncurses
         find_library(NCURSES_AGENT ncurses)
         if(NCURSES_AGENT)
-            target_link_libraries(eshkol-agent-ffi PRIVATE ${NCURSES_AGENT})
+            target_link_libraries(eshkol-agent-ffi PUBLIC ${NCURSES_AGENT})
         endif()
 
         if(PCRE2_AGENT_FOUND)
             target_include_directories(eshkol-agent-ffi PRIVATE ${PCRE2_AGENT_INCLUDE_DIRS})
-            target_link_libraries(eshkol-agent-ffi PRIVATE ${PCRE2_AGENT_LIBRARIES})
+            target_link_libraries(eshkol-agent-ffi PUBLIC ${PCRE2_AGENT_LIBRARIES})
             target_compile_definitions(eshkol-agent-ffi PRIVATE PCRE2_CODE_UNIT_WIDTH=8)
         endif()
 
         if(SQLITE3_AGENT_FOUND)
-            target_link_libraries(eshkol-agent-ffi PRIVATE ${SQLITE3_AGENT_LIBRARIES})
+            target_link_libraries(eshkol-agent-ffi PUBLIC ${SQLITE3_AGENT_LIBRARIES})
         endif()
 
         # Crypto: CommonCrypto on macOS, OpenSSL on Linux
         if(APPLE)
-            target_link_libraries(eshkol-agent-ffi PRIVATE
+            target_link_libraries(eshkol-agent-ffi PUBLIC
                 "-framework Security"
                 "-framework CoreFoundation"
             )
         else()
             find_package(OpenSSL)
             if(OpenSSL_FOUND)
-                target_link_libraries(eshkol-agent-ffi PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+                target_link_libraries(eshkol-agent-ffi PUBLIC OpenSSL::SSL OpenSSL::Crypto)
             endif()
         endif()
 
@@ -1476,6 +1496,38 @@ if(ESHKOL_BUILD_AGENT_FFI)
         message(STATUS "  Crypto:    YES")
         message(STATUS "  Regex:     ${PCRE2_AGENT_FOUND}")
         message(STATUS "  SQLite:    ${SQLITE3_AGENT_FOUND}")
+
+        # Force-load eshkol-agent-ffi into eshkol-run so the (extern …
+        # :real eshkol_*) declarations in lib/agent/*.esk can be
+        # resolved by the JIT at runtime. The agent FFI symbols are
+        # never referenced from eshkol-run's own C++ code — they exist
+        # purely to satisfy Scheme-side FFI lookups via
+        # dlsym(RTLD_DEFAULT). Without force_load, the whole archive
+        # gets dead-stripped and every (load "lib/agent/regex.esk")
+        # under -e JIT dies with "Symbols not found".
+        #
+        # Must happen here, not in the eshkol-run target section above,
+        # because the eshkol-agent-ffi target doesn't exist yet at that
+        # point (CMake evaluates if(TARGET…) at configure time).
+        #
+        # Audit reference: 2026-04-18 v2 BUG 3 ("all lib/agent/*.esk
+        # FFI modules fail under JIT").
+        if(TARGET eshkol-run)
+            # Link eshkol-agent-ffi + its transitive PUBLIC deps
+            # (sqlite3, pcre2, Security framework, OpenSSL, ncurses)
+            # into eshkol-run. MUST happen here, not in the eshkol-run
+            # config block above, because agent-ffi is defined here.
+            target_link_libraries(eshkol-run PRIVATE eshkol-agent-ffi)
+            if(APPLE)
+                target_link_options(eshkol-run PRIVATE
+                    "-Wl,-force_load,$<TARGET_FILE:eshkol-agent-ffi>")
+            elseif(NOT WIN32)
+                target_link_options(eshkol-run PRIVATE
+                    "-Wl,--whole-archive"
+                    "$<TARGET_FILE:eshkol-agent-ffi>"
+                    "-Wl,--no-whole-archive")
+            endif()
+        endif()
     else()
         message(STATUS "Agent FFI modules: lib/agent/c/ not found, skipping")
     endif()
