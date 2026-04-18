@@ -1,0 +1,183 @@
+;;; core/logging.esk
+;;;
+;;; Structured logging with JSON-Lines output. Each log record is
+;;; emitted as a single JSON object on one line, so downstream
+;;; pipelines (jq, Datadog, Elastic, etc.) can parse without
+;;; multi-line reassembly.
+;;;
+;;;   (require core.logging)
+;;;
+;;;   (log-info "agent starting" '(("version" . "v1.2") ("pid" . 42)))
+;;;   (log-error "llm call failed" '(("status" . 500) ("retry" . 3)))
+;;;
+;;; Output format (one line, no line wrap):
+;;;   {"ts":"2026-04-18T12:34:56.789Z","level":"info","msg":"...",
+;;;    "trace_id":"abc","version":"v1.2","pid":42}
+;;;
+;;; Public API:
+;;;   (log-debug msg [fields])
+;;;   (log-info  msg [fields])
+;;;   (log-warn  msg [fields])
+;;;   (log-error msg [fields])
+;;;   (log-set-level! level)    ; 'debug / 'info / 'warn / 'error
+;;;   (log-set-output! port)    ; defaults to current-output-port
+;;;   (log-with-trace! trace-id thunk) ; scope trace_id within thunk
+;;;
+;;; `fields` is an association list of (string . simple-value) pairs.
+;;; Values may be strings, numbers, or booleans; anything else is
+;;; rendered via write (quoted JSON string).
+
+(require core.json)
+
+(provide log-debug log-info log-warn log-error
+         log-set-level! log-set-output!
+         log-with-trace!
+         log-level log-output-port)
+
+;; Internal state.
+(define *log-level* 'info)
+(define *log-output* #f)  ; lazily resolved to current-output-port
+(define *log-trace-id* #f)
+
+(define (log-level) *log-level*)
+(define (log-output-port) *log-output*)
+
+(define (log-set-level! level)
+  (if (memq level '(debug info warn error))
+      (set! *log-level* level)
+      (error "log-set-level!: invalid level" level)))
+
+(define (log-set-output! port)
+  (set! *log-output* port))
+
+(define (log-level-priority lvl)
+  (cond ((eq? lvl 'debug) 0)
+        ((eq? lvl 'info)  1)
+        ((eq? lvl 'warn)  2)
+        ((eq? lvl 'error) 3)
+        (else 1)))
+
+(define (log-enabled? lvl)
+  (>= (log-level-priority lvl) (log-level-priority *log-level*)))
+
+(define (log-with-trace! trace-id thunk)
+  "Run `thunk` with *log-trace-id* bound to trace-id; restore after."
+  (let ((prev *log-trace-id*))
+    (set! *log-trace-id* trace-id)
+    (let ((result (thunk)))
+      (set! *log-trace-id* prev)
+      result)))
+
+(define (log-target-port)
+  (if *log-output* *log-output* (current-output-port)))
+
+;; Escape a string for JSON. Handles ", \, control chars, and \n /
+;; \r / \t. Doesn't attempt to coerce UTF-8 — we assume the input is
+;; already valid Scheme string (i.e. already valid UTF-8).
+(define (log-json-escape s)
+  (let ((out (open-output-string))
+        (slen (string-length s)))
+    (let loop ((i 0))
+      (if (>= i slen)
+          (get-output-string out)
+          (let ((c (string-ref s i)))
+            (cond
+              ((char=? c #\") (display "\\\"" out))
+              ((char=? c #\\) (display "\\\\" out))
+              ((char=? c #\newline) (display "\\n" out))
+              ((char=? c #\return)  (display "\\r" out))
+              ((char=? c #\tab)     (display "\\t" out))
+              ((< (char->integer c) 32)
+               (display "\\u00" out)
+               (let* ((code (char->integer c))
+                      (hi (quotient code 16))
+                      (lo (modulo code 16)))
+                 (display (log-hex-digit hi) out)
+                 (display (log-hex-digit lo) out)))
+              (else (display c out)))
+            (loop (+ i 1)))))))
+
+(define (log-hex-digit n)
+  (cond ((< n 10) (integer->char (+ 48 n)))  ; 0-9
+        (else     (integer->char (+ 87 n))))) ; a-f
+
+;; Render a single value (number, string, bool, symbol) as JSON.
+(define (log-json-value v)
+  (cond
+    ((string? v)
+     (string-append "\"" (log-json-escape v) "\""))
+    ((number? v) (number->string v))
+    ((eq? v #t) "true")
+    ((eq? v #f) "false")
+    ((null? v)  "null")
+    ((symbol? v)
+     (string-append "\"" (log-json-escape (symbol->string v)) "\""))
+    (else
+     (let ((p (open-output-string)))
+       (display "\"" p) (display v p) (display "\"" p)
+       (get-output-string p)))))
+
+;; Emit a field as "key":value — caller supplies the leading ,
+;; (or nothing for first field).
+(define (log-emit-field port key value first?)
+  (if (not first?) (display "," port))
+  (display "\"" port)
+  (display (log-json-escape key) port)
+  (display "\":" port)
+  (display (log-json-value value) port))
+
+;; Each `field` is either:
+;;   a cons cell   (key . value)   — construct with (cons "k" v)
+;;   a 2-list      ("k" v)          — construct with (list "k" v)
+;; We accept both because Eshkol's reader parses `'("k" . "v")` as a
+;; proper list `("k" "." "v")` rather than a dotted pair, so quoted-
+;; alist syntax doesn't work; (list "k" v) is the portable form.
+(define (log-field-key pair)
+  (cond ((pair? pair) (car pair))
+        (else (error "log: field is not a pair/list" pair))))
+
+(define (log-field-value pair)
+  (cond
+    ((not (pair? pair)) (error "log: field is not a pair/list" pair))
+    ;; Proper 2-list: (cdr pair) is a one-element list containing the value.
+    ((and (pair? (cdr pair)) (null? (cdr (cdr pair))))
+     (car (cdr pair)))
+    ;; Proper dotted cons: (cdr pair) is the value directly.
+    (else (cdr pair))))
+
+(define (log-emit-fields port fields first?)
+  (if (null? fields) first?
+      (let ((pair (car fields)))
+        (log-emit-field port
+                        (log-field-key pair)
+                        (log-field-value pair)
+                        first?)
+        (log-emit-fields port (cdr fields) #f))))
+
+(define (log-emit level msg fields)
+  (let ((port (log-target-port)))
+    (display "{" port)
+    (log-emit-field port "ts" (format-iso8601 (current-time-ns)) #t)
+    (log-emit-field port "level" (symbol->string level) #f)
+    (log-emit-field port "msg" msg #f)
+    (if *log-trace-id*
+        (log-emit-field port "trace_id" *log-trace-id* #f))
+    (log-emit-fields port fields #f)
+    (display "}" port)
+    (newline port)))
+
+(define (log-debug msg . rest)
+  (if (log-enabled? 'debug)
+      (log-emit 'debug msg (if (null? rest) '() (car rest)))))
+
+(define (log-info msg . rest)
+  (if (log-enabled? 'info)
+      (log-emit 'info msg (if (null? rest) '() (car rest)))))
+
+(define (log-warn msg . rest)
+  (if (log-enabled? 'warn)
+      (log-emit 'warn msg (if (null? rest) '() (car rest)))))
+
+(define (log-error msg . rest)
+  (if (log-enabled? 'error)
+      (log-emit 'error msg (if (null? rest) '() (car rest)))))
