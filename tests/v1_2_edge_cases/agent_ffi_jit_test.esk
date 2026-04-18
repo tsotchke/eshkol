@@ -1,0 +1,79 @@
+;; Agent FFI JIT-loading regression suite — exercises every agent
+;; module that depends on a C bridge linked into eshkol-run under
+;; -force_load / --whole-archive. If any of these fail the linker has
+;; regressed (symbols stripped again). Corresponds to Noesis residual
+;; audit 2026-04-18 v2 BUG 3.
+;;
+;; Note: this suite intentionally covers only the audit's exact repro
+;; probes. regex-match-groups / regex-match-all chain across additional
+;; internals (forward-ref slot binding for multi-arg extern declarations)
+;; that are tracked separately.
+
+(require stdlib)
+(load "lib/agent/regex.esk")
+(load "lib/agent/crypto.esk")
+(load "lib/agent/sqlite.esk")
+
+(display "=== Agent FFI JIT Regression Suite ===") (newline)
+
+(define pass-count 0)
+(define fail-count 0)
+
+(define (check name cond)
+  (if cond
+      (begin
+        (set! pass-count (+ pass-count 1))
+        (display "PASS: ") (display name) (newline))
+      (begin
+        (set! fail-count (+ fail-count 1))
+        (display "FAIL: ") (display name) (newline))))
+
+;; ---------------------------------------------------------------------------
+;; regex (PCRE2) — audit BUG 3a repro
+;; ---------------------------------------------------------------------------
+(define regex-h (regex-compile "[0-9]+"))
+(check "regex: compile returns a handle (not -1)"
+       (not (= regex-h -1)))
+(check "regex: match? true for matching pattern"
+       (regex-match? regex-h "abc 123 def"))
+(check "regex: match? false for no-match"
+       (not (regex-match? regex-h "abcdef")))
+(check "regex: match returns the matched substring"
+       (equal? (regex-match regex-h "abc 123 def") "123"))
+(regex-free regex-h)
+
+;; ---------------------------------------------------------------------------
+;; crypto (CommonCrypto / OpenSSL) — audit BUG 3b repro + known-answer tests
+;; ---------------------------------------------------------------------------
+(check "crypto: sha256 empty string"
+       (equal? (sha256 "")
+               "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"))
+(check "crypto: sha256 \"hello\""
+       (equal? (sha256 "hello")
+               "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"))
+(check "crypto: sha256 \"abc\""
+       (equal? (sha256 "abc")
+               "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"))
+
+;; ---------------------------------------------------------------------------
+;; sqlite — audit BUG 3c repro
+;; ---------------------------------------------------------------------------
+(define db (sqlite-open ":memory:"))
+(check "sqlite: open :memory: returns a handle (not 0)"
+       (not (= db 0)))
+(check "sqlite: exec CREATE TABLE returns 0 (SQLITE_OK)"
+       (= (sqlite-exec db "CREATE TABLE t (x INTEGER, s TEXT)") 0))
+(check "sqlite: exec INSERT returns 0"
+       (= (sqlite-exec db "INSERT INTO t VALUES (1, 'hello'), (2, 'world')") 0))
+(sqlite-close db)
+
+;; ---------------------------------------------------------------------------
+;; Summary
+;; ---------------------------------------------------------------------------
+(newline)
+(display "=== Summary ===") (newline)
+(display "Passed: ") (display pass-count) (newline)
+(display "Failed: ") (display fail-count) (newline)
+(display "Total:  ") (display (+ pass-count fail-count)) (newline)
+(display (if (= fail-count 0) "RESULT: OK" "RESULT: FAILURES"))
+(newline)

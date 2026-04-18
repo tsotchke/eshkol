@@ -769,11 +769,14 @@ llvm::Value* StringIOCodegen::makeString(const eshkol_operations_t* op) {
         fill_char = llvm::ConstantInt::get(ctx_.int8Type(), ' ');
     }
 
-    // Allocate buffer with header: len + 1 for null terminator
-    llvm::Value* buf_size = ctx_.builder().CreateAdd(len, llvm::ConstantInt::get(ctx_.int64Type(), 1));
+    // Allocate buffer with header. `arena_allocate_string_with_header`
+    // already reserves an extra byte for the NUL terminator (data_size
+    // = length + 1), so we must pass the caller-visible character
+    // count `len`, NOT `len + 1` — the previous code double-counted,
+    // yielding header->size = len + 2 and a string-length of len + 1.
     llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
     llvm::Value* buf = ctx_.builder().CreateCall(
-        ctx_.memory().getArenaAllocateStringWithHeader(), {arena_ptr, buf_size});
+        ctx_.memory().getArenaAllocateStringWithHeader(), {arena_ptr, len});
 
     // Fill with the character using memset
     llvm::Function* memset_func = ctx_.funcs().getMemset();

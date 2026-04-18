@@ -667,9 +667,9 @@ double eshkol_bignum_to_double(const eshkol_bignum_t* a) {
 char* eshkol_bignum_to_string(arena_t* arena, const eshkol_bignum_t* a) {
     if (!a) return nullptr;
 
-    /* Special case: zero */
+    /* Special case: zero. "0" is one character; allocator adds NUL. */
     if (eshkol_bignum_is_zero(a)) {
-        char* str = (char*)arena_allocate_string_with_header(arena, 2);
+        char* str = (char*)arena_allocate_string_with_header(arena, 1);
         if (str) { str[0] = '0'; str[1] = '\0'; }
         return str;
     }
@@ -707,10 +707,14 @@ char* eshkol_bignum_to_string(arena_t* arena, const eshkol_bignum_t* a) {
     }
     buf[pos] = '\0';
 
-    /* Allocate proper string with header for the display system */
-    char* result = (char*)arena_allocate_string_with_header(arena, pos + 1);
+    /* Allocate proper string with header for the display system.
+     * `pos` is the number of emitted digit characters (excluding NUL);
+     * arena_allocate_string_with_header adds the +1 itself, so passing
+     * `pos + 1` over-allocates by one and makes string-length return
+     * pos+1 after the header-backed length fix. */
+    char* result = (char*)arena_allocate_string_with_header(arena, pos);
     if (result) {
-        memcpy(result, buf, pos + 1);
+        memcpy(result, buf, pos + 1);  /* copy including NUL terminator */
     }
     return result;
 }

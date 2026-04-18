@@ -823,13 +823,49 @@ void* eshkol_bytevector_copy(void* arena, void* bv, int64_t start, int64_t end) 
 // UTF-8 Helpers
 // ----------------------------------------------------------------------------
 
-/* Count UTF-8 codepoints (skip continuation bytes 10xxxxxx) */
+/*
+ * All Scheme string values in Eshkol live behind an 8-byte
+ * ESHKOL_OBJECT_HEADER whose `size` field stores the data-byte count
+ * (data = chars + NUL terminator, so the visible payload is size - 1
+ * bytes). That header is created by both string literals
+ * (`internStringWithHeader`) and runtime allocations
+ * (`arena_allocate_string_with_header`), so every string passed from
+ * LLVM IR to these helpers has it.
+ *
+ * Using the header gives correct length for strings that contain
+ * embedded NUL bytes (e.g. `(make-string 4096 #\nul)` for FFI scratch
+ * buffers in lib/agent/regex.esk). Without it, we'd fall back to
+ * strlen semantics which stops at the first NUL and reports 0 — which
+ * is why `(string-length (make-string N #\nul))` was returning 0
+ * instead of N.
+ *
+ * Fallback: a null/non-header pointer still uses strlen semantics so
+ * callers passing a bare C string (none in tree, but defensive)
+ * continue to work.
+ */
+static int64_t eshkol_string_byte_length(const char* s) {
+    if (!s) return 0;
+    /* Sanity: the header sits at s-8 and its subtype byte is the first
+     * byte of the 8-byte header. Validate it's HEAP_SUBTYPE_STRING
+     * before trusting size. */
+    const eshkol_object_header_t* hdr =
+        (const eshkol_object_header_t*)((const uint8_t*)s - sizeof(eshkol_object_header_t));
+    if (hdr->subtype == HEAP_SUBTYPE_STRING && hdr->size > 0) {
+        /* size = data_size including NUL terminator. */
+        return (int64_t)hdr->size - 1;
+    }
+    /* No header: fall back to C strlen. */
+    return (int64_t)strlen(s);
+}
+
+/* Count UTF-8 codepoints over the full byte range (includes bytes
+ * after embedded NULs, unlike plain strlen). */
 int64_t eshkol_utf8_strlen(const char* s) {
     if (!s) return 0;
+    int64_t byte_len = eshkol_string_byte_length(s);
     int64_t count = 0;
-    while (*s) {
-        if ((*s & 0xC0) != 0x80) count++;
-        s++;
+    for (int64_t i = 0; i < byte_len; i++) {
+        if ((s[i] & 0xC0) != 0x80) count++;
     }
     return count;
 }
@@ -846,39 +882,47 @@ static int64_t decode_utf8_codepoint(const char** s) {
     return cp;
 }
 
-/* Get k-th codepoint from string */
+/* Get k-th codepoint from string, walking the full header-backed byte
+ * range so embedded NULs don't truncate the walk early. */
 int64_t eshkol_utf8_ref(const char* s, int64_t k) {
-    if (!s) return -1;
+    if (!s || k < 0) return -1;
+    int64_t byte_len = eshkol_string_byte_length(s);
+    int64_t cp_idx = 0;
     int64_t i = 0;
-    while (*s && i < k) {
-        if ((*s & 0xC0) != 0x80) i++;
-        s++;
+    while (i < byte_len && cp_idx < k) {
+        if ((s[i] & 0xC0) != 0x80) cp_idx++;
+        i++;
     }
-    if (!*s) return -1;
-    return decode_utf8_codepoint(&s);
+    if (i >= byte_len) return -1;
+    const char* p = s + i;
+    return decode_utf8_codepoint(&p);
 }
 
-/* Substring by codepoint indices → new arena-allocated string */
+/* Substring by codepoint indices → new arena-allocated string.
+ * Walks the full header-backed byte range (not strlen-limited) so
+ * strings containing embedded NULs substring correctly. */
 char* eshkol_utf8_substring(const char* s, int64_t start, int64_t end, void* arena) {
     if (!s || !arena || start < 0 || end < start) return nullptr;
     extern void* arena_allocate_string_with_header(void*, uint64_t);
+    int64_t byte_len_total = eshkol_string_byte_length(s);
     /* Find byte offset of start codepoint */
-    const char* p = s;
+    int64_t i = 0;
     int64_t cp_idx = 0;
-    while (*p && cp_idx < start) {
-        if ((*p & 0xC0) != 0x80) cp_idx++;
-        p++;
+    while (i < byte_len_total && cp_idx < start) {
+        if ((s[i] & 0xC0) != 0x80) cp_idx++;
+        i++;
     }
-    const char* start_ptr = p;
+    int64_t start_off = i;
     /* Find byte offset of end codepoint */
-    while (*p && cp_idx < end) {
-        if ((*p & 0xC0) != 0x80) cp_idx++;
-        p++;
+    while (i < byte_len_total && cp_idx < end) {
+        if ((s[i] & 0xC0) != 0x80) cp_idx++;
+        i++;
     }
-    int64_t byte_len = p - start_ptr;
-    char* buf = (char*)arena_allocate_string_with_header(arena, byte_len + 1);
+    int64_t byte_len = i - start_off;
+    /* allocator adds +1 for NUL itself — pass the payload byte count. */
+    char* buf = (char*)arena_allocate_string_with_header(arena, byte_len);
     if (buf) {
-        memcpy(buf, start_ptr, byte_len);
+        memcpy(buf, s + start_off, byte_len);
         buf[byte_len] = '\0';
     }
     return buf;

@@ -185,21 +185,24 @@ extern "C" void* eshkol_double_to_rational(void* arena, double d) {
     return eshkol_rational_create(arena, num, den);  // auto-reduces via GCD
 }
 
-/* Format rational as "num/denom" string into arena-allocated buffer with string header */
+/* Format rational as "num/denom" string into arena-allocated buffer with
+ * string header. `arena_allocate_string_with_header(len)` reserves len+1
+ * bytes and handles the NUL — pass bare `len`, not `len + 1`, or
+ * string-length sees len+1 chars after the header-aware fix. */
 extern "C" char* eshkol_rational_to_string(void* arena, void* r) {
     eshkol_rational_t* rat = (eshkol_rational_t*)r;
     if (rat->denominator == 1) {
         char tmp[32];
         int len = snprintf(tmp, sizeof(tmp), "%lld", (long long)rat->numerator);
-        char* buf = (char*)arena_allocate_string_with_header(arena, len + 1);
-        if (buf) memcpy(buf, tmp, len + 1);
+        char* buf = (char*)arena_allocate_string_with_header(arena, len);
+        if (buf) memcpy(buf, tmp, len + 1);  /* copy including NUL */
         return buf;
     }
     char tmp[72];
     int len = snprintf(tmp, sizeof(tmp), "%lld/%lld",
                        (long long)rat->numerator, (long long)rat->denominator);
-    char* buf = (char*)arena_allocate_string_with_header(arena, len + 1);
-    if (buf) memcpy(buf, tmp, len + 1);
+    char* buf = (char*)arena_allocate_string_with_header(arena, len);
+    if (buf) memcpy(buf, tmp, len + 1);  /* copy including NUL */
     return buf;
 }
 

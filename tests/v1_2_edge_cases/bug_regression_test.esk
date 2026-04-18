@@ -171,6 +171,47 @@
        (not (equal? "hello" "world")))
 
 ;; ---------------------------------------------------------------------------
+;; Noesis residual audit 2026-04-18 v2
+;; ---------------------------------------------------------------------------
+
+;; BUG 1 — call-with-values consumer must resolve stdlib `list`.
+;; Regression: `list` has no first-class value and cwv-consumer codegen
+;; failed with "Undefined variable: list".
+(check "Noesis BUG 1: cwv consumer = list produces list of values"
+       (equal? (call-with-values (lambda () (values 1 2 3)) list)
+               (list 1 2 3)))
+(check "Noesis BUG 1: cwv consumer = + produces sum"
+       (= (call-with-values (lambda () (values 1 2 3)) +) 6))
+(check "Noesis BUG 1: cwv consumer = cons (fixed arity) still works"
+       (equal? (call-with-values (lambda () (values 10 20)) cons)
+               (cons 10 20)))
+(check "Noesis BUG 1: cwv consumer = lambda (fixed arity) still works"
+       (= (call-with-values (lambda () (values 10 20)) (lambda (a b) (+ a b))) 30))
+;; A bare `list` is a first-class value now (no closure identity contract
+;; — my wrapper allocates a fresh closure each reference — so the only
+;; thing the test can assert is that invoking the returned value behaves
+;; like list.
+(check "Noesis BUG 1: bare list as first-class value is callable"
+       (equal? (((lambda () list)) 1 2 3) (list 1 2 3)))
+
+;; BUG 2 — variadic rest-arg: `(define (f . args) args)` must bind the
+;; full list of caller arguments, not just the first one
+;; (R7RS §4.1.4 regression).
+(define (noesis-bug2-my-list . args) args)
+(define (noesis-bug2-fixed+rest a . rest) rest)
+(define (noesis-bug2-only-rest . r) (length r))
+(check "Noesis BUG 2: rest binds full arg list"
+       (equal? (noesis-bug2-my-list 1 2 3) (list 1 2 3)))
+(check "Noesis BUG 2: rest with fixed prefix binds tail only"
+       (equal? (noesis-bug2-fixed+rest 1 2 3 4) (list 2 3 4)))
+(check "Noesis BUG 2: rest counts every arg passed"
+       (= (noesis-bug2-only-rest 10 20 30) 3))
+(check "Noesis BUG 2: zero-arg call to variadic returns empty list"
+       (null? (noesis-bug2-my-list)))
+(check "Noesis BUG 2: car of rest is first arg"
+       (= (car (noesis-bug2-my-list 100 200 300)) 100))
+
+;; ---------------------------------------------------------------------------
 ;; Summary
 ;; ---------------------------------------------------------------------------
 (newline)
