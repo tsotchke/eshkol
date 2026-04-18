@@ -1669,15 +1669,32 @@ static std::string resolve_module_path(const std::string& module_name, const std
         }
     }
 
-    // Try $ESHKOL_PATH
+    // Try $ESHKOL_PATH. Empty segments, non-existent directories, and
+    // files-posing-as-dirs are silently ignored (they can't hold
+    // modules) but flagged in debug mode so "module not found" errors
+    // are easy to trace to a misconfigured path. Known pitfalls:
+    //   ESHKOL_PATH=":x"           → empty leading segment
+    //   ESHKOL_PATH="/does/not/exist" → valid syntax, wrong content
+    //   ESHKOL_PATH="/etc/passwd"  → file instead of directory
     const char* eshkol_path = std::getenv("ESHKOL_PATH");
     if (eshkol_path) {
         std::stringstream ss(eshkol_path);
         std::string search_dir;
         while (std::getline(ss, search_dir, eshkol_path_separator)) {
-            std::filesystem::path env_path = std::filesystem::path(search_dir) / path_part;
-            if (std::filesystem::exists(env_path)) {
-                return std::filesystem::canonical(env_path).string();
+            if (search_dir.empty()) continue;
+            std::error_code ec;
+            std::filesystem::path dir_path(search_dir);
+            if (!std::filesystem::exists(dir_path, ec)) {
+                eshkol_debug("ESHKOL_PATH entry does not exist: %s", search_dir.c_str());
+                continue;
+            }
+            if (!std::filesystem::is_directory(dir_path, ec)) {
+                eshkol_debug("ESHKOL_PATH entry is not a directory: %s", search_dir.c_str());
+                continue;
+            }
+            std::filesystem::path env_path = dir_path / path_part;
+            if (std::filesystem::exists(env_path, ec)) {
+                return std::filesystem::canonical(env_path, ec).string();
             }
         }
     }
@@ -2685,9 +2702,28 @@ int main(int argc, char **argv)
         std::string filename = std::filesystem::path(obj_file).filename().string();
         if (filename == "stdlib.o" || filename == "libstdlib.o") {
             eshkol_info("Detected pre-compiled stdlib: %s", obj_file);
-            // Recursively discover all modules included in stdlib
+            // Recursively discover all modules included in stdlib.
+            // collect_all_submodules parses lib/stdlib.esk to build the
+            // set — if that source file is missing or unreadable (e.g.
+            // stdlib.o was installed without the accompanying .esk
+            // tree), we end up with an empty precompiled set and
+            // process_requires will then try to load core.* modules
+            // from source instead, doubling up symbols at link time.
+            // Fail loudly up-front instead of silently producing a bad
+            // binary.
+            size_t before = precompiled_modules.size();
             collect_all_submodules("stdlib", precompiled_modules, g_lib_dir);
-            eshkol_info("Pre-compiled modules: %zu total", precompiled_modules.size());
+            size_t added = precompiled_modules.size() - before;
+            eshkol_info("Pre-compiled modules: %zu total (+%zu from stdlib)",
+                        precompiled_modules.size(), added);
+            if (added == 0) {
+                eshkol_error(
+                    "stdlib.o is linked but no .esk sources were found under "
+                    "lib_dir=%s — precompiled-module detection is empty, which "
+                    "will produce duplicate symbols at link time. Check that "
+                    "the lib/ tree is installed alongside stdlib.o.",
+                    g_lib_dir.c_str());
+            }
             // Tell codegen that stdlib is being used (for homoiconic display support)
             eshkol_set_uses_stdlib(1);
         }
