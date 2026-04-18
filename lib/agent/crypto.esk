@@ -2,7 +2,10 @@
 ;; crypto.esk - Cryptographic primitives FFI wrapper
 ;; Bindings to agent_crypto.c (OpenSSL/CommonCrypto)
 ;;
-(provide hmac-sha256 sha256 random-bytes random-hex)
+(require core.data.base64)
+
+(provide hmac-sha256 sha256 random-bytes random-hex
+         uuid-v4 base64url-encode base64url-decode)
 
 ;; FFI declarations
 (extern i32 hmac-sha256-raw ptr i64 ptr i64 ptr i64 :real eshkol_hmac_sha256)
@@ -36,3 +39,88 @@
   (let ((buf (make-string (+ hex-len 1) #\space)))
     (let ((rc (random-hex-raw buf hex-len)))
       (if (= rc 0) (substring buf 0 hex-len) #f))))
+
+;; ----------------------------------------------------------------------------
+;; UUID v4 (random)
+;;
+;; Format: xxxxxxxx-xxxx-4xxx-Nxxx-xxxxxxxxxxxx where N ∈ {8,9,a,b}.
+;; We derive it from 16 bytes of (random-bytes 16) exposed as hex, then
+;; patch the version/variant nibbles in place. Ensures spec-conformant
+;; values without a native uuid library dependency.
+;; ----------------------------------------------------------------------------
+
+(define (uuid-v4)
+  "Generate a version-4 UUID string. Returns #f on entropy failure."
+  (let ((hex (random-hex 32)))
+    (if (not hex)
+        #f
+        ;; Patch nibble 12 to '4', nibble 16 to one of '8' '9' 'a' 'b'.
+        ;; We only control entropy at byte granularity via random-bytes, so
+        ;; we rewrite the two nibbles here deterministically.
+        (let* ((s0   (substring hex 0 8))    ; xxxxxxxx
+               (s1   (substring hex 8 12))   ; xxxx
+               (s2-3 (substring hex 13 16))  ; 3 nibbles after forced '4'
+               (v    (string-ref hex 16))
+               (vn   (cond ((or (equal? v #\0) (equal? v #\1)
+                                (equal? v #\2) (equal? v #\3)) #\8)
+                           ((or (equal? v #\4) (equal? v #\5)
+                                (equal? v #\6) (equal? v #\7)) #\9)
+                           ((or (equal? v #\8) (equal? v #\9)) #\a)
+                           (else #\b)))
+               (s3-rest (substring hex 17 20))
+               (s4   (substring hex 20 32)))
+          (string-append s0 "-" s1 "-4" s2-3 "-"
+                         (string vn) s3-rest "-" s4)))))
+
+;; ----------------------------------------------------------------------------
+;; Base64URL (RFC 4648 §5) — like base64 but uses `-` / `_` instead of
+;; `+` / `/`, and omits padding by default. Built on top of existing
+;; core.data.base64 which handles the encoding/decoding machinery.
+;; ----------------------------------------------------------------------------
+
+(define (base64url-encode-char c)
+  (cond ((equal? c #\+) #\-)
+        ((equal? c #\/) #\_)
+        (else c)))
+
+(define (base64url-decode-char c)
+  (cond ((equal? c #\-) #\+)
+        ((equal? c #\_) #\/)
+        (else c)))
+
+(define (string-translate s translator)
+  ;; Map each char through translator; drop characters that yield #f.
+  (let loop ((i 0) (acc ""))
+    (if (>= i (string-length s))
+        acc
+        (let ((mapped (translator (string-ref s i))))
+          (if mapped
+              (loop (+ i 1) (string-append acc (string mapped)))
+              (loop (+ i 1) acc))))))
+
+(define (strip-trailing s ch)
+  (let loop ((len (string-length s)))
+    (cond
+      ((= len 0) s)
+      ((equal? (string-ref s (- len 1)) ch) (loop (- len 1)))
+      (else (substring s 0 len)))))
+
+(define (pad-to-4 s)
+  (let ((rem (modulo (string-length s) 4)))
+    (cond
+      ((= rem 0) s)
+      ((= rem 2) (string-append s "=="))
+      ((= rem 3) (string-append s "="))
+      (else (string-append s "==="))))) ; malformed input, best effort
+
+(define (base64url-encode data)
+  "Encode bytes (string) as base64url — no padding."
+  (let ((std (base64-encode data)))
+    (if (not std)
+        #f
+        (strip-trailing (string-translate std base64url-encode-char) #\=))))
+
+(define (base64url-decode url-str)
+  "Decode base64url → bytes string (re-pads before delegating)."
+  (let ((standard (string-translate url-str base64url-decode-char)))
+    (base64-decode (pad-to-4 standard))))
