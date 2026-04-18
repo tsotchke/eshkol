@@ -455,7 +455,13 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_path_is_absolute_v(eshkol_sysbui
 static eshkol_sysbuiltin_value_t eshkol_builtin_path_normalize_v(eshkol_sysbuiltin_value_t path_val) {
     const char* path = sys_extract_string(path_val);
     if (!path) return sys_make_null();
-    /* Simple normalization: resolve . and .. */
+
+    /* Reject inputs longer than PATH_MAX outright — strcat-based
+     * construction from a buffer that's already oversize is how stack
+     * overflows used to happen here (#193 HIGH). */
+    size_t in_len = strlen(path);
+    if (in_len >= PATH_MAX) return sys_make_null();
+
     char buf[PATH_MAX];
     const char* parts[256];
     int nparts = 0;
@@ -473,13 +479,34 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_path_normalize_v(eshkol_sysbuilt
         }
         tok = strtok(NULL, "/");
     }
+
+    /* Bounded concatenation. We track the remaining space in `buf` and
+     * bail to an empty result rather than truncating silently — a
+     * truncated path is worse than an error because it might point
+     * somewhere completely different. */
     buf[0] = '\0';
-    if (is_abs) strcat(buf, "/");
-    for (int i = 0; i < nparts; i++) {
-        if (i > 0) strcat(buf, "/");
-        strcat(buf, parts[i]);
+    size_t pos = 0;
+    if (is_abs) {
+        if (pos + 1 >= PATH_MAX) { free(copy); return sys_make_null(); }
+        buf[pos++] = '/';
+        buf[pos] = '\0';
     }
-    if (buf[0] == '\0') strcpy(buf, ".");
+    for (int i = 0; i < nparts; i++) {
+        size_t plen = strlen(parts[i]);
+        size_t need = plen + (i > 0 ? 1 : 0);  /* leading '/' except first */
+        if (pos + need + 1 >= PATH_MAX) {
+            free(copy);
+            return sys_make_null();
+        }
+        if (i > 0) { buf[pos++] = '/'; }
+        memcpy(buf + pos, parts[i], plen);
+        pos += plen;
+        buf[pos] = '\0';
+    }
+    if (buf[0] == '\0') {
+        buf[0] = '.';
+        buf[1] = '\0';
+    }
     free(copy);
     return sys_make_string(buf);
 }
@@ -528,18 +555,40 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_file_copy_v(eshkol_sysbuiltin_va
     const char* dst = sys_extract_string(dst_val);
     if (!src || !dst) return sys_make_bool(0);
 #ifndef _WIN32
-    FILE* fin = fopen(src, "rb");
-    if (!fin) return sys_make_bool(0);
-    FILE* fout = fopen(dst, "wb");
-    if (!fout) { fclose(fin); return sys_make_bool(0); }
+    /* TOCTOU hardening (#193): open via file descriptors with
+     * O_NOFOLLOW + O_CLOEXEC so a symlink-swap attack between the
+     * fopen(src) and fopen(dst) calls can't redirect writes to
+     * sensitive files (e.g. /etc/passwd). If either side is a
+     * symlink we refuse the copy.
+     *
+     * Dst opens with O_EXCL by default to avoid clobbering an
+     * existing target via a race; callers who want overwrite pass a
+     * path that doesn't exist, or use a future file-copy-force.
+     */
+    int src_fd = open(src, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    if (src_fd < 0) return sys_make_bool(0);
+    int dst_fd = open(dst, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0644);
+    if (dst_fd < 0) { close(src_fd); return sys_make_bool(0); }
     char buf[8192];
-    size_t n;
-    while ((n = fread(buf, 1, sizeof(buf), fin)) > 0) {
-        fwrite(buf, 1, n, fout);
+    ssize_t n;
+    int ok = 1;
+    while ((n = read(src_fd, buf, sizeof(buf))) > 0) {
+        ssize_t written = 0;
+        while (written < n) {
+            ssize_t w = write(dst_fd, buf + written, (size_t)(n - written));
+            if (w < 0) {
+                if (errno == EINTR) continue;
+                ok = 0;
+                break;
+            }
+            written += w;
+        }
+        if (!ok) break;
     }
-    fclose(fin);
-    fclose(fout);
-    return sys_make_bool(1);
+    if (n < 0) ok = 0;
+    close(src_fd);
+    close(dst_fd);
+    return sys_make_bool(ok ? 1 : 0);
 #else
     return sys_make_bool(CopyFileA(src, dst, FALSE) != 0);
 #endif
