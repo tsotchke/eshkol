@@ -253,6 +253,11 @@ public:
     llvm::Value* processSpawnPty(const eshkol_operations_t* op);
     llvm::Value* processReadNonblocking(const eshkol_operations_t* op);
 
+    /* v1.2 time API (ISO8601, #168) */
+    llvm::Value* formatIso8601(const eshkol_operations_t* op);
+    llvm::Value* parseIso8601(const eshkol_operations_t* op);
+    llvm::Value* currentTimestamp(const eshkol_operations_t* op);
+
     /* v1.2 batch 4 */
     llvm::Value* processPid(const eshkol_operations_t* op);
     llvm::Value* fileMmap(const eshkol_operations_t* op);
