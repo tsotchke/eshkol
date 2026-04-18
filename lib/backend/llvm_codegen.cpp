@@ -9694,6 +9694,27 @@ private:
                 eshkol_debug("Variable '%s' shadows builtin (found in global_symbol_table)", func_name.c_str());
             }
 
+            // REPL CROSS-BATCH SHADOWING (Noesis residual audit v3 BUG C):
+            // In REPL mode each `-e` expression compiles to its own module, so
+            // a `(define (outer …))` made in batch 1 leaves no entry in this
+            // batch's symbol_table or global_symbol_table — only in the
+            // process-wide REPL function registry. Without consulting that
+            // registry the next-batch call to `(outer …)` falls through into
+            // the builtin dispatch table below and matches a hard-coded
+            // `if (func_name == "outer") return codegenOuterProduct(op);`,
+            // which then asserts arity 2 and rejects the user's 1-arg call
+            // with "outer requires exactly 2 arguments". Promote any name
+            // bound as a REPL user function to "user-defined" here so the
+            // shadowing path is taken — matching the same-batch behaviour
+            // and the user's intuition that their define wins over builtins.
+            if (!is_user_defined && g_repl_mode_enabled) {
+                std::lock_guard<std::mutex> lock(g_repl_mutex);
+                if (g_repl_user_function_names.count(func_name) > 0) {
+                    is_user_defined = true;
+                    eshkol_debug("REPL user function '%s' shadows builtin", func_name.c_str());
+                }
+            }
+
             // If user-defined, skip all builtin checks and go directly to user function handling
             if (is_user_defined) {
                 goto user_defined_function_call;

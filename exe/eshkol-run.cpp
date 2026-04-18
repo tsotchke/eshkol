@@ -3141,6 +3141,30 @@ int main(int argc, char **argv)
         }
 
         eshkol_info("Successfully created executable: %s", output);
+        // BUG B (Noesis residual audit v3): bare `eshkol-run file.esk`
+        // was silently producing a.out with no indication it had
+        // compiled (rather than run) the script. Anyone expecting Lisp
+        // shebang semantics — `(display …)` to actually display —
+        // saw nothing. Print a one-line stderr notice in the default-
+        // output case so the surprise is at most one help message
+        // long. Skipped when -o was explicitly given (the user knows
+        // exactly what they want) and silently absent in -e/-r/
+        // --compile paths since they never reach this branch.
+        const char* basename_of_output = std::strrchr(output, '/');
+        basename_of_output = basename_of_output ? basename_of_output + 1 : output;
+        bool default_output_name = (std::strcmp(basename_of_output, "a.out") == 0
+#ifdef _WIN32
+                                    || std::strcmp(basename_of_output, "a.exe") == 0
+#endif
+                                    );
+        if (default_output_name) {
+            fprintf(stderr,
+                    "[eshkol-run] compiled to '%s'. Run it (./%s) or use "
+                    "`eshkol-run -r %s` to JIT-execute without producing "
+                    "a binary.\n",
+                    output, output,
+                    source_files.empty() ? "<file>" : source_files[0]);
+        }
     } else if (!compiled_files.empty() && !compile_only) {
         // Only warn about unused object files if we're not in compile-only mode
         // In compile-only mode, we intentionally don't link

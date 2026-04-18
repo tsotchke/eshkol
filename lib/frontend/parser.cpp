@@ -179,10 +179,55 @@ public:
                     return {TOKEN_COMMA_AT, ",@", pos - 2, tok_line, tok_col};
                 }
                 return {TOKEN_COMMA, ",", pos - 1, tok_line, tok_col};
-            case ':':
+            case ':': {
+                // Two distinct uses of ':' in Eshkol source:
+                //   - As a stand-alone token between an identifier and a
+                //     type expression: `(lambda (x : int) ...)`. Always
+                //     surrounded by whitespace.
+                //   - As the prefix of a keyword/self-quoting symbol used
+                //     in record-style alists: `(cons ':key 1)` or
+                //     `(list :name "x" :age 42)`. Same shape that Racket
+                //     spells `#:foo`.
+                // Disambiguate by peeking the next byte: if it begins an
+                // identifier (anything that isn't whitespace, paren,
+                // quote, double-quote or another colon), consume the
+                // entire run as one TOKEN_SYMBOL whose first char is `:`.
+                // The downstream parser/codegen treats `:foo` as just
+                // another identifier — it interns to a unique symbol that
+                // (eq?) and (equal?) work over, exactly like #:foo does
+                // for the existing keyword path. (Noesis residual audit
+                // v3 BUG A.)
+                if (pos + 1 < length) {
+                    char next = input[pos + 1];
+                    bool is_terminator =
+                        std::isspace((unsigned char)next) ||
+                        next == '(' || next == ')' ||
+                        next == '\'' || next == '"' ||
+                        next == ':' || next == ',' ||
+                        next == ';';
+                    if (!is_terminator) {
+                        // Read `:foo…` as a single symbol. Manually consume
+                        // the leading ':' then defer to the same predicate
+                        // readSymbol uses (stop at whitespace / paren /
+                        // quote / colon).
+                        size_t start = pos;
+                        std::string value;
+                        value += input[pos++];
+                        column_++;
+                        while (pos < length && !std::isspace((unsigned char)input[pos]) &&
+                               input[pos] != '(' && input[pos] != ')' &&
+                               input[pos] != '\'' && input[pos] != '"' &&
+                               input[pos] != ':') {
+                            value += input[pos++];
+                            column_++;
+                        }
+                        return {TOKEN_SYMBOL, value, start, tok_line, tok_col};
+                    }
+                }
                 pos++;
                 column_++;
                 return {TOKEN_COLON, ":", pos - 1, tok_line, tok_col};
+            }
             case '"':
                 return readString();
             default:
@@ -6714,35 +6759,46 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                     return ast;
                 }
 
-                // Check for :real modifier (TOKEN_COLON followed by "real")
-                if (token.type == TOKEN_COLON) {
-                    Token next = tokenizer.nextToken();
-                    if (next.type == TOKEN_SYMBOL && next.value == "real") {
-                        // Parse the real function name
-                        token = tokenizer.nextToken();
-                        if (token.type != TOKEN_SYMBOL) {
-                            PARSE_ERROR_AT(token, "extern :real requires function name as argument");
+                // Check for :real modifier. Two tokenizations are valid:
+                //   1. TOKEN_COLON followed by SYMBOL "real" — the original
+                //      whitespace-separated form `(extern … : real …)`.
+                //   2. SYMBOL ":real" as a single token — the keyword-style
+                //      form `(extern … :real …)` that the colon-keyword
+                //      tokenizer (Noesis residual audit v3 BUG A) emits when
+                //      `:` is glued to its identifier with no space. Both
+                //      forms are accepted for backwards compatibility.
+                bool is_real_modifier =
+                    (token.type == TOKEN_COLON) ||
+                    (token.type == TOKEN_SYMBOL && token.value == ":real");
+                if (is_real_modifier) {
+                    if (token.type == TOKEN_COLON) {
+                        Token next = tokenizer.nextToken();
+                        if (next.type != TOKEN_SYMBOL || next.value != "real") {
+                            PARSE_ERROR_AT(next, "unexpected ':' in extern declaration (did you mean :real?)");
                             ast.type = ESHKOL_INVALID;
                             return ast;
                         }
-
-                        { size_t _len = token.value.length();
-                        ast.operation.extern_op.real_name = new char[_len + 1];
-                        memcpy(ast.operation.extern_op.real_name, token.value.c_str(), _len + 1); }
-
-                        // Expect closing paren after :real name
-                        token = tokenizer.nextToken();
-                        if (token.type != TOKEN_RPAREN) {
-                            PARSE_ERROR_AT(token, ":real modifier must be at end of extern declaration");
-                            ast.type = ESHKOL_INVALID;
-                            return ast;
-                        }
-                        break;
-                    } else {
-                        PARSE_ERROR_AT(token, "unexpected ':' in extern declaration (did you mean :real?)");
+                    }
+                    // Parse the real function name
+                    token = tokenizer.nextToken();
+                    if (token.type != TOKEN_SYMBOL) {
+                        PARSE_ERROR_AT(token, "extern :real requires function name as argument");
                         ast.type = ESHKOL_INVALID;
                         return ast;
                     }
+
+                    { size_t _len = token.value.length();
+                    ast.operation.extern_op.real_name = new char[_len + 1];
+                    memcpy(ast.operation.extern_op.real_name, token.value.c_str(), _len + 1); }
+
+                    // Expect closing paren after :real name
+                    token = tokenizer.nextToken();
+                    if (token.type != TOKEN_RPAREN) {
+                        PARSE_ERROR_AT(token, ":real modifier must be at end of extern declaration");
+                        ast.type = ESHKOL_INVALID;
+                        return ast;
+                    }
+                    break;
                 }
 
                 if (token.type != TOKEN_SYMBOL) {
