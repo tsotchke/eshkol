@@ -149,10 +149,41 @@ eshkol_subprocess_t* qllm_process_spawn(const char* command, const char* cwd_arg
     si.dwFlags |= STARTF_USESTDHANDLES;
 
     PROCESS_INFORMATION pi = {0};
-    char cmdline[4096];
-    snprintf(cmdline, sizeof(cmdline), "cmd /c %s", command);
 
-    if (!CreateProcessA(NULL, cmdline, NULL, NULL, TRUE, 0, NULL, cwd, &si, &pi)) {
+    /* Windows cmdline: CreateProcessA mutates the buffer in place, so
+     * it must be on the heap (not a string-literal) and sized for the
+     * full command. Previous code used a fixed 4096-byte stack buffer
+     * and snprintf-silently-truncated anything longer, producing a
+     * valid-looking but malformed command (#193 HIGH). Now we:
+     *   - Measure "cmd /c " + command length ahead of time.
+     *   - Reject if it would exceed Windows' 32768 cmdline limit.
+     *   - Heap-allocate exactly the right size so CreateProcessA can
+     *     mutate without corrupting anything outside the buffer.
+     */
+    size_t cmd_len = command ? strlen(command) : 0;
+    size_t prefix_len = 7;  /* "cmd /c " */
+    if (cmd_len + prefix_len + 1 > 32768) {
+        CloseHandle(stdin_read); CloseHandle(stdin_write);
+        CloseHandle(stdout_read); CloseHandle(stdout_write);
+        CloseHandle(stderr_read); CloseHandle(stderr_write);
+        free(proc);
+        return NULL;
+    }
+    char* cmdline = (char*)malloc(cmd_len + prefix_len + 1);
+    if (!cmdline) {
+        CloseHandle(stdin_read); CloseHandle(stdin_write);
+        CloseHandle(stdout_read); CloseHandle(stdout_write);
+        CloseHandle(stderr_read); CloseHandle(stderr_write);
+        free(proc);
+        return NULL;
+    }
+    memcpy(cmdline, "cmd /c ", prefix_len);
+    memcpy(cmdline + prefix_len, command ? command : "", cmd_len);
+    cmdline[prefix_len + cmd_len] = '\0';
+
+    BOOL created = CreateProcessA(NULL, cmdline, NULL, NULL, TRUE, 0, NULL, cwd, &si, &pi);
+    free(cmdline);
+    if (!created) {
         CloseHandle(stdin_read); CloseHandle(stdin_write);
         CloseHandle(stdout_read); CloseHandle(stdout_write);
         CloseHandle(stderr_read); CloseHandle(stderr_write);
