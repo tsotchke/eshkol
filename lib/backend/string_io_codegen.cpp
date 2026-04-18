@@ -2943,14 +2943,21 @@ llvm::Value* StringIOCodegen::readBytevector(const eshkol_operations_t* op) {
     llvm::Value* bytes_read = ctx_.builder().CreateCall(fread_func,
         {data_ptr, llvm::ConstantInt::get(ctx_.int64Type(), 1), k, file_ptr}, "bytes_read");
 
-    // Check if zero bytes read (EOF before any data)
+    // EOF sentinel is only returned when the caller explicitly asked for
+    // bytes (k > 0) and fread returned 0 — that means end-of-file before
+    // any data arrived. For the k=0 case R7RS §6.13.2 says "If k = 0, an
+    // empty bytevector is returned immediately" — do not pretend it was EOF
+    // or downstream bytevector-length crashes on the 0xFF tag.
     llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
     llvm::BasicBlock* eof_block = llvm::BasicBlock::Create(ctx_.context(), "bv_eof", current_func);
     llvm::BasicBlock* ok_block = llvm::BasicBlock::Create(ctx_.context(), "bv_ok", current_func);
     llvm::BasicBlock* done_block = llvm::BasicBlock::Create(ctx_.context(), "bv_done", current_func);
 
-    llvm::Value* is_eof = ctx_.builder().CreateICmpEQ(bytes_read,
+    llvm::Value* zero_bytes = ctx_.builder().CreateICmpEQ(bytes_read,
         llvm::ConstantInt::get(ctx_.int64Type(), 0));
+    llvm::Value* k_positive = ctx_.builder().CreateICmpSGT(k,
+        llvm::ConstantInt::get(ctx_.int64Type(), 0));
+    llvm::Value* is_eof = ctx_.builder().CreateAnd(zero_bytes, k_positive);
     ctx_.builder().CreateCondBr(is_eof, eof_block, ok_block);
 
     // EOF: return eof-object
