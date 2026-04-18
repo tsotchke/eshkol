@@ -221,6 +221,145 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_sleep_ms_v(eshkol_sysbuiltin_val
     return sys_make_null();
 }
 
+/* ═══════════════════════════════════════════════════════════════════
+ * Time API (ISO8601) — #168
+ *
+ * format-iso8601: int64 ns-since-epoch → "YYYY-MM-DDTHH:MM:SS.mmmZ"
+ * parse-iso8601:  "YYYY-MM-DDTHH:MM:SS[.mmm][Z|±HH:MM]" → int64 ns, or #f
+ * current-timestamp: → double seconds-since-epoch (wall-clock UTC)
+ *
+ * We use gmtime_r + snprintf for format (UTC, no locale dependency),
+ * and strptime / manual parse for parse. parse returns #f on any
+ * malformed input so callers can distinguish bad strings from epoch
+ * zero.
+ * ═══════════════════════════════════════════════════════════════════ */
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_format_iso8601_v(eshkol_sysbuiltin_value_t ns_val) {
+    /* The argument is nanoseconds since Unix epoch. current-time-ns packs
+     * its int64 ns count as a double (SIToFP in system_codegen), so DOUBLE
+     * input is still ns — we just cast back. INT64 input is also ns. */
+    int64_t ns;
+    if (ns_val.type == SYS_TYPE_DOUBLE) {
+        double d;
+        memcpy(&d, &ns_val.data, sizeof(double));
+        ns = (int64_t)d;
+    } else {
+        ns = (int64_t)ns_val.data;
+    }
+    time_t secs = (time_t)(ns / 1000000000LL);
+    long ms = (long)((ns / 1000000LL) % 1000LL);
+    if (ms < 0) { ms += 1000; secs -= 1; }
+
+#ifndef _WIN32
+    struct tm tmv;
+    if (!gmtime_r(&secs, &tmv)) return sys_make_null();
+#else
+    struct tm tmv;
+    if (gmtime_s(&tmv, &secs) != 0) return sys_make_null();
+#endif
+
+    char buf[40];
+    int n = snprintf(buf, sizeof(buf),
+                     "%04d-%02d-%02dT%02d:%02d:%02d.%03ldZ",
+                     tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday,
+                     tmv.tm_hour, tmv.tm_min, tmv.tm_sec, ms);
+    if (n <= 0 || n >= (int)sizeof(buf)) return sys_make_null();
+    return sys_make_string(buf);
+}
+
+/* Days-before-month in a non-leap year. Adjusted for Feb in leap years. */
+static int days_before_month[] = {0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334};
+
+static int is_leap_year(int y) {
+    return (y % 4 == 0 && y % 100 != 0) || (y % 400 == 0);
+}
+
+/* Compute Unix epoch seconds from a calendar datetime (UTC). Portable
+ * equivalent of timegm() — avoids locale / TZ state that mktime carries. */
+static int64_t timegm_portable(int year, int mon, int day,
+                               int hour, int min, int sec) {
+    int64_t days = 0;
+    for (int y = 1970; y < year; y++) {
+        days += is_leap_year(y) ? 366 : 365;
+    }
+    if (mon < 1 || mon > 12) return 0;
+    days += days_before_month[mon - 1];
+    if (mon > 2 && is_leap_year(year)) days += 1;
+    days += (day - 1);
+    return days * 86400LL + hour * 3600LL + min * 60LL + sec;
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_parse_iso8601_v(eshkol_sysbuiltin_value_t str_val) {
+    const char* s = sys_extract_string(str_val);
+    if (!s) return sys_make_bool(0);
+
+    int year, mon, day, hour, min, sec;
+    int ms = 0;
+    char tz_sign = 0;
+    int tz_hour = 0, tz_min = 0;
+
+    /* Required: YYYY-MM-DDTHH:MM:SS. Accept space as T separator too. */
+    int n = 0;
+    if (sscanf(s, "%4d-%2d-%2d%*[T ]%2d:%2d:%2d%n",
+               &year, &mon, &day, &hour, &min, &sec, &n) != 6) {
+        return sys_make_bool(0);
+    }
+    const char* p = s + n;
+
+    /* Optional .fff fractional seconds (millisecond precision). */
+    if (*p == '.') {
+        p++;
+        int digits = 0;
+        int frac = 0;
+        while (*p >= '0' && *p <= '9' && digits < 9) {
+            frac = frac * 10 + (*p - '0');
+            digits++;
+            p++;
+        }
+        /* Convert to milliseconds — pad or truncate as needed. */
+        while (digits < 3) { frac *= 10; digits++; }
+        while (digits > 3) { frac /= 10; digits--; }
+        ms = frac;
+    }
+
+    /* Timezone: Z, +HH:MM, -HH:MM, or implicit UTC. */
+    if (*p == 'Z') {
+        tz_sign = 0;
+    } else if (*p == '+' || *p == '-') {
+        tz_sign = *p;
+        if (sscanf(p + 1, "%2d:%2d", &tz_hour, &tz_min) != 2) {
+            return sys_make_bool(0);
+        }
+    } else if (*p != '\0') {
+        /* Unknown trailing content — reject. */
+        return sys_make_bool(0);
+    }
+
+    int64_t secs = timegm_portable(year, mon, day, hour, min, sec);
+    if (tz_sign == '+') secs -= (tz_hour * 3600 + tz_min * 60);
+    if (tz_sign == '-') secs += (tz_hour * 3600 + tz_min * 60);
+
+    int64_t ns = secs * 1000000000LL + (int64_t)ms * 1000000LL;
+    return sys_make_int64(ns);
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_current_timestamp_v(void) {
+#ifndef _WIN32
+    struct timespec ts;
+    if (clock_gettime(CLOCK_REALTIME, &ts) != 0) return sys_make_double(0.0);
+    double secs = (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
+    return sys_make_double(secs);
+#else
+    FILETIME ft;
+    GetSystemTimeAsFileTime(&ft);
+    /* 100-ns intervals since 1601-01-01. Subtract Unix epoch offset. */
+    uint64_t v = ((uint64_t)ft.dwHighDateTime << 32) | ft.dwLowDateTime;
+    v -= 116444736000000000ULL;
+    double secs = (double)v * 1e-7;
+    return sys_make_double(secs);
+#endif
+}
+
 static eshkol_sysbuiltin_value_t eshkol_builtin_executable_exists_v(eshkol_sysbuiltin_value_t name_val) {
     const char* name = sys_extract_string(name_val);
     if (!name) return sys_make_bool(0);
@@ -1392,6 +1531,10 @@ void eshkol_builtin_cpu_count(sv_t* out) { *out = eshkol_builtin_cpu_count_v(); 
 void eshkol_builtin_getpid(sv_t* out) { *out = eshkol_builtin_getpid_v(); }
 void eshkol_builtin_home_directory(sv_t* out) { *out = eshkol_builtin_home_directory_v(); }
 void eshkol_builtin_sleep_ms(sv_t* out, const sv_t* a) { *out = eshkol_builtin_sleep_ms_v(*a); }
+/* Time API (#168) */
+void eshkol_builtin_format_iso8601(sv_t* out, const sv_t* a) { *out = eshkol_builtin_format_iso8601_v(*a); }
+void eshkol_builtin_parse_iso8601(sv_t* out, const sv_t* a) { *out = eshkol_builtin_parse_iso8601_v(*a); }
+void eshkol_builtin_current_timestamp(sv_t* out) { *out = eshkol_builtin_current_timestamp_v(); }
 void eshkol_builtin_executable_exists(sv_t* out, const sv_t* a) { *out = eshkol_builtin_executable_exists_v(*a); }
 void eshkol_builtin_path_join(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_path_join_v(*a, *b); }
 void eshkol_builtin_path_dirname(sv_t* out, const sv_t* a) { *out = eshkol_builtin_path_dirname_v(*a); }

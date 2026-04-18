@@ -1028,6 +1028,10 @@ public:
         function_return_types["cpu-count"] = BuiltinTypes::Integer;
         function_return_types["getpid"] = BuiltinTypes::Integer;
         function_return_types["home-directory"] = BuiltinTypes::String;
+        // Time API (#168)
+        function_return_types["current-timestamp"] = BuiltinTypes::Number;
+        function_return_types["format-iso8601"] = BuiltinTypes::String;
+        function_return_types["parse-iso8601"] = BuiltinTypes::Integer;
         function_return_types["sleep-ms"] = BuiltinTypes::Null;
         function_return_types["executable-exists?"] = BuiltinTypes::Boolean;
         function_return_types["path-join"] = BuiltinTypes::String;
@@ -10989,6 +10993,10 @@ private:
         if (func_name == "cpu-count") return system_->cpuCount(op);
         if (func_name == "getpid") return system_->getpidBuiltin(op);
         if (func_name == "home-directory") return system_->homeDirectory(op);
+        // Time API (#168)
+        if (func_name == "current-timestamp") return system_->currentTimestamp(op);
+        if (func_name == "format-iso8601") return system_->formatIso8601(op);
+        if (func_name == "parse-iso8601") return system_->parseIso8601(op);
         if (func_name == "sleep-ms") return system_->sleepMs(op);
         if (func_name == "executable-exists?") return system_->executableExists(op);
         if (func_name == "path-join") return system_->pathJoin(op);
@@ -18310,6 +18318,7 @@ private:
             "os-type", "os-arch", "hostname", "username",
             "cpu-count", "getpid", "home-directory",
             "sleep-ms", "executable-exists?",
+            "current-timestamp", "format-iso8601", "parse-iso8601",
             "path-join", "path-dirname", "path-basename", "path-extname",
             "path-is-absolute?", "path-normalize", "realpath",
             "file-stat", "file-copy", "mkdir-recursive", "mkdtemp",

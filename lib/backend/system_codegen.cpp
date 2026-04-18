@@ -1314,6 +1314,10 @@ ZERO_ARG_BUILTIN(usernameBuiltin, "eshkol_builtin_username")
 ZERO_ARG_BUILTIN(cpuCount, "eshkol_builtin_cpu_count")
 ZERO_ARG_BUILTIN(getpidBuiltin, "eshkol_builtin_getpid")
 ZERO_ARG_BUILTIN(homeDirectory, "eshkol_builtin_home_directory")
+/* Time API (#168) */
+ZERO_ARG_BUILTIN(currentTimestamp, "eshkol_builtin_current_timestamp")
+ONE_ARG_BUILTIN(formatIso8601, "eshkol_builtin_format_iso8601")
+ONE_ARG_BUILTIN(parseIso8601, "eshkol_builtin_parse_iso8601")
 
 /* System ops with args */
 ONE_ARG_BUILTIN(sleepMs, "eshkol_builtin_sleep_ms")
