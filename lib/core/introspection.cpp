@@ -12,11 +12,16 @@
 
 #include <eshkol/core/introspection.h>
 #include <eshkol/core/sexp_to_ast.h>
+#include <eshkol/core/eval_bridge.h>
 #include <eshkol/logger.h>
 #include "arena_memory.h"
 
-// For eval/JIT integration
-#include "../repl/repl_jit.h"
+// NOTE: repl_jit.h is deliberately NOT included here. introspection.cpp
+// lives in eshkol-static; ReplJITContext lives only in eshkol-repl-lib.
+// JIT-dependent operations route through eshkol_eval_jit_* function
+// pointers declared in eval_bridge.h. See lib/core/eval_bridge.cpp for
+// the design rationale and lib/repl/eval_bridge_impl.cpp for the real
+// implementations that override the weak defaults.
 
 #include <atomic>
 #include <mutex>
@@ -36,23 +41,39 @@ namespace {
 // Gensym counter for unique symbol generation
 std::atomic<uint64_t> g_gensym_counter{1};
 
-// Eval JIT context (lazy-initialized singleton)
-std::mutex g_eval_jit_mutex;
-std::unique_ptr<eshkol::ReplJITContext> g_eval_jit_context;
-
-// Get or create the eval JIT context
-eshkol::ReplJITContext* get_eval_jit() {
-    std::lock_guard<std::mutex> lock(g_eval_jit_mutex);
-    if (!g_eval_jit_context) {
-        try {
-            g_eval_jit_context = std::make_unique<eshkol::ReplJITContext>();
-            eshkol_info("Eval JIT context initialized");
-        } catch (const std::exception& e) {
-            eshkol_error("Failed to initialize eval JIT: %s", e.what());
-            return nullptr;
-        }
+// Eval JIT context acquired through the bridge. The pointer is opaque —
+// only eshkol-repl-lib's strong implementation of eshkol_eval_jit_*
+// knows how to dereference it. If that implementation isn't linked (i.e.
+// this eshkol-static is in a user binary without the REPL runtime),
+// acquire() returns nullptr and the caller emits a clear error instead
+// of crashing on a dangling ReplJITContext call.
+void* get_eval_jit() {
+    eshkol_eval_jit_acquire_fn_t acquire = eshkol_eval_jit_get_acquire();
+    if (!acquire) {
+        eshkol_eval_jit_warn_missing("eval");
+        return nullptr;
     }
-    return g_eval_jit_context.get();
+    return acquire();
+}
+
+/* execute helper — funnel all jit->executeTagged sites through here so
+ * the function pointer lookup happens in one place. If the getter
+ * returns null (no REPL runtime linked) we emit a NULL tagged value
+ * rather than crashing on a null function-pointer call. */
+static inline eshkol_tagged_value_t jit_exec(void* jit, eshkol_ast_t* ast) {
+    eshkol_eval_jit_execute_fn_t exec = eshkol_eval_jit_get_execute();
+    if (!exec) {
+        eshkol_tagged_value_t out;
+        std::memset(&out, 0, sizeof(out));
+        out.type = ESHKOL_VALUE_NULL;
+        return out;
+    }
+    return exec(jit, ast);
+}
+
+static inline uint64_t jit_lookup(void* jit, const char* name) {
+    eshkol_eval_jit_lookup_fn_t lookup = eshkol_eval_jit_get_lookup();
+    return lookup ? lookup(jit, name) : 0;
 }
 
 // Serialize a tagged value (S-expression) to a string buffer
@@ -674,7 +695,7 @@ eshkol_tagged_value_t eshkol_eval(eshkol_tagged_value_t sexp, void* arena) {
         return make_null();
     }
 
-    eshkol::ReplJITContext* jit = get_eval_jit();
+    void* jit = get_eval_jit();
     if (!jit) {
         eshkol_free_sexp_ast(inner);
         eshkol_error("eshkol_eval: Failed to initialize JIT context");
@@ -689,7 +710,7 @@ eshkol_tagged_value_t eshkol_eval(eshkol_tagged_value_t sexp, void* arena) {
          inner->operation.op == ESHKOL_IMPORT_OP ||
          inner->operation.op == ESHKOL_REQUIRE_OP ||
          inner->operation.op == ESHKOL_PROVIDE_OP)) {
-        jit->executeTagged(inner);
+        jit_exec(jit, inner);
         eshkol_free_sexp_ast(inner);
         return make_null();
     }
@@ -722,10 +743,10 @@ eshkol_tagged_value_t eshkol_eval(eshkol_tagged_value_t sexp, void* arena) {
     wrapper->operation.define_op.param_types = nullptr;
 
     // Execute — sets the global to the expression value as a side effect.
-    jit->executeTagged(wrapper);
+    jit_exec(jit, wrapper);
 
     // Read back the value from the named global's memory.
-    uint64_t addr = jit->lookupSymbol(name_buf);
+    uint64_t addr = jit_lookup(jit, name_buf);
     eshkol_tagged_value_t result;
     memset(&result, 0, sizeof(result));
     if (addr != 0) {
@@ -837,7 +858,7 @@ eshkol_tagged_value_t eshkol_eval_env(eshkol_tagged_value_t sexp,
     }
 
     // Get or create the eval JIT context
-    eshkol::ReplJITContext* jit = get_eval_jit();
+    void* jit = get_eval_jit();
     if (!jit) {
         eshkol_free_sexp_ast(final_ast);
         eshkol_error("eshkol_eval_env: Failed to initialize JIT context");
@@ -845,7 +866,7 @@ eshkol_tagged_value_t eshkol_eval_env(eshkol_tagged_value_t sexp,
     }
 
     // Execute the AST through the JIT
-    eshkol_tagged_value_t result = jit->executeTagged(final_ast);
+    eshkol_tagged_value_t result = jit_exec(jit, final_ast);
 
     // Free the AST
     eshkol_free_sexp_ast(final_ast);
@@ -863,7 +884,7 @@ eshkol_tagged_value_t eshkol_compile(eshkol_tagged_value_t sexp, void* arena) {
     }
 
     // Get or create the eval JIT context
-    eshkol::ReplJITContext* jit = get_eval_jit();
+    void* jit = get_eval_jit();
     if (!jit) {
         eshkol_free_sexp_ast(ast);
         eshkol_error("eshkol_compile: Failed to initialize JIT context");
@@ -877,7 +898,7 @@ eshkol_tagged_value_t eshkol_compile(eshkol_tagged_value_t sexp, void* arena) {
     // Execute the lambda expression through the JIT
     // When evaluating a bare lambda expression like (lambda (x) (* x x)),
     // the result IS the closure object itself - it doesn't get called
-    eshkol_tagged_value_t result = jit->executeTagged(ast);
+    eshkol_tagged_value_t result = jit_exec(jit, ast);
 
     // Free the AST (JIT may have taken ownership of parts, but we allocated the root)
     eshkol_free_sexp_ast(ast);
@@ -993,7 +1014,7 @@ eshkol_tagged_value_t eshkol_compile_with_env(
     }
 
     // Get or create the eval JIT context
-    eshkol::ReplJITContext* jit = get_eval_jit();
+    void* jit = get_eval_jit();
     if (!jit) {
         eshkol_free_sexp_ast(final_ast);
         eshkol_error("eshkol_compile_with_env: Failed to initialize JIT context");
@@ -1001,7 +1022,7 @@ eshkol_tagged_value_t eshkol_compile_with_env(
     }
 
     // Execute the expression through the JIT to compile it
-    eshkol_tagged_value_t result = jit->executeTagged(final_ast);
+    eshkol_tagged_value_t result = jit_exec(jit, final_ast);
 
     // Free the AST
     eshkol_free_sexp_ast(final_ast);
@@ -1015,7 +1036,7 @@ eshkol_tagged_value_t eshkol_eval_string(const char* str, void* arena) {
     }
 
     // Get or create the eval JIT context
-    eshkol::ReplJITContext* jit = get_eval_jit();
+    void* jit = get_eval_jit();
     if (!jit) {
         eshkol_error("eshkol_eval_string: Failed to initialize JIT context");
         return make_null();
@@ -1034,7 +1055,7 @@ eshkol_tagged_value_t eshkol_eval_string(const char* str, void* arena) {
     // Execute the AST using the JIT with proper type conversion
     // executeTagged() analyzes the AST's inferred_hott_type field to return
     // a properly typed tagged value instead of a raw pointer
-    eshkol_tagged_value_t result = jit->executeTagged(&ast);
+    eshkol_tagged_value_t result = jit_exec(jit, &ast);
 
     (void)arena;  // Arena passed for potential allocation needs
     return result;
