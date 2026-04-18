@@ -5,19 +5,21 @@
 ;; I/O capture, timeout, and lifecycle management.
 ;;
 
-(provide process-spawn process-spawn-shell
+(provide process-spawn process-spawn-shell process-spawn-argv
          process-write-stdin process-close-stdin
          process-read-stdout process-read-stderr
          process-read-all-stdout process-read-all-stderr
          process-wait process-running? process-exit-code
          process-kill process-destroy
-         run-command run-command-capture)
+         run-command run-command-capture
+         run-argv run-argv-capture)
 
 ;; ============================================================================
 ;; FFI Declarations
 ;; ============================================================================
 
 (extern ptr process-spawn-raw ptr ptr ptr i64 :real qllm_process_spawn)
+(extern ptr process-spawn-argv-raw ptr ptr :real qllm_process_spawn_argv)
 (extern i64 process-write-stdin-raw ptr ptr i64 :real qllm_process_write_stdin)
 (extern void process-close-stdin-raw ptr :real qllm_process_close_stdin)
 (extern i64 process-read-stdout-raw ptr ptr i64 :real qllm_process_read_stdout)
@@ -43,6 +45,23 @@
 (define (process-spawn-shell command cwd)
   "Spawn a shell command with /bin/bash -c. Returns process handle."
   (process-spawn command cwd))
+
+;; process-spawn-argv: safe spawn that does NOT use a shell.
+;; argv is a list of strings (program first); we tab-join and pass to
+;; the native side which calls execvp. No shell means no injection —
+;; prefer this over process-spawn when the arguments are user-controlled.
+(define (process-spawn-argv argv cwd)
+  "Spawn a process without a shell. argv is a list: (program arg1 arg2 ...).
+   Returns process handle or #f on failure. Safe against shell injection."
+  (cond
+    ((null? argv) #f)
+    ((not (list? argv)) #f)
+    (else
+     (let loop ((rest (cdr argv)) (packed (car argv)))
+       (if (null? rest)
+           (process-spawn-argv-raw packed cwd)
+           (loop (cdr rest)
+                 (string-append packed "\t" (car rest))))))))
 
 (define (process-write-stdin proc data)
   "Write data to process stdin. Returns bytes written or -1 on error."
@@ -143,3 +162,55 @@
                                                    (number->string (/ timeout-ms 1000))
                                                    "s]")
                                     stderr))))))))
+
+;; ============================================================================
+;; Safe (argv-based, no-shell) Convenience Wrappers — #190
+;; ============================================================================
+
+(define (run-argv argv . rest)
+  "Run an argv list (program + args) to completion without a shell.
+   argv: (program arg1 arg2 ...). Safe against shell injection.
+   Args: argv [cwd] [timeout-ms]. Returns exit code."
+  (let* ((cwd (if (> (length rest) 0) (list-ref rest 0) "."))
+         (timeout-ms (if (> (length rest) 1) (list-ref rest 1) 30000))
+         (proc (process-spawn-argv argv cwd)))
+    (if (not proc)
+        -1
+        (begin
+          (process-close-stdin proc)
+          (let ((wait-result (process-wait proc timeout-ms)))
+            (let ((code (if (= wait-result 0)
+                            (process-exit-code proc)
+                            (begin
+                              (process-kill proc)
+                              (process-wait proc 5000)
+                              -1))))
+              (process-destroy proc)
+              code))))))
+
+(define (run-argv-capture argv . rest)
+  "Run argv list and capture stdout/stderr without a shell.
+   argv: (program arg1 arg2 ...). Safe against shell injection.
+   Args: argv [cwd] [timeout-ms] [max-output]. Returns alist."
+  (let* ((cwd (if (> (length rest) 0) (list-ref rest 0) "."))
+         (timeout-ms (if (> (length rest) 1) (list-ref rest 1) 30000))
+         (max-output (if (> (length rest) 2) (list-ref rest 2) 4194304))
+         (proc (process-spawn-argv argv cwd)))
+    (if (not proc)
+        (list (cons 'exit-code -1)
+              (cons 'stdout "")
+              (cons 'stderr "Error: failed to spawn process"))
+        (begin
+          (process-close-stdin proc)
+          (let* ((wait-result (process-wait proc timeout-ms))
+                 (timed-out (= wait-result 1))
+                 (_ (when timed-out
+                      (process-kill proc)
+                      (process-wait proc 5000)))
+                 (stdout (process-read-all-stdout proc max-output))
+                 (stderr (process-read-all-stderr proc max-output))
+                 (code (if timed-out 124 (process-exit-code proc))))
+            (process-destroy proc)
+            (list (cons 'exit-code code)
+                  (cons 'stdout stdout)
+                  (cons 'stderr stderr)))))))
