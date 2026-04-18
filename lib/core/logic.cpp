@@ -52,6 +52,27 @@ static const char* g_pred_table[PRED_TABLE_SIZE];
 static std::atomic<size_t> g_pred_count{0};
 static std::mutex g_pred_mutex;
 
+/* Reset the logic-variable + predicate interning tables. Wired to
+ * reset-tests! and exposed for embedders that need test isolation
+ * between REPL sessions. Not thread-safe by design — call from the
+ * main thread between test batches, not while logic ops are in
+ * flight. Covers audit #194 pattern where (reset-tests!) left stale
+ * g_var_names / g_pred_table entries across runs, causing cross-
+ * contaminated logic-variable IDs and predicate pointer identity. */
+extern "C" void eshkol_logic_registry_reset(void) {
+    {
+        std::lock_guard<std::mutex> lk(g_pred_mutex);
+        for (size_t i = 0; i < PRED_TABLE_SIZE; i++) g_pred_table[i] = nullptr;
+        g_pred_count.store(0, std::memory_order_release);
+        g_pred_pool_offset.store(0, std::memory_order_release);
+        /* Intentional: we don't memset the pool itself because readers
+         * hold pointers into it; those pointers will just get
+         * overwritten cleanly on the next interning pass. */
+    }
+    for (size_t i = 0; i < LOGIC_VAR_MAX; i++) g_var_names[i] = nullptr;
+    g_var_count.store(0, std::memory_order_release);
+}
+
 extern "C" const char* eshkol_intern_predicate(const char* name) {
     if (!name) return nullptr;
     size_t len = strlen(name);
