@@ -94,10 +94,12 @@
 ;; Convenience Functions
 ;; ============================================================================
 
-(define (run-command command cwd timeout-ms)
+(define (run-command command . rest)
   "Run a command and wait for completion.
-   Returns: exit code (integer)."
-  (let ((proc (process-spawn command cwd)))
+   Args: command [cwd] [timeout-ms]. Returns: exit code (integer)."
+  (let* ((cwd (if (> (length rest) 0) (list-ref rest 0) "."))
+         (timeout-ms (if (> (length rest) 1) (list-ref rest 1) 30000))
+         (proc (process-spawn command cwd)))
     (if (not proc)
         -1
         (begin
@@ -112,10 +114,13 @@
               (process-destroy proc)
               code))))))
 
-(define (run-command-capture command cwd timeout-ms max-output)
+(define (run-command-capture command . rest)
   "Run a command and capture stdout/stderr.
-   Returns: alist with 'exit-code, 'stdout, 'stderr keys."
-  (let ((proc (process-spawn command cwd)))
+   Args: command [cwd] [timeout-ms] [max-output]. Returns: alist."
+  (let* ((cwd (if (> (length rest) 0) (list-ref rest 0) "."))
+         (timeout-ms (if (> (length rest) 1) (list-ref rest 1) 30000))
+         (max-output (if (> (length rest) 2) (list-ref rest 2) 4194304))
+         (proc (process-spawn command cwd)))
     (if (not proc)
         (list (cons 'exit-code -1)
               (cons 'stdout "")
