@@ -2365,8 +2365,24 @@ static void process_requires(std::vector<eshkol_ast_t>& asts, const std::string&
     }
 }
 
+/* `(command-line)` reads these globals from libeshkol-static.
+ * They default to zero/null (weak linkage in arena_memory.cpp) since
+ * the runtime supports being embedded with no real main. eshkol-run
+ * is a real main, so we publish argc/argv here at startup so user
+ * scripts under `-e`, `-r`, or compile-and-link see the actual
+ * command line instead of an empty list. The full argv is published
+ * (including argv[0] = the eshkol-run binary path); user-script args
+ * begin at argv[optind+1] after argument parsing. */
+extern "C" {
+    extern int32_t __eshkol_argc;
+    extern char**  __eshkol_argv;
+}
+
 int main(int argc, char **argv)
 {
+    __eshkol_argc = (int32_t)argc;
+    __eshkol_argv = argv;
+
     int ch = 0;
 
     uint8_t debug_mode = 0;

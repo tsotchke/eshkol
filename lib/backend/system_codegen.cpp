@@ -440,15 +440,28 @@ llvm::Value* SystemCodegen::exitProgram(const eshkol_operations_t* op) {
 }
 
 llvm::Value* SystemCodegen::commandLine(const eshkol_operations_t* op) {
-    // Get global argc and argv
+    // The argc/argv globals are owned by the host process and exposed to
+    // JIT via ADD_DATA_SYMBOL (lib/repl/repl_jit.cpp:558-559). The
+    // top-level main-emitting path declares them, but each REPL `-e`
+    // expression is its own module — so on a bare `(command-line)` from
+    // the REPL we have to declare the externs ourselves. Without this,
+    // commandLine returned NULL and the user saw an empty list even when
+    // argc was clearly non-zero.
     llvm::Module* module = ctx_.builder().GetInsertBlock()->getParent()->getParent();
 
     llvm::GlobalVariable* g_argc = module->getGlobalVariable("__eshkol_argc");
+    if (!g_argc) {
+        g_argc = new llvm::GlobalVariable(
+            *module, ctx_.int32Type(), false,
+            llvm::GlobalValue::ExternalLinkage, nullptr,
+            "__eshkol_argc");
+    }
     llvm::GlobalVariable* g_argv = module->getGlobalVariable("__eshkol_argv");
-
-    if (!g_argc || !g_argv) {
-        eshkol_warn("command-line: argc/argv globals not found");
-        return tagged_.packNull();
+    if (!g_argv) {
+        g_argv = new llvm::GlobalVariable(
+            *module, ctx_.ptrType(), false,
+            llvm::GlobalValue::ExternalLinkage, nullptr,
+            "__eshkol_argv");
     }
 
     llvm::Function* strlen_func = function_table_["strlen"];
@@ -498,11 +511,17 @@ llvm::Value* SystemCodegen::commandLine(const eshkol_operations_t* op) {
     llvm::Value* arg_ptr_ptr = ctx_.builder().CreateGEP(ctx_.ptrType(), argv, idx_64);
     llvm::Value* arg_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), arg_ptr_ptr);
 
-    // Copy string to arena
+    // Copy argv[idx] into an arena-allocated Scheme string. Must use
+    // `arena_allocate_string_with_header` (NOT raw `arena_allocate`) so
+    // the string carries the 8-byte ESHKOL_OBJECT_HEADER that
+    // (display), (string-length), (string-ref), and the rest of the
+    // string toolkit rely on. Without the header the user sees garbage
+    // (`#<unknown>`) when displaying argv. The allocator reserves the
+    // +1 NUL byte itself, so we pass the bare strlen.
     llvm::Value* arg_len = ctx_.builder().CreateCall(strlen_func, {arg_ptr});
-    llvm::Value* alloc_len = ctx_.builder().CreateAdd(arg_len, llvm::ConstantInt::get(ctx_.int64Type(), 1));
     llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
-    llvm::Value* new_str = ctx_.builder().CreateCall(mem_.getArenaAllocate(), {arena_ptr, alloc_len});
+    llvm::Value* new_str = ctx_.builder().CreateCall(
+        mem_.getArenaAllocateStringWithHeader(), {arena_ptr, arg_len});
     ctx_.builder().CreateCall(strcpy_func, {new_str, arg_ptr});
 
     // Pack string and cons onto list
