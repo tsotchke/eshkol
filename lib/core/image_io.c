@@ -49,13 +49,34 @@ double* eshkol_image_read(const char* path, int* out_w, int* out_h, int* out_c) 
     unsigned char* data = stbi_load(path, &w, &h, &channels, 0);
     if (!data) return NULL;
 
+    /* #192 HIGH: stb_image returns untrusted dimensions from the
+     * decoded file. A crafted header claiming w=h=65536, channels=4
+     * makes (size_t)w*h*channels = 16 GB, and the subsequent
+     * (total * sizeof(double)) multiply wraps; arena_allocate then
+     * returns a tiny buffer and the for-loop walks off it. Enforce
+     * separate sanity caps on w / h / channels (matching sensible
+     * real-world image limits) AND check the products for overflow
+     * before ever calling arena_allocate. */
+    if (w <= 0 || h <= 0 || channels <= 0 || channels > 16 ||
+        w > 65535 || h > 65535) {
+        stbi_image_free(data);
+        return NULL;
+    }
+    /* Product checks: (size_t)w*h doesn't wrap on 64-bit given the
+     * caps above, and (size_t)w*h*channels also fits, but double the
+     * multiply and verify explicitly so a future loosening of the
+     * caps can't silently reintroduce the overflow. */
+    size_t wh = (size_t)w * (size_t)h;
+    if (wh / (size_t)w != (size_t)h) { stbi_image_free(data); return NULL; }
+    size_t total = wh * (size_t)channels;
+    if (total / wh != (size_t)channels) { stbi_image_free(data); return NULL; }
+    if (total > SIZE_MAX / sizeof(double)) { stbi_image_free(data); return NULL; }
+
     *out_w = w;
     *out_h = h;
     *out_c = channels;
 
-    /* Convert to normalized doubles */
-    size_t total = (size_t)w * (size_t)h * (size_t)channels;
-    double* result = (double*)arena_allocate(get_global_arena(),total * sizeof(double));
+    double* result = (double*)arena_allocate(get_global_arena(), total * sizeof(double));
     if (!result) { stbi_image_free(data); return NULL; }
 
     for (size_t i = 0; i < total; i++) {

@@ -161,6 +161,18 @@ static bool read_arg(arena_t* arena, FILE* f, eshkol_tagged_value_t* out) {
             uint32_t len;
             if (!read_u32(f, &len)) return false;
 
+            /* #192 MEDIUM: cap attacker-supplied length before any
+             * allocation. A 4GB string claim from a crafted file would
+             * otherwise trigger a multi-GB arena allocation or (with
+             * the +1 for the NUL) wrap to a tiny buffer on 32-bit
+             * size_t platforms. 16 MB is more than enough for any
+             * legitimate serialized KB string/symbol/bignum. */
+            if (len > 16u * 1024u * 1024u) {
+                eshkol_error("kb-load: string/symbol/bignum length %u exceeds 16 MB cap",
+                             (unsigned)len);
+                return false;
+            }
+
             switch (subtype) {
                 case HEAP_SUBTYPE_STRING: {
                     char* buf = arena_allocate_string_with_header(arena, len);
@@ -352,6 +364,23 @@ void eshkol_kb_load_tagged(arena_t* arena,
 
         uint32_t arity;
         if (!read_u32(f, &arity)) break;
+
+        /* #192 CRITICAL: arity comes straight out of an untrusted file.
+         * The multiply (size_t)arity * sizeof(tagged_value_t) wraps for
+         * arity near UINT32_MAX, producing a tiny fact_size that then
+         * gets a tiny arena allocation — and the subsequent j<arity
+         * loop walks off the end of the buffer. Reject pathological
+         * arities up front. 4096 is a generous practical cap
+         * (predicates never have this many args); the multiply bound
+         * also catches the wrap. */
+        if (arity > 4096) {
+            eshkol_error("kb-load: predicate arity=%u exceeds limit", arity);
+            fclose(f); return;
+        }
+        if ((size_t)arity > (SIZE_MAX - sizeof(eshkol_fact_t)) / sizeof(eshkol_tagged_value_t)) {
+            eshkol_error("kb-load: arity=%u would overflow fact_size", arity);
+            fclose(f); return;
+        }
 
         size_t fact_size = sizeof(eshkol_fact_t) +
             (size_t)arity * sizeof(eshkol_tagged_value_t);

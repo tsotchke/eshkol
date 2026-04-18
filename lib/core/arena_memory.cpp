@@ -357,6 +357,26 @@ void* arena_allocate_with_header(arena_t* arena, size_t data_size, uint8_t subty
         return nullptr;
     }
 
+    // #192 CRITICAL: integer-overflow guard on total_size. If data_size
+    // is close to SIZE_MAX, adding sizeof(header) + alignment rounding
+    // wraps to a small value; arena_allocate_aligned then returns a
+    // buffer much smaller than the caller expects. Callers often derive
+    // data_size from file contents (kb-load) or tensor shapes
+    // (user-controlled), so any wrap yields an immediate heap-overflow
+    // primitive.
+    if (data_size > SIZE_MAX - sizeof(eshkol_object_header_t) - 8) {
+        eshkol_error("arena_allocate_with_header: data_size=%zu would overflow", data_size);
+        return nullptr;
+    }
+
+    // #192 HIGH: header->size is uint32_t. Silently truncating a 4GB+
+    // allocation to its low 32 bits makes downstream readers think the
+    // object is tiny and under-copy it. Reject rather than truncate.
+    if (data_size > UINT32_MAX) {
+        eshkol_error("arena_allocate_with_header: data_size=%zu exceeds UINT32_MAX", data_size);
+        return nullptr;
+    }
+
     // Total size: header + data, aligned to 8 bytes
     size_t total_size = sizeof(eshkol_object_header_t) + data_size;
     total_size = (total_size + 7) & ~7;  // Round up to 8-byte alignment
