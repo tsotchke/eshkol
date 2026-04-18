@@ -87,8 +87,11 @@ set(CMAKE_CXX_STANDARD 20)
 option(ESHKOL_BUILD_TESTS "Build tests" ON)
 option(ESHKOL_BUILD_EXAMPLES "Build examples" OFF)
 option(ESHKOL_BUILD_INTEGRATION_TESTS "Build integration tests" OFF)
-option(ESHKOL_ENABLE_ASAN "Enable Address Sanitizer" OFF)
+option(ESHKOL_ENABLE_ASAN "Enable Address Sanitizer"            OFF)
 option(ESHKOL_ENABLE_UBSAN "Enable Undefined Behavior Sanitizer" OFF)
+option(ESHKOL_ENABLE_TSAN "Enable Thread Sanitizer"              OFF)
+option(ESHKOL_ENABLE_MSAN "Enable Memory Sanitizer"              OFF)
+option(ESHKOL_ENABLE_LSAN "Enable Leak Sanitizer (standalone)"   OFF)
 
 if(ESHKOL_BUILD_TESTS)
     enable_testing()
@@ -108,16 +111,73 @@ set(ESHKOL_LLVM_ROOT "")
 set(STABLEHLO_ROOT "" CACHE PATH "Path to StableHLO installation with bundled LLVM/MLIR")
 
 # ===== Sanitizers =====
+# Mutual-exclusivity check: ASan / TSan / MSan each rewrite the runtime
+# in incompatible ways. A build that enables more than one fails at link
+# time with a cryptic message; fail loudly up front instead. UBSan is
+# compatible with ASan + TSan but not MSan.
+set(ESHKOL_PRIMARY_SANITIZER_COUNT 0)
+foreach(san ASAN TSAN MSAN)
+    if(ESHKOL_ENABLE_${san})
+        math(EXPR ESHKOL_PRIMARY_SANITIZER_COUNT "${ESHKOL_PRIMARY_SANITIZER_COUNT} + 1")
+    endif()
+endforeach()
+if(ESHKOL_PRIMARY_SANITIZER_COUNT GREATER 1)
+    message(FATAL_ERROR
+        "At most one of ESHKOL_ENABLE_ASAN / _TSAN / _MSAN may be set. "
+        "They use incompatible runtimes. UBSan may combine with ASan or TSan.")
+endif()
+
 if(ESHKOL_ENABLE_ASAN)
     message(STATUS "Address Sanitizer: ENABLED")
-    add_compile_options(-fsanitize=address -fno-omit-frame-pointer)
+    add_compile_options(-fsanitize=address -fno-omit-frame-pointer -g)
     add_link_options(-fsanitize=address)
+    # ASan needs the runtime loaded before LLVM static init; disable the
+    # deprecated -bind_at_load trick elsewhere in this file for ASan
+    # builds by signaling via a compile definition.
+    add_compile_definitions(ESHKOL_SANITIZER_BUILD=1)
 endif()
 
 if(ESHKOL_ENABLE_UBSAN)
     message(STATUS "Undefined Behavior Sanitizer: ENABLED")
-    add_compile_options(-fsanitize=undefined -fno-omit-frame-pointer)
+    # -fno-sanitize-recover makes the first UB a hard abort so CI fails
+    # fast instead of logging the violation and continuing with a
+    # corrupt state. Disable alignment checks on the LLVM source that
+    # deliberately misaligns (see lib/backend) via per-function
+    # attributes if needed.
+    add_compile_options(-fsanitize=undefined -fno-sanitize-recover=all -fno-omit-frame-pointer -g)
     add_link_options(-fsanitize=undefined)
+    add_compile_definitions(ESHKOL_SANITIZER_BUILD=1)
+endif()
+
+if(ESHKOL_ENABLE_TSAN)
+    message(STATUS "Thread Sanitizer: ENABLED")
+    if(APPLE)
+        message(STATUS "  Note: TSan on Apple silicon requires macOS 12+ clang")
+    endif()
+    add_compile_options(-fsanitize=thread -fno-omit-frame-pointer -g)
+    add_link_options(-fsanitize=thread)
+    add_compile_definitions(ESHKOL_SANITIZER_BUILD=1)
+endif()
+
+if(ESHKOL_ENABLE_MSAN)
+    message(STATUS "Memory Sanitizer: ENABLED (requires instrumented libstdc++/libc++)")
+    add_compile_options(-fsanitize=memory -fsanitize-memory-track-origins=2
+                        -fno-omit-frame-pointer -g)
+    add_link_options(-fsanitize=memory)
+    add_compile_definitions(ESHKOL_SANITIZER_BUILD=1)
+endif()
+
+if(ESHKOL_ENABLE_LSAN)
+    # LSan standalone — only valid when NOT combined with ASan (ASan
+    # enables LSan automatically). Useful on Linux for leak-only CI.
+    if(ESHKOL_ENABLE_ASAN)
+        message(STATUS "Leak Sanitizer: subsumed by ASan")
+    else()
+        message(STATUS "Leak Sanitizer: ENABLED (standalone)")
+        add_compile_options(-fsanitize=leak -fno-omit-frame-pointer -g)
+        add_link_options(-fsanitize=leak)
+        add_compile_definitions(ESHKOL_SANITIZER_BUILD=1)
+    endif()
 endif()
 
 # LLVM backend is always enabled
