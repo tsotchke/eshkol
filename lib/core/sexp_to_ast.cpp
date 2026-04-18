@@ -938,6 +938,20 @@ eshkol_ast_t* convert_call(eshkol_tagged_value_t sexp) {
             eshkol_ast_t* arg_ast = convert_sexp(arg_sexps[i]);
             if (arg_ast) {
                 ast->operation.call_op.variables[i] = *arg_ast;
+            } else {
+                /* #194 PATTERN A: without this the arg slot stayed
+                 * uninitialised — whatever memory the arena gave us
+                 * last. The JIT would then compile that garbage as a
+                 * call argument. Poison to ESHKOL_INVALID and log so
+                 * downstream codegen fails loudly instead of silently
+                 * producing a wrong-code binary. Matches the same
+                 * treatment already applied to the sequence-op body
+                 * loops in lambda / define / let-family. */
+                eshkol_error("sexp_to_ast: failed to convert call argument %zu/%llu",
+                             i, (unsigned long long)num_args);
+                memset(&ast->operation.call_op.variables[i], 0,
+                       sizeof(eshkol_ast_t));
+                ast->operation.call_op.variables[i].type = ESHKOL_INVALID;
             }
         }
     } else {

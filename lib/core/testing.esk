@@ -120,7 +120,15 @@
           (display "    FAIL: expected thunk to raise, but it returned normally")
           (newline)))))
 
+;; FFI into the runtime's logic/predicate registry reset. Lets every
+;; test batch start from a clean logic-var ID counter + predicate
+;; pool so two runs in the same process can't accidentally share
+;; stale canonical pointers. Safe to call even when the consciousness
+;; engine isn't loaded — the symbol just resolves to a no-op.
+(extern void eshkol-logic-reset :real eshkol_logic_registry_reset)
+
 (define (reset-tests!)
+  (eshkol-logic-reset)
   (set! *tests* '())
   (set! *test-pass-count* 0)
   (set! *test-fail-count* 0)

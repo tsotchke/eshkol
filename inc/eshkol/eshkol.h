@@ -9,9 +9,9 @@
 
 // Version information
 #define ESHKOL_VERSION_MAJOR 1
-#define ESHKOL_VERSION_MINOR 1
+#define ESHKOL_VERSION_MINOR 2
 #define ESHKOL_VERSION_PATCH 0
-#define ESHKOL_VERSION_STRING "1.1.0-accelerate"
+#define ESHKOL_VERSION_STRING "1.2.0-scale"
 
 #include <stdint.h>
 #include <stdbool.h>
