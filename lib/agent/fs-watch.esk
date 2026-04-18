@@ -4,8 +4,12 @@
 ;;
 (provide fs-watch-start fs-watch-poll fs-watch-stop)
 
-(define (shell-escape s)
-  (string-append "'" (string-replace s "'" "'\"'\"'") "'"))
+;; Delegate to the stdlib shell-quote builtin (C implementation in
+;; system_builtins.c:725). Same single-quote-escape semantics but
+;; centrally maintained — a fix propagates to every agent module
+;; that wraps a shell command. Kept the local name `shell-escape`
+;; so call sites downstream don't change.
+(define shell-escape shell-quote)
 
 (define (fs-watch-start directory callback-file)
   "Start watching a directory for changes.

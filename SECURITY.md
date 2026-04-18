@@ -45,6 +45,28 @@ stdlib harden:
   balanced parens, no trailing code); `eval_file` path must not
   contain NUL or exceed 4 KiB.
 
+## Embedding Constraints
+
+The Eshkol runtime uses several process-global singletons:
+
+- **Symbol interning table** (`lib/core/symbol_intern.cpp`) — process-global
+  `g_interned_symbols` map; canonical symbol char* pointers are allocated
+  from `get_global_arena()`.
+- **Logic-var / predicate registry** (`lib/core/logic.cpp`) — `g_var_names`,
+  `g_pred_pool`, `g_pred_table` are shared across all callers in the
+  process.
+- **AD tape stack** (`lib/core/arena_memory.cpp`) — the reverse-mode tape
+  stack is thread-local but the tape-node storage arena is global.
+
+Practical implication: **embed exactly one Eshkol runtime per process.**
+Loading Python bindings (`bindings/python/eshkol_module.cpp`) AND running
+an in-process REPL JIT is fine because both share the same global arena;
+loading two independent `EshkolContext` instances that each try to own
+their own arena will dangle symbol pointers when either arena is reset.
+Call `eshkol_logic_registry_reset()` between independent test batches to
+clear logic/predicate state; symbol state is deliberately
+process-lifetime.
+
 ## Known Risky Surfaces (use with care)
 
 - `process-spawn` / `process-spawn-shell` / `run-command` /
