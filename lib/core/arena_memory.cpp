@@ -485,9 +485,25 @@ arena_tagged_cons_cell_t* arena_allocate_cons_with_header(arena_t* arena) {
 // STRING WITH HEADER (for consolidated HEAP_PTR type)
 // ───────────────────────────────────────────────────────────────────────────
 
-// Allocate a string with object header (new consolidated format)
-// Returns pointer to string data (header is at offset -8)
-// Includes space for null terminator
+// Allocate a string with object header (new consolidated format).
+//
+// Contract:
+//   `length` is the number of payload (character) bytes the caller
+//    will store — NOT including the trailing NUL terminator. The
+//    allocator reserves `length + 1` bytes of data and writes the NUL
+//    at str[length]. `hdr->size` is set to `length + 1` so that
+//    downstream consumers (`eshkol_string_byte_length`) can recover
+//    the caller-visible length by subtracting 1.
+//
+//   Historical hazard: several early call sites passed `len + 1`
+//    thinking they had to account for the NUL themselves. That
+//    silently over-allocated by a byte and — since `string-length`
+//    previously relied on C strlen semantics — was invisible. Making
+//    the header authoritative for string length (R7RS §6.7) exposed
+//    the off-by-one as `string-length` returning `N+1`. All such
+//    callers have been corrected to pass the bare character count.
+//
+// Returns pointer to string data (header is at offset -8).
 char* arena_allocate_string_with_header(arena_t* arena, size_t length) {
     if (!arena) {
         eshkol_error("Cannot allocate string with header: null arena");

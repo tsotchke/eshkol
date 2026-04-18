@@ -13349,6 +13349,8 @@ private:
                     // are consed into a Scheme list that becomes the final
                     // parameter — matching the non-forward-ref variadic path
                     // further down and matching the function's declared ABI.
+                    // For non-variadic forward refs, fixed_end == arity so
+                    // the single loop emits every arg.
                     std::vector<Value*> call_args;
 
                     uint64_t fixed_end = fwd_is_variadic ? std::min<uint64_t>(fwd_fixed_params, arity) : arity;
@@ -13400,19 +13402,6 @@ private:
                             rest_list = packPtrToTaggedValue(cons_ptr_i64, ESHKOL_VALUE_HEAP_PTR);
                         }
                         call_args.push_back(rest_list);
-                    } else {
-                        for (uint64_t i = 0; i < arity; i++) {
-                            Value* arg = codegenAST(&op->call_op.variables[i]);
-                            if (!arg) {
-                                if (builder->GetInsertBlock()->getTerminator()) return nullptr;
-                                arg = packNullToTaggedValue();
-                            }
-                            if (arg->getType() != tagged_value_type) {
-                                TypedValue tv = detectValueType(arg);
-                                arg = typedValueToTaggedValue(tv);
-                            }
-                            call_args.push_back(arg);
-                        }
                     }
 
                     // Load the function pointer from the global
