@@ -1,0 +1,307 @@
+;;; core/metrics.esk
+;;;
+;;; Prometheus-compatible counter / gauge / histogram primitives.
+;;; Designed to compose with a minimal `/metrics` endpoint (see
+;;; docs/metrics.md once the HTTP server lands in #145).
+;;;
+;;;   (require core.metrics)
+;;;
+;;;   (define req-total (make-counter "eshkol_requests_total"
+;;;                                    "Total HTTP requests" '("path" "method")))
+;;;   (counter-inc! req-total '("/steer" "POST"))
+;;;
+;;;   (define inflight (make-gauge "eshkol_inflight"
+;;;                                 "In-flight requests" '()))
+;;;   (gauge-set! inflight '() 3)
+;;;
+;;;   (define latency (make-histogram "eshkol_latency_seconds"
+;;;                                   "Request latency (s)" '("path")
+;;;                                   '(0.01 0.05 0.1 0.5 1.0 5.0)))
+;;;   (histogram-observe! latency '("/steer") 0.073)
+;;;
+;;; Registry:
+;;;   (metrics-render)  → Prometheus text-format string of all
+;;;                        registered metrics. Feed straight to the
+;;;                        HTTP response body.
+;;;   (metrics-reset!)  → zero all counters / histograms; gauges
+;;;                        retained (they represent state, not rate).
+
+(require core.list.transform)
+(require core.list.higher_order)
+
+(provide make-counter counter-inc! counter-add!
+         make-gauge gauge-set! gauge-inc! gauge-dec!
+         metrics-register! metrics-render metrics-reset!
+         metric-name metric-help metric-kind)
+
+;; make-histogram + histogram-observe! are defined below but not
+;; currently exported — the render path on multi-label histograms
+;; has an open edge case with label-key reconstruction from the
+;; flat key. Counter + gauge cover the common /metrics endpoint
+;; use cases; histograms will ship once #145 (HTTP server) lands
+;; and we can iterate against real scrape output.
+
+;; ---------------------------------------------------------------------------
+;; Global registry. Each metric registers itself on creation; render
+;; walks the list to produce the Prometheus text format.
+;; ---------------------------------------------------------------------------
+
+(define *metrics-registry* '())
+
+(define (metrics-register! m)
+  (set! *metrics-registry* (cons m *metrics-registry*)))
+
+;; A metric is a vector:
+;;   #(name help label-keys kind state)
+;; where kind ∈ 'counter 'gauge 'histogram
+;;       state is a hash-table keyed by the label-value string
+
+(define (metric-name  m) (vector-ref m 0))
+(define (metric-help  m) (vector-ref m 1))
+(define (metric-labels m) (vector-ref m 2))
+(define (metric-kind  m) (vector-ref m 3))
+(define (metric-state m) (vector-ref m 4))
+
+;; Build a stable string key from a list of label values. Prometheus
+;; label sets are unordered in the spec but our caller's responsible
+;; for passing them in the same order as declared; join with \x1f
+;; (unit separator) so no practical label value collides.
+(define (labels->key vals)
+  (let loop ((rest vals) (out "") (first? #t))
+    (if (null? rest) out
+        (loop (cdr rest)
+              (string-append out (if first? "" "\x1f") (label->string (car rest)))
+              #f))))
+
+(define (label->string v)
+  (cond ((string? v) v)
+        ((number? v) (number->string v))
+        ((symbol? v) (symbol->string v))
+        ((eq? v #t) "true")
+        ((eq? v #f) "false")
+        (else "")))
+
+;; ---------------------------------------------------------------------------
+;; Counter — monotonic, increment-only.
+;; ---------------------------------------------------------------------------
+
+(define (make-counter name help label-keys)
+  (let ((m (vector name help label-keys 'counter (make-hash-table))))
+    (metrics-register! m)
+    m))
+
+(define (counter-inc! m label-vals)
+  (counter-add! m label-vals 1))
+
+(define (counter-add! m label-vals n)
+  (if (< n 0)
+      (error "counter-add!: counters only increment" (metric-name m) n)
+      (let* ((key (labels->key label-vals))
+             (state (metric-state m))
+             (cur (if (hash-table-contains? state key)
+                      (hash-table-ref state key) 0)))
+        (hash-table-set! state key (+ cur n)))))
+
+;; ---------------------------------------------------------------------------
+;; Gauge — arbitrary value, can go up or down.
+;; ---------------------------------------------------------------------------
+
+(define (make-gauge name help label-keys)
+  (let ((m (vector name help label-keys 'gauge (make-hash-table))))
+    (metrics-register! m)
+    m))
+
+(define (gauge-set! m label-vals v)
+  (hash-table-set! (metric-state m) (labels->key label-vals) v))
+
+(define (gauge-inc! m label-vals)
+  (gauge-add! m label-vals 1))
+
+(define (gauge-dec! m label-vals)
+  (gauge-add! m label-vals -1))
+
+(define (gauge-add! m label-vals n)
+  (let* ((key (labels->key label-vals))
+         (state (metric-state m))
+         (cur (if (hash-table-contains? state key)
+                  (hash-table-ref state key) 0)))
+    (hash-table-set! state key (+ cur n))))
+
+;; ---------------------------------------------------------------------------
+;; Histogram — counts + cumulative buckets + sum.
+;;
+;; Each label combination stores: (cons bucket-counts
+;;                                 (cons count sum))
+;; where bucket-counts is a vector parallel to the bucket bounds.
+;; ---------------------------------------------------------------------------
+
+(define (make-histogram name help label-keys buckets)
+  (let ((m (vector name
+                   help
+                   label-keys
+                   (list 'histogram buckets)   ; kind carries bounds
+                   (make-hash-table))))
+    (metrics-register! m)
+    m))
+
+(define (histogram-buckets m)
+  (let ((kind (metric-kind m)))
+    (if (pair? kind) (car (cdr kind)) '())))
+
+(define (histogram-kind-symbol m) 'histogram)
+
+(define (histogram-observe! m label-vals value)
+  (let* ((key (labels->key label-vals))
+         (state (metric-state m))
+         (buckets (histogram-buckets m))
+         (n-buckets (length buckets))
+         (bucket-counts
+          (if (hash-table-contains? state key)
+              (car (hash-table-ref state key))
+              (make-vector n-buckets 0)))
+         (count-before
+          (if (hash-table-contains? state key)
+              (car (cdr (hash-table-ref state key))) 0))
+         (sum-before
+          (if (hash-table-contains? state key)
+              (cdr (cdr (hash-table-ref state key))) 0.0)))
+    ;; Increment every bucket whose upper bound >= value.
+    (let loop ((i 0) (rest buckets))
+      (cond
+        ((null? rest) #t)
+        ((<= value (car rest))
+         (vector-set! bucket-counts i (+ (vector-ref bucket-counts i) 1))
+         (loop (+ i 1) (cdr rest)))
+        (else
+         (loop (+ i 1) (cdr rest)))))
+    (hash-table-set! state key
+                     (cons bucket-counts
+                           (cons (+ count-before 1)
+                                 (+ sum-before value))))))
+
+;; ---------------------------------------------------------------------------
+;; Rendering — Prometheus text format §4.2
+;; ---------------------------------------------------------------------------
+
+(define (metrics-render)
+  (let ((out (open-output-string)))
+    (for-each (lambda (m) (render-metric out m))
+              (reverse *metrics-registry*))
+    (get-output-string out)))
+
+(define (render-metric port m)
+  (let ((name (metric-name m))
+        (help (metric-help m))
+        (kind (metric-kind m)))
+    (display "# HELP " port) (display name port)
+    (display " " port) (display help port) (newline port)
+    (display "# TYPE " port) (display name port) (display " " port)
+    (cond
+      ((eq? kind 'counter) (display "counter" port))
+      ((eq? kind 'gauge)   (display "gauge" port))
+      ((pair? kind)        (display "histogram" port))
+      (else                (display "untyped" port)))
+    (newline port)
+    (cond
+      ((eq? kind 'counter) (render-simple port m ""))
+      ((eq? kind 'gauge)   (render-simple port m ""))
+      ((pair? kind)        (render-histogram port m)))))
+
+(define (render-labels-text label-keys label-vals)
+  (if (null? label-keys) ""
+      (let ((out (open-output-string)))
+        (display "{" out)
+        (render-labels-text-helper out label-keys label-vals #t)
+        (display "}" out)
+        (get-output-string out))))
+
+(define (render-labels-text-helper port keys vals first?)
+  (cond
+    ((or (null? keys) (null? vals)) #t)
+    (else
+     (if (not first?) (display "," port))
+     (display (car keys) port)
+     (display "=\"" port)
+     (display (label->string (car vals)) port)
+     (display "\"" port)
+     (render-labels-text-helper port (cdr keys) (cdr vals) #f))))
+
+(define (unkey s)
+  ;; Reverse labels->key — split on \x1f.
+  (if (string? s) s ""))
+
+(define (render-simple port m extra-suffix)
+  (let ((state (metric-state m))
+        (name (metric-name m))
+        (label-keys (metric-labels m)))
+    (for-each
+      (lambda (key)
+        (let ((val (hash-table-ref state key)))
+          (display name port)
+          (display extra-suffix port)
+          (display (render-labels-text label-keys
+                                       (split-key key)) port)
+          (display " " port)
+          (display val port)
+          (newline port)))
+      (hash-table-keys state))))
+
+(define (split-key s)
+  (if (equal? s "") '()
+      (split-on-sep s "\x1f")))
+
+(define (split-on-sep s sep)
+  (let ((idx (string-index s sep)))
+    (if (and idx (>= idx 0))
+        (cons (substring s 0 idx)
+              (split-on-sep (substring s (+ idx 1) (string-length s)) sep))
+        (list s))))
+
+(define (render-histogram port m)
+  (let ((state (metric-state m))
+        (name (metric-name m))
+        (label-keys (metric-labels m))
+        (buckets (histogram-buckets m)))
+    (for-each
+      (lambda (key)
+        (let* ((entry (hash-table-ref state key))
+               (bucket-counts (car entry))
+               (count (car (cdr entry)))
+               (sum (cdr (cdr entry)))
+               (label-vals (split-key key)))
+          ;; _bucket{le="..."}  for each bucket bound.
+          (let loop ((i 0) (rest buckets))
+            (when (not (null? rest))
+              (display name port) (display "_bucket" port)
+              (display (render-labels-text
+                         (append label-keys (list "le"))
+                         (append label-vals
+                                 (list (number->string (car rest)))))
+                       port)
+              (display " " port)
+              (display (vector-ref bucket-counts i) port)
+              (newline port)
+              (loop (+ i 1) (cdr rest))))
+          ;; _bucket{le="+Inf"} + _count + _sum
+          (display name port) (display "_bucket" port)
+          (display (render-labels-text
+                     (append label-keys (list "le"))
+                     (append label-vals (list "+Inf"))) port)
+          (display " " port) (display count port) (newline port)
+          (display name port) (display "_count" port)
+          (display (render-labels-text label-keys label-vals) port)
+          (display " " port) (display count port) (newline port)
+          (display name port) (display "_sum" port)
+          (display (render-labels-text label-keys label-vals) port)
+          (display " " port) (display sum port) (newline port)))
+      (hash-table-keys state))))
+
+(define (metrics-reset!)
+  (for-each
+    (lambda (m)
+      (let ((kind (metric-kind m)))
+        ;; Counters and histograms reset; gauges retain state
+        ;; (per Prometheus semantics, a gauge is a live value).
+        (if (or (eq? kind 'counter) (pair? kind))
+            (hash-table-clear! (metric-state m)))))
+    *metrics-registry*))
