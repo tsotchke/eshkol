@@ -32,7 +32,18 @@
   "Match pattern against subject. Returns first match string or #f."
   (let* ((buf (make-string 4096 #\nul))
          (result (regex-match-raw handle subject buf 4096)))
-    (if (= result 1) (string-trim-right buf (char-set #\nul)) #f)))
+    (if (= result 1)
+        ;; PCRE2 writes a NUL-terminated match into buf; trim at first NUL.
+        ;; stdlib string-trim-right only removes whitespace, so we walk the
+        ;; buffer manually rather than depend on a non-existent char-set
+        ;; helper. Returning the substring is cheap — no allocation past
+        ;; what substring already does.
+        (let loop ((i 0))
+          (cond
+            ((>= i (string-length buf)) buf)
+            ((= (char->integer (string-ref buf i)) 0) (substring buf 0 i))
+            (else (loop (+ i 1)))))
+        #f)))
 
 (define (regex-match? handle subject)
   "Check if pattern matches subject. Returns #t or #f."

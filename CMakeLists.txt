@@ -1433,8 +1433,14 @@ if(ESHKOL_BUILD_AGENT_FFI)
             ${AGENT_FFI_DIR}/agent_subprocess.c
         )
 
-        # Optional: PCRE2 for regex
-        pkg_check_modules(PCRE2_AGENT pcre2-8)
+        # Optional: PCRE2 for regex. Homebrew ships the .pc file as
+        # libpcre2-8.pc, some distros (Debian) as pcre2-8.pc — try
+        # the homebrew-style name first, fall back to the bare one
+        # so Linux distros continue to build.
+        pkg_check_modules(PCRE2_AGENT libpcre2-8)
+        if(NOT PCRE2_AGENT_FOUND)
+            pkg_check_modules(PCRE2_AGENT pcre2-8)
+        endif()
         if(PCRE2_AGENT_FOUND)
             list(APPEND AGENT_FFI_SOURCES ${AGENT_FFI_DIR}/agent_regex.c)
         endif()
@@ -1470,12 +1476,28 @@ if(ESHKOL_BUILD_AGENT_FFI)
 
         if(PCRE2_AGENT_FOUND)
             target_include_directories(eshkol-agent-ffi PRIVATE ${PCRE2_AGENT_INCLUDE_DIRS})
-            target_link_libraries(eshkol-agent-ffi PUBLIC ${PCRE2_AGENT_LIBRARIES})
+            # Use LINK_LIBRARIES (full absolute paths resolved by
+            # pkg_check_modules) instead of LIBRARIES (short names
+            # that also need LIBRARY_DIRS via target_link_directories,
+            # easy to forget). Falls back to the short-name+dirs form
+            # if the installed CMake is too old to populate
+            # *_LINK_LIBRARIES.
+            if(PCRE2_AGENT_LINK_LIBRARIES)
+                target_link_libraries(eshkol-agent-ffi PUBLIC ${PCRE2_AGENT_LINK_LIBRARIES})
+            else()
+                target_link_directories(eshkol-agent-ffi PUBLIC ${PCRE2_AGENT_LIBRARY_DIRS})
+                target_link_libraries(eshkol-agent-ffi PUBLIC ${PCRE2_AGENT_LIBRARIES})
+            endif()
             target_compile_definitions(eshkol-agent-ffi PRIVATE PCRE2_CODE_UNIT_WIDTH=8)
         endif()
 
         if(SQLITE3_AGENT_FOUND)
-            target_link_libraries(eshkol-agent-ffi PUBLIC ${SQLITE3_AGENT_LIBRARIES})
+            if(SQLITE3_AGENT_LINK_LIBRARIES)
+                target_link_libraries(eshkol-agent-ffi PUBLIC ${SQLITE3_AGENT_LINK_LIBRARIES})
+            else()
+                target_link_directories(eshkol-agent-ffi PUBLIC ${SQLITE3_AGENT_LIBRARY_DIRS})
+                target_link_libraries(eshkol-agent-ffi PUBLIC ${SQLITE3_AGENT_LIBRARIES})
+            endif()
         endif()
 
         # Crypto: CommonCrypto on macOS, OpenSSL on Linux

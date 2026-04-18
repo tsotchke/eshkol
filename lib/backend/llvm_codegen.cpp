@@ -7435,8 +7435,86 @@ private:
         // NOTE: math_builtins are now handled at the top of this function
         // (before function_table check) with proper closure wrapping
 
+        // FIRST-CLASS VARIADIC BUILTINS: `list`, `values`, and friends are
+        // normally handled as inline codegen shortcuts (coll_->list /
+        // codegenValues), but that only covers the call position. When a
+        // user writes `(map list lst)` or
+        // `(call-with-values thunk list)` the bare symbol has to resolve to
+        // an honest value — without this, the call-with-values consumer
+        // codegen dies with "Undefined variable: list" (Noesis residual
+        // audit 2026-04-18 v2 BUG 1).
+        if (var_name == "list" || var_name == "values") {
+            std::string wrapper_name = "builtin_" + var_name + "_varargs";
+            return makeVariadicIdentityClosureValue(wrapper_name);
+        }
+
         codegen_error_at(ast, "Undefined variable: %s", var_name.c_str());
         return nullptr;
+    }
+
+    // Create a first-class wrapper for `list` / `values` — variadic builtins
+    // that the codegen normally inlines (coll_->list / codegenValues). When
+    // the user references the bare name `list` as a value (e.g. as a
+    // call-with-values consumer or a map argument), no inline expansion
+    // applies, so we have to synthesize an honest runtime function with the
+    // variadic-closure ABI. The wrapper takes a single tagged_value rest
+    // parameter (the list the closure dispatcher builds from the caller's
+    // args) and just returns it. For `list` that's the whole semantic;
+    // `values` similarly returns its args as a list in this path (used as a
+    // first-class function; the multi-value return path goes through a
+    // different code path).
+    //
+    // The closure metadata uses CLOSURE_FLAG_VARIADIC (bit 0 of flags byte at
+    // offset 34), arity=0, which signals codegenClosureCall to cons all
+    // caller args into a list and pass that as the single argument. See the
+    // "Variadic closure" branch around line ~5440.
+    Function* getOrCreateVariadicIdentityWrapper(const std::string& wrapper_name) {
+        Function* wrapper = module->getFunction(wrapper_name);
+        if (wrapper) return wrapper;
+
+        FunctionType* wrapper_type = FunctionType::get(
+            tagged_value_type, {tagged_value_type}, false);
+        wrapper = Function::Create(
+            wrapper_type,
+#ifdef _WIN32
+            Function::InternalLinkage,
+#else
+            Function::LinkOnceODRLinkage,
+#endif
+            wrapper_name, module.get());
+
+        IRBuilderBase::InsertPoint saved = builder->saveIP();
+        BasicBlock* entry = BasicBlock::Create(*context, "entry", wrapper);
+        builder->SetInsertPoint(entry);
+        builder->CreateRet(&*wrapper->arg_begin());
+        builder->restoreIP(saved);
+        return wrapper;
+    }
+
+    Value* makeVariadicIdentityClosureValue(const std::string& wrapper_name) {
+        Function* wrapper = getOrCreateVariadicIdentityWrapper(wrapper_name);
+        Value* func_ptr_int = builder->CreatePtrToInt(wrapper, intptr_type);
+        Value* arena_ptr = builder->CreateLoad(
+            PointerType::getUnqual(*context), global_arena);
+
+        // Packed info: 0 captures, 0 fixed params, variadic bit set (bit 63).
+        // The allocator also reads this and writes the CLOSURE_FLAG_VARIADIC
+        // byte at offset 34; both representations are consistent because the
+        // closure dispatcher can choose either source. Keeping the high bit
+        // set here is the belt-and-suspenders path used by existing user
+        // variadics.
+        uint64_t packed_info = (uint64_t)1 << 63;
+        Value* packed_info_val = sizeConst(packed_info);
+        Value* sexpr_ptr = intPtrConst(0);
+        // input_arity=0 (variadic accepts any), return=HEAP_PTR list.
+        uint64_t return_type_info_val = CLOSURE_RETURN_UNKNOWN;
+        Value* return_type_info = intPtrConst(return_type_info_val);
+        Value* closure_name = ConstantPointerNull::get(PointerType::getUnqual(*context));
+        Value* closure_ptr = builder->CreateCall(
+            getArenaAllocateClosureWithHeaderFunc(),
+            {arena_ptr, func_ptr_int, packed_info_val, sexpr_ptr,
+             return_type_info, closure_name});
+        return packPtrToTaggedValue(closure_ptr, ESHKOL_VALUE_CALLABLE);
     }
 
     Value* codegenOperation(const eshkol_operations_t* op) {
@@ -12677,13 +12755,31 @@ private:
         if (!callee && g_repl_mode_enabled) {
             bool is_repl_user_func;
             bool is_repl_user_var;
+            bool repl_is_variadic = false;
+            uint64_t repl_fixed_params = 0;
             {
                 std::lock_guard<std::mutex> lock(g_repl_mutex);
                 is_repl_user_func = g_repl_user_function_names.count(func_name) > 0;
                 is_repl_user_var  = g_repl_user_variable_names.count(func_name) > 0;
+                // Cross-batch variadic: `(define (f . a) a)` in one -e expression
+                // and `(f 1 2 3)` in the next lands here because the callee is
+                // not in this module's local tables. The unmodified path below
+                // builds a slot type with N positional tagged_value params, so
+                // the first caller-arg lands in `rest_param` and the rest
+                // silently vanish (R7RS §4.1.4: the rest list degrades to its
+                // first element). Pre-check the REPL variadic registry —
+                // populated when the define's createFunctionDeclaration ran in
+                // the previous batch — so we can emit the correct ABI shape
+                // (fixed_params + 1) and cons up a Scheme list for the tail.
+                auto vit = g_repl_variadic_functions.find(func_name);
+                if (vit != g_repl_variadic_functions.end() && vit->second.second) {
+                    repl_is_variadic = true;
+                    repl_fixed_params = vit->second.first;
+                }
             }
             if (is_repl_user_func && !is_repl_user_var) {
-                size_t arity = op->call_op.num_vars;
+                size_t num_call_args = op->call_op.num_vars;
+                size_t slot_arity = repl_is_variadic ? (repl_fixed_params + 1) : num_call_args;
 
                 // Get-or-create the external __repl_fwd_<func_name> slot in this module.
                 std::string global_ptr_name = "__repl_fwd_" + func_name;
@@ -12699,18 +12795,23 @@ private:
                     );
                 }
 
-                // Track arity in the REPL registry so subsequent compilations know it.
+                // Track arity in the REPL registry so subsequent compilations
+                // know the declared ABI shape (for variadic: fixed + 1 rest).
                 {
                     std::lock_guard<std::mutex> lock(g_repl_mutex);
-                    g_repl_function_arities[func_name] = arity;
+                    g_repl_function_arities[func_name] = slot_arity;
                 }
 
                 // Generate arguments.
-                std::vector<Type*> param_types(arity, tagged_value_type);
+                std::vector<Type*> param_types(slot_arity, tagged_value_type);
                 FunctionType* func_type = FunctionType::get(tagged_value_type, param_types, false);
 
                 std::vector<Value*> call_args;
-                for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
+                size_t fixed_end = repl_is_variadic
+                    ? std::min<size_t>(repl_fixed_params, num_call_args)
+                    : num_call_args;
+
+                for (size_t i = 0; i < fixed_end; i++) {
                     Value* arg = codegenAST(&op->call_op.variables[i]);
                     if (!arg) {
                         if (builder->GetInsertBlock()->getTerminator()) return nullptr;
@@ -12729,12 +12830,51 @@ private:
                     call_args.push_back(arg);
                 }
 
+                if (repl_is_variadic) {
+                    // Cons the tail into a Scheme list (right-to-left, null
+                    // terminator) — same shape as the in-module variadic path.
+                    Value* rest_list = packPtrToTaggedValue(
+                        ConstantInt::get(int64_type, 0), ESHKOL_VALUE_NULL);
+                    for (int64_t i = (int64_t)num_call_args - 1;
+                         i >= (int64_t)repl_fixed_params; i--) {
+                        Value* arg = codegenAST(&op->call_op.variables[i]);
+                        if (!arg) {
+                            if (builder->GetInsertBlock()->getTerminator()) return nullptr;
+                            arg = packNullToTaggedValue();
+                        }
+                        Value* arg_tagged;
+                        if (arg->getType() == tagged_value_type) {
+                            arg_tagged = arg;
+                        } else if (arg->getType()->isIntegerTy(64)) {
+                            TypedValue tv = detectValueType(arg);
+                            arg_tagged = typedValueToTaggedValue(tv);
+                        } else if (arg->getType()->isDoubleTy()) {
+                            arg_tagged = packDoubleToTaggedValue(arg);
+                        } else if (arg->getType()->isPointerTy()) {
+                            if (isa<Function>(arg)) {
+                                arg_tagged = packPtrToTaggedValue(arg, ESHKOL_VALUE_CALLABLE);
+                            } else {
+                                arg_tagged = packPtrToTaggedValue(arg, ESHKOL_VALUE_HEAP_PTR);
+                            }
+                        } else {
+                            TypedValue tv = detectValueType(arg);
+                            arg_tagged = typedValueToTaggedValue(tv);
+                        }
+                        Value* cons_ptr_i64 = codegenTaggedArenaConsCellFromTaggedValue(arg_tagged, rest_list);
+                        rest_list = packPtrToTaggedValue(cons_ptr_i64, ESHKOL_VALUE_HEAP_PTR);
+                    }
+                    call_args.push_back(rest_list);
+                }
+
                 // Load the latest function pointer from the slot and indirect-call.
                 Value* func_ptr = builder->CreateLoad(ptr_type, func_ptr_global, func_name + "_ptr");
                 Value* result = builder->CreateCall(func_type, func_ptr, call_args, func_name + "_result");
 
-                eshkol_debug("REPL hot-reload: indirect call to user function %s via %s (arity %zu)",
-                             func_name.c_str(), global_ptr_name.c_str(), arity);
+                eshkol_debug("REPL hot-reload: %s indirect call to user function %s via %s (fixed=%zu, args=%zu)",
+                             repl_is_variadic ? "variadic" : "fixed",
+                             func_name.c_str(), global_ptr_name.c_str(),
+                             repl_is_variadic ? repl_fixed_params : num_call_args,
+                             num_call_args);
                 return result;
             }
         }
@@ -13150,10 +13290,33 @@ private:
                 // global function pointers for unknown functions. This allows forward references
                 // to work across REPL evaluations.
                 if (g_repl_mode_enabled) {
+                    // VARIADIC FORWARD REFERENCE: a cross-batch call to a
+                    // variadic user-defined function (e.g. `(define (f . a) a)`
+                    // in one -e expression and `(f 1 2 3)` in the next) lands
+                    // here because the callee is not in this module's
+                    // symbol_table. The unmodified path below builds a function
+                    // type with N tagged_value parameters and passes every arg
+                    // positionally — but the real function was declared with
+                    // (fixed_params + 1) params where the trailing slot is a
+                    // pre-built list of rest args. Without this branch, the
+                    // first caller-arg lands in `rest_param` (R7RS §4.1.4 broke:
+                    // `(my-list 1 2 3)` → 1 instead of (1 2 3)).
+                    bool fwd_is_variadic = false;
+                    uint64_t fwd_fixed_params = 0;
+                    {
+                        std::lock_guard<std::mutex> lock(g_repl_mutex);
+                        auto it = g_repl_variadic_functions.find(func_name);
+                        if (it != g_repl_variadic_functions.end() && it->second.second) {
+                            fwd_is_variadic = true;
+                            fwd_fixed_params = it->second.first;
+                        }
+                    }
+
                     size_t arity = op->call_op.num_vars;
+                    size_t fn_param_count = fwd_is_variadic ? (fwd_fixed_params + 1) : arity;
 
                     // Create function type for the indirect call
-                    std::vector<Type*> param_types(arity, tagged_value_type);
+                    std::vector<Type*> param_types(fn_param_count, tagged_value_type);
                     FunctionType* func_type = FunctionType::get(tagged_value_type, param_types, false);
                     Type* func_ptr_type = ptr_type;
 
@@ -13172,26 +13335,84 @@ private:
                         );
                     }
 
-                    // Register this pending forward reference in REPL context
+                    // Register this pending forward reference in REPL context.
+                    // For variadic functions we record the declared ABI arity
+                    // (fixed_params + 1) so the runtime slot is linked to a
+                    // function of matching shape.
                     {
                         std::lock_guard<std::mutex> lock(g_repl_mutex);
-                        // Track that this function needs to be resolved
-                        g_repl_function_arities[func_name] = arity;
+                        g_repl_function_arities[func_name] = fn_param_count;
                     }
 
-                    // Generate arguments
+                    // Generate arguments. For variadic calls, the first
+                    // fwd_fixed_params go through positionally and the rest
+                    // are consed into a Scheme list that becomes the final
+                    // parameter — matching the non-forward-ref variadic path
+                    // further down and matching the function's declared ABI.
                     std::vector<Value*> call_args;
-                    for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
+
+                    uint64_t fixed_end = fwd_is_variadic ? std::min<uint64_t>(fwd_fixed_params, arity) : arity;
+                    for (uint64_t i = 0; i < fixed_end; i++) {
                         Value* arg = codegenAST(&op->call_op.variables[i]);
                         if (!arg) {
-                    if (builder->GetInsertBlock()->getTerminator()) return nullptr;
-                    arg = packNullToTaggedValue();
-                }
+                            if (builder->GetInsertBlock()->getTerminator()) return nullptr;
+                            arg = packNullToTaggedValue();
+                        }
                         if (arg->getType() != tagged_value_type) {
                             TypedValue tv = detectValueType(arg);
                             arg = typedValueToTaggedValue(tv);
                         }
                         call_args.push_back(arg);
+                    }
+
+                    if (fwd_is_variadic) {
+                        // Build the rest list from the tail arguments.
+                        // Empty list (ESHKOL_VALUE_NULL) when caller supplied
+                        // exactly fwd_fixed_params args — same convention as
+                        // the in-module variadic path.
+                        Value* rest_list = packPtrToTaggedValue(
+                            ConstantInt::get(int64_type, 0), ESHKOL_VALUE_NULL);
+                        for (int64_t i = (int64_t)arity - 1; i >= (int64_t)fwd_fixed_params; i--) {
+                            Value* arg = codegenAST(&op->call_op.variables[i]);
+                            if (!arg) {
+                                if (builder->GetInsertBlock()->getTerminator()) return nullptr;
+                                arg = packNullToTaggedValue();
+                            }
+                            Value* arg_tagged;
+                            if (arg->getType() == tagged_value_type) {
+                                arg_tagged = arg;
+                            } else if (arg->getType()->isIntegerTy(64)) {
+                                TypedValue tv = detectValueType(arg);
+                                arg_tagged = typedValueToTaggedValue(tv);
+                            } else if (arg->getType()->isDoubleTy()) {
+                                arg_tagged = packDoubleToTaggedValue(arg);
+                            } else if (arg->getType()->isPointerTy()) {
+                                if (isa<Function>(arg)) {
+                                    arg_tagged = packPtrToTaggedValue(arg, ESHKOL_VALUE_CALLABLE);
+                                } else {
+                                    arg_tagged = packPtrToTaggedValue(arg, ESHKOL_VALUE_HEAP_PTR);
+                                }
+                            } else {
+                                TypedValue tv = detectValueType(arg);
+                                arg_tagged = typedValueToTaggedValue(tv);
+                            }
+                            Value* cons_ptr_i64 = codegenTaggedArenaConsCellFromTaggedValue(arg_tagged, rest_list);
+                            rest_list = packPtrToTaggedValue(cons_ptr_i64, ESHKOL_VALUE_HEAP_PTR);
+                        }
+                        call_args.push_back(rest_list);
+                    } else {
+                        for (uint64_t i = 0; i < arity; i++) {
+                            Value* arg = codegenAST(&op->call_op.variables[i]);
+                            if (!arg) {
+                                if (builder->GetInsertBlock()->getTerminator()) return nullptr;
+                                arg = packNullToTaggedValue();
+                            }
+                            if (arg->getType() != tagged_value_type) {
+                                TypedValue tv = detectValueType(arg);
+                                arg = typedValueToTaggedValue(tv);
+                            }
+                            call_args.push_back(arg);
+                        }
                     }
 
                     // Load the function pointer from the global
@@ -13200,8 +13421,9 @@ private:
                     // Generate indirect call
                     Value* result = builder->CreateCall(func_type, func_ptr, call_args, func_name + "_result");
 
-                    eshkol_debug("REPL: Created indirect call for forward reference %s with %zu params",
-                                func_name.c_str(), arity);
+                    eshkol_debug("REPL: Created %s indirect call for forward reference %s (fixed=%zu, arity=%zu)",
+                                fwd_is_variadic ? "variadic" : "fixed",
+                                func_name.c_str(), fwd_is_variadic ? fwd_fixed_params : arity, arity);
 
                     return result;
                 } else {
@@ -13217,23 +13439,41 @@ private:
             }
         }
 
-        // VARIADIC FUNCTION HANDLING: Check if this is a variadic function call
+        // VARIADIC FUNCTION HANDLING: Check if this is a variadic function call.
+        // Both registries (variadic_function_info, g_repl_variadic_functions) are
+        // keyed by the user-visible name ("my-list"), NOT by the mangled LLVM
+        // symbol that REPL hot-reload produces ("my-list__rv0"). Checking
+        // callee->getName() first misses every variadic user define in
+        // cross-batch `-e` invocations (R7RS §4.1.4 regression: the rest list
+        // silently degrades to the first argument). Try the user name first;
+        // fall back to the mangled form only if that misses, for paths that
+        // go straight to an already-mangled callee without a user name
+        // available.
         std::string callee_name = callee->getName().str();
-        auto variadic_it = variadic_function_info.find(callee_name);
         bool is_variadic_call = false;
         uint64_t fixed_params = 0;
 
-        if (variadic_it != variadic_function_info.end() && variadic_it->second.second) {
-            is_variadic_call = true;
-            fixed_params = variadic_it->second.first;
-        } else if (g_repl_mode_enabled) {
-            // REPL MODE: Also check the global REPL registry for variadic functions
-            std::lock_guard<std::mutex> lock(g_repl_mutex);
-            auto repl_variadic_it = g_repl_variadic_functions.find(callee_name);
-            if (repl_variadic_it != g_repl_variadic_functions.end() && repl_variadic_it->second.second) {
+        auto check_variadic = [&](const std::string& key) -> bool {
+            auto it = variadic_function_info.find(key);
+            if (it != variadic_function_info.end() && it->second.second) {
                 is_variadic_call = true;
-                fixed_params = repl_variadic_it->second.first;
+                fixed_params = it->second.first;
+                return true;
             }
+            if (g_repl_mode_enabled) {
+                std::lock_guard<std::mutex> lock(g_repl_mutex);
+                auto rit = g_repl_variadic_functions.find(key);
+                if (rit != g_repl_variadic_functions.end() && rit->second.second) {
+                    is_variadic_call = true;
+                    fixed_params = rit->second.first;
+                    return true;
+                }
+            }
+            return false;
+        };
+
+        if (!check_variadic(func_name)) {
+            check_variadic(callee_name);
         }
 
         if (is_variadic_call) {
