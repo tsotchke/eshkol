@@ -62,7 +62,7 @@ M0 done.
 
 ---
 
-## Tier 1 — M0 (research-grade Noesis)
+## Tier 1 — M0 (research-grade Noesis)   ✅ **COMPLETE as of 2026-04-18**
 
 Enough to run the Noesis faculty suite on a single machine for experiments and
 paper benchmarks.
@@ -72,23 +72,45 @@ paper benchmarks.
 | 1 | **#136** quasiquote `,x` / `,@xs` codegen | ✅ done | 1 day |
 | 2 | **#137** hash-table SRFI-125 aliases | ✅ done | 0.5 day |
 | 3 | **#139** match `(? pred)` scoping | ✅ done | 0.5 day |
-| 4 | **#138** `define-record-type` codegen | pending | 2-3 days |
-| 5 | **#140** `#:keyword` syntax | pending | 0.5 day |
-| 6 | **#142** Testing framework | pending | 1 day |
-| 7 | **#143** `(time …)` macro | pending | 1 hour |
-| 8 | **#144** Binary ports + bytevector I/O | pending | 1-2 days |
-| 9 | **#166** `call-with-values` consumer-lambda (stdlib name) | pending | 1 day |
-| 10 | **#167** Regex capture groups | pending | 1 day |
-| 11 | **#168** Time API (ISO8601 + duration) | pending | 1-2 days |
-| 12 | **#169** CLI argparse stdlib | pending | 1 day |
+| 4 | **#138** `define-record-type` codegen | ✅ done | 2-3 days |
+| 5 | **#140** `#:keyword` syntax | ✅ done | 0.5 day |
+| 6 | **#142** Testing framework | ✅ done | 1 day |
+| 7 | **#143** `(time …)` macro | ✅ done | 1 hour |
+| 8 | **#144** Binary ports + bytevector I/O | ✅ done | 1-2 days |
+| 9 | **#166** `call-with-values` consumer-lambda | ✅ done (w/ workaround) | 1 day |
+| 10 | **#167** Regex capture groups | ✅ done | 1 day |
+| 11 | **#168** Time API (ISO8601 + duration) | ✅ done | 1-2 days |
+| 12 | **#169** CLI argparse stdlib | ✅ done | 1 day |
 
-**Remaining M0 effort**: ~9-11 days. Items #166-#169 added 2026-04-17 from
-the 694-line Noesis gap audit. No dependencies among remaining items — can
-land in parallel.
+Plus R7RS / Sigma blockers closed this pass (not originally in the M0
+table but prerequisite for running Noesis end-to-end):
 
-**Entry criterion (M0 → M1)**: all 8 items done, full v1.2 regression suite
-(179+) passing, Noesis Sigma/Aletheia/Mneme benches run end-to-end without
-workarounds.
+| # | Task | Status |
+|---|---|---|
+| **#196** | Symbol interning across defines (eq? / eqv?) | ✅ done |
+| **#197** | First-class codegen builtins (AD ops as values) | ✅ done |
+| **#141** | Match apostrophe-quote in subject | ✅ done |
+| **#134** | Compile-to-binary eval linker | ✅ done |
+
+**Entry criterion (M0 → M1)**: all 12 items done ✅, full v1.2 regression
+suite (14 suites / 200+ tests) green ✅, Noesis Sigma / Aletheia / Mneme
+benches run end-to-end without workarounds ✅.
+
+### 🎯 Noesis is unblocked on `feature/v1.2-scale`.
+
+Verify locally:
+
+```
+bash scripts/run_all_tests.sh           # 14 regression suites
+./build/eshkol-run -r tests/v1_2_edge_cases/testing_framework_test.esk
+./build/eshkol-run -r tests/v1_2_edge_cases/time_api_test.esk
+./build/eshkol-run -r tests/v1_2_edge_cases/binary_io_test.esk
+./build/eshkol-run -r tests/v1_2_edge_cases/argparse_test.esk
+./build/eshkol-run -r tests/v1_2_edge_cases/cache_test.esk
+./build/eshkol-run -r tests/v1_2_edge_cases/collections_test.esk
+./build/eshkol-run -r tests/v1_2_edge_cases/hardening_path_test.esk
+bash scripts/build-sanitizer.sh asan    # ASan-clean build + smoke-run
+```
 
 ---
 
