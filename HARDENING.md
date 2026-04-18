@@ -58,6 +58,21 @@ each item is implied by "ASan-clean" / "UBSan-clean" etc.
 | Symbol interning across modules     | FIX    | `eshkol_intern_symbol_lookup` in `symbol_intern.cpp`. `#196`.             |
 | First-class codegen builtins        | FIX    | Sret wrapper registry for AD ops. `#197`.                                 |
 
+### Architectural audit follow-ups (landed 2026-04-18)
+
+| Item                                       | Status | Notes                                                                           |
+| ------------------------------------------ | ------ | ------------------------------------------------------------------------------- |
+| Missing tensor backward (6 ops)            | FIX    | TRANSPOSE, SUM, BROADCAST_{ADD,MUL}, EMBEDDING, ATTENTION — was silent gradient corruption. `tensor_backward.cpp`. |
+| `sexp_to_ast` call-arg uninit slots        | FIX    | Matches the earlier `#194` pattern for sequence-op loops. Logs + marks ESHKOL_INVALID. |
+| Symbol interning arena coupling            | FIX    | `symbol_intern.cpp` now uses process-lifetime malloc blocks. Dual-instance embedding safe. |
+| `reset-tests!` leaks logic/predicate state | FIX    | `eshkol_logic_registry_reset` added, wired into `core/testing.esk`.              |
+| Agent `shell-escape` copy-paste            | FIX    | fs-watch/glob/git-ffi/keychain alias `shell-quote` from stdlib. Single source of truth. |
+| ESHKOL_PATH accepts garbage                | FIX    | Empty segments, nonexistent dirs, files-posing-as-dirs now rejected with debug log. |
+| Precompiled stdlib detection silent-fail   | FIX    | `eshkol-run.cpp` errors clearly if stdlib.o is linked but `lib/*.esk` tree is missing. |
+| tensor_backward NULL-dispatch warning      | FIX    | Default case now stderr-warns once per AD_NODE type instead of silently returning NULL. |
+| Version string (was "1.1.0-accelerate")    | FIX    | Bumped to 1.2.0-scale to match the shipping branch.                              |
+| Embedding constraints doc                  | DOC    | `SECURITY.md` § Embedding Constraints — now states what's safe, not what's banned. |
+
 ---
 
 ## Still pending
