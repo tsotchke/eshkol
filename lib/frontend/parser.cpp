@@ -1436,52 +1436,70 @@ static void collectVariableReferences(const eshkol_ast_t* ast, std::set<std::str
 static eshkol_ast_t transformInternalDefinesToLetrec(const std::vector<eshkol_ast_t>& body_expressions) {
     eshkol_ast_t result;
 
-    // PROPER EVALUATION ORDER FIX:
-    // - Statements BEFORE defines should execute first
-    // - Consecutive defines (starting from first define) are collected into letrec
-    // - Statements AFTER the define block become the letrec body
+    // INTERSPERSED INTERNAL DEFINES (Racket-compatible semantics):
     //
-    // Example: (display "before") (define x 1) (define y 2) (display "after") (+ x y)
-    // Becomes: (begin (display "before") (letrec ((x 1) (y 2)) (display "after") (+ x y)))
+    //  Per R7RS §5.3.3 internal definitions must be at the beginning of a
+    //  body. In practice, however, interspersed defines are the norm in
+    //  idiomatic Scheme — Noesis's Sigma pipeline uses them extensively.
+    //  Racket (and most MIT/Guile/Chez derivatives) accept them and treat
+    //  each `(define x V)` as introducing a binding that is visible for
+    //  the remainder of the enclosing body: equivalent to hoisting ALL
+    //  internal defines into a single `letrec*` with the non-define
+    //  expressions forming the body, in source order.
+    //
+    //  The previous implementation hoisted only the INITIAL RUN of
+    //  consecutive defines; later defines were left as raw AST nodes in
+    //  the body sequence. Codegen then compiled each late define as a
+    //  fresh local binding inside a sequence, which doesn't participate
+    //  in the surrounding let's capture analysis. Self-recursive lambdas
+    //  inside such defines have their body resolved against a stale view
+    //  of enclosing-let bindings, corrupting captures of outer-scope
+    //  variables. The Sigma fit.esk crash reduced to a two-define case:
+    //
+    //    (let ((n 2))
+    //      (define (helper i) (if (>= i n) #t (helper (+ i 1))))
+    //      (helper 0)
+    //      (define (build-fitted i) (if (>= i n) 99 (build-fitted (+ i 1))))
+    //      (build-fitted 0))
+    //
+    //  build-fitted's capture of n got wired to the wrong storage; at
+    //  runtime the reference loaded `(list n)` cons bits instead of
+    //  the scalar. Trapping (AOT exit 139 / JIT 138).
+    //
+    //  Architectural fix: collect ALL defines from the body regardless of
+    //  position, emit them as a single `letrec*` binding set. Non-define
+    //  expressions remain in their original relative order and form the
+    //  letrec* body. Any expression that runs before a late-define
+    //  binding's value expression (in source order) will see that
+    //  binding as the Eshkol-standard initially-unset slot; referencing
+    //  it there is a bug in the user's code (per R6RS / Racket), but
+    //  most code doesn't. This matches the Racket semantics the
+    //  Sigma/Noesis sources were written against.
+    //
+    //  Preserving side-effect order: non-define expressions appear in the
+    //  letrec* body in their original source order, so `(display "a")`,
+    //  `(helper 0)`, `(display "b")` all execute in that order. The
+    //  defines' value expressions (lambdas, computed values) evaluate up
+    //  front at letrec* init time, before the body runs — consistent
+    //  with hoisted-letrec* semantics. Lambdas don't execute at init,
+    //  only their closures are captured.
 
-    std::vector<eshkol_ast_t> before_defines;  // Statements before first define
-    std::vector<eshkol_ast_t> defines;          // Consecutive defines
-    std::vector<eshkol_ast_t> after_defines;    // Everything after defines
+    std::vector<eshkol_ast_t> defines;     // All internal defines, in source order
+    std::vector<eshkol_ast_t> body_exprs;  // Non-define expressions, in source order
 
-    // Find first define
-    size_t first_define_idx = body_expressions.size();
     for (size_t i = 0; i < body_expressions.size(); i++) {
         if (body_expressions[i].type == ESHKOL_OP &&
             body_expressions[i].operation.op == ESHKOL_DEFINE_OP) {
-            first_define_idx = i;
-            break;
-        }
-    }
-
-    // Collect statements before first define
-    for (size_t i = 0; i < first_define_idx; i++) {
-        before_defines.push_back(body_expressions[i]);
-    }
-
-    // Collect CONSECUTIVE defines starting from first_define_idx.
-    // Once a non-define expression is encountered, STOP collecting defines.
-    // All remaining expressions (including any later defines) go into after_defines.
-    // This preserves evaluation order: side effects between defines execute
-    // at the correct time, not after all defines are processed.
-    size_t define_end_idx = first_define_idx;
-    for (size_t i = first_define_idx; i < body_expressions.size(); i++) {
-        if (body_expressions[i].type == ESHKOL_OP &&
-            body_expressions[i].operation.op == ESHKOL_DEFINE_OP &&
-            after_defines.empty()) {
-            // Still in the consecutive define block
             defines.push_back(body_expressions[i]);
-            define_end_idx = i + 1;
         } else {
-            // Non-define encountered (or we already left the define block)
-            // Everything from here goes into the body
-            after_defines.push_back(body_expressions[i]);
+            body_exprs.push_back(body_expressions[i]);
         }
     }
+
+    // Retain original variable names for the rest of this function so the
+    // below code can continue to refer to `after_defines` semantically.
+    std::vector<eshkol_ast_t>& after_defines = body_exprs;
+    std::vector<eshkol_ast_t> before_defines;  // Unused under the new semantics
 
     // If no internal defines, return original body
     if (defines.empty()) {
