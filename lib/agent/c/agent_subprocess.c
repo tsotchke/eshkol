@@ -96,10 +96,21 @@ eshkol_subprocess_t* qllm_process_spawn(const char* command, const char* cwd_arg
     if (!proc) return NULL;
 
 #ifndef _WIN32
-    int stdin_pipe[2], stdout_pipe[2], stderr_pipe[2];
-    if (pipe(stdin_pipe) != 0 || pipe(stdout_pipe) != 0 || pipe(stderr_pipe) != 0) {
-        free(proc);
-        return NULL;
+    int stdin_pipe[2] = {-1,-1}, stdout_pipe[2] = {-1,-1}, stderr_pipe[2] = {-1,-1};
+    /* Partial-success pipe creation was leaking fds — if stdin_pipe
+     * succeeded but stdout_pipe failed, the two stdin fds never got
+     * closed because the old `||` short-circuit returned immediately.
+     * #182 resource-management audit. Gate each pipe() separately so
+     * we can clean up exactly the ones that succeeded. */
+    if (pipe(stdin_pipe) != 0) { free(proc); return NULL; }
+    if (pipe(stdout_pipe) != 0) {
+        close(stdin_pipe[0]); close(stdin_pipe[1]);
+        free(proc); return NULL;
+    }
+    if (pipe(stderr_pipe) != 0) {
+        close(stdin_pipe[0]); close(stdin_pipe[1]);
+        close(stdout_pipe[0]); close(stdout_pipe[1]);
+        free(proc); return NULL;
     }
 
     pid_t pid = fork();
@@ -298,10 +309,21 @@ eshkol_subprocess_t* qllm_process_spawn_argv(const char* tab_packed_argv,
         return NULL;
     }
 
-    int stdin_pipe[2], stdout_pipe[2], stderr_pipe[2];
-    if (pipe(stdin_pipe) != 0 || pipe(stdout_pipe) != 0 || pipe(stderr_pipe) != 0) {
-        free(argv[0]); free(argv); free(proc);
-        return NULL;
+    int stdin_pipe[2] = {-1,-1}, stdout_pipe[2] = {-1,-1}, stderr_pipe[2] = {-1,-1};
+    /* Same partial-success fd-leak guard as the shell-form spawn — see
+     * #182 comment above. Gate each pipe() so a mid-sequence failure
+     * closes only the fds that actually opened. */
+    if (pipe(stdin_pipe) != 0) {
+        free(argv[0]); free(argv); free(proc); return NULL;
+    }
+    if (pipe(stdout_pipe) != 0) {
+        close(stdin_pipe[0]); close(stdin_pipe[1]);
+        free(argv[0]); free(argv); free(proc); return NULL;
+    }
+    if (pipe(stderr_pipe) != 0) {
+        close(stdin_pipe[0]); close(stdin_pipe[1]);
+        close(stdout_pipe[0]); close(stdout_pipe[1]);
+        free(argv[0]); free(argv); free(proc); return NULL;
     }
 
     pid_t pid = fork();

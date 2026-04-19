@@ -155,6 +155,29 @@ making a `parameterize` form *look* like it had taken effect while
 actually retaining the old value. Now emits an explicit
 `eshkol_warn` so OOM on parameter growth is observable.
 
+### `#182` resource-management audit — subprocess pipe-leak on partial creation
+
+`agent_subprocess.c` qllm_process_spawn / qllm_process_spawn_argv
+used `||` short-circuit to create three pipes in one expression:
+
+```c
+if (pipe(stdin_pipe) != 0 || pipe(stdout_pipe) != 0 || pipe(stderr_pipe) != 0)
+    return NULL;
+```
+
+When the first pipe succeeded but the second failed, the two
+stdin-pipe fds never got closed — classical partial-success fd
+leak. Gated each pipe creation separately so cleanup closes
+exactly the fds that actually opened. Applies to both the shell-
+form and argv-form spawn paths.
+
+No other file/handle sites found in the leak audit. Arena-based
+allocations (cons, string, vector, tensor) are released in bulk
+when the owning arena resets, so the usual C heap-leak patterns
+don't apply. File-opening runtime paths already route through
+qllm_process_destroy and the port-close machinery that was
+hardened in #131 (tagged_value padding init).
+
 ## Still pending
 
 ### HIGH
