@@ -295,9 +295,14 @@ llvm::Value* StringIOCodegen::stringAppend(const eshkol_operations_t* op) {
     llvm::Function* strcpy_func = ctx_.funcs().getStrcpy();
     llvm::Function* strcat_func = ctx_.funcs().getStrcat();
 
-    // Calculate total length needed
+    // Calculate total byte length. arena_allocate_string_with_header reserves
+    // len+1 internally for the NUL terminator AND stamps the object header's
+    // size field with the `len` it receives. Passing sum-of-strlens here makes
+    // string-length(result) return the true byte count; passing sum+1 would
+    // report off-by-one and break any downstream loop that indexes up to
+    // (string-length s) - 1.
     std::vector<llvm::Value*> str_ptrs;
-    llvm::Value* total_len = llvm::ConstantInt::get(ctx_.int64Type(), 1); // +1 for null terminator
+    llvm::Value* total_len = llvm::ConstantInt::get(ctx_.int64Type(), 0);
 
     for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
         llvm::Value* arg = codegen_ast_callback_(&op->call_op.variables[i], callback_context_);

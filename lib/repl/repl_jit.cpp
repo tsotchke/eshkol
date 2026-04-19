@@ -1115,6 +1115,7 @@ void ReplJITContext::registerStdlibSymbols() {
                 Module& mod = **mod_or_err;
                 size_t func_count = 0, global_count = 0;
 
+                size_t variadic_count = 0;
                 for (auto& F : mod) {
                     if (F.isDeclaration()) continue;
                     if (F.hasInternalLinkage()) continue;
@@ -1129,6 +1130,30 @@ void ReplJITContext::registerStdlibSymbols() {
                     defined_lambdas_[name] = {name, arity};
                     registered_lambdas_.insert(name);
                     func_count++;
+
+                    // Scheme-level variadic signature is erased from the IR
+                    // (make-list, partial, log-info, etc. all lower to a single
+                    // tagged_value arg — indistinguishable from a 1-arg fixed
+                    // function at the bitcode level). The compiler writes
+                    // fixed-param count into the "eshkol-variadic" string
+                    // attribute when the define lowers; read it back here so a
+                    // REPL caller crossing from user code into precompiled
+                    // stdlib knows to cons surplus args into a rest list. Skip
+                    // this step and e.g. `(make-list 3 'x)` silently packs the
+                    // second arg as the whole args list and `(cdr args)` in
+                    // the stdlib body reads garbage.
+                    if (F.hasFnAttribute("eshkol-variadic")) {
+                        auto attr = F.getFnAttribute("eshkol-variadic");
+                        size_t fixed_params = 0;
+                        try {
+                            fixed_params = std::stoul(attr.getValueAsString().str());
+                        } catch (...) {
+                            fixed_params = 0;
+                        }
+                        eshkol_repl_register_variadic_function(
+                            name.c_str(), fixed_params, true);
+                        variadic_count++;
+                    }
                 }
 
                 for (auto& G : mod.globals()) {
@@ -1142,7 +1167,9 @@ void ReplJITContext::registerStdlibSymbols() {
                 }
 
                 std::cerr << "[REPL] Discovered " << func_count << " functions, "
-                          << global_count << " globals from stdlib.bc" << std::endl;
+                          << global_count << " globals, "
+                          << variadic_count << " variadic entries "
+                          << "from stdlib.bc" << std::endl;
                 return;
             } else {
                 consumeError(mod_or_err.takeError());
@@ -1173,6 +1200,31 @@ bool ReplJITContext::loadStdlib() {
             auto err = jit_->addObjectFile(main_dylib, std::move(*buffer_or_err));
             if (!err) {
                 registerStdlibSymbols();
+
+                // Run the stdlib module-level initializer. Compiled binaries
+                // call __eshkol_lib_init__(arena) from main() to populate every
+                // module-local define (e.g. core.data.base64's base64-chars
+                // alphabet, core.json's JSON_SPACE, core.testing's counters).
+                // addObjectFile alone does NOT execute the initializer — the
+                // globals would stay zero-initialised and any consumer of
+                // those constants would index out of bounds. Look up and call
+                // it explicitly with the shared REPL arena.
+                if (auto lib_init = jit_->lookup("__eshkol_lib_init__")) {
+                    using LibInitFn = void (*)(void*);
+                    auto fn = reinterpret_cast<LibInitFn>(lib_init->getValue());
+                    fn(shared_arena_);
+                } else {
+                    // Not fatal — programs that only touch stdlib functions
+                    // (no module-level constants) will keep working — but log
+                    // the miss so a `base64-chars is empty` symptom has an
+                    // obvious explanation.
+                    consumeError(lib_init.takeError());
+                    std::cerr << "[REPL] Warning: stdlib.o loaded but "
+                                 "__eshkol_lib_init__ not found — module "
+                                 "constants remain zero-initialised."
+                              << std::endl;
+                }
+
                 std::cerr << "[REPL] Loaded stdlib from: " << stdlib_obj_path << std::endl;
                 stdlib_object_loaded_ = true;
                 return true;
