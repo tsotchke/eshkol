@@ -3298,6 +3298,16 @@ private:
             if (g_repl_mode_enabled) {
                 eshkol_repl_register_variadic_function(func_name, num_params, true);
             }
+            // Persist variadic-ness in the LLVM function attribute so a
+            // consumer reading stdlib.bc (e.g. the REPL's ReplJITContext
+            // discovering stdlib.o symbols) can re-populate its variadic
+            // registry. Without this, `(make-list 3 'x)` crossing from a
+            // user REPL expression into a precompiled stdlib function has
+            // no way to know it should cons args into a list first — it
+            // emits fixed-arity IR and the stdlib body reads garbage for
+            // `(cdr args)`.
+            function->addFnAttr("eshkol-variadic",
+                                std::to_string(num_params));
             eshkol_debug("Registered variadic function %s with %llu fixed params",
                         func_name, (unsigned long long)num_params);
         }
