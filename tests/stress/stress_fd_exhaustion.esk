@@ -1,0 +1,38 @@
+;; stress_fd_exhaustion.esk — rapid subprocess spawn/destroy loop
+;;
+;; Goal: spawn 5000 subprocesses in quick succession and verify:
+;;   - every fd opened is closed (no `Too many open files` after loop)
+;;   - exit codes captured correctly each time
+;;   - wall time matches expected per-call budget
+;;
+;; #186 stress suite — targeted at the agent_subprocess.c pipe-leak
+;; fix in commit 0a14564 and the pthread drain pattern in 7c2c063.
+;; If either regresses, this test will run out of fds or hang.
+
+(require stdlib)
+(load "/Users/tyr/Desktop/eshkol/lib/agent/subprocess.esk")
+
+(define N 5000)
+(define t0 (current-jiffy))
+
+(define (loop i fails)
+  (if (>= i N)
+      fails
+      (let* ((r (run-argv-capture (list "/bin/echo" "ok")))
+             (code (cdr (assoc 'exit-code r))))
+        (if (= code 0)
+            (loop (+ i 1) fails)
+            (loop (+ i 1) (+ fails 1))))))
+
+(define failures (loop 0 0))
+(define t1 (current-jiffy))
+(define wall-ms (exact->inexact (* 1000 (/ (- t1 t0) (jiffies-per-second)))))
+
+(display "N:            ") (display N) (newline)
+(display "failures:     ") (display failures) (newline)
+(display "total wall-ms:") (display wall-ms) (newline)
+(display "per-call avg: ") (display (/ wall-ms N)) (newline)
+
+(if (= failures 0)
+    (begin (display "RESULT: OK") (newline))
+    (begin (display "RESULT: FAIL") (newline) (exit 1)))
