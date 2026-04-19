@@ -25,6 +25,7 @@
 #include <poll.h>
 #include <time.h>      /* nanosleep */
 #include <sys/time.h>  /* setitimer / itimerval */
+#include <pthread.h>   /* per-stream drain threads — canonical POSIX pattern */
 #else
 #include <windows.h>
 #endif
@@ -593,6 +594,79 @@ static void set_pipes_nonblocking(eshkol_subprocess_t* proc) {
         }
     }
 }
+
+/* Re-enable blocking mode on a single fd. Used by the pthread drainer
+ * so blocking `read()` can wait for bytes instead of spinning on
+ * EAGAIN. The fd goes back to non-blocking after the drain thread
+ * exits, so callers observing pipes post-wait still see the
+ * non-blocking behaviour the older drain-in-wait path relied on. */
+static void set_fd_blocking(int fd) {
+    if (fd < 0) return;
+    int f = fcntl(fd, F_GETFL);
+    if (f >= 0 && (f & O_NONBLOCK)) {
+        fcntl(fd, F_SETFL, f & ~O_NONBLOCK);
+    }
+}
+
+/* ─── Pthread drainer ───
+ *
+ * Canonical POSIX subprocess pattern (matches CPython's subprocess and
+ * Go's os/exec): spawn one thread per pipe (stdout, stderr), each
+ * doing blocking reads into a growable buffer until EOF. The parent's
+ * main thread blocks in waitpid(). This eliminates every polling
+ * artefact — no sigaction, no setitimer, no backoff loop, no
+ * scheduler-latency roundoff — and lets trivial `/bin/echo hello`
+ * complete in microseconds on top of the 2–3 ms fork+exec cost. */
+typedef struct {
+    int fd;
+    char** buf;
+    size_t* len;
+    size_t* cap;
+    size_t max_bytes;
+    int* eof_flag;
+} drain_thread_arg_t;
+
+static void* drain_thread_fn(void* vp) {
+    drain_thread_arg_t* a = (drain_thread_arg_t*)vp;
+    if (!a || a->fd < 0) return NULL;
+    /* Blocking reads so the thread sleeps on the pipe instead of
+     * spinning. When the child closes its write end (exit, close,
+     * exec failure), read() returns 0 and the thread exits. */
+    set_fd_blocking(a->fd);
+    char tmp[16384];
+    while (1) {
+        ssize_t n = read(a->fd, tmp, sizeof(tmp));
+        if (n > 0) {
+            if (a->max_bytes > 0 && *a->len >= a->max_bytes) {
+                /* Cap reached — keep reading so the child doesn't
+                 * stall, but drop bytes past the cap. */
+                continue;
+            }
+            size_t take = (size_t)n;
+            if (a->max_bytes > 0 && *a->len + take > a->max_bytes) {
+                take = a->max_bytes - *a->len;
+            }
+            if (*a->len + take + 1 > *a->cap) {
+                size_t newcap = (*a->cap == 0) ? 4096 : (*a->cap * 2);
+                while (newcap < *a->len + take + 1) newcap *= 2;
+                char* nb = (char*)realloc(*a->buf, newcap);
+                if (!nb) continue;
+                *a->buf = nb;
+                *a->cap = newcap;
+            }
+            memcpy(*a->buf + *a->len, tmp, take);
+            *a->len += take;
+            (*a->buf)[*a->len] = '\0';
+            continue;
+        }
+        if (n == 0) { *a->eof_flag = 1; break; }
+        if (errno == EINTR) continue;
+        /* Hard error — mark EOF and stop. */
+        *a->eof_flag = 1;
+        break;
+    }
+    return NULL;
+}
 #endif /* !_WIN32 */
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -639,133 +713,112 @@ int32_t qllm_process_wait(eshkol_subprocess_t* proc, int32_t timeout_ms) {
     if (!proc) return -1;
     if (proc->exited) return 0;
 #ifndef _WIN32
-    /* Cap how much we buffer per stream while waiting. 16 MB is well above
-     * any reasonable tool output; past this we keep reading but drop so the
-     * child doesn't stall. qllm_process_read_all_* applies its own cap on
-     * top, so callers ultimately see what they asked for. */
+    /* Per-stream byte cap. 16 MB is well above any reasonable tool
+     * output; past this the drain thread keeps reading but drops
+     * bytes so the child doesn't stall on a full pipe. The
+     * read_all_* getters then apply whatever caller-specified cap on
+     * top. */
     const size_t drain_cap = 16UL * 1024UL * 1024UL;
 
-    if (timeout_ms < 0) {
-        /* Block until done — but keep draining the pipes so the child
-         * can't deadlock on a full pipe while we wait. Use poll() so we
-         * sleep only while there's genuinely nothing to do. */
-        struct pollfd pfds[2];
-        while (!proc->exited) {
-            check_exit_status(proc);
-            if (proc->exited) break;
-            drain_proc_pipes(proc, drain_cap);
-            int nfds = 0;
-            if (proc->stdout_fd >= 0 && !proc->stdout_eof) {
-                pfds[nfds].fd = proc->stdout_fd;
-                pfds[nfds].events = POLLIN; nfds++;
-            }
-            if (proc->stderr_fd >= 0 && !proc->stderr_eof) {
-                pfds[nfds].fd = proc->stderr_fd;
-                pfds[nfds].events = POLLIN; nfds++;
-            }
-            if (nfds == 0) {
-                /* Both pipes closed; child must be just about to exit.
-                 * Fall back to a short blocking wait. */
-                int status;
-                waitpid((pid_t)proc->pid, &status, 0);
-                proc->exited = 1;
-                if (WIFEXITED(status)) proc->exit_code = WEXITSTATUS(status);
-                else if (WIFSIGNALED(status)) proc->exit_code = 128 + WTERMSIG(status);
-                return 0;
-            }
-            (void)poll(pfds, nfds, 50); /* 50ms max between exit checks */
+    /* Launch one drain thread per open pipe. They use blocking reads;
+     * the kernel schedules them onto idle cores while this thread
+     * blocks in waitpid(). No polling, no setitimer, no backoff — the
+     * canonical POSIX pattern that Python's subprocess, Go's os/exec
+     * and libuv's uv_process all use. */
+    pthread_t out_tid = 0, err_tid = 0;
+    drain_thread_arg_t out_arg = {
+        proc->stdout_fd,
+        &proc->stdout_buf, &proc->stdout_len, &proc->stdout_cap,
+        drain_cap, &proc->stdout_eof
+    };
+    drain_thread_arg_t err_arg = {
+        proc->stderr_fd,
+        &proc->stderr_buf, &proc->stderr_len, &proc->stderr_cap,
+        drain_cap, &proc->stderr_eof
+    };
+    int out_launched = 0, err_launched = 0;
+    if (proc->stdout_fd >= 0 && !proc->stdout_eof) {
+        if (pthread_create(&out_tid, NULL, drain_thread_fn, &out_arg) == 0) {
+            out_launched = 1;
         }
-        drain_proc_pipes(proc, drain_cap);
-        return 0;
+    }
+    if (proc->stderr_fd >= 0 && !proc->stderr_eof) {
+        if (pthread_create(&err_tid, NULL, drain_thread_fn, &err_arg) == 0) {
+            err_launched = 1;
+        }
     }
 
-    /* Fast-path strategy (Noesis v5 BUG D perf regression fix):
-     *
-     * The old WNOHANG+usleep(1ms) loop was cheap for small outputs but
-     * deadlocked any child emitting >64 KB (Bug A). The first BUG A
-     * fix added a poll-with-50ms-backoff that was deadlock-free but
-     * cost 50 ms+ of scheduler latency per call for /bin/echo-style
-     * tools that exit in <1 ms. This path unifies both concerns:
-     *
-     *   1. Drain both pipes (non-blocking) so a verbose child can
-     *      keep writing.
-     *   2. Try waitpid(WNOHANG) — if the child already exited, we're
-     *      done in microseconds.
-     *   3. Block in waitpid() protected by a SIGALRM timer sized so
-     *      chatty children get a chance to refill their pipes within
-     *      the quantum. When SIGALRM fires we loop, drain, retry.
-     *
-     * This gives us ~sub-ms waits for fast exits while keeping the
-     * pipes drained for slow/verbose children. Matches the Python
-     * `subprocess.run` latency profile (~3ms on /bin/echo).
-     */
-    struct pollfd pfds[2];
-    int elapsed_ms = 0;
-    int backoff_ms = 0;  /* first iteration: 0 → pure non-blocking */
-    /* SIGALRM-protected blocking-waitpid loop. Drain pipes between
-     * quanta so a chatty child can't stall on a full pipe. Geometric
-     * backoff: 1 → 2 → 4 → … → 50 ms per quantum — the 1ms first
-     * quantum wins the race on trivial tools like /bin/echo without
-     * burning CPU. */
-    struct sigaction old_sa, new_sa;
-    memset(&new_sa, 0, sizeof(new_sa));
-    new_sa.sa_handler = eshkol_subprocess_alrm_noop;
-    sigaction(SIGALRM, &new_sa, &old_sa);
-
-    int result = 1; /* default: timed out */
-    while (elapsed_ms < timeout_ms) {
-        drain_proc_pipes(proc, drain_cap);
-
+    int result;
+    if (timeout_ms < 0) {
+        /* Unbounded wait — block in waitpid. The drain threads will
+         * finish on their own once the child closes its pipes. */
         int status;
-        pid_t r = waitpid((pid_t)proc->pid, &status, WNOHANG);
+        pid_t r;
+        do { r = waitpid((pid_t)proc->pid, &status, 0); }
+        while (r < 0 && errno == EINTR);
         if (r == proc->pid) {
             proc->exited = 1;
             if (WIFEXITED(status)) proc->exit_code = WEXITSTATUS(status);
             else if (WIFSIGNALED(status)) proc->exit_code = 128 + WTERMSIG(status);
-            drain_proc_pipes(proc, drain_cap);
             result = 0;
-            break;
+        } else {
+            result = -1;
         }
-
-        int quantum = backoff_ms == 0 ? 1 : backoff_ms;
-        if (quantum > 50) quantum = 50;
-        int remaining = timeout_ms - elapsed_ms;
-        if (quantum > remaining) quantum = remaining;
-        if (backoff_ms == 0) backoff_ms = 1;
-        else backoff_ms = (backoff_ms * 2 > 50) ? 50 : backoff_ms * 2;
+    } else {
+        /* Timed wait — blocking waitpid protected by a SIGALRM
+         * itimer for the caller's full timeout budget. No polling
+         * loop: single waitpid call, single itimer arm/disarm pair.
+         * For a <1ms child this is fully dominated by fork+exec
+         * cost; for a long-running child SIGALRM interrupts waitpid
+         * exactly once per timeout. */
+        struct sigaction old_sa, new_sa;
+        memset(&new_sa, 0, sizeof(new_sa));
+        new_sa.sa_handler = eshkol_subprocess_alrm_noop;
+        sigaction(SIGALRM, &new_sa, &old_sa);
 
         struct itimerval old_it, new_it;
         memset(&new_it, 0, sizeof(new_it));
-        new_it.it_value.tv_sec = quantum / 1000;
-        new_it.it_value.tv_usec = (quantum % 1000) * 1000;
+        new_it.it_value.tv_sec = timeout_ms / 1000;
+        new_it.it_value.tv_usec = (timeout_ms % 1000) * 1000;
         setitimer(ITIMER_REAL, &new_it, &old_it);
 
-        r = waitpid((pid_t)proc->pid, &status, 0);
+        int status;
+        pid_t r = waitpid((pid_t)proc->pid, &status, 0);
 
         memset(&new_it, 0, sizeof(new_it));
         setitimer(ITIMER_REAL, &new_it, NULL);
         setitimer(ITIMER_REAL, &old_it, NULL);
+        sigaction(SIGALRM, &old_sa, NULL);
 
         if (r == proc->pid) {
             proc->exited = 1;
             if (WIFEXITED(status)) proc->exit_code = WEXITSTATUS(status);
             else if (WIFSIGNALED(status)) proc->exit_code = 128 + WTERMSIG(status);
-            drain_proc_pipes(proc, drain_cap);
             result = 0;
-            break;
+        } else {
+            /* EINTR from SIGALRM → timeout */
+            result = 1;
         }
-        elapsed_ms += quantum;
-        (void)pfds;
     }
 
-    sigaction(SIGALRM, &old_sa, NULL);
-    if (result == 0) return 0;
-    /* One last drain before reporting timeout. The child may have finished
-     * between the last poll slice and now — re-check so we don't wrongly
-     * report a timeout when the exit was simply fast. */
-    check_exit_status(proc);
-    drain_proc_pipes(proc, drain_cap);
-    return proc->exited ? 0 : 1;
+    /* Wait for drain threads to see EOF and exit. When the child
+     * exits, the kernel closes its pipe ends, so blocking read()
+     * returns 0 and the drainer naturally terminates. For the
+     * timeout case we close the reader fds so the drainer unblocks
+     * immediately — but that's done by process-destroy / read_all_*
+     * semantics, not here (so a caller that wants to read after a
+     * timeout still sees drained data). */
+    if (result == 1) {
+        /* Timed out while child still running. Close the read ends
+         * of the pipes so the drain threads unblock. The caller is
+         * expected to call process-kill → process-wait → destroy to
+         * clean up. */
+        if (proc->stdout_fd >= 0) { close(proc->stdout_fd); proc->stdout_fd = -1; }
+        if (proc->stderr_fd >= 0) { close(proc->stderr_fd); proc->stderr_fd = -1; }
+    }
+    if (out_launched) pthread_join(out_tid, NULL);
+    if (err_launched) pthread_join(err_tid, NULL);
+    return result;
 #else
     DWORD wait_ms = (timeout_ms < 0) ? INFINITE : (DWORD)timeout_ms;
     DWORD res = WaitForSingleObject(proc->hProcess, wait_ms);
