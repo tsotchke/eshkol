@@ -211,6 +211,32 @@
 (check "Noesis BUG 2: car of rest is first arg"
        (= (car (noesis-bug2-my-list 100 200 300)) 100))
 
+;; v3 BUG C — user define shadows builtin name. `outer` is a tensor
+;; codegen builtin; user's 1-arg version must win over the 2-arg builtin
+;; arity check.
+(define (noesis-bug3c-outer xs) (length xs))
+(check "Noesis v3 BUG C: user define shadows builtin (outer)"
+       (= (noesis-bug3c-outer (list 1 2 3)) 3))
+
+;; v3 BUG D — named let with nested self-call as argument was emitting
+;; a TCO branch mid-arg-evaluation, breaking LLVM verifier with
+;; "Terminator found in middle of basic block". The inner (loop …) is
+;; NOT in tail position (it's an arg to outer loop), so it must use
+;; the normal call path.
+(define (noesis-bug3d-tree-sum t)
+  (let loop ((e t) (acc 0))
+    (cond
+      ((null? e) acc)
+      ((pair? e) (loop (cdr e) (loop (car e) acc)))
+      ((number? e) (+ acc e))
+      (else acc))))
+(check "Noesis v3 BUG D: named let with nested self-call (tree walker)"
+       (= (noesis-bug3d-tree-sum (list 1 2 (list 3 4) 5)) 15))
+(check "Noesis v3 BUG D: same shape on flat list"
+       (= (noesis-bug3d-tree-sum (list 10 20 30)) 60))
+(check "Noesis v3 BUG D: deep nesting"
+       (= (noesis-bug3d-tree-sum (list 1 (list 2 (list 3 (list 4 5))))) 15))
+
 ;; ---------------------------------------------------------------------------
 ;; Summary
 ;; ---------------------------------------------------------------------------

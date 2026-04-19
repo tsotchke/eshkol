@@ -19075,12 +19075,36 @@ private:
 
         eshkol_debug("TCO: Generating tail call jump for %s", tco_ctx.func_name.c_str());
 
+        // TAIL POSITION GUARD (Noesis residual audit v3 BUG D):
+        // The check at codegenCall is "is the function-name TCO-active",
+        // not "is this call in tail position". For
+        //   (loop x (loop y z))
+        // the OUTER call is in tail position but the INNER call appears as
+        // the OUTER call's argument — and arguments are NEVER in tail
+        // position (R5RS §3.5). Without disabling TCO during arg
+        // evaluation, the inner call here emits its TCO `br loop_header`
+        // mid-stream; the outer call's subsequent stores then land after
+        // a terminator, and LLVM verifier rejects with "Terminator found
+        // in middle of basic block" — surfaces in fit.esk's recursive
+        // accumulator pattern, in tree-walker recursions, etc.
+        //
+        // Save & clear the TCO context across arg evaluation so any nested
+        // self-recursive calls fall back to the normal closure-call path.
+        // After args are evaluated and packed to tagged_value, restore the
+        // context to emit the outer call's TCO branch.
+        bool saved_enabled = tco_ctx.enabled;
+        BasicBlock* saved_header = tco_ctx.loop_header;
+        tco_ctx.enabled = false;
+        tco_ctx.loop_header = nullptr;
+
         // Evaluate all arguments first (to temporaries)
         std::vector<Value*> new_values;
         for (uint64_t i = 0; i < call_op->call_op.num_vars; i++) {
             Value* arg = codegenAST(&call_op->call_op.variables[i]);
             if (!arg) {
                 eshkol_error("TCO: Failed to evaluate argument %llu", (unsigned long long)i);
+                tco_ctx.enabled = saved_enabled;
+                tco_ctx.loop_header = saved_header;
                 return nullptr;
             }
             // Pack to tagged_value if needed
@@ -19096,6 +19120,11 @@ private:
             }
             new_values.push_back(arg);
         }
+
+        // Restore TCO context now that arg evaluation is done. The OUTER
+        // call emitted below IS in tail position so it gets the TCO branch.
+        tco_ctx.enabled = saved_enabled;
+        tco_ctx.loop_header = saved_header;
 
         // Store all new values to parameter allocas
         for (size_t i = 0; i < new_values.size(); i++) {
