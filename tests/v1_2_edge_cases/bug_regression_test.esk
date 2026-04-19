@@ -255,6 +255,37 @@
 (check "Noesis v3 follow-up: tensor-ref with (list 0)"
        (= (tensor-ref tref-t (list 0)) 7.0))
 
+;; v3 follow-up: interspersed internal defines.
+;; Pattern used in Sigma fit.esk: a function body with non-consecutive
+;; defines that both capture an outer let-binding. The second, late
+;; define's closure-conversion previously resolved the capture against
+;; stale scope state, corrupting the outer binding. Parser now hoists
+;; ALL internal defines (not just the initial consecutive ones) into a
+;; single letrec*, Racket-style, so captures are coherent.
+(define (noesis-interspersed-define)
+  (let ((n 2))
+    (define (helper i) (if (>= i n) #t (helper (+ i 1))))
+    (helper 0)
+    (define (build-fitted i) (if (>= i n) 99 (build-fitted (+ i 1))))
+    (build-fitted 0)))
+(check "Noesis: interspersed internal defines preserve outer capture"
+       (= (noesis-interspersed-define) 99))
+
+;; And the combined fit-candidate pattern: tensor ops + late defines.
+(define (noesis-fit-like ps)
+  (let ((n (length ps)))
+    (define t (make-tensor (list n) 0.0))
+    (define (helper i)
+      (if (>= i n) #t
+          (begin (tensor-set! t (list i) 5.0) (helper (+ i 1)))))
+    (helper 0)
+    (define (build i acc)
+      (if (>= i n) (reverse acc)
+          (build (+ i 1) (cons (tensor-ref t (list i)) acc))))
+    (build 0 '())))
+(check "Noesis: fit-candidate-shape pattern round-trips"
+       (equal? (noesis-fit-like (list 'c1 'c2)) (list 5.0 5.0)))
+
 ;; ---------------------------------------------------------------------------
 ;; Summary
 ;; ---------------------------------------------------------------------------

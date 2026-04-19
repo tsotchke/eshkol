@@ -332,12 +332,34 @@ llvm::Value* TensorCodegen::tensorGet(const eshkol_operations_t* op) {
     // First compute stride[0] = total_elements / dims[0]
     // Then stride[i] = stride[i-1] / dims[i]
 
-    // Collect indices and compute linear offset
+    // Collect indices and compute linear offset. Each index is funneled
+    // through `eshkol_unwrap_list_index` so (tensor-get t (list i j))
+    // works alongside (tensor-get t i j) — fit.esk passes list-wrapped
+    // indices from its tensor-set!/tensor-ref call sites.
+    llvm::Function* unwrap_fn = ctx_.module().getFunction("eshkol_unwrap_list_index");
+    if (!unwrap_fn) {
+        llvm::FunctionType* ft = llvm::FunctionType::get(
+            ctx_.int64Type(), {ctx_.ptrType()}, false);
+        unwrap_fn = llvm::Function::Create(
+            ft, llvm::Function::ExternalLinkage,
+            "eshkol_unwrap_list_index", &ctx_.module());
+    }
+
     std::vector<llvm::Value*> indices;
     for (uint64_t i = 0; i < num_indices; i++) {
         llvm::Value* idx = codegenAST(&op->call_op.variables[i + 1]);
         if (!idx) return nullptr;
-        indices.push_back(tagged_.safeExtractInt64(idx));
+        if (idx->getType() != ctx_.taggedValueType()) {
+            idx = tagged_.packInt64(tagged_.safeExtractInt64(idx), true);
+        }
+        llvm::IRBuilderBase::InsertPoint saved = ctx_.builder().saveIP();
+        llvm::Function* cur_fn = ctx_.builder().GetInsertBlock()->getParent();
+        ctx_.builder().SetInsertPoint(&cur_fn->getEntryBlock(), cur_fn->getEntryBlock().begin());
+        llvm::Value* idx_slot = ctx_.builder().CreateAlloca(
+            ctx_.taggedValueType(), nullptr, "tget_idx_slot");
+        ctx_.builder().restoreIP(saved);
+        ctx_.builder().CreateStore(idx, idx_slot);
+        indices.push_back(ctx_.builder().CreateCall(unwrap_fn, {idx_slot}));
     }
 
     // Guard: num_indices must not exceed ndim (prevents out-of-bounds dims[i] read)
@@ -584,12 +606,39 @@ llvm::Value* TensorCodegen::tensorSet(const eshkol_operations_t* op) {
         ctx_.builder().SetInsertPoint(idx_ok);
     }
 
-    // Calculate linear index (indices are variables[1..num_vars-2])
+    // Calculate linear index (indices are variables[1..num_vars-2]).
+    //
+    // Each index is funneled through `eshkol_unwrap_list_index` — same
+    // runtime helper used by tensor-ref — so the NumPy/JAX idiom
+    // `(tensor-set! t (list i) v)` works uniformly. The helper returns
+    // the integer index directly for scalar INT64/DOUBLE and extracts
+    // car for HEAP_PTR+CONS, so no AST-level detection is needed.
+    llvm::Function* unwrap_fn = ctx_.module().getFunction("eshkol_unwrap_list_index");
+    if (!unwrap_fn) {
+        llvm::FunctionType* ft = llvm::FunctionType::get(
+            ctx_.int64Type(), {ctx_.ptrType()}, false);
+        unwrap_fn = llvm::Function::Create(
+            ft, llvm::Function::ExternalLinkage,
+            "eshkol_unwrap_list_index", &ctx_.module());
+    }
+
     llvm::Value* stride = llvm::ConstantInt::get(ctx_.int64Type(), 1);
     for (int64_t i = static_cast<int64_t>(num_set_indices) - 1; i >= 0; i--) {
         llvm::Value* index = codegenAST(&op->call_op.variables[i + 1]);
         if (index) {
-            llvm::Value* idx_int = tagged_.safeExtractInt64(index);
+            // Normalise to tagged_value, then unwrap through the helper.
+            if (index->getType() != ctx_.taggedValueType()) {
+                index = tagged_.packInt64(tagged_.safeExtractInt64(index), true);
+            }
+            llvm::IRBuilderBase::InsertPoint saved = ctx_.builder().saveIP();
+            llvm::Function* cur_fn = ctx_.builder().GetInsertBlock()->getParent();
+            ctx_.builder().SetInsertPoint(&cur_fn->getEntryBlock(), cur_fn->getEntryBlock().begin());
+            llvm::Value* idx_slot = ctx_.builder().CreateAlloca(
+                ctx_.taggedValueType(), nullptr, "tset_idx_slot");
+            ctx_.builder().restoreIP(saved);
+            ctx_.builder().CreateStore(index, idx_slot);
+            llvm::Value* idx_int = ctx_.builder().CreateCall(unwrap_fn, {idx_slot});
+
             llvm::Value* contribution = ctx_.builder().CreateMul(idx_int, stride);
             linear_index = ctx_.builder().CreateAdd(linear_index, contribution);
 
