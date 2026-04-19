@@ -92,6 +92,7 @@ option(ESHKOL_ENABLE_UBSAN "Enable Undefined Behavior Sanitizer" OFF)
 option(ESHKOL_ENABLE_TSAN "Enable Thread Sanitizer"              OFF)
 option(ESHKOL_ENABLE_MSAN "Enable Memory Sanitizer"              OFF)
 option(ESHKOL_ENABLE_LSAN "Enable Leak Sanitizer (standalone)"   OFF)
+option(ESHKOL_ENABLE_FUZZ "Build libFuzzer harnesses (clang only)" OFF)
 
 if(ESHKOL_BUILD_TESTS)
     enable_testing()
@@ -1591,6 +1592,10 @@ if(ESHKOL_PYTHON_BINDINGS)
     else()
         message(STATUS "Python bindings: pybind11 not found, skipping")
     endif()
+endif()
+
+if(ESHKOL_ENABLE_FUZZ AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/fuzz/CMakeLists.txt")
+    add_subdirectory(tests/fuzz)
 endif()
 
 # where to find our CMake modules
