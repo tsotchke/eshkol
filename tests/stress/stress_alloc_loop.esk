@@ -1,0 +1,42 @@
+;; stress_alloc_loop.esk — sustained cons / vector / string allocation
+;;
+;; Goal: allocate and drop N=100k complex cons+vector+string structures
+;; per iteration for 100 iterations; verify the arena / heap release
+;; cycle is clean. Under ASan this catches any escape-pattern leak
+;; that the targeted tests miss.
+;;
+;; #186 stress suite.
+
+(require stdlib)
+
+(define OUTER 100)
+(define INNER 100000)
+(define t0 (current-jiffy))
+
+(define (inner-alloc n)
+  (if (= n 0)
+      #t
+      (let* ((s (string-append "item-" (number->string n)))
+             (v (vector n (* n 2) s))
+             (lst (list v s n)))
+        ;; Ignore — they drop out of scope at the next iteration.
+        (inner-alloc (- n 1)))))
+
+(define (outer n)
+  (if (= n 0)
+      #t
+      (begin
+        (inner-alloc INNER)
+        (outer (- n 1)))))
+
+(outer OUTER)
+(define t1 (current-jiffy))
+(define total-allocs (* OUTER INNER))
+(define wall-s (exact->inexact (/ (- t1 t0) (jiffies-per-second))))
+
+(display "outer iterations: ") (display OUTER) (newline)
+(display "inner per outer:  ") (display INNER) (newline)
+(display "total allocs:     ") (display total-allocs) (newline)
+(display "wall-s:           ") (display wall-s) (newline)
+(display "allocs/sec:       ") (display (/ total-allocs wall-s)) (newline)
+(display "RESULT: OK") (newline)
