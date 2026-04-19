@@ -48,6 +48,21 @@ size_t g_gpu_threshold = 100000;
 // Active backend
 static EshkolGPUBackend g_active_backend = ESHKOL_GPU_NONE;
 static std::atomic<bool> g_gpu_initialized{false};
+
+// Verbose logging gate (read once, cached). Opt-in via `ESHKOL_VERBOSE=1`.
+// Reason: per-call [GPU] df64 completed: ... prints drowned host logs for
+// production consumers running tens of thousands of matmuls per simulation
+// (Moonlab 2026-04-19 integration report). Per-call logging must be opt-in.
+static int gpu_verbose_enabled(void) {
+    static std::atomic<int> cached{-1};
+    int v = cached.load(std::memory_order_acquire);
+    if (v < 0) {
+        const char* env = std::getenv("ESHKOL_VERBOSE");
+        v = (env && env[0] == '1') ? 1 : 0;
+        cached.store(v, std::memory_order_release);
+    }
+    return v;
+}
 static std::mutex g_gpu_init_mutex;
 
 // ============================================================================
@@ -1811,10 +1826,12 @@ static int metal_matmul_df64_dispatch(EshkolGPUBuffer* A, EshkolGPUBuffer* B, Es
 
             int result = -4;
             if ([cmd status] == MTLCommandBufferStatusCompleted) {
-                double gpu_ms = ([cmd GPUEndTime] - [cmd GPUStartTime]) * 1000.0;
-                double gflops = (2.0 * M * K * N) / (gpu_ms / 1000.0) / 1e9;
-                fprintf(stderr, "[GPU] df64 legacy completed: %.1fms %.0f GFLOPS (M=%u K=%u N=%u)\n",
-                        gpu_ms, gflops, uM, uK, uN);
+                if (gpu_verbose_enabled()) {
+                    double gpu_ms = ([cmd GPUEndTime] - [cmd GPUStartTime]) * 1000.0;
+                    double gflops = (2.0 * M * K * N) / (gpu_ms / 1000.0) / 1e9;
+                    fprintf(stderr, "[GPU] df64 legacy completed: %.1fms %.0f GFLOPS (M=%u K=%u N=%u)\n",
+                            gpu_ms, gflops, uM, uK, uN);
+                }
                 memcpy(C->host_ptr, [buf_c contents], elementsC * 8);
                 result = 0;
             } else if ([cmd status] == MTLCommandBufferStatusError) {
@@ -1915,10 +1932,12 @@ static int metal_matmul_df64_dispatch(EshkolGPUBuffer* A, EshkolGPUBuffer* B, Es
 
         int result = -4;
         if ([cmd status] == MTLCommandBufferStatusCompleted) {
-            double gpu_ms = ([cmd GPUEndTime] - [cmd GPUStartTime]) * 1000.0;
-            double gflops = (2.0 * M * K * N) / (gpu_ms / 1000.0) / 1e9;
-            fprintf(stderr, "[GPU] df64 completed: %.1fms %.0f GFLOPS (M=%u K=%u N=%u)\n",
-                    gpu_ms, gflops, (uint32_t)M, (uint32_t)K, (uint32_t)N);
+            if (gpu_verbose_enabled()) {
+                double gpu_ms = ([cmd GPUEndTime] - [cmd GPUStartTime]) * 1000.0;
+                double gflops = (2.0 * M * K * N) / (gpu_ms / 1000.0) / 1e9;
+                fprintf(stderr, "[GPU] df64 completed: %.1fms %.0f GFLOPS (M=%u K=%u N=%u)\n",
+                        gpu_ms, gflops, (uint32_t)M, (uint32_t)K, (uint32_t)N);
+            }
             memcpy(C->host_ptr, [f64_c contents], elementsC * 8);
             result = 0;
         } else if ([cmd status] == MTLCommandBufferStatusError) {
@@ -3251,13 +3270,28 @@ int eshkol_gpu_backend_available(EshkolGPUBackend backend) {
 }
 
 int eshkol_gpu_supports_f64(void) {
-    // Metal does NOT support f64 (double precision) in compute shaders
-    // CUDA supports f64 on all modern GPUs
+    // Reports NATIVE hardware f64 only. See eshkol_gpu_has_fp64() for the
+    // "any fp64 path, including emulated" predicate — that one returns 1
+    // on Apple Silicon because SF64/Ozaki-II gives bit-exact fp64.
     switch (g_active_backend) {
         case ESHKOL_GPU_CUDA:
-            return 1;  // CUDA supports f64
+            return 1;  // CUDA supports f64 natively
         case ESHKOL_GPU_METAL:
-            return 0;  // Metal does NOT support f64
+            return 0;  // Metal compute has no hardware fp64
+        default:
+            return 0;
+    }
+}
+
+int eshkol_gpu_has_fp64(void) {
+    // Any fp64 path — native or emulated. Metal gets fp64 via SF64
+    // (Ozaki-II CRT expansion, bit-exact to IEEE-754). CUDA gets it
+    // natively. Only returns 0 when no GPU backend is active at all.
+    switch (g_active_backend) {
+        case ESHKOL_GPU_CUDA:
+            return 1;
+        case ESHKOL_GPU_METAL:
+            return 1;  // SF64 emulation available
         default:
             return 0;
     }

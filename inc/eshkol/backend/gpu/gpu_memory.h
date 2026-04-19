@@ -18,8 +18,11 @@
 #ifndef ESHKOL_GPU_MEMORY_H
 #define ESHKOL_GPU_MEMORY_H
 
-#include <cstddef>
-#include <cstdint>
+/* C-compatible standard headers: use stddef.h / stdint.h so C consumers
+ * (e.g. Moonlab, lilirrep) can include this header without compiling as
+ * C++. <cstddef> / <cstdint> are C++-only. */
+#include <stddef.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -68,8 +71,21 @@ typedef struct EshkolGPUBuffer {
 
 /**
  * Initialize GPU subsystem and detect available backends.
- * Call once at program startup.
- * @return Number of GPU devices found (0 = CPU only)
+ * Call once at program startup. Idempotent — subsequent calls are no-ops.
+ *
+ * @return 1 if a GPU backend (Metal or CUDA) was initialised and is now
+ *         active, 0 if no GPU is available (library falls back to CPU).
+ *
+ * NOTE: This is a BOOLEAN return, not a device count. The convention is
+ * deliberately inverted from POSIX (0 = success, nonzero = error). A C
+ * consumer should write `if (eshkol_gpu_init()) { ... }` or
+ * `if (!eshkol_gpu_init()) fprintf(stderr, "no GPU, using CPU\n");` —
+ * NOT `if (eshkol_gpu_init() != 0) fail();` which would wrongly error on
+ * every host that actually has a GPU.
+ *
+ * For the "is a GPU present at all?" check use `eshkol_gpu_get_backend()`
+ * and compare against `ESHKOL_GPU_NONE`. The return of this function is
+ * the init success/failure signal, not device enumeration.
  */
 int eshkol_gpu_init(void);
 
@@ -99,11 +115,38 @@ const char* eshkol_gpu_backend_name(EshkolGPUBackend backend);
 int eshkol_gpu_backend_available(EshkolGPUBackend backend);
 
 /**
- * Check if GPU supports f64 (double precision) operations.
- * Metal does NOT support f64, CUDA does.
- * @return 1 if f64 supported, 0 otherwise
+ * Check if the active GPU backend has NATIVE hardware f64 support.
+ *
+ * This returns 0 on Apple Silicon (Metal compute has no hardware fp64)
+ * even though Eshkol CAN still run fp64-grade workloads on that host via
+ * SF64 / Ozaki-II CRT emulation. If you want "can this Eshkol build run
+ * my fp64 work?" use `eshkol_gpu_has_fp64()` instead — that returns 1
+ * whenever any fp64 path (native OR emulated) is available.
+ *
+ * Keep this function for callers that specifically need to know whether
+ * native hardware fp64 is available (e.g. to decide whether to allocate
+ * a cuDNN-style workspace that only exists on native-fp64 GPUs).
+ *
+ * @return 1 if the active backend has native hardware f64 support
+ *         (CUDA on all modern NVIDIA GPUs), 0 otherwise (Metal, no GPU).
  */
 int eshkol_gpu_supports_f64(void);
+
+/**
+ * Check if ANY f64 (double-precision) path is available on the active
+ * backend, including software-emulated paths (SF64 on Metal).
+ *
+ * This is the right query for "can I hand this library fp64 data and
+ * expect correct-to-ULP results?". SF64 on Apple Silicon gives bit-exact
+ * IEEE-754 fp64 via Ozaki-II CRT expansion — see
+ * `ESHKOL_GPU_PRECISION=default` in the precision-tier docs. On CUDA
+ * this returns 1 (same as `eshkol_gpu_supports_f64`). On Metal this
+ * returns 1 whenever GPU init succeeded (SF64 is always available).
+ * Returns 0 only when no GPU backend is active at all.
+ *
+ * @return 1 if any fp64 path is usable (native or emulated), 0 otherwise.
+ */
+int eshkol_gpu_has_fp64(void);
 
 // ===== Memory Allocation =====
 
