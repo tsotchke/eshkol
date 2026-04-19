@@ -3108,8 +3108,22 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
 
     case 755: { /* laplacian(f, point) → scalar
-                 * ∇²f = ∂²f/∂x1² + ∂²f/∂x2² + ... + ∂²f/∂xn²
-                 * = trace of the Hessian matrix */
+                 * ∇²f = ∂²f/∂x1² + ∂²f/∂x2² + … + ∂²f/∂xn²
+                 *     = trace of the Hessian matrix
+                 *
+                 * Exact via hyper-dual numbers — NO finite differences.
+                 * For each i, seed xi with (value, 1, 1, 0) and every
+                 * other xk with (value, 0, 0, 0); the returned
+                 * hyper-dual's f12 component is ∂²f/∂xi². Sum over i. */
+#define VM_HD_MAKE_L(vm, fv, f1v, f2v, f12v, out) do { \
+    VmHyperDual* _h = vm_hd_make(&(vm)->heap.regions, (fv), (f1v), (f2v), (f12v)); \
+    if (!_h) { (out) = FLOAT_VAL(0); break; } \
+    int32_t _hp = heap_alloc(&(vm)->heap); \
+    if (_hp < 0) { (vm)->error = 1; (out) = FLOAT_VAL(0); break; } \
+    (vm)->heap.objects[_hp]->type = HEAP_HYPER_DUAL; \
+    (vm)->heap.objects[_hp]->opaque.ptr = _h; \
+    (out) = (Value){.type = VAL_HYPER_DUAL, .as.ptr = _hp}; \
+} while(0)
         Value x_val = vm_pop(vm), f_val = vm_pop(vm);
 
         double point[VM_AD_MAX_VARS];
@@ -3133,47 +3147,23 @@ static void vm_dispatch_native(VM* vm, int fid) {
 
         if (n == 0) { vm_push(vm, FLOAT_VAL(0)); break; }
 
-        /* Trace of Hessian: Σ ∂²f/∂xi²
-         * Each diagonal uses: (f'_i(x+h*ei) - f'_i(x-h*ei)) / (2h)
-         * where f'_i is the partial derivative w.r.t. xi (exact via dual) */
-        double h = 1e-5;
         double laplacian = 0;
-
         for (int i = 0; i < n; i++) {
-            /* Compute ∂f/∂xi at x + h*ei and x - h*ei */
-            double grad_plus = 0, grad_minus = 0;
-
-            /* ∂f/∂xi at x + h*ei */
-            {
-                double pt[VM_AD_MAX_VARS];
-                for (int k = 0; k < n; k++) pt[k] = point[k] + ((k == i) ? h : 0);
-                Value args[VM_AD_MAX_VARS];
-                for (int k = 0; k < n; k++) {
-                    VM_AD_MAKE_DUAL(vm, pt[k], (k == i) ? 1.0 : 0.0, args[k]);
-                }
-                Value r = vm_call_closure_from_native(vm, f_val, args, n);
-                if (r.type == VAL_DUAL && r.as.ptr >= 0) {
-                    VmDual* rd = (VmDual*)vm->heap.objects[r.as.ptr]->opaque.ptr;
-                    if (rd) grad_plus = rd->tangent;
-                }
+            Value args[VM_AD_MAX_VARS];
+            for (int k = 0; k < n; k++) {
+                VM_HD_MAKE_L(vm, point[k],
+                             (k == i) ? 1.0 : 0.0,
+                             (k == i) ? 1.0 : 0.0,
+                             0.0,
+                             args[k]);
             }
-            /* ∂f/∂xi at x - h*ei */
-            {
-                double pt[VM_AD_MAX_VARS];
-                for (int k = 0; k < n; k++) pt[k] = point[k] - ((k == i) ? h : 0);
-                Value args[VM_AD_MAX_VARS];
-                for (int k = 0; k < n; k++) {
-                    VM_AD_MAKE_DUAL(vm, pt[k], (k == i) ? 1.0 : 0.0, args[k]);
-                }
-                Value r = vm_call_closure_from_native(vm, f_val, args, n);
-                if (r.type == VAL_DUAL && r.as.ptr >= 0) {
-                    VmDual* rd = (VmDual*)vm->heap.objects[r.as.ptr]->opaque.ptr;
-                    if (rd) grad_minus = rd->tangent;
-                }
+            Value r = vm_call_closure_from_native(vm, f_val, args, n);
+            if (r.type == VAL_HYPER_DUAL && r.as.ptr >= 0) {
+                VmHyperDual* rh = (VmHyperDual*)vm->heap.objects[r.as.ptr]->opaque.ptr;
+                if (rh) laplacian += rh->f12;
             }
-
-            laplacian += (grad_plus - grad_minus) / (2.0 * h);
         }
+#undef VM_HD_MAKE_L
 
         vm_push(vm, FLOAT_VAL(laplacian));
         break;
