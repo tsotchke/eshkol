@@ -14639,11 +14639,20 @@ private:
             builder->CreateBr(merge);
             ad_node_exit = builder->GetInsertBlock();
         } else {
-            // Unsupported function in reverse-mode AD context
-            // Emit compile-time warning so users know this function can't be differentiated
-            eshkol_warn("function '%s' is not supported in reverse-mode AD (gradient/jacobian) — "
-                        "will abort at runtime if this code path is reached during backward pass",
-                        func_name.c_str());
+            // Unsupported function in reverse-mode AD context.
+            // floor/ceil/trunc/round are non-differentiable (derivative is 0
+            // almost everywhere) but they appear in perfectly normal scalar
+            // code — e.g. `core/plot.esk` uses (floor ...) for terminal-bar
+            // sizing, and stdlib compilation would spam the warning below for
+            // every one of those calls even though they never actually touch
+            // an AD node. Drop the warning to debug level; the runtime abort
+            // path below still fires with a clear message if a user does in
+            // fact send an AD node into one of these functions, which is the
+            // right place for the diagnostic.
+            eshkol_debug("function '%s' is not supported in reverse-mode AD "
+                         "(gradient/jacobian) — will abort at runtime if this "
+                         "code path is reached during backward pass",
+                         func_name.c_str());
             // At runtime: print diagnostic and abort
             FunctionType* fprintf_type = FunctionType::get(int32_type, {ptr_type, ptr_type}, true);
             FunctionCallee fprintf_fn = module->getOrInsertFunction("fprintf", fprintf_type);
