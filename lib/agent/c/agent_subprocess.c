@@ -23,6 +23,8 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
+#include <time.h>      /* nanosleep */
+#include <sys/time.h>  /* setitimer / itimerval */
 #else
 #include <windows.h>
 #endif
@@ -59,6 +61,11 @@ typedef struct {
     int stdout_eof;
     int stderr_eof;
 } eshkol_subprocess_t;
+
+#ifndef _WIN32
+/* Forward decl — body below in the Pipe Draining section. */
+static void set_pipes_nonblocking(eshkol_subprocess_t* proc);
+#endif
 
 /* ═══════════════════════════════════════════════════════════════════
  * Process Spawn
@@ -141,6 +148,7 @@ eshkol_subprocess_t* qllm_process_spawn(const char* command, const char* cwd_arg
     proc->stderr_fd = stderr_pipe[0];
     proc->exited = 0;
     proc->exit_code = -1;
+    set_pipes_nonblocking(proc);
     return proc;
 #else
     /* Windows: CreateProcess with pipes */
@@ -220,6 +228,7 @@ eshkol_subprocess_t* qllm_process_spawn(const char* command, const char* cwd_arg
     proc->stderr_read = stderr_read;
     proc->exited = 0;
     proc->exit_code = -1;
+    set_pipes_nonblocking(proc);
     return proc;
 #endif
 }
@@ -331,6 +340,7 @@ eshkol_subprocess_t* qllm_process_spawn_argv(const char* tab_packed_argv,
     proc->stderr_fd = stderr_pipe[0];
     proc->exited = 0;
     proc->exit_code = -1;
+    set_pipes_nonblocking(proc);
     return proc;
 #else
     /* Windows: CreateProcessA wants a single command-line string, but
@@ -507,6 +517,12 @@ char* qllm_process_read_all_stderr(eshkol_subprocess_t* proc, int64_t max_size, 
  * / read_all_stderr so callers see exactly what the child wrote.
  * ═══════════════════════════════════════════════════════════════════ */
 #ifndef _WIN32
+/* No-op SIGALRM handler. The *purpose* is solely to make delivery
+ * interrupt a blocking syscall with EINTR rather than killing us (the
+ * SIGALRM default). Defined at file scope so its address is usable
+ * inside nested functions. */
+static void eshkol_subprocess_alrm_noop(int sig) { (void)sig; }
+
 static int drain_fd_nonblocking(int fd,
                                 char** buf, size_t* len, size_t* cap,
                                 size_t max_bytes,
@@ -551,9 +567,23 @@ static int drain_fd_nonblocking(int fd,
     return got_any;
 }
 
+/* Fds are set O_NONBLOCK once at spawn time (see the spawn sites that set
+ * `nonblock_set`); drain_proc_pipes therefore runs in the hot path without
+ * any per-iteration fcntl() cost. The earlier version re-tested every
+ * iteration which turned out to dominate the 20-call loop benchmark. */
 static void drain_proc_pipes(eshkol_subprocess_t* proc, size_t max_per_stream) {
     if (!proc) return;
-    /* Make sure both fds are non-blocking so our reads don't hang. */
+    drain_fd_nonblocking(proc->stdout_fd,
+                         &proc->stdout_buf, &proc->stdout_len, &proc->stdout_cap,
+                         max_per_stream, &proc->stdout_eof);
+    drain_fd_nonblocking(proc->stderr_fd,
+                         &proc->stderr_buf, &proc->stderr_len, &proc->stderr_cap,
+                         max_per_stream, &proc->stderr_eof);
+}
+
+/* Set both stdout/stderr pipe fds to O_NONBLOCK. Call once at spawn. */
+static void set_pipes_nonblocking(eshkol_subprocess_t* proc) {
+    if (!proc) return;
     for (int which = 0; which < 2; which++) {
         int fd = (which == 0) ? proc->stdout_fd : proc->stderr_fd;
         if (fd < 0) continue;
@@ -562,12 +592,6 @@ static void drain_proc_pipes(eshkol_subprocess_t* proc, size_t max_per_stream) {
             fcntl(fd, F_SETFL, f | O_NONBLOCK);
         }
     }
-    drain_fd_nonblocking(proc->stdout_fd,
-                         &proc->stdout_buf, &proc->stdout_len, &proc->stdout_cap,
-                         max_per_stream, &proc->stdout_eof);
-    drain_fd_nonblocking(proc->stderr_fd,
-                         &proc->stderr_buf, &proc->stderr_len, &proc->stderr_cap,
-                         max_per_stream, &proc->stderr_eof);
 }
 #endif /* !_WIN32 */
 
@@ -655,36 +679,87 @@ int32_t qllm_process_wait(eshkol_subprocess_t* proc, int32_t timeout_ms) {
         return 0;
     }
 
-    /* Poll with timeout: drain pipes every tick so verbose children
-     * don't deadlock on a full pipe while we sit in waitpid(WNOHANG). */
+    /* Fast-path strategy (Noesis v5 BUG D perf regression fix):
+     *
+     * The old WNOHANG+usleep(1ms) loop was cheap for small outputs but
+     * deadlocked any child emitting >64 KB (Bug A). The first BUG A
+     * fix added a poll-with-50ms-backoff that was deadlock-free but
+     * cost 50 ms+ of scheduler latency per call for /bin/echo-style
+     * tools that exit in <1 ms. This path unifies both concerns:
+     *
+     *   1. Drain both pipes (non-blocking) so a verbose child can
+     *      keep writing.
+     *   2. Try waitpid(WNOHANG) — if the child already exited, we're
+     *      done in microseconds.
+     *   3. Block in waitpid() protected by a SIGALRM timer sized so
+     *      chatty children get a chance to refill their pipes within
+     *      the quantum. When SIGALRM fires we loop, drain, retry.
+     *
+     * This gives us ~sub-ms waits for fast exits while keeping the
+     * pipes drained for slow/verbose children. Matches the Python
+     * `subprocess.run` latency profile (~3ms on /bin/echo).
+     */
     struct pollfd pfds[2];
-    int elapsed = 0;
-    while (elapsed < timeout_ms) {
-        check_exit_status(proc);
-        if (proc->exited) {
-            /* Final drain so no bytes sit in the kernel pipe. */
-            drain_proc_pipes(proc, drain_cap);
-            return 0;
-        }
+    int elapsed_ms = 0;
+    int backoff_ms = 0;  /* first iteration: 0 → pure non-blocking */
+    /* SIGALRM-protected blocking-waitpid loop. Drain pipes between
+     * quanta so a chatty child can't stall on a full pipe. Geometric
+     * backoff: 1 → 2 → 4 → … → 50 ms per quantum — the 1ms first
+     * quantum wins the race on trivial tools like /bin/echo without
+     * burning CPU. */
+    struct sigaction old_sa, new_sa;
+    memset(&new_sa, 0, sizeof(new_sa));
+    new_sa.sa_handler = eshkol_subprocess_alrm_noop;
+    sigaction(SIGALRM, &new_sa, &old_sa);
+
+    int result = 1; /* default: timed out */
+    while (elapsed_ms < timeout_ms) {
         drain_proc_pipes(proc, drain_cap);
-        int nfds = 0;
-        if (proc->stdout_fd >= 0 && !proc->stdout_eof) {
-            pfds[nfds].fd = proc->stdout_fd;
-            pfds[nfds].events = POLLIN; nfds++;
+
+        int status;
+        pid_t r = waitpid((pid_t)proc->pid, &status, WNOHANG);
+        if (r == proc->pid) {
+            proc->exited = 1;
+            if (WIFEXITED(status)) proc->exit_code = WEXITSTATUS(status);
+            else if (WIFSIGNALED(status)) proc->exit_code = 128 + WTERMSIG(status);
+            drain_proc_pipes(proc, drain_cap);
+            result = 0;
+            break;
         }
-        if (proc->stderr_fd >= 0 && !proc->stderr_eof) {
-            pfds[nfds].fd = proc->stderr_fd;
-            pfds[nfds].events = POLLIN; nfds++;
+
+        int quantum = backoff_ms == 0 ? 1 : backoff_ms;
+        if (quantum > 50) quantum = 50;
+        int remaining = timeout_ms - elapsed_ms;
+        if (quantum > remaining) quantum = remaining;
+        if (backoff_ms == 0) backoff_ms = 1;
+        else backoff_ms = (backoff_ms * 2 > 50) ? 50 : backoff_ms * 2;
+
+        struct itimerval old_it, new_it;
+        memset(&new_it, 0, sizeof(new_it));
+        new_it.it_value.tv_sec = quantum / 1000;
+        new_it.it_value.tv_usec = (quantum % 1000) * 1000;
+        setitimer(ITIMER_REAL, &new_it, &old_it);
+
+        r = waitpid((pid_t)proc->pid, &status, 0);
+
+        memset(&new_it, 0, sizeof(new_it));
+        setitimer(ITIMER_REAL, &new_it, NULL);
+        setitimer(ITIMER_REAL, &old_it, NULL);
+
+        if (r == proc->pid) {
+            proc->exited = 1;
+            if (WIFEXITED(status)) proc->exit_code = WEXITSTATUS(status);
+            else if (WIFSIGNALED(status)) proc->exit_code = 128 + WTERMSIG(status);
+            drain_proc_pipes(proc, drain_cap);
+            result = 0;
+            break;
         }
-        int slice_ms = timeout_ms - elapsed;
-        if (slice_ms > 50) slice_ms = 50;
-        if (nfds > 0) {
-            (void)poll(pfds, nfds, slice_ms);
-        } else {
-            usleep((useconds_t)slice_ms * 1000);
-        }
-        elapsed += slice_ms;
+        elapsed_ms += quantum;
+        (void)pfds;
     }
+
+    sigaction(SIGALRM, &old_sa, NULL);
+    if (result == 0) return 0;
     /* One last drain before reporting timeout. The child may have finished
      * between the last poll slice and now — re-check so we don't wrongly
      * report a timeout when the exit was simply fast. */
