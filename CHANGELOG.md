@@ -7,6 +7,232 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0-scale] - 2026-04-19
+
+The production-readiness release. Model serialization, a stable C ABI
+with Python bindings, per-thread arenas, image/CSV I/O, a plotting
+stdlib, actionable error messages, Windows ARM64 support, and a long
+tail of Noesis- / Moonlab-driven hardening, perf, and correctness
+fixes.
+
+### Added — roadmap items
+
+- **Model serialization** (`.eshkol-model`). `model-save` /
+  `model-load` in `lib/core/model_io.cpp`. Compact binary format
+  (magic + version + per-tensor metadata + contiguous float data),
+  inspired by safetensors / GGUF. Save/load named tensor checkpoints
+  with round-trip correctness and CRC validation.
+- **Stable C FFI header** (`inc/eshkol/eshkol_ffi.h`). Clean C ABI for
+  init/shutdown, parse/compile/call, tensor create/read/write, arena
+  lifecycle. Behind `extern "C"`, C-compatible includes, suitable for
+  embedding in any language. Header compiles as plain C (no `<cstddef>`
+  / `<cstdint>`).
+- **Python bindings via pybind11** (`bindings/python/eshkol_module.cpp`).
+  NumPy interop with zero-copy tensor views. `ESHKOL_PYTHON_BINDINGS=ON`
+  CMake option.
+- **Per-thread arenas**. `arena_create_thread_local()` /
+  `arena_merge_to_parent()`. Parallel workers allocate in their own
+  arenas without contention; results flushed into the parent arena on
+  join.
+- **Image I/O** (stb_image vendored in `deps/stb/`). `image-read`,
+  `image-write`, `image-to-grayscale`, `image-resize` load/save PNG,
+  JPEG, BMP as `(height, width, channels)` tensors.
+- **CSV/DataFrame** (`lib/core/data/csv.esk`). Column-typed CSV loader
+  with type inference; select, filter, group-by, join operations.
+- **Terminal plotting** (`lib/core/plot.esk`). `sparkline`,
+  `bar-chart`, `histogram` — Unicode block-character visualization
+  with no external dependencies.
+- **Source-location error messages** throughout the frontend and
+  codegen: `file.esk:line:col: error:` + caret + underline for the
+  offending span.
+- **GPU API — `eshkol_gpu_has_fp64()`**. Reports 1 when any fp64 path
+  is available (CUDA native OR Metal SF64 emulation); the older
+  `eshkol_gpu_supports_f64()` is now documented as "native hardware
+  fp64 only".
+
+### Added — perf and parallelism
+
+- Per-call subprocess latency reduced 4× (77 ms → 19 ms) via
+  pthread pipe drainers + single blocking waitpid, the canonical POSIX
+  pattern used by CPython / Go os/exec / libuv. No more pipe-full
+  deadlocks, no polling roundoff.
+- GPU matmul dispatch: AMX peak measured at 1.1 TFLOPS, driven by the
+  updated blas/gpu cost model (blas_peak=1100, gpu_peak=200 GFLOPS).
+  GPU selected only when it's actually faster.
+- Metal SF64 tier-1 `[GPU] df64 completed: …` spam now gated on
+  `ESHKOL_VERBOSE=1` (default silent).
+
+### Added — R7RS and language
+
+- Symbol interning across modules (`symbol_intern.cpp`) — `eq?` / `eqv?`
+  now correct for symbols generated in different stdlib modules.
+- Codegen builtins as first-class values (sret wrapper registry for
+  AD ops + `call-with-values` consumers). Lambda forms that used
+  `reverse`, `append`, `list`, `map`, etc. as rvalues now work.
+- Internal `define` hoisting follows Racket-compatible letrec* order
+  (all `define`s hoisted, not only leading-consecutive ones).
+- `string-length` honours the header byte count. `substring` validates
+  start / end bounds before memcpy.
+- `call-with-values` routes stdlib-named consumers correctly.
+- Binary ports + bytevector I/O (`read-bytevector` with k=0 returns
+  empty bytevector per R7RS §6.13.2).
+- `string*` / `acons` / `partition` / `split-at` return HEAP_PTR
+  tagged values so `(define x (list* …))` / `(car x)` work end-to-end.
+- Bignum arithmetic: full 35-gap audit closed, including rational
+  comparison, `abs`, `min`/`max` precision, `expt` with exact integer
+  exponents, `number->string` / `string->number` bignum round-trip,
+  and `bignum + double` → double per R7RS exact+inexact semantics.
+
+### Added — tooling and CI
+
+- Sanitizer build infrastructure: ASan / UBSan / TSan / MSan / LSan
+  wired via CMake + `scripts/build-sanitizer.sh`.
+- 16-lane CI matrix (linux/macos/windows × x64/arm64 × lite/xla/cuda).
+- 512 MB stack by default on macOS/Linux for deep-recursion workloads;
+  `ESHKOL_STACK_SIZE` env override.
+
+### Added — Windows ARM64 native support (carried forward from 1.1.13)
+
+- VS 2022 + ClangCL + LLVM 21 aarch64 SDK build path.
+- Runtime symbol renames (eshkol_fopen, eshkol_access, …) resolve
+  MSVC POSIX-shim warnings.
+- Dynamic `jmp_buf` sizing; architecture-appropriate LLVM target
+  libraries (AArch64 on ARM64, X86 on x64).
+
+### Fixed — Noesis integration
+
+Four waves of Noesis residual audits (v2 → v5) closed:
+
+- Quasiquote `,x` / `,@xs` interpolation codegen.
+- `hash-table` runtime wiring (make, ref, set!, delete, keys, values).
+- `define-record-type` constructor/predicate/accessor/mutator codegen.
+- `match` with `(? pred)` patterns — predicate lookup across clauses.
+- `#:keyword` syntax (Racket-style self-quoting keywords).
+- Colon-keyword tokenizer disambiguation (`:foo` glued vs `:` spaced).
+- Extern declarations accept `:real` both tokenized and spelled.
+- `transformInternalDefinesToLetrec` hoists all internal defines.
+- Named-let inside mutually-recursive fns TCO bug (empty loop returned
+  0); save/restore TCO context at inner-letrec boundaries.
+- `call-with-values` named-consumer resolution.
+- `tensor-ref` with cons-cell-wrapped index (`(tensor-ref t (list i))`)
+  now dispatches to the new `eshkol_unwrap_list_index` runtime helper.
+- `list*` / `acons` / `split-at` / `partition` return HEAP_PTR.
+- Symbolic AD arena lifetime (`free()` on arena-allocated AST nodes
+  was aborting with "pointer being freed was not allocated"; removed
+  the erroneous free calls since the arena owns the lifetime).
+- Subprocess `run-command-capture` — two intertwined bugs fixed:
+  - Return-code contract: `process-wait` now returns `0=exited,
+    1=timeout, -1=error` per the .esk docstring (previously returned
+    the child's exit code, so every non-zero exit collided with the
+    timeout sentinel).
+  - Pipe drainer: pthread per stream + blocking waitpid avoids
+    pipe-fill deadlocks on chatty children and keeps fast-exit cost
+    ~sub-ms over the fork+exec baseline.
+- `string-append` header-size off-by-one: the allocator already adds
+  the NUL byte; callers now pass the bare byte count so
+  `(string-length (string-append "a" "b"))` is `2`, not `3`.
+- stdlib.o JIT trio (REPL path): `__eshkol_lib_init__` is invoked
+  after `addObjectFile` so module-level defines populate;
+  `eshkol-variadic` LLVM attribute preserves Scheme-level variadic-
+  ness across the stdlib.bc boundary; both together let
+  `(make-list 3 'x)` and `(base64-encode-string "Hello")` work in
+  REPL mode.
+
+### Fixed — Moonlab integration (GPU backend)
+
+- Header `<cstddef>` / `<cstdint>` → `<stddef.h>` / `<stdint.h>` so C
+  consumers (Moonlab, lilirrep, QGTL, SbNN) can include without
+  wrapping as C++.
+- `eshkol_gpu_init()` return convention documented clearly in the
+  header (1 = success, 0 = no GPU) with explicit warning about the
+  `!= 0` false-negative idiom.
+- `eshkol_gpu_supports_f64()` docstring updated to say "native hardware
+  fp64 only"; `eshkol_gpu_has_fp64()` added for "any fp64 path".
+
+### Fixed — consciousness / AD
+
+- `ws-step!` fully wired: LLVM codegen loop calls closures via
+  `codegenClosureCall`; C runtime helpers handle tensor wrapping and
+  softmax broadcast.
+- `fg-update-cpt!` enables real learning: CPT mutation + message
+  reset → beliefs reconverge.
+- `fg-update-cpt!` bench 14: vector-typed CPTs no longer silently
+  ignored.
+- `kb-load` format: no more dangling raw HEAP_PTR across save/load.
+- `kb-query` now works in JIT mode (was working compiled-only).
+- AD gradient wrong when `set!` on outer-scope var from inside AD
+  body (Bug C).
+- `ad-value` undefined symbol in JIT (Bug B).
+- Reverse-mode AD tape: 6 missing tensor-backward ops
+  (TRANSPOSE, SUM, BROADCAST_ADD/MUL, EMBEDDING, ATTENTION) —
+  silent gradient corruption removed.
+- `findFreeVariablesImpl` recurses into all ~30 op types
+  (DYNAMIC_WIND_OP, CALL_CC_OP, GUARD_OP, RAISE_OP, VALUES_OP,
+  MATCH_OP, calculus ops, …) — fixes "Cannot capture k from outer
+  function" on call/cc inside dynamic-wind.
+
+### Fixed — parallel / concurrency
+
+- `parallel-map` actually parallelizes (B5/B6/B7 — previously ran
+  serial).
+- `parallel-map` at scale (N=100K) no longer hangs.
+- `parallel-map` in JIT mode no longer hangs.
+- `parallel-map` "workers not registered" inside `define`d function —
+  llvm.global_ctors now emits worker registration for stdlib too.
+- TCO context corruption in nested `letrec` — save/restore at entry/
+  exit.
+- JIT thread-pool state hang: map + parallel-map sequence deadlocks
+  cleared.
+
+### Fixed — hardening (epics #189–#195 landed)
+
+- `#189` — SECURITY.md + HARDENING.md + threat model.
+- `#190` — subprocess shell-string injection: `run-argv` / `process-
+  spawn-argv` (execvp, no shell).
+- `#191` — Python FFI `derivative` method AST injection: input
+  validated against lambda-source whitelist.
+- `#192` — memory-safety integer overflows in arena allocator, KB
+  persistence, image I/O.
+- `#193` — path traversal + TOCTOU + Windows-subprocess buffer
+  overflow (4 items).
+- `#194` — 36 silent-swallow error-propagation sites surfaced
+  through logs + marked explicit.
+- `#195` — ReDoS protection (PCRE2 match_limit + depth_limit) +
+  SQL-injection guards + URL CRLF injection.
+
+### Fixed — runtime correctness
+
+- `string->number` returns `#f` for non-numeric input per R7RS.
+- `string-fill!`, `string-set!` bounds-check properly.
+- Port type check (input/output port flag bits, not HEAP_PTR
+  equality).
+- Parser `#(...)` vector literals parse inside function call arg
+  positions AND inside `if` expressions.
+- `let-rec*` letrec* define hoisting preserves R7RS semantics.
+- `apply min`/`max` on numeric lists return the actual min/max (was
+  returning `()`).
+- `floor`/`ceil`/`round`/`truncate` no longer spam "not supported in
+  reverse-mode AD" warnings for non-AD contexts; the runtime abort
+  path remains for actual AD misuse.
+
+### Changed — behaviour
+
+- Precompiled `core.*` module discovery now auto-finds sub-modules
+  in all pre-compiled libraries (no hardcoded prefix check); new
+  stdlib directories "just work".
+- Stdlib `--shared-lib` mode uses LinkOnceODRLinkage throughout so
+  user code can override stdlib functions without duplicate-symbol
+  errors.
+- REPL JIT: uses `-force_load` (macOS) / `--whole-archive` (Linux)
+  + `-export_dynamic` so new runtime functions auto-resolve
+  without manual `ADD_SYMBOL` entries.
+
+### Contributor credits
+
+Many of the Noesis and Moonlab audit fixes were driven by detailed
+bug reports from those downstream projects. See
+`docs/audits/eshkol-residual-bugs-*.md` for the full trail.
+
 ## [1.1.13-accelerate] - 2026-04-09
 
 ### Windows ARM64 + Release Workflow Overhaul + VM Closure Bug Fixes
