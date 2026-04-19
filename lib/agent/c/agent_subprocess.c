@@ -22,11 +22,19 @@
 #include <signal.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 #else
 #include <windows.h>
 #endif
 
-/* ── Subprocess handle ── */
+/* ── Subprocess handle ──
+ * stdout_buf / stderr_buf accumulate what qllm_process_wait's poll loop
+ * reads from the child's stdout/stderr pipes while the child is still
+ * running. Without this, a chatty child (lean, cmake, any tool that
+ * prints > ~64 KB) fills its pipe, blocks on write, never exits, and
+ * our WNOHANG-based wait times out with exit 124 even though the child
+ * would have finished in milliseconds given somewhere to put its
+ * output. See Noesis v5 audit BUG A (2026-04-19). */
 typedef struct {
     int64_t pid;
 #ifndef _WIN32
@@ -41,6 +49,15 @@ typedef struct {
 #endif
     int exited;
     int exit_code;
+    /* Drained-while-waiting buffers. Grown on demand; NUL terminated. */
+    char* stdout_buf;
+    size_t stdout_len;
+    size_t stdout_cap;
+    char* stderr_buf;
+    size_t stderr_len;
+    size_t stderr_cap;
+    int stdout_eof;
+    int stderr_eof;
 } eshkol_subprocess_t;
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -388,57 +405,171 @@ int64_t qllm_process_read_stderr(eshkol_subprocess_t* proc, char* buf, int64_t b
 #endif
 }
 
-/* Read all available data (blocking until EOF) */
-char* qllm_process_read_all_stdout(eshkol_subprocess_t* proc, int64_t max_size, int64_t* out_len) {
-    if (!proc || max_size <= 0) return NULL;
+/* Read all available data. Returns whatever was drained during
+ * qllm_process_wait plus any remainder still in the pipe. The buffer
+ * is malloc'd for the caller to free; internal proc buffer is
+ * zero'd after transfer so a second call returns empty string. */
+static char* read_all_stream_posix(int fd,
+                                   char** inline_buf, size_t* inline_len, size_t* inline_cap,
+                                   int* eof_flag,
+                                   int64_t max_size, int64_t* out_len) {
 #ifndef _WIN32
-    if (proc->stdout_fd < 0) return NULL;
-    /* Set back to blocking for read-all */
-    int flags = fcntl(proc->stdout_fd, F_GETFL);
-    fcntl(proc->stdout_fd, F_SETFL, flags & ~O_NONBLOCK);
+    if (max_size <= 0) return NULL;
 
-    char* buf = (char*)malloc((size_t)max_size + 1);
+    /* If the pipe fd was closed already (EOF detected during wait),
+     * transfer the inline buffer and bail. */
+    size_t cap = (size_t)max_size;
+    char* buf = (char*)malloc(cap + 1);
     if (!buf) return NULL;
     size_t total = 0;
-    ssize_t n;
-    while ((n = read(proc->stdout_fd, buf + total, (size_t)(max_size - (int64_t)total))) > 0) {
-        total += (size_t)n;
-        if ((int64_t)total >= max_size) break;
+
+    /* Hand over what we already drained during wait. */
+    if (*inline_buf && *inline_len) {
+        size_t take = (*inline_len > cap) ? cap : *inline_len;
+        memcpy(buf, *inline_buf, take);
+        total = take;
     }
+
+    /* Drain any remainder the child wrote after the last wait tick.
+     * Pipe is already non-blocking (drain_proc_pipes set the flag).
+     * We keep reading until EAGAIN or EOF so the child's final output
+     * lands in the caller's buffer. */
+    if (fd >= 0 && !*eof_flag && total < cap) {
+        while (total < cap) {
+            ssize_t n = read(fd, buf + total, cap - total);
+            if (n > 0) { total += (size_t)n; continue; }
+            if (n == 0) { *eof_flag = 1; break; }
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                /* Child may still be flushing. Briefly poll so we don't
+                 * return half its output. Cheap because the process has
+                 * already been marked exited by this point in practice. */
+                struct pollfd pf = { fd, POLLIN, 0 };
+                int p = poll(&pf, 1, 100);
+                if (p <= 0) break;
+                continue;
+            }
+            break;
+        }
+    }
+
     buf[total] = '\0';
     if (out_len) *out_len = (int64_t)total;
 
-    /* Restore non-blocking */
-    fcntl(proc->stdout_fd, F_SETFL, flags);
+    /* Reset the inline buffer so a second read_all call returns empty
+     * (matches pre-fix semantics: "read EOF → subsequent reads empty"). */
+    if (*inline_buf) {
+        free(*inline_buf);
+        *inline_buf = NULL;
+        *inline_len = 0;
+        *inline_cap = 0;
+    }
+
     return buf;
+#else
+    (void)fd; (void)inline_buf; (void)inline_len; (void)inline_cap;
+    (void)eof_flag; (void)max_size; (void)out_len;
+    return NULL;
+#endif
+}
+
+char* qllm_process_read_all_stdout(eshkol_subprocess_t* proc, int64_t max_size, int64_t* out_len) {
+    if (!proc) return NULL;
+#ifndef _WIN32
+    return read_all_stream_posix(proc->stdout_fd,
+                                 &proc->stdout_buf, &proc->stdout_len, &proc->stdout_cap,
+                                 &proc->stdout_eof,
+                                 max_size, out_len);
 #else
     return NULL;
 #endif
 }
 
 char* qllm_process_read_all_stderr(eshkol_subprocess_t* proc, int64_t max_size, int64_t* out_len) {
-    if (!proc || max_size <= 0) return NULL;
+    if (!proc) return NULL;
 #ifndef _WIN32
-    if (proc->stderr_fd < 0) return NULL;
-    int flags = fcntl(proc->stderr_fd, F_GETFL);
-    fcntl(proc->stderr_fd, F_SETFL, flags & ~O_NONBLOCK);
-
-    char* buf = (char*)malloc((size_t)max_size + 1);
-    if (!buf) return NULL;
-    size_t total = 0;
-    ssize_t n;
-    while ((n = read(proc->stderr_fd, buf + total, (size_t)(max_size - (int64_t)total))) > 0) {
-        total += (size_t)n;
-        if ((int64_t)total >= max_size) break;
-    }
-    buf[total] = '\0';
-    if (out_len) *out_len = (int64_t)total;
-    fcntl(proc->stderr_fd, F_SETFL, flags);
-    return buf;
+    return read_all_stream_posix(proc->stderr_fd,
+                                 &proc->stderr_buf, &proc->stderr_len, &proc->stderr_cap,
+                                 &proc->stderr_eof,
+                                 max_size, out_len);
 #else
     return NULL;
 #endif
 }
+
+/* ═══════════════════════════════════════════════════════════════════
+ * Pipe Draining (POSIX)
+ *
+ * Why: see eshkol_subprocess_t comment. qllm_process_wait MUST drain
+ * stdout/stderr while the child is running or any non-trivial output
+ * deadlocks the child on write. We attach a growable buffer to the
+ * proc struct and opportunistically read into it whenever there's
+ * data. The buffer is later returned by qllm_process_read_all_stdout
+ * / read_all_stderr so callers see exactly what the child wrote.
+ * ═══════════════════════════════════════════════════════════════════ */
+#ifndef _WIN32
+static int drain_fd_nonblocking(int fd,
+                                char** buf, size_t* len, size_t* cap,
+                                size_t max_bytes,
+                                int* eof_flag) {
+    if (fd < 0 || *eof_flag) return 0;
+    char tmp[4096];
+    int got_any = 0;
+    while (1) {
+        if (max_bytes > 0 && *len >= max_bytes) {
+            /* We've reached the caller's cap — drop extra bytes but
+             * keep reading so the child isn't blocked. */
+            ssize_t n = read(fd, tmp, sizeof(tmp));
+            if (n > 0) { got_any = 1; continue; }
+            if (n == 0) { *eof_flag = 1; break; }
+            if (errno == EAGAIN || errno == EWOULDBLOCK) break;
+            break;
+        }
+        size_t room = (max_bytes > 0) ? (max_bytes - *len) : sizeof(tmp);
+        if (room > sizeof(tmp)) room = sizeof(tmp);
+        ssize_t n = read(fd, tmp, room);
+        if (n > 0) {
+            if (*len + (size_t)n + 1 > *cap) {
+                size_t newcap = (*cap == 0) ? 4096 : (*cap * 2);
+                while (newcap < *len + (size_t)n + 1) newcap *= 2;
+                char* nb = (char*)realloc(*buf, newcap);
+                if (!nb) break;
+                *buf = nb;
+                *cap = newcap;
+            }
+            memcpy(*buf + *len, tmp, (size_t)n);
+            *len += (size_t)n;
+            (*buf)[*len] = '\0';
+            got_any = 1;
+            continue;
+        }
+        if (n == 0) { *eof_flag = 1; break; }
+        if (errno == EAGAIN || errno == EWOULDBLOCK) break;
+        /* Hard error — stop reading this fd. */
+        *eof_flag = 1;
+        break;
+    }
+    return got_any;
+}
+
+static void drain_proc_pipes(eshkol_subprocess_t* proc, size_t max_per_stream) {
+    if (!proc) return;
+    /* Make sure both fds are non-blocking so our reads don't hang. */
+    for (int which = 0; which < 2; which++) {
+        int fd = (which == 0) ? proc->stdout_fd : proc->stderr_fd;
+        if (fd < 0) continue;
+        int f = fcntl(fd, F_GETFL);
+        if (f >= 0 && !(f & O_NONBLOCK)) {
+            fcntl(fd, F_SETFL, f | O_NONBLOCK);
+        }
+    }
+    drain_fd_nonblocking(proc->stdout_fd,
+                         &proc->stdout_buf, &proc->stdout_len, &proc->stdout_cap,
+                         max_per_stream, &proc->stdout_eof);
+    drain_fd_nonblocking(proc->stderr_fd,
+                         &proc->stderr_buf, &proc->stderr_len, &proc->stderr_cap,
+                         max_per_stream, &proc->stderr_eof);
+}
+#endif /* !_WIN32 */
 
 /* ═══════════════════════════════════════════════════════════════════
  * Process Status
@@ -466,31 +597,106 @@ static void check_exit_status(eshkol_subprocess_t* proc) {
 #endif
 }
 
+/* Contract (matches lib/agent/subprocess.esk:process-wait docstring):
+ *   return 0  — child exited (caller uses qllm_process_exit_code to read code)
+ *   return 1  — timeout hit before child exited
+ *   return -1 — error (null proc, waitpid failure)
+ *
+ * Previously this function returned `proc->exit_code` on exit, so the
+ * common case of a child exiting with status 1 (bad-proof, test-failure,
+ * etc.) collided with the "timeout" sentinel `1` that run-command-capture
+ * checks — every legitimate non-zero exit was reported as a 124 timeout
+ * to callers. Noesis v5 audit BUG A (2026-04-19).
+ *
+ * This implementation ALSO drains stdout/stderr pipes while waiting so a
+ * chatty child (> ~64 KB output) doesn't deadlock blocking on write.
+ */
 int32_t qllm_process_wait(eshkol_subprocess_t* proc, int32_t timeout_ms) {
     if (!proc) return -1;
-    if (proc->exited) return proc->exit_code;
+    if (proc->exited) return 0;
 #ifndef _WIN32
+    /* Cap how much we buffer per stream while waiting. 16 MB is well above
+     * any reasonable tool output; past this we keep reading but drop so the
+     * child doesn't stall. qllm_process_read_all_* applies its own cap on
+     * top, so callers ultimately see what they asked for. */
+    const size_t drain_cap = 16UL * 1024UL * 1024UL;
+
     if (timeout_ms < 0) {
-        /* Block until done */
-        int status;
-        waitpid((pid_t)proc->pid, &status, 0);
-        proc->exited = 1;
-        if (WIFEXITED(status)) proc->exit_code = WEXITSTATUS(status);
-        else if (WIFSIGNALED(status)) proc->exit_code = 128 + WTERMSIG(status);
-        return proc->exit_code;
+        /* Block until done — but keep draining the pipes so the child
+         * can't deadlock on a full pipe while we wait. Use poll() so we
+         * sleep only while there's genuinely nothing to do. */
+        struct pollfd pfds[2];
+        while (!proc->exited) {
+            check_exit_status(proc);
+            if (proc->exited) break;
+            drain_proc_pipes(proc, drain_cap);
+            int nfds = 0;
+            if (proc->stdout_fd >= 0 && !proc->stdout_eof) {
+                pfds[nfds].fd = proc->stdout_fd;
+                pfds[nfds].events = POLLIN; nfds++;
+            }
+            if (proc->stderr_fd >= 0 && !proc->stderr_eof) {
+                pfds[nfds].fd = proc->stderr_fd;
+                pfds[nfds].events = POLLIN; nfds++;
+            }
+            if (nfds == 0) {
+                /* Both pipes closed; child must be just about to exit.
+                 * Fall back to a short blocking wait. */
+                int status;
+                waitpid((pid_t)proc->pid, &status, 0);
+                proc->exited = 1;
+                if (WIFEXITED(status)) proc->exit_code = WEXITSTATUS(status);
+                else if (WIFSIGNALED(status)) proc->exit_code = 128 + WTERMSIG(status);
+                return 0;
+            }
+            (void)poll(pfds, nfds, 50); /* 50ms max between exit checks */
+        }
+        drain_proc_pipes(proc, drain_cap);
+        return 0;
     }
-    /* Poll with timeout */
-    for (int i = 0; i < timeout_ms; i++) {
+
+    /* Poll with timeout: drain pipes every tick so verbose children
+     * don't deadlock on a full pipe while we sit in waitpid(WNOHANG). */
+    struct pollfd pfds[2];
+    int elapsed = 0;
+    while (elapsed < timeout_ms) {
         check_exit_status(proc);
-        if (proc->exited) return proc->exit_code;
-        usleep(1000); /* 1ms */
+        if (proc->exited) {
+            /* Final drain so no bytes sit in the kernel pipe. */
+            drain_proc_pipes(proc, drain_cap);
+            return 0;
+        }
+        drain_proc_pipes(proc, drain_cap);
+        int nfds = 0;
+        if (proc->stdout_fd >= 0 && !proc->stdout_eof) {
+            pfds[nfds].fd = proc->stdout_fd;
+            pfds[nfds].events = POLLIN; nfds++;
+        }
+        if (proc->stderr_fd >= 0 && !proc->stderr_eof) {
+            pfds[nfds].fd = proc->stderr_fd;
+            pfds[nfds].events = POLLIN; nfds++;
+        }
+        int slice_ms = timeout_ms - elapsed;
+        if (slice_ms > 50) slice_ms = 50;
+        if (nfds > 0) {
+            (void)poll(pfds, nfds, slice_ms);
+        } else {
+            usleep((useconds_t)slice_ms * 1000);
+        }
+        elapsed += slice_ms;
     }
-    return -1; /* still running */
+    /* One last drain before reporting timeout. The child may have finished
+     * between the last poll slice and now — re-check so we don't wrongly
+     * report a timeout when the exit was simply fast. */
+    check_exit_status(proc);
+    drain_proc_pipes(proc, drain_cap);
+    return proc->exited ? 0 : 1;
 #else
     DWORD wait_ms = (timeout_ms < 0) ? INFINITE : (DWORD)timeout_ms;
-    WaitForSingleObject(proc->hProcess, wait_ms);
+    DWORD res = WaitForSingleObject(proc->hProcess, wait_ms);
     check_exit_status(proc);
-    return proc->exited ? proc->exit_code : -1;
+    if (proc->exited) return 0;
+    return (res == WAIT_TIMEOUT) ? 1 : -1;
 #endif
 }
 
@@ -530,6 +736,10 @@ void qllm_process_destroy(eshkol_subprocess_t* proc) {
         int status;
         waitpid((pid_t)proc->pid, &status, WNOHANG);
     }
+    /* Free any pipe-drain buffers that the wait loop accumulated but the
+     * caller never asked for (read_all_* would have transferred them). */
+    if (proc->stdout_buf) free(proc->stdout_buf);
+    if (proc->stderr_buf) free(proc->stderr_buf);
 #else
     if (proc->stdin_write) CloseHandle(proc->stdin_write);
     if (proc->stdout_read) CloseHandle(proc->stdout_read);
