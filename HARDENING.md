@@ -98,18 +98,46 @@ each item is implied by "ASan-clean" / "UBSan-clean" etc.
 
 ---
 
+## v1.2.0-scale closeout audits (2026-04-19)
+
+### `#178` memory-safety — ASan + UBSan clean PASS
+
+Built with `scripts/build-sanitizer.sh asan+ubsan`, then ran every
+suite in `tests/v1_2_edge_cases/` plus `tests/features/data_encoding_test.esk`
+under `ASAN_OPTIONS=detect_leaks=0:halt_on_error=0` +
+`UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=0`:
+
+| Suite | errors | checks |
+|---|---|---|
+| `bug_regression_test.esk` | 0 | 57 pass |
+| `agent_ffi_jit_test.esk` | 0 | 10 pass |
+| `first_class_builtins_test.esk` | 0 | 21 pass |
+| `collections_test.esk` | 0 | 17 pass |
+| `boundary_values_test.esk` | 0 | 36 pass |
+| `image_io_test.esk` | 0 | 9 pass |
+| `hash_table_test.esk` | 0 | 27 pass |
+| `binary_io_test.esk` | 0 | 8 pass |
+| `data_encoding_test.esk` | 0 | 11 pass |
+
+Zero AddressSanitizer / UndefinedBehaviorSanitizer reports across
+**196 checks / 9 suites**. The fixes tracked in `#192` / `#193` /
+`#194` under v1.2-scale shipped (arena overflow, integer overflow
+in kb_persistence, path-traversal, Windows cmdline buffer, error-
+propagation, ReDoS / SQLi / URL-encoding validation) hold under
+sanitizer instrumentation.
+
 ## Still pending
 
 ### HIGH
 
-- `#194` — error-propagation audit: 36 silent-swallow sites.
-  Each needs a triage: propagate via exception, return sentinel, or
-  log+continue. No code change yet.
 - `#187` — libfuzzer harnesses per ingest point. Prerequisite for
   finding the next wave of issues that targeted audits miss.
 - `#186` — 24h stress test: long-running agent + parallel-at-scale
   under ASan; verifies the overflow guards hold under sustained
   load.
+- `#180` — TSan audit: `scripts/build-sanitizer.sh tsan`, run the
+  parallel and async suites, fix any data races in parallel-map /
+  worker-thread paths.
 
 ### MEDIUM
 
