@@ -88,6 +88,7 @@ extern "C" {
     int64_t eshkol_utf8_strlen(const char* s);
     int64_t eshkol_utf8_ref(const char* s, int64_t k);
     char* eshkol_utf8_substring(const char* s, int64_t start, int64_t end, void* arena);
+    int64_t eshkol_unwrap_list_index(const eshkol_tagged_value_t* tv);
 #ifdef _WIN32
     double drand48(void);
     int clock_gettime(int clock_id, void* ts_raw);
@@ -446,6 +447,7 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_SYMBOL(eshkol_utf8_strlen);
     ADD_SYMBOL(eshkol_utf8_ref);
     ADD_SYMBOL(eshkol_utf8_substring);
+    ADD_SYMBOL(eshkol_unwrap_list_index);
 
     // ===== BLAS ACCELERATION =====
     // Runtime matmul with automatic BLAS/scalar dispatch

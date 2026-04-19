@@ -12177,7 +12177,10 @@ private:
         if (func_name == "tensor-get") return tensor_->tensorGet(op);
         if (func_name == "vref") return codegenTensorVectorRef(op);  // Tensor 1D access (AD-aware)
         if (func_name == "tensor-ref") {
-            // tensor-ref: 2 args → 1D vref (AD-aware), 3+ args → multi-dim tensor-get
+            // tensor-ref: 2 args → 1D scalar vref (AD-aware); 3+ → multi-dim tensorGet.
+            // The 2-arg vref path ALSO transparently handles `(tensor-ref t (list i))`
+            // — the NumPy/JAX-style list-wrapped index that Sigma's fit.esk uses —
+            // via a runtime CONS_PTR check that extracts the car before indexing.
             if (op->call_op.num_vars >= 3) return tensor_->tensorGet(op);
             return codegenTensorVectorRef(op);
         }
@@ -21432,10 +21435,47 @@ private:
             eshkol_error("vref requires exactly 2 arguments: tensor and index");
             return nullptr;
         }
-        
+
         Value* vector_val = codegenAST(&op->call_op.variables[0]);
         Value* index = codegenAST(&op->call_op.variables[1]);
         if (!vector_val || !index) return nullptr;
+
+        // RUNTIME LIST-INDEX UNWRAP (Noesis residual audit v3 runtime bug):
+        // NumPy/JAX idiom `(tensor-ref t (list i))` passes a single-element
+        // list as the index. Route the index through
+        // `eshkol_unwrap_list_index(const tagged_value_t*) -> i64` — a tiny
+        // C helper that detects the cons case, extracts car, and falls
+        // back to the scalar's int64 data for INT64/DOUBLE.
+        //
+        // tagged_value_t passed by pointer (not by value) — the Eshkol
+        // backend convention for runtime-call marshalling; direct struct-
+        // by-value surfaces ABI differences between LLVM-emitted struct
+        // calls and C-level ones on ARM64, which we don't want to depend on.
+        if (index->getType() != tagged_value_type) {
+            TypedValue tv = detectValueType(index);
+            index = typedValueToTaggedValue(tv);
+        }
+        {
+            Function* unwrap_fn = module->getFunction("eshkol_unwrap_list_index");
+            if (!unwrap_fn) {
+                FunctionType* ft = FunctionType::get(
+                    int64_type, {builder->getPtrTy()}, false);
+                unwrap_fn = Function::Create(ft, Function::ExternalLinkage,
+                    "eshkol_unwrap_list_index", module.get());
+            }
+            // Materialise the tagged_value to an alloca slot at function entry
+            // so we have a stable pointer to hand to the helper.
+            IRBuilderBase::InsertPoint saved = builder->saveIP();
+            Function* cur_fn = builder->GetInsertBlock()->getParent();
+            builder->SetInsertPoint(&cur_fn->getEntryBlock(), cur_fn->getEntryBlock().begin());
+            Value* idx_slot = builder->CreateAlloca(tagged_value_type, nullptr, "vref_idx_slot");
+            builder->restoreIP(saved);
+            builder->CreateStore(index, idx_slot);
+            Value* unwrapped_i64 = builder->CreateCall(unwrap_fn, {idx_slot});
+            // Repack as INT64 tagged_value so the downstream dispatch sees
+            // a scalar and routes to the regular tensor-int-index path.
+            index = packInt64ToTaggedValue(unwrapped_i64, true);
+        }
         
         // CRITICAL FIX: Detect if input is AD_NODE_PTR (scalar gradient case) vs TENSOR_PTR
         // Gradient with scalar functions passes single AD node, not tensor!

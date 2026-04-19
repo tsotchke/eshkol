@@ -928,4 +928,63 @@ char* eshkol_utf8_substring(const char* s, int64_t start, int64_t end, void* are
     return buf;
 }
 
+/*
+ * Normalise a tensor-ref index argument to a raw int64.
+ *
+ * Callers write `(tensor-ref t i)` with either a literal integer index or,
+ * the NumPy / JAX / Noesis-Sigma idiom, `(tensor-ref t (list i))`. The
+ * second form passes a cons cell; the old scalar-int path read its
+ * pointer bits as an integer and GEP'd at a wild address — SEGV. This
+ * helper is called from the LLVM codegen for tensor-ref/vref to produce
+ * a scalar int in either case.
+ *
+ * Rules:
+ *   - tv.type == ESHKOL_VALUE_HEAP_PTR and the object at tv.data is a
+ *     cons cell → return (int)car. Car is itself a tagged_value (int or
+ *     double); we extract the scalar consistently with what the scalar
+ *     path below would have done.
+ *   - tv.type == ESHKOL_VALUE_INT64 → tv.data is already the int.
+ *   - tv.type == ESHKOL_VALUE_DOUBLE → cast the double to int64.
+ *   - anything else → return tv.data as-is (back-compat with the old
+ *     safeExtractInt64 behaviour; keeps the AD-aware tensor path happy
+ *     since that path does its own type-tag dispatch downstream).
+ */
+int64_t eshkol_unwrap_list_index(const eshkol_tagged_value_t* tv_in) {
+    if (!tv_in) return 0;
+    eshkol_tagged_value_t tv = *tv_in;
+    uint8_t base_type = tv.type;
+    /* Masks for exactness-flag types (0-7); types >= 8 are not immediate. */
+    if (base_type < 8) base_type &= 0x0F;
+
+    if (base_type == ESHKOL_VALUE_HEAP_PTR && tv.data.ptr_val != 0) {
+        const eshkol_object_header_t* hdr =
+            ESHKOL_GET_HEADER((void*)tv.data.ptr_val);
+        if (hdr->subtype == HEAP_SUBTYPE_CONS) {
+            /* Cons cell layout is arena_tagged_cons_cell_t — extract car.
+             * Use the public accessor rather than struct layout so future
+             * rearrangements don't silently break this path. */
+            extern eshkol_tagged_value_t arena_tagged_cons_get_tagged_value(
+                const void* cell, bool is_cdr);
+            eshkol_tagged_value_t car =
+                arena_tagged_cons_get_tagged_value((const void*)tv.data.ptr_val, false);
+            uint8_t car_base = car.type;
+            if (car_base < 8) car_base &= 0x0F;
+            if (car_base == ESHKOL_VALUE_INT64) return (int64_t)car.data.int_val;
+            if (car_base == ESHKOL_VALUE_DOUBLE) {
+                double d;
+                memcpy(&d, &car.data, sizeof(double));
+                return (int64_t)d;
+            }
+            return (int64_t)car.data.int_val;
+        }
+    }
+    if (base_type == ESHKOL_VALUE_INT64) return (int64_t)tv.data.int_val;
+    if (base_type == ESHKOL_VALUE_DOUBLE) {
+        double d;
+        memcpy(&d, &tv.data, sizeof(double));
+        return (int64_t)d;
+    }
+    return (int64_t)tv.data.int_val;
+}
+
 } // extern "C"
