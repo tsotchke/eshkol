@@ -178,6 +178,48 @@ don't apply. File-opening runtime paths already route through
 qllm_process_destroy and the port-close machinery that was
 hardened in #131 (tagged_value padding init).
 
+### `#183` security surface — consolidated
+
+The four hardening commits `#190` / `#192` / `#193` / `#195` closed
+every security item surfaced by the v1.2 audits:
+
+- Subprocess shell-string injection (`#190`).
+- Python FFI derivative-method AST injection (`#191`).
+- Memory-safety integer overflows across arena, KB persistence,
+  image I/O (`#192`).
+- Path-traversal + TOCTOU + Windows subprocess cmdline buffer
+  overflow (`#193`).
+- ReDoS + SQLi + URL/header CRLF injection (`#195`).
+
+Each is retested under the ASan+UBSan run above with zero
+regressions. No new security-surface items surfaced in this audit.
+
+### `#184` deterministic execution — binary reproducibility verified
+
+Two back-to-back full builds of the v1.2 tree produce byte-
+identical `build/stdlib.bc` AND `build/eshkol-run`:
+
+```
+958f97fb0efcb3e6b6525d9b035af3ad0a1c0cad4802d5b8cf148c83b7e9a612  stdlib.bc (build 1)
+958f97fb0efcb3e6b6525d9b035af3ad0a1c0cad4802d5b8cf148c83b7e9a612  stdlib.bc (build 2)
+aa671c3463dd57048423b0a3ea9d4ca18b06ac65b85a9bcbcd6c17db5406a8e7  eshkol-run (build 1)
+aa671c3463dd57048423b0a3ea9d4ca18b06ac65b85a9bcbcd6c17db5406a8e7  eshkol-run (build 2)
+```
+
+CMake's LLVM toolchain pipeline doesn't inject timestamps, build
+paths, or uninitialised bytes into the output. `__DATE__` /
+`__TIME__` / `__FILE__` macros are not used in shipping code
+(only in test-harness diagnostics). Hash-map iteration orders
+that affect codegen are keyed by stable strings (function names
+from the AST) so `unordered_map` iteration variance does not
+reach the emitted IR.
+
+Non-determinism in *runtime* execution — `current-time`,
+`jiffies-per-second`, `process-id`, `random` — is user-facing
+and intentional. Callers that want reproducible runs can seed
+their own PRNG (`#173` adds explicit PRNG seeding primitives in
+v1.3).
+
 ## Still pending
 
 ### HIGH
