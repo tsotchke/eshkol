@@ -126,6 +126,35 @@ in kb_persistence, path-traversal, Windows cmdline buffer, error-
 propagation, ReDoS / SQLi / URL-encoding validation) hold under
 sanitizer instrumentation.
 
+### `#180` concurrency — TSan clean PASS
+
+Built with `scripts/build-sanitizer.sh tsan`, run under
+`TSAN_OPTIONS=halt_on_error=0:report_thread_leaks=0:report_signal_unsafe=0`:
+
+| Suite | races |
+|---|---|
+| `bug_regression_test.esk` | 0 |
+| `parallel/parallel_execute_test.esk` | 0 |
+| `parallel/parallel_filter_test.esk` | 0 |
+| `parallel/parallel_fold_test.esk` | 0 |
+| `parallel/parallel_for_each_test.esk` | 0 |
+| `parallel/futures_test.esk` | 0 |
+| `v1_2_edge_cases/parallel_ad_worker_init_test.esk` | 0 |
+
+Zero data races across the parallel-map, parallel-fold, parallel-
+filter, parallel-for-each, futures, and parallel-AD-with-worker-
+init paths. The per-thread arena, worker registration, and
+tensor_backward thread hygiene added during v1.2 hold under TSan.
+
+### `#181` error-propagation audit — 37/37 silent-swallow sites eliminated
+
+The 36 sites enumerated in `#194` plus one follow-up: `runtime.cpp`
+parameter-stack realloc(NULL) path in `eshkol_param_push` was
+silently discarding the new binding when realloc returned NULL,
+making a `parameterize` form *look* like it had taken effect while
+actually retaining the old value. Now emits an explicit
+`eshkol_warn` so OOM on parameter growth is observable.
+
 ## Still pending
 
 ### HIGH
@@ -135,9 +164,6 @@ sanitizer instrumentation.
 - `#186` — 24h stress test: long-running agent + parallel-at-scale
   under ASan; verifies the overflow guards hold under sustained
   load.
-- `#180` — TSan audit: `scripts/build-sanitizer.sh tsan`, run the
-  parallel and async suites, fix any data races in parallel-map /
-  worker-thread paths.
 
 ### MEDIUM
 

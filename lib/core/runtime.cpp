@@ -616,8 +616,15 @@ void eshkol_parameter_push(void* param_ptr, eshkol_tagged_value_t val) {
         eshkol_tagged_value_t* new_stack = (eshkol_tagged_value_t*)std::realloc(
             param->stack, new_capacity * sizeof(eshkol_tagged_value_t));
         if (!new_stack) {
-            // realloc failed — silently drop the push
-            // (better than crashing; current binding remains)
+            // OOM on parameter-stack growth. Crashing mid-dynamic-bind
+            // would unwind through every `parameterize` form and leak
+            // the old stack, so we keep the current binding — but log
+            // loudly now rather than silently drop the push (which
+            // looked to the caller like `parameterize` had worked).
+            // #181 error-propagation follow-up.
+            eshkol_warn("parameter-push: realloc(%d -> %d entries) failed; "
+                        "new binding dropped, previous value remains",
+                        param->capacity, new_capacity);
             return;
         }
         param->stack = new_stack;
