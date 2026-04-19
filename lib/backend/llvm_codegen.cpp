@@ -961,6 +961,8 @@ public:
         function_return_types["range"] = BuiltinTypes::List;
         function_return_types["list-copy"] = BuiltinTypes::List;
         function_return_types["list-set!"] = BuiltinTypes::List;
+        function_return_types["list*"] = BuiltinTypes::List;
+        function_return_types["acons"] = BuiltinTypes::List;
 
         // eval returns any type
         function_return_types["eval"] = BuiltinTypes::Value;
@@ -22439,34 +22441,24 @@ private:
         }
 
         // STEP 1b: Simplify the derivative expression
+        // Symbolic AST nodes are arena-allocated (eshkol_alloc_symbolic_ast uses
+        // get_global_arena()), so we must NEVER free() them — the arena owns
+        // the lifetime. Previously we called free() which produced "pointer
+        // being freed was not allocated" aborts for any non-trivial expression.
         eshkol_ast_t* symbolic_deriv = simplifySymbolicAST(symbolic_deriv_raw);
-        if (symbolic_deriv != symbolic_deriv_raw) {
-            eshkol_ast_clean(symbolic_deriv_raw);
-            free(symbolic_deriv_raw);
-        }
-        
+
         // STEP 2: Generate runtime code that constructs the S-expression
         // For simple constants, return them directly (not as lists)
         if (symbolic_deriv->type == ESHKOL_INT64 || symbolic_deriv->type == ESHKOL_DOUBLE) {
             Value* result = codegenQuotedAST(symbolic_deriv);
-            
-            // Clean up temporary AST
-            eshkol_ast_clean(symbolic_deriv);
-            free(symbolic_deriv);
-            
             eshkol_info("Generated constant symbolic derivative");
             return result;
         }
-        
+
         // For complex expressions, convert to S-expression list
         Value* result = codegenQuotedAST(symbolic_deriv);
-        
-        // Clean up temporary AST
-        eshkol_ast_clean(symbolic_deriv);
-        free(symbolic_deriv);
-        
         eshkol_info("Generated symbolic derivative S-expression");
-        
+
         return result;
     }
     
@@ -22718,15 +22710,21 @@ private:
         const char* fn = ast->operation.call_op.func->variable.id;
         uint64_t nargs = ast->operation.call_op.num_vars;
 
-        // First, recursively simplify children
+        // First, recursively simplify children.
+        // Note: symbolic AST nodes use arena allocation (eshkol_alloc_symbolic_ast),
+        // so we must not call free() on the returned pointers — the arena owns
+        // them and will release the whole block when torn down. Previously the
+        // free() on arena pointers aborted with "pointer being freed was not
+        // allocated" for any expression with two+ operands.
         for (uint64_t i = 0; i < nargs; i++) {
             eshkol_ast_t* simplified = simplifySymbolicAST(
                 eshkol_copy_ast(&ast->operation.call_op.variables[i]));
             if (simplified) {
-                // Replace child with simplified version
+                // Replace child with simplified version.
+                // eshkol_ast_clean only clears heap str/tensor payloads;
+                // symbolic nodes carry neither, so this is a no-op-but-safe.
                 eshkol_ast_clean(&ast->operation.call_op.variables[i]);
                 ast->operation.call_op.variables[i] = *simplified;
-                free(simplified);
             }
         }
 
@@ -22871,13 +22869,8 @@ private:
         for (int i = 0; i < n; i++) {
             eshkol_ast_t* deriv = buildSymbolicDerivative(result, var);
             eshkol_ast_t* simplified = simplifySymbolicAST(deriv);
-            // Clean up intermediate results
-            if (deriv != simplified) {
-                eshkol_ast_clean(deriv);
-                free(deriv);
-            }
-            eshkol_ast_clean(result);
-            free(result);
+            // Intermediate AST nodes are arena-allocated — do not free().
+            // The arena owns their lifetime.
             result = simplified;
         }
         return result;
@@ -28245,6 +28238,7 @@ private:
         if (!result) return ConstantInt::get(int64_type, 0);
         
         // Build cons chain from second-to-last element backwards to first
+        bool consed = false;
         for (int64_t i = op->call_op.num_vars - 2; i >= 0; i--) {
             Value* element = codegenAST(&op->call_op.variables[i]);
             if (element) {
@@ -28252,12 +28246,25 @@ private:
                 TypedValue element_typed = detectValueType(element);
                 TypedValue result_typed = detectValueType(result);
                 result = codegenTaggedArenaConsCell(element_typed, result_typed);
+                consed = true;
             }
         }
-        
+
+        // codegenTaggedArenaConsCell returns a raw i64 (PtrToInt of the cons
+        // cell pointer). Callers like `(define x (list* ...))` route the return
+        // value through ensureTaggedValue which tags any raw i64 as INT64, not
+        // HEAP_PTR. That leaves @x holding an INT64 tag over the pointer bits
+        // and `(car x)` correctly rejects it as "not a pair". Lift the result
+        // to a properly tagged HEAP_PTR struct so downstream conversions keep
+        // the cons identity. (Matches cons/allocConsCell which packs HEAP_PTR.)
+        if (consed) {
+            Value* result_ptr = builder->CreateIntToPtr(result, ptr_type);
+            return tagged_->packHeapPtr(result_ptr);
+        }
+
         return result;
     }
-    
+
     // Production implementation: Acons (association constructor)
     Value* codegenAcons(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 3) {
@@ -28280,10 +28287,14 @@ private:
         TypedValue pair_typed = TypedValue(new_pair, ESHKOL_VALUE_HEAP_PTR, true);
         TypedValue alist_typed = detectValueType(alist);
         Value* new_alist = codegenTaggedArenaConsCell(pair_typed, alist_typed);
-        
-        return new_alist;
+
+        // codegenTaggedArenaConsCell returns raw i64 (PtrToInt). ensureTaggedValue
+        // at the define/call boundary would pack it as INT64 and `(car ...)` would
+        // then refuse the value. Wrap as HEAP_PTR here, matching cons/allocConsCell.
+        Value* result_ptr = builder->CreateIntToPtr(new_alist, ptr_type);
+        return tagged_->packHeapPtr(result_ptr);
     }
-    
+
     // codegenTake removed - now in stdlib.esk (core/list/query.esk)
     // codegenDrop removed - now in stdlib.esk (core/list/query.esk)
     // codegenFind removed - now in stdlib.esk (core/list/query.esk)
@@ -28449,12 +28460,14 @@ private:
         TypedValue false_typed = TypedValue(final_false_list,
             final_false_list == ConstantInt::get(int64_type, 0) ? ESHKOL_VALUE_NULL : ESHKOL_VALUE_HEAP_PTR, true);
         Value* result_pair = codegenTaggedArenaConsCell(true_typed, false_typed);
-        
+
         // CRITICAL FIX: No arena scope cleanup - cons cells must persist
-        
-        return result_pair;
+        // Wrap raw i64 ptr as HEAP_PTR tagged value so define/ret sites don't
+        // mistag as INT64 (see codegenListStar / codegenAcons notes).
+        Value* result_pair_ptr = builder->CreateIntToPtr(result_pair, ptr_type);
+        return tagged_->packHeapPtr(result_pair_ptr);
     }
-    
+
     // Production implementation: Split-at function (split list at index)
     Value* codegenSplitAt(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
@@ -28570,12 +28583,13 @@ private:
         TypedValue suffix_typed = TypedValue(final_suffix,
             final_suffix == ConstantInt::get(int64_type, 0) ? ESHKOL_VALUE_NULL : ESHKOL_VALUE_HEAP_PTR, true);
         Value* result_pair = codegenTaggedArenaConsCell(prefix_typed, suffix_typed);
-        
+
         // CRITICAL FIX: No arena scope cleanup - cons cells must persist
-        
-        return result_pair;
+        // Wrap raw i64 ptr as HEAP_PTR tagged value (see list*/acons notes).
+        Value* result_pair_ptr = builder->CreateIntToPtr(result_pair, ptr_type);
+        return tagged_->packHeapPtr(result_pair_ptr);
     }
-    
+
     // Production implementation: Remove function family (remove elements that match)
     // Supports both element-based removal: (remove 2 '(1 2 3)) => (1 3)
     // and predicate-based removal: (remove even? '(1 2 3 4)) => (1 3)
