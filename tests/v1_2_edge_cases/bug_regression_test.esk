@@ -237,6 +237,24 @@
 (check "Noesis v3 BUG D: deep nesting"
        (= (noesis-bug3d-tree-sum (list 1 (list 2 (list 3 (list 4 5))))) 15))
 
+;; v3 follow-up: tensor-ref/set! with list-wrapped index
+;; (NumPy/JAX idiom used by Sigma's fit.esk: `(tensor-ref adam-m (list i))`).
+;; Previously the 2-arg vref path read the cons cell's pointer bits as an
+;; int and GEP'd at a wild address → SEGV. Fixed by routing the index
+;; through a C runtime helper that detects CONS subtype and extracts car.
+(define tref-t (make-tensor (list 3) 0.0))
+(tensor-set! tref-t 0 7.0)
+(tensor-set! tref-t 1 8.0)
+(tensor-set! tref-t 2 9.0)
+(check "Noesis v3 follow-up: tensor-ref with int idx"
+       (= (tensor-ref tref-t 1) 8.0))
+(check "Noesis v3 follow-up: tensor-ref with (list i) idx"
+       (= (tensor-ref tref-t (list 1)) 8.0))
+(check "Noesis v3 follow-up: tensor-ref with (list i) at idx 2"
+       (= (tensor-ref tref-t (list 2)) 9.0))
+(check "Noesis v3 follow-up: tensor-ref with (list 0)"
+       (= (tensor-ref tref-t (list 0)) 7.0))
+
 ;; ---------------------------------------------------------------------------
 ;; Summary
 ;; ---------------------------------------------------------------------------
