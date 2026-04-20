@@ -4455,14 +4455,35 @@ static eshkol_tagged_value_t make_string_tagged(arena_t* arena, const char* str,
     return val;
 }
 
+/* Runtime symbol interning (Noesis Bug F, 2026-04-19).
+ * Previously this allocated a fresh arena block for every (read) symbol,
+ * so `(eq? (read port) 'foo)` always returned #f even when the spelled
+ * name matched — violating R7RS §6.5 which mandates canonical symbols.
+ * Route through the process-global intern pool used by parser-path
+ * symbol literals (lib/core/symbol_intern.cpp). Every distinct spelling
+ * maps to exactly one pointer so `eq?` across source-quoted symbols
+ * and reader-produced symbols matches. The arena arg is now unused
+ * (kept for ABI continuity with existing call sites). */
+extern "C" void* eshkol_intern_symbol_lookup(const char* name);
+
 static eshkol_tagged_value_t make_symbol_tagged(arena_t* arena, const char* name, size_t len) {
-    char* s = (char*)arena_allocate_with_header(arena, len + 1, HEAP_SUBTYPE_SYMBOL, 0);
-    memcpy(s, name, len);
-    s[len] = '\0';
+    (void)arena;  /* symbols live in the process-lifetime intern pool now */
+    char stack_buf[256];
+    char* name_cstr = stack_buf;
+    char* heap_buf = NULL;
+    if (len + 1 > sizeof(stack_buf)) {
+        heap_buf = (char*)malloc(len + 1);
+        name_cstr = heap_buf;
+    }
+    memcpy(name_cstr, name, len);
+    name_cstr[len] = '\0';
+    void* interned = eshkol_intern_symbol_lookup(name_cstr);
+    if (heap_buf) free(heap_buf);
+
     eshkol_tagged_value_t val;
     memset(&val, 0, sizeof(val));
     val.type = ESHKOL_VALUE_HEAP_PTR;
-    val.data.int_val = (int64_t)(uintptr_t)s;
+    val.data.int_val = (int64_t)(uintptr_t)interned;
     return val;
 }
 
