@@ -7529,7 +7529,76 @@ private:
         return packPtrToTaggedValue(closure_ptr, ESHKOL_VALUE_CALLABLE);
     }
 
+    /* User-shadowable builtin OPs (audit Bug G).
+     *
+     * The parser maps a handful of builtin names to dedicated OP
+     * tags (e.g. ESHKOL_MAKE_WORKSPACE_OP) so the codegen can emit
+     * a direct C-runtime call without a string-match dispatch step.
+     * That was a premature binding decision: R7RS §5.3.1 allows any
+     * top-level identifier to be redefined, and Noesis (among others)
+     * legitimately defines `make-workspace`, `make-kb`, `make-fact`,
+     * etc. at user scope. With the parser mapping in place those
+     * defines were silently ignored at every call site.
+     *
+     * The architecturally correct place to resolve this is codegen,
+     * where user scope is available (`function_table`). For every OP
+     * that corresponds to a user-overridable builtin, check whether
+     * the user has a same-named define and — if so — route the call
+     * through codegenCall with a synthesised CALL_OP/VAR header.
+     * codegenCall owns the full call-dispatch pipeline (TCO,
+     * closures, arity checks, variadic packing); synthesising the
+     * header is the minimal vehicle to reuse it without duplicating
+     * 150 lines. */
+    static const std::unordered_map<eshkol_op_t, const char*>& userShadowableOps() {
+        static const std::unordered_map<eshkol_op_t, const char*> m = {
+            {ESHKOL_UNIFY_OP,               "unify"},
+            {ESHKOL_MAKE_SUBST_OP,          "make-substitution"},
+            {ESHKOL_WALK_OP,                "walk"},
+            {ESHKOL_MAKE_FACT_OP,           "make-fact"},
+            {ESHKOL_MAKE_KB_OP,             "make-kb"},
+            {ESHKOL_KB_ASSERT_OP,           "kb-assert!"},
+            {ESHKOL_KB_QUERY_OP,            "kb-query"},
+            {ESHKOL_KB_QUERY_PREFIX_OP,     "kb-query-prefix"},
+            {ESHKOL_MAKE_FACTOR_GRAPH_OP,   "make-factor-graph"},
+            {ESHKOL_FG_ADD_FACTOR_OP,       "fg-add-factor!"},
+            {ESHKOL_FG_INFER_OP,            "fg-infer!"},
+            {ESHKOL_FG_OBSERVE_OP,          "fg-observe!"},
+            {ESHKOL_FG_UPDATE_CPT_OP,       "fg-update-cpt!"},
+            {ESHKOL_FREE_ENERGY_OP,         "free-energy"},
+            {ESHKOL_EXPECTED_FREE_ENERGY_OP,"expected-free-energy"},
+            {ESHKOL_MAKE_WORKSPACE_OP,      "make-workspace"},
+            {ESHKOL_WS_REGISTER_OP,         "ws-register!"},
+            {ESHKOL_WS_STEP_OP,             "ws-step!"},
+        };
+        return m;
+    }
+
     Value* codegenOperation(const eshkol_operations_t* op) {
+        /* Divert to codegenCall when the user has defined a function
+         * that shadows a builtin OP tag. Centralised here, one site,
+         * so future audits don't have to chase identical checks
+         * scattered across each case body. */
+        {
+            auto& shadowable = userShadowableOps();
+            auto it = shadowable.find(op->op);
+            if (it != shadowable.end() &&
+                function_table.find(it->second) != function_table.end()) {
+                eshkol_ast_t func_ast;
+                memset(&func_ast, 0, sizeof(func_ast));
+                func_ast.type = ESHKOL_VAR;
+                func_ast.variable.id = (char*)it->second;
+
+                eshkol_operations_t call_op;
+                memset(&call_op, 0, sizeof(call_op));
+                call_op.op = ESHKOL_CALL_OP;
+                call_op.call_op.func = &func_ast;
+                call_op.call_op.variables = op->call_op.variables;
+                call_op.call_op.num_vars = op->call_op.num_vars;
+
+                return codegenCall(&call_op);
+            }
+        }
+
         switch (op->op) {
             case ESHKOL_INVALID_OP:
                 // Invalid/empty operation - return null
