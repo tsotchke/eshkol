@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `set-cdr!` / `set-car!` now preserve the HEAP_PTR tag when the
+  replacement is a tagged value (list, cons, variable reference).
+  Previously detectValueType flattened tagged_value structs to INT64,
+  so `(set-cdr! p (list 4 5))` stored the list's heap address with an
+  INT64 tag and later cdr walks saw an integer. Noesis Bug E — blocked
+  dKB, Mneme ring, Workspace queue, proof-tree child lists, Hiereia
+  cycle log.
+- `(read port)` now interns symbols through the process-global pool
+  (`eshkol_intern_symbol_lookup`). Previously each `(read)` produced a
+  fresh arena allocation, so `(eq? (read port) 'foo)` always returned
+  #f — violating R7RS §6.5. Noesis Bug F — blocked dKB persistence,
+  Mneme load, proof-tree replay, Workspace state restore.
+- ONNX export: `double_data` stored in TensorProto field 10 (was
+  field 5, which is int32_data). Required `GraphProto.name` field
+  emitted so `onnx.checker.check_model` accepts the output.
+
+### Added
+- `eshkol_ffi_tensor_shape()` FFI accessor so pybind11 can return
+  N-D numpy arrays (previously everything flattened to 1-D).
+- Subprocess stdin-null fast path: `process-spawn-nostdin` wires the
+  child's stdin to `/dev/null` instead of creating a pipe we won't
+  use. Saves a `pipe()` + 2 `close()` per call — `run-command-capture`
+  / `run-argv-capture` (the hot paths) drop from 2.33 ms to 2.21 ms
+  at N=5000 on macOS.
+- `POSIX_SPAWN_CLOEXEC_DEFAULT` on Darwin: drops 6 `addclose` entries
+  per spawn by marking all fds close-on-exec in the child by default.
+- VM hyper-dual laplacian: exact second derivatives via hyper-duals
+  (replaces central-difference finite-difference).
+
 ## [1.2.0-scale] - 2026-04-19
 
 The production-readiness release. Model serialization, a stable C ABI
