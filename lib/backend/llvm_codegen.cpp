@@ -7573,16 +7573,64 @@ private:
         return m;
     }
 
+    /* Does `name` resolve to a user-defined binding (function or
+     * closure variable) in any currently-visible scope?
+     *
+     * Intended solely for the userShadowableOps redirect in
+     * codegenOperation — not a general-purpose shadow check. The
+     * callers are the consciousness-engine / workspace OP tags
+     * (make-workspace, make-kb, make-fact, kb-*, fg-*, ws-*, …),
+     * none of which collide with the C math stubs registered in
+     * function_table during init (sin, cos, exp, sqrt, pow, exit,
+     * printf). That's why it's safe to include function_table here
+     * where codegenCall's internal cascade deliberately skips it. */
+    bool hasUserShadow(const std::string& name) {
+        /* Top-level user (define (f ...) ...) registers via
+         * function_table[f] = Function*. For the shadowable-OP names
+         * this is unambiguously a user shadow (never a C stub). */
+        if (function_table.find(name) != function_table.end()) return true;
+
+        /* Inner defines and closure variables register via the
+         * symbol-table cascade — this matches codegenCall's logic. */
+        std::string func_key = name + "_func";
+        if (current_function) {
+            std::string scoped_key = current_function->getName().str() + "." + func_key;
+            if (symbol_table.find(scoped_key) != symbol_table.end()) return true;
+        }
+        if (symbol_table.find(func_key) != symbol_table.end()) return true;
+        if (symbol_table.find(name)     != symbol_table.end()) return true;
+        if (global_symbol_table.find(func_key) != global_symbol_table.end()) return true;
+        if (global_symbol_table.find(name)     != global_symbol_table.end()) return true;
+        if (g_repl_mode_enabled) {
+            std::lock_guard<std::mutex> lock(g_repl_mutex);
+            if (g_repl_user_function_names.count(name) > 0) return true;
+        }
+        return false;
+    }
+
     Value* codegenOperation(const eshkol_operations_t* op) {
-        /* Divert to codegenCall when the user has defined a function
-         * that shadows a builtin OP tag. Centralised here, one site,
-         * so future audits don't have to chase identical checks
-         * scattered across each case body. */
+        /* Bug G v2 (2026-04-20): divert user-shadowable OP tags to
+         * codegenCall when — and only when — the user has actually
+         * defined the name in some visible scope. The v1 fix looked
+         * at function_table which tracks only top-level defines;
+         * inner defines (see: `(define (outer) (define (make-
+         * workspace ...) ...) ...)`) live in the enclosing function's
+         * symbol_table and were missed, so calls inside `outer`
+         * still dispatched to the builtin.
+         *
+         * Checking shadow-ness up front (rather than unconditionally
+         * diverting) is necessary because the string-match fallback
+         * path — the one codegenCall would land on — calls some
+         * runtime helpers (e.g. eshkol_ws_step_tagged) that don't
+         * actually exist in the runtime. The OP case (codegenWSStep)
+         * is the only path that knows the real C function name
+         * (eshkol_ws_step_finalize) and its closure-dispatch loop.
+         * Diverting ONLY when a user shadow exists preserves the
+         * builtin semantics for non-shadowed calls. */
         {
             auto& shadowable = userShadowableOps();
             auto it = shadowable.find(op->op);
-            if (it != shadowable.end() &&
-                function_table.find(it->second) != function_table.end()) {
+            if (it != shadowable.end() && hasUserShadow(it->second)) {
                 eshkol_ast_t func_ast;
                 memset(&func_ast, 0, sizeof(func_ast));
                 func_ast.type = ESHKOL_VAR;

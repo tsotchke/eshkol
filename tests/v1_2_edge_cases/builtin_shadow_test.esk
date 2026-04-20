@@ -49,12 +49,28 @@
 (check "make-fact user-defined wins"
        (eq? (make-fact 1 2 3) (quote fact-sentinel)))
 
-;; ── Check builtins still reachable when NOT shadowed ─────────────
-;; We can't directly compare with the shadowed version above (once
-;; shadowed at top-level, always shadowed), so verify via symbol
-;; introspection that our shadows are what gets called.
 (check "make-workspace is a user function"
        (procedure? make-workspace))
+
+;; ── Bug G v2 (Noesis 2026-04-20): raw-return value shadow ──
+;; Noesis's minimal repro: user define that returns a plain scalar
+;; (not a wrapped structure). The v1 check only fired when
+;; function_table had the name at top-level scope; the v2 fix
+;; extends the check to the full codegenCall cascade, so any
+;; visible user binding wins.
+(define (make-substitution . rest) 42)
+(check "Bug G v2: scalar-return user shadow"
+       (= (make-substitution 1.0) 42))
+
+(define (unify a b) (list (quote unified) a b))
+(check "Bug G v2: two-arg user shadow"
+       (equal? (unify 1 2) (quote (unified 1 2))))
+
+;; NOTE: inner-scope shadows (define inside another function) also
+;; dispatch correctly, but the Eshkol compiler has a separate pre-
+;; existing bug where inner defines leak their _func key into the
+;; outer symbol_table. Testing inner shadows here would surface that
+;; unrelated leak — filed as a follow-up, not in this fix.
 
 (newline)
 (display "=== Summary ===") (newline)
