@@ -43,8 +43,9 @@ def main():
     check("nested list", ctx.eval("(list 1 (list 2 3) 4)") == [1, [2, 3], 4])
 
     # ---- Derivatives / gradients (previously SIGSEGV'd) ----
+    # Post-hardening #191: derivative() only accepts a lambda expression.
     check("derivative sin 0.5",
-          abs(ctx.derivative("sin", 0.5) - 0.8775825618903728) < 1e-9)
+          abs(ctx.derivative("(lambda (x) (sin x))", 0.5) - 0.8775825618903728) < 1e-9)
     check("AD gradient on tape",
           abs(ctx.eval("""
 (let* ((tape (ad-tape-new))
@@ -71,6 +72,23 @@ def main():
         except RuntimeError:
             pass
     check("context usable after 3 errors", ctx.eval("(* 7 6)") == 42)
+
+    # ---- Tensor → numpy N-D shape roundtrip (buffer protocol) ----
+    try:
+        import numpy as np
+        a1 = ctx.eval("#(1.0 2.0 3.0 4.0)")
+        check("1D tensor ndim",  a1.ndim == 1 and a1.shape == (4,))
+        check("1D tensor values", np.allclose(a1, [1, 2, 3, 4]))
+
+        a2 = ctx.eval("(reshape #(1.0 2.0 3.0 4.0 5.0 6.0) (list 2 3))")
+        check("2D tensor shape",  a2.shape == (2, 3))
+        check("2D row-major",     np.allclose(a2, [[1, 2, 3], [4, 5, 6]]))
+
+        a3 = ctx.eval("(reshape #(1.0 2.0 3.0 4.0 5.0 6.0 7.0 8.0) (list 2 2 2))")
+        check("3D tensor shape",  a3.shape == (2, 2, 2))
+        check("3D row-major",     np.allclose(a3[1, 0, 1], 6.0))
+    except ImportError:
+        pass  # numpy not installed — skip
 
     print()
     print("=== Summary ===")

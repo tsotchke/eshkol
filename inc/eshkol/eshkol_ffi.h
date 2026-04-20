@@ -222,6 +222,15 @@ int64_t eshkol_ffi_tensor_size(eshkol_ffi_value_t tensor);
 /** Get the number of dimensions of a tensor. */
 int eshkol_ffi_tensor_ndims(eshkol_ffi_value_t tensor);
 
+/** Copy the tensor's per-dimension sizes into @p out_shape.
+ *  Writes at most @p max_ndims entries and returns the number actually
+ *  written (== tensor's ndims, or 0 if @p tensor is not a tensor or
+ *  @p out_shape is NULL). Use together with eshkol_ffi_tensor_ndims
+ *  to size the output buffer. */
+int eshkol_ffi_tensor_shape(eshkol_ffi_value_t tensor,
+                             int64_t* out_shape,
+                             int max_ndims);
+
 /* ============================================================================
  * Error Handling
  * ============================================================================ */

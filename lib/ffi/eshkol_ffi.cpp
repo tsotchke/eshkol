@@ -583,6 +583,20 @@ extern "C" int eshkol_ffi_tensor_ndims(eshkol_ffi_value_t tensor) {
     return t ? (int)t->num_dimensions : 0;
 }
 
+extern "C" int eshkol_ffi_tensor_shape(eshkol_ffi_value_t tensor,
+                                        int64_t* out_shape,
+                                        int max_ndims) {
+    if (!ffi_is_tensor(tensor) || !out_shape || max_ndims <= 0) return 0;
+    eshkol_tensor_t* t = (eshkol_tensor_t*)tensor.data.ptr_val;
+    if (!t || !t->dimensions) return 0;
+    int n = (int)t->num_dimensions;
+    if (n > max_ndims) n = max_ndims;
+    for (int i = 0; i < n; i++) {
+        out_shape[i] = (int64_t)t->dimensions[i];
+    }
+    return n;
+}
+
 /* ============================================================================
  * Error Handling
  * ============================================================================ */
