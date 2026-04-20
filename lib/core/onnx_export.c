@@ -71,9 +71,12 @@ static size_t tensor_proto_size(const char* name, const int64_t* dims, int ndims
     size += pb_write_tag(tmp, 2, PB_VARINT);
     size += pb_write_varint(tmp, ONNX_DOUBLE);
 
-    /* Field 5: double_data (packed repeated double = length-delimited) */
+    /* Field 10: double_data (packed repeated double = length-delimited).
+     * TensorProto.proto: field 5 is int32_data, field 10 is double_data.
+     * Previously off-by-five: onnx.checker rejected with "should be stored
+     * in field 'double_data' instead of 'int32_data'". */
     size_t data_bytes = (size_t)total * sizeof(double);
-    size += pb_write_tag(tmp, 5, PB_LENDELIM);
+    size += pb_write_tag(tmp, 10, PB_LENDELIM);
     size += pb_write_varint(tmp, data_bytes);
     size += data_bytes;
 
@@ -104,9 +107,9 @@ static size_t write_tensor_proto(uint8_t* buf, const char* name,
     pos += pb_write_tag(buf + pos, 2, PB_VARINT);
     pos += pb_write_varint(buf + pos, ONNX_DOUBLE);
 
-    /* Field 5: double_data (packed) */
+    /* Field 10: double_data (packed) */
     size_t data_bytes = (size_t)total * sizeof(double);
-    pos += pb_write_tag(buf + pos, 5, PB_LENDELIM);
+    pos += pb_write_tag(buf + pos, 10, PB_LENDELIM);
     pos += pb_write_varint(buf + pos, data_bytes);
     memcpy(buf + pos, data, data_bytes);
     pos += data_bytes;
@@ -156,9 +159,15 @@ int eshkol_onnx_export(const char* path,
         total_tensor_bytes += tensor_sizes[i];
     }
 
-    /* GraphProto size: initializer fields (field 5, length-delimited) */
+    /* GraphProto size. Required field: name (field 2, string).
+     * Required enough that onnx.checker rejects models without it. */
     uint8_t tmp[16];
+    const char* graph_name = "eshkol_graph";
+    size_t graph_name_len = strlen(graph_name);
     size_t graph_size = 0;
+    graph_size += pb_write_tag(tmp, 2, PB_LENDELIM);
+    graph_size += pb_write_varint(tmp, graph_name_len);
+    graph_size += graph_name_len;
     for (int i = 0; i < n_tensors; i++) {
         graph_size += pb_write_tag(tmp, 5, PB_LENDELIM);
         graph_size += pb_write_varint(tmp, tensor_sizes[i]);
@@ -199,6 +208,12 @@ int eshkol_onnx_export(const char* path,
     /* graph */
     pos += pb_write_tag(buf + pos, 7, PB_LENDELIM);
     pos += pb_write_varint(buf + pos, graph_size);
+
+    /* graph.name (required by onnx.checker) */
+    pos += pb_write_tag(buf + pos, 2, PB_LENDELIM);
+    pos += pb_write_varint(buf + pos, graph_name_len);
+    memcpy(buf + pos, graph_name, graph_name_len);
+    pos += graph_name_len;
 
     /* graph.initializer (repeated TensorProto) */
     for (int i = 0; i < n_tensors; i++) {

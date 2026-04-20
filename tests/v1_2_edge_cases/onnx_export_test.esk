@@ -1,0 +1,42 @@
+;; onnx_export_test.esk — smoke test for ONNX export
+;;
+;; Writes a 2×2 tensor to a .onnx file, verifies the file is non-empty.
+;; Deep validation (onnx.checker + value roundtrip) is done by
+;; onnx_export_test.py.
+
+(require stdlib)
+
+(define passed 0)
+(define failed 0)
+(define (check name cond)
+  (if cond
+      (begin (display "PASS: ") (display name) (newline)
+             (set! passed (+ passed 1)))
+      (begin (display "FAIL: ") (display name) (newline)
+             (set! failed (+ failed 1)))))
+
+(define W2x2 (reshape #(1.0 2.0 3.0 4.0) (list 2 2)))
+(define path "/tmp/eshkol_onnx_test.onnx")
+(check "export-tensor returns #t" (onnx-export-tensor path W2x2))
+(check "file exists"              (file-exists? path))
+(check "file non-empty"            (> (file-size path) 0))
+
+;; 1D tensor should also round-trip
+(define V4 #(0.5 1.5 2.5 3.5))
+(define path2 "/tmp/eshkol_onnx_1d.onnx")
+(check "1D export"                (onnx-export-tensor path2 V4))
+(check "1D file exists"           (file-exists? path2))
+
+;; 3D tensor
+(define T3 (reshape #(1.0 2.0 3.0 4.0 5.0 6.0 7.0 8.0) (list 2 2 2)))
+(define path3 "/tmp/eshkol_onnx_3d.onnx")
+(check "3D export"                (onnx-export-tensor path3 T3))
+(check "3D file exists"           (file-exists? path3))
+
+(newline)
+(display "=== Summary ===") (newline)
+(display "Passed: ") (display passed) (newline)
+(display "Failed: ") (display failed) (newline)
+(if (= failed 0)
+    (begin (display "RESULT: OK") (newline))
+    (begin (display "RESULT: FAIL") (newline) (exit 1)))
