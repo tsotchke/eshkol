@@ -7573,8 +7573,8 @@ private:
         return m;
     }
 
-    /* Does `name` resolve to a user-defined binding (function or
-     * closure variable) in any currently-visible scope?
+    /* Does `name` resolve to a user-defined binding in a scope that
+     * is unambiguously visible from the current call site?
      *
      * Intended solely for the userShadowableOps redirect in
      * codegenOperation — not a general-purpose shadow check. The
@@ -7582,25 +7582,39 @@ private:
      * (make-workspace, make-kb, make-fact, kb-*, fg-*, ws-*, …),
      * none of which collide with the C math stubs registered in
      * function_table during init (sin, cos, exp, sqrt, pow, exit,
-     * printf). That's why it's safe to include function_table here
-     * where codegenCall's internal cascade deliberately skips it. */
+     * printf).
+     *
+     * Intentionally narrower than codegenCall's cascade: we only
+     * look at function_table (canonical top-level defines) and the
+     * scoped `<func>.<name>_func` key (true inner defines from the
+     * currently-enclosing function). The UNSCOPED `_func` key in
+     * symbol_table / global_symbol_table is NOT consulted here
+     * because inner-function codegen has historically registered
+     * nested defines there (llvm_codegen.cpp:8517 and friends) —
+     * so an unscoped hit can mean "an inner define from a sibling
+     * function that happens to have compiled first", which from the
+     * current call site is NOT actually in scope. A top-level
+     * `(define k1 (make-kb))` after a `(define (other) (define
+     * (make-kb) ...))` would otherwise divert to codegenCall and
+     * find the wrong (inner, non-visible) lambda via the leaked
+     * unscoped key. Fix: only accept unambiguous scope matches. */
     bool hasUserShadow(const std::string& name) {
         /* Top-level user (define (f ...) ...) registers via
          * function_table[f] = Function*. For the shadowable-OP names
          * this is unambiguously a user shadow (never a C stub). */
         if (function_table.find(name) != function_table.end()) return true;
 
-        /* Inner defines and closure variables register via the
-         * symbol-table cascade — this matches codegenCall's logic. */
-        std::string func_key = name + "_func";
+        /* Inner define of a function currently being codegen'd —
+         * look it up with the scoped key. */
         if (current_function) {
-            std::string scoped_key = current_function->getName().str() + "." + func_key;
+            std::string scoped_key = current_function->getName().str() +
+                                     "." + name + "_func";
             if (symbol_table.find(scoped_key) != symbol_table.end()) return true;
         }
-        if (symbol_table.find(func_key) != symbol_table.end()) return true;
-        if (symbol_table.find(name)     != symbol_table.end()) return true;
-        if (global_symbol_table.find(func_key) != global_symbol_table.end()) return true;
-        if (global_symbol_table.find(name)     != global_symbol_table.end()) return true;
+
+        /* REPL cross-batch: the REPL tracks its user-defined function
+         * names in a process-wide registry so previously-defined
+         * functions still shadow builtins in later batches. */
         if (g_repl_mode_enabled) {
             std::lock_guard<std::mutex> lock(g_repl_mutex);
             if (g_repl_user_function_names.count(name) > 0) return true;
@@ -7609,32 +7623,63 @@ private:
     }
 
     Value* codegenOperation(const eshkol_operations_t* op) {
-        /* Bug G v2 (2026-04-20): divert user-shadowable OP tags to
-         * codegenCall when — and only when — the user has actually
-         * defined the name in some visible scope. The v1 fix looked
-         * at function_table which tracks only top-level defines;
-         * inner defines (see: `(define (outer) (define (make-
-         * workspace ...) ...) ...)`) live in the enclosing function's
-         * symbol_table and were missed, so calls inside `outer`
-         * still dispatched to the builtin.
+        /* Bug G (v2, 2026-04-20): dispatch user-shadowable builtins
+         * to the user's define when one is in scope. R7RS §5.3.1
+         * requires top-level bindings be overridable.
          *
-         * Checking shadow-ness up front (rather than unconditionally
-         * diverting) is necessary because the string-match fallback
-         * path — the one codegenCall would land on — calls some
-         * runtime helpers (e.g. eshkol_ws_step_tagged) that don't
-         * actually exist in the runtime. The OP case (codegenWSStep)
-         * is the only path that knows the real C function name
-         * (eshkol_ws_step_finalize) and its closure-dispatch loop.
-         * Diverting ONLY when a user shadow exists preserves the
-         * builtin semantics for non-shadowed calls. */
+         * The parser maps a fixed set of consciousness-engine /
+         * workspace names (see userShadowableOps) to dedicated OP
+         * tags. When the user defines a function with the same
+         * name, we must route calls to the user's version instead.
+         *
+         * Two-path decision:
+         *   1. Top-level user define → function_table[name] —
+         *      we emit a direct CreateCall to that Function. Can't
+         *      re-route through codegenCall because its shadow
+         *      cascade deliberately skips function_table (to
+         *      preserve polymorphic dispatch for math stubs like
+         *      sin/cos). That skip is correct for generic calls
+         *      but wrong for this shadowable-OP subset, which
+         *      never collides with the math stubs.
+         *   2. Inner define visible from here → route through
+         *      codegenCall via a synthesised CALL_OP/VAR so its
+         *      scoped-key cascade does the resolution. */
         {
             auto& shadowable = userShadowableOps();
-            auto it = shadowable.find(op->op);
-            if (it != shadowable.end() && hasUserShadow(it->second)) {
+            auto shadow_it = shadowable.find(op->op);
+            if (shadow_it != shadowable.end() && hasUserShadow(shadow_it->second)) {
+                const char* user_name = shadow_it->second;
+
+                /* Bridge into codegenCall's cascade.  codegenCall's
+                 * user-shadow detection deliberately skips
+                 * function_table (to preserve polymorphic dispatch
+                 * for sin/cos/…), so a top-level `(define (make-kb)
+                 * …)` — which only populates function_table — would
+                 * be missed. Temporarily publish the Function into
+                 * symbol_table's _func key so the cascade finds it,
+                 * then restore. For inner defines (case where
+                 * hasUserShadow returns true via the scoped key),
+                 * the existing cascade already works without any
+                 * bridging. */
+                std::string func_key = std::string(user_name) + "_func";
+                bool installed_bridge = false;
+                llvm::Value* prev_value = nullptr;
+                bool had_prev = false;
+                auto ft_it = function_table.find(user_name);
+                if (ft_it != function_table.end() && ft_it->second) {
+                    auto existing = symbol_table.find(func_key);
+                    if (existing != symbol_table.end()) {
+                        had_prev = true;
+                        prev_value = existing->second;
+                    }
+                    symbol_table[func_key] = ft_it->second;
+                    installed_bridge = true;
+                }
+
                 eshkol_ast_t func_ast;
                 memset(&func_ast, 0, sizeof(func_ast));
                 func_ast.type = ESHKOL_VAR;
-                func_ast.variable.id = (char*)it->second;
+                func_ast.variable.id = (char*)user_name;
 
                 eshkol_operations_t call_op;
                 memset(&call_op, 0, sizeof(call_op));
@@ -7643,7 +7688,15 @@ private:
                 call_op.call_op.variables = op->call_op.variables;
                 call_op.call_op.num_vars = op->call_op.num_vars;
 
-                return codegenCall(&call_op);
+                Value* result = codegenCall(&call_op);
+
+                /* Restore symbol_table to avoid the bridge leaking
+                 * into unrelated subsequent codegen. */
+                if (installed_bridge) {
+                    if (had_prev) symbol_table[func_key] = prev_value;
+                    else          symbol_table.erase(func_key);
+                }
+                return result;
             }
         }
 

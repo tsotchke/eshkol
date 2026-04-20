@@ -66,11 +66,34 @@
 (check "Bug G v2: two-arg user shadow"
        (equal? (unify 1 2) (quote (unified 1 2))))
 
-;; NOTE: inner-scope shadows (define inside another function) also
-;; dispatch correctly, but the Eshkol compiler has a separate pre-
-;; existing bug where inner defines leak their _func key into the
-;; outer symbol_table. Testing inner shadows here would surface that
-;; unrelated leak — filed as a follow-up, not in this fix.
+;; ── Bug G v2 follow-up (2026-04-20): inner-scope shadows don't
+;; leak past their enclosing function.
+;; Earlier: defining an inner-scope make-kb in one function silently
+;; caused a top-level (make-kb) call elsewhere to dispatch to the
+;; inner lambda (via a leaked unscoped _func key in symbol_table).
+;; Fix: hasUserShadow only consults function_table (top-level) and
+;; the scoped `<func>.<name>_func` key (true inner defines), never
+;; the unscoped table — sibling-function leaks can't fool it.
+(define (call-inner-fact)
+  (define (make-fact . rest) (quote inner-fact-sentinel))
+  (make-fact 1 2))
+
+(define (call-inner-kb)
+  (define (make-kb . rest) (quote inner-kb-sentinel))
+  (let ((x (make-kb)))
+    x))
+
+(check "inner-scope make-fact returns inner sentinel"
+       (eq? (call-inner-fact) (quote inner-fact-sentinel)))
+
+(check "inner-scope make-kb returns inner sentinel"
+       (eq? (call-inner-kb) (quote inner-kb-sentinel)))
+
+;; And — critical — inner defines MUST NOT override top-level defines
+;; at a sibling top-level call site. Regression guard:
+(define (make-fact-top . args) (quote top-fact-sentinel))
+(check "sibling inner-scope define doesn't poison top-level make-fact lookup"
+       (eq? (make-fact-top 7) (quote top-fact-sentinel)))
 
 (newline)
 (display "=== Summary ===") (newline)
