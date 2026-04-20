@@ -20,6 +20,7 @@
 
 (extern ptr process-spawn-raw ptr ptr ptr i64 :real qllm_process_spawn)
 (extern ptr process-spawn-argv-raw ptr ptr :real qllm_process_spawn_argv)
+(extern ptr process-spawn-argv-flags-raw ptr ptr i64 :real qllm_process_spawn_argv_flags)
 (extern i64 process-write-stdin-raw ptr ptr i64 :real qllm_process_write_stdin)
 (extern void process-close-stdin-raw ptr :real qllm_process_close_stdin)
 (extern i64 process-read-stdout-raw ptr ptr i64 :real qllm_process_read_stdout)
@@ -36,14 +37,27 @@
 ;; High-Level Wrappers
 ;; ============================================================================
 
+;; flags bitmask for process-spawn-raw. Bit 0 = child's stdin is wired
+;; to /dev/null instead of a pipe, saving a pipe() + close() pair per
+;; call (~100 us on macOS). Use whenever the caller won't write to
+;; stdin (the common case — run-command-capture and friends all close
+;; stdin immediately).
+(define PROCESS_SPAWN_STDIN_NULL 1)
+
 (define (process-spawn command cwd)
   "Spawn a process. Returns process handle or #f on failure.
-   command: shell command string (run via /bin/bash -c)
-   cwd: working directory"
+   command: shell command string (run via /bin/sh -c).
+   cwd: working directory."
   (process-spawn-raw command cwd #f 0))
 
+(define (process-spawn-nostdin command cwd)
+  "Spawn a process with stdin redirected to /dev/null. Faster than
+   process-spawn + process-close-stdin when the caller never writes
+   to stdin (hot path for run-command-capture)."
+  (process-spawn-raw command cwd #f PROCESS_SPAWN_STDIN_NULL))
+
 (define (process-spawn-shell command cwd)
-  "Spawn a shell command with /bin/bash -c. Returns process handle."
+  "Spawn a shell command with /bin/sh -c. Returns process handle."
   (process-spawn command cwd))
 
 ;; process-spawn-argv: safe spawn that does NOT use a shell.
@@ -60,6 +74,22 @@
      (let loop ((rest (cdr argv)) (packed (car argv)))
        (if (null? rest)
            (process-spawn-argv-raw packed cwd)
+           (loop (cdr rest)
+                 (string-append packed "\t" (car rest))))))))
+
+;; Argv spawn with stdin wired to /dev/null. Hot path for run-argv-capture
+;; — saves a pipe() + 2 close()s per call (~100 us). See comment on
+;; PROCESS_SPAWN_STDIN_NULL above.
+(define (process-spawn-argv-nostdin argv cwd)
+  "Spawn an argv list without a shell, with stdin wired to /dev/null.
+   Faster than process-spawn-argv + process-close-stdin."
+  (cond
+    ((null? argv) #f)
+    ((not (list? argv)) #f)
+    (else
+     (let loop ((rest (cdr argv)) (packed (car argv)))
+       (if (null? rest)
+           (process-spawn-argv-flags-raw packed cwd PROCESS_SPAWN_STDIN_NULL)
            (loop (cdr rest)
                  (string-append packed "\t" (car rest))))))))
 
@@ -139,29 +169,31 @@
   (let* ((cwd (if (> (length rest) 0) (list-ref rest 0) "."))
          (timeout-ms (if (> (length rest) 1) (list-ref rest 1) 30000))
          (max-output (if (> (length rest) 2) (list-ref rest 2) 4194304))
-         (proc (process-spawn command cwd)))
+         ;; stdin is never written to in run-command-capture — wire
+         ;; it straight to /dev/null in the child and skip the pipe().
+         ;; Drops per-call syscall count by a pipe + 2 closes; the
+         ;; subsequent process-close-stdin becomes a no-op.
+         (proc (process-spawn-nostdin command cwd)))
     (if (not proc)
         (list (cons 'exit-code -1)
               (cons 'stdout "")
               (cons 'stderr "Error: failed to spawn process"))
-        (begin
-          (process-close-stdin proc)
-          (let* ((wait-result (process-wait proc timeout-ms))
-                 (timed-out (= wait-result 1))
-                 (_ (when timed-out
-                      (process-kill proc)
-                      (process-wait proc 5000)))
-                 (stdout (process-read-all-stdout proc max-output))
-                 (stderr (process-read-all-stderr proc max-output))
-                 (code (if timed-out 124 (process-exit-code proc))))
-            (process-destroy proc)
-            (list (cons 'exit-code code)
-                  (cons 'stdout stdout)
-                  (cons 'stderr (if timed-out
-                                    (string-append stderr "\n[Process timed out after "
-                                                   (number->string (/ timeout-ms 1000))
-                                                   "s]")
-                                    stderr))))))))
+        (let* ((wait-result (process-wait proc timeout-ms))
+               (timed-out (= wait-result 1))
+               (_ (when timed-out
+                    (process-kill proc)
+                    (process-wait proc 5000)))
+               (stdout (process-read-all-stdout proc max-output))
+               (stderr (process-read-all-stderr proc max-output))
+               (code (if timed-out 124 (process-exit-code proc))))
+          (process-destroy proc)
+          (list (cons 'exit-code code)
+                (cons 'stdout stdout)
+                (cons 'stderr (if timed-out
+                                  (string-append stderr "\n[Process timed out after "
+                                                 (number->string (/ timeout-ms 1000))
+                                                 "s]")
+                                  stderr)))))))
 
 ;; ============================================================================
 ;; Safe (argv-based, no-shell) Convenience Wrappers — #190
@@ -173,20 +205,18 @@
    Args: argv [cwd] [timeout-ms]. Returns exit code."
   (let* ((cwd (if (> (length rest) 0) (list-ref rest 0) "."))
          (timeout-ms (if (> (length rest) 1) (list-ref rest 1) 30000))
-         (proc (process-spawn-argv argv cwd)))
+         (proc (process-spawn-argv-nostdin argv cwd)))
     (if (not proc)
         -1
-        (begin
-          (process-close-stdin proc)
-          (let ((wait-result (process-wait proc timeout-ms)))
-            (let ((code (if (= wait-result 0)
-                            (process-exit-code proc)
-                            (begin
-                              (process-kill proc)
-                              (process-wait proc 5000)
-                              -1))))
-              (process-destroy proc)
-              code))))))
+        (let ((wait-result (process-wait proc timeout-ms)))
+          (let ((code (if (= wait-result 0)
+                          (process-exit-code proc)
+                          (begin
+                            (process-kill proc)
+                            (process-wait proc 5000)
+                            -1))))
+            (process-destroy proc)
+            code)))))
 
 (define (run-argv-capture argv . rest)
   "Run argv list and capture stdout/stderr without a shell.
@@ -195,22 +225,23 @@
   (let* ((cwd (if (> (length rest) 0) (list-ref rest 0) "."))
          (timeout-ms (if (> (length rest) 1) (list-ref rest 1) 30000))
          (max-output (if (> (length rest) 2) (list-ref rest 2) 4194304))
-         (proc (process-spawn-argv argv cwd)))
+         ;; stdin-null fast path — wire the child's stdin straight to
+         ;; /dev/null instead of creating a pipe we won't use. Saves
+         ;; ~100 us per call on the benchmark hot loop.
+         (proc (process-spawn-argv-nostdin argv cwd)))
     (if (not proc)
         (list (cons 'exit-code -1)
               (cons 'stdout "")
               (cons 'stderr "Error: failed to spawn process"))
-        (begin
-          (process-close-stdin proc)
-          (let* ((wait-result (process-wait proc timeout-ms))
-                 (timed-out (= wait-result 1))
-                 (_ (when timed-out
-                      (process-kill proc)
-                      (process-wait proc 5000)))
-                 (stdout (process-read-all-stdout proc max-output))
-                 (stderr (process-read-all-stderr proc max-output))
-                 (code (if timed-out 124 (process-exit-code proc))))
-            (process-destroy proc)
-            (list (cons 'exit-code code)
-                  (cons 'stdout stdout)
-                  (cons 'stderr stderr)))))))
+        (let* ((wait-result (process-wait proc timeout-ms))
+               (timed-out (= wait-result 1))
+               (_ (when timed-out
+                    (process-kill proc)
+                    (process-wait proc 5000)))
+               (stdout (process-read-all-stdout proc max-output))
+               (stderr (process-read-all-stderr proc max-output))
+               (code (if timed-out 124 (process-exit-code proc))))
+          (process-destroy proc)
+          (list (cons 'exit-code code)
+                (cons 'stdout stdout)
+                (cons 'stderr stderr))))))
