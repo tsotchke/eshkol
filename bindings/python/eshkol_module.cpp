@@ -65,26 +65,32 @@ static py::object ffi_value_to_python(eshkol_ffi_context_t* ctx, eshkol_ffi_valu
                 return result;
             }
 
-            /* Check for tensor — zero-copy view via numpy buffer protocol.
-             * Read the true N-D shape and produce a numpy array with
-             * matching ndim + row-major (C-contiguous) strides. 1-D
-             * tensors fall through to a 1-element shape the obvious
-             * way. Capsule prevents numpy from freeing the arena
-             * memory when the array is collected. */
+            /* Tensor → numpy N-D array. The shape buffer is sized to
+             * the reported ndim rather than a fixed 8 (audit M10 —
+             * 9-D tensors were silently truncated, producing numpy
+             * arrays with wrong ndim and misinterpreted strides). If
+             * ndim is suspicious (≤0 or > 64) we fall back to 1-D.
+             *
+             * Zero-copy caveat (audit H1): the capsule deleter is a
+             * no-op because the arena is process-lifetime. If a
+             * caller destroys the FFI context (arena reset) while
+             * numpy still references the array, reads see freed
+             * memory. For now we document this lifecycle; full
+             * refcounting is a follow-up. Callers that need
+             * lifetime-decoupled arrays can .copy() on the Python
+             * side. */
             double* tdata = eshkol_ffi_tensor_data(val);
             if (tdata) {
                 int64_t size = eshkol_ffi_tensor_size(val);
                 if (size > 0) {
                     int ndim = eshkol_ffi_tensor_ndims(val);
-                    if (ndim <= 0) ndim = 1;
-                    int64_t shape_buf[8] = {0};
-                    int n = eshkol_ffi_tensor_shape(val, shape_buf, 8);
-                    if (n <= 0) { shape_buf[0] = size; n = 1; }
+                    if (ndim <= 0 || ndim > 64) ndim = 1;
+                    std::vector<int64_t> shape_buf((size_t)ndim, 0);
+                    int n = eshkol_ffi_tensor_shape(val, shape_buf.data(), ndim);
+                    if (n <= 0) { shape_buf.resize(1); shape_buf[0] = size; n = 1; }
 
                     std::vector<py::ssize_t> shape_v(n), strides_v(n);
                     for (int i = 0; i < n; i++) shape_v[i] = (py::ssize_t)shape_buf[i];
-                    /* Row-major (C) strides: strides[-1]=sizeof(double),
-                     * strides[i] = strides[i+1] * shape[i+1]. */
                     strides_v[n - 1] = (py::ssize_t)sizeof(double);
                     for (int i = n - 2; i >= 0; i--) {
                         strides_v[i] = strides_v[i + 1] * shape_v[i + 1];
