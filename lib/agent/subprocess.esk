@@ -60,6 +60,26 @@
   "Spawn a shell command with /bin/sh -c. Returns process handle."
   (process-spawn command cwd))
 
+;; Audit M9: an argv element containing a literal tab would get
+;; re-split by the C-side parse_tab_argv. Reject such args explicitly
+;; rather than silently splitting them — shell-style quoting is NOT
+;; provided (use process-spawn if you need shell semantics; otherwise
+;; argv is strict positional). Also reject NUL bytes for the same
+;; truncation-at-C-boundary reason the symbol interner has.
+(define (process-argv-check-args argv)
+  (for-each
+   (lambda (a)
+     (unless (string? a)
+       (error "process-spawn-argv: argv entries must be strings" a))
+     (when (string-contains a "\t")
+       (error "process-spawn-argv: argv element contains literal TAB "
+              "(would be re-split by the underlying tab-separated wire "
+              "format); pass it via a wrapper or escape it externally" a))
+     (when (string-contains a "\x00")
+       (error "process-spawn-argv: argv element contains NUL byte "
+              "(would truncate at the C boundary)" a)))
+   argv))
+
 ;; process-spawn-argv: safe spawn that does NOT use a shell.
 ;; argv is a list of strings (program first); we tab-join and pass to
 ;; the native side which calls execvp. No shell means no injection —
@@ -71,6 +91,7 @@
     ((null? argv) #f)
     ((not (list? argv)) #f)
     (else
+     (process-argv-check-args argv)
      (let loop ((rest (cdr argv)) (packed (car argv)))
        (if (null? rest)
            (process-spawn-argv-raw packed cwd)
@@ -87,6 +108,7 @@
     ((null? argv) #f)
     ((not (list? argv)) #f)
     (else
+     (process-argv-check-args argv)
      (let loop ((rest (cdr argv)) (packed (car argv)))
        (if (null? rest)
            (process-spawn-argv-flags-raw packed cwd PROCESS_SPAWN_STDIN_NULL)

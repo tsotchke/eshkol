@@ -25,6 +25,7 @@
 #include <poll.h>
 #include <time.h>       /* nanosleep */
 #include <sys/time.h>   /* setitimer / itimerval */
+#include <sys/resource.h> /* setrlimit — audit H7 */
 #include <pthread.h>    /* Linux fallback drain threads */
 #include <spawn.h>      /* posix_spawn — vfork-lite on Darwin/Linux */
 #if defined(__APPLE__) || defined(__FreeBSD__)
@@ -171,6 +172,88 @@ static char** split_shell_safe_command(const char* cmd, int* out_argc) {
  * Saves one pipe() pair plus two addclose entries in the spawn file
  * actions — ~50-100 μs per call. */
 #define ESHKOL_SPAWN_STDIN_NULL 0x1
+
+/* Apply default resource limits to the child (audit H7).
+ *
+ * Problem: posix_spawn inherits the parent's (unlimited) rlimits.
+ * A Scheme caller can trivially DOS the host via fork bombs, memory
+ * exhaustion, or fd exhaustion inside the subprocess. Defaults are
+ * deliberately generous so legitimate build tools (cmake, lean, git,
+ * rustc) still work — override via ESHKOL_SUBPROC_* env.
+ *
+ * NOTE — coverage gap: posix_spawn does NOT expose rlimit via
+ * posix_spawnattr_*, so this helper only runs on the fork+exec
+ * fallback path (used when cwd != "."). The hot posix_spawn path
+ * skips rlimits for perf. Callers who need guaranteed rlimits on
+ * every subprocess should apply setrlimit to the Eshkol host
+ * process at init so all spawn paths inherit — ESHKOL_SUBPROC_*
+ * consulted here is an in-process override for the fork+exec
+ * branch only. Follow-up: either wrap posix_spawn in a tiny
+ * fork-exec monitor that applies rlimits, or upstream a
+ * posix_spawnattr rlimit attribute to Darwin / glibc.
+ *
+ *   RLIMIT_AS    virtual memory            (env ESHKOL_SUBPROC_MEM_MB,    default 4096)
+ *   RLIMIT_CPU   CPU seconds               (env ESHKOL_SUBPROC_CPU_SEC,   default 300)
+ *   RLIMIT_NOFILE file descriptors         (env ESHKOL_SUBPROC_NOFILE,    default 1024)
+ *   RLIMIT_NPROC processes per user        (env ESHKOL_SUBPROC_NPROC,     default 512)
+ *
+ * Setting a limit > the hard limit is silently ignored so we don't
+ * block legitimate tools on a host that already has lower caps. */
+static void eshkol_apply_subproc_rlimits(void) {
+#ifndef _WIN32
+    struct rlimit r;
+    const char* e;
+    /* RLIMIT_AS — virtual memory */
+    rlim_t mem_mb = 4096;
+    if ((e = getenv("ESHKOL_SUBPROC_MEM_MB")) && *e) {
+        long v = strtol(e, NULL, 10);
+        if (v > 0) mem_mb = (rlim_t)v;
+    }
+    if (mem_mb > 0 && getrlimit(RLIMIT_AS, &r) == 0) {
+        rlim_t desired = mem_mb * 1024UL * 1024UL;
+        if (r.rlim_max == RLIM_INFINITY || desired < r.rlim_max) {
+            r.rlim_cur = desired;
+            (void)setrlimit(RLIMIT_AS, &r);
+        }
+    }
+    /* RLIMIT_CPU — CPU seconds */
+    rlim_t cpu_sec = 300;
+    if ((e = getenv("ESHKOL_SUBPROC_CPU_SEC")) && *e) {
+        long v = strtol(e, NULL, 10);
+        if (v > 0) cpu_sec = (rlim_t)v;
+    }
+    if (cpu_sec > 0 && getrlimit(RLIMIT_CPU, &r) == 0) {
+        if (r.rlim_max == RLIM_INFINITY || cpu_sec < r.rlim_max) {
+            r.rlim_cur = cpu_sec;
+            (void)setrlimit(RLIMIT_CPU, &r);
+        }
+    }
+    /* RLIMIT_NOFILE — file descriptors */
+    rlim_t nofile = 1024;
+    if ((e = getenv("ESHKOL_SUBPROC_NOFILE")) && *e) {
+        long v = strtol(e, NULL, 10);
+        if (v > 0) nofile = (rlim_t)v;
+    }
+    if (nofile > 0 && getrlimit(RLIMIT_NOFILE, &r) == 0) {
+        if (r.rlim_max == RLIM_INFINITY || nofile < r.rlim_max) {
+            r.rlim_cur = nofile;
+            (void)setrlimit(RLIMIT_NOFILE, &r);
+        }
+    }
+    /* RLIMIT_NPROC — processes per real UID */
+    rlim_t nproc = 512;
+    if ((e = getenv("ESHKOL_SUBPROC_NPROC")) && *e) {
+        long v = strtol(e, NULL, 10);
+        if (v > 0) nproc = (rlim_t)v;
+    }
+    if (nproc > 0 && getrlimit(RLIMIT_NPROC, &r) == 0) {
+        if (r.rlim_max == RLIM_INFINITY || nproc < r.rlim_max) {
+            r.rlim_cur = nproc;
+            (void)setrlimit(RLIMIT_NPROC, &r);
+        }
+    }
+#endif
+}
 
 /* Env-scrub the list of vars that post-fork children must drop before
  * exec (audit C6). Used on fork+exec paths where we don't have the
@@ -451,6 +534,7 @@ eshkol_subprocess_t* qllm_process_spawn(const char* command, const char* cwd_arg
 
             if (chdir(cwd) != 0) _exit(126);
             eshkol_unset_env_injection_vars();  /* audit C6 */
+            eshkol_apply_subproc_rlimits();     /* audit H7 */
             execlp("/bin/sh", "sh", "-c", command, (char*)NULL);
             _exit(127);
         }
@@ -758,6 +842,7 @@ eshkol_subprocess_t* qllm_process_spawn_argv_flags(const char* tab_packed_argv,
             close(stdout_pipe[1]); close(stderr_pipe[1]);
             if (chdir(cwd_arg) != 0) _exit(126);
             eshkol_unset_env_injection_vars();  /* audit C6 */
+            eshkol_apply_subproc_rlimits();     /* audit H7 */
             execvp(argv[0], argv);
             _exit(127);
         }
