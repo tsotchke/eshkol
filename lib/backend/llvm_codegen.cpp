@@ -27633,85 +27633,82 @@ private:
     // codegenListTail removed - now in stdlib.esk (core/list/search.esk)
 
     // Production implementation: Set car (mutable)
-    Value* codegenSetCar(const eshkol_operations_t* op) {
+    // Shared implementation: mutate car (is_cdr=0) or cdr (is_cdr=1) of a
+    // pair. Previously the typed setters (SetInt64 / SetDouble / SetPtr)
+    // forced us to compress every replacement value into a single
+    // {value,type-tag} slot, which lost the type byte whenever the new
+    // value was already a full tagged_value struct (e.g. the result of
+    // `(list ...)` or `(cons ...)`). detectValueType was then returning
+    // INT64 for the struct's payload, so the setter wrote the raw heap
+    // address with an INT64 tag — and all subsequent cdr walks saw an
+    // integer instead of a pair (Noesis Bug E, 2026-04-19).
+    //
+    // Fix: when the replacement is already a tagged_value struct, spill
+    // it to a stack slot and call arena_tagged_cons_set_tagged_value,
+    // which copies the full 16-byte struct (including type byte) into
+    // the cons cell. This is the same path used by cons / allocConsCell,
+    // so behaviour is now uniform across cons, set-car!, and set-cdr!.
+    Value* codegenSetPairField(const eshkol_operations_t* op, bool is_cdr_bit) {
+        const char* name = is_cdr_bit ? "set-cdr!" : "set-car!";
         if (op->call_op.num_vars != 2) {
-            eshkol_warn("set-car! requires exactly 2 arguments: pair and new-value");
+            eshkol_warn("%s requires exactly 2 arguments: pair and new-value", name);
             return nullptr;
         }
-        
+
         Value* pair = codegenAST(&op->call_op.variables[0]);
         Value* new_value = codegenAST(&op->call_op.variables[1]);
         if (!pair || !new_value) return nullptr;
 
-        // TYPE SYSTEM FIX: Use safeExtractInt64 to handle tagged_value structs
         Value* pair_int = safeExtractInt64(pair);
-
-        // Mutate the car of the pair using tagged helper
         Value* cons_ptr = builder->CreateIntToPtr(pair_int, builder->getPtrTy());
-        
-        // Detect new value type and use appropriate setter
+        Value* slot_flag = ConstantInt::get(int1_type, is_cdr_bit ? 1 : 0);
+
+        // Preferred path: the replacement is a full tagged_value. Spill
+        // it to an entry-block alloca and pass the pointer to the
+        // tagged-value cons setter (same call used by allocConsCell).
+        if (new_value->getType() == tagged_value_type) {
+            IRBuilderBase::InsertPoint saved_ip = builder->saveIP();
+            Function* func = builder->GetInsertBlock()->getParent();
+            if (func && !func->empty()) {
+                BasicBlock& entry = func->getEntryBlock();
+                builder->SetInsertPoint(&entry, entry.begin());
+            }
+            Value* tv_slot = builder->CreateAlloca(tagged_value_type, nullptr, "set_pair_tv");
+            builder->restoreIP(saved_ip);
+            builder->CreateStore(new_value, tv_slot);
+            builder->CreateCall(getTaggedConsSetTaggedValueFunc(),
+                                {cons_ptr, slot_flag, tv_slot});
+            return new_value;
+        }
+
+        // Fallback: non-tagged scalar. detectValueType still classifies
+        // i64/double/i1 correctly here; only the tagged_value case was
+        // broken.
         TypedValue new_val_typed = detectValueType(new_value);
-        Value* is_car = ConstantInt::get(int1_type, 0);
         uint8_t type_tag = new_val_typed.type;
-        
+
         if (new_val_typed.isInt64()) {
             builder->CreateCall(getTaggedConsSetInt64Func(),
-                {cons_ptr, is_car, new_val_typed.llvm_value,
+                {cons_ptr, slot_flag, new_val_typed.llvm_value,
                  ConstantInt::get(int8_type, type_tag)});
         } else if (new_val_typed.isDouble()) {
             builder->CreateCall(getTaggedConsSetDoubleFunc(),
-                {cons_ptr, is_car, new_val_typed.llvm_value,
+                {cons_ptr, slot_flag, new_val_typed.llvm_value,
                  ConstantInt::get(int8_type, type_tag)});
         } else {
-            // Pointer/other types
             builder->CreateCall(getTaggedConsSetPtrFunc(),
-                {cons_ptr, is_car, new_val_typed.llvm_value,
+                {cons_ptr, slot_flag, new_val_typed.llvm_value,
                  ConstantInt::get(int8_type, type_tag)});
         }
-        
-        // Return the new value (Scheme convention)
         return new_value;
     }
-    
-    // Production implementation: Set cdr (mutable)
+
+    Value* codegenSetCar(const eshkol_operations_t* op) {
+        return codegenSetPairField(op, /*is_cdr_bit=*/false);
+    }
+
     Value* codegenSetCdr(const eshkol_operations_t* op) {
-        if (op->call_op.num_vars != 2) {
-            eshkol_warn("set-cdr! requires exactly 2 arguments: pair and new-value");
-            return nullptr;
-        }
-
-        Value* pair = codegenAST(&op->call_op.variables[0]);
-        Value* new_value = codegenAST(&op->call_op.variables[1]);
-        if (!pair || !new_value) return nullptr;
-
-        // TYPE SYSTEM FIX: Use safeExtractInt64 to handle tagged_value structs
-        Value* pair_int = safeExtractInt64(pair);
-
-        // Mutate the cdr of the pair using tagged helper
-        Value* cons_ptr = builder->CreateIntToPtr(pair_int, builder->getPtrTy());
-        
-        // Detect new value type and use appropriate setter
-        TypedValue new_val_typed = detectValueType(new_value);
-        Value* is_cdr = ConstantInt::get(int1_type, 1);
-        uint8_t type_tag = new_val_typed.type;
-        
-        if (new_val_typed.isInt64()) {
-            builder->CreateCall(getTaggedConsSetInt64Func(),
-                {cons_ptr, is_cdr, new_val_typed.llvm_value,
-                 ConstantInt::get(int8_type, type_tag)});
-        } else if (new_val_typed.isDouble()) {
-            builder->CreateCall(getTaggedConsSetDoubleFunc(),
-                {cons_ptr, is_cdr, new_val_typed.llvm_value,
-                 ConstantInt::get(int8_type, type_tag)});
-        } else {
-            // Pointer/other types
-            builder->CreateCall(getTaggedConsSetPtrFunc(),
-                {cons_ptr, is_cdr, new_val_typed.llvm_value,
-                 ConstantInt::get(int8_type, type_tag)});
-        }
-        
-        // Return the new value (Scheme convention)
-        return new_value;
+        return codegenSetPairField(op, /*is_cdr_bit=*/true);
     }
     
     // Create a wrapper function for indirect calls through function parameters
