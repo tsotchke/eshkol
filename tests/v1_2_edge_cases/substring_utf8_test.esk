@@ -1,0 +1,71 @@
+;; substring_utf8_test.esk — Noesis Bug H (2026-04-20)
+;;
+;; substring walked codepoints correctly for the start offset but
+;; exited the end-seek loop at the START byte of the end-th codepoint,
+;; leaving the trailing continuation bytes outside byte_len. A
+;; 3-byte codepoint crossing the end boundary was truncated to 1 byte.
+;; Blocked Aletheia on any theorem containing ⟨ / ⟩ / other multi-
+;; byte glyphs that straddled a substring cut.
+;;
+;; Fix: after cp_idx reaches end, advance past all continuation bytes
+;; so the last-included codepoint's byte range is complete. R7RS §6.7
+;; semantics [start, end) on codepoint indices preserved.
+
+(require stdlib)
+
+(define passed 0)
+(define failed 0)
+(define (check name cond)
+  (if cond
+      (begin (display "PASS: ") (display name) (newline)
+             (set! passed (+ passed 1)))
+      (begin (display "FAIL: ") (display name) (newline)
+             (set! failed (+ failed 1)))))
+
+;; "ab⟩" = ascii 'a' 'b' + U+27E9 (3-byte UTF-8 e2 9f a9).
+(define s "ab⟩")
+(check "orig string-length (codepoints)"  (= (string-length s) 3))
+
+(define ss (substring s 1 3))
+(check "sub string-length (codepoints)"   (= (string-length ss) 2))
+
+;; Write both to files and compare byte counts.
+(define p1 (open-output-file "/tmp/eshkol_bug_h_orig.txt"))
+(display s p1)
+(close-output-port p1)
+
+(define p2 (open-output-file "/tmp/eshkol_bug_h_sub.txt"))
+(display ss p2)
+(close-output-port p2)
+
+(check "orig on disk: 5 bytes (ab + 3-byte ⟩)"
+       (= (file-size "/tmp/eshkol_bug_h_orig.txt") 5))
+
+(check "sub on disk: 4 bytes (b + 3-byte ⟩) — NOT 2"
+       (= (file-size "/tmp/eshkol_bug_h_sub.txt") 4))
+
+;; Leading codepoint boundary: substring that SKIPS a multi-byte leader.
+(define s2 "⟨ab")
+(define ss2 (substring s2 1 3))
+(define p3 (open-output-file "/tmp/eshkol_bug_h_lead.txt"))
+(display ss2 p3)
+(close-output-port p3)
+(check "skipping ⟨: 2 bytes on disk"
+       (= (file-size "/tmp/eshkol_bug_h_lead.txt") 2))
+
+;; Both multi-byte on each end.
+(define s3 "⟨abc⟩")
+(define ss3 (substring s3 1 4))  ;; a b c → 3 bytes
+(define p4 (open-output-file "/tmp/eshkol_bug_h_both.txt"))
+(display ss3 p4)
+(close-output-port p4)
+(check "middle ASCII: 3 bytes"
+       (= (file-size "/tmp/eshkol_bug_h_both.txt") 3))
+
+(newline)
+(display "=== Summary ===") (newline)
+(display "Passed: ") (display passed) (newline)
+(display "Failed: ") (display failed) (newline)
+(if (= failed 0)
+    (begin (display "RESULT: OK") (newline))
+    (begin (display "RESULT: FAIL") (newline) (exit 1)))
