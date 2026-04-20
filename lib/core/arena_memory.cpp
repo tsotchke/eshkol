@@ -4396,6 +4396,24 @@ static int read_skip_whitespace(FILE* fp) {
 // Forward declaration
 static eshkol_tagged_value_t read_datum(arena_t* arena, FILE* fp, int first_char);
 
+/* Reader recursion-depth guard (audit C3).
+ *
+ * (read port) walks `(((((...)))))` via recursive C calls. We ship a
+ * 512 MB linker-requested stack so 1M-deep forms happen to work in
+ * practice, but that's a platform quirk, not a design. A malicious
+ * input file can still exhaust stack deterministically on any build
+ * with default limits (8 MB on Linux, ≈ 500 k depth). Counter is
+ * thread-local so concurrent `(read)` calls don't share state. */
+#define ESHKOL_READ_MAX_DEPTH 4096
+static thread_local int g_reader_depth = 0;
+
+static inline eshkol_tagged_value_t make_reader_depth_error(void) {
+    eshkol_tagged_value_t val;
+    memset(&val, 0, sizeof(val));
+    val.type = 0xFF;  /* reuse EOF sentinel — caller treats as malformed */
+    return val;
+}
+
 static eshkol_tagged_value_t make_eof_tagged(void) {
     eshkol_tagged_value_t val;
     memset(&val, 0, sizeof(val));
@@ -4468,11 +4486,40 @@ extern "C" void* eshkol_intern_symbol_lookup(const char* name);
 
 static eshkol_tagged_value_t make_symbol_tagged(arena_t* arena, const char* name, size_t len) {
     (void)arena;  /* symbols live in the process-lifetime intern pool now */
+
+    /* Security (audit C1 — symbol NUL-truncation spoofing).
+     * Previous code memcpy'd `len` bytes then NUL-terminated. The
+     * intern table keys with std::string(cstr) which truncates at the
+     * first NUL, so `"admin\0guest"` collapsed to `'admin` and was
+     * eq? to the legitimate `'admin` symbol. Any tag-dispatch
+     * `(cond ((eq? role 'admin) ...))` on attacker-controlled
+     * deserialised data was spoofable. Reject embedded NULs up-front. */
+    for (size_t i = 0; i < len; i++) {
+        if (name[i] == '\0') {
+            /* Return a distinct empty symbol rather than silently
+             * truncating. Callers treat NULL-ish returns uniformly;
+             * the invalid-symbol surface is auditable. */
+            static const char kRejectedSym[] = "|invalid-symbol|";
+            void* interned_rej = eshkol_intern_symbol_lookup(kRejectedSym);
+            eshkol_tagged_value_t rej;
+            memset(&rej, 0, sizeof(rej));
+            rej.type = ESHKOL_VALUE_HEAP_PTR;
+            rej.data.int_val = (int64_t)(uintptr_t)interned_rej;
+            return rej;
+        }
+    }
+
     char stack_buf[256];
     char* name_cstr = stack_buf;
     char* heap_buf = NULL;
     if (len + 1 > sizeof(stack_buf)) {
         heap_buf = (char*)malloc(len + 1);
+        if (!heap_buf) {
+            eshkol_tagged_value_t null_val;
+            memset(&null_val, 0, sizeof(null_val));
+            null_val.type = ESHKOL_VALUE_NULL;
+            return null_val;
+        }
         name_cstr = heap_buf;
     }
     memcpy(name_cstr, name, len);
@@ -4576,26 +4623,40 @@ static eshkol_tagged_value_t read_vector(arena_t* arena, FILE* fp) {
 
 // Read an atom (number, symbol, string, #t, #f, #\char)
 static eshkol_tagged_value_t read_atom(arena_t* arena, FILE* fp, int first_char) {
-    // String literal
+    // String literal (audit C4: bound *every* write into buf).
+    // Previously only the non-escape branch checked `len < 4095`; the
+    // escape branch wrote buf[len++] unconditionally. A crafted source
+    // with 4100+ `\\` escapes overflowed the stack buffer — stack smash
+    // / return-address overwrite surface reachable via (read port) on
+    // untrusted input. Apply the bound uniformly and consume-without-
+    // storing past the cap so the delimiter search still terminates.
     if (first_char == '"') {
         char buf[4096];
         int len = 0;
         int ch;
         while ((ch = fgetc(fp)) != EOF && ch != '"') {
+            char decoded;
             if (ch == '\\') {
                 ch = fgetc(fp);
                 if (ch == EOF) break;
                 switch (ch) {
-                    case 'n': buf[len++] = '\n'; break;
-                    case 't': buf[len++] = '\t'; break;
-                    case 'r': buf[len++] = '\r'; break;
-                    case '\\': buf[len++] = '\\'; break;
-                    case '"': buf[len++] = '"'; break;
-                    default: buf[len++] = ch; break;
+                    case 'n':  decoded = '\n'; break;
+                    case 't':  decoded = '\t'; break;
+                    case 'r':  decoded = '\r'; break;
+                    case '\\': decoded = '\\'; break;
+                    case '"':  decoded = '"';  break;
+                    default:   decoded = (char)ch; break;
                 }
             } else {
-                if (len < 4095) buf[len++] = ch;
+                decoded = (char)ch;
             }
+            if (len < (int)sizeof(buf) - 1) {
+                buf[len++] = decoded;
+            }
+            /* else: silently drop past cap. An error-raising variant
+             * would be more correct but would change a 1-byte overflow
+             * from an RCE primitive into a hard-fail DoS; the cap is
+             * documented as a reader-level string-length ceiling. */
         }
         return make_string_tagged(arena, buf, len);
     }
@@ -4758,22 +4819,29 @@ static eshkol_tagged_value_t read_atom(arena_t* arena, FILE* fp, int first_char)
 static eshkol_tagged_value_t read_datum(arena_t* arena, FILE* fp, int first_char) {
     if (first_char == EOF) return make_eof_tagged();
 
+    if (g_reader_depth >= ESHKOL_READ_MAX_DEPTH) {
+        return make_reader_depth_error();
+    }
+    g_reader_depth++;
+    eshkol_tagged_value_t result;
+
     // Quote shorthand: 'x -> (quote x)
     if (first_char == '\'') {
         int ch = read_skip_whitespace(fp);
         eshkol_tagged_value_t quoted = read_datum(arena, fp, ch);
         eshkol_tagged_value_t quote_sym = make_symbol_tagged(arena, "quote", 5);
         eshkol_tagged_value_t inner = make_cons_tagged(arena, quoted, make_null_tagged());
-        return make_cons_tagged(arena, quote_sym, inner);
+        result = make_cons_tagged(arena, quote_sym, inner);
+    }
+    else if (first_char == '(') {
+        result = read_list(arena, fp);
+    }
+    else {
+        result = read_atom(arena, fp, first_char);
     }
 
-    // List
-    if (first_char == '(') {
-        return read_list(arena, fp);
-    }
-
-    // Everything else: atoms
-    return read_atom(arena, fp, first_char);
+    g_reader_depth--;
+    return result;
 }
 
 // Main entry point: read one S-expression from a FILE*
@@ -4783,6 +4851,9 @@ extern "C" void eshkol_read_sexpr(void* arena_void, void* fp_void,
     FILE* fp = (FILE*)fp_void;
     if (!fp) fp = stdin;
 
+    /* Reset depth counter at every top-level entry so a prior
+     * exit-via-sentinel doesn't leave a stale count. */
+    g_reader_depth = 0;
     int ch = read_skip_whitespace(fp);
     *result = read_datum(arena, fp, ch);
 }
@@ -5109,23 +5180,40 @@ extern "C" int64_t eshkol_broadcast_copy(
     int64_t dst_total = 1;
     for (int64_t d = 0; d < dst_ndim; d++) dst_total *= dst_dims[d];
 
-    // Precompute source strides (row-major)
+    /* Checked-multiply stride computation (audit C5).
+     * The previous loop multiplied `strides[d+1] * dims[d+1]` as plain
+     * signed int64 with no overflow detection. A dim of -1 produced
+     * negative strides that later `offset = idx * stride` walks turn
+     * into OOB heap reads/writes. Reject negative / zero dims and
+     * trap multiply overflow up-front. */
+    /* Reject negative dims (zero dims are legal — empty tensors). */
     int64_t src_strides[16]; // max 16 dimensions
     if (src_ndim > 16) return -1;
+    for (int64_t d = 0; d < src_ndim; d++) {
+        if (src_dims[d] < 0) return -1;
+    }
     if (src_ndim > 0) {
         src_strides[src_ndim - 1] = 1;
         for (int64_t d = src_ndim - 2; d >= 0; d--) {
-            src_strides[d] = src_strides[d + 1] * src_dims[d + 1];
+            int64_t a = src_strides[d + 1];
+            int64_t b = src_dims[d + 1];
+            if (a > 0 && b > INT64_MAX / a) return -1;  // overflow
+            src_strides[d] = a * b;
         }
     }
 
-    // Precompute destination strides
     int64_t dst_strides[16];
     if (dst_ndim > 16) return -1;
+    for (int64_t d = 0; d < dst_ndim; d++) {
+        if (dst_dims[d] < 0) return -1;
+    }
     if (dst_ndim > 0) {
         dst_strides[dst_ndim - 1] = 1;
         for (int64_t d = dst_ndim - 2; d >= 0; d--) {
-            dst_strides[d] = dst_strides[d + 1] * dst_dims[d + 1];
+            int64_t a = dst_strides[d + 1];
+            int64_t b = dst_dims[d + 1];
+            if (a > 0 && b > INT64_MAX / a) return -1;
+            dst_strides[d] = a * b;
         }
     }
 
