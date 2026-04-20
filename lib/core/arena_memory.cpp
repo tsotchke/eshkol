@@ -5636,6 +5636,17 @@ extern "C" void eshkol_raise_index_oob(const char* op_name, int64_t idx,
     exit(1);
 }
 
+/* Raise an "improper list" error from codegen-generated walkers
+ * (audit M7). Used by list->vector and similar tail-traversals
+ * that encounter a non-pair, non-() tail. */
+extern "C" void eshkol_raise_improper_list(const char* msg) {
+    eshkol_exception_t* exc = eshkol_make_exception(
+        ESHKOL_EXCEPTION_ERROR, msg ? msg : "improper list");
+    if (exc) eshkol_raise(exc);
+    fprintf(stderr, "Eshkol: %s\n", msg ? msg : "improper list");
+    exit(1);
+}
+
 extern "C" void eshkol_reset_recursion_depth(void) {
     __eshkol_recursion_depth = 0;
 }
