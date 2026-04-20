@@ -912,18 +912,46 @@ char* eshkol_utf8_substring(const char* s, int64_t start, int64_t end, void* are
     if (!s || !arena || start < 0 || end < start) return nullptr;
     extern void* arena_allocate_string_with_header(void*, uint64_t);
     int64_t byte_len_total = eshkol_string_byte_length(s);
-    /* Find byte offset of start codepoint */
+    /* Bug H (2026-04-20): advance by FULL codepoints each step —
+     * skip all continuation bytes of each codepoint as a unit —
+     * so start_off lands on the first byte of the start-th
+     * codepoint and end i lands one-past the last byte of the
+     * (end-1)-th codepoint.
+     *
+     * The previous `cp_idx++` was off by one codepoint's
+     * continuation-byte tail on both start and end:
+     *
+     *   "⟨ab" (e2 9f a9 61 62) substring(1,3):
+     *     WANT: bytes 3..4 = "ab"
+     *     OLD:  start_off=1 (inside ⟨'s continuation bytes),
+     *           end stopped at i=3 (just before 'a' — so byte_len=2)
+     *
+     *   "ab⟩" (61 62 e2 9f a9) substring(1,3):
+     *     WANT: bytes 1..4 = "b⟩"
+     *     OLD:  start_off=1 (correct by luck — only ASCII before),
+     *           end stopped at i=3 (on start of ⟩'s cont bytes), byte_len=2 */
+    auto advance_one_codepoint = [&](int64_t& i) {
+        if (i >= byte_len_total) return;
+        unsigned char b = (unsigned char)s[i];
+        if ((b & 0x80) == 0)          i += 1;   /* ASCII */
+        else if ((b & 0xE0) == 0xC0)  i += 2;   /* 2-byte */
+        else if ((b & 0xF0) == 0xE0)  i += 3;   /* 3-byte */
+        else if ((b & 0xF8) == 0xF0)  i += 4;   /* 4-byte */
+        else                          i += 1;   /* malformed — best effort */
+        /* Clamp — truncated final codepoint. */
+        if (i > byte_len_total) i = byte_len_total;
+    };
+
     int64_t i = 0;
     int64_t cp_idx = 0;
     while (i < byte_len_total && cp_idx < start) {
-        if ((s[i] & 0xC0) != 0x80) cp_idx++;
-        i++;
+        advance_one_codepoint(i);
+        cp_idx++;
     }
     int64_t start_off = i;
-    /* Find byte offset of end codepoint */
     while (i < byte_len_total && cp_idx < end) {
-        if ((s[i] & 0xC0) != 0x80) cp_idx++;
-        i++;
+        advance_one_codepoint(i);
+        cp_idx++;
     }
     int64_t byte_len = i - start_off;
     /* allocator adds +1 for NUL itself — pass the payload byte count. */
