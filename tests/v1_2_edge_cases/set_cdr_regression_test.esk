@@ -1,0 +1,83 @@
+;; set_cdr_regression_test.esk — Noesis Bug E (2026-04-19)
+;;
+;; set-cdr! was storing its list argument's raw i64 payload with an
+;; INT64 type tag, losing the HEAP_PTR tag that identifies a cons
+;; cell. Every subsequent cdr walk then saw an integer and either
+;; printed garbage or raised "cdr: argument is not a pair".
+;;
+;; Fix: when the replacement value is already a tagged_value struct
+;; (the common case — `list`, `cons`, variable references all return
+;; tagged values), call arena_tagged_cons_set_tagged_value so the
+;; full type byte copies into the cons cell. Behaviour now matches
+;; the cons / allocConsCell path.
+
+(require stdlib)
+
+(define passed 0)
+(define failed 0)
+(define (check name cond)
+  (if cond
+      (begin (display "PASS: ") (display name) (newline)
+             (set! passed (+ passed 1)))
+      (begin (display "FAIL: ") (display name) (newline)
+             (set! failed (+ failed 1)))))
+
+;; Case 1 — audit minimal repro
+(define p1 (cons 1 (list 2 3)))
+(set-cdr! p1 (list 4 5))
+(check "(set-cdr! p (list 4 5))"   (equal? p1 '(1 4 5)))
+(check "pair? (cdr p) after set"   (pair? (cdr p1)))
+
+;; Case 2 — length walks the cdr chain
+(define p2 (list 'tag))
+(set-cdr! p2 (list 'x))
+(check "length after set-cdr!"     (= (length p2) 2))
+
+;; Case 3 — chained set-cdr!
+(define p3 (list 'tag))
+(set-cdr! p3 (list 'x))
+(set-cdr! (cdr p3) (list 'y))
+(check "chained set-cdr!"          (equal? p3 '(tag x y)))
+
+;; Case 4 — Noesis dKB append-to-box pattern (recursive walk)
+;; Inline name `step` because `walk` is shadowed by the logic-engine
+;; builtin. Shadowing is unrelated to this bug.
+(define (append-to-box! box item)
+  (define (step tail)
+    (if (null? (cdr tail))
+        (set-cdr! tail (list item))
+        (step (cdr tail))))
+  (step box))
+
+(define dkb (list 'facts))
+(append-to-box! dkb 'a)
+(append-to-box! dkb 'b)
+(append-to-box! dkb 'c)
+(check "dKB repeated append"       (equal? dkb '(facts a b c)))
+
+;; Case 5 — set-car! must not regress (same code path shares logic)
+(define p5 (cons 1 2))
+(set-car! p5 (list 'nested))
+(check "set-car! with tagged value"
+       (and (pair? (car p5)) (equal? (car p5) '(nested))))
+
+;; Case 6 — set-cdr! with a scalar still works (fallback path).
+;; Can't use equal? against '(1 . 42) because equal? on improper
+;; pairs has a separate pre-existing quirk; compare car/cdr directly.
+(define p6 (cons 1 (list 2 3)))
+(set-cdr! p6 42)
+(check "set-cdr! with int: car"    (= (car p6) 1))
+(check "set-cdr! with int: cdr"    (= (cdr p6) 42))
+
+;; Case 7 — vectored storage not affected (smoke)
+(define v (make-vector 3 0))
+(vector-set! v 0 (list 1 2 3))
+(check "vector-set! + list"        (equal? (vector-ref v 0) '(1 2 3)))
+
+(newline)
+(display "=== Summary ===") (newline)
+(display "Passed: ") (display passed) (newline)
+(display "Failed: ") (display failed) (newline)
+(if (= failed 0)
+    (begin (display "RESULT: OK") (newline))
+    (begin (display "RESULT: FAIL") (newline) (exit 1)))
