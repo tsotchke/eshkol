@@ -2189,12 +2189,48 @@ llvm::Value* CollectionCodegen::listToVector(const eshkol_operations_t* op) {
     count_node->addIncoming(list_arg, count_header->getSinglePredecessor());
     count_n->addIncoming(llvm::ConstantInt::get(ctx_.int64Type(), 0), count_header->getSinglePredecessor());
 
-    // Check if null (end of list): type == ESHKOL_VALUE_NULL
+    // Audit M7: guard against improper-list tail. A proper list
+    // terminates with NULL. An improper list like (1 2 . 3) has
+    // an INT64 tail that was silently deref'd as a cons cell before,
+    // reading garbage. Branch on three cases: NULL → done;
+    // HEAP_PTR → continue walking (assume cons); anything else
+    // (INT64 / DOUBLE / BOOL / etc) → improper list, raise.
     llvm::Value* node_type = tagged_.getType(count_node);
     llvm::Value* base_type = tagged_.getBaseType(node_type);
     llvm::Value* is_null = ctx_.builder().CreateICmpEQ(base_type,
         llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_NULL));
-    ctx_.builder().CreateCondBr(is_null, count_done, count_body);
+    llvm::Value* is_heap = ctx_.builder().CreateICmpEQ(base_type,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
+
+    llvm::BasicBlock* count_improper = llvm::BasicBlock::Create(
+        ctx_.context(), "l2v_count_improper", current_func);
+    llvm::BasicBlock* count_not_null = llvm::BasicBlock::Create(
+        ctx_.context(), "l2v_count_not_null", current_func);
+    ctx_.builder().CreateCondBr(is_null, count_done, count_not_null);
+
+    ctx_.builder().SetInsertPoint(count_not_null);
+    ctx_.builder().CreateCondBr(is_heap, count_body, count_improper);
+
+    /* Improper-list tail: raise. list->vector on (1 2 . 3) was
+     * silently dereferencing the 3 as a cons address. */
+    ctx_.builder().SetInsertPoint(count_improper);
+    {
+        llvm::Module* mod = ctx_.builder().GetInsertBlock()->getParent()->getParent();
+        llvm::Function* raise_fn = mod->getFunction("eshkol_raise_improper_list");
+        if (!raise_fn) {
+            llvm::FunctionType* raise_ty = llvm::FunctionType::get(
+                llvm::Type::getVoidTy(ctx_.context()),
+                {llvm::PointerType::getUnqual(ctx_.context())}, false);
+            raise_fn = llvm::Function::Create(raise_ty,
+                llvm::Function::ExternalLinkage,
+                "eshkol_raise_improper_list", mod);
+            raise_fn->setDoesNotReturn();
+        }
+        llvm::Value* msg = ctx_.builder().CreateGlobalString(
+            "list->vector: improper list (tail is not ()/pair)");
+        ctx_.builder().CreateCall(raise_fn, {msg});
+        ctx_.builder().CreateUnreachable();
+    }
 
     ctx_.builder().SetInsertPoint(count_body);
     // Get cdr via pointer dereference: cons cell is [car(16) | cdr(16)]
