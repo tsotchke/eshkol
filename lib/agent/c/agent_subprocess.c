@@ -88,6 +88,73 @@ static void set_pipes_nonblocking(eshkol_subprocess_t* proc);
  * responsible for shell-quoting every interpolated value
  * (shell-quote is provided in the system stdlib).
  */
+/* Return 1 if `command` is a simple whitespace-separated token list
+ * with NO shell metacharacters — i.e. /bin/sh -c "…" would behave
+ * identically to execvp-on-tokens. This is the overwhelmingly common
+ * case (e.g. `"/usr/bin/lean /tmp/bad.lean"`) and skipping sh startup
+ * saves 3-5 ms per call.
+ *
+ * Metacharacters that force real shell parsing:
+ *   |  &  ;  <  >  *  ?  $  `  \  '  "  ~  (  )  {  }  [  ]  !  #
+ *
+ * Also bail if we see a \n or \r — newlines are rare in command
+ * strings and reserved for scripts.
+ */
+static int command_is_shell_safe(const char* cmd) {
+    if (!cmd) return 0;
+    for (const char* p = cmd; *p; p++) {
+        unsigned char c = (unsigned char)*p;
+        switch (c) {
+            case '|': case '&': case ';': case '<': case '>':
+            case '*': case '?': case '$': case '`': case '\\':
+            case '\'': case '"': case '~': case '(': case ')':
+            case '{': case '}': case '[': case ']':
+            case '!': case '#': case '\n': case '\r':
+                return 0;
+            default: break;
+        }
+    }
+    return 1;
+}
+
+/* Split a metacharacter-free command string on whitespace into an
+ * argv array. Returns NULL on OOM or empty input. Caller frees with
+ * `free(argv[0]); free(argv);`. */
+static char** split_shell_safe_command(const char* cmd, int* out_argc) {
+    if (!cmd) return NULL;
+    /* Work on a mutable copy. The returned argv[i] all point into it,
+     * so the caller frees argv[0] (which is the copy) plus argv itself.
+     */
+    char* buf = strdup(cmd);
+    if (!buf) return NULL;
+
+    /* Count tokens first to size argv exactly. */
+    int count = 0;
+    for (char* s = buf;;) {
+        while (*s == ' ' || *s == '\t') s++;
+        if (!*s) break;
+        count++;
+        while (*s && *s != ' ' && *s != '\t') s++;
+    }
+    if (count == 0) { free(buf); return NULL; }
+
+    char** argv = (char**)calloc((size_t)count + 1, sizeof(char*));
+    if (!argv) { free(buf); return NULL; }
+
+    int i = 0;
+    char* s = buf;
+    while (*s) {
+        while (*s == ' ' || *s == '\t') s++;
+        if (!*s) break;
+        argv[i++] = s;
+        while (*s && *s != ' ' && *s != '\t') s++;
+        if (*s) { *s = '\0'; s++; }
+    }
+    argv[i] = NULL;
+    if (out_argc) *out_argc = count;
+    return argv;
+}
+
 eshkol_subprocess_t* qllm_process_spawn(const char* command, const char* cwd_arg,
                                          const char* unused_arg, int64_t flags) {
     /* subprocess.esk calls: (process-spawn-raw command cwd #f 0)
@@ -141,8 +208,27 @@ eshkol_subprocess_t* qllm_process_spawn(const char* command, const char* cwd_arg
         posix_spawn_file_actions_addclose(&fa, stderr_pipe[0]);
         posix_spawn_file_actions_addclose(&fa, stderr_pipe[1]);
 
-        char* sh_argv[] = {(char*)"sh", (char*)"-c", (char*)command, NULL};
-        spawn_errno = posix_spawn(&pid, "/bin/sh", &fa, NULL, sh_argv, environ);
+        /* If the command has NO shell metacharacters (the common case
+         * for benchmark and agent callers like `/usr/bin/lean /tmp/x.lean`
+         * or `git rev-parse HEAD`), bypass /bin/sh -c entirely.
+         * /bin/sh startup is 3-5 ms on a modern macOS — and every
+         * round-trip Noesis / Aletheia does hits that cost, even
+         * though the actual work could be direct posix_spawnp. */
+        char** split_argv = NULL;
+        int split_argc = 0;
+        if (command_is_shell_safe(command)) {
+            split_argv = split_shell_safe_command(command, &split_argc);
+        }
+
+        if (split_argv) {
+            spawn_errno = posix_spawnp(&pid, split_argv[0], &fa, NULL,
+                                       split_argv, environ);
+            free(split_argv[0]); /* underlying buffer from strdup */
+            free(split_argv);
+        } else {
+            char* sh_argv[] = {(char*)"sh", (char*)"-c", (char*)command, NULL};
+            spawn_errno = posix_spawn(&pid, "/bin/sh", &fa, NULL, sh_argv, environ);
+        }
         posix_spawn_file_actions_destroy(&fa);
 
         if (spawn_errno != 0) {
