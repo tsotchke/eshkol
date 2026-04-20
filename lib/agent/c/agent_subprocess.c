@@ -104,12 +104,22 @@ static int command_is_shell_safe(const char* cmd) {
     if (!cmd) return 0;
     for (const char* p = cmd; *p; p++) {
         unsigned char c = (unsigned char)*p;
+        /* Reject every ASCII control code except plain space and
+         * horizontal tab (audit M5). The previous list blocked
+         * \n / \r but let \v (0x0b), \f (0x0c), \x1b ESC, DEL (0x7f),
+         * and other C0/C1 control codes through — some shells
+         * re-split on VT/FF, and ESC enables ANSI-code injection into
+         * downstream tools. Allow-list is also tighter on upper-8th-bit
+         * bytes which are often used in homoglyph attacks. */
+        if (c < 0x20 && c != ' ' && c != '\t') return 0;   /* any C0 except space/tab */
+        if (c == 0x7f) return 0;                           /* DEL */
+        if (c >= 0x80) return 0;                           /* any 8th-bit byte */
         switch (c) {
             case '|': case '&': case ';': case '<': case '>':
             case '*': case '?': case '$': case '`': case '\\':
             case '\'': case '"': case '~': case '(': case ')':
             case '{': case '}': case '[': case ']':
-            case '!': case '#': case '\n': case '\r':
+            case '!': case '#':
                 return 0;
             default: break;
         }
@@ -161,6 +171,130 @@ static char** split_shell_safe_command(const char* cmd, int* out_argc) {
  * Saves one pipe() pair plus two addclose entries in the spawn file
  * actions — ~50-100 μs per call. */
 #define ESHKOL_SPAWN_STDIN_NULL 0x1
+
+/* Env-scrub the list of vars that post-fork children must drop before
+ * exec (audit C6). Used on fork+exec paths where we don't have the
+ * posix_spawn attr machinery to pass a filtered env — call this in
+ * the child process right before execvp/execlp. */
+static void eshkol_unset_env_injection_vars(void) {
+#ifndef _WIN32
+    static const char* const kVars[] = {
+        "LD_PRELOAD", "LD_AUDIT", "LD_LIBRARY_PATH", "LD_BIND_NOW",
+        "LD_BIND_NOT", "LD_DEBUG", "LD_PROFILE", "LD_USE_LOAD_BIAS",
+        "DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH",
+        "DYLD_FALLBACK_LIBRARY_PATH", "DYLD_FRAMEWORK_PATH",
+        "DYLD_FALLBACK_FRAMEWORK_PATH", "DYLD_FORCE_FLAT_NAMESPACE",
+        "DYLD_PRINT_LIBRARIES", "DYLD_PRINT_LIBRARIES_POST_LAUNCH",
+        "DYLD_PRINT_ENV", "DYLD_PRINT_BINDINGS", "DYLD_BIND_AT_LAUNCH",
+        "DYLD_IMAGE_SUFFIX",
+    };
+    for (size_t i = 0; i < sizeof(kVars)/sizeof(kVars[0]); i++) {
+        unsetenv(kVars[i]);
+    }
+#endif
+}
+
+/* Build a scrubbed environment for child processes (audit C6).
+ *
+ * Problem: posix_spawn(…, environ) blindly inherits the parent's full
+ * env. If eshkol-run is invoked with LD_PRELOAD / DYLD_INSERT_LIBRARIES
+ * / LD_AUDIT / LD_LIBRARY_PATH / DYLD_LIBRARY_PATH / DYLD_FRAMEWORK_PATH
+ * / LD_BIND_NOW set — either maliciously or by a compromised shell
+ * profile — every lean / git / python / cmake the agent launches
+ * loads the injected library. Lateral movement into the tool chain.
+ *
+ * Fix: filter the dynamic-linker injection vars and known-problematic
+ * DYLD_* / LD_* / *_PATH overrides out of the child env. Other env
+ * vars (PATH, HOME, USER, LANG, etc.) still pass through so tools
+ * keep working. Callers that truly need a specific LD_* var for a
+ * child set it via an explicit (env ...) form in the Scheme wrapper
+ * (TODO once we wire env override).
+ *
+ * The returned pointer is a malloc'd char** that callers must free
+ * after posix_spawn / execvp returns. Entry strings themselves alias
+ * the parent's `environ` — lifetime is fine because posix_spawn
+ * consumes them synchronously.
+ *
+ * If allocation fails, we fall back to the raw `environ` — safer to
+ * spawn with unfiltered env than to fail the spawn completely, and
+ * the attacker-LD_PRELOAD case is still a privilege-escalation on
+ * compromised hosts, not a standalone primitive.
+ */
+/* Cached scrubbed env — built on first spawn and reused. The pointers
+ * inside it alias the parent's `environ`, so if any code mutates
+ * environ after the cache is warmed, we'd use stale pointers. Eshkol
+ * doesn't mutate environ during spawn paths, so this is safe; if that
+ * changes, guard with an atomic-generation counter. */
+static pthread_mutex_t g_env_cache_mu = PTHREAD_MUTEX_INITIALIZER;
+static char** g_env_cache = NULL;
+static char** g_env_cache_source = NULL;  /* the environ ptr we scrubbed */
+
+static char** eshkol_scrub_environ(void) {
+#ifdef _WIN32
+    return NULL;  /* Windows uses a different env API */
+#else
+    extern char** environ;
+    if (!environ) return NULL;
+
+    pthread_mutex_lock(&g_env_cache_mu);
+    if (g_env_cache && g_env_cache_source == environ) {
+        char** cached = g_env_cache;
+        pthread_mutex_unlock(&g_env_cache_mu);
+        return cached;
+    }
+    /* (Re)build. Free any previous cache first. */
+    free(g_env_cache);
+    g_env_cache = NULL;
+    pthread_mutex_unlock(&g_env_cache_mu);
+
+    static const char* const kBlockedPrefixes[] = {
+        "LD_PRELOAD=", "LD_AUDIT=", "LD_LIBRARY_PATH=",
+        "LD_BIND_NOW=", "LD_BIND_NOT=", "LD_DEBUG=",
+        "LD_PROFILE=", "LD_USE_LOAD_BIAS=",
+        "DYLD_INSERT_LIBRARIES=", "DYLD_LIBRARY_PATH=",
+        "DYLD_FALLBACK_LIBRARY_PATH=", "DYLD_FRAMEWORK_PATH=",
+        "DYLD_FALLBACK_FRAMEWORK_PATH=", "DYLD_FORCE_FLAT_NAMESPACE=",
+        "DYLD_PRINT_LIBRARIES=", "DYLD_PRINT_LIBRARIES_POST_LAUNCH=",
+        "DYLD_PRINT_ENV=", "DYLD_PRINT_BINDINGS=",
+        "DYLD_BIND_AT_LAUNCH=", "DYLD_IMAGE_SUFFIX=",
+    };
+    const size_t n_blocked = sizeof(kBlockedPrefixes)/sizeof(kBlockedPrefixes[0]);
+
+    size_t count = 0;
+    for (char** p = environ; *p; p++) count++;
+
+    char** filtered = (char**)malloc((count + 1) * sizeof(char*));
+    if (!filtered) return NULL;
+
+    size_t j = 0;
+    for (char** p = environ; *p; p++) {
+        const char* entry = *p;
+        int blocked = 0;
+        for (size_t i = 0; i < n_blocked; i++) {
+            size_t plen = strlen(kBlockedPrefixes[i]);
+            if (strncmp(entry, kBlockedPrefixes[i], plen) == 0) {
+                blocked = 1;
+                break;
+            }
+        }
+        if (!blocked) filtered[j++] = *p;
+    }
+    filtered[j] = NULL;
+
+    pthread_mutex_lock(&g_env_cache_mu);
+    /* Race: another thread may have built a cache too. Keep whichever
+     * committed first; free ours if theirs is already valid. */
+    if (g_env_cache && g_env_cache_source == environ) {
+        pthread_mutex_unlock(&g_env_cache_mu);
+        free(filtered);
+        return g_env_cache;
+    }
+    g_env_cache = filtered;
+    g_env_cache_source = environ;
+    pthread_mutex_unlock(&g_env_cache_mu);
+    return filtered;
+#endif
+}
 
 eshkol_subprocess_t* qllm_process_spawn(const char* command, const char* cwd_arg,
                                          const char* unused_arg, int64_t flags) {
@@ -260,14 +394,17 @@ eshkol_subprocess_t* qllm_process_spawn(const char* command, const char* cwd_arg
 #else
         posix_spawnattr_t* attr_ptr = NULL;
 #endif
+        /* Cached-scrubbed env — see eshkol_scrub_environ. Do NOT free. */
+        char** child_env = eshkol_scrub_environ();
+        char** env_to_pass = child_env ? child_env : environ;
         if (split_argv) {
             spawn_errno = posix_spawnp(&pid, split_argv[0], &fa, attr_ptr,
-                                       split_argv, environ);
+                                       split_argv, env_to_pass);
             free(split_argv[0]); /* underlying buffer from strdup */
             free(split_argv);
         } else {
             char* sh_argv[] = {(char*)"sh", (char*)"-c", (char*)command, NULL};
-            spawn_errno = posix_spawn(&pid, "/bin/sh", &fa, attr_ptr, sh_argv, environ);
+            spawn_errno = posix_spawn(&pid, "/bin/sh", &fa, attr_ptr, sh_argv, env_to_pass);
         }
         posix_spawn_file_actions_destroy(&fa);
 #if defined(__APPLE__)
@@ -313,6 +450,7 @@ eshkol_subprocess_t* qllm_process_spawn(const char* command, const char* cwd_arg
             close(stderr_pipe[1]);
 
             if (chdir(cwd) != 0) _exit(126);
+            eshkol_unset_env_injection_vars();  /* audit C6 */
             execlp("/bin/sh", "sh", "-c", command, (char*)NULL);
             _exit(127);
         }
@@ -571,7 +709,10 @@ eshkol_subprocess_t* qllm_process_spawn_argv_flags(const char* tab_packed_argv,
         posix_spawnattr_t* attr_ptr = NULL;
 #endif
 
-        spawn_errno = posix_spawnp(&pid, argv[0], &fa, attr_ptr, argv, environ);
+        /* Cached-scrubbed env — do NOT free. */
+        char** child_env = eshkol_scrub_environ();
+        char** env_to_pass = child_env ? child_env : environ;
+        spawn_errno = posix_spawnp(&pid, argv[0], &fa, attr_ptr, argv, env_to_pass);
         posix_spawn_file_actions_destroy(&fa);
 #if defined(__APPLE__)
         posix_spawnattr_destroy(&attr);
@@ -616,6 +757,7 @@ eshkol_subprocess_t* qllm_process_spawn_argv_flags(const char* tab_packed_argv,
             dup2(stderr_pipe[1], STDERR_FILENO);
             close(stdout_pipe[1]); close(stderr_pipe[1]);
             if (chdir(cwd_arg) != 0) _exit(126);
+            eshkol_unset_env_injection_vars();  /* audit C6 */
             execvp(argv[0], argv);
             _exit(127);
         }
@@ -661,7 +803,18 @@ eshkol_subprocess_t* qllm_process_spawn_argv(const char* tab_packed_argv,
 int64_t qllm_process_write_stdin(eshkol_subprocess_t* proc, const char* data, int64_t len) {
     if (!proc || !data || len <= 0) return -1;
 #ifndef _WIN32
-    if (proc->stdin_fd < 0) return -1;
+    if (proc->stdin_fd < 0) {
+        /* audit H9: prior behaviour silently returned -1 when the
+         * caller had spawned nostdin but later tried to write stdin.
+         * That lost data invisibly. Warn once so the mistake surfaces
+         * at development time without turning a stdin-write into a
+         * hard error for production callers that check the return. */
+        fprintf(stderr, "eshkol: process-write-stdin on a process whose "
+                        "stdin is wired to /dev/null (spawned with "
+                        "process-spawn-nostdin or run-*-capture); "
+                        "write ignored\n");
+        return -1;
+    }
     ssize_t written = write(proc->stdin_fd, data, (size_t)len);
     return (int64_t)written;
 #else
