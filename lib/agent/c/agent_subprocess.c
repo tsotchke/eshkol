@@ -155,31 +155,47 @@ static char** split_shell_safe_command(const char* cmd, int* out_argc) {
     return argv;
 }
 
+/* flags bit 0: child's stdin should be wired to /dev/null instead of
+ * a pipe that the parent can write to. The `run-*-capture` family and
+ * every other caller that immediately closes stdin are candidates.
+ * Saves one pipe() pair plus two addclose entries in the spawn file
+ * actions — ~50-100 μs per call. */
+#define ESHKOL_SPAWN_STDIN_NULL 0x1
+
 eshkol_subprocess_t* qllm_process_spawn(const char* command, const char* cwd_arg,
                                          const char* unused_arg, int64_t flags) {
     /* subprocess.esk calls: (process-spawn-raw command cwd #f 0)
-     * So: command=shell command, cwd_arg=working directory, unused_arg=#f, flags=0 */
+     * So: command=shell command, cwd_arg=working directory,
+     * unused_arg=#f, flags=bitmask (see ESHKOL_SPAWN_* defines). */
     const char* cwd = cwd_arg;
-    (void)unused_arg; (void)flags;
+    (void)unused_arg;
     if (!command) return NULL;
 
     eshkol_subprocess_t* proc = (eshkol_subprocess_t*)calloc(1, sizeof(eshkol_subprocess_t));
     if (!proc) return NULL;
 
 #ifndef _WIN32
+    int stdin_null = (flags & ESHKOL_SPAWN_STDIN_NULL) ? 1 : 0;
     int stdin_pipe[2] = {-1,-1}, stdout_pipe[2] = {-1,-1}, stderr_pipe[2] = {-1,-1};
-    /* Partial-success pipe creation was leaking fds — if stdin_pipe
-     * succeeded but stdout_pipe failed, the two stdin fds never got
-     * closed because the old `||` short-circuit returned immediately.
-     * #182 resource-management audit. Gate each pipe() separately so
-     * we can clean up exactly the ones that succeeded. */
-    if (pipe(stdin_pipe) != 0) { free(proc); return NULL; }
+    int devnull_fd = -1;
+    /* Partial-success pipe creation was leaking fds — #182. */
+    if (!stdin_null) {
+        if (pipe(stdin_pipe) != 0) { free(proc); return NULL; }
+    } else {
+        /* Open /dev/null read-only once; the posix_spawn child dup2s
+         * it onto STDIN_FILENO and it gets closed in the child via
+         * addclose. Parent closes its copy after the spawn returns. */
+        devnull_fd = open("/dev/null", O_RDONLY | O_CLOEXEC);
+        if (devnull_fd < 0) { free(proc); return NULL; }
+    }
     if (pipe(stdout_pipe) != 0) {
-        close(stdin_pipe[0]); close(stdin_pipe[1]);
+        if (!stdin_null) { close(stdin_pipe[0]); close(stdin_pipe[1]); }
+        else close(devnull_fd);
         free(proc); return NULL;
     }
     if (pipe(stderr_pipe) != 0) {
-        close(stdin_pipe[0]); close(stdin_pipe[1]);
+        if (!stdin_null) { close(stdin_pipe[0]); close(stdin_pipe[1]); }
+        else close(devnull_fd);
         close(stdout_pipe[0]); close(stdout_pipe[1]);
         free(proc); return NULL;
     }
@@ -198,15 +214,34 @@ eshkol_subprocess_t* qllm_process_spawn(const char* command, const char* cwd_arg
     if (no_chdir) {
         posix_spawn_file_actions_t fa;
         posix_spawn_file_actions_init(&fa);
-        posix_spawn_file_actions_adddup2(&fa, stdin_pipe[0], STDIN_FILENO);
+        if (stdin_null) {
+            posix_spawn_file_actions_adddup2(&fa, devnull_fd, STDIN_FILENO);
+        } else {
+            posix_spawn_file_actions_adddup2(&fa, stdin_pipe[0], STDIN_FILENO);
+        }
         posix_spawn_file_actions_adddup2(&fa, stdout_pipe[1], STDOUT_FILENO);
         posix_spawn_file_actions_adddup2(&fa, stderr_pipe[1], STDERR_FILENO);
-        posix_spawn_file_actions_addclose(&fa, stdin_pipe[0]);
-        posix_spawn_file_actions_addclose(&fa, stdin_pipe[1]);
+#if defined(__APPLE__)
+        /* Apple extension: make every fd not explicitly preserved by
+         * an adddup2/addinherit_np close-on-exec in the child. Saves
+         * six addclose entries per spawn (and the implicit fd-table
+         * walk in the child) — measurable at the benchmark grain. */
+        posix_spawnattr_t attr;
+        posix_spawnattr_init(&attr);
+        posix_spawnattr_setflags(&attr, POSIX_SPAWN_CLOEXEC_DEFAULT);
+#else
+        /* Non-Darwin: no CLOEXEC_DEFAULT — list the explicit closes. */
+        if (stdin_null) {
+            posix_spawn_file_actions_addclose(&fa, devnull_fd);
+        } else {
+            posix_spawn_file_actions_addclose(&fa, stdin_pipe[0]);
+            posix_spawn_file_actions_addclose(&fa, stdin_pipe[1]);
+        }
         posix_spawn_file_actions_addclose(&fa, stdout_pipe[0]);
         posix_spawn_file_actions_addclose(&fa, stdout_pipe[1]);
         posix_spawn_file_actions_addclose(&fa, stderr_pipe[0]);
         posix_spawn_file_actions_addclose(&fa, stderr_pipe[1]);
+#endif
 
         /* If the command has NO shell metacharacters (the common case
          * for benchmark and agent callers like `/usr/bin/lean /tmp/x.lean`
@@ -220,19 +255,28 @@ eshkol_subprocess_t* qllm_process_spawn(const char* command, const char* cwd_arg
             split_argv = split_shell_safe_command(command, &split_argc);
         }
 
+#if defined(__APPLE__)
+        posix_spawnattr_t* attr_ptr = &attr;
+#else
+        posix_spawnattr_t* attr_ptr = NULL;
+#endif
         if (split_argv) {
-            spawn_errno = posix_spawnp(&pid, split_argv[0], &fa, NULL,
+            spawn_errno = posix_spawnp(&pid, split_argv[0], &fa, attr_ptr,
                                        split_argv, environ);
             free(split_argv[0]); /* underlying buffer from strdup */
             free(split_argv);
         } else {
             char* sh_argv[] = {(char*)"sh", (char*)"-c", (char*)command, NULL};
-            spawn_errno = posix_spawn(&pid, "/bin/sh", &fa, NULL, sh_argv, environ);
+            spawn_errno = posix_spawn(&pid, "/bin/sh", &fa, attr_ptr, sh_argv, environ);
         }
         posix_spawn_file_actions_destroy(&fa);
+#if defined(__APPLE__)
+        posix_spawnattr_destroy(&attr);
+#endif
 
         if (spawn_errno != 0) {
-            close(stdin_pipe[0]); close(stdin_pipe[1]);
+            if (!stdin_null) { close(stdin_pipe[0]); close(stdin_pipe[1]); }
+            else close(devnull_fd);
             close(stdout_pipe[0]); close(stdout_pipe[1]);
             close(stderr_pipe[0]); close(stderr_pipe[1]);
             free(proc);
@@ -242,7 +286,8 @@ eshkol_subprocess_t* qllm_process_spawn(const char* command, const char* cwd_arg
     } else {
         pid = fork();
         if (pid < 0) {
-            close(stdin_pipe[0]); close(stdin_pipe[1]);
+            if (!stdin_null) { close(stdin_pipe[0]); close(stdin_pipe[1]); }
+            else close(devnull_fd);
             close(stdout_pipe[0]); close(stdout_pipe[1]);
             close(stderr_pipe[0]); close(stderr_pipe[1]);
             free(proc);
@@ -250,15 +295,20 @@ eshkol_subprocess_t* qllm_process_spawn(const char* command, const char* cwd_arg
         }
 
         if (pid == 0) {
-            close(stdin_pipe[1]);
+            if (stdin_null) {
+                dup2(devnull_fd, STDIN_FILENO);
+                close(devnull_fd);
+            } else {
+                close(stdin_pipe[1]);
+                dup2(stdin_pipe[0], STDIN_FILENO);
+                close(stdin_pipe[0]);
+            }
             close(stdout_pipe[0]);
             close(stderr_pipe[0]);
 
-            dup2(stdin_pipe[0], STDIN_FILENO);
             dup2(stdout_pipe[1], STDOUT_FILENO);
             dup2(stderr_pipe[1], STDERR_FILENO);
 
-            close(stdin_pipe[0]);
             close(stdout_pipe[1]);
             close(stderr_pipe[1]);
 
@@ -269,16 +319,20 @@ eshkol_subprocess_t* qllm_process_spawn(const char* command, const char* cwd_arg
     }
 
     /* Parent process */
-    close(stdin_pipe[0]);   /* close read end of stdin */
-    close(stdout_pipe[1]);  /* close write end of stdout */
-    close(stderr_pipe[1]);  /* close write end of stderr */
+    if (stdin_null) {
+        close(devnull_fd);
+    } else {
+        close(stdin_pipe[0]);  /* close read end of stdin */
+    }
+    close(stdout_pipe[1]);     /* close write end of stdout */
+    close(stderr_pipe[1]);     /* close write end of stderr */
 
     /* Set stdout/stderr to non-blocking for read operations */
     fcntl(stdout_pipe[0], F_SETFL, O_NONBLOCK);
     fcntl(stderr_pipe[0], F_SETFL, O_NONBLOCK);
 
     proc->pid = pid;
-    proc->stdin_fd = stdin_pipe[1];
+    proc->stdin_fd = stdin_null ? -1 : stdin_pipe[1];
     proc->stdout_fd = stdout_pipe[0];
     proc->stderr_fd = stderr_pipe[0];
     proc->exited = 0;
@@ -416,14 +470,16 @@ static char** parse_tab_argv(const char* packed, int* argc_out) {
 }
 #endif
 
-eshkol_subprocess_t* qllm_process_spawn_argv(const char* tab_packed_argv,
-                                              const char* cwd_arg) {
+eshkol_subprocess_t* qllm_process_spawn_argv_flags(const char* tab_packed_argv,
+                                                    const char* cwd_arg,
+                                                    int64_t flags) {
     if (!tab_packed_argv || !tab_packed_argv[0]) return NULL;
 
     eshkol_subprocess_t* proc = (eshkol_subprocess_t*)calloc(1, sizeof(eshkol_subprocess_t));
     if (!proc) return NULL;
 
 #ifndef _WIN32
+    int stdin_null = (flags & ESHKOL_SPAWN_STDIN_NULL) ? 1 : 0;
     int argc = 0;
     char** argv = parse_tab_argv(tab_packed_argv, &argc);
     if (!argv || argc == 0 || !argv[0]) {
@@ -433,18 +489,26 @@ eshkol_subprocess_t* qllm_process_spawn_argv(const char* tab_packed_argv,
     }
 
     int stdin_pipe[2] = {-1,-1}, stdout_pipe[2] = {-1,-1}, stderr_pipe[2] = {-1,-1};
-    /* Same partial-success fd-leak guard as the shell-form spawn — see
-     * #182 comment above. Gate each pipe() so a mid-sequence failure
-     * closes only the fds that actually opened. */
-    if (pipe(stdin_pipe) != 0) {
-        free(argv[0]); free(argv); free(proc); return NULL;
+    int devnull_fd = -1;
+    /* Same partial-success fd-leak guard as the shell-form spawn. */
+    if (!stdin_null) {
+        if (pipe(stdin_pipe) != 0) {
+            free(argv[0]); free(argv); free(proc); return NULL;
+        }
+    } else {
+        devnull_fd = open("/dev/null", O_RDONLY | O_CLOEXEC);
+        if (devnull_fd < 0) {
+            free(argv[0]); free(argv); free(proc); return NULL;
+        }
     }
     if (pipe(stdout_pipe) != 0) {
-        close(stdin_pipe[0]); close(stdin_pipe[1]);
+        if (!stdin_null) { close(stdin_pipe[0]); close(stdin_pipe[1]); }
+        else close(devnull_fd);
         free(argv[0]); free(argv); free(proc); return NULL;
     }
     if (pipe(stderr_pipe) != 0) {
-        close(stdin_pipe[0]); close(stdin_pipe[1]);
+        if (!stdin_null) { close(stdin_pipe[0]); close(stdin_pipe[1]); }
+        else close(devnull_fd);
         close(stdout_pipe[0]); close(stdout_pipe[1]);
         free(argv[0]); free(argv); free(proc); return NULL;
     }
@@ -481,22 +545,41 @@ eshkol_subprocess_t* qllm_process_spawn_argv(const char* tab_packed_argv,
     if (no_chdir) {
         posix_spawn_file_actions_t fa;
         posix_spawn_file_actions_init(&fa);
-        posix_spawn_file_actions_adddup2(&fa, stdin_pipe[0], STDIN_FILENO);
+        if (stdin_null) {
+            posix_spawn_file_actions_adddup2(&fa, devnull_fd, STDIN_FILENO);
+        } else {
+            posix_spawn_file_actions_adddup2(&fa, stdin_pipe[0], STDIN_FILENO);
+        }
         posix_spawn_file_actions_adddup2(&fa, stdout_pipe[1], STDOUT_FILENO);
         posix_spawn_file_actions_adddup2(&fa, stderr_pipe[1], STDERR_FILENO);
-        posix_spawn_file_actions_addclose(&fa, stdin_pipe[1]);
+#if defined(__APPLE__)
+        posix_spawnattr_t attr;
+        posix_spawnattr_init(&attr);
+        posix_spawnattr_setflags(&attr, POSIX_SPAWN_CLOEXEC_DEFAULT);
+        posix_spawnattr_t* attr_ptr = &attr;
+#else
+        if (stdin_null) {
+            posix_spawn_file_actions_addclose(&fa, devnull_fd);
+        } else {
+            posix_spawn_file_actions_addclose(&fa, stdin_pipe[0]);
+            posix_spawn_file_actions_addclose(&fa, stdin_pipe[1]);
+        }
         posix_spawn_file_actions_addclose(&fa, stdout_pipe[0]);
         posix_spawn_file_actions_addclose(&fa, stderr_pipe[0]);
-        /* adddup2 leaves the originals open; close them in child too. */
-        posix_spawn_file_actions_addclose(&fa, stdin_pipe[0]);
         posix_spawn_file_actions_addclose(&fa, stdout_pipe[1]);
         posix_spawn_file_actions_addclose(&fa, stderr_pipe[1]);
+        posix_spawnattr_t* attr_ptr = NULL;
+#endif
 
-        spawn_errno = posix_spawnp(&pid, argv[0], &fa, NULL, argv, environ);
+        spawn_errno = posix_spawnp(&pid, argv[0], &fa, attr_ptr, argv, environ);
         posix_spawn_file_actions_destroy(&fa);
+#if defined(__APPLE__)
+        posix_spawnattr_destroy(&attr);
+#endif
 
         if (spawn_errno != 0) {
-            close(stdin_pipe[0]); close(stdin_pipe[1]);
+            if (!stdin_null) { close(stdin_pipe[0]); close(stdin_pipe[1]); }
+            else close(devnull_fd);
             close(stdout_pipe[0]); close(stdout_pipe[1]);
             close(stderr_pipe[0]); close(stderr_pipe[1]);
             free(argv[0]); free(argv); free(proc);
@@ -512,18 +595,26 @@ eshkol_subprocess_t* qllm_process_spawn_argv(const char* tab_packed_argv,
          * from cwd=\"\". */
         pid = fork();
         if (pid < 0) {
-            close(stdin_pipe[0]); close(stdin_pipe[1]);
+            if (!stdin_null) { close(stdin_pipe[0]); close(stdin_pipe[1]); }
+            else close(devnull_fd);
             close(stdout_pipe[0]); close(stdout_pipe[1]);
             close(stderr_pipe[0]); close(stderr_pipe[1]);
             free(argv[0]); free(argv); free(proc);
             return NULL;
         }
         if (pid == 0) {
-            close(stdin_pipe[1]); close(stdout_pipe[0]); close(stderr_pipe[0]);
-            dup2(stdin_pipe[0], STDIN_FILENO);
+            if (stdin_null) {
+                dup2(devnull_fd, STDIN_FILENO);
+                close(devnull_fd);
+            } else {
+                close(stdin_pipe[1]);
+                dup2(stdin_pipe[0], STDIN_FILENO);
+                close(stdin_pipe[0]);
+            }
+            close(stdout_pipe[0]); close(stderr_pipe[0]);
             dup2(stdout_pipe[1], STDOUT_FILENO);
             dup2(stderr_pipe[1], STDERR_FILENO);
-            close(stdin_pipe[0]); close(stdout_pipe[1]); close(stderr_pipe[1]);
+            close(stdout_pipe[1]); close(stderr_pipe[1]);
             if (chdir(cwd_arg) != 0) _exit(126);
             execvp(argv[0], argv);
             _exit(127);
@@ -531,14 +622,16 @@ eshkol_subprocess_t* qllm_process_spawn_argv(const char* tab_packed_argv,
     }
 
     /* Parent */
-    close(stdin_pipe[0]); close(stdout_pipe[1]); close(stderr_pipe[1]);
+    if (stdin_null) close(devnull_fd);
+    else close(stdin_pipe[0]);
+    close(stdout_pipe[1]); close(stderr_pipe[1]);
     fcntl(stdout_pipe[0], F_SETFL, O_NONBLOCK);
     fcntl(stderr_pipe[0], F_SETFL, O_NONBLOCK);
 
     free(argv[0]); free(argv);
 
     proc->pid = pid;
-    proc->stdin_fd = stdin_pipe[1];
+    proc->stdin_fd = stdin_null ? -1 : stdin_pipe[1];
     proc->stdout_fd = stdout_pipe[0];
     proc->stderr_fd = stderr_pipe[0];
     proc->exited = 0;
@@ -546,18 +639,19 @@ eshkol_subprocess_t* qllm_process_spawn_argv(const char* tab_packed_argv,
     set_pipes_nonblocking(proc);
     return proc;
 #else
-    /* Windows: CreateProcessA wants a single command-line string, but
-     * we can reconstruct it quote-safely. For now, delegate to the
-     * shell path with the caller's permission (they called the _argv
-     * variant, so treat first tab-separated token as program and
-     * re-join the rest with proper quoting via a simple space
-     * join — good enough for whitespace-free argv). A fuller Win32
-     * implementation is #193 Windows-subprocess buffer-overflow fix
-     * territory. */
-    (void)cwd_arg;
+    /* Windows stub — see #193 comment. */
+    (void)cwd_arg; (void)flags;
     free(proc);
     return NULL;
 #endif
+}
+
+/* Back-compat shim: original 2-arg signature, still referenced by the
+ * extern decl in subprocess.esk and the legacy callers. Delegates to
+ * the _flags variant with flags=0 (wires a stdin pipe). */
+eshkol_subprocess_t* qllm_process_spawn_argv(const char* tab_packed_argv,
+                                              const char* cwd_arg) {
+    return qllm_process_spawn_argv_flags(tab_packed_argv, cwd_arg, 0);
 }
 
 /* ═══════════════════════════════════════════════════════════════════
