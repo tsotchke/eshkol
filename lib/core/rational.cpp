@@ -81,7 +81,21 @@ extern "C" void* eshkol_rational_create(void* arena, int64_t num, int64_t denom)
         num = 0;
     }
 
-    /* Normalize: denominator always positive */
+    /* Audit C7: normalize denominator to positive without INT64_MIN overflow.
+     * Previously `if (denom < 0) { num = -num; denom = -denom; }` silently
+     * produced a NON-NORMALISED rational when either side was INT64_MIN
+     * because -INT64_MIN == INT64_MIN in two's complement. Downstream
+     * arithmetic (gcd / mul / add) then treated INT64_MIN as positive
+     * in 128-bit promotion and returned silent wrong answers. Detect
+     * the two unsafe cases and raise; legitimate rationals at INT64_MIN
+     * magnitude are rare and can be re-expressed once bignum rationals
+     * land. */
+    if (denom == INT64_MIN || num == INT64_MIN) {
+        eshkol_error("rational: INT64_MIN numerator/denominator cannot be "
+                     "sign-normalised without overflow");
+        denom = 1;
+        num = 0;
+    }
     if (denom < 0) {
         num = -num;
         denom = -denom;
