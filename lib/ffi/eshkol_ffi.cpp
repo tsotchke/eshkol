@@ -24,6 +24,9 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#ifndef _WIN32
+#include <fcntl.h>    /* O_RDONLY, O_NOFOLLOW, O_CLOEXEC (audit H8) */
+#endif
 #include <vector>
 #include <memory>
 #ifndef _WIN32
@@ -329,14 +332,44 @@ extern "C" int eshkol_ffi_eval_file(eshkol_ffi_context_t* ctx, const char* path)
         return -1;
     }
 
+    /* Audit H8: open with O_NOFOLLOW so a symlink can't redirect the
+     * read at `path` to an unrelated file (e.g. /etc/shadow) between
+     * the caller's permission check and the actual open. std::ifstream
+     * doesn't expose open flags, so route through fopen(fd) with a
+     * pre-opened fd that has O_NOFOLLOW applied. On Windows there's
+     * no symlink-follow by default in the same way; fall through to
+     * the plain ifstream path there. */
+#ifndef _WIN32
+    int fd = ::open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    if (fd < 0) {
+        /* errno == ELOOP on Linux and EMLINK on macOS when NOFOLLOW
+         * blocks a symlink; report generically so we don't leak which
+         * branch was hit. */
+        ffi_set_error("Cannot open file: %s", path);
+        return -1;
+    }
+    FILE* fp = ::fdopen(fd, "rb");
+    if (!fp) {
+        ::close(fd);
+        ffi_set_error("Cannot open file: %s", path);
+        return -1;
+    }
+    std::string source;
+    char buf[8192];
+    size_t n;
+    while ((n = ::fread(buf, 1, sizeof(buf), fp)) > 0) {
+        source.append(buf, n);
+    }
+    ::fclose(fp);
+#else
     std::ifstream file(path);
     if (!file.is_open()) {
         ffi_set_error("Cannot open file: %s", path);
         return -1;
     }
-
     std::string source((std::istreambuf_iterator<char>(file)),
                         std::istreambuf_iterator<char>());
+#endif
     return eshkol_ffi_eval(ctx, source.c_str(), NULL);
 }
 
