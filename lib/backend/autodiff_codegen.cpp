@@ -2971,7 +2971,22 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
     ctx_.builder().SetInsertPoint(grad_check_tensor);
     uint64_t grad_func_arity = 0;
     {
-        auto arity_it = function_arity_table_->find(func_ptr->getName().str());
+        // REPL hot-reload appends "__rv<n>" to the LLVM symbol name (see
+        // llvm_codegen.cpp:3264); the arity table is keyed on the
+        // original user-facing name. Without stripping, arity lookup
+        // fails for multi-arg functions and we fall into the single-arg
+        // path — then resolveGradientCaptures sees the extra LLVM
+        // parameters and misidentifies them as closure captures, emits
+        // null-pointer args, and crashes verify. Keep this normalization
+        // identical in every arity lookup below.
+        std::string key = func_ptr->getName().str();
+        auto rv_pos = key.rfind("__rv");
+        if (rv_pos != std::string::npos &&
+            rv_pos + 4 < key.size() &&
+            key.find_first_not_of("0123456789", rv_pos + 4) == std::string::npos) {
+            key.erase(rv_pos);
+        }
+        auto arity_it = function_arity_table_->find(key);
         if (arity_it != function_arity_table_->end()) {
             grad_func_arity = arity_it->second;
         }
@@ -3190,7 +3205,15 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
     // arity <= 1: pass whole dual vector (for vector-input functions like (lambda (v) ...))
     {
         uint64_t svec_func_arity = 0;
-        auto svec_arity_it = function_arity_table_->find(func_ptr->getName().str());
+        // REPL hot-reload strips __rv<n> from LLVM name — see grad_func_arity note above.
+        std::string key = func_ptr->getName().str();
+        auto rv_pos = key.rfind("__rv");
+        if (rv_pos != std::string::npos &&
+            rv_pos + 4 < key.size() &&
+            key.find_first_not_of("0123456789", rv_pos + 4) == std::string::npos) {
+            key.erase(rv_pos);
+        }
+        auto svec_arity_it = function_arity_table_->find(key);
         if (svec_arity_it != function_arity_table_->end()) {
             svec_func_arity = svec_arity_it->second;
         }
@@ -3605,7 +3628,15 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
     // MULTI-PARAMETER: If function has more params than 1, unpack AD nodes
     {
         uint64_t scalar_func_arity = 0;
-        auto scalar_arity_it = function_arity_table_->find(func_ptr->getName().str());
+        // REPL hot-reload strips __rv<n> from LLVM name — see grad_func_arity note above.
+        std::string key = func_ptr->getName().str();
+        auto rv_pos = key.rfind("__rv");
+        if (rv_pos != std::string::npos &&
+            rv_pos + 4 < key.size() &&
+            key.find_first_not_of("0123456789", rv_pos + 4) == std::string::npos) {
+            key.erase(rv_pos);
+        }
+        auto scalar_arity_it = function_arity_table_->find(key);
         if (scalar_arity_it != function_arity_table_->end()) {
             scalar_func_arity = scalar_arity_it->second;
         }
@@ -3663,8 +3694,18 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
     // as individual arguments instead of passing a single tensor.
     FunctionType* grad_func_type = func_ptr->getFunctionType();
     std::string func_name_str = func_ptr->getName().str();
+    // REPL hot-reload strips __rv<n> from LLVM name — see grad_func_arity note above.
+    std::string func_arity_key = func_name_str;
+    {
+        auto rv_pos = func_arity_key.rfind("__rv");
+        if (rv_pos != std::string::npos &&
+            rv_pos + 4 < func_arity_key.size() &&
+            func_arity_key.find_first_not_of("0123456789", rv_pos + 4) == std::string::npos) {
+            func_arity_key.erase(rv_pos);
+        }
+    }
     uint64_t func_arity = 0;
-    auto arity_it = function_arity_table_->find(func_name_str);
+    auto arity_it = function_arity_table_->find(func_arity_key);
     if (arity_it != function_arity_table_->end()) {
         func_arity = arity_it->second;
     }
@@ -6788,8 +6829,36 @@ std::vector<llvm::Value*> AutodiffCodegen::loadCapturesForAutodiff(
         return capture_args; // No captures
     }
 
-    size_t num_captures = func_type->getNumParams() - 1;
+    // Respect user arity: for `(define (f x y z) ...)` all three params
+    // are user arguments, not captures. Previously this assumed every
+    // param after the first was a capture and spammed
+    // `capture 'y' not found, using null pointer` for any multi-arg
+    // user function passed to hessian / jacobian. Look up the arity
+    // table (strip REPL __rv<n> suffix as elsewhere) and return empty
+    // when all params are user-provided. Callers that genuinely need
+    // hessian/jacobian of a multi-arg-no-captures function still need
+    // to unpack the input tensor into scalar args — that's the caller
+    // side, not this helper — but we shouldn't manufacture spurious
+    // null captures in the meantime.
     std::string lambda_name = func_ptr->getName().str();
+    if (function_arity_table_) {
+        std::string arity_key = lambda_name;
+        auto rv_pos = arity_key.rfind("__rv");
+        if (rv_pos != std::string::npos &&
+            rv_pos + 4 < arity_key.size() &&
+            arity_key.find_first_not_of("0123456789", rv_pos + 4) == std::string::npos) {
+            arity_key.erase(rv_pos);
+        }
+        auto arity_it = function_arity_table_->find(arity_key);
+        if (arity_it != function_arity_table_->end()) {
+            uint64_t user_arity = arity_it->second;
+            if (user_arity >= func_type->getNumParams()) {
+                return capture_args; // no captures — all params are user args
+            }
+        }
+    }
+
+    size_t num_captures = func_type->getNumParams() - 1;
 
     // REPL MODE: Get capture names from registry instead of parameter names
     std::vector<std::string> capture_names;
