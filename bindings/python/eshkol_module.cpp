@@ -65,20 +65,32 @@ static py::object ffi_value_to_python(eshkol_ffi_context_t* ctx, eshkol_ffi_valu
                 return result;
             }
 
-            /* Check for tensor — zero-copy via buffer protocol */
+            /* Check for tensor — zero-copy view via numpy buffer protocol.
+             * Read the true N-D shape and produce a numpy array with
+             * matching ndim + row-major (C-contiguous) strides. 1-D
+             * tensors fall through to a 1-element shape the obvious
+             * way. Capsule prevents numpy from freeing the arena
+             * memory when the array is collected. */
             double* tdata = eshkol_ffi_tensor_data(val);
             if (tdata) {
                 int64_t size = eshkol_ffi_tensor_size(val);
                 if (size > 0) {
-                    /* Zero-copy: create numpy array that views the arena memory.
-                     * The capsule prevents Python from freeing the data (arena owns it). */
-                    auto capsule = py::capsule(tdata, [](void*) { /* arena-managed, no free */ });
-                    return py::array_t<double>(
-                        {(py::ssize_t)size},            /* shape */
-                        {(py::ssize_t)sizeof(double)},  /* strides */
-                        tdata,                           /* data pointer */
-                        capsule                          /* prevent dealloc */
-                    );
+                    int ndim = eshkol_ffi_tensor_ndims(val);
+                    if (ndim <= 0) ndim = 1;
+                    int64_t shape_buf[8] = {0};
+                    int n = eshkol_ffi_tensor_shape(val, shape_buf, 8);
+                    if (n <= 0) { shape_buf[0] = size; n = 1; }
+
+                    std::vector<py::ssize_t> shape_v(n), strides_v(n);
+                    for (int i = 0; i < n; i++) shape_v[i] = (py::ssize_t)shape_buf[i];
+                    /* Row-major (C) strides: strides[-1]=sizeof(double),
+                     * strides[i] = strides[i+1] * shape[i+1]. */
+                    strides_v[n - 1] = (py::ssize_t)sizeof(double);
+                    for (int i = n - 2; i >= 0; i--) {
+                        strides_v[i] = strides_v[i + 1] * shape_v[i + 1];
+                    }
+                    auto capsule = py::capsule(tdata, [](void*) { /* arena-managed */ });
+                    return py::array_t<double>(shape_v, strides_v, tdata, capsule);
                 }
             }
 
