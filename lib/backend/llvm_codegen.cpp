@@ -18266,10 +18266,19 @@ private:
         Value* data2 = unpackInt64FromTaggedValue(arg2);
         Value* int_equal = builder->CreateICmpEQ(data1, data2);
 
-        // Double comparison
+        // Double comparison (audit M2).
+        // R7RS §6.1: eqv? on inexacts distinguishes "differing
+        // representations of the same number" — standard Scheme
+        // practice is that (eqv? 0.0 -0.0) returns #f. FCmpOEQ
+        // returned #t here because it treats +0.0 == -0.0 in IEEE
+        // semantics. Compare bit-patterns instead so signed-zero
+        // distinction is preserved; same-bit-pattern NaN compares
+        // equal (reflexivity is permitted by §6.1).
         Value* double1 = unpackDoubleFromTaggedValue(arg1);
         Value* double2 = unpackDoubleFromTaggedValue(arg2);
-        Value* double_equal = builder->CreateFCmpOEQ(double1, double2);
+        Value* d1_bits = builder->CreateBitCast(double1, int64_type);
+        Value* d2_bits = builder->CreateBitCast(double2, int64_type);
+        Value* double_equal = builder->CreateICmpEQ(d1_bits, d2_bits);
 
         Value* both_double = builder->CreateAnd(is_double1, is_double2);
         Value* same_type_num_equal = builder->CreateSelect(both_double, double_equal, int_equal);

@@ -1298,6 +1298,25 @@ llvm::Value* ArithmeticCodegen::div(llvm::Value* left, llvm::Value* right) {
 
         // Safe integer division path
         ctx_.builder().SetInsertPoint(int_safe_bb);
+        /* Audit M4: BOTH SDiv and SRem of INT64_MIN by -1 are UB in
+         * LLVM/C. Detect the pair here (before either op) and raise
+         * so we never emit the UB instruction. */
+        {
+            llvm::Value* is_min_pre = ctx_.builder().CreateICmpEQ(left_int,
+                llvm::ConstantInt::get(ctx_.int64Type(), INT64_MIN));
+            llvm::Value* is_neg1_pre = ctx_.builder().CreateICmpEQ(right_int,
+                llvm::ConstantInt::get(ctx_.int64Type(), -1));
+            llvm::Value* is_overflow_pre = ctx_.builder().CreateAnd(is_min_pre, is_neg1_pre);
+            llvm::BasicBlock* pre_ub_bb = llvm::BasicBlock::Create(
+                ctx_.context(), "div_overflow_pre", func);
+            llvm::BasicBlock* pre_ok_bb = llvm::BasicBlock::Create(
+                ctx_.context(), "div_overflow_ok", func);
+            ctx_.builder().CreateCondBr(is_overflow_pre, pre_ub_bb, pre_ok_bb);
+            ctx_.builder().SetInsertPoint(pre_ub_bb);
+            raiseDivideByZeroException();
+            ctx_.builder().CreateUnreachable();
+            ctx_.builder().SetInsertPoint(pre_ok_bb);
+        }
         // Check if division is exact
         llvm::Value* remainder = ctx_.builder().CreateSRem(left_int, right_int);
         llvm::Value* is_exact = ctx_.builder().CreateICmpEQ(remainder,
@@ -1307,7 +1326,9 @@ llvm::Value* ArithmeticCodegen::div(llvm::Value* left, llvm::Value* right) {
         llvm::BasicBlock* div_inexact_bb = llvm::BasicBlock::Create(ctx_.context(), "div_int_inexact", func);
         ctx_.builder().CreateCondBr(is_exact, div_exact_bb, div_inexact_bb);
 
-        // Exact: return integer result
+        // Exact: return integer result. Overflow case
+        // (INT64_MIN / -1) was caught upstream before the SRem that
+        // feeds is_exact.
         ctx_.builder().SetInsertPoint(div_exact_bb);
         llvm::Value* exact_div = ctx_.builder().CreateSDiv(left_int, right_int);
         llvm::Value* exact_tagged = tagged_.packInt64(exact_div, true);
