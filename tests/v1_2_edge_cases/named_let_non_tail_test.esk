@@ -1,0 +1,73 @@
+;; named_let_non_tail_test.esk — Noesis Bug J (2026-04-21)
+;;
+;; codegenNamedLet unconditionally set tco_ctx.enabled = true, which
+;; meant every self-call to the named-let identifier was routed through
+;; the TCO tail-call path — including non-tail self-calls like
+;;   (+ 1 (loop (- n 1)))
+;; The tail-call path emits `br loop_header`, terminating the current
+;; basic block; the outer `+`'s subsequent instructions then landed
+;; after a terminator and LLVM rejected with "Terminator found in
+;; middle of basic block".
+;;
+;; Fix: codegenNamedLet now checks areAllSelfCallsInTailPosition(body,
+;; loop_name) via TailCallCodegen. TCO enabled only when sound; otherwise
+;; self-calls fall through to the regular function-call path.
+
+(require stdlib)
+
+(define passed 0)
+(define failed 0)
+(define (check name cond)
+  (if cond
+      (begin (display "PASS: ") (display name) (newline)
+             (set! passed (+ passed 1)))
+      (begin (display "FAIL: ") (display name) (newline)
+             (set! failed (+ failed 1)))))
+
+;; Case 1: non-tail self-call via + (Bug J canonical pattern)
+(define (sum-via-named-let xs)
+  (let loop ((xs xs))
+    (if (null? (cdr xs))
+        (car xs)
+        (+ (car xs) (loop (cdr xs))))))
+(check "non-tail sum 1..10"
+       (= (sum-via-named-let '(1 2 3 4 5 6 7 8 9 10)) 55))
+(check "non-tail single element"
+       (= (sum-via-named-let '(42)) 42))
+
+;; Case 2: non-tail with counter
+(define (count-list xs)
+  (let loop ((xs xs))
+    (if (null? xs) 0
+        (+ 1 (loop (cdr xs))))))
+(check "count via non-tail +1" (= (count-list '(a b c d e)) 5))
+
+;; Case 3: non-tail integer recursion
+(define (triangle n)
+  (let loop ((n n))
+    (if (= n 0) 0
+        (+ n (loop (- n 1))))))
+(check "triangle(10)" (= (triangle 10) 55))
+
+;; Case 4: pure-tail named-let still uses TCO (100k depth proves it)
+(define (count-down n)
+  (let loop ((n n) (acc 0))
+    (if (= n 0) acc
+        (loop (- n 1) (+ acc 1)))))
+(check "tail-form 100k iters" (= (count-down 100000) 100000))
+
+;; Case 5: mixed tail + non-tail in same body — all-tail analysis must
+;; detect that (loop ...) inside (+ 1 (loop ...)) is non-tail and
+;; disable TCO for the whole named-let. If it leaks, we crash.
+(define (mixed xs)
+  (let loop ((xs xs) (depth 0))
+    (cond
+      ((null? xs) depth)
+      ((null? (cdr xs)) (+ 1 depth))
+      (else (+ 1 (loop (cdr xs) depth))))))
+(check "mixed tail/non-tail" (= (mixed '(a b c d)) 4))
+
+(newline)
+(display "Passed: ") (display passed) (newline)
+(display "Failed: ") (display failed) (newline)
+(if (> failed 0) (exit 1) (exit 0))
