@@ -1,0 +1,68 @@
+;; case_symbol_literal_test.esk — Noesis Bug O (2026-04-21)
+;;
+;; (case x ((Lam Pi) 'binder) ...) — per R7RS §4.2.1, datums are
+;; literals compared via eqv?. Eshkol parsed bare-symbol datums as
+;; ESHKOL_VAR (variable reference); codegen then looked them up
+;; and raised "Undefined variable: Lam".
+;;
+;; Fix: parser wraps every case datum in a QUOTE_OP so codegen sees
+;; a quoted form and emits the symbol literal (interned), not a
+;; variable lookup. Body-expr parsing also now handles TOKEN_QUOTE
+;; (same pattern as lambda body), so `'binder` in an arm works.
+
+(require stdlib)
+
+(define passed 0)
+(define failed 0)
+(define (check name cond)
+  (if cond
+      (begin (display "PASS: ") (display name) (newline)
+             (set! passed (+ passed 1)))
+      (begin (display "FAIL: ") (display name) (newline)
+             (set! failed (+ failed 1)))))
+
+;; Case 1: symbol literal datums (the core Bug O)
+(define (classify x)
+  (case x
+    ((Lam Pi) 'binder)
+    ((Var) 'reference)
+    ((App) 'application)
+    (else 'unknown)))
+(check "case Lam"   (eq? (classify 'Lam) 'binder))
+(check "case Pi"    (eq? (classify 'Pi)  'binder))
+(check "case Var"   (eq? (classify 'Var) 'reference))
+(check "case App"   (eq? (classify 'App) 'application))
+(check "case else"  (eq? (classify 'foo) 'unknown))
+
+;; Case 2: numeric literal datums (should still work)
+(define (numkind n)
+  (case n
+    ((1 2 3) 'small)
+    ((10 20 30) 'medium)
+    (else 'other)))
+(check "case numeric 1"  (eq? (numkind 1)  'small))
+(check "case numeric 20" (eq? (numkind 20) 'medium))
+(check "case numeric else" (eq? (numkind 99) 'other))
+
+;; Case 3: mixed datums in one arm
+(define (mix v)
+  (case v
+    ((a 1 b 2) 'in-set)
+    (else 'not-in-set)))
+(check "case mixed symbol"  (eq? (mix 'a) 'in-set))
+(check "case mixed number"  (eq? (mix 2)  'in-set))
+(check "case mixed neither" (eq? (mix 'z) 'not-in-set))
+
+;; Case 4: case on a runtime expression (not just variable)
+(define (classify-inc x)
+  (case (+ x 1)
+    ((1) 'one)
+    ((2) 'two)
+    (else 'other)))
+(check "case of expression" (eq? (classify-inc 0) 'one))
+(check "case of expression 2" (eq? (classify-inc 1) 'two))
+
+(newline)
+(display "Passed: ") (display passed) (newline)
+(display "Failed: ") (display failed) (newline)
+(if (> failed 0) (exit 1) (exit 0))
