@@ -21439,8 +21439,24 @@ private:
             }
         }
 
-        // TCO SETUP: Named let is always self-recursive, so always enable TCO
-        eshkol_debug("TCO: Enabling tail call optimization for named let '%s'", loop_name.c_str());
+        // TCO SETUP: only enable TCO when every self-call to `loop_name` in
+        // the body is in tail position. Non-tail self-calls like
+        //   (+ 1 (loop (- n 1)))
+        // must NOT be routed through the TCO tail-call path — that path
+        // emits a `br loop_header` which terminates the current basic
+        // block mid-expression; subsequent instructions (the `+` and its
+        // packing) then land after a terminator, and LLVM verifier rejects
+        // with "Terminator found in middle of basic block" (Noesis Bug J).
+        //
+        // Fallback: if any self-call is non-tail, leave TCO disabled and
+        // emit normal function calls everywhere. The iterative function
+        // body is still created; calls to `loop_name` resolve to that
+        // function via function_table and use the standard call path.
+        bool all_tail = tailcall_ &&
+            tailcall_->areAllSelfCallsInTailPosition(op->let_op.body, loop_name);
+
+        eshkol_debug("TCO: named let '%s' — all-tail=%d",
+                     loop_name.c_str(), all_tail ? 1 : 0);
 
         // NESTED NAMED LET FIX: Save TCO context to prevent corruption by nested named lets
         // Each named let saves the outer TCO state, does its work, then restores it
@@ -21451,9 +21467,9 @@ private:
         std::vector<AllocaInst*> saved_tco_param_allocas = tco_ctx.param_allocas;
         std::vector<std::string> saved_tco_param_names = tco_ctx.param_names;
 
-        // Set up TCO context for this named let
+        // Set up TCO context for this named let only when sound.
         tco_ctx.func_name = loop_name;
-        tco_ctx.enabled = true;
+        tco_ctx.enabled = all_tail;
         tco_ctx.param_allocas.clear();
         tco_ctx.param_names.clear();
 

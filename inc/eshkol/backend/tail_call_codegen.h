@@ -121,6 +121,17 @@ public:
     bool isTailRecursive(const eshkol_operations_t* lambda_op, const std::string& func_name) const;
 
     /**
+     * Like isTailRecursive but for a bare body AST (no lambda wrapper).
+     * Used by named-let: the body is in tail position, and every self-call
+     * to the named-let name must be in tail position for TCO to be sound.
+     * @param body The body expression
+     * @param func_name The self-call name to check
+     * @return true if all self-calls are in tail position (or none exist)
+     */
+    bool areAllSelfCallsInTailPosition(const eshkol_ast_t* body,
+                                        const std::string& func_name) const;
+
+    /**
      * Transform a tail-recursive lambda into an iterative form.
      * This avoids stack growth by using a loop instead of recursion.
      * @param func_name The function name
