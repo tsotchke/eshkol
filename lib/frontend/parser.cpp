@@ -3460,11 +3460,34 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                             return ast;
                         }
 
-                        // Parse each datum as quoted data (not as expression)
+                        // Parse each datum as quoted data (not as expression).
+                        // Bug O fix (2026-04-21): parse_quoted_data_with_token
+                        // returns the raw parsed datum — for a plain symbol
+                        // like `Lam` that's ESHKOL_VAR, which codegen would
+                        // try to evaluate as a variable reference. Per R7RS
+                        // §4.2.1, case datums are literals compared via
+                        // `eqv?`; wrap every non-literal datum in a
+                        // QUOTE_OP so codegen produces the symbol/list
+                        // value instead of a lookup.
                         eshkol_ast_t datum = parse_quoted_data_with_token(tokenizer, inner);
                         if (datum.type == ESHKOL_INVALID) {
                             ast.type = ESHKOL_INVALID;
                             return ast;
+                        }
+                        /* Wrap symbols, cons-lists and other non-self-evaluating
+                         * forms in a QUOTE_OP. Numbers / strings / chars /
+                         * booleans are already self-evaluating so wrapping is
+                         * harmless but unnecessary — wrap uniformly for
+                         * simplicity. */
+                        {
+                            eshkol_ast_t quoted = {};
+                            quoted.type = ESHKOL_OP;
+                            quoted.operation.op = ESHKOL_QUOTE_OP;
+                            quoted.operation.call_op.func = nullptr;
+                            quoted.operation.call_op.num_vars = 1;
+                            quoted.operation.call_op.variables = new eshkol_ast_t[1];
+                            quoted.operation.call_op.variables[0] = datum;
+                            datum = quoted;
                         }
                         datums.push_back(datum);
                     }
@@ -3496,7 +3519,12 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                     return ast;
                 }
 
-                // Parse body expressions
+                // Parse body expressions.
+                // Bug O fix (2026-04-21): handle TOKEN_QUOTE / TOKEN_BACKQUOTE
+                // here just as the lambda-body parser does — `'binder` must
+                // desugar to (quote binder), not be fed into parse_atom
+                // which would leave the quote dangling and the following
+                // symbol parsed as a variable reference.
                 std::vector<eshkol_ast_t> body_exprs;
 
                 while (true) {
@@ -3511,6 +3539,22 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                     eshkol_ast_t expr;
                     if (token.type == TOKEN_LPAREN) {
                         expr = parse_list(tokenizer);
+                    } else if (token.type == TOKEN_QUOTE) {
+                        eshkol_ast_t quoted = parse_quoted_data(tokenizer);
+                        expr.type = ESHKOL_OP;
+                        expr.operation.op = ESHKOL_QUOTE_OP;
+                        expr.operation.call_op.func = nullptr;
+                        expr.operation.call_op.num_vars = 1;
+                        expr.operation.call_op.variables = new eshkol_ast_t[1];
+                        expr.operation.call_op.variables[0] = quoted;
+                    } else if (token.type == TOKEN_BACKQUOTE) {
+                        eshkol_ast_t inner = parse_quasiquoted_data(tokenizer);
+                        expr.type = ESHKOL_OP;
+                        expr.operation.op = ESHKOL_QUASIQUOTE_OP;
+                        expr.operation.call_op.func = nullptr;
+                        expr.operation.call_op.num_vars = 1;
+                        expr.operation.call_op.variables = new eshkol_ast_t[1];
+                        expr.operation.call_op.variables[0] = inner;
                     } else {
                         expr = parse_atom(token);
                     }
