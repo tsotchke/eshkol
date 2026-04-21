@@ -7,8 +7,8 @@ Computable Transformers via Analytical Weight Construction"**
 ## Pinned artifact
 
 - **Repository:** this repository (`tsotchke/eshkol`)
-- **Commit SHA:** `b8be2ec81a68b590614586729e16bcc076b1b9c1`
-- **Git tag:**  `v1.1.13-accelerate-164-gb8be2ec`
+- **Commit SHA:** `8235d9987d70086e6e62083d120f3cf51fac9e48`
+- **Git tag:**  `v1.1.13-accelerate-166-g8235d99`
 - **Paper PDF:** see Noesis companion repo `docs/paper-computable-transformers/`
 - **Build environment:** LLVM 21, CMake 3.14+, C17/C++20 (see `docker/Dockerfile.paper`)
 
@@ -17,7 +17,7 @@ To reproduce against the pinned artifact:
 ```bash
 git clone https://github.com/tsotchke/eshkol.git
 cd eshkol
-git checkout b8be2ec81a68b590614586729e16bcc076b1b9c1
+git checkout 8235d9987d70086e6e62083d120f3cf51fac9e48
 docker build -f docker/Dockerfile.paper -t eshkol-paper .
 docker run --rm -v "$(pwd):/work" -w /work eshkol-paper \
     scripts/paper/run_paper_suite.sh
@@ -81,7 +81,7 @@ the platform details.
 ## Current implementation status
 
 The scripts in `scripts/paper/` are functional skeletons as of commit
-`b8be2ec`. Each runs the existing upstream infrastructure where it
+`8235d99`. Each runs the existing upstream infrastructure where it
 exists and documents its remaining TODO items inline. The three-way
 verification harness is the priority path; weight export and trace
 dumps build on the standalone VM compile path documented in
