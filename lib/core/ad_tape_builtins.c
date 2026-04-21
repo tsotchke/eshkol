@@ -35,6 +35,9 @@ extern void* get_global_arena(void);
  * For LLVM access, we need extern versions. They're re-declared here and the
  * linker resolves them from the static library. */
 AdTape* ad_tape_new_from_arena(void* arena);
+/* Bug I (2026-04-20): per-tape owned sub-arena. */
+AdTape* ad_tape_new_owned(void);
+void ad_tape_release_owned(AdTape* tape);
 int ad_const(AdTape* tape, double value);
 int ad_var(AdTape* tape, double value);
 int ad_add(AdTape* tape, int left, int right);
@@ -89,9 +92,22 @@ static AdTape* extract_tape(const ad_tagged_t* v) {
 /* All-pointer sret wrappers for LLVM codegen */
 
 void eshkol_ad_tape_new_sret(ad_tagged_t* out) {
-    void* arena = get_global_arena();
-    AdTape* tape = ad_tape_new_from_arena(arena);
+    /* Bug I (2026-04-20): route Scheme ad-tape-new to the owned-arena
+     * factory so iterative fit loops can reclaim memory via
+     * ad-tape-release. The legacy ad_tape_new_from_arena remains for
+     * VM-internal / test callers where arena lifecycle is external. */
+    AdTape* tape = ad_tape_new_owned();
     *out = tape ? make_heap(tape) : make_null();
+}
+
+/* Release an owned tape — destroys its sub-arena. After release, the
+ * tape pointer is invalid; any subsequent ad-* op on it is UB from
+ * the Scheme side. Guarded by a magic sentinel so (a) double-release
+ * is safe and (b) passing a legacy non-owned tape silently no-ops. */
+void eshkol_ad_tape_release_sret(ad_tagged_t* out, const ad_tagged_t* tape_tv) {
+    AdTape* tape = extract_tape(tape_tv);
+    ad_tape_release_owned(tape);
+    *out = make_null();
 }
 
 void eshkol_ad_const_sret(ad_tagged_t* out, const ad_tagged_t* tape_tv, const ad_tagged_t* val_tv) {

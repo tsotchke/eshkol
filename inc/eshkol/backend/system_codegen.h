@@ -290,6 +290,7 @@ public:
 
     /* Reverse-mode AD tape */
     llvm::Value* adTapeNew(const eshkol_operations_t* op);
+    llvm::Value* adTapeRelease(const eshkol_operations_t* op);
     llvm::Value* adConst(const eshkol_operations_t* op);
     llvm::Value* adVar(const eshkol_operations_t* op);
     llvm::Value* adBinaryOp(const eshkol_operations_t* op, const char* func_name);

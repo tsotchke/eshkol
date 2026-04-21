@@ -1104,6 +1104,7 @@ public:
         function_return_types["ws-step!"] = BuiltinTypes::Value;
         // Reverse-mode AD tape
         function_return_types["ad-tape-new"] = BuiltinTypes::Value;
+        function_return_types["ad-tape-release"] = BuiltinTypes::Value;
         function_return_types["ad-const"] = BuiltinTypes::Integer;
         function_return_types["ad-var"] = BuiltinTypes::Integer;
         function_return_types["ad-add"] = BuiltinTypes::Integer;
@@ -11347,6 +11348,7 @@ private:
         if (func_name == "ws-step!") return system_->wsStepBuiltin(op);
         // Reverse-mode AD tape
         if (func_name == "ad-tape-new") return system_->adTapeNew(op);
+        if (func_name == "ad-tape-release") return system_->adTapeRelease(op);
         if (func_name == "ad-const") return system_->adConst(op);
         if (func_name == "ad-var") return system_->adVar(op);
         if (func_name == "ad-add") return system_->adBinaryOp(op, "eshkol_ad_add_sret");
@@ -18792,7 +18794,7 @@ private:
             "make-factor-graph", "fg-add-factor!", "fg-infer!",
             "free-energy", "expected-free-energy",
             "make-workspace", "ws-register!", "ws-step!",
-            "ad-tape-new", "ad-const", "ad-var",
+            "ad-tape-new", "ad-tape-release", "ad-const", "ad-var",
             "ad-add", "ad-sub", "ad-mul", "ad-div",
             "ad-sin", "ad-cos", "ad-exp", "ad-log", "ad-sqrt",
             "ad-neg", "ad-abs", "ad-relu", "ad-sigmoid", "ad-tanh",
@@ -29554,6 +29556,7 @@ private:
                                         std::pair<std::string, size_t>> table = {
             // Reverse-mode AD tape ops
             {"ad-tape-new",   {"eshkol_ad_tape_new_sret",   0}},
+            {"ad-tape-release", {"eshkol_ad_tape_release_sret", 1}},
             {"ad-const",      {"eshkol_ad_const_sret",      2}},
             {"ad-var",        {"eshkol_ad_var_sret",        2}},
             {"ad-add",        {"eshkol_ad_add_sret",        3}},
