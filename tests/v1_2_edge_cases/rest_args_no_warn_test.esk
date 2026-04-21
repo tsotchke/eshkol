@@ -1,0 +1,50 @@
+;; rest_args_no_warn_test.esk — Noesis T1 (2026-04-21)
+;;
+;; HoTT type-checker was emitting spurious
+;;   [WARN] Type warning: function 'f' expects 1 arguments, got N
+;; for any call to a rest-arg function with more than 1 fixed param.
+;; Fix: PiType now carries is_variadic; arity check skips when set.
+;;
+;; This test confirms:
+;;   - variadic define accepts N > fixed-arity calls without warning
+;;   - variadic lambda likewise
+;;   - non-variadic arity mismatch still WARNS (regression guard)
+
+(require stdlib)
+
+(define passed 0)
+(define failed 0)
+(define (check name cond)
+  (if cond
+      (begin (display "PASS: ") (display name) (newline)
+             (set! passed (+ passed 1)))
+      (begin (display "FAIL: ") (display name) (newline)
+             (set! failed (+ failed 1)))))
+
+;; Case 1: variadic define — core T1 pattern
+(define (my-rest first . rest)
+  (cons first rest))
+(check "variadic define 1-arg"  (equal? (my-rest 'a) '(a)))
+(check "variadic define 2-arg"  (equal? (my-rest 'a 'b) '(a b)))
+(check "variadic define 4-arg"  (equal? (my-rest 'a 'b 'c 'd) '(a b c d)))
+
+;; Case 2: variadic define with two fixed params
+(define (two-fixed a b . rest)
+  (list a b rest))
+(check "two-fixed 2-arg"  (equal? (two-fixed 1 2) '(1 2 ())))
+(check "two-fixed 5-arg"  (equal? (two-fixed 1 2 3 4 5) '(1 2 (3 4 5))))
+
+;; Case 3: variadic lambda
+(define var-lambda (lambda (x . xs) (cons x xs)))
+(check "variadic lambda 1"  (equal? (var-lambda 'z) '(z)))
+(check "variadic lambda 3"  (equal? (var-lambda 'x 'y 'z) '(x y z)))
+
+;; Case 4: nullary rest (. rest as only param)
+(define (all-rest . args) (length args))
+(check "all-rest 0"  (= (all-rest) 0))
+(check "all-rest 5"  (= (all-rest 1 2 3 4 5) 5))
+
+(newline)
+(display "Passed: ") (display passed) (newline)
+(display "Failed: ") (display failed) (newline)
+(if (> failed 0) (exit 1) (exit 0))

@@ -975,10 +975,12 @@ TypeCheckResult TypeChecker::synthesizeLambda(eshkol_ast_t* expr) {
     // Create proper function type encoding param types and return type
     if (param_types.empty()) {
         // Nullary function
-        return TypeCheckResult::ok(env_.makeFunctionType({}, return_type));
+        return TypeCheckResult::ok(env_.makeFunctionType({}, return_type,
+                                                         lambda.is_variadic));
     }
 
-    return TypeCheckResult::ok(env_.makeFunctionType(param_types, return_type));
+    return TypeCheckResult::ok(env_.makeFunctionType(param_types, return_type,
+                                                      lambda.is_variadic));
 }
 
 TypeCheckResult TypeChecker::synthesizeApplication(eshkol_ast_t* expr) {
@@ -1404,8 +1406,11 @@ TypeCheckResult TypeChecker::synthesizeApplication(eshkol_ast_t* expr) {
         // Check argument count and types if we have function type info
         const PiType* pi = env_.getFunctionType(func_type);
         if (pi) {
-            // Arity check (only report if actual args exceed declared params)
-            if (pi->params.size() > 0 && call.num_vars > pi->params.size()) {
+            // Arity check — skip entirely when the callee is variadic: a
+            // rest-arg accepts any number of trailing positional args, so
+            // `(f a b)` on `(define (f x . rest) …)` is well-formed.
+            if (!pi->is_variadic &&
+                pi->params.size() > 0 && call.num_vars > pi->params.size()) {
                 std::string msg = "function '" +
                     std::string(func_expr->type == ESHKOL_VAR ? func_expr->variable.id : "<lambda>") +
                     "' expects " + std::to_string(pi->params.size()) +
@@ -1475,7 +1480,8 @@ TypeCheckResult TypeChecker::synthesizeDefine(eshkol_ast_t* expr) {
         if (def.return_type) {
             declared_return = resolveType(def.return_type);
         }
-        TypeId func_type = env_.makeFunctionType(param_types, declared_return);
+        TypeId func_type = env_.makeFunctionType(param_types, declared_return,
+                                                  def.is_variadic);
         ctx_.bind(def.name, func_type);
 
         // Now push scope and bind parameters
@@ -1520,7 +1526,8 @@ TypeCheckResult TypeChecker::synthesizeDefine(eshkol_ast_t* expr) {
         }
 
         // Create function type with narrowed param types and inferred return type
-        TypeId final_func_type = env_.makeFunctionType(narrowed_param_types, return_type);
+        TypeId final_func_type = env_.makeFunctionType(narrowed_param_types, return_type,
+                                                        def.is_variadic);
         value_type = TypeCheckResult::ok(final_func_type);
 
         // Re-bind function name with the full inferred type (overrides pre-binding)

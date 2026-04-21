@@ -620,10 +620,16 @@ std::optional<std::vector<CTValueSimple>> TypeEnvironment::getDimensionInfo(Type
 // ============================================================================
 
 TypeId TypeEnvironment::makeFunctionType(const std::vector<TypeId>& param_types, TypeId return_type) const {
+    return makeFunctionType(param_types, return_type, /*is_variadic=*/false);
+}
+
+TypeId TypeEnvironment::makeFunctionType(const std::vector<TypeId>& param_types, TypeId return_type,
+                                          bool is_variadic) const {
     // Check if we already have this exact function type cached
     for (const auto& entry : function_type_cache_) {
         const PiType& pi = entry.second;
-        if (pi.return_type == return_type && pi.params.size() == param_types.size()) {
+        if (pi.return_type == return_type && pi.params.size() == param_types.size() &&
+            pi.is_variadic == is_variadic) {
             bool match = true;
             for (size_t i = 0; i < param_types.size() && match; i++) {
                 if (pi.params[i].type != param_types[i]) {
@@ -643,6 +649,7 @@ TypeId TypeEnvironment::makeFunctionType(const std::vector<TypeId>& param_types,
     }
     pi.return_type = return_type;
     pi.is_dependent = false;
+    pi.is_variadic = is_variadic;
 
     uint16_t type_id = next_function_type_id_++;
     function_type_cache_[type_id] = pi;
