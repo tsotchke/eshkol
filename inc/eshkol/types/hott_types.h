@@ -338,6 +338,7 @@ struct PiType {
     std::vector<Parameter> params;  // Input parameters (can be multiple for curried form)
     TypeId return_type;             // Return type (may reference param names)
     bool is_dependent;              // True if return type references params
+    bool is_variadic = false;       // True if last param is a rest-arg (. rest)
 
     PiType() : return_type(BuiltinTypes::Value), is_dependent(false) {}
 
@@ -596,6 +597,10 @@ public:
      * Example: makeFunctionType({Int64, Int64}, Int64) creates (Int64, Int64) -> Int64
      */
     TypeId makeFunctionType(const std::vector<TypeId>& param_types, TypeId return_type) const;
+    /* Variadic overload: last declared param is a rest-arg, callers may pass
+     * more positional args than params.size() without arity mismatch. */
+    TypeId makeFunctionType(const std::vector<TypeId>& param_types, TypeId return_type,
+                            bool is_variadic) const;
 
     /**
      * Create a simple unary function type: input -> output
