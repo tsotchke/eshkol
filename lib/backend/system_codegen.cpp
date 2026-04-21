@@ -1512,6 +1512,9 @@ CE_ONE_ARG(wsStepBuiltin, "eshkol_ws_step_tagged")
 
 /* Reverse-mode AD tape — all use sret pattern from system_builtins */
 ZERO_ARG_BUILTIN(adTapeNew, "eshkol_ad_tape_new_sret")
+/* Bug I (2026-04-20): release the tape's owned sub-arena so iterative
+ * fit loops don't leak. One-arg: the tape to release. */
+ONE_ARG_BUILTIN(adTapeRelease, "eshkol_ad_tape_release_sret")
 TWO_ARG_BUILTIN(adConst, "eshkol_ad_const_sret")
 TWO_ARG_BUILTIN(adVar, "eshkol_ad_var_sret")
 

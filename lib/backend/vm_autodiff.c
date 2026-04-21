@@ -742,25 +742,122 @@ extern void* arena_allocate(void* arena, size_t size);
 static VmRegionStack g_arena_shim_rs;
 static int g_arena_shim_initialized = 0;
 
-/* Create a tape using the global arena with large initial capacity */
+/* Arena scope API from lib/core/arena_memory.cpp — checkpoint/restore
+ * on the main arena. Used by ad_tape_new_owned / ad_tape_release_owned
+ * to give each tape a true sub-region in the main arena. */
+extern void arena_push_scope(void* arena);
+extern void arena_pop_scope(void* arena);
+
+/*
+ * Sub-region-backed tape (Noesis Bug I fix, 2026-04-20).
+ *
+ * The symptom: iterative fit loops (~75 k tape allocations across
+ * Sigma's 5-var discover) exhausted the global arena; malloc
+ * eventually returned NULL, downstream AD ops deref'd a NULL tape,
+ * SIGSEGV.
+ *
+ * The right fix: each tape owns a scope on the main arena. A "scope"
+ * is Eshkol's existing checkpoint primitive — {current_block, used}
+ * captured at push, rolled back at pop. Every allocation the tape
+ * makes (tape struct + nodes array + any vm_alloc growth via
+ * g_arena_shim_rs) sits above the push mark; pop frees the lot.
+ *
+ * No separate malloc per tape. No arena_create / arena_destroy per
+ * iteration. No fragmentation. O(1) push, O(blocks-added) pop.
+ *
+ * Invariant: tape releases must be LIFO. The Scheme fit loops that
+ * hit this code path use the tape strictly within (ad-tape-new) …
+ * (ad-tape-release tape) — nested LIFO. Cross-scope release would
+ * free an interior scope's memory while outer scopes still reference
+ * it; arena_pop_scope's current behaviour skips out-of-order pops
+ * gracefully via its parent-chain walk, but callers must not rely
+ * on that.
+ *
+ * After release, the tape pointer is invalid. Any subsequent ad-*
+ * op on it is UB at the Scheme layer. The magic sentinel makes
+ * double-release safe (no-op) for defensive callers.
+ */
+typedef struct {
+    AdTape tape;         /* INLINED first — &owned->tape == owned */
+    void* arena;         /* back-reference to the arena popped on release */
+    uint64_t magic;      /* detects legacy tapes + double-release */
+} AdTapeOwned;
+
+#define AD_TAPE_OWNED_MAGIC 0x5045544f444151ULL  /* "ADOWNER" */
+
+/* Legacy path — keep for VM-internal / test use. Caller's arena is
+ * trusted for the tape's lifetime. NOT released by ad_tape_release. */
 AdTape* ad_tape_new_from_arena(void* arena) {
     if (!arena) return NULL;
-
-    /* Initialize a shim region stack backed by the global arena.
-     * This allows ad_tape_grow to work via vm_alloc. */
     if (!g_arena_shim_initialized) {
         vm_region_stack_init(&g_arena_shim_rs);
         g_arena_shim_initialized = 1;
     }
-
     AdTape* tape = (AdTape*)arena_allocate(arena, sizeof(AdTape));
     if (!tape) return NULL;
-    tape->cap = 1024; /* Large initial capacity to avoid growth */
+    tape->cap = 1024;
     tape->len = 0;
     tape->rs = &g_arena_shim_rs;
     tape->nodes = (AdNode*)arena_allocate(arena, (size_t)tape->cap * sizeof(AdNode));
     if (!tape->nodes) return NULL;
     return tape;
+}
+
+/* Sub-region-backed factory — pushes a scope on the main arena,
+ * allocates the tape inside that scope. Scheme ad-tape-new routes
+ * here. */
+AdTape* ad_tape_new_owned(void) {
+    extern void* get_global_arena(void);
+    void* arena = get_global_arena();
+    if (!arena) return NULL;
+
+    if (!g_arena_shim_initialized) {
+        vm_region_stack_init(&g_arena_shim_rs);
+        g_arena_shim_initialized = 1;
+    }
+
+    arena_push_scope(arena);
+
+    AdTapeOwned* owned = (AdTapeOwned*)arena_allocate(arena, sizeof(AdTapeOwned));
+    if (!owned) { arena_pop_scope(arena); return NULL; }
+    owned->tape.cap = 1024;
+    owned->tape.len = 0;
+    owned->tape.rs = &g_arena_shim_rs;
+    owned->tape.nodes = (AdNode*)arena_allocate(arena,
+        (size_t)owned->tape.cap * sizeof(AdNode));
+    if (!owned->tape.nodes) { arena_pop_scope(arena); return NULL; }
+    owned->arena = arena;
+    owned->magic = AD_TAPE_OWNED_MAGIC;
+    return &owned->tape;
+}
+
+/* Release a sub-region-backed tape — pop its scope. Safe on:
+ *   - owned tapes (ad_tape_new_owned) — reclaims the entire scope
+ *   - non-owned tapes (ad_tape_new_from_arena) — magic check fails,
+ *     no-op. Legacy caller still owns the arena.
+ *   - NULL — no-op
+ *   - double-release — magic is zeroed after first pop, second call
+ *     no-ops
+ *
+ * After release the tape pointer refers to freed arena memory;
+ * callers must treat it as consumed. The Scheme layer's convention
+ * is `(ad-tape-release tape)` at end of scope; use-after-release
+ * is UB. */
+void ad_tape_release_owned(AdTape* tape) {
+    if (!tape) return;
+    /* The tape is the first field of AdTapeOwned, so the wrapper
+     * starts at the same address. Guarded by the magic sentinel. */
+    AdTapeOwned* owned = (AdTapeOwned*)(void*)tape;
+    if (owned->magic != AD_TAPE_OWNED_MAGIC) {
+        /* Legacy tape — caller owns the arena. Nothing to do. */
+        return;
+    }
+    /* Read arena ptr before pop invalidates the wrapper's memory. */
+    void* arena = owned->arena;
+    owned->magic = 0;    /* invalidate on the same word we just read */
+    /* Pop — frees EVERYTHING above the push mark, including owned itself.
+     * Do not touch owned->* after this. */
+    if (arena) arena_pop_scope(arena);
 }
 
 /* Get gradient for a node */
