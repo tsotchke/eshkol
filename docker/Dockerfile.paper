@@ -1,0 +1,47 @@
+# Dockerfile.paper — pinned build environment for the SDNC paper artifact
+#
+# Reproducibility package for:
+#   "The Self-Differentiating Neural Computer: Computable Transformers
+#    via Analytical Weight Construction" (tsotchke, 2026)
+#
+# Produces a container in which artifacts/paper/scripts/run_paper_suite.sh
+# runs to completion on any Linux host.
+#
+# Build:
+#   docker build -f docker/Dockerfile.paper -t eshkol-paper .
+#
+# Run:
+#   docker run --rm -v "$(pwd):/work" -w /work eshkol-paper \
+#       scripts/paper/run_paper_suite.sh
+
+FROM ubuntu:22.04
+
+ARG DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        clang-21 \
+        cmake \
+        git \
+        llvm-21 \
+        llvm-21-dev \
+        ninja-build \
+        pkg-config \
+        python3 \
+        python3-pip \
+        wget \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV CC=clang-21
+ENV CXX=clang++-21
+ENV LLVM_CONFIG=/usr/bin/llvm-config-21
+
+# Pinned Python dependencies for trace comparator + table generator.
+RUN pip3 install --no-cache-dir \
+        numpy==1.26.4
+
+WORKDIR /work
+
+# Default command runs the paper suite. Override on docker run to
+# execute arbitrary commands in the same pinned environment.
+CMD ["bash", "scripts/paper/run_paper_suite.sh"]
