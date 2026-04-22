@@ -7613,6 +7613,27 @@ private:
             if (symbol_table.find(scoped_key) != symbol_table.end()) return true;
         }
 
+        /* Letrec / letrec* / let bindings register the binding under
+         * its bare name in symbol_table (no _func suffix). If a
+         * shadowable-OP name like `walk` is bound by an enclosing
+         * letrec (Noesis Bug M), the scoped-key check above misses it
+         * — we have to accept the bare symbol_table entry too. Limit
+         * the check to values that are plausibly callable (Function,
+         * AllocaInst holding a pointer/closure, Argument, or
+         * GlobalVariable). */
+        {
+            auto it = symbol_table.find(name);
+            if (it != symbol_table.end() && it->second) {
+                llvm::Value* v = it->second;
+                if (llvm::isa<llvm::Function>(v) ||
+                    llvm::isa<llvm::AllocaInst>(v) ||
+                    llvm::isa<llvm::Argument>(v) ||
+                    llvm::isa<llvm::GlobalVariable>(v)) {
+                    return true;
+                }
+            }
+        }
+
         /* REPL cross-batch: the REPL tracks its user-defined function
          * names in a process-wide registry so previously-defined
          * functions still shadow builtins in later batches. */
