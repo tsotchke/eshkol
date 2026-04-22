@@ -1,0 +1,74 @@
+;; shadowable_op_letrec_test.esk — Noesis Bug M (2026-04-22)
+;;
+;; The shadowable-OP dispatch (Bug G) checked function_table and
+;; scoped `<func>.<name>_func` keys for user overrides. letrec /
+;; letrec* / let bindings register the binding under its BARE name in
+;; symbol_table (no `_func` suffix), so a user's letrec-scoped `walk`
+;; was invisible to the shadow check — calls fell through to the
+;; consciousness-engine WALK_OP builtin and the user's body never ran.
+;;
+;; Fix: hasUserShadow also accepts a bare-name symbol_table entry whose
+;; value is a Function / AllocaInst / Argument / GlobalVariable —
+;; i.e. any plausibly-callable binding. Letrec's Alloca-for-lambda
+;; pattern then shadows the builtin.
+;;
+;; Noesis site: src/core/sigma/candidate.esk had extract-params-walk
+;; and extract-params-walk-list hoisted to top level specifically to
+;; dodge this bug. With this fix they can be internal defines again.
+
+(require stdlib)
+
+(define passed 0)
+(define failed 0)
+(define (check name cond)
+  (if cond
+      (begin (display "PASS: ") (display name) (newline)
+             (set! passed (+ passed 1)))
+      (begin (display "FAIL: ") (display name) (newline)
+             (set! failed (+ failed 1)))))
+
+;; Case 1: letrec-bound `walk` (exact Noesis shape)
+(define (deep-flatten expr)
+  (letrec ((walk (lambda (e acc)
+                   (if (pair? e) (walk-list (cdr e) acc) (cons e acc))))
+           (walk-list (lambda (lst acc)
+                        (if (null? lst) acc
+                            (walk-list (cdr lst) (walk (car lst) acc))))))
+    (walk expr '())))
+(check "letrec walk / walk-list"
+       (equal? (deep-flatten '(a (b c) d)) '(d c)))
+
+;; Case 2: nested internal-define with walk/walk-list (outer pattern)
+(define (outer expr)
+  (define (walk e acc)
+    (if (pair? e) (walk-list (cdr e) acc) (cons e acc)))
+  (define (walk-list lst acc)
+    (if (null? lst) acc
+        (walk-list (cdr lst) (walk (car lst) acc))))
+  (walk expr '()))
+(check "internal-define walk/walk-list"
+       (equal? (outer '(a (b c) d)) '(d c)))
+
+;; Case 3: other shadowable-OP names as letrec bindings — `unify` is also
+;; a shadowable OP (logic engine). User should be able to override it.
+(define (override-unify)
+  (letrec ((unify (lambda (a b) (list 'custom-unified a b))))
+    (unify 'x 'y)))
+(check "letrec unify shadows builtin"
+       (equal? (override-unify) '(custom-unified x y)))
+
+;; Case 4: mutual-recursion with 2-arg function (non-walk name — regression
+;; guard that we didn't break the f/g case)
+(define (mutual-2arg)
+  (letrec ((f (lambda (x acc) (cons x acc)))
+           (g (lambda (lst acc)
+                (if (null? lst) acc
+                    (g (cdr lst) (f (car lst) acc))))))
+    (g '(a b c) '())))
+(check "non-shadow mutual recursion"
+       (equal? (mutual-2arg) '(c b a)))
+
+(newline)
+(display "Passed: ") (display passed) (newline)
+(display "Failed: ") (display failed) (newline)
+(if (> failed 0) (exit 1) (exit 0))
