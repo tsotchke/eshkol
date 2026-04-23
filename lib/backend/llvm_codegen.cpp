@@ -522,6 +522,8 @@ namespace ControlFlowCallbacks {
     static llvm::Function* getBuiltinArithmeticWrapper(const std::string& op, void* context);
     // Wrapper for applying tensor/vector builtin functions
     static llvm::Value* applyBuiltinWrapper(const std::string& func_name, const std::vector<llvm::Value*>& args, llvm::Value* arg_count, void* context);
+    // Bug P (2026-04-23): wrapper for forward-ref apply (cross-file user defines)
+    static llvm::Value* applyForwardRefWrapper(const std::string& func_name, llvm::Value* list_int, void* context);
 }
 
 class EshkolLLVMCodeGen {
@@ -551,6 +553,7 @@ class EshkolLLVMCodeGen {
     friend bool ControlFlowCallbacks::isSelfTailRecursiveWrapper(const void* lambda_op, const char* func_name, void* context);
     friend llvm::Function* ControlFlowCallbacks::getBuiltinArithmeticWrapper(const std::string& op, void* context);
     friend llvm::Value* ControlFlowCallbacks::applyBuiltinWrapper(const std::string& func_name, const std::vector<llvm::Value*>& args, llvm::Value* arg_count, void* context);
+    friend llvm::Value* ControlFlowCallbacks::applyForwardRefWrapper(const std::string& func_name, llvm::Value* list_int, void* context);
     friend llvm::Value* ControlFlowCallbacks::closureCallWithInfoWrapper(llvm::Value* closure, const std::vector<llvm::Value*>& args, const char* info, void* context);
     friend llvm::Function* ControlFlowCallbacks::getClosureAllocWrapper(void* context);
 
@@ -2800,12 +2803,14 @@ private:
         call_apply_ = std::make_unique<eshkol::CallApplyCodegen>(*ctx_, *tagged_, *arith_);
         call_apply_->setSymbolTables(&symbol_table, &global_symbol_table);
         call_apply_->setVariadicFunctionInfo(&variadic_function_info);
+        call_apply_->setFunctionTable(&function_table);
         call_apply_->setCodegenASTCallback(ControlFlowCallbacks::codegenASTTypedWrapper, this);
         call_apply_->setExtractConsCarCallback(ControlFlowCallbacks::extractConsCarWrapper);
         call_apply_->setGetConsAccessorCallback(ControlFlowCallbacks::getConsAccessorWrapper);
         call_apply_->setCreateConsCallback(ControlFlowCallbacks::consCreateWrapper);
         call_apply_->setGetBuiltinArithmeticCallback(ControlFlowCallbacks::getBuiltinArithmeticWrapper);
         call_apply_->setApplyBuiltinCallback(ControlFlowCallbacks::applyBuiltinWrapper);
+        call_apply_->setApplyForwardRefCallback(ControlFlowCallbacks::applyForwardRefWrapper);
         eshkol_debug("Created CallApplyCodegen with callbacks");
 
         // Initialize MapCodegen - higher-order list mapping operations
@@ -28451,6 +28456,108 @@ private:
         return call_apply_->apply(op);
     }
 
+    /* Bug P (2026-04-23): apply on a cross-file user-defined function
+     * (REPL forward-reference). Direct calls already handle this via
+     * the `__repl_fwd_<name>` indirect-call shape; apply needs the
+     * same. Returns nullptr if `func_name` is not a known REPL
+     * forward-ref, so the caller's existing "Unknown function"
+     * fallback still fires for genuine unknowns.
+     *
+     * This mirrors the direct-call indirect-emit at ~line 13520+ but
+     * sources arguments from a runtime cons list (`list_int`) instead
+     * of compile-time AST nodes. Variadic functions are handled via
+     * g_repl_variadic_functions: the first fixed_params elements are
+     * extracted positionally from the list, the remaining tail is
+     * passed as the rest argument unchanged. */
+    Value* emitApplyForwardRef(const std::string& func_name, Value* list_int) {
+        if (!g_repl_mode_enabled) return nullptr;
+
+        size_t arity = 0;
+        bool registered = false;
+        bool is_variadic = false;
+        size_t fixed_params = 0;
+        {
+            std::lock_guard<std::mutex> lock(g_repl_mutex);
+            auto it = g_repl_function_arities.find(func_name);
+            if (it != g_repl_function_arities.end()) {
+                arity = it->second;
+                registered = true;
+            }
+            auto vit = g_repl_variadic_functions.find(func_name);
+            if (vit != g_repl_variadic_functions.end() && vit->second.second) {
+                is_variadic = true;
+                fixed_params = vit->second.first;
+            }
+        }
+        if (!registered) return nullptr;
+
+        size_t fn_param_count = is_variadic ? (fixed_params + 1) : arity;
+
+        // Function signature matches what direct-call uses for the
+        // forward-ref slot.
+        std::vector<Type*> param_types(fn_param_count, tagged_value_type);
+        FunctionType* func_type = FunctionType::get(tagged_value_type, param_types, false);
+
+        std::string global_ptr_name = "__repl_fwd_" + func_name;
+        GlobalVariable* func_ptr_global = module->getGlobalVariable(global_ptr_name);
+        if (!func_ptr_global) {
+            func_ptr_global = new GlobalVariable(
+                *module, ptr_type, /*isConstant=*/false,
+                GlobalValue::ExternalLinkage, /*Initializer=*/nullptr,
+                global_ptr_name);
+        }
+
+        Function* cons_get_ptr = mem->getTaggedConsGetPtr();
+
+        // Extract fixed-arg-count positional args from the runtime list.
+        // For each slot, if the list is null fill with NULL; else extract
+        // car and advance to cdr. This mirrors applyUserFunction's loop.
+        size_t extract_count = is_variadic ? fixed_params : arity;
+        std::vector<Value*> call_args;
+        Value* current = list_int;
+        for (size_t i = 0; i < extract_count; i++) {
+            Function* parent = builder->GetInsertBlock()->getParent();
+            BasicBlock* has_elem = BasicBlock::Create(*context, "fwd_apply_has", parent);
+            BasicBlock* no_elem  = BasicBlock::Create(*context, "fwd_apply_no",  parent);
+            BasicBlock* cont     = BasicBlock::Create(*context, "fwd_apply_ct",  parent);
+
+            Value* is_null = builder->CreateICmpEQ(current, ConstantInt::get(int64_type, 0));
+            builder->CreateCondBr(is_null, no_elem, has_elem);
+
+            builder->SetInsertPoint(no_elem);
+            Value* default_val = packNullToTaggedValue();
+            builder->CreateBr(cont);
+
+            builder->SetInsertPoint(has_elem);
+            Value* cons_ptr = builder->CreateIntToPtr(current, ptr_type);
+            Value* elem = extractConsCarAsTaggedValue(cons_ptr);
+            Value* is_cdr = ConstantInt::get(int1_type, 1);
+            Value* next = builder->CreateCall(cons_get_ptr, {cons_ptr, is_cdr});
+            BasicBlock* has_exit = builder->GetInsertBlock();
+            builder->CreateBr(cont);
+
+            builder->SetInsertPoint(cont);
+            PHINode* arg_phi = builder->CreatePHI(tagged_value_type, 2, "fwd_apply_arg");
+            arg_phi->addIncoming(default_val, no_elem);
+            arg_phi->addIncoming(elem, has_exit);
+            PHINode* next_phi = builder->CreatePHI(int64_type, 2, "fwd_apply_next");
+            next_phi->addIncoming(ConstantInt::get(int64_type, 0), no_elem);
+            next_phi->addIncoming(next, has_exit);
+
+            call_args.push_back(arg_phi);
+            current = next_phi;
+        }
+
+        if (is_variadic) {
+            // Pass remaining list (already cons cells) as the trailing rest arg.
+            Value* rest_tagged = packPtrToTaggedValue(current, ESHKOL_VALUE_HEAP_PTR);
+            call_args.push_back(rest_tagged);
+        }
+
+        Value* func_ptr = builder->CreateLoad(ptr_type, func_ptr_global, func_name + "_fwd_ptr");
+        return builder->CreateCall(func_type, func_ptr, call_args, func_name + "_fwd_apply");
+    }
+
     // codegenAssoc removed - now in stdlib.esk (core/list/search.esk)
 
     // Production implementation: List* (improper list constructor)
@@ -30880,6 +30987,11 @@ namespace ControlFlowCallbacks {
     llvm::Function* getBuiltinArithmeticWrapper(const std::string& op, void* context) {
         auto* codegen = static_cast<EshkolLLVMCodeGen*>(context);
         return codegen->createBuiltinArithmeticFunction(op, 2);
+    }
+
+    llvm::Value* applyForwardRefWrapper(const std::string& func_name, llvm::Value* list_int, void* context) {
+        auto* codegen = static_cast<EshkolLLVMCodeGen*>(context);
+        return codegen->emitApplyForwardRef(func_name, list_int);
     }
 
     llvm::Value* applyBuiltinWrapper(const std::string& func_name, const std::vector<llvm::Value*>& args, llvm::Value* arg_count, void* context) {

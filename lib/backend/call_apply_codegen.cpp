@@ -242,6 +242,41 @@ Value* CallApplyCodegen::apply(const eshkol_operations_t* op) {
             return applyClosure(func_value, list_int);
         }
 
+        // Bug P (2026-04-23): cross-file user defines (e.g. (load
+        // "file.esk") in REPL mode) register in the main codegen's
+        // function_table but not always in symbol_table /
+        // global_symbol_table, and ctx_.module().getFunction(name)
+        // may miss when names are mangled or the function lives in
+        // a different LLVM module loaded via the JIT. Consult
+        // function_table_ directly first; direct calls already use
+        // this table.
+        if (function_table_) {
+            auto ft_it = function_table_->find(func_name);
+            if (ft_it != function_table_->end() && ft_it->second) {
+                Function* tf = ft_it->second;
+                bool has_captures = false;
+                for (auto& arg : tf->args()) {
+                    if (arg.getType()->isPointerTy()) { has_captures = true; break; }
+                }
+                if (!has_captures) {
+                    return applyUserFunction(tf, list_int);
+                }
+                // With captures fall through to forward-ref / closure path.
+            }
+        }
+
+        // Then ask the main codegen to emit a REPL forward-reference
+        // indirect call (__repl_fwd_<name>). This is exactly what
+        // direct calls do for cross-batch / cross-load functions —
+        // apply now mirrors it.
+        if (apply_forward_ref_callback_) {
+            llvm::Value* fwd_result = apply_forward_ref_callback_(
+                func_name, list_int, callback_context_);
+            if (fwd_result) {
+                return fwd_result;
+            }
+        }
+
         eshkol_warn("apply: Unknown function: %s", func_name.c_str());
         return tagged_.packNull();
     }
