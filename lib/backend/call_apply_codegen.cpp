@@ -495,12 +495,28 @@ Value* CallApplyCodegen::applyUserFunction(Function* func, Value* list_int) {
     Function* cons_get_ptr = getTaggedConsGetPtrFunc();
     if (!cons_get_ptr) return tagged_.packNull();
 
-    // Check if this is a variadic function
+    // Check if this is a variadic function. Bug S (2026-04-23): in REPL
+    // mode, top-level user defines get mangled to "<name>__rv<N>" for
+    // hot-reload while variadic_function_info_ keys on the user-visible
+    // unmangled name. Without stripping the "__rv<N>" suffix the lookup
+    // misses, is_variadic stays false, and apply extracts the FIRST
+    // element of the rest list as the lone fixed argument — so
+    //   (apply f '(#t))  with  (define (f . opts) …)
+    // gives f's "opts" param the value #t (a non-pair) instead of '(#t).
+    // (car opts) then raises "argument is not a pair" mid-display.
     bool is_variadic = false;
     uint64_t fixed_params = func->arg_size();
 
     if (variadic_function_info_) {
         auto variadic_it = variadic_function_info_->find(func_name);
+        if (variadic_it == variadic_function_info_->end()) {
+            // Try the unmangled name (REPL hot-reload pattern).
+            auto rv_pos = func_name.rfind("__rv");
+            if (rv_pos != std::string::npos) {
+                std::string unmangled = func_name.substr(0, rv_pos);
+                variadic_it = variadic_function_info_->find(unmangled);
+            }
+        }
         if (variadic_it != variadic_function_info_->end()) {
             is_variadic = variadic_it->second.second;
             if (is_variadic) {
