@@ -10898,6 +10898,7 @@ private:
             return packBoolToTaggedValue(ConstantInt::get(int1_type, 1));
         }
         if (func_name == "open-output-file") return strio_->openOutputFile(op);
+        if (func_name == "open-output-file-append") return strio_->openOutputFileAppend(op);
         if (func_name == "write-string") return strio_->writeString(op);
         if (func_name == "write-line") return strio_->writeLine(op);
         if (func_name == "write-char") return strio_->writeChar(op);
@@ -18757,7 +18758,7 @@ private:
             "call-with-current-continuation", "values", "call-with-values",
             // I/O
             "display", "newline", "write", "read",
-            "open-input-file", "open-output-file", "read-line", "read-string", "close-port",
+            "open-input-file", "open-output-file", "open-output-file-append", "read-line", "read-string", "close-port",
             "close-input-port", "close-output-port",
             "eof-object?", "eof-object",
             "read-char", "peek-char", "char-ready?", "write-char", "write-string",

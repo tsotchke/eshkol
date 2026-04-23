@@ -1906,21 +1906,34 @@ llvm::Value* StringIOCodegen::openInputFile(const eshkol_operations_t* op) {
     return result;
 }
 
+// Shared body for open-output-file (mode="w") and
+// open-output-file-append (mode="a"). Bug Q (2026-04-23) added the
+// append variant for write-ahead logs; the only difference from the
+// truncating form is the fopen mode passed.
 llvm::Value* StringIOCodegen::openOutputFile(const eshkol_operations_t* op) {
+    return openOutputFileImpl(op, "w", "open-output-file");
+}
+
+llvm::Value* StringIOCodegen::openOutputFileAppend(const eshkol_operations_t* op) {
+    return openOutputFileImpl(op, "a", "open-output-file-append");
+}
+
+llvm::Value* StringIOCodegen::openOutputFileImpl(const eshkol_operations_t* op,
+                                                  const char* mode_str,
+                                                  const char* scheme_name) {
     if (!codegen_typed_ast_callback_ || !typed_to_tagged_callback_) {
-        eshkol_warn("StringIOCodegen::openOutputFile - callbacks not set");
+        eshkol_warn("StringIOCodegen::%s - callbacks not set", scheme_name);
         return tagged_.packNull();
     }
 
     if (op->call_op.num_vars != 1) {
-        eshkol_warn("open-output-file requires exactly 1 argument");
+        eshkol_warn("%s requires exactly 1 argument", scheme_name);
         return nullptr;
     }
 
     llvm::Function* fopen_func = getOrDeclareFopen(ctx_);
     if (!fopen_func) return nullptr;
 
-    // Get filename argument (should be a string)
     void* tv_ptr = codegen_typed_ast_callback_(&op->call_op.variables[0], callback_context_);
     if (!tv_ptr) return nullptr;
 
@@ -1931,23 +1944,21 @@ llvm::Value* StringIOCodegen::openOutputFile(const eshkol_operations_t* op) {
         ctx_.builder().CreateExtractValue(tagged, {4}),
         ctx_.ptrType());
 
-    // Call fopen with "w" mode
-    llvm::Value* mode = createString("w");
+    llvm::Value* mode = createString(mode_str);
     llvm::Value* file_ptr = ctx_.builder().CreateCall(fopen_func, {filename_ptr, mode});
 
-    // Convert FILE* to i64 for storage in tagged value
     llvm::Value* file_ptr_int = ctx_.builder().CreatePtrToInt(file_ptr, ctx_.int64Type());
 
-    // Pack as a tagged value with output port type
+    // Pack as a tagged value with output port type.
     // NOTE: Use 0x40 instead of 0x20 because CONS_PTR=32=0x20, so 32|0x20=32!
     llvm::Value* result = llvm::UndefValue::get(ctx_.taggedValueType());
     result = ctx_.builder().CreateInsertValue(result,
-        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR | 0x40), {0}); // type = output port
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR | 0x40), {0});
     result = ctx_.builder().CreateInsertValue(result,
-        llvm::ConstantInt::get(ctx_.int8Type(), 0), {1}); // flags
+        llvm::ConstantInt::get(ctx_.int8Type(), 0), {1});
     result = ctx_.builder().CreateInsertValue(result,
-        llvm::ConstantInt::get(ctx_.int16Type(), 0), {2}); // reserved
-    result = ctx_.builder().CreateInsertValue(result, file_ptr_int, {4}); // data = FILE*
+        llvm::ConstantInt::get(ctx_.int16Type(), 0), {2});
+    result = ctx_.builder().CreateInsertValue(result, file_ptr_int, {4});
 
     return result;
 }
