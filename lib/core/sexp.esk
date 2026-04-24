@@ -1,0 +1,109 @@
+;;; lib/core/sexp.esk — S-expression pretty-printer with proper
+;;; dotted-pair and improper-list handling.
+;;;
+;;; Noesis Quirk 4 (2026-04-23): the naive 10-line user walk of an
+;;; s-expression crashes with "cdr: argument is not a pair" as soon
+;;; as the structure contains an alist (dotted pair). Alists are
+;;; endemic to R7RS — every Scheme tutorial uses them — so users
+;;; kept hitting the same crash. This module ships the correct
+;;; implementation so no one has to re-invent it.
+;;;
+;;; API:
+;;;   (sexp->string s)            — display-style (no quotes around strings)
+;;;   (sexp->canonical-string s)  — write-style (strings quoted), suitable
+;;;                                  for hashing / on-disk storage
+;;;
+;;; Both handle proper lists, improper lists, dotted pairs, and atoms
+;;; (string, symbol, number, boolean, char, null, vector). Unknown
+;;; objects render as "#<object>".
+
+(provide sexp->string
+         sexp->canonical-string)
+
+(define (sexp->canonical-string s)
+  (cond
+    ((null? s)    "()")
+    ((pair? s)    (string-append "("
+                                 (sexp->canonical-string-list s)
+                                 ")"))
+    ((string? s)  (string-append "\"" s "\""))
+    ((symbol? s)  (symbol->string s))
+    ((number? s)  (number->string s))
+    ((boolean? s) (if s "#t" "#f"))
+    ((char? s)    (string-append "#\\" (string s)))
+    ((vector? s)  (string-append "#("
+                                 (vector->canonical-string-body s 0
+                                                                (vector-length s))
+                                 ")"))
+    (else         "#<object>")))
+
+(define (sexp->canonical-string-list s)
+  ;; Walks the spine of a pair chain, emitting " . tail" when the cdr
+  ;; is not itself a pair or null.
+  (cond
+    ((null? s) "")
+    ((not (pair? (cdr s)))
+     (if (null? (cdr s))
+         (sexp->canonical-string (car s))
+         (string-append (sexp->canonical-string (car s))
+                        " . "
+                        (sexp->canonical-string (cdr s)))))
+    (else
+     (string-append (sexp->canonical-string (car s))
+                    " "
+                    (sexp->canonical-string-list (cdr s))))))
+
+(define (vector->canonical-string-body v i n)
+  (cond
+    ((>= i n) "")
+    ((= i (- n 1))
+     (sexp->canonical-string (vector-ref v i)))
+    (else
+     (string-append (sexp->canonical-string (vector-ref v i))
+                    " "
+                    (vector->canonical-string-body v (+ i 1) n)))))
+
+
+;; sexp->string — display-style: strings emitted without quotes.
+;; Use this for human-readable output; prefer the canonical form when
+;; the result will be hashed or compared for equality.
+(define (sexp->string s)
+  (cond
+    ((null? s)    "()")
+    ((pair? s)    (string-append "("
+                                 (sexp->string-list s)
+                                 ")"))
+    ((string? s)  s)
+    ((symbol? s)  (symbol->string s))
+    ((number? s)  (number->string s))
+    ((boolean? s) (if s "#t" "#f"))
+    ((char? s)    (string s))
+    ((vector? s)  (string-append "#("
+                                 (vector->string-body s 0
+                                                      (vector-length s))
+                                 ")"))
+    (else         "#<object>")))
+
+(define (sexp->string-list s)
+  (cond
+    ((null? s) "")
+    ((not (pair? (cdr s)))
+     (if (null? (cdr s))
+         (sexp->string (car s))
+         (string-append (sexp->string (car s))
+                        " . "
+                        (sexp->string (cdr s)))))
+    (else
+     (string-append (sexp->string (car s))
+                    " "
+                    (sexp->string-list (cdr s))))))
+
+(define (vector->string-body v i n)
+  (cond
+    ((>= i n) "")
+    ((= i (- n 1))
+     (sexp->string (vector-ref v i)))
+    (else
+     (string-append (sexp->string (vector-ref v i))
+                    " "
+                    (vector->string-body v (+ i 1) n)))))

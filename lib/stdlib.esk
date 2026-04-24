@@ -34,6 +34,9 @@
 ;;; Strings - extended string utilities
 (require core.strings)
 
+;;; S-expression printer - handles dotted pairs and improper lists
+(require core.sexp)
+
 ;;; JSON - parsing and serialization
 (require core.json)
 
