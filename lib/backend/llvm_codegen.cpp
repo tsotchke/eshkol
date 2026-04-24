@@ -16537,6 +16537,24 @@ private:
                 return packNullToTaggedValue();
             }
 
+            // Dotted-pair tail from parser: `(a b . ,expr) becomes
+            // CALL_OP(cons, car, cdr) where either arg may be UNQUOTE.
+            // Evaluate both in quasiquote context and build a real cons cell.
+            if (ast->operation.op == ESHKOL_CALL_OP &&
+                ast->operation.call_op.func &&
+                ast->operation.call_op.func->type == ESHKOL_VAR &&
+                ast->operation.call_op.func->variable.id &&
+                strcmp(ast->operation.call_op.func->variable.id, "cons") == 0 &&
+                ast->operation.call_op.num_vars == 2) {
+                Value* car_val = codegenQuasiquote(&ast->operation.call_op.variables[0]);
+                Value* cdr_val = codegenQuasiquote(&ast->operation.call_op.variables[1]);
+                Value* cons_int = codegenTaggedArenaConsCellFromTaggedValue(
+                    ensureTaggedValue(car_val), ensureTaggedValue(cdr_val));
+                return packPtrToTaggedValue(
+                    builder->CreateIntToPtr(cons_int, builder->getPtrTy()),
+                    ESHKOL_VALUE_HEAP_PTR);
+            }
+
             // The parser encodes quasi-quoted lists as a CALL_OP whose func is
             // the symbol "list". Intercept that here so we evaluate each
             // element rather than treating the whole call as quoted data.
@@ -23942,7 +23960,19 @@ private:
         if (!op || op->op != ESHKOL_CALL_OP) {
             return packInt64ToTaggedValue(ConstantInt::get(int64_type, 0), true);
         }
-        
+
+        // Special case: (cons car cdr) in quoted data builds a real cons pair,
+        // not a 3-element s-expression list starting with the symbol 'cons'.
+        // This is what the reader produces for '(a . b) after the parser fix.
+        if (op->call_op.func && op->call_op.func->type == ESHKOL_VAR &&
+            op->call_op.func->variable.id &&
+            std::string(op->call_op.func->variable.id) == "cons" &&
+            op->call_op.num_vars == 2) {
+            Value* car_tagged = codegenQuotedAST(&op->call_op.variables[0]);
+            Value* cdr_tagged = codegenQuotedAST(&op->call_op.variables[1]);
+            return codegenTaggedArenaConsCellFromTaggedValue(car_tagged, cdr_tagged);
+        }
+
         // Build list from right to left: (op arg1 arg2 ...)
         // Start with empty list (null)
         Value* result_int = ConstantInt::get(int64_type, 0);
