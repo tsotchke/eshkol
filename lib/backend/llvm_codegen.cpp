@@ -1291,6 +1291,35 @@ public:
             }
             std::vector<eshkol_ast_t> expanded_asts = macro_expander.expandAll(input_asts);
 
+            // SEQUENCE_OP flattening at top level. Some parser expansions —
+            // most notably `(define-record-type ...)` — emit a single
+            // SEQUENCE_OP node wrapping the sub-defines (constructor,
+            // predicate, accessors, mutators). The rest of codegen has
+            // several passes that walk only the top-level list looking for
+            // DEFINE_OP nodes (pre-declare globals at ~line 1694, declare
+            // top-level lambdas at preGenerateTopLevelLambdas, emit
+            // function bodies at Step 2 ~line 1768). If those sub-defines
+            // sit under a SEQUENCE_OP, the passes miss them and any
+            // user function that later references the record-type
+            // constructor / accessor fails with "Unknown function: make-X"
+            // — even though the record-type machinery runs fine at
+            // top-level statement order. Flatten once, right after macro
+            // expansion, so every downstream pass sees a clean flat list.
+            {
+                std::vector<eshkol_ast_t> flattened;
+                flattened.reserve(expanded_asts.size());
+                for (auto& a : expanded_asts) {
+                    if (a.type == ESHKOL_OP && a.operation.op == ESHKOL_SEQUENCE_OP) {
+                        for (uint64_t si = 0; si < a.operation.sequence_op.num_expressions; si++) {
+                            flattened.push_back(a.operation.sequence_op.expressions[si]);
+                        }
+                    } else {
+                        flattened.push_back(a);
+                    }
+                }
+                expanded_asts = std::move(flattened);
+            }
+
             // Use expanded ASTs for the rest of code generation
             const eshkol_ast_t* asts_to_use = expanded_asts.data();
             size_t num_asts_to_use = expanded_asts.size();
