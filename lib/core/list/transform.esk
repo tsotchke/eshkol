@@ -16,11 +16,21 @@
       lst
       (drop (cdr lst) (- n 1))))
 
-;;; append: Concatenate two lists
-(define (append lst1 lst2)
+;;; append: Concatenate any number of lists (R7RS §6.4)
+;;; (append)           => ()
+;;; (append a)         => a (returned as-is; last arg not copied)
+;;; (append a b)       => a ++ b
+;;; (append a b c ...) => a ++ b ++ c ...
+;;; The last argument may be any datum (improper lists allowed).
+(define (append-2 lst1 lst2)
   (if (null? lst1)
       lst2
-      (cons (car lst1) (append (cdr lst1) lst2))))
+      (cons (car lst1) (append-2 (cdr lst1) lst2))))
+
+(define (append . lists)
+  (cond ((null? lists) '())
+        ((null? (cdr lists)) (car lists))
+        (else (append-2 (car lists) (apply append (cdr lists))))))
 
 ;;; reverse: Reverse a list (tail-recursive)
 (define (reverse lst)
