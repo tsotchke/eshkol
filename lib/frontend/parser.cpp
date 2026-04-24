@@ -2493,7 +2493,18 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             if (has_else) {
                 token = tokenizer.nextToken();
                 if (token.type != TOKEN_RPAREN) {
-                    PARSE_ERROR_AT(token, "expected closing parenthesis after if expression");
+                    // Noesis Quirk 7: users coming from C/Python treat the
+                    // else branch as a "block" and pile multiple expressions
+                    // there. R7RS §4.1.5 requires exactly three subforms —
+                    // (if <test> <then> <else>) — so extra expressions must
+                    // be wrapped in (begin ...). Give a targeted diagnostic
+                    // instead of the generic "expected closing parenthesis"
+                    // which leaves the user guessing.
+                    PARSE_ERROR_AT(token,
+                        "if expects three subforms (test, then, else); got "
+                        "an extra expression in the else position. Wrap "
+                        "multiple else expressions in (begin ...), or switch "
+                        "to cond.");
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
