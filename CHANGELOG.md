@@ -7,43 +7,151 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-- `set-cdr!` / `set-car!` now preserve the HEAP_PTR tag when the
-  replacement is a tagged value (list, cons, variable reference).
-  Previously detectValueType flattened tagged_value structs to INT64,
-  so `(set-cdr! p (list 4 5))` stored the list's heap address with an
-  INT64 tag and later cdr walks saw an integer. Noesis Bug E — blocked
-  dKB, Mneme ring, Workspace queue, proof-tree child lists, Hiereia
-  cycle log.
-- `(read port)` now interns symbols through the process-global pool
-  (`eshkol_intern_symbol_lookup`). Previously each `(read)` produced a
-  fresh arena allocation, so `(eq? (read port) 'foo)` always returned
-  #f — violating R7RS §6.5. Noesis Bug F — blocked dKB persistence,
-  Mneme load, proof-tree replay, Workspace state restore.
-- ONNX export: `double_data` stored in TensorProto field 10 (was
-  field 5, which is int32_data). Required `GraphProto.name` field
-  emitted so `onnx.checker.check_model` accepts the output.
-
-### Added
-- `eshkol_ffi_tensor_shape()` FFI accessor so pybind11 can return
-  N-D numpy arrays (previously everything flattened to 1-D).
-- Subprocess stdin-null fast path: `process-spawn-nostdin` wires the
-  child's stdin to `/dev/null` instead of creating a pipe we won't
-  use. Saves a `pipe()` + 2 `close()` per call — `run-command-capture`
-  / `run-argv-capture` (the hot paths) drop from 2.33 ms to 2.21 ms
-  at N=5000 on macOS.
-- `POSIX_SPAWN_CLOEXEC_DEFAULT` on Darwin: drops 6 `addclose` entries
-  per spawn by marking all fds close-on-exec in the child by default.
-- VM hyper-dual laplacian: exact second derivatives via hyper-duals
-  (replaces central-difference finite-difference).
-
-## [1.2.0-scale] - 2026-04-19
+## [1.2.0-scale] - 2026-04-24
 
 The production-readiness release. Model serialization, a stable C ABI
 with Python bindings, per-thread arenas, image/CSV I/O, a plotting
 stdlib, actionable error messages, Windows ARM64 support, and a long
 tail of Noesis- / Moonlab-driven hardening, perf, and correctness
 fixes.
+
+### Fixed — late-cycle correctness (Bugs J–U, Quirks 1/3/4/6/7/10/11)
+
+- **Quirk 11 — `display`/`write`/`newline` are now first-class.**
+  Before: bare references (`(for-each display xs)`,
+  `(define printer display)`) raised "Unbound variable: display"
+  because the codegen wrapper only existed in call position.
+  codegenVariable now wraps each as a unary closure (see
+  `createBuiltinIOFunction`); the type checker agrees they're
+  callable. A separate known-open bug
+  (`tests/v1_2_edge_cases/KNOWN_PORT_REDIRECT_BUG.md`) — that
+  `parameterize current-output-port` does not redirect `display`
+  to a string port — is filed but not yet fixed; explicit
+  `(display x port)` works.
+- **Quirk 10 — `append` silently dropped args 3+.** The stdlib
+  `append` was defined fixed-arity 2; `(append a b c d)` quietly
+  truncated to the first two. Rewritten as properly variadic per
+  R7RS §6.4: `(append)` returns `()`, `(append a)` returns `a`
+  as-is, N-ary produces the concatenation of all lists. Improper
+  tails permitted in the last position. (Noesis originally filed
+  this against a 4-arg repro in `self_model_sync.esk` and later
+  retracted the specific trigger, but the underlying arity-2
+  stdlib definition was still wrong per R7RS §6.4.)
+- **Bug T (reader) — R7RS dotted-pair literals.** `'(a . b)` was
+  mis-parsed: the dot became a literal symbol, producing the
+  3-element list `(a |.| b)` instead of a cons pair `(a . b)`.
+  `parse_quoted_list_internal` / `parse_quasiquoted_list_internal`
+  now detect a bare `.` token, read one tail datum, and build a
+  right-nested cons chain. `codegenQuotedList` special-cases
+  `CALL_OP(cons, car, cdr)` to emit a real cons cell; `codegenQuasiquote`
+  gained matching handling so `` `(,key . ,val) `` works.
+- **Bug T (strict-typing safety).** `car` / `cdr` of any non-pair
+  heap object (symbol, string, hash, record, bignum, etc.) now
+  raises "argument is not a pair" instead of silently dereferencing
+  the wrong memory. The `subtype_probe` block in both codegen paths
+  gates `list_block` on `HEAP_SUBTYPE_CONS`; every other subtype is
+  routed to a dedicated raise block.
+- **Bug U — REPL entry picker.** The substring match was greedy:
+  `budget-remaining`, `remain`, `remainder-user` all collided with
+  `main` because the picker matched anywhere in the symbol rather
+  than at position 0. Renaming a user-define to be the batch entry
+  is now explicitly refused; the picker uses whole-token equality.
+- **Bug S — REPL-mangled variadic apply.** `apply` on a user
+  variadic whose name had been mangled by the REPL (e.g. during
+  file-level `(define (f . args) …)`) lost `variadic_info` and
+  silently dropped the rest list. The apply path now resolves the
+  pre-mangle name before looking up variadic_info.
+- **Bug R — empty-map zombie HEAP_PTR.** `map` over an empty list
+  produced a HEAP_PTR with no valid header, so a follow-up `ptr-8`
+  read (pair? / vector-ref) SIGSEGV'd. Empty-map now returns a
+  properly-tagged null.
+- **Bug Q — append-mode ports.** New `open-output-file-append` for
+  write-ahead logs (dKB persistence, Mneme episode store, Hiereia
+  cycle-log).
+- **Bug P — apply on cross-file user functions in REPL mode.**
+  Apply resolution now searches all loaded modules, not just the
+  currently-compiling one; Noesis can call `apply` on functions
+  `require`d from another module.
+- **Bug O — case with symbol-literal keys.** `(case x ((sigma) …))`
+  was evaluating the key list as a call; case now treats keys as
+  quoted data uniformly.
+- **Bug M — shadowable-OP misses letrec bindings.** The shadowable
+  check saw `let`/`define` bindings but not `letrec` / `letrec*`,
+  so a user `unify` inside a letrec silently resolved to the
+  builtin. Fixed in `transformInternalDefinesToLetrec`.
+- **Bug J — named-let non-tail self-call.** A non-tail recursive
+  call from inside a named-let produced LLVM IR where the phi
+  predecessor list referenced a block already replaced by a later
+  optimization pass. Captured the exit block explicitly before
+  branching.
+- **T1 — arity warnings ignore rest-args.** The type checker's
+  arity warning counted rest-arg functions as fixed-arity,
+  producing spurious warnings on every `(apply f …)` call.
+- **Quirk 1 — HoTT cons type.** `cons(A, B)` synthesize-application
+  now narrows to `List` when the cdr is already `List` or `Null`
+  (per R7RS "a list is `()` or `(cons X list)`"). Eliminates the
+  false "expected List, got Pair<List, List>" warnings that
+  peppered every Noesis smoke.
+- **Quirk 3 — cross-file eq? on interned symbols.** Not
+  reproducible under current HEAD; fixed by earlier M/P/S/T/R7RS-1
+  changes. Regression test added covering all reported shapes
+  (bare literal, memq, assq, hash-table storage, vector-as-record,
+  filter across file boundaries, string->symbol roundtrip).
+- **Quirk 4 — s-expression printing.** Stdlib now ships
+  `sexp->canonical-string` and `sexp->string` helpers that
+  correctly handle proper lists, dotted pairs, improper lists,
+  alists, and mixed structure. The naive user walk crashed the
+  moment it hit a dotted pair; the stdlib helper doesn't.
+- **Quirk 6 — REPL exit propagation.** The REPL swallowed codegen
+  failures; `eshkol-run -r` now propagates a non-zero exit when
+  the script fails to compile.
+- **Quirk 7 — clearer `if` multi-else diagnostic.** Generic
+  "expected closing parenthesis after if expression" replaced with
+  a concrete message suggesting `begin` or `cond`.
+- **SEQUENCE_OP flattening.** `define-record-type` used in a user
+  function ("Unknown function: make-point") failed because the
+  three top-level pre-declaration passes only walked flat
+  `DEFINE_OP` nodes, missing the sub-defines wrapped in a single
+  `SEQUENCE_OP`. Added an architectural "top-level AST list is
+  flat" invariant: a single `SEQUENCE_OP` flattening pre-pass in
+  `generateIR()` feeds every downstream pass.
+- `set-cdr!` / `set-car!` now preserve the HEAP_PTR tag when the
+  replacement is a tagged value (list, cons, variable reference).
+  Previously `detectValueType` flattened tagged_value structs to
+  INT64, so `(set-cdr! p (list 4 5))` stored the list's heap
+  address with an INT64 tag and later cdr walks saw an integer.
+  Noesis Bug E — blocked dKB, Mneme ring, Workspace queue,
+  proof-tree child lists, Hiereia cycle log.
+- `(read port)` now interns symbols through the process-global
+  pool (`eshkol_intern_symbol_lookup`). Previously each `(read)`
+  produced a fresh arena allocation, so `(eq? (read port) 'foo)`
+  always returned #f — violating R7RS §6.5. Noesis Bug F —
+  blocked dKB persistence, Mneme load, proof-tree replay,
+  Workspace state restore.
+- ONNX export: `double_data` stored in TensorProto field 10 (was
+  field 5, which is int32_data). Required `GraphProto.name` field
+  emitted so `onnx.checker.check_model` accepts the output.
+
+### Added — late-cycle
+- **R7RS §7.1.1 radix literals** — `#b` (binary), `#o` (octal),
+  `#d` (decimal), `#x` (hex), with optional sign and exactness
+  prefix (`#e` / `#i`) chained in either order. The tokenizer
+  converts to a decimal `TOKEN_NUMBER` so downstream code paths
+  are unchanged. Before, `#xFF` was tokenized as a symbol and
+  failed as an undefined variable; `0xFF` (C syntax) split into
+  two tokens.
+- `eshkol_ffi_tensor_shape()` FFI accessor so pybind11 can return
+  N-D numpy arrays (previously everything flattened to 1-D).
+- Subprocess stdin-null fast path: `process-spawn-nostdin` wires
+  the child's stdin to `/dev/null` instead of creating a pipe we
+  won't use. Saves a `pipe()` + 2 `close()` per call —
+  `run-command-capture` / `run-argv-capture` (the hot paths) drop
+  from 2.33 ms to 2.21 ms at N=5000 on macOS.
+- `POSIX_SPAWN_CLOEXEC_DEFAULT` on Darwin: drops 6 `addclose`
+  entries per spawn by marking all fds close-on-exec in the child
+  by default.
+- VM hyper-dual laplacian: exact second derivatives via hyper-duals
+  (replaces central-difference finite-difference).
 
 ### Added — roadmap items
 
