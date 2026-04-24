@@ -1,0 +1,91 @@
+;; sexp_canonical_string_test.esk — Noesis Quirk 4 (2026-04-24)
+;;
+;; The naive user walk of an s-expression crashes with
+;; "cdr: argument is not a pair" as soon as the input contains an
+;; alist (dotted pair). Stdlib now ships `sexp->canonical-string`
+;; and `sexp->string` that handle dotted pairs, improper lists, and
+;; nested structure correctly.
+
+(require stdlib)
+
+(define passed 0)
+(define failed 0)
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin (display "PASS: ") (display name) (newline)
+             (set! passed (+ passed 1)))
+      (begin (display "FAIL: ") (display name)
+             (display " — expected ") (display expected)
+             (display ", got ") (display actual) (newline)
+             (set! failed (+ failed 1)))))
+
+;; Atoms
+(check "null"     "()"     (sexp->canonical-string '()))
+(check "symbol"   "alpha"  (sexp->canonical-string 'alpha))
+(check "integer"  "42"     (sexp->canonical-string 42))
+(check "true"     "#t"     (sexp->canonical-string #t))
+(check "false"    "#f"     (sexp->canonical-string #f))
+(check "string"   "\"hi\"" (sexp->canonical-string "hi"))
+
+;; Proper lists
+(check "empty list"    "()"           (sexp->canonical-string '()))
+(check "one element"   "(a)"          (sexp->canonical-string '(a)))
+(check "two elements"  "(a b)"        (sexp->canonical-string '(a b)))
+(check "three"         "(a b c)"      (sexp->canonical-string '(a b c)))
+(check "nested"        "((a b) c)"    (sexp->canonical-string '((a b) c)))
+(check "nested-deep"   "((a (b c)) d)" (sexp->canonical-string '((a (b c)) d)))
+
+;; Dotted pairs — the exact Quirk 4 shape
+(check "dotted pair"   "(k . v)"      (sexp->canonical-string '(k . v)))
+(check "alist entry"   "(name . \"x\")" (sexp->canonical-string '(name . "x")))
+
+;; Alists (list of dotted pairs)
+(check "alist"
+       "((a . 1) (b . 2))"
+       (sexp->canonical-string '((a . 1) (b . 2))))
+
+;; Improper list tail
+(check "improper tail" "(a b . c)"    (sexp->canonical-string '(a b . c)))
+
+;; Mixed: list with symbol, number, string, dotted inner
+(check "mixed"
+       "(fn \"label\" 3.14 (k . v))"
+       (sexp->canonical-string '(fn "label" 3.14 (k . v))))
+
+;; sexp->string (display form) — strings without quotes
+(check "display null"     "()"      (sexp->string '()))
+(check "display symbol"   "x"       (sexp->string 'x))
+(check "display string"   "hello"   (sexp->string "hello"))
+(check "display alist"
+       "((a . 1) (b . hi))"
+       (sexp->string '((a . 1) (b . "hi"))))
+
+;; Regression: the specific Noesis crash shape — walking a proof-tree
+;; node snapshot built from alists. Before this stdlib helper, the
+;; naive user walk crashed the moment it hit a dotted pair — which
+;; meant every proof-tree snapshot, every episode alist, every
+;; hash-table serialisation. Note: built with `cons`/`list` rather
+;; than a literal '((a . b) ...) to sidestep a separate Eshkol reader
+;; quirk around nested dotted-pair literals.
+(define proof-node
+  (list (cons 'id 42)
+        (list 'goal 'prove "x > 0")
+        (cons 'deps '(1 2 3))
+        (list 'tags
+              (cons 'level 2)
+              (cons 'mood 'ok))))
+(check "proof-node walk doesn't crash"
+       "((id . 42) (goal prove \"x > 0\") (deps 1 2 3) (tags (level . 2) (mood . ok)))"
+       (sexp->canonical-string proof-node))
+
+;; The shape that most often hits naive user walks: a bare alist.
+(check "bare alist doesn't crash"
+       "((alpha . 1) (beta . 2) (gamma . 3))"
+       (sexp->canonical-string (list (cons 'alpha 1)
+                                     (cons 'beta 2)
+                                     (cons 'gamma 3))))
+
+(newline)
+(display "Passed: ") (display passed) (newline)
+(display "Failed: ") (display failed) (newline)
+(if (> failed 0) (exit 1) (exit 0))
