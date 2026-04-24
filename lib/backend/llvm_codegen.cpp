@@ -7039,6 +7039,26 @@ private:
             }
         }
 
+        // I/O BUILTIN FIRST-CLASS (Quirk 11). `display`, `write`, `newline`
+        // as bare values: `(for-each display xs)`, `(define printer display)`.
+        // Each is wrapped as a closure over the runtime eshkol_display_value /
+        // eshkol_write_value / eshkol_newline helper. Unary (or nullary for
+        // newline) with tagged_value → tagged_value ABI.
+        if (var_name == "display" || var_name == "write" || var_name == "newline") {
+            Function* wrapper_func = createBuiltinIOFunction(var_name);
+            if (wrapper_func) {
+                Value* func_ptr_int = builder->CreatePtrToInt(wrapper_func, intptr_type);
+                Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+                Value* packed_info = sizeConst(0);
+                Value* sexpr_ptr = intPtrConst(0);
+                Value* return_type_info = intPtrConst(CLOSURE_RETURN_UNKNOWN);
+                Value* closure_name = ConstantPointerNull::get(PointerType::getUnqual(*context));
+                Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureWithHeaderFunc(),
+                                                         {arena_ptr, func_ptr_int, packed_info, sexpr_ptr, return_type_info, closure_name});
+                return packPtrToTaggedValue(closure_ptr, ESHKOL_VALUE_CALLABLE);
+            }
+        }
+
         // Check function_table for function names being used as values (first-class functions)
         // NOTE: Math builtins are handled above to avoid returning raw C functions
         auto func_it = function_table.find(var_name);
@@ -30052,6 +30072,71 @@ private:
                     func_name.c_str(), func_name_in.c_str());
 
         return builtin_func;
+    }
+
+    /* Quirk 11: create a unary (or nullary for `newline`) closure wrapper
+     * around an I/O runtime helper so the builtin can be passed as a
+     * first-class value. ABI: tagged_value -> tagged_value (returns null).
+     * Reusable from codegenVariable; memoised in function_table so each
+     * distinct call-site shares one wrapper. */
+    Function* createBuiltinIOFunction(const std::string& io_name) {
+        std::string wrapper_name = "builtin_io_" + io_name;
+        auto existing_it = function_table.find(wrapper_name);
+        if (existing_it != function_table.end()) {
+            return existing_it->second;
+        }
+
+        // All three signatures take (tagged_value, ...) -> tagged_value so
+        // the closure dispatcher can call them uniformly. `newline` ignores
+        // its arg (present because the dispatcher always passes one).
+        FunctionType* wrapper_type = FunctionType::get(
+            tagged_value_type,
+            {tagged_value_type},
+            false
+        );
+
+        Function* wrapper_func = Function::Create(
+            wrapper_type,
+            Function::ExternalLinkage,
+            wrapper_name,
+            module.get()
+        );
+
+        IRBuilderBase::InsertPoint old_point = builder->saveIP();
+        BasicBlock* entry = BasicBlock::Create(*context, "entry", wrapper_func);
+        builder->SetInsertPoint(entry);
+
+        Value* arg = &*wrapper_func->arg_begin();
+
+        if (io_name == "display" || io_name == "write") {
+            // Spill arg to stack so runtime can take a pointer.
+            Value* arg_ptr = builder->CreateAlloca(tagged_value_type, nullptr, "io_arg");
+            builder->CreateStore(arg, arg_ptr);
+
+            const char* rt_name = (io_name == "display") ? "eshkol_display_value"
+                                                         : "eshkol_write_value";
+            FunctionType* rt_type = FunctionType::get(
+                Type::getVoidTy(*context),
+                {PointerType::getUnqual(*context)},
+                false);
+            Function* rt_func = cast<Function>(
+                module->getOrInsertFunction(rt_name, rt_type).getCallee());
+            builder->CreateCall(rt_func, {arg_ptr});
+        } else {
+            // newline: print a literal '\n' via putchar so we don't need a
+            // port argument. Arg is ignored.
+            (void)arg;
+            FunctionType* putchar_type = FunctionType::get(int32_type, {int32_type}, false);
+            Function* putchar_func = cast<Function>(
+                module->getOrInsertFunction("putchar", putchar_type).getCallee());
+            builder->CreateCall(putchar_func, {ConstantInt::get(int32_type, '\n')});
+        }
+
+        // Return () regardless — display/write/newline are side-effecting.
+        builder->CreateRet(packNullToTaggedValue());
+        builder->restoreIP(old_point);
+        registerContextFunction(wrapper_name, wrapper_func);
+        return wrapper_func;
     }
 
     // ═════════════════════════════════════════════════════════════════════

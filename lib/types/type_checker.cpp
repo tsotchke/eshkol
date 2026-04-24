@@ -705,6 +705,13 @@ TypeCheckResult TypeChecker::synthesizeVariable(eshkol_ast_t* expr) {
             return TypeCheckResult::ok(
                 env_.makeFunctionType({BuiltinTypes::Int64, BuiltinTypes::Int64}, BuiltinTypes::Int64));
         }
+        // Quirk 11: I/O builtins as first-class values (display, write,
+        // newline). Codegen wraps each as a unary closure in codegenVariable;
+        // the type checker just needs to agree they're callable.
+        if (name == "display" || name == "write" || name == "newline") {
+            return TypeCheckResult::ok(
+                env_.makeFunctionType({BuiltinTypes::Value}, BuiltinTypes::Null));
+        }
         return errorAt(expr, "Unbound variable: " + name);
     }
 
