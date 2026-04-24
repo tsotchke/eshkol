@@ -1616,10 +1616,19 @@ void* ReplJITContext::executeBatch(std::vector<eshkol_ast_t>& asts, bool silent)
     LLVMModuleRef c_module = eshkol_generate_llvm_ir(asts.data(), asts.size(), module_name.c_str());
 
     if (!c_module) {
+        // Quirk #6 (2026-04-23): throw on codegen/verify failure so the
+        // -r / -e caller propagates a non-zero exit status. Previously
+        // this returned nullptr and the CLI's try/catch swallowed the
+        // failure, exiting 0 with only a stderr notice — which made
+        // failing LLVM verifies (Bug T before fix, Bug U, misplaced
+        // allocas, cross-file dominance bugs) look like "no output"
+        // rather than "your program never ran." The message on stderr
+        // is still emitted via eshkol_error inside generateLLVMIR; this
+        // additionally ensures the exit status communicates the error.
         if (!silent) {
             std::cerr << "Failed to generate LLVM IR from batch" << std::endl;
         }
-        return nullptr;
+        throw std::runtime_error("LLVM IR generation failed for REPL batch");
     }
 
     Module* cpp_module = module_from_ref(c_module);
@@ -1628,7 +1637,7 @@ void* ReplJITContext::executeBatch(std::vector<eshkol_ast_t>& asts, bool silent)
         if (!silent) {
             std::cerr << "Failed to unwrap LLVM module" << std::endl;
         }
-        return nullptr;
+        throw std::runtime_error("Failed to unwrap LLVM module for REPL batch");
     }
 
     // REPL SYMBOL PERSISTENCE: Inject declarations for previously-defined symbols
