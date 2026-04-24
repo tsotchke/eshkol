@@ -502,6 +502,85 @@ private:
             }
         }
 
+        // R7RS §7.1.1 radix + exactness literals:
+        //   #b / #o / #d / #x   — binary / octal / decimal / hex
+        //   #e / #i             — exact / inexact (integer radix is already
+        //                         exact, so these are pass-throughs)
+        //   Prefixes may chain: #e#xFF, #x#e10, #i#b1010.
+        //   A sign (+/-) may follow the prefix block.
+        // Convert to a decimal TOKEN_NUMBER so the rest of the parser
+        // treats it like any integer literal.
+        {
+            // Snapshot so we can bail cleanly if we don't find valid digits.
+            size_t snap_pos = pos;
+            uint32_t snap_col = column_;
+            int radix = 10;
+            bool seen_radix = false;
+            bool seen_exact = false;
+
+            auto consume_prefix = [&]() -> bool {
+                if (pos >= length) return false;
+                char c = input[pos];
+                if ((c == 'b' || c == 'B') && !seen_radix) { radix = 2;  seen_radix = true; pos++; column_++; return true; }
+                if ((c == 'o' || c == 'O') && !seen_radix) { radix = 8;  seen_radix = true; pos++; column_++; return true; }
+                if ((c == 'd' || c == 'D') && !seen_radix) { radix = 10; seen_radix = true; pos++; column_++; return true; }
+                if ((c == 'x' || c == 'X') && !seen_radix) { radix = 16; seen_radix = true; pos++; column_++; return true; }
+                if ((c == 'e' || c == 'E') && !seen_exact) { seen_exact = true; pos++; column_++; return true; }
+                if ((c == 'i' || c == 'I') && !seen_exact) { seen_exact = true; pos++; column_++; return true; }
+                return false;
+            };
+
+            if (consume_prefix()) {
+                // Optional second prefix (the other of radix/exactness), prefixed by '#'.
+                if (pos < length && input[pos] == '#') {
+                    pos++; column_++;
+                    if (!consume_prefix()) {
+                        // Second '#' with no valid prefix character — bail.
+                        pos = snap_pos; column_ = snap_col;
+                        goto not_radix;
+                    }
+                }
+
+                if (!seen_radix) {
+                    // Only exactness seen (e.g. `#e42` — still a decimal); continue.
+                    radix = 10;
+                }
+
+                // Optional sign.
+                size_t digit_start = pos;
+                if (pos < length && (input[pos] == '+' || input[pos] == '-')) {
+                    pos++; column_++;
+                }
+                size_t first_digit = pos;
+                auto is_radix_digit = [&](char c) {
+                    if (radix == 2)  return c == '0' || c == '1';
+                    if (radix == 8)  return c >= '0' && c <= '7';
+                    if (radix == 10) return c >= '0' && c <= '9';
+                    if (radix == 16) return (c >= '0' && c <= '9') ||
+                                            (c >= 'a' && c <= 'f') ||
+                                            (c >= 'A' && c <= 'F');
+                    return false;
+                };
+                while (pos < length && is_radix_digit(input[pos])) {
+                    pos++; column_++;
+                }
+
+                if (pos == first_digit) {
+                    // No digits after prefix — not a valid radix literal.
+                    pos = snap_pos; column_ = snap_col;
+                    goto not_radix;
+                }
+
+                std::string raw = input.substr(digit_start, pos - digit_start);
+                errno = 0;
+                char* endptr = nullptr;
+                long long val = std::strtoll(raw.c_str(), &endptr, radix);
+                std::string value = std::to_string((int64_t)val);
+                return {TOKEN_NUMBER, value, start, tok_line, tok_col};
+            }
+        }
+    not_radix:
+
         // Invalid boolean, treat as symbol
         pos = start;
         column_ = tok_col;
