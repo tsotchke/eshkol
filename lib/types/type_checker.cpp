@@ -1085,11 +1085,28 @@ TypeCheckResult TypeChecker::synthesizeApplication(eshkol_ast_t* expr) {
             return TypeCheckResult::ok(BuiltinTypes::List);
         }
         if (func_name == "cons") {
-            // Track element types: cons(A, B) → Pair<A, B>
+            // R7RS: a list is either '() or (cons X list). When the cdr is
+            // itself a List (or '()), (cons car cdr) is a proper List —
+            // not Pair<A, List>. Otherwise it's a (potentially improper)
+            // pair with distinct head/tail types.
+            //
+            // Quirk 1 (2026-04-24): previously always returned Pair<A, B>,
+            // so the idiomatic accumulator pattern
+            //   (let loop ((xs ...) (acc (list)))
+            //     (loop (cdr xs) (cons (... ...) acc)))
+            // produced a spurious "expected List, got Pair<List, List>"
+            // warning on every run when the loop's `acc` parameter was
+            // inferred as List but the recursive call passed a
+            // (cons _ acc) — which the old rule typed as Pair<_, List>.
             if (call.num_vars >= 2 && arg_types[0].success && arg_types[1].success) {
+                TypeId cdr_type = arg_types[1].inferred_type;
+                // Narrow to List when the cdr is a List / Null.
+                if (cdr_type == BuiltinTypes::List ||
+                    cdr_type == BuiltinTypes::Null) {
+                    return TypeCheckResult::ok(BuiltinTypes::List);
+                }
                 TypeId pair_type = env_.makePairType(
-                    arg_types[0].inferred_type,
-                    arg_types[1].inferred_type);
+                    arg_types[0].inferred_type, cdr_type);
                 return TypeCheckResult::ok(pair_type);
             }
             return TypeCheckResult::ok(BuiltinTypes::Pair);
