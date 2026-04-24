@@ -1,0 +1,141 @@
+;; cross_file_symbol_eq_test.esk — Noesis Quirk 3 reproducer.
+;;
+;; Claim: a symbol 'sigma created by a quoted literal in File A and
+;; compared via eq? to 'sigma from a quoted literal in File B
+;; sometimes returns #f — even though equal? returns #t and the symbol
+;; prints identically.
+;;
+;; Noesis workaround: prefer (equal? a b) for cross-file symbol
+;; comparisons. R7RS: eq? is guaranteed for interned symbols; this
+;; test asserts the guarantee holds across (require) boundaries.
+
+(require stdlib)
+(load "/Users/tyr/Desktop/eshkol/tests/v1_2_edge_cases/cross_file_symbol_eq_module.esk")
+
+(define passed 0)
+(define failed 0)
+(define (check name cond)
+  (if cond
+      (begin (display "PASS: ") (display name) (newline)
+             (set! passed (+ passed 1)))
+      (begin (display "FAIL: ") (display name) (newline)
+             (set! failed (+ failed 1)))))
+
+;; Case 1: literal 'sigma from this file vs literal from the other file.
+(define local-sigma 'sigma)
+(define foreign-sigma (make-sigma-literal))
+
+(check "local eq? foreign (both 'sigma literals)"
+       (eq? local-sigma foreign-sigma))
+(check "equal? agrees"
+       (equal? local-sigma foreign-sigma))
+
+;; Case 2: symbol->string stability across files.
+(check "symbol->string matches"
+       (string=? (symbol->string local-sigma)
+                 (symbol->string foreign-sigma)))
+
+;; Case 3: eq? via helper defined in the other file (the failing shape
+;; in Noesis metacog-faculty-success-rate: the helper compares the
+;; caller-supplied symbol with its own local quoted literal).
+(check "other-file eq? accepts our literal"
+       (check-sigma 'sigma))
+(check "other-file eq? accepts our variable-bound symbol"
+       (check-sigma local-sigma))
+
+;; Case 4: symbol inside a list built by the other file.
+(define foreign-list (sigma-in-list))
+(check "car of foreign list is 'sigma (eq?)"
+       (eq? (car foreign-list) 'sigma))
+(check "cadr of foreign list is 'other (eq?)"
+       (eq? (car (cdr foreign-list)) 'other))
+
+;; Case 5: memq across files — the canonical use-case where Noesis hit
+;; Quirk 3. ws-register! stored the winner symbol, the faculty arg came
+;; from a different file; a memq-style filter returned zero hits.
+(check "memq literal in foreign list"
+       (if (memq 'sigma foreign-list) #t #f))
+(check "memq variable in foreign list"
+       (if (memq local-sigma foreign-list) #t #f))
+
+;; Case 6: comparing two symbols both supplied from the caller side.
+(check "check-eq-with-caller-symbol both 'sigma"
+       (check-eq-with-caller-symbol 'sigma 'sigma))
+(check "check-eq-with-caller-symbol one local one foreign"
+       (check-eq-with-caller-symbol local-sigma foreign-sigma))
+
+;; Case 7: symbols composed via a string->symbol roundtrip vs literal.
+;; R7RS does NOT guarantee eq? here (string->symbol can return a fresh
+;; symbol), but equal? must hold. Noesis never ran into this path, but
+;; it's useful to pin what we DO and DO NOT promise.
+(define roundtripped (string->symbol "sigma"))
+(check "equal? roundtripped vs literal"
+       (equal? roundtripped 'sigma))
+(check "eq? roundtripped vs literal (R7RS guarantees via interning)"
+       (eq? roundtripped 'sigma))
+
+;; Case 8: symbol stored in a hash-table by one file, retrieved in
+;; another. This mirrors Noesis's mneme storage path (ws-register!
+;; puts the winner symbol in a workspace, later retrieved and
+;; compared with eq?).
+(define ht (make-hash-table))
+(hash-table-set! ht 'key-a (make-sigma-literal))  ; symbol produced by foreign file
+(define retrieved (hash-table-ref ht 'key-a))
+(check "hash-table retrieval preserves eq? to literal"
+       (eq? retrieved 'sigma))
+(check "hash-table retrieval preserves eq? to local var"
+       (eq? retrieved local-sigma))
+
+;; Case 9: list stored in hash-table, symbol extracted via car/cdr.
+(hash-table-set! ht 'key-list (sigma-in-list))
+(define back-list (hash-table-ref ht 'key-list))
+(check "hash-table → car retrieved symbol eq? literal"
+       (eq? (car back-list) 'sigma))
+
+;; Case 10: Noesis-shape workspace-style storage: symbol put into an
+;; alist, the alist stored, retrieved, and the symbol re-extracted.
+(define alist-store '())
+(set! alist-store (cons (cons 'winner (make-sigma-literal)) alist-store))
+(set! alist-store (cons (cons 'runner-up 'pi) alist-store))
+(define winner-entry (assq 'winner alist-store))
+(check "assq-retrieved winner symbol eq? 'sigma"
+       (eq? (cdr winner-entry) 'sigma))
+
+;; Case 11: the exact Noesis shape — pass a symbol to a foreign-file
+;; function, have that function store it in a collection, return the
+;; collection, iterate and eq?-compare.
+(define (store-and-filter items target)
+  (filter (lambda (x) (eq? x target)) items))
+(define haystack (list 'alpha foreign-sigma 'beta 'sigma 'gamma))
+(check "filter eq? across mixed-origin symbols"
+       (= (length (store-and-filter haystack 'sigma)) 2))
+
+;; Case 12: vector-as-record with symbol field. This is Noesis's
+;; ACTUAL mneme/episode pattern: a plain vector with a winner symbol
+;; at an index, built in the foreign module with a literal 'sigma.
+(define ep (make-episode-vec 'sigma 0.95))
+(check "episode-winner-vec retrieves 'sigma from foreign-built episode"
+       (eq? (episode-winner-vec ep) 'sigma))
+(check "episode-winner-vec eq? local-sigma"
+       (eq? (episode-winner-vec ep) local-sigma))
+
+;; Case 13: the Noesis metacog-faculty-success-rate shape, exactly.
+;; Episodes built in the foreign file, faculty symbol defined here,
+;; filter applied here.
+(define episodes (build-episode-store))
+(define faculty 'sigma)
+(define sigma-episodes
+  (filter (lambda (e) (eq? (episode-winner-vec e) faculty)) episodes))
+(check "metacog-faculty-success-rate filter shape (local faculty)"
+       (= (length sigma-episodes) 2))
+
+;; Case 14: the filter lambda defined in the foreign file, passed the
+;; local 'sigma faculty — crosses the boundary the other way.
+(define foreign-sigma-eps (winner-filter-from-foreign episodes 'sigma))
+(check "foreign-file filter accepts local 'sigma literal"
+       (= (length foreign-sigma-eps) 2))
+
+(newline)
+(display "Passed: ") (display passed) (newline)
+(display "Failed: ") (display failed) (newline)
+(if (> failed 0) (exit 1) (exit 0))
