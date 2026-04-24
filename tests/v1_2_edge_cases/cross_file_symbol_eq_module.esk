@@ -1,0 +1,49 @@
+;; cross_file_symbol_eq_module.esk — helpers that produce quoted
+;; literal symbols and store them in vectors, mirroring Noesis's
+;; mneme / episode pattern. Pairs with cross_file_symbol_eq_test.esk
+;; to probe Noesis Quirk 3 (cross-file eq? on same-name symbols).
+
+(provide make-sigma-literal
+         sigma-in-list
+         check-sigma
+         check-eq-with-caller-symbol
+         make-episode-vec
+         episode-winner-vec
+         build-episode-store
+         winner-filter-from-foreign)
+
+(require stdlib)
+
+;; Return the quoted literal 'sigma from THIS file.
+(define (make-sigma-literal) 'sigma)
+
+;; Return a list containing a quoted literal 'sigma from THIS file.
+(define (sigma-in-list) (list 'sigma 'other))
+
+;; Compare the caller's symbol to our literal 'sigma using eq?.
+(define (check-sigma sym) (eq? sym 'sigma))
+
+;; eq? against a specific symbol passed in from the caller.
+(define (check-eq-with-caller-symbol sym reference)
+  (eq? sym reference))
+
+;; Noesis-shape episode: plain vector with winner symbol at index 2.
+(define (make-episode-vec winner score)
+  (let ((e (make-vector 3 0)))
+    (vector-set! e 0 'episode)
+    (vector-set! e 1 score)
+    (vector-set! e 2 winner)
+    e))
+
+(define (episode-winner-vec e) (vector-ref e 2))
+
+;; Build a store of episodes with literal 'sigma winners from THIS file.
+(define (build-episode-store)
+  (list (make-episode-vec 'sigma 0.95)
+        (make-episode-vec 'pi 0.5)
+        (make-episode-vec 'sigma 0.8)
+        (make-episode-vec 'delta 0.3)))
+
+;; Exact Noesis shape: filter episodes by winner == faculty (eq?).
+(define (winner-filter-from-foreign episodes faculty)
+  (filter (lambda (e) (eq? (episode-winner-vec e) faculty)) episodes))
