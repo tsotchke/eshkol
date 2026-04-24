@@ -2638,6 +2638,17 @@ int main(int argc, char **argv)
                     jit_ctx.executeBatch(batch, /*silent=*/false);
                 } catch (const std::exception& e) {
                     eshkol_error("JIT batch execution failed: %s", e.what());
+                    // Quirk #6 (2026-04-23): surface the failure in the
+                    // exit status. The -r path used to return 0 even
+                    // when batch codegen failed (LLVM verification
+                    // error, module unwrap, etc.), which made compile
+                    // failures look like "program ran but printed
+                    // nothing" to the user. executeBatch now throws
+                    // on codegen failure; signal the caller via non-
+                    // zero exit so CI / bench / scripts see it.
+                    file.close();
+                    eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_NONE);
+                    return 1;
                 }
             }
 
