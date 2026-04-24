@@ -189,8 +189,30 @@ llvm::Value* CollectionCodegen::car(const eshkol_operations_t* op) {
         llvm::Value* is_tensor_subtype = ctx_.builder().CreateICmpEQ(subtype,
             llvm::ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_TENSOR));
         llvm::Value* is_vector_or_tensor = ctx_.builder().CreateOr(is_vector_subtype, is_tensor_subtype);
+        // Only HEAP_SUBTYPE_CONS (0) is a valid pair. Symbols, strings, etc.
+        // are NOT pairs — raise "not a pair" rather than silently reading garbage.
+        llvm::Value* is_cons_probe = ctx_.builder().CreateICmpEQ(subtype,
+            llvm::ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_CONS));
 
-        ctx_.builder().CreateCondBr(is_vector_or_tensor, vector_block, list_block);
+        llvm::BasicBlock* car_heap_raise =
+            llvm::BasicBlock::Create(ctx_.context(), "car_heap_not_pair", current_func);
+        llvm::BasicBlock* car_cons_check =
+            llvm::BasicBlock::Create(ctx_.context(), "car_cons_check", current_func);
+        ctx_.builder().CreateCondBr(is_vector_or_tensor, vector_block, car_cons_check);
+
+        ctx_.builder().SetInsertPoint(car_cons_check);
+        ctx_.builder().CreateCondBr(is_cons_probe, list_block, car_heap_raise);
+
+        ctx_.builder().SetInsertPoint(car_heap_raise);
+        {
+            llvm::FunctionCallee raise_fn =
+                ctx_.module().getOrInsertFunction("eshkol_raise_not_pair",
+                    llvm::FunctionType::get(ctx_.voidType(), {ctx_.ptrType()}, false));
+            llvm::Value* err_msg = ctx_.builder().CreateGlobalStringPtr(
+                "car: argument is not a pair", "car_heap_err");
+            ctx_.builder().CreateCall(raise_fn, {err_msg});
+            ctx_.builder().CreateUnreachable();
+        }
 
         // VECTOR/TENSOR: Extract element 0
         ctx_.builder().SetInsertPoint(vector_block);
@@ -705,8 +727,31 @@ llvm::Value* CollectionCodegen::cdr(const eshkol_operations_t* op) {
         llvm::Value* is_tensor_subtype = ctx_.builder().CreateICmpEQ(subtype,
             llvm::ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_TENSOR));
         llvm::Value* is_vector_or_tensor = ctx_.builder().CreateOr(is_vector_subtype, is_tensor_subtype);
+        // Only HEAP_SUBTYPE_CONS (0) is a valid cons pair in the heap.
+        // Symbols (10), strings (1), hashes (5), etc. are NOT pairs — raise.
+        llvm::Value* is_cons_subtype = ctx_.builder().CreateICmpEQ(subtype,
+            llvm::ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_CONS));
 
-        ctx_.builder().CreateCondBr(is_vector_or_tensor, vector_block, list_block);
+        llvm::BasicBlock* cdr_heap_raise =
+            llvm::BasicBlock::Create(ctx_.context(), "cdr_heap_not_pair", current_func);
+        // Route: vector/tensor → vector_block, cons → list_block, else → raise
+        llvm::BasicBlock* cdr_cons_check =
+            llvm::BasicBlock::Create(ctx_.context(), "cdr_cons_check", current_func);
+        ctx_.builder().CreateCondBr(is_vector_or_tensor, vector_block, cdr_cons_check);
+
+        ctx_.builder().SetInsertPoint(cdr_cons_check);
+        ctx_.builder().CreateCondBr(is_cons_subtype, list_block, cdr_heap_raise);
+
+        ctx_.builder().SetInsertPoint(cdr_heap_raise);
+        {
+            llvm::FunctionCallee raise_fn =
+                ctx_.module().getOrInsertFunction("eshkol_raise_not_pair",
+                    llvm::FunctionType::get(ctx_.voidType(), {ctx_.ptrType()}, false));
+            llvm::Value* err_msg = ctx_.builder().CreateGlobalStringPtr(
+                "cdr: argument is not a pair", "cdr_heap_err");
+            ctx_.builder().CreateCall(raise_fn, {err_msg});
+            ctx_.builder().CreateUnreachable();
+        }
 
         // VECTOR/TENSOR: Create new vector with elements 1 through n-1
         ctx_.builder().SetInsertPoint(vector_block);

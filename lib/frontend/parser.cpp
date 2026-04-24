@@ -1052,6 +1052,24 @@ static hott_type_expr_t* parseTypeExpression(SchemeTokenizer& tokenizer) {
 // ===== END HoTT TYPE EXPRESSION PARSING =====
 
 // Parse quoted data - allows any expression including data lists like (1 2 3)
+// Helper: build a (cons car cdr) CALL_OP node used by both quoted and
+// quasiquoted list parsers when they encounter a dotted-pair tail.
+static eshkol_ast_t make_cons_call(eshkol_ast_t car_ast, eshkol_ast_t cdr_ast) {
+    eshkol_ast_t ast;
+    ast.type = ESHKOL_OP;
+    ast.operation.op = ESHKOL_CALL_OP;
+    ast.operation.call_op.func = new eshkol_ast_t;
+    ast.operation.call_op.func->type = ESHKOL_VAR;
+    ast.operation.call_op.func->variable.id = new char[5];
+    memcpy(ast.operation.call_op.func->variable.id, "cons", 5);
+    ast.operation.call_op.func->variable.data = nullptr;
+    ast.operation.call_op.num_vars = 2;
+    ast.operation.call_op.variables = new eshkol_ast_t[2];
+    ast.operation.call_op.variables[0] = car_ast;
+    ast.operation.call_op.variables[1] = cdr_ast;
+    return ast;
+}
+
 // This is called AFTER consuming the opening token (QUOTE or first element of quote form)
 static eshkol_ast_t parse_quoted_data(SchemeTokenizer& tokenizer) {
     Token token = tokenizer.nextToken();
@@ -1081,8 +1099,11 @@ static eshkol_ast_t parse_quoted_data_with_token(SchemeTokenizer& tokenizer, Tok
 }
 
 // Parse a quoted list - called after consuming '('
+// Handles both proper lists '(a b c) and dotted/improper lists '(a b . c).
 static eshkol_ast_t parse_quoted_list_internal(SchemeTokenizer& tokenizer) {
     std::vector<eshkol_ast_t> elements;
+    bool has_dot_tail = false;
+    eshkol_ast_t dot_tail;
 
     while (true) {
         Token inner_token = tokenizer.nextToken();
@@ -1090,6 +1111,20 @@ static eshkol_ast_t parse_quoted_list_internal(SchemeTokenizer& tokenizer) {
         if (inner_token.type == TOKEN_EOF) {
             PARSE_ERROR_AT(inner_token, "unexpected end of input in quoted list");
             return {.type = ESHKOL_INVALID};
+        }
+
+        // R7RS §7.1.2 — a bare '.' between datums introduces a dotted pair.
+        // '(a b . c) means (cons a (cons b c)), NOT (list a b (symbol ".") c).
+        if (inner_token.type == TOKEN_SYMBOL && inner_token.value == ".") {
+            dot_tail = parse_quoted_data(tokenizer);
+            if (dot_tail.type == ESHKOL_INVALID) return dot_tail;
+            Token close = tokenizer.nextToken();
+            if (close.type != TOKEN_RPAREN) {
+                PARSE_ERROR_AT(close, "expected ')' after dotted pair tail — only one datum may follow '.'");
+                return {.type = ESHKOL_INVALID};
+            }
+            has_dot_tail = true;
+            break;
         }
 
         // Recursively parse each element (handles arbitrary nesting)
@@ -1100,8 +1135,16 @@ static eshkol_ast_t parse_quoted_list_internal(SchemeTokenizer& tokenizer) {
         elements.push_back(elem);
     }
 
-    // Build list as CALL_OP with "list" as function
-    // This allows codegenQuotedAST to handle it correctly
+    if (has_dot_tail) {
+        // Build right-nested cons chain: (cons e0 (cons e1 ... (cons eN dot_tail)...))
+        eshkol_ast_t result = dot_tail;
+        for (int i = (int)elements.size() - 1; i >= 0; i--) {
+            result = make_cons_call(elements[i], result);
+        }
+        return result;
+    }
+
+    // Proper list — build as (list e0 e1 ... eN)
     eshkol_ast_t ast;
     ast.type = ESHKOL_OP;
     ast.operation.op = ESHKOL_CALL_OP;
@@ -1199,6 +1242,8 @@ static eshkol_ast_t parse_quasiquoted_data_with_token(SchemeTokenizer& tokenizer
 // Parse a quasiquoted list - called after consuming '('
 static eshkol_ast_t parse_quasiquoted_list_internal(SchemeTokenizer& tokenizer) {
     std::vector<eshkol_ast_t> elements;
+    bool has_dot_tail = false;
+    eshkol_ast_t dot_tail;
 
     while (true) {
         Token inner_token = tokenizer.nextToken();
@@ -1206,6 +1251,19 @@ static eshkol_ast_t parse_quasiquoted_list_internal(SchemeTokenizer& tokenizer) 
         if (inner_token.type == TOKEN_EOF) {
             PARSE_ERROR_AT(inner_token, "unexpected end of input in quasiquoted list");
             return {.type = ESHKOL_INVALID};
+        }
+
+        // Dotted-pair tail: `(a b . c) or `(a b . ,expr)
+        if (inner_token.type == TOKEN_SYMBOL && inner_token.value == ".") {
+            dot_tail = parse_quasiquoted_data(tokenizer);
+            if (dot_tail.type == ESHKOL_INVALID) return dot_tail;
+            Token close = tokenizer.nextToken();
+            if (close.type != TOKEN_RPAREN) {
+                PARSE_ERROR_AT(close, "expected ')' after dotted pair tail — only one datum may follow '.'");
+                return {.type = ESHKOL_INVALID};
+            }
+            has_dot_tail = true;
+            break;
         }
 
         // Recursively parse each element (handles unquote/unquote-splicing)
@@ -1216,8 +1274,15 @@ static eshkol_ast_t parse_quasiquoted_list_internal(SchemeTokenizer& tokenizer) 
         elements.push_back(elem);
     }
 
-    // Build list as CALL_OP with "list" as function
-    // This allows codegenQuasiquotedAST to handle it correctly
+    if (has_dot_tail) {
+        eshkol_ast_t result = dot_tail;
+        for (int i = (int)elements.size() - 1; i >= 0; i--) {
+            result = make_cons_call(elements[i], result);
+        }
+        return result;
+    }
+
+    // Proper list — build as (list e0 e1 ... eN)
     eshkol_ast_t ast;
     ast.type = ESHKOL_OP;
     ast.operation.op = ESHKOL_CALL_OP;
