@@ -20670,25 +20670,88 @@ private:
                         // the outer function returns, but the closure may outlive that.
                         // Solution: Allocate storage on the arena (heap) and use that.
                         // Both the outer scope and the closure will share this arena storage.
+                        //
+                        // Bug T (2026-04-23): placement of the arena_allocate + seed
+                        // store must dominate every subsequent use of var_name.
+                        // Emitting at the current builder position failed when the
+                        // capturing lambda sat in one arm of an `if` — the other arm's
+                        // access through the updated symbol_table loaded a pointer
+                        // defined only on the lambda's arm. Function-entry hoisting
+                        // also fails when the stack alloca itself isn't in entry
+                        // (named-let / TCO pattern — alloca lives in the tco_loop
+                        // body block), because reading the stack alloca in entry
+                        // precedes its definition.
+                        //
+                        // Fix: place the arena_allocate + seed store immediately AFTER
+                        // the stack alloca's initial store. The let/let*/letrec
+                        // binding code emits:
+                        //     %w = alloca tagged_value
+                        //     store <init>, %w
+                        // so inserting right after the store gives us (1) arena_storage
+                        // defined in the SAME block as the stack alloca — guaranteed
+                        // to dominate any later use of var_name that currently reads
+                        // from the stack alloca, and (2) a seed value that is not
+                        // NULL-initialized arena memory.
+                        AllocaInst* stack_alloca = dyn_cast<AllocaInst>(var_value);
+                        Instruction* seed_store = nullptr;
+                        if (stack_alloca) {
+                            // Find the first Store instruction whose pointer operand is
+                            // the stack alloca. In practice this is the store emitted
+                            // by the let/let*/letrec binding right after CreateAlloca.
+                            for (User* u : stack_alloca->users()) {
+                                if (StoreInst* si = dyn_cast<StoreInst>(u)) {
+                                    if (si->getPointerOperand() == stack_alloca) {
+                                        seed_store = si;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
 
-                        // 1. Allocate space for tagged_value on the arena (16 bytes)
-                        Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+                        IRBuilderBase::InsertPoint saved_ip = builder->saveIP();
+                        if (seed_store) {
+                            // Insert right AFTER the let's initial store. The
+                            // IRBuilder SetInsertPoint(Instruction*) inserts BEFORE
+                            // the instruction; getNextNode() gives us the position
+                            // just after seed_store.
+                            Instruction* next = seed_store->getNextNode();
+                            if (next) {
+                                builder->SetInsertPoint(next);
+                            } else {
+                                // seed_store is terminator's predecessor; fall back
+                                // to end of its block.
+                                builder->SetInsertPoint(seed_store->getParent(),
+                                    seed_store->getParent()->end());
+                            }
+                        }
+                        // If no seed_store was found, leave the IP at the current
+                        // position — this degrades to the pre-Bug-T behavior for
+                        // that edge case, but doesn't make it worse.
+
+                        Value* arena_ptr = builder->CreateLoad(
+                            PointerType::getUnqual(*context), global_arena);
                         Value* alloc_size = sizeConst(16);  // sizeof(eshkol_tagged_value_t)
-                        Value* arena_storage = builder->CreateCall(getArenaAllocateFunc(), {arena_ptr, alloc_size});
+                        Value* arena_storage = builder->CreateCall(
+                            getArenaAllocateFunc(), {arena_ptr, alloc_size});
 
-                        // 2. Copy current value from stack alloca to arena storage
-                        Value* current_val = builder->CreateLoad(tagged_value_type, var_value, var_name + "_val");
-                        builder->CreateStore(current_val, arena_storage);
+                        // Seed the arena storage with the let's bound value. The stack
+                        // alloca's store has just happened (we inserted after it), so
+                        // this load sees that value.
+                        Value* seed_val = builder->CreateLoad(
+                            tagged_value_type, var_value, var_name + "_val");
+                        builder->CreateStore(seed_val, arena_storage);
 
-                        // 3. Update symbol table to point to arena storage (so outer scope uses it too)
-                        // This ensures set! in both outer scope and lambda modify the same storage
+                        builder->restoreIP(saved_ip);
+
+                        // Update symbol table to point to arena storage (so outer scope uses it too).
+                        // This ensures set! in both outer scope and lambda modify the same storage.
                         symbol_table[var_name] = arena_storage;
 
-                        // 4. Store arena pointer as int64 in closure environment
+                        // Store arena pointer as int64 in closure environment
                         Value* arena_ptr_int = builder->CreatePtrToInt(arena_storage, int64_type);
                         captured_val = packInt64ToTaggedValue(arena_ptr_int, true);
 
-                        eshkol_debug("Closure escape fix: moved %s from stack to arena", var_name.c_str());
+                        eshkol_debug("Closure escape fix: moved %s from stack to arena (after let seed-store)", var_name.c_str());
                     } else if (isa<AllocaInst>(var_value)) {
                         // TCO alloca - load the value and capture it (not pointer)
                         captured_val = builder->CreateLoad(tagged_value_type, var_value, var_name + "_val");

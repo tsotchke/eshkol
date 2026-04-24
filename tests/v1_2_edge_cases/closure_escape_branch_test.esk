@@ -1,0 +1,97 @@
+;; closure_escape_branch_test.esk — Noesis Bug T (2026-04-23)
+;;
+;; The "closure escape fix" (llvm_codegen.cpp:20668 region) moves a
+;; let-bound variable's storage from stack alloca to arena when it's
+;; captured by a lambda, then updates symbol_table[var_name] to the
+;; arena pointer so subsequent reads share the same cell. The move
+;; was emitted at the current builder position — inside whatever
+;; conditional branch held the capturing lambda. Sibling branches
+;; that also referenced the var then loaded from a pointer whose
+;; definition didn't dominate them, producing LLVM IR that the
+;; verifier rejected:
+;;
+;;   %N = call ptr @arena_allocate(ptr %N-1, i64 16)
+;;   %w.load = load %eshkol_tagged_value, ptr %N, align 8
+;;   Instruction does not dominate all uses!
+;;
+;; Fix: place the arena allocate + seed store immediately after the
+;; let binding's initial store to the stack alloca. The arena copy
+;; then dominates every subsequent use of var_name, including the
+;; sibling if-arm that reads var_name directly, the named-let
+;; tco_loop backedges, and any nested scope inside the capture
+;; region.
+;;
+;; Surfaced in Noesis metacog.esk's winner-dist — (filter (lambda (p)
+;; ...w...) acc) inside (if existing ...) with (cons w 1) in the
+;; sibling branch.
+
+(require stdlib)
+
+(define passed 0)
+(define failed 0)
+(define (check name cond)
+  (if cond
+      (begin (display "PASS: ") (display name) (newline)
+             (set! passed (+ passed 1)))
+      (begin (display "FAIL: ") (display name) (newline)
+             (set! failed (+ failed 1)))))
+
+;; Case 1: simplest — let-bound var captured in one if arm, used directly in other
+(define (test1 acc flag)
+  (let ((w 'a))
+    (if flag
+        (filter (lambda (p) (eq? p w)) acc)
+        (cons w acc))))
+(check "let+if TRUE"  (equal? (test1 '(a b c a) #t) '(a a)))
+(check "let+if FALSE" (equal? (test1 '(a b c a) #f) '(a a b c a)))
+
+;; Case 2: let* binding
+(define (test2 acc flag)
+  (let* ((w 'x))
+    (if flag
+        (map (lambda (p) (if (eq? p w) 'match 'miss)) acc)
+        (cons w acc))))
+(check "let*+if TRUE"  (equal? (test2 '(x y x) #t) '(match miss match)))
+(check "let*+if FALSE" (equal? (test2 '(x y x) #f) '(x x y x)))
+
+;; Case 3: named-let loop with let* body — the full Noesis repro pattern
+(define (ep-winner e) (vector-ref e 2))
+(define (winner-dist eps)
+  (let loop ((es eps) (acc (list)))
+    (cond
+      ((null? es) acc)
+      (else
+       (let* ((w (ep-winner (car es)))
+              (existing (assoc w acc)))
+         (if existing
+             (loop (cdr es)
+                   (cons (cons w (+ 1 (cdr existing)))
+                         (filter (lambda (p) (not (eq? (car p) w))) acc)))
+             (loop (cdr es) (cons (cons w 1) acc))))))))
+
+(define (mk-ep w)
+  (let ((e (make-vector 5 0)))
+    (vector-set! e 2 w)
+    e))
+
+(define dist (winner-dist (list (mk-ep 'x) (mk-ep 'x) (mk-ep 'y))))
+(check "winner-dist x count" (= (cdr (assoc 'x dist)) 2))
+(check "winner-dist y count" (= (cdr (assoc 'y dist)) 1))
+
+;; Case 4: regression guard — capture with no branch split still works
+(define (test4 acc)
+  (let ((w 'z))
+    (filter (lambda (p) (not (eq? p w))) acc)))
+(check "capture no-branch" (equal? (test4 '(a z b z c)) '(a b c)))
+
+;; Case 5: regression guard — let-bound var, no capture at all
+(define (test5 flag)
+  (let ((w 'a))
+    (if flag w 'other)))
+(check "no-capture TRUE"  (eq? (test5 #t) 'a))
+(check "no-capture FALSE" (eq? (test5 #f) 'other))
+
+(newline)
+(display "Passed: ") (display passed) (newline)
+(display "Failed: ") (display failed) (newline)
+(if (> failed 0) (exit 1) (exit 0))
