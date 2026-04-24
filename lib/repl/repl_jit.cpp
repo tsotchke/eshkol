@@ -1698,9 +1698,16 @@ void* ReplJITContext::executeBatch(std::vector<eshkol_ast_t>& asts, bool silent)
                 continue;
             }
             std::string fname = func.getName().str();
-            if (fname.find("display") != std::string::npos ||
-                fname.find("print") != std::string::npos ||
-                fname.find("__internal") != std::string::npos ||
+            // Bug U lesson: substring matches are dangerous for names.
+            // The first-pass path (above) already hardened to exact name
+            // equality. The fallback is for generators that don't emit
+            // a canonical "main" — we skip known non-entry patterns by
+            // exact name where possible, or by the underscore-prefix
+            // convention for internal helpers. Anything else is a
+            // legitimate entry-point candidate.
+            if (fname == "display" || fname == "print" || fname == "newline" ||
+                fname == "write" || fname == "write-char" ||
+                fname.starts_with("__internal") ||
                 func.hasLocalLinkage()) {
                 continue;
             }
@@ -1712,6 +1719,29 @@ void* ReplJITContext::executeBatch(std::vector<eshkol_ast_t>& asts, bool silent)
     std::string func_name;
     if (entry_func) {
         func_name = entry_func->getName().str();
+        // Bug U safeguard (2026-04-24): if we're about to rename a user-
+        // defined function to __repl_batch_eval_N, something upstream is
+        // wrong — the module should always contain an explicit "main"
+        // wrapper, and the fallback path should not pick a user-define.
+        // Renaming would destroy the user's function body and leave the
+        // REPL with no actual entry point. Fail fast with a diagnostic
+        // instead of silently producing a broken batch.
+        bool looks_like_user_define =
+            defined_lambdas_.find(func_name) != defined_lambdas_.end() ||
+            func_name.find("__rv") != std::string::npos ||
+            (entry_func->hasExternalLinkage() &&
+             func_name.find("__repl_") != 0 &&
+             func_name != "main" && func_name != "__top_level");
+        if (looks_like_user_define && !silent) {
+            std::cerr << "Internal error: REPL batch has no 'main' entry — "
+                      << "about to rename user function '" << func_name
+                      << "' as the batch entry, which would lose its body. "
+                      << "Aborting. Please file as an Eshkol compiler bug."
+                      << std::endl;
+            throw std::runtime_error(
+                "REPL batch has no 'main' entry; refusing to rename user '" +
+                func_name + "' to __repl_batch_eval_N");
+        }
         std::string unique_func_name = "__repl_batch_eval_" + std::to_string(eval_counter_);
         entry_func->setName(unique_func_name);
         func_name = unique_func_name;
