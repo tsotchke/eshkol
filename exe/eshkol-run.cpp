@@ -2074,8 +2074,15 @@ static void update_ast_references(eshkol_ast_t* ast,
                 case ESHKOL_WS_REGISTER_OP:
                 case ESHKOL_WS_STEP_OP:
                 case ESHKOL_EXTERN_OP:
-                    for (uint64_t i = 0; i < ast->operation.call_op.num_vars; i++) {
-                        update_ast_references(&ast->operation.call_op.variables[i], rename_map);
+                    // ESHKOL_EXTERN_OP uses `extern_op` in the union, NOT
+                    // `call_op` — reading call_op.num_vars/variables here
+                    // dereferences the extern_op.return_type char* as if it
+                    // were an array length and walked off into uninitialised
+                    // memory, producing the SIGSEGV that crashed every
+                    // private-extern-bearing module under
+                    // process_requires + rename_private_symbols.
+                    for (uint64_t i = 0; i < ast->operation.extern_op.num_params; i++) {
+                        update_ast_references(&ast->operation.extern_op.parameters[i], rename_map);
                     }
                     break;
 

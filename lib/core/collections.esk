@@ -31,6 +31,8 @@
 ;;;   (deque->list)
 
 (require core.list.higher_order)
+(require core.list.transform)
+(require core.list.query)
 
 (provide
   ;; priority queue
