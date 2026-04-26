@@ -28579,15 +28579,18 @@ private:
 
             // append builtin wrapper removed - now in stdlib.esk (core/list/transform.esk)
 
-            // Handle display builtin function
+            // Handle display builtin function — first-class wrapper.
+            // ABI must be tagged_value -> tagged_value because the closure
+            // dispatcher and `map` cons-builder both treat the result as a
+            // tagged value. The previous version returned `i64 0`, which
+            // crashed `(map display lst)` when the i64 was fed back into
+            // unpackDouble in the cons-cell builder.
             if (func_name == "display") {
-                // Create wrapper for display that takes tagged_value and returns 0
-                // Uses the proper runtime eshkol_display_value for full type support
                 static int display_counter = 0;
                 std::string wrapper_name = "builtin_display_" + std::to_string(display_counter++);
 
                 FunctionType* wrapper_type = FunctionType::get(
-                    int64_type,
+                    tagged_value_type,
                     {tagged_value_type},
                     false
                 );
@@ -28603,15 +28606,23 @@ private:
                 IRBuilderBase::InsertPoint old_point = builder->saveIP();
                 builder->SetInsertPoint(entry);
 
-                // Call proper runtime display function
+                // Spill the arg to the stack so the runtime can read by ptr.
                 Value* arg_tagged = &*wrapper_func->arg_begin();
-                if (eshkol_display_value_func) {
-                    // Store tagged value on stack and pass pointer to runtime
-                    Value* arg_ptr = builder->CreateAlloca(tagged_value_type, nullptr, "display_arg");
-                    builder->CreateStore(arg_tagged, arg_ptr);
-                    builder->CreateCall(eshkol_display_value_func, {arg_ptr});
-                }
-                builder->CreateRet(ConstantInt::get(int64_type, 0));
+                Value* arg_ptr = builder->CreateAlloca(tagged_value_type, nullptr, "display_arg");
+                builder->CreateStore(arg_tagged, arg_ptr);
+
+                // Use the runtime helper directly (bypasses any context-state
+                // dependency on eshkol_display_value_func being initialised).
+                FunctionType* rt_type = FunctionType::get(
+                    Type::getVoidTy(*context),
+                    {PointerType::getUnqual(*context)},
+                    false);
+                FunctionCallee rt_fn = module->getOrInsertFunction(
+                    "eshkol_display_value", rt_type);
+                builder->CreateCall(rt_fn, {arg_ptr});
+
+                // Return tagged null — display has no useful result.
+                builder->CreateRet(packNullToTaggedValue());
 
                 builder->restoreIP(old_point);
                 registerContextFunction(wrapper_name, wrapper_func);
