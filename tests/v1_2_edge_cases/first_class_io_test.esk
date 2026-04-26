@@ -1,34 +1,22 @@
-;; first_class_io_test.esk — Noesis Quirk 11 (2026-04-24)
+;; first_class_io_test.esk — Noesis Quirk 11 (2026-04-25)
 ;;
 ;; `display`, `write`, `newline` used to be codegen-only builtins —
 ;; callable at the call site but not as first-class values.
 ;;   (for-each display xs)        ; "Unbound variable: display"
 ;;   (define printer display)     ; "Unbound variable: display"
-;;   (map write ys)               ; "Unbound variable: write"
 ;; Noesis had to write a recursive helper every time it wanted to
 ;; print a list.
 ;;
-;; Fix: each is wrapped as a unary closure in codegenVariable (see
-;; createBuiltinIOFunction) and registered with the type checker as
-;; a Value → Null function.
+;; Fix (Quirk 11): each is wrapped as a unary closure in
+;; codegenVariable (createBuiltinIOFunction) and registered with the
+;; type checker as a Value → Null function.
 ;;
-;; What this test verifies (via a side-effect counter, because
-;; output-redirect via `parameterize current-output-port` does not
-;; currently rebind display's underlying port — that's a separate
-;; bug in the runtime port plumbing):
-;;
-;;   1. Bare-name references (define/let/let*) don't error.
-;;   2. The resulting closure is callable and doesn't crash.
-;;   3. for-each with display/write iterates N times (verified by
-;;      incrementing a counter inside a custom side-effecting proc
-;;      threaded alongside).
-;;   4. define-alias preserves the callable contract.
-;;
-;; What this test does NOT verify (pending runtime port-plumbing fix
-;; for `parameterize current-output-port`):
-;;   - The exact text printed by display/write. Output goes to
-;;     stdout regardless of the dynamic parameter, so a string port
-;;     cannot capture it under parameterize.
+;; Adjacent fix (port plumbing, 2026-04-25): the runtime-side
+;; current-output-port is now a real R7RS parameter object — its
+;; FILE* is held in a global cell that `parameterize` mutates and
+;; that `display` / `write` / `newline` (no port arg) consult.
+;; Together this lets us assert on captured output, not just
+;; existence of a callable.
 
 (require stdlib)
 
@@ -43,83 +31,67 @@
              (display ", got ") (display actual) (newline)
              (set! failed (+ failed 1)))))
 
+;; Helper: capture all stdout produced by THUNK into a string.
+(define (capture thunk)
+  (let ((p (open-output-string)))
+    (parameterize ((current-output-port p))
+      (thunk))
+    (get-output-string p)))
+
 ;; ── Bare-name references resolve (the core Quirk 11 contract) ────
-;; Before fix these raised "Unbound variable"; after fix they yield
-;; callable values. The predicate distinguishes closures from
-;; symbols / #f / etc.
+(check "bare display is a procedure"  (procedure? display)  #t)
+(check "bare write   is a procedure"  (procedure? write)    #t)
+(check "bare newline is a procedure"  (procedure? newline)  #t)
+
+;; ── let / define alias preserves callability ─────────────────────
 (define alias-display display)
-(define alias-write   write)
-(define alias-newline newline)
+(check "define-alias display is procedure"
+       (procedure? alias-display) #t)
+(check "let-bound display is procedure"
+       (let ((d display)) (procedure? d)) #t)
 
-(check "bare 'display' resolves to a procedure"  (procedure? alias-display) #t)
-(check "bare 'write'   resolves to a procedure"  (procedure? alias-write)   #t)
-(check "bare 'newline' resolves to a procedure"  (procedure? alias-newline) #t)
+;; ── Calling the alias actually writes to current-output-port ─────
+(check "alias-display writes captured"
+       (capture (lambda () (alias-display 42)))
+       "42")
+(check "alias-display preserves type repr"
+       (capture (lambda () (alias-display 'sigma)))
+       "sigma")
 
-;; ── let- and let*-bound aliases resolve too ──────────────────────
-(check "let-bound display is a procedure"
-       (let ((d display)) (procedure? d))
-       #t)
-(check "let*-bound write is a procedure"
-       (let* ((w write)) (procedure? w))
-       #t)
+;; ── for-each display iterates and writes each element ───────────
+(check "for-each display 3 symbols"
+       (capture (lambda () (for-each display '(a b c))))
+       "abc")
+(check "for-each display mixed types"
+       (capture (lambda () (for-each display '(1 "two" #t))))
+       "1two#t")
+(check "for-each display empty list"
+       (capture (lambda () (for-each display '())))
+       "")
 
-;; ── Calling the alias doesn't crash and returns void/null ────────
-;; We can't check *what* it printed (parameterize/port redirect is
-;; broken — separate bug), but we can check the call completes and
-;; the process keeps running.
-(define call-count 0)
-(alias-display 42)                          ; visible on stdout
-(set! call-count (+ call-count 1))
-(alias-write 'symbolic)                     ; visible on stdout
-(set! call-count (+ call-count 1))
-(alias-newline '())                         ; ignored arg per closure ABI
-(set! call-count (+ call-count 1))
-(check "3 alias calls all completed" call-count 3)
+;; ── for-each write uses write semantics (strings quoted) ─────────
+(check "for-each write quotes strings"
+       (capture (lambda () (for-each write '("a" "b" "c"))))
+       "\"a\"\"b\"\"c\"")
 
-;; ── for-each iterates N times over display (side-effect counter) ─
-;; We thread a counter-incrementing side-effect alongside display
-;; via a lambda composed over both. The counter tells us for-each
-;; actually dispatched through the display closure.
-(define tick 0)
-(define (tick! x)
-  (set! tick (+ tick 1))
-  (display x))                              ; real display at call site
+;; ── newline as first-class ──────────────────────────────────────
+(check "for-each newline 3 times → 3 newlines"
+       (capture (lambda () (for-each newline '(1 2 3))))
+       "\n\n\n")
 
-;; Positive control: 5 elements → counter hits 5
-(set! tick 0)
-(for-each tick! '(a b c d e))
-(check "for-each tick! over 5 elems -> counter=5" tick 5)
+;; ── Lambda capturing display ─────────────────────────────────────
+(check "lambda+display closure"
+       (capture (lambda ()
+                  (let ((p (lambda (x) (display x) (display "|"))))
+                    (p 'a) (p 'b) (p 'c))))
+       "a|b|c|")
 
-;; The actual Quirk-11 check: `for-each display` must dispatch
-;; through the alias closure the same number of times. We detect
-;; dispatch by pairing it with a real counter via two passes.
-(define n-elems (length '(a b c 1 2 "str" #t)))
-(check "7-element list dispatches 7 times (counter)"
-       (begin
-         (set! tick 0)
-         (for-each (lambda (x) (tick! x)) '(a b c 1 2 "str" #t))
-         tick)
-       n-elems)
-
-;; Bare `for-each display` — we can't count from inside the closure,
-;; but we can check that evaluation returns without raising. A
-;; failing dispatch would trip the stdlib's for-each and either
-;; raise or exit non-zero.
-(define finished #f)
-(for-each display '(a b c))
-(set! finished #t)
-(check "for-each display reached the set! after" finished #t)
-(for-each write '(alpha "beta" 3.14))
-(set! finished "write-done")
-(check "for-each write reached the set! after"    finished "write-done")
-
-;; ── Aliased display called inside a higher-order function ───────
+;; ── Higher-order helper takes display as a value parameter ──────
 (define (apply-to-each proc xs)
-  (for-each proc xs)
-  (length xs))
-(check "for-each with aliased display inside helper"
-       (apply-to-each alias-display '(1 2 3 4))
-       4)
+  (for-each proc xs))
+(check "for-each via aliased helper"
+       (capture (lambda () (apply-to-each alias-display '(1 2 3 4))))
+       "1234")
 
 (newline)
 (display "Passed: ") (display passed) (newline)

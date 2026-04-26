@@ -1759,23 +1759,10 @@ static llvm::Function* getOrDeclareFwrite(CodegenContext& ctx) {
 
 // Helper to get stdin global variable
 static llvm::Value* getStdin(CodegenContext& ctx) {
-#ifdef _WIN32
-    llvm::Function* stdin_stream_func = getOrDeclareStdinStream(ctx);
-    return ctx.builder().CreateCall(stdin_stream_func, {});
-#else
-#ifdef __APPLE__
-    const char* stdin_name = "__stdinp";
-#else
-    const char* stdin_name = "stdin";
-#endif
-    llvm::GlobalVariable* stdin_var = ctx.module().getGlobalVariable(stdin_name);
-    if (!stdin_var) {
-        stdin_var = new llvm::GlobalVariable(
-            ctx.module(), ctx.ptrType(), false,
-            llvm::GlobalVariable::ExternalLinkage, nullptr, stdin_name);
-    }
-    return ctx.builder().CreateLoad(ctx.ptrType(), stdin_var);
-#endif
+    auto* ft = llvm::FunctionType::get(ctx.ptrType(), {}, false);
+    auto callee = ctx.module().getOrInsertFunction(
+        "eshkol_runtime_current_input_fp", ft);
+    return ctx.builder().CreateCall(callee, {});
 }
 
 // Helper to get stderr global variable
@@ -1799,26 +1786,16 @@ static llvm::Value* getStderr(CodegenContext& ctx) {
 #endif
 }
 
-// Helper to get stdout global variable
-// On macOS/Darwin, stdout is __stdoutp; on Linux it's stdout
+// Helper that returns the FILE* for the IMPLICIT output port. Goes through
+// the runtime cell `eshkol_runtime_current_output_fp()` so that
+// `parameterize ((current-output-port p)) (display x)` actually writes into
+// `p` instead of stdout. The runtime falls back to real stdout if the cell
+// is unset, so behaviour is unchanged when the user doesn't parameterize.
 static llvm::Value* getStdout(CodegenContext& ctx) {
-#ifdef _WIN32
-    llvm::Function* stdout_stream_func = getOrDeclareStdoutStream(ctx);
-    return ctx.builder().CreateCall(stdout_stream_func, {});
-#else
-#ifdef __APPLE__
-    const char* stdout_name = "__stdoutp";
-#else
-    const char* stdout_name = "stdout";
-#endif
-    llvm::GlobalVariable* stdout_var = ctx.module().getGlobalVariable(stdout_name);
-    if (!stdout_var) {
-        stdout_var = new llvm::GlobalVariable(
-            ctx.module(), ctx.ptrType(), false,
-            llvm::GlobalVariable::ExternalLinkage, nullptr, stdout_name);
-    }
-    return ctx.builder().CreateLoad(ctx.ptrType(), stdout_var);
-#endif
+    auto* ft = llvm::FunctionType::get(ctx.ptrType(), {}, false);
+    auto callee = ctx.module().getOrInsertFunction(
+        "eshkol_runtime_current_output_fp", ft);
+    return ctx.builder().CreateCall(callee, {});
 }
 
 static llvm::Function* getOrDeclareStdoutStream(CodegenContext& ctx) {

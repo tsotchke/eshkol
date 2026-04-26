@@ -1085,6 +1085,18 @@ void eshkol_write_value(const eshkol_tagged_value_t* value);  // Scheme 'write' 
 void eshkol_write_value_to_port(const eshkol_tagged_value_t* value, void* port);
 void eshkol_display_value_to_port(const eshkol_tagged_value_t* value, void* port);
 
+// ─── R7RS current-{input,output,error}-port parameter cells ───────────────
+// `display`/`write`/`newline` (no explicit port arg) and the codegen for
+// `(current-output-port)` consult these. `(parameterize ((current-output-port
+// p)) …)` invokes the setters via the Scheme-level closure that wraps the
+// FILE* extracted from the port tagged value.
+void* eshkol_runtime_current_output_fp(void);
+void* eshkol_runtime_current_input_fp(void);
+void* eshkol_runtime_current_error_fp(void);
+void  eshkol_runtime_set_current_output_fp(void* fp);
+void  eshkol_runtime_set_current_input_fp(void* fp);
+void  eshkol_runtime_set_current_error_fp(void* fp);
+
 // Display a list (cons cell chain)
 void eshkol_display_list(uint64_t cons_ptr, eshkol_display_opts_t* opts);
 

@@ -11042,63 +11042,55 @@ private:
             return tagged_->packBool(is_port);
         }
 
-        // R7RS default port procedures
+        // R7RS default port procedures (current-input/output/error-port).
+        // The 0-arg form reads the runtime cell that backs the parameter
+        // object. The 1-arg form is the SET path used by `parameterize`:
+        // unwrap the supplied port's FILE* and write it into the cell.
+        // Without the setter, `parameterize ((current-output-port p)) …`
+        // was silently a no-op and `display` always wrote to stdout.
         if (func_name == "current-input-port" || func_name == "current-output-port" ||
             func_name == "current-error-port") {
-            // Get the appropriate stdio FILE* global
-            uint8_t port_type_tag;
-            Value* file_ptr;
+            uint8_t port_type_tag = (func_name == "current-input-port")
+                ? (uint8_t)(ESHKOL_VALUE_HEAP_PTR | 0x10)
+                : (uint8_t)(ESHKOL_VALUE_HEAP_PTR | 0x40);
+
+            const char* getter_name;
+            const char* setter_name;
             if (func_name == "current-input-port") {
-                port_type_tag = ESHKOL_VALUE_HEAP_PTR | 0x10; // input port
+                getter_name = "eshkol_runtime_current_input_fp";
+                setter_name = "eshkol_runtime_set_current_input_fp";
             } else if (func_name == "current-output-port") {
-                port_type_tag = ESHKOL_VALUE_HEAP_PTR | 0x40; // output port
+                getter_name = "eshkol_runtime_current_output_fp";
+                setter_name = "eshkol_runtime_set_current_output_fp";
             } else {
-                port_type_tag = ESHKOL_VALUE_HEAP_PTR | 0x40; // output port
+                getter_name = "eshkol_runtime_current_error_fp";
+                setter_name = "eshkol_runtime_set_current_error_fp";
             }
 
-#ifdef _WIN32
-            const char* stream_symbol = nullptr;
-            if (func_name == "current-input-port") {
-                stream_symbol = eshkol::runtime::stdin_stream_symbol;
-            } else if (func_name == "current-output-port") {
-                stream_symbol = eshkol::runtime::stdout_stream_symbol;
-            } else {
-                stream_symbol = eshkol::runtime::stderr_stream_symbol;
+            // SETTER form: (current-output-port val) — used by parameterize
+            if (op->call_op.num_vars >= 1) {
+                TypedValue arg_tv = codegenTypedAST(&op->call_op.variables[0]);
+                if (!arg_tv.llvm_value) return nullptr;
+                Value* arg_tagged = typedValueToTaggedValue(arg_tv);
+                // Unpack FILE* from the port's data field (offset {4}).
+                Value* fp_int = builder->CreateExtractValue(arg_tagged, {4});
+                Value* fp_ptr = builder->CreateIntToPtr(fp_int, builder->getPtrTy());
+
+                FunctionType* setter_ft = FunctionType::get(
+                    Type::getVoidTy(*context),
+                    {PointerType::getUnqual(*context)}, false);
+                FunctionCallee setter_fn = module->getOrInsertFunction(setter_name, setter_ft);
+                builder->CreateCall(setter_fn, {fp_ptr});
+                return packNullToTaggedValue();
             }
-            FunctionType* stream_ft = FunctionType::get(PointerType::getUnqual(*context), {}, false);
-            FunctionCallee stream_fn = module->getOrInsertFunction(stream_symbol, stream_ft);
-            file_ptr = builder->CreateCall(stream_fn, {});
-#else
-            const char* var_name;
-            if (func_name == "current-input-port") {
-#ifdef __APPLE__
-                var_name = "__stdinp";
-#else
-                var_name = "stdin";
-#endif
-            } else if (func_name == "current-output-port") {
-#ifdef __APPLE__
-                var_name = "__stdoutp";
-#else
-                var_name = "stdout";
-#endif
-            } else {
-#ifdef __APPLE__
-                var_name = "__stderrp";
-#else
-                var_name = "stderr";
-#endif
-            }
-            auto* stdio_var = module->getGlobalVariable(var_name);
-            if (!stdio_var) {
-                stdio_var = new GlobalVariable(*module, PointerType::getUnqual(*context), false,
-                    GlobalVariable::ExternalLinkage, nullptr, var_name);
-            }
-            file_ptr = builder->CreateLoad(PointerType::getUnqual(*context), stdio_var);
-#endif
+
+            // GETTER form: (current-output-port) — return current cell as port.
+            FunctionType* getter_ft = FunctionType::get(
+                PointerType::getUnqual(*context), {}, false);
+            FunctionCallee getter_fn = module->getOrInsertFunction(getter_name, getter_ft);
+            Value* file_ptr = builder->CreateCall(getter_fn, {});
             Value* file_int = builder->CreatePtrToInt(file_ptr, int64_type);
 
-            // Zero-init base so the i32 padding field {3} is also defined.
             Value* result = llvm::ConstantAggregateZero::get(tagged_value_type);
             result = builder->CreateInsertValue(result,
                 ConstantInt::get(int8_type, port_type_tag), {0});
@@ -30123,13 +30115,23 @@ private:
                 module->getOrInsertFunction(rt_name, rt_type).getCallee());
             builder->CreateCall(rt_func, {arg_ptr});
         } else {
-            // newline: print a literal '\n' via putchar so we don't need a
-            // port argument. Arg is ignored.
+            // newline: write '\n' to the current-output-port FILE* via fputc,
+            // so `parameterize ((current-output-port p)) (newline)` lands in
+            // p instead of stdout. Arg is ignored (closure dispatcher passes
+            // one regardless).
             (void)arg;
-            FunctionType* putchar_type = FunctionType::get(int32_type, {int32_type}, false);
-            Function* putchar_func = cast<Function>(
-                module->getOrInsertFunction("putchar", putchar_type).getCallee());
-            builder->CreateCall(putchar_func, {ConstantInt::get(int32_type, '\n')});
+            FunctionType* getfp_type = FunctionType::get(
+                PointerType::getUnqual(*context), {}, false);
+            Function* getfp_func = cast<Function>(
+                module->getOrInsertFunction(
+                    "eshkol_runtime_current_output_fp", getfp_type).getCallee());
+            Value* fp = builder->CreateCall(getfp_func, {});
+
+            FunctionType* fputc_type = FunctionType::get(
+                int32_type, {int32_type, PointerType::getUnqual(*context)}, false);
+            Function* fputc_func = cast<Function>(
+                module->getOrInsertFunction("fputc", fputc_type).getCallee());
+            builder->CreateCall(fputc_func, {ConstantInt::get(int32_type, '\n'), fp});
         }
 
         // Return () regardless — display/write/newline are side-effecting.
