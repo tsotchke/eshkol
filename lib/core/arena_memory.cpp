@@ -2652,12 +2652,42 @@ static void display_tensor(uint64_t tensor_ptr, eshkol_display_opts_t* opts);
 static void display_vector(uint64_t vector_ptr, eshkol_display_opts_t* opts);
 static void display_char(uint32_t codepoint, eshkol_display_opts_t* opts);
 
-// Get output stream (defaults to stdout)
+// ─── R7RS current-output-port / current-input-port / current-error-port ───
+// The cells back the Scheme-level `current-output-port` / etc. parameter
+// objects. `parameterize` mutates them via the setter; runtime helpers
+// (display/write/newline with no explicit port arg) read them.
+//
+// Default to NULL → fall back to stdio in get_output(). Lazy default so
+// constructors run before any FILE* is portable to capture (Windows DLLs).
+static FILE* g_current_output_fp = nullptr;
+static FILE* g_current_input_fp  = nullptr;
+static FILE* g_current_error_fp  = nullptr;
+
+extern "C" void* eshkol_runtime_current_output_fp(void) {
+    return (void*)(g_current_output_fp ? g_current_output_fp : stdout);
+}
+extern "C" void* eshkol_runtime_current_input_fp(void) {
+    return (void*)(g_current_input_fp ? g_current_input_fp : stdin);
+}
+extern "C" void* eshkol_runtime_current_error_fp(void) {
+    return (void*)(g_current_error_fp ? g_current_error_fp : stderr);
+}
+extern "C" void eshkol_runtime_set_current_output_fp(void* fp) {
+    g_current_output_fp = (FILE*)fp;
+}
+extern "C" void eshkol_runtime_set_current_input_fp(void* fp) {
+    g_current_input_fp = (FILE*)fp;
+}
+extern "C" void eshkol_runtime_set_current_error_fp(void* fp) {
+    g_current_error_fp = (FILE*)fp;
+}
+
+// Get output stream (defaults to stdout via current-output-port parameter)
 static FILE* get_output(eshkol_display_opts_t* opts) {
     if (opts && opts->output) {
         return (FILE*)opts->output;
     }
-    return stdout;
+    return (FILE*)eshkol_runtime_current_output_fp();
 }
 
 // Display a single tagged value
