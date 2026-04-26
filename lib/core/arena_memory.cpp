@@ -4020,6 +4020,48 @@ extern "C" void eshkol_exception_set_location(eshkol_exception_t* exc, uint32_t 
 }
 
 // Raise an exception - jumps to nearest handler
+/* Bug W: REPL forward-ref call where the named function was never
+ * defined. The codegen call site emits this BEFORE the indirect call,
+ * passing the function name as a literal. The codegen then calls this
+ * helper with the loaded fn_ptr and the stub-detection sentinel. If
+ * the slot still points at the unresolved stub, raise with a clear
+ * message that names the function. Otherwise return the resolved ptr.
+ *
+ * The sentinel comparison is necessary because every unresolved slot
+ * shares the same stub address — codegen can't tell at emit time
+ * whether the slot will be resolved by JIT load order.
+ */
+extern "C" void* eshkol_check_forward_ref(void* loaded_fn_ptr,
+                                          void* stub_sentinel,
+                                          const char* func_name) {
+    if (loaded_fn_ptr == stub_sentinel) {
+        char buf[512];
+        if (func_name && func_name[0]) {
+            snprintf(buf, sizeof(buf),
+                     "called undefined function '%s' "
+                     "(forward-referenced but never defined; "
+                     "check that the file containing its `define` is `(load …)`ed "
+                     "or `(require …)`d before the call site)",
+                     func_name);
+        } else {
+            snprintf(buf, sizeof(buf),
+                     "called a forward-referenced function that was never defined");
+        }
+        eshkol_exception_t* exc = eshkol_make_exception(
+            ESHKOL_EXCEPTION_ERROR, buf);
+        if (exc) {
+            eshkol_raise(exc);
+        }
+        // eshkol_raise exits if no handler. If it returns (handler was
+        // installed), we still must not proceed with a stub call —
+        // return null and let the caller's null-handling raise an
+        // exception of its own. This keeps the "fatal under no handler"
+        // invariant while preserving guard-clause behaviour.
+        return nullptr;
+    }
+    return loaded_fn_ptr;
+}
+
 extern "C" void eshkol_raise(eshkol_exception_t* exception) {
     g_current_exception = exception;
 

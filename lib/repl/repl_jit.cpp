@@ -594,16 +594,30 @@ void ReplJITContext::registerRuntimeSymbols() {
 
 // Stub function called when a forward-referenced function hasn't been defined yet
 static eshkol_tagged_value __repl_forward_ref_stub() {
-    // Raise an exception so that (guard ...) can catch it in user code
+    // Raise an exception so that (guard ...) can catch it in user code.
+    // This is the LEGACY path — the call-site guard added for Bug W (see
+    // eshkol_check_forward_ref) preempts most calls with a named error.
+    // This stub still runs if a forward-ref-bearing pointer escapes
+    // through other paths (apply, function-as-value, REPL eval).
     eshkol_exception_t* exc = eshkol_make_exception(
         ESHKOL_EXCEPTION_ERROR,
-        "called a forward-referenced function that was never defined");
+        "called a forward-referenced function that was never defined "
+        "(name unknown — direct invocation through a captured pointer; "
+        "use the named call site for a clearer error)");
     if (exc) {
         eshkol_raise(exc);
     }
-    // If raise returns (no handler installed), fall back to returning null
     eshkol_tagged_value result = {};
     return result;
+}
+
+// Bug W: published stub address used by the call-site guard to detect
+// unresolved forward refs. Codegen loads this via the symbol
+// `eshkol_repl_forward_ref_stub_addr` and passes it to
+// eshkol_check_forward_ref so the helper can compare without needing
+// link-time access to the C++ static.
+extern "C" void* eshkol_repl_forward_ref_stub_addr(void) {
+    return reinterpret_cast<void*>(&__repl_forward_ref_stub);
 }
 
 static bool is_repl_runtime_global(const llvm::GlobalVariable& global_var) {

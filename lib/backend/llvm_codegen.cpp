@@ -13143,7 +13143,30 @@ private:
                 }
 
                 // Load the latest function pointer from the slot and indirect-call.
-                Value* func_ptr = builder->CreateLoad(ptr_type, func_ptr_global, func_name + "_ptr");
+                Value* func_ptr_raw = builder->CreateLoad(ptr_type, func_ptr_global, func_name + "_ptr");
+
+                // Bug W: guard the indirect call with a named-error check.
+                // If the slot still holds the unresolved-forward-ref stub,
+                // raise a clear "called undefined function 'X'" error instead
+                // of the anonymous "called a forward-referenced function".
+                // Two i8* arg + name string + i8* return.
+                FunctionType* check_ft = FunctionType::get(
+                    ptr_type, {ptr_type, ptr_type, ptr_type}, false);
+                FunctionCallee check_fn = module->getOrInsertFunction(
+                    "eshkol_check_forward_ref", check_ft);
+
+                FunctionType* stub_addr_ft = FunctionType::get(ptr_type, {}, false);
+                FunctionCallee stub_addr_fn = module->getOrInsertFunction(
+                    "eshkol_repl_forward_ref_stub_addr", stub_addr_ft);
+                Value* stub_addr = builder->CreateCall(stub_addr_fn, {});
+
+                Value* name_str = builder->CreateGlobalStringPtr(
+                    func_name, "fwd_ref_name_" + func_name);
+
+                Value* func_ptr = builder->CreateCall(
+                    check_fn, {func_ptr_raw, stub_addr, name_str},
+                    func_name + "_checked");
+
                 Value* result = builder->CreateCall(func_type, func_ptr, call_args, func_name + "_result");
 
                 eshkol_debug("REPL hot-reload: %s indirect call to user function %s via %s (fixed=%zu, args=%zu)",
@@ -13681,7 +13704,25 @@ private:
                     }
 
                     // Load the function pointer from the global
-                    Value* func_ptr = builder->CreateLoad(func_ptr_type, func_ptr_global, func_name + "_ptr");
+                    Value* func_ptr_raw = builder->CreateLoad(func_ptr_type, func_ptr_global, func_name + "_ptr");
+
+                    // Bug W: name-the-undefined-call guard. If the slot still
+                    // points at the unresolved-forward-ref stub at call time,
+                    // raise a clear "called undefined function 'X'" error
+                    // (with X = func_name) instead of the anonymous default.
+                    FunctionType* check_ft = FunctionType::get(
+                        ptr_type, {ptr_type, ptr_type, ptr_type}, false);
+                    FunctionCallee check_fn = module->getOrInsertFunction(
+                        "eshkol_check_forward_ref", check_ft);
+                    FunctionType* stub_addr_ft = FunctionType::get(ptr_type, {}, false);
+                    FunctionCallee stub_addr_fn = module->getOrInsertFunction(
+                        "eshkol_repl_forward_ref_stub_addr", stub_addr_ft);
+                    Value* stub_addr = builder->CreateCall(stub_addr_fn, {});
+                    Value* name_str = builder->CreateGlobalStringPtr(
+                        func_name, "fwd_ref_name_" + func_name);
+                    Value* func_ptr = builder->CreateCall(
+                        check_fn, {func_ptr_raw, stub_addr, name_str},
+                        func_name + "_checked");
 
                     // Generate indirect call
                     Value* result = builder->CreateCall(func_type, func_ptr, call_args, func_name + "_result");
