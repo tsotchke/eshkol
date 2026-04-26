@@ -15,19 +15,45 @@ stdlib, actionable error messages, Windows ARM64 support, and a long
 tail of Noesis- / Moonlab-driven hardening, perf, and correctness
 fixes.
 
-### Fixed — late-cycle correctness (Bugs J–U, Quirks 1/3/4/6/7/10/11)
+### Fixed — late-cycle correctness (Bugs J–W, Quirks 1/3/4/6/7/10/11)
 
+- **R7RS current-output-port is now a real parameter object.**
+  Before: `(current-output-port)` returned the literal stdout FILE*
+  via hardcoded codegen; the setter form was a silent no-op. So
+  `parameterize ((current-output-port p)) (display x)` always wrote
+  to stdout. Fix: runtime-side cells (`g_current_{input,output,error}_fp`)
+  back the parameter; codegen reads the cell on the getter form and
+  writes it on the setter form (which `parameterize` generates for
+  save/restore). `display` / `write` / `newline` (no port arg) now
+  consult the cell via `eshkol_runtime_current_output_fp()` —
+  redirect-into-string-port now Just Works for all output paths.
+- **Bug W — forward-ref errors now name the function.** Before,
+  calling a forward-referenced function whose define-site was never
+  loaded raised "called a forward-referenced function that was
+  never defined" with no indication WHICH function. Codegen now
+  emits a per-call-site guard `eshkol_check_forward_ref(slot,
+  stub_sentinel, name_literal)` that compares the loaded slot
+  pointer to the published stub address; if equal, raises
+  "called undefined function 'NAME' (forward-referenced but never
+  defined; check that the file containing its `define` is `(load …)`ed
+  or `(require …)`d before the call site)" and exit 1. The legacy
+  nameless stub remains for paths where the slot pointer escapes
+  through a captured value.
+- **`(map display lst)` no longer crashes the compiler.** Before,
+  the legacy first-class `display` wrapper returned `i64 0`; map's
+  cons-builder fed that i64 back into `unpackDouble`, hitting a
+  nullptr deref in LLVM `Value::setName`. Wrapper now returns
+  tagged null with the `tagged_value(tagged_value)` ABI matching
+  the closure dispatcher and the Quirk 11 path.
 - **Quirk 11 — `display`/`write`/`newline` are now first-class.**
   Before: bare references (`(for-each display xs)`,
   `(define printer display)`) raised "Unbound variable: display"
   because the codegen wrapper only existed in call position.
   codegenVariable now wraps each as a unary closure (see
   `createBuiltinIOFunction`); the type checker agrees they're
-  callable. A separate known-open bug
-  (`tests/v1_2_edge_cases/KNOWN_PORT_REDIRECT_BUG.md`) — that
-  `parameterize current-output-port` does not redirect `display`
-  to a string port — is filed but not yet fixed; explicit
-  `(display x port)` works.
+  callable. With the port-plumbing fix above, these now correctly
+  honor `current-output-port` under `parameterize` — output
+  capture into a string port works for all forms.
 - **Quirk 10 — `append` silently dropped args 3+.** The stdlib
   `append` was defined fixed-arity 2; `(append a b c d)` quietly
   truncated to the first two. Rewritten as properly variadic per
