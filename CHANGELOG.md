@@ -17,6 +17,18 @@ fixes.
 
 ### Fixed — late-cycle correctness (Bugs J–W, Quirks 1/3/4/6/7/10/11)
 
+- **Loader use-after-free in update_ast_references (EXTERN_OP).**
+  The require-time symbol-rename walker read `call_op.num_vars` /
+  `call_op.variables` for `ESHKOL_EXTERN_OP`, but EXTERN_OP populates
+  `extern_op` (name / real_name / return_type / parameters /
+  num_params) — different union slot. The walker dereferenced
+  `extern_op.return_type` (a `char*`) as a uint64_t length and walked
+  off into uninitialised memory, SIGSEGV'ing every precompiled module
+  that had BOTH a `(provide …)` list and a private `(define …)`
+  referencing an `(extern …)` declaration. Trigger surfaced in
+  `core.testing` (used by `collections_test` and `cache_test`); both
+  tests now compile and pass (49/49 + 33/33). Edge-case suite jumped
+  from 35/35-with-9-skipped to 42/44.
 - **R7RS current-output-port is now a real parameter object.**
   Before: `(current-output-port)` returned the literal stdout FILE*
   via hardcoded codegen; the setter form was a silent no-op. So
