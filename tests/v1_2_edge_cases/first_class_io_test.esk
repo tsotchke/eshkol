@@ -93,6 +93,20 @@
        (capture (lambda () (apply-to-each alias-display '(1 2 3 4))))
        "1234")
 
+;; ── map display (used to crash the compiler — fixed 2026-04-25) ──
+;; Map collects results, which means the closure must return a
+;; well-typed tagged_value (not raw i64). The fix in
+;; resolveLambdaFunction is what closes this.
+(check "map display compiles and runs"
+       (capture (lambda () (map display '(x y z))))
+       "xyz")
+(check "map display preserves order"
+       (capture (lambda () (map display '("alpha" "beta"))))
+       "alphabeta")
+(check "map write quotes strings"
+       (capture (lambda () (map write '("a" "b"))))
+       "\"a\"\"b\"")
+
 (newline)
 (display "Passed: ") (display passed) (newline)
 (display "Failed: ") (display failed) (newline)
