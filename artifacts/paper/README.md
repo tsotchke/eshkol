@@ -42,16 +42,34 @@ Output: populated `artifacts/paper/outputs/` with:
 ## Expected checksums (post-regeneration)
 
 ```
-SHA-256  weights.qlmw                    c8525f133ee1de3c67b1b56bd948fda24db56a3c89aacf29a8c9e9c9dc046759
-SHA-256  vm-traces.jsonl                 <fill at first regen>
-SHA-256  transformer-traces.jsonl        <fill at first regen>
-SHA-256  comparison-report.json          <fill at first regen>
+SHA-256  weights.qlmw              c8525f133ee1de3c67b1b56bd948fda24db56a3c89aacf29a8c9e9c9dc046759
+SHA-256  vm-traces.jsonl           25bf31ec088ff2005a0a8f1351a9bd0e3e19853177e1f8a1adf353757861884a
+SHA-256  transformer-traces.jsonl  dbb9f05690de2f33ec9a20aa441a5149237d54da922ef843e8f684f5c4c81805
+SHA-256  comparison-report.json    e88c8f66c92df4c5418801a12f19797c99e707c53d7369e9d0c9eaad992f4cf8
+SHA-256  opcode-coverage.json      b4b5d55f71cdc25e346043783375dfef74085f004a8662dcd3ae7ef1ec261f67
 ```
 
 The first regeneration at the pinned commit records these hashes; every
 subsequent regeneration on an IEEE 754 float32 platform should produce
 bit-identical outputs. Platform divergence is a bug; file an issue with
 the platform details.
+
+The `comparison-report.json` carries two complementary metrics:
+
+  - `output_agreeing_programs` — programs whose first PRINT result is
+    bit-close (≤1e-2) on both runners. This is the paper's §4.4 claim
+    of "74/74 programs agree" and matches what the inline `test()` in
+    `weight_matrices.c` verifies. **Expected: 71/71 (the trace-suite
+    sample of the 74 inline tests; the 3 non-traced programs are
+    `100×CONST a×b` multiplication batches and similar reset-counter
+    paths that exercise control flow rather than program-as-data).**
+  - `fully_agreeing_programs` — programs whose entire per-step state
+    vector is bit-identical on both runners. This is a strictly stronger
+    check; AD backward-pass programs intentionally diverge on
+    intermediate tape state because the reference VM's
+    `ad_backward_step` and the matrix path's `backward_with_weights`
+    use distinct step functions whose final gradient still agrees.
+    **Expected: 52/71.**
 
 ## Script breakdown
 

@@ -28,23 +28,35 @@ echo "Output dir:  $OUTPUT_DIR"
 echo "=============================================="
 echo
 
-echo "[1/5] Export weights from ISA specification..."
+echo "[1/4] Export weights + dump VM and matrix-forward traces (single run)..."
+# A single weight_matrices invocation runs the 74-test suite once and emits
+# both per-step traces. This is faster than calling dump_vm_trace.sh and
+# dump_transformer_trace.sh separately (each of which runs the full suite).
+BUILD_DIR="${BUILD_DIR:-$REPO_ROOT/build-paper}"
 bash scripts/paper/export_weights.sh "$OUTPUT_DIR/weights.qlmw"
 
-echo "[2/5] Dump reference VM traces..."
-bash scripts/paper/dump_vm_trace.sh "$OUTPUT_DIR/vm-traces.jsonl"
+echo "    running 74-test suite with both trace flags..."
+ESHKOL_WEIGHTS_OUT="$OUTPUT_DIR/weights.qlmw" \
+"$BUILD_DIR/tools/weight_matrices" \
+    --trace-vm "$OUTPUT_DIR/vm-traces.jsonl" \
+    --trace-transformer "$OUTPUT_DIR/transformer-traces.jsonl" \
+    > "$BUILD_DIR.suite_trace.log" 2>&1
+if ! grep -q "74 passed, 0 failed" "$BUILD_DIR.suite_trace.log"; then
+    echo "    ERROR: 74-test suite did not pass; tail:"
+    tail -20 "$BUILD_DIR.suite_trace.log" | sed 's/^/      /'
+    exit 1
+fi
+echo "    vm-traces:          $(wc -l < "$OUTPUT_DIR/vm-traces.jsonl" | tr -d ' ') lines"
+echo "    transformer-traces: $(wc -l < "$OUTPUT_DIR/transformer-traces.jsonl" | tr -d ' ') lines"
 
-echo "[3/5] Dump compiled-transformer traces..."
-bash scripts/paper/dump_transformer_trace.sh "$OUTPUT_DIR/transformer-traces.jsonl"
-
-echo "[4/5] Compare traces (fieldwise exact)..."
+echo "[2/4] Compare traces (fieldwise + ordinal output match)..."
 python3 scripts/paper/compare_traces.py \
     --vm "$OUTPUT_DIR/vm-traces.jsonl" \
     --transformer "$OUTPUT_DIR/transformer-traces.jsonl" \
     --out "$OUTPUT_DIR/comparison-report.json" \
     --coverage-out "$OUTPUT_DIR/opcode-coverage.json"
 
-echo "[5/5] Regenerate paper tables..."
+echo "[3/4] Regenerate paper tables..."
 mkdir -p "$OUTPUT_DIR/tables"
 python3 scripts/paper/gen_paper_tables.py \
     --comparison "$OUTPUT_DIR/comparison-report.json" \
@@ -52,6 +64,7 @@ python3 scripts/paper/gen_paper_tables.py \
     --weights "$OUTPUT_DIR/weights.qlmw" \
     --out-dir "$OUTPUT_DIR/tables"
 
+echo "[4/4] Done."
 echo
 echo "=============================================="
 echo "Suite complete. Output checksums:"
