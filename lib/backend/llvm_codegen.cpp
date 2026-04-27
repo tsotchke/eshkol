@@ -10472,30 +10472,40 @@ private:
         if (func_name == "make-string") return strio_->makeString(op);
         // R7RS: (string char ...) — construct string from character arguments
         if (func_name == "string" && op->call_op.num_vars > 0) {
+            // (string ch ch ...) — Quirk 15. Each char is a Unicode codepoint
+            // (i64). Pre-fix: codegen truncated to int8 with CreateTrunc,
+            // mangling every non-ASCII char (U+2588 `█` → 0x88, an invalid
+            // UTF-8 lead byte). Now: gather codepoints into a stack array
+            // and call the runtime UTF-8 encoder so multi-byte chars round-
+            // trip correctly through display / write / string-append.
             uint64_t n = op->call_op.num_vars;
-            // Allocate buffer: n chars + null terminator, with header
-            Value* data_size = ConstantInt::get(int64_type, n + 1);
-            Value* arena = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
-            Value* str_ptr = builder->CreateCall(mem->getArenaAllocateWithHeader(),
-                {arena, data_size,
-                 ConstantInt::get(int8_type, HEAP_SUBTYPE_STRING),
-                 ConstantInt::get(int8_type, 0)});
-            // Fill each char
+
+            // Stack-allocate the codepoint array.
+            Value* cp_array = builder->CreateAlloca(int64_type,
+                ConstantInt::get(int64_type, n), "string_codepoints");
+
             for (uint64_t i = 0; i < n; i++) {
                 TypedValue tv = codegenTypedAST(&op->call_op.variables[i]);
                 if (!tv.llvm_value) return nullptr;
                 Value* arg = typedValueToTaggedValue(tv);
                 Value* ch_i64 = unpackInt64FromTaggedValue(arg);
-                Value* ch_i8 = builder->CreateTrunc(ch_i64, int8_type);
-                Value* dest = builder->CreateGEP(int8_type, str_ptr,
+                Value* slot = builder->CreateGEP(int64_type, cp_array,
                     ConstantInt::get(int64_type, i));
-                builder->CreateStore(ch_i8, dest);
+                builder->CreateStore(ch_i64, slot);
             }
-            // Null-terminate
-            Value* end = builder->CreateGEP(int8_type, str_ptr,
-                ConstantInt::get(int64_type, n));
-            builder->CreateStore(ConstantInt::get(int8_type, 0), end);
-            // Pack as HEAP_PTR
+
+            Value* arena = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+            FunctionType* enc_ft = FunctionType::get(
+                PointerType::getUnqual(*context),
+                {PointerType::getUnqual(*context),
+                 PointerType::getUnqual(*context),
+                 int64_type},
+                false);
+            FunctionCallee enc_fn = module->getOrInsertFunction(
+                "eshkol_string_from_codepoints", enc_ft);
+            Value* str_ptr = builder->CreateCall(enc_fn,
+                {arena, cp_array, ConstantInt::get(int64_type, n)});
+
             return packPtrToTaggedValue(str_ptr, ESHKOL_VALUE_HEAP_PTR);
         }
         if (func_name == "string-set!") return strio_->stringSet(op);

@@ -2675,6 +2675,70 @@ extern "C" void* eshkol_runtime_current_error_fp(void) {
 extern "C" void eshkol_runtime_set_current_output_fp(void* fp) {
     g_current_output_fp = (FILE*)fp;
 }
+
+// Helper used by `(string ch ch ...)` and similar: encode a single codepoint
+// as UTF-8 into `out`, returning the number of bytes written (1..4). The
+// pre-fix codegen truncated each codepoint to one byte, mangling every
+// non-ASCII char in `(string ch …)` and `(string-append (string ch) …)` —
+// causing Quirk 15 (Unicode block chars hung the bench output).
+static int eshkol_utf8_encode_one(uint32_t cp, char* out) {
+    if (cp < 0x80) {
+        out[0] = (char)cp;
+        return 1;
+    } else if (cp < 0x800) {
+        out[0] = (char)(0xC0 | (cp >> 6));
+        out[1] = (char)(0x80 | (cp & 0x3F));
+        return 2;
+    } else if (cp < 0x10000) {
+        out[0] = (char)(0xE0 |  (cp >> 12));
+        out[1] = (char)(0x80 | ((cp >> 6) & 0x3F));
+        out[2] = (char)(0x80 |  (cp & 0x3F));
+        return 3;
+    } else if (cp < 0x110000) {
+        out[0] = (char)(0xF0 |  (cp >> 18));
+        out[1] = (char)(0x80 | ((cp >> 12) & 0x3F));
+        out[2] = (char)(0x80 | ((cp >> 6) & 0x3F));
+        out[3] = (char)(0x80 |  (cp & 0x3F));
+        return 4;
+    }
+    // Out-of-range codepoint — encode replacement char U+FFFD.
+    out[0] = (char)0xEF; out[1] = (char)0xBF; out[2] = (char)0xBD;
+    return 3;
+}
+
+// Build a HEAP_SUBTYPE_STRING from N codepoints, encoded as UTF-8.
+// Caller passes `n` codepoints; we compute the total byte length, allocate
+// (n bytes plus a few for multi-byte expansion plus null terminator), and
+// fill. Returns the arena-allocated, null-terminated UTF-8 char* — same
+// shape as any other Eshkol string, so display / fputs work unchanged.
+extern "C" void* eshkol_string_from_codepoints(void* arena_void,
+                                               const int64_t* codepoints,
+                                               uint64_t n) {
+    arena_t* arena = (arena_t*)arena_void;
+    if (!arena || (!codepoints && n > 0)) return nullptr;
+
+    // Compute exact byte length first so we don't waste arena space.
+    size_t bytes = 0;
+    for (uint64_t i = 0; i < n; i++) {
+        uint32_t cp = (uint32_t)codepoints[i];
+        if      (cp < 0x80)     bytes += 1;
+        else if (cp < 0x800)    bytes += 2;
+        else if (cp < 0x10000)  bytes += 3;
+        else if (cp < 0x110000) bytes += 4;
+        else                    bytes += 3;  // U+FFFD replacement
+    }
+
+    char* str = (char*)arena_allocate_with_header(
+        arena, bytes + 1, HEAP_SUBTYPE_STRING, 0);
+    if (!str) return nullptr;
+
+    char* p = str;
+    for (uint64_t i = 0; i < n; i++) {
+        p += eshkol_utf8_encode_one((uint32_t)codepoints[i], p);
+    }
+    *p = '\0';
+    return (void*)str;
+}
 extern "C" void eshkol_runtime_set_current_input_fp(void* fp) {
     g_current_input_fp = (FILE*)fp;
 }
