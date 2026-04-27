@@ -1,0 +1,132 @@
+;; named_let_capture_test.esk — Noesis Quirk 14 (2026-04-26)
+;;
+;; Background. A named-let inside an internal define captures
+;; free variables from the enclosing function. The codegen copies
+;; each captured value into a hidden global (the "capture global")
+;; on entry to the named-let, so the loop function reads/writes
+;; through the global. There were two bugs in this machinery:
+;;
+;;   (1) When the captured variable's outer storage was a pointer-typed
+;;       Instruction (e.g. an IntToPtrInst from unpacking a closure-env
+;;       slot) the codegen stored the POINTER bits — not the value
+;;       loaded through the pointer — into the capture global. The
+;;       loop body then saw a tagged_value made of stale pointer bits
+;;       (effectively read 0) instead of the post-set! value.
+;;
+;;   (2) After the loop returned, the capture global held the latest
+;;       value but the outer storage was never updated. So a `set!`
+;;       to the captured var from inside the loop was visible inside
+;;       the loop but invisible to the enclosing scope after return.
+;;
+;; Both were tripped by Noesis dg-extract-symbols / case_retrieval —
+;; the symptom was either silently-wrong output (`(proven-theorem)`
+;; missing extracted strings) or the user-reported "car: not a pair"
+;; from downstream code that had assumed seen was populated.
+
+(require stdlib)
+
+(define passed 0)
+(define failed 0)
+(define (check name actual expected)
+  (if (equal? expected actual)
+      (begin (display "PASS: ") (display name) (newline)
+             (set! passed (+ passed 1)))
+      (begin (display "FAIL: ") (display name)
+             (display " — expected ") (display expected)
+             (display ", got ") (display actual) (newline)
+             (set! failed (+ failed 1)))))
+
+;; ── Bug 1: named-let body sees post-set! value ────────────────────
+;; Pre-fix: the loop saw counter as 0 because the capture global was
+;; seeded with pointer bits, not the value. Post-fix: it sees the
+;; post-helper-set! value (7), so 7+10=17.
+(define (set-then-loop)
+  (let ((counter 100))
+    (define (helper)
+      (set! counter 7)             ;; helper mutates outer counter
+      (let loop ((i 0))
+        (cond ((>= i 1) #t)
+              (else (set! counter (+ counter 10)) (loop (+ i 1))))))
+    (helper)
+    counter))
+(check "loop sees outer set! value (init 100→7→17)"
+       (set-then-loop) 17)
+
+;; ── Bug 2: named-let body's set! propagates back to outer ────────
+;; Pre-fix: counter ended at 1 (outer set! only); post-fix: 1 + 3*10 = 31.
+(define (set-then-loop-mutate)
+  (let ((counter 0))
+    (define (helper)
+      (set! counter (+ counter 1))
+      (let loop ((i 0))
+        (cond ((>= i 3) #t)
+              (else (set! counter (+ counter 10)) (loop (+ i 1))))))
+    (helper)
+    counter))
+(check "outer counter sees N×set! from inside loop"
+       (set-then-loop-mutate) 31)
+
+;; ── No outer set! before loop — pure loop mutation ───────────────
+(define (loop-only-mutate)
+  (let ((acc '()))
+    (define (helper)
+      (let loop ((i 0))
+        (cond ((>= i 4) #t)
+              (else (set! acc (cons i acc)) (loop (+ i 1))))))
+    (helper)
+    acc))
+(check "loop-only mutate of outer list"
+       (loop-only-mutate) '(3 2 1 0))
+
+;; ── Two passes: outer state survives across helper calls ─────────
+(define (two-passes)
+  (let ((acc '()))
+    (define (helper x)
+      (let loop ((i 0))
+        (cond ((>= i 3) #t)
+              (else (set! acc (cons (cons x i) acc)) (loop (+ i 1))))))
+    (helper 'a)
+    (helper 'b)
+    acc))
+(check "outer acc threads across two helper invocations"
+       (two-passes)
+       '((b . 2) (b . 1) (b . 0) (a . 2) (a . 1) (a . 0)))
+
+;; ── Real Noesis pattern: extract symbols, including from strings ─
+;; walk-str — a nested named-let inside an internal define — iterates
+;; over the chars of each string and adds each alphabetic char (as a
+;; symbol) to the outer `seen` list. Pre-fix: the walk-str set!s
+;; vanished, so strings contributed nothing. Post-fix: each char
+;; appears in seen.
+(define (extract-syms term)
+  (let ((seen (list)))
+    (define (walk t)
+      (cond
+        ((null? t) #t)
+        ((symbol? t)
+         (cond ((memv t seen) #t)
+               (else (set! seen (cons t seen)))))
+        ((string? t)
+         (let walk-str ((cs (string->list t)))
+           (cond
+             ((null? cs) #t)
+             ((char-alphabetic? (car cs))
+              (set! seen (cons (string->symbol (string (car cs))) seen))
+              (walk-str (cdr cs)))
+             (else (walk-str (cdr cs))))))
+        ((pair? t) (walk (car t)) (walk (cdr t)))
+        (else #t)))
+    (walk term)
+    (reverse seen)))
+
+(check "Noesis dg-extract-symbols pattern (no strings)"
+       (extract-syms '(forall n m Nat))
+       '(forall n m Nat))
+(check "Noesis dg-extract-symbols pattern (with strings)"
+       (extract-syms '(proven-theorem "AB" "CD"))
+       '(proven-theorem A B C D))
+
+(newline)
+(display "Passed: ") (display passed) (newline)
+(display "Failed: ") (display failed) (newline)
+(if (> failed 0) (exit 1) (exit 0))
