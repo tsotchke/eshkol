@@ -21568,6 +21568,17 @@ private:
                     } else {
                         captured_val = outer_val;  // Arguments are direct values
                     }
+                } else if (outer_val->getType()->isPointerTy()) {
+                    // Pointer-typed Instruction (typically IntToPtrInst from
+                    // unpacking a closure-env capture). The CONTENT — not the
+                    // pointer bits — is what needs to seed the capture global.
+                    // Without this load, we stored the pointer-bits as the
+                    // captured value (Quirk 14: loop saw stale 0 instead of
+                    // the helper's post-set! value).
+                    captured_val = builder->CreateLoad(tagged_value_type, outer_val,
+                                                       fv + "_cap_load_ptr_inst");
+                    eshkol_debug("Named let '%s': loading capture '%s' from pointer instruction",
+                               loop_name.c_str(), fv.c_str());
                 } else {
                     captured_val = outer_val;
                 }
@@ -21769,6 +21780,48 @@ private:
         }
 
         Value* result = builder->CreateCall(loop_func, call_args);
+
+        // SYNC-BACK FIX (Quirk 14, Noesis 2026-04-26): the loop function
+        // reads/writes captured vars THROUGH the GlobalVariable copies we
+        // allocated above; the outer-scope storage (the original alloca
+        // or pointer-typed Argument) was never updated. So a `set!` to
+        // `seen` from inside `(let walk-str (...) ...)` updated the
+        // global but the enclosing helper kept seeing the pre-loop value.
+        // Now: for each capture that came from a writable outer slot,
+        // copy the global's post-loop value back into that slot.
+        for (const std::string& fv : free_vars) {
+            auto cap_it = capture_globals.find(fv);
+            if (cap_it == capture_globals.end()) continue;
+            GlobalVariable* cap_global = cap_it->second;
+            auto outer_it = prev_symbols.find(fv);
+            if (outer_it == prev_symbols.end() || !outer_it->second) continue;
+            Value* outer_val = outer_it->second;
+
+            // Only sync back if the outer slot is one we already wrote to.
+            // GlobalVariables already share storage — no copy needed.
+            if (isa<GlobalVariable>(outer_val)) {
+                eshkol_debug("  syncback: '%s' is GlobalVariable (shared storage, skip)", fv.c_str());
+                continue;
+            }
+            // Any pointer-typed value is a writable slot:
+            //  - AllocaInst: a stack slot for a let-binding.
+            //  - Argument with pointer type: a closure-env capture slot.
+            //  - IntToPtrInst (other pointer-typed Instruction): the
+            //    unpacked pointer to a closure-env capture, used by the
+            //    MUTABLE CAPTURE path elsewhere in this codegen.
+            // In all three cases, storing through the pointer with the
+            // same tagged_value type matches how the body's `set!`
+            // already writes (see codegenSet's pointer branch).
+            if (outer_val->getType()->isPointerTy()) {
+                Value* fresh = builder->CreateLoad(tagged_value_type, cap_global,
+                                                   fv + "_syncback_load");
+                builder->CreateStore(fresh, outer_val);
+                continue;
+            }
+            // Anything else (raw int/double Argument): the caller passed
+            // by value — there's no slot to write back to.
+        }
+
         eshkol_debug("Named let '%s' completed", loop_name.c_str());
         return result;
     }
