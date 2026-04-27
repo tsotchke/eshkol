@@ -493,10 +493,23 @@ private:
                     pos += 6; column_ += 6;
                     return {TOKEN_CHAR, std::string(1, '\x1b'), start, tok_line, tok_col};
                 } else {
-                    // Single character
-                    std::string value(1, input[pos]);
-                    pos++;
-                    column_++;
+                    // Single character. Eshkol source is UTF-8, so for a
+                    // multi-byte codepoint (e.g. `#\█` = U+2588 = 3 bytes
+                    // E2 96 88) we must consume ALL the bytes — otherwise
+                    // the trailing continuation bytes leak out as the
+                    // next tokens and the rest of the file mis-parses.
+                    // Length is determined by the high bits of the lead
+                    // byte (RFC 3629).
+                    unsigned char lead = (unsigned char)input[pos];
+                    size_t nbytes = 1;
+                    if      ((lead & 0x80) == 0x00) nbytes = 1;  // 0xxxxxxx
+                    else if ((lead & 0xE0) == 0xC0) nbytes = 2;  // 110xxxxx
+                    else if ((lead & 0xF0) == 0xE0) nbytes = 3;  // 1110xxxx
+                    else if ((lead & 0xF8) == 0xF0) nbytes = 4;  // 11110xxx
+                    if (pos + nbytes > length) nbytes = length - pos;
+                    std::string value(input, pos, nbytes);
+                    pos += nbytes;
+                    column_++;  // Visually one column regardless of UTF-8 width.
                     return {TOKEN_CHAR, value, start, tok_line, tok_col};
                 }
             }
@@ -721,9 +734,31 @@ static eshkol_ast_t parse_atom(const Token& token) {
             break;
         }
 
-        case TOKEN_CHAR:
-            eshkol_ast_make_char(&ast, static_cast<unsigned char>(token.value[0]));
+        case TOKEN_CHAR: {
+            // Decode the UTF-8 byte sequence into a single codepoint.
+            // The lexer puts the full multi-byte sequence in token.value;
+            // we need an int64 codepoint for eshkol_ast_make_char.
+            const unsigned char* p = (const unsigned char*)token.value.c_str();
+            size_t n = token.value.size();
+            int64_t codepoint = 0;
+            if (n == 0) {
+                codepoint = 0;
+            } else if ((p[0] & 0x80) == 0x00) {
+                codepoint = p[0];                                            // ASCII
+            } else if (n >= 2 && (p[0] & 0xE0) == 0xC0) {
+                codepoint = ((p[0] & 0x1F) << 6) | (p[1] & 0x3F);
+            } else if (n >= 3 && (p[0] & 0xF0) == 0xE0) {
+                codepoint = ((p[0] & 0x0F) << 12) | ((p[1] & 0x3F) << 6)
+                          |  (p[2] & 0x3F);
+            } else if (n >= 4 && (p[0] & 0xF8) == 0xF0) {
+                codepoint = ((p[0] & 0x07) << 18) | ((p[1] & 0x3F) << 12)
+                          | ((p[2] & 0x3F) << 6)  |  (p[3] & 0x3F);
+            } else {
+                codepoint = p[0];  // malformed — keep first byte for diagnostic
+            }
+            eshkol_ast_make_char(&ast, codepoint);
             break;
+        }
 
         case TOKEN_SYMBOL:
             // Check for logic variable syntax: ?x, ?name, etc.

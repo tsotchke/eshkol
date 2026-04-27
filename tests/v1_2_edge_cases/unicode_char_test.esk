@@ -1,0 +1,97 @@
+;; unicode_char_test.esk — Noesis Quirk 15 (2026-04-26)
+;;
+;; Before: `(string #\█)` for any non-ASCII codepoint produced
+;; invalid UTF-8 — only the high byte of the first UTF-8 byte made
+;; it through, mangling output and effectively hanging the bench's
+;; terminal display.
+;;
+;; Two underlying bugs:
+;;
+;;   1. Reader: `#\█` consumed only ONE byte from the source. For
+;;      a 3-byte UTF-8 sequence (E2 96 88) the trailing two bytes
+;;      leaked out as garbage tokens, which then errored as
+;;      "Undefined variable" downstream and effectively poisoned
+;;      the parse.
+;;
+;;   2. (string …) codegen: each codepoint was truncated to int8
+;;      (CreateTrunc), so U+2588 became 0x88 — an invalid UTF-8
+;;      lead byte. The resulting "string" was malformed and any
+;;      consumer (display, fputs, string-append) misbehaved.
+;;
+;; Fixes:
+;;   - Reader uses the UTF-8 lead-byte high bits to consume the
+;;     correct number of bytes.
+;;   - (string …) codegen calls a runtime helper
+;;     eshkol_string_from_codepoints that re-encodes each cp as
+;;     proper UTF-8 (1..4 bytes, U+FFFD on out-of-range).
+
+(require stdlib)
+
+(define passed 0)
+(define failed 0)
+(define (check name actual expected)
+  (if (equal? expected actual)
+      (begin (display "PASS: ") (display name) (newline)
+             (set! passed (+ passed 1)))
+      (begin (display "FAIL: ") (display name)
+             (display " — expected ") (display expected)
+             (display ", got ") (display actual) (newline)
+             (set! failed (+ failed 1)))))
+
+(define (capture thunk)
+  (let ((p (open-output-string)))
+    (parameterize ((current-output-port p))
+      (thunk))
+    (get-output-string p)))
+
+;; ── ASCII still works (regression guard) ─────────────────────────
+(check "ASCII A"            "A"           (string #\A))
+(check "ASCII multi"        "ABC"         (string #\A #\B #\C))
+(check "ASCII '#' char"     "###"         (string #\# #\# #\#))
+
+;; ── 2-byte UTF-8 (U+0080..U+07FF) ─────────────────────────────────
+(check "U+00B7 middle dot"  "·"           (string #\·))
+(check "U+00B7 multi"       "···"         (string #\· #\· #\·))
+(check "U+00B5 micro sign"  "µ"           (string #\µ))
+
+;; ── 3-byte UTF-8 (U+0800..U+FFFF) ─────────────────────────────────
+(check "U+2588 full block"  "█"           (string #\█))
+(check "U+2588 multi"       "███"         (string #\█ #\█ #\█))
+
+;; ── 4-byte UTF-8 (U+10000..U+10FFFF) ──────────────────────────────
+(check "U+1F600 grinning"   "😀"          (string #\😀))
+
+;; ── Mixed widths in one (string …) call ──────────────────────────
+(check "ASCII + 3byte"      "A█Z"         (string #\A #\█ #\Z))
+(check "ASCII + 2byte"      "x·y"         (string #\x #\· #\y))
+(check "all four widths"    "A·█😀"       (string #\A #\· #\█ #\😀))
+
+;; ── Codepoint round-trip via char->integer ───────────────────────
+(check "cp(A)"              65            (char->integer #\A))
+(check "cp(·)"              183           (char->integer #\·))
+(check "cp(█)"              9608          (char->integer #\█))
+(check "cp(😀)"             128512        (char->integer #\😀))
+
+;; ── string-append composes UTF-8 strings ─────────────────────────
+(define (rep ch n)
+  (cond ((<= n 0) "")
+        (else (string-append (string ch) (rep ch (- n 1))))))
+(check "rep ASCII × 5"      "====="        (rep #\= 5))
+(check "rep block × 5"      "█████"        (rep #\█ 5))
+
+;; ── display writes proper UTF-8 to a port ────────────────────────
+(check "display ASCII"      "AB"
+       (capture (lambda () (display (string #\A #\B)))))
+(check "display block"      "██"
+       (capture (lambda () (display (string #\█ #\█)))))
+(check "display emoji"      "😀"
+       (capture (lambda () (display (string #\😀)))))
+
+;; ── string-length counts CODEPOINTS, not bytes (R7RS) ────────────
+;; A 5-block string is 5 codepoints but 15 bytes on disk.
+(check "string-length: 5 blocks = 5 cp" 5 (string-length (rep #\█ 5)))
+
+(newline)
+(display "Passed: ") (display passed) (newline)
+(display "Failed: ") (display failed) (newline)
+(if (> failed 0) (exit 1) (exit 0))
