@@ -1,3 +1,4 @@
+;; mode: jit  ;; uses (eval …) which only resolves under the REPL JIT
 ;; v1.2 edge-case regression suite — covers every bug fixed in the v1.2
 ;; hardening pass. If any of these fail in the future, one of the fixes has
 ;; regressed. Intent: run this on every commit to catch silent regressions
