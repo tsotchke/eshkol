@@ -1,3 +1,4 @@
+;; mode: jit
 ;; Agent FFI JIT-loading regression suite — exercises every agent
 ;; module that depends on a C bridge linked into eshkol-run under
 ;; -force_load / --whole-archive. If any of these fail the linker has
