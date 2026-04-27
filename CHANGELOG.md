@@ -15,8 +15,32 @@ stdlib, actionable error messages, Windows ARM64 support, and a long
 tail of Noesis- / Moonlab-driven hardening, perf, and correctness
 fixes.
 
-### Fixed — late-cycle correctness (Bugs J–W, Quirks 1/3/4/6/7/10/11)
+### Fixed — late-cycle correctness (Bugs J–W, Quirks 1/3/4/6/7/10/11/14/15)
 
+- **Quirk 14 — named-let capture broke for pointer-typed Instructions
+  + missed sync-back.** Two bugs in codegenNamedLet's free-variable
+  capture machinery. (1) When the captured outer storage was an
+  IntToPtrInst (the typical shape inside a closure-env-capturing
+  helper), the capture global was seeded with the POINTER bits
+  instead of the value through it — the loop body then read garbage
+  (effectively 0). (2) After the loop returned, the capture global
+  held the latest value but the outer storage was never updated.
+  Both fixed: load through pointer-typed Instructions on entry, and
+  add a post-call sync-back that stores the global's final value
+  back to any writable outer slot. Closes Noesis Quirk 14
+  (dg-extract-symbols silently dropped chars from string tokens).
+- **Quirk 15 — UTF-8 char literals + (string …) round-trip.** Two
+  bugs combined to corrupt non-ASCII characters: (1) the reader's
+  `#\<char>` fallback consumed exactly ONE byte, so multi-byte
+  codepoints (`#\█` = U+2588 = E2 96 88) leaked their continuation
+  bytes as garbage tokens; (2) `(string ch …)` codegen truncated each
+  codepoint to int8, producing invalid UTF-8 byte sequences. Fix:
+  reader uses UTF-8 lead-byte high bits to consume the right number
+  of bytes; parse_atom decodes the bytes into an int64 codepoint;
+  `(string …)` codegen calls a new runtime helper
+  `eshkol_string_from_codepoints` that emits proper 1..4-byte UTF-8.
+  Round-trips verified for ASCII / 2-byte / 3-byte / 4-byte
+  codepoints + `string-length` correctly counts codepoints, not bytes.
 - **Loader use-after-free in update_ast_references (EXTERN_OP).**
   The require-time symbol-rename walker read `call_op.num_vars` /
   `call_op.variables` for `ESHKOL_EXTERN_OP`, but EXTERN_OP populates
