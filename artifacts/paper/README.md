@@ -42,7 +42,7 @@ Output: populated `artifacts/paper/outputs/` with:
 ## Expected checksums (post-regeneration)
 
 ```
-SHA-256  weights.qlmw                    <fill at first regen>
+SHA-256  weights.qlmw                    c8525f133ee1de3c67b1b56bd948fda24db56a3c89aacf29a8c9e9c9dc046759
 SHA-256  vm-traces.jsonl                 <fill at first regen>
 SHA-256  transformer-traces.jsonl        <fill at first regen>
 SHA-256  comparison-report.json          <fill at first regen>
