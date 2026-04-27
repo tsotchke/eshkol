@@ -913,6 +913,10 @@ list(FILTER LIB_SRC EXCLUDE REGEX "lib/agent/.*")
 # includes (vm_*.c, eskb_*.c are #included by eshkol_vm.c).
 # Only eshkol_vm.c is added back below (compiled in library mode).
 list(FILTER LIB_SRC EXCLUDE REGEX "lib/backend/[^/]*\\.c$")
+# `archive/` holds historical SDNC predecessors (weight_matrices_v1.c,
+# weight_matrices_v2.c, eshkol_compiler_standalone.c, qllm_interpreter_v1.c).
+# These are reference-only — kept for paper-section history but never linked.
+list(FILTER LIB_SRC EXCLUDE REGEX "lib/backend/archive/.*")
 
 # Exclude standalone .cpp programs with main()
 list(FILTER LIB_SRC EXCLUDE REGEX "lib/backend/weight_compiler\\.cpp$")
@@ -1372,6 +1376,44 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/repl/assoc_e
                 ${CMAKE_CURRENT_SOURCE_DIR}
                 ${STDLIB_OUTPUT}
     )
+endif()
+
+# ===== SDNC Paper Artifact: weight_matrices ===================================
+# The paper "The Self-Differentiating Neural Computer: Computable Transformers
+# via Analytical Weight Construction" (tsotchke 2026) reports a 2.8M-parameter
+# transformer (d_model=128, n_layers=6, FFN=1024) whose weights ARE the Eshkol
+# VM's microcode. The 74-test verification suite runs the same programs three
+# ways (reference C interpreter / simulated transformer / matrix forward pass)
+# and asserts bit-identical agreement.
+#
+# `lib/backend/weight_matrices.c` is a standalone program with its own main();
+# it is NOT compiled into libeshkol-static (see the `lib/backend/[^/]*\\.c$`
+# exclude regex above). Build it as a dedicated executable so
+# `scripts/paper/export_weights.sh` and `scripts/paper/run_paper_suite.sh`
+# can invoke it without out-of-band compile commands.
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/lib/backend/weight_matrices.c")
+    add_executable(weight_matrices lib/backend/weight_matrices.c)
+    target_include_directories(weight_matrices PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc
+        ${CMAKE_CURRENT_SOURCE_DIR}/lib/backend
+    )
+    target_link_libraries(weight_matrices PRIVATE eshkol-static m)
+    if(UNIX AND NOT APPLE)
+        target_link_libraries(weight_matrices PRIVATE pthread)
+    endif()
+    set_target_properties(weight_matrices PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/tools
+    )
+    if(ESHKOL_BUILD_TESTS)
+        add_test(
+            NAME sdnc_paper_74_tests
+            COMMAND $<TARGET_FILE:weight_matrices>
+        )
+        # The test program prints "Results: 74 passed, 0 failed" on success.
+        set_tests_properties(sdnc_paper_74_tests PROPERTIES
+            PASS_REGULAR_EXPRESSION "74 passed, 0 failed"
+        )
+    endif()
 endif()
 
 # ===== XLA Integration Tests =====
