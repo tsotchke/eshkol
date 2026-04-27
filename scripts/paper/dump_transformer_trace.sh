@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# dump_transformer_trace.sh — run the compiled transformer (weight-matrix
-# matmul path) on the 74-program verification suite and emit per-step
-# state traces in the same JSONL schema as dump_vm_trace.sh.
+# dump_transformer_trace.sh — emit per-step JSONL trace from the matrix
+# forward pass (W @ x + b) on the SDNC paper's 74-program suite.
 #
-# The transformer executes each program by one forward pass per VM step:
-# state_{t+1} = transformer_forward(state_t, opcode_at_pc_t). Per-step
-# state extraction reads the state vector's partitioned layout (PC, SP,
-# TOS, SOS, registers, memory, tape, flags).
+# Mirrors dump_vm_trace.sh but routes the reference-VM output to /dev/null
+# and captures the matrix path via --trace-transformer.
 #
 # Usage:
 #   bash scripts/paper/dump_transformer_trace.sh [output_file]
+#
+# Output: JSONL at $1 (default: artifacts/paper/outputs/transformer-traces.jsonl)
+# Schema matches dump_vm_trace.sh.
 
 set -euo pipefail
 
@@ -20,37 +20,36 @@ OUTPUT="${1:-artifacts/paper/outputs/transformer-traces.jsonl}"
 mkdir -p "$(dirname "$OUTPUT")"
 
 BUILD_DIR="${BUILD_DIR:-$REPO_ROOT/build-paper}"
-PROGRAM_SUITE="${PROGRAM_SUITE:-$REPO_ROOT/tests/sdnc/programs}"
-WEIGHTS="${WEIGHTS:-$REPO_ROOT/artifacts/paper/outputs/weights.qlmw}"
 
-# TODO (SDNC paper artifact): the transformer's per-step state extraction
-# entry point needs a standalone runner similar to the reference VM's
-# test_vm. The qllm_interpreter.c has the forward path; wrap it to emit
-# per-step JSONL matching the reference schema.
-
-if [[ ! -d "$PROGRAM_SUITE" ]]; then
-    echo "  NOTE: program suite not present (TODO — see dump_vm_trace.sh)."
-    echo '{"status":"todo","message":"transformer runner not wired"}' > "$OUTPUT"
-    exit 0
+if [[ ! -x "$BUILD_DIR/tools/weight_matrices" ]]; then
+    echo "  building weight_matrices (paper config)..."
+    cmake -S . -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE=Release \
+        > "$BUILD_DIR.cmake.log" 2>&1 || {
+            echo "  cmake configuration failed; see $BUILD_DIR.cmake.log"
+            exit 1
+        }
+    cmake --build "$BUILD_DIR" --target weight_matrices -j \
+        > "$BUILD_DIR.build.log" 2>&1 || {
+            echo "  build failed; see $BUILD_DIR.build.log"
+            exit 1
+        }
 fi
 
-if [[ ! -x "$BUILD_DIR/transformer_runner" ]]; then
-    echo "  NOTE: transformer_runner binary not built (TODO)."
-    echo '{"status":"todo","message":"transformer_runner target missing"}' > "$OUTPUT"
-    exit 0
-fi
-
-echo '' > "$OUTPUT"
-count=0
-for program in "$PROGRAM_SUITE"/*.esk; do
-    name="$(basename "$program" .esk)"
-    "$BUILD_DIR/transformer_runner" --weights "$WEIGHTS" \
-        --program "$program" --trace-jsonl >> "$OUTPUT" || {
-        echo "  WARN: $name transformer trace failed"
+echo "  dumping matrix-forward trace → $OUTPUT"
+"$BUILD_DIR/tools/weight_matrices" \
+    --trace-vm /dev/null \
+    --trace-transformer "$OUTPUT" \
+    > "$BUILD_DIR.tf_trace.log" 2>&1 || {
+        echo "  weight_matrices failed; tail of log:"
+        tail -20 "$BUILD_DIR.tf_trace.log" | sed 's/^/    /'
+        exit 1
     }
-    count=$((count + 1))
-done
 
-echo "  wrote $count program transformer traces to $OUTPUT"
-wc -l "$OUTPUT"
-shasum -a 256 "$OUTPUT"
+if ! grep -q "74 passed, 0 failed" "$BUILD_DIR.tf_trace.log"; then
+    echo "  WARNING: did not see '74 passed, 0 failed'; trace may be incomplete."
+    tail -10 "$BUILD_DIR.tf_trace.log" | sed 's/^/    /'
+    exit 1
+fi
+
+echo "  $(wc -l < "$OUTPUT" | tr -d ' ') trace lines written"
+shasum -a 256 "$OUTPUT" 2>/dev/null || sha256sum "$OUTPUT"

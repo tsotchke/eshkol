@@ -1,21 +1,23 @@
 #!/usr/bin/env bash
-# dump_vm_trace.sh — run the reference C bytecode VM on the 74-program
-# verification suite and emit per-step state traces as JSONL.
+# dump_vm_trace.sh — emit per-step JSONL trace from the reference C VM
+# for the SDNC paper's 74-program three-way verification suite.
 #
-# Each JSONL record captures one VM step:
-#   {
-#     "program": "<name>",
-#     "step": <int>,
-#     "pc": <int>, "sp": <int>, "tos": <float>, "sos": <float>,
-#     "opcode": <int>, "is_native": <bool>,
-#     "registers": [<float>, ...],
-#     "memory":    [<float>, ...],
-#     "tape":      [<float>, ...],
-#     "flags":     {"zero": <bool>, ...}
-#   }
+# The 74 programs are inline test() invocations in lib/backend/weight_matrices.c
+# (the paper artifact itself). The same binary runs all three paths
+# (reference C / simulated transformer / matrix forward) and emits per-step
+# trace lines for the reference and matrix paths via --trace-vm /
+# --trace-transformer flags.
+#
+# This script writes ONLY the reference-VM trace; --trace-transformer is
+# routed to /dev/null. To produce both traces in a single run (faster), see
+# run_paper_suite.sh which calls weight_matrices once with both flags.
 #
 # Usage:
 #   bash scripts/paper/dump_vm_trace.sh [output_file]
+#
+# Output: JSONL at $1 (default: artifacts/paper/outputs/vm-traces.jsonl)
+# Each record: {program, program_id, step, pc, sp, tos, sos, output, opcode,
+#               is_native, registers, memory, tape, flags}
 
 set -euo pipefail
 
@@ -27,44 +29,37 @@ mkdir -p "$(dirname "$OUTPUT")"
 
 BUILD_DIR="${BUILD_DIR:-$REPO_ROOT/build-paper}"
 
-# Standalone VM build path per CONTRIBUTING.md
-if [[ ! -x "$BUILD_DIR/test_vm" ]]; then
-    echo "  compiling standalone reference VM..."
-    mkdir -p "$BUILD_DIR"
-    gcc -O2 -std=c11 -w -DESHKOL_VM_TRACE_JSONL=1 \
-        lib/backend/eshkol_vm.c -o "$BUILD_DIR/test_vm" -lm -lpthread
+# Build weight_matrices if not present. (Same target as export_weights.sh —
+# CMake caches the first build, so this is a no-op after the first run.)
+if [[ ! -x "$BUILD_DIR/tools/weight_matrices" ]]; then
+    echo "  building weight_matrices (paper config)..."
+    cmake -S . -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE=Release \
+        > "$BUILD_DIR.cmake.log" 2>&1 || {
+            echo "  cmake configuration failed; see $BUILD_DIR.cmake.log"
+            exit 1
+        }
+    cmake --build "$BUILD_DIR" --target weight_matrices -j \
+        > "$BUILD_DIR.build.log" 2>&1 || {
+            echo "  build failed; see $BUILD_DIR.build.log"
+            exit 1
+        }
 fi
 
-# TODO (SDNC paper artifact): the 74-program verification suite needs a
-# canonical list of programs + inputs. For the v1.1.13 release this lives
-# inside lib/backend/weight_matrices.c's main() or equivalent. Wire that
-# list into a standalone runner that emits JSONL per step.
-#
-# Current status: the reference VM binary exists and can run programs;
-# the per-step JSONL emitter needs to be added via the
-# ESHKOL_VM_TRACE_JSONL flag at compile time, and each of the 74 test
-# programs needs a per-program invocation here.
-
-PROGRAM_SUITE="${PROGRAM_SUITE:-$REPO_ROOT/tests/sdnc/programs}"
-
-if [[ ! -d "$PROGRAM_SUITE" ]]; then
-    echo "  NOTE: program suite directory $PROGRAM_SUITE not present (TODO)."
-    echo "  Expected: 74 .esk programs used in three-way verification."
-    echo "  Emitting marker at $OUTPUT"
-    echo '{"status":"todo","message":"program suite not wired"}' > "$OUTPUT"
-    exit 0
-fi
-
-echo '' > "$OUTPUT"
-count=0
-for program in "$PROGRAM_SUITE"/*.esk; do
-    name="$(basename "$program" .esk)"
-    ESHKOL_VM_NO_DISASM=1 "$BUILD_DIR/test_vm" --trace-jsonl "$program" >> "$OUTPUT" || {
-        echo "  WARN: $name trace failed"
+echo "  dumping reference-VM trace → $OUTPUT"
+"$BUILD_DIR/tools/weight_matrices" \
+    --trace-vm "$OUTPUT" \
+    --trace-transformer /dev/null \
+    > "$BUILD_DIR.vm_trace.log" 2>&1 || {
+        echo "  weight_matrices failed; tail of log:"
+        tail -20 "$BUILD_DIR.vm_trace.log" | sed 's/^/    /'
+        exit 1
     }
-    count=$((count + 1))
-done
 
-echo "  wrote $count program traces to $OUTPUT"
-wc -l "$OUTPUT"
-shasum -a 256 "$OUTPUT"
+if ! grep -q "74 passed, 0 failed" "$BUILD_DIR.vm_trace.log"; then
+    echo "  WARNING: did not see '74 passed, 0 failed'; trace may be incomplete."
+    tail -10 "$BUILD_DIR.vm_trace.log" | sed 's/^/    /'
+    exit 1
+fi
+
+echo "  $(wc -l < "$OUTPUT" | tr -d ' ') trace lines written"
+shasum -a 256 "$OUTPUT" 2>/dev/null || sha256sum "$OUTPUT"

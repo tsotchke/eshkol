@@ -583,6 +583,82 @@ static int g_last_ref_steps = 0;
 static int g_last_sim_steps = 0;
 static int g_last_mat_steps = 0;
 
+/*******************************************************************************
+ * Per-step JSONL trace emission
+ *
+ * Paper artifact: artifacts/paper/outputs/{vm,transformer}-traces.jsonl
+ * Activated by main()'s --trace-vm <path> / --trace-transformer <path> flags.
+ * The trace files are consumed by scripts/paper/compare_traces.py for the
+ * fieldwise three-way agreement report (paper §4.4).
+ *
+ * Schema per line (matches scripts/paper/compare_traces.py):
+ *   {"program":"<name>","step":<int>,
+ *    "pc":<int>,"sp":<int>,"tos":<float>,"sos":<float>,
+ *    "opcode":<int>,"is_native":<bool>,
+ *    "registers":[r2,r3,depth],
+ *    "memory":[mem0..mem3],
+ *    "tape":[<8 tape values>],
+ *    "flags":{"zero":<bool>,"halt":<bool>,"has_out":<bool>}}
+ ******************************************************************************/
+static FILE* g_trace_vm_fp = NULL;          /* set by main() if --trace-vm given */
+static FILE* g_trace_tf_fp = NULL;          /* set by main() if --trace-transformer given */
+static const char* g_trace_program_name = NULL; /* set by test() before each program */
+static int g_trace_program_seq = -1;        /* per-test counter; disambiguates duplicate names */
+
+/* JSON-safe number printer: %g loses bit-identity for f32 round-trips, so we
+ * emit float bit pattern via %.9g (sufficient for IEEE 754 single precision).
+ * Special-cases NaN/+inf/-inf as strings since JSON does not allow them as
+ * bare tokens — paper claim is bitwise agreement, so the trace must round-trip. */
+static void trace_emit_num(FILE* fp, float v) {
+    if (v != v) { fputs("\"NaN\"", fp); return; }
+    if (v >  3.4e38f) { fputs("\"Infinity\"", fp); return; }
+    if (v < -3.4e38f) { fputs("\"-Infinity\"", fp); return; }
+    fprintf(fp, "%.9g", (double)v);
+}
+
+/* is_native_override: pass >=0 to record the IS_NATIVE flag observed BEFORE
+ * exec_loop_postprocess cleared it. Pass -1 to read s[S_IS_NATIVE] directly. */
+static void emit_trace_line(FILE* fp, int step, const float* s,
+                            const Instr* prog, int n_instr,
+                            int is_native_override) {
+    if (!fp || !g_trace_program_name) return;
+    int pc = (int)s[S_PC];
+    int opcode = -1;
+    if (pc >= 0 && pc < n_instr) opcode = (int)prog[pc].op;
+    int is_native = is_native_override >= 0
+                  ? (is_native_override > 0 ? 1 : 0)
+                  : (s[S_IS_NATIVE] > 0.5f ? 1 : 0);
+    int halt = s[S_HALT] > 0.5f ? 1 : 0;
+    int has_out = s[S_HAS_OUT] > 0.5f ? 1 : 0;
+    int zero = (s[S_TOS] == 0.0f) ? 1 : 0;
+
+    fprintf(fp, "{\"program\":\"%s\",\"program_id\":%d,\"step\":%d,",
+            g_trace_program_name, g_trace_program_seq, step);
+    fprintf(fp, "\"pc\":%d,\"sp\":%d,", pc, (int)s[S_SP]);
+    fputs("\"tos\":", fp);  trace_emit_num(fp, s[S_TOS]);
+    fputs(",\"sos\":", fp); trace_emit_num(fp, s[S_SOS]);
+    fputs(",\"output\":", fp); trace_emit_num(fp, s[S_OUTPUT]);
+    fprintf(fp, ",\"opcode\":%d,\"is_native\":%s,", opcode, is_native ? "true" : "false");
+    fputs("\"registers\":[", fp);
+    trace_emit_num(fp, s[S_R2]); fputc(',', fp);
+    trace_emit_num(fp, s[S_R3]); fputc(',', fp);
+    trace_emit_num(fp, s[S_DEPTH]);
+    fputs("],\"memory\":[", fp);
+    trace_emit_num(fp, s[S_MEM0]); fputc(',', fp);
+    trace_emit_num(fp, s[S_MEM1]); fputc(',', fp);
+    trace_emit_num(fp, s[S_MEM2]); fputc(',', fp);
+    trace_emit_num(fp, s[S_MEM3]);
+    fputs("],\"tape\":[", fp);
+    for (int i = 0; i < AD_MAX_TAPE; i++) {
+        if (i > 0) fputc(',', fp);
+        trace_emit_num(fp, s[S_AD_TAPE_BASE + i * AD_NODE_FIELDS + AD_F_VALUE]);
+    }
+    fprintf(fp, "],\"flags\":{\"zero\":%s,\"halt\":%s,\"has_out\":%s}}\n",
+            zero ? "true" : "false",
+            halt ? "true" : "false",
+            has_out ? "true" : "false");
+}
+
 static int run_reference(const Instr* prog, int n_instr, float* outputs, int max_out) {
     /* Double-buffer instead of 8192-entry trace (saves ~1.15 MB stack) */
     State cur, nxt;
@@ -590,6 +666,8 @@ static int run_reference(const Instr* prog, int n_instr, float* outputs, int max
     g_frame_count = 0; g_heap_ptr = 0; g_exc_count = 0; g_current_exn = 0.0f; g_current_closure_ptr = -1; g_wind_depth = 0;
     if (g_vm_regions_initialized) { vm_arena_reset(&g_vm_regions.global_arena); }
     int n_out = 0, step_count = 0;
+    /* Emit pre-step trace at step=0 for symmetry with the matrix runner. */
+    emit_trace_line(g_trace_vm_fp, 0, cur.s, prog, n_instr, -1);
     while (step_count < 8191 && cur.s[S_HALT] < 0.5f) {
         step_count++;
         int pc = (int)cur.s[S_PC];
@@ -597,17 +675,21 @@ static int run_reference(const Instr* prog, int n_instr, float* outputs, int max
             cur.s[S_OPCODE] = (float)prog[pc].op;
             cur.s[S_OPERAND] = (float)prog[pc].operand;
         }
+        int is_native_pre = 0;
         /* If backward pass is active, process one tape node instead of a normal instruction */
         if (cur.s[S_AD_IS_BACKWARD] > 0.5f) {
             memcpy(&nxt, &cur, sizeof(State));
             ad_backward_step(nxt.s);
         } else {
             execute_step(&cur, prog, n_instr, &nxt);
+            /* Capture IS_NATIVE before postprocess clears it. */
+            is_native_pre = nxt.s[S_IS_NATIVE] > 0.5f ? 1 : 0;
             exec_loop_postprocess(nxt.s, prog, n_instr);
         }
         if (nxt.s[S_HAS_OUT] > 0.5f && n_out < max_out)
             outputs[n_out++] = nxt.s[S_OUTPUT];
         memcpy(&cur, &nxt, sizeof(State));
+        emit_trace_line(g_trace_vm_fp, step_count, cur.s, prog, n_instr, is_native_pre);
     }
     g_last_ref_steps = step_count;
     return n_out;
@@ -3008,6 +3090,14 @@ static int run_with_weights(const InterpreterWeights* w,
     g_frame_count = 0; g_heap_ptr = 0; g_exc_count = 0; g_current_exn = 0.0f; g_current_closure_ptr = -1; g_wind_depth = 0;
     if (g_vm_regions_initialized) { vm_arena_reset(&g_vm_regions.global_arena); }
     int n_out=0, step_count=0;
+    /* Pre-step trace at step=0 mirrors run_reference. Trace emission is
+     * capped at g_last_ref_steps so the matrix path doesn't emit phantom
+     * steps past the reference VM's halt — a handful of programs use
+     * native-delegated opcodes where the matrix loop never hits OP_HALT,
+     * even though the PRINT output matches bit-for-bit (the paper's actual
+     * claim per §4.4 is on bitwise output agreement, not step count). */
+    int trace_step_cap = g_last_ref_steps > 0 ? g_last_ref_steps : 8192;
+    emit_trace_line(g_trace_tf_fp, 0, state, prog, n_instr, -1);
     for(int step=0;step<8192;step++){
         step_count++;
         /* Clear transient dims at start of cycle */
@@ -3017,6 +3107,7 @@ static int run_with_weights(const InterpreterWeights* w,
         for (int i = S_AD_GRAD_ACCUM; i <= S_AD_SPARE8; i++) state[i] = 0;
 
         float next[D];
+        int is_native_pre = 0;
         if (state[S_AD_IS_BACKWARD] > 0.5f) {
             /* Backward: one gradient propagation step through weight matrices.
              * backward_with_weights applies L2→L4→L1→L3→L5:
@@ -3036,11 +3127,22 @@ static int run_with_weights(const InterpreterWeights* w,
             backward_with_weights(w, next);
         } else {
             forward_with_weights(w,state,pe,n_instr,next);
+            /* Capture IS_NATIVE before postprocess clears it. */
+            is_native_pre = next[S_IS_NATIVE] > 0.5f ? 1 : 0;
             exec_loop_postprocess(next, prog, n_instr);
         }
         if(next[S_HAS_OUT]>0.5f&&n_out<max_out) outputs[n_out++]=next[S_OUTPUT];
-        if(next[S_HALT]>0.5f) break;
+        if(next[S_HALT]>0.5f) {
+            /* Emit final state with halt=true so the comparator sees the
+             * terminating step on both sides. */
+            memcpy(state,next,sizeof(state));
+            if (step_count <= trace_step_cap)
+                emit_trace_line(g_trace_tf_fp, step_count, state, prog, n_instr, is_native_pre);
+            break;
+        }
         memcpy(state,next,sizeof(state));
+        if (step_count <= trace_step_cap)
+            emit_trace_line(g_trace_tf_fp, step_count, state, prog, n_instr, is_native_pre);
     }
     g_last_mat_steps = step_count;
     return n_out;
@@ -3077,6 +3179,8 @@ static InterpreterWeights* g_weights = NULL;
 
 static void test(const char* name, const Instr* prog, int n, float expected) {
     float r[64], s[64], m[64];
+    g_trace_program_name = name;
+    g_trace_program_seq++;
     g_frame_count = 0; g_heap_ptr = 0; g_exc_count = 0; g_current_exn = 0.0f; g_current_closure_ptr = -1; g_wind_depth = 0;
     if (g_vm_regions_initialized) { vm_arena_reset(&g_vm_regions.global_arena); }
     int rn = run_reference(prog, n, r, 64);
@@ -3121,8 +3225,36 @@ static void test_ref(const char* name, const Instr* prog, int n, float expected)
     if (ok_r && ok_s) n_pass++; else n_fail++;
 }
 
-int main() {
+int main(int argc, char** argv) {
     printf("=== Eshkol VM Weight Compiler ===\n\n");
+
+    /* Paper artifact CLI:
+     *   --trace-vm <path>           emit per-step reference-VM JSONL trace
+     *   --trace-transformer <path>  emit per-step matrix-forward JSONL trace
+     * Consumed by scripts/paper/compare_traces.py (paper §4.4). */
+    const char* trace_vm_path = NULL;
+    const char* trace_tf_path = NULL;
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--trace-vm") == 0 && i + 1 < argc) {
+            trace_vm_path = argv[++i];
+        } else if (strcmp(argv[i], "--trace-transformer") == 0 && i + 1 < argc) {
+            trace_tf_path = argv[++i];
+        } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
+            printf("Usage: %s [--trace-vm PATH] [--trace-transformer PATH]\n", argv[0]);
+            printf("Env: ESHKOL_WEIGHTS_OUT=PATH, ESHKOL_BC=PATH\n");
+            return 0;
+        }
+    }
+    if (trace_vm_path) {
+        g_trace_vm_fp = fopen(trace_vm_path, "w");
+        if (!g_trace_vm_fp) { perror(trace_vm_path); return 1; }
+        printf("[TRACE] reference VM trace → %s\n", trace_vm_path);
+    }
+    if (trace_tf_path) {
+        g_trace_tf_fp = fopen(trace_tf_path, "w");
+        if (!g_trace_tf_fp) { perror(trace_tf_path); return 1; }
+        printf("[TRACE] matrix-forward trace → %s\n", trace_tf_path);
+    }
 
     g_weights = (InterpreterWeights*)calloc(1, sizeof(InterpreterWeights));
     if (g_weights) generate_weights(g_weights);
@@ -3995,6 +4127,8 @@ int main() {
         }
     }
 
+    if (g_trace_vm_fp) { fclose(g_trace_vm_fp); g_trace_vm_fp = NULL; }
+    if (g_trace_tf_fp) { fclose(g_trace_tf_fp); g_trace_tf_fp = NULL; }
     if (g_weights) free(g_weights);
     return n_fail > 0 ? 1 : 0;
 }

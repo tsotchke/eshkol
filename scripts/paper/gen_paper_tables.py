@@ -49,7 +49,7 @@ Total             & --            & 2{,}766{,}342 \\
 
 
 def write_verification_table(comparison_path: Path, out_path: Path) -> None:
-    """Three-way verification summary."""
+    """Three-way verification summary, paper §4.4 ('74/74 programs agree')."""
     if not comparison_path.exists():
         content = LATEX_PREAMBLE + "% TODO: comparison report not present\n"
         out_path.write_text(content)
@@ -60,18 +60,19 @@ def write_verification_table(comparison_path: Path, out_path: Path) -> None:
         out_path.write_text(content)
         return
     total = report["total_programs"]
-    agreeing = report["fully_agreeing_programs"]
+    output_agreeing = report.get("output_agreeing_programs", 0)
+    fully_agreeing = report.get("fully_agreeing_programs", 0)
     content = LATEX_PREAMBLE + rf"""\begin{{tabular}}{{lrr}}
 \toprule
-Result & Programs & Fraction \\
+Agreement scope & Programs & Fraction \\
 \midrule
-Fully agreeing (bitwise)     & {agreeing}     & {agreeing}/{total} \\
-Any disagreement             & {total - agreeing} & {total - agreeing}/{total} \\
+PRINT-output agreement (paper claim) & {output_agreeing}     & {output_agreeing}/{total} \\
+Full-state per-step agreement        & {fully_agreeing}      & {fully_agreeing}/{total} \\
 \bottomrule
 \end{{tabular}}
 """
     out_path.write_text(content)
-    print(f"  wrote {out_path} ({agreeing}/{total} agreeing)")
+    print(f"  wrote {out_path} (output={output_agreeing}/{total}, fullstate={fully_agreeing}/{total})")
 
 
 def write_coverage_table(coverage_path: Path, out_path: Path) -> None:
