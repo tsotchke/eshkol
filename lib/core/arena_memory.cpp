@@ -2538,6 +2538,38 @@ extern "C" eshkol_closure_t* arena_allocate_closure(arena_t* arena, uint64_t fun
 
 // ===== END CLOSURE ENVIRONMENT MEMORY MANAGEMENT IMPLEMENTATION =====
 
+// ===== CLOSURE REFLECTION =====
+// Reflection helpers for procedure-arity / procedure-name / etc.
+//
+// The closure struct (inc/eshkol/eshkol.h) already records input_arity
+// (as part of return_type_info packed by codegen) and a CLOSURE_FLAG_VARIADIC
+// flag. These helpers expose those fields to user code.
+
+extern "C" int64_t eshkol_closure_get_arity(const eshkol_closure_t* closure) {
+    if (!closure) return -1;
+    return (int64_t)closure->input_arity;
+}
+
+extern "C" int eshkol_closure_is_variadic_fn(const eshkol_closure_t* closure) {
+    if (!closure) return 0;
+    return (closure->flags & CLOSURE_FLAG_VARIADIC) ? 1 : 0;
+}
+
+// Returns a fresh arena-allocated Eshkol string (with subtype header) so
+// the result can be passed to display/write/string-* directly. Returning
+// the raw closure->name pointer would print as "#<heap:NN>" since display
+// expects HEAP_PTR with a HEAP_SUBTYPE_STRING object header at ptr-8.
+extern "C" char* eshkol_closure_get_name(const eshkol_closure_t* closure) {
+    arena_t* arena = get_global_arena();
+    const char* src = (closure && closure->name) ? closure->name : "";
+    size_t len = strlen(src);
+    char* dst = arena_allocate_string_with_header(arena, len);
+    if (!dst) return nullptr;
+    memcpy(dst, src, len);
+    dst[len] = '\0';
+    return dst;
+}
+
 // ===== LAMBDA REGISTRY IMPLEMENTATION =====
 // Runtime table for mapping function pointers to S-expressions (homoiconicity)
 

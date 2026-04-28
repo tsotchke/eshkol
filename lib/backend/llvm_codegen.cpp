@@ -10440,6 +10440,11 @@ private:
         if (func_name == "boolean?") return codegenBooleanPredicate(op);
         if (func_name == "symbol?") return codegenHeapSubtypePredicate(op, HEAP_SUBTYPE_SYMBOL);
         if (func_name == "procedure?") return codegenProcedurePredicate(op);
+        if (func_name == "procedure-arity") return codegenProcedureArity(op);
+        // procedure-name and procedure-variadic? deferred — the closure-name
+        // codegen path doesn't reliably populate closure->name for top-level
+        // (define …) forms (only anonymous lambda alloc passes name correctly).
+        // Will surface once the closure-allocation path is unified.
 
         // HoTT TYPE INTROSPECTION: type-of returns the type tag as an integer
         if (func_name == "type-of") {
@@ -28229,13 +28234,105 @@ private:
     }
 
     // codegenAppend removed - now in stdlib.esk (core/list/transform.esk)
-    
+
     // codegenIterativeAppend removed - now in stdlib.esk (core/list/transform.esk)
-    
+
     // codegenReverse removed - now in stdlib.esk (core/list/transform.esk)
 
     // codegenListRef removed - now in stdlib.esk (core/list/search.esk)
     // codegenListTail removed - now in stdlib.esk (core/list/search.esk)
+
+    // ─── Procedure reflection ──────────────────────────────────────────
+    //
+    //   (procedure-arity proc)      → fixed param count (int), or 0 if not a
+    //                                 closure. For variadic procedures this
+    //                                 is the minimum-arity (the leading fixed
+    //                                 parameters); use (procedure-variadic? p)
+    //                                 to distinguish.
+    //   (procedure-name proc)       → the bound name from `(define name …)`
+    //                                 or "" for anonymous lambdas.
+    //   (procedure-variadic? proc)  → #t if the procedure accepts a rest
+    //                                 argument, else #f.
+    //
+    // Each takes a CALLABLE tagged value, unpacks the pointer, and reads
+    // from the closure struct (eshkol_closure_t). For non-closures (e.g.
+    // builtins exposed as CALLABLE_SUBTYPE_PRIMITIVE without a closure
+    // struct), we currently return 0/""/#f — a future refinement could
+    // consult a builtin arity table.
+
+    Value* codegenProcedureArity(const eshkol_operations_t* op) {
+        if (op->call_op.num_vars != 1) {
+            eshkol_warn("procedure-arity requires exactly 1 argument");
+            return nullptr;
+        }
+        Value* val = codegenAST(&op->call_op.variables[0]);
+        if (!val) return nullptr;
+        Value* tagged = ensureTaggedValue(val);
+        Value* ptr_int = unpackInt64FromTaggedValue(tagged);
+        Value* ptr = builder->CreateIntToPtr(ptr_int, builder->getPtrTy());
+
+        Function* fn = function_table["eshkol_closure_get_arity"];
+        if (!fn) {
+            FunctionType* ft = FunctionType::get(int64_type,
+                                                  {builder->getPtrTy()}, false);
+            fn = Function::Create(ft, GlobalValue::ExternalLinkage,
+                                  "eshkol_closure_get_arity", module.get());
+            function_table["eshkol_closure_get_arity"] = fn;
+        }
+        Value* arity = builder->CreateCall(fn, {ptr});
+        return packInt64ToTaggedValue(arity);
+    }
+
+    Value* codegenProcedureName(const eshkol_operations_t* op) {
+        if (op->call_op.num_vars != 1) {
+            eshkol_warn("procedure-name requires exactly 1 argument");
+            return nullptr;
+        }
+        Value* val = codegenAST(&op->call_op.variables[0]);
+        if (!val) return nullptr;
+        Value* tagged = ensureTaggedValue(val);
+        Value* ptr_int = unpackInt64FromTaggedValue(tagged);
+        Value* ptr = builder->CreateIntToPtr(ptr_int, builder->getPtrTy());
+
+        Function* fn = function_table["eshkol_closure_get_name"];
+        if (!fn) {
+            FunctionType* ft = FunctionType::get(builder->getPtrTy(),
+                                                  {builder->getPtrTy()}, false);
+            fn = Function::Create(ft, GlobalValue::ExternalLinkage,
+                                  "eshkol_closure_get_name", module.get());
+            function_table["eshkol_closure_get_name"] = fn;
+        }
+        Value* name_ptr = builder->CreateCall(fn, {ptr});
+        // Wrap as a HEAP_PTR-typed string. The runtime returns a const char*
+        // that points into the closure struct's `name` field — same lifetime
+        // as the closure itself, which is arena-allocated.
+        return packPtrToTaggedValue(name_ptr, ESHKOL_VALUE_HEAP_PTR);
+    }
+
+    Value* codegenProcedureVariadicP(const eshkol_operations_t* op) {
+        if (op->call_op.num_vars != 1) {
+            eshkol_warn("procedure-variadic? requires exactly 1 argument");
+            return nullptr;
+        }
+        Value* val = codegenAST(&op->call_op.variables[0]);
+        if (!val) return nullptr;
+        Value* tagged = ensureTaggedValue(val);
+        Value* ptr_int = unpackInt64FromTaggedValue(tagged);
+        Value* ptr = builder->CreateIntToPtr(ptr_int, builder->getPtrTy());
+
+        Function* fn = function_table["eshkol_closure_is_variadic_fn"];
+        if (!fn) {
+            FunctionType* ft = FunctionType::get(int32_type,
+                                                  {builder->getPtrTy()}, false);
+            fn = Function::Create(ft, GlobalValue::ExternalLinkage,
+                                  "eshkol_closure_is_variadic_fn", module.get());
+            function_table["eshkol_closure_is_variadic_fn"] = fn;
+        }
+        Value* result_int = builder->CreateCall(fn, {ptr});
+        Value* is_var = builder->CreateICmpNE(result_int,
+            ConstantInt::get(int32_type, 0));
+        return packBoolToTaggedValue(is_var);
+    }
 
     // Production implementation: Set car (mutable)
     // Shared implementation: mutate car (is_cdr=0) or cdr (is_cdr=1) of a
