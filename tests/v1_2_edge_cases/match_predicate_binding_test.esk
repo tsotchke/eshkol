@@ -1,0 +1,65 @@
+;; Match (? pred) and (? pred name) regression — Apr 28 corrected audit §2.
+;;
+;; Before this fix, (match x ((? number? n) ...)) raised:
+;;   error: expected closing paren after predicate pattern
+;; The parser only accepted the bare form (? pred); the bound form
+;; required a workaround:
+;;   ((? number?) (let ((n x)) ...))
+;;
+;; After the fix, both forms parse, the bare form behaves unchanged, and
+;; the bound form binds the matched value to the named variable in the
+;; clause body — Racket-style.
+
+(require stdlib)
+(display "=== match (? pred [name]) regression ===") (newline)
+
+(define pass-count 0)
+(define fail-count 0)
+(define (check name cond)
+  (if cond
+      (begin (set! pass-count (+ pass-count 1))
+             (display "PASS: ") (display name) (newline))
+      (begin (set! fail-count (+ fail-count 1))
+             (display "FAIL: ") (display name) (newline))))
+
+;; Bare (? pred) — backwards compatible with prior code.
+(define (is-num? x) (match x ((? number?) #t) (_ #f)))
+(check "(? number?) bare-form on number" (is-num? 42))
+(check "(? number?) bare-form on string" (not (is-num? "x")))
+(check "(? number?) bare-form on symbol" (not (is-num? (quote foo))))
+
+;; Bound (? pred name) — n is in scope in the body.
+(define (succ-or-zero x)
+  (match x ((? number? n) (+ n 1)) (_ 0)))
+(check "(? number? n) bound-form binds n=42 → 43" (= (succ-or-zero 42) 43))
+(check "(? number? n) bound-form binds n=-5 → -4" (= (succ-or-zero -5) -4))
+(check "(? number? n) bound-form misses on string" (= (succ-or-zero "x") 0))
+
+;; Bound form across multiple clauses.
+(define (kind x)
+  (match x
+    ((? number? n) (list (quote num) n))
+    ((? string? s) (string-length s))
+    (_ (quote other))))
+(check "kind: bound n on number"  (equal? (kind 99) (list (quote num) 99)))
+(check "kind: bound s on string"  (= (kind "hello") 5))
+(check "kind: catch-all"          (eq? (kind (quote sym)) (quote other)))
+
+;; Bound form with a body that uses both the binding and a closure-over var.
+(define (close-over base)
+  (lambda (x)
+    (match x
+      ((? number? n) (+ base n))
+      (_ base))))
+(define add10 (close-over 10))
+(check "bound binding inside lambda over outer var: add10 5 = 15"
+       (= (add10 5) 15))
+(check "bound binding inside lambda, miss path: add10 'foo = 10"
+       (= (add10 (quote foo)) 10))
+
+(display "---") (newline)
+(display "Total: ") (display (+ pass-count fail-count))
+(display ", PASS: ") (display pass-count)
+(display ", FAIL: ") (display fail-count)
+(newline)
+(if (> fail-count 0) (exit 1))
