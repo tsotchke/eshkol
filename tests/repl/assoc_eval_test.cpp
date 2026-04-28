@@ -151,8 +151,13 @@ bool output_has_assoc_success(const std::string& output) {
 }
 
 bool output_has_forward_ref_failure(const std::string& output) {
-    return output.find("called a forward-referenced function that was never defined") !=
-           std::string::npos;
+    // Bug W (commit 7301dc4 era) replaced the nameless message
+    //     "called a forward-referenced function that was never defined"
+    // with a per-call-site guard that names the function:
+    //     "called undefined function 'NAME' (forward-referenced but never defined; ...)"
+    // Both forms count as the expected forward-ref failure.
+    return output.find("forward-referenced") != std::string::npos &&
+           output.find("never defined") != std::string::npos;
 }
 
 int assert_assoc_eval(const std::string& label,
