@@ -8,6 +8,7 @@
          string-replace string-reverse string-copy string-repeat
          string-starts-with? string-ends-with?
          string-index string-last-index string-contains string-count
+         string-find
          string-upcase string-downcase
          string-split-ordered)
 
@@ -149,3 +150,14 @@
 ;; directly; ordered and unordered split give the same result.
 (define (string-split-ordered str delim)
   (string-split str delim))
+
+;; string-find: index of first occurrence of `needle` in `haystack`,
+;; or #f if not present.
+;;
+;; The companion `string-index` returns the same index but uses -1 as the
+;; sentinel for "not found"; `string-find`'s #f sentinel composes more
+;; cleanly with predicate-style flow: (if (string-find h n) ...). Both
+;; share the underlying strstr-based codegen so the cost is identical.
+(define (string-find haystack needle)
+  (let ((idx (string-index haystack needle)))
+    (if (< idx 0) #f idx)))
