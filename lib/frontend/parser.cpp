@@ -2101,8 +2101,13 @@ static eshkol_pattern_t* parse_pattern(SchemeTokenizer& tokenizer) {
                     pattern->list.patterns[i] = list_pats[i];
                 }
             } else if (peek.value == "?") {
-                // Predicate pattern: (? pred)
+                // Predicate pattern: (? pred) or (? pred name)
+                // Bare form: (? number?) ─ matches when (number? val) is truthy.
+                // Bound form: (? number? n) ─ same, plus binds val to `n` in
+                //   the clause body. Convenient when the predicate is a type
+                //   guard and the body wants the value typed.
                 pattern->type = PATTERN_PREDICATE;
+                pattern->predicate.binding_name = nullptr;
                 Token pred_tok = tokenizer.nextToken();
                 pattern->predicate.predicate = new eshkol_ast_t;
                 if (pred_tok.type == TOKEN_LPAREN) {
@@ -2110,8 +2115,12 @@ static eshkol_pattern_t* parse_pattern(SchemeTokenizer& tokenizer) {
                 } else {
                     *pattern->predicate.predicate = parse_atom(pred_tok);
                 }
-                // Consume closing paren
+                // Look at the next token: SYMBOL ⇒ binding name, RPAREN ⇒ done.
                 token = tokenizer.nextToken();
+                if (token.type == TOKEN_SYMBOL) {
+                    pattern->predicate.binding_name = strdup(token.value.c_str());
+                    token = tokenizer.nextToken();
+                }
                 if (token.type != TOKEN_RPAREN) {
                     PARSE_ERROR_AT(token, "expected closing paren after predicate pattern");
                     pattern->type = PATTERN_INVALID;

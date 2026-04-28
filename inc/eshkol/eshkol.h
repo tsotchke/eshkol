@@ -1242,9 +1242,12 @@ typedef struct eshkol_pattern {
             uint64_t num_patterns;
         } list;
 
-        // PATTERN_PREDICATE: (? pred-expr)
+        // PATTERN_PREDICATE: (? pred-expr) or (? pred-expr name)
+        // If `name` is non-null, the matched value is bound to that
+        // variable in the clause body (Racket-style guard-with-binding).
         struct {
             struct eshkol_ast *predicate;
+            char *binding_name;  // optional; null = no binding
         } predicate;
 
         // PATTERN_OR: (or pat1 pat2 ...)

@@ -16953,7 +16953,12 @@ private:
                     Value* result = codegenAST(&call_ast);
                     symbol_table.erase(slot_name);
                     if (!result) return ConstantInt::getFalse(*context);
-                    return flow_->isTruthy(result);
+                    Value* truth = flow_->isTruthy(result);
+                    // Optional binding: (? pred name) binds val to `name`.
+                    if (pattern->predicate.binding_name) {
+                        bindings.push_back({pattern->predicate.binding_name, val});
+                    }
+                    return truth;
                 }
 
                 // Path (b): first-class callable — evaluate, call, test.
@@ -16969,7 +16974,12 @@ private:
                     return ConstantInt::getFalse(*context);
                 }
 
-                return flow_->isTruthy(result);
+                Value* truth = flow_->isTruthy(result);
+                // Optional binding: (? pred name) binds val to `name`.
+                if (pattern->predicate.binding_name) {
+                    bindings.push_back({pattern->predicate.binding_name, val});
+                }
+                return truth;
             }
 
             case PATTERN_OR: {
