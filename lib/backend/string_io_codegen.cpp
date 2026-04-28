@@ -1072,9 +1072,33 @@ llvm::Value* StringIOCodegen::stringSplit(const eshkol_operations_t* op) {
     ctx_.builder().CreateStore(new_pos, pos_ptr);
     ctx_.builder().CreateBr(search_cond);
 
-    // Loop end: return result (segments in reverse order - use Eshkol's reverse if needed)
+    // Loop end: result is in reverse order because each segment was cons'd
+    // onto the head. Call eshkol_list_reverse_tagged to flip into left-to-right
+    // order matching split conventions (a,b,c → (a b c), not (c b a)).
+    // Uses output-pointer pattern (not by-value return) so the ABI is the
+    // same on every platform regardless of LLVM's struct-passing rules.
     ctx_.builder().SetInsertPoint(loop_end);
-    return ctx_.builder().CreateLoad(ctx_.taggedValueType(), result_ptr);
+
+    // Allocate the output slot at function entry.
+    llvm::IRBuilderBase::InsertPoint saved_rev_ip = ctx_.builder().saveIP();
+    llvm::BasicBlock& rev_entry = parent_func->getEntryBlock();
+    ctx_.builder().SetInsertPoint(&rev_entry, rev_entry.begin());
+    llvm::Value* rev_out_ptr = ctx_.builder().CreateAlloca(
+        ctx_.taggedValueType(), nullptr, "split_reversed_out");
+    ctx_.builder().restoreIP(saved_rev_ip);
+
+    llvm::Module* mod = parent_func->getParent();
+    llvm::Function* reverse_fn = mod->getFunction("eshkol_list_reverse_tagged");
+    if (!reverse_fn) {
+        llvm::FunctionType* ft = llvm::FunctionType::get(
+            ctx_.builder().getVoidTy(),
+            {ctx_.ptrType(), ctx_.ptrType(), ctx_.ptrType()},
+            false);
+        reverse_fn = llvm::Function::Create(ft, llvm::GlobalValue::ExternalLinkage,
+                                            "eshkol_list_reverse_tagged", mod);
+    }
+    ctx_.builder().CreateCall(reverse_fn, {arena_ptr, result_ptr, rev_out_ptr});
+    return ctx_.builder().CreateLoad(ctx_.taggedValueType(), rev_out_ptr);
 }
 
 llvm::Value* StringIOCodegen::stringContains(const eshkol_operations_t* op) {
