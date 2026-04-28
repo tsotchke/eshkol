@@ -3885,6 +3885,47 @@ arena_tagged_cons_cell_t* hash_table_keys(arena_t* arena, const eshkol_hash_tabl
     return head;
 }
 
+// Reverse a tagged-cons list. Walks the list, allocates a new cons cell per
+// element, writes the resulting tagged_value (NULL for empty) into *out.
+// Stops at any non-CONS terminator (NULL, dotted-pair tail, etc.) — the
+// function is robust to dotted lists but the dotted tail is dropped
+// (matching R7RS reverse on improper lists). Used by string-split codegen.
+//
+// Output-pointer rather than struct-return-by-value sidesteps the ABI
+// coupling between LLVM's IR-level struct and the platform's calling
+// convention for ≤16-byte structs.
+extern "C" void eshkol_list_reverse_tagged(
+    arena_t* arena, const eshkol_tagged_value_t* head_tv,
+    eshkol_tagged_value_t* out) {
+    if (!out) return;
+    out->type = ESHKOL_VALUE_NULL;
+    out->flags = 0;
+    out->reserved = 0;
+    out->data.ptr_val = 0;
+    if (!arena || !head_tv) return;
+
+    eshkol_tagged_value_t cur = *head_tv;
+    while (cur.type == ESHKOL_VALUE_HEAP_PTR) {
+        // Validate it's actually a cons cell via the object header.
+        eshkol_object_header_t* hdr = (eshkol_object_header_t*)
+            ((uint8_t*)cur.data.ptr_val - sizeof(eshkol_object_header_t));
+        if (hdr->subtype != HEAP_SUBTYPE_CONS) break;
+        arena_tagged_cons_cell_t* cell = (arena_tagged_cons_cell_t*)cur.data.ptr_val;
+
+        arena_tagged_cons_cell_t* new_cell = arena_allocate_cons_with_header(arena);
+        if (!new_cell) return;
+        arena_tagged_cons_set_tagged_value(new_cell, false, &cell->car);
+        arena_tagged_cons_set_tagged_value(new_cell, true, out);
+
+        out->type = ESHKOL_VALUE_HEAP_PTR;
+        out->flags = 0;
+        out->reserved = 0;
+        out->data.ptr_val = (uint64_t)new_cell;
+
+        cur = cell->cdr;
+    }
+}
+
 // Get all values as a list
 arena_tagged_cons_cell_t* hash_table_values(arena_t* arena, const eshkol_hash_table_t* table) {
     if (!arena || !table || table->size == 0) return nullptr;

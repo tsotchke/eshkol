@@ -52,8 +52,11 @@
 
 ;; string-replace: Replace all occurrences of old with new
 ;; (string-replace "hello world" "o" "0") => "hell0 w0rld"
+;; The earlier `(reverse (string-split …))` was needed when the builtin
+;; returned reversed order; now string-split returns left-to-right directly
+;; so reverse is no longer required.
 (define (string-replace str old new)
-  (string-join (reverse (string-split str old)) new))
+  (string-join (string-split str old) new))
 
 ;; string-reverse: Reverse a string
 (define (string-reverse str)
@@ -140,7 +143,9 @@
   (list->string (map (lambda (c) (integer->char (downcase-char (char->integer c))))
                      (string->list str))))
 
-;; string-split-ordered: Split string by delimiter, returns list in left-to-right order
-;; The builtin string-split returns in reverse order, this wraps it with reverse
+;; string-split-ordered: identity wrapper — kept as a backwards-compatible
+;; alias for code that called it before the codegen-side reverse fix landed.
+;; The builtin (string-split str delim) now returns left-to-right order
+;; directly; ordered and unordered split give the same result.
 (define (string-split-ordered str delim)
-  (reverse (string-split str delim)))
+  (string-split str delim))
