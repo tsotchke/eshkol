@@ -42,11 +42,11 @@ Output: populated `artifacts/paper/outputs/` with:
 ## Expected checksums (post-regeneration)
 
 ```
-SHA-256  weights.qlmw              c8525f133ee1de3c67b1b56bd948fda24db56a3c89aacf29a8c9e9c9dc046759
-SHA-256  vm-traces.jsonl           25bf31ec088ff2005a0a8f1351a9bd0e3e19853177e1f8a1adf353757861884a
-SHA-256  transformer-traces.jsonl  dbb9f05690de2f33ec9a20aa441a5149237d54da922ef843e8f684f5c4c81805
-SHA-256  comparison-report.json    e88c8f66c92df4c5418801a12f19797c99e707c53d7369e9d0c9eaad992f4cf8
-SHA-256  opcode-coverage.json      b4b5d55f71cdc25e346043783375dfef74085f004a8662dcd3ae7ef1ec261f67
+SHA-256  weights.qlmw              638376aab6d49e829da2c54d22b545d86c50aa1c2d508e8ec029d2a6d3f1e77d
+SHA-256  vm-traces.jsonl           564fbe1fa4dba5793db0c0e54d402932061f2c82b94da470c7541a5c421584f3
+SHA-256  transformer-traces.jsonl  5cc01b2a17e87d88628b13ef5f7602bd7bcd6380e407a0aac5c39b35a9570715
+SHA-256  comparison-report.json    8a7917d2b56254f9fad71a4cd5e59284504313e73f99c2b668b461a74e154aab
+SHA-256  opcode-coverage.json      aa0c666ad3c2b7a1034e4a69deee6e271e53261bddb12e07dce52fb55218438f
 ```
 
 The first regeneration at the pinned commit records these hashes; every
@@ -54,22 +54,30 @@ subsequent regeneration on an IEEE 754 float32 platform should produce
 bit-identical outputs. Platform divergence is a bug; file an issue with
 the platform details.
 
-The `comparison-report.json` carries two complementary metrics:
+### What the agreement metrics mean
 
-  - `output_agreeing_programs` — programs whose first PRINT result is
-    bit-close (≤1e-2) on both runners. This is the paper's §4.4 claim
-    of "74/74 programs agree" and matches what the inline `test()` in
-    `weight_matrices.c` verifies. **Expected: 71/71 (the trace-suite
-    sample of the 74 inline tests; the 3 non-traced programs are
-    `100×CONST a×b` multiplication batches and similar reset-counter
-    paths that exercise control flow rather than program-as-data).**
+The artifact contract is **bit-identical agreement at every step**
+between the reference C interpreter and the matrix forward pass. The
+`comparison-report.json` carries two metrics:
+
+  - `output_agreeing_programs` — programs whose first PRINT result
+    matches.
   - `fully_agreeing_programs` — programs whose entire per-step state
-    vector is bit-identical on both runners. This is a strictly stronger
-    check; AD backward-pass programs intentionally diverge on
-    intermediate tape state because the reference VM's
-    `ad_backward_step` and the matrix path's `backward_with_weights`
-    use distinct step functions whose final gradient still agrees.
-    **Expected: 52/71.**
+    vector matches bitwise (PC, SP, TOS, SOS, registers, memory, tape,
+    flags).
+
+**Both metrics must equal `total_programs` (71/71).** If a regression
+ever introduces a divergence, it must be fixed — not documented as
+acceptable drift.
+
+The matrix path is a `W·x + b` SQUARE-FFN transformer, so cross
+products are computed via the polarisation identity
+`a·b = ½·(a+b)² − ½·a² − ½·b²` (Layer 1). For bit-identity, the
+reference VM (`ad_backward_step`) uses the same polarisation arithmetic
+where it would otherwise compute `grad · saved` directly — direct
+multiplication and polarisation are mathematically equal but differ by
+1–13 ULPs in float32 due to operation order, and the matrix path has
+no architectural way to compute direct multiplication.
 
 ## Script breakdown
 

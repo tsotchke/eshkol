@@ -56,7 +56,33 @@
 #define N_LAYERS 6
 #define MEM_SIZE 4
 #define FFN_DIM 1024
-#define SCALE 100.0f
+/* Temperature for softmax/sigmoid gates.
+ *
+ * For bit-identical agreement between the matrix forward pass and the
+ * reference C interpreter, every gate must saturate to *exactly* 0 or 1
+ * — no sub-ulp leakage that accumulates over thousands of steps.
+ *
+ * Two saturation conditions:
+ *
+ *   1. sigmoid(x) gates (used by `indicator()` for opcode/operand dispatch):
+ *      sigmoidf() short-circuits to 1.0f for x > 20 and 0.0f for x < -20.
+ *      With integer x and k separated by ≥1, the sigmoid argument is
+ *      ≥ SCALE/2 in absolute value, so SCALE > 40 already saturates these.
+ *
+ *   2. Softmax over position embeddings (Layer 0 attention):
+ *      Score gap between the peak (p == PC) and adjacent positions is
+ *      ½·SCALE/sqrt(HD) = SCALE/(2·sqrt(2)) ≈ 0.3536·SCALE.
+ *      For exp(−gap) to underflow to *literal* zero in float32 (denormals
+ *      kick in around exp(−87) ≈ 1e-38), we need gap > 87, i.e.
+ *      SCALE > 246. Anything below that leaves a residue (with SCALE=100
+ *      the peak−adjacent residue is exp(−35.4) ≈ 4.6e-16, which is
+ *      perfectly representable in float32 and propagates indefinitely
+ *      through accumulation chains — observed as a tos=4.4e-16 in
+ *      `tail sum(100)` at step 1206 vs. exactly 0 in the reference).
+ *
+ * SCALE = 300 satisfies both with margin (gap ≈ 106 > 87, sigmoid
+ * argument ≥ 150 ≫ 20). */
+#define SCALE 300.0f
 #define AD_MAX_TAPE 8    /* max tape nodes in state vector */
 #define AD_NODE_FIELDS 8 /* fields per tape node */
 
@@ -553,6 +579,17 @@ static void ad_backward_step(float* s) {
      *             NEG=-1, ABS=sign, RELU=step, SIGMOID=val*(1-val),
      *             TANH=1-val², EXP=val, LOG=1/input, SQRT=1/(2*val). */
     if (fabsf(grad) > 1e-15f) {
+        /* Cross products use the polarization identity
+         *     a · b = ½·(a + b)² − ½·a² − ½·b²
+         * which is what the matrix forward path's SQUARE FFN naturally
+         * computes (Layer 1). For bit-identity with the matrix, the
+         * reference VM must use the same arithmetic order — direct
+         * multiplication and polarization are mathematically equal but
+         * differ by 1–13 ULPs in float32. Without this change, sigmoid
+         * (and any other unary AD op whose backward uses grad·saved)
+         * shows a low-ULP divergence on the gradient output. */
+        #define POLARIZATION_PRODUCT(a, b) \
+            (0.5f * ((a) + (b)) * ((a) + (b)) - 0.5f * (a) * (a) - 0.5f * (b) * (b))
         if (fabsf(op_type - AD_OP_ADD) < 0.5f) {
             if (li >= 0) AD_NODE(s, li, AD_F_GRAD) += grad;
             if (ri >= 0) AD_NODE(s, ri, AD_F_GRAD) += grad;
@@ -562,13 +599,14 @@ static void ad_backward_step(float* s) {
         } else if (fabsf(op_type - AD_OP_MUL) < 0.5f) {
             float lv = (li >= 0) ? AD_NODE(s, li, AD_F_VALUE) : 0;
             float rv = (ri >= 0) ? AD_NODE(s, ri, AD_F_VALUE) : 0;
-            if (li >= 0) AD_NODE(s, li, AD_F_GRAD) += grad * rv;
-            if (ri >= 0) AD_NODE(s, ri, AD_F_GRAD) += grad * lv;
+            if (li >= 0) AD_NODE(s, li, AD_F_GRAD) += POLARIZATION_PRODUCT(grad, rv);
+            if (ri >= 0) AD_NODE(s, ri, AD_F_GRAD) += POLARIZATION_PRODUCT(grad, lv);
         } else if (op_type >= AD_OP_NEG && op_type <= AD_OP_SQRT + 0.5f) {
             /* ALL unary ops: dL = grad * saved_val */
-            if (li >= 0) AD_NODE(s, li, AD_F_GRAD) += grad * saved;
+            if (li >= 0) AD_NODE(s, li, AD_F_GRAD) += POLARIZATION_PRODUCT(grad, saved);
         }
         /* AD_OP_CONST and AD_OP_VAR: leaf nodes, no propagation */
+        #undef POLARIZATION_PRODUCT
     }
 
     /* Decrement cursor */
@@ -602,6 +640,7 @@ static int g_last_mat_steps = 0;
  ******************************************************************************/
 static FILE* g_trace_vm_fp = NULL;          /* set by main() if --trace-vm given */
 static FILE* g_trace_tf_fp = NULL;          /* set by main() if --trace-transformer given */
+static FILE* g_trace_sim_fp = NULL;         /* set by main() if --trace-simulated given */
 static const char* g_trace_program_name = NULL; /* set by test() before each program */
 static int g_trace_program_seq = -1;        /* per-test counter; disambiguates duplicate names */
 
@@ -765,10 +804,15 @@ static void layer2_ffn(const float x[D], float out[D]) {
     /* Cursor decrement: IS_BACKWARD → delta[CURSOR] = -1 */
     if (bw_active > 0.5f) {
         out[S_AD_CURSOR] += -1.0f;
-        /* Completion check: indicator(cursor == -1) AND IS_BACKWARD → clear IS_BACKWARD.
-         * Fires on the cycle AFTER the cursor goes below 0. At cursor=-1, the cursor
-         * load indicators are all ≈ 0 (no valid node), so L4/L1/L5 produce no output. */
-        float at_done = indicator(cursor, -1.0f);
+        /* Completion check: AD_IS_BACKWARD must be cleared on the cycle that
+         * processes the LAST node (cursor == 0 pre-decrement → post-decrement
+         * cursor == -1). The reference VM (ad_backward_step) does this in one
+         * cycle: it processes node, decrements cursor, then if (cursor - 1 < 0)
+         * clears AD_IS_BACKWARD same step. Originally this used
+         *     at_done = indicator(cursor, -1.0f)
+         * which fires only the cycle AFTER cursor went negative — adding a
+         * spurious extra backward cycle that diverges from the reference. */
+        float at_done = indicator(cursor, 0.0f);
         out[S_AD_IS_BACKWARD] += -at_done * x[S_AD_IS_BACKWARD];
         out[S_AD_MODE] += -at_done * x[S_AD_MODE];
         /* Transient clear: zero cursor-loaded fields + Zone D scratch */
@@ -1823,12 +1867,21 @@ static void exec_loop_postprocess(float x[D], const Instr* prog, int n_instr) {
 }
 
 static int run_simulated(const Instr* prog, int n_instr, float* outputs, int max_out) {
+    /* pe is zero-initialised so out-of-range positions (PC ≥ n_instr) attend
+     * to an all-zero embedding (opcode = OP_NOP), avoiding garbage attention
+     * scores that would otherwise dispatch arbitrary instructions. The
+     * reference VM's auto-halt on `pc >= n_instr` is the canonical
+     * out-of-bounds behaviour; the matrix path emulates this by ensuring
+     * those positions have a predictable, well-defined embedding. */
     float pe[256][D];
+    memset(pe, 0, sizeof(pe));
     for (int p = 0; p < n_instr && p < 256; p++) embed_instruction(&prog[p], p, pe[p]);
     float state[D]; memset(state, 0, sizeof(state)); state[S_OUTPUT] = -1;
     g_frame_count = 0; g_heap_ptr = 0; g_exc_count = 0; g_current_exn = 0.0f; g_current_closure_ptr = -1; g_wind_depth = 0;
     if (g_vm_regions_initialized) { vm_arena_reset(&g_vm_regions.global_arena); }
     int n_out = 0, step_count = 0;
+    int sim_trace_step_cap = g_last_ref_steps > 0 ? g_last_ref_steps : 8192;
+    emit_trace_line(g_trace_sim_fp, 0, state, prog, n_instr, -1);
     for (int step = 0; step < 8192; step++) {
         step_count++;
         float x[D]; memcpy(x, state, sizeof(x));
@@ -1865,11 +1918,20 @@ static int run_simulated(const Instr* prog, int n_instr, float* outputs, int max
             layer2_ffn(x, tmp); for(int i=0;i<D;i++) x[i]+=tmp[i];
             layer3_ffn(x, tmp); for(int i=0;i<D;i++) x[i]+=tmp[i];
             layer4_ffn(x, tmp); for(int i=0;i<D;i++) x[i]+=tmp[i];
+            int sim_is_native = x[S_IS_NATIVE] > 0.5f ? 1 : 0;
             exec_loop_postprocess(x, prog, n_instr);
+            (void)sim_is_native; /* captured but unused below — keep for parity */
         }
         if (x[S_HAS_OUT] > 0.5f && n_out < max_out) outputs[n_out++] = x[S_OUTPUT];
-        if (x[S_HALT] > 0.5f) break;
+        if (x[S_HALT] > 0.5f) {
+            memcpy(state, x, sizeof(state));
+            if (step_count <= sim_trace_step_cap)
+                emit_trace_line(g_trace_sim_fp, step_count, state, prog, n_instr, -1);
+            break;
+        }
         memcpy(state, x, sizeof(state));
+        if (step_count <= sim_trace_step_cap)
+            emit_trace_line(g_trace_sim_fp, step_count, state, prog, n_instr, -1);
     }
     g_last_sim_steps = step_count;
     return n_out;
@@ -2205,30 +2267,40 @@ static void generate_weights(InterpreterWeights* w) {
         W(w->ff_down[2], n, S_AD_CURSOR, D) = 1.0f;
         n++;
 
-        /* ── Completion check: indicator(CURSOR == -1) AND IS_BACKWARD → clear IS_BACKWARD ──
-         * Uses standard pair difference for multi-condition gate. */
-        W(w->ff_gate[2], S_AD_CURSOR, n, FFN_DIM) = SCALE;
-        W(w->ff_gate[2], S_AD_IS_BACKWARD, n, FFN_DIM) = SCALE;
-        w->ff_gate_b[2][n] = SCALE * (1.0f + 0.5f) - SCALE; /* indicator(cursor, -1): -(-1)+0.5 = 1.5 */
+        /* ── Completion check: indicator(CURSOR == 0) AND IS_BACKWARD → clear IS_BACKWARD ──
+         * Fires on the cycle that processes the LAST tape node (pre-decrement
+         * cursor == 0 → post-decrement cursor == -1). Matches the reference
+         * VM's ad_backward_step which clears IS_BACKWARD same step it makes
+         * cursor go negative. The original encoding used indicator(cursor, -1)
+         * which fires one cycle late, adding a spurious extra backward cycle
+         * that diverged from the reference VM step-for-step.
+         *
+         * The IS_BACKWARD coefficient is 10·SCALE (not SCALE) so that high
+         * cursor values (up to AD_MAX_TAPE-1 = 7) cannot push the gate open
+         * when IS_BACKWARD is 0 — same dual-input AND pattern as the
+         * AD_TAPE_LEN/AD_IS_FORWARD gates in Layer 4. */
+        W(w->ff_gate[2], S_AD_CURSOR,        n, FFN_DIM) = SCALE;
+        W(w->ff_gate[2], S_AD_IS_BACKWARD,   n, FFN_DIM) = 10.0f * SCALE;
+        w->ff_gate_b[2][n] = SCALE * 0.5f - 10.0f * SCALE; /* fires at cursor==0 AND bw==1 */
         W(w->ff_up[2], S_AD_IS_BACKWARD, n, FFN_DIM) = -1.0f;
         W(w->ff_down[2], n, S_AD_IS_BACKWARD, D) = 1.0f;
         n++;
-        W(w->ff_gate[2], S_AD_CURSOR, n, FFN_DIM) = SCALE;
-        W(w->ff_gate[2], S_AD_IS_BACKWARD, n, FFN_DIM) = SCALE;
-        w->ff_gate_b[2][n] = SCALE * (1.0f - 0.5f) - SCALE; /* -(-1)-0.5 = 0.5 */
+        W(w->ff_gate[2], S_AD_CURSOR,        n, FFN_DIM) = SCALE;
+        W(w->ff_gate[2], S_AD_IS_BACKWARD,   n, FFN_DIM) = 10.0f * SCALE;
+        w->ff_gate_b[2][n] = SCALE * (-0.5f) - 10.0f * SCALE; /* fires at cursor>=1 AND bw==1 */
         W(w->ff_up[2], S_AD_IS_BACKWARD, n, FFN_DIM) = -1.0f;
         W(w->ff_down[2], n, S_AD_IS_BACKWARD, D) = -1.0f;
         n++;
         /* Also clear AD_MODE */
-        W(w->ff_gate[2], S_AD_CURSOR, n, FFN_DIM) = SCALE;
-        W(w->ff_gate[2], S_AD_IS_BACKWARD, n, FFN_DIM) = SCALE;
-        w->ff_gate_b[2][n] = SCALE * (1.0f + 0.5f) - SCALE;
+        W(w->ff_gate[2], S_AD_CURSOR,        n, FFN_DIM) = SCALE;
+        W(w->ff_gate[2], S_AD_IS_BACKWARD,   n, FFN_DIM) = 10.0f * SCALE;
+        w->ff_gate_b[2][n] = SCALE * 0.5f - 10.0f * SCALE;
         W(w->ff_up[2], S_AD_MODE, n, FFN_DIM) = -1.0f;
         W(w->ff_down[2], n, S_AD_MODE, D) = 1.0f;
         n++;
-        W(w->ff_gate[2], S_AD_CURSOR, n, FFN_DIM) = SCALE;
-        W(w->ff_gate[2], S_AD_IS_BACKWARD, n, FFN_DIM) = SCALE;
-        w->ff_gate_b[2][n] = SCALE * (1.0f - 0.5f) - SCALE;
+        W(w->ff_gate[2], S_AD_CURSOR,        n, FFN_DIM) = SCALE;
+        W(w->ff_gate[2], S_AD_IS_BACKWARD,   n, FFN_DIM) = 10.0f * SCALE;
+        w->ff_gate_b[2][n] = SCALE * (-0.5f) - 10.0f * SCALE;
         W(w->ff_up[2], S_AD_MODE, n, FFN_DIM) = -1.0f;
         W(w->ff_down[2], n, S_AD_MODE, D) = -1.0f;
         n++;
@@ -2763,7 +2835,27 @@ static void generate_weights(InterpreterWeights* w) {
 
     /* ── Layer 4: AD tape write (gated FFN) ──
      * When AD_IS_FORWARD is set, write AD_CUR_* fields into tape[tape_len].
-     * Uses indicator(tape_len, slot) gating. Also increments tape_len. */
+     * Uses indicator(tape_len, slot) gating. Also increments tape_len.
+     *
+     * Each field uses a pair of neurons implementing
+     *     indicator(AD_TAPE_LEN, slot) · AD_IS_FORWARD = δ(TL, slot) · fw
+     * via the dual-input AND pattern:
+     *
+     *     gate_input = SCALE·TL + SCALE·fw + SCALE·(−slot ± 0.5) − SCALE
+     *                = SCALE·(TL − slot + fw ± 0.5 − 1)
+     *
+     *   When fw == 1:  saturates open at TL ≥ slot − 0.5 (first neuron) and
+     *                  TL ≥ slot + 0.5 (second). Difference is +1 when
+     *                  TL == slot, 0 elsewhere — a true indicator.
+     *   When fw == 0:  both neurons see input ≤ −SCALE/2 (saturating
+     *                  closed) for any TL ≥ 0, so the difference is 0 and
+     *                  the tape is *not* mutated during backward mode.
+     *
+     * The original generator omitted the AD_IS_FORWARD coefficient, so the
+     * forward tape-write fired during backward whenever TL == slot, which
+     * scribbled AD_CUR_VALUE into tape[1] every backward cycle for
+     * single-AD_VAR programs (visible as tape[1]=7 in the trace for
+     * "AD edge: grad of var = 1"). */
     {
         const int L = 4;
         w->ff_type[L] = 2;
@@ -2772,56 +2864,58 @@ static void generate_weights(InterpreterWeights* w) {
         /* For each tape slot i: gate on indicator(AD_TAPE_LEN==i) * AD_IS_FORWARD
          * Write AD_CUR_OP, AD_CUR_VALUE, AD_CUR_LEFT, AD_CUR_RIGHT, AD_CUR_SAVED to tape[i] */
         for (int slot = 0; slot < AD_MAX_TAPE; slot++) {
-            /* Gate: sigmoid(SCALE*(AD_TAPE_LEN - slot + 0.5)) * sigmoid(SCALE*(AD_IS_FORWARD - 0.5))
-             * Combined: gate on both conditions via the gated neuron pattern.
-             * We use: gate_weight[AD_TAPE_LEN] = SCALE, gate_weight[AD_IS_FORWARD] = SCALE,
-             * gate_bias = SCALE*(-slot + 0.5 - 0.5) = SCALE*(-slot)
-             * This approximates: indicator(tape_len==slot) AND is_forward. */
-
             /* op field */
-            W(w->ff_gate[L], S_AD_TAPE_LEN, n, FFN_DIM) = SCALE;
-            w->ff_gate_b[L][n] = SCALE * (-(float)slot + 0.5f);
+            W(w->ff_gate[L], S_AD_TAPE_LEN,    n, FFN_DIM) = SCALE;
+            W(w->ff_gate[L], S_AD_IS_FORWARD,  n, FFN_DIM) = 10.0f * SCALE;
+            w->ff_gate_b[L][n] = SCALE * (-(float)slot + 0.5f) - 10.0f * SCALE;
             W(w->ff_up[L], S_AD_CUR_OP, n, FFN_DIM) = 1.0f;
             W(w->ff_down[L], n, S_AD_TAPE_BASE + slot * AD_NODE_FIELDS + AD_F_OP, D) = 1.0f;
             n++;
-            W(w->ff_gate[L], S_AD_TAPE_LEN, n, FFN_DIM) = SCALE;
-            w->ff_gate_b[L][n] = SCALE * (-(float)slot - 0.5f);
+            W(w->ff_gate[L], S_AD_TAPE_LEN,    n, FFN_DIM) = SCALE;
+            W(w->ff_gate[L], S_AD_IS_FORWARD,  n, FFN_DIM) = 10.0f * SCALE;
+            w->ff_gate_b[L][n] = SCALE * (-(float)slot - 0.5f) - 10.0f * SCALE;
             W(w->ff_up[L], S_AD_CUR_OP, n, FFN_DIM) = 1.0f;
             W(w->ff_down[L], n, S_AD_TAPE_BASE + slot * AD_NODE_FIELDS + AD_F_OP, D) = -1.0f;
             n++;
 
             /* value field */
-            W(w->ff_gate[L], S_AD_TAPE_LEN, n, FFN_DIM) = SCALE;
-            w->ff_gate_b[L][n] = SCALE * (-(float)slot + 0.5f);
+            W(w->ff_gate[L], S_AD_TAPE_LEN,    n, FFN_DIM) = SCALE;
+            W(w->ff_gate[L], S_AD_IS_FORWARD,  n, FFN_DIM) = 10.0f * SCALE;
+            w->ff_gate_b[L][n] = SCALE * (-(float)slot + 0.5f) - 10.0f * SCALE;
             W(w->ff_up[L], S_AD_CUR_VALUE, n, FFN_DIM) = 1.0f;
             W(w->ff_down[L], n, S_AD_TAPE_BASE + slot * AD_NODE_FIELDS + AD_F_VALUE, D) = 1.0f;
             n++;
-            W(w->ff_gate[L], S_AD_TAPE_LEN, n, FFN_DIM) = SCALE;
-            w->ff_gate_b[L][n] = SCALE * (-(float)slot - 0.5f);
+            W(w->ff_gate[L], S_AD_TAPE_LEN,    n, FFN_DIM) = SCALE;
+            W(w->ff_gate[L], S_AD_IS_FORWARD,  n, FFN_DIM) = 10.0f * SCALE;
+            w->ff_gate_b[L][n] = SCALE * (-(float)slot - 0.5f) - 10.0f * SCALE;
             W(w->ff_up[L], S_AD_CUR_VALUE, n, FFN_DIM) = 1.0f;
             W(w->ff_down[L], n, S_AD_TAPE_BASE + slot * AD_NODE_FIELDS + AD_F_VALUE, D) = -1.0f;
             n++;
 
             /* left field */
-            W(w->ff_gate[L], S_AD_TAPE_LEN, n, FFN_DIM) = SCALE;
-            w->ff_gate_b[L][n] = SCALE * (-(float)slot + 0.5f);
+            W(w->ff_gate[L], S_AD_TAPE_LEN,    n, FFN_DIM) = SCALE;
+            W(w->ff_gate[L], S_AD_IS_FORWARD,  n, FFN_DIM) = 10.0f * SCALE;
+            w->ff_gate_b[L][n] = SCALE * (-(float)slot + 0.5f) - 10.0f * SCALE;
             W(w->ff_up[L], S_AD_CUR_LEFT, n, FFN_DIM) = 1.0f;
             W(w->ff_down[L], n, S_AD_TAPE_BASE + slot * AD_NODE_FIELDS + AD_F_LEFT, D) = 1.0f;
             n++;
-            W(w->ff_gate[L], S_AD_TAPE_LEN, n, FFN_DIM) = SCALE;
-            w->ff_gate_b[L][n] = SCALE * (-(float)slot - 0.5f);
+            W(w->ff_gate[L], S_AD_TAPE_LEN,    n, FFN_DIM) = SCALE;
+            W(w->ff_gate[L], S_AD_IS_FORWARD,  n, FFN_DIM) = 10.0f * SCALE;
+            w->ff_gate_b[L][n] = SCALE * (-(float)slot - 0.5f) - 10.0f * SCALE;
             W(w->ff_up[L], S_AD_CUR_LEFT, n, FFN_DIM) = 1.0f;
             W(w->ff_down[L], n, S_AD_TAPE_BASE + slot * AD_NODE_FIELDS + AD_F_LEFT, D) = -1.0f;
             n++;
 
             /* right field */
-            W(w->ff_gate[L], S_AD_TAPE_LEN, n, FFN_DIM) = SCALE;
-            w->ff_gate_b[L][n] = SCALE * (-(float)slot + 0.5f);
+            W(w->ff_gate[L], S_AD_TAPE_LEN,    n, FFN_DIM) = SCALE;
+            W(w->ff_gate[L], S_AD_IS_FORWARD,  n, FFN_DIM) = 10.0f * SCALE;
+            w->ff_gate_b[L][n] = SCALE * (-(float)slot + 0.5f) - 10.0f * SCALE;
             W(w->ff_up[L], S_AD_CUR_RIGHT, n, FFN_DIM) = 1.0f;
             W(w->ff_down[L], n, S_AD_TAPE_BASE + slot * AD_NODE_FIELDS + AD_F_RIGHT, D) = 1.0f;
             n++;
-            W(w->ff_gate[L], S_AD_TAPE_LEN, n, FFN_DIM) = SCALE;
-            w->ff_gate_b[L][n] = SCALE * (-(float)slot - 0.5f);
+            W(w->ff_gate[L], S_AD_TAPE_LEN,    n, FFN_DIM) = SCALE;
+            W(w->ff_gate[L], S_AD_IS_FORWARD,  n, FFN_DIM) = 10.0f * SCALE;
+            w->ff_gate_b[L][n] = SCALE * (-(float)slot - 0.5f) - 10.0f * SCALE;
             W(w->ff_up[L], S_AD_CUR_RIGHT, n, FFN_DIM) = 1.0f;
             W(w->ff_down[L], n, S_AD_TAPE_BASE + slot * AD_NODE_FIELDS + AD_F_RIGHT, D) = -1.0f;
             n++;
@@ -3084,7 +3178,10 @@ static void forward_with_weights(const InterpreterWeights* w,
 static int run_with_weights(const InterpreterWeights* w,
                              const Instr* prog, int n_instr,
                              float* outputs, int max_out) {
+    /* pe is zero-initialised so out-of-range positions attend to a zero
+     * embedding (opcode = OP_NOP). See run_simulated for the rationale. */
     float pe[256][D];
+    memset(pe, 0, sizeof(pe));
     for(int p=0;p<n_instr&&p<256;p++) embed_instruction(&prog[p],p,pe[p]);
     float state[D]; memset(state,0,sizeof(state)); state[S_OUTPUT]=-1;
     g_frame_count = 0; g_heap_ptr = 0; g_exc_count = 0; g_current_exn = 0.0f; g_current_closure_ptr = -1; g_wind_depth = 0;
@@ -3205,11 +3302,18 @@ static void test(const char* name, const Instr* prog, int n, float expected) {
     /* printf("    steps: ref=%d sim=%d mat=%d heap=%d\n", g_last_ref_steps, g_last_sim_steps, g_last_mat_steps, g_heap_ptr); */
 
     if (ok_r && ok_s && ok_m) n_pass++; else n_fail++;
+
+    /* Clear program name so any non-test() runs (Dynamic multiplication,
+     * inline frame assertions, etc.) below don't pollute the trace by
+     * re-emitting under this program's name + id. */
+    g_trace_program_name = NULL;
 }
 
 /* Reference + simulated test — 2-way comparison (Phase 2: no matrix weights yet) */
 static void test_ref(const char* name, const Instr* prog, int n, float expected) {
     float r[64], s[64];
+    g_trace_program_name = name;
+    g_trace_program_seq++;
     g_frame_count = 0; g_heap_ptr = 0; g_exc_count = 0; g_current_exn = 0.0f; g_current_closure_ptr = -1; g_wind_depth = 0;
     if (g_vm_regions_initialized) { vm_arena_reset(&g_vm_regions.global_arena); }
     int rn = run_reference(prog, n, r, 64);
@@ -3223,6 +3327,7 @@ static void test_ref(const char* name, const Instr* prog, int n, float expected)
            name, rv, sv,
            ok_r?"":"ref:FAIL ", ok_s?"":"sim:FAIL ");
     if (ok_r && ok_s) n_pass++; else n_fail++;
+    g_trace_program_name = NULL;
 }
 
 int main(int argc, char** argv) {
@@ -3234,13 +3339,16 @@ int main(int argc, char** argv) {
      * Consumed by scripts/paper/compare_traces.py (paper §4.4). */
     const char* trace_vm_path = NULL;
     const char* trace_tf_path = NULL;
+    const char* trace_sim_path = NULL;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--trace-vm") == 0 && i + 1 < argc) {
             trace_vm_path = argv[++i];
         } else if (strcmp(argv[i], "--trace-transformer") == 0 && i + 1 < argc) {
             trace_tf_path = argv[++i];
+        } else if (strcmp(argv[i], "--trace-simulated") == 0 && i + 1 < argc) {
+            trace_sim_path = argv[++i];
         } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
-            printf("Usage: %s [--trace-vm PATH] [--trace-transformer PATH]\n", argv[0]);
+            printf("Usage: %s [--trace-vm PATH] [--trace-transformer PATH] [--trace-simulated PATH]\n", argv[0]);
             printf("Env: ESHKOL_WEIGHTS_OUT=PATH, ESHKOL_BC=PATH\n");
             return 0;
         }
@@ -3254,6 +3362,11 @@ int main(int argc, char** argv) {
         g_trace_tf_fp = fopen(trace_tf_path, "w");
         if (!g_trace_tf_fp) { perror(trace_tf_path); return 1; }
         printf("[TRACE] matrix-forward trace → %s\n", trace_tf_path);
+    }
+    if (trace_sim_path) {
+        g_trace_sim_fp = fopen(trace_sim_path, "w");
+        if (!g_trace_sim_fp) { perror(trace_sim_path); return 1; }
+        printf("[TRACE] simulated-layer trace → %s\n", trace_sim_path);
     }
 
     g_weights = (InterpreterWeights*)calloc(1, sizeof(InterpreterWeights));
@@ -3533,7 +3646,7 @@ int main(int argc, char** argv) {
          * CONST 99 gives [99,pair,pair]. SET_CAR: val=99, pair=pair → mutate.
          * Pops both, leaving [pair] on stack. Then CAR reads the mutated car. */
         {OP_CAR,0},{OP_PRINT,0},{OP_HALT,0},
-      }; test("set-car!", p, 8, 99); }
+      }; test("set-car!", p, 9, 99); }
 
     /* pair? test */
     { Instr p[]={
@@ -4127,8 +4240,9 @@ int main(int argc, char** argv) {
         }
     }
 
-    if (g_trace_vm_fp) { fclose(g_trace_vm_fp); g_trace_vm_fp = NULL; }
-    if (g_trace_tf_fp) { fclose(g_trace_tf_fp); g_trace_tf_fp = NULL; }
+    if (g_trace_vm_fp)  { fclose(g_trace_vm_fp);  g_trace_vm_fp = NULL; }
+    if (g_trace_tf_fp)  { fclose(g_trace_tf_fp);  g_trace_tf_fp = NULL; }
+    if (g_trace_sim_fp) { fclose(g_trace_sim_fp); g_trace_sim_fp = NULL; }
     if (g_weights) free(g_weights);
     return n_fail > 0 ? 1 : 0;
 }
