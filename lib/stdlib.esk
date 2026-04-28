@@ -51,6 +51,9 @@
 ;;; Runtime reflection - describe, type-of (procedure-arity is codegen builtin)
 (require core.reflection)
 
+;;; URL encoding - RFC 3986 percent-encoding
+(require core.url)
+
 ;; Note: core.testing is NOT auto-loaded. User code that wants the
 ;; testing framework must (require core.testing) explicitly. Baking it
 ;; into stdlib.o triggers the symbol-renamer / external-decl path
