@@ -11612,6 +11612,11 @@ private:
 
         // Handle random number generation
         if (func_name == "random") return codegenRandom(op);
+        if (func_name == "set-random-seed!") return codegenSetRandomSeed(op);
+        if (func_name == "make-prng") return codegenMakePrng(op);
+        if (func_name == "prng?") return codegenPrngP(op);
+        if (func_name == "prng-random") return codegenPrngRandom(op);
+        if (func_name == "prng-random-integer") return codegenPrngRandomInteger(op);
 
         // Handle quantum random number generation
         if (func_name == "quantum-random") return codegenQuantumRandom(op);
@@ -26392,6 +26397,134 @@ private:
 
         Value* random_val = builder->CreateCall(drand48_func, {});
         return packDoubleToTaggedValue(random_val);
+    }
+
+    // ─── PRNG: deterministic-replay seed + isolated per-task generators ───
+    //
+    // (set-random-seed! N)        ─ explicit seed for the global PRNG
+    // (make-prng N)               ─ allocate isolated PRNG state (lock-free)
+    // (prng? x)                   ─ heap-subtype check for HEAP_SUBTYPE_PRNG
+    // (prng-random p)             ─ next double in [0.0, 1.0) on the given PRNG
+    // (prng-random-integer p n)   ─ next int64 in [0, n) on the given PRNG
+    //
+    // The runtime functions live in lib/core/prng.cpp. The global PRNG path
+    // remains the existing drand48-with-mutex; the per-PRNG path is mutex-
+    // free because each state is independent.
+
+    Value* codegenSetRandomSeed(const eshkol_operations_t* op) {
+        if (op->call_op.num_vars != 1) {
+            eshkol_warn("set-random-seed! requires exactly 1 argument (seed)");
+            return packDoubleToTaggedValue(ConstantFP::get(double_type, 0.0));
+        }
+        TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
+        if (!tv.llvm_value) return nullptr;
+        Value* seed = safeExtractInt64(tv.llvm_value);
+
+        Function* seed_fn = function_table["eshkol_random_seed"];
+        if (!seed_fn) {
+            FunctionType* ft = FunctionType::get(builder->getVoidTy(),
+                                                 {int64_type}, false);
+            seed_fn = Function::Create(ft, GlobalValue::ExternalLinkage,
+                                       "eshkol_random_seed", module.get());
+            function_table["eshkol_random_seed"] = seed_fn;
+        }
+        builder->CreateCall(seed_fn, {seed});
+
+        // Mark the codegenRandom global flag as seeded so the auto-seed-from-time
+        // path doesn't override the user's explicit seed.
+        GlobalVariable* random_seeded = module->getNamedGlobal("__random_seeded__");
+        if (!random_seeded) {
+            random_seeded = new GlobalVariable(
+                *module, int8_type, false, GlobalValue::InternalLinkage,
+                ConstantInt::get(int8_type, 0), "__random_seeded__");
+        }
+        builder->CreateStore(ConstantInt::get(int8_type, 1), random_seeded);
+
+        // R7RS convention: side-effecting forms return an unspecified value.
+        return packDoubleToTaggedValue(ConstantFP::get(double_type, 0.0));
+    }
+
+    Value* codegenMakePrng(const eshkol_operations_t* op) {
+        if (op->call_op.num_vars != 1) {
+            eshkol_warn("make-prng requires exactly 1 argument (seed)");
+            return nullptr;
+        }
+        TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
+        if (!tv.llvm_value) return nullptr;
+        Value* seed = safeExtractInt64(tv.llvm_value);
+
+        Function* make_fn = function_table["eshkol_prng_make"];
+        if (!make_fn) {
+            FunctionType* ft = FunctionType::get(builder->getPtrTy(),
+                                                 {int64_type}, false);
+            make_fn = Function::Create(ft, GlobalValue::ExternalLinkage,
+                                       "eshkol_prng_make", module.get());
+            function_table["eshkol_prng_make"] = make_fn;
+        }
+        Value* state_ptr = builder->CreateCall(make_fn, {seed});
+        return packPtrToTaggedValue(state_ptr, ESHKOL_VALUE_HEAP_PTR);
+    }
+
+    Value* codegenPrngP(const eshkol_operations_t* op) {
+        if (op->call_op.num_vars != 1) {
+            eshkol_warn("prng? requires exactly 1 argument");
+            return packBoolToTaggedValue(ConstantInt::getFalse(*context));
+        }
+        TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
+        if (!tv.llvm_value) return nullptr;
+        Value* tagged = ensureTaggedValue(tv.llvm_value);
+        Value* matches = isHeapSubtype(tagged, HEAP_SUBTYPE_PRNG);
+        return packBoolToTaggedValue(matches);
+    }
+
+    Value* codegenPrngRandom(const eshkol_operations_t* op) {
+        if (op->call_op.num_vars != 1) {
+            eshkol_warn("prng-random requires exactly 1 argument (prng)");
+            return nullptr;
+        }
+        TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
+        if (!tv.llvm_value) return nullptr;
+        Value* tagged = ensureTaggedValue(tv.llvm_value);
+        // Extract the i64 pointer bits from the tagged HEAP_PTR.
+        Value* ptr_int = unpackInt64FromTaggedValue(tagged);
+        Value* state_ptr = builder->CreateIntToPtr(ptr_int, builder->getPtrTy());
+
+        Function* rnd_fn = function_table["eshkol_prng_random"];
+        if (!rnd_fn) {
+            FunctionType* ft = FunctionType::get(double_type,
+                                                 {builder->getPtrTy()}, false);
+            rnd_fn = Function::Create(ft, GlobalValue::ExternalLinkage,
+                                      "eshkol_prng_random", module.get());
+            function_table["eshkol_prng_random"] = rnd_fn;
+        }
+        Value* result = builder->CreateCall(rnd_fn, {state_ptr});
+        return packDoubleToTaggedValue(result);
+    }
+
+    Value* codegenPrngRandomInteger(const eshkol_operations_t* op) {
+        if (op->call_op.num_vars != 2) {
+            eshkol_warn("prng-random-integer requires exactly 2 arguments (prng n)");
+            return nullptr;
+        }
+        TypedValue tv_p = codegenTypedAST(&op->call_op.variables[0]);
+        TypedValue tv_n = codegenTypedAST(&op->call_op.variables[1]);
+        if (!tv_p.llvm_value || !tv_n.llvm_value) return nullptr;
+        Value* tagged = ensureTaggedValue(tv_p.llvm_value);
+        Value* ptr_int = unpackInt64FromTaggedValue(tagged);
+        Value* state_ptr = builder->CreateIntToPtr(ptr_int, builder->getPtrTy());
+        Value* n = safeExtractInt64(tv_n.llvm_value);
+
+        Function* ri_fn = function_table["eshkol_prng_random_integer"];
+        if (!ri_fn) {
+            FunctionType* ft = FunctionType::get(int64_type,
+                                                 {builder->getPtrTy(), int64_type},
+                                                 false);
+            ri_fn = Function::Create(ft, GlobalValue::ExternalLinkage,
+                                     "eshkol_prng_random_integer", module.get());
+            function_table["eshkol_prng_random_integer"] = ri_fn;
+        }
+        Value* result = builder->CreateCall(ri_fn, {state_ptr, n});
+        return packInt64ToTaggedValue(result);
     }
 
     // Quantum random number generation: (quantum-random) returns double in [0.0, 1.0)

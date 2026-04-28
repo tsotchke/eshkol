@@ -356,7 +356,8 @@ typedef enum {
     HEAP_SUBTYPE_WORKSPACE       = 17,  // Global workspace for cognitive competition
     HEAP_SUBTYPE_PROMISE         = 18,  // Lazy promise (delay/force with memoization)
     HEAP_SUBTYPE_RATIONAL        = 19,  // Exact rational number (numerator/denominator)
-    // Reserved: 20-255 for future heap types
+    HEAP_SUBTYPE_PRNG            = 20,  // Isolated pseudo-random number generator state
+    // Reserved: 21-255 for future heap types
 } heap_subtype_t;
 
 // ───────────────────────────────────────────────────────────────────────────

@@ -1,0 +1,77 @@
+;; mode: jit
+;; PRNG seeding + isolated per-task generators (task #173).
+;;
+;; Two contracts:
+;; (1) (set-random-seed! N) makes (random) deterministic — same seed,
+;;     same first sample.
+;; (2) (make-prng N) returns an isolated lock-free generator; two
+;;     generators with the same seed yield the same sequence; different
+;;     seeds diverge; (prng? x) distinguishes them from other heap values.
+
+(require stdlib)
+
+(display "=== PRNG seeding + isolation suite ===") (newline)
+
+(define pass-count 0)
+(define fail-count 0)
+(define (check name cond)
+  (if cond
+      (begin (set! pass-count (+ pass-count 1))
+             (display "PASS: ") (display name) (newline))
+      (begin (set! fail-count (+ fail-count 1))
+             (display "FAIL: ") (display name) (newline))))
+
+;; --- (1) global seed determinism -------------------------------------
+(set-random-seed! 42)
+(define g1 (random))
+(set-random-seed! 42)
+(define g2 (random))
+(check "set-random-seed! makes (random) deterministic" (= g1 g2))
+
+(set-random-seed! 100)
+(define g3 (random))
+(check "different seed yields different sample" (not (= g1 g3)))
+
+;; --- (2) isolated PRNG instances -------------------------------------
+(define p1 (make-prng 42))
+(define p2 (make-prng 42))
+(check "make-prng yields a prng?" (prng? p1))
+(check "non-prng values fail prng?" (not (prng? "hello")))
+(check "non-prng integer fails prng?" (not (prng? 42)))
+
+(check "same seed → same first sample" (= (prng-random p1) (prng-random p2)))
+(check "same seed → same second sample" (= (prng-random p1) (prng-random p2)))
+
+(define p3 (make-prng 17))
+(define p4 (make-prng 42))
+(check "different seed → different first sample"
+       (not (= (prng-random p3) (prng-random p4))))
+
+;; --- prng-random-integer respects bound ------------------------------
+(define p5 (make-prng 1))
+(define max-val 100)
+(define (samples-in-range n acc)
+  (cond ((<= n 0) acc)
+        (else
+         (let ((v (prng-random-integer p5 max-val)))
+           (samples-in-range (- n 1)
+                             (and acc (>= v 0) (< v max-val)))))))
+(check "prng-random-integer stays in [0, n)" (samples-in-range 50 #t))
+
+;; --- isolation: two PRNGs interleave without state corruption -------
+(define p-a (make-prng 7))
+(define p-b (make-prng 7))
+(define a1 (prng-random p-a))
+(define b1 (prng-random p-b))
+(define a2 (prng-random p-a))
+(define b2 (prng-random p-b))
+(check "interleaved samples — first equal across PRNGs" (= a1 b1))
+(check "interleaved samples — second equal across PRNGs" (= a2 b2))
+(check "interleaved a1 ≠ a2 (state advances)" (not (= a1 a2)))
+
+(display "---") (newline)
+(display "Total: ") (display (+ pass-count fail-count))
+(display ", PASS: ") (display pass-count)
+(display ", FAIL: ") (display fail-count)
+(newline)
+(if (> fail-count 0) (exit 1))
