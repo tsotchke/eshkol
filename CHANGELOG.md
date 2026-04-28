@@ -7,6 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — SDNC paper artifact (weight_matrices.c)
+
+Three commits (`df2fabd`, `7b1b765`, `7301dc4`) restore the
+reproducibility package for the SDNC paper ("The Self-Differentiating
+Neural Computer: Computable Transformers via Analytical Weight
+Construction", tsotchke 2026) and bring it from "matches outputs to
+0.01 tolerance" to **bit-identical agreement at every step of every
+program** between the reference C interpreter and the matrix forward
+pass.
+
+- **Restored** `lib/backend/weight_matrices.c` (3998 lines), the
+  archive predecessors under `lib/backend/archive/`, four standalone
+  binaries (`eshkol_benchmark`, `qllm_distributed`, `qllm_interpreter`,
+  `stackvm_codegen`), and `inc/eshkol/bridge/qllm_bridge.h` — all
+  required to regenerate `weights.qlmw` from the pinned commit.
+  CMake now exposes a `weight_matrices` target gated on file
+  existence and a CTest case `sdnc_paper_74_tests` asserting the
+  three-way "74 passed, 0 failed" line.
+- **Wired** the dump-trace + comparison pipeline end-to-end
+  (`scripts/paper/{dump_vm_trace.sh, dump_transformer_trace.sh,
+  compare_traces.py, gen_paper_tables.py, run_paper_suite.sh}`) so
+  `run_paper_suite.sh` produces a real `comparison-report.json`,
+  `opcode-coverage.json`, and four LaTeX tables instead of the
+  previous TODO stubs.
+- **Achieved bit-identical agreement (71/71 full per-step state)**
+  by fixing five real bugs in the matrix encoding:
+  - softmax temperature too low (`SCALE=100`→`300`) — attention
+    residue of `~4.6e-16` was leaking into accumulators;
+  - layer-4 forward tape-write missed the `AD_IS_FORWARD` gate —
+    the comment promised it, the code never wired it;
+  - dual-input AND gates required `10·SCALE` weight on the binary
+    condition so the integer condition (max 7) couldn't dominate;
+  - backward-pass cursor termination off-by-one (`indicator(c, -1)`
+    fires one cycle late; fixed to `indicator(c, 0)`);
+  - reference VM `ad_backward_step` uses direct `grad·saved` where
+    the matrix architecture is forced to use polarisation
+    `½·(a+b)² − ½·a² − ½·b²` (SQUARE-FFN limitation). Reference now
+    uses the same polarisation arithmetic so float-order matches —
+    the two are mathematically equal but differ by 1–13 ULPs in
+    float32.
+  Also: `pe[]` zero-init for out-of-bounds attention determinism,
+  and a one-character fix to the `set-car!` test (`n=8`→`n=9` —
+  the program array had 9 instructions but `n` was off by one).
+
+### Added — bisection infrastructure
+
+- New `--trace-vm`, `--trace-transformer`, and `--trace-simulated`
+  CLI flags on the `weight_matrices` binary emit per-step JSONL
+  traces with the schema consumed by `compare_traces.py`. The
+  three-way trace was essential for finding the bugs above.
+
 ## [1.2.0-scale] - 2026-04-24
 
 The production-readiness release. Model serialization, a stable C ABI
