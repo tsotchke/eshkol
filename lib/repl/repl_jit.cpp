@@ -1172,11 +1172,44 @@ void ReplJITContext::registerStdlibSymbols() {
 
                 for (auto& G : mod.globals()) {
                     std::string name = G.getName().str();
-                    // Register _sexpr globals so codegen doesn't redefine them
+                    if (name.empty()) continue;
+
+                    // _sexpr globals: int64 alias to S-expression metadata.
+                    // Registered so codegen doesn't redefine them.
                     if (name.size() > 6 && name.compare(name.size() - 6, 6, "_sexpr") == 0) {
                         eshkol_repl_register_symbol(name.c_str(), 0);
                         defined_globals_.insert(name);
                         global_count++;
+                        continue;
+                    }
+
+                    // Tagged-value data globals: top-level `(define name expr)`
+                    // where `expr` is a value (not a lambda) lowers to a
+                    // GlobalVariable of type `eshkol_tagged_value`. Without
+                    // this registration, references to such names from inside
+                    // a `delay`-generated lambda or any free-var-captured
+                    // closure body fall through to the "Undefined variable"
+                    // error in lib/backend/llvm_codegen.cpp:7518 — the codegen
+                    // path that emits an external GlobalVariable load (~7480)
+                    // is gated on g_repl_symbol_addresses containing the name.
+                    //
+                    // Discovered while implementing SRFI 41 streams (#174):
+                    // `stream-null` is the empty stream, defined as a plain
+                    // value at module top level. `(stream-cons head (delay
+                    // stream-null))` failed because `stream-null` inside the
+                    // delay's lambda was not findable.
+                    if (G.hasInternalLinkage() || G.hasPrivateLinkage()) continue;
+                    if (name.rfind("__eshkol_", 0) == 0) continue;
+                    if (name.rfind("llvm.", 0) == 0) continue;
+
+                    llvm::Type* gt = G.getValueType();
+                    if (gt && gt->isStructTy()) {
+                        auto* st = llvm::cast<llvm::StructType>(gt);
+                        if (st->hasName() && st->getName() == "eshkol_tagged_value") {
+                            eshkol_repl_register_symbol(name.c_str(), 0);
+                            defined_globals_.insert(name);
+                            global_count++;
+                        }
                     }
                 }
 
