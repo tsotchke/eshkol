@@ -1759,6 +1759,29 @@ public:
                                     marker_name
                                 );
                             }
+                        } else if (asts_to_use[i].operation.define_op.is_external) {
+                            // External define from a precompiled module (process_requires
+                            // marks defines reached via `(require <stdlib-module>)` as
+                            // external — body lives in the linked .o file). Emit a pure
+                            // external declaration with NO initializer, so this object's
+                            // copy is undefined and the linker resolves it to stdlib.o.
+                            //
+                            // Without this branch the pre-declaration emitted a STRONG
+                            // global with `undef` initializer, which the later define-form
+                            // codegen at ~line 8051 re-used (getNamedGlobal returns the
+                            // already-strong one), producing a duplicate-symbol link
+                            // failure for any non-function stdlib top-level binding.
+                            // Visible after adding `stream-null` (the only such binding
+                            // in the precompiled stdlib at the time SRFI 41 landed).
+                            global_var = new GlobalVariable(
+                                *module,
+                                tagged_value_type,
+                                false, // not constant
+                                GlobalValue::ExternalLinkage,
+                                nullptr, // no initializer = external declaration
+                                var_name
+                            );
+                            global_var->setAlignment(Align(16));
                         } else {
                             global_var = new GlobalVariable(
                                 *module,
@@ -11793,7 +11816,23 @@ private:
             Value* cached_val = builder->CreateLoad(tagged_value_type, cached_typed, "cached");
             builder->CreateBr(promise_done_bb);
 
-            // Not forced: call thunk, cache, set forced
+            // Not forced: call thunk via the standard closure dispatcher,
+            // cache, set forced.
+            //
+            // Earlier this path called `func_ptr(closure_ptr)` directly with
+            // a hardcoded `tagged_value func(ptr)` signature. That works ONLY
+            // for thunks with zero captures. A `(delay <expr>)` whose <expr>
+            // references any free variable lowers to a 0-arg lambda with N
+            // capture parameters and signature
+            //   tagged_value func(ptr, ptr, ..., ptr)   // N capture pointers
+            // The hardcoded call passed the closure pointer in the first
+            // capture slot and the rest stayed undefined, so the lambda body
+            // read garbage and force returned arbitrary bits. Visible as
+            //   (define (mk x) (delay x))
+            //   (force (mk 42))            ;; → #<unknown>, not 42
+            // and as broken SRFI 41 streams (`stream-cdr` of a normal stream
+            // would walk into a malformed pair). codegenClosureCall handles
+            // the (call_args × num_captures) dispatch generically.
             builder->SetInsertPoint(eval_bb);
             Value* thunk_slot = builder->CreateGEP(int8_type, ptr,
                 ConstantInt::get(int64_type, 8));
@@ -11801,15 +11840,11 @@ private:
                 PointerType::getUnqual(tagged_value_type));
             Value* thunk = builder->CreateLoad(tagged_value_type, thunk_typed, "thunk");
 
-            // Call the thunk (it's a closure with 0 args)
-            Value* thunk_ptr_int = builder->CreateExtractValue(thunk, {4});
-            Value* thunk_ptr = builder->CreateIntToPtr(thunk_ptr_int, PointerType::getUnqual(*context));
-            // Load function pointer from closure struct (first field)
-            Value* func_ptr_val = builder->CreateLoad(PointerType::getUnqual(*context), thunk_ptr, "thunk_fn");
-            // Call: func_ptr(closure)
-            FunctionType* thunk_fn_type = FunctionType::get(tagged_value_type,
-                {PointerType::getUnqual(*context)}, false);
-            Value* result = builder->CreateCall(thunk_fn_type, func_ptr_val, {thunk_ptr}, "thunk_result");
+            Value* result = codegenClosureCall(thunk, {}, "force_thunk");
+
+            // codegenClosureCall may have created additional basic blocks;
+            // capture the actual exit block so the PHI predecessor is right.
+            BasicBlock* eval_exit = builder->GetInsertBlock();
 
             // Cache the result
             Value* eval_cached_slot = builder->CreateGEP(int8_type, ptr,
@@ -11825,7 +11860,7 @@ private:
             builder->SetInsertPoint(promise_done_bb);
             PHINode* promise_result = builder->CreatePHI(tagged_value_type, 2, "promise_val");
             promise_result->addIncoming(cached_val, cached_bb);
-            promise_result->addIncoming(result, eval_bb);
+            promise_result->addIncoming(result, eval_exit);
             builder->CreateBr(merge_bb);
 
             // Not a promise: return value as-is (R7RS: force on non-promise returns it)
@@ -19563,7 +19598,17 @@ private:
                         // store, and capturing them produces a garbage callable-check
                         // failure at runtime. User lambdas are registered in BOTH maps,
                         // so they still capture correctly via this branch.
-                        if (g_repl_symbol_addresses.find(var_name) != g_repl_symbol_addresses.end()) {
+                        //
+                        // Stdlib top-level data globals (e.g. SRFI 41 `stream-null`)
+                        // also live in g_repl_symbol_addresses but MUST NOT be
+                        // captured — they're accessible by external-GlobalVariable
+                        // load (see lookup path in codegenAST ~line 7480), and
+                        // capturing them snapshots whatever bits were at the
+                        // address at lambda-creation time (often pre-init zeros),
+                        // not the live module state. Restrict capture to names
+                        // explicitly marked as user variables.
+                        if (g_repl_symbol_addresses.find(var_name) != g_repl_symbol_addresses.end()
+                            && g_repl_user_variable_names.count(var_name) > 0) {
                             is_free_var = true;
                         }
                     }

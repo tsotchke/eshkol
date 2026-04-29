@@ -54,6 +54,9 @@
 ;;; URL encoding - RFC 3986 percent-encoding
 (require core.url)
 
+;;; SRFI 41 - lazy streams (built on delay/force memoised promises)
+(require core.streams)
+
 ;; Note: core.testing is NOT auto-loaded. User code that wants the
 ;; testing framework must (require core.testing) explicitly. Baking it
 ;; into stdlib.o triggers the symbol-renamer / external-decl path

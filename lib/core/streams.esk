@@ -1,0 +1,181 @@
+;;; lib/core/streams.esk — SRFI 41 lazy streams.
+;;;
+;;; A *stream* is either the empty stream `stream-null` or a pair whose
+;;; tail is a promise (constructed via `delay`). Building on the existing
+;;; `delay` / `force` codegen primitives keeps the implementation in pure
+;;; Eshkol while preserving the memoisation guarantee — each tail is
+;;; computed at most once even if traversed repeatedly.
+;;;
+;;; Eshkol has no `define-syntax`, so SRFI 41's macro form
+;;;
+;;;     (stream-cons head tail-expr)
+;;;
+;;; (which delays `tail-expr` implicitly) is unavailable. Instead the
+;;; caller wraps the tail with `delay` explicitly:
+;;;
+;;;     (define ones (stream-cons 1 (delay ones)))
+;;;     (define (from n) (stream-cons n (delay (from (+ n 1)))))
+;;;
+;;; The recursive references are captured as closures by `delay`'s lambda
+;;; expansion, so cyclic stream definitions like `ones` work.
+;;;
+;;; All consumers below force their argument, so passing a delayed stream
+;;; (i.e. `(delay (stream-cons ...))`) works the same as a value-level
+;;; stream pair.
+
+(require core.list.transform)
+
+(provide stream-null
+         stream-null?
+         stream-pair?
+         stream?
+         stream-cons
+         stream-car
+         stream-cdr
+         stream-take
+         stream-drop
+         stream-ref
+         stream-map
+         stream-filter
+         stream-for-each
+         stream-zip
+         stream-append
+         stream-iterate
+         stream-from
+         stream-take-while
+         stream-drop-while
+         stream-length
+         stream->list
+         list->stream)
+
+;; ─────────────────────────────────────────────────────────────────────
+;; Construction / predicates
+;;
+;; The empty stream is the empty list. A non-empty stream is a pair
+;; `(head . tail-promise)`. Promises memoise on first force, so repeated
+;; `stream-cdr` calls do not re-evaluate the tail expression.
+
+(define stream-null '())
+
+(define (stream-null? s) (null? s))
+
+(define (stream-pair? s) (pair? s))
+
+(define (stream? s) (or (null? s) (pair? s)))
+
+;; stream-cons: head value + already-delayed tail promise.
+;; Caller is responsible for wrapping tail with (delay ...).
+(define (stream-cons head tail-promise)
+  (cons head tail-promise))
+
+(define (stream-car s) (car s))
+
+(define (stream-cdr s) (force (cdr s)))
+
+;; ─────────────────────────────────────────────────────────────────────
+;; Indexing / slicing
+
+(define (stream-take s n)
+  ;; Return a list of the first n elements (terminates on stream-null).
+  (cond
+    ((<= n 0) '())
+    ((stream-null? s) '())
+    (else
+     (cons (stream-car s)
+           (stream-take (stream-cdr s) (- n 1))))))
+
+(define (stream-drop s n)
+  (cond
+    ((<= n 0) s)
+    ((stream-null? s) s)
+    (else (stream-drop (stream-cdr s) (- n 1)))))
+
+(define (stream-ref s n)
+  (if (<= n 0)
+      (stream-car s)
+      (stream-ref (stream-cdr s) (- n 1))))
+
+;; ─────────────────────────────────────────────────────────────────────
+;; Higher-order: map / filter / for-each / zip / append.
+;;
+;; stream-map and stream-filter return new streams (lazy). stream-for-each
+;; is strict — it walks until stream-null. stream-zip terminates when ANY
+;; input stream is exhausted (matching SRFI 41 semantics).
+
+(define (stream-map f s)
+  (if (stream-null? s)
+      stream-null
+      (stream-cons (f (stream-car s))
+                   (delay (stream-map f (stream-cdr s))))))
+
+(define (stream-filter pred s)
+  (cond
+    ((stream-null? s) stream-null)
+    ((pred (stream-car s))
+     (stream-cons (stream-car s)
+                  (delay (stream-filter pred (stream-cdr s)))))
+    (else (stream-filter pred (stream-cdr s)))))
+
+(define (stream-for-each f s)
+  (if (stream-null? s)
+      '()
+      (begin
+        (f (stream-car s))
+        (stream-for-each f (stream-cdr s)))))
+
+(define (stream-zip s1 s2)
+  (if (or (stream-null? s1) (stream-null? s2))
+      stream-null
+      (stream-cons (list (stream-car s1) (stream-car s2))
+                   (delay (stream-zip (stream-cdr s1) (stream-cdr s2))))))
+
+(define (stream-append s1 s2)
+  (if (stream-null? s1)
+      s2
+      (stream-cons (stream-car s1)
+                   (delay (stream-append (stream-cdr s1) s2)))))
+
+;; ─────────────────────────────────────────────────────────────────────
+;; Generators
+
+(define (stream-iterate f x)
+  ;; Infinite stream x, (f x), (f (f x)), ...
+  (stream-cons x (delay (stream-iterate f (f x)))))
+
+(define (stream-from n)
+  ;; Infinite stream n, n+1, n+2, ...
+  (stream-cons n (delay (stream-from (+ n 1)))))
+
+(define (stream-take-while pred s)
+  (cond
+    ((stream-null? s) stream-null)
+    ((pred (stream-car s))
+     (stream-cons (stream-car s)
+                  (delay (stream-take-while pred (stream-cdr s)))))
+    (else stream-null)))
+
+(define (stream-drop-while pred s)
+  (cond
+    ((stream-null? s) s)
+    ((pred (stream-car s)) (stream-drop-while pred (stream-cdr s)))
+    (else s)))
+
+;; ─────────────────────────────────────────────────────────────────────
+;; Conversions
+;;
+;; stream-length and stream->list ONLY terminate on finite streams.
+;; Calling either on an infinite stream (e.g. `(stream-from 0)`) loops
+;; forever — by design.
+
+(define (stream-length s)
+  (let loop ((s s) (n 0))
+    (if (stream-null? s) n
+        (loop (stream-cdr s) (+ n 1)))))
+
+(define (stream->list s)
+  (if (stream-null? s) '()
+      (cons (stream-car s) (stream->list (stream-cdr s)))))
+
+(define (list->stream lst)
+  (if (null? lst) stream-null
+      (stream-cons (car lst) (delay (list->stream (cdr lst))))))
