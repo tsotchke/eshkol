@@ -15,8 +15,9 @@
 
 (require core.list.transform)
 (require core.strings)
+(require core.data.base64)
 
-(provide url-encode url-decode)
+(provide url-encode url-decode base64url-encode base64url-decode)
 
 ;; Hex digit lookup — uppercase per RFC 3986 §2.1 ("the uppercase
 ;; hexadecimal digits 'A' through 'F' are equivalent to the lowercase
@@ -168,6 +169,51 @@
                  (cons b1 i)))
            (cons b1 i))))
     (else (cons b1 i))))
+
+;; ─────────────────────────────────────────────────────────────────────
+;; base64url — URL-safe Base64 (RFC 4648 §5)
+;;
+;; Same as standard base64 but two char substitutions and no padding:
+;;   '+' → '-'
+;;   '/' → '_'
+;;   trailing '=' stripped
+;;
+;; Used for JWT (signed URLs), CSRF tokens, content hashes that travel
+;; through query strings or path segments. Decoding accepts the canonical
+;; padded form too — both `xyz-_` and `xyz-_=` decode to the same bytes.
+
+(define (b64url-strip-padding s)
+  (let ((n (string-length s)))
+    (let loop ((i n))
+      (cond
+        ((<= i 0) "")
+        ((char=? (string-ref s (- i 1)) #\=) (loop (- i 1)))
+        (else (substring s 0 i))))))
+
+(define (b64url-restore-padding s)
+  (let* ((n (string-length s))
+         (rem (remainder n 4)))
+    (cond
+      ((= rem 0) s)
+      ((= rem 2) (string-append s "=="))
+      ((= rem 3) (string-append s "="))
+      (else s))))  ; rem=1 is malformed; pass through and let decoder fail
+
+(define (b64url-replace-encode s)
+  ;; '+' → '-', '/' → '_'
+  (string-replace (string-replace s "+" "-") "/" "_"))
+
+(define (b64url-replace-decode s)
+  ;; '-' → '+', '_' → '/'
+  (string-replace (string-replace s "-" "+") "_" "/"))
+
+(define (base64url-encode str)
+  (b64url-strip-padding (b64url-replace-encode (base64-encode-string str))))
+
+(define (base64url-decode str)
+  (base64-decode-string (b64url-restore-padding (b64url-replace-decode str))))
+
+;; ─────────────────────────────────────────────────────────────────────
 
 ;; url-decode: walk str, decode each byte (or %XX), merge UTF-8 sequences
 ;; back into codepoints, emit as UTF-8 string via (string (integer->char cp)).

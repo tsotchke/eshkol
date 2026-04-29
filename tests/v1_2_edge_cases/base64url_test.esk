@@ -1,0 +1,45 @@
+;; mode: jit
+;; base64url-encode / base64url-decode regression — task #203.
+
+(require stdlib)
+(display "=== base64url ===") (newline)
+
+(define pass 0) (define fail 0)
+(define (check name cond)
+  (if cond (begin (set! pass (+ pass 1)) (display "PASS: ") (display name) (newline))
+           (begin (set! fail (+ fail 1)) (display "FAIL: ") (display name) (newline))))
+
+;; encode — known vectors
+(check "encode 'f'    → 'Zg'"      (string=? (base64url-encode "f") "Zg"))
+(check "encode 'fo'   → 'Zm8'"     (string=? (base64url-encode "fo") "Zm8"))
+(check "encode 'foo'  → 'Zm9v'"    (string=? (base64url-encode "foo") "Zm9v"))
+(check "encode 'foob' → 'Zm9vYg'"  (string=? (base64url-encode "foob") "Zm9vYg"))
+(check "encode 'fooba'→ 'Zm9vYmE'" (string=? (base64url-encode "fooba") "Zm9vYmE"))
+(check "encode 'foobar'→'Zm9vYmFy'" (string=? (base64url-encode "foobar") "Zm9vYmFy"))
+
+;; encode — bytes that produce '+' and '/' in standard base64
+(check "encode produces '-' not '+'"
+       (string=? (base64url-encode "??>?<") "Pz8-Pzw"))
+
+;; encode — empty
+(check "encode empty"              (string=? (base64url-encode "") ""))
+
+;; decode — round-trip
+(define (rt s) (string=? s (base64url-decode (base64url-encode s))))
+(check "round-trip 'Hello'"        (rt "Hello"))
+(check "round-trip 'f'"            (rt "f"))
+(check "round-trip 'fo'"           (rt "fo"))
+(check "round-trip 'foo'"          (rt "foo"))
+(check "round-trip empty"          (rt ""))
+(check "round-trip with +/ bytes"  (rt "??>?<"))
+(check "round-trip 'Hello, World!'"(rt "Hello, World!"))
+
+;; decode — accepts canonical padded form too
+(check "decode padded 'SGVsbG8='"  (string=? (base64url-decode "SGVsbG8=") "Hello"))
+(check "decode unpadded 'SGVsbG8'" (string=? (base64url-decode "SGVsbG8") "Hello"))
+
+(display "---") (newline)
+(display "Total: ") (display (+ pass fail))
+(display ", PASS: ") (display pass)
+(display ", FAIL: ") (display fail) (newline)
+(if (> fail 0) (exit 1))
