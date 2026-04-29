@@ -1033,10 +1033,16 @@ llvm::Value* StringIOCodegen::stringSplit(const eshkol_operations_t* op) {
     llvm::Value* seg_start = ctx_.builder().CreateLoad(ctx_.int64Type(), segment_start_ptr);
     llvm::Value* seg_len = ctx_.builder().CreateSub(curr_pos, seg_start);
 
-    // Allocate new string with header for segment
-    llvm::Value* seg_buf_size = ctx_.builder().CreateAdd(seg_len, llvm::ConstantInt::get(ctx_.int64Type(), 1));
+    // Allocate new string with header for segment.
+    // arena_allocate_string_with_header(arena, length) takes the string
+    // *length* (excluding null terminator) and adds +1 internally, then
+    // records length in the header. Earlier versions passed seg_len + 1
+    // which made the header report a length one byte too long, so
+    // (string-length (car (string-split "abc" "x"))) returned 4 instead
+    // of 3 — visible as the "substring: end index less than start index"
+    // crash in base64url-encode round-trips. Pass seg_len directly.
     llvm::Value* seg_buf = ctx_.builder().CreateCall(
-        ctx_.memory().getArenaAllocateStringWithHeader(), {arena_ptr, seg_buf_size});
+        ctx_.memory().getArenaAllocateStringWithHeader(), {arena_ptr, seg_len});
 
     // Copy characters using memcpy
     llvm::Value* src_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), str_ptr, seg_start);
