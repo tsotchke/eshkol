@@ -9805,133 +9805,154 @@ private:
         }
     }
 
+    // ─────────────────────────────────────────────────────────────────────
+    // codegenCall pre-dispatch helpers (mechanical extraction; IR-identical)
+    //
+    // These three handlers cover call expressions whose head is itself an
+    // operation rather than a variable reference:
+    //   - ((lambda (x) ...) arg)        → codegenCallInlineLambda
+    //   - ((f x) y)                     → codegenCallResultAsFunc
+    //   - ((derivative f) x), etc.      → codegenCallOperationResultAsFunc
+    // Each evaluates the head into a closure and dispatches via
+    // codegenClosureCall after packing args to tagged_value.
+    // ─────────────────────────────────────────────────────────────────────
+
+    Value* codegenCallInlineLambda(const eshkol_operations_t* op) {
+        // Generate the inline lambda
+        Value* lambda = codegenLambda(&op->call_op.func->operation);
+        if (!lambda) {
+            eshkol_error("Failed to generate inline lambda in call expression");
+            return nullptr;
+        }
+
+        // Generate arguments
+        std::vector<Value*> call_args;
+        for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
+            Value* arg = codegenAST(&op->call_op.variables[i]);
+            if (!arg) {
+                // If block is terminated (tail call/branch), call is unreachable
+                if (builder->GetInsertBlock()->getTerminator()) return nullptr;
+                // Otherwise use null tagged value to maintain correct arity
+                arg = packNullToTaggedValue();
+            }
+
+            // Pack to tagged_value if needed (lambdas expect tagged_value)
+            if (arg->getType() != tagged_value_type) {
+                if (arg->getType()->isIntegerTy(64)) {
+                    arg = packInt64ToTaggedValue(arg, true);
+                } else if (arg->getType()->isDoubleTy()) {
+                    arg = packDoubleToTaggedValue(arg);
+                } else {
+                    TypedValue tv = detectValueType(arg);
+                    arg = typedValueToTaggedValue(tv);
+                }
+            }
+            call_args.push_back(arg);
+        }
+
+        // CAPTURE FIX: Use codegenClosureCall to properly handle lambdas with captures.
+        // codegenLambda returns a closure (tagged_value) that contains both the function
+        // pointer and captured values. codegenClosureCall extracts these and builds
+        // the correct argument list including captures.
+        return codegenClosureCall(lambda, call_args, "inline-lambda");
+    }
+
+    Value* codegenCallResultAsFunc(const eshkol_operations_t* op) {
+        // Evaluate the inner call to get the function value
+        Value* func_result = codegenAST(op->call_op.func);
+        if (!func_result) {
+            eshkol_error("Failed to evaluate function expression");
+            return nullptr;
+        }
+
+        // Generate all normal arguments first
+        std::vector<Value*> call_args;
+        for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
+            Value* arg = codegenAST(&op->call_op.variables[i]);
+            if (!arg) {
+                if (builder->GetInsertBlock()->getTerminator()) return nullptr;
+                arg = packNullToTaggedValue();
+            }
+
+            // Pack to tagged_value if needed
+            if (arg->getType() != tagged_value_type) {
+                if (arg->getType()->isIntegerTy(64)) {
+                    arg = packInt64ToTaggedValue(arg, true);
+                } else if (arg->getType()->isDoubleTy()) {
+                    arg = packDoubleToTaggedValue(arg);
+                } else {
+                    TypedValue tv = detectValueType(arg);
+                    arg = typedValueToTaggedValue(tv);
+                }
+            }
+            call_args.push_back(arg);
+        }
+
+        // Call runtime closure dispatch helper
+        return codegenClosureCall(func_result, call_args, "call-result-as-func");
+    }
+
+    Value* codegenCallOperationResultAsFunc(const eshkol_operations_t* op) {
+        // Evaluate the operation to get the closure value
+        Value* func_result = codegenAST(op->call_op.func);
+        if (!func_result) {
+            eshkol_error("Failed to evaluate function-returning operation");
+            return nullptr;
+        }
+
+        // Generate all arguments
+        std::vector<Value*> call_args;
+        for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
+            Value* arg = codegenAST(&op->call_op.variables[i]);
+            if (!arg) {
+                if (builder->GetInsertBlock()->getTerminator()) return nullptr;
+                arg = packNullToTaggedValue();
+            }
+
+            // Pack to tagged_value if needed
+            if (arg->getType() != tagged_value_type) {
+                if (arg->getType()->isIntegerTy(64)) {
+                    arg = packInt64ToTaggedValue(arg, true);
+                } else if (arg->getType()->isDoubleTy()) {
+                    arg = packDoubleToTaggedValue(arg);
+                } else {
+                    TypedValue tv = detectValueType(arg);
+                    arg = typedValueToTaggedValue(tv);
+                }
+            }
+            call_args.push_back(arg);
+        }
+
+        // Call the returned closure with the arguments
+        return codegenClosureCall(func_result, call_args, "op-result-as-func");
+    }
+
     Value* codegenCall(const eshkol_operations_t* op) {
         if (!op->call_op.func) {
             return nullptr;
         }
-        
-        // CRITICAL FIX: Handle inline lambda expressions: ((lambda (x) body) arg)
-        // This pattern appears in nested lambda calls and must be supported
+
+        // ((lambda (x) body) arg) — inline lambda head
         if (op->call_op.func->type == ESHKOL_OP &&
             op->call_op.func->operation.op == ESHKOL_LAMBDA_OP) {
-
-            // Generate the inline lambda
-            Value* lambda = codegenLambda(&op->call_op.func->operation);
-            if (!lambda) {
-                eshkol_error("Failed to generate inline lambda in call expression");
-                return nullptr;
-            }
-
-            // Generate arguments
-            std::vector<Value*> call_args;
-            for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
-                Value* arg = codegenAST(&op->call_op.variables[i]);
-                if (!arg) {
-                    // If block is terminated (tail call/branch), call is unreachable
-                    if (builder->GetInsertBlock()->getTerminator()) return nullptr;
-                    // Otherwise use null tagged value to maintain correct arity
-                    arg = packNullToTaggedValue();
-                }
-
-                // Pack to tagged_value if needed (lambdas expect tagged_value)
-                if (arg->getType() != tagged_value_type) {
-                    if (arg->getType()->isIntegerTy(64)) {
-                        arg = packInt64ToTaggedValue(arg, true);
-                    } else if (arg->getType()->isDoubleTy()) {
-                        arg = packDoubleToTaggedValue(arg);
-                    } else {
-                        TypedValue tv = detectValueType(arg);
-                        arg = typedValueToTaggedValue(tv);
-                    }
-                }
-                call_args.push_back(arg);
-            }
-
-            // CAPTURE FIX: Use codegenClosureCall to properly handle lambdas with captures.
-            // codegenLambda returns a closure (tagged_value) that contains both the function
-            // pointer and captured values. codegenClosureCall extracts these and builds
-            // the correct argument list including captures.
-            return codegenClosureCall(lambda, call_args, "inline-lambda");
-        }
-        
-        // Handle call-result-as-function: ((f x) y) where (f x) returns a function
-        // This is a common pattern for curried functions and compose
-        if (op->call_op.func->type == ESHKOL_OP && op->call_op.func->operation.op == ESHKOL_CALL_OP) {
-            // Evaluate the inner call to get the function value
-            Value* func_result = codegenAST(op->call_op.func);
-            if (!func_result) {
-                eshkol_error("Failed to evaluate function expression");
-                return nullptr;
-            }
-
-            // Generate all normal arguments first
-            std::vector<Value*> call_args;
-            for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
-                Value* arg = codegenAST(&op->call_op.variables[i]);
-                if (!arg) {
-                    if (builder->GetInsertBlock()->getTerminator()) return nullptr;
-                    arg = packNullToTaggedValue();
-                }
-
-                // Pack to tagged_value if needed
-                if (arg->getType() != tagged_value_type) {
-                    if (arg->getType()->isIntegerTy(64)) {
-                        arg = packInt64ToTaggedValue(arg, true);
-                    } else if (arg->getType()->isDoubleTy()) {
-                        arg = packDoubleToTaggedValue(arg);
-                    } else {
-                        TypedValue tv = detectValueType(arg);
-                        arg = typedValueToTaggedValue(tv);
-                    }
-                }
-                call_args.push_back(arg);
-            }
-
-            // Call runtime closure dispatch helper
-            return codegenClosureCall(func_result, call_args, "call-result-as-func");
+            return codegenCallInlineLambda(op);
         }
 
-        // Handle operation-result-as-function: ((derivative f) x), ((gradient f) p), ((lambda ...) x), etc.
-        // Operations like derivative/gradient/lambda return closures that can be called
+        // ((f x) y) — head is itself a call
+        if (op->call_op.func->type == ESHKOL_OP &&
+            op->call_op.func->operation.op == ESHKOL_CALL_OP) {
+            return codegenCallResultAsFunc(op);
+        }
+
+        // ((derivative f) x), ((gradient f) p), etc. — operations whose
+        // result is a closure that can then be called.
         if (op->call_op.func->type == ESHKOL_OP) {
             eshkol_op_t inner_op = op->call_op.func->operation.op;
-            // Check if this is an operation that returns a callable closure
             if (inner_op == ESHKOL_DERIVATIVE_OP || inner_op == ESHKOL_GRADIENT_OP ||
                 inner_op == ESHKOL_LAMBDA_OP || inner_op == ESHKOL_JACOBIAN_OP ||
                 inner_op == ESHKOL_COND_OP || inner_op == ESHKOL_IF_OP ||
                 inner_op == ESHKOL_LET_OP || inner_op == ESHKOL_LETREC_OP) {
-                // Evaluate the operation to get the closure value
-                Value* func_result = codegenAST(op->call_op.func);
-                if (!func_result) {
-                    eshkol_error("Failed to evaluate function-returning operation");
-                    return nullptr;
-                }
-
-                // Generate all arguments
-                std::vector<Value*> call_args;
-                for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
-                    Value* arg = codegenAST(&op->call_op.variables[i]);
-                    if (!arg) {
-                    if (builder->GetInsertBlock()->getTerminator()) return nullptr;
-                    arg = packNullToTaggedValue();
-                }
-
-                    // Pack to tagged_value if needed
-                    if (arg->getType() != tagged_value_type) {
-                        if (arg->getType()->isIntegerTy(64)) {
-                            arg = packInt64ToTaggedValue(arg, true);
-                        } else if (arg->getType()->isDoubleTy()) {
-                            arg = packDoubleToTaggedValue(arg);
-                        } else {
-                            TypedValue tv = detectValueType(arg);
-                            arg = typedValueToTaggedValue(tv);
-                        }
-                    }
-                    call_args.push_back(arg);
-                }
-
-                // Call the returned closure with the arguments
-                return codegenClosureCall(func_result, call_args, "op-result-as-func");
+                return codegenCallOperationResultAsFunc(op);
             }
         }
 
