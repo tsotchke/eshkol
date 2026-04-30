@@ -1082,11 +1082,30 @@ set(STDLIB_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/lib/stdlib.esk")
 set(STDLIB_OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/stdlib.o")
 set(STDLIB_WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
 
+# stdlib.esk is a thin top-level that (require)s every module in
+# lib/core/, lib/math/, lib/signal/, etc.  CMake's DEPENDS list must
+# track those transitive sources too — otherwise edits to
+# lib/core/json_schema.esk (or any other required module) don't
+# trigger a stdlib rebuild and the user gets stale stdlib.o.  Glob
+# the union; CONFIGURE_DEPENDS asks CMake to re-glob on every build,
+# so newly-added .esk modules are picked up without needing a manual
+# `cmake ..` re-run.
+file(GLOB_RECURSE STDLIB_TRANSITIVE_SOURCES CONFIGURE_DEPENDS
+     "${CMAKE_CURRENT_SOURCE_DIR}/lib/core/*.esk"
+     "${CMAKE_CURRENT_SOURCE_DIR}/lib/math/*.esk"
+     "${CMAKE_CURRENT_SOURCE_DIR}/lib/signal/*.esk"
+     "${CMAKE_CURRENT_SOURCE_DIR}/lib/random/*.esk"
+     "${CMAKE_CURRENT_SOURCE_DIR}/lib/web/*.esk"
+     "${CMAKE_CURRENT_SOURCE_DIR}/lib/tensor/*.esk"
+     "${CMAKE_CURRENT_SOURCE_DIR}/lib/quantum/*.esk"
+     "${CMAKE_CURRENT_SOURCE_DIR}/lib/ml/*.esk"
+     "${CMAKE_CURRENT_SOURCE_DIR}/lib/math.esk")
+
 add_custom_command(
   OUTPUT ${STDLIB_OUTPUT}
   COMMAND ${CMAKE_COMMAND} -E env "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
           $<TARGET_FILE:eshkol-run> --shared-lib -o "${CMAKE_CURRENT_BINARY_DIR}/stdlib" "${STDLIB_SOURCE}"
-  DEPENDS eshkol-run ${STDLIB_SOURCE}
+  DEPENDS eshkol-run ${STDLIB_SOURCE} ${STDLIB_TRANSITIVE_SOURCES}
   WORKING_DIRECTORY ${STDLIB_WORKING_DIRECTORY}
   COMMENT "Compiling standard library to ${STDLIB_OUTPUT}"
   VERBATIM
