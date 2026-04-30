@@ -21735,10 +21735,28 @@ private:
             arg_it->setName(param_names[i]);
         }
 
+        // Bug X (Noesis 2026-04-30): save the prior bindings under
+        // `loop_name` so we can restore them after the body+call have
+        // been emitted.  Without this, sequential named-lets with the
+        // same user-visible name (e.g. two `(let loop ...)` forms in
+        // the same compilation unit, including stdlib's 1-binding
+        // `(let loop ((i 0)) ...)` in `time-it` colliding with a
+        // user's 2-binding loop) leave a stale function_table entry
+        // visible to whatever runs next, so the next file's call
+        // resolves against the wrong loop arity and emits a spurious
+        // "Arity mismatch: loop expects N arguments but got M".
+        std::string func_key = loop_name + "_func";
+        bool had_prev_ft = function_table.count(loop_name) > 0;
+        Function* prev_loop_ft = had_prev_ft ? function_table[loop_name] : nullptr;
+        bool had_prev_st = symbol_table.count(func_key) > 0;
+        Value* prev_loop_st = had_prev_st ? symbol_table[func_key] : nullptr;
+        bool had_prev_gst = global_symbol_table.count(func_key) > 0;
+        Value* prev_loop_gst = had_prev_gst ? global_symbol_table[func_key] : nullptr;
+
         // Register function so it can be called recursively
         function_table[loop_name] = loop_func;
-        symbol_table[loop_name + "_func"] = loop_func;
-        global_symbol_table[loop_name + "_func"] = loop_func;
+        symbol_table[func_key] = loop_func;
+        global_symbol_table[func_key] = loop_func;
 
         // Save current context
         Function* prev_function = current_function;
@@ -21938,6 +21956,29 @@ private:
             }
             // Anything else (raw int/double Argument): the caller passed
             // by value — there's no slot to write back to.
+        }
+
+        // Bug X (Noesis 2026-04-30): restore the previous bindings
+        // under `loop_name` now that the body and outer call have
+        // both been emitted.  See the matching save block above.
+        // The body's recursive `(loop …)` calls have already been
+        // resolved against `loop_func`; the outer caller holds the
+        // CallInst directly, so unbinding the user-visible name here
+        // does not invalidate any earlier IR.
+        if (had_prev_ft) {
+            function_table[loop_name] = prev_loop_ft;
+        } else {
+            function_table.erase(loop_name);
+        }
+        if (had_prev_st) {
+            symbol_table[func_key] = prev_loop_st;
+        } else {
+            symbol_table.erase(func_key);
+        }
+        if (had_prev_gst) {
+            global_symbol_table[func_key] = prev_loop_gst;
+        } else {
+            global_symbol_table.erase(func_key);
         }
 
         eshkol_debug("Named let '%s' completed", loop_name.c_str());
