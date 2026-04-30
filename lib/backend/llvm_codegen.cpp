@@ -562,6 +562,15 @@ private:
     std::unique_ptr<Module> module;
     std::unique_ptr<IRBuilder<>> builder;
 
+    // Monotonic counter used by codegen sites that need a unique-but-stable
+    // suffix in IR variable names (e.g. pattern-match argument slots). We
+    // previously used `reinterpret_cast<uintptr_t>(some_value)` for this,
+    // which made IR non-deterministic across runs because heap addresses
+    // change. Replacing with a counter restores reproducibility.
+    // Reset at the start of every generateIR() / library compilation so two
+    // compilations of the same source always produce identical IR.
+    uint64_t name_uniquifier_ = 0;
+
     // Type system (manages all LLVM types)
     std::unique_ptr<eshkol::TypeSystem> types;
 
@@ -1269,6 +1278,10 @@ public:
     
     std::pair<std::unique_ptr<Module>, std::unique_ptr<LLVMContext>> generateIR(const eshkol_ast_t* asts, size_t num_asts) {
         try {
+            // Reset the per-compilation name uniquifier so two compilations
+            // of the same source produce identical IR (reproducible builds).
+            name_uniquifier_ = 0;
+
             // REPL FIX: Clear stale static state from previous evaluations
             // This prevents duplicate symbol errors when creating lambda_X_sexpr globals
             if (g_repl_mode_enabled) {
@@ -16969,8 +16982,10 @@ private:
                     Value* val_slot = builder->CreateAlloca(tagged_value_type, nullptr,
                                                            "pat_pred_arg");
                     builder->CreateStore(ensureTaggedValue(val), val_slot);
+                    // Use a per-compilation counter (not the slot's heap
+                    // address) to keep IR deterministic across runs.
                     std::string slot_name = std::string("__pat_pred_arg_") +
-                                            std::to_string(reinterpret_cast<uintptr_t>(val_slot));
+                                            std::to_string(name_uniquifier_++);
                     symbol_table[slot_name] = val_slot;
 
                     eshkol_ast_t arg_var;
