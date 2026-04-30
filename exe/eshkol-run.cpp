@@ -2332,10 +2332,28 @@ static void process_requires(std::vector<eshkol_ast_t>& asts, const std::string&
                     eshkol_info("Module '%s' exports: [%s]", module_name.c_str(), exp_str.c_str());
                 }
 
-                // Rename private (non-exported) symbols to avoid collisions
-                if (!exports.empty()) {
-                    rename_private_symbols(module_asts, module_name, exports, debug_mode);
-                }
+                // Bug Z (Noesis 2026-04-30): `(provide ...)` is
+                // documented and used (across 65 Noesis source files
+                // and the Eshkol stdlib itself) as INFORMATIONAL, not
+                // as a hard export boundary.  JIT mode treats it that
+                // way; AOT was renaming non-exported names so calls
+                // from other files failed with "Unknown function: X"
+                // with a misleading source marker.  Match the
+                // documented + JIT semantics here.  If a strict
+                // export mode is wanted later, expose it via a
+                // per-file pragma so existing code keeps compiling.
+                //
+                // Collision avoidance was the original motivation —
+                // see git history of rename_private_symbols.  In
+                // practice multi-module collisions show up at link
+                // time as ODR / "duplicate symbol" errors, so we
+                // surface them where they originate rather than
+                // hiding them with a silent global mangle.  For now
+                // we skip the rename entirely; rename_private_symbols
+                // and the ESHKOL_PROVIDE_OP machinery stay in place
+                // for the future strict-mode pragma.
+                (void)rename_private_symbols;
+                (void)exports;
 
                 // Recursively process requires in the loaded module
                 std::string module_dir = std::filesystem::path(module_path).parent_path().string();
