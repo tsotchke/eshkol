@@ -24,7 +24,23 @@ for test in tests/v1_2_edge_cases/*.esk; do
     name=$(basename "$test" .esk)
     printf "  %-50s " "$name"
 
-    # Compile
+    # Honour `;; mode: jit` markers — these tests are explicitly
+    # JIT-only (e.g. they exercise eval, dynamic loads, or REPL-side
+    # symbol resolution that AOT compilation can't reproduce).  Run
+    # them through `eshkol-run -r` instead of compile-and-run.
+    if head -1 "$test" | grep -qiE "^;;\s*mode:\s*jit"; then
+        if $ESHKOL -r "$test" >/tmp/eshkol_v12_run_out 2>&1; then
+            echo "PASS (JIT)"
+            PASS=$((PASS + 1))
+        else
+            echo "FAIL (JIT)"
+            head -10 /tmp/eshkol_v12_run_out | sed 's/^/    /'
+            FAIL=$((FAIL + 1))
+        fi
+        continue
+    fi
+
+    # Compile (AOT)
     if $ESHKOL "$test" -o /tmp/eshkol_v12_test 2>/tmp/eshkol_v12_compile_err; then
         # Run.  Some tests use (check-equal? ...) which prints "FAIL: ..."
         # and exits non-zero on mismatch; we treat both compile failure

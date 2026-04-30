@@ -28248,11 +28248,22 @@ private:
             ConstantInt::get(int8_type, ESHKOL_VALUE_NULL));
         builder->CreateCondBr(is_null, exit_true, is_cons_block);
 
-        // Check if cons cell
+        // Check if cons cell.  HEAP_PTR alone is not enough — strings,
+        // tensors, vectors, hash-tables, knowledge-bases, etc. all live
+        // behind a HEAP_PTR with their own heap subtype byte.  Treating
+        // any heap pointer as a cons walks garbage memory through
+        // arena_tagged_cons_get_type and produces nondeterministic
+        // results (e.g. (list? "abcdefgh") returning #t in stdlib-
+        // compiled scope but #f from a fresh user file).  Insist that
+        // the heap subtype byte at ptr-8 says HEAP_SUBTYPE_CONS.
         builder->SetInsertPoint(is_cons_block);
-        Value* is_cons = builder->CreateICmpEQ(base_type,
+        Value* is_heap_ptr = builder->CreateICmpEQ(base_type,
             ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
-        // If not cons and not null, it's not a proper list
+        BasicBlock* check_cons_subtype = BasicBlock::Create(*context, "list_check_cons_subtype", func);
+        builder->CreateCondBr(is_heap_ptr, check_cons_subtype, exit_false);
+
+        builder->SetInsertPoint(check_cons_subtype);
+        Value* is_cons = isHeapSubtype(current, HEAP_SUBTYPE_CONS);
         builder->CreateCondBr(is_cons, get_cdr_type_block, exit_false);
 
         // Get cdr type from the cons cell
