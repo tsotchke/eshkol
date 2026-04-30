@@ -838,13 +838,15 @@ static VmTensor* vm_tensor_clamp(VmRegionStack* rs, const VmTensor* t, double lo
 
 #ifdef VM_TENSOR_OPS_TEST
 #include <assert.h>
+#include <stdlib.h>     /* exit() */
 
-/* Helper: check double equality within tolerance */
+/* Helper: check double equality within tolerance.
+ * Uses exit(1) instead of assert(0) so the test still fails under -DNDEBUG. */
 static void assert_near(double a, double b, double tol, const char* msg) {
     if (fabs(a - b) > tol) {
         fprintf(stderr, "FAIL: %s: expected %.10f, got %.10f (diff %.2e)\n",
                 msg, b, a, fabs(a - b));
-        assert(0);
+        exit(1);
     }
 }
 
