@@ -217,17 +217,25 @@ v2.0 ─────────────────────────
 
 ---
 
-## v1.2-scale (May 2026) - PLANNED
+## v1.2-scale (April 2026) - SHIPPED
 
 **Focus:** Get models into production. Save them, load them, deploy them.
 
-- [ ] Model serialization (save/load tensor weights to binary format)
-- [ ] Python bindings (call Eshkol functions from Python via FFI bridge)
-- [ ] Per-thread arenas (safe concurrent memory allocation)
-- [ ] Image I/O (PNG/JPEG read/write via stb_image)
-- [ ] CSV/DataFrame (tabular data loading for ML pipelines)
-- [ ] Improved error messages with source location spans
-- [ ] Terminal plotting (sparklines + bar charts for quick visualization)
+- [x] Model serialization (`.eshkol-model` ESKB-extended binary format)
+- [x] Stable C FFI header + Python bindings (pybind11; numpy zero-copy)
+- [x] Per-thread arenas (safe concurrent memory allocation)
+- [x] Image I/O (PNG/JPEG/BMP read/write/resize) — current backend is
+      stb_image under `deps/stb/`; v1.3+ will replace with native
+      platform APIs (CoreGraphics on macOS, system libpng/libjpeg on
+      Linux, GDI+ on Windows) so we stop vendoring third-party media
+      decoders
+- [x] CSV/DataFrame (tabular data loading for ML pipelines)
+- [x] Improved error messages with file:line:col + caret underlines
+- [x] Terminal plotting (`sparkline`, `bar-chart` in pure Eshkol stdlib)
+- [x] Codegen modularisation: `tensor_codegen.cpp` 19,940 → 1,280 lines
+      (94% reduction); 13 focused per-domain split files
+- [x] v1.2 edge-case + security regression suite (58 tests) wired into
+      `run_all_tests.sh` and a new `linux-x64-asan-ubsan` CI lane
 
 ---
 
@@ -241,6 +249,16 @@ v2.0 ─────────────────────────
 - [ ] Pattern matching in `let` bindings (destructuring `let-match`)
 - [ ] Profile-guided optimization (runtime profiling feeds codegen)
 - [ ] Whole-program optimization (cross-module inlining and dead code elimination)
+- [ ] **Native media handling, no vendoring**: replace `deps/stb/`
+      image I/O with native platform APIs (CoreGraphics on macOS,
+      system libpng/libjpeg/libwebp on Linux, GDI+ on Windows).
+      Going forward the project does not vendor third-party media
+      decoders.
+- [ ] AD `input2` plumbing for conv2d / batchnorm / layernorm / matmul
+      / attention backward passes (forward-pass tape-node creation
+      currently leaves `input2` null; the backward kernels in
+      `lib/backend/tensor_backward.cpp` already gate on
+      `if (node->input2) ...`).
 
 ---
 

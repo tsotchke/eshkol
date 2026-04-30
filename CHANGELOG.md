@@ -58,6 +58,112 @@ pass.
   traces with the schema consumed by `compare_traces.py`. The
   three-way trace was essential for finding the bugs above.
 
+### Refactored — codegen modularisation (v1.2 mechanical split)
+
+The 32K-line `lib/backend/llvm_codegen.cpp` and the 20K-line
+`lib/backend/tensor_codegen.cpp` are now split into focused per-domain
+files.  IR-identical to the prior monolith — verified at every step
+against per-PR baselines (58/58 match, 0 diffs) — so this is purely a
+modularity / build-time / readability win, not a behaviour change.
+
+- **Extracted from `llvm_codegen.cpp`:**
+  - `lib/backend/logic_workspace_codegen.cpp` (`c066c8b`) — 23
+    consciousness-engine handlers (logic vars, KB, factor graphs,
+    workspace, tensor/model serialization).
+  - In-place sub-method split of the early `codegenCall` dispatch
+    arms into `codegenCallInlineLambda`, `codegenCallResultAsFunc`,
+    `codegenCallOperationResultAsFunc` (`769480b`) — first concrete
+    payload of the audited prerequisite split before further
+    extractions.
+- **Extracted from `tensor_codegen.cpp`** (now ~1,280 lines, down from
+  19,940 — a 94% reduction):
+  - `tensor_dataloader_codegen.cpp` (`00e4bd4`) — 6 dataloader methods.
+  - `tensor_transformer_codegen.cpp` (`342bcb5`) — Track 8 attention
+    stack (9 methods, ~2,550 lines).
+  - `tensor_loss_codegen.cpp` (`40669c6`) — 14 loss functions
+    (~1,650 lines).
+  - `tensor_linalg_codegen.cpp` (`9c1efc1`) — 8 linear-algebra ops
+    (LU, det, inv, solve, Cholesky, QR, SVD, einsum; ~1,260 lines).
+  - `tensor_training_codegen.cpp` (`c1dc0fe`) — 17 optimiser/weight-
+    init/LR-scheduler methods (~1,500 lines).  Required promoting
+    `taggedNumericToDouble` to a private static method on
+    `TensorCodegen` so every split file can reach it.
+  - `tensor_conv_codegen.cpp` (`052b5cf`) — 7 conv/pool methods plus
+    the shared `extractAsDouble` helper (~1,595 lines).
+  - `tensor_activation_codegen.cpp` (`16e33bc`) — 36 activation forward
+    + backward methods (~2,587 lines).
+  - `tensor_reduce_codegen.cpp` (`da2c330`) — matmul, dot, reduce,
+    sum, mean, apply (9 methods, ~1,730 lines).
+  - `tensor_arith_codegen.cpp` (`7542131`) — internal + SIMD
+    elementwise arithmetic (~565 lines).
+  - `tensor_shape_codegen.cpp` (`4c6cc9e`) — 11 shape methods
+    (reshape, transpose, squeeze, etc.; ~1,690 lines).
+  - `tensor_creation_codegen.cpp` (`9773bfe`) — `createTensorWithDims`
+    plus zeros/ones/eye/arange/linspace/full factories (~1,236
+    lines).
+  - `tensor_extras_codegen.cpp` (`dadec34`) — Phase 4/5/7 supplements
+    (tile, pad, statistics, conv3d) plus tensor unary/binary/scale/
+    batch-matmul (~1,660 lines).
+
+### Fixed — runtime / codegen / packaging
+
+- **Bug X — `codegenNamedLet` leaked the loop name** (`590495c`).
+  After the body and outer call were emitted, the function used to
+  leave its `function_table[loop_name]`, `symbol_table[loop_name +
+  "_func"]`, and `global_symbol_table[loop_name + "_func"]` entries
+  pointing at its loop_func.  When stdlib's 1-binding `(let loop ((i
+  0)) …)` in `time-it` was compiled alongside Noesis source files
+  containing 2/3/4-binding `let loop` forms — and an earlier
+  let-binding had populated `function_table["loop"]` with a lambda
+  via `binding_codegen.cpp:registerLambdaBinding` — the next named-
+  let's body resolved `(loop x)` against the wrong function and
+  produced a misleading `Arity mismatch: loop expects 2 arguments
+  but got 1` ahead of the genuine forward-ref errors.  Fix: save and
+  restore the prior bindings under `loop_name` around the body+call
+  emission.  IR-identical for code that previously compiled cleanly.
+- **Bug X minimal-repro — silent AOT no-output** (`d7c97db`).  When
+  `eshkol-run foo.esk` (no `-o`, no `-r`) AOT-compiled a single file
+  through the LLVM-direct path (no separate object inputs to link),
+  the `[eshkol-run] compiled to 'a.out'. Run it (./a.out) or use
+  \`eshkol-run -r foo.esk\`…` notice was skipped because it lived
+  only on the link-objects branch.  Users with the Lisp-shebang
+  expectation saw nothing on stdout despite a top-level `(display
+  …)` and could not tell whether a binary had been produced.  Fix:
+  emit the same notice on the LLVM-direct path.
+- **Deterministic IR via counter-based name uniquifier** (`d5b3ebf`).
+  Pattern-match alloca slot names previously used the heap pointer
+  address (`reinterpret_cast<uintptr_t>(val_slot)`) as a suffix,
+  making repeated builds emit different `__pat_pred_arg_*` LLVM
+  names.  Replaced with a per-compilation counter reset in
+  `generateIR()`, so IR baselines reproduce.
+- **Exception-aware error paths** (`33466e7`).  Replaced 14
+  `std::abort()` and 2 `assert(0)` calls in `lib/core/runtime.cpp`,
+  `lib/backend/vm_inference.c`, and `lib/backend/vm_tensor_ops.c`
+  with `eshkol_raise(eshkol_make_exception(...))` that prints a
+  diagnostic and exits 1 — so a `(guard ...)` handler can catch
+  them and `assert(0)` no longer disappears under `-DNDEBUG`.
+- **Archive cleanup** (`39f145f`).  Removed
+  `lib/backend/archive/eshkol_compiler_standalone.{c,h}` and
+  `lib/backend/archive/qllm_distributed.c` (4 files, ~7,800 lines).
+  These were near-duplicate copies of the active dispatchers (the
+  ICC-driven audit confirmed this with complexity-score-identical
+  fingerprints).
+
+### Tooling — release-process gaps closed
+
+- **v1_2_edge_cases suite now invoked by `scripts/run_all_tests.sh`**
+  via the new `scripts/run_v1_2_edge_cases_tests.sh` runner.  Per
+  v1.2 audit blocker #1.
+- **CI sanitizer lane** added: `linux-x64-asan-ubsan` runs the v1.2
+  edge-case suite under `-DESHKOL_ENABLE_ASAN=ON
+  -DESHKOL_ENABLE_UBSAN=ON`.  TSan and MSan are still deferred —
+  they need TSan/MSan-built libstdc++ which apt.llvm.org doesn't
+  ship.
+- **Homebrew formula bumped** from `v1.1.13-accelerate` to
+  `v1.2.0-scale`; `sha256` is reset and will be filled in by
+  `scripts/update-homebrew-formula.sh` after the release tarball
+  is published.
+
 ## [1.2.0-scale] - 2026-04-24
 
 The production-readiness release. Model serialization, a stable C ABI
