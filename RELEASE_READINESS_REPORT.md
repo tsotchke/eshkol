@@ -1,14 +1,71 @@
-# Eshkol v1.1.13-accelerate Release Readiness Report
+# Eshkol v1.2.0-scale Release Readiness Report
 
-**Date**: April 9, 2026
-**Version**: v1.1.13-accelerate
+**Date**: April 30, 2026
+**Version**: v1.2.0-scale
 **Author**: tsotchke
 
 ---
 
-## Executive Summary
+## v1.2-scale Executive Summary
 
-Eshkol v1.1-accelerate is **READY FOR PRODUCTION RELEASE**. This assessment confirms that all v1.1 roadmap items are complete: XLA backend (5/5), SIMD vectorization (4/4), concurrency (5/5), extended math (5/5), bignum/rational (6/6), consciousness engine (4/4), GPU acceleration (5/5), signal processing (4/4), web platform (3/3), and R7RS extensions (6/6) -- totaling 47/47 items. Building on v1.0-foundation's compiler-integrated AD, deterministic memory, and homoiconic closures, v1.1-accelerate adds GPU acceleration, parallel primitives, a consciousness engine, exact arithmetic, signal processing, continuations, an XLA backend, a web platform, REPL JIT improvements, and a package manager. Every component is thoroughly tested and production-ready.
+Eshkol v1.2-scale is **READY FOR PRODUCTION RELEASE**.  All seven
+roadmap items shipped (model serialization, stable C FFI + Python
+bindings, per-thread arenas, image I/O, CSV/DataFrame, source-located
+error messages, terminal plotting), plus a 94 % reduction of
+`tensor_codegen.cpp` (19,940 → 1,280 lines across 13 focused split
+files, IR-identical to the prior monolith), a Bug X fix in
+`codegenNamedLet` (Noesis-reported `loop` arity-mismatch caused by
+the function leaking its user-visible name into the parent scope), an
+ASan / UBSan CI lane running the v1.2 edge-case + security regression
+suite (58 tests), and the rebased Homebrew formula.
+
+The v1.1-accelerate readiness summary follows for historical
+continuity.
+
+### v1.2 Release Checklist (all complete)
+
+| Item | Status | Evidence |
+|---|---|---|
+| Model serialization (`.eshkol-model`) | ✅ | `lib/core/model_io.cpp`; ESKB-extended binary format; per-tensor metadata + name map |
+| C FFI header + Python bindings | ✅ | `inc/eshkol/eshkol_ffi.h`; `bindings/python/eshkol_module.cpp`; pybind11; numpy zero-copy |
+| Per-thread arenas | ✅ | `arena_create_thread_local`, `arena_merge_to_parent`; v1.2 edge-case `parallel_arena_test.esk` |
+| Image I/O (PNG/JPEG/BMP) | ✅ | `image-read`/`-write`/`-resize`/`-to-grayscale` (current backend: `deps/stb/`; **v1.3+ will replace with native platform APIs** so we stop vendoring third-party media code) |
+| CSV/DataFrame | ✅ | `core.data.csv` extended with type inference + select/filter/group-by/join |
+| Improved error messages | ✅ | `file:line:col: error:` with caret underlines |
+| Terminal plotting | ✅ | `(sparkline ...)` and `(bar-chart ...)` in pure-Eshkol stdlib |
+| Codegen modularisation | ✅ | 13 `tensor_*_codegen.cpp` files; `logic_workspace_codegen.cpp`; in-place `codegenCall` pre-dispatch sub-method split |
+| Bug X — `codegenNamedLet` leak | ✅ | commit `590495c`; saves/restores prior `loop` binding around body+call |
+| AOT silent-no-output (Bug X minimal) | ✅ | commit `d7c97db`; "compiled to a.out" notice now fires on the LLVM-direct path too |
+| Deterministic IR | ✅ | commit `d5b3ebf`; counter-based `__pat_pred_arg_*` names |
+| Exception-aware error paths | ✅ | commit `33466e7`; replaced 14 `std::abort()` + 2 `assert(0)` |
+| Archive cleanup | ✅ | commit `39f145f`; deleted near-duplicate compilers |
+| v1_2_edge_cases in `run_all_tests.sh` | ✅ | new `scripts/run_v1_2_edge_cases_tests.sh` |
+| Sanitizer CI lane | ✅ | `linux-x64-asan-ubsan` lane in `ci.yml` |
+| Homebrew formula bumped | ✅ | `packaging/homebrew/eshkol.rb` → `v1.2.0-scale` |
+| CHANGELOG + ROADMAP updated | ✅ | this PR |
+
+### Known carry-forward to v1.3
+
+- **Native media handling, no vendoring.** v1.2 ships image I/O via
+  `deps/stb/{stb_image,stb_image_write,stb_image_resize2}.h` because
+  v1.1 was already on that path.  v1.3 should replace this with
+  native platform APIs (CoreGraphics on macOS, system libpng /
+  libjpeg / libwebp on Linux, GDI+ on Windows), and going forward
+  Eshkol should not vendor third-party media decoders at all.
+- **AD `input2` plumbing for conv2d / batchnorm / layernorm / matmul /
+  attention backward passes** — backward kernels in
+  `lib/backend/tensor_backward.cpp` already gate gradient
+  accumulation on `if (node->input2) ...`, but the corresponding
+  forward-pass tape-node creation is not yet wiring `input2`.
+  Tracked as a v1.3 first-week item.
+- **TSan and MSan CI lanes** — apt.llvm.org doesn't ship a
+  TSan/MSan-built libstdc++; need a custom build step.
+
+---
+
+## v1.1-accelerate Executive Summary
+
+Eshkol v1.1-accelerate was **READY FOR PRODUCTION RELEASE** as of April 9, 2026.  This assessment confirms that all v1.1 roadmap items are complete: XLA backend (5/5), SIMD vectorization (4/4), concurrency (5/5), extended math (5/5), bignum/rational (6/6), consciousness engine (4/4), GPU acceleration (5/5), signal processing (4/4), web platform (3/3), and R7RS extensions (6/6) -- totaling 47/47 items. Building on v1.0-foundation's compiler-integrated AD, deterministic memory, and homoiconic closures, v1.1-accelerate adds GPU acceleration, parallel primitives, a consciousness engine, exact arithmetic, signal processing, continuations, an XLA backend, a web platform, REPL JIT improvements, and a package manager. Every component is thoroughly tested and production-ready.
 
 ---
 
