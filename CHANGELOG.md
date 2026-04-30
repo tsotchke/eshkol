@@ -149,6 +149,60 @@ modularity / build-time / readability win, not a behaviour change.
   ICC-driven audit confirmed this with complexity-score-identical
   fingerprints).
 
+### Fixed — diagnostics + cross-mode parity (Noesis residual audit Y/Z)
+
+- **Bug Y — AOT couldn't find stdlib symbols** (`4ca7637`).
+  `eshkol-run foo.esk` (no `-r`, no `-o`) rejected calls to plain
+  stdlib functions — `length`, `reverse`, `append`, `assoc`,
+  `filter`, `for-each`, … — with `Unknown function: NAME`,
+  whereas `eshkol-run -r foo.esk` (JIT) ran the same source.  Root
+  cause: a 2026-04 deprecation comment in `exe/eshkol-run.cpp`
+  removed the AOT auto-load and gated stdlib-linking on the source
+  containing an explicit `(require stdlib)`; JIT was unaffected
+  because eshkol-repl-lib auto-discovers stdlib symbols.  Fix:
+  synthesise a top-of-module `(require stdlib)` in the AST when
+  `--no-stdlib` is not passed.  `--no-stdlib` remains the
+  documented opt-out and is now the only way to skip stdlib.
+- **Bug Z — `(provide ...)` enforced under AOT but informational
+  under JIT** (`1235e0a`).  A function defined in `lib.esk` but
+  absent from its `(provide …)` list was unreachable from a file
+  that `(load …)`d `lib.esk` under AOT, while JIT (and the
+  documented + Eshkol stdlib's own use of `provide`) treats the
+  list as informational.  Root cause: `process_requires` called
+  `rename_private_symbols`, which mangled every non-exported
+  define.  Fix: skip the rename so cross-file calls resolve the
+  same way they do under JIT.  The `rename_private_symbols`
+  function and the `ESHKOL_PROVIDE_OP` machinery stay in place so a
+  future per-file pragma can opt in to strict export enforcement
+  without breaking existing code.
+- **`list?` no longer mis-classifies non-cons heap pointers**
+  (`bec1978`).  `codegenListPredicate` previously assumed any
+  `HEAP_PTR` tagged value was a cons cell.  `(list? "abcdefgh")`
+  could therefore return `#t` when the string's heap layout
+  happened to look pair-like, causing later `cdr`-recursion to
+  crash with `cdr: argument is not a pair`.  `pair?` already does
+  the proper `HEAP_SUBTYPE_CONS` check; `list?` now does too.  This
+  was the root cause of the v1.2 edge-case `json_schema_test`
+  crashing partway through — `validate`'s array-errs branch was
+  treating strings as list candidates and recursing into
+  `length`-on-string.
+
+### Build + test infrastructure
+
+- **CMake `stdlib.o` now tracks transitive sources** (`bec1978`).
+  The `DEPENDS` list previously named only `lib/stdlib.esk`, so
+  edits to any `(require)`d submodule (`lib/core/json_schema.esk`,
+  `lib/core/streams.esk`, `lib/core/url.esk`, …) didn't trigger
+  a stdlib rebuild.  `file(GLOB_RECURSE … CONFIGURE_DEPENDS)` now
+  watches `lib/{core,math,signal,random,web,tensor,quantum,ml}/*.esk`
+  and `lib/math.esk` so newly-added modules pick up automatically.
+- **v1.2 edge-case runner honours `;; mode: jit` markers**
+  (`bec1978`).  Eight of the 58 v1.2 tests are JIT-only (they
+  exercise `eval`, dynamic loads, or REPL-side symbol resolution
+  that AOT compilation can't model).  The runner now forwards them
+  through `eshkol-run -r` so JIT-only passes don't show up as AOT
+  failures.
+
 ### Tooling — release-process gaps closed
 
 - **v1_2_edge_cases suite now invoked by `scripts/run_all_tests.sh`**
