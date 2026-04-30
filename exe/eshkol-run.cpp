@@ -3060,6 +3060,32 @@ int main(int argc, char **argv)
                     eshkol_dispose_llvm_module(llvm_module);
                     return 1;
                 }
+
+                // Bug X (Noesis 2026-04-30): the link-branch path below
+                // already prints "[eshkol-run] compiled to a.out — run
+                // it (./a.out) or use eshkol-run -r" so users with the
+                // Lisp-shebang expectation aren't silently confused.
+                // The single-file LLVM-direct path here used to skip
+                // that notice entirely, which made `eshkol-run foo.esk`
+                // look like it had silently produced no output.  Print
+                // the same notice here when no -o was given.
+                if (!output) {
+                    const char* basename_of_exe = std::strrchr(exe_name.c_str(), '/');
+                    basename_of_exe = basename_of_exe ? basename_of_exe + 1 : exe_name.c_str();
+                    bool default_output_name = (std::strcmp(basename_of_exe, "a.out") == 0
+#ifdef _WIN32
+                                                || std::strcmp(basename_of_exe, "a.exe") == 0
+#endif
+                                                );
+                    if (default_output_name) {
+                        fprintf(stderr,
+                                "[eshkol-run] compiled to '%s'. Run it (./%s) or use "
+                                "`eshkol-run -r %s` to JIT-execute without producing "
+                                "a binary.\n",
+                                exe_name.c_str(), exe_name.c_str(),
+                                source_files.empty() ? "<file>" : source_files[0]);
+                    }
+                }
             }
         }
         
