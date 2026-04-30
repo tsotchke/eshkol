@@ -26,6 +26,7 @@
 #include <eshkol/backend/tail_call_codegen.h>
 #include <eshkol/backend/system_codegen.h>
 #include <eshkol/backend/hash_codegen.h>
+#include <eshkol/backend/logic_workspace_codegen.h>
 #include <eshkol/backend/parallel_codegen.h>
 #include <eshkol/types/type_checker.h>
 #include <eshkol/frontend/macro_expander.h>
@@ -646,6 +647,10 @@ private:
 
     // HashCodegen - Hash table operations
     std::unique_ptr<eshkol::HashCodegen> hash_;
+
+    // LogicWorkspaceCodegen - Consciousness engine: logic vars, KB, factor
+    // graphs, active inference, global workspace, tensor/model serialization
+    std::unique_ptr<eshkol::LogicWorkspaceCodegen> logic_workspace_;
 
     // ParallelCodegen - Parallel execution primitives (parallel-map, parallel-fold, etc.)
     std::unique_ptr<eshkol::ParallelCodegen> parallel_;
@@ -2986,6 +2991,13 @@ private:
             this
         );
         eshkol_debug("Created HashCodegen");
+
+        // Initialize LogicWorkspaceCodegen - consciousness engine primitives
+        // (logic vars, KB, factor graphs, active inference, workspace, model_io)
+        logic_workspace_ = std::make_unique<eshkol::LogicWorkspaceCodegen>(*ctx_, *tagged_);
+        logic_workspace_->setCodegenASTCallback(ControlFlowCallbacks::codegenASTWrapper, this);
+        logic_workspace_->setCodegenClosureCallCallback(ControlFlowCallbacks::closureCallWithInfoWrapper);
+        eshkol_debug("Created LogicWorkspaceCodegen");
 
         // Initialize FunctionCodegen - lambda and closure operations
         // Note: The main implementations remain in this file for now
@@ -8013,24 +8025,29 @@ private:
                 return codegenMatch(op);
 
             // ===== NEURO-SYMBOLIC CONSCIOUSNESS ENGINE =====
+            // Type predicates (codegenLogicVarPred / codegenSubstPred / codegenKBPred /
+            // codegenFactPred / codegenFactorGraphPred / codegenWorkspacePred) stay in
+            // this file — they belong to the predicate cluster (cluster #6 in the v1.2
+            // audit). All other consciousness-engine handlers extracted into
+            // LogicWorkspaceCodegen.
             case ESHKOL_LOGIC_VAR_OP:
-                return codegenLogicVar(op);
+                return logic_workspace_->codegenLogicVar(op);
             case ESHKOL_UNIFY_OP:
-                return codegenUnify(op);
+                return logic_workspace_->codegenUnify(op);
             case ESHKOL_MAKE_SUBST_OP:
-                return codegenMakeSubst(op);
+                return logic_workspace_->codegenMakeSubst(op);
             case ESHKOL_WALK_OP:
-                return codegenWalk(op);
+                return logic_workspace_->codegenWalk(op);
             case ESHKOL_MAKE_FACT_OP:
-                return codegenMakeFact(op);
+                return logic_workspace_->codegenMakeFact(op);
             case ESHKOL_MAKE_KB_OP:
-                return codegenMakeKB(op);
+                return logic_workspace_->codegenMakeKB(op);
             case ESHKOL_KB_ASSERT_OP:
-                return codegenKBAssert(op);
+                return logic_workspace_->codegenKBAssert(op);
             case ESHKOL_KB_QUERY_OP:
-                return codegenKBQuery(op);
+                return logic_workspace_->codegenKBQuery(op);
             case ESHKOL_KB_QUERY_PREFIX_OP:
-                return codegenKBQueryPrefix(op);
+                return logic_workspace_->codegenKBQueryPrefix(op);
             case ESHKOL_LOGIC_VAR_PRED_OP:
                 return codegenLogicVarPred(op);
             case ESHKOL_SUBSTITUTION_PRED_OP:
@@ -8038,25 +8055,25 @@ private:
             case ESHKOL_KB_PRED_OP:
                 return codegenKBPred(op);
             case ESHKOL_MAKE_FACTOR_GRAPH_OP:
-                return codegenMakeFactorGraph(op);
+                return logic_workspace_->codegenMakeFactorGraph(op);
             case ESHKOL_FG_ADD_FACTOR_OP:
-                return codegenFGAddFactor(op);
+                return logic_workspace_->codegenFGAddFactor(op);
             case ESHKOL_FG_INFER_OP:
-                return codegenFGInfer(op);
+                return logic_workspace_->codegenFGInfer(op);
             case ESHKOL_FREE_ENERGY_OP:
-                return codegenFreeEnergy(op);
+                return logic_workspace_->codegenFreeEnergy(op);
             case ESHKOL_EXPECTED_FREE_ENERGY_OP:
-                return codegenEFE(op);
+                return logic_workspace_->codegenEFE(op);
             case ESHKOL_FG_UPDATE_CPT_OP:
-                return codegenFGUpdateCPT(op);
+                return logic_workspace_->codegenFGUpdateCPT(op);
             case ESHKOL_FG_OBSERVE_OP:
-                return codegenFGObserve(op);
+                return logic_workspace_->codegenFGObserve(op);
             case ESHKOL_MAKE_WORKSPACE_OP:
-                return codegenMakeWorkspace(op);
+                return logic_workspace_->codegenMakeWorkspace(op);
             case ESHKOL_WS_REGISTER_OP:
-                return codegenWSRegister(op);
+                return logic_workspace_->codegenWSRegister(op);
             case ESHKOL_WS_STEP_OP:
-                return codegenWSStep(op);
+                return logic_workspace_->codegenWSStep(op);
             case ESHKOL_FACT_PRED_OP:
                 return codegenFactPred(op);
             case ESHKOL_FACTOR_GRAPH_PRED_OP:
@@ -12736,10 +12753,10 @@ private:
         // MIGRATED: tensor-shape, tensor-length - now delegated to TensorCodegen
         if (func_name == "tensor-shape") return tensor_->tensorShape(op);
         if (func_name == "tensor-length") return tensor_->tensorLength(op);
-        if (func_name == "tensor-save") return codegenTensorSave(op);
-        if (func_name == "tensor-load") return codegenTensorLoad(op);
-        if (func_name == "model-save") return codegenModelSave(op);
-        if (func_name == "model-load") return codegenModelLoad(op);
+        if (func_name == "tensor-save") return logic_workspace_->codegenTensorSave(op);
+        if (func_name == "tensor-load") return logic_workspace_->codegenTensorLoad(op);
+        if (func_name == "model-save") return logic_workspace_->codegenModelSave(op);
+        if (func_name == "model-load") return logic_workspace_->codegenModelLoad(op);
         // MIGRATED: tensor-apply and tensor-reduce - now delegated to TensorCodegen
         if (func_name == "tensor-apply") return tensor_->tensorApply(op);
         if (func_name == "tensor-reduce") {
@@ -30653,190 +30670,10 @@ private:
         return builder->CreateLoad(tagged_value_type, result_alloca, name);
     }
 
-    // ─── Logic Variable ─────────────────────────────────────────────────
-
-    Value* codegenLogicVar(const eshkol_operations_t* op) {
-        // Pack logic variable as tagged value: type=ESHKOL_VALUE_LOGIC_VAR, data=var_id
-        uint64_t var_id = op->logic_var_op.var_id;
-        Value* var_id_val = ConstantInt::get(int64_type, var_id);
-
-        // Build tagged value: {type=10, flags=0, reserved=0, data=var_id}
-        Value* type_val = ConstantInt::get(int8_type, ESHKOL_VALUE_LOGIC_VAR);
-        Value* flags_val = ConstantInt::get(int8_type, 0);
-        return packInt64ToTaggedValueWithTypeAndFlags(var_id_val, type_val, flags_val);
-    }
-
-    // ─── Unify ──────────────────────────────────────────────────────────
-
-    Value* codegenUnify(const eshkol_operations_t* op) {
-        // (unify t1 t2 subst) → subst|#f
-        if (op->call_op.num_vars < 3) return packNullToTaggedValue();
-
-        Value* t1 = ensureTaggedValue(codegenAST(&op->call_op.variables[0]));
-        Value* t2 = ensureTaggedValue(codegenAST(&op->call_op.variables[1]));
-        Value* subst = ensureTaggedValue(codegenAST(&op->call_op.variables[2]));
-
-        Value* t1_a = allocaAndStore(t1, "unify_t1");
-        Value* t2_a = allocaAndStore(t2, "unify_t2");
-        Value* subst_a = allocaAndStore(subst, "unify_subst");
-        Value* result_a = allocaResult("unify_res");
-
-        FunctionType* fn_type = FunctionType::get(void_type,
-            {ptr_type, ptr_type, ptr_type, ptr_type, ptr_type}, false);
-        Function* func = getOrDeclareRuntimeFunc("eshkol_unify_tagged", fn_type);
-
-        builder->CreateCall(func, {loadArenaPtr(), t1_a, t2_a, subst_a, result_a});
-        return loadResult(result_a, "unify_result");
-    }
-
-    // ─── Make Substitution ──────────────────────────────────────────────
-
-    Value* codegenMakeSubst(const eshkol_operations_t* op) {
-        // (make-substitution) → empty subst
-        Value* result_a = allocaResult("subst_res");
-
-        FunctionType* fn_type = FunctionType::get(void_type,
-            {ptr_type, ptr_type}, false);
-        Function* func = getOrDeclareRuntimeFunc("eshkol_make_substitution_tagged", fn_type);
-
-        builder->CreateCall(func, {loadArenaPtr(), result_a});
-        return loadResult(result_a, "subst_result");
-    }
-
-    // ─── Walk ───────────────────────────────────────────────────────────
-
-    Value* codegenWalk(const eshkol_operations_t* op) {
-        // (walk term subst) → resolved term
-        if (op->call_op.num_vars < 2) return packNullToTaggedValue();
-
-        Value* term = ensureTaggedValue(codegenAST(&op->call_op.variables[0]));
-        Value* subst = ensureTaggedValue(codegenAST(&op->call_op.variables[1]));
-
-        Value* term_a = allocaAndStore(term, "walk_term");
-        Value* subst_a = allocaAndStore(subst, "walk_subst");
-        Value* result_a = allocaResult("walk_res");
-
-        FunctionType* fn_type = FunctionType::get(void_type,
-            {ptr_type, ptr_type, ptr_type}, false);
-        Function* func = getOrDeclareRuntimeFunc("eshkol_walk_tagged", fn_type);
-
-        builder->CreateCall(func, {term_a, subst_a, result_a});
-        return loadResult(result_a, "walk_result");
-    }
-
-    // ─── Make Fact ──────────────────────────────────────────────────────
-
-    Value* codegenMakeFact(const eshkol_operations_t* op) {
-        // (make-fact 'pred arg1 arg2 ...) → fact
-        if (op->call_op.num_vars < 1) return packNullToTaggedValue();
-
-        Value* pred = ensureTaggedValue(codegenAST(&op->call_op.variables[0]));
-        Value* pred_a = allocaAndStore(pred, "fact_pred");
-
-        // Collect remaining args into contiguous alloca array
-        uint32_t arity = op->call_op.num_vars - 1;
-        Value* args_a = nullptr;
-        if (arity > 0) {
-            args_a = builder->CreateAlloca(tagged_value_type,
-                ConstantInt::get(int32_type, arity), "fact_args");
-            for (uint32_t i = 0; i < arity; i++) {
-                Value* arg = ensureTaggedValue(codegenAST(&op->call_op.variables[i + 1]));
-                Value* gep = builder->CreateGEP(tagged_value_type, args_a,
-                    ConstantInt::get(int32_type, i));
-                builder->CreateStore(arg, gep);
-            }
-        } else {
-            args_a = ConstantPointerNull::get(PointerType::getUnqual(*context));
-        }
-
-        Value* result_a = allocaResult("fact_res");
-
-        FunctionType* fn_type = FunctionType::get(void_type,
-            {ptr_type, ptr_type, ptr_type, int32_type, ptr_type}, false);
-        Function* func = getOrDeclareRuntimeFunc("eshkol_make_fact_tagged", fn_type);
-
-        builder->CreateCall(func, {loadArenaPtr(), pred_a, args_a,
-            ConstantInt::get(int32_type, arity), result_a});
-        return loadResult(result_a, "fact_result");
-    }
-
-    // ─── Make KB ────────────────────────────────────────────────────────
-
-    Value* codegenMakeKB(const eshkol_operations_t* op) {
-        // (make-kb) → empty KB
-        Value* result_a = allocaResult("kb_res");
-
-        FunctionType* fn_type = FunctionType::get(void_type,
-            {ptr_type, ptr_type}, false);
-        Function* func = getOrDeclareRuntimeFunc("eshkol_make_kb_tagged", fn_type);
-
-        builder->CreateCall(func, {loadArenaPtr(), result_a});
-        return loadResult(result_a, "kb_result");
-    }
-
-    // ─── KB Assert ──────────────────────────────────────────────────────
-
-    Value* codegenKBAssert(const eshkol_operations_t* op) {
-        // (kb-assert! kb fact) → void
-        if (op->call_op.num_vars < 2) return packNullToTaggedValue();
-
-        Value* kb = ensureTaggedValue(codegenAST(&op->call_op.variables[0]));
-        Value* fact = ensureTaggedValue(codegenAST(&op->call_op.variables[1]));
-
-        Value* kb_a = allocaAndStore(kb, "assert_kb");
-        Value* fact_a = allocaAndStore(fact, "assert_fact");
-
-        FunctionType* fn_type = FunctionType::get(void_type,
-            {ptr_type, ptr_type, ptr_type}, false);
-        Function* func = getOrDeclareRuntimeFunc("eshkol_kb_assert_tagged", fn_type);
-
-        builder->CreateCall(func, {loadArenaPtr(), kb_a, fact_a});
-        return packNullToTaggedValue(); // void return
-    }
-
-    // ─── KB Query ───────────────────────────────────────────────────────
-
-    Value* codegenKBQuery(const eshkol_operations_t* op) {
-        // (kb-query kb pattern) → list of substs (strict arity match)
-        if (op->call_op.num_vars < 2) return packNullToTaggedValue();
-
-        Value* kb = ensureTaggedValue(codegenAST(&op->call_op.variables[0]));
-        Value* pattern = ensureTaggedValue(codegenAST(&op->call_op.variables[1]));
-
-        Value* kb_a = allocaAndStore(kb, "query_kb");
-        Value* pattern_a = allocaAndStore(pattern, "query_pat");
-        Value* result_a = allocaResult("query_res");
-
-        FunctionType* fn_type = FunctionType::get(void_type,
-            {ptr_type, ptr_type, ptr_type, ptr_type}, false);
-        Function* func = getOrDeclareRuntimeFunc("eshkol_kb_query_tagged", fn_type);
-
-        builder->CreateCall(func, {loadArenaPtr(), kb_a, pattern_a, result_a});
-        return loadResult(result_a, "query_result");
-    }
-
-    // ─── KB Query Prefix ────────────────────────────────────────────────
-
-    Value* codegenKBQueryPrefix(const eshkol_operations_t* op) {
-        // (kb-query-prefix kb pattern) → list of substs
-        // Pattern arity must be <= fact arity; extra fact args are ignored.
-        if (op->call_op.num_vars < 2) return packNullToTaggedValue();
-
-        Value* kb = ensureTaggedValue(codegenAST(&op->call_op.variables[0]));
-        Value* pattern = ensureTaggedValue(codegenAST(&op->call_op.variables[1]));
-
-        Value* kb_a = allocaAndStore(kb, "qprefix_kb");
-        Value* pattern_a = allocaAndStore(pattern, "qprefix_pat");
-        Value* result_a = allocaResult("qprefix_res");
-
-        FunctionType* fn_type = FunctionType::get(void_type,
-            {ptr_type, ptr_type, ptr_type, ptr_type}, false);
-        Function* func = getOrDeclareRuntimeFunc("eshkol_kb_query_prefix_tagged",
-            fn_type);
-
-        builder->CreateCall(func, {loadArenaPtr(), kb_a, pattern_a, result_a});
-        return loadResult(result_a, "qprefix_result");
-    }
+    // ─── Logic / KB primitives ──────────────────────────────────────────
+    // codegenLogicVar / codegenUnify / codegenMakeSubst / codegenWalk
+    // codegenMakeFact / codegenMakeKB / codegenKBAssert / codegenKBQuery
+    // codegenKBQueryPrefix — extracted to LogicWorkspaceCodegen.
 
     // ─── Type Predicates ────────────────────────────────────────────────
 
@@ -30930,206 +30767,11 @@ private:
         return packBoolToTaggedValue(phi);
     }
 
-    // ─── Active Inference: Factor Graph ──────────────────────────────────
-
-    Value* codegenTensorSave(const eshkol_operations_t* op) {
-        if (op->call_op.num_vars < 2) return packNullToTaggedValue();
-
-        Value* path = ensureTaggedValue(codegenAST(&op->call_op.variables[0]));
-        Value* tensor = ensureTaggedValue(codegenAST(&op->call_op.variables[1]));
-        Value* path_a = allocaAndStore(path, "tensor_save_path");
-        Value* tensor_a = allocaAndStore(tensor, "tensor_save_tensor");
-        Value* result_a = allocaResult("tensor_save_result");
-
-        FunctionType* fn_type = FunctionType::get(void_type,
-            {ptr_type, ptr_type, ptr_type, ptr_type}, false);
-        Function* func = getOrDeclareRuntimeFunc("eshkol_tensor_save_tagged", fn_type);
-        builder->CreateCall(func, {loadArenaPtr(), path_a, tensor_a, result_a});
-        return loadResult(result_a, "tensor_save_value");
-    }
-
-    Value* codegenTensorLoad(const eshkol_operations_t* op) {
-        if (op->call_op.num_vars < 1) return packNullToTaggedValue();
-
-        Value* path = ensureTaggedValue(codegenAST(&op->call_op.variables[0]));
-        Value* path_a = allocaAndStore(path, "tensor_load_path");
-        Value* result_a = allocaResult("tensor_load_result");
-
-        FunctionType* fn_type = FunctionType::get(void_type,
-            {ptr_type, ptr_type, ptr_type}, false);
-        Function* func = getOrDeclareRuntimeFunc("eshkol_tensor_load_tagged", fn_type);
-        builder->CreateCall(func, {loadArenaPtr(), path_a, result_a});
-        return loadResult(result_a, "tensor_load_value");
-    }
-
-    Value* codegenModelSave(const eshkol_operations_t* op) {
-        if (op->call_op.num_vars < 2) return packNullToTaggedValue();
-
-        Value* path = ensureTaggedValue(codegenAST(&op->call_op.variables[0]));
-        Value* entries = ensureTaggedValue(codegenAST(&op->call_op.variables[1]));
-        Value* path_a = allocaAndStore(path, "model_save_path");
-        Value* entries_a = allocaAndStore(entries, "model_save_entries");
-        Value* result_a = allocaResult("model_save_result");
-
-        FunctionType* fn_type = FunctionType::get(void_type,
-            {ptr_type, ptr_type, ptr_type, ptr_type}, false);
-        Function* func = getOrDeclareRuntimeFunc("eshkol_model_save_tagged", fn_type);
-        builder->CreateCall(func, {loadArenaPtr(), path_a, entries_a, result_a});
-        return loadResult(result_a, "model_save_value");
-    }
-
-    Value* codegenModelLoad(const eshkol_operations_t* op) {
-        if (op->call_op.num_vars < 1) return packNullToTaggedValue();
-
-        Value* path = ensureTaggedValue(codegenAST(&op->call_op.variables[0]));
-        Value* path_a = allocaAndStore(path, "model_load_path");
-        Value* result_a = allocaResult("model_load_result");
-
-        FunctionType* fn_type = FunctionType::get(void_type,
-            {ptr_type, ptr_type, ptr_type}, false);
-        Function* func = getOrDeclareRuntimeFunc("eshkol_model_load_tagged", fn_type);
-        builder->CreateCall(func, {loadArenaPtr(), path_a, result_a});
-        return loadResult(result_a, "model_load_value");
-    }
-
-    Value* codegenMakeFactorGraph(const eshkol_operations_t* op) {
-        // (make-factor-graph n-vars dims-tensor) → fg
-        if (op->call_op.num_vars < 2) return packNullToTaggedValue();
-
-        Value* num_vars = ensureTaggedValue(codegenAST(&op->call_op.variables[0]));
-        Value* dims = ensureTaggedValue(codegenAST(&op->call_op.variables[1]));
-
-        Value* nv_a = allocaAndStore(num_vars, "fg_nvars");
-        Value* dims_a = allocaAndStore(dims, "fg_dims");
-        Value* result_a = allocaResult("fg_res");
-
-        FunctionType* fn_type = FunctionType::get(void_type,
-            {ptr_type, ptr_type, ptr_type, ptr_type}, false);
-        Function* func = getOrDeclareRuntimeFunc("eshkol_make_factor_graph_tagged", fn_type);
-
-        builder->CreateCall(func, {loadArenaPtr(), nv_a, dims_a, result_a});
-        return loadResult(result_a, "fg_result");
-    }
-
-    Value* codegenFGAddFactor(const eshkol_operations_t* op) {
-        // (fg-add-factor! fg var-indices cpt) → void
-        if (op->call_op.num_vars < 3) return packNullToTaggedValue();
-
-        Value* fg = ensureTaggedValue(codegenAST(&op->call_op.variables[0]));
-        Value* var_indices = ensureTaggedValue(codegenAST(&op->call_op.variables[1]));
-        Value* cpt = ensureTaggedValue(codegenAST(&op->call_op.variables[2]));
-
-        Value* fg_a = allocaAndStore(fg, "fgaf_fg");
-        Value* vi_a = allocaAndStore(var_indices, "fgaf_vi");
-        Value* cpt_a = allocaAndStore(cpt, "fgaf_cpt");
-        Value* result_a = allocaResult("fgaf_res");
-
-        FunctionType* fn_type = FunctionType::get(void_type,
-            {ptr_type, ptr_type, ptr_type, ptr_type, ptr_type}, false);
-        Function* func = getOrDeclareRuntimeFunc("eshkol_fg_add_factor_tagged", fn_type);
-
-        builder->CreateCall(func, {loadArenaPtr(), fg_a, vi_a, cpt_a, result_a});
-        return packNullToTaggedValue(); // void return
-    }
-
-    Value* codegenFGInfer(const eshkol_operations_t* op) {
-        // (fg-infer! fg max-iters) → beliefs tensor
-        if (op->call_op.num_vars < 2) return packNullToTaggedValue();
-
-        Value* fg = ensureTaggedValue(codegenAST(&op->call_op.variables[0]));
-        Value* max_iters = ensureTaggedValue(codegenAST(&op->call_op.variables[1]));
-
-        Value* fg_a = allocaAndStore(fg, "fgi_fg");
-        Value* mi_a = allocaAndStore(max_iters, "fgi_mi");
-        Value* result_a = allocaResult("fgi_res");
-
-        FunctionType* fn_type = FunctionType::get(void_type,
-            {ptr_type, ptr_type, ptr_type, ptr_type}, false);
-        Function* func = getOrDeclareRuntimeFunc("eshkol_fg_infer_tagged", fn_type);
-
-        builder->CreateCall(func, {loadArenaPtr(), fg_a, mi_a, result_a});
-        return loadResult(result_a, "infer_result");
-    }
-
-    Value* codegenFreeEnergy(const eshkol_operations_t* op) {
-        // (free-energy fg observations) → scalar
-        if (op->call_op.num_vars < 2) return packNullToTaggedValue();
-
-        Value* fg = ensureTaggedValue(codegenAST(&op->call_op.variables[0]));
-        Value* obs = ensureTaggedValue(codegenAST(&op->call_op.variables[1]));
-
-        Value* fg_a = allocaAndStore(fg, "fe_fg");
-        Value* obs_a = allocaAndStore(obs, "fe_obs");
-        Value* result_a = allocaResult("fe_res");
-
-        FunctionType* fn_type = FunctionType::get(void_type,
-            {ptr_type, ptr_type, ptr_type}, false);
-        Function* func = getOrDeclareRuntimeFunc("eshkol_free_energy_tagged", fn_type);
-
-        builder->CreateCall(func, {fg_a, obs_a, result_a});
-        return loadResult(result_a, "fe_result");
-    }
-
-    Value* codegenEFE(const eshkol_operations_t* op) {
-        // (expected-free-energy fg action-var action-state) → scalar
-        if (op->call_op.num_vars < 3) return packNullToTaggedValue();
-
-        Value* fg = ensureTaggedValue(codegenAST(&op->call_op.variables[0]));
-        Value* action_var = ensureTaggedValue(codegenAST(&op->call_op.variables[1]));
-        Value* action_state = ensureTaggedValue(codegenAST(&op->call_op.variables[2]));
-
-        Value* fg_a = allocaAndStore(fg, "efe_fg");
-        Value* av_a = allocaAndStore(action_var, "efe_av");
-        Value* as_a = allocaAndStore(action_state, "efe_as");
-        Value* result_a = allocaResult("efe_res");
-
-        FunctionType* fn_type = FunctionType::get(void_type,
-            {ptr_type, ptr_type, ptr_type, ptr_type, ptr_type}, false);
-        Function* func = getOrDeclareRuntimeFunc("eshkol_efe_tagged", fn_type);
-
-        builder->CreateCall(func, {loadArenaPtr(), fg_a, av_a, as_a, result_a});
-        return loadResult(result_a, "efe_result");
-    }
-
-    // ─── fg-update-cpt! ─────────────────────────────────────────────────
-
-    Value* codegenFGUpdateCPT(const eshkol_operations_t* op) {
-        // (fg-update-cpt! fg factor-idx new-cpt) → fg
-        if (op->call_op.num_vars < 3) return packNullToTaggedValue();
-
-        Value* fg = ensureTaggedValue(codegenAST(&op->call_op.variables[0]));
-        Value* factor_idx = ensureTaggedValue(codegenAST(&op->call_op.variables[1]));
-        Value* new_cpt = ensureTaggedValue(codegenAST(&op->call_op.variables[2]));
-
-        Value* fg_a = allocaAndStore(fg, "fguc_fg");
-        Value* fi_a = allocaAndStore(factor_idx, "fguc_fi");
-        Value* cpt_a = allocaAndStore(new_cpt, "fguc_cpt");
-        Value* result_a = allocaResult("fguc_res");
-
-        FunctionType* fn_type = FunctionType::get(void_type,
-            {ptr_type, ptr_type, ptr_type, ptr_type, ptr_type}, false);
-        Function* func = getOrDeclareRuntimeFunc("eshkol_fg_update_cpt_tagged", fn_type);
-
-        builder->CreateCall(func, {loadArenaPtr(), fg_a, fi_a, cpt_a, result_a});
-        return loadResult(result_a, "fguc_result");
-    }
-
-    Value* codegenFGObserve(const eshkol_operations_t* op) {
-        // (fg-observe! fg var-id observed-state) → bool
-        if (op->call_op.num_vars < 3) return packNullToTaggedValue();
-        Value* fg = ensureTaggedValue(codegenAST(&op->call_op.variables[0]));
-        Value* var_id = ensureTaggedValue(codegenAST(&op->call_op.variables[1]));
-        Value* obs_state = ensureTaggedValue(codegenAST(&op->call_op.variables[2]));
-        Value* fg_a = allocaAndStore(fg, "fgo_fg");
-        Value* vi_a = allocaAndStore(var_id, "fgo_vi");
-        Value* os_a = allocaAndStore(obs_state, "fgo_os");
-        Value* result_a = allocaResult("fgo_res");
-        FunctionType* fn_type = FunctionType::get(void_type,
-            {ptr_type, ptr_type, ptr_type, ptr_type, ptr_type}, false);
-        Function* func = getOrDeclareRuntimeFunc("eshkol_fg_observe_tagged", fn_type);
-        builder->CreateCall(func, {loadArenaPtr(), fg_a, vi_a, os_a, result_a});
-        return loadResult(result_a, "fgo_result");
-    }
+    // ─── Tensor/model serialization + factor-graph + active inference ────
+    // codegenTensorSave / codegenTensorLoad / codegenModelSave / codegenModelLoad
+    // codegenMakeFactorGraph / codegenFGAddFactor / codegenFGInfer
+    // codegenFreeEnergy / codegenEFE / codegenFGUpdateCPT / codegenFGObserve
+    // — extracted to LogicWorkspaceCodegen.
 
     // ─── Additional Type Predicates ─────────────────────────────────────
 
@@ -31245,7 +30887,11 @@ private:
     }
 
     // ─── Global Workspace ───────────────────────────────────────────────
-
+    // codegenMakeWorkspace / codegenWSRegister / codegenWSStep — extracted to
+    // LogicWorkspaceCodegen.
+#if 0  // Replaced by LogicWorkspaceCodegen — kept #if 0 stub bodies for now
+       // until the next commit removes them entirely; dispatch in
+       // codegenOperation already routes through logic_workspace_->.
     Value* codegenMakeWorkspace(const eshkol_operations_t* op) {
         // (make-workspace dim max-modules) → ws
         if (op->call_op.num_vars < 2) return packNullToTaggedValue();
@@ -31413,6 +31059,7 @@ private:
         builder->SetInsertPoint(merge_bb);
         return ws_tv;
     }
+#endif // codegenMakeWorkspace / codegenWSRegister / codegenWSStep stubs (extracted)
 };
 
 // ============================================================================
