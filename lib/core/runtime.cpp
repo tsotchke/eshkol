@@ -31,10 +31,44 @@
 #include <chrono>
 #include <thread>
 #include <condition_variable>
+#include <cstdarg>
 #include <cstring>
 #include <csignal>
 #include <cstdlib>
 #include <cstdio>
+
+// ----------------------------------------------------------------------------
+// Fatal error helper
+// ----------------------------------------------------------------------------
+//
+// Used by runtime functions that detect a non-recoverable user error (type
+// error, OOB index, OOM, null bytevector, etc). Constructs an exception
+// object and calls eshkol_raise() so any installed `with-exception-handler`
+// can intercept it. If no handler is installed, eshkol_raise exits the
+// process (we still print to stderr first so embedding hosts see the
+// message even if eshkol_raise's exit path is muted).
+//
+// Replaces the prior pattern of `fprintf(stderr, ...); std::abort();` which
+// bypassed the exception handler entirely and produced SIGABRT in embedding
+// scenarios.
+static void eshkol_runtime_fatal(eshkol_exception_type_t type, const char* fmt, ...) {
+    char buf[512];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, args);
+    va_end(args);
+
+    fprintf(stderr, "%s\n", buf);
+
+    eshkol_exception_t* exc = eshkol_make_exception(type, buf);
+    if (exc) {
+        eshkol_raise(exc);
+        // eshkol_raise normally does not return. If it does (very rare —
+        // means the handler ran a longjmp back out and returned cleanly),
+        // we still must not proceed. Fall through to exit(1).
+    }
+    std::exit(1);
+}
 
 // ============================================================================
 // Global State
@@ -541,8 +575,10 @@ void eshkol_type_error(const char* proc_name, const char* expected_type) {
                  proc_name ? proc_name : "<unknown>",
                  expected_type ? expected_type : "<type>");
 
-    // Type errors are fatal in Scheme - abort execution
-    std::abort();
+    eshkol_runtime_fatal(ESHKOL_EXCEPTION_TYPE_ERROR,
+                         "Type error in %s: expected %s",
+                         proc_name ? proc_name : "<unknown>",
+                         expected_type ? expected_type : "<type>");
 }
 
 void eshkol_type_error_with_value(const char* proc_name, const char* expected_type,
@@ -553,8 +589,11 @@ void eshkol_type_error_with_value(const char* proc_name, const char* expected_ty
                  expected_type ? expected_type : "<type>",
                  actual_type ? actual_type : "<unknown>");
 
-    // Type errors are fatal in Scheme - abort execution
-    std::abort();
+    eshkol_runtime_fatal(ESHKOL_EXCEPTION_TYPE_ERROR,
+                         "Type error in %s: expected %s, got %s",
+                         proc_name ? proc_name : "<unknown>",
+                         expected_type ? expected_type : "<type>",
+                         actual_type ? actual_type : "<unknown>");
 }
 
 // ----------------------------------------------------------------------------
@@ -702,18 +741,18 @@ extern void* arena_allocate_with_header(void* arena, uint64_t data_size,
 /* Create a new bytevector of given length, filled with fill_byte */
 void* eshkol_make_bytevector(void* arena, int64_t len, int64_t fill_byte) {
     if (!arena || len < 0) {
-        fprintf(stderr, "Error in make-bytevector: invalid arguments (len=%lld)\n",
-                (long long)len);
-        std::abort();
+        eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
+                             "Error in make-bytevector: invalid arguments (len=%lld)",
+                             (long long)len);
     }
 
     // Allocate: 8 bytes for length + len bytes for data
     uint64_t data_size = (uint64_t)(8 + len);
     void* ptr = arena_allocate_with_header(arena, data_size, 8 /* HEAP_SUBTYPE_BYTEVECTOR */, 0);
     if (!ptr) {
-        fprintf(stderr, "Error in make-bytevector: out of memory (len=%lld)\n",
-                (long long)len);
-        std::abort();
+        eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
+                             "Error in make-bytevector: out of memory (len=%lld)",
+                             (long long)len);
     }
 
     // Store length at ptr[0..7]
@@ -731,15 +770,15 @@ void* eshkol_make_bytevector(void* arena, int64_t len, int64_t fill_byte) {
 /* Get byte at index k (returns int64_t for tagged value compatibility) */
 int64_t eshkol_bytevector_u8_ref(void* bv, int64_t k) {
     if (!bv) {
-        fprintf(stderr, "Error in bytevector-u8-ref: null bytevector\n");
-        std::abort();
+        eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
+                             "Error in bytevector-u8-ref: null bytevector");
     }
 
     int64_t len = *((int64_t*)bv);
     if (k < 0 || k >= len) {
-        fprintf(stderr, "Error in bytevector-u8-ref: index %lld out of range [0, %lld)\n",
-                (long long)k, (long long)len);
-        std::abort();
+        eshkol_runtime_fatal(ESHKOL_EXCEPTION_RANGE_ERROR,
+                             "Error in bytevector-u8-ref: index %lld out of range [0, %lld)",
+                             (long long)k, (long long)len);
     }
 
     uint8_t* data = (uint8_t*)bv + 8;
@@ -749,21 +788,21 @@ int64_t eshkol_bytevector_u8_ref(void* bv, int64_t k) {
 /* Set byte at index k */
 void eshkol_bytevector_u8_set(void* bv, int64_t k, int64_t byte_val) {
     if (!bv) {
-        fprintf(stderr, "Error in bytevector-u8-set!: null bytevector\n");
-        std::abort();
+        eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
+                             "Error in bytevector-u8-set!: null bytevector");
     }
 
     int64_t len = *((int64_t*)bv);
     if (k < 0 || k >= len) {
-        fprintf(stderr, "Error in bytevector-u8-set!: index %lld out of range [0, %lld)\n",
-                (long long)k, (long long)len);
-        std::abort();
+        eshkol_runtime_fatal(ESHKOL_EXCEPTION_RANGE_ERROR,
+                             "Error in bytevector-u8-set!: index %lld out of range [0, %lld)",
+                             (long long)k, (long long)len);
     }
 
     if (byte_val < 0 || byte_val > 255) {
-        fprintf(stderr, "Error in bytevector-u8-set!: byte value %lld out of range [0, 255]\n",
-                (long long)byte_val);
-        std::abort();
+        eshkol_runtime_fatal(ESHKOL_EXCEPTION_RANGE_ERROR,
+                             "Error in bytevector-u8-set!: byte value %lld out of range [0, 255]",
+                             (long long)byte_val);
     }
 
     uint8_t* data = (uint8_t*)bv + 8;
@@ -773,8 +812,8 @@ void eshkol_bytevector_u8_set(void* bv, int64_t k, int64_t byte_val) {
 /* Get length of bytevector */
 int64_t eshkol_bytevector_length(void* bv) {
     if (!bv) {
-        fprintf(stderr, "Error in bytevector-length: null bytevector\n");
-        std::abort();
+        eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
+                             "Error in bytevector-length: null bytevector");
     }
 
     return *((int64_t*)bv);
@@ -783,12 +822,12 @@ int64_t eshkol_bytevector_length(void* bv) {
 /* Copy bytevector (or sub-range) into a new arena-allocated bytevector */
 void* eshkol_bytevector_copy(void* arena, void* bv, int64_t start, int64_t end) {
     if (!bv) {
-        fprintf(stderr, "Error in bytevector-copy: null bytevector\n");
-        std::abort();
+        eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
+                             "Error in bytevector-copy: null bytevector");
     }
     if (!arena) {
-        fprintf(stderr, "Error in bytevector-copy: null arena\n");
-        std::abort();
+        eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
+                             "Error in bytevector-copy: null arena");
     }
 
     int64_t len = *((int64_t*)bv);
@@ -797,9 +836,9 @@ void* eshkol_bytevector_copy(void* arena, void* bv, int64_t start, int64_t end) 
     if (end < 0) end = len;
 
     if (start < 0 || start > len || end < start || end > len) {
-        fprintf(stderr, "Error in bytevector-copy: range [%lld, %lld) out of bounds [0, %lld)\n",
-                (long long)start, (long long)end, (long long)len);
-        std::abort();
+        eshkol_runtime_fatal(ESHKOL_EXCEPTION_RANGE_ERROR,
+                             "Error in bytevector-copy: range [%lld, %lld) out of bounds [0, %lld)",
+                             (long long)start, (long long)end, (long long)len);
     }
 
     int64_t copy_len = end - start;
@@ -808,9 +847,9 @@ void* eshkol_bytevector_copy(void* arena, void* bv, int64_t start, int64_t end) 
     uint64_t data_size = (uint64_t)(8 + copy_len);
     void* new_bv = arena_allocate_with_header(arena, data_size, 8 /* HEAP_SUBTYPE_BYTEVECTOR */, 0);
     if (!new_bv) {
-        fprintf(stderr, "Error in bytevector-copy: out of memory (len=%lld)\n",
-                (long long)copy_len);
-        std::abort();
+        eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
+                             "Error in bytevector-copy: out of memory (len=%lld)",
+                             (long long)copy_len);
     }
 
     // Store length

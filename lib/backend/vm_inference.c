@@ -19,6 +19,8 @@
 #include "vm_numeric.h"   /* pulls in vm_arena.h + subtypes */
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>     /* exit() */
+#include <stdbool.h>    /* bool */
 #include <string.h>
 #include <float.h>
 
@@ -615,7 +617,7 @@ static void check_beliefs_sum_to_one(const VmFactorGraph* fg, double tol) {
         }
         if (fabs(sum - 1.0) > tol) {
             printf("  FAIL: var %d beliefs sum to %.6f (expected 1.0)\n", v, sum);
-            assert(0);
+            exit(1);  /* exit(1) instead of assert(0) so the failure registers under -DNDEBUG */
         }
     }
 }
