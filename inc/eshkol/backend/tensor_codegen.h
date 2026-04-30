@@ -1111,6 +1111,22 @@ private:
     llvm::Value* emitAxisReduce(llvm::Value* tensor_val, llvm::Value* axis_val, int64_t op_code);
 
     /**
+     * Coerce a numeric value to a runtime double.
+     *
+     * - tagged values: dispatches at runtime on type-tag (INT64 → SIToFP,
+     *   else → unpackDouble) via a Select
+     * - integer LLVM values: SIToFP
+     * - everything else (assumed double): returned unchanged
+     *
+     * Static so it can be reached from any tensor_*_codegen.cpp split file
+     * — they all link into the same TensorCodegen class. Replaces the
+     * earlier file-scope helper that lived in an anonymous namespace.
+     */
+    static llvm::Value* taggedNumericToDouble(CodegenContext& ctx,
+                                              TaggedValueCodegen& tagged,
+                                              llvm::Value* value);
+
+    /**
      * Call codegenAST via callback.
      */
     llvm::Value* codegenAST(const eshkol_ast_t* ast) {
