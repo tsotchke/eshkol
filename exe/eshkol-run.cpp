@@ -2700,19 +2700,41 @@ int main(int argc, char **argv)
             compiled_files.push_back(argv[optind]);
     }
 
-    // NOTE: stdlib.esk auto-loading is now DEPRECATED.
-    // The new module system uses (require ...) statements which are processed
-    // by process_requires(). User code should explicitly use:
-    //   (require stdlib)      - for all standard library
-    //   (require core.functional.compose)  - for specific modules
-    //
-    // The old no_stdlib flag is kept for backwards compatibility but does nothing.
-    (void)no_stdlib;  // Suppress unused variable warning
-
     // First pass: Load source files to check for stdlib requirements
     // (We'll process requires after potentially adding stdlib.o)
     for (const auto &source_file : source_files) {
         load_file_asts(source_file, asts, debug_mode);
+    }
+
+    // Bug Y (Noesis 2026-04-30): stdlib auto-loading was previously
+    // gated on `(require stdlib)` appearing in the source.  JIT mode
+    // (`eshkol-run -r`) auto-loads stdlib regardless — the REPL JIT
+    // discovers symbols from `stdlib.bc` at startup — so the same
+    // file would print correct output under JIT and fail with
+    // "Unknown function: length / reverse / append / assoc / filter
+    // / for-each / …" under AOT.  Anyone running plain
+    // `eshkol-run foo.esk` was getting the worst-of-both-worlds
+    // surprise: JIT-flavoured semantics in the docs, AOT-flavoured
+    // brittleness on the command line.
+    //
+    // Restore the documented behaviour: `--no-stdlib` opts OUT of
+    // auto-load; the default IS auto-load.  `(require stdlib)`
+    // remains valid (and idempotent — has_stdlib check below).
+    bool need_stdlib = !no_stdlib && (!shared_lib);
+    if (need_stdlib && !requires_stdlib(asts)) {
+        // The source didn't `(require stdlib)` explicitly, but the
+        // user expects stdlib to be available.  Synthesize a top-of-
+        // module require so process_requires() handles it
+        // identically to a user-written `(require stdlib)`.
+        eshkol_ast_t req_ast = {};
+        req_ast.type = ESHKOL_OP;
+        req_ast.operation.op = ESHKOL_REQUIRE_OP;
+        req_ast.operation.require_op.num_modules = 1;
+        req_ast.operation.require_op.module_names = (char**)malloc(sizeof(char*));
+        req_ast.operation.require_op.module_names[0] = strdup("stdlib");
+        req_ast.line = 0;
+        req_ast.column = 0;
+        asts.insert(asts.begin(), req_ast);
     }
 
     // Auto-link stdlib.o if the source requires stdlib and we're not in library mode
