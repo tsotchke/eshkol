@@ -3678,13 +3678,22 @@ private:
                     // Keep external linkage for runtime function declarations
                     continue;
                 }
-                // Only export user-defined named functions, not lambdas
+                // Only export user-defined named functions, not lambdas.
+                //
+                // Library mode wants WEAK linkage so user code can override
+                // a stdlib symbol with their own definition without a
+                // duplicate-symbol link error.  publicDefinitionLinkage(true)
+                // returns LinkOnceODRLinkage on macOS/Linux and
+                // WeakAnyLinkage on Windows (COFF treats linkonce_odr as a
+                // strict ODR contract that's too strict for user override).
+                //
+                // Hardcoding ExternalLinkage here (the previous non-Windows
+                // path) defeated the override; for example
+                // tests/features/ultimate_math_stress.esk defining its own
+                // vec-scale collided with lib/math/ode.esk's helper
+                // vec-scale because both were strong external.
                 if (!isLambdaName(pair.first)) {
-#ifdef _WIN32
                     pair.second->setLinkage(publicDefinitionLinkage(true));
-#else
-                    pair.second->setLinkage(GlobalValue::ExternalLinkage);
-#endif
                 } else {
                     pair.second->setLinkage(GlobalValue::InternalLinkage);
                 }
