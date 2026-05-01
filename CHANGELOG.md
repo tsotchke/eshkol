@@ -186,6 +186,24 @@ modularity / build-time / readability win, not a behaviour change.
   crashing partway through — `validate`'s array-errs branch was
   treating strings as list candidates and recursing into
   `length`-on-string.
+- **Stdlib functions now use weak (LinkOnceODR) linkage in library
+  mode** so user code can override a stdlib symbol without a
+  `duplicate symbol` link error.  `createLibraryInitFunction` was
+  hardcoding `GlobalValue::ExternalLinkage` on macOS/Linux for every
+  non-lambda function in `function_table` after Step 1's
+  `createFunctionDeclaration` had set the right linkage; the
+  Windows path correctly used `publicDefinitionLinkage(true)`
+  (`WeakAnyLinkage`).  Now both branches use
+  `publicDefinitionLinkage(true)` (`LinkOnceODRLinkage` on
+  macOS/Linux, `WeakAnyLinkage` on Windows).  Pre-fix
+  reproducer: `tests/features/ultimate_math_stress.esk` defining
+  its own `vec-scale` collided with `lib/math/ode.esk`'s helper
+  `vec-scale` (both at strong external) and failed at link time.
+  Bug Z (commit `1235e0a`) made `(provide ...)` informational,
+  exposing this latent issue.  Note: this is "weak override"
+  semantics — if user defines `f` and stdlib internally calls `f`,
+  the user's `f` wins everywhere.  True module-private internals
+  remain v1.3 architectural work.
 - **Compile-error line markers now point at the actual source
   line** (carry-forward closed).  The reader,
   `eshkol_parse_next_ast_from_stream`, used to strip comment lines
