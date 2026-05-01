@@ -3375,6 +3375,22 @@ private:
         }
 
         // VARIADIC FIX: Register variadic function info
+        //
+        // REDEFINE-SHADOW FIX: When a user redefines a stdlib function with a
+        // different (variadic vs fixed-arity) signature, the call sites
+        // dispatch through `variadic_function_info` (line ~14233), not the
+        // fresh signature on the LLVM Function we just created.  If we
+        // *don't* update or clear this map, the second `(define …)` keeps
+        // the stdlib's variadic entry — the codegen lowers calls with
+        // stdlib's calling convention, the linker resolves to the user's
+        // strong external (after ce4ec65), and we get a no-capture arity
+        // mismatch warning at compile and a runtime "Type error in =" or
+        // crash.  Reproducer: tests/features/ultimate_math_stress.esk
+        // before its workaround commit defining `gradient-descent` (4
+        // fixed args) on top of stdlib's `(gradient-descent f x0 . opts)`
+        // (variadic 2+rest).
+        //
+        // Always overwrite or erase so the latest define wins:
         if (is_variadic) {
             variadic_function_info[func_name] = std::make_pair(num_params, true);
             // REPL MODE: Also register in global REPL context for cross-evaluation calls
@@ -3393,6 +3409,16 @@ private:
                                 std::to_string(num_params));
             eshkol_debug("Registered variadic function %s with %llu fixed params",
                         func_name, (unsigned long long)num_params);
+        } else {
+            // The new definition is fixed-arity.  Drop any leftover
+            // variadic entry from a prior define (the redefine-shadow
+            // case) so call-site dispatch uses the new signature.
+            auto stale_var = variadic_function_info.find(func_name);
+            if (stale_var != variadic_function_info.end()) {
+                eshkol_debug("Clearing stale variadic entry for redefined function %s",
+                             func_name);
+                variadic_function_info.erase(stale_var);
+            }
         }
 
         // FUNCTION-AS-VALUE FIX: Record arity for closure wrapping when function is used as value
