@@ -1262,7 +1262,7 @@
 
         ;; Welcome message
         (web-set-inner-html output
-          "<span style='color:#7c3aed;font-weight:bold'>Eshkol Bytecode VM</span> <span style='color:#71717a'>v1.1.13-accelerate</span>\n<span style='color:#71717a'>63-opcode ISA | Arena memory (OALR) | R7RS Scheme</span>\n<span style='color:#71717a'>Type an expression and press Enter.</span>\n\n"))
+          "<span style='color:#7c3aed;font-weight:bold'>Eshkol Bytecode VM</span> <span style='color:#71717a'>v1.2.0-scale</span>\n<span style='color:#71717a'>83-opcode ISA | Arena memory (OALR) | R7RS Scheme</span>\n<span style='color:#71717a'>Type an expression and press Enter.</span>\n\n"))
 
       ;; Terminal input area
       (let ((input-row (create-div terminal)))
@@ -1301,7 +1301,7 @@
         (style! h "fontSize" "1.5rem")
         (style! h "marginBottom" "12px"))
 
-      (body-text banner "This website runs TWO Eshkol WASM modules simultaneously: the site renderer (compiled via LLVM to WebAssembly) and the bytecode VM interpreter (compiled via Emscripten). The REPL above executes real Eshkol code through the full 63-opcode bytecode interpreter.")
+      (body-text banner "This website runs TWO Eshkol WASM modules simultaneously: the site renderer (compiled via LLVM to WebAssembly) and the bytecode VM interpreter (compiled via Emscripten). The REPL above executes real Eshkol code through the full 83-opcode bytecode interpreter.")
 
       (body-text banner "Try: (+ 1 2), (map (lambda (x) (* x x)) '(1 2 3 4 5)), (define (fib n) (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2))))) then (fib 20)"))
 
