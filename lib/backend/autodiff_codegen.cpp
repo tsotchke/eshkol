@@ -4950,22 +4950,74 @@ llvm::Value* AutodiffCodegen::derivative(const eshkol_operations_t* op) {
         return tagged_.packNull();
     }
 
+    // AD-1 fix: when `f` is a function parameter (e.g. inside
+    //   (define (newton-solve f x0 iters) ... (derivative f x) ...)
+    //   (newton-solve (lambda (x) ...) 1.5 10))
+    // resolve_lambda_callback_ returns nullptr because the AST node is a
+    // VAR pointing at a runtime closure, not a directly-resolvable Function*.
+    // The original `derivative()` body just returned nullptr in that case
+    // ("falling back to main codegen") but no caller actually invokes a
+    // fallback — the dispatcher at llvm_codegen.cpp ESHKOL_DERIVATIVE_OP
+    // simply propagates the null, which the surrounding arithmetic then
+    // turns into 0.0 / -inf.  Symptom: Newton-Raphson on
+    //   (newton-solve (lambda (x) (- (pow x 2) 2)) 1.5 10)
+    // returned 1.25872 instead of 1.41421 (when the AD tape was empty)
+    // or -inf (when global init left residue).
+    //
+    // `codegenDerivativeMonolith` (the pre-extraction monolithic
+    // implementation, kept around at line ~1747) has the full runtime-
+    // function-parameter handling: it walks symbol_table_ /
+    // global_symbol_table_ / repl_symbol_addresses_ and dispatches via
+    // closure_call_callback_ when `f` resolves to a runtime closure.
+    // Delegate to it.  v1.3 should re-extract this logic into a shared
+    // helper rather than keeping two parallel implementations.
+    return codegenDerivativeMonolith(op);
+}
+
+// === Static-only fast path retained for reference / future re-extraction ===
+//
+// The original new-style derivative body above used to live here.  It
+// only handles the case where `resolve_lambda_callback_` returns a
+// concrete Function* (i.e. a top-level `(define (f x) ...)` whose name
+// resolves directly).  When `f` is a lambda passed as a function
+// parameter the callback returns nullptr and this path bails out
+// without dispatching through the closure ABI — that's the AD-1 bug
+// for which we now delegate to the monolith.  Keeping this stub
+// around so a future v1.3 re-extraction has the trimmed entry point
+// to fill in.
+[[maybe_unused]] static const char* k_derivative_static_path_note =
+    "see codegenDerivativeMonolith for runtime closure handling";
+
+namespace {
+inline llvm::Value* derivative_static_path_unused() { (void)k_derivative_static_path_note; return nullptr; }
+}
+
+#if 0
+llvm::Value* AutodiffCodegen::derivativeStaticOnly(const eshkol_operations_t* op) {
+    using namespace llvm;
+    if (!op->derivative_op.function) {
+        eshkol_error("Invalid derivative operation - missing function");
+        return nullptr;
+    }
+    if (!op->derivative_op.point) {
+        return derivativeHigherOrder(op);
+    }
+    if (!resolve_lambda_callback_ || !codegen_ast_callback_) {
+        eshkol_error("derivative: Required callbacks not set");
+        return tagged_.packNull();
+    }
+
     eshkol_info("Computing derivative using forward-mode AD (dual numbers)");
 
-    // Get the function to differentiate
     Value* func = resolve_lambda_callback_(op->derivative_op.function, 1, callback_context_);
     if (!func) {
-        // RUNTIME FUNCTION PARAMETER FIX: Return nullptr without error
-        // to let the fallback codegenDerivative handle runtime function parameters
-        eshkol_debug("AutodiffCodegen::derivative: function not resolved, falling back to main codegen");
+        eshkol_debug("AutodiffCodegen::derivative: function not resolved");
         return nullptr;
     }
 
     Function* func_ptr = dyn_cast<Function>(func);
     if (!func_ptr) {
-        // RUNTIME FUNCTION PARAMETER FIX: Return nullptr without error
-        // to let the fallback handle runtime closures
-        eshkol_debug("AutodiffCodegen::derivative: not a Function*, falling back to main codegen");
+        eshkol_debug("AutodiffCodegen::derivative: not a Function*");
         return nullptr;
     }
 
@@ -5170,6 +5222,7 @@ llvm::Value* AutodiffCodegen::derivative(const eshkol_operations_t* op) {
     // Return derivative as tagged_value for consistent handling in arithmetic
     return tagged_.packDouble(derivative_val);
 }
+#endif // disabled static-only derivative path — see AD-1 note above
 
 llvm::Value* AutodiffCodegen::hessian(const eshkol_operations_t* op) {
     using namespace llvm;
