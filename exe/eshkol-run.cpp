@@ -3138,9 +3138,21 @@ int main(int argc, char **argv)
         eshkol_dispose_llvm_module(llvm_module);
     }
 
-    // Process compiled object files if we have them and an output target
-    // Don't link in compile-only mode (-c flag) - user can link manually
-    if (!compiled_files.empty() && output && !compile_only) {
+    // Process compiled object files if we have them and an output target.
+    // Don't link in compile-only mode (-c flag) - user can link manually.
+    // Don't link in --wasm mode either: the wasm_output branch above has
+    // already produced the .wasm file via the LLVM in-memory codegen path
+    // (the WebAssembly target emits a self-contained module).  Falling
+    // through to native clang++ link would try to relink stdlib.o (an
+    // arm64 / x86_64 native object auto-added at line ~2780) into the
+    // wasm output, which fails with "_main … referenced from initial
+    // undefines" because (a) the user's --wasm test files are typically
+    // module-style libraries with no scheme_main, and (b) the host
+    // platform linker can't consume native objects when targeting wasm.
+    // Reproducer: tests/web/web_canvas_test.esk and web_extern_test.esk
+    // succeeded in eshkol_compile_llvm_ir_to_wasm_file() but the run was
+    // marked FAIL because the redundant native link below crashed.
+    if (!compiled_files.empty() && output && !compile_only && !wasm_output) {
         std::vector<std::string> link_args;
         link_args.push_back(eshkol::platform::cxx_compiler());
 #ifndef _WIN32
@@ -3272,9 +3284,12 @@ int main(int argc, char **argv)
                     output, output,
                     source_files.empty() ? "<file>" : source_files[0]);
         }
-    } else if (!compiled_files.empty() && !compile_only) {
-        // Only warn about unused object files if we're not in compile-only mode
-        // In compile-only mode, we intentionally don't link
+    } else if (!compiled_files.empty() && !compile_only && !wasm_output) {
+        // Only warn about unused object files if we're not in
+        // compile-only mode and we weren't asked for WASM (the WASM
+        // path emits a self-contained module via LLVM in-memory codegen
+        // and intentionally bypasses the native link step that would
+        // otherwise consume those .o files).
         eshkol_warn("Object files provided but no output specified. Use -o to specify output executable.");
         eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
         return 1;
