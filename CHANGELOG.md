@@ -186,6 +186,24 @@ modularity / build-time / readability win, not a behaviour change.
   crashing partway through — `validate`'s array-errs branch was
   treating strings as list candidates and recursing into
   `length`-on-string.
+- **Compile-error line markers now point at the actual source
+  line** (carry-forward closed).  The reader,
+  `eshkol_parse_next_ast_from_stream`, used to strip comment lines
+  *including their trailing newline* (`std::getline` consumes the
+  `\n` it found) and started a fresh `SchemeTokenizer` at line 1
+  for every form — so `(undefined-fn …)` on file line 6 was
+  reported as line 1:2 (or wherever the most recent stdlib AST
+  happened to sit).  Two-part fix: (1) the reader now consumes
+  the comment body up to but not including the `\n`, leaving the
+  newline in `input` so the tokenizer's line counter stays
+  accurate within a form; (2) a new thread-local
+  `g_stream_line` / `g_stream_column` pair tracks cumulative file
+  position across successive `eshkol_parse_next_ast_from_stream`
+  calls and is passed to `SchemeTokenizer`'s constructor.
+  `load_file_asts` (and the REPL/server stringstream parsers) now
+  call the new `eshkol_reset_parse_line_counter()` API at the
+  start of each fresh parse session.  Regression suite at
+  `tests/v1_2_edge_cases/error_line_marker_test.sh`.
 
 ### Build + test infrastructure
 

@@ -23,6 +23,13 @@
 /* ── Parse context for diagnostic messages ── */
 static thread_local const char* g_parse_filename = "<unknown>";
 static thread_local const char* g_parse_source = NULL;
+/* Cumulative file line across successive eshkol_parse_next_ast_from_stream
+ * calls.  Each call advances the counter by however many newlines it
+ * consumed (form text + skipped leading whitespace + comment lines). The
+ * tokenizer for the next form starts at this line.  Reset by
+ * eshkol_reset_parse_line_counter() at the start of a fresh file. */
+static thread_local uint32_t g_stream_line = 1;
+static thread_local uint32_t g_stream_column = 1;
 
 /* Emit error with file:line:col + caret underline.
  * Falls back to plain eshkol_error if source text unavailable. */
@@ -117,8 +124,10 @@ private:
     std::vector<Token> pushback_buffer;  // Buffer for pushed back tokens
 
 public:
-    SchemeTokenizer(const std::string& text)
-        : input(text), pos(0), length(text.length()), line_(1), column_(1), line_start_(0) {}
+    SchemeTokenizer(const std::string& text, uint32_t start_line = 1, uint32_t start_column = 1)
+        : input(text), pos(0), length(text.length()),
+          line_(start_line), column_(start_column),
+          line_start_(0) {}
 
     // Push a token back to be returned by the next nextToken() call
     void pushBack(const Token& token) {
@@ -290,7 +299,12 @@ private:
             // Not whitespace or comment, stop
             break;
         }
-        // Update column after whitespace
+        // Update column after whitespace.
+        // line_start_ may not be a meaningful base when the tokenizer starts
+        // mid-line (e.g. caller hands us a slice with start_column != 1) and
+        // we haven't yet seen a newline that resets line_start_. In that
+        // case, derive column from the original column_ + how many chars
+        // we've consumed on the same line.
         column_ = static_cast<uint32_t>(pos - line_start_ + 1);
     }
     
@@ -8074,25 +8088,35 @@ static eshkol_ast_t parse_expression(SchemeTokenizer& tokenizer) {
 eshkol_ast_t eshkol_parse_next_ast_from_stream(std::istream &in_stream)
 {
     std::string input;
-    std::string line;
     bool in_quote = false;
     int bracket_depth = 0;
     bool found_expression = false;
 
-    // Read characters until we have a complete S-expression
+    // Read characters until we have a complete S-expression.
+    // Comments are stripped *but their newlines are preserved* so the
+    // tokenizer's line counter stays accurate for the post-comment text.
     while (!in_stream.eof()) {
         int c = in_stream.get();
         if (in_stream.eof()) break;
 
-        // Handle comments - skip to end of line
-        // BUT NOT when ; is part of a #\; character literal
+        // Handle comments - skip to end of line, but keep the trailing \n.
+        // BUT NOT when ; is part of a #\; character literal.
         if (c == ';' && !in_quote) {
             size_t len = input.size();
             bool is_char_literal = (len >= 2 && input[len-1] == '\\' && input[len-2] == '#');
             if (!is_char_literal) {
-                std::getline(in_stream, line); // consume rest of line
+                // Consume comment body (up to but not including the \n).
+                while (!in_stream.eof()) {
+                    int cc = in_stream.peek();
+                    if (cc == EOF || cc == '\n') break;
+                    in_stream.get();
+                }
+                // Append a space if we're inside a form so the comment
+                // doesn't visually merge two tokens; the trailing \n (if
+                // any) will be picked up on the next loop iteration and
+                // appended to `input` for accurate line tracking.
                 if (bracket_depth == 0 && !input.empty()) {
-                    input += ' '; // Add space to separate from next token
+                    input += ' ';
                 }
                 continue;
             }
@@ -8101,12 +8125,10 @@ eshkol_ast_t eshkol_parse_next_ast_from_stream(std::istream &in_stream)
 
         // Track quotes - a quote is escaped only if preceded by ODD number of backslashes
         if (c == '"') {
-            // Count trailing backslashes in input
             size_t backslash_count = 0;
             for (size_t i = input.size(); i > 0 && input[i-1] == '\\'; i--) {
                 backslash_count++;
             }
-            // Quote is escaped only if odd number of backslashes precede it
             if (backslash_count % 2 == 0) {
                 in_quote = !in_quote;
             }
@@ -8147,24 +8169,76 @@ eshkol_ast_t eshkol_parse_next_ast_from_stream(std::istream &in_stream)
         }
     }
 
-    // Parse the collected input
+    // Account for any trailing leftover bytes in `input` after the form
+    // closes (we never have any with the loop above), and update the file
+    // line/column counters from whatever we just consumed.
+
     if (!input.empty() && found_expression) {
-        // Remove leading/trailing whitespace
-        size_t start = input.find_first_not_of(" \t\n\r");
+        // Skip leading whitespace, but advance the line counter for any
+        // newlines we drop so the tokenizer starts at the form's actual
+        // file line.
+        size_t skip = 0;
+        uint32_t form_line = g_stream_line;
+        uint32_t form_column = g_stream_column;
+        while (skip < input.size()) {
+            char c = input[skip];
+            if (c == '\n') {
+                form_line++;
+                form_column = 1;
+                skip++;
+            } else if (c == ' ' || c == '\t' || c == '\r') {
+                form_column++;
+                skip++;
+            } else {
+                break;
+            }
+        }
+
+        // Trim trailing whitespace too; doesn't affect line tracking
+        // since the tokenizer already saw the whole form.
         size_t end = input.find_last_not_of(" \t\n\r");
+        if (skip <= end) {
+            std::string form_text = input.substr(skip, end - skip + 1);
 
-        if (start != std::string::npos && end != std::string::npos) {
-            input = input.substr(start, end - start + 1);
-
-            g_parse_source = input.c_str();
-            SchemeTokenizer tokenizer(input);
+            g_parse_source = form_text.c_str();
+            SchemeTokenizer tokenizer(form_text, form_line, form_column);
             eshkol_ast_t result = parse_expression(tokenizer);
             g_parse_source = NULL;
+
+            // Advance the cumulative counter by the full input we
+            // consumed (including leading skip and trailing junk), so the
+            // next form starts on the right line/column.
+            for (char c : input) {
+                if (c == '\n') {
+                    g_stream_line++;
+                    g_stream_column = 1;
+                } else {
+                    g_stream_column++;
+                }
+            }
+
             return result;
         }
     }
 
+    // Even if no expression was found, advance the counter by whatever
+    // we read so a follow-up call doesn't rewind to the file start.
+    for (char c : input) {
+        if (c == '\n') {
+            g_stream_line++;
+            g_stream_column = 1;
+        } else {
+            g_stream_column++;
+        }
+    }
+
     return {.type = ESHKOL_INVALID};
+}
+
+// Reset the cumulative line/column counter — call before parsing a new file.
+extern "C" void eshkol_reset_parse_line_counter(void) {
+    g_stream_line = 1;
+    g_stream_column = 1;
 }
 
 // File-based parser (wrapper for backwards compatibility)

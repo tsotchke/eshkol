@@ -60,6 +60,23 @@ for test in tests/v1_2_edge_cases/*.esk; do
     fi
 done
 
+# Shell-based regression tests in the same directory (compile-time
+# diagnostics, etc. — anything that can't be expressed as an .esk
+# program because the test is *about* a compile failure).
+for test in tests/v1_2_edge_cases/*.sh; do
+    [ -f "$test" ] || continue
+    name=$(basename "$test" .sh)
+    printf "  %-50s " "$name"
+    if bash "$test" >/tmp/eshkol_v12_run_out 2>&1; then
+        echo "PASS (shell)"
+        PASS=$((PASS + 1))
+    else
+        echo "FAIL (shell)"
+        head -10 /tmp/eshkol_v12_run_out | sed 's/^/    /'
+        FAIL=$((FAIL + 1))
+    fi
+done
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 exit $FAIL
