@@ -1,6 +1,6 @@
 # Eshkol REPL JIT System
 
-**Status**: Production (v1.1-accelerate)
+**Status**: Production (v1.2.0-scale)
 **Source file**: `lib/repl/repl_jit.cpp` (2063 lines)
 **Header**: `lib/repl/repl_jit.h`
 

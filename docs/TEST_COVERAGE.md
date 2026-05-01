@@ -1,4 +1,4 @@
-# Eshkol v1.1-accelerate Test Coverage
+# Eshkol v1.2.0-scale Test Coverage
 
 **Version**: v1.2.0-scale
 **Last Updated**: 2026-04-09

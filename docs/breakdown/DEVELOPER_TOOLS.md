@@ -1,7 +1,7 @@
 # Eshkol Developer Tools Reference
 
 **Status:** Production (v1.2.0-scale)
-**Applies to:** Eshkol compiler v1.1-accelerate and later
+**Applies to:** Eshkol compiler v1.2.0-scale and later
 
 ---
 
@@ -205,7 +205,7 @@ The server searches the open document for two patterns using `find_definition()`
 
 The search walks the raw document string and counts line/column numbers by scanning characters. The returned `Location` object contains the document URI and a zero-width range at the start of the name token.
 
-Limitation: go-to-definition is document-local only. Cross-file navigation (e.g. jumping to a `provide`d symbol in another module) is not supported in v1.1.13.
+Limitation: go-to-definition is document-local only. Cross-file navigation (e.g. jumping to a `provide`d symbol in another module) is not supported in v1.2.0.
 
 ---
 

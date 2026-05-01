@@ -1,4 +1,4 @@
-# Eshkol v1.1-accelerate Feature Matrix
+# Eshkol v1.2.0-scale Feature Matrix
 
 **Status Key**: ✅ Production | 🚧 In Progress | 📋 Planned | ❌ Not Planned
 

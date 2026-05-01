@@ -1,6 +1,6 @@
 # Signal Processing in Eshkol
 
-**Status:** Production (v1.1-accelerate)
+**Status:** Production (v1.2.0-scale)
 **Module path:** `lib/signal/`
 **Source files:** `lib/signal/fft.esk`, `lib/signal/filters.esk`
 

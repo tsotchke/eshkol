@@ -1,7 +1,7 @@
-# Eshkol v1.1-accelerate API Reference
+# Eshkol v1.2.0-scale API Reference
 
-**Version**: 1.1
-**Last Updated**: 2026-03-03
+**Version**: 1.2.0-scale
+**Last Updated**: 2026-05-01
 **Audience**: Scientific Computing & AI Systems Programming
 
 This comprehensive reference documents all special forms, functions, and operations in the Eshkol language. All documentation is code-verified against the production compiler implementation (~232,000 lines of LLVM-based C++ code, 555+ builtins).

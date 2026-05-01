@@ -1,4 +1,4 @@
-# Compiler Architecture in Eshkol (v1.1-accelerate)
+# Compiler Architecture in Eshkol (v1.2.0-scale)
 
 ## Table of Contents
 
