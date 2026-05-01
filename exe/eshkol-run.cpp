@@ -2416,6 +2416,35 @@ extern "C" {
     extern char**  __eshkol_argv;
 }
 
+/* LeakSanitizer policy for eshkol-run.
+ *
+ * eshkol-run is a one-shot batch compiler: parse → typecheck → codegen
+ * → emit object → exit. AST nodes (every `new eshkol_ast_t[N]` and
+ * `new char[N]` in lib/frontend/parser.cpp) are owned by the AST tree
+ * and intentionally never freed — process exit reaps them. This is
+ * the same convention clang, rustc, and gcc use for their internal
+ * IRs, since walking and freeing a multi-hundred-thousand-node AST at
+ * exit is pure busywork on the way to _exit().
+ *
+ * exitcode=0 tells LSan to PRINT exit-time leaks (so we still see them
+ * in CI logs and can drive the long-tail cleanup tracked under the
+ * resource-management hardening epic) but not fail the build on them.
+ * ASan's other checks — heap-buffer-overflow, use-after-free, invalid
+ * free, double-free, stack-use-after-scope — remain hard failures.
+ * UBSan is unaffected. Long-running leaks during execution can still
+ * be caught by calling __lsan_do_recoverable_leak_check() at well-
+ * defined recovery points if needed.
+ *
+ * When the AST gains a proper destructor (epic #182, or the v1.3
+ * arena-backed AST refactor), this override should be removed so that
+ * any regression — a new alloc that *isn't* exit-time-only — fails CI. */
+#if (defined(__has_feature) && (__has_feature(address_sanitizer) || __has_feature(leak_sanitizer))) \
+    || defined(__SANITIZE_ADDRESS__)
+extern "C" const char* __lsan_default_options(void) {
+    return "exitcode=0:print_suppressions=0:report_objects=1";
+}
+#endif
+
 int main(int argc, char **argv)
 {
     __eshkol_argc = (int32_t)argc;
