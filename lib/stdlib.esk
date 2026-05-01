@@ -57,6 +57,9 @@
 ;;; SRFI 41 - lazy streams (built on delay/force memoised promises)
 (require core.streams)
 
+;;; JSON Schema validator (Draft 7 subset)
+(require core.json_schema)
+
 ;; Note: core.testing is NOT auto-loaded. User code that wants the
 ;; testing framework must (require core.testing) explicitly. Baking it
 ;; into stdlib.o triggers the symbol-renamer / external-decl path
