@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <time.h>   /* struct tm, gmtime_s/gmtime_r — used on every platform */
 
 #ifndef _WIN32
 #include <unistd.h>
@@ -24,7 +25,6 @@
 #include <errno.h>
 #include <signal.h>
 #include <poll.h>
-#include <time.h>
 #include <pwd.h>
 #include <fcntl.h>
 #include <glob.h>
@@ -38,7 +38,45 @@
 #include <windows.h>
 #include <direct.h>
 #include <process.h>
+/* Windows POSIX compatibility:
+ *   - <limits.h> on MSVC defines _MAX_PATH (260) but not PATH_MAX.
+ *   - <libgen.h> (dirname/basename) does not exist on Windows.
+ * We use a generous PATH_MAX (4096 matches Linux) for our own buffers,
+ * and provide portable dirname/basename below. */
+#ifndef PATH_MAX
+#define PATH_MAX 4096
 #endif
+#endif
+
+/* Portable dirname/basename — POSIX-equivalent semantics on every platform.
+ * POSIX dirname/basename are allowed to modify their argument and return a
+ * pointer into it (or into a static buffer); ours always work in-place,
+ * matching the POSIX modify-in-place behaviour our callers already expect.
+ * Treats both '/' and '\\' as separators so they DTRT on Windows paths. */
+static char* eshkol_portable_dirname(char* path) {
+    if (!path || !*path) return (char*)".";
+    size_t n = strlen(path);
+    while (n > 1 && (path[n-1] == '/' || path[n-1] == '\\')) path[--n] = '\0';
+    char* sep = NULL;
+    for (size_t i = 0; i < n; i++) {
+        if (path[i] == '/' || path[i] == '\\') sep = path + i;
+    }
+    if (!sep) { return (char*)"."; }
+    if (sep == path) { path[1] = '\0'; return path; }
+    *sep = '\0';
+    return path;
+}
+
+static char* eshkol_portable_basename(char* path) {
+    if (!path || !*path) return (char*)".";
+    size_t n = strlen(path);
+    while (n > 1 && (path[n-1] == '/' || path[n-1] == '\\')) path[--n] = '\0';
+    char* sep = NULL;
+    for (size_t i = 0; i < n; i++) {
+        if (path[i] == '/' || path[i] == '\\') sep = path + i;
+    }
+    return sep ? sep + 1 : path;
+}
 
 /* Forward declarations from arena_memory.h */
 extern void* get_global_arena(void);
@@ -413,7 +451,7 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_path_dirname_v(eshkol_sysbuiltin
     if (!path) return sys_make_null();
     char* copy = strdup(path);
     if (!copy) return sys_make_null();
-    char* dir = dirname(copy);
+    char* dir = eshkol_portable_dirname(copy);
     eshkol_sysbuiltin_value_t result = sys_make_string(dir);
     free(copy);
     return result;
@@ -424,7 +462,7 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_path_basename_v(eshkol_sysbuilti
     if (!path) return sys_make_null();
     char* copy = strdup(path);
     if (!copy) return sys_make_null();
-    char* base = basename(copy);
+    char* base = eshkol_portable_basename(copy);
     eshkol_sysbuiltin_value_t result = sys_make_string(base);
     free(copy);
     return result;

@@ -25,6 +25,10 @@
 #include <llvm/IR/Intrinsics.h>
 #include <llvm/Config/llvm-config.h>
 
+#ifdef ESHKOL_XLA_ENABLED
+#include <eshkol/backend/xla/xla_codegen.h>
+#endif
+
 // LLVM VERSION COMPATIBILITY
 #if LLVM_VERSION_MAJOR >= 21
 #define ESHKOL_GET_INTRINSIC(mod, id, types) llvm::Intrinsic::getOrInsertDeclaration(mod, id, types)
