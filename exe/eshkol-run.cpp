@@ -3196,12 +3196,22 @@ int main(int argc, char **argv)
 
         append_host_runtime_link_args(link_args);
 
+// Set 512 MB main-thread stack so deeply recursive Scheme code
+// (e.g. nested letrec / non-tail-recursive helpers in
+// tests/tco/nested_tco_test.esk) doesn't overflow the default 8 MB
+// macOS / Linux thread stack.  Without this the binary's LC_MAIN
+// shows `stacksize 0` (i.e. linker default) on Darwin and the
+// recursion-depth check itself segfaults on its own frame push
+// once the user stack is exhausted.  llvm_codegen.cpp's parallel
+// link path already does this; the path here for pre-compiled
+// .o inputs (the common `eshkol-run file.esk -o exe` flow) was
+// missing the Darwin branch.
 #ifdef _WIN32
         link_args.emplace_back("-Xlinker");
         link_args.emplace_back("/STACK:536870912");
-#endif
-
-#ifdef __linux__
+#elif defined(__APPLE__)
+        link_args.emplace_back("-Wl,-stack_size,0x20000000");
+#elif defined(__linux__)
         link_args.emplace_back("-Wl,-z,stack-size=536870912");
 #endif
 
