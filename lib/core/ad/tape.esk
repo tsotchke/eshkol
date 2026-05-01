@@ -1,0 +1,27 @@
+;;
+;; core.ad.tape — Reverse-mode automatic differentiation via Wengert tape
+;;
+;; Usage:
+;;   (define tape (ad-tape-new))
+;;   (define x (ad-var tape 2.0))
+;;   (define y (ad-mul tape x x))    ; y = x^2
+;;   (ad-backward tape y)            ; propagate gradients
+;;   (ad-gradient tape x)            ; => 4.0 (dy/dx = 2x = 4)
+;;
+;; The tape records the computation graph during the forward pass.
+;; ad-backward runs reverse-mode differentiation from the output node.
+;; ad-gradient reads the accumulated gradient for any input variable.
+;;
+;; Operations: ad-add, ad-sub, ad-mul, ad-div, ad-sin, ad-cos,
+;;   ad-exp, ad-log, ad-sqrt, ad-neg, ad-abs, ad-relu, ad-sigmoid, ad-tanh
+;;
+
+(provide ad-tape-new ad-const ad-var
+         ad-add ad-sub ad-mul ad-div
+         ad-sin ad-cos ad-exp ad-log ad-sqrt
+         ad-neg ad-abs ad-relu ad-sigmoid ad-tanh
+         ad-backward ad-gradient ad-node-value)
+
+;; Note: ad-value is exposed as a codegen builtin alias for ad-node-value
+;; (see llvm_codegen.cpp). This gives the user-facing name `ad-value`
+;; alongside the historical internal name `ad-node-value`.

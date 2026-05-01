@@ -1,0 +1,78 @@
+;; Noesis #136: quasiquote interpolation regression test.
+;;
+;; Previously `(a ,x b) silently produced (a () b) because the top-level
+;; TOKEN_BACKQUOTE handler in parser.cpp used parse_expression (which
+;; treated the list as a function call, losing the list shape) and
+;; ,expr used parse_quasiquoted_data (treating `(* y 2)` as data
+;; rather than escaping back to expression mode). Both routes are now
+;; correctly data→expression at the right boundaries, and the codegen
+;; path builds the runtime list via cons + eshkol_append_tagged_sret for
+;; splices.
+
+(require stdlib)
+
+(display "=== Noesis#1 quasiquote interpolation suite ===") (newline)
+
+(define pass-count 0)
+(define fail-count 0)
+(define (check name cond)
+  (if cond
+      (begin (set! pass-count (+ pass-count 1))
+             (display "PASS: ") (display name) (newline))
+      (begin (set! fail-count (+ fail-count 1))
+             (display "FAIL: ") (display name) (newline))))
+
+;; ---- bare quasiquote with no unquote ----
+(check "plain `(a b c) → (a b c)"
+       (equal? `(a b c) (list 'a 'b 'c)))
+
+;; ---- ,x interpolation ----
+(define x 10)
+(check "`(a ,x b) → (a 10 b)"
+       (equal? `(a ,x b) (list 'a 10 'b)))
+
+;; ---- ,(computed expression) ----
+(define y 5)
+(check "`(n ,(* y 2)) → (n 10)"
+       (equal? `(n ,(* y 2)) (list 'n 10)))
+
+;; ---- ,@xs splicing ----
+(define xs (list 2 3 4))
+(check "`(1 ,@xs 5 6) → (1 2 3 4 5 6)"
+       (equal? `(1 ,@xs 5 6) (list 1 2 3 4 5 6)))
+
+;; ---- Multiple splices in same list ----
+(define a (list 'x 'y))
+(define b (list 'p 'q))
+(check "`(,@a | ,@b) → (x y | p q)"
+       (equal? `(,@a ,@b) (list 'x 'y 'p 'q)))
+
+;; ---- Nested quasiquoted lists ----
+(define name "Jane")
+(check "nested: `((greet ,name) (age ,(+ 20 5)))"
+       (equal? `((greet ,name) (age ,(+ 20 5)))
+               (list (list 'greet "Jane") (list 'age 25))))
+
+;; ---- Bare `,expr (top-level unquote) ----
+(define n 42)
+(check "`,n evaluates to 42"
+       (= `,n 42))
+
+;; ---- Empty list / empty splice ----
+(check "`() → ()"
+       (null? `()))
+(check "`(a ,@'() b) drops empty splice → (a b)"
+       (equal? `(a ,@'() b) (list 'a 'b)))
+
+;; ---- Quasiquote inside lambda body ----
+(define (mk-tagged tag val)
+  `(,tag ,val))
+(check "lambda-body quasiquote (mk-tagged 'score 99)"
+       (equal? (mk-tagged 'score 99) (list 'score 99)))
+
+(newline)
+(display "=== Summary ===") (newline)
+(display "Passed: ") (display pass-count) (newline)
+(display "Failed: ") (display fail-count) (newline)
+(display (if (= fail-count 0) "RESULT: ALL PASS" "RESULT: FAILURES DETECTED"))
+(newline)

@@ -1,0 +1,104 @@
+;; builtin_shadow_test.esk — Bug G (2026-04-19)
+;;
+;; A user (define) for a builtin-name must take precedence at every
+;; call site, per R7RS §5.3.1. Previously the parser hard-bound these
+;; names to dedicated OP tags, so the codegen switch fired the builtin
+;; unconditionally and the user's define was silently ignored.
+;;
+;; Fix: centralised user-shadow redirect at the top of codegenOperation
+;; — any OP whose user-visible name appears in function_table is
+;; dispatched through codegenCall (which has the full user-shadow
+;; resolution pipeline) instead of the dedicated builtin codegen.
+
+(require stdlib)
+
+(define passed 0)
+(define failed 0)
+(define (check name cond)
+  (if cond
+      (begin (display "PASS: ") (display name) (newline)
+             (set! passed (+ passed 1)))
+      (begin (display "FAIL: ") (display name) (newline)
+             (set! failed (+ failed 1)))))
+
+;; ── make-workspace shadow ─────────────────────────────────────────
+(define (make-workspace . rest)
+  (let* ((temp (if (null? rest) 1.0 (car rest)))
+         (rec (make-vector 5 0)))
+    (vector-set! rec 0 (quote ws-tag))
+    (vector-set! rec 1 temp)
+    rec))
+
+(define w1 (make-workspace 1.0))
+(check "make-workspace user-defined wins" (eq? (vector-ref w1 0) (quote ws-tag)))
+(check "make-workspace user arg propagates" (= (vector-ref w1 1) 1.0))
+
+;; ── make-kb shadow ───────────────────────────────────────────────
+(define (make-kb . rest)
+  (let ((rec (make-vector 3 0)))
+    (vector-set! rec 0 (quote kb-tag))
+    rec))
+
+(define k1 (make-kb))
+(check "make-kb user-defined wins" (eq? (vector-ref k1 0) (quote kb-tag)))
+
+;; ── make-fact shadow ─────────────────────────────────────────────
+(define (make-fact . args)
+  (quote fact-sentinel))
+
+(check "make-fact user-defined wins"
+       (eq? (make-fact 1 2 3) (quote fact-sentinel)))
+
+(check "make-workspace is a user function"
+       (procedure? make-workspace))
+
+;; ── Bug G v2 (Noesis 2026-04-20): raw-return value shadow ──
+;; Noesis's minimal repro: user define that returns a plain scalar
+;; (not a wrapped structure). The v1 check only fired when
+;; function_table had the name at top-level scope; the v2 fix
+;; extends the check to the full codegenCall cascade, so any
+;; visible user binding wins.
+(define (make-substitution . rest) 42)
+(check "Bug G v2: scalar-return user shadow"
+       (= (make-substitution 1.0) 42))
+
+(define (unify a b) (list (quote unified) a b))
+(check "Bug G v2: two-arg user shadow"
+       (equal? (unify 1 2) (quote (unified 1 2))))
+
+;; ── Bug G v2 follow-up (2026-04-20): inner-scope shadows don't
+;; leak past their enclosing function.
+;; Earlier: defining an inner-scope make-kb in one function silently
+;; caused a top-level (make-kb) call elsewhere to dispatch to the
+;; inner lambda (via a leaked unscoped _func key in symbol_table).
+;; Fix: hasUserShadow only consults function_table (top-level) and
+;; the scoped `<func>.<name>_func` key (true inner defines), never
+;; the unscoped table — sibling-function leaks can't fool it.
+(define (call-inner-fact)
+  (define (make-fact . rest) (quote inner-fact-sentinel))
+  (make-fact 1 2))
+
+(define (call-inner-kb)
+  (define (make-kb . rest) (quote inner-kb-sentinel))
+  (let ((x (make-kb)))
+    x))
+
+(check "inner-scope make-fact returns inner sentinel"
+       (eq? (call-inner-fact) (quote inner-fact-sentinel)))
+
+(check "inner-scope make-kb returns inner sentinel"
+       (eq? (call-inner-kb) (quote inner-kb-sentinel)))
+
+;; And — critical — inner defines MUST NOT override top-level defines
+;; at a sibling top-level call site. Regression guard:
+(define (make-fact-top . args) (quote top-fact-sentinel))
+(check "sibling inner-scope define doesn't poison top-level make-fact lookup"
+       (eq? (make-fact-top 7) (quote top-fact-sentinel)))
+
+(newline)
+(display "=== Summary ===") (newline)
+(display "Passed: ") (display passed) (newline)
+(display "Failed: ") (display failed) (newline)
+(if (= failed 0)
+    (begin (display "RESULT: OK") (newline))
+    (begin (display "RESULT: FAIL") (newline) (exit 1)))

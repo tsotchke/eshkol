@@ -1,0 +1,70 @@
+;;; time_api_test.esk — #168 ISO8601 format/parse + current-timestamp
+
+(require core.testing)
+
+(reset-tests!)
+
+(register-test "format-iso8601 epoch"
+  (lambda ()
+    (check-equal? (format-iso8601 0) "1970-01-01T00:00:00.000Z")))
+
+(register-test "format-iso8601 one second after epoch"
+  (lambda ()
+    (check-equal? (format-iso8601 1000000000)
+                  "1970-01-01T00:00:01.000Z")))
+
+(register-test "format-iso8601 millisecond precision"
+  (lambda ()
+    ;; 1704067200.789 seconds = 2024-01-01 plus 789 ms
+    (check-equal? (format-iso8601 1704067200789000000)
+                  "2024-01-01T00:00:00.789Z")))
+
+(register-test "parse-iso8601 basic UTC"
+  (lambda ()
+    (check-equal? (parse-iso8601 "2024-01-01T00:00:00Z")
+                  1704067200000000000)))
+
+(register-test "parse-iso8601 with fractional seconds"
+  (lambda ()
+    (check-equal? (parse-iso8601 "2024-01-01T00:00:00.500Z")
+                  1704067200500000000)))
+
+(register-test "parse-iso8601 with +tz offset"
+  (lambda ()
+    ;; 2024-01-01T05:00:00+05:00 == 2024-01-01T00:00:00Z
+    (check-equal? (parse-iso8601 "2024-01-01T05:00:00+05:00")
+                  1704067200000000000)))
+
+(register-test "parse-iso8601 with -tz offset"
+  (lambda ()
+    ;; 2024-01-01T12:00:00-05:00 == 2024-01-01T17:00:00Z
+    (check-equal? (parse-iso8601 "2024-01-01T12:00:00-05:00")
+                  1704128400000000000)))
+
+(register-test "parse-iso8601 rejects malformed"
+  (lambda ()
+    (check-false (parse-iso8601 "not-a-date"))
+    (check-false (parse-iso8601 "2024"))
+    (check-false (parse-iso8601 "2024-01-01"))))
+
+(register-test "format/parse roundtrip"
+  (lambda ()
+    (let* ((s0 "2026-04-17T12:34:56.789Z")
+           (ns (parse-iso8601 s0))
+           (s1 (format-iso8601 ns)))
+      (check-equal? s0 s1))))
+
+(register-test "current-timestamp returns positive double"
+  (lambda ()
+    (let ((t (current-timestamp)))
+      (check-true (> t 0))
+      ;; 2024-01-01 was ~1.704e9 seconds; 2040 will be ~2.2e9. If this
+      ;; assertion ever fires, it's the year 2040 or the clock is broken.
+      (check-true (> t 1700000000.0))
+      (check-true (< t 3000000000.0)))))
+
+(register-test "parse epoch zero"
+  (lambda ()
+    (check-equal? (parse-iso8601 "1970-01-01T00:00:00Z") 0)))
+
+(run-tests)

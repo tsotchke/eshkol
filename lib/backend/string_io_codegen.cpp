@@ -295,9 +295,14 @@ llvm::Value* StringIOCodegen::stringAppend(const eshkol_operations_t* op) {
     llvm::Function* strcpy_func = ctx_.funcs().getStrcpy();
     llvm::Function* strcat_func = ctx_.funcs().getStrcat();
 
-    // Calculate total length needed
+    // Calculate total byte length. arena_allocate_string_with_header reserves
+    // len+1 internally for the NUL terminator AND stamps the object header's
+    // size field with the `len` it receives. Passing sum-of-strlens here makes
+    // string-length(result) return the true byte count; passing sum+1 would
+    // report off-by-one and break any downstream loop that indexes up to
+    // (string-length s) - 1.
     std::vector<llvm::Value*> str_ptrs;
-    llvm::Value* total_len = llvm::ConstantInt::get(ctx_.int64Type(), 1); // +1 for null terminator
+    llvm::Value* total_len = llvm::ConstantInt::get(ctx_.int64Type(), 0);
 
     for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
         llvm::Value* arg = codegen_ast_callback_(&op->call_op.variables[i], callback_context_);
@@ -571,9 +576,34 @@ llvm::Value* StringIOCodegen::numberToString(const eshkol_operations_t* op) {
         return tagged_.packNull();
     }
 
-    if (op->call_op.num_vars != 1) {
-        eshkol_warn("number->string requires exactly 1 argument");
+    if (op->call_op.num_vars < 1 || op->call_op.num_vars > 2) {
+        eshkol_warn("number->string requires 1 or 2 arguments");
         return nullptr;
+    }
+
+    /* If 2 args, the second is the radix. Extract both as int64 in IR,
+     * pass to C runtime that returns string via sret. */
+    if (op->call_op.num_vars == 2) {
+        llvm::Value* num_arg = codegen_ast_callback_(&op->call_op.variables[0], callback_context_);
+        llvm::Value* radix_arg = codegen_ast_callback_(&op->call_op.variables[1], callback_context_);
+        if (!num_arg || !radix_arg) return nullptr;
+
+        /* Extract int64 values from tagged values */
+        llvm::Value* num_i64 = tagged_.unpackInt64(num_arg);
+        llvm::Value* rad_i64 = tagged_.unpackInt64(radix_arg);
+
+        /* Call: ptr eshkol_number_to_string_radix_raw(i64 num, i64 radix, ptr arena) */
+        llvm::Module* mod = ctx_.builder().GetInsertBlock()->getParent()->getParent();
+        llvm::Function* func = mod->getFunction("eshkol_number_to_string_radix_raw");
+        if (!func) {
+            llvm::FunctionType* ft = llvm::FunctionType::get(ctx_.ptrType(),
+                {ctx_.int64Type(), ctx_.int64Type(), ctx_.ptrType()}, false);
+            func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+                "eshkol_number_to_string_radix_raw", mod);
+        }
+        llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+        llvm::Value* result_ptr = ctx_.builder().CreateCall(func, {num_i64, rad_i64, arena_ptr});
+        return tagged_.packHeapPtr(result_ptr);
     }
 
     // Get typed value via callback
@@ -725,8 +755,11 @@ llvm::Value* StringIOCodegen::makeString(const eshkol_operations_t* op) {
     llvm::Value* len = *reinterpret_cast<llvm::Value**>(len_tv_ptr);
     if (!len) return nullptr;
 
-    // Ensure length is i64
-    if (!len->getType()->isIntegerTy(64)) {
+    // Ensure length is i64 — may arrive as tagged value struct or raw int
+    if (len->getType() == ctx_.taggedValueType()) {
+        // Extract int64 data field from tagged value
+        len = tagged_.unpackInt64(len);
+    } else if (!len->getType()->isIntegerTy(64)) {
         len = ctx_.builder().CreateZExt(len, ctx_.int64Type());
     }
 
@@ -741,11 +774,14 @@ llvm::Value* StringIOCodegen::makeString(const eshkol_operations_t* op) {
         fill_char = llvm::ConstantInt::get(ctx_.int8Type(), ' ');
     }
 
-    // Allocate buffer with header: len + 1 for null terminator
-    llvm::Value* buf_size = ctx_.builder().CreateAdd(len, llvm::ConstantInt::get(ctx_.int64Type(), 1));
+    // Allocate buffer with header. `arena_allocate_string_with_header`
+    // already reserves an extra byte for the NUL terminator (data_size
+    // = length + 1), so we must pass the caller-visible character
+    // count `len`, NOT `len + 1` — the previous code double-counted,
+    // yielding header->size = len + 2 and a string-length of len + 1.
     llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
     llvm::Value* buf = ctx_.builder().CreateCall(
-        ctx_.memory().getArenaAllocateStringWithHeader(), {arena_ptr, buf_size});
+        ctx_.memory().getArenaAllocateStringWithHeader(), {arena_ptr, len});
 
     // Fill with the character using memset
     llvm::Function* memset_func = ctx_.funcs().getMemset();
@@ -997,10 +1033,16 @@ llvm::Value* StringIOCodegen::stringSplit(const eshkol_operations_t* op) {
     llvm::Value* seg_start = ctx_.builder().CreateLoad(ctx_.int64Type(), segment_start_ptr);
     llvm::Value* seg_len = ctx_.builder().CreateSub(curr_pos, seg_start);
 
-    // Allocate new string with header for segment
-    llvm::Value* seg_buf_size = ctx_.builder().CreateAdd(seg_len, llvm::ConstantInt::get(ctx_.int64Type(), 1));
+    // Allocate new string with header for segment.
+    // arena_allocate_string_with_header(arena, length) takes the string
+    // *length* (excluding null terminator) and adds +1 internally, then
+    // records length in the header. Earlier versions passed seg_len + 1
+    // which made the header report a length one byte too long, so
+    // (string-length (car (string-split "abc" "x"))) returned 4 instead
+    // of 3 — visible as the "substring: end index less than start index"
+    // crash in base64url-encode round-trips. Pass seg_len directly.
     llvm::Value* seg_buf = ctx_.builder().CreateCall(
-        ctx_.memory().getArenaAllocateStringWithHeader(), {arena_ptr, seg_buf_size});
+        ctx_.memory().getArenaAllocateStringWithHeader(), {arena_ptr, seg_len});
 
     // Copy characters using memcpy
     llvm::Value* src_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), str_ptr, seg_start);
@@ -1036,9 +1078,33 @@ llvm::Value* StringIOCodegen::stringSplit(const eshkol_operations_t* op) {
     ctx_.builder().CreateStore(new_pos, pos_ptr);
     ctx_.builder().CreateBr(search_cond);
 
-    // Loop end: return result (segments in reverse order - use Eshkol's reverse if needed)
+    // Loop end: result is in reverse order because each segment was cons'd
+    // onto the head. Call eshkol_list_reverse_tagged to flip into left-to-right
+    // order matching split conventions (a,b,c → (a b c), not (c b a)).
+    // Uses output-pointer pattern (not by-value return) so the ABI is the
+    // same on every platform regardless of LLVM's struct-passing rules.
     ctx_.builder().SetInsertPoint(loop_end);
-    return ctx_.builder().CreateLoad(ctx_.taggedValueType(), result_ptr);
+
+    // Allocate the output slot at function entry.
+    llvm::IRBuilderBase::InsertPoint saved_rev_ip = ctx_.builder().saveIP();
+    llvm::BasicBlock& rev_entry = parent_func->getEntryBlock();
+    ctx_.builder().SetInsertPoint(&rev_entry, rev_entry.begin());
+    llvm::Value* rev_out_ptr = ctx_.builder().CreateAlloca(
+        ctx_.taggedValueType(), nullptr, "split_reversed_out");
+    ctx_.builder().restoreIP(saved_rev_ip);
+
+    llvm::Module* mod = parent_func->getParent();
+    llvm::Function* reverse_fn = mod->getFunction("eshkol_list_reverse_tagged");
+    if (!reverse_fn) {
+        llvm::FunctionType* ft = llvm::FunctionType::get(
+            ctx_.builder().getVoidTy(),
+            {ctx_.ptrType(), ctx_.ptrType(), ctx_.ptrType()},
+            false);
+        reverse_fn = llvm::Function::Create(ft, llvm::GlobalValue::ExternalLinkage,
+                                            "eshkol_list_reverse_tagged", mod);
+    }
+    ctx_.builder().CreateCall(reverse_fn, {arena_ptr, result_ptr, rev_out_ptr});
+    return ctx_.builder().CreateLoad(ctx_.taggedValueType(), rev_out_ptr);
 }
 
 llvm::Value* StringIOCodegen::stringContains(const eshkol_operations_t* op) {
@@ -1723,23 +1789,10 @@ static llvm::Function* getOrDeclareFwrite(CodegenContext& ctx) {
 
 // Helper to get stdin global variable
 static llvm::Value* getStdin(CodegenContext& ctx) {
-#ifdef _WIN32
-    llvm::Function* stdin_stream_func = getOrDeclareStdinStream(ctx);
-    return ctx.builder().CreateCall(stdin_stream_func, {});
-#else
-#ifdef __APPLE__
-    const char* stdin_name = "__stdinp";
-#else
-    const char* stdin_name = "stdin";
-#endif
-    llvm::GlobalVariable* stdin_var = ctx.module().getGlobalVariable(stdin_name);
-    if (!stdin_var) {
-        stdin_var = new llvm::GlobalVariable(
-            ctx.module(), ctx.ptrType(), false,
-            llvm::GlobalVariable::ExternalLinkage, nullptr, stdin_name);
-    }
-    return ctx.builder().CreateLoad(ctx.ptrType(), stdin_var);
-#endif
+    auto* ft = llvm::FunctionType::get(ctx.ptrType(), {}, false);
+    auto callee = ctx.module().getOrInsertFunction(
+        "eshkol_runtime_current_input_fp", ft);
+    return ctx.builder().CreateCall(callee, {});
 }
 
 // Helper to get stderr global variable
@@ -1763,26 +1816,16 @@ static llvm::Value* getStderr(CodegenContext& ctx) {
 #endif
 }
 
-// Helper to get stdout global variable
-// On macOS/Darwin, stdout is __stdoutp; on Linux it's stdout
+// Helper that returns the FILE* for the IMPLICIT output port. Goes through
+// the runtime cell `eshkol_runtime_current_output_fp()` so that
+// `parameterize ((current-output-port p)) (display x)` actually writes into
+// `p` instead of stdout. The runtime falls back to real stdout if the cell
+// is unset, so behaviour is unchanged when the user doesn't parameterize.
 static llvm::Value* getStdout(CodegenContext& ctx) {
-#ifdef _WIN32
-    llvm::Function* stdout_stream_func = getOrDeclareStdoutStream(ctx);
-    return ctx.builder().CreateCall(stdout_stream_func, {});
-#else
-#ifdef __APPLE__
-    const char* stdout_name = "__stdoutp";
-#else
-    const char* stdout_name = "stdout";
-#endif
-    llvm::GlobalVariable* stdout_var = ctx.module().getGlobalVariable(stdout_name);
-    if (!stdout_var) {
-        stdout_var = new llvm::GlobalVariable(
-            ctx.module(), ctx.ptrType(), false,
-            llvm::GlobalVariable::ExternalLinkage, nullptr, stdout_name);
-    }
-    return ctx.builder().CreateLoad(ctx.ptrType(), stdout_var);
-#endif
+    auto* ft = llvm::FunctionType::get(ctx.ptrType(), {}, false);
+    auto callee = ctx.module().getOrInsertFunction(
+        "eshkol_runtime_current_output_fp", ft);
+    return ctx.builder().CreateCall(callee, {});
 }
 
 static llvm::Function* getOrDeclareStdoutStream(CodegenContext& ctx) {
@@ -1870,21 +1913,34 @@ llvm::Value* StringIOCodegen::openInputFile(const eshkol_operations_t* op) {
     return result;
 }
 
+// Shared body for open-output-file (mode="w") and
+// open-output-file-append (mode="a"). Bug Q (2026-04-23) added the
+// append variant for write-ahead logs; the only difference from the
+// truncating form is the fopen mode passed.
 llvm::Value* StringIOCodegen::openOutputFile(const eshkol_operations_t* op) {
+    return openOutputFileImpl(op, "w", "open-output-file");
+}
+
+llvm::Value* StringIOCodegen::openOutputFileAppend(const eshkol_operations_t* op) {
+    return openOutputFileImpl(op, "a", "open-output-file-append");
+}
+
+llvm::Value* StringIOCodegen::openOutputFileImpl(const eshkol_operations_t* op,
+                                                  const char* mode_str,
+                                                  const char* scheme_name) {
     if (!codegen_typed_ast_callback_ || !typed_to_tagged_callback_) {
-        eshkol_warn("StringIOCodegen::openOutputFile - callbacks not set");
+        eshkol_warn("StringIOCodegen::%s - callbacks not set", scheme_name);
         return tagged_.packNull();
     }
 
     if (op->call_op.num_vars != 1) {
-        eshkol_warn("open-output-file requires exactly 1 argument");
+        eshkol_warn("%s requires exactly 1 argument", scheme_name);
         return nullptr;
     }
 
     llvm::Function* fopen_func = getOrDeclareFopen(ctx_);
     if (!fopen_func) return nullptr;
 
-    // Get filename argument (should be a string)
     void* tv_ptr = codegen_typed_ast_callback_(&op->call_op.variables[0], callback_context_);
     if (!tv_ptr) return nullptr;
 
@@ -1895,23 +1951,21 @@ llvm::Value* StringIOCodegen::openOutputFile(const eshkol_operations_t* op) {
         ctx_.builder().CreateExtractValue(tagged, {4}),
         ctx_.ptrType());
 
-    // Call fopen with "w" mode
-    llvm::Value* mode = createString("w");
+    llvm::Value* mode = createString(mode_str);
     llvm::Value* file_ptr = ctx_.builder().CreateCall(fopen_func, {filename_ptr, mode});
 
-    // Convert FILE* to i64 for storage in tagged value
     llvm::Value* file_ptr_int = ctx_.builder().CreatePtrToInt(file_ptr, ctx_.int64Type());
 
-    // Pack as a tagged value with output port type
+    // Pack as a tagged value with output port type.
     // NOTE: Use 0x40 instead of 0x20 because CONS_PTR=32=0x20, so 32|0x20=32!
     llvm::Value* result = llvm::UndefValue::get(ctx_.taggedValueType());
     result = ctx_.builder().CreateInsertValue(result,
-        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR | 0x40), {0}); // type = output port
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR | 0x40), {0});
     result = ctx_.builder().CreateInsertValue(result,
-        llvm::ConstantInt::get(ctx_.int8Type(), 0), {1}); // flags
+        llvm::ConstantInt::get(ctx_.int8Type(), 0), {1});
     result = ctx_.builder().CreateInsertValue(result,
-        llvm::ConstantInt::get(ctx_.int16Type(), 0), {2}); // reserved
-    result = ctx_.builder().CreateInsertValue(result, file_ptr_int, {4}); // data = FILE*
+        llvm::ConstantInt::get(ctx_.int16Type(), 0), {2});
+    result = ctx_.builder().CreateInsertValue(result, file_ptr_int, {4});
 
     return result;
 }
@@ -2915,14 +2969,21 @@ llvm::Value* StringIOCodegen::readBytevector(const eshkol_operations_t* op) {
     llvm::Value* bytes_read = ctx_.builder().CreateCall(fread_func,
         {data_ptr, llvm::ConstantInt::get(ctx_.int64Type(), 1), k, file_ptr}, "bytes_read");
 
-    // Check if zero bytes read (EOF before any data)
+    // EOF sentinel is only returned when the caller explicitly asked for
+    // bytes (k > 0) and fread returned 0 — that means end-of-file before
+    // any data arrived. For the k=0 case R7RS §6.13.2 says "If k = 0, an
+    // empty bytevector is returned immediately" — do not pretend it was EOF
+    // or downstream bytevector-length crashes on the 0xFF tag.
     llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
     llvm::BasicBlock* eof_block = llvm::BasicBlock::Create(ctx_.context(), "bv_eof", current_func);
     llvm::BasicBlock* ok_block = llvm::BasicBlock::Create(ctx_.context(), "bv_ok", current_func);
     llvm::BasicBlock* done_block = llvm::BasicBlock::Create(ctx_.context(), "bv_done", current_func);
 
-    llvm::Value* is_eof = ctx_.builder().CreateICmpEQ(bytes_read,
+    llvm::Value* zero_bytes = ctx_.builder().CreateICmpEQ(bytes_read,
         llvm::ConstantInt::get(ctx_.int64Type(), 0));
+    llvm::Value* k_positive = ctx_.builder().CreateICmpSGT(k,
+        llvm::ConstantInt::get(ctx_.int64Type(), 0));
+    llvm::Value* is_eof = ctx_.builder().CreateAnd(zero_bytes, k_positive);
     ctx_.builder().CreateCondBr(is_eof, eof_block, ok_block);
 
     // EOF: return eof-object

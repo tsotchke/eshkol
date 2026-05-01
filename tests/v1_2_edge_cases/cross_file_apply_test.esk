@@ -1,0 +1,56 @@
+;; cross_file_apply_test.esk — Noesis Bug P (2026-04-23)
+;;
+;; (apply f arglist) where f is a user-defined function loaded from
+;; another file via (load "...") emitted "apply: Unknown function: f"
+;; and silently returned (). Same-file apply worked; apply on a
+;; lambda worked; apply on a builtin worked; direct call to the
+;; loaded function worked. Only cross-file apply broke.
+;;
+;; Root cause: apply codegen looked up the function by name in
+;; symbol_table / global_symbol_table / module().getFunction(), but
+;; cross-file functions in REPL mode live in a different LLVM module
+;; and are reached by direct calls only via __repl_fwd_<name>
+;; indirect-call shape. Apply now consults the same machinery: it
+;; checks function_table directly, then asks the main codegen to
+;; emit a __repl_fwd_<name> indirect call (mirroring direct-call
+;; resolution). For variadic loaded functions, the rest-list is
+;; passed through unchanged.
+
+(require stdlib)
+(load "/Users/tyr/Desktop/eshkol/tests/v1_2_edge_cases/cross_file_apply_module.esk")
+
+(define passed 0)
+(define failed 0)
+(define (check name cond)
+  (if cond
+      (begin (display "PASS: ") (display name) (newline)
+             (set! passed (+ passed 1)))
+      (begin (display "FAIL: ") (display name) (newline)
+             (set! failed (+ failed 1)))))
+
+;; Case 1: cross-file fixed-arity apply
+(check "apply fixed-arity 2"
+       (equal? (apply xfile-fixed (list 1 2)) '(fixed 1 2)))
+(check "apply three-arg arithmetic"
+       (= (apply xfile-three (list 10 20 30)) 60))
+
+;; Case 2: cross-file variadic apply
+(check "apply variadic with args"
+       (equal? (apply xfile-rest (list 'a 'b 'c)) '(got (a b c))))
+(check "apply variadic empty"
+       (eq? (apply xfile-rest '()) 'zero-args))
+
+;; Case 3: direct call still works (regression guard)
+(check "direct call fixed"
+       (equal? (xfile-fixed 1 2) '(fixed 1 2)))
+(check "direct call variadic"
+       (equal? (xfile-rest 'x 'y) '(got (x y))))
+
+;; Case 4: apply on a lambda still works (regression guard)
+(check "apply on lambda"
+       (= (apply (lambda (a b) (* a b)) (list 3 4)) 12))
+
+(newline)
+(display "Passed: ") (display passed) (newline)
+(display "Failed: ") (display failed) (newline)
+(if (> failed 0) (exit 1) (exit 0))

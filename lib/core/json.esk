@@ -19,7 +19,7 @@
 ;;   null    -> '()
 ;;
 
-(provide json-parse json-stringify json-get json-array-ref
+(provide json-parse json-stringify json-get json-get-in json-array-ref
          hash-table->alist alist->hash-table
          alist->json json-write-file alist-write-json json-read-file)
 
@@ -452,3 +452,37 @@
           (close-port port)
           (json-parse acc))
         (json-read-file-loop port (string-append acc line)))))
+
+;; Nested path access into JSON structures
+;; (json-get-in obj keys) follows nested hash-tables and lists
+;; (json-get-in obj '("a" "b" 2)) follows obj["a"]["b"][2]
+;; Keys can be strings (hash-table lookup) or integers (list index)
+;; Returns #f if any step fails
+
+(define (json-get-in obj keys)
+  (json-get-in-loop obj keys #f))
+
+(define (json-get-in-loop obj keys default)
+  (if (null? keys)
+      obj
+      (let ((key (car keys))
+            (rest-keys (cdr keys)))
+        (cond
+          ((and (hash-table? obj) (string? key))
+           (let ((val (hash-ref obj key #f)))
+             (if val
+                 (json-get-in-loop val rest-keys default)
+                 default)))
+          ((and (pair? obj) (integer? key))
+           (let ((val (json-get-in-list-ref obj key)))
+             (if val
+                 (json-get-in-loop val rest-keys default)
+                 default)))
+          (else default)))))
+
+(define (json-get-in-list-ref lst idx)
+  (if (or (< idx 0) (null? lst))
+      #f
+      (if (= idx 0)
+          (car lst)
+          (json-get-in-list-ref (cdr lst) (- idx 1)))))

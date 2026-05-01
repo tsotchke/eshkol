@@ -75,9 +75,12 @@ Value* CallApplyCodegen::apply(const eshkol_operations_t* op) {
     if (func_arg->type == ESHKOL_VAR) {
         std::string func_name = func_arg->variable.id;
 
-        // Handle variadic built-in arithmetic operations
-        if (func_name == "+" || func_name == "-" || func_name == "*" || func_name == "/") {
-            return applyArithmetic(func_name, list_int);
+        // Variadic built-in reductions: arithmetic (+ - * /) and min/max.
+        // All share the same fold-over-list machinery; applyReduction
+        // dispatches on op name internally.
+        if (func_name == "+" || func_name == "-" || func_name == "*" || func_name == "/" ||
+            func_name == "min" || func_name == "max") {
+            return applyReduction(func_name, list_int);
         }
 
         // Handle list operation
@@ -239,6 +242,41 @@ Value* CallApplyCodegen::apply(const eshkol_operations_t* op) {
             return applyClosure(func_value, list_int);
         }
 
+        // Bug P (2026-04-23): cross-file user defines (e.g. (load
+        // "file.esk") in REPL mode) register in the main codegen's
+        // function_table but not always in symbol_table /
+        // global_symbol_table, and ctx_.module().getFunction(name)
+        // may miss when names are mangled or the function lives in
+        // a different LLVM module loaded via the JIT. Consult
+        // function_table_ directly first; direct calls already use
+        // this table.
+        if (function_table_) {
+            auto ft_it = function_table_->find(func_name);
+            if (ft_it != function_table_->end() && ft_it->second) {
+                Function* tf = ft_it->second;
+                bool has_captures = false;
+                for (auto& arg : tf->args()) {
+                    if (arg.getType()->isPointerTy()) { has_captures = true; break; }
+                }
+                if (!has_captures) {
+                    return applyUserFunction(tf, list_int);
+                }
+                // With captures fall through to forward-ref / closure path.
+            }
+        }
+
+        // Then ask the main codegen to emit a REPL forward-reference
+        // indirect call (__repl_fwd_<name>). This is exactly what
+        // direct calls do for cross-batch / cross-load functions —
+        // apply now mirrors it.
+        if (apply_forward_ref_callback_) {
+            llvm::Value* fwd_result = apply_forward_ref_callback_(
+                func_name, list_int, callback_context_);
+            if (fwd_result) {
+                return fwd_result;
+            }
+        }
+
         eshkol_warn("apply: Unknown function: %s", func_name.c_str());
         return tagged_.packNull();
     }
@@ -336,43 +374,54 @@ Value* CallApplyCodegen::applyCons(Value* list_int) {
     return phi;
 }
 
-Value* CallApplyCodegen::applyArithmetic(const std::string& op, Value* list_int) {
+Value* CallApplyCodegen::applyReduction(const std::string& op, Value* list_int) {
     Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
     Function* cons_get_ptr = getTaggedConsGetPtrFunc();
     if (!cons_get_ptr) return tagged_.packNull();
 
-    // Determine identity element
-    Value* identity;
-    if (op == "+" || op == "-") {
-        identity = tagged_.packInt64(ConstantInt::get(ctx_.int64Type(), 0), true);
-    } else { // "*" or "/"
-        identity = tagged_.packInt64(ConstantInt::get(ctx_.int64Type(), 1), true);
+    // Identity elements for ops that have them. min/max have no identity:
+    // applying them to an empty list is a type error in R7RS.
+    const bool has_identity = (op == "+" || op == "-" || op == "*" || op == "/");
+    Value* identity = nullptr;
+    if (has_identity) {
+        if (op == "+" || op == "-") {
+            identity = tagged_.packInt64(ConstantInt::get(ctx_.int64Type(), 0), true);
+        } else { // "*" or "/"
+            identity = tagged_.packInt64(ConstantInt::get(ctx_.int64Type(), 1), true);
+        }
     }
 
-    // Check if list is empty
-    Value* is_empty = ctx_.builder().CreateICmpEQ(list_int, ConstantInt::get(ctx_.int64Type(), 0));
+    Value* is_empty = ctx_.builder().CreateICmpEQ(list_int,
+        ConstantInt::get(ctx_.int64Type(), 0));
 
-    BasicBlock* empty_block = BasicBlock::Create(ctx_.context(), "apply_arith_empty", current_func);
-    BasicBlock* non_empty = BasicBlock::Create(ctx_.context(), "apply_arith_non_empty", current_func);
-    BasicBlock* loop_cond = BasicBlock::Create(ctx_.context(), "apply_arith_cond", current_func);
-    BasicBlock* loop_body = BasicBlock::Create(ctx_.context(), "apply_arith_body", current_func);
-    BasicBlock* done_block = BasicBlock::Create(ctx_.context(), "apply_arith_done", current_func);
-    BasicBlock* loop_exit = BasicBlock::Create(ctx_.context(), "apply_arith_exit", current_func);
+    BasicBlock* empty_block = BasicBlock::Create(ctx_.context(), "apply_red_empty", current_func);
+    BasicBlock* non_empty   = BasicBlock::Create(ctx_.context(), "apply_red_non_empty", current_func);
+    BasicBlock* loop_cond   = BasicBlock::Create(ctx_.context(), "apply_red_cond", current_func);
+    BasicBlock* loop_body   = BasicBlock::Create(ctx_.context(), "apply_red_body", current_func);
+    BasicBlock* done_block  = BasicBlock::Create(ctx_.context(), "apply_red_done", current_func);
+    BasicBlock* loop_exit   = BasicBlock::Create(ctx_.context(), "apply_red_exit", current_func);
 
     ctx_.builder().CreateCondBr(is_empty, empty_block, non_empty);
 
-    // Empty list: return identity
+    // Empty list: return identity or raise for ops without one.
     ctx_.builder().SetInsertPoint(empty_block);
-    ctx_.builder().CreateBr(loop_exit);
+    if (has_identity) {
+        ctx_.builder().CreateBr(loop_exit);
+    } else {
+        std::string msg = "(apply " + op + " '()): " + op +
+            " requires at least one argument";
+        arith_.emitTypeError(msg.c_str());
+        // emitTypeError emits CreateUnreachable; guard with a sentinel branch
+        // so the block remains well-formed for later PHI incoming edges.
+    }
 
-    // Non-empty list: get first element as initial accumulator
+    // Non-empty list: first element as initial accumulator.
     ctx_.builder().SetInsertPoint(non_empty);
     Value* first_cons = ctx_.builder().CreateIntToPtr(list_int, ctx_.ptrType());
     Value* first_elem = extractConsCarAsTaggedValue(first_cons);
     Value* is_cdr = ConstantInt::get(ctx_.int1Type(), 1);
     Value* rest_list = ctx_.builder().CreateCall(cons_get_ptr, {first_cons, is_cdr});
 
-    // Allocate accumulator and current pointer
     Value* accum_ptr = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "apply_accum");
     ctx_.builder().CreateStore(first_elem, accum_ptr);
     Value* current_ptr = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "apply_current");
@@ -380,46 +429,46 @@ Value* CallApplyCodegen::applyArithmetic(const std::string& op, Value* list_int)
 
     ctx_.builder().CreateBr(loop_cond);
 
-    // Loop condition: check if current != null
     ctx_.builder().SetInsertPoint(loop_cond);
     Value* current_val = ctx_.builder().CreateLoad(ctx_.int64Type(), current_ptr);
-    Value* is_not_null = ctx_.builder().CreateICmpNE(current_val, ConstantInt::get(ctx_.int64Type(), 0));
+    Value* is_not_null = ctx_.builder().CreateICmpNE(current_val,
+        ConstantInt::get(ctx_.int64Type(), 0));
     ctx_.builder().CreateCondBr(is_not_null, loop_body, done_block);
 
-    // Loop body: apply operation
     ctx_.builder().SetInsertPoint(loop_body);
     Value* cons_ptr = ctx_.builder().CreateIntToPtr(current_val, ctx_.ptrType());
     Value* elem = extractConsCarAsTaggedValue(cons_ptr);
     Value* accum = ctx_.builder().CreateLoad(ctx_.taggedValueType(), accum_ptr);
 
-    // Apply the operation using ArithmeticCodegen
+    // Dispatch to the shared ArithmeticCodegen binary operation. All of these
+    // (add/sub/mul/div/min/max) return a tagged_value with correct type
+    // promotion (int → double, bignum, etc.).
     Value* new_accum;
-    if (op == "+") {
-        new_accum = arith_.add(accum, elem);
-    } else if (op == "-") {
-        new_accum = arith_.sub(accum, elem);
-    } else if (op == "*") {
-        new_accum = arith_.mul(accum, elem);
-    } else { // "/"
-        new_accum = arith_.div(accum, elem);
+    if      (op == "+")   new_accum = arith_.add(accum, elem);
+    else if (op == "-")   new_accum = arith_.sub(accum, elem);
+    else if (op == "*")   new_accum = arith_.mul(accum, elem);
+    else if (op == "/")   new_accum = arith_.div(accum, elem);
+    else if (op == "min") new_accum = arith_.min(accum, elem);
+    else if (op == "max") new_accum = arith_.max(accum, elem);
+    else {
+        eshkol_error("applyReduction: unsupported operation '%s'", op.c_str());
+        return tagged_.packNull();
     }
 
     ctx_.builder().CreateStore(new_accum, accum_ptr);
 
-    // Move to next element
     Value* next_val = ctx_.builder().CreateCall(cons_get_ptr, {cons_ptr, is_cdr});
     ctx_.builder().CreateStore(next_val, current_ptr);
     ctx_.builder().CreateBr(loop_cond);
 
-    // Done block: load final accumulator value
     ctx_.builder().SetInsertPoint(done_block);
     Value* final_accum = ctx_.builder().CreateLoad(ctx_.taggedValueType(), accum_ptr);
     ctx_.builder().CreateBr(loop_exit);
 
-    // Loop exit: return result
     ctx_.builder().SetInsertPoint(loop_exit);
-    PHINode* result = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2, "apply_result");
-    result->addIncoming(identity, empty_block);
+    PHINode* result = ctx_.builder().CreatePHI(ctx_.taggedValueType(),
+        has_identity ? 2 : 1, "apply_result");
+    if (has_identity) result->addIncoming(identity, empty_block);
     result->addIncoming(final_accum, done_block);
 
     return result;
@@ -446,12 +495,28 @@ Value* CallApplyCodegen::applyUserFunction(Function* func, Value* list_int) {
     Function* cons_get_ptr = getTaggedConsGetPtrFunc();
     if (!cons_get_ptr) return tagged_.packNull();
 
-    // Check if this is a variadic function
+    // Check if this is a variadic function. Bug S (2026-04-23): in REPL
+    // mode, top-level user defines get mangled to "<name>__rv<N>" for
+    // hot-reload while variadic_function_info_ keys on the user-visible
+    // unmangled name. Without stripping the "__rv<N>" suffix the lookup
+    // misses, is_variadic stays false, and apply extracts the FIRST
+    // element of the rest list as the lone fixed argument — so
+    //   (apply f '(#t))  with  (define (f . opts) …)
+    // gives f's "opts" param the value #t (a non-pair) instead of '(#t).
+    // (car opts) then raises "argument is not a pair" mid-display.
     bool is_variadic = false;
     uint64_t fixed_params = func->arg_size();
 
     if (variadic_function_info_) {
         auto variadic_it = variadic_function_info_->find(func_name);
+        if (variadic_it == variadic_function_info_->end()) {
+            // Try the unmangled name (REPL hot-reload pattern).
+            auto rv_pos = func_name.rfind("__rv");
+            if (rv_pos != std::string::npos) {
+                std::string unmangled = func_name.substr(0, rv_pos);
+                variadic_it = variadic_function_info_->find(unmangled);
+            }
+        }
         if (variadic_it != variadic_function_info_->end()) {
             is_variadic = variadic_it->second.second;
             if (is_variadic) {

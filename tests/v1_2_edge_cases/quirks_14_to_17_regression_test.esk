@@ -1,0 +1,94 @@
+;; mode: jit
+;; Quirks 14-17 regression suite — encode current correct behavior so
+;; future regressions are caught. All four bugs were filed by Noesis
+;; during agent development; 14 and 15 are fixed in code; 16 and 17 are
+;; either non-reproducible on isolated tests or doc-only.
+
+(require stdlib)
+
+(display "=== Quirks 14-17 Regression Suite ===") (newline)
+
+(define pass-count 0)
+(define fail-count 0)
+(define (check name cond)
+  (if cond
+      (begin (set! pass-count (+ pass-count 1))
+             (display "PASS: ") (display name) (newline))
+      (begin (set! fail-count (+ fail-count 1))
+             (display "FAIL: ") (display name) (newline))))
+
+;; --- Quirk 14: set!-over-let-bound + nested named-let -----------------
+;; The fix (commit d0ae487) ensures captured outer storage is loaded
+;; through pointer-typed Instructions on entry, and synced back after
+;; the loop returns. Test: a named-let that mutates an outer let-bound.
+(define (q14-test)
+  (let ((acc 0))
+    (let loop ((i 0))
+      (cond ((>= i 5) acc)
+            (else (set! acc (+ acc i)) (loop (+ i 1)))))))
+(check "Quirk 14: named-let captures + sync-back"
+       (= (q14-test) 10))
+
+;; --- Quirk 15: Unicode char literals + (string …) round-trip ----------
+;; The fix (commit 06ae47e) makes the reader consume the right number of
+;; UTF-8 bytes for non-ASCII char literals, and (string ch …) emits
+;; proper UTF-8.
+(check "Quirk 15: ASCII char round-trip"
+       (equal? (string #\h #\i) "hi"))
+(check "Quirk 15: 2-byte UTF-8 char (#\\é)"
+       (= (string-length (string #\é)) 1))
+(check "Quirk 15: 3-byte UTF-8 char (#\\█)"
+       (= (string-length (string #\█)) 1))
+
+;; --- Quirk 16: forward-ref between sibling defines (same file) --------
+;; Defining helper BELOW its caller in the same file. R7RS top-level
+;; semantics permit this; it should resolve at compile-time link.
+(define (q16-caller x) (q16-helper (* x 2)))
+(define (q16-helper y) (+ y 100))
+(check "Quirk 16: caller-above-helper top-level forward ref"
+       (= (q16-caller 5) 110))
+
+;; Forward ref inside let* body
+(define (q16-let* xs query)
+  (let* ((scored (q16-loop xs query)))
+    (if (null? scored) 0 (length scored))))
+(define (q16-loop xs query)
+  (cond ((null? xs) '()) (else (cons (car xs) (q16-loop (cdr xs) query)))))
+(check "Quirk 16: forward ref inside let* body"
+       (= (q16-let* (list 1 2 3) 'q) 3))
+
+;; --- Quirk 17: ':keyword + let-bound name in (assoc ...) --------------
+;; The reader must parse ':keyword as (quote :keyword), with `:keyword`
+;; being a regular symbol whose name has a leading colon. Lookup must
+;; round-trip when both alist and lookup use the same form.
+(define (q17-mkalist a) (list (cons ':first a)))
+(define (q17-test)
+  (let ((rec (q17-mkalist 99)))
+    (cdr (assoc ':first rec))))
+(check "Quirk 17: ':keyword cons + assoc with let-bound name"
+       (= (q17-test) 99))
+
+;; ':keyword is a symbol, not a 2-element quote-form
+(check "Quirk 17: ':keyword parses as symbol"
+       (symbol? ':template))
+(check "Quirk 17: ':keyword name preserves colon"
+       (equal? (symbol->string ':template) ":template"))
+(check "Quirk 17: ':keyword eq? to identical literal"
+       (eq? ':template ':template))
+
+;; user-defined function with ':keyword in argument position followed
+;; by let-bound — the original Noesis report's exact pattern (with
+;; matching keys this time so the test is meaningful).
+(define (q17-lookup k al) (cdr (assoc k al)))
+(define (q17-via-fn)
+  (let ((rec (list (cons ':first 42))))
+    (q17-lookup ':first rec)))
+(check "Quirk 17: user fn with ':keyword + let-bound arg"
+       (= (q17-via-fn) 42))
+
+(display "---") (newline)
+(display "Total: ") (display (+ pass-count fail-count))
+(display ", PASS: ") (display pass-count)
+(display ", FAIL: ") (display fail-count)
+(newline)
+(if (> fail-count 0) (exit 1))

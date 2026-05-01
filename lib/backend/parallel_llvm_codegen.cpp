@@ -1434,17 +1434,69 @@ llvm::Value* ParallelCodegen::parallelMap(const eshkol_operations_t* op) {
     if (!arena_ptr) return nullptr;
 
     // =========================================================================
-    // PURE LLVM PARALLEL-MAP IMPLEMENTATION
+    // REAL PARALLEL-MAP: dispatch to eshkol_parallel_map (thread pool backend)
     // =========================================================================
-    // No C runtime - everything generated in LLVM IR
+    // Prior revision inlined a sequential loop in LLVM IR which made
+    // parallel-map indistinguishable from map at runtime (1.0x speedup on
+    // bench 06). The thread pool C runtime (parallel_codegen.cpp ::
+    // eshkol_parallel_map) submits each item as a task to the work-stealing
+    // pool and waits on futures — that is the architectural parallel path.
     //
-    // Algorithm:
-    // 1. Check if list is null → return null
-    // 2. Loop over list elements:
-    //    - Extract car from cons cell
-    //    - Call unary dispatcher (fn car)
-    //    - Build result list
-    // 3. Return result list
+    // Signature: void eshkol_parallel_map(
+    //     eshkol_tagged_value_t fn,      (pass-by-value)
+    //     eshkol_tagged_value_t list,
+    //     arena_t* arena,
+    //     eshkol_tagged_value_t* out_result)
+    //
+    // declareParallelMap() has already declared this function in the module.
+
+    // Route through the thread-pool backend only when the program explicitly
+    // opts in (ESHKOL_PARALLEL_ENABLE=1). The backend itself is sound — the
+    // thread pool materialises tasks correctly — but running arithmetic
+    // codepaths concurrently reveals thread-safety issues in the polymorphic
+    // dispatch (AD mode/tape is process-global, not thread-local) that the
+    // codebase already documents under task #108. Until the arithmetic path
+    // is made thread-safe, the safe default is the sequential inlined loop
+    // (which produces correct results at 1.0x speedup).
+    const char* env = std::getenv("ESHKOL_PARALLEL_ENABLE");
+    if (env && env[0] == '1') {
+        llvm::Function* pmap_sret = ctx_.module().getFunction("eshkol_parallel_map_sret");
+        if (!pmap_sret) {
+            llvm::FunctionType* ft = llvm::FunctionType::get(ctx_.voidType(),
+                {ctx_.ptrType(), ctx_.ptrType(), ctx_.ptrType(), ctx_.ptrType()},
+                false);
+            pmap_sret = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+                "eshkol_parallel_map_sret", &ctx_.module());
+        }
+
+        llvm::Value* result_slot = ctx_.builder().CreateAlloca(
+            ctx_.taggedValueType(), nullptr, "pmap_result");
+        llvm::Value* fn_slot = ctx_.builder().CreateAlloca(
+            ctx_.taggedValueType(), nullptr, "pmap_fn");
+        ctx_.builder().CreateStore(fn_val, fn_slot);
+        llvm::Value* list_slot = ctx_.builder().CreateAlloca(
+            ctx_.taggedValueType(), nullptr, "pmap_list");
+        ctx_.builder().CreateStore(list_val, list_slot);
+
+        ctx_.builder().CreateCall(pmap_sret,
+            {result_slot, fn_slot, list_slot, arena_ptr});
+
+        return ctx_.builder().CreateLoad(ctx_.taggedValueType(), result_slot, "pmap_loaded");
+    }
+
+    // Fall through to sequential inlined implementation.
+    return parallelMapSequentialInline(op);
+}
+
+// Retained for historical reference / potential sequential fallback path.
+llvm::Value* ParallelCodegen::parallelMapSequentialInline(const eshkol_operations_t* op) {
+    // Get fn and list arguments
+    llvm::Value* fn_raw = codegen_ast_callback_(&op->call_op.variables[0], callback_context_);
+    llvm::Value* fn_val = ensureTaggedValue(fn_raw);
+    llvm::Value* list_raw = codegen_ast_callback_(&op->call_op.variables[1], callback_context_);
+    llvm::Value* list_val = ensureTaggedValue(list_raw);
+    llvm::Value* arena_ptr = getArenaPtr();
+    if (!arena_ptr) return nullptr;
 
     llvm::LLVMContext& llvm_ctx = ctx_.context();
     llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();

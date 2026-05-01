@@ -9,6 +9,13 @@
 #include "eshkol/backend/cpu_features.h"
 #include "eshkol/logger.h"
 #include <cstdlib>
+
+// Forward declarations for arena allocation (avoid full include to prevent type conflicts with XLA stubs)
+extern "C" {
+    typedef struct arena arena_t;
+    arena_t* get_global_arena(void);
+    void* arena_allocate(arena_t* arena, size_t size);
+}
 #include <cstring>
 
 // GPU backend for hardware acceleration
@@ -909,8 +916,9 @@ void eshkol_matmul_backward_f64(
                 /* GPU matmul doesn't support CblasTrans — need explicit transpose.
                  * Transpose B → B^T, then: grad_A = grad_out @ B^T via eshkol_gpu_matmul_f64
                  * Transpose A → A^T, then: grad_B = A^T @ grad_out via eshkol_gpu_matmul_f64 */
-                double* B_T = (double*)malloc((size_t)(K * N) * sizeof(double));
-                double* A_T = (double*)malloc((size_t)(M * K) * sizeof(double));
+                arena_t* bwd_a = get_global_arena();
+                double* B_T = (double*)arena_allocate(bwd_a, (size_t)(K * N) * sizeof(double));
+                double* A_T = (double*)arena_allocate(bwd_a, (size_t)(M * K) * sizeof(double));
                 if (B_T && A_T) {
                     transpose_f64(saved_B, B_T, K, N);  // B(K,N) → B^T(N,K)
                     transpose_f64(saved_A, A_T, M, K);  // A(M,K) → A^T(K,M)
@@ -924,23 +932,22 @@ void eshkol_matmul_backward_f64(
                             eshkol_gpu_free(&buf_go); eshkol_gpu_free(&buf_bt); eshkol_gpu_free(&buf_ga);
 
                             /* grad_B = A^T @ grad_out: (K,M) @ (M,N) -> (K,N) */
-                            EshkolGPUBuffer buf_at, buf_go2, buf_gb;
-                            if (eshkol_gpu_wrap_host(A_T, K*M*sizeof(double), &buf_at) == 0 &&
-                                eshkol_gpu_wrap_host((void*)grad_out, M*N*sizeof(double), &buf_go2) == 0 &&
-                                eshkol_gpu_wrap_host(grad_B, K*N*sizeof(double), &buf_gb) == 0) {
-                                if (eshkol_gpu_matmul_f64(&buf_at, &buf_go2, &buf_gb, K, M, N) == 0) {
-                                    eshkol_gpu_free(&buf_at); eshkol_gpu_free(&buf_go2); eshkol_gpu_free(&buf_gb);
-                                    free(B_T); free(A_T);
-                                    return;  // GPU success for both gradients
-                                }
+                            EshkolGPUBuffer buf_at = {}, buf_go2 = {}, buf_gb = {};
+                            int w1 = eshkol_gpu_wrap_host(A_T, K*M*sizeof(double), &buf_at);
+                            int w2 = w1 == 0 ? eshkol_gpu_wrap_host((void*)grad_out, M*N*sizeof(double), &buf_go2) : -1;
+                            int w3 = w2 == 0 ? eshkol_gpu_wrap_host(grad_B, K*N*sizeof(double), &buf_gb) : -1;
+                            if (w3 == 0 && eshkol_gpu_matmul_f64(&buf_at, &buf_go2, &buf_gb, K, M, N) == 0) {
                                 eshkol_gpu_free(&buf_at); eshkol_gpu_free(&buf_go2); eshkol_gpu_free(&buf_gb);
+                                return;  // GPU success for both gradients
                             }
+                            if (w1 == 0) eshkol_gpu_free(&buf_at);
+                            if (w2 == 0) eshkol_gpu_free(&buf_go2);
+                            if (w3 == 0) eshkol_gpu_free(&buf_gb);
                         } else {
                             eshkol_gpu_free(&buf_go); eshkol_gpu_free(&buf_bt); eshkol_gpu_free(&buf_ga);
                         }
                     }
                 }
-                free(B_T); free(A_T);
                 // GPU failed, fall through to BLAS
             }
         }

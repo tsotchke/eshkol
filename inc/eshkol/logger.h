@@ -82,6 +82,9 @@ void eshkol_set_timestamps(bool enabled);
 // ============================================================================
 
 // Log a message at the specified level
+#ifdef __GNUC__
+__attribute__((format(printf, 2, 3)))
+#endif
 void eshkol_printf(eshkol_logger_t level, const char *msg, ...);
 
 // Log a stacktrace at the specified level
@@ -107,6 +110,17 @@ void eshkol_log_structured(eshkol_logger_t level,
 // ============================================================================
 // Convenience Macros
 // ============================================================================
+
+// Source-location-aware error reporting (clang/gcc diagnostic style)
+// Prints: file:line:col: error: message
+//         <source line>
+//         ~~~~^~~~~
+// If source_text is NULL, no caret line is printed.
+// If file is NULL, uses "<unknown>".
+void eshkol_error_at(const char* file, unsigned line, unsigned column,
+                     const char* source_text, const char* msg, ...);
+void eshkol_warn_at(const char* file, unsigned line, unsigned column,
+                    const char* source_text, const char* msg, ...);
 
 #define eshkol_fatal(...) eshkol_printf(ESHKOL_FATAL, __VA_ARGS__)
 #define eshkol_error(...) eshkol_printf(ESHKOL_ERROR, __VA_ARGS__)

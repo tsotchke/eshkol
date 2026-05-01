@@ -1,0 +1,53 @@
+;;; v1.2 Reverse-Mode AD Tape Test Suite
+;;; Tests the tape-based automatic differentiation API.
+
+(display "=== AD Tape: x^2 ===") (newline)
+
+;; f(x) = x^2, f'(x) = 2x
+;; At x=3: f(3) = 9, f'(3) = 6
+(define tape (ad-tape-new))
+(define x (ad-var tape 3.0))
+(define y (ad-mul tape x x))
+(ad-backward tape y)
+(display "f(3) = ") (display (ad-node-value tape y)) (newline)
+(display "f'(3) = ") (display (ad-gradient tape x)) (newline)
+
+(display "=== AD Tape: sin(x) ===") (newline)
+
+;; f(x) = sin(x), f'(x) = cos(x)
+;; At x=0: f(0) = 0, f'(0) = 1
+(define tape2 (ad-tape-new))
+(define x2 (ad-var tape2 0.0))
+(define y2 (ad-sin tape2 x2))
+(ad-backward tape2 y2)
+(display "sin(0) = ") (display (ad-node-value tape2 y2)) (newline)
+(display "cos(0) = ") (display (ad-gradient tape2 x2)) (newline)
+
+(display "=== AD Tape: exp(x) ===") (newline)
+
+;; f(x) = exp(x), f'(x) = exp(x)
+;; At x=1: f(1) = e, f'(1) = e
+(define tape3 (ad-tape-new))
+(define x3 (ad-var tape3 1.0))
+(define y3 (ad-exp tape3 x3))
+(ad-backward tape3 y3)
+(display "exp(1) = ") (display (ad-node-value tape3 y3)) (newline)
+(display "exp'(1) = ") (display (ad-gradient tape3 x3)) (newline)
+
+(display "=== AD Tape: a*b + c ===") (newline)
+
+;; f(a,b,c) = a*b + c, df/da = b, df/db = a, df/dc = 1
+;; At a=2, b=3, c=4: f = 10, df/da = 3, df/db = 2, df/dc = 1
+(define tape4 (ad-tape-new))
+(define a (ad-var tape4 2.0))
+(define b (ad-var tape4 3.0))
+(define c (ad-var tape4 4.0))
+(define ab (ad-mul tape4 a b))
+(define f (ad-add tape4 ab c))
+(ad-backward tape4 f)
+(display "f(2,3,4) = ") (display (ad-node-value tape4 f)) (newline)
+(display "df/da = ") (display (ad-gradient tape4 a)) (newline)
+(display "df/db = ") (display (ad-gradient tape4 b)) (newline)
+(display "df/dc = ") (display (ad-gradient tape4 c)) (newline)
+
+(display "ALL PASS") (newline)

@@ -1,0 +1,75 @@
+;; main_substring_name_test.esk — Noesis Bug U (2026-04-23)
+;;
+;; The REPL JIT's entry-function picker used substring find() against
+;; the literal "main". Any user function whose LLVM symbol name
+;; contained "main" anywhere — including "remaining" (chars 2–5:
+;; m-a-i-n), "remain", "remainder", "remainx", "remainrestart",
+;; "budget-remaining", "main-menu", "run-main" — was picked as the
+;; batch's entry function and renamed to __repl_batch_eval_N. The
+;; user's real function body was lost (the rename overwrote it); the
+;; actual main wrapper was never found; the program silently exited
+;; with no diagnostic and no output (stdout was buffered, flushed at
+;; exit with nothing in it).
+;;
+;; Fix: match "main" and "__top_level" as WHOLE names, not substrings.
+;; The REPL batch wrapper is always named exactly "main".
+;;
+;; Surfaced while Noesis Hiereia added `budget-remaining` /
+;; `b-set-remaining!` in src/core/budget/budget.esk. Workaround was
+;; to rename to `budget-tokens` / `b-set-tokens!`.
+
+(require stdlib)
+
+(define passed 0)
+(define failed 0)
+(define (check name cond)
+  (if cond
+      (begin (display "PASS: ") (display name) (newline)
+             (set! passed (+ passed 1)))
+      (begin (display "FAIL: ") (display name) (newline)
+             (set! failed (+ failed 1)))))
+
+;; Case 1: the canonical Bug U triggers
+(define (remain x) x)
+(check "remain"               (= (remain 42) 42))
+(define (remaining x) x)
+(check "remaining"            (= (remaining 42) 42))
+(define (remainder-user x) x)
+(check "remainder-user"       (= (remainder-user 42) 42))
+(define (remainx x) x)
+(check "remainx"              (= (remainx 42) 42))
+(define (remainrestart x) x)
+(check "remainrestart"        (= (remainrestart 42) 42))
+(define (budget-remaining x) x)
+(check "budget-remaining"     (= (budget-remaining 42) 42))
+
+;; Case 2: "main" as a substring ANYWHERE in the name
+(define (main-menu) 'menu)
+(check "main-menu prefix"     (eq? (main-menu) 'menu))
+(define (run-main) 'ran)
+(check "run-main suffix"      (eq? (run-main) 'ran))
+(define (domain-x x) x)
+(check "domain-x (main inside)" (= (domain-x 7) 7))
+
+;; Case 3: "__top_level" as a substring
+(define (user-__top_level-helper x) x)
+(check "user-__top_level-helper" (= (user-__top_level-helper 5) 5))
+
+;; Case 4: regression guard — definitions that used to work keep working
+(define (other x) x)
+(check "other (regression)"   (= (other 42) 42))
+(define (tokens-left x) x)
+(check "tokens-left (regression)" (= (tokens-left 10) 10))
+
+;; Case 5: regression guard — the batch has non-define expressions too
+;; This would silently exit 0 with no output before the fix
+(display "CHECKPOINT-A") (newline)
+(define (remaining-check-b x) x)
+(display "CHECKPOINT-B") (newline)
+(check "batch interleaving survives remain-prefix define"
+       (= (remaining-check-b 999) 999))
+
+(newline)
+(display "Passed: ") (display passed) (newline)
+(display "Failed: ") (display failed) (newline)
+(if (> failed 0) (exit 1) (exit 0))

@@ -76,6 +76,8 @@ extern "C" {
     void eshkol_type_error_with_value(const char* proc_name, const char* expected_type,
                                        const char* actual_type);
     int64_t eshkol_shapes_equal(const int64_t* shape_a, const int64_t* shape_b, int64_t rank);
+    void eshkol_batch_matmul_f64(const double* a, const double* b, double* c,
+                                  int64_t batch, int64_t M, int64_t K, int64_t N);
     int64_t eshkol_broadcast_elementwise_f64(
         const double* a_data, const int64_t* a_shape, int64_t a_rank,
         const double* b_data, const int64_t* b_shape, int64_t b_rank,
@@ -86,6 +88,7 @@ extern "C" {
     int64_t eshkol_utf8_strlen(const char* s);
     int64_t eshkol_utf8_ref(const char* s, int64_t k);
     char* eshkol_utf8_substring(const char* s, int64_t start, int64_t end, void* arena);
+    int64_t eshkol_unwrap_list_index(const eshkol_tagged_value_t* tv);
 #ifdef _WIN32
     double drand48(void);
     int clock_gettime(int clock_id, void* ts_raw);
@@ -202,6 +205,18 @@ void ReplJITContext::initializeJIT() {
 
     jit_ = std::move(*jit_or_err);
 
+    // Install a custom error reporter that suppresses "became defunct" messages.
+    // These fire during JIT teardown when a resource tracker is invalidated while
+    // modules are still registered — the computation already completed successfully,
+    // so this is a harmless cleanup-ordering artifact, not a real error.
+    jit_->getExecutionSession().setErrorReporter([](Error Err) {
+        handleAllErrors(std::move(Err), [](ErrorInfoBase& EIB) {
+            if (EIB.message().find("became defunct") == std::string::npos) {
+                std::cerr << "JIT session error: " << EIB.message() << "\n";
+            }
+        });
+    });
+
     // Enable REPL mode in the compiler for cross-evaluation symbol persistence
     eshkol_repl_enable();
 
@@ -252,8 +267,21 @@ void ReplJITContext::registerRuntimeSymbols() {
         }
 
     // Helper macro to add a data symbol (global variable)
+    // NOTE: Regular (non-TLS) globals are found by DynamicLibrarySearchGenerator via dlsym,
+    // so the unmangled ES.intern name works (the generator handles the mangling internally).
     #define ADD_DATA_SYMBOL(name) \
         symbols[ES.intern(#name)] = { \
+            orc::ExecutorAddr::fromPtr((void*)&name), \
+            JITSymbolFlags::Exported \
+        }
+
+    // Helper macro for thread_local data symbols.
+    // DynamicLibrarySearchGenerator cannot find TLS symbols via dlsym, so we MUST register
+    // them here with the MANGLED name (MangleAndInterner adds the platform prefix, e.g. '_'
+    // on macOS, so @__foo in IR → "_" + "__foo" = "___foo" which matches the JIT lookup).
+    orc::MangleAndInterner Mangle(ES, DL);
+    #define ADD_TLS_SYMBOL(name) \
+        symbols[Mangle(#name)] = { \
             orc::ExecutorAddr::fromPtr((void*)&name), \
             JITSymbolFlags::Exported \
         }
@@ -394,6 +422,7 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_SYMBOL(eshkol_model_load_tagged);
     ADD_SYMBOL(eshkol_shapes_equal);
     ADD_SYMBOL(eshkol_broadcast_elementwise_f64);
+    ADD_SYMBOL(eshkol_batch_matmul_f64);
 
     // ===== BIGNUM / RATIONAL NUMERICS =====
     ADD_SYMBOL(eshkol_bignum_from_overflow);
@@ -418,6 +447,7 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_SYMBOL(eshkol_utf8_strlen);
     ADD_SYMBOL(eshkol_utf8_ref);
     ADD_SYMBOL(eshkol_utf8_substring);
+    ADD_SYMBOL(eshkol_unwrap_list_index);
 
     // ===== BLAS ACCELERATION =====
     // Runtime matmul with automatic BLAS/scalar dispatch
@@ -504,8 +534,20 @@ void ReplJITContext::registerRuntimeSymbols() {
     // AD tape pointer (for gradient/jacobian operations)
     ADD_DATA_SYMBOL(__current_ad_tape);
 
-    // AD mode flag (CRITICAL: must be shared so lambdas see AD mode set by other modules)
+    // AD mode flag (shared so lambdas see AD mode set by other modules)
     ADD_DATA_SYMBOL(__ad_mode_active);
+
+    // Double-backward / higher-order AD globals (tape stack, outer AD state)
+    // These are thread_local — must use ADD_TLS_SYMBOL (mangled name) so the JIT can resolve them.
+    ADD_TLS_SYMBOL(__ad_tape_stack);
+    ADD_TLS_SYMBOL(__ad_tape_depth);
+    ADD_TLS_SYMBOL(__outer_ad_node_storage);
+    ADD_TLS_SYMBOL(__outer_ad_node_to_inner);
+    ADD_TLS_SYMBOL(__outer_grad_accumulator);
+    ADD_TLS_SYMBOL(__inner_var_node_ptr);
+    ADD_TLS_SYMBOL(__gradient_x_degree);
+    ADD_TLS_SYMBOL(__outer_ad_node_stack);
+    ADD_TLS_SYMBOL(__outer_ad_node_depth);
 
     // Shared arena pointer (persistent across REPL evaluations)
     ADD_DATA_SYMBOL(__repl_shared_arena);
@@ -533,6 +575,7 @@ void ReplJITContext::registerRuntimeSymbols() {
 
     #undef ADD_SYMBOL
     #undef ADD_DATA_SYMBOL
+    #undef ADD_TLS_SYMBOL
 
     // Add all symbols to the main dylib
     auto& main_dylib = jit_->getMainJITDylib();
@@ -551,16 +594,30 @@ void ReplJITContext::registerRuntimeSymbols() {
 
 // Stub function called when a forward-referenced function hasn't been defined yet
 static eshkol_tagged_value __repl_forward_ref_stub() {
-    // Raise an exception so that (guard ...) can catch it in user code
+    // Raise an exception so that (guard ...) can catch it in user code.
+    // This is the LEGACY path — the call-site guard added for Bug W (see
+    // eshkol_check_forward_ref) preempts most calls with a named error.
+    // This stub still runs if a forward-ref-bearing pointer escapes
+    // through other paths (apply, function-as-value, REPL eval).
     eshkol_exception_t* exc = eshkol_make_exception(
         ESHKOL_EXCEPTION_ERROR,
-        "called a forward-referenced function that was never defined");
+        "called a forward-referenced function that was never defined "
+        "(name unknown — direct invocation through a captured pointer; "
+        "use the named call site for a clearer error)");
     if (exc) {
         eshkol_raise(exc);
     }
-    // If raise returns (no handler installed), fall back to returning null
     eshkol_tagged_value result = {};
     return result;
+}
+
+// Bug W: published stub address used by the call-site guard to detect
+// unresolved forward refs. Codegen loads this via the symbol
+// `eshkol_repl_forward_ref_stub_addr` and passes it to
+// eshkol_check_forward_ref so the helper can compare without needing
+// link-time access to the C++ static.
+extern "C" void* eshkol_repl_forward_ref_stub_addr(void) {
+    return reinterpret_cast<void*>(&__repl_forward_ref_stub);
 }
 
 static bool is_repl_runtime_global(const llvm::GlobalVariable& global_var) {
@@ -1072,6 +1129,7 @@ void ReplJITContext::registerStdlibSymbols() {
                 Module& mod = **mod_or_err;
                 size_t func_count = 0, global_count = 0;
 
+                size_t variadic_count = 0;
                 for (auto& F : mod) {
                     if (F.isDeclaration()) continue;
                     if (F.hasInternalLinkage()) continue;
@@ -1086,20 +1144,79 @@ void ReplJITContext::registerStdlibSymbols() {
                     defined_lambdas_[name] = {name, arity};
                     registered_lambdas_.insert(name);
                     func_count++;
+
+                    // Scheme-level variadic signature is erased from the IR
+                    // (make-list, partial, log-info, etc. all lower to a single
+                    // tagged_value arg — indistinguishable from a 1-arg fixed
+                    // function at the bitcode level). The compiler writes
+                    // fixed-param count into the "eshkol-variadic" string
+                    // attribute when the define lowers; read it back here so a
+                    // REPL caller crossing from user code into precompiled
+                    // stdlib knows to cons surplus args into a rest list. Skip
+                    // this step and e.g. `(make-list 3 'x)` silently packs the
+                    // second arg as the whole args list and `(cdr args)` in
+                    // the stdlib body reads garbage.
+                    if (F.hasFnAttribute("eshkol-variadic")) {
+                        auto attr = F.getFnAttribute("eshkol-variadic");
+                        size_t fixed_params = 0;
+                        try {
+                            fixed_params = std::stoul(attr.getValueAsString().str());
+                        } catch (...) {
+                            fixed_params = 0;
+                        }
+                        eshkol_repl_register_variadic_function(
+                            name.c_str(), fixed_params, true);
+                        variadic_count++;
+                    }
                 }
 
                 for (auto& G : mod.globals()) {
                     std::string name = G.getName().str();
-                    // Register _sexpr globals so codegen doesn't redefine them
+                    if (name.empty()) continue;
+
+                    // _sexpr globals: int64 alias to S-expression metadata.
+                    // Registered so codegen doesn't redefine them.
                     if (name.size() > 6 && name.compare(name.size() - 6, 6, "_sexpr") == 0) {
                         eshkol_repl_register_symbol(name.c_str(), 0);
                         defined_globals_.insert(name);
                         global_count++;
+                        continue;
+                    }
+
+                    // Tagged-value data globals: top-level `(define name expr)`
+                    // where `expr` is a value (not a lambda) lowers to a
+                    // GlobalVariable of type `eshkol_tagged_value`. Without
+                    // this registration, references to such names from inside
+                    // a `delay`-generated lambda or any free-var-captured
+                    // closure body fall through to the "Undefined variable"
+                    // error in lib/backend/llvm_codegen.cpp:7518 — the codegen
+                    // path that emits an external GlobalVariable load (~7480)
+                    // is gated on g_repl_symbol_addresses containing the name.
+                    //
+                    // Discovered while implementing SRFI 41 streams (#174):
+                    // `stream-null` is the empty stream, defined as a plain
+                    // value at module top level. `(stream-cons head (delay
+                    // stream-null))` failed because `stream-null` inside the
+                    // delay's lambda was not findable.
+                    if (G.hasInternalLinkage() || G.hasPrivateLinkage()) continue;
+                    if (name.rfind("__eshkol_", 0) == 0) continue;
+                    if (name.rfind("llvm.", 0) == 0) continue;
+
+                    llvm::Type* gt = G.getValueType();
+                    if (gt && gt->isStructTy()) {
+                        auto* st = llvm::cast<llvm::StructType>(gt);
+                        if (st->hasName() && st->getName() == "eshkol_tagged_value") {
+                            eshkol_repl_register_symbol(name.c_str(), 0);
+                            defined_globals_.insert(name);
+                            global_count++;
+                        }
                     }
                 }
 
                 std::cerr << "[REPL] Discovered " << func_count << " functions, "
-                          << global_count << " globals from stdlib.bc" << std::endl;
+                          << global_count << " globals, "
+                          << variadic_count << " variadic entries "
+                          << "from stdlib.bc" << std::endl;
                 return;
             } else {
                 consumeError(mod_or_err.takeError());
@@ -1113,6 +1230,10 @@ void ReplJITContext::registerStdlibSymbols() {
 }
 
 bool ReplJITContext::loadStdlib() {
+    if (stdlib_object_loaded_) {
+        return true;  // Already loaded — idempotent.
+    }
+
     if (!jit_) {
         initializeJIT();
     }
@@ -1126,7 +1247,33 @@ bool ReplJITContext::loadStdlib() {
             auto err = jit_->addObjectFile(main_dylib, std::move(*buffer_or_err));
             if (!err) {
                 registerStdlibSymbols();
+
+                // Run the stdlib module-level initializer. Compiled binaries
+                // call __eshkol_lib_init__(arena) from main() to populate every
+                // module-local define (e.g. core.data.base64's base64-chars
+                // alphabet, core.json's JSON_SPACE, core.testing's counters).
+                // addObjectFile alone does NOT execute the initializer — the
+                // globals would stay zero-initialised and any consumer of
+                // those constants would index out of bounds. Look up and call
+                // it explicitly with the shared REPL arena.
+                if (auto lib_init = jit_->lookup("__eshkol_lib_init__")) {
+                    using LibInitFn = void (*)(void*);
+                    auto fn = reinterpret_cast<LibInitFn>(lib_init->getValue());
+                    fn(shared_arena_);
+                } else {
+                    // Not fatal — programs that only touch stdlib functions
+                    // (no module-level constants) will keep working — but log
+                    // the miss so a `base64-chars is empty` symptom has an
+                    // obvious explanation.
+                    consumeError(lib_init.takeError());
+                    std::cerr << "[REPL] Warning: stdlib.o loaded but "
+                                 "__eshkol_lib_init__ not found — module "
+                                 "constants remain zero-initialised."
+                              << std::endl;
+                }
+
                 std::cerr << "[REPL] Loaded stdlib from: " << stdlib_obj_path << std::endl;
+                stdlib_object_loaded_ = true;
                 return true;
             } else {
                 std::string err_msg;
@@ -1143,6 +1290,9 @@ bool ReplJITContext::loadStdlib() {
     loading_stdlib_from_source_ = true;
     const bool loaded = loadModule("stdlib", false);
     loading_stdlib_from_source_ = was_loading_stdlib_from_source;
+    if (loaded) {
+        stdlib_object_loaded_ = true;
+    }
     return loaded;
 }
 
@@ -1156,12 +1306,20 @@ bool ReplJITContext::loadModule(const std::string& module_name, bool allow_preco
         return true;  // Already loaded via stdlib.o
     }
 
-    // For stdlib or core.* modules, use precompiled stdlib.o if available
+    // For stdlib or core.* modules, use precompiled stdlib.o if available.
+    // stdlib.o does NOT include every core.* module (core.testing is the
+    // obvious example — heavy state, not commonly used). After loading
+    // stdlib.o we re-check whether the requested name was registered by
+    // registerStdlibSymbols; if it wasn't, fall through to JIT compile
+    // the individual source file.
     if (allow_precompiled_stdlib && !loading_stdlib_from_source_ &&
         (module_name == "stdlib" || module_name.find("core.") == 0)) {
-        // Try to load via stdlib.o (which includes all core modules)
         if (loadStdlib()) {
-            return true;
+            if (loaded_modules.count(module_name)) {
+                return true;  // Module is genuinely in stdlib.o — done.
+            }
+            // Module name starts with core.* but stdlib.o doesn't carry
+            // it — JIT-compile the source below.
         }
         // If stdlib.o loading failed, fall through to JIT compilation
     }
@@ -1352,6 +1510,10 @@ static std::vector<eshkol_ast_t> parseAllAstsFromString(const std::string& conte
     std::vector<eshkol_ast_t> results;
     std::istringstream stream(content);
 
+    // Fresh parse session — reset cumulative line counter so the first
+    // form starts at line 1 within `content`.
+    ::eshkol_reset_parse_line_counter();
+
     while (stream.good() && !stream.eof()) {
         // Skip whitespace and comments
         while (stream.good()) {
@@ -1505,10 +1667,19 @@ void* ReplJITContext::executeBatch(std::vector<eshkol_ast_t>& asts, bool silent)
     LLVMModuleRef c_module = eshkol_generate_llvm_ir(asts.data(), asts.size(), module_name.c_str());
 
     if (!c_module) {
+        // Quirk #6 (2026-04-23): throw on codegen/verify failure so the
+        // -r / -e caller propagates a non-zero exit status. Previously
+        // this returned nullptr and the CLI's try/catch swallowed the
+        // failure, exiting 0 with only a stderr notice — which made
+        // failing LLVM verifies (Bug T before fix, Bug U, misplaced
+        // allocas, cross-file dominance bugs) look like "no output"
+        // rather than "your program never ran." The message on stderr
+        // is still emitted via eshkol_error inside generateLLVMIR; this
+        // additionally ensures the exit status communicates the error.
         if (!silent) {
             std::cerr << "Failed to generate LLVM IR from batch" << std::endl;
         }
-        return nullptr;
+        throw std::runtime_error("LLVM IR generation failed for REPL batch");
     }
 
     Module* cpp_module = module_from_ref(c_module);
@@ -1517,7 +1688,7 @@ void* ReplJITContext::executeBatch(std::vector<eshkol_ast_t>& asts, bool silent)
         if (!silent) {
             std::cerr << "Failed to unwrap LLVM module" << std::endl;
         }
-        return nullptr;
+        throw std::runtime_error("Failed to unwrap LLVM module for REPL batch");
     }
 
     // REPL SYMBOL PERSISTENCE: Inject declarations for previously-defined symbols
@@ -1557,8 +1728,16 @@ void* ReplJITContext::executeBatch(std::vector<eshkol_ast_t>& asts, bool silent)
             continue;
         }
         std::string fname = func.getName().str();
-        if (fname.find("__top_level") != std::string::npos ||
-            fname.find("main") != std::string::npos) {
+        // Bug U (2026-04-23): match "main" and "__top_level" as WHOLE
+        // names, not substrings. A substring find() matched any user
+        // function containing "main" or "__top_level" anywhere in its
+        // identifier — "remaining" (has "main" at index 2), "main-menu"
+        // (prefix), "run-main" (suffix), etc. — and picked the user's
+        // function as the batch entry, renaming it to
+        // __repl_batch_eval_0 and erasing the rest of the batch. The
+        // REPL entry is always exactly "main" (generated by the batch
+        // wrapper); use == here.
+        if (fname == "__top_level" || fname == "main") {
             entry_func = &func;
             break;
         }
@@ -1570,9 +1749,16 @@ void* ReplJITContext::executeBatch(std::vector<eshkol_ast_t>& asts, bool silent)
                 continue;
             }
             std::string fname = func.getName().str();
-            if (fname.find("display") != std::string::npos ||
-                fname.find("print") != std::string::npos ||
-                fname.find("__internal") != std::string::npos ||
+            // Bug U lesson: substring matches are dangerous for names.
+            // The first-pass path (above) already hardened to exact name
+            // equality. The fallback is for generators that don't emit
+            // a canonical "main" — we skip known non-entry patterns by
+            // exact name where possible, or by the underscore-prefix
+            // convention for internal helpers. Anything else is a
+            // legitimate entry-point candidate.
+            if (fname == "display" || fname == "print" || fname == "newline" ||
+                fname == "write" || fname == "write-char" ||
+                fname.starts_with("__internal") ||
                 func.hasLocalLinkage()) {
                 continue;
             }
@@ -1584,6 +1770,29 @@ void* ReplJITContext::executeBatch(std::vector<eshkol_ast_t>& asts, bool silent)
     std::string func_name;
     if (entry_func) {
         func_name = entry_func->getName().str();
+        // Bug U safeguard (2026-04-24): if we're about to rename a user-
+        // defined function to __repl_batch_eval_N, something upstream is
+        // wrong — the module should always contain an explicit "main"
+        // wrapper, and the fallback path should not pick a user-define.
+        // Renaming would destroy the user's function body and leave the
+        // REPL with no actual entry point. Fail fast with a diagnostic
+        // instead of silently producing a broken batch.
+        bool looks_like_user_define =
+            defined_lambdas_.find(func_name) != defined_lambdas_.end() ||
+            func_name.find("__rv") != std::string::npos ||
+            (entry_func->hasExternalLinkage() &&
+             func_name.find("__repl_") != 0 &&
+             func_name != "main" && func_name != "__top_level");
+        if (looks_like_user_define && !silent) {
+            std::cerr << "Internal error: REPL batch has no 'main' entry — "
+                      << "about to rename user function '" << func_name
+                      << "' as the batch entry, which would lose its body. "
+                      << "Aborting. Please file as an Eshkol compiler bug."
+                      << std::endl;
+            throw std::runtime_error(
+                "REPL batch has no 'main' entry; refusing to rename user '" +
+                func_name + "' to __repl_batch_eval_N");
+        }
         std::string unique_func_name = "__repl_batch_eval_" + std::to_string(eval_counter_);
         entry_func->setName(unique_func_name);
         func_name = unique_func_name;
@@ -1692,6 +1901,31 @@ void* ReplJITContext::execute(eshkol_ast_t* ast) {
         throw std::runtime_error("Cannot execute null AST");
     }
 
+    // TOP-LEVEL SEQUENCE FLATTENING (Noesis#3 / v1.2.1-hardened)
+    //
+    // define-record-type, make-parameter, and other macro-style parser
+    // expansions emit a SEQUENCE_OP wrapping multiple DEFINE_OPs. The
+    // single-module codegen path below treats SEQUENCE_OP as a function-
+    // body sequence, which makes inner DEFINEs behave like let-bindings
+    // (local) rather than top-level definitions. Symbols like `mk`, `p?`,
+    // `px` then fail to resolve in subsequent top-level expressions with
+    // the "called a forward-referenced function" diagnostic.
+    //
+    // Fix: when execute() sees SEQUENCE_OP at top level, recursively call
+    // execute() on each inner expression. This gives each DEFINE_OP its
+    // own module and registers the symbol in the shared JIT dylib as a
+    // first-class top-level binding. Returns the result of the last
+    // sub-expression (sequence-of-expressions semantics).
+    if (ast->type == ESHKOL_OP && ast->operation.op == ESHKOL_SEQUENCE_OP) {
+        void* last_result = nullptr;
+        for (uint64_t i = 0; i < ast->operation.sequence_op.num_expressions; i++) {
+            eshkol_ast_t* sub = &ast->operation.sequence_op.expressions[i];
+            if (sub->type == ESHKOL_INVALID) continue;
+            last_result = execute(sub);
+        }
+        return last_result;
+    }
+
     // IMPORT/REQUIRE HANDLING: Load and execute imported files
     if (ast->type == ESHKOL_OP) {
         // Handle (import "path/to/file.esk")
@@ -1715,6 +1949,12 @@ void* ReplJITContext::execute(eshkol_ast_t* ast) {
                 canonical_path = std::filesystem::canonical(import_path).string();
             } catch (...) {
                 std::cerr << "Import file not found: " << import_path << std::endl;
+                return nullptr;
+            }
+
+            // X3: Reject paths that escape the project directory via ".." traversal
+            if (canonical_path.find("..") != std::string::npos) {
+                std::cerr << "Import path escapes project directory: " << canonical_path << std::endl;
                 return nullptr;
             }
 
@@ -2187,11 +2427,20 @@ eshkol_tagged_value_t ReplJITContext::executeTagged(eshkol_ast_t* ast) {
             case ESHKOL_VAR:
             case ESHKOL_OP:
             default:
-                // For VAR, OP, and other complex AST nodes without type info,
-                // we cannot determine the type - return as null with warning
-                // The caller should ensure type checking runs before eval
-                result.type = ESHKOL_VALUE_NULL;
-                result.data.raw_val = 0;
+                // For VAR, OP, and other complex AST nodes, the JIT function
+                // returns the result as an int32 from main(). For expressions
+                // that produce numeric results, treat as int64.
+                // This handles (+ 1 2), (sin 0.5), variable references, etc.
+                if (raw_val != 0) {
+                    // Try to interpret as integer result (most common case)
+                    result.type = ESHKOL_VALUE_INT64;
+                    result.flags = ESHKOL_VALUE_EXACT_FLAG;
+                    result.data.int_val = raw_val;
+                } else {
+                    result.type = ESHKOL_VALUE_INT64;
+                    result.flags = ESHKOL_VALUE_EXACT_FLAG;
+                    result.data.int_val = 0;
+                }
                 return result;
         }
     }

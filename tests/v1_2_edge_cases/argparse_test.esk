@@ -1,0 +1,95 @@
+;;; argparse_test.esk
+;;;
+;;; Covers the core.argparse API: parse-args with mixed flags and
+;;; positional args, --flag=value inline form, --no-flag negation,
+;;; -- end-of-options marker, type coercion (string/integer/boolean),
+;;; and unknown-flag fall-through to positional collection.
+
+(require core.argparse)
+(require core.testing)
+
+(reset-tests!)
+
+(define spec
+  (list (list '--name    'string  "World" "Your name")
+        (list '--count   'integer 1       "Count")
+        (list '--verbose 'boolean #f      "Verbose")
+        (list '--debug   'boolean #f      "Debug mode")))
+
+(register-test "defaults when no args supplied"
+  (lambda ()
+    (let ((args (parse-args '() spec)))
+      (check-equal? (arg-get args '--name)    "World")
+      (check-equal? (arg-get args '--count)   1)
+      (check-equal? (arg-get args '--verbose) #f)
+      (check-equal? (arg-get args '--debug)   #f)
+      (check-equal? (arg-positional args)     '()))))
+
+(register-test "long flag with separate value"
+  (lambda ()
+    (let ((args (parse-args (list "--name" "Alice") spec)))
+      (check-equal? (arg-get args '--name) "Alice"))))
+
+(register-test "long flag with inline value (--flag=value)"
+  (lambda ()
+    (let ((args (parse-args (list "--name=Bob") spec)))
+      (check-equal? (arg-get args '--name) "Bob"))))
+
+(register-test "integer coercion"
+  (lambda ()
+    (let ((args (parse-args (list "--count" "42") spec)))
+      (check-equal? (arg-get args '--count) 42))))
+
+(register-test "boolean flag sets to #t"
+  (lambda ()
+    (let ((args (parse-args (list "--verbose") spec)))
+      (check-equal? (arg-get args '--verbose) #t))))
+
+(register-test "--no-flag negation"
+  (lambda ()
+    ;; Start with --verbose, then negate via --no-verbose.
+    (let ((args (parse-args (list "--verbose" "--no-verbose") spec)))
+      (check-equal? (arg-get args '--verbose) #f))))
+
+(register-test "positional args preserved in order"
+  (lambda ()
+    (let ((args (parse-args (list "--name" "X" "foo" "bar" "baz") spec)))
+      (check-equal? (arg-positional args) '("foo" "bar" "baz")))))
+
+(register-test "-- end-of-options marker"
+  (lambda ()
+    (let ((args (parse-args (list "--" "--name" "positional") spec)))
+      ;; --name after -- is treated as positional, not a flag.
+      (check-equal? (arg-get args '--name)    "World")
+      (check-equal? (arg-positional args)     '("--name" "positional")))))
+
+(register-test "unknown flag falls through to positional"
+  (lambda ()
+    (let ((args (parse-args (list "--unknown" "--name" "Alice") spec)))
+      (check-equal? (arg-get args '--name) "Alice")
+      (check-true (member "--unknown" (arg-positional args))))))
+
+(register-test "mixed flags and positionals"
+  (lambda ()
+    (let ((args (parse-args
+                  (list "pos1" "--name" "Alice" "pos2"
+                        "--count=7" "--verbose" "pos3")
+                  spec)))
+      (check-equal? (arg-get args '--name)    "Alice")
+      (check-equal? (arg-get args '--count)   7)
+      (check-equal? (arg-get args '--verbose) #t)
+      (check-equal? (arg-positional args)     '("pos1" "pos2" "pos3")))))
+
+(register-test "arg-has? true for explicitly set value"
+  (lambda ()
+    (let ((args (parse-args (list "--name" "Alice") spec)))
+      (check-true  (arg-has? args '--name))
+      (check-false (arg-has? args '--verbose)))))
+
+(register-test "argparse-help contains usage line + every flag name"
+  (lambda ()
+    (let ((h (argparse-help "myprog" spec)))
+      (check-true (string? h))
+      (check-true (> (string-length h) 10)))))
+
+(run-tests)

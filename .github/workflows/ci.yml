@@ -98,6 +98,22 @@ jobs:
             test_command: ./scripts/run_xla_tests.sh
             upload_artifact: 'false'
             artifact_name: ''
+          # Sanitizer lanes (per v1.2 release audit, blocker #10).
+          # ASan and UBSan are compatible together; both run the v1.2
+          # edge-case suite which is the most likely place to surface
+          # memory-safety / UB regressions.  TSan and MSan are deferred
+          # — TSan needs LLVM-21-built-with-tsan-runtime which the
+          # apt.llvm.org packages don't ship; MSan needs an MSan-built
+          # libstdc++ which is even more involved.
+          - name: linux-x64-asan-ubsan
+            runner: ubuntu-22.04
+            build_dir: build-asan
+            xla_enabled: 'OFF'
+            gpu_enabled: 'OFF'
+            sanitizer_flags: '-DESHKOL_ENABLE_ASAN=ON -DESHKOL_ENABLE_UBSAN=ON'
+            test_command: ./scripts/run_v1_2_edge_cases_tests.sh
+            upload_artifact: 'false'
+            artifact_name: ''
 
     steps:
       - uses: actions/checkout@v4
@@ -148,7 +164,8 @@ jobs:
             -DESHKOL_REQUIRED_LLVM_MAJOR="${LLVM_MAJOR}" \
             -DLLVM_CONFIG_EXECUTABLE="$LLVM_CONFIG" \
             -DESHKOL_XLA_ENABLED=${{ matrix.xla_enabled }} \
-            -DESHKOL_GPU_ENABLED=${{ matrix.gpu_enabled }}
+            -DESHKOL_GPU_ENABLED=${{ matrix.gpu_enabled }} \
+            ${{ matrix.sanitizer_flags }}
 
       - name: Build
         shell: bash

@@ -1,0 +1,161 @@
+;;
+;; plot.esk - Terminal plotting for Eshkol
+;;
+;; Provides:
+;;   (sparkline data)          → string of Unicode block characters
+;;   (bar-chart entries)       → displays horizontal bar chart
+;;   (histogram data n-bins)   → displays frequency histogram
+;;
+;; Uses Unicode block characters: ▁▂▃▄▅▆▇█
+;; No external dependencies — pure Eshkol stdlib.
+;;
+
+(provide sparkline bar-chart histogram)
+
+;; ════════════════════════════════════════════════════════════════════
+;; Sparkline — compact inline visualization of a numeric sequence
+;; (sparkline '(1 4 2 8 5 3 7)) → "▁▄▂█▅▃▇"
+;; ════════════════════════════════════════════════════════════════════
+
+;; Unicode block elements: indices 0-7 map to ▁▂▃▄▅▆▇█
+(define (sparkline-char idx)
+  (cond
+    ((= idx 0) "▁")
+    ((= idx 1) "▂")
+    ((= idx 2) "▃")
+    ((= idx 3) "▄")
+    ((= idx 4) "▅")
+    ((= idx 5) "▆")
+    ((= idx 6) "▇")
+    (else      "█")))
+
+(define (sparkline data)
+  (if (null? data)
+      ""
+      (let ((mn (sparkline-min data))
+            (mx (sparkline-max data)))
+        (if (= mn mx)
+            (sparkline-build data mn mx "")
+            (sparkline-build data mn mx "")))))
+
+(define (sparkline-build data mn mx acc)
+  (if (null? data)
+      acc
+      (let ((v (car data))
+            (range (- mx mn)))
+        (let ((idx (if (= range 0)
+                       3
+                       (min 7 (floor (* (/ (- v mn) range) 7.999))))))
+          (sparkline-build (cdr data) mn mx
+                          (string-append acc (sparkline-char (inexact->exact (floor idx)))))))))
+
+;; Min/max: explicit recursion with direct < > comparison.
+;; Safe for data up to ~10K elements (Eshkol has 512MB stack).
+(define (sparkline-min lst)
+  (if (null? (cdr lst))
+      (car lst)
+      (let ((rest-min (sparkline-min (cdr lst))))
+        (if (< (car lst) rest-min) (car lst) rest-min))))
+
+(define (sparkline-max lst)
+  (if (null? (cdr lst))
+      (car lst)
+      (let ((rest-max (sparkline-max (cdr lst))))
+        (if (> (car lst) rest-max) (car lst) rest-max))))
+
+;; ════════════════════════════════════════════════════════════════════
+;; Bar Chart — horizontal bars with labels
+;; (bar-chart '(("Alpha" 10) ("Beta" 25) ("Gamma" 15)))
+;; Prints:
+;;   Alpha  ████████░░░░░░░░░░░░  10
+;;   Beta   ████████████████████  25
+;;   Gamma  ████████████░░░░░░░░  15
+;; ════════════════════════════════════════════════════════════════════
+
+(define bar-chart-width 30)
+
+(define (bar-chart entries)
+  (if (null? entries)
+      '()
+      (let ((mx (bar-chart-max-val entries)))
+        (bar-chart-rows entries mx))))
+
+(define (bar-chart-rows entries mx)
+  (if (null? entries)
+      '()
+      (let ((entry (car entries)))
+        (let ((label (car entry))
+              (val (car (cdr entry))))
+          (let ((filled (if (= mx 0) 0 (inexact->exact (floor (* (/ val mx) bar-chart-width)))))
+                (empty (- bar-chart-width (if (= mx 0) 0 (inexact->exact (floor (* (/ val mx) bar-chart-width)))))))
+            (display (bar-chart-pad-right label 8))
+            (display " ")
+            (bar-chart-repeat "█" filled)
+            (bar-chart-repeat "░" empty)
+            (display "  ")
+            (display val)
+            (newline)
+            (bar-chart-rows (cdr entries) mx))))))
+
+(define (bar-chart-max-val entries)
+  (if (null? entries)
+      0
+      (max (car (cdr (car entries)))
+           (bar-chart-max-val (cdr entries)))))
+
+(define (bar-chart-repeat ch n)
+  (if (<= n 0)
+      '()
+      (begin (display ch) (bar-chart-repeat ch (- n 1)))))
+
+(define (bar-chart-pad-right s width)
+  (if (>= (string-length s) width)
+      s
+      (bar-chart-pad-right (string-append s " ") width)))
+
+;; ════════════════════════════════════════════════════════════════════
+;; Histogram — frequency distribution of numeric data
+;; (histogram '(1 2 2 3 3 3 4 4 5) 5)
+;; Prints bucket ranges and bar chart of frequencies
+;; ════════════════════════════════════════════════════════════════════
+
+(define (histogram data n-bins)
+  (if (or (null? data) (<= n-bins 0))
+      '()
+      (let ((mn (sparkline-min data))
+            (mx (sparkline-max data)))
+        (let ((range (- mx mn)))
+          (let ((bin-width (if (= range 0) 1 (/ range n-bins))))
+            (histogram-display data mn bin-width n-bins 0))))))
+
+(define (histogram-display data mn bin-width n-bins i)
+  (if (>= i n-bins)
+      '()
+      (let ((lo (+ mn (* i bin-width)))
+            (hi (+ mn (* (+ i 1) bin-width))))
+        (let ((count (histogram-count data lo hi (= i (- n-bins 1)))))
+          (display "[")
+          (display (histogram-fmt lo))
+          (display ", ")
+          (display (histogram-fmt hi))
+          (display ") ")
+          (bar-chart-repeat "█" count)
+          (display " ")
+          (display count)
+          (newline)
+          (histogram-display data mn bin-width n-bins (+ i 1))))))
+
+(define (histogram-count data lo hi inclusive)
+  (if (null? data)
+      0
+      (let ((v (car data)))
+        (+ (if (and (>= v lo)
+                    (if inclusive (<= v hi) (< v hi)))
+               1 0)
+           (histogram-count (cdr data) lo hi inclusive)))))
+
+(define (histogram-fmt v)
+  (let ((s (number->string (* (floor (* v 100)) 0.01))))
+    (if (> (string-length s) 6)
+        (substring s 0 6)
+        s)))

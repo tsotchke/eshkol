@@ -100,6 +100,20 @@ const char* eshkol_logic_var_name(uint64_t var_id);
 /* Check if a tagged value is a logic variable */
 bool eshkol_is_logic_var(const eshkol_tagged_value_t* tv);
 
+/*
+ * Clear the process-global logic-variable name registry AND the
+ * predicate interning pool. Used by (reset-tests!) to achieve full
+ * test isolation — without this, two consecutive test runs share
+ * logic-variable IDs and predicate canonical pointers, which can
+ * surface as stale unification results or false-positive eq?
+ * matches across test boundaries.
+ *
+ * NOT thread-safe. Call from the main thread only, between test
+ * batches or REPL session resets. Calling while logic operations
+ * are in flight on another thread is a data race.
+ */
+void eshkol_logic_registry_reset(void);
+
 /* ===== Substitution ===== */
 
 /*
@@ -178,6 +192,16 @@ void eshkol_kb_assert(arena_t* arena, eshkol_knowledge_base_t* kb,
  * initial_subst may be NULL (uses empty substitution).
  */
 eshkol_tagged_value_t eshkol_kb_query(arena_t* arena,
+    const eshkol_knowledge_base_t* kb, const eshkol_fact_t* pattern,
+    const eshkol_substitution_t* initial_subst);
+
+/*
+ * Prefix variant of eshkol_kb_query. Accepts patterns whose arity is <= the
+ * fact's arity, unifying only the first pattern-arity argument pairs. Useful
+ * for KBs with mixed arities or provenance-extended tails where the caller
+ * wants "match any fact with this head and these prefix args".
+ */
+eshkol_tagged_value_t eshkol_kb_query_prefix(arena_t* arena,
     const eshkol_knowledge_base_t* kb, const eshkol_fact_t* pattern,
     const eshkol_substitution_t* initial_subst);
 

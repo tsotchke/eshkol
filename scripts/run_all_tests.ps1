@@ -325,7 +325,7 @@ function Invoke-ProcessCapture {
         [string]$FilePath,
         [string[]]$Arguments = @(),
         [string]$WorkingDirectory,
-        [int]$TimeoutSec = 0,
+        [int]$TimeoutSec = 120,
         [string]$InputText = ""
     )
 
@@ -447,7 +447,7 @@ function Invoke-SimpleCompileRunSuite {
         [string[]]$Patterns,
         [string]$FailRegex = "",
         [string]$RuntimeErrorRegex = "",
-        [int]$TimeoutSec = 0,
+        [int]$TimeoutSec = 120,
         [switch]$Recurse
     )
 

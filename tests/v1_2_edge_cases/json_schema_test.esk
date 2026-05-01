@@ -1,0 +1,216 @@
+;;; tests/v1_2_edge_cases/json_schema_test.esk
+;;; JSON Schema (Draft 7 subset) validator (#172).
+
+(require stdlib)
+
+(define total 0)
+(define passed 0)
+
+(define (check name expected actual)
+  (set! total (+ total 1))
+  (cond
+    ((equal? expected actual)
+     (set! passed (+ passed 1))
+     (display "PASS: ") (display name) (newline))
+    (else
+     (display "FAIL: ") (display name)
+     (display " — expected ") (write expected)
+     (display ", got ") (write actual) (newline))))
+
+(define (valid? schema value) (json-schema-valid? schema value))
+
+(display "=== type ===") (newline)
+
+(define s-int   (json-parse "{\"type\": \"integer\"}"))
+(define s-str   (json-parse "{\"type\": \"string\"}"))
+(define s-num   (json-parse "{\"type\": \"number\"}"))
+(define s-bool  (json-parse "{\"type\": \"boolean\"}"))
+(define s-arr   (json-parse "{\"type\": \"array\"}"))
+(define s-obj   (json-parse "{\"type\": \"object\"}"))
+(define s-null  (json-parse "{\"type\": \"null\"}"))
+
+(check "integer 42 ok"          #t (valid? s-int 42))
+(check "integer 'hi' rejected"  #f (valid? s-int "hi"))
+(check "integer 1.5 rejected"   #f (valid? s-int 1.5))
+(check "number 1.5 ok"          #t (valid? s-num 1.5))
+(check "number 42 ok"           #t (valid? s-num 42))
+(check "string 'hi' ok"         #t (valid? s-str "hi"))
+(check "string 42 rejected"     #f (valid? s-str 42))
+(check "boolean #t ok"          #t (valid? s-bool #t))
+(check "boolean 1 rejected"     #f (valid? s-bool 1))
+(check "array empty ok"         #t (valid? s-arr (list)))
+(check "array nonempty ok"      #t (valid? s-arr (list 1 2 3)))
+(check "object {} ok"           #t (valid? s-obj (json-parse "{}")))
+(check "null '() ok"            #t (valid? s-null (list)))
+
+(display "=== type union ===") (newline)
+
+(define s-union (json-parse "{\"type\": [\"integer\", \"string\"]}"))
+(check "union accepts int"      #t (valid? s-union 42))
+(check "union accepts string"   #t (valid? s-union "hi"))
+(check "union rejects float"    #f (valid? s-union 1.5))
+
+(display "=== enum / const ===") (newline)
+
+(define s-enum (json-parse "{\"enum\": [\"red\", \"green\", \"blue\"]}"))
+(check "enum hit"               #t (valid? s-enum "red"))
+(check "enum miss"              #f (valid? s-enum "purple"))
+
+(define s-const (json-parse "{\"const\": 42}"))
+(check "const exact"            #t (valid? s-const 42))
+(check "const wrong value"      #f (valid? s-const 41))
+
+(display "=== string rules ===") (newline)
+
+(define s-pwd (json-parse
+  "{\"type\": \"string\", \"minLength\": 8, \"maxLength\": 64}"))
+(check "string minLength ok"    #t (valid? s-pwd "abcdefgh"))
+(check "string minLength fail"  #f (valid? s-pwd "short"))
+(check "string maxLength fail"  #f
+       (valid? s-pwd "this is a string that is much longer than the sixty four char cap and so should fail"))
+
+(define s-email (json-parse
+  "{\"type\": \"string\", \"pattern\": \"@\"}"))
+(check "string pattern hit"     #t (valid? s-email "alice@example.com"))
+(check "string pattern miss"    #f (valid? s-email "no-at-sign"))
+
+(display "=== number rules ===") (newline)
+
+(define s-age (json-parse
+  "{\"type\": \"integer\", \"minimum\": 0, \"maximum\": 120}"))
+(check "age 30 ok"              #t (valid? s-age 30))
+(check "age -1 rejected"        #f (valid? s-age -1))
+(check "age 200 rejected"       #f (valid? s-age 200))
+
+(define s-strict (json-parse
+  "{\"type\": \"number\", \"exclusiveMinimum\": 0, \"exclusiveMaximum\": 1}"))
+(check "exclusive 0.5 ok"       #t (valid? s-strict 0.5))
+(check "exclusive 0 rejected"   #f (valid? s-strict 0))
+(check "exclusive 1 rejected"   #f (valid? s-strict 1))
+
+(display "=== array rules ===") (newline)
+
+(define s-tags (json-parse
+  "{\"type\": \"array\", \"items\": {\"type\": \"string\"}, \"minItems\": 1, \"maxItems\": 5}"))
+(check "tags 3 strings ok"      #t (valid? s-tags (list "a" "b" "c")))
+(check "tags empty rejected"    #f (valid? s-tags (list)))
+(check "tags too many rejected" #f (valid? s-tags (list "a" "b" "c" "d" "e" "f")))
+(check "tags wrong type"        #f (valid? s-tags (list "a" 2 "c")))
+
+(display "=== object rules ===") (newline)
+
+(define s-user (json-parse
+  "{\"type\": \"object\",
+    \"properties\": {
+      \"name\":  {\"type\": \"string\", \"minLength\": 1},
+      \"age\":   {\"type\": \"integer\", \"minimum\": 0},
+      \"email\": {\"type\": \"string\", \"pattern\": \"@\"}
+    },
+    \"required\": [\"name\", \"email\"]}"))
+
+(check "user complete ok"       #t
+       (valid? s-user (json-parse "{\"name\":\"alice\",\"age\":30,\"email\":\"a@x.io\"}")))
+(check "user no age ok"         #t
+       (valid? s-user (json-parse "{\"name\":\"alice\",\"email\":\"a@x.io\"}")))
+(check "user missing required"  #f
+       (valid? s-user (json-parse "{\"name\":\"alice\"}")))
+(check "user bad email"         #f
+       (valid? s-user (json-parse "{\"name\":\"alice\",\"email\":\"not-email\"}")))
+(check "user bad age type"      #f
+       (valid? s-user (json-parse "{\"name\":\"alice\",\"email\":\"a@x.io\",\"age\":\"thirty\"}")))
+
+(display "=== additionalProperties ===") (newline)
+
+(define s-strict-obj (json-parse
+  "{\"type\": \"object\",
+    \"properties\": {\"id\": {\"type\": \"integer\"}},
+    \"additionalProperties\": false}"))
+
+(check "strict obj ok"          #t (valid? s-strict-obj (json-parse "{\"id\":1}")))
+(check "strict obj extra rejected" #f
+       (valid? s-strict-obj (json-parse "{\"id\":1,\"extra\":\"nope\"}")))
+
+(display "=== combinators ===") (newline)
+
+(define s-anyof (json-parse
+  "{\"anyOf\": [{\"type\": \"integer\"}, {\"type\": \"string\"}]}"))
+(check "anyOf int"              #t (valid? s-anyof 42))
+(check "anyOf string"           #t (valid? s-anyof "hi"))
+(check "anyOf neither"          #f (valid? s-anyof 1.5))
+
+(define s-oneof (json-parse
+  "{\"oneOf\": [
+     {\"type\": \"integer\", \"minimum\": 0},
+     {\"type\": \"integer\", \"maximum\": -1}]}"))
+(check "oneOf positive matches" #t (valid? s-oneof 5))
+(check "oneOf negative matches" #t (valid? s-oneof -5))
+;; Both schemas are both-int — overlap when value=0? No, second is max -1.
+;; Both apply only to integers — for non-integer, nothing matches.
+(check "oneOf non-integer none" #f (valid? s-oneof "hi"))
+
+(define s-allof (json-parse
+  "{\"allOf\": [
+     {\"type\": \"integer\"},
+     {\"minimum\": 10},
+     {\"maximum\": 20}]}"))
+(check "allOf 15 ok"            #t (valid? s-allof 15))
+(check "allOf 5 below"          #f (valid? s-allof 5))
+(check "allOf 25 above"         #f (valid? s-allof 25))
+(check "allOf string fails one" #f (valid? s-allof "hi"))
+
+(define s-not (json-parse "{\"not\": {\"type\": \"string\"}}"))
+(check "not string: integer ok" #t (valid? s-not 42))
+(check "not string: rejects"    #f (valid? s-not "hi"))
+
+(display "=== nested object/array ===") (newline)
+
+(define s-nested (json-parse
+  "{\"type\": \"object\",
+    \"properties\": {
+      \"users\": {
+        \"type\": \"array\",
+        \"items\": {
+          \"type\": \"object\",
+          \"properties\": {
+            \"name\": {\"type\": \"string\"},
+            \"score\": {\"type\": \"integer\", \"minimum\": 0}
+          },
+          \"required\": [\"name\"]
+        }
+      }
+    }}"))
+
+(check "nested ok"              #t
+       (valid? s-nested (json-parse
+         "{\"users\":[{\"name\":\"a\",\"score\":10},{\"name\":\"b\",\"score\":20}]}")))
+(check "nested bad inner score" #f
+       (valid? s-nested (json-parse
+         "{\"users\":[{\"name\":\"a\",\"score\":10},{\"name\":\"b\",\"score\":-5}]}")))
+(check "nested missing inner name" #f
+       (valid? s-nested (json-parse
+         "{\"users\":[{\"score\":10}]}")))
+
+(display "=== error messages carry path ===") (newline)
+
+(define errs (json-schema-validate s-nested
+  (json-parse "{\"users\":[{\"name\":\"a\",\"score\":-5}]}")))
+(check "got exactly 1 error"    1 (length errs))
+;; Error string should mention /users/0/score and minimum.
+(check "error mentions path"    #t
+       (and (>= (string-index (car errs) "/users/0/score") 0)
+            (>= (string-index (car errs) "minimum") 0)))
+
+(display "=== schema=#t/#f shorthand ===") (newline)
+
+(check "schema #t accepts anything" #t (valid? #t "anything"))
+(check "schema #f rejects anything" #f (valid? #f "anything"))
+
+(newline)
+(display "---") (newline)
+(display "Total: ") (display total)
+(display ", PASS: ") (display passed)
+(display ", FAIL: ") (display (- total passed)) (newline)
+
+(if (= passed total)
+    (begin (display "ALL OK") (newline))
+    (begin (display "SOME FAILED") (newline) (exit 1)))

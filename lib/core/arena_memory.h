@@ -85,6 +85,36 @@ void arena_push_scope(arena_t* arena);
 void arena_pop_scope(arena_t* arena);
 void arena_reset(arena_t* arena);
 
+// Per-thread arena management (v1.2)
+// Each thread gets its own arena for lock-free allocation during parallel execution.
+// Worker arenas are merged into the parent arena when parallel tasks complete.
+
+/** Get or create the current thread's arena.
+ *  Returns the thread-local arena if in a worker thread, else the global arena. */
+arena_t* arena_get_thread_local(void);
+
+/** Create a new thread-local arena for the current thread.
+ *  @param size_hint  Initial block size (0 = default 1MB) */
+arena_t* arena_create_thread_local(size_t size_hint);
+
+/** Merge all blocks from src arena into dest arena.
+ *  After merge, src is empty (reset) but still valid for reuse.
+ *  This is used to collect worker thread allocations into the main arena. */
+void arena_merge_to_parent(arena_t* dest, arena_t* src);
+
+/** Check if the current thread is a worker thread. */
+int arena_is_worker_thread(void);
+
+/** Initialise all thread-local runtime state for a worker thread.
+ *  Eagerly creates the thread-local arena and touches AD tape stack / region
+ *  stack TLS slots so they are ready before the first task executes.
+ *  Safe to call multiple times (idempotent). */
+void eshkol_thread_init_worker(size_t arena_size_hint);
+
+/** Tear down all thread-local runtime state for a worker thread.
+ *  Destroys the thread-local arena. Safe to call multiple times. */
+void eshkol_thread_shutdown_worker(void);
+
 // Statistics and debugging
 size_t arena_get_used_memory(const arena_t* arena);
 size_t arena_get_total_memory(const arena_t* arena);
@@ -193,11 +223,12 @@ ad_node_t* arena_allocate_ad_node(arena_t* arena);
 ad_node_t* arena_allocate_ad_node_with_header(arena_t* arena);  // For consolidated CALLABLE type
 ad_node_t* arena_allocate_ad_batch(arena_t* arena, size_t count);
 
-// Global tape pointer for AD operations (shared across JIT modules in REPL)
+// Global tape pointer for AD operations (shared across JIT modules in REPL).
+// Not thread_local due to cross-platform LLVM↔C TLS ABI constraints.
+// Thread safety: AD tape stack (__ad_tape_stack) is thread_local.
 extern ad_tape_t* __current_ad_tape;
 
-// Global AD mode flag (shared across JIT modules in REPL)
-// CRITICAL: This must be shared so lambdas from one module can see AD mode set by another
+// Global AD mode flag (shared across JIT modules in REPL).
 extern bool __ad_mode_active;
 
 // Debug helper to print AD mode state
@@ -215,7 +246,12 @@ extern char** __eshkol_argv;
 
 // Global arena for default allocations
 extern arena_t* __global_arena;
-arena_t* get_global_arena();
+arena_t* get_global_arena(void);
+
+/** Get the global shared arena, bypassing per-thread override.
+ *  Use when allocation MUST go into the shared arena (e.g. building result lists
+ *  that will be returned to the main thread). */
+arena_t* get_global_arena_shared(void);
 
 // Tape allocation and management
 ad_tape_t* arena_allocate_tape(arena_t* arena, size_t initial_capacity);
@@ -246,6 +282,19 @@ struct eshkol_region {
 #define MAX_REGION_DEPTH 64
 extern thread_local eshkol_region_t* __region_stack[MAX_REGION_DEPTH];
 extern thread_local uint64_t __region_stack_depth;
+
+// Thread-local AD tape stack for nested gradient operations (double-backward)
+// MAX_TAPE_DEPTH must match arena_memory.cpp and codegen_context.h
+#define ESHKOL_ARENA_MAX_TAPE_DEPTH 32
+extern thread_local ad_tape_t* __ad_tape_stack[ESHKOL_ARENA_MAX_TAPE_DEPTH];
+extern thread_local uint64_t __ad_tape_depth;
+extern thread_local void* __outer_ad_node_storage;
+extern thread_local void* __outer_ad_node_to_inner;
+extern thread_local void* __outer_grad_accumulator;
+extern thread_local void* __inner_var_node_ptr;
+extern thread_local uint64_t __gradient_x_degree;
+extern thread_local void* __outer_ad_node_stack[ESHKOL_ARENA_MAX_TAPE_DEPTH];
+extern thread_local uint64_t __outer_ad_node_depth;
 
 // Region lifecycle functions
 eshkol_region_t* region_create(const char* name, size_t size_hint);

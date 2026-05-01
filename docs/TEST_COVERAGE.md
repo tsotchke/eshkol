@@ -1,6 +1,6 @@
 # Eshkol v1.1-accelerate Test Coverage
 
-**Version**: v1.1.13-accelerate
+**Version**: v1.2.0-scale
 **Last Updated**: 2026-04-09
 **Status**: 35 suites, 438 tests, 100% pass rate
 

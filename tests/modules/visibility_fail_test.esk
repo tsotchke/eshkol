@@ -1,8 +1,51 @@
-;;; Test that private symbols are not accessible
-;;; Expected: Error - "Unknown function: helper"
+;;; visibility_fail_test.esk — module visibility under Bug Z semantics
+;;;
+;;; History: this test originally asserted that non-`provide`d
+;;; symbols from a required module are inaccessible — calling
+;;; `helper` should raise "Unknown function: helper".  The test
+;;; runner detected the negative-test assertion via a sentinel
+;;; comment on the original line 2 (the runner greps for that
+;;; sentinel; we deliberately don't repeat its text here so the
+;;; runner now treats this as a normal positive test).
+;;;
+;;; Bug Z (commit `1235e0a`, "fix(eshkol-run): (provide ...) is
+;;; informational, not a hard export boundary") deliberately removed
+;;; the strict export check.  The reason was that
+;;; `rename_private_symbols` mangled non-exported defines, which
+;;; broke cross-file calls that worked under JIT and matched
+;;; Eshkol stdlib's own use of `provide`.  After Bug Z, every
+;;; define from a `(require)`d module is reachable from the
+;;; requiring file, regardless of the `(provide)` list — `provide`
+;;; is informational documentation, not a hard boundary.
+;;;
+;;; This test now documents that semantics: `helper` IS callable,
+;;; and the test passes when the `(provide)`d symbols and the
+;;; non-provided helper all return the expected values.  The file
+;;; name is preserved for git history; re-naming would lose the
+;;; provenance trail.
+;;;
+;;; True module-private internals — where the compiler refuses to
+;;; resolve `helper` from outside `math_utils.esk` and emits a
+;;; helpful error — are v1.3 architectural work.  See
+;;; `notes/v1.2-audit-2026-04-30.md`.  The proper fix needs:
+;;;   (a) renaming non-provided defines to module-private names,
+;;;   (b) keeping cross-file calls to *provided* symbols working
+;;;       through the public name,
+;;;   (c) emitting "X is private to Y" when a foreign module tries
+;;;       to call a private name.
+
 (require test.modules.math_utils)
 
-;;; This should fail - helper is private
-(display "Trying to call private helper: ")
-(display (helper 5))
-(newline)
+(define dbl (double-it 5))
+(define sq  (square 3))
+(define h   (helper 5))
+
+(if (and (= dbl 10) (= sq 9) (= h 10))
+    (begin
+      (display "PASS: provide is informational; helper reachable as documented")
+      (newline))
+    (begin
+      (display "FAIL: dbl=") (display dbl)
+      (display " sq=") (display sq)
+      (display " h=") (display h) (newline)
+      (exit 1)))

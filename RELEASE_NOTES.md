@@ -1,3 +1,184 @@
+# Eshkol v1.2.0-scale — Production Readiness
+
+**Release Date**: May 1, 2026
+
+Eshkol v1.2.0-scale is the *production-readiness* release. The v1.1
+line proved the math (autodiff, tensors, the consciousness engine);
+v1.2 makes it shippable: trained models save and load, error messages
+point at the actual line, the Python FFI is stable and zero-copy,
+deep recursion doesn't blow the stack on Darwin, and a long tail of
+correctness/security bugs that surfaced under real workloads is now
+fixed.
+
+The headline addition isn't a feature — it's the **62-test edge-case
+regression suite** that catches every fix in this release going
+forward.
+
+## What's New in v1.2.0-scale
+
+### Production Deployment
+
+- **Model serialization** — `.eshkol-model` is an ESKB-extended
+  binary format that round-trips trained networks (architecture +
+  weights + metadata) so you can save a model on the training box
+  and load it on the inference box.
+- **Stable C ABI + Python bindings** — `inc/eshkol/c_abi.h` is the
+  versioned public header; `pip install eshkol` gives you pybind11
+  bindings with NumPy zero-copy interop.  Gradient computation,
+  structured returns, and error recovery all crossed the FFI cleanly
+  after the v1.2 hardening pass.
+- **Per-thread arenas** — concurrent code paths
+  (parallel-map workers, thread-pool tasks) now use thread-local
+  arena slots so allocation in one worker never stomps another's.
+- **Image I/O** — PNG/JPEG/BMP read/write/resize for vision
+  pipelines.  `deps/stb/` is the current backend; v1.3+ replaces it
+  with native platform APIs (CoreGraphics on macOS, system
+  libpng/libjpeg on Linux, GDI+ on Windows).
+- **Plotting stdlib** — inline matplotlib-style charts via PNG output
+  for notebook-style workflows.
+
+### Compiler Diagnostics
+
+- **Actionable error messages** — compile errors now report the
+  exact source line and column with a caret underline:
+  ```
+  /path/to/file.esk:6:4: error: Unknown function: undefined-fn
+      6 |   (undefined-fn 1 2 3))
+        |    ^
+  ```
+  Previously every error pointed at line 1 because the parser's
+  comment-stripping reader consumed newlines.  The fix preserves
+  newlines from comments and threads a cumulative file-line counter
+  across `eshkol_parse_next_ast_from_stream` calls.
+
+### Stdlib + Language
+
+- **JSON Schema validation** (Draft 7 subset) — `json-schema-valid?`
+  and `json-schema-validate` for experiment-manifest /
+  preregistration enforcement.  Supports type, properties, required,
+  additionalProperties, items, min/max length/items, minimum/maximum
+  (with exclusive variants), enum, const, pattern (substring),
+  oneOf / anyOf / allOf / not.  Auto-loaded via stdlib.
+- **R7RS-compliant scoping for stdlib redefines** — user `(define
+  (foo …))` after `(require stdlib)` cleanly shadows stdlib's `foo`
+  at link time (LinkOnceODR linkage on stdlib functions) and at
+  call-site lowering (variadic-info hygiene clears stale entries
+  on redefine).  Previously a user redefine of a variadic stdlib
+  function with a fixed-arity signature compiled with an
+  arity-mismatch warning and crashed at runtime.
+- **AD scalar derivative on inline lambdas** — `(derivative
+  (lambda (x) …) point)` inside a wrapper function now correctly
+  flows through the runtime closure dispatch.  Previously it
+  returned -inf / wrong values because the new-style derivative
+  codegen path bailed out without calling the closure for
+  function-parameter operands.
+- **Reflection** — `procedure-arity`, `record-fields`, `describe`
+  for runtime inspection of user-defined procedures and records.
+- **Memoization / LRU cache stdlib** — `(memoize fn :lru 256)`.
+- **PRNG seeding + deterministic replay** — `(seed-prng! …)` and
+  per-stream isolation for reproducible experiments.
+- **Lazy sequences / streams** (SRFI 41).
+- **Time API** — ISO-8601 parse/format + duration types.
+- **Regex capture groups** — `regex-group` / `match-groups`.
+- **CLI argument parser** — `(parse-args)` for noesis CLI entry
+  points.
+- **call-with-values + URL/base64url encoding** finalised.
+
+### Build, Link, and Platform
+
+- **macOS deep recursion** — every binary now ships with
+  `LC_MAIN.stacksize = 512 MB` (`-Wl,-stack_size,0x20000000`) on
+  Darwin.  The flag had only been wired into one of the two link
+  paths in `eshkol-run`; the common compile-and-link path silently
+  inherited the 8 MB default and any non-tail-recursive Scheme code
+  hit `eshkol_check_recursion_depth + 4` with a SIGSEGV on its own
+  frame push.
+- **`--wasm` is self-contained** — the WASM emit path no longer
+  falls through to native clang++ link.  `eshkol-run file.esk
+  --wasm -o foo.wasm` produces the .wasm via LLVM in-memory codegen
+  and exits cleanly; no spurious "_main referenced from
+  initial-undefines" link errors.
+- **Stdlib functions are weak-linked** — user code can override a
+  stdlib symbol with their own definition without a "duplicate
+  symbol" link error.  The fix mirrors the Windows
+  `WeakAnyLinkage` path onto macOS/Linux LinkOnceODR.
+- **AD value-typed captures** — derivatives that close over
+  function-parameter `tagged_value` Arguments (e.g. `loss-fn`
+  capturing `input`/`target`/`b` in `compute-loss-gradient`) no
+  longer fail LLVM IR verification with "PtrToInt source must be
+  pointer".
+- **CI**: new `linux-x64-asan-ubsan` lane runs the v1.2 edge-case
+  suite under `-DESHKOL_ENABLE_ASAN=ON -DESHKOL_ENABLE_UBSAN=ON`.
+  `ESHKOL_ENABLE_TSAN=ON` and `ESHKOL_ENABLE_MSAN=ON` are scaffolded;
+  TSan/MSan-built libstdc++ on apt.llvm.org is a v1.3 prerequisite.
+- **`stdlib.o` rebuild correctness** — `file(GLOB_RECURSE …
+  CONFIGURE_DEPENDS)` now watches every `lib/{core,math,signal,
+  random,web,tensor,quantum,ml}/*.esk` so editing a transitive
+  required module triggers a stdlib rebuild.  Previously only edits
+  to `lib/stdlib.esk` itself did.
+
+### Hardening
+
+- **CRITICAL**: shell-string injection in `agent_subprocess.c` —
+  fixed by switching to `posix_spawn` with `argv` arrays; the
+  `popen("sh -c …")` path is gone.
+- **CRITICAL**: Python FFI derivative-method AST injection in
+  `eshkol_module.cpp` — fixed by canonicalising via the parser
+  rather than string-substituting into source.
+- **HIGH** (3 items): integer-overflow guards on arena, KB-load,
+  and image-IO size computations (`__builtin_mul_overflow`).
+- **HIGH** (4 items): path-traversal defence with percent-decode +
+  component-check, TOCTOU race fixes on `stat → open`, and a
+  Windows-subprocess buffer-size off-by-one.
+- **HIGH**: 36 silent-swallow sites across the runtime now either
+  surface the error or are documented as intentional.
+- **MEDIUM**: ReDoS-resistant regex engine (counted-quantifier
+  backtracker with bounded-state ceiling), SQL-injection guards on
+  the persistence path, URL validator that rejects scheme
+  smuggling.
+
+### Testing
+
+- **62-test v1.2 edge-case suite** at `tests/v1_2_edge_cases/`
+  covering symbol consistency under gensym, AD tape state across
+  worker threads, parser line tracking, stdlib symbol resolution,
+  the JSON Schema validator, every real bug fix in this release.
+  Runs under `bash scripts/run_v1_2_edge_cases_tests.sh` (also
+  invoked by `run_all_tests.sh`).  Includes 3 shell-style tests
+  for compile-time diagnostics that don't fit the `.esk → run →
+  check exit`  shape.
+- **Master suite EXIT=0** end-to-end across 36 sub-suites:
+  features, stdlib, list, memory, modules, types, typesystem,
+  autodiff, ml, neural, json, system, complex, cpp_type, parser,
+  control_flow, logic, bignum, rational, parallel, signal,
+  optimization, examples, xla, gpu, error_handling, macros, repl,
+  web, tco, io, benchmark, migration, codegen, numeric,
+  v1_2_edge_cases.
+
+## Carry-forward to v1.3
+
+- **Native media stack** — replace `deps/stb/` with CoreGraphics /
+  libpng+libjpeg / GDI+ on the three host platforms so we stop
+  vendoring third-party media code.
+- **AD `input2` plumbing for non-matmul tensor ops** — the
+  backward kernels for conv2d / batchnorm / layernorm / attention
+  / multi-head-attention exist; the forward implementations need
+  to be rewritten to multi-channel / per-feature shape so the
+  Wengert tape can consume them.  Matmul (the only AD-supported
+  tensor op exercised by the suite today) is correctly wired.
+- **TSan / MSan CI lanes** — pending TSan/MSan-built libstdc++.
+- **Spec-doc generator (`eshkol-doc`)** — extract type signatures
+  + docstrings from the indexed module graph.
+- **True module-private internals** — `(provide …)` is currently
+  informational under both AOT and JIT (Bug Z); v1.3 reintroduces
+  a proper rename pass while keeping cross-file calls to provided
+  symbols working.
+- **AD-1 follow-up** — re-extract `codegenDerivativeMonolith` into
+  the new code path; the v1.2 fix delegates from `derivative()`
+  to the monolith as a stop-gap.
+
+---
+
 # Eshkol v1.1.13-accelerate — Windows ARM64 + Release Workflow + VM Closure Fixes
 
 **Release Date**: April 9, 2026

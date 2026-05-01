@@ -1,0 +1,42 @@
+;; mode: jit
+;; procedure-arity reflection — task #170 (partial: arity only).
+
+(require stdlib)
+(display "=== procedure-arity ===") (newline)
+
+(define pass-count 0)
+(define fail-count 0)
+(define (check name cond)
+  (if cond
+      (begin (set! pass-count (+ pass-count 1))
+             (display "PASS: ") (display name) (newline))
+      (begin (set! fail-count (+ fail-count 1))
+             (display "FAIL: ") (display name) (newline))))
+
+(define (zero) 42)
+(define (one x) x)
+(define (two a b) (+ a b))
+(define (three a b c) (+ a b c))
+(define (four a b c d) (+ a b c d))
+(define (variadic . rest) (length rest))
+(define lmb-1 (lambda (x) x))
+(define lmb-2 (lambda (x y) (* x y)))
+
+(check "zero-arg arity = 0"        (= (procedure-arity zero) 0))
+(check "one-arg arity = 1"         (= (procedure-arity one) 1))
+(check "two-arg arity = 2"         (= (procedure-arity two) 2))
+(check "three-arg arity = 3"       (= (procedure-arity three) 3))
+(check "four-arg arity = 4"        (= (procedure-arity four) 4))
+(check "variadic fixed-arity = 0"  (= (procedure-arity variadic) 0))
+(check "lambda 1-arg arity"        (= (procedure-arity lmb-1) 1))
+(check "lambda 2-arg arity"        (= (procedure-arity lmb-2) 2))
+
+;; Inline lambda
+(check "inline lambda arity"       (= (procedure-arity (lambda (a b c) a)) 3))
+
+(display "---") (newline)
+(display "Total: ") (display (+ pass-count fail-count))
+(display ", PASS: ") (display pass-count)
+(display ", FAIL: ") (display fail-count)
+(newline)
+(if (> fail-count 0) (exit 1))

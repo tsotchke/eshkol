@@ -102,6 +102,11 @@ struct eshkol_thread_pool {
 // Thread-local arena for worker threads
 thread_local arena_t* tls_arena = nullptr;
 thread_local bool tls_is_worker_thread = false;
+
+/* Exported for arena_is_worker_thread() weak symbol linkage */
+extern "C" int eshkol_thread_pool_is_worker(void) {
+    return tls_is_worker_thread ? 1 : 0;
+}
 thread_local size_t tls_arena_size = 0;
 thread_local size_t tls_worker_id = SIZE_MAX;
 thread_local size_t tls_epoch_slot = SIZE_MAX;
@@ -110,7 +115,9 @@ arena_t* get_thread_local_arena(void) {
     if (!tls_arena) {
         // Use reasonable default size
         size_t size = tls_arena_size > 0 ? tls_arena_size : (1024 * 1024);
-        tls_arena = arena_create(size);
+        // Create via the central API so get_global_arena() returns this
+        // arena when called from worker threads.
+        tls_arena = arena_create_thread_local(size);
         if (tls_arena) {
             eshkol_debug("Created thread-local arena (size: %zu)", size);
         } else {
@@ -141,6 +148,14 @@ static void work_stealing_worker_func(eshkol_thread_pool_t* pool, size_t worker_
     tls_is_worker_thread = true;
     tls_arena_size = pool->thread_arena_size;
     tls_worker_id = worker_id;
+
+    // Eagerly materialise all thread-local runtime state (TLS arena, AD tape
+    // stack, OALR region stack). This prevents null-deref hazards when a
+    // parallel-map lambda touches AD primitives before the TLS slot has been
+    // lazily initialised. Also assigns tls_arena so subsequent
+    // get_thread_local_arena() calls return the same arena.
+    eshkol_thread_init_worker(pool->thread_arena_size);
+    tls_arena = arena_get_thread_local();
 
     // Register with epoch manager for safe memory reclamation
     tls_epoch_slot = pool->epoch_mgr->registerThread();
@@ -288,10 +303,11 @@ static void work_stealing_worker_func(eshkol_thread_pool_t* pool, size_t worker_
     // Cleanup
     pool->epoch_mgr->unregisterThread(tls_epoch_slot);
 
-    if (tls_arena) {
-        arena_destroy(tls_arena);
-        tls_arena = nullptr;
-    }
+    // Tear down thread-local runtime state (arena + AD tape stack + region
+    // stack). eshkol_thread_shutdown_worker handles the arena destroy too, so
+    // clear the local alias afterwards to avoid a dangling pointer.
+    eshkol_thread_shutdown_worker();
+    tls_arena = nullptr;
 
     eshkol_debug("[%s] Work-stealing worker %zu stopped", pool->name.c_str(), worker_id);
 }
@@ -304,6 +320,11 @@ static void legacy_worker_func(eshkol_thread_pool_t* pool, size_t worker_id) {
     tls_is_worker_thread = true;
     tls_arena_size = pool->thread_arena_size;
     tls_worker_id = worker_id;
+
+    // Same init sequence as work-stealing workers — guarantees TLS arena +
+    // AD tape stack are ready before the first task runs.
+    eshkol_thread_init_worker(pool->thread_arena_size);
+    tls_arena = arena_get_thread_local();
 
     eshkol_debug("[%s] Legacy worker %zu started", pool->name.c_str(), worker_id);
 
@@ -385,10 +406,8 @@ static void legacy_worker_func(eshkol_thread_pool_t* pool, size_t worker_id) {
         }
     }
 
-    if (tls_arena) {
-        arena_destroy(tls_arena);
-        tls_arena = nullptr;
-    }
+    eshkol_thread_shutdown_worker();
+    tls_arena = nullptr;
 
     eshkol_debug("[%s] Legacy worker %zu stopped", pool->name.c_str(), worker_id);
 }

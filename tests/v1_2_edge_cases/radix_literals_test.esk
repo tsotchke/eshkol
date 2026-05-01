@@ -1,0 +1,81 @@
+;; radix_literals_test.esk — R7RS §7.1.1 radix literals (2026-04-24)
+;;
+;; Before: `#xFF` / `#b1010` / `#o17` / `#d42` were tokenized as bare
+;; symbols (undefined variables); `0xDEADBEEF` was two tokens (0 +
+;; symbol). The reader had no radix-prefix support.
+;;
+;; After: `#b` / `#o` / `#d` / `#x` parse as integer literals in the
+;; respective radix. Signs accepted. Exactness prefixes `#e` / `#i`
+;; chain with radix (either order) — `#e#xFF`, `#x#e10`, `#i#b1010`.
+;; All radix literals are exact integers regardless of `#i` (R7RS
+;; allows this for integers that fit exactly).
+
+(define passed 0)
+(define failed 0)
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin (display "PASS: ") (display name) (newline)
+             (set! passed (+ passed 1)))
+      (begin (display "FAIL: ") (display name)
+             (display " — expected ") (display expected)
+             (display ", got ") (display actual) (newline)
+             (set! failed (+ failed 1)))))
+
+;; ── Hex (#x) ──────────────────────────────────────────────────────
+(check "#xFF"           255           #xFF)
+(check "#xff"           255           #xff)
+(check "#x0"            0             #x0)
+(check "#x10"           16            #x10)
+(check "#xDEAD"         57005         #xDEAD)
+(check "#xFFFFFFFF"     4294967295    #xFFFFFFFF)
+(check "#xABCDEF"       11259375      #xABCDEF)
+
+;; ── Binary (#b) ──────────────────────────────────────────────────
+(check "#b0"            0             #b0)
+(check "#b1"            1             #b1)
+(check "#b1010"         10            #b1010)
+(check "#b11111111"     255           #b11111111)
+
+;; ── Octal (#o) ────────────────────────────────────────────────────
+(check "#o0"            0             #o0)
+(check "#o7"            7             #o7)
+(check "#o17"           15            #o17)
+(check "#o777"          511           #o777)
+
+;; ── Decimal (#d) ──────────────────────────────────────────────────
+(check "#d42"           42            #d42)
+(check "#d0"            0             #d0)
+(check "#d123456789"    123456789     #d123456789)
+
+;; ── Signed ────────────────────────────────────────────────────────
+(check "#x-FF"          -255          #x-FF)
+(check "#x+10"          16            #x+10)
+(check "#b-1010"        -10           #b-1010)
+(check "#o-17"          -15           #o-17)
+(check "#d-42"          -42           #d-42)
+
+;; ── Exactness prefix chains ──────────────────────────────────────
+(check "#e#xFF"         255           #e#xFF)
+(check "#x#eFF"         255           #x#eFF)
+(check "#i#b1010"       10            #i#b1010)
+(check "#b#i1010"       10            #b#i1010)
+(check "#e42"           42            #e42)
+(check "#i42"           42            #i42)
+
+;; ── Arithmetic with radix literals ───────────────────────────────
+(check "#xFF + #x01"    256           (+ #xFF #x01))
+(check "#b1010 * 3"     30            (* #b1010 3))
+(check "(modulo #xFF 16)" 15          (modulo #xFF 16))
+
+;; ── In list literals ──────────────────────────────────────────────
+(check "list with hex"  '(255 16 1)   (list #xFF #x10 #x01))
+(check "vector with bin" #(1 0 1 0)   #(#b1 #b0 #b1 #b0))
+
+;; ── Comparison to decimal equivalents ────────────────────────────
+(check "hex == decimal" #t            (= #xFF 255))
+(check "binary == hex"  #t            (= #b11111111 #xFF))
+
+(newline)
+(display "Passed: ") (display passed) (newline)
+(display "Failed: ") (display failed) (newline)
+(if (> failed 0) (exit 1) (exit 0))

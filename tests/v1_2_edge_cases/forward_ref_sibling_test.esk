@@ -1,0 +1,114 @@
+;; forward_ref_sibling_test.esk — Noesis Quirk 16 (filed 2026-04-26)
+;;
+;; Noesis reported: "Within case_retrieval.esk, case-recommend called
+;; case-recommend-loop which was defined LATER in the same file. Inside
+;; let* body. Did NOT crash with explicit error — but the call returned
+;; the empty-state default."
+;;
+;; And: "Within dkb_grounded.esk, dg-extract-symbols calling
+;; dg-extract-symbols-from-string — defined later — worked only AFTER
+;; reordering them."
+;;
+;; Investigation showed Quirk 16's "silent empty result" was almost
+;; certainly Quirk 14 (named-let capture corruption) leaking through —
+;; a `set!` to outer-let-bound state from inside the helper's named-let
+;; was vanishing, so callers saw the initial empty value. With Quirk 14
+;; fixed, every pattern Noesis described now runs correctly.
+;;
+;; This regression test pins the behavior so we can't lose it again.
+
+(require stdlib)
+
+(define passed 0)
+(define failed 0)
+(define (check name actual expected)
+  (if (equal? expected actual)
+      (begin (display "PASS: ") (display name) (newline)
+             (set! passed (+ passed 1)))
+      (begin (display "FAIL: ") (display name)
+             (display " — expected ") (display expected)
+             (display ", got ") (display actual) (newline)
+             (set! failed (+ failed 1)))))
+
+;; ── 1. Caller above, helper below — both at top-level ─────────────
+(define (caller-above x) (helper-below (* x 10)))
+(define (helper-below x) (+ x 1))
+(check "caller-above + helper-below"
+       (caller-above 5) 51)
+
+;; ── 2. Caller calls helper from inside let* + cond branch ────────
+;; Exact shape of Noesis case-recommend.
+(define (case-rec data)
+  (let* ((n (length data)))
+    (cond
+      ((= n 0) 'empty-default)
+      (else (case-rec-loop data n 0.0 (list))))))
+
+(define (case-rec-loop xs n sum acc)
+  (cond
+    ((null? xs)
+     (list (cons 'n n) (cons 'sum sum) (cons 'acc acc)))
+    (else
+     (let* ((entry (car xs))
+            (sim (car entry))
+            (sym (cdr entry)))
+       (case-rec-loop (cdr xs) n (+ sum sim) (cons sym acc))))))
+
+(check "case-rec on empty input → empty-default"
+       (case-rec '()) 'empty-default)
+(check "case-rec on 3 items → not the empty-default"
+       (case-rec (list (cons 1.0 'a) (cons 0.5 'b) (cons 0.25 'c)))
+       '((n . 3) (sum . 1.75) (acc c b a)))
+
+;; ── 3. Internal define calls top-level helper defined later ──────
+(define (outer-fn xs)
+  (define (inner-walk xs acc)
+    (cond ((null? xs) (reverse acc))
+          (else (inner-walk (cdr xs)
+                            (cons (sibling-fn (car xs)) acc)))))
+  (inner-walk xs (list)))
+
+(define (sibling-fn x) (* x x))
+
+(check "internal-define calls later top-level fn"
+       (outer-fn '(1 2 3 4)) '(1 4 9 16))
+
+;; ── 4. Mutual recursion between siblings, both called from top  ──
+(define (is-even? n)
+  (cond ((= n 0) #t) (else (is-odd? (- n 1)))))
+(define (is-odd? n)
+  (cond ((= n 0) #f) (else (is-even? (- n 1)))))
+(check "mutual-recursion 4 even"  (is-even? 4) #t)
+(check "mutual-recursion 7 odd"   (is-odd? 7)  #t)
+(check "mutual-recursion 5 even=#f" (is-even? 5) #f)
+
+;; ── 5. Noesis dkb_grounded layout: caller above, string-helper below
+(define (extract-syms term)
+  (cond
+    ((null? term) '())
+    ((symbol? term) (list term))
+    ((string? term) (extract-syms-from-string term))   ; forward ref
+    ((pair? term)
+     (append (extract-syms (car term))
+             (extract-syms (cdr term))))
+    (else '())))
+
+(define (extract-syms-from-string s)
+  (let loop ((cs (string->list s)) (acc '()))
+    (cond
+      ((null? cs) (reverse acc))
+      ((char-alphabetic? (car cs))
+       (loop (cdr cs) (cons (string->symbol (string (car cs))) acc)))
+      (else (loop (cdr cs) acc)))))
+
+(check "dg-extract-symbols pure-symbol input"
+       (extract-syms '(forall n m Nat))
+       '(forall n m Nat))
+(check "dg-extract-symbols string-tail input"
+       (extract-syms '(proven "AB" "CD"))
+       '(proven A B C D))
+
+(newline)
+(display "Passed: ") (display passed) (newline)
+(display "Failed: ") (display failed) (newline)
+(if (> failed 0) (exit 1) (exit 0))

@@ -1,0 +1,97 @@
+;; Noesis #139: match (? pred) predicate pattern regression test.
+;;
+;; Previously (match x ((? number?) "n")) failed with "Undefined variable:
+;; number?". Root cause: R7RS predicates like number?/string?/pair?/etc. are
+;; LLVM-inline builtins (intercepted in codegenCall), not first-class
+;; closures, so the pattern codegen's attempt to look them up via
+;; codegenTypedAST hit the bare-VAR undefined path. Fix: bare-symbol
+;; predicates are now synthesised as a call AST (pred val) and compiled
+;; through the normal call-dispatch, which handles builtins and user-defined
+;; lambdas identically.
+
+(require stdlib)
+
+(display "=== Noesis#4 match (? pred) suite ===") (newline)
+
+(define pass-count 0)
+(define fail-count 0)
+(define (check name cond)
+  (if cond
+      (begin (set! pass-count (+ pass-count 1))
+             (display "PASS: ") (display name) (newline))
+      (begin (set! fail-count (+ fail-count 1))
+             (display "FAIL: ") (display name) (newline))))
+
+;; ---- Built-in type predicates ----
+(check "(? number?) matches 5"
+       (equal? (match 5 ((? number?) "num") (_ "other")) "num"))
+(check "(? string?) matches \"hi\""
+       (equal? (match "hi" ((? string?) "str") (_ "other")) "str"))
+;; NOTE: (match 'foo ...) — apostrophe-quote in match-subject position
+;; hangs silently in v1.2 (separate from #139's predicate-scoping fix).
+;; Tracked as a match-parser edge case; use (quote foo) meanwhile.
+(check "(? symbol?) matches (quote foo)"
+       (equal? (match (quote foo) ((? symbol?) "sym") (_ "other")) "sym"))
+(check "(? pair?) matches (list 1 2)"
+       (equal? (match (list 1 2) ((? pair?) "pair") (_ "other")) "pair"))
+(check "(? null?) matches (list)"
+       (equal? (match (list) ((? null?) "null") (_ "other")) "null"))
+
+;; ---- Multi-clause dispatch ----
+(define (classify v)
+  (match v
+    ((? number?) "number")
+    ((? string?) "string")
+    ((? symbol?) "symbol")
+    ((? pair?)   "pair")
+    (_           "other")))
+(check "classify 42 → number" (equal? (classify 42) "number"))
+(check "classify \"x\" → string" (equal? (classify "x") "string"))
+(check "classify (quote foo) → symbol"
+       (equal? (classify (quote foo)) "symbol"))
+(check "classify (list 'a 'b) → pair"
+       (equal? (classify (list (quote a) (quote b))) "pair"))
+(check "classify #t → other" (equal? (classify #t) "other"))
+
+;; ---- User-defined predicates ----
+(define (even? n) (= 0 (remainder n 2)))
+(check "(? even?) on 6 → even"
+       (equal? (match 6 ((? even?) "even") (_ "odd")) "even"))
+(check "(? even?) on 7 → odd"
+       (equal? (match 7 ((? even?) "even") (_ "odd")) "odd"))
+
+;; ---- Predicate + bound variable ----
+(define (first-or-zero v)
+  (match v
+    ((? pair?) (car v))
+    ((? number?) v)
+    (_ 0)))
+(check "first-or-zero '(1 2 3) → 1"
+       (= (first-or-zero (list 1 2 3)) 1))
+(check "first-or-zero 42 → 42"
+       (= (first-or-zero 42) 42))
+(check "first-or-zero #t → 0"
+       (= (first-or-zero #t) 0))
+
+;; ---- #141: apostrophe-quote subject + apostrophe-quote patterns ----
+(check "(match 'foo …) no longer hangs"
+       (equal? (match 'foo ((? symbol?) "sym") (_ "other")) "sym"))
+
+(define (classify-sym v)
+  (match v
+    ('a "letter-a")
+    ('b "letter-b")
+    ('c "letter-c")
+    (n (if (number? n) "num" "other"))))
+(check "classify-sym 'a = letter-a" (equal? (classify-sym 'a) "letter-a"))
+(check "classify-sym 'b = letter-b" (equal? (classify-sym 'b) "letter-b"))
+(check "classify-sym 'c = letter-c" (equal? (classify-sym 'c) "letter-c"))
+(check "classify-sym 42 = num"      (equal? (classify-sym 42) "num"))
+(check "classify-sym 'x = other"    (equal? (classify-sym 'x) "other"))
+
+(newline)
+(display "=== Summary ===") (newline)
+(display "Passed: ") (display pass-count) (newline)
+(display "Failed: ") (display fail-count) (newline)
+(display (if (= fail-count 0) "RESULT: ALL PASS" "RESULT: FAILURES DETECTED"))
+(newline)

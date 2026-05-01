@@ -1,6 +1,6 @@
 # CI/CD Pipelines
 
-**Status:** Production (v1.1.13)
+**Status:** Production (v1.2.0-scale)
 **Applies to:** Eshkol compiler v1.1-accelerate and later
 
 ---

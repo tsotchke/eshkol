@@ -260,6 +260,26 @@ public:
     llvm::Value* openOutputFile(const eshkol_operations_t* op);
 
     /**
+     * Open file for append: (open-output-file-append filename).
+     * Same shape as open-output-file but fopen is called with "a"
+     * mode — file is created if missing, otherwise writes append to
+     * the existing contents (O(1) per write). Required for
+     * write-ahead logs and other append-only persistence schemes.
+     * @param op The operation AST node
+     * @return Port as tagged value
+     */
+    llvm::Value* openOutputFileAppend(const eshkol_operations_t* op);
+
+private:
+    /* Shared implementation for open-output-file / open-output-file-append.
+     * mode_str is "w" or "a"; scheme_name is the diagnostic name. */
+    llvm::Value* openOutputFileImpl(const eshkol_operations_t* op,
+                                     const char* mode_str,
+                                     const char* scheme_name);
+
+public:
+
+    /**
      * Close a port: (close-port port)
      * @param op The operation AST node
      * @return Unspecified value

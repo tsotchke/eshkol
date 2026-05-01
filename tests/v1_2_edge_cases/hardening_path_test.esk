@@ -1,0 +1,55 @@
+;;; hardening_path_test.esk — #193 path-traversal + TOCTOU protections
+
+(require core.testing)
+
+(reset-tests!)
+
+(register-test "path-normalize rejects oversize input"
+  (lambda ()
+    ;; Longer than PATH_MAX (1024 on macOS, 4096 on Linux — 8K is
+    ;; oversized everywhere we care about). The old impl overflowed
+    ;; its stack buffer via unchecked strcat; now it returns ()/null.
+    (let ((long (make-string 8192 #\a)))
+      (check-equal? (path-normalize long) '()))))
+
+(register-test "path-normalize: valid inputs still work"
+  (lambda ()
+    (check-equal? (path-normalize "./a/b/../c") "a/c")
+    (check-equal? (path-normalize "/a/./b/c")   "/a/b/c")
+    (check-equal? (path-normalize "../../x")    "x")
+    (check-equal? (path-normalize "a/b/c/../../x") "a/x")))
+
+(register-test "file-copy refuses to write INTO a symlink (TOCTOU guard)"
+  (lambda ()
+    (let ((src  "/tmp/eshkol_fc_hardening_src.txt")
+          (dst  "/tmp/eshkol_fc_hardening_dst_link")
+          (real "/tmp/eshkol_fc_hardening_real_target.txt"))
+      (delete-file dst)
+      (delete-file real)
+      (let ((p (open-output-file src)))
+        (display "attacker-controlled" p) (close-port p))
+      (let ((p (open-output-file real)))
+        (display "SENSITIVE" p) (close-port p))
+      (symlink-create real dst)
+      ;; O_NOFOLLOW on the dst fd makes this copy fail; the real file
+      ;; behind the symlink must not be overwritten.
+      (check-false (file-copy src dst))
+      (let ((p (open-input-file real)))
+        (let ((contents (read-line p)))
+          (close-port p)
+          (check-equal? contents "SENSITIVE"))))))
+
+(register-test "file-copy: plain files still round-trip"
+  (lambda ()
+    (let ((src "/tmp/eshkol_fc_plain_src.txt")
+          (dst "/tmp/eshkol_fc_plain_dst.txt"))
+      (delete-file dst)
+      (let ((p (open-output-file src)))
+        (display "plain copy" p) (close-port p))
+      (check-true (file-copy src dst))
+      (let ((p (open-input-file dst)))
+        (let ((got (read-line p)))
+          (close-port p)
+          (check-equal? got "plain copy"))))))
+
+(run-tests)

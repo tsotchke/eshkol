@@ -119,13 +119,22 @@ When implementing new language features:
 3. Add type checking in [`lib/types/type_checker.cpp`](../../lib/types/type_checker.cpp)
 4. Implement LLVM codegen (create new module or extend existing)
 5. Add comprehensive tests
-6. Document in relevant docs/breakdown/ files
+6. Document in the relevant `docs/breakdown/` or `docs/platform/` files
 
 ## Project Status
 
-**Current**: v1.1.13-accelerate (production-ready)
+**Current**: v1.2.0-scale (production-ready)
 
 See [Roadmap](../breakdown/ROADMAP.md) for planned features.
+
+## Platform Program
+
+The freestanding / kernel / embedded platform program is documented in:
+
+- [Platform Program Index](../platform/README.md)
+- [Program Overview](../platform/PROGRAM_OVERVIEW.md)
+- [Roadmap Alignment](../platform/ROADMAP_ALIGNMENT.md)
+- [Architecture](../platform/ARCHITECTURE.md)
 
 ## See Also
 

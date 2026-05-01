@@ -40,6 +40,70 @@ static uint64_t find_var_by_name(const char* name) {
 static char g_var_name_pool[LOGIC_VAR_MAX * 64]; /* 64 chars per name max */
 static std::atomic<size_t> g_var_name_pool_offset{0};
 
+/* ═══════════════════════════════════════════════════════════════════
+ * Predicate Interning — all fact predicates go through this table
+ * so pointer equality works in unification (critical for kb-load).
+ * ═══════════════════════════════════════════════════════════════════ */
+static constexpr size_t PRED_POOL_SIZE = 64 * 1024;  /* 64KB for predicate strings */
+static constexpr size_t PRED_TABLE_SIZE = 1024;       /* max distinct predicates */
+static char g_pred_pool[PRED_POOL_SIZE];
+static std::atomic<size_t> g_pred_pool_offset{0};
+static const char* g_pred_table[PRED_TABLE_SIZE];
+static std::atomic<size_t> g_pred_count{0};
+static std::mutex g_pred_mutex;
+
+/* Reset the logic-variable + predicate interning tables. Wired to
+ * reset-tests! and exposed for embedders that need test isolation
+ * between REPL sessions. Not thread-safe by design — call from the
+ * main thread between test batches, not while logic ops are in
+ * flight. Covers audit #194 pattern where (reset-tests!) left stale
+ * g_var_names / g_pred_table entries across runs, causing cross-
+ * contaminated logic-variable IDs and predicate pointer identity. */
+extern "C" void eshkol_logic_registry_reset(void) {
+    {
+        std::lock_guard<std::mutex> lk(g_pred_mutex);
+        for (size_t i = 0; i < PRED_TABLE_SIZE; i++) g_pred_table[i] = nullptr;
+        g_pred_count.store(0, std::memory_order_release);
+        g_pred_pool_offset.store(0, std::memory_order_release);
+        /* Intentional: we don't memset the pool itself because readers
+         * hold pointers into it; those pointers will just get
+         * overwritten cleanly on the next interning pass. */
+    }
+    for (size_t i = 0; i < LOGIC_VAR_MAX; i++) g_var_names[i] = nullptr;
+    g_var_count.store(0, std::memory_order_release);
+}
+
+extern "C" const char* eshkol_intern_predicate(const char* name) {
+    if (!name) return nullptr;
+    size_t len = strlen(name);
+
+    /* Check if already interned (lock for table scan) */
+    std::lock_guard<std::mutex> lock(g_pred_mutex);
+    size_t count = g_pred_count.load(std::memory_order_acquire);
+    for (size_t i = 0; i < count; i++) {
+        if (g_pred_table[i] && strcmp(g_pred_table[i], name) == 0) {
+            return g_pred_table[i];
+        }
+    }
+
+    /* Not found — intern into pool */
+    if (count >= PRED_TABLE_SIZE) {
+        eshkol_error("predicate table full (%zu predicates)", count);
+        return name;  /* fallback — strcmp will catch it */
+    }
+    size_t needed = len + 1;
+    size_t offset = g_pred_pool_offset.load(std::memory_order_relaxed);
+    if (offset + needed > PRED_POOL_SIZE) {
+        eshkol_error("predicate pool exhausted (%zu bytes)", offset);
+        return name;
+    }
+    g_pred_pool_offset.store(offset + needed, std::memory_order_release);
+    memcpy(g_pred_pool + offset, name, needed);
+    g_pred_table[count] = g_pred_pool + offset;
+    g_pred_count.store(count + 1, std::memory_order_release);
+    return g_pred_pool + offset;
+}
+
 static const char* intern_var_name(const char* name) {
     size_t len = strlen(name);
     if (len >= 63) len = 63; /* truncate to fit pool slot */
@@ -309,29 +373,21 @@ static bool occurs(uint64_t var_id, const eshkol_tagged_value_t* term,
 
 /* ===== Tagged Value Comparison ===== */
 
+/* Canonical structural equality — defined in arena_memory.cpp.
+ * We delegate to it so unification sees the same equivalence as (equal? ...):
+ * strings compare by content, cons cells recursively, bignums by numeric value.
+ * Pointer equality is preserved as a fast-path inside eshkol_deep_equal. */
+extern "C" bool eshkol_deep_equal(const eshkol_tagged_value_t* val1,
+                                   const eshkol_tagged_value_t* val2);
+
 static bool tagged_values_equal(const eshkol_tagged_value_t* a,
                                 const eshkol_tagged_value_t* b) {
-    if (a->type != b->type) return false;
-    switch (a->type) {
-        case ESHKOL_VALUE_NULL:
-            return true;
-        case ESHKOL_VALUE_INT64:
-            return a->data.int_val == b->data.int_val;
-        case ESHKOL_VALUE_DOUBLE:
-            return a->data.double_val == b->data.double_val;
-        case ESHKOL_VALUE_BOOL:
-            return a->data.int_val == b->data.int_val;
-        case ESHKOL_VALUE_CHAR:
-            return a->data.int_val == b->data.int_val;
-        case ESHKOL_VALUE_LOGIC_VAR:
-            return a->data.int_val == b->data.int_val;
-        case ESHKOL_VALUE_HEAP_PTR:
-        case ESHKOL_VALUE_CALLABLE:
-            /* Pointer equality for heap objects (symbols are interned) */
-            return a->data.ptr_val == b->data.ptr_val;
-        default:
-            return false;
+    /* Logic variables unify by id — deep_equal does not know about them,
+     * so handle that case explicitly before delegating. */
+    if (a->type == ESHKOL_VALUE_LOGIC_VAR && b->type == ESHKOL_VALUE_LOGIC_VAR) {
+        return a->data.int_val == b->data.int_val;
     }
+    return eshkol_deep_equal(a, b);
 }
 
 /* ===== Unification ===== */
@@ -375,8 +431,15 @@ extern "C" eshkol_substitution_t* eshkol_unify(arena_t* arena,
             eshkol_fact_t* f1 = (eshkol_fact_t*)w1.data.ptr_val;
             eshkol_fact_t* f2 = (eshkol_fact_t*)w2.data.ptr_val;
 
-            /* Check predicate equality (pointer comparison for interned symbols) */
-            if (f1->predicate != f2->predicate) return NULL;
+            /* Check predicate equality — pointer comparison for interned predicates.
+             * All fact predicates MUST go through intern_predicate() so this is safe. */
+            if (f1->predicate != f2->predicate) {
+                /* Fallback: string comparison for non-interned predicates (e.g. kb-load).
+                 * This is the defensive path — intern_predicate should be used at creation. */
+                const char* p1 = (const char*)(uintptr_t)f1->predicate;
+                const char* p2 = (const char*)(uintptr_t)f2->predicate;
+                if (!p1 || !p2 || strcmp(p1, p2) != 0) return NULL;
+            }
             /* Check arity */
             if (f1->arity != f2->arity) return NULL;
 
@@ -532,6 +595,74 @@ extern "C" eshkol_tagged_value_t eshkol_kb_query(arena_t* arena,
     return result_list;
 }
 
+/* Prefix variant: pattern arity must be <= fact arity. Unifies only the
+ * first pattern->arity argument pairs. Extra fact arguments are ignored.
+ * Motivation: KBs with mixed or provenance-extended arities where callers
+ * want "match any fact whose head+prefix matches" without enumerating
+ * arities. Strict equality semantics preserved in eshkol_kb_query. */
+extern "C" eshkol_tagged_value_t eshkol_kb_query_prefix(arena_t* arena,
+    const eshkol_knowledge_base_t* kb, const eshkol_fact_t* pattern,
+    const eshkol_substitution_t* initial_subst) {
+    eshkol_tagged_value_t null_val;
+    memset(&null_val, 0, sizeof(null_val));
+    null_val.type = ESHKOL_VALUE_NULL;
+
+    if (!arena || !kb || !pattern) return null_val;
+
+    const eshkol_substitution_t* base_subst = initial_subst;
+    eshkol_substitution_t* empty = NULL;
+    if (!base_subst) {
+        empty = eshkol_make_substitution(arena, 8);
+        base_subst = empty;
+    }
+
+    eshkol_tagged_value_t result_list = null_val;
+
+    for (uint32_t i = 0; i < kb->num_facts; i++) {
+        const eshkol_fact_t* fact = kb->facts[i];
+
+        if (pattern->predicate != 0 && fact->predicate != 0 &&
+            pattern->predicate != fact->predicate) {
+            continue;
+        }
+
+        /* Prefix semantics: pattern arity must be <= fact arity */
+        if (pattern->arity > fact->arity) continue;
+
+        eshkol_substitution_t* subst = (eshkol_substitution_t*)base_subst;
+        const eshkol_tagged_value_t* pat_args = FACT_ARGS(pattern);
+        const eshkol_tagged_value_t* fact_args = FACT_ARGS(fact);
+
+        bool success = true;
+        for (uint32_t j = 0; j < pattern->arity; j++) {
+            subst = eshkol_unify(arena, &pat_args[j], &fact_args[j], subst);
+            if (!subst) {
+                success = false;
+                break;
+            }
+        }
+
+        if (success && subst) {
+            size_t cons_size = 2 * sizeof(eshkol_tagged_value_t);
+            void* cons_data = arena_allocate_with_header(arena, cons_size,
+                HEAP_SUBTYPE_CONS, 0);
+            if (cons_data) {
+                eshkol_tagged_value_t* car = (eshkol_tagged_value_t*)cons_data;
+                eshkol_tagged_value_t* cdr = car + 1;
+                memset(car, 0, sizeof(*car));
+                car->type = ESHKOL_VALUE_HEAP_PTR;
+                car->data.ptr_val = (uint64_t)subst;
+                *cdr = result_list;
+                memset(&result_list, 0, sizeof(result_list));
+                result_list.type = ESHKOL_VALUE_HEAP_PTR;
+                result_list.data.ptr_val = (uint64_t)cons_data;
+            }
+        }
+    }
+
+    return result_list;
+}
+
 /* ===== Tagged Value Dispatch ===== */
 
 extern "C" void eshkol_unify_tagged(arena_t* arena,
@@ -583,7 +714,13 @@ extern "C" void eshkol_make_fact_tagged(arena_t* arena,
     /* Extract predicate pointer (should be a HEAP_PTR to interned symbol) */
     uint64_t predicate = 0;
     if (pred->type == ESHKOL_VALUE_HEAP_PTR) {
-        predicate = pred->data.ptr_val;
+        /* Intern the predicate string so pointer equality works in unification.
+         * The string data is at pred->data.ptr_val (after 8-byte object header). */
+        const char* pred_str = (const char*)(uintptr_t)pred->data.ptr_val;
+        if (pred_str) {
+            const char* interned = eshkol_intern_predicate(pred_str);
+            predicate = (uint64_t)(uintptr_t)interned;
+        }
     }
 
     eshkol_fact_t* fact = eshkol_make_fact(arena, predicate,
@@ -645,6 +782,25 @@ extern "C" void eshkol_kb_query_tagged(arena_t* arena,
     const eshkol_fact_t* pattern = (const eshkol_fact_t*)pattern_tv->data.ptr_val;
 
     *result = eshkol_kb_query(arena, kb, pattern, NULL);
+}
+
+extern "C" void eshkol_kb_query_prefix_tagged(arena_t* arena,
+    const eshkol_tagged_value_t* kb_tv, const eshkol_tagged_value_t* pattern_tv,
+    eshkol_tagged_value_t* result) {
+    if (!result) return;
+    memset(result, 0, sizeof(*result));
+
+    if (!arena || !kb_tv || !pattern_tv ||
+        kb_tv->type != ESHKOL_VALUE_HEAP_PTR || !kb_tv->data.ptr_val ||
+        pattern_tv->type != ESHKOL_VALUE_HEAP_PTR || !pattern_tv->data.ptr_val) {
+        result->type = ESHKOL_VALUE_NULL;
+        return;
+    }
+
+    const eshkol_knowledge_base_t* kb = (const eshkol_knowledge_base_t*)kb_tv->data.ptr_val;
+    const eshkol_fact_t* pattern = (const eshkol_fact_t*)pattern_tv->data.ptr_val;
+
+    *result = eshkol_kb_query_prefix(arena, kb, pattern, NULL);
 }
 
 extern "C" void eshkol_make_substitution_tagged(arena_t* arena,

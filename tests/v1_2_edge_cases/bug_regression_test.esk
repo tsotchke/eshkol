@@ -1,0 +1,299 @@
+;; mode: jit  ;; uses (eval …) which only resolves under the REPL JIT
+;; v1.2 edge-case regression suite — covers every bug fixed in the v1.2
+;; hardening pass. If any of these fail in the future, one of the fixes has
+;; regressed. Intent: run this on every commit to catch silent regressions
+;; in the bug classes listed.
+
+(require stdlib)
+
+(display "=== v1.2 Edge-Case Regression Suite ===") (newline)
+
+(define pass-count 0)
+(define fail-count 0)
+
+(define (check name cond)
+  (if cond
+      (begin
+        (set! pass-count (+ pass-count 1))
+        (display "PASS: ") (display name) (newline))
+      (begin
+        (set! fail-count (+ fail-count 1))
+        (display "FAIL: ") (display name) (newline))))
+
+;; ---------------------------------------------------------------------------
+;; Bug 1: #(...) vector literals inside if consequent
+;; ---------------------------------------------------------------------------
+(check "Bug 1: #(...) in if-then branch"
+       (equal? (if #t #(1 2 3) #(4 5 6)) #(1 2 3)))
+(check "Bug 1: #(...) in if-else branch"
+       (equal? (if #f #(1 2 3) #(4 5 6)) #(4 5 6)))
+
+;; ---------------------------------------------------------------------------
+;; Bug 106: string->number returns #f for non-numeric (R7RS)
+;; ---------------------------------------------------------------------------
+(check "B1: string->number on garbage returns #f"
+       (eq? (string->number "hello") #f))
+(check "B1: string->number on valid returns number"
+       (= (string->number "42") 42))
+(check "B1: string->number float"
+       (= (string->number "3.14") 3.14))
+
+;; ---------------------------------------------------------------------------
+;; Bug 109: type error on arithmetic with non-numeric does not segfault
+;; ---------------------------------------------------------------------------
+(check "#109: (+ \"a\" 3) raises exception, does not crash"
+       (guard (exn (#t #t)) (+ "hello" 3) #f))
+(check "#109: (* \"a\" 1.0) raises exception, does not crash"
+       (guard (exn (#t #t)) (* "hello" 1.0) #f))
+
+;; ---------------------------------------------------------------------------
+;; Bug 118: set! with boolean stores #t/#f (not null)
+;; ---------------------------------------------------------------------------
+(define b118 #t)
+(set! b118 #f)
+(check "#118: set! x #f stores #f" (eq? b118 #f))
+(set! b118 #t)
+(check "#118: set! x #t stores #t" (eq? b118 #t))
+(check "#118: set! to #f preserves boolean type" (boolean? b118))
+
+;; ---------------------------------------------------------------------------
+;; Bug 4: kb-query returns bindings in all modes
+;; ---------------------------------------------------------------------------
+(define kb4 (make-kb))
+(kb-assert! kb4 (make-fact "likes" "alice" "math"))
+(kb-assert! kb4 (make-fact "likes" "bob" "physics"))
+(check "Bug 4: kb-query with logic var binds"
+       (not (null? (kb-query kb4 (make-fact "likes" "alice" ?x)))))
+(check "Bug 4: kb-query exact match succeeds"
+       (not (null? (kb-query kb4 (make-fact "likes" "alice" "math")))))
+(check "Bug 4: kb-query no match returns ()"
+       (null? (kb-query kb4 (make-fact "likes" "alice" "chemistry"))))
+
+;; ---------------------------------------------------------------------------
+;; Bug 119: kb-query-prefix — arity-flexible prefix match
+;; ---------------------------------------------------------------------------
+(define kb-prefix (make-kb))
+(kb-assert! kb-prefix (make-fact "knows" "alice" "bob"))
+(kb-assert! kb-prefix (make-fact "knows" "alice" "bob" "deeply"))
+(kb-assert! kb-prefix (make-fact "knows" "alice" "carol" "via-work" "2025"))
+(check "Bug 119: kb-query strict returns 1 match (arity 2)"
+       (= (length (kb-query kb-prefix (make-fact "knows" "alice" ?x))) 1))
+(check "Bug 119: kb-query-prefix returns all 3 matches"
+       (= (length (kb-query-prefix kb-prefix (make-fact "knows" "alice" ?x))) 3))
+
+;; ---------------------------------------------------------------------------
+;; Bug 117: kb persistence round-trip
+;; ---------------------------------------------------------------------------
+(define kb-save-test (make-kb))
+(kb-assert! kb-save-test (make-fact "p" "a" "b"))
+(kb-assert! kb-save-test (make-fact "q" "c"))
+(kb-save "/tmp/eshkol_v12_regression.kb" kb-save-test)
+(define kb-loaded (kb-load "/tmp/eshkol_v12_regression.kb"))
+(check "Bug 117: kb-load count matches" (= (kb-count kb-loaded) 2))
+(check "Bug 117: kb-query on loaded KB finds facts"
+       (not (null? (kb-query kb-loaded (make-fact "p" "a" ?x)))))
+(delete-file "/tmp/eshkol_v12_regression.kb")
+
+;; ---------------------------------------------------------------------------
+;; Bug A: apply min / apply max
+;; ---------------------------------------------------------------------------
+(check "Bug A: apply min on ints" (= (apply min (list 3 1 2)) 1))
+(check "Bug A: apply max on ints" (= (apply max (list 3 1 2)) 3))
+(check "Bug A: apply min on floats"
+       (= (apply min (list 0.5 0.1 0.7)) 0.1))
+(check "Bug A: apply max on floats"
+       (= (apply max (list 0.5 0.1 0.7)) 0.7))
+(check "Bug A: apply + on ints still works" (= (apply + (list 1 2 3)) 6))
+(check "Bug A: apply * on ints still works" (= (apply * (list 2 3 4)) 24))
+
+;; ---------------------------------------------------------------------------
+;; Bug B/C: AD node values and gradients (tagged-slot integrity)
+;; ---------------------------------------------------------------------------
+(let* ((tape (ad-tape-new))
+       (x (ad-var tape 1.0))
+       (y (ad-sin tape x)))
+  (check "Bug B: ad-node-value of var preserves value"
+         (= (ad-node-value tape x) 1.0))
+  (check "Bug B: ad-value alias works"
+         (= (ad-value tape x) 1.0))
+  (ad-backward tape y)
+  (let ((g (ad-gradient tape x)))
+    (check "Bug C: d/dx sin(1) ≈ cos(1) (0.540302)"
+           (< (abs (- g 0.540302)) 0.001))))
+
+;; ---------------------------------------------------------------------------
+;; Bug 6: fg-update-cpt! accepts both tensor and vector CPTs
+;; ---------------------------------------------------------------------------
+(define fg6 (make-factor-graph 2 #(3 3)))
+(fg-add-factor! fg6 #(0) (vector -1.0 -1.0 -1.0))
+(check "Bug 6: fg-add-factor! with (vector ...) CPT works"
+       (begin (fg-infer! fg6 10) #t))
+(fg-update-cpt! fg6 0 (vector -0.5 -0.5 -0.5))
+(check "Bug 6: fg-update-cpt! with (vector ...) CPT works"
+       (begin (fg-infer! fg6 10) #t))
+
+;; ---------------------------------------------------------------------------
+;; Bug 3: stdlib function captured inside a lambda call
+;; ---------------------------------------------------------------------------
+(define (builder-lambda)
+  (let loop ((i 0) (acc '()))
+    (if (>= i 5) (reverse acc)
+        (loop (+ i 1) (cons i acc)))))
+(check "Bug 3: reverse inside lambda returns correct list"
+       (equal? (builder-lambda) (list 0 1 2 3 4)))
+
+;; ---------------------------------------------------------------------------
+;; Bug 5: parallel-map with inline lambda
+;; ---------------------------------------------------------------------------
+(check "Bug 5: parallel-map (lambda) on small list"
+       (equal? (parallel-map (lambda (x) (* x x)) (list 1 2 3 4 5))
+               (list 1 4 9 16 25)))
+
+;; ---------------------------------------------------------------------------
+;; Bug 2: eval — direct call
+;; ---------------------------------------------------------------------------
+(check "Bug 2: (eval (quote 42)) returns 42"
+       (= (eval (quote 42)) 42))
+(check "Bug 2: (eval (quote (+ 1 2))) returns 3"
+       (= (eval (quote (+ 1 2))) 3))
+(check "Bug 2: (eval (quote (* 2 (+ 3 4)))) returns 14"
+       (= (eval (quote (* 2 (+ 3 4)))) 14))
+(check "Bug 2: (eval (read (open-input-string ...))) works"
+       (= (eval (read (open-input-string "(* 5 6)"))) 30))
+
+;; ---------------------------------------------------------------------------
+;; tagged_values_equal / Bug 4 deep structure
+;; ---------------------------------------------------------------------------
+(check "deep-equal: identical string literals equal"
+       (equal? "hello" "hello"))
+(check "deep-equal: identical int lists equal"
+       (equal? (list 1 2 3) (list 1 2 3)))
+(check "deep-equal: unequal strings not equal"
+       (not (equal? "hello" "world")))
+
+;; ---------------------------------------------------------------------------
+;; Noesis residual audit 2026-04-18 v2
+;; ---------------------------------------------------------------------------
+
+;; BUG 1 — call-with-values consumer must resolve stdlib `list`.
+;; Regression: `list` has no first-class value and cwv-consumer codegen
+;; failed with "Undefined variable: list".
+(check "Noesis BUG 1: cwv consumer = list produces list of values"
+       (equal? (call-with-values (lambda () (values 1 2 3)) list)
+               (list 1 2 3)))
+(check "Noesis BUG 1: cwv consumer = + produces sum"
+       (= (call-with-values (lambda () (values 1 2 3)) +) 6))
+(check "Noesis BUG 1: cwv consumer = cons (fixed arity) still works"
+       (equal? (call-with-values (lambda () (values 10 20)) cons)
+               (cons 10 20)))
+(check "Noesis BUG 1: cwv consumer = lambda (fixed arity) still works"
+       (= (call-with-values (lambda () (values 10 20)) (lambda (a b) (+ a b))) 30))
+;; A bare `list` is a first-class value now (no closure identity contract
+;; — my wrapper allocates a fresh closure each reference — so the only
+;; thing the test can assert is that invoking the returned value behaves
+;; like list.
+(check "Noesis BUG 1: bare list as first-class value is callable"
+       (equal? (((lambda () list)) 1 2 3) (list 1 2 3)))
+
+;; BUG 2 — variadic rest-arg: `(define (f . args) args)` must bind the
+;; full list of caller arguments, not just the first one
+;; (R7RS §4.1.4 regression).
+(define (noesis-bug2-my-list . args) args)
+(define (noesis-bug2-fixed+rest a . rest) rest)
+(define (noesis-bug2-only-rest . r) (length r))
+(check "Noesis BUG 2: rest binds full arg list"
+       (equal? (noesis-bug2-my-list 1 2 3) (list 1 2 3)))
+(check "Noesis BUG 2: rest with fixed prefix binds tail only"
+       (equal? (noesis-bug2-fixed+rest 1 2 3 4) (list 2 3 4)))
+(check "Noesis BUG 2: rest counts every arg passed"
+       (= (noesis-bug2-only-rest 10 20 30) 3))
+(check "Noesis BUG 2: zero-arg call to variadic returns empty list"
+       (null? (noesis-bug2-my-list)))
+(check "Noesis BUG 2: car of rest is first arg"
+       (= (car (noesis-bug2-my-list 100 200 300)) 100))
+
+;; v3 BUG C — user define shadows builtin name. `outer` is a tensor
+;; codegen builtin; user's 1-arg version must win over the 2-arg builtin
+;; arity check.
+(define (noesis-bug3c-outer xs) (length xs))
+(check "Noesis v3 BUG C: user define shadows builtin (outer)"
+       (= (noesis-bug3c-outer (list 1 2 3)) 3))
+
+;; v3 BUG D — named let with nested self-call as argument was emitting
+;; a TCO branch mid-arg-evaluation, breaking LLVM verifier with
+;; "Terminator found in middle of basic block". The inner (loop …) is
+;; NOT in tail position (it's an arg to outer loop), so it must use
+;; the normal call path.
+(define (noesis-bug3d-tree-sum t)
+  (let loop ((e t) (acc 0))
+    (cond
+      ((null? e) acc)
+      ((pair? e) (loop (cdr e) (loop (car e) acc)))
+      ((number? e) (+ acc e))
+      (else acc))))
+(check "Noesis v3 BUG D: named let with nested self-call (tree walker)"
+       (= (noesis-bug3d-tree-sum (list 1 2 (list 3 4) 5)) 15))
+(check "Noesis v3 BUG D: same shape on flat list"
+       (= (noesis-bug3d-tree-sum (list 10 20 30)) 60))
+(check "Noesis v3 BUG D: deep nesting"
+       (= (noesis-bug3d-tree-sum (list 1 (list 2 (list 3 (list 4 5))))) 15))
+
+;; v3 follow-up: tensor-ref/set! with list-wrapped index
+;; (NumPy/JAX idiom used by Sigma's fit.esk: `(tensor-ref adam-m (list i))`).
+;; Previously the 2-arg vref path read the cons cell's pointer bits as an
+;; int and GEP'd at a wild address → SEGV. Fixed by routing the index
+;; through a C runtime helper that detects CONS subtype and extracts car.
+(define tref-t (make-tensor (list 3) 0.0))
+(tensor-set! tref-t 0 7.0)
+(tensor-set! tref-t 1 8.0)
+(tensor-set! tref-t 2 9.0)
+(check "Noesis v3 follow-up: tensor-ref with int idx"
+       (= (tensor-ref tref-t 1) 8.0))
+(check "Noesis v3 follow-up: tensor-ref with (list i) idx"
+       (= (tensor-ref tref-t (list 1)) 8.0))
+(check "Noesis v3 follow-up: tensor-ref with (list i) at idx 2"
+       (= (tensor-ref tref-t (list 2)) 9.0))
+(check "Noesis v3 follow-up: tensor-ref with (list 0)"
+       (= (tensor-ref tref-t (list 0)) 7.0))
+
+;; v3 follow-up: interspersed internal defines.
+;; Pattern used in Sigma fit.esk: a function body with non-consecutive
+;; defines that both capture an outer let-binding. The second, late
+;; define's closure-conversion previously resolved the capture against
+;; stale scope state, corrupting the outer binding. Parser now hoists
+;; ALL internal defines (not just the initial consecutive ones) into a
+;; single letrec*, Racket-style, so captures are coherent.
+(define (noesis-interspersed-define)
+  (let ((n 2))
+    (define (helper i) (if (>= i n) #t (helper (+ i 1))))
+    (helper 0)
+    (define (build-fitted i) (if (>= i n) 99 (build-fitted (+ i 1))))
+    (build-fitted 0)))
+(check "Noesis: interspersed internal defines preserve outer capture"
+       (= (noesis-interspersed-define) 99))
+
+;; And the combined fit-candidate pattern: tensor ops + late defines.
+(define (noesis-fit-like ps)
+  (let ((n (length ps)))
+    (define t (make-tensor (list n) 0.0))
+    (define (helper i)
+      (if (>= i n) #t
+          (begin (tensor-set! t (list i) 5.0) (helper (+ i 1)))))
+    (helper 0)
+    (define (build i acc)
+      (if (>= i n) (reverse acc)
+          (build (+ i 1) (cons (tensor-ref t (list i)) acc))))
+    (build 0 '())))
+(check "Noesis: fit-candidate-shape pattern round-trips"
+       (equal? (noesis-fit-like (list 'c1 'c2)) (list 5.0 5.0)))
+
+;; ---------------------------------------------------------------------------
+;; Summary
+;; ---------------------------------------------------------------------------
+(newline)
+(display "=== Summary ===") (newline)
+(display "Passed: ") (display pass-count) (newline)
+(display "Failed: ") (display fail-count) (newline)
+(display "Total:  ") (display (+ pass-count fail-count)) (newline)
+(display (if (= fail-count 0) "RESULT: ALL PASS" "RESULT: FAILURES DETECTED"))
+(newline)

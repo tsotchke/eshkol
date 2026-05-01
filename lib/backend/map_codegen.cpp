@@ -675,7 +675,19 @@ Value* MapCodegen::mapSingleList(Function* proc_func, Value* list) {
 
     eshkol_debug("Single-list map completed - cons cells remain persistent in arena memory");
 
-    return tagged_.packHeapPtr(ctx_.builder().CreateIntToPtr(final_result, ctx_.ptrType()));
+    /* Bug R (2026-04-23): on empty input, result_head is still 0.
+     * Returning packHeapPtr(IntToPtr(0)) produces a tagged value that
+     * CLAIMS to be HEAP_PTR but with data=0 — a "zombie null". Downstream
+     * predicates like string?/symbol?/vector? then take the HEAP_PTR
+     * branch, dereference NULL-8 (object header at ptr-8) and SIGSEGV.
+     * Match the mapWithClosure pattern: select packNull() when empty so
+     * the type tag agrees with the actual NULL-ness of the data. */
+    Value* is_empty = ctx_.builder().CreateICmpEQ(final_result,
+        ConstantInt::get(ctx_.int64Type(), 0));
+    Value* null_val = tagged_.packNull();
+    Value* list_val = tagged_.packHeapPtr(
+        ctx_.builder().CreateIntToPtr(final_result, ctx_.ptrType()));
+    return ctx_.builder().CreateSelect(is_empty, null_val, list_val);
 }
 
 Value* MapCodegen::mapMultiList(Function* proc_func, const std::vector<Value*>& lists) {
@@ -851,7 +863,15 @@ Value* MapCodegen::mapMultiList(Function* proc_func, const std::vector<Value*>& 
 
     eshkol_debug("Multi-list map completed - cons cells remain persistent in arena memory");
 
-    return tagged_.packHeapPtr(ctx_.builder().CreateIntToPtr(final_result, ctx_.ptrType()));
+    /* Bug R (2026-04-23): same zombie-null fix as mapSingleList — see
+     * the comment there. Empty input must return a true NULL tagged
+     * value, not packHeapPtr(IntToPtr(0)). */
+    Value* is_empty = ctx_.builder().CreateICmpEQ(final_result,
+        ConstantInt::get(ctx_.int64Type(), 0));
+    Value* null_val = tagged_.packNull();
+    Value* list_val = tagged_.packHeapPtr(
+        ctx_.builder().CreateIntToPtr(final_result, ctx_.ptrType()));
+    return ctx_.builder().CreateSelect(is_empty, null_val, list_val);
 }
 
 } // namespace eshkol

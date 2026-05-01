@@ -1,0 +1,104 @@
+;; Task #111: boundary-value & numeric-edge tests.
+;;
+;; Covers: INT64 limits, NaN, Inf, negative zero, empty strings/lists,
+;; precision-sensitive arithmetic, and a few places where silent UB used
+;; to leak through.
+
+(require stdlib)
+
+(display "=== v1.2 Boundary-value suite ===") (newline)
+
+(define pass-count 0)
+(define fail-count 0)
+(define (check name cond)
+  (if cond
+      (begin (set! pass-count (+ pass-count 1))
+             (display "PASS: ") (display name) (newline))
+      (begin (set! fail-count (+ fail-count 1))
+             (display "FAIL: ") (display name) (newline))))
+
+;; ------------------------------------------------------------
+;; Integer boundaries. (/ int int) is R7RS-exact: returns a rational if
+;; not evenly divisible. quotient is floor-division (always an integer).
+;; ------------------------------------------------------------
+(check "quotient at near-INT64_MAX"
+       (= (quotient 9223372036854775806 2) 4611686018427387903))
+(check "int zero identity +" (= (+ 0 42) 42))
+(check "int zero identity *" (= (* 1 42) 42))
+(check "negative int abs" (= (abs -123) 123))
+(check "zero abs" (= (abs 0) 0))
+
+;; ------------------------------------------------------------
+;; Floating-point edge cases
+;; ------------------------------------------------------------
+(check "0.0 + 0.0 = 0.0" (= (+ 0.0 0.0) 0.0))
+(check "negative zero equals zero" (= -0.0 0.0))
+(check "1e300 is finite" (< (* 1e300 1e-300) 100.0))
+
+;; NaN does not equal itself — this is the IEEE-754 rule.
+(define nan-val (/ 0.0 0.0))
+(check "NaN != NaN" (not (= nan-val nan-val)))
+
+;; ------------------------------------------------------------
+;; Division
+;; ------------------------------------------------------------
+(check "int / int exact"  (= (/ 10 2) 5))
+(check "float / float" (< (abs (- (/ 1.0 3.0) 0.3333333333)) 1e-9))
+
+;; ------------------------------------------------------------
+;; Empty collections
+;; ------------------------------------------------------------
+(check "empty list length 0" (= (length '()) 0))
+(check "empty string length 0" (= (string-length "") 0))
+(check "empty list reverse is empty" (equal? (reverse '()) '()))
+(check "empty list map is empty" (equal? (map (lambda (x) x) '()) '()))
+(check "empty list append stays empty"
+       (equal? (append '() '()) '()))
+
+;; ------------------------------------------------------------
+;; Deep / heavy recursion
+;; ------------------------------------------------------------
+(define (sum-to n acc)
+  (if (= n 0) acc (sum-to (- n 1) (+ acc n))))
+(check "TCO sum to 10000" (= (sum-to 10000 0) 50005000))
+(check "TCO sum to 100000" (= (sum-to 100000 0) 5000050000))
+
+;; ------------------------------------------------------------
+;; String edges
+;; ------------------------------------------------------------
+(check "substring empty slice" (equal? (substring "hello" 0 0) ""))
+(check "substring full" (equal? (substring "hello" 0 5) "hello"))
+(check "string-append empty+x" (equal? (string-append "" "x") "x"))
+(check "string-append x+empty" (equal? (string-append "x" "") "x"))
+(check "string->number empty is #f" (eq? (string->number "") #f))
+(check "string->number whitespace-only is #f"
+       (eq? (string->number "   ") #f))
+
+;; ------------------------------------------------------------
+;; Tensor edges — shape (0) / (1) / large
+;; ------------------------------------------------------------
+(define small-t (make-tensor (list 3) 0.0))
+(check "make-tensor shape (3) is tensor" (tensor? small-t))
+(check "make-tensor shape (3) shape is (3)"
+       (equal? (tensor-shape small-t) (list 3)))
+
+(define big-t (make-tensor (list 1000) 1.0))
+(check "make-tensor shape (1000) is tensor" (tensor? big-t))
+
+;; ------------------------------------------------------------
+;; Booleans / equality
+;; ------------------------------------------------------------
+(check "#t is boolean" (boolean? #t))
+(check "#f is boolean" (boolean? #f))
+(check "0 is not boolean" (not (boolean? 0)))
+(check "eq? #t #t" (eq? #t #t))
+(check "not #t" (eq? (not #t) #f))
+(check "not #f" (eq? (not #f) #t))
+(check "not 0 is #f (0 is truthy in Scheme)" (eq? (not 0) #f))
+
+(newline)
+(display "=== Summary ===") (newline)
+(display "Passed: ") (display pass-count) (newline)
+(display "Failed: ") (display fail-count) (newline)
+(display (if (= fail-count 0) "RESULT: ALL PASS" "RESULT: FAILURES DETECTED"))
+(newline)

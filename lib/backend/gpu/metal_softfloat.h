@@ -4073,4 +4073,219 @@ kernel void matmul_ozaki_gemm(
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Backward Pass Kernels — GPU-accelerated gradient computation
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Conv2d backward — compute grad_input and grad_kernel from grad_out
+// One thread per (batch, channel_in, height, width) output element
+kernel void conv2d_backward_input_sf64(
+    device const uint2* grad_out [[buffer(0)]],
+    device const uint2* kernel_weights [[buffer(1)]],
+    device uint2* grad_input [[buffer(2)]],
+    constant uint& in_h [[buffer(3)]],
+    constant uint& in_w [[buffer(4)]],
+    constant uint& k_h [[buffer(5)]],
+    constant uint& k_w [[buffer(6)]],
+    constant uint& out_h [[buffer(7)]],
+    constant uint& out_w [[buffer(8)]],
+    constant uint& stride_h [[buffer(9)]],
+    constant uint& stride_w [[buffer(10)]],
+    constant uint& channels_in [[buffer(11)]],
+    constant uint& channels_out [[buffer(12)]],
+    uint3 tid [[thread_position_in_grid]])
+{
+    // tid.x = width, tid.y = height, tid.z = batch * channels_in + ci
+    uint iw = tid.x;
+    uint ih = tid.y;
+    uint bci = tid.z;
+
+    if (iw >= in_w || ih >= in_h) return;
+
+    uint ci = bci % channels_in;
+    uint b = bci / channels_in;
+    uint in_spatial = in_h * in_w;
+    uint out_spatial = out_h * out_w;
+    uint kernel_spatial = k_h * k_w;
+
+    sf64 sum = SF64_ZERO;
+
+    // Accumulate gradient from all output positions that used this input position
+    for (uint co = 0; co < channels_out; co++) {
+        for (uint kh = 0; kh < k_h; kh++) {
+            for (uint kw = 0; kw < k_w; kw++) {
+                // Output position that used input[ih][iw] via kernel[kh][kw]
+                int oh_candidate = (int)ih - (int)kh;
+                int ow_candidate = (int)iw - (int)kw;
+                if (oh_candidate < 0 || ow_candidate < 0) continue;
+                if (oh_candidate % stride_h != 0 || ow_candidate % stride_w != 0) continue;
+                uint oh = (uint)oh_candidate / stride_h;
+                uint ow = (uint)ow_candidate / stride_w;
+                if (oh >= out_h || ow >= out_w) continue;
+
+                sf64 g = native_to_sf64(grad_out[(b * channels_out + co) * out_spatial + oh * out_w + ow]);
+                sf64 k = native_to_sf64(kernel_weights[(co * channels_in + ci) * kernel_spatial + kh * k_w + kw]);
+                sum = sf64_add(sum, sf64_mul(g, k));
+            }
+        }
+    }
+
+    grad_input[(b * channels_in + ci) * in_spatial + ih * in_w + iw] = sf64_to_native(sum);
+}
+
+// Conv2d backward — compute grad_kernel
+// One thread per (co, ci, kh, kw) kernel element
+kernel void conv2d_backward_kernel_sf64(
+    device const uint2* grad_out [[buffer(0)]],
+    device const uint2* saved_input [[buffer(1)]],
+    device uint2* grad_kernel [[buffer(2)]],
+    constant uint& in_h [[buffer(3)]],
+    constant uint& in_w [[buffer(4)]],
+    constant uint& k_h [[buffer(5)]],
+    constant uint& k_w [[buffer(6)]],
+    constant uint& out_h [[buffer(7)]],
+    constant uint& out_w [[buffer(8)]],
+    constant uint& stride_h [[buffer(9)]],
+    constant uint& stride_w [[buffer(10)]],
+    constant uint& channels_in [[buffer(11)]],
+    constant uint& channels_out [[buffer(12)]],
+    constant uint& batch_size [[buffer(13)]],
+    uint3 tid [[thread_position_in_grid]])
+{
+    // tid.x = kw, tid.y = kh, tid.z = co * channels_in + ci
+    uint kw_idx = tid.x;
+    uint kh_idx = tid.y;
+    uint co_ci = tid.z;
+
+    if (kw_idx >= k_w || kh_idx >= k_h) return;
+
+    uint ci = co_ci % channels_in;
+    uint co = co_ci / channels_in;
+    if (co >= channels_out) return;
+
+    uint in_spatial = in_h * in_w;
+    uint out_spatial = out_h * out_w;
+    uint kernel_spatial = k_h * k_w;
+
+    sf64 sum = SF64_ZERO;
+
+    for (uint b = 0; b < batch_size; b++) {
+        for (uint oh = 0; oh < out_h; oh++) {
+            for (uint ow = 0; ow < out_w; ow++) {
+                uint ih = oh * stride_h + kh_idx;
+                uint iw = ow * stride_w + kw_idx;
+
+                sf64 g = native_to_sf64(grad_out[(b * channels_out + co) * out_spatial + oh * out_w + ow]);
+                sf64 inp = native_to_sf64(saved_input[(b * channels_in + ci) * in_spatial + ih * in_w + iw]);
+                sum = sf64_add(sum, sf64_mul(g, inp));
+            }
+        }
+    }
+
+    grad_kernel[(co * channels_in + ci) * kernel_spatial + kh_idx * k_w + kw_idx] = sf64_to_native(sum);
+}
+
+// BatchNorm backward — compute grad_input, grad_gamma, grad_beta
+// One thread per feature dimension
+kernel void batchnorm_backward_sf64(
+    device const uint2* grad_out [[buffer(0)]],
+    device const uint2* saved_input [[buffer(1)]],
+    device const uint2* saved_mean [[buffer(2)]],
+    device const uint2* saved_inv_std [[buffer(3)]],
+    device const uint2* saved_gamma [[buffer(4)]],
+    device uint2* grad_input [[buffer(5)]],
+    device uint2* grad_gamma [[buffer(6)]],
+    device uint2* grad_beta [[buffer(7)]],
+    constant uint& batch_size [[buffer(8)]],
+    constant uint& feature_size [[buffer(9)]],
+    uint tid [[thread_position_in_grid]])
+{
+    if (tid >= feature_size) return;
+
+    uint f = tid;
+    sf64 mean_f = native_to_sf64(saved_mean[f]);
+    sf64 inv_std_f = native_to_sf64(saved_inv_std[f]);
+    sf64 gamma_f = native_to_sf64(saved_gamma[f]);
+    sf64 N = sf64_from_int(batch_size);
+
+    // Compute grad_beta and grad_gamma
+    sf64 sum_g = SF64_ZERO;
+    sf64 sum_gn = SF64_ZERO;
+
+    for (uint b = 0; b < batch_size; b++) {
+        uint idx = b * feature_size + f;
+        sf64 g = native_to_sf64(grad_out[idx]);
+        sf64 x = native_to_sf64(saved_input[idx]);
+        sf64 normalized = sf64_mul(sf64_sub(x, mean_f), inv_std_f);
+        sum_g = sf64_add(sum_g, g);
+        sum_gn = sf64_add(sum_gn, sf64_mul(g, normalized));
+    }
+
+    grad_beta[f] = sf64_to_native(sum_g);
+    grad_gamma[f] = sf64_to_native(sum_gn);
+
+    // Compute grad_input
+    sf64 coeff = sf64_div(sf64_mul(gamma_f, inv_std_f), N);
+
+    for (uint b = 0; b < batch_size; b++) {
+        uint idx = b * feature_size + f;
+        sf64 g = native_to_sf64(grad_out[idx]);
+        sf64 x = native_to_sf64(saved_input[idx]);
+        sf64 normalized = sf64_mul(sf64_sub(x, mean_f), inv_std_f);
+
+        // grad_input = coeff * (N * g - sum_g - normalized * sum_gn)
+        sf64 gi = sf64_mul(coeff,
+            sf64_sub(sf64_sub(sf64_mul(N, g), sum_g),
+                     sf64_mul(normalized, sum_gn)));
+        grad_input[idx] = sf64_to_native(gi);
+    }
+}
+
+// LayerNorm backward — compute grad_input per sample
+// One thread per sample
+kernel void layernorm_backward_sf64(
+    device const uint2* grad_out [[buffer(0)]],
+    device const uint2* saved_input [[buffer(1)]],
+    device const uint2* saved_mean [[buffer(2)]],
+    device const uint2* saved_inv_std [[buffer(3)]],
+    device const uint2* saved_gamma [[buffer(4)]],
+    device uint2* grad_input [[buffer(5)]],
+    constant uint& num_samples [[buffer(6)]],
+    constant uint& feature_size [[buffer(7)]],
+    uint tid [[thread_position_in_grid]])
+{
+    if (tid >= num_samples) return;
+
+    uint s = tid;
+    sf64 mean_s = native_to_sf64(saved_mean[s]);
+    sf64 inv_std_s = native_to_sf64(saved_inv_std[s]);
+    sf64 D = sf64_from_int(feature_size);
+
+    // Per-sample sums
+    sf64 sum_grad = SF64_ZERO;
+    sf64 sum_grad_norm = SF64_ZERO;
+
+    for (uint f = 0; f < feature_size; f++) {
+        uint idx = s * feature_size + f;
+        sf64 g = sf64_mul(native_to_sf64(grad_out[idx]), native_to_sf64(saved_gamma[f]));
+        sf64 normalized = sf64_mul(sf64_sub(native_to_sf64(saved_input[idx]), mean_s), inv_std_s);
+        sum_grad = sf64_add(sum_grad, g);
+        sum_grad_norm = sf64_add(sum_grad_norm, sf64_mul(g, normalized));
+    }
+
+    // Compute grad_input for this sample
+    sf64 inv_D = sf64_div(inv_std_s, D);
+
+    for (uint f = 0; f < feature_size; f++) {
+        uint idx = s * feature_size + f;
+        sf64 g = sf64_mul(native_to_sf64(grad_out[idx]), native_to_sf64(saved_gamma[f]));
+        sf64 normalized = sf64_mul(sf64_sub(native_to_sf64(saved_input[idx]), mean_s), inv_std_s);
+
+        sf64 gi = sf64_mul(inv_D,
+            sf64_sub(sf64_sub(sf64_mul(D, g), sum_grad),
+                     sf64_mul(normalized, sum_grad_norm)));
+        grad_input[idx] = sf64_to_native(gi);
+    }
+}
+
 #endif // ESHKOL_METAL_SOFTFLOAT_H

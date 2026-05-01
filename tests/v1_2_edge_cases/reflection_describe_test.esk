@@ -1,0 +1,36 @@
+;; mode: jit
+;; describe + type-name reflection helpers — task #170 (final piece).
+
+(require stdlib)
+(display "=== describe + type-name ===") (newline)
+
+(define pass 0) (define fail 0)
+(define (check name cond)
+  (if cond (begin (set! pass (+ pass 1)) (display "PASS: ") (display name) (newline))
+           (begin (set! fail (+ fail 1)) (display "FAIL: ") (display name) (newline))))
+
+;; type-name — returns a single-token symbol per type
+(check "type-name integer"   (eq? (type-name 42) 'integer))
+(check "type-name real"      (eq? (type-name 3.14) 'real))
+(check "type-name string"    (eq? (type-name "hi") 'string))
+(check "type-name symbol"    (eq? (type-name 'foo) 'symbol))
+(check "type-name boolean"   (eq? (type-name #t) 'boolean))
+(check "type-name null"      (eq? (type-name '()) 'null))
+(check "type-name pair"      (eq? (type-name (list 1)) 'pair))
+(check "type-name vector"    (eq? (type-name (vector 1 2)) 'vector))
+(check "type-name procedure" (eq? (type-name (lambda () 0)) 'procedure))
+
+;; describe — readable string
+(check "describe integer"   (string=? (describe 42) "integer: 42"))
+(check "describe boolean #t" (string=? (describe #t) "boolean: #t"))
+(check "describe boolean #f" (string=? (describe #f) "boolean: #f"))
+(check "describe null"      (string=? (describe '()) "null"))
+(check "describe symbol"    (string=? (describe 'foo) "symbol: foo"))
+(check "describe vector size" (string=? (describe (vector 1 2 3)) "vector[3]"))
+(check "describe procedure arity" (string=? (describe (lambda (a b) a)) "procedure: arity=2"))
+
+(display "---") (newline)
+(display "Total: ") (display (+ pass fail))
+(display ", PASS: ") (display pass)
+(display ", FAIL: ") (display fail) (newline)
+(if (> fail 0) (exit 1))

@@ -1,0 +1,365 @@
+;;; lib/core/json_schema.esk — JSON Schema (Draft 7 subset) validator.
+;;;
+;;; Validates JSON values produced by `json-parse` against a JSON Schema
+;;; document (also expressed as parsed-JSON hash-tables / lists).
+;;;
+;;; Supported keywords:
+;;;   type        — "object" | "array" | "string" | "number" |
+;;;                 "integer" | "boolean" | "null", or a list of those
+;;;   properties  — object: {name → subschema}
+;;;   required    — object: list of required property names
+;;;   additionalProperties — object: #f rejects extras (default: allowed)
+;;;   items       — array: subschema applied to every element
+;;;   minItems / maxItems
+;;;   minLength / maxLength       (string)
+;;;   minimum / maximum           (number/integer)
+;;;   exclusiveMinimum / exclusiveMaximum
+;;;   enum        — value must be `equal?` to one entry
+;;;   const       — value must be `equal?` to the constant
+;;;   pattern     — string only; substring containment (no full regex)
+;;;   oneOf       — value must validate against EXACTLY one
+;;;   anyOf       — value must validate against AT LEAST one
+;;;   allOf       — value must validate against ALL
+;;;   not         — value must NOT validate
+;;;
+;;; API:
+;;;   (json-schema-valid? schema value)         → boolean
+;;;   (json-schema-validate schema value)       → list of error strings
+;;;                                                (empty = valid)
+;;;
+;;; Error strings carry a JSON-pointer-style path: e.g.
+;;;   "/users/0/age: expected integer, got string"
+
+(require core.list.transform)
+(require core.list.search)
+(require core.list.query)
+(require core.strings)
+(require core.json)
+
+(provide json-schema-valid? json-schema-validate)
+
+;; ─────────────────────────────────────────────────────────────────────
+;; Type classification.
+;;
+;; json-parse maps types as: object→hash-table, array→list, string→string,
+;; integer→integer, real→real, true/false→#t/#f, null→'(). The schema's
+;; "number" type covers both integer and real; "integer" is a strict
+;; subset.
+
+;; Flatten a list of lists into a single list. Replaces (apply append lsts)
+;; which currently triggers a "forward-referenced function" error in JIT
+;; mode when invoked from a stdlib-defined function.
+(define (concat-lists lsts)
+  (if (null? lsts) '()
+      (append (car lsts) (concat-lists (cdr lsts)))))
+
+(define (jsv-is-object? v) (hash-table? v))
+;; Note: (list? <hash-table>) returns #t in Eshkol because hash-tables are
+;; heap pointers and the predicate accepts any pointer that walks like a
+;; list cell. Exclude hash-tables explicitly so `(jsv-is-array? hash)`
+;; does not misclassify objects as arrays — would crash deeper validators
+;; with `length`/`car` on hash data.
+(define (jsv-is-array?  v) (and (not (hash-table? v))
+                                (list? v)
+                                (not (null? v))))
+(define (jsv-is-empty-array? v) (and (not (hash-table? v)) (null? v)))
+(define (jsv-is-string? v) (string? v))
+(define (jsv-is-integer? v) (integer? v))
+(define (jsv-is-number?  v) (or (integer? v) (real? v)))
+(define (jsv-is-boolean? v) (boolean? v))
+(define (jsv-is-null?    v) (and (not (boolean? v)) (null? v)))
+
+(define (jsv-type-name v)
+  (cond
+    ((boolean? v)    "boolean")
+    ((null? v)       "null")
+    ((integer? v)    "integer")
+    ((real? v)       "number")
+    ((string? v)     "string")
+    ((hash-table? v) "object")
+    ((list? v)       "array")
+    (else            "unknown")))
+
+(define (jsv-matches-type? v type)
+  (cond
+    ((string=? type "object")  (jsv-is-object? v))
+    ((string=? type "array")   (or (jsv-is-array? v) (jsv-is-empty-array? v)))
+    ((string=? type "string")  (jsv-is-string? v))
+    ((string=? type "integer") (jsv-is-integer? v))
+    ((string=? type "number")  (jsv-is-number? v))
+    ((string=? type "boolean") (jsv-is-boolean? v))
+    ((string=? type "null")    (jsv-is-null? v))
+    (else #f)))
+
+;; ─────────────────────────────────────────────────────────────────────
+;; Schema field access. A schema is itself a hash-table; fields not
+;; present return the supplied default.
+
+(define (s-get schema key default)
+  (if (hash-table? schema)
+      (hash-table-ref schema key default)
+      default))
+
+(define (path-extend path segment)
+  (string-append path "/" segment))
+
+(define (mkerr path msg)
+  (string-append path ": " msg))
+
+;; ─────────────────────────────────────────────────────────────────────
+;; Internal validator. Returns a list of error strings (empty = valid).
+
+(define (validate schema value path)
+  (cond
+    ;; Schema = #t means "always valid" per Draft 6+. Schema = #f means
+    ;; "always invalid". Some manifests use these as boolean shorthands.
+    ((eq? schema #t) '())
+    ((eq? schema #f) (list (mkerr path "schema is `false` — value rejected")))
+    ((not (hash-table? schema)) '())   ; non-schema values pass through
+
+    (else
+     (let* ((type-errs    (check-type schema value path))
+            (enum-errs    (check-enum schema value path))
+            (const-errs   (check-const schema value path))
+            (combo-errs   (check-combinators schema value path))
+            (string-errs  (if (string? value) (check-string-rules schema value path) '()))
+            (number-errs  (if (or (integer? value) (real? value))
+                              (check-number-rules schema value path) '()))
+            (array-errs   (if (and (not (hash-table? value))
+                                   (or (and (list? value) (not (null? value)))
+                                       (null? value)))
+                              (check-array-rules schema value path) '()))
+            (object-errs  (if (hash-table? value)
+                              (check-object-rules schema value path) '())))
+       (append type-errs enum-errs const-errs combo-errs
+               string-errs number-errs array-errs object-errs)))))
+
+;; type — string or list of strings
+(define (check-type schema value path)
+  (let ((t (s-get schema "type" '())))
+    (cond
+      ((null? t) '())                       ; not specified
+      ((string? t)
+       (if (jsv-matches-type? value t) '()
+           (list (mkerr path
+                  (string-append "expected " t ", got " (jsv-type-name value))))))
+      ((list? t)
+       (if (any (lambda (typename) (jsv-matches-type? value typename)) t) '()
+           (list (mkerr path
+                  (string-append "expected one of [" (string-join t ", ")
+                                 "], got " (jsv-type-name value))))))
+      (else '()))))
+
+(define (check-enum schema value path)
+  (let ((e (s-get schema "enum" '())))
+    (cond
+      ((null? e) '())
+      ((any (lambda (allowed) (equal? value allowed)) e) '())
+      (else (list (mkerr path "value not in `enum`"))))))
+
+(define (check-const schema value path)
+  (let ((c (s-get schema "const" '__missing__)))
+    (cond
+      ((eq? c '__missing__) '())
+      ((equal? value c) '())
+      (else (list (mkerr path "value does not match `const`"))))))
+
+;; ─────────────────────────────────────────────────────────────────────
+;; Combinators
+
+(define (check-combinators schema value path)
+  (append
+    (check-allof schema value path)
+    (check-anyof schema value path)
+    (check-oneof schema value path)
+    (check-not   schema value path)))
+
+(define (check-allof schema value path)
+  (let ((subs (s-get schema "allOf" '())))
+    (if (null? subs) '()
+        (concat-lists
+               (map (lambda (sub) (validate sub value path)) subs)))))
+
+(define (check-anyof schema value path)
+  (let ((subs (s-get schema "anyOf" '())))
+    (cond
+      ((null? subs) '())
+      ((any (lambda (sub) (null? (validate sub value path))) subs) '())
+      (else (list (mkerr path "did not match any subschema in `anyOf`"))))))
+
+(define (count-matching subs value path)
+  (let loop ((subs subs) (n 0))
+    (cond
+      ((null? subs) n)
+      ((null? (validate (car subs) value path))
+       (loop (cdr subs) (+ n 1)))
+      (else (loop (cdr subs) n)))))
+
+(define (check-oneof schema value path)
+  (let ((subs (s-get schema "oneOf" '())))
+    (cond
+      ((null? subs) '())
+      (else
+       (let ((n (count-matching subs value path)))
+         (cond
+           ((= n 1) '())
+           ((= n 0) (list (mkerr path "matched no subschema in `oneOf`")))
+           (else    (list (mkerr path
+                          (string-append "matched " (number->string n)
+                                         " subschemas in `oneOf` (expected 1)"))))))))))
+
+(define (check-not schema value path)
+  (let ((sub (s-get schema "not" '())))
+    (cond
+      ((null? sub) '())
+      ((null? (validate sub value path))
+       (list (mkerr path "value matched `not` subschema")))
+      (else '()))))
+
+;; ─────────────────────────────────────────────────────────────────────
+;; String rules
+
+(define (check-string-rules schema value path)
+  (let* ((minl (s-get schema "minLength" '()))
+         (maxl (s-get schema "maxLength" '()))
+         (pat  (s-get schema "pattern"   '()))
+         (n    (string-length value)))
+    (append
+      (if (and (integer? minl) (< n minl))
+          (list (mkerr path (string-append "string shorter than minLength="
+                                          (number->string minl))))
+          '())
+      (if (and (integer? maxl) (> n maxl))
+          (list (mkerr path (string-append "string longer than maxLength="
+                                          (number->string maxl))))
+          '())
+      ;; pattern check uses substring containment (not full regex). The
+      ;; commonest manifest use — "must contain @" or "starts with v" — is
+      ;; covered. Real regex would need core.regex import which has heavier
+      ;; deps; substring keeps json-schema light.
+      (if (and (string? pat)
+               (= (string-length pat) 0))
+          '()
+          (if (string? pat)
+              (let ((idx (string-index value pat)))
+                (if (>= idx 0) '()
+                    (list (mkerr path
+                           (string-append "string does not contain pattern \""
+                                          pat "\"")))))
+              '())))))
+
+;; ─────────────────────────────────────────────────────────────────────
+;; Number rules
+
+(define (check-number-rules schema value path)
+  (let ((mi  (s-get schema "minimum"          '()))
+        (ma  (s-get schema "maximum"          '()))
+        (xmi (s-get schema "exclusiveMinimum" '()))
+        (xma (s-get schema "exclusiveMaximum" '())))
+    (append
+      (if (and (or (integer? mi) (real? mi)) (< value mi))
+          (list (mkerr path (string-append "value < minimum="
+                                          (number->string mi))))
+          '())
+      (if (and (or (integer? ma) (real? ma)) (> value ma))
+          (list (mkerr path (string-append "value > maximum="
+                                          (number->string ma))))
+          '())
+      (if (and (or (integer? xmi) (real? xmi)) (<= value xmi))
+          (list (mkerr path (string-append "value <= exclusiveMinimum="
+                                          (number->string xmi))))
+          '())
+      (if (and (or (integer? xma) (real? xma)) (>= value xma))
+          (list (mkerr path (string-append "value >= exclusiveMaximum="
+                                          (number->string xma))))
+          '()))))
+
+;; ─────────────────────────────────────────────────────────────────────
+;; Array rules
+
+(define (check-array-rules schema value path)
+  (let ((items (s-get schema "items"    '()))
+        (mi    (s-get schema "minItems" '()))
+        (ma    (s-get schema "maxItems" '()))
+        (n     (length value)))
+    (append
+      (if (and (integer? mi) (< n mi))
+          (list (mkerr path (string-append "array length " (number->string n)
+                                          " < minItems=" (number->string mi))))
+          '())
+      (if (and (integer? ma) (> n ma))
+          (list (mkerr path (string-append "array length " (number->string n)
+                                          " > maxItems=" (number->string ma))))
+          '())
+      (if (or (null? items) (not (hash-table? items)))
+          '()
+          (validate-array-items items value path 0)))))
+
+(define (validate-array-items item-schema items path idx)
+  (cond
+    ((null? items) '())
+    (else
+     (let* ((sub-path (path-extend path (number->string idx)))
+            (head-errs (validate item-schema (car items) sub-path))
+            (rest-errs (validate-array-items item-schema (cdr items) path (+ idx 1))))
+       (append head-errs rest-errs)))))
+
+;; ─────────────────────────────────────────────────────────────────────
+;; Object rules
+
+(define (check-object-rules schema value path)
+  (let ((props      (s-get schema "properties"           '()))
+        (required   (s-get schema "required"             '()))
+        (additional (s-get schema "additionalProperties" #t)))
+    (append
+      (check-required required value path)
+      (check-properties props value path)
+      (check-additional props additional value path))))
+
+(define (check-required required value path)
+  (cond
+    ((not (list? required)) '())
+    (else
+     (concat-lists
+            (map (lambda (k)
+                   (if (and (string? k) (hash-table-contains? value k))
+                       '()
+                       (list (mkerr (path-extend path k) "missing required property"))))
+                 required)))))
+
+(define (check-properties props value path)
+  (cond
+    ((not (hash-table? props)) '())
+    (else
+     (concat-lists
+            (map (lambda (k)
+                   (if (hash-table-contains? value k)
+                       (validate (hash-table-ref props k '())
+                                 (hash-table-ref value k '())
+                                 (path-extend path k))
+                       '()))
+                 (hash-table-keys props))))))
+
+(define (check-additional props additional value path)
+  (cond
+    ((not (eq? additional #f)) '())          ; default: allowed
+    ((not (hash-table? props)) '())
+    (else
+     (let ((known-keys (hash-table-keys props))
+           (actual-keys (hash-table-keys value)))
+       (apply append
+              (map (lambda (k)
+                     (if (member k known-keys)
+                         '()
+                         (list (mkerr (path-extend path k)
+                                      "additional property not allowed"))))
+                   actual-keys))))))
+
+;; ─────────────────────────────────────────────────────────────────────
+;; Public API
+
+(define (json-schema-validate schema value)
+  (validate schema value ""))
+
+(define (json-schema-valid? schema value)
+  (null? (json-schema-validate schema value)))

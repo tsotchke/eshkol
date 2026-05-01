@@ -4,6 +4,7 @@
 ;;
 (provide regex-compile regex-match regex-match? regex-match-all
          regex-replace regex-free
+         regex-match-groups regex-group regex-named-group-number
          REGEX_CASELESS REGEX_MULTILINE REGEX_DOTALL)
 
 ;; Flags
@@ -17,6 +18,9 @@
 (extern i32 regex-match-all-raw i64 ptr ptr i64 i32 :real eshkol_regex_match_all)
 (extern i32 regex-replace-raw i64 ptr ptr ptr i64 :real eshkol_regex_replace)
 (extern void regex-free-raw i64 :real eshkol_regex_free)
+(extern i32 regex-match-groups-raw i64 ptr ptr i64 :real eshkol_regex_match_groups)
+(extern i32 regex-match-groups-count-raw i64 ptr :real eshkol_regex_match_groups_count)
+(extern i32 regex-named-group-number-raw i64 ptr :real eshkol_regex_named_group_number)
 
 ;; High-level wrappers
 (define (regex-compile pattern . flags)
@@ -28,7 +32,18 @@
   "Match pattern against subject. Returns first match string or #f."
   (let* ((buf (make-string 4096 #\nul))
          (result (regex-match-raw handle subject buf 4096)))
-    (if (= result 1) (string-trim-right buf (char-set #\nul)) #f)))
+    (if (= result 1)
+        ;; PCRE2 writes a NUL-terminated match into buf; trim at first NUL.
+        ;; stdlib string-trim-right only removes whitespace, so we walk the
+        ;; buffer manually rather than depend on a non-existent char-set
+        ;; helper. Returning the substring is cheap — no allocation past
+        ;; what substring already does.
+        (let loop ((i 0))
+          (cond
+            ((>= i (string-length buf)) buf)
+            ((= (char->integer (string-ref buf i)) 0) (substring buf 0 i))
+            (else (loop (+ i 1)))))
+        #f)))
 
 (define (regex-match? handle subject)
   "Check if pattern matches subject. Returns #t or #f."
@@ -59,3 +74,41 @@
 (define (regex-free handle)
   "Free a compiled regex."
   (regex-free-raw handle))
+
+;; ---------------------------------------------------------------------------
+;; Capture-group extraction (Noesis #167)
+;;
+;; regex-match-groups returns a list of strings: group 0 is the whole match,
+;; groups 1..N are the captured subgroups. Returns #f on no-match. An unset
+;; optional group (e.g. (a(b)?c) where the b was absent) is returned as an
+;; empty string "".
+;; ---------------------------------------------------------------------------
+
+(define (regex-match-groups handle subject)
+  "Match and return (list full-match group1 group2 …) or #f on no match."
+  (let* ((buf-size 16384)   ; should comfortably hold most realistic matches
+         (buf (make-string buf-size #\nul))
+         (count (regex-match-groups-raw handle subject buf buf-size)))
+    (cond
+      ((<= count 0) #f)     ; -1 = no match, 0 = invalid input
+      (else
+        ;; Walk buf: successive NUL-terminated strings, count of them is `count`.
+        (let loop ((i 0) (start 0) (emitted 0) (acc '()))
+          (cond
+            ((>= emitted count) (reverse acc))
+            ((>= i buf-size) (reverse acc))
+            ((= (char->integer (string-ref buf i)) 0)
+             (loop (+ i 1) (+ i 1) (+ emitted 1)
+                   (cons (substring buf start i) acc)))
+            (else (loop (+ i 1) start emitted acc))))))))
+
+(define (regex-group match-groups idx)
+  "Access capture group by index. Group 0 = full match, 1.. = subgroups."
+  (if (and match-groups (list? match-groups)
+           (>= idx 0) (< idx (length match-groups)))
+      (list-ref match-groups idx)
+      #f))
+
+(define (regex-named-group-number handle name)
+  "Return the numeric index for a named capture group, or -1 if absent."
+  (regex-named-group-number-raw handle name))

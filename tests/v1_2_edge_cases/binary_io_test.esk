@@ -1,0 +1,97 @@
+;;; binary_io_test.esk — #144 Binary ports + bytevector I/O (R7RS §6.13.3)
+;;;
+;;; Note: open-binary-* / read-bytevector / write-bytevector are already
+;;; wired in StringIOCodegen. This suite locks down the behavior so
+;;; future refactors can't silently break the round-trip.
+
+(require core.testing)
+
+(reset-tests!)
+
+(define TEST-PATH "/tmp/eshkol_bin_io_test.dat")
+
+(register-test "make-bytevector and accessors"
+  (lambda ()
+    (let ((bv (make-bytevector 3 0)))
+      (check-equal? (bytevector-length bv) 3)
+      (bytevector-u8-set! bv 0 65)
+      (bytevector-u8-set! bv 1 66)
+      (bytevector-u8-set! bv 2 67)
+      (check-equal? (bytevector-u8-ref bv 0) 65)
+      (check-equal? (bytevector-u8-ref bv 1) 66)
+      (check-equal? (bytevector-u8-ref bv 2) 67))))
+
+(register-test "write-bytevector then read-bytevector"
+  (lambda ()
+    (let ((bv (make-bytevector 4 0)))
+      (bytevector-u8-set! bv 0 0)      ; null byte
+      (bytevector-u8-set! bv 1 255)    ; high byte
+      (bytevector-u8-set! bv 2 127)    ; signed-int boundary
+      (bytevector-u8-set! bv 3 128)    ; other signed-int boundary
+      (let ((op (open-binary-output-file TEST-PATH)))
+        (write-bytevector bv op)
+        (close-port op))
+      (let* ((ip (open-binary-input-file TEST-PATH))
+             (back (read-bytevector 4 ip)))
+        (close-port ip)
+        (check-equal? (bytevector-length back) 4)
+        (check-equal? (bytevector-u8-ref back 0) 0)
+        (check-equal? (bytevector-u8-ref back 1) 255)
+        (check-equal? (bytevector-u8-ref back 2) 127)
+        (check-equal? (bytevector-u8-ref back 3) 128)))))
+
+(register-test "bytevector? predicate"
+  (lambda ()
+    (check-true  (bytevector? (make-bytevector 1 0)))
+    (check-false (bytevector? "not a bytevector"))
+    (check-false (bytevector? 42))
+    (check-false (bytevector? '()))))
+
+(register-test "bytevector-copy produces an independent copy"
+  (lambda ()
+    (let* ((a (make-bytevector 3 0)))
+      (bytevector-u8-set! a 0 1)
+      (bytevector-u8-set! a 1 2)
+      (bytevector-u8-set! a 2 3)
+      (let ((b (bytevector-copy a)))
+        (check-equal? (bytevector-u8-ref b 0) 1)
+        (check-equal? (bytevector-u8-ref b 1) 2)
+        (check-equal? (bytevector-u8-ref b 2) 3)
+        ;; Mutating one should not touch the other.
+        (bytevector-u8-set! b 0 99)
+        (check-equal? (bytevector-u8-ref a 0) 1)
+        (check-equal? (bytevector-u8-ref b 0) 99)))))
+
+(register-test "empty bytevector round-trip (R7RS §6.13.2 k=0 clause)"
+  (lambda ()
+    (let ((empty (make-bytevector 0 0)))
+      (check-equal? (bytevector-length empty) 0)
+      (let ((op (open-binary-output-file TEST-PATH)))
+        (write-bytevector empty op)
+        (close-port op))
+      (let* ((ip (open-binary-input-file TEST-PATH))
+             (back (read-bytevector 0 ip)))
+        (close-port ip)
+        ;; R7RS: (read-bytevector 0 ...) returns an empty bytevector
+        ;; immediately — never the eof-object.
+        (check-equal? (bytevector-length back) 0)))))
+
+(register-test "all-byte roundtrip (0..255)"
+  (lambda ()
+    (let ((bv (make-bytevector 256 0)))
+      (let loop ((i 0))
+        (when (< i 256)
+          (bytevector-u8-set! bv i i)
+          (loop (+ i 1))))
+      (let ((op (open-binary-output-file TEST-PATH)))
+        (write-bytevector bv op)
+        (close-port op))
+      (let* ((ip (open-binary-input-file TEST-PATH))
+             (back (read-bytevector 256 ip)))
+        (close-port ip)
+        (check-equal? (bytevector-length back) 256)
+        (check-equal? (bytevector-u8-ref back 0)   0)
+        (check-equal? (bytevector-u8-ref back 42)  42)
+        (check-equal? (bytevector-u8-ref back 255) 255)))))
+
+(run-tests)
