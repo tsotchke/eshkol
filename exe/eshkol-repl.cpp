@@ -290,10 +290,13 @@ int get_paren_depth(const std::string& input) {
     return depth;
 }
 
-// Helper: Parse a string to AST using istringstream (no temp file needed)
+// Helper: Parse a string to AST using istringstream (no temp file needed).
+// Resets the parser's cumulative line counter so each REPL form starts at
+// line 1 — otherwise diagnostics would creep forward across commands.
 eshkol_ast_t parse_string(const std::string& input) {
     std::string parse_input = input + "\n";
     std::istringstream stream(parse_input);
+    eshkol_reset_parse_line_counter();
     return eshkol_parse_next_ast_from_stream(stream);
 }
 

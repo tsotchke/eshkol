@@ -1410,6 +1410,11 @@ static void load_file_asts(const std::string& filepath, std::vector<eshkol_ast_t
         eshkol_info("Loading file: %s", filepath.c_str());
     }
 
+    // Reset cumulative line/column counter so this file's first AST is at
+    // line 1.  Without this, a file loaded after some other file would
+    // start counting at the previous file's last line.
+    eshkol_reset_parse_line_counter();
+
     eshkol_ast_t ast = eshkol_parse_next_ast(read_file);
     while (ast.type != ESHKOL_INVALID) {
         if (debug_mode) {

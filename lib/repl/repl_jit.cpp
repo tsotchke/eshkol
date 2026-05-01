@@ -1510,6 +1510,10 @@ static std::vector<eshkol_ast_t> parseAllAstsFromString(const std::string& conte
     std::vector<eshkol_ast_t> results;
     std::istringstream stream(content);
 
+    // Fresh parse session — reset cumulative line counter so the first
+    // form starts at line 1 within `content`.
+    ::eshkol_reset_parse_line_counter();
+
     while (stream.good() && !stream.eof()) {
         // Skip whitespace and comments
         while (stream.good()) {

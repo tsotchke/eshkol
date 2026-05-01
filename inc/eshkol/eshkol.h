@@ -1894,6 +1894,10 @@ eshkol_ast_t eshkol_parse_next_ast(std::ifstream &in_file);
 // Parse next AST from any input stream (including string streams for stdlib)
 eshkol_ast_t eshkol_parse_next_ast_from_stream(std::istream &in_stream);
 
+// Reset cumulative file line/column counter — call before parsing a new file
+// so the next eshkol_parse_next_ast call starts at file line 1, column 1.
+extern "C" void eshkol_reset_parse_line_counter(void);
+
 #endif
 
 #endif

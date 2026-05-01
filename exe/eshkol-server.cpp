@@ -239,6 +239,10 @@ std::string compile_to_wasm(const std::string& code, const std::string& session_
     // Parse the code using a stringstream
     std::istringstream code_stream(code);
 
+    // Fresh parse session — reset cumulative line counter so the first
+    // form starts at line 1 in `code`.
+    eshkol_reset_parse_line_counter();
+
     std::vector<eshkol_ast_t> asts;
     eshkol_ast_t ast;
 
