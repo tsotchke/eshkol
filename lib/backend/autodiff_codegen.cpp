@@ -8657,11 +8657,21 @@ void AutodiffCodegen::pushTapeContext(llvm::Value* new_tape) {
         llvm::FunctionType* fprintf_type = llvm::FunctionType::get(ctx_.int32Type(),
             {ctx_.ptrType(), ctx_.ptrType()}, true);
         llvm::FunctionCallee fprintf_func = ctx_.module().getOrInsertFunction("fprintf", fprintf_type);
-        // Get stderr via __stderrp (macOS) or stderr global
-        llvm::GlobalVariable* stderr_var = ctx_.module().getGlobalVariable("__stderrp");
+        // Get stderr via platform-appropriate symbol name. The check fires
+        // at eshkol-run build time, so a Linux build emits IR that
+        // references `stderr` (Linux libc) and a macOS build emits IR
+        // referencing `__stderrp` (Apple libc). We were unconditionally
+        // emitting `__stderrp`, which broke linking of user programs on
+        // Linux ARM64 / x86_64 with `undefined reference to __stderrp`.
+#ifdef __APPLE__
+        const char* stderr_sym = "__stderrp";
+#else
+        const char* stderr_sym = "stderr";
+#endif
+        llvm::GlobalVariable* stderr_var = ctx_.module().getGlobalVariable(stderr_sym);
         if (!stderr_var) {
             stderr_var = new llvm::GlobalVariable(ctx_.module(), ctx_.ptrType(), false,
-                llvm::GlobalValue::ExternalLinkage, nullptr, "__stderrp");
+                llvm::GlobalValue::ExternalLinkage, nullptr, stderr_sym);
         }
         llvm::Value* stderr_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), stderr_var);
         llvm::Value* err_msg = ctx_.builder().CreateGlobalStringPtr(

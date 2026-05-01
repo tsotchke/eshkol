@@ -2438,8 +2438,22 @@ extern "C" {
  * When the AST gains a proper destructor (epic #182, or the v1.3
  * arena-backed AST refactor), this override should be removed so that
  * any regression — a new alloc that *isn't* exit-time-only — fails CI. */
-#if (defined(__has_feature) && (__has_feature(address_sanitizer) || __has_feature(leak_sanitizer))) \
-    || defined(__SANITIZE_ADDRESS__)
+/* clang exposes __has_feature; gcc does not (and using it as
+ * `defined(__has_feature)` works on clang but mis-parses on gcc).
+ * Detect each compiler's sanitizer macro independently. */
+#ifndef ESHKOL_HAS_ASAN
+# if defined(__SANITIZE_ADDRESS__)
+#  define ESHKOL_HAS_ASAN 1
+# elif defined(__clang__)
+#  if defined(__has_feature)
+#   if __has_feature(address_sanitizer) || __has_feature(leak_sanitizer)
+#    define ESHKOL_HAS_ASAN 1
+#   endif
+#  endif
+# endif
+#endif
+
+#ifdef ESHKOL_HAS_ASAN
 extern "C" const char* __lsan_default_options(void) {
     return "exitcode=0:print_suppressions=0:report_objects=1";
 }
@@ -3254,6 +3268,13 @@ int main(int argc, char **argv)
         link_args.emplace_back("-Wl,-stack_size,0x20000000");
 #elif defined(__linux__)
         link_args.emplace_back("-Wl,-z,stack-size=536870912");
+        // AArch64 Linux: see lib/backend/llvm_codegen.cpp for rationale —
+        // GNU ld 2.38 has bugs handling large user binaries; switch to
+        // LLVM's lld which has no such limits. Keep in sync with the
+        // JIT link path.
+#  if defined(__aarch64__) || defined(__arm64__)
+        link_args.emplace_back("-fuse-ld=lld");
+#  endif
 #endif
 
         // Add output
