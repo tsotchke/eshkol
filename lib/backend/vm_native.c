@@ -2078,7 +2078,9 @@ static void vm_dispatch_native(VM* vm, int fid) {
         Value* results = (Value*)vm_alloc(&vm->heap.regions, (size_t)n * sizeof(Value));
         if (!results) { vm_push(vm, NIL_VAL); break; }
 
-        /* Use thread pool if available and list is large enough */
+        /* Use thread pool if available and list is large enough.
+         * WASM target has no pthread → vm_parallel.c is excluded; always sequential. */
+#ifndef ESHKOL_VM_WASM
         if (g_pool && n >= 4) {
             VmParMapTask* tasks = (VmParMapTask*)vm_alloc(&vm->heap.regions,
                                       (size_t)n * sizeof(VmParMapTask));
@@ -2102,8 +2104,10 @@ static void vm_dispatch_native(VM* vm, int fid) {
                     results[i] = vm_call_closure_from_native(vm, fn, &elems[i], 1);
                 }
             }
-        } else {
-            /* Sequential: small list or no pool */
+        } else
+#endif
+        {
+            /* Sequential: small list, no pool, or WASM target */
             for (int i = 0; i < n; i++) {
                 results[i] = vm_call_closure_from_native(vm, fn, &elems[i], 1);
             }
@@ -2140,7 +2144,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
             cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
         }
 
-        /* Evaluate predicates (parallel via pool if available) */
+        /* Evaluate predicates (parallel via pool if available; WASM is sequential). */
+#ifndef ESHKOL_VM_WASM
         if (g_pool && n >= 4) {
             VmParMapTask* tasks = (VmParMapTask*)vm_alloc(&vm->heap.regions,
                                       (size_t)n * sizeof(VmParMapTask));
@@ -2157,7 +2162,9 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 for (int i = 0; i < n; i++)
                     preds[i] = vm_call_closure_from_native(vm, pred, &elems[i], 1);
             }
-        } else {
+        } else
+#endif
+        {
             for (int i = 0; i < n; i++)
                 preds[i] = vm_call_closure_from_native(vm, pred, &elems[i], 1);
         }
@@ -2206,6 +2213,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
             cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
         }
 
+        /* parallel-for-each: parallel via pool if available; WASM is sequential. */
+#ifndef ESHKOL_VM_WASM
         if (g_pool && n >= 4) {
             VmParMapTask* tasks = (VmParMapTask*)vm_alloc(&vm->heap.regions,
                                       (size_t)n * sizeof(VmParMapTask));
@@ -2221,7 +2230,9 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 for (int i = 0; i < n; i++)
                     vm_call_closure_from_native(vm, fn, &elems[i], 1);
             }
-        } else {
+        } else
+#endif
+        {
             for (int i = 0; i < n; i++)
                 vm_call_closure_from_native(vm, fn, &elems[i], 1);
         }
@@ -5135,6 +5146,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
 
     case 1852: { /* image-to-grayscale(tensor) → tensor (H,W) or #f */
         Value tensor_val = vm_pop(vm);
+#ifndef ESHKOL_VM_WASM
         if (tensor_val.type == VAL_TENSOR) {
             VmTensor* t = (VmTensor*)vm->heap.objects[tensor_val.as.ptr]->opaque.ptr;
             if (t && t->data && t->n_dims >= 2) {
@@ -5150,12 +5162,16 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 }
             }
         }
+#else
+        (void)tensor_val;
+#endif
         vm_push(vm, BOOL_VAL(0));
         break;
     }
 
     case 1853: { /* image-resize(tensor, new-h, new-w) → tensor or #f */
         Value nw_val = vm_pop(vm), nh_val = vm_pop(vm), tensor_val = vm_pop(vm);
+#ifndef ESHKOL_VM_WASM
         if (tensor_val.type == VAL_TENSOR) {
             VmTensor* t = (VmTensor*)vm->heap.objects[tensor_val.as.ptr]->opaque.ptr;
             int new_h = (int)as_number(nh_val), new_w = (int)as_number(nw_val);
@@ -5174,6 +5190,9 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 }
             }
         }
+#else
+        (void)nw_val; (void)nh_val; (void)tensor_val;
+#endif
         vm_push(vm, BOOL_VAL(0));
         break;
     }
