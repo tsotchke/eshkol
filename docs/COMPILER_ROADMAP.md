@@ -23,7 +23,7 @@ research-grade Noesis.
 ## Current status (2026-04-17)
 
 **Branch**: `feature/v1.2-scale`
-**Last shipped release**: v1.1.13-accelerate (2026-04-10)
+**Last shipped release**: v1.2.0-scale (2026-05-01)
 **Tests passing**: 179 across 9 regression suites.
 
 Delivered in this sprint:
