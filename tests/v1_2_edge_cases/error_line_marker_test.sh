@@ -13,7 +13,7 @@
 set -u
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-RUN="$ROOT/build/eshkol-run"
+RUN="$ROOT/${BUILD_DIR:-build}/eshkol-run"
 
 if [ ! -x "$RUN" ]; then
     echo "ERROR: $RUN not built"
