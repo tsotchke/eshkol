@@ -1481,9 +1481,17 @@ if(ESHKOL_XLA_ENABLED AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/xla/xla_code
 endif()
 
 # ===== Agent FFI Modules =====
-# C bridge libraries for the Eshkol agent (terminal, regex, sqlite, crypto)
-
-option(ESHKOL_BUILD_AGENT_FFI "Build agent FFI modules" ON)
+# C bridge libraries for the Eshkol agent (terminal, regex, sqlite, crypto).
+# The Unix implementations use POSIX-only APIs (termios, pthread, fork/exec,
+# /dev/tty); the Windows ports (ConPTY, CreateProcess+pipes, Windows
+# Credential Manager) are slated for v1.4-platform. Default to OFF on
+# Windows so the rest of the toolchain (LLVM backend, REPL, codegen,
+# stdlib) builds and tests cleanly there in the meantime.
+if(WIN32)
+    option(ESHKOL_BUILD_AGENT_FFI "Build agent FFI modules (POSIX-only)" OFF)
+else()
+    option(ESHKOL_BUILD_AGENT_FFI "Build agent FFI modules" ON)
+endif()
 
 if(ESHKOL_BUILD_AGENT_FFI)
     set(AGENT_FFI_DIR "${CMAKE_SOURCE_DIR}/lib/agent/c")
