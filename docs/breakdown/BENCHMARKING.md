@@ -1,7 +1,7 @@
 # Benchmarking
 
 **Status:** Production (v1.2.0-scale)
-**Applies to:** Eshkol compiler v1.1-accelerate and later
+**Applies to:** Eshkol compiler v1.2.0-scale and later
 
 ---
 

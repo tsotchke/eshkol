@@ -274,16 +274,18 @@ eshkol/
 - **GitHub Discussions**: For general questions, ideas, and community discussions.
 - **Pull Requests**: For code contributions and code reviews.
 
-## Priority Areas for Contribution (v1.2+)
+## Priority Areas for Contribution (v1.3+)
 
-v1.0-foundation and v1.1-accelerate are **complete**. We welcome contributions for upcoming releases:
+v1.0-foundation, v1.1-accelerate, and v1.2.0-scale are **complete**. We welcome contributions for upcoming releases:
 
-### Immediate Priorities (v1.2-scale - Q2 2026)
-1. **Distributed Computing**: Multi-node gradient synchronization
-2. **Model Deployment**: ONNX/TFLite/CoreML export
-3. **Vulkan Compute**: Cross-platform GPU backend (Metal and CUDA already shipped in v1.1)
-4. **Visual Debugger**: Source-level debugging UI
-5. **Python Bindings**: Interoperability with Python ML ecosystem
+### Immediate Priorities (v1.3-evolve - June 2026)
+1. **R7RS Library System**: `define-library` / `import` with renaming, prefixing, `only`, `except`
+2. **String Interpolation**: `~{expr}` syntax in strings
+3. **Named Keyword Arguments**: `(f #:key value)` call syntax
+4. **Destructuring Let**: `(let-match ((cons a b) lst) ...)`
+5. **Profile-Guided & Whole-Program Optimization**: PGO + LTO wired through the build
+6. **Debugger**: REPL step-through with breakpoints + variable inspection
+7. **Documentation Generator**: `eshkol-doc` from docstrings
 
 ### Near-Term (v1.5-intelligence - Q3 2026)
 1. **Neural-Symbolic Search**: Differentiable logic programs (building on v1.1 consciousness engine)

@@ -1,6 +1,6 @@
 # Eshkol Module System
 
-**Status:** Production (v1.1-accelerate)
+**Status:** Production (v1.2.0-scale)
 **Primary implementation:** `exe/eshkol-run.cpp`
 **Related files:** `lib/backend/llvm_codegen.cpp`, `lib/frontend/parser.cpp`, `lib/backend/binding_codegen.cpp`
 

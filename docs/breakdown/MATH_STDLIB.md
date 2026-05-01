@@ -1,6 +1,6 @@
 # Eshkol Mathematics Standard Library
 
-**Status:** Stable — v1.1-accelerate
+**Status:** Stable — v1.2.0-scale
 **Module:** `math`, `math.constants`, `math.special`, `math.ode`, `math.statistics`, `random`
 **Sources:** `lib/math/constants.esk`, `lib/math/special.esk`, `lib/math/ode.esk`,
 `lib/math/statistics.esk`, `lib/random/random.esk`

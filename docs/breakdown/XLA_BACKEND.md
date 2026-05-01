@@ -1,6 +1,6 @@
 # XLA Backend — Eshkol Compiler Internals
 
-**Status**: Production (v1.1-accelerate)
+**Status**: Production (v1.2.0-scale)
 **Source**: `lib/backend/xla/xla_runtime.cpp` (1249 lines), `inc/eshkol/backend/xla/xla_codegen.h`, `inc/eshkol/backend/xla/xla_runtime.h`
 **Build flag**: `-DESHKOL_XLA_ENABLED`
 

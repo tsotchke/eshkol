@@ -1016,7 +1016,7 @@ Map Eshkol names to C names:
 
 ```
 $ ./eshkol-repl
-Eshkol REPL v1.1-accelerate
+Eshkol REPL v1.2.0-scale
 Type :help for assistance, :quit to exit
 
 eshkol> (define (square x) (* x x))
@@ -1368,5 +1368,5 @@ MIT License - Copyright (C) tsotchke
 ---
 
 <p align="center">
-<strong>Eshkol v1.1-accelerate</strong>: Where functional programming meets scientific computing, GPU acceleration, and machine consciousness.
+<strong>Eshkol v1.2.0-scale</strong>: Where functional programming meets scientific computing, GPU acceleration, and machine consciousness.
 </p>
