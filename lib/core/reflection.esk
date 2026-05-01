@@ -1,0 +1,109 @@
+;;; lib/core/reflection.esk — runtime reflection helpers (task #170)
+;;;
+;;; Three primitives are provided:
+;;;
+;;;   (procedure-arity proc)  — codegen builtin (lib/backend/llvm_codegen.cpp).
+;;;                             Returns the fixed parameter count of a closure.
+;;;   (describe value)        — stdlib helper. Returns a human-readable string
+;;;                             tagging the value's type and (where useful)
+;;;                             its arity, length, or contents.
+;;;   (record-fields value)   — DEFERRED. Records are currently stored as
+;;;                             vectors with a type-tag in slot 0; the field
+;;;                             *names* live only in the parser/codegen at
+;;;                             expansion time. Adding a runtime registry of
+;;;                             record-type → field-names is its own task —
+;;;                             see TODO at the bottom of this file.
+
+(require core.list.transform)
+
+(provide describe type-name)
+
+;; ─────────────────────────────────────────────────────────────────────
+;; type-name — single-token type tag for a value.
+;;
+;; Returns one of: 'integer 'real 'string 'symbol 'boolean 'pair 'null
+;;                 'vector 'procedure 'char 'unknown
+;;
+;; Useful as a stand-alone classifier when callers don't want to write
+;; their own dispatch chain.
+
+(define (type-name value)
+  (cond
+    ((null? value)      'null)
+    ((boolean? value)   'boolean)
+    ((integer? value)   'integer)
+    ((real? value)      'real)
+    ((string? value)    'string)
+    ((symbol? value)    'symbol)
+    ((char? value)      'char)
+    ((pair? value)      'pair)
+    ((vector? value)    'vector)
+    ((procedure? value) 'procedure)
+    (else               'unknown)))
+
+;; ─────────────────────────────────────────────────────────────────────
+;; describe — string description of any value.
+;;
+;; The format aims for "tells you something useful at a glance" rather
+;; than full structural detail. For collections it shows the size; for
+;; procedures it shows the fixed arity; for atoms it shows the value.
+;;
+;;   (describe 42)              → "integer: 42"
+;;   (describe 3.14)            → "real: 3.14"
+;;   (describe "hi")            → "string[2]: \"hi\""
+;;   (describe 'foo)            → "symbol: foo"
+;;   (describe #t)              → "boolean: #t"
+;;   (describe '())             → "null"
+;;   (describe (list 1 2 3))    → "pair (length 3): (1 2 3)"
+;;   (describe (vector 'a 'b))  → "vector[2]: #(a b)"
+;;   (describe (lambda (x y) x)) → "procedure: arity=2"
+;;   (describe car)             → "procedure: arity=1"
+
+(define (describe value)
+  (cond
+    ((null? value) "null")
+    ((boolean? value)
+     (string-append "boolean: " (if value "#t" "#f")))
+    ((integer? value)
+     (string-append "integer: " (number->string value)))
+    ((real? value)
+     (string-append "real: " (number->string value)))
+    ((string? value)
+     (string-append "string["
+                    (number->string (string-length value))
+                    "]: \"" value "\""))
+    ((symbol? value)
+     (string-append "symbol: " (symbol->string value)))
+    ((char? value)
+     (string-append "char: #\\"
+                    (string value)))
+    ((pair? value)
+     (string-append "pair (length "
+                    (number->string (length value))
+                    ")"))
+    ((vector? value)
+     (string-append "vector["
+                    (number->string (vector-length value))
+                    "]"))
+    ((procedure? value)
+     (string-append "procedure: arity="
+                    (number->string (procedure-arity value))))
+    (else "unknown")))
+
+;; ─────────────────────────────────────────────────────────────────────
+;; record-fields — DEFERRED.
+;;
+;; Records expand at parse time into a vector with a type-tag in slot 0
+;; plus accessor/mutator function definitions. The field *names* exist
+;; only in the parser source and are not embedded in the runtime value,
+;; so a value-level reflection like `(record-fields some-record)` cannot
+;; recover them without a separate runtime registry.
+;;
+;; Implementation plan when this lands:
+;;   1. Generate a global association list at expansion time of
+;;      `((record-type-tag . (field1 field2 ...)) ...)`.
+;;   2. Have `(record-fields obj)` extract slot 0 (the type tag) and
+;;      look it up in that registry.
+;;
+;; Estimated effort: ~1 day in lib/frontend/parser.cpp + a small runtime
+;; helper to populate and query the registry.

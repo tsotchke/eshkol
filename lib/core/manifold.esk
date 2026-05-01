@@ -1,0 +1,33 @@
+;;
+;; core.manifold — Riemannian manifold operations
+;;
+;; Provides constructors and operations for geometric manifolds:
+;;   Euclidean, Hyperbolic (Poincaré), Spherical
+;;
+;; Operations: exponential map, logarithmic map, geodesic distance,
+;;   parallel transport, curvature tensor, Christoffel symbols
+;;
+;; These wrap the native VM geometric operations (IDs 804+).
+;; Requires the geometric manifold runtime (qLLM or built-in).
+;;
+
+(provide make-euclidean-manifold make-hyperbolic-manifold make-spherical-manifold
+         manifold-exp-map manifold-log-map manifold-distance
+         manifold-parallel-transport manifold-curvature
+         manifold-dimension manifold-type)
+
+;; ═══════════════════════════════════════════════════════════════
+;; Constructors
+;; ═══════════════════════════════════════════════════════════════
+
+;; These are native builtins — the names map to VM native IDs.
+;; When compiled via LLVM, they resolve through the codegen dispatch.
+
+;; Manifold type queries
+(define (manifold-dimension m)
+  "Return the dimension of a manifold."
+  (if m 0 0))  ;; placeholder — actual impl in native
+
+(define (manifold-type m)
+  "Return the type of a manifold as a symbol."
+  (if m 'unknown 'unknown))  ;; placeholder

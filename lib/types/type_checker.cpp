@@ -4,6 +4,7 @@
  */
 
 #include "eshkol/types/type_checker.h"
+#include "../../lib/core/arena_memory.h"
 #include <cstdio>
 #include <sstream>
 #include <cstring>
@@ -78,11 +79,9 @@ std::optional<hott_type_expr_t*> Context::lookupTypeAlias(const std::string& nam
 
 // Helper function to allocate a type expression
 static hott_type_expr_t* allocTypeExpr(hott_type_kind_t kind) {
-    hott_type_expr_t* type = (hott_type_expr_t*)malloc(sizeof(hott_type_expr_t));
-    if (type) {
-        memset(type, 0, sizeof(hott_type_expr_t));
-        type->kind = kind;
-    }
+    void* mem = arena_allocate_zeroed(get_global_arena(), sizeof(hott_type_expr_t));
+    hott_type_expr_t* type = (hott_type_expr_t*)mem;
+    if (type) type->kind = kind;
     return type;
 }
 
@@ -114,7 +113,7 @@ static hott_type_expr_t* substituteTypeVars(
 
         case HOTT_TYPE_ARROW:
             if (type_expr->arrow.num_params > 0 && type_expr->arrow.param_types) {
-                result->arrow.param_types = (hott_type_expr_t**)malloc(
+                result->arrow.param_types = (hott_type_expr_t**)arena_allocate(get_global_arena(),
                     type_expr->arrow.num_params * sizeof(hott_type_expr_t*));
                 for (uint64_t i = 0; i < type_expr->arrow.num_params; i++) {
                     result->arrow.param_types[i] = substituteTypeVars(
@@ -129,7 +128,7 @@ static hott_type_expr_t* substituteTypeVars(
         case HOTT_TYPE_FORALL:
             // For forall types, we need to be careful not to substitute bound variables
             if (type_expr->forall.num_vars > 0 && type_expr->forall.type_vars) {
-                result->forall.type_vars = (char**)malloc(
+                result->forall.type_vars = (char**)arena_allocate(get_global_arena(),
                     type_expr->forall.num_vars * sizeof(char*));
                 // Create a modified substitution map excluding bound variables
                 std::map<std::string, hott_type_expr_t*> inner_subst = substitutions;
@@ -706,6 +705,13 @@ TypeCheckResult TypeChecker::synthesizeVariable(eshkol_ast_t* expr) {
             return TypeCheckResult::ok(
                 env_.makeFunctionType({BuiltinTypes::Int64, BuiltinTypes::Int64}, BuiltinTypes::Int64));
         }
+        // Quirk 11: I/O builtins as first-class values (display, write,
+        // newline). Codegen wraps each as a unary closure in codegenVariable;
+        // the type checker just needs to agree they're callable.
+        if (name == "display" || name == "write" || name == "newline") {
+            return TypeCheckResult::ok(
+                env_.makeFunctionType({BuiltinTypes::Value}, BuiltinTypes::Null));
+        }
         return errorAt(expr, "Unbound variable: " + name);
     }
 
@@ -872,6 +878,7 @@ TypeCheckResult TypeChecker::synthesizeOperation(eshkol_ast_t* expr) {
         case ESHKOL_MAKE_FACT_OP:
         case ESHKOL_MAKE_KB_OP:
         case ESHKOL_KB_QUERY_OP:
+        case ESHKOL_KB_QUERY_PREFIX_OP:
         case ESHKOL_MAKE_FACTOR_GRAPH_OP:
         case ESHKOL_FG_INFER_OP:
         case ESHKOL_FG_UPDATE_CPT_OP:
@@ -975,10 +982,12 @@ TypeCheckResult TypeChecker::synthesizeLambda(eshkol_ast_t* expr) {
     // Create proper function type encoding param types and return type
     if (param_types.empty()) {
         // Nullary function
-        return TypeCheckResult::ok(env_.makeFunctionType({}, return_type));
+        return TypeCheckResult::ok(env_.makeFunctionType({}, return_type,
+                                                         lambda.is_variadic));
     }
 
-    return TypeCheckResult::ok(env_.makeFunctionType(param_types, return_type));
+    return TypeCheckResult::ok(env_.makeFunctionType(param_types, return_type,
+                                                      lambda.is_variadic));
 }
 
 TypeCheckResult TypeChecker::synthesizeApplication(eshkol_ast_t* expr) {
@@ -1083,11 +1092,28 @@ TypeCheckResult TypeChecker::synthesizeApplication(eshkol_ast_t* expr) {
             return TypeCheckResult::ok(BuiltinTypes::List);
         }
         if (func_name == "cons") {
-            // Track element types: cons(A, B) → Pair<A, B>
+            // R7RS: a list is either '() or (cons X list). When the cdr is
+            // itself a List (or '()), (cons car cdr) is a proper List —
+            // not Pair<A, List>. Otherwise it's a (potentially improper)
+            // pair with distinct head/tail types.
+            //
+            // Quirk 1 (2026-04-24): previously always returned Pair<A, B>,
+            // so the idiomatic accumulator pattern
+            //   (let loop ((xs ...) (acc (list)))
+            //     (loop (cdr xs) (cons (... ...) acc)))
+            // produced a spurious "expected List, got Pair<List, List>"
+            // warning on every run when the loop's `acc` parameter was
+            // inferred as List but the recursive call passed a
+            // (cons _ acc) — which the old rule typed as Pair<_, List>.
             if (call.num_vars >= 2 && arg_types[0].success && arg_types[1].success) {
+                TypeId cdr_type = arg_types[1].inferred_type;
+                // Narrow to List when the cdr is a List / Null.
+                if (cdr_type == BuiltinTypes::List ||
+                    cdr_type == BuiltinTypes::Null) {
+                    return TypeCheckResult::ok(BuiltinTypes::List);
+                }
                 TypeId pair_type = env_.makePairType(
-                    arg_types[0].inferred_type,
-                    arg_types[1].inferred_type);
+                    arg_types[0].inferred_type, cdr_type);
                 return TypeCheckResult::ok(pair_type);
             }
             return TypeCheckResult::ok(BuiltinTypes::Pair);
@@ -1404,8 +1430,11 @@ TypeCheckResult TypeChecker::synthesizeApplication(eshkol_ast_t* expr) {
         // Check argument count and types if we have function type info
         const PiType* pi = env_.getFunctionType(func_type);
         if (pi) {
-            // Arity check (only report if actual args exceed declared params)
-            if (pi->params.size() > 0 && call.num_vars > pi->params.size()) {
+            // Arity check — skip entirely when the callee is variadic: a
+            // rest-arg accepts any number of trailing positional args, so
+            // `(f a b)` on `(define (f x . rest) …)` is well-formed.
+            if (!pi->is_variadic &&
+                pi->params.size() > 0 && call.num_vars > pi->params.size()) {
                 std::string msg = "function '" +
                     std::string(func_expr->type == ESHKOL_VAR ? func_expr->variable.id : "<lambda>") +
                     "' expects " + std::to_string(pi->params.size()) +
@@ -1475,7 +1504,8 @@ TypeCheckResult TypeChecker::synthesizeDefine(eshkol_ast_t* expr) {
         if (def.return_type) {
             declared_return = resolveType(def.return_type);
         }
-        TypeId func_type = env_.makeFunctionType(param_types, declared_return);
+        TypeId func_type = env_.makeFunctionType(param_types, declared_return,
+                                                  def.is_variadic);
         ctx_.bind(def.name, func_type);
 
         // Now push scope and bind parameters
@@ -1520,7 +1550,8 @@ TypeCheckResult TypeChecker::synthesizeDefine(eshkol_ast_t* expr) {
         }
 
         // Create function type with narrowed param types and inferred return type
-        TypeId final_func_type = env_.makeFunctionType(narrowed_param_types, return_type);
+        TypeId final_func_type = env_.makeFunctionType(narrowed_param_types, return_type,
+                                                        def.is_variadic);
         value_type = TypeCheckResult::ok(final_func_type);
 
         // Re-bind function name with the full inferred type (overrides pre-binding)

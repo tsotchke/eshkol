@@ -8,7 +8,7 @@ if(POLICY CMP0091)
     cmake_policy(SET CMP0091 NEW)
 endif()
 
-set(ESHKOL_VERSION "1.1.13")
+set(ESHKOL_VERSION "1.2.0")
 
 project("Eshkol" VERSION ${ESHKOL_VERSION} LANGUAGES C CXX)
 
@@ -87,8 +87,12 @@ set(CMAKE_CXX_STANDARD 20)
 option(ESHKOL_BUILD_TESTS "Build tests" ON)
 option(ESHKOL_BUILD_EXAMPLES "Build examples" OFF)
 option(ESHKOL_BUILD_INTEGRATION_TESTS "Build integration tests" OFF)
-option(ESHKOL_ENABLE_ASAN "Enable Address Sanitizer" OFF)
+option(ESHKOL_ENABLE_ASAN "Enable Address Sanitizer"            OFF)
 option(ESHKOL_ENABLE_UBSAN "Enable Undefined Behavior Sanitizer" OFF)
+option(ESHKOL_ENABLE_TSAN "Enable Thread Sanitizer"              OFF)
+option(ESHKOL_ENABLE_MSAN "Enable Memory Sanitizer"              OFF)
+option(ESHKOL_ENABLE_LSAN "Enable Leak Sanitizer (standalone)"   OFF)
+option(ESHKOL_ENABLE_FUZZ "Build libFuzzer harnesses (clang only)" OFF)
 
 if(ESHKOL_BUILD_TESTS)
     enable_testing()
@@ -108,16 +112,73 @@ set(ESHKOL_LLVM_ROOT "")
 set(STABLEHLO_ROOT "" CACHE PATH "Path to StableHLO installation with bundled LLVM/MLIR")
 
 # ===== Sanitizers =====
+# Mutual-exclusivity check: ASan / TSan / MSan each rewrite the runtime
+# in incompatible ways. A build that enables more than one fails at link
+# time with a cryptic message; fail loudly up front instead. UBSan is
+# compatible with ASan + TSan but not MSan.
+set(ESHKOL_PRIMARY_SANITIZER_COUNT 0)
+foreach(san ASAN TSAN MSAN)
+    if(ESHKOL_ENABLE_${san})
+        math(EXPR ESHKOL_PRIMARY_SANITIZER_COUNT "${ESHKOL_PRIMARY_SANITIZER_COUNT} + 1")
+    endif()
+endforeach()
+if(ESHKOL_PRIMARY_SANITIZER_COUNT GREATER 1)
+    message(FATAL_ERROR
+        "At most one of ESHKOL_ENABLE_ASAN / _TSAN / _MSAN may be set. "
+        "They use incompatible runtimes. UBSan may combine with ASan or TSan.")
+endif()
+
 if(ESHKOL_ENABLE_ASAN)
     message(STATUS "Address Sanitizer: ENABLED")
-    add_compile_options(-fsanitize=address -fno-omit-frame-pointer)
+    add_compile_options(-fsanitize=address -fno-omit-frame-pointer -g)
     add_link_options(-fsanitize=address)
+    # ASan needs the runtime loaded before LLVM static init; disable the
+    # deprecated -bind_at_load trick elsewhere in this file for ASan
+    # builds by signaling via a compile definition.
+    add_compile_definitions(ESHKOL_SANITIZER_BUILD=1)
 endif()
 
 if(ESHKOL_ENABLE_UBSAN)
     message(STATUS "Undefined Behavior Sanitizer: ENABLED")
-    add_compile_options(-fsanitize=undefined -fno-omit-frame-pointer)
+    # -fno-sanitize-recover makes the first UB a hard abort so CI fails
+    # fast instead of logging the violation and continuing with a
+    # corrupt state. Disable alignment checks on the LLVM source that
+    # deliberately misaligns (see lib/backend) via per-function
+    # attributes if needed.
+    add_compile_options(-fsanitize=undefined -fno-sanitize-recover=all -fno-omit-frame-pointer -g)
     add_link_options(-fsanitize=undefined)
+    add_compile_definitions(ESHKOL_SANITIZER_BUILD=1)
+endif()
+
+if(ESHKOL_ENABLE_TSAN)
+    message(STATUS "Thread Sanitizer: ENABLED")
+    if(APPLE)
+        message(STATUS "  Note: TSan on Apple silicon requires macOS 12+ clang")
+    endif()
+    add_compile_options(-fsanitize=thread -fno-omit-frame-pointer -g)
+    add_link_options(-fsanitize=thread)
+    add_compile_definitions(ESHKOL_SANITIZER_BUILD=1)
+endif()
+
+if(ESHKOL_ENABLE_MSAN)
+    message(STATUS "Memory Sanitizer: ENABLED (requires instrumented libstdc++/libc++)")
+    add_compile_options(-fsanitize=memory -fsanitize-memory-track-origins=2
+                        -fno-omit-frame-pointer -g)
+    add_link_options(-fsanitize=memory)
+    add_compile_definitions(ESHKOL_SANITIZER_BUILD=1)
+endif()
+
+if(ESHKOL_ENABLE_LSAN)
+    # LSan standalone — only valid when NOT combined with ASan (ASan
+    # enables LSan automatically). Useful on Linux for leak-only CI.
+    if(ESHKOL_ENABLE_ASAN)
+        message(STATUS "Leak Sanitizer: subsumed by ASan")
+    else()
+        message(STATUS "Leak Sanitizer: ENABLED (standalone)")
+        add_compile_options(-fsanitize=leak -fno-omit-frame-pointer -g)
+        add_link_options(-fsanitize=leak)
+        add_compile_definitions(ESHKOL_SANITIZER_BUILD=1)
+    endif()
 endif()
 
 # LLVM backend is always enabled
@@ -852,6 +913,9 @@ list(FILTER LIB_SRC EXCLUDE REGEX "lib/agent/.*")
 # includes (vm_*.c, eskb_*.c are #included by eshkol_vm.c).
 # Only eshkol_vm.c is added back below (compiled in library mode).
 list(FILTER LIB_SRC EXCLUDE REGEX "lib/backend/[^/]*\\.c$")
+# `archive/` holds historical SDNC predecessors (weight_matrices_v1.c,
+# weight_matrices_v2.c, eshkol_compiler_standalone.c, qllm_interpreter_v1.c).
+# These are reference-only — kept for paper-section history but never linked.
 list(FILTER LIB_SRC EXCLUDE REGEX "lib/backend/archive/.*")
 
 # Exclude standalone .cpp programs with main()
@@ -870,6 +934,12 @@ else()
     list(APPEND LIB_SRC lib/backend/eshkol_vm.c)
 endif()
 
+# Image I/O (stb_image — single-header, MIT/public domain)
+list(APPEND LIB_SRC lib/core/image_io.c)
+
+# C FFI (stable embedding API)
+list(APPEND LIB_SRC lib/ffi/eshkol_ffi.cpp)
+
 # Exclude XLA sources from main library when XLA is disabled
 if(NOT ESHKOL_XLA_ENABLED)
     list(FILTER LIB_SRC EXCLUDE REGEX "lib/backend/xla/.*")
@@ -879,7 +949,7 @@ endif()
 file(GLOB REPL_SRC RELATIVE ${CMAKE_SOURCE_DIR} "lib/repl/*.cpp")
 
 add_compile_definitions(
-  ESHKOL_VER="${ESHKOL_VERSION}-accelerate"
+  ESHKOL_VER="${ESHKOL_VERSION}-scale"
 )
 
 if(ESHKOL_USING_MSVC)
@@ -1012,11 +1082,30 @@ set(STDLIB_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/lib/stdlib.esk")
 set(STDLIB_OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/stdlib.o")
 set(STDLIB_WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
 
+# stdlib.esk is a thin top-level that (require)s every module in
+# lib/core/, lib/math/, lib/signal/, etc.  CMake's DEPENDS list must
+# track those transitive sources too — otherwise edits to
+# lib/core/json_schema.esk (or any other required module) don't
+# trigger a stdlib rebuild and the user gets stale stdlib.o.  Glob
+# the union; CONFIGURE_DEPENDS asks CMake to re-glob on every build,
+# so newly-added .esk modules are picked up without needing a manual
+# `cmake ..` re-run.
+file(GLOB_RECURSE STDLIB_TRANSITIVE_SOURCES CONFIGURE_DEPENDS
+     "${CMAKE_CURRENT_SOURCE_DIR}/lib/core/*.esk"
+     "${CMAKE_CURRENT_SOURCE_DIR}/lib/math/*.esk"
+     "${CMAKE_CURRENT_SOURCE_DIR}/lib/signal/*.esk"
+     "${CMAKE_CURRENT_SOURCE_DIR}/lib/random/*.esk"
+     "${CMAKE_CURRENT_SOURCE_DIR}/lib/web/*.esk"
+     "${CMAKE_CURRENT_SOURCE_DIR}/lib/tensor/*.esk"
+     "${CMAKE_CURRENT_SOURCE_DIR}/lib/quantum/*.esk"
+     "${CMAKE_CURRENT_SOURCE_DIR}/lib/ml/*.esk"
+     "${CMAKE_CURRENT_SOURCE_DIR}/lib/math.esk")
+
 add_custom_command(
   OUTPUT ${STDLIB_OUTPUT}
   COMMAND ${CMAKE_COMMAND} -E env "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
           $<TARGET_FILE:eshkol-run> --shared-lib -o "${CMAKE_CURRENT_BINARY_DIR}/stdlib" "${STDLIB_SOURCE}"
-  DEPENDS eshkol-run ${STDLIB_SOURCE}
+  DEPENDS eshkol-run ${STDLIB_SOURCE} ${STDLIB_TRANSITIVE_SOURCES}
   WORKING_DIRECTORY ${STDLIB_WORKING_DIRECTORY}
   COMMENT "Compiling standard library to ${STDLIB_OUTPUT}"
   VERBATIM
@@ -1165,10 +1254,35 @@ if(REPL_SRC)
   # ===== Link eshkol-run with REPL library for -e/--eval JIT support =====
   # This must come after eshkol-repl-lib is defined
   target_link_libraries(eshkol-run PRIVATE eshkol-repl-lib)
-  # Force-load eshkol-static for JIT symbol resolution (same as REPL)
+
+  # Agent FFI linkage is applied AFTER the eshkol-agent-ffi target is
+  # defined (see the block at the end of the agent-FFI section further
+  # down). At this point in the file the target doesn't exist yet, so
+  # if(TARGET …) would evaluate false and silently drop the linkage.
+  # Force-load eshkol-static for JIT symbol resolution (same as REPL).
+  # Also force-load eshkol-repl-lib so its strong eval_bridge_impl.cpp
+  # overrides (eshkol_eval_jit_get_*) beat the weak defaults in
+  # eshkol-static. Without force_load, ld64 skips the TU because no
+  # *other* symbol references it.
   if(APPLE)
+    # ld64's -force_load only applies to the single archive that
+    # immediately follows it. Combining the flag with two paths on the
+    # same line still force-loads only the first archive. Use the
+    # comma-prefixed -Wl,-force_load,PATH form so each archive gets its
+    # own flag. This matters for eshkol-repl-lib: its eval_bridge_impl
+    # TU has a static constructor that registers bridge pointers with
+    # eshkol-static, but with only `eshkol_eval_bridge_linked` as an
+    # external symbol the archive gets dead-stripped without
+    # force_load.
     target_link_options(eshkol-run PRIVATE
-      "-Wl,-force_load" "$<TARGET_FILE:eshkol-static>")
+      "-Wl,-force_load,$<TARGET_FILE:eshkol-static>"
+      "-Wl,-force_load,$<TARGET_FILE:eshkol-repl-lib>")
+    # NOTE: agent-ffi force_load is applied separately AFTER the
+    # eshkol-agent-ffi target is defined later in this file (line
+    # 1467+ area). See the matching block at the bottom of the agent
+    # FFI section. This split is because `if(TARGET eshkol-agent-ffi)`
+    # here evaluates at configure time and the target doesn't exist
+    # yet.
     target_link_options(eshkol-run PRIVATE "-Wl,-export_dynamic")
     # 512MB stack for deep recursion (main thread stack set at link time on macOS)
     target_link_options(eshkol-run PRIVATE "-Wl,-stack_size,0x20000000")
@@ -1178,7 +1292,10 @@ if(REPL_SRC)
     # accept GNU ld options here.
   else()
     target_link_options(eshkol-run PRIVATE
-      "-Wl,--whole-archive" "$<TARGET_FILE:eshkol-static>" "-Wl,--no-whole-archive")
+      "-Wl,--whole-archive"
+      "$<TARGET_FILE:eshkol-static>"
+      "$<TARGET_FILE:eshkol-repl-lib>"
+      "-Wl,--no-whole-archive")
     target_link_options(eshkol-run PRIVATE "-Wl,--export-dynamic")
     # 512MB stack for deep recursion
     target_link_options(eshkol-run PRIVATE "-Wl,-z,stack-size=536870912")
@@ -1280,6 +1397,44 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/repl/assoc_e
     )
 endif()
 
+# ===== SDNC Paper Artifact: weight_matrices ===================================
+# The paper "The Self-Differentiating Neural Computer: Computable Transformers
+# via Analytical Weight Construction" (tsotchke 2026) reports a 2.8M-parameter
+# transformer (d_model=128, n_layers=6, FFN=1024) whose weights ARE the Eshkol
+# VM's microcode. The 74-test verification suite runs the same programs three
+# ways (reference C interpreter / simulated transformer / matrix forward pass)
+# and asserts bit-identical agreement.
+#
+# `lib/backend/weight_matrices.c` is a standalone program with its own main();
+# it is NOT compiled into libeshkol-static (see the `lib/backend/[^/]*\\.c$`
+# exclude regex above). Build it as a dedicated executable so
+# `scripts/paper/export_weights.sh` and `scripts/paper/run_paper_suite.sh`
+# can invoke it without out-of-band compile commands.
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/lib/backend/weight_matrices.c")
+    add_executable(weight_matrices lib/backend/weight_matrices.c)
+    target_include_directories(weight_matrices PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc
+        ${CMAKE_CURRENT_SOURCE_DIR}/lib/backend
+    )
+    target_link_libraries(weight_matrices PRIVATE eshkol-static m)
+    if(UNIX AND NOT APPLE)
+        target_link_libraries(weight_matrices PRIVATE pthread)
+    endif()
+    set_target_properties(weight_matrices PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/tools
+    )
+    if(ESHKOL_BUILD_TESTS)
+        add_test(
+            NAME sdnc_paper_74_tests
+            COMMAND $<TARGET_FILE:weight_matrices>
+        )
+        # The test program prints "Results: 74 passed, 0 failed" on success.
+        set_tests_properties(sdnc_paper_74_tests PROPERTIES
+            PASS_REGULAR_EXPRESSION "74 passed, 0 failed"
+        )
+    endif()
+endif()
+
 # ===== XLA Integration Tests =====
 if(ESHKOL_XLA_ENABLED AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/xla/xla_codegen_test.cpp")
     message(STATUS "Building XLA integration tests")
@@ -1337,10 +1492,17 @@ if(ESHKOL_BUILD_AGENT_FFI)
         set(AGENT_FFI_SOURCES
             ${AGENT_FFI_DIR}/agent_terminal.c
             ${AGENT_FFI_DIR}/agent_crypto.c
+            ${AGENT_FFI_DIR}/agent_subprocess.c
         )
 
-        # Optional: PCRE2 for regex
-        pkg_check_modules(PCRE2_AGENT pcre2-8)
+        # Optional: PCRE2 for regex. Homebrew ships the .pc file as
+        # libpcre2-8.pc, some distros (Debian) as pcre2-8.pc — try
+        # the homebrew-style name first, fall back to the bare one
+        # so Linux distros continue to build.
+        pkg_check_modules(PCRE2_AGENT libpcre2-8)
+        if(NOT PCRE2_AGENT_FOUND)
+            pkg_check_modules(PCRE2_AGENT pcre2-8)
+        endif()
         if(PCRE2_AGENT_FOUND)
             list(APPEND AGENT_FFI_SOURCES ${AGENT_FFI_DIR}/agent_regex.c)
         endif()
@@ -1357,32 +1519,59 @@ if(ESHKOL_BUILD_AGENT_FFI)
             ${CMAKE_SOURCE_DIR}/include
         )
 
+        # NOTE: The following dependencies are declared PUBLIC rather
+        # than PRIVATE so they propagate transitively to any target
+        # that links eshkol-agent-ffi (most importantly eshkol-run).
+        # When eshkol-run uses -force_load / --whole-archive to keep
+        # agent FFI symbols alive for JIT dlsym, the linker also
+        # needs sqlite3 / pcre2 / Security framework / OpenSSL to
+        # resolve the symbols those agent objects reference
+        # internally — otherwise we get "Undefined symbols for
+        # architecture arm64: _sqlite3_exec, _SecRandomCopyBytes,
+        # etc." at eshkol-run's link step.
+
         # Terminal needs ncurses
         find_library(NCURSES_AGENT ncurses)
         if(NCURSES_AGENT)
-            target_link_libraries(eshkol-agent-ffi PRIVATE ${NCURSES_AGENT})
+            target_link_libraries(eshkol-agent-ffi PUBLIC ${NCURSES_AGENT})
         endif()
 
         if(PCRE2_AGENT_FOUND)
             target_include_directories(eshkol-agent-ffi PRIVATE ${PCRE2_AGENT_INCLUDE_DIRS})
-            target_link_libraries(eshkol-agent-ffi PRIVATE ${PCRE2_AGENT_LIBRARIES})
+            # Use LINK_LIBRARIES (full absolute paths resolved by
+            # pkg_check_modules) instead of LIBRARIES (short names
+            # that also need LIBRARY_DIRS via target_link_directories,
+            # easy to forget). Falls back to the short-name+dirs form
+            # if the installed CMake is too old to populate
+            # *_LINK_LIBRARIES.
+            if(PCRE2_AGENT_LINK_LIBRARIES)
+                target_link_libraries(eshkol-agent-ffi PUBLIC ${PCRE2_AGENT_LINK_LIBRARIES})
+            else()
+                target_link_directories(eshkol-agent-ffi PUBLIC ${PCRE2_AGENT_LIBRARY_DIRS})
+                target_link_libraries(eshkol-agent-ffi PUBLIC ${PCRE2_AGENT_LIBRARIES})
+            endif()
             target_compile_definitions(eshkol-agent-ffi PRIVATE PCRE2_CODE_UNIT_WIDTH=8)
         endif()
 
         if(SQLITE3_AGENT_FOUND)
-            target_link_libraries(eshkol-agent-ffi PRIVATE ${SQLITE3_AGENT_LIBRARIES})
+            if(SQLITE3_AGENT_LINK_LIBRARIES)
+                target_link_libraries(eshkol-agent-ffi PUBLIC ${SQLITE3_AGENT_LINK_LIBRARIES})
+            else()
+                target_link_directories(eshkol-agent-ffi PUBLIC ${SQLITE3_AGENT_LIBRARY_DIRS})
+                target_link_libraries(eshkol-agent-ffi PUBLIC ${SQLITE3_AGENT_LIBRARIES})
+            endif()
         endif()
 
         # Crypto: CommonCrypto on macOS, OpenSSL on Linux
         if(APPLE)
-            target_link_libraries(eshkol-agent-ffi PRIVATE
+            target_link_libraries(eshkol-agent-ffi PUBLIC
                 "-framework Security"
                 "-framework CoreFoundation"
             )
         else()
             find_package(OpenSSL)
             if(OpenSSL_FOUND)
-                target_link_libraries(eshkol-agent-ffi PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+                target_link_libraries(eshkol-agent-ffi PUBLIC OpenSSL::SSL OpenSSL::Crypto)
             endif()
         endif()
 
@@ -1391,9 +1580,83 @@ if(ESHKOL_BUILD_AGENT_FFI)
         message(STATUS "  Crypto:    YES")
         message(STATUS "  Regex:     ${PCRE2_AGENT_FOUND}")
         message(STATUS "  SQLite:    ${SQLITE3_AGENT_FOUND}")
+
+        # Force-load eshkol-agent-ffi into eshkol-run so the (extern …
+        # :real eshkol_*) declarations in lib/agent/*.esk can be
+        # resolved by the JIT at runtime. The agent FFI symbols are
+        # never referenced from eshkol-run's own C++ code — they exist
+        # purely to satisfy Scheme-side FFI lookups via
+        # dlsym(RTLD_DEFAULT). Without force_load, the whole archive
+        # gets dead-stripped and every (load "lib/agent/regex.esk")
+        # under -e JIT dies with "Symbols not found".
+        #
+        # Must happen here, not in the eshkol-run target section above,
+        # because the eshkol-agent-ffi target doesn't exist yet at that
+        # point (CMake evaluates if(TARGET…) at configure time).
+        #
+        # Audit reference: 2026-04-18 v2 BUG 3 ("all lib/agent/*.esk
+        # FFI modules fail under JIT").
+        if(TARGET eshkol-run)
+            # Link eshkol-agent-ffi + its transitive PUBLIC deps
+            # (sqlite3, pcre2, Security framework, OpenSSL, ncurses)
+            # into eshkol-run. MUST happen here, not in the eshkol-run
+            # config block above, because agent-ffi is defined here.
+            target_link_libraries(eshkol-run PRIVATE eshkol-agent-ffi)
+            if(APPLE)
+                target_link_options(eshkol-run PRIVATE
+                    "-Wl,-force_load,$<TARGET_FILE:eshkol-agent-ffi>")
+            elseif(NOT WIN32)
+                target_link_options(eshkol-run PRIVATE
+                    "-Wl,--whole-archive"
+                    "$<TARGET_FILE:eshkol-agent-ffi>"
+                    "-Wl,--no-whole-archive")
+            endif()
+        endif()
     else()
         message(STATUS "Agent FFI modules: lib/agent/c/ not found, skipping")
     endif()
+endif()
+
+# ===== Python Bindings (pybind11) =====
+option(ESHKOL_PYTHON_BINDINGS "Build Python bindings via pybind11" OFF)
+
+if(ESHKOL_PYTHON_BINDINGS)
+    find_package(pybind11 QUIET)
+    if(pybind11_FOUND)
+        pybind11_add_module(eshkol_py bindings/python/eshkol_module.cpp)
+        target_include_directories(eshkol_py PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+        if(LLVM_LIBRARY_DIRS)
+            target_link_directories(eshkol_py PRIVATE ${LLVM_LIBRARY_DIRS})
+        endif()
+        # Force-load eshkol-static so JIT can resolve all runtime symbols
+        if(APPLE)
+            target_link_libraries(eshkol_py PRIVATE eshkol-repl-lib
+                "-Wl,-force_load" "$<TARGET_FILE:eshkol-static>"
+                ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+        else()
+            target_link_libraries(eshkol_py PRIVATE eshkol-repl-lib
+                "-Wl,--whole-archive" "$<TARGET_FILE:eshkol-static>" "-Wl,--no-whole-archive"
+                ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+        endif()
+        if(TARGET eshkol-agent-ffi)
+            target_link_libraries(eshkol_py PRIVATE eshkol-agent-ffi)
+        endif()
+        # Platform libraries
+        if(APPLE)
+            target_link_libraries(eshkol_py PRIVATE
+                "-framework Accelerate" "-framework Metal"
+                "-framework MetalPerformanceShaders" "-framework Foundation"
+                "-lobjc" "-lncurses")
+        endif()
+        set_target_properties(eshkol_py PROPERTIES OUTPUT_NAME "eshkol")
+        message(STATUS "Python bindings: ENABLED (pybind11 ${pybind11_VERSION})")
+    else()
+        message(STATUS "Python bindings: pybind11 not found, skipping")
+    endif()
+endif()
+
+if(ESHKOL_ENABLE_FUZZ AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/fuzz/CMakeLists.txt")
+    add_subdirectory(tests/fuzz)
 endif()
 
 # where to find our CMake modules

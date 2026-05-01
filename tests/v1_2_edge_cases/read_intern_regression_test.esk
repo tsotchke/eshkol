@@ -1,0 +1,67 @@
+;; read_intern_regression_test.esk — Noesis Bug F (2026-04-19)
+;;
+;; (read port) was allocating a fresh arena block per symbol, so
+;;   (eq? (read port) 'foo)
+;; returned #f even when the spelled name matched. Violates R7RS §6.5
+;; which mandates canonical symbols. Blocks any (cond ((eq? tag 'x) ..))
+;; dispatch on deserialized data — dKB load, Mneme load, proof-tree
+;; replay, workspace state restore.
+;;
+;; Fix: make_symbol_tagged in the reader now routes through
+;; eshkol_intern_symbol_lookup (the same intern pool that serves
+;; parser-path symbol literals).
+
+(require stdlib)
+
+(define passed 0)
+(define failed 0)
+(define (check name cond)
+  (if cond
+      (begin (display "PASS: ") (display name) (newline)
+             (set! passed (+ passed 1)))
+      (begin (display "FAIL: ") (display name) (newline)
+             (set! failed (+ failed 1)))))
+
+;; Case 1 — audit's minimal repro
+(define out (open-output-file "/tmp/eshkol_read_intern_1.esk"))
+(display "dkb-persisted" out)
+(close-output-port out)
+(define in (open-input-file "/tmp/eshkol_read_intern_1.esk"))
+(define s (read in))
+(close-input-port in)
+(check "read yields symbol"     (symbol? s))
+(check "eq? quoted literal"     (eq? s (quote dkb-persisted)))
+(check "equal? quoted literal"  (equal? s (quote dkb-persisted)))
+
+;; Case 2 — two reads of the same name give eq? symbols
+(define out2 (open-output-file "/tmp/eshkol_read_intern_2.esk"))
+(display "foo foo" out2)
+(close-output-port out2)
+(define in2 (open-input-file "/tmp/eshkol_read_intern_2.esk"))
+(define s1 (read in2))
+(define s2 (read in2))
+(close-input-port in2)
+(check "two reads, same spelling: eq?" (eq? s1 s2))
+
+;; Case 3 — Noesis dKB load pattern: (read) then (cond ((eq? ...)))
+(define out3 (open-output-file "/tmp/eshkol_read_intern_3.esk"))
+(display "(dkb-persisted)" out3)
+(close-output-port out3)
+(define in3 (open-input-file "/tmp/eshkol_read_intern_3.esk"))
+(define data (read in3))
+(close-input-port in3)
+(check "dKB tag dispatch: car is symbol"
+       (and (pair? data) (symbol? (car data))))
+(check "dKB tag dispatch: eq? matches"
+       (eq? (car data) (quote dkb-persisted)))
+
+;; Case 4 — string->symbol also interns (already was correct; sanity)
+(check "string->symbol eq? quoted" (eq? (string->symbol "abc") 'abc))
+
+(newline)
+(display "=== Summary ===") (newline)
+(display "Passed: ") (display passed) (newline)
+(display "Failed: ") (display failed) (newline)
+(if (= failed 0)
+    (begin (display "RESULT: OK") (newline))
+    (begin (display "RESULT: FAIL") (newline) (exit 1)))

@@ -19,10 +19,10 @@
 #include <semiclassical_qllm/spherical.h>
 #endif
 
-/* Helper: convert VmTensor (f64) to float array for qllm API */
-static float* vm_tensor_to_float(const VmTensor* t) {
+/* Helper: convert VmTensor (f64) to float array for qllm API (VM-arena allocated) */
+static float* vm_tensor_to_float(VM* vm, const VmTensor* t) {
     if (!t || t->total <= 0) return NULL;
-    float* f = (float*)malloc(t->total * sizeof(float));
+    float* f = (float*)vm_alloc(&vm->heap.regions, (size_t)(t->total * sizeof(float)));
     if (!f) return NULL;
     for (int64_t i = 0; i < t->total; i++) f[i] = (float)t->data[i];
     return f;
@@ -99,11 +99,10 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         VmTensor* tv = vm_get_tensor(vm, vm_pop(vm));
         VmTensor* bv = vm_get_tensor(vm, vm_pop(vm));
         if (bv && tv) {
-            float* bf = vm_tensor_to_float(bv);
-            float* tf = vm_tensor_to_float(tv);
+            float* bf = vm_tensor_to_float(vm, bv);
+            float* tf = vm_tensor_to_float(vm, tv);
             int n = (int)bv->total;
             qllm_tensor_t* result = qllm_hyperbolic_exp_map(bf, tf, n, c);
-            free(bf); free(tf);
             if (result) {
                 /* Convert result back to VmTensor */
                 float* rd = (float*)qllm_tensor_get_data(result);
@@ -121,11 +120,10 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         VmTensor* pv = vm_get_tensor(vm, vm_pop(vm));
         VmTensor* bv = vm_get_tensor(vm, vm_pop(vm));
         if (bv && pv) {
-            float* bf = vm_tensor_to_float(bv);
-            float* pf = vm_tensor_to_float(pv);
+            float* bf = vm_tensor_to_float(vm, bv);
+            float* pf = vm_tensor_to_float(vm, pv);
             int n = (int)bv->total;
             qllm_tensor_t* result = qllm_hyperbolic_log_map(bf, pf, n, c);
-            free(bf); free(pf);
             if (result) {
                 float* rd = (float*)qllm_tensor_get_data(result);
                 VmTensor* out = vm_tensor_zeros(&vm->heap.regions, bv->shape, bv->n_dims);
@@ -142,10 +140,9 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         VmTensor* yv = vm_get_tensor(vm, vm_pop(vm));
         VmTensor* xv = vm_get_tensor(vm, vm_pop(vm));
         if (xv && yv && xv->total == yv->total) {
-            float* xf = vm_tensor_to_float(xv);
-            float* yf = vm_tensor_to_float(yv);
+            float* xf = vm_tensor_to_float(vm, xv);
+            float* yf = vm_tensor_to_float(vm, yv);
             float dist = qllm_hyperbolic_distance(xf, yf, (int)xv->total, c);
-            free(xf); free(yf);
             vm_push_float(vm, dist);
         } else vm_push(vm, NIL_VAL);
         break;
@@ -156,11 +153,10 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         VmTensor* yv = vm_get_tensor(vm, vm_pop(vm));
         VmTensor* xv = vm_get_tensor(vm, vm_pop(vm));
         if (xv && yv && vv) {
-            float* xf = vm_tensor_to_float(xv);
-            float* yf = vm_tensor_to_float(yv);
-            float* vf = vm_tensor_to_float(vv);
+            float* xf = vm_tensor_to_float(vm, xv);
+            float* yf = vm_tensor_to_float(vm, yv);
+            float* vf = vm_tensor_to_float(vm, vv);
             qllm_tensor_t* result = qllm_hyperbolic_parallel_transport(xf, yf, vf, (int)xv->total, c);
-            free(xf); free(yf); free(vf);
             if (result) {
                 float* rd = (float*)qllm_tensor_get_data(result);
                 VmTensor* out = vm_tensor_zeros(&vm->heap.regions, xv->shape, xv->n_dims);
@@ -176,9 +172,8 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         float c = (float)as_number(vm_pop(vm));
         VmTensor* xv = vm_get_tensor(vm, vm_pop(vm));
         if (xv) {
-            float* xf = vm_tensor_to_float(xv);
+            float* xf = vm_tensor_to_float(vm, xv);
             qllm_tensor_t* result = qllm_hyperbolic_project(xf, (int)xv->total, c);
-            free(xf);
             if (result) {
                 float* rd = (float*)qllm_tensor_get_data(result);
                 VmTensor* out = vm_tensor_zeros(&vm->heap.regions, xv->shape, xv->n_dims);
@@ -197,10 +192,9 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         VmTensor* yv = vm_get_tensor(vm, vm_pop(vm));
         VmTensor* xv = vm_get_tensor(vm, vm_pop(vm));
         if (xv && yv) {
-            float* xf = vm_tensor_to_float(xv);
-            float* yf = vm_tensor_to_float(yv);
+            float* xf = vm_tensor_to_float(vm, xv);
+            float* yf = vm_tensor_to_float(vm, yv);
             qllm_tensor_t* result = qllm_hyperbolic_mobius_add(xf, yf, (int)xv->total, c);
-            free(xf); free(yf);
             if (result) {
                 float* rd = (float*)qllm_tensor_get_data(result);
                 VmTensor* out = vm_tensor_zeros(&vm->heap.regions, xv->shape, xv->n_dims);
@@ -217,9 +211,8 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         VmTensor* xv = vm_get_tensor(vm, vm_pop(vm));
         float r = (float)as_number(vm_pop(vm));
         if (xv) {
-            float* xf = vm_tensor_to_float(xv);
+            float* xf = vm_tensor_to_float(vm, xv);
             qllm_tensor_t* result = qllm_hyperbolic_mobius_scalar(r, xf, (int)xv->total, c);
-            free(xf);
             if (result) {
                 float* rd = (float*)qllm_tensor_get_data(result);
                 VmTensor* out = vm_tensor_zeros(&vm->heap.regions, xv->shape, xv->n_dims);
@@ -236,10 +229,9 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         VmTensor* yv = vm_get_tensor(vm, vm_pop(vm));
         VmTensor* xv = vm_get_tensor(vm, vm_pop(vm));
         if (xv && yv && xv->total == yv->total) {
-            float* xf = vm_tensor_to_float(xv);
-            float* yf = vm_tensor_to_float(yv);
+            float* xf = vm_tensor_to_float(vm, xv);
+            float* yf = vm_tensor_to_float(vm, yv);
             float dist = qllm_hyperbolic_distance(xf, yf, (int)xv->total, c);
-            free(xf); free(yf);
             vm_push_float(vm, dist);
         } else vm_push(vm, NIL_VAL);
         break;
@@ -249,12 +241,11 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         VmTensor* wv = vm_get_tensor(vm, vm_pop(vm));
         VmTensor* pv = vm_get_tensor(vm, vm_pop(vm));
         if (pv && wv) {
-            float* pf = vm_tensor_to_float(pv);
-            float* wf = vm_tensor_to_float(wv);
+            float* pf = vm_tensor_to_float(vm, pv);
+            float* wf = vm_tensor_to_float(vm, wv);
             int dim = (pv->n_dims >= 2) ? (int)pv->shape[1] : (int)pv->total;
             int n_points = (pv->n_dims >= 2) ? (int)pv->shape[0] : 1;
             qllm_tensor_t* result = qllm_hyperbolic_frechet_mean(pf, wf, n_points, dim, c, 100, 1e-6f);
-            free(pf); free(wf);
             if (result) {
                 float* rd = (float*)qllm_tensor_get_data(result);
                 int64_t shape[1] = {dim};
@@ -273,10 +264,9 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         VmTensor* yv = vm_get_tensor(vm, vm_pop(vm));
         VmTensor* xv = vm_get_tensor(vm, vm_pop(vm));
         if (xv && yv && xv->total == yv->total) {
-            float* xf = vm_tensor_to_float(xv);
-            float* yf = vm_tensor_to_float(yv);
+            float* xf = vm_tensor_to_float(vm, xv);
+            float* yf = vm_tensor_to_float(vm, yv);
             float dist = qllm_spherical_distance(xf, yf, (int)xv->total);
-            free(xf); free(yf);
             vm_push_float(vm, dist);
         } else vm_push(vm, NIL_VAL);
         break;
@@ -286,10 +276,9 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         VmTensor* yv = vm_get_tensor(vm, vm_pop(vm));
         VmTensor* xv = vm_get_tensor(vm, vm_pop(vm));
         if (xv && yv) {
-            float* xf = vm_tensor_to_float(xv);
-            float* yf = vm_tensor_to_float(yv);
+            float* xf = vm_tensor_to_float(vm, xv);
+            float* yf = vm_tensor_to_float(vm, yv);
             qllm_tensor_t* result = qllm_spherical_slerp(xf, yf, (int)xv->total, t);
-            free(xf); free(yf);
             if (result) {
                 float* rd = (float*)qllm_tensor_get_data(result);
                 VmTensor* out = vm_tensor_zeros(&vm->heap.regions, xv->shape, xv->n_dims);
@@ -305,10 +294,9 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         VmTensor* tv = vm_get_tensor(vm, vm_pop(vm));
         VmTensor* bv = vm_get_tensor(vm, vm_pop(vm));
         if (bv && tv) {
-            float* bf = vm_tensor_to_float(bv);
-            float* tf = vm_tensor_to_float(tv);
+            float* bf = vm_tensor_to_float(vm, bv);
+            float* tf = vm_tensor_to_float(vm, tv);
             qllm_tensor_t* result = qllm_spherical_exp_map(bf, tf, (int)bv->total);
-            free(bf); free(tf);
             if (result) {
                 float* rd = (float*)qllm_tensor_get_data(result);
                 VmTensor* out = vm_tensor_zeros(&vm->heap.regions, bv->shape, bv->n_dims);
@@ -324,10 +312,9 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         VmTensor* pv = vm_get_tensor(vm, vm_pop(vm));
         VmTensor* bv = vm_get_tensor(vm, vm_pop(vm));
         if (bv && pv) {
-            float* bf = vm_tensor_to_float(bv);
-            float* pf = vm_tensor_to_float(pv);
+            float* bf = vm_tensor_to_float(vm, bv);
+            float* pf = vm_tensor_to_float(vm, pv);
             qllm_tensor_t* result = qllm_spherical_log_map(bf, pf, (int)bv->total);
-            free(bf); free(pf);
             if (result) {
                 float* rd = (float*)qllm_tensor_get_data(result);
                 VmTensor* out = vm_tensor_zeros(&vm->heap.regions, bv->shape, bv->n_dims);
@@ -342,9 +329,8 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
     case 823: { /* spherical-project(x) — project onto unit sphere */
         VmTensor* xv = vm_get_tensor(vm, vm_pop(vm));
         if (xv) {
-            float* xf = vm_tensor_to_float(xv);
+            float* xf = vm_tensor_to_float(vm, xv);
             qllm_tensor_t* result = qllm_spherical_project(xf, (int)xv->total);
-            free(xf);
             if (result) {
                 float* rd = (float*)qllm_tensor_get_data(result);
                 VmTensor* out = vm_tensor_zeros(&vm->heap.regions, xv->shape, xv->n_dims);
@@ -361,10 +347,9 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
     case 824: { /* so3-exp(omega_tensor) — axis-angle → rotation quaternion */
         VmTensor* omega = vm_get_tensor(vm, vm_pop(vm));
         if (omega && omega->total >= 3) {
-            float* of = vm_tensor_to_float(omega);
+            float* of = vm_tensor_to_float(vm, omega);
             qllm_so3_algebra_t alg = {{of[0], of[1], of[2]}};
             qllm_so3_t rot = qllm_so3_exp(&alg);
-            free(of);
             /* Return quaternion as 4-element tensor */
             int64_t shape[1] = {4};
             VmTensor* out = vm_tensor_zeros(&vm->heap.regions, shape, 1);
@@ -376,10 +361,9 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
     case 825: { /* so3-log(quat_tensor) — rotation quaternion → axis-angle */
         VmTensor* qv = vm_get_tensor(vm, vm_pop(vm));
         if (qv && qv->total >= 4) {
-            float* qf = vm_tensor_to_float(qv);
+            float* qf = vm_tensor_to_float(vm, qv);
             qllm_so3_t rot = {qf[0], qf[1], qf[2], qf[3]};
             qllm_so3_algebra_t alg = qllm_so3_log(&rot);
-            free(qf);
             int64_t shape[1] = {3};
             VmTensor* out = vm_tensor_zeros(&vm->heap.regions, shape, 1);
             if (out) { out->data[0]=alg.omega[0]; out->data[1]=alg.omega[1]; out->data[2]=alg.omega[2]; }
@@ -390,12 +374,11 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
     case 826: { /* se3-exp(twist_tensor) — twist → rigid transform */
         VmTensor* tv = vm_get_tensor(vm, vm_pop(vm));
         if (tv && tv->total >= 6) {
-            float* tf = vm_tensor_to_float(tv);
+            float* tf = vm_tensor_to_float(vm, tv);
             qllm_se3_algebra_t twist;
             twist.omega.omega[0]=tf[0]; twist.omega.omega[1]=tf[1]; twist.omega.omega[2]=tf[2];
             twist.v[0]=tf[3]; twist.v[1]=tf[4]; twist.v[2]=tf[5];
             qllm_se3_t pose = qllm_se3_exp(&twist);
-            free(tf);
             /* Return as 7-element tensor: quat(4) + translation(3) */
             int64_t shape[1] = {7};
             VmTensor* out = vm_tensor_zeros(&vm->heap.regions, shape, 1);
@@ -411,12 +394,11 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
     case 827: { /* se3-log(pose_tensor) — rigid transform → twist */
         VmTensor* pv = vm_get_tensor(vm, vm_pop(vm));
         if (pv && pv->total >= 7) {
-            float* pf = vm_tensor_to_float(pv);
+            float* pf = vm_tensor_to_float(vm, pv);
             qllm_se3_t pose;
             pose.rotation = (qllm_so3_t){pf[0],pf[1],pf[2],pf[3]};
             pose.translation[0]=pf[4]; pose.translation[1]=pf[5]; pose.translation[2]=pf[6];
             qllm_se3_algebra_t twist = qllm_se3_log(&pose);
-            free(pf);
             int64_t shape[1] = {6};
             VmTensor* out = vm_tensor_zeros(&vm->heap.regions, shape, 1);
             if (out) {
@@ -431,12 +413,11 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         VmTensor* q2v = vm_get_tensor(vm, vm_pop(vm));
         VmTensor* q1v = vm_get_tensor(vm, vm_pop(vm));
         if (q1v && q2v && q1v->total >= 4 && q2v->total >= 4) {
-            float* q1f = vm_tensor_to_float(q1v);
-            float* q2f = vm_tensor_to_float(q2v);
+            float* q1f = vm_tensor_to_float(vm, q1v);
+            float* q2f = vm_tensor_to_float(vm, q2v);
             qllm_so3_t r1 = {q1f[0],q1f[1],q1f[2],q1f[3]};
             qllm_so3_t r2 = {q2f[0],q2f[1],q2f[2],q2f[3]};
             qllm_so3_t result = qllm_so3_compose(&r1, &r2);
-            free(q1f); free(q2f);
             int64_t shape[1] = {4};
             VmTensor* out = vm_tensor_zeros(&vm->heap.regions, shape, 1);
             if (out) { out->data[0]=result.w; out->data[1]=result.x; out->data[2]=result.y; out->data[3]=result.z; }
@@ -456,9 +437,17 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         break;
     }
     case 830: { /* christoffel(manifold, point) — connection coefficients */
-        vm_pop(vm); vm_pop(vm); /* manifold, point */
-        /* Full Christoffel symbols require creating a connection object.
-         * Return scalar curvature as proxy for now. */
+        Value point = vm_pop(vm);
+        Value manifold = vm_pop(vm);
+        /* Christoffel symbols Γ^k_ij for the Levi-Civita connection.
+         * For constant-curvature manifolds (spherical, hyperbolic),
+         * Γ^k_ij = κ * (δ^k_i * g_jl * x^l + δ^k_j * g_il * x^l - δ_ij * g^kl * x_l)
+         * For flat space (Euclidean), all Christoffel symbols are zero.
+         * Currently returns 0 for all manifold types — full connection
+         * tensor requires v1.5 geometric manifold infrastructure. */
+        (void)point; (void)manifold;
+        fprintf(stderr, "WARNING: christoffel() not yet implemented — returns 0. "
+                        "Full connection tensors require v1.5 geometric manifolds.\n");
         vm_push(vm, FLOAT_VAL(0)); break;
     }
     case 831: { /* riemann-curvature(manifold) */
@@ -622,25 +611,22 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         VmTensor* gv = vm_get_tensor(vm, vm_pop(vm));
         VmTensor* pv = vm_get_tensor(vm, vm_pop(vm));
         if (pv && gv) {
-            float* pf = vm_tensor_to_float(pv);
-            float* gf = vm_tensor_to_float(gv);
+            float* pf = vm_tensor_to_float(vm, pv);
+            float* gf = vm_tensor_to_float(vm, gv);
             int n = (int)pv->total;
             /* Riemannian SGD: retract(-lr * grad) from point */
-            float* neg_scaled = (float*)malloc(n * sizeof(float));
+            float* neg_scaled = (float*)vm_alloc(&vm->heap.regions, n * sizeof(float));
             if (neg_scaled) {
                 for (int i = 0; i < n; i++) neg_scaled[i] = -lr * gf[i];
                 qllm_tensor_t* result = qllm_hyperbolic_exp_map(pf, neg_scaled, n, c);
-                free(neg_scaled);
                 if (result) {
                     float* rd = (float*)qllm_tensor_get_data(result);
                     VmTensor* out = vm_tensor_zeros(&vm->heap.regions, pv->shape, pv->n_dims);
                     if (out && rd) for (int64_t i = 0; i < out->total; i++) out->data[i] = rd[i];
                     qllm_tensor_destroy(result);
-                    free(pf); free(gf);
                     if (out) { VM_PUSH_TENSOR(vm, out); break; }
                 }
             }
-            free(pf); free(gf);
         }
         vm_push(vm, NIL_VAL); break;
     }
@@ -653,25 +639,22 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         VmTensor* pv = vm_get_tensor(vm, vm_pop(vm));
         if (pv && gv) {
             /* Adam step: retract(-lr * grad) with momentum (simplified) */
-            float* pf = vm_tensor_to_float(pv);
-            float* gf = vm_tensor_to_float(gv);
+            float* pf = vm_tensor_to_float(vm, pv);
+            float* gf = vm_tensor_to_float(vm, gv);
             int n = (int)pv->total;
-            float* step = (float*)malloc(n * sizeof(float));
+            float* step = (float*)vm_alloc(&vm->heap.regions, n * sizeof(float));
             if (step) {
                 (void)b1; (void)b2; /* Full Adam needs state — use SGD as fallback */
                 for (int i = 0; i < n; i++) step[i] = -lr * gf[i];
                 qllm_tensor_t* result = qllm_hyperbolic_exp_map(pf, step, n, c);
-                free(step);
                 if (result) {
                     float* rd = (float*)qllm_tensor_get_data(result);
                     VmTensor* out = vm_tensor_zeros(&vm->heap.regions, pv->shape, pv->n_dims);
                     if (out && rd) for (int64_t i = 0; i < out->total; i++) out->data[i] = rd[i];
                     qllm_tensor_destroy(result);
-                    free(pf); free(gf);
                     if (out) { VM_PUSH_TENSOR(vm, out); break; }
                 }
             }
-            free(pf); free(gf);
         }
         vm_push(vm, NIL_VAL); break;
     }
@@ -681,9 +664,8 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         VmTensor* gv = vm_get_tensor(vm, vm_pop(vm));
         if (gv && pv) {
             /* Riemannian gradient = conformal_factor^2 * euclidean_gradient */
-            float* pf = vm_tensor_to_float(pv);
+            float* pf = vm_tensor_to_float(vm, pv);
             float cf = qllm_hyperbolic_conformal_factor(pf, (int)pv->total, c);
-            free(pf);
             VmTensor* out = vm_tensor_zeros(&vm->heap.regions, gv->shape, gv->n_dims);
             if (out) {
                 float scale = cf * cf;
@@ -698,10 +680,9 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         VmTensor* tv = vm_get_tensor(vm, vm_pop(vm));
         VmTensor* bv = vm_get_tensor(vm, vm_pop(vm));
         if (bv && tv) {
-            float* bf = vm_tensor_to_float(bv);
-            float* tf = vm_tensor_to_float(tv);
+            float* bf = vm_tensor_to_float(vm, bv);
+            float* tf = vm_tensor_to_float(vm, tv);
             qllm_tensor_t* result = qllm_hyperbolic_exp_map(bf, tf, (int)bv->total, c);
-            free(bf); free(tf);
             if (result) {
                 float* rd = (float*)qllm_tensor_get_data(result);
                 VmTensor* out = vm_tensor_zeros(&vm->heap.regions, bv->shape, bv->n_dims);
@@ -718,11 +699,10 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         VmTensor* yv = vm_get_tensor(vm, vm_pop(vm));
         VmTensor* xv = vm_get_tensor(vm, vm_pop(vm));
         if (xv && yv && vv) {
-            float* xf = vm_tensor_to_float(xv);
-            float* yf = vm_tensor_to_float(yv);
-            float* vf = vm_tensor_to_float(vv);
+            float* xf = vm_tensor_to_float(vm, xv);
+            float* yf = vm_tensor_to_float(vm, yv);
+            float* vf = vm_tensor_to_float(vm, vv);
             qllm_tensor_t* result = qllm_hyperbolic_parallel_transport(xf, yf, vf, (int)xv->total, c);
-            free(xf); free(yf); free(vf);
             if (result) {
                 float* rd = (float*)qllm_tensor_get_data(result);
                 VmTensor* out = vm_tensor_zeros(&vm->heap.regions, xv->shape, xv->n_dims);
@@ -740,8 +720,8 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         VmTensor* kv = vm_get_tensor(vm, vm_pop(vm));
         VmTensor* qv = vm_get_tensor(vm, vm_pop(vm));
         if (qv && kv) {
-            float* qf = vm_tensor_to_float(qv);
-            float* kf = vm_tensor_to_float(kv);
+            float* qf = vm_tensor_to_float(vm, qv);
+            float* kf = vm_tensor_to_float(vm, kv);
             /* Compute pairwise hyperbolic distances as attention scores */
             int n_q = (qv->n_dims >= 2) ? (int)qv->shape[0] : 1;
             int n_k = (kv->n_dims >= 2) ? (int)kv->shape[0] : 1;
@@ -754,10 +734,8 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
                         float d = qllm_hyperbolic_distance(qf + i*dim, kf + j*dim, dim, c);
                         out->data[i * n_k + j] = -d; /* negative distance as attention score */
                     }
-                free(qf); free(kf);
                 VM_PUSH_TENSOR(vm, out); break;
             }
-            free(qf); free(kf);
         }
         vm_push(vm, NIL_VAL); break;
     }
@@ -767,11 +745,10 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         VmTensor* sv = vm_get_tensor(vm, vm_pop(vm));
         if (sv && vv && vv->n_dims >= 2) {
             int n = (int)vv->shape[0], dim = (int)vv->shape[1];
-            float* vf = vm_tensor_to_float(vv);
-            float* sf = vm_tensor_to_float(sv);
+            float* vf = vm_tensor_to_float(vm, vv);
+            float* sf = vm_tensor_to_float(vm, sv);
             /* Weighted Fréchet mean of value vectors */
             qllm_tensor_t* result = qllm_hyperbolic_frechet_mean(vf, sf, n, dim, c, 50, 1e-5f);
-            free(vf); free(sf);
             if (result) {
                 float* rd = (float*)qllm_tensor_get_data(result);
                 int64_t shape[1] = {dim};
@@ -808,9 +785,9 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         if (qv && kv && vv && qv->n_dims >= 2 && kv->n_dims >= 2) {
             int n_q = (int)qv->shape[0], n_k = (int)kv->shape[0];
             int dim = (int)qv->shape[1];
-            float* qf = vm_tensor_to_float(qv);
-            float* kf = vm_tensor_to_float(kv);
-            float* vf = vm_tensor_to_float(vv);
+            float* qf = vm_tensor_to_float(vm, qv);
+            float* kf = vm_tensor_to_float(vm, kv);
+            float* vf = vm_tensor_to_float(vm, vv);
             /* Compute distance-based attention scores */
             int64_t out_shape[2] = {n_q, dim};
             VmTensor* out = vm_tensor_zeros(&vm->heap.regions, out_shape, 2);
@@ -831,10 +808,8 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
                         out->data[i*dim+d] = v;
                     }
                 }
-                free(qf); free(kf); free(vf);
                 VM_PUSH_TENSOR(vm, out); break;
             }
-            free(qf); free(kf); free(vf);
         }
         vm_push(vm, NIL_VAL); break;
     }

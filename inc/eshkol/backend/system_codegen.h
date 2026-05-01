@@ -202,6 +202,121 @@ public:
      */
     llvm::Value* setCurrentDirectory(const eshkol_operations_t* op);
 
+    /* ── v1.2 system builtins (delegate to C runtime) ── */
+    llvm::Value* osType(const eshkol_operations_t* op);
+    llvm::Value* osArch(const eshkol_operations_t* op);
+    llvm::Value* hostnameBuiltin(const eshkol_operations_t* op);
+    llvm::Value* usernameBuiltin(const eshkol_operations_t* op);
+    llvm::Value* cpuCount(const eshkol_operations_t* op);
+    llvm::Value* getpidBuiltin(const eshkol_operations_t* op);
+    llvm::Value* homeDirectory(const eshkol_operations_t* op);
+    llvm::Value* sleepMs(const eshkol_operations_t* op);
+    llvm::Value* executableExists(const eshkol_operations_t* op);
+    llvm::Value* pathJoin(const eshkol_operations_t* op);
+    llvm::Value* pathDirname(const eshkol_operations_t* op);
+    llvm::Value* pathBasename(const eshkol_operations_t* op);
+    llvm::Value* pathExtname(const eshkol_operations_t* op);
+    llvm::Value* pathIsAbsolute(const eshkol_operations_t* op);
+    llvm::Value* pathNormalize(const eshkol_operations_t* op);
+    llvm::Value* realpathBuiltin(const eshkol_operations_t* op);
+    llvm::Value* fileStat(const eshkol_operations_t* op);
+    llvm::Value* fileCopy(const eshkol_operations_t* op);
+    llvm::Value* mkdirRecursive(const eshkol_operations_t* op);
+    llvm::Value* mkdtempBuiltin(const eshkol_operations_t* op);
+    llvm::Value* directoryDeleteRecursive(const eshkol_operations_t* op);
+    llvm::Value* shellQuote(const eshkol_operations_t* op);
+    llvm::Value* processSpawn(const eshkol_operations_t* op);
+    llvm::Value* processWait(const eshkol_operations_t* op);
+    llvm::Value* pollFd(const eshkol_operations_t* op);
+    llvm::Value* tensorSave(const eshkol_operations_t* op);
+    llvm::Value* tensorLoad(const eshkol_operations_t* op);
+
+    /* v1.2 batch 2: VM-parity + new builtins */
+    llvm::Value* fileChmod(const eshkol_operations_t* op);
+    llvm::Value* symlinkCreate(const eshkol_operations_t* op);
+    llvm::Value* symlinkRead(const eshkol_operations_t* op);
+    llvm::Value* directoryWalk(const eshkol_operations_t* op);
+    llvm::Value* mkstempBuiltin(const eshkol_operations_t* op);
+    llvm::Value* processKill(const eshkol_operations_t* op);
+    llvm::Value* fileMtime(const eshkol_operations_t* op);
+    llvm::Value* fileAtime(const eshkol_operations_t* op);
+    llvm::Value* fileLock(const eshkol_operations_t* op);
+    llvm::Value* fileUnlock(const eshkol_operations_t* op);
+    llvm::Value* pathRelative(const eshkol_operations_t* op);
+    llvm::Value* pathResolve(const eshkol_operations_t* op);
+    llvm::Value* globExpand(const eshkol_operations_t* op);
+    llvm::Value* globMatch(const eshkol_operations_t* op);
+
+    /* v1.2 batch 3: advanced process management */
+    llvm::Value* processSetpgid(const eshkol_operations_t* op);
+    llvm::Value* processKillTree(const eshkol_operations_t* op);
+    llvm::Value* processSpawnPty(const eshkol_operations_t* op);
+    llvm::Value* processReadNonblocking(const eshkol_operations_t* op);
+
+    /* v1.2 time API (ISO8601, #168) */
+    llvm::Value* formatIso8601(const eshkol_operations_t* op);
+    llvm::Value* parseIso8601(const eshkol_operations_t* op);
+    llvm::Value* currentTimestamp(const eshkol_operations_t* op);
+
+    /* v1.2 batch 4 */
+    llvm::Value* processPid(const eshkol_operations_t* op);
+    llvm::Value* fileMmap(const eshkol_operations_t* op);
+    llvm::Value* fileMunmap(const eshkol_operations_t* op);
+    llvm::Value* kbSave(const eshkol_operations_t* op);
+    llvm::Value* kbLoad(const eshkol_operations_t* op);
+    llvm::Value* tensorTokenEstimate(const eshkol_operations_t* op);
+
+    /* Noesis requirements */
+    llvm::Value* fgMarginal(const eshkol_operations_t* op);
+    llvm::Value* fgEntropy(const eshkol_operations_t* op);
+    llvm::Value* kbRetract(const eshkol_operations_t* op);
+
+    /* Consciousness engine */
+    llvm::Value* makeSubstitution(const eshkol_operations_t* op);
+    llvm::Value* unifyBuiltin(const eshkol_operations_t* op);
+    llvm::Value* walkBuiltin(const eshkol_operations_t* op);
+    llvm::Value* makeFactBuiltin(const eshkol_operations_t* op);
+    llvm::Value* makeKbBuiltin(const eshkol_operations_t* op);
+    llvm::Value* kbAssertBuiltin(const eshkol_operations_t* op);
+    llvm::Value* kbQueryBuiltin(const eshkol_operations_t* op);
+    llvm::Value* makeFactorGraphBuiltin(const eshkol_operations_t* op);
+    llvm::Value* fgAddFactorBuiltin(const eshkol_operations_t* op);
+    llvm::Value* fgInferBuiltin(const eshkol_operations_t* op);
+    llvm::Value* freeEnergyBuiltin(const eshkol_operations_t* op);
+    llvm::Value* expectedFreeEnergyBuiltin(const eshkol_operations_t* op);
+    llvm::Value* makeWorkspaceBuiltin(const eshkol_operations_t* op);
+    llvm::Value* wsRegisterBuiltin(const eshkol_operations_t* op);
+    llvm::Value* wsStepBuiltin(const eshkol_operations_t* op);
+
+    /* Reverse-mode AD tape */
+    llvm::Value* adTapeNew(const eshkol_operations_t* op);
+    llvm::Value* adTapeRelease(const eshkol_operations_t* op);
+    llvm::Value* adConst(const eshkol_operations_t* op);
+    llvm::Value* adVar(const eshkol_operations_t* op);
+    llvm::Value* adBinaryOp(const eshkol_operations_t* op, const char* func_name);
+    llvm::Value* adUnaryOp(const eshkol_operations_t* op, const char* func_name);
+    llvm::Value* adBackward(const eshkol_operations_t* op);
+    llvm::Value* adGradient(const eshkol_operations_t* op);
+    llvm::Value* adNodeValue(const eshkol_operations_t* op);
+    llvm::Value* onnxExportTensor(const eshkol_operations_t* op);
+
+    /* Type predicates */
+    llvm::Value* logicVarPred(const eshkol_operations_t* op);
+    llvm::Value* substitutionPred(const eshkol_operations_t* op);
+    llvm::Value* factPred(const eshkol_operations_t* op);
+    llvm::Value* kbPred(const eshkol_operations_t* op);
+    llvm::Value* factorGraphPred(const eshkol_operations_t* op);
+    llvm::Value* workspacePred(const eshkol_operations_t* op);
+    llvm::Value* tensorPred(const eshkol_operations_t* op);
+    llvm::Value* dualPred(const eshkol_operations_t* op);
+    llvm::Value* fgUpdateCpt(const eshkol_operations_t* op);
+    llvm::Value* kbCount(const eshkol_operations_t* op);
+
+    /* Image I/O */
+    llvm::Value* imageRead(const eshkol_operations_t* op);
+    llvm::Value* imageWrite(const eshkol_operations_t* op);
+    llvm::Value* imageGrayscale(const eshkol_operations_t* op);
+
 private:
     CodegenContext& ctx_;
     TaggedValueCodegen& tagged_;

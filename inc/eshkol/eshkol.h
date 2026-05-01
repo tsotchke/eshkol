@@ -9,9 +9,9 @@
 
 // Version information
 #define ESHKOL_VERSION_MAJOR 1
-#define ESHKOL_VERSION_MINOR 1
+#define ESHKOL_VERSION_MINOR 2
 #define ESHKOL_VERSION_PATCH 0
-#define ESHKOL_VERSION_STRING "1.1.0-accelerate"
+#define ESHKOL_VERSION_STRING "1.2.0-scale"
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -356,7 +356,8 @@ typedef enum {
     HEAP_SUBTYPE_WORKSPACE       = 17,  // Global workspace for cognitive competition
     HEAP_SUBTYPE_PROMISE         = 18,  // Lazy promise (delay/force with memoization)
     HEAP_SUBTYPE_RATIONAL        = 19,  // Exact rational number (numerator/denominator)
-    // Reserved: 20-255 for future heap types
+    HEAP_SUBTYPE_PRNG            = 20,  // Isolated pseudo-random number generator state
+    // Reserved: 21-255 for future heap types
 } heap_subtype_t;
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -1085,6 +1086,18 @@ void eshkol_write_value(const eshkol_tagged_value_t* value);  // Scheme 'write' 
 void eshkol_write_value_to_port(const eshkol_tagged_value_t* value, void* port);
 void eshkol_display_value_to_port(const eshkol_tagged_value_t* value, void* port);
 
+// ─── R7RS current-{input,output,error}-port parameter cells ───────────────
+// `display`/`write`/`newline` (no explicit port arg) and the codegen for
+// `(current-output-port)` consult these. `(parameterize ((current-output-port
+// p)) …)` invokes the setters via the Scheme-level closure that wraps the
+// FILE* extracted from the port tagged value.
+void* eshkol_runtime_current_output_fp(void);
+void* eshkol_runtime_current_input_fp(void);
+void* eshkol_runtime_current_error_fp(void);
+void  eshkol_runtime_set_current_output_fp(void* fp);
+void  eshkol_runtime_set_current_input_fp(void* fp);
+void  eshkol_runtime_set_current_error_fp(void* fp);
+
 // Display a list (cons cell chain)
 void eshkol_display_list(uint64_t cons_ptr, eshkol_display_opts_t* opts);
 
@@ -1229,9 +1242,12 @@ typedef struct eshkol_pattern {
             uint64_t num_patterns;
         } list;
 
-        // PATTERN_PREDICATE: (? pred-expr)
+        // PATTERN_PREDICATE: (? pred-expr) or (? pred-expr name)
+        // If `name` is non-null, the matched value is bound to that
+        // variable in the clause body (Racket-style guard-with-binding).
         struct {
             struct eshkol_ast *predicate;
+            char *binding_name;  // optional; null = no binding
         } predicate;
 
         // PATTERN_OR: (or pat1 pat2 ...)
@@ -1438,6 +1454,7 @@ typedef enum {
     ESHKOL_COND_EXPAND_OP,           // (cond-expand (feature body ...) ...) - transformed at parse time
     ESHKOL_INCLUDE_OP,               // (include "file" ...) - transformed at parse time
     ESHKOL_SYNTAX_ERROR_OP,          // (syntax-error "msg" datum ...) - handled at parse time
+    ESHKOL_KB_QUERY_PREFIX_OP,       // (kb-query-prefix kb pattern) -> list of substs (pattern arity ≤ fact arity)
 } eshkol_op_t;
 
 struct eshkol_ast;
@@ -1876,6 +1893,10 @@ eshkol_ast_t eshkol_parse_next_ast(std::ifstream &in_file);
 
 // Parse next AST from any input stream (including string streams for stdlib)
 eshkol_ast_t eshkol_parse_next_ast_from_stream(std::istream &in_stream);
+
+// Reset cumulative file line/column counter — call before parsing a new file
+// so the next eshkol_parse_next_ast call starts at file line 1, column 1.
+extern "C" void eshkol_reset_parse_line_counter(void);
 
 #endif
 

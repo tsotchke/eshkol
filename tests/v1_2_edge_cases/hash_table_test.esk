@@ -1,0 +1,104 @@
+;; Noesis #137: hash-table runtime regression test.
+;;
+;; Runtime infrastructure (eshkol_hash_table_t, arena_hash_table_create,
+;; hash_table_set/get/has_key/remove/keys/values/count/clear) was already
+;; in place but only the short names (hash-ref, hash-set!) were wired into
+;; the LLVM codegen dispatcher. The SRFI-125 names (hash-table-ref,
+;; hash-table-set!, …) used by external Scheme code and the Noesis audit
+;; were not. Both name conventions now dispatch through the same
+;; HashCodegen methods, with `hash-table-*` forms aliased for
+;; compatibility.
+
+(require stdlib)
+
+(display "=== Noesis#2 hash-table runtime suite ===") (newline)
+
+(define pass-count 0)
+(define fail-count 0)
+(define (check name cond)
+  (if cond
+      (begin (set! pass-count (+ pass-count 1))
+             (display "PASS: ") (display name) (newline))
+      (begin (set! fail-count (+ fail-count 1))
+             (display "FAIL: ") (display name) (newline))))
+
+;; ---- Constructor + predicate ----
+(define ht (make-hash-table))
+(check "make-hash-table returns a hash table" (hash-table? ht))
+(check "hash-count of empty table = 0" (= (hash-count ht) 0))
+(check "hash-table-size alias works" (= (hash-table-size ht) 0))
+
+;; ---- set! / ref (short names) ----
+(hash-set! ht "name" "Alice")
+(hash-set! ht "age" 30)
+(check "hash-ref finds \"name\" → \"Alice\""
+       (equal? (hash-ref ht "name" "?") "Alice"))
+(check "hash-ref finds \"age\" → 30"
+       (= (hash-ref ht "age" 0) 30))
+(check "hash-ref missing key → default"
+       (equal? (hash-ref ht "missing" "NOPE") "NOPE"))
+(check "hash-count after 2 sets = 2" (= (hash-count ht) 2))
+
+;; ---- SRFI-125 long-name aliases ----
+(hash-table-set! ht "city" "NYC")
+(check "hash-table-ref finds new key"
+       (equal? (hash-table-ref ht "city" "?") "NYC"))
+(check "hash-table-set! works (size = 3)"
+       (= (hash-table-size ht) 3))
+(check "hash-table-contains? on present key"
+       (hash-table-contains? ht "name"))
+(check "hash-table-contains? on absent key is #f"
+       (not (hash-table-contains? ht "missing")))
+
+;; ---- Update (set on existing key overwrites) ----
+(hash-set! ht "name" "Bob")
+(check "hash-set! overwrites existing key"
+       (equal? (hash-ref ht "name" "?") "Bob"))
+(check "count unchanged after update" (= (hash-count ht) 3))
+
+;; ---- Numeric keys ----
+(define ht2 (make-hash-table))
+(hash-set! ht2 1 "one")
+(hash-set! ht2 2 "two")
+(hash-set! ht2 100 "hundred")
+(check "integer key 1 → \"one\""
+       (equal? (hash-ref ht2 1 "?") "one"))
+(check "integer key 100 → \"hundred\""
+       (equal? (hash-ref ht2 100 "?") "hundred"))
+
+;; ---- Remove (deletion) ----
+(hash-remove! ht "age")
+(check "hash-remove! drops the key"
+       (not (hash-has-key? ht "age")))
+(check "count after remove = 2" (= (hash-count ht) 2))
+
+;; ---- keys / values lists ----
+(check "hash-keys returns a list of 2"
+       (= (length (hash-keys ht)) 2))
+(check "hash-values returns a list of 2"
+       (= (length (hash-values ht)) 2))
+
+;; ---- clear ----
+(hash-clear! ht)
+(check "hash-clear! empties the table"
+       (= (hash-count ht) 0))
+(check "cleared table still identifies as hash-table"
+       (hash-table? ht))
+
+;; ---- Scale: 500 inserts / 500 lookups — exercises resize path ----
+(define big (make-hash-table))
+(let loop ((i 0))
+  (if (< i 500)
+      (begin (hash-set! big i (* i 2))
+             (loop (+ i 1)))))
+(check "500-entry hash-count = 500" (= (hash-count big) 500))
+(check "big[0] = 0"   (= (hash-ref big 0 -1) 0))
+(check "big[250] = 500" (= (hash-ref big 250 -1) 500))
+(check "big[499] = 998" (= (hash-ref big 499 -1) 998))
+
+(newline)
+(display "=== Summary ===") (newline)
+(display "Passed: ") (display pass-count) (newline)
+(display "Failed: ") (display fail-count) (newline)
+(display (if (= fail-count 0) "RESULT: ALL PASS" "RESULT: FAILURES DETECTED"))
+(newline)

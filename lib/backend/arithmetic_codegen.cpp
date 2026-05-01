@@ -63,6 +63,7 @@ static llvm::Value* emitBignumPromotion(CodegenContext& ctx, TaggedValueCodegen&
     llvm::Value* arena_ptr = getArenaPtr(ctx);
     if (!arena_ptr) {
         // Fallback: promote to double if arena not available
+        eshkol_debug("bignum overflow: falling back to double (precision loss)");
         llvm::Value* l = ctx.builder().CreateSIToFP(left_int, ctx.doubleType());
         llvm::Value* r = ctx.builder().CreateSIToFP(right_int, ctx.doubleType());
         llvm::Value* result;
@@ -395,6 +396,7 @@ llvm::Value* ArithmeticCodegen::convertToComplex(llvm::Value* operand, llvm::Val
     ctx_.builder().CreateCondBr(is_heap, bignum_check_bb, normal_convert_bb);
 
     // Bignum → double path (intentionally lossy, complex uses floating-point)
+    eshkol_debug("complex: bignum->double conversion is lossy");
     ctx_.builder().SetInsertPoint(bignum_check_bb);
     llvm::Value* ptr_int = tagged_.unpackInt64(operand);
     llvm::Value* bn_ptr = ctx_.builder().CreateIntToPtr(ptr_int, llvm::PointerType::get(ctx_.context(), 0));
@@ -695,6 +697,7 @@ llvm::Value* ArithmeticCodegen::add(llvm::Value* left, llvm::Value* right) {
 
         // Vector/tensor path
         ctx_.builder().SetInsertPoint(vector_path);
+        guardHeapOperandsNumeric(left, right, "+");
         llvm::Value* vec_result = tensor_.tensorArithmeticInternal(left, right, "add");
         ctx_.builder().CreateBr(merge);
         llvm::BasicBlock* vector_exit = ctx_.builder().GetInsertBlock();
@@ -864,6 +867,7 @@ llvm::Value* ArithmeticCodegen::sub(llvm::Value* left, llvm::Value* right) {
 
         // Vector/tensor path
         ctx_.builder().SetInsertPoint(vector_path);
+        guardHeapOperandsNumeric(left, right, "-");
         llvm::Value* vec_result = tensor_.tensorArithmeticInternal(left, right, "sub");
         ctx_.builder().CreateBr(merge);
         llvm::BasicBlock* vector_exit = ctx_.builder().GetInsertBlock();
@@ -1033,6 +1037,7 @@ llvm::Value* ArithmeticCodegen::mul(llvm::Value* left, llvm::Value* right) {
 
         // Vector/tensor path
         ctx_.builder().SetInsertPoint(vector_path);
+        guardHeapOperandsNumeric(left, right, "*");
         llvm::Value* vec_result = tensor_.tensorArithmeticInternal(left, right, "mul");
         ctx_.builder().CreateBr(merge);
         llvm::BasicBlock* vector_exit = ctx_.builder().GetInsertBlock();
@@ -1202,6 +1207,7 @@ llvm::Value* ArithmeticCodegen::div(llvm::Value* left, llvm::Value* right) {
 
         // Vector/tensor path
         ctx_.builder().SetInsertPoint(vector_path);
+        guardHeapOperandsNumeric(left, right, "/");
         llvm::Value* vec_result = tensor_.tensorArithmeticInternal(left, right, "div");
         ctx_.builder().CreateBr(merge);
         llvm::BasicBlock* vector_exit = ctx_.builder().GetInsertBlock();
@@ -1292,6 +1298,25 @@ llvm::Value* ArithmeticCodegen::div(llvm::Value* left, llvm::Value* right) {
 
         // Safe integer division path
         ctx_.builder().SetInsertPoint(int_safe_bb);
+        /* Audit M4: BOTH SDiv and SRem of INT64_MIN by -1 are UB in
+         * LLVM/C. Detect the pair here (before either op) and raise
+         * so we never emit the UB instruction. */
+        {
+            llvm::Value* is_min_pre = ctx_.builder().CreateICmpEQ(left_int,
+                llvm::ConstantInt::get(ctx_.int64Type(), INT64_MIN));
+            llvm::Value* is_neg1_pre = ctx_.builder().CreateICmpEQ(right_int,
+                llvm::ConstantInt::get(ctx_.int64Type(), -1));
+            llvm::Value* is_overflow_pre = ctx_.builder().CreateAnd(is_min_pre, is_neg1_pre);
+            llvm::BasicBlock* pre_ub_bb = llvm::BasicBlock::Create(
+                ctx_.context(), "div_overflow_pre", func);
+            llvm::BasicBlock* pre_ok_bb = llvm::BasicBlock::Create(
+                ctx_.context(), "div_overflow_ok", func);
+            ctx_.builder().CreateCondBr(is_overflow_pre, pre_ub_bb, pre_ok_bb);
+            ctx_.builder().SetInsertPoint(pre_ub_bb);
+            raiseDivideByZeroException();
+            ctx_.builder().CreateUnreachable();
+            ctx_.builder().SetInsertPoint(pre_ok_bb);
+        }
         // Check if division is exact
         llvm::Value* remainder = ctx_.builder().CreateSRem(left_int, right_int);
         llvm::Value* is_exact = ctx_.builder().CreateICmpEQ(remainder,
@@ -1301,7 +1326,9 @@ llvm::Value* ArithmeticCodegen::div(llvm::Value* left, llvm::Value* right) {
         llvm::BasicBlock* div_inexact_bb = llvm::BasicBlock::Create(ctx_.context(), "div_int_inexact", func);
         ctx_.builder().CreateCondBr(is_exact, div_exact_bb, div_inexact_bb);
 
-        // Exact: return integer result
+        // Exact: return integer result. Overflow case
+        // (INT64_MIN / -1) was caught upstream before the SRem that
+        // feeds is_exact.
         ctx_.builder().SetInsertPoint(div_exact_bb);
         llvm::Value* exact_div = ctx_.builder().CreateSDiv(left_int, right_int);
         llvm::Value* exact_tagged = tagged_.packInt64(exact_div, true);
@@ -1671,15 +1698,29 @@ llvm::Value* ArithmeticCodegen::extractAsDouble(llvm::Value* tagged_val) {
     ctx_.builder().CreateBr(merge_bb);
     rational_bb = ctx_.builder().GetInsertBlock();
 
-    // Bignum path: call eshkol_bignum_to_double(ptr)
+    // Bignum/other heap path: verify subtype is bignum before calling eshkol_bignum_to_double.
+    // Non-numeric heap types (strings, vectors, etc.) return 0.0 instead of crashing.
     ctx_.builder().SetInsertPoint(bignum_bb);
+    llvm::Value* is_bignum = ctx_.builder().CreateICmpEQ(subtype,
+        llvm::ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_BIGNUM));
+    llvm::BasicBlock* actual_bignum_bb = llvm::BasicBlock::Create(ctx_.context(), "ead_actual_bn", func);
+    llvm::BasicBlock* non_numeric_bb = llvm::BasicBlock::Create(ctx_.context(), "ead_non_numeric", func);
+    ctx_.builder().CreateCondBr(is_bignum, actual_bignum_bb, non_numeric_bb);
+
+    ctx_.builder().SetInsertPoint(actual_bignum_bb);
     llvm::FunctionType* bn_to_dbl_type = llvm::FunctionType::get(
         ctx_.doubleType(), {ctx_.ptrType()}, false);
     llvm::FunctionCallee bn_to_dbl = ctx_.module().getOrInsertFunction(
         "eshkol_bignum_to_double", bn_to_dbl_type);
     llvm::Value* bn_dbl = ctx_.builder().CreateCall(bn_to_dbl, {heap_ptr}, "bn_to_dbl");
     ctx_.builder().CreateBr(merge_bb);
-    bignum_bb = ctx_.builder().GetInsertBlock();
+    actual_bignum_bb = ctx_.builder().GetInsertBlock();
+
+    // Non-numeric heap type (string, vector, etc.) — return 0.0 to avoid crash
+    ctx_.builder().SetInsertPoint(non_numeric_bb);
+    llvm::Value* zero_fallback = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
+    ctx_.builder().CreateBr(merge_bb);
+    non_numeric_bb = ctx_.builder().GetInsertBlock();
 
     // Int path: SIToFP
     ctx_.builder().SetInsertPoint(int_bb);
@@ -1690,11 +1731,12 @@ llvm::Value* ArithmeticCodegen::extractAsDouble(llvm::Value* tagged_val) {
 
     // Merge
     ctx_.builder().SetInsertPoint(merge_bb);
-    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.doubleType(), 5, "as_double");
+    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.doubleType(), 6, "as_double");
     phi->addIncoming(ad_val, ad_bb);
     phi->addIncoming(dbl_val, dbl_bb);
     phi->addIncoming(rat_dbl, rational_bb);
-    phi->addIncoming(bn_dbl, bignum_bb);
+    phi->addIncoming(bn_dbl, actual_bignum_bb);
+    phi->addIncoming(zero_fallback, non_numeric_bb);
     phi->addIncoming(int_as_dbl, int_bb);
     return phi;
 }
@@ -2345,6 +2387,80 @@ void ArithmeticCodegen::emitOverflowError(const char* message) {
         llvm::ConstantInt::get(ctx_.int32Type(), ESHKOL_EXCEPTION_ERROR),
         error_msg
     }, "overflow_exception");
+    ctx_.builder().CreateCall(raise_func, {exc});
+    ctx_.builder().CreateUnreachable();
+}
+
+void ArithmeticCodegen::guardHeapOperandsNumeric(llvm::Value* left,
+                                                  llvm::Value* right,
+                                                  const char* op_name) {
+    // For each operand: if HEAP_PTR, subtype MUST be VECTOR or TENSOR.
+    // Anything else (string, cons, symbol, fact, ...) is a type error in
+    // arithmetic — catching it here prevents downstream code from treating
+    // the operand as a tensor layout and segfaulting.
+    llvm::Function* fn = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::BasicBlock* type_err_blk = llvm::BasicBlock::Create(
+        ctx_.context(), "arith_type_err", fn);
+    llvm::BasicBlock* ok_blk = llvm::BasicBlock::Create(
+        ctx_.context(), "arith_heap_ok", fn);
+
+    auto is_heap = [&](llvm::Value* tv) -> llvm::Value* {
+        llvm::Value* base = tagged_.getBaseType(tagged_.getType(tv));
+        return ctx_.builder().CreateICmpEQ(base,
+            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
+    };
+    auto is_numeric_heap = [&](llvm::Value* tv) -> llvm::Value* {
+        return ctx_.builder().CreateOr(tagged_.isVector(tv),
+                                       tagged_.isTensor(tv));
+    };
+
+    // Left check: either NOT heap, or heap-with-numeric-subtype
+    llvm::Value* l_ok = ctx_.builder().CreateOr(
+        ctx_.builder().CreateNot(is_heap(left)),
+        is_numeric_heap(left));
+    llvm::Value* r_ok = ctx_.builder().CreateOr(
+        ctx_.builder().CreateNot(is_heap(right)),
+        is_numeric_heap(right));
+    llvm::Value* all_ok = ctx_.builder().CreateAnd(l_ok, r_ok);
+    ctx_.builder().CreateCondBr(all_ok, ok_blk, type_err_blk);
+
+    // Type error branch — non-returning
+    ctx_.builder().SetInsertPoint(type_err_blk);
+    std::string msg = std::string(op_name) +
+        ": operand is not a number, vector, or tensor";
+    emitTypeError(msg.c_str());
+
+    // Continue in ok_blk
+    ctx_.builder().SetInsertPoint(ok_blk);
+}
+
+void ArithmeticCodegen::emitTypeError(const char* message) {
+    llvm::Function* make_exc_func = ctx_.module().getFunction("eshkol_make_exception_with_header");
+    if (!make_exc_func) {
+        llvm::FunctionType* make_type = llvm::FunctionType::get(
+            llvm::PointerType::getUnqual(ctx_.context()),
+            {ctx_.int32Type(), llvm::PointerType::getUnqual(ctx_.context())},
+            false);
+        make_exc_func = llvm::Function::Create(make_type,
+            llvm::Function::ExternalLinkage, "eshkol_make_exception_with_header", &ctx_.module());
+    }
+
+    llvm::Function* raise_func = ctx_.module().getFunction("eshkol_raise");
+    if (!raise_func) {
+        llvm::FunctionType* raise_type = llvm::FunctionType::get(
+            llvm::Type::getVoidTy(ctx_.context()),
+            {llvm::PointerType::getUnqual(ctx_.context())},
+            false);
+        raise_func = llvm::Function::Create(raise_type,
+            llvm::Function::ExternalLinkage, "eshkol_raise", &ctx_.module());
+        raise_func->setDoesNotReturn();
+    }
+
+    llvm::Value* error_msg = ctx_.builder().CreateGlobalString(message);
+    llvm::Value* exc = ctx_.builder().CreateCall(make_exc_func, {
+        llvm::ConstantInt::get(ctx_.int32Type(), ESHKOL_EXCEPTION_TYPE_ERROR),
+        error_msg
+    }, "type_err_exception");
     ctx_.builder().CreateCall(raise_func, {exc});
     ctx_.builder().CreateUnreachable();
 }

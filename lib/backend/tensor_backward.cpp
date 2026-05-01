@@ -20,6 +20,61 @@
 #include <cmath>
 #include <cstdlib>
 
+#if defined(_OPENMP)
+#include <omp.h>
+#endif
+
+#include <eshkol/backend/gpu/gpu_memory.h>
+#include "../../lib/core/arena_memory.h"
+
+/*
+ * Safe integer multiplication for allocation sizes.
+ * Returns false if the result would overflow, preventing heap buffer overflows.
+ */
+static bool safe_mul(int64_t a, int64_t b, int64_t* result) {
+    if (a == 0 || b == 0) { *result = 0; return true; }
+    if (a < 0 || b < 0) return false;
+    if (a > INT64_MAX / b) return false;
+    *result = a * b;
+    return true;
+}
+
+static bool safe_mul3(int64_t a, int64_t b, int64_t c, int64_t* result) {
+    int64_t ab;
+    if (!safe_mul(a, b, &ab)) return false;
+    return safe_mul(ab, c, result);
+}
+
+static bool safe_mul4(int64_t a, int64_t b, int64_t c, int64_t d, int64_t* result) {
+    int64_t abc;
+    if (!safe_mul3(a, b, c, &abc)) return false;
+    return safe_mul(abc, d, result);
+}
+
+/*
+ * Arena-based zero-initialized allocation for backward pass temporaries.
+ * Uses the global arena with a scope push/pop pattern — the caller must
+ * call backward_scope_end() when done. Returns nullptr on failure.
+ *
+ * OpenMP per-thread buffers also use the global arena — the arena is
+ * only accessed from the main thread's scope, and per-thread buffers
+ * are allocated before the parallel region begins.
+ */
+static arena_t* backward_scope_begin() {
+    arena_t* arena = get_global_arena();
+    if (arena) arena_push_scope(arena);
+    return arena;
+}
+
+static void backward_scope_end(arena_t* arena) {
+    if (arena) arena_pop_scope(arena);
+}
+
+static void* arena_calloc(arena_t* arena, size_t size) {
+    if (!arena || size == 0) return nullptr;
+    return arena_allocate_zeroed(arena, size);
+}
+
 #ifdef ESHKOL_BLAS_ENABLED
 #ifdef __APPLE__
 #include <Accelerate/Accelerate.h>
@@ -184,38 +239,145 @@ extern "C" void eshkol_backward_conv2d(
     memset(grad_kernel, 0,
            (size_t)(channels_out * channels_in * kernel_spatial) * sizeof(double));
 
-    for (int64_t b = 0; b < batch_size; b++) {
-        for (int64_t co = 0; co < channels_out; co++) {
-            for (int64_t ci = 0; ci < channels_in; ci++) {
-                const double* kernel_ptr =
-                    saved_kernel + (co * channels_in + ci) * kernel_spatial;
-                double* gk_ptr =
-                    grad_kernel + (co * channels_in + ci) * kernel_spatial;
+    /* Try GPU dispatch for large convolutions */
+    size_t total_ops = (size_t)(batch_size * channels_out * channels_in * out_h * out_w * k_h * k_w);
+    if (eshkol_gpu_should_use((int64_t)total_ops)) {
+        EshkolGPUBuffer buf_go, buf_kw, buf_gi, buf_si, buf_gk;
+        size_t go_size = (size_t)(batch_size * channels_out * out_spatial) * sizeof(double);
+        size_t gi_size = (size_t)(batch_size * channels_in * in_spatial) * sizeof(double);
+        size_t kw_size = (size_t)(channels_out * channels_in * kernel_spatial) * sizeof(double);
 
-                for (int64_t oh = 0; oh < out_h; oh++) {
-                    for (int64_t ow = 0; ow < out_w; ow++) {
-                        double g = grad_out[
-                            (b * channels_out + co) * out_spatial +
-                            oh * out_w + ow];
+        if (eshkol_gpu_wrap_host((void*)grad_out, go_size, &buf_go) == 0 &&
+            eshkol_gpu_wrap_host((void*)saved_kernel, kw_size, &buf_kw) == 0 &&
+            eshkol_gpu_wrap_host((void*)grad_input, gi_size, &buf_gi) == 0 &&
+            eshkol_gpu_wrap_host((void*)saved_input, gi_size, &buf_si) == 0 &&
+            eshkol_gpu_wrap_host((void*)grad_kernel, kw_size, &buf_gk) == 0) {
 
-                        for (int64_t kh = 0; kh < k_h; kh++) {
-                            for (int64_t kw = 0; kw < k_w; kw++) {
-                                int64_t ih = oh * stride_h + kh;
-                                int64_t iw = ow * stride_w + kw;
+            int rc1 = eshkol_gpu_conv2d_backward_input_f64(
+                &buf_go, &buf_kw, &buf_gi,
+                in_h, in_w, k_h, k_w, out_h, out_w,
+                stride_h, stride_w, channels_in, channels_out, batch_size);
+            int rc2 = eshkol_gpu_conv2d_backward_kernel_f64(
+                &buf_go, &buf_si, &buf_gk,
+                in_h, in_w, k_h, k_w, out_h, out_w,
+                stride_h, stride_w, channels_in, channels_out, batch_size);
 
-                                /* grad_input: full convolution of
-                                 * grad_out with flipped kernel */
-                                double in_val = saved_input[
-                                    (b * channels_in + ci) * in_spatial +
-                                    ih * in_w + iw];
-                                grad_input[
-                                    (b * channels_in + ci) * in_spatial +
-                                    ih * in_w + iw]
-                                    += g * kernel_ptr[kh * k_w + kw];
+            eshkol_gpu_free(&buf_go);
+            eshkol_gpu_free(&buf_kw);
+            eshkol_gpu_free(&buf_gi);
+            eshkol_gpu_free(&buf_si);
+            eshkol_gpu_free(&buf_gk);
 
-                                /* grad_kernel: cross-correlation of
-                                 * input with grad_out */
-                                gk_ptr[kh * k_w + kw] += g * in_val;
+            if (rc1 == 0 && rc2 == 0) return; /* GPU succeeded */
+        }
+        /* GPU failed — fall through to CPU */
+    }
+
+    /* Parallel backward: batch dimension is embarrassingly parallel.
+     * grad_input[b] is independent per batch element.
+     * grad_kernel is shared — use per-thread buffers and reduce. */
+    size_t kernel_total = (size_t)(channels_out * channels_in * kernel_spatial);
+
+#if defined(_OPENMP)
+    int n_threads = omp_get_max_threads();
+#else
+    int n_threads = 1;
+#endif
+
+    if (batch_size > 1 && n_threads > 1) {
+        /* Allocate per-thread kernel gradient buffers */
+        arena_t* conv_arena = get_global_arena();
+        double** thread_gk = (double**)arena_allocate_zeroed(conv_arena, (size_t)n_threads * sizeof(double*));
+        if (!thread_gk) return;
+        for (int t = 0; t < n_threads; t++) {
+            thread_gk[t] = (double*)arena_allocate_zeroed(conv_arena, kernel_total * sizeof(double));
+        }
+
+#if defined(_OPENMP)
+        #pragma omp parallel for schedule(dynamic)
+#endif
+        for (int64_t b = 0; b < batch_size; b++) {
+#if defined(_OPENMP)
+            int tid = omp_get_thread_num();
+#else
+            int tid = 0;
+#endif
+            double* local_gk = thread_gk[tid];
+
+            for (int64_t co = 0; co < channels_out; co++) {
+                for (int64_t ci = 0; ci < channels_in; ci++) {
+                    const double* kernel_ptr =
+                        saved_kernel + (co * channels_in + ci) * kernel_spatial;
+                    double* lgk_ptr =
+                        local_gk + (co * channels_in + ci) * kernel_spatial;
+
+                    for (int64_t oh = 0; oh < out_h; oh++) {
+                        for (int64_t ow = 0; ow < out_w; ow++) {
+                            double g = grad_out[
+                                (b * channels_out + co) * out_spatial +
+                                oh * out_w + ow];
+
+                            for (int64_t kh = 0; kh < k_h; kh++) {
+                                for (int64_t kw = 0; kw < k_w; kw++) {
+                                    int64_t ih = oh * stride_h + kh;
+                                    int64_t iw = ow * stride_w + kw;
+
+                                    double in_val = saved_input[
+                                        (b * channels_in + ci) * in_spatial +
+                                        ih * in_w + iw];
+                                    /* grad_input: per-batch, no contention */
+                                    grad_input[
+                                        (b * channels_in + ci) * in_spatial +
+                                        ih * in_w + iw]
+                                        += g * kernel_ptr[kh * k_w + kw];
+
+                                    /* grad_kernel: per-thread buffer */
+                                    lgk_ptr[kh * k_w + kw] += g * in_val;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        /* Reduce per-thread kernel gradients */
+        for (int t = 0; t < n_threads; t++) {
+            for (size_t i = 0; i < kernel_total; i++) {
+                grad_kernel[i] += thread_gk[t][i];
+            }
+        }
+    } else {
+        /* Single-thread fallback (batch_size == 1 or no OpenMP) */
+        for (int64_t b = 0; b < batch_size; b++) {
+            for (int64_t co = 0; co < channels_out; co++) {
+                for (int64_t ci = 0; ci < channels_in; ci++) {
+                    const double* kernel_ptr =
+                        saved_kernel + (co * channels_in + ci) * kernel_spatial;
+                    double* gk_ptr =
+                        grad_kernel + (co * channels_in + ci) * kernel_spatial;
+
+                    for (int64_t oh = 0; oh < out_h; oh++) {
+                        for (int64_t ow = 0; ow < out_w; ow++) {
+                            double g = grad_out[
+                                (b * channels_out + co) * out_spatial +
+                                oh * out_w + ow];
+
+                            for (int64_t kh = 0; kh < k_h; kh++) {
+                                for (int64_t kw = 0; kw < k_w; kw++) {
+                                    int64_t ih = oh * stride_h + kh;
+                                    int64_t iw = ow * stride_w + kw;
+
+                                    double in_val = saved_input[
+                                        (b * channels_in + ci) * in_spatial +
+                                        ih * in_w + iw];
+                                    grad_input[
+                                        (b * channels_in + ci) * in_spatial +
+                                        ih * in_w + iw]
+                                        += g * kernel_ptr[kh * k_w + kw];
+
+                                    gk_ptr[kh * k_w + kw] += g * in_val;
+                                }
                             }
                         }
                     }
@@ -236,29 +398,31 @@ extern "C" void eshkol_backward_batchnorm(
 {
     double N = (double)batch_size;
 
-    /* Compute grad_beta = sum(grad_out, dim=batch) */
+    /* Compute grad_beta and grad_gamma with parallel reduction across features.
+     * Feature dimension is parallelized — each feature's sum is independent. */
     memset(grad_beta, 0, (size_t)feature_size * sizeof(double));
-    for (int64_t b = 0; b < batch_size; b++) {
-        for (int64_t f = 0; f < feature_size; f++) {
-            grad_beta[f] += grad_out[b * feature_size + f];
-        }
-    }
-
-    /* Compute grad_gamma = sum(grad_out * normalized, dim=batch) */
     memset(grad_gamma, 0, (size_t)feature_size * sizeof(double));
-    for (int64_t b = 0; b < batch_size; b++) {
-        for (int64_t f = 0; f < feature_size; f++) {
-            double normalized =
-                (saved_input[b * feature_size + f] - saved_mean[f])
-                * saved_inv_std[f];
-            grad_gamma[f] += grad_out[b * feature_size + f] * normalized;
+
+#if defined(_OPENMP)
+    #pragma omp parallel for schedule(static) if(feature_size > 64)
+#endif
+    for (int64_t f = 0; f < feature_size; f++) {
+        double sum_g = 0.0, sum_gn = 0.0;
+        for (int64_t b = 0; b < batch_size; b++) {
+            int64_t idx = b * feature_size + f;
+            double g = grad_out[idx];
+            double normalized = (saved_input[idx] - saved_mean[f]) * saved_inv_std[f];
+            sum_g += g;
+            sum_gn += g * normalized;
         }
+        grad_beta[f] = sum_g;
+        grad_gamma[f] = sum_gn;
     }
 
-    /* Compute grad_input using the standard batchnorm backward formula:
-     * grad_input = (gamma / (N * std)) *
-     *   (N * grad_out - sum(grad_out) - normalized * sum(grad_out * normalized))
-     */
+    /* Compute grad_input — parallelized across features */
+#if defined(_OPENMP)
+    #pragma omp parallel for schedule(static) if(feature_size > 64)
+#endif
     for (int64_t f = 0; f < feature_size; f++) {
         double gamma_f = saved_gamma[f];
         double inv_std_f = saved_inv_std[f];
@@ -287,14 +451,14 @@ extern "C" void eshkol_backward_layernorm(
 {
     double D = (double)feature_size;
 
-    /* Compute grad_beta and grad_gamma (accumulated across samples) */
+    /* Compute grad_beta and grad_gamma — reduce across samples per feature.
+     * Each feature's sum is independent → parallelizable. */
     memset(grad_beta, 0, (size_t)feature_size * sizeof(double));
     memset(grad_gamma, 0, (size_t)feature_size * sizeof(double));
 
     for (int64_t s = 0; s < num_samples; s++) {
         double mean_s = saved_mean[s];
         double inv_std_s = saved_inv_std[s];
-
         for (int64_t f = 0; f < feature_size; f++) {
             int64_t idx = s * feature_size + f;
             double normalized = (saved_input[idx] - mean_s) * inv_std_s;
@@ -303,13 +467,15 @@ extern "C" void eshkol_backward_layernorm(
         }
     }
 
-    /* Compute grad_input per-sample (same formula as batchnorm but
-     * applied per-sample across feature dimension) */
+    /* Compute grad_input per-sample — each sample is independent.
+     * Parallelized across samples. */
+#if defined(_OPENMP)
+    #pragma omp parallel for schedule(static) if(num_samples > 16)
+#endif
     for (int64_t s = 0; s < num_samples; s++) {
         double mean_s = saved_mean[s];
         double inv_std_s = saved_inv_std[s];
 
-        /* Per-sample sums */
         double sum_grad = 0.0;
         double sum_grad_norm = 0.0;
         for (int64_t f = 0; f < feature_size; f++) {
@@ -373,15 +539,12 @@ extern "C" void eshkol_backward_attention(
      *   d_K = d_scores^T @ Q              (seq_k, d_k)
      */
 
-    /* Allocate temporary for d_attn and d_scores */
+    /* Allocate temporary for d_attn and d_scores (arena-scoped) */
+    arena_t* attn_arena = get_global_arena();
     size_t scores_size = (size_t)(seq_q * seq_k);
-    double* d_attn = (double*)calloc(scores_size, sizeof(double));
-    double* d_scores = (double*)calloc(scores_size, sizeof(double));
-    if (!d_attn || !d_scores) {
-        free(d_attn);
-        free(d_scores);
-        return;
-    }
+    double* d_attn = (double*)arena_allocate_zeroed(attn_arena, scores_size * sizeof(double));
+    double* d_scores = (double*)arena_allocate_zeroed(attn_arena, scores_size * sizeof(double));
+    if (!d_attn || !d_scores) return;
 
     /* d_V = attn^T @ grad_out: use dispatched backward matmul pattern
      * attn is (seq_q, seq_k), grad_out is (seq_q, d_v) → need attn^T @ grad_out = (seq_k, d_v)
@@ -459,8 +622,6 @@ extern "C" void eshkol_backward_attention(
                 grad_K[k * d_k + d] += d_scores[q * seq_k + k] * saved_Q[q * d_k + d];
 #endif
 
-    free(d_attn);
-    free(d_scores);
 }
 
 extern "C" void eshkol_backward_multihead_attention(
@@ -476,26 +637,18 @@ extern "C" void eshkol_backward_multihead_attention(
     int64_t head_dim = d_model / num_heads;
     double scale = 1.0 / sqrt((double)head_dim);
 
-    /* Allocate temporaries for per-head gradients */
+    /* Allocate temporaries for per-head gradients (arena-scoped) */
+    arena_t* mha_arena = get_global_arena();
     size_t head_q_size = (size_t)(seq_q * head_dim);
     size_t head_k_size = (size_t)(seq_k * head_dim);
-    double* d_head_Q = (double*)calloc(head_q_size, sizeof(double));
-    double* d_head_K = (double*)calloc(head_k_size, sizeof(double));
-    double* d_head_V = (double*)calloc(head_k_size, sizeof(double));
-    if (!d_head_Q || !d_head_K || !d_head_V) {
-        free(d_head_Q); free(d_head_K); free(d_head_V);
-        return;
-    }
+    double* d_head_Q = (double*)arena_allocate_zeroed(mha_arena, head_q_size * sizeof(double));
+    double* d_head_K = (double*)arena_allocate_zeroed(mha_arena, head_k_size * sizeof(double));
+    double* d_head_V = (double*)arena_allocate_zeroed(mha_arena, head_k_size * sizeof(double));
+    if (!d_head_Q || !d_head_K || !d_head_V) return;
 
-    /* grad_WO: grad_out^T @ concat_heads
-     * For simplicity, compute as: grad_WO += grad_out^T @ projected
-     * First, backprop through W_O: d_concat = grad_out @ W_O^T */
     size_t concat_size = (size_t)(seq_q * d_model);
-    double* d_concat = (double*)calloc(concat_size, sizeof(double));
-    if (!d_concat) {
-        free(d_head_Q); free(d_head_K); free(d_head_V);
-        return;
-    }
+    double* d_concat = (double*)arena_allocate_zeroed(mha_arena, concat_size * sizeof(double));
+    if (!d_concat) return;
 
     /* d_concat = grad_out @ W_O^T: (seq_q, d_model) @ (d_model, d_model) */
     memset(d_concat, 0, concat_size * sizeof(double));
@@ -542,8 +695,8 @@ extern "C" void eshkol_backward_multihead_attention(
         }
 
         /* Extract per-head d_concat slice */
-        double* d_head_out = (double*)calloc(
-            (size_t)(seq_q * head_dim), sizeof(double));
+        double* d_head_out = (double*)arena_allocate_zeroed(mha_arena,
+            (size_t)(seq_q * head_dim) * sizeof(double));
         if (!d_head_out) continue;
 
         for (int64_t i = 0; i < seq_q; i++) {
@@ -559,13 +712,10 @@ extern "C" void eshkol_backward_multihead_attention(
 
         /* Extract per-head Q, K, V from saved projected data */
         /* Q_h = Q @ W_Q_h, so we need to extract the head slice */
-        double* head_Q = (double*)calloc(head_q_size, sizeof(double));
-        double* head_K = (double*)calloc(head_k_size, sizeof(double));
-        double* head_V = (double*)calloc(head_k_size, sizeof(double));
-        if (!head_Q || !head_K || !head_V) {
-            free(d_head_out); free(head_Q); free(head_K); free(head_V);
-            continue;
-        }
+        double* head_Q = (double*)arena_allocate_zeroed(mha_arena, head_q_size * sizeof(double));
+        double* head_K = (double*)arena_allocate_zeroed(mha_arena, head_k_size * sizeof(double));
+        double* head_V = (double*)arena_allocate_zeroed(mha_arena, head_k_size * sizeof(double));
+        if (!head_Q || !head_K || !head_V) continue;
 
         /* Project Q, K, V through head-specific weight slices
          * head_Q = saved_Q @ W_Q[:, h_offset:h_offset+head_dim]
@@ -713,16 +863,8 @@ extern "C" void eshkol_backward_multihead_attention(
         }
 #endif
 
-        free(d_head_out);
-        free(head_Q);
-        free(head_K);
-        free(head_V);
     }
 
-    free(d_concat);
-    free(d_head_Q);
-    free(d_head_K);
-    free(d_head_V);
 }
 
 /* ===== Embedding ===== */
@@ -759,16 +901,17 @@ extern "C" void eshkol_seed_tensor_gradient(void* ad_node_ptr) {
     /* Only seed if this is a tensor node (has tensor_value set) */
     if (!node->tensor_value) return;
 
-    /* Compute total elements from shape */
+    /* Compute total elements from shape (with overflow check) */
+    if (node->ndim > 0 && !node->shape) return;
     int64_t total = 1;
     for (size_t i = 0; i < node->ndim; i++) {
-        total *= node->shape[i];
+        if (!safe_mul(total, node->shape[i], &total)) return;
     }
     if (total <= 0) return;
 
     /* Allocate tensor_gradient if not already set */
     if (!node->tensor_gradient) {
-        node->tensor_gradient = calloc((size_t)total, sizeof(double));
+        node->tensor_gradient = arena_allocate_zeroed(get_global_arena(), (size_t)total * sizeof(double));
         if (!node->tensor_gradient) return;
     }
 
@@ -785,9 +928,10 @@ extern "C" void eshkol_seed_tensor_gradient(void* ad_node_ptr) {
  * Helper: compute total elements from shape array.
  */
 static int64_t compute_total_elements(const int64_t* shape, size_t ndim) {
+    if (ndim > 0 && !shape) return 0;
     int64_t total = 1;
     for (size_t i = 0; i < ndim; i++) {
-        total *= shape[i];
+        if (!safe_mul(total, shape[i], &total)) return 0;
     }
     return total;
 }
@@ -802,27 +946,34 @@ extern "C" void eshkol_tensor_backward_dispatch(void* ad_node_ptr) {
     /* Access params as raw int64_t array (matches union layout) */
     int64_t* p = (int64_t*)&node->params;
 
+    /* Arena-scoped allocation: all gradient temporaries below are allocated from
+     * the global arena within a pushed scope. When we pop at function exit, the
+     * memory is bulk-freed. Gradients are accumulated into AD nodes (which live
+     * outside this scope) via eshkol_accumulate_tensor_grad before the pop. */
+    arena_t* bwd_arena = backward_scope_begin();
+    if (!bwd_arena) return;
+
     switch (node->type) {
 
     /* --- CONV2D (19) --- */
     case AD_NODE_CONV2D: {
         if (!node->saved_tensors || node->num_saved < 2) break;
+        if (node->ndim > 0 && !node->shape) break;
         const double* saved_input  = (const double*)node->saved_tensors[0];
         const double* saved_kernel = (const double*)node->saved_tensors[1];
         int64_t k_h = p[0], k_w = p[1];
         int64_t stride_h = p[2], stride_w = p[3];
         int64_t channels_in = p[4], channels_out = p[5];
-        /* Derive spatial dimensions from output shape */
-        /* shape = [batch_size, channels_out, out_h, out_w] */
         int64_t batch_size = (node->ndim >= 1) ? node->shape[0] : 1;
         int64_t out_h = (node->ndim >= 3) ? node->shape[2] : 1;
         int64_t out_w = (node->ndim >= 4) ? node->shape[3] : 1;
         int64_t in_h = (out_h - 1) * stride_h + k_h;
         int64_t in_w = (out_w - 1) * stride_w + k_w;
-        int64_t input_total = batch_size * channels_in * in_h * in_w;
-        int64_t kernel_total = channels_out * channels_in * k_h * k_w;
-        double* grad_input  = (double*)calloc((size_t)input_total, sizeof(double));
-        double* grad_kernel = (double*)calloc((size_t)kernel_total, sizeof(double));
+        int64_t input_total, kernel_total;
+        if (!safe_mul4(batch_size, channels_in, in_h, in_w, &input_total)) break;
+        if (!safe_mul4(channels_out, channels_in, k_h, k_w, &kernel_total)) break;
+        double* grad_input  = (double*)arena_calloc(bwd_arena, (size_t)input_total * sizeof(double));
+        double* grad_kernel = (double*)arena_calloc(bwd_arena, (size_t)kernel_total * sizeof(double));
         if (grad_input && grad_kernel) {
             eshkol_backward_conv2d(upstream_grad, saved_input, saved_kernel,
                 grad_input, grad_kernel, in_h, in_w, k_h, k_w, out_h, out_w,
@@ -832,8 +983,6 @@ extern "C" void eshkol_tensor_backward_dispatch(void* ad_node_ptr) {
             if (node->input2)
                 eshkol_accumulate_tensor_grad(node->input2, grad_kernel, kernel_total);
         }
-        free(grad_input);
-        free(grad_kernel);
         break;
     }
 
@@ -849,7 +998,7 @@ extern "C" void eshkol_tensor_backward_dispatch(void* ad_node_ptr) {
         int64_t in_h = (out_h - 1) * stride_h + k_h;
         int64_t in_w = (out_w - 1) * stride_w + k_w;
         int64_t input_total = batch_size * channels * in_h * in_w;
-        double* grad_input = (double*)calloc((size_t)input_total, sizeof(double));
+        double* grad_input = (double*)arena_calloc(bwd_arena,(size_t)input_total * sizeof(double));
         if (grad_input) {
             eshkol_backward_maxpool2d(upstream_grad, grad_input, max_indices,
                 in_h, in_w, out_h, out_w, k_h, k_w, stride_h, stride_w,
@@ -857,7 +1006,6 @@ extern "C" void eshkol_tensor_backward_dispatch(void* ad_node_ptr) {
             if (node->input1)
                 eshkol_accumulate_tensor_grad(node->input1, grad_input, input_total);
         }
-        free(grad_input);
         break;
     }
 
@@ -871,7 +1019,7 @@ extern "C" void eshkol_tensor_backward_dispatch(void* ad_node_ptr) {
         int64_t in_h = (out_h - 1) * stride_h + k_h;
         int64_t in_w = (out_w - 1) * stride_w + k_w;
         int64_t input_total = batch_size * channels * in_h * in_w;
-        double* grad_input = (double*)calloc((size_t)input_total, sizeof(double));
+        double* grad_input = (double*)arena_calloc(bwd_arena,(size_t)input_total * sizeof(double));
         if (grad_input) {
             eshkol_backward_avgpool2d(upstream_grad, grad_input,
                 in_h, in_w, out_h, out_w, k_h, k_w, stride_h, stride_w,
@@ -879,7 +1027,6 @@ extern "C" void eshkol_tensor_backward_dispatch(void* ad_node_ptr) {
             if (node->input1)
                 eshkol_accumulate_tensor_grad(node->input1, grad_input, input_total);
         }
-        free(grad_input);
         break;
     }
 
@@ -893,9 +1040,9 @@ extern "C" void eshkol_tensor_backward_dispatch(void* ad_node_ptr) {
         int64_t batch_size    = p[0];
         int64_t feature_size  = p[1];
         int64_t input_total   = batch_size * feature_size;
-        double* grad_input = (double*)calloc((size_t)input_total, sizeof(double));
-        double* grad_gamma = (double*)calloc((size_t)feature_size, sizeof(double));
-        double* grad_beta  = (double*)calloc((size_t)feature_size, sizeof(double));
+        double* grad_input = (double*)arena_calloc(bwd_arena,(size_t)input_total * sizeof(double));
+        double* grad_gamma = (double*)arena_calloc(bwd_arena,(size_t)feature_size * sizeof(double));
+        double* grad_beta  = (double*)arena_calloc(bwd_arena,(size_t)feature_size * sizeof(double));
         if (grad_input && grad_gamma && grad_beta) {
             eshkol_backward_batchnorm(upstream_grad, saved_input, saved_mean,
                 saved_inv_std, saved_gamma, grad_input, grad_gamma, grad_beta,
@@ -905,9 +1052,6 @@ extern "C" void eshkol_tensor_backward_dispatch(void* ad_node_ptr) {
             if (node->input2)
                 eshkol_accumulate_tensor_grad(node->input2, grad_gamma, feature_size);
         }
-        free(grad_input);
-        free(grad_gamma);
-        free(grad_beta);
         break;
     }
 
@@ -921,9 +1065,9 @@ extern "C" void eshkol_tensor_backward_dispatch(void* ad_node_ptr) {
         int64_t num_samples   = p[0];
         int64_t feature_size  = p[1];
         int64_t input_total   = num_samples * feature_size;
-        double* grad_input = (double*)calloc((size_t)input_total, sizeof(double));
-        double* grad_gamma = (double*)calloc((size_t)feature_size, sizeof(double));
-        double* grad_beta  = (double*)calloc((size_t)feature_size, sizeof(double));
+        double* grad_input = (double*)arena_calloc(bwd_arena,(size_t)input_total * sizeof(double));
+        double* grad_gamma = (double*)arena_calloc(bwd_arena,(size_t)feature_size * sizeof(double));
+        double* grad_beta  = (double*)arena_calloc(bwd_arena,(size_t)feature_size * sizeof(double));
         if (grad_input && grad_gamma && grad_beta) {
             eshkol_backward_layernorm(upstream_grad, saved_input, saved_mean,
                 saved_inv_std, saved_gamma, grad_input, grad_gamma, grad_beta,
@@ -933,9 +1077,6 @@ extern "C" void eshkol_tensor_backward_dispatch(void* ad_node_ptr) {
             if (node->input2)
                 eshkol_accumulate_tensor_grad(node->input2, grad_gamma, feature_size);
         }
-        free(grad_input);
-        free(grad_gamma);
-        free(grad_beta);
         break;
     }
 
@@ -945,8 +1086,8 @@ extern "C" void eshkol_tensor_backward_dispatch(void* ad_node_ptr) {
         const double* saved_A = (const double*)node->saved_tensors[0];
         const double* saved_B = (const double*)node->saved_tensors[1];
         int64_t M = p[0], K = p[1], N = p[2];
-        double* grad_A = (double*)calloc((size_t)(M * K), sizeof(double));
-        double* grad_B = (double*)calloc((size_t)(K * N), sizeof(double));
+        double* grad_A = (double*)arena_calloc(bwd_arena,(size_t)(M * K) * sizeof(double));
+        double* grad_B = (double*)arena_calloc(bwd_arena,(size_t)(K * N) * sizeof(double));
         if (grad_A && grad_B) {
             eshkol_backward_matmul(upstream_grad, saved_A, saved_B,
                 grad_A, grad_B, M, K, N);
@@ -955,8 +1096,6 @@ extern "C" void eshkol_tensor_backward_dispatch(void* ad_node_ptr) {
             if (node->input2)
                 eshkol_accumulate_tensor_grad(node->input2, grad_B, K * N);
         }
-        free(grad_A);
-        free(grad_B);
         break;
     }
 
@@ -965,26 +1104,24 @@ extern "C" void eshkol_tensor_backward_dispatch(void* ad_node_ptr) {
         int64_t rows = p[0], cols = p[1];
         /* Input has shape (cols, rows) — transpose of output (rows, cols) */
         int64_t input_total = rows * cols;
-        double* grad_input = (double*)calloc((size_t)input_total, sizeof(double));
+        double* grad_input = (double*)arena_calloc(bwd_arena,(size_t)input_total * sizeof(double));
         if (grad_input) {
             eshkol_backward_transpose(upstream_grad, grad_input, rows, cols);
             if (node->input1)
                 eshkol_accumulate_tensor_grad(node->input1, grad_input, input_total);
         }
-        free(grad_input);
         break;
     }
 
     /* --- RESHAPE (26) --- */
     case AD_NODE_RESHAPE: {
         int64_t total_elements = p[0];
-        double* grad_input = (double*)calloc((size_t)total_elements, sizeof(double));
+        double* grad_input = (double*)arena_calloc(bwd_arena,(size_t)total_elements * sizeof(double));
         if (grad_input) {
             eshkol_backward_reshape(upstream_grad, grad_input, total_elements);
             if (node->input1)
                 eshkol_accumulate_tensor_grad(node->input1, grad_input, total_elements);
         }
-        free(grad_input);
         break;
     }
 
@@ -993,13 +1130,12 @@ extern "C" void eshkol_tensor_backward_dispatch(void* ad_node_ptr) {
         int64_t input_total = p[0];
         /* Sum output is scalar; upstream_grad is a 1-element tensor */
         double grad_scalar = upstream_grad[0];
-        double* grad_input = (double*)calloc((size_t)input_total, sizeof(double));
+        double* grad_input = (double*)arena_calloc(bwd_arena,(size_t)input_total * sizeof(double));
         if (grad_input) {
             eshkol_backward_sum(grad_scalar, grad_input, input_total);
             if (node->input1)
                 eshkol_accumulate_tensor_grad(node->input1, grad_input, input_total);
         }
-        free(grad_input);
         break;
     }
 
@@ -1007,13 +1143,12 @@ extern "C" void eshkol_tensor_backward_dispatch(void* ad_node_ptr) {
     case AD_NODE_MEAN: {
         int64_t input_total = p[0];
         double grad_scalar = upstream_grad[0];
-        double* grad_input = (double*)calloc((size_t)input_total, sizeof(double));
+        double* grad_input = (double*)arena_calloc(bwd_arena,(size_t)input_total * sizeof(double));
         if (grad_input) {
             eshkol_backward_mean(grad_scalar, grad_input, input_total);
             if (node->input1)
                 eshkol_accumulate_tensor_grad(node->input1, grad_input, input_total);
         }
-        free(grad_input);
         break;
     }
 
@@ -1029,9 +1164,9 @@ extern "C" void eshkol_tensor_backward_dispatch(void* ad_node_ptr) {
         /* scale stored as double bit-pattern in p[4] */
         double scale;
         memcpy(&scale, &p[4], sizeof(double));
-        double* grad_Q = (double*)calloc((size_t)(seq_q * d_k), sizeof(double));
-        double* grad_K = (double*)calloc((size_t)(seq_k * d_k), sizeof(double));
-        double* grad_V = (double*)calloc((size_t)(seq_k * d_v), sizeof(double));
+        double* grad_Q = (double*)arena_calloc(bwd_arena,(size_t)(seq_q * d_k) * sizeof(double));
+        double* grad_K = (double*)arena_calloc(bwd_arena,(size_t)(seq_k * d_k) * sizeof(double));
+        double* grad_V = (double*)arena_calloc(bwd_arena,(size_t)(seq_k * d_v) * sizeof(double));
         if (grad_Q && grad_K && grad_V) {
             eshkol_backward_attention(upstream_grad, saved_Q, saved_K, saved_V,
                 saved_attn, grad_Q, grad_K, grad_V,
@@ -1043,9 +1178,6 @@ extern "C" void eshkol_tensor_backward_dispatch(void* ad_node_ptr) {
             if (node->input3)
                 eshkol_accumulate_tensor_grad(node->input3, grad_V, seq_k * d_v);
         }
-        free(grad_Q);
-        free(grad_K);
-        free(grad_V);
         break;
     }
 
@@ -1062,13 +1194,13 @@ extern "C" void eshkol_tensor_backward_dispatch(void* ad_node_ptr) {
         const double* saved_attn_ph  = (const double*)node->saved_tensors[7];
         int64_t seq_q = p[0], seq_k = p[1];
         int64_t d_model = p[2], num_heads = p[3];
-        double* grad_Q  = (double*)calloc((size_t)(seq_q * d_model), sizeof(double));
-        double* grad_K  = (double*)calloc((size_t)(seq_k * d_model), sizeof(double));
-        double* grad_V  = (double*)calloc((size_t)(seq_k * d_model), sizeof(double));
-        double* grad_WQ = (double*)calloc((size_t)(d_model * d_model), sizeof(double));
-        double* grad_WK = (double*)calloc((size_t)(d_model * d_model), sizeof(double));
-        double* grad_WV = (double*)calloc((size_t)(d_model * d_model), sizeof(double));
-        double* grad_WO = (double*)calloc((size_t)(d_model * d_model), sizeof(double));
+        double* grad_Q  = (double*)arena_calloc(bwd_arena,(size_t)(seq_q * d_model) * sizeof(double));
+        double* grad_K  = (double*)arena_calloc(bwd_arena,(size_t)(seq_k * d_model) * sizeof(double));
+        double* grad_V  = (double*)arena_calloc(bwd_arena,(size_t)(seq_k * d_model) * sizeof(double));
+        double* grad_WQ = (double*)arena_calloc(bwd_arena,(size_t)(d_model * d_model) * sizeof(double));
+        double* grad_WK = (double*)arena_calloc(bwd_arena,(size_t)(d_model * d_model) * sizeof(double));
+        double* grad_WV = (double*)arena_calloc(bwd_arena,(size_t)(d_model * d_model) * sizeof(double));
+        double* grad_WO = (double*)arena_calloc(bwd_arena,(size_t)(d_model * d_model) * sizeof(double));
         if (grad_Q && grad_K && grad_V && grad_WQ && grad_WK && grad_WV && grad_WO) {
             eshkol_backward_multihead_attention(upstream_grad,
                 saved_Q, saved_K, saved_V,
@@ -1084,8 +1216,6 @@ extern "C" void eshkol_tensor_backward_dispatch(void* ad_node_ptr) {
                 eshkol_accumulate_tensor_grad(node->input3, grad_V, seq_k * d_model);
             /* Weight gradients would go to input4 or separate weight nodes */
         }
-        free(grad_Q); free(grad_K); free(grad_V);
-        free(grad_WQ); free(grad_WK); free(grad_WV); free(grad_WO);
         break;
     }
 
@@ -1094,13 +1224,12 @@ extern "C" void eshkol_tensor_backward_dispatch(void* ad_node_ptr) {
         int64_t total_elements = p[0];
         if (total_elements <= 0 && node->ndim > 0)
             total_elements = compute_total_elements(node->shape, node->ndim);
-        double* grad_input = (double*)calloc((size_t)total_elements, sizeof(double));
+        double* grad_input = (double*)arena_calloc(bwd_arena,(size_t)total_elements * sizeof(double));
         if (grad_input) {
             eshkol_backward_positional_encoding(upstream_grad, grad_input, total_elements);
             if (node->input1)
                 eshkol_accumulate_tensor_grad(node->input1, grad_input, total_elements);
         }
-        free(grad_input);
         break;
     }
 
@@ -1112,14 +1241,13 @@ extern "C" void eshkol_tensor_backward_dispatch(void* ad_node_ptr) {
         int64_t d_model     = p[1];
         int64_t vocab_size  = p[2];
         int64_t weight_total = vocab_size * d_model;
-        double* grad_weights = (double*)calloc((size_t)weight_total, sizeof(double));
+        double* grad_weights = (double*)arena_calloc(bwd_arena,(size_t)weight_total * sizeof(double));
         if (grad_weights) {
             eshkol_backward_embedding(upstream_grad, saved_indices,
                 grad_weights, num_indices, d_model, vocab_size);
             if (node->input1)
                 eshkol_accumulate_tensor_grad(node->input1, grad_weights, weight_total);
         }
-        free(grad_weights);
         break;
     }
 
@@ -1162,6 +1290,11 @@ extern "C" void eshkol_tensor_backward_dispatch(void* ad_node_ptr) {
          * Geometric/hyperbolic ops (33-40) use scalar backward in codegen. */
         break;
     }
+
+    /* Pop arena scope — all temporary gradient buffers are bulk-freed here.
+     * Accumulated gradients in AD nodes (via eshkol_accumulate_tensor_grad)
+     * live in the unscoped global arena and survive this pop. */
+    backward_scope_end(bwd_arena);
 }
 
 /* ===== Tensor Gradient Accumulation ===== */
@@ -1175,8 +1308,8 @@ extern "C" void eshkol_accumulate_tensor_grad(
 
     /* If tensor_gradient is NULL, allocate and zero-fill */
     if (!node->tensor_gradient) {
-        node->tensor_gradient = calloc(
-            (size_t)num_elements, sizeof(double));
+        node->tensor_gradient = arena_allocate_zeroed(get_global_arena(),
+            (size_t)num_elements * sizeof(double));
         if (!node->tensor_gradient) return;
     }
 

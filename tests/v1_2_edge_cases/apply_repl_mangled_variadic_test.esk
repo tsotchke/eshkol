@@ -1,0 +1,69 @@
+;; apply_repl_mangled_variadic_test.esk — Noesis Bug S (2026-04-23)
+;;
+;; Surfaced when Noesis ethics.esk reverted a Bug-P workaround
+;; ((null? opts) dispatch) back to (apply make-ethics-engine opts):
+;; the call crashed with "car: argument is not a pair" the moment
+;; opts was non-empty.
+;;
+;; Root cause (single-file, no cross-file boundary needed):
+;; In REPL mode, top-level (define (f . opts) …) gets its LLVM symbol
+;; mangled to "f__rv0" / "f__rv1" / … for hot-reload. variadic_function_info_
+;; is keyed on the user-visible name "f". applyUserFunction looked up
+;; func->getName().str() ("f__rv0") and missed; is_variadic stayed
+;; false; the loop extracted the FIRST element of the apply'd list as
+;; the lone fixed argument and dropped the rest. f's "opts" then held
+;; the head value (e.g. #t) instead of the cons list ((#t)).
+;;
+;; Fix: applyUserFunction strips the "__rv<N>" suffix when the
+;; mangled name misses, retries with the unmangled name. Variadic
+;; dispatch then proceeds correctly.
+
+(require stdlib)
+
+(define passed 0)
+(define failed 0)
+(define (check name cond)
+  (if cond
+      (begin (display "PASS: ") (display name) (newline)
+             (set! passed (+ passed 1)))
+      (begin (display "FAIL: ") (display name) (newline)
+             (set! failed (+ failed 1)))))
+
+;; Case 1: pure-rest variadic — the canonical repro
+(define (f . opts)
+  (if (null? opts) 'zero-args (car opts)))
+(check "direct zero"   (eq? (f) 'zero-args))
+(check "direct one"    (eq? (f #t) #t))
+(check "apply empty"   (eq? (apply f '()) 'zero-args))
+(check "apply one #t"  (eq? (apply f '(#t)) #t))
+(check "apply one sym" (eq? (apply f '(hello)) 'hello))
+(check "apply two"     (eq? (apply f '(a b)) 'a))   ; car of (a b)
+
+;; Case 2: rest body that uses the whole opts list, not just car
+(define (collect . opts) opts)
+(check "apply collect 0"  (equal? (apply collect '()) '()))
+(check "apply collect 1"  (equal? (apply collect '(x)) '(x)))
+(check "apply collect 3"  (equal? (apply collect '(x y z)) '(x y z)))
+
+;; Case 3: variadic with one fixed param
+(define (g first . opts) (list first opts))
+(check "apply 1-fixed empty rest"  (equal? (apply g '(a)) '(a ())))
+(check "apply 1-fixed one rest"    (equal? (apply g '(a b)) '(a (b))))
+(check "apply 1-fixed two rest"    (equal? (apply g '(a b c)) '(a (b c))))
+
+;; Case 4: variadic with two fixed params
+(define (h x y . opts) (list x y opts))
+(check "apply 2-fixed exact"   (equal? (apply h '(1 2)) '(1 2 ())))
+(check "apply 2-fixed +1 rest" (equal? (apply h '(1 2 3)) '(1 2 (3))))
+
+;; Case 5: regression guard — apply on a non-variadic still works
+(define (add2 a b) (+ a b))
+(check "apply non-variadic"    (= (apply add2 '(3 4)) 7))
+
+;; Case 6: regression guard — apply on a builtin still works
+(check "apply builtin +"       (= (apply + '(1 2 3 4)) 10))
+
+(newline)
+(display "Passed: ") (display passed) (newline)
+(display "Failed: ") (display failed) (newline)
+(if (> failed 0) (exit 1) (exit 0))

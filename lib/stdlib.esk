@@ -34,12 +34,37 @@
 ;;; Strings - extended string utilities
 (require core.strings)
 
+;;; S-expression printer - handles dotted pairs and improper lists
+(require core.sexp)
+
 ;;; JSON - parsing and serialization
 (require core.json)
 
-;;; Data formats - CSV, Base64
+;;; Data formats - CSV, Base64, DataFrame
 (require core.data.csv)
+(require core.data.dataframe)
 (require core.data.base64)
+
+;;; Terminal plotting - sparklines, bar charts, histograms
+(require core.plot)
+
+;;; Runtime reflection - describe, type-of (procedure-arity is codegen builtin)
+(require core.reflection)
+
+;;; URL encoding - RFC 3986 percent-encoding
+(require core.url)
+
+;;; SRFI 41 - lazy streams (built on delay/force memoised promises)
+(require core.streams)
+
+;;; JSON Schema validator (Draft 7 subset)
+(require core.json_schema)
+
+;; Note: core.testing is NOT auto-loaded. User code that wants the
+;; testing framework must (require core.testing) explicitly. Baking it
+;; into stdlib.o triggers the symbol-renamer / external-decl path
+;; interactions that currently mis-handle pre-compiled modules' internal
+;; state (duplicate `_*tests*` in user .o).
 
 ;;; Signal Processing - FFT/IFFT and FIR/IIR filters, windowing, Butterworth design
 (require signal.fft)

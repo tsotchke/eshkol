@@ -1,0 +1,83 @@
+;; ad_tape_release_regression_test.esk — Noesis Bug I (2026-04-20)
+;;
+;; Sigma discover crashed SIGSEGV mid-benchmark because fit-candidate
+;; allocated one AD tape per Adam iteration and never freed them
+;; (~75 k tapes across 5-var × 31-template × 20-iter × 24-perm
+;; discover). Arena grew unboundedly, malloc eventually returned NULL,
+;; downstream AD ops dereffed NULL tape, SIGSEGV.
+;;
+;; Fix: (ad-tape-new) now pushes a scope on the main arena and
+;; allocates the tape inside. (ad-tape-release tape) pops the scope,
+;; reclaiming the tape + all nodes + growth blocks in O(blocks).
+
+(require stdlib)
+
+(define passed 0)
+(define failed 0)
+(define (check name cond)
+  (if cond
+      (begin (display "PASS: ") (display name) (newline)
+             (set! passed (+ passed 1)))
+      (begin (display "FAIL: ") (display name) (newline)
+             (set! failed (+ failed 1)))))
+
+;; Case 1 — basic new+release round-trip returns valid values before release
+(define tape1 (ad-tape-new))
+(check "tape-new returns non-null" (not (null? tape1)))
+(define x1 (ad-var tape1 3.0))
+(define y1 (ad-var tape1 4.0))
+(define z1 (ad-add tape1 x1 y1))
+(ad-backward tape1 z1)
+(check "ad-backward before release works"
+       (= (ad-node-value tape1 z1) 7.0))
+(ad-tape-release tape1)
+
+;; Case 2 — release on a NULL / released tape is safe (double-release)
+(ad-tape-release tape1)   ;; should silently no-op via magic sentinel
+(check "double-release does not crash" #t)
+
+;; Case 3 — many cycles do not exhaust memory (the actual Bug I stress)
+;; 50 k tape cycles simulate Sigma's ~75 k pressure. Before the fix,
+;; this would OOM or SIGSEGV around 5-10 k.
+(define (stress n)
+  (if (>= n 50000) #t
+      (let ((tape (ad-tape-new)))
+        (let* ((a (ad-var tape 1.0))
+               (b (ad-mul tape a a))
+               (c (ad-sin tape b))
+               (d (ad-exp tape c)))
+          (ad-backward tape d)
+          (ad-tape-release tape)
+          (stress (+ n 1))))))
+(stress 0)
+(check "50k new+release cycles complete" #t)
+
+;; Case 4 — gradient still correct after many cycles (no state leak)
+(define tape4 (ad-tape-new))
+(define x4 (ad-var tape4 2.0))
+(define y4 (ad-mul tape4 x4 x4))   ;; y = x^2
+(ad-backward tape4 y4)
+(check "gradient of x^2 at x=2 is 4"
+       (= (ad-gradient tape4 x4) 4.0))
+(ad-tape-release tape4)
+
+;; Case 5 — nested LIFO tapes work
+(define outer (ad-tape-new))
+(define ox (ad-var outer 5.0))
+(define inner (ad-tape-new))
+(define ix (ad-var inner 3.0))
+(define iy (ad-mul inner ix ix))
+(ad-backward inner iy)
+(check "inner gradient correct" (= (ad-gradient inner ix) 6.0))
+(ad-tape-release inner)
+;; outer still usable
+(define oy (ad-mul outer ox ox))
+(ad-backward outer oy)
+(check "outer tape survives inner release"
+       (= (ad-gradient outer ox) 10.0))
+(ad-tape-release outer)
+
+(newline)
+(display "Passed: ") (display passed) (newline)
+(display "Failed: ") (display failed) (newline)
+(if (> failed 0) (exit 1) (exit 0))

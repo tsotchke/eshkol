@@ -1,0 +1,108 @@
+;; Noesis #138: define-record-type regression test.
+;;
+;; Coverage:
+;;   - Constructor / predicate / accessor / mutator work end-to-end
+;;   - Predicate is type-specific (doesn't false-positive on plain vectors
+;;     or on other record types — this was the original parser's "check if
+;;     vector?" bug)
+;;   - Records nest correctly (record-of-record)
+;;   - Records live in let-bindings and closures
+;;   - Mutators update in place
+;;   - Records interact correctly with hash tables and lists
+
+(require stdlib)
+
+(display "=== Noesis#3 define-record-type suite ===") (newline)
+
+(define pass-count 0)
+(define fail-count 0)
+(define (check name cond)
+  (if cond
+      (begin (set! pass-count (+ pass-count 1))
+             (display "PASS: ") (display name) (newline))
+      (begin (set! fail-count (+ fail-count 1))
+             (display "FAIL: ") (display name) (newline))))
+
+;; ---- basic constructor / predicate / accessor ----
+(define-record-type point (make-point x y) point? (x point-x) (y point-y))
+
+(define p (make-point 3 4))
+(check "point? on a point is #t" (point? p))
+(check "point? on a number is #f" (not (point? 42)))
+(check "point? on a string is #f" (not (point? "p")))
+(check "point? on a plain vector is #f"
+       (not (point? (vector 1 2 3))))
+(check "point-x returns 3" (= (point-x p) 3))
+(check "point-y returns 4" (= (point-y p) 4))
+
+;; ---- mutator ----
+(define-record-type box (make-box v) box? (v box-value set-box-value!))
+(define b (make-box 10))
+(check "box-value initial = 10" (= (box-value b) 10))
+(set-box-value! b 42)
+(check "box-value after set = 42" (= (box-value b) 42))
+(check "set-box-value! preserves identity (still a box)"
+       (box? b))
+
+;; ---- two distinct record types don't collide on predicates ----
+(define-record-type cat (make-cat name) cat? (name cat-name))
+(define-record-type dog (make-dog name) dog? (name dog-name))
+(define c (make-cat "whiskers"))
+(define d (make-dog "rex"))
+(check "cat? (make-cat …) = #t" (cat? c))
+(check "cat? (make-dog …) = #f" (not (cat? d)))
+(check "dog? (make-dog …) = #t" (dog? d))
+(check "dog? (make-cat …) = #f" (not (dog? c)))
+(check "cat-name returns \"whiskers\"" (equal? (cat-name c) "whiskers"))
+(check "dog-name returns \"rex\"" (equal? (dog-name d) "rex"))
+
+;; ---- records composing records ----
+(define-record-type rect (make-rect tl br) rect?
+  (tl rect-top-left)
+  (br rect-bottom-right))
+
+(define r (make-rect (make-point 0 0) (make-point 10 10)))
+(check "rect? on a rect" (rect? r))
+(check "rect-top-left returns a point" (point? (rect-top-left r)))
+(check "point-x on nested record"
+       (= (point-x (rect-top-left r)) 0))
+(check "point-y on nested bottom-right"
+       (= (point-y (rect-bottom-right r)) 10))
+
+;; ---- record as hash-table value ----
+(define ht (make-hash-table))
+(hash-set! ht "origin" (make-point 0 0))
+(hash-set! ht "unit"   (make-point 1 1))
+(check "hash-ref returns a point"
+       (point? (hash-ref ht "origin" #f)))
+(check "nested accessor via hash-ref"
+       (= (point-x (hash-ref ht "unit" #f)) 1))
+
+;; ---- record in a list + map ----
+(define pts (list (make-point 1 2) (make-point 3 4) (make-point 5 6)))
+(check "every elem in pts is a point"
+       (and (point? (car pts))
+            (point? (car (cdr pts)))
+            (point? (car (cdr (cdr pts))))))
+(check "sum of x-coords via map+apply"
+       (= (apply + (map point-x pts)) 9))
+
+;; ---- record in closure capture (outer record type only;
+;; nested define-record-type inside a lambda is not R7RS-compliant).
+;; Captures a record-type constructor + accessor from enclosing scope. ----
+(define point-shifter
+  (lambda (dx dy)
+    (lambda (p) (make-point (+ (point-x p) dx)
+                             (+ (point-y p) dy)))))
+(define shift5 (point-shifter 5 5))
+(define shifted (shift5 (make-point 1 1)))
+(check "closure produces point" (point? shifted))
+(check "closure-shifted x = 6" (= (point-x shifted) 6))
+(check "closure-shifted y = 6" (= (point-y shifted) 6))
+
+(newline)
+(display "=== Summary ===") (newline)
+(display "Passed: ") (display pass-count) (newline)
+(display "Failed: ") (display fail-count) (newline)
+(display (if (= fail-count 0) "RESULT: ALL PASS" "RESULT: FAILURES DETECTED"))
+(newline)

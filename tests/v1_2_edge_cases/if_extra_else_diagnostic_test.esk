@@ -1,0 +1,70 @@
+;; if_extra_else_diagnostic_test.esk — Noesis Quirk 7 (2026-04-24)
+;;
+;; (if cond then else-a else-b) used to emit the generic
+;; "expected closing parenthesis after if expression" — confusing for
+;; users from C/Python/other Lisps that allow an implicit begin in
+;; the else branch. R7RS §4.1.5 defines if as EXACTLY three subforms,
+;; so the parser's behaviour is correct, but the diagnostic didn't
+;; help users recover.
+;;
+;; This test verifies the 3-form case still parses correctly (it is
+;; run end-to-end). A companion shell test in scripts/ verifies the
+;; new diagnostic fires with the expected wording when the else
+;; position has an extra expression.
+
+(require stdlib)
+
+(define passed 0)
+(define failed 0)
+(define (check name cond)
+  (if cond
+      (begin (display "PASS: ") (display name) (newline)
+             (set! passed (+ passed 1)))
+      (begin (display "FAIL: ") (display name) (newline)
+             (set! failed (+ failed 1)))))
+
+;; The valid 3-form if — test / then / else — must still work.
+(define (abs-int x) (if (< x 0) (- x) x))
+(check "if 3-form: negative -> negate" (= (abs-int -7) 7))
+(check "if 3-form: positive -> identity" (= (abs-int 7) 7))
+(check "if 3-form: zero -> identity" (= (abs-int 0) 0))
+
+;; 2-form if (no else) — R7RS allows it; returns unspecified value.
+(define called #f)
+(define (maybe-set x)
+  (if x (set! called #t)))
+(maybe-set #t)
+(check "if 2-form: then executes when test is truthy" called)
+(set! called #f)
+(maybe-set #f)
+(check "if 2-form: then skipped when test is falsy" (not called))
+
+;; Multi-expr then or else wrapped in begin — the idiomatic fix for
+;; the Quirk 7 error. This is the shape users must write.
+(define count 0)
+(if #t
+    (begin (set! count (+ count 1))
+           (set! count (+ count 10)))
+    (begin (set! count 999)))
+(check "begin-wrapped then runs all expressions" (= count 11))
+
+(set! count 0)
+(if #f
+    (begin (set! count 999))
+    (begin (set! count (+ count 1))
+           (set! count (+ count 100))))
+(check "begin-wrapped else runs all expressions" (= count 101))
+
+;; cond is the other idiomatic recovery path.
+(define (classify x)
+  (cond ((< x 0)  (display "negative: ") (display x) (newline) 'neg)
+        ((= x 0)  (display "zero") (newline) 'zero)
+        (else     (display "positive: ") (display x) (newline) 'pos)))
+(check "cond multi-expr clauses: negative -> neg" (eq? (classify -3) 'neg))
+(check "cond multi-expr clauses: zero -> zero" (eq? (classify 0) 'zero))
+(check "cond multi-expr clauses: positive -> pos" (eq? (classify 5) 'pos))
+
+(newline)
+(display "Passed: ") (display passed) (newline)
+(display "Failed: ") (display failed) (newline)
+(if (> failed 0) (exit 1) (exit 0))

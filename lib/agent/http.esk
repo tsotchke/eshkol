@@ -75,8 +75,48 @@
   "Check if HTTPS is available."
   (= (http-has-ssl-raw) 1))
 
+;; #195 MEDIUM: URL / header sanitization before dispatch.
+;;
+;; CRLF injection in a request URL or header value lets an attacker
+;; append an extra request to the wire (\r\n<evil-header>) which many
+;; HTTP proxies happily forward. NUL in a URL or header truncates at
+;; the C boundary and can route the request to the wrong origin.
+;; Reject any input containing those bytes before it reaches the
+;; curl/libwhatever backend.
+;; Audit M8: header-value injection via whitespace-not-\r\n.
+;; Some HTTP parsers (notably older proxies and some app frameworks)
+;; treat tab and other C0 whitespace as separators within a header
+;; value, re-splitting a value like "api.example.com\tHost: evil.com"
+;; into two logical headers. Reject tab and the rest of the C0
+;; controls in addition to CR/LF/NUL; 0x7f (DEL) too.
+(define (http-safe-string? s)
+  (and (string? s)
+       (not (string-contains s "\r"))
+       (not (string-contains s "\n"))
+       (not (string-contains s "\t"))
+       (not (string-contains s "\x00"))
+       (not (string-contains s "\x0b"))   ;; VT
+       (not (string-contains s "\x0c"))   ;; FF
+       (not (string-contains s "\x7f"))   ;; DEL
+       ))
+
+(define (http-check-url url)
+  (unless (http-safe-string? url)
+    (error "http: URL contains unsafe control byte (CR/LF/NUL/TAB/VT/FF/DEL) — possible injection" url)))
+
+(define (http-check-headers headers)
+  (for-each (lambda (pair)
+              (let ((name (if (pair? pair) (car pair) ""))
+                    (val  (if (pair? pair) (cdr pair) "")))
+                (unless (and (http-safe-string? name)
+                             (http-safe-string? val))
+                  (error "http: header contains unsafe control byte (CR/LF/NUL/TAB/VT/FF/DEL) — possible injection"
+                         pair))))
+            headers))
+
 (define (http-get url . timeout)
   "Perform HTTP GET. Returns (status-code . body-string) or #f on error."
+  (http-check-url url)
   (let* ((timeout-ms (if (null? timeout) 30000 (car timeout)))
          (resp (http-get-raw url timeout-ms)))
     (if (not resp) #f
@@ -91,6 +131,8 @@
    headers: list of (name . value) pairs
    body: string
    Returns: (status-code . body-string) or #f on error."
+  (http-check-url url)
+  (http-check-headers headers)
   (let* ((timeout-ms (if (null? timeout) 30000 (car timeout)))
          ;; For now, use the JSON convenience function with auth header extraction
          ;; TODO: once the full header-passing FFI is wired, use http-post-raw

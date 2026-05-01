@@ -1,0 +1,113 @@
+;; first_class_io_test.esk — Noesis Quirk 11 (2026-04-25)
+;;
+;; `display`, `write`, `newline` used to be codegen-only builtins —
+;; callable at the call site but not as first-class values.
+;;   (for-each display xs)        ; "Unbound variable: display"
+;;   (define printer display)     ; "Unbound variable: display"
+;; Noesis had to write a recursive helper every time it wanted to
+;; print a list.
+;;
+;; Fix (Quirk 11): each is wrapped as a unary closure in
+;; codegenVariable (createBuiltinIOFunction) and registered with the
+;; type checker as a Value → Null function.
+;;
+;; Adjacent fix (port plumbing, 2026-04-25): the runtime-side
+;; current-output-port is now a real R7RS parameter object — its
+;; FILE* is held in a global cell that `parameterize` mutates and
+;; that `display` / `write` / `newline` (no port arg) consult.
+;; Together this lets us assert on captured output, not just
+;; existence of a callable.
+
+(require stdlib)
+
+(define passed 0)
+(define failed 0)
+(define (check name actual expected)
+  (if (equal? expected actual)
+      (begin (display "PASS: ") (display name) (newline)
+             (set! passed (+ passed 1)))
+      (begin (display "FAIL: ") (display name)
+             (display " — expected ") (display expected)
+             (display ", got ") (display actual) (newline)
+             (set! failed (+ failed 1)))))
+
+;; Helper: capture all stdout produced by THUNK into a string.
+(define (capture thunk)
+  (let ((p (open-output-string)))
+    (parameterize ((current-output-port p))
+      (thunk))
+    (get-output-string p)))
+
+;; ── Bare-name references resolve (the core Quirk 11 contract) ────
+(check "bare display is a procedure"  (procedure? display)  #t)
+(check "bare write   is a procedure"  (procedure? write)    #t)
+(check "bare newline is a procedure"  (procedure? newline)  #t)
+
+;; ── let / define alias preserves callability ─────────────────────
+(define alias-display display)
+(check "define-alias display is procedure"
+       (procedure? alias-display) #t)
+(check "let-bound display is procedure"
+       (let ((d display)) (procedure? d)) #t)
+
+;; ── Calling the alias actually writes to current-output-port ─────
+(check "alias-display writes captured"
+       (capture (lambda () (alias-display 42)))
+       "42")
+(check "alias-display preserves type repr"
+       (capture (lambda () (alias-display 'sigma)))
+       "sigma")
+
+;; ── for-each display iterates and writes each element ───────────
+(check "for-each display 3 symbols"
+       (capture (lambda () (for-each display '(a b c))))
+       "abc")
+(check "for-each display mixed types"
+       (capture (lambda () (for-each display '(1 "two" #t))))
+       "1two#t")
+(check "for-each display empty list"
+       (capture (lambda () (for-each display '())))
+       "")
+
+;; ── for-each write uses write semantics (strings quoted) ─────────
+(check "for-each write quotes strings"
+       (capture (lambda () (for-each write '("a" "b" "c"))))
+       "\"a\"\"b\"\"c\"")
+
+;; ── newline as first-class ──────────────────────────────────────
+(check "for-each newline 3 times → 3 newlines"
+       (capture (lambda () (for-each newline '(1 2 3))))
+       "\n\n\n")
+
+;; ── Lambda capturing display ─────────────────────────────────────
+(check "lambda+display closure"
+       (capture (lambda ()
+                  (let ((p (lambda (x) (display x) (display "|"))))
+                    (p 'a) (p 'b) (p 'c))))
+       "a|b|c|")
+
+;; ── Higher-order helper takes display as a value parameter ──────
+(define (apply-to-each proc xs)
+  (for-each proc xs))
+(check "for-each via aliased helper"
+       (capture (lambda () (apply-to-each alias-display '(1 2 3 4))))
+       "1234")
+
+;; ── map display (used to crash the compiler — fixed 2026-04-25) ──
+;; Map collects results, which means the closure must return a
+;; well-typed tagged_value (not raw i64). The fix in
+;; resolveLambdaFunction is what closes this.
+(check "map display compiles and runs"
+       (capture (lambda () (map display '(x y z))))
+       "xyz")
+(check "map display preserves order"
+       (capture (lambda () (map display '("alpha" "beta"))))
+       "alphabeta")
+(check "map write quotes strings"
+       (capture (lambda () (map write '("a" "b"))))
+       "\"a\"\"b\"")
+
+(newline)
+(display "Passed: ") (display passed) (newline)
+(display "Failed: ") (display failed) (newline)
+(if (> failed 0) (exit 1) (exit 0))

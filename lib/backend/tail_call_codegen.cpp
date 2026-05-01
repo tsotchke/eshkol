@@ -358,6 +358,12 @@ bool TailCallCodegen::isTailRecursive(const eshkol_operations_t* lambda_op,
     return allSelfCallsInTailPosition(lambda_op->lambda_op.body, func_name, true);
 }
 
+bool TailCallCodegen::areAllSelfCallsInTailPosition(const eshkol_ast_t* body,
+                                                     const std::string& func_name) const {
+    if (!body) return true;
+    return allSelfCallsInTailPosition(body, func_name, /*in_tail_pos=*/true);
+}
+
 llvm::Function* TailCallCodegen::transformToIterative(
     const std::string& func_name,
     const std::vector<std::string>& params,

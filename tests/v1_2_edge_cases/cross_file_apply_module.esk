@@ -1,0 +1,6 @@
+;; Helper module for cross_file_apply_test.esk — defines functions
+;; in a separate file that the test loads and applies.
+
+(define (xfile-fixed x y) (list 'fixed x y))
+(define (xfile-rest . opts) (if (null? opts) 'zero-args (list 'got opts)))
+(define (xfile-three a b c) (+ a b c))

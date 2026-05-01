@@ -1,0 +1,102 @@
+;;; VM System/Filesystem/Path/Process builtin tests
+
+(display "=== System Info ===") (newline)
+
+(display "os-type: ") (display (os-type)) (newline)
+(display "os-arch: ") (display (os-arch)) (newline)
+(display "home-directory: ") (display (home-directory)) (newline)
+(display "current-directory: ") (display (current-directory)) (newline)
+(display "hostname: ") (display (hostname)) (newline)
+(display "username: ") (display (username)) (newline)
+(display "cpu-count: ") (display (cpu-count)) (newline)
+(display "getpid: ") (display (getpid)) (newline)
+(display "current-time-ms: ") (display (current-time-ms)) (newline)
+
+;; executable-exists?
+(display "executable-exists? ls: ") (display (executable-exists? "ls")) (newline)
+(display "executable-exists? nonexistent99: ") (display (executable-exists? "nonexistent99")) (newline)
+
+;; setenv / getenv / unsetenv
+(setenv "ESHKOL_TEST_VAR" "hello42")
+(display "setenv + get-environment-variable: ")
+(display (get-environment-variable "ESHKOL_TEST_VAR"))
+(newline)
+(unsetenv "ESHKOL_TEST_VAR")
+
+;; sleep-ms (just verify it doesn't crash, 1ms sleep)
+(sleep-ms 1)
+(display "sleep-ms: PASS") (newline)
+
+;; current-error-port
+(display "current-error-port: ")
+(display (output-port? (current-error-port)))
+(newline)
+
+(display "=== Path Manipulation ===") (newline)
+
+(display "path-join: ") (display (path-join "/usr" "local/bin")) (newline)
+(display "path-join trailing /: ") (display (path-join "/usr/" "local")) (newline)
+(display "path-dirname: ") (display (path-dirname "/usr/local/bin")) (newline)
+(display "path-basename: ") (display (path-basename "/usr/local/bin")) (newline)
+(display "path-extname: ") (display (path-extname "/tmp/file.txt")) (newline)
+(display "path-extname no ext: ") (display (path-extname "/tmp/file")) (newline)
+(display "path-is-absolute? /: ") (display (path-is-absolute? "/usr")) (newline)
+(display "path-is-absolute? rel: ") (display (path-is-absolute? "foo/bar")) (newline)
+(display "path-normalize: ") (display (path-normalize "/usr/local/../bin/./gcc")) (newline)
+(display "realpath /tmp: ") (display (realpath "/tmp")) (newline)
+
+(display "=== Filesystem ===") (newline)
+
+;; file-size
+(display "file-size /dev/null: ") (display (file-size "/dev/null")) (newline)
+
+;; file-stat
+(display "file-stat /tmp: ") (display (file-stat "/tmp")) (newline)
+
+;; mkdir-recursive + directory-entries + directory-delete-recursive
+(mkdir-recursive "/tmp/eshkol-test-dir/sub1/sub2")
+(display "mkdir-recursive: ")
+(display (file-exists? "/tmp/eshkol-test-dir/sub1/sub2"))
+(newline)
+
+;; file-copy
+(file-copy "/dev/null" "/tmp/eshkol-test-dir/copied")
+(display "file-copy: ")
+(display (file-exists? "/tmp/eshkol-test-dir/copied"))
+(newline)
+
+;; file-rename
+(file-rename "/tmp/eshkol-test-dir/copied" "/tmp/eshkol-test-dir/renamed")
+(display "file-rename: ")
+(display (file-exists? "/tmp/eshkol-test-dir/renamed"))
+(newline)
+
+;; mkdtemp
+(let ((d (mkdtemp "/tmp/eshkol-mkdtemp-XXXXXX")))
+  (display "mkdtemp: ") (display d) (newline)
+  (if (string? d) (directory-delete-recursive d) #f))
+
+;; cleanup
+(directory-delete-recursive "/tmp/eshkol-test-dir")
+(display "cleanup: ")
+(display (not (file-exists? "/tmp/eshkol-test-dir")))
+(newline)
+
+(display "=== Shell Utilities ===") (newline)
+
+(display "shell-quote: ") (display (shell-quote "hello world")) (newline)
+(display "shell-quote with ': ") (display (shell-quote "it's")) (newline)
+(display "shell-split: ") (display (shell-split "foo bar 'hello world' baz")) (newline)
+
+(display "=== Process ===") (newline)
+
+;; process-spawn + process-wait
+(let ((pid (process-spawn "/bin/echo" (list "hello" "from" "eshkol") #f)))
+  (if pid
+    (begin
+      (display "process-spawn pid: ") (display pid) (newline)
+      (let ((status (process-wait pid)))
+        (display "process-wait exit: ") (display status) (newline)))
+    (begin (display "process-spawn: FAIL") (newline))))
+
+(display "=== ALL DONE ===") (newline)

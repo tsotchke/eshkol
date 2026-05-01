@@ -36,13 +36,17 @@
 // Default alignment for memory allocations
 #define DEFAULT_ALIGNMENT 8
 
-// Global tape pointer for AD operations (shared across JIT modules in REPL)
-// NOTE: Not thread_local because REPL JIT resolves these via dlsym/ADD_DATA_SYMBOL.
-// For parallel-map with AD, the codegen should use per-task tape allocation.
+// Global tape pointer for AD operations.
+// NOTE: Not thread_local — LLVM ExternalLinkage globals cannot link against
+// C thread_local symbols portably (macOS ARM64 TLS ABI mismatch). Thread
+// safety is ensured by the AD tape STACK (__ad_tape_stack) which IS thread_local.
+// parallel-map workers don't perform AD internally; the main thread controls
+// AD mode. If parallel AD is needed (v1.2+), use per-task tape allocation.
 ad_tape_t* __current_ad_tape = nullptr;
 
-// Global AD mode flag (shared across JIT modules in REPL)
-// CRITICAL: This must be shared so lambdas from one module can see AD mode set by another
+// Global AD mode flag — same portability constraint as __current_ad_tape.
+// CRITICAL: Must be shared so lambdas from one LLVM module can see AD mode
+// set by another module (cross-module AD in REPL).
 bool __ad_mode_active = false;
 
 // ============================================================================
@@ -353,6 +357,26 @@ void* arena_allocate_with_header(arena_t* arena, size_t data_size, uint8_t subty
         return nullptr;
     }
 
+    // #192 CRITICAL: integer-overflow guard on total_size. If data_size
+    // is close to SIZE_MAX, adding sizeof(header) + alignment rounding
+    // wraps to a small value; arena_allocate_aligned then returns a
+    // buffer much smaller than the caller expects. Callers often derive
+    // data_size from file contents (kb-load) or tensor shapes
+    // (user-controlled), so any wrap yields an immediate heap-overflow
+    // primitive.
+    if (data_size > SIZE_MAX - sizeof(eshkol_object_header_t) - 8) {
+        eshkol_error("arena_allocate_with_header: data_size=%zu would overflow", data_size);
+        return nullptr;
+    }
+
+    // #192 HIGH: header->size is uint32_t. Silently truncating a 4GB+
+    // allocation to its low 32 bits makes downstream readers think the
+    // object is tiny and under-copy it. Reject rather than truncate.
+    if (data_size > UINT32_MAX) {
+        eshkol_error("arena_allocate_with_header: data_size=%zu exceeds UINT32_MAX", data_size);
+        return nullptr;
+    }
+
     // Total size: header + data, aligned to 8 bytes
     size_t total_size = sizeof(eshkol_object_header_t) + data_size;
     total_size = (total_size + 7) & ~7;  // Round up to 8-byte alignment
@@ -461,17 +485,33 @@ arena_tagged_cons_cell_t* arena_allocate_cons_with_header(arena_t* arena) {
 // STRING WITH HEADER (for consolidated HEAP_PTR type)
 // ───────────────────────────────────────────────────────────────────────────
 
-// Allocate a string with object header (new consolidated format)
-// Returns pointer to string data (header is at offset -8)
-// Includes space for null terminator
+// Allocate a string with object header (new consolidated format).
+//
+// Contract:
+//   `length` is the number of payload (character) bytes the caller
+//    will store — NOT including the trailing NUL terminator. The
+//    allocator reserves `length + 1` bytes of data and writes the NUL
+//    at str[length]. `hdr->size` is set to `length + 1` so that
+//    downstream consumers (`eshkol_string_byte_length`) can recover
+//    the caller-visible length by subtracting 1.
+//
+//   Historical hazard: several early call sites passed `len + 1`
+//    thinking they had to account for the NUL themselves. That
+//    silently over-allocated by a byte and — since `string-length`
+//    previously relied on C strlen semantics — was invisible. Making
+//    the header authoritative for string length (R7RS §6.7) exposed
+//    the off-by-one as `string-length` returning `N+1`. All such
+//    callers have been corrected to pass the bare character count.
+//
+// Returns pointer to string data (header is at offset -8).
 char* arena_allocate_string_with_header(arena_t* arena, size_t length) {
     if (!arena) {
         eshkol_error("Cannot allocate string with header: null arena");
         return nullptr;
     }
 
-    // Overflow check: length + 1 can wrap at SIZE_MAX
-    if (length >= SIZE_MAX) {
+    // Overflow check: length + 1 + header must not wrap
+    if (length >= SIZE_MAX - sizeof(eshkol_object_header_t) - 8) {
         eshkol_error("String length overflow (length=%zu)", length);
         return nullptr;
     }
@@ -681,7 +721,7 @@ void arena_pop_scope(arena_t* arena) {
     if (!arena || !arena->current_scope) {
         eshkol_error("Attempted to pop arena scope with no matching push — "
                      "unbalanced scope operations risk memory corruption");
-        abort();  // Fatal: continuing with corrupted scope stack causes silent memory corruption
+        return;  // Graceful: skip the pop rather than kill the process
     }
     
     arena_scope_t* scope = arena->current_scope;
@@ -1231,6 +1271,65 @@ bool eshkol_deep_equal(const eshkol_tagged_value_t* val1, const eshkol_tagged_va
                                            val1->data.int_val) == 0;
     }
 
+    // Tensor vs tensor: compare dimensions + element-wise doubles.
+    // Two #(...) literals with identical contents must return #t under
+    // R7RS-style equal? even though they are distinct allocations.
+    auto is_tensor = [](uint8_t type, const eshkol_tagged_value_t* val) -> bool {
+        if (type == ESHKOL_VALUE_HEAP_PTR && val->data.ptr_val) {
+            eshkol_object_header_t* hdr = ESHKOL_GET_HEADER((void*)val->data.ptr_val);
+            return hdr->subtype == HEAP_SUBTYPE_TENSOR;
+        }
+        return false;
+    };
+    bool is_t1 = is_tensor(type1, val1);
+    bool is_t2 = is_tensor(type2, val2);
+    if (is_t1 && is_t2) {
+        if (val1->data.ptr_val == val2->data.ptr_val) return true;
+        eshkol_tensor_t* t1 = (eshkol_tensor_t*)val1->data.ptr_val;
+        eshkol_tensor_t* t2 = (eshkol_tensor_t*)val2->data.ptr_val;
+        if (!t1 || !t2) return t1 == t2;
+        if (t1->num_dimensions != t2->num_dimensions) return false;
+        if (t1->total_elements != t2->total_elements) return false;
+        for (uint64_t i = 0; i < t1->num_dimensions; i++) {
+            if (t1->dimensions[i] != t2->dimensions[i]) return false;
+        }
+        // Elements are doubles stored as int64 bit patterns — compare as doubles
+        // so NaN != NaN falls through correctly and -0.0 == 0.0.
+        for (uint64_t i = 0; i < t1->total_elements; i++) {
+            union { int64_t i; double d; } u1, u2;
+            u1.i = t1->elements[i];
+            u2.i = t2->elements[i];
+            if (u1.d != u2.d) return false;
+        }
+        return true;
+    }
+
+    // Vector vs vector: heterogeneous tagged elements. Compare each pair
+    // recursively via eshkol_deep_equal so nested structures match too.
+    auto is_vector = [](uint8_t type, const eshkol_tagged_value_t* val) -> bool {
+        if (type == ESHKOL_VALUE_HEAP_PTR && val->data.ptr_val) {
+            eshkol_object_header_t* hdr = ESHKOL_GET_HEADER((void*)val->data.ptr_val);
+            return hdr->subtype == HEAP_SUBTYPE_VECTOR;
+        }
+        return false;
+    };
+    bool is_v1 = is_vector(type1, val1);
+    bool is_v2 = is_vector(type2, val2);
+    if (is_v1 && is_v2) {
+        if (val1->data.ptr_val == val2->data.ptr_val) return true;
+        int64_t len1 = *(int64_t*)(uintptr_t)val1->data.ptr_val;
+        int64_t len2 = *(int64_t*)(uintptr_t)val2->data.ptr_val;
+        if (len1 != len2) return false;
+        eshkol_tagged_value_t* elems1 =
+            (eshkol_tagged_value_t*)((uint8_t*)(uintptr_t)val1->data.ptr_val + 8);
+        eshkol_tagged_value_t* elems2 =
+            (eshkol_tagged_value_t*)((uint8_t*)(uintptr_t)val2->data.ptr_val + 8);
+        for (int64_t i = 0; i < len1; i++) {
+            if (!eshkol_deep_equal(&elems1[i], &elems2[i])) return false;
+        }
+        return true;
+    }
+
     // Different types: not equal
     if (type1 != type2) {
         return false;
@@ -1555,6 +1654,9 @@ static std::once_flag global_arena_once;
 static pthread_once_t global_arena_once = PTHREAD_ONCE_INIT;
 #endif
 
+// Forward declaration — defined below in per-thread arena section
+static thread_local arena_t* __thread_local_arena;
+
 static void init_global_arena_internal() {
     // Create a thread-safe arena for global allocations
     __global_arena = arena_create_threadsafe(65536);  // 64KB default, thread-safe
@@ -1563,7 +1665,9 @@ static void init_global_arena_internal() {
     }
 }
 
-// Get or create the global arena (thread-safe)
+// Get the appropriate arena for the current thread.
+// Worker threads get their own per-thread arena (no lock contention).
+// Main thread gets the global thread-safe arena.
 arena_t* get_global_arena() {
     // Use platform once semantics for thread-safe initialization.
 #ifdef _WIN32
@@ -1571,7 +1675,167 @@ arena_t* get_global_arena() {
 #else
     pthread_once(&global_arena_once, init_global_arena_internal);
 #endif
+
+    // On worker threads, use the per-thread arena if available.
+    // This eliminates mutex contention in parallel-map/fold/filter.
+    if (__thread_local_arena) return __thread_local_arena;
+
     return __global_arena;
+}
+
+// Get the global arena specifically (bypasses per-thread override).
+// Used when allocation MUST go into the shared arena (e.g. result lists).
+arena_t* get_global_arena_shared() {
+#ifdef _WIN32
+    std::call_once(global_arena_once, init_global_arena_internal);
+#else
+    pthread_once(&global_arena_once, init_global_arena_internal);
+#endif
+    return __global_arena;
+}
+
+// ── Per-thread arena management (v1.2) ──
+
+// __thread_local_arena is forward-declared above get_global_arena()
+
+arena_t* arena_get_thread_local(void) {
+    // Worker threads have their own TLS arena managed by thread_pool.cpp.
+    // For non-worker threads, use the thread-local arena or global arena.
+    if (__thread_local_arena) return __thread_local_arena;
+    return get_global_arena();
+}
+
+arena_t* arena_create_thread_local(size_t size_hint) {
+    if (__thread_local_arena) {
+        // Already exists — return existing
+        return __thread_local_arena;
+    }
+    size_t block_size = size_hint > 0 ? size_hint : (1024 * 1024); // 1 MB default
+    __thread_local_arena = arena_create(block_size);
+    return __thread_local_arena;
+}
+
+/* Initialise all thread-local runtime state for a worker thread.
+ *
+ * Architectural purpose: parallel-map workers can execute user lambdas that
+ * call AD primitives (ad-tape-new, ad-var, ad-sin, ...) or OALR regions
+ * (with-region). Those primitives read/write the following thread_local
+ * variables declared above:
+ *
+ *   __ad_tape_stack[MAX_TAPE_DEPTH]   (line 105)
+ *   __ad_tape_depth                    (line 106)
+ *   __outer_ad_node_stack[MAX_TAPE_DEPTH]
+ *   __outer_ad_node_depth
+ *   __region_stack[MAX_REGION_DEPTH]   (line 1606)
+ *   __region_stack_depth                (line 1607)
+ *   __thread_local_arena                (line 1622)
+ *
+ * On POSIX+glibc, thread_local is lazily initialised on first access; on
+ * macOS Mach-O, it goes through __tlv_* wrappers. Explicitly touching each
+ * TLS slot at worker startup forces initialisation before the first user
+ * task runs, preventing any "silent zero" hazards where codegen reads a
+ * TLS slot before it has been materialised.
+ *
+ * We also eagerly allocate the thread-local arena so the first allocation
+ * call inside a task does not pay the creation cost (latency smoothing)
+ * and so any arena_* call made during a signal handler or ctor path is
+ * safe. */
+void eshkol_thread_init_worker(size_t arena_size_hint) {
+    /* AD tape TLS slots: explicit zero so readers get defined values even if
+     * the TLS image is not zero-filled (conservative; on POSIX it is). */
+    for (size_t i = 0; i < MAX_TAPE_DEPTH; ++i) {
+        __ad_tape_stack[i] = nullptr;
+        __outer_ad_node_stack[i] = nullptr;
+    }
+    __ad_tape_depth = 0;
+    __outer_ad_node_depth = 0;
+
+    /* Double-backward storage */
+    __outer_ad_node_storage = nullptr;
+    __outer_ad_node_to_inner = nullptr;
+    __outer_grad_accumulator = nullptr;
+    __inner_var_node_ptr = nullptr;
+    __gradient_x_degree = 0;
+
+    /* OALR region TLS slots */
+    for (size_t i = 0; i < MAX_REGION_DEPTH; ++i) {
+        __region_stack[i] = nullptr;
+    }
+    __region_stack_depth = 0;
+
+    /* Eagerly create the thread-local arena so the first arena_allocate
+     * in a worker task finds an arena ready. If one already exists (e.g.
+     * init called twice), arena_create_thread_local is a no-op. */
+    (void)arena_create_thread_local(arena_size_hint);
+}
+
+/* Destroy the thread-local arena and clear TLS handles. Safe to call
+ * multiple times (idempotent). */
+void eshkol_thread_shutdown_worker(void) {
+    if (__thread_local_arena) {
+        arena_destroy(__thread_local_arena);
+        __thread_local_arena = nullptr;
+    }
+    /* Clear tape + region stack pointers so stale tape pointers from a
+     * previous worker lifetime are never observed after pthread re-use. */
+    for (size_t i = 0; i < MAX_TAPE_DEPTH; ++i) {
+        __ad_tape_stack[i] = nullptr;
+        __outer_ad_node_stack[i] = nullptr;
+    }
+    __ad_tape_depth = 0;
+    __outer_ad_node_depth = 0;
+    for (size_t i = 0; i < MAX_REGION_DEPTH; ++i) {
+        __region_stack[i] = nullptr;
+    }
+    __region_stack_depth = 0;
+}
+
+void arena_merge_to_parent(arena_t* dest, arena_t* src) {
+    if (!dest || !src || dest == src) return;
+
+    if (dest->thread_safe) arena_lock(dest);
+
+    /* Append src's blocks to the END of dest's chain.
+     * dest->current_block stays unchanged — dest continues allocating
+     * from its own newest block. Src's blocks become "old" blocks
+     * containing finalized data that won't be allocated into.
+     *
+     * This preserves dest's allocation invariants:
+     *   - dest->current_block->used reflects dest's allocation state
+     *   - New allocations go into dest->current_block (or new blocks)
+     *   - Src blocks are only read, never written to after merge */
+    if (src->current_block) {
+        if (dest->current_block) {
+            /* Find the end of dest's block chain */
+            arena_block_t* dest_tail = dest->current_block;
+            while (dest_tail->next) dest_tail = dest_tail->next;
+            /* Append src's entire chain after dest's tail */
+            dest_tail->next = src->current_block;
+        } else {
+            /* dest has no blocks — take src's chain */
+            dest->current_block = src->current_block;
+        }
+
+        dest->total_allocated += src->total_allocated;
+
+        /* Clear src without freeing blocks (now owned by dest) */
+        src->current_block = nullptr;
+        src->total_allocated = 0;
+    }
+
+    if (dest->thread_safe) arena_unlock(dest);
+}
+
+/* Worker thread detection — delegates to thread_pool's TLS flag.
+ * Weak symbol: returns 0 if thread_pool is not linked. */
+extern "C" int eshkol_thread_pool_is_worker(void) __attribute__((weak));
+
+int arena_is_worker_thread(void) {
+    /* If thread_pool is linked, use its TLS flag. Otherwise return 0. */
+    if (eshkol_thread_pool_is_worker) {
+        return eshkol_thread_pool_is_worker();
+    }
+    return 0;
 }
 
 // Region creation
@@ -2274,6 +2538,38 @@ extern "C" eshkol_closure_t* arena_allocate_closure(arena_t* arena, uint64_t fun
 
 // ===== END CLOSURE ENVIRONMENT MEMORY MANAGEMENT IMPLEMENTATION =====
 
+// ===== CLOSURE REFLECTION =====
+// Reflection helpers for procedure-arity / procedure-name / etc.
+//
+// The closure struct (inc/eshkol/eshkol.h) already records input_arity
+// (as part of return_type_info packed by codegen) and a CLOSURE_FLAG_VARIADIC
+// flag. These helpers expose those fields to user code.
+
+extern "C" int64_t eshkol_closure_get_arity(const eshkol_closure_t* closure) {
+    if (!closure) return -1;
+    return (int64_t)closure->input_arity;
+}
+
+extern "C" int eshkol_closure_is_variadic_fn(const eshkol_closure_t* closure) {
+    if (!closure) return 0;
+    return (closure->flags & CLOSURE_FLAG_VARIADIC) ? 1 : 0;
+}
+
+// Returns a fresh arena-allocated Eshkol string (with subtype header) so
+// the result can be passed to display/write/string-* directly. Returning
+// the raw closure->name pointer would print as "#<heap:NN>" since display
+// expects HEAP_PTR with a HEAP_SUBTYPE_STRING object header at ptr-8.
+extern "C" char* eshkol_closure_get_name(const eshkol_closure_t* closure) {
+    arena_t* arena = get_global_arena();
+    const char* src = (closure && closure->name) ? closure->name : "";
+    size_t len = strlen(src);
+    char* dst = arena_allocate_string_with_header(arena, len);
+    if (!dst) return nullptr;
+    memcpy(dst, src, len);
+    dst[len] = '\0';
+    return dst;
+}
+
 // ===== LAMBDA REGISTRY IMPLEMENTATION =====
 // Runtime table for mapping function pointers to S-expressions (homoiconicity)
 
@@ -2388,12 +2684,106 @@ static void display_tensor(uint64_t tensor_ptr, eshkol_display_opts_t* opts);
 static void display_vector(uint64_t vector_ptr, eshkol_display_opts_t* opts);
 static void display_char(uint32_t codepoint, eshkol_display_opts_t* opts);
 
-// Get output stream (defaults to stdout)
+// ─── R7RS current-output-port / current-input-port / current-error-port ───
+// The cells back the Scheme-level `current-output-port` / etc. parameter
+// objects. `parameterize` mutates them via the setter; runtime helpers
+// (display/write/newline with no explicit port arg) read them.
+//
+// Default to NULL → fall back to stdio in get_output(). Lazy default so
+// constructors run before any FILE* is portable to capture (Windows DLLs).
+static FILE* g_current_output_fp = nullptr;
+static FILE* g_current_input_fp  = nullptr;
+static FILE* g_current_error_fp  = nullptr;
+
+extern "C" void* eshkol_runtime_current_output_fp(void) {
+    return (void*)(g_current_output_fp ? g_current_output_fp : stdout);
+}
+extern "C" void* eshkol_runtime_current_input_fp(void) {
+    return (void*)(g_current_input_fp ? g_current_input_fp : stdin);
+}
+extern "C" void* eshkol_runtime_current_error_fp(void) {
+    return (void*)(g_current_error_fp ? g_current_error_fp : stderr);
+}
+extern "C" void eshkol_runtime_set_current_output_fp(void* fp) {
+    g_current_output_fp = (FILE*)fp;
+}
+
+// Helper used by `(string ch ch ...)` and similar: encode a single codepoint
+// as UTF-8 into `out`, returning the number of bytes written (1..4). The
+// pre-fix codegen truncated each codepoint to one byte, mangling every
+// non-ASCII char in `(string ch …)` and `(string-append (string ch) …)` —
+// causing Quirk 15 (Unicode block chars hung the bench output).
+static int eshkol_utf8_encode_one(uint32_t cp, char* out) {
+    if (cp < 0x80) {
+        out[0] = (char)cp;
+        return 1;
+    } else if (cp < 0x800) {
+        out[0] = (char)(0xC0 | (cp >> 6));
+        out[1] = (char)(0x80 | (cp & 0x3F));
+        return 2;
+    } else if (cp < 0x10000) {
+        out[0] = (char)(0xE0 |  (cp >> 12));
+        out[1] = (char)(0x80 | ((cp >> 6) & 0x3F));
+        out[2] = (char)(0x80 |  (cp & 0x3F));
+        return 3;
+    } else if (cp < 0x110000) {
+        out[0] = (char)(0xF0 |  (cp >> 18));
+        out[1] = (char)(0x80 | ((cp >> 12) & 0x3F));
+        out[2] = (char)(0x80 | ((cp >> 6) & 0x3F));
+        out[3] = (char)(0x80 |  (cp & 0x3F));
+        return 4;
+    }
+    // Out-of-range codepoint — encode replacement char U+FFFD.
+    out[0] = (char)0xEF; out[1] = (char)0xBF; out[2] = (char)0xBD;
+    return 3;
+}
+
+// Build a HEAP_SUBTYPE_STRING from N codepoints, encoded as UTF-8.
+// Caller passes `n` codepoints; we compute the total byte length, allocate
+// (n bytes plus a few for multi-byte expansion plus null terminator), and
+// fill. Returns the arena-allocated, null-terminated UTF-8 char* — same
+// shape as any other Eshkol string, so display / fputs work unchanged.
+extern "C" void* eshkol_string_from_codepoints(void* arena_void,
+                                               const int64_t* codepoints,
+                                               uint64_t n) {
+    arena_t* arena = (arena_t*)arena_void;
+    if (!arena || (!codepoints && n > 0)) return nullptr;
+
+    // Compute exact byte length first so we don't waste arena space.
+    size_t bytes = 0;
+    for (uint64_t i = 0; i < n; i++) {
+        uint32_t cp = (uint32_t)codepoints[i];
+        if      (cp < 0x80)     bytes += 1;
+        else if (cp < 0x800)    bytes += 2;
+        else if (cp < 0x10000)  bytes += 3;
+        else if (cp < 0x110000) bytes += 4;
+        else                    bytes += 3;  // U+FFFD replacement
+    }
+
+    char* str = (char*)arena_allocate_with_header(
+        arena, bytes + 1, HEAP_SUBTYPE_STRING, 0);
+    if (!str) return nullptr;
+
+    char* p = str;
+    for (uint64_t i = 0; i < n; i++) {
+        p += eshkol_utf8_encode_one((uint32_t)codepoints[i], p);
+    }
+    *p = '\0';
+    return (void*)str;
+}
+extern "C" void eshkol_runtime_set_current_input_fp(void* fp) {
+    g_current_input_fp = (FILE*)fp;
+}
+extern "C" void eshkol_runtime_set_current_error_fp(void* fp) {
+    g_current_error_fp = (FILE*)fp;
+}
+
+// Get output stream (defaults to stdout via current-output-port parameter)
 static FILE* get_output(eshkol_display_opts_t* opts) {
     if (opts && opts->output) {
         return (FILE*)opts->output;
     }
-    return stdout;
+    return (FILE*)eshkol_runtime_current_output_fp();
 }
 
 // Display a single tagged value
@@ -3527,6 +3917,47 @@ arena_tagged_cons_cell_t* hash_table_keys(arena_t* arena, const eshkol_hash_tabl
     return head;
 }
 
+// Reverse a tagged-cons list. Walks the list, allocates a new cons cell per
+// element, writes the resulting tagged_value (NULL for empty) into *out.
+// Stops at any non-CONS terminator (NULL, dotted-pair tail, etc.) — the
+// function is robust to dotted lists but the dotted tail is dropped
+// (matching R7RS reverse on improper lists). Used by string-split codegen.
+//
+// Output-pointer rather than struct-return-by-value sidesteps the ABI
+// coupling between LLVM's IR-level struct and the platform's calling
+// convention for ≤16-byte structs.
+extern "C" void eshkol_list_reverse_tagged(
+    arena_t* arena, const eshkol_tagged_value_t* head_tv,
+    eshkol_tagged_value_t* out) {
+    if (!out) return;
+    out->type = ESHKOL_VALUE_NULL;
+    out->flags = 0;
+    out->reserved = 0;
+    out->data.ptr_val = 0;
+    if (!arena || !head_tv) return;
+
+    eshkol_tagged_value_t cur = *head_tv;
+    while (cur.type == ESHKOL_VALUE_HEAP_PTR) {
+        // Validate it's actually a cons cell via the object header.
+        eshkol_object_header_t* hdr = (eshkol_object_header_t*)
+            ((uint8_t*)cur.data.ptr_val - sizeof(eshkol_object_header_t));
+        if (hdr->subtype != HEAP_SUBTYPE_CONS) break;
+        arena_tagged_cons_cell_t* cell = (arena_tagged_cons_cell_t*)cur.data.ptr_val;
+
+        arena_tagged_cons_cell_t* new_cell = arena_allocate_cons_with_header(arena);
+        if (!new_cell) return;
+        arena_tagged_cons_set_tagged_value(new_cell, false, &cell->car);
+        arena_tagged_cons_set_tagged_value(new_cell, true, out);
+
+        out->type = ESHKOL_VALUE_HEAP_PTR;
+        out->flags = 0;
+        out->reserved = 0;
+        out->data.ptr_val = (uint64_t)new_cell;
+
+        cur = cell->cdr;
+    }
+}
+
 // Get all values as a list
 arena_tagged_cons_cell_t* hash_table_values(arena_t* arena, const eshkol_hash_table_t* table) {
     if (!arena || !table || table->size == 0) return nullptr;
@@ -3726,6 +4157,48 @@ extern "C" void eshkol_exception_set_location(eshkol_exception_t* exc, uint32_t 
 }
 
 // Raise an exception - jumps to nearest handler
+/* Bug W: REPL forward-ref call where the named function was never
+ * defined. The codegen call site emits this BEFORE the indirect call,
+ * passing the function name as a literal. The codegen then calls this
+ * helper with the loaded fn_ptr and the stub-detection sentinel. If
+ * the slot still points at the unresolved stub, raise with a clear
+ * message that names the function. Otherwise return the resolved ptr.
+ *
+ * The sentinel comparison is necessary because every unresolved slot
+ * shares the same stub address — codegen can't tell at emit time
+ * whether the slot will be resolved by JIT load order.
+ */
+extern "C" void* eshkol_check_forward_ref(void* loaded_fn_ptr,
+                                          void* stub_sentinel,
+                                          const char* func_name) {
+    if (loaded_fn_ptr == stub_sentinel) {
+        char buf[512];
+        if (func_name && func_name[0]) {
+            snprintf(buf, sizeof(buf),
+                     "called undefined function '%s' "
+                     "(forward-referenced but never defined; "
+                     "check that the file containing its `define` is `(load …)`ed "
+                     "or `(require …)`d before the call site)",
+                     func_name);
+        } else {
+            snprintf(buf, sizeof(buf),
+                     "called a forward-referenced function that was never defined");
+        }
+        eshkol_exception_t* exc = eshkol_make_exception(
+            ESHKOL_EXCEPTION_ERROR, buf);
+        if (exc) {
+            eshkol_raise(exc);
+        }
+        // eshkol_raise exits if no handler. If it returns (handler was
+        // installed), we still must not proceed with a stub call —
+        // return null and let the caller's null-handling raise an
+        // exception of its own. This keeps the "fatal under no handler"
+        // invariant while preserving guard-clause behaviour.
+        return nullptr;
+    }
+    return loaded_fn_ptr;
+}
+
 extern "C" void eshkol_raise(eshkol_exception_t* exception) {
     g_current_exception = exception;
 
@@ -4132,6 +4605,24 @@ static int read_skip_whitespace(FILE* fp) {
 // Forward declaration
 static eshkol_tagged_value_t read_datum(arena_t* arena, FILE* fp, int first_char);
 
+/* Reader recursion-depth guard (audit C3).
+ *
+ * (read port) walks `(((((...)))))` via recursive C calls. We ship a
+ * 512 MB linker-requested stack so 1M-deep forms happen to work in
+ * practice, but that's a platform quirk, not a design. A malicious
+ * input file can still exhaust stack deterministically on any build
+ * with default limits (8 MB on Linux, ≈ 500 k depth). Counter is
+ * thread-local so concurrent `(read)` calls don't share state. */
+#define ESHKOL_READ_MAX_DEPTH 4096
+static thread_local int g_reader_depth = 0;
+
+static inline eshkol_tagged_value_t make_reader_depth_error(void) {
+    eshkol_tagged_value_t val;
+    memset(&val, 0, sizeof(val));
+    val.type = 0xFF;  /* reuse EOF sentinel — caller treats as malformed */
+    return val;
+}
+
 static eshkol_tagged_value_t make_eof_tagged(void) {
     eshkol_tagged_value_t val;
     memset(&val, 0, sizeof(val));
@@ -4191,30 +4682,86 @@ static eshkol_tagged_value_t make_string_tagged(arena_t* arena, const char* str,
     return val;
 }
 
+/* Runtime symbol interning (Noesis Bug F, 2026-04-19).
+ * Previously this allocated a fresh arena block for every (read) symbol,
+ * so `(eq? (read port) 'foo)` always returned #f even when the spelled
+ * name matched — violating R7RS §6.5 which mandates canonical symbols.
+ * Route through the process-global intern pool used by parser-path
+ * symbol literals (lib/core/symbol_intern.cpp). Every distinct spelling
+ * maps to exactly one pointer so `eq?` across source-quoted symbols
+ * and reader-produced symbols matches. The arena arg is now unused
+ * (kept for ABI continuity with existing call sites). */
+extern "C" void* eshkol_intern_symbol_lookup(const char* name);
+
 static eshkol_tagged_value_t make_symbol_tagged(arena_t* arena, const char* name, size_t len) {
-    char* s = (char*)arena_allocate_with_header(arena, len + 1, HEAP_SUBTYPE_SYMBOL, 0);
-    memcpy(s, name, len);
-    s[len] = '\0';
+    (void)arena;  /* symbols live in the process-lifetime intern pool now */
+
+    /* Security (audit C1 — symbol NUL-truncation spoofing).
+     * Previous code memcpy'd `len` bytes then NUL-terminated. The
+     * intern table keys with std::string(cstr) which truncates at the
+     * first NUL, so `"admin\0guest"` collapsed to `'admin` and was
+     * eq? to the legitimate `'admin` symbol. Any tag-dispatch
+     * `(cond ((eq? role 'admin) ...))` on attacker-controlled
+     * deserialised data was spoofable. Reject embedded NULs up-front. */
+    for (size_t i = 0; i < len; i++) {
+        if (name[i] == '\0') {
+            /* Return a distinct empty symbol rather than silently
+             * truncating. Callers treat NULL-ish returns uniformly;
+             * the invalid-symbol surface is auditable. */
+            static const char kRejectedSym[] = "|invalid-symbol|";
+            void* interned_rej = eshkol_intern_symbol_lookup(kRejectedSym);
+            eshkol_tagged_value_t rej;
+            memset(&rej, 0, sizeof(rej));
+            rej.type = ESHKOL_VALUE_HEAP_PTR;
+            rej.data.int_val = (int64_t)(uintptr_t)interned_rej;
+            return rej;
+        }
+    }
+
+    char stack_buf[256];
+    char* name_cstr = stack_buf;
+    char* heap_buf = NULL;
+    if (len + 1 > sizeof(stack_buf)) {
+        heap_buf = (char*)malloc(len + 1);
+        if (!heap_buf) {
+            eshkol_tagged_value_t null_val;
+            memset(&null_val, 0, sizeof(null_val));
+            null_val.type = ESHKOL_VALUE_NULL;
+            return null_val;
+        }
+        name_cstr = heap_buf;
+    }
+    memcpy(name_cstr, name, len);
+    name_cstr[len] = '\0';
+    void* interned = eshkol_intern_symbol_lookup(name_cstr);
+    if (heap_buf) free(heap_buf);
+
     eshkol_tagged_value_t val;
     memset(&val, 0, sizeof(val));
     val.type = ESHKOL_VALUE_HEAP_PTR;
-    val.data.int_val = (int64_t)(uintptr_t)s;
+    val.data.int_val = (int64_t)(uintptr_t)interned;
     return val;
 }
 
 static eshkol_tagged_value_t make_cons_tagged(arena_t* arena,
     eshkol_tagged_value_t car, eshkol_tagged_value_t cdr) {
-    arena_tagged_cons_cell_t* cell = arena_allocate_tagged_cons_cell(arena);
+    // Use the header-carrying cons allocator so every cons cell has a proper
+    // eshkol_object_header_t with HEAP_SUBTYPE_CONS. This lets pair?,
+    // equal?, kb-query, eval, and every consolidated-HEAP_PTR dispatch path
+    // treat read's output identically to code-constructed cons cells.
+    arena_tagged_cons_cell_t* cell = arena_allocate_cons_with_header(arena);
+    if (!cell) {
+        eshkol_tagged_value_t null_val;
+        memset(&null_val, 0, sizeof(null_val));
+        null_val.type = ESHKOL_VALUE_NULL;
+        return null_val;
+    }
     cell->car = car;
     cell->cdr = cdr;
     eshkol_tagged_value_t val;
     memset(&val, 0, sizeof(val));
     val.type = ESHKOL_VALUE_HEAP_PTR;
     val.data.int_val = (int64_t)(uintptr_t)cell;
-    // Need header for cons cells - use allocate_with_header approach
-    // Actually cons cells don't have headers in the current system,
-    // they use CONS_PTR type directly
-    val.type = ESHKOL_VALUE_CONS_PTR;
     return val;
 }
 
@@ -4285,26 +4832,40 @@ static eshkol_tagged_value_t read_vector(arena_t* arena, FILE* fp) {
 
 // Read an atom (number, symbol, string, #t, #f, #\char)
 static eshkol_tagged_value_t read_atom(arena_t* arena, FILE* fp, int first_char) {
-    // String literal
+    // String literal (audit C4: bound *every* write into buf).
+    // Previously only the non-escape branch checked `len < 4095`; the
+    // escape branch wrote buf[len++] unconditionally. A crafted source
+    // with 4100+ `\\` escapes overflowed the stack buffer — stack smash
+    // / return-address overwrite surface reachable via (read port) on
+    // untrusted input. Apply the bound uniformly and consume-without-
+    // storing past the cap so the delimiter search still terminates.
     if (first_char == '"') {
         char buf[4096];
         int len = 0;
         int ch;
         while ((ch = fgetc(fp)) != EOF && ch != '"') {
+            char decoded;
             if (ch == '\\') {
                 ch = fgetc(fp);
                 if (ch == EOF) break;
                 switch (ch) {
-                    case 'n': buf[len++] = '\n'; break;
-                    case 't': buf[len++] = '\t'; break;
-                    case 'r': buf[len++] = '\r'; break;
-                    case '\\': buf[len++] = '\\'; break;
-                    case '"': buf[len++] = '"'; break;
-                    default: buf[len++] = ch; break;
+                    case 'n':  decoded = '\n'; break;
+                    case 't':  decoded = '\t'; break;
+                    case 'r':  decoded = '\r'; break;
+                    case '\\': decoded = '\\'; break;
+                    case '"':  decoded = '"';  break;
+                    default:   decoded = (char)ch; break;
                 }
             } else {
-                if (len < 4095) buf[len++] = ch;
+                decoded = (char)ch;
             }
+            if (len < (int)sizeof(buf) - 1) {
+                buf[len++] = decoded;
+            }
+            /* else: silently drop past cap. An error-raising variant
+             * would be more correct but would change a 1-byte overflow
+             * from an RCE primitive into a hard-fail DoS; the cap is
+             * documented as a reader-level string-length ceiling. */
         }
         return make_string_tagged(arena, buf, len);
     }
@@ -4467,22 +5028,29 @@ static eshkol_tagged_value_t read_atom(arena_t* arena, FILE* fp, int first_char)
 static eshkol_tagged_value_t read_datum(arena_t* arena, FILE* fp, int first_char) {
     if (first_char == EOF) return make_eof_tagged();
 
+    if (g_reader_depth >= ESHKOL_READ_MAX_DEPTH) {
+        return make_reader_depth_error();
+    }
+    g_reader_depth++;
+    eshkol_tagged_value_t result;
+
     // Quote shorthand: 'x -> (quote x)
     if (first_char == '\'') {
         int ch = read_skip_whitespace(fp);
         eshkol_tagged_value_t quoted = read_datum(arena, fp, ch);
         eshkol_tagged_value_t quote_sym = make_symbol_tagged(arena, "quote", 5);
         eshkol_tagged_value_t inner = make_cons_tagged(arena, quoted, make_null_tagged());
-        return make_cons_tagged(arena, quote_sym, inner);
+        result = make_cons_tagged(arena, quote_sym, inner);
+    }
+    else if (first_char == '(') {
+        result = read_list(arena, fp);
+    }
+    else {
+        result = read_atom(arena, fp, first_char);
     }
 
-    // List
-    if (first_char == '(') {
-        return read_list(arena, fp);
-    }
-
-    // Everything else: atoms
-    return read_atom(arena, fp, first_char);
+    g_reader_depth--;
+    return result;
 }
 
 // Main entry point: read one S-expression from a FILE*
@@ -4492,6 +5060,9 @@ extern "C" void eshkol_read_sexpr(void* arena_void, void* fp_void,
     FILE* fp = (FILE*)fp_void;
     if (!fp) fp = stdin;
 
+    /* Reset depth counter at every top-level entry so a prior
+     * exit-via-sentinel doesn't leave a stale count. */
+    g_reader_depth = 0;
     int ch = read_skip_whitespace(fp);
     *result = read_datum(arena, fp, ch);
 }
@@ -4818,23 +5389,40 @@ extern "C" int64_t eshkol_broadcast_copy(
     int64_t dst_total = 1;
     for (int64_t d = 0; d < dst_ndim; d++) dst_total *= dst_dims[d];
 
-    // Precompute source strides (row-major)
+    /* Checked-multiply stride computation (audit C5).
+     * The previous loop multiplied `strides[d+1] * dims[d+1]` as plain
+     * signed int64 with no overflow detection. A dim of -1 produced
+     * negative strides that later `offset = idx * stride` walks turn
+     * into OOB heap reads/writes. Reject negative / zero dims and
+     * trap multiply overflow up-front. */
+    /* Reject negative dims (zero dims are legal — empty tensors). */
     int64_t src_strides[16]; // max 16 dimensions
     if (src_ndim > 16) return -1;
+    for (int64_t d = 0; d < src_ndim; d++) {
+        if (src_dims[d] < 0) return -1;
+    }
     if (src_ndim > 0) {
         src_strides[src_ndim - 1] = 1;
         for (int64_t d = src_ndim - 2; d >= 0; d--) {
-            src_strides[d] = src_strides[d + 1] * src_dims[d + 1];
+            int64_t a = src_strides[d + 1];
+            int64_t b = src_dims[d + 1];
+            if (a > 0 && b > INT64_MAX / a) return -1;  // overflow
+            src_strides[d] = a * b;
         }
     }
 
-    // Precompute destination strides
     int64_t dst_strides[16];
     if (dst_ndim > 16) return -1;
+    for (int64_t d = 0; d < dst_ndim; d++) {
+        if (dst_dims[d] < 0) return -1;
+    }
     if (dst_ndim > 0) {
         dst_strides[dst_ndim - 1] = 1;
         for (int64_t d = dst_ndim - 2; d >= 0; d--) {
-            dst_strides[d] = dst_strides[d + 1] * dst_dims[d + 1];
+            int64_t a = dst_strides[d + 1];
+            int64_t b = dst_dims[d + 1];
+            if (a > 0 && b > INT64_MAX / a) return -1;
+            dst_strides[d] = a * b;
         }
     }
 
@@ -5076,6 +5664,45 @@ extern "C" void eshkol_concat_strided(
 
 // ===== END LINEAR ALGEBRA RUNTIME FUNCTIONS =====
 
+// ===== BATCH MATRIX MULTIPLICATION RUNTIME =====
+
+/**
+ * eshkol_batch_matmul_f64 — batched GEMM with plain C loops.
+ *
+ * A: [batch, M, K]   B: [batch, K, N]   C: [batch, M, N]
+ *
+ * Each slice is: C[b,:,:] = A[b,:,:] @ B[b,:,:]
+ * Inner loop uses a simple triple-loop (i,j,k) that the compiler
+ * can auto-vectorise.
+ */
+extern "C" void eshkol_batch_matmul_f64(
+    const double* __restrict__ a,
+    const double* __restrict__ b,
+    double*       __restrict__ c,
+    int64_t batch, int64_t M, int64_t K, int64_t N)
+{
+    for (int64_t bs = 0; bs < batch; bs++) {
+        const double* A = a + bs * M * K;
+        const double* B = b + bs * K * N;
+        double*       C = c + bs * M * N;
+
+        // Initialise output slice to zero
+        for (int64_t idx = 0; idx < M * N; idx++) C[idx] = 0.0;
+
+        // Standard triple loop, cache-friendly for row-major B iteration
+        for (int64_t i = 0; i < M; i++) {
+            for (int64_t kk = 0; kk < K; kk++) {
+                double a_ik = A[i * K + kk];
+                for (int64_t j = 0; j < N; j++) {
+                    C[i * N + j] += a_ik * B[kk * N + j];
+                }
+            }
+        }
+    }
+}
+
+// ===== END BATCH MATRIX MULTIPLICATION RUNTIME =====
+
 // ===== STACK OVERFLOW PROTECTION =====
 
 // Per-thread recursion depth counter
@@ -5105,6 +5732,128 @@ extern "C" void eshkol_decrement_recursion_depth(void) {
     if (__eshkol_recursion_depth > 0) {
         __eshkol_recursion_depth--;
     }
+}
+
+/* Safety guards emitted inline by the codegen for car / cdr / list-ref when
+ * the input argument's static type cannot be proven to be a pair. Previously
+ * these sites dereferenced whatever integer lived in the tagged value's data
+ * field, turning e.g. `(car #t)` (pair_int_safe == 1) into a load of address
+ * 0x1 and a SIGSEGV. Now the codegen calls into these helpers on the error
+ * branch and the runtime raises a typed exception that `guard` can catch. */
+extern "C" void eshkol_raise_not_pair(const char* op_name) {
+    eshkol_exception_t* exc = eshkol_make_exception(
+        ESHKOL_EXCEPTION_TYPE_ERROR,
+        op_name ? op_name : "car/cdr: argument is not a pair");
+    if (exc) eshkol_raise(exc);
+    /* If no handler is installed, eshkol_raise calls exit(1) itself. */
+    fprintf(stderr, "Eshkol: %s\n", op_name ? op_name : "not a pair");
+    exit(1);
+}
+
+/* Append `lhs` (expected to be a proper list) to `rhs`, returning the
+ * concatenated list. Used by the quasiquote codegen to implement
+ * `,@splice-list` — the parser emits a list-constructor call where a splicing
+ * element's runtime value must be appended to the rest of the list, not just
+ * consed. Allocates fresh cons cells in the global arena so the original
+ * lhs is not mutated. If lhs is not a proper cons list, it is treated as a
+ * single-element list (falls back to cons'ing onto rhs). */
+extern "C" void eshkol_append_tagged_sret(eshkol_tagged_value_t* out,
+                                          const eshkol_tagged_value_t* lhs,
+                                          const eshkol_tagged_value_t* rhs) {
+    if (!out) return;
+    if (!rhs) {
+        *out = (eshkol_tagged_value_t){};
+        out->type = ESHKOL_VALUE_NULL;
+        return;
+    }
+    if (!lhs || lhs->type == ESHKOL_VALUE_NULL) {
+        *out = *rhs;
+        return;
+    }
+
+    /* Is lhs a cons cell? Accept both legacy CONS_PTR and consolidated
+     * HEAP_PTR with HEAP_SUBTYPE_CONS. */
+    bool is_cons = false;
+    if (lhs->type == ESHKOL_VALUE_CONS_PTR) is_cons = true;
+    else if (lhs->type == ESHKOL_VALUE_HEAP_PTR && lhs->data.ptr_val) {
+        eshkol_object_header_t* h =
+            ESHKOL_GET_HEADER((void*)(uintptr_t)lhs->data.ptr_val);
+        if (h && h->subtype == HEAP_SUBTYPE_CONS) is_cons = true;
+    }
+
+    if (!is_cons) {
+        /* Non-list splice value — treat as a single element cons onto rhs. */
+        arena_t* arena = get_global_arena();
+        arena_tagged_cons_cell_t* cell = arena_allocate_cons_with_header(arena);
+        if (!cell) { *out = *rhs; return; }
+        cell->car = *lhs;
+        cell->cdr = *rhs;
+        out->type = ESHKOL_VALUE_HEAP_PTR;
+        out->flags = 0; out->reserved = 0;
+        out->data.ptr_val = (uint64_t)(uintptr_t)cell;
+        return;
+    }
+
+    /* Collect lhs elements front-to-back so we can rebuild onto rhs. */
+    std::vector<eshkol_tagged_value_t> elems;
+    eshkol_tagged_value_t cur = *lhs;
+    while (cur.type != ESHKOL_VALUE_NULL && cur.data.ptr_val != 0) {
+        bool cur_is_cons = false;
+        if (cur.type == ESHKOL_VALUE_CONS_PTR) cur_is_cons = true;
+        else if (cur.type == ESHKOL_VALUE_HEAP_PTR) {
+            eshkol_object_header_t* h =
+                ESHKOL_GET_HEADER((void*)(uintptr_t)cur.data.ptr_val);
+            if (h && h->subtype == HEAP_SUBTYPE_CONS) cur_is_cons = true;
+        }
+        if (!cur_is_cons) {
+            /* Improper list — store the tail atom as the last element. */
+            elems.push_back(cur);
+            break;
+        }
+        arena_tagged_cons_cell_t* cell =
+            (arena_tagged_cons_cell_t*)(uintptr_t)cur.data.ptr_val;
+        elems.push_back(cell->car);
+        cur = cell->cdr;
+    }
+
+    /* Build acc = rhs, then prepend elems in reverse. */
+    eshkol_tagged_value_t acc = *rhs;
+    arena_t* arena = get_global_arena();
+    for (auto it = elems.rbegin(); it != elems.rend(); ++it) {
+        arena_tagged_cons_cell_t* cell = arena_allocate_cons_with_header(arena);
+        if (!cell) { *out = acc; return; }
+        cell->car = *it;
+        cell->cdr = acc;
+        acc.type = ESHKOL_VALUE_HEAP_PTR;
+        acc.flags = 0; acc.reserved = 0;
+        acc.data.ptr_val = (uint64_t)(uintptr_t)cell;
+    }
+    *out = acc;
+}
+
+extern "C" void eshkol_raise_index_oob(const char* op_name, int64_t idx,
+                                        int64_t length) {
+    char buf[160];
+    snprintf(buf, sizeof(buf),
+             "%s: index %lld out of bounds (length=%lld)",
+             op_name ? op_name : "list-ref/vector-ref",
+             (long long)idx, (long long)length);
+    eshkol_exception_t* exc = eshkol_make_exception(
+        ESHKOL_EXCEPTION_ERROR, buf);
+    if (exc) eshkol_raise(exc);
+    fprintf(stderr, "Eshkol: %s\n", buf);
+    exit(1);
+}
+
+/* Raise an "improper list" error from codegen-generated walkers
+ * (audit M7). Used by list->vector and similar tail-traversals
+ * that encounter a non-pair, non-() tail. */
+extern "C" void eshkol_raise_improper_list(const char* msg) {
+    eshkol_exception_t* exc = eshkol_make_exception(
+        ESHKOL_EXCEPTION_ERROR, msg ? msg : "improper list");
+    if (exc) eshkol_raise(exc);
+    fprintf(stderr, "Eshkol: %s\n", msg ? msg : "improper list");
+    exit(1);
 }
 
 extern "C" void eshkol_reset_recursion_depth(void) {

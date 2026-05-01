@@ -75,6 +75,7 @@ TEST_SCRIPTS=(
     "run_migration_tests.sh"
     "run_codegen_tests.sh"
     "run_numeric_tests.sh"
+    "run_v1_2_edge_cases_tests.sh"
 )
 
 echo ""

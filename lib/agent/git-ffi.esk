@@ -5,8 +5,9 @@
 (provide git-run git-status git-diff-stat git-branch-current
          git-is-repo? git-root git-log-oneline)
 
-(define (shell-escape s)
-  (string-append "'" (string-replace s "'" "'\"'\"'") "'"))
+;; Delegate to stdlib shell-quote builtin (see lib/agent/fs-watch.esk
+;; for rationale). Single source of truth for shell arg quoting.
+(define shell-escape shell-quote)
 
 (define (git-run cwd . args)
   "Run a git command, return (exit-code . output)."

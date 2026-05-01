@@ -1,0 +1,37 @@
+;; stress_parallel_at_scale.esk — N=1M parallel-map / parallel-fold
+;;
+;; Goal: sustain 1 million parallel-map invocations and verify:
+;;   - result correctness (sum matches sequential)
+;;   - RSS stays bounded (per-worker arena releases properly)
+;;   - no hang, no deadlock, wall-time linear in N
+;;
+;; #186 stress suite. Run under ASan to catch any memory leak
+;; surfacing at scale.
+
+(require stdlib)
+
+(define N 1000000)
+
+(define (square x) (* x x))
+
+(define t0 (current-jiffy))
+
+;; Parallel map of 1M elements
+(define xs (iota N))
+(define sq-parallel (parallel-map square xs))
+(define sum-parallel (fold + 0 sq-parallel))
+
+(define t1 (current-jiffy))
+
+;; Verification: Σ i² for i in 0..N-1 = (N-1)N(2N-1)/6
+(define expected (quotient (* (- N 1) (* N (- (* 2 N) 1))) 6))
+
+(display "N: ") (display N) (newline)
+(display "expected: ") (display expected) (newline)
+(display "got:      ") (display sum-parallel) (newline)
+(display "wall-ms:  ") (display (exact->inexact (* 1000 (/ (- t1 t0) (jiffies-per-second))))) (newline)
+(display "match:    ") (display (= expected sum-parallel)) (newline)
+
+(if (= expected sum-parallel)
+    (begin (display "RESULT: OK") (newline))
+    (begin (display "RESULT: FAIL") (newline) (exit 1)))

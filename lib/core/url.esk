@@ -1,0 +1,255 @@
+;;; lib/core/url.esk — RFC 3986 percent-encoding for URL components.
+;;;
+;;; (url-encode str)  — percent-encodes every byte of `str` except the
+;;;                     unreserved set [A-Za-z0-9-_.~]. Returns the
+;;;                     encoded string.
+;;; (url-decode str)  — reverses url-encode. Each "%XX" triple decodes
+;;;                     to the byte 0xXX; literal "+" decodes to space
+;;;                     (legacy form-encoding compatibility); everything
+;;;                     else passes through literal. Returns the decoded
+;;;                     string.
+;;;
+;;; Non-ASCII codepoints are encoded as their UTF-8 byte sequence per
+;;; RFC 3986 §2.5 ("when these characters are converted into something
+;;; other than US-ASCII, they MUST first be encoded into UTF-8 bytes").
+
+(require core.list.transform)
+(require core.strings)
+(require core.data.base64)
+
+(provide url-encode url-decode base64url-encode base64url-decode)
+
+;; Hex digit lookup — uppercase per RFC 3986 §2.1 ("the uppercase
+;; hexadecimal digits 'A' through 'F' are equivalent to the lowercase
+;; digits 'a' through 'f', respectively. … producers should use
+;; uppercase").
+(define (byte->hex2 b)
+  (let* ((hex-digits "0123456789ABCDEF")
+         (hi (quotient b 16))
+         (lo (remainder b 16)))
+    (string (string-ref hex-digits hi)
+            (string-ref hex-digits lo))))
+
+;; Unreserved set: A-Z a-z 0-9 - _ . ~
+(define (url-unreserved? b)
+  (or (and (>= b 65) (<= b 90))      ; A-Z
+      (and (>= b 97) (<= b 122))     ; a-z
+      (and (>= b 48) (<= b 57))      ; 0-9
+      (= b 45)                        ; -
+      (= b 95)                        ; _
+      (= b 46)                        ; .
+      (= b 126)))                     ; ~
+
+;; Encode a single codepoint as UTF-8 bytes (1..4), percent-encoding
+;; or passing through each byte. Returns a string fragment.
+(define (encode-codepoint cp)
+  (cond
+    ;; 1-byte (ASCII)
+    ((< cp 128)
+     (if (url-unreserved? cp)
+         (string (integer->char cp))
+         (string-append "%" (byte->hex2 cp))))
+    ;; 2-byte (110xxxxx 10xxxxxx)
+    ((< cp 2048)
+     (let ((b1 (+ 192 (quotient cp 64)))
+           (b2 (+ 128 (remainder cp 64))))
+       (string-append "%" (byte->hex2 b1) "%" (byte->hex2 b2))))
+    ;; 3-byte (1110xxxx 10xxxxxx 10xxxxxx)
+    ((< cp 65536)
+     (let* ((b1 (+ 224 (quotient cp 4096)))
+            (rest (remainder cp 4096))
+            (b2 (+ 128 (quotient rest 64)))
+            (b3 (+ 128 (remainder rest 64))))
+       (string-append "%" (byte->hex2 b1) "%" (byte->hex2 b2)
+                      "%" (byte->hex2 b3))))
+    ;; 4-byte (11110xxx 10xxxxxx 10xxxxxx 10xxxxxx) — codepoints up to 0x10FFFF
+    (else
+     (let* ((b1 (+ 240 (quotient cp 262144)))
+            (rest1 (remainder cp 262144))
+            (b2 (+ 128 (quotient rest1 4096)))
+            (rest2 (remainder rest1 4096))
+            (b3 (+ 128 (quotient rest2 64)))
+            (b4 (+ 128 (remainder rest2 64))))
+       (string-append "%" (byte->hex2 b1) "%" (byte->hex2 b2)
+                      "%" (byte->hex2 b3) "%" (byte->hex2 b4))))))
+
+(define (url-encode str)
+  (let ((n (string-length str)))
+    (let loop ((i 0) (acc ""))
+      (cond
+        ((>= i n) acc)
+        (else
+         (let ((cp (char->integer (string-ref str i))))
+           (loop (+ i 1)
+                 (string-append acc (encode-codepoint cp)))))))))
+
+;; Decode helpers
+(define (hex-digit? ch)
+  (let ((c (char->integer ch)))
+    (or (and (>= c 48) (<= c 57))     ; 0-9
+        (and (>= c 65) (<= c 70))     ; A-F
+        (and (>= c 97) (<= c 102))))) ; a-f
+
+(define (hex-digit->int ch)
+  (let ((c (char->integer ch)))
+    (cond
+      ((and (>= c 48) (<= c 57))  (- c 48))
+      ((and (>= c 65) (<= c 70))  (- c 55))   ; A=10
+      ((and (>= c 97) (<= c 102)) (- c 87))   ; a=10
+      (else 0))))
+
+;; Read one decoded byte from str at position i.
+;; Returns (cons byte next-i) on a valid %XX or '+' or literal ASCII byte.
+;; Returns (cons #f next-i) if str[i] is the start of a non-ASCII literal
+;; codepoint (handled separately by url-decode's outer loop).
+(define (url-read-byte str i)
+  (let ((ch (string-ref str i)))
+    (cond
+      ;; %XX
+      ((and (char=? ch #\%)
+            (< (+ i 2) (string-length str))
+            (hex-digit? (string-ref str (+ i 1)))
+            (hex-digit? (string-ref str (+ i 2))))
+       (let* ((hi (hex-digit->int (string-ref str (+ i 1))))
+              (lo (hex-digit->int (string-ref str (+ i 2)))))
+         (cons (+ (* hi 16) lo) (+ i 3))))
+      ;; + = space (form-encoding)
+      ((char=? ch #\+)
+       (cons 32 (+ i 1)))
+      ;; ASCII literal — codepoint < 128 fits in one byte
+      ((< (char->integer ch) 128)
+       (cons (char->integer ch) (+ i 1)))
+      ;; non-ASCII literal — caller handles
+      (else
+       (cons #f i)))))
+
+;; Combine a UTF-8 byte sequence into a single codepoint.
+;; b1 is the lead byte; n_extra is how many continuation bytes follow.
+(define (utf8-combine b1 n-extra str i)
+  (cond
+    ((= n-extra 0) (cons b1 i))
+    ((= n-extra 1)
+     (let* ((p2 (url-read-byte str i))
+            (b2 (car p2)))
+       (if (and b2 (>= b2 128) (< b2 192))
+           (cons (+ (* (- b1 192) 64) (- b2 128)) (cdr p2))
+           (cons b1 i))))      ; malformed — return lead byte alone
+    ((= n-extra 2)
+     (let* ((p2 (url-read-byte str i))
+            (b2 (car p2))
+            (i2 (cdr p2)))
+       (if (and b2 (>= b2 128) (< b2 192))
+           (let* ((p3 (url-read-byte str i2))
+                  (b3 (car p3)))
+             (if (and b3 (>= b3 128) (< b3 192))
+                 (cons (+ (* (- b1 224) 4096)
+                          (* (- b2 128) 64)
+                          (- b3 128))
+                       (cdr p3))
+                 (cons b1 i)))
+           (cons b1 i))))
+    ((= n-extra 3)
+     (let* ((p2 (url-read-byte str i))
+            (b2 (car p2))
+            (i2 (cdr p2)))
+       (if (and b2 (>= b2 128) (< b2 192))
+           (let* ((p3 (url-read-byte str i2))
+                  (b3 (car p3))
+                  (i3 (cdr p3)))
+             (if (and b3 (>= b3 128) (< b3 192))
+                 (let* ((p4 (url-read-byte str i3))
+                        (b4 (car p4)))
+                   (if (and b4 (>= b4 128) (< b4 192))
+                       (cons (+ (* (- b1 240) 262144)
+                                (* (- b2 128) 4096)
+                                (* (- b3 128) 64)
+                                (- b4 128))
+                             (cdr p4))
+                       (cons b1 i)))
+                 (cons b1 i)))
+           (cons b1 i))))
+    (else (cons b1 i))))
+
+;; ─────────────────────────────────────────────────────────────────────
+;; base64url — URL-safe Base64 (RFC 4648 §5)
+;;
+;; Same as standard base64 but two char substitutions and no padding:
+;;   '+' → '-'
+;;   '/' → '_'
+;;   trailing '=' stripped
+;;
+;; Used for JWT (signed URLs), CSRF tokens, content hashes that travel
+;; through query strings or path segments. Decoding accepts the canonical
+;; padded form too — both `xyz-_` and `xyz-_=` decode to the same bytes.
+
+(define (b64url-strip-padding s)
+  (let ((n (string-length s)))
+    (let loop ((i n))
+      (cond
+        ((<= i 0) "")
+        ((char=? (string-ref s (- i 1)) #\=) (loop (- i 1)))
+        (else (substring s 0 i))))))
+
+(define (b64url-restore-padding s)
+  (let* ((n (string-length s))
+         (rem (remainder n 4)))
+    (cond
+      ((= rem 0) s)
+      ((= rem 2) (string-append s "=="))
+      ((= rem 3) (string-append s "="))
+      (else s))))  ; rem=1 is malformed; pass through and let decoder fail
+
+(define (b64url-replace-encode s)
+  ;; '+' → '-', '/' → '_'
+  (string-replace (string-replace s "+" "-") "/" "_"))
+
+(define (b64url-replace-decode s)
+  ;; '-' → '+', '_' → '/'
+  (string-replace (string-replace s "-" "+") "_" "/"))
+
+(define (base64url-encode str)
+  (b64url-strip-padding (b64url-replace-encode (base64-encode-string str))))
+
+(define (base64url-decode str)
+  (base64-decode-string (b64url-restore-padding (b64url-replace-decode str))))
+
+;; ─────────────────────────────────────────────────────────────────────
+
+;; url-decode: walk str, decode each byte (or %XX), merge UTF-8 sequences
+;; back into codepoints, emit as UTF-8 string via (string (integer->char cp)).
+(define (url-decode str)
+  (let ((n (string-length str)))
+    (let loop ((i 0) (acc ""))
+      (cond
+        ((>= i n) acc)
+        (else
+         (let* ((p1 (url-read-byte str i))
+                (b1 (car p1))
+                (i1 (cdr p1)))
+           (cond
+             ;; non-ASCII literal — emit the char directly
+             ((not b1)
+              (loop (+ i 1)
+                    (string-append acc (string (string-ref str i)))))
+             ;; ASCII byte
+             ((< b1 128)
+              (loop i1 (string-append acc (string (integer->char b1)))))
+             ;; UTF-8 lead byte — combine with continuation bytes
+             ((and (>= b1 192) (< b1 224))
+              (let* ((cp+i (utf8-combine b1 1 str i1))
+                     (cp (car cp+i)))
+                (loop (cdr cp+i)
+                      (string-append acc (string (integer->char cp))))))
+             ((and (>= b1 224) (< b1 240))
+              (let* ((cp+i (utf8-combine b1 2 str i1))
+                     (cp (car cp+i)))
+                (loop (cdr cp+i)
+                      (string-append acc (string (integer->char cp))))))
+             ((and (>= b1 240) (< b1 248))
+              (let* ((cp+i (utf8-combine b1 3 str i1))
+                     (cp (car cp+i)))
+                (loop (cdr cp+i)
+                      (string-append acc (string (integer->char cp))))))
+             ;; Stray continuation byte (0x80-0xBF) or invalid — emit raw
+             (else
+              (loop i1 (string-append acc (string (integer->char b1))))))))))))

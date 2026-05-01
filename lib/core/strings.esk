@@ -8,6 +8,7 @@
          string-replace string-reverse string-copy string-repeat
          string-starts-with? string-ends-with?
          string-index string-last-index string-contains string-count
+         string-find
          string-upcase string-downcase
          string-split-ordered)
 
@@ -52,8 +53,11 @@
 
 ;; string-replace: Replace all occurrences of old with new
 ;; (string-replace "hello world" "o" "0") => "hell0 w0rld"
+;; The earlier `(reverse (string-split …))` was needed when the builtin
+;; returned reversed order; now string-split returns left-to-right directly
+;; so reverse is no longer required.
 (define (string-replace str old new)
-  (string-join (reverse (string-split str old)) new))
+  (string-join (string-split str old) new))
 
 ;; string-reverse: Reverse a string
 (define (string-reverse str)
@@ -140,7 +144,20 @@
   (list->string (map (lambda (c) (integer->char (downcase-char (char->integer c))))
                      (string->list str))))
 
-;; string-split-ordered: Split string by delimiter, returns list in left-to-right order
-;; The builtin string-split returns in reverse order, this wraps it with reverse
+;; string-split-ordered: identity wrapper — kept as a backwards-compatible
+;; alias for code that called it before the codegen-side reverse fix landed.
+;; The builtin (string-split str delim) now returns left-to-right order
+;; directly; ordered and unordered split give the same result.
 (define (string-split-ordered str delim)
-  (reverse (string-split str delim)))
+  (string-split str delim))
+
+;; string-find: index of first occurrence of `needle` in `haystack`,
+;; or #f if not present.
+;;
+;; The companion `string-index` returns the same index but uses -1 as the
+;; sentinel for "not found"; `string-find`'s #f sentinel composes more
+;; cleanly with predicate-style flow: (if (string-find h n) ...). Both
+;; share the underlying strstr-based codegen so the cost is identical.
+(define (string-find haystack needle)
+  (let ((idx (string-index haystack needle)))
+    (if (< idx 0) #f idx)))

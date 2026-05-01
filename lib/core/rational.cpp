@@ -8,6 +8,7 @@
 
 #include <eshkol/core/rational.h>
 #include <eshkol/eshkol.h>
+#include <eshkol/logger.h>
 #include <cmath>
 #include <stdlib.h>
 #include <stdio.h>
@@ -23,6 +24,8 @@ extern "C" void* arena_allocate_string_with_header(void* arena, uint64_t size);
 static int64_t gcd(int64_t a, int64_t b) {
     if (a < 0) a = -a;
     if (b < 0) b = -b;
+    if (a == 0) return b;
+    if (b == 0) return a;
     while (b != 0) {
         int64_t t = b;
         b = a % b;
@@ -72,12 +75,27 @@ static void* rational_create_safe(void* arena, __int128_t num, __int128_t denom)
 
 extern "C" void* eshkol_rational_create(void* arena, int64_t num, int64_t denom) {
     if (denom == 0) {
-        /* Division by zero — return 0/1 as fallback */
+        eshkol_error("rational: division by zero (denominator is 0)");
+        /* Return 0/1 as safe fallback after error is reported */
         denom = 1;
         num = 0;
     }
 
-    /* Normalize: denominator always positive */
+    /* Audit C7: normalize denominator to positive without INT64_MIN overflow.
+     * Previously `if (denom < 0) { num = -num; denom = -denom; }` silently
+     * produced a NON-NORMALISED rational when either side was INT64_MIN
+     * because -INT64_MIN == INT64_MIN in two's complement. Downstream
+     * arithmetic (gcd / mul / add) then treated INT64_MIN as positive
+     * in 128-bit promotion and returned silent wrong answers. Detect
+     * the two unsafe cases and raise; legitimate rationals at INT64_MIN
+     * magnitude are rare and can be re-expressed once bignum rationals
+     * land. */
+    if (denom == INT64_MIN || num == INT64_MIN) {
+        eshkol_error("rational: INT64_MIN numerator/denominator cannot be "
+                     "sign-normalised without overflow");
+        denom = 1;
+        num = 0;
+    }
     if (denom < 0) {
         num = -num;
         denom = -denom;
@@ -181,21 +199,24 @@ extern "C" void* eshkol_double_to_rational(void* arena, double d) {
     return eshkol_rational_create(arena, num, den);  // auto-reduces via GCD
 }
 
-/* Format rational as "num/denom" string into arena-allocated buffer with string header */
+/* Format rational as "num/denom" string into arena-allocated buffer with
+ * string header. `arena_allocate_string_with_header(len)` reserves len+1
+ * bytes and handles the NUL — pass bare `len`, not `len + 1`, or
+ * string-length sees len+1 chars after the header-aware fix. */
 extern "C" char* eshkol_rational_to_string(void* arena, void* r) {
     eshkol_rational_t* rat = (eshkol_rational_t*)r;
     if (rat->denominator == 1) {
         char tmp[32];
         int len = snprintf(tmp, sizeof(tmp), "%lld", (long long)rat->numerator);
-        char* buf = (char*)arena_allocate_string_with_header(arena, len + 1);
-        if (buf) memcpy(buf, tmp, len + 1);
+        char* buf = (char*)arena_allocate_string_with_header(arena, len);
+        if (buf) memcpy(buf, tmp, len + 1);  /* copy including NUL */
         return buf;
     }
     char tmp[72];
     int len = snprintf(tmp, sizeof(tmp), "%lld/%lld",
                        (long long)rat->numerator, (long long)rat->denominator);
-    char* buf = (char*)arena_allocate_string_with_header(arena, len + 1);
-    if (buf) memcpy(buf, tmp, len + 1);
+    char* buf = (char*)arena_allocate_string_with_header(arena, len);
+    if (buf) memcpy(buf, tmp, len + 1);  /* copy including NUL */
     return buf;
 }
 

@@ -2,7 +2,7 @@
 ;; sqlite.esk - SQLite3 FFI wrapper
 ;; Bindings to agent_sqlite.c
 ;;
-(provide sqlite-open sqlite-close sqlite-exec
+(provide sqlite-exec-safe sqlite-open sqlite-close sqlite-exec
          sqlite-prepare sqlite-step sqlite-reset sqlite-finalize
          sqlite-bind-text sqlite-bind-int sqlite-bind-double sqlite-bind-null
          sqlite-column-text sqlite-column-int sqlite-column-double
@@ -45,8 +45,35 @@
 (define (sqlite-close handle) (sqlite-close-raw handle))
 
 (define (sqlite-exec handle sql)
-  "Execute SQL statement(s). Returns 0 on success."
+  "Execute SQL statement(s). Returns 0 on success.
+
+   SECURITY (#195): sqlite-exec takes raw SQL — any caller that
+   builds the statement by concatenating user input is vulnerable to
+   SQL injection. Prefer sqlite-prepare + sqlite-bind-* + sqlite-step
+   for anything with user-controlled values. sqlite-exec stays
+   supported for trusted DDL (CREATE TABLE, PRAGMA) and fully-
+   literal batch scripts.
+
+   If you MUST interpolate, the library provides no sanitizer — it is
+   the caller's responsibility. Future versions may restrict
+   sqlite-exec to a whitelist of statement kinds."
   (sqlite-exec-raw handle sql))
+
+(define (sqlite-exec-safe handle sql)
+  "Guarded variant: refuses to run statements that contain multiple
+   SQL commands (semicolon-joined) or lexer-obvious comment forms.
+   This is NOT a substitute for prepared statements — it only blocks
+   the dumbest injection attempts — but it's better than no filter
+   on call sites that absolutely cannot migrate to bind-* today."
+  (cond
+    ((not (string? sql))
+     (error "sqlite-exec-safe: sql must be a string"))
+    ((string-contains sql ";")
+     (error "sqlite-exec-safe: statement contains ';' — use sqlite-prepare for batches"))
+    ((or (string-contains sql "--")
+         (string-contains sql "/*"))
+     (error "sqlite-exec-safe: statement contains SQL comment — possible injection"))
+    (else (sqlite-exec-raw handle sql))))
 
 (define (sqlite-prepare handle sql)
   "Prepare a statement. Returns stmt handle or -1."

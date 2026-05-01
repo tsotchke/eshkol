@@ -13,6 +13,13 @@
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
 
 #include <eshkol/logger.h>
+#include <llvm/IR/Intrinsics.h>
+
+#if LLVM_VERSION_MAJOR >= 21
+#define SYS_GET_INTRINSIC(mod, id, types) llvm::Intrinsic::getOrInsertDeclaration(mod, id, types)
+#else
+#define SYS_GET_INTRINSIC(mod, id, types) llvm::Intrinsic::getDeclaration(mod, id, types)
+#endif
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/Function.h>
 
@@ -223,7 +230,16 @@ llvm::Value* SystemCodegen::sleep(const eshkol_operations_t* op) {
     // Convert seconds to microseconds
     llvm::Value* usec_double = ctx_.builder().CreateFMul(seconds_double,
         llvm::ConstantFP::get(ctx_.builder().getDoubleTy(), 1000000.0));
-    llvm::Value* usec_i64 = ctx_.builder().CreateFPToSI(usec_double, ctx_.int64Type());
+    // Clamp to valid int32 range before conversion to prevent UB
+    llvm::Value* clamped = ctx_.builder().CreateCall(
+        SYS_GET_INTRINSIC(&ctx_.module(),
+            llvm::Intrinsic::minnum, {ctx_.doubleType()}),
+        {usec_double, llvm::ConstantFP::get(ctx_.doubleType(), 2147483647.0)});
+    clamped = ctx_.builder().CreateCall(
+        SYS_GET_INTRINSIC(&ctx_.module(),
+            llvm::Intrinsic::maxnum, {ctx_.doubleType()}),
+        {clamped, llvm::ConstantFP::get(ctx_.doubleType(), 0.0)});
+    llvm::Value* usec_i64 = ctx_.builder().CreateFPToSI(clamped, ctx_.int64Type());
     llvm::Value* usec = ctx_.builder().CreateTrunc(usec_i64, ctx_.int32Type());
 
     // Call usleep
@@ -399,7 +415,16 @@ llvm::Value* SystemCodegen::exitProgram(const eshkol_operations_t* op) {
     // Convert to i32 if needed
     llvm::Value* code_i32;
     if (code->getType()->isDoubleTy()) {
-        code_i32 = ctx_.builder().CreateFPToSI(code, ctx_.int32Type());
+        // Clamp to valid exit code range [0, 255]
+        llvm::Value* clamped_code = ctx_.builder().CreateCall(
+            SYS_GET_INTRINSIC(&ctx_.module(),
+                llvm::Intrinsic::minnum, {ctx_.doubleType()}),
+            {code, llvm::ConstantFP::get(ctx_.doubleType(), 255.0)});
+        clamped_code = ctx_.builder().CreateCall(
+            SYS_GET_INTRINSIC(&ctx_.module(),
+                llvm::Intrinsic::maxnum, {ctx_.doubleType()}),
+            {clamped_code, llvm::ConstantFP::get(ctx_.doubleType(), 0.0)});
+        code_i32 = ctx_.builder().CreateFPToSI(clamped_code, ctx_.int32Type());
     } else if (code->getType()->isIntegerTy(64)) {
         code_i32 = ctx_.builder().CreateTrunc(code, ctx_.int32Type());
     } else {
@@ -415,15 +440,28 @@ llvm::Value* SystemCodegen::exitProgram(const eshkol_operations_t* op) {
 }
 
 llvm::Value* SystemCodegen::commandLine(const eshkol_operations_t* op) {
-    // Get global argc and argv
+    // The argc/argv globals are owned by the host process and exposed to
+    // JIT via ADD_DATA_SYMBOL (lib/repl/repl_jit.cpp:558-559). The
+    // top-level main-emitting path declares them, but each REPL `-e`
+    // expression is its own module — so on a bare `(command-line)` from
+    // the REPL we have to declare the externs ourselves. Without this,
+    // commandLine returned NULL and the user saw an empty list even when
+    // argc was clearly non-zero.
     llvm::Module* module = ctx_.builder().GetInsertBlock()->getParent()->getParent();
 
     llvm::GlobalVariable* g_argc = module->getGlobalVariable("__eshkol_argc");
+    if (!g_argc) {
+        g_argc = new llvm::GlobalVariable(
+            *module, ctx_.int32Type(), false,
+            llvm::GlobalValue::ExternalLinkage, nullptr,
+            "__eshkol_argc");
+    }
     llvm::GlobalVariable* g_argv = module->getGlobalVariable("__eshkol_argv");
-
-    if (!g_argc || !g_argv) {
-        eshkol_warn("command-line: argc/argv globals not found");
-        return tagged_.packNull();
+    if (!g_argv) {
+        g_argv = new llvm::GlobalVariable(
+            *module, ctx_.ptrType(), false,
+            llvm::GlobalValue::ExternalLinkage, nullptr,
+            "__eshkol_argv");
     }
 
     llvm::Function* strlen_func = function_table_["strlen"];
@@ -473,11 +511,17 @@ llvm::Value* SystemCodegen::commandLine(const eshkol_operations_t* op) {
     llvm::Value* arg_ptr_ptr = ctx_.builder().CreateGEP(ctx_.ptrType(), argv, idx_64);
     llvm::Value* arg_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), arg_ptr_ptr);
 
-    // Copy string to arena
+    // Copy argv[idx] into an arena-allocated Scheme string. Must use
+    // `arena_allocate_string_with_header` (NOT raw `arena_allocate`) so
+    // the string carries the 8-byte ESHKOL_OBJECT_HEADER that
+    // (display), (string-length), (string-ref), and the rest of the
+    // string toolkit rely on. Without the header the user sees garbage
+    // (`#<unknown>`) when displaying argv. The allocator reserves the
+    // +1 NUL byte itself, so we pass the bare strlen.
     llvm::Value* arg_len = ctx_.builder().CreateCall(strlen_func, {arg_ptr});
-    llvm::Value* alloc_len = ctx_.builder().CreateAdd(arg_len, llvm::ConstantInt::get(ctx_.int64Type(), 1));
     llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
-    llvm::Value* new_str = ctx_.builder().CreateCall(mem_.getArenaAllocate(), {arena_ptr, alloc_len});
+    llvm::Value* new_str = ctx_.builder().CreateCall(
+        mem_.getArenaAllocateStringWithHeader(), {arena_ptr, arg_len});
     ctx_.builder().CreateCall(strcpy_func, {new_str, arg_ptr});
 
     // Pack string and cons onto list
@@ -1110,9 +1154,9 @@ llvm::Value* SystemCodegen::directoryList(const eshkol_operations_t* op) {
 
     // Allocate cons cell with object header (consolidated pointer format)
     llvm::Value* cons = ctx_.builder().CreateCall(mem_.getArenaAllocateConsWithHeader(), {arena_ptr});
-    // Set car to string (is_cdr = 0 for car)
-    llvm::Value* is_car = llvm::ConstantInt::get(ctx_.int32Type(), 0);
-    llvm::Value* is_cdr = llvm::ConstantInt::get(ctx_.int32Type(), 1);
+    // Set car to string (is_cdr = false for car, true for cdr)
+    llvm::Value* is_car = llvm::ConstantInt::getFalse(ctx_.context());
+    llvm::Value* is_cdr = llvm::ConstantInt::getTrue(ctx_.context());
 
     // Create alloca for tagged values
     llvm::Value* str_ptr = ctx_.builder().CreateAlloca(ctx_.taggedValueType());
@@ -1198,6 +1242,338 @@ llvm::Value* SystemCodegen::setCurrentDirectory(const eshkol_operations_t* op) {
     llvm::Value* success = ctx_.builder().CreateICmpEQ(result, llvm::ConstantInt::get(ctx_.int32Type(), 0));
     return tagged_.packBool(success);
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * v1.2 System Builtins — delegate to C runtime (system_builtins.c)
+ *
+ * These functions are declared extern "C" in system_builtins.c and return
+ * eshkol_sysbuiltin_value_t which is layout-identical to eshkol_tagged_value_t.
+ * We declare them as returning the LLVM tagged value type and call directly.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+/* All-pointer calling convention for C runtime builtins.
+ * Both the result and all arguments are passed through pointers to avoid
+ * ALL struct passing ABI mismatches between LLVM IR and C on ARM64/etc.
+ * Signature: void c_func(tagged_value_t* out, tagged_value_t* arg1, ...) */
+llvm::Function* getOrDeclareRuntimeFuncAllPtr(CodegenContext& ctx, llvm::Module* mod,
+                                               const std::string& name, int nargs) {
+    llvm::Function* f = mod->getFunction(name);
+    if (f) return f;
+    std::vector<llvm::Type*> arg_types(1 + nargs, ctx.ptrType());
+    llvm::FunctionType* ft = llvm::FunctionType::get(
+        llvm::Type::getVoidTy(ctx.context()), arg_types, false);
+    f = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, name, mod);
+    return f;
+}
+
+/* Store tagged value to alloca, call C function with pointers, load result.
+ *
+ * Architectural note: the AST callback may return a raw LLVM value (double,
+ * i64, i1, or pointer) rather than a tagged_value struct. Storing a raw
+ * scalar directly into the 16-byte tagged_value slot would leave the upper
+ * bytes uninitialized, which the sret callee then reads as garbage type/data
+ * fields. ensureTagged normalises every argument into a full tagged_value
+ * before the store, eliminating that whole class of ABI corruption. */
+static llvm::Value* callPtrRuntime(CodegenContext& ctx, llvm::Function* f,
+                                    llvm::ArrayRef<llvm::Value*> args) {
+    llvm::IRBuilder<>& builder = ctx.builder();
+    TaggedValueCodegen tagged(ctx);
+    llvm::Value* result_ptr = builder.CreateAlloca(ctx.taggedValueType(), nullptr, "rt_out");
+    std::vector<llvm::Value*> call_args;
+    call_args.push_back(result_ptr);
+    for (auto* a : args) {
+        llvm::Value* tagged_arg = tagged.ensureTagged(a);
+        llvm::Value* slot = builder.CreateAlloca(ctx.taggedValueType(), nullptr, "rt_arg");
+        builder.CreateStore(tagged_arg, slot);
+        call_args.push_back(slot);
+    }
+    builder.CreateCall(f, call_args);
+    return builder.CreateLoad(ctx.taggedValueType(), result_ptr);
+}
+
+/* Zero-arg builtin */
+#define ZERO_ARG_BUILTIN(method_name, c_func_name) \
+llvm::Value* SystemCodegen::method_name(const eshkol_operations_t* op) { \
+    (void)op; \
+    llvm::Module* mod = ctx_.builder().GetInsertBlock()->getParent()->getParent(); \
+    llvm::Function* f = getOrDeclareRuntimeFuncAllPtr(ctx_, mod, c_func_name, 0); \
+    return callPtrRuntime(ctx_, f, {}); \
+}
+
+/* One-arg builtin */
+#define ONE_ARG_BUILTIN(method_name, c_func_name) \
+llvm::Value* SystemCodegen::method_name(const eshkol_operations_t* op) { \
+    if (op->call_op.num_vars != 1) return tagged_.packNull(); \
+    if (!codegen_ast_callback_) return tagged_.packNull(); \
+    llvm::Value* arg = codegen_ast_callback_(&op->call_op.variables[0], callback_context_); \
+    if (!arg) return tagged_.packNull(); \
+    llvm::Module* mod = ctx_.builder().GetInsertBlock()->getParent()->getParent(); \
+    llvm::Function* f = getOrDeclareRuntimeFuncAllPtr(ctx_, mod, c_func_name, 1); \
+    return callPtrRuntime(ctx_, f, {arg}); \
+}
+
+/* Two-arg builtin */
+#define TWO_ARG_BUILTIN(method_name, c_func_name) \
+llvm::Value* SystemCodegen::method_name(const eshkol_operations_t* op) { \
+    if (op->call_op.num_vars != 2) return tagged_.packNull(); \
+    if (!codegen_ast_callback_) return tagged_.packNull(); \
+    llvm::Value* a = codegen_ast_callback_(&op->call_op.variables[0], callback_context_); \
+    llvm::Value* b = codegen_ast_callback_(&op->call_op.variables[1], callback_context_); \
+    if (!a || !b) return tagged_.packNull(); \
+    llvm::Module* mod = ctx_.builder().GetInsertBlock()->getParent()->getParent(); \
+    llvm::Function* f = getOrDeclareRuntimeFuncAllPtr(ctx_, mod, c_func_name, 2); \
+    return callPtrRuntime(ctx_, f, {a, b}); \
+}
+
+/* System info */
+ZERO_ARG_BUILTIN(osType, "eshkol_builtin_os_type")
+ZERO_ARG_BUILTIN(osArch, "eshkol_builtin_os_arch")
+ZERO_ARG_BUILTIN(hostnameBuiltin, "eshkol_builtin_hostname")
+ZERO_ARG_BUILTIN(usernameBuiltin, "eshkol_builtin_username")
+ZERO_ARG_BUILTIN(cpuCount, "eshkol_builtin_cpu_count")
+ZERO_ARG_BUILTIN(getpidBuiltin, "eshkol_builtin_getpid")
+ZERO_ARG_BUILTIN(homeDirectory, "eshkol_builtin_home_directory")
+/* Time API (#168) */
+ZERO_ARG_BUILTIN(currentTimestamp, "eshkol_builtin_current_timestamp")
+ONE_ARG_BUILTIN(formatIso8601, "eshkol_builtin_format_iso8601")
+ONE_ARG_BUILTIN(parseIso8601, "eshkol_builtin_parse_iso8601")
+
+/* System ops with args */
+ONE_ARG_BUILTIN(sleepMs, "eshkol_builtin_sleep_ms")
+ONE_ARG_BUILTIN(executableExists, "eshkol_builtin_executable_exists")
+
+/* Path manipulation */
+TWO_ARG_BUILTIN(pathJoin, "eshkol_builtin_path_join")
+ONE_ARG_BUILTIN(pathDirname, "eshkol_builtin_path_dirname")
+ONE_ARG_BUILTIN(pathBasename, "eshkol_builtin_path_basename")
+ONE_ARG_BUILTIN(pathExtname, "eshkol_builtin_path_extname")
+ONE_ARG_BUILTIN(pathIsAbsolute, "eshkol_builtin_path_is_absolute")
+ONE_ARG_BUILTIN(pathNormalize, "eshkol_builtin_path_normalize")
+ONE_ARG_BUILTIN(realpathBuiltin, "eshkol_builtin_realpath")
+
+/* Filesystem */
+ONE_ARG_BUILTIN(fileStat, "eshkol_builtin_file_stat")
+TWO_ARG_BUILTIN(fileCopy, "eshkol_builtin_file_copy")
+ONE_ARG_BUILTIN(mkdirRecursive, "eshkol_builtin_mkdir_recursive")
+ONE_ARG_BUILTIN(mkdtempBuiltin, "eshkol_builtin_mkdtemp")
+ONE_ARG_BUILTIN(directoryDeleteRecursive, "eshkol_builtin_directory_delete_recursive")
+
+/* Shell */
+ONE_ARG_BUILTIN(shellQuote, "eshkol_builtin_shell_quote")
+
+/* Process */
+TWO_ARG_BUILTIN(processSpawn, "eshkol_builtin_process_spawn")
+ONE_ARG_BUILTIN(processWait, "eshkol_builtin_process_wait")
+
+/* IO multiplexing */
+TWO_ARG_BUILTIN(pollFd, "eshkol_builtin_poll_fd")
+
+/* Tensor persistence */
+TWO_ARG_BUILTIN(tensorSave, "eshkol_builtin_tensor_save")
+ONE_ARG_BUILTIN(tensorLoad, "eshkol_builtin_tensor_load")
+
+/* v1.2 batch 2: VM-parity + new builtins */
+TWO_ARG_BUILTIN(fileChmod, "eshkol_builtin_file_chmod")
+TWO_ARG_BUILTIN(symlinkCreate, "eshkol_builtin_symlink_create")
+ONE_ARG_BUILTIN(symlinkRead, "eshkol_builtin_symlink_read")
+ONE_ARG_BUILTIN(directoryWalk, "eshkol_builtin_directory_walk")
+ONE_ARG_BUILTIN(mkstempBuiltin, "eshkol_builtin_mkstemp")
+TWO_ARG_BUILTIN(processKill, "eshkol_builtin_process_kill")
+ONE_ARG_BUILTIN(fileMtime, "eshkol_builtin_file_mtime")
+ONE_ARG_BUILTIN(fileAtime, "eshkol_builtin_file_atime")
+ONE_ARG_BUILTIN(fileLock, "eshkol_builtin_file_lock")
+ONE_ARG_BUILTIN(fileUnlock, "eshkol_builtin_file_unlock")
+TWO_ARG_BUILTIN(pathRelative, "eshkol_builtin_path_relative")
+TWO_ARG_BUILTIN(pathResolve, "eshkol_builtin_path_resolve")
+ONE_ARG_BUILTIN(globExpand, "eshkol_builtin_glob_expand")
+TWO_ARG_BUILTIN(globMatch, "eshkol_builtin_glob_match")
+
+/* v1.2 batch 3: advanced process management */
+TWO_ARG_BUILTIN(processSetpgid, "eshkol_builtin_process_setpgid")
+TWO_ARG_BUILTIN(processKillTree, "eshkol_builtin_process_kill_tree")
+ONE_ARG_BUILTIN(processSpawnPty, "eshkol_builtin_process_spawn_pty")
+TWO_ARG_BUILTIN(processReadNonblocking, "eshkol_builtin_process_read_nonblocking")
+
+/* Three-arg builtin */
+#define THREE_ARG_BUILTIN(method_name, c_func_name) \
+llvm::Value* SystemCodegen::method_name(const eshkol_operations_t* op) { \
+    if (op->call_op.num_vars != 3) return tagged_.packNull(); \
+    if (!codegen_ast_callback_) return tagged_.packNull(); \
+    llvm::Value* a = codegen_ast_callback_(&op->call_op.variables[0], callback_context_); \
+    llvm::Value* b = codegen_ast_callback_(&op->call_op.variables[1], callback_context_); \
+    llvm::Value* c = codegen_ast_callback_(&op->call_op.variables[2], callback_context_); \
+    if (!a || !b || !c) return tagged_.packNull(); \
+    llvm::Module* mod = ctx_.builder().GetInsertBlock()->getParent()->getParent(); \
+    llvm::Function* f = getOrDeclareRuntimeFuncAllPtr(ctx_, mod, c_func_name, 3); \
+    return callPtrRuntime(ctx_, f, {a, b, c}); \
+}
+
+/* Noesis requirements */
+TWO_ARG_BUILTIN(fgMarginal, "eshkol_builtin_fg_marginal")
+TWO_ARG_BUILTIN(fgEntropy, "eshkol_builtin_fg_entropy")
+TWO_ARG_BUILTIN(kbRetract, "eshkol_builtin_kb_retract")
+
+/* Consciousness engine — uses existing tagged functions from logic.cpp/inference.cpp/workspace.cpp.
+ * These have signature: void func(arena_t* arena, const tv* arg1, ..., tv* result)
+ * Arena comes first, result comes last. Custom dispatch needed. */
+
+/* Helper: call arena-first tagged function with N args */
+static llvm::Value* callArenaTaggedFunc(CodegenContext& ctx, TaggedValueCodegen& tagged,
+                                         const std::string& name, int nargs,
+                                         llvm::ArrayRef<llvm::Value*> args) {
+    llvm::Module* mod = ctx.builder().GetInsertBlock()->getParent()->getParent();
+    llvm::Function* f = mod->getFunction(name);
+    if (!f) {
+        /* Signature: void func(ptr arena, [ptr arg1, ..., ptr argN,] ptr result) */
+        std::vector<llvm::Type*> param_types(2 + nargs, ctx.ptrType());
+        llvm::FunctionType* ft = llvm::FunctionType::get(
+            llvm::Type::getVoidTy(ctx.context()), param_types, false);
+        f = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, name, mod);
+    }
+
+    llvm::IRBuilder<>& builder = ctx.builder();
+    llvm::Value* result_ptr = builder.CreateAlloca(ctx.taggedValueType(), nullptr, "ce_result");
+    llvm::Value* arena = builder.CreateLoad(ctx.ptrType(), ctx.globalArena());
+
+    std::vector<llvm::Value*> call_args;
+    call_args.push_back(arena);
+    for (auto* a : args) {
+        llvm::Value* slot = builder.CreateAlloca(ctx.taggedValueType());
+        builder.CreateStore(a, slot);
+        call_args.push_back(slot);
+    }
+    call_args.push_back(result_ptr);
+
+    builder.CreateCall(f, call_args);
+    return builder.CreateLoad(ctx.taggedValueType(), result_ptr);
+}
+
+#define CE_ZERO_ARG(method_name, c_func_name) \
+llvm::Value* SystemCodegen::method_name(const eshkol_operations_t* op) { \
+    (void)op; \
+    return callArenaTaggedFunc(ctx_, tagged_, c_func_name, 0, {}); \
+}
+
+#define CE_TWO_ARG(method_name, c_func_name) \
+llvm::Value* SystemCodegen::method_name(const eshkol_operations_t* op) { \
+    if (op->call_op.num_vars != 2) return tagged_.packNull(); \
+    if (!codegen_ast_callback_) return tagged_.packNull(); \
+    llvm::Value* a = codegen_ast_callback_(&op->call_op.variables[0], callback_context_); \
+    llvm::Value* b = codegen_ast_callback_(&op->call_op.variables[1], callback_context_); \
+    if (!a || !b) return tagged_.packNull(); \
+    return callArenaTaggedFunc(ctx_, tagged_, c_func_name, 2, {a, b}); \
+}
+
+#define CE_THREE_ARG(method_name, c_func_name) \
+llvm::Value* SystemCodegen::method_name(const eshkol_operations_t* op) { \
+    if (op->call_op.num_vars != 3) return tagged_.packNull(); \
+    if (!codegen_ast_callback_) return tagged_.packNull(); \
+    llvm::Value* a = codegen_ast_callback_(&op->call_op.variables[0], callback_context_); \
+    llvm::Value* b = codegen_ast_callback_(&op->call_op.variables[1], callback_context_); \
+    llvm::Value* c = codegen_ast_callback_(&op->call_op.variables[2], callback_context_); \
+    if (!a || !b || !c) return tagged_.packNull(); \
+    return callArenaTaggedFunc(ctx_, tagged_, c_func_name, 3, {a, b, c}); \
+}
+
+#define CE_ONE_ARG(method_name, c_func_name) \
+llvm::Value* SystemCodegen::method_name(const eshkol_operations_t* op) { \
+    if (op->call_op.num_vars != 1) return tagged_.packNull(); \
+    if (!codegen_ast_callback_) return tagged_.packNull(); \
+    llvm::Value* a = codegen_ast_callback_(&op->call_op.variables[0], callback_context_); \
+    if (!a) return tagged_.packNull(); \
+    return callArenaTaggedFunc(ctx_, tagged_, c_func_name, 1, {a}); \
+}
+
+/* Logic engine */
+CE_ZERO_ARG(makeSubstitution, "eshkol_make_substitution_tagged")
+CE_ZERO_ARG(makeKbBuiltin, "eshkol_make_kb_tagged")
+CE_THREE_ARG(unifyBuiltin, "eshkol_unify_tagged")
+CE_TWO_ARG(walkBuiltin, "eshkol_walk_tagged")
+CE_TWO_ARG(makeFactBuiltin, "eshkol_make_fact_tagged")
+CE_TWO_ARG(kbAssertBuiltin, "eshkol_kb_assert_tagged")
+CE_TWO_ARG(kbQueryBuiltin, "eshkol_kb_query_tagged")
+
+/* Inference engine */
+CE_TWO_ARG(makeFactorGraphBuiltin, "eshkol_make_factor_graph_tagged")
+CE_THREE_ARG(fgAddFactorBuiltin, "eshkol_fg_add_factor_tagged")
+CE_THREE_ARG(fgInferBuiltin, "eshkol_fg_infer_tagged")
+CE_TWO_ARG(freeEnergyBuiltin, "eshkol_free_energy_tagged")
+CE_THREE_ARG(expectedFreeEnergyBuiltin, "eshkol_efe_tagged")
+
+/* Workspace */
+CE_TWO_ARG(makeWorkspaceBuiltin, "eshkol_make_workspace_tagged")
+CE_THREE_ARG(wsRegisterBuiltin, "eshkol_ws_register_tagged")
+CE_ONE_ARG(wsStepBuiltin, "eshkol_ws_step_tagged")
+
+#undef CE_ZERO_ARG
+#undef CE_ONE_ARG
+#undef CE_TWO_ARG
+#undef CE_THREE_ARG
+
+/* Reverse-mode AD tape — all use sret pattern from system_builtins */
+ZERO_ARG_BUILTIN(adTapeNew, "eshkol_ad_tape_new_sret")
+/* Bug I (2026-04-20): release the tape's owned sub-arena so iterative
+ * fit loops don't leak. One-arg: the tape to release. */
+ONE_ARG_BUILTIN(adTapeRelease, "eshkol_ad_tape_release_sret")
+TWO_ARG_BUILTIN(adConst, "eshkol_ad_const_sret")
+TWO_ARG_BUILTIN(adVar, "eshkol_ad_var_sret")
+
+llvm::Value* SystemCodegen::adBinaryOp(const eshkol_operations_t* op, const char* func_name) {
+    if (op->call_op.num_vars != 3) return tagged_.packNull();
+    if (!codegen_ast_callback_) return tagged_.packNull();
+    llvm::Value* tape = codegen_ast_callback_(&op->call_op.variables[0], callback_context_);
+    llvm::Value* left = codegen_ast_callback_(&op->call_op.variables[1], callback_context_);
+    llvm::Value* right = codegen_ast_callback_(&op->call_op.variables[2], callback_context_);
+    if (!tape || !left || !right) return tagged_.packNull();
+    llvm::Module* mod = ctx_.builder().GetInsertBlock()->getParent()->getParent();
+    llvm::Function* f = getOrDeclareRuntimeFuncAllPtr(ctx_, mod, func_name, 3);
+    return callPtrRuntime(ctx_, f, {tape, left, right});
+}
+
+llvm::Value* SystemCodegen::adUnaryOp(const eshkol_operations_t* op, const char* func_name) {
+    if (op->call_op.num_vars != 2) return tagged_.packNull();
+    if (!codegen_ast_callback_) return tagged_.packNull();
+    llvm::Value* tape = codegen_ast_callback_(&op->call_op.variables[0], callback_context_);
+    llvm::Value* node = codegen_ast_callback_(&op->call_op.variables[1], callback_context_);
+    if (!tape || !node) return tagged_.packNull();
+    llvm::Module* mod = ctx_.builder().GetInsertBlock()->getParent()->getParent();
+    llvm::Function* f = getOrDeclareRuntimeFuncAllPtr(ctx_, mod, func_name, 2);
+    return callPtrRuntime(ctx_, f, {tape, node});
+}
+
+TWO_ARG_BUILTIN(adBackward, "eshkol_ad_backward_sret")
+TWO_ARG_BUILTIN(adGradient, "eshkol_ad_gradient_sret")
+TWO_ARG_BUILTIN(adNodeValue, "eshkol_ad_node_value_sret")
+TWO_ARG_BUILTIN(onnxExportTensor, "eshkol_builtin_onnx_export_tensor")
+
+/* Type predicates */
+ONE_ARG_BUILTIN(logicVarPred, "eshkol_builtin_logic_var_p")
+ONE_ARG_BUILTIN(substitutionPred, "eshkol_builtin_substitution_p")
+ONE_ARG_BUILTIN(factPred, "eshkol_builtin_fact_p")
+ONE_ARG_BUILTIN(kbPred, "eshkol_builtin_kb_p")
+ONE_ARG_BUILTIN(factorGraphPred, "eshkol_builtin_factor_graph_p")
+ONE_ARG_BUILTIN(workspacePred, "eshkol_builtin_workspace_p")
+ONE_ARG_BUILTIN(tensorPred, "eshkol_builtin_tensor_p")
+ONE_ARG_BUILTIN(dualPred, "eshkol_builtin_dual_p")
+THREE_ARG_BUILTIN(fgUpdateCpt, "eshkol_builtin_fg_update_cpt")
+ONE_ARG_BUILTIN(kbCount, "eshkol_builtin_kb_count")
+
+/* Image I/O */
+ONE_ARG_BUILTIN(imageRead, "eshkol_builtin_image_read_sret")
+THREE_ARG_BUILTIN(imageWrite, "eshkol_builtin_image_write_sret")
+ONE_ARG_BUILTIN(imageGrayscale, "eshkol_builtin_image_grayscale_sret")
+
+/* v1.2 batch 4 */
+ZERO_ARG_BUILTIN(processPid, "eshkol_builtin_process_pid")
+ONE_ARG_BUILTIN(fileMmap, "eshkol_builtin_file_mmap")
+ONE_ARG_BUILTIN(fileMunmap, "eshkol_builtin_file_munmap")
+TWO_ARG_BUILTIN(kbSave, "eshkol_builtin_kb_save")
+ONE_ARG_BUILTIN(kbLoad, "eshkol_builtin_kb_load")
+ONE_ARG_BUILTIN(tensorTokenEstimate, "eshkol_builtin_tensor_token_estimate")
+
+#undef ZERO_ARG_BUILTIN
+#undef ONE_ARG_BUILTIN
+#undef TWO_ARG_BUILTIN
 
 } // namespace eshkol
 

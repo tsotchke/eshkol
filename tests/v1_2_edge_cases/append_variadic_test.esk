@@ -1,0 +1,77 @@
+;; append_variadic_test.esk — Noesis Quirk 10 (2026-04-24)
+;;
+;; Before fix: (append a b c d) silently dropped arg c (and sometimes d).
+;; The stdlib `append` was defined with arity 2, so any call with 3+ args
+;; truncated to the first two. No warning, no crash — just silently wrong.
+;;
+;; After fix: `append` is properly variadic per R7RS §6.4. Arity 0, 1, 2,
+;; and N-ary all produce the correct concatenation; last arg can be any
+;; datum (improper-list tails permitted).
+
+(require stdlib)
+
+(define passed 0)
+(define failed 0)
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin (display "PASS: ") (display name) (newline)
+             (set! passed (+ passed 1)))
+      (begin (display "FAIL: ") (display name)
+             (display " — expected ") (display expected)
+             (display ", got ") (display actual) (newline)
+             (set! failed (+ failed 1)))))
+
+;; ── R7RS arity boundaries ─────────────────────────────────────────
+(check "0-arg append is ()"  '()       (append))
+(check "1-arg preserved"     '(1 2 3)  (append '(1 2 3)))
+(check "1-arg empty"         '()       (append '()))
+
+;; ── 2-arg (the old working path) ──────────────────────────────────
+(check "2-arg basic"         '(1 2 3 4)    (append '(1 2) '(3 4)))
+(check "2-arg left-empty"    '(3 4)        (append '() '(3 4)))
+(check "2-arg right-empty"   '(1 2)        (append '(1 2) '()))
+(check "2-arg both-empty"    '()           (append '() '()))
+
+;; ── 3-arg (Quirk 10 core case) ────────────────────────────────────
+(check "3-arg basic"         '(1 2 3 4 5 6)   (append '(1 2) '(3 4) '(5 6)))
+(check "3-arg middle alist"  '(1 2 (k . v) 3) (append '(1 2) '((k . v)) '(3)))
+(check "3-arg middle empty"  '(1 2 3)         (append '(1 2) '() '(3)))
+(check "3-arg first empty"   '(2 3)           (append '() '(2) '(3)))
+
+;; ── 4-arg (the exact Noesis repro) ────────────────────────────────
+(define a '(1 2))
+(define b '(3 4))
+(define c '((surprise-count 2)))
+(define d '(5 6))
+(check "4-arg Noesis shape"
+       '(1 2 3 4 (surprise-count 2) 5 6)
+       (append a b c d))
+
+;; ── 5+ args ────────────────────────────────────────────────────────
+(check "5-arg basic"
+       '(1 2 3 4 5 6 7 8 9 10)
+       (append '(1 2) '(3 4) '(5 6) '(7 8) '(9 10)))
+
+;; ── Improper-list tail (R7RS allows non-list as last arg) ─────────
+(check "dotted-tail last"    '(1 2 3 . end)  (append '(1) '(2) '(3) 'end))
+(check "single improper"     'end            (append 'end))
+
+;; ── apply append ──────────────────────────────────────────────────
+(check "apply append of 3 lists"
+       '(1 2 3 4 5 6)
+       (apply append '((1 2) (3 4) (5 6))))
+(check "apply append of 0 lists" '() (apply append '()))
+
+;; ── Noesis sanity: alist-merge pattern ────────────────────────────
+;; Typical Noesis shape: merge three alist segments into one.
+(define header '((name . "alpha") (version . 1)))
+(define middle '((surprise-count . 2)))
+(define footer '((checksum . 3735928559)))
+(check "alist 3-merge"
+       '((name . "alpha") (version . 1) (surprise-count . 2) (checksum . 3735928559))
+       (append header middle footer))
+
+(newline)
+(display "Passed: ") (display passed) (newline)
+(display "Failed: ") (display failed) (newline)
+(if (> failed 0) (exit 1) (exit 0))

@@ -1,0 +1,83 @@
+;; map_empty_zombie_null_test.esk — Noesis Bug R (2026-04-23)
+;;
+;; codegenMap (mapSingleList / mapMultiList) returned
+;;   packHeapPtr(IntToPtr(final_result))
+;; unconditionally. When the input was empty and final_result == 0,
+;; this produced a tagged value with type=HEAP_PTR but data=0 — a
+;; "zombie null" that lied about being a heap pointer.
+;;
+;; Downstream predicates (string?, symbol?, vector?, …) routed through
+;; isHeapSubtype: see HEAP_PTR base type → enter check_subtype branch →
+;; getObjectSubtype dereferences ptr-8 → SIGSEGV at 0xfffffffffffffff8.
+;;
+;; The crash only manifested when the map result was passed to a
+;; type-predicate cascade — display alone, length, null?, pair?, list?
+;; all worked because their codegen paths NULL-check first. string? and
+;; the heap-subtype predicates trusted the type tag.
+;;
+;; Fix: mapSingleList and mapMultiList now select between packNull()
+;; and packHeapPtr() based on whether final_result == 0, mirroring
+;; mapWithClosure which already had this discipline.
+;;
+;; Surfaced via Noesis Hiereia soul.esk's tamper-detection smoke —
+;; soul-content-hash builds a snapshot containing
+;; (map value->sexp (soul-values s)) which is () when the soul has no
+;; values, then walks the snapshot via sexp->canonical-string which
+;; dispatches on string?/null?/pair? — and crashed on the zombie null.
+
+(require stdlib)
+
+(define passed 0)
+(define failed 0)
+(define (check name cond)
+  (if cond
+      (begin (display "PASS: ") (display name) (newline)
+             (set! passed (+ passed 1)))
+      (begin (display "FAIL: ") (display name) (newline)
+             (set! failed (+ failed 1)))))
+
+;; Case 1: predicates on (map identity '())
+(define m1 (map (lambda (x) x) '()))
+(check "null? on empty map result"   (null? m1))
+(check "pair? on empty map result"   (not (pair? m1)))
+(check "string? on empty map result" (not (string? m1)))
+(check "vector? on empty map result" (not (vector? m1)))
+(check "symbol? on empty map result" (not (symbol? m1)))
+(check "list? on empty map result"   (list? m1))
+
+;; Case 2: predicates on (map proc '()) embedded in a larger sexp
+(define snap (list "X" (map (lambda (x) x) '()) "Z"))
+(check "snap structure intact"       (= (length snap) 3))
+(check "snap second element is null" (null? (car (cdr snap))))
+
+;; Case 3: cascade dispatch like sexp->canonical-string. Ensure
+;; walking the snapshot via the predicate cascade does not crash.
+(define (sexp->cstring s)
+  (cond ((string? s) (string-append "\"" s "\""))
+        ((null? s)   "()")
+        ((pair? s)
+         (string-append "(" (sexp->cstring-list s) ")"))
+        (else "?")))
+(define (sexp->cstring-list s)
+  (cond ((null? s) "")
+        ((null? (cdr s)) (sexp->cstring (car s)))
+        (else (string-append (sexp->cstring (car s)) " "
+                             (sexp->cstring-list (cdr s))))))
+(check "cascade walk over empty-map snapshot"
+       (string=? (sexp->cstring snap) "(\"X\" () \"Z\")"))
+
+;; Case 4: regression guard — non-empty map still returns a true cons
+(define m2 (map (lambda (x) (* x 2)) '(1 2 3)))
+(check "non-empty map: list?"  (list? m2))
+(check "non-empty map: pair?"  (pair? m2))
+(check "non-empty map: equal?" (equal? m2 '(2 4 6)))
+
+;; Case 5: multi-list map with empty inputs
+(define m3 (map (lambda (a b) (+ a b)) '() '()))
+(check "multimap empty null?"   (null? m3))
+(check "multimap empty string?" (not (string? m3)))
+
+(newline)
+(display "Passed: ") (display passed) (newline)
+(display "Failed: ") (display failed) (newline)
+(if (> failed 0) (exit 1) (exit 0))

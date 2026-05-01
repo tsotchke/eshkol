@@ -57,12 +57,33 @@ compile_and_run_test() {
 
     printf "Compiling %-40s " "$test_name..."
 
-    # Compile the test
+    # Compile the test.  We link the prebuilt libeshkol-static.a (which
+    # includes arena_memory.cpp's `arena_strdup`, `arena_allocate_zeroed`,
+    # `get_global_arena`, etc.) instead of pulling raw .cpp files —
+    # type_checker.cpp and ast.cpp call into the arena allocator and
+    # fail to link otherwise.  The CMake `eshkol-static` target must be
+    # built first (`cmake --build build` does this automatically).
+    local extra_libs=("$BUILD_DIR/libeshkol-static.a")
+    # Platform frameworks and helper libs the static archive was
+    # itself linked against.  Mirrors lib/backend/llvm_codegen.cpp's
+    # link path — keep these in sync if a new framework is added.
+    case "$(uname -s)" in
+        Darwin)
+            extra_libs+=("-framework" "Accelerate"
+                         "-framework" "Metal"
+                         "-framework" "MetalPerformanceShaders"
+                         "-framework" "Foundation"
+                         "-framework" "Security"
+                         "-framework" "CoreFoundation"
+                         "-lobjc" "-lncurses" "-lpcre2-8" "-lsqlite3") ;;
+    esac
+
     if g++ -std=c++20 \
         -I"$PROJECT_DIR/inc" \
         ${LLVM_CXXFLAGS[@]+"${LLVM_CXXFLAGS[@]}"} \
         $SOURCES \
         "$test_file" \
+        "${extra_libs[@]}" \
         ${LLVM_LDFLAGS[@]+"${LLVM_LDFLAGS[@]}"} \
         ${LLVM_LIBS[@]+"${LLVM_LIBS[@]}"} \
         ${LLVM_SYSTEM_LIBS[@]+"${LLVM_SYSTEM_LIBS[@]}"} \

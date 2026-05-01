@@ -28,6 +28,12 @@
 #ifndef ESHKOL_VM_WASM
 #include <dirent.h>
 #include <unistd.h>
+#include <sys/stat.h>
+#include <sys/time.h>
+#include <sys/wait.h>
+#include <signal.h>
+#include <poll.h>
+#include <errno.h>
 #endif
 
 /* ESKB binary format */
@@ -48,6 +54,7 @@
 #include "vm_rational.c"
 #include "vm_bignum.c"
 #include "vm_dual.c"
+#include "vm_hyperdual.c"
 #include "vm_autodiff.c"
 #include "vm_tensor.c"
 #include "vm_tensor_ops.c"
@@ -74,13 +81,13 @@
 /* Geometric manifold operations (Riemannian, geodesic, Lie groups) */
 #include "vm_geometric.c"
 
-/* Native function dispatch (550+ functions) */
-#include "vm_native.c"
-
-/* Thread pool and parallel primitives */
+/* Thread pool and parallel primitives (before vm_native so parallel-map can use g_pool) */
 #ifndef ESHKOL_VM_WASM
 #include "vm_parallel.c"
 #endif
+
+/* Native function dispatch (550+ functions) */
+#include "vm_native.c"
 
 /* VM interpreter: 63-opcode dispatch loop */
 #include "vm_run.c"
@@ -232,16 +239,27 @@ static const BuiltinDef BUILTINS[] = {
     {"numerator", 346, 1}, {"denominator", 347, 1},
     {"rationalize", 345, 2},
     /* ═══════════════════════════════════════════════════════════════
-     * AD — new-style IDs 370-399, high-level 750-752
+     * AD — new-style IDs 370-399, high-level 750-756
      * ═══════════════════════════════════════════════════════════════ */
     {"make-dual", 370, 2}, {"dual-primal", 371, 1}, {"dual-tangent", 372, 1},
     {"dual?", 383, 1}, {"derivative", 393, 2}, {"diff", 393, 2},
     {"gradient", 750, 2}, {"jacobian", 751, 2}, {"hessian", 752, 2},
+    {"divergence", 753, 2}, {"curl", 754, 2},
+    {"laplacian", 755, 2}, {"directional-derivative", 756, 3},
+    {"reverse-gradient", 1840, 2},
+    /* Low-level reverse-mode tape API */
+    {"ad-tape-new", 390, 0}, {"ad-const", 391, 2}, {"ad-var", 392, 2},
+    {"ad-add", 394, 3}, {"ad-sub", 395, 3}, {"ad-mul", 396, 3}, {"ad-div", 397, 3},
+    {"ad-sin", 398, 2}, {"ad-cos", 399, 2}, {"ad-exp", 400, 2},
+    {"ad-log", 401, 2}, {"ad-sqrt", 402, 2}, {"ad-neg", 403, 2},
+    {"ad-abs", 404, 2}, {"ad-relu", 405, 2}, {"ad-sigmoid", 406, 2}, {"ad-tanh", 407, 2},
+    {"ad-pow", 397, 3}, {"ad-backward", 408, 2}, {"ad-gradient", 409, 2},
     /* ═══════════════════════════════════════════════════════════════
      * Tensors — IDs 410-470
      * ═══════════════════════════════════════════════════════════════ */
     {"make-tensor", 410, 2}, {"tensor", 410, 2},
     {"tensor-get", 411, 2}, {"tensor-ref", 411, 2},
+    {"tensor-set!", 412, 3},
     {"tensor-shape", 413, 1}, {"tensor-reshape", 414, 2}, {"reshape", 414, 2},
     {"tensor-transpose", 415, 1}, {"transpose", 415, 1},
     {"flatten", 416, 1}, {"zeros", 417, 1}, {"ones", 418, 1},
@@ -284,6 +302,7 @@ static const BuiltinDef BUILTINS[] = {
     {"eof-object?", 592, 1},
     {"open-input-string", 596, 1}, {"open-output-string", 597, 0},
     {"get-output-string", 598, 1}, {"file-exists?", 599, 1},
+    {"delete-file", 600, 1},
     {"directory-entries", 601, 1}, {"command-line", 602, 0},
     /* ═══════════════════════════════════════════════════════════════
      * Hash tables — IDs 660-670
@@ -329,6 +348,61 @@ static const BuiltinDef BUILTINS[] = {
     {"string-reverse", 905, 1}, {"string-repeat", 906, 2},
     {"string-trim", 907, 1}, {"string-split", 908, 2},
     {"string-join", 909, 2},
+    /* ═══════════════════════════════════════════════════════════════
+     * System Information — IDs 1700-1719
+     * ═══════════════════════════════════════════════════════════════ */
+    {"os-type", 1700, 0}, {"os-arch", 1701, 0},
+    {"home-directory", 1702, 0}, {"current-directory", 1703, 0},
+    {"set-current-directory!", 1704, 1},
+    {"hostname", 1705, 0}, {"username", 1706, 0},
+    {"cpu-count", 1707, 0}, {"executable-exists?", 1708, 1},
+    {"current-time-ms", 1709, 0}, {"getpid", 1710, 0},
+    {"sleep-ms", 1711, 1}, {"setenv", 1712, 2}, {"unsetenv", 1713, 1},
+    {"current-error-port", 1714, 0},
+    {"get-environment-variable", 1715, 1},
+    /* ═══════════════════════════════════════════════════════════════
+     * Path Manipulation — IDs 1720-1739
+     * ═══════════════════════════════════════════════════════════════ */
+    {"path-join", 1720, 2}, {"path-dirname", 1721, 1},
+    {"path-basename", 1722, 1}, {"path-extname", 1723, 1},
+    {"path-is-absolute?", 1724, 1}, {"path-normalize", 1725, 1},
+    {"realpath", 1726, 1},
+    /* ═══════════════════════════════════════════════════════════════
+     * Filesystem — IDs 1740-1769
+     * ═══════════════════════════════════════════════════════════════ */
+    {"file-size", 1740, 1}, {"file-stat", 1741, 1},
+    {"file-rename", 1742, 2}, {"file-copy", 1743, 2},
+    {"mkdir-recursive", 1744, 1}, {"file-chmod", 1745, 2},
+    {"symlink-create", 1746, 2}, {"symlink-read", 1747, 1},
+    {"directory-walk", 1748, 1}, {"directory-delete-recursive", 1749, 1},
+    {"mkstemp", 1750, 1}, {"mkdtemp", 1751, 1},
+    /* ═══════════════════════════════════════════════════════════════
+     * Shell Utilities — IDs 1770-1779
+     * ═══════════════════════════════════════════════════════════════ */
+    {"shell-quote", 1770, 1}, {"shell-split", 1771, 1},
+    /* ═══════════════════════════════════════════════════════════════
+     * Process Management — IDs 1780-1799
+     * ═══════════════════════════════════════════════════════════════ */
+    {"process-spawn", 1780, 3}, {"process-wait", 1781, 1},
+    {"process-kill", 1782, 2}, {"io-poll", 1783, 2},
+    /* ═══════════════════════════════════════════════════════════════
+     * KB Extensions — IDs 1800-1809
+     * ═══════════════════════════════════════════════════════════════ */
+    {"kb-count", 1800, 1}, {"kb-retract!", 1801, 2},
+    /* ═══════════════════════════════════════════════════════════════
+     * Factor Graph Extensions — IDs 1810-1819
+     * ═══════════════════════════════════════════════════════════════ */
+    {"fg-marginal", 1810, 2}, {"fg-entropy", 1811, 2},
+    /* ═══════════════════════════════════════════════════════════════
+     * Tensor/KB Persistence — IDs 1820-1829
+     * ═══════════════════════════════════════════════════════════════ */
+    {"tensor-save", 1820, 2}, {"tensor-load", 1821, 1},
+    {"kb-save", 1822, 2},
+    /* ═══════════════════════════════════════════════════════════════
+     * Image I/O — IDs 1850-1859
+     * ═══════════════════════════════════════════════════════════════ */
+    {"image-read", 1850, 1}, {"image-write", 1851, 3},
+    {"image-to-grayscale", 1852, 1}, {"image-resize", 1853, 3},
     /* Sentinel */
     {NULL, 0, 0}
 };

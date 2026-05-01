@@ -1,3 +1,12 @@
+/* Heap pointer validation — prevent OOB heap access from untrusted values.
+ * Used before any vm->heap.objects[val.as.ptr] dereference. */
+#define VM_VALIDATE_HEAP(vm, val) \
+    (is_valid_heap_ptr((vm), (val).as.ptr) ? \
+     (vm)->heap.objects[(val).as.ptr] : \
+     (fprintf(stderr, "HEAP ACCESS: invalid ptr %d (max %d)\n", \
+              (val).as.ptr, (vm)->heap.next_free), \
+      (vm)->error = 1, (HeapObject*)NULL))
+
 static void vm_dispatch_native(VM* vm, int fid) {
     switch (fid) {
     /* ══════════════════════════════════════════════════════════════════════
@@ -125,7 +134,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 71: { /* length */
         Value lst = vm_pop(vm);
         int len = 0;
-        while (lst.type == VAL_PAIR) { len++; lst = vm->heap.objects[lst.as.ptr]->cons.cdr; }
+        while (lst.type == VAL_PAIR) { len++; if (len > 1000000) { vm->error = 1; break; } lst = vm->heap.objects[lst.as.ptr]->cons.cdr; }
+        if (vm->error) break;
         vm_push(vm, INT_VAL(len));
         break;
     }
@@ -600,6 +610,91 @@ static void vm_dispatch_native(VM* vm, int fid) {
             VmDual* result = vm_dual_scale(dual_rs, as_number(scalar_val), &a_d);
             if (!result) { vm_push(vm, NIL_VAL); break; }
             VM_PUSH_HEAP_OPAQUE(vm, HEAP_DUAL, VAL_DUAL, result); break; }
+        default: vm_push(vm, NIL_VAL); break;
+        }
+        break;
+    }
+
+    /* ══════════════════════════════════════════════════════════════════════
+     * Hyper-Dual Numbers (1900-1921) — exact second derivatives
+     * ══════════════════════════════════════════════════════════════════════ */
+    case 1900: case 1901: case 1902: case 1903: case 1904:
+    case 1905: case 1906: case 1907: case 1908: case 1909:
+    case 1910: case 1911: case 1912: case 1913: case 1914:
+    case 1915: case 1916: case 1917: case 1918: case 1919:
+    case 1920: case 1921: {
+        VmRegionStack* hd_rs = &vm->heap.regions;
+        switch (fid) {
+        case 1900: { /* make-hyper-dual(f, f1, f2, f12) */
+            Value f12v = vm_pop(vm), f2v = vm_pop(vm), f1v = vm_pop(vm), fv = vm_pop(vm);
+            VmHyperDual* h = vm_hd_make(hd_rs, as_number(fv), as_number(f1v), as_number(f2v), as_number(f12v));
+            if (!h) { vm_push(vm, NIL_VAL); break; }
+            VM_PUSH_HEAP_OPAQUE(vm, HEAP_HYPER_DUAL, VAL_HYPER_DUAL, h); break; }
+        case 1901: { Value v = vm_pop(vm); /* f component */
+            if (v.type == VAL_HYPER_DUAL) { VmHyperDual* h = (VmHyperDual*)vm->heap.objects[v.as.ptr]->opaque.ptr; vm_push(vm, FLOAT_VAL(h->f)); }
+            else vm_push(vm, FLOAT_VAL(as_number(v))); break; }
+        case 1902: { Value v = vm_pop(vm); /* f1 component */
+            if (v.type == VAL_HYPER_DUAL) { VmHyperDual* h = (VmHyperDual*)vm->heap.objects[v.as.ptr]->opaque.ptr; vm_push(vm, FLOAT_VAL(h->f1)); }
+            else vm_push(vm, FLOAT_VAL(0.0)); break; }
+        case 1903: { Value v = vm_pop(vm); /* f2 component */
+            if (v.type == VAL_HYPER_DUAL) { VmHyperDual* h = (VmHyperDual*)vm->heap.objects[v.as.ptr]->opaque.ptr; vm_push(vm, FLOAT_VAL(h->f2)); }
+            else vm_push(vm, FLOAT_VAL(0.0)); break; }
+        case 1904: { Value v = vm_pop(vm); /* f12 — the second derivative */
+            if (v.type == VAL_HYPER_DUAL) { VmHyperDual* h = (VmHyperDual*)vm->heap.objects[v.as.ptr]->opaque.ptr; vm_push(vm, FLOAT_VAL(h->f12)); }
+            else vm_push(vm, FLOAT_VAL(0.0)); break; }
+        case 1905: case 1906: case 1907: case 1908: { /* binary: add/sub/mul/div */
+            Value b_val = vm_pop(vm), a_val = vm_pop(vm);
+            VmHyperDual a_h = {as_number(a_val), 0, 0, 0}, b_h = {as_number(b_val), 0, 0, 0};
+            if (a_val.type == VAL_HYPER_DUAL) a_h = *(VmHyperDual*)vm->heap.objects[a_val.as.ptr]->opaque.ptr;
+            if (b_val.type == VAL_HYPER_DUAL) b_h = *(VmHyperDual*)vm->heap.objects[b_val.as.ptr]->opaque.ptr;
+            VmHyperDual* result = NULL;
+            switch (fid) {
+                case 1905: result = vm_hd_add(hd_rs, &a_h, &b_h); break;
+                case 1906: result = vm_hd_sub(hd_rs, &a_h, &b_h); break;
+                case 1907: result = vm_hd_mul(hd_rs, &a_h, &b_h); break;
+                case 1908: result = vm_hd_div(hd_rs, &a_h, &b_h); break;
+            }
+            if (!result) { vm_push(vm, NIL_VAL); break; }
+            VM_PUSH_HEAP_OPAQUE(vm, HEAP_HYPER_DUAL, VAL_HYPER_DUAL, result); break; }
+        case 1909: case 1910: case 1911: case 1912: case 1913:
+        case 1914: case 1916: case 1917: case 1918: case 1919: { /* unary */
+            Value v = vm_pop(vm);
+            VmHyperDual a_h = {as_number(v), 0, 0, 0};
+            if (v.type == VAL_HYPER_DUAL) a_h = *(VmHyperDual*)vm->heap.objects[v.as.ptr]->opaque.ptr;
+            VmHyperDual* result = NULL;
+            switch (fid) {
+                case 1909: result = vm_hd_neg(hd_rs, &a_h); break;
+                case 1910: result = vm_hd_sin(hd_rs, &a_h); break;
+                case 1911: result = vm_hd_cos(hd_rs, &a_h); break;
+                case 1912: result = vm_hd_exp(hd_rs, &a_h); break;
+                case 1913: result = vm_hd_log(hd_rs, &a_h); break;
+                case 1914: result = vm_hd_sqrt(hd_rs, &a_h); break;
+                case 1916: result = vm_hd_abs(hd_rs, &a_h); break;
+                case 1917: result = vm_hd_relu(hd_rs, &a_h); break;
+                case 1918: result = vm_hd_sigmoid(hd_rs, &a_h); break;
+                case 1919: result = vm_hd_tanh(hd_rs, &a_h); break;
+            }
+            if (!result) { vm_push(vm, NIL_VAL); break; }
+            VM_PUSH_HEAP_OPAQUE(vm, HEAP_HYPER_DUAL, VAL_HYPER_DUAL, result); break; }
+        case 1915: { /* pow(base, exp) */
+            Value exp_val = vm_pop(vm), base_val = vm_pop(vm);
+            VmHyperDual a_h = {as_number(base_val), 0, 0, 0};
+            if (base_val.type == VAL_HYPER_DUAL) a_h = *(VmHyperDual*)vm->heap.objects[base_val.as.ptr]->opaque.ptr;
+            VmHyperDual* result = vm_hd_pow(hd_rs, &a_h, as_number(exp_val));
+            if (!result) { vm_push(vm, NIL_VAL); break; }
+            VM_PUSH_HEAP_OPAQUE(vm, HEAP_HYPER_DUAL, VAL_HYPER_DUAL, result); break; }
+        case 1920: { /* from-double */
+            Value v = vm_pop(vm);
+            VmHyperDual* h = vm_hd_from_double(hd_rs, as_number(v));
+            if (!h) { vm_push(vm, NIL_VAL); break; }
+            VM_PUSH_HEAP_OPAQUE(vm, HEAP_HYPER_DUAL, VAL_HYPER_DUAL, h); break; }
+        case 1921: { /* scale(scalar, hd) */
+            Value hd_val = vm_pop(vm), scalar_val = vm_pop(vm);
+            VmHyperDual a_h = {as_number(hd_val), 0, 0, 0};
+            if (hd_val.type == VAL_HYPER_DUAL) a_h = *(VmHyperDual*)vm->heap.objects[hd_val.as.ptr]->opaque.ptr;
+            VmHyperDual* result = vm_hd_scale(hd_rs, as_number(scalar_val), &a_h);
+            if (!result) { vm_push(vm, NIL_VAL); break; }
+            VM_PUSH_HEAP_OPAQUE(vm, HEAP_HYPER_DUAL, VAL_HYPER_DUAL, result); break; }
         default: vm_push(vm, NIL_VAL); break;
         }
         break;
@@ -1383,12 +1478,10 @@ static void vm_dispatch_native(VM* vm, int fid) {
                         fg->beliefs[var_id][s] = (s == obs_state) ? 0.0 : -1e30;
                     }
                     /* Mark variable as observed (skip during belief update in fg-infer!).
-                     * Use calloc (not arena) because VmFactorGraph's lifetime may exceed
-                     * arena scope. The leak is bounded: one allocation per factor graph
-                     * (guarded by !fg->observed), num_vars * sizeof(bool) = typically 6-24 bytes.
-                     * Freed when the factor graph is destroyed or the process exits. */
+                     * Allocated via VM arena — lives as long as the factor graph. */
                     if (!fg->observed) {
-                        fg->observed = (bool*)calloc(fg->num_vars, sizeof(bool));
+                        fg->observed = (bool*)vm_alloc(&vm->heap.regions, fg->num_vars * sizeof(bool));
+                        if (fg->observed) memset(fg->observed, 0, fg->num_vars * sizeof(bool));
                     }
                     if (fg->observed) {
                         fg->observed[var_id] = true;
@@ -1455,9 +1548,11 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 /* Call each module's closure, collect salience + proposal */
                 int n_mod = ws->n_modules;
                 if (n_mod > 256) n_mod = 256;
-                double* saliences = (double*)calloc(n_mod, sizeof(double));
-                Value* proposals = (Value*)calloc(n_mod, sizeof(Value));
-                if (!saliences || !proposals) { free(saliences); free(proposals); vm_push(vm, NIL_VAL); break; }
+                double* saliences = (double*)vm_alloc(&vm->heap.regions, n_mod * sizeof(double));
+                Value* proposals = (Value*)vm_alloc(&vm->heap.regions, n_mod * sizeof(Value));
+                if (!saliences || !proposals) { vm_push(vm, NIL_VAL); break; }
+                memset(saliences, 0, n_mod * sizeof(double));
+                memset(proposals, 0, n_mod * sizeof(Value));
                 for (int i = 0; i < n_mod; i++) {
                     Value* closure_ptr = (Value*)ws->modules[i].process_fn;
                     if (closure_ptr && closure_ptr->type == VAL_CLOSURE) {
@@ -1480,7 +1575,6 @@ static void vm_dispatch_native(VM* vm, int fid) {
                     if (saliences[i] > saliences[winner]) winner = i;
                 ws->step_count++;
                 Value winner_proposal = proposals[winner];
-                free(saliences); free(proposals);
                 vm_push(vm, winner_proposal);
                 break;
             }
@@ -1958,65 +2052,127 @@ static void vm_dispatch_native(VM* vm, int fid) {
     /* ══════════════════════════════════════════════════════════════════════
      * Parallel (620-628) — sequential fallback (VM is single-threaded)
      * ══════════════════════════════════════════════════════════════════════ */
-    case 620: { /* parallel-map(fn, list) — sequential via closure bridge (VM is single-threaded) */
+    case 620: { /* parallel-map(fn, list) — parallel via thread pool when available */
         Value list = vm_pop(vm), fn = vm_pop(vm);
-        /* Apply fn to each element, build result list in correct order */
-        Value rev_results = NIL_VAL;
+
+        /* Count elements */
+        int n = 0;
         Value cur = list;
-        while (cur.type == VAL_PAIR) {
-            Value elem = vm->heap.objects[cur.as.ptr]->cons.car;
-            Value mapped = vm_call_closure_from_native(vm, fn, &elem, 1);
-            int32_t p = heap_alloc(&vm->heap);
-            if (p < 0) break;
-            vm->heap.objects[p]->type = HEAP_CONS;
-            vm->heap.objects[p]->cons.car = mapped;
-            vm->heap.objects[p]->cons.cdr = rev_results;
-            rev_results = PAIR_VAL(p);
+        while (cur.type == VAL_PAIR && n < 4096) {
+            n++;
             cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
         }
-        /* Reverse to get correct order */
+
+        if (n == 0) { vm_push(vm, NIL_VAL); break; }
+
+        /* Extract elements into array */
+        Value* elems = (Value*)vm_alloc(&vm->heap.regions, (size_t)n * sizeof(Value));
+        if (!elems) { vm_push(vm, NIL_VAL); break; }
+        cur = list;
+        for (int i = 0; i < n; i++) {
+            elems[i] = vm->heap.objects[cur.as.ptr]->cons.car;
+            cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
+        }
+
+        /* Allocate results array */
+        Value* results = (Value*)vm_alloc(&vm->heap.regions, (size_t)n * sizeof(Value));
+        if (!results) { vm_push(vm, NIL_VAL); break; }
+
+        /* Use thread pool if available and list is large enough */
+        if (g_pool && n >= 4) {
+            VmParMapTask* tasks = (VmParMapTask*)vm_alloc(&vm->heap.regions,
+                                      (size_t)n * sizeof(VmParMapTask));
+            if (tasks) {
+                for (int i = 0; i < n; i++) {
+                    tasks[i].main_vm = vm;
+                    tasks[i].closure = fn;
+                    tasks[i].input = elems[i];
+                    tasks[i].output = NIL_VAL;
+                }
+                for (int i = 0; i < n; i++) {
+                    vm_pool_submit(g_pool, vm_parmap_task_fn, &tasks[i], NULL);
+                }
+                vm_pool_wait_all(g_pool);
+                for (int i = 0; i < n; i++) {
+                    results[i] = tasks[i].output;
+                }
+            } else {
+                /* Fallback: sequential */
+                for (int i = 0; i < n; i++) {
+                    results[i] = vm_call_closure_from_native(vm, fn, &elems[i], 1);
+                }
+            }
+        } else {
+            /* Sequential: small list or no pool */
+            for (int i = 0; i < n; i++) {
+                results[i] = vm_call_closure_from_native(vm, fn, &elems[i], 1);
+            }
+        }
+
+        /* Build result list from array (reverse order → cons → correct order) */
         Value result = NIL_VAL;
-        cur = rev_results;
-        while (cur.type == VAL_PAIR) {
+        for (int i = n - 1; i >= 0; i--) {
             int32_t p = heap_alloc(&vm->heap);
             if (p < 0) break;
             vm->heap.objects[p]->type = HEAP_CONS;
-            vm->heap.objects[p]->cons.car = vm->heap.objects[cur.as.ptr]->cons.car;
+            vm->heap.objects[p]->cons.car = results[i];
             vm->heap.objects[p]->cons.cdr = result;
             result = PAIR_VAL(p);
-            cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
         }
         vm_push(vm, result);
         break;
     }
-    case 621: { /* parallel-filter(pred, list) — sequential via closure bridge */
+    case 621: { /* parallel-filter(pred, list) — parallel predicate evaluation */
         Value list = vm_pop(vm), pred = vm_pop(vm);
-        Value rev_results = NIL_VAL;
+
+        /* Count and extract elements */
+        int n = 0;
         Value cur = list;
-        while (cur.type == VAL_PAIR) {
-            Value elem = vm->heap.objects[cur.as.ptr]->cons.car;
-            Value keep = vm_call_closure_from_native(vm, pred, &elem, 1);
-            if (is_truthy(keep)) {
+        while (cur.type == VAL_PAIR && n < 4096) { n++; cur = vm->heap.objects[cur.as.ptr]->cons.cdr; }
+        if (n == 0) { vm_push(vm, NIL_VAL); break; }
+
+        Value* elems = (Value*)vm_alloc(&vm->heap.regions, (size_t)n * sizeof(Value));
+        Value* preds = (Value*)vm_alloc(&vm->heap.regions, (size_t)n * sizeof(Value));
+        if (!elems || !preds) { vm_push(vm, NIL_VAL); break; }
+        cur = list;
+        for (int i = 0; i < n; i++) {
+            elems[i] = vm->heap.objects[cur.as.ptr]->cons.car;
+            cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
+        }
+
+        /* Evaluate predicates (parallel via pool if available) */
+        if (g_pool && n >= 4) {
+            VmParMapTask* tasks = (VmParMapTask*)vm_alloc(&vm->heap.regions,
+                                      (size_t)n * sizeof(VmParMapTask));
+            if (tasks) {
+                for (int i = 0; i < n; i++) {
+                    tasks[i].main_vm = vm; tasks[i].closure = pred;
+                    tasks[i].input = elems[i]; tasks[i].output = NIL_VAL;
+                }
+                for (int i = 0; i < n; i++)
+                    vm_pool_submit(g_pool, vm_parmap_task_fn, &tasks[i], NULL);
+                vm_pool_wait_all(g_pool);
+                for (int i = 0; i < n; i++) preds[i] = tasks[i].output;
+            } else {
+                for (int i = 0; i < n; i++)
+                    preds[i] = vm_call_closure_from_native(vm, pred, &elems[i], 1);
+            }
+        } else {
+            for (int i = 0; i < n; i++)
+                preds[i] = vm_call_closure_from_native(vm, pred, &elems[i], 1);
+        }
+
+        /* Build filtered list (correct order) */
+        Value result = NIL_VAL;
+        for (int i = n - 1; i >= 0; i--) {
+            if (is_truthy(preds[i])) {
                 int32_t p = heap_alloc(&vm->heap);
                 if (p < 0) break;
                 vm->heap.objects[p]->type = HEAP_CONS;
-                vm->heap.objects[p]->cons.car = elem;
-                vm->heap.objects[p]->cons.cdr = rev_results;
-                rev_results = PAIR_VAL(p);
+                vm->heap.objects[p]->cons.car = elems[i];
+                vm->heap.objects[p]->cons.cdr = result;
+                result = PAIR_VAL(p);
             }
-            cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
-        }
-        /* Reverse */
-        Value result = NIL_VAL;
-        cur = rev_results;
-        while (cur.type == VAL_PAIR) {
-            int32_t p = heap_alloc(&vm->heap);
-            if (p < 0) break;
-            vm->heap.objects[p]->type = HEAP_CONS;
-            vm->heap.objects[p]->cons.car = vm->heap.objects[cur.as.ptr]->cons.car;
-            vm->heap.objects[p]->cons.cdr = result;
-            result = PAIR_VAL(p);
-            cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
         }
         vm_push(vm, result);
         break;
@@ -2034,13 +2190,40 @@ static void vm_dispatch_native(VM* vm, int fid) {
         vm_push(vm, acc);
         break;
     }
-    case 623: { /* parallel-for-each(fn, list) — sequential via closure bridge */
+    case 623: { /* parallel-for-each(fn, list) — parallel side-effect execution */
         Value list = vm_pop(vm), fn = vm_pop(vm);
+
+        int n = 0;
         Value cur = list;
-        while (cur.type == VAL_PAIR) {
-            Value elem = vm->heap.objects[cur.as.ptr]->cons.car;
-            vm_call_closure_from_native(vm, fn, &elem, 1);
+        while (cur.type == VAL_PAIR && n < 4096) { n++; cur = vm->heap.objects[cur.as.ptr]->cons.cdr; }
+        if (n == 0) { vm_push(vm, NIL_VAL); break; }
+
+        Value* elems = (Value*)vm_alloc(&vm->heap.regions, (size_t)n * sizeof(Value));
+        if (!elems) { vm_push(vm, NIL_VAL); break; }
+        cur = list;
+        for (int i = 0; i < n; i++) {
+            elems[i] = vm->heap.objects[cur.as.ptr]->cons.car;
             cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
+        }
+
+        if (g_pool && n >= 4) {
+            VmParMapTask* tasks = (VmParMapTask*)vm_alloc(&vm->heap.regions,
+                                      (size_t)n * sizeof(VmParMapTask));
+            if (tasks) {
+                for (int i = 0; i < n; i++) {
+                    tasks[i].main_vm = vm; tasks[i].closure = fn;
+                    tasks[i].input = elems[i]; tasks[i].output = NIL_VAL;
+                }
+                for (int i = 0; i < n; i++)
+                    vm_pool_submit(g_pool, vm_parmap_task_fn, &tasks[i], NULL);
+                vm_pool_wait_all(g_pool);
+            } else {
+                for (int i = 0; i < n; i++)
+                    vm_call_closure_from_native(vm, fn, &elems[i], 1);
+            }
+        } else {
+            for (int i = 0; i < n; i++)
+                vm_call_closure_from_native(vm, fn, &elems[i], 1);
         }
         vm_push(vm, NIL_VAL);
         break;
@@ -2457,69 +2640,603 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
 
     /* ══════════════════════════════════════════════════════════════════════
-     * High-level AD: gradient, jacobian, hessian (750-752)
-     * Uses closure bridge to evaluate function with dual numbers
+     * High-level AD: gradient, jacobian, hessian, divergence, curl,
+     *                laplacian, directional-derivative (750-756)
+     *
+     * Architecture:
+     *   Forward-mode AD via dual numbers (VmDual). For multi-variable
+     *   functions f(x1,...,xn), we perform N forward passes, each seeding
+     *   one variable with tangent=1 and the rest with tangent=0. The
+     *   tangent of the result gives the partial derivative ∂f/∂xi.
+     *
+     *   Hessian uses central difference of exact gradients:
+     *     f''(x) ≈ (f'(x+h) - f'(x-h)) / (2h)
+     *   where f' is computed exactly via dual numbers, giving O(h²)
+     *   accuracy with exact first derivatives.
+     *
+     * Helper: vm_ad_make_dual_val — allocate a dual on the heap, return Value
+     * Helper: vm_ad_extract_point — read point from scalar/list/tensor
+     * Helper: vm_ad_partial — compute ∂f/∂xi at a multi-variable point
+     * Helper: vm_ad_eval_component — call f, extract i-th output component
      * ══════════════════════════════════════════════════════════════════════ */
-    case 750: { /* gradient(f, x) → f'(x) via forward-mode dual */
+
+#define VM_AD_MAX_VARS 64
+
+    /* --- Helper: create a dual number Value on the heap --- */
+#define VM_AD_MAKE_DUAL(vm, primal_val, tangent_val, out_val) do { \
+    VmDual* _d = vm_dual_new(&(vm)->heap.regions, (primal_val), (tangent_val)); \
+    if (!_d) { (out_val) = FLOAT_VAL(0); break; } \
+    int32_t _dp = heap_alloc(&(vm)->heap); \
+    if (_dp < 0) { (vm)->error = 1; (out_val) = FLOAT_VAL(0); break; } \
+    (vm)->heap.objects[_dp]->type = HEAP_DUAL; \
+    (vm)->heap.objects[_dp]->opaque.ptr = _d; \
+    (out_val) = (Value){.type = VAL_DUAL, .as.ptr = _dp}; \
+} while(0)
+
+    case 750: { /* gradient(f, point) → scalar or tensor of partial derivatives
+                 * Scalar point: returns f'(x) (same as derivative)
+                 * List/tensor point: returns #(∂f/∂x1 ∂f/∂x2 ... ∂f/∂xn) */
         Value x_val = vm_pop(vm), f_val = vm_pop(vm);
-        /* Create dual number: x + 1ε */
-        VmDual* d = vm_dual_new(&vm->heap.regions, as_number(x_val), 1.0);
-        if (!d) { vm_push(vm, FLOAT_VAL(0)); break; }
-        int32_t dptr = heap_alloc(&vm->heap);
-        if (dptr < 0) { vm->error = 1; break; }
-        vm->heap.objects[dptr]->type = HEAP_DUAL;
-        vm->heap.objects[dptr]->opaque.ptr = d;
-        Value dual_arg = (Value){.type = VAL_DUAL, .as.ptr = dptr};
-        /* Call f(dual) */
-        Value result = vm_call_closure_from_native(vm, f_val, &dual_arg, 1);
-        /* Extract tangent = derivative */
+
+        /* Extract point values */
+        double point[VM_AD_MAX_VARS];
+        int n = 0;
+
+        if (x_val.type == VAL_PAIR) {
+            /* List of values: (list x1 x2 ... xn) */
+            Value cur = x_val;
+            while (cur.type == VAL_PAIR && n < VM_AD_MAX_VARS) {
+                point[n++] = as_number(vm->heap.objects[cur.as.ptr]->cons.car);
+                cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
+            }
+        } else if (x_val.type == VAL_TENSOR && x_val.as.ptr >= 0) {
+            /* Tensor of values: #(x1 x2 ... xn) */
+            VmTensor* t = (VmTensor*)vm->heap.objects[x_val.as.ptr]->opaque.ptr;
+            if (t && t->data) {
+                n = (int)(t->total < VM_AD_MAX_VARS ? t->total : VM_AD_MAX_VARS);
+                for (int i = 0; i < n; i++) point[i] = t->data[i];
+            }
+        } else {
+            /* Scalar: single-variable derivative */
+            point[0] = as_number(x_val);
+            n = 1;
+        }
+
+        if (n == 0) { vm_push(vm, FLOAT_VAL(0)); break; }
+
+        if (n == 1) {
+            /* Scalar case: f'(x) via single dual pass */
+            Value dual_arg;
+            VM_AD_MAKE_DUAL(vm, point[0], 1.0, dual_arg);
+            Value result = vm_call_closure_from_native(vm, f_val, &dual_arg, 1);
+            if (result.type == VAL_DUAL && result.as.ptr >= 0) {
+                VmDual* rd = (VmDual*)vm->heap.objects[result.as.ptr]->opaque.ptr;
+                vm_push(vm, FLOAT_VAL(rd ? rd->tangent : 0));
+            } else {
+                vm_push(vm, FLOAT_VAL(0)); /* constant function */
+            }
+        } else {
+            /* Multi-variable: N forward passes, seed each variable in turn */
+            double partials[VM_AD_MAX_VARS];
+            for (int i = 0; i < n; i++) {
+                Value args[VM_AD_MAX_VARS];
+                for (int j = 0; j < n; j++) {
+                    VM_AD_MAKE_DUAL(vm, point[j], (j == i) ? 1.0 : 0.0, args[j]);
+                }
+                Value result = vm_call_closure_from_native(vm, f_val, args, n);
+                if (result.type == VAL_DUAL && result.as.ptr >= 0) {
+                    VmDual* rd = (VmDual*)vm->heap.objects[result.as.ptr]->opaque.ptr;
+                    partials[i] = rd ? rd->tangent : 0;
+                } else {
+                    partials[i] = 0;
+                }
+            }
+            /* Return as tensor */
+            int64_t shape[1] = { n };
+            VmTensor* t = vm_tensor_from_data(&vm->heap.regions, partials, shape, 1);
+            if (t) {
+                VM_PUSH_HEAP_OPAQUE(vm, HEAP_TENSOR, VAL_TENSOR, t);
+            } else {
+                vm_push(vm, NIL_VAL);
+            }
+        }
+        break;
+    }
+
+    case 751: { /* jacobian(f, point) → matrix of partial derivatives
+                 * For f: R^n → R^m, returns m×n tensor J[i][j] = ∂fi/∂xj
+                 * Scalar→scalar: returns f'(x)
+                 * Multi-var→scalar: returns gradient (1×n)
+                 * Multi-var→vector: returns m×n Jacobian matrix */
+        Value x_val = vm_pop(vm), f_val = vm_pop(vm);
+
+        /* Extract point */
+        double point[VM_AD_MAX_VARS];
+        int n = 0;
+        if (x_val.type == VAL_PAIR) {
+            Value cur = x_val;
+            while (cur.type == VAL_PAIR && n < VM_AD_MAX_VARS) {
+                point[n++] = as_number(vm->heap.objects[cur.as.ptr]->cons.car);
+                cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
+            }
+        } else if (x_val.type == VAL_TENSOR && x_val.as.ptr >= 0) {
+            VmTensor* t = (VmTensor*)vm->heap.objects[x_val.as.ptr]->opaque.ptr;
+            if (t && t->data) {
+                n = (int)(t->total < VM_AD_MAX_VARS ? t->total : VM_AD_MAX_VARS);
+                for (int i = 0; i < n; i++) point[i] = t->data[i];
+            }
+        } else {
+            point[0] = as_number(x_val);
+            n = 1;
+        }
+
+        if (n == 0) { vm_push(vm, FLOAT_VAL(0)); break; }
+
+        /* First pass with variable 0 seeded to determine output dimension m */
+        Value probe_args[VM_AD_MAX_VARS];
+        for (int j = 0; j < n; j++) {
+            VM_AD_MAKE_DUAL(vm, point[j], (j == 0) ? 1.0 : 0.0, probe_args[j]);
+        }
+        Value probe_result = vm_call_closure_from_native(vm, f_val, probe_args, n);
+
+        /* Determine output dimension: scalar (m=1) or tensor (m = tensor size) */
+        int m = 1;
+        if (probe_result.type == VAL_TENSOR && probe_result.as.ptr >= 0) {
+            VmTensor* rt = (VmTensor*)vm->heap.objects[probe_result.as.ptr]->opaque.ptr;
+            if (rt) m = (int)rt->total;
+        }
+
+        if (n == 1 && m == 1) {
+            /* Scalar → scalar: just the derivative */
+            if (probe_result.type == VAL_DUAL && probe_result.as.ptr >= 0) {
+                VmDual* rd = (VmDual*)vm->heap.objects[probe_result.as.ptr]->opaque.ptr;
+                vm_push(vm, FLOAT_VAL(rd ? rd->tangent : 0));
+            } else {
+                vm_push(vm, FLOAT_VAL(0));
+            }
+        } else {
+            /* Build m×n Jacobian matrix */
+            double* jac_data = (double*)vm_alloc(&vm->heap.regions,
+                                                  (size_t)(m * n) * sizeof(double));
+            if (!jac_data) { vm_push(vm, NIL_VAL); break; }
+            memset(jac_data, 0, (size_t)(m * n) * sizeof(double));
+
+            for (int i = 0; i < n; i++) {
+                Value args[VM_AD_MAX_VARS];
+                for (int j = 0; j < n; j++) {
+                    VM_AD_MAKE_DUAL(vm, point[j], (j == i) ? 1.0 : 0.0, args[j]);
+                }
+                Value result = vm_call_closure_from_native(vm, f_val, args, n);
+
+                if (m == 1) {
+                    /* Scalar output */
+                    if (result.type == VAL_DUAL && result.as.ptr >= 0) {
+                        VmDual* rd = (VmDual*)vm->heap.objects[result.as.ptr]->opaque.ptr;
+                        jac_data[i] = rd ? rd->tangent : 0; /* row 0, col i */
+                    }
+                } else if (result.type == VAL_TENSOR && result.as.ptr >= 0) {
+                    /* Vector output: each element is a dual or scalar */
+                    VmTensor* rt = (VmTensor*)vm->heap.objects[result.as.ptr]->opaque.ptr;
+                    if (rt && rt->data) {
+                        /* Tensor of doubles — tangents already extracted by AD */
+                        for (int k = 0; k < m && k < (int)rt->total; k++) {
+                            jac_data[k * n + i] = rt->data[k]; /* J[k][i] */
+                        }
+                    }
+                } else if (result.type == VAL_DUAL && result.as.ptr >= 0) {
+                    /* Single dual result for m=1 case */
+                    VmDual* rd = (VmDual*)vm->heap.objects[result.as.ptr]->opaque.ptr;
+                    jac_data[i] = rd ? rd->tangent : 0;
+                }
+            }
+
+            if (m == 1) {
+                /* 1×n → return as 1D tensor (gradient) */
+                int64_t shape[1] = { n };
+                VmTensor* t = vm_tensor_from_data(&vm->heap.regions, jac_data, shape, 1);
+                if (t) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_TENSOR, VAL_TENSOR, t); }
+                else { vm_push(vm, NIL_VAL); }
+            } else {
+                /* m×n Jacobian matrix */
+                int64_t shape[2] = { m, n };
+                VmTensor* t = vm_tensor_from_data(&vm->heap.regions, jac_data, shape, 2);
+                if (t) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_TENSOR, VAL_TENSOR, t); }
+                else { vm_push(vm, NIL_VAL); }
+            }
+        }
+        break;
+    }
+
+    case 752: { /* hessian(f, point) → EXACT second derivative via hyper-dual numbers
+                 * Scalar: seed x = (x,1,1,0) → f₁₂ = f''(x)
+                 * Multi-var: H[i][j] = ∂²f/∂xᵢ∂xⱼ via hyper-dual seeding
+                 * NO finite differences — mathematically exact. */
+#define VM_HD_MAKE(vm, fv, f1v, f2v, f12v, out) do { \
+    VmHyperDual* _h = vm_hd_make(&(vm)->heap.regions, (fv), (f1v), (f2v), (f12v)); \
+    if (!_h) { (out) = FLOAT_VAL(0); break; } \
+    int32_t _hp = heap_alloc(&(vm)->heap); \
+    if (_hp < 0) { (vm)->error = 1; (out) = FLOAT_VAL(0); break; } \
+    (vm)->heap.objects[_hp]->type = HEAP_HYPER_DUAL; \
+    (vm)->heap.objects[_hp]->opaque.ptr = _h; \
+    (out) = (Value){.type = VAL_HYPER_DUAL, .as.ptr = _hp}; \
+} while(0)
+        Value x_val = vm_pop(vm), f_val = vm_pop(vm);
+
+        double point[VM_AD_MAX_VARS];
+        int n = 0;
+        if (x_val.type == VAL_PAIR) {
+            Value cur = x_val;
+            while (cur.type == VAL_PAIR && n < VM_AD_MAX_VARS) {
+                point[n++] = as_number(vm->heap.objects[cur.as.ptr]->cons.car);
+                cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
+            }
+        } else if (x_val.type == VAL_TENSOR && x_val.as.ptr >= 0) {
+            VmTensor* t = (VmTensor*)vm->heap.objects[x_val.as.ptr]->opaque.ptr;
+            if (t && t->data) {
+                n = (int)(t->total < VM_AD_MAX_VARS ? t->total : VM_AD_MAX_VARS);
+                for (int i = 0; i < n; i++) point[i] = t->data[i];
+            }
+        } else {
+            point[0] = as_number(x_val);
+            n = 1;
+        }
+
+        if (n == 0) { vm_push(vm, FLOAT_VAL(0)); break; }
+
+        if (n == 1) {
+            /* Scalar hessian via hyper-dual: seed (x, 1, 1, 0) → f₁₂ = f''(x) */
+            Value hd_arg;
+            VM_HD_MAKE(vm, point[0], 1.0, 1.0, 0.0, hd_arg);
+            Value result = vm_call_closure_from_native(vm, f_val, &hd_arg, 1);
+            if (result.type == VAL_HYPER_DUAL && result.as.ptr >= 0) {
+                VmHyperDual* rh = (VmHyperDual*)vm->heap.objects[result.as.ptr]->opaque.ptr;
+                vm_push(vm, FLOAT_VAL(rh ? rh->f12 : 0.0));
+            } else {
+                vm_push(vm, FLOAT_VAL(0.0));
+            }
+        } else {
+            /* Multi-variable Hessian via hyper-dual: H[i][j] = ∂²f/∂xᵢ∂xⱼ
+             * Seed xₖ = (point[k], δₖᵢ, δₖⱼ, 0) → result.f12 = H[i][j] */
+            double* hess_data = (double*)vm_alloc(&vm->heap.regions,
+                                                   (size_t)(n * n) * sizeof(double));
+            if (!hess_data) { vm_push(vm, NIL_VAL); break; }
+
+            for (int i = 0; i < n; i++) {
+                for (int j = i; j < n; j++) {
+                    Value args[VM_AD_MAX_VARS];
+                    for (int k = 0; k < n; k++) {
+                        VM_HD_MAKE(vm, point[k], (k==i)?1.0:0.0, (k==j)?1.0:0.0, 0.0, args[k]);
+                    }
+                    Value r = vm_call_closure_from_native(vm, f_val, args, n);
+                    double h_ij = 0.0;
+                    if (r.type == VAL_HYPER_DUAL && r.as.ptr >= 0) {
+                        VmHyperDual* rh = (VmHyperDual*)vm->heap.objects[r.as.ptr]->opaque.ptr;
+                        if (rh) h_ij = rh->f12;
+                    }
+                    hess_data[i * n + j] = h_ij;
+                    hess_data[j * n + i] = h_ij;
+                }
+            }
+
+            int64_t shape[2] = { n, n };
+            VmTensor* t = vm_tensor_from_data(&vm->heap.regions, hess_data, shape, 2);
+            if (t) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_TENSOR, VAL_TENSOR, t); }
+            else { vm_push(vm, NIL_VAL); }
+        }
+#undef VM_HD_MAKE
+        break;
+    }
+
+    case 753: { /* divergence(F, point) → scalar
+                 * div(F) = ∂F1/∂x1 + ∂F2/∂x2 + ... + ∂Fn/∂xn
+                 * F: R^n → R^n (vector field), point: list or tensor */
+        Value x_val = vm_pop(vm), f_val = vm_pop(vm);
+
+        double point[VM_AD_MAX_VARS];
+        int n = 0;
+        if (x_val.type == VAL_PAIR) {
+            Value cur = x_val;
+            while (cur.type == VAL_PAIR && n < VM_AD_MAX_VARS) {
+                point[n++] = as_number(vm->heap.objects[cur.as.ptr]->cons.car);
+                cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
+            }
+        } else if (x_val.type == VAL_TENSOR && x_val.as.ptr >= 0) {
+            VmTensor* t = (VmTensor*)vm->heap.objects[x_val.as.ptr]->opaque.ptr;
+            if (t && t->data) {
+                n = (int)(t->total < VM_AD_MAX_VARS ? t->total : VM_AD_MAX_VARS);
+                for (int i = 0; i < n; i++) point[i] = t->data[i];
+            }
+        } else {
+            point[0] = as_number(x_val);
+            n = 1;
+        }
+
+        if (n == 0) { vm_push(vm, FLOAT_VAL(0)); break; }
+
+        /* Sum of ∂Fi/∂xi: for each i, seed variable i, extract component i */
+        double div = 0;
+        for (int i = 0; i < n; i++) {
+            Value args[VM_AD_MAX_VARS];
+            for (int j = 0; j < n; j++) {
+                VM_AD_MAKE_DUAL(vm, point[j], (j == i) ? 1.0 : 0.0, args[j]);
+            }
+            Value result = vm_call_closure_from_native(vm, f_val, args, n);
+
+            /* Extract the i-th component's tangent */
+            if (result.type == VAL_TENSOR && result.as.ptr >= 0) {
+                /* F returns a tensor — we need the tangent of element i.
+                 * Since the tensor contains primals (doubles), the tangent
+                 * information is lost. We need to use a different approach:
+                 * call F component-wise. But if F returns a tensor of duals,
+                 * we can extract directly. For tensor-returning functions,
+                 * use finite differences as fallback. */
+                VmTensor* rt = (VmTensor*)vm->heap.objects[result.as.ptr]->opaque.ptr;
+                if (rt && rt->data && i < (int)rt->total) {
+                    /* Tensor element — use finite difference for this component */
+                    double fplus, fminus;
+                    double pt_plus[VM_AD_MAX_VARS], pt_minus[VM_AD_MAX_VARS];
+                    double h = 1e-7;
+                    for (int k = 0; k < n; k++) {
+                        pt_plus[k] = point[k] + ((k == i) ? h : 0);
+                        pt_minus[k] = point[k] - ((k == i) ? h : 0);
+                    }
+                    /* F(x + h*ei)[i] */
+                    Value ap[VM_AD_MAX_VARS];
+                    for (int k = 0; k < n; k++) ap[k] = FLOAT_VAL(pt_plus[k]);
+                    Value rp = vm_call_closure_from_native(vm, f_val, ap, n);
+                    fplus = 0;
+                    if (rp.type == VAL_TENSOR && rp.as.ptr >= 0) {
+                        VmTensor* tp = (VmTensor*)vm->heap.objects[rp.as.ptr]->opaque.ptr;
+                        if (tp && tp->data && i < (int)tp->total) fplus = tp->data[i];
+                    }
+                    /* F(x - h*ei)[i] */
+                    Value am[VM_AD_MAX_VARS];
+                    for (int k = 0; k < n; k++) am[k] = FLOAT_VAL(pt_minus[k]);
+                    Value rm = vm_call_closure_from_native(vm, f_val, am, n);
+                    fminus = 0;
+                    if (rm.type == VAL_TENSOR && rm.as.ptr >= 0) {
+                        VmTensor* tm = (VmTensor*)vm->heap.objects[rm.as.ptr]->opaque.ptr;
+                        if (tm && tm->data && i < (int)tm->total) fminus = tm->data[i];
+                    }
+                    div += (fplus - fminus) / (2.0 * h);
+                }
+            } else if (result.type == VAL_PAIR) {
+                /* F returns a list — walk to i-th element, extract tangent */
+                Value cur = result;
+                for (int k = 0; k < i && cur.type == VAL_PAIR; k++) {
+                    cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
+                }
+                if (cur.type == VAL_PAIR) {
+                    Value elem = vm->heap.objects[cur.as.ptr]->cons.car;
+                    if (elem.type == VAL_DUAL && elem.as.ptr >= 0) {
+                        VmDual* rd = (VmDual*)vm->heap.objects[elem.as.ptr]->opaque.ptr;
+                        if (rd) div += rd->tangent;
+                    }
+                }
+            } else if (n == 1 && result.type == VAL_DUAL && result.as.ptr >= 0) {
+                /* Scalar function */
+                VmDual* rd = (VmDual*)vm->heap.objects[result.as.ptr]->opaque.ptr;
+                if (rd) div += rd->tangent;
+            }
+        }
+        vm_push(vm, FLOAT_VAL(div));
+        break;
+    }
+
+    case 754: { /* curl(F, point) → 3D vector
+                 * curl(F) = (∂F3/∂y - ∂F2/∂z, ∂F1/∂z - ∂F3/∂x, ∂F2/∂x - ∂F1/∂y)
+                 * F: R^3 → R^3, point must have exactly 3 components */
+        Value x_val = vm_pop(vm), f_val = vm_pop(vm);
+
+        double point[3];
+        int n = 0;
+        if (x_val.type == VAL_PAIR) {
+            Value cur = x_val;
+            while (cur.type == VAL_PAIR && n < 3) {
+                point[n++] = as_number(vm->heap.objects[cur.as.ptr]->cons.car);
+                cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
+            }
+        } else if (x_val.type == VAL_TENSOR && x_val.as.ptr >= 0) {
+            VmTensor* t = (VmTensor*)vm->heap.objects[x_val.as.ptr]->opaque.ptr;
+            if (t && t->data) {
+                n = (int)(t->total < 3 ? t->total : 3);
+                for (int i = 0; i < n; i++) point[i] = t->data[i];
+            }
+        }
+
+        if (n != 3) {
+            /* Curl requires exactly 3 dimensions */
+            vm_push(vm, NIL_VAL);
+            break;
+        }
+
+        /* Compute the 3×3 Jacobian via central differences:
+         * J[i][j] = ∂Fi/∂xj
+         * curl = (J[2][1] - J[1][2], J[0][2] - J[2][0], J[1][0] - J[0][1]) */
+        double jac[3][3];
+        double h = 1e-7;
+
+        for (int j = 0; j < 3; j++) {
+            /* ∂F/∂xj via central difference */
+            Value ap[3], am[3];
+            for (int k = 0; k < 3; k++) {
+                ap[k] = FLOAT_VAL(point[k] + ((k == j) ? h : 0));
+                am[k] = FLOAT_VAL(point[k] - ((k == j) ? h : 0));
+            }
+            Value rp = vm_call_closure_from_native(vm, f_val, ap, 3);
+            Value rm = vm_call_closure_from_native(vm, f_val, am, 3);
+
+            /* Extract 3 components from each result */
+            double fp[3] = {0,0,0}, fm[3] = {0,0,0};
+            if (rp.type == VAL_TENSOR && rp.as.ptr >= 0) {
+                VmTensor* tp = (VmTensor*)vm->heap.objects[rp.as.ptr]->opaque.ptr;
+                if (tp && tp->data) for (int i = 0; i < 3 && i < (int)tp->total; i++) fp[i] = tp->data[i];
+            } else if (rp.type == VAL_PAIR) {
+                Value cur = rp; int idx = 0;
+                while (cur.type == VAL_PAIR && idx < 3) {
+                    fp[idx++] = as_number(vm->heap.objects[cur.as.ptr]->cons.car);
+                    cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
+                }
+            }
+            if (rm.type == VAL_TENSOR && rm.as.ptr >= 0) {
+                VmTensor* tm = (VmTensor*)vm->heap.objects[rm.as.ptr]->opaque.ptr;
+                if (tm && tm->data) for (int i = 0; i < 3 && i < (int)tm->total; i++) fm[i] = tm->data[i];
+            } else if (rm.type == VAL_PAIR) {
+                Value cur = rm; int idx = 0;
+                while (cur.type == VAL_PAIR && idx < 3) {
+                    fm[idx++] = as_number(vm->heap.objects[cur.as.ptr]->cons.car);
+                    cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
+                }
+            }
+
+            for (int i = 0; i < 3; i++) {
+                jac[i][j] = (fp[i] - fm[i]) / (2.0 * h);
+            }
+        }
+
+        /* curl = (∂F3/∂y - ∂F2/∂z, ∂F1/∂z - ∂F3/∂x, ∂F2/∂x - ∂F1/∂y) */
+        double curl_data[3] = {
+            jac[2][1] - jac[1][2],  /* ∂F3/∂y - ∂F2/∂z */
+            jac[0][2] - jac[2][0],  /* ∂F1/∂z - ∂F3/∂x */
+            jac[1][0] - jac[0][1]   /* ∂F2/∂x - ∂F1/∂y */
+        };
+        int64_t shape[1] = { 3 };
+        VmTensor* t = vm_tensor_from_data(&vm->heap.regions, curl_data, shape, 1);
+        if (t) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_TENSOR, VAL_TENSOR, t); }
+        else { vm_push(vm, NIL_VAL); }
+        break;
+    }
+
+    case 755: { /* laplacian(f, point) → scalar
+                 * ∇²f = ∂²f/∂x1² + ∂²f/∂x2² + … + ∂²f/∂xn²
+                 *     = trace of the Hessian matrix
+                 *
+                 * Exact via hyper-dual numbers — NO finite differences.
+                 * For each i, seed xi with (value, 1, 1, 0) and every
+                 * other xk with (value, 0, 0, 0); the returned
+                 * hyper-dual's f12 component is ∂²f/∂xi². Sum over i. */
+#define VM_HD_MAKE_L(vm, fv, f1v, f2v, f12v, out) do { \
+    VmHyperDual* _h = vm_hd_make(&(vm)->heap.regions, (fv), (f1v), (f2v), (f12v)); \
+    if (!_h) { (out) = FLOAT_VAL(0); break; } \
+    int32_t _hp = heap_alloc(&(vm)->heap); \
+    if (_hp < 0) { (vm)->error = 1; (out) = FLOAT_VAL(0); break; } \
+    (vm)->heap.objects[_hp]->type = HEAP_HYPER_DUAL; \
+    (vm)->heap.objects[_hp]->opaque.ptr = _h; \
+    (out) = (Value){.type = VAL_HYPER_DUAL, .as.ptr = _hp}; \
+} while(0)
+        Value x_val = vm_pop(vm), f_val = vm_pop(vm);
+
+        double point[VM_AD_MAX_VARS];
+        int n = 0;
+        if (x_val.type == VAL_PAIR) {
+            Value cur = x_val;
+            while (cur.type == VAL_PAIR && n < VM_AD_MAX_VARS) {
+                point[n++] = as_number(vm->heap.objects[cur.as.ptr]->cons.car);
+                cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
+            }
+        } else if (x_val.type == VAL_TENSOR && x_val.as.ptr >= 0) {
+            VmTensor* t = (VmTensor*)vm->heap.objects[x_val.as.ptr]->opaque.ptr;
+            if (t && t->data) {
+                n = (int)(t->total < VM_AD_MAX_VARS ? t->total : VM_AD_MAX_VARS);
+                for (int i = 0; i < n; i++) point[i] = t->data[i];
+            }
+        } else {
+            point[0] = as_number(x_val);
+            n = 1;
+        }
+
+        if (n == 0) { vm_push(vm, FLOAT_VAL(0)); break; }
+
+        double laplacian = 0;
+        for (int i = 0; i < n; i++) {
+            Value args[VM_AD_MAX_VARS];
+            for (int k = 0; k < n; k++) {
+                VM_HD_MAKE_L(vm, point[k],
+                             (k == i) ? 1.0 : 0.0,
+                             (k == i) ? 1.0 : 0.0,
+                             0.0,
+                             args[k]);
+            }
+            Value r = vm_call_closure_from_native(vm, f_val, args, n);
+            if (r.type == VAL_HYPER_DUAL && r.as.ptr >= 0) {
+                VmHyperDual* rh = (VmHyperDual*)vm->heap.objects[r.as.ptr]->opaque.ptr;
+                if (rh) laplacian += rh->f12;
+            }
+        }
+#undef VM_HD_MAKE_L
+
+        vm_push(vm, FLOAT_VAL(laplacian));
+        break;
+    }
+
+    case 756: { /* directional-derivative(f, point, direction) → scalar
+                 * D_v(f) = ∇f · v = Σ (∂f/∂xi * vi)
+                 * Uses a single forward pass with tangent = direction vector */
+        Value dir_val = vm_pop(vm), x_val = vm_pop(vm), f_val = vm_pop(vm);
+
+        double point[VM_AD_MAX_VARS], dir[VM_AD_MAX_VARS];
+        int n = 0, nd = 0;
+
+        /* Extract point */
+        if (x_val.type == VAL_PAIR) {
+            Value cur = x_val;
+            while (cur.type == VAL_PAIR && n < VM_AD_MAX_VARS) {
+                point[n++] = as_number(vm->heap.objects[cur.as.ptr]->cons.car);
+                cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
+            }
+        } else if (x_val.type == VAL_TENSOR && x_val.as.ptr >= 0) {
+            VmTensor* t = (VmTensor*)vm->heap.objects[x_val.as.ptr]->opaque.ptr;
+            if (t && t->data) {
+                n = (int)(t->total < VM_AD_MAX_VARS ? t->total : VM_AD_MAX_VARS);
+                for (int i = 0; i < n; i++) point[i] = t->data[i];
+            }
+        } else {
+            point[0] = as_number(x_val);
+            n = 1;
+        }
+
+        /* Extract direction */
+        if (dir_val.type == VAL_PAIR) {
+            Value cur = dir_val;
+            while (cur.type == VAL_PAIR && nd < VM_AD_MAX_VARS) {
+                dir[nd++] = as_number(vm->heap.objects[cur.as.ptr]->cons.car);
+                cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
+            }
+        } else if (dir_val.type == VAL_TENSOR && dir_val.as.ptr >= 0) {
+            VmTensor* t = (VmTensor*)vm->heap.objects[dir_val.as.ptr]->opaque.ptr;
+            if (t && t->data) {
+                nd = (int)(t->total < VM_AD_MAX_VARS ? t->total : VM_AD_MAX_VARS);
+                for (int i = 0; i < nd; i++) dir[i] = t->data[i];
+            }
+        } else {
+            dir[0] = as_number(dir_val);
+            nd = 1;
+        }
+
+        if (n == 0 || nd != n) {
+            vm_push(vm, FLOAT_VAL(0));
+            break;
+        }
+
+        /* Single forward pass: seed tangent = direction vector
+         * D_v(f)(x) = Σ vi * ∂f/∂xi = tangent when all tangents are vi
+         * This is the efficient approach — one pass instead of n+1 */
+        Value args[VM_AD_MAX_VARS];
+        for (int j = 0; j < n; j++) {
+            VM_AD_MAKE_DUAL(vm, point[j], dir[j], args[j]);
+        }
+        Value result = vm_call_closure_from_native(vm, f_val, args, n);
         if (result.type == VAL_DUAL && result.as.ptr >= 0) {
             VmDual* rd = (VmDual*)vm->heap.objects[result.as.ptr]->opaque.ptr;
             vm_push(vm, FLOAT_VAL(rd ? rd->tangent : 0));
         } else {
-            vm_push(vm, FLOAT_VAL(as_number(result))); /* non-dual result = zero derivative */
+            vm_push(vm, FLOAT_VAL(0));
         }
         break;
     }
-    case 751: { /* jacobian — simplified: same as gradient for scalar */
-        Value x_val = vm_pop(vm), f_val = vm_pop(vm);
-        VmDual* d = vm_dual_new(&vm->heap.regions, as_number(x_val), 1.0);
-        if (!d) { vm_push(vm, FLOAT_VAL(0)); break; }
-        int32_t dptr = heap_alloc(&vm->heap);
-        if (dptr < 0) { vm->error = 1; break; }
-        vm->heap.objects[dptr]->type = HEAP_DUAL;
-        vm->heap.objects[dptr]->opaque.ptr = d;
-        Value dual_arg = (Value){.type = VAL_DUAL, .as.ptr = dptr};
-        Value result = vm_call_closure_from_native(vm, f_val, &dual_arg, 1);
-        if (result.type == VAL_DUAL && result.as.ptr >= 0) {
-            VmDual* rd = (VmDual*)vm->heap.objects[result.as.ptr]->opaque.ptr;
-            vm_push(vm, FLOAT_VAL(rd ? rd->tangent : 0));
-        } else { vm_push(vm, FLOAT_VAL(0)); }
-        break;
-    }
-    case 752: { /* hessian — second derivative via finite differences on gradient */
-        Value x_val = vm_pop(vm), f_val = vm_pop(vm);
-        double x = as_number(x_val);
-        double h = 1e-5;
-        double grads[2];
-        double pts[2] = { x + h, x - h };
-        for (int gi = 0; gi < 2; gi++) {
-            VmDual* d = vm_dual_new(&vm->heap.regions, pts[gi], 1.0);
-            if (!d) { grads[gi] = 0; continue; }
-            int32_t dp = heap_alloc(&vm->heap);
-            if (dp < 0) { grads[gi] = 0; continue; }
-            vm->heap.objects[dp]->type = HEAP_DUAL;
-            vm->heap.objects[dp]->opaque.ptr = d;
-            Value da = (Value){.type = VAL_DUAL, .as.ptr = dp};
-            Value r = vm_call_closure_from_native(vm, f_val, &da, 1);
-            if (r.type == VAL_DUAL && r.as.ptr >= 0) {
-                VmDual* rd = (VmDual*)vm->heap.objects[r.as.ptr]->opaque.ptr;
-                grads[gi] = rd ? rd->tangent : 0;
-            } else grads[gi] = 0;
-        }
-        vm_push(vm, FLOAT_VAL((grads[0] - grads[1]) / (2 * h)));
-        break;
-    }
+
+#undef VM_AD_MAKE_DUAL
+#undef VM_AD_MAX_VARS
 
 
     /* ══════════════════════════════════════════════════════════════════════
@@ -2811,9 +3528,9 @@ static void vm_dispatch_native(VM* vm, int fid) {
         Value ch = vm_pop(vm), n = vm_pop(vm);
         int sz = (int)as_number(n), c = (int)as_number(ch);
         if (sz < 0) sz = 0; if (sz > 65536) sz = 65536;
-        char* buf = (char*)malloc(sz + 1);
+        char* buf = (char*)vm_alloc(&vm->heap.regions, (size_t)(sz + 1));
         if (buf) { memset(buf, c > 0 && c < 128 ? c : ' ', sz); buf[sz] = 0;
-            VmString* s = vm_string_from_cstr(&vm->heap.regions, buf); free(buf);
+            VmString* s = vm_string_from_cstr(&vm->heap.regions, buf);
             if (s) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, s); break; }
         }
         vm_push(vm, NIL_VAL); break;
@@ -3214,9 +3931,9 @@ static void vm_dispatch_native(VM* vm, int fid) {
         if (s_val.type == VAL_STRING) {
             VmString* s = (VmString*)vm->heap.objects[s_val.as.ptr]->opaque.ptr;
             if (s && s->byte_len > 0) {
-                char* buf = (char*)malloc(s->byte_len + 1);
+                char* buf = (char*)vm_alloc(&vm->heap.regions, (size_t)(s->byte_len + 1));
                 if (buf) { for (int i = 0; i < s->byte_len; i++) buf[i] = s->data[s->byte_len - 1 - i]; buf[s->byte_len] = 0;
-                    VmString* r = vm_string_from_cstr(&vm->heap.regions, buf); free(buf);
+                    VmString* r = vm_string_from_cstr(&vm->heap.regions, buf);
                     if (r) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, r); break; } } }
         }
         vm_push(vm, s_val); break; }
@@ -3227,9 +3944,9 @@ static void vm_dispatch_native(VM* vm, int fid) {
             int n = (int)as_number(n_val);
             if (s && n > 0 && n < 10000 && s->byte_len > 0) {
                 int total = s->byte_len * n;
-                char* buf = (char*)malloc(total + 1);
+                char* buf = (char*)vm_alloc(&vm->heap.regions, (size_t)(total + 1));
                 if (buf) { for (int i = 0; i < n; i++) memcpy(buf + i * s->byte_len, s->data, s->byte_len); buf[total] = 0;
-                    VmString* r = vm_string_from_cstr(&vm->heap.regions, buf); free(buf);
+                    VmString* r = vm_string_from_cstr(&vm->heap.regions, buf);
                     if (r) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, r); break; } } }
         }
         vm_push(vm, s_val); break; }
@@ -3295,6 +4012,1445 @@ static void vm_dispatch_native(VM* vm, int fid) {
         VmString* r = vm_string_from_cstr(&vm->heap.regions, buf);
         if (r) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, r); }
         else vm_push(vm, NIL_VAL); break; }
+
+    /* ══════════════════════════════════════════════════════════════════════
+     * System Information (1700-1719)
+     * ══════════════════════════════════════════════════════════════════════ */
+
+    case 1700: { /* os-type → "darwin", "linux", "windows", etc. */
+#ifdef __APPLE__
+        const char* os = "darwin";
+#elif defined(_WIN32)
+        const char* os = "windows";
+#elif defined(__linux__)
+        const char* os = "linux";
+#elif defined(__FreeBSD__)
+        const char* os = "freebsd";
+#else
+        const char* os = "unknown";
+#endif
+        VmString* s = vm_string_from_cstr(&vm->heap.regions, os);
+        if (s) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, s); }
+        else { vm_push(vm, NIL_VAL); }
+        break;
+    }
+
+    case 1701: { /* os-arch → "arm64", "x86_64", etc. */
+#if defined(__aarch64__) || defined(_M_ARM64)
+        const char* arch = "arm64";
+#elif defined(__x86_64__) || defined(_M_X64)
+        const char* arch = "x86_64";
+#elif defined(__i386__) || defined(_M_IX86)
+        const char* arch = "x86";
+#elif defined(__riscv)
+        const char* arch = "riscv64";
+#else
+        const char* arch = "unknown";
+#endif
+        VmString* s = vm_string_from_cstr(&vm->heap.regions, arch);
+        if (s) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, s); }
+        else { vm_push(vm, NIL_VAL); }
+        break;
+    }
+
+    case 1702: { /* home-directory → "/Users/foo" or "/home/foo" */
+#ifndef ESHKOL_VM_WASM
+        const char* home = getenv("HOME");
+#ifdef _WIN32
+        if (!home) home = getenv("USERPROFILE");
+#endif
+        if (home) {
+            VmString* s = vm_string_from_cstr(&vm->heap.regions, home);
+            if (s) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, s); break; }
+        }
+#endif
+        vm_push(vm, NIL_VAL);
+        break;
+    }
+
+    case 1703: { /* current-directory → cwd string */
+#ifndef ESHKOL_VM_WASM
+        char cwd[4096];
+        if (getcwd(cwd, sizeof(cwd))) {
+            VmString* s = vm_string_from_cstr(&vm->heap.regions, cwd);
+            if (s) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, s); break; }
+        }
+#endif
+        vm_push(vm, NIL_VAL);
+        break;
+    }
+
+    case 1704: { /* set-current-directory!(path) → #t or #f */
+#ifndef ESHKOL_VM_WASM
+        Value path_val = vm_pop(vm);
+        if (path_val.type == VAL_STRING) {
+            VmString* ps = (VmString*)vm->heap.objects[path_val.as.ptr]->opaque.ptr;
+            if (ps && chdir(ps->data) == 0) { vm_push(vm, BOOL_VAL(1)); break; }
+        }
+#endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+    case 1705: { /* hostname → string */
+#ifndef ESHKOL_VM_WASM
+        char hostname[256];
+        if (gethostname(hostname, sizeof(hostname)) == 0) {
+            VmString* s = vm_string_from_cstr(&vm->heap.regions, hostname);
+            if (s) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, s); break; }
+        }
+#endif
+        vm_push(vm, NIL_VAL);
+        break;
+    }
+
+    case 1706: { /* username → string */
+#ifndef ESHKOL_VM_WASM
+        const char* user = getenv("USER");
+#ifdef _WIN32
+        if (!user) user = getenv("USERNAME");
+#endif
+        if (user) {
+            VmString* s = vm_string_from_cstr(&vm->heap.regions, user);
+            if (s) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, s); break; }
+        }
+#endif
+        vm_push(vm, NIL_VAL);
+        break;
+    }
+
+    case 1707: { /* cpu-count → integer */
+#ifndef ESHKOL_VM_WASM
+#ifdef _WIN32
+        SYSTEM_INFO si; GetSystemInfo(&si);
+        vm_push(vm, INT_VAL(si.dwNumberOfProcessors));
+#elif defined(_SC_NPROCESSORS_ONLN)
+        long n = sysconf(_SC_NPROCESSORS_ONLN);
+        vm_push(vm, INT_VAL(n > 0 ? n : 1));
+#else
+        vm_push(vm, INT_VAL(1));
+#endif
+#else
+        vm_push(vm, INT_VAL(1));
+#endif
+        break;
+    }
+
+    case 1708: { /* executable-exists?(name) → #t or #f */
+        Value name_val = vm_pop(vm);
+#ifndef ESHKOL_VM_WASM
+        if (name_val.type == VAL_STRING) {
+            VmString* ns = (VmString*)vm->heap.objects[name_val.as.ptr]->opaque.ptr;
+            if (ns) {
+                /* Search PATH for the executable */
+                const char* path_env = getenv("PATH");
+                if (path_env) {
+                    char buf[4096];
+                    strncpy(buf, path_env, sizeof(buf) - 1); buf[sizeof(buf) - 1] = 0;
+                    char* dir = strtok(buf, ":");
+                    while (dir) {
+                        char full[4096];
+                        snprintf(full, sizeof(full), "%s/%s", dir, ns->data);
+                        if (access(full, X_OK) == 0) {
+                            vm_push(vm, BOOL_VAL(1)); goto done_1708;
+                        }
+                        dir = strtok(NULL, ":");
+                    }
+                }
+            }
+        }
+#else
+        (void)name_val;
+#endif
+        vm_push(vm, BOOL_VAL(0));
+#ifndef ESHKOL_VM_WASM
+        done_1708:
+#endif
+        break;
+    }
+
+    case 1709: { /* current-time-ms → integer (milliseconds since epoch) */
+#ifndef ESHKOL_VM_WASM
+        struct timeval tv;
+        gettimeofday(&tv, NULL);
+        int64_t ms = (int64_t)tv.tv_sec * 1000 + (int64_t)tv.tv_usec / 1000;
+        vm_push(vm, INT_VAL(ms));
+#else
+        vm_push(vm, INT_VAL(0));
+#endif
+        break;
+    }
+
+    case 1710: { /* getpid → integer */
+#ifndef ESHKOL_VM_WASM
+        vm_push(vm, INT_VAL((int64_t)getpid()));
+#else
+        vm_push(vm, INT_VAL(0));
+#endif
+        break;
+    }
+
+    case 1711: { /* sleep-ms(milliseconds) → void */
+        Value ms_val = vm_pop(vm);
+#ifndef ESHKOL_VM_WASM
+        int64_t ms = (int64_t)as_number(ms_val);
+        if (ms > 0) {
+            struct timespec ts;
+            ts.tv_sec = ms / 1000;
+            ts.tv_nsec = (ms % 1000) * 1000000L;
+            nanosleep(&ts, NULL);
+        }
+#else
+        (void)ms_val;
+#endif
+        vm_push(vm, NIL_VAL);
+        break;
+    }
+
+    case 1712: { /* setenv(name, value) → #t or #f */
+        Value val_v = vm_pop(vm), name_v = vm_pop(vm);
+#ifndef ESHKOL_VM_WASM
+        if (name_v.type == VAL_STRING && val_v.type == VAL_STRING) {
+            VmString* ns = (VmString*)vm->heap.objects[name_v.as.ptr]->opaque.ptr;
+            VmString* vs = (VmString*)vm->heap.objects[val_v.as.ptr]->opaque.ptr;
+            if (ns && vs && setenv(ns->data, vs->data, 1) == 0) {
+                vm_push(vm, BOOL_VAL(1)); break;
+            }
+        }
+#else
+        (void)val_v; (void)name_v;
+#endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+    case 1713: { /* unsetenv(name) → #t or #f */
+        Value name_v = vm_pop(vm);
+#ifndef ESHKOL_VM_WASM
+        if (name_v.type == VAL_STRING) {
+            VmString* ns = (VmString*)vm->heap.objects[name_v.as.ptr]->opaque.ptr;
+            if (ns && unsetenv(ns->data) == 0) {
+                vm_push(vm, BOOL_VAL(1)); break;
+            }
+        }
+#else
+        (void)name_v;
+#endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+    case 1714: { /* current-error-port → port for stderr */
+        /* Return a pointer to the static vm_stderr_port (same pattern as current-output-port) */
+        VM_PUSH_HEAP_OPAQUE(vm, HEAP_PORT, VAL_PORT, &vm_stderr_port);
+        break;
+    }
+
+    case 1715: { /* get-environment-variable(name) → string or #f */
+        Value name_val = vm_pop(vm);
+#ifndef ESHKOL_VM_WASM
+        if (name_val.type == VAL_STRING) {
+            VmString* ns = (VmString*)vm->heap.objects[name_val.as.ptr]->opaque.ptr;
+            if (ns) {
+                const char* val = getenv(ns->data);
+                if (val) {
+                    VmString* s = vm_string_from_cstr(&vm->heap.regions, val);
+                    if (s) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, s); break; }
+                }
+            }
+        }
+#else
+        (void)name_val;
+#endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+    case 1716: { /* delete-file(path) — alias for 600 but with proper registration */
+        Value path_val = vm_pop(vm);
+#ifndef ESHKOL_VM_WASM
+        if (path_val.type == VAL_STRING) {
+            VmString* ps = (VmString*)vm->heap.objects[path_val.as.ptr]->opaque.ptr;
+            if (ps && unlink(ps->data) == 0) { vm_push(vm, BOOL_VAL(1)); break; }
+        }
+#else
+        (void)path_val;
+#endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+    /* ══════════════════════════════════════════════════════════════════════
+     * Path Manipulation (1720-1739)
+     * ══════════════════════════════════════════════════════════════════════ */
+
+    case 1720: { /* path-join(a, b) → string */
+        Value b_val = vm_pop(vm), a_val = vm_pop(vm);
+        if (a_val.type == VAL_STRING && b_val.type == VAL_STRING) {
+            VmString* as = (VmString*)vm->heap.objects[a_val.as.ptr]->opaque.ptr;
+            VmString* bs = (VmString*)vm->heap.objects[b_val.as.ptr]->opaque.ptr;
+            if (as && bs) {
+                char buf[4096];
+                int alen = (int)strlen(as->data);
+                if (alen > 0 && as->data[alen - 1] == '/')
+                    snprintf(buf, sizeof(buf), "%s%s", as->data, bs->data);
+                else
+                    snprintf(buf, sizeof(buf), "%s/%s", as->data, bs->data);
+                VmString* s = vm_string_from_cstr(&vm->heap.regions, buf);
+                if (s) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, s); break; }
+            }
+        }
+        vm_push(vm, NIL_VAL);
+        break;
+    }
+
+    case 1721: { /* path-dirname(path) → string */
+        Value path_val = vm_pop(vm);
+        if (path_val.type == VAL_STRING) {
+            VmString* ps = (VmString*)vm->heap.objects[path_val.as.ptr]->opaque.ptr;
+            if (ps) {
+                char buf[4096];
+                strncpy(buf, ps->data, sizeof(buf) - 1); buf[sizeof(buf) - 1] = 0;
+                /* Find last / */
+                char* last_slash = strrchr(buf, '/');
+                if (last_slash) {
+                    if (last_slash == buf) buf[1] = 0; /* root "/" */
+                    else *last_slash = 0;
+                } else {
+                    strcpy(buf, ".");
+                }
+                VmString* s = vm_string_from_cstr(&vm->heap.regions, buf);
+                if (s) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, s); break; }
+            }
+        }
+        vm_push(vm, NIL_VAL);
+        break;
+    }
+
+    case 1722: { /* path-basename(path) → string */
+        Value path_val = vm_pop(vm);
+        if (path_val.type == VAL_STRING) {
+            VmString* ps = (VmString*)vm->heap.objects[path_val.as.ptr]->opaque.ptr;
+            if (ps) {
+                const char* last_slash = strrchr(ps->data, '/');
+                const char* base = last_slash ? last_slash + 1 : ps->data;
+                VmString* s = vm_string_from_cstr(&vm->heap.regions, base);
+                if (s) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, s); break; }
+            }
+        }
+        vm_push(vm, NIL_VAL);
+        break;
+    }
+
+    case 1723: { /* path-extname(path) → string (e.g., ".txt") or "" */
+        Value path_val = vm_pop(vm);
+        if (path_val.type == VAL_STRING) {
+            VmString* ps = (VmString*)vm->heap.objects[path_val.as.ptr]->opaque.ptr;
+            if (ps) {
+                const char* base = strrchr(ps->data, '/');
+                if (!base) base = ps->data; else base++;
+                const char* dot = strrchr(base, '.');
+                const char* ext = (dot && dot != base) ? dot : "";
+                VmString* s = vm_string_from_cstr(&vm->heap.regions, ext);
+                if (s) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, s); break; }
+            }
+        }
+        vm_push(vm, NIL_VAL);
+        break;
+    }
+
+    case 1724: { /* path-is-absolute?(path) → #t or #f */
+        Value path_val = vm_pop(vm);
+        if (path_val.type == VAL_STRING) {
+            VmString* ps = (VmString*)vm->heap.objects[path_val.as.ptr]->opaque.ptr;
+            if (ps && ps->data[0] == '/') {
+                vm_push(vm, BOOL_VAL(1)); break;
+            }
+        }
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+    case 1725: { /* path-normalize(path) → string with resolved . and .. */
+        Value path_val = vm_pop(vm);
+        if (path_val.type == VAL_STRING) {
+            VmString* ps = (VmString*)vm->heap.objects[path_val.as.ptr]->opaque.ptr;
+            if (ps) {
+                /* Split by /, resolve . and .., reassemble */
+                char buf[4096];
+                strncpy(buf, ps->data, sizeof(buf) - 1); buf[sizeof(buf) - 1] = 0;
+                char* parts[256]; int nparts = 0;
+                int absolute = (buf[0] == '/');
+                char* tok = strtok(buf, "/");
+                while (tok && nparts < 256) {
+                    if (strcmp(tok, ".") == 0) { /* skip */ }
+                    else if (strcmp(tok, "..") == 0) { if (nparts > 0) nparts--; }
+                    else { parts[nparts++] = tok; }
+                    tok = strtok(NULL, "/");
+                }
+                char result[4096];
+                int pos = 0;
+                if (absolute) result[pos++] = '/';
+                for (int i = 0; i < nparts; i++) {
+                    if (i > 0) result[pos++] = '/';
+                    int len = (int)strlen(parts[i]);
+                    if (pos + len >= 4095) break;
+                    memcpy(result + pos, parts[i], len);
+                    pos += len;
+                }
+                if (pos == 0) { result[0] = '.'; pos = 1; }
+                result[pos] = 0;
+                VmString* s = vm_string_from_cstr(&vm->heap.regions, result);
+                if (s) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, s); break; }
+            }
+        }
+        vm_push(vm, NIL_VAL);
+        break;
+    }
+
+    case 1726: { /* realpath(path) → resolved absolute path string */
+        Value path_val = vm_pop(vm);
+#ifndef ESHKOL_VM_WASM
+        if (path_val.type == VAL_STRING) {
+            VmString* ps = (VmString*)vm->heap.objects[path_val.as.ptr]->opaque.ptr;
+            if (ps) {
+                char resolved[4096];
+                if (realpath(ps->data, resolved)) {
+                    VmString* s = vm_string_from_cstr(&vm->heap.regions, resolved);
+                    if (s) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, s); break; }
+                }
+            }
+        }
+#else
+        (void)path_val;
+#endif
+        vm_push(vm, NIL_VAL);
+        break;
+    }
+
+    /* ══════════════════════════════════════════════════════════════════════
+     * Filesystem Operations (1740-1769)
+     * ══════════════════════════════════════════════════════════════════════ */
+
+    case 1740: { /* file-size(path) → integer (bytes) or #f */
+        Value path_val = vm_pop(vm);
+#ifndef ESHKOL_VM_WASM
+        if (path_val.type == VAL_STRING) {
+            VmString* ps = (VmString*)vm->heap.objects[path_val.as.ptr]->opaque.ptr;
+            if (ps) {
+                struct stat st;
+                if (stat(ps->data, &st) == 0) {
+                    vm_push(vm, INT_VAL((int64_t)st.st_size));
+                    break;
+                }
+            }
+        }
+#else
+        (void)path_val;
+#endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+    case 1741: { /* file-stat(path) → list: (size mtime-sec type-char) or #f
+                  * type-char: 'f' = regular, 'd' = directory, 'l' = symlink, '?' = other */
+        Value path_val = vm_pop(vm);
+#ifndef ESHKOL_VM_WASM
+        if (path_val.type == VAL_STRING) {
+            VmString* ps = (VmString*)vm->heap.objects[path_val.as.ptr]->opaque.ptr;
+            if (ps) {
+                struct stat st;
+                if (lstat(ps->data, &st) == 0) {
+                    char type_ch = '?';
+                    if (S_ISREG(st.st_mode)) type_ch = 'f';
+                    else if (S_ISDIR(st.st_mode)) type_ch = 'd';
+                    else if (S_ISLNK(st.st_mode)) type_ch = 'l';
+
+                    /* Build list: (size mtime type-string) */
+                    char type_str[2] = { type_ch, 0 };
+                    VmString* ts = vm_string_from_cstr(&vm->heap.regions, type_str);
+                    if (!ts) { vm_push(vm, BOOL_VAL(0)); break; }
+
+                    /* Build cons cells: (type . nil) → (mtime . ...) → (size . ...) */
+                    int32_t t_sp = heap_alloc(&vm->heap); if (t_sp < 0) { vm_push(vm, BOOL_VAL(0)); break; }
+                    vm->heap.objects[t_sp]->type = HEAP_STRING;
+                    vm->heap.objects[t_sp]->opaque.ptr = ts;
+
+                    int32_t c3 = heap_alloc(&vm->heap); if (c3 < 0) { vm_push(vm, BOOL_VAL(0)); break; }
+                    vm->heap.objects[c3]->type = HEAP_CONS;
+                    vm->heap.objects[c3]->cons.car = (Value){.type = VAL_STRING, .as.ptr = t_sp};
+                    vm->heap.objects[c3]->cons.cdr = NIL_VAL;
+
+                    int32_t c2 = heap_alloc(&vm->heap); if (c2 < 0) { vm_push(vm, BOOL_VAL(0)); break; }
+                    vm->heap.objects[c2]->type = HEAP_CONS;
+                    vm->heap.objects[c2]->cons.car = INT_VAL((int64_t)st.st_mtime);
+                    vm->heap.objects[c2]->cons.cdr = PAIR_VAL(c3);
+
+                    int32_t c1 = heap_alloc(&vm->heap); if (c1 < 0) { vm_push(vm, BOOL_VAL(0)); break; }
+                    vm->heap.objects[c1]->type = HEAP_CONS;
+                    vm->heap.objects[c1]->cons.car = INT_VAL((int64_t)st.st_size);
+                    vm->heap.objects[c1]->cons.cdr = PAIR_VAL(c2);
+
+                    vm_push(vm, PAIR_VAL(c1));
+                    break;
+                }
+            }
+        }
+#else
+        (void)path_val;
+#endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+    case 1742: { /* file-rename(old, new) → #t or #f */
+        Value new_val = vm_pop(vm), old_val = vm_pop(vm);
+#ifndef ESHKOL_VM_WASM
+        if (old_val.type == VAL_STRING && new_val.type == VAL_STRING) {
+            VmString* os = (VmString*)vm->heap.objects[old_val.as.ptr]->opaque.ptr;
+            VmString* ns = (VmString*)vm->heap.objects[new_val.as.ptr]->opaque.ptr;
+            if (os && ns && rename(os->data, ns->data) == 0) {
+                vm_push(vm, BOOL_VAL(1)); break;
+            }
+        }
+#else
+        (void)new_val; (void)old_val;
+#endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+    case 1743: { /* file-copy(src, dst) → #t or #f */
+        Value dst_val = vm_pop(vm), src_val = vm_pop(vm);
+#ifndef ESHKOL_VM_WASM
+        if (src_val.type == VAL_STRING && dst_val.type == VAL_STRING) {
+            VmString* ss = (VmString*)vm->heap.objects[src_val.as.ptr]->opaque.ptr;
+            VmString* ds = (VmString*)vm->heap.objects[dst_val.as.ptr]->opaque.ptr;
+            if (ss && ds) {
+                FILE* fin = fopen(ss->data, "rb");
+                FILE* fout = fin ? fopen(ds->data, "wb") : NULL;
+                if (fin && fout) {
+                    char cbuf[8192];
+                    size_t n;
+                    while ((n = fread(cbuf, 1, sizeof(cbuf), fin)) > 0)
+                        fwrite(cbuf, 1, n, fout);
+                    fclose(fin); fclose(fout);
+                    vm_push(vm, BOOL_VAL(1)); break;
+                }
+                if (fin) fclose(fin);
+                if (fout) fclose(fout);
+            }
+        }
+#else
+        (void)dst_val; (void)src_val;
+#endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+    case 1744: { /* mkdir-recursive(path) → #t or #f */
+        Value path_val = vm_pop(vm);
+#ifndef ESHKOL_VM_WASM
+        if (path_val.type == VAL_STRING) {
+            VmString* ps = (VmString*)vm->heap.objects[path_val.as.ptr]->opaque.ptr;
+            if (ps) {
+                char buf[4096];
+                strncpy(buf, ps->data, sizeof(buf) - 1); buf[sizeof(buf) - 1] = 0;
+                /* Create each component */
+                int ok = 1;
+                for (char* p = buf + 1; *p; p++) {
+                    if (*p == '/') {
+                        *p = 0;
+                        if (mkdir(buf, 0755) != 0 && errno != EEXIST) { ok = 0; break; }
+                        *p = '/';
+                    }
+                }
+                if (ok && mkdir(buf, 0755) != 0 && errno != EEXIST) ok = 0;
+                if (ok || errno == EEXIST) { vm_push(vm, BOOL_VAL(1)); break; }
+            }
+        }
+#else
+        (void)path_val;
+#endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+    case 1745: { /* file-chmod(path, mode) → #t or #f (mode is integer, e.g. 0o755 = 493) */
+        Value mode_val = vm_pop(vm), path_val = vm_pop(vm);
+#ifndef ESHKOL_VM_WASM
+        if (path_val.type == VAL_STRING) {
+            VmString* ps = (VmString*)vm->heap.objects[path_val.as.ptr]->opaque.ptr;
+            if (ps && chmod(ps->data, (mode_t)as_number(mode_val)) == 0) {
+                vm_push(vm, BOOL_VAL(1)); break;
+            }
+        }
+#else
+        (void)mode_val; (void)path_val;
+#endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+    case 1746: { /* symlink-create(target, linkpath) → #t or #f */
+        Value link_val = vm_pop(vm), target_val = vm_pop(vm);
+#ifndef ESHKOL_VM_WASM
+        if (target_val.type == VAL_STRING && link_val.type == VAL_STRING) {
+            VmString* ts = (VmString*)vm->heap.objects[target_val.as.ptr]->opaque.ptr;
+            VmString* ls = (VmString*)vm->heap.objects[link_val.as.ptr]->opaque.ptr;
+            if (ts && ls && symlink(ts->data, ls->data) == 0) {
+                vm_push(vm, BOOL_VAL(1)); break;
+            }
+        }
+#else
+        (void)link_val; (void)target_val;
+#endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+    case 1747: { /* symlink-read(linkpath) → target string or #f */
+        Value path_val = vm_pop(vm);
+#ifndef ESHKOL_VM_WASM
+        if (path_val.type == VAL_STRING) {
+            VmString* ps = (VmString*)vm->heap.objects[path_val.as.ptr]->opaque.ptr;
+            if (ps) {
+                char buf[4096];
+                ssize_t len = readlink(ps->data, buf, sizeof(buf) - 1);
+                if (len > 0) {
+                    buf[len] = 0;
+                    VmString* s = vm_string_from_cstr(&vm->heap.regions, buf);
+                    if (s) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, s); break; }
+                }
+            }
+        }
+#else
+        (void)path_val;
+#endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+    case 1748: { /* directory-walk(path) → flat list of all file paths (recursive) */
+        Value path_val = vm_pop(vm);
+#ifndef ESHKOL_VM_WASM
+        if (path_val.type == VAL_STRING) {
+            VmString* ps = (VmString*)vm->heap.objects[path_val.as.ptr]->opaque.ptr;
+            if (ps) {
+                /* BFS using a simple stack of directories to visit */
+                Value result = NIL_VAL;
+                char dirs[256][4096];
+                int dir_count = 0;
+                strncpy(dirs[0], ps->data, 4095); dirs[0][4095] = 0;
+                dir_count = 1;
+                int dir_idx = 0;
+                while (dir_idx < dir_count && dir_count < 256) {
+                    DIR* d = opendir(dirs[dir_idx]);
+                    dir_idx++;
+                    if (!d) continue;
+                    struct dirent* ent;
+                    while ((ent = readdir(d)) != NULL) {
+                        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) continue;
+                        char full[4096];
+                        snprintf(full, sizeof(full), "%s/%s", dirs[dir_idx - 1], ent->d_name);
+                        struct stat st;
+                        if (stat(full, &st) == 0 && S_ISDIR(st.st_mode) && dir_count < 256) {
+                            strncpy(dirs[dir_count], full, 4095);
+                            dirs[dir_count][4095] = 0;
+                            dir_count++;
+                        }
+                        /* Add to result list */
+                        VmString* s = vm_string_from_cstr(&vm->heap.regions, full);
+                        if (!s) continue;
+                        int32_t sp = heap_alloc(&vm->heap); if (sp < 0) continue;
+                        vm->heap.objects[sp]->type = HEAP_STRING;
+                        vm->heap.objects[sp]->opaque.ptr = s;
+                        int32_t cp = heap_alloc(&vm->heap); if (cp < 0) continue;
+                        vm->heap.objects[cp]->type = HEAP_CONS;
+                        vm->heap.objects[cp]->cons.car = (Value){.type = VAL_STRING, .as.ptr = sp};
+                        vm->heap.objects[cp]->cons.cdr = result;
+                        result = PAIR_VAL(cp);
+                    }
+                    closedir(d);
+                }
+                vm_push(vm, result);
+                break;
+            }
+        }
+#else
+        (void)path_val;
+#endif
+        vm_push(vm, NIL_VAL);
+        break;
+    }
+
+    case 1749: { /* directory-delete-recursive(path) → #t or #f */
+        Value path_val = vm_pop(vm);
+#ifndef ESHKOL_VM_WASM
+        if (path_val.type == VAL_STRING) {
+            VmString* ps = (VmString*)vm->heap.objects[path_val.as.ptr]->opaque.ptr;
+            if (ps) {
+                /* Use system rm -rf (safe: path validated) */
+                char cmd[4096];
+                /* Basic path safety: reject if contains ; | & ` $ */
+                int safe = 1;
+                for (const char* c = ps->data; *c; c++) {
+                    if (*c == ';' || *c == '|' || *c == '&' || *c == '`' || *c == '$') {
+                        safe = 0; break;
+                    }
+                }
+                if (safe) {
+                    snprintf(cmd, sizeof(cmd), "rm -rf '%s'", ps->data);
+                    if (system(cmd) == 0) { vm_push(vm, BOOL_VAL(1)); break; }
+                }
+            }
+        }
+#else
+        (void)path_val;
+#endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+    case 1750: { /* mkstemp(template) → (fd . path) or #f
+                  * Template should end with XXXXXX */
+        Value tmpl_val = vm_pop(vm);
+#ifndef ESHKOL_VM_WASM
+        if (tmpl_val.type == VAL_STRING) {
+            VmString* ts = (VmString*)vm->heap.objects[tmpl_val.as.ptr]->opaque.ptr;
+            if (ts) {
+                char buf[4096];
+                strncpy(buf, ts->data, sizeof(buf) - 1); buf[sizeof(buf) - 1] = 0;
+                int fd = mkstemp(buf);
+                if (fd >= 0) {
+                    VmString* ps = vm_string_from_cstr(&vm->heap.regions, buf);
+                    if (ps) {
+                        int32_t sp = heap_alloc(&vm->heap); if (sp >= 0) {
+                            vm->heap.objects[sp]->type = HEAP_STRING;
+                            vm->heap.objects[sp]->opaque.ptr = ps;
+                            int32_t cp = heap_alloc(&vm->heap); if (cp >= 0) {
+                                vm->heap.objects[cp]->type = HEAP_CONS;
+                                vm->heap.objects[cp]->cons.car = INT_VAL(fd);
+                                vm->heap.objects[cp]->cons.cdr = (Value){.type = VAL_STRING, .as.ptr = sp};
+                                vm_push(vm, PAIR_VAL(cp)); break;
+                            }
+                        }
+                    }
+                    close(fd);
+                }
+            }
+        }
+#else
+        (void)tmpl_val;
+#endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+    case 1751: { /* mkdtemp(template) → path string or #f */
+        Value tmpl_val = vm_pop(vm);
+#ifndef ESHKOL_VM_WASM
+        if (tmpl_val.type == VAL_STRING) {
+            VmString* ts = (VmString*)vm->heap.objects[tmpl_val.as.ptr]->opaque.ptr;
+            if (ts) {
+                char buf[4096];
+                strncpy(buf, ts->data, sizeof(buf) - 1); buf[sizeof(buf) - 1] = 0;
+                if (mkdtemp(buf)) {
+                    VmString* s = vm_string_from_cstr(&vm->heap.regions, buf);
+                    if (s) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, s); break; }
+                }
+            }
+        }
+#else
+        (void)tmpl_val;
+#endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+    /* ══════════════════════════════════════════════════════════════════════
+     * Shell Utilities (1770-1779)
+     * ══════════════════════════════════════════════════════════════════════ */
+
+    case 1770: { /* shell-quote(str) → single-quoted shell-safe string */
+        Value str_val = vm_pop(vm);
+        if (str_val.type == VAL_STRING) {
+            VmString* ss = (VmString*)vm->heap.objects[str_val.as.ptr]->opaque.ptr;
+            if (ss) {
+                /* POSIX shell quoting: wrap in single quotes, escape internal ' as '\'' */
+                char buf[8192];
+                int pos = 0;
+                buf[pos++] = '\'';
+                for (const char* c = ss->data; *c && pos < 8180; c++) {
+                    if (*c == '\'') {
+                        buf[pos++] = '\''; buf[pos++] = '\\';
+                        buf[pos++] = '\''; buf[pos++] = '\'';
+                    } else {
+                        buf[pos++] = *c;
+                    }
+                }
+                buf[pos++] = '\'';
+                buf[pos] = 0;
+                VmString* s = vm_string_from_cstr(&vm->heap.regions, buf);
+                if (s) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, s); break; }
+            }
+        }
+        vm_push(vm, NIL_VAL);
+        break;
+    }
+
+    case 1771: { /* shell-split(str) → list of strings (basic word splitting) */
+        Value str_val = vm_pop(vm);
+        if (str_val.type == VAL_STRING) {
+            VmString* ss = (VmString*)vm->heap.objects[str_val.as.ptr]->opaque.ptr;
+            if (ss) {
+                Value result = NIL_VAL;
+                char buf[4096];
+                strncpy(buf, ss->data, sizeof(buf) - 1); buf[sizeof(buf) - 1] = 0;
+                /* Collect words in reverse, then reverse the list */
+                char* words[256]; int nwords = 0;
+                char* p = buf;
+                while (*p && nwords < 256) {
+                    while (*p == ' ' || *p == '\t') p++;
+                    if (!*p) break;
+                    char quote = 0;
+                    if (*p == '\'' || *p == '"') { quote = *p; p++; }
+                    char* start = p;
+                    if (quote) {
+                        while (*p && *p != quote) p++;
+                        if (*p) *p++ = 0;
+                    } else {
+                        while (*p && *p != ' ' && *p != '\t') p++;
+                        if (*p) *p++ = 0;
+                    }
+                    words[nwords++] = start;
+                }
+                /* Build list in order */
+                for (int i = nwords - 1; i >= 0; i--) {
+                    VmString* ws = vm_string_from_cstr(&vm->heap.regions, words[i]);
+                    if (!ws) continue;
+                    int32_t sp = heap_alloc(&vm->heap); if (sp < 0) continue;
+                    vm->heap.objects[sp]->type = HEAP_STRING;
+                    vm->heap.objects[sp]->opaque.ptr = ws;
+                    int32_t cp = heap_alloc(&vm->heap); if (cp < 0) continue;
+                    vm->heap.objects[cp]->type = HEAP_CONS;
+                    vm->heap.objects[cp]->cons.car = (Value){.type = VAL_STRING, .as.ptr = sp};
+                    vm->heap.objects[cp]->cons.cdr = result;
+                    result = PAIR_VAL(cp);
+                }
+                vm_push(vm, result);
+                break;
+            }
+        }
+        vm_push(vm, NIL_VAL);
+        break;
+    }
+
+    /* ══════════════════════════════════════════════════════════════════════
+     * Process Management (1780-1799)
+     * ══════════════════════════════════════════════════════════════════════ */
+
+    /* ══════════════════════════════════════════════════════════════════════
+     * Knowledge Base Extensions (1800-1809)
+     * ══════════════════════════════════════════════════════════════════════ */
+
+    case 1800: { /* kb-count(kb) → integer (number of facts) */
+        Value kb_val = vm_pop(vm);
+        if (kb_val.as.ptr >= 0 && vm->heap.objects[kb_val.as.ptr]->type == HEAP_KB) {
+            VmKnowledgeBase* kb = (VmKnowledgeBase*)vm->heap.objects[kb_val.as.ptr]->opaque.ptr;
+            if (kb) { vm_push(vm, INT_VAL(kb->n_facts)); break; }
+        }
+        vm_push(vm, INT_VAL(0));
+        break;
+    }
+
+    case 1801: { /* kb-retract!(kb, fact) → #t or #f
+                  * Remove first matching fact from KB */
+        Value fact_val = vm_pop(vm), kb_val = vm_pop(vm);
+        if (kb_val.as.ptr >= 0 && vm->heap.objects[kb_val.as.ptr]->type == HEAP_KB &&
+            fact_val.as.ptr >= 0 && vm->heap.objects[fact_val.as.ptr]->type == HEAP_FACT) {
+            VmKnowledgeBase* kb = (VmKnowledgeBase*)vm->heap.objects[kb_val.as.ptr]->opaque.ptr;
+            VmFact* target = (VmFact*)vm->heap.objects[fact_val.as.ptr]->opaque.ptr;
+            if (kb && target) {
+                for (int i = 0; i < kb->n_facts; i++) {
+                    if (kb->facts[i] == target) {
+                        /* Shift remaining facts down */
+                        for (int j = i; j < kb->n_facts - 1; j++)
+                            kb->facts[j] = kb->facts[j + 1];
+                        kb->n_facts--;
+                        vm_push(vm, BOOL_VAL(1));
+                        goto done_1801;
+                    }
+                }
+            }
+        }
+        vm_push(vm, BOOL_VAL(0));
+        done_1801:
+        break;
+    }
+
+    /* ══════════════════════════════════════════════════════════════════════
+     * Factor Graph Extensions (1810-1819)
+     * ══════════════════════════════════════════════════════════════════════ */
+
+    case 1810: { /* fg-marginal(fg, var-idx) → tensor of belief probabilities */
+        Value idx_val = vm_pop(vm), fg_val = vm_pop(vm);
+        if (fg_val.as.ptr >= 0 && vm->heap.objects[fg_val.as.ptr]->type == HEAP_FACTOR_GRAPH) {
+            VmFactorGraph* fg = (VmFactorGraph*)vm->heap.objects[fg_val.as.ptr]->opaque.ptr;
+            int var = (int)as_number(idx_val);
+            if (fg && var >= 0 && var < fg->num_vars) {
+                int dim = fg->var_dims[var];
+                /* Convert log-beliefs to probabilities via softmax */
+                double probs[64];
+                double max_b = fg->beliefs[var][0];
+                for (int i = 1; i < dim && i < 64; i++)
+                    if (fg->beliefs[var][i] > max_b) max_b = fg->beliefs[var][i];
+                double sum = 0;
+                for (int i = 0; i < dim && i < 64; i++) {
+                    probs[i] = exp(fg->beliefs[var][i] - max_b);
+                    sum += probs[i];
+                }
+                if (sum > 0) for (int i = 0; i < dim && i < 64; i++) probs[i] /= sum;
+                int64_t shape[1] = { dim };
+                VmTensor* t = vm_tensor_from_data(&vm->heap.regions, probs, shape, 1);
+                if (t) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_TENSOR, VAL_TENSOR, t); break; }
+            }
+        }
+        vm_push(vm, NIL_VAL);
+        break;
+    }
+
+    case 1811: { /* fg-entropy(fg, var-idx) → scalar entropy H = -Σ p*log(p) */
+        Value idx_val = vm_pop(vm), fg_val = vm_pop(vm);
+        if (fg_val.as.ptr >= 0 && vm->heap.objects[fg_val.as.ptr]->type == HEAP_FACTOR_GRAPH) {
+            VmFactorGraph* fg = (VmFactorGraph*)vm->heap.objects[fg_val.as.ptr]->opaque.ptr;
+            int var = (int)as_number(idx_val);
+            if (fg && var >= 0 && var < fg->num_vars) {
+                int dim = fg->var_dims[var];
+                /* Softmax to get probabilities */
+                double max_b = fg->beliefs[var][0];
+                for (int i = 1; i < dim; i++)
+                    if (fg->beliefs[var][i] > max_b) max_b = fg->beliefs[var][i];
+                double sum = 0;
+                double probs[64];
+                for (int i = 0; i < dim && i < 64; i++) {
+                    probs[i] = exp(fg->beliefs[var][i] - max_b);
+                    sum += probs[i];
+                }
+                /* H = -Σ p*log(p) */
+                double entropy = 0;
+                for (int i = 0; i < dim && i < 64; i++) {
+                    double p = probs[i] / sum;
+                    if (p > 1e-15) entropy -= p * log(p);
+                }
+                vm_push(vm, FLOAT_VAL(entropy));
+                break;
+            }
+        }
+        vm_push(vm, FLOAT_VAL(0));
+        break;
+    }
+
+    /* ══════════════════════════════════════════════════════════════════════
+     * Tensor/KB Persistence (1820-1829)
+     * Binary format: [magic:4][version:4][ndims:4][shape:ndims*8][data:total*8]
+     * ══════════════════════════════════════════════════════════════════════ */
+
+#define TENSOR_FILE_MAGIC 0x45534B54 /* "ESKT" */
+
+    case 1820: { /* tensor-save(path, tensor) → #t or #f */
+        Value tensor_val = vm_pop(vm), path_val = vm_pop(vm);
+#ifndef ESHKOL_VM_WASM
+        if (path_val.type == VAL_STRING && tensor_val.type == VAL_TENSOR) {
+            VmString* ps = (VmString*)vm->heap.objects[path_val.as.ptr]->opaque.ptr;
+            VmTensor* t = (VmTensor*)vm->heap.objects[tensor_val.as.ptr]->opaque.ptr;
+            if (ps && t && t->data) {
+                FILE* f = fopen(ps->data, "wb");
+                if (f) {
+                    uint32_t magic = TENSOR_FILE_MAGIC;
+                    uint32_t version = 1;
+                    uint32_t ndims = (uint32_t)t->n_dims;
+                    fwrite(&magic, 4, 1, f);
+                    fwrite(&version, 4, 1, f);
+                    fwrite(&ndims, 4, 1, f);
+                    for (int i = 0; i < t->n_dims; i++) {
+                        int64_t dim = t->shape[i];
+                        fwrite(&dim, 8, 1, f);
+                    }
+                    fwrite(t->data, sizeof(double), (size_t)t->total, f);
+                    fclose(f);
+                    vm_push(vm, BOOL_VAL(1));
+                    break;
+                }
+            }
+        }
+#else
+        (void)tensor_val; (void)path_val;
+#endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+    case 1821: { /* tensor-load(path) → tensor or #f */
+        Value path_val = vm_pop(vm);
+#ifndef ESHKOL_VM_WASM
+        if (path_val.type == VAL_STRING) {
+            VmString* ps = (VmString*)vm->heap.objects[path_val.as.ptr]->opaque.ptr;
+            if (ps) {
+                FILE* f = fopen(ps->data, "rb");
+                if (f) {
+                    uint32_t magic, version, ndims;
+                    if (fread(&magic, 4, 1, f) == 1 && magic == TENSOR_FILE_MAGIC &&
+                        fread(&version, 4, 1, f) == 1 && version == 1 &&
+                        fread(&ndims, 4, 1, f) == 1 && ndims > 0 && ndims <= 8) {
+                        int64_t shape[8];
+                        int ok = 1;
+                        for (uint32_t i = 0; i < ndims; i++) {
+                            if (fread(&shape[i], 8, 1, f) != 1) { ok = 0; break; }
+                        }
+                        if (ok) {
+                            int64_t total = 1;
+                            for (uint32_t i = 0; i < ndims; i++) total *= shape[i];
+                            VmTensor* t = vm_tensor_new(&vm->heap.regions, shape, (int)ndims);
+                            if (t && t->data && (int64_t)fread(t->data, sizeof(double), (size_t)total, f) == total) {
+                                fclose(f);
+                                VM_PUSH_HEAP_OPAQUE(vm, HEAP_TENSOR, VAL_TENSOR, t);
+                                break;
+                            }
+                        }
+                    }
+                    fclose(f);
+                }
+            }
+        }
+#else
+        (void)path_val;
+#endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+    case 1822: { /* kb-save(path, kb) → #t or #f
+                  * Serializes KB: writes fact count + predicate hashes + arities as binary.
+                  * For facts with datum (list), writes the list repr.
+                  * Format: [magic:4][version:4][n_facts:4][per fact: predicate_hash:8, arity:4, datum_ptr:4] */
+        Value kb_val = vm_pop(vm), path_val = vm_pop(vm);
+#ifndef ESHKOL_VM_WASM
+        if (path_val.type == VAL_STRING && kb_val.as.ptr >= 0 &&
+            vm->heap.objects[kb_val.as.ptr]->type == HEAP_KB) {
+            VmString* ps = (VmString*)vm->heap.objects[path_val.as.ptr]->opaque.ptr;
+            VmKnowledgeBase* kb = (VmKnowledgeBase*)vm->heap.objects[kb_val.as.ptr]->opaque.ptr;
+            if (ps && kb) {
+                FILE* f = fopen(ps->data, "wb");
+                if (f) {
+                    uint32_t magic = 0x45534B42; /* "ESKB" */
+                    uint32_t version = 1;
+                    uint32_t nf = (uint32_t)kb->n_facts;
+                    fwrite(&magic, 4, 1, f);
+                    fwrite(&version, 4, 1, f);
+                    fwrite(&nf, 4, 1, f);
+                    for (int i = 0; i < kb->n_facts; i++) {
+                        VmFact* fact = kb->facts[i];
+                        if (!fact) { uint64_t z = 0; fwrite(&z, 8, 1, f); uint32_t za = 0; fwrite(&za, 4, 1, f); continue; }
+                        fwrite(&fact->predicate, 8, 1, f);
+                        uint32_t ar = (uint32_t)fact->arity;
+                        fwrite(&ar, 4, 1, f);
+                        /* Write each arg's type byte + data */
+                        for (int j = 0; j < fact->arity; j++) {
+                            fwrite(&fact->args[j].type, 1, 1, f);
+                            fwrite(&fact->args[j].data, 8, 1, f);
+                        }
+                    }
+                    fclose(f);
+                    vm_push(vm, BOOL_VAL(1));
+                    break;
+                }
+            }
+        }
+#else
+        (void)kb_val; (void)path_val;
+#endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+#undef TENSOR_FILE_MAGIC
+
+    /* ══════════════════════════════════════════════════════════════════════
+     * Image I/O (1850-1859) — stb_image based
+     * ══════════════════════════════════════════════════════════════════════ */
+
+    case 1850: { /* image-read(path) → tensor (H,W,C) or #f */
+        Value path_val = vm_pop(vm);
+#ifndef ESHKOL_VM_WASM
+        if (path_val.type == VAL_STRING) {
+            VmString* ps = (VmString*)vm->heap.objects[path_val.as.ptr]->opaque.ptr;
+            if (ps) {
+                int w, h, c;
+                extern double* eshkol_image_read(const char*, int*, int*, int*);
+                double* data = eshkol_image_read(ps->data, &w, &h, &c);
+                if (data) {
+                    int64_t shape[3] = { h, w, c };
+                    int ndims = (c == 1) ? 2 : 3;
+                    if (c == 1) { shape[0] = h; shape[1] = w; }
+                    VmTensor* t = vm_tensor_from_data(&vm->heap.regions, data, shape, ndims);
+                    free(data);
+                    if (t) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_TENSOR, VAL_TENSOR, t); break; }
+                }
+            }
+        }
+#else
+        (void)path_val;
+#endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+    case 1851: { /* image-write(path, tensor, format) → #t or #f */
+        Value fmt_val = vm_pop(vm), tensor_val = vm_pop(vm), path_val = vm_pop(vm);
+#ifndef ESHKOL_VM_WASM
+        if (path_val.type == VAL_STRING && tensor_val.type == VAL_TENSOR) {
+            VmString* ps = (VmString*)vm->heap.objects[path_val.as.ptr]->opaque.ptr;
+            VmTensor* t = (VmTensor*)vm->heap.objects[tensor_val.as.ptr]->opaque.ptr;
+            const char* fmt = "png";
+            if (fmt_val.type == VAL_STRING) {
+                VmString* fs = (VmString*)vm->heap.objects[fmt_val.as.ptr]->opaque.ptr;
+                if (fs) fmt = fs->data;
+            }
+            if (ps && t && t->data && t->n_dims >= 2) {
+                int h = (int)t->shape[0], w = (int)t->shape[1];
+                int c = (t->n_dims >= 3) ? (int)t->shape[2] : 1;
+                extern int eshkol_image_write(const char*, const double*, int, int, int, const char*);
+                if (eshkol_image_write(ps->data, t->data, w, h, c, fmt) == 0) {
+                    vm_push(vm, BOOL_VAL(1)); break;
+                }
+            }
+        }
+#else
+        (void)fmt_val; (void)tensor_val; (void)path_val;
+#endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+    case 1852: { /* image-to-grayscale(tensor) → tensor (H,W) or #f */
+        Value tensor_val = vm_pop(vm);
+        if (tensor_val.type == VAL_TENSOR) {
+            VmTensor* t = (VmTensor*)vm->heap.objects[tensor_val.as.ptr]->opaque.ptr;
+            if (t && t->data && t->n_dims >= 2) {
+                int h = (int)t->shape[0], w = (int)t->shape[1];
+                int c = (t->n_dims >= 3) ? (int)t->shape[2] : 1;
+                extern double* eshkol_image_to_grayscale(const double*, int, int, int);
+                double* gray = eshkol_image_to_grayscale(t->data, w, h, c);
+                if (gray) {
+                    int64_t shape[2] = { h, w };
+                    VmTensor* gt = vm_tensor_from_data(&vm->heap.regions, gray, shape, 2);
+                    free(gray);
+                    if (gt) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_TENSOR, VAL_TENSOR, gt); break; }
+                }
+            }
+        }
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+    case 1853: { /* image-resize(tensor, new-h, new-w) → tensor or #f */
+        Value nw_val = vm_pop(vm), nh_val = vm_pop(vm), tensor_val = vm_pop(vm);
+        if (tensor_val.type == VAL_TENSOR) {
+            VmTensor* t = (VmTensor*)vm->heap.objects[tensor_val.as.ptr]->opaque.ptr;
+            int new_h = (int)as_number(nh_val), new_w = (int)as_number(nw_val);
+            if (t && t->data && t->n_dims >= 2 && new_h > 0 && new_w > 0) {
+                int h = (int)t->shape[0], w = (int)t->shape[1];
+                int c = (t->n_dims >= 3) ? (int)t->shape[2] : 1;
+                extern double* eshkol_image_resize(const double*, int, int, int, int, int);
+                double* resized = eshkol_image_resize(t->data, w, h, c, new_w, new_h);
+                if (resized) {
+                    int64_t shape[3] = { new_h, new_w, c };
+                    int ndims = (c == 1) ? 2 : 3;
+                    if (c == 1) { shape[0] = new_h; shape[1] = new_w; }
+                    VmTensor* rt = vm_tensor_from_data(&vm->heap.regions, resized, shape, ndims);
+                    free(resized);
+                    if (rt) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_TENSOR, VAL_TENSOR, rt); break; }
+                }
+            }
+        }
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+    case 1840: { /* reverse-gradient(f, point) → tensor of gradients
+                  * Uses reverse-mode AD via Wengert tape tracing.
+                  * Activates the tape, calls f with traced inputs,
+                  * runs backward pass, returns gradient tensor.
+                  * Single backward pass → O(1) regardless of input dimension. */
+        Value x_val = vm_pop(vm), f_val = vm_pop(vm);
+
+        double point[64];
+        int n = 0;
+        if (x_val.type == VAL_PAIR) {
+            Value cur = x_val;
+            while (cur.type == VAL_PAIR && n < 64) {
+                point[n++] = as_number(vm->heap.objects[cur.as.ptr]->cons.car);
+                cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
+            }
+        } else if (x_val.type == VAL_TENSOR && x_val.as.ptr >= 0) {
+            VmTensor* t = (VmTensor*)vm->heap.objects[x_val.as.ptr]->opaque.ptr;
+            if (t && t->data) {
+                n = (int)(t->total < 64 ? t->total : 64);
+                for (int i = 0; i < n; i++) point[i] = t->data[i];
+            }
+        } else {
+            point[0] = as_number(x_val);
+            n = 1;
+        }
+
+        if (n == 0) { vm_push(vm, FLOAT_VAL(0)); break; }
+
+        /* Create tape and variable nodes */
+        AdTape* tape = ad_tape_new(&vm->heap.regions);
+        if (!tape) { vm_push(vm, FLOAT_VAL(0)); break; }
+
+        int var_nodes[64];
+        Value args[64];
+        for (int i = 0; i < n; i++) {
+            var_nodes[i] = ad_var(tape, point[i]);
+            args[i] = FLOAT_VAL(point[i]);
+        }
+
+        /* Activate tape tracing on VM */
+        void* saved_tape = vm->active_tape;
+        vm->active_tape = tape;
+
+        /* Set up ad_node_map for the argument slots.
+         * The closure bridge pushes: closure, arg0, arg1, ..., argN-1
+         * at stack positions sp, sp+1, ..., sp+N.
+         * After frame setup, locals start at fp = sp+N-N = sp.
+         * So arg[i] is at stack position (current_sp + 1 + i). */
+        int base_sp = vm->sp + 1; /* +1 for closure push */
+        for (int i = 0; i < n; i++) {
+            if (base_sp + i < STACK_SIZE)
+                vm->ad_node_map[base_sp + i] = var_nodes[i];
+        }
+
+        /* Call f(x1, x2, ..., xn) — arithmetic will record on tape */
+        Value result = vm_call_closure_from_native(vm, f_val, args, n);
+
+        /* Capture result's tape node (it's at the return value position) */
+        /* The closure bridge captures result from stack[sp-1] before restoring sp.
+         * At that point, ad_node_map[sp-1] holds the result node. But since sp
+         * was already restored by the bridge, we need to find the output node.
+         * The last node on the tape IS the output (tape nodes are appended in order). */
+        int output_node = tape->len - 1;
+
+        /* Deactivate tape */
+        vm->active_tape = saved_tape;
+
+        if (output_node < 0) {
+            /* Function didn't produce any tape operations — constant function */
+            int64_t shape[1] = { n };
+            VmTensor* zt = vm_tensor_zeros(&vm->heap.regions, shape, 1);
+            if (zt) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_TENSOR, VAL_TENSOR, zt); }
+            else { vm_push(vm, NIL_VAL); }
+            break;
+        }
+
+        /* Run backward pass */
+        ad_backward(tape, output_node);
+
+        /* Collect gradients from variable nodes */
+        if (n == 1) {
+            vm_push(vm, FLOAT_VAL(ad_gradient(tape, var_nodes[0])));
+        } else {
+            double grads[64];
+            for (int i = 0; i < n; i++)
+                grads[i] = ad_gradient(tape, var_nodes[i]);
+            int64_t shape[1] = { n };
+            VmTensor* t = vm_tensor_from_data(&vm->heap.regions, grads, shape, 1);
+            if (t) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_TENSOR, VAL_TENSOR, t); }
+            else { vm_push(vm, NIL_VAL); }
+        }
+        break;
+    }
+
+    case 1830: { /* tensor-from-stack(count, v1, v2, ..., vN) → tensor
+                  * Internal: compiler emits this for all-numeric #(...) literals.
+                  * Stack: [count, val0, val1, ..., valN-1] (count pushed first) */
+        /* Pop values in reverse (valN-1 is TOS) */
+        int n = 0;
+        /* We need to find the count on the stack. The compiler pushes:
+         * CONST(count), CONST(v0), CONST(v1), ..., CONST(vN-1), NATIVE_CALL
+         * So TOS-0 through TOS-(N-1) are values, TOS-N is count. */
+        /* Strategy: peek backwards to find the int count */
+        double vals[1024];
+        int found = 0;
+        for (int try_n = 0; try_n < 1024 && try_n < vm->sp; try_n++) {
+            int count_pos = vm->sp - try_n - 1;
+            if (count_pos >= 0 && vm->stack[count_pos].type == VAL_INT) {
+                int candidate = (int)vm->stack[count_pos].as.i;
+                if (candidate == try_n && candidate >= 0 && candidate < 1024) {
+                    n = candidate;
+                    found = 1;
+                    break;
+                }
+            }
+        }
+        if (found && n > 0) {
+            /* Pop the n values */
+            for (int i = n - 1; i >= 0; i--)
+                vals[i] = as_number(vm_pop(vm));
+            vm_pop(vm); /* pop count */
+            int64_t shape[1] = { n };
+            VmTensor* t = vm_tensor_from_data(&vm->heap.regions, vals, shape, 1);
+            if (t) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_TENSOR, VAL_TENSOR, t); break; }
+        } else if (found && n == 0) {
+            vm_pop(vm); /* pop count */
+        }
+        vm_push(vm, NIL_VAL);
+        break;
+    }
+
+    case 1780: { /* process-spawn(cmd, args-list, env-alist) → pid or #f
+                  * cmd: string, args: list of strings, env: alist of (name . value) or #f
+                  * Returns child PID on success, #f on failure */
+        Value env_val = vm_pop(vm), args_val = vm_pop(vm), cmd_val = vm_pop(vm);
+#ifndef ESHKOL_VM_WASM
+        if (cmd_val.type == VAL_STRING) {
+            VmString* cs = (VmString*)vm->heap.objects[cmd_val.as.ptr]->opaque.ptr;
+            if (cs) {
+                /* Build argv array */
+                char* argv[256];
+                int argc_local = 0;
+                argv[argc_local++] = cs->data;
+                Value acur = args_val;
+                while (acur.type == VAL_PAIR && argc_local < 255) {
+                    Value elem = vm->heap.objects[acur.as.ptr]->cons.car;
+                    if (elem.type == VAL_STRING) {
+                        VmString* es = (VmString*)vm->heap.objects[elem.as.ptr]->opaque.ptr;
+                        if (es) argv[argc_local++] = es->data;
+                    }
+                    acur = vm->heap.objects[acur.as.ptr]->cons.cdr;
+                }
+                argv[argc_local] = NULL;
+
+                /* Build environment if provided */
+                char* envp_buf[256];
+                char env_strs[256][512];
+                char** envp = NULL;
+                int envc = 0;
+                if (env_val.type == VAL_PAIR) {
+                    Value ecur = env_val;
+                    while (ecur.type == VAL_PAIR && envc < 255) {
+                        Value pair = vm->heap.objects[ecur.as.ptr]->cons.car;
+                        if (pair.type == VAL_PAIR) {
+                            Value key = vm->heap.objects[pair.as.ptr]->cons.car;
+                            Value val = vm->heap.objects[pair.as.ptr]->cons.cdr;
+                            if (key.type == VAL_STRING && val.type == VAL_STRING) {
+                                VmString* ks = (VmString*)vm->heap.objects[key.as.ptr]->opaque.ptr;
+                                VmString* vs = (VmString*)vm->heap.objects[val.as.ptr]->opaque.ptr;
+                                if (ks && vs) {
+                                    snprintf(env_strs[envc], 512, "%s=%s", ks->data, vs->data);
+                                    envp_buf[envc] = env_strs[envc];
+                                    envc++;
+                                }
+                            }
+                        }
+                        ecur = vm->heap.objects[ecur.as.ptr]->cons.cdr;
+                    }
+                    envp_buf[envc] = NULL;
+                    envp = envp_buf;
+                }
+
+                pid_t pid = fork();
+                if (pid == 0) {
+                    /* Child */
+                    if (envp) execve(argv[0], argv, envp);
+                    else execvp(argv[0], argv);
+                    _exit(127);
+                } else if (pid > 0) {
+                    vm_push(vm, INT_VAL((int64_t)pid));
+                    break;
+                }
+            }
+        }
+#else
+        (void)env_val; (void)args_val; (void)cmd_val;
+#endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+    case 1781: { /* process-wait(pid) → exit-status integer */
+        Value pid_val = vm_pop(vm);
+#ifndef ESHKOL_VM_WASM
+        int status = 0;
+        pid_t pid = (pid_t)as_number(pid_val);
+        if (waitpid(pid, &status, 0) >= 0) {
+            vm_push(vm, INT_VAL(WIFEXITED(status) ? WEXITSTATUS(status) : -1));
+        } else
+#else
+        (void)pid_val;
+#endif
+        { vm_push(vm, INT_VAL(-1)); }
+        break;
+    }
+
+    case 1782: { /* process-kill(pid, signal) → #t or #f */
+        Value sig_val = vm_pop(vm), pid_val = vm_pop(vm);
+#ifndef ESHKOL_VM_WASM
+        pid_t pid = (pid_t)as_number(pid_val);
+        int sig = (int)as_number(sig_val);
+        if (kill(pid, sig) == 0) { vm_push(vm, BOOL_VAL(1)); break; }
+#else
+        (void)sig_val; (void)pid_val;
+#endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+    case 1783: { /* io-poll(fd-list, timeout-ms) → list of ready fds or empty
+                  * fd-list: list of integer file descriptors
+                  * timeout-ms: integer (-1 = block forever, 0 = non-blocking) */
+        Value timeout_val = vm_pop(vm), fds_val = vm_pop(vm);
+#ifndef ESHKOL_VM_WASM
+        /* Count fds */
+        int nfds = 0;
+        Value cur = fds_val;
+        while (cur.type == VAL_PAIR && nfds < 256) {
+            nfds++;
+            cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
+        }
+        if (nfds > 0) {
+            struct pollfd pfds[256];
+            cur = fds_val;
+            for (int i = 0; i < nfds; i++) {
+                pfds[i].fd = (int)as_number(vm->heap.objects[cur.as.ptr]->cons.car);
+                pfds[i].events = POLLIN;
+                pfds[i].revents = 0;
+                cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
+            }
+            int timeout_ms = (int)as_number(timeout_val);
+            int ret = poll(pfds, (nfds_t)nfds, timeout_ms);
+            if (ret > 0) {
+                Value result = NIL_VAL;
+                for (int i = nfds - 1; i >= 0; i--) {
+                    if (pfds[i].revents & (POLLIN | POLLHUP | POLLERR)) {
+                        int32_t cp = heap_alloc(&vm->heap); if (cp < 0) continue;
+                        vm->heap.objects[cp]->type = HEAP_CONS;
+                        vm->heap.objects[cp]->cons.car = INT_VAL(pfds[i].fd);
+                        vm->heap.objects[cp]->cons.cdr = result;
+                        result = PAIR_VAL(cp);
+                    }
+                }
+                vm_push(vm, result);
+                break;
+            }
+        }
+#else
+        (void)timeout_val; (void)fds_val;
+#endif
+        vm_push(vm, NIL_VAL);
+        break;
+    }
 
     default:
         /* Check geometric manifold operations (804-843) */

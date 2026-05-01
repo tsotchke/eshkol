@@ -1,0 +1,122 @@
+;;; tests/v1_2_edge_cases/streams_test.esk
+;;; SRFI 41 lazy streams (#174).
+
+(require stdlib)
+
+(define total 0)
+(define passed 0)
+
+(define (check name expected actual)
+  (set! total (+ total 1))
+  (cond
+    ((equal? expected actual)
+     (set! passed (+ passed 1))
+     (display "PASS: ") (display name) (newline))
+    (else
+     (display "FAIL: ") (display name)
+     (display " — expected ") (write expected)
+     (display ", got ") (write actual) (newline))))
+
+(display "=== streams: construction + accessors ===") (newline)
+
+(define s1 (stream-cons 1 (delay (stream-cons 2 (delay (stream-cons 3 (delay stream-null)))))))
+
+(check "stream-pair? non-empty" #t (stream-pair? s1))
+(check "stream-null? non-empty" #f (stream-null? s1))
+(check "stream-null? empty" #t (stream-null? stream-null))
+(check "stream-car"            1  (stream-car s1))
+(check "stream-car . cdr"      2  (stream-car (stream-cdr s1)))
+(check "stream-car . cdr . cdr" 3 (stream-car (stream-cdr (stream-cdr s1))))
+(check "stream-null tail"      #t (stream-null? (stream-cdr (stream-cdr (stream-cdr s1)))))
+
+(display "=== streams: take / drop / ref / list conversion ===") (newline)
+
+(check "stream-take 0"   '()       (stream-take s1 0))
+(check "stream-take 2"   '(1 2)    (stream-take s1 2))
+(check "stream-take all" '(1 2 3)  (stream-take s1 3))
+(check "stream-take overshoot" '(1 2 3) (stream-take s1 10))
+(check "stream-drop 0"   '(1 2 3)  (stream->list (stream-drop s1 0)))
+(check "stream-drop 1"   '(2 3)    (stream->list (stream-drop s1 1)))
+(check "stream-drop all" '()       (stream->list (stream-drop s1 5)))
+(check "stream-ref 0"    1         (stream-ref s1 0))
+(check "stream-ref 2"    3         (stream-ref s1 2))
+(check "list->stream"    '(10 20 30) (stream->list (list->stream '(10 20 30))))
+(check "stream-length"   3         (stream-length s1))
+
+(display "=== streams: map / filter / for-each / append / zip ===") (newline)
+
+(check "stream-map"     '(2 4 6)
+       (stream->list (stream-map (lambda (x) (* x 2)) s1)))
+(check "stream-filter"  '(1 3)
+       (stream->list (stream-filter odd? s1)))
+(check "stream-append"  '(1 2 3 1 2 3)
+       (stream->list (stream-append s1 s1)))
+(check "stream-zip"     '((1 1) (2 2) (3 3))
+       (stream->list (stream-zip s1 s1)))
+
+(define visited '())
+(stream-for-each (lambda (x) (set! visited (cons x visited))) s1)
+(check "stream-for-each side effects" '(3 2 1) visited)
+
+(display "=== streams: infinite generators ===") (newline)
+
+(define naturals (stream-from 0))
+(check "stream-from car"          0       (stream-car naturals))
+(check "stream-from take 5"       '(0 1 2 3 4) (stream-take naturals 5))
+(check "stream-from ref 100"      100     (stream-ref naturals 100))
+
+(define powers-of-2 (stream-iterate (lambda (n) (* n 2)) 1))
+(check "stream-iterate take 6"    '(1 2 4 8 16 32) (stream-take powers-of-2 6))
+
+(check "stream-take-while"        '(0 1 2 3 4)
+       (stream->list (stream-take-while (lambda (x) (< x 5)) naturals)))
+(check "stream-drop-while take 3" '(5 6 7)
+       (stream-take (stream-drop-while (lambda (x) (< x 5)) naturals) 3))
+
+(display "=== streams: laziness — tail not evaluated until forced ===") (newline)
+
+(define evals 0)
+(define (counted-from n)
+  (set! evals (+ evals 1))
+  (stream-cons n (delay (counted-from (+ n 1)))))
+
+(define lazy-s (counted-from 0))
+(check "lazy: head only evaluated once on construction" 1 evals)
+(stream-car lazy-s)
+(check "lazy: stream-car does NOT force tail"           1 evals)
+(stream-cdr lazy-s)
+(check "lazy: stream-cdr forces ONE more cell"          2 evals)
+;; Force same tail again — memoised, no new evaluation.
+(stream-cdr lazy-s)
+(check "lazy: repeated stream-cdr is memoised"          2 evals)
+
+(display "=== streams: cyclic / self-referential definitions ===") (newline)
+
+;; SRFI 41 textbook example: ones — a stream that is its own tail.
+(define ones (stream-cons 1 (delay ones)))
+(check "ones take 5" '(1 1 1 1 1) (stream-take ones 5))
+
+;; Interleave 0/1 by self-reference + map over zip.
+(define zeros-and-ones
+  (stream-cons 0 (delay (stream-cons 1 (delay zeros-and-ones)))))
+(check "alternating take 6" '(0 1 0 1 0 1) (stream-take zeros-and-ones 6))
+
+(display "=== streams: composition pipelines ===") (newline)
+
+;; First 5 even squares.
+(define even-squares
+  (stream-filter even?
+    (stream-map (lambda (x) (* x x))
+      (stream-from 1))))
+(check "filter . map pipeline" '(4 16 36 64 100)
+       (stream-take even-squares 5))
+
+(newline)
+(display "---") (newline)
+(display "Total: ") (display total)
+(display ", PASS: ") (display passed)
+(display ", FAIL: ") (display (- total passed)) (newline)
+
+(if (= passed total)
+    (begin (display "ALL OK") (newline))
+    (begin (display "SOME FAILED") (newline) (exit 1)))

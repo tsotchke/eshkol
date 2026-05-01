@@ -1410,6 +1410,11 @@ static void load_file_asts(const std::string& filepath, std::vector<eshkol_ast_t
         eshkol_info("Loading file: %s", filepath.c_str());
     }
 
+    // Reset cumulative line/column counter so this file's first AST is at
+    // line 1.  Without this, a file loaded after some other file would
+    // start counting at the previous file's last line.
+    eshkol_reset_parse_line_counter();
+
     eshkol_ast_t ast = eshkol_parse_next_ast(read_file);
     while (ast.type != ESHKOL_INVALID) {
         if (debug_mode) {
@@ -1669,15 +1674,32 @@ static std::string resolve_module_path(const std::string& module_name, const std
         }
     }
 
-    // Try $ESHKOL_PATH
+    // Try $ESHKOL_PATH. Empty segments, non-existent directories, and
+    // files-posing-as-dirs are silently ignored (they can't hold
+    // modules) but flagged in debug mode so "module not found" errors
+    // are easy to trace to a misconfigured path. Known pitfalls:
+    //   ESHKOL_PATH=":x"           → empty leading segment
+    //   ESHKOL_PATH="/does/not/exist" → valid syntax, wrong content
+    //   ESHKOL_PATH="/etc/passwd"  → file instead of directory
     const char* eshkol_path = std::getenv("ESHKOL_PATH");
     if (eshkol_path) {
         std::stringstream ss(eshkol_path);
         std::string search_dir;
         while (std::getline(ss, search_dir, eshkol_path_separator)) {
-            std::filesystem::path env_path = std::filesystem::path(search_dir) / path_part;
-            if (std::filesystem::exists(env_path)) {
-                return std::filesystem::canonical(env_path).string();
+            if (search_dir.empty()) continue;
+            std::error_code ec;
+            std::filesystem::path dir_path(search_dir);
+            if (!std::filesystem::exists(dir_path, ec)) {
+                eshkol_debug("ESHKOL_PATH entry does not exist: %s", search_dir.c_str());
+                continue;
+            }
+            if (!std::filesystem::is_directory(dir_path, ec)) {
+                eshkol_debug("ESHKOL_PATH entry is not a directory: %s", search_dir.c_str());
+                continue;
+            }
+            std::filesystem::path env_path = dir_path / path_part;
+            if (std::filesystem::exists(env_path, ec)) {
+                return std::filesystem::canonical(env_path, ec).string();
             }
         }
     }
@@ -2056,9 +2078,24 @@ static void update_ast_references(eshkol_ast_t* ast,
                 case ESHKOL_MAKE_WORKSPACE_OP:
                 case ESHKOL_WS_REGISTER_OP:
                 case ESHKOL_WS_STEP_OP:
-                case ESHKOL_EXTERN_OP:
+                    // Consciousness-engine ops use call_op semantics — they
+                    // codegen as direct function calls with the same arg
+                    // shape as ESHKOL_CALL_OP.
                     for (uint64_t i = 0; i < ast->operation.call_op.num_vars; i++) {
                         update_ast_references(&ast->operation.call_op.variables[i], rename_map);
+                    }
+                    break;
+
+                case ESHKOL_EXTERN_OP:
+                    // ESHKOL_EXTERN_OP uses `extern_op` in the union (name /
+                    // real_name / return_type / parameters / num_params),
+                    // NOT `call_op`. Reading call_op.num_vars here dereferenced
+                    // extern_op.return_type (a char*) as a uint64_t length and
+                    // walked off into uninitialised memory — SIGSEGV in every
+                    // private-extern-bearing module under process_requires +
+                    // rename_private_symbols.
+                    for (uint64_t i = 0; i < ast->operation.extern_op.num_params; i++) {
+                        update_ast_references(&ast->operation.extern_op.parameters[i], rename_map);
                     }
                     break;
 
@@ -2300,10 +2337,28 @@ static void process_requires(std::vector<eshkol_ast_t>& asts, const std::string&
                     eshkol_info("Module '%s' exports: [%s]", module_name.c_str(), exp_str.c_str());
                 }
 
-                // Rename private (non-exported) symbols to avoid collisions
-                if (!exports.empty()) {
-                    rename_private_symbols(module_asts, module_name, exports, debug_mode);
-                }
+                // Bug Z (Noesis 2026-04-30): `(provide ...)` is
+                // documented and used (across 65 Noesis source files
+                // and the Eshkol stdlib itself) as INFORMATIONAL, not
+                // as a hard export boundary.  JIT mode treats it that
+                // way; AOT was renaming non-exported names so calls
+                // from other files failed with "Unknown function: X"
+                // with a misleading source marker.  Match the
+                // documented + JIT semantics here.  If a strict
+                // export mode is wanted later, expose it via a
+                // per-file pragma so existing code keeps compiling.
+                //
+                // Collision avoidance was the original motivation —
+                // see git history of rename_private_symbols.  In
+                // practice multi-module collisions show up at link
+                // time as ODR / "duplicate symbol" errors, so we
+                // surface them where they originate rather than
+                // hiding them with a silent global mangle.  For now
+                // we skip the rename entirely; rename_private_symbols
+                // and the ESHKOL_PROVIDE_OP machinery stay in place
+                // for the future strict-mode pragma.
+                (void)rename_private_symbols;
+                (void)exports;
 
                 // Recursively process requires in the loaded module
                 std::string module_dir = std::filesystem::path(module_path).parent_path().string();
@@ -2348,8 +2403,24 @@ static void process_requires(std::vector<eshkol_ast_t>& asts, const std::string&
     }
 }
 
+/* `(command-line)` reads these globals from libeshkol-static.
+ * They default to zero/null (weak linkage in arena_memory.cpp) since
+ * the runtime supports being embedded with no real main. eshkol-run
+ * is a real main, so we publish argc/argv here at startup so user
+ * scripts under `-e`, `-r`, or compile-and-link see the actual
+ * command line instead of an empty list. The full argv is published
+ * (including argv[0] = the eshkol-run binary path); user-script args
+ * begin at argv[optind+1] after argument parsing. */
+extern "C" {
+    extern int32_t __eshkol_argc;
+    extern char**  __eshkol_argv;
+}
+
 int main(int argc, char **argv)
 {
+    __eshkol_argc = (int32_t)argc;
+    __eshkol_argv = argv;
+
     int ch = 0;
 
     uint8_t debug_mode = 0;
@@ -2555,37 +2626,70 @@ int main(int argc, char **argv)
                 eshkol_info("JIT running: %s", filepath.c_str());
             }
 
-            // Parse and execute all expressions in the file
-            eshkol_ast_t ast = eshkol_parse_next_ast(file);
-            while (ast.type != ESHKOL_INVALID) {
-                if (debug_mode) {
-                    printf("=== AST ===\n");
-                    eshkol_ast_pretty_print(&ast, 0);
-                    printf("===========\n");
-                }
-
-                // Execute the AST (definitions don't print, expressions do via display)
-                bool is_define = (ast.type == ESHKOL_OP &&
-                    (ast.operation.op == ESHKOL_DEFINE_OP ||
-                     ast.operation.op == ESHKOL_REQUIRE_OP ||
-                     ast.operation.op == ESHKOL_IMPORT_OP));
-
-                // Check if it's a display/print call
-                bool is_output_call = false;
-                if (ast.type == ESHKOL_OP && ast.operation.op == ESHKOL_CALL_OP &&
-                    ast.operation.call_op.func && ast.operation.call_op.func->type == ESHKOL_VAR) {
-                    const char* name = ast.operation.call_op.func->variable.id;
-                    if (name && (strcmp(name, "display") == 0 || strcmp(name, "newline") == 0 ||
-                                 strcmp(name, "print") == 0 || strcmp(name, "write") == 0)) {
-                        is_output_call = true;
+            // Architectural fix for the per-form JIT module boundary class:
+            //
+            // Previously this loop compiled and executed each top-level form
+            // as its own LLVM module, matching REPL interactive semantics.
+            // That forced cross-module references for every define-then-use
+            // pattern (e.g. (define hw ...) then (parallel-map hw ...)),
+            // which tripped thread-pool/closure-capture state issues and
+            // hung benches that work cleanly in compiled mode.
+            //
+            // For file execution the right architectural choice is a single
+            // module containing every top-level form — identical to what
+            // compiled mode does — then one executeBatch call. require/
+            // import forms are still processed inline by the batch path
+            // (they load submodules synchronously).
+            std::vector<eshkol_ast_t> file_asts;
+            file_asts.reserve(64);
+            {
+                eshkol_ast_t ast = eshkol_parse_next_ast(file);
+                while (ast.type != ESHKOL_INVALID) {
+                    if (debug_mode) {
+                        printf("=== AST ===\n");
+                        eshkol_ast_pretty_print(&ast, 0);
+                        printf("===========\n");
                     }
+                    file_asts.push_back(ast);
+                    ast = eshkol_parse_next_ast(file);
                 }
-
-                jit_ctx.execute(&ast);
-
-                // Parse next expression
-                ast = eshkol_parse_next_ast(file);
             }
+
+            // Process require/import up front so their module contents are
+            // available as externally-resolvable symbols before batch codegen.
+            // Everything else gets batched into a single module.
+            std::vector<eshkol_ast_t> batch;
+            batch.reserve(file_asts.size());
+            for (auto& ast : file_asts) {
+                bool is_load = (ast.type == ESHKOL_OP &&
+                    (ast.operation.op == ESHKOL_REQUIRE_OP ||
+                     ast.operation.op == ESHKOL_IMPORT_OP));
+                if (is_load) {
+                    try { jit_ctx.execute(&ast); } catch (...) { /* continue */ }
+                } else {
+                    batch.push_back(ast);
+                }
+            }
+
+            if (!batch.empty()) {
+                try {
+                    jit_ctx.executeBatch(batch, /*silent=*/false);
+                } catch (const std::exception& e) {
+                    eshkol_error("JIT batch execution failed: %s", e.what());
+                    // Quirk #6 (2026-04-23): surface the failure in the
+                    // exit status. The -r path used to return 0 even
+                    // when batch codegen failed (LLVM verification
+                    // error, module unwrap, etc.), which made compile
+                    // failures look like "program ran but printed
+                    // nothing" to the user. executeBatch now throws
+                    // on codegen failure; signal the caller via non-
+                    // zero exit so CI / bench / scripts see it.
+                    file.close();
+                    eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_NONE);
+                    return 1;
+                }
+            }
+
             file.close();
         }
 
@@ -2619,19 +2723,41 @@ int main(int argc, char **argv)
             compiled_files.push_back(argv[optind]);
     }
 
-    // NOTE: stdlib.esk auto-loading is now DEPRECATED.
-    // The new module system uses (require ...) statements which are processed
-    // by process_requires(). User code should explicitly use:
-    //   (require stdlib)      - for all standard library
-    //   (require core.functional.compose)  - for specific modules
-    //
-    // The old no_stdlib flag is kept for backwards compatibility but does nothing.
-    (void)no_stdlib;  // Suppress unused variable warning
-
     // First pass: Load source files to check for stdlib requirements
     // (We'll process requires after potentially adding stdlib.o)
     for (const auto &source_file : source_files) {
         load_file_asts(source_file, asts, debug_mode);
+    }
+
+    // Bug Y (Noesis 2026-04-30): stdlib auto-loading was previously
+    // gated on `(require stdlib)` appearing in the source.  JIT mode
+    // (`eshkol-run -r`) auto-loads stdlib regardless — the REPL JIT
+    // discovers symbols from `stdlib.bc` at startup — so the same
+    // file would print correct output under JIT and fail with
+    // "Unknown function: length / reverse / append / assoc / filter
+    // / for-each / …" under AOT.  Anyone running plain
+    // `eshkol-run foo.esk` was getting the worst-of-both-worlds
+    // surprise: JIT-flavoured semantics in the docs, AOT-flavoured
+    // brittleness on the command line.
+    //
+    // Restore the documented behaviour: `--no-stdlib` opts OUT of
+    // auto-load; the default IS auto-load.  `(require stdlib)`
+    // remains valid (and idempotent — has_stdlib check below).
+    bool need_stdlib = !no_stdlib && (!shared_lib);
+    if (need_stdlib && !requires_stdlib(asts)) {
+        // The source didn't `(require stdlib)` explicitly, but the
+        // user expects stdlib to be available.  Synthesize a top-of-
+        // module require so process_requires() handles it
+        // identically to a user-written `(require stdlib)`.
+        eshkol_ast_t req_ast = {};
+        req_ast.type = ESHKOL_OP;
+        req_ast.operation.op = ESHKOL_REQUIRE_OP;
+        req_ast.operation.require_op.num_modules = 1;
+        req_ast.operation.require_op.module_names = (char**)malloc(sizeof(char*));
+        req_ast.operation.require_op.module_names[0] = strdup("stdlib");
+        req_ast.line = 0;
+        req_ast.column = 0;
+        asts.insert(asts.begin(), req_ast);
     }
 
     // Auto-link stdlib.o if the source requires stdlib and we're not in library mode
@@ -2663,9 +2789,28 @@ int main(int argc, char **argv)
         std::string filename = std::filesystem::path(obj_file).filename().string();
         if (filename == "stdlib.o" || filename == "libstdlib.o") {
             eshkol_info("Detected pre-compiled stdlib: %s", obj_file);
-            // Recursively discover all modules included in stdlib
+            // Recursively discover all modules included in stdlib.
+            // collect_all_submodules parses lib/stdlib.esk to build the
+            // set — if that source file is missing or unreadable (e.g.
+            // stdlib.o was installed without the accompanying .esk
+            // tree), we end up with an empty precompiled set and
+            // process_requires will then try to load core.* modules
+            // from source instead, doubling up symbols at link time.
+            // Fail loudly up-front instead of silently producing a bad
+            // binary.
+            size_t before = precompiled_modules.size();
             collect_all_submodules("stdlib", precompiled_modules, g_lib_dir);
-            eshkol_info("Pre-compiled modules: %zu total", precompiled_modules.size());
+            size_t added = precompiled_modules.size() - before;
+            eshkol_info("Pre-compiled modules: %zu total (+%zu from stdlib)",
+                        precompiled_modules.size(), added);
+            if (added == 0) {
+                eshkol_error(
+                    "stdlib.o is linked but no .esk sources were found under "
+                    "lib_dir=%s — precompiled-module detection is empty, which "
+                    "will produce duplicate symbols at link time. Check that "
+                    "the lib/ tree is installed alongside stdlib.o.",
+                    g_lib_dir.c_str());
+            }
             // Tell codegen that stdlib is being used (for homoiconic display support)
             eshkol_set_uses_stdlib(1);
         }
@@ -2791,6 +2936,16 @@ int main(int argc, char **argv)
             // Resolve the source file to an absolute path for DWARF
             std::filesystem::path abs_source = std::filesystem::absolute(source_files[0]);
             eshkol_enable_debug_info(abs_source.string().c_str());
+        }
+
+        // Set source context for structured error messages
+        if (!source_files.empty()) {
+            std::ifstream src_stream(source_files[0]);
+            if (src_stream.is_open()) {
+                std::string src_text((std::istreambuf_iterator<char>(src_stream)),
+                                     std::istreambuf_iterator<char>());
+                eshkol_set_source_context(source_files[0], src_text.c_str());
+            }
         }
 
         // Generate LLVM IR (use library mode if --shared-lib flag is set)
@@ -2950,6 +3105,32 @@ int main(int argc, char **argv)
                     eshkol_dispose_llvm_module(llvm_module);
                     return 1;
                 }
+
+                // Bug X (Noesis 2026-04-30): the link-branch path below
+                // already prints "[eshkol-run] compiled to a.out — run
+                // it (./a.out) or use eshkol-run -r" so users with the
+                // Lisp-shebang expectation aren't silently confused.
+                // The single-file LLVM-direct path here used to skip
+                // that notice entirely, which made `eshkol-run foo.esk`
+                // look like it had silently produced no output.  Print
+                // the same notice here when no -o was given.
+                if (!output) {
+                    const char* basename_of_exe = std::strrchr(exe_name.c_str(), '/');
+                    basename_of_exe = basename_of_exe ? basename_of_exe + 1 : exe_name.c_str();
+                    bool default_output_name = (std::strcmp(basename_of_exe, "a.out") == 0
+#ifdef _WIN32
+                                                || std::strcmp(basename_of_exe, "a.exe") == 0
+#endif
+                                                );
+                    if (default_output_name) {
+                        fprintf(stderr,
+                                "[eshkol-run] compiled to '%s'. Run it (./%s) or use "
+                                "`eshkol-run -r %s` to JIT-execute without producing "
+                                "a binary.\n",
+                                exe_name.c_str(), exe_name.c_str(),
+                                source_files.empty() ? "<file>" : source_files[0]);
+                    }
+                }
             }
         }
         
@@ -2957,9 +3138,21 @@ int main(int argc, char **argv)
         eshkol_dispose_llvm_module(llvm_module);
     }
 
-    // Process compiled object files if we have them and an output target
-    // Don't link in compile-only mode (-c flag) - user can link manually
-    if (!compiled_files.empty() && output && !compile_only) {
+    // Process compiled object files if we have them and an output target.
+    // Don't link in compile-only mode (-c flag) - user can link manually.
+    // Don't link in --wasm mode either: the wasm_output branch above has
+    // already produced the .wasm file via the LLVM in-memory codegen path
+    // (the WebAssembly target emits a self-contained module).  Falling
+    // through to native clang++ link would try to relink stdlib.o (an
+    // arm64 / x86_64 native object auto-added at line ~2780) into the
+    // wasm output, which fails with "_main … referenced from initial
+    // undefines" because (a) the user's --wasm test files are typically
+    // module-style libraries with no scheme_main, and (b) the host
+    // platform linker can't consume native objects when targeting wasm.
+    // Reproducer: tests/web/web_canvas_test.esk and web_extern_test.esk
+    // succeeded in eshkol_compile_llvm_ir_to_wasm_file() but the run was
+    // marked FAIL because the redundant native link below crashed.
+    if (!compiled_files.empty() && output && !compile_only && !wasm_output) {
         std::vector<std::string> link_args;
         link_args.push_back(eshkol::platform::cxx_compiler());
 #ifndef _WIN32
@@ -3015,12 +3208,22 @@ int main(int argc, char **argv)
 
         append_host_runtime_link_args(link_args);
 
+// Set 512 MB main-thread stack so deeply recursive Scheme code
+// (e.g. nested letrec / non-tail-recursive helpers in
+// tests/tco/nested_tco_test.esk) doesn't overflow the default 8 MB
+// macOS / Linux thread stack.  Without this the binary's LC_MAIN
+// shows `stacksize 0` (i.e. linker default) on Darwin and the
+// recursion-depth check itself segfaults on its own frame push
+// once the user stack is exhausted.  llvm_codegen.cpp's parallel
+// link path already does this; the path here for pre-compiled
+// .o inputs (the common `eshkol-run file.esk -o exe` flow) was
+// missing the Darwin branch.
 #ifdef _WIN32
         link_args.emplace_back("-Xlinker");
         link_args.emplace_back("/STACK:536870912");
-#endif
-
-#ifdef __linux__
+#elif defined(__APPLE__)
+        link_args.emplace_back("-Wl,-stack_size,0x20000000");
+#elif defined(__linux__)
         link_args.emplace_back("-Wl,-z,stack-size=536870912");
 #endif
 
@@ -3057,9 +3260,36 @@ int main(int argc, char **argv)
         }
 
         eshkol_info("Successfully created executable: %s", output);
-    } else if (!compiled_files.empty() && !compile_only) {
-        // Only warn about unused object files if we're not in compile-only mode
-        // In compile-only mode, we intentionally don't link
+        // BUG B (Noesis residual audit v3): bare `eshkol-run file.esk`
+        // was silently producing a.out with no indication it had
+        // compiled (rather than run) the script. Anyone expecting Lisp
+        // shebang semantics — `(display …)` to actually display —
+        // saw nothing. Print a one-line stderr notice in the default-
+        // output case so the surprise is at most one help message
+        // long. Skipped when -o was explicitly given (the user knows
+        // exactly what they want) and silently absent in -e/-r/
+        // --compile paths since they never reach this branch.
+        const char* basename_of_output = std::strrchr(output, '/');
+        basename_of_output = basename_of_output ? basename_of_output + 1 : output;
+        bool default_output_name = (std::strcmp(basename_of_output, "a.out") == 0
+#ifdef _WIN32
+                                    || std::strcmp(basename_of_output, "a.exe") == 0
+#endif
+                                    );
+        if (default_output_name) {
+            fprintf(stderr,
+                    "[eshkol-run] compiled to '%s'. Run it (./%s) or use "
+                    "`eshkol-run -r %s` to JIT-execute without producing "
+                    "a binary.\n",
+                    output, output,
+                    source_files.empty() ? "<file>" : source_files[0]);
+        }
+    } else if (!compiled_files.empty() && !compile_only && !wasm_output) {
+        // Only warn about unused object files if we're not in
+        // compile-only mode and we weren't asked for WASM (the WASM
+        // path emits a self-contained module via LLVM in-memory codegen
+        // and intentionally bypasses the native link step that would
+        // otherwise consume those .o files).
         eshkol_warn("Object files provided but no output specified. Use -o to specify output executable.");
         eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
         return 1;

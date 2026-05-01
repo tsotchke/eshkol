@@ -1,0 +1,170 @@
+;;; core/argparse.esk
+;;;
+;;; Minimal CLI argument parser for Eshkol programs.
+;;;
+;;; Usage:
+;;;   (require core.argparse)
+;;;
+;;;   (define spec
+;;;     (list (list '--name    'string  "World" "Your name")
+;;;           (list '--count   'integer 1       "How many greetings")
+;;;           (list '--verbose 'boolean #f      "Verbose output")))
+;;;
+;;;   (define args (parse-args (command-line) spec))
+;;;
+;;;   (display (arg-get args '--name))   ; => "World" or whatever user passed
+;;;   (display (arg-get args '--count))  ; => 1 (integer, already converted)
+;;;   (display (arg-positional args))    ; => positional args after flags
+;;;
+;;; Spec layout (positional, no keyword args — Eshkol parser doesn't
+;;; support #:default in list literals at v1.2): (name type default desc)
+;;;   type ∈ 'string 'integer 'number 'boolean
+;;; Flag conventions:
+;;;   --name value      long flag with next-token value
+;;;   --name=value      long flag with inline value
+;;;   --name            boolean flag (sets to #t)
+;;;   --no-name         boolean flag negation (sets to #f)
+;;;   --                end-of-options marker; remaining args are positional
+;;;
+;;; Unknown flags are collected as positional strings so callers can
+;;; decide whether to reject or forward them.
+
+(require core.list.transform)
+(require core.list.search)
+(require core.strings)
+
+(provide parse-args arg-get arg-positional arg-has? argparse-help)
+
+(define (spec-name s)    (car s))
+(define (spec-type s)    (car (cdr s)))
+(define (spec-default s) (car (cdr (cdr s))))
+(define (spec-desc s)    (car (cdr (cdr (cdr s)))))
+
+(define (spec-lookup name spec)
+  (cond
+    ((null? spec) #f)
+    ((equal? (spec-name (car spec)) name) (car spec))
+    (else (spec-lookup name (cdr spec)))))
+
+(define (defaults-alist spec)
+  (if (null? spec) '()
+      (cons (cons (spec-name (car spec)) (spec-default (car spec)))
+            (defaults-alist (cdr spec)))))
+
+(define (alist-set alist key val)
+  (cond
+    ((null? alist) (list (cons key val)))
+    ((equal? (car (car alist)) key) (cons (cons key val) (cdr alist)))
+    (else (cons (car alist) (alist-set (cdr alist) key val)))))
+
+(define (alist-lookup alist key)
+  (cond
+    ((null? alist) #f)
+    ((equal? (car (car alist)) key) (cdr (car alist)))
+    (else (alist-lookup (cdr alist) key))))
+
+(define (convert-value str type)
+  (cond
+    ((equal? type 'string)  str)
+    ((equal? type 'integer) (string->number str))
+    ((equal? type 'number)  (string->number str))
+    ((equal? type 'boolean) (not (or (equal? str "false") (equal? str "0"))))
+    (else str)))
+
+(define (starts-with? s prefix)
+  (and (>= (string-length s) (string-length prefix))
+       (equal? (substring s 0 (string-length prefix)) prefix)))
+
+(define (find-eq-idx s i)
+  (cond
+    ((>= i (string-length s)) #f)
+    ((equal? (string-ref s i) #\=) i)
+    (else (find-eq-idx s (+ i 1)))))
+
+;; Core state machine: given current argv + alist + positional accum,
+;; return the new (flags positionals) after consuming one token.
+(define (parse-step argv flags pos end-opts spec)
+  (cond
+    ((null? argv) (list flags (reverse pos)))
+    (end-opts
+     (parse-step (cdr argv) flags (cons (car argv) pos) #t spec))
+    (else (parse-one (car argv) (cdr argv) flags pos end-opts spec))))
+
+(define (parse-one a rest flags pos end-opts spec)
+  (cond
+    ((equal? a "--")
+     (parse-step rest flags pos #t spec))
+
+    ;; --no-flag
+    ((starts-with? a "--no-")
+     (handle-negation a rest flags pos end-opts spec))
+
+    ;; --flag=value
+    ((and (starts-with? a "--") (find-eq-idx a 2))
+     (handle-eq-form a rest flags pos end-opts spec))
+
+    ;; --flag [value]
+    ((starts-with? a "--")
+     (handle-long-flag a rest flags pos end-opts spec))
+
+    ;; plain positional
+    (else
+     (parse-step rest flags (cons a pos) end-opts spec))))
+
+(define (handle-negation a rest flags pos end-opts spec)
+  (let ((base (string-append "--" (substring a 5 (string-length a)))))
+    (let ((sym (string->symbol base)))
+      (let ((row (spec-lookup sym spec)))
+        (if row
+            (parse-step rest (alist-set flags sym #f) pos end-opts spec)
+            (parse-step rest flags (cons a pos) end-opts spec))))))
+
+(define (handle-eq-form a rest flags pos end-opts spec)
+  (let ((idx (find-eq-idx a 2)))
+    (let ((name (substring a 0 idx))
+          (val  (substring a (+ idx 1) (string-length a))))
+      (let ((sym (string->symbol name)))
+        (let ((row (spec-lookup sym spec)))
+          (if row
+              (parse-step rest
+                          (alist-set flags sym (convert-value val (spec-type row)))
+                          pos end-opts spec)
+              (parse-step rest flags (cons a pos) end-opts spec)))))))
+
+(define (handle-long-flag a rest flags pos end-opts spec)
+  (let ((sym (string->symbol a)))
+    (let ((row (spec-lookup sym spec)))
+      (cond
+        ((not row)
+         (parse-step rest flags (cons a pos) end-opts spec))
+        ((equal? (spec-type row) 'boolean)
+         (parse-step rest (alist-set flags sym #t) pos end-opts spec))
+        ((null? rest)
+         (parse-step rest flags pos end-opts spec))
+        (else
+         (parse-step (cdr rest)
+                     (alist-set flags sym (convert-value (car rest) (spec-type row)))
+                     pos end-opts spec))))))
+
+(define (parse-args argv spec)
+  (parse-step argv (defaults-alist spec) '() #f spec))
+
+(define (arg-get parsed key)    (alist-lookup (car parsed) key))
+(define (arg-positional parsed) (car (cdr parsed)))
+(define (arg-has? parsed key)
+  (let ((v (arg-get parsed key)))
+    (not (or (null? v) (equal? v #f)))))
+
+(define (argparse-help-row row)
+  (string-append "  " (symbol->string (spec-name row))
+                 " <" (symbol->string (spec-type row)) ">"
+                 "    " (spec-desc row) "\n"))
+
+(define (argparse-help-rows rows)
+  (if (null? rows) ""
+      (string-append (argparse-help-row (car rows))
+                     (argparse-help-rows (cdr rows)))))
+
+(define (argparse-help progname spec)
+  (string-append "Usage: " progname " [OPTIONS] [ARGS...]\n\nOptions:\n"
+                 (argparse-help-rows spec)))

@@ -1,0 +1,95 @@
+;; dotted_pair_reader_test.esk — Quirk X (2026-04-24)
+;;
+;; '(a . b) was misread: the dot became a literal symbol, producing
+;; the 3-element list (a |.| b) instead of the cons pair (a . b).
+;; Fix: parse_quoted_list_internal and parse_quasiquoted_list_internal
+;; now detect a bare '.' token and build a cons chain instead of list.
+
+(require stdlib)
+
+(define passed 0)
+(define failed 0)
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin (display "PASS: ") (display name) (newline)
+             (set! passed (+ passed 1)))
+      (begin (display "FAIL: ") (display name)
+             (display " — expected ") (display expected)
+             (display ", got ") (display actual) (newline)
+             (set! failed (+ failed 1)))))
+
+;; ── Basic dotted pair ──────────────────────────────────────────────
+(define p '(k . v))
+(check "car of dotted pair"  'k  (car p))
+(check "cdr of dotted pair"  'v  (cdr p))
+(check "pair?"               #t  (pair? p))
+(check "symbol? cdr"         #t  (symbol? (cdr p)))
+(check "pair? cdr"           #f  (pair? (cdr p)))
+
+;; Must match cons
+(check "equal? cons"  #t  (equal? p (cons 'k 'v)))
+
+;; ── Canonical string roundtrip ─────────────────────────────────────
+;; '(k . v) displays as "(k . v)", not "(k |.| v)"
+(check "display"  "(k . v)"  (let ((p (open-output-string)))
+                                (display '(k . v) p)
+                                (get-output-string p)))
+
+;; ── Improper list: (a b . c) ──────────────────────────────────────
+(define q '(a b . c))
+(check "improper car"   'a   (car q))
+(check "improper cadr"  'b   (car (cdr q)))
+(check "improper cddr"  'c   (cdr (cdr q)))
+(check "improper equal?" #t  (equal? q (cons 'a (cons 'b 'c))))
+
+;; ── Nested: '(x . (y . z)) ≡ '(x y . z) ─────────────────────────
+;; R7RS: the two notations are identical.
+(define a '(x . (y . z)))
+(define b '(x y . z))
+(check "nested-dot equal"    #t        (equal? a b))
+(check "nested car"          'x        (car a))
+(check "nested cdr car"      'y        (car (cdr a)))
+(check "nested cdr cdr"      'z        (cdr (cdr a)))
+
+;; ── Alist ─────────────────────────────────────────────────────────
+(define alist '((alpha . 1) (beta . 2) (gamma . 3)))
+(check "alist pair?"          #t  (pair? alist))
+(check "alist car pair?"      #t  (pair? (car alist)))
+(check "alist caar"           'alpha  (car (car alist)))
+(check "alist cdar"           1       (cdr (car alist)))
+(check "alist assq alpha"     '(alpha . 1)  (assq 'alpha alist))
+(check "alist assq beta"      '(beta . 2)   (assq 'beta  alist))
+
+;; ── Quasiquote with dot ───────────────────────────────────────────
+(define key 'x)
+(define val 42)
+(define qp `(,key . ,val))
+(check "quasiquote dotted car"  'x   (car qp))
+(check "quasiquote dotted cdr"  42   (cdr qp))
+(check "quasiquote equal?"       #t   (equal? qp (cons 'x 42)))
+
+;; ── Mixed: dotted pair inside proper list ─────────────────────────
+(define mixed '(fn "label" 3.14 (k . v)))
+(check "mixed length"     4        (length mixed))
+(check "mixed car"        'fn      (car mixed))
+(check "mixed 4th car"    'k       (car (car (cdr (cdr (cdr mixed))))))
+(check "mixed 4th cdr"    'v       (cdr (car (cdr (cdr (cdr mixed))))))
+
+;; ── car/cdr of non-pair raises ───────────────────────────────────
+;; R7RS: (cdr 'foo) and (car 'foo) must raise an error, not silently
+;; return garbage or () (previously returned raw pointer / 0).
+(define (raises-error? thunk)
+  (guard (exn (#t #t))
+    (thunk)
+    #f))
+
+(check "cdr of symbol raises"  #t  (raises-error? (lambda () (cdr 'foo))))
+(check "car of symbol raises"  #t  (raises-error? (lambda () (car 'foo))))
+(check "cdr of integer raises" #t  (raises-error? (lambda () (cdr 42))))
+(check "car of integer raises" #t  (raises-error? (lambda () (car 42))))
+(check "cdr of string raises"  #t  (raises-error? (lambda () (cdr "hi"))))
+
+(newline)
+(display "Passed: ") (display passed) (newline)
+(display "Failed: ") (display failed) (newline)
+(if (> failed 0) (exit 1) (exit 0))

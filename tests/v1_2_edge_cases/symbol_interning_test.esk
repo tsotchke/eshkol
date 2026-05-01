@@ -1,0 +1,85 @@
+;; R7RS-1 #196: symbol interning regression test.
+;;
+;; R7RS §6.5 mandates: "different literal constants … created using quote …
+;; always denote the same object". Previously each JIT module created its
+;; own local symbol global, so (eq? x y) on two identically-named symbols
+;; from different defines returned #f. The codegen path now routes all
+;; symbol literals through eshkol_intern_symbol_lookup (shared with
+;; string->symbol / procedure-name / type-of) so every spelling has a single
+;; canonical process-global pointer.
+
+(require stdlib)
+
+(display "=== R7RS-1 symbol interning suite ===") (newline)
+
+(define pass-count 0)
+(define fail-count 0)
+(define (check name cond)
+  (if cond
+      (begin (set! pass-count (+ pass-count 1))
+             (display "PASS: ") (display name) (newline))
+      (begin (set! fail-count (+ fail-count 1))
+             (display "FAIL: ") (display name) (newline))))
+
+;; ---- literal quoted symbols ----
+(check "(eq? 'foo 'foo) inline" (eq? (quote foo) (quote foo)))
+(check "(eqv? 'foo 'foo) inline" (eqv? (quote foo) (quote foo)))
+(check "(equal? 'foo 'foo) inline" (equal? (quote foo) (quote foo)))
+
+;; ---- cross-define identity — THE primary bug ----
+(define a (quote foo))
+(define b (quote foo))
+(check "(eq? a b) across defines" (eq? a b))
+(check "(eqv? a b) across defines" (eqv? a b))
+
+;; ---- distinct symbol names are NOT eq? ----
+(check "(eq? 'foo 'bar) = #f" (not (eq? (quote foo) (quote bar))))
+
+;; ---- cond/case dispatch on symbolic operator ----
+(define (dispatch op)
+  (cond ((eq? op (quote +)) "add")
+        ((eq? op (quote *)) "mul")
+        ((eq? op (quote -)) "sub")
+        (else "other")))
+(check "dispatch '+ → \"add\"" (equal? (dispatch (quote +)) "add"))
+(check "dispatch '* → \"mul\"" (equal? (dispatch (quote *)) "mul"))
+(check "dispatch '- → \"sub\"" (equal? (dispatch (quote -)) "sub"))
+(check "dispatch '@ → \"other\"" (equal? (dispatch (quote @)) "other"))
+
+;; ---- string->symbol interning ----
+(check "(eq? (string->symbol \"x\") (string->symbol \"x\"))"
+       (eq? (string->symbol "x") (string->symbol "x")))
+
+;; ---- string->symbol agrees with quote ----
+(check "(eq? (string->symbol \"foo\") 'foo)"
+       (eq? (string->symbol "foo") (quote foo)))
+(check "(eq? 'bar (string->symbol \"bar\"))"
+       (eq? (quote bar) (string->symbol "bar")))
+
+;; ---- symbols survive through let / lambda boundaries ----
+(define (identity-sym) (quote keep))
+(check "symbol from function = quoted form"
+       (eq? (identity-sym) (quote keep)))
+
+(define stored
+  (let ((s (quote inside-let))) s))
+(check "symbol from let-binding = outer quote"
+       (eq? stored (quote inside-let)))
+
+;; ---- symbol-as-key in hash-table (exercise symbol-based equal?) ----
+(define ht (make-hash-table))
+(hash-set! ht (quote kk) 42)
+(check "hash-ref with quoted-symbol key"
+       (= (hash-ref ht (quote kk) -1) 42))
+
+;; Fetch with string->symbol of same name — should find same entry because
+;; the symbol is canonical (same pointer).
+(check "hash-ref via (string->symbol) lookup"
+       (= (hash-ref ht (string->symbol "kk") -1) 42))
+
+(newline)
+(display "=== Summary ===") (newline)
+(display "Passed: ") (display pass-count) (newline)
+(display "Failed: ") (display fail-count) (newline)
+(display (if (= fail-count 0) "RESULT: ALL PASS" "RESULT: FAILURES DETECTED"))
+(newline)

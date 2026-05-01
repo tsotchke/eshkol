@@ -79,13 +79,28 @@ public:
     llvm::Value* applyCons(llvm::Value* list_int);
 
     /**
-     * Apply variadic arithmetic to list: (apply + '(1 2 3))
+     * Apply a variadic binary reduction to a list of numbers:
+     * (apply OP '(x1 x2 ... xn)) folds OP left-to-right over the list.
      *
-     * @param op Operation string (+, -, *, /)
+     * Supported ops: + - * / min max
+     *
+     * Operations with an identity element (+, -, *, /) return the identity
+     * on empty lists. Operations without an identity (min, max) raise a
+     * TYPE_ERROR exception on empty lists (matching R7RS).
+     *
+     * @param op Operation string
      * @param list_int Argument list as i64 pointer
-     * @return Result of folding operation over list
+     * @return Result tagged value
      */
-    llvm::Value* applyArithmetic(const std::string& op, llvm::Value* list_int);
+    llvm::Value* applyReduction(const std::string& op, llvm::Value* list_int);
+
+    /**
+     * @deprecated Old name retained as a thin forwarder for compatibility;
+     * prefer applyReduction.
+     */
+    llvm::Value* applyArithmetic(const std::string& op, llvm::Value* list_int) {
+        return applyReduction(op, list_int);
+    }
 
     /**
      * Apply user-defined function to list arguments.
@@ -146,6 +161,18 @@ public:
         std::unordered_map<std::string, std::pair<uint64_t, bool>>* info
     ) {
         variadic_function_info_ = info;
+    }
+
+    /**
+     * Set the main codegen's function_table for cross-file apply
+     * resolution (Noesis Bug P, 2026-04-23). User functions defined
+     * in modules brought in via (load …) register here; symbol_table /
+     * global_symbol_table do not always carry them, and
+     * `module().getFunction(name)` may miss when the name has been
+     * mangled or the function lives in a different LLVM module.
+     */
+    void setFunctionTable(std::unordered_map<std::string, llvm::Function*>* tbl) {
+        function_table_ = tbl;
     }
 
     /**
@@ -210,6 +237,28 @@ public:
         apply_builtin_callback_ = callback;
     }
 
+    /**
+     * Bug P (2026-04-23): forward-reference apply callback.
+     *
+     * For cross-file user-defined functions in REPL mode (i.e. (load
+     * "module.esk") brings in a `(define (f …) …)`, then a different
+     * batch / file does `(apply f args)`), the symbol-table /
+     * function_table cascade misses because the function lives in
+     * another LLVM module loaded into the JIT. Direct calls handle
+     * this via __repl_fwd_<name> indirect calls; apply needs the
+     * same. The callback consults the REPL forward-reference
+     * registry and emits the appropriate indirect call when the
+     * name is registered. Returns nullptr if the name is not a known
+     * REPL forward-ref (apply then falls through to its existing
+     * "Unknown function" warning).
+     */
+    using ApplyForwardRefCallback = llvm::Value* (*)(const std::string& func_name,
+                                                      llvm::Value* list_int,
+                                                      void* context);
+    void setApplyForwardRefCallback(ApplyForwardRefCallback callback) {
+        apply_forward_ref_callback_ = callback;
+    }
+
 private:
     CodegenContext& ctx_;
     TaggedValueCodegen& tagged_;
@@ -218,6 +267,9 @@ private:
     // Symbol tables for function lookup
     std::unordered_map<std::string, llvm::Value*>* symbol_table_ = nullptr;
     std::unordered_map<std::string, llvm::Value*>* global_symbol_table_ = nullptr;
+    // Main codegen's function_table — Bug P: cross-file user defines
+    // register here; consulted as last resort before "Unknown function".
+    std::unordered_map<std::string, llvm::Function*>* function_table_ = nullptr;
 
     // Variadic function metadata
     std::unordered_map<std::string, std::pair<uint64_t, bool>>* variadic_function_info_ = nullptr;
@@ -236,6 +288,7 @@ private:
 
     // Apply builtin callback for tensor/vector functions
     ApplyBuiltinCallback apply_builtin_callback_ = nullptr;
+    ApplyForwardRefCallback apply_forward_ref_callback_ = nullptr;
 
     // === Internal Helpers ===
 
