@@ -134,10 +134,17 @@ jobs:
           set -euxo pipefail
           sudo apt-get install -y \
             cmake ninja-build \
-            llvm-${LLVM_MAJOR} llvm-${LLVM_MAJOR}-dev \
+            llvm-${LLVM_MAJOR} llvm-${LLVM_MAJOR}-dev lld-${LLVM_MAJOR} \
             libreadline-dev pkg-config \
             libssl-dev libncurses-dev \
             git python3
+          # eshkol's codegen passes -fuse-ld=lld for AArch64 Linux
+          # (GNU ld 2.38 hits range/erratum bugs on the big static
+          # runtime; see lib/backend/llvm_codegen.cpp). The
+          # lld-${LLVM_MAJOR} package installs `ld.lld-${LLVM_MAJOR}`
+          # but `-fuse-ld=lld` looks for unversioned `ld.lld` in PATH.
+          sudo ln -sf "/usr/bin/ld.lld-${LLVM_MAJOR}" /usr/bin/ld.lld
+          ld.lld --version
 
       - name: Install Dependencies (macOS)
         if: runner.os == 'macOS'

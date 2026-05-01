@@ -31843,17 +31843,39 @@ int eshkol_compile_llvm_ir_to_object(LLVMModuleRef module_ref, const char* filen
             return -1;
         }
 
-        // Create target machine with configured optimization level
+        // Create target machine with configured optimization level.
+        //
+        // CodeModel selection:
+        //   - AArch64: use Large. The default Small/Medium models emit
+        //     direct BL/ADRP+ADD calls limited to ±128 MiB; libeshkol-
+        //     static.a + user code routinely exceeds that on Linux ARM64
+        //     and the linker fails with "R_AARCH64_CALL26: relocation
+        //     truncated to fit". Large emits `movk/movz/blr` sequences
+        //     that resolve to absolute 64-bit addresses, eliminating
+        //     the reach limit at a small per-call code-size cost.
+        //   - x86_64 / others: leave at default (nullopt → small/medium
+        //     per ABI). Range overflow doesn't bite there.
+        std::optional<llvm::CodeModel::Model> code_model;
+#if LLVM_VERSION_MAJOR >= 21
+        const std::string& triple_str_for_cm = cached_triple.str();
+#else
+        const std::string& triple_str_for_cm = g_cached_target_triple;
+#endif
+        if (triple_str_for_cm.find("aarch64") != std::string::npos ||
+            triple_str_for_cm.find("arm64") != std::string::npos) {
+            code_model = llvm::CodeModel::Large;
+        }
+
         TargetOptions target_options;
         auto codegen_opt = getCodeGenOptLevel();
         std::unique_ptr<TargetMachine> target_machine(
 #if LLVM_VERSION_MAJOR >= 21
             target->createTargetMachine(cached_triple, g_cached_cpu_name, g_cached_features,
-                                       target_options, Reloc::PIC_, std::nullopt,
+                                       target_options, Reloc::PIC_, code_model,
                                        codegen_opt));
 #else
             target->createTargetMachine(g_cached_target_triple, g_cached_cpu_name, g_cached_features,
-                                       target_options, Reloc::PIC_, std::nullopt,
+                                       target_options, Reloc::PIC_, code_model,
                                        codegen_opt));
 #endif
 
@@ -32076,6 +32098,25 @@ int eshkol_compile_llvm_ir_to_executable(LLVMModuleRef module_ref, const char* f
         link_args.emplace_back("/STACK:536870912");
 #elif defined(__linux__)
         link_args.emplace_back("-Wl,-z,stack-size=536870912");
+        // ── AArch64 Linux: linker selection ───────────────────────────
+        // Codegen uses CodeModel::Large for AArch64 (see target machine
+        // creation below) which handles the primary R_AARCH64_CALL26
+        // reach issue. Ubuntu 22.04's GNU ld 2.38, however, hits a
+        // separate problem: the Cortex-A53 erratum-843419 stub table
+        // is enabled by default and itself overflows on the biggest
+        // user binaries we link, with a `--no-fix-…` form that 2.38
+        // doesn't accept and a `=adr` variant whose interaction with
+        // CodeModel::Large triggers BFD assertion failures and
+        // segfaults inside ld itself (elfnn-aarch64.c:5362).
+        //
+        // LLVM's lld has none of these limits — it handles arbitrary-
+        // size text sections natively and is shipped with every LLVM
+        // 21 install we already require. -fuse-ld=lld is a clang/g++
+        // driver flag that swaps the linker without changing anything
+        // else about the link line.
+#  if defined(__aarch64__) || defined(__arm64__)
+        link_args.emplace_back("-fuse-ld=lld");
+#  endif
 #endif
 
         link_args.emplace_back("-o");
