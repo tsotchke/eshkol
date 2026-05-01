@@ -23,16 +23,20 @@ fi
 PASS=0
 FAIL=0
 
-# expect_err <case-name> <esk-source> <expected-substring>
+# expect_err <case-name> <esk-source> <expected-substring> [--with-stdlib]
 expect_err() {
     local name="$1"
     local src="$2"
     local expected="$3"
+    local stdlib_flag="--no-stdlib"
+    if [ "${4:-}" = "--with-stdlib" ]; then
+        stdlib_flag=""
+    fi
     local f
     f=$(mktemp /tmp/eshkol_err_marker_XXXXXX.esk)
     printf '%s\n' "$src" > "$f"
     local out
-    out=$("$RUN" --no-stdlib "$f" -o /tmp/eshkol_err_marker_out 2>&1 || true)
+    out=$("$RUN" $stdlib_flag "$f" -o /tmp/eshkol_err_marker_out 2>&1 || true)
     if grep -qF "$expected" <<<"$out"; then
         PASS=$((PASS + 1))
     else
@@ -73,6 +77,19 @@ expect_err "error in nested function body" \
 (define (broken)
   (undefined-fn 1 2 3))' \
 ':3:4:'
+
+# Case 5: with stdlib loaded — verifies the cumulative line counter
+# isn't perturbed by the parser walking through multiple stdlib
+# modules before reaching the user's program.  Pre-fix, the user's
+# error would be reported at "line 1 of the last stdlib AST" or
+# similar.
+expect_err "error after stdlib load + user defines" \
+';; uses stdlib so we exercise the stdlib parse path
+(define xs (list 1 2 3))
+(display (length xs)) (newline)
+
+(undefined-fn)' \
+':5:2:' --with-stdlib
 
 echo "error-line-marker: $PASS pass, $FAIL fail"
 exit $FAIL
