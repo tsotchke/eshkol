@@ -705,6 +705,43 @@ href="../lib/backend/llvm_codegen.cpp:15280"><code>codegenFlatten()</code></a></
 <strong>Implementation</strong>: <a
 href="../lib/backend/tensor_codegen.cpp:1796"><code>tensorShape()</code></a></p>
 <hr />
+<h4 id="tensor-save"><code>tensor-save</code></h4>
+<p><strong>Syntax</strong>: <code>(tensor-save path tensor)</code></p>
+<p>Writes a tensor checkpoint to disk.</p>
+<p><strong>Examples</strong>:</p>
+<pre class="scheme"><code>(tensor-save &quot;/tmp/tensor.em&quot; #(1 2 3))  ; =&gt; #t</code></pre>
+<p><strong>Type</strong>: Serialization<br />
+<strong>Returns</strong>: <code>#t</code> on success, <code>#f</code> on
+failure</p>
+<hr />
+<h4 id="tensor-load"><code>tensor-load</code></h4>
+<p><strong>Syntax</strong>: <code>(tensor-load path)</code></p>
+<p>Loads a tensor checkpoint from disk.</p>
+<p><strong>Examples</strong>:</p>
+<pre class="scheme"><code>(tensor-load &quot;/tmp/tensor.em&quot;)  ; =&gt; #(1 2 3)</code></pre>
+<p><strong>Type</strong>: Serialization<br />
+<strong>Returns</strong>: Tensor on success,
+<code>()</code>/null-equivalent on failure</p>
+<hr />
+<h4 id="model-save"><code>model-save</code></h4>
+<p><strong>Syntax</strong>: <code>(model-save path entries)</code></p>
+<p>Writes a multi-tensor checkpoint to disk. <code>entries</code> is a
+list of <code>(name . tensor)</code> pairs.</p>
+<p><strong>Examples</strong>:</p>
+<pre class="scheme"><code>(model-save &quot;/tmp/model.em&quot; (list (cons &quot;w&quot; #(1 2)) (cons &quot;b&quot; #(3))))  ; =&gt; #t</code></pre>
+<p><strong>Type</strong>: Serialization<br />
+<strong>Returns</strong>: <code>#t</code> on success, <code>#f</code> on
+failure</p>
+<hr />
+<h4 id="model-load"><code>model-load</code></h4>
+<p><strong>Syntax</strong>: <code>(model-load path)</code></p>
+<p>Loads a multi-tensor checkpoint from disk.</p>
+<p><strong>Examples</strong>:</p>
+<pre class="scheme"><code>(model-load &quot;/tmp/model.em&quot;)  ; =&gt; ((&quot;w&quot; . #(1 2)) (&quot;b&quot; . #(3)))</code></pre>
+<p><strong>Type</strong>: Serialization<br />
+<strong>Returns</strong>: List of <code>(name . tensor)</code> pairs on
+success, <code>()</code>/null-equivalent on failure</p>
+<hr />
 <h3 id="tensor-arithmetic">Tensor Arithmetic</h3>
 <h4
 id="tensor-add-tensor-sub-tensor-mul-tensor-div"><code>tensor-add</code>,
