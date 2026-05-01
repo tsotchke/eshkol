@@ -139,7 +139,7 @@
     (+ (* (- x 3) (- x 3))
        (* (- y 2) (- y 2)))))
 
-(define (gradient-descent f start learning-rate iterations)
+(define (user-grad-desc f start learning-rate iterations)
   (define (step point)
     (let* ((grad (gradient f point))
            (gx (tensor-get grad 0))
@@ -154,7 +154,7 @@
         (iterate (step point) (- n 1))))
   (iterate start iterations))
 
-(define optimum (gradient-descent rosenbrock-simple (vector 0.0 0.0) 0.1 100))
+(define optimum (user-grad-desc rosenbrock-simple (vector 0.0 0.0) 0.1 100))
 (check-approx "GD finds x=3" 3.0 (vector-ref optimum 0) 0.01)
 (check-approx "GD finds y=2" 2.0 (vector-ref optimum 1) 0.01)
 
