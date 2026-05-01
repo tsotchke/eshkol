@@ -13,7 +13,12 @@
 
 set -e
 
-ESHKOL="./build/eshkol-run"
+# Honour $BUILD_DIR (CI passes it via the matrix) so the asan-ubsan
+# / xla / cuda lanes that build into build-asan / build-xla /
+# build-cuda find their eshkol-run binary instead of falling through
+# to a missing ./build/eshkol-run.
+BUILD_DIR="${BUILD_DIR:-build}"
+ESHKOL="./${BUILD_DIR}/eshkol-run"
 PASS=0
 FAIL=0
 
