@@ -10,7 +10,7 @@
 ;; test asserts the guarantee holds across (require) boundaries.
 
 (require stdlib)
-(load "/Users/tyr/Desktop/eshkol/tests/v1_2_edge_cases/cross_file_symbol_eq_module.esk")
+(load "tests/v1_2_edge_cases/cross_file_symbol_eq_module.esk")
 
 (define passed 0)
 (define failed 0)
