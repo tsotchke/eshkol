@@ -2006,11 +2006,32 @@ llvm::Value* AutodiffCodegen::codegenDerivativeMonolith(const eshkol_operations_
                 Value* storage = it->second;
                 // MUTABLE CAPTURE FIX: Pack pointer in closure format
                 // Lambda expects ptr to slot containing {type=INT64, data=ptrtoint(@storage)}
-                Value* deriv_storage_ptr_int = ctx_.builder().CreatePtrToInt(storage, ctx_.int64Type());
-                Value* deriv_packed_storage = tagged_.packInt64(deriv_storage_ptr_int, true);
-                Value* deriv_temp_storage = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "deriv_capture_storage");
-                ctx_.builder().CreateStore(deriv_packed_storage, deriv_temp_storage);
-                deriv_call_args.push_back(deriv_temp_storage);
+                //
+                // AD-1 follow-up: when `storage` is a function-parameter Argument
+                // with tagged_value type (struct, not pointer) — the case
+                // exposed by tests/neural/nn_working.esk's `compute-loss-gradient`
+                // capturing `input`/`target`/`b` from outer parameters — the
+                // unconditional PtrToInt fails LLVM verification with "PtrToInt
+                // source must be pointer".  Mirror the case-split that the
+                // recently-disabled new-style derivative() body had: pack the
+                // pointer when storage is one, otherwise pass the value-typed
+                // tagged_value through a fresh alloca temp slot so the lambda's
+                // single-load body sees the value directly.
+                if (storage->getType()->isPointerTy()) {
+                    Value* deriv_storage_ptr_int = ctx_.builder().CreatePtrToInt(storage, ctx_.int64Type());
+                    Value* deriv_packed_storage = tagged_.packInt64(deriv_storage_ptr_int, true);
+                    Value* deriv_temp_storage = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "deriv_capture_storage");
+                    ctx_.builder().CreateStore(deriv_packed_storage, deriv_temp_storage);
+                    deriv_call_args.push_back(deriv_temp_storage);
+                } else {
+                    // Value-typed capture (e.g. function-parameter Argument with
+                    // tagged_value struct type).  Funnel through a temp slot —
+                    // the lambda body's single `load tagged_value` will read
+                    // the value directly.
+                    Value* deriv_temp_storage = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "deriv_capture_value");
+                    ctx_.builder().CreateStore(storage, deriv_temp_storage);
+                    deriv_call_args.push_back(deriv_temp_storage);
+                }
             } else {
                 // MUTABLE CAPTURE FIX: Push null pointer instead of packed zero
                 deriv_call_args.push_back(ConstantPointerNull::get(PointerType::getUnqual(ctx_.context())));
