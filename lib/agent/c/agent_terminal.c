@@ -10,15 +10,21 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#ifndef _WIN32
 #include <unistd.h>
 #include <termios.h>
 #include <signal.h>
 #include <sys/ioctl.h>
 #include <errno.h>
 #include <poll.h>
+#endif
 
 /* Forward declarations */
 int eshkol_term_read_key_timeout(int timeout_ms);
+
+#ifndef _WIN32
+/* ───────────────────────── POSIX implementation ───────────────────────── */
 
 /* Key code constants (match Eshkol FFI expectations) */
 #define KEY_UP        1001
@@ -266,3 +272,35 @@ void eshkol_term_set_title(const char* title) {
     int len = snprintf(buf, sizeof(buf), "\033]0;%s\007", title);
     write(STDOUT_FILENO, buf, len);
 }
+
+#else /* _WIN32 */
+/* ───────────────────────── Windows stubs ─────────────────────────────────
+ * Raw-mode terminal control on Windows requires the ConPTY API and a
+ * different architecture than POSIX termios. Until that lands (planned for
+ * the v1.4-platform window), the Windows build links no-op stubs so the
+ * agent FFI library still compiles. Calls succeed silently or return
+ * default values; (eshkol_term_init) returns -1 to signal "not available". */
+
+int eshkol_term_init(void)            { return -1; }
+void eshkol_term_shutdown(void)       { }
+void eshkol_term_raw_mode(void)       { }
+void eshkol_term_cooked_mode(void)    { }
+int eshkol_term_width(void)           { return 80; }
+int eshkol_term_height(void)          { return 24; }
+int eshkol_term_resized(void)         { return 0; }
+int eshkol_term_read_key(void)        { return -1; }
+int eshkol_term_read_key_timeout(int timeout_ms) { (void)timeout_ms; return -1; }
+void eshkol_term_clear(void)          { }
+void eshkol_term_move_to(int row, int col) { (void)row; (void)col; }
+int eshkol_term_cursor_pos(int* row, int* col) {
+    if (row) *row = 0;
+    if (col) *col = 0;
+    return -1;
+}
+void eshkol_term_show_cursor(void)    { }
+void eshkol_term_hide_cursor(void)    { }
+void eshkol_term_write(const char* s) { if (s) fputs(s, stdout); }
+void eshkol_term_flush(void)          { fflush(stdout); }
+void eshkol_term_set_title(const char* title) { (void)title; }
+
+#endif /* _WIN32 */
