@@ -864,6 +864,33 @@ if(NOT APPLE)
     if(WIN32 AND ESHKOL_CUDA_DEVICE_RUNTIME)
         eshkol_append_host_runtime_link_arg("${ESHKOL_CUDA_DEVICE_RUNTIME}")
     endif()
+
+    # ── Sanitizer link-flag propagation ──────────────────────────────
+    # When libeshkol-static is built with -fsanitize=address /
+    # -fsanitize=undefined / -fsanitize=thread / -fsanitize=memory,
+    # its objects emit unresolved references to the sanitizer runtime
+    # (__asan_*, __ubsan_*, __tsan_*, __msan_*). User programs that
+    # link against libeshkol-static must therefore also pull in the
+    # sanitizer runtimes — otherwise `ld` fails with `undefined
+    # reference to __asan_report_storeN` etc.
+    #
+    # eshkol-run drives the user link step, and reads
+    # ESHKOL_HOST_RUNTIME_LINK_ARGS from build_config.h to compose
+    # that command line. Append the sanitizer flags here so the user
+    # link automatically picks them up; nothing is added on a
+    # non-sanitized build.
+    if(ESHKOL_ENABLE_ASAN)
+        eshkol_append_host_runtime_link_arg("-fsanitize=address")
+    endif()
+    if(ESHKOL_ENABLE_UBSAN)
+        eshkol_append_host_runtime_link_arg("-fsanitize=undefined")
+    endif()
+    if(ESHKOL_ENABLE_TSAN)
+        eshkol_append_host_runtime_link_arg("-fsanitize=thread")
+    endif()
+    if(ESHKOL_ENABLE_MSAN)
+        eshkol_append_host_runtime_link_arg("-fsanitize=memory")
+    endif()
 endif()
 
 if(DEFINED ESHKOL_GENERATED_INCLUDE_DIR)
