@@ -8,7 +8,7 @@
 
 Eshkol is a Scheme-based programming language that unifies functional programming with native automatic differentiation, providing a mathematically rigorous foundation for gradient-based optimization, numerical simulation, and machine learning research. Built on Homotopy Type Theory foundations and compiled to native code via LLVM, Eshkol delivers mathematical correctness and deterministic performance without sacrificing the elegance of homoiconic Lisp syntax.
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![Version](https://img.shields.io/badge/version-v1.1.13--accelerate-green.svg)](RELEASE_NOTES.md) [![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)](CMakeLists.txt)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![Version](https://img.shields.io/badge/version-v1.2.0--scale-green.svg)](RELEASE_NOTES.md) [![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)](CMakeLists.txt)
 
 <br>
 
@@ -576,6 +576,22 @@ Execute: `eshkol-run gradient.esk -o gradient && ./gradient`
 - **Dual backend**: Bytecode VM (63 opcodes, ESKB format) alongside LLVM native compiler
 - **Windows support**: Native Visual Studio 2022 + ClangCL/LLVM 21 build with UTF-8 REPL and DLL bundling
 
+### v1.2-scale Features
+
+**Get models into production.** Save them, load them, deploy them — and stop being surprised by edge cases.
+
+- **Model serialization**: `.eshkol-model` ESKB-extended binary format for round-tripping trained networks
+- **Stable C FFI**: pybind11 Python bindings with NumPy zero-copy interop
+- **Per-thread arenas**: Safe concurrent memory allocation; deep recursion (100K stack frames) on a 512 MB thread stack
+- **Image I/O**: PNG/JPEG/BMP read/write/resize for vision pipelines
+- **Plotting stdlib**: Inline matplotlib-style charts via PNG output
+- **Actionable error messages**: Compile errors point at the exact source line and column with caret underline
+- **JSON Schema validation**: Draft 7 subset for experiment-manifest / preregistration enforcement (`json-schema-valid?`, `json-schema-validate`)
+- **R7RS-compliant scoping**: User redefines of stdlib functions cleanly shadow the stdlib version (LinkOnceODR linkage; variadic-info hygiene)
+- **WASM library mode**: `--wasm` produces self-contained module without falling through to native link
+- **Hardening**: subprocess shell-injection fix, Python FFI AST-injection fix, integer-overflow guards (arena/KB/image), path-traversal defence, ReDoS protection, sanitizer-clean ASan/UBSan CI lane
+- **62-test edge-case suite**: regression coverage for symbol consistency, AD tape state, parser line tracking, stdlib symbol resolution, every fix in this release
+
 ### Modern Language Features
 
 - **Pattern matching** with algebraic data type support
@@ -597,7 +613,7 @@ The **REPL** provides full compilation and execution via LLVM JIT:
 ```
 $ eshkol-repl
 
-Welcome to Eshkol REPL v1.1.13-accelerate
+Welcome to Eshkol REPL v1.2.0-scale
 Type :help for commands, :quit to exit
 
 eshkol> (define (f x) (* x x x))
@@ -752,7 +768,7 @@ Eshkol is released under the **MIT License**. For academic use, please cite:
 @software{eshkol2025,
   title = {Eshkol: A Programming Language for Mathematical Computing},
   author = {tsotchke},
-  version = {1.1.13-accelerate},
+  version = {1.2.0-scale},
   year = {2026},
   url = {https://github.com/tsotchke/eshkol},
   note = {Scheme-based language with native automatic differentiation}

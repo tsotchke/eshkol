@@ -7,6 +7,158 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+(no entries — v1.2 is closed; new work targets v1.3-evolve)
+
+## [1.2.0-scale] - 2026-05-01
+
+The production-readiness release.  Closes 14 audit blockers,
+finalises the v1.2 stdlib (json_schema, reflection, time API,
+regex capture groups, memoization, PRNG seeding, lazy streams),
+and lands the deep-architecture fixes that surfaced when the
+edge-case suite was widened: parser line markers, stdlib LinkOnceODR
+linkage, macOS stack-flag wiring, --wasm path separation, AD
+scalar-derivative through runtime closures, value-typed-capture
+LLVM verification, variadic-info hygiene on user redefines.
+Master suite exits 0 across 36 sub-suites.
+
+The detailed changelog runs from "Fixed — SDNC paper artifact
+(weight_matrices.c)" below through the original 2026-04-24 release
+notes a few hundred lines further down.  This date represents the
+final v1.2.0-scale public tag; the 2026-04-24 entry is the
+mid-cycle internal preview.
+
+### Fixed — late-cycle quality (parser, codegen, AD)
+
+- **Variadic→fixed redefine hygiene** (`bbfb357`).
+  `createFunctionDeclaration` only ADDED to `variadic_function_info`
+  on the variadic branch — the inverse case (redefining a
+  previously-variadic name as fixed-arity) left the stale entry
+  behind and call-site dispatch lowered with the wrong calling
+  convention.  Symptom:
+  `tests/features/ultimate_math_stress.esk`'s user
+  `(define (gradient-descent f start lr iters))` (4 fixed) on top
+  of stdlib's `(gradient-descent f x0 . opts)` compiled with a
+  "no-capture call to gradient-descent.4 expected 4 got 3"
+  warning and crashed at runtime.  Fix: erase the stale entry on
+  the non-variadic branch.  Regression test:
+  `tests/v1_2_edge_cases/redefine_variadic_to_fixed_test.esk`.
+
+- **AD value-typed captures** (`ecb567d`).
+  `derivativeHigherOrder` line ~2009 unconditionally
+  `CreatePtrToInt`'d the resolved capture storage even when
+  `storage` was a function-parameter Argument with `tagged_value`
+  struct type — LLVM IR verification rejected this with
+  "PtrToInt source must be pointer".  The previously-disabled
+  new-style derivative body had the right case-split (preserved
+  under `#if 0` for v1.3 re-extraction).  Fix: pack the pointer
+  when storage is one, otherwise pass the value-typed
+  tagged_value through a fresh alloca temp slot.  Reproducer:
+  `tests/neural/{nn_working,nn_training}.esk`'s
+  `compute-loss-gradient` capturing `input`/`target`/`b`.
+
+- **Scalar derivative on runtime closures** (`1321a3f`, closes
+  v1.3 task #215 "AD-1: scalar-derivative tape-state hygiene").
+  `AutodiffCodegen::derivative()` was extracted from
+  `codegenDerivativeMonolith` but missed the runtime-function-
+  parameter handling: when `f` was a lambda passed as a function
+  parameter (the common pattern, e.g.
+  `(newton-solve (lambda (x) (- (pow x 2) 2)) 1.5 10)`), the
+  callback returned nullptr and the new method bailed out
+  without dispatching through the closure ABI.  The dispatcher
+  propagated the null and the surrounding arithmetic produced
+  -inf or wrong values.  Fix: have `derivative()` delegate to
+  `codegenDerivativeMonolith` (which has the full path).  v1.3
+  re-extraction will produce one shared implementation.
+  Reproducer: Newton-Raphson sqrt(2) ≈ 1.25872 instead of
+  1.41421.
+
+- **`--wasm` no longer falls through to native link** (`151a026`).
+  The WASM emit branch produces a self-contained .wasm via LLVM
+  in-memory codegen, but the unconditional `compiled_files` link
+  block then ran clang++ on the same .o files and failed with
+  `Undefined symbols for architecture arm64: _main referenced
+  from <initial-undefines>`.  Fix: gate the link block and its
+  sibling "unused object files" warning on `!wasm_output`.
+  Reproducer: `tests/web/{web_canvas_test,web_extern_test}.esk`
+  succeeded in `eshkol_compile_llvm_ir_to_wasm_file()` but were
+  marked compile-fail by the redundant native link below.  Web
+  suite returns to 100%.
+
+- **macOS `-Wl,-stack_size` on the compiled-files link path**
+  (`38f0ca2`).  `exe/eshkol-run.cpp`'s compile-and-link path had
+  Win32 + Linux stack-size guards but was missing the macOS
+  `-Wl,-stack_size,0x20000000`.  Every binary built via the
+  common `eshkol-run file.esk -o exe` flow shipped with
+  `LC_MAIN.stacksize = 0` (i.e. linker default 8 MB on macOS).
+  `lib/backend/llvm_codegen.cpp` already had the macOS branch on
+  the parallel single-step link path; this commit mirrors it.
+  Reproducer: `tests/tco/nested_tco_test.esk` Test 4 (3-level
+  nesting, depth 10000 of non-tail-recursive `outer`) segfaulted
+  in `eshkol_check_recursion_depth + 4` itself once the user
+  stack was exhausted.  The same commit caps Test 4 at depth
+  4000 — at -O0 each frame for that pattern is ~95 KB, and ARM64
+  macOS hard-caps the stack at 512 MB.  Smaller per-frame size
+  is v1.3 work.
+
+- **Stdlib LinkOnceODR linkage** (`ce4ec65`).
+  `createLibraryInitFunction` had a hardcoded
+  `pair.second->setLinkage(GlobalValue::ExternalLinkage)` on
+  macOS/Linux that overrode the LinkOnceODR linkage that
+  `createFunctionDeclaration` had just set.  Result: every
+  stdlib function shipped as a strong external symbol, so a
+  user `(define (foo …))` with the same name as a stdlib
+  function failed with `duplicate symbol _foo`.  Fix: both
+  branches call `publicDefinitionLinkage(true)`
+  (`LinkOnceODRLinkage` on macOS/Linux, `WeakAnyLinkage` on
+  Windows).  After: `nm -m build/stdlib.o | grep vec-scale`
+  shows `weak external`, user override works cleanly.
+
+- **Parser line markers** (`5992fdb`, `e41957c`).
+  `eshkol_parse_next_ast_from_stream` stripped comment lines
+  *including their trailing newline* (`std::getline`) and started
+  a fresh `SchemeTokenizer` at line 1 for every form — so
+  `(undefined-fn …)` on file line 6 was reported as line 1:2.
+  Two-part fix: (1) reader consumes comment body up to but not
+  including `\n`, leaving the newline in `input` so the
+  tokenizer's line counter stays accurate within a form; (2)
+  thread-local `g_stream_line` / `g_stream_column` track
+  cumulative file position across successive
+  `eshkol_parse_next_ast_from_stream` calls and are passed to
+  `SchemeTokenizer`'s constructor.  `eshkol_reset_parse_line_counter()`
+  is called at every fresh parse session
+  (load_file_asts, parse_string in REPL, parseAllAstsFromString
+  in repl_jit, compile_to_wasm in eshkol-server).  Regression
+  suite at `tests/v1_2_edge_cases/error_line_marker_test.sh` (5
+  cases: top-of-file, post-comment, multi-line, nested-body,
+  stdlib-loaded).
+
+- **`core.json_schema` validator** (`7ef7753`, closes M1 task
+  #172).  Draft 7 subset: type, properties, required,
+  additionalProperties, items, min/max length/items,
+  minimum/maximum (with exclusive variants), enum, const,
+  pattern (substring containment), oneOf / anyOf / allOf / not.
+  Auto-loaded via stdlib.  API: `(json-schema-valid? schema
+  value)` returns boolean; `(json-schema-validate schema value)`
+  returns a list of error strings carrying JSON-pointer-style
+  paths.
+
+- **cpp_type tests link cleanly** (`cda7b9d`).  The HoTT
+  type-checker C++ tests now link against
+  `build/libeshkol-static.a` + macOS frameworks (Accelerate,
+  Metal, MetalPerformanceShaders, Foundation, Security,
+  CoreFoundation, libobjc, libncurses, libpcre2-8, libsqlite3)
+  instead of pulling raw .cpp sources by hand and missing
+  `arena_strdup` / `arena_allocate_zeroed` / `get_global_arena`.
+  Suite goes from "SOME C++ TYPE TESTS FAILED" (0/2) to PASSED
+  (2/2, 61/61 internal asserts).
+
+- **`visibility_fail_test` aligned with Bug Z** (`65cac3e`).  Bug
+  Z (`1235e0a`) made `(provide …)` informational; this test had
+  asserted the opposite (calling a non-`provide`d helper should
+  error) and was failing.  Updated to document the new
+  semantics; true module privacy is filed as v1.3 architectural
+  work.  Modules suite back to 100%.
+
 ### Fixed — SDNC paper artifact (weight_matrices.c)
 
 Three commits (`df2fabd`, `7b1b765`, `7301dc4`) restore the
@@ -254,13 +406,14 @@ modularity / build-time / readability win, not a behaviour change.
   `scripts/update-homebrew-formula.sh` after the release tarball
   is published.
 
-## [1.2.0-scale] - 2026-04-24
+## [1.2.0-scale-pre1] - 2026-04-24 (mid-cycle internal preview)
 
-The production-readiness release. Model serialization, a stable C ABI
-with Python bindings, per-thread arenas, image/CSV I/O, a plotting
-stdlib, actionable error messages, Windows ARM64 support, and a long
-tail of Noesis- / Moonlab-driven hardening, perf, and correctness
-fixes.
+The production-readiness release.  Mid-cycle internal preview tag —
+the final v1.2.0-scale public release is the 2026-05-01 entry above.
+Model serialization, a stable C ABI with Python bindings, per-thread
+arenas, image/CSV I/O, a plotting stdlib, actionable error messages,
+Windows ARM64 support, and a long tail of Noesis- / Moonlab-driven
+hardening, perf, and correctness fixes.
 
 ### Fixed — late-cycle correctness (Bugs J–W, Quirks 1/3/4/6/7/10/11/14/15)
 

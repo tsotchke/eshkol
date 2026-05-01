@@ -217,13 +217,17 @@ v2.0 ─────────────────────────
 
 ---
 
-## v1.2-scale (April 2026) - SHIPPED
+## v1.2-scale (May 2026) - SHIPPED
 
-**Focus:** Get models into production. Save them, load them, deploy them.
+**Focus:** Get models into production. Save them, load them, deploy them — and stop being surprised by edge cases.
 
 - [x] Model serialization (`.eshkol-model` ESKB-extended binary format)
 - [x] Stable C FFI header + Python bindings (pybind11; numpy zero-copy)
 - [x] Per-thread arenas (safe concurrent memory allocation)
+- [x] Deep recursion: 512 MB main-thread stack on Darwin/Linux/Windows
+      (linker flags wired into both single-step and compiled-files
+      link paths); 100K-frame recursion-depth check with typed
+      exception
 - [x] Image I/O (PNG/JPEG/BMP read/write/resize) — current backend is
       stb_image under `deps/stb/`; v1.3+ will replace with native
       platform APIs (CoreGraphics on macOS, system libpng/libjpeg on
@@ -231,11 +235,43 @@ v2.0 ─────────────────────────
       decoders
 - [x] CSV/DataFrame (tabular data loading for ML pipelines)
 - [x] Improved error messages with file:line:col + caret underlines
+      (preserves newlines in stripped comments + cumulative file-line
+      tracking across `parse_next_ast` calls; 5-case regression suite)
 - [x] Terminal plotting (`sparkline`, `bar-chart` in pure Eshkol stdlib)
 - [x] Codegen modularisation: `tensor_codegen.cpp` 19,940 → 1,280 lines
-      (94% reduction); 13 focused per-domain split files
-- [x] v1.2 edge-case + security regression suite (58 tests) wired into
-      `run_all_tests.sh` and a new `linux-x64-asan-ubsan` CI lane
+      (94% reduction); 13 focused per-domain split files.  The
+      remaining `llvm_codegen.cpp` extractions
+      (module_init_codegen.cpp, builtin_factory_codegen.cpp,
+      repl_resolution_codegen.cpp) need the `EshkolLLVMCodeGen` class
+      header exposed first and are tracked as v1.3 carry-forward.
+- [x] v1.2 edge-case + security regression suite (62 tests) wired into
+      `run_all_tests.sh` and a new `linux-x64-asan-ubsan` CI lane.
+      Includes 3 shell-style tests for compile-time diagnostics.
+- [x] Stdlib correctness: user `(define (foo …))` after `(require
+      stdlib)` cleanly shadows stdlib's `foo` at link time
+      (LinkOnceODR linkage on stdlib functions) and at call-site
+      lowering (variadic-info hygiene clears stale entries on
+      redefine).
+- [x] `--wasm` is self-contained: WASM emit no longer falls through
+      to native clang++ link.
+- [x] AD scalar derivative on inline lambdas: `(derivative
+      (lambda (x) …) point)` inside a wrapper function correctly
+      flows through the runtime closure dispatch.  AD value-typed
+      captures pass LLVM IR verification when capturing
+      function-parameter `tagged_value` Arguments.
+- [x] M1 stdlib finalised: `core.json_schema` (Draft 7 subset),
+      reflection (`procedure-arity`, `record-fields`, `describe`),
+      memoization/LRU, PRNG seeding + deterministic replay, lazy
+      streams (SRFI 41), time API (ISO-8601), regex capture groups,
+      CLI argument parser, structured logging (JSON-L),
+      Prometheus metrics, extra AD ops
+      (atan2 / asin / acos / softmax / gelu / silu / sinh / cosh),
+      priority queues / sets / deques.
+- [x] Hardening: subprocess shell-injection fix (CRITICAL), Python
+      FFI AST-injection fix (CRITICAL), 3 integer-overflow guards
+      (HIGH), 4 path-traversal/TOCTOU/Windows-buffer fixes (HIGH),
+      36 silent-swallow sites surfaced (HIGH), ReDoS protection +
+      SQL-injection guards + URL validator (MEDIUM).
 
 ---
 
