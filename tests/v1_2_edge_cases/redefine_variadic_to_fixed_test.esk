@@ -1,0 +1,48 @@
+;;; redefine_variadic_to_fixed_test.esk — user redefines a variadic
+;;; stdlib function with a fixed-arity signature.
+;;;
+;;; Bug history (`bbfb357`): `createFunctionDeclaration`'s VARIADIC FIX
+;;; block at llvm_codegen.cpp ~line 3379 only ADDED to
+;;; variadic_function_info when the new function was variadic.  The
+;;; inverse case — redefining a previously-variadic name as
+;;; fixed-arity — left the stale entry behind, and call-site dispatch
+;;; in codegenCall (~line 14233) consulted that map BEFORE checking
+;;; the LLVM Function's actual parameter count.  Result: lower the
+;;; call using stdlib's variadic signature, link-time landing on the
+;;; user's fixed-arity Function, "no-capture call to <name>.N
+;;; expected N got M" warning, runtime "Type error in =" or wrong
+;;; results.
+;;;
+;;; Original reproducer: tests/features/ultimate_math_stress.esk's
+;;; user-defined `(gradient-descent f start lr iters)` (4 fixed)
+;;; shadowing stdlib's `(gradient-descent f x0 . opts)` (variadic
+;;; 2+rest).  Captured here as a small regression.
+;;;
+;;; Stdlib's `gradient-descent` lives in lib/ml/optimization.esk.
+
+(require stdlib)
+
+;; Redefine gradient-descent with a 4-fixed-arg signature on top of
+;; the stdlib's 2+rest variadic one.  Without the fix, this compiles
+;; with an arity-mismatch warning and crashes at runtime.
+(define (gradient-descent f start lr iters)
+  ;; Trivial body: do `iters` steps of x ← x - lr * f(x).
+  (define (it x n)
+    (if (= n 0)
+        x
+        (it (- x (* lr (f x))) (- n 1))))
+  (it start iters))
+
+(define result (gradient-descent (lambda (x) (- x 7))
+                                 0.0
+                                 0.5
+                                 50))
+
+;; The fixed point of x ← x - 0.5 * (x - 7) is 7.  After 50 iterations
+;; from x=0 with rate 0.5 (geometric ratio 0.5) we're at 7 - 7*0.5^50
+;; which rounds to 7 in double precision.
+(if (and (>= result 6.999) (<= result 7.001))
+    (begin (display "PASS: redefined gradient-descent converged to 7")
+           (newline))
+    (begin (display "FAIL: expected ≈7, got ") (display result) (newline)
+           (exit 1)))
