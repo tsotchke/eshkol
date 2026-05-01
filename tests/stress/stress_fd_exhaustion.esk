@@ -10,7 +10,7 @@
 ;; If either regresses, this test will run out of fds or hang.
 
 (require stdlib)
-(load "/Users/tyr/Desktop/eshkol/lib/agent/subprocess.esk")
+(load "lib/agent/subprocess.esk")
 
 (define N 5000)
 (define t0 (current-jiffy))
