@@ -7,7 +7,7 @@
 set -u
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-RUN="$ROOT/build/eshkol-run"
+RUN="$ROOT/${BUILD_DIR:-build}/eshkol-run"
 
 if [ ! -x "$RUN" ]; then
     echo "SKIP: $RUN not built"

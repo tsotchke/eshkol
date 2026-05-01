@@ -10,7 +10,7 @@
 set -u
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-RUN="$ROOT/build/eshkol-run"
+RUN="$ROOT/${BUILD_DIR:-build}/eshkol-run"
 [ ! -x "$RUN" ] && { echo "SKIP: $RUN not built"; exit 0; }
 
 PASS=0; FAIL=0
