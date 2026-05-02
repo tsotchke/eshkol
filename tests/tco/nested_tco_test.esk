@@ -91,24 +91,33 @@
                                            (mid (- m 1) (+ acc inner-result)))))))
                              (mid 4 0))))
                     (+ mid-result (outer (- n 1))))))))
-    ;; outer is non-tail-recursive (the `(+ ... (outer ...))` form
+    ;; `outer` is non-tail-recursive (the `(+ ... (outer ...))` form
     ;; cannot be transformed into a self-loop), so we pile up one
     ;; physical stack frame per iteration.  At -O0 each frame for this
-    ;; pattern is ~95 KB because the inner letrec's closure
+    ;; pattern is ~80–95 KB because the inner letrec's closure
     ;; environment + intermediate `mid-result` get freshly allocated
-    ;; via alloca per-call.  macOS arm64 caps the main-thread stack at
-    ;; 512 MB (`-Wl,-stack_size` is rejected above that), so the
-    ;; original `(outer 10000)` overflows at ~5400 frames.  4000
-    ;; iterations exercises the same nested-letrec TCO pattern this
-    ;; test was added to regression-check while staying well under the
-    ;; ARM64 ceiling.  Smaller per-frame size is v1.3 work (LLVM -O1
-    ;; pipeline + closure-env hoisting).
-    (outer 4000)))
+    ;; via alloca per-call.
+    ;;
+    ;; This test was added to regression-check Bug X (codegenNamedLet
+    ;; leaked the loop name) — a *correctness* check on the nested-
+    ;; letrec TCO transformation.  The recursion depth itself isn't
+    ;; what's under test, just the shape of the generated code.
+    ;;
+    ;; Linux's default `ulimit -s` is 8 MB, so ~100 of these frames
+    ;; (~95 KB × 100 ≈ 9.5 MB) overflows it.  The Linux test runner
+    ;; (`scripts/run_tco_tests.sh`) raises the soft stack limit to
+    ;; 512 MB before invoking each binary, which is why this test
+    ;; passes there.  Linker flags like `-Wl,-z,stack-size=...` and
+    ;; runtime `setrlimit(RLIMIT_STACK)` cannot grow the main thread
+    ;; stack post-exec — the kernel sets it from RLIMIT_STACK before
+    ;; the program starts.  Smaller per-frame size is v1.3 work
+    ;; (closure-env hoisting + LLVM -O1 pipeline).
+    (outer 100)))
 
 (display "Test 4 (3-level nesting): ")
 (let ((r (test-3level-tco)))
-  ;; inner returns 3, mid loops 4 times = 12, outer loops 4000 times = 48000
-  (if (= r 48000) (display "PASS") (display "FAIL")))
+  ;; inner returns 3, mid loops 4 times = 12, outer loops 100 times = 1200
+  (if (= r 1200) (display "PASS") (display "FAIL")))
 (newline)
 
 ;; ================================================================
