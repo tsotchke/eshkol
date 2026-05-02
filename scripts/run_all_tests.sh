@@ -84,14 +84,17 @@ echo -e "${BLUE}   Eshkol Complete Test Suite${NC}"
 echo -e "${BLUE}=========================================${NC}"
 echo ""
 
+# Honour $BUILD_DIR (CI passes it via the matrix); fall back to "build" for plain local runs.
+BUILD_DIR="${BUILD_DIR:-build}"
+
 # Ensure build directory exists
-if [ ! -d "build" ]; then
+if [ ! -d "$BUILD_DIR" ]; then
     echo -e "${RED}Error: build directory not found. Run cmake first.${NC}"
     exit 1
 fi
 
 # Check if compiler exists
-if [ ! -f "build/eshkol-run" ]; then
+if [ ! -f "$BUILD_DIR/eshkol-run" ]; then
     echo -e "${RED}Error: eshkol-run not found. Run make first.${NC}"
     exit 1
 fi

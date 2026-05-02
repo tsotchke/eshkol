@@ -40,14 +40,17 @@ echo ""
 # Test directory
 COMPLEX_DIR="tests/complex"
 
+# Honour $BUILD_DIR (CI passes it via the matrix); fall back to "build" for plain local runs.
+BUILD_DIR="${BUILD_DIR:-build}"
+
 # Ensure build directory exists
-if [ ! -d "build" ]; then
+if [ ! -d "$BUILD_DIR" ]; then
     echo -e "${RED}Error: build directory not found. Run cmake first.${NC}"
     exit 1
 fi
 
 # Check if compiler exists
-if [ ! -f "build/eshkol-run" ]; then
+if [ ! -f "$BUILD_DIR/eshkol-run" ]; then
     echo -e "${RED}Error: eshkol-run not found. Run make first.${NC}"
     exit 1
 fi
@@ -79,7 +82,7 @@ run_test_verbose() {
     # Try to compile with full output
     echo "COMPILATION OUTPUT:" >> "$output_file"
     echo "----------------------------------------" >> "$output_file"
-    if ./build/eshkol-run -L./build "$test_file" >> "$output_file" 2>&1; then
+    if ./$BUILD_DIR/eshkol-run -L./$BUILD_DIR "$test_file" >> "$output_file" 2>&1; then
         echo "----------------------------------------" >> "$output_file"
         echo "COMPILATION: SUCCESS" >> "$output_file"
         echo "" >> "$output_file"

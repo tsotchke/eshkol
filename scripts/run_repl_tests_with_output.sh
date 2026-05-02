@@ -1,5 +1,8 @@
 #!/bin/bash
 
+# Honour $BUILD_DIR (CI passes it via the matrix); fall back to "build" for plain local runs.
+BUILD_DIR="${BUILD_DIR:-build}"
+
 # Eshkol REPL Test Suite - Verbose Mode
 # Iterates tests/repl/*.esk and shows full REPL output for debugging
 
@@ -46,7 +49,7 @@ if [ ! -d "build" ]; then
 fi
 
 # Check if REPL exists
-if [ ! -f "build/eshkol-repl" ]; then
+if [ ! -f "$BUILD_DIR/eshkol-repl" ]; then
     echo -e "${RED}Error: eshkol-repl not found. Run make first.${NC}"
     exit 1
 fi
@@ -90,7 +93,7 @@ run_test_verbose() {
     # Run through REPL with :quit appended
     echo "REPL OUTPUT:" >> "$output_file"
     echo "----------------------------------------" >> "$output_file"
-    { cat "$test_file"; echo ""; echo ":quit"; } | ./build/eshkol-repl >> "$output_file" 2>&1 || true
+    { cat "$test_file"; echo ""; echo ":quit"; } | ./$BUILD_DIR/eshkol-repl >> "$output_file" 2>&1 || true
     EXIT_CODE=$?
 
     echo "----------------------------------------" >> "$output_file"

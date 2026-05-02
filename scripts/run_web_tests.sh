@@ -5,10 +5,14 @@
 
 set -e
 
+# Honour $BUILD_DIR (CI passes it via the matrix); fall back to "build" for plain local runs.
+BUILD_DIR="${BUILD_DIR:-build}"
+
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-SERVER_BIN="$PROJECT_DIR/build/eshkol-server"
-ESHKOL_RUN="$PROJECT_DIR/build/eshkol-run"
+SERVER_BIN="$PROJECT_DIR/$BUILD_DIR/eshkol-server"
+ESHKOL_RUN="$PROJECT_DIR/$BUILD_DIR/eshkol-run"
 PORT=19876
 SERVER_PID=""
 
@@ -184,12 +188,12 @@ cd "$PROJECT_DIR"
 
 # Check for required binaries
 if [ ! -f "$ESHKOL_RUN" ]; then
-    echo -e "${RED}Error: eshkol-run not found. Run cmake --build build first.${NC}"
+    echo -e "${RED}Error: eshkol-run not found. Run cmake --build "$BUILD_DIR" first.${NC}"
     exit 1
 fi
 
 if [ ! -f "$SERVER_BIN" ]; then
-    echo -e "${RED}Error: eshkol-server not found. Run cmake --build build first.${NC}"
+    echo -e "${RED}Error: eshkol-server not found. Run cmake --build "$BUILD_DIR" first.${NC}"
     exit 1
 fi
 

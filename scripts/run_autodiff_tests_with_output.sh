@@ -12,6 +12,9 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
+# Honour $BUILD_DIR (CI passes it via the matrix); fall back to "build" for plain local runs.
+BUILD_DIR="${BUILD_DIR:-build}"
+
 # Counters
 PASS=0
 FAIL=0
@@ -65,7 +68,7 @@ run_test_verbose() {
     # Try to compile with full output
     echo "COMPILATION OUTPUT:" >> "$output_file"
     echo "----------------------------------------" >> "$output_file"
-    if ./build/eshkol-run "$test_file" >> "$output_file" 2>&1; then
+    if ./$BUILD_DIR/eshkol-run "$test_file" >> "$output_file" 2>&1; then
         echo "----------------------------------------" >> "$output_file"
         echo "COMPILATION: SUCCESS" >> "$output_file"
         echo "" >> "$output_file"

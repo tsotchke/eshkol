@@ -5,6 +5,10 @@
 
 set -e
 
+# Honour $BUILD_DIR (CI passes it via the matrix); fall back to "build" for plain local runs.
+BUILD_DIR="${BUILD_DIR:-build}"
+
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -30,7 +34,7 @@ if [ ! -d "build" ]; then
 fi
 
 # Check if REPL exists
-if [ ! -f "build/eshkol-repl" ]; then
+if [ ! -f "$BUILD_DIR/eshkol-repl" ]; then
     echo -e "${RED}Error: eshkol-repl not found. Run make first.${NC}"
     exit 1
 fi
@@ -56,11 +60,11 @@ for test_file in tests/repl/*.esk; do
     # Use timeout command if available, otherwise just run directly
     if command -v timeout > /dev/null 2>&1; then
         # Linux has timeout
-        { cat "$test_file"; echo ""; echo ":quit"; } | timeout 10 ./build/eshkol-repl > /tmp/repl_test_output.txt 2>&1 || true
+        { cat "$test_file"; echo ""; echo ":quit"; } | timeout 10 ./$BUILD_DIR/eshkol-repl > /tmp/repl_test_output.txt 2>&1 || true
         EXIT_CODE=$?
     else
         # macOS - run directly (no timeout needed, tests are fast)
-        { cat "$test_file"; echo ""; echo ":quit"; } | ./build/eshkol-repl > /tmp/repl_test_output.txt 2>&1 || true
+        { cat "$test_file"; echo ""; echo ":quit"; } | ./$BUILD_DIR/eshkol-repl > /tmp/repl_test_output.txt 2>&1 || true
         EXIT_CODE=$?
     fi
 

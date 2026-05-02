@@ -18,22 +18,25 @@ echo "  Eshkol Examples Test Suite (Verbose)"
 echo "========================================="
 echo ""
 
+# Honour $BUILD_DIR (CI passes it via the matrix); fall back to "build" for plain local runs.
+BUILD_DIR="${BUILD_DIR:-build}"
+
 # Ensure build directory exists
-if [ ! -d "build" ]; then
+if [ ! -d "$BUILD_DIR" ]; then
     echo -e "${RED}Error: build directory not found. Run cmake first.${NC}"
     exit 1
 fi
 
 # Check if compiler exists
-if [ ! -f "build/eshkol-run" ]; then
+if [ ! -f "$BUILD_DIR/eshkol-run" ]; then
     echo -e "${RED}Error: eshkol-run not found. Run make first.${NC}"
     exit 1
 fi
 
 # Check if stdlib exists
-if [ ! -f "build/stdlib.o" ]; then
+if [ ! -f "$BUILD_DIR/stdlib.o" ]; then
     echo -e "${YELLOW}Warning: stdlib.o not found. Building...${NC}"
-    cmake --build build --target stdlib
+    cmake --build "$BUILD_DIR" --target stdlib
 fi
 
 # Allow specifying specific file or pattern as argument
@@ -67,7 +70,7 @@ for test_file in $FILES; do
     echo -e "${BLUE}[Compiling...]${NC}"
 
     # Try to compile (show output)
-    if ./build/eshkol-run -L./build "$test_file" 2>&1; then
+    if ./$BUILD_DIR/eshkol-run -L./$BUILD_DIR "$test_file" 2>&1; then
         echo ""
         echo -e "${BLUE}[Running...]${NC}"
 

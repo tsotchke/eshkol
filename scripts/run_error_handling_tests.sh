@@ -24,7 +24,7 @@ echo "========================================="
 echo ""
 
 # Check for build directory
-BUILD_DIR="build"
+BUILD_DIR="${BUILD_DIR:-build}"
 
 if [ ! -d "$BUILD_DIR" ] || [ ! -f "$BUILD_DIR/eshkol-run" ]; then
     echo -e "${RED}Error: Build directory not found or eshkol-run missing.${NC}"
