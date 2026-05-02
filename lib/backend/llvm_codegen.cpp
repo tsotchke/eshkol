@@ -32033,7 +32033,41 @@ int eshkol_compile_llvm_ir_to_executable(LLVMModuleRef module_ref, const char* f
         }
 
         if (!runtime_lib_path.empty()) {
+            // libeshkol-static.a contains a global constructor —
+            // __eshkol_init_parallel_workers — registered into
+            // llvm.global_ctors by parallel_llvm_codegen.cpp. The
+            // constructor calls __eshkol_register_parallel_workers
+            // with the LLVM-emitted worker function pointers, which
+            // is how the C-side parallel runtime (parallel_codegen.cpp)
+            // resolves the workers it dispatches into for
+            // (parallel-execute), (parallel-map), (parallel-fold),
+            // (parallel-filter). Without that ctor running, those
+            // builtins all error with `worker not registered (stdlib
+            // not loaded?)` and silently return ().
+            //
+            // GNU ld.bfd preserves the ctor automatically because of
+            // the special handling for `llvm.global_ctors` /
+            // `__CTOR_LIST__`. lld is more aggressive about GC'ing
+            // the section containing the ctor's callee, which on
+            // AArch64 (where we use -fuse-ld=lld for the
+            // R_AARCH64_CALL26 reach issue — see below) makes the
+            // user binary silently lose its parallel-execute support.
+            //
+            // Force-load every object (including the constructor)
+            // so it is preserved unconditionally. This matches the
+            // link strategy used by the eshkol-run binary itself
+            // (see CMakeLists.txt). macOS uses -force_load (one flag
+            // per archive); ELF uses --whole-archive bracketing;
+            // Windows MSVC uses /WHOLEARCHIVE.
+#if defined(__APPLE__)
+            link_args.emplace_back("-Wl,-force_load," + runtime_lib_path.generic_string());
+#elif defined(_WIN32)
+            link_args.emplace_back("/WHOLEARCHIVE:" + runtime_lib_path.generic_string());
+#else
+            link_args.emplace_back("-Wl,--whole-archive");
             link_args.emplace_back(runtime_lib_path.generic_string());
+            link_args.emplace_back("-Wl,--no-whole-archive");
+#endif
             eshkol_debug("Linking with library: %s", runtime_lib_path.string().c_str());
 
             // Also link agent FFI library if available (terminal, crypto, regex, sqlite)
@@ -32098,6 +32132,13 @@ int eshkol_compile_llvm_ir_to_executable(LLVMModuleRef module_ref, const char* f
         link_args.emplace_back("/STACK:536870912");
 #elif defined(__linux__)
         link_args.emplace_back("-Wl,-z,stack-size=536870912");
+        // --export-dynamic places static-linked symbols into the dynamic
+        // symbol table so dlsym(RTLD_DEFAULT, …) can find them at runtime.
+        // parallel_codegen.cpp's lazy worker resolver uses this to recover
+        // the LLVM-generated workers when the .init_array constructor that
+        // would normally have registered them was silently skipped (see
+        // eshkol_parallel_workers_lazy_resolve in parallel_codegen.cpp).
+        link_args.emplace_back("-Wl,--export-dynamic");
         // ── AArch64 Linux: linker selection ───────────────────────────
         // Codegen uses CodeModel::Large for AArch64 (see target machine
         // creation below) which handles the primary R_AARCH64_CALL26
@@ -32123,6 +32164,16 @@ int eshkol_compile_llvm_ir_to_executable(LLVMModuleRef module_ref, const char* f
         link_args.emplace_back(output_path.generic_string());
 #ifndef _WIN32
         link_args.emplace_back("-lm");
+        // libdl: parallel_codegen.cpp uses dlsym(RTLD_DEFAULT, …)
+        // for lazy LLVM-worker symbol resolution (Linux AArch64 +
+        // lld doesn't run the .ctors / .init_array entries that
+        // would normally register them at startup, see comment in
+        // parallel_codegen.cpp::eshkol_parallel_workers_lazy_resolve).
+#  ifdef __APPLE__
+        // dlsym is in libc on macOS; no -ldl needed
+#  else
+        link_args.emplace_back("-ldl");
+#  endif
 #endif
 
         std::string link_cmd;

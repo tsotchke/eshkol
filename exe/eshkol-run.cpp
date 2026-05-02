@@ -3268,6 +3268,9 @@ int main(int argc, char **argv)
         link_args.emplace_back("-Wl,-stack_size,0x20000000");
 #elif defined(__linux__)
         link_args.emplace_back("-Wl,-z,stack-size=536870912");
+        // --export-dynamic: see lib/backend/llvm_codegen.cpp — required
+        // for parallel-worker dlsym() fallback.
+        link_args.emplace_back("-Wl,--export-dynamic");
         // AArch64 Linux: see lib/backend/llvm_codegen.cpp for rationale —
         // GNU ld 2.38 has bugs handling large user binaries; switch to
         // LLVM's lld which has no such limits. Keep in sync with the
@@ -3282,6 +3285,12 @@ int main(int argc, char **argv)
         link_args.emplace_back(output);
 #ifndef _WIN32
         link_args.emplace_back("-lm");
+#  ifndef __APPLE__
+        // libdl: see lib/backend/llvm_codegen.cpp for rationale
+        // (dlsym fallback for parallel-worker registration on
+        // platforms where the global ctor doesn't fire).
+        link_args.emplace_back("-ldl");
+#  endif
 #endif
 
         std::string link_cmd;

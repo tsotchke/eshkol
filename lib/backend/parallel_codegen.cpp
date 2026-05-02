@@ -38,6 +38,9 @@
 #include <atomic>
 #include <algorithm>
 #include <cstring>
+#ifndef _WIN32
+#include <dlfcn.h>   /* dlsym(RTLD_DEFAULT, …) for lazy worker resolution */
+#endif
 
 // ============================================================================
 // LLVM Worker Function Pointers (Runtime Registration)
@@ -109,6 +112,58 @@ void __eshkol_register_parallel_workers(
  */
 bool eshkol_parallel_workers_registered() {
     return g_parallel_map_worker != nullptr;
+}
+
+/**
+ * Lazy worker resolution via dlsym fallback.
+ *
+ * Background.  The LLVM-generated workers
+ * (`__parallel_map_worker`, `__parallel_fold_worker`, etc.) are
+ * registered with the C runtime by a global constructor
+ * (`__eshkol_init_parallel_workers`) emitted from
+ * parallel_llvm_codegen.cpp into stdlib.o.  On most platforms the
+ * dynamic loader runs `.init_array` entries from every linked object
+ * before main(), so by the time any user code calls
+ * `(parallel-execute …)` the worker pointers are non-NULL.
+ *
+ * On Linux AArch64 with lld, however, the constructor's `.ctors`
+ * placement (rather than `.init_array`) is silently skipped by glibc
+ * — the user binary contains the function and the entry, but the
+ * loader never invokes it, so every parallel primitive errors with
+ * `worker not registered (stdlib not loaded?)` and silently returns
+ * the empty list.  Forcing the linkage / placement to fix lld is
+ * fragile and target-dependent.
+ *
+ * Instead: at runtime, on the first call into any parallel
+ * primitive, look up the worker symbols via `dlsym(RTLD_DEFAULT,
+ * …)`.  RTLD_DEFAULT searches the main executable plus loaded
+ * shared objects in load order, so for our compile-and-link path
+ * (where stdlib.o is statically linked into the user binary) the
+ * symbols are visible.  No reliance on `.init_array` ordering, no
+ * reliance on linker section placement.
+ *
+ * The lookup is idempotent and runs once; subsequent calls take the
+ * fast path through the already-set globals.
+ */
+static void eshkol_parallel_workers_lazy_resolve() {
+    if (g_parallel_map_worker != nullptr) return;  // already set
+#ifndef _WIN32
+    /* dlsym/RTLD_DEFAULT: search the main executable plus all
+     * already-loaded DSOs.  -Wl,--export-dynamic on the user link is
+     * required so the static-linked symbols end up in the dynamic
+     * symbol table — eshkol-run already passes that flag (see the
+     * AArch64-Linux block in eshkol_compile_llvm_ir_to_executable). */
+    void* map_w     = dlsym(RTLD_DEFAULT, "__parallel_map_worker");
+    void* fold_w    = dlsym(RTLD_DEFAULT, "__parallel_fold_worker");
+    void* filter_w  = dlsym(RTLD_DEFAULT, "__parallel_filter_worker");
+    void* exec_w    = dlsym(RTLD_DEFAULT, "__parallel_execute_worker");
+    void* unary_d   = dlsym(RTLD_DEFAULT, "__eshkol_call_unary_closure");
+    void* binary_d  = dlsym(RTLD_DEFAULT, "__eshkol_call_binary_closure");
+    if (map_w && filter_w && unary_d && binary_d && exec_w) {
+        __eshkol_register_parallel_workers(map_w, fold_w, filter_w,
+                                            unary_d, binary_d, exec_w);
+    }
+#endif
 }
 
 } // extern "C"
@@ -291,7 +346,10 @@ void eshkol_parallel_map(
         results[i].data.raw_val = 0;
     }
 
-    // Check if workers are registered
+    // Check if workers are registered, falling back to dlsym on platforms
+    // (notably AArch64 Linux + lld) where the stdlib's global ctor that
+    // would normally have done this is silently skipped by the loader.
+    if (!g_parallel_map_worker) eshkol_parallel_workers_lazy_resolve();
     if (!g_parallel_map_worker) {
         eshkol_error("parallel-map: workers not registered (stdlib not loaded?)");
         eshkol_tagged_value_t null_val = {};
@@ -425,7 +483,8 @@ void eshkol_parallel_fold(
         *out_result = init; return;
     }
 
-    // Check if dispatcher is registered
+    // Check if dispatcher is registered (with dlsym fallback)
+    if (!g_call_binary_closure) eshkol_parallel_workers_lazy_resolve();
     if (!g_call_binary_closure) {
         eshkol_error("parallel-fold: binary closure dispatcher not registered (stdlib not loaded?)");
         *out_result = init; return;
@@ -518,7 +577,8 @@ void eshkol_parallel_filter(
 
     size_t n = items.size();
 
-    // Check if workers are registered
+    // Check if workers are registered (with dlsym fallback)
+    if (!g_parallel_filter_worker) eshkol_parallel_workers_lazy_resolve();
     if (!g_parallel_filter_worker) {
         eshkol_error("parallel-filter: workers not registered (stdlib not loaded?)");
         eshkol_tagged_value_t null_val = {};
@@ -644,7 +704,8 @@ void eshkol_parallel_execute(
         *out_result = null_val; return;
     }
 
-    // Check if execute worker is registered
+    // Check if execute worker is registered (with dlsym fallback)
+    if (!g_parallel_execute_worker) eshkol_parallel_workers_lazy_resolve();
     if (!g_parallel_execute_worker) {
         eshkol_error("parallel-execute: execute worker not registered (stdlib not loaded?)");
         *out_result = null_val; return;
