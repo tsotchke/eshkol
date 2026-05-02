@@ -30,27 +30,31 @@ declare -a RUNTIME_ERRORS
 LOG_DIR="/tmp/eshkol_examples_test"
 mkdir -p "$LOG_DIR"
 
+# Honour $BUILD_DIR (CI passes it via the matrix: build / build-xla /
+# build-cuda / build-asan); fall back to "build" for plain local runs.
+BUILD_DIR="${BUILD_DIR:-build}"
+
 echo "========================================="
 echo "  Eshkol Examples Test Suite"
 echo "========================================="
 echo ""
 
 # Ensure build directory exists
-if [ ! -d "build" ]; then
-    echo -e "${RED}Error: build directory not found. Run cmake first.${NC}"
+if [ ! -d "$BUILD_DIR" ]; then
+    echo -e "${RED}Error: build directory '$BUILD_DIR' not found. Run cmake first.${NC}"
     exit 1
 fi
 
 # Check if compiler exists
-if [ ! -f "build/eshkol-run" ]; then
-    echo -e "${RED}Error: eshkol-run not found. Run make first.${NC}"
+if [ ! -f "$BUILD_DIR/eshkol-run" ]; then
+    echo -e "${RED}Error: eshkol-run not found in '$BUILD_DIR'. Run make first.${NC}"
     exit 1
 fi
 
 # Check if stdlib exists
-if [ ! -f "build/stdlib.o" ]; then
-    echo -e "${YELLOW}Warning: stdlib.o not found. Building...${NC}"
-    cmake --build build --target stdlib
+if [ ! -f "$BUILD_DIR/stdlib.o" ]; then
+    echo -e "${YELLOW}Warning: stdlib.o not found in $BUILD_DIR. Building...${NC}"
+    cmake --build "$BUILD_DIR" --target stdlib
 fi
 
 echo "Testing all .esk files in examples/ directory..."
@@ -94,7 +98,7 @@ for test_file in examples/*.esk; do
     run_log="$LOG_DIR/${test_name%.esk}_run.log"
 
     # Try to compile
-    if ./build/eshkol-run -L./build "$test_file" > "$compile_log" 2>&1; then
+    if ./"$BUILD_DIR"/eshkol-run -L./"$BUILD_DIR" "$test_file" > "$compile_log" 2>&1; then
         # Compilation succeeded, try to run
         if ./a.out > "$run_log" 2>&1; then
             exit_code=$?
