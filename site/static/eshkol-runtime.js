@@ -386,6 +386,107 @@ class EshkolRuntime {
                 __stdoutp: new WebAssembly.Global({ value: 'i32', mutable: false }, 0),
                 __stderrp: new WebAssembly.Global({ value: 'i32', mutable: false }, 0),
 
+                // ────────────────────────────────────────────────────────────
+                // Eshkol runtime helpers — keep this block in sync with the
+                // C runtime in lib/core/.  The check is automated via
+                // scripts/check_wasm_imports.py: it parses the WASM `import`
+                // section and fails CI when any `env.<name>` import the
+                // codegen emits is missing here.  Do NOT delete a stub
+                // without first removing the matching `extern "C"` from the
+                // codegen-emitted side; otherwise the website breaks at
+                // WebAssembly.instantiate() with `function import requires a
+                // callable`.
+                // ────────────────────────────────────────────────────────────
+
+                // Symbol interning — must canonicalise on name so that
+                // (eq? 'foo 'foo) returns #t at runtime.  We bump-allocate
+                // an 8-byte object header followed by the NUL-terminated
+                // name into WASM linear memory, key the JS-side map by the
+                // string, and return the data pointer (header lives at
+                // ptr-8).  Identical names hit the cached pointer.
+                eshkol_intern_symbol_lookup: (namePtr) => {
+                    if (!namePtr) return 0;
+                    if (!rt._symbolMap) rt._symbolMap = new Map();
+                    const name = rt.readString(namePtr);
+                    const cached = rt._symbolMap.get(name);
+                    if (cached !== undefined) return cached;
+                    const headerSize = 8;
+                    const block = rt._bump(headerSize + name.length + 1);
+                    const dataPtr = block + headerSize;
+                    const mem = new Uint8Array(rt._importedMemory.buffer);
+                    for (let i = 0; i < name.length; i++) mem[dataPtr + i] = name.charCodeAt(i);
+                    mem[dataPtr + name.length] = 0;
+                    rt._symbolMap.set(name, dataPtr);
+                    return dataPtr;
+                },
+
+                // Runtime / lifecycle no-ops — the website uses a fresh
+                // bump-allocated arena per program, so init/recursion-depth
+                // bookkeeping is unnecessary.
+                __eshkol_lib_init__: () => {},
+                eshkol_runtime_init: () => {},
+                eshkol_init_stack_size: () => {},
+                eshkol_check_recursion_depth: () => 0,
+                eshkol_decrement_recursion_depth: () => {},
+                eshkol_runtime_current_output_fp: () => 0,
+                arena_tagged_cons_set_tagged_value: () => {},
+
+                // String ports — bump-allocate a buffer; reads/writes use a
+                // JS-side Map keyed by the buffer pointer so we can
+                // accumulate output and return it via get-output-string.
+                eshkol_open_output_string: () => {
+                    if (!rt._stringPorts) rt._stringPorts = new Map();
+                    const port = rt._bump(16);  // sentinel block; identity only
+                    rt._stringPorts.set(port, []);
+                    return port;
+                },
+                eshkol_get_output_string: (port) => {
+                    if (!rt._stringPorts) return 0;
+                    const chunks = rt._stringPorts.get(port) || [];
+                    const text = chunks.join('');
+                    const block = rt._bump(8 + text.length + 1);
+                    const dataPtr = block + 8;
+                    const mem = new Uint8Array(rt._importedMemory.buffer);
+                    for (let i = 0; i < text.length; i++) mem[dataPtr + i] = text.charCodeAt(i);
+                    mem[dataPtr + text.length] = 0;
+                    return dataPtr;
+                },
+                eshkol_display_value_to_port: (value, port) => {
+                    if (!rt._stringPorts) rt._stringPorts = new Map();
+                    const chunks = rt._stringPorts.get(port);
+                    if (chunks) chunks.push(String(value));
+                    else console.log('[port]', value);
+                },
+
+                // Exception handling — Eshkol exceptions in the WASM build
+                // are degraded to console.error + bail; setjmp returns 0
+                // (no-jump path) and longjmp throws so the JS host can
+                // catch it.  This is fine for the website demo surface;
+                // full exception support is a v1.4 item.
+                eshkol_raise: (excPtr) => {
+                    console.error('Eshkol raise (WASM stub): exception at ptr', excPtr);
+                    throw new Error('Eshkol exception (WASM stub)');
+                },
+                eshkol_raise_not_pair: () => {
+                    console.error('Eshkol: car/cdr of non-pair');
+                    throw new Error('not a pair');
+                },
+                eshkol_push_exception_handler: () => 0,
+                eshkol_pop_exception_handler: () => {},
+                eshkol_get_current_exception: () => 0,
+                eshkol_clear_current_exception: () => {},
+                eshkol_get_raised_value: () => 0,
+                eshkol_set_raised_value: () => {},
+                eshkol_unwind_dynamic_wind: () => {},
+                eshkol_jmp_buf_size: () => 64,
+                setjmp: () => 0,                  // first-pass through
+                longjmp: () => { throw new Error('longjmp (WASM stub) — not supported'); },
+
+                // libc fallbacks the codegen reaches for occasionally
+                puts: (s) => { console.log(rt.readString(s)); return 0; },
+                fputc: (c, _fp) => { /* drop — we have no fp model */ return c; },
+                length: () => 0,                  // Scheme length stub; codegen normally inlines
+
                 // === DOM API ===
 
                 web_get_body: () => rt.bodyHandle,

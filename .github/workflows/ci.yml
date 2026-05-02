@@ -180,6 +180,25 @@ jobs:
           set -euxo pipefail
           cmake --build "${{ matrix.build_dir }}" --parallel
 
+      # Catches the failure mode where a new C runtime helper
+      # (eshkol_intern_symbol_lookup, region_create, …) is added on the
+      # host side and the codegen emits a WASM `env` import for it, but
+      # the JS glue (web/eshkol-repl.js + site/static/eshkol-runtime.js)
+      # is never updated — the website then fails with `function import
+      # requires a callable` at WebAssembly.instantiate().  Compiles a
+      # tiny smoke set, parses each .wasm import section, diffs against
+      # the JS env keys.  Skipped on the GPU/XLA/sanitizer lanes — those
+      # don't change the WASM-side surface and their ASan instrumentation
+      # confuses the wasm32 codegen path.
+      - name: Check WASM env imports
+        if: matrix.xla_enabled == 'OFF' && matrix.gpu_enabled == 'OFF' && matrix.build_dir == 'build'
+        shell: bash
+        env:
+          BUILD_DIR: ${{ matrix.build_dir }}
+        run: |
+          set -euxo pipefail
+          python3 scripts/check_wasm_imports.py --build-dir "$BUILD_DIR"
+
       - name: Run Tests
         shell: bash
         env:
