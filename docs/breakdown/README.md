@@ -3,10 +3,14 @@
 ![Version](https://img.shields.io/badge/version-1.2.0--scale-green)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
-> **Note**: This directory originally documented v1.0-foundation. For v1.1-accelerate
-> features (GPU acceleration, XLA backend, parallel primitives, consciousness engine,
-> exact arithmetic, signal processing, first-class continuations), see
-> [CHANGELOG.md](../../CHANGELOG.md) and [V1.1 Scope](../V1.1_SCOPE.md).
+> **Note**: This directory originally documented v1.0-foundation; the docs were
+> extended for v1.1-accelerate (GPU acceleration, XLA backend, parallel primitives,
+> consciousness engine, exact arithmetic, signal processing, first-class continuations)
+> and again for v1.2.0-scale (model serialization, stable C FFI + Python bindings,
+> per-thread arenas, image I/O, JSON Schema validation, CSV/DataFrame, terminal
+> plotting, source-located error messages). For per-release detail see
+> [CHANGELOG.md](../../CHANGELOG.md), [V1.1 Scope](../V1.1_SCOPE.md), and
+> [SDNC.md](../SDNC.md) for the v1.2 self-differentiating-neural-computer artifact.
 
 ## Introduction
 

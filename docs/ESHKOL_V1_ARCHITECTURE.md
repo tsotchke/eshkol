@@ -1549,4 +1549,4 @@ v1.1 resolves several production issues in the interactive JIT:
 
 ---
 
-*This document reflects the v1.1-accelerate release. All claims are verified against actual source code. For questions or corrections, see [`CONTRIBUTING.md`](../CONTRIBUTING.md).*
+*This document reflects the v1.2.0-scale release. All claims are verified against actual source code. For questions or corrections, see [`CONTRIBUTING.md`](../CONTRIBUTING.md).*
