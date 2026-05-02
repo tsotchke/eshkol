@@ -520,7 +520,7 @@ The memory model specification defines Eshkol's arena-based memory management sy
 
 The concurrency model specification defines Eshkol's approach to parallel and distributed computation, including task creation, synchronization mechanisms, and communication protocols. This section describes the memory consistency model, defining the visibility of memory operations across concurrent tasks, and the progress guarantees provided by different concurrency constructs. The specification covers both shared-memory parallelism on a single machine and distributed computation across multiple nodes.
 
-### Appendix B: Standard Library Reference (implemented in v1.1-accelerate; see API_REFERENCE.md)
+### Appendix B: Standard Library Reference (implemented in v1.1-accelerate, expanded in v1.2.0-scale; see API_REFERENCE.md)
 
 Appendix B provides comprehensive documentation of Eshkol's standard library, describing the functionality available to all Eshkol programs without additional dependencies. This reference includes detailed descriptions of library modules, functions, data structures, and algorithms, with examples illustrating common usage patterns and best practices.
 
@@ -534,7 +534,7 @@ The Concurrency Library documentation covers parallel computation, synchronizati
 
 The FFI Library documentation covers interoperation with C and other languages, including function calling conventions, data marshalling, and resource management across language boundaries. This section includes descriptions of both low-level FFI primitives and higher-level abstractions for common interoperation patterns. The documentation provides guidance on designing robust interfaces between Eshkol and other languages, with attention to safety, performance, and maintainability considerations.
 
-### Appendix C: Performance Benchmarks (implemented in v1.1-accelerate; see benchmarks/)
+### Appendix C: Performance Benchmarks (implemented in v1.1-accelerate, extended in v1.2.0-scale; see benchmarks/)
 
 Appendix C presents detailed performance benchmark results for Eshkol, providing quantitative measurements of the language's performance characteristics across various computational domains and in comparison to other programming languages. These benchmarks serve as both validation of Eshkol's design goals and guidance for optimization efforts, identifying strengths and areas for improvement.
 

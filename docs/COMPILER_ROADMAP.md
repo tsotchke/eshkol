@@ -8,7 +8,7 @@ this document is the authoritative version-by-version delivery plan.
 Two axes are tracked side-by-side:
 
 1. **Release version** (v1.2, v1.3, …, v2.0) — when a feature ships to users.
-   Monthly cadence since v1.1-accelerate (2026-04-10).
+   Monthly cadence since v1.1-accelerate (2026-04-10); v1.2.0-scale shipped 2026-05-01 on schedule.
 2. **Noesis milestone** (M0, M1, M2, M3, M4) — what Noesis capability each
    feature unblocks. Taken from the 2026-04-17 gap audit
    (`/Users/tyr/Desktop/noesis/docs/audits/eshkol-feature-gap-report-2026-04-17.md`).

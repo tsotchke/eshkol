@@ -340,6 +340,70 @@ Three R7RS environment constructors: `interaction-environment`, `scheme-report-e
 
 ---
 
+## v1.2.0-scale Feature Summary
+
+v1.2.0-scale builds on v1.1-accelerate by closing the *deployment* loop —
+trained models persist, Python interop is first-class, and the build
+pipeline produces clean binaries across the full 16-lane CI matrix.
+
+### Model and Knowledge-Base Persistence
+
+Tensors and knowledge bases serialize to disk as compact ESKB-extended
+binary files, round-tripping cleanly across processes and platforms:
+
+- **`(model-save path alist)` / `(model-load path)`** — named tensor
+  checkpoint format with little-endian header, per-tensor metadata
+  (shape, dtype, name), contiguous double data. Inspired by safetensors.
+- **`(tensor-save path tensor)` / `(tensor-load path)`** — single
+  tensor.
+- **`(kb-save path kb)` / `(kb-load path)`** — knowledge base with
+  fact and rule serialisation (pointer-safe; v1.1's raw HEAP_PTR
+  format that dangled across save/load is fixed).
+
+### Stable C FFI + Python Bindings
+
+`inc/eshkol/eshkol_ffi.h` exposes a frozen C ABI: parse, compile-to-IR,
+JIT-call, tensor create/read/write, arena lifecycle. `bindings/python/`
+wraps it via pybind11 with NumPy zero-copy interop. `pip install` works.
+
+### Per-Thread Arenas
+
+The arena allocator is now thread-aware: each worker thread holds its
+own region stack, with results merged back to the parent on join. This
+formalises the v1.1 ad-hoc per-task allocation that powered
+`parallel-map` and is a prerequisite for v1.4 networking.
+
+### Self-Differentiating Neural Computer Artifact
+
+`artifacts/paper/` ships the reproducibility package for the Tsotchke
+*Self-Differentiating Neural Computer* paper: a 6-layer transformer
+with 2.8M analytically-constructed weights that bit-identically
+simulates an 83-instruction bytecode VM with native reverse-mode AD.
+71/71 test programs agree at every step on every field. See
+[SDNC.md](../SDNC.md).
+
+### v1.2 Toolchain and Stdlib
+
+- **JSON Schema validation** (Draft 7 subset): `(json-schema-valid? schema value)` for experiment-manifest enforcement.
+- **Image I/O** (vendored stb_image / stb_image_write): `(image-read)`, `(image-write)`, `(image-resize)`, `(image-to-grayscale)` returning tensors of shape `(H W C)`.
+- **CSV/DataFrame extensions**: `(read-csv)` with type inference, column selection, filter, group-by.
+- **Terminal plotting** (pure stdlib): `(sparkline list)`, `(bar-chart pairs)` via Unicode block characters — zero dependencies.
+- **Source-located error messages**: `file.esk:line:col: error: …` with caret + underline for the failing span.
+- **AArch64 Linux**: codegen now uses `CodeModel::Large` and `-fuse-ld=lld` to handle the runtime's >128 MiB text section without `R_AARCH64_CALL26` overflows.
+- **R7RS-compliant scoping**: user redefines of stdlib functions cleanly shadow the stdlib version (LinkOnceODR linkage; variadic-info hygiene).
+
+### v1.2 Hardening
+
+Seven critical/high security fixes landed: subprocess shell-string
+injection (agent_subprocess.c), Python-FFI AST injection, integer
+overflows in arena/KB-persistence/image-IO, path traversal + TOCTOU,
+Windows-subprocess buffer overflow, error-propagation patterns
+(36 silent-swallow sites), ReDoS protection, SQL-injection guards,
+URL validation. See [SECURITY.md](../../SECURITY.md) and
+[HARDENING.md](../../HARDENING.md).
+
+---
+
 ## When to Use Eshkol
 
 ### Ideal Use Cases
@@ -436,7 +500,7 @@ Both pursue memory safety without garbage collection:
 
 ## Production Readiness
 
-Eshkol v1.1-accelerate represents a **mature, production-ready implementation** for scientific computing, machine learning, and cognitive architecture deployment.
+Eshkol v1.2.0-scale represents a **mature, production-ready implementation** for scientific computing, machine learning, and cognitive architecture deployment.
 
 ### Implementation Scale
 
