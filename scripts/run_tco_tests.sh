@@ -45,8 +45,9 @@ echo "  Eshkol TCO (Tail Call Optimization) Tests"
 echo "========================================="
 echo ""
 
-# Check for build directory
-BUILD_DIR="build"
+# Honour $BUILD_DIR (CI passes it via the matrix: build / build-xla /
+# build-cuda / build-asan); fall back to "build" for plain local runs.
+BUILD_DIR="${BUILD_DIR:-build}"
 
 if [ ! -d "$BUILD_DIR" ] || [ ! -f "$BUILD_DIR/eshkol-run" ]; then
     echo -e "${RED}Error: Build directory not found or eshkol-run missing.${NC}"
@@ -95,6 +96,20 @@ for test_file in "$TCO_TEST_DIR"/*.esk; do
         rm -f "$TEMP_BIN"
         continue
     fi
+
+    # The 3-level-nesting test in nested_tco_test.esk runs (outer 4000)
+    # which the comment in the test explains intentionally trades depth
+    # for per-frame size — each nested-letrec frame on Linux x64 is
+    # ~80 KB (-O0; closure env + intermediate result allocas), so 4000
+    # iterations need ~320 MB of stack.  Linux's default ulimit -s of
+    # 8192 KB (8 MB) caps the process at ~100 frames before SIGSEGV.
+    # The eshkol-run linker flag `-Wl,-z,stack-size=536870912` and the
+    # runtime `eshkol_init_stack_size()` setrlimit call only affect
+    # newly-created stacks (mmap'd thread stacks); the kernel sets the
+    # main-thread stack size from RLIMIT_STACK at exec(), and post-exec
+    # setrlimit cannot grow the main stack.  Raise the soft limit
+    # before invoking each test so children inherit a 512 MB stack.
+    ulimit -s 524288 2>/dev/null || ulimit -s unlimited 2>/dev/null || true
 
     # Run with timeout (TCO bugs cause infinite recursion → stack overflow)
     RUN_OUTPUT=$(run_with_timeout 60 "$TEMP_BIN" 2>&1)
