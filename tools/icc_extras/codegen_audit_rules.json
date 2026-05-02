@@ -1,0 +1,105 @@
+{
+  "$comment": "Audit rules for the Eshkol codegen surface. Format mirrors infinite_context_coder's AUDIT_PATTERN_PRESETS so these can be upstreamed as a preset later. Each rule has: id, severity (high/medium/low), regex (Python re, MULTILINE), description, plus optional skip_if_line_contains, skip_if_match_contains, skip_if_nearby_contains, nearby_line_window, include_globs, exclude_globs, and diff_only (review-on-add only). Files are filtered by include_globs/exclude_globs at the rule level — keeps each rule narrowly scoped to where the failure mode actually applies.",
+  "version": 1,
+  "preset_name": "eshkol-codegen",
+  "rules": [
+    {
+      "id": "tagged_value_data_field_idx_3",
+      "severity": "high",
+      "regex": "(?:CreateInsertValue|CreateExtractValue)\\s*\\([^)]*?,\\s*\\{\\s*3\\s*\\}\\s*\\)",
+      "description": "Tagged value struct is {i8 type, i8 flags, i16 reserved, i32 padding, i64 data} — the data field is at index 4, NOT 3. Index 3 is the i32 padding slot; reading from it yields zero, writing to it silently drops the value. See MEMORY.md tagged-value-data-field bug — codegenSubstPred / codegenKBPred used {3} and got null deref at offset -8.",
+      "include_globs": ["lib/backend/**/*.cpp", "lib/backend/**/*.c"],
+      "skip_if_line_contains": ["// idx-3-ok-padding"]
+    },
+    {
+      "id": "intrinsic_get_on_unique_ptr",
+      "severity": "high",
+      "regex": "(?:Intrinsic::getDeclaration|ESHKOL_GET_INTRINSIC)\\s*\\(\\s*module\\s*,",
+      "description": "LLVM intrinsic helpers want a raw `Module*`, but `module` here is a `unique_ptr<Module>`. Use `module.get()`. Compiles, then either invokes the wrong overload or fails an assertion at IR-emit time depending on LLVM version. See MEMORY.md.",
+      "include_globs": ["lib/backend/**/*.cpp"]
+    },
+    {
+      "id": "eshkol_value_nil_typo",
+      "severity": "high",
+      "regex": "\\bESHKOL_VALUE_NIL\\b",
+      "description": "There is no ESHKOL_VALUE_NIL — the empty-value tag is ESHKOL_VALUE_NULL. ESHKOL_VALUE_NIL is undefined; either fails to compile or expands to 0 via a stray macro and the runtime semantics are silently wrong.",
+      "include_globs": ["lib/**/*.cpp", "lib/**/*.c", "lib/**/*.h", "exe/**/*.cpp", "tests/**/*.cpp"]
+    },
+    {
+      "id": "fmin_fmax_in_codegen",
+      "severity": "medium",
+      "regex": "\\b(?:fmin|fmax)\\s*\\(",
+      "description": "Direct fmin/fmax in codegen bypasses tagged-dispatch in ArithmeticCodegen::min/max — bignums and rationals fall through to double extraction with precision loss. Use arith_->min(...) / arith_->max(...) instead. See MEMORY.md min/max precision-loss bug.",
+      "include_globs": ["lib/backend/llvm_codegen.cpp", "lib/backend/*_codegen.cpp"],
+      "exclude_globs": ["lib/backend/arithmetic_codegen.cpp"],
+      "skip_if_line_contains": ["fminf", "fmaxf", "// fmin-direct-ok"]
+    },
+    {
+      "id": "phi_in_closure_call_loop",
+      "severity": "medium",
+      "regex": "(?ms)CreatePHI\\s*\\([^)]+\\)[\\s\\S]{0,4000}codegenClosureCall",
+      "description": "A PHINode created in a function body that subsequently calls codegenClosureCall risks broken predecessor relationships — codegenClosureCall creates 15+ basic blocks. Use alloca + store/load for loop counters, mirror mapWithClosure / codegenReduce. See MEMORY.md closure-in-loop PHI bug (string-for-each / vector-for-each / vector-map / string-map). Diff-only because pre-existing PHIs were reviewed when written.",
+      "include_globs": ["lib/backend/llvm_codegen.cpp", "lib/backend/*_codegen.cpp"],
+      "diff_only": true
+    },
+    {
+      "id": "missing_get_insert_block_capture",
+      "severity": "medium",
+      "regex": "->\\s*addIncoming\\s*\\([^,)]+,\\s*(?:exact_path|float_path|float_block|regular_path|regular_merge|exit_block|merge|merge_block|then_block|else_block)\\s*\\)",
+      "description": "PHI addIncoming uses a *named* block variable for predecessor — but if any helper called between the variable's assignment and addIncoming creates basic blocks (extractAsDouble, extractDoubleFromTagged, packDoubleToTaggedValue, isHeapSubtype, convertToDual, convertToComplex), the actual exit block diverges from the named one. Capture the actual exit with `auto X_block = builder->GetInsertBlock();` AFTER the helper, immediately before addIncoming. See MEMORY.md floor/ceil/round/truncate PHI fix.",
+      "include_globs": ["lib/backend/**/*.cpp"],
+      "skip_if_nearby_contains": ["GetInsertBlock()", "// block-capture-not-required"],
+      "nearby_line_window": 6
+    },
+    {
+      "id": "safe_extract_int64_on_init_value",
+      "severity": "medium",
+      "regex": "\\bsafeExtractInt64\\s*\\(\\s*init",
+      "description": "safeExtractInt64 LOSES type information. For init values that may be doubles (codegenReduce / fold init / etc.), use ensureTaggedValue(init_val) — it dispatches doubles to packDoubleToTaggedValue and ints to packInt64ToTaggedValue based on the LLVM type. See MEMORY.md reduce type-promotion bug.",
+      "include_globs": ["lib/backend/**/*.cpp"]
+    },
+    {
+      "id": "test_grep_qi_FAIL",
+      "severity": "low",
+      "regex": "grep\\s+-qi\\s+\"?FAIL\"?",
+      "description": "Case-insensitive grep for FAIL matches 'Failed: 0' summary lines as a false positive. Use `grep -q '^FAIL:'` or `grep -qE 'Failed:[[:space:]]+[1-9]'`.",
+      "include_globs": ["scripts/**/*.sh", "tests/**/*.sh"]
+    },
+    {
+      "id": "linkage_external_in_library_mode",
+      "severity": "high",
+      "regex": "GlobalValue::ExternalLinkage",
+      "description": "Direct `GlobalValue::ExternalLinkage` in symbol-creation sites breaks `--shared-lib` (stdlib.o) builds: user programs can't override stdlib symbols without `duplicate symbol` errors. Use the `publicDefinitionLinkage(library_mode)` helper which returns LinkOnceODRLinkage in library mode and ExternalLinkage in user-program mode. Skip when the call site has `library_mode || g_repl_mode_enabled` near it (already gated). See MEMORY.md stdlib duplicate-symbol fix.",
+      "include_globs": ["lib/backend/llvm_codegen.cpp", "lib/backend/binding_codegen.cpp"],
+      "skip_if_nearby_contains": ["library_mode", "g_repl_mode_enabled", "publicDefinitionLinkage", "Always external", "// external-linkage-ok", "arena_use_external_only", "use_external_only"],
+      "nearby_line_window": 5,
+      "diff_only": true
+    },
+    {
+      "id": "ulimit_stack_in_test_runner",
+      "severity": "low",
+      "regex": "\\.\\$BUILD_DIR/eshkol-run\\b",
+      "description": "Test runners that compile-and-run user binaries through eshkol-run should set `ulimit -s 524288` once before the loop. Linux's default 8 MB stack overflows ~100 nested-letrec frames at ~80 KB each. See run_tco_tests.sh for the canonical pattern.",
+      "include_globs": ["scripts/run_*_tests.sh"],
+      "skip_if_nearby_contains": ["ulimit -s", "no-large-stack-needed", "no-test-binary-run"],
+      "nearby_line_window": 80
+    },
+    {
+      "id": "arena_allocate_unchecked",
+      "severity": "high",
+      "regex": "\\barena_allocate(?:_tensor_with_header)?\\s*\\([^;]*\\)\\s*;",
+      "description": "arena_allocate / arena_allocate_tensor_with_header can return NULL on OOM. The next statement should null-check the result and either raise eshkol_exception or short-circuit. See MEMORY.md tensor reshape OOM fix.",
+      "include_globs": ["lib/backend/**/*.cpp", "lib/backend/**/*.c", "lib/core/**/*.c"],
+      "skip_if_nearby_contains": ["if (!", "if (NULL ==", "if (== NULL", "if (== nullptr", "// allocate-cannot-fail", "out of memory", "eshkol_raise"],
+      "nearby_line_window": 4
+    },
+    {
+      "id": "no_amend_on_pre_commit_failure",
+      "severity": "low",
+      "regex": "git\\s+commit\\s+--amend",
+      "description": "Pre-commit hooks abort the commit before it lands; --amend then modifies the PREVIOUS commit instead. Make a NEW commit. (See repo-wide guidance.) Mostly relevant for scripts/CI; user-facing docs may legitimately mention --amend.",
+      "include_globs": ["scripts/**/*.sh", "scripts/**/*.py", ".github/**/*.yml"],
+      "skip_if_line_contains": ["# amend-allowed-here", "explicitly requested", "interactive only"]
+    }
+  ]
+}
