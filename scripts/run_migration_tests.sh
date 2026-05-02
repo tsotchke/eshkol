@@ -10,6 +10,9 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 NC='\033[0m' # No Color
 
+# Honour $BUILD_DIR (CI passes it via the matrix); fall back to "build" for plain local runs.
+BUILD_DIR="${BUILD_DIR:-build}"
+
 # Counters
 PASS=0
 FAIL=0
@@ -22,7 +25,7 @@ echo "  Eshkol Migration Test Suite"
 echo "========================================="
 echo ""
 
-if [ ! -f "build/eshkol-run" ]; then
+if [ ! -f "$BUILD_DIR/eshkol-run" ]; then
     echo -e "${RED}Error: eshkol-run not found. Run make first.${NC}"
     exit 1
 fi
@@ -34,7 +37,7 @@ for test_file in tests/migration/*.esk; do
 
     rm -f a.out a.out.tmp.o
 
-    if ./build/eshkol-run -L./build "$test_file" > /dev/null 2>&1; then
+    if ./$BUILD_DIR/eshkol-run -L./$BUILD_DIR "$test_file" > /dev/null 2>&1; then
         if ./a.out > /tmp/test_output.txt 2>&1; then
             if grep -q "^FAIL" /tmp/test_output.txt; then
                 echo -e "${RED}❌ FAIL${NC}"

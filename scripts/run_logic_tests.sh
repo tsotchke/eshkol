@@ -2,7 +2,11 @@
 # Run Eshkol Consciousness Engine tests — v1.1-accelerate
 set -e
 
-ESHKOL="./build/eshkol-run"
+# Honour $BUILD_DIR (CI passes it via the matrix); fall back to "build" for plain local runs.
+BUILD_DIR="${BUILD_DIR:-build}"
+
+
+ESHKOL="./$BUILD_DIR/eshkol-run"
 PASS=0
 FAIL=0
 

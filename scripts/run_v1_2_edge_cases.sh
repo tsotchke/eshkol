@@ -14,7 +14,7 @@
 set -u
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-RUN="$ROOT/build/eshkol-run"
+RUN="$ROOT/$BUILD_DIR/eshkol-run"
 DIR="$ROOT/tests/v1_2_edge_cases"
 
 if [ ! -x "$RUN" ]; then

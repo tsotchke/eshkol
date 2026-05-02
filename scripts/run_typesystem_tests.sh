@@ -30,13 +30,16 @@ echo "  Eshkol Type System Test Suite"
 echo "========================================="
 echo ""
 
+# Honour $BUILD_DIR (CI passes it via the matrix); fall back to "build" for plain local runs.
+BUILD_DIR="${BUILD_DIR:-build}"
+
 # Ensure build directory exists
-if [ ! -d "build" ]; then
+if [ ! -d "$BUILD_DIR" ]; then
     echo -e "${RED}Error: build directory not found. Run cmake first.${NC}"
     exit 1
 fi
 
-if [ ! -f "build/eshkol-run" ]; then
+if [ ! -f "$BUILD_DIR/eshkol-run" ]; then
     echo -e "${RED}Error: eshkol-run not found. Run make first.${NC}"
     exit 1
 fi
@@ -57,7 +60,7 @@ for test_file in tests/typesystem/*.esk; do
     mode=$(grep '^;; EXPECT-MODE:' "$test_file" | head -1 | sed 's/;; EXPECT-MODE: *//')
 
     # Build compiler flags
-    flags="-L./build"
+    flags="-L./$BUILD_DIR"
     case "$mode" in
         strict-types) flags="$flags --strict-types" ;;
         unsafe)       flags="$flags --unsafe" ;;
@@ -66,7 +69,7 @@ for test_file in tests/typesystem/*.esk; do
     esac
 
     # Compile, capturing stderr separately
-    ./build/eshkol-run "$test_file" $flags -o /tmp/typesystem_test_bin > /dev/null 2>/tmp/typesystem_test_stderr.txt
+    ./$BUILD_DIR/eshkol-run "$test_file" $flags -o /tmp/typesystem_test_bin > /dev/null 2>/tmp/typesystem_test_stderr.txt
     compile_exit=$?
 
     # Check all EXPECT-STDERR patterns

@@ -20,14 +20,17 @@ echo "  Eshkol Control Flow Test Suite"
 echo "========================================="
 echo ""
 
+# Honour $BUILD_DIR (CI passes it via the matrix); fall back to "build" for plain local runs.
+BUILD_DIR="${BUILD_DIR:-build}"
+
 # Ensure build directory exists
-if [ ! -d "build" ]; then
+if [ ! -d "$BUILD_DIR" ]; then
     echo -e "${RED}Error: build directory not found. Run cmake first.${NC}"
     exit 1
 fi
 
 # Check if compiler exists
-if [ ! -f "build/eshkol-run" ]; then
+if [ ! -f "$BUILD_DIR/eshkol-run" ]; then
     echo -e "${RED}Error: eshkol-run not found. Run make first.${NC}"
     exit 1
 fi
@@ -52,7 +55,7 @@ for test_file in tests/control_flow/*.esk; do
     rm -f a.out a.out.tmp.o
 
     # Compile and run the test
-    if ./build/eshkol-run -L./build "$test_file" > /dev/null 2>&1; then
+    if ./$BUILD_DIR/eshkol-run -L./$BUILD_DIR "$test_file" > /dev/null 2>&1; then
         if ./a.out > /tmp/test_output.txt 2>&1; then
             # Check for failures in output
             if grep -q "FAIL:" /tmp/test_output.txt; then

@@ -39,7 +39,7 @@ for test_file in "$TEST_DIR"/*.esk; do
     printf "Testing: %-40s " "$test_name"
 
     # Compile
-    if ! ./build/eshkol-run "$test_file" > /dev/null 2>&1; then
+    if ! ./$BUILD_DIR/eshkol-run "$test_file" > /dev/null 2>&1; then
         echo -e "${RED}COMPILE FAIL${NC}"
         ((FAIL++))
         continue
