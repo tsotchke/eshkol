@@ -1,0 +1,131 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://eshkol.org/schemas/parity_ledger.schema.json",
+  "title": "Eshkol JIT/AOT/VM parity ledger",
+  "description": "Records, for each Eshkol operation and builtin, where its AOT, JIT, and VM implementations live and whether they are at parity.",
+  "type": "object",
+  "required": ["schema_version", "generated", "special_forms", "builtins"],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1,
+      "description": "Bump on incompatible schema changes."
+    },
+    "generated": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO-8601 timestamp of last generation."
+    },
+    "generator_commit": {
+      "type": "string",
+      "description": "git rev-parse HEAD at generation time, for cross-checking when source has moved."
+    },
+    "special_forms": {
+      "type": "array",
+      "description": "Forms recognised by the parser as ESHKOL_*_OP — let, letrec, lambda, define, match, etc.",
+      "items": {"$ref": "#/definitions/special_form_entry"}
+    },
+    "builtins": {
+      "type": "array",
+      "description": "Function-call-shape builtins — gradient, vector-set!, kb-query, etc. Anything dispatched by name in the ordinary call path, not as a special form.",
+      "items": {"$ref": "#/definitions/builtin_entry"}
+    }
+  },
+  "definitions": {
+    "code_location": {
+      "type": "object",
+      "description": "A single point or range in the source tree, recorded as repo-relative paths so the ledger survives clones.",
+      "required": ["file"],
+      "properties": {
+        "file": {"type": "string", "description": "Repo-relative path."},
+        "line": {"type": "integer", "minimum": 1},
+        "lines": {"type": "string", "description": "Range form, e.g. \"812-845\"."},
+        "function": {"type": "string", "description": "Containing function or method name, when known."},
+        "note": {"type": "string"}
+      }
+    },
+    "parity_status": {
+      "type": "string",
+      "enum": ["ok", "vm-partial", "vm-absent", "aot-partial", "divergent", "unverified"],
+      "description": "See README.md for semantics. Generator may insert 'unverified' but never demote a hand-set status."
+    },
+    "special_form_entry": {
+      "type": "object",
+      "required": ["name", "ast_op", "parser", "aot", "parity"],
+      "properties": {
+        "name": {"type": "string", "description": "Surface form, e.g. \"letrec\"."},
+        "ast_op": {"type": "string", "pattern": "^ESHKOL_[A-Z0-9_]+_OP$"},
+        "parser": {"$ref": "#/definitions/code_location"},
+        "aot": {
+          "type": "array",
+          "description": "AOT/JIT codegen entry points — the same code path serves both modes for special forms.",
+          "items": {"$ref": "#/definitions/code_location"}
+        },
+        "vm": {
+          "oneOf": [
+            {"$ref": "#/definitions/vm_entry"},
+            {"type": "null", "description": "Special form is compiled away in the VM (e.g. desugared to other ops); no native ID."}
+          ]
+        },
+        "tests": {
+          "type": "array",
+          "items": {"type": "string", "description": "Repo-relative test file path or glob."}
+        },
+        "memory_refs": {
+          "type": "array",
+          "items": {"type": "string", "description": "Filename under ~/.claude/projects/.../memory/ documenting context."}
+        },
+        "parity": {"$ref": "#/definitions/parity_status"},
+        "notes": {"type": "string"}
+      }
+    },
+    "builtin_entry": {
+      "type": "object",
+      "required": ["name", "parity"],
+      "properties": {
+        "name": {"type": "string", "description": "Surface builtin name, e.g. \"gradient\" or \"vector-set!\"."},
+        "category": {
+          "type": "string",
+          "enum": ["arith", "vector", "tensor", "list", "string", "io", "ad", "logic", "consciousness", "parallel", "module", "type-system", "system", "misc"],
+          "description": "Coarse grouping for grep-friendly slicing."
+        },
+        "aot": {
+          "type": "array",
+          "description": "AOT codegen entry. Empty array means \"AOT routes through the generic call path with no specialised codegen\" (= calls a runtime C function only).",
+          "items": {"$ref": "#/definitions/code_location"}
+        },
+        "runtime": {
+          "type": "array",
+          "description": "C runtime functions invoked from AOT (eshkol_*_tagged etc.) — useful for tracing where a divergence actually lives.",
+          "items": {"$ref": "#/definitions/code_location"}
+        },
+        "vm": {
+          "oneOf": [
+            {"$ref": "#/definitions/vm_entry"},
+            {"type": "null", "description": "Builtin is AOT-only (e.g. some parallel primitives in non-WASM builds)."}
+          ]
+        },
+        "tests": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "memory_refs": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "parity": {"$ref": "#/definitions/parity_status"},
+        "notes": {"type": "string"}
+      }
+    },
+    "vm_entry": {
+      "type": "object",
+      "description": "VM-side mapping. The compiler emits OP_NATIVE_CALL with a numeric native_id; vm_native.c (or one of vm_*.c) handles that ID.",
+      "properties": {
+        "native_id": {"oneOf": [{"type": "integer", "minimum": 0}, {"type": "null"}], "description": "The numeric ID emitted by vm_compiler.c.  Null when the form is recognised structurally without an OP_NATIVE_CALL emit."},
+        "compiler": {"oneOf": [{"$ref": "#/definitions/code_location"}, {"type": "null"}], "description": "Where vm_compiler.c (or vm_parser.c) emits the OP_NATIVE_CALL for this name."},
+        "handler": {"oneOf": [{"$ref": "#/definitions/code_location"}, {"type": "null"}], "description": "Where the native ID is actually serviced (vm_native.c case, or a vm_*.c sub-handler)."},
+        "wasm_guarded": {"type": "boolean", "description": "True if the handler body is wrapped in #ifndef ESHKOL_VM_WASM (skipped in browser/WASM builds)."}
+      }
+    }
+  }
+}
