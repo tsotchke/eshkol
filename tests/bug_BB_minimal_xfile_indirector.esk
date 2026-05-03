@@ -1,0 +1,79 @@
+;; Bug BB minimal repro — JIT segfault on second consecutive indirect call
+;; to a CROSS-FILE-LOADED user function passed as a first-class value.
+;;
+;; Bisect (this session, against eshkol-run @ HEAD-of-master 2026-05-02):
+;;
+;;   1. ~96-line noesis repro (docs/audits/eshkol-bug-repros/bug-BB-…esk):
+;;      crashes on 2nd `loop-step-pcc-reproducer` call as documented.
+;;
+;;   2. Inlining all 3 inner functions of `closed-loop-self-modify-rotation!`
+;;      (propose-self-modification, apply-self-modification!,
+;;      apply-approved-to-rotation!) at top level and calling them on the
+;;      SAME ctx twice → both calls succeed (no SEGV).
+;;
+;;   3. Defining the wrapper LOCALLY and calling via a local indirector
+;;      function twice → both calls succeed (no SEGV).
+;;
+;;   4. Loading `closed-loop-self-modify-rotation!` from self_modify.esk and
+;;      calling via a local indirector function twice → SECOND CALL SEGV.
+;;
+;; The trigger is therefore SPECIFICALLY:
+;;   - cross-file-LOADED user function (not a local define)
+;;   - passed as a first-class value to an indirector
+;;   - invoked via that indirector twice in succession
+;;
+;; Suspected JIT path:
+;;   lib/backend/llvm_codegen.cpp ~7575:  the `is_repl_user_func` branch
+;;   loads from `__repl_fwd_<name>` slot and allocates a fresh closure
+;;   via `arena_allocate_closure_with_header` per reference.  Each
+;;   reference produces a closure carrying the loaded function pointer.
+;;   The first call works; on the second indirector call a fresh
+;;   closure is allocated again, the loaded function pointer is the
+;;   same address — but invoking that closure SEGVs at a mangled
+;;   pointer address (audited as 0x2be0a91e7bfd, no 0xCB poison
+;;   pattern → not arena UAF).
+;;
+;; Likely root cause: the closure-as-value path interacts with the
+;; cross-file `__repl_fwd_<name>` indirection in a way that doesn't
+;; survive the arena state delta between two top-level invocations.
+;; Specifically the closure allocated on call #1 may be holding state
+;; that gets clobbered when call #2's allocator runs in the same
+;; scope/region — but stress-test 4× without state-modifying body
+;; succeeded (this script's runs-fine variant), so the modification
+;; matters too.
+;;
+;; To reproduce SEGV in this minimal repro: requires the noesis tree
+;; (specifically self_modify.esk and its transitive deps).  The
+;; runs-fine variant (no cross-file load) is in
+;; tests/bug_BB_indirector_double_call.esk for comparison.
+
+(load "/Users/tyr/Desktop/noesis/src/core/self_modify/self_modify.esk")
+
+(define (mk-ctx)
+  (let* ((dkb (make-dkb 4)) (mneme (make-mneme 64)) (ws (make-workspace 1.0))
+         (eth (make-ethics-engine-with-seed #f)) (soul (make-soul "bb-min"))
+         (pt (make-proof-tree 64)) (gs (make-gs-engine-with-seed)))
+    (make-cycle-context dkb mneme ws eth #f soul #f pt #f gs)))
+
+(define ctx (mk-ctx))
+(define rot-state (list (cons ':active-id 'v3)
+                        (cons ':active-index 0)
+                        (cons ':corpora (list 'v3 'v2))
+                        (cons ':rotations 0)))
+
+;; Local indirector — receives the cross-file function as a value
+(define (indirector ctx rot fn)
+  (display "  [indirect.before] ")
+  (let ((r (fn ctx rot 'rotate-corpus 'v3)))
+    (display "[indirect.after] ") (newline)
+    r))
+
+(display "first indirect call: ") (newline)
+(define r1 (indirector ctx rot-state closed-loop-self-modify-rotation!))
+(display "  result type: ") (display (pair? r1)) (newline)
+
+(display "second indirect call (expect SEGV before [indirect.after] prints): ") (newline)
+(define r2 (indirector ctx rot-state closed-loop-self-modify-rotation!))
+(display "  result type: ") (display (pair? r2)) (newline)
+
+(display "DONE") (newline)
