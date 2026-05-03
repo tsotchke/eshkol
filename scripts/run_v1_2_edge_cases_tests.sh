@@ -22,6 +22,14 @@ ESHKOL="./${BUILD_DIR}/eshkol-run"
 PASS=0
 FAIL=0
 
+# Some edge-case tests use `(load "tests/v1_2_edge_cases/foo.esk")` —
+# project-root-relative paths.  resolve_module_path's first try is
+# `<base_dir>/<path>`, where base_dir is the directory of the file
+# being compiled (not cwd), so a relative path from project root
+# only resolves if . is on $ESHKOL_PATH.  Add the project root by
+# default so these tests run cleanly when invoked from the repo root.
+export ESHKOL_PATH="${ESHKOL_PATH:-.}"
+
 echo "=== Eshkol v1.2 Edge-Case + Security Suite ==="
 echo ""
 
