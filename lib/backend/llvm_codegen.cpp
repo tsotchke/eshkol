@@ -5034,6 +5034,39 @@ private:
             function_table[actual_func_name] = extern_func;
         }
 
+        // Bug BB: also propagate the resolved arity into function_arity_table
+        // so future variable-codegen paths that look up `func_name` in
+        // function_table (line ~7212) ALSO find an arity entry and take the
+        // closure-wrap branch.
+        //
+        // Before this line existed, the second reference to a cross-file
+        // user function would:
+        //   1. find the function in function_table (registered above on
+        //      the first reference)
+        //   2. NOT find an arity in function_arity_table
+        //   3. fall through to the "raw function pointer" path at line ~7250
+        //   4. produce a CALLABLE tagged value whose data field is the raw
+        //      code address instead of a heap pointer to a closure header
+        // and the next dispatch would dereference the code address as if it
+        // were a closure → SEGV at a mangled-looking address.
+        //
+        // Repro:
+        //   (load "lib.esk")           ; defines f
+        //   (define a f) (define b f)  ; first wraps OK; second was raw
+        //   (a x)  → OK
+        //   (b x)  → SEGV  before this fix
+        //
+        // See tests/bug_BB_minimal_xfile_indirector.esk.
+        if (arity > 0 || function_arity_table.find(func_name) == function_arity_table.end()) {
+            function_arity_table[func_name] = arity;
+            if (jit_symbol_name != func_name) {
+                function_arity_table[jit_symbol_name] = arity;
+            }
+            if (actual_func_name != func_name && actual_func_name != jit_symbol_name) {
+                function_arity_table[actual_func_name] = arity;
+            }
+        }
+
         return extern_func;
     }
 
