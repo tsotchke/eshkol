@@ -1,0 +1,74 @@
+;; bignum_modulo_test.esk — regression for #221.
+;;
+;; Pre-fix, codegenModulo unpacked both args as int64 unconditionally,
+;; which for a HEAP_PTR bignum returned the raw pointer/storage bits
+;; rather than the actual numeric value.  SRem then produced garbage
+;; — typically a small multiple of the input pattern — silently
+;; corrupting any 64-bit modular arithmetic.  Caught while
+;; implementing core.merkle's FNV-1a hash (#175).
+;;
+;; Fix at lib/backend/llvm_codegen.cpp codegenModulo: bignum check
+;; first, dispatch through emitBignumBinaryCall(arg1, arg2, op=4)
+;; which routes to eshkol_bignum_mod via the existing runtime.
+
+(define passed 0)
+(define failed 0)
+(define (check label expected actual)
+  (if (equal? expected actual)
+      (begin (display "PASS: ") (display label) (newline)
+             (set! passed (+ passed 1)))
+      (begin (display "FAIL: ") (display label)
+             (display " (expected ") (display expected)
+             (display ", got ") (display actual) (display ")") (newline)
+             (set! failed (+ failed 1)))))
+
+;; ── Sanity: int64 path still correct ────────────────────────────────
+;; Scheme/R7RS modulo: result has same SIGN as the divisor.
+(check "int modulo positive"  3 (modulo 23 5))
+(check "int modulo zero rem"  0 (modulo 20 5))
+(check "int modulo negative dividend"  2 (modulo -7 3))
+;;   q = floor(7 / -3) = -3 (round toward -inf)
+;;   r = 7 - (-3 * -3) = 7 - 9 = -2 (sign of divisor)
+(check "int modulo negative divisor"  -2 (modulo 7 -3))
+
+;; ── Bignum × int64 ──────────────────────────────────────────────────
+;; 0xcbf2_9ce4_8422_2325 — bigger than int64 max so it's a bignum.
+(define big 14695981039346656037)
+;; Last digits of big: ...6037, so big mod 1000 = 37
+(check "bignum mod 1000" 37 (modulo big 1000))
+(check "bignum mod 2 = 1 (odd)" 1 (modulo big 2))
+
+;; ── Bignum × bignum ─────────────────────────────────────────────────
+(check "(* big 2) mod 2^64"
+       10945218004983760458
+       (modulo (* big 2) 18446744073709551616))
+
+;; Bignum mod bignum where divisor is also large.
+(check "bignum mod bignum exact"
+       42
+       (modulo (+ (* 1000000000000000000000 1000) 42)
+               1000000000000000000000))
+
+;; Determinism: same operands always yield same result.
+(define m1 (modulo big 12345))
+(define m2 (modulo big 12345))
+(define m3 (modulo big 12345))
+(check "bignum mod is deterministic" #t (and (= m1 m2) (= m2 m3)))
+
+;; FNV-1a 64-bit single-step (the canonical bug reproducer).
+;; offset = 0xcbf29ce484222325, prime = 0x100000001b3
+;; This compiles to a (bignum-mul → bignum-mod 2^64) chain, which was
+;; the failure path: pre-fix every call returned a tiny truncated value.
+;; Now the result is deterministic and within [0, 2^64).
+(define h1 (modulo (* (bitwise-xor big 97) 1099511628211)
+                   18446744073709551616))
+(define h1-again (modulo (* (bitwise-xor big 97) 1099511628211)
+                         18446744073709551616))
+(check "FNV-1a step deterministic across calls" h1 h1-again)
+(check "FNV-1a step is positive" #t (>= h1 0))
+(check "FNV-1a step is in [0, 2^64)" #t (< h1 18446744073709551616))
+
+(display "---") (newline)
+(display "Passed: ") (display passed) (newline)
+(display "Failed: ") (display failed) (newline)
+(if (> failed 0) (exit 1) (exit 0))

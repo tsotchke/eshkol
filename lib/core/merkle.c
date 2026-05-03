@@ -1,10 +1,11 @@
 /*
  * merkle.c — fast non-crypto hash primitives for content addressing.
  *
- * Eshkol-side modulo on bignums >2^53 was returning truncated values
- * (lib/core/merkle.esk's pure-Eshkol FNV-1a tripped this), so the
- * inner loop is in C.  No external dependencies.  64-bit modular
- * arithmetic is just uint64_t overflow.
+ * The C inner loop predates the bignum-modulo fix in #221; pure-Eshkol
+ * FNV-1a is now correct (and a regression test pins it), but the C
+ * version stays because it's ~30× faster on long inputs and avoids
+ * heap-allocating a bignum per byte.  No external dependencies — 64-bit
+ * modular arithmetic is just uint64_t overflow.
  *
  * For cryptographic content addressing (signing, distributed
  * adversarial storage), use lib/agent/crypto.esk's sha256 instead —
