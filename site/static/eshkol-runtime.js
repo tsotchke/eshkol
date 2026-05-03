@@ -487,6 +487,40 @@ class EshkolRuntime {
                 fputc: (c, _fp) => { /* drop — we have no fp model */ return c; },
                 length: () => 0,                  // Scheme length stub; codegen normally inlines
 
+                // Compiler-rt builtins LLVM emits for 128-bit arithmetic.
+                __multi3: (alo, ahi, blo, bhi) => 0n,  // 128×128→128 mul; bignums route through eshkol_bignum_*
+
+                // Bignum runtime — full impl is in lib/core/runtime.cpp on
+                // native; for the website we degrade gracefully (return 0
+                // so subsequent operations hit type-checks rather than
+                // crashing).
+                eshkol_bignum_from_overflow: () => 0,
+                eshkol_bignum_to_double:     () => 0.0,
+
+                // Rational runtime — same degradation pattern as bignum.
+                eshkol_rational_create:           () => 0,
+                eshkol_rational_to_double:        () => 0.0,
+                eshkol_rational_binary_tagged_ptr:() => 0,
+
+                // OALR regions — JIT path uses these.  In WASM we don't
+                // have a region system; degrade to no-op (region_create
+                // returns a fake handle, push/pop/escape are no-ops).
+                region_create: (_name, _size_hint) => 1,
+                region_push:   () => {},
+                region_pop:    () => {},
+                region_escape_tagged_value_into: (_dst, _src) => {},
+
+                // Tensor runtime helpers
+                eshkol_broadcast_elementwise_f64: () => 0,
+                eshkol_shapes_equal: () => 0,
+
+                // Continuations (call/cc) — WASM can't longjmp out of
+                // host frames, so we degrade these.  Calling the
+                // continuation will throw at runtime via setjmp/longjmp
+                // stubs above, which is detectable by the user.
+                eshkol_make_continuation_state:   () => 0,
+                eshkol_make_continuation_closure: () => 0,
+
                 // === DOM API ===
 
                 web_get_body: () => rt.bodyHandle,
