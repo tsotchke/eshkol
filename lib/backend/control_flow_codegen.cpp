@@ -352,7 +352,15 @@ llvm::Value* ControlFlowCodegen::codegenCond(const eshkol_operations_t* op) {
             then_block = ctx_.builder().GetInsertBlock();
             bool then_terminated = then_block->getTerminator() != nullptr;
             if (!then_terminated) {
-                if (!result) result = tagged_.packBool(llvm::ConstantInt::getFalse(ctx_.context()));
+                if (!result) {
+                    // R7RS §6.3: a `(<test>)` clause with no body returns the
+                    // value of the test itself when truthy.  `test` was
+                    // computed before the conditional branch and dominates
+                    // this then-block, so we can reuse it directly.  Without
+                    // this special case, `(cond ((+ 1 2)) (else 'fail))`
+                    // would silently return #f instead of 3 (Bug CC).
+                    result = test;
+                }
                 // Ensure result is tagged_value_type for PHI consistency
                 if (result->getType() != ctx_.taggedValueType() && detect_and_pack_callback_) {
                     result = detect_and_pack_callback_(result, callback_context_);
