@@ -1,0 +1,69 @@
+;; future_force_test.esk — regression for #222.
+;;
+;; Pre-fix, `force` on a `(future …)` value never ran the thunk:
+;; the future-codegen marks the tagged value with FLAG=10 in slot {1}
+;; but allocates the underlying lazy_future via raw `new` (no Eshkol
+;; heap header).  The original force codegen only checked
+;; `*(ptr-8) == HEAP_SUBTYPE_PROMISE`, so for futures the byte read
+;; was undefined memory and force fell through to "return as-is".
+;;
+;; Fix: force now FIRST checks the tagged-value flags slot for the
+;; future marker and dispatches to the lazy_future eval path
+;; (eshkol_lazy_future_* C runtime) before attempting the heap-header
+;; check used for promises.
+
+(require stdlib)
+
+(define passed 0)
+(define failed 0)
+(define (check label expected actual)
+  (if (equal? expected actual)
+      (begin (display "PASS: ") (display label) (newline)
+             (set! passed (+ passed 1)))
+      (begin (display "FAIL: ") (display label)
+             (display " (expected ") (display expected)
+             (display ", got ") (display actual) (display ")") (newline)
+             (set! failed (+ failed 1)))))
+
+;; ── Basic: thunk runs, result returned ──────────────────────────────
+(define f1 (future (lambda () 42)))
+(check "force returns thunk value" 42 (force f1))
+
+;; ── Capture: thunk references outer free variable ───────────────────
+(define (mk x) (future (lambda () (* x 100))))
+(check "force on captured-free-var thunk" 700 (force (mk 7)))
+(check "force on second captured thunk independent"
+       1300 (force (mk 13)))
+
+;; ── Memoisation: thunk runs at most once across N forces ────────────
+(define call-count (vector 0))
+(define f-side (future (lambda ()
+                         (vector-set! call-count 0
+                                      (+ 1 (vector-ref call-count 0)))
+                         'side)))
+(force f-side) (force f-side) (force f-side) (force f-side)
+(check "force is memoised: thunk runs exactly once"
+       1 (vector-ref call-count 0))
+
+;; ── future-ready? ───────────────────────────────────────────────────
+;; Lazy futures are NOT ready until forced.
+(define f-not-yet (future (lambda () 1)))
+(check "future-ready? before force" #f (future-ready? f-not-yet))
+(force f-not-yet)
+(check "future-ready? after force" #t (future-ready? f-not-yet))
+
+;; ── Eager future (plain value, not a thunk) ─────────────────────────
+;; Per the ParallelCodegen::future codegen, a non-callable arg is
+;; resolved immediately — force should just return the cached value.
+(define f-eager (future 99))
+(check "future-ready? on eager future" #t (future-ready? f-eager))
+(check "force on eager future returns value" 99 (force f-eager))
+
+;; ── force on non-future returns as-is (R7RS) ────────────────────────
+(check "force on plain int returns int" 5 (force 5))
+(check "force on string returns string" "hi" (force "hi"))
+
+(display "---") (newline)
+(display "Passed: ") (display passed) (newline)
+(display "Failed: ") (display failed) (newline)
+(if (> failed 0) (exit 1) (exit 0))
