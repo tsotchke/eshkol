@@ -228,10 +228,12 @@ int eshkol_onnx_export(const char* path,
     pos += pb_write_tag(buf + pos, 2, PB_VARINT);
     pos += pb_write_varint(buf + pos, 13);
 
-    /* Write to file */
+    /* Write to file.  Pre-fix, fwrite + fclose return values were
+     * dropped — disk-full mid-export or commit-time error left a
+     * truncated/corrupt .onnx file but onnx-export reported success. */
     FILE* f = fopen(path, "wb");
     if (!f) return -1;
-    fwrite(buf, 1, pos, f);
-    fclose(f);
-    return 0;
+    int wrote_ok = (fwrite(buf, 1, pos, f) == (size_t)pos);
+    int closed_ok = (fclose(f) == 0);
+    return (wrote_ok && closed_ok) ? 0 : -1;
 }
