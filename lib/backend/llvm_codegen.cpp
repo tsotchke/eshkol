@@ -12006,10 +12006,12 @@ private:
             };
             Function* lf_is_ready  = declare_lf("eshkol_lazy_future_is_ready",
                                                 int8_type, {builder->getPtrTy()});
-            Function* lf_is_async  = declare_lf("eshkol_lazy_future_is_async",
-                                                int8_type, {builder->getPtrTy()});
-            Function* lf_join_async = declare_lf("eshkol_lazy_future_join_async",
-                                                builder->getVoidTy(), {builder->getPtrTy()});
+            // is_async + join_async are kept declared (the C runtime
+            // helpers still exist in case eager submit is re-enabled),
+            // but we don't call them here anymore — see #224 rollback
+            // note in ParallelCodegen::future.  is_async on a lazy
+            // future returns 0 anyway, so this is a no-op even if
+            // re-introduced.
             Function* lf_get_tp    = declare_lf("eshkol_lazy_future_get_thunk_ptr",
                                                 int64_type, {builder->getPtrTy()});
             Function* lf_get_tt    = declare_lf("eshkol_lazy_future_get_thunk_type",
@@ -12026,22 +12028,9 @@ private:
                                                 builder->getVoidTy(),
                                                 {builder->getPtrTy(), int64_type, int8_type, int8_type});
 
-            // If the future was submitted eagerly to the pool, join the
-            // pool task now (blocking until the worker writes the
-            // result).  is_async returns 0 for purely-lazy futures
-            // (workers not yet registered or plain-value futures), so
-            // join_async is a cheap no-op in those cases — followed
-            // by the lazy-eval path below if not yet forced.
-            Value* fut_async = builder->CreateCall(lf_is_async, {future_ptr});
-            Value* fut_async_set = builder->CreateICmpNE(fut_async,
-                ConstantInt::get(int8_type, 0));
-            BasicBlock* join_async_bb = BasicBlock::Create(*context, "future_join_async", current_func);
-            BasicBlock* check_ready_bb = BasicBlock::Create(*context, "future_check_ready", current_func);
-            builder->CreateCondBr(fut_async_set, join_async_bb, check_ready_bb);
-            builder->SetInsertPoint(join_async_bb);
-            builder->CreateCall(lf_join_async, {future_ptr});
-            builder->CreateBr(check_ready_bb);
-            builder->SetInsertPoint(check_ready_bb);
+            // (eager-submit join path was rolled back with #224 —
+            // is_async always returns 0 in lazy mode, so the check
+            // would be a no-op anyway.)
 
             BasicBlock* fut_cached_bb = BasicBlock::Create(*context, "future_cached", current_func);
             BasicBlock* fut_eval_bb   = BasicBlock::Create(*context, "future_eval",   current_func);

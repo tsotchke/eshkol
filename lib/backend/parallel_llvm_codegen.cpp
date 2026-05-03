@@ -2287,50 +2287,32 @@ llvm::Value* ParallelCodegen::future(const eshkol_operations_t* op) {
     llvm::Value* future_ptr = ctx_.builder().CreateCall(create_func,
         {arg_ptr, arg_type, arg_flags}, "future_ptr");
 
-    // Check if the argument is a callable (closure/thunk) that can be
-    // submitted to the pool, or a plain value to resolve immediately.
+    // Check if the argument is a callable (closure/thunk) that can be lazily forced,
+    // or a plain value that should be immediately resolved.
+    // If it's not a callable, force will crash trying to call it as a closure.
     llvm::Value* is_callable = ctx_.builder().CreateICmpEQ(arg_type,
         llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CALLABLE), "is_callable");
     llvm::Value* is_closure_ptr = ctx_.builder().CreateICmpEQ(arg_type,
         llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CLOSURE_PTR), "is_closure_ptr");
     llvm::Value* is_thunk = ctx_.builder().CreateOr(is_callable, is_closure_ptr, "is_thunk");
 
-    // Declare async submit helper.  If submit fails (workers not yet
-    // registered, e.g. inside a fresh stdlib JIT module that hasn't
-    // run its global ctors), we fall back to lazy semantics —
-    // force then evaluates the thunk inline on the joining thread.
-    llvm::Function* submit_async_func =
-        ctx_.module().getFunction("eshkol_lazy_future_submit_async");
-    if (!submit_async_func) {
-        llvm::FunctionType* sub_type = llvm::FunctionType::get(
-            ctx_.int8Type(),
-            {ctx_.ptrType(), ctx_.int64Type(), ctx_.int8Type(), ctx_.int8Type()},
-            false);
-        submit_async_func = llvm::Function::Create(sub_type,
-            llvm::Function::ExternalLinkage,
-            "eshkol_lazy_future_submit_async", &ctx_.module());
-    }
-
     llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
-    llvm::BasicBlock* thunk_bb  = llvm::BasicBlock::Create(ctx_.context(), "future_thunk", current_func);
-    llvm::BasicBlock* eager_bb  = llvm::BasicBlock::Create(ctx_.context(), "future_eager", current_func);
-    llvm::BasicBlock* done_bb   = llvm::BasicBlock::Create(ctx_.context(), "future_done",  current_func);
+    llvm::BasicBlock* eager_bb = llvm::BasicBlock::Create(ctx_.context(), "future_eager", current_func);
+    llvm::BasicBlock* done_bb = llvm::BasicBlock::Create(ctx_.context(), "future_done", current_func);
 
-    ctx_.builder().CreateCondBr(is_thunk, thunk_bb, eager_bb);
-
-    // Thunk path: try to submit the closure to the pool eagerly.
-    // submit_async returns 1 on success, 0 on failure (workers not
-    // registered).  Either way we fall through to done — if submit
-    // fails, force will lazy-eval the thunk.
-    ctx_.builder().SetInsertPoint(thunk_bb);
-    ctx_.builder().CreateCall(submit_async_func,
-        {future_ptr, arg_ptr, arg_type, arg_flags});
-    ctx_.builder().CreateBr(done_bb);
+    // If not a thunk, immediately resolve the future with the computed value
+    ctx_.builder().CreateCondBr(is_thunk, done_bb, eager_bb);
 
     // Eager path: argument is a plain value, mark future as already resolved
     ctx_.builder().SetInsertPoint(eager_bb);
     ctx_.builder().CreateCall(set_result_func, {future_ptr, arg_ptr, arg_type, arg_flags});
     ctx_.builder().CreateBr(done_bb);
+
+    // NOTE: thunk-as-future is currently LAZY again — force evaluates
+    // it inline on the joining thread.  Eager submit_async was rolled
+    // back because closure invocation on a fresh worker thread
+    // miscompiles inner-closure capture (nested let-loop sees stale
+    // pid).  Tracked as #224 with a minimal repro.
 
     // Done: wrap future pointer in tagged value (HEAP_PTR with HEAP_SUBTYPE_FUTURE)
     ctx_.builder().SetInsertPoint(done_bb);
