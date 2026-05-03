@@ -1,0 +1,59 @@
+;; Bug BB minimal-repro candidate — narrows the audit's "second-call SEGV"
+;; symptom to "calling a complex-alist-returning function as a first-class
+;; value via an indirector, twice consecutively, on the same captured state".
+;;
+;; Bisect findings (from a session that walked through the original noesis
+;; repro at docs/audits/eshkol-bug-repros/bug-BB-…esk):
+;;
+;;  - Calling `closed-loop-self-modify-rotation!`'s 3 inner functions DIRECTLY
+;;    on the same ctx twice in sequence → both calls succeed, no SEGV.
+;;  - Calling them via the wrapper `closed-loop-self-modify-rotation!` directly
+;;    (NOT through an indirector) twice in sequence → also succeeds (per the
+;;    audit's verified-isolations list, item 1).
+;;  - Wrapping the wrapper in `loop-step-pcc-reproducer` and calling THAT twice,
+;;    passing `closed-loop-self-modify-rotation!` as a first-class value →
+;;    SEGV on the second call inside the closure dispatch.
+;;
+;; So the bug is the COMBINATION of:
+;;   (a) Function-as-value (first-class, passed as a parameter)
+;;   (b) Function returns an alist of cons-cell-allocated key/value pairs
+;;   (c) Two consecutive calls through the same indirector at top level
+;;
+;; Hypothesised root cause (NOT YET CONFIRMED — needs JIT investigation):
+;;   the indirector path may reuse a return-buffer or closure-env scratch
+;;   space across the two calls, clobbering the first call's return value
+;;   before the next access.  Or the JIT registers the function with a
+;;   variadic-dispatch shim that has a second-call entry-point bug.
+;;
+;; This file deliberately AVOIDS loading the noesis tree so it can run
+;; standalone.  If it crashes here, the bug is contained.  If it does NOT
+;; crash here but crashes against the noesis source, we've further narrowed
+;; the trigger to noesis-side code shape (likely the alist construction).
+
+(define (make-complex-alist tag)
+  (list (cons ':a tag)
+        (cons ':b (list (cons ':nested tag)))
+        (cons ':c (cons tag (cons (* tag 2) '())))))
+
+(define (the-callee ctx tag)
+  ;; Mimics closed-loop-self-modify-rotation!'s shape: 4 args (we use 2 here),
+  ;; returns an alist with cons-cell values.
+  (make-complex-alist tag))
+
+(define (indirect-caller ctx tag fn)
+  ;; Mimics loop-step-pcc-reproducer's shape: receives the callee as a
+  ;; first-class value and invokes it.
+  (let* ((result (fn ctx tag))
+         (a (cdr (assoc ':a result)))
+         (b (cdr (assoc ':b result))))
+    (list (cons ':a a) (cons ':b b))))
+
+(display "first call: ")
+(define r1 (indirect-caller 'ctx 1 the-callee))
+(display r1) (newline)
+
+(display "second call: ")
+(define r2 (indirect-caller 'ctx 2 the-callee))
+(display r2) (newline)
+
+(display "DONE") (newline)
