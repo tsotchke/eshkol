@@ -20202,16 +20202,114 @@ private:
                     case ESHKOL_FG_ADD_FACTOR_OP:
                     case ESHKOL_FG_INFER_OP:
                     case ESHKOL_FG_UPDATE_CPT_OP:
+                    case ESHKOL_FG_OBSERVE_OP:        // call_op (fg-observe! fg var-id state)
                     case ESHKOL_FREE_ENERGY_OP:
                     case ESHKOL_EXPECTED_FREE_ENERGY_OP:
                     case ESHKOL_MAKE_WORKSPACE_OP:
                     case ESHKOL_WS_REGISTER_OP:
                     case ESHKOL_WS_STEP_OP:
+                    case ESHKOL_MAKE_PARAMETER_OP:    // call_op holding the init expr (parse-transformed)
                     case ESHKOL_EXTERN_OP:
                         for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
                             findFreeVariablesImpl(&op->call_op.variables[i], current_scope, parameters, num_params, free_vars, bound_vars);
                         }
                         break;
+
+                    // Tensor literal #(elem ...) — recurse into each element so
+                    // captures inside `(let ((x 1)) #(x 2 3))` are seen.
+                    case ESHKOL_TENSOR_OP:
+                        for (uint64_t i = 0; i < op->tensor_op.total_elements; i++) {
+                            findFreeVariablesImpl(&op->tensor_op.elements[i], current_scope,
+                                                  parameters, num_params, free_vars, bound_vars);
+                        }
+                        break;
+
+                    // Logic-variable reference (?x) — globally interned, no
+                    // lexical capture.  Treat as leaf.
+                    case ESHKOL_LOGIC_VAR_OP:
+                        break;
+
+                    // (let-values (((vars...) producer) ...) body)
+                    // Producers run in the OUTER scope; only the body sees the
+                    // newly-bound names.  Save/restore bound_vars around body.
+                    case ESHKOL_LET_VALUES_OP: {
+                        for (uint64_t i = 0; i < op->let_values_op.num_bindings; i++) {
+                            findFreeVariablesImpl(&op->let_values_op.producers[i],
+                                                  current_scope, parameters, num_params,
+                                                  free_vars, bound_vars);
+                        }
+                        std::unordered_set<std::string> saved_bound = bound_vars;
+                        for (uint64_t i = 0; i < op->let_values_op.num_bindings; i++) {
+                            for (uint64_t j = 0; j < op->let_values_op.binding_var_counts[i]; j++) {
+                                if (op->let_values_op.binding_vars[i][j]) {
+                                    bound_vars.insert(op->let_values_op.binding_vars[i][j]);
+                                }
+                            }
+                        }
+                        if (op->let_values_op.body) {
+                            findFreeVariablesImpl(op->let_values_op.body, current_scope,
+                                                  parameters, num_params, free_vars, bound_vars);
+                        }
+                        bound_vars = saved_bound;
+                        break;
+                    }
+
+                    // (let*-values ...) — like let-values but each producer
+                    // can see vars bound by all earlier clauses.
+                    case ESHKOL_LET_STAR_VALUES_OP: {
+                        std::unordered_set<std::string> saved_bound = bound_vars;
+                        for (uint64_t i = 0; i < op->let_values_op.num_bindings; i++) {
+                            findFreeVariablesImpl(&op->let_values_op.producers[i],
+                                                  current_scope, parameters, num_params,
+                                                  free_vars, bound_vars);
+                            for (uint64_t j = 0; j < op->let_values_op.binding_var_counts[i]; j++) {
+                                if (op->let_values_op.binding_vars[i][j]) {
+                                    bound_vars.insert(op->let_values_op.binding_vars[i][j]);
+                                }
+                            }
+                        }
+                        if (op->let_values_op.body) {
+                            findFreeVariablesImpl(op->let_values_op.body, current_scope,
+                                                  parameters, num_params, free_vars, bound_vars);
+                        }
+                        bound_vars = saved_bound;
+                        break;
+                    }
+
+                    // case-lambda is normally transformed at parse time into a
+                    // variadic dispatch lambda — but the analyser may run on
+                    // pre-transform ASTs (type checker, audits).  Recurse into
+                    // each clause so we don't silently drop captures.
+                    case ESHKOL_CASE_LAMBDA_OP:
+                        for (uint64_t i = 0; i < op->case_lambda_op.num_clauses; i++) {
+                            findFreeVariablesImpl(&op->case_lambda_op.clauses[i],
+                                                  current_scope, parameters, num_params,
+                                                  free_vars, bound_vars);
+                        }
+                        break;
+
+                    // (parameterize ((p v) ...) body) — also parse-transformed.
+                    // Recurse into both sides of every binding plus the body.
+                    // Defensive: the AST has separate params/values arrays.
+                    case ESHKOL_PARAMETERIZE_OP:
+                        for (uint64_t i = 0; i < op->parameterize_op.num_bindings; i++) {
+                            if (op->parameterize_op.params) {
+                                findFreeVariablesImpl(&op->parameterize_op.params[i],
+                                                      current_scope, parameters, num_params,
+                                                      free_vars, bound_vars);
+                            }
+                            if (op->parameterize_op.values) {
+                                findFreeVariablesImpl(&op->parameterize_op.values[i],
+                                                      current_scope, parameters, num_params,
+                                                      free_vars, bound_vars);
+                            }
+                        }
+                        if (op->parameterize_op.body) {
+                            findFreeVariablesImpl(op->parameterize_op.body, current_scope,
+                                                  parameters, num_params, free_vars, bound_vars);
+                        }
+                        break;
+
                     default:
                         break;
                 }

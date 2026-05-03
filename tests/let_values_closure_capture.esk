@@ -1,0 +1,32 @@
+;; Regression test for findFreeVariablesImpl coverage of LET_VALUES_OP
+;; and LET_STAR_VALUES_OP.  Pre-fix, the analyser silently dropped any
+;; free-variable references inside a let-values producer or body, which
+;; would surface either as "Cannot capture X from outer function" warnings
+;; or, worse, as miscompiled closures that read garbage from the capture
+;; slot.  Post-fix, both clauses recurse into producers + body with the
+;; correct bound-vars discipline.
+
+(define (returns-pair) (values 7 9))
+
+;; Closure body uses let-values internally.  The producer
+;; `(returns-pair)` references no free vars, but the BODY references
+;; outer `multiplier` — that's the free var the analyser must capture.
+(define (make-scaled-summer multiplier)
+  (lambda ()
+    (let-values (((a b) (returns-pair)))
+      (* multiplier (+ a b)))))
+
+;; Same but with let*-values, where the second producer references
+;; the first binding AND the closure's outer free var `bias`.
+(define (make-bias-builder bias)
+  (lambda ()
+    (let*-values (((a b) (returns-pair))
+                  ((c)   (values (+ a b bias))))
+      c)))
+
+(define f (make-scaled-summer 3))
+(define g (make-bias-builder 100))
+
+(display "let-values: ") (display (f)) (newline)
+(display "let*-values: ") (display (g)) (newline)
+(display "DONE") (newline)
