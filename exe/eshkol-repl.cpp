@@ -8,6 +8,8 @@
 
 #include <eshkol/eshkol.h>
 #include <eshkol/platform_runtime.h>
+#include <eshkol/core/runtime.h>
+#include <eshkol/backend/thread_pool.h>
 #include "../lib/repl/repl_jit.h"
 #include "../lib/repl/repl_utils.h"
 
@@ -54,6 +56,23 @@ static std::vector<std::string> g_defined_symbols;
 void sigint_handler(int sig) {
     (void)sig;
     g_interrupted = 1;
+}
+
+// Forward decl — defined later, but repl_clean_exit references it.
+void save_readline_history();
+
+// Ordered teardown before std::_Exit. Joins JIT thread-pool workers and runs
+// runtime shutdown hooks so we don't terminate the process while worker
+// threads still hold libsystem locks (which surfaces as a spurious
+// "Abort trap: 6" on macOS even though the user's program completed
+// normally).  Called from each :quit / EOF / (exit) path.
+[[noreturn]] static void repl_clean_exit(int code) {
+    save_readline_history();
+    std::fflush(stdout);
+    std::fflush(stderr);
+    thread_pool_global_shutdown();
+    eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_NONE);
+    std::_Exit(code);
 }
 
 // Signal handler for crashes during JIT execution (SIGSEGV, SIGFPE, SIGBUS)
@@ -518,8 +537,7 @@ bool handle_command(const std::string& input, eshkol::ReplJITContext& repl_ctx) 
 
     if (cmd == ":quit" || cmd == ":q" || cmd == "(exit)" || cmd == "exit") {
         std::cout << color::dim() << "Goodbye!" << color::reset() << "\n";
-        save_readline_history();
-        std::_Exit(0);
+        repl_clean_exit(0);
     }
 
     if (cmd == ":clear") {
@@ -845,8 +863,7 @@ int main(int argc, char** argv) {
                     break;
                 }
                 std::cout << "\n" << color::dim() << "Goodbye!" << color::reset() << "\n";
-                save_readline_history();
-                std::_Exit(0);
+                repl_clean_exit(0);
             }
 
             // Empty continuation line - remove last line or cancel
@@ -893,8 +910,7 @@ int main(int argc, char** argv) {
                               strcmp(input, "quit") == 0)) {
                 free(input);
                 std::cout << color::dim() << "Goodbye!" << color::reset() << "\n";
-                save_readline_history();
-                std::_Exit(0);
+                repl_clean_exit(0);
             }
 
             // Check for :cancel on any line
