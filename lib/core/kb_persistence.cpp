@@ -298,7 +298,14 @@ void eshkol_kb_save_tagged(arena_t* arena,
         }
     }
 
-    fclose(f);
+    /* close commits buffered writes; if it fails (NFS commit error,
+     * EIO on page-cache flush) the .eskb file may be short or
+     * uncommitted.  Pre-fix, kb-save returned #t even in that case
+     * — caller couldn't tell saved-to-disk apart from saved-to-cache. */
+    if (fclose(f) != 0) {
+        eshkol_error("kb-save: fclose failed (errno=%d) — file may be incomplete", errno);
+        fail(); return;
+    }
 
     /* #t */
     result->type = ESHKOL_VALUE_BOOL;
