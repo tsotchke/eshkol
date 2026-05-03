@@ -133,6 +133,9 @@ eshkol_signal_handler_t g_old_sigpipe_handler = SIG_DFL;
 struct sigaction g_old_sigint_handler;
 struct sigaction g_old_sigterm_handler;
 struct sigaction g_old_sigpipe_handler;
+struct sigaction g_old_sigsegv_handler;
+struct sigaction g_old_sigbus_handler;
+struct sigaction g_old_sigabrt_handler;
 #endif
 bool g_signals_installed = false;
 
@@ -197,6 +200,53 @@ LONG WINAPI eshkol_unhandled_exception_filter(EXCEPTION_POINTERS* exception_info
 // ============================================================================
 // Signal Handler
 // ============================================================================
+
+/* Bug AA: handler for fatal synchronous signals (SIGSEGV/SIGBUS/SIGABRT).
+ * The default action for these is to terminate without flushing any
+ * stdio buffers, which means a `(display "step 1") (newline)` issued
+ * before a crash never reaches the terminal — making the program look
+ * like it printed nothing at all.
+ *
+ * Strategy: write a minimal one-line diagnostic to stderr (which is
+ * unbuffered, so the user sees we crashed and why), restore the
+ * default disposition for this signal, and re-raise it so the kernel
+ * produces the normal coredump / 128+signum exit code.  We deliberately
+ * do NOT call fflush(stdout) here — fflush is technically not async-
+ * signal-safe.  Instead, runtime init line-buffers stdout via setvbuf;
+ * any `(newline)`-terminated output will already have reached the
+ * kernel before we got here.
+ *
+ * Async-signal-safety: only write(2), strlen(3) (constants), and the
+ * sigaction restore + raise(2) calls — all on the POSIX async-signal-
+ * safe list.
+ */
+void eshkol_fatal_signal_handler(int signum) {
+    const char* name = "unknown";
+    switch (signum) {
+        case SIGSEGV: name = "SIGSEGV (segmentation fault)"; break;
+        case SIGBUS:  name = "SIGBUS (bus error)";           break;
+        case SIGABRT: name = "SIGABRT (abort)";              break;
+        default: break;
+    }
+    static const char prefix[] = "\n[Eshkol] fatal signal: ";
+    static const char suffix[] = " — terminating; output above is what made it to stdout before the crash\n";
+    eshkol_signal_safe_write(prefix, sizeof(prefix) - 1);
+    eshkol_signal_safe_write(name, std::strlen(name));
+    eshkol_signal_safe_write(suffix, sizeof(suffix) - 1);
+
+#ifndef _WIN32
+    // Restore default disposition and re-raise so the process exits with
+    // the canonical 128+signum code (and dumps core if so configured).
+    struct sigaction sa_dfl;
+    std::memset(&sa_dfl, 0, sizeof(sa_dfl));
+    sa_dfl.sa_handler = SIG_DFL;
+    sigemptyset(&sa_dfl.sa_mask);
+    sigaction(signum, &sa_dfl, nullptr);
+#endif
+    std::raise(signum);
+    // Unreachable, but defensive.
+    eshkol_signal_safe_exit(128 + signum);
+}
 
 void eshkol_signal_handler(int signum) {
     // Set the volatile flag (signal-safe: volatile sig_atomic_t)
@@ -303,6 +353,26 @@ void eshkol_runtime_init_signals(void) {
     if (sigaction(SIGPIPE, &sa_ignore, &g_old_sigpipe_handler) != 0) {
         eshkol_warn("Failed to install SIGPIPE handler");
     }
+
+    // Bug AA: install fatal-signal handlers that announce themselves on
+    // stderr before terminating, so the user knows the program crashed
+    // (vs. the previous behaviour where SIGSEGV produced silent exit
+    // and any buffered stdout was lost).  See eshkol_fatal_signal_handler
+    // for the full rationale.
+    struct sigaction sa_fatal;
+    std::memset(&sa_fatal, 0, sizeof(sa_fatal));
+    sa_fatal.sa_handler = eshkol_fatal_signal_handler;
+    sa_fatal.sa_flags = SA_RESETHAND;  // belt-and-braces: also auto-reset
+    sigemptyset(&sa_fatal.sa_mask);
+    if (sigaction(SIGSEGV, &sa_fatal, &g_old_sigsegv_handler) != 0) {
+        eshkol_warn("Failed to install SIGSEGV handler");
+    }
+    if (sigaction(SIGBUS,  &sa_fatal, &g_old_sigbus_handler)  != 0) {
+        eshkol_warn("Failed to install SIGBUS handler");
+    }
+    if (sigaction(SIGABRT, &sa_fatal, &g_old_sigabrt_handler) != 0) {
+        eshkol_warn("Failed to install SIGABRT handler");
+    }
 #endif
 
     g_signals_installed = true;
@@ -327,6 +397,9 @@ void eshkol_runtime_restore_signals(void) {
     sigaction(SIGINT, &g_old_sigint_handler, nullptr);
     sigaction(SIGTERM, &g_old_sigterm_handler, nullptr);
     sigaction(SIGPIPE, &g_old_sigpipe_handler, nullptr);
+    sigaction(SIGSEGV, &g_old_sigsegv_handler, nullptr);
+    sigaction(SIGBUS,  &g_old_sigbus_handler,  nullptr);
+    sigaction(SIGABRT, &g_old_sigabrt_handler, nullptr);
 #endif
 
     g_signals_installed = false;
@@ -418,6 +491,21 @@ int eshkol_runtime_init(void) {
     }
     // Sync signal-safe shadow
     g_sig_runtime_state = (sig_atomic_t)ESHKOL_RUNTIME_RUNNING;
+
+    // Bug AA: line-buffer stdout so `(display "x") (newline)` actually
+    // reaches the terminal even when stdout is piped or redirected to a
+    // file.  The default for non-tty stdout is full-buffering, which
+    // means a buffered message can be lost forever if the program
+    // SIGSEGVs (default action: dump core, no atexit, no fflush) or
+    // longjmps out without flushing.  Line-buffering makes
+    //   (display "step 1") (newline)
+    // always reach the terminal at the newline, regardless of whether
+    // the next form crashes.  Costs ~no perf since most output already
+    // ends in a newline anyway.
+    //
+    // setvbuf is only safe before any I/O on the stream — we're at
+    // runtime-init, before any user-level Eshkol code runs.
+    setvbuf(stdout, NULL, _IOLBF, 0);
 
     // Install signal handlers
     eshkol_runtime_init_signals();
