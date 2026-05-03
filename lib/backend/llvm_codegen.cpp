@@ -15545,23 +15545,51 @@ private:
         }
         builder->CreateUnreachable();
 
-        // Safe path - compute Scheme modulo
+        // Safe path — first check for bignum operands and dispatch through
+        // the C runtime, then fall through to the int64 SRem fast path.
+        //
+        // BIGNUM DISPATCH (#221 root cause): without this, both operands go
+        // through unpackInt64FromTaggedValue, which for a HEAP_PTR bignum
+        // returns the raw pointer / int64 storage field (NOT the actual
+        // numeric value).  SRem on those bits silently produces garbage —
+        // commonly a small multiple of the input pattern — so user code like
+        //   (modulo (* big-int 2) (expt 2 64))
+        // returned ~32-bit truncated values, breaking any 64-bit modular
+        // arithmetic (FNV-1a hash, CRT solvers, ...).
         builder->SetInsertPoint(safe_bb);
 
-        // Compute C-style remainder first
-        Value* rem = builder->CreateSRem(int_val1, int_val2, "remainder");
+        Value* any_bignum = arith_->emitIsBignumCheck(arg1, arg2);
+        BasicBlock* bn_bb  = BasicBlock::Create(*context, "mod_bignum", func);
+        BasicBlock* int_bb = BasicBlock::Create(*context, "mod_int",    func);
+        BasicBlock* mrg_bb = BasicBlock::Create(*context, "mod_merge",  func);
+        builder->CreateCondBr(any_bignum, bn_bb, int_bb);
 
-        // Scheme's modulo: result has same sign as divisor
-        // If signs differ and remainder is non-zero, add divisor
+        // Bignum path: eshkol_bignum_binary_tagged op=4 → mod
+        builder->SetInsertPoint(bn_bb);
+        Value* bn_result = arith_->emitBignumBinaryCall(arg1, arg2, 4);
+        BasicBlock* bn_exit = builder->GetInsertBlock();
+        builder->CreateBr(mrg_bb);
+
+        // Int64 fast path — Scheme's modulo: result has same sign as divisor.
+        builder->SetInsertPoint(int_bb);
+        Value* rem = builder->CreateSRem(int_val1, int_val2, "remainder");
         Value* rem_neg = builder->CreateICmpSLT(rem, zero, "rem_neg");
         Value* div_neg = builder->CreateICmpSLT(int_val2, zero, "div_neg");
         Value* signs_differ = builder->CreateXor(rem_neg, div_neg, "signs_differ");
         Value* rem_nonzero = builder->CreateICmpNE(rem, zero, "rem_nonzero");
         Value* need_adjust = builder->CreateAnd(signs_differ, rem_nonzero, "need_adjust");
         Value* adjusted = builder->CreateAdd(rem, int_val2, "adjusted");
-        Value* result = builder->CreateSelect(need_adjust, adjusted, rem, "modulo_result");
+        Value* int_rem = builder->CreateSelect(need_adjust, adjusted, rem, "modulo_result");
+        Value* int_tagged = packInt64ToTaggedValue(int_rem, true);
+        BasicBlock* int_exit = builder->GetInsertBlock();
+        builder->CreateBr(mrg_bb);
 
-        return packInt64ToTaggedValue(result, true);
+        // Merge.
+        builder->SetInsertPoint(mrg_bb);
+        PHINode* result_phi = builder->CreatePHI(tagged_value_type, 2, "modulo_phi");
+        result_phi->addIncoming(bn_result, bn_exit);
+        result_phi->addIncoming(int_tagged, int_exit);
+        return result_phi;
     }
 
     // Remainder operation - handles both integer and floating point
