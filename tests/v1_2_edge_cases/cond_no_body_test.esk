@@ -1,0 +1,40 @@
+;; cond_no_body_test.esk — Bug CC regression (filed 2026-05-02 by Noesis,
+;; closed by Eshkol commit bfaf3db).
+;;
+;; R7RS §6.3 (and R5RS): a `(<test>)` clause in `cond` with NO body
+;; returns the value of the test itself when the test is truthy.
+;; Pre-fix, codegenCond returned `#f` instead, which silently broke
+;; Noesis's `coverage_rotation.esk:choose-next-corpus-coverage-v2`
+;; (the test was an `(assoc ...)` lookup whose result the caller
+;; needed to consume).
+;;
+;; The two test forms below are the canonical R7RS examples.
+
+(require stdlib)
+
+(define (test-1)
+  ;; (cond ((+ 1 2)) (else 'fail)) — should return 3, not #f.
+  (cond ((+ 1 2))
+        (else 'fail)))
+
+(define (test-2)
+  ;; (cond ((assoc ':found '((:found . 42)))) (else 'fail)) — returns
+  ;; the matched pair (:found . 42), not #f.
+  (cond ((assoc ':found '((:found . 42))))
+        (else 'fail)))
+
+(define (test-3)
+  ;; A no-body clause whose test is FALSE must fall through to else.
+  (cond ((assoc ':missing '((:found . 42))))
+        (else 'fell-through)))
+
+(display "test-1: ") (display (test-1)) (newline)
+(display "test-2: ") (display (test-2)) (newline)
+(display "test-3: ") (display (test-3)) (newline)
+
+;; Sanity gate — if any of these returned #f or wrong value, fail loudly.
+(define ok?
+  (and (= (test-1) 3)
+       (equal? (test-2) (cons ':found 42))
+       (equal? (test-3) 'fell-through)))
+(display (if ok? "PASS" "FAIL")) (newline)

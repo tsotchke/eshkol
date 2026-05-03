@@ -1631,14 +1631,40 @@ static std::string find_lib_dir()
 // Convert symbolic module name to file path
 // e.g., "data.json" -> "lib/data/json.esk"
 //       "core.strings" -> "lib/core/strings.esk"
+//
+// Path-literal exception: `(load "...")` strings are stored verbatim by
+// the parser since 5992fdb-era fixes; they may legitimately contain
+// dots in directory names (e.g. macOS $TMPDIR=/var/folders/<hash>.<r>/T,
+// or any project cache dir like build.v2/).  Detect path-like strings
+// and skip the dot-to-slash rewrite entirely.
 static std::string resolve_module_path(const std::string& module_name, const std::string& base_dir, const std::string& lib_dir)
 {
-    // Convert dots to path separators
-    std::string path_part = module_name;
-    for (char& c : path_part) {
-        if (c == '.') c = '/';
+    bool is_path_literal =
+        !module_name.empty() &&
+        (module_name[0] == '/' ||
+         module_name.rfind("./", 0) == 0 ||
+         module_name.rfind("../", 0) == 0 ||
+         module_name.find('/') != std::string::npos ||
+         (module_name.size() > 4 &&
+          module_name.compare(module_name.size() - 4, 4, ".esk") == 0));
+
+    std::string path_part;
+    if (is_path_literal) {
+        path_part = module_name;
+        if (path_part.size() < 4 ||
+            path_part.compare(path_part.size() - 4, 4, ".esk") != 0) {
+            if (!std::filesystem::exists(path_part)) {
+                path_part += ".esk";
+            }
+        }
+    } else {
+        // Convert dots to path separators (dotted module name)
+        path_part = module_name;
+        for (char& c : path_part) {
+            if (c == '.') c = '/';
+        }
+        path_part += ".esk";
     }
-    path_part += ".esk";
 
     // Search order:
     // 1. Current directory (relative to base_dir)
