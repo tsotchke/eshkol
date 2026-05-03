@@ -1,26 +1,39 @@
-;; threads.esk — POSIX mutex + condition variable bindings
+;; threads.esk — thread coordination primitives
 ;;
 ;; (require core.threads)
 ;;
-;; Backed by lib/core/threads.c (pthread_mutex_t / pthread_cond_t).
-;; Mutex is RECURSIVE — a thread that re-enters (with-mutex m ...) on
-;; the same m doesn't deadlock.  This matches SRFI 18 semantics.
+;; This module provides three families of primitives:
 ;;
-;; Thread CREATION (make-thread / thread-join) is intentionally NOT
-;; exposed in this module.  For parallel work use the existing
-;; thread-pool primitives:
+;; 1. MUTEX (recursive POSIX pthread_mutex_t)
+;;    Used to serialise access to shared state — the canonical use is
+;;    around a (vector-set! ...) on a shared cell from inside
+;;    parallel-map workers.  RECURSIVE means re-entering (with-mutex m
+;;    ...) on the same mutex from the same thread doesn't deadlock —
+;;    matches SRFI 18 semantics.
 ;;
-;;   (future thunk)         — submit zero-arg thunk to the pool
-;;   (force fut)            — block + get result
-;;   (parallel-execute t1 t2 ...)
-;;   (parallel-map fn list)
+;; 2. CONDVAR (POSIX pthread_cond_t)
+;;    Used to coordinate workers waiting on a state change — pair with
+;;    a mutex via condvar-wait!.
 ;;
-;; The mutex / condvar primitives below are useful for coordinating
-;; pool tasks and protecting shared state inside parallel-map workers.
+;; 3. THREAD (make-thread / thread-join)
+;;    Lightweight handle around a zero-argument thunk.  The current
+;;    implementation is "lazy thread": the thunk runs on the joining
+;;    thread, NOT on a freshly-spawned worker.  This is honest about
+;;    a limitation in the v1.2 closure-call ABI — invoking an arbitrary
+;;    Eshkol closure on a fresh pthread requires the LLVM-emitted
+;;    closure dispatcher (per-thread arena, AD tape, region stack), and
+;;    that's deferred to v1.4-platform.  For real concurrent execution
+;;    today, use the pool primitives:
+;;        (parallel-map fn list)             — concurrent over list
+;;        (parallel-execute t1 t2 ...)       — concurrent fixed thunks
+;;    The mutex / condvar primitives in this module are real even
+;;    though make-thread is lazy — they correctly serialise access
+;;    inside parallel-map workers.
 
 (provide
   make-mutex mutex-lock! mutex-trylock! mutex-unlock! mutex-destroy! with-mutex
-  make-condvar condvar-wait! condvar-signal! condvar-broadcast! condvar-destroy!)
+  make-condvar condvar-wait! condvar-signal! condvar-broadcast! condvar-destroy!
+  make-thread thread-join thread? thread-result-ready?)
 
 ;; ── FFI declarations ─────────────────────────────────────────────────
 (extern ptr mutex-create-raw                         :real eshkol_mutex_create)
@@ -91,3 +104,46 @@
 (define (condvar-destroy! c)
   "Destroy and free the condition variable."
   (condvar-destroy-raw c))
+
+;; ── Thread (lazy: runs on joiner; see module-header note) ────────────
+;;
+;; Layout: vector of length 4 with header sentinel for thread? predicate.
+;;   slot 0: tag symbol 'eshkol-thread (cheap nominal type marker)
+;;   slot 1: thunk (the user-supplied zero-arg procedure)
+;;   slot 2: ran? — #t once the thunk has been forced
+;;   slot 3: result — set when ran? becomes #t
+;;
+;; This is intentionally NOT a real OS thread; it's a lazy promise
+;; with thread-shaped API.  The next-stage implementation (v1.4)
+;; will swap the body of make-thread for a real pool-submit while
+;; keeping this exact API surface — so user code written against
+;; make-thread/thread-join today is forward-compatible.
+
+(define (make-thread thunk)
+  "Wrap thunk into a thread handle.  See module header — currently lazy:
+   the thunk runs on the joining thread, not concurrently."
+  (vector 'eshkol-thread thunk #f #f))
+
+(define (thread? h)
+  "Predicate: is h a thread handle returned by make-thread?"
+  (and (vector? h)
+       (= (vector-length h) 4)
+       (eq? (vector-ref h 0) 'eshkol-thread)))
+
+(define (thread-result-ready? h)
+  "Non-blocking check: has thread-join already produced a result?"
+  (if (thread? h) (vector-ref h 2) #f))
+
+(define (thread-join h)
+  "Run the thread's thunk if it hasn't already, return its result.
+   Memoised: a second join returns the cached result without re-running.
+   Calling on a non-thread is an error (returns the value as-is for
+   forward-compat with the v1.4 eager spawn-and-wait variant)."
+  (cond
+    ((not (thread? h)) h)
+    ((vector-ref h 2) (vector-ref h 3))
+    (else
+      (let ((r ((vector-ref h 1))))
+        (vector-set! h 3 r)
+        (vector-set! h 2 #t)
+        r))))
