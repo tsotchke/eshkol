@@ -625,7 +625,12 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_file_copy_v(eshkol_sysbuiltin_va
     }
     if (n < 0) ok = 0;
     close(src_fd);
-    close(dst_fd);
+    /* close(dst_fd) can fail (e.g. NFS commit error, EIO on flush of
+     * the page cache) AFTER write() returned success — POSIX says the
+     * data isn't guaranteed durable until close returns 0.  Silently
+     * dropping the close error means file-copy reports success even
+     * when the destination is short or corrupt.  Treat as failure. */
+    if (close(dst_fd) < 0) ok = 0;
     return sys_make_bool(ok ? 1 : 0);
 #else
     return sys_make_bool(CopyFileA(src, dst, FALSE) != 0);
@@ -1544,16 +1549,22 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_tensor_save_v(eshkol_sysbuiltin_
     uint32_t magic = TENSOR_FILE_MAGIC;
     uint32_t version = 1;
     uint32_t ndims = (uint32_t)t->num_dimensions;
-    fwrite(&magic, 4, 1, f);
-    fwrite(&version, 4, 1, f);
-    fwrite(&ndims, 4, 1, f);
-    for (uint32_t i = 0; i < ndims; i++) {
-        fwrite(&t->dimensions[i], 8, 1, f);
+    int ok = 1;
+    /* Pre-fix, every fwrite return was ignored — tensor-save reported
+     * success even on disk-full mid-write or fclose-time commit error,
+     * leaving a truncated file the caller couldn't tell from a
+     * successful save. */
+    if (fwrite(&magic, 4, 1, f) != 1) ok = 0;
+    if (ok && fwrite(&version, 4, 1, f) != 1) ok = 0;
+    if (ok && fwrite(&ndims, 4, 1, f) != 1) ok = 0;
+    for (uint32_t i = 0; ok && i < ndims; i++) {
+        if (fwrite(&t->dimensions[i], 8, 1, f) != 1) ok = 0;
     }
     /* Elements are int64 bit patterns of doubles, 8 bytes each */
-    fwrite(t->elements, 8, (size_t)t->total_elements, f);
-    fclose(f);
-    return sys_make_bool(1);
+    if (ok && fwrite(t->elements, 8, (size_t)t->total_elements, f)
+              != (size_t)t->total_elements) ok = 0;
+    if (fclose(f) != 0) ok = 0;
+    return sys_make_bool(ok ? 1 : 0);
 #else
     return sys_make_bool(0);
 #endif
