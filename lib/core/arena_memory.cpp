@@ -723,9 +723,50 @@ void arena_pop_scope(arena_t* arena) {
                      "unbalanced scope operations risk memory corruption");
         return;  // Graceful: skip the pop rather than kill the process
     }
-    
+
     arena_scope_t* scope = arena->current_scope;
-    
+
+    /* Bug-BB-class diagnostic: when ESHKOL_ARENA_POISON=1 is set in
+     * the environment, fill the popped region with a recognisable
+     * sentinel byte (0xCB) before releasing it.  Any later
+     * dereference of a stale pointer into that region will crash
+     * with an address that contains the byte 0xCB in obvious
+     * positions — turning a silent SEGV at a random-looking
+     * mangled address into a "this was an arena UAF" diagnosis.
+     *
+     * This is opt-in (default off) because it adds work to every
+     * pop; turn it on when investigating a "second-call SEGV" or
+     * any state-corruption-shaped bug, then bisect by which arena
+     * scope's pop precedes the crash.
+     *
+     * The byte 0xCB picked because:
+     *   - High-bit set so addresses look "obviously poisoned" in
+     *     register dumps (e.g. 0xCB...CB...) without colliding with
+     *     real heap addresses on macOS arm64.
+     *   - Distinct from libc's MallocPreScribble (0xAA) and
+     *     MallocScribble (0x55) so they don't shadow each other.
+     *   - Distinct from glibc malloc's perturb_free (0x42).
+     */
+    static int poison_enabled = -1;
+    if (poison_enabled < 0) {
+        const char* env = std::getenv("ESHKOL_ARENA_POISON");
+        poison_enabled = (env && env[0] && env[0] != '0') ? 1 : 0;
+    }
+    if (poison_enabled) {
+        // Poison anything between scope's saved-used and current block's
+        // current-used, plus any blocks beyond scope->block.
+        if (scope->block && scope->block == arena->current_block) {
+            char* base = (char*)scope->block->memory + scope->used;
+            size_t len = (arena->current_block->used > scope->used)
+                       ? (arena->current_block->used - scope->used) : 0;
+            std::memset(base, 0xCB, len);
+        }
+        // Walk extra blocks added after the scope and poison their used range.
+        for (arena_block_t* b = arena->current_block; b && b != scope->block; b = b->next) {
+            std::memset(b->memory, 0xCB, b->used);
+        }
+    }
+
     // Restore arena state to scope start
     // Free any blocks allocated after this scope
     arena_block_t* block = arena->current_block;
@@ -735,15 +776,15 @@ void arena_pop_scope(arena_t* arena) {
         free_arena_block(block);
         block = next;
     }
-    
+
     arena->current_block = scope->block;
     if (arena->current_block) {
         arena->current_block->used = scope->used;
     }
-    
+
     arena->current_scope = scope->parent;
     free(scope);
-    
+
     eshkol_debug("Popped arena scope");
 }
 
