@@ -228,6 +228,20 @@ void eshkol_fatal_signal_handler(int signum) {
         case SIGABRT: name = "SIGABRT (abort)";              break;
         default: break;
     }
+    /* Best-effort flush of stdout/stderr.  fflush() is technically
+     * not on POSIX's async-signal-safe list; in practice it works on
+     * every libc we run on (glibc, musl, Apple libc, BSD libc) when
+     * the process is otherwise quiescent — the only deadlock risk is
+     * if we caught the signal mid-stdio-call holding the FILE* lock.
+     * Worst case we hang and the kernel eventually SIGKILLs after
+     * timeout; better than guaranteed silent data loss.
+     *
+     * stdout is also setvbuf'd to _IONBF in eshkol_runtime_init so
+     * even without this flush most output has already reached the
+     * kernel; this is belt-and-braces for the single-write case. */
+    std::fflush(stdout);
+    std::fflush(stderr);
+
     static const char prefix[] = "\n[Eshkol] fatal signal: ";
     static const char suffix[] = " — terminating; output above is what made it to stdout before the crash\n";
     eshkol_signal_safe_write(prefix, sizeof(prefix) - 1);
@@ -492,20 +506,24 @@ int eshkol_runtime_init(void) {
     // Sync signal-safe shadow
     g_sig_runtime_state = (sig_atomic_t)ESHKOL_RUNTIME_RUNNING;
 
-    // Bug AA: line-buffer stdout so `(display "x") (newline)` actually
-    // reaches the terminal even when stdout is piped or redirected to a
-    // file.  The default for non-tty stdout is full-buffering, which
-    // means a buffered message can be lost forever if the program
-    // SIGSEGVs (default action: dump core, no atexit, no fflush) or
-    // longjmps out without flushing.  Line-buffering makes
-    //   (display "step 1") (newline)
-    // always reach the terminal at the newline, regardless of whether
-    // the next form crashes.  Costs ~no perf since most output already
-    // ends in a newline anyway.
+    // Bug AA: make stdout unbuffered so EVERY `(display …)` reaches the
+    // terminal immediately, even without a trailing newline and even
+    // when the next form crashes.  The default for non-tty stdout is
+    // full-buffering, which means buffered output is lost forever if
+    // the program SIGSEGVs (default action: terminate without flushing)
+    // or longjmps out.  Line-buffering helps for `…(newline)` patterns
+    // but loses non-terminated `(display "step 1")` output — and the
+    // failure-mode-of-interest is exactly "I added a (display) and saw
+    // nothing", which often hits unterminated debug prints.
+    //
+    // Unbuffered means one write(2) per display, but display is never
+    // in a perf-sensitive inner loop — bytecode/codegen doesn't lower
+    // arithmetic to printf — so the perf hit is invisible in practice
+    // and the correctness win is total.
     //
     // setvbuf is only safe before any I/O on the stream — we're at
     // runtime-init, before any user-level Eshkol code runs.
-    setvbuf(stdout, NULL, _IOLBF, 0);
+    setvbuf(stdout, NULL, _IONBF, 0);
 
     // Install signal handlers
     eshkol_runtime_init_signals();
