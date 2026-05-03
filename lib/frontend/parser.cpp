@@ -7145,14 +7145,18 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                     return ast;
                 }
                 if (token.type == TOKEN_STRING) {
-                    // (load "path/to/file.esk") — convert file path to module name
-                    std::string path = token.value;
-                    // Strip .esk suffix if present
-                    if (path.size() > 4 && path.substr(path.size() - 4) == ".esk")
-                        path = path.substr(0, path.size() - 4);
-                    // Convert / to . for module resolution
-                    for (char& c : path) { if (c == '/') c = '.'; }
-                    modules.push_back(path);
+                    // (load "path/to/file.esk") — keep the path string verbatim.
+                    // Earlier versions stripped `.esk` and rewrote `/` → `.`
+                    // so the path could be reused as a dotted module name,
+                    // but that mangled paths whose directory components
+                    // legitimately contain dots (e.g. on macOS, anything
+                    // under $TMPDIR which is /var/folders/<hash>.<rand>/T,
+                    // or any cache dir named like `cache.v2`).  The
+                    // round-trip back through `/` substitution corrupted
+                    // those into nonexistent files.  resolveModulePath
+                    // now detects path-like inputs and uses them
+                    // directly.
+                    modules.push_back(token.value);
                 } else if (token.type != TOKEN_SYMBOL) {
                     PARSE_ERROR_AT(token, "require expects symbolic module names (e.g., data.json)");
                     ast.type = ESHKOL_INVALID;

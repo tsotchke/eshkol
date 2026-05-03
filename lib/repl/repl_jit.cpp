@@ -1569,12 +1569,45 @@ static std::string g_lib_dir;
 // Helper to resolve module path (e.g., "core.functional.compose" -> "lib/core/functional/compose.esk")
 // Matches eshkol-run.cpp module resolution logic
 static std::string resolveModulePath(const std::string& module_name, const std::string& base_dir) {
-    // Convert dots to path separators
-    std::string path_part = module_name;
-    for (char& c : path_part) {
-        if (c == '.') c = '/';
+    // PATH-LITERAL DETECTION:
+    //
+    // `(load "...")` strings are stored in module_names verbatim (the
+    // parser used to mangle them into dotted form, but that broke
+    // any path whose directory components contain dots — common on
+    // macOS where $TMPDIR is /var/folders/<hash>.<rand>/T, and on
+    // any project that uses cache dirs like build.v2/).  Treat
+    // anything that looks like a literal path as one and skip the
+    // dot-to-slash rewrite entirely.
+    bool is_path_literal =
+        !module_name.empty() &&
+        (module_name[0] == '/' ||
+         module_name.rfind("./", 0) == 0 ||
+         module_name.rfind("../", 0) == 0 ||
+         module_name.find('/') != std::string::npos ||
+         (module_name.size() > 4 &&
+          module_name.compare(module_name.size() - 4, 4, ".esk") == 0));
+
+    std::string path_part;
+    if (is_path_literal) {
+        path_part = module_name;
+        // Add .esk if the user omitted it (and the path doesn't already
+        // point at an existing file as-given).
+        if (path_part.size() < 4 ||
+            path_part.compare(path_part.size() - 4, 4, ".esk") != 0) {
+            // Only append if the bare path doesn't exist; users may load
+            // a file with a non-.esk extension on purpose.
+            if (!std::filesystem::exists(path_part)) {
+                path_part += ".esk";
+            }
+        }
+    } else {
+        // Convert dots to path separators (dotted module name)
+        path_part = module_name;
+        for (char& c : path_part) {
+            if (c == '.') c = '/';
+        }
+        path_part += ".esk";
     }
-    path_part += ".esk";
 
     // Initialize lib dir if needed
     if (g_lib_dir.empty()) {
