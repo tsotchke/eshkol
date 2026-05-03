@@ -1404,11 +1404,19 @@ bool ReplJITContext::loadModule(const std::string& module_name, bool allow_preco
         if (ast_item.type == ESHKOL_OP) {
             if (ast_item.operation.op == ESHKOL_REQUIRE_OP ||
                 ast_item.operation.op == ESHKOL_IMPORT_OP) {
-                // Process dependencies immediately
+                // Process dependencies immediately.  Continue past failures
+                // so a single bad require doesn't take down the whole
+                // module load — but WARN so users see why later symbol
+                // lookups are failing.  Pre-fix this was silent and
+                // produced confusing "undefined function" errors at
+                // unrelated call sites.
                 try {
                     execute(&ast_item);
                 } catch (const std::exception& e) {
-                    // Continue even if a dependency fails
+                    std::cerr << "[WARN] dependency load failed during module init: "
+                              << e.what()
+                              << " (downstream lookups for symbols from this "
+                                 "dependency will fail)" << std::endl;
                 }
                 continue;
             }
@@ -2027,7 +2035,13 @@ void* ReplJITContext::execute(eshkol_ast_t* ast) {
                         try {
                             execute(&ast_item);
                         } catch (const std::exception& e) {
-                            // Continue even if a dependency fails
+                            // See companion site at executeFile() — warn so
+                            // dependency-load failures don't surface as
+                            // unrelated "undefined symbol" errors later.
+                            std::cerr << "[WARN] nested dependency load failed: "
+                                      << e.what()
+                                      << " (downstream lookups for symbols from "
+                                         "this dependency will fail)" << std::endl;
                         }
                         continue;
                     }
@@ -2043,7 +2057,14 @@ void* ReplJITContext::execute(eshkol_ast_t* ast) {
                 try {
                     last_result = executeBatch(batch_asts, true);
                 } catch (const std::exception& e) {
-                    // Silently continue
+                    // Loaded-file batch failed.  Warn so the user knows the
+                    // file partially failed to load — silent failure here
+                    // surfaces later as confusing "undefined function"
+                    // errors against symbols the file was meant to provide.
+                    std::cerr << "[WARN] file load failed during batch compile: "
+                              << e.what()
+                              << " (symbols from this file may be unavailable)"
+                              << std::endl;
                 }
             }
 
