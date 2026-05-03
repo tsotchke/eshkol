@@ -384,9 +384,17 @@ void eshkol_runtime_init_signals(void) {
     if (sigaction(SIGBUS,  &sa_fatal, &g_old_sigbus_handler)  != 0) {
         eshkol_warn("Failed to install SIGBUS handler");
     }
-    if (sigaction(SIGABRT, &sa_fatal, &g_old_sigabrt_handler) != 0) {
-        eshkol_warn("Failed to install SIGABRT handler");
-    }
+    /* Note: we deliberately do NOT install a handler for SIGABRT.  The Bug
+     * AA fix is about not losing user output when a Eshkol program crashes
+     * with SIGSEGV/SIGBUS (invalid memory access from a runtime helper).
+     * SIGABRT, by contrast, is mostly raised by libsystem during process
+     * teardown after _Exit() — once we hijack it our handler runs in a
+     * partially-torn-down state, fflush() can deadlock or write into a
+     * closed FD, and our re-raise turns a clean shutdown into a spurious
+     * "Abort trap: 6" exit (134) for the user.  If a future bug requires
+     * catching deliberate abort()s from Eshkol code, route it through the
+     * exception system instead. */
+    (void)g_old_sigabrt_handler;
 #endif
 
     g_signals_installed = true;
