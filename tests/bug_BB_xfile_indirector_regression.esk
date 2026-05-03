@@ -1,0 +1,37 @@
+;; Bug BB regression test — cross-file user-function passed as a first-class
+;; value through an indirector, invoked twice consecutively at top level.
+;;
+;; Pre-fix (master before 50acaaf): SECOND indirect call SEGV'd in JIT mode
+;; because tryResolveReplFunction registered the cross-file function in
+;; function_table but NOT in function_arity_table.  On the second reference
+;; the codegen path looked up function_table first, failed the arity
+;; lookup, and fell through to "return raw function pointer as CALLABLE
+;; data" — invoking which dispatches via a mangled pointer and crashes.
+;;
+;; Post-fix: arity is propagated alongside the function-table entry, so
+;; the second reference is wrapped in a closure exactly like the first.
+;;
+;; This test uses a minimal local helper module (no noesis dep) so it
+;; can run in CI.  Expected output ends with `DONE`; both indirect calls
+;; must succeed.
+
+;; Use a same-directory relative path so the test is portable across
+;; checkouts.  Run from the tests/ directory (or use the regression
+;; script that does `cd tests && eshkol-run -r ...`).
+(load "bug_BB_xfile_lib.esk")
+
+(define (indirect-caller ctx tag fn)
+  (let* ((result (fn ctx tag))
+         (a (cdr (assoc ':a result)))
+         (b (cdr (assoc ':b result))))
+    (list (cons ':a a) (cons ':b b))))
+
+(display "first call: ")
+(define r1 (indirect-caller 'ctx 1 xfile-callee))
+(display r1) (newline)
+
+(display "second call: ")
+(define r2 (indirect-caller 'ctx 2 xfile-callee))
+(display r2) (newline)
+
+(display "DONE") (newline)

@@ -1,0 +1,14 @@
+;; Helper module for tests/bug_BB_xfile_indirector_regression.esk.
+;; Exercises the cross-file user-function path that triggered Bug BB
+;; (commit 50acaaf) — JIT segfault on second consecutive indirect call
+;; to a CROSS-FILE-LOADED user function passed as a first-class value.
+
+(provide make-complex-alist xfile-callee)
+
+(define (make-complex-alist tag)
+  (list (cons ':a tag)
+        (cons ':b (list (cons ':nested tag)))
+        (cons ':c (cons tag (cons (* tag 2) '())))))
+
+(define (xfile-callee ctx tag)
+  (make-complex-alist tag))
