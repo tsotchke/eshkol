@@ -168,8 +168,66 @@ static llvm::OptimizationLevel getPassBuilderOptLevel() {
     }
 }
 
+/* Coerce mismatched integer call-argument types to match each callee's
+ * declared parameter type.  Necessary on the wasm32 target where many
+ * arena_allocate callsites (~144 across lib/backend/*_codegen.cpp) emit
+ * an i64 size argument while the function is declared with i32 size_t.
+ * On native (size_t = i64) this loop is a near-no-op since types already
+ * match; on wasm32 it inserts ZExt/Trunc to satisfy the LLVM verifier
+ * before WASM codegen runs.
+ *
+ * Only direct calls with a known Function callee are touched.  Only
+ * IntegerType vs IntegerType mismatches are fixed; pointer/FP arg
+ * mismatches indicate a real codegen bug and are left for the verifier
+ * to reject loudly.  Variadic args past the fixed parameter count are
+ * not coerced (they have no declared type to match).
+ *
+ * Centralising here is the architectural fix that doesn't require
+ * touching the 144 callsites individually — they all funnel through
+ * this pass before module verification.
+ */
+static void coerceCallArgIntegerTypes(llvm::Module& module) {
+    using namespace llvm;
+    // Two-phase to avoid any iterator-invalidation footgun: collect candidate
+    // CallInsts first, then mutate.  Insertions from CreateZExtOrTrunc would
+    // otherwise land inside the BB we're iterating over.
+    SmallVector<CallInst*, 32> calls;
+    for (Function& F : module) {
+        for (BasicBlock& BB : F) {
+            for (Instruction& I : BB) {
+                if (auto* CI = dyn_cast<CallInst>(&I)) calls.push_back(CI);
+            }
+        }
+    }
+    for (CallInst* CI : calls) {
+        Function* callee = CI->getCalledFunction();
+        if (!callee) continue;  // indirect call
+        FunctionType* FT = callee->getFunctionType();
+        unsigned fixed = FT->getNumParams();
+        IRBuilder<> builder(CI);
+        for (unsigned i = 0; i < CI->arg_size(); ++i) {
+            if (i >= fixed) break;  // variadic tail — no declared type
+            Value* arg = CI->getArgOperand(i);
+            Type* expected = FT->getParamType(i);
+            Type* actual = arg->getType();
+            if (actual == expected) continue;
+            auto* aIT = dyn_cast<IntegerType>(actual);
+            auto* eIT = dyn_cast<IntegerType>(expected);
+            if (!aIT || !eIT) continue;  // not an int↔int mismatch
+            Value* coerced = builder.CreateZExtOrTrunc(arg, expected,
+                arg->hasName() ? arg->getName() + ".coerced" : Twine("arg.coerced"));
+            CI->setArgOperand(i, coerced);
+        }
+    }
+}
+
 // Run LLVM optimization passes on a module before codegen
 static void optimizeModule(llvm::Module& module, llvm::TargetMachine* TM, bool is_wasm = false) {
+    // Always coerce mismatched integer call-arg types first.  On native this
+    // is a no-op; on wasm32 it fixes the size_t (i32) vs i64 mismatch that
+    // would otherwise fail module verification before WASM emission.
+    coerceCallArgIntegerTypes(module);
+
     auto opt_level = getPassBuilderOptLevel();
 
     // For WASM targets, always run at least mem2reg even at -O0.
@@ -2231,6 +2289,13 @@ public:
                 eshkol_error("Failed to generate LLVM IR due to earlier code generation errors");
                 return std::make_pair(nullptr, nullptr);
             }
+
+            // Coerce mismatched integer call-arg types before verification
+            // so wasm32 (where size_t is i32) doesn't trip on the 144 codegen
+            // sites that emit i64 sizes for arena_allocate-family calls.  On
+            // native this is a no-op since szTy already == i64.  See the
+            // pass definition above optimizeModule().
+            coerceCallArgIntegerTypes(*module);
 
             // Verify the module
             std::string error_str;
