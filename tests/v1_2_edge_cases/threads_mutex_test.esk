@@ -1,0 +1,59 @@
+;; threads_mutex_test.esk — single-threaded smoke for core.threads
+;; mutex primitives (#156).  Cross-thread tests using the thread pool
+;; live in run_parallel_tests.sh; here we just validate the lock /
+;; unlock / with-mutex API and the recursive-lock semantic.
+
+(require stdlib)
+(require core.threads)
+
+(define passed 0)
+(define failed 0)
+(define (check label expected actual)
+  (if (equal? expected actual)
+      (begin (display "PASS: ") (display label) (newline)
+             (set! passed (+ passed 1)))
+      (begin (display "FAIL: ") (display label)
+             (display " (expected ") (display expected)
+             (display ", got ") (display actual) (display ")") (newline)
+             (set! failed (+ failed 1)))))
+
+;; ── Basic mutex lifecycle ────────────────────────────────────────────
+(define m (make-mutex))
+(check "mutex-lock! returns 0" 0 (mutex-lock! m))
+(check "mutex-unlock! returns 0" 0 (mutex-unlock! m))
+
+;; ── trylock on free mutex succeeds ──────────────────────────────────
+(check "trylock free mutex" 0 (mutex-trylock! m))
+(check "unlock after trylock" 0 (mutex-unlock! m))
+
+;; ── with-mutex acquires + releases + returns thunk result ───────────
+(define r (with-mutex m (lambda () 42)))
+(check "with-mutex returns thunk value" 42 r)
+;; mutex should be free again — verify by re-acquiring
+(check "mutex free after with-mutex" 0 (mutex-trylock! m))
+(mutex-unlock! m)
+
+;; ── Recursive mutex semantics: same thread can re-enter ─────────────
+;; PTHREAD_MUTEX_RECURSIVE means a second lock by the same thread
+;; doesn't block.  Verify by nesting with-mutex.
+(define nested-result
+  (with-mutex m
+    (lambda ()
+      (with-mutex m
+        (lambda () 'nested-ok)))))
+(check "recursive with-mutex" 'nested-ok nested-result)
+
+;; ── Condvar lifecycle (no real waiter — we just create + signal) ────
+(define c (make-condvar))
+(check "condvar-signal! on no-waiter returns 0" 0 (condvar-signal! c))
+(check "condvar-broadcast! on no-waiter returns 0" 0 (condvar-broadcast! c))
+
+;; ── Cleanup ─────────────────────────────────────────────────────────
+(check "condvar-destroy! returns 0" 0 (condvar-destroy! c))
+(check "mutex-destroy! returns 0" 0 (mutex-destroy! m))
+
+;; ── Result ──────────────────────────────────────────────────────────
+(display "---") (newline)
+(display "Passed: ") (display passed) (newline)
+(display "Failed: ") (display failed) (newline)
+(if (> failed 0) (exit 1) (exit 0))
