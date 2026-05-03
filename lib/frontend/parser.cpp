@@ -7261,50 +7261,31 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                     }
                     token = tokenizer.nextToken();
                 } else {
-                    // It's a body expression starting with (, need to reconstruct the list
-                    // We already consumed the opening '(' and got peek as the first element
-                    // We need to build a complete list AST: (operator arg1 arg2 ...)
-
-                    // Build the first body expression as a call/list
-                    eshkol_ast_t first_body;
-                    first_body.type = ESHKOL_OP;
-                    first_body.operation.op = get_operator_type(peek.value);
-
-                    // If it's a call, set up the function and arguments
-                    if (first_body.operation.op == ESHKOL_CALL_OP) {
-                        first_body.operation.call_op.func = new eshkol_ast_t;
-                        first_body.operation.call_op.func->type = ESHKOL_VAR;
-                        first_body.operation.call_op.func->variable.id = strdup(peek.value.c_str());
-                        first_body.operation.call_op.func->variable.data = nullptr;
-
-                        // Parse arguments until we hit the closing paren of this list
-                        std::vector<eshkol_ast_t> args;
-                        while (true) {
-                            Token arg_token = tokenizer.nextToken();
-                            if (arg_token.type == TOKEN_RPAREN) break;
-                            if (arg_token.type == TOKEN_EOF) {
-                                PARSE_ERROR_AT(token, "unexpected end of input in with-region body list");
-                                ast.type = ESHKOL_INVALID;
-                                return ast;
-                            }
-                            eshkol_ast_t arg;
-                            if (arg_token.type == TOKEN_LPAREN) {
-                                arg = parse_list(tokenizer);
-                            } else {
-                                arg = parse_atom(arg_token);
-                            }
-                            args.push_back(arg);
-                        }
-
-                        first_body.operation.call_op.num_vars = args.size();
-                        if (!args.empty()) {
-                            first_body.operation.call_op.variables = new eshkol_ast_t[args.size()];
-                            for (size_t i = 0; i < args.size(); i++) {
-                                first_body.operation.call_op.variables[i] = args[i];
-                            }
-                        } else {
-                            first_body.operation.call_op.variables = nullptr;
-                        }
+                    // It's a body expression starting with (.  We've already
+                    // consumed the opening '(' and the head token (peek).
+                    //
+                    // Bug-WASM-regions: the previous implementation hand-rolled
+                    // the AST construction and ONLY initialised the `call_op`
+                    // union slot when peek was an operator name that mapped to
+                    // ESHKOL_CALL_OP.  For any other op (lambda, let, letrec,
+                    // …), the eshkol_operations_t union was left UNINITIALISED
+                    // — its fields had whatever stack garbage happened to be
+                    // there.  The OwnershipAnalyzer then read e.g.
+                    // `op->lambda_op.num_params` and saw a 64-bit garbage
+                    // value, iterating the parameter loop ~10^15 times — what
+                    // looked like an infinite WASM-codegen hang was actually a
+                    // legitimately-finite (but practically infinite) for-loop
+                    // walking a bogus parameter count.
+                    //
+                    // Fix: pushBack the peek token and delegate to parse_list,
+                    // which knows how to construct a properly-initialised AST
+                    // for every operator type (lambda, let, letrec, etc.) by
+                    // way of zero-init + parse_expression.
+                    tokenizer.pushBack(peek);
+                    eshkol_ast_t first_body = parse_list(tokenizer);
+                    if (first_body.type == ESHKOL_INVALID) {
+                        ast.type = ESHKOL_INVALID;
+                        return ast;
                     }
 
                     // Now continue parsing more body expressions for with-region
