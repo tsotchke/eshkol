@@ -52,6 +52,26 @@
 (check "condvar-destroy! returns 0" 0 (condvar-destroy! c))
 (check "mutex-destroy! returns 0" 0 (mutex-destroy! m))
 
+;; ── Thread API (lazy in v1.2 — see module header) ────────────────────
+(define t (make-thread (lambda () 17)))
+(check "thread? recognises handle" #t (thread? t))
+(check "thread? rejects non-thread" #f (thread? 42))
+(check "thread-result-ready? before join" #f (thread-result-ready? t))
+(check "thread-join returns thunk value" 17 (thread-join t))
+(check "thread-result-ready? after join" #t (thread-result-ready? t))
+(check "thread-join is memoised" 17 (thread-join t))
+
+;; Thread thunk with side effect — verify it runs exactly once.
+(define side-effect-count (vector 0))
+(define t2 (make-thread (lambda ()
+                          (vector-set! side-effect-count 0
+                                       (+ 1 (vector-ref side-effect-count 0)))
+                          'side-result)))
+(thread-join t2)
+(thread-join t2)  ;; second join MUST NOT re-run the thunk
+(check "thread thunk runs exactly once across multiple joins"
+       1 (vector-ref side-effect-count 0))
+
 ;; ── Result ──────────────────────────────────────────────────────────
 (display "---") (newline)
 (display "Passed: ") (display passed) (newline)
