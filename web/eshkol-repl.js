@@ -463,6 +463,35 @@ class EshkolRepl {
                 puts: (s) => { console.log(this.readString(s)); return 0; },
                 length: () => 0,
 
+                // Compiler-rt builtins LLVM emits for 128-bit arithmetic
+                __multi3: (alo, ahi, blo, bhi) => 0n,
+
+                // Bignum / rational runtime — degrade gracefully on the web
+                // (the JIT-on-WASM use case isn't a real bignum workload).
+                eshkol_bignum_from_overflow:    () => 0,
+                eshkol_bignum_to_double:        () => 0.0,
+                eshkol_bignum_binary_tagged:    () => 0,
+                eshkol_is_bignum_tagged:        () => 0,
+                eshkol_rational_create:           () => 0,
+                eshkol_rational_to_double:        () => 0.0,
+                eshkol_rational_binary_tagged_ptr:() => 0,
+                eshkol_is_rational_tagged_ptr:  () => 0,
+
+                // OALR regions — degrade to no-op (WASM has no region
+                // system; the heap allocator handles everything).
+                region_create: (_name, _size_hint) => 1,
+                region_push:   () => {},
+                region_pop:    () => {},
+                region_escape_tagged_value_into: (_dst, _src) => {},
+
+                // Tensor runtime helpers
+                eshkol_broadcast_elementwise_f64: () => 0,
+                eshkol_shapes_equal:              () => 0,
+
+                // Continuations — WASM can't longjmp out of host frames
+                eshkol_make_continuation_state:   () => 0,
+                eshkol_make_continuation_closure: () => 0,
+
                 // ============================================
                 // DOM API - Make Eshkol a Web Language
                 // ============================================
