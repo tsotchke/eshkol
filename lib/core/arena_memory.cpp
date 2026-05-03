@@ -28,6 +28,10 @@
 #include <new>      // for std::bad_alloc
 #include <stdexcept>
 #include <atomic>
+#include <filesystem>   // Bug W ask 2: provider-file scan
+#include <fstream>      // Bug W ask 2: read .esk files for provide/define lookup
+#include <string>       // std::string for the provider scan
+#include <cctype>       // std::isspace / std::isalnum
 #ifdef _WIN32
 #include <mutex>
 #endif
@@ -4209,18 +4213,50 @@ extern "C" void eshkol_exception_set_location(eshkol_exception_t* exc, uint32_t 
  * shares the same stub address — codegen can't tell at emit time
  * whether the slot will be resolved by JIT load order.
  */
+/* Bug W ask 2: scan project .esk files for `(provide …)` or `(define …)`
+ * lists that mention `name` and suggest the most likely file to (load …).
+ *
+ * Heuristics — text-based, not a full parse — so this never blocks the
+ * error from being raised.  We bound the work: max 4 dirs deep, max 800
+ * files, max 256 KB read per file.  Result is an arena-allocated
+ * malloc'd buffer (caller-owned), or NULL if nothing found.
+ *
+ * Search order:
+ *   1. CWD recursively
+ *   2. ./src recursively
+ *   3. ./lib recursively
+ *   4. $ESHKOL_PROJECT_ROOT recursively (if set)
+ *
+ * Match scoring (highest wins):
+ *   - 100  exact `(provide name)` form found
+ *   -  50  exact `(define name …)` or `(define (name …) …)` found
+ *   -  10  name appears in some other position (weak hint)
+ */
+static char* eshkol_find_provider_file(const char* name);
+
 extern "C" void* eshkol_check_forward_ref(void* loaded_fn_ptr,
                                           void* stub_sentinel,
                                           const char* func_name) {
     if (loaded_fn_ptr == stub_sentinel) {
-        char buf[512];
+        char buf[1024];
+        char* hint = nullptr;
         if (func_name && func_name[0]) {
-            snprintf(buf, sizeof(buf),
-                     "called undefined function '%s' "
-                     "(forward-referenced but never defined; "
-                     "check that the file containing its `define` is `(load …)`ed "
-                     "or `(require …)`d before the call site)",
-                     func_name);
+            hint = eshkol_find_provider_file(func_name);
+            if (hint) {
+                snprintf(buf, sizeof(buf),
+                         "called undefined function '%s' "
+                         "(forward-referenced but never defined). "
+                         "Likely missing: (load \"%s\") — that file appears to define '%s'.",
+                         func_name, hint, func_name);
+                std::free(hint);
+            } else {
+                snprintf(buf, sizeof(buf),
+                         "called undefined function '%s' "
+                         "(forward-referenced but never defined; "
+                         "check that the file containing its `define` is `(load …)`ed "
+                         "or `(require …)`d before the call site)",
+                         func_name);
+            }
         } else {
             snprintf(buf, sizeof(buf),
                      "called a forward-referenced function that was never defined");
@@ -4238,6 +4274,163 @@ extern "C" void* eshkol_check_forward_ref(void* loaded_fn_ptr,
         return nullptr;
     }
     return loaded_fn_ptr;
+}
+
+// Bug W ask 2 — implementation.
+// Walk a few project-relative directories looking for `.esk` files that
+// either `(provide … name …)` or `(define name …)` / `(define (name …) …)`.
+// Returns a malloc'd string the caller frees, or NULL.  Bounded work:
+// max ~800 files, max 256 KB per file, max 4 dirs deep.
+namespace {
+constexpr size_t kMaxFilesScanned   = 800;
+constexpr size_t kMaxFileBytes      = 256 * 1024;
+constexpr int    kMaxDepth          = 4;
+constexpr int    kScoreProvide      = 100;
+constexpr int    kScoreDefineHead   =  50;
+constexpr int    kScoreDefineParen  =  50;
+constexpr int    kScoreWeakMention  =  10;
+
+struct ScanResult {
+    std::string best_path;
+    int         best_score = 0;
+    size_t      files_scanned = 0;
+};
+
+bool starts_word(const std::string& s, size_t pos, const std::string& word) {
+    if (pos + word.size() > s.size()) return false;
+    return s.compare(pos, word.size(), word) == 0;
+}
+
+bool name_at(const std::string& haystack, size_t pos, const std::string& name) {
+    if (pos + name.size() > haystack.size()) return false;
+    if (haystack.compare(pos, name.size(), name) != 0) return false;
+    // Word boundary on both sides — Eshkol identifiers can contain alnum,
+    // -, _, !, ?, *, +, /, <, >, =, .  Anything else is a separator.
+    auto is_id = [](char c) {
+        return std::isalnum(static_cast<unsigned char>(c)) ||
+               c == '-' || c == '_' || c == '!' || c == '?' ||
+               c == '*' || c == '+' || c == '/' || c == '<' ||
+               c == '>' || c == '=' || c == '.';
+    };
+    if (pos > 0 && is_id(haystack[pos - 1])) return false;
+    size_t end = pos + name.size();
+    if (end < haystack.size() && is_id(haystack[end])) return false;
+    return true;
+}
+
+int score_file_text(const std::string& text, const std::string& name) {
+    int best = 0;
+    size_t pos = 0;
+    while ((pos = text.find(name, pos)) != std::string::npos) {
+        if (!name_at(text, pos, name)) { pos += name.size(); continue; }
+
+        // Look back to find the most recent `(`
+        size_t back = pos;
+        while (back > 0 && text[back - 1] != '(' && text[back - 1] != '\n') --back;
+        if (back == 0 || text[back - 1] != '(') {
+            // No `(` on this line before the name → weak mention only
+            if (best < kScoreWeakMention) best = kScoreWeakMention;
+            pos += name.size();
+            continue;
+        }
+        // Identify the head form just after `(`
+        size_t head_start = back;
+        while (head_start < text.size() &&
+               std::isspace(static_cast<unsigned char>(text[head_start]))) ++head_start;
+        if (starts_word(text, head_start, "provide")) {
+            return kScoreProvide;  // can't do better
+        }
+        if (starts_word(text, head_start, "define")) {
+            // (define name …)  OR  (define (name …) …)
+            // Distinguish: head is "define", then whitespace, then either
+            //   - the name itself
+            //   - `(` then the name
+            size_t after = head_start + 6;  // past "define"
+            while (after < text.size() &&
+                   std::isspace(static_cast<unsigned char>(text[after]))) ++after;
+            if (after < text.size() && text[after] == '(') {
+                ++after;
+                while (after < text.size() &&
+                       std::isspace(static_cast<unsigned char>(text[after]))) ++after;
+                if (after == pos) {
+                    if (best < kScoreDefineParen) best = kScoreDefineParen;
+                }
+            } else if (after == pos) {
+                if (best < kScoreDefineHead) best = kScoreDefineHead;
+            }
+        }
+        pos += name.size();
+    }
+    return best;
+}
+
+void scan_dir(const std::filesystem::path& dir, const std::string& name,
+              int depth, ScanResult& out) {
+    if (depth > kMaxDepth || out.files_scanned >= kMaxFilesScanned) return;
+    if (out.best_score >= kScoreProvide) return;  // can't beat that
+
+    std::error_code ec;
+    if (!std::filesystem::exists(dir, ec) || !std::filesystem::is_directory(dir, ec)) {
+        return;
+    }
+
+    for (auto it = std::filesystem::directory_iterator(dir, std::filesystem::directory_options::skip_permission_denied, ec);
+         !ec && it != std::filesystem::directory_iterator{} && out.files_scanned < kMaxFilesScanned;
+         it.increment(ec)) {
+        if (ec) break;
+        const auto& entry = *it;
+        std::error_code ec2;
+        if (entry.is_directory(ec2)) {
+            // Skip well-known build / vendor / hidden dirs
+            std::string dn = entry.path().filename().string();
+            if (dn.empty() || dn[0] == '.' ||
+                dn == "build" || dn == "build-x64" || dn == "build-asan" ||
+                dn == "build-xla" || dn == "build-cuda" || dn == "build-debug" ||
+                dn == "node_modules" || dn == "deps" || dn == "dist" ||
+                dn == "artifacts" || dn == "Testing") continue;
+            scan_dir(entry.path(), name, depth + 1, out);
+            continue;
+        }
+        if (!entry.is_regular_file(ec2)) continue;
+        if (entry.path().extension() != ".esk") continue;
+
+        ++out.files_scanned;
+        std::ifstream f(entry.path(), std::ios::binary);
+        if (!f) continue;
+        // Read up to kMaxFileBytes
+        std::string text;
+        text.resize(kMaxFileBytes);
+        f.read(text.data(), kMaxFileBytes);
+        text.resize(f.gcount());
+
+        int sc = score_file_text(text, name);
+        if (sc > out.best_score) {
+            out.best_score = sc;
+            out.best_path  = entry.path().string();
+            if (out.best_score >= kScoreProvide) return;
+        }
+    }
+}
+}  // anonymous namespace
+
+static char* eshkol_find_provider_file(const char* name) {
+    if (!name || !name[0]) return nullptr;
+    std::string sname(name);
+
+    ScanResult res;
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    fs::path cwd = fs::current_path(ec);
+    if (!ec) {
+        scan_dir(cwd, sname, 0, res);
+    }
+    if (res.best_score < kScoreProvide) {
+        if (const char* root = std::getenv("ESHKOL_PROJECT_ROOT")) {
+            scan_dir(fs::path(root), sname, 0, res);
+        }
+    }
+    if (res.best_score == 0) return nullptr;
+    return strdup(res.best_path.c_str());
 }
 
 extern "C" void eshkol_raise(eshkol_exception_t* exception) {
