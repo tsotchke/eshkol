@@ -199,6 +199,97 @@ struct llvm_parallel_execute_task {
 };
 
 // ============================================================================
+// Eager async future submission
+// ============================================================================
+//
+// Builds on the existing thread-pool execute worker (g_parallel_execute_worker)
+// to give `(future thunk)` true concurrent kickoff: at future-creation time
+// we allocate a llvm_parallel_execute_task pointing at a result slot stored
+// in the lazy_future, submit it to the global pool, and stash the resulting
+// eshkol_future_t in the lazy_future's `pool_future` field.  `force` then
+// checks `is_async`; if set, it calls `join_async` which future_get's the
+// pool future (blocking until the worker completes) and copies the worker's
+// written result into the lazy_future's stored fields.
+//
+// Layout of lazy_future async fields (lib/backend/thread_pool.cpp):
+//   pool_future          → eshkol_future_t* (NULL = lazy)
+//   async_result_slot    → eshkol_tagged_value_t* the worker writes
+//   async_task           → llvm_parallel_execute_task* owned by lazy_future
+
+// Mirror of the lazy_future struct in lib/backend/thread_pool.cpp.
+// Kept here as a shadow because parallel_codegen.cpp doesn't have a
+// public header for the struct.  Field offsets MUST match.
+namespace {
+struct eshkol_lazy_future_layout {
+    uint64_t thunk_ptr;
+    uint8_t  thunk_type;
+    uint8_t  thunk_flags;
+    uint8_t  forced;
+    uint8_t  pad[5];
+    uint64_t result_ptr;
+    uint8_t  result_type;
+    uint8_t  result_flags;
+    uint8_t  pad2[6];
+    void*    pool_future;
+    void*    async_result_slot;
+    void*    async_task;
+};
+} // anonymous namespace
+
+extern "C" uint8_t eshkol_lazy_future_submit_async(
+    void* lf_void, uint64_t closure_ptr, uint8_t closure_type, uint8_t closure_flags) {
+    if (!lf_void) return 0;
+    auto* lf = reinterpret_cast<eshkol_lazy_future_layout*>(lf_void);
+
+    if (!g_parallel_execute_worker) eshkol_parallel_workers_lazy_resolve();
+    if (!g_parallel_execute_worker) return 0;     // workers not registered
+
+    eshkol_thread_pool_t* pool = thread_pool_global();
+    if (!pool) return 0;
+
+    // Allocate result slot + task on the heap; lazy_future owns them.
+    auto* slot = new eshkol_tagged_value_t{};
+    slot->type = ESHKOL_VALUE_NULL;
+    auto* task = new llvm_parallel_execute_task{
+        closure_ptr,
+        static_cast<uint64_t>(closure_type),
+        static_cast<uint64_t>(closure_flags),
+        reinterpret_cast<uint64_t>(slot),
+    };
+    eshkol_future_t* fut = thread_pool_submit(pool, g_parallel_execute_worker, task);
+    if (!fut) { delete slot; delete task; return 0; }
+
+    lf->pool_future = fut;
+    lf->async_result_slot = slot;
+    lf->async_task = task;
+    return 1;
+}
+
+extern "C" void eshkol_lazy_future_join_async(void* lf_void) {
+    if (!lf_void) return;
+    auto* lf = reinterpret_cast<eshkol_lazy_future_layout*>(lf_void);
+
+    if (lf->forced) return;            // already done
+    if (!lf->pool_future) return;      // not async
+
+    eshkol_future_t* fut = static_cast<eshkol_future_t*>(lf->pool_future);
+    (void)future_get(fut);             // blocks until worker completes
+    auto* slot = static_cast<eshkol_tagged_value_t*>(lf->async_result_slot);
+    if (slot) {
+        lf->result_ptr   = slot->data.ptr_val;
+        lf->result_type  = slot->type;
+        lf->result_flags = slot->flags;
+    }
+    lf->forced = 1;
+    future_release(fut);
+    delete static_cast<llvm_parallel_execute_task*>(lf->async_task);
+    delete slot;
+    lf->pool_future = nullptr;
+    lf->async_task = nullptr;
+    lf->async_result_slot = nullptr;
+}
+
+// ============================================================================
 // Helper Functions
 // ============================================================================
 

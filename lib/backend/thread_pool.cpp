@@ -850,7 +850,17 @@ bool future_wait_all(eshkol_future_t** futures, size_t count, uint64_t timeout_m
 // Eshkol Lazy Future Helpers for LLVM-Generated Code
 // ============================================================================
 
-// Lazy future structure - simple pointer storage
+// Lazy future structure - holds the thunk descriptor, the eventual
+// result, and (optionally) handles for eager async submission.
+//
+// `forced=1` means the result fields are valid.
+//
+// Eager async fields (set by eshkol_lazy_future_submit_async):
+//   pool_future != NULL  → there's a pool task in flight; future_join_async
+//                          should call future_get on it before returning.
+//   async_result_slot    → buffer the worker writes into; copied to
+//                          (result_ptr, result_type, result_flags) after
+//                          the worker completes.
 struct eshkol_lazy_future {
     uint64_t thunk_ptr;
     uint8_t thunk_type;
@@ -861,6 +871,10 @@ struct eshkol_lazy_future {
     uint8_t result_type;
     uint8_t result_flags;
     uint8_t padding2[6];
+    // Eager-async additions
+    void* pool_future;          // eshkol_future_t* — NULL if lazy
+    void* async_result_slot;    // eshkol_tagged_value_t* — where worker writes
+    void* async_task;           // llvm_parallel_execute_task* — owned, freed in join
 };
 
 extern "C" eshkol_lazy_future* eshkol_lazy_future_create_ptr(
@@ -874,7 +888,16 @@ extern "C" eshkol_lazy_future* eshkol_lazy_future_create_ptr(
     lf->result_ptr = 0;
     lf->result_type = ESHKOL_VALUE_NULL;
     lf->result_flags = 0;
+    lf->pool_future = nullptr;
+    lf->async_result_slot = nullptr;
+    lf->async_task = nullptr;
     return lf;
+}
+
+/* Predicate: was this future created via eager async submission?
+ * (force checks this to decide whether to call join_async or eval inline.) */
+extern "C" uint8_t eshkol_lazy_future_is_async(eshkol_lazy_future* lf) {
+    return (lf && lf->pool_future) ? 1 : 0;
 }
 
 extern "C" uint8_t eshkol_lazy_future_is_ready(eshkol_lazy_future* lf) {

@@ -1272,6 +1272,26 @@ bool ReplJITContext::loadStdlib() {
                               << std::endl;
                 }
 
+                // Same story for __eshkol_init_parallel_workers — it lives in
+                // stdlib.o's llvm.global_ctors, which addObjectFile does NOT
+                // execute.  Without this, g_parallel_execute_worker stays
+                // NULL, parallel-execute fails with "execute worker not
+                // registered (stdlib not loaded?)" and (future thunk)'s
+                // eager-submit path silently no-ops back to lazy semantics.
+                // Symptoms: cross-thread blocking-channel tests deadlock
+                // because the producer "future" never actually runs on a
+                // worker thread.
+                if (auto pw_init = jit_->lookup("__eshkol_init_parallel_workers")) {
+                    using PWInitFn = void (*)(void);
+                    auto fn = reinterpret_cast<PWInitFn>(pw_init->getValue());
+                    fn();
+                } else {
+                    consumeError(pw_init.takeError());
+                    // Quieter — many programs don't use parallel.  If they
+                    // try parallel-execute / future-eager, the user will
+                    // see a clear error from the call site.
+                }
+
                 std::cerr << "[REPL] Loaded stdlib from: " << stdlib_obj_path << std::endl;
                 stdlib_object_loaded_ = true;
                 return true;
