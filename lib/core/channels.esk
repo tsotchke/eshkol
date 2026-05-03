@@ -1,0 +1,194 @@
+;; channels.esk — Go-style bounded CSP channels
+;;
+;; (require core.channels)
+;;
+;; Built on core.threads' mutex + condvar.  Channels are bounded
+;; (fixed-capacity ring buffer) and blocking by default; non-blocking
+;; try-send! / try-recv! variants are provided for poll-style use.
+;;
+;; Concurrency model: channels are designed to coordinate parallel-map
+;; workers and other thread-pool tasks.  The make-thread / thread-join
+;; primitives in core.threads are currently lazy (see that module's
+;; header); for real concurrent producer/consumer you want
+;;   (parallel-map (lambda (_) (worker ch)) '(0 0 0 0))
+;; with channels passed by value (the channel is a vector — pointer
+;; equality across captures preserves identity).
+;;
+;; Once a channel is CLOSED:
+;;   - channel-send! errors
+;;   - channel-recv! drains buffered items, then returns the
+;;     channel-closed-sentinel forever (non-blocking after drain)
+;;   - waiting receivers are woken
+;;
+;; Layout: vector of length 10 with header sentinel for channel?
+;;   0: tag 'eshkol-channel
+;;   1: capacity (int)
+;;   2: buffer (vector of capacity slots)
+;;   3: head (next read position)
+;;   4: tail (next write position)
+;;   5: count (current items)
+;;   6: closed? (#t/#f)
+;;   7: not-empty condvar (signalled on send)
+;;   8: not-full condvar (signalled on recv)
+;;   9: mutex
+
+(require stdlib)
+(require core.threads)
+
+(provide
+  make-channel channel? channel-capacity channel-len channel-closed?
+  channel-send! channel-recv!
+  channel-try-send! channel-try-recv!
+  channel-close!
+  channel-closed-sentinel)
+
+;; Sentinel returned by channel-recv! after a closed channel is drained.
+;; Use eq? to test:  (eq? v (channel-closed-sentinel))
+(define +channel-closed+ (cons 'channel-closed 'sentinel))
+(define (channel-closed-sentinel) +channel-closed+)
+
+(define (make-channel cap)
+  "Create a bounded channel with the given integer capacity (>= 1).
+   Channel is open and empty.  Caller is responsible for eventually
+   calling (channel-close! ch) so blocked receivers can drain."
+  (if (< cap 1)
+      (error "make-channel: capacity must be >= 1")
+      (vector 'eshkol-channel
+              cap
+              (make-vector cap #f)
+              0     ; head
+              0     ; tail
+              0     ; count
+              #f    ; closed?
+              (make-condvar)   ; not-empty
+              (make-condvar)   ; not-full
+              (make-mutex))))
+
+(define (channel? ch)
+  (and (vector? ch)
+       (= (vector-length ch) 10)
+       (eq? (vector-ref ch 0) 'eshkol-channel)))
+
+(define (channel-capacity ch) (vector-ref ch 1))
+(define (channel-len ch)
+  (with-mutex (vector-ref ch 9) (lambda () (vector-ref ch 5))))
+(define (channel-closed? ch)
+  (with-mutex (vector-ref ch 9) (lambda () (vector-ref ch 6))))
+
+;; ── Internal: lock-free buffer ops (caller MUST hold the mutex) ─────
+
+(define (-ch-buffer-push! ch val)
+  (let ((buf (vector-ref ch 2))
+        (cap (vector-ref ch 1))
+        (tail (vector-ref ch 4))
+        (cnt  (vector-ref ch 5)))
+    (vector-set! buf tail val)
+    (vector-set! ch 4 (modulo (+ tail 1) cap))
+    (vector-set! ch 5 (+ cnt 1))))
+
+(define (-ch-buffer-pop! ch)
+  (let* ((buf (vector-ref ch 2))
+         (cap (vector-ref ch 1))
+         (head (vector-ref ch 3))
+         (val (vector-ref buf head)))
+    (vector-set! buf head #f)   ; clear slot to release reference
+    (vector-set! ch 3 (modulo (+ head 1) cap))
+    (vector-set! ch 5 (- (vector-ref ch 5) 1))
+    val))
+
+;; ── Blocking send/recv ──────────────────────────────────────────────
+
+(define (channel-send! ch val)
+  "Blocking send.  Blocks while the buffer is full.  Errors if the
+   channel is closed."
+  (let ((m (vector-ref ch 9))
+        (not-full  (vector-ref ch 8))
+        (not-empty (vector-ref ch 7)))
+    (mutex-lock! m)
+    ;; Wait while full and open.
+    (let loop ()
+      (cond
+        ((vector-ref ch 6)
+         (mutex-unlock! m)
+         (error "channel-send!: send on closed channel"))
+        ((>= (vector-ref ch 5) (vector-ref ch 1))
+         (condvar-wait! not-full m)
+         (loop))
+        (else
+         (-ch-buffer-push! ch val)
+         (condvar-signal! not-empty)
+         (mutex-unlock! m))))))
+
+(define (channel-recv! ch)
+  "Blocking receive.  Blocks while the buffer is empty and the channel
+   is open.  Returns (channel-closed-sentinel) once the channel is
+   closed AND drained — use eq? to test."
+  (let ((m (vector-ref ch 9))
+        (not-full  (vector-ref ch 8))
+        (not-empty (vector-ref ch 7)))
+    (mutex-lock! m)
+    (let loop ()
+      (cond
+        ((> (vector-ref ch 5) 0)
+         (let ((v (-ch-buffer-pop! ch)))
+           (condvar-signal! not-full)
+           (mutex-unlock! m)
+           v))
+        ((vector-ref ch 6)
+         ;; Closed and drained
+         (mutex-unlock! m)
+         +channel-closed+)
+        (else
+         (condvar-wait! not-empty m)
+         (loop))))))
+
+;; ── Non-blocking variants ───────────────────────────────────────────
+
+(define (channel-try-send! ch val)
+  "Non-blocking send.  Returns #t if delivered, #f if buffer full or
+   channel closed."
+  (let ((m (vector-ref ch 9)))
+    (mutex-lock! m)
+    (cond
+      ((vector-ref ch 6) (mutex-unlock! m) #f)
+      ((>= (vector-ref ch 5) (vector-ref ch 1))
+       (mutex-unlock! m) #f)
+      (else
+       (-ch-buffer-push! ch val)
+       (condvar-signal! (vector-ref ch 7))
+       (mutex-unlock! m)
+       #t))))
+
+(define (channel-try-recv! ch)
+  "Non-blocking receive.  Returns the value if available; returns
+   (channel-closed-sentinel) if the channel is closed AND drained;
+   returns #f if the channel is open but empty."
+  (let ((m (vector-ref ch 9)))
+    (mutex-lock! m)
+    (cond
+      ((> (vector-ref ch 5) 0)
+       (let ((v (-ch-buffer-pop! ch)))
+         (condvar-signal! (vector-ref ch 8))
+         (mutex-unlock! m)
+         v))
+      ((vector-ref ch 6)
+       (mutex-unlock! m)
+       +channel-closed+)
+      (else
+       (mutex-unlock! m)
+       #f))))
+
+(define (channel-close! ch)
+  "Mark the channel closed and wake all waiters.  Idempotent.
+   Subsequent sends error; recvs drain remaining buffered items
+   then return (channel-closed-sentinel)."
+  (let ((m (vector-ref ch 9)))
+    (mutex-lock! m)
+    (cond
+      ((vector-ref ch 6)
+       (mutex-unlock! m))
+      (else
+       (vector-set! ch 6 #t)
+       (condvar-broadcast! (vector-ref ch 7))   ; wake recvs
+       (condvar-broadcast! (vector-ref ch 8))   ; wake sends
+       (mutex-unlock! m)))))

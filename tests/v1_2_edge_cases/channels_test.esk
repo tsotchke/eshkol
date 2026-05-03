@@ -1,0 +1,141 @@
+;; channels_test.esk — single-thread + cross-thread smoke for
+;; core.channels (#157).
+
+(require stdlib)
+(require core.channels)
+
+(define passed 0)
+(define failed 0)
+(define (check label expected actual)
+  (if (equal? expected actual)
+      (begin (display "PASS: ") (display label) (newline)
+             (set! passed (+ passed 1)))
+      (begin (display "FAIL: ") (display label)
+             (display " (expected ") (display expected)
+             (display ", got ") (display actual) (display ")") (newline)
+             (set! failed (+ failed 1)))))
+
+;; ── Construction + predicates ───────────────────────────────────────
+(define ch (make-channel 4))
+(check "channel? recognises channel" #t (channel? ch))
+(check "channel? rejects non-channel" #f (channel? 'x))
+(check "fresh capacity = 4" 4 (channel-capacity ch))
+(check "fresh len = 0" 0 (channel-len ch))
+(check "fresh closed? = #f" #f (channel-closed? ch))
+
+;; ── Single-thread send/recv (no contention) ─────────────────────────
+(channel-send! ch 'a)
+(channel-send! ch 'b)
+(channel-send! ch 'c)
+(check "len after 3 sends" 3 (channel-len ch))
+(check "FIFO recv 1" 'a (channel-recv! ch))
+(check "FIFO recv 2" 'b (channel-recv! ch))
+(check "len after 2 recvs" 1 (channel-len ch))
+(check "FIFO recv 3" 'c (channel-recv! ch))
+(check "len drained" 0 (channel-len ch))
+
+;; ── Wrap-around buffer (>capacity worth of total traffic) ───────────
+(channel-send! ch 1)
+(channel-send! ch 2)
+(channel-send! ch 3)
+(channel-send! ch 4)   ; fills buffer (cap=4)
+(check "len at capacity" 4 (channel-len ch))
+(check "wrap recv 1" 1 (channel-recv! ch))
+(channel-send! ch 5)   ; uses wrapped slot
+(check "wrap recv 2" 2 (channel-recv! ch))
+(check "wrap recv 3" 3 (channel-recv! ch))
+(check "wrap recv 4" 4 (channel-recv! ch))
+(check "wrap recv 5" 5 (channel-recv! ch))
+(check "len drained again" 0 (channel-len ch))
+
+;; ── Non-blocking variants ───────────────────────────────────────────
+(check "try-recv on empty" #f (channel-try-recv! ch))
+(check "try-send 'x" #t (channel-try-send! ch 'x))
+(check "try-recv 'x" 'x (channel-try-recv! ch))
+
+;; Fill via try-send, then verify try-send returns #f when full
+(channel-try-send! ch 1) (channel-try-send! ch 2)
+(channel-try-send! ch 3) (channel-try-send! ch 4)
+(check "try-send on full returns #f" #f (channel-try-send! ch 99))
+;; Drain to leave room
+(channel-recv! ch) (channel-recv! ch)
+(channel-recv! ch) (channel-recv! ch)
+
+;; ── Close semantics ─────────────────────────────────────────────────
+(channel-send! ch 'last1)
+(channel-send! ch 'last2)
+(channel-close! ch)
+(check "closed? after close" #t (channel-closed? ch))
+(check "drain after close: last1" 'last1 (channel-recv! ch))
+(check "drain after close: last2" 'last2 (channel-recv! ch))
+;; Now empty + closed → returns sentinel
+(check "recv on closed+drained returns sentinel"
+       #t (eq? (channel-recv! ch) (channel-closed-sentinel)))
+(check "try-recv on closed+drained returns sentinel"
+       #t (eq? (channel-try-recv! ch) (channel-closed-sentinel)))
+;; try-send on closed returns #f
+(check "try-send on closed returns #f" #f (channel-try-send! ch 'late))
+
+;; close is idempotent
+(channel-close! ch)
+(check "double-close is idempotent" #t (channel-closed? ch))
+
+;; ── Cross-thread parallel fill + drain ─────────────────────────────
+;; 8 parallel-map workers each push 50 items via try-send!, then
+;; 8 workers each drain 50 via try-recv!, summing into a shared
+;; mutex-protected cell.  Avoids pool-starvation by using the
+;; non-blocking variants (no thread parks holding a pool slot).
+;;
+;; NOTE: blocking channel-send!/channel-recv! mixed in a single
+;; parallel-map batch CAN deadlock against a small pool (N producers
+;; pin all workers; consumer never gets scheduled).  For real
+;; multi-producer/multi-consumer, use the try-* variants with a
+;; finite retry budget — what this test exercises.
+
+(define ch2 (make-channel 500))
+(define total-cell (vector 0))
+(define total-mutex (make-mutex))
+
+(parallel-map
+  (lambda (i)
+    (let loop ((j 0))
+      (if (< j 50)
+          (begin (channel-try-send! ch2 (+ (* i 1000) j))
+                 (loop (+ j 1)))
+          'done)))
+  '(0 1 2 3 4 5 6 7))
+(check "fill batch left correct count in channel"
+       400 (channel-len ch2))
+
+(parallel-map
+  (lambda (_)
+    (let loop ((j 0) (sum 0))
+      (if (< j 50)
+          (let ((v (channel-try-recv! ch2)))
+            (cond
+              ((not v) (loop j sum))                         ; transient empty
+              ((eq? v (channel-closed-sentinel)) sum)
+              (else  (loop (+ j 1) (+ sum v)))))
+          (begin
+            (with-mutex total-mutex
+              (lambda ()
+                (vector-set! total-cell 0 (+ (vector-ref total-cell 0) sum))))
+            'done))))
+  '(0 1 2 3 4 5 6 7))
+
+;; Expected total: sum over i in {0..7} of sum_{j=0..49} (i*1000 + j)
+;;   = sum_i (50*1000i + sum_j j)
+;;   = sum_i (50000 i + 1225)
+;;   = 50000*(0+1+...+7) + 8*1225
+;;   = 50000*28 + 9800
+;;   = 1400000 + 9800
+;;   = 1409800
+(check "parallel try-send/try-recv: total exactly preserved"
+       1409800 (vector-ref total-cell 0))
+(check "channel drained after parallel work" 0 (channel-len ch2))
+
+;; ── Result ──────────────────────────────────────────────────────────
+(display "---") (newline)
+(display "Passed: ") (display passed) (newline)
+(display "Failed: ") (display failed) (newline)
+(if (> failed 0) (exit 1) (exit 0))
