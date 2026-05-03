@@ -11956,17 +11956,128 @@ private:
             if (!tv.llvm_value) return nullptr;
             Value* arg = typedValueToTaggedValue(tv);
 
-            // Check if it's a HEAP_PTR with HEAP_SUBTYPE_PROMISE header
+            // Two heap-resident things support force:
+            //   - Promises (delay/force, R7RS): allocated via the arena
+            //     with HEAP_SUBTYPE_PROMISE in the heap header at ptr-8.
+            //     Layout: [forced:i64][thunk:tagged_value][cached:tagged_value]
+            //   - Lazy futures (future/force, parallel): allocated via
+            //     `new eshkol_lazy_future` in lib/backend/thread_pool.cpp.
+            //     NO HEAP HEADER (raw new, not arena_allocate_with_header).
+            //     The future-codegen flags this by stamping FUTURE_MARKER
+            //     into the tagged-value FLAGS slot {1}.  Forcing a
+            //     future calls the eshkol_lazy_future_* C runtime helpers.
+            //
+            // Pre-fix #222: only the promise path existed.  A force on
+            // a future fell through to "not_promise → return as-is",
+            // so the thunk never ran.
+            constexpr uint8_t FUTURE_FLAG = 10;
+
             Value* type_tag = builder->CreateExtractValue(arg, {0});
+            Value* arg_flags = builder->CreateExtractValue(arg, {1});
             Value* is_heap = builder->CreateICmpEQ(type_tag,
                 ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
+            Value* is_future_flagged = builder->CreateICmpEQ(arg_flags,
+                ConstantInt::get(int8_type, FUTURE_FLAG));
+            Value* is_future = builder->CreateAnd(is_heap, is_future_flagged);
 
             Function* current_func = builder->GetInsertBlock()->getParent();
+            BasicBlock* future_bb = BasicBlock::Create(*context, "force_future", current_func);
+            BasicBlock* check_promise_bb = BasicBlock::Create(*context, "force_check_promise", current_func);
             BasicBlock* check_sub_bb = BasicBlock::Create(*context, "force_check_sub", current_func);
             BasicBlock* promise_bb = BasicBlock::Create(*context, "force_promise", current_func);
             BasicBlock* not_promise_bb = BasicBlock::Create(*context, "force_not_promise", current_func);
             BasicBlock* merge_bb = BasicBlock::Create(*context, "force_merge", current_func);
 
+            // Future first — its "ptr - 8" is undefined memory, so we
+            // MUST NOT fall into the heap-header check for futures.
+            builder->CreateCondBr(is_future, future_bb, check_promise_bb);
+
+            // ── FUTURE PATH (lazy_future runtime helpers) ───────────────
+            builder->SetInsertPoint(future_bb);
+            Value* future_ptr_raw = builder->CreateExtractValue(arg, {4});
+            Value* future_ptr = builder->CreateIntToPtr(future_ptr_raw,
+                PointerType::getUnqual(*context));
+
+            auto declare_lf = [&](const char* name, llvm::Type* ret_ty,
+                                  std::vector<llvm::Type*> args) -> Function* {
+                if (Function* f = module->getFunction(name)) return f;
+                FunctionType* ft = FunctionType::get(ret_ty, args, false);
+                return Function::Create(ft, Function::ExternalLinkage, name, module.get());
+            };
+            Function* lf_is_ready  = declare_lf("eshkol_lazy_future_is_ready",
+                                                int8_type, {builder->getPtrTy()});
+            Function* lf_get_tp    = declare_lf("eshkol_lazy_future_get_thunk_ptr",
+                                                int64_type, {builder->getPtrTy()});
+            Function* lf_get_tt    = declare_lf("eshkol_lazy_future_get_thunk_type",
+                                                int8_type, {builder->getPtrTy()});
+            Function* lf_get_tf    = declare_lf("eshkol_lazy_future_get_thunk_flags",
+                                                int8_type, {builder->getPtrTy()});
+            Function* lf_get_rp    = declare_lf("eshkol_lazy_future_get_result_ptr",
+                                                int64_type, {builder->getPtrTy()});
+            Function* lf_get_rt    = declare_lf("eshkol_lazy_future_get_result_type",
+                                                int8_type, {builder->getPtrTy()});
+            Function* lf_get_rf    = declare_lf("eshkol_lazy_future_get_result_flags",
+                                                int8_type, {builder->getPtrTy()});
+            Function* lf_set_res   = declare_lf("eshkol_lazy_future_set_result_ptr",
+                                                builder->getVoidTy(),
+                                                {builder->getPtrTy(), int64_type, int8_type, int8_type});
+
+            BasicBlock* fut_cached_bb = BasicBlock::Create(*context, "future_cached", current_func);
+            BasicBlock* fut_eval_bb   = BasicBlock::Create(*context, "future_eval",   current_func);
+            BasicBlock* fut_done_bb   = BasicBlock::Create(*context, "future_done",   current_func);
+
+            Value* fut_ready = builder->CreateCall(lf_is_ready, {future_ptr});
+            Value* fut_already = builder->CreateICmpNE(fut_ready,
+                ConstantInt::get(int8_type, 0));
+            builder->CreateCondBr(fut_already, fut_cached_bb, fut_eval_bb);
+
+            // Eval: reconstruct thunk tagged value, call via standard
+            // closure dispatcher (handles captures + arity), store back.
+            builder->SetInsertPoint(fut_eval_bb);
+            Value* fut_thunk_ptr = builder->CreateCall(lf_get_tp, {future_ptr});
+            Value* fut_thunk_type = builder->CreateCall(lf_get_tt, {future_ptr});
+            Value* fut_thunk_flags = builder->CreateCall(lf_get_tf, {future_ptr});
+            Value* fut_thunk = UndefValue::get(tagged_value_type);
+            fut_thunk = builder->CreateInsertValue(fut_thunk, fut_thunk_type, {0});
+            fut_thunk = builder->CreateInsertValue(fut_thunk, fut_thunk_flags, {1});
+            fut_thunk = builder->CreateInsertValue(fut_thunk,
+                ConstantInt::get(builder->getInt16Ty(), 0), {2});
+            fut_thunk = builder->CreateInsertValue(fut_thunk,
+                ConstantInt::get(builder->getInt32Ty(), 0), {3});
+            fut_thunk = builder->CreateInsertValue(fut_thunk, fut_thunk_ptr, {4});
+            Value* fut_eval_result = codegenClosureCall(fut_thunk, {}, "future_thunk");
+            BasicBlock* fut_eval_exit = builder->GetInsertBlock();
+            // Persist cached result components.
+            Value* fut_eval_rp = builder->CreateExtractValue(fut_eval_result, {4});
+            Value* fut_eval_rt = builder->CreateExtractValue(fut_eval_result, {0});
+            Value* fut_eval_rf = builder->CreateExtractValue(fut_eval_result, {1});
+            builder->CreateCall(lf_set_res, {future_ptr, fut_eval_rp, fut_eval_rt, fut_eval_rf});
+            builder->CreateBr(fut_done_bb);
+
+            // Cached: reconstruct tagged value from stored components.
+            builder->SetInsertPoint(fut_cached_bb);
+            Value* fut_cached_rp = builder->CreateCall(lf_get_rp, {future_ptr});
+            Value* fut_cached_rt = builder->CreateCall(lf_get_rt, {future_ptr});
+            Value* fut_cached_rf = builder->CreateCall(lf_get_rf, {future_ptr});
+            Value* fut_cached_val = UndefValue::get(tagged_value_type);
+            fut_cached_val = builder->CreateInsertValue(fut_cached_val, fut_cached_rt, {0});
+            fut_cached_val = builder->CreateInsertValue(fut_cached_val, fut_cached_rf, {1});
+            fut_cached_val = builder->CreateInsertValue(fut_cached_val,
+                ConstantInt::get(builder->getInt16Ty(), 0), {2});
+            fut_cached_val = builder->CreateInsertValue(fut_cached_val,
+                ConstantInt::get(builder->getInt32Ty(), 0), {3});
+            fut_cached_val = builder->CreateInsertValue(fut_cached_val, fut_cached_rp, {4});
+            builder->CreateBr(fut_done_bb);
+
+            builder->SetInsertPoint(fut_done_bb);
+            PHINode* fut_phi = builder->CreatePHI(tagged_value_type, 2, "future_val");
+            fut_phi->addIncoming(fut_eval_result, fut_eval_exit);
+            fut_phi->addIncoming(fut_cached_val, fut_cached_bb);
+            builder->CreateBr(merge_bb);
+            BasicBlock* fut_done_exit = builder->GetInsertBlock();
+
+            // ── PROMISE PATH (existing) ─────────────────────────────────
+            builder->SetInsertPoint(check_promise_bb);
             builder->CreateCondBr(is_heap, check_sub_bb, not_promise_bb);
 
             // Check subtype header
@@ -12052,7 +12163,8 @@ private:
             builder->CreateBr(merge_bb);
 
             builder->SetInsertPoint(merge_bb);
-            PHINode* final_result = builder->CreatePHI(tagged_value_type, 2, "force_result");
+            PHINode* final_result = builder->CreatePHI(tagged_value_type, 3, "force_result");
+            final_result->addIncoming(fut_phi, fut_done_exit);
             final_result->addIncoming(promise_result, promise_done_bb);
             final_result->addIncoming(arg, not_promise_bb);
             return final_result;
