@@ -1,0 +1,254 @@
+;; merkle.esk — Merkle trees + content-addressable storage
+;;
+;; (require core.merkle)
+;;
+;; Pure-Eshkol implementation, no FFI dependencies.  Uses FNV-1a 64-bit
+;; as the default hash — fast and well-distributed for content
+;; addressing within a single process, but NOT cryptographically secure.
+;;
+;; For tamper-resistant content addressing (signing, distributed
+;; storage with adversarial actors), pass a crypto-grade hash via
+;; the optional hash-fn parameter, e.g. agent.crypto's sha256:
+;;
+;;   (require agent.crypto)
+;;   (define mt (merkle-tree-with-hash my-data sha256))
+;;   (define cas (make-cas-with-hash sha256))
+;;
+;; Tree representation:
+;;   leaf  → (vector 'merkle-leaf hash data)
+;;   inode → (vector 'merkle-inode hash left right)
+;;
+;; A tree's root is just the top inode; (merkle-root tree) extracts
+;; its hash.  Trees with an odd number of leaves at any level
+;; duplicate the last leaf (Bitcoin convention) so every inode has
+;; two children and proofs are uniform.
+
+(require stdlib)
+
+(provide
+  ;; Hash
+  fnv1a-64 hash->hex
+  ;; Merkle tree
+  merkle-leaf merkle-leaf? merkle-inode? merkle-root merkle-data
+  merkle-tree merkle-tree-with-hash
+  merkle-leaves
+  merkle-proof merkle-verify
+  ;; Content-addressable store
+  make-cas make-cas-with-hash cas? cas-put! cas-get cas-has? cas-size cas-keys)
+
+;; ── FNV-1a 64-bit hash ──────────────────────────────────────────────
+;;
+;; The hash inner loop lives in lib/core/merkle.c — Eshkol-side
+;; modulo on bignums >2^53 currently truncates to ~32 bits, which
+;; broke the fully-Eshkol implementation (different result on every
+;; call to fnv1a-64 of the same input).  C-side uint64_t overflow
+;; semantics are exactly what FNV-1a wants.
+;;
+;; Returns an int64 (user observes the uint64 bit pattern as a
+;; possibly-negative int — for content addressing this is fine
+;; because we render via hash->hex which extracts the low 64 bits).
+
+(extern i64 fnv1a-64-raw    ptr i64        :real eshkol_fnv1a_64)
+(extern i64 u64-to-hex16-raw i64 ptr i64   :real eshkol_u64_to_hex16)
+
+(define (fnv1a-64 str)
+  "FNV-1a 64-bit hash of the UTF-8 byte view of str.  Returns the
+   uint64 bit pattern as an int64 (may be negative — that's fine,
+   only equality and hex rendering matter for content addressing)."
+  (fnv1a-64-raw str (string-length str)))
+
+(define (hash->hex h)
+  "Render a 64-bit hash as a 16-char lowercase hex string."
+  (let ((buf (make-string 17 #\space)))
+    (u64-to-hex16-raw h buf 17)
+    (substring buf 0 16)))
+
+;; ── Merkle tree ──────────────────────────────────────────────────────
+
+(define (merkle-leaf data . hash-fn-opt)
+  "Wrap raw data as a leaf node.  Optional second arg is the hash
+   function (defaults to fnv1a-64).  data must be a string."
+  (let ((hash-fn (if (null? hash-fn-opt) fnv1a-64 (car hash-fn-opt))))
+    (vector 'merkle-leaf (hash-fn data) data)))
+
+(define (merkle-leaf? n)
+  (and (vector? n)
+       (>= (vector-length n) 3)
+       (eq? (vector-ref n 0) 'merkle-leaf)))
+
+(define (merkle-inode? n)
+  (and (vector? n)
+       (>= (vector-length n) 4)
+       (eq? (vector-ref n 0) 'merkle-inode)))
+
+(define (merkle-root n)
+  "Hash at the root of the tree (or the leaf's own hash if n is a leaf)."
+  (cond ((merkle-leaf? n)  (vector-ref n 1))
+        ((merkle-inode? n) (vector-ref n 1))
+        (else (error "merkle-root: not a merkle node"))))
+
+(define (merkle-data n)
+  "Original data of a leaf node.  Errors if n is an inode."
+  (if (merkle-leaf? n)
+      (vector-ref n 2)
+      (error "merkle-data: not a leaf node")))
+
+(define (merkle-pair-hash hash-fn left right)
+  "Hash the concatenation of two child hashes (rendered as hex)."
+  (hash-fn (string-append (hash->hex left) (hash->hex right))))
+
+(define (merkle-build-level hash-fn nodes)
+  ;; Pair adjacent nodes; if odd, duplicate the last one.  Returns
+  ;; the next level up.
+  (cond
+    ((null? nodes) '())
+    ((null? (cdr nodes))
+     ;; Single node at this level: become root
+     (list (car nodes)))
+    (else
+     (let loop ((rest nodes) (acc '()))
+       (cond
+         ((null? rest) (reverse acc))
+         ((null? (cdr rest))
+          ;; Odd one out — duplicate it
+          (let* ((only (car rest))
+                 (h (merkle-pair-hash hash-fn
+                                      (merkle-root only)
+                                      (merkle-root only))))
+            (reverse (cons (vector 'merkle-inode h only only) acc))))
+         (else
+          (let* ((l (car rest))
+                 (r (cadr rest))
+                 (h (merkle-pair-hash hash-fn
+                                      (merkle-root l)
+                                      (merkle-root r))))
+            (loop (cddr rest)
+                  (cons (vector 'merkle-inode h l r) acc)))))))))
+
+(define (merkle-tree-with-hash data-list hash-fn)
+  "Build a Merkle tree from a list of strings using the given hash
+   function.  Returns the root node.  Empty list errors out."
+  (cond
+    ((null? data-list)
+     (error "merkle-tree-with-hash: cannot build tree from empty list"))
+    (else
+     (let* ((leaves (map (lambda (d) (merkle-leaf d hash-fn)) data-list)))
+       (let loop ((level leaves))
+         (if (null? (cdr level))
+             (car level)
+             (loop (merkle-build-level hash-fn level))))))))
+
+(define (merkle-tree data-list)
+  "Build a Merkle tree from a list of strings using the default hash
+   (FNV-1a 64-bit).  Returns the root node."
+  (merkle-tree-with-hash data-list fnv1a-64))
+
+(define (merkle-leaves tree)
+  "Walk the tree left-to-right, returning the list of leaf data."
+  (cond ((merkle-leaf? tree) (list (merkle-data tree)))
+        ((merkle-inode? tree)
+         (let ((l (vector-ref tree 2))
+               (r (vector-ref tree 3)))
+           (if (eq? l r)
+               ;; Duplicated odd-one-out: count once
+               (merkle-leaves l)
+               (append (merkle-leaves l) (merkle-leaves r)))))
+        (else (error "merkle-leaves: not a merkle node"))))
+
+;; ── Proofs ──────────────────────────────────────────────────────────
+;;
+;; A proof for leaf at index i in the leaf list is a list of
+;; (sibling-hash . side) pairs from leaf level up to root, where side
+;; is 'left or 'right indicating which side the sibling sits on.
+
+(define (merkle-leaf-count node)
+  (cond ((merkle-leaf? node) 1)
+        ((merkle-inode? node)
+         (let ((l (vector-ref node 2)) (r (vector-ref node 3)))
+           (if (eq? l r)
+               (merkle-leaf-count l)
+               (+ (merkle-leaf-count l) (merkle-leaf-count r)))))
+        (else 0)))
+
+(define (merkle-proof tree index)
+  "Return the inclusion proof for the leaf at the given index.
+   Proof is a list of (sibling-hash . side) from leaf to root —
+   verify processes left-to-right starting with the leaf's own hash."
+  ;; We descend top-down but cons onto acc; cons puts each new
+  ;; (deeper) sibling at the FRONT — so the natural acc order at
+  ;; loop end is bottom-to-top, which is exactly what verify wants.
+  ;; Do NOT reverse.
+  (let loop ((node tree) (i index) (acc '()))
+    (cond
+      ((merkle-leaf? node) acc)
+      ((merkle-inode? node)
+       (let* ((l (vector-ref node 2))
+              (r (vector-ref node 3))
+              (left-count (merkle-leaf-count l)))
+         (if (< i left-count)
+             ;; Descend left; sibling is right
+             (loop l i (cons (cons (merkle-root r) 'right) acc))
+             ;; Descend right; sibling is left
+             (loop r (- i left-count)
+                   (cons (cons (merkle-root l) 'left) acc)))))
+      (else (error "merkle-proof: not a merkle node")))))
+
+(define (merkle-verify root-hash leaf-data proof . hash-fn-opt)
+  "Verify that leaf-data is included under root-hash given proof.
+   Returns #t on valid proof, #f otherwise."
+  (let ((hash-fn (if (null? hash-fn-opt) fnv1a-64 (car hash-fn-opt))))
+    (let loop ((h (hash-fn leaf-data)) (rest proof))
+      (cond
+        ((null? rest) (= h root-hash))
+        (else
+         (let* ((p (car rest))
+                (sibling-h (car p))
+                (side (cdr p))
+                (combined (if (eq? side 'right)
+                              (merkle-pair-hash hash-fn h sibling-h)
+                              (merkle-pair-hash hash-fn sibling-h h))))
+           (loop combined (cdr rest))))))))
+
+;; ── Content-addressable store ───────────────────────────────────────
+;;
+;; A CAS is a (vector tag hash-fn hash-table); tag = 'eshkol-cas.
+;; cas-put! returns the content hash as a hex string; cas-get retrieves
+;; the original data given that hash.
+
+(define (make-cas-with-hash hash-fn)
+  "Create a content-addressable store using the given hash function."
+  (vector 'eshkol-cas hash-fn (make-hash-table)))
+
+(define (make-cas)
+  "Create a content-addressable store using the default FNV-1a hash."
+  (make-cas-with-hash fnv1a-64))
+
+(define (cas? c)
+  (and (vector? c)
+       (= (vector-length c) 3)
+       (eq? (vector-ref c 0) 'eshkol-cas)))
+
+(define (cas-hash-fn c) (vector-ref c 1))
+(define (cas-table c)   (vector-ref c 2))
+
+(define (cas-put! c data)
+  "Store data, return the content hash as a 16-char hex string."
+  (let* ((h (hash->hex ((cas-hash-fn c) data))))
+    (hash-table-set! (cas-table c) h data)
+    h))
+
+(define (cas-get c hash)
+  "Retrieve the data stored under hash, or #f if not present."
+  (hash-table-ref/default (cas-table c) hash #f))
+
+(define (cas-has? c hash)
+  "Predicate: does c contain an entry for this hash?"
+  (hash-table-exists? (cas-table c) hash))
+
+(define (cas-size c)
+  "Number of distinct objects stored."
+  (hash-table-size (cas-table c)))
+
+(define (cas-keys c)
+  "List of all stored hashes."
+  (hash-table-keys (cas-table c)))
