@@ -16,19 +16,12 @@
 ;;    a mutex via condvar-wait!.
 ;;
 ;; 3. THREAD (make-thread / thread-join)
-;;    Lightweight handle around a zero-argument thunk.  The current
-;;    implementation is "lazy thread": the thunk runs on the joining
-;;    thread, NOT on a freshly-spawned worker.  This is honest about
-;;    a limitation in the v1.2 closure-call ABI — invoking an arbitrary
-;;    Eshkol closure on a fresh pthread requires the LLVM-emitted
-;;    closure dispatcher (per-thread arena, AD tape, region stack), and
-;;    that's deferred to v1.4-platform.  For real concurrent execution
-;;    today, use the pool primitives:
-;;        (parallel-map fn list)             — concurrent over list
-;;        (parallel-execute t1 t2 ...)       — concurrent fixed thunks
-;;    The mutex / condvar primitives in this module are real even
-;;    though make-thread is lazy — they correctly serialise access
-;;    inside parallel-map workers.
+;;    Spawns the thunk on a thread-pool worker concurrently with the
+;;    spawner; thread-join blocks until the worker completes.  Backed
+;;    by `(future thunk)` which since #223 eagerly submits to the pool.
+;;    Also useful: `(parallel-map fn list)` for concurrent map and
+;;    `(parallel-execute t1 t2 ...)` for a fixed set of thunks where
+;;    you want the joined results as a list.
 
 (provide
   make-mutex mutex-lock! mutex-trylock! mutex-unlock! mutex-destroy! with-mutex
@@ -105,45 +98,42 @@
   "Destroy and free the condition variable."
   (condvar-destroy-raw c))
 
-;; ── Thread (lazy: runs on joiner; see module-header note) ────────────
+;; ── Thread (eager: runs on a pool worker concurrently) ──────────────
 ;;
-;; Layout: vector of length 4 with header sentinel for thread? predicate.
-;;   slot 0: tag symbol 'eshkol-thread (cheap nominal type marker)
-;;   slot 1: thunk (the user-supplied zero-arg procedure)
-;;   slot 2: ran? — #t once the thunk has been forced
-;;   slot 3: result — set when ran? becomes #t
+;; Backed by `(future thunk)` which since #223 eagerly submits the
+;; closure to the global thread pool.  thread-join is `force`, which
+;; either returns the cached result (if the worker already finished)
+;; or blocks until the worker writes set_result_ptr.
 ;;
-;; This is intentionally NOT a real OS thread; it's a lazy promise
-;; with thread-shaped API.  The next-stage implementation (v1.4)
-;; will swap the body of make-thread for a real pool-submit while
-;; keeping this exact API surface — so user code written against
-;; make-thread/thread-join today is forward-compatible.
+;; Layout: vector of length 2 — a thin envelope around the future so
+;; thread? can distinguish it from a bare future.
+;;   slot 0: tag symbol 'eshkol-thread
+;;   slot 1: the future returned by (future thunk)
 
 (define (make-thread thunk)
-  "Wrap thunk into a thread handle.  See module header — currently lazy:
-   the thunk runs on the joining thread, not concurrently."
-  (vector 'eshkol-thread thunk #f #f))
+  "Spawn thunk on a thread-pool worker; returns a thread handle.  The
+   thunk runs CONCURRENTLY with the spawner — get its result via
+   (thread-join h), which blocks until the worker completes."
+  ;; Pass the thunk itself (a callable) to (future …); future's eager
+  ;; path submits it to the pool and returns immediately.  Do NOT call
+  ;; the thunk here — `(future (thunk))` would evaluate the thunk
+  ;; synchronously and pass its result to future.
+  (vector 'eshkol-thread (future thunk)))
 
 (define (thread? h)
   "Predicate: is h a thread handle returned by make-thread?"
   (and (vector? h)
-       (= (vector-length h) 4)
+       (= (vector-length h) 2)
        (eq? (vector-ref h 0) 'eshkol-thread)))
 
 (define (thread-result-ready? h)
-  "Non-blocking check: has thread-join already produced a result?"
-  (if (thread? h) (vector-ref h 2) #f))
+  "Non-blocking check: has the worker finished?"
+  (if (thread? h) (future-ready? (vector-ref h 1)) #f))
 
 (define (thread-join h)
-  "Run the thread's thunk if it hasn't already, return its result.
-   Memoised: a second join returns the cached result without re-running.
-   Calling on a non-thread is an error (returns the value as-is for
-   forward-compat with the v1.4 eager spawn-and-wait variant)."
+  "Block until the thread's thunk completes; return its result.
+   Memoised by force: a second join returns the cached result.
+   Calling on a non-thread returns the value as-is (per R7RS force)."
   (cond
     ((not (thread? h)) h)
-    ((vector-ref h 2) (vector-ref h 3))
-    (else
-      (let ((r ((vector-ref h 1))))
-        (vector-set! h 3 r)
-        (vector-set! h 2 #t)
-        r))))
+    (else (force (vector-ref h 1)))))

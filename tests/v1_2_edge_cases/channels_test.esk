@@ -80,17 +80,33 @@
 (channel-close! ch)
 (check "double-close is idempotent" #t (channel-closed? ch))
 
-;; ── Cross-thread parallel fill + drain ─────────────────────────────
-;; 8 parallel-map workers each push 50 items via try-send!, then
-;; 8 workers each drain 50 via try-recv!, summing into a shared
-;; mutex-protected cell.  Avoids pool-starvation by using the
-;; non-blocking variants (no thread parks holding a pool slot).
-;;
-;; NOTE: blocking channel-send!/channel-recv! mixed in a single
-;; parallel-map batch CAN deadlock against a small pool (N producers
-;; pin all workers; consumer never gets scheduled).  For real
-;; multi-producer/multi-consumer, use the try-* variants with a
-;; finite retry budget — what this test exercises.
+;; ── Cross-thread blocking producer/consumer (real concurrent) ──────
+;; Producer runs on a worker thread via `(future …)` (eager since
+;; #223), main thread blocking-recvs.  Pre-#223 this deadlocked
+;; because future was lazy — the producer thunk only ran when
+;; the joining thread called force, so blocking channel-recv!
+;; on the main thread would wait for items that never arrived.
+
+(define ch3 (make-channel 4))
+(define prod (future
+              (lambda ()
+                (let loop ((i 0))
+                  (if (< i 10)
+                      (begin (channel-send! ch3 i) (loop (+ i 1)))
+                      (begin (channel-close! ch3) 'producer-done))))))
+;; Main thread drains.
+(let loop ((acc '()))
+  (let ((v (channel-recv! ch3)))
+    (if (eq? v (channel-closed-sentinel))
+        (check "blocking cross-thread drain"
+               '(0 1 2 3 4 5 6 7 8 9) (reverse acc))
+        (loop (cons v acc)))))
+(check "producer joined cleanly" 'producer-done (force prod))
+
+;; ── parallel-map fill + drain (non-blocking variant) ───────────────
+;; This test predates eager futures and uses try-* variants so it
+;; can't deadlock under any pool size.  Kept as a stress test for
+;; the channel mutex/condvar primitives.
 
 (define ch2 (make-channel 500))
 (define total-cell (vector 0))
