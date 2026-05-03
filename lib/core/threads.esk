@@ -1,0 +1,93 @@
+;; threads.esk — POSIX mutex + condition variable bindings
+;;
+;; (require core.threads)
+;;
+;; Backed by lib/core/threads.c (pthread_mutex_t / pthread_cond_t).
+;; Mutex is RECURSIVE — a thread that re-enters (with-mutex m ...) on
+;; the same m doesn't deadlock.  This matches SRFI 18 semantics.
+;;
+;; Thread CREATION (make-thread / thread-join) is intentionally NOT
+;; exposed in this module.  For parallel work use the existing
+;; thread-pool primitives:
+;;
+;;   (future thunk)         — submit zero-arg thunk to the pool
+;;   (force fut)            — block + get result
+;;   (parallel-execute t1 t2 ...)
+;;   (parallel-map fn list)
+;;
+;; The mutex / condvar primitives below are useful for coordinating
+;; pool tasks and protecting shared state inside parallel-map workers.
+
+(provide
+  make-mutex mutex-lock! mutex-trylock! mutex-unlock! mutex-destroy! with-mutex
+  make-condvar condvar-wait! condvar-signal! condvar-broadcast! condvar-destroy!)
+
+;; ── FFI declarations ─────────────────────────────────────────────────
+(extern ptr mutex-create-raw                         :real eshkol_mutex_create)
+(extern i32 mutex-lock-raw       ptr                 :real eshkol_mutex_lock)
+(extern i32 mutex-trylock-raw    ptr                 :real eshkol_mutex_trylock)
+(extern i32 mutex-unlock-raw     ptr                 :real eshkol_mutex_unlock)
+(extern i32 mutex-destroy-raw    ptr                 :real eshkol_mutex_destroy)
+
+(extern ptr condvar-create-raw                       :real eshkol_condvar_create)
+(extern i32 condvar-wait-raw     ptr ptr             :real eshkol_condvar_wait)
+(extern i32 condvar-signal-raw   ptr                 :real eshkol_condvar_signal)
+(extern i32 condvar-broadcast-raw ptr                :real eshkol_condvar_broadcast)
+(extern i32 condvar-destroy-raw  ptr                 :real eshkol_condvar_destroy)
+
+;; ── Mutex ────────────────────────────────────────────────────────────
+
+(define (make-mutex)
+  "Create a recursive POSIX mutex.  Returns an opaque pointer.  Caller
+   is responsible for the matching (mutex-destroy! m) — or just rely on
+   process exit if the mutex's lifetime spans the whole program."
+  (mutex-create-raw))
+
+(define (mutex-lock! m)
+  "Block until the mutex is acquired.  Returns 0 on success or an
+   errno value on failure."
+  (mutex-lock-raw m))
+
+(define (mutex-trylock! m)
+  "Non-blocking lock attempt.  Returns 0 if acquired, EBUSY (16 on
+   macOS / Linux) if already held by another thread, or another errno."
+  (mutex-trylock-raw m))
+
+(define (mutex-unlock! m)
+  "Release the mutex.  Returns 0 on success."
+  (mutex-unlock-raw m))
+
+(define (mutex-destroy! m)
+  "Destroy and free the mutex.  Caller MUST NOT use m after this."
+  (mutex-destroy-raw m))
+
+(define (with-mutex m thunk)
+  "Acquire m, invoke (thunk), release m before returning.  The mutex
+   is released even if thunk raises, via dynamic-wind."
+  (dynamic-wind
+    (lambda () (mutex-lock! m))
+    thunk
+    (lambda () (mutex-unlock! m))))
+
+;; ── Condition variable ──────────────────────────────────────────────
+
+(define (make-condvar)
+  "Create a POSIX condition variable.  Returns an opaque pointer."
+  (condvar-create-raw))
+
+(define (condvar-wait! c m)
+  "Atomically release mutex m, block until c is signalled, reacquire m
+   before returning.  m MUST be held by this thread on entry."
+  (condvar-wait-raw c m))
+
+(define (condvar-signal! c)
+  "Wake one thread waiting on c."
+  (condvar-signal-raw c))
+
+(define (condvar-broadcast! c)
+  "Wake all threads waiting on c."
+  (condvar-broadcast-raw c))
+
+(define (condvar-destroy! c)
+  "Destroy and free the condition variable."
+  (condvar-destroy-raw c))

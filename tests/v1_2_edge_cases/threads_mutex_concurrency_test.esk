@@ -1,0 +1,44 @@
+;; threads_mutex_concurrency_test.esk — verify the mutex primitives
+;; from core.threads actually serialise access across real threads
+;; spawned by the thread pool.  If mutex were broken, the final
+;; counter value would be less than the expected total because of
+;; lost increment races on (vector-set! cell ...).
+;;
+;; Approach:
+;;   - shared counter (1-element vector as mutable cell)
+;;   - 8 parallel-map workers, each performs 1000 increments under
+;;     the mutex (each worker's input element is just a sentinel;
+;;     parallel-map dispatches one task per element across the pool)
+;;   - assert counter == 8000
+
+(require stdlib)
+(require core.threads)
+
+(define m (make-mutex))
+(define cell (vector 0))
+
+(define (locked-incr! delta)
+  (with-mutex m
+    (lambda ()
+      (vector-set! cell 0 (+ (vector-ref cell 0) delta)))))
+
+(define (do-increments _)
+  (let loop ((i 0))
+    (if (< i 1000)
+        (begin (locked-incr! 1) (loop (+ i 1)))
+        'done)))
+
+(define expected 8000)
+(parallel-map do-increments '(1 2 3 4 5 6 7 8))
+
+(define final (vector-ref cell 0))
+(display "expected: ") (display expected) (newline)
+(display "final:    ") (display final) (newline)
+
+(if (= final expected)
+    (begin (display "PASS: mutex-protected counter is consistent across threads") (newline)
+           (mutex-destroy! m)
+           (exit 0))
+    (begin (display "FAIL: race detected — increments lost (mutex broken)") (newline)
+           (mutex-destroy! m)
+           (exit 1)))
