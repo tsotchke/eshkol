@@ -52,11 +52,10 @@
 (check "condvar-destroy! returns 0" 0 (condvar-destroy! c))
 (check "mutex-destroy! returns 0" 0 (mutex-destroy! m))
 
-;; ── Thread API (lazy in v1.2 — see #224) ───────────────────────────
+;; ── Thread API (eager since #223 + #224 architectural fix) ─────────
 (define t (make-thread (lambda () 17)))
 (check "thread? recognises handle" #t (thread? t))
 (check "thread? rejects non-thread" #f (thread? 42))
-(check "thread-result-ready? before join" #f (thread-result-ready? t))
 (check "thread-join returns thunk value" 17 (thread-join t))
 (check "thread-result-ready? after join" #t (thread-result-ready? t))
 (check "thread-join is memoised" 17 (thread-join t))
