@@ -730,6 +730,20 @@ private:
     std::unordered_map<std::string, std::vector<std::string>> nested_function_captures; // Free vars for nested defines
     std::unordered_map<std::string, std::string> functions_returning_lambda; // Maps function name -> lambda name it returns
 
+    // NAMED-LET CAPTURE METADATA (#224 architectural fix):
+    // Per-loop list of captured free-var NAMES, keyed by the loop Function*.
+    // Loop functions take captures as EXTRA pointer args after the regular
+    // params.  codegenCall consults this when emitting a non-tail recursive
+    // call to a loop function and appends the corresponding pointers from
+    // the current symbol_table.  Replaces the old GlobalVariable-shuttle
+    // approach which was not thread-safe (two threads invoking the same
+    // closure raced on the global, both reading the second store).
+    // Storage is per-call: the pointer is either the outer's alloca, the
+    // outer's GlobalVariable, the outer's pointer-typed Argument (already a
+    // capture-slot), or — for raw-value Arguments — a freshly alloca'd cell
+    // seeded with the outer's value at the call site.
+    std::unordered_map<llvm::Function*, std::vector<std::string>> named_let_captures;
+
     // HoTT TYPE TRACKING: Maps variable names to their compile-time HoTT types
     // This enables type-directed optimizations when both operand types are known
     std::unordered_map<std::string, eshkol::hott::TypeId> symbol_hott_types;
@@ -12006,12 +12020,16 @@ private:
             };
             Function* lf_is_ready  = declare_lf("eshkol_lazy_future_is_ready",
                                                 int8_type, {builder->getPtrTy()});
-            // is_async + join_async are kept declared (the C runtime
-            // helpers still exist in case eager submit is re-enabled),
-            // but we don't call them here anymore — see #224 rollback
-            // note in ParallelCodegen::future.  is_async on a lazy
-            // future returns 0 anyway, so this is a no-op even if
-            // re-introduced.
+            // is_async + join_async — re-enabled now that #224 has landed.
+            // is_async returns 1 when the future was submitted to the pool
+            // eagerly; join_async blocks until the worker writes its result
+            // and merges it into the future's cached slots.  For purely
+            // lazy futures (workers not yet registered, or plain values)
+            // is_async returns 0 and we fall through to the lazy path.
+            Function* lf_is_async  = declare_lf("eshkol_lazy_future_is_async",
+                                                int8_type, {builder->getPtrTy()});
+            Function* lf_join_async = declare_lf("eshkol_lazy_future_join_async",
+                                                builder->getVoidTy(), {builder->getPtrTy()});
             Function* lf_get_tp    = declare_lf("eshkol_lazy_future_get_thunk_ptr",
                                                 int64_type, {builder->getPtrTy()});
             Function* lf_get_tt    = declare_lf("eshkol_lazy_future_get_thunk_type",
@@ -12028,9 +12046,22 @@ private:
                                                 builder->getVoidTy(),
                                                 {builder->getPtrTy(), int64_type, int8_type, int8_type});
 
-            // (eager-submit join path was rolled back with #224 —
-            // is_async always returns 0 in lazy mode, so the check
-            // would be a no-op anyway.)
+            // If the future was submitted eagerly to the pool (#223), join
+            // the pool task now (blocking until the worker writes the
+            // result).  is_async returns 0 for purely-lazy futures
+            // (workers not yet registered or plain-value futures), so
+            // join_async is a cheap no-op in those cases — followed
+            // by the lazy-eval path below if not yet forced.
+            Value* fut_async = builder->CreateCall(lf_is_async, {future_ptr});
+            Value* fut_async_set = builder->CreateICmpNE(fut_async,
+                ConstantInt::get(int8_type, 0));
+            BasicBlock* join_async_bb = BasicBlock::Create(*context, "future_join_async", current_func);
+            BasicBlock* check_ready_bb = BasicBlock::Create(*context, "future_check_ready", current_func);
+            builder->CreateCondBr(fut_async_set, join_async_bb, check_ready_bb);
+            builder->SetInsertPoint(join_async_bb);
+            builder->CreateCall(lf_join_async, {future_ptr});
+            builder->CreateBr(check_ready_bb);
+            builder->SetInsertPoint(check_ready_bb);
 
             BasicBlock* fut_cached_bb = BasicBlock::Create(*context, "future_cached", current_func);
             BasicBlock* fut_eval_bb   = BasicBlock::Create(*context, "future_eval",   current_func);
@@ -14290,8 +14321,23 @@ private:
         std::vector<Value*> args;
         FunctionType* func_type = callee->getFunctionType();
 
+        // NAMED-LET CAPTURE FORWARDING (#224): named-let loop functions take
+        // extra ptr params for their captures, but those are NOT closure
+        // captures — they're direct pointers from the surrounding scope.
+        // Subtract them from the closure-call detection so the regular
+        // arg-building path runs, then append capture pointers below before
+        // the final CreateCall.
+        size_t named_let_extra_params = 0;
+        {
+            auto nlc_it = named_let_captures.find(callee);
+            if (nlc_it != named_let_captures.end()) {
+                named_let_extra_params = nlc_it->second.size();
+            }
+        }
+
         // Check if this is a closure call (more parameters expected than provided)
-        bool is_closure_call = (func_type->getNumParams() > op->call_op.num_vars);
+        bool is_closure_call = ((func_type->getNumParams() - named_let_extra_params)
+                                > op->call_op.num_vars);
 
         // Add explicit arguments first
         for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
@@ -14656,6 +14702,32 @@ private:
             }
         }
         // Note: Capture arguments (last num_captures args) are NOT dereferenced - they're storage pointers
+
+        // NAMED-LET CAPTURE FORWARDING (#224): If the callee is a named-let
+        // loop function, append the capture pointers from the current scope's
+        // symbol_table.  Must run BEFORE the mutual-TCO emit below, because
+        // mutual TCO emits the call directly without going through the
+        // arity-fix block further down.
+        // TCO recursive calls to the loop_header don't reach this point —
+        // they're intercepted earlier and turned into a `br loop_header`
+        // by codegenTailCallFromContext.
+        {
+            auto nlc_it = named_let_captures.find(callee);
+            if (nlc_it != named_let_captures.end()) {
+                for (const std::string& fv : nlc_it->second) {
+                    auto sym_it = symbol_table.find(fv);
+                    if (sym_it != symbol_table.end() && sym_it->second &&
+                        sym_it->second->getType()->isPointerTy()) {
+                        args.push_back(sym_it->second);
+                    } else {
+                        eshkol_warn("Named-let capture forwarding: '%s' missing pointer in symbol_table",
+                                    fv.c_str());
+                        args.push_back(
+                            ConstantPointerNull::get(PointerType::getUnqual(*context)));
+                    }
+                }
+            }
+        }
 
         // MUTUAL TCO: If this call is in tail position AND has a compatible signature
         // with the current function, use musttail to enable tail call optimization.
@@ -22020,86 +22092,91 @@ private:
                 [&bound_names](const std::string& var) { return bound_names.count(var) > 0; }),
             free_vars.end());
 
-        // Create GlobalVariables for non-global captures
+        // PER-CALL CAPTURE POINTERS (#224 architectural fix): For each free
+        // var, determine the "outer storage pointer" we'll pass as an extra
+        // arg to the loop function. The loop function reads/writes through
+        // this pointer; recursive (loop ...) calls forward the same pointer.
+        // This is per-call (per stack frame), so concurrent invocations of
+        // the enclosing closure on multiple threads each get their own
+        // capture storage — no GlobalVariable race.
+        //
+        // Outer storage cases:
+        //   - AllocaInst             → pass alloca pointer directly
+        //   - GlobalVariable         → pass global pointer directly
+        //   - Pointer-typed Argument → pass directly (already a capture slot)
+        //   - IntToPtrInst (etc.)    → pass directly (closure-env unpack)
+        //   - Raw-value Argument     → alloca a per-call slot, store value, pass ptr
+        //   - Other raw value        → same as raw-value Argument
         static int named_let_counter = 0;
         int current_counter = named_let_counter++;
-        std::unordered_map<std::string, GlobalVariable*> capture_globals;
-
+        std::vector<Value*> capture_outer_ptrs;
+        capture_outer_ptrs.reserve(free_vars.size());
         for (const std::string& fv : free_vars) {
             auto it = prev_symbols.find(fv);
-            if (it == prev_symbols.end() || !it->second) continue;
-
+            if (it == prev_symbols.end() || !it->second) {
+                capture_outer_ptrs.push_back(
+                    ConstantPointerNull::get(PointerType::getUnqual(*context)));
+                eshkol_warn("Named let '%s': free var '%s' missing from outer symbol table",
+                            loop_name.c_str(), fv.c_str());
+                continue;
+            }
             Value* outer_val = it->second;
 
-            // If already a GlobalVariable, no need to create a new one
-            if (isa<GlobalVariable>(outer_val)) {
-                capture_globals[fv] = dyn_cast<GlobalVariable>(outer_val);
-                eshkol_debug("Named let '%s': capture '%s' is already GlobalVariable",
-                           loop_name.c_str(), fv.c_str());
-            } else {
-                // Create a new GlobalVariable to hold the captured value
-                std::string global_name = module_prefix + "_named_let_capture_" + loop_name +
-                                         "_" + fv + "_" + std::to_string(current_counter);
-                GlobalVariable* capture_global = new GlobalVariable(
-                    *module,
-                    tagged_value_type,
-                    false,  // not constant (mutable captures like set!)
-                    GlobalValue::InternalLinkage,
-                    UndefValue::get(tagged_value_type),
-                    global_name
-                );
-                capture_globals[fv] = capture_global;
-
-                // Load the value from the outer scope and store it in the global
-                Value* captured_val = nullptr;
-                if (isa<AllocaInst>(outer_val)) {
-                    captured_val = builder->CreateLoad(
-                        dyn_cast<AllocaInst>(outer_val)->getAllocatedType(), outer_val);
-                } else if (isa<Argument>(outer_val)) {
-                    // For Argument, check if it's a pointer type (capture pointer) or value type
-                    // When the outer function is a lambda with captures, captured variables
-                    // are passed as pointers to closure env slots
-                    if (outer_val->getType()->isPointerTy()) {
-                        captured_val = builder->CreateLoad(tagged_value_type, outer_val,
-                                                          fv + "_cap_load");
-                        eshkol_debug("Named let '%s': loading capture '%s' from pointer argument",
-                                   loop_name.c_str(), fv.c_str());
-                    } else {
-                        captured_val = outer_val;  // Arguments are direct values
-                    }
-                } else if (outer_val->getType()->isPointerTy()) {
-                    // Pointer-typed Instruction (typically IntToPtrInst from
-                    // unpacking a closure-env capture). The CONTENT — not the
-                    // pointer bits — is what needs to seed the capture global.
-                    // Without this load, we stored the pointer-bits as the
-                    // captured value (Quirk 14: loop saw stale 0 instead of
-                    // the helper's post-set! value).
-                    captured_val = builder->CreateLoad(tagged_value_type, outer_val,
-                                                       fv + "_cap_load_ptr_inst");
-                    eshkol_debug("Named let '%s': loading capture '%s' from pointer instruction",
-                               loop_name.c_str(), fv.c_str());
-                } else {
-                    captured_val = outer_val;
-                }
-
-                // Ensure tagged_value type
-                if (captured_val->getType() != tagged_value_type) {
-                    if (captured_val->getType()->isDoubleTy()) {
-                        captured_val = packDoubleToTaggedValue(captured_val);
-                    } else if (captured_val->getType()->isIntegerTy(64)) {
-                        captured_val = packInt64ToTaggedValue(captured_val, true);
-                    }
-                }
-
-                builder->CreateStore(captured_val, capture_global);
-                eshkol_debug("Named let '%s': created GlobalVariable for capture '%s'",
-                           loop_name.c_str(), fv.c_str());
+            // Already a pointer we can pass directly.
+            if (isa<AllocaInst>(outer_val) || isa<GlobalVariable>(outer_val) ||
+                isa<IntToPtrInst>(outer_val)) {
+                capture_outer_ptrs.push_back(outer_val);
+                continue;
             }
+            if (isa<Argument>(outer_val) && outer_val->getType()->isPointerTy()) {
+                capture_outer_ptrs.push_back(outer_val);
+                continue;
+            }
+            if (outer_val->getType()->isPointerTy()) {
+                // Generic pointer instruction (e.g., GEP, BitCast yielding a
+                // tagged_value*). Pass directly.
+                capture_outer_ptrs.push_back(outer_val);
+                continue;
+            }
+
+            // Raw value (Argument with tagged_value/int64/double, or some
+            // computed Value). Materialise into an alloca on the caller's
+            // entry block so we can pass a pointer. set! through this pointer
+            // updates only the local slot, NOT the original Argument — which
+            // matches existing semantics (Arguments are immutable in Eshkol).
+            BasicBlock* save_bb = builder->GetInsertBlock();
+            Function* parent_fn = save_bb->getParent();
+            BasicBlock& entry_bb = parent_fn->getEntryBlock();
+            IRBuilder<> entry_builder(&entry_bb,
+                entry_bb.getFirstInsertionPt());
+            AllocaInst* slot = entry_builder.CreateAlloca(
+                tagged_value_type, nullptr,
+                fv + "_named_let_cap_" + std::to_string(current_counter));
+
+            // Coerce outer_val to tagged_value at the current insert point.
+            Value* tagged = outer_val;
+            if (tagged->getType() != tagged_value_type) {
+                if (tagged->getType()->isDoubleTy()) {
+                    tagged = packDoubleToTaggedValue(tagged);
+                } else if (tagged->getType()->isIntegerTy(64)) {
+                    tagged = packInt64ToTaggedValue(tagged, true);
+                } else if (tagged->getType()->isIntegerTy(1)) {
+                    tagged = packBoolToTaggedValue(tagged);
+                }
+            }
+            builder->CreateStore(tagged, slot);
+            capture_outer_ptrs.push_back(slot);
+            eshkol_debug("Named let '%s': materialised raw capture '%s' into per-call alloca",
+                         loop_name.c_str(), fv.c_str());
         }
 
-        // Create the loop function: (lambda (param1 param2 ...) body)
-        // Function signature: all parameters are tagged_value, returns tagged_value
+        // Create the loop function: (lambda (param1 param2 ... cap1* cap2* ...) body)
+        // Function signature: regular params as tagged_value, then one ptr per
+        // captured free var (#224 architectural fix); returns tagged_value.
         std::vector<Type*> param_types(param_names.size(), tagged_value_type);
+        for (size_t i = 0; i < free_vars.size(); i++) {
+            param_types.push_back(PointerType::getUnqual(*context));  // capture ptr
+        }
         FunctionType* loop_func_type = FunctionType::get(tagged_value_type, param_types, false);
 
         std::string func_name = "named_let_" + loop_name + "_" + std::to_string(current_counter);
@@ -22110,10 +22187,18 @@ private:
             module.get()
         );
 
-        // Set parameter names
+        // Register the capture-name list so codegenCall can forward capture
+        // pointers when emitting non-tail recursive (loop ...) calls inside
+        // the body.  Keyed by Function* (unique within module).
+        named_let_captures[loop_func] = free_vars;
+
+        // Set parameter names: regular params first, then capture pointers.
         auto arg_it = loop_func->arg_begin();
         for (size_t i = 0; i < param_names.size(); i++, ++arg_it) {
             arg_it->setName(param_names[i]);
+        }
+        for (size_t i = 0; i < free_vars.size(); i++, ++arg_it) {
+            arg_it->setName(free_vars[i] + "_cap");
         }
 
         // Bug X (Noesis 2026-04-30): save the prior bindings under
@@ -22153,16 +22238,23 @@ private:
         symbol_table[loop_name + "_func"] = loop_func;
         function_table[loop_name] = loop_func;
 
-        // Add capture GlobalVariables to symbol table (they can be accessed from any function)
-        for (auto& capture : capture_globals) {
-            symbol_table[capture.first] = capture.second;
+        // Register capture-pointer args (#224): the body's reads/writes of fv
+        // resolve through the corresponding pointer Argument.  codegenVariable
+        // and codegenSet already handle pointer-typed Arguments via load/store.
+        {
+            auto cap_it = loop_func->arg_begin();
+            std::advance(cap_it, param_names.size());
+            for (size_t i = 0; i < free_vars.size(); i++, ++cap_it) {
+                symbol_table[free_vars[i]] = &*cap_it;
+            }
         }
 
-        // Also add any other GlobalVariables from prev_symbols that weren't captured
-        // (e.g., stdlib functions, other top-level defines)
+        // Add any GlobalVariables from prev_symbols that weren't captured
+        // (e.g., stdlib functions, other top-level defines).  Skip names we
+        // already bound as capture pointers above.
         for (auto& entry : prev_symbols) {
             if (entry.second && isa<GlobalVariable>(entry.second) &&
-                capture_globals.find(entry.first) == capture_globals.end()) {
+                symbol_table.find(entry.first) == symbol_table.end()) {
                 symbol_table[entry.first] = entry.second;
             }
         }
@@ -22253,23 +22345,10 @@ private:
             builder->SetInsertPoint(prev_block);
         }
 
-        // MUTABLE CAPTURE FIX: Preserve GlobalVariable captures before restoring
-        std::unordered_map<std::string, Value*> globals_to_preserve;
-        for (auto& entry : symbol_table) {
-            if (isa<GlobalVariable>(entry.second)) {
-                globals_to_preserve[entry.first] = entry.second;
-            }
-        }
-
         // Restore symbol table (but keep loop function registered)
         symbol_table = prev_symbols;
         symbol_table[loop_name + "_func"] = loop_func;
         function_table[loop_name] = loop_func;
-
-        // Re-add preserved GlobalVariable captures
-        for (auto& entry : globals_to_preserve) {
-            symbol_table[entry.first] = entry.second;
-        }
 
         // NESTED NAMED LET FIX: Restore outer TCO context after body generation
         // This ensures nested named lets don't corrupt the outer's TCO state
@@ -22279,8 +22358,7 @@ private:
         tco_ctx.param_allocas = saved_tco_param_allocas;
         tco_ctx.param_names = saved_tco_param_names;
 
-        // Call the loop function with initial values
-        // Ensure initial values are tagged_value type
+        // Call the loop function with initial values + capture pointers (#224)
         std::vector<Value*> call_args;
         for (Value* init_val : init_values) {
             if (init_val->getType() != tagged_value_type) {
@@ -22295,49 +22373,16 @@ private:
             }
             call_args.push_back(init_val);
         }
+        // Append capture pointers — order matches free_vars / loop_func params.
+        for (Value* cap_ptr : capture_outer_ptrs) {
+            call_args.push_back(cap_ptr);
+        }
 
         Value* result = builder->CreateCall(loop_func, call_args);
 
-        // SYNC-BACK FIX (Quirk 14, Noesis 2026-04-26): the loop function
-        // reads/writes captured vars THROUGH the GlobalVariable copies we
-        // allocated above; the outer-scope storage (the original alloca
-        // or pointer-typed Argument) was never updated. So a `set!` to
-        // `seen` from inside `(let walk-str (...) ...)` updated the
-        // global but the enclosing helper kept seeing the pre-loop value.
-        // Now: for each capture that came from a writable outer slot,
-        // copy the global's post-loop value back into that slot.
-        for (const std::string& fv : free_vars) {
-            auto cap_it = capture_globals.find(fv);
-            if (cap_it == capture_globals.end()) continue;
-            GlobalVariable* cap_global = cap_it->second;
-            auto outer_it = prev_symbols.find(fv);
-            if (outer_it == prev_symbols.end() || !outer_it->second) continue;
-            Value* outer_val = outer_it->second;
-
-            // Only sync back if the outer slot is one we already wrote to.
-            // GlobalVariables already share storage — no copy needed.
-            if (isa<GlobalVariable>(outer_val)) {
-                eshkol_debug("  syncback: '%s' is GlobalVariable (shared storage, skip)", fv.c_str());
-                continue;
-            }
-            // Any pointer-typed value is a writable slot:
-            //  - AllocaInst: a stack slot for a let-binding.
-            //  - Argument with pointer type: a closure-env capture slot.
-            //  - IntToPtrInst (other pointer-typed Instruction): the
-            //    unpacked pointer to a closure-env capture, used by the
-            //    MUTABLE CAPTURE path elsewhere in this codegen.
-            // In all three cases, storing through the pointer with the
-            // same tagged_value type matches how the body's `set!`
-            // already writes (see codegenSet's pointer branch).
-            if (outer_val->getType()->isPointerTy()) {
-                Value* fresh = builder->CreateLoad(tagged_value_type, cap_global,
-                                                   fv + "_syncback_load");
-                builder->CreateStore(fresh, outer_val);
-                continue;
-            }
-            // Anything else (raw int/double Argument): the caller passed
-            // by value — there's no slot to write back to.
-        }
+        // No sync-back needed: the loop body reads/writes captures DIRECTLY
+        // through the same pointers passed at this call site, so set! mutations
+        // are visible to the outer scope without any extra copying.
 
         // Bug X (Noesis 2026-04-30): restore the previous bindings
         // under `loop_name` now that the body and outer call have
