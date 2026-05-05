@@ -411,11 +411,18 @@ class EshkolRuntime {
                     const cached = rt._symbolMap.get(name);
                     if (cached !== undefined) return cached;
                     const headerSize = 8;
-                    const block = rt._bump(headerSize + name.length + 1);
+                    const encoded = new TextEncoder().encode(name);
+                    const block = rt._bump(headerSize + encoded.length + 1);
                     const dataPtr = block + headerSize;
-                    const mem = new Uint8Array(rt._importedMemory.buffer);
-                    for (let i = 0; i < name.length; i++) mem[dataPtr + i] = name.charCodeAt(i);
-                    mem[dataPtr + name.length] = 0;
+                    const memory = rt._importedMemory || rt.memory;
+                    const mem = new Uint8Array(memory.buffer);
+                    const header = new DataView(memory.buffer, block, headerSize);
+                    header.setUint8(0, 10);                         // HEAP_SUBTYPE_SYMBOL
+                    header.setUint8(1, 0);                          // flags
+                    header.setUint16(2, 0, true);                   // ref_count
+                    header.setUint32(4, encoded.length + 1, true);  // size, including NUL
+                    mem.set(encoded, dataPtr);
+                    mem[dataPtr + encoded.length] = 0;
                     rt._symbolMap.set(name, dataPtr);
                     return dataPtr;
                 },
