@@ -20,6 +20,7 @@ class EshkolRuntime {
         // WASM instance (set after instantiation)
         this.instance = null;
         this.memory = null;
+        this.internedSymbols = new Map();
     }
 
     // Bump allocator for arena stubs
@@ -321,6 +322,27 @@ class EshkolRuntime {
                 eshkol_lambda_registry_init: () => {},
                 eshkol_lambda_registry_add: () => {},
                 eshkol_lambda_registry_lookup: () => 0,
+                eshkol_intern_symbol_lookup: (namePtr) => {
+                    const name = rt.readString(namePtr);
+                    if (rt.internedSymbols.has(name)) return rt.internedSymbols.get(name);
+
+                    const encoded = new TextEncoder().encode(name);
+                    const raw = rt._bump(8 + encoded.length + 1);
+                    const mem = rt._importedMemory || rt.memory;
+                    const data = new Uint8Array(mem.buffer);
+                    const header = new DataView(mem.buffer, raw, 8);
+
+                    header.setUint8(0, 10);                         // HEAP_SUBTYPE_SYMBOL
+                    header.setUint8(1, 0);                          // flags
+                    header.setUint16(2, 0, true);                   // ref_count
+                    header.setUint32(4, encoded.length + 1, true);  // size, including NUL
+                    data.set(encoded, raw + 8);
+                    data[raw + 8 + encoded.length] = 0;
+
+                    const ptr = raw + 8;
+                    rt.internedSymbols.set(name, ptr);
+                    return ptr;
+                },
                 eshkol_bignum_binary_tagged: () => 0,
                 eshkol_bignum_compare_tagged: () => 0,
                 eshkol_is_bignum_tagged: () => 0,
