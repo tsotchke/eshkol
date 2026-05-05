@@ -389,13 +389,19 @@ class EshkolRepl {
                     const cached = this._symbolMap.get(name);
                     if (cached !== undefined) return cached;
                     const headerSize = 8;
-                    const totalSize = ((headerSize + name.length + 1) + 7) & ~7;
+                    const encoded = new TextEncoder().encode(name);
+                    const totalSize = ((headerSize + encoded.length + 1) + 7) & ~7;
                     const block = this._bumpPtr;
                     this._bumpPtr += totalSize;
                     const dataPtr = block + headerSize;
                     const mem = new Uint8Array(this.memory.buffer);
-                    for (let i = 0; i < name.length; i++) mem[dataPtr + i] = name.charCodeAt(i);
-                    mem[dataPtr + name.length] = 0;
+                    const header = new DataView(this.memory.buffer, block, headerSize);
+                    header.setUint8(0, 10);                         // HEAP_SUBTYPE_SYMBOL
+                    header.setUint8(1, 0);                          // flags
+                    header.setUint16(2, 0, true);                   // ref_count
+                    header.setUint32(4, encoded.length + 1, true);  // size, including NUL
+                    mem.set(encoded, dataPtr);
+                    mem[dataPtr + encoded.length] = 0;
                     this._symbolMap.set(name, dataPtr);
                     return dataPtr;
                 },
