@@ -107,6 +107,7 @@ RUN cmake --build build --parallel
 RUN test -f build/eshkol-run && echo "eshkol-run: OK" || exit 1
 RUN test -f build/eshkol-repl && echo "eshkol-repl: OK" || exit 1
 RUN test -f build/stdlib.o && echo "stdlib.o: OK" || exit 1
+RUN test -f build/stdlib.bc && echo "stdlib.bc: OK" || exit 1
 
 # Run all tests exactly as CI does
 RUN ./scripts/run_types_tests.sh
@@ -284,7 +285,7 @@ test_macos_ci() {
 
     # Verify outputs
     echo "Verifying outputs..."
-    for f in eshkol-run eshkol-repl stdlib.o; do
+    for f in eshkol-run eshkol-repl stdlib.o stdlib.bc; do
         if [ -f "$BUILD_DIR/$f" ]; then
             echo -e "  ${GREEN}[OK]${NC} $f"
         else
@@ -369,6 +370,8 @@ RUN archive_root="eshkol-v${VERSION}-linux-x64-lite" \\
     && cp build/eshkol-repl "\${pkg_dir}/bin/" \\
     && cp build/stdlib.o "\${pkg_dir}/lib/" \\
     && cp build/stdlib.o "\${pkg_dir}/lib/eshkol/" \\
+    && cp build/stdlib.bc "\${pkg_dir}/lib/" \\
+    && cp build/stdlib.bc "\${pkg_dir}/lib/eshkol/" \\
     && cp lib/stdlib.esk "\${pkg_dir}/share/eshkol/" \\
     && [ ! -f lib/math.esk ] || cp lib/math.esk "\${pkg_dir}/share/eshkol/" \\
     && find lib -type f -name '*.esk' -print0 | while IFS= read -r -d '' source_file; do \\

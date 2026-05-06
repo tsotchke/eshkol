@@ -158,6 +158,8 @@ jobs:
           cp "${{ matrix.build_dir }}/eshkol-repl" "$pkg_dir/bin/"
           cp "${{ matrix.build_dir }}/stdlib.o" "$pkg_dir/lib/"
           cp "${{ matrix.build_dir }}/stdlib.o" "$pkg_dir/lib/eshkol/"
+          cp "${{ matrix.build_dir }}/stdlib.bc" "$pkg_dir/lib/"
+          cp "${{ matrix.build_dir }}/stdlib.bc" "$pkg_dir/lib/eshkol/"
 
           cp "lib/stdlib.esk" "$pkg_dir/share/eshkol/"
           if [[ -f "lib/math.esk" ]]; then
@@ -356,12 +358,21 @@ jobs:
           $shareLibDir = Join-Path $shareDir 'lib'
           $binaryDir = Join-Path '${{ matrix.build_dir }}' 'Release'
           $stdlibObject = Join-Path '${{ matrix.build_dir }}' 'stdlib.o'
+          $stdlibBitcode = Join-Path '${{ matrix.build_dir }}' 'stdlib.bc'
           if (-not (Test-Path $stdlibObject)) {
             $stdlibCandidate = Join-Path $binaryDir 'stdlib.o'
             if (Test-Path $stdlibCandidate) {
               $stdlibObject = $stdlibCandidate
             } else {
               throw "stdlib.o was not found in '${{ matrix.build_dir }}' or '$binaryDir'"
+            }
+          }
+          if (-not (Test-Path $stdlibBitcode)) {
+            $stdlibBitcodeCandidate = Join-Path $binaryDir 'stdlib.bc'
+            if (Test-Path $stdlibBitcodeCandidate) {
+              $stdlibBitcode = $stdlibBitcodeCandidate
+            } else {
+              throw "stdlib.bc was not found in '${{ matrix.build_dir }}' or '$binaryDir'"
             }
           }
 
@@ -376,6 +387,8 @@ jobs:
 
           Copy-Item -LiteralPath $stdlibObject -Destination $libDir
           Copy-Item -LiteralPath $stdlibObject -Destination $libEshkolDir
+          Copy-Item -LiteralPath $stdlibBitcode -Destination $libDir
+          Copy-Item -LiteralPath $stdlibBitcode -Destination $libEshkolDir
 
           Copy-Item -LiteralPath 'lib\stdlib.esk' -Destination $shareDir
           if (Test-Path 'lib\math.esk') {

@@ -220,13 +220,12 @@ private:
     // Tracks when stdlib is being loaded from source so nested `core.*`
     // requires do not recurse back through the precompiled-stdlib path.
     bool loading_stdlib_from_source_ = false;
-    /* Set once stdlib.o has been successfully added (via addObjectFile) or
-     * once the JIT-source fallback has completed. Subsequent calls to
-     * loadStdlib() are no-ops — re-adding the object would hit a
-     * "duplicate definition" error in ORC for every symbol. Reached here
-     * when user code does (require core.testing) after an initial
+    /* Set once stdlib has been successfully added, either as bitcode, as the
+     * legacy object fallback, or from source. Subsequent calls to loadStdlib()
+     * are no-ops — re-adding it would hit duplicate definitions in ORC.
+     * Reached here when user code does (require core.testing) after an initial
      * (require stdlib), which both funnel through loadStdlib. */
-    bool stdlib_object_loaded_ = false;
+    bool stdlib_loaded_ = false;
 
     // REPL HOT RELOAD: Heap-allocated 16-byte tagged_value storage for every
     // user-defined top-level variable. The codegen emits @<name> as a pure
