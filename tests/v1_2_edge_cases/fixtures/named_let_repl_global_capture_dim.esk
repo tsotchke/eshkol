@@ -1,0 +1,5 @@
+(require stdlib)
+
+(provide FF-DIM)
+
+(define FF-DIM 7)

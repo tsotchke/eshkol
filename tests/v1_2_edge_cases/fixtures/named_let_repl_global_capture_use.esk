@@ -1,0 +1,9 @@
+(require stdlib)
+
+(provide ff-use-dim)
+
+(define (ff-use-dim xs)
+  (let loop ((ys xs) (acc 0))
+    (cond
+      ((null? ys) (+ acc FF-DIM))
+      (else (loop (cdr ys) (+ acc 1))))))

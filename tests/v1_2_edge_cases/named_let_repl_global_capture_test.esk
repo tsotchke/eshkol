@@ -1,0 +1,21 @@
+;; mode: jit
+;; Bug FF minimal form: a named-let body captures a top-level value
+;; loaded by a previous JIT batch. This used to pass a null capture
+;; pointer and segfault at runtime.
+
+(require stdlib)
+(load "tests/v1_2_edge_cases/fixtures/named_let_repl_global_capture_dim.esk")
+(load "tests/v1_2_edge_cases/fixtures/named_let_repl_global_capture_use.esk")
+
+(define actual (ff-use-dim '(a b c)))
+
+(if (= actual 10)
+    (begin
+      (display "RESULT: PASS")
+      (newline)
+      (exit 0))
+    (begin
+      (display "RESULT: FAIL expected 10 got ")
+      (display actual)
+      (newline)
+      (exit 1)))
