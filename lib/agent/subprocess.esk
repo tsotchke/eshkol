@@ -27,6 +27,7 @@
 (extern i64 process-read-stderr-raw ptr ptr i64 :real qllm_process_read_stderr)
 (extern ptr process-read-all-stdout-raw ptr i64 ptr :real qllm_process_read_all_stdout)
 (extern ptr process-read-all-stderr-raw ptr i64 ptr :real qllm_process_read_all_stderr)
+(extern void process-free-buffer-raw ptr :real free)
 (extern i32 process-wait-raw ptr i32 :real qllm_process_wait)
 (extern i32 process-running-raw ptr :real qllm_process_running)
 (extern i32 process-exit-code-raw ptr :real qllm_process_exit_code)
@@ -45,20 +46,29 @@
 (define PROCESS_SPAWN_STDIN_NULL 1)
 
 (define (process-spawn command cwd)
-  "Spawn a process. Returns process handle or #f on failure.
-   command: shell command string (run via /bin/sh -c).
+  "Spawn a legacy command string. Returns process handle or #f on failure.
+   command: shell-compatible command string. The native layer may bypass
+   /bin/sh for simple commands with no shell metacharacters.
    cwd: working directory."
   (process-spawn-raw command cwd #f 0))
 
 (define (process-spawn-nostdin command cwd)
-  "Spawn a process with stdin redirected to /dev/null. Faster than
+  "Spawn a legacy command string with stdin redirected to /dev/null. Faster than
    process-spawn + process-close-stdin when the caller never writes
    to stdin (hot path for run-command-capture)."
   (process-spawn-raw command cwd #f PROCESS_SPAWN_STDIN_NULL))
 
 (define (process-spawn-shell command cwd)
   "Spawn a shell command with /bin/sh -c. Returns process handle."
-  (process-spawn command cwd))
+  (process-spawn-argv (list "/bin/sh" "-c" command) cwd))
+
+(define (process-owned-c-string->string buf)
+  "Copy a malloc-owned C string into Eshkol space, then free it."
+  (if buf
+      (let ((s (ptr->string buf)))
+        (process-free-buffer-raw buf)
+        s)
+      ""))
 
 ;; Audit M9: an argv element containing a literal tab would get
 ;; re-split by the C-side parse_tab_argv. Reject such args explicitly
@@ -125,13 +135,13 @@
 
 (define (process-read-stdout proc max-bytes)
   "Read available stdout. Returns string or empty string."
-  (let ((buf (process-read-all-stdout-raw proc max-bytes #f)))
-    (if buf buf "")))
+  (process-owned-c-string->string
+    (process-read-all-stdout-raw proc max-bytes #f)))
 
 (define (process-read-stderr proc max-bytes)
   "Read available stderr. Returns string or empty string."
-  (let ((buf (process-read-all-stderr-raw proc max-bytes #f)))
-    (if buf buf "")))
+  (process-owned-c-string->string
+    (process-read-all-stderr-raw proc max-bytes #f)))
 
 (define (process-read-all-stdout proc max-bytes)
   "Read all stdout until EOF. Returns string."
