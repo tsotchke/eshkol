@@ -1,0 +1,60 @@
+; syntax-rules ellipsis regression tests
+
+(require stdlib)
+
+(define passed 0)
+(define failed 0)
+
+(define (check name actual expected)
+  (if (equal? expected actual)
+      (begin
+        (display "PASS: ") (display name) (newline)
+        (set! passed (+ passed 1)))
+      (begin
+        (display "FAIL: ") (display name)
+        (display " expected ") (display expected)
+        (display ", got ") (display actual) (newline)
+        (set! failed (+ failed 1)))))
+
+(define-syntax collect
+  (syntax-rules ()
+    ((collect x ...)
+     (list x ...))))
+
+(define-syntax run-body
+  (syntax-rules ()
+    ((run-body body ...)
+     (begin body ...))))
+
+(define-syntax thunk-body
+  (syntax-rules ()
+    ((thunk-body body ...)
+     (lambda () body ...))))
+
+(check "template list ellipsis"
+       (collect 1 2 3)
+       '(1 2 3))
+
+(define body-cell (vector 0))
+(run-body
+  (vector-set! body-cell 0 (+ (vector-ref body-cell 0) 1))
+  (vector-set! body-cell 0 (+ (vector-ref body-cell 0) 2))
+  (vector-set! body-cell 0 (+ (vector-ref body-cell 0) 3)))
+
+(check "begin body ellipsis"
+       (vector-ref body-cell 0)
+       6)
+
+(define thunk
+  (thunk-body
+    (vector-set! body-cell 0 (+ (vector-ref body-cell 0) 4))
+    (vector-ref body-cell 0)))
+
+(check "lambda body ellipsis"
+       (thunk)
+       10)
+
+(newline)
+(display "Passed: ") (display passed) (newline)
+(display "Failed: ") (display failed) (newline)
+(if (> failed 0) (exit 1) (exit 0))
