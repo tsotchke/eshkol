@@ -15,6 +15,19 @@ This document defines how the freestanding / platform program is run as a founde
   - long-lived incubator for freestanding, embedded, BSP, and toolchain work
   - all platform topic branches start here
 
+## Worktree model
+
+Recommended layout:
+
+- `~/Desktop/eshkol`
+  - `feature/v1.2-scale`
+- `~/Desktop/eshkol-platform`
+  - `feature/platform-freestanding`
+- optional extra worktrees
+  - active topic branches only
+
+The integration worktree should track `feature/platform-freestanding` directly. Topic branches should be short-lived and should not permanently replace the integration worktree.
+
 ## Topic branch model
 
 All implementation work should happen on short-lived topic branches off `feature/platform-freestanding`.
@@ -45,6 +58,8 @@ Topic branch rule:
 
 - merge or rebase `feature/v1.2-scale` into `feature/platform-freestanding` every 1-3 days while churn is high
 - never allow the platform branch to drift far from the main release line
+- prefer explicit merge commits for roadmap sync points so integration history stays auditable
+- use [SYNC_POLICY.md](SYNC_POLICY.md) as the operational rule for full vs selective roadmap sync
 
 ### Platform into mainline
 
@@ -54,6 +69,10 @@ Merge only when all are true:
 - relevant tests pass
 - the change is within the current release window's acceptable scope
 - no kernel-only artifacts are required to justify the change
+
+### Topic branches into platform
+
+Merge accepted topic branches into `feature/platform-freestanding` with explicit merge commits. This preserves the slice boundary in history and makes later audit, bisect, and rollback much safer.
 
 ### Kernel repo relationship
 
@@ -181,3 +200,6 @@ A change is not ready to merge if it changes any of the following without updati
 - test/CI requirements
 
 The doc set under `docs/platform/` is part of the program implementation, not optional commentary.
+
+Use [IMPLEMENTATION_WORKFLOW.md](IMPLEMENTATION_WORKFLOW.md) and [SLICE_CHECKLIST.md](SLICE_CHECKLIST.md) as the operating procedure for each topic branch.
+Use [SYNC_POLICY.md](SYNC_POLICY.md) for branch-to-branch convergence while roadmap and platform work proceed in parallel.
