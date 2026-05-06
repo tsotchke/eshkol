@@ -41,10 +41,24 @@ cat > "$WORK/subprocess_api.esk" <<'EOF'
 (define argv-result
   (run-argv-capture (list "/bin/echo" "literal;not-shell") "." 5000 4096))
 
+(define shell-builtin
+  (process-spawn-shell "cd" "."))
+
+(define shell-builtin-code
+  (if shell-builtin
+      (begin
+        (process-close-stdin shell-builtin)
+        (process-wait shell-builtin 5000)
+        (let ((code (process-exit-code shell-builtin)))
+          (process-destroy shell-builtin)
+          code))
+      -999))
+
 (check "shell exit code" (cdr (assoc 'exit-code shell-result)) 42)
 (check "shell stdout" (cdr (assoc 'stdout shell-result)) "out\n")
 (check "shell stderr" (cdr (assoc 'stderr shell-result)) "err\n")
 (check "argv does not use shell" (cdr (assoc 'stdout argv-result)) "literal;not-shell\n")
+(check "explicit shell runs shell builtins" shell-builtin-code 0)
 
 (if (> failed 0)
     (exit 1)

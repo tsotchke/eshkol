@@ -32439,12 +32439,15 @@ int eshkol_compile_llvm_ir_to_object(LLVMModuleRef module_ref, const char* filen
         //     per ABI). Range overflow doesn't bite there.
         std::optional<llvm::CodeModel::Model> code_model;
 #if LLVM_VERSION_MAJOR >= 21
-        const std::string& triple_str_for_cm = cached_triple.str();
+        const bool use_large_aarch64_code_model = cached_triple.getArch() == Triple::aarch64 &&
+                                                  !cached_triple.isOSWindows();
 #else
         const std::string& triple_str_for_cm = g_cached_target_triple;
+        const Triple triple_for_cm(triple_str_for_cm);
+        const bool use_large_aarch64_code_model = triple_for_cm.getArch() == Triple::aarch64 &&
+                                                  !triple_for_cm.isOSWindows();
 #endif
-        if (triple_str_for_cm.find("aarch64") != std::string::npos ||
-            triple_str_for_cm.find("arm64") != std::string::npos) {
+        if (use_large_aarch64_code_model) {
             code_model = llvm::CodeModel::Large;
         }
 
@@ -32644,6 +32647,7 @@ int eshkol_compile_llvm_ir_to_executable(LLVMModuleRef module_ref, const char* f
 #if defined(__APPLE__)
             link_args.emplace_back("-Wl,-force_load," + runtime_lib_path.generic_string());
 #elif defined(_WIN32)
+            link_args.emplace_back("-Xlinker");
             link_args.emplace_back("/WHOLEARCHIVE:" + runtime_lib_path.generic_string());
 #else
             link_args.emplace_back("-Wl,--whole-archive");
