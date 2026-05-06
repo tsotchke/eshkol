@@ -130,6 +130,7 @@ ESHKOL_VM_NO_DISASM=1 ./test_vm
 
 # Rebuild the browser REPL VM
 emcc -O2 -s WASM=1 -s MODULARIZE=1 -s EXPORT_NAME=&#39;EshkolVM&#39; \
+  -s EXPORTED_RUNTIME_METHODS=&#39;[&quot;ccall&quot;,&quot;cwrap&quot;]&#39; \
   -DESHKOL_VM_WASM -DESHKOL_VM_NO_DISASM \
   -I lib/backend lib/backend/vm_wasm_repl.c \
   -o site/static/eshkol-vm.js -lm
