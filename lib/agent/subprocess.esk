@@ -19,6 +19,7 @@
 ;; ============================================================================
 
 (extern ptr process-spawn-raw ptr ptr ptr i64 :real qllm_process_spawn)
+(extern ptr process-spawn-shell-raw ptr ptr i64 :real qllm_process_spawn_shell)
 (extern ptr process-spawn-argv-raw ptr ptr :real qllm_process_spawn_argv)
 (extern ptr process-spawn-argv-flags-raw ptr ptr i64 :real qllm_process_spawn_argv_flags)
 (extern i64 process-write-stdin-raw ptr ptr i64 :real qllm_process_write_stdin)
@@ -27,7 +28,7 @@
 (extern i64 process-read-stderr-raw ptr ptr i64 :real qllm_process_read_stderr)
 (extern ptr process-read-all-stdout-raw ptr i64 ptr :real qllm_process_read_all_stdout)
 (extern ptr process-read-all-stderr-raw ptr i64 ptr :real qllm_process_read_all_stderr)
-(extern void process-free-buffer-raw ptr :real free)
+(extern void process-free-buffer-raw ptr :real qllm_process_free_buffer)
 (extern i32 process-wait-raw ptr i32 :real qllm_process_wait)
 (extern i32 process-running-raw ptr :real qllm_process_running)
 (extern i32 process-exit-code-raw ptr :real qllm_process_exit_code)
@@ -47,8 +48,8 @@
 
 (define (process-spawn command cwd)
   "Spawn a legacy command string. Returns process handle or #f on failure.
-   command: shell-compatible command string. The native layer may bypass
-   /bin/sh for simple commands with no shell metacharacters.
+   command: shell-compatible command string. The native layer may bypass the
+   platform shell for simple commands where direct argv execution is equivalent.
    cwd: working directory."
   (process-spawn-raw command cwd #f 0))
 
@@ -59,8 +60,12 @@
   (process-spawn-raw command cwd #f PROCESS_SPAWN_STDIN_NULL))
 
 (define (process-spawn-shell command cwd)
-  "Spawn a shell command with /bin/sh -c. Returns process handle."
-  (process-spawn-argv (list "/bin/sh" "-c" command) cwd))
+  "Spawn a command through the platform shell. Returns process handle."
+  (process-spawn-shell-raw command cwd 0))
+
+(define (process-spawn-shell-nostdin command cwd)
+  "Spawn a shell command with stdin redirected to /dev/null."
+  (process-spawn-shell-raw command cwd PROCESS_SPAWN_STDIN_NULL))
 
 (define (process-owned-c-string->string buf)
   "Copy a malloc-owned C string into Eshkol space, then free it."
@@ -180,7 +185,7 @@
    Args: command [cwd] [timeout-ms]. Returns: exit code (integer)."
   (let* ((cwd (if (> (length rest) 0) (list-ref rest 0) "."))
          (timeout-ms (if (> (length rest) 1) (list-ref rest 1) 30000))
-         (proc (process-spawn command cwd)))
+         (proc (process-spawn-shell command cwd)))
     (if (not proc)
         -1
         (begin
@@ -205,7 +210,7 @@
          ;; it straight to /dev/null in the child and skip the pipe().
          ;; Drops per-call syscall count by a pipe + 2 closes; the
          ;; subsequent process-close-stdin becomes a no-op.
-         (proc (process-spawn-nostdin command cwd)))
+         (proc (process-spawn-shell-nostdin command cwd)))
     (if (not proc)
         (list (cons 'exit-code -1)
               (cons 'stdout "")
