@@ -217,6 +217,7 @@ jobs:
             ${{ matrix.build_dir }}/eshkol-run
             ${{ matrix.build_dir }}/eshkol-repl
             ${{ matrix.build_dir }}/stdlib.o
+            ${{ matrix.build_dir }}/stdlib.bc
 
   windows-matrix:
     name: ${{ matrix.name }}
@@ -399,3 +400,4 @@ jobs:
             ${{ matrix.build_dir }}/Release/eshkol-run.exe
             ${{ matrix.build_dir }}/Release/eshkol-repl.exe
             ${{ matrix.build_dir }}/stdlib.o
+            ${{ matrix.build_dir }}/stdlib.bc
