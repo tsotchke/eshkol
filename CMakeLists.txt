@@ -847,9 +847,12 @@ macro(eshkol_append_host_runtime_link_arg item)
             endif()
         else()
             set(_eshkol_runtime_link_arg "${item}")
-            if(NOT _eshkol_runtime_link_arg MATCHES "^-" AND
-               NOT _eshkol_runtime_link_arg MATCHES "[/\\\\]" AND
-               NOT _eshkol_runtime_link_arg MATCHES "\\.(a|so|dylib|lib)$")
+            if(WIN32 AND _eshkol_runtime_link_arg MATCHES "^[A-Za-z0-9_.-]+\\.lib$")
+                string(REGEX REPLACE "\\.lib$" "" _eshkol_runtime_link_arg "${_eshkol_runtime_link_arg}")
+                set(_eshkol_runtime_link_arg "-l${_eshkol_runtime_link_arg}")
+            elseif(NOT _eshkol_runtime_link_arg MATCHES "^-" AND
+                   NOT _eshkol_runtime_link_arg MATCHES "[/\\\\]" AND
+                   NOT _eshkol_runtime_link_arg MATCHES "\\.(a|so|dylib|lib)$")
                 set(_eshkol_runtime_link_arg "-l${_eshkol_runtime_link_arg}")
             endif()
         endif()
