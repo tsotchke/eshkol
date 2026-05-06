@@ -1009,7 +1009,18 @@ void* eshkol_bytevector_copy(void* arena, void* bv, int64_t start, int64_t end) 
  * callers passing a bare C string (none in tree, but defensive)
  * continue to work.
  */
-static int64_t eshkol_string_byte_length(const char* s) {
+/* Public byte-count for an Eshkol string — reads the header `size` field
+ * (set by arena_allocate_string_with_header to data_len + 1) and returns
+ * the payload byte count.  Falls back to C strlen for raw char* without
+ * an Eshkol header (e.g. compile-time string literals before the
+ * header layout was uniform).
+ *
+ * Exported (non-static) so codegen for string-append, etc., can call it
+ * to honour embedded NULs — strlen would short-circuit at the first NUL
+ * byte and silently truncate `(string-append "echo" (string #\nul) "evil")`
+ * to "echo".
+ */
+extern "C" int64_t eshkol_string_byte_length(const char* s) {
     if (!s) return 0;
     /* Sanity: the header sits at s-8 and its subtype byte is the first
      * byte of the 8-byte header. Validate it's HEAP_SUBTYPE_STRING

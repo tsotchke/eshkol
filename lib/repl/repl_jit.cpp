@@ -89,6 +89,7 @@ extern "C" {
     int64_t eshkol_check_recursion_depth(void);
     void eshkol_decrement_recursion_depth(void);
     int64_t eshkol_utf8_strlen(const char* s);
+    int64_t eshkol_string_byte_length(const char* s);
     int64_t eshkol_utf8_ref(const char* s, int64_t k);
     char* eshkol_utf8_substring(const char* s, int64_t start, int64_t end, void* arena);
     int64_t eshkol_unwrap_list_index(const eshkol_tagged_value_t* tv);
@@ -700,6 +701,7 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_SYMBOL(eshkol_rational_compare_tagged_ptr);
     ADD_SYMBOL(eshkol_bignum_compare_tagged);
     ADD_SYMBOL(eshkol_utf8_strlen);
+    ADD_SYMBOL(eshkol_string_byte_length);
     ADD_SYMBOL(eshkol_utf8_ref);
     ADD_SYMBOL(eshkol_utf8_substring);
     ADD_SYMBOL(eshkol_unwrap_list_index);
