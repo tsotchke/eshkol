@@ -1665,6 +1665,22 @@ if(ESHKOL_BUILD_AGENT_FFI)
                     "-Wl,--no-whole-archive")
             endif()
         endif()
+
+        if(TARGET eshkol-repl)
+            # Keep the long-lived REPL's JIT resolver on the same footing
+            # as eshkol-run -r: agent FFI externs loaded from .esk files
+            # should be available in persistent control sessions too.
+            target_link_libraries(eshkol-repl PRIVATE eshkol-agent-ffi)
+            if(APPLE)
+                target_link_options(eshkol-repl PRIVATE
+                    "-Wl,-force_load,$<TARGET_FILE:eshkol-agent-ffi>")
+            elseif(NOT WIN32)
+                target_link_options(eshkol-repl PRIVATE
+                    "-Wl,--whole-archive"
+                    "$<TARGET_FILE:eshkol-agent-ffi>"
+                    "-Wl,--no-whole-archive")
+            endif()
+        endif()
     else()
         message(STATUS "Agent FFI modules: lib/agent/c/ not found, skipping")
     endif()

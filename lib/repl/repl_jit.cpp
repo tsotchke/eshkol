@@ -44,6 +44,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
 #ifdef _WIN32
 #include <malloc.h>           // _aligned_malloc / _aligned_free
 #endif
@@ -124,6 +126,124 @@ extern "C" {
                                             void* filter_worker, void* unary_dispatcher,
                                             void* binary_dispatcher);
     bool eshkol_parallel_workers_registered(void);
+
+#if !defined(_WIN32)
+#if defined(__APPLE__)
+#define ESHKOL_OPTIONAL_AGENT_FFI __attribute__((weak_import))
+#else
+#define ESHKOL_OPTIONAL_AGENT_FFI __attribute__((weak))
+#endif
+
+    int eshkol_term_init(void) ESHKOL_OPTIONAL_AGENT_FFI;
+    void eshkol_term_shutdown(void) ESHKOL_OPTIONAL_AGENT_FFI;
+    void eshkol_term_raw_mode(void) ESHKOL_OPTIONAL_AGENT_FFI;
+    void eshkol_term_cooked_mode(void) ESHKOL_OPTIONAL_AGENT_FFI;
+    int eshkol_term_width(void) ESHKOL_OPTIONAL_AGENT_FFI;
+    int eshkol_term_height(void) ESHKOL_OPTIONAL_AGENT_FFI;
+    int eshkol_term_resized(void) ESHKOL_OPTIONAL_AGENT_FFI;
+    int eshkol_term_read_key(void) ESHKOL_OPTIONAL_AGENT_FFI;
+    int eshkol_term_read_key_timeout(int timeout_ms) ESHKOL_OPTIONAL_AGENT_FFI;
+    void eshkol_term_clear(void) ESHKOL_OPTIONAL_AGENT_FFI;
+    void eshkol_term_move_to(int row, int col) ESHKOL_OPTIONAL_AGENT_FFI;
+    void eshkol_term_show_cursor(void) ESHKOL_OPTIONAL_AGENT_FFI;
+    void eshkol_term_hide_cursor(void) ESHKOL_OPTIONAL_AGENT_FFI;
+    void eshkol_term_write(const char* str) ESHKOL_OPTIONAL_AGENT_FFI;
+    void eshkol_term_flush(void) ESHKOL_OPTIONAL_AGENT_FFI;
+    void eshkol_term_set_title(const char* title) ESHKOL_OPTIONAL_AGENT_FFI;
+
+    int eshkol_hmac_sha256(const char* key, size_t key_len, const char* data,
+                           size_t data_len, char* out_hex, size_t out_size)
+        ESHKOL_OPTIONAL_AGENT_FFI;
+    int eshkol_sha256(const char* data, size_t data_len, char* out_hex,
+                      size_t out_size) ESHKOL_OPTIONAL_AGENT_FFI;
+    int eshkol_random_bytes(char* buf, size_t len) ESHKOL_OPTIONAL_AGENT_FFI;
+    int eshkol_random_hex(char* buf, size_t hex_len) ESHKOL_OPTIONAL_AGENT_FFI;
+
+    int64_t eshkol_regex_compile(const char* pattern, int flags)
+        ESHKOL_OPTIONAL_AGENT_FFI;
+    int eshkol_regex_match(int64_t handle, const char* subject, char* out,
+                           size_t out_size) ESHKOL_OPTIONAL_AGENT_FFI;
+    int eshkol_regex_match_all(int64_t handle, const char* subject, char* out,
+                               size_t out_size, int include_groups)
+        ESHKOL_OPTIONAL_AGENT_FFI;
+    int eshkol_regex_replace(int64_t handle, const char* subject,
+                             const char* replacement, char* out,
+                             size_t out_size) ESHKOL_OPTIONAL_AGENT_FFI;
+    void eshkol_regex_free(int64_t handle) ESHKOL_OPTIONAL_AGENT_FFI;
+    int eshkol_regex_match_groups(int64_t handle, const char* subject,
+                                  char* out, size_t out_size)
+        ESHKOL_OPTIONAL_AGENT_FFI;
+    int eshkol_regex_match_groups_count(int64_t handle, const char* subject)
+        ESHKOL_OPTIONAL_AGENT_FFI;
+    int eshkol_regex_named_group_number(int64_t handle, const char* name)
+        ESHKOL_OPTIONAL_AGENT_FFI;
+
+    int64_t eshkol_sqlite_open(const char* path) ESHKOL_OPTIONAL_AGENT_FFI;
+    void eshkol_sqlite_close(int64_t handle) ESHKOL_OPTIONAL_AGENT_FFI;
+    int eshkol_sqlite_exec(int64_t handle, const char* sql)
+        ESHKOL_OPTIONAL_AGENT_FFI;
+    int64_t eshkol_sqlite_prepare(int64_t db_handle, const char* sql)
+        ESHKOL_OPTIONAL_AGENT_FFI;
+    int eshkol_sqlite_step(int64_t stmt_handle) ESHKOL_OPTIONAL_AGENT_FFI;
+    int eshkol_sqlite_reset(int64_t stmt_handle) ESHKOL_OPTIONAL_AGENT_FFI;
+    void eshkol_sqlite_finalize(int64_t stmt_handle) ESHKOL_OPTIONAL_AGENT_FFI;
+    int eshkol_sqlite_bind_text(int64_t stmt_handle, int index,
+                                const char* text) ESHKOL_OPTIONAL_AGENT_FFI;
+    int eshkol_sqlite_bind_int(int64_t stmt_handle, int index, int64_t value)
+        ESHKOL_OPTIONAL_AGENT_FFI;
+    int eshkol_sqlite_bind_double(int64_t stmt_handle, int index, double value)
+        ESHKOL_OPTIONAL_AGENT_FFI;
+    int eshkol_sqlite_bind_null(int64_t stmt_handle, int index)
+        ESHKOL_OPTIONAL_AGENT_FFI;
+    int eshkol_sqlite_column_text(int64_t stmt_handle, int index, char* out,
+                                  int64_t out_size) ESHKOL_OPTIONAL_AGENT_FFI;
+    int64_t eshkol_sqlite_column_int(int64_t stmt_handle, int index)
+        ESHKOL_OPTIONAL_AGENT_FFI;
+    double eshkol_sqlite_column_double(int64_t stmt_handle, int index)
+        ESHKOL_OPTIONAL_AGENT_FFI;
+    int eshkol_sqlite_column_count(int64_t stmt_handle)
+        ESHKOL_OPTIONAL_AGENT_FFI;
+    int eshkol_sqlite_column_name(int64_t stmt_handle, int index, char* out,
+                                  int64_t out_size) ESHKOL_OPTIONAL_AGENT_FFI;
+    int eshkol_sqlite_column_type(int64_t stmt_handle, int index)
+        ESHKOL_OPTIONAL_AGENT_FFI;
+    int eshkol_sqlite_last_error(int64_t db_handle, char* out,
+                                 size_t out_size) ESHKOL_OPTIONAL_AGENT_FFI;
+    int64_t eshkol_sqlite_last_insert_rowid(int64_t db_handle)
+        ESHKOL_OPTIONAL_AGENT_FFI;
+    int eshkol_sqlite_changes(int64_t db_handle) ESHKOL_OPTIONAL_AGENT_FFI;
+
+    void* qllm_process_spawn(const char* command, const char* cwd_arg,
+                             const char* env_arg, int64_t flags)
+        ESHKOL_OPTIONAL_AGENT_FFI;
+    void* qllm_process_spawn_argv(const char* tab_packed_argv,
+                                  const char* cwd_arg)
+        ESHKOL_OPTIONAL_AGENT_FFI;
+    void* qllm_process_spawn_argv_flags(const char* tab_packed_argv,
+                                        const char* cwd_arg, int64_t flags)
+        ESHKOL_OPTIONAL_AGENT_FFI;
+    int64_t qllm_process_write_stdin(void* proc, const char* data, int64_t len)
+        ESHKOL_OPTIONAL_AGENT_FFI;
+    void qllm_process_close_stdin(void* proc) ESHKOL_OPTIONAL_AGENT_FFI;
+    int64_t qllm_process_read_stdout(void* proc, char* buf, int64_t buf_size)
+        ESHKOL_OPTIONAL_AGENT_FFI;
+    int64_t qllm_process_read_stderr(void* proc, char* buf, int64_t buf_size)
+        ESHKOL_OPTIONAL_AGENT_FFI;
+    char* qllm_process_read_all_stdout(void* proc, int64_t max_size,
+                                       int64_t* out_len)
+        ESHKOL_OPTIONAL_AGENT_FFI;
+    char* qllm_process_read_all_stderr(void* proc, int64_t max_size,
+                                       int64_t* out_len)
+        ESHKOL_OPTIONAL_AGENT_FFI;
+    int32_t qllm_process_wait(void* proc, int32_t timeout_ms)
+        ESHKOL_OPTIONAL_AGENT_FFI;
+    int32_t qllm_process_running(void* proc) ESHKOL_OPTIONAL_AGENT_FFI;
+    int32_t qllm_process_exit_code(void* proc) ESHKOL_OPTIONAL_AGENT_FFI;
+    void qllm_process_kill(void* proc, int32_t signal) ESHKOL_OPTIONAL_AGENT_FFI;
+    void qllm_process_destroy(void* proc) ESHKOL_OPTIONAL_AGENT_FFI;
+
+#undef ESHKOL_OPTIONAL_AGENT_FFI
+#endif
 }
 
 // Track already-loaded modules to prevent circular imports
@@ -268,6 +388,18 @@ void ReplJITContext::registerRuntimeSymbols() {
             JITSymbolFlags::Callable | JITSymbolFlags::Exported \
         }
 
+#if !defined(_WIN32)
+    #define ADD_OPTIONAL_AGENT_FFI_SYMBOL(name) \
+        do { \
+            if (reinterpret_cast<void*>(&name) != nullptr) { \
+                symbols[ES.intern(#name)] = { \
+                    orc::ExecutorAddr::fromPtr((void*)&name), \
+                    JITSymbolFlags::Callable | JITSymbolFlags::Exported \
+                }; \
+            } \
+        } while (0)
+#endif
+
     // Helper macro to add a data symbol (global variable)
     // NOTE: Regular (non-TLS) globals are found by DynamicLibrarySearchGenerator via dlsym,
     // so the unmangled ES.intern name works (the generator handles the mangling internally).
@@ -394,6 +526,80 @@ void ReplJITContext::registerRuntimeSymbols() {
         orc::ExecutorAddr::fromPtr((void*)&::snprintf),
         JITSymbolFlags::Callable | JITSymbolFlags::Exported
     };
+
+#if !defined(_WIN32)
+    // ===== OPTIONAL AGENT FFI EXPORTS =====
+    // Agent FFI modules are optional at configure time and their symbols
+    // are not referenced by C++ code. When linked into eshkol-run/repl,
+    // register them explicitly so JIT extern declarations do not depend on
+    // platform-specific executable dynamic-symbol export behavior.
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_term_init);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_term_shutdown);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_term_raw_mode);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_term_cooked_mode);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_term_width);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_term_height);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_term_resized);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_term_read_key);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_term_read_key_timeout);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_term_clear);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_term_move_to);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_term_show_cursor);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_term_hide_cursor);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_term_write);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_term_flush);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_term_set_title);
+
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_hmac_sha256);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_sha256);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_random_bytes);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_random_hex);
+
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_regex_compile);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_regex_match);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_regex_match_all);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_regex_replace);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_regex_free);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_regex_match_groups);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_regex_match_groups_count);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_regex_named_group_number);
+
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_sqlite_open);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_sqlite_close);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_sqlite_exec);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_sqlite_prepare);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_sqlite_step);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_sqlite_reset);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_sqlite_finalize);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_sqlite_bind_text);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_sqlite_bind_int);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_sqlite_bind_double);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_sqlite_bind_null);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_sqlite_column_text);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_sqlite_column_int);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_sqlite_column_double);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_sqlite_column_count);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_sqlite_column_name);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_sqlite_column_type);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_sqlite_last_error);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_sqlite_last_insert_rowid);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_sqlite_changes);
+
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(qllm_process_spawn);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(qllm_process_spawn_argv);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(qllm_process_spawn_argv_flags);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(qllm_process_write_stdin);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(qllm_process_close_stdin);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(qllm_process_read_stdout);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(qllm_process_read_stderr);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(qllm_process_read_all_stdout);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(qllm_process_read_all_stderr);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(qllm_process_wait);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(qllm_process_running);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(qllm_process_exit_code);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(qllm_process_kill);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(qllm_process_destroy);
+#endif
 
     // ===== TYPE ERRORS (R7RS Compliance) =====
     // Use global scope since these are declared extern "C" in global namespace
@@ -586,6 +792,9 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_SYMBOL(eshkol_parallel_workers_registered);
 
     #undef ADD_SYMBOL
+#if !defined(_WIN32)
+    #undef ADD_OPTIONAL_AGENT_FFI_SYMBOL
+#endif
     #undef ADD_DATA_SYMBOL
     #undef ADD_TLS_SYMBOL
 
