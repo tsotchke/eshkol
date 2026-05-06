@@ -58,18 +58,68 @@ if [ ! -d "$BUILD_DIR" ]; then
     exit 1
 fi
 
+cleanup_output_log() {
+    local path="${OUTPUT_LOG:-}"
+
+    if [ -z "$path" ]; then
+        return
+    fi
+
+    if [ -L "$path" ] || { [ -e "$path" ] && ! test -f "$path"; }; then
+        echo "Refusing to remove non-file or symlinked output log path: $path" >&2
+        return
+    fi
+
+    rm -f -- "$path"
+}
+
+require_regular_executable() {
+    local label="$1"
+    local path="$2"
+
+    if [ -L "$path" ] || ! test -f "$path" || ! test -s "$path" || ! test -x "$path"; then
+        echo -e "${RED}Error: $label missing, empty, symlinked, or not executable: $path${NC}"
+        exit 1
+    fi
+}
+
+validate_suite_script() {
+    local path="$1"
+
+    if ! test -e "$path"; then
+        return 1
+    fi
+
+    if [ -L "$path" ] || ! test -f "$path" || ! test -s "$path"; then
+        echo -e "${RED}Error: suite script missing, empty, symlinked, or not a regular file: $path${NC}"
+        return 2
+    fi
+
+    return 0
+}
+
+run_suite_script() {
+    local path="$1"
+    local status
+
+    validate_suite_script "$path"
+    status=$?
+    if [ "$status" -ne 0 ]; then
+        return 126
+    fi
+
+    bash "$path"
+}
+
 # Check if compiler exists
-if [ ! -f "$BUILD_DIR/eshkol-run" ]; then
-    echo -e "${RED}Error: eshkol-run not found. Run make first.${NC}"
-    exit 1
-fi
+require_regular_executable "eshkol-run" "$BUILD_DIR/eshkol-run"
 
 echo "Running all test suites with full output..."
 echo ""
 
 # Create temp file for output
 OUTPUT_LOG=$(mktemp)
-trap "rm -f $OUTPUT_LOG" EXIT
+trap cleanup_output_log EXIT
 
 # Run each test suite
 for script in "${TEST_SCRIPTS[@]}"; do
@@ -78,8 +128,15 @@ for script in "${TEST_SCRIPTS[@]}"; do
     suite_name="${suite_name#run_}"
     suite_name="${suite_name%_tests}"
 
-    if [ ! -f "$script_path" ]; then
+    validate_suite_script "$script_path"
+    suite_script_status=$?
+    if [ "$suite_script_status" -eq 1 ]; then
         echo -e "${YELLOW}⚠ Skipping $script (not found)${NC}"
+        continue
+    fi
+    if [ "$suite_script_status" -ne 0 ]; then
+        FAILED_SUITES+=("$suite_name")
+        ((SUITES_FAIL++))
         continue
     fi
 
@@ -90,7 +147,7 @@ for script in "${TEST_SCRIPTS[@]}"; do
     echo ""
 
     # Run with full output, capture exit code
-    if bash "$script_path" 2>&1 | tee "$OUTPUT_LOG"; then
+    if run_suite_script "$script_path" 2>&1 | tee "$OUTPUT_LOG"; then
         echo ""
         echo -e "${GREEN}═══ $suite_name: PASSED ═══${NC}"
         PASSED_SUITES+=("$suite_name")

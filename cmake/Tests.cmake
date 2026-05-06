@@ -2,13 +2,13 @@ function(eshkol_add_suite_test suite_name test_glob)
     add_test(
         NAME suite-${suite_name}
         COMMAND
-            ${CMAKE_COMMAND}
-            -DPROJECT_ROOT=${CMAKE_SOURCE_DIR}
-            -DBUILD_DIR=${CMAKE_BINARY_DIR}
-            -DEXECUTABLE_SUFFIX=${CMAKE_EXECUTABLE_SUFFIX}
-            -DSUITE_NAME=${suite_name}
-            -DTEST_GLOB=${test_glob}
-            -P ${CMAKE_SOURCE_DIR}/cmake/RunSuite.cmake
+            "${CMAKE_COMMAND}"
+            "-DPROJECT_ROOT=${CMAKE_SOURCE_DIR}"
+            "-DBUILD_DIR=${CMAKE_BINARY_DIR}"
+            "-DEXECUTABLE_SUFFIX=${CMAKE_EXECUTABLE_SUFFIX}"
+            "-DSUITE_NAME=${suite_name}"
+            "-DTEST_GLOB=${test_glob}"
+            -P "${CMAKE_SOURCE_DIR}/cmake/RunSuite.cmake"
     )
     set_tests_properties(suite-${suite_name} PROPERTIES LABELS "suite")
 endfunction()
@@ -17,14 +17,14 @@ function(eshkol_add_negative_suite_test suite_name test_glob negative_mode)
     add_test(
         NAME suite-${suite_name}
         COMMAND
-            ${CMAKE_COMMAND}
-            -DPROJECT_ROOT=${CMAKE_SOURCE_DIR}
-            -DBUILD_DIR=${CMAKE_BINARY_DIR}
-            -DEXECUTABLE_SUFFIX=${CMAKE_EXECUTABLE_SUFFIX}
-            -DSUITE_NAME=${suite_name}
-            -DTEST_GLOB=${test_glob}
-            -DNEGATIVE_MODE=${negative_mode}
-            -P ${CMAKE_SOURCE_DIR}/cmake/RunSuite.cmake
+            "${CMAKE_COMMAND}"
+            "-DPROJECT_ROOT=${CMAKE_SOURCE_DIR}"
+            "-DBUILD_DIR=${CMAKE_BINARY_DIR}"
+            "-DEXECUTABLE_SUFFIX=${CMAKE_EXECUTABLE_SUFFIX}"
+            "-DSUITE_NAME=${suite_name}"
+            "-DTEST_GLOB=${test_glob}"
+            "-DNEGATIVE_MODE=${negative_mode}"
+            -P "${CMAKE_SOURCE_DIR}/cmake/RunSuite.cmake"
     )
     set_tests_properties(suite-${suite_name} PROPERTIES LABELS "suite")
 endfunction()

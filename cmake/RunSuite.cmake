@@ -6,14 +6,61 @@ if(NOT DEFINED NEGATIVE_MODE)
     set(NEGATIVE_MODE "none")
 endif()
 
+function(eshkol_require_directory label path)
+    if(NOT IS_ABSOLUTE "${path}")
+        message(FATAL_ERROR "${label} must be absolute: ${path}")
+    endif()
+
+    if(IS_SYMLINK "${path}")
+        message(FATAL_ERROR "${label} must not be a symlink: ${path}")
+    endif()
+
+    if(NOT IS_DIRECTORY "${path}")
+        message(FATAL_ERROR "${label} must be an existing directory: ${path}")
+    endif()
+endfunction()
+
+function(eshkol_require_regular_file label path)
+    if(IS_SYMLINK "${path}")
+        message(FATAL_ERROR "${label} must not be a symlink: ${path}")
+    endif()
+
+    if(NOT EXISTS "${path}")
+        message(FATAL_ERROR "${label} not found: ${path}")
+    endif()
+
+    if(IS_DIRECTORY "${path}")
+        message(FATAL_ERROR "${label} must be a regular file: ${path}")
+    endif()
+endfunction()
+
+function(eshkol_require_suite_name value)
+    if("${value}" STREQUAL "" OR NOT "${value}" MATCHES "^[A-Za-z0-9_.-]+$")
+        message(FATAL_ERROR "unsupported suite name: ${value}")
+    endif()
+endfunction()
+
+function(eshkol_require_test_glob value)
+    if("${value}" STREQUAL "")
+        message(FATAL_ERROR "TEST_GLOB must not be empty")
+    endif()
+
+    if(IS_ABSOLUTE "${value}" OR "${value}" MATCHES "(^|/)\\.\\.(/|$)")
+        message(FATAL_ERROR "unsupported TEST_GLOB: ${value}")
+    endif()
+endfunction()
+
+eshkol_require_directory("PROJECT_ROOT" "${PROJECT_ROOT}")
+eshkol_require_directory("BUILD_DIR" "${BUILD_DIR}")
+eshkol_require_suite_name("${SUITE_NAME}")
+eshkol_require_test_glob("${TEST_GLOB}")
+
 set(ESHKOL_RUN "${BUILD_DIR}/eshkol-run${EXECUTABLE_SUFFIX}")
 if(NOT EXISTS "${ESHKOL_RUN}")
     set(ESHKOL_RUN "${BUILD_DIR}/eshkol-run")
 endif()
 
-if(NOT EXISTS "${ESHKOL_RUN}")
-    message(FATAL_ERROR "eshkol-run not found at ${BUILD_DIR}")
-endif()
+eshkol_require_regular_file("eshkol-run" "${ESHKOL_RUN}")
 
 file(GLOB TEST_FILES LIST_DIRECTORIES false "${PROJECT_ROOT}/${TEST_GLOB}")
 if(NOT TEST_FILES)
@@ -44,6 +91,14 @@ function(eshkol_find_output out_var output_base)
         "${output_base}"
     )
     foreach(candidate IN LISTS candidates)
+        if(IS_SYMLINK "${candidate}")
+            message(FATAL_ERROR "suite output executable must not be a symlink: ${candidate}")
+        endif()
+
+        if(IS_DIRECTORY "${candidate}")
+            message(FATAL_ERROR "suite output executable must be a regular file: ${candidate}")
+        endif()
+
         if(EXISTS "${candidate}")
             set(${out_var} "${candidate}" PARENT_SCOPE)
             return()
@@ -59,6 +114,7 @@ set(fail_count 0)
 message(STATUS "Running Eshkol suite ${SUITE_NAME}")
 
 foreach(test_file IN LISTS TEST_FILES)
+    eshkol_require_regular_file("suite test file" "${test_file}")
     file(RELATIVE_PATH TEST_RELATIVE_PATH "${PROJECT_ROOT}" "${test_file}")
     string(REGEX REPLACE "[^A-Za-z0-9_.-]" "_" TEST_WORK_ID "${TEST_RELATIVE_PATH}")
     set(TEST_WORK_DIR "${SUITE_OUTPUT_ROOT}/${TEST_WORK_ID}")

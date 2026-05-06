@@ -1468,6 +1468,55 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/repl/assoc_e
     )
 endif()
 
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/windows_suite_surface_test.cpp")
+    add_executable(windows_suite_surface_test tests/toolchain/windows_suite_surface_test.cpp)
+    target_compile_features(windows_suite_surface_test PRIVATE cxx_std_17)
+    add_test(
+        NAME windows_suite_surface_test
+        COMMAND windows_suite_surface_test "${CMAKE_CURRENT_SOURCE_DIR}"
+    )
+endif()
+
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/aggregate_shell_suite_surface_test.cpp")
+    add_executable(aggregate_shell_suite_surface_test
+        tests/toolchain/aggregate_shell_suite_surface_test.cpp)
+    target_compile_features(aggregate_shell_suite_surface_test PRIVATE cxx_std_17)
+    add_test(
+        NAME aggregate_shell_suite_surface_test
+        COMMAND aggregate_shell_suite_surface_test "${CMAKE_CURRENT_SOURCE_DIR}"
+    )
+endif()
+
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/debian_package_surface_test.cpp")
+    add_executable(debian_package_surface_test
+        tests/toolchain/debian_package_surface_test.cpp)
+    target_compile_features(debian_package_surface_test PRIVATE cxx_std_17)
+    add_test(
+        NAME debian_package_surface_test
+        COMMAND debian_package_surface_test "${CMAKE_CURRENT_SOURCE_DIR}"
+    )
+endif()
+
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/docker_build_surface_test.cpp")
+    add_executable(docker_build_surface_test
+        tests/toolchain/docker_build_surface_test.cpp)
+    target_compile_features(docker_build_surface_test PRIVATE cxx_std_17)
+    add_test(
+        NAME docker_build_surface_test
+        COMMAND docker_build_surface_test "${CMAKE_CURRENT_SOURCE_DIR}"
+    )
+endif()
+
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/macos_build_surface_test.cpp")
+    add_executable(macos_build_surface_test
+        tests/toolchain/macos_build_surface_test.cpp)
+    target_compile_features(macos_build_surface_test PRIVATE cxx_std_17)
+    add_test(
+        NAME macos_build_surface_test
+        COMMAND macos_build_surface_test "${CMAKE_CURRENT_SOURCE_DIR}"
+    )
+endif()
+
 # ===== SDNC Paper Artifact: weight_matrices ===================================
 # The paper "The Self-Differentiating Neural Computer: Computable Transformers
 # via Analytical Weight Construction" (tsotchke 2026) reports a 2.8M-parameter
