@@ -5,6 +5,9 @@
 
 set -e
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/test_output_helpers.sh"
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -19,11 +22,11 @@ COMPILE_FAIL=0
 
 # Output directory
 OUTPUT_DIR="list_test_outputs"
-mkdir -p "$OUTPUT_DIR"
+test_output_prepare_dir "$OUTPUT_DIR"
 
 # Results file
 RESULTS_FILE="$OUTPUT_DIR/test_results_summary.txt"
-> "$RESULTS_FILE"  # Clear file
+test_output_reset_file "$RESULTS_FILE" "$OUTPUT_DIR" "test results file"
 
 # Results arrays
 declare -a FAILED_TESTS
@@ -62,7 +65,9 @@ for test_file in tests/lists/*.esk; do
     printf "Testing %-50s " "$test_name"
     
     # Clear output file
-    > "$output_file"
+    test_output_reset_file "$output_file" "$OUTPUT_DIR" "list test output file"
+    compile_output_file="${output_file}.compile"
+    test_output_reset_file "$compile_output_file" "$OUTPUT_DIR" "list compile output file"
     
     # Add header to output file
     echo "========================================" >> "$output_file"
@@ -72,7 +77,7 @@ for test_file in tests/lists/*.esk; do
     echo "" >> "$output_file"
     
     # Try to compile
-    if ./$BUILD_DIR/eshkol-run -L./$BUILD_DIR "$test_file" > "${output_file}.compile" 2>&1; then
+    if ./"$BUILD_DIR"/eshkol-run -L./"$BUILD_DIR" "$test_file" > "$compile_output_file" 2>&1; then
         # Compilation succeeded, try to run
         echo "COMPILATION: SUCCESS" >> "$output_file"
         echo "" >> "$output_file"
@@ -88,14 +93,14 @@ for test_file in tests/lists/*.esk; do
                 ((FAIL++))
                 
                 # Add to summary
-                echo "❌ $test_name - RUNTIME ERROR" >> "$RESULTS_FILE"
+                test_output_append_line "$RESULTS_FILE" "$OUTPUT_DIR" "❌ $test_name - RUNTIME ERROR"
             else
                 echo -e "${GREEN}✅ PASS${NC}"
                 echo "STATUS: PASS" >> "$output_file"
                 ((PASS++))
                 
                 # Add to summary
-                echo "✅ $test_name - PASS" >> "$RESULTS_FILE"
+                test_output_append_line "$RESULTS_FILE" "$OUTPUT_DIR" "✅ $test_name - PASS"
             fi
         else
             echo -e "${RED}❌ RUNTIME FAIL${NC}"
@@ -104,23 +109,23 @@ for test_file in tests/lists/*.esk; do
             ((FAIL++))
             
             # Add to summary
-            echo "❌ $test_name - RUNTIME FAIL" >> "$RESULTS_FILE"
+            test_output_append_line "$RESULTS_FILE" "$OUTPUT_DIR" "❌ $test_name - RUNTIME FAIL"
         fi
     else
         echo -e "${RED}❌ COMPILE FAIL${NC}"
         echo "COMPILATION: FAILED" >> "$output_file"
         echo "" >> "$output_file"
-        cat "${output_file}.compile" >> "$output_file"
+        cat "$compile_output_file" >> "$output_file"
         FAILED_TESTS+=("$test_name")
         ((COMPILE_FAIL++))
         ((FAIL++))
         
         # Add to summary
-        echo "❌ $test_name - COMPILE FAIL" >> "$RESULTS_FILE"
+        test_output_append_line "$RESULTS_FILE" "$OUTPUT_DIR" "❌ $test_name - COMPILE FAIL"
     fi
     
     # Clean up compile output
-    rm -f "${output_file}.compile"
+    rm -f -- "$compile_output_file"
 done
 
 echo ""
@@ -135,15 +140,15 @@ echo -e "  Runtime Errors:   ${#RUNTIME_ERRORS[@]}"
 echo ""
 
 # Add summary to results file
-echo "" >> "$RESULTS_FILE"
-echo "=========================================" >> "$RESULTS_FILE"
-echo "SUMMARY" >> "$RESULTS_FILE"
-echo "=========================================" >> "$RESULTS_FILE"
-echo "Total Tests: $(( PASS + FAIL ))" >> "$RESULTS_FILE"
-echo "Passed: $PASS" >> "$RESULTS_FILE"
-echo "Failed: $FAIL" >> "$RESULTS_FILE"
-echo "  Compile Failures: $COMPILE_FAIL" >> "$RESULTS_FILE"
-echo "  Runtime Errors: ${#RUNTIME_ERRORS[@]}" >> "$RESULTS_FILE"
+test_output_append_line "$RESULTS_FILE" "$OUTPUT_DIR" ""
+test_output_append_line "$RESULTS_FILE" "$OUTPUT_DIR" "========================================="
+test_output_append_line "$RESULTS_FILE" "$OUTPUT_DIR" "SUMMARY"
+test_output_append_line "$RESULTS_FILE" "$OUTPUT_DIR" "========================================="
+test_output_append_line "$RESULTS_FILE" "$OUTPUT_DIR" "Total Tests: $(( PASS + FAIL ))"
+test_output_append_line "$RESULTS_FILE" "$OUTPUT_DIR" "Passed: $PASS"
+test_output_append_line "$RESULTS_FILE" "$OUTPUT_DIR" "Failed: $FAIL"
+test_output_append_line "$RESULTS_FILE" "$OUTPUT_DIR" "  Compile Failures: $COMPILE_FAIL"
+test_output_append_line "$RESULTS_FILE" "$OUTPUT_DIR" "  Runtime Errors: ${#RUNTIME_ERRORS[@]}"
 
 if [ $FAIL -gt 0 ]; then
     echo "Failed Tests:"
@@ -166,7 +171,7 @@ TOTAL=$(( PASS + FAIL ))
 if [ $TOTAL -gt 0 ]; then
     PASS_RATE=$(( PASS * 100 / TOTAL ))
     echo "Pass Rate: ${PASS_RATE}%"
-    echo "Pass Rate: ${PASS_RATE}%" >> "$RESULTS_FILE"
+    test_output_append_line "$RESULTS_FILE" "$OUTPUT_DIR" "Pass Rate: ${PASS_RATE}%"
 fi
 
 echo ""

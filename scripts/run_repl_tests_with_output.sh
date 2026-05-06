@@ -11,6 +11,7 @@ set +e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$PROJECT_ROOT"
+source "$SCRIPT_DIR/test_output_helpers.sh"
 
 # Colors for output
 RED='\033[0;31m'
@@ -25,11 +26,11 @@ FAIL=0
 
 # Output directory
 OUTPUT_DIR="repl_test_outputs"
-mkdir -p "$OUTPUT_DIR"
+test_output_prepare_dir "$OUTPUT_DIR"
 
 # Results file
 RESULTS_FILE="$OUTPUT_DIR/repl_results_summary.txt"
-> "$RESULTS_FILE"
+test_output_reset_file "$RESULTS_FILE" "$OUTPUT_DIR" "test results file"
 
 # Results arrays
 declare -a FAILED_TESTS

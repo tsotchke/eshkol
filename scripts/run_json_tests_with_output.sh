@@ -5,6 +5,9 @@
 
 set +e  # Don't exit on error, we want to see all failures
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/test_output_helpers.sh"
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -20,11 +23,11 @@ RUNTIME_FAIL=0
 
 # Output directory
 OUTPUT_DIR="json_test_outputs"
-mkdir -p "$OUTPUT_DIR"
+test_output_prepare_dir "$OUTPUT_DIR"
 
 # Results file
 RESULTS_FILE="$OUTPUT_DIR/json_results_summary.txt"
-> "$RESULTS_FILE"  # Clear file
+test_output_reset_file "$RESULTS_FILE" "$OUTPUT_DIR" "test results file"
 
 # Results arrays
 declare -a FAILED_TESTS

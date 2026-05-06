@@ -33,6 +33,26 @@ run_with_timeout() {
     fi
 }
 
+cleanup_temp_bin() {
+    local path="$1"
+
+    case "$path" in
+        /tmp/tco_test_*)
+            ;;
+        *)
+            echo "Refusing to remove unexpected TCO temp binary path: $path" >&2
+            return 1
+            ;;
+    esac
+
+    if [ -L "$path" ] || { [ -e "$path" ] && [ ! -f "$path" ]; }; then
+        echo "Refusing to remove non-file or symlinked TCO temp binary path: $path" >&2
+        return 1
+    fi
+
+    rm -f -- "$path"
+}
+
 # Counters
 PASS=0
 FAIL=0
@@ -93,7 +113,7 @@ for test_file in "$TCO_TEST_DIR"/*.esk; do
         echo "    Compile output: $COMPILE_OUTPUT"
         ((FAIL++)) || true
         FAILED_TESTS+=("$test_name (compile)")
-        rm -f "$TEMP_BIN"
+        cleanup_temp_bin "$TEMP_BIN"
         continue
     fi
 
@@ -115,7 +135,7 @@ for test_file in "$TCO_TEST_DIR"/*.esk; do
     RUN_OUTPUT=$(run_with_timeout 60 "$TEMP_BIN" 2>&1)
     RUN_EXIT=$?
 
-    rm -f "$TEMP_BIN"
+    cleanup_temp_bin "$TEMP_BIN"
 
     if [ $RUN_EXIT -ne 0 ]; then
         echo -e "${RED}RUNTIME FAIL (exit $RUN_EXIT)${NC}"

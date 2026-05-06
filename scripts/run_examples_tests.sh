@@ -26,43 +26,52 @@ declare -a COMPILE_FAILURES
 declare -a RUNTIME_FAILURES
 declare -a RUNTIME_ERRORS
 
-# Output directory for logs
-LOG_DIR="/tmp/eshkol_examples_test"
-mkdir -p "$LOG_DIR"
+print_examples_banner() {
+    echo "========================================="
+    echo "  Eshkol Examples Test Suite"
+    echo "========================================="
+    echo ""
+}
 
 # Honour $BUILD_DIR (CI passes it via the matrix: build / build-xla /
 # build-cuda / build-asan); fall back to "build" for plain local runs.
 BUILD_DIR="${BUILD_DIR:-build}"
 
-echo "========================================="
-echo "  Eshkol Examples Test Suite"
-echo "========================================="
-echo ""
+cleanup_example_artifacts() {
+    rm -f a.out a.out.tmp.o
+}
 
-# Ensure build directory exists
-if [ ! -d "$BUILD_DIR" ]; then
-    echo -e "${RED}Error: build directory '$BUILD_DIR' not found. Run cmake first.${NC}"
-    exit 1
-fi
+ensure_examples_build() {
+    if [ ! -d "$BUILD_DIR" ]; then
+        echo -e "${RED}Error: build directory '$BUILD_DIR' not found. Run cmake first.${NC}"
+        exit 1
+    fi
 
-# Check if compiler exists
-if [ ! -f "$BUILD_DIR/eshkol-run" ]; then
-    echo -e "${RED}Error: eshkol-run not found in '$BUILD_DIR'. Run make first.${NC}"
-    exit 1
-fi
+    if [ ! -f "$BUILD_DIR/eshkol-run" ]; then
+        echo -e "${RED}Error: eshkol-run not found in '$BUILD_DIR'. Run make first.${NC}"
+        exit 1
+    fi
 
-# Check if stdlib exists
-if [ ! -f "$BUILD_DIR/stdlib.o" ]; then
-    echo -e "${YELLOW}Warning: stdlib.o not found in $BUILD_DIR. Building...${NC}"
-    cmake --build "$BUILD_DIR" --target stdlib
-fi
+    if [ ! -f "$BUILD_DIR/stdlib.o" ]; then
+        echo -e "${YELLOW}Warning: stdlib.o not found in $BUILD_DIR. Building...${NC}"
+        cmake --build "$BUILD_DIR" --target stdlib
+    fi
+}
 
-echo "Testing all .esk files in examples/ directory..."
-echo "Log files will be saved to: $LOG_DIR"
-echo ""
+example_should_skip() {
+    local test_name="$1"
 
-# Check if examples directory exists and has .esk files
-if [ ! -d "examples" ] || [ -z "$(ls -A examples/*.esk 2>/dev/null)" ]; then
+    case "$test_name" in
+        selene_*|qllm_*|agent.esk|consciousness_*)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+print_empty_examples_summary() {
     echo "No examples found in examples/ directory. Skipping."
     echo ""
     echo "========================================="
@@ -71,7 +80,23 @@ if [ ! -d "examples" ] || [ -z "$(ls -A examples/*.esk 2>/dev/null)" ]; then
     echo "Total Examples:     0"
     echo "Pass Rate: N/A (no examples to test)"
     echo ""
-    rm -f a.out a.out.tmp.o
+}
+
+# Output directory for logs
+LOG_DIR="/tmp/eshkol_examples_test"
+mkdir -p "$LOG_DIR"
+
+print_examples_banner
+ensure_examples_build
+
+echo "Testing all .esk files in examples/ directory..."
+echo "Log files will be saved to: $LOG_DIR"
+echo ""
+
+# Check if examples directory exists and has .esk files
+if [ ! -d "examples" ] || [ -z "$(ls -A examples/*.esk 2>/dev/null)" ]; then
+    print_empty_examples_summary
+    cleanup_example_artifacts
     exit 0
 fi
 
@@ -85,13 +110,14 @@ for test_file in examples/*.esk; do
     test_name=$(basename "$test_file")
 
     # Skip proprietary/unreleased examples
-    case "$test_name" in
-        selene_*|qllm_*|agent.esk|consciousness_*) printf "SKIP (proprietary)\n"; continue ;;
-    esac
+    if example_should_skip "$test_name"; then
+        printf "SKIP (proprietary)\n"
+        continue
+    fi
     printf "[%3d/%3d] %-50s " "$CURRENT" "$TOTAL" "$test_name"
 
     # Clean up stale temp files before each test
-    rm -f a.out a.out.tmp.o
+    cleanup_example_artifacts
 
     # Log file for this example
     compile_log="$LOG_DIR/${test_name%.esk}_compile.log"
@@ -207,7 +233,7 @@ echo "To view runtime output:  cat $LOG_DIR/<example>_run.log"
 echo ""
 
 # Clean up
-rm -f a.out a.out.tmp.o
+cleanup_example_artifacts
 
 # Exit with appropriate code
 if [ $COMPILE_FAIL -eq 0 ] && [ $RUNTIME_FAIL -eq 0 ]; then

@@ -17,6 +17,15 @@ BUILD_DIR="${1:-./dist}"
 VERSION="${2:-1.0.0}"
 TYPE="${3:-release}"
 
+case "$TYPE" in
+    release|debug)
+        ;;
+    *)
+        echo "Unsupported Docker build type: $TYPE" >&2
+        exit 1
+        ;;
+esac
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 cd "$PROJECT_ROOT"
@@ -28,6 +37,25 @@ echo "  Type: $TYPE"
 echo ""
 
 mkdir -p "$BUILD_DIR"
+
+require_docker_name() {
+    local value="$1"
+    local label="$2"
+
+    case "$value" in
+        ""|.*|*/*|*[!A-Za-z0-9_.-]*)
+            echo "Unsafe Docker $label: $value" >&2
+            exit 1
+            ;;
+    esac
+}
+
+remove_build_container() {
+    local name="$1"
+
+    require_docker_name "$name" "container name"
+    docker container rm --force "$name" 2>/dev/null || true
+}
 
 # Determine host architecture for platform selection
 HOST_ARCH=$(uname -m)
@@ -57,6 +85,8 @@ for os_dir in docker/*/; do
         arch="${platform#linux/}"
         image_name="eshkol_${os}_${TYPE}_${arch}"
         container_name="eshkol_build_${os}_${TYPE}_${arch}_$$"
+        require_docker_name "$image_name" "image name"
+        require_docker_name "$container_name" "container name"
 
         echo ""
         echo "=== Building $os ($arch) ==="
@@ -75,7 +105,7 @@ for os_dir in docker/*/; do
 
         # Create container and extract artifacts
         echo "Extracting artifacts..."
-        docker rm -f "$container_name" 2>/dev/null || true
+        remove_build_container "$container_name"
         container_id=$(docker create --platform "$platform" --name "$container_name" "$image_name")
 
         # Create output directory
@@ -96,7 +126,7 @@ for os_dir in docker/*/; do
         fi
 
         # Cleanup
-        docker rm -f "$container_name" 2>/dev/null || true
+        remove_build_container "$container_name"
 
         # List outputs
         echo "  Artifacts in $out_dir:"
