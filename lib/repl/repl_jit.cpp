@@ -1451,7 +1451,7 @@ void ReplJITContext::registerStdlibSymbols() {
 }
 
 bool ReplJITContext::loadStdlib() {
-    if (stdlib_object_loaded_) {
+    if (stdlib_loaded_) {
         return true;  // Already loaded — idempotent.
     }
 
@@ -1459,7 +1459,91 @@ bool ReplJITContext::loadStdlib() {
         initializeJIT();
     }
 
-    // Load pre-compiled stdlib.o via addObjectFile (fast, instant availability).
+    auto run_stdlib_initializers = [this](const std::string& source_path) {
+        // Run the stdlib module-level initializer. Compiled binaries call
+        // __eshkol_lib_init__(arena) from main() to populate every module-local
+        // define (e.g. core.data.base64's base64-chars alphabet, core.json's
+        // JSON_SPACE, core.testing's counters). ORC does not call this Eshkol
+        // library initializer for REPL preloads, so invoke it explicitly with
+        // the shared REPL arena.
+        if (auto lib_init = jit_->lookup("__eshkol_lib_init__")) {
+            using LibInitFn = void (*)(void*);
+            auto fn = reinterpret_cast<LibInitFn>(lib_init->getValue());
+            fn(shared_arena_);
+        } else {
+            consumeError(lib_init.takeError());
+            std::cerr << "[REPL] Warning: stdlib loaded from " << source_path
+                      << " but __eshkol_lib_init__ was not found — module "
+                         "constants remain zero-initialised."
+                      << std::endl;
+        }
+
+        // __eshkol_init_parallel_workers is emitted into llvm.global_ctors,
+        // but REPL stdlib loading has historically not relied on ORC ctor
+        // execution. Call it explicitly so the parallel runtime sees the same
+        // worker registrations regardless of whether stdlib came from bitcode,
+        // an object file, or a future loader path.
+        if (auto pw_init = jit_->lookup("__eshkol_init_parallel_workers")) {
+            using PWInitFn = void (*)(void);
+            auto fn = reinterpret_cast<PWInitFn>(pw_init->getValue());
+            fn();
+        } else {
+            consumeError(pw_init.takeError());
+        }
+    };
+
+    // Preferred fast path: load precompiled stdlib.bc as an ORC IR module.
+    // Eshkol's internal function ABI passes tagged values by LLVM aggregate
+    // value. Keeping stdlib in the same ORC IR compilation pipeline as later
+    // REPL batches avoids the object-file ABI boundary that corrupts 3-arg
+    // stdlib calls such as `(fold + 0 xs)` on arm64.
+    std::string stdlib_bc_path = findStdlibBitcode();
+    if (!stdlib_bc_path.empty()) {
+        auto buffer_or_err = MemoryBuffer::getFile(stdlib_bc_path);
+        if (buffer_or_err) {
+            auto module_context = std::make_unique<LLVMContext>();
+            auto mod_or_err = parseBitcodeFile(
+                buffer_or_err->get()->getMemBufferRef(), *module_context);
+            if (mod_or_err) {
+                std::unique_ptr<Module> stdlib_module = std::move(*mod_or_err);
+                if (stdlib_module->getDataLayout().isDefault()) {
+                    stdlib_module->setDataLayout(jit_->getDataLayout());
+                }
+
+                auto ts_ctx = orc::ThreadSafeContext(std::move(module_context));
+                auto tsm = ThreadSafeModule(std::move(stdlib_module), ts_ctx);
+                if (auto err = jit_->addIRModule(std::move(tsm))) {
+                    std::string err_msg;
+                    raw_string_ostream err_stream(err_msg);
+                    err_stream << err;
+                    std::cerr << "Warning: Failed to load stdlib.bc (" << err_msg
+                              << "), falling back to stdlib.o" << std::endl;
+                } else {
+                    registerStdlibSymbols();
+                    run_stdlib_initializers(stdlib_bc_path);
+                    std::cerr << "[REPL] Loaded stdlib bitcode from: "
+                              << stdlib_bc_path << std::endl;
+                    stdlib_loaded_ = true;
+                    return true;
+                }
+            } else {
+                std::string err_msg;
+                raw_string_ostream err_stream(err_msg);
+                err_stream << mod_or_err.takeError();
+                std::cerr << "Warning: Failed to parse stdlib.bc (" << err_msg
+                          << "), falling back to stdlib.o" << std::endl;
+            }
+        } else {
+            std::cerr << "Warning: Failed to read stdlib.bc at " << stdlib_bc_path
+                      << ": " << buffer_or_err.getError().message()
+                      << ", falling back to stdlib.o" << std::endl;
+        }
+    }
+
+    // Legacy fallback: load pre-compiled stdlib.o via addObjectFile.  This is
+    // kept for installed layouts that have not shipped stdlib.bc yet, but it is
+    // no longer the preferred path for the REPL because it crosses the native
+    // object ABI for Eshkol aggregate values.
     std::string stdlib_obj_path = findStdlibObject();
     if (!stdlib_obj_path.empty()) {
         auto buffer_or_err = MemoryBuffer::getFile(stdlib_obj_path);
@@ -1468,53 +1552,9 @@ bool ReplJITContext::loadStdlib() {
             auto err = jit_->addObjectFile(main_dylib, std::move(*buffer_or_err));
             if (!err) {
                 registerStdlibSymbols();
-
-                // Run the stdlib module-level initializer. Compiled binaries
-                // call __eshkol_lib_init__(arena) from main() to populate every
-                // module-local define (e.g. core.data.base64's base64-chars
-                // alphabet, core.json's JSON_SPACE, core.testing's counters).
-                // addObjectFile alone does NOT execute the initializer — the
-                // globals would stay zero-initialised and any consumer of
-                // those constants would index out of bounds. Look up and call
-                // it explicitly with the shared REPL arena.
-                if (auto lib_init = jit_->lookup("__eshkol_lib_init__")) {
-                    using LibInitFn = void (*)(void*);
-                    auto fn = reinterpret_cast<LibInitFn>(lib_init->getValue());
-                    fn(shared_arena_);
-                } else {
-                    // Not fatal — programs that only touch stdlib functions
-                    // (no module-level constants) will keep working — but log
-                    // the miss so a `base64-chars is empty` symptom has an
-                    // obvious explanation.
-                    consumeError(lib_init.takeError());
-                    std::cerr << "[REPL] Warning: stdlib.o loaded but "
-                                 "__eshkol_lib_init__ not found — module "
-                                 "constants remain zero-initialised."
-                              << std::endl;
-                }
-
-                // Same story for __eshkol_init_parallel_workers — it lives in
-                // stdlib.o's llvm.global_ctors, which addObjectFile does NOT
-                // execute.  Without this, g_parallel_execute_worker stays
-                // NULL, parallel-execute fails with "execute worker not
-                // registered (stdlib not loaded?)" and (future thunk)'s
-                // eager-submit path silently no-ops back to lazy semantics.
-                // Symptoms: cross-thread blocking-channel tests deadlock
-                // because the producer "future" never actually runs on a
-                // worker thread.
-                if (auto pw_init = jit_->lookup("__eshkol_init_parallel_workers")) {
-                    using PWInitFn = void (*)(void);
-                    auto fn = reinterpret_cast<PWInitFn>(pw_init->getValue());
-                    fn();
-                } else {
-                    consumeError(pw_init.takeError());
-                    // Quieter — many programs don't use parallel.  If they
-                    // try parallel-execute / future-eager, the user will
-                    // see a clear error from the call site.
-                }
-
+                run_stdlib_initializers(stdlib_obj_path);
                 std::cerr << "[REPL] Loaded stdlib from: " << stdlib_obj_path << std::endl;
-                stdlib_object_loaded_ = true;
+                stdlib_loaded_ = true;
                 return true;
             } else {
                 std::string err_msg;
@@ -1532,7 +1572,7 @@ bool ReplJITContext::loadStdlib() {
     const bool loaded = loadModule("stdlib", false);
     loading_stdlib_from_source_ = was_loading_stdlib_from_source;
     if (loaded) {
-        stdlib_object_loaded_ = true;
+        stdlib_loaded_ = true;
     }
     return loaded;
 }

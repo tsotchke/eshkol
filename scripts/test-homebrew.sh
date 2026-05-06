@@ -116,7 +116,7 @@ if [ "$LOCAL_TEST" = true ]; then
 
     # Verify outputs exist
     echo -e "${YELLOW}Verifying build outputs...${NC}"
-    OUTPUTS=("$BUILD_DIR/eshkol-run" "$BUILD_DIR/eshkol-repl" "$BUILD_DIR/stdlib.o")
+    OUTPUTS=("$BUILD_DIR/eshkol-run" "$BUILD_DIR/eshkol-repl" "$BUILD_DIR/stdlib.o" "$BUILD_DIR/stdlib.bc")
     ALL_OK=true
     for output in "${OUTPUTS[@]}"; do
         if [ -f "$output" ]; then
