@@ -1,0 +1,141 @@
+;;
+;; http_server.esk - Minimal HTTP/1.1 server + WebSocket FFI wrapper
+;;
+;; Bindings to lib/agent/c/agent_http_server.c.  The C runtime exposes:
+;;
+;;   - HTTP/1.1 server (single-connection, blocking) — designed for
+;;     OAuth PKCE callbacks, MCP auth, /health endpoints.  Binds to
+;;     loopback only (INADDR_LOOPBACK), so it's safe on shared hosts.
+;;   - Unix domain socket connect — for IDE IPC (VS Code's
+;;     VSCODE_IPC_HOOK socket etc.).
+;;   - WebSocket client — RFC 6455 text + binary frames; expects an
+;;     existing TCP fd post-handshake.  Sufficient for MCP over WS
+;;     and voice streaming.  No permessage-deflate, no fragmentation.
+;;
+;; This module is OPTIONAL and POSIX-only — agent_http_server.c is
+;; only compiled when ESHKOL_BUILD_AGENT_FFI is on, which itself is
+;; off by default on Windows.
+
+(provide
+  ;; HTTP server
+  http-server-create http-server-port http-server-accept
+  http-server-respond http-server-close
+  ;; Unix domain socket
+  unix-socket-connect
+  ;; WebSocket
+  ws-wrap-fd ws-send-text ws-send-binary ws-receive ws-close
+  ;; Constants — frame types from ws-receive
+  WS-FRAME-TEXT WS-FRAME-BINARY WS-FRAME-CLOSE WS-FRAME-PING WS-FRAME-PONG)
+
+;; ── Constants (mirror the int32 frame_type out-arg from the C side) ──
+(define WS-FRAME-TEXT   1)
+(define WS-FRAME-BINARY 2)
+(define WS-FRAME-CLOSE  8)
+(define WS-FRAME-PING   9)
+(define WS-FRAME-PONG  10)
+
+;; ── FFI declarations ─────────────────────────────────────────────────
+;; HTTP server
+(extern i64 http-server-create-raw    i32                 :real eshkol_http_server_create)
+(extern i32 http-server-port-raw      i64                 :real eshkol_http_server_port)
+(extern i32 http-server-accept-raw    i64 ptr i32 i32     :real eshkol_http_server_accept)
+(extern void http-server-respond-raw  i64 i32 ptr ptr     :real eshkol_http_server_respond)
+(extern void http-server-close-raw    i64                 :real eshkol_http_server_close)
+
+;; Unix domain socket
+(extern i64 unix-socket-connect-raw   ptr                 :real eshkol_unix_socket_connect)
+
+;; WebSocket
+(extern i64 ws-wrap-fd-raw            i32                 :real eshkol_ws_wrap_fd)
+(extern i32 ws-send-text-raw          i64 ptr i32         :real eshkol_ws_send_text)
+(extern i32 ws-send-binary-raw        i64 ptr i32         :real eshkol_ws_send_binary)
+(extern i32 ws-receive-raw            i64 ptr i32 ptr i32 :real eshkol_ws_receive)
+(extern void ws-close-raw             i64                 :real eshkol_ws_close)
+
+;; ── HTTP server API ─────────────────────────────────────────────────
+(define (http-server-create port)
+  "Create an HTTP server bound to localhost:port.  Pass 0 to get a
+   random available port.  Returns handle (>= 1) on success or -1 on
+   failure (out of slots / bind failed)."
+  (http-server-create-raw port))
+
+(define (http-server-port handle)
+  "Return the actual port number.  Useful when (http-server-create 0)
+   was used to bind a random port."
+  (http-server-port-raw handle))
+
+(define (http-server-accept handle buffer-size timeout-ms)
+  "Block until an HTTP request arrives or the timeout elapses.  Returns
+   the request as a string (METHOD PATH followed by headers, separated
+   by CRLF, terminated by CRLFCRLF) on success, '' on timeout, or #f
+   on error."
+  (let* ((buf (make-string buffer-size #\nul))
+         (n   (http-server-accept-raw handle buf buffer-size timeout-ms))
+         (clamped (cond ((< n 0) -1)
+                        ((> n buffer-size) buffer-size)
+                        (else n))))
+    (cond
+      ((< clamped 0) #f)
+      ((= clamped 0) "")
+      (else (substring buf 0 clamped)))))
+
+(define (http-server-respond handle status content-type body)
+  "Send an HTTP response on the currently-accepted connection then
+   close it.  status is an integer (200, 301, 400, 404, 500 are
+   recognised reason phrases).  content-type and body are strings."
+  (http-server-respond-raw handle status content-type body))
+
+(define (http-server-close handle)
+  "Close the listen socket and any pending client connection, free the
+   server slot."
+  (http-server-close-raw handle))
+
+;; ── Unix domain socket ──────────────────────────────────────────────
+(define (unix-socket-connect path)
+  "Connect to a Unix domain socket at the given path.  Returns the
+   raw fd (>= 0) on success or -1 on failure.  Pair with (ws-wrap-fd)
+   for an IPC channel that speaks WebSocket framing."
+  (unix-socket-connect-raw path))
+
+;; ── WebSocket API ───────────────────────────────────────────────────
+(define (ws-wrap-fd fd)
+  "Wrap an existing TCP/Unix fd as a WebSocket handle.  Caller is
+   responsible for completing the HTTP/1.1 Upgrade handshake before
+   wrapping.  Returns handle (>= 1) on success or -1 if no slot
+   available."
+  (ws-wrap-fd-raw fd))
+
+(define (ws-send-text handle data)
+  "Send a UTF-8 text frame.  data is a string.  Returns 0 on success,
+   -1 on error (closed handle, partial send)."
+  (ws-send-text-raw handle data (string-length data)))
+
+(define (ws-send-binary handle data)
+  "Send a binary frame.  data is a string (treated as a byte buffer).
+   Returns 0 on success, -1 on error."
+  (ws-send-binary-raw handle data (string-length data)))
+
+(define (ws-receive handle buffer-size timeout-ms)
+  "Block until a frame arrives or the timeout elapses.  Returns a
+   pair `(frame-type . payload-string)` on success — frame-type is
+   one of WS-FRAME-{TEXT,BINARY,CLOSE,PING,PONG} — or #f on timeout
+   or error.  PING frames are auto-answered with PONG by the C side
+   before returning, so the caller usually skips them."
+  (let* ((buf       (make-string buffer-size #\nul))
+         ;; The C side writes the frame-type as int32 to a 4-byte
+         ;; out-arg.  We pass a 4-byte string and decode the first
+         ;; byte (host-endian; little-endian on every platform we
+         ;; ship to).  WS opcodes are 0..15 so a single byte suffices.
+         (ft-buf    (make-string 4 #\nul))
+         (n         (ws-receive-raw handle buf buffer-size ft-buf
+                                    timeout-ms)))
+    (cond
+      ((< n 0) #f)
+      ((= n 0) #f)  ; timeout
+      (else
+        (let ((ft (char->integer (string-ref ft-buf 0))))
+          (cons ft (substring buf 0 n)))))))
+
+(define (ws-close handle)
+  "Send a close frame, close the underlying fd, free the slot."
+  (ws-close-raw handle))

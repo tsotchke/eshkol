@@ -246,6 +246,25 @@ extern "C" {
     void qllm_process_destroy(void* proc) ESHKOL_OPTIONAL_AGENT_FFI;
     void qllm_process_free_buffer(char* buf) ESHKOL_OPTIONAL_AGENT_FFI;
 
+    int64_t eshkol_http_server_create(int32_t port) ESHKOL_OPTIONAL_AGENT_FFI;
+    int32_t eshkol_http_server_port(int64_t handle) ESHKOL_OPTIONAL_AGENT_FFI;
+    int32_t eshkol_http_server_accept(int64_t handle, char* buf, int32_t buf_size,
+                                       int32_t timeout_ms) ESHKOL_OPTIONAL_AGENT_FFI;
+    void eshkol_http_server_respond(int64_t handle, int32_t status,
+                                     const char* content_type, const char* body)
+        ESHKOL_OPTIONAL_AGENT_FFI;
+    void eshkol_http_server_close(int64_t handle) ESHKOL_OPTIONAL_AGENT_FFI;
+    int64_t eshkol_unix_socket_connect(const char* path) ESHKOL_OPTIONAL_AGENT_FFI;
+    int64_t eshkol_ws_wrap_fd(int32_t fd) ESHKOL_OPTIONAL_AGENT_FFI;
+    int32_t eshkol_ws_send_text(int64_t handle, const char* data, int32_t len)
+        ESHKOL_OPTIONAL_AGENT_FFI;
+    int32_t eshkol_ws_send_binary(int64_t handle, const char* data, int32_t len)
+        ESHKOL_OPTIONAL_AGENT_FFI;
+    int32_t eshkol_ws_receive(int64_t handle, char* buf, int32_t buf_size,
+                               int32_t* frame_type, int32_t timeout_ms)
+        ESHKOL_OPTIONAL_AGENT_FFI;
+    void eshkol_ws_close(int64_t handle) ESHKOL_OPTIONAL_AGENT_FFI;
+
 #undef ESHKOL_OPTIONAL_AGENT_FFI
 #endif
 }
@@ -605,6 +624,18 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(qllm_process_kill);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(qllm_process_destroy);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(qllm_process_free_buffer);
+
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_http_server_create);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_http_server_port);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_http_server_accept);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_http_server_respond);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_http_server_close);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_unix_socket_connect);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_ws_wrap_fd);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_ws_send_text);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_ws_send_binary);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_ws_receive);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_ws_close);
 #endif
 
     // ===== TYPE ERRORS (R7RS Compliance) =====
