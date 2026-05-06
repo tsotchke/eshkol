@@ -14716,15 +14716,49 @@ private:
             if (nlc_it != named_let_captures.end()) {
                 for (const std::string& fv : nlc_it->second) {
                     auto sym_it = symbol_table.find(fv);
-                    if (sym_it != symbol_table.end() && sym_it->second &&
-                        sym_it->second->getType()->isPointerTy()) {
-                        args.push_back(sym_it->second);
-                    } else {
-                        eshkol_warn("Named-let capture forwarding: '%s' missing pointer in symbol_table",
+                    if (sym_it == symbol_table.end() || !sym_it->second) {
+                        eshkol_warn("Named-let capture forwarding: '%s' missing from symbol_table",
                                     fv.c_str());
                         args.push_back(
                             ConstantPointerNull::get(PointerType::getUnqual(*context)));
+                        continue;
                     }
+
+                    Value* cap_val = sym_it->second;
+                    if (cap_val->getType()->isPointerTy()) {
+                        args.push_back(cap_val);
+                        continue;
+                    }
+
+                    BasicBlock* current_bb = builder->GetInsertBlock();
+                    Function* current_fn = current_bb ? current_bb->getParent() : nullptr;
+                    if (!current_fn) {
+                        eshkol_warn("Named-let capture forwarding: '%s' has no current function",
+                                    fv.c_str());
+                        args.push_back(
+                            ConstantPointerNull::get(PointerType::getUnqual(*context)));
+                        continue;
+                    }
+
+                    BasicBlock& entry_bb = current_fn->getEntryBlock();
+                    IRBuilder<> entry_builder(&entry_bb, entry_bb.getFirstInsertionPt());
+                    AllocaInst* cap_slot = entry_builder.CreateAlloca(
+                        tagged_value_type, nullptr, fv + "_named_let_forward_cap");
+
+                    Value* tagged = cap_val;
+                    if (tagged->getType() != tagged_value_type) {
+                        if (tagged->getType()->isDoubleTy()) {
+                            tagged = packDoubleToTaggedValue(tagged);
+                        } else if (tagged->getType()->isIntegerTy(64)) {
+                            tagged = packInt64ToTaggedValue(tagged, true);
+                        } else if (tagged->getType()->isIntegerTy(1)) {
+                            tagged = packBoolToTaggedValue(tagged);
+                        } else {
+                            tagged = packNullToTaggedValue();
+                        }
+                    }
+                    builder->CreateStore(tagged, cap_slot);
+                    args.push_back(cap_slot);
                 }
             }
         }
@@ -20037,6 +20071,34 @@ private:
                         // Check the function expression - it could be a captured lambda or variable
                         if (op->call_op.func) {
                             findFreeVariablesImpl(op->call_op.func, current_scope, parameters, num_params, free_vars, bound_vars);
+                            if (op->call_op.func->type == ESHKOL_VAR &&
+                                op->call_op.func->variable.id) {
+                                std::string call_name = op->call_op.func->variable.id;
+                                auto fn_it = function_table.find(call_name);
+                                if (fn_it != function_table.end()) {
+                                    auto nlc_it = named_let_captures.find(fn_it->second);
+                                    if (nlc_it != named_let_captures.end()) {
+                                        for (const std::string& cap_name : nlc_it->second) {
+                                            bool is_bound = bound_vars.find(cap_name) != bound_vars.end();
+                                            if (!is_bound && parameters) {
+                                                for (uint64_t p = 0; p < num_params; p++) {
+                                                    if (parameters[p].type == ESHKOL_VAR &&
+                                                        parameters[p].variable.id &&
+                                                        cap_name == parameters[p].variable.id) {
+                                                        is_bound = true;
+                                                        break;
+                                                    }
+                                                }
+                                            }
+                                            if (!is_bound &&
+                                                current_scope.find(cap_name) != current_scope.end() &&
+                                                std::find(free_vars.begin(), free_vars.end(), cap_name) == free_vars.end()) {
+                                                free_vars.push_back(cap_name);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         }
                         for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
                             findFreeVariablesImpl(&op->call_op.variables[i], current_scope, parameters, num_params, free_vars, bound_vars);

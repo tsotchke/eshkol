@@ -126,6 +126,27 @@
        (extract-syms '(proven-theorem "AB" "CD"))
        '(proven-theorem A B C D))
 
+;; Nested named-lets can need capture pointers only to forward them
+;; into an outer loop function. Pre-fix, inner's call to outer had no
+;; `xs` binding to forward, so codegen passed a null capture pointer
+;; and the JIT crashed.
+(define (distinct-pairs xs)
+  (let outer ((as xs) (acc (list)))
+    (cond
+      ((null? as) (reverse acc))
+      (else
+       (let inner ((bs xs) (acc2 acc))
+         (cond
+           ((null? bs) (outer (cdr as) acc2))
+           ((eq? (car as) (car bs)) (inner (cdr bs) acc2))
+           (else
+            (inner (cdr bs)
+                   (cons (list (car as) (car bs)) acc2)))))))))
+
+(check "nested named-let forwards outer captures through inner loop"
+       (distinct-pairs '(a b))
+       '((a b) (b a)))
+
 (newline)
 (display "Passed: ") (display passed) (newline)
 (display "Failed: ") (display failed) (newline)
