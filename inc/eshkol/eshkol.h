@@ -1098,6 +1098,13 @@ void  eshkol_runtime_set_current_output_fp(void* fp);
 void  eshkol_runtime_set_current_input_fp(void* fp);
 void  eshkol_runtime_set_current_error_fp(void* fp);
 
+// Process-global runtime helpers emitted by codegen/JIT modules.
+void* eshkol_intern_symbol_lookup(const char* name);
+void* eshkol_check_forward_ref(void* loaded_fn_ptr,
+                               void* unresolved_stub_ptr,
+                               const char* name);
+void  eshkol_raise_not_pair(const char* op_name);
+
 // Display a list (cons cell chain)
 void eshkol_display_list(uint64_t cons_ptr, eshkol_display_opts_t* opts);
 
