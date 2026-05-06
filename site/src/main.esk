@@ -1308,7 +1308,7 @@
     ;; Architecture diagram
     (section-subheading page "Architecture")
     (create-code-block page
-      "  <span style='color:#a78bfa'>Website</span>                        <span style='color:#a78bfa'>REPL</span>\n  main.esk                       eshkol_vm.c + eshkol_compiler.c\n      |                                |\n  LLVM IR (eshkol-run --wasm)    Emscripten (emcc)\n      |                                |\n  eshkol-site.wasm               eshkol-vm.wasm\n      |                                |\n  eshkol-runtime.js              Emscripten glue\n      |                                |\n      +----------<span style='color:#22c55e'> Browser </span>-----------+")
+      "  <span style='color:#a78bfa'>Website</span>                        <span style='color:#a78bfa'>REPL</span>\n  main.esk                       eshkol_vm.c + eshkol_compiler.c\n      |                                |\n  LLVM IR (eshkol-run --wasm)    Emscripten (emcc)\n      |                                |\n  eshkol-site.wasm               eshkol-vm.wasm\n      |                                |\n  eshkol-runtime.js              Emscripten glue\n      |                                |\n      +------------<span style='color:#22c55e'> Browser </span>-----------+")
 
     ;; Stats
     (section-subheading page "Site Statistics")
@@ -1526,4 +1526,3 @@
         (web-scroll-to 0 0)
         (route!)))
     0))
-

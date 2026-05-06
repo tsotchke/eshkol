@@ -124,6 +124,7 @@ The website is written in Eshkol and compiled to WebAssembly:
 
 # Rebuild the browser REPL VM
 emcc -O2 -s WASM=1 -s MODULARIZE=1 -s EXPORT_NAME='EshkolVM' \
+  -s EXPORTED_RUNTIME_METHODS='["ccall","cwrap"]' \
   -DESHKOL_VM_WASM -DESHKOL_VM_NO_DISASM \
   -I lib/backend lib/backend/vm_wasm_repl.c \
   -o site/static/eshkol-vm.js -lm
