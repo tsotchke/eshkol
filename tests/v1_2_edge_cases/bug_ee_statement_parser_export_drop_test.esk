@@ -1,0 +1,26 @@
+;; Bug EE: #\( inside an earlier definition must not cause a later
+;; top-level exported definition to be swallowed by the stream reader.
+
+(require stdlib)
+(load "tests/v1_2_edge_cases/bug_ee_statement_parser_lib.esk")
+
+(define passed 0)
+(define failed 0)
+
+(define (check name actual expected)
+  (if (equal? expected actual)
+      (begin (display "PASS: ") (display name) (newline)
+             (set! passed (+ passed 1)))
+      (begin (display "FAIL: ") (display name)
+             (display " expected ") (display expected)
+             (display ", got ") (display actual) (newline)
+             (set! failed (+ failed 1)))))
+
+(check "Bug EE statement parser export survives #\\("
+       (ss-count-binders "forall (x0 x1 x2 : Nat), P x0 x1 -> P x1 x2 -> Q x0 x2")
+       3)
+
+(newline)
+(display "Passed: ") (display passed) (newline)
+(display "Failed: ") (display failed) (newline)
+(if (> failed 0) (exit 1) (exit 0))
