@@ -1654,15 +1654,18 @@ if(ESHKOL_BUILD_AGENT_FFI)
             # (sqlite3, pcre2, Security framework, OpenSSL, ncurses)
             # into eshkol-run. MUST happen here, not in the eshkol-run
             # config block above, because agent-ffi is defined here.
-            target_link_libraries(eshkol-run PRIVATE eshkol-agent-ffi)
             if(APPLE)
+                target_link_libraries(eshkol-run PRIVATE eshkol-agent-ffi)
                 target_link_options(eshkol-run PRIVATE
                     "-Wl,-force_load,$<TARGET_FILE:eshkol-agent-ffi>")
             elseif(NOT WIN32)
-                target_link_options(eshkol-run PRIVATE
-                    "-Wl,--whole-archive"
-                    "$<TARGET_FILE:eshkol-agent-ffi>"
-                    "-Wl,--no-whole-archive")
+                # Keep the whole-archive group in the ordered library list.
+                # CMake de-duplicates LINK_OPTIONS and can otherwise split this
+                # group away from other --whole-archive uses in sanitizer builds.
+                target_link_libraries(eshkol-run PRIVATE
+                    "-Wl,--whole-archive" eshkol-agent-ffi "-Wl,--no-whole-archive")
+            else()
+                target_link_libraries(eshkol-run PRIVATE eshkol-agent-ffi)
             endif()
         endif()
 
@@ -1670,15 +1673,15 @@ if(ESHKOL_BUILD_AGENT_FFI)
             # Keep the long-lived REPL's JIT resolver on the same footing
             # as eshkol-run -r: agent FFI externs loaded from .esk files
             # should be available in persistent control sessions too.
-            target_link_libraries(eshkol-repl PRIVATE eshkol-agent-ffi)
             if(APPLE)
+                target_link_libraries(eshkol-repl PRIVATE eshkol-agent-ffi)
                 target_link_options(eshkol-repl PRIVATE
                     "-Wl,-force_load,$<TARGET_FILE:eshkol-agent-ffi>")
             elseif(NOT WIN32)
-                target_link_options(eshkol-repl PRIVATE
-                    "-Wl,--whole-archive"
-                    "$<TARGET_FILE:eshkol-agent-ffi>"
-                    "-Wl,--no-whole-archive")
+                target_link_libraries(eshkol-repl PRIVATE
+                    "-Wl,--whole-archive" eshkol-agent-ffi "-Wl,--no-whole-archive")
+            else()
+                target_link_libraries(eshkol-repl PRIVATE eshkol-agent-ffi)
             endif()
         endif()
     else()
