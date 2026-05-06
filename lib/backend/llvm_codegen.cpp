@@ -22174,15 +22174,57 @@ private:
         std::vector<Value*> capture_outer_ptrs;
         capture_outer_ptrs.reserve(free_vars.size());
         for (const std::string& fv : free_vars) {
+            Value* outer_val = nullptr;
+
             auto it = prev_symbols.find(fv);
-            if (it == prev_symbols.end() || !it->second) {
+            if (it != prev_symbols.end()) {
+                outer_val = it->second;
+            }
+
+            if (!outer_val) {
+                auto git = global_symbol_table.find(fv);
+                if (git != global_symbol_table.end()) {
+                    outer_val = git->second;
+                }
+            }
+
+            if (!outer_val) {
+                if (GlobalVariable* existing_global = module->getGlobalVariable(fv)) {
+                    outer_val = existing_global;
+                    global_symbol_table[fv] = existing_global;
+                }
+            }
+
+            if (!outer_val && g_repl_mode_enabled) {
+                std::lock_guard<std::mutex> lock(g_repl_mutex);
+                if (g_repl_private_symbols.find(fv) != g_repl_private_symbols.end()) {
+                    eshkol_error("Named let '%s': free var '%s' is private (not exported from its module)",
+                                 loop_name.c_str(), fv.c_str());
+                    markFatalCodegenError();
+                } else if (g_repl_symbol_addresses.find(fv) != g_repl_symbol_addresses.end()) {
+                    GlobalVariable* repl_global = module->getGlobalVariable(fv);
+                    if (!repl_global) {
+                        repl_global = new GlobalVariable(
+                            *module,
+                            tagged_value_type,
+                            false,
+                            GlobalValue::ExternalLinkage,
+                            nullptr,
+                            fv
+                        );
+                    }
+                    outer_val = repl_global;
+                    global_symbol_table[fv] = repl_global;
+                }
+            }
+
+            if (!outer_val) {
                 capture_outer_ptrs.push_back(
                     ConstantPointerNull::get(PointerType::getUnqual(*context)));
                 eshkol_warn("Named let '%s': free var '%s' missing from outer symbol table",
                             loop_name.c_str(), fv.c_str());
                 continue;
             }
-            Value* outer_val = it->second;
 
             // Already a pointer we can pass directly.
             if (isa<AllocaInst>(outer_val) || isa<GlobalVariable>(outer_val) ||
