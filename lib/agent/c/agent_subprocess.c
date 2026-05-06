@@ -78,16 +78,18 @@ static void set_pipes_nonblocking(eshkol_subprocess_t* proc);
  * ═══════════════════════════════════════════════════════════════════ */
 
 /*
- * Safety note (#190): qllm_process_spawn feeds `command` through
- * /bin/sh -c, so any caller that interpolates user-controlled data
- * into the command string without shell-quote ends up with classical
- * command injection. For that reason we also expose
- * qllm_process_spawn_argv below, which takes a TAB-separated argv
- * ("program\targ1\targ2\t…") and uses execvp — no shell, no
- * expansion, no injection surface. Callers that want shell features
- * (glob, pipes, redirection) keep using the shell form but are
- * responsible for shell-quoting every interpolated value
- * (shell-quote is provided in the system stdlib).
+ * Process API boundary:
+ *
+ *   qllm_process_spawn_shell  always invokes the platform shell
+ *                             (/bin/sh -c on POSIX, cmd /c on Windows).
+ *   qllm_process_spawn_argv   always execs argv directly with no shell.
+ *   qllm_process_spawn        is the legacy shell-compatible command-string
+ *                             entrypoint. It may bypass /bin/sh for commands
+ *                             where direct execvp is observably equivalent.
+ *
+ * Callers that interpolate user-controlled values should prefer argv. Callers
+ * that need pipes, redirection, globbing, or other shell grammar should use the
+ * explicit shell entrypoint and quote interpolated values themselves.
  */
 /* Return 1 if `command` is a simple whitespace-separated token list
  * with NO shell metacharacters — i.e. /bin/sh -c "…" would behave
@@ -379,13 +381,11 @@ static char** eshkol_scrub_environ(void) {
 #endif
 }
 
-eshkol_subprocess_t* qllm_process_spawn(const char* command, const char* cwd_arg,
-                                         const char* unused_arg, int64_t flags) {
-    /* subprocess.esk calls: (process-spawn-raw command cwd #f 0)
-     * So: command=shell command, cwd_arg=working directory,
-     * unused_arg=#f, flags=bitmask (see ESHKOL_SPAWN_* defines). */
+static eshkol_subprocess_t* qllm_process_spawn_command_impl(const char* command,
+                                                            const char* cwd_arg,
+                                                            int64_t flags,
+                                                            int force_shell) {
     const char* cwd = cwd_arg;
-    (void)unused_arg;
     if (!command) return NULL;
 
     eshkol_subprocess_t* proc = (eshkol_subprocess_t*)calloc(1, sizeof(eshkol_subprocess_t));
@@ -468,7 +468,7 @@ eshkol_subprocess_t* qllm_process_spawn(const char* command, const char* cwd_arg
          * though the actual work could be direct posix_spawnp. */
         char** split_argv = NULL;
         int split_argc = 0;
-        if (command_is_shell_safe(command)) {
+        if (!force_shell && command_is_shell_safe(command)) {
             split_argv = split_shell_safe_command(command, &split_argc);
         }
 
@@ -562,6 +562,7 @@ eshkol_subprocess_t* qllm_process_spawn(const char* command, const char* cwd_arg
     set_pipes_nonblocking(proc);
     return proc;
 #else
+    (void)force_shell;
     /* Windows: CreateProcess with pipes */
     SECURITY_ATTRIBUTES sa = {sizeof(SECURITY_ATTRIBUTES), NULL, TRUE};
     HANDLE stdin_read, stdin_write, stdout_read, stdout_write, stderr_read, stderr_write;
@@ -642,6 +643,22 @@ eshkol_subprocess_t* qllm_process_spawn(const char* command, const char* cwd_arg
     set_pipes_nonblocking(proc);
     return proc;
 #endif
+}
+
+eshkol_subprocess_t* qllm_process_spawn(const char* command, const char* cwd_arg,
+                                         const char* unused_arg, int64_t flags) {
+    (void)unused_arg;
+    return qllm_process_spawn_command_impl(command, cwd_arg, flags, 0);
+}
+
+eshkol_subprocess_t* qllm_process_spawn_shell(const char* command,
+                                               const char* cwd_arg,
+                                               int64_t flags) {
+    return qllm_process_spawn_command_impl(command, cwd_arg, flags, 1);
+}
+
+void qllm_process_free_buffer(char* buf) {
+    free(buf);
 }
 
 /* ═══════════════════════════════════════════════════════════════════
