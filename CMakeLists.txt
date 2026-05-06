@@ -1436,6 +1436,25 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/model_i
     add_test(NAME model_io_test COMMAND model_io_test)
 endif()
 
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/execution_profile_test.cpp")
+    add_executable(execution_profile_test tests/toolchain/execution_profile_test.cpp)
+    target_compile_features(execution_profile_test PRIVATE cxx_std_17)
+    target_include_directories(execution_profile_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/inc")
+    if(LLVM_INCLUDE_DIRS)
+        target_include_directories(execution_profile_test PRIVATE ${LLVM_INCLUDE_DIRS})
+    endif()
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(execution_profile_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(execution_profile_test PRIVATE
+        eshkol-static
+        ${ESHKOL_EXTRA_LINK_LIBS}
+        ${LLVM_LIBS_LIST}
+        ${LLVM_SYSTEM_LIBS_LIST}
+    )
+    add_test(NAME execution_profile_test COMMAND execution_profile_test)
+endif()
+
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/repl/assoc_eval_test.cpp")
     add_executable(assoc_eval_test tests/repl/assoc_eval_test.cpp)
     target_compile_features(assoc_eval_test PRIVATE cxx_std_17)
