@@ -216,6 +216,9 @@ extern "C" {
     void* qllm_process_spawn(const char* command, const char* cwd_arg,
                              const char* env_arg, int64_t flags)
         ESHKOL_OPTIONAL_AGENT_FFI;
+    void* qllm_process_spawn_shell(const char* command, const char* cwd_arg,
+                                   int64_t flags)
+        ESHKOL_OPTIONAL_AGENT_FFI;
     void* qllm_process_spawn_argv(const char* tab_packed_argv,
                                   const char* cwd_arg)
         ESHKOL_OPTIONAL_AGENT_FFI;
@@ -241,6 +244,7 @@ extern "C" {
     int32_t qllm_process_exit_code(void* proc) ESHKOL_OPTIONAL_AGENT_FFI;
     void qllm_process_kill(void* proc, int32_t signal) ESHKOL_OPTIONAL_AGENT_FFI;
     void qllm_process_destroy(void* proc) ESHKOL_OPTIONAL_AGENT_FFI;
+    void qllm_process_free_buffer(char* buf) ESHKOL_OPTIONAL_AGENT_FFI;
 
 #undef ESHKOL_OPTIONAL_AGENT_FFI
 #endif
@@ -586,6 +590,7 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_sqlite_changes);
 
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(qllm_process_spawn);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(qllm_process_spawn_shell);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(qllm_process_spawn_argv);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(qllm_process_spawn_argv_flags);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(qllm_process_write_stdin);
@@ -599,6 +604,7 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(qllm_process_exit_code);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(qllm_process_kill);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(qllm_process_destroy);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(qllm_process_free_buffer);
 #endif
 
     // ===== TYPE ERRORS (R7RS Compliance) =====
