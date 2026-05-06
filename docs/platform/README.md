@@ -40,8 +40,11 @@ Read in this order:
 2. [ARCHITECTURE.md](ARCHITECTURE.md)
 3. [ROADMAP_ALIGNMENT.md](ROADMAP_ALIGNMENT.md)
 4. [BRANCHING_AND_GOVERNANCE.md](BRANCHING_AND_GOVERNANCE.md)
-5. [WORKSTREAMS.md](WORKSTREAMS.md)
-6. [MILESTONES_AND_EXIT_CRITERIA.md](MILESTONES_AND_EXIT_CRITERIA.md)
+5. [SYNC_POLICY.md](SYNC_POLICY.md)
+6. [IMPLEMENTATION_WORKFLOW.md](IMPLEMENTATION_WORKFLOW.md)
+7. [SLICE_CHECKLIST.md](SLICE_CHECKLIST.md)
+8. [WORKSTREAMS.md](WORKSTREAMS.md)
+9. [MILESTONES_AND_EXIT_CRITERIA.md](MILESTONES_AND_EXIT_CRITERIA.md)
 
 Use the remaining docs as operational references while implementation proceeds.
 
@@ -53,6 +56,12 @@ Use the remaining docs as operational references while implementation proceeds.
   - how the platform program fits `v1.2` through `v1.8`
 - [BRANCHING_AND_GOVERNANCE.md](BRANCHING_AND_GOVERNANCE.md)
   - branch roles, merge policy, founder-led decision process, delegation rules
+- [SYNC_POLICY.md](SYNC_POLICY.md)
+  - roadmap-to-platform sync cadence, hotspot files, merge-back criteria, full vs selective sync
+- [IMPLEMENTATION_WORKFLOW.md](IMPLEMENTATION_WORKFLOW.md)
+  - worktree layout, topic-branch lifecycle, merge flow, validation expectations
+- [SLICE_CHECKLIST.md](SLICE_CHECKLIST.md)
+  - release-quality checklist for every platform change slice
 - [ARCHITECTURE.md](ARCHITECTURE.md)
   - technical architecture for profiles, runtimes, backends, BSPs, and kernel handoff
 - [WORKSTREAMS.md](WORKSTREAMS.md)
