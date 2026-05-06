@@ -28,6 +28,7 @@
 #include <new>      // for std::bad_alloc
 #include <stdexcept>
 #include <atomic>
+#include <cstring>      // std::memset
 #include <filesystem>   // Bug W ask 2: provider-file scan
 #include <fstream>      // Bug W ask 2: read .esk files for provide/define lookup
 #include <string>       // std::string for the provider scan

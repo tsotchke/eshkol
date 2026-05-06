@@ -224,7 +224,9 @@ void eshkol_fatal_signal_handler(int signum) {
     const char* name = "unknown";
     switch (signum) {
         case SIGSEGV: name = "SIGSEGV (segmentation fault)"; break;
+#ifdef SIGBUS
         case SIGBUS:  name = "SIGBUS (bus error)";           break;
+#endif
         case SIGABRT: name = "SIGABRT (abort)";              break;
         default: break;
     }
@@ -381,9 +383,11 @@ void eshkol_runtime_init_signals(void) {
     if (sigaction(SIGSEGV, &sa_fatal, &g_old_sigsegv_handler) != 0) {
         eshkol_warn("Failed to install SIGSEGV handler");
     }
+#ifdef SIGBUS
     if (sigaction(SIGBUS,  &sa_fatal, &g_old_sigbus_handler)  != 0) {
         eshkol_warn("Failed to install SIGBUS handler");
     }
+#endif
     /* Note: we deliberately do NOT install a handler for SIGABRT.  The Bug
      * AA fix is about not losing user output when a Eshkol program crashes
      * with SIGSEGV/SIGBUS (invalid memory access from a runtime helper).
@@ -420,7 +424,9 @@ void eshkol_runtime_restore_signals(void) {
     sigaction(SIGTERM, &g_old_sigterm_handler, nullptr);
     sigaction(SIGPIPE, &g_old_sigpipe_handler, nullptr);
     sigaction(SIGSEGV, &g_old_sigsegv_handler, nullptr);
+#ifdef SIGBUS
     sigaction(SIGBUS,  &g_old_sigbus_handler,  nullptr);
+#endif
     sigaction(SIGABRT, &g_old_sigabrt_handler, nullptr);
 #endif
 
