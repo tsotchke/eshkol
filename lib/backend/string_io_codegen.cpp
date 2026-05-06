@@ -1328,18 +1328,28 @@ llvm::Value* StringIOCodegen::stringUpcase(const eshkol_operations_t* op) {
     llvm::Value* ptr_int = tagged_.unpackInt64(str_arg);
     llvm::Value* str_ptr = ctx_.builder().CreateIntToPtr(ptr_int, ctx_.ptrType());
 
-    llvm::Function* strlen_func = ctx_.funcs().getStrlen();
+    // Use eshkol_string_byte_length so we honour embedded NULs and the
+    // header-recorded payload length.  Pass the byte count to the
+    // allocator (which adds +1 internally for the NUL terminator); the
+    // old code passed `str_len + 1` which double-counted and made
+    // string-length(result) report one too many.
+    llvm::Function* byte_len_func = ctx_.module().getFunction("eshkol_string_byte_length");
+    if (!byte_len_func) {
+        llvm::FunctionType* ft = llvm::FunctionType::get(
+            ctx_.int64Type(), {ctx_.ptrType()}, false);
+        byte_len_func = llvm::Function::Create(ft,
+            llvm::Function::ExternalLinkage,
+            "eshkol_string_byte_length", &ctx_.module());
+    }
     llvm::Function* parent_func = ctx_.builder().GetInsertBlock()->getParent();
 
     // Get string length
-    llvm::Value* str_len = ctx_.builder().CreateCall(strlen_func, {str_ptr});
-    llvm::Value* buf_size = ctx_.builder().CreateAdd(str_len,
-        llvm::ConstantInt::get(ctx_.int64Type(), 1));
+    llvm::Value* str_len = ctx_.builder().CreateCall(byte_len_func, {str_ptr});
 
-    // Allocate new string with header
+    // Allocate new string with header — pass str_len, NOT str_len+1.
     llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
     llvm::Value* new_str = ctx_.builder().CreateCall(
-        ctx_.memory().getArenaAllocateStringWithHeader(), {arena_ptr, buf_size});
+        ctx_.memory().getArenaAllocateStringWithHeader(), {arena_ptr, str_len});
 
     // Create loop to convert each character
     llvm::BasicBlock* loop_cond = llvm::BasicBlock::Create(ctx_.context(), "upcase_cond", parent_func);
@@ -1415,18 +1425,25 @@ llvm::Value* StringIOCodegen::stringDowncase(const eshkol_operations_t* op) {
     llvm::Value* ptr_int = tagged_.unpackInt64(str_arg);
     llvm::Value* str_ptr = ctx_.builder().CreateIntToPtr(ptr_int, ctx_.ptrType());
 
-    llvm::Function* strlen_func = ctx_.funcs().getStrlen();
+    // Use eshkol_string_byte_length, pass byte count to allocator (no
+    // double-count); see stringUpcase comment.
+    llvm::Function* byte_len_func = ctx_.module().getFunction("eshkol_string_byte_length");
+    if (!byte_len_func) {
+        llvm::FunctionType* ft = llvm::FunctionType::get(
+            ctx_.int64Type(), {ctx_.ptrType()}, false);
+        byte_len_func = llvm::Function::Create(ft,
+            llvm::Function::ExternalLinkage,
+            "eshkol_string_byte_length", &ctx_.module());
+    }
     llvm::Function* parent_func = ctx_.builder().GetInsertBlock()->getParent();
 
     // Get string length
-    llvm::Value* str_len = ctx_.builder().CreateCall(strlen_func, {str_ptr});
-    llvm::Value* buf_size = ctx_.builder().CreateAdd(str_len,
-        llvm::ConstantInt::get(ctx_.int64Type(), 1));
+    llvm::Value* str_len = ctx_.builder().CreateCall(byte_len_func, {str_ptr});
 
-    // Allocate new string with header
+    // Allocate new string with header — pass str_len, NOT str_len+1.
     llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
     llvm::Value* new_str = ctx_.builder().CreateCall(
-        ctx_.memory().getArenaAllocateStringWithHeader(), {arena_ptr, buf_size});
+        ctx_.memory().getArenaAllocateStringWithHeader(), {arena_ptr, str_len});
 
     // Create loop to convert each character
     llvm::BasicBlock* loop_cond = llvm::BasicBlock::Create(ctx_.context(), "downcase_cond", parent_func);
