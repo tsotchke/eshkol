@@ -206,6 +206,12 @@ private:
     // These are only accessible within their defining module
     std::unordered_set<std::string> private_symbols_;
 
+    // Persistent module macros visible to later REPL/JIT batches. Loaded
+    // files are compiled in one batch, while following top-level forms are
+    // compiled in fresh batches with fresh MacroExpander instances. Keep
+    // define-syntax forms here so macro visibility matches AOT load semantics.
+    std::vector<eshkol_ast_t> persistent_macro_asts_;
+
     // SHARED ARENA: Single persistent arena shared across all evaluations
     // This ensures data allocated in one evaluation (lists, vectors, etc.)
     // is accessible in subsequent evaluations
@@ -245,6 +251,9 @@ private:
 
     // Inject external declarations for previously-defined symbols
     void injectPreviousSymbols(llvm::Module* module);
+
+    // Remember top-level define-syntax forms from a successfully compiled batch.
+    void rememberPersistentMacros(const std::vector<eshkol_ast_t>& asts);
 };
 
 } // namespace eshkol
