@@ -8084,32 +8084,34 @@ eshkol_ast_t eshkol_parse_next_ast_from_stream(std::istream &in_stream)
         int c = in_stream.get();
         if (in_stream.eof()) break;
 
+        // If the current byte is the payload of a character literal such
+        // as #\(, #\), #\", or #\;, it is data, not reader syntax.
+        bool is_char_literal_payload =
+            input.size() >= 2 &&
+            input[input.size() - 2] == '#' &&
+            input[input.size() - 1] == '\\';
+
         // Handle comments - skip to end of line, but keep the trailing \n.
         // BUT NOT when ; is part of a #\; character literal.
-        if (c == ';' && !in_quote) {
-            size_t len = input.size();
-            bool is_char_literal = (len >= 2 && input[len-1] == '\\' && input[len-2] == '#');
-            if (!is_char_literal) {
-                // Consume comment body (up to but not including the \n).
-                while (!in_stream.eof()) {
-                    int cc = in_stream.peek();
-                    if (cc == EOF || cc == '\n') break;
-                    in_stream.get();
-                }
-                // Append a space if we're inside a form so the comment
-                // doesn't visually merge two tokens; the trailing \n (if
-                // any) will be picked up on the next loop iteration and
-                // appended to `input` for accurate line tracking.
-                if (bracket_depth == 0 && !input.empty()) {
-                    input += ' ';
-                }
-                continue;
+        if (c == ';' && !in_quote && !is_char_literal_payload) {
+            // Consume comment body (up to but not including the \n).
+            while (!in_stream.eof()) {
+                int cc = in_stream.peek();
+                if (cc == EOF || cc == '\n') break;
+                in_stream.get();
             }
-            // Fall through — ; is a character literal value, not a comment
+            // Append a space if we're inside a form so the comment
+            // doesn't visually merge two tokens; the trailing \n (if
+            // any) will be picked up on the next loop iteration and
+            // appended to `input` for accurate line tracking.
+            if (bracket_depth == 0 && !input.empty()) {
+                input += ' ';
+            }
+            continue;
         }
 
         // Track quotes - a quote is escaped only if preceded by ODD number of backslashes
-        if (c == '"') {
+        if (c == '"' && !is_char_literal_payload) {
             size_t backslash_count = 0;
             for (size_t i = input.size(); i > 0 && input[i-1] == '\\'; i--) {
                 backslash_count++;
@@ -8122,7 +8124,7 @@ eshkol_ast_t eshkol_parse_next_ast_from_stream(std::istream &in_stream)
         input += static_cast<char>(c);
 
         // Track parentheses depth (only outside quotes)
-        if (!in_quote) {
+        if (!in_quote && !is_char_literal_payload) {
             if (c == '(') {
                 bracket_depth++;
                 found_expression = true;

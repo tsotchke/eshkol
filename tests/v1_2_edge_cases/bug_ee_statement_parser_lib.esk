@@ -1,0 +1,62 @@
+;; Companion library for Bug EE.  The important shape is a definition
+;; containing #\( before a later exported definition.
+
+(require stdlib)
+
+(provide ss-count-binders)
+
+(define (ss-space-char? c)
+  (or (char=? c #\space)
+      (char=? c #\tab)
+      (char=? c #\newline)
+      (char=? c #\return)))
+
+(define (ss-find-char s target start)
+  (let ((n (string-length s)))
+    (let loop ((i start))
+      (cond
+        ((>= i n) #f)
+        ((char=? (string-ref s i) target) i)
+        (else (loop (+ i 1)))))))
+
+(define (ss-name-token-char? c)
+  (and (not (ss-space-char? c))
+       (not (char=? c #\())
+       (not (char=? c #\)))
+       (not (char=? c #\:))
+       (not (char=? c #\,))))
+
+(define (ss-count-name-tokens s start end)
+  (let loop ((i start) (in-token? #f) (n 0))
+    (cond
+      ((>= i end) n)
+      ((ss-name-token-char? (string-ref s i))
+       (cond
+         (in-token? (loop (+ i 1) #t n))
+         (else (loop (+ i 1) #t (+ n 1)))))
+      (else (loop (+ i 1) #f n)))))
+
+(define (ss-count-binder-group s open-i limit)
+  (let ((colon (ss-find-char s #\: open-i)))
+    (cond
+      ((not colon) 0)
+      ((>= colon limit) 0)
+      (else (ss-count-name-tokens s (+ open-i 1) colon)))))
+
+(define (ss-count-binder-groups s start limit)
+  (let loop ((i start) (n 0))
+    (cond
+      ((>= i limit) n)
+      ((char=? (string-ref s i) #\()
+       (loop (+ i 1)
+             (+ n (ss-count-binder-group s i limit))))
+      (else (loop (+ i 1) n)))))
+
+(define (ss-count-binders stmt)
+  (cond
+    ((not (string? stmt)) 0)
+    (else
+     (let* ((comma (ss-find-char stmt #\, 0))
+            (limit (cond (comma comma)
+                         (else (string-length stmt)))))
+       (ss-count-binder-groups stmt 0 limit)))))
