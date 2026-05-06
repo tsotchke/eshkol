@@ -37,9 +37,65 @@ llvm::Value* StringIOCodegen::ensureRawInt64(llvm::Value* val, const std::string
         return val;
     }
 
-    // If it's a tagged_value struct, extract the int64 data field
+    // If it's a tagged_value struct, dispatch on the runtime type tag.
+    //
+    // Why this matters: FFI extern functions returning i32 are packed as
+    // DOUBLE tagged values (llvm_codegen.cpp ~14889 — the rationale being
+    // that Scheme doesn't distinguish int from float for `=`).  Doing a
+    // raw `extractvalue field 4` on such a tagged value returns the BIT
+    // PATTERN of the double, which is e.g. 0x4055000000000000 for 84.0 —
+    // wildly out-of-range when used as a substring index.  We have to
+    // check the type tag at runtime and, when it's DOUBLE, bitcast back
+    // to a double and FPToSI to int64.
+    //
+    // First-class symptom (#145): `(substring buf 0 n)` where n came
+    // from an FFI i32 return raised "substring: bounds out of range"
+    // even though `(display n)` printed the correct integer (because
+    // display dispatches on the type tag).
     if (val->getType() == ctx_.taggedValueType()) {
-        return tagged_.unpackInt64(val);
+        llvm::Type* int64_ty = ctx_.int64Type();
+        llvm::Type* int8_ty  = ctx_.int8Type();
+        llvm::Function* current_fn = ctx_.builder().GetInsertBlock()->getParent();
+
+        llvm::Value* type_tag = ctx_.builder().CreateExtractValue(val, {0});
+        llvm::Value* raw_data = ctx_.builder().CreateExtractValue(val, {4});
+
+        // Mask off flag bits — base type is the low nibble.  Doubles are
+        // type 2; pointer-flagged doubles can be 0x12 / 0x42 etc., so
+        // compare on the masked tag.
+        llvm::Value* base_tag = ctx_.builder().CreateAnd(type_tag,
+            llvm::ConstantInt::get(int8_ty, 0x0F));
+        llvm::Value* is_double = ctx_.builder().CreateICmpEQ(base_tag,
+            llvm::ConstantInt::get(int8_ty, 2 /* ESHKOL_VALUE_DOUBLE */),
+            name + "_is_dbl");
+
+        llvm::BasicBlock* dbl_bb   = llvm::BasicBlock::Create(ctx_.context(),
+            name + "_dbl", current_fn);
+        llvm::BasicBlock* int_bb   = llvm::BasicBlock::Create(ctx_.context(),
+            name + "_int", current_fn);
+        llvm::BasicBlock* merge_bb = llvm::BasicBlock::Create(ctx_.context(),
+            name + "_merge", current_fn);
+
+        ctx_.builder().CreateCondBr(is_double, dbl_bb, int_bb);
+
+        // Double path: bitcast i64 → double → FPToSI → i64.
+        ctx_.builder().SetInsertPoint(dbl_bb);
+        llvm::Value* as_dbl = ctx_.builder().CreateBitCast(raw_data,
+            ctx_.builder().getDoubleTy(), name + "_dbl_bits");
+        llvm::Value* dbl_to_int = ctx_.builder().CreateFPToSI(as_dbl, int64_ty,
+            name + "_fp2si");
+        ctx_.builder().CreateBr(merge_bb);
+
+        // Int path: data field is already an integer (INT64, BOOL, CHAR, ptr).
+        ctx_.builder().SetInsertPoint(int_bb);
+        ctx_.builder().CreateBr(merge_bb);
+
+        // Merge.
+        ctx_.builder().SetInsertPoint(merge_bb);
+        llvm::PHINode* phi = ctx_.builder().CreatePHI(int64_ty, 2, name);
+        phi->addIncoming(dbl_to_int, dbl_bb);
+        phi->addIncoming(raw_data, int_bb);
+        return phi;
     }
 
     // For other integer types, extend to i64
@@ -369,15 +425,30 @@ llvm::Value* StringIOCodegen::substring(const eshkol_operations_t* op) {
     llvm::Value* ptr_int = tagged_.unpackInt64(str_arg);
     llvm::Value* str_ptr = ctx_.builder().CreateIntToPtr(ptr_int, ctx_.ptrType());
 
-    // Get string length for upper bound check
-    llvm::Function* strlen_func = ctx_.module().getFunction("strlen");
-    if (!strlen_func) {
-        llvm::FunctionType* strlen_type = llvm::FunctionType::get(
+    // Get string length for upper bound check.
+    //
+    // Use eshkol_utf8_strlen — codepoint count via the string's header
+    // (size field), falling back to strlen if no header.  Plain strlen
+    // is wrong here for two reasons:
+    //   1. Strings with embedded NULs (FFI buffers from `make-string n
+    //      #\nul` then a C side that `recv()`s into them) have a header
+    //      length larger than what strlen sees, so substring on the
+    //      filled portion fails its end <= length check.  Manifested
+    //      first as the agent.http_server accept wrapper crashing on
+    //      well-formed HTTP requests (#145).
+    //   2. For multi-byte UTF-8 the codepoint indices we accept here
+    //      are smaller than the byte count strlen returns, so the
+    //      strlen-based upper bound was loose anyway — codepoint count
+    //      is the correct semantic.
+    llvm::Function* utf8_strlen_func = ctx_.module().getFunction("eshkol_utf8_strlen");
+    if (!utf8_strlen_func) {
+        llvm::FunctionType* utf8_strlen_type = llvm::FunctionType::get(
             ctx_.int64Type(), {ctx_.ptrType()}, false);
-        strlen_func = llvm::Function::Create(
-            strlen_type, llvm::Function::ExternalLinkage, "strlen", &ctx_.module());
+        utf8_strlen_func = llvm::Function::Create(
+            utf8_strlen_type, llvm::Function::ExternalLinkage,
+            "eshkol_utf8_strlen", &ctx_.module());
     }
-    llvm::Value* str_len = ctx_.builder().CreateCall(strlen_func, {str_ptr}, "str_len");
+    llvm::Value* str_len = ctx_.builder().CreateCall(utf8_strlen_func, {str_ptr}, "str_len");
 
     // Bounds validation: start >= 0, end >= start, end <= string_length
     llvm::Value* start_negative = ctx_.builder().CreateICmpSLT(start,
@@ -411,7 +482,8 @@ llvm::Value* StringIOCodegen::substring(const eshkol_operations_t* op) {
                 "eshkol_make_exception_with_header", &ctx_.module());
         }
         llvm::Value* err_msg = ctx_.builder().CreateGlobalString(
-            "substring: end index less than start index");
+            "substring: bounds out of range "
+            "(start < 0, end < start, or end > string-length)");
         llvm::Value* exc_type = llvm::ConstantInt::get(ctx_.builder().getInt32Ty(), ESHKOL_EXCEPTION_ERROR);
         llvm::Value* exception = ctx_.builder().CreateCall(make_exc_func, {exc_type, err_msg});
         ctx_.builder().CreateCall(raise_func, {exception});

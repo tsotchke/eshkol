@@ -1623,6 +1623,13 @@ if(ESHKOL_BUILD_AGENT_FFI)
             ${AGENT_FFI_DIR}/agent_subprocess.c
         )
 
+        # HTTP server / WebSocket / Unix domain socket primitives.
+        # POSIX-only (uses sockets, poll, accept) — already gated by the
+        # surrounding ESHKOL_BUILD_AGENT_FFI=OFF on Windows.
+        if(EXISTS "${AGENT_FFI_DIR}/agent_http_server.c")
+            list(APPEND AGENT_FFI_SOURCES ${AGENT_FFI_DIR}/agent_http_server.c)
+        endif()
+
         # Optional: PCRE2 for regex. Homebrew ships the .pc file as
         # libpcre2-8.pc, some distros (Debian) as pcre2-8.pc — try
         # the homebrew-style name first, fall back to the bare one
