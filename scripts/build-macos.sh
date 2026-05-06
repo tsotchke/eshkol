@@ -28,6 +28,89 @@ UNIVERSAL=false
 TARGET_ARCH="native"
 CLEAN=false
 
+fail() {
+    echo "Error: $1" >&2
+    exit 1
+}
+
+validate_package_version() {
+    local version="$1"
+
+    case "$version" in
+        ""|*/*|*\\*|*..*|*[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789.+:~-]*)
+            fail "unsafe macOS artifact version: $version"
+            ;;
+    esac
+
+    if [ "${#version}" -gt 128 ]; then
+        fail "macOS artifact version is too long: $version"
+    fi
+}
+
+validate_target_arch() {
+    local arch="$1"
+
+    case "$arch" in
+        native|arm64|x86_64)
+            ;;
+        *)
+            fail "unsupported macOS target architecture: $arch"
+            ;;
+    esac
+}
+
+require_output_directory() {
+    local label="$1"
+    local path="$2"
+
+    if [ -L "$path" ]; then
+        fail "$label must not be a symlink: $path"
+    fi
+
+    mkdir -p "$path"
+
+    if [ -L "$path" ] || [ ! -d "$path" ]; then
+        fail "$label missing or symlinked after creation: $path"
+    fi
+}
+
+remove_build_directory() {
+    local path="$1"
+
+    case "$path" in
+        build-arm64|build-x86_64)
+            ;;
+        *)
+            fail "refusing to remove unexpected macOS build directory: $path"
+            ;;
+    esac
+
+    if [ -L "$path" ] || { [ -e "$path" ] && [ ! -d "$path" ]; }; then
+        fail "refusing to remove non-directory or symlinked macOS build path: $path"
+    fi
+
+    rm -rf -- "$path"
+}
+
+remove_package_stage() {
+    local stage="$1"
+    local root="$2"
+
+    case "$stage" in
+        "$root"/.pkg.*)
+            ;;
+        *)
+            fail "refusing to remove unexpected macOS package stage path: $stage"
+            ;;
+    esac
+
+    if [ -L "$stage" ] || { [ -e "$stage" ] && [ ! -d "$stage" ]; }; then
+        fail "refusing to remove non-directory or symlinked macOS package stage: $stage"
+    fi
+
+    rm -rf -- "$stage"
+}
+
 # Parse arguments
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -62,6 +145,9 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+validate_package_version "$VERSION"
+validate_target_arch "$TARGET_ARCH"
+
 # Get project root
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
@@ -75,7 +161,8 @@ echo "Host architecture: $HOST_ARCH"
 eshkol_activate_llvm_toolchain
 LLVM_PATH="${ESHKOL_LLVM_ROOT}"
 
-mkdir -p "$OUTPUT_DIR"
+require_output_directory "macOS artifact output directory" "$OUTPUT_DIR"
+OUTPUT_DIR="$(cd "$OUTPUT_DIR" && pwd -P)"
 
 # Function to build for a specific architecture
 build_arch() {
@@ -85,7 +172,7 @@ build_arch() {
     echo "Building for architecture: $arch"
 
     if [ "$CLEAN" = true ] && [ -d "$build_dir" ]; then
-        rm -rf "$build_dir"
+        remove_build_directory "$build_dir"
     fi
 
     # Set architecture-specific flags
@@ -137,7 +224,8 @@ create_package() {
     echo "Creating package: $output_name"
 
     local pkg_dir="$OUTPUT_DIR/${output_name}"
-    mkdir -p "$pkg_dir"
+    require_output_directory "macOS package output directory" "$pkg_dir"
+    pkg_dir="$(cd "$pkg_dir" && pwd -P)"
 
     # Copy binaries
     cp "$build_dir/eshkol-run" "$pkg_dir/"
@@ -146,17 +234,19 @@ create_package() {
 
     # Create tarball
     local tarball="$OUTPUT_DIR/eshkol-${VERSION}-${output_name}.tar.gz"
+    local pkg_stage
+    pkg_stage="$(mktemp -d "$pkg_dir/.pkg.XXXXXX")"
     (
-        mkdir -p "$pkg_dir/pkg/bin" "$pkg_dir/pkg/lib" "$pkg_dir/pkg/share/eshkol"
-        cp "$build_dir/eshkol-run" "$pkg_dir/pkg/bin/"
-        cp "$build_dir/eshkol-repl" "$pkg_dir/pkg/bin/"
-        cp "$build_dir/stdlib.o" "$pkg_dir/pkg/lib/"
-        cp lib/stdlib.esk "$pkg_dir/pkg/share/eshkol/"
-        [ -d lib/core ] && cp -r lib/core "$pkg_dir/pkg/share/eshkol/"
-        cp README.md LICENSE "$pkg_dir/pkg/" 2>/dev/null || true
-        tar -czvf "$tarball" -C "$pkg_dir/pkg" .
-        rm -rf "$pkg_dir/pkg"
+        mkdir -p "$pkg_stage/bin" "$pkg_stage/lib" "$pkg_stage/share/eshkol"
+        cp "$build_dir/eshkol-run" "$pkg_stage/bin/"
+        cp "$build_dir/eshkol-repl" "$pkg_stage/bin/"
+        cp "$build_dir/stdlib.o" "$pkg_stage/lib/"
+        cp lib/stdlib.esk "$pkg_stage/share/eshkol/"
+        [ -d lib/core ] && cp -r lib/core "$pkg_stage/share/eshkol/"
+        cp README.md LICENSE "$pkg_stage/" 2>/dev/null || true
+        tar -czvf "$tarball" -C "$pkg_stage" .
     )
+    remove_package_stage "$pkg_stage" "$pkg_dir"
 
     echo "Created: $tarball"
 }
@@ -166,7 +256,8 @@ create_universal() {
     echo "Creating universal binary..."
 
     local universal_dir="$OUTPUT_DIR/macos-universal"
-    mkdir -p "$universal_dir"
+    require_output_directory "macOS universal artifact directory" "$universal_dir"
+    universal_dir="$(cd "$universal_dir" && pwd -P)"
 
     # Use lipo to combine arm64 and x86_64 binaries
     for binary in eshkol-run eshkol-repl; do
@@ -188,19 +279,21 @@ create_universal() {
 
     # Create tarball
     local tarball="$OUTPUT_DIR/eshkol-${VERSION}-macos-universal.tar.gz"
+    local pkg_stage
+    pkg_stage="$(mktemp -d "$universal_dir/.pkg.XXXXXX")"
     (
-        mkdir -p "$universal_dir/pkg/bin" "$universal_dir/pkg/lib" "$universal_dir/pkg/share/eshkol"
-        cp "$universal_dir/eshkol-run" "$universal_dir/pkg/bin/"
-        cp "$universal_dir/eshkol-repl" "$universal_dir/pkg/bin/"
+        mkdir -p "$pkg_stage/bin" "$pkg_stage/lib" "$pkg_stage/share/eshkol"
+        cp "$universal_dir/eshkol-run" "$pkg_stage/bin/"
+        cp "$universal_dir/eshkol-repl" "$pkg_stage/bin/"
         # Include both arch-specific stdlib.o files
-        cp "$universal_dir/stdlib-arm64.o" "$universal_dir/pkg/lib/" 2>/dev/null || true
-        cp "$universal_dir/stdlib-x86_64.o" "$universal_dir/pkg/lib/" 2>/dev/null || true
-        cp lib/stdlib.esk "$universal_dir/pkg/share/eshkol/"
-        [ -d lib/core ] && cp -r lib/core "$universal_dir/pkg/share/eshkol/"
-        cp README.md LICENSE "$universal_dir/pkg/" 2>/dev/null || true
-        tar -czvf "$tarball" -C "$universal_dir/pkg" .
-        rm -rf "$universal_dir/pkg"
+        cp "$universal_dir/stdlib-arm64.o" "$pkg_stage/lib/" 2>/dev/null || true
+        cp "$universal_dir/stdlib-x86_64.o" "$pkg_stage/lib/" 2>/dev/null || true
+        cp lib/stdlib.esk "$pkg_stage/share/eshkol/"
+        [ -d lib/core ] && cp -r lib/core "$pkg_stage/share/eshkol/"
+        cp README.md LICENSE "$pkg_stage/" 2>/dev/null || true
+        tar -czvf "$tarball" -C "$pkg_stage" .
     )
+    remove_package_stage "$pkg_stage" "$universal_dir"
 
     echo "Created: $tarball"
 }

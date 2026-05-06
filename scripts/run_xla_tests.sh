@@ -28,10 +28,40 @@ declare -a FAILED_TESTS
 declare -a SKIPPED_TESTS
 declare -a RUNTIME_ERRORS
 
-echo "========================================="
-echo "  Eshkol XLA/StableHLO Integration Tests"
-echo "========================================="
-echo ""
+print_xla_banner() {
+    echo "========================================="
+    echo "  Eshkol XLA/StableHLO Integration Tests"
+    echo "========================================="
+    echo ""
+}
+
+build_cache_enables_xla() {
+    local build_dir="$1"
+
+    [ -f "$build_dir/CMakeCache.txt" ] &&
+        grep -qE "ESHKOL_(USE_)?XLA(_ENABLED)?:BOOL=ON" "$build_dir/CMakeCache.txt"
+}
+
+cleanup_xla_binary_artifacts() {
+    rm -f a.out a.out.tmp.o
+}
+
+cleanup_xla_temp_artifacts() {
+    cleanup_xla_binary_artifacts
+    rm -f /tmp/xla_test_output.txt /tmp/xla_compile.log /tmp/xla_perf_output.txt /tmp/xla_perf_test.esk
+}
+
+select_timeout_command() {
+    if command -v timeout >/dev/null 2>&1; then
+        printf '%s\n' timeout
+    elif command -v gtimeout >/dev/null 2>&1; then
+        printf '%s\n' gtimeout
+    else
+        return 1
+    fi
+}
+
+print_xla_banner
 
 # Determine which build directory to use
 # Override with: BUILD_DIR=build ./scripts/run_xla_tests.sh
@@ -43,8 +73,7 @@ if [ -n "$BUILD_DIR" ]; then
         echo -e "${RED}Error: Specified BUILD_DIR=$BUILD_DIR not found or missing eshkol-run.${NC}"
         exit 1
     fi
-    if [ -f "$BUILD_DIR/CMakeCache.txt" ] && \
-       grep -qE "ESHKOL_(USE_)?XLA(_ENABLED)?:BOOL=ON" "$BUILD_DIR/CMakeCache.txt"; then
+    if build_cache_enables_xla "$BUILD_DIR"; then
         XLA_ENABLED="yes"
     fi
     echo -e "${GREEN}Using build directory: $BUILD_DIR${NC}"
@@ -53,8 +82,7 @@ else
     for candidate in build-xla build; do
         if [ -d "$candidate" ] && [ -f "$candidate/eshkol-run" ]; then
             BUILD_DIR="$candidate"
-            if [ -f "$candidate/CMakeCache.txt" ] && \
-               grep -qE "ESHKOL_(USE_)?XLA(_ENABLED)?:BOOL=ON" "$candidate/CMakeCache.txt"; then
+            if build_cache_enables_xla "$candidate"; then
                 XLA_ENABLED="yes"
             fi
             break
@@ -86,7 +114,7 @@ XLA_TEST_BIN="$BUILD_DIR/xla_codegen_test"
 
 if [ -f "$XLA_TEST_BIN" ]; then
     echo "Running XLA C++ unit tests..."
-    if $XLA_TEST_BIN; then
+    if "$XLA_TEST_BIN"; then
         echo -e "${GREEN}✅ C++ Unit Tests: PASS${NC}"
         ((PASS++)) || true
     else
@@ -132,10 +160,10 @@ else
         printf "Testing %-45s " "$test_name"
 
         # Clean up stale temp files
-        rm -f a.out a.out.tmp.o
+        cleanup_xla_binary_artifacts
 
         # Try to compile
-        if ./$BUILD_DIR/eshkol-run "$test_file" -L./$BUILD_DIR > /tmp/xla_compile.log 2>&1; then
+        if "$BUILD_DIR/eshkol-run" "$test_file" -L"$BUILD_DIR" > /tmp/xla_compile.log 2>&1; then
             # Compilation succeeded, try to run
             if ./a.out > /tmp/xla_test_output.txt 2>&1; then
                 # Check for FAIL markers in output (from test assertions)
@@ -189,22 +217,14 @@ ESKEOF
 
 printf "Testing %-45s " "performance_sanity"
 
-if ./$BUILD_DIR/eshkol-run /tmp/xla_perf_test.esk -L./$BUILD_DIR > /tmp/xla_compile.log 2>&1; then
+if "$BUILD_DIR/eshkol-run" /tmp/xla_perf_test.esk -L"$BUILD_DIR" > /tmp/xla_compile.log 2>&1; then
     start_time=$(python3 -c "import time; print(int(time.time() * 1000))" 2>/dev/null || date +%s%3N)
-    TIMEOUT_CMD="timeout"
-    if ! command -v timeout &>/dev/null; then
-        if command -v gtimeout &>/dev/null; then
-            TIMEOUT_CMD="gtimeout"
-        else
-            TIMEOUT_CMD=""
-        fi
-    fi
-    if [ -n "$TIMEOUT_CMD" ]; then
-        PERF_RUN="$TIMEOUT_CMD 60 ./a.out"
+    if TIMEOUT_CMD="$(select_timeout_command)"; then
+        PERF_RUN=("$TIMEOUT_CMD" 60 ./a.out)
     else
-        PERF_RUN="./a.out"
+        PERF_RUN=(./a.out)
     fi
-    if $PERF_RUN > /tmp/xla_perf_output.txt 2>&1; then
+    if "${PERF_RUN[@]}" > /tmp/xla_perf_output.txt 2>&1; then
         end_time=$(python3 -c "import time; print(int(time.time() * 1000))" 2>/dev/null || date +%s%3N)
         elapsed=$((end_time - start_time))
         echo -e "${GREEN}✅ PASS${NC} (${elapsed}ms)"
@@ -280,7 +300,7 @@ else
 fi
 
 # Clean up
-rm -f /tmp/xla_test_output.txt /tmp/xla_compile.log /tmp/xla_perf_output.txt a.out
+cleanup_xla_temp_artifacts
 
 # Exit with appropriate code
 if [ $FAIL -eq 0 ]; then

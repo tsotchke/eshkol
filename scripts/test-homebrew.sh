@@ -55,6 +55,38 @@ source "${SCRIPT_DIR}/lib/llvm21-env.sh"
 
 echo -e "${YELLOW}=== Homebrew Formula Test ===${NC}"
 
+require_homebrew_test_file() {
+    local path="$1"
+
+    case "$path" in
+        /tmp/eshkol-test.*.esk)
+            ;;
+        *)
+            echo "Unsafe Homebrew test source path: $path" >&2
+            exit 1
+            ;;
+    esac
+
+    if [ -L "$path" ] || { [ -e "$path" ] && [ ! -f "$path" ]; }; then
+        echo "Homebrew test source path must be a regular non-symlinked file: $path" >&2
+        exit 1
+    fi
+}
+
+write_homebrew_test_file() {
+    local path="$1"
+
+    require_homebrew_test_file "$path"
+    printf '%s\n' '(display "Hello from Homebrew test!")' > "$path"
+}
+
+remove_homebrew_test_file() {
+    local path="$1"
+
+    require_homebrew_test_file "$path"
+    rm -f -- "$path"
+}
+
 LLVM_FORMULA="llvm@${ESHKOL_REQUIRED_LLVM_MAJOR}"
 
 # Check for Homebrew
@@ -135,7 +167,7 @@ if [ "$LOCAL_TEST" = true ]; then
     # Run a quick test
     echo -e "${YELLOW}Running quick test...${NC}"
     TEST_FILE=$(mktemp /tmp/eshkol-test.XXXXXX.esk)
-    echo '(display "Hello from Homebrew test!")' > "$TEST_FILE"
+    write_homebrew_test_file "$TEST_FILE"
 
     if "$BUILD_DIR/eshkol-run" "$TEST_FILE" -L"$BUILD_DIR"; then
         if [ -f "a.out" ]; then
@@ -148,7 +180,7 @@ if [ "$LOCAL_TEST" = true ]; then
         echo -e "  ${RED}[FAIL]${NC} Compilation failed"
     fi
 
-    rm -f "$TEST_FILE"
+    remove_homebrew_test_file "$TEST_FILE"
 
     # Cleanup
     rm -rf "$BUILD_DIR"

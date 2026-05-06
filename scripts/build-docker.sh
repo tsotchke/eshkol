@@ -24,6 +24,59 @@ OUTPUT_DIR="./dist"
 NO_CACHE=""
 BUILD_TYPE="release"
 
+fail() {
+    echo "Error: $1" >&2
+    exit 1
+}
+
+validate_package_version() {
+    local version="$1"
+
+    case "$version" in
+        ""|*/*|*\\*|*..*|*[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789.+:~-]*)
+            fail "unsafe Docker artifact version: $version"
+            ;;
+    esac
+
+    if [ "${#version}" -gt 128 ]; then
+        fail "Docker artifact version is too long: $version"
+    fi
+}
+
+require_output_directory() {
+    local label="$1"
+    local path="$2"
+
+    if [ -L "$path" ]; then
+        fail "$label must not be a symlink: $path"
+    fi
+
+    mkdir -p "$path"
+
+    if [ -L "$path" ] || [ ! -d "$path" ]; then
+        fail "$label missing or symlinked after creation: $path"
+    fi
+}
+
+remove_package_stage() {
+    local stage="$1"
+    local root="$2"
+
+    case "$stage" in
+        "$root"/.pkg.*)
+            ;;
+        *)
+            fail "refusing to remove unexpected Docker package stage path: $stage"
+            ;;
+    esac
+
+    if [ -L "$stage" ] || { [ -e "$stage" ] && [ ! -d "$stage" ]; }; then
+        fail "refusing to remove non-directory or symlinked Docker package stage: $stage"
+    fi
+
+    rm -rf -- "$stage"
+}
+
 # Parse arguments
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -54,6 +107,8 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+validate_package_version "$VERSION"
+
 # Get project root
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
@@ -80,11 +135,30 @@ echo "Version: $VERSION"
 echo "Build type: $BUILD_TYPE"
 
 # Create output directory
-mkdir -p "$OUTPUT_DIR"
+require_output_directory "Docker artifact output directory" "$OUTPUT_DIR"
+
+require_docker_container_name() {
+    local value="$1"
+
+    case "$value" in
+        ""|.*|*/*|*[!A-Za-z0-9_.-]*)
+            echo "Unsafe Docker container name: $value" >&2
+            exit 1
+            ;;
+    esac
+}
+
+remove_build_container() {
+    local container_name="$1"
+
+    require_docker_container_name "$container_name"
+    docker container rm --force "$container_name" 2>/dev/null || true
+}
 
 # Docker image name
 IMAGE_NAME="eshkol-builder-debian-${ARCH}"
 CONTAINER_NAME="eshkol-build-${ARCH}-$$"
+require_docker_container_name "$CONTAINER_NAME"
 
 # Check if we need to set up QEMU for cross-platform builds
 HOST_ARCH=$(uname -m)
@@ -108,7 +182,7 @@ docker build \
 
 # Create and run container
 echo "Running build in container..."
-docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
+remove_build_container "$CONTAINER_NAME"
 docker create --platform "$PLATFORM" --name "$CONTAINER_NAME" "$IMAGE_NAME"
 
 # Extract artifacts
@@ -116,7 +190,8 @@ echo "Extracting artifacts..."
 
 # Create arch-specific output directory
 ARCH_OUTPUT="$OUTPUT_DIR/linux-${ARCH_NAME}"
-mkdir -p "$ARCH_OUTPUT"
+require_output_directory "Docker architecture artifact directory" "$ARCH_OUTPUT"
+ARCH_OUTPUT="$(cd "$ARCH_OUTPUT" && pwd -P)"
 
 # Copy binaries
 docker cp "$CONTAINER_NAME:/app/build/eshkol-run" "$ARCH_OUTPUT/" 2>/dev/null || echo "Warning: eshkol-run not found"
@@ -134,25 +209,25 @@ fi
 # Create tarball
 echo "Creating tarball..."
 TARBALL_NAME="eshkol-${VERSION}-linux-${ARCH_NAME}.tar.gz"
+PKG_STAGE="$(mktemp -d "$ARCH_OUTPUT/.pkg.XXXXXX")"
 (
-    cd "$ARCH_OUTPUT"
-    mkdir -p pkg/bin pkg/lib pkg/share/eshkol
-    cp eshkol-run pkg/bin/ 2>/dev/null || true
-    cp eshkol-repl pkg/bin/ 2>/dev/null || true
-    cp stdlib.o pkg/lib/ 2>/dev/null || true
-    cp libeshkol-static.a pkg/lib/ 2>/dev/null || true
-    cp "$PROJECT_ROOT/lib/stdlib.esk" pkg/share/eshkol/ 2>/dev/null || true
+    mkdir -p "$PKG_STAGE/bin" "$PKG_STAGE/lib" "$PKG_STAGE/share/eshkol"
+    cp "$ARCH_OUTPUT/eshkol-run" "$PKG_STAGE/bin/" 2>/dev/null || true
+    cp "$ARCH_OUTPUT/eshkol-repl" "$PKG_STAGE/bin/" 2>/dev/null || true
+    cp "$ARCH_OUTPUT/stdlib.o" "$PKG_STAGE/lib/" 2>/dev/null || true
+    cp "$ARCH_OUTPUT/libeshkol-static.a" "$PKG_STAGE/lib/" 2>/dev/null || true
+    cp "$PROJECT_ROOT/lib/stdlib.esk" "$PKG_STAGE/share/eshkol/" 2>/dev/null || true
     if [ -d "$PROJECT_ROOT/lib/core" ]; then
-        cp -r "$PROJECT_ROOT/lib/core" pkg/share/eshkol/
+        cp -r "$PROJECT_ROOT/lib/core" "$PKG_STAGE/share/eshkol/"
     fi
-    cp "$PROJECT_ROOT/README.md" pkg/ 2>/dev/null || true
-    cp "$PROJECT_ROOT/LICENSE" pkg/ 2>/dev/null || true
-    tar -czvf "$TARBALL_NAME" -C pkg .
-    rm -rf pkg
+    cp "$PROJECT_ROOT/README.md" "$PKG_STAGE/" 2>/dev/null || true
+    cp "$PROJECT_ROOT/LICENSE" "$PKG_STAGE/" 2>/dev/null || true
+    tar -czvf "$ARCH_OUTPUT/$TARBALL_NAME" -C "$PKG_STAGE" .
 )
+remove_package_stage "$PKG_STAGE" "$ARCH_OUTPUT"
 
 # Cleanup container
-docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
+remove_build_container "$CONTAINER_NAME"
 
 echo ""
 echo "Build complete! Artifacts in: $ARCH_OUTPUT"

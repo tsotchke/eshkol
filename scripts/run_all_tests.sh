@@ -34,9 +34,71 @@ declare -a FAILED_SUITES
 declare -a SKIPPED_SUITES
 declare -a ALL_FAILURES  # "suite: test_name (reason)" entries
 
+cleanup_tests_tmpdir() {
+    local path="${TMPDIR_TESTS:-}"
+
+    if [ -z "$path" ]; then
+        return
+    fi
+
+    case "$path" in
+        /tmp/*|/private/tmp/*|/var/folders/*|/private/var/folders/*)
+            ;;
+        *)
+            echo "Refusing to remove unexpected test temp directory: $path" >&2
+            return
+            ;;
+    esac
+
+    if [ -L "$path" ] || { [ -e "$path" ] && [ ! -d "$path" ]; }; then
+        echo "Refusing to remove non-directory or symlinked test temp path: $path" >&2
+        return
+    fi
+
+    rm -rf -- "$path"
+}
+
+require_regular_executable() {
+    local label="$1"
+    local path="$2"
+
+    if [ -L "$path" ] || ! test -f "$path" || ! test -s "$path" || ! test -x "$path"; then
+        echo -e "${RED}Error: $label missing, empty, symlinked, or not executable: $path${NC}"
+        exit 1
+    fi
+}
+
+validate_suite_script() {
+    local path="$1"
+
+    if ! test -e "$path"; then
+        return 1
+    fi
+
+    if [ -L "$path" ] || ! test -f "$path" || ! test -s "$path"; then
+        echo -e "${RED}Error: suite script missing, empty, symlinked, or not a regular file: $path${NC}"
+        return 2
+    fi
+
+    return 0
+}
+
+run_suite_script() {
+    local path="$1"
+    local status
+
+    validate_suite_script "$path"
+    status=$?
+    if [ "$status" -ne 0 ]; then
+        return 126
+    fi
+
+    bash "$path"
+}
+
 # Temp directory for captured output
 TMPDIR_TESTS=$(mktemp -d)
-trap "rm -rf '$TMPDIR_TESTS'" EXIT
+trap cleanup_tests_tmpdir EXIT
 
 # Test scripts to run (in order)
 TEST_SCRIPTS=(
@@ -94,10 +156,7 @@ if [ ! -d "$BUILD_DIR" ]; then
 fi
 
 # Check if compiler exists
-if [ ! -f "$BUILD_DIR/eshkol-run" ]; then
-    echo -e "${RED}Error: eshkol-run not found. Run make first.${NC}"
-    exit 1
-fi
+require_regular_executable "eshkol-run" "$BUILD_DIR/eshkol-run"
 
 echo "Running all test suites..."
 echo ""
@@ -184,10 +243,17 @@ for script in "${TEST_SCRIPTS[@]}"; do
     suite_name="${suite_name#run_}"
     suite_name="${suite_name%_tests}"
 
-    if [ ! -f "$script_path" ]; then
+    validate_suite_script "$script_path"
+    suite_script_status=$?
+    if [ "$suite_script_status" -eq 1 ]; then
         echo -e "${YELLOW}-- Skipping $script (not found)${NC}"
         SKIPPED_SUITES+=("$suite_name")
         ((SUITES_SKIP++)) || true
+        continue
+    fi
+    if [ "$suite_script_status" -ne 0 ]; then
+        FAILED_SUITES+=("$suite_name")
+        ((SUITES_FAIL++)) || true
         continue
     fi
 
@@ -197,7 +263,7 @@ for script in "${TEST_SCRIPTS[@]}"; do
 
     # Capture output while still displaying it
     output_file="$TMPDIR_TESTS/${suite_name}.log"
-    bash "$script_path" 2>&1 | tee "$output_file"
+    run_suite_script "$script_path" 2>&1 | tee "$output_file"
     suite_exit=${PIPESTATUS[0]}
 
     if [ $suite_exit -eq 0 ]; then

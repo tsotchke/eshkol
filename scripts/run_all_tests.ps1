@@ -126,7 +126,7 @@ function Resolve-BuildDirectory {
             (Join-Path $resolvedCandidate "Release"),
             (Join-Path $resolvedCandidate "Debug")
         )) {
-            if (Test-Path (Join-Path $binDir "eshkol-run.exe")) {
+            if (Test-RegularFile -Path (Join-Path $binDir "eshkol-run.exe")) {
                 return [pscustomobject]@{
                     RootDir   = $resolvedCandidate
                     BinaryDir = $binDir
@@ -181,9 +181,83 @@ function New-OutputBase {
     Join-Path $dir $safeName
 }
 
+function Get-RegularFileItem {
+    param([string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        return $null
+    }
+
+    try {
+        $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+    } catch [System.Management.Automation.ItemNotFoundException] {
+        return $null
+    } catch [System.Management.Automation.DriveNotFoundException] {
+        return $null
+    }
+
+    if ($item.PSIsContainer) {
+        return $null
+    }
+    if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+        return $null
+    }
+
+    return $item
+}
+
+function Test-RegularFile {
+    param([string]$Path)
+
+    return ($null -ne (Get-RegularFileItem -Path $Path))
+}
+
+function Remove-RegularFileIfPresent {
+    param([string[]]$Path)
+
+    foreach ($entry in $Path) {
+        if ([string]::IsNullOrWhiteSpace($entry)) {
+            continue
+        }
+
+        try {
+            $item = Get-Item -LiteralPath $entry -Force -ErrorAction Stop
+        } catch [System.Management.Automation.ItemNotFoundException] {
+            continue
+        } catch [System.Management.Automation.DriveNotFoundException] {
+            continue
+        }
+
+        if ($item.PSIsContainer) {
+            throw "Refusing to remove directory artifact: $entry"
+        }
+        if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "Refusing to remove reparse-point artifact: $entry"
+        }
+
+        Remove-Item -LiteralPath $item.FullName -Force -ErrorAction Stop
+    }
+}
+
+function Start-RegularFileProcess {
+    param(
+        [string]$FilePath,
+        [string[]]$ArgumentList = @(),
+        [string]$WorkingDirectory,
+        [string]$RedirectStandardOutput,
+        [string]$RedirectStandardError
+    )
+
+    if (-not (Test-RegularFile -Path $FilePath)) {
+        throw "Refusing to start missing or non-regular executable: $FilePath"
+    }
+
+    return Start-Process -FilePath $FilePath -ArgumentList $ArgumentList -WorkingDirectory $WorkingDirectory -RedirectStandardOutput $RedirectStandardOutput -RedirectStandardError $RedirectStandardError -PassThru
+}
+
 function Get-Text {
     param([string]$Path)
-    if (-not (Test-Path $Path)) {
+    if (-not (Test-RegularFile -Path $Path)) {
         return ""
     }
     return [System.IO.File]::ReadAllText($Path)
@@ -388,7 +462,7 @@ function Invoke-EshkolCompile {
     )
 
     $exePath = $OutputBase + ".exe"
-    Remove-Item $exePath, $OutputBase -Force -ErrorAction SilentlyContinue
+    Remove-RegularFileIfPresent -Path @($exePath, $OutputBase)
 
     $args = @("-L", $BuildDir, "-o", $OutputBase)
     if ($ExtraArgs.Count -gt 0) {
@@ -401,7 +475,7 @@ function Invoke-EshkolCompile {
     [pscustomobject]@{
         ExitCode = $captured.ExitCode
         TimedOut = $captured.TimedOut
-        Success  = ($captured.ExitCode -eq 0 -and (Test-Path $exePath))
+        Success  = ($captured.ExitCode -eq 0 -and (Test-RegularFile -Path $exePath))
         StdOut   = $captured.StdOut
         StdErr   = $captured.StdErr
         Output   = $captured.Output
@@ -569,7 +643,7 @@ function Invoke-ModulesSuite {
 
         if ($source -match ";;; Expected: Error") {
             $hasCompileError = (-not $compile.Success) -or ($compile.Output -match "(?i)error:")
-            if ($hasCompileError -and (-not (Test-Path $compile.ExePath))) {
+            if ($hasCompileError -and (-not (Test-RegularFile -Path $compile.ExePath))) {
                 Format-TestStatus $testName "PASS (expected compile error)" Green
                 Add-Pass $suite
                 continue
@@ -912,13 +986,16 @@ function Invoke-CppTypeSuite {
         Sort-Object Name -Descending |
         ForEach-Object { Join-Path $_.FullName "bin\llvm-config.exe" }
     foreach ($candidate in $llvmCandidates) {
-        if ($candidate -and (Test-Path $candidate)) {
+        if ($candidate -and (Test-RegularFile -Path $candidate)) {
             $llvmConfig = $candidate
             break
         }
     }
     if (-not $llvmConfig) {
-        $llvmConfig = (Get-Command "llvm-config.exe" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -First 1)
+        $llvmCommand = (Get-Command "llvm-config.exe" -ErrorAction SilentlyContinue | Select-Object -First 1)
+        if ($llvmCommand -and (Test-RegularFile -Path $llvmCommand.Source)) {
+            $llvmConfig = $llvmCommand.Source
+        }
     }
     if (-not $llvmConfig) {
         Add-Skip $suite "llvm-config.exe not found; skipping C++ type tests."
@@ -928,7 +1005,7 @@ function Invoke-CppTypeSuite {
 
     $llvmBinDir = Split-Path -Parent $llvmConfig
     $clangxx = Join-Path $llvmBinDir "clang++.exe"
-    if (-not (Test-Path $clangxx)) {
+    if (-not (Test-RegularFile -Path $clangxx)) {
         Add-Skip $suite "clang++.exe not found next to llvm-config.exe; skipping C++ type tests."
         Show-SuiteSummary $suite "C++ Test Results Summary"
         return $suite
@@ -965,14 +1042,14 @@ function Invoke-CppTypeSuite {
     )
 
     foreach ($testFile in $tests) {
-        if (-not (Test-Path $testFile)) {
+        if (-not (Test-RegularFile -Path $testFile)) {
             continue
         }
 
         $testName = [System.IO.Path]::GetFileNameWithoutExtension($testFile)
         $outputBase = New-OutputBase -TempRoot $script:TempRoot -SuiteName "cpp_type" -TestName $testName
         $exePath = $outputBase + ".exe"
-        Remove-Item $exePath -Force -ErrorAction SilentlyContinue
+        Remove-RegularFileIfPresent -Path @($exePath)
 
         Write-Host ("Compiling {0,-40} " -f ($testName + "...")) -NoNewline
         $args = @(
@@ -1025,7 +1102,7 @@ function Invoke-WebSuite {
     Write-Section "Eshkol Web/WASM Test Suite"
     $suite = New-SuiteState "web"
 
-    if (-not (Test-Path $script:EshkolServer)) {
+    if (-not (Test-RegularFile -Path $script:EshkolServer)) {
         Write-Host "Building eshkol-server..." -ForegroundColor Yellow
         $buildArgs = @("--build", $script:BuildDir)
         if ($script:BuildConfig) {
@@ -1033,7 +1110,7 @@ function Invoke-WebSuite {
         }
         $buildArgs += @("--target", "eshkol-server", "--parallel")
         & cmake @buildArgs
-        if ($LASTEXITCODE -ne 0 -or -not (Test-Path $script:EshkolServer)) {
+        if ($LASTEXITCODE -ne 0 -or -not (Test-RegularFile -Path $script:EshkolServer)) {
             Add-Fail $suite "eshkol-server build"
             Show-SuiteSummary $suite
             return $suite
@@ -1048,7 +1125,7 @@ function Invoke-WebSuite {
         $args = @("--wasm", "-o", $wasmPath, $testFile)
         $compile = Invoke-ProcessCapture -FilePath $script:EshkolRun -Arguments $args -WorkingDirectory $script:BuildDir
 
-        if ($compile.ExitCode -eq 0 -and (Test-Path $wasmPath)) {
+        if ($compile.ExitCode -eq 0 -and (Test-RegularFile -Path $wasmPath)) {
             $bytes = [System.IO.File]::ReadAllBytes($wasmPath)
             if ($bytes.Length -ge 4 -and $bytes[0] -eq 0x00 -and $bytes[1] -eq 0x61 -and $bytes[2] -eq 0x73 -and $bytes[3] -eq 0x6D) {
                 Format-TestStatus $testName "PASS" Green
@@ -1066,13 +1143,13 @@ function Invoke-WebSuite {
 
     $serverStdout = Join-Path $script:TempRoot "eshkol-server.stdout.log"
     $serverStderr = Join-Path $script:TempRoot "eshkol-server.stderr.log"
-    Remove-Item $serverStdout, $serverStderr -Force -ErrorAction SilentlyContinue
+    Remove-RegularFileIfPresent -Path @($serverStdout, $serverStderr)
     $port = 19876
-    $server = Start-Process -FilePath $script:EshkolServer -ArgumentList @("--port", "$port") -WorkingDirectory $script:ProjectRoot -RedirectStandardOutput $serverStdout -RedirectStandardError $serverStderr -PassThru
+    $server = Start-RegularFileProcess -FilePath $script:EshkolServer -ArgumentList @("--port", "$port") -WorkingDirectory $script:ProjectRoot -RedirectStandardOutput $serverStdout -RedirectStandardError $serverStderr
     Start-Sleep -Seconds 2
     $server.Refresh()
     if ($server.HasExited) {
-        if (Test-Path $serverStderr) {
+        if (Test-RegularFile -Path $serverStderr) {
             Show-ProcessFailureDetails -TestName "eshkol-server" -Phase "startup" -Result ([pscustomobject]@{
                 StdOut = Get-Text $serverStdout
                 StdErr = Get-Text $serverStderr
@@ -1131,7 +1208,7 @@ function Invoke-XlaSuite {
     $suite = New-SuiteState "xla"
 
     $xlaBin = Join-Path $script:BinaryDir "xla_codegen_test.exe"
-    if (Test-Path $xlaBin) {
+    if (Test-RegularFile -Path $xlaBin) {
         $run = Invoke-ProcessCapture -FilePath $xlaBin -WorkingDirectory $script:ProjectRoot
         if ($run.ExitCode -eq 0) {
             Add-Pass $suite
@@ -1211,11 +1288,11 @@ function Ensure-BuildArtifacts {
         $path = Join-Path $script:BinaryDir ($target + ".exe")
         if ($target -eq "stdlib") {
             $path = Join-Path $script:BuildDir "stdlib.o"
-            if (-not (Test-Path $path)) {
+            if (-not (Test-RegularFile -Path $path)) {
                 $path = Join-Path $script:BinaryDir "stdlib.o"
             }
         }
-        if (-not (Test-Path $path)) {
+        if (-not (Test-RegularFile -Path $path)) {
             $missingTargets += $target
         }
     }
