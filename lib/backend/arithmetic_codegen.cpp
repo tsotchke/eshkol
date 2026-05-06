@@ -1785,13 +1785,34 @@ llvm::Value* ArithmeticCodegen::compare(llvm::Value* left, llvm::Value* right,
         llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CALLABLE));
     llvm::Value* any_callable = ctx_.builder().CreateOr(left_is_callable, right_is_callable);
 
-    // R7RS compliance: Both operands must be numbers (int64, double, bignum, or AD node)
+    // CHAR ACCEPTANCE: numeric comparisons accept characters by their codepoint.
+    // Stdlib code historically wrote `(= c 32)` to test for a space byte
+    // because string-ref returns a CHAR (data field = codepoint as int64).
+    // Rejecting the comparison forced every caller to wrap with
+    // `char->integer`, which the agent project filed as a bug.  Treat
+    // CHAR as INT64 here — the data field already has the right shape,
+    // so the int path Just Works without further changes.  Mixed CHAR /
+    // DOUBLE goes through extractAsDouble's int fallback (SIToFP on
+    // field 4), which is also correct.
+    llvm::Value* left_is_char = ctx_.builder().CreateICmpEQ(left_base,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CHAR));
+    llvm::Value* right_is_char = ctx_.builder().CreateICmpEQ(right_base,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CHAR));
+
+    // R7RS-ish compliance: both operands must be numbers OR characters.
+    // (Strict R7RS would reject CHAR; we follow the looser Lisp tradition
+    // here because the alternative is a stdlib-wide audit and silent
+    // error in real programs.)
     llvm::Value* left_is_number = ctx_.builder().CreateOr(
-        ctx_.builder().CreateOr(left_is_double, left_is_int),
-        ctx_.builder().CreateOr(left_is_heap, left_is_callable));
+        ctx_.builder().CreateOr(
+            ctx_.builder().CreateOr(left_is_double, left_is_int),
+            ctx_.builder().CreateOr(left_is_heap, left_is_callable)),
+        left_is_char);
     llvm::Value* right_is_number = ctx_.builder().CreateOr(
-        ctx_.builder().CreateOr(right_is_double, right_is_int),
-        ctx_.builder().CreateOr(right_is_heap, right_is_callable));
+        ctx_.builder().CreateOr(
+            ctx_.builder().CreateOr(right_is_double, right_is_int),
+            ctx_.builder().CreateOr(right_is_heap, right_is_callable)),
+        right_is_char);
     llvm::Value* both_numbers = ctx_.builder().CreateAnd(left_is_number, right_is_number);
 
     llvm::Function* func = ctx_.builder().GetInsertBlock()->getParent();

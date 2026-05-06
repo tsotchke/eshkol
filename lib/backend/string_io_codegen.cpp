@@ -346,18 +346,31 @@ llvm::Value* StringIOCodegen::stringAppend(const eshkol_operations_t* op) {
         return nullptr;
     }
 
-    // Get C library functions from FunctionCache
-    llvm::Function* strlen_func = ctx_.funcs().getStrlen();
-    llvm::Function* strcpy_func = ctx_.funcs().getStrcpy();
-    llvm::Function* strcat_func = ctx_.funcs().getStrcat();
+    // Use eshkol_string_byte_length (header-based) + memcpy instead of
+    // strlen + strcpy/strcat.  Plain strlen stops at the first NUL byte,
+    // so `(string-append "echo" (string #\nul) "evil")` was truncating
+    // to "echo" (the middle NUL string was reported as length 0 and
+    // strcat copied nothing, which also dropped the trailing "evil").
+    // Honoring embedded NULs is a hard requirement for binary-data /
+    // bytestring callers — agent's tools.bash-security NUL validation
+    // and similar relied on this.
+    llvm::Function* byte_len_func = ctx_.module().getFunction("eshkol_string_byte_length");
+    if (!byte_len_func) {
+        llvm::FunctionType* byte_len_ty = llvm::FunctionType::get(
+            ctx_.int64Type(), {ctx_.ptrType()}, false);
+        byte_len_func = llvm::Function::Create(byte_len_ty,
+            llvm::Function::ExternalLinkage,
+            "eshkol_string_byte_length", &ctx_.module());
+    }
+    llvm::Function* memcpy_func = ctx_.funcs().getMemcpy();
 
-    // Calculate total byte length. arena_allocate_string_with_header reserves
-    // len+1 internally for the NUL terminator AND stamps the object header's
-    // size field with the `len` it receives. Passing sum-of-strlens here makes
-    // string-length(result) return the true byte count; passing sum+1 would
-    // report off-by-one and break any downstream loop that indexes up to
-    // (string-length s) - 1.
+    // Calculate total byte length using header sizes (no NUL truncation).
+    // arena_allocate_string_with_header reserves len+1 internally for the
+    // NUL terminator AND stamps the object header's size field with `len`.
+    // Passing sum-of-byte-lengths makes string-length(result) return the
+    // true byte count.
     std::vector<llvm::Value*> str_ptrs;
+    std::vector<llvm::Value*> str_lens;
     llvm::Value* total_len = llvm::ConstantInt::get(ctx_.int64Type(), 0);
 
     for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
@@ -369,8 +382,9 @@ llvm::Value* StringIOCodegen::stringAppend(const eshkol_operations_t* op) {
         llvm::Value* str_ptr = ctx_.builder().CreateIntToPtr(ptr_int, ctx_.ptrType());
         str_ptrs.push_back(str_ptr);
 
-        // Add length to total
-        llvm::Value* len = ctx_.builder().CreateCall(strlen_func, {str_ptr});
+        // Header-aware byte length
+        llvm::Value* len = ctx_.builder().CreateCall(byte_len_func, {str_ptr});
+        str_lens.push_back(len);
         total_len = ctx_.builder().CreateAdd(total_len, len);
     }
 
@@ -379,13 +393,25 @@ llvm::Value* StringIOCodegen::stringAppend(const eshkol_operations_t* op) {
     llvm::Value* new_str = ctx_.builder().CreateCall(
         ctx_.memory().getArenaAllocateStringWithHeader(), {arena_ptr, total_len});
 
-    // Copy first string
-    ctx_.builder().CreateCall(strcpy_func, {new_str, str_ptrs[0]});
-
-    // Concatenate remaining strings
-    for (size_t i = 1; i < str_ptrs.size(); i++) {
-        ctx_.builder().CreateCall(strcat_func, {new_str, str_ptrs[i]});
+    // memcpy each input into the right offset.  The new_str header was
+    // stamped with size = total_len + 1, so eshkol_string_byte_length and
+    // string-length will both report total_len.  We then explicitly NUL-
+    // terminate at offset total_len so C-string consumers (printf, libc
+    // FFI, etc.) still see a clean boundary — arena_allocate_string_with_
+    // header only zeroes byte 0, the rest of the payload is uninitialised
+    // until we memcpy into it.
+    llvm::Value* cursor = llvm::ConstantInt::get(ctx_.int64Type(), 0);
+    for (size_t i = 0; i < str_ptrs.size(); i++) {
+        llvm::Value* dest = ctx_.builder().CreateGEP(
+            ctx_.int8Type(), new_str, cursor);
+        ctx_.builder().CreateCall(memcpy_func, {dest, str_ptrs[i], str_lens[i]});
+        cursor = ctx_.builder().CreateAdd(cursor, str_lens[i]);
     }
+    // Explicit NUL terminator at offset total_len.
+    llvm::Value* term_ptr = ctx_.builder().CreateGEP(
+        ctx_.int8Type(), new_str, total_len);
+    ctx_.builder().CreateStore(
+        llvm::ConstantInt::get(ctx_.int8Type(), 0), term_ptr);
 
     return tagged_.packHeapPtr(new_str);
 }
@@ -686,11 +712,35 @@ llvm::Value* StringIOCodegen::numberToString(const eshkol_operations_t* op) {
     auto* tv = reinterpret_cast<TypedValueLayout*>(tv_ptr);
     if (!tv->llvm_value) return nullptr;
 
-    // Allocate buffer for string with header (64 bytes should be enough for any number)
+    // Allocate buffer for string with header (64 bytes should be enough for any number).
+    // Note: header.size is stamped to buf_size+1 at allocation time.  We MUST
+    // overwrite it after snprintf to reflect the actual content length —
+    // otherwise eshkol_string_byte_length and string-length both report 64
+    // and downstream code (string-append memcpy, string-ref bounds, equal?
+    // hashing, etc.) reads garbage from the trailing uninitialised payload.
     llvm::Value* buf_size = llvm::ConstantInt::get(ctx_.sizeType(), 64);
     llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
     llvm::Value* buf = ctx_.builder().CreateCall(
         ctx_.memory().getArenaAllocateStringWithHeader(), {arena_ptr, buf_size});
+
+    // Helper to truncate the string's header.size (uint32_t at buf-8+4) to
+    // match snprintf's returned written-byte count.  snprintf returns the
+    // number of characters that *would have been written* if the buffer had
+    // been infinite, which for our 64-byte numbers is always == actual.
+    auto truncate_header = [&](llvm::Value* written_i32) {
+        llvm::Value* written_i64 = ctx_.builder().CreateZExt(written_i32,
+            ctx_.int64Type(), "n2s_written_i64");
+        // header.size = written_i64 + 1 (data_size includes NUL)
+        llvm::Value* new_size = ctx_.builder().CreateAdd(written_i64,
+            llvm::ConstantInt::get(ctx_.int64Type(), 1));
+        llvm::Value* new_size_i32 = ctx_.builder().CreateTrunc(new_size,
+            llvm::Type::getInt32Ty(ctx_.context()));
+        // header.size offset: -8 (header start) + 4 (subtype:1 + flags:1 + ref_count:2)
+        llvm::Value* size_field_ptr = ctx_.builder().CreateGEP(
+            ctx_.int8Type(), buf,
+            llvm::ConstantInt::get(ctx_.int64Type(), -4));
+        ctx_.builder().CreateStore(new_size_i32, size_field_ptr);
+    };
 
     // Get snprintf function
     llvm::Function* snprintf_func = ctx_.funcs().getSnprintf();
@@ -762,14 +812,18 @@ llvm::Value* StringIOCodegen::numberToString(const eshkol_operations_t* op) {
         ctx_.builder().SetInsertPoint(double_block);
         llvm::Value* double_val = ctx_.builder().CreateBitCast(data_i64, ctx_.doubleType());
         llvm::Value* fmt_double = createString("%g");
-        ctx_.builder().CreateCall(snprintf_func, {buf, buf_size, fmt_double, double_val});
+        llvm::Value* dbl_written = ctx_.builder().CreateCall(
+            snprintf_func, {buf, buf_size, fmt_double, double_val});
+        truncate_header(dbl_written);
         ctx_.builder().CreateBr(merge_block);
         llvm::BasicBlock* double_exit = ctx_.builder().GetInsertBlock();
 
         // Format as integer
         ctx_.builder().SetInsertPoint(int_block);
         llvm::Value* fmt_int = createString("%lld");
-        ctx_.builder().CreateCall(snprintf_func, {buf, buf_size, fmt_int, data_i64});
+        llvm::Value* int_written = ctx_.builder().CreateCall(
+            snprintf_func, {buf, buf_size, fmt_int, data_i64});
+        truncate_header(int_written);
         ctx_.builder().CreateBr(merge_block);
         llvm::BasicBlock* int_exit = ctx_.builder().GetInsertBlock();
 
@@ -792,7 +846,9 @@ llvm::Value* StringIOCodegen::numberToString(const eshkol_operations_t* op) {
                 double_val = ctx_.builder().CreateSIToFP(raw_val, ctx_.doubleType());
             }
             llvm::Value* fmt = createString("%g");
-            ctx_.builder().CreateCall(snprintf_func, {buf, buf_size, fmt, double_val});
+            llvm::Value* written = ctx_.builder().CreateCall(
+                snprintf_func, {buf, buf_size, fmt, double_val});
+            truncate_header(written);
         } else {
             // Format as integer
             llvm::Value* int_val = raw_val;
@@ -802,7 +858,9 @@ llvm::Value* StringIOCodegen::numberToString(const eshkol_operations_t* op) {
                 int_val = ctx_.builder().CreateSExt(raw_val, ctx_.int64Type());
             }
             llvm::Value* fmt = createString("%lld");
-            ctx_.builder().CreateCall(snprintf_func, {buf, buf_size, fmt, int_val});
+            llvm::Value* written = ctx_.builder().CreateCall(
+                snprintf_func, {buf, buf_size, fmt, int_val});
+            truncate_header(written);
         }
     }
 
@@ -2124,9 +2182,36 @@ llvm::Value* StringIOCodegen::readLine(const eshkol_operations_t* op) {
 
     ctx_.builder().SetInsertPoint(strip_block);
     ctx_.builder().CreateStore(llvm::ConstantInt::get(ctx_.int8Type(), 0), last_char_ptr);
+    // Strip the newline byte from the recorded length too — `len` is now
+    // the count of bytes BEFORE the trailing '\n'.
+    llvm::Value* len_after_strip = ctx_.builder().CreateSub(len,
+        llvm::ConstantInt::get(ctx_.int64Type(), 1));
     ctx_.builder().CreateBr(no_strip_block);
+    llvm::BasicBlock* strip_exit = ctx_.builder().GetInsertBlock();
 
     ctx_.builder().SetInsertPoint(no_strip_block);
+    // Final length is either len (no newline) or len-1 (newline stripped).
+    llvm::PHINode* final_len = ctx_.builder().CreatePHI(ctx_.int64Type(), 2, "rl_final_len");
+    final_len->addIncoming(len, success_block);
+    final_len->addIncoming(len_after_strip, strip_exit);
+
+    // Truncate the string's header.size to the actual line length.  We
+    // allocated 1024 bytes, but the result may be just a few bytes — without
+    // this update, eshkol_string_byte_length would report 1024 and downstream
+    // consumers (string-append memcpy, string-ref bounds, equal? hashing)
+    // would read uninitialised garbage past the line.  Header layout:
+    // {subtype:1, flags:1, ref_count:2, size:4} → size at buffer-4.
+    // header.size = byte count + 1 (data_size includes NUL terminator).
+    {
+        llvm::Value* new_size = ctx_.builder().CreateAdd(final_len,
+            llvm::ConstantInt::get(ctx_.int64Type(), 1));
+        llvm::Value* new_size_i32 = ctx_.builder().CreateTrunc(new_size,
+            llvm::Type::getInt32Ty(ctx_.context()));
+        llvm::Value* size_field_ptr = ctx_.builder().CreateGEP(
+            ctx_.int8Type(), buffer,
+            llvm::ConstantInt::get(ctx_.int64Type(), -4));
+        ctx_.builder().CreateStore(new_size_i32, size_field_ptr);
+    }
 
     // Pack string as tagged value (consolidated HEAP_PTR)
     llvm::Value* buffer_int = ctx_.builder().CreatePtrToInt(buffer, ctx_.int64Type());
@@ -2207,6 +2292,22 @@ llvm::Value* StringIOCodegen::readString(const eshkol_operations_t* op) {
     // Null-terminate the buffer at bytes_read position
     llvm::Value* term_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), buffer, bytes_read);
     ctx_.builder().CreateStore(llvm::ConstantInt::get(ctx_.int8Type(), 0), term_ptr);
+
+    // Truncate header.size to actual bytes_read+1 (data_size includes NUL).
+    // The allocation reserved k+2 bytes; reading less leaves uninitialised
+    // payload past `bytes_read` that string-length / string-ref must not
+    // see (#226 / NUL-preservation fix exposed this latent buffer over-
+    // allocation pattern).
+    {
+        llvm::Value* new_size = ctx_.builder().CreateAdd(bytes_read,
+            llvm::ConstantInt::get(ctx_.int64Type(), 1));
+        llvm::Value* new_size_i32 = ctx_.builder().CreateTrunc(new_size,
+            llvm::Type::getInt32Ty(ctx_.context()));
+        llvm::Value* size_field_ptr = ctx_.builder().CreateGEP(
+            ctx_.int8Type(), buffer,
+            llvm::ConstantInt::get(ctx_.int64Type(), -4));
+        ctx_.builder().CreateStore(new_size_i32, size_field_ptr);
+    }
 
     // Check if 0 bytes read (EOF)
     llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
