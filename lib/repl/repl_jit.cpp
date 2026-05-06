@@ -51,6 +51,7 @@
 #include <set>
 #include <vector>
 #include <cctype>
+#include <algorithm>
 
 static constexpr char eshkol_path_separator =
 #ifdef _WIN32
@@ -1542,6 +1543,34 @@ void ReplJITContext::injectPreviousSymbols(Module* module) {
     }
 }
 
+void ReplJITContext::rememberPersistentMacros(const std::vector<eshkol_ast_t>& asts) {
+    for (const auto& ast_item : asts) {
+        if (ast_item.type != ESHKOL_OP ||
+            ast_item.operation.op != ESHKOL_DEFINE_SYNTAX_OP ||
+            !ast_item.operation.define_syntax_op.macro ||
+            !ast_item.operation.define_syntax_op.macro->name) {
+            continue;
+        }
+
+        const std::string macro_name = ast_item.operation.define_syntax_op.macro->name;
+        persistent_macro_asts_.erase(
+            std::remove_if(persistent_macro_asts_.begin(), persistent_macro_asts_.end(),
+                [&](const eshkol_ast_t& existing) {
+                    return existing.type == ESHKOL_OP &&
+                           existing.operation.op == ESHKOL_DEFINE_SYNTAX_OP &&
+                           existing.operation.define_syntax_op.macro &&
+                           existing.operation.define_syntax_op.macro->name &&
+                           macro_name == existing.operation.define_syntax_op.macro->name;
+                }),
+            persistent_macro_asts_.end());
+
+        // eshkol_ast_clean does not free macro definitions; the parser allocates
+        // them for process lifetime. A shallow AST copy is enough to keep the
+        // macro pointer available for future MacroExpander instances.
+        persistent_macro_asts_.push_back(ast_item);
+    }
+}
+
 // Helper to parse all ASTs from a string content
 // Returns a vector of parsed ASTs
 // Note: Uses ::eshkol_parse_next_ast_from_stream from global namespace (declared in eshkol.h)
@@ -1734,9 +1763,21 @@ void* ReplJITContext::executeBatch(std::vector<eshkol_ast_t>& asts, bool silent)
     // This allows forward references between functions in the same batch
     std::string module_name = "__repl_batch_" + std::to_string(eval_counter_);
 
-    // Call the existing compiler to generate LLVM IR from ALL ASTs at once
-    // (asts vector is already contiguous, no need to copy)
-    LLVMModuleRef c_module = eshkol_generate_llvm_ir(asts.data(), asts.size(), module_name.c_str());
+    std::vector<eshkol_ast_t> codegen_asts;
+    const eshkol_ast_t* asts_for_codegen = asts.data();
+    size_t num_asts_for_codegen = asts.size();
+    if (!persistent_macro_asts_.empty()) {
+        codegen_asts.reserve(persistent_macro_asts_.size() + asts.size());
+        codegen_asts.insert(codegen_asts.end(),
+                            persistent_macro_asts_.begin(),
+                            persistent_macro_asts_.end());
+        codegen_asts.insert(codegen_asts.end(), asts.begin(), asts.end());
+        asts_for_codegen = codegen_asts.data();
+        num_asts_for_codegen = codegen_asts.size();
+    }
+
+    LLVMModuleRef c_module = eshkol_generate_llvm_ir(
+        asts_for_codegen, num_asts_for_codegen, module_name.c_str());
 
     if (!c_module) {
         // Quirk #6 (2026-04-23): throw on codegen/verify failure so the
@@ -1753,6 +1794,8 @@ void* ReplJITContext::executeBatch(std::vector<eshkol_ast_t>& asts, bool silent)
         }
         throw std::runtime_error("LLVM IR generation failed for REPL batch");
     }
+
+    rememberPersistentMacros(asts);
 
     Module* cpp_module = module_from_ref(c_module);
 

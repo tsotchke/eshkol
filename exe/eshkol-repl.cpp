@@ -496,15 +496,6 @@ bool load_file(const std::string& filename, eshkol::ReplJITContext& repl_ctx) {
 
             void* result = repl_ctx.execute(ast_to_execute);
 
-            if (should_display && ast_to_execute != &ast) {
-                free(ast_to_execute->operation.call_op.func);
-                free(ast_to_execute->operation.call_op.variables[0].operation.call_op.func);
-                free(ast_to_execute->operation.call_op.variables[0].operation.call_op.variables);
-                free(ast_to_execute->operation.call_op.variables[1].operation.call_op.func);
-                free(ast_to_execute->operation.call_op.variables);
-                free(ast_to_execute);
-            }
-
             eshkol_ast_clean(&ast);
             if (result) {
                 delete static_cast<int64_t*>(result);
@@ -727,15 +718,6 @@ bool handle_command(const std::string& input, eshkol::ReplJITContext& repl_ctx) 
                               << color::bright_yellow() << std::setw(8) << total_time.count() << color::reset()
                               << color::dim() << " μs" << color::reset() << "\n";
                     std::cout << color::dim() << "Note: JIT compilation dominates for simple expressions" << color::reset() << "\n";
-
-                    if (should_display && ast_to_execute != &ast) {
-                        free(ast_to_execute->operation.call_op.func);
-                        free(ast_to_execute->operation.call_op.variables[0].operation.call_op.func);
-                        free(ast_to_execute->operation.call_op.variables[0].operation.call_op.variables);
-                        free(ast_to_execute->operation.call_op.variables[1].operation.call_op.func);
-                        free(ast_to_execute->operation.call_op.variables);
-                        free(ast_to_execute);
-                    }
 
                     eshkol_ast_clean(&ast);
                     if (result) delete static_cast<int64_t*>(result);
@@ -1037,16 +1019,6 @@ int main(int argc, char** argv) {
                 signal(g_crash_signal, crash_handler);
             }
             g_in_jit = 0;
-
-            // Clean up wrapper
-            if (should_display && ast_to_execute != &ast) {
-                free(ast_to_execute->operation.call_op.func);
-                free(ast_to_execute->operation.call_op.variables[0].operation.call_op.func);
-                free(ast_to_execute->operation.call_op.variables[0].operation.call_op.variables);
-                free(ast_to_execute->operation.call_op.variables[1].operation.call_op.func);
-                free(ast_to_execute->operation.call_op.variables);
-                free(ast_to_execute);
-            }
 
             // Clean up
             eshkol_ast_clean(&ast);

@@ -4763,6 +4763,12 @@ private:
             default: {
                 // For variables and operations, generate LLVM value and detect type
                 Value* val = codegenAST(ast);
+                if (builder->GetInsertBlock()->getTerminator()) {
+                    return TypedValue(UndefValue::get(tagged_value_type),
+                                      ESHKOL_VALUE_NULL,
+                                      eshkol::hott::BuiltinTypes::Null,
+                                      true);
+                }
                 if (!val) return TypedValue();
 
                 // HoTT TYPE TRACKING: Look up compile-time type for variables
@@ -13481,6 +13487,9 @@ private:
 
                 for (size_t i = 0; i < fixed_end; i++) {
                     Value* arg = codegenAST(&op->call_op.variables[i]);
+                    if (builder->GetInsertBlock()->getTerminator()) {
+                        return UndefValue::get(tagged_value_type);
+                    }
                     if (!arg) {
                         if (builder->GetInsertBlock()->getTerminator()) return nullptr;
                         arg = packNullToTaggedValue();
@@ -13494,6 +13503,9 @@ private:
                             TypedValue tv = detectValueType(arg);
                             arg = typedValueToTaggedValue(tv);
                         }
+                        if (builder->GetInsertBlock()->getTerminator()) {
+                            return UndefValue::get(tagged_value_type);
+                        }
                     }
                     call_args.push_back(arg);
                 }
@@ -13506,6 +13518,9 @@ private:
                     for (int64_t i = (int64_t)num_call_args - 1;
                          i >= (int64_t)repl_fixed_params; i--) {
                         Value* arg = codegenAST(&op->call_op.variables[i]);
+                        if (builder->GetInsertBlock()->getTerminator()) {
+                            return UndefValue::get(tagged_value_type);
+                        }
                         if (!arg) {
                             if (builder->GetInsertBlock()->getTerminator()) return nullptr;
                             arg = packNullToTaggedValue();
@@ -13527,6 +13542,9 @@ private:
                         } else {
                             TypedValue tv = detectValueType(arg);
                             arg_tagged = typedValueToTaggedValue(tv);
+                        }
+                        if (builder->GetInsertBlock()->getTerminator()) {
+                            return UndefValue::get(tagged_value_type);
                         }
                         Value* cons_ptr_i64 = codegenTaggedArenaConsCellFromTaggedValue(arg_tagged, rest_list);
                         rest_list = packPtrToTaggedValue(cons_ptr_i64, ESHKOL_VALUE_HEAP_PTR);
@@ -13559,6 +13577,9 @@ private:
                     check_fn, {func_ptr_raw, stub_addr, name_str},
                     func_name + "_checked");
 
+                if (builder->GetInsertBlock()->getTerminator()) {
+                    return UndefValue::get(tagged_value_type);
+                }
                 Value* result = builder->CreateCall(func_type, func_ptr, call_args, func_name + "_result");
 
                 eshkol_debug("REPL hot-reload: %s indirect call to user function %s via %s (fixed=%zu, args=%zu)",
@@ -13678,10 +13699,13 @@ private:
                         std::vector<Value*> call_args;
                         for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
                             Value* arg = codegenAST(&op->call_op.variables[i]);
+                            if (builder->GetInsertBlock()->getTerminator()) {
+                                return UndefValue::get(tagged_value_type);
+                            }
                             if (!arg) {
-                    if (builder->GetInsertBlock()->getTerminator()) return nullptr;
-                    arg = packNullToTaggedValue();
-                }
+                                if (builder->GetInsertBlock()->getTerminator()) return nullptr;
+                                arg = packNullToTaggedValue();
+                            }
 
                             // Pack to tagged_value if needed
                             if (arg->getType() != tagged_value_type) {
@@ -13692,6 +13716,9 @@ private:
                                 } else {
                                     TypedValue tv = detectValueType(arg);
                                     arg = typedValueToTaggedValue(tv);
+                                }
+                                if (builder->GetInsertBlock()->getTerminator()) {
+                                    return UndefValue::get(tagged_value_type);
                                 }
                             }
                             call_args.push_back(arg);
@@ -14047,6 +14074,9 @@ private:
                     uint64_t fixed_end = fwd_is_variadic ? std::min<uint64_t>(fwd_fixed_params, arity) : arity;
                     for (uint64_t i = 0; i < fixed_end; i++) {
                         Value* arg = codegenAST(&op->call_op.variables[i]);
+                        if (builder->GetInsertBlock()->getTerminator()) {
+                            return UndefValue::get(tagged_value_type);
+                        }
                         if (!arg) {
                             if (builder->GetInsertBlock()->getTerminator()) return nullptr;
                             arg = packNullToTaggedValue();
@@ -14054,6 +14084,9 @@ private:
                         if (arg->getType() != tagged_value_type) {
                             TypedValue tv = detectValueType(arg);
                             arg = typedValueToTaggedValue(tv);
+                            if (builder->GetInsertBlock()->getTerminator()) {
+                                return UndefValue::get(tagged_value_type);
+                            }
                         }
                         call_args.push_back(arg);
                     }
@@ -14067,6 +14100,9 @@ private:
                             ConstantInt::get(int64_type, 0), ESHKOL_VALUE_NULL);
                         for (int64_t i = (int64_t)arity - 1; i >= (int64_t)fwd_fixed_params; i--) {
                             Value* arg = codegenAST(&op->call_op.variables[i]);
+                            if (builder->GetInsertBlock()->getTerminator()) {
+                                return UndefValue::get(tagged_value_type);
+                            }
                             if (!arg) {
                                 if (builder->GetInsertBlock()->getTerminator()) return nullptr;
                                 arg = packNullToTaggedValue();
@@ -14088,6 +14124,9 @@ private:
                             } else {
                                 TypedValue tv = detectValueType(arg);
                                 arg_tagged = typedValueToTaggedValue(tv);
+                            }
+                            if (builder->GetInsertBlock()->getTerminator()) {
+                                return UndefValue::get(tagged_value_type);
                             }
                             Value* cons_ptr_i64 = codegenTaggedArenaConsCellFromTaggedValue(arg_tagged, rest_list);
                             rest_list = packPtrToTaggedValue(cons_ptr_i64, ESHKOL_VALUE_HEAP_PTR);
@@ -14185,6 +14224,9 @@ private:
             // Process fixed parameters first
             for (uint64_t i = 0; i < fixed_params && i < op->call_op.num_vars; i++) {
                 Value* arg = codegenAST(&op->call_op.variables[i]);
+                if (builder->GetInsertBlock()->getTerminator()) {
+                    return UndefValue::get(tagged_value_type);
+                }
                 if (!arg) {
                     if (builder->GetInsertBlock()->getTerminator()) return nullptr;
                     arg = packNullToTaggedValue();
@@ -14209,6 +14251,9 @@ private:
                         TypedValue tv = detectValueType(arg);
                         arg = typedValueToTaggedValue(tv);
                     }
+                    if (builder->GetInsertBlock()->getTerminator()) {
+                        return UndefValue::get(tagged_value_type);
+                    }
                 }
                 call_args.push_back(arg);
             }
@@ -14222,6 +14267,9 @@ private:
             // Build list from right to left (last arg first)
             for (int64_t i = op->call_op.num_vars - 1; i >= (int64_t)fixed_params; i--) {
                 Value* arg = codegenAST(&op->call_op.variables[i]);
+                if (builder->GetInsertBlock()->getTerminator()) {
+                    return UndefValue::get(tagged_value_type);
+                }
                 if (!arg) {
                     if (builder->GetInsertBlock()->getTerminator()) return nullptr;
                     arg = packNullToTaggedValue();
@@ -14247,6 +14295,9 @@ private:
                 } else {
                     TypedValue tv = detectValueType(arg);
                     arg_tagged = typedValueToTaggedValue(tv);
+                }
+                if (builder->GetInsertBlock()->getTerminator()) {
+                    return UndefValue::get(tagged_value_type);
                 }
 
                 // Create cons cell: (arg . rest_list) - returns i64 pointer
@@ -14314,6 +14365,9 @@ private:
                     if (call_args.size() > expected) call_args.resize(expected);
                 }
             }
+            if (builder->GetInsertBlock()->getTerminator()) {
+                return UndefValue::get(tagged_value_type);
+            }
             return builder->CreateCall(callee, call_args);
         }
 
@@ -14342,6 +14396,9 @@ private:
         // Add explicit arguments first
         for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
             Value* arg = codegenAST(&op->call_op.variables[i]);
+            if (builder->GetInsertBlock()->getTerminator()) {
+                return UndefValue::get(tagged_value_type);
+            }
             if (!arg) {
                 // If block terminated (tail call/branch), call is unreachable
                 if (builder->GetInsertBlock()->getTerminator()) return nullptr;
@@ -14361,6 +14418,9 @@ private:
                         // CRITICAL FIX: Use detectValueType to correctly identify CONS_PTR from PtrToInt
                         TypedValue tv = detectValueType(arg);
                         arg = typedValueToTaggedValue(tv);
+                        if (builder->GetInsertBlock()->getTerminator()) {
+                            return UndefValue::get(tagged_value_type);
+                        }
                     } else if (actual_type->isDoubleTy()) {
                         arg = packDoubleToTaggedValue(arg);
                     } else if (actual_type->isPointerTy()) {
@@ -14810,6 +14870,9 @@ private:
                 while (args.size() < expected) args.push_back(packNullToTaggedValue());
                 if (args.size() > expected) args.resize(expected);
             }
+        }
+        if (builder->GetInsertBlock()->getTerminator()) {
+            return UndefValue::get(tagged_value_type);
         }
         Value* result = builder->CreateCall(callee, args);
 
@@ -16157,10 +16220,12 @@ private:
         Value* body_result = nullptr;
         if (op->guard_op.body && op->guard_op.num_body_exprs > 0) {
             TypedValue body_typed = codegenTypedAST(&op->guard_op.body[0]);
-            // Convert to tagged value to ensure consistent type for PHI node
-            body_result = typedValueToTaggedValue(body_typed);
+            if (!builder->GetInsertBlock()->getTerminator()) {
+                // Convert to tagged value to ensure consistent type for PHI node.
+                body_result = typedValueToTaggedValue(body_typed);
+            }
         }
-        if (!body_result) {
+        if (!body_result && !builder->GetInsertBlock()->getTerminator()) {
             body_result = packNullToTaggedValue();
         }
 
@@ -16233,14 +16298,19 @@ private:
                     Value* result = nullptr;
                     for (uint64_t j = 0; j < clause->operation.call_op.num_vars; j++) {
                         TypedValue typed = codegenTypedAST(&clause->operation.call_op.variables[j]);
-                        // Convert to tagged value for consistent PHI node type
-                        result = typedValueToTaggedValue(typed);
                         // NORETURN SAFETY: If a body expression raised, stop
                         if (builder->GetInsertBlock()->getTerminator()) {
                             break;
                         }
+                        // Convert to tagged value for consistent PHI node type
+                        result = typedValueToTaggedValue(typed);
+                        if (builder->GetInsertBlock()->getTerminator()) {
+                            break;
+                        }
                     }
-                    if (!result) result = packNullToTaggedValue();
+                    if (!result && !builder->GetInsertBlock()->getTerminator()) {
+                        result = packNullToTaggedValue();
+                    }
 
                     // NORETURN SAFETY: If block terminated (body expression raised), skip cleanup/branch
                     if (builder->GetInsertBlock()->getTerminator()) {
@@ -16257,6 +16327,9 @@ private:
                 } else {
                     // Evaluate test
                     TypedValue test_typed = codegenTypedAST(clause->operation.call_op.func);
+                    if (builder->GetInsertBlock()->getTerminator()) {
+                        break;
+                    }
                     Value* test = test_typed.llvm_value;
                     if (!test) continue;
 
@@ -16271,14 +16344,19 @@ private:
                     Value* result = nullptr;
                     for (uint64_t j = 0; j < clause->operation.call_op.num_vars; j++) {
                         TypedValue typed = codegenTypedAST(&clause->operation.call_op.variables[j]);
-                        // Convert to tagged value for consistent PHI node type
-                        result = typedValueToTaggedValue(typed);
                         // NORETURN SAFETY: If a body expression raised, stop
                         if (builder->GetInsertBlock()->getTerminator()) {
                             break;
                         }
+                        // Convert to tagged value for consistent PHI node type
+                        result = typedValueToTaggedValue(typed);
+                        if (builder->GetInsertBlock()->getTerminator()) {
+                            break;
+                        }
                     }
-                    if (!result) result = packNullToTaggedValue();
+                    if (!result && !builder->GetInsertBlock()->getTerminator()) {
+                        result = packNullToTaggedValue();
+                    }
 
                     // NORETURN SAFETY: If block terminated (body expression raised), skip cleanup/branch
                     if (!builder->GetInsertBlock()->getTerminator()) {
@@ -19111,8 +19189,17 @@ private:
     Value* codegenSequence(const eshkol_operations_t* op) {
         Value* last_value = nullptr;
         for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++) {
+            if (builder->GetInsertBlock()->getTerminator()) {
+                break;
+            }
             const eshkol_ast_t* expr = &op->sequence_op.expressions[i];
             last_value = codegenAST(expr);
+            if (builder->GetInsertBlock()->getTerminator()) {
+                break;
+            }
+        }
+        if (!last_value) {
+            return UndefValue::get(tagged_value_type);
         }
         return last_value;
     }

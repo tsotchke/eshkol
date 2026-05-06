@@ -17,6 +17,11 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUN="$ROOT/$BUILD_DIR/eshkol-run"
 DIR="$ROOT/tests/v1_2_edge_cases"
 
+# Several edge tests intentionally use project-root-relative `(load ...)`
+# paths. Add the repo root to ESHKOL_PATH so both quiet and verbose runners
+# resolve those modules the same way.
+export ESHKOL_PATH="${ESHKOL_PATH:-.}"
+
 if [ ! -x "$RUN" ]; then
     echo "ERROR: $RUN not built. Run 'make -C build -j8' first."
     exit 1

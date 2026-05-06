@@ -1,0 +1,12 @@
+(require stdlib)
+
+(provide ok err tr)
+
+(define (ok x) (list 'ok x))
+(define (err e) (list 'err e))
+
+(define-syntax tr
+  (syntax-rules ()
+    ((tr body ...)
+     (guard (e (#t (err e)))
+       (ok (begin body ...))))))

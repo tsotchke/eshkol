@@ -1,0 +1,20 @@
+;; mode: jit
+;; A macro loaded in an earlier JIT batch must remain visible to later
+;; batches. If the macro expands to (guard ... (raise ...)), codegen must
+;; also stop call emission after the no-return expression.
+
+(require stdlib)
+(load "tests/v1_2_edge_cases/fixtures/repl_loaded_macro_no_return.esk")
+
+(define actual (tr (raise "x")))
+
+(if (equal? actual (list 'err "x"))
+    (begin
+      (display "RESULT: PASS")
+      (newline)
+      (exit 0))
+    (begin
+      (display "RESULT: FAIL expected (err x) got ")
+      (display actual)
+      (newline)
+      (exit 1)))

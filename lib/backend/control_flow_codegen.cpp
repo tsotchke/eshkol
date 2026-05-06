@@ -579,13 +579,23 @@ llvm::Value* ControlFlowCodegen::codegenWhen(const eshkol_operations_t* op) {
     llvm::Value* result = nullptr;
     for (uint64_t i = 1; i < op->call_op.num_vars; i++) {
         void* tv_ptr = codegen_typed_ast_callback_(&op->call_op.variables[i], callback_context_);
-        if (tv_ptr) result = typed_to_tagged_callback_(tv_ptr, callback_context_);
+        if (ctx_.builder().GetInsertBlock()->getTerminator()) {
+            break;
+        }
+        if (tv_ptr) {
+            result = typed_to_tagged_callback_(tv_ptr, callback_context_);
+        }
+        if (ctx_.builder().GetInsertBlock()->getTerminator()) {
+            break;
+        }
     }
-    if (!result) result = tagged_.packBool(llvm::ConstantInt::getTrue(ctx_.context()));
     llvm::BasicBlock* then_exit = ctx_.builder().GetInsertBlock();
+    bool then_branches_to_done = !then_exit->getTerminator();
+    if (!result && then_branches_to_done) {
+        result = tagged_.packBool(llvm::ConstantInt::getTrue(ctx_.context()));
+    }
 
     // Only add branch if block doesn't already have a terminator (e.g., from TCO tail call)
-    bool then_branches_to_done = !then_exit->getTerminator();
     if (then_branches_to_done) {
         ctx_.builder().CreateBr(done_block);
     }
@@ -639,13 +649,23 @@ llvm::Value* ControlFlowCodegen::codegenUnless(const eshkol_operations_t* op) {
     llvm::Value* result = nullptr;
     for (uint64_t i = 1; i < op->call_op.num_vars; i++) {
         void* tv_ptr = codegen_typed_ast_callback_(&op->call_op.variables[i], callback_context_);
-        if (tv_ptr) result = typed_to_tagged_callback_(tv_ptr, callback_context_);
+        if (ctx_.builder().GetInsertBlock()->getTerminator()) {
+            break;
+        }
+        if (tv_ptr) {
+            result = typed_to_tagged_callback_(tv_ptr, callback_context_);
+        }
+        if (ctx_.builder().GetInsertBlock()->getTerminator()) {
+            break;
+        }
     }
-    if (!result) result = tagged_.packBool(llvm::ConstantInt::getTrue(ctx_.context()));
     llvm::BasicBlock* else_exit = ctx_.builder().GetInsertBlock();
+    bool else_branches_to_done = !else_exit->getTerminator();
+    if (!result && else_branches_to_done) {
+        result = tagged_.packBool(llvm::ConstantInt::getTrue(ctx_.context()));
+    }
 
     // Only add branch if block doesn't already have a terminator (e.g., from TCO tail call)
-    bool else_branches_to_done = !else_exit->getTerminator();
     if (else_branches_to_done) {
         ctx_.builder().CreateBr(done_block);
     }
