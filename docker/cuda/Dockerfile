@@ -50,7 +50,7 @@ RUN cmake --build build --parallel
 RUN ./scripts/run_all_tests.sh || echo "Tests completed"
 
 # Verify artifacts
-RUN ls -la /app/build/eshkol-run /app/build/eshkol-repl /app/build/stdlib.o || true
+RUN ls -la /app/build/eshkol-run /app/build/eshkol-repl /app/build/stdlib.o /app/build/stdlib.bc || true
 
 # Keep container running for file extraction
 CMD ["sleep", "infinity"]

@@ -1122,9 +1122,10 @@ foreach (exe ${EXE_SRC})
 endforeach ()
 
 # ===== Pre-compiled Standard Library =====
-# Compile stdlib.esk to stdlib.o for faster compilation of user programs
+# Compile stdlib.esk to stdlib.o/stdlib.bc for faster loading of user programs
 set(STDLIB_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/lib/stdlib.esk")
 set(STDLIB_OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/stdlib.o")
+set(STDLIB_BITCODE "${CMAKE_CURRENT_BINARY_DIR}/stdlib.bc")
 set(STDLIB_WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
 
 # stdlib.esk is a thin top-level that (require)s every module in
@@ -1148,6 +1149,7 @@ file(GLOB_RECURSE STDLIB_TRANSITIVE_SOURCES CONFIGURE_DEPENDS
 
 add_custom_command(
   OUTPUT ${STDLIB_OUTPUT}
+  BYPRODUCTS ${STDLIB_BITCODE}
   COMMAND ${CMAKE_COMMAND} -E env "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
           $<TARGET_FILE:eshkol-run> --shared-lib -o "${CMAKE_CURRENT_BINARY_DIR}/stdlib" "${STDLIB_SOURCE}"
   DEPENDS eshkol-run ${STDLIB_SOURCE} ${STDLIB_TRANSITIVE_SOURCES}
@@ -1158,10 +1160,12 @@ add_custom_command(
 
 add_custom_target(stdlib ALL DEPENDS ${STDLIB_OUTPUT})
 
-# Install stdlib.o to lib directory
-install(FILES ${STDLIB_OUTPUT} DESTINATION ${CMAKE_INSTALL_LIBDIR}/eshkol)
+# Install stdlib artifacts to lib directory.  The REPL prefers stdlib.bc so
+# stdlib and later REPL batches share the same ORC IR compilation pipeline;
+# stdlib.o remains available for legacy/load-time fallback paths.
+install(FILES ${STDLIB_OUTPUT} ${STDLIB_BITCODE} DESTINATION ${CMAKE_INSTALL_LIBDIR}/eshkol)
 
-message(STATUS "Standard library will be pre-compiled to: ${STDLIB_OUTPUT}")
+message(STATUS "Standard library will be pre-compiled to: ${STDLIB_OUTPUT} and ${STDLIB_BITCODE}")
 
 # ===== REPL Support =====
 # Optional REPL with JIT execution

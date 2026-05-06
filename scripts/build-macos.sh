@@ -231,6 +231,7 @@ create_package() {
     cp "$build_dir/eshkol-run" "$pkg_dir/"
     cp "$build_dir/eshkol-repl" "$pkg_dir/"
     cp "$build_dir/stdlib.o" "$pkg_dir/"
+    cp "$build_dir/stdlib.bc" "$pkg_dir/"
 
     # Create tarball
     local tarball="$OUTPUT_DIR/eshkol-${VERSION}-${output_name}.tar.gz"
@@ -241,6 +242,7 @@ create_package() {
         cp "$build_dir/eshkol-run" "$pkg_stage/bin/"
         cp "$build_dir/eshkol-repl" "$pkg_stage/bin/"
         cp "$build_dir/stdlib.o" "$pkg_stage/lib/"
+        cp "$build_dir/stdlib.bc" "$pkg_stage/lib/"
         cp lib/stdlib.esk "$pkg_stage/share/eshkol/"
         [ -d lib/core ] && cp -r lib/core "$pkg_stage/share/eshkol/"
         cp README.md LICENSE "$pkg_stage/" 2>/dev/null || true
@@ -273,9 +275,11 @@ create_universal() {
         fi
     done
 
-    # stdlib.o needs to be built separately for each arch - copy native version
+    # stdlib artifacts need to be built separately for each arch - copy native versions
     cp "build-arm64/stdlib.o" "$universal_dir/stdlib-arm64.o" 2>/dev/null || true
     cp "build-x86_64/stdlib.o" "$universal_dir/stdlib-x86_64.o" 2>/dev/null || true
+    cp "build-arm64/stdlib.bc" "$universal_dir/stdlib-arm64.bc" 2>/dev/null || true
+    cp "build-x86_64/stdlib.bc" "$universal_dir/stdlib-x86_64.bc" 2>/dev/null || true
 
     # Create tarball
     local tarball="$OUTPUT_DIR/eshkol-${VERSION}-macos-universal.tar.gz"
@@ -285,9 +289,11 @@ create_universal() {
         mkdir -p "$pkg_stage/bin" "$pkg_stage/lib" "$pkg_stage/share/eshkol"
         cp "$universal_dir/eshkol-run" "$pkg_stage/bin/"
         cp "$universal_dir/eshkol-repl" "$pkg_stage/bin/"
-        # Include both arch-specific stdlib.o files
+        # Include arch-specific stdlib artifacts.
         cp "$universal_dir/stdlib-arm64.o" "$pkg_stage/lib/" 2>/dev/null || true
         cp "$universal_dir/stdlib-x86_64.o" "$pkg_stage/lib/" 2>/dev/null || true
+        cp "$universal_dir/stdlib-arm64.bc" "$pkg_stage/lib/" 2>/dev/null || true
+        cp "$universal_dir/stdlib-x86_64.bc" "$pkg_stage/lib/" 2>/dev/null || true
         cp lib/stdlib.esk "$pkg_stage/share/eshkol/"
         [ -d lib/core ] && cp -r lib/core "$pkg_stage/share/eshkol/"
         cp README.md LICENSE "$pkg_stage/" 2>/dev/null || true
