@@ -8657,12 +8657,16 @@ void AutodiffCodegen::pushTapeContext(llvm::Value* new_tape) {
         llvm::FunctionType* fprintf_type = llvm::FunctionType::get(ctx_.int32Type(),
             {ctx_.ptrType(), ctx_.ptrType()}, true);
         llvm::FunctionCallee fprintf_func = ctx_.module().getOrInsertFunction("fprintf", fprintf_type);
-        // Get stderr via platform-appropriate symbol name. The check fires
-        // at eshkol-run build time, so a Linux build emits IR that
-        // references `stderr` (Linux libc) and a macOS build emits IR
-        // referencing `__stderrp` (Apple libc). We were unconditionally
-        // emitting `__stderrp`, which broke linking of user programs on
-        // Linux ARM64 / x86_64 with `undefined reference to __stderrp`.
+        // Get stderr via the runtime wrapper on Windows; the MSVC CRT does
+        // not export a plain `stderr` data symbol for user-program links.
+#ifdef _WIN32
+        llvm::FunctionType* stream_type = llvm::FunctionType::get(ctx_.ptrType(), {}, false);
+        llvm::FunctionCallee stderr_fn = ctx_.module().getOrInsertFunction(
+            runtime::stderr_stream_symbol, stream_type);
+        llvm::Value* stderr_ptr = ctx_.builder().CreateCall(stderr_fn, {});
+#else
+        // On Unix this check fires at eshkol-run build time, so a Linux
+        // build emits `stderr` and a macOS build emits `__stderrp`.
 #ifdef __APPLE__
         const char* stderr_sym = "__stderrp";
 #else
@@ -8674,6 +8678,7 @@ void AutodiffCodegen::pushTapeContext(llvm::Value* new_tape) {
                 llvm::GlobalValue::ExternalLinkage, nullptr, stderr_sym);
         }
         llvm::Value* stderr_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), stderr_var);
+#endif
         llvm::Value* err_msg = ctx_.builder().CreateGlobalStringPtr(
             "AD tape stack overflow: nesting depth exceeds 32\n");
         ctx_.builder().CreateCall(fprintf_func, {stderr_ptr, err_msg});

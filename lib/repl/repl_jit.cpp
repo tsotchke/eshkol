@@ -89,6 +89,7 @@ extern "C" {
     int64_t eshkol_utf8_ref(const char* s, int64_t k);
     char* eshkol_utf8_substring(const char* s, int64_t start, int64_t end, void* arena);
     int64_t eshkol_unwrap_list_index(const eshkol_tagged_value_t* tv);
+    void* eshkol_repl_forward_ref_stub_addr(void);
 #ifdef _WIN32
     double drand48(void);
     int clock_gettime(int clock_id, void* ts_raw);
@@ -342,6 +343,16 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_SYMBOL(eshkol_lambda_registry_add);
     ADD_SYMBOL(eshkol_lambda_registry_lookup);
     ADD_SYMBOL(eshkol_init_stack_size);
+    ADD_SYMBOL(eshkol_intern_symbol_lookup);
+    ADD_SYMBOL(eshkol_runtime_current_output_fp);
+    ADD_SYMBOL(eshkol_runtime_current_input_fp);
+    ADD_SYMBOL(eshkol_runtime_current_error_fp);
+    ADD_SYMBOL(eshkol_runtime_set_current_output_fp);
+    ADD_SYMBOL(eshkol_runtime_set_current_input_fp);
+    ADD_SYMBOL(eshkol_runtime_set_current_error_fp);
+    ADD_SYMBOL(eshkol_check_forward_ref);
+    ADD_SYMBOL(eshkol_repl_forward_ref_stub_addr);
+    ADD_SYMBOL(eshkol_raise_not_pair);
     ADD_DATA_SYMBOL(g_lambda_registry);
 
     // ===== EXCEPTION HANDLING =====

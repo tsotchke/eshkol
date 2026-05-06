@@ -19,7 +19,16 @@ endif()
 
 set(ESHKOL_CLANG_BUILTINS_LIB "")
 set(ESHKOL_EXTRA_LINK_LIBS "")
-set(ESHKOL_HOST_CXX_COMPILER "${CMAKE_CXX_COMPILER}")
+set(ESHKOL_HOST_CXX_COMPILER_EXPLICIT FALSE)
+if(DEFINED ESHKOL_HOST_CXX_COMPILER AND NOT "${ESHKOL_HOST_CXX_COMPILER}" STREQUAL "")
+    set(ESHKOL_HOST_CXX_COMPILER_EXPLICIT TRUE)
+    file(TO_CMAKE_PATH "${ESHKOL_HOST_CXX_COMPILER}" ESHKOL_HOST_CXX_COMPILER)
+else()
+    set(ESHKOL_HOST_CXX_COMPILER "${CMAKE_CXX_COMPILER}")
+endif()
+set(ESHKOL_HOST_CXX_COMPILER "${ESHKOL_HOST_CXX_COMPILER}" CACHE FILEPATH
+    "C++ compiler driver used by eshkol-run when linking generated programs" FORCE)
+
 if(ESHKOL_USING_MSVC AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
     # Visual Studio's ClangCL toolset drives lld-link directly, so compiler-rt
     # builtins do not get auto-added the way they would through the Clang driver.
@@ -28,9 +37,13 @@ if(ESHKOL_USING_MSVC AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
     # flags (-L/-l/-o), so prefer the sibling clang++ driver there instead of
     # clang-cl's CL-style frontend.
     get_filename_component(_eshkol_clang_bin_dir "${CMAKE_CXX_COMPILER}" DIRECTORY)
-    set(_eshkol_host_clangxx_candidate "${_eshkol_clang_bin_dir}/clang++.exe")
-    if(EXISTS "${_eshkol_host_clangxx_candidate}")
-        file(TO_CMAKE_PATH "${_eshkol_host_clangxx_candidate}" ESHKOL_HOST_CXX_COMPILER)
+    if(NOT ESHKOL_HOST_CXX_COMPILER_EXPLICIT)
+        set(_eshkol_host_clangxx_candidate "${_eshkol_clang_bin_dir}/clang++.exe")
+        if(EXISTS "${_eshkol_host_clangxx_candidate}")
+            file(TO_CMAKE_PATH "${_eshkol_host_clangxx_candidate}" ESHKOL_HOST_CXX_COMPILER)
+            set(ESHKOL_HOST_CXX_COMPILER "${ESHKOL_HOST_CXX_COMPILER}" CACHE FILEPATH
+                "C++ compiler driver used by eshkol-run when linking generated programs" FORCE)
+        endif()
     endif()
 
     execute_process(
@@ -73,6 +86,10 @@ if(ESHKOL_USING_MSVC AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
             "ClangCL compiler-rt builtins were not found; native Windows links may fail "
             "on __divti3/__chkstk_ms-style symbols.")
     endif()
+endif()
+
+if(WIN32)
+    list(APPEND ESHKOL_EXTRA_LINK_LIBS Advapi32.lib)
 endif()
 
 include(CTest)
@@ -955,6 +972,7 @@ list(FILTER LIB_SRC EXCLUDE REGEX "lib/backend/weight_compiler\\.cpp$")
 # stub there and keep the full VM everywhere else.
 if(WIN32)
     list(APPEND LIB_SRC lib/backend/eshkol_vm_stub.c)
+    list(APPEND LIB_SRC lib/backend/vm_autodiff.c)
     message(STATUS "Bytecode VM / ESKB emission: DISABLED for native Windows builds")
 else()
     # Add eshkol_vm.c (unity build: includes vm_*.c, eskb_*.c internally)

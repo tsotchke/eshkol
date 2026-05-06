@@ -1249,7 +1249,10 @@ Ensure-NativeTempRoot -TempRoot $script:TempRoot
 $script:EshkolRun = Join-Path $script:BinaryDir "eshkol-run.exe"
 $script:EshkolRepl = Join-Path $script:BinaryDir "eshkol-repl.exe"
 $script:EshkolServer = Join-Path $script:BinaryDir "eshkol-server.exe"
-$env:ESHKOL_PATH = Join-Path $script:ProjectRoot "lib"
+$env:ESHKOL_PATH = @(
+    $script:ProjectRoot,
+    (Join-Path $script:ProjectRoot "lib")
+) -join [System.IO.Path]::PathSeparator
 
 if (-not $SkipConfigureBuild) {
     Ensure-BuildArtifacts -Targets @("eshkol-run", "eshkol-repl", "stdlib")

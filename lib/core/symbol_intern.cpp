@@ -15,9 +15,10 @@
  *   events (REPL restart, test-batch boundary, Python binding
  *   destroy) and between embedded instances — every reset dangles
  *   every interned symbol's char buffer. Storing them here, in a
- *   per-page malloc'd pool that's never freed, breaks that
- *   coupling: symbol pointers stay valid regardless of arena
- *   lifecycle, and dual-instance embedding becomes safe.
+ *   per-page malloc'd pool breaks that coupling: symbol pointers stay
+ *   valid regardless of arena lifecycle, and dual-instance embedding
+ *   becomes safe. The table is cleared only at process exit so leak
+ *   checkers do not report intentional process-lifetime storage.
  *
  *   Each symbol needs an 8-byte ESHKOL_OBJECT_HEADER immediately
  *   preceding its char data so ESHKOL_GET_HEADER(ptr) at runtime
@@ -56,11 +57,10 @@ std::unordered_map<std::string, InternedEntry> g_interned_symbols;
  * an 8-byte ESHKOL_OBJECT_HEADER with subtype=HEAP_SUBTYPE_SYMBOL.
  * Returns a pointer to the char data (header sits at ptr-8).
  *
- * Backed by plain malloc because symbols are process-lifetime — we
- * never free them, so an arena's bulk-reset isn't helpful and in
- * fact is actively harmful. Small per-symbol overhead (~40 bytes
- * including malloc bookkeeping) times ~10k symbols in a large
- * process is ~400 KB — negligible.
+ * Backed by plain malloc because symbols are process-lifetime. An
+ * arena's bulk-reset is not helpful here and is actively harmful.
+ * Small per-symbol overhead (~40 bytes including malloc bookkeeping)
+ * times ~10k symbols in a large process is ~400 KB.
  */
 char* alloc_symbol_block(const char* src, size_t len) {
     size_t header_sz = sizeof(eshkol_object_header_t);
@@ -77,6 +77,25 @@ char* alloc_symbol_block(const char* src, size_t len) {
     data[len] = '\0';
     return data;
 }
+
+void free_symbol_block(char* symbol_ptr) {
+    if (!symbol_ptr) return;
+    std::free(reinterpret_cast<uint8_t*>(symbol_ptr) -
+              sizeof(eshkol_object_header_t));
+}
+
+void cleanup_symbol_table() {
+    std::lock_guard<std::mutex> lock(g_symbol_mutex);
+    for (auto& item : g_interned_symbols) {
+        free_symbol_block(item.second.symbol_ptr);
+    }
+    g_interned_symbols.clear();
+}
+
+const bool g_cleanup_registered = [] {
+    std::atexit(cleanup_symbol_table);
+    return true;
+}();
 
 } /* anonymous namespace */
 
@@ -121,9 +140,7 @@ extern "C" void* eshkol_intern_symbol_lookup(const char* name) {
         std::lock_guard<std::mutex> lock(g_symbol_mutex);
         auto it = g_interned_symbols.find(key);
         if (it != g_interned_symbols.end()) {
-            /* Free the redundant block (header is 8 bytes before data). */
-            std::free(reinterpret_cast<uint8_t*>(sym_str) -
-                      sizeof(eshkol_object_header_t));
+            free_symbol_block(sym_str);
             return it->second.symbol_ptr;
         }
         g_interned_symbols[key] = {sym_str};
