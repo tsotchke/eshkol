@@ -527,6 +527,408 @@ eshkol_ast_t MacroExpander::instantiateTemplate(const eshkol_macro_template_t* t
     return null_ast;
 }
 
+bool MacroExpander::isEllipsisSymbol(const eshkol_ast_t& ast) const {
+    return ast.type == ESHKOL_VAR && ast.variable.id &&
+           std::string(ast.variable.id) == "...";
+}
+
+bool MacroExpander::findRepeatedBinding(const eshkol_ast_t& ast,
+                                          const Bindings& bindings,
+                                          std::string& binding_name) const {
+    if (ast.type == ESHKOL_VAR && ast.variable.id) {
+        std::string name = ast.variable.id;
+        if (bindings.find(name) != bindings.end()) {
+            binding_name = name;
+            return true;
+        }
+        return false;
+    }
+
+    if (ast.type == ESHKOL_CONS) {
+        return (ast.cons_cell.car &&
+                findRepeatedBinding(*ast.cons_cell.car, bindings, binding_name)) ||
+               (ast.cons_cell.cdr &&
+                findRepeatedBinding(*ast.cons_cell.cdr, bindings, binding_name));
+    }
+
+    if (ast.type != ESHKOL_OP) {
+        return false;
+    }
+
+    const auto* op = &ast.operation;
+    switch (op->op) {
+        case ESHKOL_CALL_OP:
+        case ESHKOL_COND_OP:
+        case ESHKOL_CASE_OP:
+        case ESHKOL_WHEN_OP:
+        case ESHKOL_UNLESS_OP:
+        case ESHKOL_DO_OP:
+            if (op->call_op.func &&
+                findRepeatedBinding(*op->call_op.func, bindings, binding_name)) {
+                return true;
+            }
+            for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
+                if (findRepeatedBinding(op->call_op.variables[i], bindings, binding_name)) {
+                    return true;
+                }
+            }
+            return false;
+
+        case ESHKOL_SEQUENCE_OP:
+        case ESHKOL_AND_OP:
+        case ESHKOL_OR_OP:
+            for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++) {
+                if (findRepeatedBinding(op->sequence_op.expressions[i], bindings, binding_name)) {
+                    return true;
+                }
+            }
+            return false;
+
+        case ESHKOL_DEFINE_OP:
+            return op->define_op.value &&
+                   findRepeatedBinding(*op->define_op.value, bindings, binding_name);
+
+        case ESHKOL_LAMBDA_OP:
+            return op->lambda_op.body &&
+                   findRepeatedBinding(*op->lambda_op.body, bindings, binding_name);
+
+        case ESHKOL_LET_OP:
+        case ESHKOL_LET_STAR_OP:
+        case ESHKOL_LETREC_OP:
+            for (uint64_t i = 0; i < op->let_op.num_bindings; i++) {
+                if (findRepeatedBinding(op->let_op.bindings[i], bindings, binding_name)) {
+                    return true;
+                }
+            }
+            return op->let_op.body &&
+                   findRepeatedBinding(*op->let_op.body, bindings, binding_name);
+
+        case ESHKOL_MATCH_OP:
+            if (op->match_op.expr &&
+                findRepeatedBinding(*op->match_op.expr, bindings, binding_name)) {
+                return true;
+            }
+            for (uint64_t i = 0; i < op->match_op.num_clauses; i++) {
+                if (op->match_op.clauses[i].body &&
+                    findRepeatedBinding(*op->match_op.clauses[i].body, bindings, binding_name)) {
+                    return true;
+                }
+            }
+            return false;
+
+        case ESHKOL_SET_OP:
+            return op->set_op.value &&
+                   findRepeatedBinding(*op->set_op.value, bindings, binding_name);
+
+        case ESHKOL_GUARD_OP:
+            for (uint64_t i = 0; i < op->guard_op.num_clauses; i++) {
+                if (findRepeatedBinding(op->guard_op.clauses[i], bindings, binding_name)) {
+                    return true;
+                }
+            }
+            for (uint64_t i = 0; i < op->guard_op.num_body_exprs; i++) {
+                if (findRepeatedBinding(op->guard_op.body[i], bindings, binding_name)) {
+                    return true;
+                }
+            }
+            return false;
+
+        case ESHKOL_RAISE_OP:
+            return op->raise_op.exception &&
+                   findRepeatedBinding(*op->raise_op.exception, bindings, binding_name);
+
+        case ESHKOL_VALUES_OP:
+            for (uint64_t i = 0; i < op->values_op.num_values; i++) {
+                if (findRepeatedBinding(op->values_op.expressions[i], bindings, binding_name)) {
+                    return true;
+                }
+            }
+            return false;
+
+        case ESHKOL_CALL_CC_OP:
+            return op->call_cc_op.proc &&
+                   findRepeatedBinding(*op->call_cc_op.proc, bindings, binding_name);
+
+        case ESHKOL_DYNAMIC_WIND_OP:
+            return (op->dynamic_wind_op.before &&
+                    findRepeatedBinding(*op->dynamic_wind_op.before, bindings, binding_name)) ||
+                   (op->dynamic_wind_op.thunk &&
+                    findRepeatedBinding(*op->dynamic_wind_op.thunk, bindings, binding_name)) ||
+                   (op->dynamic_wind_op.after &&
+                    findRepeatedBinding(*op->dynamic_wind_op.after, bindings, binding_name));
+
+        default:
+            return false;
+    }
+}
+
+eshkol_ast_t MacroExpander::substituteBindingsAtIndex(const eshkol_ast_t& ast,
+                                                       const Bindings& bindings,
+                                                       size_t index) {
+    if (ast.type == ESHKOL_VAR && ast.variable.id) {
+        std::string name = ast.variable.id;
+        auto it = bindings.find(name);
+        if (it != bindings.end() && !it->second.values.empty()) {
+            size_t value_index = std::min(index, it->second.values.size() - 1);
+            return copyAst(it->second.values[value_index]);
+        }
+        return copyAst(ast);
+    }
+
+    if (ast.type == ESHKOL_CONS) {
+        eshkol_ast_t result;
+        result.type = ESHKOL_CONS;
+        result.cons_cell.car = new eshkol_ast_t;
+        *result.cons_cell.car = ast.cons_cell.car ?
+            substituteBindingsAtIndex(*ast.cons_cell.car, bindings, index) : eshkol_ast_t{};
+        result.cons_cell.cdr = new eshkol_ast_t;
+        *result.cons_cell.cdr = ast.cons_cell.cdr ?
+            substituteBindingsAtIndex(*ast.cons_cell.cdr, bindings, index) : eshkol_ast_t{};
+        return result;
+    }
+
+    if (ast.type != ESHKOL_OP) {
+        return copyAst(ast);
+    }
+
+    eshkol_ast_t result;
+    result.type = ESHKOL_OP;
+    result.operation = ast.operation;
+    auto* op = &result.operation;
+
+    auto substitute_array_at_index = [&](const eshkol_ast_t* items, uint64_t count) {
+        std::vector<eshkol_ast_t> out;
+        out.reserve(count);
+        for (uint64_t i = 0; i < count; i++) {
+            out.push_back(substituteBindingsAtIndex(items[i], bindings, index));
+        }
+        return out;
+    };
+
+    switch (op->op) {
+        case ESHKOL_CALL_OP:
+        case ESHKOL_COND_OP:
+        case ESHKOL_CASE_OP:
+        case ESHKOL_WHEN_OP:
+        case ESHKOL_UNLESS_OP:
+        case ESHKOL_DO_OP:
+            if (op->call_op.func) {
+                eshkol_ast_t* new_func = new eshkol_ast_t;
+                *new_func = substituteBindingsAtIndex(*op->call_op.func, bindings, index);
+                op->call_op.func = new_func;
+            }
+            if (op->call_op.num_vars > 0 && op->call_op.variables) {
+                std::vector<eshkol_ast_t> new_vars_vec =
+                    substitute_array_at_index(op->call_op.variables, op->call_op.num_vars);
+                op->call_op.num_vars = new_vars_vec.size();
+                op->call_op.variables = new eshkol_ast_t[op->call_op.num_vars];
+                for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
+                    op->call_op.variables[i] = new_vars_vec[i];
+                }
+            }
+            break;
+
+        case ESHKOL_SEQUENCE_OP:
+        case ESHKOL_AND_OP:
+        case ESHKOL_OR_OP:
+            if (op->sequence_op.num_expressions > 0 && op->sequence_op.expressions) {
+                std::vector<eshkol_ast_t> new_exprs_vec =
+                    substitute_array_at_index(op->sequence_op.expressions,
+                                              op->sequence_op.num_expressions);
+                op->sequence_op.num_expressions = new_exprs_vec.size();
+                op->sequence_op.expressions = new eshkol_ast_t[op->sequence_op.num_expressions];
+                for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++) {
+                    op->sequence_op.expressions[i] = new_exprs_vec[i];
+                }
+            }
+            break;
+
+        case ESHKOL_DEFINE_OP:
+            if (op->define_op.value) {
+                eshkol_ast_t* new_val = new eshkol_ast_t;
+                *new_val = substituteBindingsAtIndex(*op->define_op.value, bindings, index);
+                op->define_op.value = new_val;
+            }
+            break;
+
+        case ESHKOL_LAMBDA_OP:
+            if (op->lambda_op.body) {
+                eshkol_ast_t* new_body = new eshkol_ast_t;
+                *new_body = substituteBindingsAtIndex(*op->lambda_op.body, bindings, index);
+                op->lambda_op.body = new_body;
+            }
+            break;
+
+        case ESHKOL_LET_OP:
+        case ESHKOL_LET_STAR_OP:
+        case ESHKOL_LETREC_OP:
+            if (op->let_op.num_bindings > 0 && op->let_op.bindings) {
+                op->let_op.bindings = new eshkol_ast_t[op->let_op.num_bindings];
+                for (uint64_t i = 0; i < ast.operation.let_op.num_bindings; i++) {
+                    op->let_op.bindings[i] =
+                        substituteBindingsAtIndex(ast.operation.let_op.bindings[i], bindings, index);
+                }
+            }
+            if (op->let_op.body) {
+                eshkol_ast_t* new_body = new eshkol_ast_t;
+                *new_body = substituteBindingsAtIndex(*op->let_op.body, bindings, index);
+                op->let_op.body = new_body;
+            }
+            break;
+
+        case ESHKOL_MATCH_OP:
+            if (op->match_op.expr) {
+                eshkol_ast_t* new_expr = new eshkol_ast_t;
+                *new_expr = substituteBindingsAtIndex(*op->match_op.expr, bindings, index);
+                op->match_op.expr = new_expr;
+            }
+            if (op->match_op.num_clauses > 0 && op->match_op.clauses) {
+                for (uint64_t i = 0; i < op->match_op.num_clauses; i++) {
+                    if (op->match_op.clauses[i].body) {
+                        eshkol_ast_t* new_body = new eshkol_ast_t;
+                        *new_body = substituteBindingsAtIndex(*op->match_op.clauses[i].body,
+                                                              bindings,
+                                                              index);
+                        op->match_op.clauses[i].body = new_body;
+                    }
+                }
+            }
+            break;
+
+        case ESHKOL_SET_OP:
+            if (op->set_op.value) {
+                eshkol_ast_t* new_val = new eshkol_ast_t;
+                *new_val = substituteBindingsAtIndex(*op->set_op.value, bindings, index);
+                op->set_op.value = new_val;
+            }
+            break;
+
+        case ESHKOL_GUARD_OP:
+            if (op->guard_op.num_clauses > 0 && op->guard_op.clauses) {
+                op->guard_op.clauses = new eshkol_ast_t[op->guard_op.num_clauses];
+                for (uint64_t i = 0; i < ast.operation.guard_op.num_clauses; i++) {
+                    op->guard_op.clauses[i] =
+                        substituteBindingsAtIndex(ast.operation.guard_op.clauses[i], bindings, index);
+                }
+            }
+            if (op->guard_op.num_body_exprs > 0 && op->guard_op.body) {
+                op->guard_op.body = new eshkol_ast_t[op->guard_op.num_body_exprs];
+                for (uint64_t i = 0; i < ast.operation.guard_op.num_body_exprs; i++) {
+                    op->guard_op.body[i] =
+                        substituteBindingsAtIndex(ast.operation.guard_op.body[i], bindings, index);
+                }
+            }
+            break;
+
+        case ESHKOL_RAISE_OP:
+            if (op->raise_op.exception) {
+                eshkol_ast_t* new_exc = new eshkol_ast_t;
+                *new_exc = substituteBindingsAtIndex(*op->raise_op.exception, bindings, index);
+                op->raise_op.exception = new_exc;
+            }
+            break;
+
+        case ESHKOL_VALUES_OP:
+            if (op->values_op.num_values > 0 && op->values_op.expressions) {
+                std::vector<eshkol_ast_t> new_values_vec =
+                    substitute_array_at_index(op->values_op.expressions, op->values_op.num_values);
+                op->values_op.num_values = new_values_vec.size();
+                op->values_op.expressions = new eshkol_ast_t[op->values_op.num_values];
+                for (uint64_t i = 0; i < op->values_op.num_values; i++) {
+                    op->values_op.expressions[i] = new_values_vec[i];
+                }
+            }
+            break;
+
+        case ESHKOL_CALL_CC_OP:
+            if (op->call_cc_op.proc) {
+                eshkol_ast_t* new_proc = new eshkol_ast_t;
+                *new_proc = substituteBindingsAtIndex(*op->call_cc_op.proc, bindings, index);
+                op->call_cc_op.proc = new_proc;
+            }
+            break;
+
+        case ESHKOL_DYNAMIC_WIND_OP:
+            if (op->dynamic_wind_op.before) {
+                eshkol_ast_t* new_before = new eshkol_ast_t;
+                *new_before = substituteBindingsAtIndex(*op->dynamic_wind_op.before, bindings, index);
+                op->dynamic_wind_op.before = new_before;
+            }
+            if (op->dynamic_wind_op.thunk) {
+                eshkol_ast_t* new_thunk = new eshkol_ast_t;
+                *new_thunk = substituteBindingsAtIndex(*op->dynamic_wind_op.thunk, bindings, index);
+                op->dynamic_wind_op.thunk = new_thunk;
+            }
+            if (op->dynamic_wind_op.after) {
+                eshkol_ast_t* new_after = new eshkol_ast_t;
+                *new_after = substituteBindingsAtIndex(*op->dynamic_wind_op.after, bindings, index);
+                op->dynamic_wind_op.after = new_after;
+            }
+            break;
+
+        default:
+            break;
+    }
+
+    return result;
+}
+
+std::vector<eshkol_ast_t> MacroExpander::expandEllipsisElement(const eshkol_ast_t& ast,
+                                                                const Bindings& bindings) {
+    std::vector<eshkol_ast_t> expanded;
+
+    if (ast.type == ESHKOL_VAR && ast.variable.id) {
+        std::string name = ast.variable.id;
+        auto it = bindings.find(name);
+        if (it != bindings.end()) {
+            expanded.reserve(it->second.values.size());
+            for (const auto& value : it->second.values) {
+                expanded.push_back(copyAst(value));
+            }
+            return expanded;
+        }
+    }
+
+    std::string binding_name;
+    if (findRepeatedBinding(ast, bindings, binding_name)) {
+        const auto& values = bindings.at(binding_name).values;
+        expanded.reserve(values.size());
+        for (size_t i = 0; i < values.size(); i++) {
+            expanded.push_back(substituteBindingsAtIndex(ast, bindings, i));
+        }
+        return expanded;
+    }
+
+    eshkol_error("misplaced ellipsis in macro template");
+    expanded.push_back(substituteBindings(ast, bindings));
+    return expanded;
+}
+
+std::vector<eshkol_ast_t> MacroExpander::substituteBindingsInList(const eshkol_ast_t* items,
+                                                                   uint64_t count,
+                                                                   const Bindings& bindings) {
+    std::vector<eshkol_ast_t> result;
+    result.reserve(count);
+
+    for (uint64_t i = 0; i < count; i++) {
+        if (i + 1 < count && isEllipsisSymbol(items[i + 1])) {
+            std::vector<eshkol_ast_t> expanded = expandEllipsisElement(items[i], bindings);
+            result.insert(result.end(), expanded.begin(), expanded.end());
+            i++;
+            continue;
+        }
+
+        if (isEllipsisSymbol(items[i])) {
+            eshkol_error("misplaced ellipsis in macro template");
+            continue;
+        }
+
+        result.push_back(substituteBindings(items[i], bindings));
+    }
+
+    return result;
+}
+
 eshkol_ast_t MacroExpander::substituteBindings(const eshkol_ast_t& ast,
                                                  const Bindings& bindings) {
     // Check if this is a variable that should be substituted
@@ -567,11 +969,18 @@ eshkol_ast_t MacroExpander::substituteBindings(const eshkol_ast_t& ast,
                     op->call_op.func = new_func;
                 }
                 if (op->call_op.num_vars > 0 && op->call_op.variables) {
-                    eshkol_ast_t* new_vars = new eshkol_ast_t[op->call_op.num_vars];
-                    for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
-                        new_vars[i] = substituteBindings(op->call_op.variables[i], bindings);
+                    std::vector<eshkol_ast_t> new_vars_vec =
+                        substituteBindingsInList(op->call_op.variables, op->call_op.num_vars, bindings);
+                    op->call_op.num_vars = new_vars_vec.size();
+                    if (op->call_op.num_vars > 0) {
+                        eshkol_ast_t* new_vars = new eshkol_ast_t[op->call_op.num_vars];
+                        for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
+                            new_vars[i] = new_vars_vec[i];
+                        }
+                        op->call_op.variables = new_vars;
+                    } else {
+                        op->call_op.variables = nullptr;
                     }
-                    op->call_op.variables = new_vars;
                 }
                 break;
 
@@ -579,11 +988,20 @@ eshkol_ast_t MacroExpander::substituteBindings(const eshkol_ast_t& ast,
             case ESHKOL_AND_OP:
             case ESHKOL_OR_OP:
                 if (op->sequence_op.num_expressions > 0 && op->sequence_op.expressions) {
-                    eshkol_ast_t* new_exprs = new eshkol_ast_t[op->sequence_op.num_expressions];
-                    for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++) {
-                        new_exprs[i] = substituteBindings(op->sequence_op.expressions[i], bindings);
+                    std::vector<eshkol_ast_t> new_exprs_vec =
+                        substituteBindingsInList(op->sequence_op.expressions,
+                                                 op->sequence_op.num_expressions,
+                                                 bindings);
+                    op->sequence_op.num_expressions = new_exprs_vec.size();
+                    if (op->sequence_op.num_expressions > 0) {
+                        eshkol_ast_t* new_exprs = new eshkol_ast_t[op->sequence_op.num_expressions];
+                        for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++) {
+                            new_exprs[i] = new_exprs_vec[i];
+                        }
+                        op->sequence_op.expressions = new_exprs;
+                    } else {
+                        op->sequence_op.expressions = nullptr;
                     }
-                    op->sequence_op.expressions = new_exprs;
                 }
                 break;
 
@@ -649,11 +1067,18 @@ eshkol_ast_t MacroExpander::substituteBindings(const eshkol_ast_t& ast,
                     op->call_op.func = new_func;
                 }
                 if (op->call_op.num_vars > 0 && op->call_op.variables) {
-                    eshkol_ast_t* new_vars = new eshkol_ast_t[op->call_op.num_vars];
-                    for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
-                        new_vars[i] = substituteBindings(op->call_op.variables[i], bindings);
+                    std::vector<eshkol_ast_t> new_vars_vec =
+                        substituteBindingsInList(op->call_op.variables, op->call_op.num_vars, bindings);
+                    op->call_op.num_vars = new_vars_vec.size();
+                    if (op->call_op.num_vars > 0) {
+                        eshkol_ast_t* new_vars = new eshkol_ast_t[op->call_op.num_vars];
+                        for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
+                            new_vars[i] = new_vars_vec[i];
+                        }
+                        op->call_op.variables = new_vars;
+                    } else {
+                        op->call_op.variables = nullptr;
                     }
-                    op->call_op.variables = new_vars;
                 }
                 break;
 
@@ -674,11 +1099,20 @@ eshkol_ast_t MacroExpander::substituteBindings(const eshkol_ast_t& ast,
                     op->guard_op.clauses = new_clauses;
                 }
                 if (op->guard_op.num_body_exprs > 0 && op->guard_op.body) {
-                    eshkol_ast_t* new_body = new eshkol_ast_t[op->guard_op.num_body_exprs];
-                    for (uint64_t i = 0; i < op->guard_op.num_body_exprs; i++) {
-                        new_body[i] = substituteBindings(op->guard_op.body[i], bindings);
+                    std::vector<eshkol_ast_t> new_body_vec =
+                        substituteBindingsInList(op->guard_op.body,
+                                                 op->guard_op.num_body_exprs,
+                                                 bindings);
+                    op->guard_op.num_body_exprs = new_body_vec.size();
+                    if (op->guard_op.num_body_exprs > 0) {
+                        eshkol_ast_t* new_body = new eshkol_ast_t[op->guard_op.num_body_exprs];
+                        for (uint64_t i = 0; i < op->guard_op.num_body_exprs; i++) {
+                            new_body[i] = new_body_vec[i];
+                        }
+                        op->guard_op.body = new_body;
+                    } else {
+                        op->guard_op.body = nullptr;
                     }
-                    op->guard_op.body = new_body;
                 }
                 break;
 
@@ -692,11 +1126,20 @@ eshkol_ast_t MacroExpander::substituteBindings(const eshkol_ast_t& ast,
 
             case ESHKOL_VALUES_OP:
                 if (op->values_op.num_values > 0 && op->values_op.expressions) {
-                    eshkol_ast_t* new_exprs = new eshkol_ast_t[op->values_op.num_values];
-                    for (uint64_t i = 0; i < op->values_op.num_values; i++) {
-                        new_exprs[i] = substituteBindings(op->values_op.expressions[i], bindings);
+                    std::vector<eshkol_ast_t> new_values_vec =
+                        substituteBindingsInList(op->values_op.expressions,
+                                                 op->values_op.num_values,
+                                                 bindings);
+                    op->values_op.num_values = new_values_vec.size();
+                    if (op->values_op.num_values > 0) {
+                        eshkol_ast_t* new_exprs = new eshkol_ast_t[op->values_op.num_values];
+                        for (uint64_t i = 0; i < op->values_op.num_values; i++) {
+                            new_exprs[i] = new_values_vec[i];
+                        }
+                        op->values_op.expressions = new_exprs;
+                    } else {
+                        op->values_op.expressions = nullptr;
                     }
-                    op->values_op.expressions = new_exprs;
                 }
                 break;
 

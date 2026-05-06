@@ -148,6 +148,38 @@ private:
      * Substitute bindings in an AST (for template instantiation).
      */
     eshkol_ast_t substituteBindings(const eshkol_ast_t& ast, const Bindings& bindings);
+
+    /**
+     * Check if an AST node is the syntax-rules ellipsis marker.
+     */
+    bool isEllipsisSymbol(const eshkol_ast_t& ast) const;
+
+    /**
+     * Substitute bindings in a repeated template element at a specific index.
+     */
+    eshkol_ast_t substituteBindingsAtIndex(const eshkol_ast_t& ast,
+                                           const Bindings& bindings,
+                                           size_t index);
+
+    /**
+     * Find the first multi-value pattern binding referenced by a template.
+     */
+    bool findRepeatedBinding(const eshkol_ast_t& ast,
+                             const Bindings& bindings,
+                             std::string& binding_name) const;
+
+    /**
+     * Expand a single template element followed by ellipsis.
+     */
+    std::vector<eshkol_ast_t> expandEllipsisElement(const eshkol_ast_t& ast,
+                                                     const Bindings& bindings);
+
+    /**
+     * Substitute a sequence/call argument list, expanding element ellipses.
+     */
+    std::vector<eshkol_ast_t> substituteBindingsInList(const eshkol_ast_t* items,
+                                                        uint64_t count,
+                                                        const Bindings& bindings);
 };
 
 } // namespace eshkol
