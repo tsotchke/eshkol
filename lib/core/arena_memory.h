@@ -33,6 +33,8 @@ struct arena_block {
     size_t size;           // Total block size
     size_t used;           // Used bytes in this block
     arena_block_t* next;   // Next block in chain
+    bool owns_memory;      // Whether block->memory should be freed
+    bool owns_metadata;    // Whether the block header itself should be freed
 };
 
 // Arena scope for nested allocation contexts
@@ -51,6 +53,8 @@ struct arena {
     size_t alignment;              // Memory alignment requirement
     void* mutex;                   // Optional mutex for thread-safe access (platform-specific)
     bool thread_safe;              // Whether this arena uses mutex locking
+    bool allow_heap_growth;        // Whether new blocks may be heap-allocated
+    bool owns_metadata;            // Whether the arena structure itself should be freed
 };
 
 // Arena management functions
@@ -276,6 +280,7 @@ struct eshkol_region {
     size_t size_hint;                // Size hint provided at creation
     size_t escape_count;             // Track escaping allocations
     uint8_t is_active;               // Whether this region is currently active
+    uint8_t storage_mode;            // Dedicated heap arena vs embedded pooled subarena
 };
 
 // Thread-local region stack (safe for parallel-map + with-region)

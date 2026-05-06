@@ -921,6 +921,17 @@ if(DEFINED ESHKOL_GENERATED_INCLUDE_DIR)
     )
 endif()
 
+set(ESHKOL_BUILD_INCLUDE_DIRS
+  "${CMAKE_CURRENT_SOURCE_DIR}/inc/"
+)
+set(ESHKOL_BUILD_INTERFACE_INCLUDE_DIRS
+  "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/inc/>"
+)
+if(DEFINED ESHKOL_GENERATED_INCLUDE_DIR)
+    list(APPEND ESHKOL_BUILD_INCLUDE_DIRS "${ESHKOL_GENERATED_INCLUDE_DIR}")
+    list(APPEND ESHKOL_BUILD_INTERFACE_INCLUDE_DIRS "$<BUILD_INTERFACE:${ESHKOL_GENERATED_INCLUDE_DIR}>")
+endif()
+
 # Make uninstall.
 add_custom_target("uninstall" COMMENT "Uninstall installed files")
 add_custom_command(
@@ -967,8 +978,8 @@ list(FILTER LIB_SRC EXCLUDE REGEX "lib/backend/archive/.*")
 
 # Exclude standalone .cpp programs with main()
 list(FILTER LIB_SRC EXCLUDE REGEX "lib/backend/weight_compiler\\.cpp$")
-# platform_runtime.cpp stays in eshkol-static so the REPL, compiler, and JIT
-# share the same path/process helpers on every platform.
+# Runtime files are classified into explicit source sets below so embedders can
+# link the freestanding core without hosted process, filesystem, or clock code.
 
 # Native Windows REPL builds do not use the bytecode VM / ESKB compiler path.
 # Building the VM currently drags in a large POSIX-only unity build, so use a
@@ -1013,13 +1024,117 @@ else()
     set(ESHKOL_EXE_COMPILE_FLAGS -fPIE)
 endif()
 
+# Runtime stratification starts here. These are internal source-set boundaries
+# only; `eshkol-static` remains the delivered aggregate archive for now.
+set(ESHKOL_RUNTIME_CORE_SRC
+  lib/core/ad_tape_builtins.c
+  lib/core/arena_memory.cpp
+  lib/core/bignum.cpp
+  lib/core/rational.cpp
+  lib/core/resource_limits_core.cpp
+  lib/core/runtime.cpp
+)
+
+set(ESHKOL_RUNTIME_HOSTED_SRC
+  lib/core/arena_exception_hosted.cpp
+  lib/backend/thread_pool.cpp
+  lib/core/arena_display_hosted.cpp
+  lib/core/arena_reader_hosted.cpp
+  lib/core/arena_string_ports_hosted.cpp
+  lib/core/arena_threading_hosted.cpp
+  lib/core/bignum_display_hosted.cpp
+  lib/core/config.cpp
+  lib/core/logger.cpp
+  lib/core/platform_runtime.cpp
+  lib/core/resource_limits_hosted.cpp
+  lib/core/runtime_errors_hosted.cpp
+  lib/core/runtime_exports_hosted.cpp
+  lib/core/runtime_hosted.cpp
+  lib/core/runtime_logging_hosted.cpp
+  lib/core/system_builtins.c
+)
+
+set(ESHKOL_RUNTIME_FREESTANDING_SRC
+  lib/core/runtime_freestanding.cpp
+)
+
+set(ESHKOL_RUNTIME_SPLIT_PENDING_SRC)
+
+# Keep the legacy translation unit in the tree for direct source embedders, but
+# compile the split owners above inside CMake targets to avoid duplicate symbols.
+set(ESHKOL_RUNTIME_COMPAT_SRC
+  lib/core/resource_limits.cpp
+)
+
+list(REMOVE_ITEM LIB_SRC
+  ${ESHKOL_RUNTIME_CORE_SRC}
+  ${ESHKOL_RUNTIME_HOSTED_SRC}
+  ${ESHKOL_RUNTIME_FREESTANDING_SRC}
+  ${ESHKOL_RUNTIME_SPLIT_PENDING_SRC}
+  ${ESHKOL_RUNTIME_COMPAT_SRC}
+)
+
+set(ESHKOL_NON_RUNTIME_SRC ${LIB_SRC})
+
+list(LENGTH ESHKOL_RUNTIME_CORE_SRC ESHKOL_RUNTIME_CORE_SRC_COUNT)
+list(LENGTH ESHKOL_RUNTIME_HOSTED_SRC ESHKOL_RUNTIME_HOSTED_SRC_COUNT)
+list(LENGTH ESHKOL_RUNTIME_FREESTANDING_SRC ESHKOL_RUNTIME_FREESTANDING_SRC_COUNT)
+list(LENGTH ESHKOL_RUNTIME_SPLIT_PENDING_SRC ESHKOL_RUNTIME_SPLIT_PENDING_SRC_COUNT)
+message(STATUS
+  "Runtime source sets: core=${ESHKOL_RUNTIME_CORE_SRC_COUNT}, "
+  "freestanding=${ESHKOL_RUNTIME_FREESTANDING_SRC_COUNT}, "
+  "hosted=${ESHKOL_RUNTIME_HOSTED_SRC_COUNT}, "
+  "split-pending=${ESHKOL_RUNTIME_SPLIT_PENDING_SRC_COUNT}"
+)
+
+add_library(eshkol-runtime-core-obj OBJECT ${ESHKOL_RUNTIME_CORE_SRC})
+add_library(eshkol-runtime-hosted-obj OBJECT ${ESHKOL_RUNTIME_HOSTED_SRC})
+add_library(eshkol-runtime-freestanding-obj OBJECT ${ESHKOL_RUNTIME_FREESTANDING_SRC})
+set(_eshkol_runtime_obj_targets
+    eshkol-runtime-core-obj
+    eshkol-runtime-freestanding-obj
+    eshkol-runtime-hosted-obj
+)
+set(ESHKOL_RUNTIME_SPLIT_PENDING_OBJECTS)
+if(ESHKOL_RUNTIME_SPLIT_PENDING_SRC)
+    add_library(eshkol-runtime-split-pending-obj OBJECT ${ESHKOL_RUNTIME_SPLIT_PENDING_SRC})
+    list(APPEND _eshkol_runtime_obj_targets eshkol-runtime-split-pending-obj)
+    set(ESHKOL_RUNTIME_SPLIT_PENDING_OBJECTS $<TARGET_OBJECTS:eshkol-runtime-split-pending-obj>)
+endif()
+
+function(eshkol_apply_common_compile_settings target)
+    target_include_directories(${target} PRIVATE ${ESHKOL_BUILD_INCLUDE_DIRS})
+    target_compile_options(${target} PRIVATE
+      $<$<COMPILE_LANGUAGE:C,CXX>:${LLVM_CXXFLAGS_LIST}>
+      $<$<COMPILE_LANGUAGE:C,CXX>:${ESHKOL_WARNING_FLAGS}>
+      $<$<COMPILE_LANGUAGE:C,CXX>:${ESHKOL_HARDENING_FLAGS}>
+    )
+    if(NOT ESHKOL_USING_MSVC)
+        target_compile_definitions(${target} PRIVATE $<$<NOT:$<CONFIG:Debug>>:_FORTIFY_SOURCE=2>)
+    endif()
+    target_compile_definitions(${target} PRIVATE ESHKOL_LLVM_BACKEND_ENABLED)
+    target_compile_definitions(${target} PRIVATE ESHKOL_VM_LIBRARY_MODE)
+
+    if(LLVM_INCLUDE_DIRS)
+        target_include_directories(${target} PRIVATE ${LLVM_INCLUDE_DIRS})
+    endif()
+endfunction()
+
+foreach(_eshkol_runtime_obj_target IN LISTS _eshkol_runtime_obj_targets)
+    eshkol_apply_common_compile_settings(${_eshkol_runtime_obj_target})
+endforeach()
+
 # Create static library for executables.
-add_library(eshkol-static STATIC ${LIB_SRC})
+add_library(eshkol-static STATIC
+  ${ESHKOL_NON_RUNTIME_SRC}
+  $<TARGET_OBJECTS:eshkol-runtime-core-obj>
+  $<TARGET_OBJECTS:eshkol-runtime-hosted-obj>
+  ${ESHKOL_RUNTIME_SPLIT_PENDING_OBJECTS}
+)
 target_include_directories(
   eshkol-static
   PUBLIC
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/inc/>
-    $<BUILD_INTERFACE:${ESHKOL_GENERATED_INCLUDE_DIR}>
+    ${ESHKOL_BUILD_INTERFACE_INCLUDE_DIRS}
 )
 
 # Always add LLVM support to static library
@@ -1514,6 +1629,84 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/ma
     add_test(
         NAME macos_build_surface_test
         COMMAND macos_build_surface_test "${CMAKE_CURRENT_SOURCE_DIR}"
+    )
+endif()
+
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/arena_bootstrap_test.cpp")
+    add_executable(arena_bootstrap_test tests/toolchain/arena_bootstrap_test.cpp)
+    target_compile_features(arena_bootstrap_test PRIVATE cxx_std_17)
+    target_include_directories(arena_bootstrap_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/inc")
+    target_link_libraries(arena_bootstrap_test PRIVATE
+        eshkol-static
+        ${ESHKOL_EXTRA_LINK_LIBS}
+    )
+    add_test(NAME arena_bootstrap_test COMMAND arena_bootstrap_test)
+endif()
+
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/runtime_hook_surface_test.cpp")
+    add_executable(runtime_hook_surface_test tests/toolchain/runtime_hook_surface_test.cpp)
+    target_compile_features(runtime_hook_surface_test PRIVATE cxx_std_17)
+    target_include_directories(runtime_hook_surface_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/inc")
+    target_link_libraries(runtime_hook_surface_test PRIVATE
+        eshkol-static
+        ${ESHKOL_EXTRA_LINK_LIBS}
+    )
+    add_test(NAME runtime_hook_surface_test COMMAND runtime_hook_surface_test)
+endif()
+
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/resource_limits_timebase_test.cpp")
+    add_executable(resource_limits_timebase_test tests/toolchain/resource_limits_timebase_test.cpp)
+    target_compile_features(resource_limits_timebase_test PRIVATE cxx_std_17)
+    target_include_directories(resource_limits_timebase_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/inc")
+    target_link_libraries(resource_limits_timebase_test PRIVATE
+        eshkol-static
+        ${ESHKOL_EXTRA_LINK_LIBS}
+    )
+    add_test(NAME resource_limits_timebase_test COMMAND resource_limits_timebase_test)
+endif()
+
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/runtime_freestanding_surface_test.cpp")
+    add_executable(runtime_freestanding_surface_test
+        tests/toolchain/runtime_freestanding_surface_test.cpp
+        lib/core/arena_memory.cpp
+        lib/core/bignum.cpp
+        lib/core/rational.cpp
+        lib/core/resource_limits_core.cpp
+        lib/core/runtime.cpp
+        $<TARGET_OBJECTS:eshkol-runtime-freestanding-obj>
+    )
+    target_compile_features(runtime_freestanding_surface_test PRIVATE cxx_std_17)
+    target_compile_definitions(runtime_freestanding_surface_test PRIVATE
+        ESHKOL_LLVM_BACKEND_ENABLED
+        ESHKOL_VM_LIBRARY_MODE
+    )
+    target_include_directories(runtime_freestanding_surface_test PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/inc"
+    )
+    if(LLVM_INCLUDE_DIRS)
+        target_include_directories(runtime_freestanding_surface_test PRIVATE ${LLVM_INCLUDE_DIRS})
+    endif()
+    target_compile_options(runtime_freestanding_surface_test PRIVATE
+        $<$<COMPILE_LANGUAGE:C,CXX>:${LLVM_CXXFLAGS_LIST}>
+        $<$<COMPILE_LANGUAGE:C,CXX>:${ESHKOL_WARNING_FLAGS}>
+        $<$<COMPILE_LANGUAGE:C,CXX>:${ESHKOL_HARDENING_FLAGS}>
+    )
+    if(NOT ESHKOL_USING_MSVC)
+        target_compile_definitions(runtime_freestanding_surface_test PRIVATE $<$<NOT:$<CONFIG:Debug>>:_FORTIFY_SOURCE=2>)
+    endif()
+    target_link_libraries(runtime_freestanding_surface_test PRIVATE
+        ${ESHKOL_EXTRA_LINK_LIBS}
+    )
+    add_test(NAME runtime_freestanding_surface_test COMMAND runtime_freestanding_surface_test)
+endif()
+
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/runtime_core_boundary_test.cpp")
+    add_executable(runtime_core_boundary_test tests/toolchain/runtime_core_boundary_test.cpp)
+    target_compile_features(runtime_core_boundary_test PRIVATE cxx_std_17)
+    add_test(
+        NAME runtime_core_boundary_test
+        COMMAND runtime_core_boundary_test "${CMAKE_CURRENT_SOURCE_DIR}"
     )
 endif()
 

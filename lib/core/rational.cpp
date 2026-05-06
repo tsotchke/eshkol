@@ -7,8 +7,8 @@
  */
 
 #include <eshkol/core/rational.h>
+#include <eshkol/core/runtime.h>
 #include <eshkol/eshkol.h>
-#include <eshkol/logger.h>
 #include <cmath>
 #include <stdlib.h>
 #include <stdio.h>
@@ -75,7 +75,7 @@ static void* rational_create_safe(void* arena, __int128_t num, __int128_t denom)
 
 extern "C" void* eshkol_rational_create(void* arena, int64_t num, int64_t denom) {
     if (denom == 0) {
-        eshkol_error("rational: division by zero (denominator is 0)");
+        eshkol_runtime_errorf("rational: division by zero (denominator is 0)");
         /* Return 0/1 as safe fallback after error is reported */
         denom = 1;
         num = 0;
@@ -91,8 +91,8 @@ extern "C" void* eshkol_rational_create(void* arena, int64_t num, int64_t denom)
      * magnitude are rare and can be re-expressed once bignum rationals
      * land. */
     if (denom == INT64_MIN || num == INT64_MIN) {
-        eshkol_error("rational: INT64_MIN numerator/denominator cannot be "
-                     "sign-normalised without overflow");
+        eshkol_runtime_errorf("rational: INT64_MIN numerator/denominator cannot be "
+                              "sign-normalised without overflow");
         denom = 1;
         num = 0;
     }

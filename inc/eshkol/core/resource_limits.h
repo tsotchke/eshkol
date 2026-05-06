@@ -139,6 +139,8 @@ size_t eshkol_get_stack_depth(void);
 
 // Start the execution timer
 // - timeout_ms: Override timeout (0 = use configured limit)
+// If the effective timeout is non-zero, timer start requires an available
+// runtime monotonic time source.
 void eshkol_start_timer(uint64_t timeout_ms);
 
 // Stop the execution timer
@@ -148,7 +150,9 @@ void eshkol_stop_timer(void);
 // Should be called periodically in long-running operations
 bool eshkol_is_timed_out(void);
 
-// Get remaining time in ms (0 if timed out or no timeout set)
+// Get remaining time in ms.
+// Returns UINT64_MAX when no timeout is active, or 0 when timed out or when
+// the timer cannot consult its runtime timebase.
 uint64_t eshkol_get_remaining_time_ms(void);
 
 // ============================================================================

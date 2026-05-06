@@ -48,11 +48,16 @@ int main(int argc, char** argv) {
 
     const fs::path source_root = argv[1];
     const fs::path script_path = source_root / "scripts" / "run_all_tests.ps1";
+    const fs::path codegen_path = source_root / "lib" / "backend" / "llvm_codegen.cpp";
     if (!fs::exists(script_path)) {
         return fail("run_all_tests.ps1 not found under source root");
     }
+    if (!fs::exists(codegen_path)) {
+        return fail("llvm_codegen.cpp not found under source root");
+    }
 
     const std::string script = read_file(script_path);
+    const std::string codegen = read_file(codegen_path);
     bool ok = true;
 
     ok = ok &&
@@ -104,6 +109,14 @@ int main(int argc, char** argv) {
                              "Windows suite should not remove variable paths without the guard helper") &&
          expect_not_contains(script, "$server = Start-Process",
                              "Windows suite should not start the web server without the guard helper");
+
+    ok = ok &&
+         expect_contains(codegen, "COFF/MSVC archive extraction is different",
+                         "generated Windows links document normal COFF archive extraction") &&
+         expect_contains(codegen, "#elif defined(_WIN32)\n            link_args.emplace_back(runtime_lib_path.generic_string());",
+                         "generated Windows links use normal archive linkage") &&
+         expect_not_contains(codegen, "/WHOLEARCHIVE:\" + runtime_lib_path",
+                             "generated Windows links should not whole-archive eshkol-static");
 
     if (!ok) {
         return 1;

@@ -108,6 +108,10 @@ void append_host_runtime_link_args(std::vector<std::string>& link_args) {
 #include <llvm/Transforms/InstCombine/InstCombine.h>
 #include <llvm/Transforms/Scalar.h>
 #include <llvm/Transforms/Scalar/GVN.h>
+#include <llvm/Transforms/Scalar/SROA.h>
+#include <llvm/Transforms/Scalar/SimplifyCFG.h>
+#include <llvm/Transforms/Scalar/TailRecursionElimination.h>
+#include <llvm/Transforms/Utils/Mem2Reg.h>
 #include <llvm/ADT/StringMap.h>
 #include <llvm/IR/GlobalValue.h>
 #include <llvm/Config/llvm-config.h>
@@ -230,12 +234,6 @@ static void optimizeModule(llvm::Module& module, llvm::TargetMachine* TM, bool i
 
     auto opt_level = getPassBuilderOptLevel();
 
-    // For WASM targets, always run at least mem2reg even at -O0.
-    // WASM has a hard limit on local count (~50,000) that native targets don't.
-    // Without mem2reg, each tagged value pack/unpack creates an alloca that
-    // becomes a WASM local, easily exceeding the limit for non-trivial programs.
-    if (opt_level == llvm::OptimizationLevel::O0 && !is_wasm) return;
-
     llvm::PassBuilder PB(TM);
 
     llvm::LoopAnalysisManager LAM;
@@ -250,10 +248,31 @@ static void optimizeModule(llvm::Module& module, llvm::TargetMachine* TM, bool i
     PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
 
     if (opt_level == llvm::OptimizationLevel::O0) {
-        // WASM at -O0: run minimal passes (mem2reg + simplifycfg) to reduce local count
-        llvm::ModulePassManager MPM = PB.buildPerModuleDefaultPipeline(llvm::OptimizationLevel::O1);
+        if (is_wasm) {
+            // Preserve the stronger WASM baseline: without the O1 pipeline,
+            // large programs can exceed WebAssembly's local-count limits.
+            llvm::ModulePassManager MPM =
+                PB.buildPerModuleDefaultPipeline(llvm::OptimizationLevel::O1);
+            MPM.run(module, MAM);
+            eshkol_info("Applied minimal LLVM optimization passes for WASM target");
+            return;
+        }
+
+        // Baseline cleanup at -O0 keeps generated temporaries out of the C
+        // stack. Recursive generated functions can otherwise retain hundreds
+        // of tagged-value allocas per frame.
+        llvm::FunctionPassManager FPM;
+        FPM.addPass(llvm::SROAPass(llvm::SROAOptions::ModifyCFG));
+        FPM.addPass(llvm::PromotePass());
+        FPM.addPass(llvm::InstCombinePass());
+        FPM.addPass(llvm::SimplifyCFGPass());
+        FPM.addPass(llvm::TailCallElimPass());
+        FPM.addPass(llvm::SimplifyCFGPass());
+
+        llvm::ModulePassManager MPM;
+        MPM.addPass(llvm::createModuleToFunctionPassAdaptor(std::move(FPM)));
         MPM.run(module, MAM);
-        eshkol_info("Applied minimal LLVM optimization passes for WASM target");
+        eshkol_info("Applied baseline LLVM cleanup passes at -O0");
     } else {
         llvm::ModulePassManager MPM = PB.buildPerModuleDefaultPipeline(opt_level);
         MPM.run(module, MAM);
@@ -32639,16 +32658,24 @@ int eshkol_compile_llvm_ir_to_executable(LLVMModuleRef module_ref, const char* f
             // user binary silently lose its parallel-execute support.
             //
             // Force-load every object (including the constructor)
-            // so it is preserved unconditionally. This matches the
-            // link strategy used by the eshkol-run binary itself
-            // (see CMakeLists.txt). macOS uses -force_load (one flag
-            // per archive); ELF uses --whole-archive bracketing;
-            // Windows MSVC uses /WHOLEARCHIVE.
+            // so it is preserved unconditionally on platforms that
+            // need archive-wide extraction. This matches the link
+            // strategy used by the eshkol-run binary itself (see
+            // CMakeLists.txt). macOS uses -force_load (one flag per
+            // archive); ELF uses --whole-archive bracketing.
+            //
+            // COFF/MSVC archive extraction is different: the generated
+            // object directly references the runtime registration
+            // symbols it needs, and /WHOLEARCHIVE on the aggregate
+            // eshkol-static archive also pulls compiler backend objects
+            // into user executables. That makes generated Windows
+            // programs depend on the full LLVM SDK. Link the aggregate
+            // archive normally on Windows and let COFF extract the
+            // referenced runtime members.
 #if defined(__APPLE__)
             link_args.emplace_back("-Wl,-force_load," + runtime_lib_path.generic_string());
 #elif defined(_WIN32)
-            link_args.emplace_back("-Xlinker");
-            link_args.emplace_back("/WHOLEARCHIVE:" + runtime_lib_path.generic_string());
+            link_args.emplace_back(runtime_lib_path.generic_string());
 #else
             link_args.emplace_back("-Wl,--whole-archive");
             link_args.emplace_back(runtime_lib_path.generic_string());

@@ -973,7 +973,9 @@ extern eshkol_exception_t* g_current_exception;
 // Top of exception handler stack (NULL if no handlers)
 extern eshkol_exception_handler_t* g_exception_handler_stack;
 
-// Exception API functions (implemented in arena_memory.cpp)
+// Exception API functions.
+// Hosted builds provide the full exception/runtime integration path; the
+// freestanding runtime currently provides a bounded bootstrap implementation.
 eshkol_exception_t* eshkol_make_exception(eshkol_exception_type_t type, const char* message);
 eshkol_exception_t* eshkol_make_exception_with_header(eshkol_exception_type_t type, const char* message);
 void eshkol_exception_add_irritant(eshkol_exception_t* exc, eshkol_tagged_value_t irritant);
@@ -982,6 +984,14 @@ void eshkol_raise(eshkol_exception_t* exception);
 void eshkol_push_exception_handler(void* jmp_buf_ptr);
 void eshkol_pop_exception_handler(void);
 int eshkol_exception_type_matches(eshkol_exception_t* exc, eshkol_exception_type_t type);
+void eshkol_set_raised_value(const eshkol_tagged_value_t* value);
+void eshkol_get_raised_value(eshkol_tagged_value_t* out);
+eshkol_exception_t* eshkol_get_current_exception(void);
+void eshkol_clear_current_exception(void);
+void eshkol_display_exception(eshkol_exception_t* exc);
+int64_t eshkol_check_recursion_depth(void);
+void eshkol_decrement_recursion_depth(void);
+void eshkol_reset_recursion_depth(void);
 
 // Helper to create tagged exception value
 static inline eshkol_tagged_value_t eshkol_make_exception_value(eshkol_exception_t* exc) {
@@ -1079,7 +1089,7 @@ static inline eshkol_display_opts_t eshkol_display_default_opts(void) {
     return opts;
 }
 
-// Main display functions (implemented in arena_memory.cpp)
+// Main display functions (implemented in hosted runtime display glue)
 void eshkol_display_value(const eshkol_tagged_value_t* value);
 void eshkol_display_value_opts(const eshkol_tagged_value_t* value, eshkol_display_opts_t* opts);
 void eshkol_write_value(const eshkol_tagged_value_t* value);  // Scheme 'write' semantics
@@ -1142,6 +1152,7 @@ typedef enum {
     HOTT_TYPE_LIST,         // (list a) list type
     HOTT_TYPE_VECTOR,       // (vector a) vector type
     HOTT_TYPE_TENSOR,       // (tensor a) tensor type (multi-dimensional array)
+    HOTT_TYPE_POINTER,      // (ptr a) raw pointer type
     HOTT_TYPE_PAIR,         // (pair a b) cons pair type
     // Polymorphic types
     HOTT_TYPE_VAR,          // type variable (e.g., 'a in forall)
@@ -1176,7 +1187,7 @@ typedef struct hott_type_expr {
             struct hott_type_expr* body;
         } forall;
 
-        // For compound types: list, vector, etc.
+        // For compound single-parameter types: list, vector, tensor, ptr
         struct {
             struct hott_type_expr* element_type;
         } container;
@@ -1499,6 +1510,15 @@ typedef struct eshkol_operation {
             // HoTT type annotations
             hott_type_expr_t *return_type;    // Return type annotation (NULL if not annotated)
             hott_type_expr_t **param_types;   // Array of parameter type annotations (NULL entries for unannotated)
+            // Platform declaration modifiers
+            char *link_section;       // Optional section name for top-level symbols
+            uint64_t alignment;       // Explicit alignment value when has_alignment is true
+            uint8_t has_alignment;    // True when alignment was explicitly provided
+            uint8_t is_used;          // Preserve symbol even when unreferenced
+            uint8_t is_weak;          // Emit symbol with weak linkage
+            uint8_t export_symbol;    // Force public/exported linkage for the definition
+            char *export_name;        // Optional emitted symbol name for exported definitions
+            uint8_t is_no_return;     // Function never returns normally
         } define_op;
         struct {
             struct eshkol_ast *expressions;
@@ -1510,10 +1530,13 @@ typedef struct eshkol_operation {
             char *return_type;
             struct eshkol_ast *parameters;
             uint64_t num_params;
+            uint8_t is_weak;          // Imported symbol may be unresolved and weak
+            uint8_t is_no_return;     // Imported function never returns normally
         } extern_op;
         struct {
             char *name;
             char *type;
+            char *real_name;
         } extern_var_op;
 	struct {
 	           struct eshkol_ast *parameters;
@@ -1771,6 +1794,7 @@ typedef struct eshkol_ast {
     // Source location for error reporting
     uint32_t line;      // 1-based line number (0 = unknown)
     uint32_t column;    // 1-based column number (0 = unknown)
+    const char* source_name;  // Registry-owned source identity (NULL = unknown)
 } eshkol_ast_t;
 
 // ===== Unified AST Literal Builders =====
@@ -1821,6 +1845,24 @@ static inline void eshkol_ast_make_symbol(eshkol_ast_t* node, const char* ptr, u
     node->inferred_hott_type = 27; // BuiltinTypes::Symbol
 }
 
+static inline void eshkol_ast_set_source_location(eshkol_ast_t* node,
+                                                  uint32_t line,
+                                                  uint32_t column,
+                                                  const char* source_name) {
+    if (!node) return;
+    node->line = line;
+    node->column = column;
+    node->source_name = source_name;
+}
+
+static inline void eshkol_ast_copy_source_location(eshkol_ast_t* node,
+                                                   const eshkol_ast_t* source) {
+    if (!node || !source) return;
+    node->line = source->line;
+    node->column = source->column;
+    node->source_name = source->source_name;
+}
+
 void eshkol_ast_clean(eshkol_ast_t *ast);
 void eshkol_ast_pretty_print(const eshkol_ast_t *ast, int indent);
 
@@ -1856,6 +1898,7 @@ hott_type_expr_t* hott_make_arrow_type(hott_type_expr_t** param_types, uint64_t 
 hott_type_expr_t* hott_make_list_type(hott_type_expr_t* element_type);
 hott_type_expr_t* hott_make_vector_type(hott_type_expr_t* element_type);
 hott_type_expr_t* hott_make_tensor_type(hott_type_expr_t* element_type);
+hott_type_expr_t* hott_make_pointer_type(hott_type_expr_t* element_type);
 hott_type_expr_t* hott_make_pair_type(hott_type_expr_t* left, hott_type_expr_t* right);
 hott_type_expr_t* hott_make_product_type(hott_type_expr_t* left, hott_type_expr_t* right);
 hott_type_expr_t* hott_make_sum_type(hott_type_expr_t* left, hott_type_expr_t* right);
@@ -1897,9 +1940,12 @@ static inline int hott_type_is_set(uint32_t packed) {
 
 // Parse next AST from file stream
 eshkol_ast_t eshkol_parse_next_ast(std::ifstream &in_file);
+eshkol_ast_t eshkol_parse_next_ast(std::ifstream &in_file, const char* source_name);
 
 // Parse next AST from any input stream (including string streams for stdlib)
 eshkol_ast_t eshkol_parse_next_ast_from_stream(std::istream &in_stream);
+eshkol_ast_t eshkol_parse_next_ast_from_stream(std::istream &in_stream,
+                                               const char* source_name);
 
 // Reset cumulative file line/column counter — call before parsing a new file
 // so the next eshkol_parse_next_ast call starts at file line 1, column 1.

@@ -14,7 +14,6 @@
 #include "eshkol/core/rational.h"
 #include "eshkol/eshkol.h"
 #include <cstring>
-#include <cstdio>
 #include <cstdlib>
 #include <cmath>
 #include <cerrno>
@@ -1054,68 +1053,6 @@ void eshkol_string_to_number_tagged(arena_t* arena, const char* str,
 
     /* Not a valid number */
     *result = false_val;
-}
-
-/* ===== Display ===== */
-
-void eshkol_bignum_display(const eshkol_bignum_t* a, void* file) {
-    if (!a || !file) return;
-    FILE* f = (FILE*)file;
-
-    if (eshkol_bignum_is_zero(a)) {
-        fprintf(f, "0");
-        return;
-    }
-
-    if (a->sign) fprintf(f, "-");
-
-    /* For small bignums (1 limb), use direct printf */
-    if (a->num_limbs == 1) {
-        fprintf(f, "%llu", (unsigned long long)BIGNUM_LIMBS(a)[0]);
-        return;
-    }
-
-    /* For larger bignums, we need to convert to decimal.
-     * Use a simple stack buffer for reasonable sizes. */
-    char stack_buf[256];
-    size_t max_digits = (size_t)a->num_limbs * 20 + 2;
-
-    if (max_digits <= sizeof(stack_buf)) {
-        /* Extract digits into stack buffer */
-        /* Working copy of limbs — max 12 limbs when max_digits <= 256 */
-        uint64_t work[13];
-        memcpy(work, BIGNUM_LIMBS(a), a->num_limbs * sizeof(uint64_t));
-        uint32_t work_limbs = a->num_limbs;
-
-        size_t pos = 0;
-        while (work_limbs > 0) {
-            /* Check if all zero */
-            bool all_zero = true;
-            for (uint32_t i = 0; i < work_limbs; i++) {
-                if (work[i] != 0) { all_zero = false; break; }
-            }
-            if (all_zero) break;
-
-            /* Divide by 10 */
-            __uint128_t rem = 0;
-            for (int32_t i = (int32_t)work_limbs - 1; i >= 0; i--) {
-                __uint128_t cur = (rem << 64) | work[i];
-                work[i] = (uint64_t)(cur / 10);
-                rem = cur % 10;
-            }
-            stack_buf[pos++] = '0' + (char)(uint64_t)rem;
-
-            /* Trim leading zero limbs */
-            while (work_limbs > 0 && work[work_limbs - 1] == 0) work_limbs--;
-        }
-
-        /* Print digits in reverse */
-        for (size_t i = pos; i > 0; i--) {
-            fputc(stack_buf[i - 1], f);
-        }
-    } else {
-        fprintf(f, "<bignum:%u-limbs>", a->num_limbs);
-    }
 }
 
 /* ===== Bitwise Operations ===== */

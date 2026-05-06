@@ -43,6 +43,11 @@ fi
 echo "Testing all files in tests/features/ directory..."
 echo ""
 
+# Several feature stress programs intentionally exercise deep closure/CPS
+# recursion. Match the TCO suite policy so Linux children inherit enough main
+# thread stack before exec.
+ulimit -s 524288 2>/dev/null || ulimit -s unlimited 2>/dev/null || true
+
 # Run each test
 for test_file in tests/features/*.esk; do
     test_name=$(basename "$test_file")

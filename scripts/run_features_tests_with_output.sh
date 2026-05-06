@@ -48,6 +48,11 @@ echo ""
 # Test directory
 TEST_DIR="tests/features"
 
+# Several feature stress programs intentionally exercise deep closure/CPS
+# recursion. Match the TCO suite policy so Linux children inherit enough main
+# thread stack before exec.
+ulimit -s 524288 2>/dev/null || ulimit -s unlimited 2>/dev/null || true
+
 # Function to run a single test with full output
 run_test_verbose() {
     local test_file=$1

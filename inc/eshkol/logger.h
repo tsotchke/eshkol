@@ -122,6 +122,15 @@ void eshkol_error_at(const char* file, unsigned line, unsigned column,
 void eshkol_warn_at(const char* file, unsigned line, unsigned column,
                     const char* source_text, const char* msg, ...);
 
+// Register full source text under a stable source identity. Returns the
+// registry-owned source name pointer that ASTs can keep for later diagnostics.
+const char* eshkol_register_source_context(const char* file,
+                                           const char* source_text);
+
+// Look up previously-registered source text for a source identity.
+// Returns NULL when no source text is available.
+const char* eshkol_lookup_source_context(const char* file);
+
 #define eshkol_fatal(...) eshkol_printf(ESHKOL_FATAL, __VA_ARGS__)
 #define eshkol_error(...) eshkol_printf(ESHKOL_ERROR, __VA_ARGS__)
 #define eshkol_warn(...) eshkol_printf(ESHKOL_WARNING, __VA_ARGS__)
