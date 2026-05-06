@@ -197,6 +197,7 @@ ARCH_OUTPUT="$(cd "$ARCH_OUTPUT" && pwd -P)"
 docker cp "$CONTAINER_NAME:/app/build/eshkol-run" "$ARCH_OUTPUT/" 2>/dev/null || echo "Warning: eshkol-run not found"
 docker cp "$CONTAINER_NAME:/app/build/eshkol-repl" "$ARCH_OUTPUT/" 2>/dev/null || echo "Warning: eshkol-repl not found"
 docker cp "$CONTAINER_NAME:/app/build/stdlib.o" "$ARCH_OUTPUT/" 2>/dev/null || echo "Warning: stdlib.o not found"
+docker cp "$CONTAINER_NAME:/app/build/stdlib.bc" "$ARCH_OUTPUT/" 2>/dev/null || echo "Warning: stdlib.bc not found"
 docker cp "$CONTAINER_NAME:/app/build/libeshkol-static.a" "$ARCH_OUTPUT/" 2>/dev/null || echo "Warning: libeshkol-static.a not found"
 
 # Copy .deb package if it exists
@@ -215,6 +216,7 @@ PKG_STAGE="$(mktemp -d "$ARCH_OUTPUT/.pkg.XXXXXX")"
     cp "$ARCH_OUTPUT/eshkol-run" "$PKG_STAGE/bin/" 2>/dev/null || true
     cp "$ARCH_OUTPUT/eshkol-repl" "$PKG_STAGE/bin/" 2>/dev/null || true
     cp "$ARCH_OUTPUT/stdlib.o" "$PKG_STAGE/lib/" 2>/dev/null || true
+    cp "$ARCH_OUTPUT/stdlib.bc" "$PKG_STAGE/lib/" 2>/dev/null || true
     cp "$ARCH_OUTPUT/libeshkol-static.a" "$PKG_STAGE/lib/" 2>/dev/null || true
     cp "$PROJECT_ROOT/lib/stdlib.esk" "$PKG_STAGE/share/eshkol/" 2>/dev/null || true
     if [ -d "$PROJECT_ROOT/lib/core" ]; then

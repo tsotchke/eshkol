@@ -116,6 +116,7 @@ for os_dir in docker/*/; do
         docker cp "$container_id:/app/build/eshkol-run" "$out_dir/" 2>/dev/null || echo "  Warning: eshkol-run not found"
         docker cp "$container_id:/app/build/eshkol-repl" "$out_dir/" 2>/dev/null || echo "  Warning: eshkol-repl not found"
         docker cp "$container_id:/app/build/stdlib.o" "$out_dir/" 2>/dev/null || echo "  Warning: stdlib.o not found"
+        docker cp "$container_id:/app/build/stdlib.bc" "$out_dir/" 2>/dev/null || echo "  Warning: stdlib.bc not found"
 
         # Find and copy .deb package
         deb_file=$(docker run --rm --platform "$platform" "$image_name" find /app/build -name "*.deb" 2>/dev/null | head -1)

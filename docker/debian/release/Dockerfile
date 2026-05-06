@@ -51,7 +51,7 @@ WORKDIR /app/build
 RUN cpack -G DEB -D CPACK_PACKAGE_VERSION="${VERSION}"
 
 # Verify artifacts
-RUN ls -la /app/build/eshkol-run /app/build/eshkol-repl /app/build/stdlib.o || true
+RUN ls -la /app/build/eshkol-run /app/build/eshkol-repl /app/build/stdlib.o /app/build/stdlib.bc || true
 RUN find /app/build -name "*.deb" -ls || true
 
 # Keep container running for file extraction
