@@ -1,0 +1,99 @@
+;; tests/v1_2_edge_cases/tensor_pixel_fill_test.esk
+;;
+;; Native pixel-fill primitives for game-style rendering on 2D / 3D tensors:
+;;   (tensor-rect-fill! t row0 col0 row1 col1 v0 [v1 v2 ...])
+;;   (tensor-disk-fill! t cy cx radius v0 [v1 v2 ...])
+;;
+;; Half-open rects (row0..row1) × (col0..col1). Channel count must match
+;; the tensor's last dim for 3D tensors (or be a single broadcast scalar).
+;; Out-of-range corners clamp to the tensor edges. Disks use Euclidean
+;; distance squared to avoid sqrt; pixels outside the bounding box are
+;; skipped without checking.
+;;
+;; Originally landed for the Noesis 2026-05-07 tensor-graphics request:
+;; per-pixel rendering needed C-runtime fills so an 80-frame asteroids
+;; bench could fit under a 16ms-per-frame budget.
+
+(require stdlib)
+
+(define passed 0)
+(define failed 0)
+(define (check label want got)
+  (if (= want got)
+      (begin (set! passed (+ passed 1)))
+      (begin (set! failed (+ failed 1))
+             (display "FAIL ") (display label)
+             (display " want=") (display want)
+             (display " got=") (display got) (newline))))
+
+
+;; --- 2D scalar rect fill ---
+(define t2 (make-tensor (list 5 5) 0.0))
+(tensor-rect-fill! t2 1 1 4 4 9.0)
+(check "2D rect inside (2,2)"      9 (tensor-ref t2 2 2))
+(check "2D rect corner (1,1)"      9 (tensor-ref t2 1 1))
+(check "2D rect edge (3,3)"        9 (tensor-ref t2 3 3))
+(check "2D rect outside (0,0)"     0 (tensor-ref t2 0 0))
+(check "2D rect outside (4,4)"     0 (tensor-ref t2 4 4))
+(check "2D rect just-past (1,4)"   0 (tensor-ref t2 1 4))
+
+
+;; --- 3D RGB rect fill: per-channel values ---
+(define t3 (make-tensor (list 4 4 3) 0.0))
+(tensor-rect-fill! t3 0 0 2 2 255.0 128.0 64.0)
+(check "3D RGB R at (0,0)"   255 (tensor-ref t3 0 0 0))
+(check "3D RGB G at (0,0)"   128 (tensor-ref t3 0 0 1))
+(check "3D RGB B at (0,0)"    64 (tensor-ref t3 0 0 2))
+(check "3D RGB R at (1,1)"   255 (tensor-ref t3 1 1 0))
+(check "3D RGB R outside"      0 (tensor-ref t3 2 2 0))
+
+
+;; --- 3D scalar broadcast ---
+(define t3b (make-tensor (list 3 3 3) 0.0))
+(tensor-rect-fill! t3b 0 0 3 3 7.0)  ; one fill value broadcast to all channels
+(check "3D broadcast R" 7 (tensor-ref t3b 0 0 0))
+(check "3D broadcast G" 7 (tensor-ref t3b 0 0 1))
+(check "3D broadcast B" 7 (tensor-ref t3b 0 0 2))
+
+
+;; --- Out-of-bounds clamping ---
+(define tc (make-tensor (list 3 3) 0.0))
+(tensor-rect-fill! tc -5 -5 100 100 1.0)
+(check "clamp every cell (0,0)" 1 (tensor-ref tc 0 0))
+(check "clamp every cell (2,2)" 1 (tensor-ref tc 2 2))
+
+
+;; --- Disk fill: a radius-2 disk has the classic plus shape ---
+(define td (make-tensor (list 5 5) 0.0))
+(tensor-disk-fill! td 2 2 2 1.0)
+;; expected pattern (1 = filled):
+;;   . . 1 . .
+;;   . 1 1 1 .
+;;   1 1 1 1 1
+;;   . 1 1 1 .
+;;   . . 1 . .
+(check "disk row0 col2" 1 (tensor-ref td 0 2))
+(check "disk row1 col2" 1 (tensor-ref td 1 2))
+(check "disk row2 col0" 1 (tensor-ref td 2 0))
+(check "disk row2 col4" 1 (tensor-ref td 2 4))
+(check "disk corner skipped (0,0)" 0 (tensor-ref td 0 0))
+(check "disk corner skipped (4,4)" 0 (tensor-ref td 4 4))
+
+
+;; --- Disk fill with negative radius is a no-op ---
+(define tn (make-tensor (list 3 3) 0.0))
+(tensor-disk-fill! tn 1 1 -1 5.0)
+(check "negative radius no-op" 0 (tensor-ref tn 1 1))
+
+
+;; --- Inverted rect corners are normalized (not a no-op) ---
+(define ti (make-tensor (list 4 4) 0.0))
+(tensor-rect-fill! ti 3 3 1 1 5.0)  ; row0 > row1
+(check "inverted-corner (1,1)" 5 (tensor-ref ti 1 1))
+(check "inverted-corner (2,2)" 5 (tensor-ref ti 2 2))
+
+
+;; --- Summary ---
+(display "passed=") (display passed)
+(display " failed=") (display failed) (newline)
+(if (> failed 0) (exit 1) (display "OK\n"))

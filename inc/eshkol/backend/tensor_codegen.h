@@ -90,6 +90,16 @@ public:
      */
     llvm::Value* tensorSet(const eshkol_operations_t* op);
 
+    /**
+     * Native pixel fills — answer to Noesis 2026-05-07 request.
+     * tensor-rect-fill!: (tensor-rect-fill! t row0 col0 row1 col1 v0 [v1 v2 ...])
+     * tensor-disk-fill!: (tensor-disk-fill! t cy cx radius v0 [v1 v2 ...])
+     * Channel values are passed as a stack-allocated double[] to the
+     * runtime so per-pixel cost is one memcpy, not a tagged dispatch.
+     */
+    llvm::Value* tensorRectFill(const eshkol_operations_t* op);
+    llvm::Value* tensorDiskFill(const eshkol_operations_t* op);
+
     // === Tensor Arithmetic ===
 
     /**
