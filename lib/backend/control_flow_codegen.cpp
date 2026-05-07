@@ -847,6 +847,12 @@ llvm::Value* ControlFlowCodegen::codegenBegin(const eshkol_operations_t* op) {
         llvm::Value* last_value = nullptr;
         for (const eshkol_ast_t* expr : non_defines) {
             last_value = codegen_ast_callback_(expr, callback_context_);
+            // NORETURN SAFETY (#244): if this expression terminated the
+            // current block (e.g., `(raise ...)` emitted unreachable),
+            // stop emitting further siblings — they would land after the
+            // terminator and trip "Terminator found in the middle of a
+            // basic block!" verifier failure.
+            if (ctx_.builder().GetInsertBlock()->getTerminator()) break;
         }
 
         return last_value ? last_value : tagged_.packNull();
@@ -856,6 +862,8 @@ llvm::Value* ControlFlowCodegen::codegenBegin(const eshkol_operations_t* op) {
     llvm::Value* last_value = nullptr;
     for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
         last_value = codegen_ast_callback_(&op->call_op.variables[i], callback_context_);
+        // NORETURN SAFETY (#244): see comment in the defines branch above.
+        if (ctx_.builder().GetInsertBlock()->getTerminator()) break;
     }
 
     return last_value ? last_value : llvm::ConstantInt::get(ctx_.int64Type(), 0);

@@ -1652,13 +1652,17 @@ llvm::Value* StringIOCodegen::listToString(const eshkol_operations_t* op) {
     ctx_.builder().CreateStore(cdr_val, list_iter_ptr);
     ctx_.builder().CreateBr(count_cond);
 
-    // Count end: allocate string buffer with header
+    // Count end: allocate string buffer with header.
+    // arena_allocate_string_with_header(arena, length) treats `length` as
+    // the string's payload length (excluding NUL) and adds +1 internally.
+    // Pass `final_count` directly — passing final_count+1 makes the header
+    // report length+1 (same shape as the original string-upcase/downcase
+    // overallocation bug exposed by the substring strlen→utf8 fix).
     ctx_.builder().SetInsertPoint(count_end);
     llvm::Value* final_count = ctx_.builder().CreateLoad(ctx_.int64Type(), count_ptr);
-    llvm::Value* buf_size = ctx_.builder().CreateAdd(final_count, llvm::ConstantInt::get(ctx_.int64Type(), 1));
     llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
     llvm::Value* str_buf = ctx_.builder().CreateCall(
-        ctx_.memory().getArenaAllocateStringWithHeader(), {arena_ptr, buf_size});
+        ctx_.memory().getArenaAllocateStringWithHeader(), {arena_ptr, final_count});
 
     // Reset iterator and index for filling
     ctx_.builder().CreateStore(list_arg, list_iter_ptr);

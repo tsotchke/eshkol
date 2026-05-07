@@ -1,0 +1,52 @@
+;; mode: aot
+;; R7RS string escape sequences — task #227
+;; Covers \xHEX;, \uNNNN, \a, \b, \|, line continuation, and graceful fallback.
+
+(define pass 0)
+(define fail 0)
+
+(define (check label got expected)
+  (if (equal? got expected)
+      (begin (set! pass (+ pass 1))
+             (display "PASS: ") (display label) (newline))
+      (begin (set! fail (+ fail 1))
+             (display "FAIL: ") (display label)
+             (display " — got [") (display got)
+             (display "] expected [") (display expected) (display "]") (newline))))
+
+;; \xHEX; — variable-length R7RS hex escape
+(check "x-ascii-A"        "\x41;"          "A")
+(check "x-two-chars"      "\x48;\x69;"     "Hi")
+(check "x-len-1"          (string-length "\x41;") 1)
+
+;; UTF-8 multi-byte (string-length is codepoint count per R7RS)
+(check "x-1cp-eacute"     (string-length "\xE9;") 1)
+(check "x-1cp-heart"      (string-length "\x2764;") 1)
+(check "x-1cp-emoji"      (string-length "\x1F600;") 1)
+
+;; \uNNNN — 4-hex-digit shorthand (single codepoint)
+(check "u-ascii"          "A" "A")
+(check "u-eacute-len"     (string-length "é") 1)
+(check "u-heart-len"      (string-length "❤") 1)
+
+;; Single-letter named escapes
+(check "alert"            "\a" (make-string 1 (integer->char 7)))
+(check "backspace"        "\b" (make-string 1 (integer->char 8)))
+(check "vertical-bar"     "\|" "|")
+
+;; Graceful fallback for malformed forms — must not crash
+(check "x-no-semi-keeps-x"   "\xZZ" "xZZ")
+(check "x-empty-keeps-x"     "\x;"  "x;")
+(check "u-non-hex-keeps-u"   "\uZZZZ" "uZZZZ")
+
+;; Existing escapes still work
+(check "newline"          "a\nb" (string-append "a" (make-string 1 (integer->char 10)) "b"))
+(check "tab"              "a\tb" (string-append "a" (make-string 1 (integer->char 9)) "b"))
+(check "backslash"        "\\"   (make-string 1 (integer->char 92)))
+(check "quote"            "\""   (make-string 1 (integer->char 34)))
+
+(newline)
+(display "Total: ") (display (+ pass fail))
+(display ", PASS: ") (display pass)
+(display ", FAIL: ") (display fail) (newline)
+(if (> fail 0) (exit 1) (exit 0))

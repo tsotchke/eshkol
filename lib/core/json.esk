@@ -19,7 +19,9 @@
 ;;   null    -> '()
 ;;
 
-(provide json-parse json-stringify json-get json-get-in json-array-ref
+(provide json-parse json-try-parse json-parse-result?
+         json-result-ok? json-result-value json-result-error
+         json-stringify json-get json-get-in json-array-ref
          hash-table->alist alist->hash-table
          alist->json json-write-file alist-write-json json-read-file)
 
@@ -277,9 +279,134 @@
 ;; Public API - Parsing
 ;; ============================================================================
 
-;; Parse a JSON string into an Eshkol value
+;; Parse a JSON string into an Eshkol value (legacy permissive entry).
+;; Returns the parsed value on success and a degenerate '() on partial /
+;; malformed input — callers can't distinguish "valid JSON null" from
+;; "garbage input." Kept for backwards compat; prefer json-try-parse.
 (define (json-parse str)
   (car (json-parse-val str 0 (string-length str))))
+
+;; ============================================================================
+;; Result-typed parser (#246)
+;; ============================================================================
+;; A Result is a tagged 2-list:
+;;   (json-ok    . value)   on successful parse
+;;   (json-err   . message) on failure
+;;
+;; Why a tagged sentinel rather than reusing pairs/nulls: the underlying
+;; parser legitimately produces '() for the JSON `null` literal AND
+;; for the "couldn't recognize anything" branch, so a bare value can't
+;; signal failure. Callers that need to distinguish the two MUST go
+;; through json-try-parse and pattern-match on the tag.
+
+(define (json-parse-result? r)
+  "Recognize a json-ok / json-err Result pair."
+  (and (pair? r)
+       (or (eq? (car r) 'json-ok)
+           (eq? (car r) 'json-err))))
+
+(define (json-result-ok? r)
+  "True iff r is (json-ok . _)."
+  (and (pair? r) (eq? (car r) 'json-ok)))
+
+(define (json-result-value r)
+  "Extract the parsed value from (json-ok . v). Errors on json-err."
+  (if (json-result-ok? r)
+      (cdr r)
+      (error "json-result-value: not an Ok result" r)))
+
+(define (json-result-error r)
+  "Extract the message from (json-err . msg). Errors on json-ok."
+  (if (and (pair? r) (eq? (car r) 'json-err))
+      (cdr r)
+      (error "json-result-error: not an Err result" r)))
+
+;; Helper: skip trailing whitespace from a position. Used by
+;; json-try-parse to confirm the parser consumed the whole input
+;; (modulo allowed trailing whitespace, which RFC 8259 permits).
+(define (json-skip-trailing-ws str pos len)
+  (if (>= pos len)
+      pos
+      (let ((c (char->integer (string-ref str pos))))
+        (if (or (= c 32) (= c 9) (= c 10) (= c 13))
+            (json-skip-trailing-ws str (+ pos 1) len)
+            pos))))
+
+;; Structural balance check: walk the string once and confirm every
+;; `{` has a matching `}`, every `[` a matching `]`, and no string is
+;; left unterminated. The underlying recursive-descent parser silently
+;; accepts truncated objects (`{"k":` returns a partial hash) so we
+;; need this independent witness before declaring a parse successful.
+;;
+;; Returns #f if the input is structurally complete. If unbalanced,
+;; returns a short diagnostic string naming what's missing — that
+;; string becomes the error message of the surrounding json-try-parse.
+;;
+;; Limitations: this check trusts the surface tokenization (skips over
+;; \" inside strings) but doesn't validate every grammar rule. It's a
+;; cheap O(N) gate to catch the most common partial-input cases that
+;; the recursive-descent parser would otherwise accept silently.
+(define (json-structural-error str len)
+  (define (loop p brace-depth bracket-depth in-str escape)
+    (cond
+      ((>= p len)
+       (cond
+         (in-str          "json-try-parse: unterminated string literal")
+         ((> brace-depth 0)   "json-try-parse: missing closing brace")
+         ((> bracket-depth 0) "json-try-parse: missing closing bracket")
+         (else            #f)))
+      (else
+       (let ((c (char->integer (string-ref str p))))
+         (cond
+           (in-str
+            (cond
+              (escape (loop (+ p 1) brace-depth bracket-depth #t #f))
+              ((= c 92) (loop (+ p 1) brace-depth bracket-depth #t #t))   ;; backslash
+              ((= c 34) (loop (+ p 1) brace-depth bracket-depth #f #f))   ;; close quote
+              (else     (loop (+ p 1) brace-depth bracket-depth #t #f))))
+           ((= c 34) (loop (+ p 1) brace-depth bracket-depth #t #f))      ;; open quote
+           ((= c 123) (loop (+ p 1) (+ brace-depth 1) bracket-depth #f #f))    ;; {
+           ((= c 125) (loop (+ p 1) (- brace-depth 1) bracket-depth #f #f))    ;; }
+           ((= c 91)  (loop (+ p 1) brace-depth (+ bracket-depth 1) #f #f))    ;; [
+           ((= c 93)  (loop (+ p 1) brace-depth (- bracket-depth 1) #f #f))    ;; ]
+           (else (loop (+ p 1) brace-depth bracket-depth #f #f)))))))
+  (loop 0 0 0 #f #f))
+
+(define (json-try-parse str)
+  "Parse JSON returning a Result.
+
+   Success:  (json-ok . value)            — value is the parsed Eshkol value
+   Failure:  (json-err . \"reason ...\")  — string with a short diagnostic
+
+   Distinguishes JSON null (parses to '() under (json-ok . ())) from
+   malformed input (returns json-err). This is what the agent wants
+   for session JSON / API responses where an unparseable payload must
+   surface explicitly instead of crashing later in (json-array-ref)
+   or (hash-ref) on a degenerate '()."
+  (cond
+    ((not (string? str))
+     (cons 'json-err "json-try-parse: input is not a string"))
+    ((= (string-length str) 0)
+     (cons 'json-err "json-try-parse: empty input"))
+    (else
+     (let* ((len (string-length str))
+            (start (json-skip-trailing-ws str 0 len)))
+       (if (>= start len)
+           (cons 'json-err "json-try-parse: input is whitespace only")
+           (let ((struct-err (json-structural-error str len)))
+             (if struct-err
+                 (cons 'json-err struct-err)
+                 (let* ((result (json-parse-val str 0 len))
+                        (value (car result))
+                        (end-pos (cdr result))
+                        (after-ws (json-skip-trailing-ws str end-pos len)))
+                   (cond
+                     ((<= end-pos start)
+                      (cons 'json-err "json-try-parse: no JSON value recognized"))
+                     ((< after-ws len)
+                      (cons 'json-err "json-try-parse: trailing garbage after JSON value"))
+                     (else
+                      (cons 'json-ok value)))))))))))
 
 ;; Get a field from a JSON object (hash table)
 (define (json-get obj key . default)
