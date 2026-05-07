@@ -1170,6 +1170,8 @@ public:
         function_return_types["kb-save"] = BuiltinTypes::Boolean;
         function_return_types["kb-load"] = BuiltinTypes::Value;
         function_return_types["tensor-token-estimate"] = BuiltinTypes::Integer;
+        function_return_types["tensor-rect-fill!"] = BuiltinTypes::Null;
+        function_return_types["tensor-disk-fill!"] = BuiltinTypes::Null;
         // Noesis requirements
         function_return_types["fg-marginal"] = BuiltinTypes::Value;
         function_return_types["fg-entropy"] = BuiltinTypes::Value;
@@ -12872,6 +12874,8 @@ private:
             return codegenTensorVectorRef(op);
         }
         if (func_name == "tensor-set" || func_name == "tensor-set!") return tensor_->tensorSet(op);
+        if (func_name == "tensor-rect-fill!") return tensor_->tensorRectFill(op);
+        if (func_name == "tensor-disk-fill!") return tensor_->tensorDiskFill(op);
         if (func_name == "tensor") return tensor_->makeTensor(op);  // (tensor e1 e2 ...) or (tensor shape fill)
 
         // Scheme vectors (heterogeneous - can hold any type) - MIGRATED to CollectionCodegen
@@ -19578,6 +19582,8 @@ private:
             "factor-graph?", "workspace?", "tensor?", "dual?",
             "fg-update-cpt!", "kb-count",
             "image-read", "image-write", "image-to-grayscale",
+            // Native pixel fills (Noesis 2026-05-07 substrate request)
+            "tensor-rect-fill!", "tensor-disk-fill!",
             // Eval
             "eval",
         };

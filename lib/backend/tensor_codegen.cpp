@@ -807,6 +807,142 @@ llvm::Value* TensorCodegen::tensorSet(const eshkol_operations_t* op) {
     return tensor_ptr_int; // Return the tensor
 }
 
+// Shared codegen for tensor-rect-fill! / tensor-disk-fill!. Both
+// builtins take a tensor + a fixed prefix of integer args + 1..C
+// numeric "channel value" args, and dispatch to a single C runtime
+// helper that does the heavy lifting per-pixel. We allocate a stack
+// buffer of `num_channels` doubles, populate it from the trailing
+// args, and pass (tensor_tv*, ints..., chan_ptr, num_channels) to
+// the runtime — so per-pixel cost in C is one memcpy + one store
+// per channel, not a tagged-value dispatch.
+//
+// Why ptr-to-tagged-value rather than struct-by-value: same backend
+// convention used everywhere else in tensor_codegen.cpp — direct
+// struct-by-value calls to C cause ABI divergence on ARM64 between
+// the LLVM-emitted call and the C runtime. Always alloca + pointer.
+llvm::Value* TensorCodegen::tensorRectFill(const eshkol_operations_t* op) {
+    // (tensor-rect-fill! t row0 col0 row1 col1 v0 [v1 ...])
+    //   6 fixed args + N channel values, N >= 1
+    if (op->call_op.num_vars < 6) {
+        eshkol_error("tensor-rect-fill! requires tensor, row0, col0, row1, col1, value, ...");
+        return nullptr;
+    }
+    llvm::Value* tensor_val = codegenAST(&op->call_op.variables[0]);
+    if (!tensor_val) return nullptr;
+    if (tensor_val->getType() != ctx_.taggedValueType()) {
+        tensor_val = tagged_.packInt64(tagged_.safeExtractInt64(tensor_val), false);
+    }
+
+    llvm::Value* row0 = tagged_.safeExtractInt64(codegenAST(&op->call_op.variables[1]));
+    llvm::Value* col0 = tagged_.safeExtractInt64(codegenAST(&op->call_op.variables[2]));
+    llvm::Value* row1 = tagged_.safeExtractInt64(codegenAST(&op->call_op.variables[3]));
+    llvm::Value* col1 = tagged_.safeExtractInt64(codegenAST(&op->call_op.variables[4]));
+
+    const uint64_t num_channels = op->call_op.num_vars - 5;
+
+    // Materialise tensor + chan buffer in entry block so call sees
+    // stable pointers regardless of where this codegen runs.
+    llvm::IRBuilderBase::InsertPoint saved = ctx_.builder().saveIP();
+    llvm::Function* cur_fn = ctx_.builder().GetInsertBlock()->getParent();
+    ctx_.builder().SetInsertPoint(&cur_fn->getEntryBlock(), cur_fn->getEntryBlock().begin());
+    llvm::Value* t_slot = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "rect_t_slot");
+    llvm::Value* chan_buf = ctx_.builder().CreateAlloca(
+        ctx_.doubleType(),
+        llvm::ConstantInt::get(ctx_.int64Type(), num_channels),
+        "rect_chans");
+    ctx_.builder().restoreIP(saved);
+    ctx_.builder().CreateStore(tensor_val, t_slot);
+
+    for (uint64_t i = 0; i < num_channels; i++) {
+        llvm::Value* v = codegenAST(&op->call_op.variables[5 + i]);
+        if (!v) return nullptr;
+        llvm::Value* d = extractAsDouble(v);
+        llvm::Value* slot = ctx_.builder().CreateGEP(
+            ctx_.doubleType(), chan_buf,
+            llvm::ConstantInt::get(ctx_.int64Type(), i));
+        ctx_.builder().CreateStore(d, slot);
+    }
+
+    llvm::Function* fn = ctx_.module().getFunction("eshkol_tensor_rect_fill");
+    if (!fn) {
+        llvm::FunctionType* ft = llvm::FunctionType::get(
+            ctx_.builder().getVoidTy(),
+            {ctx_.ptrType(),                     // tensor tagged-value*
+             ctx_.int64Type(), ctx_.int64Type(), // row0, col0
+             ctx_.int64Type(), ctx_.int64Type(), // row1, col1
+             ctx_.ptrType(),                     // double* channels
+             ctx_.int64Type()},                  // num_channels
+            false);
+        fn = llvm::Function::Create(
+            ft, llvm::Function::ExternalLinkage,
+            "eshkol_tensor_rect_fill", &ctx_.module());
+    }
+    ctx_.builder().CreateCall(fn, {
+        t_slot, row0, col0, row1, col1, chan_buf,
+        llvm::ConstantInt::get(ctx_.int64Type(), num_channels)});
+
+    return tagged_.packNull();
+}
+
+llvm::Value* TensorCodegen::tensorDiskFill(const eshkol_operations_t* op) {
+    // (tensor-disk-fill! t cy cx radius v0 [v1 ...])
+    //   4 fixed args + N channel values, N >= 1
+    if (op->call_op.num_vars < 5) {
+        eshkol_error("tensor-disk-fill! requires tensor, cy, cx, radius, value, ...");
+        return nullptr;
+    }
+    llvm::Value* tensor_val = codegenAST(&op->call_op.variables[0]);
+    if (!tensor_val) return nullptr;
+    if (tensor_val->getType() != ctx_.taggedValueType()) {
+        tensor_val = tagged_.packInt64(tagged_.safeExtractInt64(tensor_val), false);
+    }
+
+    llvm::Value* cy = tagged_.safeExtractInt64(codegenAST(&op->call_op.variables[1]));
+    llvm::Value* cx = tagged_.safeExtractInt64(codegenAST(&op->call_op.variables[2]));
+    llvm::Value* radius = tagged_.safeExtractInt64(codegenAST(&op->call_op.variables[3]));
+
+    const uint64_t num_channels = op->call_op.num_vars - 4;
+
+    llvm::IRBuilderBase::InsertPoint saved = ctx_.builder().saveIP();
+    llvm::Function* cur_fn = ctx_.builder().GetInsertBlock()->getParent();
+    ctx_.builder().SetInsertPoint(&cur_fn->getEntryBlock(), cur_fn->getEntryBlock().begin());
+    llvm::Value* t_slot = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "disk_t_slot");
+    llvm::Value* chan_buf = ctx_.builder().CreateAlloca(
+        ctx_.doubleType(),
+        llvm::ConstantInt::get(ctx_.int64Type(), num_channels),
+        "disk_chans");
+    ctx_.builder().restoreIP(saved);
+    ctx_.builder().CreateStore(tensor_val, t_slot);
+
+    for (uint64_t i = 0; i < num_channels; i++) {
+        llvm::Value* v = codegenAST(&op->call_op.variables[4 + i]);
+        if (!v) return nullptr;
+        llvm::Value* d = extractAsDouble(v);
+        llvm::Value* slot = ctx_.builder().CreateGEP(
+            ctx_.doubleType(), chan_buf,
+            llvm::ConstantInt::get(ctx_.int64Type(), i));
+        ctx_.builder().CreateStore(d, slot);
+    }
+
+    llvm::Function* fn = ctx_.module().getFunction("eshkol_tensor_disk_fill");
+    if (!fn) {
+        llvm::FunctionType* ft = llvm::FunctionType::get(
+            ctx_.builder().getVoidTy(),
+            {ctx_.ptrType(),                                          // tensor tagged-value*
+             ctx_.int64Type(), ctx_.int64Type(), ctx_.int64Type(),    // cy, cx, radius
+             ctx_.ptrType(), ctx_.int64Type()},                       // chans, num
+            false);
+        fn = llvm::Function::Create(
+            ft, llvm::Function::ExternalLinkage,
+            "eshkol_tensor_disk_fill", &ctx_.module());
+    }
+    ctx_.builder().CreateCall(fn, {
+        t_slot, cy, cx, radius, chan_buf,
+        llvm::ConstantInt::get(ctx_.int64Type(), num_channels)});
+
+    return tagged_.packNull();
+}
+
 llvm::Value* TensorCodegen::tensorArithmetic(const eshkol_operations_t* op, const std::string& operation) {
     // tensor-add/sub/mul/div: (tensor-op arg1 arg2)
     // Supports both scheme vectors (VECTOR_PTR) and tensors (TENSOR_PTR)

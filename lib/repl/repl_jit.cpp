@@ -98,6 +98,13 @@ extern "C" {
     int64_t eshkol_tensor_index_arg_count(const eshkol_tagged_value_t* tv);
     int64_t eshkol_vref_unwrap_index(const eshkol_tagged_value_t* vec_tv,
                                      const eshkol_tagged_value_t* idx_tv);
+    void eshkol_tensor_rect_fill(const eshkol_tagged_value_t* t_tv,
+                                 int64_t row0, int64_t col0,
+                                 int64_t row1, int64_t col1,
+                                 const double* channels, int64_t num_channels);
+    void eshkol_tensor_disk_fill(const eshkol_tagged_value_t* t_tv,
+                                 int64_t cy, int64_t cx, int64_t radius,
+                                 const double* channels, int64_t num_channels);
     void* eshkol_repl_forward_ref_stub_addr(void);
 #ifdef _WIN32
     double drand48(void);
@@ -961,6 +968,8 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_SYMBOL(eshkol_tensor_linear_from_index_arg);
     ADD_SYMBOL(eshkol_tensor_index_arg_count);
     ADD_SYMBOL(eshkol_vref_unwrap_index);
+    ADD_SYMBOL(eshkol_tensor_rect_fill);
+    ADD_SYMBOL(eshkol_tensor_disk_fill);
 
     // ===== BLAS ACCELERATION =====
     // Runtime matmul with automatic BLAS/scalar dispatch
