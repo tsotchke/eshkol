@@ -1,0 +1,58 @@
+# Eshkol production-audit policies. Used by `icc production-audit` to compose
+# a release-readiness report combining artifact freshness, source drift,
+# guard-rail diff, contract-graph gaps, stub classification, and oracle
+# verdict into one verdict with severity-weighted gates.
+
+profiles:
+  # Default profile for `icc production-audit --target eshkol-compiler-readiness`.
+  # Tight gates: any high-severity finding fails the audit; mediums become
+  # warnings; lows are advisory.
+  - name: eshkol-compiler-readiness
+    default: true
+    targets: [eshkol-compiler-readiness, eshkol, compiler]
+    required_artifacts: [index, memory, architecture, git-history]
+    presets: [shell-hardening]
+    verdict:
+      fail_on:
+        high: 0
+      warn_on:
+        medium: 0
+        low: 0
+
+  # Agent FFI surface — the compiler needs to ship contracts the agent can
+  # rely on. Same gate severity as the main compiler since the agent treats
+  # FFI breaks as production-blocking.
+  - name: agent-ffi-ready
+    targets: [agent-ffi-ready, agent-ffi]
+    required_artifacts: [index, memory, architecture]
+    presets: [shell-hardening]
+    verdict:
+      fail_on:
+        high: 0
+      warn_on:
+        medium: 0
+        low: 0
+
+  # v1.2 release gate — strictest. Even mediums fail. Used right before
+  # tagging a release.
+  - name: v1.2-release
+    targets: [v1.2-release, v1.2, release-1.2]
+    required_artifacts: [index, memory, architecture, git-history]
+    presets: [shell-hardening]
+    verdict:
+      fail_on:
+        high: 0
+        medium: 0
+      warn_on:
+        low: 0
+
+  # Per-PR sanity gate — only fails on highs. Lets in-flight medium-severity
+  # findings through during the development loop.
+  - name: no-regression
+    targets: [no-regression, smoke, sanity, safe-to-merge]
+    required_artifacts: [index]
+    presets: []
+    verdict:
+      fail_on:
+        high: 0
+      warn_on: {}

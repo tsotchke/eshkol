@@ -134,3 +134,4 @@ CMakeFiles/
 /cmake_install.cmake
 /install_manifest.txt
 notes/
+scripts/icc_traces/

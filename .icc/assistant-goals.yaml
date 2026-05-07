@@ -1,0 +1,65 @@
+# Eshkol-side assistant goals. Used by `icc next-action --target eshkol-…`
+# to suggest what to work on next when no specific bug is queued.
+#
+# Order roughly tracks the agent's blocker urgency + the v1.2 milestone.
+# Items get demoted to `done` (delete) once their oracle passes.
+
+goals:
+  - id: agent-blockers-cleared
+    priority: high
+    goal: All three eshkol-agent blockers (HTTP/SSE, subprocess pipe contract, durable session persistence) clear on the eshkol side
+    reason: agent productivity is gated on these; everything else they need (live API calls, MCP, durable sessions) waits until the runtime contracts are real
+    tags: [agent, ffi, blockers]
+
+  - id: http-sse-streaming
+    priority: high
+    goal: Implement SSE streaming in agent_http_client.c (qllm_http_stream_open/next/done/close) so Anthropic streaming, server-sent events, and live token surfaces work
+    depends_on: [agent-blockers-cleared]
+    reason: sync HTTP shipped 2026-05-06; streaming is still stubbed. Without it the agent must batch-poll, which breaks the conversational UX
+    tags: [http, streaming, agent]
+
+  - id: or-null-miscompile-root-cause
+    priority: high
+    goal: Find and fix the codegen path that replaces a function body containing `(or X null-literal)` with "return null"
+    reason: real agent code (services/mcp-client.esk, services/mcp-transport.esk) hit this; the workaround `(if X X '())` is everywhere and needs cleanup. Repro and notes in memory/project_229_or_null_repro.md
+    tags: [codegen, agent, regression]
+
+  - id: repl-no-return-verifier
+    priority: high
+    goal: Fix REPL/JIT %entry getting setup IR appended after `(raise …)` emits unreachable
+    reason: AOT path is fixed (#244 partial). REPL still trips "Terminator found in middle of basic block %entry" which forces agent tests onto the slower compile-link-run harness. Trace plan in memory/project_244_partial_fix.md
+    tags: [codegen, repl, jit]
+
+  - id: parallel-test-fork-exhaustion
+    priority: medium
+    goal: "Diagnose and fix subprocess fork-exhaustion under heavy ctest load (`/bin/sh: fork: Resource temporarily unavailable`)"
+    depends_on: [agent-blockers-cleared]
+    reason: "basic single-thread spawn is fine; failure mode is concurrent ctest -j with shell pipelines. Likely zombie reaping or fd close ordering. Stress harness needed first"
+    tags: [subprocess, runtime, test-harness]
+
+  - id: stdlib-test-coverage-per-module
+    priority: medium
+    goal: Every module under lib/core has at least one regression test and a "known builtins" entry
+    reason: silent stdlib regressions are caught by ICC oracle's stdlib-ready criterion, but only if a test exists for each. Currently coverage is patchy
+    tags: [stdlib, tests]
+
+  - id: v1.2-release-cut
+    priority: medium
+    goal: All v1.2 oracle criteria green; cut the v1.2-scale release
+    depends_on: [agent-blockers-cleared, http-sse-streaming]
+    reason: model serialization, image I/O, per-thread arenas, error messages — all the v1.2 roadmap items shipped, just need the gating audit and the release artifacts
+    tags: [release, milestone]
+
+  - id: agent-side-migration
+    priority: medium
+    goal: Update eshkol-agent to use the new HTTP/subprocess contracts instead of the legacy "explicit unavailable" wrappers
+    depends_on: [agent-blockers-cleared]
+    reason: runtime now has real implementations; agent code hasn't switched yet. Bridge work in eshkol-agent, not eshkol itself
+    tags: [agent, migration, cross-repo]
+
+  - id: hardening-epics
+    priority: low
+    goal: Work through the hardening epics (memory-safety / input-validation / concurrency / resource-management / security-surface / determinism)
+    depends_on: [v1.2-release-cut]
+    reason: pre-1.0 stability surface; not blocking shipping but blocking "production ready" claim
+    tags: [hardening, audit]
