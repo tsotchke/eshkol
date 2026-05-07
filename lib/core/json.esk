@@ -347,6 +347,40 @@
                             (json-stringify-val (hash-ref ht (car ks)))))))
   (loop keys #t ""))
 
+;; Detect "looks like an alist" — every cell is a cons whose car is
+;; string- or symbol-typed.  We need this because Scheme's `pair?` is
+;; true for both `(("a" . 1) ("b" . 2))` (alist → JSON object) and
+;; `(1 2 3)` (list → JSON array), and the previous `pair? → array`
+;; classification would dive into each cons cell, recurse on its cdr
+;; as a "list of one element", and eventually hit `(cdr "string")` →
+;; "cdr: argument is not a pair".
+(define (alist-key? k) (or (string? k) (symbol? k)))
+(define (proper-alist? x)
+  (cond
+    ((null? x) #f)              ; empty: ambiguous, prefer array
+    ((not (pair? x)) #f)
+    ((not (pair? (car x))) #f)
+    ((not (alist-key? (car (car x)))) #f)
+    ((null? (cdr x)) #t)        ; one entry, valid
+    (else (proper-alist? (cdr x)))))
+
+;; Stringify alist (proper-alist? must have already returned #t)
+(define (json-stringify-alist alist)
+  (define (key->string k)
+    (if (symbol? k) (symbol->string k) k))
+  (define (loop entries first result)
+    (if (null? entries)
+        (string-append "{" result "}")
+        (let ((entry (car entries)))
+          (loop (cdr entries)
+                #f
+                (string-append result
+                              (if first "" ",")
+                              (json-escape-str (key->string (car entry)))
+                              ":"
+                              (json-stringify-val (cdr entry)))))))
+  (loop alist #t ""))
+
 ;; Implementation
 (define (json-stringify-val-impl val)
   (cond
@@ -369,9 +403,20 @@
     ((real? val)
      (number->string val))
 
+    ;; Symbol -> JSON string (matches the agent's session codec
+    ;; convention; without this rule symbols would fall through to
+    ;; the catch-all "null").
+    ((symbol? val)
+     (json-escape-str (symbol->string val)))
+
     ;; Hash table -> object
     ((hash-table? val)
      (json-stringify-obj val))
+
+    ;; Alist (list of (key . value) cons cells with string/symbol keys)
+    ;; → JSON object.  Must be checked BEFORE the generic pair branch.
+    ((proper-alist? val)
+     (json-stringify-alist val))
 
     ;; List -> array (but not null which is also a list)
     ((pair? val)
