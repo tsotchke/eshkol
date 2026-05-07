@@ -1,0 +1,63 @@
+# Eshkol `.icc/` — Infinite Context Coder configs
+
+These files configure ICC's release-readiness machinery for the Eshkol
+compiler. ICC is the assistant tool at `~/Desktop/infinite_context_coder/`;
+its Eshkol-aware indexer treats `.esk` files as a first-class language and
+the configs here let `completion-oracle`, `production-audit`, and
+`assistant-status` give answers tailored to this repo instead of generic
+"is the build green" boilerplate.
+
+## Files
+
+| File | Purpose |
+|---|---|
+| `completion-oracles.yaml` | Defines what "ready" means for various Eshkol targets. Each oracle is a list of criteria (test evidence, runtime checks, contract gaps, stub classification) and a verdict severity. |
+| `production-audit.yaml` | Audit profiles that compose oracle output with artifact freshness, source drift, and guard-rail diffs into one go/no-go verdict. Different gate strictness per profile (per-PR vs release tag). |
+| `assistant-goals.yaml` | Prioritized work goals the assistant suggests when no specific bug is queued. Tracks dependency order; pop items as their oracle goes green. |
+
+## Targets
+
+| Target | When to run |
+|---|---|
+| `eshkol-compiler-readiness` | Daily smoke. Is the compiler healthy enough to land changes? |
+| `agent-ffi-ready` | Before publishing any FFI change. Confirms HTTP/SQLite/subprocess contracts hold. |
+| `stdlib-ready` | After touching `lib/core/`. Catches missing tests / known-builtins entries. |
+| `v1.2-release` | Pre-tag. Strict gate; even mediums fail. |
+| `no-regression` | Per-PR sanity. Highs only fail. |
+
+## Usage
+
+```bash
+ICC=~/Desktop/infinite_context_coder/scripts/codebase_tool.py
+
+# What's blocking the daily compiler health check?
+python3 $ICC completion-oracle --repo eshkol_lang \
+    --target eshkol-compiler-readiness --format markdown
+
+# Pre-release audit composing oracle + artifacts + drift + guards
+python3 $ICC production-audit --repo eshkol_lang \
+    --target v1.2-release --format markdown
+
+# What should I work on next?
+python3 $ICC assistant-status --repo eshkol_lang --format markdown
+```
+
+## Editing tips
+
+- `requires:` is the criteria list (legacy alias for `criteria:`). Each item
+  picks a kind: `test_evidence`, `runtime_check`, `runtime_event`,
+  `runtime_or_contract`, `contract_kind`, `no_contract_gap`, `no_stubbed_paths`.
+- For YAML strings that contain `:`, `#`, or backticks-with-colon, **quote them**.
+  We hit this once already (`/bin/sh: fork: …` confused the parser).
+- Severity `high` blocks; `medium` warns; `low` is advisory. Adjust per profile.
+- `aliases:` let `--target eshkol` resolve to `eshkol-compiler-readiness`.
+
+## Why these specific oracles
+
+The oracle set was curated 2026-05-06 to match the agent-blocker matrix
+in `plans/note-for-eshkol-agent.md`. The five blockers (HTTP, subprocess
+contract, durable session persistence, AOT link wiring, no-return verifier)
+each have either a runtime check that ICC can probe or a runtime trace
+event the assistant can emit. Going green on `agent-ffi-ready` means the
+agent's three top blockers (HTTP/SSE, subprocess, sessions) are unblocked
+on the eshkol side.

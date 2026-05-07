@@ -1,0 +1,286 @@
+# ICC completion oracles for the Eshkol compiler.
+#
+# Each oracle is a target name plus a list of `requires` criteria. ICC's
+# `completion-oracle` subcommand checks that each criterion has evidence
+# (test indexed, contract present, runtime check passed, no stub paths)
+# and produces a verdict the assistant can plan against.
+#
+# Targets here mirror the milestone structure in ROADMAP.md / ESHKOL_VERSION.txt
+# and the agent-blocker matrix in plans/note-for-eshkol-agent.md.
+
+oracles:
+  # ─────────────────────────────────────────────────────────────────
+  # Main compiler readiness — the everyday "is the compiler healthy"
+  # check. Used by `icc next-action --target eshkol-compiler` to surface
+  # what's blocking work today.
+  #
+  # Each runtime_event criterion looks for a JSON-L line in
+  # scripts/icc_traces/*.jsonl with kind:"eshkol_smoke" name:<id>
+  # value:"PASS". scripts/run_icc_smoke.sh produces the trace; running
+  # it before `icc completion-oracle` flips this oracle to green.
+  # ─────────────────────────────────────────────────────────────────
+  - name: eshkol-compiler-readiness
+    aliases: [eshkol, compiler, eshkol-compiler]
+    requires:
+      - test_evidence: true
+        severity: high
+        label: v1.2 edge-case tests are indexed and runnable
+        action: cd build && cmake --build . && ctest -R v1_2
+
+      - no_contract_gap:
+          - flag_without_contract
+          - state_key_produced_without_consumer
+          - state_key_consumed_without_producer
+          - artifact_without_test_or_trace
+          - missing_expected_contract_kind
+        severity: high
+        label: Compiler subsystems wire together without dangling contracts
+        action: fix_contract_graph_gap
+
+      - no_stubbed_paths:
+          - production_fallback
+          - synthetic_model_only
+          - not_exercised_by_real_smoke
+        severity: high
+        label: Codegen / runtime / type-checker production paths are real
+        action: wire_real_path_or_classify_stub
+
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["llvm_module_verifier_clean"]
+          event_values: ["PASS"]
+        severity: high
+        label: LLVM verifyModule passes on the codegen output
+        action: ./scripts/run_icc_smoke.sh
+
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["aot_link_succeeds"]
+          event_values: ["PASS"]
+        severity: high
+        label: eshkol-run produces a runnable binary from an .esk file
+        action: ./scripts/run_icc_smoke.sh
+
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["jit_repl_clean_exit"]
+          event_values: ["PASS"]
+        severity: medium
+        label: eshkol-repl + eshkol-run -r return cleanly on a smoke input
+        action: ./scripts/run_icc_smoke.sh
+
+  # ─────────────────────────────────────────────────────────────────
+  # Agent-FFI readiness — the contract the eshkol-agent depends on.
+  # When this oracle goes green, the agent's three blockers (HTTP,
+  # subprocess, session persistence) are all cleared on the eshkol side.
+  # See plans/note-for-eshkol-agent.md for the originating ranked list.
+  # ─────────────────────────────────────────────────────────────────
+  - name: agent-ffi-ready
+    aliases: [agent-ffi, eshkol-agent-runtime]
+    requires:
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["native_http_get_works"]
+          event_values: ["PASS"]
+        severity: high
+        label: qllm_http_get returns a real response body for live HTTPS
+        action: ./scripts/run_icc_smoke.sh
+
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["native_http_post_json_works"]
+          event_values: ["PASS"]
+        severity: high
+        label: qllm_http_post_json round-trips JSON to a real endpoint
+        action: ./scripts/run_icc_smoke.sh
+
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["subprocess_argv_safe"]
+          event_values: ["PASS"]
+        severity: high
+        label: process-spawn-argv runs argv directly without shell interpretation
+        action: ./scripts/run_icc_smoke.sh
+
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["subprocess_pid_exposed"]
+          event_values: ["PASS"]
+        severity: medium
+        label: process-pid returns the real OS PID of the spawned child
+        action: ./scripts/run_icc_smoke.sh
+
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["sqlite_text_round_trip"]
+          event_values: ["PASS"]
+        severity: high
+        label: sqlite-column-text round-trips ≥ 30 KB session JSON without truncation
+        action: ./scripts/run_icc_smoke.sh
+
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["aot_binaries_link_agent_ffi"]
+          event_values: ["PASS"]
+        severity: high
+        label: eshkol-run -o produces binaries that link agent FFI when (require agent.…) appears
+        action: ./scripts/run_icc_smoke.sh
+
+      - test_evidence: true
+        severity: medium
+        label: Agent FFI smoke tests indexed (http_server_smoke_test, etc.)
+        action: ensure_tests_under_v1_2_edge_cases
+
+  # ─────────────────────────────────────────────────────────────────
+  # Stdlib readiness — every stdlib module under lib/core has a
+  # provide form, a callable through stdlib.o, and at least one test.
+  # Catches the common "added a function, forgot the type-checker
+  # entry / known builtins list" regression class.
+  # ─────────────────────────────────────────────────────────────────
+  - name: stdlib-ready
+    aliases: [stdlib, core-stdlib]
+    requires:
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["stdlib_o_loads"]
+          event_values: ["PASS"]
+        severity: high
+        label: build/stdlib.o exists and loads at JIT and AOT link time
+        action: cmake --build build --target stdlib
+
+      - test_evidence: true
+        severity: medium
+        label: Each stdlib module has a regression test
+        action: add_test_per_stdlib_module
+
+      - no_stubbed_paths:
+          - production_fallback
+          - external_backend_required
+        severity: medium
+        label: Stdlib functions don't shell-out for things they should compute
+        action: replace_shell_fallback_with_native_path
+
+  # ─────────────────────────────────────────────────────────────────
+  # v1.2 release readiness — the gate that flips green when v1.2 ships.
+  # Tracks the 7 roadmap items + the agent-blocker matrix.
+  # ─────────────────────────────────────────────────────────────────
+  - name: v1.2-release
+    aliases: [v1.2, release-1.2, scale]
+    requires:
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["model_serialization_round_trip"]
+          event_values: ["PASS"]
+        severity: high
+        label: model-save / model-load preserve weights bit-exact
+        action: verify_with_tensor_io_test
+
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["image_io_works"]
+          event_values: ["PASS"]
+        severity: medium
+        label: image-read returns a tensor of the correct shape
+        action: run_image_io_test
+
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["per_thread_arena_works"]
+          event_values: ["PASS"]
+        severity: high
+        label: parallel-map can allocate per-thread without cross-thread aliasing
+        action: run_parallel_arena_test
+
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["error_messages_have_source_locations"]
+          event_values: ["PASS"]
+        severity: medium
+        label: Compile errors include file:line:col + caret
+        action: keep_eshkol_error_at_pipeline
+
+      - test_evidence: true
+        severity: high
+        label: Full 16-lane CI matrix indexed and green
+        action: gh_workflow_view_main_after_push
+
+      - no_contract_gap:
+          - missing_expected_contract_kind
+          - flag_without_contract
+        severity: high
+        label: All v1.2 features have wired contracts (plan ↔ test ↔ runtime)
+        action: regenerate_contract_graph
+
+      - no_stubbed_paths:
+          - production_fallback
+          - synthetic_model_only
+          - not_exercised_by_real_smoke
+        severity: high
+        label: No silent fallbacks in v1.2 production paths
+        action: classify_or_replace_each_stub
+
+  # ─────────────────────────────────────────────────────────────────
+  # SDNC paper reproducibility — the headline claim from
+  #   "The Self-Differentiating Neural Computer: Computable Transformers
+  #    via Analytical Weight Construction" (tsotchke 2026).
+  # The reference C bytecode VM and the analytically-constructed
+  # transformer must agree bit-identically on outputs (paper §4.4) and
+  # ideally on the full per-step state. scripts/run_sdnc_oracle.sh runs
+  # the paper suite and writes summary events; per-program disagreement
+  # also surfaces as sdnc_program FAIL records.
+  # ─────────────────────────────────────────────────────────────────
+  - name: sdnc-paper-reproducibility
+    aliases: [sdnc, sdnc-paper, computable-transformers]
+    requires:
+      - runtime_event:
+          event_kinds: [sdnc_paper_suite]
+          event_names: ["output_agreement"]
+          event_values: ["PASS"]
+        severity: high
+        label: All 71 programs produce bit-identical PRINT outputs (paper §4.4)
+        action: ./scripts/run_sdnc_oracle.sh
+
+      - runtime_event:
+          event_kinds: [sdnc_paper_suite]
+          event_names: ["trace_agreement"]
+          event_values: ["PASS"]
+        severity: medium
+        label: Full per-step state agrees for all 71 programs (extended check)
+        action: ./scripts/run_sdnc_oracle.sh
+
+      - runtime_event:
+          event_kinds: [eshkol_vm_halt]
+        severity: high
+        label: At least one bytecode VM trace records a program halt
+        action: ./scripts/run_sdnc_oracle.sh
+
+  # ─────────────────────────────────────────────────────────────────
+  # No-regression gate — used after a refactor or codegen change to
+  # confirm the fix didn't break anything. Lower bar than full release.
+  # ─────────────────────────────────────────────────────────────────
+  - name: no-regression
+    aliases: [smoke, sanity, safe-to-merge]
+    requires:
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["v1_2_edge_case_tests_pass"]
+          event_values: ["PASS"]
+        severity: high
+        label: All tests under tests/v1_2_edge_cases/ pass
+        action: ./scripts/run_icc_smoke.sh
+
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["stdlib_compiles_clean"]
+          event_values: ["PASS"]
+        severity: high
+        label: build/stdlib.o builds without warnings
+        action: touch lib/stdlib.esk && cmake --build build --target stdlib
+
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["example_agent_compiles"]
+          event_values: ["PASS"]
+        severity: medium
+        label: examples/agent.esk compiles end-to-end
+        action: ./build/eshkol-run examples/agent.esk -o /tmp/selene
