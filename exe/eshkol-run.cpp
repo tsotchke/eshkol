@@ -1605,6 +1605,26 @@ static bool requires_stdlib(const std::vector<eshkol_ast_t>& asts)
     return false;
 }
 
+// Check if any AST requires an agent.* module (#248). When true the
+// AOT link step splices ESHKOL_HOST_AGENT_FFI_LINK_ARGS into the
+// link command so symbols like qllm_http_get / eshkol_sqlite_* /
+// qllm_process_* resolve in the produced binary. Programs that don't
+// touch agent.* don't pay the libcurl/sqlite/pcre2 link cost.
+static bool requires_agent_ffi(const std::vector<eshkol_ast_t>& asts)
+{
+    for (const auto& ast : asts) {
+        if (ast.type == ESHKOL_OP && ast.operation.op == ESHKOL_REQUIRE_OP) {
+            for (uint64_t i = 0; i < ast.operation.require_op.num_modules; i++) {
+                std::string module_name = ast.operation.require_op.module_names[i];
+                if (module_name.find("agent.") == 0) {
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
 // Find the library base directory (lib/)
 static std::string find_lib_dir()
 {
@@ -2887,6 +2907,12 @@ int main(int argc, char **argv)
     }
 
     // Second pass: Process require statements now that we know about precompiled modules
+    // #248: capture agent-FFI usage BEFORE process_requires expands
+    // (require agent.…) into the inlined module ASTs, after which the
+    // top-level require op is gone and the AST scanner can no longer
+    // tell agent-using programs from plain ones.
+    bool needs_agent_ffi = requires_agent_ffi(asts);
+
     for (const auto &source_file : source_files) {
         std::filesystem::path source_path(source_file);
         std::string base_dir = source_path.parent_path().string();
@@ -3276,6 +3302,31 @@ int main(int argc, char **argv)
 #endif
 
         append_host_runtime_link_args(link_args);
+
+        // #248: Splice agent-FFI link args when the user's source has
+        // any (require agent.…). Empty when the build wasn't
+        // configured with libcurl / sqlite3 / pcre2 — in that case
+        // calls to qllm_http_get / etc. would still hit the existing
+        // "explicit unavailable" stubs at runtime, same as before.
+        // Splitting on whitespace is safe because we constructed
+        // ESHKOL_HOST_AGENT_FFI_LINK_ARGS from pkg-config and CMake
+        // path lookups; user paths with spaces would be a problem,
+        // but pkg-config produces system-style absolute paths which
+        // are never spaced in practice.
+        if (needs_agent_ffi) {
+            std::string raw = ESHKOL_HOST_AGENT_FFI_LINK_ARGS;
+            if (!raw.empty()) {
+                size_t pos = 0;
+                while (pos < raw.size()) {
+                    size_t end = raw.find(' ', pos);
+                    if (end == std::string::npos) end = raw.size();
+                    if (end > pos) {
+                        link_args.emplace_back(raw.substr(pos, end - pos));
+                    }
+                    pos = end + 1;
+                }
+            }
+        }
 
 // Set 512 MB main-thread stack so deeply recursive Scheme code
 // (e.g. nested letrec / non-tail-recursive helpers in

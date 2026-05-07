@@ -289,6 +289,7 @@ else()
 
     # Generated build config for toolchain/runtime helpers (Windows port)
     set(ESHKOL_HOST_RUNTIME_LINK_ARGS "")
+    set(ESHKOL_HOST_AGENT_FFI_LINK_ARGS "")
     set(ESHKOL_GENERATED_INCLUDE_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
     file(MAKE_DIRECTORY "${ESHKOL_GENERATED_INCLUDE_DIR}/eshkol")
     configure_file(
@@ -1675,6 +1676,15 @@ if(ESHKOL_BUILD_AGENT_FFI)
             list(APPEND AGENT_FFI_SOURCES ${AGENT_FFI_DIR}/agent_sqlite.c)
         endif()
 
+        # Optional: libcurl for native HTTP client (Anthropic API,
+        # WebFetch, OAuth, generic HTTPS). Without this the agent's
+        # http.esk falls back to qLLM symbols (returns "explicit
+        # unavailable error") — see plans/note-for-eshkol-agent.md.
+        pkg_check_modules(LIBCURL_AGENT libcurl)
+        if(LIBCURL_AGENT_FOUND AND EXISTS "${AGENT_FFI_DIR}/agent_http_client.c")
+            list(APPEND AGENT_FFI_SOURCES ${AGENT_FFI_DIR}/agent_http_client.c)
+        endif()
+
         add_library(eshkol-agent-ffi STATIC ${AGENT_FFI_SOURCES})
 
         target_include_directories(eshkol-agent-ffi PRIVATE
@@ -1724,6 +1734,17 @@ if(ESHKOL_BUILD_AGENT_FFI)
             endif()
         endif()
 
+        if(LIBCURL_AGENT_FOUND)
+            target_include_directories(eshkol-agent-ffi PRIVATE ${LIBCURL_AGENT_INCLUDE_DIRS})
+            target_compile_definitions(eshkol-agent-ffi PRIVATE ESHKOL_HAVE_LIBCURL=1)
+            if(LIBCURL_AGENT_LINK_LIBRARIES)
+                target_link_libraries(eshkol-agent-ffi PUBLIC ${LIBCURL_AGENT_LINK_LIBRARIES})
+            else()
+                target_link_directories(eshkol-agent-ffi PUBLIC ${LIBCURL_AGENT_LIBRARY_DIRS})
+                target_link_libraries(eshkol-agent-ffi PUBLIC ${LIBCURL_AGENT_LIBRARIES})
+            endif()
+        endif()
+
         # Crypto: CommonCrypto on macOS, OpenSSL on Linux
         if(APPLE)
             target_link_libraries(eshkol-agent-ffi PUBLIC
@@ -1742,6 +1763,100 @@ if(ESHKOL_BUILD_AGENT_FFI)
         message(STATUS "  Crypto:    YES")
         message(STATUS "  Regex:     ${PCRE2_AGENT_FOUND}")
         message(STATUS "  SQLite:    ${SQLITE3_AGENT_FOUND}")
+        message(STATUS "  HTTP/curl: ${LIBCURL_AGENT_FOUND}")
+
+        # ─────────────────────────────────────────────────────────────
+        # Build the link-arg string AOT-compiled user binaries need so
+        # symbols from agent_http_client.c / agent_subprocess.c / etc.
+        # resolve. Writes to ESHKOL_HOST_AGENT_FFI_LINK_ARGS, which the
+        # final configure_file at the end of this CMakeLists splices
+        # into build_config.h. eshkol-run.cpp reads it from there at
+        # the AOT link step (only when the user's source contains
+        # `(require agent.…)`, otherwise we don't pull in libcurl/etc.
+        # for programs that don't need them).
+        #
+        # Order matters for static-archive resolution on POSIX
+        # toolchains: agent-ffi.a first (force-loaded so qllm_*
+        # symbols stay live), then deps (libcurl, sqlite3, pcre2,
+        # ncurses, OpenSSL/Security framework). For macOS we also need
+        # -framework Security and -framework CoreFoundation; on Linux,
+        # OpenSSL via OpenSSL::SSL/Crypto if found, otherwise libsecret.
+        # Use the well-known archive output path (CMake creates it as
+        # libeshkol-agent-ffi.a in CMAKE_BINARY_DIR for STATIC libs).
+        # Avoids generator expressions which configure_file can't
+        # evaluate. The path matters at AOT link time, not configure
+        # time, so a string here is fine.
+        set(_agent_ffi_archive
+            "${CMAKE_BINARY_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}eshkol-agent-ffi${CMAKE_STATIC_LIBRARY_SUFFIX}")
+        if(APPLE)
+            list(APPEND ESHKOL_HOST_AGENT_FFI_LINK_ARGS
+                "-Wl,-force_load,${_agent_ffi_archive}")
+        else()
+            list(APPEND ESHKOL_HOST_AGENT_FFI_LINK_ARGS
+                "-Wl,--whole-archive" "${_agent_ffi_archive}" "-Wl,--no-whole-archive")
+        endif()
+
+        # Transitive deps. Each is gated by the same flag that
+        # determined whether the C source got compiled into agent-ffi.
+        if(LIBCURL_AGENT_FOUND)
+            if(LIBCURL_AGENT_LINK_LIBRARIES)
+                foreach(_lib IN LISTS LIBCURL_AGENT_LINK_LIBRARIES)
+                    list(APPEND ESHKOL_HOST_AGENT_FFI_LINK_ARGS "${_lib}")
+                endforeach()
+            else()
+                foreach(_dir IN LISTS LIBCURL_AGENT_LIBRARY_DIRS)
+                    list(APPEND ESHKOL_HOST_AGENT_FFI_LINK_ARGS "-L${_dir}")
+                endforeach()
+                foreach(_lib IN LISTS LIBCURL_AGENT_LIBRARIES)
+                    list(APPEND ESHKOL_HOST_AGENT_FFI_LINK_ARGS "-l${_lib}")
+                endforeach()
+            endif()
+        endif()
+        if(SQLITE3_AGENT_FOUND)
+            if(SQLITE3_AGENT_LINK_LIBRARIES)
+                foreach(_lib IN LISTS SQLITE3_AGENT_LINK_LIBRARIES)
+                    list(APPEND ESHKOL_HOST_AGENT_FFI_LINK_ARGS "${_lib}")
+                endforeach()
+            else()
+                foreach(_lib IN LISTS SQLITE3_AGENT_LIBRARIES)
+                    list(APPEND ESHKOL_HOST_AGENT_FFI_LINK_ARGS "-l${_lib}")
+                endforeach()
+            endif()
+        endif()
+        if(PCRE2_AGENT_FOUND)
+            if(PCRE2_AGENT_LINK_LIBRARIES)
+                foreach(_lib IN LISTS PCRE2_AGENT_LINK_LIBRARIES)
+                    list(APPEND ESHKOL_HOST_AGENT_FFI_LINK_ARGS "${_lib}")
+                endforeach()
+            else()
+                foreach(_lib IN LISTS PCRE2_AGENT_LIBRARIES)
+                    list(APPEND ESHKOL_HOST_AGENT_FFI_LINK_ARGS "-l${_lib}")
+                endforeach()
+            endif()
+        endif()
+        if(NCURSES_AGENT)
+            list(APPEND ESHKOL_HOST_AGENT_FFI_LINK_ARGS "${NCURSES_AGENT}")
+        endif()
+        if(APPLE)
+            list(APPEND ESHKOL_HOST_AGENT_FFI_LINK_ARGS
+                "-framework" "Security"
+                "-framework" "CoreFoundation")
+        else()
+            if(OpenSSL_FOUND)
+                list(APPEND ESHKOL_HOST_AGENT_FFI_LINK_ARGS "-lssl" "-lcrypto")
+            endif()
+        endif()
+
+        # The CMake variable carries semicolons as list separators; for
+        # build_config.h.in's @VAR@ substitution we want the args
+        # whitespace-separated. Convert here. Items that themselves
+        # contain spaces (cmake's $<TARGET_FILE:…> generator expressions
+        # don't, framework arg pairs are split into two tokens above)
+        # are safe; user paths with spaces would not be — but the
+        # agent-FFI deps are all system libraries from pkg-config, not
+        # user-provided.
+        string(REPLACE ";" " " ESHKOL_HOST_AGENT_FFI_LINK_ARGS
+                       "${ESHKOL_HOST_AGENT_FFI_LINK_ARGS}")
 
         # Force-load eshkol-agent-ffi into eshkol-run so the (extern …
         # :real eshkol_*) declarations in lib/agent/*.esk can be
@@ -1796,6 +1911,22 @@ if(ESHKOL_BUILD_AGENT_FFI)
     else()
         message(STATUS "Agent FFI modules: lib/agent/c/ not found, skipping")
     endif()
+endif()
+
+# Re-emit build_config.h after the agent-FFI block so
+# ESHKOL_HOST_AGENT_FFI_LINK_ARGS gets baked in. The earlier
+# configure_file (line ~917) ran before the agent block was processed,
+# so without this re-emit the macro would always be empty in the
+# header. Generator expressions like $<TARGET_FILE:eshkol-agent-ffi>
+# are evaluated at build time, so the resulting string carries the
+# unresolved expression; eshkol-run.cpp resolves it at link step by
+# string-replacing against the build directory.
+if(DEFINED ESHKOL_GENERATED_INCLUDE_DIR AND TARGET eshkol-agent-ffi)
+    configure_file(
+      "${CMAKE_CURRENT_SOURCE_DIR}/cmake/build_config.h.in"
+      "${ESHKOL_GENERATED_INCLUDE_DIR}/eshkol/build_config.h"
+      @ONLY
+    )
 endif()
 
 # ===== Python Bindings (pybind11) =====

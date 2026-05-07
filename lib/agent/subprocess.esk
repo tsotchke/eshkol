@@ -9,7 +9,7 @@
          process-write-stdin process-close-stdin
          process-read-stdout process-read-stderr
          process-read-all-stdout process-read-all-stderr
-         process-wait process-running? process-exit-code
+         process-wait process-running? process-exit-code process-pid
          process-kill process-destroy
          run-command run-command-capture
          run-argv run-argv-capture)
@@ -34,6 +34,7 @@
 (extern i32 process-exit-code-raw ptr :real qllm_process_exit_code)
 (extern void process-kill-raw ptr i32 :real qllm_process_kill)
 (extern void process-destroy-raw ptr :real qllm_process_destroy)
+(extern i64 process-pid-raw ptr :real qllm_process_pid)
 
 ;; ============================================================================
 ;; High-Level Wrappers
@@ -167,6 +168,15 @@
 (define (process-exit-code proc)
   "Get exit code. Only valid after process-wait returns 0."
   (process-exit-code-raw proc))
+
+(define (process-pid proc)
+  "Real OS process identity. Returns 0 for a NULL/destroyed handle.
+   Useful for trace IDs, external observability (pgrep, top), and
+   correlation across log streams. The PID may outlive the handle if
+   the agent leaks the handle without process-destroy — but conversely
+   the handle may outlive the OS process if the child exited and was
+   reaped via process-wait. Use process-running? to distinguish."
+  (process-pid-raw proc))
 
 (define (process-kill proc . signal)
   "Kill process. Default signal is SIGTERM (15)."

@@ -6,3 +6,10 @@
 #define ESHKOL_HOST_STATIC_LIBRARY_PREFIX "@CMAKE_STATIC_LIBRARY_PREFIX@"
 #define ESHKOL_HOST_STATIC_LIBRARY_SUFFIX "@CMAKE_STATIC_LIBRARY_SUFFIX@"
 #define ESHKOL_HOST_RUNTIME_LINK_ARGS "@ESHKOL_HOST_RUNTIME_LINK_ARGS@"
+
+/* Agent-FFI link arguments. When the user's source contains any
+ * (require agent.…) form, the AOT link step splices these into the
+ * link command so symbols like qllm_http_get / eshkol_sqlite_*
+ * resolve in the produced binary. Empty when agent-FFI wasn't
+ * configured or its deps weren't found at configure time. */
+#define ESHKOL_HOST_AGENT_FFI_LINK_ARGS "@ESHKOL_HOST_AGENT_FFI_LINK_ARGS@"

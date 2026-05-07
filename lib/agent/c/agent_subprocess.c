@@ -1483,6 +1483,21 @@ void qllm_process_kill(eshkol_subprocess_t* proc, int32_t signal) {
 #endif
 }
 
+/* Real OS process identity. Returns 0 for a NULL handle so the caller
+ * can distinguish "not spawned / already destroyed" from a real PID
+ * (live OS PIDs are always > 0). On Windows this is dwProcessId, on
+ * POSIX the pid_t from fork()/posix_spawn() — both fit in int64_t.
+ *
+ * Why this exists: the agent needs PID for (a) building child-aware
+ * trace IDs, (b) external observability (pgrep, top), (c) correlation
+ * across log streams, and (d) emitting WARN if a stale handle outlives
+ * its OS process. Without an accessor, callers were either parsing
+ * the proc handle pointer (meaningless) or rolling a synthetic ID. */
+int64_t qllm_process_pid(eshkol_subprocess_t* proc) {
+    if (!proc) return 0;
+    return proc->pid;
+}
+
 void qllm_process_destroy(eshkol_subprocess_t* proc) {
     if (!proc) return;
 #ifndef _WIN32

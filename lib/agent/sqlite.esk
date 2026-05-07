@@ -28,6 +28,7 @@
 (extern i32 sqlite-bind-double-raw i64 i32 double :real eshkol_sqlite_bind_double)
 (extern i32 sqlite-bind-null-raw i64 i32 :real eshkol_sqlite_bind_null)
 (extern i32 sqlite-column-text-raw i64 i32 ptr i64 :real eshkol_sqlite_column_text)
+(extern i64 sqlite-column-bytes-raw i64 i32 :real eshkol_sqlite_column_bytes)
 (extern i64 sqlite-column-int-raw i64 i32 :real eshkol_sqlite_column_int)
 (extern double sqlite-column-double-raw i64 i32 :real eshkol_sqlite_column_double)
 (extern i32 sqlite-column-count-raw i64 :real eshkol_sqlite_column_count)
@@ -89,10 +90,21 @@
 (define (sqlite-bind-null stmt idx) (sqlite-bind-null-raw stmt idx))
 
 (define (sqlite-column-text stmt idx)
-  "Get text column value."
-  (let ((buf (make-string 8192 #\nul)))
-    (let ((n (sqlite-column-text-raw stmt idx buf 8192)))
-      (if (> n 0) (substring buf 0 n) ""))))
+  "Get text column value, sized exactly to the row's payload.
+   Previously this used a fixed 8 KB buffer and silently truncated
+   larger values (e.g., session JSON, embedded blobs) — callers then
+   threw 'invalid JSON' on the partial result. We now query
+   sqlite3_column_bytes first and allocate exactly that size, so a
+   2 MB session round-trips losslessly. Empty TEXT and NULL both
+   return \"\" — distinguish them with sqlite-column-type."
+  (let ((nbytes (sqlite-column-bytes-raw stmt idx)))
+    (cond
+      ((<= nbytes 0) "")
+      (else
+       (let* ((cap (+ nbytes 1))   ;; +1 for trailing NUL the C path writes
+              (buf (make-string cap #\nul))
+              (n (sqlite-column-text-raw stmt idx buf cap)))
+         (if (> n 0) (substring buf 0 n) ""))))))
 
 (define (sqlite-column-int stmt idx) (sqlite-column-int-raw stmt idx))
 (define (sqlite-column-double stmt idx) (sqlite-column-double-raw stmt idx))

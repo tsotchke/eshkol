@@ -174,6 +174,23 @@ int eshkol_sqlite_bind_null(int64_t stmt_handle, int index) {
  * Column Access
  ******************************************************************************/
 
+/* Get the byte length of a TEXT/BLOB column without copying the data.
+ * Required so the Eshkol wrapper can size its receiving buffer
+ * correctly for large payloads (session JSON, embedded blobs, etc.)
+ * — the previous fixed-8 KB scheme silently truncated and callers
+ * threw on the partial JSON. Mirrors sqlite3_column_bytes which is
+ * exact (binary-safe) unlike strlen on the text pointer. */
+int64_t eshkol_sqlite_column_bytes(int64_t stmt_handle, int index) {
+    sqlite3_stmt* stmt = get_stmt(stmt_handle);
+    if (!stmt) return -1;
+    /* Note: SQLite docs require column_text() to be called before
+     * column_bytes() if the underlying value isn't already TEXT,
+     * because SQLite may need to convert the type. Calling text first
+     * is harmless when the column is already TEXT. */
+    sqlite3_column_text(stmt, index);
+    return (int64_t)sqlite3_column_bytes(stmt, index);
+}
+
 int eshkol_sqlite_column_text(int64_t stmt_handle, int index,
                                 char* buf, size_t buf_size) {
     sqlite3_stmt* stmt = get_stmt(stmt_handle);
@@ -184,10 +201,26 @@ int eshkol_sqlite_column_text(int64_t stmt_handle, int index,
         buf[0] = '\0';
         return 0;
     }
-    size_t len = strlen((const char*)text);
+    /* Use sqlite3_column_bytes (binary-safe, includes embedded NULs)
+     * not strlen (stops at first NUL). The agent stores JSON sessions
+     * which never contain NUL but may contain other bytes that strlen
+     * would handle correctly — still, column_bytes is the canonical
+     * length and matches the buffer-sizing path below. */
+    size_t len = (size_t)sqlite3_column_bytes(stmt, index);
     size_t copy = len < buf_size - 1 ? len : buf_size - 1;
     memcpy(buf, text, copy);
     buf[copy] = '\0';
+    /* Signal truncation: caller passed buf_size = len, but content was
+     * larger. Returning the truncated count alone hides the overflow.
+     * Encoding: if we couldn't fit the full payload, return -(len+1)
+     * so the Eshkol wrapper can detect and retry with a bigger buffer
+     * (or surface a clear error rather than silent truncation). The
+     * Eshkol wrapper calls column_bytes first nowadays so this branch
+     * shouldn't fire in normal use, but it's defensive against
+     * callers that haven't migrated to the new sizing path. */
+    if (copy < len) {
+        return -(int)(len + 1);
+    }
     return (int)copy;
 }
 
