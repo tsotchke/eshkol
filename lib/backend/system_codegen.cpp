@@ -808,17 +808,24 @@ llvm::Value* SystemCodegen::readFile(const eshkol_operations_t* op) {
         file, llvm::ConstantInt::get(ctx_.int64Type(), 0), llvm::ConstantInt::get(ctx_.int32Type(), 0)
     });
 
-    // Allocate buffer (+1 for null terminator)
-    llvm::Value* alloc_size = ctx_.builder().CreateAdd(size, llvm::ConstantInt::get(ctx_.int64Type(), 1));
+    // Allocate buffer with HEAP_SUBTYPE_STRING header so `string?` /
+    // `string-length` / `substring` recognise the result.  Previously this
+    // used raw `arena_allocate`, leaving the bytes at offset -8 as
+    // arbitrary memory; the (string? (read-file …)) check then returned
+    // #f because the subtype byte was garbage, and the agent project
+    // worked around it via `(run-argv-capture (cat path))`.
+    // arena_allocate_string_with_header(arena, size) reserves size+1
+    // bytes for the trailing NUL and stamps header.size = size+1.
     llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
-    llvm::Value* buf = ctx_.builder().CreateCall(mem_.getArenaAllocate(), {arena_ptr, alloc_size});
+    llvm::Value* buf = ctx_.builder().CreateCall(
+        mem_.getArenaAllocateStringWithHeader(), {arena_ptr, size});
 
     // Read entire file
     ctx_.builder().CreateCall(fread_func, {
         buf, llvm::ConstantInt::get(ctx_.int64Type(), 1), size, file
     });
 
-    // Null terminate
+    // Null terminate at offset `size` (the allocator reserved +1 for it).
     llvm::Value* term_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), buf, size);
     ctx_.builder().CreateStore(llvm::ConstantInt::get(ctx_.int8Type(), 0), term_ptr);
 
