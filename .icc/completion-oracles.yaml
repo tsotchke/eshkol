@@ -1,0 +1,139 @@
+# ICC completion oracles for the Eshkol platform mergeback worktree.
+#
+# These criteria make ICC's completion-oracle/readiness commands understand
+# the platform mergeback review shape instead of falling back to generic
+# "some runtime evidence exists" checks.
+
+oracles:
+  - name: runtime-boundary-mergeback
+    aliases:
+      - runtime-boundary
+      - mergeback-runtime-boundary
+      - platform-runtime-boundary
+      - pr26
+    requires:
+      - test_evidence: true
+        required_names:
+          - arena_bootstrap_test
+          - resource_limits_timebase_test
+          - runtime_core_boundary_test
+          - runtime_freestanding_surface_test
+          - runtime_hook_surface_test
+          - windows_suite_surface_test
+        path_prefixes:
+          - tests/toolchain/
+        severity: high
+        label: Runtime boundary tests are indexed and runnable
+        action: "cmake --build build --target eshkol-run arena_bootstrap_test runtime_hook_surface_test resource_limits_timebase_test runtime_freestanding_surface_test runtime_core_boundary_test && ctest --output-on-failure --test-dir build -R 'arena_bootstrap_test|runtime_hook_surface_test|resource_limits_timebase_test|runtime_freestanding_surface_test|runtime_core_boundary_test'"
+
+      - no_contract_gap:
+          - missing_expected_contract_kind
+          - artifact_without_test_or_trace
+          - checkpoint_without_test_or_trace
+          - state_key_produced_without_consumer
+          - state_key_consumed_without_producer
+        paths:
+          - CMakeLists.txt
+          - inc/eshkol/core/arena.h
+          - inc/eshkol/core/resource_limits.h
+          - inc/eshkol/core/runtime.h
+          - inc/eshkol/eshkol.h
+          - inc/eshkol/logger.h
+          - lib/backend/llvm_codegen.cpp
+          - lib/core/arena_display_hosted.cpp
+          - lib/core/arena_exception_hosted.cpp
+          - lib/core/arena_memory.cpp
+          - lib/core/arena_memory.h
+          - lib/core/arena_reader_hosted.cpp
+          - lib/core/arena_string_ports_hosted.cpp
+          - lib/core/arena_threading_hosted.cpp
+          - lib/core/bignum.cpp
+          - lib/core/bignum_display_hosted.cpp
+          - lib/core/platform_runtime.cpp
+          - lib/core/rational.cpp
+          - lib/core/resource_limits.cpp
+          - lib/core/resource_limits_core.cpp
+          - lib/core/resource_limits_hosted.cpp
+          - lib/core/runtime.cpp
+          - lib/core/runtime_errors_hosted.cpp
+          - lib/core/runtime_exports_hosted.cpp
+          - lib/core/runtime_freestanding.cpp
+          - lib/core/runtime_hosted.cpp
+          - lib/core/runtime_logging_hosted.cpp
+          - scripts/run_features_tests.sh
+          - scripts/run_features_tests_with_output.sh
+          - tests/toolchain/arena_bootstrap_test.cpp
+          - tests/toolchain/resource_limits_timebase_test.cpp
+          - tests/toolchain/runtime_core_boundary_test.cpp
+          - tests/toolchain/runtime_freestanding_surface_test.cpp
+          - tests/toolchain/runtime_hook_surface_test.cpp
+          - tests/toolchain/windows_suite_surface_test.cpp
+        severity: high
+        label: Runtime source-set, hook, timebase, and freestanding contracts have evidence
+        action: "run focused CTest targets and update source-boundary surface tests when adding runtime files"
+
+      - no_stubbed_paths:
+          - production_fallback
+          - synthetic_model_only
+          - not_exercised_by_real_smoke
+        allow_classifications:
+          - not_exercised_by_real_smoke
+        path_prefixes:
+          - inc/eshkol/core/
+          - lib/core/
+        severity: high
+        label: Hosted/freestanding runtime paths are real or explicitly excluded from this slice
+        action: "replace fallback code paths or mark them outside the runtime-boundary mergeback scope"
+
+      - runtime_event:
+          event_kinds: [eshkol_ci]
+          event_names: [pr26_runtime_boundary_ci]
+          event_values: ["PASS"]
+        severity: medium
+        label: PR #26 CI matrix passed after runtime-boundary changes
+        action: "record a trace event after GitHub PR #26 CI is green"
+
+  - name: platform-mergeback-readiness
+    aliases:
+      - platform-mergeback
+      - mergeback
+      - platform-sync
+    requires:
+      - test_evidence: true
+        path_prefixes:
+          - tests/toolchain/
+        severity: high
+        label: Mergeback slices have source-surface and runtime tests indexed
+        action: "run the focused tests named by the active mergeback slice"
+
+      - no_contract_gap:
+          - missing_expected_contract_kind
+          - artifact_without_test_or_trace
+          - flag_without_contract
+          - state_key_produced_without_consumer
+          - state_key_consumed_without_producer
+        path_prefixes:
+          - CMakeLists.txt
+          - cmake/
+          - docs/platform/
+          - inc/eshkol/
+          - lib/core/
+          - tests/toolchain/
+        severity: high
+        label: Mergeback contracts are reviewable before heavier BSP/substrate work lands
+        action: "keep docs/platform/SYNC_INTEGRATION_MAP.md and source-boundary tests current"
+
+      - no_stubbed_paths:
+          - production_fallback
+          - synthetic_model_only
+          - not_exercised_by_real_smoke
+        allow_classifications:
+          - not_exercised_by_real_smoke
+        path_prefixes:
+          - inc/eshkol/
+          - lib/core/
+          - lib/backend/
+          - scripts/
+        severity: high
+        label: Mainline mergeback slices do not hide production fallbacks
+        action: "split fallback-only paths into later review slices or replace them"

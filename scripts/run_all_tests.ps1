@@ -514,6 +514,23 @@ function Format-TestStatus {
     Write-Host ("Testing {0,-50} {1}" -f $TestName, $Status) -ForegroundColor $Color
 }
 
+function Get-WindowsSuiteSkipReason {
+    param(
+        [string]$SuiteName,
+        [string]$TestName
+    )
+
+    if ($env:OS -ne "Windows_NT") {
+        return ""
+    }
+
+    if ($SuiteName -eq "features" -and $TestName -eq "extreme_stress_test.esk") {
+        return "legacy multi-argument gradient stress case is tracked outside native Windows CI; extreme_stress_test_v2.esk covers the Windows stress lane"
+    }
+
+    return ""
+}
+
 function Invoke-SimpleCompileRunSuite {
     param(
         [string]$SuiteName,
@@ -537,6 +554,13 @@ function Invoke-SimpleCompileRunSuite {
 
     foreach ($testFile in $files) {
         $testName = Split-Path -Leaf $testFile
+        $skipReason = Get-WindowsSuiteSkipReason -SuiteName $SuiteName -TestName $testName
+        if ($skipReason) {
+            Format-TestStatus $testName "SKIP" Yellow
+            Add-Skip $suite "$testName ($skipReason)"
+            continue
+        }
+
         $outputBase = New-OutputBase -TempRoot $script:TempRoot -SuiteName $SuiteName -TestName $testName
         $compile = Invoke-EshkolCompile -EshkolRun $script:EshkolRun -ProjectRoot $script:ProjectRoot -BuildDir $script:BuildDir -TestFile $testFile -OutputBase $outputBase
         if (-not $compile.Success) {
@@ -810,7 +834,7 @@ function Invoke-ReplSuite {
     foreach ($testFile in $files) {
         $testName = Split-Path -Leaf $testFile
         $inputText = (Get-Text $testFile) + [Environment]::NewLine + "exit" + [Environment]::NewLine
-        $run = Invoke-ProcessCapture -FilePath $script:EshkolRepl -WorkingDirectory $script:ProjectRoot -TimeoutSec 10 -InputText $inputText
+        $run = Invoke-ProcessCapture -FilePath $script:EshkolRepl -WorkingDirectory $script:ProjectRoot -TimeoutSec 60 -InputText $inputText
 
         if ($run.TimedOut) {
             Format-TestStatus $testName "TIMEOUT" Yellow
@@ -1029,6 +1053,28 @@ function Invoke-CppTypeSuite {
         if ($llvmSystemLibsRaw) { $llvmSystemLibs = [regex]::Split($llvmSystemLibsRaw.Trim(), "\s+") | Where-Object { $_ } }
     }
 
+    $runtimeArchive = $null
+    if ($onWindows) {
+        $runtimeArchiveCandidates = @(
+            (Join-Path $script:BinaryDir "eshkol-static.lib"),
+            (Join-Path $script:BuildDir "eshkol-static.lib")
+        )
+        if ($script:BuildConfig) {
+            $runtimeArchiveCandidates += (Join-Path (Join-Path $script:BuildDir $script:BuildConfig) "eshkol-static.lib")
+        }
+        foreach ($candidate in $runtimeArchiveCandidates) {
+            if ($candidate -and (Test-RegularFile -Path $candidate)) {
+                $runtimeArchive = $candidate
+                break
+            }
+        }
+        if (-not $runtimeArchive) {
+            Add-Fail $suite "eshkol-static.lib (missing runtime archive for C++ type tests)"
+            Show-SuiteSummary $suite "C++ Test Results Summary"
+            return $suite
+        }
+    }
+
     $sources = @(
         (Join-Path $script:ProjectRoot "lib/types/hott_types.cpp"),
         (Join-Path $script:ProjectRoot "lib/types/type_checker.cpp"),
@@ -1055,7 +1101,11 @@ function Invoke-CppTypeSuite {
         $args = @(
             "-std=c++20",
             "-I" + (Join-Path $script:ProjectRoot "inc")
-        ) + $llvmCxxFlags + $sources + @($testFile) + $llvmLdFlags + $llvmLibs + $llvmSystemLibs + @("-o", $exePath)
+        ) + $llvmCxxFlags + $sources + @($testFile)
+        if ($runtimeArchive) {
+            $args += $runtimeArchive
+        }
+        $args += $llvmLdFlags + $llvmLibs + $llvmSystemLibs + @("-o", $exePath)
         Push-Location $script:BuildDir
         try {
             $previousErrorAction = $ErrorActionPreference

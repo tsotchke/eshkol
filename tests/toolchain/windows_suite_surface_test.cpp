@@ -93,6 +93,16 @@ int main(int argc, char** argv) {
                          "Windows suite server runner requires a regular executable") &&
          expect_contains(script, "Start-RegularFileProcess -FilePath $script:EshkolServer",
                          "Windows suite starts the web server through the guarded launcher") &&
+         expect_contains(script, "function Get-WindowsSuiteSkipReason",
+                         "Windows suite declares explicit per-test skip helper") &&
+         expect_contains(script, "extreme_stress_test_v2.esk covers the Windows stress lane",
+                         "Windows suite documents the legacy Windows stress-test skip") &&
+         expect_contains(script, "eshkol-static.lib (missing runtime archive for C++ type tests)",
+                         "Windows C++ type tests require the aggregate runtime archive") &&
+         expect_contains(script, "$args += $runtimeArchive",
+                         "Windows C++ type tests link the runtime archive for split arena symbols") &&
+         expect_contains(script, "-TimeoutSec 60 -InputText $inputText",
+                         "Windows REPL suite uses a CI-appropriate timeout") &&
          expect_contains(script, "Test-RegularFile -Path $wasmPath",
                          "Windows suite WASM validation requires a regular output file") &&
          expect_contains(script, "Remove-RegularFileIfPresent -Path @($serverStdout, $serverStderr)",

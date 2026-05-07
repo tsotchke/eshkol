@@ -174,7 +174,7 @@ static llvm::OptimizationLevel getPassBuilderOptLevel() {
 
 /* Coerce mismatched integer call-argument types to match each callee's
  * declared parameter type.  Necessary on the wasm32 target where many
- * arena_allocate callsites (~144 across lib/backend/*_codegen.cpp) emit
+ * arena_allocate callsites across lib/backend codegen translation units emit
  * an i64 size argument while the function is declared with i32 size_t.
  * On native (size_t = i64) this loop is a near-no-op since types already
  * match; on wasm32 it inserts ZExt/Trunc to satisfy the LLVM verifier
@@ -225,12 +225,43 @@ static void coerceCallArgIntegerTypes(llvm::Module& module) {
     }
 }
 
+static void coerceBinaryOperatorIntegerTypes(llvm::Module& module) {
+    using namespace llvm;
+    SmallVector<BinaryOperator*, 64> ops;
+    for (Function& F : module) {
+        for (BasicBlock& BB : F) {
+            for (Instruction& I : BB) {
+                if (auto* BO = dyn_cast<BinaryOperator>(&I)) ops.push_back(BO);
+            }
+        }
+    }
+
+    for (BinaryOperator* BO : ops) {
+        auto* expected = dyn_cast<IntegerType>(BO->getType());
+        if (!expected) continue;
+        IRBuilder<> builder(BO);
+        for (unsigned i = 0; i < BO->getNumOperands(); ++i) {
+            Value* operand = BO->getOperand(i);
+            Type* actual = operand->getType();
+            if (actual == expected) continue;
+            if (!isa<IntegerType>(actual)) continue;
+            Value* coerced = builder.CreateZExtOrTrunc(
+                operand,
+                expected,
+                operand->hasName() ? operand->getName() + ".binop.coerced" : Twine("binop.coerced"));
+            BO->setOperand(i, coerced);
+        }
+    }
+}
+
 // Run LLVM optimization passes on a module before codegen
 static void optimizeModule(llvm::Module& module, llvm::TargetMachine* TM, bool is_wasm = false) {
-    // Always coerce mismatched integer call-arg types first.  On native this
-    // is a no-op; on wasm32 it fixes the size_t (i32) vs i64 mismatch that
-    // would otherwise fail module verification before WASM emission.
+    // Always coerce mismatched integer operands first.  On native this is
+    // usually a no-op; on wasm32 it fixes size_t/intptr_t (i32) vs i64
+    // mismatches that would otherwise fail module verification before WASM
+    // emission.
     coerceCallArgIntegerTypes(module);
+    coerceBinaryOperatorIntegerTypes(module);
 
     auto opt_level = getPassBuilderOptLevel();
 
