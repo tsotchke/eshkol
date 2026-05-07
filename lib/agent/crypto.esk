@@ -114,13 +114,26 @@
       (else (string-append s "==="))))) ; malformed input, best effort
 
 (define (base64url-encode data)
-  "Encode bytes (string) as base64url — no padding."
-  (let ((std (base64-encode data)))
+  "Encode bytes (string) as base64url — no padding.
+
+   Bug HH (2026-05-07): previously called `(base64-encode data)` directly,
+   but `core.data.base64/base64-encode` expects a list of bytes — a
+   string falls through `(cdr bytes)` immediately and aborts with
+   `cdr: argument is not a pair` on the first character. The right
+   entry for a string input is `base64-encode-string` which calls
+   `string->bytes` first. Fixes JWT header encoding under AOT/JIT
+   for the agent.bridge JWT signer."
+  (let ((std (base64-encode-string data)))
     (if (not std)
         #f
         (strip-trailing (string-translate std base64url-encode-char) #\=))))
 
 (define (base64url-decode url-str)
-  "Decode base64url → bytes string (re-pads before delegating)."
+  "Decode base64url → bytes string (re-pads before delegating).
+
+   Bug HH (2026-05-07): switched from `base64-decode` (returns list of
+   bytes — agent callers expect a string) to `base64-decode-string`
+   for symmetry with base64url-encode and so JWT decode produces a
+   directly displayable string."
   (let ((standard (string-translate url-str base64url-decode-char)))
-    (base64-decode (pad-to-4 standard))))
+    (base64-decode-string (pad-to-4 standard))))

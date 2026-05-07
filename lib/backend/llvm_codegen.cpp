@@ -1956,6 +1956,22 @@ public:
                         // Process all other expressions (defines AND non-defines) sequentially
                         codegenAST(&asts_to_use[i]);
 
+                        // NORETURN SAFETY (#244): a top-level expression may
+                        // be a no-return form (`(raise ...)`, top-level call/cc
+                        // longjmp, etc.) that emits an `unreachable` terminator
+                        // in the current block. Subsequent top-level expressions
+                        // would then emit instructions after the terminator and
+                        // trip "Terminator found in the middle of a basic block!"
+                        // verifier failure. Move into a fresh "after_noreturn"
+                        // block so subsequent code is well-formed (and LLVM DCE
+                        // will drop it as unreachable-from-entry).
+                        if (builder->GetInsertBlock()->getTerminator()) {
+                            BasicBlock* after = BasicBlock::Create(
+                                *context, "after_noreturn",
+                                builder->GetInsertBlock()->getParent());
+                            builder->SetInsertPoint(after);
+                        }
+
                         // After each expression that might define a lambda, generate its S-expression
                         // and call __lambda_init__ to initialize captures immediately
                         if (!pending_lambda_sexprs.empty()) {
@@ -2205,6 +2221,16 @@ public:
                         !asts_to_use[i].operation.define_op.is_function) {
                         codegenAST(&asts_to_use[i]);
                         eshkol_debug("Initialized global variable: %s", asts_to_use[i].operation.define_op.name);
+                        // NORETURN SAFETY (#244): a `(define x (raise ...))` could
+                        // emit a terminator. Move into a fresh block so the next
+                        // global-define / scheme_main call doesn't land in a
+                        // terminated entry block.
+                        if (builder->GetInsertBlock()->getTerminator()) {
+                            BasicBlock* after = BasicBlock::Create(
+                                *context, "after_noreturn",
+                                builder->GetInsertBlock()->getParent());
+                            builder->SetInsertPoint(after);
+                        }
                     }
                 }
 
@@ -6986,7 +7012,18 @@ private:
             case ESHKOL_STRING: {
                 // String literals use internStringWithHeader to create globals with headers.
                 // This allows consistent use of HEAP_PTR for all heap/string types.
-                Value* str_ptr = ctx_->internStringWithHeader(ast->str_val.ptr, HEAP_SUBTYPE_STRING);
+                //
+                // NUL PRESERVATION (#247): construct std::string with explicit
+                // (ptr, len) so embedded NULs from `\0` / `\x00;` escapes
+                // survive. Passing the raw `char*` would implicitly call
+                // std::string(const char*) which uses strlen and truncates at
+                // the first NUL — `(string-length "\0")` then returned 0
+                // even though make-string preserved NULs correctly. The AST's
+                // str_val.size includes a trailing NUL byte (parser.cpp:759),
+                // so the actual payload length is size - 1.
+                size_t payload_len = ast->str_val.size > 0 ? ast->str_val.size - 1 : 0;
+                std::string str_data(ast->str_val.ptr, payload_len);
+                Value* str_ptr = ctx_->internStringWithHeader(str_data, HEAP_SUBTYPE_STRING);
                 return packPtrToTaggedValue(str_ptr, ESHKOL_VALUE_HEAP_PTR);
             }
                 
@@ -14359,8 +14396,12 @@ private:
                 size_t expected = ft->getNumParams();
                 size_t actual = call_args.size();
                 if (actual != expected && !ft->isVarArg()) {
-                    eshkol_warn("Arity mismatch in no-capture call to %s: expected %zu, got %zu",
-                                callee->getName().str().c_str(), expected, actual);
+                    eshkol_warn_at(
+                        g_source_filepath.empty() ? nullptr : g_source_filepath.c_str(),
+                        current_source_line, current_source_column,
+                        g_source_text.empty() ? nullptr : g_source_text.c_str(),
+                        "Arity mismatch in no-capture call to %s: expected %zu, got %zu",
+                        callee->getName().str().c_str(), expected, actual);
                     while (call_args.size() < expected) call_args.push_back(packNullToTaggedValue());
                     if (call_args.size() > expected) call_args.resize(expected);
                 }
@@ -14586,13 +14627,21 @@ private:
                           variadic_function_info[func_name].second;
             size_t min_params = is_var ? variadic_function_info[func_name].first : expected_params;
             if (!is_var && op->call_op.num_vars != expected_params) {
-                eshkol_error("Arity mismatch: %s expects %zu arguments but got %llu",
-                            func_name.c_str(), expected_params, (unsigned long long)op->call_op.num_vars);
+                eshkol_error_at(
+                    g_source_filepath.empty() ? nullptr : g_source_filepath.c_str(),
+                    current_source_line, current_source_column,
+                    g_source_text.empty() ? nullptr : g_source_text.c_str(),
+                    "Arity mismatch: %s expects %zu arguments but got %llu",
+                    func_name.c_str(), expected_params, (unsigned long long)op->call_op.num_vars);
                 return nullptr;
             }
             if (is_var && op->call_op.num_vars < min_params) {
-                eshkol_error("Arity mismatch: %s requires at least %zu arguments but got %llu",
-                            func_name.c_str(), min_params, (unsigned long long)op->call_op.num_vars);
+                eshkol_error_at(
+                    g_source_filepath.empty() ? nullptr : g_source_filepath.c_str(),
+                    current_source_line, current_source_column,
+                    g_source_text.empty() ? nullptr : g_source_text.c_str(),
+                    "Arity mismatch: %s requires at least %zu arguments but got %llu",
+                    func_name.c_str(), min_params, (unsigned long long)op->call_op.num_vars);
                 return nullptr;
             }
 
@@ -14865,8 +14914,12 @@ private:
             size_t expected = ft->getNumParams();
             size_t actual = args.size();
             if (actual != expected && !ft->isVarArg()) {
-                eshkol_warn("Arity mismatch in general call to %s: expected %zu, got %zu",
-                            callee->getName().str().c_str(), expected, actual);
+                eshkol_warn_at(
+                    g_source_filepath.empty() ? nullptr : g_source_filepath.c_str(),
+                    current_source_line, current_source_column,
+                    g_source_text.empty() ? nullptr : g_source_text.c_str(),
+                    "Arity mismatch in general call to %s: expected %zu, got %zu",
+                    callee->getName().str().c_str(), expected, actual);
                 while (args.size() < expected) args.push_back(packNullToTaggedValue());
                 if (args.size() > expected) args.resize(expected);
             }
@@ -19993,9 +20046,13 @@ private:
 
         // Check arity matches
         if (call_op->call_op.num_vars != tco_ctx.param_allocas.size()) {
-            eshkol_warn("TCO: arity mismatch in tail call to %s (expected %zu, got %llu)",
-                       tco_ctx.func_name.c_str(), tco_ctx.param_allocas.size(),
-                       (unsigned long long)call_op->call_op.num_vars);
+            eshkol_warn_at(
+                g_source_filepath.empty() ? nullptr : g_source_filepath.c_str(),
+                current_source_line, current_source_column,
+                g_source_text.empty() ? nullptr : g_source_text.c_str(),
+                "TCO: arity mismatch in tail call to %s (expected %zu, got %llu)",
+                tco_ctx.func_name.c_str(), tco_ctx.param_allocas.size(),
+                (unsigned long long)call_op->call_op.num_vars);
             return nullptr;
         }
 
@@ -22687,38 +22744,54 @@ private:
         Value* index = codegenAST(&op->call_op.variables[1]);
         if (!vector_val || !index) return nullptr;
 
-        // RUNTIME LIST-INDEX UNWRAP (Noesis residual audit v3 runtime bug):
-        // NumPy/JAX idiom `(tensor-ref t (list i))` passes a single-element
-        // list as the index. Route the index through
-        // `eshkol_unwrap_list_index(const tagged_value_t*) -> i64` — a tiny
-        // C helper that detects the cons case, extracts car, and falls
-        // back to the scalar's int64 data for INT64/DOUBLE.
+        // RUNTIME LIST-INDEX UNWRAP — Bug II fix (2026-05-07):
+        // NumPy/JAX idiom `(tensor-ref t (list i j k))` passes a list
+        // as the index. Previously routed through
+        // `eshkol_unwrap_list_index`, which returns ONLY the car of
+        // the cons — silently collapsing every (0 _ _) read on a 3D
+        // tensor to flat[0]. Replaced with `eshkol_vref_unwrap_index`,
+        // which peeks at the tensor's own dims/ndim at runtime: if
+        // it's a tensor, walks the cons chain and computes a proper
+        // row-major linear offset; otherwise falls back to the old
+        // car-only behavior (preserving scheme-vector and scalar
+        // gradient semantics).
         //
-        // tagged_value_t passed by pointer (not by value) — the Eshkol
-        // backend convention for runtime-call marshalling; direct struct-
-        // by-value surfaces ABI differences between LLVM-emitted struct
-        // calls and C-level ones on ARM64, which we don't want to depend on.
+        // tagged_value_t passed by pointer — backend convention for
+        // runtime-call marshalling; direct struct-by-value surfaces
+        // ABI differences between LLVM-emitted struct calls and C-level
+        // ones on ARM64, which we don't want to depend on.
         if (index->getType() != tagged_value_type) {
             TypedValue tv = detectValueType(index);
             index = typedValueToTaggedValue(tv);
         }
         {
-            Function* unwrap_fn = module->getFunction("eshkol_unwrap_list_index");
+            Function* unwrap_fn = module->getFunction("eshkol_vref_unwrap_index");
             if (!unwrap_fn) {
                 FunctionType* ft = FunctionType::get(
-                    int64_type, {builder->getPtrTy()}, false);
+                    int64_type,
+                    {builder->getPtrTy(), builder->getPtrTy()},
+                    false);
                 unwrap_fn = Function::Create(ft, Function::ExternalLinkage,
-                    "eshkol_unwrap_list_index", module.get());
+                    "eshkol_vref_unwrap_index", module.get());
             }
-            // Materialise the tagged_value to an alloca slot at function entry
-            // so we have a stable pointer to hand to the helper.
+            // Materialise both tagged_values to stable alloca slots so
+            // the helper can read them as `const eshkol_tagged_value_t*`.
             IRBuilderBase::InsertPoint saved = builder->saveIP();
             Function* cur_fn = builder->GetInsertBlock()->getParent();
             builder->SetInsertPoint(&cur_fn->getEntryBlock(), cur_fn->getEntryBlock().begin());
+            Value* vec_slot = builder->CreateAlloca(tagged_value_type, nullptr, "vref_vec_slot");
             Value* idx_slot = builder->CreateAlloca(tagged_value_type, nullptr, "vref_idx_slot");
             builder->restoreIP(saved);
+            // vector_val may not yet be tagged (e.g. raw heap pointer from
+            // CreateTensor) — coerce so the helper can inspect its type tag.
+            Value* vec_tagged = vector_val;
+            if (vec_tagged->getType() != tagged_value_type) {
+                TypedValue vtv = detectValueType(vec_tagged);
+                vec_tagged = typedValueToTaggedValue(vtv);
+            }
+            builder->CreateStore(vec_tagged, vec_slot);
             builder->CreateStore(index, idx_slot);
-            Value* unwrapped_i64 = builder->CreateCall(unwrap_fn, {idx_slot});
+            Value* unwrapped_i64 = builder->CreateCall(unwrap_fn, {vec_slot, idx_slot});
             // Repack as INT64 tagged_value so the downstream dispatch sees
             // a scalar and routes to the regular tensor-int-index path.
             index = packInt64ToTaggedValue(unwrapped_i64, true);

@@ -2897,13 +2897,27 @@ void eshkol_display_value_opts(const eshkol_tagged_value_t* value, eshkol_displa
                 case HEAP_SUBTYPE_CONS:
                     eshkol_display_list(value->data.ptr_val, opts);
                     break;
-                case HEAP_SUBTYPE_STRING:
+                case HEAP_SUBTYPE_STRING: {
+                    // Use the header's recorded byte length, NOT strlen, so
+                    // that strings containing embedded NUL bytes are emitted
+                    // in full. `arena_allocate_string_with_header` stores
+                    // `length + 1` (including the trailing NUL terminator)
+                    // in `header->size`, so subtract one to get the payload
+                    // byte count.  Without this, `(display rgb-bytes
+                    // binary-port)` truncates at the first 0x00 byte —
+                    // blocking P6 PPM raw-output and any other binary
+                    // protocol that pipes through `display`.
+                    size_t payload = (header->size > 0) ? (size_t)header->size - 1 : 0;
+                    FILE* out = get_output(opts);
                     if (opts->quote_strings) {
-                        fprintf(get_output(opts), "\"%s\"", (const char*)data_ptr);
+                        fputc('"', out);
+                        if (payload > 0) fwrite(data_ptr, 1, payload, out);
+                        fputc('"', out);
                     } else {
-                        fprintf(get_output(opts), "%s", (const char*)data_ptr);
+                        if (payload > 0) fwrite(data_ptr, 1, payload, out);
                     }
                     break;
+                }
                 case HEAP_SUBTYPE_SYMBOL:
                     // Display symbol name without quotes (homoiconic representation)
                     fprintf(get_output(opts), "%s", (const char*)data_ptr);
@@ -4235,6 +4249,47 @@ extern "C" void eshkol_exception_set_location(eshkol_exception_t* exc, uint32_t 
  */
 static char* eshkol_find_provider_file(const char* name);
 
+// Derive an Eshkol module name from a file path under a `lib/` (or
+// equivalent) directory. e.g.
+//   /Users/.../lib/agent/http.esk  → "agent.http"
+//   /Users/.../lib/core/json.esk   → "core.json"
+//   /tmp/myfile.esk                → ""  (no module-style location)
+// Returns malloc'd string the caller frees, or NULL if no module name
+// can be derived.
+static char* derive_module_name_from_path(const char* file_path) {
+    if (!file_path || !file_path[0]) return nullptr;
+    std::string path(file_path);
+
+    // Look for "/lib/" anywhere in the path; the module path starts
+    // after that. Falls back to "src/" since some projects use that.
+    size_t lib_pos = path.find("/lib/");
+    size_t skip = 5;  // "/lib/" length
+    if (lib_pos == std::string::npos) {
+        lib_pos = path.find("/src/");
+        skip = 5;
+    }
+    if (lib_pos == std::string::npos) return nullptr;
+
+    std::string mod = path.substr(lib_pos + skip);
+    // Drop ".esk" suffix
+    if (mod.size() > 4 && mod.compare(mod.size() - 4, 4, ".esk") == 0) {
+        mod.resize(mod.size() - 4);
+    }
+    // Replace "/" with "." for module syntax. Reject paths containing
+    // any character that wouldn't be valid in a Scheme symbol —
+    // unusual filenames mean we can't safely synthesise a module name.
+    for (size_t i = 0; i < mod.size(); ++i) {
+        char c = mod[i];
+        if (c == '/') { mod[i] = '.'; continue; }
+        if (!(std::isalnum(static_cast<unsigned char>(c)) ||
+              c == '-' || c == '_' || c == '.' || c == '!' || c == '?')) {
+            return nullptr;
+        }
+    }
+    if (mod.empty()) return nullptr;
+    return strdup(mod.c_str());
+}
+
 extern "C" void* eshkol_check_forward_ref(void* loaded_fn_ptr,
                                           void* stub_sentinel,
                                           const char* func_name) {
@@ -4244,11 +4299,30 @@ extern "C" void* eshkol_check_forward_ref(void* loaded_fn_ptr,
         if (func_name && func_name[0]) {
             hint = eshkol_find_provider_file(func_name);
             if (hint) {
-                snprintf(buf, sizeof(buf),
-                         "called undefined function '%s' "
-                         "(forward-referenced but never defined). "
-                         "Likely missing: (load \"%s\") — that file appears to define '%s'.",
-                         func_name, hint, func_name);
+                // If the matched file looks like a module (has a `lib/`
+                // ancestor), suggest `(require module-name)` since that's
+                // the modern entry point. Falls back to `(load …)` for
+                // ad-hoc files that aren't part of the module tree.
+                // Bug W "ask 2" (eshkol-agent 2026-05-06): the previous
+                // hint always suggested (load …), but agents normally
+                // wire imports through (require …) and provide forms.
+                char* module_name = derive_module_name_from_path(hint);
+                if (module_name) {
+                    snprintf(buf, sizeof(buf),
+                             "called undefined function '%s' "
+                             "(forward-referenced but never defined). "
+                             "Likely missing: (require %s) — that module's "
+                             "file %s appears to define '%s'.",
+                             func_name, module_name, hint, func_name);
+                    std::free(module_name);
+                } else {
+                    snprintf(buf, sizeof(buf),
+                             "called undefined function '%s' "
+                             "(forward-referenced but never defined). "
+                             "Likely missing: (load \"%s\") — that file "
+                             "appears to define '%s'.",
+                             func_name, hint, func_name);
+                }
                 std::free(hint);
             } else {
                 snprintf(buf, sizeof(buf),

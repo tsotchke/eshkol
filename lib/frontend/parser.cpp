@@ -316,17 +316,128 @@ private:
         column_++;
         std::string value;
 
+        // Append a Unicode codepoint as UTF-8 to value.
+        auto append_utf8 = [&value](uint32_t cp) {
+            if (cp < 0x80) {
+                value += static_cast<char>(cp);
+            } else if (cp < 0x800) {
+                value += static_cast<char>(0xC0 | (cp >> 6));
+                value += static_cast<char>(0x80 | (cp & 0x3F));
+            } else if (cp < 0x10000) {
+                value += static_cast<char>(0xE0 | (cp >> 12));
+                value += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+                value += static_cast<char>(0x80 | (cp & 0x3F));
+            } else if (cp <= 0x10FFFF) {
+                value += static_cast<char>(0xF0 | (cp >> 18));
+                value += static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
+                value += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+                value += static_cast<char>(0x80 | (cp & 0x3F));
+            }
+            // codepoints > 0x10FFFF are silently dropped (out of Unicode range).
+        };
+
+        auto hex_digit = [](char c) -> int {
+            if (c >= '0' && c <= '9') return c - '0';
+            if (c >= 'a' && c <= 'f') return 10 + (c - 'a');
+            if (c >= 'A' && c <= 'F') return 10 + (c - 'A');
+            return -1;
+        };
+
         while (pos < length && input[pos] != '"') {
             if (input[pos] == '\\' && pos + 1 < length) {
                 pos++;
                 column_++;
-                switch (input[pos]) {
+                char esc = input[pos];
+                switch (esc) {
                     case 'n': value += '\n'; break;
                     case 't': value += '\t'; break;
                     case 'r': value += '\r'; break;
+                    case 'a': value += '\a'; break;
+                    case 'b': value += '\b'; break;
                     case '\\': value += '\\'; break;
                     case '"': value += '"'; break;
-                    default: value += input[pos]; break;
+                    case '|': value += '|'; break;
+                    case '0': value += '\0'; break;
+                    case 'x': {
+                        // R7RS \xHEX; — variable-length hex codepoint terminated by ';'.
+                        // Read up to 8 hex digits, require trailing ';'. On
+                        // malformed input fall back to literal 'x' so we don't
+                        // swallow user characters silently.
+                        size_t scan = pos + 1;
+                        uint32_t cp = 0;
+                        size_t digits = 0;
+                        while (scan < length && digits < 8) {
+                            int d = hex_digit(input[scan]);
+                            if (d < 0) break;
+                            cp = (cp << 4) | static_cast<uint32_t>(d);
+                            scan++;
+                            digits++;
+                        }
+                        if (digits > 0 && scan < length && input[scan] == ';') {
+                            append_utf8(cp);
+                            // Advance past hex digits + ';'. Outer pos++ at the
+                            // bottom of the loop advances past the ';'.
+                            size_t consumed = (scan - pos);  // 'x' is at pos
+                            pos += consumed;
+                            column_ += static_cast<uint32_t>(consumed);
+                        } else {
+                            // Malformed \x escape — keep as literal 'x'.
+                            value += 'x';
+                        }
+                        break;
+                    }
+                    case 'u': {
+                        // Non-R7RS but commonly requested: \uNNNN exactly 4 hex digits
+                        // (unterminated). Useful for JSON/JS interop.
+                        if (pos + 4 < length) {
+                            uint32_t cp = 0;
+                            bool ok = true;
+                            for (int i = 1; i <= 4; i++) {
+                                int d = hex_digit(input[pos + i]);
+                                if (d < 0) { ok = false; break; }
+                                cp = (cp << 4) | static_cast<uint32_t>(d);
+                            }
+                            if (ok) {
+                                append_utf8(cp);
+                                pos += 4;
+                                column_ += 4;
+                            } else {
+                                value += 'u';
+                            }
+                        } else {
+                            value += 'u';
+                        }
+                        break;
+                    }
+                    case ' ': case '\t': case '\n': case '\r': {
+                        // Line continuation: \<intraline whitespace>*<newline><intraline whitespace>*
+                        // Skip intraline whitespace, then exactly one newline, then more
+                        // whitespace. If no newline appears, treat as literal whitespace
+                        // (preserve backwards-compat for `\<space>` users — though R7RS
+                        // would reject this). Track line_/line_start_ when consuming \n.
+                        size_t scan = pos;
+                        while (scan < length && (input[scan] == ' ' || input[scan] == '\t')) scan++;
+                        if (scan < length && (input[scan] == '\n' || input[scan] == '\r')) {
+                            // Consume CRLF/CR/LF as one line terminator.
+                            if (input[scan] == '\r' && scan + 1 < length && input[scan + 1] == '\n') {
+                                scan += 2;
+                            } else {
+                                scan += 1;
+                            }
+                            line_++;
+                            line_start_ = scan;
+                            while (scan < length && (input[scan] == ' ' || input[scan] == '\t')) scan++;
+                            // Advance pos to one before scan; outer pos++ moves past it.
+                            size_t consumed = scan - pos - 1;
+                            pos += consumed;
+                            column_ = static_cast<uint32_t>(pos - line_start_ + 1);
+                        } else {
+                            // Just a literal whitespace after backslash.
+                            value += esc;
+                        }
+                        break;
+                    }
+                    default: value += esc; break;
                 }
             } else if (input[pos] == '\n') {
                 value += input[pos];
@@ -5958,6 +6069,19 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
         if (ast.operation.op == ESHKOL_AND_OP) {
             // Syntax: (and expr1 expr2 ...)
             // Returns first false value or last value if all are true
+            //
+            // #229 (2026-05-07): the per-arg dispatch used to be just
+            //   `if (TOKEN_LPAREN) parse_list else parse_atom`, which
+            // silently dropped TOKEN_QUOTE / TOKEN_VECTOR_START / TOKEN_BACKQUOTE /
+            // TOKEN_COMMA / TOKEN_COMMA_AT — `parse_atom` returns an empty AST for
+            // those, the apostrophe gets re-tokenized into the next iteration,
+            // and the trailing forms of the program get consumed as `or`/`and`
+            // arguments. Symptoms in the wild: `(or #f '())` and `(and #t #(1 2))`
+            // appear to compile but the binary silently truncates everything
+            // after them. Fix: push the consumed token back and delegate to
+            // `parse_expression`, which already handles every kind of token
+            // (quotes, vectors, quasi-quotes, etc.) the same way it does in
+            // every other expression position.
             std::vector<eshkol_ast_t> exprs;
 
             while (true) {
@@ -5969,12 +6093,8 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                     return ast;
                 }
 
-                eshkol_ast_t expr;
-                if (token.type == TOKEN_LPAREN) {
-                    expr = parse_list(tokenizer);
-                } else {
-                    expr = parse_atom(token);
-                }
+                tokenizer.pushBack(token);
+                eshkol_ast_t expr = parse_expression(tokenizer);
 
                 if (expr.type == ESHKOL_INVALID) {
                     ast.type = ESHKOL_INVALID;
@@ -6002,6 +6122,9 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
         if (ast.operation.op == ESHKOL_OR_OP) {
             // Syntax: (or expr1 expr2 ...)
             // Returns first true value or last value if all are false
+            // See the and-handler above for the #229 dispatch fix rationale —
+            // same broken pattern lived here too. `parse_expression` is the
+            // only correct way to read an arbitrary argument expression.
             std::vector<eshkol_ast_t> exprs;
 
             while (true) {
@@ -6013,12 +6136,8 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                     return ast;
                 }
 
-                eshkol_ast_t expr;
-                if (token.type == TOKEN_LPAREN) {
-                    expr = parse_list(tokenizer);
-                } else {
-                    expr = parse_atom(token);
-                }
+                tokenizer.pushBack(token);
+                eshkol_ast_t expr = parse_expression(tokenizer);
 
                 if (expr.type == ESHKOL_INVALID) {
                     ast.type = ESHKOL_INVALID;

@@ -330,10 +330,16 @@ llvm::Value* TensorCodegen::tensorGet(const eshkol_operations_t* op) {
     // First compute stride[0] = total_elements / dims[0]
     // Then stride[i] = stride[i-1] / dims[i]
 
-    // Collect indices and compute linear offset. Each index is funneled
-    // through `eshkol_unwrap_list_index` so (tensor-get t (list i j))
-    // works alongside (tensor-get t i j) — fit.esk passes list-wrapped
-    // indices from its tensor-set!/tensor-ref call sites.
+    // Bug II (2026-05-07): when num_indices == 1, the single arg may be
+    // a cons list packing all dims (the NumPy-style `t[(i,j,k)]` idiom
+    // Noesis uses for image-write framebuffers). The previous codegen
+    // funneled it through `eshkol_unwrap_list_index`, which returns
+    // only the *car* — collapsing every (0 _ _) read on a 3D tensor
+    // to flat[0]. Fix: in the 1-arg case, route through
+    // `eshkol_tensor_linear_from_index_arg` to compute the full
+    // row-major offset, and use `eshkol_tensor_index_arg_count` to
+    // decide scalar-vs-slice the same way the multi-arg path does.
+    // The multi-arg path keeps the original per-arg unwrap.
     llvm::Function* unwrap_fn = ctx_.module().getFunction("eshkol_unwrap_list_index");
     if (!unwrap_fn) {
         llvm::FunctionType* ft = llvm::FunctionType::get(
@@ -344,8 +350,29 @@ llvm::Value* TensorCodegen::tensorGet(const eshkol_operations_t* op) {
     }
 
     std::vector<llvm::Value*> indices;
-    for (uint64_t i = 0; i < num_indices; i++) {
-        llvm::Value* idx = codegenAST(&op->call_op.variables[i + 1]);
+    llvm::Value* runtime_linear = nullptr;
+    llvm::Value* runtime_index_count = nullptr;
+
+    if (num_indices == 1) {
+        llvm::Function* lin_fn = ctx_.module().getFunction("eshkol_tensor_linear_from_index_arg");
+        if (!lin_fn) {
+            llvm::FunctionType* ft = llvm::FunctionType::get(
+                ctx_.int64Type(),
+                {ctx_.ptrType(), ctx_.ptrType(), ctx_.int64Type()}, false);
+            lin_fn = llvm::Function::Create(
+                ft, llvm::Function::ExternalLinkage,
+                "eshkol_tensor_linear_from_index_arg", &ctx_.module());
+        }
+        llvm::Function* count_fn = ctx_.module().getFunction("eshkol_tensor_index_arg_count");
+        if (!count_fn) {
+            llvm::FunctionType* ft = llvm::FunctionType::get(
+                ctx_.int64Type(), {ctx_.ptrType()}, false);
+            count_fn = llvm::Function::Create(
+                ft, llvm::Function::ExternalLinkage,
+                "eshkol_tensor_index_arg_count", &ctx_.module());
+        }
+
+        llvm::Value* idx = codegenAST(&op->call_op.variables[1]);
         if (!idx) return nullptr;
         if (idx->getType() != ctx_.taggedValueType()) {
             idx = tagged_.packInt64(tagged_.safeExtractInt64(idx), true);
@@ -357,79 +384,142 @@ llvm::Value* TensorCodegen::tensorGet(const eshkol_operations_t* op) {
             ctx_.taggedValueType(), nullptr, "tget_idx_slot");
         ctx_.builder().restoreIP(saved);
         ctx_.builder().CreateStore(idx, idx_slot);
-        indices.push_back(ctx_.builder().CreateCall(unwrap_fn, {idx_slot}));
+        runtime_linear = ctx_.builder().CreateCall(lin_fn, {idx_slot, dims_ptr, ndim});
+        runtime_index_count = ctx_.builder().CreateCall(count_fn, {idx_slot});
+    } else {
+        for (uint64_t i = 0; i < num_indices; i++) {
+            llvm::Value* idx = codegenAST(&op->call_op.variables[i + 1]);
+            if (!idx) return nullptr;
+            if (idx->getType() != ctx_.taggedValueType()) {
+                idx = tagged_.packInt64(tagged_.safeExtractInt64(idx), true);
+            }
+            llvm::IRBuilderBase::InsertPoint saved = ctx_.builder().saveIP();
+            llvm::Function* cur_fn = ctx_.builder().GetInsertBlock()->getParent();
+            ctx_.builder().SetInsertPoint(&cur_fn->getEntryBlock(), cur_fn->getEntryBlock().begin());
+            llvm::Value* idx_slot = ctx_.builder().CreateAlloca(
+                ctx_.taggedValueType(), nullptr, "tget_idx_slot");
+            ctx_.builder().restoreIP(saved);
+            ctx_.builder().CreateStore(idx, idx_slot);
+            indices.push_back(ctx_.builder().CreateCall(unwrap_fn, {idx_slot}));
+        }
     }
 
-    // Guard: num_indices must not exceed ndim (prevents out-of-bounds dims[i] read)
-    {
-        llvm::Value* idx_count = llvm::ConstantInt::get(ctx_.int64Type(), num_indices);
-        llvm::Value* too_many = ctx_.builder().CreateICmpUGT(idx_count, ndim);
-        llvm::Function* cur_fn = ctx_.builder().GetInsertBlock()->getParent();
-        llvm::BasicBlock* idx_ok = llvm::BasicBlock::Create(ctx_.context(), "tget_idx_ok", cur_fn);
-        llvm::BasicBlock* idx_err = llvm::BasicBlock::Create(ctx_.context(), "tget_idx_err", cur_fn);
-        ctx_.builder().CreateCondBr(too_many, idx_err, idx_ok);
+    llvm::Value* linear_offset = nullptr;
+    llvm::Value* prod_dims = nullptr;
+    llvm::Value* num_indices_val = nullptr;
 
-        ctx_.builder().SetInsertPoint(idx_err);
-        llvm::Function* pf = ctx_.lookupFunction("printf");
-        llvm::Function* ef = ctx_.lookupFunction("exit");
-        if (pf && ef) {
-            llvm::Value* fmt = ctx_.builder().CreateGlobalString(
-                "Error: too many indices for tensor-get (got %lld, tensor is %lldD)\n");
-            ctx_.builder().CreateCall(pf, {fmt, idx_count, ndim});
-            ctx_.builder().CreateCall(ef, {llvm::ConstantInt::get(ctx_.builder().getInt32Ty(), 1)});
+    if (runtime_linear) {
+        // Bug II fix path: linear and count come from the runtime helper
+        // that walked the cons list. Skip per-arg bounds check (the
+        // runtime helper trusts the user — bounds violations would
+        // produce a wrong but non-crashing offset; could harden later).
+        // Compute prod_dims = product(dims[0..count-1]) with a small
+        // IR loop, since we can't constant-fold it at codegen time.
+        linear_offset = runtime_linear;
+        num_indices_val = runtime_index_count;
+
+        llvm::Function* fn = ctx_.builder().GetInsertBlock()->getParent();
+        llvm::BasicBlock* pd_entry = ctx_.builder().GetInsertBlock();
+        llvm::BasicBlock* pd_cond = llvm::BasicBlock::Create(ctx_.context(), "pd_cond", fn);
+        llvm::BasicBlock* pd_body = llvm::BasicBlock::Create(ctx_.context(), "pd_body", fn);
+        llvm::BasicBlock* pd_done = llvm::BasicBlock::Create(ctx_.context(), "pd_done", fn);
+
+        ctx_.builder().CreateBr(pd_cond);
+        ctx_.builder().SetInsertPoint(pd_cond);
+        llvm::PHINode* pd_i = ctx_.builder().CreatePHI(ctx_.int64Type(), 2, "pd_i");
+        llvm::PHINode* pd_acc = ctx_.builder().CreatePHI(ctx_.int64Type(), 2, "pd_acc");
+        pd_i->addIncoming(llvm::ConstantInt::get(ctx_.int64Type(), 0), pd_entry);
+        pd_acc->addIncoming(llvm::ConstantInt::get(ctx_.int64Type(), 1), pd_entry);
+
+        llvm::Value* pd_done_cond = ctx_.builder().CreateICmpUGE(pd_i, runtime_index_count);
+        ctx_.builder().CreateCondBr(pd_done_cond, pd_done, pd_body);
+
+        ctx_.builder().SetInsertPoint(pd_body);
+        llvm::Value* pd_dim_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), dims_ptr, pd_i);
+        llvm::Value* pd_dim_v = ctx_.builder().CreateLoad(ctx_.int64Type(), pd_dim_ptr);
+        llvm::Value* pd_acc_next = ctx_.builder().CreateMul(pd_acc, pd_dim_v);
+        llvm::Value* pd_i_next = ctx_.builder().CreateAdd(pd_i, llvm::ConstantInt::get(ctx_.int64Type(), 1));
+        pd_i->addIncoming(pd_i_next, ctx_.builder().GetInsertBlock());
+        pd_acc->addIncoming(pd_acc_next, ctx_.builder().GetInsertBlock());
+        ctx_.builder().CreateBr(pd_cond);
+
+        ctx_.builder().SetInsertPoint(pd_done);
+        prod_dims = pd_acc;
+    } else {
+        // Multi-arg path: indices vector is populated. Static bounds
+        // check per-arg; static prod_dims accumulates dims[i] in IR.
+        // Guard: num_indices must not exceed ndim (prevents out-of-bounds dims[i] read)
+        {
+            llvm::Value* idx_count = llvm::ConstantInt::get(ctx_.int64Type(), num_indices);
+            llvm::Value* too_many = ctx_.builder().CreateICmpUGT(idx_count, ndim);
+            llvm::Function* cur_fn = ctx_.builder().GetInsertBlock()->getParent();
+            llvm::BasicBlock* idx_ok = llvm::BasicBlock::Create(ctx_.context(), "tget_idx_ok", cur_fn);
+            llvm::BasicBlock* idx_err = llvm::BasicBlock::Create(ctx_.context(), "tget_idx_err", cur_fn);
+            ctx_.builder().CreateCondBr(too_many, idx_err, idx_ok);
+
+            ctx_.builder().SetInsertPoint(idx_err);
+            llvm::Function* pf = ctx_.lookupFunction("printf");
+            llvm::Function* ef = ctx_.lookupFunction("exit");
+            if (pf && ef) {
+                llvm::Value* fmt = ctx_.builder().CreateGlobalString(
+                    "Error: too many indices for tensor-get (got %lld, tensor is %lldD)\n");
+                ctx_.builder().CreateCall(pf, {fmt, idx_count, ndim});
+                ctx_.builder().CreateCall(ef, {llvm::ConstantInt::get(ctx_.builder().getInt32Ty(), 1)});
+            }
+            ctx_.builder().CreateUnreachable();
+
+            ctx_.builder().SetInsertPoint(idx_ok);
         }
-        ctx_.builder().CreateUnreachable();
 
-        ctx_.builder().SetInsertPoint(idx_ok);
-    }
+        // Compute linear offset incrementally
+        // offset = i0*stride0 + i1*stride1 + ... where stride_j = total / prod(d0..dj)
+        linear_offset = llvm::ConstantInt::get(ctx_.int64Type(), 0);
+        prod_dims = llvm::ConstantInt::get(ctx_.int64Type(), 1);
 
-    // Compute linear offset incrementally
-    // offset = i0*stride0 + i1*stride1 + ... where stride_j = total / prod(d0..dj)
-    llvm::Value* linear_offset = llvm::ConstantInt::get(ctx_.int64Type(), 0);
-    llvm::Value* prod_dims = llvm::ConstantInt::get(ctx_.int64Type(), 1);
+        for (uint64_t i = 0; i < num_indices; i++) {
+            // Load dims[i]
+            llvm::Value* dim_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), dims_ptr,
+                llvm::ConstantInt::get(ctx_.int64Type(), i));
+            llvm::Value* dim_i = ctx_.builder().CreateLoad(ctx_.int64Type(), dim_ptr);
 
-    for (uint64_t i = 0; i < num_indices; i++) {
-        // Load dims[i]
-        llvm::Value* dim_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), dims_ptr,
-            llvm::ConstantInt::get(ctx_.int64Type(), i));
-        llvm::Value* dim_i = ctx_.builder().CreateLoad(ctx_.int64Type(), dim_ptr);
+            // Bounds check: verify indices[i] < dims[i]
+            llvm::Value* oob = ctx_.builder().CreateICmpUGE(indices[i], dim_i, "idx_oob");
+            llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+            llvm::BasicBlock* oob_bb = llvm::BasicBlock::Create(ctx_.context(), "tensor_oob", current_func);
+            llvm::BasicBlock* ok_bb = llvm::BasicBlock::Create(ctx_.context(), "tensor_ok", current_func);
+            ctx_.builder().CreateCondBr(oob, oob_bb, ok_bb);
 
-        // Bounds check: verify indices[i] < dims[i]
-        llvm::Value* oob = ctx_.builder().CreateICmpUGE(indices[i], dim_i, "idx_oob");
-        llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
-        llvm::BasicBlock* oob_bb = llvm::BasicBlock::Create(ctx_.context(), "tensor_oob", current_func);
-        llvm::BasicBlock* ok_bb = llvm::BasicBlock::Create(ctx_.context(), "tensor_ok", current_func);
-        ctx_.builder().CreateCondBr(oob, oob_bb, ok_bb);
+            ctx_.builder().SetInsertPoint(oob_bb);
+            llvm::Function* printf_fn = ctx_.lookupFunction("printf");
+            llvm::Function* exit_fn = ctx_.lookupFunction("exit");
+            if (printf_fn && exit_fn) {
+                llvm::Value* fmt = ctx_.builder().CreateGlobalString(
+                    "Error: tensor index out of bounds (dimension %lld)\n");
+                ctx_.builder().CreateCall(printf_fn, {fmt, dim_i});
+                ctx_.builder().CreateCall(exit_fn, {llvm::ConstantInt::get(
+                    llvm::Type::getInt32Ty(ctx_.context()), 1)});
+            }
+            ctx_.builder().CreateUnreachable();
 
-        ctx_.builder().SetInsertPoint(oob_bb);
-        llvm::Function* printf_fn = ctx_.lookupFunction("printf");
-        llvm::Function* exit_fn = ctx_.lookupFunction("exit");
-        if (printf_fn && exit_fn) {
-            llvm::Value* fmt = ctx_.builder().CreateGlobalString(
-                "Error: tensor index out of bounds (dimension %lld)\n");
-            ctx_.builder().CreateCall(printf_fn, {fmt, dim_i});
-            ctx_.builder().CreateCall(exit_fn, {llvm::ConstantInt::get(
-                llvm::Type::getInt32Ty(ctx_.context()), 1)});
+            ctx_.builder().SetInsertPoint(ok_bb);
+
+            // stride[i] = total_elements / (prod_dims * dim_i) = total_elements / prod_dims_including_i
+            llvm::Value* prod_dims_next = ctx_.builder().CreateMul(prod_dims, dim_i);
+
+            // stride[i] = total / prod_dims_next
+            llvm::Value* stride_i = ctx_.builder().CreateUDiv(total_elements, prod_dims_next);
+
+            // offset += indices[i] * stride[i]
+            llvm::Value* contrib = ctx_.builder().CreateMul(indices[i], stride_i);
+            linear_offset = ctx_.builder().CreateAdd(linear_offset, contrib);
+
+            prod_dims = prod_dims_next;
         }
-        ctx_.builder().CreateUnreachable();
 
-        ctx_.builder().SetInsertPoint(ok_bb);
-
-        // stride[i] = total_elements / (prod_dims * dim_i) = total_elements / prod_dims_including_i
-        llvm::Value* prod_dims_next = ctx_.builder().CreateMul(prod_dims, dim_i);
-
-        // stride[i] = total / prod_dims_next
-        llvm::Value* stride_i = ctx_.builder().CreateUDiv(total_elements, prod_dims_next);
-
-        // offset += indices[i] * stride[i]
-        llvm::Value* contrib = ctx_.builder().CreateMul(indices[i], stride_i);
-        linear_offset = ctx_.builder().CreateAdd(linear_offset, contrib);
-
-        prod_dims = prod_dims_next;
+        num_indices_val = llvm::ConstantInt::get(ctx_.int64Type(), num_indices);
     }
 
     // ===== PHASE 2: Decide scalar vs slice =====
-    llvm::Value* num_indices_val = llvm::ConstantInt::get(ctx_.int64Type(), num_indices);
     llvm::Value* is_full_index = ctx_.builder().CreateICmpEQ(num_indices_val, ndim);
 
     llvm::Function* func = ctx_.builder().GetInsertBlock()->getParent();
@@ -606,25 +696,34 @@ llvm::Value* TensorCodegen::tensorSet(const eshkol_operations_t* op) {
 
     // Calculate linear index (indices are variables[1..num_vars-2]).
     //
-    // Each index is funneled through `eshkol_unwrap_list_index` — same
-    // runtime helper used by tensor-ref — so the NumPy/JAX idiom
-    // `(tensor-set! t (list i) v)` works uniformly. The helper returns
-    // the integer index directly for scalar INT64/DOUBLE and extracts
-    // car for HEAP_PTR+CONS, so no AST-level detection is needed.
-    llvm::Function* unwrap_fn = ctx_.module().getFunction("eshkol_unwrap_list_index");
-    if (!unwrap_fn) {
-        llvm::FunctionType* ft = llvm::FunctionType::get(
-            ctx_.int64Type(), {ctx_.ptrType()}, false);
-        unwrap_fn = llvm::Function::Create(
-            ft, llvm::Function::ExternalLinkage,
-            "eshkol_unwrap_list_index", &ctx_.module());
-    }
+    // Two shapes are supported:
+    //   (A) (tensor-set! t i j k v)         — N scalar args, one per dim
+    //   (B) (tensor-set! t (list i j k) v)  — single list arg holding all dims
+    //
+    // Bug II (2026-05-07): the previous codegen funneled each arg through
+    // `eshkol_unwrap_list_index`, which returns just the *car* of a cons
+    // list. That made (B) silently collapse to `flat[car]` — a 3D
+    // (list 0 1 0) write hit flat[0] instead of flat[3], and any
+    // (tensor-ref t (list 0 _ _)) read came back flat[0]. Symptom: an
+    // image-write framebuffer rendered nearly-black with a smear in the
+    // top-left.  Fix: when there's exactly one index argument, dispatch
+    // to `eshkol_tensor_linear_from_index_arg`, which walks the cons
+    // chain and computes the row-major linear offset from the tensor's
+    // own dims — covering both list and scalar cases in one call. The
+    // multi-arg path keeps the per-arg unwrap (each arg is one dim).
+    if (num_set_indices == 1) {
+        llvm::Function* lin_fn = ctx_.module().getFunction("eshkol_tensor_linear_from_index_arg");
+        if (!lin_fn) {
+            llvm::FunctionType* ft = llvm::FunctionType::get(
+                ctx_.int64Type(),
+                {ctx_.ptrType(), ctx_.ptrType(), ctx_.int64Type()}, false);
+            lin_fn = llvm::Function::Create(
+                ft, llvm::Function::ExternalLinkage,
+                "eshkol_tensor_linear_from_index_arg", &ctx_.module());
+        }
 
-    llvm::Value* stride = llvm::ConstantInt::get(ctx_.int64Type(), 1);
-    for (int64_t i = static_cast<int64_t>(num_set_indices) - 1; i >= 0; i--) {
-        llvm::Value* index = codegenAST(&op->call_op.variables[i + 1]);
+        llvm::Value* index = codegenAST(&op->call_op.variables[1]);
         if (index) {
-            // Normalise to tagged_value, then unwrap through the helper.
             if (index->getType() != ctx_.taggedValueType()) {
                 index = tagged_.packInt64(tagged_.safeExtractInt64(index), true);
             }
@@ -635,16 +734,44 @@ llvm::Value* TensorCodegen::tensorSet(const eshkol_operations_t* op) {
                 ctx_.taggedValueType(), nullptr, "tset_idx_slot");
             ctx_.builder().restoreIP(saved);
             ctx_.builder().CreateStore(index, idx_slot);
-            llvm::Value* idx_int = ctx_.builder().CreateCall(unwrap_fn, {idx_slot});
+            linear_index = ctx_.builder().CreateCall(lin_fn,
+                {idx_slot, typed_dims_ptr, ndim});
+        }
+    } else {
+        llvm::Function* unwrap_fn = ctx_.module().getFunction("eshkol_unwrap_list_index");
+        if (!unwrap_fn) {
+            llvm::FunctionType* ft = llvm::FunctionType::get(
+                ctx_.int64Type(), {ctx_.ptrType()}, false);
+            unwrap_fn = llvm::Function::Create(
+                ft, llvm::Function::ExternalLinkage,
+                "eshkol_unwrap_list_index", &ctx_.module());
+        }
 
-            llvm::Value* contribution = ctx_.builder().CreateMul(idx_int, stride);
-            linear_index = ctx_.builder().CreateAdd(linear_index, contribution);
+        llvm::Value* stride = llvm::ConstantInt::get(ctx_.int64Type(), 1);
+        for (int64_t i = static_cast<int64_t>(num_set_indices) - 1; i >= 0; i--) {
+            llvm::Value* index = codegenAST(&op->call_op.variables[i + 1]);
+            if (index) {
+                if (index->getType() != ctx_.taggedValueType()) {
+                    index = tagged_.packInt64(tagged_.safeExtractInt64(index), true);
+                }
+                llvm::IRBuilderBase::InsertPoint saved = ctx_.builder().saveIP();
+                llvm::Function* cur_fn = ctx_.builder().GetInsertBlock()->getParent();
+                ctx_.builder().SetInsertPoint(&cur_fn->getEntryBlock(), cur_fn->getEntryBlock().begin());
+                llvm::Value* idx_slot = ctx_.builder().CreateAlloca(
+                    ctx_.taggedValueType(), nullptr, "tset_idx_slot");
+                ctx_.builder().restoreIP(saved);
+                ctx_.builder().CreateStore(index, idx_slot);
+                llvm::Value* idx_int = ctx_.builder().CreateCall(unwrap_fn, {idx_slot});
 
-            if (i > 0) {
-                llvm::Value* dim_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), typed_dims_ptr,
-                                                      llvm::ConstantInt::get(ctx_.int64Type(), i));
-                llvm::Value* dim = ctx_.builder().CreateLoad(ctx_.int64Type(), dim_ptr);
-                stride = ctx_.builder().CreateMul(stride, dim);
+                llvm::Value* contribution = ctx_.builder().CreateMul(idx_int, stride);
+                linear_index = ctx_.builder().CreateAdd(linear_index, contribution);
+
+                if (i > 0) {
+                    llvm::Value* dim_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), typed_dims_ptr,
+                                                          llvm::ConstantInt::get(ctx_.int64Type(), i));
+                    llvm::Value* dim = ctx_.builder().CreateLoad(ctx_.int64Type(), dim_ptr);
+                    stride = ctx_.builder().CreateMul(stride, dim);
+                }
             }
         }
     }
