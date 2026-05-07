@@ -1630,6 +1630,33 @@ if(ESHKOL_BUILD_AGENT_FFI)
             list(APPEND AGENT_FFI_SOURCES ${AGENT_FFI_DIR}/agent_http_server.c)
         endif()
 
+        # Additional agent FFI primitives — all POSIX-only and gated above.
+        # Each module is independent and gracefully degrades when its
+        # optional system library is absent (HAS_* compile defines).
+        #
+        # NOTE: agent_concurrency.c is intentionally OMITTED — it duplicates
+        # eshkol_mutex_* / eshkol_condvar_* / etc. already defined by
+        # core.threads (lib/core/threads.c, exposed via core.threads.esk).
+        # If we ever need handle-based mutex/channel/timer primitives we
+        # should rename them with an explicit suffix (e.g. _h) before
+        # re-enabling.  See agent's own eshkol-side wrappers — they use
+        # the core.threads primitives directly.
+        foreach(_agent_extra_src
+                agent_compression.c     # zlib / gzip — compiles to stub w/o HAS_ZLIB
+                agent_kb_io.c           # KB JSON persistence
+                agent_platform.c        # filesystem, time, mmap, glob, base64url, uuid
+                agent_poll.c            # IO multiplexing (poll/select)
+                agent_signal.c          # SIGINT/SIGTERM/SIGHUP + atexit
+                agent_tensor_io.c       # tensor save/load
+                agent_treesitter.c      # tree-sitter — stubs w/o HAS_TREE_SITTER
+                agent_watch.c           # kqueue/inotify file watch
+                agent_yoga.c            # Facebook Yoga flexbox — stubs w/o HAS_YOGA
+        )
+            if(EXISTS "${AGENT_FFI_DIR}/${_agent_extra_src}")
+                list(APPEND AGENT_FFI_SOURCES "${AGENT_FFI_DIR}/${_agent_extra_src}")
+            endif()
+        endforeach()
+
         # Optional: PCRE2 for regex. Homebrew ships the .pc file as
         # libpcre2-8.pc, some distros (Debian) as pcre2-8.pc — try
         # the homebrew-style name first, fall back to the bare one

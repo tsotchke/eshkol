@@ -266,6 +266,133 @@ extern "C" {
         ESHKOL_OPTIONAL_AGENT_FFI;
     void eshkol_ws_close(int64_t handle) ESHKOL_OPTIONAL_AGENT_FFI;
 
+    // ── Bulk agent FFI symbols (compression, concurrency, kb-io, platform,
+    // poll, signal, tensor-io, treesitter, watch, yoga).  Declared with
+    // void* / void(void) signatures because the JIT only needs the address
+    // — actual call types come from each user `(extern …)` declaration.
+    // We use opaque `void` parameters so the linker pulls the symbol from
+    // libeshkol-agent-ffi.a without dragging in C++ type cruft here.
+    #define ESHKOL_AGENT_FFI_SYMBOL(name) void name() ESHKOL_OPTIONAL_AGENT_FFI;
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_compression_available)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_deflate)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_inflate_data)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_gzip)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_gunzip)
+
+    // (agent_concurrency.c — intentionally omitted; collides with core.threads.)
+
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_kb_save_json)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_kb_load_json)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_kb_fact_count)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_kb_fact_clear)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_kb_fact_add)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_kb_fact_get_field)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_kb_fact_get_value)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_kb_fact_has_value)
+
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_mkdir_recursive)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_rmdir_recursive)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_directory_walk)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_file_copy)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_file_chmod)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_file_stat_fields)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_file_lock)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_file_unlock)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_file_mmap)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_file_munmap)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_mmap_read)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_mmap_length)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_symlink_create)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_symlink_read)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_realpath_resolve)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_glob_match)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_glob_expand)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_temp_directory)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_mkstemp_path)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_mkdtemp_path)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_executable_exists)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_executable_path)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_home_directory)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_hostname)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_username)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_os_type)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_os_arch)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_getpid_val)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_process_pid)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_process_stdout_fd)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_process_stderr_fd)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_process_kill_tree)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_current_time_ms)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_monotonic_time_ms)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_sleep_ms)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_format_iso8601)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_parse_iso8601)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_format_relative)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_local_timezone_offset)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_uuid_v4)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_base64url_encode)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_base64url_decode)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_constant_time_equal)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_sha256_file)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_shell_quote)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_shell_split)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_string_display_width)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_string_truncate_display)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_eprint)
+
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_poll)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_poll_read)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_fd_set_nonblocking)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_fd_set_blocking)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_fd_read_available)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_fd_write_available)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_make_pipe)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_line_reader_create)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_line_reader_close)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_line_reader_next)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_line_reader_eof)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_line_reader_buffered)
+
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_signal_handler_install)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_signal_handler_reset)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_signal_ignore)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_signal_check)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_signal_total_count)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_atexit_init)
+
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_tensor_save)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_tensor_load)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_tensor_file_info)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_tensor_free_loaded)
+
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_ts_available)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_ts_parser_new)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_ts_parser_free)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_ts_parse)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_ts_tree_root)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_ts_tree_sexp)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_ts_tree_free)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_ts_node_text)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_ts_node_children)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_ts_query_new)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_ts_query_free)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_ts_query_matches)
+
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_watch_start)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_watch_stop)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_watch_poll)
+
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_yoga_available)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_yoga_node_create)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_yoga_node_free)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_yoga_node_set_int)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_yoga_node_set_float)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_yoga_node_add_child)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_yoga_node_calculate)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_yoga_node_get_computed)
+
+    #undef ESHKOL_AGENT_FFI_SYMBOL
+
 #undef ESHKOL_OPTIONAL_AGENT_FFI
 #endif
 }
@@ -637,6 +764,127 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_ws_send_binary);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_ws_receive);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_ws_close);
+
+    // Bulk agent FFI symbols (compression, concurrency, kb-io, platform,
+    // poll, signal, tensor-io, treesitter, watch, yoga).  See bulk
+    // declaration block above for naming convention.
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_compression_available);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_deflate);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_inflate_data);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_gzip);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_gunzip);
+
+    // (agent_concurrency.c symbols intentionally omitted — see decl block.)
+
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_kb_save_json);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_kb_load_json);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_kb_fact_count);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_kb_fact_clear);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_kb_fact_add);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_kb_fact_get_field);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_kb_fact_get_value);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_kb_fact_has_value);
+
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_mkdir_recursive);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_rmdir_recursive);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_directory_walk);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_file_copy);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_file_chmod);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_file_stat_fields);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_file_lock);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_file_unlock);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_file_mmap);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_file_munmap);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_mmap_read);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_mmap_length);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_symlink_create);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_symlink_read);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_realpath_resolve);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_glob_match);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_glob_expand);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_temp_directory);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_mkstemp_path);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_mkdtemp_path);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_executable_exists);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_executable_path);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_home_directory);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_hostname);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_username);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_os_type);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_os_arch);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_getpid_val);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_process_pid);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_process_stdout_fd);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_process_stderr_fd);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_process_kill_tree);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_current_time_ms);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_monotonic_time_ms);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_sleep_ms);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_format_iso8601);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_parse_iso8601);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_format_relative);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_local_timezone_offset);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_uuid_v4);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_base64url_encode);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_base64url_decode);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_constant_time_equal);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_sha256_file);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_shell_quote);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_shell_split);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_string_display_width);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_string_truncate_display);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_eprint);
+
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_poll);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_poll_read);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_fd_set_nonblocking);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_fd_set_blocking);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_fd_read_available);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_fd_write_available);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_make_pipe);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_line_reader_create);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_line_reader_close);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_line_reader_next);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_line_reader_eof);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_line_reader_buffered);
+
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_signal_handler_install);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_signal_handler_reset);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_signal_ignore);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_signal_check);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_signal_total_count);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_atexit_init);
+
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_tensor_save);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_tensor_load);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_tensor_file_info);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_tensor_free_loaded);
+
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_ts_available);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_ts_parser_new);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_ts_parser_free);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_ts_parse);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_ts_tree_root);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_ts_tree_sexp);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_ts_tree_free);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_ts_node_text);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_ts_node_children);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_ts_query_new);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_ts_query_free);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_ts_query_matches);
+
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_watch_start);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_watch_stop);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_watch_poll);
+
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_yoga_available);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_yoga_node_create);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_yoga_node_free);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_yoga_node_set_int);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_yoga_node_set_float);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_yoga_node_add_child);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_yoga_node_calculate);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_yoga_node_get_computed);
 #endif
 
     // ===== TYPE ERRORS (R7RS Compliance) =====
