@@ -761,17 +761,38 @@ bool handle_command(const std::string& input, eshkol::ReplJITContext& repl_ctx) 
     return false;
 }
 
+// --machine mode framing markers (Noesis warm-worker support, 2026-05-07).
+// Sentinels go to STDERR so user program output on stdout stays clean.
+// Clients drive eshkol-repl as a long-running JIT-warm worker:
+//   1. Spawn `eshkol-repl --machine`
+//   2. Read stderr until "EREPL READY" — JIT + stdlib are warm
+//   3. Send a form on stdin (terminated by newline + balanced parens)
+//   4. Read stdout until you see "EREPL DONE" / "EREPL FAIL" on stderr
+//   5. Repeat for each new form, never paying the cold-start cost again
+// EREPL_READY emits exactly once after init; EREPL_DONE / EREPL_FAIL
+// emits once per top-level form. Both end with \n and an explicit fflush.
+static constexpr const char* EREPL_READY = "EREPL READY\n";
+static constexpr const char* EREPL_DONE  = "EREPL DONE\n";
+static constexpr const char* EREPL_FAIL  = "EREPL FAIL\n";
+
 int main(int argc, char** argv) {
     // Parse command-line arguments
     bool load_stdlib = false;
+    bool machine_mode = false;
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
         if (arg == "--stdlib" || arg == "-s") {
             load_stdlib = true;
+        } else if (arg == "--machine" || arg == "-m") {
+            machine_mode = true;
+            load_stdlib = true; // Whole point of the mode is to be JIT-warm
         } else if (arg == "--help" || arg == "-h") {
             std::cout << "Usage: eshkol-repl [OPTIONS]\n\n";
             std::cout << "Options:\n";
             std::cout << "  --stdlib, -s    Load standard library on startup\n";
+            std::cout << "  --machine, -m   Machine-driven mode: emits EREPL READY/DONE/FAIL\n";
+            std::cout << "                  framing on stderr; suppresses banner / prompts;\n";
+            std::cout << "                  implies --stdlib (warm-worker for sister projects).\n";
             std::cout << "  --help, -h      Show this help message\n";
             return 0;
         }
@@ -779,6 +800,7 @@ int main(int argc, char** argv) {
 
     // Check if running interactively
     g_interactive = eshkol::platform::stdin_isatty();
+    if (machine_mode) g_interactive = false; // Force machine framing path
 
     // Install signal handlers.
     signal(SIGINT, sigint_handler);
@@ -816,6 +838,15 @@ int main(int argc, char** argv) {
     }
 
     std::cout << "\n";
+
+    // Machine-mode handshake: emit READY on stderr once init is done
+    // so the controlling process knows it can start sending forms.
+    // Done AFTER stdlib loads (when load_stdlib is set, which --machine
+    // forces) so the sentinel really does mean "no more JIT cold-start".
+    if (machine_mode) {
+        std::fputs(EREPL_READY, stderr);
+        std::fflush(stderr);
+    }
 
     while (true) {
         g_interrupted = 0;
@@ -1026,8 +1057,22 @@ int main(int argc, char** argv) {
                 delete static_cast<int64_t*>(result);
             }
 
+            // Machine-mode per-form sentinel — emit AFTER cleanup so any
+            // exception printing has already flushed. Flush stdout first so
+            // the client receives all program output before the marker.
+            if (machine_mode) {
+                std::fflush(stdout);
+                std::fputs(had_error ? EREPL_FAIL : EREPL_DONE, stderr);
+                std::fflush(stderr);
+            }
+
         } catch (const std::exception& e) {
             print_error("Execution error", e.what());
+            if (machine_mode) {
+                std::fflush(stdout);
+                std::fputs(EREPL_FAIL, stderr);
+                std::fflush(stderr);
+            }
         }
     }
 
