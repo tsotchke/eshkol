@@ -16564,6 +16564,29 @@ private:
         builder->CreateCall(raise_func, {exc});
         builder->CreateUnreachable();
 
+        // #244 fix (2026-05-07): Switch to a fresh "post_raise_dead" block
+        // before returning. Naive callers (codegenDisplay processing
+        // (display (raise ...)) ; codegenCall arg evaluation; etc.) will
+        // continue emitting IR using our undef return value — that IR
+        // would land *after* the CreateUnreachable in the same block
+        // and trip the LLVM verifier ("Terminator found in the middle
+        // of a basic block!"). By moving the insertion point to a
+        // brand-new block (unreachable from entry, so DCE drops it),
+        // the dead-code remains verifier-valid even if no caller
+        // bothers to check `getTerminator()`. This is the "raise's
+        // contract is no-return; downstream IR is dead code; let it
+        // live in its own block" pattern — same shape as the
+        // post-unreachable continuation block already used by
+        // codegenError and codegenAbort. The earlier loop-level
+        // `if (terminator) goto after_noreturn` fix in the top-level
+        // expression loop covered the simple `(raise) (display)` case
+        // at top level; this fix covers the general `(<consumer>
+        // (raise) ...)` case in any expression position.
+        BasicBlock* post_raise = BasicBlock::Create(
+            *context, "post_raise_dead",
+            builder->GetInsertBlock()->getParent());
+        builder->SetInsertPoint(post_raise);
+
         // Return undef - this code path is unreachable, so the value doesn't matter
         // IMPORTANT: Don't call packNullToTaggedValue() here as it creates instructions
         // after the unreachable terminator, which is invalid LLVM IR
