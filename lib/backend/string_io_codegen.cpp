@@ -457,29 +457,60 @@ llvm::Value* StringIOCodegen::stringCompare(const eshkol_operations_t* op, const
     llvm::Value* ptr2_int = tagged_.unpackInt64(str2_arg);
     llvm::Value* str2_ptr = ctx_.builder().CreateIntToPtr(ptr2_int, ctx_.ptrType());
 
-    // Get strcmp function
-    llvm::Function* strcmp_func = ctx_.funcs().getStrcmp();
+    // Defensive null guard: if either arg was '() / #f / scalar (raw int64
+    // data field 0), strcmp(NULL, ...) SIGSEGVs.  This surfaced as the
+    // PR #26 v12_system_builtins_test crash chain — a Windows-stub
+    // builtin returned null, and the very next form `(string=? mapped str)`
+    // segfaulted with a misleading _chkstk stack trace.  Cheaper to guard
+    // here than to teach every primitive to never return null.  R7RS
+    // technically mandates string args, but returning #f for non-string
+    // is the principle-of-least-surprise extension already applied by
+    // many Scheme implementations.
+    llvm::Value* zero64 = llvm::ConstantInt::get(ctx_.int64Type(), 0);
+    llvm::Value* both_nonnull = ctx_.builder().CreateAnd(
+        ctx_.builder().CreateICmpNE(ptr1_int, zero64),
+        ctx_.builder().CreateICmpNE(ptr2_int, zero64));
 
-    // Call strcmp
+    llvm::Function* cur_fn = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::BasicBlock* compare_bb = llvm::BasicBlock::Create(ctx_.context(), "strcmp_safe_nonnull", cur_fn);
+    llvm::BasicBlock* nullarg_bb = llvm::BasicBlock::Create(ctx_.context(), "strcmp_safe_null", cur_fn);
+    llvm::BasicBlock* merge_bb   = llvm::BasicBlock::Create(ctx_.context(), "strcmp_safe_done", cur_fn);
+    ctx_.builder().CreateCondBr(both_nonnull, compare_bb, nullarg_bb);
+
+    // Compare path: actual strcmp
+    ctx_.builder().SetInsertPoint(compare_bb);
+    llvm::Function* strcmp_func = ctx_.funcs().getStrcmp();
     llvm::Value* cmp_result = ctx_.builder().CreateCall(strcmp_func, {str1_ptr, str2_ptr});
     llvm::Value* zero = llvm::ConstantInt::get(ctx_.int32Type(), 0);
-    llvm::Value* result;
-
+    llvm::Value* compare_bool;
     if (cmp_type == "eq") {
-        result = ctx_.builder().CreateICmpEQ(cmp_result, zero);
+        compare_bool = ctx_.builder().CreateICmpEQ(cmp_result, zero);
     } else if (cmp_type == "lt") {
-        result = ctx_.builder().CreateICmpSLT(cmp_result, zero);
+        compare_bool = ctx_.builder().CreateICmpSLT(cmp_result, zero);
     } else if (cmp_type == "gt") {
-        result = ctx_.builder().CreateICmpSGT(cmp_result, zero);
+        compare_bool = ctx_.builder().CreateICmpSGT(cmp_result, zero);
     } else if (cmp_type == "le") {
-        result = ctx_.builder().CreateICmpSLE(cmp_result, zero);
+        compare_bool = ctx_.builder().CreateICmpSLE(cmp_result, zero);
     } else if (cmp_type == "ge") {
-        result = ctx_.builder().CreateICmpSGE(cmp_result, zero);
+        compare_bool = ctx_.builder().CreateICmpSGE(cmp_result, zero);
     } else {
-        result = llvm::ConstantInt::getFalse(ctx_.context());
+        compare_bool = llvm::ConstantInt::getFalse(ctx_.context());
     }
+    llvm::BasicBlock* compare_exit = ctx_.builder().GetInsertBlock();
+    ctx_.builder().CreateBr(merge_bb);
 
-    return tagged_.packBool(result);
+    // Null-arg path: return #f
+    ctx_.builder().SetInsertPoint(nullarg_bb);
+    llvm::Value* null_bool = llvm::ConstantInt::getFalse(ctx_.context());
+    ctx_.builder().CreateBr(merge_bb);
+
+    // Merge
+    ctx_.builder().SetInsertPoint(merge_bb);
+    llvm::PHINode* result_phi = ctx_.builder().CreatePHI(ctx_.builder().getInt1Ty(), 2, "strcmp_safe_result");
+    result_phi->addIncoming(compare_bool, compare_exit);
+    result_phi->addIncoming(null_bool, nullarg_bb);
+
+    return tagged_.packBool(result_phi);
 }
 
 llvm::Value* StringIOCodegen::stringCiCompare(const eshkol_operations_t* op, const std::string& cmp_type) {
@@ -504,27 +535,49 @@ llvm::Value* StringIOCodegen::stringCiCompare(const eshkol_operations_t* op, con
     llvm::Value* ptr2_int = tagged_.unpackInt64(str2_arg);
     llvm::Value* str2_ptr = ctx_.builder().CreateIntToPtr(ptr2_int, ctx_.ptrType());
 
-    // Call strcasecmp for case-insensitive comparison
+    // Same defensive null guard as stringCompare — see comment there.
+    llvm::Value* zero64 = llvm::ConstantInt::get(ctx_.int64Type(), 0);
+    llvm::Value* both_nonnull = ctx_.builder().CreateAnd(
+        ctx_.builder().CreateICmpNE(ptr1_int, zero64),
+        ctx_.builder().CreateICmpNE(ptr2_int, zero64));
+
+    llvm::Function* cur_fn = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::BasicBlock* compare_bb = llvm::BasicBlock::Create(ctx_.context(), "strcasecmp_safe_nonnull", cur_fn);
+    llvm::BasicBlock* nullarg_bb = llvm::BasicBlock::Create(ctx_.context(), "strcasecmp_safe_null", cur_fn);
+    llvm::BasicBlock* merge_bb   = llvm::BasicBlock::Create(ctx_.context(), "strcasecmp_safe_done", cur_fn);
+    ctx_.builder().CreateCondBr(both_nonnull, compare_bb, nullarg_bb);
+
+    ctx_.builder().SetInsertPoint(compare_bb);
     llvm::Function* strcasecmp_func = ctx_.funcs().getStrcasecmp();
     llvm::Value* cmp_result = ctx_.builder().CreateCall(strcasecmp_func, {str1_ptr, str2_ptr});
     llvm::Value* zero = llvm::ConstantInt::get(ctx_.int32Type(), 0);
-    llvm::Value* result;
-
+    llvm::Value* compare_bool;
     if (cmp_type == "eq") {
-        result = ctx_.builder().CreateICmpEQ(cmp_result, zero);
+        compare_bool = ctx_.builder().CreateICmpEQ(cmp_result, zero);
     } else if (cmp_type == "lt") {
-        result = ctx_.builder().CreateICmpSLT(cmp_result, zero);
+        compare_bool = ctx_.builder().CreateICmpSLT(cmp_result, zero);
     } else if (cmp_type == "gt") {
-        result = ctx_.builder().CreateICmpSGT(cmp_result, zero);
+        compare_bool = ctx_.builder().CreateICmpSGT(cmp_result, zero);
     } else if (cmp_type == "le") {
-        result = ctx_.builder().CreateICmpSLE(cmp_result, zero);
+        compare_bool = ctx_.builder().CreateICmpSLE(cmp_result, zero);
     } else if (cmp_type == "ge") {
-        result = ctx_.builder().CreateICmpSGE(cmp_result, zero);
+        compare_bool = ctx_.builder().CreateICmpSGE(cmp_result, zero);
     } else {
-        result = llvm::ConstantInt::getFalse(ctx_.context());
+        compare_bool = llvm::ConstantInt::getFalse(ctx_.context());
     }
+    llvm::BasicBlock* compare_exit = ctx_.builder().GetInsertBlock();
+    ctx_.builder().CreateBr(merge_bb);
 
-    return tagged_.packBool(result);
+    ctx_.builder().SetInsertPoint(nullarg_bb);
+    llvm::Value* null_bool = llvm::ConstantInt::getFalse(ctx_.context());
+    ctx_.builder().CreateBr(merge_bb);
+
+    ctx_.builder().SetInsertPoint(merge_bb);
+    llvm::PHINode* result_phi = ctx_.builder().CreatePHI(ctx_.builder().getInt1Ty(), 2, "strcasecmp_safe_result");
+    result_phi->addIncoming(compare_bool, compare_exit);
+    result_phi->addIncoming(null_bool, nullarg_bb);
+
+    return tagged_.packBool(result_phi);
 }
 
 llvm::Value* StringIOCodegen::stringToNumber(const eshkol_operations_t* op) {
