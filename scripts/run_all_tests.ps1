@@ -550,19 +550,6 @@ function Get-WindowsSuiteSkipReason {
         return "legacy multi-argument gradient stress case is tracked outside native Windows CI; extreme_stress_test_v2.esk covers the Windows stress lane"
     }
 
-    # v12_system_builtins_test SIGSEGVs at 0xC0000005 (EXCEPTION_ACCESS_VIOLATION)
-    # via _chkstk on the Windows lite lanes. The stack trace points to a
-    # large local stack frame entry probing past the committed stack region;
-    # the test exercises a long sequence of system / filesystem / process
-    # builtins back-to-back so the deepest function in the chain hits a
-    # guard page that hasn't been committed. The test PASSES on every other
-    # CI lane (linux x64/arm64 + macOS x64/arm64 + windows-x64-xla and
-    # the cuda lanes), so the regression is specific to the Windows lite
-    # toolchain's stack layout, not the test itself. Tracked separately.
-    if ($SuiteName -eq "stdlib" -and $TestName -eq "v12_system_builtins_test.esk") {
-        return "Windows lite SIGSEGV in _chkstk during builtin chain; passes on every other CI lane (xla/cuda + linux + macOS); tracked as a runtime hardening item — skip on lite to unblock PR #26 merge"
-    }
-
     return ""
 }
 

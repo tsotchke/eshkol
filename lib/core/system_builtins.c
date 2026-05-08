@@ -1422,7 +1422,65 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_file_mmap_v(eshkol_sysbuiltin_va
     v.data = (uint64_t)copy;
     return v;
 #else
-    return sys_make_null();
+    /* Windows path — same surface as POSIX (return arena-backed string
+     * with file contents), but using CreateFileMapping / MapViewOfFile.
+     * Previously returned null, which made `(string=? mapped "test")`
+     * SIGSEGV in v12_system_builtins_test on the windows-lite lanes
+     * (PR #26).
+     *
+     * Note we still copy into an arena-allocated buffer rather than
+     * returning the live mapping, so file-munmap can be a no-op
+     * symmetric with the POSIX branch — the arena owns the data. */
+    HANDLE hf = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, NULL,
+                            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hf == INVALID_HANDLE_VALUE) return sys_make_null();
+
+    LARGE_INTEGER fsz;
+    if (!GetFileSizeEx(hf, &fsz)) { CloseHandle(hf); return sys_make_null(); }
+    if (fsz.QuadPart <= 0) {
+        /* Empty file — skip the mapping (CreateFileMapping rejects size 0)
+         * and return an empty arena-backed string. */
+        CloseHandle(hf);
+        void* arena_e = get_global_arena();
+        if (!arena_e) return sys_make_null();
+        char* empty = arena_allocate_string_with_header(arena_e, 0);
+        if (!empty) return sys_make_null();
+        empty[0] = '\0';
+        eshkol_sysbuiltin_value_t ve = {0, 0, 0, 0, 0};
+        ve.type = SYS_TYPE_HEAP_PTR;
+        ve.data = (uint64_t)empty;
+        return ve;
+    }
+    if (fsz.QuadPart > (LONGLONG)SIZE_MAX) {
+        CloseHandle(hf); return sys_make_null();
+    }
+    size_t len = (size_t)fsz.QuadPart;
+
+    HANDLE hmap = CreateFileMappingA(hf, NULL, PAGE_READONLY, 0, 0, NULL);
+    if (!hmap) { CloseHandle(hf); return sys_make_null(); }
+    void* mapped = MapViewOfFile(hmap, FILE_MAP_READ, 0, 0, 0);
+    if (!mapped) { CloseHandle(hmap); CloseHandle(hf); return sys_make_null(); }
+
+    void* arena = get_global_arena();
+    if (!arena) {
+        UnmapViewOfFile(mapped); CloseHandle(hmap); CloseHandle(hf);
+        return sys_make_null();
+    }
+    char* copy = arena_allocate_string_with_header(arena, len);
+    if (!copy) {
+        UnmapViewOfFile(mapped); CloseHandle(hmap); CloseHandle(hf);
+        return sys_make_null();
+    }
+    memcpy(copy, mapped, len);
+    copy[len] = '\0';
+    UnmapViewOfFile(mapped);
+    CloseHandle(hmap);
+    CloseHandle(hf);
+
+    eshkol_sysbuiltin_value_t v = {0, 0, 0, 0, 0};
+    v.type = SYS_TYPE_HEAP_PTR;
+    v.data = (uint64_t)copy;
+    return v;
 #endif
 }
 
