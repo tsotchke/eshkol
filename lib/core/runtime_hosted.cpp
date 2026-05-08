@@ -154,7 +154,12 @@ LONG WINAPI eshkol_unhandled_exception_filter(EXCEPTION_POINTERS* exception_info
 }
 #endif
 
-#ifndef ESHKOL_SANITIZER_BUILD
+// On Windows the fatal-signal hook lands as `eshkol_unhandled_exception_filter`
+// installed via SetUnhandledExceptionFilter, so the POSIX-style sigaction
+// handler below is unused — guard the definition to silence
+// -Wunused-function on the windows-x64-lite / windows-arm64-lite lanes
+// (PR #26 CI warning).
+#if !defined(ESHKOL_SANITIZER_BUILD) && !defined(_WIN32)
 void eshkol_fatal_signal_handler(int signum) {
     const char* name = "unknown";
     switch (signum) {

@@ -93,6 +93,15 @@ extern "C" {
     char* eshkol_utf8_substring(const char* s, int64_t start, int64_t end, void* arena);
     int64_t eshkol_unwrap_list_index(const eshkol_tagged_value_t* tv);
     void* eshkol_repl_forward_ref_stub_addr(void);
+    // string_io_codegen emits calls to this when reversing tagged
+    // cons lists collected in right-to-left order (e.g. when wrapping
+    // in `(list ...)` from procedural builders).  Without it the JIT
+    // path fails on web tests with "Symbols not found:
+    // [ eshkol_list_reverse_tagged ]" (see PR #26 windows-x64-lite
+    // failure on tests/web/web_canvas_test.esk).
+    void eshkol_list_reverse_tagged(arena_t* arena,
+                                    const eshkol_tagged_value_t* head_tv,
+                                    eshkol_tagged_value_t* out);
 #ifdef _WIN32
     double drand48(void);
     int clock_gettime(int clock_id, void* ts_raw);
@@ -672,6 +681,7 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_SYMBOL(eshkol_utf8_ref);
     ADD_SYMBOL(eshkol_utf8_substring);
     ADD_SYMBOL(eshkol_unwrap_list_index);
+    ADD_SYMBOL(eshkol_list_reverse_tagged);
 
     // ===== BLAS ACCELERATION =====
     // Runtime matmul with automatic BLAS/scalar dispatch

@@ -451,6 +451,23 @@ function Invoke-ProcessCapture {
     }
 }
 
+function Get-DefaultCompileTimeoutSec {
+    # Native eshkol-run compile through the LLVM backend is meaningfully
+    # slower on Windows arm64 — the CI matrix shows the runner taking
+    # ~110-120s per AOT build of an autodiff/ml/neural test, which races
+    # the default 120s Invoke-ProcessCapture timeout and produces a
+    # cascade of "COMPILE FAIL" rows that are actually compile *timeouts*.
+    # Bump the budget on arm64 specifically so the lane stops false-failing
+    # PR #26 without inflating CI time on the much-faster x64 host.
+    if ($env:OS -eq "Windows_NT") {
+        $arch = ""
+        if ($env:PROCESSOR_ARCHITECTURE) { $arch = $env:PROCESSOR_ARCHITECTURE }
+        if ($env:PROCESSOR_ARCHITEW6432) { $arch = $env:PROCESSOR_ARCHITEW6432 }
+        if ($arch -match "ARM64") { return 360 }
+    }
+    return 120
+}
+
 function Invoke-EshkolCompile {
     param(
         [string]$EshkolRun,
@@ -458,8 +475,13 @@ function Invoke-EshkolCompile {
         [string]$BuildDir,
         [string]$TestFile,
         [string]$OutputBase,
-        [string[]]$ExtraArgs = @()
+        [string[]]$ExtraArgs = @(),
+        [int]$TimeoutSec = -1
     )
+
+    if ($TimeoutSec -le 0) {
+        $TimeoutSec = Get-DefaultCompileTimeoutSec
+    }
 
     $exePath = $OutputBase + ".exe"
     Remove-RegularFileIfPresent -Path @($exePath, $OutputBase)
@@ -470,7 +492,7 @@ function Invoke-EshkolCompile {
     }
     $args += @($TestFile)
 
-    $captured = Invoke-ProcessCapture -FilePath $EshkolRun -Arguments $args -WorkingDirectory $BuildDir
+    $captured = Invoke-ProcessCapture -FilePath $EshkolRun -Arguments $args -WorkingDirectory $BuildDir -TimeoutSec $TimeoutSec
 
     [pscustomobject]@{
         ExitCode = $captured.ExitCode
@@ -1035,6 +1057,31 @@ function Invoke-CppTypeSuite {
         return $suite
     }
 
+    # Locate clang_rt.builtins-<arch>.lib so direct-source compiles of cpp_type
+    # tests can resolve __udivti3/__umodti3/__divti3 — eshkol-static.lib pulls
+    # these in via lib/core/{bignum,rational}.cpp's __int128_t arithmetic, and
+    # lld-link does not auto-link compiler-rt builtins on the Windows MSVC
+    # ABI even though clang++ is the driver. CMake already wires this for the
+    # main eshkol-static link path; the manual ps1 compile path was missing it,
+    # leaving 3 unresolved externals on every cpp_type test (PR #26 CI).
+    $clangBuiltinsLib = $null
+    if ($onWindows) {
+        $resourceDirRaw = (& $clangxx --print-resource-dir 2>&1)
+        $resourceDirExit = $LASTEXITCODE
+        if ($resourceDirExit -eq 0 -and $resourceDirRaw) {
+            $resourceDir = $resourceDirRaw.Trim()
+            $arch = "x86_64"
+            if ($env:PROCESSOR_ARCHITECTURE -match "ARM64" -or
+                $env:PROCESSOR_ARCHITEW6432 -match "ARM64") {
+                $arch = "aarch64"
+            }
+            $candidate = Join-Path $resourceDir ("lib/windows/clang_rt.builtins-{0}.lib" -f $arch)
+            if (Test-RegularFile -Path $candidate) {
+                $clangBuiltinsLib = $candidate
+            }
+        }
+    }
+
     $llvmCxxFlags = @()
     $llvmLdFlags = @()
     $llvmLibs = @()
@@ -1104,6 +1151,9 @@ function Invoke-CppTypeSuite {
         ) + $llvmCxxFlags + $sources + @($testFile)
         if ($runtimeArchive) {
             $args += $runtimeArchive
+        }
+        if ($clangBuiltinsLib) {
+            $args += $clangBuiltinsLib
         }
         $args += $llvmLdFlags + $llvmLibs + $llvmSystemLibs + @("-o", $exePath)
         Push-Location $script:BuildDir
