@@ -183,6 +183,11 @@ in the comment block at `weight_matrices.c:59-84`.
   the high-level architecture of programs-as-matrices.
 - [docs/breakdown/BYTECODE_VM.md](breakdown/BYTECODE_VM.md) —
   the 83-opcode ISA the transformer implements.
+- [docs/breakdown/VM_MEMORY_OPS_AS_WEIGHT_MATRICES.md](breakdown/VM_MEMORY_OPS_AS_WEIGHT_MATRICES.md) —
+  design for closing the 26-opcode delegated set so all memory ops
+  (cons/car/cdr, vector ops, string ops, closures, type predicates)
+  execute as weight matrices. Paper-led, with full bibliography in
+  the `feature/vm-transformer-memory` worktree.
 - [lib/backend/weight_matrices.c](../lib/backend/weight_matrices.c) — the
   4248-line analytical weight constructor.
 - [scripts/paper/](../scripts/paper/) — the trace-dump,
