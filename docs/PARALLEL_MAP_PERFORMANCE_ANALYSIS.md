@@ -1,4 +1,22 @@
-# `parallel-map` performance — root-cause analysis
+# `parallel-map` performance — root-cause analysis + AOT fix
+
+**Update 2026-05-09:** REAL parallelism now works in AOT mode after fixing
+the worker tagged-value flags-byte bug. Measured **5-12× speedup** on
+24-core M2 Max (CPU-bound 8-task busy-work). Default flipped to enable
+parallel codegen (override with `ESHKOL_PARALLEL_DISABLE=1`). JIT path
+contention is a separate, deeper bug — see "JIT contention remains" below.
+
+## Headline measurement after fix
+
+```
+=== AOT compilation, default-on parallel-map (no env vars) ===
+seq8  1016 ms   8 tasks sequential
+par8   270 ms   3.8× speedup
+par16  334 ms   8 tasks → 16 tasks ≈ same wall (all cores active)
+par24  370 ms   24 tasks at 16/(370/127) ≈ 11.8× speedup, saturating cores
+```
+
+
 
 **Date:** 2026-05-08
 **Repro repository:** `/tmp/par_repro.esk`, `/tmp/par_scale.esk`, `/tmp/par_sleep.esk`
