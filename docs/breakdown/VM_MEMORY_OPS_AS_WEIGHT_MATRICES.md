@@ -200,17 +200,55 @@ value via residual.
 | `OP_BOOL_P` | "                       | TOS = (t == 1 ? 1 : 0), type_tos = 1 |
 | `OP_PROC_P` | "                       | TOS = (t == 3 ? 1 : 0), type_tos = 1 |
 
-**Encoding.** Each predicate is **one indicator gate on `S_TYPE_TOS`** in
-Layer 3:
+**Encoding constraint discovered during implementation review.**
+`apply_ffn_layer` (`weight_matrices.c:3066-3086`) implements
+`y = down · (sigmoid(W_g x + b_g) ⊙ (W_u x + b_u))` — gate has sigmoid,
+**up is purely linear, no activation**. This means the existing
+`add_gated_pair` helper produces `coeff · indicator(opcode == op_id) ·
+(linear_up_value)` per call. An indicator on `S_TYPE_TOS` **cannot be
+synthesised inside the up-projection alone**: the linear up cannot
+collapse a sigmoid difference. Both indicators must come from gates,
+but each neuron only has one gate.
+
+**Therefore: predicates must be encoded as a two-layer composition.**
+Layer 2 (preprocessing) computes a per-type indicator slot via the
+`indicator()` helper at `weight_matrices.c:229`:
 
 ```
-Δ S_TOS = indicator(opcode, OP_PAIR_P) · alive · (indicator(S_TYPE_TOS, 2) - S_TOS)
+S_TYPE_IS_PAIR = indicator(S_TYPE_TOS, 2)   /* := σ(SCALE·(t-1.5)) - σ(SCALE·(t-2.5)) */
+S_TYPE_IS_NUM  = indicator(S_TYPE_TOS, 0)
+S_TYPE_IS_STR  = indicator(S_TYPE_TOS, 4)
+S_TYPE_IS_BOOL = indicator(S_TYPE_TOS, 1)
+S_TYPE_IS_PROC = indicator(S_TYPE_TOS, 3)
+S_TYPE_IS_VEC  = indicator(S_TYPE_TOS, 5)
+S_TYPE_IS_NIL  = indicator(S_TYPE_TOS, 6)   /* shared with NULL_P */
 ```
 
-Plus the type-tag write `Δ S_TYPE_TOS = indicator(opcode, OP_PAIR_P) · alive
-· (1 - S_TYPE_TOS)`. Cost: 6 new gated-pair entries in the Layer 3 FFN.
-**Trivial.** The pattern is identical to `OP_NULL_P`'s currently-delegated
-form, except `NULL_P` checks the value not the type tag — see §5.2 for that.
+Then Layer 3 dispatch is one `add_gated_pair` per predicate:
+
+```c
+n = add_gated_pair(w, L=3, n, OP_PAIR_P,
+                   S_TYPE_IS_PAIR, 1, S_TOS, -1, -1, 0, -1, 0,
+                   0, S_TOS, 1.0f);          /* Δ TOS = IS_PAIR - TOS */
+n = add_gated_pair(w, L=3, n, OP_PAIR_P,
+                   S_TYPE_TOS, -1, -1, 0, -1, 0, -1, 0,
+                   1.0f, S_TYPE_TOS, 1.0f);  /* Δ TYPE_TOS = TYPE_BOOL - TYPE_TOS */
+```
+
+`TYPE_BOOL = 1.0f` so the second pair's `bias=1.0f, S_TYPE_TOS coeff=-1`
+produces `Δ = 1 - TYPE_TOS` exactly when opcode == PAIR_P.
+
+**State-vector budget.** Seven new transient slots are needed in Zone D.
+The `S_AD_SPARE2..S_AD_SPARE8` range (slots 121-127) has 7 free dims;
+exactly fits. `S_AD_PROD_GRAD_SV` at 120 stays untouched. No `d_model`
+extension required for stage 1.
+
+**Cost.** Layer 2: 7 new sigmoid-difference precompute slots (each is
+two FFN entries — sign-pair on the SCALE bias, like
+`weight_matrices.c:780-790` already does for `S_CMP_EQ`). Layer 3:
+2 new `add_gated_pair` calls per predicate × 7 predicates = 14 entries.
+**~28 new neurons total**, well inside the existing FFN_DIM=1024
+budget. No layer count change. No `d_model` change.
 
 ### 5.2. `OP_NULL_P` (currently delegated, encodable)
 
@@ -509,15 +547,47 @@ the per-step compute but not the depth.
 
 ## 8. Implementation milestones (lift to a PR series)
 
-### Stage 1 — Type predicates + null + POPN + closure-stack-only ops
-*~3 days, ~30k new params, ~1500 lines added to weight_matrices.c*
+### Stage 1 — Type predicates + null + POPN
+*~3 days, ~30k new params, ~150 lines added to weight_matrices.c*
 
-- [ ] Add `S_TYPE_*` lanes to closures' upvalue slots in Zone D
-- [ ] Implement 7 indicator gates for `PAIR_P` … `NUM_P` + `NULL_P`
-- [ ] Implement 3 `POPN` cases
-- [ ] Implement `OP_CLOSE_UPVALUE`, `OP_OPEN_CLOSURE` (trivially PC++)
-- [ ] Re-verify bit-identical agreement on artifact (no heap touched)
-- [ ] **Acceptance:** weight_matrices.c compiles, 71/71 still bit-identical
+**Pre-stage baseline (verified 2026-05-08):** the existing 71/71 contract
+reproduces in 2.84s wall on M2 Max, with all 5 SHA-256s matching the
+doc-pinned values:
+
+```
+weights.qlmw              638376aab6d49e829da2c54d22b545d86c50aa1c2d508e8ec029d2a6d3f1e77d
+vm-traces.jsonl           564fbe1fa4dba5793db0c0e54d402932061f2c82b94da470c7541a5c421584f3
+transformer-traces.jsonl  5cc01b2a17e87d88628b13ef5f7602bd7bcd6380e407a0aac5c39b35a9570715
+comparison-report.json    8a7917d2b56254f9fad71a4cd5e59284504313e73f99c2b668b461a74e154aab
+opcode-coverage.json      aa0c666ad3c2b7a1034e4a69deee6e271e53261bddb12e07dce52fb55218438f
+```
+
+Run `scripts/paper/run_paper_suite.sh` after each stage-1 patch; expect
+identical checksums. (Different SHAs for traces are OK if the predicate
+opcodes' state-vector trajectories changed — what matters is `total_programs
+== output_agreeing_programs == fully_agreeing_programs == 71`.)
+
+- [ ] Repurpose `S_AD_SPARE2..S_AD_SPARE8` (slots 121-127) as
+  `S_TYPE_IS_NUM/BOOL/PAIR/PROC/STR/VEC/NIL` transient slots
+- [ ] Layer 2: emit 7 sigmoid-difference indicator computations
+  (one per type tag, mirroring the existing `S_CMP_EQ` pattern at
+  `weight_matrices.c:780-790`)
+- [ ] Layer 3: replace IS_NATIVE emission for `OP_NULL_P` (34) +
+  `OP_PAIR_P` (45) … `OP_VEC_P` (50) with two `add_gated_pair` calls
+  each (`Δ TOS = S_TYPE_IS_X - TOS` then `Δ TYPE_TOS = TYPE_BOOL -
+  TYPE_TOS`)
+- [ ] Layer 3: replace IS_NATIVE emission for `OP_POPN` (53) with
+  three indicator-gated cases on `S_OPERAND ∈ {1, 2, 3}`
+- [ ] Update `exec_step` simulator dispatch (`weight_matrices.c:537-548`):
+  remove the 7 predicates + POPN from the IS_NATIVE union, add explicit
+  cases that compute the same result
+- [ ] Update IS_NATIVE matrix-emission loop at line ~902 to skip the
+  newly-encoded opcodes
+- [ ] Re-run `scripts/paper/run_paper_suite.sh`; the comparison-report
+  must still report 71/71/71 agreement
+- [ ] **Acceptance:** `tab_opcode_coverage.tex` shows `(43+8) wi, (10-8)
+  nd` — i.e., 51 weight-implemented, 2 native-delegated for the suite's
+  exercised set
 
 ### Stage 2 — Heap bank: CONS, CAR, CDR, SET_CAR, SET_CDR, VEC_*, STR_*
 *~2 weeks, ~1.5M new params, d_model 128 → 256*
