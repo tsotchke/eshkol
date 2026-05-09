@@ -2109,12 +2109,14 @@ llvm::Value* ParallelCodegen::threadPoolInfo(const eshkol_operations_t* op) {
     llvm::Value* num_threads = ctx_.builder().CreateCall(
         thread_pool_num_threads_func_, {}, "num_threads");
 
-    // Pack as tagged int64
+    // Pack as tagged int64 with EXACT_FLAG (matches packInt64 in
+    // tagged_value_codegen.cpp). Without the flag, exact?/integer? on
+    // the result would mis-classify the value.
     llvm::Value* result = llvm::UndefValue::get(ctx_.taggedValueType());
     result = ctx_.builder().CreateInsertValue(result,
         llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_INT64), {0});
     result = ctx_.builder().CreateInsertValue(result,
-        llvm::ConstantInt::get(ctx_.int8Type(), 0), {1});
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_EXACT_FLAG), {1});
     result = ctx_.builder().CreateInsertValue(result, num_threads, {4});
 
     eshkol_debug("Generated thread-pool-info call");
