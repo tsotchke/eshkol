@@ -1,19 +1,34 @@
 # `parallel-map` performance — root-cause analysis + AOT fix
 
-**Update 2026-05-09:** REAL parallelism now works in AOT mode after fixing
-the worker tagged-value flags-byte bug. Measured **5-12× speedup** on
-24-core M2 Max (CPU-bound 8-task busy-work). Default flipped to enable
-parallel codegen (override with `ESHKOL_PARALLEL_DISABLE=1`). JIT path
-contention is a separate, deeper bug — see "JIT contention remains" below.
+**Update 2026-05-09:** REAL parallelism in BOTH AOT and JIT modes after
+fixing the worker tagged-value flags-byte bug. Default flipped to enable
+parallel codegen (override with `ESHKOL_PARALLEL_DISABLE=1`).
 
-## Headline measurement after fix
+The contention was **never** lazy materialisation as initially diagnosed —
+it was bignum-promotion triggered by the flags-byte mis-dispatch.
+INT64 values arrived at workers as `type=INT64,flags=0` instead of
+`type=INT64,flags=EXACT_FLAG`; arithmetic dispatch then mis-routed
+into bignum heap-alloc paths that contended on global state.
+Sample-based profiling showed `MaterializationTask::run` because each
+worker, when it triggered bignum allocation, hit a code path that
+needed an additional symbol lookup → ORC compile → contention. The
+real fix was in the tagged-value reconstruction, not in the JIT
+compile pipeline.
+
+## Headline measurements after fix (24-core M2 Max)
 
 ```
 === AOT compilation, default-on parallel-map (no env vars) ===
 seq8  1016 ms   8 tasks sequential
 par8   270 ms   3.8× speedup
-par16  334 ms   8 tasks → 16 tasks ≈ same wall (all cores active)
-par24  370 ms   24 tasks at 16/(370/127) ≈ 11.8× speedup, saturating cores
+par16  334 ms   16 tasks → 9.0× speedup
+par24  370 ms   24 tasks → 11.8× speedup (saturating cores)
+
+=== JIT mode (eshkol-run -r), default-on parallel-map ===
+seq8  1321 ms   8 tasks sequential
+par8   336 ms   3.9× speedup
+par16  405 ms   6.5× speedup
+par24  455 ms   8.7× speedup
 ```
 
 
@@ -195,30 +210,27 @@ the headline 1.0× JIT-mode parallel-map issue.
   but does NOT close the gap.
 - `docs/PARALLEL_MAP_PERFORMANCE_ANALYSIS.md` (this file).
 
-**The actual parallel-map fix for CPU-bound workloads is intentionally
-NOT in this PR.** Honest measurement on the 8-task busy-work CPU
-benchmark on M2 Max (24 cores):
+## Diagnostic history (resolved 2026-05-09)
 
-| Config | seq | par | speedup |
-|---|---|---|---|
-| Default JIT (sequential codegen) | 2509 | 2462 | 1.02× |
-| `PARALLEL=1` JIT (no warmup) | 2754 | 3899 | **0.71×** |
-| `PARALLEL=1` JIT (warmup, this PR) | 3157 | 3839 | **0.82×** |
-| `PARALLEL=1` AOT | (crashes — separate bug) | — | — |
+The earlier draft of this doc claimed JIT contention was lazy
+materialisation and that warmup gave only 1.5% improvement. That was
+correct as far as it went, but missed the deeper cause. The
+flags-byte mis-dispatch was triggering bignum allocation in workers,
+which hit global state and contended; the `MaterializationTask::run`
+samples were workers re-entering ORC for bignum runtime helpers that
+hadn't been materialised yet.
 
-Even with warmup, parallel-map remains *slower* than sequential for
-CPU-bound work. The contention is continuous (per-iteration), not
-first-call. Sample-based profiling shows compile-thread time inside
-LLVM's `IRCompileLayer::emit → ARM64 backend passes` even mid-execution,
-suggesting either:
-- JIT lazy-recompiling helpers as new code paths are entered, or
-- Cache-line bouncing on a shared atomic/mutex inside the closure body's
-  emitted code (e.g., AD-mode check, tagged-value polymorphic dispatch).
+| Stage | JIT speedup | AOT speedup |
+|---|---|---|
+| Initial Aletheia repro (PARALLEL not enabled) | 1.02× | — |
+| `PARALLEL=1` enabled, no flags fix | 0.71× | crashes |
+| `PARALLEL=1` + warmup (cb400f7) | 0.82× | crashes |
+| **Flags fix + default-on (ba9b568)** | **3.9–8.7×** | **3.8–11.8×** |
 
-A multi-day investigation is needed to disambiguate. For now, downstream
-users should follow the recommendations above — memoization for
-high-leverage wins, OS-blocking workloads for guaranteed parallelism,
-sequential map for CPU-bound integer work.
+The fix is one line of intent at `parallel_codegen.cpp:177`
+(packing) plus one line of intent at `parallel_llvm_codegen.cpp:854`
+(unpacking) — preserve the EXACT_FLAG bit through the worker
+struct round-trip.
 
 ## Repro instructions
 
