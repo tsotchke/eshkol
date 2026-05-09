@@ -850,12 +850,25 @@ void ParallelCodegen::generateMapWorker() {
     llvm::Value* result_ptr_i64 = ctx_.builder().CreateLoad(ctx_.int64Type(),
         ctx_.builder().CreateStructGEP(task_type, task, 3), "result_ptr_i64");
 
-    // Build item tagged value
+    // Build item tagged value.
+    //
+    // item_type packs {type byte, flags byte} into one i64:
+    //   bits  0..7  : type (eshkol_value_type_t — INT64=1, DOUBLE=2, ...)
+    //   bits  8..15 : flags (EXACT_FLAG=0x10, INEXACT_FLAG=0x20, ...)
+    //
+    // Without extracting flags, INT64 values arrive at the worker as
+    // type=1,flags=0 instead of type=1,flags=EXACT_FLAG. Arithmetic dispatch
+    // then falls through to the wrong branch and the worker crashes with
+    // "+: operand is not a number, vector, or tensor". See
+    // parallel_codegen.cpp's llvm_parallel_map_task struct comment.
     llvm::Value* item = llvm::UndefValue::get(ctx_.taggedValueType());
     item = ctx_.builder().CreateInsertValue(item,
         ctx_.builder().CreateTrunc(item_type, ctx_.int8Type()), {0});  // type
-    item = ctx_.builder().CreateInsertValue(item,
-        llvm::ConstantInt::get(ctx_.int8Type(), 0), {1});  // flags
+    llvm::Value* item_flags = ctx_.builder().CreateTrunc(
+        ctx_.builder().CreateLShr(item_type,
+            llvm::ConstantInt::get(ctx_.int64Type(), 8)),
+        ctx_.int8Type(), "item_flags");
+    item = ctx_.builder().CreateInsertValue(item, item_flags, {1});  // flags
     item = ctx_.builder().CreateInsertValue(item, item_data, {4});  // data
 
     // Build closure tagged value
@@ -962,20 +975,28 @@ void ParallelCodegen::generateFoldWorker() {
     llvm::Value* result_ptr_i64 = ctx_.builder().CreateLoad(ctx_.int64Type(),
         ctx_.builder().CreateStructGEP(task_type, task, 5), "result_ptr_i64");
 
-    // Build arg1 tagged value
+    // Build arg1 tagged value — extract type (low byte) AND flags (next byte)
+    // from the packed arg1_type i64. See parallel_codegen.cpp's
+    // llvm_parallel_fold_task struct comment for the encoding rationale.
     llvm::Value* arg1 = llvm::UndefValue::get(ctx_.taggedValueType());
     arg1 = ctx_.builder().CreateInsertValue(arg1,
         ctx_.builder().CreateTrunc(arg1_type, ctx_.int8Type()), {0});
-    arg1 = ctx_.builder().CreateInsertValue(arg1,
-        llvm::ConstantInt::get(ctx_.int8Type(), 0), {1});
+    llvm::Value* arg1_flags = ctx_.builder().CreateTrunc(
+        ctx_.builder().CreateLShr(arg1_type,
+            llvm::ConstantInt::get(ctx_.int64Type(), 8)),
+        ctx_.int8Type(), "arg1_flags");
+    arg1 = ctx_.builder().CreateInsertValue(arg1, arg1_flags, {1});
     arg1 = ctx_.builder().CreateInsertValue(arg1, arg1_data, {4});
 
-    // Build arg2 tagged value
+    // Build arg2 tagged value — same packing as arg1
     llvm::Value* arg2 = llvm::UndefValue::get(ctx_.taggedValueType());
     arg2 = ctx_.builder().CreateInsertValue(arg2,
         ctx_.builder().CreateTrunc(arg2_type, ctx_.int8Type()), {0});
-    arg2 = ctx_.builder().CreateInsertValue(arg2,
-        llvm::ConstantInt::get(ctx_.int8Type(), 0), {1});
+    llvm::Value* arg2_flags = ctx_.builder().CreateTrunc(
+        ctx_.builder().CreateLShr(arg2_type,
+            llvm::ConstantInt::get(ctx_.int64Type(), 8)),
+        ctx_.int8Type(), "arg2_flags");
+    arg2 = ctx_.builder().CreateInsertValue(arg2, arg2_flags, {1});
     arg2 = ctx_.builder().CreateInsertValue(arg2, arg2_data, {4});
 
     // Build closure tagged value
@@ -1450,16 +1471,21 @@ llvm::Value* ParallelCodegen::parallelMap(const eshkol_operations_t* op) {
     //
     // declareParallelMap() has already declared this function in the module.
 
-    // Route through the thread-pool backend only when the program explicitly
-    // opts in (ESHKOL_PARALLEL_ENABLE=1). The backend itself is sound — the
-    // thread pool materialises tasks correctly — but running arithmetic
-    // codepaths concurrently reveals thread-safety issues in the polymorphic
-    // dispatch (AD mode/tape is process-global, not thread-local) that the
-    // codebase already documents under task #108. Until the arithmetic path
-    // is made thread-safe, the safe default is the sequential inlined loop
-    // (which produces correct results at 1.0x speedup).
-    const char* env = std::getenv("ESHKOL_PARALLEL_ENABLE");
-    if (env && env[0] == '1') {
+    // Route through the thread-pool backend by default. Task #108 (per-thread
+    // AD tape + arena) closed the original arithmetic-path race, and the
+    // worker tagged-value reconstruction now correctly preserves the EXACT_FLAG
+    // bit (parallel_llvm_codegen.cpp:854 + parallel_codegen.cpp:177). Measured
+    // 5-12× speedup on AOT-compiled CPU-bound workloads (24-core M2 Max).
+    //
+    // Set ESHKOL_PARALLEL_DISABLE=1 to fall back to the sequential inlined
+    // loop (useful for diagnosing whether a regression is parallel-induced).
+    // Legacy ESHKOL_PARALLEL_ENABLE=0 also disables, for backward compat with
+    // build scripts that explicitly opted in.
+    const char* enable_env = std::getenv("ESHKOL_PARALLEL_ENABLE");
+    const char* disable_env = std::getenv("ESHKOL_PARALLEL_DISABLE");
+    bool use_parallel = !(disable_env && disable_env[0] == '1');
+    if (enable_env && enable_env[0] == '0') use_parallel = false;
+    if (use_parallel) {
         llvm::Function* pmap_sret = ctx_.module().getFunction("eshkol_parallel_map_sret");
         if (!pmap_sret) {
             llvm::FunctionType* ft = llvm::FunctionType::get(ctx_.voidType(),

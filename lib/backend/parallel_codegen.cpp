@@ -172,20 +172,35 @@ static void eshkol_parallel_workers_lazy_resolve() {
 // C-Side Task Structs (must match LLVM layout in parallel_llvm_codegen.cpp)
 // ============================================================================
 
-// Task data for parallel map - fields are i64 to avoid struct-by-value ABI
+// Task data for parallel map - fields are i64 to avoid struct-by-value ABI.
+//
+// item_type packs BOTH the type byte AND the flags byte:
+//   bits  0..7  : type  (eshkol_value_type_t — INT64=1, DOUBLE=2, ...)
+//   bits  8..15 : flags (EXACT_FLAG=0x10, INEXACT_FLAG=0x20, ...)
+//   bits 16..63 : reserved (always 0)
+//
+// Without packing flags, INT64 values arrive at the worker as type=1,flags=0
+// instead of type=1,flags=EXACT_FLAG; arithmetic dispatch then falls through
+// to the wrong branch and worker crashes with
+//   "+: operand is not a number, vector, or tensor"
+//
+// Backward-compat: if older stdlib.o packs only the type byte (bits 8-15
+// zero), reconstruction yields flags=0 — same as the buggy old behaviour, no
+// regression. New stdlib.o + new LLVM correctly carries flags.
 struct llvm_parallel_map_task {
     uint64_t closure_ptr;   // offset 0: pointer to closure struct (from fn.data.ptr_val)
-    uint64_t item_type;     // offset 8: type field (i64-extended from i8)
+    uint64_t item_type;     // offset 8: type byte | (flags byte << 8)
     uint64_t item_data;     // offset 16: data field (raw_val)
     uint64_t result_ptr;    // offset 24: pointer to eshkol_tagged_value_t for result
 };
 
-// Task data for parallel fold (binary closure)
+// Task data for parallel fold (binary closure).
+// arg1_type and arg2_type both pack {type, flags} the same way as above.
 struct llvm_parallel_fold_task {
     uint64_t closure_ptr;   // offset 0: pointer to closure struct
-    uint64_t arg1_type;     // offset 8: first arg type
+    uint64_t arg1_type;     // offset 8: type byte | (flags byte << 8)
     uint64_t arg1_data;     // offset 16: first arg data
-    uint64_t arg2_type;     // offset 24: second arg type
+    uint64_t arg2_type;     // offset 24: type byte | (flags byte << 8)
     uint64_t arg2_data;     // offset 32: second arg data
     uint64_t result_ptr;    // offset 40: pointer for result
 };
@@ -455,7 +470,8 @@ void eshkol_parallel_map(
             // Pack task data (decomposed to i64 fields)
             llvm_parallel_map_task task;
             task.closure_ptr = fn.data.ptr_val;
-            task.item_type = static_cast<uint64_t>(items[i].type);
+            task.item_type = static_cast<uint64_t>(items[i].type)
+                           | (static_cast<uint64_t>(items[i].flags) << 8);
             task.item_data = items[i].data.raw_val;
             task.result_ptr = reinterpret_cast<uint64_t>(&results[i]);
 
@@ -481,7 +497,8 @@ void eshkol_parallel_map(
     for (size_t i = 0; i < n; ++i) {
         // Pack task: closure pointer, type as i64, data as i64, result pointer
         tasks[i].closure_ptr = fn.data.ptr_val;
-        tasks[i].item_type = static_cast<uint64_t>(items[i].type);
+        tasks[i].item_type = static_cast<uint64_t>(items[i].type)
+                           | (static_cast<uint64_t>(items[i].flags) << 8);
         tasks[i].item_data = items[i].data.raw_val;
         tasks[i].result_ptr = reinterpret_cast<uint64_t>(&results[i]);
     }
@@ -716,7 +733,8 @@ void eshkol_parallel_filter(
         for (size_t i = 0; i < n; ++i) {
             llvm_parallel_map_task task;
             task.closure_ptr = pred.data.ptr_val;
-            task.item_type = static_cast<uint64_t>(items[i].type);
+            task.item_type = static_cast<uint64_t>(items[i].type)
+                           | (static_cast<uint64_t>(items[i].flags) << 8);
             task.item_data = items[i].data.raw_val;
             task.result_ptr = reinterpret_cast<uint64_t>(&pred_results[i]);
 
@@ -747,7 +765,8 @@ void eshkol_parallel_filter(
 
     for (size_t i = 0; i < n; ++i) {
         tasks[i].closure_ptr = pred.data.ptr_val;
-        tasks[i].item_type = static_cast<uint64_t>(items[i].type);
+        tasks[i].item_type = static_cast<uint64_t>(items[i].type)
+                           | (static_cast<uint64_t>(items[i].flags) << 8);
         tasks[i].item_data = items[i].data.raw_val;
         tasks[i].result_ptr = reinterpret_cast<uint64_t>(&pred_results[i]);
     }
