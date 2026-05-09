@@ -1094,11 +1094,16 @@ void ParallelCodegen::generateFilterWorker() {
     llvm::Value* result_ptr_i64 = ctx_.builder().CreateLoad(ctx_.int64Type(),
         ctx_.builder().CreateStructGEP(task_type, task, 3), "result_ptr_i64");
 
+    // item_type packs {type byte, flags byte} — same encoding as map task.
+    // See parallel_codegen.cpp's llvm_parallel_map_task struct comment.
     llvm::Value* item = llvm::UndefValue::get(ctx_.taggedValueType());
     item = ctx_.builder().CreateInsertValue(item,
         ctx_.builder().CreateTrunc(item_type, ctx_.int8Type()), {0});
-    item = ctx_.builder().CreateInsertValue(item,
-        llvm::ConstantInt::get(ctx_.int8Type(), 0), {1});
+    llvm::Value* item_flags = ctx_.builder().CreateTrunc(
+        ctx_.builder().CreateLShr(item_type,
+            llvm::ConstantInt::get(ctx_.int64Type(), 8)),
+        ctx_.int8Type(), "item_flags");
+    item = ctx_.builder().CreateInsertValue(item, item_flags, {1});
     item = ctx_.builder().CreateInsertValue(item, item_data, {4});
 
     llvm::Value* closure = llvm::UndefValue::get(ctx_.taggedValueType());
@@ -1265,26 +1270,30 @@ llvm::Value* ParallelCodegen::ensureTaggedValue(llvm::Value* val) {
         return val;
     }
 
-    // Raw i64 - wrap as INT64
+    // Raw i64 - wrap as INT64. Set EXACT_FLAG so downstream R7RS exactness
+    // checks (exact?, exact->inexact, /) take the right branch. Without the
+    // flag, INT64 values look "of unspecified exactness" and can fall into
+    // bignum/inexact paths.
     if (val_type == ctx_.int64Type()) {
         eshkol_debug("ensureTaggedValue: wrapping i64 as INT64");
         llvm::Value* result = llvm::UndefValue::get(ctx_.taggedValueType());
         result = ctx_.builder().CreateInsertValue(result,
             llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_INT64), {0});
         result = ctx_.builder().CreateInsertValue(result,
-            llvm::ConstantInt::get(ctx_.int8Type(), 0), {1});
+            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_EXACT_FLAG), {1});
         result = ctx_.builder().CreateInsertValue(result, val, {4});
         return result;
     }
 
-    // Raw double - wrap as DOUBLE
+    // Raw double - wrap as DOUBLE. Set INEXACT_FLAG to match the R7RS contract
+    // for floating-point literals.
     if (val_type == ctx_.doubleType()) {
         llvm::Value* double_as_i64 = ctx_.builder().CreateBitCast(val, ctx_.int64Type());
         llvm::Value* result = llvm::UndefValue::get(ctx_.taggedValueType());
         result = ctx_.builder().CreateInsertValue(result,
             llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DOUBLE), {0});
         result = ctx_.builder().CreateInsertValue(result,
-            llvm::ConstantInt::get(ctx_.int8Type(), 0), {1});
+            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_INEXACT_FLAG), {1});
         result = ctx_.builder().CreateInsertValue(result, double_as_i64, {4});
         return result;
     }
