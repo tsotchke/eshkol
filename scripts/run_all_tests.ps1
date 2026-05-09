@@ -1064,6 +1064,10 @@ function Invoke-CppTypeSuite {
     # ABI even though clang++ is the driver. CMake already wires this for the
     # main eshkol-static link path; the manual ps1 compile path was missing it,
     # leaving 3 unresolved externals on every cpp_type test (PR #26 CI).
+    #
+    # Define $onWindows up front (also used at lines 1090, 1104) so PowerShell
+    # strict mode does not error on forward reference.
+    $onWindows = ($env:OS -eq "Windows_NT")
     $clangBuiltinsLib = $null
     if ($onWindows) {
         $resourceDirRaw = (& $clangxx --print-resource-dir 2>&1)
@@ -1087,7 +1091,7 @@ function Invoke-CppTypeSuite {
     $llvmLibs = @()
     $llvmSystemLibs = @()
 
-    $onWindows = ($env:OS -eq "Windows_NT")
+    # $onWindows already defined above (cpp_type clangBuiltinsLib path)
     if (-not $onWindows) {
         $llvmCxxFlagsRaw = (& $llvmConfig --cxxflags) -replace "(^|\s)-std=[^\s]+", "" -replace "(^|\s)-fno-exceptions", ""
         $llvmLdFlagsRaw = & $llvmConfig --ldflags
