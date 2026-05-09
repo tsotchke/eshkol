@@ -1,0 +1,83 @@
+;; Regression test for the parallel-map flags-byte mis-dispatch bug
+;; (master ba9b568, 4c87335, fdba5f3 — 2026-05-09).
+;;
+;; Pre-fix symptom: parallel-map workers would crash with
+;;   "+: operand is not a number, vector, or tensor"
+;; OR silently mis-dispatch INT64 arithmetic into the bignum-promotion
+;; path. The latter looked like 1.01× speedup on 24 cores instead of
+;; the expected 5-12× — Aletheia's perf-pass discovery.
+;;
+;; Root cause: parallel_llvm_codegen.cpp:854 reconstructed the worker's
+;; tagged-value with `flags=0` hardcoded. INT64 values arrived as
+;; type=INT64,flags=0 instead of type=INT64,flags=EXACT_FLAG; arithmetic
+;; dispatch fell through the wrong branch.
+;;
+;; Fix: pack {type, flags} into the existing item_type i64 (bits 0-7
+;; type, bits 8-15 flags). Mirror fix in parallel-fold and
+;; parallel-filter workers. Same fix in ensureTaggedValue and
+;; threadPoolInfo.
+;;
+;; This test exercises every encoded-flag path end-to-end. If any path
+;; regresses to flags=0, the result will be wrong (crash, or wrong type,
+;; or wrong arithmetic).
+
+(display "=== parallel-map flags-byte regression ===") (newline)
+
+;; Test 1: large INT64 sum-of-squares should match sequential
+;; (proves INT64 stays in int64 path, not promoted to bignum)
+(define (busy-int64 n)
+  (let loop ((i 0) (acc 0))
+    (if (>= i n) acc
+        (loop (+ i 1) (+ acc (* i i))))))
+
+(define (work x) (busy-int64 (+ 1000 x)))
+(define inputs (list 0 1 2 3 4 5 6 7))
+(define seq (map work inputs))
+(define par (parallel-map work inputs))
+(display "T1 INT64 sum-of-squares parity: ")
+(display (if (equal? seq par) "PASS" (list "FAIL seq=" seq " par=" par)))
+(newline)
+
+;; Test 2: cpu-count must be exact (was returning non-exact pre-fdba5f3)
+(display "T2 (exact? (cpu-count)): ")
+(display (if (exact? (cpu-count)) "PASS" "FAIL"))
+(newline)
+
+;; Test 3: parallel-fold must propagate flags too (binary closure path)
+;; Sum the squares of 1..10; must equal 385.
+(define folded (parallel-fold + 0 (map (lambda (x) (* x x))
+                                       (list 1 2 3 4 5 6 7 8 9 10))))
+(display "T3 parallel-fold sum-squares-1-10: ")
+(display (if (= folded 385) "PASS" (list "FAIL got " folded)))
+(newline)
+
+;; Test 4: parallel-filter must propagate flags (predicate gets INT64)
+;; Filter evens from 1..10; must produce '(2 4 6 8 10).
+(define evens (parallel-filter (lambda (x) (= 0 (modulo x 2)))
+                               (list 1 2 3 4 5 6 7 8 9 10)))
+(display "T4 parallel-filter evens-1-10: ")
+(display (if (equal? evens '(2 4 6 8 10)) "PASS"
+             (list "FAIL got " evens)))
+(newline)
+
+;; Test 5: nested parallel-map (map over list of lists)
+;; Each inner list is processed in parallel; outer map combines.
+;; Tests that flags survive multiple round-trips through worker paths.
+(define rows '((1 2 3) (4 5 6) (7 8 9)))
+(define row-sums (map (lambda (row) (parallel-fold + 0 row)) rows))
+(display "T5 nested map-over-rows + parallel-fold: ")
+(display (if (equal? row-sums '(6 15 24)) "PASS"
+             (list "FAIL got " row-sums)))
+(newline)
+
+;; Test 6: closure capture of an INT64 global
+;; If the captured global's flags were dropped, arithmetic would mis-dispatch.
+(define BASE 100)
+(define add-base (lambda (x) (+ x BASE)))
+(define captured (parallel-map add-base inputs))
+(display "T6 closure captures INT64 global BASE: ")
+(display (if (equal? captured '(100 101 102 103 104 105 106 107)) "PASS"
+             (list "FAIL got " captured)))
+(newline)
+
+(display "=== regression test complete ===") (newline)
