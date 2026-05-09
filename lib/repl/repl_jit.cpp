@@ -473,10 +473,30 @@ void ReplJITContext::initializeJIT() {
     jtmb->setCodeGenOptLevel(CodeGenOpt::None);
 #endif
 
-    // Create LLJIT instance with explicit host-matched TM
+    // Create LLJIT instance with explicit host-matched TM.
+    //
+    // setNumCompileThreads(N): with N=1 the ORC compile pool serialises
+    // every IR materialisation, so parallel-map workers that lazy-trigger
+    // any new symbol lookup queue behind that single compile thread.
+    // Profiler trace on a 24-core M2 Max showed 100% of worker time inside
+    // `MaterializationTask::run → CloneFunctionInto`, with 8 parallel
+    // tasks delivering 1.02× speedup vs sequential map.
+    //
+    // ESHKOL_JIT_COMPILE_THREADS overrides at runtime; defaults to
+    // hardware_concurrency() / 2 (capped to ≥1, ≤16). Larger values
+    // reduce contention proportionally but add memory pressure (each
+    // compile thread holds its own LLVMContext + cloned module).
+    unsigned compile_threads = std::thread::hardware_concurrency();
+    if (compile_threads == 0) compile_threads = 4;
+    compile_threads = std::max(1u, compile_threads / 2);
+    if (compile_threads > 16) compile_threads = 16;
+    if (const char* env = std::getenv("ESHKOL_JIT_COMPILE_THREADS")) {
+        long v = std::strtol(env, nullptr, 10);
+        if (v > 0 && v <= 64) compile_threads = static_cast<unsigned>(v);
+    }
     auto jit_or_err = LLJITBuilder()
         .setJITTargetMachineBuilder(std::move(*jtmb))
-        .setNumCompileThreads(1)  // Single-threaded for simplicity
+        .setNumCompileThreads(compile_threads)
         .create();
 
     if (!jit_or_err) {

@@ -486,24 +486,48 @@ void eshkol_parallel_map(
         tasks[i].result_ptr = reinterpret_cast<uint64_t>(&results[i]);
     }
 
+    // ── JIT-warmup phase ───────────────────────────────────────────────────
+    // In JIT mode the closure body and every stdlib helper it transitively
+    // references is materialised lazily by LLVM ORC the first time it is
+    // called. If we submit N tasks straight to worker threads, all N race
+    // for ORC's single materialisation lock — profiler trace shows 100% of
+    // worker time inside `MaterializationTask::run` and parallel-map runs
+    // SLOWER than sequential.
+    //
+    // The fix: execute item[0] on the calling thread first. This forces
+    // materialisation of the entire transitive symbol set (closure body +
+    // stdlib helpers) on this single thread. Worker threads then run
+    // pre-compiled native code with no JIT involvement.
+    //
+    // Override with ESHKOL_PARALLEL_NO_WARMUP=1 to skip (useful for
+    // diagnosing whether warmup itself introduces a regression).
+    bool do_warmup = !getenv("ESHKOL_PARALLEL_NO_WARMUP");
+    size_t parallel_start = 0;
+    if (do_warmup && n > 1) {
+        eshkol_debug("parallel-map: warming up JIT via item[0] on caller");
+        g_parallel_map_worker(&tasks[0]);
+        parallel_start = 1;  // item[0] is already done
+    }
+
     // Submit LLVM worker to thread pool via function pointer
     // Key: void* arg crosses C/LLVM boundary (safe), tagged values stay in LLVM
-    eshkol_debug("parallel-map: submitting %zu tasks to thread pool", n);
+    eshkol_debug("parallel-map: submitting %zu tasks to thread pool", n - parallel_start);
     if (getenv("ESHKOL_DEBUG_PAR")) {
         eshkol_thread_pool_metrics_t m;
         thread_pool_get_metrics(pool, &m);
-        fprintf(stderr, "[par-map] pool=%p threads=%zu  active=%zu  submitting=%zu tasks\n",
-            (void*)pool, m.num_threads, m.active_workers, n);
+        fprintf(stderr, "[par-map] pool=%p threads=%zu  active=%zu  submitting=%zu tasks (warmup=%d, parallel_start=%zu)\n",
+            (void*)pool, m.num_threads, m.active_workers, n - parallel_start,
+            do_warmup ? 1 : 0, parallel_start);
     }
-    for (size_t i = 0; i < n; ++i) {
+    for (size_t i = parallel_start; i < n; ++i) {
         futures[i] = thread_pool_submit(pool, g_parallel_map_worker, &tasks[i]);
         if (!futures[i]) {
             eshkol_error("parallel-map: failed to submit task %zu", i);
         }
     }
 
-    // Wait for all tasks to complete
-    for (size_t i = 0; i < n; ++i) {
+    // Wait for all parallel tasks to complete
+    for (size_t i = parallel_start; i < n; ++i) {
         if (futures[i]) {
             future_get(futures[i]);
             future_release(futures[i]);
