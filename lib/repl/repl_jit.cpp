@@ -3050,8 +3050,34 @@ eshkol_tagged_value_t ReplJITContext::executeTagged(eshkol_ast_t* ast) {
         return result;
     }
 
+    /* REPL LAST-VALUE CAPTURE (2026-05-08, qLLM bridge fix):
+     * Clear the thread-local capture slot before evaluation so a parse or
+     * codegen failure on this AST cannot accidentally surface a stale
+     * value from the previous successful evaluation. */
+    eshkol_repl_clear_last_value();
+
     // Execute the AST and get raw result
     void* raw_result = execute(ast);
+
+    /* REPL LAST-VALUE CAPTURE (2026-05-08, qLLM bridge fix):
+     * If the JIT-compiled top-level expression captured a typed result,
+     * use it directly. This is the fix for the bug where every literal /
+     * arithmetic eval came back as {type=INT64, int_val=0} — the host
+     * reads back the actual tagged value here instead of relying on the
+     * truncated i32 return of `main` (which always emitted `ret i32 0`).
+     *
+     * The legacy raw-pointer path below still runs as a fallback for
+     * paths that don't yet route through the capture (e.g. evaluations
+     * outside REPL mode, or future codegen variants). */
+    eshkol_tagged_value_t captured;
+    bool have_captured = eshkol_repl_get_last_value(&captured);
+    if (have_captured) {
+        if (raw_result) {
+            // Free the legacy heap-allocated int — we don't need it.
+            delete static_cast<int64_t*>(raw_result);
+        }
+        return captured;
+    }
 
     if (!raw_result) {
         // Execution returned null - return null tagged value

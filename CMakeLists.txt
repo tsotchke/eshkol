@@ -1469,6 +1469,70 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/repl/assoc_e
     )
 endif()
 
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm/test_vm_c_api.cpp")
+    add_executable(test_vm_c_api tests/vm/test_vm_c_api.cpp)
+    target_compile_features(test_vm_c_api PRIVATE cxx_std_17)
+    target_include_directories(test_vm_c_api PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc
+        ${CMAKE_CURRENT_SOURCE_DIR}/lib/backend)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(test_vm_c_api PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(test_vm_c_api PRIVATE
+        eshkol-static
+        ${ESHKOL_EXTRA_LINK_LIBS}
+        ${LLVM_LIBS_LIST}
+        ${LLVM_SYSTEM_LIBS_LIST}
+    )
+    add_test(NAME test_vm_c_api COMMAND test_vm_c_api)
+endif()
+
+# Direct C++ test of ReplJITContext::executeTagged value-capture path.
+# Regression for the 2026-05-08 qLLM-bridge bug where
+# eshkol_eval_string("42") returned {type=INT64, int_val=0} because the
+# JIT-emitted main always emitted `ret i32 0`. Test links the full
+# eshkol-static + eshkol-repl-lib stack so eshkol_eval_string and the
+# JIT bridge resolve at link time.
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/repl/test_repl_jit_executetagged.cpp")
+    add_executable(test_repl_jit_executetagged
+        tests/repl/test_repl_jit_executetagged.cpp)
+    target_compile_features(test_repl_jit_executetagged PRIVATE cxx_std_17)
+    target_include_directories(test_repl_jit_executetagged PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(test_repl_jit_executetagged PRIVATE
+            ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(test_repl_jit_executetagged PRIVATE
+        eshkol-repl-lib eshkol-static ${ESHKOL_EXTRA_LINK_LIBS}
+        ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+    if(APPLE)
+        # Force-load eshkol-static + eshkol-repl-lib so the strong
+        # eval-bridge implementation in eval_bridge_impl.cpp wins over
+        # the weak default in eshkol-static (matches eshkol-run linkage
+        # at line ~1330 above).
+        # -undefined dynamic_lookup lets unresolved weak agent-FFI
+        # qllm_process_* refs (declared __attribute__((weak_import))
+        # in repl_jit.cpp) fall through to a runtime dlsym, since the
+        # test does not link the eshkol-agent-ffi archive.
+        target_link_options(test_repl_jit_executetagged PRIVATE
+            "-Wl,-force_load,$<TARGET_FILE:eshkol-static>"
+            "-Wl,-force_load,$<TARGET_FILE:eshkol-repl-lib>"
+            "-Wl,-export_dynamic"
+            "-Wl,-undefined,dynamic_lookup")
+    elseif(UNIX)
+        target_link_options(test_repl_jit_executetagged PRIVATE
+            "-Wl,--whole-archive"
+            "$<TARGET_FILE:eshkol-static>"
+            "$<TARGET_FILE:eshkol-repl-lib>"
+            "-Wl,--no-whole-archive"
+            "-Wl,--export-dynamic"
+            "-Wl,--unresolved-symbols=ignore-in-object-files")
+    endif()
+    add_test(NAME test_repl_jit_executetagged
+             COMMAND test_repl_jit_executetagged)
+endif()
+
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/windows_suite_surface_test.cpp")
     add_executable(windows_suite_surface_test tests/toolchain/windows_suite_surface_test.cpp)
     target_compile_features(windows_suite_surface_test PRIVATE cxx_std_17)
@@ -1522,7 +1586,7 @@ endif()
 # The paper "The Self-Differentiating Neural Computer: Computable Transformers
 # via Analytical Weight Construction" (tsotchke 2026) reports a 2.8M-parameter
 # transformer (d_model=128, n_layers=6, FFN=1024) whose weights ARE the Eshkol
-# VM's microcode. The 74-test verification suite runs the same programs three
+# VM's microcode. The verification suite runs the same programs three
 # ways (reference C interpreter / simulated transformer / matrix forward pass)
 # and asserts bit-identical agreement.
 #
@@ -1546,12 +1610,12 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/lib/backend/weight_matrices.c")
     )
     if(ESHKOL_BUILD_TESTS)
         add_test(
-            NAME sdnc_paper_74_tests
+            NAME sdnc_paper_weight_tests
             COMMAND $<TARGET_FILE:weight_matrices>
         )
-        # The test program prints "Results: 74 passed, 0 failed" on success.
-        set_tests_properties(sdnc_paper_74_tests PROPERTIES
-            PASS_REGULAR_EXPRESSION "74 passed, 0 failed"
+        # The suite count grows as VM-as-transformer coverage expands.
+        set_tests_properties(sdnc_paper_weight_tests PROPERTIES
+            PASS_REGULAR_EXPRESSION "Results: [0-9]+ passed, 0 failed"
         )
     endif()
 endif()

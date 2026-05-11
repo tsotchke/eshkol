@@ -375,7 +375,44 @@ namespace {
     std::unordered_set<std::string> g_repl_user_function_names;
     std::unordered_set<std::string> g_repl_user_variable_names;
     std::atomic<int> g_repl_define_counter{0};                             // Monotonic version counter for REPL user functions
+    // Functions registered via eshkol_repl_register_native_c_function: their
+    // symbols name a C function (compiled by clang/gcc) that takes/returns
+    // eshkol_tagged_value_t under the platform C ABI. Clang lowers a 16-byte
+    // tagged_value to `[2 x i64]` for AAPCS / SysV register passing, NOT to
+    // the IR struct `{i8,i8,i16,i32,i64}` that the JIT uses for Eshkol-to-
+    // Eshkol calls. If we declared these C functions with the IR struct ABI,
+    // the JIT would pass each field in a separate GPR while the C function
+    // expects two i64 GPRs holding the packed bytes, scrambling the args.
+    //
+    // tryResolveReplFunction() detects membership in this set and emits a
+    // thin coercion thunk (struct-ABI on the JIT side, [2 x i64] ABI on the
+    // C side) so existing call sites stay untouched. See the comment block
+    // in tryResolveReplFunction() for the full coercion sequence.
+    std::unordered_set<std::string> g_repl_native_c_functions;
     std::mutex g_repl_mutex;  // Thread safety for REPL symbol access
+
+    /* REPL LAST-VALUE CAPTURE
+     *
+     * Bug (2026-05-08, qLLM bridge): top-level expressions evaluated by the
+     * REPL JIT (no user-defined `main`) had their results discarded — the
+     * generated `main` always emitted `ret i32 0` at line ~2069 below, no
+     * matter what the last expression returned. Symptom: every call to
+     * eshkol_eval_string("42", ...) and eshkol_eval_string("(+ 1 2)", ...)
+     * came back with type=INT64 (correct) but data.int_val=0 (wrong).
+     *
+     * Fix: codegen now emits a runtime call to
+     * eshkol_repl_capture_last_value() after each top-level expression. The
+     * JIT-side captures the tagged value into the thread-local slot below.
+     * ReplJITContext::executeTagged then reads the slot in preference to
+     * the truncated-i32 main return.
+     *
+     * Thread-local because the REPL JIT may run on multiple worker threads
+     * (test fixtures, agent contexts) and each must see only its own value.
+     */
+    thread_local eshkol_tagged_value_t g_repl_last_value{
+        ESHKOL_VALUE_NULL, 0, 0, {.raw_val = 0}
+    };
+    thread_local bool g_repl_last_value_set = false;
 
     // External library function registry
     // Populated by eshkol_register_external_functions(), consumed during codegen
@@ -1945,6 +1982,18 @@ public:
                     // Lambda captures are handled by calling __lambda_init__ after each lambda define,
                     // rather than hoisting all defines first.
 
+                    /* REPL LAST-VALUE CAPTURE (2026-05-08, qLLM bridge fix):
+                     * Track the LLVM Value* produced by the last non-define
+                     * top-level expression. After all expressions have been
+                     * codegenned we emit a call to
+                     * eshkol_repl_capture_last_value(&tagged) so the host
+                     * (ReplJITContext::executeTagged) can recover the typed
+                     * result. Previously the result Value was discarded and
+                     * `main` always returned `ret i32 0`, which manifested as
+                     * eshkol_eval_string("42") -> {type=INT64, int_val=0}. */
+                    Value* last_top_level_value = nullptr;
+                    bool last_was_value_expr = false;
+
                     for (size_t i = 0; i < num_asts_to_use; i++) {
                         bool is_function_def = (asts_to_use[i].type == ESHKOL_OP &&
                                                asts_to_use[i].operation.op == ESHKOL_DEFINE_OP &&
@@ -1956,7 +2005,18 @@ public:
                         }
 
                         // Process all other expressions (defines AND non-defines) sequentially
-                        codegenAST(&asts_to_use[i]);
+                        Value* expr_val = codegenAST(&asts_to_use[i]);
+
+                        /* Track the last value-producing top-level expression
+                         * for capture. Skip DEFINE forms (they bind, but their
+                         * "result" is not a useful eval value); track every
+                         * other expression including calls and literals. */
+                        bool is_define = (asts_to_use[i].type == ESHKOL_OP &&
+                                          asts_to_use[i].operation.op == ESHKOL_DEFINE_OP);
+                        if (!is_define) {
+                            last_top_level_value = expr_val;
+                            last_was_value_expr = true;
+                        }
 
                         // NORETURN SAFETY (#244): a top-level expression may
                         // be a no-return form (`(raise ...)`, top-level call/cc
@@ -2054,6 +2114,48 @@ public:
                         }
                     }
                     
+                    /* REPL LAST-VALUE CAPTURE (2026-05-08, qLLM bridge fix):
+                     * If we ran in REPL mode and the last top-level expression
+                     * produced a value, pack it as tagged_value and call
+                     * eshkol_repl_capture_last_value(&tagged) so the host can
+                     * recover the typed result. Without this, every
+                     * eshkol_eval_string("42") returned {type=INT64,
+                     * int_val=0} because main's `ret i32 0` discarded the
+                     * actual value. */
+                    if (g_repl_mode_enabled &&
+                        last_was_value_expr && last_top_level_value &&
+                        !builder->GetInsertBlock()->getTerminator()) {
+
+                        // Promote raw i64/double to a tagged_value struct.
+                        Value* tagged_val = ensureTaggedValue(last_top_level_value);
+
+                        // Spill into a stack slot so we can pass &tagged.
+                        Value* tv_slot = builder->CreateAlloca(
+                            tagged_value_type, nullptr,
+                            "__repl_capture_tv_slot");
+                        builder->CreateStore(tagged_val, tv_slot);
+
+                        // Declare/lookup the runtime helper. Signature:
+                        //   void eshkol_repl_capture_last_value(
+                        //            const eshkol_tagged_value_t*)
+                        FunctionType* capture_type = FunctionType::get(
+                            void_type,
+                            {PointerType::getUnqual(*context)},
+                            false);
+                        Function* capture_func = module->getFunction(
+                            "eshkol_repl_capture_last_value");
+                        if (!capture_func) {
+                            capture_func = Function::Create(
+                                capture_type,
+                                Function::ExternalLinkage,
+                                "eshkol_repl_capture_last_value",
+                                module.get());
+                        }
+                        builder->CreateCall(capture_func, {tv_slot});
+                        eshkol_debug("Emitted eshkol_repl_capture_last_value "
+                                     "for top-level expression result");
+                    }
+
                     // Add terminator to main function if it doesn't have one
                     if (!builder->GetInsertBlock()->getTerminator()) {
                         // GLOBAL ARENA FIX: Cleanup arena before return (SKIP IN REPL MODE)
@@ -5051,25 +5153,119 @@ private:
             arity = arity_it->second;
         }
 
-        // Check if we already have this function in the current module
-        Function* extern_func = module->getFunction(jit_symbol_name);
-        if (!extern_func) {
-            // Function doesn't exist yet - create external declaration
-            // All Eshkol functions return eshkol_tagged_value and take tagged_value parameters
-            std::vector<Type*> param_types(arity, tagged_value_type);
-            FunctionType* func_type = FunctionType::get(
-                tagged_value_type,
-                param_types,
-                false  // NOT varargs - use exact arity
-            );
+        // Did the host explicitly mark this name as a native C function (i.e.
+        // compiled by Clang/GCC, NOT by the JIT)? If so we cannot use the IR
+        // struct {i8,i8,i16,i32,i64} for params/return — Clang coerces a
+        // 16-byte struct-by-value into `[2 x i64]` per AAPCS/SysV, which is
+        // a different register-packing than what LLVM does for the IR struct.
+        // We register a *thunk* with the struct ABI (so existing call sites
+        // are unchanged) that internally bitcasts to [2 x i64] and forwards.
+        bool is_native_c = g_repl_native_c_functions.count(jit_symbol_name) > 0
+                       || g_repl_native_c_functions.count(actual_func_name) > 0
+                       || g_repl_native_c_functions.count(func_name) > 0;
 
-            // CRITICAL: Use the actual JIT symbol name that exists in the JIT, not the requested name
-            extern_func = Function::Create(
-                func_type,
-                Function::ExternalLinkage,
-                jit_symbol_name,  // Use the actual JIT symbol name (e.g., "lambda_0")!
-                module.get()
-            );
+        // Check if we already have this function in the current module.
+        // For native-C functions the cache key is the thunk name, NOT the
+        // raw JIT symbol (that name now refers to the [2 x i64] declaration
+        // and is wrong-typed for callers who expect a tagged_value-ABI fn).
+        std::string cache_key = is_native_c
+            ? (jit_symbol_name + "__cabi_thunk")
+            : jit_symbol_name;
+        Function* extern_func = module->getFunction(cache_key);
+        if (!extern_func) {
+            if (is_native_c) {
+                // 1. Declare the *real* C function with the [2 x i64] ABI
+                //    under the original JIT symbol name. ORC will resolve
+                //    that name via dlsym to the host C function (compiled
+                //    by Clang/GCC, which itself coerced the 16-byte struct
+                //    to [2 x i64] for AAPCS / SysV register passing).
+                ArrayType* coerced_type = ArrayType::get(int64_type, 2);
+                std::vector<Type*> cabi_param_types(arity, coerced_type);
+                FunctionType* cabi_type = FunctionType::get(
+                    coerced_type,
+                    cabi_param_types,
+                    false
+                );
+                Function* cabi_real = module->getFunction(jit_symbol_name);
+                if (!cabi_real) {
+                    cabi_real = Function::Create(
+                        cabi_type,
+                        Function::ExternalLinkage,
+                        jit_symbol_name,  // ORC will dlsym this name
+                        module.get()
+                    );
+                }
+
+                // 2. Build a thunk with the IR struct ABI that just unpacks
+                //    its struct args into [2 x i64], calls the C function,
+                //    and packs the result back. The thunk has private
+                //    linkage so it does not collide across modules.
+                std::vector<Type*> thunk_param_types(arity, tagged_value_type);
+                FunctionType* thunk_type = FunctionType::get(
+                    tagged_value_type,
+                    thunk_param_types,
+                    false
+                );
+                std::string thunk_name = jit_symbol_name + "__cabi_thunk";
+                Function* thunk = Function::Create(
+                    thunk_type,
+                    Function::PrivateLinkage,
+                    thunk_name,
+                    module.get()
+                );
+                // Save current insert point so we can return to the caller
+                // mid-codegen without disturbing it.
+                IRBuilder<>::InsertPoint saved_ip = builder->saveIP();
+                BasicBlock* entry = BasicBlock::Create(*context, "entry", thunk);
+                builder->SetInsertPoint(entry);
+
+                // Coerce each struct arg → [2 x i64] via memory (alloca,
+                // store struct, load [2 x i64]). This is exactly what Clang
+                // emits for a 16-byte struct passed by value at -O0.
+                std::vector<Value*> coerced_args;
+                coerced_args.reserve(arity);
+                for (size_t i = 0; i < arity; ++i) {
+                    Value* slot = builder->CreateAlloca(
+                        tagged_value_type, nullptr,
+                        "cabi_arg_" + std::to_string(i));
+                    builder->CreateStore(thunk->getArg(i), slot);
+                    Value* loaded = builder->CreateLoad(
+                        coerced_type, slot,
+                        "cabi_arg_" + std::to_string(i) + "_coerced");
+                    coerced_args.push_back(loaded);
+                }
+                Value* cabi_ret = builder->CreateCall(
+                    cabi_type, cabi_real, coerced_args, "cabi_ret");
+
+                // Coerce return [2 x i64] → struct via memory.
+                Value* ret_slot = builder->CreateAlloca(
+                    tagged_value_type, nullptr, "cabi_ret_slot");
+                builder->CreateStore(cabi_ret, ret_slot);
+                Value* ret_struct = builder->CreateLoad(
+                    tagged_value_type, ret_slot, "cabi_ret_struct");
+                builder->CreateRet(ret_struct);
+
+                builder->restoreIP(saved_ip);
+
+                extern_func = thunk;
+            } else {
+                // Function doesn't exist yet - create external declaration
+                // All Eshkol functions return eshkol_tagged_value and take tagged_value parameters
+                std::vector<Type*> param_types(arity, tagged_value_type);
+                FunctionType* func_type = FunctionType::get(
+                    tagged_value_type,
+                    param_types,
+                    false  // NOT varargs - use exact arity
+                );
+
+                // CRITICAL: Use the actual JIT symbol name that exists in the JIT, not the requested name
+                extern_func = Function::Create(
+                    func_type,
+                    Function::ExternalLinkage,
+                    jit_symbol_name,  // Use the actual JIT symbol name (e.g., "lambda_0")!
+                    module.get()
+                );
+            }
         }
 
         // Register in function table so subsequent lookups find it
@@ -32353,6 +32549,7 @@ void eshkol_repl_disable() {
     g_repl_function_arities.clear();
     g_repl_user_function_names.clear();
     g_repl_user_variable_names.clear();
+    g_repl_native_c_functions.clear();
     g_repl_define_counter.store(0, std::memory_order_relaxed);
 }
 
@@ -32367,6 +32564,41 @@ void eshkol_repl_register_function(const char* name, uint64_t address, size_t ar
     std::lock_guard<std::mutex> lock(g_repl_mutex);
     g_repl_function_addresses[name] = address;
     g_repl_function_arities[name] = arity;
+}
+
+/* Register a host C function (compiled by Clang/GCC, NOT by the JIT) as a
+ * REPL-callable native primitive.
+ *
+ * Why this exists separately from eshkol_repl_register_function: the IR
+ * struct `{i8,i8,i16,i32,i64}` and the C struct `eshkol_tagged_value_t` are
+ * the SAME memory layout (both 16 bytes, fields at offsets 0/1/2/8) — but
+ * Clang lowers a 16-byte struct passed by value to `[2 x i64]` for
+ * AAPCS / SysV register passing, while LLVM's IR backend lowers the 5-field
+ * struct to one register per field. The two register-packings are NOT
+ * compatible. Calling a Clang-built C function with the IR struct ABI
+ * scrambles the arguments on aarch64 (and SysV-x86_64).
+ *
+ * Functions registered via this entry point are emitted with a thin
+ * coercion thunk inside tryResolveReplFunction(): the thunk has the IR
+ * struct ABI on the JIT-facing side, then bitcasts each parameter through
+ * memory to `[2 x i64]` and calls the real C symbol declared with the
+ * coerced ABI. The return value is bitcast back the same way.
+ *
+ * Use this for any C function you register with eshkol_repl_register_function
+ * whose source is a separately-compiled C/C++ TU. Do NOT use it for
+ * JIT-emitted Eshkol functions (lambdas, defines) — those agree on the IR
+ * struct layout with their callers.
+ *
+ * Note: the `name` here MUST match the value registered via
+ * `eshkol_repl_register_lambda_name` (i.e. the `lambda_name` argument that
+ * names the C symbol the JIT will dlsym), NOT the user-facing Scheme name.
+ * Calling this with a Scheme name has no effect since the codegen looks up
+ * the JIT symbol name.
+ */
+void eshkol_repl_register_native_c_function(const char* name) {
+    if (!name) return;
+    std::lock_guard<std::mutex> lock(g_repl_mutex);
+    g_repl_native_c_functions.insert(name);
 }
 
 void eshkol_repl_register_variadic_function(const char* name, size_t fixed_params, bool is_variadic) {
@@ -32385,6 +32617,43 @@ void eshkol_repl_register_sexpr(const char* sexpr_name, uint64_t sexpr_value) {
     if (!sexpr_name) return;
     std::lock_guard<std::mutex> lock(g_repl_mutex);
     g_repl_sexpr_values[sexpr_name] = sexpr_value;
+}
+
+/* REPL LAST-VALUE CAPTURE — see commentary at g_repl_last_value declaration.
+ *
+ * The JIT-compiled top-level expression body emits a single call to
+ * eshkol_repl_capture_last_value(&v), where `v` is the tagged-value form of
+ * the last expression's result (raw i64/double values are wrapped via
+ * ensureTaggedValue() before the call). The JIT host reads the slot back
+ * via eshkol_repl_get_last_value() right after eval_func returns.
+ *
+ * No mutex: the slot is thread_local, so each REPL worker thread sees only
+ * its own value. Clearing happens at the start of every executeTagged()
+ * invocation so a parse-only or codegen-error path can't leak a stale
+ * value from the previous evaluation.
+ */
+void eshkol_repl_capture_last_value(const eshkol_tagged_value_t* v) {
+    if (!v) {
+        g_repl_last_value_set = false;
+        return;
+    }
+    g_repl_last_value = *v;
+    g_repl_last_value_set = true;
+}
+
+bool eshkol_repl_get_last_value(eshkol_tagged_value_t* out) {
+    if (!out) return false;
+    if (!g_repl_last_value_set) return false;
+    *out = g_repl_last_value;
+    return true;
+}
+
+void eshkol_repl_clear_last_value(void) {
+    g_repl_last_value_set = false;
+    g_repl_last_value.type = ESHKOL_VALUE_NULL;
+    g_repl_last_value.flags = 0;
+    g_repl_last_value.reserved = 0;
+    g_repl_last_value.data.raw_val = 0;
 }
 
 void eshkol_repl_register_private_symbol(const char* name) {
