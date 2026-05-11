@@ -1,4 +1,4 @@
-static void vm_run(VM* vm) {
+void vm_run(VM* vm) {
 #if defined(__GNUC__) || defined(__clang__)
 /* =========================================================================
  * Computed-goto (threaded) dispatch — GCC/Clang only.
@@ -1167,7 +1167,7 @@ static void emit(VM* vm, uint8_t op, int32_t operand) {
     vm->code[vm->code_len++] = (Instr){op, operand};
 }
 
-static VM* vm_create(void) {
+VM* vm_create(void) {
     VM* vm = (VM*)calloc(1, sizeof(VM));
     if (!vm) return NULL;
     vm_init(vm);
@@ -1175,7 +1175,7 @@ static VM* vm_create(void) {
     if (!vm->code) { free(vm); return NULL; }
     return vm;
 }
-static void vm_free(VM* vm) {
+void vm_free(VM* vm) {
     heap_destroy(&vm->heap);
     free(vm->code);
     free(vm);

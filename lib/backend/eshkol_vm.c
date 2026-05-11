@@ -1077,6 +1077,85 @@ static void repl_session_destroy(ReplSession* rs) {
     free(rs);
 }
 
+/*******************************************************************************
+ * Public bytecode VM API — exported as eshkol_vm_* symbols.
+ *
+ * These wrappers give external callers (e.g. qLLM bridge) a stable C ABI for
+ * loading an in-memory ESKB chunk, executing it, and tearing the VM down,
+ * without exposing the VM/EskbModule struct internals.
+ *
+ * Returned handle = malloc'd struct holding {VM*, EskbModule}; opaque on the
+ * caller side. NULL on failure.
+ ******************************************************************************/
+
+typedef struct EshkolVmHandle {
+    VM*        vm;
+    EskbModule mod;
+    int        mod_owned;  /* 1 if mod is heap-decoded and must be freed */
+} EshkolVmHandle;
+
+EshkolVmHandle* eshkol_vm_load_chunk(const void* buffer, size_t size) {
+    if (!buffer || size == 0) return NULL;
+    EshkolVmHandle* h = (EshkolVmHandle*)calloc(1, sizeof(EshkolVmHandle));
+    if (!h) return NULL;
+    if (eskb_load_memory(buffer, size, &h->mod) != 0) {
+        free(h); return NULL;
+    }
+    h->mod_owned = 1;
+    h->vm = vm_create();
+    if (!h->vm) { eskb_module_free(&h->mod); free(h); return NULL; }
+    if (h->mod.n_constants > MAX_CONSTS) {
+        vm_free(h->vm);
+        eskb_module_free(&h->mod);
+        free(h);
+        return NULL;
+    }
+    free(h->vm->code);
+    h->vm->code = (Instr*)calloc(h->mod.code_len ? h->mod.code_len : 1, sizeof(Instr));
+    if (!h->vm->code) { vm_free(h->vm); eskb_module_free(&h->mod); free(h); return NULL; }
+    h->vm->code_len = h->mod.code_len;
+    for (int i = 0; i < h->mod.code_len; i++) {
+        h->vm->code[i] = (Instr){h->mod.opcodes[i], h->mod.operands[i]};
+    }
+    for (int i = 0; i < h->mod.n_constants && i < MAX_CONSTS; i++) {
+        switch (h->mod.const_types[i]) {
+        case ESKB_CONST_NIL:   h->vm->constants[i] = NIL_VAL; break;
+        case ESKB_CONST_INT64: h->vm->constants[i] = INT_VAL(h->mod.const_ints[i]); break;
+        case ESKB_CONST_F64:   h->vm->constants[i] = FLOAT_VAL(h->mod.const_floats[i]); break;
+        case ESKB_CONST_BOOL:  h->vm->constants[i] = BOOL_VAL((int)h->mod.const_ints[i]); break;
+        default:               h->vm->constants[i] = INT_VAL(h->mod.const_ints[i]); break;
+        }
+    }
+    h->vm->n_constants = h->mod.n_constants;
+    return h;
+}
+
+int eshkol_vm_run(EshkolVmHandle* h) {
+    if (!h || !h->vm) return -1;
+    vm_run(h->vm);
+    return h->vm->error ? -1 : 0;
+}
+
+void eshkol_vm_destroy(EshkolVmHandle* h) {
+    if (!h) return;
+    if (h->vm) vm_free(h->vm);
+    if (h->mod_owned) eskb_module_free(&h->mod);
+    free(h);
+}
+
+/* Top-of-stack inspector — exposes the last-pushed value as int64 for tests
+ * that want to do a return-value smoke check without exposing Value internals.
+ * Returns 0 on success, -1 on empty stack or non-int top. */
+int eshkol_vm_top_int64(EshkolVmHandle* h, int64_t* out) {
+    if (!h || !h->vm || !out) return -1;
+    if (h->vm->sp <= 0) return -1;
+    Value v = h->vm->stack[h->vm->sp - 1];
+    if (v.type == VAL_INT) { *out = v.as.i; return 0; }
+    if (v.type == VAL_FLOAT) { *out = (int64_t)v.as.f; return 0; }
+    if (v.type == VAL_BOOL) { *out = v.as.b ? 1 : 0; return 0; }
+    return -1;
+}
+
 #if !defined(ESHKOL_VM_LIBRARY_MODE) && !defined(GENERATE_PRELUDE_CACHE)
 int main(int argc, char** argv) {
     vm_set_command_line(argc, argv);

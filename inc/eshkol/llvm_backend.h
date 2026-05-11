@@ -203,6 +203,37 @@ void eshkol_repl_register_symbol(const char* name, uint64_t address);
 void eshkol_repl_register_function(const char* name, uint64_t address, size_t arity);
 
 /*
+ * REPL Mode: Mark a previously-registered function as a host-side C function
+ * (compiled by Clang/GCC, NOT JIT-emitted).
+ *
+ * Why this exists separately from eshkol_repl_register_function: a 16-byte
+ * eshkol_tagged_value_t passed by value uses two distinct register-packing
+ * conventions:
+ *
+ *   - Clang on AAPCS / SysV-x86_64 coerces the struct to `[2 x i64]`,
+ *     placing the first 8 bytes (type/flags/reserved/padding) in the first
+ *     GPR and the data union in the second.
+ *
+ *   - The JIT emits the IR struct {i8,i8,i16,i32,i64} directly, and LLVM's
+ *     ABI lowering passes one register per field (5 registers, not 2).
+ *
+ * Functions where both ends are JIT-emitted agree (both use the IR struct),
+ * but a JIT-to-C call needs explicit coercion. Marking a function via this
+ * call instructs the codegen to wrap it in a thin thunk that bitcasts each
+ * struct argument through memory to `[2 x i64]` and calls the real C symbol
+ * declared with the C ABI. The return value is bitcast back the same way.
+ *
+ * Use this for any function you register with eshkol_repl_register_function
+ * whose body is a separately-compiled C/C++ TU (e.g. an FFI shim).
+ *
+ * @param name The JIT symbol name (matches the `name` argument to
+ *             eshkol_repl_register_function — i.e. the underlying C symbol,
+ *             NOT the user-facing Scheme alias). Calling this with the
+ *             Scheme alias has no effect.
+ */
+void eshkol_repl_register_native_c_function(const char* name);
+
+/*
  * REPL Mode: Register variadic function info
  * @param name Function name
  * @param fixed_params Number of fixed parameters before the rest parameter
@@ -252,6 +283,35 @@ void eshkol_repl_mark_user_variable(const char* name);
  */
 void eshkol_repl_mark_user_function(const char* name);
 
+/*
+ * REPL Mode: Capture the last top-level expression result into a
+ * thread-local slot. Called from JIT-emitted code at the end of each
+ * top-level expression so the REPL host can recover the typed result
+ * without round-tripping through the i32 main return value.
+ *
+ * The slot is owned by the calling thread; the JIT host reads it back via
+ * eshkol_repl_get_last_value() and clears it via
+ * eshkol_repl_clear_last_value().
+ */
+void eshkol_repl_capture_last_value(const eshkol_tagged_value_t* v);
+
+/*
+ * REPL Mode: Read the last captured top-level expression value.
+ * @param out pointer to a tagged_value to fill in
+ * @return true if a value was captured during the most recent evaluation
+ *         and copied into *out; false if no value was captured (caller
+ *         should fall back to the legacy raw-pointer path).
+ */
+bool eshkol_repl_get_last_value(eshkol_tagged_value_t* out);
+
+/*
+ * REPL Mode: Clear the thread-local last-value slot. Should be called by
+ * the host before starting a new evaluation so a parse/codegen failure on
+ * the new input cannot surface a stale value from a previous successful
+ * evaluation.
+ */
+void eshkol_repl_clear_last_value(void);
+
 #else
 
 // Stub implementations when LLVM backend is disabled
@@ -275,6 +335,7 @@ void eshkol_repl_mark_user_function(const char* name);
 #define eshkol_repl_disable() do {} while(0)
 #define eshkol_repl_register_symbol(name, address) do {} while(0)
 #define eshkol_repl_register_function(name, address, arity) do {} while(0)
+#define eshkol_repl_register_native_c_function(name) do {} while(0)
 #define eshkol_repl_register_variadic_function(name, fixed_params, is_variadic) do {} while(0)
 #define eshkol_repl_register_lambda_name(var_name, lambda_name) do {} while(0)
 #define eshkol_repl_register_sexpr(sexpr_name, sexpr_value) do {} while(0)
@@ -282,6 +343,9 @@ void eshkol_repl_mark_user_function(const char* name);
 #define eshkol_repl_is_private_symbol(name) (false)
 #define eshkol_repl_mark_user_variable(name) do {} while(0)
 #define eshkol_repl_mark_user_function(name) do {} while(0)
+#define eshkol_repl_capture_last_value(v) do {} while(0)
+#define eshkol_repl_get_last_value(out) (false)
+#define eshkol_repl_clear_last_value() do {} while(0)
 
 #endif // ESHKOL_LLVM_BACKEND_ENABLED
 
