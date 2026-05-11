@@ -29,23 +29,26 @@ echo "=============================================="
 echo
 
 echo "[1/4] Export weights + dump VM and matrix-forward traces (single run)..."
-# A single weight_matrices invocation runs the 74-test suite once and emits
+# A single weight_matrices invocation runs the verification suite once and emits
 # both per-step traces. This is faster than calling dump_vm_trace.sh and
 # dump_transformer_trace.sh separately (each of which runs the full suite).
 BUILD_DIR="${BUILD_DIR:-$REPO_ROOT/build-paper}"
 bash scripts/paper/export_weights.sh "$OUTPUT_DIR/weights.qlmw"
 
-echo "    running 74-test suite with both trace flags..."
+echo "    running verification suite with both trace flags..."
 ESHKOL_WEIGHTS_OUT="$OUTPUT_DIR/weights.qlmw" \
 "$BUILD_DIR/tools/weight_matrices" \
     --trace-vm "$OUTPUT_DIR/vm-traces.jsonl" \
     --trace-transformer "$OUTPUT_DIR/transformer-traces.jsonl" \
     > "$BUILD_DIR.suite_trace.log" 2>&1
-if ! grep -q "74 passed, 0 failed" "$BUILD_DIR.suite_trace.log"; then
-    echo "    ERROR: 74-test suite did not pass; tail:"
+result_line="$(grep -E "=== Results: [0-9]+ passed, 0 failed ===" "$BUILD_DIR.suite_trace.log" | tail -1 || true)"
+if [[ -z "$result_line" ]]; then
+    echo "    ERROR: verification suite did not pass; tail:"
     tail -20 "$BUILD_DIR.suite_trace.log" | sed 's/^/      /'
     exit 1
 fi
+passed="$(printf '%s\n' "$result_line" | sed -E 's/.*Results: ([0-9]+) passed, 0 failed.*/\1/')"
+echo "    $passed/$passed verification passes with trace flags."
 echo "    vm-traces:          $(wc -l < "$OUTPUT_DIR/vm-traces.jsonl" | tr -d ' ') lines"
 echo "    transformer-traces: $(wc -l < "$OUTPUT_DIR/transformer-traces.jsonl" | tr -d ' ') lines"
 

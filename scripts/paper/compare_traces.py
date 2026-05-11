@@ -24,8 +24,8 @@ Two complementary metrics are emitted:
 
   output_agreeing_programs   — programs where every step that has has_out=true
                                 produces an identical tos value across the two
-                                runners. This is the paper's §4.4 claim of
-                                "74/74 programs agree" (bit-identical outputs).
+                                runners. This is the paper's §4.4
+                                bit-identical-output agreement claim.
 
   fully_agreeing_programs    — programs whose entire per-step state vector is
                                 bit-identical across the two runners. This is a

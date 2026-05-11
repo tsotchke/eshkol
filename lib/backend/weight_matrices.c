@@ -2,7 +2,7 @@
  * @file weight_matrices.c
  * @brief Universal Eshkol VM interpreter compiled into transformer weights.
  *
- * Full ISA implementation (83 opcodes: 64 base + 19 AD, d_model=128).
+ * Full ISA implementation (83 opcodes: 64 base + 19 AD, d_model=256).
  * Opcode numbering matches eshkol_compiler.c canonical enum.
  *
  * Three execution modes verified against each other:
@@ -10,7 +10,7 @@
  *   2. Simulated transformer (C functions mirroring weight computation)
  *   3. Matrix-based forward pass (actual W @ x + b through generic matmul)
  *
- * Architecture: d_model=128, n_heads=16, head_dim=2, n_layers=6, FFN_DIM=1024
+ * Architecture: d_model=256, n_heads=16, head_dim=2, n_layers=6, FFN_DIM=1280
  *   Layer 0: Instruction fetch (Gaussian attention peaked at PC)
  *   Layer 1: Product precompute (SQUARE activation for TOS*SOS + AD backward products)
  *   Layer 2: Preprocessing (gated FFN for address resolution, comparisons, AD cursor load)
@@ -50,12 +50,12 @@
 #include "vm_error.c"
 #include "vm_parameter.c"
 
-#define D 128
+#define D 256
 #define H 16
 #define HD 2
 #define N_LAYERS 6
 #define MEM_SIZE 4
-#define FFN_DIM 1024
+#define FFN_DIM 1280
 /* Temperature for softmax/sigmoid gates.
  *
  * For bit-identical agreement between the matrix forward pass and the
@@ -85,6 +85,10 @@
 #define SCALE 300.0f
 #define AD_MAX_TAPE 8    /* max tape nodes in state vector */
 #define AD_NODE_FIELDS 8 /* fields per tape node */
+#define ARENA_CELLS 16
+#define ARENA_CELL_FIELDS 5
+#define ARENA_KIND_EMPTY 0.0f
+#define ARENA_KIND_PAIR 1.0f
 
 /* Opcodes — canonical numbering from eshkol_compiler.c */
 typedef enum {
@@ -120,7 +124,7 @@ typedef enum {
 
 typedef struct { OpCode op; int operand; } Instr;
 
-/* State vector layout (d_model=32) */
+/* State vector layout (d_model=256) */
 enum {
     /* Permanent state (0-15) — persist across steps */
     S_PC=0, S_TOS=1, S_SOS=2, S_R2=3, S_R3=4, S_DEPTH=5,
@@ -187,7 +191,28 @@ enum {
     S_TYPE_IS_NIL=127,
 
     S_AD_SPARE2=121, S_AD_SPARE3=122, S_AD_SPARE4=123,
-    S_AD_SPARE5=124, S_AD_SPARE6=125, S_AD_SPARE7=126, S_AD_SPARE8=127
+    S_AD_SPARE5=124, S_AD_SPARE6=125, S_AD_SPARE7=126, S_AD_SPARE8=127,
+
+    /* ── Zone E: bounded arena bank (128-207) ──
+     * Cell i stores [kind, car_value, cdr_value, car_type, cdr_type].
+     * Stack values hold small cell indices, not host pointers. */
+    S_ARENA_BASE=128,
+    S_ARENA_NEXT=S_ARENA_BASE + ARENA_CELLS * ARENA_CELL_FIELDS,
+
+    /* Arena operation transients, cleared every cycle. */
+    S_ARENA_WRITE_KIND,
+    S_ARENA_WRITE_CAR,
+    S_ARENA_WRITE_CDR,
+    S_ARENA_READ_CAR,
+    S_ARENA_READ_CDR,
+    S_ARENA_TARGET,
+    S_ARENA_NEW_KIND,
+    S_ARENA_NEW_CAR,
+    S_ARENA_NEW_CDR,
+    S_ARENA_NEW_CAR_TYPE,
+    S_ARENA_NEW_CDR_TYPE,
+    S_ARENA_TRANSIENT_START=S_ARENA_WRITE_KIND,
+    S_ARENA_TRANSIENT_END=S_ARENA_NEW_CDR_TYPE
 };
 
 /* AD tape node field offsets within each 8-field block */
@@ -200,6 +225,15 @@ enum {
 
 /* Access tape node field: state[S_AD_TAPE_BASE + node * AD_NODE_FIELDS + field] */
 #define AD_NODE(s, node, field) ((s)[S_AD_TAPE_BASE + (node) * AD_NODE_FIELDS + (field)])
+
+/* Arena cell field offsets */
+#define ARENA_F_KIND     0
+#define ARENA_F_CAR_VAL  1
+#define ARENA_F_CDR_VAL  2
+#define ARENA_F_CAR_TYPE 3
+#define ARENA_F_CDR_TYPE 4
+#define ARENA_DIM(cell, field) (S_ARENA_BASE + (cell) * ARENA_CELL_FIELDS + (field))
+#define ARENA_FIELD(s, cell, field) ((s)[ARENA_DIM((cell), (field))])
 
 /* AD operation type encodings (stored in AD_F_OP field) */
 #define AD_OP_CONST    0.0f
@@ -319,10 +353,12 @@ static void execute_step(const State* cur, const Instr* prog, int n_instr, State
     memcpy(next, cur, sizeof(State));
     next->s[S_OUTPUT] = -1.0f;
     next->s[S_HAS_OUT] = 0;
-    /* Clear intermediates: Zone A (16-31), Zone B cursor (39-47), Zone D (112-127) */
+    /* Clear intermediates: Zone A (16-31), Zone B cursor (39-47),
+     * Zone D (112-127), and arena op transients. */
     for (int i = S_OPCODE; i <= S_ABS_DELTA; i++) next->s[i] = 0;
     for (int i = S_AD_CUR_OP; i <= S_AD_RIGHT_VALUE; i++) next->s[i] = 0;
     for (int i = S_AD_IS_FORWARD; i <= S_AD_SPARE8; i++) next->s[i] = 0;
+    for (int i = S_ARENA_TRANSIENT_START; i <= S_ARENA_TRANSIENT_END; i++) next->s[i] = 0;
 
     int pc = (int)cur->s[S_PC];
     if (pc < 0 || pc >= n_instr || cur->s[S_HALT] > 0.5f) { next->s[S_HALT] = 1; return; }
@@ -428,6 +464,66 @@ static void execute_step(const State* cur, const Instr* prog, int n_instr, State
         next->s[S_TYPE_TOS]=tt_sos; next->s[S_TYPE_SOS]=tt_r2; next->s[S_TYPE_R2]=tt_r3; next->s[S_TYPE_R3]=TYPE_NUMBER;
         break;
     case OP_HALT:   next->s[S_HALT]=1; break;
+
+    /* Stage-2 arena-backed pair ops. The transformer VM stores cons cells
+     * in a bounded bump arena inside the state vector; stack values are
+     * arena cell indices, not host pointers. */
+    case OP_CONS: {
+        int cell = (int)cur->s[S_ARENA_NEXT];
+        if (cell < 0 || cell >= ARENA_CELLS) { next->s[S_HALT]=1; break; }
+        ARENA_FIELD(next->s, cell, ARENA_F_KIND) = ARENA_KIND_PAIR;
+        ARENA_FIELD(next->s, cell, ARENA_F_CAR_VAL) = sos;
+        ARENA_FIELD(next->s, cell, ARENA_F_CDR_VAL) = tos;
+        ARENA_FIELD(next->s, cell, ARENA_F_CAR_TYPE) = tt_sos;
+        ARENA_FIELD(next->s, cell, ARENA_F_CDR_TYPE) = tt_tos;
+        next->s[S_ARENA_NEXT] = (float)(cell + 1);
+        next->s[S_TOS]=(float)cell; next->s[S_SOS]=r2; next->s[S_R2]=r3; next->s[S_R3]=0;
+        next->s[S_DEPTH]=cur->s[S_DEPTH]-1; next->s[S_PC]=pc+1;
+        next->s[S_TYPE_TOS]=TYPE_PAIR; next->s[S_TYPE_SOS]=tt_r2; next->s[S_TYPE_R2]=tt_r3; next->s[S_TYPE_R3]=TYPE_NUMBER;
+        break;
+    }
+    case OP_CAR: {
+        int cell = (int)tos;
+        next->s[S_TOS]=0; next->s[S_TYPE_TOS]=TYPE_NUMBER;
+        if (cell >= 0 && cell < ARENA_CELLS) {
+            next->s[S_TOS]=ARENA_FIELD(cur->s, cell, ARENA_F_CAR_VAL);
+            next->s[S_TYPE_TOS]=ARENA_FIELD(cur->s, cell, ARENA_F_CAR_TYPE);
+        }
+        next->s[S_PC]=pc+1;
+        break;
+    }
+    case OP_CDR: {
+        int cell = (int)tos;
+        next->s[S_TOS]=0; next->s[S_TYPE_TOS]=TYPE_NUMBER;
+        if (cell >= 0 && cell < ARENA_CELLS) {
+            next->s[S_TOS]=ARENA_FIELD(cur->s, cell, ARENA_F_CDR_VAL);
+            next->s[S_TYPE_TOS]=ARENA_FIELD(cur->s, cell, ARENA_F_CDR_TYPE);
+        }
+        next->s[S_PC]=pc+1;
+        break;
+    }
+    case OP_SET_CAR: {
+        int cell = (int)sos;
+        if (cell >= 0 && cell < ARENA_CELLS) {
+            ARENA_FIELD(next->s, cell, ARENA_F_CAR_VAL) = tos;
+            ARENA_FIELD(next->s, cell, ARENA_F_CAR_TYPE) = tt_tos;
+        }
+        next->s[S_TOS]=r2; next->s[S_SOS]=r3; next->s[S_R2]=0; next->s[S_R3]=0;
+        next->s[S_DEPTH]=cur->s[S_DEPTH]-2; next->s[S_PC]=pc+1;
+        next->s[S_TYPE_TOS]=tt_r2; next->s[S_TYPE_SOS]=tt_r3; next->s[S_TYPE_R2]=TYPE_NUMBER; next->s[S_TYPE_R3]=TYPE_NUMBER;
+        break;
+    }
+    case OP_SET_CDR: {
+        int cell = (int)sos;
+        if (cell >= 0 && cell < ARENA_CELLS) {
+            ARENA_FIELD(next->s, cell, ARENA_F_CDR_VAL) = tos;
+            ARENA_FIELD(next->s, cell, ARENA_F_CDR_TYPE) = tt_tos;
+        }
+        next->s[S_TOS]=r2; next->s[S_SOS]=r3; next->s[S_R2]=0; next->s[S_R3]=0;
+        next->s[S_DEPTH]=cur->s[S_DEPTH]-2; next->s[S_PC]=pc+1;
+        next->s[S_TYPE_TOS]=tt_r2; next->s[S_TYPE_SOS]=tt_r3; next->s[S_TYPE_R2]=TYPE_NUMBER; next->s[S_TYPE_R3]=TYPE_NUMBER;
+        break;
+    }
 
     /* Stage-1 VM-as-transformer memory ops: directly encodable predicates
      * and stack cleanup. These used to set IS_NATIVE and round-trip through
@@ -597,12 +693,10 @@ static void execute_step(const State* cur, const Instr* prog, int n_instr, State
         next->s[S_IS_NATIVE]=1; next->s[S_PC]=pc+1; break;
 
     /* All remaining opcodes delegate to exec loop via IS_NATIVE */
-    case OP_CONS: case OP_CAR: case OP_CDR:
     case OP_NATIVE_CALL: case OP_TAIL_CALL:
     case OP_CLOSURE: case OP_GET_UPVALUE: case OP_SET_UPVALUE: case OP_CLOSE_UPVALUE:
     case OP_VEC_CREATE: case OP_VEC_REF: case OP_VEC_SET: case OP_VEC_LEN:
     case OP_STR_REF: case OP_STR_LEN:
-    case OP_SET_CAR: case OP_SET_CDR:
     case OP_OPEN_CLOSURE: case OP_CALLCC: case OP_INVOKE_CC:
     case OP_PUSH_HANDLER: case OP_POP_HANDLER: case OP_GET_EXN:
     case OP_PACK_REST: case OP_WIND_PUSH: case OP_WIND_POP:
@@ -909,13 +1003,15 @@ static void layer3_ffn(const float x[D], float out[D]) {
     out[S_OUTPUT] = -1.0f - x[S_OUTPUT];
     out[S_HAS_OUT] = -x[S_HAS_OUT];
     /* Universal: clear intermediate dims
-     * Zone A transient (16-31) and Zone D transient (112-127) cleared here.
+     * Zone A transient (16-31), Zone D transient (112-127), and arena op
+     * transients are cleared here.
      * EXCEPT S_AD_IS_BACKWARD (113) — must persist through Layers 4 and 5
      * which need it for parent load and gradient write-back gating. */
     for (int i = S_OPCODE; i <= S_ABS_DELTA; i++) out[i] += -x[i];
     out[S_AD_IS_FORWARD] += -x[S_AD_IS_FORWARD]; /* clear 112 */
     /* S_AD_IS_BACKWARD (113) intentionally NOT cleared */
     for (int i = S_AD_GRAD_ACCUM; i <= S_AD_SPARE8; i++) out[i] += -x[i];
+    for (int i = S_ARENA_TRANSIENT_START; i <= S_ARENA_TRANSIENT_END; i++) out[i] += -x[i];
 
     float g;
     /* OP_NOP (0) */  g=indicator(op,0)*alive; out[S_PC]+=g;
@@ -970,12 +1066,27 @@ static void layer3_ffn(const float x[D], float out[D]) {
         out[S_TOS]+=g*(sos-tos); out[S_SOS]+=g*(r2-sos); out[S_R2]+=g*(r3-r2); out[S_R3]+=g*(-r3); out[S_DEPTH]+=g*(-1);
         out[S_TYPE_TOS]+=g*(tsos-ttos); out[S_TYPE_SOS]+=g*(tr2-tsos); out[S_TYPE_R2]+=g*(tr3-tr2); out[S_TYPE_R3]+=g*(TYPE_NUMBER-tr3);
     }
-    /* OP_CONS (31): delegate to exec loop */
-    g=indicator(op,31)*alive; out[S_PC]+=g; out[S_IS_NATIVE]+=g;
-    /* OP_CAR (32): delegate to exec loop */
-    g=indicator(op,32)*alive; out[S_PC]+=g; out[S_IS_NATIVE]+=g;
-    /* OP_CDR (33): delegate to exec loop */
-    g=indicator(op,33)*alive; out[S_PC]+=g; out[S_IS_NATIVE]+=g;
+    /* OP_CONS (31): allocate pair in bounded arena. TOS=cdr, SOS=car. */
+    g=indicator(op,31)*alive; {
+        float cell = x[S_ARENA_NEXT];
+        out[S_PC]+=g;
+        out[S_TOS]+=g*(cell-tos); out[S_SOS]+=g*(r2-sos); out[S_R2]+=g*(r3-r2); out[S_R3]+=g*(-r3); out[S_DEPTH]+=g*(-1);
+        out[S_TYPE_TOS]+=g*(TYPE_PAIR-ttos); out[S_TYPE_SOS]+=g*(tr2-tsos); out[S_TYPE_R2]+=g*(tr3-tr2); out[S_TYPE_R3]+=g*(TYPE_NUMBER-tr3);
+        out[S_ARENA_WRITE_KIND]+=g; out[S_ARENA_WRITE_CAR]+=g; out[S_ARENA_WRITE_CDR]+=g;
+        out[S_ARENA_TARGET]+=g*cell;
+        out[S_ARENA_NEW_KIND]+=g*ARENA_KIND_PAIR;
+        out[S_ARENA_NEW_CAR]+=g*sos; out[S_ARENA_NEW_CDR]+=g*tos;
+        out[S_ARENA_NEW_CAR_TYPE]+=g*tsos; out[S_ARENA_NEW_CDR_TYPE]+=g*ttos;
+        out[S_ARENA_NEXT]+=g;
+    }
+    /* OP_CAR (32): default to 0, then layer4 overwrites from arena[target].car. */
+    g=indicator(op,32)*alive;
+    out[S_PC]+=g; out[S_TOS]+=g*(-tos); out[S_TYPE_TOS]+=g*(TYPE_NUMBER-ttos);
+    out[S_ARENA_READ_CAR]+=g; out[S_ARENA_TARGET]+=g*tos;
+    /* OP_CDR (33): default to 0, then layer4 overwrites from arena[target].cdr. */
+    g=indicator(op,33)*alive;
+    out[S_PC]+=g; out[S_TOS]+=g*(-tos); out[S_TYPE_TOS]+=g*(TYPE_NUMBER-ttos);
+    out[S_ARENA_READ_CDR]+=g; out[S_ARENA_TARGET]+=g*tos;
     /* OP_NULL_P (34): weight-encoded nil predicate */
     g=indicator(op,34)*alive; out[S_PC]+=g; out[S_TOS]+=g*(x[S_TYPE_IS_NIL]-tos); out[S_TYPE_TOS]+=g*(TYPE_BOOL-ttos);
     /* OP_GET_UPVALUE (22): delegate */
@@ -996,6 +1107,19 @@ static void layer3_ffn(const float x[D], float out[D]) {
     g=indicator(op,49)*alive; out[S_PC]+=g; out[S_TOS]+=g*(x[S_TYPE_IS_PROC]-tos); out[S_TYPE_TOS]+=g*(TYPE_BOOL-ttos);
     g=indicator(op,50)*alive; out[S_PC]+=g; out[S_TOS]+=g*(x[S_TYPE_IS_VEC]-tos);  out[S_TYPE_TOS]+=g*(TYPE_BOOL-ttos);
 
+    /* OP_SET_CAR (51): mutate arena pair car, then pop pair+value. */
+    g=indicator(op,51)*alive;
+    out[S_PC]+=g; out[S_TOS]+=g*(r2-tos); out[S_SOS]+=g*(r3-sos); out[S_R2]+=g*(-r2); out[S_R3]+=g*(-r3); out[S_DEPTH]+=g*(-2);
+    out[S_TYPE_TOS]+=g*(tr2-ttos); out[S_TYPE_SOS]+=g*(tr3-tsos); out[S_TYPE_R2]+=g*(TYPE_NUMBER-tr2); out[S_TYPE_R3]+=g*(TYPE_NUMBER-tr3);
+    out[S_ARENA_WRITE_CAR]+=g; out[S_ARENA_TARGET]+=g*sos;
+    out[S_ARENA_NEW_CAR]+=g*tos; out[S_ARENA_NEW_CAR_TYPE]+=g*ttos;
+    /* OP_SET_CDR (52): mutate arena pair cdr, then pop pair+value. */
+    g=indicator(op,52)*alive;
+    out[S_PC]+=g; out[S_TOS]+=g*(r2-tos); out[S_SOS]+=g*(r3-sos); out[S_R2]+=g*(-r2); out[S_R3]+=g*(-r3); out[S_DEPTH]+=g*(-2);
+    out[S_TYPE_TOS]+=g*(tr2-ttos); out[S_TYPE_SOS]+=g*(tr3-tsos); out[S_TYPE_R2]+=g*(TYPE_NUMBER-tr2); out[S_TYPE_R3]+=g*(TYPE_NUMBER-tr3);
+    out[S_ARENA_WRITE_CDR]+=g; out[S_ARENA_TARGET]+=g*sos;
+    out[S_ARENA_NEW_CDR]+=g*tos; out[S_ARENA_NEW_CDR_TYPE]+=g*ttos;
+
     /* OP_POPN (53): weight-encoded for current compiler emissions n <= 3.
      * It removes N values below TOS while keeping TOS itself. */
     g=indicator(op,53)*alive; out[S_PC]+=g;
@@ -1011,7 +1135,7 @@ static void layer3_ffn(const float x[D], float out[D]) {
 
     /* Remaining delegated opcodes (38-62): all set IS_NATIVE + PC++ */
     for (int opc = 38; opc <= 62; opc++) {
-        if ((opc >= 45 && opc <= 50) || opc == 53) continue;
+        if ((opc >= 45 && opc <= 50) || opc == 51 || opc == 52 || opc == 53) continue;
         g=indicator(op,(float)opc)*alive; out[S_PC]+=g; out[S_IS_NATIVE]+=g;
     }
     /* OP_CALL (25): set IS_CALL flag for exec loop, PC++ */
@@ -1323,6 +1447,35 @@ static void layer4_ffn(float x[D], float out[D]) {
             out[S_AD_LEFT_VALUE]  += li * x[S_AD_TAPE_BASE + i * AD_NODE_FIELDS + AD_F_VALUE];
             out[S_AD_RIGHT_VALUE] += ri * x[S_AD_TAPE_BASE + i * AD_NODE_FIELDS + AD_F_VALUE];
         }
+    }
+
+    /* ── Arena pair read/write ──
+     * Layer 3 computes the target cell and operation flags; Layer 4 performs
+     * the actual bounded random access against the in-state arena bank. */
+    float target = x[S_ARENA_TARGET];
+    float wk = x[S_ARENA_WRITE_KIND];
+    float wc = x[S_ARENA_WRITE_CAR];
+    float wd = x[S_ARENA_WRITE_CDR];
+    float rc = x[S_ARENA_READ_CAR];
+    float rd = x[S_ARENA_READ_CDR];
+    for (int cell = 0; cell < ARENA_CELLS; cell++) {
+        float ti = indicator(target, (float)cell);
+        int kind_dim = ARENA_DIM(cell, ARENA_F_KIND);
+        int car_dim = ARENA_DIM(cell, ARENA_F_CAR_VAL);
+        int cdr_dim = ARENA_DIM(cell, ARENA_F_CDR_VAL);
+        int car_type_dim = ARENA_DIM(cell, ARENA_F_CAR_TYPE);
+        int cdr_type_dim = ARENA_DIM(cell, ARENA_F_CDR_TYPE);
+
+        out[kind_dim] += ti * wk * (x[S_ARENA_NEW_KIND] - x[kind_dim]);
+        out[car_dim] += ti * wc * (x[S_ARENA_NEW_CAR] - x[car_dim]);
+        out[car_type_dim] += ti * wc * (x[S_ARENA_NEW_CAR_TYPE] - x[car_type_dim]);
+        out[cdr_dim] += ti * wd * (x[S_ARENA_NEW_CDR] - x[cdr_dim]);
+        out[cdr_type_dim] += ti * wd * (x[S_ARENA_NEW_CDR_TYPE] - x[cdr_type_dim]);
+
+        out[S_TOS] += ti * rc * (x[car_dim] - x[S_TOS]);
+        out[S_TYPE_TOS] += ti * rc * (x[car_type_dim] - x[S_TYPE_TOS]);
+        out[S_TOS] += ti * rd * (x[cdr_dim] - x[S_TOS]);
+        out[S_TYPE_TOS] += ti * rd * (x[cdr_type_dim] - x[S_TYPE_TOS]);
     }
 }
 
@@ -2007,6 +2160,7 @@ static int run_simulated(const Instr* prog, int n_instr, float* outputs, int max
         x[S_AD_IS_FORWARD] = 0; /* 112 */
         /* Skip S_AD_IS_BACKWARD (113) — must persist for backward check */
         for (int i = S_AD_GRAD_ACCUM; i <= S_AD_SPARE8; i++) x[i] = 0;
+        for (int i = S_ARENA_TRANSIENT_START; i <= S_ARENA_TRANSIENT_END; i++) x[i] = 0;
 
         if (x[S_AD_IS_BACKWARD] > 0.5f) {
             /* Backward: simulated layer functions mirroring backward_with_weights.
@@ -2230,6 +2384,33 @@ static int add_gated_pair_op_operand(InterpreterWeights* w, int L, int n,
     return n + 2;
 }
 
+/* Gate on arena operation flag AND arena target cell.
+ * When flag_dim is 1, the pair difference is indicator(A_TARGET == cell);
+ * when flag_dim is 0, the large negative flag bias keeps both neurons closed
+ * for all bounded arena targets. */
+static int add_arena_target_pair(InterpreterWeights* w, int L, int n,
+                                 int flag_dim, int cell,
+                                 int ud1, float us1, int ud2, float us2,
+                                 int ud3, float us3, int ud4, float us4,
+                                 float ubias,
+                                 int out_dim, float coeff) {
+    const float flag_scale = 100.0f;
+    for (int sign = 0; sign < 2; sign++) {
+        int j = n + sign;
+        float s = (sign == 0) ? 0.5f : -0.5f;
+        W(w->ff_gate[L], S_ARENA_TARGET, j, FFN_DIM) += SCALE;
+        W(w->ff_gate[L], flag_dim, j, FFN_DIM) += flag_scale * SCALE;
+        w->ff_gate_b[L][j] = SCALE * (-(float)cell + s) - flag_scale * SCALE;
+        if (ud1 >= 0) W(w->ff_up[L], ud1, j, FFN_DIM) += us1;
+        if (ud2 >= 0) W(w->ff_up[L], ud2, j, FFN_DIM) += us2;
+        if (ud3 >= 0) W(w->ff_up[L], ud3, j, FFN_DIM) += us3;
+        if (ud4 >= 0) W(w->ff_up[L], ud4, j, FFN_DIM) += us4;
+        w->ff_up_b[L][j] = ubias;
+        W(w->ff_down[L], j, out_dim, D) += (sign == 0) ? coeff : -coeff;
+    }
+    return n + 2;
+}
+
 static int add_type_push(InterpreterWeights* w, int L, int n,
                          int op_id, float pushed_type) {
     n = add_gated_pair(w, L, n, op_id, S_TYPE_TOS,-1,-1,0,-1,0,-1,0,
@@ -2273,6 +2454,18 @@ static int add_type_binary_result(InterpreterWeights* w, int L, int n,
                        0, S_TYPE_SOS, 1.0f);
     n = add_gated_pair(w, L, n, op_id, S_TYPE_R3,1,S_TYPE_R2,-1,-1,0,-1,0,
                        0, S_TYPE_R2, 1.0f);
+    n = add_gated_pair(w, L, n, op_id, S_TYPE_R3,-1,-1,0,-1,0,-1,0,
+                       TYPE_NUMBER, S_TYPE_R3, 1.0f);
+    return n;
+}
+
+static int add_type_pop2(InterpreterWeights* w, int L, int n, int op_id) {
+    n = add_gated_pair(w, L, n, op_id, S_TYPE_R2,1,S_TYPE_TOS,-1,-1,0,-1,0,
+                       0, S_TYPE_TOS, 1.0f);
+    n = add_gated_pair(w, L, n, op_id, S_TYPE_R3,1,S_TYPE_SOS,-1,-1,0,-1,0,
+                       0, S_TYPE_SOS, 1.0f);
+    n = add_gated_pair(w, L, n, op_id, S_TYPE_R2,-1,-1,0,-1,0,-1,0,
+                       TYPE_NUMBER, S_TYPE_R2, 1.0f);
     n = add_gated_pair(w, L, n, op_id, S_TYPE_R3,-1,-1,0,-1,0,-1,0,
                        TYPE_NUMBER, S_TYPE_R3, 1.0f);
     return n;
@@ -2563,13 +2756,16 @@ static void generate_weights(InterpreterWeights* w) {
         n = add_unconditional(w, L, n, S_OUTPUT, -1.0f, -1.0f, S_OUTPUT, 1.0f);
         /* Universal: clear HAS_OUT */
         n = add_unconditional(w, L, n, S_HAS_OUT, -1.0f, 0, S_HAS_OUT, 1.0f);
-        /* Universal: clear intermediate dims (Zone A: 16-31, Zone D: 112-127)
+        /* Universal: clear intermediate dims (Zone A: 16-31, Zone D: 112-127,
+         * arena op transients)
          * Skip S_AD_IS_BACKWARD (113) — must persist through L4/L5 for backward gating */
         for (int d = S_OPCODE; d <= S_ABS_DELTA; d++)
             n = add_unconditional(w, L, n, d, -1.0f, 0, d, 1.0f);
         n = add_unconditional(w, L, n, S_AD_IS_FORWARD, -1.0f, 0, S_AD_IS_FORWARD, 1.0f);
         /* S_AD_IS_BACKWARD (113) intentionally NOT cleared */
         for (int d = S_AD_GRAD_ACCUM; d <= S_AD_SPARE8; d++)
+            n = add_unconditional(w, L, n, d, -1.0f, 0, d, 1.0f);
+        for (int d = S_ARENA_TRANSIENT_START; d <= S_ARENA_TRANSIENT_END; d++)
             n = add_unconditional(w, L, n, d, -1.0f, 0, d, 1.0f);
 
         /* OP_NOP (0): PC += 1 */
@@ -2800,15 +2996,39 @@ static void generate_weights(InterpreterWeights* w) {
         n = add_gated_pair(w,L,n, 25, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
         n = add_gated_pair(w,L,n, 25, -1,0,-1,0,-1,0,-1,0, 1.0f, S_IS_CALL, 1.0f);
 
-        /* OP_CONS (31): IS_NATIVE, PC++ */
+        /* Stage-2 arena pair ops (31-33): weight-encoded against bounded arena. */
         n = add_gated_pair(w,L,n, 31, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
-        n = add_gated_pair(w,L,n, 31, -1,0,-1,0,-1,0,-1,0, 1.0f, S_IS_NATIVE, 1.0f);
-        /* OP_CAR (32): IS_NATIVE, PC++ */
+        n = add_gated_pair(w,L,n, 31, S_ARENA_NEXT,1,S_TOS,-1,-1,0,-1,0, 0, S_TOS, 1.0f);
+        n = add_gated_pair(w,L,n, 31, S_R2,1,S_SOS,-1,-1,0,-1,0, 0, S_SOS, 1.0f);
+        n = add_gated_pair(w,L,n, 31, S_R3,1,S_R2,-1,-1,0,-1,0, 0, S_R2, 1.0f);
+        n = add_gated_pair(w,L,n, 31, S_R3,-1,-1,0,-1,0,-1,0, 0, S_R3, 1.0f);
+        n = add_gated_pair(w,L,n, 31, -1,0,-1,0,-1,0,-1,0, -1.0f, S_DEPTH, 1.0f);
+        n = add_gated_pair(w,L,n, 31, S_TYPE_TOS,-1,-1,0,-1,0,-1,0, TYPE_PAIR, S_TYPE_TOS, 1.0f);
+        n = add_gated_pair(w,L,n, 31, S_TYPE_R2,1,S_TYPE_SOS,-1,-1,0,-1,0, 0, S_TYPE_SOS, 1.0f);
+        n = add_gated_pair(w,L,n, 31, S_TYPE_R3,1,S_TYPE_R2,-1,-1,0,-1,0, 0, S_TYPE_R2, 1.0f);
+        n = add_gated_pair(w,L,n, 31, S_TYPE_R3,-1,-1,0,-1,0,-1,0, TYPE_NUMBER, S_TYPE_R3, 1.0f);
+        n = add_gated_pair(w,L,n, 31, -1,0,-1,0,-1,0,-1,0, 1.0f, S_ARENA_WRITE_KIND, 1.0f);
+        n = add_gated_pair(w,L,n, 31, -1,0,-1,0,-1,0,-1,0, 1.0f, S_ARENA_WRITE_CAR, 1.0f);
+        n = add_gated_pair(w,L,n, 31, -1,0,-1,0,-1,0,-1,0, 1.0f, S_ARENA_WRITE_CDR, 1.0f);
+        n = add_gated_pair(w,L,n, 31, S_ARENA_NEXT,1,-1,0,-1,0,-1,0, 0, S_ARENA_TARGET, 1.0f);
+        n = add_gated_pair(w,L,n, 31, -1,0,-1,0,-1,0,-1,0, ARENA_KIND_PAIR, S_ARENA_NEW_KIND, 1.0f);
+        n = add_gated_pair(w,L,n, 31, S_SOS,1,-1,0,-1,0,-1,0, 0, S_ARENA_NEW_CAR, 1.0f);
+        n = add_gated_pair(w,L,n, 31, S_TOS,1,-1,0,-1,0,-1,0, 0, S_ARENA_NEW_CDR, 1.0f);
+        n = add_gated_pair(w,L,n, 31, S_TYPE_SOS,1,-1,0,-1,0,-1,0, 0, S_ARENA_NEW_CAR_TYPE, 1.0f);
+        n = add_gated_pair(w,L,n, 31, S_TYPE_TOS,1,-1,0,-1,0,-1,0, 0, S_ARENA_NEW_CDR_TYPE, 1.0f);
+        n = add_gated_pair(w,L,n, 31, -1,0,-1,0,-1,0,-1,0, 1.0f, S_ARENA_NEXT, 1.0f);
+
         n = add_gated_pair(w,L,n, 32, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
-        n = add_gated_pair(w,L,n, 32, -1,0,-1,0,-1,0,-1,0, 1.0f, S_IS_NATIVE, 1.0f);
-        /* OP_CDR (33): IS_NATIVE, PC++ */
+        n = add_gated_pair(w,L,n, 32, S_TOS,-1,-1,0,-1,0,-1,0, 0, S_TOS, 1.0f);
+        n = add_type_unary_result(w,L,n, 32, TYPE_NUMBER);
+        n = add_gated_pair(w,L,n, 32, -1,0,-1,0,-1,0,-1,0, 1.0f, S_ARENA_READ_CAR, 1.0f);
+        n = add_gated_pair(w,L,n, 32, S_TOS,1,-1,0,-1,0,-1,0, 0, S_ARENA_TARGET, 1.0f);
+
         n = add_gated_pair(w,L,n, 33, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
-        n = add_gated_pair(w,L,n, 33, -1,0,-1,0,-1,0,-1,0, 1.0f, S_IS_NATIVE, 1.0f);
+        n = add_gated_pair(w,L,n, 33, S_TOS,-1,-1,0,-1,0,-1,0, 0, S_TOS, 1.0f);
+        n = add_type_unary_result(w,L,n, 33, TYPE_NUMBER);
+        n = add_gated_pair(w,L,n, 33, -1,0,-1,0,-1,0,-1,0, 1.0f, S_ARENA_READ_CDR, 1.0f);
+        n = add_gated_pair(w,L,n, 33, S_TOS,1,-1,0,-1,0,-1,0, 0, S_ARENA_TARGET, 1.0f);
         /* OP_NULL_P (34): weight-encoded nil predicate */
         n = add_gated_pair(w,L,n, 34, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
         n = add_gated_pair(w,L,n, 34, S_TYPE_IS_NIL,1,S_TOS,-1,-1,0,-1,0, 0, S_TOS, 1.0f);
@@ -2849,6 +3069,31 @@ static void generate_weights(InterpreterWeights* w) {
         n = add_gated_pair(w,L,n, 50, S_TYPE_IS_VEC,1,S_TOS,-1,-1,0,-1,0, 0, S_TOS, 1.0f);
         n = add_type_unary_result(w,L,n, 50, TYPE_BOOL);
 
+        /* SET_CAR/SET_CDR write through Layer 4, then pop pair+value. */
+        n = add_gated_pair(w,L,n, 51, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
+        n = add_gated_pair(w,L,n, 51, S_R2,1,S_TOS,-1,-1,0,-1,0, 0, S_TOS, 1.0f);
+        n = add_gated_pair(w,L,n, 51, S_R3,1,S_SOS,-1,-1,0,-1,0, 0, S_SOS, 1.0f);
+        n = add_gated_pair(w,L,n, 51, S_R2,-1,-1,0,-1,0,-1,0, 0, S_R2, 1.0f);
+        n = add_gated_pair(w,L,n, 51, S_R3,-1,-1,0,-1,0,-1,0, 0, S_R3, 1.0f);
+        n = add_gated_pair(w,L,n, 51, -1,0,-1,0,-1,0,-1,0, -2.0f, S_DEPTH, 1.0f);
+        n = add_type_pop2(w,L,n, 51);
+        n = add_gated_pair(w,L,n, 51, -1,0,-1,0,-1,0,-1,0, 1.0f, S_ARENA_WRITE_CAR, 1.0f);
+        n = add_gated_pair(w,L,n, 51, S_SOS,1,-1,0,-1,0,-1,0, 0, S_ARENA_TARGET, 1.0f);
+        n = add_gated_pair(w,L,n, 51, S_TOS,1,-1,0,-1,0,-1,0, 0, S_ARENA_NEW_CAR, 1.0f);
+        n = add_gated_pair(w,L,n, 51, S_TYPE_TOS,1,-1,0,-1,0,-1,0, 0, S_ARENA_NEW_CAR_TYPE, 1.0f);
+
+        n = add_gated_pair(w,L,n, 52, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
+        n = add_gated_pair(w,L,n, 52, S_R2,1,S_TOS,-1,-1,0,-1,0, 0, S_TOS, 1.0f);
+        n = add_gated_pair(w,L,n, 52, S_R3,1,S_SOS,-1,-1,0,-1,0, 0, S_SOS, 1.0f);
+        n = add_gated_pair(w,L,n, 52, S_R2,-1,-1,0,-1,0,-1,0, 0, S_R2, 1.0f);
+        n = add_gated_pair(w,L,n, 52, S_R3,-1,-1,0,-1,0,-1,0, 0, S_R3, 1.0f);
+        n = add_gated_pair(w,L,n, 52, -1,0,-1,0,-1,0,-1,0, -2.0f, S_DEPTH, 1.0f);
+        n = add_type_pop2(w,L,n, 52);
+        n = add_gated_pair(w,L,n, 52, -1,0,-1,0,-1,0,-1,0, 1.0f, S_ARENA_WRITE_CDR, 1.0f);
+        n = add_gated_pair(w,L,n, 52, S_SOS,1,-1,0,-1,0,-1,0, 0, S_ARENA_TARGET, 1.0f);
+        n = add_gated_pair(w,L,n, 52, S_TOS,1,-1,0,-1,0,-1,0, 0, S_ARENA_NEW_CDR, 1.0f);
+        n = add_gated_pair(w,L,n, 52, S_TYPE_TOS,1,-1,0,-1,0,-1,0, 0, S_ARENA_NEW_CDR_TYPE, 1.0f);
+
         /* OP_POPN (53): remove N values below TOS while preserving TOS itself.
          * The current compiler emits only N <= 3, matching the four-register
          * stack cache that the weight interpreter models directly. */
@@ -2879,7 +3124,7 @@ static void generate_weights(InterpreterWeights* w) {
 
         /* Remaining delegated opcodes (38-62): all IS_NATIVE + PC++ */
         for (int opc = 38; opc <= 62; opc++) {
-            if ((opc >= 45 && opc <= 50) || opc == 53) continue;
+            if ((opc >= 45 && opc <= 50) || opc == 51 || opc == 52 || opc == 53) continue;
             n = add_gated_pair(w,L,n, opc, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
             n = add_gated_pair(w,L,n, opc, -1,0,-1,0,-1,0,-1,0, 1.0f, S_IS_NATIVE, 1.0f);
         }
@@ -3255,6 +3500,44 @@ static void generate_weights(InterpreterWeights* w) {
             n++;
         }
 
+        /* ── Arena pair bank: bounded read/write by target cell ── */
+        for (int cell = 0; cell < ARENA_CELLS; cell++) {
+            int kind_dim = ARENA_DIM(cell, ARENA_F_KIND);
+            int car_dim = ARENA_DIM(cell, ARENA_F_CAR_VAL);
+            int cdr_dim = ARENA_DIM(cell, ARENA_F_CDR_VAL);
+            int car_type_dim = ARENA_DIM(cell, ARENA_F_CAR_TYPE);
+            int cdr_type_dim = ARENA_DIM(cell, ARENA_F_CDR_TYPE);
+
+            n = add_arena_target_pair(w,L,n, S_ARENA_WRITE_KIND, cell,
+                                      S_ARENA_NEW_KIND,1,kind_dim,-1,-1,0,-1,0,
+                                      0, kind_dim, 1.0f);
+            n = add_arena_target_pair(w,L,n, S_ARENA_WRITE_CAR, cell,
+                                      S_ARENA_NEW_CAR,1,car_dim,-1,-1,0,-1,0,
+                                      0, car_dim, 1.0f);
+            n = add_arena_target_pair(w,L,n, S_ARENA_WRITE_CAR, cell,
+                                      S_ARENA_NEW_CAR_TYPE,1,car_type_dim,-1,-1,0,-1,0,
+                                      0, car_type_dim, 1.0f);
+            n = add_arena_target_pair(w,L,n, S_ARENA_WRITE_CDR, cell,
+                                      S_ARENA_NEW_CDR,1,cdr_dim,-1,-1,0,-1,0,
+                                      0, cdr_dim, 1.0f);
+            n = add_arena_target_pair(w,L,n, S_ARENA_WRITE_CDR, cell,
+                                      S_ARENA_NEW_CDR_TYPE,1,cdr_type_dim,-1,-1,0,-1,0,
+                                      0, cdr_type_dim, 1.0f);
+
+            n = add_arena_target_pair(w,L,n, S_ARENA_READ_CAR, cell,
+                                      car_dim,1,S_TOS,-1,-1,0,-1,0,
+                                      0, S_TOS, 1.0f);
+            n = add_arena_target_pair(w,L,n, S_ARENA_READ_CAR, cell,
+                                      car_type_dim,1,S_TYPE_TOS,-1,-1,0,-1,0,
+                                      0, S_TYPE_TOS, 1.0f);
+            n = add_arena_target_pair(w,L,n, S_ARENA_READ_CDR, cell,
+                                      cdr_dim,1,S_TOS,-1,-1,0,-1,0,
+                                      0, S_TOS, 1.0f);
+            n = add_arena_target_pair(w,L,n, S_ARENA_READ_CDR, cell,
+                                      cdr_type_dim,1,S_TYPE_TOS,-1,-1,0,-1,0,
+                                      0, S_TYPE_TOS, 1.0f);
+        }
+
         printf("[WEIGHT_GEN] Layer 4: %d neurons used out of %d\n", n, FFN_DIM);
     }
 
@@ -3498,6 +3781,7 @@ static int run_with_weights(const InterpreterWeights* w,
         state[S_AD_IS_FORWARD] = 0;
         /* Keep S_AD_IS_BACKWARD */
         for (int i = S_AD_GRAD_ACCUM; i <= S_AD_SPARE8; i++) state[i] = 0;
+        for (int i = S_ARENA_TRANSIENT_START; i <= S_ARENA_TRANSIENT_END; i++) state[i] = 0;
 
         float next[D];
         int is_native_pre = 0;
@@ -3844,6 +4128,9 @@ int main(int argc, char** argv) {
     /* (cdr (cons 3 4)) → 4 */
     { Instr p[]={{OP_CONST,3},{OP_CONST,4},{OP_CONS,0},{OP_CDR,0},{OP_PRINT,0},{OP_HALT,0}};
       test("cdr(cons 3 4)", p, 6, 4); }
+    /* (null? (cdr (cons 3 nil))) → 1, proving cdr type survives arena round-trip */
+    { Instr p[]={{OP_CONST,3},{OP_NIL,0},{OP_CONS,0},{OP_CDR,0},{OP_NULL_P,0},{OP_PRINT,0},{OP_HALT,0}};
+      test("null?(cdr cons nil)", p, 7, 1); }
     /* (null? nil) → 1 */
     { Instr p[]={{OP_NIL,0},{OP_NULL_P,0},{OP_PRINT,0},{OP_HALT,0}};
       test("null?(nil)", p, 4, 1); }
@@ -3943,11 +4230,20 @@ int main(int argc, char** argv) {
          * Pops both, leaving [pair] on stack. Then CAR reads the mutated car. */
         {OP_CAR,0},{OP_PRINT,0},{OP_HALT,0},
       }; test("set-car!", p, 9, 99); }
+    { Instr p[]={
+        {OP_CONST,10},{OP_CONST,20},{OP_CONS,0},
+        {OP_DUP,0},{OP_CONST,99},{OP_SET_CDR,0},
+        {OP_CDR,0},{OP_PRINT,0},{OP_HALT,0},
+      }; test("set-cdr!", p, 9, 99); }
 
     /* pair? test */
     { Instr p[]={
         {OP_CONST,1},{OP_CONST,2},{OP_CONS,0},{OP_PAIR_P,0},{OP_PRINT,0},{OP_HALT,0}};
       test("pair?(cons 1 2)", p, 6, 1); }
+    { Instr p[]={
+        {OP_CONST,1},{OP_CONST,2},{OP_CONS,0},
+        {OP_CONST,3},{OP_CONS,0},{OP_CAR,0},{OP_PAIR_P,0},{OP_PRINT,0},{OP_HALT,0}};
+      test("pair?(car nested)", p, 9, 1); }
 
     /* Stage-1 VM-as-transformer memory-op regressions */
     { Instr p[]={{OP_CONST,42},{OP_NUM_P,0},{OP_PRINT,0},{OP_HALT,0}};

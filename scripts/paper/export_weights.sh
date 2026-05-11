@@ -7,7 +7,7 @@
 # Usage:
 #   bash scripts/paper/export_weights.sh [output_file]
 #
-# Output: QLMW v3 binary (~10.6 MB) at $1
+# Output: QLMW v3 binary at $1
 # Default: artifacts/paper/outputs/weights.qlmw
 
 set -euo pipefail
@@ -21,25 +21,25 @@ mkdir -p "$(dirname "$OUTPUT")"
 # Use a dedicated build dir for the paper artifact so the user's normal
 # build tree is unaffected and so the run is hermetic.
 BUILD_DIR="${BUILD_DIR:-$REPO_ROOT/build-paper}"
-if [[ ! -d "$BUILD_DIR" ]] || [[ ! -x "$BUILD_DIR/tools/weight_matrices" ]]; then
+if [[ ! -d "$BUILD_DIR" ]]; then
     echo "  building weight_matrices (paper config)..."
     cmake -S . -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE=Release \
         > "$BUILD_DIR.cmake.log" 2>&1 || {
             echo "  cmake configuration failed; see $BUILD_DIR.cmake.log"
             exit 1
         }
-    cmake --build "$BUILD_DIR" --target weight_matrices -j \
-        > "$BUILD_DIR.build.log" 2>&1 || {
-            echo "  build failed; see $BUILD_DIR.build.log"
-            exit 1
-        }
 fi
+cmake --build "$BUILD_DIR" --target weight_matrices -j \
+    > "$BUILD_DIR.build.log" 2>&1 || {
+        echo "  build failed; see $BUILD_DIR.build.log"
+        exit 1
+    }
 
-# Run the weight matrix construction. The binary self-tests via the 74-test
+# Run the weight matrix construction. The binary self-tests via the
 # three-way verification suite (reference C interpreter / simulated transformer
 # / actual matrix forward pass through W @ x + b) and writes the QLMW v3 binary
-# only on 0/74 failures. ESHKOL_WEIGHTS_OUT redirects the output path.
-echo "  running 74-test verification + weight export..."
+# only on zero failures. ESHKOL_WEIGHTS_OUT redirects the output path.
+echo "  running verification + weight export..."
 ESHKOL_WEIGHTS_OUT="$OUTPUT" "$BUILD_DIR/tools/weight_matrices" \
     > "$BUILD_DIR.weights.log" 2>&1 || {
         echo "  verification or export failed; see $BUILD_DIR.weights.log"
@@ -48,15 +48,17 @@ ESHKOL_WEIGHTS_OUT="$OUTPUT" "$BUILD_DIR/tools/weight_matrices" \
         exit 1
     }
 
-# Confirm the 74/74 line is present — paper claim §4.4.
-if ! grep -q "74 passed, 0 failed" "$BUILD_DIR.weights.log"; then
-    echo "  WARNING: did not see '74 passed, 0 failed' line; verification suite may have changed."
+# Confirm the all-pass line is present — paper claim §4.4.
+result_line="$(grep -E "=== Results: [0-9]+ passed, 0 failed ===" "$BUILD_DIR.weights.log" | tail -1 || true)"
+if [[ -z "$result_line" ]]; then
+    echo "  WARNING: did not see an all-pass verification line."
     echo "  tail of log:"
     tail -10 "$BUILD_DIR.weights.log" | sed 's/^/    /'
     exit 1
 fi
+passed="$(printf '%s\n' "$result_line" | sed -E 's/.*Results: ([0-9]+) passed, 0 failed.*/\1/')"
 
-echo "  74/74 verification passes (reference == simulated == matrix forward)."
+echo "  $passed/$passed verification passes (reference == simulated == matrix forward)."
 
 if [[ ! -f "$OUTPUT" ]]; then
     echo "  ERROR: expected $OUTPUT to exist after run."

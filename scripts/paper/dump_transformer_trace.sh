@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # dump_transformer_trace.sh — emit per-step JSONL trace from the matrix
-# forward pass (W @ x + b) on the SDNC paper's 74-program suite.
+# forward pass (W @ x + b) on the SDNC paper's verification suite.
 #
 # Mirrors dump_vm_trace.sh but routes the reference-VM output to /dev/null
 # and captures the matrix path via --trace-transformer.
@@ -21,19 +21,19 @@ mkdir -p "$(dirname "$OUTPUT")"
 
 BUILD_DIR="${BUILD_DIR:-$REPO_ROOT/build-paper}"
 
-if [[ ! -x "$BUILD_DIR/tools/weight_matrices" ]]; then
+if [[ ! -d "$BUILD_DIR" ]]; then
     echo "  building weight_matrices (paper config)..."
     cmake -S . -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE=Release \
         > "$BUILD_DIR.cmake.log" 2>&1 || {
             echo "  cmake configuration failed; see $BUILD_DIR.cmake.log"
             exit 1
         }
-    cmake --build "$BUILD_DIR" --target weight_matrices -j \
-        > "$BUILD_DIR.build.log" 2>&1 || {
-            echo "  build failed; see $BUILD_DIR.build.log"
-            exit 1
-        }
 fi
+cmake --build "$BUILD_DIR" --target weight_matrices -j \
+    > "$BUILD_DIR.build.log" 2>&1 || {
+        echo "  build failed; see $BUILD_DIR.build.log"
+        exit 1
+    }
 
 echo "  dumping matrix-forward trace → $OUTPUT"
 "$BUILD_DIR/tools/weight_matrices" \
@@ -45,8 +45,8 @@ echo "  dumping matrix-forward trace → $OUTPUT"
         exit 1
     }
 
-if ! grep -q "74 passed, 0 failed" "$BUILD_DIR.tf_trace.log"; then
-    echo "  WARNING: did not see '74 passed, 0 failed'; trace may be incomplete."
+if ! grep -Eq "=== Results: [0-9]+ passed, 0 failed ===" "$BUILD_DIR.tf_trace.log"; then
+    echo "  WARNING: did not see an all-pass verification line; trace may be incomplete."
     tail -10 "$BUILD_DIR.tf_trace.log" | sed 's/^/    /'
     exit 1
 fi

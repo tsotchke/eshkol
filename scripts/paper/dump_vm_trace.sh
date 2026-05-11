@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # dump_vm_trace.sh — emit per-step JSONL trace from the reference C VM
-# for the SDNC paper's 74-program three-way verification suite.
+# for the SDNC paper's three-way verification suite.
 #
-# The 74 programs are inline test() invocations in lib/backend/weight_matrices.c
+# The programs are inline test() invocations in lib/backend/weight_matrices.c
 # (the paper artifact itself). The same binary runs all three paths
 # (reference C / simulated transformer / matrix forward) and emits per-step
 # trace lines for the reference and matrix paths via --trace-vm /
@@ -29,21 +29,20 @@ mkdir -p "$(dirname "$OUTPUT")"
 
 BUILD_DIR="${BUILD_DIR:-$REPO_ROOT/build-paper}"
 
-# Build weight_matrices if not present. (Same target as export_weights.sh —
-# CMake caches the first build, so this is a no-op after the first run.)
-if [[ ! -x "$BUILD_DIR/tools/weight_matrices" ]]; then
+# Build weight_matrices. (Same target as export_weights.sh.)
+if [[ ! -d "$BUILD_DIR" ]]; then
     echo "  building weight_matrices (paper config)..."
     cmake -S . -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE=Release \
         > "$BUILD_DIR.cmake.log" 2>&1 || {
             echo "  cmake configuration failed; see $BUILD_DIR.cmake.log"
             exit 1
         }
-    cmake --build "$BUILD_DIR" --target weight_matrices -j \
-        > "$BUILD_DIR.build.log" 2>&1 || {
-            echo "  build failed; see $BUILD_DIR.build.log"
-            exit 1
-        }
 fi
+cmake --build "$BUILD_DIR" --target weight_matrices -j \
+    > "$BUILD_DIR.build.log" 2>&1 || {
+        echo "  build failed; see $BUILD_DIR.build.log"
+        exit 1
+    }
 
 echo "  dumping reference-VM trace → $OUTPUT"
 "$BUILD_DIR/tools/weight_matrices" \
@@ -55,8 +54,8 @@ echo "  dumping reference-VM trace → $OUTPUT"
         exit 1
     }
 
-if ! grep -q "74 passed, 0 failed" "$BUILD_DIR.vm_trace.log"; then
-    echo "  WARNING: did not see '74 passed, 0 failed'; trace may be incomplete."
+if ! grep -Eq "=== Results: [0-9]+ passed, 0 failed ===" "$BUILD_DIR.vm_trace.log"; then
+    echo "  WARNING: did not see an all-pass verification line; trace may be incomplete."
     tail -10 "$BUILD_DIR.vm_trace.log" | sed 's/^/    /'
     exit 1
 fi
