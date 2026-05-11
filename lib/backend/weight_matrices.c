@@ -172,7 +172,21 @@ enum {
     S_AD_RIGHT_GRAD_NEW=118, /* computed gradient delta for right parent */
     S_AD_PROD_GRAD_CV=119,  /* precomputed: CUR_GRAD * CUR_VALUE (for legacy compat) */
     S_AD_PROD_GRAD_SV=120,  /* precomputed: CUR_GRAD * CUR_SAVED (all unary backward) */
-    S_AD_SPARE1=120, S_AD_SPARE2=121, S_AD_SPARE3=122, S_AD_SPARE4=123,
+    S_AD_SPARE1=120,
+
+    /* Stage-1 VM-as-transformer memory-op transients.
+     * These reuse the true spare portion of Zone D. Layer 2 computes
+     * saturated one-hot indicators over S_TYPE_TOS; Layer 3 consumes them
+     * to execute NULL_P and the six type predicates without IS_NATIVE. */
+    S_TYPE_IS_NUM=121,
+    S_TYPE_IS_BOOL=122,
+    S_TYPE_IS_PAIR=123,
+    S_TYPE_IS_PROC=124,
+    S_TYPE_IS_STR=125,
+    S_TYPE_IS_VEC=126,
+    S_TYPE_IS_NIL=127,
+
+    S_AD_SPARE2=121, S_AD_SPARE3=122, S_AD_SPARE4=123,
     S_AD_SPARE5=124, S_AD_SPARE6=125, S_AD_SPARE7=126, S_AD_SPARE8=127
 };
 
@@ -415,6 +429,54 @@ static void execute_step(const State* cur, const Instr* prog, int n_instr, State
         break;
     case OP_HALT:   next->s[S_HALT]=1; break;
 
+    /* Stage-1 VM-as-transformer memory ops: directly encodable predicates
+     * and stack cleanup. These used to set IS_NATIVE and round-trip through
+     * exec_loop_postprocess; keeping them here makes the reference path match
+     * the simulated/matrix weight implementation. */
+    case OP_NULL_P:
+        next->s[S_TOS]=(tt_tos == TYPE_NIL) ? 1.0f : 0.0f; next->s[S_PC]=pc+1;
+        next->s[S_TYPE_TOS]=TYPE_BOOL;
+        break;
+    case OP_PAIR_P:
+        next->s[S_TOS]=(tt_tos == TYPE_PAIR) ? 1.0f : 0.0f; next->s[S_PC]=pc+1;
+        next->s[S_TYPE_TOS]=TYPE_BOOL;
+        break;
+    case OP_NUM_P:
+        next->s[S_TOS]=(tt_tos == TYPE_NUMBER) ? 1.0f : 0.0f; next->s[S_PC]=pc+1;
+        next->s[S_TYPE_TOS]=TYPE_BOOL;
+        break;
+    case OP_STR_P:
+        next->s[S_TOS]=(tt_tos == TYPE_STRING) ? 1.0f : 0.0f; next->s[S_PC]=pc+1;
+        next->s[S_TYPE_TOS]=TYPE_BOOL;
+        break;
+    case OP_BOOL_P:
+        next->s[S_TOS]=(tt_tos == TYPE_BOOL) ? 1.0f : 0.0f; next->s[S_PC]=pc+1;
+        next->s[S_TYPE_TOS]=TYPE_BOOL;
+        break;
+    case OP_PROC_P:
+        next->s[S_TOS]=(tt_tos == TYPE_CLOSURE) ? 1.0f : 0.0f; next->s[S_PC]=pc+1;
+        next->s[S_TYPE_TOS]=TYPE_BOOL;
+        break;
+    case OP_VEC_P:
+        next->s[S_TOS]=(tt_tos == TYPE_VECTOR) ? 1.0f : 0.0f; next->s[S_PC]=pc+1;
+        next->s[S_TYPE_TOS]=TYPE_BOOL;
+        break;
+    case OP_POPN: {
+        int count = (int)operand;
+        if (count < 0) count = 0;
+        float regs[4] = {tos, sos, r2, r3};
+        float types[4] = {tt_tos, tt_sos, tt_r2, tt_r3};
+        for (int i = 1; i < 4; i++) {
+            int src = i + count;
+            if (src < 4) { regs[i] = regs[src]; types[i] = types[src]; }
+            else { regs[i] = 0; types[i] = TYPE_NUMBER; }
+        }
+        next->s[S_TOS]=regs[0]; next->s[S_SOS]=regs[1]; next->s[S_R2]=regs[2]; next->s[S_R3]=regs[3];
+        next->s[S_TYPE_TOS]=types[0]; next->s[S_TYPE_SOS]=types[1]; next->s[S_TYPE_R2]=types[2]; next->s[S_TYPE_R3]=types[3];
+        next->s[S_DEPTH]=cur->s[S_DEPTH]-count; next->s[S_PC]=pc+1;
+        break;
+    }
+
     /* ── AD Forward Ops: record nodes on the embedded tape ── */
     case OP_AD_VAR: { /* (ad-var value) → push tape index */
         int tlen = (int)cur->s[S_AD_TAPE_LEN];
@@ -535,13 +597,12 @@ static void execute_step(const State* cur, const Instr* prog, int n_instr, State
         next->s[S_IS_NATIVE]=1; next->s[S_PC]=pc+1; break;
 
     /* All remaining opcodes delegate to exec loop via IS_NATIVE */
-    case OP_CONS: case OP_CAR: case OP_CDR: case OP_NULL_P:
+    case OP_CONS: case OP_CAR: case OP_CDR:
     case OP_NATIVE_CALL: case OP_TAIL_CALL:
     case OP_CLOSURE: case OP_GET_UPVALUE: case OP_SET_UPVALUE: case OP_CLOSE_UPVALUE:
     case OP_VEC_CREATE: case OP_VEC_REF: case OP_VEC_SET: case OP_VEC_LEN:
     case OP_STR_REF: case OP_STR_LEN:
-    case OP_PAIR_P: case OP_NUM_P: case OP_STR_P: case OP_BOOL_P: case OP_PROC_P: case OP_VEC_P:
-    case OP_SET_CAR: case OP_SET_CDR: case OP_POPN:
+    case OP_SET_CAR: case OP_SET_CDR:
     case OP_OPEN_CLOSURE: case OP_CALLCC: case OP_INVOKE_CC:
     case OP_PUSH_HANDLER: case OP_POP_HANDLER: case OP_GET_EXN:
     case OP_PACK_REST: case OP_WIND_PUSH: case OP_WIND_POP:
@@ -785,6 +846,18 @@ static void layer2_ffn(const float x[D], float out[D]) {
     /* ABS precompute */
     out[S_ABS_DELTA] = sigmoidf(SCALE * (-x[S_TOS] - 0.5f)) * (-2.0f * x[S_TOS]);
 
+    /* Stage-1 VM-as-transformer type predicate precompute.
+     * Layer 3 cannot synthesize both opcode and type indicators inside a
+     * single gated neuron because the up path is linear. Precompute the
+     * type-side indicators here, then gate by opcode in Layer 3. */
+    out[S_TYPE_IS_NUM]  = indicator(x[S_TYPE_TOS], TYPE_NUMBER);
+    out[S_TYPE_IS_BOOL] = indicator(x[S_TYPE_TOS], TYPE_BOOL);
+    out[S_TYPE_IS_PAIR] = indicator(x[S_TYPE_TOS], TYPE_PAIR);
+    out[S_TYPE_IS_PROC] = indicator(x[S_TYPE_TOS], TYPE_CLOSURE);
+    out[S_TYPE_IS_STR]  = indicator(x[S_TYPE_TOS], TYPE_STRING);
+    out[S_TYPE_IS_VEC]  = indicator(x[S_TYPE_TOS], TYPE_VECTOR);
+    out[S_TYPE_IS_NIL]  = indicator(x[S_TYPE_TOS], TYPE_NIL);
+
     /* ── AD tape random-access load (backward mode only) ──
      * Load node at AD_CURSOR into AD_CUR_* fields.
      * Only active during backward pass — during forward ops, layer3 sets AD_CUR_* directly. */
@@ -828,6 +901,7 @@ static void layer3_ffn(const float x[D], float out[D]) {
     memset(out, 0, D*sizeof(float));
     float op=x[S_OPCODE], oper=x[S_OPERAND], tos=x[S_TOS], sos=x[S_SOS];
     float r2=x[S_R2], r3=x[S_R3], product=x[S_PRODUCT], lv=x[S_LOADVAL];
+    float ttos=x[S_TYPE_TOS], tsos=x[S_TYPE_SOS], tr2=x[S_TYPE_R2], tr3=x[S_TYPE_R3];
     float alive = (1.0f - sigmoidf(SCALE*(x[S_HALT]-0.5f)))
                * (1.0f - sigmoidf(SCALE*(x[S_AD_IS_BACKWARD]-0.5f))); /* suppress during backward */
 
@@ -846,39 +920,55 @@ static void layer3_ffn(const float x[D], float out[D]) {
     float g;
     /* OP_NOP (0) */  g=indicator(op,0)*alive; out[S_PC]+=g;
     /* OP_CONST (1) */g=indicator(op,1)*alive; out[S_PC]+=g; out[S_TOS]+=g*(oper-tos); out[S_SOS]+=g*(tos-sos); out[S_R2]+=g*(sos-r2); out[S_R3]+=g*(r2-r3); out[S_DEPTH]+=g;
+    out[S_TYPE_TOS]+=g*(TYPE_NUMBER-ttos); out[S_TYPE_SOS]+=g*(ttos-tsos); out[S_TYPE_R2]+=g*(tsos-tr2); out[S_TYPE_R3]+=g*(tr2-tr3);
     /* OP_NIL (2) */  g=indicator(op,2)*alive; out[S_PC]+=g; out[S_TOS]+=g*(-1-tos); out[S_SOS]+=g*(tos-sos); out[S_R2]+=g*(sos-r2); out[S_R3]+=g*(r2-r3); out[S_DEPTH]+=g;
+    out[S_TYPE_TOS]+=g*(TYPE_NIL-ttos); out[S_TYPE_SOS]+=g*(ttos-tsos); out[S_TYPE_R2]+=g*(tsos-tr2); out[S_TYPE_R3]+=g*(tr2-tr3);
     /* OP_TRUE (3) */ g=indicator(op,3)*alive; out[S_PC]+=g; out[S_TOS]+=g*(1-tos); out[S_SOS]+=g*(tos-sos); out[S_R2]+=g*(sos-r2); out[S_R3]+=g*(r2-r3); out[S_DEPTH]+=g;
+    out[S_TYPE_TOS]+=g*(TYPE_BOOL-ttos); out[S_TYPE_SOS]+=g*(ttos-tsos); out[S_TYPE_R2]+=g*(tsos-tr2); out[S_TYPE_R3]+=g*(tr2-tr3);
     /* OP_FALSE (4) */g=indicator(op,4)*alive; out[S_PC]+=g; out[S_TOS]+=g*(0-tos); out[S_SOS]+=g*(tos-sos); out[S_R2]+=g*(sos-r2); out[S_R3]+=g*(r2-r3); out[S_DEPTH]+=g;
+    out[S_TYPE_TOS]+=g*(TYPE_BOOL-ttos); out[S_TYPE_SOS]+=g*(ttos-tsos); out[S_TYPE_R2]+=g*(tsos-tr2); out[S_TYPE_R3]+=g*(tr2-tr3);
     /* OP_POP (5) */  g=indicator(op,5)*alive; out[S_PC]+=g; out[S_TOS]+=g*(sos-tos); out[S_SOS]+=g*(r2-sos); out[S_R2]+=g*(r3-r2); out[S_R3]+=g*(-r3); out[S_DEPTH]+=g*(-1);
+    out[S_TYPE_TOS]+=g*(tsos-ttos); out[S_TYPE_SOS]+=g*(tr2-tsos); out[S_TYPE_R2]+=g*(tr3-tr2); out[S_TYPE_R3]+=g*(TYPE_NUMBER-tr3);
     /* OP_DUP (6) */  g=indicator(op,6)*alive; out[S_PC]+=g; out[S_SOS]+=g*(tos-sos); out[S_R2]+=g*(sos-r2); out[S_R3]+=g*(r2-r3); out[S_DEPTH]+=g;
+    out[S_TYPE_SOS]+=g*(ttos-tsos); out[S_TYPE_R2]+=g*(tsos-tr2); out[S_TYPE_R3]+=g*(tr2-tr3);
     /* OP_ADD (7) */  g=indicator(op,7)*alive; out[S_PC]+=g; out[S_TOS]+=g*sos; out[S_SOS]+=g*(r2-sos); out[S_R2]+=g*(r3-r2); out[S_R3]+=g*(-r3); out[S_DEPTH]+=g*(-1);
+    out[S_TYPE_TOS]+=g*(TYPE_NUMBER-ttos); out[S_TYPE_SOS]+=g*(tr2-tsos); out[S_TYPE_R2]+=g*(tr3-tr2); out[S_TYPE_R3]+=g*(TYPE_NUMBER-tr3);
     /* OP_SUB (8) */  g=indicator(op,8)*alive; out[S_PC]+=g; out[S_TOS]+=g*(sos-2*tos); out[S_SOS]+=g*(r2-sos); out[S_R2]+=g*(r3-r2); out[S_R3]+=g*(-r3); out[S_DEPTH]+=g*(-1);
+    out[S_TYPE_TOS]+=g*(TYPE_NUMBER-ttos); out[S_TYPE_SOS]+=g*(tr2-tsos); out[S_TYPE_R2]+=g*(tr3-tr2); out[S_TYPE_R3]+=g*(TYPE_NUMBER-tr3);
     /* OP_MUL (9) */  g=indicator(op,9)*alive; out[S_PC]+=g; out[S_TOS]+=g*(product-tos); out[S_SOS]+=g*(r2-sos); out[S_R2]+=g*(r3-r2); out[S_R3]+=g*(-r3); out[S_DEPTH]+=g*(-1);
-    /* OP_NEG (12) */ g=indicator(op,12)*alive; out[S_PC]+=g; out[S_TOS]+=g*(-2*tos);
-    /* OP_ABS (13) */ g=indicator(op,13)*alive; out[S_PC]+=g; out[S_TOS]+=g*x[S_ABS_DELTA];
+    out[S_TYPE_TOS]+=g*(TYPE_NUMBER-ttos); out[S_TYPE_SOS]+=g*(tr2-tsos); out[S_TYPE_R2]+=g*(tr3-tr2); out[S_TYPE_R3]+=g*(TYPE_NUMBER-tr3);
+    /* OP_NEG (12) */ g=indicator(op,12)*alive; out[S_PC]+=g; out[S_TOS]+=g*(-2*tos); out[S_TYPE_TOS]+=g*(TYPE_NUMBER-ttos);
+    /* OP_ABS (13) */ g=indicator(op,13)*alive; out[S_PC]+=g; out[S_TOS]+=g*x[S_ABS_DELTA]; out[S_TYPE_TOS]+=g*(TYPE_NUMBER-ttos);
     /* OP_EQ (14) */  g=indicator(op,14)*alive; out[S_PC]+=g; out[S_TOS]+=g*(x[S_CMP_EQ]-tos); out[S_SOS]+=g*(r2-sos); out[S_R2]+=g*(r3-r2); out[S_R3]+=g*(-r3); out[S_DEPTH]+=g*(-1);
+    out[S_TYPE_TOS]+=g*(TYPE_BOOL-ttos); out[S_TYPE_SOS]+=g*(tr2-tsos); out[S_TYPE_R2]+=g*(tr3-tr2); out[S_TYPE_R3]+=g*(TYPE_NUMBER-tr3);
     /* OP_LT (15): SOS < TOS → CMP_LT precomputed as sigmoid(SCALE*(TOS-SOS-0.5)) */
     g=indicator(op,15)*alive; out[S_PC]+=g; out[S_TOS]+=g*(x[S_CMP_LT]-tos); out[S_SOS]+=g*(r2-sos); out[S_R2]+=g*(r3-r2); out[S_R3]+=g*(-r3); out[S_DEPTH]+=g*(-1);
+    out[S_TYPE_TOS]+=g*(TYPE_BOOL-ttos); out[S_TYPE_SOS]+=g*(tr2-tsos); out[S_TYPE_R2]+=g*(tr3-tr2); out[S_TYPE_R3]+=g*(TYPE_NUMBER-tr3);
     /* OP_GT (16): SOS > TOS → 1 - CMP_LT - CMP_EQ */
     g=indicator(op,16)*alive; out[S_PC]+=g; out[S_TOS]+=g*(1.0f-x[S_CMP_LT]-x[S_CMP_EQ]-tos); out[S_SOS]+=g*(r2-sos); out[S_R2]+=g*(r3-r2); out[S_R3]+=g*(-r3); out[S_DEPTH]+=g*(-1);
+    out[S_TYPE_TOS]+=g*(TYPE_BOOL-ttos); out[S_TYPE_SOS]+=g*(tr2-tsos); out[S_TYPE_R2]+=g*(tr3-tr2); out[S_TYPE_R3]+=g*(TYPE_NUMBER-tr3);
     /* OP_LE (17): SOS <= TOS → CMP_LT + CMP_EQ */
     g=indicator(op,17)*alive; out[S_PC]+=g; out[S_TOS]+=g*(x[S_CMP_LT]+x[S_CMP_EQ]-tos); out[S_SOS]+=g*(r2-sos); out[S_R2]+=g*(r3-r2); out[S_R3]+=g*(-r3); out[S_DEPTH]+=g*(-1);
+    out[S_TYPE_TOS]+=g*(TYPE_BOOL-ttos); out[S_TYPE_SOS]+=g*(tr2-tsos); out[S_TYPE_R2]+=g*(tr3-tr2); out[S_TYPE_R3]+=g*(TYPE_NUMBER-tr3);
     /* OP_GE (18): SOS >= TOS → 1 - CMP_LT */
     g=indicator(op,18)*alive; out[S_PC]+=g; out[S_TOS]+=g*(1.0f-x[S_CMP_LT]-tos); out[S_SOS]+=g*(r2-sos); out[S_R2]+=g*(r3-r2); out[S_R3]+=g*(-r3); out[S_DEPTH]+=g*(-1);
+    out[S_TYPE_TOS]+=g*(TYPE_BOOL-ttos); out[S_TYPE_SOS]+=g*(tr2-tsos); out[S_TYPE_R2]+=g*(tr3-tr2); out[S_TYPE_R3]+=g*(TYPE_NUMBER-tr3);
     /* OP_DIV (10): delegate to exec loop — set IS_NATIVE, keep TOS/SOS for exec loop */
     g=indicator(op,10)*alive; out[S_PC]+=g; out[S_IS_NATIVE]+=g;
     /* OP_MOD (11): same pattern as DIV */
     g=indicator(op,11)*alive; out[S_PC]+=g; out[S_IS_NATIVE]+=g;
     /* OP_NOT (19): uses ZOPER trick — encode NOT with operand=1 so ZOPER = indicator(TOS,0)*1 */
-    g=indicator(op,19)*alive; out[S_PC]+=g; out[S_TOS]+=g*(x[S_ZOPER]-tos);
+    g=indicator(op,19)*alive; out[S_PC]+=g; out[S_TOS]+=g*(x[S_ZOPER]-tos); out[S_TYPE_TOS]+=g*(TYPE_BOOL-ttos);
     /* OP_GET_LOCAL (20): push mem[operand] — LOADVAL precomputed from OPERAND in layer 2 */
     g=indicator(op,20)*alive;
     out[S_PC]+=g; out[S_TOS]+=g*(lv-tos); out[S_SOS]+=g*(tos-sos); out[S_R2]+=g*(sos-r2); out[S_R3]+=g*(r2-r3); out[S_DEPTH]+=g;
+    out[S_TYPE_TOS]+=g*(TYPE_NUMBER-ttos); out[S_TYPE_SOS]+=g*(ttos-tsos); out[S_TYPE_R2]+=g*(tsos-tr2); out[S_TYPE_R3]+=g*(tr2-tr3);
     /* OP_SET_LOCAL (21): mem[operand]=TOS, pop — uses precomputed STORED deltas from layer 2 */
     g=indicator(op,21)*alive; {
         out[S_PC]+=g;
         for (int a = 0; a < MEM_SIZE; a++) out[S_MEM0+a] += g * x[S_STORED0+a];
         out[S_TOS]+=g*(sos-tos); out[S_SOS]+=g*(r2-sos); out[S_R2]+=g*(r3-r2); out[S_R3]+=g*(-r3); out[S_DEPTH]+=g*(-1);
+        out[S_TYPE_TOS]+=g*(tsos-ttos); out[S_TYPE_SOS]+=g*(tr2-tsos); out[S_TYPE_R2]+=g*(tr3-tr2); out[S_TYPE_R3]+=g*(TYPE_NUMBER-tr3);
     }
     /* OP_CONS (31): delegate to exec loop */
     g=indicator(op,31)*alive; out[S_PC]+=g; out[S_IS_NATIVE]+=g;
@@ -886,8 +976,8 @@ static void layer3_ffn(const float x[D], float out[D]) {
     g=indicator(op,32)*alive; out[S_PC]+=g; out[S_IS_NATIVE]+=g;
     /* OP_CDR (33): delegate to exec loop */
     g=indicator(op,33)*alive; out[S_PC]+=g; out[S_IS_NATIVE]+=g;
-    /* OP_NULL_P (34): delegate to exec loop */
-    g=indicator(op,34)*alive; out[S_PC]+=g; out[S_IS_NATIVE]+=g;
+    /* OP_NULL_P (34): weight-encoded nil predicate */
+    g=indicator(op,34)*alive; out[S_PC]+=g; out[S_TOS]+=g*(x[S_TYPE_IS_NIL]-tos); out[S_TYPE_TOS]+=g*(TYPE_BOOL-ttos);
     /* OP_GET_UPVALUE (22): delegate */
     g=indicator(op,22)*alive; out[S_PC]+=g; out[S_IS_NATIVE]+=g;
     /* OP_SET_UPVALUE (23): delegate */
@@ -898,8 +988,30 @@ static void layer3_ffn(const float x[D], float out[D]) {
     g=indicator(op,26)*alive; out[S_PC]+=g; out[S_IS_NATIVE]+=g;
     /* OP_NATIVE_CALL (37): delegate */
     g=indicator(op,37)*alive; out[S_PC]+=g; out[S_IS_NATIVE]+=g;
+    /* Stage-1 type predicates (45-50): weight-encoded via Layer 2 type indicators. */
+    g=indicator(op,45)*alive; out[S_PC]+=g; out[S_TOS]+=g*(x[S_TYPE_IS_PAIR]-tos); out[S_TYPE_TOS]+=g*(TYPE_BOOL-ttos);
+    g=indicator(op,46)*alive; out[S_PC]+=g; out[S_TOS]+=g*(x[S_TYPE_IS_NUM]-tos);  out[S_TYPE_TOS]+=g*(TYPE_BOOL-ttos);
+    g=indicator(op,47)*alive; out[S_PC]+=g; out[S_TOS]+=g*(x[S_TYPE_IS_STR]-tos);  out[S_TYPE_TOS]+=g*(TYPE_BOOL-ttos);
+    g=indicator(op,48)*alive; out[S_PC]+=g; out[S_TOS]+=g*(x[S_TYPE_IS_BOOL]-tos); out[S_TYPE_TOS]+=g*(TYPE_BOOL-ttos);
+    g=indicator(op,49)*alive; out[S_PC]+=g; out[S_TOS]+=g*(x[S_TYPE_IS_PROC]-tos); out[S_TYPE_TOS]+=g*(TYPE_BOOL-ttos);
+    g=indicator(op,50)*alive; out[S_PC]+=g; out[S_TOS]+=g*(x[S_TYPE_IS_VEC]-tos);  out[S_TYPE_TOS]+=g*(TYPE_BOOL-ttos);
+
+    /* OP_POPN (53): weight-encoded for current compiler emissions n <= 3.
+     * It removes N values below TOS while keeping TOS itself. */
+    g=indicator(op,53)*alive; out[S_PC]+=g;
+    float gp1=g*indicator(oper,1.0f);
+    out[S_SOS]+=gp1*(r2-sos); out[S_R2]+=gp1*(r3-r2); out[S_R3]+=gp1*(-r3); out[S_DEPTH]+=gp1*(-1);
+    out[S_TYPE_SOS]+=gp1*(tr2-tsos); out[S_TYPE_R2]+=gp1*(tr3-tr2); out[S_TYPE_R3]+=gp1*(TYPE_NUMBER-tr3);
+    float gp2=g*indicator(oper,2.0f);
+    out[S_SOS]+=gp2*(r3-sos); out[S_R2]+=gp2*(-r2); out[S_R3]+=gp2*(-r3); out[S_DEPTH]+=gp2*(-2);
+    out[S_TYPE_SOS]+=gp2*(tr3-tsos); out[S_TYPE_R2]+=gp2*(TYPE_NUMBER-tr2); out[S_TYPE_R3]+=gp2*(TYPE_NUMBER-tr3);
+    float gp3=g*indicator(oper,3.0f);
+    out[S_SOS]+=gp3*(-sos); out[S_R2]+=gp3*(-r2); out[S_R3]+=gp3*(-r3); out[S_DEPTH]+=gp3*(-3);
+    out[S_TYPE_SOS]+=gp3*(TYPE_NUMBER-tsos); out[S_TYPE_R2]+=gp3*(TYPE_NUMBER-tr2); out[S_TYPE_R3]+=gp3*(TYPE_NUMBER-tr3);
+
     /* Remaining delegated opcodes (38-62): all set IS_NATIVE + PC++ */
     for (int opc = 38; opc <= 62; opc++) {
+        if ((opc >= 45 && opc <= 50) || opc == 53) continue;
         g=indicator(op,(float)opc)*alive; out[S_PC]+=g; out[S_IS_NATIVE]+=g;
     }
     /* OP_CALL (25): set IS_CALL flag for exec loop, PC++ */
@@ -913,11 +1025,13 @@ static void layer3_ffn(const float x[D], float out[D]) {
     g=indicator(op,29)*alive;
     out[S_PC]+=g*(1.0f + x[S_ZOPER] - x[S_ZPC1]);
     out[S_TOS]+=g*(sos-tos); out[S_SOS]+=g*(r2-sos); out[S_R2]+=g*(r3-r2); out[S_R3]+=g*(-r3); out[S_DEPTH]+=g*(-1);
+    out[S_TYPE_TOS]+=g*(tsos-ttos); out[S_TYPE_SOS]+=g*(tr2-tsos); out[S_TYPE_R2]+=g*(tr3-tr2); out[S_TYPE_R3]+=g*(TYPE_NUMBER-tr3);
     /* OP_LOOP (30): unconditional backward jump */
     g=indicator(op,30)*alive; out[S_PC]+=g*(oper-x[S_PC]);
     /* OP_PRINT (35): output = TOS, pop */
     g=indicator(op,35)*alive; out[S_PC]+=g; out[S_OUTPUT]+=g*(tos+1); out[S_HAS_OUT]+=g;
     out[S_TOS]+=g*(sos-tos); out[S_SOS]+=g*(r2-sos); out[S_R2]+=g*(r3-r2); out[S_R3]+=g*(-r3); out[S_DEPTH]+=g*(-1);
+    out[S_TYPE_TOS]+=g*(tsos-ttos); out[S_TYPE_SOS]+=g*(tr2-tsos); out[S_TYPE_R2]+=g*(tr3-tr2); out[S_TYPE_R3]+=g*(TYPE_NUMBER-tr3);
     /* OP_HALT (36) */
     g=indicator(op,36)*alive; out[S_HALT]+=g;
 
@@ -2070,6 +2184,106 @@ static int add_unconditional(InterpreterWeights* w, int L, int n,
     return n + 1;
 }
 
+/* Precompute indicator(state_dim == target_value) into out_dim. */
+static int add_indicator_precompute(InterpreterWeights* w, int L, int n,
+                                    int state_dim, float target_value,
+                                    int out_dim) {
+    W(w->ff_gate[L], state_dim, n, FFN_DIM) = SCALE;
+    w->ff_gate_b[L][n] = SCALE * (-target_value + 0.5f);
+    w->ff_up_b[L][n] = 1.0f;
+    W(w->ff_down[L], n, out_dim, D) = 1.0f;
+    n++;
+
+    W(w->ff_gate[L], state_dim, n, FFN_DIM) = SCALE;
+    w->ff_gate_b[L][n] = SCALE * (-target_value - 0.5f);
+    w->ff_up_b[L][n] = 1.0f;
+    W(w->ff_down[L], n, out_dim, D) = -1.0f;
+    return n + 1;
+}
+
+/* Opcode+operand gated pair for fixed small-immediate opcodes such as POPN.
+ * The gate is indicator(opcode + 100*operand == op_id + 100*operand_id),
+ * which is collision-free for this ISA's opcode and small operand ranges. */
+static int add_gated_pair_op_operand(InterpreterWeights* w, int L, int n,
+                                     int op_id, int operand_id,
+                                     int ud1, float us1, int ud2, float us2,
+                                     int ud3, float us3, int ud4, float us4,
+                                     float ubias,
+                                     int out_dim, float coeff) {
+    const float operand_scale = 100.0f;
+    float target = (float)op_id + operand_scale * (float)operand_id;
+    for (int sign = 0; sign < 2; sign++) {
+        int j = n + sign;
+        float s = (sign == 0) ? 0.5f : -0.5f;
+        W(w->ff_gate[L], S_OPCODE, j, FFN_DIM) += SCALE;
+        W(w->ff_gate[L], S_OPERAND, j, FFN_DIM) += SCALE * operand_scale;
+        W(w->ff_gate[L], S_HALT, j, FFN_DIM) += -SCALE;
+        w->ff_gate_b[L][j] = SCALE * (-target + s);
+        if (ud1 >= 0) W(w->ff_up[L], ud1, j, FFN_DIM) += us1;
+        if (ud2 >= 0) W(w->ff_up[L], ud2, j, FFN_DIM) += us2;
+        if (ud3 >= 0) W(w->ff_up[L], ud3, j, FFN_DIM) += us3;
+        if (ud4 >= 0) W(w->ff_up[L], ud4, j, FFN_DIM) += us4;
+        w->ff_up_b[L][j] = ubias;
+        float c = (sign == 0) ? coeff : -coeff;
+        W(w->ff_down[L], j, out_dim, D) += c;
+    }
+    return n + 2;
+}
+
+static int add_type_push(InterpreterWeights* w, int L, int n,
+                         int op_id, float pushed_type) {
+    n = add_gated_pair(w, L, n, op_id, S_TYPE_TOS,-1,-1,0,-1,0,-1,0,
+                       pushed_type, S_TYPE_TOS, 1.0f);
+    n = add_gated_pair(w, L, n, op_id, S_TYPE_TOS,1,S_TYPE_SOS,-1,-1,0,-1,0,
+                       0, S_TYPE_SOS, 1.0f);
+    n = add_gated_pair(w, L, n, op_id, S_TYPE_SOS,1,S_TYPE_R2,-1,-1,0,-1,0,
+                       0, S_TYPE_R2, 1.0f);
+    n = add_gated_pair(w, L, n, op_id, S_TYPE_R2,1,S_TYPE_R3,-1,-1,0,-1,0,
+                       0, S_TYPE_R3, 1.0f);
+    return n;
+}
+
+static int add_type_pop(InterpreterWeights* w, int L, int n, int op_id) {
+    n = add_gated_pair(w, L, n, op_id, S_TYPE_SOS,1,S_TYPE_TOS,-1,-1,0,-1,0,
+                       0, S_TYPE_TOS, 1.0f);
+    n = add_gated_pair(w, L, n, op_id, S_TYPE_R2,1,S_TYPE_SOS,-1,-1,0,-1,0,
+                       0, S_TYPE_SOS, 1.0f);
+    n = add_gated_pair(w, L, n, op_id, S_TYPE_R3,1,S_TYPE_R2,-1,-1,0,-1,0,
+                       0, S_TYPE_R2, 1.0f);
+    n = add_gated_pair(w, L, n, op_id, S_TYPE_R3,-1,-1,0,-1,0,-1,0,
+                       TYPE_NUMBER, S_TYPE_R3, 1.0f);
+    return n;
+}
+
+static int add_type_dup(InterpreterWeights* w, int L, int n, int op_id) {
+    n = add_gated_pair(w, L, n, op_id, S_TYPE_TOS,1,S_TYPE_SOS,-1,-1,0,-1,0,
+                       0, S_TYPE_SOS, 1.0f);
+    n = add_gated_pair(w, L, n, op_id, S_TYPE_SOS,1,S_TYPE_R2,-1,-1,0,-1,0,
+                       0, S_TYPE_R2, 1.0f);
+    n = add_gated_pair(w, L, n, op_id, S_TYPE_R2,1,S_TYPE_R3,-1,-1,0,-1,0,
+                       0, S_TYPE_R3, 1.0f);
+    return n;
+}
+
+static int add_type_binary_result(InterpreterWeights* w, int L, int n,
+                                  int op_id, float result_type) {
+    n = add_gated_pair(w, L, n, op_id, S_TYPE_TOS,-1,-1,0,-1,0,-1,0,
+                       result_type, S_TYPE_TOS, 1.0f);
+    n = add_gated_pair(w, L, n, op_id, S_TYPE_R2,1,S_TYPE_SOS,-1,-1,0,-1,0,
+                       0, S_TYPE_SOS, 1.0f);
+    n = add_gated_pair(w, L, n, op_id, S_TYPE_R3,1,S_TYPE_R2,-1,-1,0,-1,0,
+                       0, S_TYPE_R2, 1.0f);
+    n = add_gated_pair(w, L, n, op_id, S_TYPE_R3,-1,-1,0,-1,0,-1,0,
+                       TYPE_NUMBER, S_TYPE_R3, 1.0f);
+    return n;
+}
+
+static int add_type_unary_result(InterpreterWeights* w, int L, int n,
+                                 int op_id, float result_type) {
+    return add_gated_pair(w, L, n, op_id, S_TYPE_TOS,-1,-1,0,-1,0,-1,0,
+                          result_type, S_TYPE_TOS, 1.0f);
+}
+
 static void generate_weights(InterpreterWeights* w) {
     memset(w, 0, sizeof(InterpreterWeights));
 
@@ -2229,6 +2443,16 @@ static void generate_weights(InterpreterWeights* w) {
         W(w->ff_down[2], n, S_ABS_DELTA, D) = 1.0f;
         n++;
 
+        /* Stage-1 type predicate indicators over S_TYPE_TOS. These feed
+         * NULL_P and the six type-predicate opcodes in Layer 3. */
+        n = add_indicator_precompute(w, 2, n, S_TYPE_TOS, TYPE_NUMBER,  S_TYPE_IS_NUM);
+        n = add_indicator_precompute(w, 2, n, S_TYPE_TOS, TYPE_BOOL,    S_TYPE_IS_BOOL);
+        n = add_indicator_precompute(w, 2, n, S_TYPE_TOS, TYPE_PAIR,    S_TYPE_IS_PAIR);
+        n = add_indicator_precompute(w, 2, n, S_TYPE_TOS, TYPE_CLOSURE, S_TYPE_IS_PROC);
+        n = add_indicator_precompute(w, 2, n, S_TYPE_TOS, TYPE_STRING,  S_TYPE_IS_STR);
+        n = add_indicator_precompute(w, 2, n, S_TYPE_TOS, TYPE_VECTOR,  S_TYPE_IS_VEC);
+        n = add_indicator_precompute(w, 2, n, S_TYPE_TOS, TYPE_NIL,     S_TYPE_IS_NIL);
+
         /* ── AD backward: cursor load — indicator pair with IS_BACKWARD ──
          * Gate: SCALE*CURSOR + SCALE*IS_BACKWARD + bias
          * Pair bias: +neuron = SCALE*(-slot + 0.5) - SCALE
@@ -2358,6 +2582,7 @@ static void generate_weights(InterpreterWeights* w) {
         n = add_gated_pair(w,L,n, 1, S_SOS,1,S_R2,-1,-1,0,-1,0, 0, S_R2, 1.0f);
         n = add_gated_pair(w,L,n, 1, S_R2,1,S_R3,-1,-1,0,-1,0, 0, S_R3, 1.0f);
         n = add_gated_pair(w,L,n, 1, -1,0,-1,0,-1,0,-1,0, 1.0f, S_DEPTH, 1.0f);
+        n = add_type_push(w,L,n, 1, TYPE_NUMBER);
 
         /* OP_NIL (2): push -1, same pattern as CONST */
         n = add_gated_pair(w,L,n, 2, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
@@ -2366,6 +2591,7 @@ static void generate_weights(InterpreterWeights* w) {
         n = add_gated_pair(w,L,n, 2, S_SOS,1,S_R2,-1,-1,0,-1,0, 0, S_R2, 1.0f);
         n = add_gated_pair(w,L,n, 2, S_R2,1,S_R3,-1,-1,0,-1,0, 0, S_R3, 1.0f);
         n = add_gated_pair(w,L,n, 2, -1,0,-1,0,-1,0,-1,0, 1.0f, S_DEPTH, 1.0f);
+        n = add_type_push(w,L,n, 2, TYPE_NIL);
 
         /* OP_TRUE (3): push 1 */
         n = add_gated_pair(w,L,n, 3, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
@@ -2374,6 +2600,7 @@ static void generate_weights(InterpreterWeights* w) {
         n = add_gated_pair(w,L,n, 3, S_SOS,1,S_R2,-1,-1,0,-1,0, 0, S_R2, 1.0f);
         n = add_gated_pair(w,L,n, 3, S_R2,1,S_R3,-1,-1,0,-1,0, 0, S_R3, 1.0f);
         n = add_gated_pair(w,L,n, 3, -1,0,-1,0,-1,0,-1,0, 1.0f, S_DEPTH, 1.0f);
+        n = add_type_push(w,L,n, 3, TYPE_BOOL);
 
         /* OP_FALSE (4): push 0 */
         n = add_gated_pair(w,L,n, 4, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
@@ -2382,6 +2609,7 @@ static void generate_weights(InterpreterWeights* w) {
         n = add_gated_pair(w,L,n, 4, S_SOS,1,S_R2,-1,-1,0,-1,0, 0, S_R2, 1.0f);
         n = add_gated_pair(w,L,n, 4, S_R2,1,S_R3,-1,-1,0,-1,0, 0, S_R3, 1.0f);
         n = add_gated_pair(w,L,n, 4, -1,0,-1,0,-1,0,-1,0, 1.0f, S_DEPTH, 1.0f);
+        n = add_type_push(w,L,n, 4, TYPE_BOOL);
 
         /* OP_POP (5): shift up, depth-- */
         n = add_gated_pair(w,L,n, 5, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
@@ -2390,6 +2618,7 @@ static void generate_weights(InterpreterWeights* w) {
         n = add_gated_pair(w,L,n, 5, S_R3,1,S_R2,-1,-1,0,-1,0, 0, S_R2, 1.0f);
         n = add_gated_pair(w,L,n, 5, S_R3,-1,-1,0,-1,0,-1,0, 0, S_R3, 1.0f);
         n = add_gated_pair(w,L,n, 5, -1,0,-1,0,-1,0,-1,0, -1.0f, S_DEPTH, 1.0f);
+        n = add_type_pop(w,L,n, 5);
 
         /* OP_DUP (6): push TOS copy, shift down */
         n = add_gated_pair(w,L,n, 6, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
@@ -2397,6 +2626,7 @@ static void generate_weights(InterpreterWeights* w) {
         n = add_gated_pair(w,L,n, 6, S_SOS,1,S_R2,-1,-1,0,-1,0, 0, S_R2, 1.0f);
         n = add_gated_pair(w,L,n, 6, S_R2,1,S_R3,-1,-1,0,-1,0, 0, S_R3, 1.0f);
         n = add_gated_pair(w,L,n, 6, -1,0,-1,0,-1,0,-1,0, 1.0f, S_DEPTH, 1.0f);
+        n = add_type_dup(w,L,n, 6);
 
         /* OP_ADD (7): TOS+=SOS, shift up, depth--, PC++ */
         n = add_gated_pair(w,L,n, 7, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
@@ -2405,6 +2635,7 @@ static void generate_weights(InterpreterWeights* w) {
         n = add_gated_pair(w,L,n, 7, S_R3,1,S_R2,-1,-1,0,-1,0, 0, S_R2, 1.0f);
         n = add_gated_pair(w,L,n, 7, S_R3,-1,-1,0,-1,0,-1,0, 0, S_R3, 1.0f);
         n = add_gated_pair(w,L,n, 7, -1,0,-1,0,-1,0,-1,0, -1.0f, S_DEPTH, 1.0f);
+        n = add_type_binary_result(w,L,n, 7, TYPE_NUMBER);
 
         /* OP_SUB (8): TOS=SOS-TOS (delta=SOS-2*TOS), shift up */
         n = add_gated_pair(w,L,n, 8, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
@@ -2413,6 +2644,7 @@ static void generate_weights(InterpreterWeights* w) {
         n = add_gated_pair(w,L,n, 8, S_R3,1,S_R2,-1,-1,0,-1,0, 0, S_R2, 1.0f);
         n = add_gated_pair(w,L,n, 8, S_R3,-1,-1,0,-1,0,-1,0, 0, S_R3, 1.0f);
         n = add_gated_pair(w,L,n, 8, -1,0,-1,0,-1,0,-1,0, -1.0f, S_DEPTH, 1.0f);
+        n = add_type_binary_result(w,L,n, 8, TYPE_NUMBER);
 
         /* OP_MUL (9): TOS=TOS*SOS=product, shift up */
         n = add_gated_pair(w,L,n, 9, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
@@ -2421,14 +2653,17 @@ static void generate_weights(InterpreterWeights* w) {
         n = add_gated_pair(w,L,n, 9, S_R3,1,S_R2,-1,-1,0,-1,0, 0, S_R2, 1.0f);
         n = add_gated_pair(w,L,n, 9, S_R3,-1,-1,0,-1,0,-1,0, 0, S_R3, 1.0f);
         n = add_gated_pair(w,L,n, 9, -1,0,-1,0,-1,0,-1,0, -1.0f, S_DEPTH, 1.0f);
+        n = add_type_binary_result(w,L,n, 9, TYPE_NUMBER);
 
         /* OP_NEG (12): TOS = -TOS, PC++ */
         n = add_gated_pair(w,L,n, 12, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
         n = add_gated_pair(w,L,n, 12, S_TOS,-2,-1,0,-1,0,-1,0, 0, S_TOS, 1.0f);
+        n = add_type_unary_result(w,L,n, 12, TYPE_NUMBER);
 
         /* OP_ABS (13): TOS = |TOS|, PC++ — uses ABS_DELTA precomputed in layer 2 */
         n = add_gated_pair(w,L,n, 13, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
         n = add_gated_pair(w,L,n, 13, S_ABS_DELTA,1,-1,0,-1,0,-1,0, 0, S_TOS, 1.0f);
+        n = add_type_unary_result(w,L,n, 13, TYPE_NUMBER);
 
         /* OP_EQ (14): TOS = (TOS==SOS), binary comparison, shift up */
         n = add_gated_pair(w,L,n, 14, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
@@ -2437,6 +2672,7 @@ static void generate_weights(InterpreterWeights* w) {
         n = add_gated_pair(w,L,n, 14, S_R3,1,S_R2,-1,-1,0,-1,0, 0, S_R2, 1.0f);
         n = add_gated_pair(w,L,n, 14, S_R3,-1,-1,0,-1,0,-1,0, 0, S_R3, 1.0f);
         n = add_gated_pair(w,L,n, 14, -1,0,-1,0,-1,0,-1,0, -1.0f, S_DEPTH, 1.0f);
+        n = add_type_binary_result(w,L,n, 14, TYPE_BOOL);
 
         /* OP_LT (15): TOS = (SOS < TOS) = CMP_LT */
         n = add_gated_pair(w,L,n, 15, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
@@ -2445,6 +2681,7 @@ static void generate_weights(InterpreterWeights* w) {
         n = add_gated_pair(w,L,n, 15, S_R3,1,S_R2,-1,-1,0,-1,0, 0, S_R2, 1.0f);
         n = add_gated_pair(w,L,n, 15, S_R3,-1,-1,0,-1,0,-1,0, 0, S_R3, 1.0f);
         n = add_gated_pair(w,L,n, 15, -1,0,-1,0,-1,0,-1,0, -1.0f, S_DEPTH, 1.0f);
+        n = add_type_binary_result(w,L,n, 15, TYPE_BOOL);
 
         /* OP_GT (16): TOS = (SOS > TOS) = 1 - CMP_LT - CMP_EQ */
         n = add_gated_pair(w,L,n, 16, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
@@ -2453,6 +2690,7 @@ static void generate_weights(InterpreterWeights* w) {
         n = add_gated_pair(w,L,n, 16, S_R3,1,S_R2,-1,-1,0,-1,0, 0, S_R2, 1.0f);
         n = add_gated_pair(w,L,n, 16, S_R3,-1,-1,0,-1,0,-1,0, 0, S_R3, 1.0f);
         n = add_gated_pair(w,L,n, 16, -1,0,-1,0,-1,0,-1,0, -1.0f, S_DEPTH, 1.0f);
+        n = add_type_binary_result(w,L,n, 16, TYPE_BOOL);
 
         /* OP_LE (17): TOS = (SOS <= TOS) = CMP_LT + CMP_EQ */
         n = add_gated_pair(w,L,n, 17, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
@@ -2461,6 +2699,7 @@ static void generate_weights(InterpreterWeights* w) {
         n = add_gated_pair(w,L,n, 17, S_R3,1,S_R2,-1,-1,0,-1,0, 0, S_R2, 1.0f);
         n = add_gated_pair(w,L,n, 17, S_R3,-1,-1,0,-1,0,-1,0, 0, S_R3, 1.0f);
         n = add_gated_pair(w,L,n, 17, -1,0,-1,0,-1,0,-1,0, -1.0f, S_DEPTH, 1.0f);
+        n = add_type_binary_result(w,L,n, 17, TYPE_BOOL);
 
         /* OP_GE (18): TOS = (SOS >= TOS) = 1 - CMP_LT */
         n = add_gated_pair(w,L,n, 18, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
@@ -2469,6 +2708,7 @@ static void generate_weights(InterpreterWeights* w) {
         n = add_gated_pair(w,L,n, 18, S_R3,1,S_R2,-1,-1,0,-1,0, 0, S_R2, 1.0f);
         n = add_gated_pair(w,L,n, 18, S_R3,-1,-1,0,-1,0,-1,0, 0, S_R3, 1.0f);
         n = add_gated_pair(w,L,n, 18, -1,0,-1,0,-1,0,-1,0, -1.0f, S_DEPTH, 1.0f);
+        n = add_type_binary_result(w,L,n, 18, TYPE_BOOL);
 
         /* OP_NOT (19): TOS = (TOS==0) ? 1 : 0. Unary, no stack shift.
          * Approach: delta = indicator(TOS,0) - TOS.
@@ -2533,6 +2773,7 @@ static void generate_weights(InterpreterWeights* w) {
          */
         n = add_gated_pair(w,L,n, 19, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
         n = add_gated_pair(w,L,n, 19, S_ZOPER,1,S_TOS,-1,-1,0,-1,0, 0, S_TOS, 1.0f);
+        n = add_type_unary_result(w,L,n, 19, TYPE_BOOL);
 
         /* OP_GET_LOCAL (20): push mem[operand] — LOADVAL precomputed from OPERAND */
         n = add_gated_pair(w,L,n, 20, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
@@ -2541,6 +2782,7 @@ static void generate_weights(InterpreterWeights* w) {
         n = add_gated_pair(w,L,n, 20, S_SOS,1,S_R2,-1,-1,0,-1,0, 0, S_R2, 1.0f);
         n = add_gated_pair(w,L,n, 20, S_R2,1,S_R3,-1,-1,0,-1,0, 0, S_R3, 1.0f);
         n = add_gated_pair(w,L,n, 20, -1,0,-1,0,-1,0,-1,0, 1.0f, S_DEPTH, 1.0f);
+        n = add_type_push(w,L,n, 20, TYPE_NUMBER);
 
         /* OP_SET_LOCAL (21): mem[operand]=TOS, pop — uses precomputed STORED deltas */
         n = add_gated_pair(w,L,n, 21, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
@@ -2552,6 +2794,7 @@ static void generate_weights(InterpreterWeights* w) {
         n = add_gated_pair(w,L,n, 21, S_R3,1,S_R2,-1,-1,0,-1,0, 0, S_R2, 1.0f);
         n = add_gated_pair(w,L,n, 21, S_R3,-1,-1,0,-1,0,-1,0, 0, S_R3, 1.0f);
         n = add_gated_pair(w,L,n, 21, -1,0,-1,0,-1,0,-1,0, -1.0f, S_DEPTH, 1.0f);
+        n = add_type_pop(w,L,n, 21);
 
         /* OP_CALL (25): set IS_CALL flag, PC++ */
         n = add_gated_pair(w,L,n, 25, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
@@ -2566,9 +2809,10 @@ static void generate_weights(InterpreterWeights* w) {
         /* OP_CDR (33): IS_NATIVE, PC++ */
         n = add_gated_pair(w,L,n, 33, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
         n = add_gated_pair(w,L,n, 33, -1,0,-1,0,-1,0,-1,0, 1.0f, S_IS_NATIVE, 1.0f);
-        /* OP_NULL_P (34): IS_NATIVE, PC++ */
+        /* OP_NULL_P (34): weight-encoded nil predicate */
         n = add_gated_pair(w,L,n, 34, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
-        n = add_gated_pair(w,L,n, 34, -1,0,-1,0,-1,0,-1,0, 1.0f, S_IS_NATIVE, 1.0f);
+        n = add_gated_pair(w,L,n, 34, S_TYPE_IS_NIL,1,S_TOS,-1,-1,0,-1,0, 0, S_TOS, 1.0f);
+        n = add_type_unary_result(w,L,n, 34, TYPE_BOOL);
         /* OP_GET_UPVALUE (22): IS_NATIVE */
         n = add_gated_pair(w,L,n, 22, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
         n = add_gated_pair(w,L,n, 22, -1,0,-1,0,-1,0,-1,0, 1.0f, S_IS_NATIVE, 1.0f);
@@ -2584,8 +2828,58 @@ static void generate_weights(InterpreterWeights* w) {
         /* OP_NATIVE_CALL (37): IS_NATIVE, PC++ */
         n = add_gated_pair(w,L,n, 37, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
         n = add_gated_pair(w,L,n, 37, -1,0,-1,0,-1,0,-1,0, 1.0f, S_IS_NATIVE, 1.0f);
+
+        /* Stage-1 type predicates (45-50): weight-encoded via Layer 2 type indicators. */
+        n = add_gated_pair(w,L,n, 45, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
+        n = add_gated_pair(w,L,n, 45, S_TYPE_IS_PAIR,1,S_TOS,-1,-1,0,-1,0, 0, S_TOS, 1.0f);
+        n = add_type_unary_result(w,L,n, 45, TYPE_BOOL);
+        n = add_gated_pair(w,L,n, 46, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
+        n = add_gated_pair(w,L,n, 46, S_TYPE_IS_NUM,1,S_TOS,-1,-1,0,-1,0, 0, S_TOS, 1.0f);
+        n = add_type_unary_result(w,L,n, 46, TYPE_BOOL);
+        n = add_gated_pair(w,L,n, 47, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
+        n = add_gated_pair(w,L,n, 47, S_TYPE_IS_STR,1,S_TOS,-1,-1,0,-1,0, 0, S_TOS, 1.0f);
+        n = add_type_unary_result(w,L,n, 47, TYPE_BOOL);
+        n = add_gated_pair(w,L,n, 48, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
+        n = add_gated_pair(w,L,n, 48, S_TYPE_IS_BOOL,1,S_TOS,-1,-1,0,-1,0, 0, S_TOS, 1.0f);
+        n = add_type_unary_result(w,L,n, 48, TYPE_BOOL);
+        n = add_gated_pair(w,L,n, 49, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
+        n = add_gated_pair(w,L,n, 49, S_TYPE_IS_PROC,1,S_TOS,-1,-1,0,-1,0, 0, S_TOS, 1.0f);
+        n = add_type_unary_result(w,L,n, 49, TYPE_BOOL);
+        n = add_gated_pair(w,L,n, 50, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
+        n = add_gated_pair(w,L,n, 50, S_TYPE_IS_VEC,1,S_TOS,-1,-1,0,-1,0, 0, S_TOS, 1.0f);
+        n = add_type_unary_result(w,L,n, 50, TYPE_BOOL);
+
+        /* OP_POPN (53): remove N values below TOS while preserving TOS itself.
+         * The current compiler emits only N <= 3, matching the four-register
+         * stack cache that the weight interpreter models directly. */
+        n = add_gated_pair(w,L,n, 53, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
+        n = add_gated_pair_op_operand(w,L,n, 53, 1, S_R2,1,S_SOS,-1,-1,0,-1,0, 0, S_SOS, 1.0f);
+        n = add_gated_pair_op_operand(w,L,n, 53, 1, S_R3,1,S_R2,-1,-1,0,-1,0, 0, S_R2, 1.0f);
+        n = add_gated_pair_op_operand(w,L,n, 53, 1, S_R3,-1,-1,0,-1,0,-1,0, 0, S_R3, 1.0f);
+        n = add_gated_pair_op_operand(w,L,n, 53, 1, -1,0,-1,0,-1,0,-1,0, -1.0f, S_DEPTH, 1.0f);
+        n = add_gated_pair_op_operand(w,L,n, 53, 1, S_TYPE_R2,1,S_TYPE_SOS,-1,-1,0,-1,0, 0, S_TYPE_SOS, 1.0f);
+        n = add_gated_pair_op_operand(w,L,n, 53, 1, S_TYPE_R3,1,S_TYPE_R2,-1,-1,0,-1,0, 0, S_TYPE_R2, 1.0f);
+        n = add_gated_pair_op_operand(w,L,n, 53, 1, S_TYPE_R3,-1,-1,0,-1,0,-1,0, TYPE_NUMBER, S_TYPE_R3, 1.0f);
+
+        n = add_gated_pair_op_operand(w,L,n, 53, 2, S_R3,1,S_SOS,-1,-1,0,-1,0, 0, S_SOS, 1.0f);
+        n = add_gated_pair_op_operand(w,L,n, 53, 2, S_R2,-1,-1,0,-1,0,-1,0, 0, S_R2, 1.0f);
+        n = add_gated_pair_op_operand(w,L,n, 53, 2, S_R3,-1,-1,0,-1,0,-1,0, 0, S_R3, 1.0f);
+        n = add_gated_pair_op_operand(w,L,n, 53, 2, -1,0,-1,0,-1,0,-1,0, -2.0f, S_DEPTH, 1.0f);
+        n = add_gated_pair_op_operand(w,L,n, 53, 2, S_TYPE_R3,1,S_TYPE_SOS,-1,-1,0,-1,0, 0, S_TYPE_SOS, 1.0f);
+        n = add_gated_pair_op_operand(w,L,n, 53, 2, S_TYPE_R2,-1,-1,0,-1,0,-1,0, TYPE_NUMBER, S_TYPE_R2, 1.0f);
+        n = add_gated_pair_op_operand(w,L,n, 53, 2, S_TYPE_R3,-1,-1,0,-1,0,-1,0, TYPE_NUMBER, S_TYPE_R3, 1.0f);
+
+        n = add_gated_pair_op_operand(w,L,n, 53, 3, S_SOS,-1,-1,0,-1,0,-1,0, 0, S_SOS, 1.0f);
+        n = add_gated_pair_op_operand(w,L,n, 53, 3, S_R2,-1,-1,0,-1,0,-1,0, 0, S_R2, 1.0f);
+        n = add_gated_pair_op_operand(w,L,n, 53, 3, S_R3,-1,-1,0,-1,0,-1,0, 0, S_R3, 1.0f);
+        n = add_gated_pair_op_operand(w,L,n, 53, 3, -1,0,-1,0,-1,0,-1,0, -3.0f, S_DEPTH, 1.0f);
+        n = add_gated_pair_op_operand(w,L,n, 53, 3, S_TYPE_SOS,-1,-1,0,-1,0,-1,0, TYPE_NUMBER, S_TYPE_SOS, 1.0f);
+        n = add_gated_pair_op_operand(w,L,n, 53, 3, S_TYPE_R2,-1,-1,0,-1,0,-1,0, TYPE_NUMBER, S_TYPE_R2, 1.0f);
+        n = add_gated_pair_op_operand(w,L,n, 53, 3, S_TYPE_R3,-1,-1,0,-1,0,-1,0, TYPE_NUMBER, S_TYPE_R3, 1.0f);
+
         /* Remaining delegated opcodes (38-62): all IS_NATIVE + PC++ */
         for (int opc = 38; opc <= 62; opc++) {
+            if ((opc >= 45 && opc <= 50) || opc == 53) continue;
             n = add_gated_pair(w,L,n, opc, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
             n = add_gated_pair(w,L,n, opc, -1,0,-1,0,-1,0,-1,0, 1.0f, S_IS_NATIVE, 1.0f);
         }
@@ -2607,6 +2901,7 @@ static void generate_weights(InterpreterWeights* w) {
         n = add_gated_pair(w,L,n, 29,
                            S_ZOPER, 1, S_ZPC1, -1, -1, 0, -1, 0,
                            1.0f, S_PC, 1.0f);
+        n = add_type_pop(w,L,n, 29);
 
         /* OP_LOOP (30): backward jump — same as OP_JUMP */
         n = add_gated_pair(w,L,n, 30, S_OPERAND,1,S_PC,-1,-1,0,-1,0, 0, S_PC, 1.0f);
@@ -2620,6 +2915,7 @@ static void generate_weights(InterpreterWeights* w) {
         n = add_gated_pair(w,L,n, 35, S_R3,1,S_R2,-1,-1,0,-1,0, 0, S_R2, 1.0f);
         n = add_gated_pair(w,L,n, 35, S_R3,-1,-1,0,-1,0,-1,0, 0, S_R3, 1.0f);
         n = add_gated_pair(w,L,n, 35, -1,0,-1,0,-1,0,-1,0, -1.0f, S_DEPTH, 1.0f);
+        n = add_type_pop(w,L,n, 35);
 
         /* OP_DIV (10): delegate to exec loop — PC++ and IS_NATIVE, exec loop does the rest */
         n = add_gated_pair(w,L,n, 10, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
@@ -3652,6 +3948,29 @@ int main(int argc, char** argv) {
     { Instr p[]={
         {OP_CONST,1},{OP_CONST,2},{OP_CONS,0},{OP_PAIR_P,0},{OP_PRINT,0},{OP_HALT,0}};
       test("pair?(cons 1 2)", p, 6, 1); }
+
+    /* Stage-1 VM-as-transformer memory-op regressions */
+    { Instr p[]={{OP_CONST,42},{OP_NUM_P,0},{OP_PRINT,0},{OP_HALT,0}};
+      test("number?(42)", p, 4, 1); }
+    { Instr p[]={{OP_TRUE,0},{OP_BOOL_P,0},{OP_PRINT,0},{OP_HALT,0}};
+      test("boolean?(true)", p, 4, 1); }
+    { Instr p[]={{OP_CONST,42},{OP_STR_P,0},{OP_PRINT,0},{OP_HALT,0}};
+      test("string?(42)", p, 4, 0); }
+    { Instr p[]={{OP_CLOSURE,5},{OP_PROC_P,0},{OP_PRINT,0},{OP_HALT,0},
+                 {OP_NOP,0},{OP_CONST,1},{OP_RETURN,0}};
+      test("procedure?(closure)", p, 7, 1); }
+    { Instr p[]={{OP_CONST,10},{OP_CONST,20},{OP_VEC_CREATE,2},{OP_VEC_P,0},
+                 {OP_PRINT,0},{OP_HALT,0}};
+      test("vector?(vec)", p, 6, 1); }
+    { Instr p[]={{OP_CONST,10},{OP_CONST,20},{OP_CONST,30},{OP_POPN,1},
+                 {OP_POP,0},{OP_PRINT,0},{OP_HALT,0}};
+      test("popn1 keeps below", p, 7, 10); }
+    { Instr p[]={{OP_CONST,10},{OP_CONST,20},{OP_CONST,30},{OP_CONST,40},
+                 {OP_POPN,2},{OP_POP,0},{OP_PRINT,0},{OP_HALT,0}};
+      test("popn2 keeps below", p, 8, 10); }
+    { Instr p[]={{OP_CONST,10},{OP_CONST,20},{OP_CONST,30},{OP_CONST,40},
+                 {OP_POPN,3},{OP_PRINT,0},{OP_HALT,0}};
+      test("popn3 keeps TOS", p, 7, 40); }
 
     /* Composite: (+ (car (cons 10 20)) (cdr (cons 30 40))) = 10 + 40 = 50 */
     { Instr p[]={
