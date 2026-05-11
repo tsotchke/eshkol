@@ -6,6 +6,23 @@
 **Companion artifact:** `research/papers/` (33 cached PDFs, content-addressed)
 **Companion bib:** `research/vm-transformer-bib.bib`
 
+**Implementation note (2026-05-11):** Stage 1 landed as `273782f`
+(`NULL_P`, six type predicates, `POPN`). The first Stage 2 slice landed as
+`58bc8b9` (`CONS`, `CAR`, `CDR`, `SET_CAR`, `SET_CDR`). The implementation
+uses Eshkol's arena model, not a free-list heap: Zone E is a bounded in-state
+arena bank, `S_ARENA_NEXT` is a bump pointer, and stack object references are
+small arena cell indices. The older "heap" wording below is historical design
+shorthand for "object store in the residual stream"; new work should use
+arena terminology and avoid GC/free-list semantics.
+
+The landed pair slice uses the existing six-layer schedule rather than adding
+Layer 6/7 immediately: Layer 3 computes stack effects plus arena operation
+transients, and Layer 4 performs arena read/write alongside the AD tape write
+logic. Current artifact verification after `58bc8b9`: 85/85 inline tests pass,
+82/82 traced programs agree on PRINT output and full per-step state, opcode
+coverage is 51 weight-implemented / 7 native-delegated, and the QLMW export is
+d_model=256, FFN=1280, 7,489,542 parameters.
+
 ## 1. Problem statement
 
 The Eshkol VM is a 83-opcode bytecode machine. The Self-Differentiating Neural
@@ -562,44 +579,50 @@ comparison-report.json    8a7917d2b56254f9fad71a4cd5e59284504313e73f99c2b668b461
 opcode-coverage.json      aa0c666ad3c2b7a1034e4a69deee6e271e53261bddb12e07dce52fb55218438f
 ```
 
-Run `scripts/paper/run_paper_suite.sh` after each stage-1 patch; expect
-identical checksums. (Different SHAs for traces are OK if the predicate
-opcodes' state-vector trajectories changed — what matters is `total_programs
-== output_agreeing_programs == fully_agreeing_programs == 71`.)
+Run `scripts/paper/run_paper_suite.sh` after each patch. The historical
+baseline here was 71 traced programs; later stages add tests, so the durable
+contract is `total_programs == output_agreeing_programs ==
+fully_agreeing_programs`, not a fixed count. Different SHAs for traces are OK
+if newly weight-encoded opcodes change state-vector trajectories.
 
-- [ ] Repurpose `S_AD_SPARE2..S_AD_SPARE8` (slots 121-127) as
+- [x] Repurpose `S_AD_SPARE2..S_AD_SPARE8` (slots 121-127) as
   `S_TYPE_IS_NUM/BOOL/PAIR/PROC/STR/VEC/NIL` transient slots
-- [ ] Layer 2: emit 7 sigmoid-difference indicator computations
+- [x] Layer 2: emit 7 sigmoid-difference indicator computations
   (one per type tag, mirroring the existing `S_CMP_EQ` pattern at
   `weight_matrices.c:780-790`)
-- [ ] Layer 3: replace IS_NATIVE emission for `OP_NULL_P` (34) +
+- [x] Layer 3: replace IS_NATIVE emission for `OP_NULL_P` (34) +
   `OP_PAIR_P` (45) … `OP_VEC_P` (50) with two `add_gated_pair` calls
   each (`Δ TOS = S_TYPE_IS_X - TOS` then `Δ TYPE_TOS = TYPE_BOOL -
   TYPE_TOS`)
-- [ ] Layer 3: replace IS_NATIVE emission for `OP_POPN` (53) with
+- [x] Layer 3: replace IS_NATIVE emission for `OP_POPN` (53) with
   three indicator-gated cases on `S_OPERAND ∈ {1, 2, 3}`
-- [ ] Update `exec_step` simulator dispatch (`weight_matrices.c:537-548`):
+- [x] Update `exec_step` simulator dispatch (`weight_matrices.c:537-548`):
   remove the 7 predicates + POPN from the IS_NATIVE union, add explicit
   cases that compute the same result
-- [ ] Update IS_NATIVE matrix-emission loop at line ~902 to skip the
+- [x] Update IS_NATIVE matrix-emission loop at line ~902 to skip the
   newly-encoded opcodes
-- [ ] Re-run `scripts/paper/run_paper_suite.sh`; the comparison-report
-  must still report 71/71/71 agreement
-- [ ] **Acceptance:** `tab_opcode_coverage.tex` shows `(43+8) wi, (10-8)
+- [x] Re-run `scripts/paper/run_paper_suite.sh`; the comparison-report
+  must report all traced programs agreeing on PRINT output and full state
+- [x] **Acceptance:** `tab_opcode_coverage.tex` shows `(43+8) wi, (10-8)
   nd` — i.e., 51 weight-implemented, 2 native-delegated for the suite's
   exercised set
 
-### Stage 2 — Heap bank: CONS, CAR, CDR, SET_CAR, SET_CDR, VEC_*, STR_*
+### Stage 2 — Arena bank: CONS, CAR, CDR, SET_CAR, SET_CDR, VEC_*, STR_*
 *~2 weeks, ~1.5M new params, d_model 128 → 256*
 
-- [ ] Extend `D` to 256, add Zone E layout
-- [ ] Add Layer 6 (cell fetch), Layer 7 (heap mutate)
-- [ ] Implement 12 heap ops via `add_heap_write` + `add_cell_load_indicator`
-- [ ] Update simulated transformer C functions (`exec_loop_postprocess`)
-- [ ] Update reference comparison harness for 256-dim states
-- [ ] **Acceptance:** add 5 new test programs that exercise heap (cons/list,
-  vector ops, string ops); all 76 programs (71 base + 5 new) bit-identical
-  agreement against simulated transformer mode
+- [x] Extend `D` to 256, add Zone E arena layout
+- [x] Implement pair arena write/read in existing Layer 3 + Layer 4 schedule
+  (`CONS`, `CAR`, `CDR`, `SET_CAR`, `SET_CDR`)
+- [x] Update reference and simulated transformer C functions for pair arena ops
+- [x] Add focused pair regressions: cdr nil type preservation, nested pair
+  type preservation, `set-cdr!`
+- [x] Re-run `scripts/paper/run_paper_suite.sh`; current report is 82/82
+  PRINT-output and full-state agreement
+- [ ] Extend arena bank layout for `VEC_*` and `STR_*`
+- [ ] Decide whether broader object ops need Layer 6/7 cell fetch/mutate or can
+  stay in the landed Layer 3 + Layer 4 schedule
+- [ ] **Acceptance:** add vector/string test programs; all traced programs
+  bit-identical against simulated transformer mode
 
 ### Stage 3 — Closures with upvalues, TAIL_CALL, PACK_REST
 *~1 week, ~500k new params*
