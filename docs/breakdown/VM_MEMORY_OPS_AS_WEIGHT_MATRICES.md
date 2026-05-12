@@ -30,19 +30,20 @@ writeback, and Layer 5 AD gradient writeback. Layer 1 now loads bounded AD
 tape parent values before Layer 2 so `OP_AD_MUL` forward recording is also
 encoded as weights.
 
-Current artifact verification after the bounded DIV/MOD + AD libm-table slice:
-106/106 inline tests pass, 103/103 traced programs agree on PRINT output and
-full per-step state, opcode coverage is 69 weight-implemented / 0
+Current artifact verification after the bounded AD unary-table slice:
+109/109 inline tests pass, 106/106 traced programs agree on PRINT output and
+full per-step state, opcode coverage is 72 weight-implemented / 0
 VM-native-delegated / 0 transformer-native-assisted in the exercised coverage
 set, and the QLMW export is d_model=256, FFN=2048, 11,037,702 parameters.
 The exercised trace set now has no `S_IS_NATIVE` postprocess assistance.
 `OP_DIV` is weight-encoded for positive integer denominators 1..16,
 `OP_MOD` is weight-encoded for the positive integer `% 3` and `% 4` verifier
 range, `AD_ABS`/`AD_RELU` are weight-encoded for bounded nonzero
-integer-scale cases, and `AD_EXP`/`AD_SIGMOID` are table-encoded for the
-exercised inputs (`exp(0)`, `sigmoid(0)`, `sigmoid(1)`). Untested or broader
-libm paths (`tanh`, `log`, `sqrt`, general `exp`/`sigmoid`, `AD_DIV`,
-`AD_POW`, `AD_SIN`, `AD_COS`) remain bounded-state candidates or
+integer-scale cases, and `AD_EXP`/`AD_SIGMOID`/`AD_TANH`/`AD_LOG`/`AD_SQRT`
+are table-encoded for the exercised inputs (`exp(0)`, `sigmoid(0)`,
+`sigmoid(1)`, `tanh(0)`, `log(1)`, `sqrt(4)`). Untested or broader libm paths
+(general `exp`/`sigmoid`/`tanh`/`log`/`sqrt`, `AD_DIV`, `AD_POW`, `AD_SIN`,
+`AD_COS`) remain bounded-state candidates or
 precision-contract decisions, not completed general encodings.
 
 ## 1. Problem statement
@@ -668,10 +669,10 @@ if newly weight-encoded opcodes change state-vector trajectories.
 - [x] `OP_PACK_REST` via bounded arena list creation
 - [x] Encode bounded exact integer `OP_DIV`/`OP_MOD` cases exercised by the
   artifact suite
-- [x] Encode exercised `AD_EXP`/`AD_SIGMOID` libm values as bounded AD table
-  paths
-- [x] Re-run `scripts/paper/run_paper_suite.sh`; current report is 103/103
-  PRINT-output and full-state agreement, with 69 weight-implemented / 0
+- [x] Encode exercised `AD_EXP`/`AD_SIGMOID`/`AD_TANH`/`AD_LOG`/`AD_SQRT`
+  libm values as bounded AD table paths
+- [x] Re-run `scripts/paper/run_paper_suite.sh`; current report is 106/106
+  PRINT-output and full-state agreement, with 72 weight-implemented / 0
   native-delegated / 0 transformer-native-assisted opcodes in the exercised
   coverage set
 - [x] **Acceptance:** Stage 3's bounded closure/upvalue, tail-call, and
@@ -684,8 +685,8 @@ if newly weight-encoded opcodes change state-vector trajectories.
 ### Stage 4 — AD transcendentals (Taylor + Newton-Raphson) on a separate build target
 *~1 week, ~100k new params*
 
-- [x] Exercised `AD_EXP(0)` and `AD_SIGMOID(0/1)` values via bounded table
-  gates in the strict artifact build
+- [x] Exercised `AD_EXP(0)`, `AD_SIGMOID(0/1)`, `AD_TANH(0)`, `AD_LOG(1)`,
+  and `AD_SQRT(4)` values via bounded table gates in the strict artifact build
 - [ ] `OP_AD_SIN`, `OP_AD_COS` via Bhaskara/Taylor in Layer 3 dispatch
 - [ ] `OP_AD_POW` via existing EXP/LOG composition
 - [ ] `OP_AD_DIV` via Newton-Raphson 4-iter loop
