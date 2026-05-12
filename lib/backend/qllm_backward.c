@@ -4,7 +4,7 @@
  *
  * Implements:
  *   - Per-dimension weighted MSE loss
- *   - Backward pass through 5-layer transformer (attention + 2 FFN types)
+ *   - Backward pass through configured transformer layers (attention + 2 FFN types)
  *   - AdamW optimizer with cosine LR schedule
  *   - Gradient clipping
  *   - QLMW v4 checkpoint format (weights + optimizer state)
@@ -24,7 +24,7 @@
 
 /* Architecture constants (must match qllm_interpreter.c) */
 #ifndef D
-#define D 36
+#define D 256
 #endif
 #ifndef H
 #define H 16
@@ -33,10 +33,10 @@
 #define HD 2
 #endif
 #ifndef N_LAYERS
-#define N_LAYERS 5
+#define N_LAYERS 6
 #endif
 #ifndef FFN_DIM
-#define FFN_DIM 512
+#define FFN_DIM 2304
 #endif
 
 /*******************************************************************************
@@ -385,7 +385,7 @@ static void qllm_backward_attention(
 }
 
 /*******************************************************************************
- * Full Backward Pass — all 5 layers in reverse
+ * Full Backward Pass — all configured layers in reverse
  ******************************************************************************/
 
 /* Weight layout — must match InterpreterWeights in weight_matrices.c */
@@ -424,7 +424,7 @@ static void qllm_forward_cached(const QllmWeights* w, const float state[D],
     float x[D]; memcpy(x, state, sizeof(float) * D);
     cache->np = np;
 
-    for (int L = 0; L < N_LAYERS; L++) {
+    for (int L = 0; L < N_LAYERS - 1; L++) {
         memcpy(cache->x_in[L], x, sizeof(float) * D);
 
         /* Attention (layer 0 only) */
@@ -508,7 +508,7 @@ static void qllm_backward(
     float dx[D];
     memcpy(dx, loss_grad, D * sizeof(float));
 
-    for (int L = N_LAYERS - 1; L >= 0; L--) {
+    for (int L = N_LAYERS - 2; L >= 0; L--) {
         float dx_layer[D] = {0};
         int ff_type = w->ff_type[L];
 

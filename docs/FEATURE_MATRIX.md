@@ -787,10 +787,10 @@ This matrix documents all implemented and planned features for the Eshkol langua
 | guard/raise exceptions | ✅ | Handler stack with continuation restore |
 | Variadic functions | ✅ | OP_PACK_REST for rest parameters |
 | **Weight Matrix Transformer** |
-| Transformer interpreter | ✅ | d_model=36, 5 layers, FFN_DIM=512, 307K params |
-| 3-way verification | ✅ | Reference = simulated = matrix-based (55/55 tests) |
+| Transformer interpreter | ✅ | d_model=256, 6 layers, FFN_DIM=2304, 12.22M params |
+| 3-way verification | ✅ | Reference = simulated = matrix-based (126/126 inline, 123/123 traced) |
 | QLMW binary export | ✅ | For qLLM weight loading |
-| 25 core opcodes in weights | ✅ | Remaining 38 via native dispatch |
+| 82 canonical opcodes in weights | ✅ | `OP_NATIVE_CALL` remains the external dispatch boundary |
 | **qLLM Bridge** |
 | Eshkol↔qLLM tensors | ✅ | Type conversion (double↔float32) with AD integration |
 | Web Platform | ✅ Complete | WebAssembly compilation, 59 DOM bindings, browser REPL, eshkol.ai |

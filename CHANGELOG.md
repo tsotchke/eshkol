@@ -1030,10 +1030,10 @@ Eshkol v1.1-accelerate delivers comprehensive performance acceleration through X
   - ESKB binary format with LEB128 encoding, CRC32 checksums, section-based layout
   - Bytecode emission via `-B` flag: `eshkol-run input.esk -B output.eskb`
   - VM linked into compiler build (ESHKOL_VM_LIBRARY_MODE)
-- **Weight Matrix Transformer**: Programs as neural network weights (weight_matrices.c, 2299 lines)
-  - d_model=36, 5 layers, FFN_DIM=512, 307K parameters
+- **Weight Matrix Transformer**: Programs as neural network weights (weight_matrices.c, ~6,800 lines)
+  - d_model=256, 6 layers, FFN_DIM=2304, 12.22M parameters
   - 3-way verification: reference interpreter = simulated transformer = matrix-based forward pass
-  - 55/55 tests passing, exports QLMW binary format for qLLM loading
+  - 126/126 inline programs and 123/123 traced programs passing, exports QLMW binary format for qLLM loading
 - **qLLM Bridge**: Eshkol-qLLM tensor conversion with AD integration (qllm_bridge.h)
 
 #### Windows Platform Support (NEW)

@@ -60,26 +60,27 @@ candidates or precision-contract decisions, not completed general encodings.
 
 The Eshkol VM is a 83-opcode bytecode machine. The Self-Differentiating Neural
 Computer (SDNC) — `lib/backend/weight_matrices.c` — analytically constructs a
-6-layer transformer. The original artifact used `d_model = 128`, FFN width
-1024, and a 71-program suite pinned at `8235d99`; the current bounded-arena
-artifact uses `d_model = 256`, FFN width 2304, and a 115-program traced suite.
+6-layer transformer. Earlier reproducibility snapshots used a smaller
+state-vector and trace suite; the current bounded-arena artifact uses
+`d_model = 256`, FFN width 2304, and a 123-program traced suite.
 
-Historically, 57 of the 83 opcodes executed end-to-end through `Wx + b`
-matmul-plus-bias and the remaining **26 opcodes were delegated** to the C
-runtime via an `IS_NATIVE` boundary marker. Current work has collapsed the
+Historically, only part of the 83-opcode ISA executed end-to-end through
+`Wx + b` matmul-plus-bias while the rest crossed an `IS_NATIVE` boundary marker.
+Current work has collapsed the
 artifact-exercised memory, closure/upvalue, tail-call, pack-rest, bounded
 integer arithmetic, and selected AD value-generation paths into weights; the
 remaining boundaries are semantic/native or broader precision-contract issues.
 
-The `IS_NATIVE` boundary is real and useful: it cleanly separates side-effecting
-heap operations from the differentiable compute kernel. But it is a leak from
-"the program is the matrix." The goal of this design is to **collapse the
-boundary for every operation that does not fundamentally require runtime
+The `IS_NATIVE` boundary is real and useful: it cleanly separates host services
+and high-level library calls from the differentiable compute kernel. But it is a
+leak from "the program is the matrix." The goal of this design is to **collapse
+the boundary for every operation that does not fundamentally require runtime
 side-effects** — i.e. every operation whose semantics can be expressed as a
-deterministic transformation of a bounded state vector. Once collapsed, the
-full VM is one transformer block iterated against itself, the heap lives in
-the state vector, and gradients through `(map f xs)` flow through the same
-backward pass that already handles arithmetic on the 19 AD opcodes.
+deterministic transformation of a bounded state vector. Once collapsed, the VM
+artifact is one transformer block iterated against itself, the arena lives in
+the state vector, and gradients through bounded list/vector programs flow
+through the same backward pass that already handles arithmetic on the 19 AD
+opcodes.
 
 This document specifies the encoding scheme.
 

@@ -83,7 +83,7 @@ build/eshkol-run hello.esk
 - **[Continuations](CONTINUATIONS.md)** — call/cc, dynamic-wind, guard/raise, exception handling
 - **[XLA Backend](XLA_BACKEND.md)** — Tensor runtime operations, GPU dispatch, broadcasting, AD gradient support
 - **[Bytecode VM](BYTECODE_VM.md)** — 63-opcode bytecode interpreter, ESKB binary format, WebAssembly execution
-- **[Computable Transformer](COMPUTABLE_TRANSFORMER.md)** — Programs as neural network weight matrices, 5-layer transformer VM encoding
+- **[Computable Transformer](COMPUTABLE_TRANSFORMER.md)** — Programs as neural network weight matrices, 6-layer transformer VM encoding
 
 ### Platform and Tools
 

@@ -78,9 +78,11 @@ f(5)  # 15 (works here, but not always in complex programs)
 ## 4. Programs as neural network weights
 
 No other language does this. Eshkol compiles programs to bytecode,
-encodes the bytecode VM into a 5-layer transformer's weight matrices,
-and executes programs as matrix multiplications. 55/55 test programs
-verified across three execution paths.
+encodes the canonical VM/AD ISA into a 6-layer transformer's weight matrices,
+and executes programs as matrix multiplications. The current repository
+artifact verifies 126/126 inline programs and 123/123 traced programs across
+three execution paths, with every canonical opcode weight-covered except the
+deliberate `OP_NATIVE_CALL` boundary.
 
 This means:
 - Programs are differentiable (gradient descent on program behaviour)

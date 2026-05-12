@@ -3934,8 +3934,8 @@ Section-based container with:
 ### 28.4 Weight Matrix Transformer
 
 Programs encoded as neural network weights (`weight_matrices.c`):
-- Architecture: d_model=36, 5 layers, FFN_DIM=512, 307K parameters
-- 25 core opcodes in weights, 38 via native dispatch
+- Architecture: d_model=256, 6 layers, FFN_DIM=2304, 12.22M parameters
+- 82 canonical opcodes in weights; `OP_NATIVE_CALL` remains the external dispatch boundary
 - 3-way verification: reference interpreter = simulated transformer = matrix-based forward pass
 - Exports QLMW binary format for qLLM loading
 

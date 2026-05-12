@@ -2,17 +2,17 @@
 
 ## Overview
 
-Eshkol's most architecturally distinctive feature is that its bytecode VM can be encoded into the weight matrices of a 5-layer transformer. Programs don't just run on a VM — they execute as matrix multiplications through a neural network whose weights ARE the interpreter.
+Eshkol's most architecturally distinctive feature is that its canonical VM/AD ISA can be encoded into the weight matrices of a 6-layer transformer. Programs don't just run on a VM — they execute as matrix multiplications through a neural network whose weights ARE the interpreter.
 
 This means:
 - A program is a sequence of bytecode instructions
-- The VM's runtime state is a 36-dimensional float vector
+- The bounded VM runtime state is a 256-dimensional float vector
 - One forward pass through the transformer = one instruction executed
-- The transformer's weights implement the full 63-opcode ISA
+- The transformer's weights implement 82 of the 83 canonical VM/AD opcodes
 
 The state vector simultaneously serves as:
-- The VM's runtime state (PC, TOS, SOS, registers, memory, type tags)
-- The embedding dimension for the transformer (d_model=36)
+- The VM's runtime state (PC, TOS, SOS, registers, arena cells, type tags, AD tape)
+- The embedding dimension for the transformer (d_model=256)
 
 ## Architecture
 
@@ -36,7 +36,7 @@ The state vector simultaneously serves as:
     ┌─────────▼─────────┐  ┌───────▼──────┐  ┌──────────▼─────────┐
     │  Reference VM     │  │  Simulated   │  │  Matrix Forward    │
     │  (C switch/case)  │  │  Transformer │  │  Pass (W @ x + b)  │
-    │  63 opcodes       │  │  (C functions│  │  (actual matmul)   │
+    │  83 opcodes       │  │  (C functions│  │  (actual matmul)   │
     │                   │  │   mirroring  │  │                    │
     │                   │  │   weights)   │  │                    │
     └─────────┬─────────┘  └───────┬──────┘  └──────────┬─────────┘
@@ -44,35 +44,36 @@ The state vector simultaneously serves as:
               └────────────────────┼────────────────────┘
                                    │
                          3-way verification
-                         (55/55 tests pass)
+                         (126/126 inline, 123/123 traced)
 ```
 
-## The State Vector (d_model=36)
+## The State Vector (d_model=256)
 
-The 36-dimensional state vector encodes the complete VM state:
+The 256-dimensional state vector encodes the bounded VM state:
 
 | Dimensions | Content |
 |-----------|---------|
-| 0 | Program Counter (PC) |
-| 1 | Stack Pointer (SP) |
-| 2 | Top-of-Stack (TOS) |
-| 3 | Second-on-Stack (SOS) |
-| 4-7 | Registers / scratch |
-| 8-15 | Memory cells |
-| 16-19 | Type tags |
-| 20-23 | Flags (zero, negative, overflow, halt) |
-| 24-31 | Extended state (frame pointer, upvalues) |
-| 32-35 | Instruction operand / immediate value |
+| 0-15 | Persistent VM state: PC, stack values, output, halt, locals, SP/FP, closure |
+| 16-31 | Per-cycle transients: opcode, operand, products, loads, comparisons, dispatch flags |
+| 32-35 | Type tags for TOS/SOS/R2/R3 |
+| 36-47 | AD control state: tape length, cursor, mode, current node fields |
+| 48-111 | AD tape storage: 8 nodes x 8 fields |
+| 112-127 | AD/type-predicate transient indicators |
+| 128-207 | Bounded arena bank: 16 cells x 5 fields |
+| 208-255 | Arena operation transients for cons/list/vector/string/closure/continuation slices |
+
+The arena bank is a bounded OALR-style memory slice. Stack values carry small
+cell indices, not host pointers; the weight artifact is not a GC heap.
 
 ## Transformer Architecture
 
 ```
-d_model  = 36       (state vector dimension)
+d_model  = 256      (state vector dimension)
 n_heads  = 16       (attention heads)
 head_dim = 2        (per-head dimension)
-n_layers = 5        (transformer depth)
-FFN_DIM  = 512      (feed-forward hidden dimension)
-Parameters: ~307,000
+n_layers = 6        (transformer depth)
+FFN_DIM  = 2304     (feed-forward hidden dimension)
+Parameters: 12,220,422
 ```
 
 ### Layer 0: Instruction Fetch
@@ -80,39 +81,43 @@ Parameters: ~307,000
 - **Function**: Reads the current instruction from the code buffer into the state vector
 - **Attention pattern**: Sharply peaked — attends almost entirely to the instruction at position PC
 
-### Layer 1: Product Precompute
-- **Mechanism**: Square activation FFN
-- **Function**: Computes TOS × SOS and other products needed by arithmetic opcodes
-- **Activation**: h = Wx + b, then a = h², then out = a·W' + b'
-
-### Layer 2: Preprocessing
+### Layer 1: Preprocessing
 - **Mechanism**: Gated FFN (sigmoid gate × linear up-projection)
-- **Function**: Address resolution, comparison flags, operand decoding
-- **Operations**: Resolves local/upvalue slot addresses, computes comparison results
+- **Function**: Address resolution, comparison flags, operand decoding, type predicates, AD cursor loads
+- **Operations**: Resolves local/upvalue slot addresses, computes comparison results, prepares bounded arena/AD indicators
+
+### Layer 2: Product Precompute
+- **Mechanism**: Square activation FFN
+- **Function**: Computes TOS × SOS and the AD products needed by backward rules
+- **Activation**: h = Wx + b, then a = h², then out = a·W' + b'
 
 ### Layer 3: Execution
 - **Mechanism**: Gated FFN — the core opcode dispatcher
 - **Function**: Each opcode is implemented as a pair of neurons (gate + value)
 - **Pattern**: Gate neuron activates for a specific opcode; value neuron computes the result
-- **Coverage**: 25 core opcodes are fully weight-encoded; 38 complex opcodes (CONS, CAR, closures, vectors) set IS_NATIVE=1 and delegate to C
+- **Coverage**: 82 canonical opcodes are weight-encoded; only `OP_NATIVE_CALL` remains the external dispatch boundary
 
-### Layer 4: Frame Management
-- **Mechanism**: Gated FFN for CALL/RETURN
-- **Function**: Manages call frames, stack frame setup, return address tracking
+### Layer 4: Tape and Arena Writeback
+- **Mechanism**: Gated FFN for persistent writes
+- **Function**: Commits AD tape nodes, arena cells, closure/continuation state, and parent loads
+
+### Layer 5: Gradient Writeback
+- **Mechanism**: Gated FFN for backward-only updates
+- **Function**: Accumulates parent gradients and advances reverse-mode AD cursor state
 
 ## Two Tiers of Execution
 
-### Tier 1: Weight-Encoded Opcodes (0-62)
+### Tier 1: Weight-Encoded Opcodes
 
-The 63 core ISA opcodes — ADD, SUB, MUL, CONST, JUMP, etc. — compute their results entirely through matrix multiplications. For example:
+The bounded canonical VM/AD opcodes — ADD, SUB, MUL, CONST, JUMP, arena memory, closures, continuations, type predicates, and verifier-covered AD tape rules — compute their results entirely through matrix multiplications. For example:
 
 **OP_ADD**: The gate neuron fires when `opcode == 7`. The value neurons compute `TOS + SOS` and write the result back to the TOS dimension of the state vector. This happens as `W @ state + b` — no C code involved.
 
-25 of the 63 opcodes are fully weight-encoded. The remaining 38 (CONS, CAR, CDR, closures, heap allocation, I/O) set the `IS_NATIVE` flag in the state vector, causing the execution loop to delegate to C-level `exec_loop_postprocess()`.
+82 of the 83 canonical opcodes are weight-encoded in the current artifact. The bounded memory representation is an arena bank in the state vector, so operations such as cons/car/cdr, list/vector slices, closures, continuations, and type predicates are no longer generic native fallbacks in the strict verifier.
 
 ### Tier 2: Native Call Dispatch (IDs 300+)
 
-`OP_NATIVE_CALL` (opcode 37) carries a native function ID as its operand. The transformer detects it, sets `IS_NATIVE=1`, and the C postprocessor dispatches to the appropriate native function. This is how:
+`OP_NATIVE_CALL` (opcode 37) carries a native function ID as its operand. This remains the explicit external boundary for host services and high-level library calls. This is how:
 
 - Consciousness engine (500-549): logic, inference, workspace
 - Tensor operations (410-470): matmul, reshape, reduce
@@ -129,7 +134,7 @@ Every program is executed through all three paths and the results are compared:
 2. **Simulated transformer**: C functions that mirror exactly what the weight matrices compute, but without actual matrix multiplication
 3. **Matrix-based forward pass**: Actual `W @ state + b` through generic matmul — the real transformer execution
 
-All three must produce identical results. **55/55 test programs pass 3-way verification.**
+All three must produce identical results. The current artifact has **126/126 inline verification programs** and **123/123 traced programs** agreeing on both printed output and full per-step state.
 
 ## QLMW Binary Format
 
@@ -139,10 +144,10 @@ The analytically constructed weights are exported in QLMW (Quantum LLM Weights) 
 Header:
   magic: "QLMW"
   version: 3
-  d_model: 36
-  n_layers: 5
+  d_model: 256
+  n_layers: 6
   n_heads: 16
-  ffn_dim: 512
+  ffn_dim: 2304
 
 Per-layer weights:
   W_Q, W_K, W_V, W_O  (attention projection matrices)
@@ -178,7 +183,7 @@ This enables:
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `lib/backend/weight_matrices.c` | 2,299 | Weight matrix construction + 3-way verification |
+| `lib/backend/weight_matrices.c` | ~6,800 | Weight matrix construction + 3-way verification |
 | `lib/backend/qllm_interpreter.c` | ~1,000 | qLLM integration + QLMW loading |
 | `lib/backend/qllm_backward.c` | ~700 | Backward pass for weight learning |
 | `lib/backend/eskb_format.h` | ~100 | ESKB binary format specification |

@@ -37,13 +37,16 @@
 #endif
 
 /* Architecture constants (must match weight_matrices.c) */
-#define D 36
+#define D 256
 #define H 16
 #define HD 2
-#define N_LAYERS 5
-#define FFN_DIM 512
+#define N_LAYERS 6
+#define FFN_DIM 2304
 #define MEM_SIZE 4
-#define SCALE 100.0f
+#define SCALE 300.0f
+#define AD_NODE_FIELDS 8
+#define ARENA_CELLS 16
+#define ARENA_CELL_FIELDS 5
 
 /* Opcodes -- canonical numbering from eshkol_compiler.c */
 typedef enum {
@@ -62,8 +65,15 @@ typedef enum {
     OP_SET_CAR=51, OP_SET_CDR=52, OP_POPN=53,
     OP_OPEN_CLOSURE=54, OP_CALLCC=55, OP_INVOKE_CC=56,
     OP_PUSH_HANDLER=57, OP_POP_HANDLER=58, OP_GET_EXN=59,
-    OP_PACK_REST=60, OP_WIND_PUSH=61, OP_WIND_POP=62,
-    OP_COUNT=63
+    OP_PACK_REST=60, OP_WIND_PUSH=61, OP_WIND_POP=62, OP_VOID=63,
+    OP_AD_VAR=64, OP_AD_CONST=65,
+    OP_AD_ADD=66, OP_AD_SUB=67, OP_AD_MUL=68,
+    OP_AD_NEG=69, OP_AD_ABS=70, OP_AD_RELU=71,
+    OP_AD_SIGMOID=72, OP_AD_TANH=73,
+    OP_AD_EXP=74, OP_AD_LOG=75, OP_AD_SQRT=76,
+    OP_AD_BACKWARD=77, OP_AD_GRAD=78,
+    OP_AD_DIV=79, OP_AD_POW=80, OP_AD_SIN=81, OP_AD_COS=82,
+    OP_COUNT=83
 } OpCode;
 
 typedef struct { OpCode op; int operand; } Instr;
@@ -73,7 +83,8 @@ enum {
     S_PC=0, S_TOS=1, S_SOS=2, S_R2=3, S_R3=4, S_DEPTH=5,
     S_OUTPUT=6, S_HALT=7,
     S_MEM0=8, S_MEM1=9, S_MEM2=10, S_MEM3=11,
-    S_SP=12, S_FP=13, S_HAS_OUT=14, S_SPARE=15,
+    S_SP=12, S_FP=13, S_HAS_OUT=14, S_CUR_CLOSURE=15,
+    S_EXC_DEPTH=S_SP, S_WIND_DEPTH=S_FP,
     S_OPCODE=16, S_OPERAND=17,
     S_PRODUCT=18, S_LOADVAL=19,
     S_STORED0=20, S_STORED1=21, S_STORED2=22, S_STORED3=23,
@@ -85,7 +96,100 @@ enum {
     /* Type tags for TOS/SOS/R2/R3 (32-35) — persist across steps.
      * Type encoding: 0=number, 1=boolean, 2=pair, 3=closure,
      *                4=string, 5=vector, 6=nil, 7=continuation */
-    S_TYPE_TOS=32, S_TYPE_SOS=33, S_TYPE_R2=34, S_TYPE_R3=35
+    S_TYPE_TOS=32, S_TYPE_SOS=33, S_TYPE_R2=34, S_TYPE_R3=35,
+
+    S_AD_TAPE_LEN=36,
+    S_AD_CURSOR=37,
+    S_AD_MODE=38,
+    S_AD_CUR_OP=39,
+    S_AD_CUR_VALUE=40,
+    S_AD_CUR_GRAD=41,
+    S_AD_CUR_LEFT=42,
+    S_AD_CUR_RIGHT=43,
+    S_AD_CUR_SAVED=44,
+    S_AD_LEFT_VALUE=45,
+    S_AD_LEFT_GRAD=46,
+    S_AD_UNARY_ABS_ACTIVE=S_AD_LEFT_GRAD,
+    S_AD_RIGHT_VALUE=47,
+
+    S_AD_TAPE_BASE=48,
+
+    S_AD_IS_FORWARD=112,
+    S_AD_IS_BACKWARD=113,
+    S_AD_GRAD_ACCUM=114,
+    S_AD_UNARY_RELU_ACTIVE=S_AD_GRAD_ACCUM,
+    S_AD_PROD_GRAD_LV=115,
+    S_AD_PROD_GRAD_RV=116,
+    S_AD_LEFT_GRAD_NEW=117,
+    S_AD_RIGHT_GRAD_NEW=118,
+    S_AD_PROD_LR=119,
+    S_AD_PROD_GRAD_CV=S_AD_PROD_LR,
+    S_AD_PROD_GRAD_SV=120,
+    S_AD_SPARE1=120,
+
+    S_TYPE_IS_NUM=121,
+    S_TYPE_IS_BOOL=122,
+    S_TYPE_IS_PAIR=123,
+    S_TYPE_IS_PROC=124,
+    S_TYPE_IS_STR=125,
+    S_TYPE_IS_VEC=126,
+    S_TYPE_IS_NIL=127,
+
+    S_AD_SPARE2=121, S_AD_SPARE3=122, S_AD_SPARE4=123,
+    S_AD_SPARE5=124, S_AD_SPARE6=125, S_AD_SPARE7=126, S_AD_SPARE8=127,
+
+    S_ARENA_BASE=128,
+    S_ARENA_NEXT=S_ARENA_BASE + ARENA_CELLS * ARENA_CELL_FIELDS,
+
+    S_ARENA_WRITE_KIND,
+    S_ARENA_WRITE_CAR,
+    S_ARENA_WRITE_CDR,
+    S_ARENA_READ_CAR,
+    S_ARENA_READ_CDR,
+    S_ARENA_TARGET,
+    S_ARENA_NEW_KIND,
+    S_ARENA_NEW_CAR,
+    S_ARENA_NEW_CDR,
+    S_ARENA_NEW_CAR_TYPE,
+    S_ARENA_NEW_CDR_TYPE,
+    S_ARENA_VEC_WRITE,
+    S_ARENA_VEC_BASE,
+    S_ARENA_VEC_LEN,
+    S_ARENA_VEC_E0,
+    S_ARENA_VEC_E1,
+    S_ARENA_VEC_E2,
+    S_ARENA_VEC_E3,
+    S_ARENA_VEC_T0,
+    S_ARENA_VEC_T1,
+    S_ARENA_VEC_T2,
+    S_ARENA_VEC_T3,
+    S_ARENA_VEC_HAS_E0,
+    S_ARENA_VEC_HAS_E1,
+    S_ARENA_VEC_HAS_E2,
+    S_ARENA_VEC_HAS_E3,
+    S_ARENA_LIST_BASE,
+    S_ARENA_LIST_E0,
+    S_ARENA_LIST_E1,
+    S_ARENA_LIST_E2,
+    S_ARENA_LIST_E3,
+    S_ARENA_LIST_T0,
+    S_ARENA_LIST_T1,
+    S_ARENA_LIST_T2,
+    S_ARENA_LIST_T3,
+    S_ARENA_LIST_CDR0,
+    S_ARENA_LIST_CDR1,
+    S_ARENA_LIST_CDR2,
+    S_ARENA_LIST_CDR3,
+    S_ARENA_LIST_CDRT0,
+    S_ARENA_LIST_CDRT1,
+    S_ARENA_LIST_CDRT2,
+    S_ARENA_LIST_CDRT3,
+    S_ARENA_LIST_HAS_E0,
+    S_ARENA_LIST_HAS_E1,
+    S_ARENA_LIST_HAS_E2,
+    S_ARENA_LIST_HAS_E3,
+    S_ARENA_TRANSIENT_START=S_ARENA_WRITE_KIND,
+    S_ARENA_TRANSIENT_END=S_ARENA_LIST_HAS_E3
 };
 
 /* Type tag values */
@@ -706,11 +810,41 @@ static void matvec(const float* x, const float* W, float* out, int rows, int col
             out[j] += x[i] * W[i * cols + j];
 }
 
+static void apply_ffn_layer(const Weights* w, int L, float x[D]) {
+    float fo[D]; memset(fo, 0, sizeof(fo));
+    if (w->ff_type[L] == 1) {
+        float h[FFN_DIM];
+        matvec(x, w->ff_up[L], h, D, FFN_DIM);
+        for (int i = 0; i < FFN_DIM; i++) h[i] += w->ff_up_b[L][i];
+        for (int i = 0; i < FFN_DIM; i++) h[i] *= h[i];
+        matvec(h, w->ff_down[L], fo, FFN_DIM, D);
+        for (int i = 0; i < D; i++) fo[i] += w->ff_down_b[L][i];
+    } else if (w->ff_type[L] == 2) {
+        float gate[FFN_DIM], up[FFN_DIM], h[FFN_DIM];
+        matvec(x, w->ff_gate[L], gate, D, FFN_DIM);
+        for (int i = 0; i < FFN_DIM; i++) gate[i] = sigmoidf(gate[i] + w->ff_gate_b[L][i]);
+        matvec(x, w->ff_up[L], up, D, FFN_DIM);
+        for (int i = 0; i < FFN_DIM; i++) up[i] += w->ff_up_b[L][i];
+        for (int i = 0; i < FFN_DIM; i++) h[i] = gate[i] * up[i];
+        matvec(h, w->ff_down[L], fo, FFN_DIM, D);
+        for (int i = 0; i < D; i++) fo[i] += w->ff_down_b[L][i];
+    }
+    for (int i = 0; i < D; i++) x[i] += fo[i];
+}
+
+static void backward_with_weights(const Weights* w, float x[D]) {
+    apply_ffn_layer(w, 1, x);
+    apply_ffn_layer(w, 4, x);
+    apply_ffn_layer(w, 2, x);
+    apply_ffn_layer(w, 5, x);
+    apply_ffn_layer(w, 5, x);
+}
+
 static void forward_pass(const Weights* w, const float state[D],
                           const float pe[][D], int np, float next[D]) {
     float x[D]; memcpy(x, state, sizeof(float)*D);
 
-    for (int L = 0; L < N_LAYERS; L++) {
+    for (int L = 0; L < N_LAYERS - 1; L++) {
         /* Attention (layer 0 only) */
         float ao[D]; memset(ao, 0, sizeof(ao));
         if (L == 0 && np > 0) {
@@ -736,26 +870,7 @@ static void forward_pass(const Weights* w, const float state[D],
         }
         for(int i=0;i<D;i++) x[i]+=ao[i];
 
-        /* FFN */
-        float fo[D]; memset(fo,0,sizeof(fo));
-        if (w->ff_type[L]==1) {
-            float h[FFN_DIM];
-            matvec(x, w->ff_up[L], h, D, FFN_DIM);
-            for(int i=0;i<FFN_DIM;i++) h[i]+=w->ff_up_b[L][i];
-            for(int i=0;i<FFN_DIM;i++) h[i]*=h[i];
-            matvec(h, w->ff_down[L], fo, FFN_DIM, D);
-            for(int i=0;i<D;i++) fo[i]+=w->ff_down_b[L][i];
-        } else if (w->ff_type[L]==2) {
-            float gate[FFN_DIM], up[FFN_DIM], h[FFN_DIM];
-            matvec(x, w->ff_gate[L], gate, D, FFN_DIM);
-            for(int i=0;i<FFN_DIM;i++) gate[i]=sigmoidf(gate[i]+w->ff_gate_b[L][i]);
-            matvec(x, w->ff_up[L], up, D, FFN_DIM);
-            for(int i=0;i<FFN_DIM;i++) up[i]+=w->ff_up_b[L][i];
-            for(int i=0;i<FFN_DIM;i++) h[i]=gate[i]*up[i];
-            matvec(h, w->ff_down[L], fo, FFN_DIM, D);
-            for(int i=0;i<D;i++) fo[i]+=w->ff_down_b[L][i];
-        }
-        for(int i=0;i<D;i++) x[i]+=fo[i];
+        apply_ffn_layer(w, L, x);
     }
     memcpy(next, x, sizeof(float)*D);
 }
@@ -776,7 +891,7 @@ static void forward_pass_qllm(const Weights* w, const float state[D],
                                 qllm_device_t dev) {
     float x[D]; memcpy(x, state, sizeof(float)*D);
 
-    for (int L = 0; L < N_LAYERS; L++) {
+    for (int L = 0; L < N_LAYERS - 1; L++) {
         /* Attention (layer 0 only — same as C version, attention is small) */
         float ao[D]; memset(ao, 0, sizeof(ao));
         if (L == 0 && np > 0) {
@@ -863,15 +978,27 @@ static void forward_pass_qllm(const Weights* w, const float state[D],
 static int run_program(const Weights* w, const Instr* prog, int n_instr,
                         float* outputs, int max_out) {
     float pe[256][D];
+    memset(pe, 0, sizeof(pe));
     for (int p = 0; p < n_instr && p < 256; p++)
         embed_instruction(&prog[p], p, pe[p]);
-    float state[D]; memset(state, 0, sizeof(state)); state[S_OUTPUT] = -1;
+    float state[D]; memset(state, 0, sizeof(state));
+    state[S_OUTPUT] = -1;
+    state[S_CUR_CLOSURE] = -100.0f;
     g_frame_count = 0; g_heap_ptr = 0; g_exc_count = 0; g_current_exn = 0.0f; g_current_closure_ptr = -1; g_wind_depth = 0;
     int n_out = 0;
     for (int step = 0; step < 100000; step++) {
         float next[D];
-        forward_pass(w, state, pe, n_instr, next);
-        exec_loop_postprocess(next, prog, n_instr);
+        for (int i = S_AD_CUR_OP; i <= S_AD_RIGHT_VALUE; i++) state[i] = 0;
+        state[S_AD_IS_FORWARD] = 0;
+        for (int i = S_AD_GRAD_ACCUM; i <= S_AD_SPARE8; i++) state[i] = 0;
+        for (int i = S_ARENA_TRANSIENT_START; i <= S_ARENA_TRANSIENT_END; i++) state[i] = 0;
+        if (state[S_AD_IS_BACKWARD] > 0.5f) {
+            memcpy(next, state, sizeof(next));
+            backward_with_weights(w, next);
+        } else {
+            forward_pass(w, state, pe, n_instr, next);
+            exec_loop_postprocess(next, prog, n_instr);
+        }
         if (next[S_HAS_OUT] > 0.5f && n_out < max_out)
             outputs[n_out++] = next[S_OUTPUT];
         if (next[S_HALT] > 0.5f) break;
@@ -884,15 +1011,27 @@ static int run_program(const Weights* w, const Instr* prog, int n_instr,
 static int run_program_qllm(const Weights* w, const Instr* prog, int n_instr,
                               float* outputs, int max_out, qllm_device_t dev) {
     float pe[256][D];
+    memset(pe, 0, sizeof(pe));
     for (int p = 0; p < n_instr && p < 256; p++)
         embed_instruction(&prog[p], p, pe[p]);
-    float state[D]; memset(state, 0, sizeof(state)); state[S_OUTPUT] = -1;
+    float state[D]; memset(state, 0, sizeof(state));
+    state[S_OUTPUT] = -1;
+    state[S_CUR_CLOSURE] = -100.0f;
     g_frame_count = 0; g_heap_ptr = 0; g_exc_count = 0; g_current_exn = 0.0f; g_current_closure_ptr = -1; g_wind_depth = 0;
     int n_out = 0;
     for (int step = 0; step < 100000; step++) {
         float next[D];
-        forward_pass_qllm(w, state, pe, n_instr, next, dev);
-        exec_loop_postprocess(next, prog, n_instr);
+        for (int i = S_AD_CUR_OP; i <= S_AD_RIGHT_VALUE; i++) state[i] = 0;
+        state[S_AD_IS_FORWARD] = 0;
+        for (int i = S_AD_GRAD_ACCUM; i <= S_AD_SPARE8; i++) state[i] = 0;
+        for (int i = S_ARENA_TRANSIENT_START; i <= S_ARENA_TRANSIENT_END; i++) state[i] = 0;
+        if (state[S_AD_IS_BACKWARD] > 0.5f) {
+            memcpy(next, state, sizeof(next));
+            backward_with_weights(w, next);
+        } else {
+            forward_pass_qllm(w, state, pe, n_instr, next, dev);
+            exec_loop_postprocess(next, prog, n_instr);
+        }
         if (next[S_HAS_OUT] > 0.5f && n_out < max_out)
             outputs[n_out++] = next[S_OUTPUT];
         if (next[S_HALT] > 0.5f) break;
@@ -946,7 +1085,7 @@ int main(int argc, char** argv) {
     const char* bc_path = NULL;
 
     for (int i = 1; i < argc; i++) {
-        if (strstr(argv[i], ".bin")) weight_path = argv[i];
+        if (strstr(argv[i], ".bin") || strstr(argv[i], ".qlmw")) weight_path = argv[i];
         else if (strstr(argv[i], ".bc")) bc_path = argv[i];
     }
 
