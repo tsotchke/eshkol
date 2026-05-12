@@ -24,12 +24,22 @@ work should use arena terminology and avoid GC/free-list semantics.
 The landed pair slice uses the existing six-layer schedule rather than adding
 Layer 6/7 immediately: Layer 3 computes stack effects plus arena operation
 transients, and Layer 4 performs arena read/write alongside the AD tape write
-logic. Current artifact verification after the bounded handler/wind
-bookkeeping slice:
-104/104 inline tests pass, 101/101 traced programs agree on PRINT output and full
-per-step state, opcode coverage is 68 weight-implemented / 0 native-delegated
-in the exercised coverage set, and the QLMW export is d_model=256, FFN=2048,
-11,037,702 parameters.
+logic. The current schedule is Layer 0 instruction fetch, Layer 1
+preprocessing, Layer 2 SQUARE products, Layer 3 dispatch, Layer 4 tape/arena
+writeback, and Layer 5 AD gradient writeback. Layer 1 now loads bounded AD
+tape parent values before Layer 2 so `OP_AD_MUL` forward recording is also
+encoded as weights.
+
+Current artifact verification after the bounded AD tape-product slice:
+104/104 inline tests pass, 101/101 traced programs agree on PRINT output and
+full per-step state, opcode coverage is 68 weight-implemented / 0
+VM-native-delegated / 3 transformer-native-assisted in the exercised coverage
+set, and the QLMW export is d_model=256, FFN=2048, 11,037,702 parameters.
+The remaining transformer-native-assisted cases in the trace are strict
+`OP_DIV`/`OP_MOD` and AD unary value generation for `relu`, `exp`, and
+`sigmoid` programs. Untested AD unary/libm paths (`abs`, `tanh`, `log`,
+`sqrt`, `AD_DIV`, `AD_POW`, `AD_SIN`, `AD_COS`) remain bounded-state
+candidates or precision-contract decisions, not completed weight encodings.
 
 ## 1. Problem statement
 

@@ -107,20 +107,22 @@ def write_coverage_table(coverage_path: Path, out_path: Path) -> None:
         return
     wi_count = len(report.get("weight_implemented", {}))
     nd_count = len(report.get("native_delegated", {}))
-    total = wi_count + nd_count
+    tna_count = len(report.get("transformer_native_assisted", {}))
+    total = wi_count + nd_count + tna_count
     content = LATEX_PREAMBLE + rf"""\begin{{tabular}}{{lrr}}
 \toprule
 Opcode class & Count & Fraction of ISA \\
 \midrule
 Weight-implemented (matmul+bias) & {wi_count} & {wi_count}/{total} \\
 Native-delegated (IS\_NATIVE)     & {nd_count} & {nd_count}/{total} \\
+Transformer-native-assisted       & {tna_count} & {tna_count}/{total} \\
 \midrule
 Total ISA                         & {total}    & 1.00 \\
 \bottomrule
 \end{{tabular}}
 """
     out_path.write_text(content)
-    print(f"  wrote {out_path} ({wi_count} wi, {nd_count} nd)")
+    print(f"  wrote {out_path} ({wi_count} wi, {nd_count} nd, {tna_count} tna)")
 
 
 def write_runtime_table(out_path: Path) -> None:

@@ -17,8 +17,10 @@ Inputs are JSONL files where each line is one VM step. Expected schema:
     }
 
 For each program, for each step, we compare every field bit-identically
-for weight-implemented opcodes, and compare only the boundary-marker
-fields (PC, is_native flag) for native-delegated opcodes.
+for weight-implemented opcodes, compare only the boundary-marker fields
+for VM-native opcodes, and separately report transformer-native-assisted
+steps where the matrix path used an IS_NATIVE postprocess but the reference
+VM did not.
 
 Two complementary metrics are emitted:
 
@@ -134,6 +136,7 @@ def main() -> int:
     opcode_coverage = {
         "weight_implemented": defaultdict(lambda: {"programs": set(), "steps": 0, "agree": 0}),
         "native_delegated": defaultdict(lambda: {"programs": set(), "steps": 0, "boundary_agree": 0}),
+        "transformer_native_assisted": defaultdict(lambda: {"programs": set(), "steps": 0, "agree": 0}),
     }
 
     # Pre-compute output sequences per program: the ordered list of (step, tos)
@@ -173,20 +176,33 @@ def main() -> int:
             per["missing_tf_steps"] += 1
             continue
 
-        is_native = bool(vm_rec.get("is_native", False))
+        vm_native = bool(vm_rec.get("is_native", False))
+        tf_native = bool(tf_rec.get("is_native", False))
         opcode = vm_rec.get("opcode")
 
         # Per-step PRINT-step matching is done below at program scope via the
         # output_sequence() ordinal pairing — not here, because matrix-path
         # AD programs offset their PRINT by one cycle relative to the VM.
 
-        if is_native:
+        if vm_native:
             diffs = fieldwise_compare(vm_rec, tf_rec, NATIVE_BOUNDARY_FIELDS)
             bucket = opcode_coverage["native_delegated"][opcode]
             bucket["programs"].add(program)
             bucket["steps"] += 1
             if not diffs:
                 bucket["boundary_agree"] += 1
+                per["agreeing_steps"] += 1
+            else:
+                per["disagreeing_steps"] += 1
+                for f in diffs:
+                    per["diff_fields"][f] += 1
+        elif tf_native:
+            diffs = fieldwise_compare(vm_rec, tf_rec, WEIGHT_IMPLEMENTED_FIELDS)
+            bucket = opcode_coverage["transformer_native_assisted"][opcode]
+            bucket["programs"].add(program)
+            bucket["steps"] += 1
+            if not diffs:
+                bucket["agree"] += 1
                 per["agreeing_steps"] += 1
             else:
                 per["disagreeing_steps"] += 1
@@ -299,11 +315,20 @@ def main() -> int:
             }
             for opcode, data in opcode_coverage["native_delegated"].items()
         },
+        "transformer_native_assisted": {
+            str(opcode): {
+                "programs": sorted(data["programs"]),
+                "steps": data["steps"],
+                "agree": data["agree"],
+            }
+            for opcode, data in opcode_coverage["transformer_native_assisted"].items()
+        },
     }
     args.coverage_out.parent.mkdir(parents=True, exist_ok=True)
     args.coverage_out.write_text(json.dumps(coverage_report, indent=2))
     print(f"  opcode coverage: {len(coverage_report['weight_implemented'])} weight-impl, "
-          f"{len(coverage_report['native_delegated'])} native-delegated")
+          f"{len(coverage_report['native_delegated'])} native-delegated, "
+          f"{len(coverage_report['transformer_native_assisted'])} transformer-native-assisted")
 
     # Exit non-zero only when the paper's actual claim (output agreement)
     # fails. The stricter full-state agreement is informational.

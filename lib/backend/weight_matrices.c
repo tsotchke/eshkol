@@ -12,8 +12,8 @@
  *
  * Architecture: d_model=256, n_heads=16, head_dim=2, n_layers=6, FFN_DIM=2048
  *   Layer 0: Instruction fetch (Gaussian attention peaked at PC)
- *   Layer 1: Product precompute (SQUARE activation for TOS*SOS + AD backward products)
- *   Layer 2: Preprocessing (gated FFN for address resolution, comparisons, AD cursor load)
+ *   Layer 1: Preprocessing (gated FFN for address resolution, comparisons, AD cursor load)
+ *   Layer 2: Product precompute (SQUARE activation for TOS*SOS + AD products)
  *   Layer 3: Execution (gated FFN for opcode dispatch + AD forward/backward rules)
  *   Layer 4: Tape write + parent load (gated FFN)
  *   Layer 5: Gradient write-back (gated FFN, backward-only)
@@ -113,7 +113,7 @@ typedef enum {
     OP_PUSH_HANDLER=57, OP_POP_HANDLER=58, OP_GET_EXN=59,
     OP_PACK_REST=60, OP_WIND_PUSH=61, OP_WIND_POP=62, OP_VOID=63,
 
-    /* AD opcodes — native in transformer weights */
+    /* AD opcodes — bounded tape ops are weight-encoded; libm/precision ops delegate. */
     OP_AD_VAR=64, OP_AD_CONST=65,
     OP_AD_ADD=66, OP_AD_SUB=67, OP_AD_MUL=68,
     OP_AD_NEG=69, OP_AD_ABS=70, OP_AD_RELU=71,
@@ -175,16 +175,17 @@ enum {
     S_AD_IS_FORWARD=112,     /* indicator: executing AD forward op this cycle */
     S_AD_IS_BACKWARD=113,    /* indicator: in backward pass */
     S_AD_GRAD_ACCUM=114,     /* gradient accumulator */
-    S_AD_PROD_GRAD_LV=115,   /* precomputed: CUR_GRAD * LEFT_VALUE */
-    S_AD_PROD_GRAD_RV=116,   /* precomputed: CUR_GRAD * RIGHT_VALUE */
+    S_AD_PROD_GRAD_LV=115,   /* precomputed: CUR_GRAD * RIGHT_VALUE (left delta for MUL) */
+    S_AD_PROD_GRAD_RV=116,   /* precomputed: CUR_GRAD * LEFT_VALUE (right delta for MUL) */
     S_AD_LEFT_GRAD_NEW=117,  /* computed gradient delta for left parent */
     S_AD_RIGHT_GRAD_NEW=118, /* computed gradient delta for right parent */
-    S_AD_PROD_GRAD_CV=119,  /* precomputed: CUR_GRAD * CUR_VALUE (for legacy compat) */
+    S_AD_PROD_LR=119,       /* precomputed: AD_LEFT_VALUE * AD_RIGHT_VALUE */
+    S_AD_PROD_GRAD_CV=S_AD_PROD_LR,  /* legacy alias for dim 119 */
     S_AD_PROD_GRAD_SV=120,  /* precomputed: CUR_GRAD * CUR_SAVED (all unary backward) */
     S_AD_SPARE1=120,
 
     /* Stage-1 VM-as-transformer memory-op transients.
-     * These reuse the true spare portion of Zone D. Layer 2 computes
+     * These reuse the true spare portion of Zone D. Layer 1 computes
      * saturated one-hot indicators over S_TYPE_TOS; Layer 3 consumes them
      * to execute NULL_P and the six type predicates without IS_NATIVE. */
     S_TYPE_IS_NUM=121,
@@ -971,7 +972,7 @@ static void ad_backward_step(float* s) {
         /* Cross products use the polarization identity
          *     a · b = ½·(a + b)² − ½·a² − ½·b²
          * which is what the matrix forward path's SQUARE FFN naturally
-         * computes (Layer 1). For bit-identity with the matrix, the
+         * computes (Layer 2). For bit-identity with the matrix, the
          * reference VM must use the same arithmetic order — direct
          * multiplication and polarization are mathematically equal but
          * differ by 1–13 ULPs in float32. Without this change, sigmoid
@@ -1148,11 +1149,12 @@ static void layer1_ffn(const float x[D], float out[D]) {
     /* Original: TOS * SOS via SQUARE trick */
     float a = x[S_TOS], b = x[S_SOS];
     out[S_PRODUCT] = 0.5f*(a+b)*(a+b) - 0.5f*a*a - 0.5f*b*b;
-    /* AD backward: products via SQUARE trick (polarization identity) */
+    /* AD products via SQUARE trick (polarization identity) */
     float g = x[S_AD_CUR_GRAD], lv = x[S_AD_LEFT_VALUE], rv = x[S_AD_RIGHT_VALUE];
     float sv = x[S_AD_CUR_SAVED];
     out[S_AD_PROD_GRAD_LV] = 0.5f*(g+rv)*(g+rv) - 0.5f*g*g - 0.5f*rv*rv; /* g * rv (MUL dL) */
     out[S_AD_PROD_GRAD_RV] = 0.5f*(g+lv)*(g+lv) - 0.5f*g*g - 0.5f*lv*lv; /* g * lv (MUL dR) */
+    out[S_AD_PROD_LR] = 0.5f*(lv+rv)*(lv+rv) - 0.5f*lv*lv - 0.5f*rv*rv; /* lv * rv (MUL forward) */
     out[S_AD_PROD_GRAD_SV] = 0.5f*(g+sv)*(g+sv) - 0.5f*g*g - 0.5f*sv*sv; /* g * saved (ALL unary) */
 }
 
@@ -1200,7 +1202,20 @@ static void layer2_ffn(const float x[D], float out[D]) {
         out[S_AD_CUR_RIGHT]  += ci * x[S_AD_TAPE_BASE + i * AD_NODE_FIELDS + AD_F_RIGHT];
         out[S_AD_CUR_SAVED]  += ci * x[S_AD_TAPE_BASE + i * AD_NODE_FIELDS + AD_F_SAVED];
     }
-    /* Parent load moved to layer4_ffn (runs after L2 in backward sequence) */
+    /* AD forward binary parent loads. With preprocessing before the SQUARE
+     * layer, AD_MUL can record left_value * right_value without C postprocess. */
+    float fw_binary = (indicator(x[S_OPCODE], OP_AD_ADD) +
+                       indicator(x[S_OPCODE], OP_AD_SUB) +
+                       indicator(x[S_OPCODE], OP_AD_MUL)) *
+                      (1.0f - bw_active);
+    for (int i = 0; i < AD_MAX_TAPE; i++) {
+        float li = indicator(x[S_SOS], (float)i) * fw_binary;
+        float ri = indicator(x[S_TOS], (float)i) * fw_binary;
+        float value = x[S_AD_TAPE_BASE + i * AD_NODE_FIELDS + AD_F_VALUE];
+        out[S_AD_LEFT_VALUE]  += li * value;
+        out[S_AD_RIGHT_VALUE] += ri * value;
+    }
+    /* Parent load moved to layer4_ffn (runs after preprocessing in backward sequence) */
 
     /* Cursor decrement: IS_BACKWARD → delta[CURSOR] = -1 */
     if (bw_active > 0.5f) {
@@ -1383,7 +1398,7 @@ static void layer3_ffn(const float x[D], float out[D]) {
     }
     /* OP_NATIVE_CALL (37): delegate */
     g=indicator(op,37)*alive; out[S_PC]+=g; out[S_IS_NATIVE]+=g;
-    /* Stage-1 type predicates (45-50): weight-encoded via Layer 2 type indicators. */
+    /* Stage-1 type predicates (45-50): weight-encoded via Layer 1 type indicators. */
     g=indicator(op,45)*alive; out[S_PC]+=g; out[S_TOS]+=g*(x[S_TYPE_IS_PAIR]-tos); out[S_TYPE_TOS]+=g*(TYPE_BOOL-ttos);
     g=indicator(op,46)*alive; out[S_PC]+=g; out[S_TOS]+=g*(x[S_TYPE_IS_NUM]-tos);  out[S_TYPE_TOS]+=g*(TYPE_BOOL-ttos);
     g=indicator(op,47)*alive; out[S_PC]+=g; out[S_TOS]+=g*(x[S_TYPE_IS_STR]-tos);  out[S_TYPE_TOS]+=g*(TYPE_BOOL-ttos);
@@ -1762,7 +1777,7 @@ static void layer3_ffn(const float x[D], float out[D]) {
         float gl = x[S_AD_PROD_GRAD_LV]; /* precomputed: grad * right_value (for MUL dL) */
         float gr = x[S_AD_PROD_GRAD_RV]; /* precomputed: grad * left_value (for MUL dR) */
 
-        float gsv = x[S_AD_PROD_GRAD_SV]; /* precomputed: grad * saved_val (from L1 SQUARE) */
+        float gsv = x[S_AD_PROD_GRAD_SV]; /* precomputed: grad * saved_val (from Layer 2 SQUARE) */
 
         /* Binary ops */
         /* ADD: dL = grad, dR = grad */
@@ -1773,12 +1788,12 @@ static void layer3_ffn(const float x[D], float out[D]) {
         float bs = indicator(cur_op, AD_OP_SUB);
         out[S_AD_LEFT_GRAD_NEW]  += bs * cur_grad;
         out[S_AD_RIGHT_GRAD_NEW] -= bs * cur_grad;
-        /* MUL: dL = grad*R, dR = grad*L (precomputed in L1) */
+        /* MUL: dL = grad*R, dR = grad*L (precomputed in Layer 2) */
         float bm = indicator(cur_op, AD_OP_MUL);
         out[S_AD_LEFT_GRAD_NEW]  += bm * gl;
         out[S_AD_RIGHT_GRAD_NEW] += bm * gr;
 
-        /* ALL unary ops: dL = grad * saved_val (precomputed in L1 as AD_PROD_GRAD_SV).
+        /* ALL unary ops: dL = grad * saved_val (precomputed in Layer 2 as AD_PROD_GRAD_SV).
          * saved_val was stored during forward recording:
          *   NEG=-1, ABS=sign, RELU=step, SIGMOID=val*(1-val),
          *   TANH=1-val², EXP=val, LOG=1/input, SQRT=1/(2*val). */
@@ -1932,8 +1947,8 @@ static void layer4_ffn(float x[D], float out[D]) {
  * during backward — this eliminates all transient-clearing interference.
  *
  * Gradient rules dispatch on AD_CUR_OP:
- *   Binary: ADD (passthrough), SUB (negate right), MUL (cross-product via L1 SQUARE)
- *   Unary: ALL use grad * saved_val (precomputed as AD_PROD_GRAD_SV by L1 SQUARE)
+ *   Binary: ADD (passthrough), SUB (negate right), MUL (cross-product via Layer 2 SQUARE)
+ *   Unary: ALL use grad * saved_val (precomputed as AD_PROD_GRAD_SV by Layer 2 SQUARE)
  *
  * After computing LEFT/RIGHT_GRAD_NEW, writes them to parent tape nodes. */
 /* Layer 5 simulated: split into dispatch and write-back for the two-pass scheme. */
@@ -2448,7 +2463,7 @@ static void exec_loop_postprocess(float x[D], const Instr* prog, int n_instr) {
             } else if (opcode >= OP_AD_VAR && opcode <= OP_AD_SQRT) {
                 /* AD forward ops: Layer 3 weight matrices handle stack manipulation
                  * and flag setting. The VALUE computation requires tape random-access
-                 * which is handled here for correctness. Layer 2 indicator neurons
+                 * which is handled here for correctness. Layer 1 indicator neurons
                  * could compute this in a fully weight-only path (future work). */
                 int tlen = (int)roundf(x[S_AD_TAPE_LEN]) - 1; /* already incremented by Layer 4 */
                 if (tlen >= 0 && tlen < AD_MAX_TAPE) {
@@ -2628,10 +2643,10 @@ static int run_simulated(const Instr* prog, int n_instr, float* outputs, int max
             /* Backward: simulated layer functions mirroring backward_with_weights.
              * Uses same layer math as weight matrices: indicator gating, SQUARE products,
              * gradient dispatch — expressed as explicit C simulating the neuron computations. */
-            /* Backward: L2→L4→L1→L5 (Layer 3 NOT invoked during backward).
-             * L2 loads cursor node, L4 loads parent values, L1 computes
+            /* Backward: L1→L4→L2→L5 (Layer 3 NOT invoked during backward).
+             * L1 loads cursor node, L4 loads parent values, L2 computes
              * SQUARE products, L5 dispatches gradient rules + writes back. */
-            /* Backward: L2→L4→L1→L5→L5 through simulated layers.
+            /* Backward: L1→L4→L2→L5→L5 through simulated layers.
              * Layer 5 handles gradient dispatch, write-back, cursor decrement,
              * completion check, and transient clearing — no inline C. */
             layer2_ffn(x, tmp); for(int i=0;i<D;i++) x[i]+=tmp[i];
@@ -2642,10 +2657,10 @@ static int run_simulated(const Instr* prog, int n_instr, float* outputs, int max
             /* Cursor decrement, completion check, and transient clear are
              * in layer2_ffn (weight neurons). No inline C in backward loop. */
         } else {
-            /* Normal execution: all 6 layers (skip L5 — backward only) */
+            /* Normal execution: fetch, preprocess, product, dispatch, writeback. */
             layer0_attention(x, pe, n_instr, tmp); for(int i=0;i<D;i++) x[i]+=tmp[i];
-            layer1_ffn(x, tmp); for(int i=0;i<D;i++) x[i]+=tmp[i];
             layer2_ffn(x, tmp); for(int i=0;i<D;i++) x[i]+=tmp[i];
+            layer1_ffn(x, tmp); for(int i=0;i<D;i++) x[i]+=tmp[i];
             layer3_ffn(x, tmp); for(int i=0;i<D;i++) x[i]+=tmp[i];
             layer4_ffn(x, tmp); for(int i=0;i<D;i++) x[i]+=tmp[i];
             int sim_is_native = x[S_IS_NATIVE] > 0.5f ? 1 : 0;
@@ -2734,6 +2749,34 @@ static int add_gated_pair_ad(InterpreterWeights* w, int L, int n,
         w->ff_up_b[L][j] = ubias;
         float c = (sign == 0) ? coeff : -coeff;
         W(w->ff_down[L], j, out_dim, D) += c;
+    }
+    return n + 2;
+}
+
+/* Gated pair for AD opcodes that also dispatch on a bounded stack index
+ * (TOS/SOS == slot). Used for forward tape random-access reads and AD_GRAD. */
+static int add_gated_pair_ad_index(InterpreterWeights* w, int L, int n,
+                                   int op_id, int index_dim, int slot,
+                                   int ud1, float us1, int ud2, float us2,
+                                   int ud3, float us3, int ud4, float us4,
+                                   float ubias,
+                                   int out_dim, float coeff) {
+    const float index_scale = 100.0f;
+    float target = (float)op_id + index_scale * (float)slot;
+    for (int sign = 0; sign < 2; sign++) {
+        int j = n + sign;
+        float s = (sign == 0) ? 0.5f : -0.5f;
+        W(w->ff_gate[L], S_OPCODE, j, FFN_DIM) += SCALE;
+        W(w->ff_gate[L], index_dim, j, FFN_DIM) += SCALE * index_scale;
+        W(w->ff_gate[L], S_HALT, j, FFN_DIM) += -SCALE;
+        W(w->ff_gate[L], S_AD_IS_BACKWARD, j, FFN_DIM) += -SCALE;
+        w->ff_gate_b[L][j] = SCALE * (-target + s);
+        if (ud1 >= 0) W(w->ff_up[L], ud1, j, FFN_DIM) += us1;
+        if (ud2 >= 0) W(w->ff_up[L], ud2, j, FFN_DIM) += us2;
+        if (ud3 >= 0) W(w->ff_up[L], ud3, j, FFN_DIM) += us3;
+        if (ud4 >= 0) W(w->ff_up[L], ud4, j, FFN_DIM) += us4;
+        w->ff_up_b[L][j] = ubias;
+        W(w->ff_down[L], j, out_dim, D) += (sign == 0) ? coeff : -coeff;
     }
     return n + 2;
 }
@@ -3029,157 +3072,174 @@ static void generate_weights(InterpreterWeights* w) {
         w->ff_type[0] = 0;
     }
 
-    /* ── Layer 1: Product FFN (SQUARE activation) ── */
+    /* ── Layer 2: Product FFN (SQUARE activation) ── */
     {
-        w->ff_type[1] = 1;
-        W(w->ff_up[1], S_TOS, 0, FFN_DIM) = 1; W(w->ff_up[1], S_SOS, 0, FFN_DIM) = 1;
-        W(w->ff_up[1], S_TOS, 1, FFN_DIM) = 1;
-        W(w->ff_up[1], S_SOS, 2, FFN_DIM) = 1;
-        W(w->ff_down[1], 0, S_PRODUCT, D) =  0.5f;
-        W(w->ff_down[1], 1, S_PRODUCT, D) = -0.5f;
-        W(w->ff_down[1], 2, S_PRODUCT, D) = -0.5f;
+        const int L = 2;
+        w->ff_type[L] = 1;
+        W(w->ff_up[L], S_TOS, 0, FFN_DIM) = 1; W(w->ff_up[L], S_SOS, 0, FFN_DIM) = 1;
+        W(w->ff_up[L], S_TOS, 1, FFN_DIM) = 1;
+        W(w->ff_up[L], S_SOS, 2, FFN_DIM) = 1;
+        W(w->ff_down[L], 0, S_PRODUCT, D) =  0.5f;
+        W(w->ff_down[L], 1, S_PRODUCT, D) = -0.5f;
+        W(w->ff_down[L], 2, S_PRODUCT, D) = -0.5f;
 
         /* AD backward products via SQUARE trick:
          * Product 1: grad * right_value → AD_PROD_GRAD_LV (MUL dL = grad*R) */
         int pn = 3; /* next neuron index */
-        W(w->ff_up[1], S_AD_CUR_GRAD, pn, FFN_DIM) = 1; W(w->ff_up[1], S_AD_RIGHT_VALUE, pn, FFN_DIM) = 1;
-        W(w->ff_up[1], S_AD_CUR_GRAD, pn+1, FFN_DIM) = 1;
-        W(w->ff_up[1], S_AD_RIGHT_VALUE, pn+2, FFN_DIM) = 1;
-        W(w->ff_down[1], pn, S_AD_PROD_GRAD_LV, D) = 0.5f;
-        W(w->ff_down[1], pn+1, S_AD_PROD_GRAD_LV, D) = -0.5f;
-        W(w->ff_down[1], pn+2, S_AD_PROD_GRAD_LV, D) = -0.5f;
+        W(w->ff_up[L], S_AD_CUR_GRAD, pn, FFN_DIM) = 1; W(w->ff_up[L], S_AD_RIGHT_VALUE, pn, FFN_DIM) = 1;
+        W(w->ff_up[L], S_AD_CUR_GRAD, pn+1, FFN_DIM) = 1;
+        W(w->ff_up[L], S_AD_RIGHT_VALUE, pn+2, FFN_DIM) = 1;
+        W(w->ff_down[L], pn, S_AD_PROD_GRAD_LV, D) = 0.5f;
+        W(w->ff_down[L], pn+1, S_AD_PROD_GRAD_LV, D) = -0.5f;
+        W(w->ff_down[L], pn+2, S_AD_PROD_GRAD_LV, D) = -0.5f;
         pn += 3;
 
         /* Product 2: grad * left_value → AD_PROD_GRAD_RV (MUL dR = grad*L) */
-        W(w->ff_up[1], S_AD_CUR_GRAD, pn, FFN_DIM) = 1; W(w->ff_up[1], S_AD_LEFT_VALUE, pn, FFN_DIM) = 1;
-        W(w->ff_up[1], S_AD_CUR_GRAD, pn+1, FFN_DIM) = 1;
-        W(w->ff_up[1], S_AD_LEFT_VALUE, pn+2, FFN_DIM) = 1;
-        W(w->ff_down[1], pn, S_AD_PROD_GRAD_RV, D) = 0.5f;
-        W(w->ff_down[1], pn+1, S_AD_PROD_GRAD_RV, D) = -0.5f;
-        W(w->ff_down[1], pn+2, S_AD_PROD_GRAD_RV, D) = -0.5f;
+        W(w->ff_up[L], S_AD_CUR_GRAD, pn, FFN_DIM) = 1; W(w->ff_up[L], S_AD_LEFT_VALUE, pn, FFN_DIM) = 1;
+        W(w->ff_up[L], S_AD_CUR_GRAD, pn+1, FFN_DIM) = 1;
+        W(w->ff_up[L], S_AD_LEFT_VALUE, pn+2, FFN_DIM) = 1;
+        W(w->ff_down[L], pn, S_AD_PROD_GRAD_RV, D) = 0.5f;
+        W(w->ff_down[L], pn+1, S_AD_PROD_GRAD_RV, D) = -0.5f;
+        W(w->ff_down[L], pn+2, S_AD_PROD_GRAD_RV, D) = -0.5f;
         pn += 3;
 
-        /* Product 3: grad * cur_value → AD_PROD_GRAD_CV */
-        W(w->ff_up[1], S_AD_CUR_GRAD, pn, FFN_DIM) = 1; W(w->ff_up[1], S_AD_CUR_VALUE, pn, FFN_DIM) = 1;
-        W(w->ff_up[1], S_AD_CUR_GRAD, pn+1, FFN_DIM) = 1;
-        W(w->ff_up[1], S_AD_CUR_VALUE, pn+2, FFN_DIM) = 1;
-        W(w->ff_down[1], pn, S_AD_PROD_GRAD_CV, D) = 0.5f;
-        W(w->ff_down[1], pn+1, S_AD_PROD_GRAD_CV, D) = -0.5f;
-        W(w->ff_down[1], pn+2, S_AD_PROD_GRAD_CV, D) = -0.5f;
+        /* Product 3: left_value * right_value → AD_PROD_LR (AD_MUL forward) */
+        W(w->ff_up[L], S_AD_LEFT_VALUE, pn, FFN_DIM) = 1; W(w->ff_up[L], S_AD_RIGHT_VALUE, pn, FFN_DIM) = 1;
+        W(w->ff_up[L], S_AD_LEFT_VALUE, pn+1, FFN_DIM) = 1;
+        W(w->ff_up[L], S_AD_RIGHT_VALUE, pn+2, FFN_DIM) = 1;
+        W(w->ff_down[L], pn, S_AD_PROD_LR, D) = 0.5f;
+        W(w->ff_down[L], pn+1, S_AD_PROD_LR, D) = -0.5f;
+        W(w->ff_down[L], pn+2, S_AD_PROD_LR, D) = -0.5f;
         pn += 3;
 
         /* Product 4: grad * saved_val → AD_PROD_GRAD_SV (ALL unary backward rules) */
-        W(w->ff_up[1], S_AD_CUR_GRAD, pn, FFN_DIM) = 1; W(w->ff_up[1], S_AD_CUR_SAVED, pn, FFN_DIM) = 1;
-        W(w->ff_up[1], S_AD_CUR_GRAD, pn+1, FFN_DIM) = 1;
-        W(w->ff_up[1], S_AD_CUR_SAVED, pn+2, FFN_DIM) = 1;
-        W(w->ff_down[1], pn, S_AD_PROD_GRAD_SV, D) = 0.5f;
-        W(w->ff_down[1], pn+1, S_AD_PROD_GRAD_SV, D) = -0.5f;
-        W(w->ff_down[1], pn+2, S_AD_PROD_GRAD_SV, D) = -0.5f;
+        W(w->ff_up[L], S_AD_CUR_GRAD, pn, FFN_DIM) = 1; W(w->ff_up[L], S_AD_CUR_SAVED, pn, FFN_DIM) = 1;
+        W(w->ff_up[L], S_AD_CUR_GRAD, pn+1, FFN_DIM) = 1;
+        W(w->ff_up[L], S_AD_CUR_SAVED, pn+2, FFN_DIM) = 1;
+        W(w->ff_down[L], pn, S_AD_PROD_GRAD_SV, D) = 0.5f;
+        W(w->ff_down[L], pn+1, S_AD_PROD_GRAD_SV, D) = -0.5f;
+        W(w->ff_down[L], pn+2, S_AD_PROD_GRAD_SV, D) = -0.5f;
         pn += 3;
 
-        printf("[WEIGHT_GEN] Layer 1: %d SQUARE neurons\n", pn);
+        printf("[WEIGHT_GEN] Layer %d: %d SQUARE neurons\n", L, pn);
     }
 
-    /* ── Layer 2: Preprocessing (gated FFN) ── */
+    /* ── Layer 1: Preprocessing (gated FFN) ── */
     {
-        w->ff_type[2] = 2;
+        const int L = 1;
+        w->ff_type[L] = 2;
         int n = 0;
 
         /* GET_LOCAL address resolution: indicator(OPERAND==a) * mem[a] → LOADVAL */
         for (int a = 0; a < MEM_SIZE; a++) {
-            W(w->ff_gate[2], S_OPERAND, n, FFN_DIM) = SCALE;
-            w->ff_gate_b[2][n] = SCALE * (-(float)a + 0.5f);
-            W(w->ff_up[2], S_MEM0+a, n, FFN_DIM) = 1.0f;
-            W(w->ff_down[2], n, S_LOADVAL, D) = 1.0f;
+            W(w->ff_gate[L], S_OPERAND, n, FFN_DIM) = SCALE;
+            w->ff_gate_b[L][n] = SCALE * (-(float)a + 0.5f);
+            W(w->ff_up[L], S_MEM0+a, n, FFN_DIM) = 1.0f;
+            W(w->ff_down[L], n, S_LOADVAL, D) = 1.0f;
             n++;
-            W(w->ff_gate[2], S_OPERAND, n, FFN_DIM) = SCALE;
-            w->ff_gate_b[2][n] = SCALE * (-(float)a - 0.5f);
-            W(w->ff_up[2], S_MEM0+a, n, FFN_DIM) = 1.0f;
-            W(w->ff_down[2], n, S_LOADVAL, D) = -1.0f;
+            W(w->ff_gate[L], S_OPERAND, n, FFN_DIM) = SCALE;
+            w->ff_gate_b[L][n] = SCALE * (-(float)a - 0.5f);
+            W(w->ff_up[L], S_MEM0+a, n, FFN_DIM) = 1.0f;
+            W(w->ff_down[L], n, S_LOADVAL, D) = -1.0f;
             n++;
         }
 
         /* SET_LOCAL store deltas: indicator(OPERAND==a) * (TOS - mem[a]) → STORED0+a */
         for (int a = 0; a < MEM_SIZE; a++) {
-            W(w->ff_gate[2], S_OPERAND, n, FFN_DIM) = SCALE;
-            w->ff_gate_b[2][n] = SCALE * (-(float)a + 0.5f);
-            W(w->ff_up[2], S_TOS, n, FFN_DIM) = 1.0f;
-            W(w->ff_up[2], S_MEM0+a, n, FFN_DIM) = -1.0f;
-            W(w->ff_down[2], n, S_STORED0+a, D) = 1.0f;
+            W(w->ff_gate[L], S_OPERAND, n, FFN_DIM) = SCALE;
+            w->ff_gate_b[L][n] = SCALE * (-(float)a + 0.5f);
+            W(w->ff_up[L], S_TOS, n, FFN_DIM) = 1.0f;
+            W(w->ff_up[L], S_MEM0+a, n, FFN_DIM) = -1.0f;
+            W(w->ff_down[L], n, S_STORED0+a, D) = 1.0f;
             n++;
-            W(w->ff_gate[2], S_OPERAND, n, FFN_DIM) = SCALE;
-            w->ff_gate_b[2][n] = SCALE * (-(float)a - 0.5f);
-            W(w->ff_up[2], S_TOS, n, FFN_DIM) = 1.0f;
-            W(w->ff_up[2], S_MEM0+a, n, FFN_DIM) = -1.0f;
-            W(w->ff_down[2], n, S_STORED0+a, D) = -1.0f;
+            W(w->ff_gate[L], S_OPERAND, n, FFN_DIM) = SCALE;
+            w->ff_gate_b[L][n] = SCALE * (-(float)a - 0.5f);
+            W(w->ff_up[L], S_TOS, n, FFN_DIM) = 1.0f;
+            W(w->ff_up[L], S_MEM0+a, n, FFN_DIM) = -1.0f;
+            W(w->ff_down[L], n, S_STORED0+a, D) = -1.0f;
             n++;
         }
 
         /* JUMP_IF_FALSE zero case: indicator(TOS==0) * operand → ZOPER */
-        W(w->ff_gate[2], S_TOS, n, FFN_DIM) = SCALE;
-        w->ff_gate_b[2][n] = SCALE * 0.5f;
-        W(w->ff_up[2], S_OPERAND, n, FFN_DIM) = 1.0f;
-        W(w->ff_down[2], n, S_ZOPER, D) = 1.0f;
+        W(w->ff_gate[L], S_TOS, n, FFN_DIM) = SCALE;
+        w->ff_gate_b[L][n] = SCALE * 0.5f;
+        W(w->ff_up[L], S_OPERAND, n, FFN_DIM) = 1.0f;
+        W(w->ff_down[L], n, S_ZOPER, D) = 1.0f;
         n++;
-        W(w->ff_gate[2], S_TOS, n, FFN_DIM) = SCALE;
-        w->ff_gate_b[2][n] = SCALE * (-0.5f);
-        W(w->ff_up[2], S_OPERAND, n, FFN_DIM) = 1.0f;
-        W(w->ff_down[2], n, S_ZOPER, D) = -1.0f;
+        W(w->ff_gate[L], S_TOS, n, FFN_DIM) = SCALE;
+        w->ff_gate_b[L][n] = SCALE * (-0.5f);
+        W(w->ff_up[L], S_OPERAND, n, FFN_DIM) = 1.0f;
+        W(w->ff_down[L], n, S_ZOPER, D) = -1.0f;
         n++;
 
         /* JUMP_IF_FALSE zero case: indicator(TOS==0) * (PC+1) → ZPC1 */
-        W(w->ff_gate[2], S_TOS, n, FFN_DIM) = SCALE;
-        w->ff_gate_b[2][n] = SCALE * 0.5f;
-        W(w->ff_up[2], S_PC, n, FFN_DIM) = 1.0f;
-        w->ff_up_b[2][n] = 1.0f;
-        W(w->ff_down[2], n, S_ZPC1, D) = 1.0f;
+        W(w->ff_gate[L], S_TOS, n, FFN_DIM) = SCALE;
+        w->ff_gate_b[L][n] = SCALE * 0.5f;
+        W(w->ff_up[L], S_PC, n, FFN_DIM) = 1.0f;
+        w->ff_up_b[L][n] = 1.0f;
+        W(w->ff_down[L], n, S_ZPC1, D) = 1.0f;
         n++;
-        W(w->ff_gate[2], S_TOS, n, FFN_DIM) = SCALE;
-        w->ff_gate_b[2][n] = SCALE * (-0.5f);
-        W(w->ff_up[2], S_PC, n, FFN_DIM) = 1.0f;
-        w->ff_up_b[2][n] = 1.0f;
-        W(w->ff_down[2], n, S_ZPC1, D) = -1.0f;
+        W(w->ff_gate[L], S_TOS, n, FFN_DIM) = SCALE;
+        w->ff_gate_b[L][n] = SCALE * (-0.5f);
+        W(w->ff_up[L], S_PC, n, FFN_DIM) = 1.0f;
+        w->ff_up_b[L][n] = 1.0f;
+        W(w->ff_down[L], n, S_ZPC1, D) = -1.0f;
         n++;
 
         /* CMP_EQ: indicator(TOS - SOS == 0) → two neurons on (TOS - SOS) */
-        W(w->ff_gate[2], S_TOS, n, FFN_DIM) = SCALE;
-        W(w->ff_gate[2], S_SOS, n, FFN_DIM) = -SCALE;
-        w->ff_gate_b[2][n] = SCALE * 0.5f;
-        w->ff_up_b[2][n] = 1.0f;
-        W(w->ff_down[2], n, S_CMP_EQ, D) = 1.0f;
+        W(w->ff_gate[L], S_TOS, n, FFN_DIM) = SCALE;
+        W(w->ff_gate[L], S_SOS, n, FFN_DIM) = -SCALE;
+        w->ff_gate_b[L][n] = SCALE * 0.5f;
+        w->ff_up_b[L][n] = 1.0f;
+        W(w->ff_down[L], n, S_CMP_EQ, D) = 1.0f;
         n++;
-        W(w->ff_gate[2], S_TOS, n, FFN_DIM) = SCALE;
-        W(w->ff_gate[2], S_SOS, n, FFN_DIM) = -SCALE;
-        w->ff_gate_b[2][n] = SCALE * (-0.5f);
-        w->ff_up_b[2][n] = 1.0f;
-        W(w->ff_down[2], n, S_CMP_EQ, D) = -1.0f;
+        W(w->ff_gate[L], S_TOS, n, FFN_DIM) = SCALE;
+        W(w->ff_gate[L], S_SOS, n, FFN_DIM) = -SCALE;
+        w->ff_gate_b[L][n] = SCALE * (-0.5f);
+        w->ff_up_b[L][n] = 1.0f;
+        W(w->ff_down[L], n, S_CMP_EQ, D) = -1.0f;
         n++;
 
         /* CMP_LT: sigmoid(SCALE*(TOS - SOS - 0.5)) → 1 when SOS < TOS */
-        W(w->ff_gate[2], S_TOS, n, FFN_DIM) = SCALE;
-        W(w->ff_gate[2], S_SOS, n, FFN_DIM) = -SCALE;
-        w->ff_gate_b[2][n] = SCALE * (-0.5f);
-        w->ff_up_b[2][n] = 1.0f;
-        W(w->ff_down[2], n, S_CMP_LT, D) = 1.0f;
+        W(w->ff_gate[L], S_TOS, n, FFN_DIM) = SCALE;
+        W(w->ff_gate[L], S_SOS, n, FFN_DIM) = -SCALE;
+        w->ff_gate_b[L][n] = SCALE * (-0.5f);
+        w->ff_up_b[L][n] = 1.0f;
+        W(w->ff_down[L], n, S_CMP_LT, D) = 1.0f;
         n++;
 
         /* ABS_DELTA: indicator(TOS < 0) * (-2*TOS)
          * gate = sigmoid(SCALE*(-TOS - 0.5)) ≈ 1 when TOS < 0 */
-        W(w->ff_gate[2], S_TOS, n, FFN_DIM) = -SCALE;
-        w->ff_gate_b[2][n] = SCALE * (-0.5f);
-        W(w->ff_up[2], S_TOS, n, FFN_DIM) = -2.0f;
-        W(w->ff_down[2], n, S_ABS_DELTA, D) = 1.0f;
+        W(w->ff_gate[L], S_TOS, n, FFN_DIM) = -SCALE;
+        w->ff_gate_b[L][n] = SCALE * (-0.5f);
+        W(w->ff_up[L], S_TOS, n, FFN_DIM) = -2.0f;
+        W(w->ff_down[L], n, S_ABS_DELTA, D) = 1.0f;
         n++;
 
         /* Stage-1 type predicate indicators over S_TYPE_TOS. These feed
          * NULL_P and the six type-predicate opcodes in Layer 3. */
-        n = add_indicator_precompute(w, 2, n, S_TYPE_TOS, TYPE_NUMBER,  S_TYPE_IS_NUM);
-        n = add_indicator_precompute(w, 2, n, S_TYPE_TOS, TYPE_BOOL,    S_TYPE_IS_BOOL);
-        n = add_indicator_precompute(w, 2, n, S_TYPE_TOS, TYPE_PAIR,    S_TYPE_IS_PAIR);
-        n = add_indicator_precompute(w, 2, n, S_TYPE_TOS, TYPE_CLOSURE, S_TYPE_IS_PROC);
-        n = add_indicator_precompute(w, 2, n, S_TYPE_TOS, TYPE_STRING,  S_TYPE_IS_STR);
-        n = add_indicator_precompute(w, 2, n, S_TYPE_TOS, TYPE_VECTOR,  S_TYPE_IS_VEC);
-        n = add_indicator_precompute(w, 2, n, S_TYPE_TOS, TYPE_NIL,     S_TYPE_IS_NIL);
+        n = add_indicator_precompute(w, L, n, S_TYPE_TOS, TYPE_NUMBER,  S_TYPE_IS_NUM);
+        n = add_indicator_precompute(w, L, n, S_TYPE_TOS, TYPE_BOOL,    S_TYPE_IS_BOOL);
+        n = add_indicator_precompute(w, L, n, S_TYPE_TOS, TYPE_PAIR,    S_TYPE_IS_PAIR);
+        n = add_indicator_precompute(w, L, n, S_TYPE_TOS, TYPE_CLOSURE, S_TYPE_IS_PROC);
+        n = add_indicator_precompute(w, L, n, S_TYPE_TOS, TYPE_STRING,  S_TYPE_IS_STR);
+        n = add_indicator_precompute(w, L, n, S_TYPE_TOS, TYPE_VECTOR,  S_TYPE_IS_VEC);
+        n = add_indicator_precompute(w, L, n, S_TYPE_TOS, TYPE_NIL,     S_TYPE_IS_NIL);
+
+        /* AD forward binary parent loads. Layer 1 runs before the SQUARE
+         * layer, so OP_AD_MUL can consume AD_LEFT_VALUE/AD_RIGHT_VALUE in
+         * Layer 2 and record the product without native postprocess. */
+        for (int opc = OP_AD_ADD; opc <= OP_AD_MUL; opc++) {
+            for (int slot = 0; slot < AD_MAX_TAPE; slot++) {
+                int val_dim = S_AD_TAPE_BASE + slot * AD_NODE_FIELDS + AD_F_VALUE;
+                n = add_gated_pair_ad_index(w,L,n, opc, S_SOS, slot,
+                                            val_dim,1,-1,0,-1,0,-1,0,
+                                            0, S_AD_LEFT_VALUE, 1.0f);
+                n = add_gated_pair_ad_index(w,L,n, opc, S_TOS, slot,
+                                            val_dim,1,-1,0,-1,0,-1,0,
+                                            0, S_AD_RIGHT_VALUE, 1.0f);
+            }
+        }
 
         /* ── AD backward: cursor load — indicator pair with IS_BACKWARD ──
          * Gate: SCALE*CURSOR + SCALE*IS_BACKWARD + bias
@@ -3196,27 +3256,27 @@ static void generate_weights(InterpreterWeights* w) {
                 int src = S_AD_TAPE_BASE + slot * AD_NODE_FIELDS + fields[fi];
                 int dst = targets[fi];
                 /* Positive neuron */
-                W(w->ff_gate[2], S_AD_CURSOR, n, FFN_DIM) = SCALE;
-                W(w->ff_gate[2], S_AD_IS_BACKWARD, n, FFN_DIM) = SCALE;
-                w->ff_gate_b[2][n] = SCALE * (-(float)slot + 0.5f) - SCALE;
-                W(w->ff_up[2], src, n, FFN_DIM) = 1.0f;
-                W(w->ff_down[2], n, dst, D) = 1.0f;
+                W(w->ff_gate[L], S_AD_CURSOR, n, FFN_DIM) = SCALE;
+                W(w->ff_gate[L], S_AD_IS_BACKWARD, n, FFN_DIM) = SCALE;
+                w->ff_gate_b[L][n] = SCALE * (-(float)slot + 0.5f) - SCALE;
+                W(w->ff_up[L], src, n, FFN_DIM) = 1.0f;
+                W(w->ff_down[L], n, dst, D) = 1.0f;
                 n++;
                 /* Negative neuron */
-                W(w->ff_gate[2], S_AD_CURSOR, n, FFN_DIM) = SCALE;
-                W(w->ff_gate[2], S_AD_IS_BACKWARD, n, FFN_DIM) = SCALE;
-                w->ff_gate_b[2][n] = SCALE * (-(float)slot - 0.5f) - SCALE;
-                W(w->ff_up[2], src, n, FFN_DIM) = 1.0f;
-                W(w->ff_down[2], n, dst, D) = -1.0f;
+                W(w->ff_gate[L], S_AD_CURSOR, n, FFN_DIM) = SCALE;
+                W(w->ff_gate[L], S_AD_IS_BACKWARD, n, FFN_DIM) = SCALE;
+                w->ff_gate_b[L][n] = SCALE * (-(float)slot - 0.5f) - SCALE;
+                W(w->ff_up[L], src, n, FFN_DIM) = 1.0f;
+                W(w->ff_down[L], n, dst, D) = -1.0f;
                 n++;
             }
         }
 
         /* ── Cursor decrement: IS_BACKWARD → delta[CURSOR] = -1 ── */
-        W(w->ff_gate[2], S_AD_IS_BACKWARD, n, FFN_DIM) = SCALE;
-        w->ff_gate_b[2][n] = SCALE * (-0.5f);
-        w->ff_up_b[2][n] = -1.0f;
-        W(w->ff_down[2], n, S_AD_CURSOR, D) = 1.0f;
+        W(w->ff_gate[L], S_AD_IS_BACKWARD, n, FFN_DIM) = SCALE;
+        w->ff_gate_b[L][n] = SCALE * (-0.5f);
+        w->ff_up_b[L][n] = -1.0f;
+        W(w->ff_down[L], n, S_AD_CURSOR, D) = 1.0f;
         n++;
 
         /* ── Completion check: indicator(CURSOR == 0) AND IS_BACKWARD → clear IS_BACKWARD ──
@@ -3231,54 +3291,54 @@ static void generate_weights(InterpreterWeights* w) {
          * cursor values (up to AD_MAX_TAPE-1 = 7) cannot push the gate open
          * when IS_BACKWARD is 0 — same dual-input AND pattern as the
          * AD_TAPE_LEN/AD_IS_FORWARD gates in Layer 4. */
-        W(w->ff_gate[2], S_AD_CURSOR,        n, FFN_DIM) = SCALE;
-        W(w->ff_gate[2], S_AD_IS_BACKWARD,   n, FFN_DIM) = 10.0f * SCALE;
-        w->ff_gate_b[2][n] = SCALE * 0.5f - 10.0f * SCALE; /* fires at cursor==0 AND bw==1 */
-        W(w->ff_up[2], S_AD_IS_BACKWARD, n, FFN_DIM) = -1.0f;
-        W(w->ff_down[2], n, S_AD_IS_BACKWARD, D) = 1.0f;
+        W(w->ff_gate[L], S_AD_CURSOR,        n, FFN_DIM) = SCALE;
+        W(w->ff_gate[L], S_AD_IS_BACKWARD,   n, FFN_DIM) = 10.0f * SCALE;
+        w->ff_gate_b[L][n] = SCALE * 0.5f - 10.0f * SCALE; /* fires at cursor==0 AND bw==1 */
+        W(w->ff_up[L], S_AD_IS_BACKWARD, n, FFN_DIM) = -1.0f;
+        W(w->ff_down[L], n, S_AD_IS_BACKWARD, D) = 1.0f;
         n++;
-        W(w->ff_gate[2], S_AD_CURSOR,        n, FFN_DIM) = SCALE;
-        W(w->ff_gate[2], S_AD_IS_BACKWARD,   n, FFN_DIM) = 10.0f * SCALE;
-        w->ff_gate_b[2][n] = SCALE * (-0.5f) - 10.0f * SCALE; /* fires at cursor>=1 AND bw==1 */
-        W(w->ff_up[2], S_AD_IS_BACKWARD, n, FFN_DIM) = -1.0f;
-        W(w->ff_down[2], n, S_AD_IS_BACKWARD, D) = -1.0f;
+        W(w->ff_gate[L], S_AD_CURSOR,        n, FFN_DIM) = SCALE;
+        W(w->ff_gate[L], S_AD_IS_BACKWARD,   n, FFN_DIM) = 10.0f * SCALE;
+        w->ff_gate_b[L][n] = SCALE * (-0.5f) - 10.0f * SCALE; /* fires at cursor>=1 AND bw==1 */
+        W(w->ff_up[L], S_AD_IS_BACKWARD, n, FFN_DIM) = -1.0f;
+        W(w->ff_down[L], n, S_AD_IS_BACKWARD, D) = -1.0f;
         n++;
         /* Also clear AD_MODE */
-        W(w->ff_gate[2], S_AD_CURSOR,        n, FFN_DIM) = SCALE;
-        W(w->ff_gate[2], S_AD_IS_BACKWARD,   n, FFN_DIM) = 10.0f * SCALE;
-        w->ff_gate_b[2][n] = SCALE * 0.5f - 10.0f * SCALE;
-        W(w->ff_up[2], S_AD_MODE, n, FFN_DIM) = -1.0f;
-        W(w->ff_down[2], n, S_AD_MODE, D) = 1.0f;
+        W(w->ff_gate[L], S_AD_CURSOR,        n, FFN_DIM) = SCALE;
+        W(w->ff_gate[L], S_AD_IS_BACKWARD,   n, FFN_DIM) = 10.0f * SCALE;
+        w->ff_gate_b[L][n] = SCALE * 0.5f - 10.0f * SCALE;
+        W(w->ff_up[L], S_AD_MODE, n, FFN_DIM) = -1.0f;
+        W(w->ff_down[L], n, S_AD_MODE, D) = 1.0f;
         n++;
-        W(w->ff_gate[2], S_AD_CURSOR,        n, FFN_DIM) = SCALE;
-        W(w->ff_gate[2], S_AD_IS_BACKWARD,   n, FFN_DIM) = 10.0f * SCALE;
-        w->ff_gate_b[2][n] = SCALE * (-0.5f) - 10.0f * SCALE;
-        W(w->ff_up[2], S_AD_MODE, n, FFN_DIM) = -1.0f;
-        W(w->ff_down[2], n, S_AD_MODE, D) = -1.0f;
+        W(w->ff_gate[L], S_AD_CURSOR,        n, FFN_DIM) = SCALE;
+        W(w->ff_gate[L], S_AD_IS_BACKWARD,   n, FFN_DIM) = 10.0f * SCALE;
+        w->ff_gate_b[L][n] = SCALE * (-0.5f) - 10.0f * SCALE;
+        W(w->ff_up[L], S_AD_MODE, n, FFN_DIM) = -1.0f;
+        W(w->ff_down[L], n, S_AD_MODE, D) = -1.0f;
         n++;
 
         /* ── Transient clear: IS_BACKWARD → zero cursor-loaded + Zone D scratch ── */
         for (int d = S_AD_CUR_OP; d <= S_AD_RIGHT_VALUE; d++) {
-            W(w->ff_gate[2], S_AD_IS_BACKWARD, n, FFN_DIM) = SCALE;
-            w->ff_gate_b[2][n] = SCALE * (-0.5f);
-            W(w->ff_up[2], d, n, FFN_DIM) = -1.0f;
-            W(w->ff_down[2], n, d, D) = 1.0f;
+            W(w->ff_gate[L], S_AD_IS_BACKWARD, n, FFN_DIM) = SCALE;
+            w->ff_gate_b[L][n] = SCALE * (-0.5f);
+            W(w->ff_up[L], d, n, FFN_DIM) = -1.0f;
+            W(w->ff_down[L], n, d, D) = 1.0f;
             n++;
         }
-        W(w->ff_gate[2], S_AD_IS_BACKWARD, n, FFN_DIM) = SCALE;
-        w->ff_gate_b[2][n] = SCALE * (-0.5f);
-        W(w->ff_up[2], S_AD_IS_FORWARD, n, FFN_DIM) = -1.0f;
-        W(w->ff_down[2], n, S_AD_IS_FORWARD, D) = 1.0f;
+        W(w->ff_gate[L], S_AD_IS_BACKWARD, n, FFN_DIM) = SCALE;
+        w->ff_gate_b[L][n] = SCALE * (-0.5f);
+        W(w->ff_up[L], S_AD_IS_FORWARD, n, FFN_DIM) = -1.0f;
+        W(w->ff_down[L], n, S_AD_IS_FORWARD, D) = 1.0f;
         n++;
         for (int d = S_AD_GRAD_ACCUM; d <= S_AD_SPARE8; d++) {
-            W(w->ff_gate[2], S_AD_IS_BACKWARD, n, FFN_DIM) = SCALE;
-            w->ff_gate_b[2][n] = SCALE * (-0.5f);
-            W(w->ff_up[2], d, n, FFN_DIM) = -1.0f;
-            W(w->ff_down[2], n, d, D) = 1.0f;
+            W(w->ff_gate[L], S_AD_IS_BACKWARD, n, FFN_DIM) = SCALE;
+            w->ff_gate_b[L][n] = SCALE * (-0.5f);
+            W(w->ff_up[L], d, n, FFN_DIM) = -1.0f;
+            W(w->ff_down[L], n, d, D) = 1.0f;
             n++;
         }
 
-        printf("[WEIGHT_GEN] Layer 2: %d neurons\n", n);
+        printf("[WEIGHT_GEN] Layer %d: %d neurons\n", L, n);
     }
 
     /* ── Layer 3: Execution (gated FFN) ── */
@@ -3455,7 +3515,7 @@ static void generate_weights(InterpreterWeights* w) {
          * gated_pair1: gate=indicator(op,19)*indicator(TOS,0)*alive, up=1, out=TOS (sets TOS=1 when TOS==0)
          * But we can't nest indicators in a single gate neuron.
          *
-         * Solution: reuse ZOPER from Layer 2 which precomputes indicator(TOS,0).
+         * Solution: reuse ZOPER from Layer 1 which precomputes indicator(TOS,0).
          * NOT = "TOS becomes indicator(TOS,0)" = ZOPER/operand trick.
          * NOT = "TOS becomes 1 if TOS==0, else 0"
          * delta_TOS = result - TOS where result = indicator(TOS,0)
@@ -3647,7 +3707,7 @@ static void generate_weights(InterpreterWeights* w) {
         n = add_gated_pair(w,L,n, 37, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
         n = add_gated_pair(w,L,n, 37, -1,0,-1,0,-1,0,-1,0, 1.0f, S_IS_NATIVE, 1.0f);
 
-        /* Stage-1 type predicates (45-50): weight-encoded via Layer 2 type indicators. */
+        /* Stage-1 type predicates (45-50): weight-encoded via Layer 1 type indicators. */
         n = add_gated_pair(w,L,n, 45, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
         n = add_gated_pair(w,L,n, 45, S_TYPE_IS_PAIR,1,S_TOS,-1,-1,0,-1,0, 0, S_TOS, 1.0f);
         n = add_type_unary_result(w,L,n, 45, TYPE_BOOL);
@@ -3918,7 +3978,6 @@ static void generate_weights(InterpreterWeights* w) {
         n = add_gated_pair_ad(w,L,n, 64, -1,0,-1,0,-1,0,-1,0, -1.0f, S_AD_CUR_RIGHT, 1.0f);
         n = add_gated_pair_ad(w,L,n, 64, -1,0,-1,0,-1,0,-1,0, 1.0f, S_AD_IS_FORWARD, 1.0f);
         n = add_gated_pair_ad(w,L,n, 64, -1,0,-1,0,-1,0,-1,0, 1.0f, S_AD_MODE, 1.0f);
-        n = add_gated_pair_ad(w,L,n, 64, -1,0,-1,0,-1,0,-1,0, 1.0f, S_IS_NATIVE, 1.0f);
 
         /* OP_AD_CONST (65): same as VAR but with AD_OP_CONST */
         n = add_gated_pair_ad(w,L,n, 65, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
@@ -3933,7 +3992,6 @@ static void generate_weights(InterpreterWeights* w) {
         n = add_gated_pair_ad(w,L,n, 65, -1,0,-1,0,-1,0,-1,0, -1.0f, S_AD_CUR_RIGHT, 1.0f);
         n = add_gated_pair_ad(w,L,n, 65, -1,0,-1,0,-1,0,-1,0, 1.0f, S_AD_IS_FORWARD, 1.0f);
         n = add_gated_pair_ad(w,L,n, 65, -1,0,-1,0,-1,0,-1,0, 1.0f, S_AD_MODE, 1.0f);
-        n = add_gated_pair_ad(w,L,n, 65, -1,0,-1,0,-1,0,-1,0, 1.0f, S_IS_NATIVE, 1.0f);
 
         /* OP_AD_ADD (66): binary. Pop 2, push tape_len. Set CUR fields.
          * Note: value computation (left_val + right_val) happens in simulated
@@ -3950,8 +4008,14 @@ static void generate_weights(InterpreterWeights* w) {
         n = add_gated_pair_ad(w,L,n, 66, -1,0,-1,0,-1,0,-1,0, (float)AD_OP_ADD, S_AD_CUR_OP, 1.0f);
         n = add_gated_pair_ad(w,L,n, 66, S_SOS,1,-1,0,-1,0,-1,0, 0, S_AD_CUR_LEFT, 1.0f);
         n = add_gated_pair_ad(w,L,n, 66, S_TOS,1,-1,0,-1,0,-1,0, 0, S_AD_CUR_RIGHT, 1.0f);
+        for (int slot = 0; slot < AD_MAX_TAPE; slot++) {
+            int val_dim = S_AD_TAPE_BASE + slot * AD_NODE_FIELDS + AD_F_VALUE;
+            n = add_gated_pair_ad_index(w,L,n, 66, S_SOS, slot, val_dim,1,-1,0,-1,0,-1,0,
+                                        0, S_AD_CUR_VALUE, 1.0f);
+            n = add_gated_pair_ad_index(w,L,n, 66, S_TOS, slot, val_dim,1,-1,0,-1,0,-1,0,
+                                        0, S_AD_CUR_VALUE, 1.0f);
+        }
         n = add_gated_pair_ad(w,L,n, 66, -1,0,-1,0,-1,0,-1,0, 1.0f, S_AD_IS_FORWARD, 1.0f);
-        n = add_gated_pair_ad(w,L,n, 66, -1,0,-1,0,-1,0,-1,0, 1.0f, S_IS_NATIVE, 1.0f);
 
         /* OP_AD_SUB (67): same stack pattern as ADD */
         n = add_gated_pair_ad(w,L,n, 67, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
@@ -3963,8 +4027,14 @@ static void generate_weights(InterpreterWeights* w) {
         n = add_gated_pair_ad(w,L,n, 67, -1,0,-1,0,-1,0,-1,0, (float)AD_OP_SUB, S_AD_CUR_OP, 1.0f);
         n = add_gated_pair_ad(w,L,n, 67, S_SOS,1,-1,0,-1,0,-1,0, 0, S_AD_CUR_LEFT, 1.0f);
         n = add_gated_pair_ad(w,L,n, 67, S_TOS,1,-1,0,-1,0,-1,0, 0, S_AD_CUR_RIGHT, 1.0f);
+        for (int slot = 0; slot < AD_MAX_TAPE; slot++) {
+            int val_dim = S_AD_TAPE_BASE + slot * AD_NODE_FIELDS + AD_F_VALUE;
+            n = add_gated_pair_ad_index(w,L,n, 67, S_SOS, slot, val_dim,1,-1,0,-1,0,-1,0,
+                                        0, S_AD_CUR_VALUE, 1.0f);
+            n = add_gated_pair_ad_index(w,L,n, 67, S_TOS, slot, val_dim,1,-1,0,-1,0,-1,0,
+                                        0, S_AD_CUR_VALUE, -1.0f);
+        }
         n = add_gated_pair_ad(w,L,n, 67, -1,0,-1,0,-1,0,-1,0, 1.0f, S_AD_IS_FORWARD, 1.0f);
-        n = add_gated_pair_ad(w,L,n, 67, -1,0,-1,0,-1,0,-1,0, 1.0f, S_IS_NATIVE, 1.0f);
 
         /* OP_AD_MUL (68): same pattern */
         n = add_gated_pair_ad(w,L,n, 68, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
@@ -3976,8 +4046,8 @@ static void generate_weights(InterpreterWeights* w) {
         n = add_gated_pair_ad(w,L,n, 68, -1,0,-1,0,-1,0,-1,0, (float)AD_OP_MUL, S_AD_CUR_OP, 1.0f);
         n = add_gated_pair_ad(w,L,n, 68, S_SOS,1,-1,0,-1,0,-1,0, 0, S_AD_CUR_LEFT, 1.0f);
         n = add_gated_pair_ad(w,L,n, 68, S_TOS,1,-1,0,-1,0,-1,0, 0, S_AD_CUR_RIGHT, 1.0f);
+        n = add_gated_pair_ad(w,L,n, 68, S_AD_PROD_LR,1,-1,0,-1,0,-1,0, 0, S_AD_CUR_VALUE, 1.0f);
         n = add_gated_pair_ad(w,L,n, 68, -1,0,-1,0,-1,0,-1,0, 1.0f, S_AD_IS_FORWARD, 1.0f);
-        n = add_gated_pair_ad(w,L,n, 68, -1,0,-1,0,-1,0,-1,0, 1.0f, S_IS_NATIVE, 1.0f);
 
         /* Unary AD ops (69-76): replace TOS with tape_len, set CUR fields */
         for (int uop = 69; uop <= 76; uop++) {
@@ -3998,8 +4068,17 @@ static void generate_weights(InterpreterWeights* w) {
             n = add_gated_pair_ad(w,L,n, uop, -1,0,-1,0,-1,0,-1,0, ad_op_type, S_AD_CUR_OP, 1.0f);
             n = add_gated_pair_ad(w,L,n, uop, S_TOS,1,-1,0,-1,0,-1,0, 0, S_AD_CUR_LEFT, 1.0f);
             n = add_gated_pair_ad(w,L,n, uop, -1,0,-1,0,-1,0,-1,0, -1.0f, S_AD_CUR_RIGHT, 1.0f);
+            if (uop == 69) {
+                n = add_gated_pair_ad(w,L,n, 69, -1,0,-1,0,-1,0,-1,0, -1.0f, S_AD_CUR_SAVED, 1.0f);
+                for (int slot = 0; slot < AD_MAX_TAPE; slot++) {
+                    int val_dim = S_AD_TAPE_BASE + slot * AD_NODE_FIELDS + AD_F_VALUE;
+                    n = add_gated_pair_ad_index(w,L,n, 69, S_TOS, slot, val_dim,1,-1,0,-1,0,-1,0,
+                                                0, S_AD_CUR_VALUE, -1.0f);
+                }
+            }
             n = add_gated_pair_ad(w,L,n, uop, -1,0,-1,0,-1,0,-1,0, 1.0f, S_AD_IS_FORWARD, 1.0f);
-            n = add_gated_pair_ad(w,L,n, uop, -1,0,-1,0,-1,0,-1,0, 1.0f, S_IS_NATIVE, 1.0f);
+            if (uop != 69)
+                n = add_gated_pair_ad(w,L,n, uop, -1,0,-1,0,-1,0,-1,0, 1.0f, S_IS_NATIVE, 1.0f);
         }
 
         /* OP_AD_BACKWARD (77): set backward mode, seed gradient */
@@ -4007,18 +4086,25 @@ static void generate_weights(InterpreterWeights* w) {
         n = add_gated_pair_ad(w,L,n, 77, -1,0,-1,0,-1,0,-1,0, 2.0f, S_AD_MODE, 1.0f);
         n = add_gated_pair_ad(w,L,n, 77, S_TOS,1,S_AD_CURSOR,-1,-1,0,-1,0, 0, S_AD_CURSOR, 1.0f);
         n = add_gated_pair_ad(w,L,n, 77, -1,0,-1,0,-1,0,-1,0, 1.0f, S_AD_IS_BACKWARD, 1.0f);
+        for (int slot = 0; slot < AD_MAX_TAPE; slot++) {
+            int grad_dim = S_AD_TAPE_BASE + slot * AD_NODE_FIELDS + AD_F_GRAD;
+            n = add_gated_pair_ad_index(w,L,n, 77, S_TOS, slot, -1,0,-1,0,-1,0,-1,0,
+                                        1.0f, grad_dim, 1.0f);
+        }
         /* Pop TOS */
         n = add_gated_pair_ad(w,L,n, 77, S_SOS,1,S_TOS,-1,-1,0,-1,0, 0, S_TOS, 1.0f);
         n = add_gated_pair_ad(w,L,n, 77, S_R2,1,S_SOS,-1,-1,0,-1,0, 0, S_SOS, 1.0f);
         n = add_gated_pair_ad(w,L,n, 77, S_R3,1,S_R2,-1,-1,0,-1,0, 0, S_R2, 1.0f);
         n = add_gated_pair_ad(w,L,n, 77, -1,0,-1,0,-1,0,-1,0, 0, S_R3, 1.0f);
         n = add_gated_pair_ad(w,L,n, 77, -1,0,-1,0,-1,0,-1,0, -1.0f, S_DEPTH, 1.0f);
-        n = add_gated_pair_ad(w,L,n, 77, -1,0,-1,0,-1,0,-1,0, 1.0f, S_IS_NATIVE, 1.0f);
 
-        /* OP_AD_GRAD (78): replace TOS with gradient of tape[TOS].
-         * Requires tape random-access read — same IS_NATIVE pattern as CAR/CDR/VEC_REF. */
+        /* OP_AD_GRAD (78): replace TOS with gradient of tape[TOS]. */
         n = add_gated_pair_ad(w,L,n, 78, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
-        n = add_gated_pair_ad(w,L,n, 78, -1,0,-1,0,-1,0,-1,0, 1.0f, S_IS_NATIVE, 1.0f);
+        for (int slot = 0; slot < AD_MAX_TAPE; slot++) {
+            int grad_dim = S_AD_TAPE_BASE + slot * AD_NODE_FIELDS + AD_F_GRAD;
+            n = add_gated_pair_ad_index(w,L,n, 78, S_TOS, slot, grad_dim,1,S_TOS,-1,-1,0,-1,0,
+                                        0, S_TOS, 1.0f);
+        }
 
         /* AD delegated ops (79-82): IS_NATIVE */
         for (int opc = 79; opc <= 82; opc++) {
@@ -4056,11 +4142,10 @@ static void generate_weights(InterpreterWeights* w) {
         ADD_BW_PAIR(AD_OP_SUB, S_AD_CUR_GRAD, 1.0f, 0, S_AD_LEFT_GRAD_NEW, 1.0f);
         ADD_BW_PAIR(AD_OP_SUB, S_AD_CUR_GRAD, -1.0f, 0, S_AD_RIGHT_GRAD_NEW, 1.0f);
 
-        /* AD_MUL (4): dL = grad*right_value (precomputed in L1 as AD_PROD_GRAD_LV)
-         *             dR = grad*left_value  (precomputed in L1 as AD_PROD_GRAD_RV)
-         * Note: L1 SQUARE products use AD_CUR_GRAD and AD_RIGHT_VALUE/AD_LEFT_VALUE
-         * which are populated by L2 (cursor load) and L4 (parent load) before L1 runs
-         * in the backward layer order L2→L4→L1→L3→L5. */
+        /* AD_MUL (4): dL = grad*right_value (precomputed in Layer 2 as AD_PROD_GRAD_LV)
+         *             dR = grad*left_value  (precomputed in Layer 2 as AD_PROD_GRAD_RV)
+         * Note: Layer 2 SQUARE products use AD_CUR_GRAD and AD_RIGHT_VALUE/AD_LEFT_VALUE
+         * which are populated by Layer 1 (cursor load) and Layer 4 (parent load). */
         ADD_BW_PAIR(AD_OP_MUL, S_AD_PROD_GRAD_LV, 1.0f, 0, S_AD_LEFT_GRAD_NEW, 1.0f);
         ADD_BW_PAIR(AD_OP_MUL, S_AD_PROD_GRAD_RV, 1.0f, 0, S_AD_RIGHT_GRAD_NEW, 1.0f);
 
@@ -4090,7 +4175,7 @@ static void generate_weights(InterpreterWeights* w) {
          * saved_val is precomputed during forward recording (Option B):
          *   NEG=-1, ABS=sign, RELU=step, SIGMOID=val*(1-val),
          *   TANH=1-val², EXP=val, LOG=1/input, SQRT=1/(2*val).
-         * L1 SQUARE computes AD_PROD_GRAD_SV = grad * saved_val.
+         * Layer 2 SQUARE computes AD_PROD_GRAD_SV = grad * saved_val.
          * Each unary op gets a gated pair that writes AD_PROD_GRAD_SV → LEFT_GRAD_NEW. */
         for (int uop_i = 0; uop_i < 8; uop_i++) {
             float uop_vals[] = { AD_OP_NEG, AD_OP_ABS, AD_OP_RELU, AD_OP_SIGMOID,
@@ -4188,6 +4273,20 @@ static void generate_weights(InterpreterWeights* w) {
             w->ff_gate_b[L][n] = SCALE * (-(float)slot - 0.5f) - 10.0f * SCALE;
             W(w->ff_up[L], S_AD_CUR_RIGHT, n, FFN_DIM) = 1.0f;
             W(w->ff_down[L], n, S_AD_TAPE_BASE + slot * AD_NODE_FIELDS + AD_F_RIGHT, D) = -1.0f;
+            n++;
+
+            /* saved field */
+            W(w->ff_gate[L], S_AD_TAPE_LEN,    n, FFN_DIM) = SCALE;
+            W(w->ff_gate[L], S_AD_IS_FORWARD,  n, FFN_DIM) = 10.0f * SCALE;
+            w->ff_gate_b[L][n] = SCALE * (-(float)slot + 0.5f) - 10.0f * SCALE;
+            W(w->ff_up[L], S_AD_CUR_SAVED, n, FFN_DIM) = 1.0f;
+            W(w->ff_down[L], n, S_AD_TAPE_BASE + slot * AD_NODE_FIELDS + AD_F_SAVED, D) = 1.0f;
+            n++;
+            W(w->ff_gate[L], S_AD_TAPE_LEN,    n, FFN_DIM) = SCALE;
+            W(w->ff_gate[L], S_AD_IS_FORWARD,  n, FFN_DIM) = 10.0f * SCALE;
+            w->ff_gate_b[L][n] = SCALE * (-(float)slot - 0.5f) - 10.0f * SCALE;
+            W(w->ff_up[L], S_AD_CUR_SAVED, n, FFN_DIM) = 1.0f;
+            W(w->ff_down[L], n, S_AD_TAPE_BASE + slot * AD_NODE_FIELDS + AD_F_SAVED, D) = -1.0f;
             n++;
         }
 
@@ -4472,51 +4571,20 @@ static void apply_ffn_layer(const InterpreterWeights* w, int L, float x[D]) {
     for (int i = 0; i < D; i++) x[i] += fo[i];
 }
 
-/* Backward gradient propagation via weight matrices.
- * Layer application order: L2 (cursor load) → L4 (parent load) →
- * L1 (SQUARE products) → L3 (gradient rules) → L5 (gradient write-back).
- * This reordering satisfies data dependencies:
- *   L2 loads AD_CUR_LEFT/RIGHT from tape
- *   L4 uses those indices to load parent values
- *   L1 computes grad*left_value and grad*right_value via SQUARE trick
- *   L3 dispatches gradient rules by AD_CUR_OP
- *   L5 writes gradient deltas to parent tape nodes */
-/* Backward gradient propagation through weight matrices.
- * Applies L2 (cursor load) → L4 (parent load) → L1 (SQUARE products) → L5 (gradient write-back).
- * Layer 3 is NOT applied during backward — it contains forward opcode dispatch which
- * would interfere (unconditional OUTPUT/HAS_OUT clears, transient dim clears).
- * The gradient rules (ADD passthrough, MUL cross-product, etc.) are applied via
- * the SQUARE products from L1 and direct writes from L5.
+/* Backward: L1→L4→L2→L5→L5 entirely through weight matrices. Zero C code.
  *
- * For ops where L1 SQUARE products suffice (MUL: grad*left, grad*right), L5 writes
- * the L1 products directly. For ops where L3 gradient rules are needed (ADD: grad
- * passthrough), L5 writes grad directly (no product needed). */
-/* Backward gradient propagation entirely through weight matrices.
- * L2: cursor load (tape[cursor] → AD_CUR_*)
+ * L1: cursor load (tape[cursor] → AD_CUR_*)
  * L4: parent load (tape[CUR_LEFT/RIGHT] → AD_LEFT/RIGHT_VALUE)
- * L1: SQUARE products (grad*right, grad*left, grad*saved — all via polarization identity)
- * L3: gradient rule dispatch (gated pairs write LEFT/RIGHT_GRAD_NEW)
- * L5: gradient write-back (indicator-gated write to parent tape nodes)
- * Zero inline C. All operations through apply_ffn_layer (actual W @ x + b). */
-/* Backward: L2→L4→L1→L5 through weight matrices. Layer 3 is NOT invoked.
- * L2: cursor load (tape[cursor] → AD_CUR_*)
- * L4: parent load (tape[CUR_LEFT/RIGHT] → AD_LEFT/RIGHT_VALUE)
- * L1: SQUARE products (grad*right, grad*left, grad*saved — polarization identity)
- * L5: gradient dispatch + write-back (dispatch on CUR_OP, write to parent nodes) */
-/* Backward: L2→L4→L1→L5→L5 entirely through weight matrices. Zero C code.
- *
- * L2: cursor load (tape[cursor] → AD_CUR_*)
- * L4: parent load (tape[CUR_LEFT/RIGHT] → AD_LEFT/RIGHT_VALUE)
- * L1: SQUARE products (grad*right, grad*left, grad*saved via polarization identity)
+ * L2: SQUARE products (grad*right, grad*left, grad*saved via polarization identity)
  * L5 pass 1: gradient rule dispatch (indicator on CUR_OP → LEFT/RIGHT_GRAD_NEW)
  * L5 pass 2: gradient write-back (indicator on CUR_LEFT/RIGHT → parent tape nodes)
  *            + cursor decrement + completion check + transient clear
  *
  * Layer 3 is NEVER invoked during backward. */
 static void backward_with_weights(const InterpreterWeights* w, float x[D]) {
-    apply_ffn_layer(w, 2, x);  /* cursor load */
+    apply_ffn_layer(w, 1, x);  /* cursor load */
     apply_ffn_layer(w, 4, x);  /* parent load */
-    apply_ffn_layer(w, 1, x);  /* SQUARE products */
+    apply_ffn_layer(w, 2, x);  /* SQUARE products */
     apply_ffn_layer(w, 5, x);  /* pass 1: gradient dispatch */
     apply_ffn_layer(w, 5, x);  /* pass 2: gradient write-back */
 }
@@ -4595,18 +4663,17 @@ static int run_with_weights(const InterpreterWeights* w,
         int is_native_pre = 0;
         if (state[S_AD_IS_BACKWARD] > 0.5f) {
             /* Backward: one gradient propagation step through weight matrices.
-             * backward_with_weights applies L2→L4→L1→L3→L5:
-             *   L2: cursor load (tape[cursor] → AD_CUR_*)
+             * backward_with_weights applies L1→L4→L2→L5→L5:
+             *   L1: cursor load (tape[cursor] → AD_CUR_*)
              *   L4: parent load (tape[CUR_LEFT/RIGHT] → AD_LEFT/RIGHT_VALUE)
-             *   L1: SQUARE products (grad*left, grad*right, grad*cur_value)
-             *   L3: gradient rules (dispatch on AD_CUR_OP)
-             *   L5: gradient write-back (to parent tape nodes)
+             *   L2: SQUARE products (grad*left, grad*right, grad*saved)
+             *   L5: gradient dispatch and write-back
              * Cursor decrement and SIGMOID/TANH/LOG/SQRT handled after. */
-            /* Backward entirely through weight matrices: L2→L4→L1→L5→L5.
+            /* Backward entirely through weight matrices: L1→L4→L2→L5→L5.
              * Layer 5 handles gradient dispatch, write-back, cursor decrement,
              * completion check, and transient clearing — no inline C. */
             /* Backward entirely through weight matrices. Zero inline C.
-             * Cursor decrement + completion in L2. Gradient dispatch in L5 pass 1.
+             * Cursor decrement + completion in L1. Gradient dispatch in L5 pass 1.
              * Gradient write-back in L5 pass 2. */
             memcpy(next, state, sizeof(next));
             backward_with_weights(w, next);
