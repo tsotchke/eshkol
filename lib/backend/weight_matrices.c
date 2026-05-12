@@ -134,7 +134,7 @@ enum {
     S_PC=0, S_TOS=1, S_SOS=2, S_R2=3, S_R3=4, S_DEPTH=5,
     S_OUTPUT=6, S_HALT=7,
     S_MEM0=8, S_MEM1=9, S_MEM2=10, S_MEM3=11,
-    S_SP=12, S_FP=13, S_HAS_OUT=14, S_SPARE=15,
+    S_SP=12, S_FP=13, S_HAS_OUT=14, S_CUR_CLOSURE=15,
 
     /* Intermediate / transient (16-31) — cleared every cycle by Layer 3 */
     S_OPCODE=16, S_OPERAND=17,
@@ -331,6 +331,7 @@ typedef struct {
     float return_pc;
     float saved_mem[MEM_SIZE];
     float saved_tos, saved_sos, saved_r2, saved_r3, saved_depth;
+    float saved_closure;
 } CallFrame;
 static CallFrame g_frames[64];
 static int g_frame_count = 0;
@@ -387,6 +388,7 @@ typedef struct { float s[D]; } State;
 static void state_init(State* st) {
     memset(st, 0, sizeof(State));
     st->s[S_OUTPUT] = -1.0f;
+    st->s[S_CUR_CLOSURE] = -100.0f;
 }
 
 static void execute_step(const State* cur, const Instr* prog, int n_instr, State* next) {
@@ -494,18 +496,42 @@ static void execute_step(const State* cur, const Instr* prog, int n_instr, State
         addr=(int)operand;
         next->s[S_R3]=r2; next->s[S_R2]=sos; next->s[S_SOS]=tos;
         next->s[S_TOS]=(addr>=0&&addr<MEM_SIZE)?cur->s[S_MEM0+addr]:0;
+        next->s[S_TYPE_TOS]=TYPE_NUMBER;
+        if (addr >= 0 && addr < MEM_SIZE && cur->s[S_CUR_CLOSURE] >= 0.0f) {
+            int upcell = (int)(cur->s[S_CUR_CLOSURE] + 1.0f + (float)addr);
+            if (upcell >= 0 && upcell < ARENA_CELLS) {
+                next->s[S_TOS]=ARENA_FIELD(cur->s, upcell, ARENA_F_CAR_VAL);
+                next->s[S_TYPE_TOS]=ARENA_FIELD(cur->s, upcell, ARENA_F_CAR_TYPE);
+            }
+        }
         next->s[S_DEPTH]=cur->s[S_DEPTH]+1; next->s[S_PC]=pc+1;
         next->s[S_TYPE_R3]=tt_r2; next->s[S_TYPE_R2]=tt_sos; next->s[S_TYPE_SOS]=tt_tos;
-        next->s[S_TYPE_TOS]=TYPE_NUMBER;
         break;
     case OP_SET_UPVALUE:
         addr=(int)operand;
         if(addr>=0&&addr<MEM_SIZE) next->s[S_MEM0+addr]=tos;
+        if (addr >= 0 && addr < MEM_SIZE && cur->s[S_CUR_CLOSURE] >= 0.0f) {
+            int upcell = (int)(cur->s[S_CUR_CLOSURE] + 1.0f + (float)addr);
+            if (upcell >= 0 && upcell < ARENA_CELLS) {
+                ARENA_FIELD(next->s, upcell, ARENA_F_CAR_VAL) = tos;
+                ARENA_FIELD(next->s, upcell, ARENA_F_CAR_TYPE) = tt_tos;
+            }
+        }
         next->s[S_TOS]=sos; next->s[S_SOS]=r2; next->s[S_R2]=r3; next->s[S_R3]=0; next->s[S_DEPTH]=cur->s[S_DEPTH]-1;
         next->s[S_TYPE_TOS]=tt_sos; next->s[S_TYPE_SOS]=tt_r2; next->s[S_TYPE_R2]=tt_r3; next->s[S_TYPE_R3]=TYPE_NUMBER;
         next->s[S_PC]=pc+1; break;
     case OP_CLOSE_UPVALUE:
+        addr=(int)operand;
+        if (addr >= 0 && addr < MEM_SIZE && cur->s[S_CUR_CLOSURE] >= 0.0f) {
+            int upcell = (int)(cur->s[S_CUR_CLOSURE] + 1.0f + (float)addr);
+            if (upcell >= 0 && upcell < ARENA_CELLS) {
+                ARENA_FIELD(next->s, upcell, ARENA_F_CAR_VAL) = cur->s[S_MEM0+addr];
+                ARENA_FIELD(next->s, upcell, ARENA_F_CAR_TYPE) = TYPE_NUMBER;
+            }
+        }
+        next->s[S_PC]=pc+1; break;
     case OP_OPEN_CLOSURE:
+        next->s[S_CUR_CLOSURE]=tos;
         next->s[S_PC]=pc+1; break;
     case OP_CALL:   /* Set IS_CALL for exec loop to handle frame management */
         next->s[S_IS_CALL]=1; next->s[S_PC]=pc+1; break;
@@ -598,13 +624,13 @@ static void execute_step(const State* cur, const Instr* prog, int n_instr, State
     }
     case OP_CLOSURE: {
         int cell = (int)cur->s[S_ARENA_NEXT];
-        if (cell < 0 || cell >= ARENA_CELLS) { next->s[S_HALT]=1; break; }
+        if (cell < 0 || cell + 1 + MEM_SIZE > ARENA_CELLS) { next->s[S_HALT]=1; break; }
         ARENA_FIELD(next->s, cell, ARENA_F_KIND) = ARENA_KIND_CLOSURE;
         ARENA_FIELD(next->s, cell, ARENA_F_CAR_VAL) = (float)operand;
-        ARENA_FIELD(next->s, cell, ARENA_F_CDR_VAL) = 0.0f;
+        ARENA_FIELD(next->s, cell, ARENA_F_CDR_VAL) = (float)MEM_SIZE;
         ARENA_FIELD(next->s, cell, ARENA_F_CAR_TYPE) = TYPE_NUMBER;
         ARENA_FIELD(next->s, cell, ARENA_F_CDR_TYPE) = TYPE_NUMBER;
-        next->s[S_ARENA_NEXT] = (float)(cell + 1);
+        next->s[S_ARENA_NEXT] = (float)(cell + 1 + MEM_SIZE);
         next->s[S_R3]=r2; next->s[S_R2]=sos; next->s[S_SOS]=tos; next->s[S_TOS]=(float)cell;
         next->s[S_DEPTH]=cur->s[S_DEPTH]+1; next->s[S_PC]=pc+1;
         next->s[S_TYPE_TOS]=TYPE_CLOSURE; next->s[S_TYPE_SOS]=tt_tos;
@@ -1272,24 +1298,32 @@ static void layer3_ffn(const float x[D], float out[D]) {
     out[S_ARENA_READ_CDR]+=g; out[S_ARENA_TARGET]+=g*tos;
     /* OP_NULL_P (34): weight-encoded nil predicate */
     g=indicator(op,34)*alive; out[S_PC]+=g; out[S_TOS]+=g*(x[S_TYPE_IS_NIL]-tos); out[S_TYPE_TOS]+=g*(TYPE_BOOL-ttos);
-    /* OP_GET_UPVALUE (22): MEM-backed upvalue slot read. Closure-cell
-     * captures land in a later slice; this matches the existing fallback. */
+    /* OP_GET_UPVALUE (22): MEM fallback first; Layer 4 overwrites TOS from
+     * current arena closure cell when S_CUR_CLOSURE points at one. */
     g=indicator(op,22)*alive;
     out[S_PC]+=g; out[S_TOS]+=g*(lv-tos); out[S_SOS]+=g*(tos-sos); out[S_R2]+=g*(sos-r2); out[S_R3]+=g*(r2-r3); out[S_DEPTH]+=g;
     out[S_TYPE_TOS]+=g*(TYPE_NUMBER-ttos); out[S_TYPE_SOS]+=g*(ttos-tsos); out[S_TYPE_R2]+=g*(tsos-tr2); out[S_TYPE_R3]+=g*(tr2-tr3);
-    /* OP_SET_UPVALUE (23): MEM-backed upvalue slot write, then pop. */
+    out[S_ARENA_READ_CAR]+=g; out[S_ARENA_TARGET]+=g*(x[S_CUR_CLOSURE]+oper+1.0f);
+    /* OP_SET_UPVALUE (23): write MEM fallback and current arena closure cell, then pop. */
     g=indicator(op,23)*alive; {
         out[S_PC]+=g;
         for (int a = 0; a < MEM_SIZE; a++) out[S_MEM0+a] += g * x[S_STORED0+a];
         out[S_TOS]+=g*(sos-tos); out[S_SOS]+=g*(r2-sos); out[S_R2]+=g*(r3-r2); out[S_R3]+=g*(-r3); out[S_DEPTH]+=g*(-1);
         out[S_TYPE_TOS]+=g*(tsos-ttos); out[S_TYPE_SOS]+=g*(tr2-tsos); out[S_TYPE_R2]+=g*(tr3-tr2); out[S_TYPE_R3]+=g*(TYPE_NUMBER-tr3);
+        out[S_ARENA_WRITE_CAR]+=g; out[S_ARENA_TARGET]+=g*(x[S_CUR_CLOSURE]+oper+1.0f);
+        out[S_ARENA_NEW_CAR]+=g*tos; out[S_ARENA_NEW_CAR_TYPE]+=g*ttos;
     }
-    /* OP_CLOSE_UPVALUE (38) and OP_OPEN_CLOSURE (54): arena-closure
-     * housekeeping no-ops until closure-cell capture storage lands. */
-    g=indicator(op,38)*alive; out[S_PC]+=g;
-    g=indicator(op,54)*alive; out[S_PC]+=g;
-    /* OP_CLOSURE (24): allocate closure header in bounded arena.
-     * car stores function entry PC; cdr reserves n_upvals for future slices. */
+    /* OP_CLOSE_UPVALUE (38): close MEM[operand] into the current arena closure cell. */
+    g=indicator(op,38)*alive;
+    out[S_PC]+=g; out[S_ARENA_WRITE_CAR]+=g;
+    out[S_ARENA_TARGET]+=g*(x[S_CUR_CLOSURE]+oper+1.0f);
+    out[S_ARENA_NEW_CAR]+=g*lv; out[S_ARENA_NEW_CAR_TYPE]+=g*TYPE_NUMBER;
+    /* OP_OPEN_CLOSURE (54): make TOS the current arena closure without
+     * disturbing the operand stack. */
+    g=indicator(op,54)*alive;
+    out[S_PC]+=g; out[S_CUR_CLOSURE]+=g*(tos-x[S_CUR_CLOSURE]);
+    /* OP_CLOSURE (24): allocate closure header plus four bounded upvalue
+     * cells in the arena. car stores function entry PC; cdr stores capacity. */
     g=indicator(op,24)*alive; {
         float cell = x[S_ARENA_NEXT];
         out[S_PC]+=g;
@@ -1298,9 +1332,9 @@ static void layer3_ffn(const float x[D], float out[D]) {
         out[S_ARENA_WRITE_KIND]+=g; out[S_ARENA_WRITE_CAR]+=g; out[S_ARENA_WRITE_CDR]+=g;
         out[S_ARENA_TARGET]+=g*cell;
         out[S_ARENA_NEW_KIND]+=g*ARENA_KIND_CLOSURE;
-        out[S_ARENA_NEW_CAR]+=g*oper; out[S_ARENA_NEW_CDR]+=g*0.0f;
+        out[S_ARENA_NEW_CAR]+=g*oper; out[S_ARENA_NEW_CDR]+=g*(float)MEM_SIZE;
         out[S_ARENA_NEW_CAR_TYPE]+=g*TYPE_NUMBER; out[S_ARENA_NEW_CDR_TYPE]+=g*TYPE_NUMBER;
-        out[S_ARENA_NEXT]+=g;
+        out[S_ARENA_NEXT]+=g*(float)(1 + MEM_SIZE);
     }
     /* OP_TAIL_CALL (26): frame reuse. Encode the stack/register shuffle
      * directly; CALL frame handling remains native only for non-tail calls. */
@@ -2429,6 +2463,7 @@ static void exec_loop_postprocess(float x[D], const Instr* prog, int n_instr) {
         if (argc < 0) argc = 0;
         if (argc > MEM_SIZE) argc = MEM_SIZE;
         float func_pc = x[S_TOS];
+        float caller_closure = x[S_CUR_CLOSURE];
         /* If func_pc looks like a heap closure pointer, dereference to get entry point */
         int fptr = (int)func_pc;
         if (x[S_TYPE_TOS] == TYPE_CLOSURE &&
@@ -2436,18 +2471,23 @@ static void exec_loop_postprocess(float x[D], const Instr* prog, int n_instr) {
             ARENA_FIELD(x, fptr, ARENA_F_KIND) == ARENA_KIND_CLOSURE) {
             float candidate = ARENA_FIELD(x, fptr, ARENA_F_CAR_VAL);
             if (candidate >= 0 && candidate < n_instr) func_pc = candidate;
-            g_current_closure_ptr = -1; /* arena closure; upvalue slice lands later */
+            x[S_CUR_CLOSURE] = (float)fptr;
+            g_current_closure_ptr = -1;
         } else if (fptr >= 0 && fptr + 1 < g_heap_ptr && fptr + 1 < HEAP_SIZE && g_heap[fptr] < 10000) {
             /* Check if this is a closure (heap[ptr] = entry_pc, heap[ptr+1] = n_upvals) */
             float candidate = g_heap[fptr];
             if (candidate >= 0 && candidate < n_instr) func_pc = candidate;
             g_current_closure_ptr = fptr; /* track current closure for GET_UPVALUE */
+            x[S_CUR_CLOSURE] = -100.0f;
+        } else {
+            x[S_CUR_CLOSURE] = -100.0f;
         }
 
         /* Save call frame: return address, memory, and caller's stack below args */
         if (g_frame_count < 64) {
             CallFrame* f = &g_frames[g_frame_count];
             f->return_pc = x[S_PC]; /* already PC+1 */
+            f->saved_closure = caller_closure;
             for (int i = 0; i < MEM_SIZE; i++)
                 f->saved_mem[i] = x[S_MEM0+i];
             /* Save caller's stack state below the func_pc + args.
@@ -2506,6 +2546,7 @@ static void exec_loop_postprocess(float x[D], const Instr* prog, int n_instr) {
             x[S_R3] = f->saved_r2;
             x[S_TYPE_SOS] = TYPE_NUMBER; x[S_TYPE_R2] = TYPE_NUMBER; x[S_TYPE_R3] = TYPE_NUMBER;
             x[S_DEPTH] = f->saved_depth + 1; /* +1 for return value */
+            x[S_CUR_CLOSURE] = f->saved_closure;
         }
         x[S_IS_RET] = 0;
     }
@@ -2521,7 +2562,7 @@ static int run_simulated(const Instr* prog, int n_instr, float* outputs, int max
     float pe[256][D];
     memset(pe, 0, sizeof(pe));
     for (int p = 0; p < n_instr && p < 256; p++) embed_instruction(&prog[p], p, pe[p]);
-    float state[D]; memset(state, 0, sizeof(state)); state[S_OUTPUT] = -1;
+    float state[D]; memset(state, 0, sizeof(state)); state[S_OUTPUT] = -1; state[S_CUR_CLOSURE] = -100.0f;
     g_frame_count = 0; g_heap_ptr = 0; g_exc_count = 0; g_current_exn = 0.0f; g_current_closure_ptr = -1; g_wind_depth = 0;
     if (g_vm_regions_initialized) { vm_arena_reset(&g_vm_regions.global_arena); }
     int n_out = 0, step_count = 0;
@@ -3484,8 +3525,8 @@ static void generate_weights(InterpreterWeights* w) {
         n = add_gated_pair(w,L,n, 34, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
         n = add_gated_pair(w,L,n, 34, S_TYPE_IS_NIL,1,S_TOS,-1,-1,0,-1,0, 0, S_TOS, 1.0f);
         n = add_type_unary_result(w,L,n, 34, TYPE_BOOL);
-        /* OP_GET_UPVALUE (22): MEM-backed upvalue slot read. Closure-cell
-         * captures are a later slice; this mirrors the reference fallback. */
+        /* OP_GET_UPVALUE (22): MEM fallback; Layer 4 overwrites TOS from
+         * current arena closure cell when S_CUR_CLOSURE is in range. */
         n = add_gated_pair(w,L,n, 22, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
         n = add_gated_pair(w,L,n, 22, S_LOADVAL,1,S_TOS,-1,-1,0,-1,0, 0, S_TOS, 1.0f);
         n = add_gated_pair(w,L,n, 22, S_TOS,1,S_SOS,-1,-1,0,-1,0, 0, S_SOS, 1.0f);
@@ -3493,21 +3534,33 @@ static void generate_weights(InterpreterWeights* w) {
         n = add_gated_pair(w,L,n, 22, S_R2,1,S_R3,-1,-1,0,-1,0, 0, S_R3, 1.0f);
         n = add_gated_pair(w,L,n, 22, -1,0,-1,0,-1,0,-1,0, 1.0f, S_DEPTH, 1.0f);
         n = add_type_push(w,L,n, 22, TYPE_NUMBER);
-        /* OP_SET_UPVALUE (23): MEM-backed upvalue slot write, then pop. */
+        n = add_gated_pair(w,L,n, 22, -1,0,-1,0,-1,0,-1,0, 1.0f, S_ARENA_READ_CAR, 1.0f);
+        n = add_gated_pair(w,L,n, 22, S_CUR_CLOSURE,1,S_OPERAND,1,-1,0,-1,0, 1.0f, S_ARENA_TARGET, 1.0f);
+        /* OP_SET_UPVALUE (23): write MEM fallback and current arena closure cell, then pop. */
         n = add_gated_pair(w,L,n, 23, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
         for (int a = 0; a < MEM_SIZE; a++) {
             n = add_gated_pair(w,L,n, 23, S_STORED0+a,1,-1,0,-1,0,-1,0, 0, S_MEM0+a, 1.0f);
         }
+        n = add_gated_pair(w,L,n, 23, -1,0,-1,0,-1,0,-1,0, 1.0f, S_ARENA_WRITE_CAR, 1.0f);
+        n = add_gated_pair(w,L,n, 23, S_CUR_CLOSURE,1,S_OPERAND,1,-1,0,-1,0, 1.0f, S_ARENA_TARGET, 1.0f);
+        n = add_gated_pair(w,L,n, 23, S_TOS,1,-1,0,-1,0,-1,0, 0, S_ARENA_NEW_CAR, 1.0f);
+        n = add_gated_pair(w,L,n, 23, S_TYPE_TOS,1,-1,0,-1,0,-1,0, 0, S_ARENA_NEW_CAR_TYPE, 1.0f);
         n = add_gated_pair(w,L,n, 23, S_SOS,1,S_TOS,-1,-1,0,-1,0, 0, S_TOS, 1.0f);
         n = add_gated_pair(w,L,n, 23, S_R2,1,S_SOS,-1,-1,0,-1,0, 0, S_SOS, 1.0f);
         n = add_gated_pair(w,L,n, 23, S_R3,1,S_R2,-1,-1,0,-1,0, 0, S_R2, 1.0f);
         n = add_gated_pair(w,L,n, 23, S_R3,-1,-1,0,-1,0,-1,0, 0, S_R3, 1.0f);
         n = add_gated_pair(w,L,n, 23, -1,0,-1,0,-1,0,-1,0, -1.0f, S_DEPTH, 1.0f);
         n = add_type_pop(w,L,n, 23);
-        /* OP_CLOSE_UPVALUE/OP_OPEN_CLOSURE: arena-closure housekeeping no-ops. */
+        /* OP_CLOSE_UPVALUE: copy MEM[operand] into current arena closure cell. */
         n = add_gated_pair(w,L,n, 38, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
+        n = add_gated_pair(w,L,n, 38, -1,0,-1,0,-1,0,-1,0, 1.0f, S_ARENA_WRITE_CAR, 1.0f);
+        n = add_gated_pair(w,L,n, 38, S_CUR_CLOSURE,1,S_OPERAND,1,-1,0,-1,0, 1.0f, S_ARENA_TARGET, 1.0f);
+        n = add_gated_pair(w,L,n, 38, S_LOADVAL,1,-1,0,-1,0,-1,0, 0, S_ARENA_NEW_CAR, 1.0f);
+        n = add_gated_pair(w,L,n, 38, -1,0,-1,0,-1,0,-1,0, TYPE_NUMBER, S_ARENA_NEW_CAR_TYPE, 1.0f);
+        /* OP_OPEN_CLOSURE: set current closure to TOS without changing stack. */
         n = add_gated_pair(w,L,n, 54, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
-        /* OP_CLOSURE (24): allocate closure header in bounded arena. */
+        n = add_gated_pair(w,L,n, 54, S_TOS,1,S_CUR_CLOSURE,-1,-1,0,-1,0, 0, S_CUR_CLOSURE, 1.0f);
+        /* OP_CLOSURE (24): allocate closure header plus four bounded upvalue cells. */
         n = add_gated_pair(w,L,n, 24, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
         n = add_gated_pair(w,L,n, 24, S_ARENA_NEXT,1,S_TOS,-1,-1,0,-1,0, 0, S_TOS, 1.0f);
         n = add_gated_pair(w,L,n, 24, S_TOS,1,S_SOS,-1,-1,0,-1,0, 0, S_SOS, 1.0f);
@@ -3521,10 +3574,10 @@ static void generate_weights(InterpreterWeights* w) {
         n = add_gated_pair(w,L,n, 24, S_ARENA_NEXT,1,-1,0,-1,0,-1,0, 0, S_ARENA_TARGET, 1.0f);
         n = add_gated_pair(w,L,n, 24, -1,0,-1,0,-1,0,-1,0, ARENA_KIND_CLOSURE, S_ARENA_NEW_KIND, 1.0f);
         n = add_gated_pair(w,L,n, 24, S_OPERAND,1,-1,0,-1,0,-1,0, 0, S_ARENA_NEW_CAR, 1.0f);
-        n = add_gated_pair(w,L,n, 24, -1,0,-1,0,-1,0,-1,0, 0.0f, S_ARENA_NEW_CDR, 1.0f);
+        n = add_gated_pair(w,L,n, 24, -1,0,-1,0,-1,0,-1,0, (float)MEM_SIZE, S_ARENA_NEW_CDR, 1.0f);
         n = add_gated_pair(w,L,n, 24, -1,0,-1,0,-1,0,-1,0, TYPE_NUMBER, S_ARENA_NEW_CAR_TYPE, 1.0f);
         n = add_gated_pair(w,L,n, 24, -1,0,-1,0,-1,0,-1,0, TYPE_NUMBER, S_ARENA_NEW_CDR_TYPE, 1.0f);
-        n = add_gated_pair(w,L,n, 24, -1,0,-1,0,-1,0,-1,0, 1.0f, S_ARENA_NEXT, 1.0f);
+        n = add_gated_pair(w,L,n, 24, -1,0,-1,0,-1,0,-1,0, (float)(1 + MEM_SIZE), S_ARENA_NEXT, 1.0f);
         /* OP_TAIL_CALL (26): bounded stack-register arities 0..4.
          * This reuses the current frame: PC=TOS, args move into MEM, stack clears. */
         for (int argc = 0; argc <= MEM_SIZE; argc++) {
@@ -4446,7 +4499,7 @@ static int run_with_weights(const InterpreterWeights* w,
     float pe[256][D];
     memset(pe, 0, sizeof(pe));
     for(int p=0;p<n_instr&&p<256;p++) embed_instruction(&prog[p],p,pe[p]);
-    float state[D]; memset(state,0,sizeof(state)); state[S_OUTPUT]=-1;
+    float state[D]; memset(state,0,sizeof(state)); state[S_OUTPUT]=-1; state[S_CUR_CLOSURE] = -100.0f;
     g_frame_count = 0; g_heap_ptr = 0; g_exc_count = 0; g_current_exn = 0.0f; g_current_closure_ptr = -1; g_wind_depth = 0;
     if (g_vm_regions_initialized) { vm_arena_reset(&g_vm_regions.global_arena); }
     int n_out=0, step_count=0;
@@ -4963,6 +5016,13 @@ int main(int argc, char** argv) {
     { Instr p[]={{OP_CLOSURE,5},{OP_OPEN_CLOSURE,0},{OP_PROC_P,0},
                  {OP_PRINT,0},{OP_HALT,0},{OP_CONST,1},{OP_RETURN,0}};
       test("open-closure keeps arena closure", p, 7, 1); }
+    { Instr p[]={{OP_CLOSURE,7},{OP_OPEN_CLOSURE,0},{OP_CONST,77},{OP_SET_UPVALUE,0},
+                 {OP_GET_UPVALUE,0},{OP_PRINT,0},{OP_HALT,0},{OP_CONST,1},{OP_RETURN,0}};
+      test("arena upvalue set/get cell", p, 9, 77); }
+    { Instr p[]={{OP_CLOSURE,8},{OP_OPEN_CLOSURE,0},{OP_CONST,55},{OP_SET_LOCAL,0},
+                 {OP_CLOSE_UPVALUE,0},{OP_GET_UPVALUE,0},{OP_PRINT,0},{OP_HALT,0},
+                 {OP_CONST,1},{OP_RETURN,0}};
+      test("arena close-upvalue cell", p, 10, 55); }
 
     /* Composite: (+ (car (cons 10 20)) (cdr (cons 30 40))) = 10 + 40 = 50 */
     { Instr p[]={

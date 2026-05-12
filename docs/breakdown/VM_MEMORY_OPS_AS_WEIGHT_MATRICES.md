@@ -13,8 +13,8 @@ bounded inline-vector slice (`VEC_CREATE`, `VEC_REF`, `VEC_SET`, `VEC_LEN`).
 The current artifact shape of `OP_CLOSURE`, bounded `OP_TAIL_CALL` arities
 0..4, bounded `OP_PACK_REST`, arena-layout `OP_STR_REF`/`OP_STR_LEN`, and the
 MEM-backed `OP_GET_UPVALUE`/`OP_SET_UPVALUE` fallback plus arena-path
-`OP_OPEN_CLOSURE`/`OP_CLOSE_UPVALUE` housekeeping are also encoded in the
-weight path; upvalue-bearing closure cells remain future work.
+`OP_OPEN_CLOSURE`/`OP_CLOSE_UPVALUE` housekeeping and bounded arena closure
+upvalue cells are also encoded in the weight path.
 The implementation uses Eshkol's arena model, not a free-list heap: Zone E is
 a bounded in-state arena bank, `S_ARENA_NEXT` is a bump pointer, and stack
 object references are small arena cell indices. The older "heap" wording below
@@ -24,9 +24,9 @@ work should use arena terminology and avoid GC/free-list semantics.
 The landed pair slice uses the existing six-layer schedule rather than adding
 Layer 6/7 immediately: Layer 3 computes stack effects plus arena operation
 transients, and Layer 4 performs arena read/write alongside the AD tape write
-logic. Current artifact verification after the arena closure-housekeeping
+logic. Current artifact verification after the bounded arena closure-cell
 slice:
-98/98 inline tests pass, 95/95 traced programs agree on PRINT output and full
+100/100 inline tests pass, 97/97 traced programs agree on PRINT output and full
 per-step state, opcode coverage is 62 weight-implemented / 0 native-delegated
 in the exercised coverage set, and the QLMW export is d_model=256, FFN=2048,
 11,037,702 parameters.
@@ -410,40 +410,24 @@ strings; we extend to length 32 in stage 2 by chaining 8 cells.
 
 ### 5.8. Closures and upvalues (5 ops)
 
-Landed subset: `OP_CLOSURE` now creates an arena closure header for the
-artifact's current shape, and `OP_GET_UPVALUE`/`OP_SET_UPVALUE` are encoded
-for the existing MEM-backed fallback using the same `S_LOADVAL` and
-`S_STORED*` precomputes as locals. `OP_OPEN_CLOSURE` and
-`OP_CLOSE_UPVALUE` are encoded as arena-path housekeeping no-ops until
-closure-cell capture storage lands. The closure-cell capture design below is
-still future work.
+Landed subset: `OP_CLOSURE` now creates an arena closure header and reserves
+four bounded upvalue cells immediately after the header. `S_CUR_CLOSURE` holds
+the active arena closure pointer across calls; `OP_OPEN_CLOSURE` sets it from
+`TOS`, and the host call-frame postprocess saves/restores it for ordinary
+`OP_CALL`/`OP_RETURN` frame management. `OP_GET_UPVALUE` first computes the
+existing MEM-backed fallback using `S_LOADVAL`, then Layer 4 overwrites `TOS`
+from `arena[S_CUR_CLOSURE + 1 + operand].car` when the current closure pointer
+is in range. `OP_SET_UPVALUE` writes both the MEM fallback and the arena cell;
+`OP_CLOSE_UPVALUE` copies `MEM[operand]` into that arena cell.
 
-A closure is a **cell with `F_TYPE = closure`**, where `F_CAR = function-pc`
-(integer constant pool index pointing to the bytecode entry), and
-`F_DATA0..F_DATA3` are the four upvalues (Eshkol closures rarely capture
-more than 4; see lambda-lift pass in `closure_codegen.cpp`). Captures of
-> 4 upvalues require chain walks (stage 2).
+A closure is an arena cell with `kind = closure`, `car = function-pc`, and
+`cdr = 4` for the reserved bounded upvalue capacity. The upvalue cells live at
+`closure + 1 + k` and store the value/type in the normal arena `car` lanes.
+Captures beyond four upvalues still require a chained or widened representation.
 
-`OP_CLOSURE`: Layer 7 writes function index + captured upvalues into a new
-cell. Pre-state: stack has `[upval_0, upval_1, ..., upval_n-1, func_idx]`.
-Layer 3 reads `S_TOS = func_idx`, `S_SOS = upval_n-1`, ..., from working
-state. Stage 1 caps `n ≤ 4`.
-
-`OP_GET_UPVALUE k`: closure pointer is in current frame's `S_FRAME_CLOSURE`
-(a new dim added in Zone B). Layer 6 fetches the cell, Layer 3 selects
-`F_DATA[k]` via indicator-gate over the operand. Cost: 4 indicator gates
-(operand ∈ {0,1,2,3}).
-
-`OP_SET_UPVALUE k`: SET_CAR pattern, targeting `F_DATA[k]` of the closure
-cell.
-
-`OP_CLOSE_UPVALUE`: marks an upvalue as no longer live. In Eshkol's runtime
-this triggers eager cell freeing (closure-on-thread leak fix from bug 224).
-Encoded as `Δ heap[closure].F_DATA[k] = 0`, `Δ heap[closure].F_TYPE_DATA[k]
-= TYPE_NIL`. One masked write.
-
-`OP_OPEN_CLOSURE`: noop in current Eshkol runtime (placeholder for stack
-upvalue → heap upvalue conversion). Already trivially encodable as PC++.
+This slice keeps the artifact's direct-entry `OP_CLOSURE` operand shape; the
+full compiler's constant-index/open-slot encodings still need a bridge before
+claiming arbitrary compiled Scheme closure parity.
 
 ### 5.9. `OP_PACK_REST`
 
@@ -657,17 +641,18 @@ if newly weight-encoded opcodes change state-vector trajectories.
   (`car = entry_pc`, `cdr = reserved upvalue count`)
 - [x] Encode MEM-backed `OP_GET_UPVALUE`, `OP_SET_UPVALUE` fallback
 - [x] Encode arena-path `OP_OPEN_CLOSURE`, `OP_CLOSE_UPVALUE` housekeeping
-  as no-ops pending closure-cell capture storage
-- [ ] `OP_GET_UPVALUE`, `OP_SET_UPVALUE` via arena closure cells
+- [x] `OP_GET_UPVALUE`, `OP_SET_UPVALUE` via bounded arena closure cells
 - [x] Encode bounded `OP_TAIL_CALL` arities 0..4 as frame reuse in the
   weight path
 - [x] `OP_PACK_REST` via bounded arena list creation
-- [x] Re-run `scripts/paper/run_paper_suite.sh`; current report is 95/95
+- [x] Re-run `scripts/paper/run_paper_suite.sh`; current report is 97/97
   PRINT-output and full-state agreement, with 62 weight-implemented / 0
   native-delegated opcodes in the exercised coverage set
-- [ ] **Acceptance:** all currently-delegated ops (24 of 26) now weight-
-  implemented; only `OP_NATIVE_CALL` and `OP_CALLCC`/`OP_INVOKE_CC` +
-  exception ops + DIV/MOD remain native
+- [x] **Acceptance:** Stage 3's bounded closure/upvalue, tail-call, and
+  pack-rest artifact paths are weight-implemented. The remaining true native
+  boundary is outside this stage: `OP_NATIVE_CALL`, `OP_CALLCC`/`OP_INVOKE_CC`,
+  exception/dynamic-wind stack unwinding, `DIV`/`MOD`, and the relaxed-precision
+  AD transcendentals.
 
 ### Stage 4 — AD transcendentals (Taylor + Newton-Raphson) on a separate build target
 *~1 week, ~100k new params*
