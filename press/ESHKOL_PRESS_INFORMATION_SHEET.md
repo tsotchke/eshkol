@@ -192,7 +192,7 @@ No other compiled language maintains this property.
 | **Type checker** | Bidirectional Hindley-Milner with HoTT extensions, ~1,561 lines |
 | **Codegen** | 21 modular LLVM code generation components |
 | **Bytecode VM** | 63-opcode register+stack interpreter, ESKB binary format |
-| **Weight matrix transformer** | Programs as neural network weights, 307K parameters |
+| **Weight matrix transformer** | Programs as neural network weights, 12.22M analytical parameters |
 | **Test suite** | 438 tests across 35 suites, 100% pass rate |
 | **Toolchain** | LLVM 21, unified via `cmake/LLVMToolchain.cmake` |
 

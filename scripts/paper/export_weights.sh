@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# export_weights.sh — regenerate the QLMW v3 weight matrices from the ISA specification.
+# export_weights.sh — regenerate the QLMW weight matrices from the ISA specification.
 #
 # The construction is deterministic: same ISA in, bit-identical weights out on any
 # IEEE 754 float32 platform. No training, no random seeds.
@@ -7,7 +7,7 @@
 # Usage:
 #   bash scripts/paper/export_weights.sh [output_file]
 #
-# Output: QLMW v3 binary at $1
+# Output: QLMW binary at $1
 # Default: artifacts/paper/outputs/weights.qlmw
 
 set -euo pipefail
@@ -37,7 +37,7 @@ cmake --build "$BUILD_DIR" --target weight_matrices -j \
 
 # Run the weight matrix construction. The binary self-tests via the
 # three-way verification suite (reference C interpreter / simulated transformer
-# / actual matrix forward pass through W @ x + b) and writes the QLMW v3 binary
+# / actual matrix forward pass through W @ x + b) and writes the QLMW binary
 # only on zero failures. ESHKOL_WEIGHTS_OUT redirects the output path.
 echo "  running verification + weight export..."
 ESHKOL_WEIGHTS_OUT="$OUTPUT" "$BUILD_DIR/tools/weight_matrices" \

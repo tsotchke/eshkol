@@ -4,7 +4,7 @@
 **Last Updated**: 2026-04-09
 **Status**: 35 suites, 438 tests, 100% pass rate
 
-**Additional verification**: Bytecode VM passes 331/332 tests (99.7%), weight matrix transformer passes 55/55 tests with 3-way verification.
+**Additional verification**: Bytecode VM passes 331/332 tests (99.7%); the weight matrix transformer passes 126/126 inline verifier programs and 123/123 traced programs with 3-way verification.
 
 ---
 

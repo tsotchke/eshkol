@@ -209,7 +209,7 @@ Eshkol v1.1-accelerate was **READY FOR PRODUCTION RELEASE** as of April 9, 2026.
 **Evidence**:
 - Weight matrix compiler (lib/backend/weight_matrices.c)
 - End-to-end bytecode integration with ESKB format
-- 55/55 tests passing, 3-way verified across compiler, VM, and Metal backend
+- 126/126 inline programs and 123/123 traced programs passing, 3-way verified across compiler, VM, and matrix-forward execution
 
 ### Exact Arithmetic (NEW in v1.1)
 

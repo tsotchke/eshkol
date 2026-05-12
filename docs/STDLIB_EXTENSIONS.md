@@ -34,10 +34,10 @@ Compiled Agent (LLVM, AOT)  ──writes S-expressions──►  JIT REPL (runti
     as data (homoiconic)                                      ▼
         │                                            Bytecode VM (interpreter)
         │                                                     │
-        │                                         state vector = d_model=36
+        │                                         state vector = d_model=256
         │                                                     │
         │                                                     ▼
-        │                                     Transformer Weights (5-layer, analytical)
+        │                                     Transformer Weights (6-layer, analytical)
         │                                          from weight_matrices.c
         │                                                     │
         │                                              forward pass =
@@ -50,21 +50,21 @@ Compiled Agent (LLVM, AOT)  ──writes S-expressions──►  JIT REPL (runti
 
 ### The State Vector IS the Model
 
-`weight_matrices.c`: The VM's execution state is a **36-dimensional float vector**
+`weight_matrices.c`: The VM's bounded execution state is a **256-dimensional float vector**
 that simultaneously serves as:
-- The VM's runtime state (PC, TOS, SOS, registers, memory, type tags)
-- The embedding dimension for a 5-layer transformer (d_model=36, n_heads=16, FFN_DIM=512)
+- The VM's runtime state (PC, TOS, SOS, registers, arena cells, type tags, AD tape)
+- The embedding dimension for a 6-layer transformer (d_model=256, n_heads=16, FFN_DIM=2304)
 
 ### Two Tiers of Execution
 
-**Tier 1 — Weight-Encoded (opcodes 0-62):** The 63 core ISA opcodes are implemented
-as gated neuron pairs in Layer 3 of the transformer. ADD, SUB, MUL, CONST, JUMP, etc.
-compute their results entirely in matrix multiplications. Complex opcodes (CONS, CAR,
-closures, vectors) set `IS_NATIVE=1` and delegate to `exec_loop_postprocess()` in C.
+**Tier 1 — Weight-Encoded:** The bounded canonical VM/AD opcodes are implemented
+as gated neuron pairs across the transformer layers. ADD, SUB, MUL, CONST, JUMP,
+arena memory, closures, continuations, type predicates, and the verifier-covered
+reverse-mode AD tape compute their results entirely in matrix multiplications.
 
 **Tier 2 — Native Call Dispatch (IDs 300+):** `OP_NATIVE_CALL` (opcode 37) carries
-the native function ID as its operand. The transformer detects it, sets `IS_NATIVE=1`,
-and `exec_loop_postprocess()` dispatches to C based on the ID. This is where
+the native function ID as its operand. It remains the explicit external boundary
+for host services and high-level library calls. This is where
 consciousness engine (500-527), factor graphs (520-539), workspace (540-549),
 geometric manifolds (800-859), tensors (410-470), autodiff (370-409), and everything
 in this document executes.
@@ -1836,7 +1836,7 @@ compiler changes needed. The LLVM backend already has many B-section functions
 ### VM Bytecode — Computable Transformer Weights
 The VM is the core of the **computable transformer model** (`weight_matrices.c`).
 The transformer's weights ARE a universal stack machine interpreter:
-- Weights: analytically constructed float matrices (d_model=36, 5 layers, FFN_DIM=512)
+- Weights: analytically constructed float matrices (d_model=256, 6 layers, FFN_DIM=2304)
 - Programs: bytecode embedded as attention values `pe[pos][S_OPCODE/S_OPERAND]`
 - Execution: each forward pass = one VM step (attention fetch → gated FFN dispatch)
 - Three-way verified: reference C ≡ simulated transformer ≡ matrix forward pass

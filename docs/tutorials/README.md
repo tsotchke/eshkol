@@ -26,7 +26,7 @@ Start here to learn what Eshkol can do.
 |---|---|---|
 | 01 | [Autodiff and ML](https://github.com/tsotchke/eshkol/blob/master/docs/tutorials/01_AUTODIFF_AND_ML.md) | Derivatives, gradients, Hessians, gradient descent from scratch |
 | 02 | [Bytecode VM](https://github.com/tsotchke/eshkol/blob/master/docs/tutorials/02_BYTECODE_VM.md) | REPL, hot reload, `-B` flag, VM vs LLVM, browser REPL |
-| 03 | [Weight Matrix Transformer](https://github.com/tsotchke/eshkol/blob/master/docs/tutorials/03_WEIGHT_MATRIX_TRANSFORMER.md) | Programs as neural network weights, 5-layer architecture |
+| 03 | [Weight Matrix Transformer](https://github.com/tsotchke/eshkol/blob/master/docs/tutorials/03_WEIGHT_MATRIX_TRANSFORMER.md) | Programs as neural network weights, 6-layer architecture |
 | 04 | [Consciousness Engine](https://github.com/tsotchke/eshkol/blob/master/docs/tutorials/04_CONSCIOUSNESS_ENGINE.md) | Knowledge bases, unification, factor graphs, belief propagation |
 | 05 | [Signal Processing](https://github.com/tsotchke/eshkol/blob/master/docs/tutorials/05_SIGNAL_PROCESSING.md) | FFT, window functions, FIR/IIR filters, Butterworth design |
 | 06 | [Exact Arithmetic](https://github.com/tsotchke/eshkol/blob/master/docs/tutorials/06_EXACT_ARITHMETIC.md) | Bignums, rationals, complex numbers, automatic promotion |

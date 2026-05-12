@@ -249,7 +249,7 @@ Eshkol has two production execution backends serving different purposes:
 
 **Bytecode VM** (complementary): 63-opcode register+stack interpreter (`eshkol_vm.c`, 8457 lines) with 250+ native call IDs covering the full language — arithmetic, closures, continuations, exception handling, tensors, complex/rational/bignum numbers, logic/inference/workspace, hash tables, bytevectors, parameters, and I/O. Compiles to ESKB binary format (section-based with LEB128 encoding, CRC32 checksums). Invoked via `eshkol-run input.esk -B output.eskb`.
 
-**Weight Matrix Transformer**: Programs encoded as neural network weights (`weight_matrices.c`, 2299 lines). Architecture: d_model=36, 5 layers, FFN_DIM=512, 307K parameters. 25 core opcodes in weights, 38 via native dispatch. 3-way verification: reference interpreter = simulated transformer = matrix-based forward pass (55/55 tests). Exports QLMW binary format for qLLM loading.
+**Weight Matrix Transformer**: Programs encoded as neural network weights (`weight_matrices.c`, ~6,800 lines). Architecture: d_model=256, 6 layers, FFN_DIM=2304, 12.22M parameters. 82 canonical opcodes in weights; `OP_NATIVE_CALL` remains the external dispatch boundary. 3-way verification: reference interpreter = simulated transformer = matrix-based forward pass (126/126 inline, 123/123 traced). Exports QLMW binary format for qLLM loading.
 
 The LLVM and VM backends share the same language semantics but use independent value representations. The VM exists for the qLLM/transformer weight pipeline and portable bytecode execution, not as a replacement for native compilation.
 
@@ -284,12 +284,12 @@ The LLVM and VM backends share the same language semantics but use independent v
 | REPL JIT | ~2,100 | 1 |
 | Tools (LSP, package manager, VS Code) | ~2,800 | 3+ |
 | Headers | ~16,000 | 52 |
-| Weight matrix transformer | ~2,300 | 1 |
+| Weight matrix transformer | ~6,800 | 1 |
 | **Total compiler infrastructure** | **~232,000** | **130+** |
 | Standard library (.esk) | ~5,200 | 40 modules |
 | Test code (.esk) | ~34,000 | 438 files |
 
-35 automated test suites, 438 test files, 525+ assertions, 0 failures. Bytecode VM: 331/332 tests (99.7%). Weight matrices: 55/55 (3-way verified).
+35 automated test suites, 438 test files, 525+ assertions, 0 failures. Bytecode VM: 331/332 tests (99.7%). Weight matrices: 126/126 inline + 123/123 traced (3-way verified).
 
 ---
 

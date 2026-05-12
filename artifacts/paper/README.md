@@ -84,24 +84,24 @@ no architectural way to compute direct multiplication.
 | Script | Purpose |
 |--------|---------|
 | `scripts/paper/run_paper_suite.sh`        | Top-level runner; calls the others in order |
-| `scripts/paper/export_weights.sh`         | Regenerates QLMW v3 weight matrices from the ISA spec |
-| `scripts/paper/dump_vm_trace.sh`          | Runs the reference C VM on the 74-program suite; emits per-step traces |
-| `scripts/paper/dump_transformer_trace.sh` | Runs the compiled transformer on the same 74 programs; emits per-step traces |
+| `scripts/paper/export_weights.sh`         | Regenerates QLMW weight matrices from the ISA spec |
+| `scripts/paper/dump_vm_trace.sh`          | Runs the reference C VM on the traced program suite; emits per-step traces |
+| `scripts/paper/dump_transformer_trace.sh` | Runs the compiled transformer on the same traced programs; emits per-step traces |
 | `scripts/paper/compare_traces.py`         | Fieldwise exact comparison; emits `comparison-report.json` |
 | `scripts/paper/gen_paper_tables.py`       | Regenerates LaTeX tables from measurement outputs |
 
 ## What the paper claims the artifact proves
 
 1. The weight generation is deterministic — same ISA, same weights, bit-identical across platforms.
-2. Three-way agreement: reference C VM = simulated transformer (C code mirroring the weight-implemented opcodes) = matrix forward pass (actual W @ x + b matmul). 74/74 programs agree.
-3. The scope of exactness is the 57 weight-implemented opcodes (37 base + 15 AD forward + 5 AD control). The remaining 26 opcodes delegate to C runtime and are explicitly labeled in the opcode-coverage report.
+2. Three-way agreement: reference C VM = simulated transformer (C code mirroring the weight-implemented opcodes) = matrix forward pass (actual W @ x + b matmul). The current repository artifact verifies 126/126 inline programs and 123/123 traced programs.
+3. The strict bounded-artifact scope covers 82/83 canonical opcodes in weights. `OP_NATIVE_CALL` remains the explicit external boundary for host services and high-level runtime calls.
 4. The AD tape (8 nodes in the state vector) correctly computes gradients on the reported toy scalar/vector programs; gradient-check vs. dual numbers within 1e-6 relative error.
 
 ## What this artifact does NOT claim
 
-- No claim on opcodes beyond the 57 weight-implemented ones.
+- No claim that `OP_NATIVE_CALL` host services are themselves encoded as closed-form VM weights.
 - No claim on float64 or other precisions.
-- No claim on state-vector capacities beyond $D=128$.
+- No claim on state-vector capacities beyond $D=256$.
 - No benchmark claims against frontier LLMs (see the Noesis companion paper for empirical comparisons).
 
 ## Current implementation status

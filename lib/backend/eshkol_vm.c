@@ -3,8 +3,10 @@
  * @brief Eshkol bytecode VM — unity build hub.
  *
  * This file #includes all VM components in the correct order.
- * The VM implements a 63-opcode ISA with arena-based memory (OALR),
- * closures, continuations, and a full numeric tower.
+ * The source VM implements the 63 base bytecode opcodes plus native-call
+ * dispatch, with arena-based memory (OALR), closures, continuations, and a
+ * full numeric tower. The SDNC weight-matrix artifact separately lifts the
+ * canonical 64 base + 19 AD opcode ISA into transformer weights.
  *
  * Components:
  *   vm_core.c      — Types, heap, stack, value representation

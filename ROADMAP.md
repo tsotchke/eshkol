@@ -117,7 +117,7 @@ This roadmap tracks Eshkol's evolution from the **completed v1.0-foundation rele
 - [x] ESKB binary format — section-based bytecode container with CRC32
 - [x] `-B` flag for bytecode emission from eshkol-run
 - [x] VM compiler integration — eshkol_vm.c linked into compiler build
-- [x] Weight matrix transformer — programs as neural network weights (55/55, 3-way verified)
+- [x] Weight matrix transformer — programs as neural network weights (126/126 inline, 123/123 traced, 3-way verified)
 - [x] qLLM bridge — Eshkol↔qLLM tensor conversion with AD integration
 
 ### GPU Acceleration (Added)

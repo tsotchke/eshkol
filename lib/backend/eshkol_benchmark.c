@@ -17,13 +17,13 @@
 
 /* ── Copy architecture from weight_matrices.c ── */
 
-#define D 36
+#define D 256
 #define H 16
 #define HD 2
-#define N_LAYERS 5
+#define N_LAYERS 6
 #define MEM_SIZE 4
-#define FFN_DIM 512
-#define SCALE 100.0f
+#define FFN_DIM 2304
+#define SCALE 300.0f
 
 typedef enum {
     OP_NOP=0, OP_CONST=1, OP_NIL=2, OP_TRUE=3, OP_FALSE=4, OP_POP=5, OP_DUP=6,
@@ -192,7 +192,7 @@ static void matvec(const float* x, const float* W, float* out, int rows, int col
 static void forward_pass(const Weights* w, const float state[D],
                           const float pe[][D], int np, float next[D]) {
     float x[D]; memcpy(x, state, sizeof(float)*D);
-    for (int L = 0; L < N_LAYERS; L++) {
+    for (int L = 0; L < N_LAYERS - 1; L++) {
         float ao[D]; memset(ao, 0, sizeof(ao));
         if (L == 0 && np > 0) {
             float Q[D]; memset(Q, 0, sizeof(Q));
@@ -258,6 +258,7 @@ typedef struct {
 static int run_bench(const Weights* w, const Instr* prog, int n_instr,
                       float* outputs, int max_out, BenchResult* br) {
     float pe[256][D];
+    memset(pe, 0, sizeof(pe));
     for (int p = 0; p < n_instr && p < 256; p++)
         embed_instruction(&prog[p], p, pe[p]);
     float state[D]; memset(state, 0, sizeof(state)); state[S_OUTPUT] = -1;
@@ -295,6 +296,12 @@ static Weights* load_weights(const char* path) {
     uint32_t hdr[7];
     if (fread(hdr, 28, 1, f) != 1) { fclose(f); return NULL; }
     if (hdr[0] != 0x514C4D57) { fclose(f); return NULL; }
+    if (hdr[2] != D || hdr[3] != N_LAYERS || hdr[4] != FFN_DIM) {
+        fprintf(stderr, "ERROR: weight dimensions mismatch (got d=%u l=%u f=%u, expected d=%d l=%d f=%d)\n",
+                hdr[2], hdr[3], hdr[4], D, N_LAYERS, FFN_DIM);
+        fclose(f);
+        return NULL;
+    }
     Weights* w = (Weights*)calloc(1, sizeof(Weights));
     if (fread(w, sizeof(Weights), 1, f) != 1) { free(w); fclose(f); return NULL; }
     fclose(f);
@@ -305,14 +312,15 @@ static Weights* load_weights(const char* path) {
  * BENCHMARK PROGRAMS
  * ══════════════════════════════════════════════════════════════════════════════ */
 
-int main() {
+int main(int argc, char** argv) {
     printf("╔══════════════════════════════════════════════════════════════╗\n");
     printf("║  ESHKOL VM WEIGHT MATRIX BENCHMARK                         ║\n");
     printf("║  All computation via transformer W @ x + b                 ║\n");
-    printf("║  d_model=32, 5 layers, 512 FFN neurons, 272K params       ║\n");
+    printf("║  d_model=256, 6 layers, 2304 FFN neurons, 12.22M params   ║\n");
     printf("╚══════════════════════════════════════════════════════════════╝\n\n");
 
-    Weights* w = load_weights("/tmp/interpreter_weights.bin");
+    const char* weight_path = argc > 1 ? argv[1] : "/tmp/eshkol_current.qlmw";
+    Weights* w = load_weights(weight_path);
     if (!w) { printf("ERROR: run weight_matrices first to generate weights\n"); return 1; }
 
     float out[256];
@@ -412,6 +420,7 @@ int main() {
         {OP_CONST,6},{OP_CALL,2},                   /* A(m-1, A(m,n-1)) */
         {OP_RETURN,0},
       };
+      (void)p;
       /* Recount: let me be precise */
       /* Actually this program has issues with arg ordering. Let me rewrite it cleanly. */
       /* SKIP — too complex for inline assembly. Use a simpler deeply-recursive test. */
@@ -574,7 +583,7 @@ int main() {
     /* ── Summary ── */
     printf("╔══════════════════════════════════════════════════════════════╗\n");
     printf("║  Every result above was computed via transformer W @ x + b ║\n");
-    printf("║  272K params, 1.04 MB weights, 32-dim state vector         ║\n");
+    printf("║  12.22M params, 46.6 MB weights, 256-dim state vector      ║\n");
     printf("║  The manifold IS the computer.                             ║\n");
     printf("╚══════════════════════════════════════════════════════════════╝\n");
 

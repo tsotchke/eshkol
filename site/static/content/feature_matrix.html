@@ -3759,12 +3759,12 @@ logic, inference, workspace, hash, bytevector, parameter</td>
 <tr>
 <td>Transformer interpreter</td>
 <td>✅</td>
-<td>d_model=36, 5 layers, FFN_DIM=512, 307K params</td>
+<td>d_model=256, 6 layers, FFN_DIM=2304, 12.22M params</td>
 </tr>
 <tr>
 <td>3-way verification</td>
 <td>✅</td>
-<td>Reference = simulated = matrix-based (55/55 tests)</td>
+<td>Reference = simulated = matrix-based (126/126 inline, 123/123 traced)</td>
 </tr>
 <tr>
 <td>QLMW binary export</td>
@@ -3772,9 +3772,9 @@ logic, inference, workspace, hash, bytevector, parameter</td>
 <td>For qLLM weight loading</td>
 </tr>
 <tr>
-<td>25 core opcodes in weights</td>
+<td>82 canonical opcodes in weights</td>
 <td>✅</td>
-<td>Remaining 38 via native dispatch</td>
+<td><code>OP_NATIVE_CALL</code> remains the external dispatch boundary</td>
 </tr>
 <tr>
 <td><strong>qLLM Bridge</strong></td>
