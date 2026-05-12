@@ -14,7 +14,10 @@ The current artifact shape of `OP_CLOSURE`, bounded `OP_TAIL_CALL` arities
 0..4, bounded `OP_PACK_REST`, arena-layout `OP_STR_REF`/`OP_STR_LEN`, and the
 MEM-backed `OP_GET_UPVALUE`/`OP_SET_UPVALUE` fallback plus arena-path
 `OP_OPEN_CLOSURE`/`OP_CLOSE_UPVALUE` housekeeping and bounded arena closure
-upvalue cells are also encoded in the weight path.
+upvalue cells are also encoded in the weight path. The bounded continuation
+slice now encodes direct-entry `OP_CALLCC`/`OP_INVOKE_CC` escape continuations
+as four contiguous arena cells in Zone E; full R7RS continuation frame walking
+remains outside this bounded artifact contract.
 The implementation uses Eshkol's arena model, not a free-list heap: Zone E is
 a bounded in-state arena bank, `S_ARENA_NEXT` is a bump pointer, and stack
 object references are small arena cell indices. The older "heap" wording below
@@ -30,11 +33,11 @@ writeback, and Layer 5 AD gradient writeback. Layer 1 now loads bounded AD
 tape parent values before Layer 2 so `OP_AD_MUL` forward recording is also
 encoded as weights.
 
-Current artifact verification after the bounded AD table/division/power slice:
-115/115 inline tests pass, 112/112 traced programs agree on PRINT output and
-full per-step state, opcode coverage is 76 weight-implemented / 0
+Current artifact verification after the bounded continuation slice:
+118/118 inline tests pass, 115/115 traced programs agree on PRINT output and
+full per-step state, opcode coverage is 78 weight-implemented / 0
 VM-native-delegated / 0 transformer-native-assisted in the exercised coverage
-set, and the QLMW export is d_model=256, FFN=2048, 11,037,702 parameters.
+set, and the QLMW export is d_model=256, FFN=2304, 12,220,422 parameters.
 The exercised trace set now has no `S_IS_NATIVE` postprocess assistance.
 `OP_DIV` is weight-encoded for positive integer denominators 1..16,
 `OP_MOD` is weight-encoded for the positive integer `% 3` and `% 4` verifier
@@ -56,7 +59,7 @@ The Eshkol VM is a 83-opcode bytecode machine. The Self-Differentiating Neural
 Computer (SDNC) — `lib/backend/weight_matrices.c` — analytically constructs a
 6-layer transformer. The original artifact used `d_model = 128`, FFN width
 1024, and a 71-program suite pinned at `8235d99`; the current bounded-arena
-artifact uses `d_model = 256`, FFN width 2048, and a 112-program traced suite.
+artifact uses `d_model = 256`, FFN width 2304, and a 115-program traced suite.
 
 Historically, 57 of the 83 opcodes executed end-to-end through `Wx + b`
 matmul-plus-bias and the remaining **26 opcodes were delegated** to the C
@@ -98,15 +101,14 @@ We classify these by **whether the runtime side-effect is essential or
 incidental**:
 
 - **Encodable (this design):** type predicates, heap data ops, closures,
-  upvalues, `POPN`, `TAIL_CALL`, `PACK_REST`, handler/wind bookkeeping,
-  AD transcendentals.
+  upvalues, `POPN`, `TAIL_CALL`, `PACK_REST`, bounded escape continuations,
+  handler/wind bookkeeping, AD transcendentals.
 - **Genuinely native (out of scope here):** `NATIVE_CALL` (by definition
-  bridges to libcurl, sqlite3, libpthread), `CALLCC`/`INVOKE_CC` (first-class
-  continuation requires capturing the entire VM stack — can be encoded with
-  unbounded depth penalty), and full R7RS raise/unwind through exception +
-  dynamic-wind frames. The simple handler-depth and wind-depth bookkeeping
-  opcodes are now in the weight path; invoking the unwind protocol remains a
-  runtime boundary.
+  bridges to libcurl, sqlite3, libpthread), unbounded first-class continuation
+  frame walking, and full R7RS raise/unwind through exception + dynamic-wind
+  frames. The simple handler-depth, wind-depth, and bounded escape-continuation
+  paths are now in the weight path; invoking the general unwind protocol remains
+  a runtime boundary.
 - **Bounded precision slices:** `OP_DIV`, `OP_MOD`. The exercised exact
   integer cases are now encoded directly in the weight path (`DIV` via
   denominator-gated reciprocals, `MOD` via small exact lookup). General IEEE
@@ -116,8 +118,8 @@ incidental**:
 The exercised artifact target for "all bounded memory operations are in the
 transformer" is now met: no traced program needs transformer-native
 postprocess assistance. The general-language boundary still includes
-OS/native calls, full continuations/unwind, arbitrary IEEE division/modulo, and
-broader AD libm functions.
+OS/native calls, unbounded continuation frame walking/full unwind, arbitrary
+IEEE division/modulo, and broader AD libm functions.
 
 ## 3. State vector extension
 
@@ -511,8 +513,7 @@ transformer cannot represent in its bounded state":
 | Opcode | Why native |
 |---|---|
 | `OP_NATIVE_CALL` | Bridges to libcurl, sqlite3, libpthread, libm, etc. The state is in the OS, not the transformer. |
-| `OP_CALLCC` | First-class continuation captures the entire VM stack including the heap; bounding it would change semantics. The Sukhbaatar 2015 / Santoro 2018 RMC tradeoff applies — bounded continuations are encodable but not R7RS-faithful. |
-| `OP_INVOKE_CC` | Symmetric inverse of CALLCC; same constraint. |
+| Full `OP_CALLCC` / `OP_INVOKE_CC` frame walking | The bounded escape-continuation slice is weight-encoded as a four-cell arena record. General first-class continuations that capture and reinstate unbounded stack/heap/dynamic-wind state remain outside the strict artifact contract. |
 | `OP_PUSH_HANDLER`, `OP_POP_HANDLER`, `OP_GET_EXN` | Bounded depth bookkeeping and default `GET_EXN` are weight-encoded; full R7RS raise/unwind still traverses dynamic-wind frames and remains native. |
 | `OP_WIND_PUSH`, `OP_WIND_POP` | Bounded wind-depth bookkeeping and stack effects are weight-encoded; running after-thunks during continuation unwinding remains native. |
 | General `OP_DIV`, `OP_MOD` | The exercised exact-integer slice is weight-encoded. Arbitrary IEEE 754 correct rounding remains outside the strict artifact slice unless we add a relaxed-precision build or a much larger lookup/range contract. |
@@ -687,16 +688,19 @@ if newly weight-encoded opcodes change state-vector trajectories.
   `d(x/2)/dx` and `d(6/y)/dy` reverse-mode checks
 - [x] Encode exercised bounded `AD_POW` positive integer table path, including
   both `d(pow(x,2))/dx` and `d(pow(2,y))/dy` reverse-mode checks
-- [x] Re-run `scripts/paper/run_paper_suite.sh`; current report is 112/112
-  PRINT-output and full-state agreement, with 76 weight-implemented / 0
+- [x] Encode bounded direct-entry `OP_CALLCC`/`OP_INVOKE_CC` escape
+  continuations as a four-cell arena record
+- [x] Re-run `scripts/paper/run_paper_suite.sh`; current report is 115/115
+  PRINT-output and full-state agreement, with 78 weight-implemented / 0
   native-delegated / 0 transformer-native-assisted opcodes in the exercised
   coverage set
 - [x] **Acceptance:** Stage 3's bounded closure/upvalue, tail-call, and
-  pack-rest artifact paths are weight-implemented. The exercised trace set has
-  no native-assisted transformer steps. The remaining true native
-  boundary is outside this stage: `OP_NATIVE_CALL`, `OP_CALLCC`/`OP_INVOKE_CC`,
-  full exception/dynamic-wind unwinding, general IEEE `DIV`/`MOD`, and
-  broader relaxed-precision AD transcendentals.
+  pack-rest artifact paths plus bounded escape continuations are
+  weight-implemented. The exercised trace set has no native-assisted
+  transformer steps. The remaining true native boundary is outside this stage:
+  `OP_NATIVE_CALL`, full exception/dynamic-wind unwinding, unbounded
+  continuation frame walking, general IEEE `DIV`/`MOD`, and broader
+  relaxed-precision AD transcendentals.
 
 ### Stage 4 — AD transcendentals (Taylor + Newton-Raphson) on a separate build target
 *~1 week, ~100k new params*
@@ -722,7 +726,7 @@ if newly weight-encoded opcodes change state-vector trajectories.
 | 16-cell heap insufficient for real Eshkol programs | The artifact's 71 test programs only exercise heap shallowly. Real programs need bounded heap or chain-walks; we accept that "all memory ops in the transformer" is a *contract about ops*, not about *unbounded program execution*. The contract is: "for any program whose live-cell-count never exceeds 16, the full execution is one transformer block iterated." Production deployments scale `MEM_SIZE` linearly. |
 | Taylor approximation breaks AD precision | Two builds; users opt in via CMake flag |
 | Float32 saturation breaks at `d_model = 256` | SCALE = 300 already has 50 ULP margin per the `weight_matrices.c:59-84` analysis; doubling state dims adds ~2× accumulation length, well within margin |
-| Frame walking for `CALLCC` | Out of scope; remains delegated. No regression to current contract. |
+| Frame walking for `CALLCC` | Bounded escape continuations are encoded; unbounded frame walking remains outside the strict artifact contract. |
 
 ## 10. References (with cached SHAs)
 
