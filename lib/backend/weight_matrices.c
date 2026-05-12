@@ -5587,6 +5587,8 @@ int main(int argc, char** argv) {
     /* ── Stage 0: Original v1 tests (renumbered to canonical opcodes) ── */
     printf("  --- Stage 0: Core arithmetic & control ---\n");
 
+    { Instr p[]={{OP_NOP,0},{OP_CONST,42},{OP_PRINT,0},{OP_HALT,0}};
+      test("nop pc++", p, 4, 42); }
     { Instr p[]={{OP_CONST,3},{OP_CONST,5},{OP_ADD,0},{OP_PRINT,0},{OP_HALT,0}};
       test("3+5", p, 5, 8); }
     { Instr p[]={{OP_CONST,3},{OP_CONST,5},{OP_ADD,0},{OP_CONST,2},{OP_MUL,0},{OP_PRINT,0},{OP_HALT,0}};
@@ -5701,6 +5703,9 @@ int main(int argc, char** argv) {
       test("5>=3", p, 5, 1); }
     { Instr p[]={{OP_CONST,3},{OP_CONST,3},{OP_GE,0},{OP_PRINT,0},{OP_HALT,0}};
       test("3>=3", p, 5, 1); }
+    /* Matrix NOT uses operand as the zero-indicator scale. */
+    { Instr p[]={{OP_CONST,0},{OP_NOT,1},{OP_PRINT,0},{OP_HALT,0}};
+      test("not(0)=true", p, 4, 1); }
     /* Composite: if (3 < 5) print 42 else print 99 */
     { Instr p[]={
         {OP_CONST,3},{OP_CONST,5},{OP_LT,0},
@@ -5709,7 +5714,7 @@ int main(int argc, char** argv) {
       test("if(3<5)42", p, 9, 42); }
 
     /* ── Stage 4: DIV, MOD (delegated to exec loop) ── */
-    printf("\n  --- Stage 4: DIV, MOD ---\n");
+    printf("\n  --- Stage 4: DIV, MOD, LOOP ---\n");
     { Instr p[]={{OP_CONST,10},{OP_CONST,2},{OP_DIV,0},{OP_PRINT,0},{OP_HALT,0}};
       test("10/2", p, 5, 5); }
     { Instr p[]={{OP_CONST,10},{OP_CONST,3},{OP_MOD,0},{OP_PRINT,0},{OP_HALT,0}};
@@ -5721,6 +5726,16 @@ int main(int argc, char** argv) {
     /* DIV in a computation: (10/2) + 3 = 8 */
     { Instr p[]={{OP_CONST,10},{OP_CONST,2},{OP_DIV,0},{OP_CONST,3},{OP_ADD,0},{OP_PRINT,0},{OP_HALT,0}};
       test("10/2+3", p, 7, 8); }
+    /* LOOP opcode: sum counter 3+2+1 into mem0 */
+    { Instr p[]={
+        {OP_CONST,0},{OP_SET_LOCAL,0},
+        {OP_CONST,3},{OP_SET_LOCAL,1},
+        {OP_GET_LOCAL,1},{OP_CONST,0},{OP_EQ,0},{OP_JUMP_IF_FALSE,11},
+        {OP_GET_LOCAL,0},{OP_PRINT,0},{OP_HALT,0},
+        {OP_GET_LOCAL,0},{OP_GET_LOCAL,1},{OP_ADD,0},{OP_SET_LOCAL,0},
+        {OP_GET_LOCAL,1},{OP_CONST,1},{OP_SUB,0},{OP_SET_LOCAL,1},
+        {OP_LOOP,4}
+      }; test("loop sum 3..1", p, 20, 6); }
 
     /* ── Stage 5: CALL, RETURN ── */
     printf("\n  --- Stage 5: CALL, RETURN ---\n");
@@ -6127,6 +6142,18 @@ int main(int argc, char** argv) {
         {OP_PRINT, 0},
         {OP_HALT, 0}
       }; test("AD: d/dx (x+x) at 5 = 2", p, 9, 2); }
+
+    /* f(x,y) = x-y at (5,2): df/dy = -1 */
+    { Instr p[]={
+        {OP_AD_VAR, 5},
+        {OP_AD_VAR, 2},
+        {OP_AD_SUB, 0},
+        {OP_AD_BACKWARD, 0},
+        {OP_CONST, 1},
+        {OP_AD_GRAD, 0},
+        {OP_PRINT, 0},
+        {OP_HALT, 0}
+      }; test("AD: d(x-y)/dy at (5,2) = -1", p, 8, -1); }
 
     /* f(x) = -x at x=7: grad = -1 */
     { Instr p[]={

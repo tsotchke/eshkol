@@ -33,12 +33,14 @@ writeback, and Layer 5 AD gradient writeback. Layer 1 now loads bounded AD
 tape parent values before Layer 2 so `OP_AD_MUL` forward recording is also
 encoded as weights.
 
-Current artifact verification after the bounded AD trig table slice:
-122/122 inline tests pass, 119/119 traced programs agree on PRINT output and
-full per-step state, opcode coverage is 78 weight-implemented / 0
+Current artifact verification after the non-native opcode coverage slice:
+126/126 inline tests pass, 123/123 traced programs agree on PRINT output and
+full per-step state, opcode coverage is 82 weight-implemented / 0
 VM-native-delegated / 0 transformer-native-assisted in the exercised coverage
 set, and the QLMW export is d_model=256, FFN=2304, 12,220,422 parameters.
-The exercised trace set now has no `S_IS_NATIVE` postprocess assistance.
+The exercised trace set now has no `S_IS_NATIVE` postprocess assistance and
+covers every canonical opcode except the deliberate external boundary,
+`OP_NATIVE_CALL`.
 `OP_DIV` is weight-encoded for positive integer denominators 1..16,
 `OP_MOD` is weight-encoded for the positive integer `% 3` and `% 4` verifier
 range, `AD_ABS`/`AD_RELU` are weight-encoded for bounded nonzero
@@ -694,8 +696,10 @@ if newly weight-encoded opcodes change state-vector trajectories.
   both `d(pow(x,2))/dx` and `d(pow(2,y))/dy` reverse-mode checks
 - [x] Encode bounded direct-entry `OP_CALLCC`/`OP_INVOKE_CC` escape
   continuations as a four-cell arena record
-- [x] Re-run `scripts/paper/run_paper_suite.sh`; current report is 119/119
-  PRINT-output and full-state agreement, with 78 weight-implemented / 0
+- [x] Add explicit verifier coverage for previously untraced weight opcodes:
+  `OP_NOP`, `OP_NOT`, `OP_LOOP`, and `OP_AD_SUB`
+- [x] Re-run `scripts/paper/run_paper_suite.sh`; current report is 123/123
+  PRINT-output and full-state agreement, with 82 weight-implemented / 0
   native-delegated / 0 transformer-native-assisted opcodes in the exercised
   coverage set
 - [x] **Acceptance:** Stage 3's bounded closure/upvalue, tail-call, and
