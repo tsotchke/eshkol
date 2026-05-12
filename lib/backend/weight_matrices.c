@@ -639,7 +639,8 @@ static void execute_step(const State* cur, const Instr* prog, int n_instr, State
         next->s[S_TYPE_R2]=TYPE_NUMBER; next->s[S_TYPE_R3]=TYPE_NUMBER;
         break;
     }
-    case OP_VEC_REF: {
+    case OP_VEC_REF:
+    case OP_STR_REF: {
         int base = (int)sos;
         int idx = (int)tos;
         next->s[S_TOS]=0; next->s[S_TYPE_TOS]=TYPE_NUMBER;
@@ -670,7 +671,8 @@ static void execute_step(const State* cur, const Instr* prog, int n_instr, State
         next->s[S_TYPE_TOS]=tt_r3; next->s[S_TYPE_SOS]=TYPE_NUMBER; next->s[S_TYPE_R2]=TYPE_NUMBER; next->s[S_TYPE_R3]=TYPE_NUMBER;
         break;
     }
-    case OP_VEC_LEN: {
+    case OP_VEC_LEN:
+    case OP_STR_LEN: {
         int base = (int)tos;
         next->s[S_TOS]=0; next->s[S_TYPE_TOS]=TYPE_NUMBER;
         if (base >= 0 && base < ARENA_CELLS)
@@ -876,7 +878,6 @@ static void execute_step(const State* cur, const Instr* prog, int n_instr, State
     /* All remaining opcodes delegate to exec loop via IS_NATIVE */
     case OP_NATIVE_CALL:
     case OP_CLOSE_UPVALUE:
-    case OP_STR_REF: case OP_STR_LEN:
     case OP_OPEN_CLOSURE: case OP_CALLCC: case OP_INVOKE_CC:
     case OP_PUSH_HANDLER: case OP_POP_HANDLER: case OP_GET_EXN:
     case OP_WIND_PUSH: case OP_WIND_POP:
@@ -1385,6 +1386,17 @@ static void layer3_ffn(const float x[D], float out[D]) {
     out[S_PC]+=g; out[S_TOS]+=g*(-tos); out[S_TYPE_TOS]+=g*(TYPE_NUMBER-ttos);
     out[S_ARENA_READ_CAR]+=g; out[S_ARENA_TARGET]+=g*tos;
 
+    /* OP_STR_REF (43) and OP_STR_LEN (44): strings use the same arena
+     * length-header + contiguous element layout as bounded vectors. */
+    g=indicator(op,43)*alive;
+    out[S_PC]+=g; out[S_TOS]+=g*(-tos); out[S_SOS]+=g*(r2-sos); out[S_R2]+=g*(r3-r2); out[S_R3]+=g*(-r3); out[S_DEPTH]+=g*(-1);
+    out[S_TYPE_TOS]+=g*(TYPE_NUMBER-ttos); out[S_TYPE_SOS]+=g*(tr2-tsos); out[S_TYPE_R2]+=g*(tr3-tr2); out[S_TYPE_R3]+=g*(TYPE_NUMBER-tr3);
+    out[S_ARENA_READ_CAR]+=g; out[S_ARENA_TARGET]+=g*(sos + tos + 1.0f);
+
+    g=indicator(op,44)*alive;
+    out[S_PC]+=g; out[S_TOS]+=g*(-tos); out[S_TYPE_TOS]+=g*(TYPE_NUMBER-ttos);
+    out[S_ARENA_READ_CAR]+=g; out[S_ARENA_TARGET]+=g*tos;
+
     /* OP_POPN (53): weight-encoded for current compiler emissions n <= 3.
      * It removes N values below TOS while keeping TOS itself. */
     g=indicator(op,53)*alive; out[S_PC]+=g;
@@ -1428,7 +1440,7 @@ static void layer3_ffn(const float x[D], float out[D]) {
 
     /* Remaining delegated opcodes (38-62): all set IS_NATIVE + PC++ */
     for (int opc = 38; opc <= 62; opc++) {
-        if ((opc >= 39 && opc <= 42) || (opc >= 45 && opc <= 50) || opc == 51 || opc == 52 || opc == 53 || opc == 60) continue;
+        if ((opc >= 39 && opc <= 44) || (opc >= 45 && opc <= 50) || opc == 51 || opc == 52 || opc == 53 || opc == 60) continue;
         g=indicator(op,(float)opc)*alive; out[S_PC]+=g; out[S_IS_NATIVE]+=g;
     }
     /* OP_CALL (25): set IS_CALL flag for exec loop, PC++ */
@@ -3628,6 +3640,26 @@ static void generate_weights(InterpreterWeights* w) {
         n = add_gated_pair(w,L,n, 42, -1,0,-1,0,-1,0,-1,0, 1.0f, S_ARENA_READ_CAR, 1.0f);
         n = add_gated_pair(w,L,n, 42, S_TOS,1,-1,0,-1,0,-1,0, 0, S_ARENA_TARGET, 1.0f);
 
+        /* STR_REF/STR_LEN use the same bounded arena layout as vector reads. */
+        n = add_gated_pair(w,L,n, 43, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
+        n = add_gated_pair(w,L,n, 43, S_TOS,-1,-1,0,-1,0,-1,0, 0, S_TOS, 1.0f);
+        n = add_gated_pair(w,L,n, 43, S_R2,1,S_SOS,-1,-1,0,-1,0, 0, S_SOS, 1.0f);
+        n = add_gated_pair(w,L,n, 43, S_R3,1,S_R2,-1,-1,0,-1,0, 0, S_R2, 1.0f);
+        n = add_gated_pair(w,L,n, 43, S_R3,-1,-1,0,-1,0,-1,0, 0, S_R3, 1.0f);
+        n = add_gated_pair(w,L,n, 43, -1,0,-1,0,-1,0,-1,0, -1.0f, S_DEPTH, 1.0f);
+        n = add_gated_pair(w,L,n, 43, S_TYPE_TOS,-1,-1,0,-1,0,-1,0, TYPE_NUMBER, S_TYPE_TOS, 1.0f);
+        n = add_gated_pair(w,L,n, 43, S_TYPE_R2,1,S_TYPE_SOS,-1,-1,0,-1,0, 0, S_TYPE_SOS, 1.0f);
+        n = add_gated_pair(w,L,n, 43, S_TYPE_R3,1,S_TYPE_R2,-1,-1,0,-1,0, 0, S_TYPE_R2, 1.0f);
+        n = add_gated_pair(w,L,n, 43, S_TYPE_R3,-1,-1,0,-1,0,-1,0, TYPE_NUMBER, S_TYPE_R3, 1.0f);
+        n = add_gated_pair(w,L,n, 43, -1,0,-1,0,-1,0,-1,0, 1.0f, S_ARENA_READ_CAR, 1.0f);
+        n = add_gated_pair(w,L,n, 43, S_SOS,1,S_TOS,1,-1,0,-1,0, 1.0f, S_ARENA_TARGET, 1.0f);
+
+        n = add_gated_pair(w,L,n, 44, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
+        n = add_gated_pair(w,L,n, 44, S_TOS,-1,-1,0,-1,0,-1,0, 0, S_TOS, 1.0f);
+        n = add_gated_pair(w,L,n, 44, S_TYPE_TOS,-1,-1,0,-1,0,-1,0, TYPE_NUMBER, S_TYPE_TOS, 1.0f);
+        n = add_gated_pair(w,L,n, 44, -1,0,-1,0,-1,0,-1,0, 1.0f, S_ARENA_READ_CAR, 1.0f);
+        n = add_gated_pair(w,L,n, 44, S_TOS,1,-1,0,-1,0,-1,0, 0, S_ARENA_TARGET, 1.0f);
+
         /* OP_POPN (53): remove N values below TOS while preserving TOS itself.
          * The current compiler emits only N <= 3, matching the four-register
          * stack cache that the weight interpreter models directly. */
@@ -3688,7 +3720,7 @@ static void generate_weights(InterpreterWeights* w) {
 
         /* Remaining delegated opcodes (38-62): all IS_NATIVE + PC++ */
         for (int opc = 38; opc <= 62; opc++) {
-            if ((opc >= 39 && opc <= 42) || (opc >= 45 && opc <= 50) || opc == 51 || opc == 52 || opc == 53 || opc == 60) continue;
+            if ((opc >= 39 && opc <= 44) || (opc >= 45 && opc <= 50) || opc == 51 || opc == 52 || opc == 53 || opc == 60) continue;
             n = add_gated_pair(w,L,n, opc, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
             n = add_gated_pair(w,L,n, opc, -1,0,-1,0,-1,0,-1,0, 1.0f, S_IS_NATIVE, 1.0f);
         }
@@ -4953,6 +4985,14 @@ int main(int argc, char** argv) {
         {OP_DUP,0},{OP_CONST,1},{OP_CONST,99},{OP_VEC_SET,0},
         {OP_CONST,1},{OP_VEC_REF,0},{OP_PRINT,0},{OP_HALT,0}};
       test("vec-set/ref", p, 12, 99); }
+    { Instr p[]={
+        {OP_CONST,65},{OP_CONST,66},{OP_VEC_CREATE,2},
+        {OP_CONST,1},{OP_STR_REF,0},{OP_PRINT,0},{OP_HALT,0}};
+      test("str-ref arena-layout", p, 7, 66); }
+    { Instr p[]={
+        {OP_CONST,65},{OP_CONST,66},{OP_VEC_CREATE,2},
+        {OP_STR_LEN,0},{OP_PRINT,0},{OP_HALT,0}};
+      test("str-len arena-layout", p, 6, 2); }
 
     /* Tail-call optimization test: tail-recursive sum
      * sum(n, acc) = if n==0 then acc else sum(n-1, acc+n)
