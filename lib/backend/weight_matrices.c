@@ -1240,7 +1240,10 @@ static void layer2_ffn(const float x[D], float out[D]) {
     float fw_unary_bounded = (indicator(x[S_OPCODE], OP_AD_ABS) +
                               indicator(x[S_OPCODE], OP_AD_RELU) +
                               indicator(x[S_OPCODE], OP_AD_SIGMOID) +
-                              indicator(x[S_OPCODE], OP_AD_EXP)) *
+                              indicator(x[S_OPCODE], OP_AD_TANH) +
+                              indicator(x[S_OPCODE], OP_AD_EXP) +
+                              indicator(x[S_OPCODE], OP_AD_LOG) +
+                              indicator(x[S_OPCODE], OP_AD_SQRT)) *
                              (1.0f - bw_active);
     for (int i = 0; i < AD_MAX_TAPE; i++) {
         float li = indicator(x[S_SOS], (float)i) * fw_binary;
@@ -3412,7 +3415,10 @@ static void generate_weights(InterpreterWeights* w) {
                                             0, S_AD_RIGHT_VALUE, 1.0f);
             }
         }
-        int bounded_unary_ops[] = { OP_AD_ABS, OP_AD_RELU, OP_AD_SIGMOID, OP_AD_EXP };
+        int bounded_unary_ops[] = {
+            OP_AD_ABS, OP_AD_RELU, OP_AD_SIGMOID, OP_AD_TANH,
+            OP_AD_EXP, OP_AD_LOG, OP_AD_SQRT
+        };
         for (int oi = 0; oi < (int)(sizeof(bounded_unary_ops) / sizeof(bounded_unary_ops[0])); oi++) {
             int opc = bounded_unary_ops[oi];
             for (int slot = 0; slot < AD_MAX_TAPE; slot++) {
@@ -4312,6 +4318,13 @@ static void generate_weights(InterpreterWeights* w) {
                 n = add_gated_opcode_index(w,L,n, uop, S_AD_LEFT_VALUE, 1,
                                            -1,0,-1,0,-1,0,-1,0,
                                            dsig1, S_AD_CUR_SAVED, 1.0f);
+            } else if (uop == 73) {
+                n = add_gated_opcode_index(w,L,n, uop, S_AD_LEFT_VALUE, 0,
+                                           -1,0,-1,0,-1,0,-1,0,
+                                           0.0f, S_AD_CUR_VALUE, 1.0f);
+                n = add_gated_opcode_index(w,L,n, uop, S_AD_LEFT_VALUE, 0,
+                                           -1,0,-1,0,-1,0,-1,0,
+                                           1.0f, S_AD_CUR_SAVED, 1.0f);
             } else if (uop == 74) {
                 n = add_gated_opcode_index(w,L,n, uop, S_AD_LEFT_VALUE, 0,
                                            -1,0,-1,0,-1,0,-1,0,
@@ -4319,9 +4332,24 @@ static void generate_weights(InterpreterWeights* w) {
                 n = add_gated_opcode_index(w,L,n, uop, S_AD_LEFT_VALUE, 0,
                                            -1,0,-1,0,-1,0,-1,0,
                                            1.0f, S_AD_CUR_SAVED, 1.0f);
+            } else if (uop == 75) {
+                n = add_gated_opcode_index(w,L,n, uop, S_AD_LEFT_VALUE, 1,
+                                           -1,0,-1,0,-1,0,-1,0,
+                                           0.0f, S_AD_CUR_VALUE, 1.0f);
+                n = add_gated_opcode_index(w,L,n, uop, S_AD_LEFT_VALUE, 1,
+                                           -1,0,-1,0,-1,0,-1,0,
+                                           1.0f, S_AD_CUR_SAVED, 1.0f);
+            } else if (uop == 76) {
+                n = add_gated_opcode_index(w,L,n, uop, S_AD_LEFT_VALUE, 4,
+                                           -1,0,-1,0,-1,0,-1,0,
+                                           2.0f, S_AD_CUR_VALUE, 1.0f);
+                n = add_gated_opcode_index(w,L,n, uop, S_AD_LEFT_VALUE, 4,
+                                           -1,0,-1,0,-1,0,-1,0,
+                                           0.25f, S_AD_CUR_SAVED, 1.0f);
             }
             n = add_gated_pair_ad(w,L,n, uop, -1,0,-1,0,-1,0,-1,0, 1.0f, S_AD_IS_FORWARD, 1.0f);
-            if (uop != 69 && uop != 70 && uop != 71 && uop != 72 && uop != 74)
+            if (uop != 69 && uop != 70 && uop != 71 && uop != 72 &&
+                uop != 73 && uop != 74 && uop != 75 && uop != 76)
                 n = add_gated_pair_ad(w,L,n, uop, -1,0,-1,0,-1,0,-1,0, 1.0f, S_IS_NATIVE, 1.0f);
         }
 
@@ -5683,6 +5711,39 @@ int main(int argc, char** argv) {
         {OP_PRINT, 0},
         {OP_HALT, 0}
       }; test("AD: d/dx sigmoid(0) = 0.25", p, 7, 0.25f); }
+
+    /* f(x) = tanh(0): grad = 1 */
+    { Instr p[]={
+        {OP_AD_VAR, 0},
+        {OP_AD_TANH, 0},
+        {OP_AD_BACKWARD, 0},
+        {OP_CONST, 0},
+        {OP_AD_GRAD, 0},
+        {OP_PRINT, 0},
+        {OP_HALT, 0}
+      }; test("AD: d/dx tanh(0) = 1", p, 7, 1); }
+
+    /* f(x) = log(1): grad = 1 */
+    { Instr p[]={
+        {OP_AD_VAR, 1},
+        {OP_AD_LOG, 0},
+        {OP_AD_BACKWARD, 0},
+        {OP_CONST, 0},
+        {OP_AD_GRAD, 0},
+        {OP_PRINT, 0},
+        {OP_HALT, 0}
+      }; test("AD: d/dx log(1) = 1", p, 7, 1); }
+
+    /* f(x) = sqrt(4): grad = 1/(2*sqrt(4)) = 0.25 */
+    { Instr p[]={
+        {OP_AD_VAR, 4},
+        {OP_AD_SQRT, 0},
+        {OP_AD_BACKWARD, 0},
+        {OP_CONST, 0},
+        {OP_AD_GRAD, 0},
+        {OP_PRINT, 0},
+        {OP_HALT, 0}
+      }; test("AD: d/dx sqrt(4) = 0.25", p, 7, 0.25f); }
 
     /* f(x) = relu(3): grad = 1 */
     { Instr p[]={
