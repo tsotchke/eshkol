@@ -30,9 +30,9 @@ writeback, and Layer 5 AD gradient writeback. Layer 1 now loads bounded AD
 tape parent values before Layer 2 so `OP_AD_MUL` forward recording is also
 encoded as weights.
 
-Current artifact verification after the bounded AD unary-table slice:
-111/111 inline tests pass, 108/108 traced programs agree on PRINT output and
-full per-step state, opcode coverage is 74 weight-implemented / 0
+Current artifact verification after the bounded AD table/division slice:
+113/113 inline tests pass, 110/110 traced programs agree on PRINT output and
+full per-step state, opcode coverage is 75 weight-implemented / 0
 VM-native-delegated / 0 transformer-native-assisted in the exercised coverage
 set, and the QLMW export is d_model=256, FFN=2048, 11,037,702 parameters.
 The exercised trace set now has no `S_IS_NATIVE` postprocess assistance.
@@ -42,9 +42,10 @@ range, `AD_ABS`/`AD_RELU` are weight-encoded for bounded nonzero
 integer-scale cases, and `AD_EXP`/`AD_SIGMOID`/`AD_TANH`/`AD_LOG`/`AD_SQRT`,
 `AD_SIN`, and `AD_COS` are table-encoded for the exercised inputs (`exp(0)`,
 `sigmoid(0)`, `sigmoid(1)`, `tanh(0)`, `log(1)`, `sqrt(4)`, `sin(0)`,
-`cos(0)`). Untested
-or broader libm paths (general `exp`/`sigmoid`/`tanh`/`log`/`sqrt`/`sin`/`cos`,
-`AD_DIV`, `AD_POW`) remain bounded-state candidates or
+`cos(0)`). `AD_DIV` is weight-encoded for positive integer denominator table
+entries 1..16, including both numerator and denominator reverse-mode gradients.
+Untested or broader libm paths (general `exp`/`sigmoid`/`tanh`/`log`/`sqrt`/
+`sin`/`cos`, general `AD_DIV`, `AD_POW`) remain bounded-state candidates or
 precision-contract decisions, not completed general encodings.
 
 ## 1. Problem statement
@@ -53,7 +54,7 @@ The Eshkol VM is a 83-opcode bytecode machine. The Self-Differentiating Neural
 Computer (SDNC) — `lib/backend/weight_matrices.c` — analytically constructs a
 6-layer transformer. The original artifact used `d_model = 128`, FFN width
 1024, and a 71-program suite pinned at `8235d99`; the current bounded-arena
-artifact uses `d_model = 256`, FFN width 2048, and a 108-program traced suite.
+artifact uses `d_model = 256`, FFN width 2048, and a 110-program traced suite.
 
 Historically, 57 of the 83 opcodes executed end-to-end through `Wx + b`
 matmul-plus-bias and the remaining **26 opcodes were delegated** to the C
@@ -471,9 +472,11 @@ support needs the same list/arena path as `OP_PACK_REST`.
 
 These are delegated for *precision*, not for runtime side-effect. The strict
 artifact build now table-encodes the exercised `sin(0)` and `cos(0)` AD cases,
-including saved reverse-mode derivatives (`cos(0)=1`, `-sin(0)=0`). Broader
-transcendental coverage can use the existing AD forward dispatch shape, but
-general inputs require:
+including saved reverse-mode derivatives (`cos(0)=1`, `-sin(0)=0`), and
+bounded `AD_DIV` for positive integer denominators 1..16. Division stores
+`1/right` as the saved left-derivative factor and gates the right derivative
+`-grad*left/(right^2)` by denominator. Broader transcendental coverage can use
+the existing AD forward dispatch shape, but general inputs require:
 
 - `sin(x)` / `cos(x)`: Bhaskara's approximation or Taylor (5 terms ≈
   IEEE-correct for x ∈ [-π, π], precision drops outside; range-reduction
@@ -674,8 +677,10 @@ if newly weight-encoded opcodes change state-vector trajectories.
   artifact suite
 - [x] Encode exercised `AD_EXP`/`AD_SIGMOID`/`AD_TANH`/`AD_LOG`/`AD_SQRT`/
   `AD_SIN`/`AD_COS` libm values as bounded AD table paths
-- [x] Re-run `scripts/paper/run_paper_suite.sh`; current report is 108/108
-  PRINT-output and full-state agreement, with 74 weight-implemented / 0
+- [x] Encode exercised bounded `AD_DIV` denominator table path, including both
+  `d(x/2)/dx` and `d(6/y)/dy` reverse-mode checks
+- [x] Re-run `scripts/paper/run_paper_suite.sh`; current report is 110/110
+  PRINT-output and full-state agreement, with 75 weight-implemented / 0
   native-delegated / 0 transformer-native-assisted opcodes in the exercised
   coverage set
 - [x] **Acceptance:** Stage 3's bounded closure/upvalue, tail-call, and
@@ -691,9 +696,11 @@ if newly weight-encoded opcodes change state-vector trajectories.
 - [x] Exercised `AD_EXP(0)`, `AD_SIGMOID(0/1)`, `AD_TANH(0)`, `AD_LOG(1)`,
   `AD_SQRT(4)`, `AD_SIN(0)`, and `AD_COS(0)` values via bounded table gates
   in the strict artifact build
+- [x] Exercised `AD_DIV` via positive denominator table gates and both
+  numerator/denominator reverse-mode gradient paths
 - [ ] General `OP_AD_SIN`, `OP_AD_COS` via Bhaskara/Taylor in Layer 3 dispatch
 - [ ] `OP_AD_POW` via existing EXP/LOG composition
-- [ ] `OP_AD_DIV` via Newton-Raphson 4-iter loop
+- [ ] General `OP_AD_DIV` via Newton-Raphson 4-iter loop
 - [ ] **Acceptance:** Taylor-build matches reference to ≤ 4 ULPs on AD ops,
   documented relaxation; libm-delegated build remains bit-identical
 
