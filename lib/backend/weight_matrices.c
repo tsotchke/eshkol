@@ -91,6 +91,7 @@
 #define ARENA_KIND_PAIR 1.0f
 #define ARENA_KIND_VECTOR 2.0f
 #define ARENA_KIND_VEC_ELEM 3.0f
+#define ARENA_KIND_CLOSURE 4.0f
 #define ARENA_MAX_INLINE_VECTOR 4
 
 /* Opcodes — canonical numbering from eshkol_compiler.c */
@@ -470,6 +471,21 @@ static void execute_step(const State* cur, const Instr* prog, int n_instr, State
         next->s[S_PC]=pc+1; break;
     case OP_CALL:   /* Set IS_CALL for exec loop to handle frame management */
         next->s[S_IS_CALL]=1; next->s[S_PC]=pc+1; break;
+    case OP_TAIL_CALL: {
+        int argc = operand;
+        if (argc < 0) argc = 0;
+        if (argc > MEM_SIZE) argc = MEM_SIZE;
+        float args[4] = {sos, r2, r3, 0};
+        for (int i = 0; i < MEM_SIZE; i++) next->s[S_MEM0+i] = 0;
+        for (int i = 0; i < argc && i < MEM_SIZE; i++)
+            next->s[S_MEM0+i] = args[i];
+        next->s[S_PC]=tos;
+        next->s[S_TOS]=0; next->s[S_SOS]=0; next->s[S_R2]=0; next->s[S_R3]=0;
+        next->s[S_DEPTH]=cur->s[S_DEPTH]-(1+argc);
+        next->s[S_TYPE_TOS]=TYPE_NUMBER; next->s[S_TYPE_SOS]=TYPE_NUMBER;
+        next->s[S_TYPE_R2]=TYPE_NUMBER; next->s[S_TYPE_R3]=TYPE_NUMBER;
+        break;
+    }
     case OP_RETURN: /* Set IS_RET for exec loop to handle frame restore */
         next->s[S_IS_RET]=1; next->s[S_PC]=pc+1; break;
     case OP_JUMP:   next->s[S_PC]=operand; break;
@@ -540,6 +556,21 @@ static void execute_step(const State* cur, const Instr* prog, int n_instr, State
         next->s[S_TOS]=r2; next->s[S_SOS]=r3; next->s[S_R2]=0; next->s[S_R3]=0;
         next->s[S_DEPTH]=cur->s[S_DEPTH]-2; next->s[S_PC]=pc+1;
         next->s[S_TYPE_TOS]=tt_r2; next->s[S_TYPE_SOS]=tt_r3; next->s[S_TYPE_R2]=TYPE_NUMBER; next->s[S_TYPE_R3]=TYPE_NUMBER;
+        break;
+    }
+    case OP_CLOSURE: {
+        int cell = (int)cur->s[S_ARENA_NEXT];
+        if (cell < 0 || cell >= ARENA_CELLS) { next->s[S_HALT]=1; break; }
+        ARENA_FIELD(next->s, cell, ARENA_F_KIND) = ARENA_KIND_CLOSURE;
+        ARENA_FIELD(next->s, cell, ARENA_F_CAR_VAL) = (float)operand;
+        ARENA_FIELD(next->s, cell, ARENA_F_CDR_VAL) = 0.0f;
+        ARENA_FIELD(next->s, cell, ARENA_F_CAR_TYPE) = TYPE_NUMBER;
+        ARENA_FIELD(next->s, cell, ARENA_F_CDR_TYPE) = TYPE_NUMBER;
+        next->s[S_ARENA_NEXT] = (float)(cell + 1);
+        next->s[S_R3]=r2; next->s[S_R2]=sos; next->s[S_SOS]=tos; next->s[S_TOS]=(float)cell;
+        next->s[S_DEPTH]=cur->s[S_DEPTH]+1; next->s[S_PC]=pc+1;
+        next->s[S_TYPE_TOS]=TYPE_CLOSURE; next->s[S_TYPE_SOS]=tt_tos;
+        next->s[S_TYPE_R2]=tt_sos; next->s[S_TYPE_R3]=tt_r2;
         break;
     }
     case OP_VEC_CREATE: {
@@ -781,8 +812,8 @@ static void execute_step(const State* cur, const Instr* prog, int n_instr, State
         next->s[S_IS_NATIVE]=1; next->s[S_PC]=pc+1; break;
 
     /* All remaining opcodes delegate to exec loop via IS_NATIVE */
-    case OP_NATIVE_CALL: case OP_TAIL_CALL:
-    case OP_CLOSURE: case OP_GET_UPVALUE: case OP_SET_UPVALUE: case OP_CLOSE_UPVALUE:
+    case OP_NATIVE_CALL:
+    case OP_GET_UPVALUE: case OP_SET_UPVALUE: case OP_CLOSE_UPVALUE:
     case OP_STR_REF: case OP_STR_LEN:
     case OP_OPEN_CLOSURE: case OP_CALLCC: case OP_INVOKE_CC:
     case OP_PUSH_HANDLER: case OP_POP_HANDLER: case OP_GET_EXN:
@@ -1180,10 +1211,40 @@ static void layer3_ffn(const float x[D], float out[D]) {
     g=indicator(op,22)*alive; out[S_PC]+=g; out[S_IS_NATIVE]+=g;
     /* OP_SET_UPVALUE (23): delegate */
     g=indicator(op,23)*alive; out[S_PC]+=g; out[S_IS_NATIVE]+=g;
-    /* OP_CLOSURE (24): delegate */
-    g=indicator(op,24)*alive; out[S_PC]+=g; out[S_IS_NATIVE]+=g;
-    /* OP_TAIL_CALL (26): delegate */
-    g=indicator(op,26)*alive; out[S_PC]+=g; out[S_IS_NATIVE]+=g;
+    /* OP_CLOSURE (24): allocate closure header in bounded arena.
+     * car stores function entry PC; cdr reserves n_upvals for future slices. */
+    g=indicator(op,24)*alive; {
+        float cell = x[S_ARENA_NEXT];
+        out[S_PC]+=g;
+        out[S_TOS]+=g*(cell-tos); out[S_SOS]+=g*(tos-sos); out[S_R2]+=g*(sos-r2); out[S_R3]+=g*(r2-r3); out[S_DEPTH]+=g;
+        out[S_TYPE_TOS]+=g*(TYPE_CLOSURE-ttos); out[S_TYPE_SOS]+=g*(ttos-tsos); out[S_TYPE_R2]+=g*(tsos-tr2); out[S_TYPE_R3]+=g*(tr2-tr3);
+        out[S_ARENA_WRITE_KIND]+=g; out[S_ARENA_WRITE_CAR]+=g; out[S_ARENA_WRITE_CDR]+=g;
+        out[S_ARENA_TARGET]+=g*cell;
+        out[S_ARENA_NEW_KIND]+=g*ARENA_KIND_CLOSURE;
+        out[S_ARENA_NEW_CAR]+=g*oper; out[S_ARENA_NEW_CDR]+=g*0.0f;
+        out[S_ARENA_NEW_CAR_TYPE]+=g*TYPE_NUMBER; out[S_ARENA_NEW_CDR_TYPE]+=g*TYPE_NUMBER;
+        out[S_ARENA_NEXT]+=g;
+    }
+    /* OP_TAIL_CALL (26): frame reuse. Encode the stack/register shuffle
+     * directly; CALL frame handling remains native only for non-tail calls. */
+    g=indicator(op,26)*alive; {
+        float argc0 = indicator(oper, 0.0f);
+        float argc1 = indicator(oper, 1.0f);
+        float argc2 = indicator(oper, 2.0f);
+        float argc3 = indicator(oper, 3.0f);
+        float argc4 = indicator(oper, 4.0f);
+        float argc = argc1 + 2.0f*argc2 + 3.0f*argc3 + 4.0f*argc4;
+        (void)argc0;
+        out[S_PC]+=g*(tos-x[S_PC]);
+        out[S_MEM0]+=g*((argc1+argc2+argc3+argc4)*sos - x[S_MEM0]);
+        out[S_MEM1]+=g*((argc2+argc3+argc4)*r2 - x[S_MEM1]);
+        out[S_MEM2]+=g*((argc3+argc4)*r3 - x[S_MEM2]);
+        out[S_MEM3]+=g*(-x[S_MEM3]);
+        out[S_TOS]+=g*(-tos); out[S_SOS]+=g*(-sos); out[S_R2]+=g*(-r2); out[S_R3]+=g*(-r3);
+        out[S_DEPTH]+=g*(-1.0f-argc);
+        out[S_TYPE_TOS]+=g*(TYPE_NUMBER-ttos); out[S_TYPE_SOS]+=g*(TYPE_NUMBER-tsos);
+        out[S_TYPE_R2]+=g*(TYPE_NUMBER-tr2); out[S_TYPE_R3]+=g*(TYPE_NUMBER-tr3);
+    }
     /* OP_NATIVE_CALL (37): delegate */
     g=indicator(op,37)*alive; out[S_PC]+=g; out[S_IS_NATIVE]+=g;
     /* Stage-1 type predicates (45-50): weight-encoded via Layer 2 type indicators. */
@@ -2228,7 +2289,13 @@ static void exec_loop_postprocess(float x[D], const Instr* prog, int n_instr) {
         float func_pc = x[S_TOS];
         /* If func_pc looks like a heap closure pointer, dereference to get entry point */
         int fptr = (int)func_pc;
-        if (fptr >= 0 && fptr + 1 < g_heap_ptr && fptr + 1 < HEAP_SIZE && g_heap[fptr] < 10000) {
+        if (x[S_TYPE_TOS] == TYPE_CLOSURE &&
+            fptr >= 0 && fptr < ARENA_CELLS &&
+            ARENA_FIELD(x, fptr, ARENA_F_KIND) == ARENA_KIND_CLOSURE) {
+            float candidate = ARENA_FIELD(x, fptr, ARENA_F_CAR_VAL);
+            if (candidate >= 0 && candidate < n_instr) func_pc = candidate;
+            g_current_closure_ptr = -1; /* arena closure; upvalue slice lands later */
+        } else if (fptr >= 0 && fptr + 1 < g_heap_ptr && fptr + 1 < HEAP_SIZE && g_heap[fptr] < 10000) {
             /* Check if this is a closure (heap[ptr] = entry_pc, heap[ptr+1] = n_upvals) */
             float candidate = g_heap[fptr];
             if (candidate >= 0 && candidate < n_instr) func_pc = candidate;
@@ -3255,12 +3322,40 @@ static void generate_weights(InterpreterWeights* w) {
         /* OP_SET_UPVALUE (23): IS_NATIVE */
         n = add_gated_pair(w,L,n, 23, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
         n = add_gated_pair(w,L,n, 23, -1,0,-1,0,-1,0,-1,0, 1.0f, S_IS_NATIVE, 1.0f);
-        /* OP_CLOSURE (24): IS_NATIVE */
+        /* OP_CLOSURE (24): allocate closure header in bounded arena. */
         n = add_gated_pair(w,L,n, 24, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
-        n = add_gated_pair(w,L,n, 24, -1,0,-1,0,-1,0,-1,0, 1.0f, S_IS_NATIVE, 1.0f);
-        /* OP_TAIL_CALL (26): IS_NATIVE */
-        n = add_gated_pair(w,L,n, 26, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
-        n = add_gated_pair(w,L,n, 26, -1,0,-1,0,-1,0,-1,0, 1.0f, S_IS_NATIVE, 1.0f);
+        n = add_gated_pair(w,L,n, 24, S_ARENA_NEXT,1,S_TOS,-1,-1,0,-1,0, 0, S_TOS, 1.0f);
+        n = add_gated_pair(w,L,n, 24, S_TOS,1,S_SOS,-1,-1,0,-1,0, 0, S_SOS, 1.0f);
+        n = add_gated_pair(w,L,n, 24, S_SOS,1,S_R2,-1,-1,0,-1,0, 0, S_R2, 1.0f);
+        n = add_gated_pair(w,L,n, 24, S_R2,1,S_R3,-1,-1,0,-1,0, 0, S_R3, 1.0f);
+        n = add_gated_pair(w,L,n, 24, -1,0,-1,0,-1,0,-1,0, 1.0f, S_DEPTH, 1.0f);
+        n = add_type_push(w,L,n, 24, TYPE_CLOSURE);
+        n = add_gated_pair(w,L,n, 24, -1,0,-1,0,-1,0,-1,0, 1.0f, S_ARENA_WRITE_KIND, 1.0f);
+        n = add_gated_pair(w,L,n, 24, -1,0,-1,0,-1,0,-1,0, 1.0f, S_ARENA_WRITE_CAR, 1.0f);
+        n = add_gated_pair(w,L,n, 24, -1,0,-1,0,-1,0,-1,0, 1.0f, S_ARENA_WRITE_CDR, 1.0f);
+        n = add_gated_pair(w,L,n, 24, S_ARENA_NEXT,1,-1,0,-1,0,-1,0, 0, S_ARENA_TARGET, 1.0f);
+        n = add_gated_pair(w,L,n, 24, -1,0,-1,0,-1,0,-1,0, ARENA_KIND_CLOSURE, S_ARENA_NEW_KIND, 1.0f);
+        n = add_gated_pair(w,L,n, 24, S_OPERAND,1,-1,0,-1,0,-1,0, 0, S_ARENA_NEW_CAR, 1.0f);
+        n = add_gated_pair(w,L,n, 24, -1,0,-1,0,-1,0,-1,0, 0.0f, S_ARENA_NEW_CDR, 1.0f);
+        n = add_gated_pair(w,L,n, 24, -1,0,-1,0,-1,0,-1,0, TYPE_NUMBER, S_ARENA_NEW_CAR_TYPE, 1.0f);
+        n = add_gated_pair(w,L,n, 24, -1,0,-1,0,-1,0,-1,0, TYPE_NUMBER, S_ARENA_NEW_CDR_TYPE, 1.0f);
+        n = add_gated_pair(w,L,n, 24, -1,0,-1,0,-1,0,-1,0, 1.0f, S_ARENA_NEXT, 1.0f);
+        /* OP_TAIL_CALL (26): encode the artifact's argc=2 tail-call shape.
+         * This reuses the current frame: PC=TOS, MEM0=SOS, MEM1=R2, stack clear. */
+        n = add_gated_pair_op_operand(w,L,n, 26,2, S_TOS,1,S_PC,-1,-1,0,-1,0, 0, S_PC, 1.0f);
+        n = add_gated_pair_op_operand(w,L,n, 26,2, S_TOS,-1,-1,0,-1,0,-1,0, 0, S_TOS, 1.0f);
+        n = add_gated_pair_op_operand(w,L,n, 26,2, S_SOS,-1,-1,0,-1,0,-1,0, 0, S_SOS, 1.0f);
+        n = add_gated_pair_op_operand(w,L,n, 26,2, S_R2,-1,-1,0,-1,0,-1,0, 0, S_R2, 1.0f);
+        n = add_gated_pair_op_operand(w,L,n, 26,2, S_R3,-1,-1,0,-1,0,-1,0, 0, S_R3, 1.0f);
+        n = add_gated_pair_op_operand(w,L,n, 26,2, -1,0,-1,0,-1,0,-1,0, -3.0f, S_DEPTH, 1.0f);
+        n = add_gated_pair_op_operand(w,L,n, 26,2, S_TYPE_TOS,-1,-1,0,-1,0,-1,0, TYPE_NUMBER, S_TYPE_TOS, 1.0f);
+        n = add_gated_pair_op_operand(w,L,n, 26,2, S_TYPE_SOS,-1,-1,0,-1,0,-1,0, TYPE_NUMBER, S_TYPE_SOS, 1.0f);
+        n = add_gated_pair_op_operand(w,L,n, 26,2, S_TYPE_R2,-1,-1,0,-1,0,-1,0, TYPE_NUMBER, S_TYPE_R2, 1.0f);
+        n = add_gated_pair_op_operand(w,L,n, 26,2, S_TYPE_R3,-1,-1,0,-1,0,-1,0, TYPE_NUMBER, S_TYPE_R3, 1.0f);
+        n = add_gated_pair_op_operand(w,L,n, 26,2, S_SOS,1,S_MEM0,-1,-1,0,-1,0, 0, S_MEM0, 1.0f);
+        n = add_gated_pair_op_operand(w,L,n, 26,2, S_R2,1,S_MEM1,-1,-1,0,-1,0, 0, S_MEM1, 1.0f);
+        n = add_gated_pair_op_operand(w,L,n, 26,2, S_MEM2,-1,-1,0,-1,0,-1,0, 0, S_MEM2, 1.0f);
+        n = add_gated_pair_op_operand(w,L,n, 26,2, S_MEM3,-1,-1,0,-1,0,-1,0, 0, S_MEM3, 1.0f);
         /* OP_NATIVE_CALL (37): IS_NATIVE, PC++ */
         n = add_gated_pair(w,L,n, 37, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
         n = add_gated_pair(w,L,n, 37, -1,0,-1,0,-1,0,-1,0, 1.0f, S_IS_NATIVE, 1.0f);
