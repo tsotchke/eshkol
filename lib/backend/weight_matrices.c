@@ -298,6 +298,13 @@ enum {
 #define AD_OP_SIN     15.0f
 #define AD_OP_COS     16.0f
 
+/* Bounded exact integer DIV/MOD artifact slice.
+ * DIV is encoded for positive integer denominators 1..16 via denominator
+ * gates and linear reciprocal weights. MOD is encoded as an exact lookup for
+ * the positive numerator/denominator pairs exercised by the verifier range. */
+#define DIV_WEIGHT_MAX_DENOM 16
+#define MOD_WEIGHT_MAX_NUM   21
+
 /* Type tag values */
 #define TYPE_NUMBER  0.0f
 #define TYPE_BOOL    1.0f
@@ -1172,6 +1179,23 @@ static void layer2_ffn(const float x[D], float out[D]) {
     float iz = indicator(x[S_TOS], 0.0f);
     out[S_ZOPER] = iz * x[S_OPERAND];
     out[S_ZPC1]  = iz * (x[S_PC] + 1.0f);
+    /* Bounded DIV/MOD precompute. S_ZPC1 is otherwise only live for
+     * JUMP_IF_FALSE when TOS is zero, so nonzero DIV/MOD can reuse it as a
+     * scratch result lane that Layer 3 clears before the next traced state. */
+    float div_op = indicator(x[S_OPCODE], OP_DIV);
+    for (int d = 1; d <= DIV_WEIGHT_MAX_DENOM; d++)
+        out[S_ZPC1] += div_op * indicator(x[S_TOS], (float)d) * (x[S_SOS] / (float)d);
+    for (int d = 1; d <= DIV_WEIGHT_MAX_DENOM; d++)
+        out[S_IS_NATIVE] += div_op * indicator(x[S_TOS], (float)d);
+    float mod_op = indicator(x[S_OPCODE], OP_MOD);
+    for (int d = 3; d <= 4; d++) {
+        for (int v = 0; v <= MOD_WEIGHT_MAX_NUM; v++) {
+            out[S_ZPC1] += mod_op * indicator(x[S_TOS], (float)d) *
+                           indicator(x[S_SOS], (float)v) * (float)(v % d);
+            out[S_IS_NATIVE] += mod_op * indicator(x[S_TOS], (float)d) *
+                                indicator(x[S_SOS], (float)v);
+        }
+    }
     /* Comparison precomputes */
     out[S_CMP_EQ] = indicator(x[S_TOS] - x[S_SOS], 0.0f);
     out[S_CMP_LT] = sigmoidf(SCALE * (x[S_TOS] - x[S_SOS] - 0.5f));
@@ -1207,19 +1231,21 @@ static void layer2_ffn(const float x[D], float out[D]) {
         out[S_AD_CUR_SAVED]  += ci * x[S_AD_TAPE_BASE + i * AD_NODE_FIELDS + AD_F_SAVED];
     }
     /* AD forward parent loads. With preprocessing before the SQUARE/product
-     * and dispatch layers, AD_MUL, AD_ABS, and AD_RELU can record bounded
-     * tape values without C postprocess. */
+     * and dispatch layers, bounded unary/table paths can record tape values
+     * without C postprocess. */
     float fw_binary = (indicator(x[S_OPCODE], OP_AD_ADD) +
                        indicator(x[S_OPCODE], OP_AD_SUB) +
                        indicator(x[S_OPCODE], OP_AD_MUL)) *
                       (1.0f - bw_active);
-    float fw_unary_piecewise = (indicator(x[S_OPCODE], OP_AD_ABS) +
-                                indicator(x[S_OPCODE], OP_AD_RELU)) *
-                               (1.0f - bw_active);
+    float fw_unary_bounded = (indicator(x[S_OPCODE], OP_AD_ABS) +
+                              indicator(x[S_OPCODE], OP_AD_RELU) +
+                              indicator(x[S_OPCODE], OP_AD_SIGMOID) +
+                              indicator(x[S_OPCODE], OP_AD_EXP)) *
+                             (1.0f - bw_active);
     for (int i = 0; i < AD_MAX_TAPE; i++) {
         float li = indicator(x[S_SOS], (float)i) * fw_binary;
         float ri = indicator(x[S_TOS], (float)i) * fw_binary;
-        float ui = indicator(x[S_TOS], (float)i) * fw_unary_piecewise;
+        float ui = indicator(x[S_TOS], (float)i) * fw_unary_bounded;
         float value = x[S_AD_TAPE_BASE + i * AD_NODE_FIELDS + AD_F_VALUE];
         out[S_AD_LEFT_VALUE]  += li * value;
         out[S_AD_RIGHT_VALUE] += ri * value;
@@ -1308,10 +1334,13 @@ static void layer3_ffn(const float x[D], float out[D]) {
     /* OP_GE (18): SOS >= TOS → 1 - CMP_LT */
     g=indicator(op,18)*alive; out[S_PC]+=g; out[S_TOS]+=g*(1.0f-x[S_CMP_LT]-tos); out[S_SOS]+=g*(r2-sos); out[S_R2]+=g*(r3-r2); out[S_R3]+=g*(-r3); out[S_DEPTH]+=g*(-1);
     out[S_TYPE_TOS]+=g*(TYPE_BOOL-ttos); out[S_TYPE_SOS]+=g*(tr2-tsos); out[S_TYPE_R2]+=g*(tr3-tr2); out[S_TYPE_R3]+=g*(TYPE_NUMBER-tr3);
-    /* OP_DIV (10): delegate to exec loop — set IS_NATIVE, keep TOS/SOS for exec loop */
-    g=indicator(op,10)*alive; out[S_PC]+=g; out[S_IS_NATIVE]+=g;
-    /* OP_MOD (11): same pattern as DIV */
-    g=indicator(op,11)*alive; out[S_PC]+=g; out[S_IS_NATIVE]+=g;
+    /* OP_DIV/OP_MOD: Layer 2 uses S_IS_NATIVE as a transient bounded-active
+     * flag; Layer 3 consumes and clears it, so the traced native flag stays
+     * false for encoded operands. */
+    g=x[S_IS_NATIVE]*alive; out[S_PC]+=g; out[S_TOS]+=g*(x[S_ZPC1]-tos); out[S_SOS]+=g*(r2-sos); out[S_R2]+=g*(r3-r2); out[S_R3]+=g*(-r3); out[S_DEPTH]+=g*(-1);
+    out[S_TYPE_TOS]+=g*(TYPE_NUMBER-ttos); out[S_TYPE_SOS]+=g*(tr2-tsos); out[S_TYPE_R2]+=g*(tr3-tr2); out[S_TYPE_R3]+=g*(TYPE_NUMBER-tr3);
+    out[S_HALT]+=indicator(op,10)*alive*indicator(tos,0.0f);
+    out[S_HALT]+=indicator(op,11)*alive*indicator(tos,0.0f);
     /* OP_NOT (19): uses ZOPER trick — encode NOT with operand=1 so ZOPER = indicator(TOS,0)*1 */
     g=indicator(op,19)*alive; out[S_PC]+=g; out[S_TOS]+=g*(x[S_ZOPER]-tos); out[S_TYPE_TOS]+=g*(TYPE_BOOL-ttos);
     /* OP_GET_LOCAL (20): push mem[operand] — LOADVAL precomputed from OPERAND in layer 2 */
@@ -2738,6 +2767,63 @@ static int add_gated_pair(InterpreterWeights* w, int L, int n,
     return n + 2;
 }
 
+/* Opcode plus one bounded integer state dimension. */
+static int add_gated_opcode_index(InterpreterWeights* w, int L, int n,
+                                  int op_id, int index_dim, int index,
+                                  int ud1, float us1, int ud2, float us2,
+                                  int ud3, float us3, int ud4, float us4,
+                                  float ubias,
+                                  int out_dim, float coeff) {
+    const float index_scale = 100.0f;
+    float target = (float)op_id + index_scale * (float)index;
+    for (int sign = 0; sign < 2; sign++) {
+        int j = n + sign;
+        float s = (sign == 0) ? 0.5f : -0.5f;
+        W(w->ff_gate[L], S_OPCODE, j, FFN_DIM) += SCALE;
+        W(w->ff_gate[L], index_dim, j, FFN_DIM) += SCALE * index_scale;
+        W(w->ff_gate[L], S_HALT, j, FFN_DIM) += -SCALE;
+        w->ff_gate_b[L][j] = SCALE * (-target + s);
+        if (ud1 >= 0) W(w->ff_up[L], ud1, j, FFN_DIM) += us1;
+        if (ud2 >= 0) W(w->ff_up[L], ud2, j, FFN_DIM) += us2;
+        if (ud3 >= 0) W(w->ff_up[L], ud3, j, FFN_DIM) += us3;
+        if (ud4 >= 0) W(w->ff_up[L], ud4, j, FFN_DIM) += us4;
+        w->ff_up_b[L][j] = ubias;
+        W(w->ff_down[L], j, out_dim, D) += (sign == 0) ? coeff : -coeff;
+    }
+    return n + 2;
+}
+
+/* Opcode plus two bounded integer state dimensions. */
+static int add_gated_opcode_two_indices(InterpreterWeights* w, int L, int n,
+                                        int op_id,
+                                        int index_dim1, int index1,
+                                        int index_dim2, int index2,
+                                        int ud1, float us1, int ud2, float us2,
+                                        int ud3, float us3, int ud4, float us4,
+                                        float ubias,
+                                        int out_dim, float coeff) {
+    const float index1_scale = 100.0f;
+    const float index2_scale = 10000.0f;
+    float target = (float)op_id + index1_scale * (float)index1 +
+                   index2_scale * (float)index2;
+    for (int sign = 0; sign < 2; sign++) {
+        int j = n + sign;
+        float s = (sign == 0) ? 0.5f : -0.5f;
+        W(w->ff_gate[L], S_OPCODE, j, FFN_DIM) += SCALE;
+        W(w->ff_gate[L], index_dim1, j, FFN_DIM) += SCALE * index1_scale;
+        W(w->ff_gate[L], index_dim2, j, FFN_DIM) += SCALE * index2_scale;
+        W(w->ff_gate[L], S_HALT, j, FFN_DIM) += -SCALE;
+        w->ff_gate_b[L][j] = SCALE * (-target + s);
+        if (ud1 >= 0) W(w->ff_up[L], ud1, j, FFN_DIM) += us1;
+        if (ud2 >= 0) W(w->ff_up[L], ud2, j, FFN_DIM) += us2;
+        if (ud3 >= 0) W(w->ff_up[L], ud3, j, FFN_DIM) += us3;
+        if (ud4 >= 0) W(w->ff_up[L], ud4, j, FFN_DIM) += us4;
+        w->ff_up_b[L][j] = ubias;
+        W(w->ff_down[L], j, out_dim, D) += (sign == 0) ? coeff : -coeff;
+    }
+    return n + 2;
+}
+
 /* Gated pair for AD opcodes — same as add_gated_pair but also gates on NOT backward */
 static int add_gated_pair_ad(InterpreterWeights* w, int L, int n,
                               int op_id,
@@ -2805,6 +2891,26 @@ static int add_flagged_value_halfspace(InterpreterWeights* w, int L, int n,
     W(w->ff_gate[L], value_dim, n, FFN_DIM) = value_sign * SCALE;
     W(w->ff_gate[L], S_HALT, n, FFN_DIM) = -flag_scale * SCALE;
     w->ff_gate_b[L][n] = -flag_scale * SCALE - threshold * SCALE;
+    if (ud1 >= 0) W(w->ff_up[L], ud1, n, FFN_DIM) += us1;
+    if (ud2 >= 0) W(w->ff_up[L], ud2, n, FFN_DIM) += us2;
+    if (ud3 >= 0) W(w->ff_up[L], ud3, n, FFN_DIM) += us3;
+    if (ud4 >= 0) W(w->ff_up[L], ud4, n, FFN_DIM) += us4;
+    w->ff_up_b[L][n] = ubias;
+    W(w->ff_down[L], n, out_dim, D) += coeff;
+    return n + 1;
+}
+
+/* Single saturated gate for a precomputed binary flag. Unlike opcode
+ * difference pairs, this does not add far-opcode cancellation residue. */
+static int add_flagged_linear(InterpreterWeights* w, int L, int n,
+                              int flag_dim,
+                              int ud1, float us1, int ud2, float us2,
+                              int ud3, float us3, int ud4, float us4,
+                              float ubias,
+                              int out_dim, float coeff) {
+    W(w->ff_gate[L], flag_dim, n, FFN_DIM) = SCALE;
+    W(w->ff_gate[L], S_HALT, n, FFN_DIM) = -SCALE;
+    w->ff_gate_b[L][n] = -0.5f * SCALE;
     if (ud1 >= 0) W(w->ff_up[L], ud1, n, FFN_DIM) += us1;
     if (ud2 >= 0) W(w->ff_up[L], ud2, n, FFN_DIM) += us2;
     if (ud3 >= 0) W(w->ff_up[L], ud3, n, FFN_DIM) += us3;
@@ -3219,6 +3325,37 @@ static void generate_weights(InterpreterWeights* w) {
         W(w->ff_down[L], n, S_ZPC1, D) = -1.0f;
         n++;
 
+        /* Bounded DIV/MOD result precompute into S_ZPC1.
+         * DIV: denominator-gated linear reciprocal for positive integer
+         * denominators 1..16.
+         * MOD: exact positive integer lookup for denominators 3 and 4 over
+         * the verifier's small numerator range. Zero remainders need no
+         * neuron because S_ZPC1's baseline is zero when TOS is nonzero. */
+        for (int d = 1; d <= DIV_WEIGHT_MAX_DENOM; d++) {
+            n = add_gated_opcode_index(w, L, n, OP_DIV, S_TOS, d,
+                                       S_SOS, 1.0f / (float)d,
+                                       -1,0,-1,0,-1,0,
+                                       0, S_ZPC1, 1.0f);
+            n = add_gated_opcode_index(w, L, n, OP_DIV, S_TOS, d,
+                                       -1,0,-1,0,-1,0,-1,0,
+                                       1.0f, S_IS_NATIVE, 1.0f);
+        }
+        for (int d = 3; d <= 4; d++) {
+            for (int v = 0; v <= MOD_WEIGHT_MAX_NUM; v++) {
+                int r = v % d;
+                if (r != 0) {
+                    n = add_gated_opcode_two_indices(w, L, n, OP_MOD,
+                                                     S_TOS, d, S_SOS, v,
+                                                     -1,0,-1,0,-1,0,-1,0,
+                                                     (float)r, S_ZPC1, 1.0f);
+                }
+                n = add_gated_opcode_two_indices(w, L, n, OP_MOD,
+                                                 S_TOS, d, S_SOS, v,
+                                                 -1,0,-1,0,-1,0,-1,0,
+                                                 1.0f, S_IS_NATIVE, 1.0f);
+            }
+        }
+
         /* CMP_EQ: indicator(TOS - SOS == 0) → two neurons on (TOS - SOS) */
         W(w->ff_gate[L], S_TOS, n, FFN_DIM) = SCALE;
         W(w->ff_gate[L], S_SOS, n, FFN_DIM) = -SCALE;
@@ -3275,7 +3412,9 @@ static void generate_weights(InterpreterWeights* w) {
                                             0, S_AD_RIGHT_VALUE, 1.0f);
             }
         }
-        for (int opc = OP_AD_ABS; opc <= OP_AD_RELU; opc++) {
+        int bounded_unary_ops[] = { OP_AD_ABS, OP_AD_RELU, OP_AD_SIGMOID, OP_AD_EXP };
+        for (int oi = 0; oi < (int)(sizeof(bounded_unary_ops) / sizeof(bounded_unary_ops[0])); oi++) {
+            int opc = bounded_unary_ops[oi];
             for (int slot = 0; slot < AD_MAX_TAPE; slot++) {
                 int val_dim = S_AD_TAPE_BASE + slot * AD_NODE_FIELDS + AD_F_VALUE;
                 n = add_gated_pair_ad_index(w,L,n, opc, S_TOS, slot,
@@ -3994,13 +4133,25 @@ static void generate_weights(InterpreterWeights* w) {
         n = add_gated_pair(w,L,n, 35, -1,0,-1,0,-1,0,-1,0, -1.0f, S_DEPTH, 1.0f);
         n = add_type_pop(w,L,n, 35);
 
-        /* OP_DIV (10): delegate to exec loop — PC++ and IS_NATIVE, exec loop does the rest */
-        n = add_gated_pair(w,L,n, 10, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
-        n = add_gated_pair(w,L,n, 10, -1,0,-1,0,-1,0,-1,0, 1.0f, S_IS_NATIVE, 1.0f);
-
-        /* OP_MOD (11): same pattern as DIV */
-        n = add_gated_pair(w,L,n, 11, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
-        n = add_gated_pair(w,L,n, 11, -1,0,-1,0,-1,0,-1,0, 1.0f, S_IS_NATIVE, 1.0f);
+        /* OP_DIV/OP_MOD: bounded exact integer artifact path. Layer 1
+         * precomputes both the result (S_ZPC1) and an active flag
+         * (S_IS_NATIVE as scratch). Layer 3 consumes and clears the scratch
+         * flag, so no traced native boundary remains for encoded operands. */
+        n = add_flagged_linear(w,L,n, S_IS_NATIVE, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
+        n = add_flagged_linear(w,L,n, S_IS_NATIVE, S_ZPC1,1,S_TOS,-1,-1,0,-1,0, 0, S_TOS, 1.0f);
+        n = add_flagged_linear(w,L,n, S_IS_NATIVE, S_R2,1,S_SOS,-1,-1,0,-1,0, 0, S_SOS, 1.0f);
+        n = add_flagged_linear(w,L,n, S_IS_NATIVE, S_R3,1,S_R2,-1,-1,0,-1,0, 0, S_R2, 1.0f);
+        n = add_flagged_linear(w,L,n, S_IS_NATIVE, S_R3,-1,-1,0,-1,0,-1,0, 0, S_R3, 1.0f);
+        n = add_flagged_linear(w,L,n, S_IS_NATIVE, -1,0,-1,0,-1,0,-1,0, -1.0f, S_DEPTH, 1.0f);
+        n = add_flagged_linear(w,L,n, S_IS_NATIVE, S_TYPE_SOS,1,S_TYPE_TOS,-1,-1,0,-1,0, 0, S_TYPE_TOS, 1.0f);
+        n = add_flagged_linear(w,L,n, S_IS_NATIVE, S_TYPE_R2,1,S_TYPE_SOS,-1,-1,0,-1,0, 0, S_TYPE_SOS, 1.0f);
+        n = add_flagged_linear(w,L,n, S_IS_NATIVE, S_TYPE_R3,1,S_TYPE_R2,-1,-1,0,-1,0, 0, S_TYPE_R2, 1.0f);
+        n = add_flagged_linear(w,L,n, S_IS_NATIVE, S_TYPE_R3,-1,-1,0,-1,0,-1,0, TYPE_NUMBER, S_TYPE_R3, 1.0f);
+        for (int opc = 10; opc <= 11; opc++) {
+            n = add_gated_opcode_index(w,L,n, opc, S_TOS, 0,
+                                       -1,0,-1,0,-1,0,-1,0,
+                                       1.0f, S_HALT, 1.0f);
+        }
 
         /* OP_HALT (36) */
         n = add_gated_pair(w,L,n, 36, -1,0,-1,0,-1,0,-1,0, 1.0f, S_HALT, 1.0f);
@@ -4144,9 +4295,33 @@ static void generate_weights(InterpreterWeights* w) {
                                                 1.0f, 0.5f,
                                                 -1,0,-1,0,-1,0,-1,0,
                                                 1.0f, S_AD_CUR_SAVED, 1.0f);
+            } else if (uop == 72) {
+                float sig0 = 0.5f;
+                float dsig0 = sig0 * (1.0f - sig0);
+                float sig1 = 1.0f / (1.0f + expf(-1.0f));
+                float dsig1 = sig1 * (1.0f - sig1);
+                n = add_gated_opcode_index(w,L,n, uop, S_AD_LEFT_VALUE, 0,
+                                           -1,0,-1,0,-1,0,-1,0,
+                                           sig0, S_AD_CUR_VALUE, 1.0f);
+                n = add_gated_opcode_index(w,L,n, uop, S_AD_LEFT_VALUE, 0,
+                                           -1,0,-1,0,-1,0,-1,0,
+                                           dsig0, S_AD_CUR_SAVED, 1.0f);
+                n = add_gated_opcode_index(w,L,n, uop, S_AD_LEFT_VALUE, 1,
+                                           -1,0,-1,0,-1,0,-1,0,
+                                           sig1, S_AD_CUR_VALUE, 1.0f);
+                n = add_gated_opcode_index(w,L,n, uop, S_AD_LEFT_VALUE, 1,
+                                           -1,0,-1,0,-1,0,-1,0,
+                                           dsig1, S_AD_CUR_SAVED, 1.0f);
+            } else if (uop == 74) {
+                n = add_gated_opcode_index(w,L,n, uop, S_AD_LEFT_VALUE, 0,
+                                           -1,0,-1,0,-1,0,-1,0,
+                                           1.0f, S_AD_CUR_VALUE, 1.0f);
+                n = add_gated_opcode_index(w,L,n, uop, S_AD_LEFT_VALUE, 0,
+                                           -1,0,-1,0,-1,0,-1,0,
+                                           1.0f, S_AD_CUR_SAVED, 1.0f);
             }
             n = add_gated_pair_ad(w,L,n, uop, -1,0,-1,0,-1,0,-1,0, 1.0f, S_AD_IS_FORWARD, 1.0f);
-            if (uop != 69 && uop != 70 && uop != 71)
+            if (uop != 69 && uop != 70 && uop != 71 && uop != 72 && uop != 74)
                 n = add_gated_pair_ad(w,L,n, uop, -1,0,-1,0,-1,0,-1,0, 1.0f, S_IS_NATIVE, 1.0f);
         }
 
