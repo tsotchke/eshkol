@@ -7,7 +7,7 @@
  *
  * Usage: ./eshkol_asm [program_name]
  *   Programs: add, factorial, fibonacci, sum, complex
- *   Output: /tmp/eshkol_<name>.bc (ESKB format)
+ *   Output: /tmp/eshkol_<name>.eskb
  *
  * Copyright (C) Tsotchke Corporation. MIT License.
  */
@@ -16,6 +16,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+
+#include "eskb_writer.c"
 
 /* Opcodes (match eshkol_compiler.c) */
 enum {
@@ -29,22 +31,11 @@ enum {
     OP_PRINT=35, OP_HALT=36,
 };
 
-typedef struct { uint8_t op; int32_t operand; } Instr;
+typedef EskbInstr Instr;
 
 static void write_eskb(const char* path, const Instr* prog, int n_instr) {
-    FILE* f = fopen(path, "wb");
-    if (!f) { printf("ERROR: cannot open %s\n", path); return; }
-    uint32_t magic = 0x45534B42; /* "ESKB" */
-    uint32_t ni = n_instr, nc = 0;
-    fwrite(&magic, 4, 1, f);
-    fwrite(&ni, 4, 1, f);
-    fwrite(&nc, 4, 1, f);  /* 0 constants — all values are immediate */
-    for (int i = 0; i < n_instr; i++) {
-        fwrite(&prog[i].op, 1, 1, f);
-        fwrite(&prog[i].operand, 4, 1, f);
-    }
-    fclose(f);
-    printf("Wrote %d instructions to %s\n", n_instr, path);
+    if (eskb_write_file(path, prog, n_instr, NULL, 0, path) < 0)
+        printf("ERROR: cannot write %s\n", path);
 }
 
 int main(int argc, char** argv) {
@@ -56,7 +47,7 @@ int main(int argc, char** argv) {
         Instr p[] = {
             {OP_CONST,3},{OP_CONST,5},{OP_ADD,0},{OP_PRINT,0},{OP_HALT,0}
         };
-        write_eskb("/tmp/eshkol_add.bc", p, 5);
+        write_eskb("/tmp/eshkol_add.eskb", p, 5);
     }
 
     /* Iterative factorial(5) = 120 */
@@ -70,7 +61,7 @@ int main(int argc, char** argv) {
             {OP_JUMP,4},
             {OP_GET_LOCAL,0},{OP_PRINT,0},{OP_HALT,0},
         };
-        write_eskb("/tmp/eshkol_factorial.bc", p, 18);
+        write_eskb("/tmp/eshkol_factorial.eskb", p, 18);
     }
 
     /* Iterative fibonacci(7) = 13 */
@@ -87,7 +78,7 @@ int main(int argc, char** argv) {
             {OP_JUMP,6},
             {OP_GET_LOCAL,0},{OP_PRINT,0},{OP_HALT,0},
         };
-        write_eskb("/tmp/eshkol_fibonacci.bc", p, 22);
+        write_eskb("/tmp/eshkol_fibonacci.eskb", p, 22);
     }
 
     /* Recursive factorial(5) = 120 via CALL/RETURN */
@@ -101,7 +92,7 @@ int main(int argc, char** argv) {
             {OP_GET_LOCAL,0},{OP_CONST,1},{OP_SUB,0},{OP_CONST,5},{OP_CALL,1},
             {OP_MUL,0},{OP_RETURN,0},
         };
-        write_eskb("/tmp/eshkol_rec_factorial.bc", p, 19);
+        write_eskb("/tmp/eshkol_rec_factorial.eskb", p, 19);
     }
 
     /* Recursive fibonacci(7) = 13 via CALL/RETURN */
@@ -115,7 +106,7 @@ int main(int argc, char** argv) {
             {OP_GET_LOCAL,0},{OP_CONST,2},{OP_SUB,0},{OP_CONST,5},{OP_CALL,1},
             {OP_ADD,0},{OP_RETURN,0},
         };
-        write_eskb("/tmp/eshkol_rec_fibonacci.bc", p, 23);
+        write_eskb("/tmp/eshkol_rec_fibonacci.eskb", p, 23);
     }
 
     /* Complex: (car (cons (+ 10 20) 40)) = 30 */
@@ -125,9 +116,9 @@ int main(int argc, char** argv) {
             {OP_CONST,40},{OP_CONS,0},                 /* (cons 30 40) */
             {OP_CAR,0},{OP_PRINT,0},{OP_HALT,0},      /* car → 30 */
         };
-        write_eskb("/tmp/eshkol_complex.bc", p, 8);
+        write_eskb("/tmp/eshkol_complex.eskb", p, 8);
     }
 
-    printf("\nDone. Run with: ESHKOL_BC=/tmp/eshkol_<name>.bc /tmp/weight_matrices\n");
+    printf("\nDone. Run with: /tmp/qllm_interpreter /tmp/eshkol_current.qlmw /tmp/eshkol_<name>.eskb\n");
     return 0;
 }

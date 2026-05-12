@@ -31,6 +31,8 @@
 #include <stdint.h>
 #include <time.h>
 
+#include "eskb_reader.c"
+
 #ifdef USE_QLLM
 #include <semiclassical_qllm/tensor.h>
 #include <semiclassical_qllm/backend.h>
@@ -1046,33 +1048,58 @@ static int run_program_qllm(const Weights* w, const Instr* prog, int n_instr,
  ******************************************************************************/
 
 static Instr* load_eskb(const char* path, int* n_instr_out) {
-    FILE* f = fopen(path, "rb");
-    if (!f) return NULL;
-    uint32_t magic, n_instr, n_const;
-    fread(&magic, 4, 1, f); fread(&n_instr, 4, 1, f); fread(&n_const, 4, 1, f);
-    if (magic != 0x45534B42 || n_instr > 8192) { fclose(f); return NULL; }
-    Instr* prog = (Instr*)calloc(n_instr, sizeof(Instr));
-    for (uint32_t i = 0; i < n_instr; i++) {
-        uint8_t op; int32_t operand;
-        fread(&op, 1, 1, f); fread(&operand, 4, 1, f);
-        prog[i].op = (OpCode)op; prog[i].operand = operand;
+    EskbModule mod;
+    if (eskb_load_file(path, &mod) < 0) return NULL;
+    if (mod.code_len <= 0) {
+        eskb_module_free(&mod);
+        return NULL;
     }
-    float* constants = NULL;
-    if (n_const > 0) {
-        constants = (float*)calloc(n_const, sizeof(float));
-        for (uint32_t i = 0; i < n_const; i++) {
-            uint8_t type; double val;
-            fread(&type, 1, 1, f); fread(&val, 8, 1, f);
-            constants[i] = (float)val;
-        }
-        for (uint32_t i = 0; i < n_instr; i++) {
-            if (prog[i].op == OP_CONST && prog[i].operand < (int)n_const)
-                prog[i].operand = (int)constants[prog[i].operand];
-        }
-        free(constants);
+
+    Instr* prog = (Instr*)calloc((size_t)mod.code_len, sizeof(Instr));
+    if (!prog) {
+        eskb_module_free(&mod);
+        return NULL;
     }
-    fclose(f);
-    *n_instr_out = (int)n_instr;
+
+    for (int i = 0; i < mod.code_len; i++) {
+        if (mod.opcodes[i] >= OP_COUNT) {
+            fprintf(stderr, "ERROR: unsupported opcode %u at instruction %d\n",
+                    (unsigned)mod.opcodes[i], i);
+            free(prog);
+            eskb_module_free(&mod);
+            return NULL;
+        }
+        prog[i].op = (OpCode)mod.opcodes[i];
+        prog[i].operand = mod.operands[i];
+
+        if (prog[i].op == OP_CONST && prog[i].operand >= 0 &&
+            prog[i].operand < mod.n_constants) {
+            int idx = prog[i].operand;
+            switch (mod.const_types[idx]) {
+            case ESKB_CONST_NIL:
+                prog[i].operand = -1;
+                break;
+            case ESKB_CONST_INT64:
+                prog[i].operand = (int32_t)mod.const_ints[idx];
+                break;
+            case ESKB_CONST_F64:
+                prog[i].operand = (int32_t)llround(mod.const_floats[idx]);
+                break;
+            case ESKB_CONST_BOOL:
+                prog[i].operand = mod.const_ints[idx] ? 1 : 0;
+                break;
+            case ESKB_CONST_STRING:
+                prog[i].operand = (int32_t)mod.const_ints[idx];
+                break;
+            default:
+                prog[i].operand = (int32_t)mod.const_ints[idx];
+                break;
+            }
+        }
+    }
+
+    *n_instr_out = mod.code_len;
+    eskb_module_free(&mod);
     return prog;
 }
 
@@ -1086,7 +1113,7 @@ int main(int argc, char** argv) {
 
     for (int i = 1; i < argc; i++) {
         if (strstr(argv[i], ".bin") || strstr(argv[i], ".qlmw")) weight_path = argv[i];
-        else if (strstr(argv[i], ".bc")) bc_path = argv[i];
+        else if (strstr(argv[i], ".eskb") || strstr(argv[i], ".bc")) bc_path = argv[i];
     }
 
     printf("=== qLLM Interpreter ===\n\n");
