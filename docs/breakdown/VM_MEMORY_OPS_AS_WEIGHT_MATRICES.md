@@ -10,9 +10,9 @@
 (`NULL_P`, six type predicates, `POPN`). Stage 2 now has two landed arena
 slices: `58bc8b9` (`CONS`, `CAR`, `CDR`, `SET_CAR`, `SET_CDR`) and the
 bounded inline-vector slice (`VEC_CREATE`, `VEC_REF`, `VEC_SET`, `VEC_LEN`).
-The current artifact shape of `OP_CLOSURE`, `OP_TAIL_CALL`, and the
-MEM-backed `OP_GET_UPVALUE`/`OP_SET_UPVALUE` fallback is also encoded in the
-weight path; upvalue-bearing closure cells remain future work.
+The current artifact shape of `OP_CLOSURE`, bounded `OP_TAIL_CALL` arities
+0..4, and the MEM-backed `OP_GET_UPVALUE`/`OP_SET_UPVALUE` fallback are also
+encoded in the weight path; upvalue-bearing closure cells remain future work.
 The implementation uses Eshkol's arena model, not a free-list heap: Zone E is
 a bounded in-state arena bank, `S_ARENA_NEXT` is a bump pointer, and stack
 object references are small arena cell indices. The older "heap" wording below
@@ -22,9 +22,8 @@ work should use arena terminology and avoid GC/free-list semantics.
 The landed pair slice uses the existing six-layer schedule rather than adding
 Layer 6/7 immediately: Layer 3 computes stack effects plus arena operation
 transients, and Layer 4 performs arena read/write alongside the AD tape write
-logic. Current artifact verification after the MEM-backed upvalue fallback
-slice:
-88/88 inline tests pass, 85/85 traced programs agree on PRINT output and full
+logic. Current artifact verification after the bounded tail-call slice:
+91/91 inline tests pass, 88/88 traced programs agree on PRINT output and full
 per-step state, opcode coverage is 57 weight-implemented / 0 native-delegated
 in the exercised coverage set, and the QLMW export is d_model=256, FFN=1536,
 8,672,262 parameters.
@@ -452,12 +451,10 @@ hits zero.
 ### 5.10. `OP_TAIL_CALL`
 
 `TAIL_CALL n` is `CALL n` followed by `RETURN` with frame reuse. Already
-half-encoded (line 405 sets `IS_RET`; `IS_CALL` triggers frame management
-in the exec loop). Full encoding requires the transformer to emit
-*both* the frame-collapse (move return PC up) and the new call-frame
-push in one cycle — currently the runtime does this, but the construction
-mirrors `OP_CALL` + `OP_RETURN` composed. One new gated pair, branching on
-the operand's tail-call flag.
+encoded for bounded stack-register arities 0..4: `PC = TOS`, `MEM0..MEM2`
+receive `SOS/R2/R3` when present, `MEM3` is cleared, the stack/type
+registers are reset, and depth is decremented by `1 + argc`. Broader arity
+support needs the same list/arena path as `OP_PACK_REST`.
 
 ### 5.11. AD transcendentals (4 ops): `OP_AD_DIV`, `OP_AD_POW`, `OP_AD_SIN`, `OP_AD_COS`
 
@@ -650,10 +647,10 @@ if newly weight-encoded opcodes change state-vector trajectories.
   (`car = entry_pc`, `cdr = reserved upvalue count`)
 - [x] Encode MEM-backed `OP_GET_UPVALUE`, `OP_SET_UPVALUE` fallback
 - [ ] `OP_GET_UPVALUE`, `OP_SET_UPVALUE` via arena closure cells
-- [x] Encode artifact-shape `OP_TAIL_CALL` for current compiler emission
-  (`argc = 2`) as frame reuse in the weight path
+- [x] Encode bounded `OP_TAIL_CALL` arities 0..4 as frame reuse in the
+  weight path
 - [ ] `OP_PACK_REST` via looped CONS
-- [x] Re-run `scripts/paper/run_paper_suite.sh`; current report is 85/85
+- [x] Re-run `scripts/paper/run_paper_suite.sh`; current report is 88/88
   PRINT-output and full-state agreement, with 57 weight-implemented / 0
   native-delegated opcodes in the exercised coverage set
 - [ ] **Acceptance:** all currently-delegated ops (24 of 26) now weight-
