@@ -3376,22 +3376,28 @@ static void generate_weights(InterpreterWeights* w) {
         n = add_gated_pair(w,L,n, 24, -1,0,-1,0,-1,0,-1,0, TYPE_NUMBER, S_ARENA_NEW_CAR_TYPE, 1.0f);
         n = add_gated_pair(w,L,n, 24, -1,0,-1,0,-1,0,-1,0, TYPE_NUMBER, S_ARENA_NEW_CDR_TYPE, 1.0f);
         n = add_gated_pair(w,L,n, 24, -1,0,-1,0,-1,0,-1,0, 1.0f, S_ARENA_NEXT, 1.0f);
-        /* OP_TAIL_CALL (26): encode the artifact's argc=2 tail-call shape.
-         * This reuses the current frame: PC=TOS, MEM0=SOS, MEM1=R2, stack clear. */
-        n = add_gated_pair_op_operand(w,L,n, 26,2, S_TOS,1,S_PC,-1,-1,0,-1,0, 0, S_PC, 1.0f);
-        n = add_gated_pair_op_operand(w,L,n, 26,2, S_TOS,-1,-1,0,-1,0,-1,0, 0, S_TOS, 1.0f);
-        n = add_gated_pair_op_operand(w,L,n, 26,2, S_SOS,-1,-1,0,-1,0,-1,0, 0, S_SOS, 1.0f);
-        n = add_gated_pair_op_operand(w,L,n, 26,2, S_R2,-1,-1,0,-1,0,-1,0, 0, S_R2, 1.0f);
-        n = add_gated_pair_op_operand(w,L,n, 26,2, S_R3,-1,-1,0,-1,0,-1,0, 0, S_R3, 1.0f);
-        n = add_gated_pair_op_operand(w,L,n, 26,2, -1,0,-1,0,-1,0,-1,0, -3.0f, S_DEPTH, 1.0f);
-        n = add_gated_pair_op_operand(w,L,n, 26,2, S_TYPE_TOS,-1,-1,0,-1,0,-1,0, TYPE_NUMBER, S_TYPE_TOS, 1.0f);
-        n = add_gated_pair_op_operand(w,L,n, 26,2, S_TYPE_SOS,-1,-1,0,-1,0,-1,0, TYPE_NUMBER, S_TYPE_SOS, 1.0f);
-        n = add_gated_pair_op_operand(w,L,n, 26,2, S_TYPE_R2,-1,-1,0,-1,0,-1,0, TYPE_NUMBER, S_TYPE_R2, 1.0f);
-        n = add_gated_pair_op_operand(w,L,n, 26,2, S_TYPE_R3,-1,-1,0,-1,0,-1,0, TYPE_NUMBER, S_TYPE_R3, 1.0f);
-        n = add_gated_pair_op_operand(w,L,n, 26,2, S_SOS,1,S_MEM0,-1,-1,0,-1,0, 0, S_MEM0, 1.0f);
-        n = add_gated_pair_op_operand(w,L,n, 26,2, S_R2,1,S_MEM1,-1,-1,0,-1,0, 0, S_MEM1, 1.0f);
-        n = add_gated_pair_op_operand(w,L,n, 26,2, S_MEM2,-1,-1,0,-1,0,-1,0, 0, S_MEM2, 1.0f);
-        n = add_gated_pair_op_operand(w,L,n, 26,2, S_MEM3,-1,-1,0,-1,0,-1,0, 0, S_MEM3, 1.0f);
+        /* OP_TAIL_CALL (26): bounded stack-register arities 0..4.
+         * This reuses the current frame: PC=TOS, args move into MEM, stack clears. */
+        for (int argc = 0; argc <= MEM_SIZE; argc++) {
+            int arg_src[4] = { S_SOS, S_R2, S_R3, -1 };
+            n = add_gated_pair_op_operand(w,L,n, 26,argc, S_TOS,1,S_PC,-1,-1,0,-1,0, 0, S_PC, 1.0f);
+            n = add_gated_pair_op_operand(w,L,n, 26,argc, S_TOS,-1,-1,0,-1,0,-1,0, 0, S_TOS, 1.0f);
+            n = add_gated_pair_op_operand(w,L,n, 26,argc, S_SOS,-1,-1,0,-1,0,-1,0, 0, S_SOS, 1.0f);
+            n = add_gated_pair_op_operand(w,L,n, 26,argc, S_R2,-1,-1,0,-1,0,-1,0, 0, S_R2, 1.0f);
+            n = add_gated_pair_op_operand(w,L,n, 26,argc, S_R3,-1,-1,0,-1,0,-1,0, 0, S_R3, 1.0f);
+            n = add_gated_pair_op_operand(w,L,n, 26,argc, -1,0,-1,0,-1,0,-1,0, -1.0f-(float)argc, S_DEPTH, 1.0f);
+            n = add_gated_pair_op_operand(w,L,n, 26,argc, S_TYPE_TOS,-1,-1,0,-1,0,-1,0, TYPE_NUMBER, S_TYPE_TOS, 1.0f);
+            n = add_gated_pair_op_operand(w,L,n, 26,argc, S_TYPE_SOS,-1,-1,0,-1,0,-1,0, TYPE_NUMBER, S_TYPE_SOS, 1.0f);
+            n = add_gated_pair_op_operand(w,L,n, 26,argc, S_TYPE_R2,-1,-1,0,-1,0,-1,0, TYPE_NUMBER, S_TYPE_R2, 1.0f);
+            n = add_gated_pair_op_operand(w,L,n, 26,argc, S_TYPE_R3,-1,-1,0,-1,0,-1,0, TYPE_NUMBER, S_TYPE_R3, 1.0f);
+            for (int a = 0; a < MEM_SIZE; a++) {
+                if (a < argc && arg_src[a] >= 0) {
+                    n = add_gated_pair_op_operand(w,L,n, 26,argc, arg_src[a],1,S_MEM0+a,-1,-1,0,-1,0, 0, S_MEM0+a, 1.0f);
+                } else {
+                    n = add_gated_pair_op_operand(w,L,n, 26,argc, S_MEM0+a,-1,-1,0,-1,0,-1,0, 0, S_MEM0+a, 1.0f);
+                }
+            }
+        }
         /* OP_NATIVE_CALL (37): IS_NATIVE, PC++ */
         n = add_gated_pair(w,L,n, 37, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
         n = add_gated_pair(w,L,n, 37, -1,0,-1,0,-1,0,-1,0, 1.0f, S_IS_NATIVE, 1.0f);
@@ -4782,6 +4788,22 @@ int main(int argc, char** argv) {
         /* 15 */ {OP_GET_LOCAL,0},{OP_GET_LOCAL,1},{OP_ADD,0},       /* acc+n */
         /* 18 */ {OP_CONST,6},{OP_TAIL_CALL,2},
       }; test("tail sum(100)", p, 20, 5050); }
+    { Instr p[]={
+        {OP_CONST,5},{OP_CALL,0},{OP_PRINT,0},{OP_HALT,0},{OP_NOP,0},
+        {OP_CONST,7},{OP_TAIL_CALL,0},
+        {OP_CONST,77},{OP_RETURN,0},
+      }; test("tail argc0", p, 9, 77); }
+    { Instr p[]={
+        {OP_CONST,12},{OP_CONST,5},{OP_CALL,1},{OP_PRINT,0},{OP_HALT,0},
+        {OP_GET_LOCAL,0},{OP_CONST,8},{OP_TAIL_CALL,1},
+        {OP_GET_LOCAL,0},{OP_RETURN,0},
+      }; test("tail argc1", p, 10, 12); }
+    { Instr p[]={
+        {OP_CONST,1},{OP_CONST,2},{OP_CONST,3},{OP_CONST,7},{OP_CALL,3},
+        {OP_PRINT,0},{OP_HALT,0},
+        {OP_GET_LOCAL,0},{OP_GET_LOCAL,1},{OP_GET_LOCAL,2},{OP_CONST,12},{OP_TAIL_CALL,3},
+        {OP_GET_LOCAL,0},{OP_GET_LOCAL,1},{OP_ADD,0},{OP_GET_LOCAL,2},{OP_ADD,0},{OP_RETURN,0},
+      }; test("tail argc3", p, 18, 6); }
 
     /* Dynamic multiplication: 100/100 */
     printf("\n  Dynamic multiplication: ");
