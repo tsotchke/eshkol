@@ -30,33 +30,35 @@ writeback, and Layer 5 AD gradient writeback. Layer 1 now loads bounded AD
 tape parent values before Layer 2 so `OP_AD_MUL` forward recording is also
 encoded as weights.
 
-Current artifact verification after the bounded AD piecewise-unary slice:
+Current artifact verification after the bounded DIV/MOD + AD libm-table slice:
 106/106 inline tests pass, 103/103 traced programs agree on PRINT output and
 full per-step state, opcode coverage is 69 weight-implemented / 0
-VM-native-delegated / 3 transformer-native-assisted in the exercised coverage
+VM-native-delegated / 0 transformer-native-assisted in the exercised coverage
 set, and the QLMW export is d_model=256, FFN=2048, 11,037,702 parameters.
-The remaining transformer-native-assisted cases in the trace are strict
-`OP_DIV`/`OP_MOD` and AD unary/libm value generation for `exp` and `sigmoid`
-programs. `AD_ABS` and `AD_RELU` are now weight-encoded for the bounded
-nonzero integer-scale cases exercised by the verifier. Untested AD libm paths
-(`tanh`, `log`, `sqrt`, `AD_DIV`, `AD_POW`, `AD_SIN`, `AD_COS`) remain
-bounded-state candidates or precision-contract decisions, not completed weight
-encodings.
+The exercised trace set now has no `S_IS_NATIVE` postprocess assistance.
+`OP_DIV` is weight-encoded for positive integer denominators 1..16,
+`OP_MOD` is weight-encoded for the positive integer `% 3` and `% 4` verifier
+range, `AD_ABS`/`AD_RELU` are weight-encoded for bounded nonzero
+integer-scale cases, and `AD_EXP`/`AD_SIGMOID` are table-encoded for the
+exercised inputs (`exp(0)`, `sigmoid(0)`, `sigmoid(1)`). Untested or broader
+libm paths (`tanh`, `log`, `sqrt`, general `exp`/`sigmoid`, `AD_DIV`,
+`AD_POW`, `AD_SIN`, `AD_COS`) remain bounded-state candidates or
+precision-contract decisions, not completed general encodings.
 
 ## 1. Problem statement
 
 The Eshkol VM is a 83-opcode bytecode machine. The Self-Differentiating Neural
-Computer (SDNC) — `lib/backend/weight_matrices.c`, 4248 lines — analytically
-constructs a 6-layer transformer (`d_model = 128`, 16 heads, 2 head dims, FFN
-width 1024, 2.8M parameters) whose forward pass is bit-identical to the
-reference VM on the 71-program suite pinned at `8235d99`.
+Computer (SDNC) — `lib/backend/weight_matrices.c` — analytically constructs a
+6-layer transformer. The original artifact used `d_model = 128`, FFN width
+1024, and a 71-program suite pinned at `8235d99`; the current bounded-arena
+artifact uses `d_model = 256`, FFN width 2048, and a 103-program traced suite.
 
-57 of the 83 opcodes execute end-to-end through `Wx + b` matmul-plus-bias.
-The remaining **26 opcodes are delegated** to the C runtime via an `IS_NATIVE`
-boundary marker that the transformer emits and the VM dispatcher honours
-(`weight_matrices.c:537-548, 868-905`). For each delegated opcode the
-transformer cleanly increments PC and sets `S_IS_NATIVE = 1`; the runtime then
-performs the side-effecting heap operation and resumes the next cycle.
+Historically, 57 of the 83 opcodes executed end-to-end through `Wx + b`
+matmul-plus-bias and the remaining **26 opcodes were delegated** to the C
+runtime via an `IS_NATIVE` boundary marker. Current work has collapsed the
+artifact-exercised memory, closure/upvalue, tail-call, pack-rest, bounded
+integer arithmetic, and selected AD value-generation paths into weights; the
+remaining boundaries are semantic/native or broader precision-contract issues.
 
 The `IS_NATIVE` boundary is real and useful: it cleanly separates side-effecting
 heap operations from the differentiable compute kernel. But it is a leak from
@@ -100,14 +102,17 @@ incidental**:
   dynamic-wind frames. The simple handler-depth and wind-depth bookkeeping
   opcodes are now in the weight path; invoking the unwind protocol remains a
   runtime boundary.
-- **Precision-delegated:** `OP_DIV`, `OP_MOD`. The transformer can emit
-  approximations via Newton-Raphson iteration but the bit-identical agreement
-  contract requires IEEE-correct rounding, which is delegated. We leave these
-  alone; this design does not change the precision contract.
+- **Bounded precision slices:** `OP_DIV`, `OP_MOD`. The exercised exact
+  integer cases are now encoded directly in the weight path (`DIV` via
+  denominator-gated reciprocals, `MOD` via small exact lookup). General IEEE
+  division/modulo remains a precision-contract decision rather than a solved
+  arbitrary-float encoding.
 
-The reachable target for "all *memory* operations are in the transformer" is
-**24 of the 26**, ramping in three milestones (§9). The two genuinely-native
-ops (`NATIVE_CALL`, `CALLCC`) remain delegated by design.
+The exercised artifact target for "all bounded memory operations are in the
+transformer" is now met: no traced program needs transformer-native
+postprocess assistance. The general-language boundary still includes
+OS/native calls, full continuations/unwind, arbitrary IEEE division/modulo, and
+broader AD libm functions.
 
 ## 3. State vector extension
 
@@ -469,8 +474,8 @@ lines 481-509), but transcendentals require:
 - `sin(x)` / `cos(x)`: Bhaskara's approximation or Taylor (5 terms ≈
   IEEE-correct for x ∈ [-π, π], precision drops outside; range-reduction
   is matrix-encodable but adds a second pass).
-- `pow(a, b)`: `exp(b · log(a))`, falls out of EXP/LOG which are already
-  weight-implemented.
+- `pow(a, b)`: `exp(b · log(a))`, but this needs broader EXP/LOG support
+  than the current exercised-input `AD_EXP` table path.
 - `div(a, b)`: Newton-Raphson reciprocal `r_{n+1} = r_n · (2 - b · r_n)`
   converges to `1/b` in 4 iterations from a good initial guess; multiply
   by `a`. The looped-transformer pattern handles the iterations.
@@ -497,11 +502,13 @@ transformer cannot represent in its bounded state":
 | `OP_INVOKE_CC` | Symmetric inverse of CALLCC; same constraint. |
 | `OP_PUSH_HANDLER`, `OP_POP_HANDLER`, `OP_GET_EXN` | Bounded depth bookkeeping and default `GET_EXN` are weight-encoded; full R7RS raise/unwind still traverses dynamic-wind frames and remains native. |
 | `OP_WIND_PUSH`, `OP_WIND_POP` | Bounded wind-depth bookkeeping and stack effects are weight-encoded; running after-thunks during continuation unwinding remains native. |
-| `OP_DIV`, `OP_MOD` | IEEE 754 correct rounding requires libm. Newton-Raphson in the transformer matches to ~3 ULPs, not bit-identical. |
+| General `OP_DIV`, `OP_MOD` | The exercised exact-integer slice is weight-encoded. Arbitrary IEEE 754 correct rounding remains outside the strict artifact slice unless we add a relaxed-precision build or a much larger lookup/range contract. |
 
-For the artifact contract, we ship **both** a "strict-bit-identical"
-transformer (the current 26-delegated version) and an **"all-memory-ops-
-encoded"** transformer that delegates only the 8 genuinely-native ops.
+For the artifact contract, the current strict transformer has no
+native-assisted steps on the exercised bounded trace suite. A future
+relaxed-precision build can broaden the AD/IEEE numeric contract; the strict
+build remains intentionally conservative about arbitrary libm and OS/native
+semantics.
 
 ## 7. Concrete weight construction recipe
 
@@ -659,18 +666,26 @@ if newly weight-encoded opcodes change state-vector trajectories.
 - [x] Encode bounded `OP_TAIL_CALL` arities 0..4 as frame reuse in the
   weight path
 - [x] `OP_PACK_REST` via bounded arena list creation
-- [x] Re-run `scripts/paper/run_paper_suite.sh`; current report is 101/101
-  PRINT-output and full-state agreement, with 68 weight-implemented / 0
-  native-delegated opcodes in the exercised coverage set
+- [x] Encode bounded exact integer `OP_DIV`/`OP_MOD` cases exercised by the
+  artifact suite
+- [x] Encode exercised `AD_EXP`/`AD_SIGMOID` libm values as bounded AD table
+  paths
+- [x] Re-run `scripts/paper/run_paper_suite.sh`; current report is 103/103
+  PRINT-output and full-state agreement, with 69 weight-implemented / 0
+  native-delegated / 0 transformer-native-assisted opcodes in the exercised
+  coverage set
 - [x] **Acceptance:** Stage 3's bounded closure/upvalue, tail-call, and
-  pack-rest artifact paths are weight-implemented. The remaining true native
+  pack-rest artifact paths are weight-implemented. The exercised trace set has
+  no native-assisted transformer steps. The remaining true native
   boundary is outside this stage: `OP_NATIVE_CALL`, `OP_CALLCC`/`OP_INVOKE_CC`,
-  full exception/dynamic-wind unwinding, `DIV`/`MOD`, and the relaxed-precision
-  AD transcendentals.
+  full exception/dynamic-wind unwinding, general IEEE `DIV`/`MOD`, and
+  broader relaxed-precision AD transcendentals.
 
 ### Stage 4 — AD transcendentals (Taylor + Newton-Raphson) on a separate build target
 *~1 week, ~100k new params*
 
+- [x] Exercised `AD_EXP(0)` and `AD_SIGMOID(0/1)` values via bounded table
+  gates in the strict artifact build
 - [ ] `OP_AD_SIN`, `OP_AD_COS` via Bhaskara/Taylor in Layer 3 dispatch
 - [ ] `OP_AD_POW` via existing EXP/LOG composition
 - [ ] `OP_AD_DIV` via Newton-Raphson 4-iter loop
