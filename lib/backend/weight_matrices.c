@@ -304,6 +304,8 @@ enum {
  * the positive numerator/denominator pairs exercised by the verifier range. */
 #define DIV_WEIGHT_MAX_DENOM 16
 #define MOD_WEIGHT_MAX_NUM   21
+#define AD_POW_WEIGHT_MAX_BASE 8
+#define AD_POW_WEIGHT_MAX_EXP  4
 
 /* Type tag values */
 #define TYPE_NUMBER  0.0f
@@ -859,7 +861,7 @@ static void execute_step(const State* cur, const Instr* prog, int n_instr, State
         next->s[S_PC]=pc+1; break;
     }
     case OP_AD_ADD: case OP_AD_SUB: case OP_AD_MUL:
-    case OP_AD_DIV: { /* binary: TOS=right_idx, SOS=left_idx */
+    case OP_AD_DIV: case OP_AD_POW: { /* binary: TOS=right_idx, SOS=left_idx */
         int tlen = (int)cur->s[S_AD_TAPE_LEN];
         int li = (int)sos, ri = (int)tos;
         if (tlen < AD_MAX_TAPE && li >= 0 && li < tlen && ri >= 0 && ri < tlen) {
@@ -871,11 +873,16 @@ static void execute_step(const State* cur, const Instr* prog, int n_instr, State
             if (cur_op == OP_AD_ADD) { val = lv + rv; op_type = AD_OP_ADD; }
             else if (cur_op == OP_AD_SUB) { val = lv - rv; op_type = AD_OP_SUB; }
             else if (cur_op == OP_AD_MUL) { val = lv * rv; op_type = AD_OP_MUL; }
-            else {
+            else if (cur_op == OP_AD_DIV) {
                 float safe_rv = fabsf(rv) > 1e-15f ? rv : (rv < 0 ? -1e-15f : 1e-15f);
                 val = lv / safe_rv;
                 saved = 1.0f / safe_rv;
                 op_type = AD_OP_DIV;
+            } else {
+                float safe_lv = lv > 1e-15f ? lv : 1e-15f;
+                val = powf(safe_lv, rv);
+                saved = rv * powf(safe_lv, rv - 1.0f);
+                op_type = AD_OP_POW;
             }
             AD_NODE(next->s, tlen, AD_F_OP) = op_type;
             AD_NODE(next->s, tlen, AD_F_VALUE) = val;
@@ -947,10 +954,6 @@ static void execute_step(const State* cur, const Instr* prog, int n_instr, State
         next->s[S_TOS] = grad;
         next->s[S_PC]=pc+1; break;
     }
-    /* Binary AD ops needing non-table quotient/power support still delegate. */
-    case OP_AD_POW:
-        next->s[S_IS_NATIVE]=1; next->s[S_PC]=pc+1; break;
-
     /* All remaining opcodes delegate to exec loop via IS_NATIVE */
     case OP_NATIVE_CALL:
     case OP_CALLCC: case OP_INVOKE_CC:
@@ -983,7 +986,8 @@ static void ad_backward_step(float* s) {
     /* Gradient propagation rules.
      * Binary ops: ADD (dL=grad, dR=grad), SUB (dL=grad, dR=-grad),
      *             MUL (dL=grad*R_value, dR=grad*L_value),
-     *             DIV (dL=grad/R, dR=-grad*L/(R*R)).
+     *             DIV (dL=grad/R, dR=-grad*L/(R*R)),
+     *             POW (dL=grad*R*L^(R-1), dR=grad*L^R*log(L)).
      * Unary ops:  ALL use dL = grad * saved_val.
      *             saved_val is precomputed during forward recording:
      *             NEG=-1, ABS=sign, RELU=step, SIGMOID=val*(1-val),
@@ -1018,6 +1022,12 @@ static void ad_backward_step(float* s) {
             float safe_rv = fabsf(rv) > 1e-15f ? rv : (rv < 0 ? -1e-15f : 1e-15f);
             if (li >= 0) AD_NODE(s, li, AD_F_GRAD) += POLARIZATION_PRODUCT(grad, saved);
             if (ri >= 0) AD_NODE(s, ri, AD_F_GRAD) += POLARIZATION_PRODUCT(grad, lv) * (-1.0f / (safe_rv * safe_rv));
+        } else if (fabsf(op_type - AD_OP_POW) < 0.5f) {
+            float lv = (li >= 0) ? AD_NODE(s, li, AD_F_VALUE) : 0;
+            float safe_lv = lv > 1e-15f ? lv : 1e-15f;
+            float val = AD_NODE(s, cursor, AD_F_VALUE);
+            if (li >= 0) AD_NODE(s, li, AD_F_GRAD) += POLARIZATION_PRODUCT(grad, saved);
+            if (ri >= 0) AD_NODE(s, ri, AD_F_GRAD) += grad * (val * logf(safe_lv));
         } else if ((op_type >= AD_OP_NEG && op_type <= AD_OP_SQRT + 0.5f) ||
                    fabsf(op_type - AD_OP_SIN) < 0.5f ||
                    fabsf(op_type - AD_OP_COS) < 0.5f) {
@@ -1256,7 +1266,8 @@ static void layer2_ffn(const float x[D], float out[D]) {
     float fw_binary = (indicator(x[S_OPCODE], OP_AD_ADD) +
                        indicator(x[S_OPCODE], OP_AD_SUB) +
                        indicator(x[S_OPCODE], OP_AD_MUL) +
-                       indicator(x[S_OPCODE], OP_AD_DIV)) *
+                       indicator(x[S_OPCODE], OP_AD_DIV) +
+                       indicator(x[S_OPCODE], OP_AD_POW)) *
                       (1.0f - bw_active);
     float fw_unary_bounded = (indicator(x[S_OPCODE], OP_AD_ABS) +
                               indicator(x[S_OPCODE], OP_AD_RELU) +
@@ -1718,6 +1729,20 @@ static void layer3_ffn(const float x[D], float out[D]) {
     out[S_TOS]+=g*(tlen-tos); out[S_SOS]+=g*(r2-sos); out[S_R2]+=g*(r3-r2); out[S_R3]+=g*(-r3);
     out[S_DEPTH]+=g*(-1); out[S_PC]+=g; }
 
+    /* OP_AD_POW (80) */
+    g=indicator(op,80)*alive*tape_ok; {
+    if (g > 0.5f) {
+        float safe_pow_left = ad_left_val > 1e-15f ? ad_left_val : 1e-15f;
+        out[S_AD_CUR_OP]    += AD_OP_POW;
+        out[S_AD_CUR_VALUE]  += powf(safe_pow_left, ad_right_val);
+        out[S_AD_CUR_SAVED]  += ad_right_val * powf(safe_pow_left, ad_right_val - 1.0f);
+        out[S_AD_CUR_LEFT]   += sos;
+        out[S_AD_CUR_RIGHT]  += tos;
+        out[S_AD_IS_FORWARD] += 1.0f;
+        out[S_TOS]+=(tlen-tos); out[S_SOS]+=(r2-sos); out[S_R2]+=(r3-r2); out[S_R3]+=(-r3);
+        out[S_DEPTH]+=-1.0f; out[S_PC]+=1.0f;
+    } }
+
     /* Unary AD ops (69-76, 81-82): AD_NEG, AD_ABS, AD_RELU, AD_SIGMOID, AD_TANH,
      * AD_EXP, AD_LOG, AD_SQRT, AD_SIN, AD_COS.
      * TOS=input_idx. Replace TOS with tape index.
@@ -1859,9 +1884,6 @@ static void layer3_ffn(const float x[D], float out[D]) {
         out[S_PC] += g;
     }
 
-    /* OP_AD_POW remains delegated until power gradients are encoded. */
-    g=indicator(op,80)*alive; out[S_PC]+=g; out[S_IS_NATIVE]+=g;
-
     /* ── AD Backward gradient computation ──
      * When AD_IS_BACKWARD is set (by run_simulated's backward step),
      * compute gradient contributions based on AD_CUR_OP.
@@ -1895,6 +1917,11 @@ static void layer3_ffn(const float x[D], float out[D]) {
                                (x[S_AD_RIGHT_VALUE] < 0 ? -1e-15f : 1e-15f);
         out[S_AD_LEFT_GRAD_NEW]  += bd * gsv;
         out[S_AD_RIGHT_GRAD_NEW] += bd * gr * (-1.0f / (safe_div_right * safe_div_right));
+        /* POW: dL = grad*right*left^(right-1) via saved; dR = grad*value*log(left). */
+        float bp = indicator(cur_op, AD_OP_POW);
+        float safe_pow_left = x[S_AD_LEFT_VALUE] > 1e-15f ? x[S_AD_LEFT_VALUE] : 1e-15f;
+        out[S_AD_LEFT_GRAD_NEW]  += bp * gsv;
+        out[S_AD_RIGHT_GRAD_NEW] += bp * cur_grad * cur_val * logf(safe_pow_left);
 
         /* ALL unary ops: dL = grad * saved_val (precomputed in Layer 2 as AD_PROD_GRAD_SV).
          * saved_val was stored during forward recording:
@@ -2082,6 +2109,10 @@ static void layer5_dispatch(float x[D], float out[D]) {
                                (x[S_AD_RIGHT_VALUE] < 0 ? -1e-15f : 1e-15f);
         out[S_AD_LEFT_GRAD_NEW] += bd * gsv;
         out[S_AD_RIGHT_GRAD_NEW] += bd * gr * (-1.0f / (safe_div_right * safe_div_right));
+        float bp = indicator(cur_op, AD_OP_POW);
+        float safe_pow_left = x[S_AD_LEFT_VALUE] > 1e-15f ? x[S_AD_LEFT_VALUE] : 1e-15f;
+        out[S_AD_LEFT_GRAD_NEW] += bp * gsv;
+        out[S_AD_RIGHT_GRAD_NEW] += bp * cur_grad * x[S_AD_CUR_VALUE] * logf(safe_pow_left);
 
         /* ALL unary ops: dL = grad * saved_val */
         float unary_ops[] = { AD_OP_NEG, AD_OP_ABS, AD_OP_RELU, AD_OP_SIGMOID,
@@ -3473,7 +3504,7 @@ static void generate_weights(InterpreterWeights* w) {
         /* AD forward binary parent loads. Layer 1 runs before the SQUARE
          * layer, so OP_AD_MUL can consume AD_LEFT_VALUE/AD_RIGHT_VALUE in
          * Layer 2 and record the product without native postprocess. */
-        int bounded_binary_ops[] = { OP_AD_ADD, OP_AD_SUB, OP_AD_MUL, OP_AD_DIV };
+        int bounded_binary_ops[] = { OP_AD_ADD, OP_AD_SUB, OP_AD_MUL, OP_AD_DIV, OP_AD_POW };
         for (int oi = 0; oi < (int)(sizeof(bounded_binary_ops) / sizeof(bounded_binary_ops[0])); oi++) {
             int opc = bounded_binary_ops[oi];
             for (int slot = 0; slot < AD_MAX_TAPE; slot++) {
@@ -4341,6 +4372,36 @@ static void generate_weights(InterpreterWeights* w) {
         }
         n = add_gated_pair_ad(w,L,n, 79, -1,0,-1,0,-1,0,-1,0, 1.0f, S_AD_IS_FORWARD, 1.0f);
 
+        /* OP_AD_POW (80): bounded positive integer base/exponent table. */
+        n = add_gated_pair_ad(w,L,n, 80, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
+        n = add_gated_pair_ad(w,L,n, 80, S_AD_TAPE_LEN,1,S_TOS,-1,-1,0,-1,0, 0, S_TOS, 1.0f);
+        n = add_gated_pair_ad(w,L,n, 80, S_R2,1,S_SOS,-1,-1,0,-1,0, 0, S_SOS, 1.0f);
+        n = add_gated_pair_ad(w,L,n, 80, S_R3,1,S_R2,-1,-1,0,-1,0, 0, S_R2, 1.0f);
+        n = add_gated_pair_ad(w,L,n, 80, -1,0,-1,0,-1,0,-1,0, 0, S_R3, 1.0f);
+        n = add_gated_pair_ad(w,L,n, 80, -1,0,-1,0,-1,0,-1,0, -1.0f, S_DEPTH, 1.0f);
+        n = add_gated_pair_ad(w,L,n, 80, -1,0,-1,0,-1,0,-1,0, (float)AD_OP_POW, S_AD_CUR_OP, 1.0f);
+        n = add_gated_pair_ad(w,L,n, 80, S_SOS,1,-1,0,-1,0,-1,0, 0, S_AD_CUR_LEFT, 1.0f);
+        n = add_gated_pair_ad(w,L,n, 80, S_TOS,1,-1,0,-1,0,-1,0, 0, S_AD_CUR_RIGHT, 1.0f);
+        for (int base = 1; base <= AD_POW_WEIGHT_MAX_BASE; base++) {
+            for (int exp = 1; exp <= AD_POW_WEIGHT_MAX_EXP; exp++) {
+                float b = (float)base;
+                float e = (float)exp;
+                float val = powf(b, e);
+                float dbase = e * powf(b, e - 1.0f);
+                n = add_gated_opcode_two_indices(w,L,n, 80,
+                                                 S_AD_LEFT_VALUE, base,
+                                                 S_AD_RIGHT_VALUE, exp,
+                                                 -1,0,-1,0,-1,0,-1,0,
+                                                 val, S_AD_CUR_VALUE, 1.0f);
+                n = add_gated_opcode_two_indices(w,L,n, 80,
+                                                 S_AD_LEFT_VALUE, base,
+                                                 S_AD_RIGHT_VALUE, exp,
+                                                 -1,0,-1,0,-1,0,-1,0,
+                                                 dbase, S_AD_CUR_SAVED, 1.0f);
+            }
+        }
+        n = add_gated_pair_ad(w,L,n, 80, -1,0,-1,0,-1,0,-1,0, 1.0f, S_AD_IS_FORWARD, 1.0f);
+
         /* Unary AD ops (69-76, 81-82): replace TOS with tape_len, set CUR fields */
         int bounded_ad_unary_ops[] = { 69, 70, 71, 72, 73, 74, 75, 76, 81, 82 };
         for (int uop_i = 0; uop_i < (int)(sizeof(bounded_ad_unary_ops) / sizeof(bounded_ad_unary_ops[0])); uop_i++) {
@@ -4488,10 +4549,6 @@ static void generate_weights(InterpreterWeights* w) {
             n = add_gated_pair_ad_index(w,L,n, 78, S_TOS, slot, grad_dim,1,S_TOS,-1,-1,0,-1,0,
                                         0, S_TOS, 1.0f);
         }
-
-        /* OP_AD_POW remains delegated until power gradients are encoded. */
-        n = add_gated_pair_ad(w,L,n, 80, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
-        n = add_gated_pair_ad(w,L,n, 80, -1,0,-1,0,-1,0,-1,0, 1.0f, S_IS_NATIVE, 1.0f);
 
         /* ── AD backward gradient rules (gated on AD_IS_BACKWARD + AD_CUR_OP) ──
          * Each backward rule computes gradient deltas for AD_LEFT_GRAD_NEW / AD_RIGHT_GRAD_NEW.
@@ -4879,6 +4936,30 @@ static void generate_weights(InterpreterWeights* w) {
     n++; \
 } while(0)
 
+#define ADD_L5_BW_LEFT_RIGHT_VALUE(op_val, left_val, right_val, in_dim, in_scale, bias, out_dim, coeff) do { \
+    const float left_scale = 100.0f; \
+    const float right_scale = 1000.0f; \
+    float target = (op_val) + left_scale * (float)(left_val) + right_scale * (float)(right_val); \
+    W(w->ff_gate[L], S_AD_CUR_OP, n, FFN_DIM) = SCALE; \
+    W(w->ff_gate[L], S_AD_LEFT_VALUE, n, FFN_DIM) = SCALE * left_scale; \
+    W(w->ff_gate[L], S_AD_RIGHT_VALUE, n, FFN_DIM) = SCALE * right_scale; \
+    W(w->ff_gate[L], S_AD_IS_BACKWARD, n, FFN_DIM) = SCALE; \
+    w->ff_gate_b[L][n] = SCALE * (-target + 0.5f) - SCALE; \
+    if ((in_dim) >= 0) W(w->ff_up[L], (in_dim), n, FFN_DIM) = (in_scale); \
+    w->ff_up_b[L][n] = (bias); \
+    W(w->ff_down[L], n, (out_dim), D) = (coeff); \
+    n++; \
+    W(w->ff_gate[L], S_AD_CUR_OP, n, FFN_DIM) = SCALE; \
+    W(w->ff_gate[L], S_AD_LEFT_VALUE, n, FFN_DIM) = SCALE * left_scale; \
+    W(w->ff_gate[L], S_AD_RIGHT_VALUE, n, FFN_DIM) = SCALE * right_scale; \
+    W(w->ff_gate[L], S_AD_IS_BACKWARD, n, FFN_DIM) = SCALE; \
+    w->ff_gate_b[L][n] = SCALE * (-target - 0.5f) - SCALE; \
+    if ((in_dim) >= 0) W(w->ff_up[L], (in_dim), n, FFN_DIM) = (in_scale); \
+    w->ff_up_b[L][n] = (bias); \
+    W(w->ff_down[L], n, (out_dim), D) = -(coeff); \
+    n++; \
+} while(0)
+
         /* ADD: dL = grad, dR = grad */
         ADD_L5_BW(AD_OP_ADD, S_AD_CUR_GRAD, 1.0f, 0, S_AD_LEFT_GRAD_NEW, 1.0f);
         ADD_L5_BW(AD_OP_ADD, S_AD_CUR_GRAD, 1.0f, 0, S_AD_RIGHT_GRAD_NEW, 1.0f);
@@ -4895,6 +4976,18 @@ static void generate_weights(InterpreterWeights* w) {
             ADD_L5_BW_RIGHT_VALUE(AD_OP_DIV, d, S_AD_PROD_GRAD_RV, 1.0f, 0,
                                   S_AD_RIGHT_GRAD_NEW, right_coeff);
         }
+        /* POW: dL = grad*right*left^(right-1); dR = grad*left^right*log(left). */
+        ADD_L5_BW(AD_OP_POW, S_AD_PROD_GRAD_SV, 1.0f, 0, S_AD_LEFT_GRAD_NEW, 1.0f);
+        for (int exp = 1; exp <= AD_POW_WEIGHT_MAX_EXP; exp++) {
+            for (int base = 2; base <= AD_POW_WEIGHT_MAX_BASE; base++) {
+                float b = (float)base;
+                float e = (float)exp;
+                float right_coeff = powf(b, e) * logf(b);
+                ADD_L5_BW_LEFT_RIGHT_VALUE(AD_OP_POW, base, exp,
+                                           S_AD_CUR_GRAD, 1.0f, 0,
+                                           S_AD_RIGHT_GRAD_NEW, right_coeff);
+            }
+        }
         /* ALL unary ops: dL = grad * saved (PROD_GRAD_SV) */
         for (int uop_i = 0; uop_i < 10; uop_i++) {
             float uop_vals[] = { AD_OP_NEG, AD_OP_ABS, AD_OP_RELU, AD_OP_SIGMOID,
@@ -4902,6 +4995,7 @@ static void generate_weights(InterpreterWeights* w) {
                                  AD_OP_SIN, AD_OP_COS };
             ADD_L5_BW(uop_vals[uop_i], S_AD_PROD_GRAD_SV, 1.0f, 0, S_AD_LEFT_GRAD_NEW, 1.0f);
         }
+#undef ADD_L5_BW_LEFT_RIGHT_VALUE
 #undef ADD_L5_BW_RIGHT_VALUE
 #undef ADD_L5_BW
 
@@ -5854,6 +5948,30 @@ int main(int argc, char** argv) {
         {OP_PRINT, 0},
         {OP_HALT, 0}
       }; test("AD: d/dy 6/y at 2 = -1.5", p, 8, -1.5f); }
+
+    /* f(x) = x^2 at x=3: df/dx = 2x = 6 */
+    { Instr p[]={
+        {OP_AD_VAR, 3},
+        {OP_AD_CONST, 2},
+        {OP_AD_POW, 0},
+        {OP_AD_BACKWARD, 0},
+        {OP_CONST, 0},
+        {OP_AD_GRAD, 0},
+        {OP_PRINT, 0},
+        {OP_HALT, 0}
+      }; test("AD: d/dx pow(x,2) at 3 = 6", p, 8, 6); }
+
+    /* f(y) = 2^y at y=3: df/dy = 2^3 * log(2) */
+    { Instr p[]={
+        {OP_AD_CONST, 2},
+        {OP_AD_VAR, 3},
+        {OP_AD_POW, 0},
+        {OP_AD_BACKWARD, 0},
+        {OP_CONST, 1},
+        {OP_AD_GRAD, 0},
+        {OP_PRINT, 0},
+        {OP_HALT, 0}
+      }; test("AD: d/dy pow(2,y) at 3", p, 8, 8.0f * logf(2.0f)); }
 
     /* f(x) = exp(0): grad = exp(0) = 1 */
     { Instr p[]={
