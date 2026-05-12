@@ -504,6 +504,9 @@ static void execute_step(const State* cur, const Instr* prog, int n_instr, State
         next->s[S_TOS]=sos; next->s[S_SOS]=r2; next->s[S_R2]=r3; next->s[S_R3]=0; next->s[S_DEPTH]=cur->s[S_DEPTH]-1;
         next->s[S_TYPE_TOS]=tt_sos; next->s[S_TYPE_SOS]=tt_r2; next->s[S_TYPE_R2]=tt_r3; next->s[S_TYPE_R3]=TYPE_NUMBER;
         next->s[S_PC]=pc+1; break;
+    case OP_CLOSE_UPVALUE:
+    case OP_OPEN_CLOSURE:
+        next->s[S_PC]=pc+1; break;
     case OP_CALL:   /* Set IS_CALL for exec loop to handle frame management */
         next->s[S_IS_CALL]=1; next->s[S_PC]=pc+1; break;
     case OP_TAIL_CALL: {
@@ -877,8 +880,7 @@ static void execute_step(const State* cur, const Instr* prog, int n_instr, State
 
     /* All remaining opcodes delegate to exec loop via IS_NATIVE */
     case OP_NATIVE_CALL:
-    case OP_CLOSE_UPVALUE:
-    case OP_OPEN_CLOSURE: case OP_CALLCC: case OP_INVOKE_CC:
+    case OP_CALLCC: case OP_INVOKE_CC:
     case OP_PUSH_HANDLER: case OP_POP_HANDLER: case OP_GET_EXN:
     case OP_WIND_PUSH: case OP_WIND_POP:
         next->s[S_IS_NATIVE]=1; next->s[S_PC]=pc+1; break;
@@ -1282,6 +1284,10 @@ static void layer3_ffn(const float x[D], float out[D]) {
         out[S_TOS]+=g*(sos-tos); out[S_SOS]+=g*(r2-sos); out[S_R2]+=g*(r3-r2); out[S_R3]+=g*(-r3); out[S_DEPTH]+=g*(-1);
         out[S_TYPE_TOS]+=g*(tsos-ttos); out[S_TYPE_SOS]+=g*(tr2-tsos); out[S_TYPE_R2]+=g*(tr3-tr2); out[S_TYPE_R3]+=g*(TYPE_NUMBER-tr3);
     }
+    /* OP_CLOSE_UPVALUE (38) and OP_OPEN_CLOSURE (54): arena-closure
+     * housekeeping no-ops until closure-cell capture storage lands. */
+    g=indicator(op,38)*alive; out[S_PC]+=g;
+    g=indicator(op,54)*alive; out[S_PC]+=g;
     /* OP_CLOSURE (24): allocate closure header in bounded arena.
      * car stores function entry PC; cdr reserves n_upvals for future slices. */
     g=indicator(op,24)*alive; {
@@ -1440,7 +1446,7 @@ static void layer3_ffn(const float x[D], float out[D]) {
 
     /* Remaining delegated opcodes (38-62): all set IS_NATIVE + PC++ */
     for (int opc = 38; opc <= 62; opc++) {
-        if ((opc >= 39 && opc <= 44) || (opc >= 45 && opc <= 50) || opc == 51 || opc == 52 || opc == 53 || opc == 60) continue;
+        if (opc == 38 || (opc >= 39 && opc <= 44) || (opc >= 45 && opc <= 50) || opc == 51 || opc == 52 || opc == 53 || opc == 54 || opc == 60) continue;
         g=indicator(op,(float)opc)*alive; out[S_PC]+=g; out[S_IS_NATIVE]+=g;
     }
     /* OP_CALL (25): set IS_CALL flag for exec loop, PC++ */
@@ -3498,6 +3504,9 @@ static void generate_weights(InterpreterWeights* w) {
         n = add_gated_pair(w,L,n, 23, S_R3,-1,-1,0,-1,0,-1,0, 0, S_R3, 1.0f);
         n = add_gated_pair(w,L,n, 23, -1,0,-1,0,-1,0,-1,0, -1.0f, S_DEPTH, 1.0f);
         n = add_type_pop(w,L,n, 23);
+        /* OP_CLOSE_UPVALUE/OP_OPEN_CLOSURE: arena-closure housekeeping no-ops. */
+        n = add_gated_pair(w,L,n, 38, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
+        n = add_gated_pair(w,L,n, 54, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
         /* OP_CLOSURE (24): allocate closure header in bounded arena. */
         n = add_gated_pair(w,L,n, 24, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
         n = add_gated_pair(w,L,n, 24, S_ARENA_NEXT,1,S_TOS,-1,-1,0,-1,0, 0, S_TOS, 1.0f);
@@ -3720,7 +3729,7 @@ static void generate_weights(InterpreterWeights* w) {
 
         /* Remaining delegated opcodes (38-62): all IS_NATIVE + PC++ */
         for (int opc = 38; opc <= 62; opc++) {
-            if ((opc >= 39 && opc <= 44) || (opc >= 45 && opc <= 50) || opc == 51 || opc == 52 || opc == 53 || opc == 60) continue;
+            if (opc == 38 || (opc >= 39 && opc <= 44) || (opc >= 45 && opc <= 50) || opc == 51 || opc == 52 || opc == 53 || opc == 54 || opc == 60) continue;
             n = add_gated_pair(w,L,n, opc, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
             n = add_gated_pair(w,L,n, opc, -1,0,-1,0,-1,0,-1,0, 1.0f, S_IS_NATIVE, 1.0f);
         }
@@ -4948,6 +4957,12 @@ int main(int argc, char** argv) {
     { Instr p[]={{OP_CONST,17},{OP_SET_LOCAL,1},{OP_GET_UPVALUE,1},
                  {OP_PRINT,0},{OP_HALT,0}};
       test("upvalue get mem1 fallback", p, 5, 17); }
+    { Instr p[]={{OP_CONST,42},{OP_SET_LOCAL,0},{OP_CLOSE_UPVALUE,0},
+                 {OP_GET_LOCAL,0},{OP_PRINT,0},{OP_HALT,0}};
+      test("close-upvalue arena no-op", p, 6, 42); }
+    { Instr p[]={{OP_CLOSURE,5},{OP_OPEN_CLOSURE,0},{OP_PROC_P,0},
+                 {OP_PRINT,0},{OP_HALT,0},{OP_CONST,1},{OP_RETURN,0}};
+      test("open-closure keeps arena closure", p, 7, 1); }
 
     /* Composite: (+ (car (cons 10 20)) (cdr (cons 30 40))) = 10 + 40 = 50 */
     { Instr p[]={
