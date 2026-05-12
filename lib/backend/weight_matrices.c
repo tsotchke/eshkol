@@ -10,7 +10,7 @@
  *   2. Simulated transformer (C functions mirroring weight computation)
  *   3. Matrix-based forward pass (actual W @ x + b through generic matmul)
  *
- * Architecture: d_model=256, n_heads=16, head_dim=2, n_layers=6, FFN_DIM=2048
+ * Architecture: d_model=256, n_heads=16, head_dim=2, n_layers=6, FFN_DIM=2304
  *   Layer 0: Instruction fetch (Gaussian attention peaked at PC)
  *   Layer 1: Preprocessing (gated FFN for address resolution, comparisons, AD cursor load)
  *   Layer 2: Product precompute (SQUARE activation for TOS*SOS + AD products)
@@ -55,7 +55,7 @@
 #define HD 2
 #define N_LAYERS 6
 #define MEM_SIZE 4
-#define FFN_DIM 2048
+#define FFN_DIM 2304
 /* Temperature for softmax/sigmoid gates.
  *
  * For bit-identical agreement between the matrix forward pass and the
@@ -93,6 +93,8 @@
 #define ARENA_KIND_VEC_ELEM 3.0f
 #define ARENA_KIND_CLOSURE 4.0f
 #define ARENA_MAX_INLINE_VECTOR 4
+#define ARENA_CONT_CELLS 4
+#define CONT_RESTORE_MARKER 7.0f
 
 /* Opcodes — canonical numbering from eshkol_compiler.c */
 typedef enum {
@@ -773,6 +775,61 @@ static void execute_step(const State* cur, const Instr* prog, int n_instr, State
         next->s[S_PC]=pc+1;
         break;
 
+    /* Bounded continuation slice. The transformer VM records the directly
+     * modeled continuation state into four contiguous arena cells. This covers
+     * artifact-shape escape continuations without using host heap pointers. */
+    case OP_CALLCC: {
+        int base = (int)cur->s[S_ARENA_NEXT];
+        if (base < 0 || base + ARENA_CONT_CELLS > ARENA_CELLS) {
+            next->s[S_HALT]=1;
+            break;
+        }
+
+        float cont_payload[ARENA_CONT_CELLS][ARENA_CELL_FIELDS] = {
+            {ARENA_KIND_PAIR, (float)(pc + 1), cur->s[S_DEPTH] - 1.0f, sos, r2},
+            {ARENA_KIND_PAIR, r3, 0.0f, tt_sos, tt_r2},
+            {ARENA_KIND_PAIR, tt_r3, TYPE_NUMBER, cur->s[S_MEM0], cur->s[S_MEM1]},
+            {ARENA_KIND_PAIR, cur->s[S_MEM2], cur->s[S_MEM3], cur->s[S_WIND_DEPTH], 0.0f},
+        };
+        for (int i = 0; i < ARENA_CONT_CELLS; i++)
+            for (int f = 0; f < ARENA_CELL_FIELDS; f++)
+                ARENA_FIELD(next->s, base + i, f) = cont_payload[i][f];
+
+        next->s[S_ARENA_NEXT]=(float)(base + ARENA_CONT_CELLS);
+        next->s[S_MEM0]=(float)base; next->s[S_MEM1]=0; next->s[S_MEM2]=0; next->s[S_MEM3]=0;
+        next->s[S_PC]=tos;
+        next->s[S_TOS]=0; next->s[S_SOS]=0; next->s[S_R2]=0; next->s[S_R3]=0;
+        next->s[S_DEPTH]=0;
+        next->s[S_TYPE_TOS]=TYPE_NUMBER; next->s[S_TYPE_SOS]=TYPE_NUMBER;
+        next->s[S_TYPE_R2]=TYPE_NUMBER; next->s[S_TYPE_R3]=TYPE_NUMBER;
+        break;
+    }
+    case OP_INVOKE_CC: {
+        int base = (int)sos;
+        if (base >= 0 && base + ARENA_CONT_CELLS <= ARENA_CELLS) {
+            float retval = tos;
+            float rettype = tt_tos;
+            next->s[S_PC]   = ARENA_FIELD(cur->s, base + 0, ARENA_F_CAR_VAL);
+            next->s[S_DEPTH]= ARENA_FIELD(cur->s, base + 0, ARENA_F_CDR_VAL) + 1.0f;
+            next->s[S_MEM0] = ARENA_FIELD(cur->s, base + 2, ARENA_F_CAR_TYPE);
+            next->s[S_MEM1] = ARENA_FIELD(cur->s, base + 2, ARENA_F_CDR_TYPE);
+            next->s[S_MEM2] = ARENA_FIELD(cur->s, base + 3, ARENA_F_CAR_VAL);
+            next->s[S_MEM3] = ARENA_FIELD(cur->s, base + 3, ARENA_F_CDR_VAL);
+            next->s[S_TOS]  = retval;
+            next->s[S_SOS]  = ARENA_FIELD(cur->s, base + 0, ARENA_F_CAR_TYPE);
+            next->s[S_R2]   = ARENA_FIELD(cur->s, base + 0, ARENA_F_CDR_TYPE);
+            next->s[S_R3]   = ARENA_FIELD(cur->s, base + 1, ARENA_F_CAR_VAL);
+            next->s[S_TYPE_TOS] = rettype;
+            next->s[S_TYPE_SOS] = ARENA_FIELD(cur->s, base + 1, ARENA_F_CAR_TYPE);
+            next->s[S_TYPE_R2]  = ARENA_FIELD(cur->s, base + 1, ARENA_F_CDR_TYPE);
+            next->s[S_TYPE_R3]  = ARENA_FIELD(cur->s, base + 2, ARENA_F_CAR_VAL);
+            next->s[S_WIND_DEPTH] = ARENA_FIELD(cur->s, base + 3, ARENA_F_CAR_TYPE);
+        } else {
+            next->s[S_HALT]=1;
+        }
+        break;
+    }
+
     /* Stage-1 VM-as-transformer memory ops: directly encodable predicates
      * and stack cleanup. These used to set IS_NATIVE and round-trip through
      * exec_loop_postprocess; keeping them here makes the reference path match
@@ -956,7 +1013,6 @@ static void execute_step(const State* cur, const Instr* prog, int n_instr, State
     }
     /* All remaining opcodes delegate to exec loop via IS_NATIVE */
     case OP_NATIVE_CALL:
-    case OP_CALLCC: case OP_INVOKE_CC:
         next->s[S_IS_NATIVE]=1; next->s[S_PC]=pc+1; break;
     default:        next->s[S_PC]=pc+1; break;
     }
@@ -1474,6 +1530,55 @@ static void layer3_ffn(const float x[D], float out[D]) {
     }
     /* OP_NATIVE_CALL (37): delegate */
     g=indicator(op,37)*alive; out[S_PC]+=g; out[S_IS_NATIVE]+=g;
+
+    /* OP_CALLCC (55): bounded escape continuation. Capture the modeled VM
+     * registers and MEM bank into four contiguous arena cells, then jump to
+     * the direct-entry function PC in TOS with the continuation in MEM0. */
+    g=indicator(op,55)*alive; {
+        int elem_dims[4] = { S_ARENA_LIST_E0, S_ARENA_LIST_E1, S_ARENA_LIST_E2, S_ARENA_LIST_E3 };
+        int elem_type_dims[4] = { S_ARENA_LIST_T0, S_ARENA_LIST_T1, S_ARENA_LIST_T2, S_ARENA_LIST_T3 };
+        int cdr_dims[4] = { S_ARENA_LIST_CDR0, S_ARENA_LIST_CDR1, S_ARENA_LIST_CDR2, S_ARENA_LIST_CDR3 };
+        int cdr_type_dims[4] = { S_ARENA_LIST_CDRT0, S_ARENA_LIST_CDRT1, S_ARENA_LIST_CDRT2, S_ARENA_LIST_CDRT3 };
+        int has_dims[4] = { S_ARENA_LIST_HAS_E0, S_ARENA_LIST_HAS_E1, S_ARENA_LIST_HAS_E2, S_ARENA_LIST_HAS_E3 };
+        float base = x[S_ARENA_NEXT];
+
+        out[S_PC]+=g*(tos-x[S_PC]);
+        out[S_MEM0]+=g*(base-x[S_MEM0]); out[S_MEM1]+=g*(-x[S_MEM1]);
+        out[S_MEM2]+=g*(-x[S_MEM2]); out[S_MEM3]+=g*(-x[S_MEM3]);
+        out[S_TOS]+=g*(-tos); out[S_SOS]+=g*(-sos); out[S_R2]+=g*(-r2); out[S_R3]+=g*(-r3);
+        out[S_DEPTH]+=g*(-x[S_DEPTH]);
+        out[S_TYPE_TOS]+=g*(TYPE_NUMBER-ttos); out[S_TYPE_SOS]+=g*(TYPE_NUMBER-tsos);
+        out[S_TYPE_R2]+=g*(TYPE_NUMBER-tr2); out[S_TYPE_R3]+=g*(TYPE_NUMBER-tr3);
+        out[S_ARENA_LIST_BASE]+=g*base;
+        out[S_ARENA_NEXT]+=g*(float)ARENA_CONT_CELLS;
+
+        out[elem_dims[0]] += g*(x[S_PC] + 1.0f);
+        out[cdr_dims[0]] += g*(x[S_DEPTH] - 1.0f);
+        out[elem_type_dims[0]] += g*sos;
+        out[cdr_type_dims[0]] += g*r2;
+        out[elem_dims[1]] += g*r3;
+        out[cdr_dims[1]] += 0.0f;
+        out[elem_type_dims[1]] += g*tsos;
+        out[cdr_type_dims[1]] += g*tr2;
+        out[elem_dims[2]] += g*tr3;
+        out[cdr_dims[2]] += g*TYPE_NUMBER;
+        out[elem_type_dims[2]] += g*x[S_MEM0];
+        out[cdr_type_dims[2]] += g*x[S_MEM1];
+        out[elem_dims[3]] += g*x[S_MEM2];
+        out[cdr_dims[3]] += g*x[S_MEM3];
+        out[elem_type_dims[3]] += g*x[S_WIND_DEPTH];
+        out[cdr_type_dims[3]] += 0.0f;
+        for (int i = 0; i < ARENA_CONT_CELLS; i++) out[has_dims[i]] += g;
+    }
+
+    /* OP_INVOKE_CC (56): Layer 3 marks a continuation restore; Layer 4 reads
+     * the arena record and overwrites PC/MEM/stack. TOS remains the return
+     * value, and SOS supplies the continuation base cell. */
+    g=indicator(op,56)*alive;
+    out[S_ARENA_VEC_HAS_E0]+=g;
+    out[S_ARENA_VEC_BASE]+=g*sos;
+    out[S_ARENA_VEC_LEN]+=g*CONT_RESTORE_MARKER;
+
     /* Stage-1 type predicates (45-50): weight-encoded via Layer 1 type indicators. */
     g=indicator(op,45)*alive; out[S_PC]+=g; out[S_TOS]+=g*(x[S_TYPE_IS_PAIR]-tos); out[S_TYPE_TOS]+=g*(TYPE_BOOL-ttos);
     g=indicator(op,46)*alive; out[S_PC]+=g; out[S_TOS]+=g*(x[S_TYPE_IS_NUM]-tos);  out[S_TYPE_TOS]+=g*(TYPE_BOOL-ttos);
@@ -1613,7 +1718,7 @@ static void layer3_ffn(const float x[D], float out[D]) {
     for (int opc = 38; opc <= 62; opc++) {
         if (opc == 38 || (opc >= 39 && opc <= 44) || (opc >= 45 && opc <= 50) ||
             opc == 51 || opc == 52 || opc == 53 || opc == 54 ||
-            (opc >= 57 && opc <= 62)) continue;
+            opc == 55 || opc == 56 || (opc >= 57 && opc <= 62)) continue;
         g=indicator(op,(float)opc)*alive; out[S_PC]+=g; out[S_IS_NATIVE]+=g;
     }
     /* OP_CALL (25): set IS_CALL flag for exec loop, PC++ */
@@ -2010,6 +2115,37 @@ static void layer4_ffn(float x[D], float out[D]) {
         out[S_TYPE_TOS] += ti * rc * (x[car_type_dim] - x[S_TYPE_TOS]);
         out[S_TOS] += ti * rd * (x[cdr_dim] - x[S_TOS]);
         out[S_TYPE_TOS] += ti * rd * (x[cdr_type_dim] - x[S_TYPE_TOS]);
+    }
+
+    /* ── Bounded continuation restore ──
+     * Layer 3 marks INVOKE_CC by setting S_ARENA_VEC_HAS_E0 with a sentinel in
+     * S_ARENA_VEC_LEN. The base cell is in S_ARENA_VEC_BASE; the record layout
+     * mirrors OP_CALLCC's four arena cells. */
+    float cont_restore = x[S_ARENA_VEC_HAS_E0] * indicator(x[S_ARENA_VEC_LEN], CONT_RESTORE_MARKER);
+    if (cont_restore > 0.5f) {
+        float rec[ARENA_CONT_CELLS][ARENA_CELL_FIELDS];
+        memset(rec, 0, sizeof(rec));
+        float base = x[S_ARENA_VEC_BASE];
+        for (int off = 0; off < ARENA_CONT_CELLS; off++) {
+            for (int cell = 0; cell < ARENA_CELLS; cell++) {
+                float ti = indicator(base + (float)off, (float)cell);
+                for (int f = 0; f < ARENA_CELL_FIELDS; f++)
+                    rec[off][f] += ti * x[ARENA_DIM(cell, f)];
+            }
+        }
+        out[S_PC] += cont_restore * (rec[0][ARENA_F_CAR_VAL] - x[S_PC]);
+        out[S_DEPTH] += cont_restore * (rec[0][ARENA_F_CDR_VAL] + 1.0f - x[S_DEPTH]);
+        out[S_MEM0] += cont_restore * (rec[2][ARENA_F_CAR_TYPE] - x[S_MEM0]);
+        out[S_MEM1] += cont_restore * (rec[2][ARENA_F_CDR_TYPE] - x[S_MEM1]);
+        out[S_MEM2] += cont_restore * (rec[3][ARENA_F_CAR_VAL] - x[S_MEM2]);
+        out[S_MEM3] += cont_restore * (rec[3][ARENA_F_CDR_VAL] - x[S_MEM3]);
+        out[S_SOS] += cont_restore * (rec[0][ARENA_F_CAR_TYPE] - x[S_SOS]);
+        out[S_R2] += cont_restore * (rec[0][ARENA_F_CDR_TYPE] - x[S_R2]);
+        out[S_R3] += cont_restore * (rec[1][ARENA_F_CAR_VAL] - x[S_R3]);
+        out[S_TYPE_SOS] += cont_restore * (rec[1][ARENA_F_CAR_TYPE] - x[S_TYPE_SOS]);
+        out[S_TYPE_R2] += cont_restore * (rec[1][ARENA_F_CDR_TYPE] - x[S_TYPE_R2]);
+        out[S_TYPE_R3] += cont_restore * (rec[2][ARENA_F_CAR_VAL] - x[S_TYPE_R3]);
+        out[S_WIND_DEPTH] += cont_restore * (rec[3][ARENA_F_CAR_TYPE] - x[S_WIND_DEPTH]);
     }
 
     /* ── Arena vector create ──
@@ -3210,6 +3346,40 @@ static int add_arena_base_offset_pair(InterpreterWeights* w, int L, int n,
     return n + 2;
 }
 
+/* Base+offset arena gate with a sentinel marker. Used by INVOKE_CC restore so
+ * it can reuse existing arena transient lanes without colliding with vector
+ * creation or PACK_REST writes. */
+static int add_arena_marked_base_offset_pair(InterpreterWeights* w, int L, int n,
+                                             int base_dim, int flag_dim,
+                                             int marker_dim, float marker_value,
+                                             int cell, int offset,
+                                             int ud1, float us1, int ud2, float us2,
+                                             int ud3, float us3, int ud4, float us4,
+                                             float ubias,
+                                             int out_dim, float coeff) {
+    int base_target = cell - offset;
+    if (base_target < 0 || base_target >= ARENA_CELLS) return n;
+    const float flag_scale = 100.0f;
+    const float marker_scale = 10000.0f;
+    for (int sign = 0; sign < 2; sign++) {
+        int j = n + sign;
+        float s = (sign == 0) ? 0.5f : -0.5f;
+        W(w->ff_gate[L], base_dim, j, FFN_DIM) += SCALE;
+        W(w->ff_gate[L], flag_dim, j, FFN_DIM) += flag_scale * SCALE;
+        W(w->ff_gate[L], marker_dim, j, FFN_DIM) += marker_scale * SCALE;
+        w->ff_gate_b[L][j] = SCALE * (-(float)base_target + s)
+                            - flag_scale * SCALE
+                            - marker_scale * marker_value * SCALE;
+        if (ud1 >= 0) W(w->ff_up[L], ud1, j, FFN_DIM) += us1;
+        if (ud2 >= 0) W(w->ff_up[L], ud2, j, FFN_DIM) += us2;
+        if (ud3 >= 0) W(w->ff_up[L], ud3, j, FFN_DIM) += us3;
+        if (ud4 >= 0) W(w->ff_up[L], ud4, j, FFN_DIM) += us4;
+        w->ff_up_b[L][j] = ubias;
+        W(w->ff_down[L], j, out_dim, D) += (sign == 0) ? coeff : -coeff;
+    }
+    return n + 2;
+}
+
 static int add_type_push(InterpreterWeights* w, int L, int n,
                          int op_id, float pushed_type) {
     n = add_gated_pair(w, L, n, op_id, S_TYPE_TOS,-1,-1,0,-1,0,-1,0,
@@ -3997,6 +4167,57 @@ static void generate_weights(InterpreterWeights* w) {
         n = add_gated_pair(w,L,n, 37, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
         n = add_gated_pair(w,L,n, 37, -1,0,-1,0,-1,0,-1,0, 1.0f, S_IS_NATIVE, 1.0f);
 
+        /* OP_CALLCC (55): capture a bounded continuation into four arena cells
+         * via the existing contiguous-list writeback lanes, then jump to TOS. */
+        {
+            int elem_dims[4] = { S_ARENA_LIST_E0, S_ARENA_LIST_E1, S_ARENA_LIST_E2, S_ARENA_LIST_E3 };
+            int elem_type_dims[4] = { S_ARENA_LIST_T0, S_ARENA_LIST_T1, S_ARENA_LIST_T2, S_ARENA_LIST_T3 };
+            int cdr_dims[4] = { S_ARENA_LIST_CDR0, S_ARENA_LIST_CDR1, S_ARENA_LIST_CDR2, S_ARENA_LIST_CDR3 };
+            int cdr_type_dims[4] = { S_ARENA_LIST_CDRT0, S_ARENA_LIST_CDRT1, S_ARENA_LIST_CDRT2, S_ARENA_LIST_CDRT3 };
+            int has_dims[4] = { S_ARENA_LIST_HAS_E0, S_ARENA_LIST_HAS_E1, S_ARENA_LIST_HAS_E2, S_ARENA_LIST_HAS_E3 };
+
+            n = add_gated_pair(w,L,n, 55, S_TOS,1,S_PC,-1,-1,0,-1,0, 0, S_PC, 1.0f);
+            n = add_gated_pair(w,L,n, 55, S_ARENA_NEXT,1,S_MEM0,-1,-1,0,-1,0, 0, S_MEM0, 1.0f);
+            n = add_gated_pair(w,L,n, 55, S_MEM1,-1,-1,0,-1,0,-1,0, 0, S_MEM1, 1.0f);
+            n = add_gated_pair(w,L,n, 55, S_MEM2,-1,-1,0,-1,0,-1,0, 0, S_MEM2, 1.0f);
+            n = add_gated_pair(w,L,n, 55, S_MEM3,-1,-1,0,-1,0,-1,0, 0, S_MEM3, 1.0f);
+            n = add_gated_pair(w,L,n, 55, S_TOS,-1,-1,0,-1,0,-1,0, 0, S_TOS, 1.0f);
+            n = add_gated_pair(w,L,n, 55, S_SOS,-1,-1,0,-1,0,-1,0, 0, S_SOS, 1.0f);
+            n = add_gated_pair(w,L,n, 55, S_R2,-1,-1,0,-1,0,-1,0, 0, S_R2, 1.0f);
+            n = add_gated_pair(w,L,n, 55, S_R3,-1,-1,0,-1,0,-1,0, 0, S_R3, 1.0f);
+            n = add_gated_pair(w,L,n, 55, S_DEPTH,-1,-1,0,-1,0,-1,0, 0, S_DEPTH, 1.0f);
+            n = add_gated_pair(w,L,n, 55, S_TYPE_TOS,-1,-1,0,-1,0,-1,0, TYPE_NUMBER, S_TYPE_TOS, 1.0f);
+            n = add_gated_pair(w,L,n, 55, S_TYPE_SOS,-1,-1,0,-1,0,-1,0, TYPE_NUMBER, S_TYPE_SOS, 1.0f);
+            n = add_gated_pair(w,L,n, 55, S_TYPE_R2,-1,-1,0,-1,0,-1,0, TYPE_NUMBER, S_TYPE_R2, 1.0f);
+            n = add_gated_pair(w,L,n, 55, S_TYPE_R3,-1,-1,0,-1,0,-1,0, TYPE_NUMBER, S_TYPE_R3, 1.0f);
+            n = add_gated_pair(w,L,n, 55, S_ARENA_NEXT,1,-1,0,-1,0,-1,0, 0, S_ARENA_LIST_BASE, 1.0f);
+            n = add_gated_pair(w,L,n, 55, -1,0,-1,0,-1,0,-1,0, (float)ARENA_CONT_CELLS, S_ARENA_NEXT, 1.0f);
+
+            n = add_gated_pair(w,L,n, 55, S_PC,1,-1,0,-1,0,-1,0, 1.0f, elem_dims[0], 1.0f);
+            n = add_gated_pair(w,L,n, 55, S_DEPTH,1,-1,0,-1,0,-1,0, -1.0f, cdr_dims[0], 1.0f);
+            n = add_gated_pair(w,L,n, 55, S_SOS,1,-1,0,-1,0,-1,0, 0, elem_type_dims[0], 1.0f);
+            n = add_gated_pair(w,L,n, 55, S_R2,1,-1,0,-1,0,-1,0, 0, cdr_type_dims[0], 1.0f);
+            n = add_gated_pair(w,L,n, 55, S_R3,1,-1,0,-1,0,-1,0, 0, elem_dims[1], 1.0f);
+            n = add_gated_pair(w,L,n, 55, S_TYPE_SOS,1,-1,0,-1,0,-1,0, 0, elem_type_dims[1], 1.0f);
+            n = add_gated_pair(w,L,n, 55, S_TYPE_R2,1,-1,0,-1,0,-1,0, 0, cdr_type_dims[1], 1.0f);
+            n = add_gated_pair(w,L,n, 55, S_TYPE_R3,1,-1,0,-1,0,-1,0, 0, elem_dims[2], 1.0f);
+            n = add_gated_pair(w,L,n, 55, -1,0,-1,0,-1,0,-1,0, TYPE_NUMBER, cdr_dims[2], 1.0f);
+            n = add_gated_pair(w,L,n, 55, S_MEM0,1,-1,0,-1,0,-1,0, 0, elem_type_dims[2], 1.0f);
+            n = add_gated_pair(w,L,n, 55, S_MEM1,1,-1,0,-1,0,-1,0, 0, cdr_type_dims[2], 1.0f);
+            n = add_gated_pair(w,L,n, 55, S_MEM2,1,-1,0,-1,0,-1,0, 0, elem_dims[3], 1.0f);
+            n = add_gated_pair(w,L,n, 55, S_MEM3,1,-1,0,-1,0,-1,0, 0, cdr_dims[3], 1.0f);
+            n = add_gated_pair(w,L,n, 55, S_WIND_DEPTH,1,-1,0,-1,0,-1,0, 0, elem_type_dims[3], 1.0f);
+            for (int i = 0; i < ARENA_CONT_CELLS; i++)
+                n = add_gated_pair(w,L,n, 55, -1,0,-1,0,-1,0,-1,0, 1.0f, has_dims[i], 1.0f);
+        }
+
+        /* OP_INVOKE_CC (56): mark Layer 4 to restore from arena base SOS.
+         * S_ARENA_VEC_HAS_E0 is used only as a restore flag here; the sentinel
+         * in S_ARENA_VEC_LEN prevents collision with real vector-create lanes. */
+        n = add_gated_pair(w,L,n, 56, -1,0,-1,0,-1,0,-1,0, 1.0f, S_ARENA_VEC_HAS_E0, 1.0f);
+        n = add_gated_pair(w,L,n, 56, S_SOS,1,-1,0,-1,0,-1,0, 0, S_ARENA_VEC_BASE, 1.0f);
+        n = add_gated_pair(w,L,n, 56, -1,0,-1,0,-1,0,-1,0, CONT_RESTORE_MARKER, S_ARENA_VEC_LEN, 1.0f);
+
         /* Stage-1 type predicates (45-50): weight-encoded via Layer 1 type indicators. */
         n = add_gated_pair(w,L,n, 45, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
         n = add_gated_pair(w,L,n, 45, S_TYPE_IS_PAIR,1,S_TOS,-1,-1,0,-1,0, 0, S_TOS, 1.0f);
@@ -4203,7 +4424,7 @@ static void generate_weights(InterpreterWeights* w) {
         for (int opc = 38; opc <= 62; opc++) {
             if (opc == 38 || (opc >= 39 && opc <= 44) || (opc >= 45 && opc <= 50) ||
                 opc == 51 || opc == 52 || opc == 53 || opc == 54 ||
-                (opc >= 57 && opc <= 62)) continue;
+                opc == 55 || opc == 56 || (opc >= 57 && opc <= 62)) continue;
             n = add_gated_pair(w,L,n, opc, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
             n = add_gated_pair(w,L,n, opc, -1,0,-1,0,-1,0,-1,0, 1.0f, S_IS_NATIVE, 1.0f);
         }
@@ -4805,6 +5026,33 @@ static void generate_weights(InterpreterWeights* w) {
                                       cdr_type_dim,1,S_TYPE_TOS,-1,-1,0,-1,0,
                                       0, S_TYPE_TOS, 1.0f);
         }
+
+        /* INVOKE_CC restore. Layer 3 places the continuation base in
+         * S_ARENA_VEC_BASE, raises S_ARENA_VEC_HAS_E0, and writes the sentinel
+         * CONT_RESTORE_MARKER into S_ARENA_VEC_LEN. */
+#define ADD_CONT_RESTORE(offset, field, cur_dim, out_dim, bias) do { \
+            for (int cell = 0; cell < ARENA_CELLS; cell++) { \
+                int src_dim = ARENA_DIM(cell, field); \
+                n = add_arena_marked_base_offset_pair( \
+                    w,L,n, S_ARENA_VEC_BASE, S_ARENA_VEC_HAS_E0, \
+                    S_ARENA_VEC_LEN, CONT_RESTORE_MARKER, cell, offset, \
+                    src_dim,1,cur_dim,-1,-1,0,-1,0, bias, out_dim, 1.0f); \
+            } \
+        } while (0)
+        ADD_CONT_RESTORE(0, ARENA_F_CAR_VAL,  S_PC,         S_PC,         0.0f);
+        ADD_CONT_RESTORE(0, ARENA_F_CDR_VAL,  S_DEPTH,      S_DEPTH,      1.0f);
+        ADD_CONT_RESTORE(2, ARENA_F_CAR_TYPE, S_MEM0,       S_MEM0,       0.0f);
+        ADD_CONT_RESTORE(2, ARENA_F_CDR_TYPE, S_MEM1,       S_MEM1,       0.0f);
+        ADD_CONT_RESTORE(3, ARENA_F_CAR_VAL,  S_MEM2,       S_MEM2,       0.0f);
+        ADD_CONT_RESTORE(3, ARENA_F_CDR_VAL,  S_MEM3,       S_MEM3,       0.0f);
+        ADD_CONT_RESTORE(0, ARENA_F_CAR_TYPE, S_SOS,        S_SOS,        0.0f);
+        ADD_CONT_RESTORE(0, ARENA_F_CDR_TYPE, S_R2,         S_R2,         0.0f);
+        ADD_CONT_RESTORE(1, ARENA_F_CAR_VAL,  S_R3,         S_R3,         0.0f);
+        ADD_CONT_RESTORE(1, ARENA_F_CAR_TYPE, S_TYPE_SOS,   S_TYPE_SOS,   0.0f);
+        ADD_CONT_RESTORE(1, ARENA_F_CDR_TYPE, S_TYPE_R2,    S_TYPE_R2,    0.0f);
+        ADD_CONT_RESTORE(2, ARENA_F_CAR_VAL,  S_TYPE_R3,    S_TYPE_R3,    0.0f);
+        ADD_CONT_RESTORE(3, ARENA_F_CAR_TYPE, S_WIND_DEPTH, S_WIND_DEPTH, 0.0f);
+#undef ADD_CONT_RESTORE
 
         /* Arena vector-create writes. Header lives at base; element i lives
          * at base + 1 + i and uses the same car/value type lanes as pairs. */
@@ -5659,6 +5907,18 @@ int main(int argc, char** argv) {
     { Instr p[]={{OP_CONST,11},{OP_CONST,22},{OP_WIND_PUSH,0},
                  {OP_WIND_POP,0},{OP_PRINT,0},{OP_HALT,0}};
       test("wind push/pop keeps body value", p, 6, 11); }
+    { Instr p[]={{OP_CONST,4},{OP_CALLCC,0},{OP_PRINT,0},{OP_HALT,0},
+                 {OP_GET_LOCAL,0},{OP_CONST,77},{OP_INVOKE_CC,0}};
+      test("callcc arena escape", p, 7, 77); }
+    { Instr p[]={{OP_CONST,12},{OP_CONST,6},{OP_CALLCC,0},{OP_ADD,0},
+                 {OP_PRINT,0},{OP_HALT,0},{OP_GET_LOCAL,0},{OP_CONST,77},
+                 {OP_INVOKE_CC,0}};
+      test("callcc restores stack", p, 9, 89); }
+    { Instr p[]={{OP_CONST,33},{OP_SET_LOCAL,1},{OP_CONST,8},{OP_CALLCC,0},
+                 {OP_GET_LOCAL,1},{OP_ADD,0},{OP_PRINT,0},{OP_HALT,0},
+                 {OP_GET_LOCAL,0},{OP_CONST,44},{OP_SET_LOCAL,1},{OP_CONST,7},
+                 {OP_INVOKE_CC,0}};
+      test("callcc restores mem", p, 13, 40); }
     { Instr p[]={{OP_CONST,42},{OP_SET_UPVALUE,0},{OP_GET_UPVALUE,0},
                  {OP_PRINT,0},{OP_HALT,0}};
       test("upvalue set/get mem0", p, 5, 42); }
