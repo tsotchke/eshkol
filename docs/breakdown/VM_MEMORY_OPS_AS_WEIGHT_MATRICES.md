@@ -30,16 +30,18 @@ writeback, and Layer 5 AD gradient writeback. Layer 1 now loads bounded AD
 tape parent values before Layer 2 so `OP_AD_MUL` forward recording is also
 encoded as weights.
 
-Current artifact verification after the bounded AD tape-product slice:
-104/104 inline tests pass, 101/101 traced programs agree on PRINT output and
-full per-step state, opcode coverage is 68 weight-implemented / 0
+Current artifact verification after the bounded AD piecewise-unary slice:
+106/106 inline tests pass, 103/103 traced programs agree on PRINT output and
+full per-step state, opcode coverage is 69 weight-implemented / 0
 VM-native-delegated / 3 transformer-native-assisted in the exercised coverage
 set, and the QLMW export is d_model=256, FFN=2048, 11,037,702 parameters.
 The remaining transformer-native-assisted cases in the trace are strict
-`OP_DIV`/`OP_MOD` and AD unary value generation for `relu`, `exp`, and
-`sigmoid` programs. Untested AD unary/libm paths (`abs`, `tanh`, `log`,
-`sqrt`, `AD_DIV`, `AD_POW`, `AD_SIN`, `AD_COS`) remain bounded-state
-candidates or precision-contract decisions, not completed weight encodings.
+`OP_DIV`/`OP_MOD` and AD unary/libm value generation for `exp` and `sigmoid`
+programs. `AD_ABS` and `AD_RELU` are now weight-encoded for the bounded
+nonzero integer-scale cases exercised by the verifier. Untested AD libm paths
+(`tanh`, `log`, `sqrt`, `AD_DIV`, `AD_POW`, `AD_SIN`, `AD_COS`) remain
+bounded-state candidates or precision-contract decisions, not completed weight
+encodings.
 
 ## 1. Problem statement
 

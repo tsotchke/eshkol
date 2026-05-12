@@ -163,6 +163,7 @@ enum {
     S_AD_CUR_SAVED=44,   /* auxiliary saved value */
     S_AD_LEFT_VALUE=45,  /* value of left parent (loaded for backward) */
     S_AD_LEFT_GRAD=46,   /* gradient of left parent */
+    S_AD_UNARY_ABS_ACTIVE=S_AD_LEFT_GRAD, /* forward scratch alias */
     S_AD_RIGHT_VALUE=47, /* value of right parent */
 
     /* ── Zone C: AD tape storage (48-111) — 8 nodes x 8 fields ──
@@ -175,6 +176,7 @@ enum {
     S_AD_IS_FORWARD=112,     /* indicator: executing AD forward op this cycle */
     S_AD_IS_BACKWARD=113,    /* indicator: in backward pass */
     S_AD_GRAD_ACCUM=114,     /* gradient accumulator */
+    S_AD_UNARY_RELU_ACTIVE=S_AD_GRAD_ACCUM, /* forward scratch alias */
     S_AD_PROD_GRAD_LV=115,   /* precomputed: CUR_GRAD * RIGHT_VALUE (left delta for MUL) */
     S_AD_PROD_GRAD_RV=116,   /* precomputed: CUR_GRAD * LEFT_VALUE (right delta for MUL) */
     S_AD_LEFT_GRAD_NEW=117,  /* computed gradient delta for left parent */
@@ -1187,6 +1189,8 @@ static void layer2_ffn(const float x[D], float out[D]) {
     out[S_TYPE_IS_STR]  = indicator(x[S_TYPE_TOS], TYPE_STRING);
     out[S_TYPE_IS_VEC]  = indicator(x[S_TYPE_TOS], TYPE_VECTOR);
     out[S_TYPE_IS_NIL]  = indicator(x[S_TYPE_TOS], TYPE_NIL);
+    out[S_AD_UNARY_ABS_ACTIVE] = indicator(x[S_OPCODE], OP_AD_ABS);
+    out[S_AD_UNARY_RELU_ACTIVE] = indicator(x[S_OPCODE], OP_AD_RELU);
 
     /* ── AD tape random-access load (backward mode only) ──
      * Load node at AD_CURSOR into AD_CUR_* fields.
@@ -1202,18 +1206,24 @@ static void layer2_ffn(const float x[D], float out[D]) {
         out[S_AD_CUR_RIGHT]  += ci * x[S_AD_TAPE_BASE + i * AD_NODE_FIELDS + AD_F_RIGHT];
         out[S_AD_CUR_SAVED]  += ci * x[S_AD_TAPE_BASE + i * AD_NODE_FIELDS + AD_F_SAVED];
     }
-    /* AD forward binary parent loads. With preprocessing before the SQUARE
-     * layer, AD_MUL can record left_value * right_value without C postprocess. */
+    /* AD forward parent loads. With preprocessing before the SQUARE/product
+     * and dispatch layers, AD_MUL, AD_ABS, and AD_RELU can record bounded
+     * tape values without C postprocess. */
     float fw_binary = (indicator(x[S_OPCODE], OP_AD_ADD) +
                        indicator(x[S_OPCODE], OP_AD_SUB) +
                        indicator(x[S_OPCODE], OP_AD_MUL)) *
                       (1.0f - bw_active);
+    float fw_unary_piecewise = (indicator(x[S_OPCODE], OP_AD_ABS) +
+                                indicator(x[S_OPCODE], OP_AD_RELU)) *
+                               (1.0f - bw_active);
     for (int i = 0; i < AD_MAX_TAPE; i++) {
         float li = indicator(x[S_SOS], (float)i) * fw_binary;
         float ri = indicator(x[S_TOS], (float)i) * fw_binary;
+        float ui = indicator(x[S_TOS], (float)i) * fw_unary_piecewise;
         float value = x[S_AD_TAPE_BASE + i * AD_NODE_FIELDS + AD_F_VALUE];
         out[S_AD_LEFT_VALUE]  += li * value;
         out[S_AD_RIGHT_VALUE] += ri * value;
+        out[S_AD_LEFT_VALUE]  += ui * value;
     }
     /* Parent load moved to layer4_ffn (runs after preprocessing in backward sequence) */
 
@@ -2781,6 +2791,29 @@ static int add_gated_pair_ad_index(InterpreterWeights* w, int L, int n,
     return n + 2;
 }
 
+/* One-sided value gate controlled by a precomputed binary flag.
+ * gate ≈ flag && (value_sign * value_dim > threshold). */
+static int add_flagged_value_halfspace(InterpreterWeights* w, int L, int n,
+                                       int flag_dim, int value_dim,
+                                       float value_sign, float threshold,
+                                       int ud1, float us1, int ud2, float us2,
+                                       int ud3, float us3, int ud4, float us4,
+                                       float ubias,
+                                       int out_dim, float coeff) {
+    const float flag_scale = 1000.0f;
+    W(w->ff_gate[L], flag_dim, n, FFN_DIM) = flag_scale * SCALE;
+    W(w->ff_gate[L], value_dim, n, FFN_DIM) = value_sign * SCALE;
+    W(w->ff_gate[L], S_HALT, n, FFN_DIM) = -flag_scale * SCALE;
+    w->ff_gate_b[L][n] = -flag_scale * SCALE - threshold * SCALE;
+    if (ud1 >= 0) W(w->ff_up[L], ud1, n, FFN_DIM) += us1;
+    if (ud2 >= 0) W(w->ff_up[L], ud2, n, FFN_DIM) += us2;
+    if (ud3 >= 0) W(w->ff_up[L], ud3, n, FFN_DIM) += us3;
+    if (ud4 >= 0) W(w->ff_up[L], ud4, n, FFN_DIM) += us4;
+    w->ff_up_b[L][n] = ubias;
+    W(w->ff_down[L], n, out_dim, D) += coeff;
+    return n + 1;
+}
+
 /* Backward-gated neuron for cursor-indexed tape access.
  * Gate: sigmoid(SCALE*(IS_BACKWARD - 0.5)) → 1 when backward active
  * Up:   indicator(index_dim == slot) * value_dim → tape random-access
@@ -3225,6 +3258,8 @@ static void generate_weights(InterpreterWeights* w) {
         n = add_indicator_precompute(w, L, n, S_TYPE_TOS, TYPE_STRING,  S_TYPE_IS_STR);
         n = add_indicator_precompute(w, L, n, S_TYPE_TOS, TYPE_VECTOR,  S_TYPE_IS_VEC);
         n = add_indicator_precompute(w, L, n, S_TYPE_TOS, TYPE_NIL,     S_TYPE_IS_NIL);
+        n = add_indicator_precompute(w, L, n, S_OPCODE, OP_AD_ABS,      S_AD_UNARY_ABS_ACTIVE);
+        n = add_indicator_precompute(w, L, n, S_OPCODE, OP_AD_RELU,     S_AD_UNARY_RELU_ACTIVE);
 
         /* AD forward binary parent loads. Layer 1 runs before the SQUARE
          * layer, so OP_AD_MUL can consume AD_LEFT_VALUE/AD_RIGHT_VALUE in
@@ -3238,6 +3273,14 @@ static void generate_weights(InterpreterWeights* w) {
                 n = add_gated_pair_ad_index(w,L,n, opc, S_TOS, slot,
                                             val_dim,1,-1,0,-1,0,-1,0,
                                             0, S_AD_RIGHT_VALUE, 1.0f);
+            }
+        }
+        for (int opc = OP_AD_ABS; opc <= OP_AD_RELU; opc++) {
+            for (int slot = 0; slot < AD_MAX_TAPE; slot++) {
+                int val_dim = S_AD_TAPE_BASE + slot * AD_NODE_FIELDS + AD_F_VALUE;
+                n = add_gated_pair_ad_index(w,L,n, opc, S_TOS, slot,
+                                            val_dim,1,-1,0,-1,0,-1,0,
+                                            0, S_AD_LEFT_VALUE, 1.0f);
             }
         }
 
@@ -4075,9 +4118,35 @@ static void generate_weights(InterpreterWeights* w) {
                     n = add_gated_pair_ad_index(w,L,n, 69, S_TOS, slot, val_dim,1,-1,0,-1,0,-1,0,
                                                 0, S_AD_CUR_VALUE, -1.0f);
                 }
+            } else if (uop == 70) {
+                n = add_flagged_value_halfspace(w,L,n, S_AD_UNARY_ABS_ACTIVE, S_AD_LEFT_VALUE,
+                                                1.0f, 0.5f,
+                                                S_AD_LEFT_VALUE,1,-1,0,-1,0,-1,0,
+                                                0, S_AD_CUR_VALUE, 1.0f);
+                n = add_flagged_value_halfspace(w,L,n, S_AD_UNARY_ABS_ACTIVE, S_AD_LEFT_VALUE,
+                                                1.0f, 0.5f,
+                                                -1,0,-1,0,-1,0,-1,0,
+                                                1.0f, S_AD_CUR_SAVED, 1.0f);
+                n = add_flagged_value_halfspace(w,L,n, S_AD_UNARY_ABS_ACTIVE, S_AD_LEFT_VALUE,
+                                                -1.0f, 0.5f,
+                                                S_AD_LEFT_VALUE,-1,-1,0,-1,0,-1,0,
+                                                0, S_AD_CUR_VALUE, 1.0f);
+                n = add_flagged_value_halfspace(w,L,n, S_AD_UNARY_ABS_ACTIVE, S_AD_LEFT_VALUE,
+                                                -1.0f, 0.5f,
+                                                -1,0,-1,0,-1,0,-1,0,
+                                                -1.0f, S_AD_CUR_SAVED, 1.0f);
+            } else if (uop == 71) {
+                n = add_flagged_value_halfspace(w,L,n, S_AD_UNARY_RELU_ACTIVE, S_AD_LEFT_VALUE,
+                                                1.0f, 0.5f,
+                                                S_AD_LEFT_VALUE,1,-1,0,-1,0,-1,0,
+                                                0, S_AD_CUR_VALUE, 1.0f);
+                n = add_flagged_value_halfspace(w,L,n, S_AD_UNARY_RELU_ACTIVE, S_AD_LEFT_VALUE,
+                                                1.0f, 0.5f,
+                                                -1,0,-1,0,-1,0,-1,0,
+                                                1.0f, S_AD_CUR_SAVED, 1.0f);
             }
             n = add_gated_pair_ad(w,L,n, uop, -1,0,-1,0,-1,0,-1,0, 1.0f, S_AD_IS_FORWARD, 1.0f);
-            if (uop != 69)
+            if (uop != 69 && uop != 70 && uop != 71)
                 n = add_gated_pair_ad(w,L,n, uop, -1,0,-1,0,-1,0,-1,0, 1.0f, S_IS_NATIVE, 1.0f);
         }
 
@@ -5371,6 +5440,27 @@ int main(int argc, char** argv) {
         {OP_PRINT, 0},
         {OP_HALT, 0}
       }; test("AD: d/dx (-x) at 7 = -1", p, 7, -1); }
+
+    /* f(x) = abs(x): derivative is sign(x) away from zero */
+    { Instr p[]={
+        {OP_AD_VAR, 7},
+        {OP_AD_ABS, 0},
+        {OP_AD_BACKWARD, 0},
+        {OP_CONST, 0},
+        {OP_AD_GRAD, 0},
+        {OP_PRINT, 0},
+        {OP_HALT, 0}
+      }; test("AD: d/dx abs(7) = 1", p, 7, 1); }
+
+    { Instr p[]={
+        {OP_AD_VAR, -7},
+        {OP_AD_ABS, 0},
+        {OP_AD_BACKWARD, 0},
+        {OP_CONST, 0},
+        {OP_AD_GRAD, 0},
+        {OP_PRINT, 0},
+        {OP_HALT, 0}
+      }; test("AD: d/dx abs(-7) = -1", p, 7, -1); }
 
     /* f(x,y) = x*y at (3,4): df/dx=4, df/dy=3.
      * We check df/dx. node 0=x=3, node 1=y=4, node 2=x*y */
