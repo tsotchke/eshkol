@@ -135,6 +135,7 @@ enum {
     S_OUTPUT=6, S_HALT=7,
     S_MEM0=8, S_MEM1=9, S_MEM2=10, S_MEM3=11,
     S_SP=12, S_FP=13, S_HAS_OUT=14, S_CUR_CLOSURE=15,
+    S_EXC_DEPTH=S_SP, S_WIND_DEPTH=S_FP,
 
     /* Intermediate / transient (16-31) — cleared every cycle by Layer 3 */
     S_OPCODE=16, S_OPERAND=17,
@@ -736,6 +737,29 @@ static void execute_step(const State* cur, const Instr* prog, int n_instr, State
         next->s[S_PC]=pc+1;
         break;
     }
+    case OP_PUSH_HANDLER:
+        next->s[S_EXC_DEPTH]=cur->s[S_EXC_DEPTH]+1;
+        next->s[S_PC]=pc+1;
+        break;
+    case OP_POP_HANDLER:
+        next->s[S_EXC_DEPTH]=cur->s[S_EXC_DEPTH]-1;
+        next->s[S_PC]=pc+1;
+        break;
+    case OP_GET_EXN:
+        next->s[S_R3]=r2; next->s[S_R2]=sos; next->s[S_SOS]=tos; next->s[S_TOS]=g_current_exn;
+        next->s[S_TYPE_R3]=tt_r2; next->s[S_TYPE_R2]=tt_sos; next->s[S_TYPE_SOS]=tt_tos; next->s[S_TYPE_TOS]=TYPE_NUMBER;
+        next->s[S_DEPTH]=cur->s[S_DEPTH]+1; next->s[S_PC]=pc+1;
+        break;
+    case OP_WIND_PUSH:
+        next->s[S_WIND_DEPTH]=cur->s[S_WIND_DEPTH]+1;
+        next->s[S_TOS]=sos; next->s[S_SOS]=r2; next->s[S_R2]=r3; next->s[S_R3]=0;
+        next->s[S_TYPE_TOS]=tt_sos; next->s[S_TYPE_SOS]=tt_r2; next->s[S_TYPE_R2]=tt_r3; next->s[S_TYPE_R3]=TYPE_NUMBER;
+        next->s[S_DEPTH]=cur->s[S_DEPTH]-1; next->s[S_PC]=pc+1;
+        break;
+    case OP_WIND_POP:
+        next->s[S_WIND_DEPTH]=cur->s[S_WIND_DEPTH]-1;
+        next->s[S_PC]=pc+1;
+        break;
 
     /* Stage-1 VM-as-transformer memory ops: directly encodable predicates
      * and stack cleanup. These used to set IS_NATIVE and round-trip through
@@ -910,8 +934,6 @@ static void execute_step(const State* cur, const Instr* prog, int n_instr, State
     /* All remaining opcodes delegate to exec loop via IS_NATIVE */
     case OP_NATIVE_CALL:
     case OP_CALLCC: case OP_INVOKE_CC:
-    case OP_PUSH_HANDLER: case OP_POP_HANDLER: case OP_GET_EXN:
-    case OP_WIND_PUSH: case OP_WIND_POP:
         next->s[S_IS_NATIVE]=1; next->s[S_PC]=pc+1; break;
     default:        next->s[S_PC]=pc+1; break;
     }
@@ -1456,6 +1478,18 @@ static void layer3_ffn(const float x[D], float out[D]) {
     /* OP_VOID (63): no stack effect, PC++ */
     g=indicator(op,63)*alive; out[S_PC]+=g;
 
+    /* Exception/dynamic-wind bookkeeping. These keep bounded counters and
+     * stack effects in the residual stream; full raise/unwind remains native. */
+    g=indicator(op,57)*alive; out[S_PC]+=g; out[S_EXC_DEPTH]+=g;
+    g=indicator(op,58)*alive; out[S_PC]+=g; out[S_EXC_DEPTH]+=g*(-1);
+    g=indicator(op,59)*alive;
+    out[S_PC]+=g; out[S_TOS]+=g*(-tos); out[S_SOS]+=g*(tos-sos); out[S_R2]+=g*(sos-r2); out[S_R3]+=g*(r2-r3); out[S_DEPTH]+=g;
+    out[S_TYPE_TOS]+=g*(TYPE_NUMBER-ttos); out[S_TYPE_SOS]+=g*(ttos-tsos); out[S_TYPE_R2]+=g*(tsos-tr2); out[S_TYPE_R3]+=g*(tr2-tr3);
+    g=indicator(op,61)*alive;
+    out[S_PC]+=g; out[S_WIND_DEPTH]+=g; out[S_TOS]+=g*(sos-tos); out[S_SOS]+=g*(r2-sos); out[S_R2]+=g*(r3-r2); out[S_R3]+=g*(-r3); out[S_DEPTH]+=g*(-1);
+    out[S_TYPE_TOS]+=g*(tsos-ttos); out[S_TYPE_SOS]+=g*(tr2-tsos); out[S_TYPE_R2]+=g*(tr3-tr2); out[S_TYPE_R3]+=g*(TYPE_NUMBER-tr3);
+    g=indicator(op,62)*alive; out[S_PC]+=g; out[S_WIND_DEPTH]+=g*(-1);
+
     /* OP_PACK_REST (60): pack MEM[n_fixed..3] into an arena list and
      * store the resulting list pointer back in MEM[n_fixed]. */
     g=indicator(op,60)*alive; out[S_PC]+=g; {
@@ -1486,7 +1520,9 @@ static void layer3_ffn(const float x[D], float out[D]) {
 
     /* Remaining delegated opcodes (38-62): all set IS_NATIVE + PC++ */
     for (int opc = 38; opc <= 62; opc++) {
-        if (opc == 38 || (opc >= 39 && opc <= 44) || (opc >= 45 && opc <= 50) || opc == 51 || opc == 52 || opc == 53 || opc == 54 || opc == 60) continue;
+        if (opc == 38 || (opc >= 39 && opc <= 44) || (opc >= 45 && opc <= 50) ||
+            opc == 51 || opc == 52 || opc == 53 || opc == 54 ||
+            (opc >= 57 && opc <= 62)) continue;
         g=indicator(op,(float)opc)*alive; out[S_PC]+=g; out[S_IS_NATIVE]+=g;
     }
     /* OP_CALL (25): set IS_CALL flag for exec loop, PC++ */
@@ -2287,7 +2323,7 @@ static void exec_loop_postprocess(float x[D], const Instr* prog, int n_instr) {
                     g_heap[ptr + 12] = x[S_TYPE_R3];
                     g_heap[ptr + 13] = TYPE_NUMBER;
                     g_heap[ptr + 14] = (float)g_frame_count;
-                    g_heap[ptr + 15] = (float)g_wind_depth;
+                    g_heap[ptr + 15] = x[S_WIND_DEPTH];
                     g_heap_ptr += CONT_SIZE;
                     cont_ptr = (float)ptr;
                 }
@@ -2328,7 +2364,8 @@ static void exec_loop_postprocess(float x[D], const Instr* prog, int n_instr) {
                     x[S_DEPTH] = g_heap[cptr +  1] + 1;
                     /* Restore frame count and wind depth */
                     g_frame_count = (int)g_heap[cptr + 14];
-                    g_wind_depth  = (int)g_heap[cptr + 15];
+                    x[S_WIND_DEPTH] = g_heap[cptr + 15];
+                    g_wind_depth  = (int)x[S_WIND_DEPTH];
                 }
                 #undef CONT_SIZE
             }
@@ -3759,6 +3796,29 @@ static void generate_weights(InterpreterWeights* w) {
         /* OP_VOID (63): no stack effect, PC++ */
         n = add_gated_pair(w,L,n, 63, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
 
+        /* Exception/dynamic-wind bookkeeping. Full raise/unwind remains native. */
+        n = add_gated_pair(w,L,n, 57, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
+        n = add_gated_pair(w,L,n, 57, -1,0,-1,0,-1,0,-1,0, 1.0f, S_EXC_DEPTH, 1.0f);
+        n = add_gated_pair(w,L,n, 58, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
+        n = add_gated_pair(w,L,n, 58, -1,0,-1,0,-1,0,-1,0, -1.0f, S_EXC_DEPTH, 1.0f);
+        n = add_gated_pair(w,L,n, 59, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
+        n = add_gated_pair(w,L,n, 59, S_TOS,-1,-1,0,-1,0,-1,0, 0, S_TOS, 1.0f);
+        n = add_gated_pair(w,L,n, 59, S_TOS,1,S_SOS,-1,-1,0,-1,0, 0, S_SOS, 1.0f);
+        n = add_gated_pair(w,L,n, 59, S_SOS,1,S_R2,-1,-1,0,-1,0, 0, S_R2, 1.0f);
+        n = add_gated_pair(w,L,n, 59, S_R2,1,S_R3,-1,-1,0,-1,0, 0, S_R3, 1.0f);
+        n = add_gated_pair(w,L,n, 59, -1,0,-1,0,-1,0,-1,0, 1.0f, S_DEPTH, 1.0f);
+        n = add_type_push(w,L,n, 59, TYPE_NUMBER);
+        n = add_gated_pair(w,L,n, 61, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
+        n = add_gated_pair(w,L,n, 61, -1,0,-1,0,-1,0,-1,0, 1.0f, S_WIND_DEPTH, 1.0f);
+        n = add_gated_pair(w,L,n, 61, S_SOS,1,S_TOS,-1,-1,0,-1,0, 0, S_TOS, 1.0f);
+        n = add_gated_pair(w,L,n, 61, S_R2,1,S_SOS,-1,-1,0,-1,0, 0, S_SOS, 1.0f);
+        n = add_gated_pair(w,L,n, 61, S_R3,1,S_R2,-1,-1,0,-1,0, 0, S_R2, 1.0f);
+        n = add_gated_pair(w,L,n, 61, S_R3,-1,-1,0,-1,0,-1,0, 0, S_R3, 1.0f);
+        n = add_gated_pair(w,L,n, 61, -1,0,-1,0,-1,0,-1,0, -1.0f, S_DEPTH, 1.0f);
+        n = add_type_pop(w,L,n, 61);
+        n = add_gated_pair(w,L,n, 62, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
+        n = add_gated_pair(w,L,n, 62, -1,0,-1,0,-1,0,-1,0, -1.0f, S_WIND_DEPTH, 1.0f);
+
         /* OP_PACK_REST (60): pack MEM[n_fixed..3] into a contiguous arena list. */
         n = add_gated_pair(w,L,n, 60, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
         {
@@ -3791,7 +3851,9 @@ static void generate_weights(InterpreterWeights* w) {
 
         /* Remaining delegated opcodes (38-62): all IS_NATIVE + PC++ */
         for (int opc = 38; opc <= 62; opc++) {
-            if (opc == 38 || (opc >= 39 && opc <= 44) || (opc >= 45 && opc <= 50) || opc == 51 || opc == 52 || opc == 53 || opc == 54 || opc == 60) continue;
+            if (opc == 38 || (opc >= 39 && opc <= 44) || (opc >= 45 && opc <= 50) ||
+                opc == 51 || opc == 52 || opc == 53 || opc == 54 ||
+                (opc >= 57 && opc <= 62)) continue;
             n = add_gated_pair(w,L,n, opc, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
             n = add_gated_pair(w,L,n, opc, -1,0,-1,0,-1,0,-1,0, 1.0f, S_IS_NATIVE, 1.0f);
         }
@@ -5015,6 +5077,14 @@ int main(int argc, char** argv) {
       test("popn3 keeps TOS", p, 7, 40); }
     { Instr p[]={{OP_VOID,0},{OP_CONST,42},{OP_PRINT,0},{OP_HALT,0}};
       test("void pc++", p, 4, 42); }
+    { Instr p[]={{OP_PUSH_HANDLER,4},{OP_POP_HANDLER,0},{OP_CONST,42},
+                 {OP_PRINT,0},{OP_HALT,0}};
+      test("handler push/pop pc++", p, 5, 42); }
+    { Instr p[]={{OP_GET_EXN,0},{OP_PRINT,0},{OP_HALT,0}};
+      test("get-exn default zero", p, 3, 0); }
+    { Instr p[]={{OP_CONST,11},{OP_CONST,22},{OP_WIND_PUSH,0},
+                 {OP_WIND_POP,0},{OP_PRINT,0},{OP_HALT,0}};
+      test("wind push/pop keeps body value", p, 6, 11); }
     { Instr p[]={{OP_CONST,42},{OP_SET_UPVALUE,0},{OP_GET_UPVALUE,0},
                  {OP_PRINT,0},{OP_HALT,0}};
       test("upvalue set/get mem0", p, 5, 42); }

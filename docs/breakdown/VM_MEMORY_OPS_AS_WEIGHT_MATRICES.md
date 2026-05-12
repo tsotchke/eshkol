@@ -24,10 +24,10 @@ work should use arena terminology and avoid GC/free-list semantics.
 The landed pair slice uses the existing six-layer schedule rather than adding
 Layer 6/7 immediately: Layer 3 computes stack effects plus arena operation
 transients, and Layer 4 performs arena read/write alongside the AD tape write
-logic. Current artifact verification after the bounded arena closure-cell
-slice:
-101/101 inline tests pass, 98/98 traced programs agree on PRINT output and full
-per-step state, opcode coverage is 63 weight-implemented / 0 native-delegated
+logic. Current artifact verification after the bounded handler/wind
+bookkeeping slice:
+104/104 inline tests pass, 101/101 traced programs agree on PRINT output and full
+per-step state, opcode coverage is 68 weight-implemented / 0 native-delegated
 in the exercised coverage set, and the QLMW export is d_model=256, FFN=2048,
 11,037,702 parameters.
 
@@ -79,13 +79,15 @@ We classify these by **whether the runtime side-effect is essential or
 incidental**:
 
 - **Encodable (this design):** type predicates, heap data ops, closures,
-  upvalues, `POPN`, `TAIL_CALL`, `PACK_REST`, AD transcendentals.
+  upvalues, `POPN`, `TAIL_CALL`, `PACK_REST`, handler/wind bookkeeping,
+  AD transcendentals.
 - **Genuinely native (out of scope here):** `NATIVE_CALL` (by definition
   bridges to libcurl, sqlite3, libpthread), `CALLCC`/`INVOKE_CC` (first-class
   continuation requires capturing the entire VM stack — can be encoded with
-  unbounded depth penalty), `PUSH_HANDLER`/`POP_HANDLER`/`GET_EXN`/`WIND_PUSH`/
-  `WIND_POP` (R7RS exception + dynamic-wind require the VM to manipulate frames
-  *outside* the transformer's instruction-fetch path).
+  unbounded depth penalty), and full R7RS raise/unwind through exception +
+  dynamic-wind frames. The simple handler-depth and wind-depth bookkeeping
+  opcodes are now in the weight path; invoking the unwind protocol remains a
+  runtime boundary.
 - **Precision-delegated:** `OP_DIV`, `OP_MOD`. The transformer can emit
   approximations via Newton-Raphson iteration but the bit-identical agreement
   contract requires IEEE-correct rounding, which is delegated. We leave these
@@ -481,8 +483,8 @@ transformer cannot represent in its bounded state":
 | `OP_NATIVE_CALL` | Bridges to libcurl, sqlite3, libpthread, libm, etc. The state is in the OS, not the transformer. |
 | `OP_CALLCC` | First-class continuation captures the entire VM stack including the heap; bounding it would change semantics. The Sukhbaatar 2015 / Santoro 2018 RMC tradeoff applies — bounded continuations are encodable but not R7RS-faithful. |
 | `OP_INVOKE_CC` | Symmetric inverse of CALLCC; same constraint. |
-| `OP_PUSH_HANDLER`, `OP_POP_HANDLER`, `OP_GET_EXN` | R7RS exception handling traverses the dynamic-wind stack; the unwinding is iterative-with-side-effect-on-frames. |
-| `OP_WIND_PUSH`, `OP_WIND_POP` | Same as above. |
+| `OP_PUSH_HANDLER`, `OP_POP_HANDLER`, `OP_GET_EXN` | Bounded depth bookkeeping and default `GET_EXN` are weight-encoded; full R7RS raise/unwind still traverses dynamic-wind frames and remains native. |
+| `OP_WIND_PUSH`, `OP_WIND_POP` | Bounded wind-depth bookkeeping and stack effects are weight-encoded; running after-thunks during continuation unwinding remains native. |
 | `OP_DIV`, `OP_MOD` | IEEE 754 correct rounding requires libm. Newton-Raphson in the transformer matches to ~3 ULPs, not bit-identical. |
 
 For the artifact contract, we ship **both** a "strict-bit-identical"
@@ -645,13 +647,13 @@ if newly weight-encoded opcodes change state-vector trajectories.
 - [x] Encode bounded `OP_TAIL_CALL` arities 0..4 as frame reuse in the
   weight path
 - [x] `OP_PACK_REST` via bounded arena list creation
-- [x] Re-run `scripts/paper/run_paper_suite.sh`; current report is 98/98
-  PRINT-output and full-state agreement, with 63 weight-implemented / 0
+- [x] Re-run `scripts/paper/run_paper_suite.sh`; current report is 101/101
+  PRINT-output and full-state agreement, with 68 weight-implemented / 0
   native-delegated opcodes in the exercised coverage set
 - [x] **Acceptance:** Stage 3's bounded closure/upvalue, tail-call, and
   pack-rest artifact paths are weight-implemented. The remaining true native
   boundary is outside this stage: `OP_NATIVE_CALL`, `OP_CALLCC`/`OP_INVOKE_CC`,
-  exception/dynamic-wind stack unwinding, `DIV`/`MOD`, and the relaxed-precision
+  full exception/dynamic-wind unwinding, `DIV`/`MOD`, and the relaxed-precision
   AD transcendentals.
 
 ### Stage 4 — AD transcendentals (Taylor + Newton-Raphson) on a separate build target
