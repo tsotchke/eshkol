@@ -95,6 +95,8 @@
 #define ARENA_MAX_INLINE_VECTOR 4
 #define ARENA_CONT_CELLS 4
 #define CONT_RESTORE_MARKER 7.0f
+#define AD_TRIG_WEIGHT_MIN_INPUT -4
+#define AD_TRIG_WEIGHT_MAX_INPUT 4
 
 /* Opcodes — canonical numbering from eshkol_compiler.c */
 typedef enum {
@@ -4724,20 +4726,18 @@ static void generate_weights(InterpreterWeights* w) {
                 n = add_gated_opcode_index(w,L,n, uop, S_AD_LEFT_VALUE, 4,
                                            -1,0,-1,0,-1,0,-1,0,
                                            0.25f, S_AD_CUR_SAVED, 1.0f);
-            } else if (uop == 81) {
-                n = add_gated_opcode_index(w,L,n, uop, S_AD_LEFT_VALUE, 0,
-                                           -1,0,-1,0,-1,0,-1,0,
-                                           0.0f, S_AD_CUR_VALUE, 1.0f);
-                n = add_gated_opcode_index(w,L,n, uop, S_AD_LEFT_VALUE, 0,
-                                           -1,0,-1,0,-1,0,-1,0,
-                                           1.0f, S_AD_CUR_SAVED, 1.0f);
-            } else if (uop == 82) {
-                n = add_gated_opcode_index(w,L,n, uop, S_AD_LEFT_VALUE, 0,
-                                           -1,0,-1,0,-1,0,-1,0,
-                                           1.0f, S_AD_CUR_VALUE, 1.0f);
-                n = add_gated_opcode_index(w,L,n, uop, S_AD_LEFT_VALUE, 0,
-                                           -1,0,-1,0,-1,0,-1,0,
-                                           0.0f, S_AD_CUR_SAVED, 1.0f);
+            } else if (uop == 81 || uop == 82) {
+                for (int input = AD_TRIG_WEIGHT_MIN_INPUT; input <= AD_TRIG_WEIGHT_MAX_INPUT; input++) {
+                    float xval = (float)input;
+                    float value = (uop == 81) ? sinf(xval) : cosf(xval);
+                    float saved = (uop == 81) ? cosf(xval) : -sinf(xval);
+                    n = add_gated_opcode_index(w,L,n, uop, S_AD_LEFT_VALUE, input,
+                                               -1,0,-1,0,-1,0,-1,0,
+                                               value, S_AD_CUR_VALUE, 1.0f);
+                    n = add_gated_opcode_index(w,L,n, uop, S_AD_LEFT_VALUE, input,
+                                               -1,0,-1,0,-1,0,-1,0,
+                                               saved, S_AD_CUR_SAVED, 1.0f);
+                }
             }
             n = add_gated_pair_ad(w,L,n, uop, -1,0,-1,0,-1,0,-1,0, 1.0f, S_AD_IS_FORWARD, 1.0f);
             if (uop != 69 && uop != 70 && uop != 71 && uop != 72 &&
@@ -6299,6 +6299,17 @@ int main(int argc, char** argv) {
         {OP_HALT, 0}
       }; test("AD: d/dx sin(0) = 1", p, 7, 1); }
 
+    /* f(x) = sin(1): grad = cos(1) */
+    { Instr p[]={
+        {OP_AD_VAR, 1},
+        {OP_AD_SIN, 0},
+        {OP_AD_BACKWARD, 0},
+        {OP_CONST, 0},
+        {OP_AD_GRAD, 0},
+        {OP_PRINT, 0},
+        {OP_HALT, 0}
+      }; test("AD: d/dx sin(1) = cos(1)", p, 7, cosf(1.0f)); }
+
     /* f(x) = cos(0): grad = -sin(0) = 0 */
     { Instr p[]={
         {OP_AD_VAR, 0},
@@ -6309,6 +6320,39 @@ int main(int argc, char** argv) {
         {OP_PRINT, 0},
         {OP_HALT, 0}
       }; test("AD: d/dx cos(0) = 0", p, 7, 0); }
+
+    /* f(x) = cos(1): grad = -sin(1) */
+    { Instr p[]={
+        {OP_AD_VAR, 1},
+        {OP_AD_COS, 0},
+        {OP_AD_BACKWARD, 0},
+        {OP_CONST, 0},
+        {OP_AD_GRAD, 0},
+        {OP_PRINT, 0},
+        {OP_HALT, 0}
+      }; test("AD: d/dx cos(1) = -sin(1)", p, 7, -sinf(1.0f)); }
+
+    /* f(x) = cos(-1): grad = -sin(-1) */
+    { Instr p[]={
+        {OP_AD_VAR, -1},
+        {OP_AD_COS, 0},
+        {OP_AD_BACKWARD, 0},
+        {OP_CONST, 0},
+        {OP_AD_GRAD, 0},
+        {OP_PRINT, 0},
+        {OP_HALT, 0}
+      }; test("AD: d/dx cos(-1) = sin(1)", p, 7, sinf(1.0f)); }
+
+    /* f(x) = sin(-1): grad = cos(-1), exercising a negative table row */
+    { Instr p[]={
+        {OP_AD_VAR, -1},
+        {OP_AD_SIN, 0},
+        {OP_AD_BACKWARD, 0},
+        {OP_CONST, 0},
+        {OP_AD_GRAD, 0},
+        {OP_PRINT, 0},
+        {OP_HALT, 0}
+      }; test("AD: d/dx sin(-1) = cos(1)", p, 7, cosf(1.0f)); }
 
     /* f(x) = relu(3): grad = 1 */
     { Instr p[]={

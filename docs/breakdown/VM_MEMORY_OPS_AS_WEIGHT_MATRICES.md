@@ -33,8 +33,8 @@ writeback, and Layer 5 AD gradient writeback. Layer 1 now loads bounded AD
 tape parent values before Layer 2 so `OP_AD_MUL` forward recording is also
 encoded as weights.
 
-Current artifact verification after the bounded continuation slice:
-118/118 inline tests pass, 115/115 traced programs agree on PRINT output and
+Current artifact verification after the bounded AD trig table slice:
+122/122 inline tests pass, 119/119 traced programs agree on PRINT output and
 full per-step state, opcode coverage is 78 weight-implemented / 0
 VM-native-delegated / 0 transformer-native-assisted in the exercised coverage
 set, and the QLMW export is d_model=256, FFN=2304, 12,220,422 parameters.
@@ -42,15 +42,16 @@ The exercised trace set now has no `S_IS_NATIVE` postprocess assistance.
 `OP_DIV` is weight-encoded for positive integer denominators 1..16,
 `OP_MOD` is weight-encoded for the positive integer `% 3` and `% 4` verifier
 range, `AD_ABS`/`AD_RELU` are weight-encoded for bounded nonzero
-integer-scale cases, and `AD_EXP`/`AD_SIGMOID`/`AD_TANH`/`AD_LOG`/`AD_SQRT`,
-`AD_SIN`, and `AD_COS` are table-encoded for the exercised inputs (`exp(0)`,
-`sigmoid(0)`, `sigmoid(1)`, `tanh(0)`, `log(1)`, `sqrt(4)`, `sin(0)`,
-`cos(0)`). `AD_DIV` is weight-encoded for positive integer denominator table
+integer-scale cases, `AD_EXP`/`AD_SIGMOID`/`AD_TANH`/`AD_LOG`/`AD_SQRT` are
+table-encoded for the exercised inputs (`exp(0)`, `sigmoid(0)`, `sigmoid(1)`,
+`tanh(0)`, `log(1)`, `sqrt(4)`), and `AD_SIN`/`AD_COS` are table-encoded for
+integer inputs -4..4 with representative traced coverage at -1, 0, and 1.
+`AD_DIV` is weight-encoded for positive integer denominator table
 entries 1..16, including both numerator and denominator reverse-mode gradients.
 `AD_POW` is weight-encoded for positive integer bases 1..8 and exponents 1..4,
 including both base and exponent reverse-mode gradients.
-Untested or broader libm paths (general `exp`/`sigmoid`/`tanh`/`log`/`sqrt`/
-`sin`/`cos`, general `AD_DIV`, general `AD_POW`) remain bounded-state
+Untested or broader libm paths (general non-integer `exp`/`sigmoid`/`tanh`/
+`log`/`sqrt`/`sin`/`cos`, general `AD_DIV`, general `AD_POW`) remain bounded-state
 candidates or precision-contract decisions, not completed general encodings.
 
 ## 1. Problem statement
@@ -475,8 +476,9 @@ support needs the same list/arena path as `OP_PACK_REST`.
 ### 5.11. AD transcendentals (4 ops): `OP_AD_DIV`, `OP_AD_POW`, `OP_AD_SIN`, `OP_AD_COS`
 
 These are delegated for *precision*, not for runtime side-effect. The strict
-artifact build now table-encodes the exercised `sin(0)` and `cos(0)` AD cases,
-including saved reverse-mode derivatives (`cos(0)=1`, `-sin(0)=0`), and
+artifact build now table-encodes `AD_SIN` and `AD_COS` for integer inputs -4..4,
+including saved reverse-mode derivatives (`cos(x)` for `sin`, `-sin(x)` for
+`cos`) and traced representative cases at -1, 0, and 1. It also table-encodes
 bounded `AD_DIV` for positive integer denominators 1..16. Division stores
 `1/right` as the saved left-derivative factor and gates the right derivative
 `-grad*left/(right^2)` by denominator. Bounded `AD_POW` covers positive integer
@@ -682,15 +684,17 @@ if newly weight-encoded opcodes change state-vector trajectories.
 - [x] `OP_PACK_REST` via bounded arena list creation
 - [x] Encode bounded exact integer `OP_DIV`/`OP_MOD` cases exercised by the
   artifact suite
-- [x] Encode exercised `AD_EXP`/`AD_SIGMOID`/`AD_TANH`/`AD_LOG`/`AD_SQRT`/
-  `AD_SIN`/`AD_COS` libm values as bounded AD table paths
+- [x] Encode exercised `AD_EXP`/`AD_SIGMOID`/`AD_TANH`/`AD_LOG`/`AD_SQRT`
+  libm values as bounded AD table paths
+- [x] Encode `AD_SIN`/`AD_COS` integer input table -4..4, with traced
+  representative coverage at -1, 0, and 1
 - [x] Encode exercised bounded `AD_DIV` denominator table path, including both
   `d(x/2)/dx` and `d(6/y)/dy` reverse-mode checks
 - [x] Encode exercised bounded `AD_POW` positive integer table path, including
   both `d(pow(x,2))/dx` and `d(pow(2,y))/dy` reverse-mode checks
 - [x] Encode bounded direct-entry `OP_CALLCC`/`OP_INVOKE_CC` escape
   continuations as a four-cell arena record
-- [x] Re-run `scripts/paper/run_paper_suite.sh`; current report is 115/115
+- [x] Re-run `scripts/paper/run_paper_suite.sh`; current report is 119/119
   PRINT-output and full-state agreement, with 78 weight-implemented / 0
   native-delegated / 0 transformer-native-assisted opcodes in the exercised
   coverage set
@@ -706,8 +710,8 @@ if newly weight-encoded opcodes change state-vector trajectories.
 *~1 week, ~100k new params*
 
 - [x] Exercised `AD_EXP(0)`, `AD_SIGMOID(0/1)`, `AD_TANH(0)`, `AD_LOG(1)`,
-  `AD_SQRT(4)`, `AD_SIN(0)`, and `AD_COS(0)` values via bounded table gates
-  in the strict artifact build
+  `AD_SQRT(4)`, and representative `AD_SIN`/`AD_COS` integer inputs -1, 0,
+  and 1 via bounded table gates in the strict artifact build
 - [x] Exercised `AD_DIV` via positive denominator table gates and both
   numerator/denominator reverse-mode gradient paths
 - [x] Exercised `AD_POW` via positive base/exponent table gates and both
