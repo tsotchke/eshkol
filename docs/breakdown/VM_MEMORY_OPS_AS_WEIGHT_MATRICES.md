@@ -10,8 +10,9 @@
 (`NULL_P`, six type predicates, `POPN`). Stage 2 now has two landed arena
 slices: `58bc8b9` (`CONS`, `CAR`, `CDR`, `SET_CAR`, `SET_CDR`) and the
 bounded inline-vector slice (`VEC_CREATE`, `VEC_REF`, `VEC_SET`, `VEC_LEN`).
-The current artifact shape of `OP_CLOSURE` and `OP_TAIL_CALL` is also encoded
-in the weight path; upvalue-bearing closures remain future work.
+The current artifact shape of `OP_CLOSURE`, `OP_TAIL_CALL`, and the
+MEM-backed `OP_GET_UPVALUE`/`OP_SET_UPVALUE` fallback is also encoded in the
+weight path; upvalue-bearing closure cells remain future work.
 The implementation uses Eshkol's arena model, not a free-list heap: Zone E is
 a bounded in-state arena bank, `S_ARENA_NEXT` is a bump pointer, and stack
 object references are small arena cell indices. The older "heap" wording below
@@ -21,11 +22,12 @@ work should use arena terminology and avoid GC/free-list semantics.
 The landed pair slice uses the existing six-layer schedule rather than adding
 Layer 6/7 immediately: Layer 3 computes stack effects plus arena operation
 transients, and Layer 4 performs arena read/write alongside the AD tape write
-logic. Current artifact verification after the closure/tail-call slice:
-86/86 inline tests pass, 83/83 traced programs agree on PRINT output and full
-per-step state, opcode coverage is 55 weight-implemented / 0 native-delegated
-in the exercised coverage set, and the QLMW export is d_model=256, FFN=1280,
-7,489,542 parameters.
+logic. Current artifact verification after the MEM-backed upvalue fallback
+slice:
+88/88 inline tests pass, 85/85 traced programs agree on PRINT output and full
+per-step state, opcode coverage is 57 weight-implemented / 0 native-delegated
+in the exercised coverage set, and the QLMW export is d_model=256, FFN=1536,
+8,672,262 parameters.
 
 ## 1. Problem statement
 
@@ -268,8 +270,8 @@ extension required for stage 1.
 two FFN entries — sign-pair on the SCALE bias, like
 `weight_matrices.c:780-790` already does for `S_CMP_EQ`). Layer 3:
 2 new `add_gated_pair` calls per predicate × 7 predicates = 14 entries.
-**~28 new neurons total**, well inside the existing FFN_DIM=1024
-budget. No layer count change. No `d_model` change.
+**~28 new neurons total**, well inside the FFN budget. No layer count
+change. No `d_model` change.
 
 ### 5.2. `OP_NULL_P` (currently delegated, encodable)
 
@@ -403,6 +405,12 @@ display literals: `"hello"`). Stage-1 `len ≤ 4` covers ~80% of artifact
 strings; we extend to length 32 in stage 2 by chaining 8 cells.
 
 ### 5.8. Closures and upvalues (5 ops)
+
+Landed subset: `OP_CLOSURE` now creates an arena closure header for the
+artifact's current shape, and `OP_GET_UPVALUE`/`OP_SET_UPVALUE` are encoded
+for the existing MEM-backed fallback using the same `S_LOADVAL` and
+`S_STORED*` precomputes as locals. The closure-cell capture design below is
+still future work.
 
 A closure is a **cell with `F_TYPE = closure`**, where `F_CAR = function-pc`
 (integer constant pool index pointing to the bytecode entry), and
@@ -640,12 +648,13 @@ if newly weight-encoded opcodes change state-vector trajectories.
 
 - [x] Encode artifact-shape `OP_CLOSURE` as an arena closure header
   (`car = entry_pc`, `cdr = reserved upvalue count`)
+- [x] Encode MEM-backed `OP_GET_UPVALUE`, `OP_SET_UPVALUE` fallback
 - [ ] `OP_GET_UPVALUE`, `OP_SET_UPVALUE` via arena closure cells
 - [x] Encode artifact-shape `OP_TAIL_CALL` for current compiler emission
   (`argc = 2`) as frame reuse in the weight path
 - [ ] `OP_PACK_REST` via looped CONS
-- [x] Re-run `scripts/paper/run_paper_suite.sh`; current report is 83/83
-  PRINT-output and full-state agreement, with 55 weight-implemented / 0
+- [x] Re-run `scripts/paper/run_paper_suite.sh`; current report is 85/85
+  PRINT-output and full-state agreement, with 57 weight-implemented / 0
   native-delegated opcodes in the exercised coverage set
 - [ ] **Acceptance:** all currently-delegated ops (24 of 26) now weight-
   implemented; only `OP_NATIVE_CALL` and `OP_CALLCC`/`OP_INVOKE_CC` +

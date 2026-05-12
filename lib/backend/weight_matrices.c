@@ -10,7 +10,7 @@
  *   2. Simulated transformer (C functions mirroring weight computation)
  *   3. Matrix-based forward pass (actual W @ x + b through generic matmul)
  *
- * Architecture: d_model=256, n_heads=16, head_dim=2, n_layers=6, FFN_DIM=1280
+ * Architecture: d_model=256, n_heads=16, head_dim=2, n_layers=6, FFN_DIM=1536
  *   Layer 0: Instruction fetch (Gaussian attention peaked at PC)
  *   Layer 1: Product precompute (SQUARE activation for TOS*SOS + AD backward products)
  *   Layer 2: Preprocessing (gated FFN for address resolution, comparisons, AD cursor load)
@@ -55,7 +55,7 @@
 #define HD 2
 #define N_LAYERS 6
 #define MEM_SIZE 4
-#define FFN_DIM 1280
+#define FFN_DIM 1536
 /* Temperature for softmax/sigmoid gates.
  *
  * For bit-identical agreement between the matrix forward pass and the
@@ -469,6 +469,20 @@ static void execute_step(const State* cur, const Instr* prog, int n_instr, State
         next->s[S_TOS]=sos; next->s[S_SOS]=r2; next->s[S_R2]=r3; next->s[S_R3]=0; next->s[S_DEPTH]=cur->s[S_DEPTH]-1;
         next->s[S_TYPE_TOS]=tt_sos; next->s[S_TYPE_SOS]=tt_r2; next->s[S_TYPE_R2]=tt_r3; next->s[S_TYPE_R3]=TYPE_NUMBER;
         next->s[S_PC]=pc+1; break;
+    case OP_GET_UPVALUE:
+        addr=(int)operand;
+        next->s[S_R3]=r2; next->s[S_R2]=sos; next->s[S_SOS]=tos;
+        next->s[S_TOS]=(addr>=0&&addr<MEM_SIZE)?cur->s[S_MEM0+addr]:0;
+        next->s[S_DEPTH]=cur->s[S_DEPTH]+1; next->s[S_PC]=pc+1;
+        next->s[S_TYPE_R3]=tt_r2; next->s[S_TYPE_R2]=tt_sos; next->s[S_TYPE_SOS]=tt_tos;
+        next->s[S_TYPE_TOS]=TYPE_NUMBER;
+        break;
+    case OP_SET_UPVALUE:
+        addr=(int)operand;
+        if(addr>=0&&addr<MEM_SIZE) next->s[S_MEM0+addr]=tos;
+        next->s[S_TOS]=sos; next->s[S_SOS]=r2; next->s[S_R2]=r3; next->s[S_R3]=0; next->s[S_DEPTH]=cur->s[S_DEPTH]-1;
+        next->s[S_TYPE_TOS]=tt_sos; next->s[S_TYPE_SOS]=tt_r2; next->s[S_TYPE_R2]=tt_r3; next->s[S_TYPE_R3]=TYPE_NUMBER;
+        next->s[S_PC]=pc+1; break;
     case OP_CALL:   /* Set IS_CALL for exec loop to handle frame management */
         next->s[S_IS_CALL]=1; next->s[S_PC]=pc+1; break;
     case OP_TAIL_CALL: {
@@ -813,7 +827,7 @@ static void execute_step(const State* cur, const Instr* prog, int n_instr, State
 
     /* All remaining opcodes delegate to exec loop via IS_NATIVE */
     case OP_NATIVE_CALL:
-    case OP_GET_UPVALUE: case OP_SET_UPVALUE: case OP_CLOSE_UPVALUE:
+    case OP_CLOSE_UPVALUE:
     case OP_STR_REF: case OP_STR_LEN:
     case OP_OPEN_CLOSURE: case OP_CALLCC: case OP_INVOKE_CC:
     case OP_PUSH_HANDLER: case OP_POP_HANDLER: case OP_GET_EXN:
@@ -1207,10 +1221,18 @@ static void layer3_ffn(const float x[D], float out[D]) {
     out[S_ARENA_READ_CDR]+=g; out[S_ARENA_TARGET]+=g*tos;
     /* OP_NULL_P (34): weight-encoded nil predicate */
     g=indicator(op,34)*alive; out[S_PC]+=g; out[S_TOS]+=g*(x[S_TYPE_IS_NIL]-tos); out[S_TYPE_TOS]+=g*(TYPE_BOOL-ttos);
-    /* OP_GET_UPVALUE (22): delegate */
-    g=indicator(op,22)*alive; out[S_PC]+=g; out[S_IS_NATIVE]+=g;
-    /* OP_SET_UPVALUE (23): delegate */
-    g=indicator(op,23)*alive; out[S_PC]+=g; out[S_IS_NATIVE]+=g;
+    /* OP_GET_UPVALUE (22): MEM-backed upvalue slot read. Closure-cell
+     * captures land in a later slice; this matches the existing fallback. */
+    g=indicator(op,22)*alive;
+    out[S_PC]+=g; out[S_TOS]+=g*(lv-tos); out[S_SOS]+=g*(tos-sos); out[S_R2]+=g*(sos-r2); out[S_R3]+=g*(r2-r3); out[S_DEPTH]+=g;
+    out[S_TYPE_TOS]+=g*(TYPE_NUMBER-ttos); out[S_TYPE_SOS]+=g*(ttos-tsos); out[S_TYPE_R2]+=g*(tsos-tr2); out[S_TYPE_R3]+=g*(tr2-tr3);
+    /* OP_SET_UPVALUE (23): MEM-backed upvalue slot write, then pop. */
+    g=indicator(op,23)*alive; {
+        out[S_PC]+=g;
+        for (int a = 0; a < MEM_SIZE; a++) out[S_MEM0+a] += g * x[S_STORED0+a];
+        out[S_TOS]+=g*(sos-tos); out[S_SOS]+=g*(r2-sos); out[S_R2]+=g*(r3-r2); out[S_R3]+=g*(-r3); out[S_DEPTH]+=g*(-1);
+        out[S_TYPE_TOS]+=g*(tsos-ttos); out[S_TYPE_SOS]+=g*(tr2-tsos); out[S_TYPE_R2]+=g*(tr3-tr2); out[S_TYPE_R3]+=g*(TYPE_NUMBER-tr3);
+    }
     /* OP_CLOSURE (24): allocate closure header in bounded arena.
      * car stores function entry PC; cdr reserves n_upvals for future slices. */
     g=indicator(op,24)*alive; {
@@ -3316,12 +3338,26 @@ static void generate_weights(InterpreterWeights* w) {
         n = add_gated_pair(w,L,n, 34, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
         n = add_gated_pair(w,L,n, 34, S_TYPE_IS_NIL,1,S_TOS,-1,-1,0,-1,0, 0, S_TOS, 1.0f);
         n = add_type_unary_result(w,L,n, 34, TYPE_BOOL);
-        /* OP_GET_UPVALUE (22): IS_NATIVE */
+        /* OP_GET_UPVALUE (22): MEM-backed upvalue slot read. Closure-cell
+         * captures are a later slice; this mirrors the reference fallback. */
         n = add_gated_pair(w,L,n, 22, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
-        n = add_gated_pair(w,L,n, 22, -1,0,-1,0,-1,0,-1,0, 1.0f, S_IS_NATIVE, 1.0f);
-        /* OP_SET_UPVALUE (23): IS_NATIVE */
+        n = add_gated_pair(w,L,n, 22, S_LOADVAL,1,S_TOS,-1,-1,0,-1,0, 0, S_TOS, 1.0f);
+        n = add_gated_pair(w,L,n, 22, S_TOS,1,S_SOS,-1,-1,0,-1,0, 0, S_SOS, 1.0f);
+        n = add_gated_pair(w,L,n, 22, S_SOS,1,S_R2,-1,-1,0,-1,0, 0, S_R2, 1.0f);
+        n = add_gated_pair(w,L,n, 22, S_R2,1,S_R3,-1,-1,0,-1,0, 0, S_R3, 1.0f);
+        n = add_gated_pair(w,L,n, 22, -1,0,-1,0,-1,0,-1,0, 1.0f, S_DEPTH, 1.0f);
+        n = add_type_push(w,L,n, 22, TYPE_NUMBER);
+        /* OP_SET_UPVALUE (23): MEM-backed upvalue slot write, then pop. */
         n = add_gated_pair(w,L,n, 23, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
-        n = add_gated_pair(w,L,n, 23, -1,0,-1,0,-1,0,-1,0, 1.0f, S_IS_NATIVE, 1.0f);
+        for (int a = 0; a < MEM_SIZE; a++) {
+            n = add_gated_pair(w,L,n, 23, S_STORED0+a,1,-1,0,-1,0,-1,0, 0, S_MEM0+a, 1.0f);
+        }
+        n = add_gated_pair(w,L,n, 23, S_SOS,1,S_TOS,-1,-1,0,-1,0, 0, S_TOS, 1.0f);
+        n = add_gated_pair(w,L,n, 23, S_R2,1,S_SOS,-1,-1,0,-1,0, 0, S_SOS, 1.0f);
+        n = add_gated_pair(w,L,n, 23, S_R3,1,S_R2,-1,-1,0,-1,0, 0, S_R2, 1.0f);
+        n = add_gated_pair(w,L,n, 23, S_R3,-1,-1,0,-1,0,-1,0, 0, S_R3, 1.0f);
+        n = add_gated_pair(w,L,n, 23, -1,0,-1,0,-1,0,-1,0, -1.0f, S_DEPTH, 1.0f);
+        n = add_type_pop(w,L,n, 23);
         /* OP_CLOSURE (24): allocate closure header in bounded arena. */
         n = add_gated_pair(w,L,n, 24, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
         n = add_gated_pair(w,L,n, 24, S_ARENA_NEXT,1,S_TOS,-1,-1,0,-1,0, 0, S_TOS, 1.0f);
@@ -4678,6 +4714,12 @@ int main(int argc, char** argv) {
     { Instr p[]={{OP_CONST,10},{OP_CONST,20},{OP_CONST,30},{OP_CONST,40},
                  {OP_POPN,3},{OP_PRINT,0},{OP_HALT,0}};
       test("popn3 keeps TOS", p, 7, 40); }
+    { Instr p[]={{OP_CONST,42},{OP_SET_UPVALUE,0},{OP_GET_UPVALUE,0},
+                 {OP_PRINT,0},{OP_HALT,0}};
+      test("upvalue set/get mem0", p, 5, 42); }
+    { Instr p[]={{OP_CONST,17},{OP_SET_LOCAL,1},{OP_GET_UPVALUE,1},
+                 {OP_PRINT,0},{OP_HALT,0}};
+      test("upvalue get mem1 fallback", p, 5, 17); }
 
     /* Composite: (+ (car (cons 10 20)) (cdr (cons 30 40))) = 10 + 40 = 50 */
     { Instr p[]={
