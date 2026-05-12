@@ -12,7 +12,8 @@ slices: `58bc8b9` (`CONS`, `CAR`, `CDR`, `SET_CAR`, `SET_CDR`) and the
 bounded inline-vector slice (`VEC_CREATE`, `VEC_REF`, `VEC_SET`, `VEC_LEN`).
 The current artifact shape of `OP_CLOSURE`, bounded `OP_TAIL_CALL` arities
 0..4, bounded `OP_PACK_REST`, arena-layout `OP_STR_REF`/`OP_STR_LEN`, and the
-MEM-backed `OP_GET_UPVALUE`/`OP_SET_UPVALUE` fallback are also encoded in the
+MEM-backed `OP_GET_UPVALUE`/`OP_SET_UPVALUE` fallback plus arena-path
+`OP_OPEN_CLOSURE`/`OP_CLOSE_UPVALUE` housekeeping are also encoded in the
 weight path; upvalue-bearing closure cells remain future work.
 The implementation uses Eshkol's arena model, not a free-list heap: Zone E is
 a bounded in-state arena bank, `S_ARENA_NEXT` is a bump pointer, and stack
@@ -23,9 +24,10 @@ work should use arena terminology and avoid GC/free-list semantics.
 The landed pair slice uses the existing six-layer schedule rather than adding
 Layer 6/7 immediately: Layer 3 computes stack effects plus arena operation
 transients, and Layer 4 performs arena read/write alongside the AD tape write
-logic. Current artifact verification after the string read slice:
-96/96 inline tests pass, 93/93 traced programs agree on PRINT output and full
-per-step state, opcode coverage is 60 weight-implemented / 0 native-delegated
+logic. Current artifact verification after the arena closure-housekeeping
+slice:
+98/98 inline tests pass, 95/95 traced programs agree on PRINT output and full
+per-step state, opcode coverage is 62 weight-implemented / 0 native-delegated
 in the exercised coverage set, and the QLMW export is d_model=256, FFN=2048,
 11,037,702 parameters.
 
@@ -411,7 +413,9 @@ strings; we extend to length 32 in stage 2 by chaining 8 cells.
 Landed subset: `OP_CLOSURE` now creates an arena closure header for the
 artifact's current shape, and `OP_GET_UPVALUE`/`OP_SET_UPVALUE` are encoded
 for the existing MEM-backed fallback using the same `S_LOADVAL` and
-`S_STORED*` precomputes as locals. The closure-cell capture design below is
+`S_STORED*` precomputes as locals. `OP_OPEN_CLOSURE` and
+`OP_CLOSE_UPVALUE` are encoded as arena-path housekeeping no-ops until
+closure-cell capture storage lands. The closure-cell capture design below is
 still future work.
 
 A closure is a **cell with `F_TYPE = closure`**, where `F_CAR = function-pc`
@@ -652,12 +656,14 @@ if newly weight-encoded opcodes change state-vector trajectories.
 - [x] Encode artifact-shape `OP_CLOSURE` as an arena closure header
   (`car = entry_pc`, `cdr = reserved upvalue count`)
 - [x] Encode MEM-backed `OP_GET_UPVALUE`, `OP_SET_UPVALUE` fallback
+- [x] Encode arena-path `OP_OPEN_CLOSURE`, `OP_CLOSE_UPVALUE` housekeeping
+  as no-ops pending closure-cell capture storage
 - [ ] `OP_GET_UPVALUE`, `OP_SET_UPVALUE` via arena closure cells
 - [x] Encode bounded `OP_TAIL_CALL` arities 0..4 as frame reuse in the
   weight path
 - [x] `OP_PACK_REST` via bounded arena list creation
-- [x] Re-run `scripts/paper/run_paper_suite.sh`; current report is 93/93
-  PRINT-output and full-state agreement, with 60 weight-implemented / 0
+- [x] Re-run `scripts/paper/run_paper_suite.sh`; current report is 95/95
+  PRINT-output and full-state agreement, with 62 weight-implemented / 0
   native-delegated opcodes in the exercised coverage set
 - [ ] **Acceptance:** all currently-delegated ops (24 of 26) now weight-
   implemented; only `OP_NATIVE_CALL` and `OP_CALLCC`/`OP_INVOKE_CC` +
