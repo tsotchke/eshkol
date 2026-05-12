@@ -11,9 +11,9 @@
 slices: `58bc8b9` (`CONS`, `CAR`, `CDR`, `SET_CAR`, `SET_CDR`) and the
 bounded inline-vector slice (`VEC_CREATE`, `VEC_REF`, `VEC_SET`, `VEC_LEN`).
 The current artifact shape of `OP_CLOSURE`, bounded `OP_TAIL_CALL` arities
-0..4, bounded `OP_PACK_REST`, and the MEM-backed
-`OP_GET_UPVALUE`/`OP_SET_UPVALUE` fallback are also encoded in the weight
-path; upvalue-bearing closure cells remain future work.
+0..4, bounded `OP_PACK_REST`, arena-layout `OP_STR_REF`/`OP_STR_LEN`, and the
+MEM-backed `OP_GET_UPVALUE`/`OP_SET_UPVALUE` fallback are also encoded in the
+weight path; upvalue-bearing closure cells remain future work.
 The implementation uses Eshkol's arena model, not a free-list heap: Zone E is
 a bounded in-state arena bank, `S_ARENA_NEXT` is a bump pointer, and stack
 object references are small arena cell indices. The older "heap" wording below
@@ -23,9 +23,9 @@ work should use arena terminology and avoid GC/free-list semantics.
 The landed pair slice uses the existing six-layer schedule rather than adding
 Layer 6/7 immediately: Layer 3 computes stack effects plus arena operation
 transients, and Layer 4 performs arena read/write alongside the AD tape write
-logic. Current artifact verification after the bounded `PACK_REST` slice:
-94/94 inline tests pass, 91/91 traced programs agree on PRINT output and full
-per-step state, opcode coverage is 58 weight-implemented / 0 native-delegated
+logic. Current artifact verification after the string read slice:
+96/96 inline tests pass, 93/93 traced programs agree on PRINT output and full
+per-step state, opcode coverage is 60 weight-implemented / 0 native-delegated
 in the exercised coverage set, and the QLMW export is d_model=256, FFN=2048,
 11,037,702 parameters.
 
@@ -397,8 +397,10 @@ writes `S_TOS = S_LOAD_F3`. One indicator gate.
 
 ### 5.7. `OP_STR_REF`, `OP_STR_LEN`
 
-Identical to vector ops but with `F_TYPE = string`. Strings of length ≤ 4
-fit inline; longer strings chain (stage 2).
+Landed bounded form: identical to vector reads over the arena length-header
+layout. `OP_STR_REF` reads `header + 1 + index` and returns the element car
+as a character code; `OP_STR_LEN` reads the header car. Dedicated string
+construction and chained strings remain future work.
 
 The artifact's strings are short (function names: `"map"`, `"foldr"`,
 display literals: `"hello"`). Stage-1 `len ≤ 4` covers ~80% of artifact
@@ -634,10 +636,14 @@ if newly weight-encoded opcodes change state-vector trajectories.
 - [x] Re-run `scripts/paper/run_paper_suite.sh`; vector report was 83/83
   PRINT-output and full-state agreement, with 54 weight-implemented / 3
   native-delegated opcodes in the exercised coverage set
-- [ ] Extend arena bank layout for `STR_*`
-- [ ] Decide whether broader object ops need Layer 6/7 cell fetch/mutate or can
-  stay in the landed Layer 3 + Layer 4 schedule
-- [ ] **Acceptance:** add string test programs; all traced programs
+- [x] Encode arena-layout `STR_REF` and `STR_LEN` reads
+- [x] Add focused string-layout regressions: `str-ref`, `str-len`
+- [x] Re-run `scripts/paper/run_paper_suite.sh`; string-read report was
+  93/93 PRINT-output and full-state agreement, with 60 weight-implemented /
+  0 native-delegated opcodes in the exercised coverage set
+- [x] Keep bounded string reads in the landed Layer 3 + Layer 4 schedule;
+  chained string construction remains future work
+- [x] **Acceptance:** add string test programs; all traced programs
   bit-identical against simulated transformer mode
 
 ### Stage 3 — Closures with upvalues, TAIL_CALL, PACK_REST
@@ -650,8 +656,8 @@ if newly weight-encoded opcodes change state-vector trajectories.
 - [x] Encode bounded `OP_TAIL_CALL` arities 0..4 as frame reuse in the
   weight path
 - [x] `OP_PACK_REST` via bounded arena list creation
-- [x] Re-run `scripts/paper/run_paper_suite.sh`; current report is 91/91
-  PRINT-output and full-state agreement, with 58 weight-implemented / 0
+- [x] Re-run `scripts/paper/run_paper_suite.sh`; current report is 93/93
+  PRINT-output and full-state agreement, with 60 weight-implemented / 0
   native-delegated opcodes in the exercised coverage set
 - [ ] **Acceptance:** all currently-delegated ops (24 of 26) now weight-
   implemented; only `OP_NATIVE_CALL` and `OP_CALLCC`/`OP_INVOKE_CC` +
