@@ -784,6 +784,9 @@ static void execute_step(const State* cur, const Instr* prog, int n_instr, State
         next->s[S_DEPTH]=cur->s[S_DEPTH]-count; next->s[S_PC]=pc+1;
         break;
     }
+    case OP_VOID:
+        next->s[S_PC]=pc+1;
+        break;
 
     /* ── AD Forward Ops: record nodes on the embedded tape ── */
     case OP_AD_VAR: { /* (ad-var value) → push tape index */
@@ -1449,6 +1452,9 @@ static void layer3_ffn(const float x[D], float out[D]) {
     float gp3=g*indicator(oper,3.0f);
     out[S_SOS]+=gp3*(-sos); out[S_R2]+=gp3*(-r2); out[S_R3]+=gp3*(-r3); out[S_DEPTH]+=gp3*(-3);
     out[S_TYPE_SOS]+=gp3*(TYPE_NUMBER-tsos); out[S_TYPE_R2]+=gp3*(TYPE_NUMBER-tr2); out[S_TYPE_R3]+=gp3*(TYPE_NUMBER-tr3);
+
+    /* OP_VOID (63): no stack effect, PC++ */
+    g=indicator(op,63)*alive; out[S_PC]+=g;
 
     /* OP_PACK_REST (60): pack MEM[n_fixed..3] into an arena list and
      * store the resulting list pointer back in MEM[n_fixed]. */
@@ -3750,6 +3756,9 @@ static void generate_weights(InterpreterWeights* w) {
         n = add_gated_pair_op_operand(w,L,n, 53, 3, S_TYPE_R2,-1,-1,0,-1,0,-1,0, TYPE_NUMBER, S_TYPE_R2, 1.0f);
         n = add_gated_pair_op_operand(w,L,n, 53, 3, S_TYPE_R3,-1,-1,0,-1,0,-1,0, TYPE_NUMBER, S_TYPE_R3, 1.0f);
 
+        /* OP_VOID (63): no stack effect, PC++ */
+        n = add_gated_pair(w,L,n, 63, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
+
         /* OP_PACK_REST (60): pack MEM[n_fixed..3] into a contiguous arena list. */
         n = add_gated_pair(w,L,n, 60, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
         {
@@ -5004,6 +5013,8 @@ int main(int argc, char** argv) {
     { Instr p[]={{OP_CONST,10},{OP_CONST,20},{OP_CONST,30},{OP_CONST,40},
                  {OP_POPN,3},{OP_PRINT,0},{OP_HALT,0}};
       test("popn3 keeps TOS", p, 7, 40); }
+    { Instr p[]={{OP_VOID,0},{OP_CONST,42},{OP_PRINT,0},{OP_HALT,0}};
+      test("void pc++", p, 4, 42); }
     { Instr p[]={{OP_CONST,42},{OP_SET_UPVALUE,0},{OP_GET_UPVALUE,0},
                  {OP_PRINT,0},{OP_HALT,0}};
       test("upvalue set/get mem0", p, 5, 42); }

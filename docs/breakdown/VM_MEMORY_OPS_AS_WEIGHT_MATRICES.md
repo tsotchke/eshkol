@@ -26,8 +26,8 @@ Layer 6/7 immediately: Layer 3 computes stack effects plus arena operation
 transients, and Layer 4 performs arena read/write alongside the AD tape write
 logic. Current artifact verification after the bounded arena closure-cell
 slice:
-100/100 inline tests pass, 97/97 traced programs agree on PRINT output and full
-per-step state, opcode coverage is 62 weight-implemented / 0 native-delegated
+101/101 inline tests pass, 98/98 traced programs agree on PRINT output and full
+per-step state, opcode coverage is 63 weight-implemented / 0 native-delegated
 in the exercised coverage set, and the QLMW export is d_model=256, FFN=2048,
 11,037,702 parameters.
 
@@ -72,8 +72,8 @@ From `weight_matrices.c:537-548`:
 | Stack housekeeping | 1 | `OP_POPN` |
 | AD transcendentals | 4 | `OP_AD_DIV`, `OP_AD_POW`, `OP_AD_SIN`, `OP_AD_COS` |
 
-(Count drift: `OP_VOID=63` is treated as native by the runtime in some paths
-but the weight matrix already emits PC++ for it; not in the 26.)
+(Count drift: `OP_VOID=63` is not one of the original 26 delegated memory
+operations; the weight path now explicitly emits PC++ for it.)
 
 We classify these by **whether the runtime side-effect is essential or
 incidental**:
@@ -645,8 +645,8 @@ if newly weight-encoded opcodes change state-vector trajectories.
 - [x] Encode bounded `OP_TAIL_CALL` arities 0..4 as frame reuse in the
   weight path
 - [x] `OP_PACK_REST` via bounded arena list creation
-- [x] Re-run `scripts/paper/run_paper_suite.sh`; current report is 97/97
-  PRINT-output and full-state agreement, with 62 weight-implemented / 0
+- [x] Re-run `scripts/paper/run_paper_suite.sh`; current report is 98/98
+  PRINT-output and full-state agreement, with 63 weight-implemented / 0
   native-delegated opcodes in the exercised coverage set
 - [x] **Acceptance:** Stage 3's bounded closure/upvalue, tail-call, and
   pack-rest artifact paths are weight-implemented. The remaining true native
