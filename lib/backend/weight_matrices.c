@@ -89,6 +89,9 @@
 #define ARENA_CELL_FIELDS 5
 #define ARENA_KIND_EMPTY 0.0f
 #define ARENA_KIND_PAIR 1.0f
+#define ARENA_KIND_VECTOR 2.0f
+#define ARENA_KIND_VEC_ELEM 3.0f
+#define ARENA_MAX_INLINE_VECTOR 4
 
 /* Opcodes — canonical numbering from eshkol_compiler.c */
 typedef enum {
@@ -211,8 +214,23 @@ enum {
     S_ARENA_NEW_CDR,
     S_ARENA_NEW_CAR_TYPE,
     S_ARENA_NEW_CDR_TYPE,
+    S_ARENA_VEC_WRITE,
+    S_ARENA_VEC_BASE,
+    S_ARENA_VEC_LEN,
+    S_ARENA_VEC_E0,
+    S_ARENA_VEC_E1,
+    S_ARENA_VEC_E2,
+    S_ARENA_VEC_E3,
+    S_ARENA_VEC_T0,
+    S_ARENA_VEC_T1,
+    S_ARENA_VEC_T2,
+    S_ARENA_VEC_T3,
+    S_ARENA_VEC_HAS_E0,
+    S_ARENA_VEC_HAS_E1,
+    S_ARENA_VEC_HAS_E2,
+    S_ARENA_VEC_HAS_E3,
     S_ARENA_TRANSIENT_START=S_ARENA_WRITE_KIND,
-    S_ARENA_TRANSIENT_END=S_ARENA_NEW_CDR_TYPE
+    S_ARENA_TRANSIENT_END=S_ARENA_VEC_HAS_E3
 };
 
 /* AD tape node field offsets within each 8-field block */
@@ -524,6 +542,76 @@ static void execute_step(const State* cur, const Instr* prog, int n_instr, State
         next->s[S_TYPE_TOS]=tt_r2; next->s[S_TYPE_SOS]=tt_r3; next->s[S_TYPE_R2]=TYPE_NUMBER; next->s[S_TYPE_R3]=TYPE_NUMBER;
         break;
     }
+    case OP_VEC_CREATE: {
+        int count = operand;
+        if (count < 0 || count > ARENA_MAX_INLINE_VECTOR ||
+            (int)cur->s[S_ARENA_NEXT] + count >= ARENA_CELLS) {
+            next->s[S_HALT]=1;
+            break;
+        }
+        int base = (int)cur->s[S_ARENA_NEXT];
+        float vals[4] = {tos, sos, r2, r3};
+        float types[4] = {tt_tos, tt_sos, tt_r2, tt_r3};
+        ARENA_FIELD(next->s, base, ARENA_F_KIND) = ARENA_KIND_VECTOR;
+        ARENA_FIELD(next->s, base, ARENA_F_CAR_VAL) = (float)count;
+        ARENA_FIELD(next->s, base, ARENA_F_CDR_VAL) = (float)(base + 1);
+        ARENA_FIELD(next->s, base, ARENA_F_CAR_TYPE) = TYPE_NUMBER;
+        ARENA_FIELD(next->s, base, ARENA_F_CDR_TYPE) = TYPE_NUMBER;
+        for (int i = 0; i < count; i++) {
+            int elem_cell = base + 1 + i;
+            int src = count - 1 - i;
+            ARENA_FIELD(next->s, elem_cell, ARENA_F_KIND) = ARENA_KIND_VEC_ELEM;
+            ARENA_FIELD(next->s, elem_cell, ARENA_F_CAR_VAL) = vals[src];
+            ARENA_FIELD(next->s, elem_cell, ARENA_F_CDR_VAL) = (float)(elem_cell + 1);
+            ARENA_FIELD(next->s, elem_cell, ARENA_F_CAR_TYPE) = types[src];
+            ARENA_FIELD(next->s, elem_cell, ARENA_F_CDR_TYPE) = TYPE_NUMBER;
+        }
+        next->s[S_ARENA_NEXT] = (float)(base + 1 + count);
+        next->s[S_TOS]=(float)base; next->s[S_SOS]=0; next->s[S_R2]=0; next->s[S_R3]=0;
+        next->s[S_DEPTH]=cur->s[S_DEPTH] - (float)(count - 1); next->s[S_PC]=pc+1;
+        next->s[S_TYPE_TOS]=TYPE_VECTOR; next->s[S_TYPE_SOS]=TYPE_NUMBER;
+        next->s[S_TYPE_R2]=TYPE_NUMBER; next->s[S_TYPE_R3]=TYPE_NUMBER;
+        break;
+    }
+    case OP_VEC_REF: {
+        int base = (int)sos;
+        int idx = (int)tos;
+        next->s[S_TOS]=0; next->s[S_TYPE_TOS]=TYPE_NUMBER;
+        if (base >= 0 && idx >= 0 && idx < ARENA_MAX_INLINE_VECTOR) {
+            int elem_cell = base + 1 + idx;
+            if (elem_cell >= 0 && elem_cell < ARENA_CELLS) {
+                next->s[S_TOS]=ARENA_FIELD(cur->s, elem_cell, ARENA_F_CAR_VAL);
+                next->s[S_TYPE_TOS]=ARENA_FIELD(cur->s, elem_cell, ARENA_F_CAR_TYPE);
+            }
+        }
+        next->s[S_SOS]=r2; next->s[S_R2]=r3; next->s[S_R3]=0;
+        next->s[S_DEPTH]=cur->s[S_DEPTH]-1; next->s[S_PC]=pc+1;
+        next->s[S_TYPE_SOS]=tt_r2; next->s[S_TYPE_R2]=tt_r3; next->s[S_TYPE_R3]=TYPE_NUMBER;
+        break;
+    }
+    case OP_VEC_SET: {
+        int base = (int)r2;
+        int idx = (int)sos;
+        if (base >= 0 && idx >= 0 && idx < ARENA_MAX_INLINE_VECTOR) {
+            int elem_cell = base + 1 + idx;
+            if (elem_cell >= 0 && elem_cell < ARENA_CELLS) {
+                ARENA_FIELD(next->s, elem_cell, ARENA_F_CAR_VAL) = tos;
+                ARENA_FIELD(next->s, elem_cell, ARENA_F_CAR_TYPE) = tt_tos;
+            }
+        }
+        next->s[S_TOS]=r3; next->s[S_SOS]=0; next->s[S_R2]=0; next->s[S_R3]=0;
+        next->s[S_DEPTH]=cur->s[S_DEPTH]-3; next->s[S_PC]=pc+1;
+        next->s[S_TYPE_TOS]=tt_r3; next->s[S_TYPE_SOS]=TYPE_NUMBER; next->s[S_TYPE_R2]=TYPE_NUMBER; next->s[S_TYPE_R3]=TYPE_NUMBER;
+        break;
+    }
+    case OP_VEC_LEN: {
+        int base = (int)tos;
+        next->s[S_TOS]=0; next->s[S_TYPE_TOS]=TYPE_NUMBER;
+        if (base >= 0 && base < ARENA_CELLS)
+            next->s[S_TOS]=ARENA_FIELD(cur->s, base, ARENA_F_CAR_VAL);
+        next->s[S_PC]=pc+1;
+        break;
+    }
 
     /* Stage-1 VM-as-transformer memory ops: directly encodable predicates
      * and stack cleanup. These used to set IS_NATIVE and round-trip through
@@ -695,7 +783,6 @@ static void execute_step(const State* cur, const Instr* prog, int n_instr, State
     /* All remaining opcodes delegate to exec loop via IS_NATIVE */
     case OP_NATIVE_CALL: case OP_TAIL_CALL:
     case OP_CLOSURE: case OP_GET_UPVALUE: case OP_SET_UPVALUE: case OP_CLOSE_UPVALUE:
-    case OP_VEC_CREATE: case OP_VEC_REF: case OP_VEC_SET: case OP_VEC_LEN:
     case OP_STR_REF: case OP_STR_LEN:
     case OP_OPEN_CLOSURE: case OP_CALLCC: case OP_INVOKE_CC:
     case OP_PUSH_HANDLER: case OP_POP_HANDLER: case OP_GET_EXN:
@@ -1120,6 +1207,53 @@ static void layer3_ffn(const float x[D], float out[D]) {
     out[S_ARENA_WRITE_CDR]+=g; out[S_ARENA_TARGET]+=g*sos;
     out[S_ARENA_NEW_CDR]+=g*tos; out[S_ARENA_NEW_CDR_TYPE]+=g*ttos;
 
+    /* OP_VEC_CREATE (39): bounded inline vector. Header cell at ARENA_NEXT,
+     * followed by up to four contiguous element cells. */
+    g=indicator(op,39)*alive; out[S_PC]+=g;
+    {
+        int elem_dims[4] = { S_ARENA_VEC_E0, S_ARENA_VEC_E1, S_ARENA_VEC_E2, S_ARENA_VEC_E3 };
+        int elem_type_dims[4] = { S_ARENA_VEC_T0, S_ARENA_VEC_T1, S_ARENA_VEC_T2, S_ARENA_VEC_T3 };
+        int elem_has_dims[4] = { S_ARENA_VEC_HAS_E0, S_ARENA_VEC_HAS_E1, S_ARENA_VEC_HAS_E2, S_ARENA_VEC_HAS_E3 };
+        float vals[4] = { tos, sos, r2, r3 };
+        float types[4] = { ttos, tsos, tr2, tr3 };
+        for (int count = 0; count <= ARENA_MAX_INLINE_VECTOR; count++) {
+            float gc = g * indicator(oper, (float)count);
+            out[S_TOS]+=gc*(x[S_ARENA_NEXT]-tos); out[S_SOS]+=gc*(-sos); out[S_R2]+=gc*(-r2); out[S_R3]+=gc*(-r3);
+            out[S_DEPTH]+=gc*(1.0f-(float)count);
+            out[S_TYPE_TOS]+=gc*(TYPE_VECTOR-ttos); out[S_TYPE_SOS]+=gc*(TYPE_NUMBER-tsos);
+            out[S_TYPE_R2]+=gc*(TYPE_NUMBER-tr2); out[S_TYPE_R3]+=gc*(TYPE_NUMBER-tr3);
+            out[S_ARENA_VEC_WRITE]+=gc;
+            out[S_ARENA_VEC_BASE]+=gc*x[S_ARENA_NEXT];
+            out[S_ARENA_VEC_LEN]+=gc*(float)count;
+            for (int i = 0; i < count; i++) {
+                int src = count - 1 - i;
+                out[elem_dims[i]] += gc * vals[src];
+                out[elem_type_dims[i]] += gc * types[src];
+                out[elem_has_dims[i]] += gc;
+            }
+            out[S_ARENA_NEXT]+=gc*(float)(count + 1);
+        }
+    }
+
+    /* OP_VEC_REF (40): TOS=index, SOS=vector header. Element cells are
+     * contiguous, so element target = header + 1 + index. Layer 4 reads car. */
+    g=indicator(op,40)*alive;
+    out[S_PC]+=g; out[S_TOS]+=g*(-tos); out[S_SOS]+=g*(r2-sos); out[S_R2]+=g*(r3-r2); out[S_R3]+=g*(-r3); out[S_DEPTH]+=g*(-1);
+    out[S_TYPE_TOS]+=g*(TYPE_NUMBER-ttos); out[S_TYPE_SOS]+=g*(tr2-tsos); out[S_TYPE_R2]+=g*(tr3-tr2); out[S_TYPE_R3]+=g*(TYPE_NUMBER-tr3);
+    out[S_ARENA_READ_CAR]+=g; out[S_ARENA_TARGET]+=g*(sos + tos + 1.0f);
+
+    /* OP_VEC_SET (41): TOS=value, SOS=index, R2=vector header. */
+    g=indicator(op,41)*alive;
+    out[S_PC]+=g; out[S_TOS]+=g*(r3-tos); out[S_SOS]+=g*(-sos); out[S_R2]+=g*(-r2); out[S_R3]+=g*(-r3); out[S_DEPTH]+=g*(-3);
+    out[S_TYPE_TOS]+=g*(tr3-ttos); out[S_TYPE_SOS]+=g*(TYPE_NUMBER-tsos); out[S_TYPE_R2]+=g*(TYPE_NUMBER-tr2); out[S_TYPE_R3]+=g*(TYPE_NUMBER-tr3);
+    out[S_ARENA_WRITE_CAR]+=g; out[S_ARENA_TARGET]+=g*(r2 + sos + 1.0f);
+    out[S_ARENA_NEW_CAR]+=g*tos; out[S_ARENA_NEW_CAR_TYPE]+=g*ttos;
+
+    /* OP_VEC_LEN (42): vector header's car field stores length. */
+    g=indicator(op,42)*alive;
+    out[S_PC]+=g; out[S_TOS]+=g*(-tos); out[S_TYPE_TOS]+=g*(TYPE_NUMBER-ttos);
+    out[S_ARENA_READ_CAR]+=g; out[S_ARENA_TARGET]+=g*tos;
+
     /* OP_POPN (53): weight-encoded for current compiler emissions n <= 3.
      * It removes N values below TOS while keeping TOS itself. */
     g=indicator(op,53)*alive; out[S_PC]+=g;
@@ -1135,7 +1269,7 @@ static void layer3_ffn(const float x[D], float out[D]) {
 
     /* Remaining delegated opcodes (38-62): all set IS_NATIVE + PC++ */
     for (int opc = 38; opc <= 62; opc++) {
-        if ((opc >= 45 && opc <= 50) || opc == 51 || opc == 52 || opc == 53) continue;
+        if ((opc >= 39 && opc <= 42) || (opc >= 45 && opc <= 50) || opc == 51 || opc == 52 || opc == 53) continue;
         g=indicator(op,(float)opc)*alive; out[S_PC]+=g; out[S_IS_NATIVE]+=g;
     }
     /* OP_CALL (25): set IS_CALL flag for exec loop, PC++ */
@@ -1476,6 +1610,41 @@ static void layer4_ffn(float x[D], float out[D]) {
         out[S_TYPE_TOS] += ti * rc * (x[car_type_dim] - x[S_TYPE_TOS]);
         out[S_TOS] += ti * rd * (x[cdr_dim] - x[S_TOS]);
         out[S_TYPE_TOS] += ti * rd * (x[cdr_type_dim] - x[S_TYPE_TOS]);
+    }
+
+    /* ── Arena vector create ──
+     * Vectors are a header cell followed by contiguous element cells:
+     *   header.car = length
+     *   elem[i].car = element value
+     * VEC_REF/VEC_SET/VEC_LEN reuse the generic car read/write path above. */
+    float vw = x[S_ARENA_VEC_WRITE];
+    if (vw > 0.5f) {
+        int elem_dims[4] = { S_ARENA_VEC_E0, S_ARENA_VEC_E1, S_ARENA_VEC_E2, S_ARENA_VEC_E3 };
+        int elem_type_dims[4] = { S_ARENA_VEC_T0, S_ARENA_VEC_T1, S_ARENA_VEC_T2, S_ARENA_VEC_T3 };
+        int elem_has_dims[4] = { S_ARENA_VEC_HAS_E0, S_ARENA_VEC_HAS_E1, S_ARENA_VEC_HAS_E2, S_ARENA_VEC_HAS_E3 };
+        float base = x[S_ARENA_VEC_BASE];
+        for (int cell = 0; cell < ARENA_CELLS; cell++) {
+            int kind_dim = ARENA_DIM(cell, ARENA_F_KIND);
+            int car_dim = ARENA_DIM(cell, ARENA_F_CAR_VAL);
+            int cdr_dim = ARENA_DIM(cell, ARENA_F_CDR_VAL);
+            int car_type_dim = ARENA_DIM(cell, ARENA_F_CAR_TYPE);
+            int cdr_type_dim = ARENA_DIM(cell, ARENA_F_CDR_TYPE);
+            float hi = indicator(base, (float)cell) * vw;
+            out[kind_dim] += hi * (ARENA_KIND_VECTOR - x[kind_dim]);
+            out[car_dim] += hi * (x[S_ARENA_VEC_LEN] - x[car_dim]);
+            out[cdr_dim] += hi * ((base + 1.0f) - x[cdr_dim]);
+            out[car_type_dim] += hi * (TYPE_NUMBER - x[car_type_dim]);
+            out[cdr_type_dim] += hi * (TYPE_NUMBER - x[cdr_type_dim]);
+
+            for (int i = 0; i < ARENA_MAX_INLINE_VECTOR; i++) {
+                float ei = indicator(base + 1.0f + (float)i, (float)cell) * x[elem_has_dims[i]];
+                out[kind_dim] += ei * (ARENA_KIND_VEC_ELEM - x[kind_dim]);
+                out[car_dim] += ei * (x[elem_dims[i]] - x[car_dim]);
+                out[cdr_dim] += ei * ((base + 2.0f + (float)i) - x[cdr_dim]);
+                out[car_type_dim] += ei * (x[elem_type_dims[i]] - x[car_type_dim]);
+                out[cdr_type_dim] += ei * (TYPE_NUMBER - x[cdr_type_dim]);
+            }
+        }
     }
 }
 
@@ -2411,6 +2580,32 @@ static int add_arena_target_pair(InterpreterWeights* w, int L, int n,
     return n + 2;
 }
 
+/* Gate on vector-create flag AND (arena vector base + offset == cell). */
+static int add_arena_vec_offset_pair(InterpreterWeights* w, int L, int n,
+                                     int flag_dim, int cell, int offset,
+                                     int ud1, float us1, int ud2, float us2,
+                                     int ud3, float us3, int ud4, float us4,
+                                     float ubias,
+                                     int out_dim, float coeff) {
+    int base_target = cell - offset;
+    if (base_target < 0 || base_target >= ARENA_CELLS) return n;
+    const float flag_scale = 100.0f;
+    for (int sign = 0; sign < 2; sign++) {
+        int j = n + sign;
+        float s = (sign == 0) ? 0.5f : -0.5f;
+        W(w->ff_gate[L], S_ARENA_VEC_BASE, j, FFN_DIM) += SCALE;
+        W(w->ff_gate[L], flag_dim, j, FFN_DIM) += flag_scale * SCALE;
+        w->ff_gate_b[L][j] = SCALE * (-(float)base_target + s) - flag_scale * SCALE;
+        if (ud1 >= 0) W(w->ff_up[L], ud1, j, FFN_DIM) += us1;
+        if (ud2 >= 0) W(w->ff_up[L], ud2, j, FFN_DIM) += us2;
+        if (ud3 >= 0) W(w->ff_up[L], ud3, j, FFN_DIM) += us3;
+        if (ud4 >= 0) W(w->ff_up[L], ud4, j, FFN_DIM) += us4;
+        w->ff_up_b[L][j] = ubias;
+        W(w->ff_down[L], j, out_dim, D) += (sign == 0) ? coeff : -coeff;
+    }
+    return n + 2;
+}
+
 static int add_type_push(InterpreterWeights* w, int L, int n,
                          int op_id, float pushed_type) {
     n = add_gated_pair(w, L, n, op_id, S_TYPE_TOS,-1,-1,0,-1,0,-1,0,
@@ -2421,6 +2616,27 @@ static int add_type_push(InterpreterWeights* w, int L, int n,
                        0, S_TYPE_R2, 1.0f);
     n = add_gated_pair(w, L, n, op_id, S_TYPE_R2,1,S_TYPE_R3,-1,-1,0,-1,0,
                        0, S_TYPE_R3, 1.0f);
+    return n;
+}
+
+static int add_vec_create_case(InterpreterWeights* w, int L, int n, int count) {
+    int elem_dims[4] = { S_ARENA_VEC_E0, S_ARENA_VEC_E1, S_ARENA_VEC_E2, S_ARENA_VEC_E3 };
+    int elem_type_dims[4] = { S_ARENA_VEC_T0, S_ARENA_VEC_T1, S_ARENA_VEC_T2, S_ARENA_VEC_T3 };
+    int elem_has_dims[4] = { S_ARENA_VEC_HAS_E0, S_ARENA_VEC_HAS_E1, S_ARENA_VEC_HAS_E2, S_ARENA_VEC_HAS_E3 };
+    int value_srcs[4] = { S_TOS, S_SOS, S_R2, S_R3 };
+    int type_srcs[4] = { S_TYPE_TOS, S_TYPE_SOS, S_TYPE_R2, S_TYPE_R3 };
+
+    n = add_gated_pair_op_operand(w,L,n, 39,count, -1,0,-1,0,-1,0,-1,0, 1.0f-(float)count, S_DEPTH, 1.0f);
+    n = add_gated_pair_op_operand(w,L,n, 39,count, -1,0,-1,0,-1,0,-1,0, (float)count, S_ARENA_VEC_LEN, 1.0f);
+    n = add_gated_pair_op_operand(w,L,n, 39,count, -1,0,-1,0,-1,0,-1,0, (float)(count + 1), S_ARENA_NEXT, 1.0f);
+
+    for (int i = 0; i < count && i < ARENA_MAX_INLINE_VECTOR; i++) {
+        int src = count - 1 - i;
+        n = add_gated_pair_op_operand(w,L,n, 39,count, value_srcs[src],1,-1,0,-1,0,-1,0, 0, elem_dims[i], 1.0f);
+        n = add_gated_pair_op_operand(w,L,n, 39,count, type_srcs[src],1,-1,0,-1,0,-1,0, 0, elem_type_dims[i], 1.0f);
+        n = add_gated_pair_op_operand(w,L,n, 39,count, -1,0,-1,0,-1,0,-1,0, 1.0f, elem_has_dims[i], 1.0f);
+    }
+
     return n;
 }
 
@@ -3094,6 +3310,59 @@ static void generate_weights(InterpreterWeights* w) {
         n = add_gated_pair(w,L,n, 52, S_TOS,1,-1,0,-1,0,-1,0, 0, S_ARENA_NEW_CDR, 1.0f);
         n = add_gated_pair(w,L,n, 52, S_TYPE_TOS,1,-1,0,-1,0,-1,0, 0, S_ARENA_NEW_CDR_TYPE, 1.0f);
 
+        /* VEC_CREATE stores a bounded inline vector in the arena: header
+         * cell plus up to four contiguous element cells. */
+        n = add_gated_pair(w,L,n, 39, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
+        n = add_gated_pair(w,L,n, 39, S_ARENA_NEXT,1,S_TOS,-1,-1,0,-1,0, 0, S_TOS, 1.0f);
+        n = add_gated_pair(w,L,n, 39, S_SOS,-1,-1,0,-1,0,-1,0, 0, S_SOS, 1.0f);
+        n = add_gated_pair(w,L,n, 39, S_R2,-1,-1,0,-1,0,-1,0, 0, S_R2, 1.0f);
+        n = add_gated_pair(w,L,n, 39, S_R3,-1,-1,0,-1,0,-1,0, 0, S_R3, 1.0f);
+        n = add_gated_pair(w,L,n, 39, S_TYPE_TOS,-1,-1,0,-1,0,-1,0, TYPE_VECTOR, S_TYPE_TOS, 1.0f);
+        n = add_gated_pair(w,L,n, 39, S_TYPE_SOS,-1,-1,0,-1,0,-1,0, TYPE_NUMBER, S_TYPE_SOS, 1.0f);
+        n = add_gated_pair(w,L,n, 39, S_TYPE_R2,-1,-1,0,-1,0,-1,0, TYPE_NUMBER, S_TYPE_R2, 1.0f);
+        n = add_gated_pair(w,L,n, 39, S_TYPE_R3,-1,-1,0,-1,0,-1,0, TYPE_NUMBER, S_TYPE_R3, 1.0f);
+        n = add_gated_pair(w,L,n, 39, -1,0,-1,0,-1,0,-1,0, 1.0f, S_ARENA_VEC_WRITE, 1.0f);
+        n = add_gated_pair(w,L,n, 39, S_ARENA_NEXT,1,-1,0,-1,0,-1,0, 0, S_ARENA_VEC_BASE, 1.0f);
+        for (int count = 0; count <= ARENA_MAX_INLINE_VECTOR; count++)
+            n = add_vec_create_case(w,L,n,count);
+
+        /* VEC_REF: TOS=index, SOS=vector header → read element-cell car. */
+        n = add_gated_pair(w,L,n, 40, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
+        n = add_gated_pair(w,L,n, 40, S_TOS,-1,-1,0,-1,0,-1,0, 0, S_TOS, 1.0f);
+        n = add_gated_pair(w,L,n, 40, S_R2,1,S_SOS,-1,-1,0,-1,0, 0, S_SOS, 1.0f);
+        n = add_gated_pair(w,L,n, 40, S_R3,1,S_R2,-1,-1,0,-1,0, 0, S_R2, 1.0f);
+        n = add_gated_pair(w,L,n, 40, S_R3,-1,-1,0,-1,0,-1,0, 0, S_R3, 1.0f);
+        n = add_gated_pair(w,L,n, 40, -1,0,-1,0,-1,0,-1,0, -1.0f, S_DEPTH, 1.0f);
+        n = add_gated_pair(w,L,n, 40, S_TYPE_TOS,-1,-1,0,-1,0,-1,0, TYPE_NUMBER, S_TYPE_TOS, 1.0f);
+        n = add_gated_pair(w,L,n, 40, S_TYPE_R2,1,S_TYPE_SOS,-1,-1,0,-1,0, 0, S_TYPE_SOS, 1.0f);
+        n = add_gated_pair(w,L,n, 40, S_TYPE_R3,1,S_TYPE_R2,-1,-1,0,-1,0, 0, S_TYPE_R2, 1.0f);
+        n = add_gated_pair(w,L,n, 40, S_TYPE_R3,-1,-1,0,-1,0,-1,0, TYPE_NUMBER, S_TYPE_R3, 1.0f);
+        n = add_gated_pair(w,L,n, 40, -1,0,-1,0,-1,0,-1,0, 1.0f, S_ARENA_READ_CAR, 1.0f);
+        n = add_gated_pair(w,L,n, 40, S_SOS,1,S_TOS,1,-1,0,-1,0, 1.0f, S_ARENA_TARGET, 1.0f);
+
+        /* VEC_SET: TOS=value, SOS=index, R2=vector header. */
+        n = add_gated_pair(w,L,n, 41, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
+        n = add_gated_pair(w,L,n, 41, S_R3,1,S_TOS,-1,-1,0,-1,0, 0, S_TOS, 1.0f);
+        n = add_gated_pair(w,L,n, 41, S_SOS,-1,-1,0,-1,0,-1,0, 0, S_SOS, 1.0f);
+        n = add_gated_pair(w,L,n, 41, S_R2,-1,-1,0,-1,0,-1,0, 0, S_R2, 1.0f);
+        n = add_gated_pair(w,L,n, 41, S_R3,-1,-1,0,-1,0,-1,0, 0, S_R3, 1.0f);
+        n = add_gated_pair(w,L,n, 41, -1,0,-1,0,-1,0,-1,0, -3.0f, S_DEPTH, 1.0f);
+        n = add_gated_pair(w,L,n, 41, S_TYPE_R3,1,S_TYPE_TOS,-1,-1,0,-1,0, 0, S_TYPE_TOS, 1.0f);
+        n = add_gated_pair(w,L,n, 41, S_TYPE_SOS,-1,-1,0,-1,0,-1,0, TYPE_NUMBER, S_TYPE_SOS, 1.0f);
+        n = add_gated_pair(w,L,n, 41, S_TYPE_R2,-1,-1,0,-1,0,-1,0, TYPE_NUMBER, S_TYPE_R2, 1.0f);
+        n = add_gated_pair(w,L,n, 41, S_TYPE_R3,-1,-1,0,-1,0,-1,0, TYPE_NUMBER, S_TYPE_R3, 1.0f);
+        n = add_gated_pair(w,L,n, 41, -1,0,-1,0,-1,0,-1,0, 1.0f, S_ARENA_WRITE_CAR, 1.0f);
+        n = add_gated_pair(w,L,n, 41, S_R2,1,S_SOS,1,-1,0,-1,0, 1.0f, S_ARENA_TARGET, 1.0f);
+        n = add_gated_pair(w,L,n, 41, S_TOS,1,-1,0,-1,0,-1,0, 0, S_ARENA_NEW_CAR, 1.0f);
+        n = add_gated_pair(w,L,n, 41, S_TYPE_TOS,1,-1,0,-1,0,-1,0, 0, S_ARENA_NEW_CAR_TYPE, 1.0f);
+
+        /* VEC_LEN reads the vector header's car field. */
+        n = add_gated_pair(w,L,n, 42, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
+        n = add_gated_pair(w,L,n, 42, S_TOS,-1,-1,0,-1,0,-1,0, 0, S_TOS, 1.0f);
+        n = add_gated_pair(w,L,n, 42, S_TYPE_TOS,-1,-1,0,-1,0,-1,0, TYPE_NUMBER, S_TYPE_TOS, 1.0f);
+        n = add_gated_pair(w,L,n, 42, -1,0,-1,0,-1,0,-1,0, 1.0f, S_ARENA_READ_CAR, 1.0f);
+        n = add_gated_pair(w,L,n, 42, S_TOS,1,-1,0,-1,0,-1,0, 0, S_ARENA_TARGET, 1.0f);
+
         /* OP_POPN (53): remove N values below TOS while preserving TOS itself.
          * The current compiler emits only N <= 3, matching the four-register
          * stack cache that the weight interpreter models directly. */
@@ -3124,7 +3393,7 @@ static void generate_weights(InterpreterWeights* w) {
 
         /* Remaining delegated opcodes (38-62): all IS_NATIVE + PC++ */
         for (int opc = 38; opc <= 62; opc++) {
-            if ((opc >= 45 && opc <= 50) || opc == 51 || opc == 52 || opc == 53) continue;
+            if ((opc >= 39 && opc <= 42) || (opc >= 45 && opc <= 50) || opc == 51 || opc == 52 || opc == 53) continue;
             n = add_gated_pair(w,L,n, opc, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
             n = add_gated_pair(w,L,n, opc, -1,0,-1,0,-1,0,-1,0, 1.0f, S_IS_NATIVE, 1.0f);
         }
@@ -3536,6 +3805,53 @@ static void generate_weights(InterpreterWeights* w) {
             n = add_arena_target_pair(w,L,n, S_ARENA_READ_CDR, cell,
                                       cdr_type_dim,1,S_TYPE_TOS,-1,-1,0,-1,0,
                                       0, S_TYPE_TOS, 1.0f);
+        }
+
+        /* Arena vector-create writes. Header lives at base; element i lives
+         * at base + 1 + i and uses the same car/value type lanes as pairs. */
+        for (int cell = 0; cell < ARENA_CELLS; cell++) {
+            int kind_dim = ARENA_DIM(cell, ARENA_F_KIND);
+            int car_dim = ARENA_DIM(cell, ARENA_F_CAR_VAL);
+            int cdr_dim = ARENA_DIM(cell, ARENA_F_CDR_VAL);
+            int car_type_dim = ARENA_DIM(cell, ARENA_F_CAR_TYPE);
+            int cdr_type_dim = ARENA_DIM(cell, ARENA_F_CDR_TYPE);
+
+            n = add_arena_vec_offset_pair(w,L,n, S_ARENA_VEC_WRITE, cell, 0,
+                                          kind_dim,-1,-1,0,-1,0,-1,0,
+                                          ARENA_KIND_VECTOR, kind_dim, 1.0f);
+            n = add_arena_vec_offset_pair(w,L,n, S_ARENA_VEC_WRITE, cell, 0,
+                                          S_ARENA_VEC_LEN,1,car_dim,-1,-1,0,-1,0,
+                                          0, car_dim, 1.0f);
+            n = add_arena_vec_offset_pair(w,L,n, S_ARENA_VEC_WRITE, cell, 0,
+                                          S_ARENA_VEC_BASE,1,cdr_dim,-1,-1,0,-1,0,
+                                          1.0f, cdr_dim, 1.0f);
+            n = add_arena_vec_offset_pair(w,L,n, S_ARENA_VEC_WRITE, cell, 0,
+                                          car_type_dim,-1,-1,0,-1,0,-1,0,
+                                          TYPE_NUMBER, car_type_dim, 1.0f);
+            n = add_arena_vec_offset_pair(w,L,n, S_ARENA_VEC_WRITE, cell, 0,
+                                          cdr_type_dim,-1,-1,0,-1,0,-1,0,
+                                          TYPE_NUMBER, cdr_type_dim, 1.0f);
+
+            int elem_dims[4] = { S_ARENA_VEC_E0, S_ARENA_VEC_E1, S_ARENA_VEC_E2, S_ARENA_VEC_E3 };
+            int elem_type_dims[4] = { S_ARENA_VEC_T0, S_ARENA_VEC_T1, S_ARENA_VEC_T2, S_ARENA_VEC_T3 };
+            int elem_has_dims[4] = { S_ARENA_VEC_HAS_E0, S_ARENA_VEC_HAS_E1, S_ARENA_VEC_HAS_E2, S_ARENA_VEC_HAS_E3 };
+            for (int i = 0; i < ARENA_MAX_INLINE_VECTOR; i++) {
+                n = add_arena_vec_offset_pair(w,L,n, elem_has_dims[i], cell, i + 1,
+                                              kind_dim,-1,-1,0,-1,0,-1,0,
+                                              ARENA_KIND_VEC_ELEM, kind_dim, 1.0f);
+                n = add_arena_vec_offset_pair(w,L,n, elem_has_dims[i], cell, i + 1,
+                                              elem_dims[i],1,car_dim,-1,-1,0,-1,0,
+                                              0, car_dim, 1.0f);
+                n = add_arena_vec_offset_pair(w,L,n, elem_has_dims[i], cell, i + 1,
+                                              S_ARENA_VEC_BASE,1,cdr_dim,-1,-1,0,-1,0,
+                                              (float)(i + 2), cdr_dim, 1.0f);
+                n = add_arena_vec_offset_pair(w,L,n, elem_has_dims[i], cell, i + 1,
+                                              elem_type_dims[i],1,car_type_dim,-1,-1,0,-1,0,
+                                              0, car_type_dim, 1.0f);
+                n = add_arena_vec_offset_pair(w,L,n, elem_has_dims[i], cell, i + 1,
+                                              cdr_type_dim,-1,-1,0,-1,0,-1,0,
+                                              TYPE_NUMBER, cdr_type_dim, 1.0f);
+            }
         }
 
         printf("[WEIGHT_GEN] Layer 4: %d neurons used out of %d\n", n, FFN_DIM);
@@ -4299,6 +4615,11 @@ int main(int argc, char** argv) {
         {OP_CONST,10},{OP_CONST,20},{OP_CONST,30},{OP_VEC_CREATE,3},
         {OP_VEC_LEN,0},{OP_PRINT,0},{OP_HALT,0}};
       test("vec-len", p, 7, 3); }
+    { Instr p[]={
+        {OP_CONST,10},{OP_CONST,20},{OP_CONST,30},{OP_VEC_CREATE,3},
+        {OP_DUP,0},{OP_CONST,1},{OP_CONST,99},{OP_VEC_SET,0},
+        {OP_CONST,1},{OP_VEC_REF,0},{OP_PRINT,0},{OP_HALT,0}};
+      test("vec-set/ref", p, 12, 99); }
 
     /* Tail-call optimization test: tail-recursive sum
      * sum(n, acc) = if n==0 then acc else sum(n-1, acc+n)

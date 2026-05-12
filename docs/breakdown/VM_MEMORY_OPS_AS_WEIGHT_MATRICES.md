@@ -6,22 +6,23 @@
 **Companion artifact:** `research/papers/` (33 cached PDFs, content-addressed)
 **Companion bib:** `research/vm-transformer-bib.bib`
 
-**Implementation note (2026-05-11):** Stage 1 landed as `273782f`
-(`NULL_P`, six type predicates, `POPN`). The first Stage 2 slice landed as
-`58bc8b9` (`CONS`, `CAR`, `CDR`, `SET_CAR`, `SET_CDR`). The implementation
-uses Eshkol's arena model, not a free-list heap: Zone E is a bounded in-state
-arena bank, `S_ARENA_NEXT` is a bump pointer, and stack object references are
-small arena cell indices. The older "heap" wording below is historical design
-shorthand for "object store in the residual stream"; new work should use
-arena terminology and avoid GC/free-list semantics.
+**Implementation note (2026-05-12):** Stage 1 landed as `273782f`
+(`NULL_P`, six type predicates, `POPN`). Stage 2 now has two landed arena
+slices: `58bc8b9` (`CONS`, `CAR`, `CDR`, `SET_CAR`, `SET_CDR`) and the
+bounded inline-vector slice (`VEC_CREATE`, `VEC_REF`, `VEC_SET`, `VEC_LEN`).
+The implementation uses Eshkol's arena model, not a free-list heap: Zone E is
+a bounded in-state arena bank, `S_ARENA_NEXT` is a bump pointer, and stack
+object references are small arena cell indices. The older "heap" wording below
+is historical design shorthand for "object store in the residual stream"; new
+work should use arena terminology and avoid GC/free-list semantics.
 
 The landed pair slice uses the existing six-layer schedule rather than adding
 Layer 6/7 immediately: Layer 3 computes stack effects plus arena operation
 transients, and Layer 4 performs arena read/write alongside the AD tape write
-logic. Current artifact verification after `58bc8b9`: 85/85 inline tests pass,
-82/82 traced programs agree on PRINT output and full per-step state, opcode
-coverage is 51 weight-implemented / 7 native-delegated, and the QLMW export is
-d_model=256, FFN=1280, 7,489,542 parameters.
+logic. Current artifact verification after the vector slice: 86/86 inline
+tests pass, 83/83 traced programs agree on PRINT output and full per-step
+state, opcode coverage is 54 weight-implemented / 3 native-delegated, and the
+QLMW export is d_model=256, FFN=1280, 7,489,542 parameters.
 
 ## 1. Problem statement
 
@@ -616,12 +617,19 @@ if newly weight-encoded opcodes change state-vector trajectories.
 - [x] Update reference and simulated transformer C functions for pair arena ops
 - [x] Add focused pair regressions: cdr nil type preservation, nested pair
   type preservation, `set-cdr!`
-- [x] Re-run `scripts/paper/run_paper_suite.sh`; current report is 82/82
+- [x] Re-run `scripts/paper/run_paper_suite.sh`; pair slice report was 82/82
   PRINT-output and full-state agreement
-- [ ] Extend arena bank layout for `VEC_*` and `STR_*`
+- [x] Extend arena bank layout for bounded `VEC_*`
+- [x] Implement bounded inline vectors in the existing Layer 3 + Layer 4
+  schedule (`VEC_CREATE`, `VEC_REF`, `VEC_SET`, `VEC_LEN`)
+- [x] Add focused vector regressions: `vec-ref`, `vec-len`, `vec-set/ref`
+- [x] Re-run `scripts/paper/run_paper_suite.sh`; current report is 83/83
+  PRINT-output and full-state agreement, with 54 weight-implemented / 3
+  native-delegated opcodes in the exercised coverage set
+- [ ] Extend arena bank layout for `STR_*`
 - [ ] Decide whether broader object ops need Layer 6/7 cell fetch/mutate or can
   stay in the landed Layer 3 + Layer 4 schedule
-- [ ] **Acceptance:** add vector/string test programs; all traced programs
+- [ ] **Acceptance:** add string test programs; all traced programs
   bit-identical against simulated transformer mode
 
 ### Stage 3 — Closures with upvalues, TAIL_CALL, PACK_REST
