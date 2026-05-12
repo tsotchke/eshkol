@@ -10,7 +10,7 @@
  *   2. Simulated transformer (C functions mirroring weight computation)
  *   3. Matrix-based forward pass (actual W @ x + b through generic matmul)
  *
- * Architecture: d_model=256, n_heads=16, head_dim=2, n_layers=6, FFN_DIM=1536
+ * Architecture: d_model=256, n_heads=16, head_dim=2, n_layers=6, FFN_DIM=2048
  *   Layer 0: Instruction fetch (Gaussian attention peaked at PC)
  *   Layer 1: Product precompute (SQUARE activation for TOS*SOS + AD backward products)
  *   Layer 2: Preprocessing (gated FFN for address resolution, comparisons, AD cursor load)
@@ -55,7 +55,7 @@
 #define HD 2
 #define N_LAYERS 6
 #define MEM_SIZE 4
-#define FFN_DIM 1536
+#define FFN_DIM 2048
 /* Temperature for softmax/sigmoid gates.
  *
  * For bit-identical agreement between the matrix forward pass and the
@@ -230,8 +230,29 @@ enum {
     S_ARENA_VEC_HAS_E1,
     S_ARENA_VEC_HAS_E2,
     S_ARENA_VEC_HAS_E3,
+    S_ARENA_LIST_BASE,
+    S_ARENA_LIST_E0,
+    S_ARENA_LIST_E1,
+    S_ARENA_LIST_E2,
+    S_ARENA_LIST_E3,
+    S_ARENA_LIST_T0,
+    S_ARENA_LIST_T1,
+    S_ARENA_LIST_T2,
+    S_ARENA_LIST_T3,
+    S_ARENA_LIST_CDR0,
+    S_ARENA_LIST_CDR1,
+    S_ARENA_LIST_CDR2,
+    S_ARENA_LIST_CDR3,
+    S_ARENA_LIST_CDRT0,
+    S_ARENA_LIST_CDRT1,
+    S_ARENA_LIST_CDRT2,
+    S_ARENA_LIST_CDRT3,
+    S_ARENA_LIST_HAS_E0,
+    S_ARENA_LIST_HAS_E1,
+    S_ARENA_LIST_HAS_E2,
+    S_ARENA_LIST_HAS_E3,
     S_ARENA_TRANSIENT_START=S_ARENA_WRITE_KIND,
-    S_ARENA_TRANSIENT_END=S_ARENA_VEC_HAS_E3
+    S_ARENA_TRANSIENT_END=S_ARENA_LIST_HAS_E3
 };
 
 /* AD tape node field offsets within each 8-field block */
@@ -657,6 +678,33 @@ static void execute_step(const State* cur, const Instr* prog, int n_instr, State
         next->s[S_PC]=pc+1;
         break;
     }
+    case OP_PACK_REST: {
+        int n_fixed = (int)operand;
+        if (n_fixed < 0) n_fixed = 0;
+        if (n_fixed > MEM_SIZE) n_fixed = MEM_SIZE;
+        int count = MEM_SIZE - n_fixed;
+        if (count > 0) {
+            int base = (int)cur->s[S_ARENA_NEXT];
+            if (base < 0 || base + count > ARENA_CELLS) { next->s[S_HALT]=1; break; }
+            for (int j = 0; j < count; j++) {
+                int cell = base + j;
+                ARENA_FIELD(next->s, cell, ARENA_F_KIND) = ARENA_KIND_PAIR;
+                ARENA_FIELD(next->s, cell, ARENA_F_CAR_VAL) = cur->s[S_MEM0+n_fixed+j];
+                ARENA_FIELD(next->s, cell, ARENA_F_CAR_TYPE) = TYPE_NUMBER;
+                if (j + 1 < count) {
+                    ARENA_FIELD(next->s, cell, ARENA_F_CDR_VAL) = (float)(cell + 1);
+                    ARENA_FIELD(next->s, cell, ARENA_F_CDR_TYPE) = TYPE_PAIR;
+                } else {
+                    ARENA_FIELD(next->s, cell, ARENA_F_CDR_VAL) = -1.0f;
+                    ARENA_FIELD(next->s, cell, ARENA_F_CDR_TYPE) = TYPE_NIL;
+                }
+            }
+            next->s[S_ARENA_NEXT] = (float)(base + count);
+            next->s[S_MEM0+n_fixed] = (float)base;
+        }
+        next->s[S_PC]=pc+1;
+        break;
+    }
 
     /* Stage-1 VM-as-transformer memory ops: directly encodable predicates
      * and stack cleanup. These used to set IS_NATIVE and round-trip through
@@ -831,7 +879,7 @@ static void execute_step(const State* cur, const Instr* prog, int n_instr, State
     case OP_STR_REF: case OP_STR_LEN:
     case OP_OPEN_CLOSURE: case OP_CALLCC: case OP_INVOKE_CC:
     case OP_PUSH_HANDLER: case OP_POP_HANDLER: case OP_GET_EXN:
-    case OP_PACK_REST: case OP_WIND_PUSH: case OP_WIND_POP:
+    case OP_WIND_PUSH: case OP_WIND_POP:
         next->s[S_IS_NATIVE]=1; next->s[S_PC]=pc+1; break;
     default:        next->s[S_PC]=pc+1; break;
     }
@@ -1350,9 +1398,37 @@ static void layer3_ffn(const float x[D], float out[D]) {
     out[S_SOS]+=gp3*(-sos); out[S_R2]+=gp3*(-r2); out[S_R3]+=gp3*(-r3); out[S_DEPTH]+=gp3*(-3);
     out[S_TYPE_SOS]+=gp3*(TYPE_NUMBER-tsos); out[S_TYPE_R2]+=gp3*(TYPE_NUMBER-tr2); out[S_TYPE_R3]+=gp3*(TYPE_NUMBER-tr3);
 
+    /* OP_PACK_REST (60): pack MEM[n_fixed..3] into an arena list and
+     * store the resulting list pointer back in MEM[n_fixed]. */
+    g=indicator(op,60)*alive; out[S_PC]+=g; {
+        int elem_dims[4] = { S_ARENA_LIST_E0, S_ARENA_LIST_E1, S_ARENA_LIST_E2, S_ARENA_LIST_E3 };
+        int elem_type_dims[4] = { S_ARENA_LIST_T0, S_ARENA_LIST_T1, S_ARENA_LIST_T2, S_ARENA_LIST_T3 };
+        int cdr_dims[4] = { S_ARENA_LIST_CDR0, S_ARENA_LIST_CDR1, S_ARENA_LIST_CDR2, S_ARENA_LIST_CDR3 };
+        int cdr_type_dims[4] = { S_ARENA_LIST_CDRT0, S_ARENA_LIST_CDRT1, S_ARENA_LIST_CDRT2, S_ARENA_LIST_CDRT3 };
+        int has_dims[4] = { S_ARENA_LIST_HAS_E0, S_ARENA_LIST_HAS_E1, S_ARENA_LIST_HAS_E2, S_ARENA_LIST_HAS_E3 };
+        for (int n_fixed = 0; n_fixed <= MEM_SIZE; n_fixed++) {
+            float gf = g * indicator(oper, (float)n_fixed);
+            int count = MEM_SIZE - n_fixed;
+            out[S_ARENA_LIST_BASE] += gf * x[S_ARENA_NEXT];
+            out[S_ARENA_NEXT] += gf * (float)count;
+            if (n_fixed < MEM_SIZE)
+                out[S_MEM0+n_fixed] += gf * ((count > 0 ? x[S_ARENA_NEXT] : -1.0f) - x[S_MEM0+n_fixed]);
+            for (int j = 0; j < count; j++) {
+                int mem_dim = S_MEM0 + n_fixed + j;
+                float cdr = (j + 1 < count) ? x[S_ARENA_NEXT] + (float)(j + 1) : -1.0f;
+                float cdr_type = (j + 1 < count) ? TYPE_PAIR : TYPE_NIL;
+                out[elem_dims[j]] += gf * x[mem_dim];
+                out[elem_type_dims[j]] += gf * TYPE_NUMBER;
+                out[cdr_dims[j]] += gf * cdr;
+                out[cdr_type_dims[j]] += gf * cdr_type;
+                out[has_dims[j]] += gf;
+            }
+        }
+    }
+
     /* Remaining delegated opcodes (38-62): all set IS_NATIVE + PC++ */
     for (int opc = 38; opc <= 62; opc++) {
-        if ((opc >= 39 && opc <= 42) || (opc >= 45 && opc <= 50) || opc == 51 || opc == 52 || opc == 53) continue;
+        if ((opc >= 39 && opc <= 42) || (opc >= 45 && opc <= 50) || opc == 51 || opc == 52 || opc == 53 || opc == 60) continue;
         g=indicator(op,(float)opc)*alive; out[S_PC]+=g; out[S_IS_NATIVE]+=g;
     }
     /* OP_CALL (25): set IS_CALL flag for exec loop, PC++ */
@@ -1726,6 +1802,32 @@ static void layer4_ffn(float x[D], float out[D]) {
                 out[cdr_dim] += ei * ((base + 2.0f + (float)i) - x[cdr_dim]);
                 out[car_type_dim] += ei * (x[elem_type_dims[i]] - x[car_type_dim]);
                 out[cdr_type_dim] += ei * (TYPE_NUMBER - x[cdr_type_dim]);
+            }
+        }
+    }
+
+    /* ── Arena list create for PACK_REST ──
+     * Layer 3 precomputes the contiguous pair cells, including cdr links. */
+    {
+        int elem_dims[4] = { S_ARENA_LIST_E0, S_ARENA_LIST_E1, S_ARENA_LIST_E2, S_ARENA_LIST_E3 };
+        int elem_type_dims[4] = { S_ARENA_LIST_T0, S_ARENA_LIST_T1, S_ARENA_LIST_T2, S_ARENA_LIST_T3 };
+        int cdr_dims[4] = { S_ARENA_LIST_CDR0, S_ARENA_LIST_CDR1, S_ARENA_LIST_CDR2, S_ARENA_LIST_CDR3 };
+        int cdr_type_dims[4] = { S_ARENA_LIST_CDRT0, S_ARENA_LIST_CDRT1, S_ARENA_LIST_CDRT2, S_ARENA_LIST_CDRT3 };
+        int elem_has_dims[4] = { S_ARENA_LIST_HAS_E0, S_ARENA_LIST_HAS_E1, S_ARENA_LIST_HAS_E2, S_ARENA_LIST_HAS_E3 };
+        float base = x[S_ARENA_LIST_BASE];
+        for (int cell = 0; cell < ARENA_CELLS; cell++) {
+            int kind_dim = ARENA_DIM(cell, ARENA_F_KIND);
+            int car_dim = ARENA_DIM(cell, ARENA_F_CAR_VAL);
+            int cdr_dim = ARENA_DIM(cell, ARENA_F_CDR_VAL);
+            int car_type_dim = ARENA_DIM(cell, ARENA_F_CAR_TYPE);
+            int cdr_type_dim = ARENA_DIM(cell, ARENA_F_CDR_TYPE);
+            for (int i = 0; i < ARENA_MAX_INLINE_VECTOR; i++) {
+                float ei = indicator(base + (float)i, (float)cell) * x[elem_has_dims[i]];
+                out[kind_dim] += ei * (ARENA_KIND_PAIR - x[kind_dim]);
+                out[car_dim] += ei * (x[elem_dims[i]] - x[car_dim]);
+                out[cdr_dim] += ei * (x[cdr_dims[i]] - x[cdr_dim]);
+                out[car_type_dim] += ei * (x[elem_type_dims[i]] - x[car_type_dim]);
+                out[cdr_type_dim] += ei * (x[cdr_type_dims[i]] - x[cdr_type_dim]);
             }
         }
     }
@@ -2695,6 +2797,32 @@ static int add_arena_vec_offset_pair(InterpreterWeights* w, int L, int n,
     return n + 2;
 }
 
+/* Same as add_arena_vec_offset_pair, but the base dimension is selectable. */
+static int add_arena_base_offset_pair(InterpreterWeights* w, int L, int n,
+                                      int base_dim, int flag_dim, int cell, int offset,
+                                      int ud1, float us1, int ud2, float us2,
+                                      int ud3, float us3, int ud4, float us4,
+                                      float ubias,
+                                      int out_dim, float coeff) {
+    int base_target = cell - offset;
+    if (base_target < 0 || base_target >= ARENA_CELLS) return n;
+    const float flag_scale = 100.0f;
+    for (int sign = 0; sign < 2; sign++) {
+        int j = n + sign;
+        float s = (sign == 0) ? 0.5f : -0.5f;
+        W(w->ff_gate[L], base_dim, j, FFN_DIM) += SCALE;
+        W(w->ff_gate[L], flag_dim, j, FFN_DIM) += flag_scale * SCALE;
+        w->ff_gate_b[L][j] = SCALE * (-(float)base_target + s) - flag_scale * SCALE;
+        if (ud1 >= 0) W(w->ff_up[L], ud1, j, FFN_DIM) += us1;
+        if (ud2 >= 0) W(w->ff_up[L], ud2, j, FFN_DIM) += us2;
+        if (ud3 >= 0) W(w->ff_up[L], ud3, j, FFN_DIM) += us3;
+        if (ud4 >= 0) W(w->ff_up[L], ud4, j, FFN_DIM) += us4;
+        w->ff_up_b[L][j] = ubias;
+        W(w->ff_down[L], j, out_dim, D) += (sign == 0) ? coeff : -coeff;
+    }
+    return n + 2;
+}
+
 static int add_type_push(InterpreterWeights* w, int L, int n,
                          int op_id, float pushed_type) {
     n = add_gated_pair(w, L, n, op_id, S_TYPE_TOS,-1,-1,0,-1,0,-1,0,
@@ -3528,9 +3656,39 @@ static void generate_weights(InterpreterWeights* w) {
         n = add_gated_pair_op_operand(w,L,n, 53, 3, S_TYPE_R2,-1,-1,0,-1,0,-1,0, TYPE_NUMBER, S_TYPE_R2, 1.0f);
         n = add_gated_pair_op_operand(w,L,n, 53, 3, S_TYPE_R3,-1,-1,0,-1,0,-1,0, TYPE_NUMBER, S_TYPE_R3, 1.0f);
 
+        /* OP_PACK_REST (60): pack MEM[n_fixed..3] into a contiguous arena list. */
+        n = add_gated_pair(w,L,n, 60, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
+        {
+            int elem_dims[4] = { S_ARENA_LIST_E0, S_ARENA_LIST_E1, S_ARENA_LIST_E2, S_ARENA_LIST_E3 };
+            int elem_type_dims[4] = { S_ARENA_LIST_T0, S_ARENA_LIST_T1, S_ARENA_LIST_T2, S_ARENA_LIST_T3 };
+            int cdr_dims[4] = { S_ARENA_LIST_CDR0, S_ARENA_LIST_CDR1, S_ARENA_LIST_CDR2, S_ARENA_LIST_CDR3 };
+            int cdr_type_dims[4] = { S_ARENA_LIST_CDRT0, S_ARENA_LIST_CDRT1, S_ARENA_LIST_CDRT2, S_ARENA_LIST_CDRT3 };
+            int has_dims[4] = { S_ARENA_LIST_HAS_E0, S_ARENA_LIST_HAS_E1, S_ARENA_LIST_HAS_E2, S_ARENA_LIST_HAS_E3 };
+            for (int n_fixed = 0; n_fixed <= MEM_SIZE; n_fixed++) {
+                int count = MEM_SIZE - n_fixed;
+                n = add_gated_pair_op_operand(w,L,n, 60,n_fixed, S_ARENA_NEXT,1,-1,0,-1,0,-1,0, 0, S_ARENA_LIST_BASE, 1.0f);
+                n = add_gated_pair_op_operand(w,L,n, 60,n_fixed, -1,0,-1,0,-1,0,-1,0, (float)count, S_ARENA_NEXT, 1.0f);
+                if (n_fixed < MEM_SIZE)
+                    n = add_gated_pair_op_operand(w,L,n, 60,n_fixed, S_ARENA_NEXT,1,S_MEM0+n_fixed,-1,-1,0,-1,0, 0, S_MEM0+n_fixed, 1.0f);
+                for (int j = 0; j < count; j++) {
+                    int mem_dim = S_MEM0 + n_fixed + j;
+                    n = add_gated_pair_op_operand(w,L,n, 60,n_fixed, mem_dim,1,-1,0,-1,0,-1,0, 0, elem_dims[j], 1.0f);
+                    n = add_gated_pair_op_operand(w,L,n, 60,n_fixed, -1,0,-1,0,-1,0,-1,0, TYPE_NUMBER, elem_type_dims[j], 1.0f);
+                    if (j + 1 < count) {
+                        n = add_gated_pair_op_operand(w,L,n, 60,n_fixed, S_ARENA_NEXT,1,-1,0,-1,0,-1,0, (float)(j + 1), cdr_dims[j], 1.0f);
+                        n = add_gated_pair_op_operand(w,L,n, 60,n_fixed, -1,0,-1,0,-1,0,-1,0, TYPE_PAIR, cdr_type_dims[j], 1.0f);
+                    } else {
+                        n = add_gated_pair_op_operand(w,L,n, 60,n_fixed, -1,0,-1,0,-1,0,-1,0, -1.0f, cdr_dims[j], 1.0f);
+                        n = add_gated_pair_op_operand(w,L,n, 60,n_fixed, -1,0,-1,0,-1,0,-1,0, TYPE_NIL, cdr_type_dims[j], 1.0f);
+                    }
+                    n = add_gated_pair_op_operand(w,L,n, 60,n_fixed, -1,0,-1,0,-1,0,-1,0, 1.0f, has_dims[j], 1.0f);
+                }
+            }
+        }
+
         /* Remaining delegated opcodes (38-62): all IS_NATIVE + PC++ */
         for (int opc = 38; opc <= 62; opc++) {
-            if ((opc >= 39 && opc <= 42) || (opc >= 45 && opc <= 50) || opc == 51 || opc == 52 || opc == 53) continue;
+            if ((opc >= 39 && opc <= 42) || (opc >= 45 && opc <= 50) || opc == 51 || opc == 52 || opc == 53 || opc == 60) continue;
             n = add_gated_pair(w,L,n, opc, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
             n = add_gated_pair(w,L,n, opc, -1,0,-1,0,-1,0,-1,0, 1.0f, S_IS_NATIVE, 1.0f);
         }
@@ -3988,6 +4146,38 @@ static void generate_weights(InterpreterWeights* w) {
                 n = add_arena_vec_offset_pair(w,L,n, elem_has_dims[i], cell, i + 1,
                                               cdr_type_dim,-1,-1,0,-1,0,-1,0,
                                               TYPE_NUMBER, cdr_type_dim, 1.0f);
+            }
+        }
+
+        /* Arena list-create writes for PACK_REST. Base is S_ARENA_LIST_BASE;
+         * element i lives at base + i and is a pair cell. */
+        for (int cell = 0; cell < ARENA_CELLS; cell++) {
+            int kind_dim = ARENA_DIM(cell, ARENA_F_KIND);
+            int car_dim = ARENA_DIM(cell, ARENA_F_CAR_VAL);
+            int cdr_dim = ARENA_DIM(cell, ARENA_F_CDR_VAL);
+            int car_type_dim = ARENA_DIM(cell, ARENA_F_CAR_TYPE);
+            int cdr_type_dim = ARENA_DIM(cell, ARENA_F_CDR_TYPE);
+            int elem_dims[4] = { S_ARENA_LIST_E0, S_ARENA_LIST_E1, S_ARENA_LIST_E2, S_ARENA_LIST_E3 };
+            int elem_type_dims[4] = { S_ARENA_LIST_T0, S_ARENA_LIST_T1, S_ARENA_LIST_T2, S_ARENA_LIST_T3 };
+            int cdr_dims[4] = { S_ARENA_LIST_CDR0, S_ARENA_LIST_CDR1, S_ARENA_LIST_CDR2, S_ARENA_LIST_CDR3 };
+            int cdr_type_dims[4] = { S_ARENA_LIST_CDRT0, S_ARENA_LIST_CDRT1, S_ARENA_LIST_CDRT2, S_ARENA_LIST_CDRT3 };
+            int elem_has_dims[4] = { S_ARENA_LIST_HAS_E0, S_ARENA_LIST_HAS_E1, S_ARENA_LIST_HAS_E2, S_ARENA_LIST_HAS_E3 };
+            for (int i = 0; i < ARENA_MAX_INLINE_VECTOR; i++) {
+                n = add_arena_base_offset_pair(w,L,n, S_ARENA_LIST_BASE, elem_has_dims[i], cell, i,
+                                               kind_dim,-1,-1,0,-1,0,-1,0,
+                                               ARENA_KIND_PAIR, kind_dim, 1.0f);
+                n = add_arena_base_offset_pair(w,L,n, S_ARENA_LIST_BASE, elem_has_dims[i], cell, i,
+                                               elem_dims[i],1,car_dim,-1,-1,0,-1,0,
+                                               0, car_dim, 1.0f);
+                n = add_arena_base_offset_pair(w,L,n, S_ARENA_LIST_BASE, elem_has_dims[i], cell, i,
+                                               cdr_dims[i],1,cdr_dim,-1,-1,0,-1,0,
+                                               0, cdr_dim, 1.0f);
+                n = add_arena_base_offset_pair(w,L,n, S_ARENA_LIST_BASE, elem_has_dims[i], cell, i,
+                                               elem_type_dims[i],1,car_type_dim,-1,-1,0,-1,0,
+                                               0, car_type_dim, 1.0f);
+                n = add_arena_base_offset_pair(w,L,n, S_ARENA_LIST_BASE, elem_has_dims[i], cell, i,
+                                               cdr_type_dims[i],1,cdr_type_dim,-1,-1,0,-1,0,
+                                               0, cdr_type_dim, 1.0f);
             }
         }
 
@@ -4804,6 +4994,20 @@ int main(int argc, char** argv) {
         {OP_GET_LOCAL,0},{OP_GET_LOCAL,1},{OP_GET_LOCAL,2},{OP_CONST,12},{OP_TAIL_CALL,3},
         {OP_GET_LOCAL,0},{OP_GET_LOCAL,1},{OP_ADD,0},{OP_GET_LOCAL,2},{OP_ADD,0},{OP_RETURN,0},
       }; test("tail argc3", p, 18, 6); }
+    { Instr p[]={
+        {OP_CONST,2},{OP_SET_LOCAL,1},{OP_CONST,3},{OP_SET_LOCAL,2},
+        {OP_CONST,4},{OP_SET_LOCAL,3},{OP_PACK_REST,1},
+        {OP_GET_LOCAL,1},{OP_CAR,0},{OP_PRINT,0},{OP_HALT,0},
+      }; test("pack-rest car", p, 11, 2); }
+    { Instr p[]={
+        {OP_CONST,2},{OP_SET_LOCAL,1},{OP_CONST,3},{OP_SET_LOCAL,2},
+        {OP_CONST,4},{OP_SET_LOCAL,3},{OP_PACK_REST,1},
+        {OP_GET_LOCAL,1},{OP_CDR,0},{OP_CAR,0},{OP_PRINT,0},{OP_HALT,0},
+      }; test("pack-rest cdr car", p, 12, 3); }
+    { Instr p[]={
+        {OP_CONST,9},{OP_SET_LOCAL,3},{OP_PACK_REST,3},
+        {OP_GET_LOCAL,3},{OP_CDR,0},{OP_NULL_P,0},{OP_PRINT,0},{OP_HALT,0},
+      }; test("pack-rest single tail nil", p, 8, 1); }
 
     /* Dynamic multiplication: 100/100 */
     printf("\n  Dynamic multiplication: ");

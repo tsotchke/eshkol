@@ -11,8 +11,9 @@
 slices: `58bc8b9` (`CONS`, `CAR`, `CDR`, `SET_CAR`, `SET_CDR`) and the
 bounded inline-vector slice (`VEC_CREATE`, `VEC_REF`, `VEC_SET`, `VEC_LEN`).
 The current artifact shape of `OP_CLOSURE`, bounded `OP_TAIL_CALL` arities
-0..4, and the MEM-backed `OP_GET_UPVALUE`/`OP_SET_UPVALUE` fallback are also
-encoded in the weight path; upvalue-bearing closure cells remain future work.
+0..4, bounded `OP_PACK_REST`, and the MEM-backed
+`OP_GET_UPVALUE`/`OP_SET_UPVALUE` fallback are also encoded in the weight
+path; upvalue-bearing closure cells remain future work.
 The implementation uses Eshkol's arena model, not a free-list heap: Zone E is
 a bounded in-state arena bank, `S_ARENA_NEXT` is a bump pointer, and stack
 object references are small arena cell indices. The older "heap" wording below
@@ -22,11 +23,11 @@ work should use arena terminology and avoid GC/free-list semantics.
 The landed pair slice uses the existing six-layer schedule rather than adding
 Layer 6/7 immediately: Layer 3 computes stack effects plus arena operation
 transients, and Layer 4 performs arena read/write alongside the AD tape write
-logic. Current artifact verification after the bounded tail-call slice:
-91/91 inline tests pass, 88/88 traced programs agree on PRINT output and full
-per-step state, opcode coverage is 57 weight-implemented / 0 native-delegated
-in the exercised coverage set, and the QLMW export is d_model=256, FFN=1536,
-8,672,262 parameters.
+logic. Current artifact verification after the bounded `PACK_REST` slice:
+94/94 inline tests pass, 91/91 traced programs agree on PRINT output and full
+per-step state, opcode coverage is 58 weight-implemented / 0 native-delegated
+in the exercised coverage set, and the QLMW export is d_model=256, FFN=2048,
+11,037,702 parameters.
 
 ## 1. Problem statement
 
@@ -440,13 +441,12 @@ upvalue → heap upvalue conversion). Already trivially encodable as PC++.
 
 ### 5.9. `OP_PACK_REST`
 
-`(pack-rest n_fixed)` packs the top `argc - n_fixed` arguments into a
-single list. This is a chained `CONS` operation: at most one CONS per
-remaining argument. Encoded via the **looped transformer** pattern: keep
-PC pinned, decrement an internal counter each cycle, emit one CONS per
-cycle. Cost: zero new opcodes; reuses CONS infrastructure with a
-"chain mode" Layer 3 dispatch that increments PC only when the counter
-hits zero.
+`(pack-rest n_fixed)` packs `MEM[n_fixed..3]` into a single list. The landed
+bounded form writes a contiguous arena pair chain in one VM step: Layer 3
+precomputes the list base, element values, cdr links, and type lanes; Layer 4
+writes up to four pair cells into the in-state arena bank. `MEM[n_fixed]`
+receives the new list pointer. Larger rest lists need the same operation
+repeated over additional register windows.
 
 ### 5.10. `OP_TAIL_CALL`
 
@@ -649,9 +649,9 @@ if newly weight-encoded opcodes change state-vector trajectories.
 - [ ] `OP_GET_UPVALUE`, `OP_SET_UPVALUE` via arena closure cells
 - [x] Encode bounded `OP_TAIL_CALL` arities 0..4 as frame reuse in the
   weight path
-- [ ] `OP_PACK_REST` via looped CONS
-- [x] Re-run `scripts/paper/run_paper_suite.sh`; current report is 88/88
-  PRINT-output and full-state agreement, with 57 weight-implemented / 0
+- [x] `OP_PACK_REST` via bounded arena list creation
+- [x] Re-run `scripts/paper/run_paper_suite.sh`; current report is 91/91
+  PRINT-output and full-state agreement, with 58 weight-implemented / 0
   native-delegated opcodes in the exercised coverage set
 - [ ] **Acceptance:** all currently-delegated ops (24 of 26) now weight-
   implemented; only `OP_NATIVE_CALL` and `OP_CALLCC`/`OP_INVOKE_CC` +
