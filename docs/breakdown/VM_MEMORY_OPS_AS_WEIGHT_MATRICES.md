@@ -10,6 +10,8 @@
 (`NULL_P`, six type predicates, `POPN`). Stage 2 now has two landed arena
 slices: `58bc8b9` (`CONS`, `CAR`, `CDR`, `SET_CAR`, `SET_CDR`) and the
 bounded inline-vector slice (`VEC_CREATE`, `VEC_REF`, `VEC_SET`, `VEC_LEN`).
+The current artifact shape of `OP_CLOSURE` and `OP_TAIL_CALL` is also encoded
+in the weight path; upvalue-bearing closures remain future work.
 The implementation uses Eshkol's arena model, not a free-list heap: Zone E is
 a bounded in-state arena bank, `S_ARENA_NEXT` is a bump pointer, and stack
 object references are small arena cell indices. The older "heap" wording below
@@ -19,10 +21,11 @@ work should use arena terminology and avoid GC/free-list semantics.
 The landed pair slice uses the existing six-layer schedule rather than adding
 Layer 6/7 immediately: Layer 3 computes stack effects plus arena operation
 transients, and Layer 4 performs arena read/write alongside the AD tape write
-logic. Current artifact verification after the vector slice: 86/86 inline
-tests pass, 83/83 traced programs agree on PRINT output and full per-step
-state, opcode coverage is 54 weight-implemented / 3 native-delegated, and the
-QLMW export is d_model=256, FFN=1280, 7,489,542 parameters.
+logic. Current artifact verification after the closure/tail-call slice:
+86/86 inline tests pass, 83/83 traced programs agree on PRINT output and full
+per-step state, opcode coverage is 55 weight-implemented / 0 native-delegated
+in the exercised coverage set, and the QLMW export is d_model=256, FFN=1280,
+7,489,542 parameters.
 
 ## 1. Problem statement
 
@@ -623,7 +626,7 @@ if newly weight-encoded opcodes change state-vector trajectories.
 - [x] Implement bounded inline vectors in the existing Layer 3 + Layer 4
   schedule (`VEC_CREATE`, `VEC_REF`, `VEC_SET`, `VEC_LEN`)
 - [x] Add focused vector regressions: `vec-ref`, `vec-len`, `vec-set/ref`
-- [x] Re-run `scripts/paper/run_paper_suite.sh`; current report is 83/83
+- [x] Re-run `scripts/paper/run_paper_suite.sh`; vector report was 83/83
   PRINT-output and full-state agreement, with 54 weight-implemented / 3
   native-delegated opcodes in the exercised coverage set
 - [ ] Extend arena bank layout for `STR_*`
@@ -635,9 +638,15 @@ if newly weight-encoded opcodes change state-vector trajectories.
 ### Stage 3 — Closures with upvalues, TAIL_CALL, PACK_REST
 *~1 week, ~500k new params*
 
-- [ ] `OP_CLOSURE`, `OP_GET_UPVALUE`, `OP_SET_UPVALUE` via heap cells
-- [ ] `OP_TAIL_CALL` as composed CALL+RETURN
+- [x] Encode artifact-shape `OP_CLOSURE` as an arena closure header
+  (`car = entry_pc`, `cdr = reserved upvalue count`)
+- [ ] `OP_GET_UPVALUE`, `OP_SET_UPVALUE` via arena closure cells
+- [x] Encode artifact-shape `OP_TAIL_CALL` for current compiler emission
+  (`argc = 2`) as frame reuse in the weight path
 - [ ] `OP_PACK_REST` via looped CONS
+- [x] Re-run `scripts/paper/run_paper_suite.sh`; current report is 83/83
+  PRINT-output and full-state agreement, with 55 weight-implemented / 0
+  native-delegated opcodes in the exercised coverage set
 - [ ] **Acceptance:** all currently-delegated ops (24 of 26) now weight-
   implemented; only `OP_NATIVE_CALL` and `OP_CALLCC`/`OP_INVOKE_CC` +
   exception ops + DIV/MOD remain native
