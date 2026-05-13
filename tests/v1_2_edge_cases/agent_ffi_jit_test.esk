@@ -14,6 +14,7 @@
 (load "lib/agent/regex.esk")
 (load "lib/agent/crypto.esk")
 (load "lib/agent/sqlite.esk")
+(load "lib/agent/terminal.esk")
 
 (display "=== Agent FFI JIT Regression Suite ===") (newline)
 
@@ -67,6 +68,18 @@
 (check "sqlite: exec INSERT returns 0"
        (= (sqlite-exec db "INSERT INTO t VALUES (1, 'hello'), (2, 'world')") 0))
 (sqlite-close db)
+
+;; ---------------------------------------------------------------------------
+;; terminal — cursor query wrappers over DSR, with deterministic non-TTY
+;; fallback used in CI.
+;; ---------------------------------------------------------------------------
+(define cursor-pos (term-cursor-pos))
+(check "terminal: cursor position returns a pair"
+       (pair? cursor-pos))
+(check "terminal: cursor row is numeric"
+       (number? (car cursor-pos)))
+(check "terminal: cursor column is numeric"
+       (number? (cdr cursor-pos)))
 
 ;; ---------------------------------------------------------------------------
 ;; Summary

@@ -158,6 +158,8 @@ extern "C" {
     int eshkol_term_read_key_timeout(int timeout_ms) ESHKOL_OPTIONAL_AGENT_FFI;
     void eshkol_term_clear(void) ESHKOL_OPTIONAL_AGENT_FFI;
     void eshkol_term_move_to(int row, int col) ESHKOL_OPTIONAL_AGENT_FFI;
+    int eshkol_term_cursor_row(void) ESHKOL_OPTIONAL_AGENT_FFI;
+    int eshkol_term_cursor_col(void) ESHKOL_OPTIONAL_AGENT_FFI;
     void eshkol_term_show_cursor(void) ESHKOL_OPTIONAL_AGENT_FFI;
     void eshkol_term_hide_cursor(void) ESHKOL_OPTIONAL_AGENT_FFI;
     void eshkol_term_write(const char* str) ESHKOL_OPTIONAL_AGENT_FFI;
@@ -727,6 +729,8 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_term_read_key_timeout);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_term_clear);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_term_move_to);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_term_cursor_row);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_term_cursor_col);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_term_show_cursor);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_term_hide_cursor);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_term_write);

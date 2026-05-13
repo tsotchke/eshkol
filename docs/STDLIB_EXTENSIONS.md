@@ -164,10 +164,12 @@ agent faster than Claude Code for multi-tool responses.
 
 ---
 
-## A.4 `term-cursor-pos` (terminal.esk line 56) — RETURNS `(0 . 0)`
+## A.4 `term-cursor-pos` (terminal.esk line 56) — IMPLEMENTED
 
-**Fix**: Implement DSR (Device Status Report) query: send `\033[6n`, parse
-response `\033[row;colR`.
+The standalone VM exposes builtin 603, returning `(row . col)`. The agent
+terminal FFI wrapper now calls scalar row/column helpers over the existing
+DSR query path. Non-TTY contexts return `(0 . 0)` without writing terminal
+escape sequences, which keeps CI and redirected output deterministic.
 
 ---
 
@@ -1801,7 +1803,7 @@ continuously tune the manifold:
 | **A.1** | Fix `directory-entries` | 1 | Implemented |
 | **A.2** | Fix `command-line` | 1 | Implemented |
 | **A.3** | Fix parallel primitives (620-628) | 9 | Partial thread-pool path |
-| **A.4** | Fix `term-cursor-pos` | 1 | Hardcoded (0.0) |
+| **A.4** | Fix `term-cursor-pos` | 1 | Implemented |
 | **A.5** | Fix Riemannian Adam (836) | 1 | Falls back to SGD |
 | **A.6** | Fix Christoffel symbols (826) | 1 | Returns 0 |
 | **A.7** | Fix pullback (834) | 1 | Returns nil |

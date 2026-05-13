@@ -1,0 +1,17 @@
+;; Standalone VM terminal cursor regression.
+;; Non-TTY execution returns (0 . 0); interactive TTY execution may return
+;; the real cursor position. Both paths must return a numeric pair.
+
+(define pos (term-cursor-pos))
+
+(display (if (pair? pos) "PASS" "FAIL"))
+(display ": term-cursor-pos returns a pair")
+(newline)
+
+(display (if (number? (car pos)) "PASS" "FAIL"))
+(display ": cursor row is numeric")
+(newline)
+
+(display (if (number? (cdr pos)) "PASS" "FAIL"))
+(display ": cursor column is numeric")
+(newline)
