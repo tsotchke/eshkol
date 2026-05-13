@@ -223,6 +223,7 @@ static const BuiltinDef BUILTINS[] = {
     {"substring", 553, 3},
     {"_string-append-2", 554, 2},  /* 2-arg; prelude defines variadic string-append */
     {"string-upcase", 557, 1}, {"string-downcase", 558, 1},
+    {"string=?", 560, 2}, {"string<?", 561, 2}, {"string-ci=?", 562, 2},
     {"string-fill!", 556, 2}, {"string-copy", 566, 1},
     /* Misc — IDs 236-238 */
     {"boolean=?", 236, 2}, {"error", 237, 1}, {"void", 238, 0},
@@ -1160,19 +1161,28 @@ int eshkol_vm_top_int64(EshkolVmHandle* h, int64_t* out) {
 
 #if !defined(ESHKOL_VM_LIBRARY_MODE) && !defined(GENERATE_PRELUDE_CACHE)
 int main(int argc, char** argv) {
-    vm_set_command_line(argc, argv);
     if (argc > 1) {
         /* Parse flags */
         int trace = 0;
         const char* input = NULL;
         const char* eskb_output = NULL;
+        int input_index = -1;
+        int positional_only = 0;
         for (int i = 1; i < argc; i++) {
-            if (strcmp(argv[i], "--trace") == 0) { trace = 1; g_trace_on = 1; }
-            else if (strcmp(argv[i], "--emit-eskb") == 0 && i + 1 < argc) { eskb_output = argv[++i]; g_eskb_output_path = eskb_output; }
-            else input = argv[i];
+            if (!positional_only && strcmp(argv[i], "--") == 0) {
+                positional_only = 1;
+            } else if (!positional_only && strcmp(argv[i], "--trace") == 0) {
+                trace = 1; g_trace_on = 1;
+            } else if (!positional_only && strcmp(argv[i], "--emit-eskb") == 0 && i + 1 < argc) {
+                eskb_output = argv[++i]; g_eskb_output_path = eskb_output;
+            } else if (!input) {
+                input = argv[i];
+                input_index = i;
+            }
         }
 
         if (input) {
+            vm_set_command_line(argc - input_index, &argv[input_index]);
             size_t len = strlen(input);
             if (len > 5 && strcmp(input + len - 5, ".eskb") == 0) {
                 /* Load and run ESKB bytecode */
@@ -1221,6 +1231,7 @@ int main(int argc, char** argv) {
             }
         }
     } else {
+        vm_set_command_line(argc, argv);
         /* Run built-in VM tests */
         printf("=== Eshkol VM (unified compiler+interpreter) ===\n\n");
         test_arithmetic();
