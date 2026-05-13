@@ -1,0 +1,54 @@
+;; Standalone VM portable geometric fallback regression.
+;; These assertions exercise the no-qLLM path: arena-backed manifold handles,
+;; constant-curvature tensors, pullbacks, and simple tangent-space updates.
+
+(define h (make-hyperbolic-manifold 2 -1.0))
+(define s (make-spherical-manifold 2))
+(define p (make-tensor '(2) 1.0))
+(define j (make-tensor '(2 2) 1.0))
+
+(display (if h "PASS" "FAIL")) (display ": hyperbolic handle") (newline)
+(display (if (= (manifold-type h) 1) "PASS" "FAIL")) (display ": manifold type") (newline)
+(display (if (= (manifold-dim h) 2) "PASS" "FAIL")) (display ": manifold dim") (newline)
+(display (if (= (get-curvature h) -1.0) "PASS" "FAIL")) (display ": get curvature") (newline)
+
+(define metric (metric-tensor h))
+(display (if (= (tensor-ref metric 0) 1.0) "PASS" "FAIL")) (display ": metric diag 0") (newline)
+(display (if (= (tensor-ref metric 1) 0.0) "PASS" "FAIL")) (display ": metric offdiag") (newline)
+(display (if (= (tensor-ref metric 3) 1.0) "PASS" "FAIL")) (display ": metric diag 1") (newline)
+
+(define gamma (christoffel h p))
+(display (if (= (tensor-ref gamma 0) 1.0) "PASS" "FAIL")) (display ": christoffel 000") (newline)
+(display (if (= (tensor-ref gamma 3) -1.0) "PASS" "FAIL")) (display ": christoffel 011") (newline)
+
+(display (if (= (ricci-scalar h) -2.0) "PASS" "FAIL")) (display ": ricci scalar") (newline)
+(display (if (= (sectional-curvature h p p) -1.0) "PASS" "FAIL")) (display ": sectional curvature") (newline)
+
+(define pb (pullback p j))
+(display (if (= (tensor-ref pb 0) 2.0) "PASS" "FAIL")) (display ": pullback 0") (newline)
+(display (if (= (tensor-ref pb 1) 2.0) "PASS" "FAIL")) (display ": pullback 1") (newline)
+
+(define wedge (wedge-product p p))
+(display (if (= (tensor-ref wedge 0) 0.0) "PASS" "FAIL")) (display ": wedge antisymmetry") (newline)
+
+(define interior (interior-product p p))
+(display (if (= (tensor-ref interior 0) 2.0) "PASS" "FAIL")) (display ": interior product") (newline)
+
+(define step (riemannian-sgd-step p p 0.25 -1.0))
+(display (if (= (tensor-ref step 0) 0.75) "PASS" "FAIL")) (display ": riemannian sgd") (newline)
+
+(define probs (curvature-softmax (make-tensor '(2) 0.0) -1.0))
+(display (if (= (tensor-ref probs 0) 0.5) "PASS" "FAIL")) (display ": curvature softmax 0") (newline)
+(display (if (= (tensor-ref probs 1) 0.5) "PASS" "FAIL")) (display ": curvature softmax 1") (newline)
+
+(define quat (so3-exp (make-tensor '(3) 0.0)))
+(display (if (= (tensor-ref quat 0) 1.0) "PASS" "FAIL")) (display ": so3 zero exp") (newline)
+
+(set-curvature! h -0.5)
+(display (if (= (get-curvature h) -0.5) "PASS" "FAIL")) (display ": set curvature") (newline)
+(display (if (= (transition-geometry! h -1.0 0.5) -0.75) "PASS" "FAIL")) (display ": transition geometry") (newline)
+(display (if (= (manifold-interpolate h s 0.5) 0.125) "PASS" "FAIL")) (display ": manifold interpolate") (newline)
+
+(manifold-destroy! h)
+(display "PASS: geometric fallback numeric regression complete")
+(newline)

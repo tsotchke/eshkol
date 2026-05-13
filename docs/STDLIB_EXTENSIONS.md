@@ -1277,34 +1277,35 @@ separate state record). Two options:
 
 ---
 
-## A.6 Christoffel Symbols (builtin 830) — RETURNS 0
+## A.6 Christoffel Symbols (builtin 830) — IMPLEMENTED
 
-**File**: `lib/backend/vm_geometric.c` line 459-462
+**File**: `lib/backend/vm_geometric.c`
 ```c
 case 830: { /* christoffel(manifold, point) — connection coefficients */
-    vm_pop(vm); vm_pop(vm); /* manifold, point */
-    vm_push(vm, FLOAT_VAL(0)); break;
+    vm_geometric_christoffel_tensor(vm);
+    break;
 ```
 
-**Fix**: For constant-curvature spaces (which is all Eshkol supports), the
+**Status**: For constant-curvature spaces (which is all Eshkol supports), the
 Christoffel symbols are expressible in closed form. For hyperbolic space with
 curvature K, `Γ^k_{ij} = K * (δ_ij x^k - δ_jk x^i - δ_ik x^j)` at a point
-`x`. Return as a `dim×dim×dim` tensor.
+`x`. The standalone VM now returns this as a `dim×dim×dim` tensor allocated in
+the VM arena.
 
 ---
 
-## A.7 Pullback (builtin 838) — STUB
+## A.7 Pullback (builtin 838) — IMPLEMENTED
 
-**File**: `lib/backend/vm_geometric.c` line 613-616
+**File**: `lib/backend/vm_geometric.c`
 ```c
 case 838: { /* pullback(form, jacobian) — 2 args */
-    vm_pop(vm); vm_pop(vm); /* Pullback requires full Jacobian matrix — complex */
-    vm_push(vm, NIL_VAL); break;
+    vm_geometric_pullback_tensor(vm);
+    break;
 ```
 
-**Fix**: `f*(omega)(v) = omega(J*v)` where `J` is the Jacobian matrix passed as
-the second argument (a `dim×dim` tensor). Apply the Jacobian to each basis
-vector and use those as the new form coefficients.
+**Status**: `f*(omega)(v) = omega(J*v)` where `J` is the Jacobian matrix passed
+as the second argument. The VM now computes one-form pullback as `J^T * omega`
+and returns the pulled-back coefficient tensor.
 
 ---
 
@@ -1338,9 +1339,11 @@ iterative training loops that need memory reclamation.
 ## B.24 Geometric Manifold VM Surface
 
 `lib/backend/vm_geometric.c` exposes geometric native calls in the standalone
-VM at IDs 804-859. The source VM now registers these names directly; when
-`ESHKOL_GEOMETRIC_ENABLED` is not linked, the fallback returns `nil` after
-consuming the correct number of arguments so the VM stack stays balanced.
+VM at IDs 804-859. The source VM now registers these names directly. When
+`ESHKOL_GEOMETRIC_ENABLED` is not linked, the standalone VM uses a portable
+constant-curvature fallback with arena-backed manifold handles, tensor-returning
+metric/connection/form operations, Euclidean approximations for map/transport
+operations, SO3/SE3 quaternion helpers, and curvature adaptation primitives.
 
 A higher-level `lib/agent/geometry.esk` convenience module is still useful, but
 the raw builtin surface is no longer undefined:
@@ -1392,7 +1395,7 @@ the raw builtin surface is no longer undefined:
 
 ### Differential geometry
 ```scheme
-(metric-tensor m)            ;; native 829 — returns curvature (scalar proxy)
+(metric-tensor m)            ;; native 829 — fallback returns identity metric tensor
 (christoffel m point)        ;; native 830
 (riemann-curvature m)        ;; native 831
 (ricci-scalar m)             ;; native 832
@@ -1813,11 +1816,11 @@ continuously tune the manifold:
 | **A.3** | Fix parallel primitives (620-628) | 9 | Partial thread-pool path |
 | **A.4** | Fix `term-cursor-pos` | 1 | Implemented |
 | **A.5** | Fix Riemannian Adam (840) | 1 | Falls back to SGD |
-| **A.6** | Fix Christoffel symbols (830) | 1 | Returns 0 |
-| **A.7** | Fix pullback (838) | 1 | Returns nil |
+| **A.6** | Fix Christoffel symbols (830) | 1 | Implemented |
+| **A.7** | Fix pullback (838) | 1 | Implemented |
 | **A.8** | Wire reverse-mode AD tape (390-409) | 20 | Implemented |
 | **B.1-B.23** | Original missing functions | 148 | Truly missing |
-| **B.24** | Geometric manifold wrappers | 40 | VM surface registered (804-859); wrapper still useful |
+| **B.24** | Geometric manifold wrappers | 40 | VM surface registered (804-859); portable fallback implemented; wrapper still useful |
 | **B.25** | Reverse-mode AD tape wrappers | 5 | A.8 VM surface implemented |
 | **B.26** | Workspace introspection (543-546) | 4 | C exists, no .esk |
 | **B.27** | Factor graph marginals + KB extensions | 6 | New native IDs needed |

@@ -1,6 +1,6 @@
 ;; Standalone VM geometric builtin surface regression.
 ;; The default build may not link qLLM geometry, but these names must resolve
-;; and their no-library fallback must consume the right number of arguments.
+;; and their portable fallback must consume the right number of arguments.
 
 (define t (make-tensor '(2) 0.0))
 (define m (make-euclidean-manifold 2))
