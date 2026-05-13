@@ -66,7 +66,7 @@ reverse-mode AD tape compute their results entirely in matrix multiplications.
 the native function ID as its operand. It remains the explicit external boundary
 for host services and high-level library calls. This is where
 consciousness engine (500-527), factor graphs (520-539), workspace (540-549),
-geometric manifolds (800-859), tensors (410-470), autodiff (370-409), and everything
+geometric manifolds (804-859), tensors (410-470), autodiff (370-409), and everything
 in this document executes.
 
 ### Implementation Pattern Per Function
@@ -1257,7 +1257,7 @@ These exist and work. We just need to `(require ...)` them:
 
 # Part A (continued): More Broken Stubs Found in Code
 
-## A.5 Riemannian Adam (builtin 836) — FALLS BACK TO SGD
+## A.5 Riemannian Adam (builtin 840) — FALLS BACK TO SGD
 
 **File**: `lib/backend/vm_geometric.c` line 661-662
 ```c
@@ -1276,11 +1276,11 @@ separate state record). Two options:
 
 ---
 
-## A.6 Christoffel Symbols (builtin 826) — RETURNS 0
+## A.6 Christoffel Symbols (builtin 830) — RETURNS 0
 
 **File**: `lib/backend/vm_geometric.c` line 459-462
 ```c
-case 826: { /* christoffel(manifold, point) — connection coefficients */
+case 830: { /* christoffel(manifold, point) — connection coefficients */
     vm_pop(vm); vm_pop(vm); /* manifold, point */
     vm_push(vm, FLOAT_VAL(0)); break;
 ```
@@ -1292,11 +1292,11 @@ curvature K, `Γ^k_{ij} = K * (δ_ij x^k - δ_jk x^i - δ_ik x^j)` at a point
 
 ---
 
-## A.7 Pullback (builtin 834) — STUB
+## A.7 Pullback (builtin 838) — STUB
 
 **File**: `lib/backend/vm_geometric.c` line 613-616
 ```c
-case 834: { /* pullback(form, jacobian) — 2 args */
+case 838: { /* pullback(form, jacobian) — 2 args */
     vm_pop(vm); vm_pop(vm); /* Pullback requires full Jacobian matrix — complex */
     vm_push(vm, NIL_VAL); break;
 ```
@@ -1334,90 +1334,94 @@ iterative training loops that need memory reclamation.
 
 # Part B (continued): New Missing Items From Code Audit
 
-## B.24 Geometric Manifold Eshkol Wrappers
+## B.24 Geometric Manifold VM Surface
 
-`lib/backend/vm_geometric.c` implements 60 native calls (IDs 800-859) via
-`qllm_manifold_*` and `qllm_hyperbolic_*` C functions. **Zero Eshkol wrapper
-files exist.** No `.esk` file anywhere in the codebase wraps these calls.
+`lib/backend/vm_geometric.c` exposes geometric native calls in the standalone
+VM at IDs 804-859. The source VM now registers these names directly; when
+`ESHKOL_GEOMETRIC_ENABLED` is not linked, the fallback returns `nil` after
+consuming the correct number of arguments so the VM stack stays balanced.
 
-Required: `lib/agent/geometry.esk` (or `lib/core/geometry.esk`) providing:
+A higher-level `lib/agent/geometry.esk` convenience module is still useful, but
+the raw builtin surface is no longer undefined:
 
 ### Manifold creation
 ```scheme
-(make-euclidean-manifold dim)       ;; native 800
-(make-hyperbolic-manifold dim curv) ;; native 801
-(make-spherical-manifold dim)       ;; native 802
-(make-product-manifold m1 m2)       ;; native 803
-(manifold-curvature m)              ;; native 804
+(make-euclidean-manifold dim)       ;; native 804
+(make-hyperbolic-manifold dim curv) ;; native 805
+(make-spherical-manifold dim)       ;; native 806
+(make-product-manifold m1 m2)       ;; native 807
+(manifold-curvature m)              ;; native 808
 (manifold-type m)                   ;; native 857
-(manifold-dim m)                    ;; native 858 (check — may be stubbed)
+(manifold-dim m)                    ;; native 858
 (manifold-destroy! m)               ;; native 859
 ```
 
 ### Hyperbolic geometry
 ```scheme
-(hyperbolic-exp-map base tangent curv)   ;; native 805
-(hyperbolic-log-map base point curv)     ;; native 806
-(geodesic-distance x y curv)            ;; native 807
-(parallel-transport x y v curv)         ;; native 808
-(manifold-project x curv)              ;; native 809
-(mobius-add x y curv)                   ;; native 810
-(mobius-scalar-mul r x curv)            ;; native 811
-(poincare-distance x y curv)            ;; native 812
-(frechet-mean points weights curv)      ;; native 813
+(hyperbolic-exp-map base tangent curv)   ;; native 809
+(hyperbolic-log-map base point curv)     ;; native 810
+(geodesic-distance x y curv)            ;; native 811
+(parallel-transport x y v curv)         ;; native 812
+(manifold-project x curv)              ;; native 813
+(mobius-add x y curv)                   ;; native 814
+(mobius-scalar-mul r x curv)            ;; native 815
+(poincare-distance x y curv)            ;; native 816
+(frechet-mean points weights curv)      ;; native 817
 ```
 
 ### Spherical geometry
 ```scheme
-(great-circle-distance x y)             ;; native 815
-(slerp x y t)                           ;; native 816
-(spherical-exp base tangent)            ;; native 817
-(spherical-log base point)              ;; native 818
-(spherical-project x)                   ;; native 819
+(great-circle-distance x y)             ;; native 819
+(slerp x y t)                           ;; native 820
+(spherical-exp base tangent)            ;; native 821
+(spherical-log base point)              ;; native 822
+(spherical-project x)                   ;; native 823
 ```
 
 ### Lie groups (SO3/SE3)
 ```scheme
 ;; SO3: rotation as quaternion #(w x y z)
-(so3-exp omega)              ;; native 820 — axis-angle [3] → quat [4]
-(so3-log quat)               ;; native 821 — quat [4] → axis-angle [3]
+(so3-exp omega)              ;; native 824 — axis-angle [3] → quat [4]
+(so3-log quat)               ;; native 825 — quat [4] → axis-angle [3]
 ;; SE3: rigid transform as #(qw qx qy qz tx ty tz)
-(se3-exp twist)              ;; native 822 — twist [6] → pose [7]
-(se3-log pose)               ;; native 823 — pose [7] → twist [6]
-(quaternion-mul q1 q2)       ;; native 824 — Hamilton product
+(se3-exp twist)              ;; native 826 — twist [6] → pose [7]
+(se3-log pose)               ;; native 827 — pose [7] → twist [6]
+(quaternion-mul q1 q2)       ;; native 828 — Hamilton product
 ```
 
 ### Differential geometry
 ```scheme
-(metric-tensor m)            ;; native 825 — returns curvature (scalar proxy)
-(riemann-curvature m)        ;; native 827
-(ricci-scalar m)             ;; native 828
-(sectional-curvature m u v)  ;; native 829
+(metric-tensor m)            ;; native 829 — returns curvature (scalar proxy)
+(christoffel m point)        ;; native 830
+(riemann-curvature m)        ;; native 831
+(ricci-scalar m)             ;; native 832
+(sectional-curvature m u v)  ;; native 833
 ```
 
 ### Differential forms
 ```scheme
-(wedge-product alpha beta)          ;; native 830
-(exterior-derivative form)          ;; native 831
-(hodge-star form metric-dim)        ;; native 832
-(interior-product vector form)      ;; native 833
+(wedge-product alpha beta)          ;; native 834
+(exterior-derivative form)          ;; native 835
+(hodge-star form metric)            ;; native 836
+(interior-product vector form)      ;; native 837
+(pullback form jacobian)            ;; native 838
 ```
 
 ### Riemannian optimization
 ```scheme
-(riemannian-sgd-step point grad lr curv)           ;; native 835
-(riemannian-adam-step pt grad lr b1 b2 curv)       ;; native 836 — NOTE: fallback to SGD (A.5)
-(riemannian-grad euclidean-grad point curv)         ;; native 837
-(retraction base tangent curv)                     ;; native 838
-(vector-transport x y v curv)                      ;; native 839
+(riemannian-sgd-step point grad lr curv)           ;; native 839
+(riemannian-adam-step pt grad lr b1 b2 curv)       ;; native 840 — NOTE: fallback to SGD (A.5)
+(riemannian-grad euclidean-grad point curv)         ;; native 841
+(retraction base tangent curv)                     ;; native 842
+(vector-transport x y v curv)                      ;; native 843
 ```
 
 ### Geodesic attention
 ```scheme
-(geodesic-attention-scores Q K curv)               ;; native 840
-(geodesic-attention-values scores V curv)           ;; native 841 — Fréchet mean
-(curvature-softmax scores curv)                    ;; native 842
-(geodesic-attention-forward Q K V curv)            ;; native 843 — full attention
+(geodesic-attention-scores Q K curv)               ;; native 844
+(geodesic-attention-values scores V curv)           ;; native 845 — Fréchet mean
+(curvature-softmax scores curv)                    ;; native 846
+(geodesic-attention-forward Q K V curv)            ;; native 847 — full attention
 ```
 
 ### Adaptive curvature
@@ -1427,6 +1431,8 @@ Required: `lib/agent/geometry.esk` (or `lib/core/geometry.esk`) providing:
 (curvature-gradient m loss-grad)      ;; native 852
 (transition-geometry! m target rate)  ;; native 853
 (manifold-interpolate m1 m2 t)        ;; native 854
+(curvature-hessian m grad)            ;; native 855
+(adaptive-curvature-step m grad)      ;; native 856
 ```
 
 ---
@@ -1558,7 +1564,7 @@ describes most code hierarchies, file trees, and conversation trees).
 between turns. We can learn concept embeddings over the session and use geodesic
 distance to find related concepts in O(1) time.
 
-**Requires**: B.24 wrapper file + builtins 800-814.
+**Requires**: B.24 convenience wrapper plus VM builtins 804-817.
 
 ---
 
@@ -1583,7 +1589,7 @@ distances in hyperbolic space reflect tree structure.
     (map cdr top-k)))
 ```
 
-**Requires**: builtins 840-843 (geodesic attention forward pass).
+**Requires**: builtins 844-847 (geodesic attention forward pass).
 
 ---
 
@@ -1802,19 +1808,19 @@ continuously tune the manifold:
 | **A.2** | Fix `command-line` | 1 | Implemented |
 | **A.3** | Fix parallel primitives (620-628) | 9 | Partial thread-pool path |
 | **A.4** | Fix `term-cursor-pos` | 1 | Implemented |
-| **A.5** | Fix Riemannian Adam (836) | 1 | Falls back to SGD |
-| **A.6** | Fix Christoffel symbols (826) | 1 | Returns 0 |
-| **A.7** | Fix pullback (834) | 1 | Returns nil |
-| **A.8** | Wire reverse-mode AD tape (390-409) | 20 | C exists, not wired |
+| **A.5** | Fix Riemannian Adam (840) | 1 | Falls back to SGD |
+| **A.6** | Fix Christoffel symbols (830) | 1 | Returns 0 |
+| **A.7** | Fix pullback (838) | 1 | Returns nil |
+| **A.8** | Wire reverse-mode AD tape (390-409) | 20 | Implemented |
 | **B.1-B.23** | Original missing functions | 148 | Truly missing |
-| **B.24** | Geometric manifold wrappers | 40 | C exists (800-859), no .esk |
-| **B.25** | Reverse-mode AD tape wrappers | 5 | Needs A.8 first |
+| **B.24** | Geometric manifold wrappers | 40 | VM surface registered (804-859); wrapper still useful |
+| **B.25** | Reverse-mode AD tape wrappers | 5 | A.8 VM surface implemented |
 | **B.26** | Workspace introspection (543-546) | 4 | C exists, no .esk |
 | **B.27** | Factor graph marginals + KB extensions | 6 | New native IDs needed |
 | **C.1-C.17** | Original Beyond Claude Code | ~30 | Already in Eshkol |
-| **C.18** | Hyperbolic semantic memory | integration | Uses 800-814 |
-| **C.19** | Geodesic attention in query loop | integration | Uses 840-843 |
-| **C.20** | Riemannian self-optimization | integration | Uses 835-854 |
+| **C.18** | Hyperbolic semantic memory | integration | Uses 804-817 |
+| **C.19** | Geodesic attention in query loop | integration | Uses 844-847 |
+| **C.20** | Riemannian self-optimization | integration | Uses 839-854 |
 | **C.21** | Symbolic autodiff compilation | 6 new natives | vm_symbolic_ad.c |
 | **C.22** | Quantum RNG for security | integration | random.esk exists |
 | **C.23** | Distributed multi-agent grad sync | 5 new natives | qllm_distributed.c |

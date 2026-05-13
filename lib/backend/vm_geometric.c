@@ -1,6 +1,6 @@
 /**
  * @file vm_geometric.c
- * @brief VM geometric manifold dispatch — native IDs 804-843.
+ * @brief VM geometric manifold dispatch — native IDs 804-859.
  *
  * When ESHKOL_GEOMETRIC_ENABLED is defined, calls semiclassical_qllm.
  * Otherwise returns NIL for all operations.
@@ -47,6 +47,29 @@ static void vm_push_manifold(VM* vm, void* manifold) {
     vm->heap.objects[ptr]->type = HEAP_MANIFOLD;
     vm->heap.objects[ptr]->opaque.ptr = manifold;
     vm_push(vm, (Value){.type = VAL_MANIFOLD, .as.ptr = ptr});
+}
+
+static int vm_geometric_arity(int fid) {
+    switch (fid) {
+    case 804: case 806: case 808: case 823: case 824: case 825:
+    case 826: case 827: case 829: case 831: case 832: case 835:
+    case 851: case 857: case 858: case 859:
+        return 1;
+    case 805: case 807: case 813: case 819: case 821: case 822:
+    case 828: case 830: case 834: case 836: case 837: case 838:
+    case 846: case 850: case 852: case 855: case 856:
+        return 2;
+    case 809: case 810: case 811: case 814: case 815: case 816:
+    case 817: case 820: case 833: case 841: case 842: case 844:
+    case 845: case 853: case 854:
+        return 3;
+    case 812: case 839: case 843: case 847:
+        return 4;
+    case 840:
+        return 6;
+    default:
+        return 0;
+    }
 }
 
 static void vm_dispatch_geometric(VM* vm, int fid) {
@@ -714,8 +737,8 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         vm_push(vm, NIL_VAL); break;
     }
 
-    /* ═══ Geodesic attention (840-849) ═══ */
-    case 840: { /* geodesic-attention-scores(Q, K, curvature) */
+    /* ═══ Geodesic attention (844-849) ═══ */
+    case 844: { /* geodesic-attention-scores(Q, K, curvature) */
         float c = (float)as_number(vm_pop(vm));
         VmTensor* kv = vm_get_tensor(vm, vm_pop(vm));
         VmTensor* qv = vm_get_tensor(vm, vm_pop(vm));
@@ -739,7 +762,7 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         }
         vm_push(vm, NIL_VAL); break;
     }
-    case 841: { /* geodesic-attention-values(scores, V, curvature) — weighted Fréchet mean */
+    case 845: { /* geodesic-attention-values(scores, V, curvature) — weighted Fréchet mean */
         float c = (float)as_number(vm_pop(vm));
         VmTensor* vv = vm_get_tensor(vm, vm_pop(vm));
         VmTensor* sv = vm_get_tensor(vm, vm_pop(vm));
@@ -760,7 +783,7 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         }
         vm_push(vm, NIL_VAL); break;
     }
-    case 842: { /* curvature-softmax(scores, curvature) — curvature-scaled softmax */
+    case 846: { /* curvature-softmax(scores, curvature) — curvature-scaled softmax */
         float c = (float)as_number(vm_pop(vm));
         VmTensor* sv = vm_get_tensor(vm, vm_pop(vm));
         if (sv) {
@@ -777,7 +800,7 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         }
         vm_push(vm, NIL_VAL); break;
     }
-    case 843: { /* geodesic-attention-forward(Q, K, V, curvature) — full attention */
+    case 847: { /* geodesic-attention-forward(Q, K, V, curvature) — full attention */
         float c = (float)as_number(vm_pop(vm));
         VmTensor* vv = vm_get_tensor(vm, vm_pop(vm));
         VmTensor* kv = vm_get_tensor(vm, vm_pop(vm));
@@ -813,7 +836,7 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         }
         vm_push(vm, NIL_VAL); break;
     }
-    case 844: case 845: case 846: case 847: case 848: case 849: {
+    case 848: case 849: {
         /* attention-backward, attention-mask, multi-head variants */
         int nargs = (fid <= 845) ? 4 : 3;
         for (int i = 0; i < nargs; i++) vm_pop(vm);
@@ -890,8 +913,11 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
                 vm_push(vm, INT_VAL((int)qllm_manifold_get_type(
                     (qllm_manifold_t*)vm->heap.objects[mv.as.ptr]->opaque.ptr)));
             else vm_push(vm, NIL_VAL);
+        } else if (fid == 858) {
+            vm_pop(vm);
+            vm_push(vm, NIL_VAL);
         } else {
-            int nargs = 2; for (int i = 0; i < nargs; i++) vm_pop(vm);
+            int nargs = vm_geometric_arity(fid); for (int i = 0; i < nargs; i++) vm_pop(vm);
             vm_push(vm, NIL_VAL);
         }
         break;
@@ -903,7 +929,8 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
     }
 #else
     /* No geometric library available */
-    (void)fid;
+    int nargs = vm_geometric_arity(fid);
+    for (int i = 0; i < nargs; i++) vm_pop(vm);
     vm_push(vm, NIL_VAL);
 #endif
 }
