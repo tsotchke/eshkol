@@ -1,0 +1,37 @@
+;; Standalone VM reverse-mode AD tape regression.
+;; Covers VM-only builtin registration and native dispatch gaps.
+
+(define tape (ad-tape-new))
+(define x (ad-var tape 2.0))
+(define three (ad-const tape 3.0))
+(define y (ad-pow tape x three))
+(ad-backward tape y)
+
+(display (if (= (ad-node-value tape y) 8.0) "PASS" "FAIL"))
+(display ": ad-node-value reads forward value")
+(newline)
+
+(display (if (= (ad-value tape y) 8.0) "PASS" "FAIL"))
+(display ": ad-value alias reads forward value")
+(newline)
+
+(display (if (= (ad-gradient tape x) 12.0) "PASS" "FAIL"))
+(display ": ad-pow propagates gradient")
+(newline)
+
+(display (if (= (ad-gradient-of tape x) 12.0) "PASS" "FAIL"))
+(display ": ad-gradient-of alias works")
+(newline)
+
+(display (if (> (ad-tape-length tape) 0) "PASS" "FAIL"))
+(display ": ad-tape-length reports nodes")
+(newline)
+
+(display (if (= (ad-value-of tape y) 8.0) "PASS" "FAIL"))
+(display ": ad-value-of alias works")
+(newline)
+
+(ad-tape-release tape)
+(ad-tape-release tape)
+(display "PASS: ad-tape-release is idempotent")
+(newline)

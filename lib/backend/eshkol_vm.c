@@ -259,7 +259,9 @@ static const BuiltinDef BUILTINS[] = {
     {"ad-sin", 398, 2}, {"ad-cos", 399, 2}, {"ad-exp", 400, 2},
     {"ad-log", 401, 2}, {"ad-sqrt", 402, 2}, {"ad-neg", 403, 2},
     {"ad-abs", 404, 2}, {"ad-relu", 405, 2}, {"ad-sigmoid", 406, 2}, {"ad-tanh", 407, 2},
-    {"ad-pow", 397, 3}, {"ad-backward", 408, 2}, {"ad-gradient", 409, 2},
+    {"ad-backward", 408, 2}, {"ad-gradient", 409, 2}, {"ad-gradient-of", 409, 2},
+    {"ad-tape-release", 1841, 1}, {"ad-node-value", 1842, 2}, {"ad-value", 1842, 2},
+    {"ad-value-of", 1842, 2}, {"ad-tape-length", 1843, 1}, {"ad-pow", 1844, 3},
     /* ═══════════════════════════════════════════════════════════════
      * Tensors — IDs 410-470
      * ═══════════════════════════════════════════════════════════════ */

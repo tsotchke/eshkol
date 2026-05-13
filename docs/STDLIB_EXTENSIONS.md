@@ -1307,30 +1307,28 @@ vector and use those as the new form coefficients.
 
 ---
 
-## A.8 Reverse-Mode AD Tape (builtins 390-409) — NOT WIRED TO VM
+## A.8 Reverse-Mode AD Tape VM Surface — IMPLEMENTED
 
-**File**: `lib/backend/vm_autodiff.c` — full implementation exists (65 functions)
-but checking `vm_native.c`:
-```
-grep -n "case 39[0-9]\|case 40[0-9]" lib/backend/vm_native.c
-```
-returns nothing. The tape is implemented but NO cases in vm_native.c dispatch
-to it.
-
-**Fix**: Add cases 390-409 to vm_native.c:
+**File**: `lib/backend/vm_autodiff.c` implements the tape operations and
+`lib/backend/vm_native.c` now dispatches the standalone VM surface:
 - 390: `ad-tape-new`
 - 391: `ad-const`
 - 392: `ad-var`
-- 393-397: `ad-add`, `ad-sub`, `ad-mul`, `ad-div`, `ad-pow`
-- 398-406: `ad-neg`, `ad-abs`, `ad-relu`, `ad-sigmoid`, `ad-tanh`, `ad-sin`,
-  `ad-cos`, `ad-exp`, `ad-log`, `ad-sqrt`
-- 407: `ad-backward` (run backward pass, fill all `.gradient` fields)
-- 408: `ad-gradient-of` (read gradient of node by index)
-- 409: `ad-value-of` (read forward value of node by index)
+- 393: `derivative` / `diff` forward-mode dual bridge
+- 394-397: `ad-add`, `ad-sub`, `ad-mul`, `ad-div`
+- 398-407: `ad-sin`, `ad-cos`, `ad-exp`, `ad-log`, `ad-sqrt`, `ad-neg`,
+  `ad-abs`, `ad-relu`, `ad-sigmoid`, `ad-tanh`
+- 408: `ad-backward` (run backward pass, fill `.gradient` fields)
+- 409: `ad-gradient` / `ad-gradient-of` (read gradient of node by index)
+- 1841: `ad-tape-release` (standalone VM logical handle release; idempotent)
+- 1842: `ad-node-value` / `ad-value` / `ad-value-of` (read forward value)
+- 1843: `ad-tape-length`
+- 1844: `ad-pow`
 
-**Impact**: Without this, gradient-based learning is forward-mode only (works
-for scalars, slow for vectors). Reverse-mode is essential for training any
-model with many parameters (single backward pass vs N forward passes).
+The standalone VM allocates AD tapes in its arena-backed region stack, so
+`ad-tape-release` invalidates the VM tape handle and makes double release safe.
+The LLVM/AOT runtime path still uses the owned main-arena scope release for
+iterative training loops that need memory reclamation.
 
 ---
 
@@ -1435,8 +1433,8 @@ Required: `lib/agent/geometry.esk` (or `lib/core/geometry.esk`) providing:
 
 ## B.25 Reverse-Mode AD Tape Eshkol Wrappers
 
-Once A.8 is fixed (wire 390-409 to vm_native.c), create
-`lib/agent/autodiff-tape.esk`:
+A.8 is wired in the VM. A higher-level convenience wrapper module is still
+useful; create `lib/agent/autodiff-tape.esk`:
 
 ```scheme
 (define (with-tape f)
