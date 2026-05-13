@@ -19,6 +19,82 @@ static Value vm_int_pair(VM* vm, int64_t car, int64_t cdr) {
     return PAIR_VAL(ptr);
 }
 
+static int vm_values_equal_deep(VM* vm, Value a, Value b, int depth) {
+    if (depth > 128) return 0;
+    if (a.type != b.type) {
+        if ((a.type == VAL_INT || a.type == VAL_FLOAT) &&
+            (b.type == VAL_INT || b.type == VAL_FLOAT))
+            return as_number(a) == as_number(b);
+        return 0;
+    }
+
+    switch (a.type) {
+    case VAL_NIL:
+        return 1;
+    case VAL_INT:
+        return a.as.i == b.as.i;
+    case VAL_FLOAT:
+        return a.as.f == b.as.f;
+    case VAL_BOOL:
+        return a.as.b == b.as.b;
+    case VAL_STRING: {
+        if (!is_valid_heap_ptr(vm, a.as.ptr) || !is_valid_heap_ptr(vm, b.as.ptr)) return 0;
+        if (vm->heap.objects[a.as.ptr]->type != HEAP_STRING ||
+            vm->heap.objects[b.as.ptr]->type != HEAP_STRING) return 0;
+        VmString* sa = (VmString*)vm->heap.objects[a.as.ptr]->opaque.ptr;
+        VmString* sb = (VmString*)vm->heap.objects[b.as.ptr]->opaque.ptr;
+        return sa && sb && sa->byte_len == sb->byte_len &&
+               memcmp(sa->data, sb->data, (size_t)sa->byte_len) == 0;
+    }
+    case VAL_PAIR: {
+        if (!is_valid_heap_ptr(vm, a.as.ptr) || !is_valid_heap_ptr(vm, b.as.ptr)) return 0;
+        HeapObject* oa = vm->heap.objects[a.as.ptr];
+        HeapObject* ob = vm->heap.objects[b.as.ptr];
+        if (oa->type == HEAP_FACT)
+            return vm_values_equal_deep(vm, oa->cons.car, b, depth + 1);
+        if (ob->type == HEAP_FACT)
+            return vm_values_equal_deep(vm, a, ob->cons.car, depth + 1);
+        if (oa->type != HEAP_CONS || ob->type != HEAP_CONS) return a.as.ptr == b.as.ptr;
+        return vm_values_equal_deep(vm, oa->cons.car, ob->cons.car, depth + 1) &&
+               vm_values_equal_deep(vm, oa->cons.cdr, ob->cons.cdr, depth + 1);
+    }
+    default:
+        return a.as.ptr == b.as.ptr;
+    }
+}
+
+static int vm_kb_extract_fact_datum(VM* vm, Value fact_val, Value* out) {
+    if (!out) return 0;
+    if (fact_val.type == VAL_PAIR && is_valid_heap_ptr(vm, fact_val.as.ptr)) {
+        HeapObject* obj = vm->heap.objects[fact_val.as.ptr];
+        if (obj->type == HEAP_FACT) {
+            *out = obj->cons.car;
+            return 1;
+        }
+        if (obj->type == HEAP_CONS) {
+            *out = fact_val;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int vm_kb_stored_fact_datum(VM* vm, VmFact* fact, Value* out) {
+    if (!fact || !fact->has_datum || !out) return 0;
+    if (!is_valid_heap_ptr(vm, fact->datum_ptr)) return 0;
+    *out = PAIR_VAL(fact->datum_ptr);
+    return 1;
+}
+
+static int vm_kb_fact_predicate_matches(VM* vm, VmFact* fact, Value predicate) {
+    Value datum;
+    if (!vm_kb_stored_fact_datum(vm, fact, &datum)) return 0;
+    if (datum.type != VAL_PAIR || !is_valid_heap_ptr(vm, datum.as.ptr)) return 0;
+    HeapObject* obj = vm->heap.objects[datum.as.ptr];
+    if (obj->type != HEAP_CONS) return 0;
+    return vm_values_equal_deep(vm, obj->cons.car, predicate, 0);
+}
+
 static int vm_query_terminal_cursor(int* row, int* col) {
     if (row) *row = 0;
     if (col) *col = 0;
@@ -1364,7 +1440,6 @@ static void vm_dispatch_native(VM* vm, int fid) {
         vm->heap.objects[ptr]->type = HEAP_FACT;
         vm->heap.objects[ptr]->cons.car = datum;
         vm->heap.objects[ptr]->cons.cdr = NIL_VAL;
-        vm->heap.objects[ptr]->opaque.ptr = NULL;
         vm_push(vm, (Value){.type = VAL_PAIR, .as.ptr = ptr});
         break;
     }
@@ -5036,19 +5111,19 @@ static void vm_dispatch_native(VM* vm, int fid) {
         break;
     }
 
-    case 1801: { /* kb-retract!(kb, fact) → #t or #f
-                  * Remove first matching fact from KB */
+    case 1801: { /* kb-retract!(kb, fact) -> #t or #f
+                  * Remove first structurally matching fact from KB. */
         Value fact_val = vm_pop(vm), kb_val = vm_pop(vm);
-        if (kb_val.as.ptr >= 0 && vm->heap.objects[kb_val.as.ptr]->type == HEAP_KB &&
-            fact_val.as.ptr >= 0 && vm->heap.objects[fact_val.as.ptr]->type == HEAP_FACT) {
+        if (kb_val.as.ptr >= 0 && vm->heap.objects[kb_val.as.ptr]->type == HEAP_KB) {
             VmKnowledgeBase* kb = (VmKnowledgeBase*)vm->heap.objects[kb_val.as.ptr]->opaque.ptr;
-            VmFact* target = (VmFact*)vm->heap.objects[fact_val.as.ptr]->opaque.ptr;
-            if (kb && target) {
+            Value target_datum;
+            int has_target_datum = vm_kb_extract_fact_datum(vm, fact_val, &target_datum);
+            if (kb && has_target_datum) {
                 for (int i = 0; i < kb->n_facts; i++) {
-                    if (kb->facts[i] == target) {
-                        /* Shift remaining facts down */
-                        for (int j = i; j < kb->n_facts - 1; j++)
-                            kb->facts[j] = kb->facts[j + 1];
+                    Value stored_datum;
+                    if (vm_kb_stored_fact_datum(vm, kb->facts[i], &stored_datum) &&
+                        vm_values_equal_deep(vm, stored_datum, target_datum, 0)) {
+                        kb->facts[i] = kb->facts[kb->n_facts - 1];
                         kb->n_facts--;
                         vm_push(vm, BOOL_VAL(1));
                         goto done_1801;
@@ -5061,59 +5136,80 @@ static void vm_dispatch_native(VM* vm, int fid) {
         break;
     }
 
+    case 1802: { /* kb-count-predicate(kb, predicate) -> integer */
+        Value predicate = vm_pop(vm), kb_val = vm_pop(vm);
+        int count = 0;
+        if (kb_val.as.ptr >= 0 && vm->heap.objects[kb_val.as.ptr]->type == HEAP_KB) {
+            VmKnowledgeBase* kb = (VmKnowledgeBase*)vm->heap.objects[kb_val.as.ptr]->opaque.ptr;
+            if (kb) {
+                for (int i = 0; i < kb->n_facts; i++)
+                    if (vm_kb_fact_predicate_matches(vm, kb->facts[i], predicate)) count++;
+            }
+        }
+        vm_push(vm, INT_VAL(count));
+        break;
+    }
+
     /* ══════════════════════════════════════════════════════════════════════
      * Factor Graph Extensions (1810-1819)
      * ══════════════════════════════════════════════════════════════════════ */
 
-    case 1810: { /* fg-marginal(fg, var-idx) → tensor of belief probabilities */
+    case 1810: { /* fg-marginal(fg, var-idx) -> tensor of belief probabilities */
         Value idx_val = vm_pop(vm), fg_val = vm_pop(vm);
         if (fg_val.as.ptr >= 0 && vm->heap.objects[fg_val.as.ptr]->type == HEAP_FACTOR_GRAPH) {
             VmFactorGraph* fg = (VmFactorGraph*)vm->heap.objects[fg_val.as.ptr]->opaque.ptr;
             int var = (int)as_number(idx_val);
             if (fg && var >= 0 && var < fg->num_vars) {
                 int dim = fg->var_dims[var];
-                /* Convert log-beliefs to probabilities via softmax */
-                double probs[64];
-                double max_b = fg->beliefs[var][0];
-                for (int i = 1; i < dim && i < 64; i++)
-                    if (fg->beliefs[var][i] > max_b) max_b = fg->beliefs[var][i];
-                double sum = 0;
-                for (int i = 0; i < dim && i < 64; i++) {
-                    probs[i] = exp(fg->beliefs[var][i] - max_b);
-                    sum += probs[i];
-                }
-                if (sum > 0) for (int i = 0; i < dim && i < 64; i++) probs[i] /= sum;
                 int64_t shape[1] = { dim };
-                VmTensor* t = vm_tensor_from_data(&vm->heap.regions, probs, shape, 1);
-                if (t) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_TENSOR, VAL_TENSOR, t); break; }
+                VmTensor* t = vm_tensor_zeros(&vm->heap.regions, shape, 1);
+                if (t) {
+                    double sum = 0.0;
+                    for (int i = 0; i < dim; i++) {
+                        t->data[i] = exp(fg->beliefs[var][i]);
+                        sum += t->data[i];
+                    }
+                    if (sum > 0.0) for (int i = 0; i < dim; i++) t->data[i] /= sum;
+                    VM_PUSH_HEAP_OPAQUE(vm, HEAP_TENSOR, VAL_TENSOR, t);
+                    break;
+                }
             }
         }
         vm_push(vm, NIL_VAL);
         break;
     }
 
-    case 1811: { /* fg-entropy(fg, var-idx) → scalar entropy H = -Σ p*log(p) */
+    case 1811: { /* fg-entropy(fg, var-idx) -> scalar entropy H = -sum p*log(p) */
         Value idx_val = vm_pop(vm), fg_val = vm_pop(vm);
         if (fg_val.as.ptr >= 0 && vm->heap.objects[fg_val.as.ptr]->type == HEAP_FACTOR_GRAPH) {
             VmFactorGraph* fg = (VmFactorGraph*)vm->heap.objects[fg_val.as.ptr]->opaque.ptr;
             int var = (int)as_number(idx_val);
             if (fg && var >= 0 && var < fg->num_vars) {
                 int dim = fg->var_dims[var];
-                /* Softmax to get probabilities */
-                double max_b = fg->beliefs[var][0];
-                for (int i = 1; i < dim; i++)
-                    if (fg->beliefs[var][i] > max_b) max_b = fg->beliefs[var][i];
-                double sum = 0;
-                double probs[64];
-                for (int i = 0; i < dim && i < 64; i++) {
-                    probs[i] = exp(fg->beliefs[var][i] - max_b);
-                    sum += probs[i];
-                }
-                /* H = -Σ p*log(p) */
-                double entropy = 0;
-                for (int i = 0; i < dim && i < 64; i++) {
-                    double p = probs[i] / sum;
+                double entropy = 0.0;
+                for (int i = 0; i < dim; i++) {
+                    double p = exp(fg->beliefs[var][i]);
                     if (p > 1e-15) entropy -= p * log(p);
+                }
+                vm_push(vm, FLOAT_VAL(entropy));
+                break;
+            }
+        }
+        vm_push(vm, FLOAT_VAL(0));
+        break;
+    }
+
+    case 1812: { /* fg-total-entropy(fg) -> sum of variable marginal entropies */
+        Value fg_val = vm_pop(vm);
+        if (fg_val.as.ptr >= 0 && vm->heap.objects[fg_val.as.ptr]->type == HEAP_FACTOR_GRAPH) {
+            VmFactorGraph* fg = (VmFactorGraph*)vm->heap.objects[fg_val.as.ptr]->opaque.ptr;
+            if (fg) {
+                double entropy = 0.0;
+                for (int var = 0; var < fg->num_vars; var++) {
+                    for (int s = 0; s < fg->var_dims[var]; s++) {
+                        double p = exp(fg->beliefs[var][s]);
+                        if (p > 1e-15) entropy -= p * log(p);
+                    }
                 }
                 vm_push(vm, FLOAT_VAL(entropy));
                 break;
