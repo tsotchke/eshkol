@@ -1,0 +1,33 @@
+;; Standalone VM quantum RNG regression.
+
+(define r (quantum-random))
+(display (if (number? r) "PASS" "FAIL"))
+(display ": quantum-random returns a number")
+(newline)
+
+(display (if (and (>= r 0.0) (< r 1.0)) "PASS" "FAIL"))
+(display ": quantum-random is in [0, 1)")
+(newline)
+
+(define i (quantum-random-int 10))
+(display (if (integer? i) "PASS" "FAIL"))
+(display ": quantum-random-int returns an integer")
+(newline)
+
+(display (if (and (>= i 0) (< i 10)) "PASS" "FAIL"))
+(display ": quantum-random-int respects bound")
+(newline)
+
+(display (if (= (quantum-random-int 1) 0) "PASS" "FAIL"))
+(display ": quantum-random-int 1 returns 0")
+(newline)
+
+(define rf (quantum-random-range -10.0 -5.0))
+(display (if (and (>= rf -10.0) (< rf -5.0)) "PASS" "FAIL"))
+(display ": quantum-random-range float bounds")
+(newline)
+
+(define ri (quantum-random-range 5 10))
+(display (if (and (integer? ri) (>= ri 5) (<= ri 10)) "PASS" "FAIL"))
+(display ": quantum-random-range integer bounds")
+(newline)

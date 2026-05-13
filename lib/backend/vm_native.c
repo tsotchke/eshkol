@@ -68,6 +68,34 @@ static AdTape* vm_ad_tape_from_value(VM* vm, Value tape_val) {
     return (AdTape*)vm->heap.objects[tape_val.as.ptr]->opaque.ptr;
 }
 
+static uint64_t vm_qrng_state = 0;
+
+static uint64_t vm_qrng_next_u64(void) {
+    if (vm_qrng_state == 0) {
+        uint64_t seed = 0x9e3779b97f4a7c15ULL ^ (uint64_t)(uintptr_t)&vm_qrng_state;
+#if !defined(ESHKOL_VM_WASM)
+        struct timeval tv;
+        if (gettimeofday(&tv, NULL) == 0) {
+            seed ^= ((uint64_t)tv.tv_sec << 32) ^ (uint64_t)tv.tv_usec;
+        }
+#if !defined(_WIN32)
+        seed ^= ((uint64_t)(uint32_t)getpid() << 17);
+#endif
+#endif
+        vm_qrng_state = seed ? seed : 0x2545f4914f6cdd1dULL;
+    }
+    uint64_t x = vm_qrng_state;
+    x ^= x >> 12;
+    x ^= x << 25;
+    x ^= x >> 27;
+    vm_qrng_state = x;
+    return x * 0x2545f4914f6cdd1dULL;
+}
+
+static double vm_qrng_double(void) {
+    return (double)(vm_qrng_next_u64() >> 11) * (1.0 / 9007199254740992.0);
+}
+
 static void vm_dispatch_native(VM* vm, int fid) {
     switch (fid) {
     /* ══════════════════════════════════════════════════════════════════════
@@ -5327,6 +5355,42 @@ static void vm_dispatch_native(VM* vm, int fid) {
         (void)nw_val; (void)nh_val; (void)tensor_val;
 #endif
         vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+    /* ══════════════════════════════════════════════════════════════════════
+     * Quantum-inspired RNG (1860-1862)
+     * ══════════════════════════════════════════════════════════════════════ */
+    case 1860: { /* quantum-random() -> double in [0, 1) */
+        vm_push(vm, FLOAT_VAL(vm_qrng_double()));
+        break;
+    }
+    case 1861: { /* quantum-random-int(bound) -> integer in [0, bound) */
+        Value bound_val = vm_pop(vm);
+        int64_t bound = (int64_t)as_number(bound_val);
+        if (bound <= 1) {
+            vm_push(vm, INT_VAL(0));
+        } else {
+            vm_push(vm, INT_VAL((int64_t)(vm_qrng_next_u64() % (uint64_t)bound)));
+        }
+        break;
+    }
+    case 1862: { /* quantum-random-range(min, max) */
+        Value max_val = vm_pop(vm), min_val = vm_pop(vm);
+        double lo = as_number(min_val);
+        double hi = as_number(max_val);
+        if (hi <= lo) {
+            vm_push(vm, (min_val.type == VAL_INT && max_val.type == VAL_INT) ? INT_VAL((int64_t)lo) : FLOAT_VAL(lo));
+            break;
+        }
+        if (min_val.type == VAL_INT && max_val.type == VAL_INT) {
+            int64_t ilo = min_val.as.i;
+            int64_t ihi = max_val.as.i;
+            uint64_t span = (uint64_t)(ihi - ilo + 1);
+            vm_push(vm, INT_VAL(ilo + (int64_t)(vm_qrng_next_u64() % span)));
+        } else {
+            vm_push(vm, FLOAT_VAL(lo + vm_qrng_double() * (hi - lo)));
+        }
         break;
     }
 
