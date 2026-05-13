@@ -342,6 +342,8 @@ static const BuiltinDef BUILTINS[] = {
     {"free-energy", 525, 2}, {"expected-free-energy", 526, 3},
     {"make-workspace", 540, 2}, {"workspace?", 541, 1},
     {"ws-register!", 542, 3}, {"ws-step!", 543, 1},
+    {"ws-get-content", 544, 1}, {"ws-set-content!", 545, 2},
+    {"ws-get-dim", 546, 1}, {"ws-get-step-count", 547, 1},
     /* ═══════════════════════════════════════════════════════════════
      * I/O — IDs 580-602
      * ═══════════════════════════════════════════════════════════════ */
