@@ -36,6 +36,9 @@
 #include <signal.h>
 #include <poll.h>
 #include <errno.h>
+#ifndef _WIN32
+#include <termios.h>
+#endif
 #endif
 
 /* ESKB binary format */
@@ -307,6 +310,7 @@ static const BuiltinDef BUILTINS[] = {
     {"get-output-string", 598, 1}, {"file-exists?", 599, 1},
     {"delete-file", 600, 1},
     {"directory-entries", 601, 1}, {"command-line", 602, 0},
+    {"term-cursor-pos", 603, 0},
     /* ═══════════════════════════════════════════════════════════════
      * Hash tables — IDs 660-670
      * ═══════════════════════════════════════════════════════════════ */

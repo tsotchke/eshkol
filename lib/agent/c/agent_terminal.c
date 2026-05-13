@@ -50,6 +50,10 @@ static int g_raw_mode = 0;
 static volatile int g_resized = 0;
 static int g_term_width = 80;
 static int g_term_height = 24;
+static int g_cursor_cache_ready = 0;
+static int g_cursor_cache_ok = 0;
+static int g_cursor_cache_row = 0;
+static int g_cursor_cache_col = 0;
 
 /* SIGWINCH handler */
 static void sigwinch_handler(int sig) {
@@ -232,21 +236,64 @@ void eshkol_term_move_to(int row, int col) {
 }
 
 int eshkol_term_cursor_pos(int* row, int* col) {
+    if (row) *row = 0;
+    if (col) *col = 0;
+    if (!row || !col) return 0;
+    if (!isatty(STDIN_FILENO) || !isatty(STDOUT_FILENO)) return 0;
+
+    struct termios orig;
+    int restore = 0;
+    if (tcgetattr(STDIN_FILENO, &orig) == 0) {
+        struct termios raw = orig;
+        raw.c_lflag &= ~(ICANON | ECHO);
+        raw.c_cc[VMIN] = 0;
+        raw.c_cc[VTIME] = 0;
+        if (tcsetattr(STDIN_FILENO, TCSANOW, &raw) == 0) restore = 1;
+    }
+
     char buf[32];
     /* Send DSR (Device Status Report) */
-    write(STDOUT_FILENO, "\033[6n", 4);
+    if (write(STDOUT_FILENO, "\033[6n", 4) != 4) {
+        if (restore) tcsetattr(STDIN_FILENO, TCSANOW, &orig);
+        return 0;
+    }
+
     /* Read response: ESC [ row ; col R */
     int i = 0;
     while (i < (int)sizeof(buf) - 1) {
         struct pollfd pfd = { .fd = STDIN_FILENO, .events = POLLIN };
         if (poll(&pfd, 1, 100) <= 0) break;
         if (read(STDIN_FILENO, &buf[i], 1) != 1) break;
-        if (buf[i] == 'R') break;
-        i++;
+        if (buf[i++] == 'R') break;
     }
     buf[i] = '\0';
-    if (sscanf(buf, "\033[%d;%d", row, col) != 2) return 0;
-    return 1;
+    int ok = (sscanf(buf, "\033[%d;%dR", row, col) == 2) ||
+             (sscanf(buf, "\033[%d;%d", row, col) == 2);
+    if (restore) tcsetattr(STDIN_FILENO, TCSANOW, &orig);
+    if (!ok) {
+        *row = 0;
+        *col = 0;
+    }
+    return ok;
+}
+
+static void eshkol_term_refresh_cursor_cache(void) {
+    g_cursor_cache_row = 0;
+    g_cursor_cache_col = 0;
+    g_cursor_cache_ok = eshkol_term_cursor_pos(&g_cursor_cache_row, &g_cursor_cache_col);
+    g_cursor_cache_ready = 1;
+}
+
+int eshkol_term_cursor_row(void) {
+    eshkol_term_refresh_cursor_cache();
+    return g_cursor_cache_ok ? g_cursor_cache_row : 0;
+}
+
+int eshkol_term_cursor_col(void) {
+    if (!g_cursor_cache_ready) eshkol_term_refresh_cursor_cache();
+    int col = g_cursor_cache_ok ? g_cursor_cache_col : 0;
+    g_cursor_cache_ready = 0;
+    return col;
 }
 
 void eshkol_term_show_cursor(void) {
@@ -297,6 +344,8 @@ int eshkol_term_cursor_pos(int* row, int* col) {
     if (col) *col = 0;
     return -1;
 }
+int eshkol_term_cursor_row(void)      { return 0; }
+int eshkol_term_cursor_col(void)      { return 0; }
 void eshkol_term_show_cursor(void)    { }
 void eshkol_term_hide_cursor(void)    { }
 void eshkol_term_write(const char* s) { if (s) fputs(s, stdout); }

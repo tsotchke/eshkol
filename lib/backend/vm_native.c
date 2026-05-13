@@ -7,6 +7,61 @@
               (val).as.ptr, (vm)->heap.next_free), \
       (vm)->error = 1, (HeapObject*)NULL))
 
+static Value vm_int_pair(VM* vm, int64_t car, int64_t cdr) {
+    int32_t ptr = heap_alloc(&vm->heap);
+    if (ptr < 0) {
+        vm->error = 1;
+        return NIL_VAL;
+    }
+    vm->heap.objects[ptr]->type = HEAP_CONS;
+    vm->heap.objects[ptr]->cons.car = INT_VAL(car);
+    vm->heap.objects[ptr]->cons.cdr = INT_VAL(cdr);
+    return PAIR_VAL(ptr);
+}
+
+static int vm_query_terminal_cursor(int* row, int* col) {
+    if (row) *row = 0;
+    if (col) *col = 0;
+#if defined(ESHKOL_VM_WASM) || defined(_WIN32)
+    return 0;
+#else
+    if (!row || !col) return 0;
+    if (!isatty(STDIN_FILENO) || !isatty(STDOUT_FILENO)) return 0;
+
+    struct termios orig;
+    int restore = 0;
+    if (tcgetattr(STDIN_FILENO, &orig) == 0) {
+        struct termios raw = orig;
+        raw.c_lflag &= ~(ICANON | ECHO);
+        raw.c_cc[VMIN] = 0;
+        raw.c_cc[VTIME] = 0;
+        if (tcsetattr(STDIN_FILENO, TCSANOW, &raw) == 0) restore = 1;
+    }
+
+    int ok = 0;
+    char buf[32];
+    int i = 0;
+    if (write(STDOUT_FILENO, "\033[6n", 4) == 4) {
+        while (i < (int)sizeof(buf) - 1) {
+            struct pollfd pfd = { .fd = STDIN_FILENO, .events = POLLIN };
+            if (poll(&pfd, 1, 100) <= 0) break;
+            if (read(STDIN_FILENO, &buf[i], 1) != 1) break;
+            if (buf[i++] == 'R') break;
+        }
+        buf[i] = '\0';
+        ok = (sscanf(buf, "\033[%d;%dR", row, col) == 2) ||
+             (sscanf(buf, "\033[%d;%d", row, col) == 2);
+    }
+
+    if (restore) tcsetattr(STDIN_FILENO, TCSANOW, &orig);
+    if (!ok) {
+        *row = 0;
+        *col = 0;
+    }
+    return ok;
+#endif
+}
+
 static void vm_dispatch_native(VM* vm, int fid) {
     switch (fid) {
     /* ══════════════════════════════════════════════════════════════════════
@@ -2046,6 +2101,13 @@ static void vm_dispatch_native(VM* vm, int fid) {
             result602 = PAIR_VAL(cp602);
         }
         vm_push(vm, result602);
+        break;
+    }
+    case 603: { /* term-cursor-pos → (row . col), or (0 . 0) off-TTY */
+        int row = 0;
+        int col = 0;
+        (void)vm_query_terminal_cursor(&row, &col);
+        vm_push(vm, vm_int_pair(vm, row, col));
         break;
     }
 

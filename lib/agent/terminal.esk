@@ -35,6 +35,8 @@
 (extern i32 term-read-key-timeout-raw i32 :real eshkol_term_read_key_timeout)
 (extern void term-clear-raw :real eshkol_term_clear)
 (extern void term-move-to-raw i32 i32 :real eshkol_term_move_to)
+(extern i32 term-cursor-row-raw :real eshkol_term_cursor_row)
+(extern i32 term-cursor-col-raw :real eshkol_term_cursor_col)
 (extern void term-show-cursor-raw :real eshkol_term_show_cursor)
 (extern void term-hide-cursor-raw :real eshkol_term_hide_cursor)
 (extern void term-write-raw ptr :real eshkol_term_write)
@@ -53,7 +55,7 @@
 (define (term-read-key-timeout ms) (term-read-key-timeout-raw ms))
 (define (term-clear) (term-clear-raw))
 (define (term-move-to row col) (term-move-to-raw row col))
-(define (term-cursor-pos) (cons 0 0))  ;; Requires struct return, use DSR query
+(define (term-cursor-pos) (cons (term-cursor-row-raw) (term-cursor-col-raw)))
 (define (term-show-cursor) (term-show-cursor-raw))
 (define (term-hide-cursor) (term-hide-cursor-raw))
 (define (term-write str) (term-write-raw str))
