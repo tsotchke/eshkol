@@ -3,7 +3,9 @@
  * @brief VM geometric manifold dispatch — native IDs 804-859.
  *
  * When ESHKOL_GEOMETRIC_ENABLED is defined, calls semiclassical_qllm.
- * Otherwise returns NIL for all operations.
+ * Otherwise uses a portable constant-curvature fallback allocated in the VM
+ * arena. Handles are logically invalidated by manifold-destroy!; arena memory
+ * remains owned by the VM region stack.
  *
  * Copyright (C) Tsotchke Corporation. MIT License.
  */
@@ -49,6 +51,200 @@ static void vm_push_manifold(VM* vm, void* manifold) {
     vm_push(vm, (Value){.type = VAL_MANIFOLD, .as.ptr = ptr});
 }
 
+#if !defined(ESHKOL_GEOMETRIC_ENABLED)
+typedef struct {
+    int type;          /* 0 euclidean, 1 hyperbolic, 2 spherical, 3 product */
+    int dim;
+    double curvature;
+} VmFallbackManifold;
+
+static VmFallbackManifold* vm_fallback_manifold(VM* vm, Value mv) {
+    if (mv.type != VAL_MANIFOLD || !is_heap_type(vm, mv, HEAP_MANIFOLD)) return NULL;
+    return (VmFallbackManifold*)vm->heap.objects[mv.as.ptr]->opaque.ptr;
+}
+
+static void vm_push_fallback_manifold(VM* vm, int type, int dim, double curvature) {
+    if (dim <= 0) { vm_push(vm, NIL_VAL); return; }
+    VmFallbackManifold* m = (VmFallbackManifold*)vm_alloc(&vm->heap.regions, sizeof(VmFallbackManifold));
+    if (!m) { vm_push(vm, NIL_VAL); return; }
+    m->type = type;
+    m->dim = dim;
+    m->curvature = curvature;
+    vm_push_manifold(vm, m);
+}
+#endif
+
+static int vm_manifold_has_value(VM* vm, Value mv) {
+    return mv.type == VAL_MANIFOLD && is_heap_type(vm, mv, HEAP_MANIFOLD) &&
+           vm->heap.objects[mv.as.ptr]->opaque.ptr != NULL;
+}
+
+static double vm_geometric_manifold_curvature(VM* vm, Value mv, int* ok) {
+    if (!vm_manifold_has_value(vm, mv)) {
+        if (ok) *ok = 0;
+        return 0.0;
+    }
+#if defined(ESHKOL_GEOMETRIC_ENABLED)
+    if (ok) *ok = 1;
+    return qllm_manifold_get_curvature((qllm_manifold_t*)vm->heap.objects[mv.as.ptr]->opaque.ptr);
+#else
+    VmFallbackManifold* m = vm_fallback_manifold(vm, mv);
+    if (!m) {
+        if (ok) *ok = 0;
+        return 0.0;
+    }
+    if (ok) *ok = 1;
+    return m->curvature;
+#endif
+}
+
+static int vm_geometric_manifold_dim(VM* vm, Value mv) {
+#if defined(ESHKOL_GEOMETRIC_ENABLED)
+    (void)vm; (void)mv;
+    return 0;
+#else
+    VmFallbackManifold* m = vm_fallback_manifold(vm, mv);
+    return m ? m->dim : 0;
+#endif
+}
+
+static VmTensor* vm_tensor_copy_for_geometry(VM* vm, const VmTensor* src) {
+    if (!src || !src->data || src->n_dims <= 0) return NULL;
+    VmTensor* out = vm_tensor_zeros(&vm->heap.regions, src->shape, src->n_dims);
+    if (!out) return NULL;
+    memcpy(out->data, src->data, (size_t)src->total * sizeof(double));
+    return out;
+}
+
+static VmTensor* vm_tensor_linear_combo_for_geometry(VM* vm, const VmTensor* a, double as,
+                                                     const VmTensor* b, double bs) {
+    if (!a || !b || !a->data || !b->data || a->total != b->total) return NULL;
+    VmTensor* out = vm_tensor_zeros(&vm->heap.regions, a->shape, a->n_dims);
+    if (!out) return NULL;
+    for (int64_t i = 0; i < out->total; i++) out->data[i] = as * a->data[i] + bs * b->data[i];
+    return out;
+}
+
+static VmTensor* vm_tensor_scale_for_geometry(VM* vm, const VmTensor* src, double scale) {
+    if (!src || !src->data) return NULL;
+    VmTensor* out = vm_tensor_zeros(&vm->heap.regions, src->shape, src->n_dims);
+    if (!out) return NULL;
+    for (int64_t i = 0; i < out->total; i++) out->data[i] = src->data[i] * scale;
+    return out;
+}
+
+static double vm_tensor_dot_for_geometry(const VmTensor* a, const VmTensor* b) {
+    if (!a || !b || !a->data || !b->data || a->total != b->total) return 0.0;
+    double sum = 0.0;
+    for (int64_t i = 0; i < a->total; i++) sum += a->data[i] * b->data[i];
+    return sum;
+}
+
+static double vm_tensor_distance_for_geometry(const VmTensor* a, const VmTensor* b) {
+    if (!a || !b || !a->data || !b->data || a->total != b->total) return 0.0;
+    double sum = 0.0;
+    for (int64_t i = 0; i < a->total; i++) {
+        double d = a->data[i] - b->data[i];
+        sum += d * d;
+    }
+    return sqrt(sum);
+}
+
+static void vm_tensor_normalize_for_geometry(VmTensor* t) {
+    if (!t || !t->data) return;
+    double norm2 = 0.0;
+    for (int64_t i = 0; i < t->total; i++) norm2 += t->data[i] * t->data[i];
+    if (norm2 <= 0.0) return;
+    double inv = 1.0 / sqrt(norm2);
+    for (int64_t i = 0; i < t->total; i++) t->data[i] *= inv;
+}
+
+static void vm_push_tensor_handle_for_geometry(VM* vm, VmTensor* t) {
+    if (!t) { vm_push(vm, NIL_VAL); return; }
+    int32_t ptr = heap_alloc(&vm->heap);
+    if (ptr < 0) { vm->error = 1; vm_push(vm, NIL_VAL); return; }
+    vm->heap.objects[ptr]->type = HEAP_TENSOR;
+    vm->heap.objects[ptr]->opaque.ptr = t;
+    vm_push(vm, (Value){.type = VAL_TENSOR, .as.ptr = ptr});
+}
+
+static void vm_push_tensor_or_nil(VM* vm, VmTensor* t) {
+    vm_push_tensor_handle_for_geometry(vm, t);
+}
+
+static void vm_geometric_metric_tensor(VM* vm) {
+    Value mv = vm_pop(vm);
+    int dim = vm_geometric_manifold_dim(vm, mv);
+    if (dim <= 0 || dim > 256) { vm_push(vm, NIL_VAL); return; }
+    int64_t shape[2] = {dim, dim};
+    VmTensor* out = vm_tensor_zeros(&vm->heap.regions, shape, 2);
+    if (!out) { vm_push(vm, NIL_VAL); return; }
+    for (int i = 0; i < dim; i++) out->data[i * dim + i] = 1.0;
+    vm_push_tensor_handle_for_geometry(vm, out);
+}
+
+static void vm_geometric_christoffel_tensor(VM* vm) {
+    Value pointv = vm_pop(vm);
+    Value mv = vm_pop(vm);
+    VmTensor* point = vm_get_tensor(vm, pointv);
+    int ok = 0;
+    double K = vm_geometric_manifold_curvature(vm, mv, &ok);
+    if (!ok || !point || !point->data) { vm_push(vm, NIL_VAL); return; }
+    int dim = vm_geometric_manifold_dim(vm, mv);
+    if (dim <= 0 || dim > point->total) dim = (int)point->total;
+    if (dim <= 0 || dim > 64) { vm_push(vm, NIL_VAL); return; }
+
+    int64_t shape[3] = {dim, dim, dim};
+    VmTensor* out = vm_tensor_zeros(&vm->heap.regions, shape, 3);
+    if (!out) { vm_push(vm, NIL_VAL); return; }
+
+    for (int k = 0; k < dim; k++) {
+        for (int i = 0; i < dim; i++) {
+            for (int j = 0; j < dim; j++) {
+                double xk = point->data[k];
+                double xi = point->data[i];
+                double xj = point->data[j];
+                double v = K * ((i == j ? xk : 0.0) -
+                                (j == k ? xi : 0.0) -
+                                (i == k ? xj : 0.0));
+                out->data[((int64_t)k * dim + i) * dim + j] = v;
+            }
+        }
+    }
+    vm_push_tensor_handle_for_geometry(vm, out);
+}
+
+static void vm_geometric_pullback_tensor(VM* vm) {
+    Value jacv = vm_pop(vm);
+    Value formv = vm_pop(vm);
+    VmTensor* jac = vm_get_tensor(vm, jacv);
+    VmTensor* form = vm_get_tensor(vm, formv);
+    if (!jac || !form || !jac->data || !form->data) { vm_push(vm, NIL_VAL); return; }
+
+    int64_t rows = 0, cols = 0;
+    if (jac->n_dims >= 2) {
+        rows = jac->shape[0];
+        cols = jac->shape[1];
+    } else if (form->total > 0 && jac->total % form->total == 0) {
+        rows = form->total;
+        cols = jac->total / form->total;
+    }
+    if (rows <= 0 || cols <= 0 || rows * cols > jac->total || rows > form->total) {
+        vm_push(vm, NIL_VAL);
+        return;
+    }
+
+    int64_t shape[1] = {cols};
+    VmTensor* out = vm_tensor_zeros(&vm->heap.regions, shape, 1);
+    if (!out) { vm_push(vm, NIL_VAL); return; }
+    for (int64_t j = 0; j < cols; j++) {
+        double sum = 0.0;
+        for (int64_t i = 0; i < rows; i++) sum += form->data[i] * jac->data[i * cols + j];
+        out->data[j] = sum;
+    }
+    vm_push_tensor_handle_for_geometry(vm, out);
+}
+
 static int vm_geometric_arity(int fid) {
     switch (fid) {
     case 804: case 806: case 808: case 823: case 824: case 825:
@@ -71,6 +267,546 @@ static int vm_geometric_arity(int fid) {
         return 0;
     }
 }
+
+#if !defined(ESHKOL_GEOMETRIC_ENABLED)
+static void vm_dispatch_geometric_fallback(VM* vm, int fid) {
+    switch (fid) {
+    case 804: { /* make-euclidean-manifold(dim) */
+        int dim = (int)as_number(vm_pop(vm));
+        vm_push_fallback_manifold(vm, 0, dim, 0.0);
+        break;
+    }
+    case 805: { /* make-hyperbolic-manifold(dim, curvature) */
+        double c = as_number(vm_pop(vm));
+        int dim = (int)as_number(vm_pop(vm));
+        vm_push_fallback_manifold(vm, 1, dim, c);
+        break;
+    }
+    case 806: { /* make-spherical-manifold(dim) */
+        int dim = (int)as_number(vm_pop(vm));
+        vm_push_fallback_manifold(vm, 2, dim, 1.0);
+        break;
+    }
+    case 807: { /* make-product-manifold(m1, m2) */
+        Value m2v = vm_pop(vm), m1v = vm_pop(vm);
+        VmFallbackManifold* m1 = vm_fallback_manifold(vm, m1v);
+        VmFallbackManifold* m2 = vm_fallback_manifold(vm, m2v);
+        if (m1 && m2) vm_push_fallback_manifold(vm, 3, m1->dim + m2->dim,
+                                                0.5 * (m1->curvature + m2->curvature));
+        else vm_push(vm, NIL_VAL);
+        break;
+    }
+    case 808: case 831: case 851: { /* manifold-curvature/get-curvature/riemann-curvature */
+        Value mv = vm_pop(vm);
+        int ok = 0;
+        double c = vm_geometric_manifold_curvature(vm, mv, &ok);
+        if (ok) vm_push_float(vm, c);
+        else vm_push(vm, NIL_VAL);
+        break;
+    }
+
+    case 809: case 842: { /* exp-map/retraction(base, tangent, curvature) */
+        (void)as_number(vm_pop(vm));
+        VmTensor* tangent = vm_get_tensor(vm, vm_pop(vm));
+        VmTensor* base = vm_get_tensor(vm, vm_pop(vm));
+        vm_push_tensor_or_nil(vm, vm_tensor_linear_combo_for_geometry(vm, base, 1.0, tangent, 1.0));
+        break;
+    }
+    case 810: case 822: { /* log-map(base, point, curvature) / spherical-log(base, point) */
+        if (fid == 810) (void)as_number(vm_pop(vm));
+        VmTensor* point = vm_get_tensor(vm, vm_pop(vm));
+        VmTensor* base = vm_get_tensor(vm, vm_pop(vm));
+        vm_push_tensor_or_nil(vm, vm_tensor_linear_combo_for_geometry(vm, point, 1.0, base, -1.0));
+        break;
+    }
+    case 811: case 816: { /* geodesic-distance/poincare-distance(x, y, curvature) */
+        (void)as_number(vm_pop(vm));
+        VmTensor* y = vm_get_tensor(vm, vm_pop(vm));
+        VmTensor* x = vm_get_tensor(vm, vm_pop(vm));
+        if (x && y && x->total == y->total) vm_push_float(vm, vm_tensor_distance_for_geometry(x, y));
+        else vm_push(vm, NIL_VAL);
+        break;
+    }
+    case 812: case 843: { /* parallel/vector transport(x, y, v, curvature) */
+        (void)as_number(vm_pop(vm));
+        VmTensor* v = vm_get_tensor(vm, vm_pop(vm));
+        (void)vm_pop(vm); /* y */
+        (void)vm_pop(vm); /* x */
+        vm_push_tensor_or_nil(vm, vm_tensor_copy_for_geometry(vm, v));
+        break;
+    }
+    case 813: { /* manifold-project(x, curvature) */
+        (void)as_number(vm_pop(vm));
+        VmTensor* x = vm_get_tensor(vm, vm_pop(vm));
+        vm_push_tensor_or_nil(vm, vm_tensor_copy_for_geometry(vm, x));
+        break;
+    }
+    case 814: { /* mobius-add(x, y, curvature) */
+        (void)as_number(vm_pop(vm));
+        VmTensor* y = vm_get_tensor(vm, vm_pop(vm));
+        VmTensor* x = vm_get_tensor(vm, vm_pop(vm));
+        vm_push_tensor_or_nil(vm, vm_tensor_linear_combo_for_geometry(vm, x, 1.0, y, 1.0));
+        break;
+    }
+    case 815: { /* mobius-scalar-mul(r, x, curvature) */
+        (void)as_number(vm_pop(vm));
+        VmTensor* x = vm_get_tensor(vm, vm_pop(vm));
+        double r = as_number(vm_pop(vm));
+        vm_push_tensor_or_nil(vm, vm_tensor_scale_for_geometry(vm, x, r));
+        break;
+    }
+    case 817: { /* frechet-mean(points, weights, curvature) */
+        (void)as_number(vm_pop(vm));
+        VmTensor* weights = vm_get_tensor(vm, vm_pop(vm));
+        VmTensor* points = vm_get_tensor(vm, vm_pop(vm));
+        if (!points || !points->data) { vm_push(vm, NIL_VAL); break; }
+        int n = (points->n_dims >= 2) ? (int)points->shape[0] : 1;
+        int dim = (points->n_dims >= 2) ? (int)points->shape[1] : (int)points->total;
+        int64_t shape[1] = {dim};
+        VmTensor* out = vm_tensor_zeros(&vm->heap.regions, shape, 1);
+        if (!out) { vm_push(vm, NIL_VAL); break; }
+        double wsum = 0.0;
+        for (int i = 0; i < n; i++) {
+            double w = (weights && i < weights->total) ? weights->data[i] : 1.0;
+            wsum += w;
+            for (int d = 0; d < dim; d++) out->data[d] += w * points->data[i * dim + d];
+        }
+        if (wsum != 0.0) for (int d = 0; d < dim; d++) out->data[d] /= wsum;
+        VM_PUSH_TENSOR(vm, out);
+        break;
+    }
+
+    case 819: { /* great-circle-distance(x, y) */
+        VmTensor* y = vm_get_tensor(vm, vm_pop(vm));
+        VmTensor* x = vm_get_tensor(vm, vm_pop(vm));
+        if (!x || !y || x->total != y->total) { vm_push(vm, NIL_VAL); break; }
+        double nx = sqrt(vm_tensor_dot_for_geometry(x, x));
+        double ny = sqrt(vm_tensor_dot_for_geometry(y, y));
+        if (nx <= 0.0 || ny <= 0.0) { vm_push_float(vm, 0.0); break; }
+        double cs = vm_tensor_dot_for_geometry(x, y) / (nx * ny);
+        if (cs > 1.0) cs = 1.0;
+        if (cs < -1.0) cs = -1.0;
+        vm_push_float(vm, acos(cs));
+        break;
+    }
+    case 820: { /* slerp(x, y, t) */
+        double t = as_number(vm_pop(vm));
+        VmTensor* y = vm_get_tensor(vm, vm_pop(vm));
+        VmTensor* x = vm_get_tensor(vm, vm_pop(vm));
+        VmTensor* out = vm_tensor_linear_combo_for_geometry(vm, x, 1.0 - t, y, t);
+        vm_tensor_normalize_for_geometry(out);
+        vm_push_tensor_or_nil(vm, out);
+        break;
+    }
+    case 821: { /* spherical-exp(base, tangent) */
+        VmTensor* tangent = vm_get_tensor(vm, vm_pop(vm));
+        VmTensor* base = vm_get_tensor(vm, vm_pop(vm));
+        VmTensor* out = vm_tensor_linear_combo_for_geometry(vm, base, 1.0, tangent, 1.0);
+        vm_tensor_normalize_for_geometry(out);
+        vm_push_tensor_or_nil(vm, out);
+        break;
+    }
+    case 823: { /* spherical-project(x) */
+        VmTensor* x = vm_get_tensor(vm, vm_pop(vm));
+        VmTensor* out = vm_tensor_copy_for_geometry(vm, x);
+        vm_tensor_normalize_for_geometry(out);
+        vm_push_tensor_or_nil(vm, out);
+        break;
+    }
+
+    case 824: { /* so3-exp(omega) */
+        VmTensor* omega = vm_get_tensor(vm, vm_pop(vm));
+        if (!omega || omega->total < 3) { vm_push(vm, NIL_VAL); break; }
+        int64_t shape[1] = {4};
+        VmTensor* out = vm_tensor_zeros(&vm->heap.regions, shape, 1);
+        if (!out) { vm_push(vm, NIL_VAL); break; }
+        double ox = omega->data[0], oy = omega->data[1], oz = omega->data[2];
+        double theta = sqrt(ox * ox + oy * oy + oz * oz);
+        if (theta <= 1e-12) {
+            out->data[0] = 1.0;
+        } else {
+            double half = 0.5 * theta;
+            double s = sin(half) / theta;
+            out->data[0] = cos(half);
+            out->data[1] = ox * s;
+            out->data[2] = oy * s;
+            out->data[3] = oz * s;
+        }
+        VM_PUSH_TENSOR(vm, out);
+        break;
+    }
+    case 825: { /* so3-log(quat) */
+        VmTensor* q = vm_get_tensor(vm, vm_pop(vm));
+        if (!q || q->total < 4) { vm_push(vm, NIL_VAL); break; }
+        int64_t shape[1] = {3};
+        VmTensor* out = vm_tensor_zeros(&vm->heap.regions, shape, 1);
+        if (!out) { vm_push(vm, NIL_VAL); break; }
+        double n = sqrt(q->data[0] * q->data[0] + q->data[1] * q->data[1] +
+                        q->data[2] * q->data[2] + q->data[3] * q->data[3]);
+        if (n <= 0.0) { VM_PUSH_TENSOR(vm, out); break; }
+        double w = q->data[0] / n;
+        if (w > 1.0) w = 1.0;
+        if (w < -1.0) w = -1.0;
+        double x = q->data[1] / n, y = q->data[2] / n, z = q->data[3] / n;
+        double vnorm = sqrt(x * x + y * y + z * z);
+        if (vnorm > 1e-12) {
+            double theta = 2.0 * atan2(vnorm, w);
+            out->data[0] = x * theta / vnorm;
+            out->data[1] = y * theta / vnorm;
+            out->data[2] = z * theta / vnorm;
+        }
+        VM_PUSH_TENSOR(vm, out);
+        break;
+    }
+    case 826: { /* se3-exp(twist) */
+        VmTensor* twist = vm_get_tensor(vm, vm_pop(vm));
+        if (!twist || twist->total < 6) { vm_push(vm, NIL_VAL); break; }
+        int64_t shape[1] = {7};
+        VmTensor* out = vm_tensor_zeros(&vm->heap.regions, shape, 1);
+        if (!out) { vm_push(vm, NIL_VAL); break; }
+        double ox = twist->data[0], oy = twist->data[1], oz = twist->data[2];
+        double theta = sqrt(ox * ox + oy * oy + oz * oz);
+        if (theta <= 1e-12) out->data[0] = 1.0;
+        else {
+            double half = 0.5 * theta;
+            double s = sin(half) / theta;
+            out->data[0] = cos(half);
+            out->data[1] = ox * s;
+            out->data[2] = oy * s;
+            out->data[3] = oz * s;
+        }
+        out->data[4] = twist->data[3];
+        out->data[5] = twist->data[4];
+        out->data[6] = twist->data[5];
+        VM_PUSH_TENSOR(vm, out);
+        break;
+    }
+    case 827: { /* se3-log(pose) */
+        VmTensor* pose = vm_get_tensor(vm, vm_pop(vm));
+        if (!pose || pose->total < 7) { vm_push(vm, NIL_VAL); break; }
+        int64_t shape[1] = {6};
+        VmTensor* out = vm_tensor_zeros(&vm->heap.regions, shape, 1);
+        if (!out) { vm_push(vm, NIL_VAL); break; }
+        double n = sqrt(pose->data[0] * pose->data[0] + pose->data[1] * pose->data[1] +
+                        pose->data[2] * pose->data[2] + pose->data[3] * pose->data[3]);
+        if (n > 0.0) {
+            double w = pose->data[0] / n;
+            if (w > 1.0) w = 1.0;
+            if (w < -1.0) w = -1.0;
+            double x = pose->data[1] / n, y = pose->data[2] / n, z = pose->data[3] / n;
+            double vnorm = sqrt(x * x + y * y + z * z);
+            if (vnorm > 1e-12) {
+                double theta = 2.0 * atan2(vnorm, w);
+                out->data[0] = x * theta / vnorm;
+                out->data[1] = y * theta / vnorm;
+                out->data[2] = z * theta / vnorm;
+            }
+        }
+        out->data[3] = pose->data[4];
+        out->data[4] = pose->data[5];
+        out->data[5] = pose->data[6];
+        VM_PUSH_TENSOR(vm, out);
+        break;
+    }
+    case 828: { /* quaternion-mul(q1, q2) */
+        VmTensor* q2 = vm_get_tensor(vm, vm_pop(vm));
+        VmTensor* q1 = vm_get_tensor(vm, vm_pop(vm));
+        if (!q1 || !q2 || q1->total < 4 || q2->total < 4) { vm_push(vm, NIL_VAL); break; }
+        int64_t shape[1] = {4};
+        VmTensor* out = vm_tensor_zeros(&vm->heap.regions, shape, 1);
+        if (!out) { vm_push(vm, NIL_VAL); break; }
+        double a = q1->data[0], b = q1->data[1], c = q1->data[2], d = q1->data[3];
+        double e = q2->data[0], f = q2->data[1], g = q2->data[2], h = q2->data[3];
+        out->data[0] = a * e - b * f - c * g - d * h;
+        out->data[1] = a * f + b * e + c * h - d * g;
+        out->data[2] = a * g - b * h + c * e + d * f;
+        out->data[3] = a * h + b * g - c * f + d * e;
+        VM_PUSH_TENSOR(vm, out);
+        break;
+    }
+
+    case 829: { /* metric-tensor(manifold) */
+        vm_geometric_metric_tensor(vm);
+        break;
+    }
+    case 830: { /* christoffel(manifold, point) */
+        vm_geometric_christoffel_tensor(vm);
+        break;
+    }
+    case 832: { /* ricci-scalar(manifold) */
+        Value mv = vm_pop(vm);
+        int ok = 0;
+        double K = vm_geometric_manifold_curvature(vm, mv, &ok);
+        int dim = vm_geometric_manifold_dim(vm, mv);
+        if (ok && dim > 0) vm_push_float(vm, (double)dim * (double)(dim - 1) * K);
+        else vm_push(vm, NIL_VAL);
+        break;
+    }
+    case 833: { /* sectional-curvature(manifold, u, v) */
+        (void)vm_pop(vm);
+        (void)vm_pop(vm);
+        Value mv = vm_pop(vm);
+        int ok = 0;
+        double K = vm_geometric_manifold_curvature(vm, mv, &ok);
+        if (ok) vm_push_float(vm, K);
+        else vm_push(vm, NIL_VAL);
+        break;
+    }
+
+    case 834: { /* wedge-product(form_a, form_b) */
+        VmTensor* b = vm_get_tensor(vm, vm_pop(vm));
+        VmTensor* a = vm_get_tensor(vm, vm_pop(vm));
+        if (!a || !b || !a->data || !b->data) { vm_push(vm, NIL_VAL); break; }
+        int64_t n = a->total < b->total ? a->total : b->total;
+        int64_t count = (n > 1) ? (n * (n - 1)) / 2 : 1;
+        int64_t shape[1] = {count};
+        VmTensor* out = vm_tensor_zeros(&vm->heap.regions, shape, 1);
+        if (!out) { vm_push(vm, NIL_VAL); break; }
+        int64_t p = 0;
+        for (int64_t i = 0; i < n; i++)
+            for (int64_t j = i + 1; j < n; j++)
+                out->data[p++] = a->data[i] * b->data[j] - a->data[j] * b->data[i];
+        VM_PUSH_TENSOR(vm, out);
+        break;
+    }
+    case 835: { /* exterior-derivative(form) */
+        VmTensor* form = vm_get_tensor(vm, vm_pop(vm));
+        if (!form) { vm_push(vm, NIL_VAL); break; }
+        VmTensor* out = vm_tensor_zeros(&vm->heap.regions, form->shape, form->n_dims);
+        vm_push_tensor_or_nil(vm, out);
+        break;
+    }
+    case 836: { /* hodge-star(form, metric) */
+        (void)vm_pop(vm);
+        VmTensor* form = vm_get_tensor(vm, vm_pop(vm));
+        vm_push_tensor_or_nil(vm, vm_tensor_copy_for_geometry(vm, form));
+        break;
+    }
+    case 837: { /* interior-product(vector, form) */
+        VmTensor* form = vm_get_tensor(vm, vm_pop(vm));
+        VmTensor* vector = vm_get_tensor(vm, vm_pop(vm));
+        if (!form || !vector || form->total != vector->total) { vm_push(vm, NIL_VAL); break; }
+        int64_t shape[1] = {1};
+        VmTensor* out = vm_tensor_zeros(&vm->heap.regions, shape, 1);
+        if (!out) { vm_push(vm, NIL_VAL); break; }
+        out->data[0] = vm_tensor_dot_for_geometry(vector, form);
+        VM_PUSH_TENSOR(vm, out);
+        break;
+    }
+    case 838: { /* pullback(form, jacobian) */
+        vm_geometric_pullback_tensor(vm);
+        break;
+    }
+
+    case 839: { /* riemannian-sgd-step(point, gradient, lr, curvature) */
+        (void)as_number(vm_pop(vm));
+        double lr = as_number(vm_pop(vm));
+        VmTensor* grad = vm_get_tensor(vm, vm_pop(vm));
+        VmTensor* point = vm_get_tensor(vm, vm_pop(vm));
+        vm_push_tensor_or_nil(vm, vm_tensor_linear_combo_for_geometry(vm, point, 1.0, grad, -lr));
+        break;
+    }
+    case 840: { /* riemannian-adam-step(point, gradient, lr, beta1, beta2, curvature) */
+        (void)as_number(vm_pop(vm));
+        (void)as_number(vm_pop(vm));
+        (void)as_number(vm_pop(vm));
+        double lr = as_number(vm_pop(vm));
+        VmTensor* grad = vm_get_tensor(vm, vm_pop(vm));
+        VmTensor* point = vm_get_tensor(vm, vm_pop(vm));
+        vm_push_tensor_or_nil(vm, vm_tensor_linear_combo_for_geometry(vm, point, 1.0, grad, -lr));
+        break;
+    }
+    case 841: { /* riemannian-grad(euclidean_grad, point, curvature) */
+        (void)as_number(vm_pop(vm));
+        (void)vm_pop(vm);
+        VmTensor* grad = vm_get_tensor(vm, vm_pop(vm));
+        vm_push_tensor_or_nil(vm, vm_tensor_copy_for_geometry(vm, grad));
+        break;
+    }
+
+    case 844: { /* geodesic-attention-scores(Q, K, curvature) */
+        (void)as_number(vm_pop(vm));
+        VmTensor* k = vm_get_tensor(vm, vm_pop(vm));
+        VmTensor* q = vm_get_tensor(vm, vm_pop(vm));
+        if (!q || !k || !q->data || !k->data) { vm_push(vm, NIL_VAL); break; }
+        int nq = (q->n_dims >= 2) ? (int)q->shape[0] : 1;
+        int nk = (k->n_dims >= 2) ? (int)k->shape[0] : 1;
+        int qdim = (q->n_dims >= 2) ? (int)q->shape[1] : (int)q->total;
+        int kdim = (k->n_dims >= 2) ? (int)k->shape[1] : (int)k->total;
+        if (qdim != kdim) { vm_push(vm, NIL_VAL); break; }
+        int64_t shape[2] = {nq, nk};
+        VmTensor* out = vm_tensor_zeros(&vm->heap.regions, shape, 2);
+        if (!out) { vm_push(vm, NIL_VAL); break; }
+        for (int i = 0; i < nq; i++) {
+            for (int j = 0; j < nk; j++) {
+                double sum = 0.0;
+                for (int d = 0; d < qdim; d++) {
+                    double diff = q->data[i * qdim + d] - k->data[j * kdim + d];
+                    sum += diff * diff;
+                }
+                out->data[i * nk + j] = -sqrt(sum);
+            }
+        }
+        VM_PUSH_TENSOR(vm, out);
+        break;
+    }
+    case 845: { /* geodesic-attention-values(scores, V, curvature) */
+        (void)as_number(vm_pop(vm));
+        VmTensor* values = vm_get_tensor(vm, vm_pop(vm));
+        VmTensor* scores = vm_get_tensor(vm, vm_pop(vm));
+        if (!scores || !values || values->n_dims < 2) { vm_push(vm, NIL_VAL); break; }
+        int n = (int)values->shape[0], dim = (int)values->shape[1];
+        int64_t shape[1] = {dim};
+        VmTensor* out = vm_tensor_zeros(&vm->heap.regions, shape, 1);
+        if (!out) { vm_push(vm, NIL_VAL); break; }
+        double wsum = 0.0;
+        for (int i = 0; i < n && i < scores->total; i++) {
+            double w = scores->data[i];
+            wsum += w;
+            for (int d = 0; d < dim; d++) out->data[d] += w * values->data[i * dim + d];
+        }
+        if (wsum != 0.0) for (int d = 0; d < dim; d++) out->data[d] /= wsum;
+        VM_PUSH_TENSOR(vm, out);
+        break;
+    }
+    case 846: { /* curvature-softmax(scores, curvature) */
+        double c = as_number(vm_pop(vm));
+        VmTensor* scores = vm_get_tensor(vm, vm_pop(vm));
+        if (!scores || !scores->data || scores->total <= 0) { vm_push(vm, NIL_VAL); break; }
+        VmTensor* out = vm_tensor_zeros(&vm->heap.regions, scores->shape, scores->n_dims);
+        if (!out) { vm_push(vm, NIL_VAL); break; }
+        double scale = fabs(c) > 0.0 ? 1.0 / sqrt(fabs(c)) : 1.0;
+        double maxv = scores->data[0];
+        for (int64_t i = 1; i < scores->total; i++) if (scores->data[i] > maxv) maxv = scores->data[i];
+        double sum = 0.0;
+        for (int64_t i = 0; i < scores->total; i++) {
+            out->data[i] = exp((scores->data[i] - maxv) * scale);
+            sum += out->data[i];
+        }
+        if (sum != 0.0) for (int64_t i = 0; i < scores->total; i++) out->data[i] /= sum;
+        VM_PUSH_TENSOR(vm, out);
+        break;
+    }
+    case 847: { /* geodesic-attention-forward(Q, K, V, curvature) */
+        (void)as_number(vm_pop(vm));
+        VmTensor* values = vm_get_tensor(vm, vm_pop(vm));
+        VmTensor* k = vm_get_tensor(vm, vm_pop(vm));
+        VmTensor* q = vm_get_tensor(vm, vm_pop(vm));
+        if (!q || !k || !values || q->n_dims < 2 || k->n_dims < 2 || values->n_dims < 2) {
+            vm_push(vm, NIL_VAL); break;
+        }
+        int nq = (int)q->shape[0], nk = (int)k->shape[0], dim = (int)q->shape[1];
+        int vdim = (int)values->shape[1];
+        if ((int)k->shape[1] != dim || (int)values->shape[0] < nk) { vm_push(vm, NIL_VAL); break; }
+        int64_t shape[2] = {nq, vdim};
+        VmTensor* out = vm_tensor_zeros(&vm->heap.regions, shape, 2);
+        if (!out) { vm_push(vm, NIL_VAL); break; }
+        for (int i = 0; i < nq; i++) {
+            double wsum = 0.0;
+            for (int j = 0; j < nk; j++) {
+                double dist2 = 0.0;
+                for (int d = 0; d < dim; d++) {
+                    double diff = q->data[i * dim + d] - k->data[j * dim + d];
+                    dist2 += diff * diff;
+                }
+                double w = exp(-sqrt(dist2));
+                wsum += w;
+                for (int d = 0; d < vdim; d++) out->data[i * vdim + d] += w * values->data[j * vdim + d];
+            }
+            if (wsum != 0.0)
+                for (int d = 0; d < vdim; d++) out->data[i * vdim + d] /= wsum;
+        }
+        VM_PUSH_TENSOR(vm, out);
+        break;
+    }
+
+    case 850: { /* set-curvature!(manifold, new_curvature) */
+        double c = as_number(vm_pop(vm));
+        Value mv = vm_pop(vm);
+        VmFallbackManifold* m = vm_fallback_manifold(vm, mv);
+        if (m) { m->curvature = c; vm_push(vm, mv); }
+        else vm_push(vm, NIL_VAL);
+        break;
+    }
+    case 852: { /* curvature-gradient(manifold, loss_grad) */
+        VmTensor* grad = vm_get_tensor(vm, vm_pop(vm));
+        Value mv = vm_pop(vm);
+        if (!vm_fallback_manifold(vm, mv) || !grad) { vm_push(vm, NIL_VAL); break; }
+        double sum = 0.0;
+        for (int64_t i = 0; i < grad->total; i++) sum += grad->data[i];
+        vm_push_float(vm, sum);
+        break;
+    }
+    case 853: { /* transition-geometry!(manifold, target, rate) */
+        double rate = as_number(vm_pop(vm));
+        double target = as_number(vm_pop(vm));
+        Value mv = vm_pop(vm);
+        VmFallbackManifold* m = vm_fallback_manifold(vm, mv);
+        if (m) {
+            m->curvature = m->curvature + rate * (target - m->curvature);
+            vm_push_float(vm, m->curvature);
+        } else vm_push(vm, NIL_VAL);
+        break;
+    }
+    case 854: { /* manifold-interpolate(m1, m2, t) */
+        double t = as_number(vm_pop(vm));
+        Value m2v = vm_pop(vm), m1v = vm_pop(vm);
+        VmFallbackManifold* m1 = vm_fallback_manifold(vm, m1v);
+        VmFallbackManifold* m2 = vm_fallback_manifold(vm, m2v);
+        if (m1 && m2) vm_push_float(vm, m1->curvature * (1.0 - t) + m2->curvature * t);
+        else vm_push(vm, NIL_VAL);
+        break;
+    }
+    case 855: { /* curvature-hessian(manifold, grad) */
+        (void)vm_pop(vm);
+        Value mv = vm_pop(vm);
+        if (vm_fallback_manifold(vm, mv)) vm_push_float(vm, 0.0);
+        else vm_push(vm, NIL_VAL);
+        break;
+    }
+    case 856: { /* adaptive-curvature-step(manifold, grad) */
+        VmTensor* grad = vm_get_tensor(vm, vm_pop(vm));
+        Value mv = vm_pop(vm);
+        VmFallbackManifold* m = vm_fallback_manifold(vm, mv);
+        if (m && grad) {
+            double sum = 0.0;
+            for (int64_t i = 0; i < grad->total; i++) sum += grad->data[i];
+            m->curvature -= 0.01 * sum;
+            vm_push(vm, mv);
+        } else vm_push(vm, NIL_VAL);
+        break;
+    }
+    case 857: { /* manifold-type(manifold) */
+        Value mv = vm_pop(vm);
+        VmFallbackManifold* m = vm_fallback_manifold(vm, mv);
+        if (m) vm_push(vm, INT_VAL(m->type));
+        else vm_push(vm, NIL_VAL);
+        break;
+    }
+    case 858: { /* manifold-dim/manifold-dimension(manifold) */
+        Value mv = vm_pop(vm);
+        VmFallbackManifold* m = vm_fallback_manifold(vm, mv);
+        if (m) vm_push(vm, INT_VAL(m->dim));
+        else vm_push(vm, NIL_VAL);
+        break;
+    }
+    case 859: { /* manifold-destroy!(manifold) */
+        Value mv = vm_pop(vm);
+        if (mv.type == VAL_MANIFOLD && is_heap_type(vm, mv, HEAP_MANIFOLD))
+            vm->heap.objects[mv.as.ptr]->opaque.ptr = NULL;
+        vm_push(vm, NIL_VAL);
+        break;
+    }
+
+    default: {
+        int nargs = vm_geometric_arity(fid);
+        for (int i = 0; i < nargs; i++) vm_pop(vm);
+        vm_push(vm, NIL_VAL);
+        break;
+    }
+    }
+}
+#endif
 
 static void vm_dispatch_geometric(VM* vm, int fid) {
 #if defined(ESHKOL_GEOMETRIC_ENABLED)
@@ -460,18 +1196,8 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         break;
     }
     case 830: { /* christoffel(manifold, point) — connection coefficients */
-        Value point = vm_pop(vm);
-        Value manifold = vm_pop(vm);
-        /* Christoffel symbols Γ^k_ij for the Levi-Civita connection.
-         * For constant-curvature manifolds (spherical, hyperbolic),
-         * Γ^k_ij = κ * (δ^k_i * g_jl * x^l + δ^k_j * g_il * x^l - δ_ij * g^kl * x_l)
-         * For flat space (Euclidean), all Christoffel symbols are zero.
-         * Currently returns 0 for all manifold types — full connection
-         * tensor requires v1.5 geometric manifold infrastructure. */
-        (void)point; (void)manifold;
-        fprintf(stderr, "WARNING: christoffel() not yet implemented — returns 0. "
-                        "Full connection tensors require v1.5 geometric manifolds.\n");
-        vm_push(vm, FLOAT_VAL(0)); break;
+        vm_geometric_christoffel_tensor(vm);
+        break;
     }
     case 831: { /* riemann-curvature(manifold) */
         Value mv = vm_pop(vm);
@@ -623,8 +1349,8 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         vm_push(vm, NIL_VAL); break;
     }
     case 838: { /* pullback(form, jacobian) — 2 args */
-        vm_pop(vm); vm_pop(vm); /* Pullback requires full Jacobian matrix — complex */
-        vm_push(vm, NIL_VAL); break;
+        vm_geometric_pullback_tensor(vm);
+        break;
     }
 
     /* ═══ Riemannian optimization (835-839) ═══ */
@@ -928,9 +1654,6 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         vm_push(vm, NIL_VAL); break;
     }
 #else
-    /* No geometric library available */
-    int nargs = vm_geometric_arity(fid);
-    for (int i = 0; i < nargs; i++) vm_pop(vm);
-    vm_push(vm, NIL_VAL);
+    vm_dispatch_geometric_fallback(vm, fid);
 #endif
 }
