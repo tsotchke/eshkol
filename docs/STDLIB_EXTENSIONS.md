@@ -1680,8 +1680,11 @@ which simulates an 8-qubit quantum circuit.
   (min max-ms (* base-ms (expt 2 attempt) (quniform 0.5 1.5))))
 ```
 
-**Note**: `random.esk` uses `quantum-random` and `quantum-random-range` as
-builtins. These must be exposed in vm_native.c. Check for their case numbers.
+**VM status**: `quantum-random`, `quantum-random-int`, and
+`quantum-random-range` are exposed in the standalone VM as native IDs
+1860-1862. The VM implementation uses a local xorshift generator seeded from
+time, PID, and process address entropy; LLVM/AOT still routes through the
+existing quantum RNG runtime.
 
 ---
 
