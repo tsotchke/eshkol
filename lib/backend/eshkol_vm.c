@@ -340,6 +340,7 @@ static const BuiltinDef BUILTINS[] = {
     {"fg-add-factor!", 522, 3}, {"fg-infer!", 523, 3},
     {"fg-update-cpt!", 524, 3},
     {"free-energy", 525, 2}, {"expected-free-energy", 526, 3},
+    {"fg-observe!", 527, 3},
     {"make-workspace", 540, 2}, {"workspace?", 541, 1},
     {"ws-register!", 542, 3}, {"ws-step!", 543, 1},
     {"ws-get-content", 544, 1}, {"ws-set-content!", 545, 2},
@@ -441,10 +442,12 @@ static const BuiltinDef BUILTINS[] = {
      * KB Extensions — IDs 1800-1809
      * ═══════════════════════════════════════════════════════════════ */
     {"kb-count", 1800, 1}, {"kb-retract!", 1801, 2},
+    {"kb-count-predicate", 1802, 2}, {"kb-count-matching", 1802, 2},
     /* ═══════════════════════════════════════════════════════════════
      * Factor Graph Extensions — IDs 1810-1819
      * ═══════════════════════════════════════════════════════════════ */
     {"fg-marginal", 1810, 2}, {"fg-entropy", 1811, 2},
+    {"fg-total-entropy", 1812, 1}, {"fg-joint-entropy", 1812, 1},
     /* ═══════════════════════════════════════════════════════════════
      * Tensor/KB Persistence — IDs 1820-1829
      * ═══════════════════════════════════════════════════════════════ */

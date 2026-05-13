@@ -1486,46 +1486,36 @@ snapshot the current workspace state.
 
 ## B.27 Factor Graph Marginals and Entropy
 
-Currently after `(fg-infer! fg max-iters tol)` converges, there is **no way
-to read the resulting beliefs out**. The belief arrays exist in C but are not
-exposed. Required:
+The standalone VM exposes the belief arrays and KB maintenance helpers:
 
-### `(fg-marginal fg var-id) -> tensor`
+### `(fg-marginal fg var-id) -> tensor` — native 1810
 Return the posterior marginal P(X_var=k) for each state k as a 1D tensor.
-Reads from `fg->beliefs[var_id][]` (exponentiated from log-space).
+Reads from `fg->beliefs[var_id][]`, exponentiates from log-space, normalizes,
+and allocates the result tensor in the VM arena. This path now supports
+variables with more than 64 states.
 
-**Native ID**: Can reuse ID 528 (unassigned) or a new ID.
-```c
-case 528: { /* fg-marginal(fg, var_id) */
-    int var_id = (int)as_number(vm_pop(vm));
-    Value fgv = vm_pop(vm);
-    VmFactorGraph* fg = ...;
-    int dim = fg->var_dims[var_id];
-    int64_t shape[1] = {dim};
-    VmTensor* out = vm_tensor_zeros(..., shape, 1);
-    for (int s = 0; s < dim; s++)
-        out->data[s] = exp(fg->beliefs[var_id][s]);
-    VM_PUSH_TENSOR(vm, out); break;
-}
-```
+### `(fg-entropy fg var-id) -> float` — native 1811
+Shannon entropy of one variable marginal: `H = -sum_s b(v,s) * log(b(v,s))`.
 
-### `(fg-entropy fg) -> float`
-Shannon entropy of the joint belief: `H = -sum_v sum_s b(v,s) * log(b(v,s))`.
-Reads all beliefs from the graph.
+### `(fg-total-entropy fg) -> float` — native 1812
+Sum of all variable marginal entropies:
+`H = -sum_v sum_s b(v,s) * log(b(v,s))`.
 
-**Native ID**: 529
+### `(fg-observe! fg var-id state) -> bool` — native 527
+Clamp a variable to an observed state before rerunning inference.
 
-### `(kb-retract! kb fact) -> bool`
-Remove a fact from the knowledge base. Currently `kb-assert!` only adds.
-Scan `kb->facts[]` for matching fact (by predicate + args equality), remove
-by swapping with last element and decrementing count.
+### `(kb-retract! kb fact) -> bool` — native 1801
+Remove a fact from the knowledge base by structural equality of the stored
+Scheme fact datum, then swap with the last fact and decrement the count.
 
-**Native ID**: 513
+### `(kb-count kb) -> integer` — native 1800
+Count all facts in the knowledge base.
 
-### `(kb-count kb predicate) -> integer`
-Count facts matching predicate without materializing the list.
+### `(kb-count-predicate kb predicate) -> integer` — native 1802
+Count facts whose datum starts with the given predicate symbol.
 
-**Native ID**: 514
+The older LLVM/AOT names continue to route through their existing codegen
+surface; this section describes the standalone VM native IDs.
 
 ---
 
@@ -1823,7 +1813,7 @@ continuously tune the manifold:
 | **B.24** | Geometric manifold wrappers | 40 | VM surface registered (804-859); portable fallback implemented; wrapper still useful |
 | **B.25** | Reverse-mode AD tape wrappers | 5 | A.8 VM surface implemented |
 | **B.26** | Workspace introspection (543-546) | 4 | C exists, no .esk |
-| **B.27** | Factor graph marginals + KB extensions | 6 | New native IDs needed |
+| **B.27** | Factor graph marginals + KB extensions | 6 | Implemented |
 | **C.1-C.17** | Original Beyond Claude Code | ~30 | Already in Eshkol |
 | **C.18** | Hyperbolic semantic memory | integration | Uses 804-817 |
 | **C.19** | Geodesic attention in query loop | integration | Uses 844-847 |
