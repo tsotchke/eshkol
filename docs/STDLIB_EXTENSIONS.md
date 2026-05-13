@@ -858,7 +858,8 @@ history:
 **Already exists**: `make-kb`, `kb-assert!`, `kb-query`, `make-fact`,
 `make-factor-graph`, `fg-add-factor!`, `fg-infer!`, `fg-update-cpt!`,
 `fg-observe!`, `free-energy`, `expected-free-energy`,
-`make-workspace`, `ws-register!`, `ws-step!`, `ws-get-content`.
+`make-workspace`, `ws-register!`, `ws-step!`, `ws-get-content`,
+`ws-set-content!`, `ws-get-dim`, `ws-get-step-count`.
 
 **Needed**:
 ### `(fg-marginal fg var-id) -> tensor`
@@ -1464,14 +1465,14 @@ useful; create `lib/agent/autodiff-tape.esk`:
 
 ## B.26 Workspace Introspection
 
-`vm_workspace.c` implements builtins 543-546 but they're not exposed in any
-.esk file. Add to consciousness.esk or a new `lib/agent/workspace.esk`:
+The standalone VM exposes the workspace introspection surface directly:
 
 ```scheme
-(ws-get-content ws)          ;; native 543 — returns content tensor
-(ws-set-content! ws tensor)  ;; native 544 — overwrite content
-(ws-get-dim ws)              ;; native 545 — content dimension
-(ws-get-step-count ws)       ;; native 546 — cognitive cycle counter
+(ws-step! ws)                ;; native 543 — run one cognitive cycle
+(ws-get-content ws)          ;; native 544 — returns content tensor
+(ws-set-content! ws tensor)  ;; native 545 — overwrite content
+(ws-get-dim ws)              ;; native 546 — content dimension
+(ws-get-step-count ws)       ;; native 547 — cognitive cycle counter
 ```
 
 **Use case**: The agent can query `(ws-get-step-count mind)` to log how many

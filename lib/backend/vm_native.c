@@ -1585,7 +1585,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
 
     /* ══════════════════════════════════════════════════════════════════════
-     * Workspace Operations (540-544)
+     * Workspace Operations (540-547)
      * ══════════════════════════════════════════════════════════════════════ */
     case 540: { /* make-workspace(dim, max_modules) */
         Value max_m = vm_pop(vm), dim_val = vm_pop(vm);
@@ -1691,6 +1691,43 @@ static void vm_dispatch_native(VM* vm, int fid) {
             }
         }
         vm_push(vm, NIL_VAL);
+        break;
+    }
+    case 545: { /* ws-set-content!(ws, tensor) */
+        Value tensor_val = vm_pop(vm), ws_val = vm_pop(vm);
+        if (ws_val.as.ptr >= 0 && vm->heap.objects[ws_val.as.ptr]->type == HEAP_WORKSPACE &&
+            tensor_val.as.ptr >= 0 && vm->heap.objects[tensor_val.as.ptr]->type == HEAP_TENSOR) {
+            VmWorkspace* ws = (VmWorkspace*)vm->heap.objects[ws_val.as.ptr]->opaque.ptr;
+            VmTensor* t = (VmTensor*)vm->heap.objects[tensor_val.as.ptr]->opaque.ptr;
+            if (ws && t && t->data) {
+                int copy_dim = (t->total < ws->dim) ? (int)t->total : ws->dim;
+                if (copy_dim > 0) memcpy(ws->content, t->data, (size_t)copy_dim * sizeof(double));
+                for (int i = copy_dim; i < ws->dim; i++) ws->content[i] = 0.0;
+                vm_push(vm, NIL_VAL);
+                break;
+            }
+        }
+        vm_push(vm, NIL_VAL);
+        break;
+    }
+    case 546: { /* ws-get-dim */
+        Value ws_val = vm_pop(vm);
+        if (ws_val.as.ptr >= 0 && vm->heap.objects[ws_val.as.ptr]->type == HEAP_WORKSPACE) {
+            VmWorkspace* ws = (VmWorkspace*)vm->heap.objects[ws_val.as.ptr]->opaque.ptr;
+            vm_push(vm, INT_VAL(ws ? ws->dim : 0));
+        } else {
+            vm_push(vm, INT_VAL(0));
+        }
+        break;
+    }
+    case 547: { /* ws-get-step-count */
+        Value ws_val = vm_pop(vm);
+        if (ws_val.as.ptr >= 0 && vm->heap.objects[ws_val.as.ptr]->type == HEAP_WORKSPACE) {
+            VmWorkspace* ws = (VmWorkspace*)vm->heap.objects[ws_val.as.ptr]->opaque.ptr;
+            vm_push(vm, INT_VAL(ws ? ws->step_count : 0));
+        } else {
+            vm_push(vm, INT_VAL(0));
+        }
         break;
     }
 

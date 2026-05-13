@@ -1,0 +1,22 @@
+;; Standalone VM workspace introspection regression.
+
+(define ws (make-workspace 3 2))
+
+(display (if (= (ws-get-dim ws) 3) "PASS" "FAIL"))
+(display ": ws-get-dim returns workspace dimension")
+(newline)
+
+(display (if (= (ws-get-step-count ws) 0) "PASS" "FAIL"))
+(display ": ws-get-step-count starts at zero")
+(newline)
+
+(define initial (ws-get-content ws))
+(display (if (= (tensor-ref initial 0) 0.0) "PASS" "FAIL"))
+(display ": ws-get-content returns zero-initialized tensor")
+(newline)
+
+(ws-set-content! ws (make-tensor '(3) 2.5))
+(define updated (ws-get-content ws))
+(display (if (= (tensor-ref updated 1) 2.5) "PASS" "FAIL"))
+(display ": ws-set-content! updates workspace content")
+(newline)
