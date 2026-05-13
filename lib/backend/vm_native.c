@@ -62,6 +62,12 @@ static int vm_query_terminal_cursor(int* row, int* col) {
 #endif
 }
 
+static AdTape* vm_ad_tape_from_value(VM* vm, Value tape_val) {
+    if (tape_val.type != VAL_AD_TAPE) return NULL;
+    if (!is_heap_type(vm, tape_val, HEAP_AD_TAPE)) return NULL;
+    return (AdTape*)vm->heap.objects[tape_val.as.ptr]->opaque.ptr;
+}
+
 static void vm_dispatch_native(VM* vm, int fid) {
     switch (fid) {
     /* ══════════════════════════════════════════════════════════════════════
@@ -766,14 +772,14 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 391: { /* ad-const(tape, value) */
         Value val = vm_pop(vm), tape_val = vm_pop(vm);
-        AdTape* tape = (AdTape*)vm->heap.objects[tape_val.as.ptr]->opaque.ptr;
+        AdTape* tape = vm_ad_tape_from_value(vm, tape_val);
         if (!tape) { vm_push(vm, NIL_VAL); break; }
         vm_push(vm, INT_VAL(ad_const(tape, as_number(val))));
         break;
     }
     case 392: { /* ad-var(tape, value) */
         Value val = vm_pop(vm), tape_val = vm_pop(vm);
-        AdTape* tape = (AdTape*)vm->heap.objects[tape_val.as.ptr]->opaque.ptr;
+        AdTape* tape = vm_ad_tape_from_value(vm, tape_val);
         if (!tape) { vm_push(vm, NIL_VAL); break; }
         vm_push(vm, INT_VAL(ad_var(tape, as_number(val))));
         break;
@@ -801,7 +807,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 394: case 395: case 396: case 397: { /* ad-add, ad-sub, ad-mul, ad-div(tape, left, right) */
         Value right = vm_pop(vm), left = vm_pop(vm), tape_val = vm_pop(vm);
-        AdTape* tape = (AdTape*)vm->heap.objects[tape_val.as.ptr]->opaque.ptr;
+        AdTape* tape = vm_ad_tape_from_value(vm, tape_val);
         if (!tape) { vm_push(vm, NIL_VAL); break; }
         int result = -1;
         switch (fid) {
@@ -816,7 +822,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 398: case 399: case 400: case 401: case 402:
     case 403: case 404: case 405: case 406: case 407: { /* ad unary ops(tape, node) */
         Value node = vm_pop(vm), tape_val = vm_pop(vm);
-        AdTape* tape = (AdTape*)vm->heap.objects[tape_val.as.ptr]->opaque.ptr;
+        AdTape* tape = vm_ad_tape_from_value(vm, tape_val);
         if (!tape) { vm_push(vm, NIL_VAL); break; }
         int result = -1;
         int idx = (int)node.as.i;
@@ -837,7 +843,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 408: { /* ad-backward(tape, output_node) */
         Value node = vm_pop(vm), tape_val = vm_pop(vm);
-        AdTape* tape = (AdTape*)vm->heap.objects[tape_val.as.ptr]->opaque.ptr;
+        AdTape* tape = vm_ad_tape_from_value(vm, tape_val);
         if (!tape) { vm_push(vm, NIL_VAL); break; }
         ad_backward(tape, (int)node.as.i);
         vm_push(vm, NIL_VAL); /* backward is side-effectful */
@@ -845,7 +851,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 409: { /* ad-gradient(tape, node) → gradient value */
         Value node = vm_pop(vm), tape_val = vm_pop(vm);
-        AdTape* tape = (AdTape*)vm->heap.objects[tape_val.as.ptr]->opaque.ptr;
+        AdTape* tape = vm_ad_tape_from_value(vm, tape_val);
         if (!tape) { vm_push(vm, FLOAT_VAL(0.0)); break; }
         int idx = (int)node.as.i;
         if (idx >= 0 && idx < tape->len) {
@@ -853,6 +859,34 @@ static void vm_dispatch_native(VM* vm, int fid) {
         } else {
             vm_push(vm, FLOAT_VAL(0.0));
         }
+        break;
+    }
+    case 1841: { /* ad-tape-release(tape) - VM arena-backed logical release */
+        Value tape_val = vm_pop(vm);
+        if (tape_val.type == VAL_AD_TAPE && is_heap_type(vm, tape_val, HEAP_AD_TAPE)) {
+            vm->heap.objects[tape_val.as.ptr]->opaque.ptr = NULL;
+        }
+        vm_push(vm, NIL_VAL);
+        break;
+    }
+    case 1842: { /* ad-node-value/ad-value(tape, node) → forward value */
+        Value node = vm_pop(vm), tape_val = vm_pop(vm);
+        AdTape* tape = vm_ad_tape_from_value(vm, tape_val);
+        if (!tape) { vm_push(vm, FLOAT_VAL(0.0)); break; }
+        vm_push(vm, FLOAT_VAL(ad_get_value(tape, (int)node.as.i)));
+        break;
+    }
+    case 1843: { /* ad-tape-length(tape) */
+        Value tape_val = vm_pop(vm);
+        AdTape* tape = vm_ad_tape_from_value(vm, tape_val);
+        vm_push(vm, INT_VAL(tape ? tape->len : 0));
+        break;
+    }
+    case 1844: { /* ad-pow(tape, base_node, exponent_node) */
+        Value exponent = vm_pop(vm), base = vm_pop(vm), tape_val = vm_pop(vm);
+        AdTape* tape = vm_ad_tape_from_value(vm, tape_val);
+        if (!tape) { vm_push(vm, NIL_VAL); break; }
+        vm_push(vm, INT_VAL(ad_pow(tape, (int)base.as.i, (int)exponent.as.i)));
         break;
     }
 
