@@ -1,0 +1,16 @@
+;; Standalone bytecode VM command-line regression.
+;; Run with: eshkol_vm tests/vm/command_line_args.esk alpha beta
+
+(define args (command-line))
+
+(display (if (= (length args) 3) "PASS" "FAIL"))
+(display ": command-line preserves script plus user args")
+(newline)
+
+(display (if (string=? (cadr args) "alpha") "PASS" "FAIL"))
+(display ": first user arg is alpha")
+(newline)
+
+(display (if (string=? (caddr args) "beta") "PASS" "FAIL"))
+(display ": second user arg is beta")
+(newline)

@@ -119,19 +119,25 @@ vm_push(vm, vm_reverse_list(vm, result));
 
 ---
 
-## A.2 `command-line` (builtin 602) — RETURNS EMPTY LIST
+## A.2 `command-line` (builtin 602) — IMPLEMENTED
 
-**Fix**: Store `argc`/`argv` at VM startup, return as list of strings.
+Standalone VM startup stores the script path plus user arguments and builtin
+602 returns them as a list of strings. The regression fixture is
+`tests/vm/command_line_args.esk`.
 
 **Impact**: Needed for CLI argument parsing in `src/main.esk`.
 
 ---
 
-## A.3 Parallel primitives (620-628) — ALL SEQUENTIAL
+## A.3 Parallel primitives (620-628) — PARTIAL THREAD-POOL PATH
 
 `parallel-map`, `parallel-filter`, `parallel-fold`, `parallel-for-each`,
 `parallel-execute`, `future`, `force`, `future-ready?`, `thread-pool-info`
-are all sequential fallbacks in the single-threaded VM.
+have correct VM APIs. `parallel-map`, `parallel-filter`, and
+`parallel-for-each` use the VM thread pool for scheduling when available, but
+user closure execution is still serialized through the main VM under the
+shared runtime/arena mutex. `parallel-fold`, futures, and `thread-pool-info`
+remain sequential fallbacks.
 
 **Fix**: Implement a work-stealing thread pool using pthreads. Each worker
 thread gets its own VM stack. Use a shared work queue with mutex/condvar.
@@ -1792,9 +1798,9 @@ continuously tune the manifold:
 
 | Section | Category | Count | Status |
 |---------|----------|-------|--------|
-| **A.1** | Fix `directory-entries` | 1 | Stub in vm_native.c |
-| **A.2** | Fix `command-line` | 1 | Stub in vm_native.c |
-| **A.3** | Fix parallel primitives (620-628) | 9 | Sequential fallback |
+| **A.1** | Fix `directory-entries` | 1 | Implemented |
+| **A.2** | Fix `command-line` | 1 | Implemented |
+| **A.3** | Fix parallel primitives (620-628) | 9 | Partial thread-pool path |
 | **A.4** | Fix `term-cursor-pos` | 1 | Hardcoded (0.0) |
 | **A.5** | Fix Riemannian Adam (836) | 1 | Falls back to SGD |
 | **A.6** | Fix Christoffel symbols (826) | 1 | Returns 0 |
