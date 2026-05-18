@@ -306,6 +306,11 @@ public:
     llvm::Value* regexMatchPredicate(const eshkol_operations_t* op);
     llvm::Value* regexMatchGroups(const eshkol_operations_t* op);
     llvm::Value* regexSplit(const eshkol_operations_t* op);
+    llvm::Value* diffLines(const eshkol_operations_t* op);
+    llvm::Value* fuzzyMatch(const eshkol_operations_t* op);
+    llvm::Value* semverParse(const eshkol_operations_t* op);
+    llvm::Value* semverCompare(const eshkol_operations_t* op);
+    llvm::Value* semverSatisfies(const eshkol_operations_t* op);
     llvm::Value* stringEndsWith(const eshkol_operations_t* op);
     llvm::Value* stringIndexOf(const eshkol_operations_t* op);
     llvm::Value* stringPadLeft(const eshkol_operations_t* op);

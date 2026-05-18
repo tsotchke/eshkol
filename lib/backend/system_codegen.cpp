@@ -1457,6 +1457,20 @@ llvm::Value* SystemCodegen::method_name(const eshkol_operations_t* op) { \
     return callPtrRuntime(ctx_, f, {a, b, c}); \
 }
 
+#define FOUR_ARG_BUILTIN(method_name, c_func_name) \
+llvm::Value* SystemCodegen::method_name(const eshkol_operations_t* op) { \
+    if (op->call_op.num_vars != 4) return tagged_.packNull(); \
+    if (!codegen_ast_callback_) return tagged_.packNull(); \
+    llvm::Value* a = codegen_ast_callback_(&op->call_op.variables[0], callback_context_); \
+    llvm::Value* b = codegen_ast_callback_(&op->call_op.variables[1], callback_context_); \
+    llvm::Value* c = codegen_ast_callback_(&op->call_op.variables[2], callback_context_); \
+    llvm::Value* d = codegen_ast_callback_(&op->call_op.variables[3], callback_context_); \
+    if (!a || !b || !c || !d) return tagged_.packNull(); \
+    llvm::Module* mod = ctx_.builder().GetInsertBlock()->getParent()->getParent(); \
+    llvm::Function* f = getOrDeclareRuntimeFuncAllPtr(ctx_, mod, c_func_name, 4); \
+    return callPtrRuntime(ctx_, f, {a, b, c, d}); \
+}
+
 /* Noesis requirements */
 TWO_ARG_BUILTIN(fgMarginal, "eshkol_builtin_fg_marginal")
 TWO_ARG_BUILTIN(fgEntropy, "eshkol_builtin_fg_entropy")
@@ -1653,6 +1667,11 @@ TWO_ARG_BUILTIN(regexMatch, "eshkol_builtin_regex_match")
 TWO_ARG_BUILTIN(regexMatchPredicate, "eshkol_builtin_regex_match_p")
 TWO_ARG_BUILTIN(regexMatchGroups, "eshkol_builtin_regex_match_groups")
 TWO_ARG_BUILTIN(regexSplit, "eshkol_builtin_regex_split")
+TWO_ARG_BUILTIN(diffLines, "eshkol_builtin_diff_lines")
+FOUR_ARG_BUILTIN(fuzzyMatch, "eshkol_builtin_fuzzy_match")
+ONE_ARG_BUILTIN(semverParse, "eshkol_builtin_semver_parse")
+TWO_ARG_BUILTIN(semverCompare, "eshkol_builtin_semver_compare")
+TWO_ARG_BUILTIN(semverSatisfies, "eshkol_builtin_semver_satisfies")
 TWO_ARG_BUILTIN(stringEndsWith, "eshkol_builtin_string_ends_with")
 THREE_ARG_BUILTIN(stringIndexOf, "eshkol_builtin_string_index_of")
 THREE_ARG_BUILTIN(stringPadLeft, "eshkol_builtin_string_pad_left")

@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <ctype.h>
 #include <time.h>   /* struct tm, gmtime_s/gmtime_r — used on every platform */
 
 #ifndef _WIN32
@@ -2652,6 +2653,310 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_regex_split_v(eshkol_sysbuiltin_
 #endif
 }
 
+typedef struct {
+    const char* data;
+    int len;
+} SysLineSlice;
+
+static int sys_split_lines(const char* s, SysLineSlice* out, int cap) {
+    if (!s || !out || cap <= 0) return -1;
+    int len = (int)strlen(s);
+    int count = 0;
+    int start = 0;
+    for (int i = 0; i <= len; i++) {
+        if (i == len || s[i] == '\n') {
+            if (count >= cap) return -1;
+            out[count].data = s + start;
+            out[count].len = i - start;
+            count++;
+            start = i + 1;
+        }
+    }
+    return count;
+}
+
+static int sys_line_equal(SysLineSlice a, SysLineSlice b) {
+    return a.len == b.len && (a.len == 0 || memcmp(a.data, b.data, (size_t)a.len) == 0);
+}
+
+static eshkol_sysbuiltin_value_t sys_prefixed_line_value(char prefix, SysLineSlice line) {
+    char* buf = (char*)malloc((size_t)line.len + 2);
+    if (!buf) return sys_make_bool(0);
+    buf[0] = prefix;
+    if (line.len > 0) memcpy(buf + 1, line.data, (size_t)line.len);
+    buf[line.len + 1] = '\0';
+    eshkol_sysbuiltin_value_t out = sys_make_string_len(buf, (size_t)line.len + 1);
+    free(buf);
+    return out;
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_diff_lines_v(eshkol_sysbuiltin_value_t old_val,
+                                                              eshkol_sysbuiltin_value_t new_val) {
+    enum { MAX_LINES = 256 };
+    const char* old_s = sys_extract_string(old_val);
+    const char* new_s = sys_extract_string(new_val);
+    if (!old_s || !new_s) return sys_make_bool(0);
+    SysLineSlice old_lines[MAX_LINES], new_lines[MAX_LINES];
+    int n_old = sys_split_lines(old_s, old_lines, MAX_LINES);
+    int n_new = sys_split_lines(new_s, new_lines, MAX_LINES);
+    if (n_old < 0 || n_new < 0) return sys_make_bool(0);
+    int cols = n_new + 1;
+    int* dp = (int*)calloc((size_t)(n_old + 1) * (size_t)(n_new + 1), sizeof(int));
+    if (!dp) return sys_make_bool(0);
+    for (int i = 1; i <= n_old; i++) {
+        for (int j = 1; j <= n_new; j++) {
+            if (sys_line_equal(old_lines[i - 1], new_lines[j - 1]))
+                dp[i * cols + j] = dp[(i - 1) * cols + (j - 1)] + 1;
+            else {
+                int a = dp[(i - 1) * cols + j];
+                int b = dp[i * cols + (j - 1)];
+                dp[i * cols + j] = a > b ? a : b;
+            }
+        }
+    }
+    int i = n_old, j = n_new;
+    eshkol_sysbuiltin_value_t out = sys_make_null();
+    while (i > 0 || j > 0) {
+        if (i > 0 && j > 0 && sys_line_equal(old_lines[i - 1], new_lines[j - 1])) {
+            out = sys_make_pair(sys_prefixed_line_value('=', old_lines[i - 1]), out);
+            i--; j--;
+        } else if (j > 0 && (i == 0 || dp[i * cols + (j - 1)] >= dp[(i - 1) * cols + j])) {
+            out = sys_make_pair(sys_prefixed_line_value('+', new_lines[j - 1]), out);
+            j--;
+        } else {
+            out = sys_make_pair(sys_prefixed_line_value('-', old_lines[i - 1]), out);
+            i--;
+        }
+    }
+    free(dp);
+    return out;
+}
+
+static int sys_fuzzy_score(const char* pattern, const char* candidate) {
+    if (!pattern || !candidate) return -1;
+    if (!*pattern) return 0;
+    int score = 0, pi = 0, last = -2;
+    for (int ci = 0; candidate[ci] && pattern[pi]; ci++) {
+        if (tolower((unsigned char)pattern[pi]) != tolower((unsigned char)candidate[ci]))
+            continue;
+        score += 10;
+        if (ci == last + 1) score += 5;
+        if (ci == 0 || candidate[ci - 1] == '-' || candidate[ci - 1] == '_' ||
+            candidate[ci - 1] == ' ' || candidate[ci - 1] == '/' ||
+            (islower((unsigned char)candidate[ci - 1]) && isupper((unsigned char)candidate[ci])))
+            score += 3;
+        score -= ci - last - 1;
+        last = ci;
+        pi++;
+    }
+    return pattern[pi] ? -1 : score;
+}
+
+typedef struct {
+    int score;
+    eshkol_sysbuiltin_value_t candidate;
+} SysFuzzyResult;
+
+static int sys_fuzzy_result_cmp(const void* a, const void* b) {
+    const SysFuzzyResult* ra = (const SysFuzzyResult*)a;
+    const SysFuzzyResult* rb = (const SysFuzzyResult*)b;
+    return rb->score - ra->score;
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_fuzzy_match_v(eshkol_sysbuiltin_value_t pattern_val,
+                                                               eshkol_sysbuiltin_value_t candidates_val,
+                                                               eshkol_sysbuiltin_value_t key_fn_val,
+                                                               eshkol_sysbuiltin_value_t max_val) {
+    (void)key_fn_val;
+    const char* pattern = sys_extract_string(pattern_val);
+    int64_t max_results = sys_extract_int64(max_val);
+    if (!pattern || max_results <= 0) return sys_make_null();
+    SysFuzzyResult results[1024];
+    int n = 0;
+    eshkol_sysbuiltin_value_t cur = candidates_val;
+    while (cur.type == SYS_TYPE_HEAP_PTR && cur.flags == 0x00 && cur.data != 0 &&
+           n < (int)(sizeof(results) / sizeof(results[0]))) {
+        eshkol_sysbuiltin_value_t car, cdr;
+        memcpy(&car, (void*)(uintptr_t)cur.data, sizeof(car));
+        memcpy(&cdr, (char*)(uintptr_t)cur.data + sizeof(car), sizeof(cdr));
+        const char* candidate = sys_extract_string(car);
+        if (candidate) {
+            int score = sys_fuzzy_score(pattern, candidate);
+            if (score >= 0) {
+                results[n].score = score;
+                results[n].candidate = car;
+                n++;
+            }
+        }
+        cur = cdr;
+    }
+    qsort(results, (size_t)n, sizeof(results[0]), sys_fuzzy_result_cmp);
+    if (max_results > n) max_results = n;
+    eshkol_sysbuiltin_value_t out = sys_make_null();
+    for (int i = (int)max_results - 1; i >= 0; i--) {
+        eshkol_sysbuiltin_value_t entry = sys_make_pair(sys_make_int64((int64_t)results[i].score),
+                                                        results[i].candidate);
+        out = sys_make_pair(entry, out);
+    }
+    return out;
+}
+
+typedef struct {
+    int major;
+    int minor;
+    int patch;
+    char prerelease[128];
+    char build[128];
+} SysSemver;
+
+static int sys_parse_uint_component(const char** p, int* out) {
+    if (!p || !*p || !isdigit((unsigned char)**p)) return 0;
+    int value = 0;
+    while (isdigit((unsigned char)**p)) {
+        value = value * 10 + (**p - '0');
+        (*p)++;
+    }
+    *out = value;
+    return 1;
+}
+
+static int sys_semver_parse_cstr(const char* s, SysSemver* out) {
+    if (!s || !out) return 0;
+    memset(out, 0, sizeof(*out));
+    const char* p = s;
+    if (*p == 'v' || *p == 'V') p++;
+    if (!sys_parse_uint_component(&p, &out->major) || *p++ != '.') return 0;
+    if (!sys_parse_uint_component(&p, &out->minor) || *p++ != '.') return 0;
+    if (!sys_parse_uint_component(&p, &out->patch)) return 0;
+    if (*p == '-') {
+        p++;
+        int n = 0;
+        while (*p && *p != '+' && n < (int)sizeof(out->prerelease) - 1)
+            out->prerelease[n++] = *p++;
+        out->prerelease[n] = '\0';
+        if (n == 0) return 0;
+    }
+    if (*p == '+') {
+        p++;
+        int n = 0;
+        while (*p && n < (int)sizeof(out->build) - 1)
+            out->build[n++] = *p++;
+        out->build[n] = '\0';
+        if (n == 0) return 0;
+    }
+    return *p == '\0';
+}
+
+static int sys_semver_identifier_numeric(const char* s, int len) {
+    if (len <= 0) return 0;
+    for (int i = 0; i < len; i++)
+        if (!isdigit((unsigned char)s[i])) return 0;
+    return 1;
+}
+
+static int sys_semver_compare_prerelease(const char* a, const char* b) {
+    if (!a[0] && !b[0]) return 0;
+    if (!a[0]) return 1;
+    if (!b[0]) return -1;
+    const char* pa = a;
+    const char* pb = b;
+    while (*pa || *pb) {
+        const char* ea = strchr(pa, '.');
+        const char* eb = strchr(pb, '.');
+        int la = ea ? (int)(ea - pa) : (int)strlen(pa);
+        int lb = eb ? (int)(eb - pb) : (int)strlen(pb);
+        int na = sys_semver_identifier_numeric(pa, la);
+        int nb = sys_semver_identifier_numeric(pb, lb);
+        if (na && nb) {
+            long va = 0, vb = 0;
+            for (int i = 0; i < la; i++) va = va * 10 + (pa[i] - '0');
+            for (int i = 0; i < lb; i++) vb = vb * 10 + (pb[i] - '0');
+            if (va != vb) return va < vb ? -1 : 1;
+        } else if (na != nb) {
+            return na ? -1 : 1;
+        } else {
+            int cmp = strncmp(pa, pb, (size_t)(la < lb ? la : lb));
+            if (cmp != 0) return cmp < 0 ? -1 : 1;
+            if (la != lb) return la < lb ? -1 : 1;
+        }
+        pa = ea ? ea + 1 : pa + la;
+        pb = eb ? eb + 1 : pb + lb;
+    }
+    return 0;
+}
+
+static int sys_semver_compare_structs(const SysSemver* a, const SysSemver* b) {
+    if (a->major != b->major) return a->major < b->major ? -1 : 1;
+    if (a->minor != b->minor) return a->minor < b->minor ? -1 : 1;
+    if (a->patch != b->patch) return a->patch < b->patch ? -1 : 1;
+    return sys_semver_compare_prerelease(a->prerelease, b->prerelease);
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_semver_parse_v(eshkol_sysbuiltin_value_t str_val) {
+    SysSemver v;
+    const char* s = sys_extract_string(str_val);
+    if (!s || !sys_semver_parse_cstr(s, &v)) return sys_make_bool(0);
+    eshkol_sysbuiltin_value_t result = sys_make_null();
+    result = sys_make_pair(sys_alist_entry("build", sys_make_string(v.build)), result);
+    result = sys_make_pair(sys_alist_entry("prerelease", sys_make_string(v.prerelease)), result);
+    result = sys_make_pair(sys_alist_entry("patch", sys_make_int64((int64_t)v.patch)), result);
+    result = sys_make_pair(sys_alist_entry("minor", sys_make_int64((int64_t)v.minor)), result);
+    result = sys_make_pair(sys_alist_entry("major", sys_make_int64((int64_t)v.major)), result);
+    return result;
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_semver_compare_v(eshkol_sysbuiltin_value_t a_val,
+                                                                  eshkol_sysbuiltin_value_t b_val) {
+    SysSemver a, b;
+    const char* as = sys_extract_string(a_val);
+    const char* bs = sys_extract_string(b_val);
+    if (!as || !bs || !sys_semver_parse_cstr(as, &a) || !sys_semver_parse_cstr(bs, &b))
+        return sys_make_bool(0);
+    int cmp = sys_semver_compare_structs(&a, &b);
+    return sys_make_int64((int64_t)(cmp < 0 ? -1 : cmp > 0 ? 1 : 0));
+}
+
+static int sys_semver_satisfies_range(const SysSemver* version, const char* range) {
+    while (*range && isspace((unsigned char)*range)) range++;
+    char op[3] = "";
+    if ((range[0] == '>' || range[0] == '<' || range[0] == '=') && range[1] == '=') {
+        op[0] = range[0]; op[1] = '='; range += 2;
+    } else if (*range == '>' || *range == '<' || *range == '=') {
+        op[0] = *range++;
+    } else if (*range == '^' || *range == '~') {
+        op[0] = *range++;
+    }
+    while (*range && isspace((unsigned char)*range)) range++;
+    SysSemver target;
+    if (!sys_semver_parse_cstr(range, &target)) return 0;
+    int cmp = sys_semver_compare_structs(version, &target);
+    if (!op[0] || op[0] == '=') return cmp == 0;
+    if (strcmp(op, ">=") == 0) return cmp >= 0;
+    if (strcmp(op, "<=") == 0) return cmp <= 0;
+    if (strcmp(op, ">") == 0) return cmp > 0;
+    if (strcmp(op, "<") == 0) return cmp < 0;
+    if (op[0] == '^') {
+        SysSemver upper = target;
+        upper.major++; upper.minor = 0; upper.patch = 0; upper.prerelease[0] = '\0';
+        return cmp >= 0 && sys_semver_compare_structs(version, &upper) < 0;
+    }
+    if (op[0] == '~') {
+        SysSemver upper = target;
+        upper.minor++; upper.patch = 0; upper.prerelease[0] = '\0';
+        return cmp >= 0 && sys_semver_compare_structs(version, &upper) < 0;
+    }
+    return 0;
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_semver_satisfies_v(eshkol_sysbuiltin_value_t version_val,
+                                                                    eshkol_sysbuiltin_value_t range_val) {
+    SysSemver version;
+    const char* vs = sys_extract_string(version_val);
+    const char* range = sys_extract_string(range_val);
+    if (!vs || !range || !sys_semver_parse_cstr(vs, &version)) return sys_make_bool(0);
+    return sys_make_bool(sys_semver_satisfies_range(&version, range));
+}
+
 static int sys_utf8_encode_codepoint(int cp, char* out) {
     if (!out) return 0;
     if (cp < 0) cp = ' ';
@@ -3134,6 +3439,11 @@ void eshkol_builtin_regex_match(sv_t* out, const sv_t* a, const sv_t* b) { *out 
 void eshkol_builtin_regex_match_p(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_regex_match_v(*a, *b, 1); }
 void eshkol_builtin_regex_match_groups(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_regex_match_groups_v(*a, *b); }
 void eshkol_builtin_regex_split(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_regex_split_v(*a, *b); }
+void eshkol_builtin_diff_lines(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_diff_lines_v(*a, *b); }
+void eshkol_builtin_fuzzy_match(sv_t* out, const sv_t* a, const sv_t* b, const sv_t* c, const sv_t* d) { *out = eshkol_builtin_fuzzy_match_v(*a, *b, *c, *d); }
+void eshkol_builtin_semver_parse(sv_t* out, const sv_t* a) { *out = eshkol_builtin_semver_parse_v(*a); }
+void eshkol_builtin_semver_compare(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_semver_compare_v(*a, *b); }
+void eshkol_builtin_semver_satisfies(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_semver_satisfies_v(*a, *b); }
 void eshkol_builtin_string_ends_with(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_string_ends_with_v(*a, *b); }
 void eshkol_builtin_string_index_of(sv_t* out, const sv_t* a, const sv_t* b, const sv_t* c) { *out = eshkol_builtin_string_index_of_v(*a, *b, *c); }
 void eshkol_builtin_string_pad_left(sv_t* out, const sv_t* a, const sv_t* b, const sv_t* c) { *out = eshkol_builtin_string_pad_v(*a, *b, *c, 1); }
