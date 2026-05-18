@@ -353,6 +353,27 @@ typedef struct VM {
             Value handler;
         } listeners[64];
     } event_emitters[16];
+
+    struct {
+        int active;
+        int capacity;
+        int head;
+        int tail;
+        int count;
+        int closed;
+        Value buffer[64];
+    } channels[16];
+
+    struct {
+        int active;
+        int locked;
+        int recursion;
+    } mutexes[16];
+
+    struct {
+        int active;
+        int signals;
+    } condvars[16];
 } VM;
 
 /* Command-line arguments (set in main, read by native 602) */

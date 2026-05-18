@@ -1891,6 +1891,99 @@ static int vm_event_emit(VM* vm, int handle, Value event, Value args_list) {
     return invoked;
 }
 
+static int vm_channel_valid(VM* vm, int handle) {
+    return vm && handle > 0 &&
+           handle < (int)(sizeof(vm->channels) / sizeof(vm->channels[0])) &&
+           vm->channels[handle].active;
+}
+
+static int vm_channel_create(VM* vm, int capacity) {
+    if (!vm) return -1;
+    if (capacity < 1) capacity = 1;
+    if (capacity > 64) capacity = 64;
+    for (int i = 1; i < (int)(sizeof(vm->channels) / sizeof(vm->channels[0])); i++) {
+        if (vm->channels[i].active) continue;
+        memset(&vm->channels[i], 0, sizeof(vm->channels[i]));
+        vm->channels[i].active = 1;
+        vm->channels[i].capacity = capacity;
+        return i;
+    }
+    return -1;
+}
+
+static int vm_channel_send_value(VM* vm, int handle, Value value) {
+    if (!vm_channel_valid(vm, handle) || vm->channels[handle].closed)
+        return 0;
+    if (vm->channels[handle].count >= vm->channels[handle].capacity)
+        return 0;
+    vm->channels[handle].buffer[vm->channels[handle].tail] = value;
+    vm->channels[handle].tail =
+        (vm->channels[handle].tail + 1) % vm->channels[handle].capacity;
+    vm->channels[handle].count++;
+    return 1;
+}
+
+static Value vm_channel_receive_value(VM* vm, int handle) {
+    if (!vm_channel_valid(vm, handle) || vm->channels[handle].count <= 0)
+        return BOOL_VAL(0);
+    Value value = vm->channels[handle].buffer[vm->channels[handle].head];
+    vm->channels[handle].buffer[vm->channels[handle].head] = NIL_VAL;
+    vm->channels[handle].head =
+        (vm->channels[handle].head + 1) % vm->channels[handle].capacity;
+    vm->channels[handle].count--;
+    return value;
+}
+
+static int vm_mutex_valid(VM* vm, int handle) {
+    return vm && handle > 0 &&
+           handle < (int)(sizeof(vm->mutexes) / sizeof(vm->mutexes[0])) &&
+           vm->mutexes[handle].active;
+}
+
+static int vm_mutex_create(VM* vm) {
+    if (!vm) return -1;
+    for (int i = 1; i < (int)(sizeof(vm->mutexes) / sizeof(vm->mutexes[0])); i++) {
+        if (vm->mutexes[i].active) continue;
+        memset(&vm->mutexes[i], 0, sizeof(vm->mutexes[i]));
+        vm->mutexes[i].active = 1;
+        return i;
+    }
+    return -1;
+}
+
+static int vm_mutex_lock_handle(VM* vm, int handle) {
+    if (!vm_mutex_valid(vm, handle)) return 0;
+    vm->mutexes[handle].locked = 1;
+    vm->mutexes[handle].recursion++;
+    return 1;
+}
+
+static int vm_mutex_unlock_handle(VM* vm, int handle) {
+    if (!vm_mutex_valid(vm, handle) || vm->mutexes[handle].recursion <= 0)
+        return 0;
+    vm->mutexes[handle].recursion--;
+    if (vm->mutexes[handle].recursion == 0)
+        vm->mutexes[handle].locked = 0;
+    return 1;
+}
+
+static int vm_condvar_valid(VM* vm, int handle) {
+    return vm && handle > 0 &&
+           handle < (int)(sizeof(vm->condvars) / sizeof(vm->condvars[0])) &&
+           vm->condvars[handle].active;
+}
+
+static int vm_condvar_create(VM* vm) {
+    if (!vm) return -1;
+    for (int i = 1; i < (int)(sizeof(vm->condvars) / sizeof(vm->condvars[0])); i++) {
+        if (vm->condvars[i].active) continue;
+        memset(&vm->condvars[i], 0, sizeof(vm->condvars[i]));
+        vm->condvars[i].active = 1;
+        return i;
+    }
+    return -1;
+}
+
 static int vm_string_ends_with_bytes(VmString* s, VmString* suffix) {
     if (!s || !suffix || !s->data || !suffix->data) return 0;
     if (suffix->byte_len > s->byte_len) return 0;
@@ -5387,6 +5480,109 @@ static void vm_dispatch_native(VM* vm, int fid) {
         Value handler_val = vm_pop(vm), event_val = vm_pop(vm), emitter_val = vm_pop(vm);
         vm_push(vm, INT_VAL((int64_t)vm_event_listener_remove(vm, (int)as_number(emitter_val),
                                                               event_val, handler_val)));
+        break;
+    }
+    case 2001: { /* make-channel(capacity) → channel or #f */
+        Value capacity_val = vm_pop(vm);
+        int handle = vm_channel_create(vm, (int)as_number(capacity_val));
+        if (handle > 0) vm_push(vm, INT_VAL((int64_t)handle));
+        else vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+    case 2002: { /* channel-send!(channel, value) → bool */
+        Value value_val = vm_pop(vm), channel_val = vm_pop(vm);
+        vm_push(vm, BOOL_VAL(vm_channel_send_value(vm, (int)as_number(channel_val), value_val)));
+        break;
+    }
+    case 2003: { /* channel-receive(channel, timeout-ms) → value or #f */
+        Value timeout_val = vm_pop(vm), channel_val = vm_pop(vm);
+        (void)timeout_val;
+        vm_push(vm, vm_channel_receive_value(vm, (int)as_number(channel_val)));
+        break;
+    }
+    case 2004: { /* channel-try-receive(channel) → value or #f */
+        Value channel_val = vm_pop(vm);
+        vm_push(vm, vm_channel_receive_value(vm, (int)as_number(channel_val)));
+        break;
+    }
+    case 2005: { /* channel-close!(channel) → bool */
+        Value channel_val = vm_pop(vm);
+        int handle = (int)as_number(channel_val);
+        if (vm_channel_valid(vm, handle)) {
+            vm->channels[handle].closed = 1;
+            vm_push(vm, BOOL_VAL(1));
+        } else {
+            vm_push(vm, BOOL_VAL(0));
+        }
+        break;
+    }
+    case 2006: { /* make-mutex() → mutex or #f */
+        int handle = vm_mutex_create(vm);
+        if (handle > 0) vm_push(vm, INT_VAL((int64_t)handle));
+        else vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+    case 2007: { /* mutex-lock!(mutex) → bool */
+        Value mutex_val = vm_pop(vm);
+        vm_push(vm, BOOL_VAL(vm_mutex_lock_handle(vm, (int)as_number(mutex_val))));
+        break;
+    }
+    case 2008: { /* mutex-unlock!(mutex) → bool */
+        Value mutex_val = vm_pop(vm);
+        vm_push(vm, BOOL_VAL(vm_mutex_unlock_handle(vm, (int)as_number(mutex_val))));
+        break;
+    }
+    case 2009: { /* with-mutex(mutex, thunk) → value or #f */
+        Value thunk_val = vm_pop(vm), mutex_val = vm_pop(vm);
+        int handle = (int)as_number(mutex_val);
+        if (thunk_val.type == VAL_CLOSURE && vm_mutex_lock_handle(vm, handle)) {
+            Value result = vm_call_closure_from_native(vm, thunk_val, NULL, 0);
+            (void)vm_mutex_unlock_handle(vm, handle);
+            vm_push(vm, result);
+        } else {
+            vm_push(vm, BOOL_VAL(0));
+        }
+        break;
+    }
+    case 2010: { /* make-condition-variable() → cv or #f */
+        int handle = vm_condvar_create(vm);
+        if (handle > 0) vm_push(vm, INT_VAL((int64_t)handle));
+        else vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+    case 2011: { /* condition-wait(cv, mutex) → bool */
+        Value mutex_val = vm_pop(vm), cv_val = vm_pop(vm);
+        int cv = (int)as_number(cv_val);
+        int mutex = (int)as_number(mutex_val);
+        if (vm_condvar_valid(vm, cv) && vm_mutex_valid(vm, mutex)) {
+            (void)vm_mutex_unlock_handle(vm, mutex);
+            (void)vm_mutex_lock_handle(vm, mutex);
+            vm_push(vm, BOOL_VAL(1));
+        } else {
+            vm_push(vm, BOOL_VAL(0));
+        }
+        break;
+    }
+    case 2012: { /* condition-signal(cv) → bool */
+        Value cv_val = vm_pop(vm);
+        int cv = (int)as_number(cv_val);
+        if (vm_condvar_valid(vm, cv)) {
+            vm->condvars[cv].signals++;
+            vm_push(vm, BOOL_VAL(1));
+        } else {
+            vm_push(vm, BOOL_VAL(0));
+        }
+        break;
+    }
+    case 2013: { /* condition-broadcast(cv) → bool */
+        Value cv_val = vm_pop(vm);
+        int cv = (int)as_number(cv_val);
+        if (vm_condvar_valid(vm, cv)) {
+            vm->condvars[cv].signals++;
+            vm_push(vm, BOOL_VAL(1));
+        } else {
+            vm_push(vm, BOOL_VAL(0));
+        }
         break;
     }
     case 1956: { /* string-ends-with?(str, suffix) → bool */
