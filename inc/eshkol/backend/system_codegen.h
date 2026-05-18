@@ -284,6 +284,7 @@ public:
     llvm::Value* fsUnwatch(const eshkol_operations_t* op);
     llvm::Value* ansiStrip(const eshkol_operations_t* op);
     llvm::Value* stringDisplayWidth(const eshkol_operations_t* op);
+    llvm::Value* stringTruncateDisplay(const eshkol_operations_t* op);
     llvm::Value* kbSave(const eshkol_operations_t* op);
     llvm::Value* kbLoad(const eshkol_operations_t* op);
     llvm::Value* tensorTokenEstimate(const eshkol_operations_t* op);

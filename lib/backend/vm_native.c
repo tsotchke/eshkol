@@ -396,6 +396,31 @@ static int64_t vm_string_display_width_bytes(const char* data, int len) {
     return width;
 }
 
+static int vm_display_prefix_byte_len(const char* data, int len, int64_t max_cols) {
+    if (!data || len <= 0 || max_cols < 0) return 0;
+    int64_t width = 0;
+    int pos = 0;
+    int end = 0;
+    while (pos < len) {
+        int skip = vm_ansi_escape_len(data, len, pos);
+        if (skip > 0) {
+            pos += skip;
+            end = pos;
+            continue;
+        }
+        int before = pos;
+        int cp = vm_utf8_decode(data, len, &pos);
+        if (pos <= before) pos = before + 1;
+        int char_width = 0;
+        if (!vm_display_is_zero_width((uint32_t)cp))
+            char_width = vm_display_is_wide_char((uint32_t)cp) ? 2 : 1;
+        if (width + char_width > max_cols) break;
+        width += char_width;
+        end = pos;
+    }
+    return end;
+}
+
 static Value vm_ansi_strip_value(VM* vm, VmString* input) {
     if (!vm || !input || !input->data) return BOOL_VAL(0);
     int len = input->byte_len;
@@ -414,6 +439,42 @@ static Value vm_ansi_strip_value(VM* vm, VmString* input) {
     }
     out[j] = '\0';
     Value result = vm_string_value(vm, out, j);
+    free(out);
+    return result;
+}
+
+static Value vm_string_truncate_display_value(VM* vm,
+                                              VmString* input,
+                                              int64_t max_cols,
+                                              VmString* suffix) {
+    if (!vm || !input || !input->data) return vm_string_value(vm, "", 0);
+    if (max_cols < 0) max_cols = 0;
+
+    int64_t full_width = vm_string_display_width_bytes(input->data, input->byte_len);
+    if (full_width <= max_cols)
+        return vm_string_value(vm, input->data, input->byte_len);
+
+    const char* suffix_data = (suffix && suffix->data) ? suffix->data : "";
+    int suffix_len = (suffix && suffix->data) ? suffix->byte_len : 0;
+    int64_t suffix_width = vm_string_display_width_bytes(suffix_data, suffix_len);
+
+    int prefix_len = 0;
+    int append_suffix_len = suffix_len;
+    if (suffix_width <= max_cols) {
+        prefix_len = vm_display_prefix_byte_len(input->data, input->byte_len,
+                                                max_cols - suffix_width);
+    } else {
+        append_suffix_len = vm_display_prefix_byte_len(suffix_data, suffix_len, max_cols);
+    }
+
+    size_t out_len = (size_t)prefix_len + (size_t)append_suffix_len;
+    char* out = (char*)malloc(out_len + 1);
+    if (!out) return BOOL_VAL(0);
+    if (prefix_len > 0) memcpy(out, input->data, (size_t)prefix_len);
+    if (append_suffix_len > 0)
+        memcpy(out + prefix_len, suffix_data, (size_t)append_suffix_len);
+    out[out_len] = '\0';
+    Value result = vm_string_value(vm, out, (int64_t)out_len);
     free(out);
     return result;
 }
@@ -3502,6 +3563,15 @@ static void vm_dispatch_native(VM* vm, int fid) {
         Value str_val = vm_pop(vm);
         VmString* s = vm_value_as_string(vm, str_val);
         vm_push(vm, INT_VAL(s ? vm_string_display_width_bytes(s->data, s->byte_len) : 0));
+        break;
+    }
+    case 1948: { /* string-truncate-display(str, max, suffix) → string */
+        Value suffix_val = vm_pop(vm);
+        Value max_val = vm_pop(vm);
+        Value str_val = vm_pop(vm);
+        VmString* s = vm_value_as_string(vm, str_val);
+        VmString* suffix = vm_value_as_string(vm, suffix_val);
+        vm_push(vm, vm_string_truncate_display_value(vm, s, (int64_t)as_number(max_val), suffix));
         break;
     }
 

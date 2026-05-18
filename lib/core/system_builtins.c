@@ -1808,6 +1808,31 @@ static int64_t sys_string_display_width_bytes(const char* data, int len) {
     return width;
 }
 
+static int sys_display_prefix_byte_len(const char* data, int len, int64_t max_cols) {
+    if (!data || len <= 0 || max_cols < 0) return 0;
+    int64_t width = 0;
+    int pos = 0;
+    int end = 0;
+    while (pos < len) {
+        int skip = sys_ansi_escape_len(data, len, pos);
+        if (skip > 0) {
+            pos += skip;
+            end = pos;
+            continue;
+        }
+        int before = pos;
+        uint32_t cp = sys_decode_utf8_display(data, len, &pos);
+        if (pos <= before) pos = before + 1;
+        int char_width = 0;
+        if (!sys_display_is_zero_width(cp))
+            char_width = sys_display_is_wide_char(cp) ? 2 : 1;
+        if (width + char_width > max_cols) break;
+        width += char_width;
+        end = pos;
+    }
+    return end;
+}
+
 static eshkol_sysbuiltin_value_t eshkol_builtin_ansi_strip_v(eshkol_sysbuiltin_value_t str_val) {
     const char* input = sys_extract_string(str_val);
     if (!input) return sys_make_bool(0);
@@ -1835,6 +1860,44 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_string_display_width_v(eshkol_sy
     const char* input = sys_extract_string(str_val);
     if (!input) return sys_make_int64(0);
     return sys_make_int64(sys_string_display_width_bytes(input, (int)strlen(input)));
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_string_truncate_display_v(
+    eshkol_sysbuiltin_value_t str_val,
+    eshkol_sysbuiltin_value_t max_val,
+    eshkol_sysbuiltin_value_t suffix_val) {
+    const char* input = sys_extract_string(str_val);
+    if (!input) return sys_make_string("");
+
+    int64_t max_cols = (int64_t)max_val.data;
+    if (max_cols < 0) max_cols = 0;
+    int input_len = (int)strlen(input);
+    int64_t full_width = sys_string_display_width_bytes(input, input_len);
+    if (full_width <= max_cols) return sys_make_string(input);
+
+    const char* suffix = sys_extract_string(suffix_val);
+    if (!suffix) suffix = "";
+    int suffix_len = (int)strlen(suffix);
+    int64_t suffix_width = sys_string_display_width_bytes(suffix, suffix_len);
+
+    int prefix_len = 0;
+    int append_suffix_len = suffix_len;
+    if (suffix_width <= max_cols) {
+        prefix_len = sys_display_prefix_byte_len(input, input_len, max_cols - suffix_width);
+    } else {
+        append_suffix_len = sys_display_prefix_byte_len(suffix, suffix_len, max_cols);
+    }
+
+    size_t out_len = (size_t)prefix_len + (size_t)append_suffix_len;
+    char* out = (char*)malloc(out_len + 1);
+    if (!out) return sys_make_bool(0);
+    if (prefix_len > 0) memcpy(out, input, (size_t)prefix_len);
+    if (append_suffix_len > 0)
+        memcpy(out + prefix_len, suffix, (size_t)append_suffix_len);
+    out[out_len] = '\0';
+    eshkol_sysbuiltin_value_t result = sys_make_string(out);
+    free(out);
+    return result;
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -2203,6 +2266,7 @@ void eshkol_builtin_fs_watch_poll(sv_t* out, const sv_t* a) { *out = eshkol_buil
 void eshkol_builtin_fs_unwatch(sv_t* out, const sv_t* a) { *out = eshkol_builtin_fs_unwatch_v(*a); }
 void eshkol_builtin_ansi_strip(sv_t* out, const sv_t* a) { *out = eshkol_builtin_ansi_strip_v(*a); }
 void eshkol_builtin_string_display_width(sv_t* out, const sv_t* a) { *out = eshkol_builtin_string_display_width_v(*a); }
+void eshkol_builtin_string_truncate_display(sv_t* out, const sv_t* a, const sv_t* b, const sv_t* c) { *out = eshkol_builtin_string_truncate_display_v(*a, *b, *c); }
 void eshkol_builtin_kb_save(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_kb_save_v(*a, *b); }
 void eshkol_builtin_kb_load(sv_t* out, const sv_t* a) { *out = eshkol_builtin_kb_load_v(*a); }
 void eshkol_builtin_tensor_token_estimate(sv_t* out, const sv_t* a) { *out = eshkol_builtin_tensor_token_estimate_v(*a); }
