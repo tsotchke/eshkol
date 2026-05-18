@@ -882,6 +882,12 @@ evicted when the configured capacity is reached.
 ### `(once! emitter event handler) -> void`
 ### `(off! emitter event handler) -> void`
 
+Standalone VM native IDs 1997-2000 expose VM-lifetime event emitter handles.
+`emit!` is a variadic Scheme wrapper over native ID 1996, invokes matching
+closures synchronously through the VM closure bridge, and returns the number of
+handlers called. `on!` and `once!` return booleans; `off!` returns the number of
+removed listeners.
+
 ---
 
 ## B.21 Layout Engine (Full Flexbox)

@@ -1,0 +1,84 @@
+;; Standalone VM regression for event emitter primitives.
+
+(display "=== event emitter VM surface regression ===") (newline)
+
+(define emitter (make-event-emitter))
+
+(display "T1 make-event-emitter returns handle: ")
+(display (if (and (number? emitter) (> emitter 0))
+             "PASS"
+             (list "FAIL got " emitter)))
+(newline)
+
+(define seen 0)
+(define last-value 0)
+(define handler
+  (lambda (value)
+    (set! seen (+ seen 1))
+    (set! last-value value)))
+
+(define registered (on! emitter "data" handler))
+(define emitted (emit! emitter "data" 42))
+
+(display "T2 on!/emit! invokes closure: ")
+(display (if (and registered
+                  (= emitted 1)
+                  (= seen 1)
+                  (= last-value 42))
+             "PASS"
+             "FAIL"))
+(newline)
+
+(define once-count 0)
+(define once-handler
+  (lambda ()
+    (set! once-count (+ once-count 1))))
+
+(define once-registered (once! emitter "once" once-handler))
+(define once-first (emit! emitter "once"))
+(define once-second (emit! emitter "once"))
+
+(display "T3 once! removes listener after first emit: ")
+(display (if (and once-registered
+                  (= once-first 1)
+                  (= once-second 0)
+                  (= once-count 1))
+             "PASS"
+             "FAIL"))
+(newline)
+
+(define removed-seen 0)
+(define remove-handler
+  (lambda (value)
+    (set! removed-seen (+ removed-seen value))))
+
+(define remove-registered (on! emitter "remove" remove-handler))
+(define removed-count (off! emitter "remove" remove-handler))
+(define remove-emit (emit! emitter "remove" 9))
+
+(display "T4 off! removes matching listener: ")
+(display (if (and remove-registered
+                  (= removed-count 1)
+                  (= remove-emit 0)
+                  (= removed-seen 0))
+             "PASS"
+             "FAIL"))
+(newline)
+
+(define sum 0)
+(define sum-handler
+  (lambda (a b)
+    (set! sum (+ a b))))
+
+(define sum-registered (on! emitter "sum" sum-handler))
+(define sum-emitted (emit! emitter "sum" 3 4))
+
+(display "T5 emit! forwards variadic arguments: ")
+(display (if (and sum-registered
+                  (= sum-emitted 1)
+                  (= sum 7))
+             "PASS"
+             "FAIL"))
+(newline)
+
+(display "=== event emitter VM surface complete ===") (newline)

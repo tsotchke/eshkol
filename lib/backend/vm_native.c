@@ -1808,6 +1808,89 @@ static int vm_lru_set_value(VM* vm, int handle, Value key, Value value) {
     return 1;
 }
 
+static int vm_event_emitter_valid(VM* vm, int handle) {
+    return vm && handle > 0 &&
+           handle < (int)(sizeof(vm->event_emitters) / sizeof(vm->event_emitters[0])) &&
+           vm->event_emitters[handle].active;
+}
+
+static int vm_event_emitter_create(VM* vm) {
+    if (!vm) return -1;
+    for (int i = 1; i < (int)(sizeof(vm->event_emitters) / sizeof(vm->event_emitters[0])); i++) {
+        if (vm->event_emitters[i].active) continue;
+        memset(&vm->event_emitters[i], 0, sizeof(vm->event_emitters[i]));
+        vm->event_emitters[i].active = 1;
+        return i;
+    }
+    return -1;
+}
+
+static int vm_event_listener_add(VM* vm, int handle, Value event, Value handler, int once) {
+    if (!vm_event_emitter_valid(vm, handle) || handler.type != VAL_CLOSURE)
+        return 0;
+    for (int i = 0; i < (int)(sizeof(vm->event_emitters[handle].listeners) /
+                              sizeof(vm->event_emitters[handle].listeners[0])); i++) {
+        if (vm->event_emitters[handle].listeners[i].active) continue;
+        vm->event_emitters[handle].listeners[i].active = 1;
+        vm->event_emitters[handle].listeners[i].once = once ? 1 : 0;
+        vm->event_emitters[handle].listeners[i].event = event;
+        vm->event_emitters[handle].listeners[i].handler = handler;
+        return 1;
+    }
+    return 0;
+}
+
+static int vm_event_listener_remove(VM* vm, int handle, Value event, Value handler) {
+    if (!vm_event_emitter_valid(vm, handle)) return 0;
+    int removed = 0;
+    for (int i = 0; i < (int)(sizeof(vm->event_emitters[handle].listeners) /
+                              sizeof(vm->event_emitters[handle].listeners[0])); i++) {
+        if (!vm->event_emitters[handle].listeners[i].active) continue;
+        if (vm_values_equal_deep(vm, vm->event_emitters[handle].listeners[i].event, event, 0) &&
+            vm_values_equal_deep(vm, vm->event_emitters[handle].listeners[i].handler, handler, 0)) {
+            memset(&vm->event_emitters[handle].listeners[i], 0,
+                   sizeof(vm->event_emitters[handle].listeners[i]));
+            removed++;
+        }
+    }
+    return removed;
+}
+
+static int vm_event_args_from_list(VM* vm, Value args_list, Value* args, int max_args) {
+    int argc = 0;
+    Value cur = args_list;
+    while (cur.type == VAL_PAIR && argc < max_args && is_valid_heap_ptr(vm, cur.as.ptr)) {
+        HeapObject* node = vm->heap.objects[cur.as.ptr];
+        if (!node || node->type != HEAP_CONS) break;
+        args[argc++] = node->cons.car;
+        cur = node->cons.cdr;
+    }
+    return argc;
+}
+
+static int vm_event_emit(VM* vm, int handle, Value event, Value args_list) {
+    if (!vm_event_emitter_valid(vm, handle)) return -1;
+    Value args[16];
+    int argc = vm_event_args_from_list(vm, args_list, args, 16);
+    int invoked = 0;
+
+    for (int i = 0; i < (int)(sizeof(vm->event_emitters[handle].listeners) /
+                              sizeof(vm->event_emitters[handle].listeners[0])); i++) {
+        if (!vm->event_emitters[handle].listeners[i].active) continue;
+        if (!vm_values_equal_deep(vm, vm->event_emitters[handle].listeners[i].event, event, 0))
+            continue;
+
+        Value handler = vm->event_emitters[handle].listeners[i].handler;
+        int once = vm->event_emitters[handle].listeners[i].once;
+        if (once)
+            memset(&vm->event_emitters[handle].listeners[i], 0,
+                   sizeof(vm->event_emitters[handle].listeners[i]));
+        (void)vm_call_closure_from_native(vm, handler, args, argc);
+        invoked++;
+    }
+    return invoked;
+}
+
 static int vm_string_ends_with_bytes(VmString* s, VmString* suffix) {
     if (!s || !suffix || !s->data || !suffix->data) return 0;
     if (suffix->byte_len > s->byte_len) return 0;
@@ -5273,6 +5356,37 @@ static void vm_dispatch_native(VM* vm, int fid) {
             vm_push(vm, INT_VAL((int64_t)vm->lru_caches[handle].size));
         else
             vm_push(vm, INT_VAL(0));
+        break;
+    }
+    case 1996: { /* _emit-event(emitter, event, args-list) → invoked-count or #f */
+        Value args_val = vm_pop(vm), event_val = vm_pop(vm), emitter_val = vm_pop(vm);
+        int invoked = vm_event_emit(vm, (int)as_number(emitter_val), event_val, args_val);
+        if (invoked >= 0) vm_push(vm, INT_VAL((int64_t)invoked));
+        else vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+    case 1997: { /* make-event-emitter() → emitter or #f */
+        int handle = vm_event_emitter_create(vm);
+        if (handle > 0) vm_push(vm, INT_VAL((int64_t)handle));
+        else vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+    case 1998: { /* on!(emitter, event, handler) → bool */
+        Value handler_val = vm_pop(vm), event_val = vm_pop(vm), emitter_val = vm_pop(vm);
+        vm_push(vm, BOOL_VAL(vm_event_listener_add(vm, (int)as_number(emitter_val),
+                                                   event_val, handler_val, 0)));
+        break;
+    }
+    case 1999: { /* once!(emitter, event, handler) → bool */
+        Value handler_val = vm_pop(vm), event_val = vm_pop(vm), emitter_val = vm_pop(vm);
+        vm_push(vm, BOOL_VAL(vm_event_listener_add(vm, (int)as_number(emitter_val),
+                                                   event_val, handler_val, 1)));
+        break;
+    }
+    case 2000: { /* off!(emitter, event, handler) → removed-count */
+        Value handler_val = vm_pop(vm), event_val = vm_pop(vm), emitter_val = vm_pop(vm);
+        vm_push(vm, INT_VAL((int64_t)vm_event_listener_remove(vm, (int)as_number(emitter_val),
+                                                              event_val, handler_val)));
         break;
     }
     case 1956: { /* string-ends-with?(str, suffix) → bool */

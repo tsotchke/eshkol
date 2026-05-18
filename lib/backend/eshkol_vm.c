@@ -433,6 +433,8 @@ static const BuiltinDef BUILTINS[] = {
     {"lru-set!", 1991, 3}, {"lru-has?", 1992, 2},
     {"lru-delete!", 1993, 2}, {"lru-clear!", 1994, 1},
     {"lru-size", 1995, 1},
+    {"_emit-event", 1996, 3}, {"make-event-emitter", 1997, 0},
+    {"on!", 1998, 3}, {"once!", 1999, 3}, {"off!", 2000, 3},
     {"string-ends-with?", 1956, 2}, {"string-index-of", 1957, 3},
     {"string-pad-left", 1958, 3}, {"string-pad-right", 1959, 3},
     /* Parallel primitives — IDs 620-628 */
@@ -970,6 +972,7 @@ static void compile_and_run_source_to_chunk(const char* source, FuncChunk* chunk
         "(define (max a . rest) (fold-left _max2 a rest))\n"
         "(define (min a . rest) (fold-left _min2 a rest))\n"
         "(define (string-append . args) (fold-left _string-append-2 \"\" args))\n"
+        "(define (emit! emitter event . args) (_emit-event emitter event args))\n"
         "(define (make-list n val) (let loop ((i 0) (acc (list))) (if (= i n) acc (loop (+ i 1) (cons val acc)))))\n"
         "(define (make-factor-graph n . rest) (if (null? rest) (_make-fg2 n (make-list n 2)) (_make-fg2 n (car rest))))\n"
         "(define (tensor-sum t . args) (if (null? args) (_tensor-reduce-sum t -1) (_tensor-reduce-sum t (car args))))\n"
