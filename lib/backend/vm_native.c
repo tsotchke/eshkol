@@ -1664,6 +1664,76 @@ static Value vm_semver_satisfies_value(VM* vm, VmString* version_s, VmString* ra
     return BOOL_VAL(vm_semver_satisfies_range(&version, range_s->data));
 }
 
+static int vm_line_reader_start(VM* vm, int fd) {
+    if (!vm || fd < 0) return -1;
+    for (int i = 1; i < (int)(sizeof(vm->line_readers) / sizeof(vm->line_readers[0])); i++) {
+        if (vm->line_readers[i].active) continue;
+        vm->line_readers[i].active = 1;
+        vm->line_readers[i].fd = fd;
+        vm->line_readers[i].len = 0;
+        return i;
+    }
+    return -1;
+}
+
+static Value vm_line_reader_poll_value(VM* vm, int handle) {
+#if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
+    if (!vm || handle <= 0 ||
+        handle >= (int)(sizeof(vm->line_readers) / sizeof(vm->line_readers[0])) ||
+        !vm->line_readers[handle].active)
+        return BOOL_VAL(0);
+    int len = vm->line_readers[handle].len;
+    for (int i = 0; i < len; i++) {
+        if (vm->line_readers[handle].buffer[i] == '\n') {
+            Value line = vm_string_value(vm, vm->line_readers[handle].buffer, i);
+            int remaining = len - i - 1;
+            if (remaining > 0)
+                memmove(vm->line_readers[handle].buffer,
+                        vm->line_readers[handle].buffer + i + 1,
+                        (size_t)remaining);
+            vm->line_readers[handle].len = remaining;
+            return line;
+        }
+    }
+
+    int fd = vm->line_readers[handle].fd;
+    int old_flags = fcntl(fd, F_GETFL, 0);
+    if (old_flags < 0) return BOOL_VAL(0);
+    if (fcntl(fd, F_SETFL, old_flags | O_NONBLOCK) != 0) return BOOL_VAL(0);
+    char chunk[512];
+    ssize_t n = read(fd, chunk, sizeof(chunk));
+    (void)fcntl(fd, F_SETFL, old_flags);
+    if (n <= 0) return BOOL_VAL(0);
+    int space = (int)sizeof(vm->line_readers[handle].buffer) - len;
+    if (n > space) n = space;
+    if (n > 0) {
+        memcpy(vm->line_readers[handle].buffer + len, chunk, (size_t)n);
+        len += (int)n;
+        vm->line_readers[handle].len = len;
+    }
+    for (int i = 0; i < len; i++) {
+        if (vm->line_readers[handle].buffer[i] == '\n') {
+            Value line = vm_string_value(vm, vm->line_readers[handle].buffer, i);
+            int remaining = len - i - 1;
+            if (remaining > 0)
+                memmove(vm->line_readers[handle].buffer,
+                        vm->line_readers[handle].buffer + i + 1,
+                        (size_t)remaining);
+            vm->line_readers[handle].len = remaining;
+            return line;
+        }
+    }
+    if (len >= (int)sizeof(vm->line_readers[handle].buffer)) {
+        Value line = vm_string_value(vm, vm->line_readers[handle].buffer, len);
+        vm->line_readers[handle].len = 0;
+        return line;
+    }
+#else
+    (void)vm; (void)handle;
+#endif
+    return BOOL_VAL(0);
+}
+
 static int vm_string_ends_with_bytes(VmString* s, VmString* suffix) {
     if (!s || !suffix || !s->data || !suffix->data) return 0;
     if (suffix->byte_len > s->byte_len) return 0;
@@ -4992,6 +5062,87 @@ static void vm_dispatch_native(VM* vm, int fid) {
         Value range_val = vm_pop(vm), version_val = vm_pop(vm);
         vm_push(vm, vm_semver_satisfies_value(vm, vm_value_as_string(vm, version_val),
                                               vm_value_as_string(vm, range_val)));
+        break;
+    }
+    case 1983: { /* make-pipe() → (read-fd . write-fd) or #f */
+#if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
+        int fds[2];
+        if (pipe(fds) == 0) {
+            Value pair = vm_cons_value(vm, INT_VAL((int64_t)fds[0]), INT_VAL((int64_t)fds[1]));
+            vm_push(vm, pair);
+            break;
+        }
+#endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+    case 1984: { /* fd-write(fd, string-or-bytevector) → bytes or #f */
+        Value data_val = vm_pop(vm), fd_val = vm_pop(vm);
+#if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
+        int fd = (int)as_number(fd_val);
+        const void* data = NULL;
+        size_t len = 0;
+        VmString* s = vm_value_as_string(vm, data_val);
+        if (s && s->data) {
+            data = s->data;
+            len = (size_t)s->byte_len;
+        } else {
+            VmBytevector* bv = vm_value_as_bytevector(vm, data_val);
+            if (bv && bv->data) {
+                data = bv->data;
+                len = (size_t)bv->len;
+            }
+        }
+        if (fd >= 0 && data) {
+            ssize_t n = write(fd, data, len);
+            if (n >= 0) {
+                vm_push(vm, INT_VAL((int64_t)n));
+                break;
+            }
+        }
+#else
+        (void)data_val; (void)fd_val;
+#endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+    case 1985: { /* make-line-reader(fd, callback) → reader or #f */
+        Value callback_val = vm_pop(vm), fd_val = vm_pop(vm);
+        (void)callback_val;
+        int handle = vm_line_reader_start(vm, (int)as_number(fd_val));
+        if (handle > 0) vm_push(vm, INT_VAL((int64_t)handle));
+        else vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+    case 1986: { /* line-reader-poll(reader) → line string or #f */
+        Value handle_val = vm_pop(vm);
+        vm_push(vm, vm_line_reader_poll_value(vm, (int)as_number(handle_val)));
+        break;
+    }
+    case 1987: { /* line-reader-close(reader) → bool */
+        Value handle_val = vm_pop(vm);
+        int handle = (int)as_number(handle_val);
+        if (handle > 0 && handle < (int)(sizeof(vm->line_readers) / sizeof(vm->line_readers[0])) &&
+            vm->line_readers[handle].active) {
+            memset(&vm->line_readers[handle], 0, sizeof(vm->line_readers[handle]));
+            vm_push(vm, BOOL_VAL(1));
+            break;
+        }
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+    case 1988: { /* fd-close(fd) → bool */
+        Value fd_val = vm_pop(vm);
+#if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
+        int fd = (int)as_number(fd_val);
+        if (fd >= 0 && close(fd) == 0) {
+            vm_push(vm, BOOL_VAL(1));
+            break;
+        }
+#else
+        (void)fd_val;
+#endif
+        vm_push(vm, BOOL_VAL(0));
         break;
     }
     case 1956: { /* string-ends-with?(str, suffix) → bool */

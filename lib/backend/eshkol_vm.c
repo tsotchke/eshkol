@@ -426,6 +426,9 @@ static const BuiltinDef BUILTINS[] = {
     {"diff-lines", 1978, 2}, {"fuzzy-match", 1979, 4},
     {"semver-parse", 1980, 1}, {"semver-compare", 1981, 2},
     {"semver-satisfies?", 1982, 2},
+    {"make-pipe", 1983, 0}, {"fd-write", 1984, 2},
+    {"make-line-reader", 1985, 2}, {"line-reader-poll", 1986, 1},
+    {"line-reader-close", 1987, 1}, {"fd-close", 1988, 1},
     {"string-ends-with?", 1956, 2}, {"string-index-of", 1957, 3},
     {"string-pad-left", 1958, 3}, {"string-pad-right", 1959, 3},
     /* Parallel primitives — IDs 620-628 */
