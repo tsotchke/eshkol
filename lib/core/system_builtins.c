@@ -2957,6 +2957,133 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_semver_satisfies_v(eshkol_sysbui
     return sys_make_bool(sys_semver_satisfies_range(&version, range));
 }
 
+typedef struct {
+    int active;
+    int fd;
+    int len;
+    char buffer[4096];
+} SysLineReader;
+
+static SysLineReader g_sys_line_readers[32];
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_make_pipe_v(void) {
+#if !defined(_WIN32) && !defined(ESHKOL_VM_WASM)
+    int fds[2];
+    if (pipe(fds) != 0) return sys_make_bool(0);
+    return sys_make_pair(sys_make_int64((int64_t)fds[0]), sys_make_int64((int64_t)fds[1]));
+#else
+    return sys_make_bool(0);
+#endif
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_fd_write_v(eshkol_sysbuiltin_value_t fd_val,
+                                                            eshkol_sysbuiltin_value_t data_val) {
+#if !defined(_WIN32) && !defined(ESHKOL_VM_WASM)
+    int fd = (int)sys_extract_int64(fd_val);
+    const char* data = sys_extract_string(data_val);
+    if (fd < 0 || !data) return sys_make_bool(0);
+    ssize_t n = write(fd, data, strlen(data));
+    return n >= 0 ? sys_make_int64((int64_t)n) : sys_make_bool(0);
+#else
+    (void)fd_val; (void)data_val;
+    return sys_make_bool(0);
+#endif
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_make_line_reader_v(eshkol_sysbuiltin_value_t fd_val,
+                                                                    eshkol_sysbuiltin_value_t callback_val) {
+    (void)callback_val;
+#if !defined(_WIN32) && !defined(ESHKOL_VM_WASM)
+    int fd = (int)sys_extract_int64(fd_val);
+    if (fd < 0) return sys_make_bool(0);
+    for (int i = 1; i < (int)(sizeof(g_sys_line_readers) / sizeof(g_sys_line_readers[0])); ++i) {
+        if (g_sys_line_readers[i].active) continue;
+        g_sys_line_readers[i].active = 1;
+        g_sys_line_readers[i].fd = fd;
+        g_sys_line_readers[i].len = 0;
+        return sys_make_int64((int64_t)i);
+    }
+    return sys_make_bool(0);
+#else
+    (void)fd_val;
+    return sys_make_bool(0);
+#endif
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_line_reader_poll_v(eshkol_sysbuiltin_value_t handle_val) {
+#if !defined(_WIN32) && !defined(ESHKOL_VM_WASM)
+    int handle = (int)sys_extract_int64(handle_val);
+    if (handle <= 0 || handle >= (int)(sizeof(g_sys_line_readers) / sizeof(g_sys_line_readers[0])) ||
+        !g_sys_line_readers[handle].active)
+        return sys_make_bool(0);
+    int len = g_sys_line_readers[handle].len;
+    for (int i = 0; i < len; ++i) {
+        if (g_sys_line_readers[handle].buffer[i] == '\n') {
+            eshkol_sysbuiltin_value_t line = sys_make_string_len(g_sys_line_readers[handle].buffer, (size_t)i);
+            int remaining = len - i - 1;
+            if (remaining > 0)
+                memmove(g_sys_line_readers[handle].buffer,
+                        g_sys_line_readers[handle].buffer + i + 1,
+                        (size_t)remaining);
+            g_sys_line_readers[handle].len = remaining;
+            return line;
+        }
+    }
+
+    int fd = g_sys_line_readers[handle].fd;
+    int old_flags = fcntl(fd, F_GETFL, 0);
+    if (old_flags < 0) return sys_make_bool(0);
+    if (fcntl(fd, F_SETFL, old_flags | O_NONBLOCK) != 0) return sys_make_bool(0);
+    char chunk[512];
+    ssize_t n = read(fd, chunk, sizeof(chunk));
+    (void)fcntl(fd, F_SETFL, old_flags);
+    if (n <= 0) return sys_make_bool(0);
+    int space = (int)sizeof(g_sys_line_readers[handle].buffer) - len;
+    if (n > space) n = space;
+    if (n > 0) {
+        memcpy(g_sys_line_readers[handle].buffer + len, chunk, (size_t)n);
+        len += (int)n;
+        g_sys_line_readers[handle].len = len;
+    }
+    for (int i = 0; i < len; ++i) {
+        if (g_sys_line_readers[handle].buffer[i] == '\n') {
+            eshkol_sysbuiltin_value_t line = sys_make_string_len(g_sys_line_readers[handle].buffer, (size_t)i);
+            int remaining = len - i - 1;
+            if (remaining > 0)
+                memmove(g_sys_line_readers[handle].buffer,
+                        g_sys_line_readers[handle].buffer + i + 1,
+                        (size_t)remaining);
+            g_sys_line_readers[handle].len = remaining;
+            return line;
+        }
+    }
+    return sys_make_bool(0);
+#else
+    (void)handle_val;
+    return sys_make_bool(0);
+#endif
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_line_reader_close_v(eshkol_sysbuiltin_value_t handle_val) {
+    int handle = (int)sys_extract_int64(handle_val);
+    if (handle > 0 && handle < (int)(sizeof(g_sys_line_readers) / sizeof(g_sys_line_readers[0])) &&
+        g_sys_line_readers[handle].active) {
+        memset(&g_sys_line_readers[handle], 0, sizeof(g_sys_line_readers[handle]));
+        return sys_make_bool(1);
+    }
+    return sys_make_bool(0);
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_fd_close_v(eshkol_sysbuiltin_value_t fd_val) {
+#if !defined(_WIN32) && !defined(ESHKOL_VM_WASM)
+    int fd = (int)sys_extract_int64(fd_val);
+    return (fd >= 0 && close(fd) == 0) ? sys_make_bool(1) : sys_make_bool(0);
+#else
+    (void)fd_val;
+    return sys_make_bool(0);
+#endif
+}
+
 static int sys_utf8_encode_codepoint(int cp, char* out) {
     if (!out) return 0;
     if (cp < 0) cp = ' ';
@@ -3444,6 +3571,12 @@ void eshkol_builtin_fuzzy_match(sv_t* out, const sv_t* a, const sv_t* b, const s
 void eshkol_builtin_semver_parse(sv_t* out, const sv_t* a) { *out = eshkol_builtin_semver_parse_v(*a); }
 void eshkol_builtin_semver_compare(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_semver_compare_v(*a, *b); }
 void eshkol_builtin_semver_satisfies(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_semver_satisfies_v(*a, *b); }
+void eshkol_builtin_make_pipe(sv_t* out) { *out = eshkol_builtin_make_pipe_v(); }
+void eshkol_builtin_fd_write(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_fd_write_v(*a, *b); }
+void eshkol_builtin_make_line_reader(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_make_line_reader_v(*a, *b); }
+void eshkol_builtin_line_reader_poll(sv_t* out, const sv_t* a) { *out = eshkol_builtin_line_reader_poll_v(*a); }
+void eshkol_builtin_line_reader_close(sv_t* out, const sv_t* a) { *out = eshkol_builtin_line_reader_close_v(*a); }
+void eshkol_builtin_fd_close(sv_t* out, const sv_t* a) { *out = eshkol_builtin_fd_close_v(*a); }
 void eshkol_builtin_string_ends_with(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_string_ends_with_v(*a, *b); }
 void eshkol_builtin_string_index_of(sv_t* out, const sv_t* a, const sv_t* b, const sv_t* c) { *out = eshkol_builtin_string_index_of_v(*a, *b, *c); }
 void eshkol_builtin_string_pad_left(sv_t* out, const sv_t* a, const sv_t* b, const sv_t* c) { *out = eshkol_builtin_string_pad_v(*a, *b, *c, 1); }
