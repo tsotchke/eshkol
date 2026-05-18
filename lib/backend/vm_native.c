@@ -118,53 +118,149 @@ static int vm_directory_delete_recursive_posix(const char* path, int depth) {
 }
 #endif
 
+static int vm_path_is_separator(char c) {
+#ifdef _WIN32
+    return c == '/' || c == '\\';
+#else
+    return c == '/';
+#endif
+}
+
+static char vm_path_separator(void) {
+#ifdef _WIN32
+    return '\\';
+#else
+    return '/';
+#endif
+}
+
+static const char* vm_path_last_separator(const char* path) {
+    const char* last = NULL;
+    if (!path) return NULL;
+    for (const char* p = path; *p; ++p) {
+        if (vm_path_is_separator(*p)) last = p;
+    }
+    return last;
+}
+
+static int vm_path_is_absolute_native(const char* path) {
+    if (!path || path[0] == '\0') return 0;
+#ifdef _WIN32
+    size_t len = strlen(path);
+    if (len >= 3 && isalpha((unsigned char)path[0]) &&
+        path[1] == ':' && vm_path_is_separator(path[2])) {
+        return 1;
+    }
+    return len >= 2 && vm_path_is_separator(path[0]) && vm_path_is_separator(path[1]);
+#else
+    return path[0] == '/';
+#endif
+}
+
+static int vm_path_copy_cstr(char* dst, size_t dst_len, const char* src) {
+    if (!dst || dst_len == 0 || !src) return 0;
+    size_t len = strlen(src);
+    if (len >= dst_len) return 0;
+    memcpy(dst, src, len + 1);
+    return 1;
+}
+
 static int vm_path_normalize_cstr(const char* input, char* result, size_t result_len) {
     if (!input || !result || result_len == 0) return 0;
 
     char buf[4096];
-    strncpy(buf, input, sizeof(buf) - 1);
-    buf[sizeof(buf) - 1] = 0;
+    if (!vm_path_copy_cstr(buf, sizeof(buf), input)) return 0;
 
     char* parts[256];
     int nparts = 0;
-    int absolute = (buf[0] == '/');
-    char* tok = strtok(buf, "/");
+    char prefix[8] = "";
+    char* scan = buf;
+    int absolute = vm_path_is_absolute_native(buf);
+
+#ifdef _WIN32
+    size_t buf_len = strlen(buf);
+    if (buf_len >= 2 && isalpha((unsigned char)buf[0]) && buf[1] == ':') {
+        prefix[0] = buf[0];
+        prefix[1] = ':';
+        prefix[2] = 0;
+        scan = buf + 2;
+        if (vm_path_is_separator(*scan)) scan++;
+    } else if (buf_len >= 2 && vm_path_is_separator(buf[0]) && vm_path_is_separator(buf[1])) {
+        prefix[0] = vm_path_separator();
+        prefix[1] = vm_path_separator();
+        prefix[2] = 0;
+        scan = buf + 2;
+    } else if (vm_path_is_separator(buf[0])) {
+        scan = buf + 1;
+    }
+    char* tok = strtok(scan, "/\\");
+#else
+    if (buf[0] == '/') scan = buf + 1;
+    char* tok = strtok(scan, "/");
+#endif
+
     while (tok && nparts < 256) {
         if (strcmp(tok, ".") == 0 || strcmp(tok, "") == 0) {
             /* skip */
         } else if (strcmp(tok, "..") == 0) {
-            if (nparts > 0 && strcmp(parts[nparts - 1], "..") != 0) {
-                nparts--;
-            } else if (!absolute) {
-                parts[nparts++] = tok;
-            }
+            if (nparts > 0) nparts--;
         } else {
             parts[nparts++] = tok;
         }
+#ifdef _WIN32
+        tok = strtok(NULL, "/\\");
+#else
         tok = strtok(NULL, "/");
+#endif
     }
 
     size_t pos = 0;
-    if (absolute && pos < result_len - 1) result[pos++] = '/';
+    if (prefix[0]) {
+        size_t prefix_len = strlen(prefix);
+        if (prefix_len >= result_len) return 0;
+        memcpy(result + pos, prefix, prefix_len);
+        pos += prefix_len;
+    }
+    if (absolute &&
+        !(prefix[0] == vm_path_separator() &&
+          prefix[1] == vm_path_separator() &&
+          prefix[2] == 0)) {
+        if (pos >= result_len - 1) return 0;
+        result[pos++] = vm_path_separator();
+    }
     for (int i = 0; i < nparts; i++) {
-        if (i > 0 && pos < result_len - 1) result[pos++] = '/';
+        if (i > 0) {
+            if (pos >= result_len - 1) return 0;
+            result[pos++] = vm_path_separator();
+        }
         size_t len = strlen(parts[i]);
-        if (pos + len >= result_len) len = result_len - pos - 1;
+        if (pos + len >= result_len) return 0;
         memcpy(result + pos, parts[i], len);
         pos += len;
-        if (pos >= result_len - 1) break;
     }
-    if (pos == 0) result[pos++] = absolute ? '/' : '.';
+
+    if (pos == 0) {
+        if (result_len < 2) return 0;
+        result[pos++] = '.';
+    }
     result[pos] = 0;
     return 1;
 }
 
 static int vm_path_split_mut(char* path, char** parts, int max_parts) {
     int nparts = 0;
+#ifdef _WIN32
+    char* tok = strtok(path, "/\\");
+#else
     char* tok = strtok(path, "/");
+#endif
     while (tok && nparts < max_parts) {
         if (*tok) parts[nparts++] = tok;
+#ifdef _WIN32
+        tok = strtok(NULL, "/\\");
+#else
         tok = strtok(NULL, "/");
+#endif
     }
     return nparts;
 }
@@ -179,49 +275,75 @@ static int vm_path_relative_cstr(const char* from, const char* to, char* result,
         return 0;
     }
 
-    int from_abs = (from_norm[0] == '/');
-    int to_abs = (to_norm[0] == '/');
-    if (from_abs != to_abs) {
-        strncpy(result, to_norm, result_len - 1);
-        result[result_len - 1] = 0;
-        return 1;
-    }
+    int from_abs = vm_path_is_absolute_native(from_norm);
+    int to_abs = vm_path_is_absolute_native(to_norm);
+    if (from_abs != to_abs) return vm_path_copy_cstr(result, result_len, to_norm);
 
     char from_buf[4096];
     char to_buf[4096];
-    strncpy(from_buf, from_norm, sizeof(from_buf) - 1);
-    from_buf[sizeof(from_buf) - 1] = 0;
-    strncpy(to_buf, to_norm, sizeof(to_buf) - 1);
-    to_buf[sizeof(to_buf) - 1] = 0;
+    if (!vm_path_copy_cstr(from_buf, sizeof(from_buf), from_norm) ||
+        !vm_path_copy_cstr(to_buf, sizeof(to_buf), to_norm)) {
+        return 0;
+    }
 
     char* from_parts[256];
     char* to_parts[256];
     int n_from = vm_path_split_mut(from_buf, from_parts, 256);
     int n_to = vm_path_split_mut(to_buf, to_parts, 256);
 
+#ifdef _WIN32
+    if (from_abs && to_abs) {
+        if (n_from > 0 && n_to > 0 &&
+            strchr(from_parts[0], ':') && strchr(to_parts[0], ':') &&
+            _stricmp(from_parts[0], to_parts[0]) != 0) {
+            return vm_path_copy_cstr(result, result_len, to_norm);
+        }
+        if (from_norm[0] == '\\' && from_norm[1] == '\\' &&
+            to_norm[0] == '\\' && to_norm[1] == '\\' &&
+            (n_from < 2 || n_to < 2 ||
+             _stricmp(from_parts[0], to_parts[0]) != 0 ||
+             _stricmp(from_parts[1], to_parts[1]) != 0)) {
+            return vm_path_copy_cstr(result, result_len, to_norm);
+        }
+    }
+#endif
+
     int common = 0;
     while (common < n_from && common < n_to &&
-           strcmp(from_parts[common], to_parts[common]) == 0) {
+#ifdef _WIN32
+           _stricmp(from_parts[common], to_parts[common]) == 0
+#else
+           strcmp(from_parts[common], to_parts[common]) == 0
+#endif
+    ) {
         common++;
     }
 
     size_t pos = 0;
     for (int i = common; i < n_from; i++) {
-        if (pos > 0 && pos < result_len - 1) result[pos++] = '/';
-        if (pos + 2 >= result_len) break;
+        if (pos > 0) {
+            if (pos >= result_len - 1) return 0;
+            result[pos++] = vm_path_separator();
+        }
+        if (pos + 2 >= result_len) return 0;
         result[pos++] = '.';
         result[pos++] = '.';
     }
     for (int i = common; i < n_to; i++) {
-        if (pos > 0 && pos < result_len - 1) result[pos++] = '/';
+        if (pos > 0) {
+            if (pos >= result_len - 1) return 0;
+            result[pos++] = vm_path_separator();
+        }
         size_t len = strlen(to_parts[i]);
-        if (pos + len >= result_len) len = result_len - pos - 1;
+        if (pos + len >= result_len) return 0;
         memcpy(result + pos, to_parts[i], len);
         pos += len;
-        if (pos >= result_len - 1) break;
     }
 
-    if (pos == 0) result[pos++] = '.';
+    if (pos == 0) {
+        if (result_len < 2) return 0;
+        result[pos++] = '.';
+    }
     result[pos] = 0;
     return 1;
 }
@@ -313,11 +435,17 @@ static uint64_t vm_qrng_next_u64(void) {
     if (vm_qrng_state == 0) {
         uint64_t seed = 0x9e3779b97f4a7c15ULL ^ (uint64_t)(uintptr_t)&vm_qrng_state;
 #if !defined(ESHKOL_VM_WASM)
+#if defined(_WIN32)
+        seed ^= (uint64_t)GetTickCount64();
+        LARGE_INTEGER counter;
+        if (QueryPerformanceCounter(&counter)) {
+            seed ^= (uint64_t)counter.QuadPart;
+        }
+#else
         struct timeval tv;
         if (gettimeofday(&tv, NULL) == 0) {
             seed ^= ((uint64_t)tv.tv_sec << 32) ^ (uint64_t)tv.tv_usec;
         }
-#if !defined(_WIN32)
         seed ^= ((uint64_t)(uint32_t)getpid() << 17);
 #endif
 #endif
@@ -4825,10 +4953,10 @@ static void vm_dispatch_native(VM* vm, int fid) {
             if (as && bs) {
                 char buf[4096];
                 int alen = (int)strlen(as->data);
-                if (alen > 0 && as->data[alen - 1] == '/')
+                if (alen > 0 && vm_path_is_separator(as->data[alen - 1]))
                     snprintf(buf, sizeof(buf), "%s%s", as->data, bs->data);
                 else
-                    snprintf(buf, sizeof(buf), "%s/%s", as->data, bs->data);
+                    snprintf(buf, sizeof(buf), "%s%c%s", as->data, vm_path_separator(), bs->data);
                 VmString* s = vm_string_from_cstr(&vm->heap.regions, buf);
                 if (s) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, s); break; }
             }
@@ -4844,11 +4972,20 @@ static void vm_dispatch_native(VM* vm, int fid) {
             if (ps) {
                 char buf[4096];
                 strncpy(buf, ps->data, sizeof(buf) - 1); buf[sizeof(buf) - 1] = 0;
-                /* Find last / */
-                char* last_slash = strrchr(buf, '/');
+                /* Find last path separator. */
+                char* last_slash = (char*)vm_path_last_separator(buf);
                 if (last_slash) {
+#ifdef _WIN32
+                    if (last_slash == buf ||
+                        (last_slash == buf + 2 && isalpha((unsigned char)buf[0]) && buf[1] == ':')) {
+                        last_slash[1] = 0; /* root "\\" or "C:\\" */
+                    } else {
+                        *last_slash = 0;
+                    }
+#else
                     if (last_slash == buf) buf[1] = 0; /* root "/" */
                     else *last_slash = 0;
+#endif
                 } else {
                     strcpy(buf, ".");
                 }
@@ -4865,7 +5002,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
         if (path_val.type == VAL_STRING) {
             VmString* ps = (VmString*)vm->heap.objects[path_val.as.ptr]->opaque.ptr;
             if (ps) {
-                const char* last_slash = strrchr(ps->data, '/');
+                const char* last_slash = vm_path_last_separator(ps->data);
                 const char* base = last_slash ? last_slash + 1 : ps->data;
                 VmString* s = vm_string_from_cstr(&vm->heap.regions, base);
                 if (s) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, s); break; }
@@ -4880,7 +5017,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
         if (path_val.type == VAL_STRING) {
             VmString* ps = (VmString*)vm->heap.objects[path_val.as.ptr]->opaque.ptr;
             if (ps) {
-                const char* base = strrchr(ps->data, '/');
+                const char* base = vm_path_last_separator(ps->data);
                 if (!base) base = ps->data; else base++;
                 const char* dot = strrchr(base, '.');
                 const char* ext = (dot && dot != base) ? dot : "";
@@ -4896,7 +5033,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
         Value path_val = vm_pop(vm);
         if (path_val.type == VAL_STRING) {
             VmString* ps = (VmString*)vm->heap.objects[path_val.as.ptr]->opaque.ptr;
-            if (ps && ps->data[0] == '/') {
+            if (ps && vm_path_is_absolute_native(ps->data)) {
                 vm_push(vm, BOOL_VAL(1)); break;
             }
         }
@@ -4909,32 +5046,11 @@ static void vm_dispatch_native(VM* vm, int fid) {
         if (path_val.type == VAL_STRING) {
             VmString* ps = (VmString*)vm->heap.objects[path_val.as.ptr]->opaque.ptr;
             if (ps) {
-                /* Split by /, resolve . and .., reassemble */
-                char buf[4096];
-                strncpy(buf, ps->data, sizeof(buf) - 1); buf[sizeof(buf) - 1] = 0;
-                char* parts[256]; int nparts = 0;
-                int absolute = (buf[0] == '/');
-                char* tok = strtok(buf, "/");
-                while (tok && nparts < 256) {
-                    if (strcmp(tok, ".") == 0) { /* skip */ }
-                    else if (strcmp(tok, "..") == 0) { if (nparts > 0) nparts--; }
-                    else { parts[nparts++] = tok; }
-                    tok = strtok(NULL, "/");
-                }
                 char result[4096];
-                int pos = 0;
-                if (absolute) result[pos++] = '/';
-                for (int i = 0; i < nparts; i++) {
-                    if (i > 0) result[pos++] = '/';
-                    int len = (int)strlen(parts[i]);
-                    if (pos + len >= 4095) break;
-                    memcpy(result + pos, parts[i], len);
-                    pos += len;
+                if (vm_path_normalize_cstr(ps->data, result, sizeof(result))) {
+                    VmString* s = vm_string_from_cstr(&vm->heap.regions, result);
+                    if (s) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, s); break; }
                 }
-                if (pos == 0) { result[0] = '.'; pos = 1; }
-                result[pos] = 0;
-                VmString* s = vm_string_from_cstr(&vm->heap.regions, result);
-                if (s) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, s); break; }
             }
         }
         vm_push(vm, NIL_VAL);
@@ -4947,11 +5063,20 @@ static void vm_dispatch_native(VM* vm, int fid) {
         if (path_val.type == VAL_STRING) {
             VmString* ps = (VmString*)vm->heap.objects[path_val.as.ptr]->opaque.ptr;
             if (ps) {
+#ifdef _WIN32
+                char resolved[4096];
+                DWORD written = GetFullPathNameA(ps->data, (DWORD)sizeof(resolved), resolved, NULL);
+                if (written > 0 && written < (DWORD)sizeof(resolved)) {
+                    VmString* s = vm_string_from_cstr(&vm->heap.regions, resolved);
+                    if (s) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, s); break; }
+                }
+#else
                 char resolved[4096];
                 if (realpath(ps->data, resolved)) {
                     VmString* s = vm_string_from_cstr(&vm->heap.regions, resolved);
                     if (s) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, s); break; }
                 }
+#endif
             }
         }
 #else
@@ -4987,8 +5112,9 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 char joined[4096];
                 char result[4096];
                 const char* input = rs->data;
-                if (rs->data[0] != '/') {
-                    int n = snprintf(joined, sizeof(joined), "%s/%s", bs->data, rs->data);
+                if (!vm_path_is_absolute_native(rs->data)) {
+                    int n = snprintf(joined, sizeof(joined), "%s%c%s",
+                                     bs->data, vm_path_separator(), rs->data);
                     if (n <= 0 || n >= (int)sizeof(joined)) {
                         vm_push(vm, NIL_VAL);
                         break;
