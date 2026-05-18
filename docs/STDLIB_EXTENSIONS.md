@@ -595,6 +595,10 @@ for compatibility with the existing pure Eshkol URL library.
 ### `(url-parse str) -> alist-or-false`
 `((scheme . "https") (host . "...") (port . 443) (path . "...") (query . "..."))`.
 
+Standalone VM native ID 1960 returns a string-keyed alist with `scheme`, `host`,
+`port`, `path`, plus `query` and `fragment` when present. The compiled runtime
+uses the same conservative parser.
+
 ### `(string-ends-with? str suffix) -> bool`
 Return `#t` when `str` ends with `suffix`.
 
@@ -623,8 +627,14 @@ Standalone VM native ID 1959.
 ### `(string-repeat str count) -> string`
 `(string-repeat "-" 40)` -> `"----------------------------------------"`
 
+Standalone VM native ID 906 already exposes this helper.
+
 ### `(string-split str delim limit) -> list`
 Split with max splits: `(string-split "a:b:c" ":" 1)` -> `("a" "b:c")`.
+
+Standalone VM native ID 908 currently exposes the two-argument split surface
+`(string-split str delim)`. The documented limit-bearing arity remains a future
+compatibility extension.
 
 ---
 

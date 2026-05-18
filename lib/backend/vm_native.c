@@ -651,6 +651,107 @@ static Value vm_url_decode_value(VM* vm, VmString* input) {
     return result;
 }
 
+static const char* vm_find_url_sep(const char* p, const char* end) {
+    while (p < end) {
+        if (*p == '/' || *p == '?' || *p == '#') return p;
+        p++;
+    }
+    return end;
+}
+
+static int vm_span_eq_cstr(const char* p, int len, const char* s) {
+    return p && s && len == (int)strlen(s) && memcmp(p, s, (size_t)len) == 0;
+}
+
+static Value vm_url_parse_value(VM* vm, VmString* input) {
+    if (!vm || !input || !input->data || input->byte_len <= 0) return BOOL_VAL(0);
+    const char* begin = input->data;
+    const char* end = input->data + input->byte_len;
+    const char* scheme_end = NULL;
+    for (const char* p = begin; p + 2 < end; p++) {
+        if (p[0] == ':' && p[1] == '/' && p[2] == '/') {
+            scheme_end = p;
+            break;
+        }
+    }
+    if (!scheme_end || scheme_end == begin) return BOOL_VAL(0);
+
+    const char* authority = scheme_end + 3;
+    const char* authority_end = vm_find_url_sep(authority, end);
+    if (authority == authority_end) return BOOL_VAL(0);
+
+    const char* host_start = authority;
+    const char* host_end = authority_end;
+    int64_t port = 0;
+    const char* colon = NULL;
+    for (const char* p = authority_end; p > authority; p--) {
+        if (*(p - 1) == ':') {
+            colon = p - 1;
+            break;
+        }
+    }
+    if (colon && colon + 1 < authority_end) {
+        int all_digits = 1;
+        int64_t parsed = 0;
+        for (const char* p = colon + 1; p < authority_end; p++) {
+            if (!isdigit((unsigned char)*p)) { all_digits = 0; break; }
+            parsed = parsed * 10 + (*p - '0');
+            if (parsed > 65535) { all_digits = 0; break; }
+        }
+        if (all_digits) {
+            host_end = colon;
+            port = parsed;
+        }
+    }
+    if (host_start == host_end) return BOOL_VAL(0);
+    int scheme_len = (int)(scheme_end - begin);
+    if (port == 0) {
+        if (vm_span_eq_cstr(begin, scheme_len, "https")) port = 443;
+        else if (vm_span_eq_cstr(begin, scheme_len, "http")) port = 80;
+    }
+
+    const char* path_start = authority_end;
+    const char* path_end = authority_end;
+    if (path_start < end && *path_start == '/') {
+        path_end = path_start;
+        while (path_end < end && *path_end != '?' && *path_end != '#') path_end++;
+    }
+
+    const char* query_start = NULL;
+    const char* query_end = NULL;
+    const char* fragment_start = NULL;
+    for (const char* p = authority_end; p < end; p++) {
+        if (*p == '?' && !query_start && !fragment_start) {
+            query_start = p + 1;
+            query_end = end;
+        } else if (*p == '#') {
+            fragment_start = p + 1;
+            if (query_start) query_end = p;
+            break;
+        }
+    }
+
+    Value result = NIL_VAL;
+    if (fragment_start)
+        result = vm_cons_value(vm, vm_alist_entry(vm, "fragment",
+                              vm_string_value(vm, fragment_start, (int64_t)(end - fragment_start))), result);
+    if (query_start)
+        result = vm_cons_value(vm, vm_alist_entry(vm, "query",
+                              vm_string_value(vm, query_start, (int64_t)(query_end - query_start))), result);
+    if (path_start < end && *path_start == '/')
+        result = vm_cons_value(vm, vm_alist_entry(vm, "path",
+                              vm_string_value(vm, path_start, (int64_t)(path_end - path_start))), result);
+    else
+        result = vm_cons_value(vm, vm_alist_entry(vm, "path", vm_string_value(vm, "/", 1)), result);
+    if (port > 0)
+        result = vm_cons_value(vm, vm_alist_entry(vm, "port", INT_VAL(port)), result);
+    result = vm_cons_value(vm, vm_alist_entry(vm, "host",
+                          vm_string_value(vm, host_start, (int64_t)(host_end - host_start))), result);
+    result = vm_cons_value(vm, vm_alist_entry(vm, "scheme",
+                          vm_string_value(vm, begin, (int64_t)scheme_len)), result);
+    return result;
+}
+
 static int vm_string_ends_with_bytes(VmString* s, VmString* suffix) {
     if (!s || !suffix || !s->data || !suffix->data) return 0;
     if (suffix->byte_len > s->byte_len) return 0;
@@ -1632,6 +1733,16 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 if (car.type == key.type && ((car.type == VAL_INT && car.as.i == key.as.i) ||
                     (car.type == VAL_FLOAT && car.as.f == key.as.f) ||
                     (car.type == VAL_BOOL && car.as.b == key.as.b))) {
+                    vm_push(vm, pair); found = 1; break;
+                }
+                if (car.type == VAL_STRING && key.type == VAL_STRING) {
+                    VmString* a = vm_value_as_string(vm, car);
+                    VmString* b = vm_value_as_string(vm, key);
+                    if (a && b && a->byte_len == b->byte_len &&
+                        memcmp(a->data, b->data, (size_t)a->byte_len) == 0) {
+                        vm_push(vm, pair); found = 1; break;
+                    }
+                } else if (car.type == key.type && car.type >= VAL_PAIR && car.as.ptr == key.as.ptr) {
                     vm_push(vm, pair); found = 1; break;
                 }
             }
@@ -3845,6 +3956,12 @@ static void vm_dispatch_native(VM* vm, int fid) {
         Value str_val = vm_pop(vm);
         VmString* s = vm_value_as_string(vm, str_val);
         vm_push(vm, vm_url_decode_value(vm, s));
+        break;
+    }
+    case 1960: { /* url-parse(str) → alist or #f */
+        Value str_val = vm_pop(vm);
+        VmString* s = vm_value_as_string(vm, str_val);
+        vm_push(vm, vm_url_parse_value(vm, s));
         break;
     }
     case 1956: { /* string-ends-with?(str, suffix) → bool */

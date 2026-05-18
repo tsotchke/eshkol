@@ -1242,6 +1242,7 @@ public:
         function_return_types["string-truncate-display"] = BuiltinTypes::String;
         function_return_types["url-encode"] = BuiltinTypes::String;
         function_return_types["url-decode"] = BuiltinTypes::String;
+        function_return_types["url-parse"] = BuiltinTypes::Value;
         function_return_types["string-ends-with?"] = BuiltinTypes::Boolean;
         function_return_types["string-index-of"] = BuiltinTypes::Integer;
         function_return_types["string-pad-left"] = BuiltinTypes::String;
@@ -11940,6 +11941,7 @@ private:
         if (func_name == "string-truncate-display") return system_->stringTruncateDisplay(op);
         if (func_name == "url-encode") return system_->urlEncode(op);
         if (func_name == "url-decode") return system_->urlDecode(op);
+        if (func_name == "url-parse") return system_->urlParse(op);
         if (func_name == "string-ends-with?") return system_->stringEndsWith(op);
         if (func_name == "string-index-of") return system_->stringIndexOf(op);
         if (func_name == "string-pad-left") return system_->stringPadLeft(op);
@@ -19869,7 +19871,7 @@ private:
             "term-detect-capabilities", "term-bell",
             "fs-watch-native", "fs-watch-recursive", "fs-watch-poll", "fs-unwatch",
             "ansi-strip", "string-display-width", "string-truncate-display",
-            "url-encode", "url-decode",
+            "url-encode", "url-decode", "url-parse",
             "string-ends-with?", "string-index-of",
             "string-pad-left", "string-pad-right",
             "kb-save", "kb-load", "tensor-token-estimate",

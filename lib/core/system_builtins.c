@@ -86,6 +86,7 @@ static char* eshkol_portable_basename(char* path) {
 extern void* get_global_arena(void);
 extern void* arena_allocate(void* arena, size_t size);
 extern char* arena_allocate_string_with_header(void* arena, size_t length);
+extern void* arena_allocate_cons_with_header(void* arena);
 
 /* Tagged value layout MUST match LLVM IR: {i8, i8, i16, i32, i64} = 16 bytes.
  * The i32 is explicit padding — this matches the LLVM struct exactly so that
@@ -130,21 +131,45 @@ static eshkol_sysbuiltin_value_t sys_make_double(double val) {
     return v;
 }
 
-static eshkol_sysbuiltin_value_t sys_make_string(const char* s) {
+static eshkol_sysbuiltin_value_t sys_make_string_len(const char* s, size_t len) {
     if (!s) return sys_make_null();
     void* arena = get_global_arena();
     if (!arena) return sys_make_null();
-    size_t len = strlen(s);
     /* Use arena_allocate_string_with_header so the string has a proper
      * object header — required by eshkol_display_value and the runtime. */
     char* copy = arena_allocate_string_with_header(arena, len);
     if (!copy) return sys_make_null();
-    memcpy(copy, s, len + 1);
+    memcpy(copy, s, len);
+    copy[len] = '\0';
     eshkol_sysbuiltin_value_t v = {0, 0, 0, 0, 0};
     v.type = SYS_TYPE_HEAP_PTR;
     v.flags = 0x01; /* string subtype */
     v.data = (uint64_t)copy;
     return v;
+}
+
+static eshkol_sysbuiltin_value_t sys_make_string(const char* s) {
+    return s ? sys_make_string_len(s, strlen(s)) : sys_make_null();
+}
+
+static eshkol_sysbuiltin_value_t sys_make_pair(eshkol_sysbuiltin_value_t car,
+                                                eshkol_sysbuiltin_value_t cdr) {
+    void* arena = get_global_arena();
+    if (!arena) return sys_make_null();
+    void* cell = arena_allocate_cons_with_header(arena);
+    if (!cell) return sys_make_null();
+    memcpy(cell, &car, sizeof(car));
+    memcpy((char*)cell + sizeof(car), &cdr, sizeof(cdr));
+    eshkol_sysbuiltin_value_t v = {0, 0, 0, 0, 0};
+    v.type = SYS_TYPE_HEAP_PTR;
+    v.flags = 0x00; /* cons subtype */
+    v.data = (uint64_t)cell;
+    return v;
+}
+
+static eshkol_sysbuiltin_value_t sys_alist_entry(const char* key,
+                                                  eshkol_sysbuiltin_value_t value) {
+    return sys_make_pair(sys_make_string(key), value);
 }
 
 static const char* sys_extract_string(eshkol_sysbuiltin_value_t v) {
@@ -2076,6 +2101,104 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_url_decode_v(eshkol_sysbuiltin_v
     return result;
 }
 
+static const char* sys_find_url_sep(const char* p) {
+    while (*p) {
+        if (*p == '/' || *p == '?' || *p == '#') return p;
+        p++;
+    }
+    return p;
+}
+
+static int sys_span_eq_cstr(const char* p, size_t len, const char* s) {
+    return p && s && len == strlen(s) && memcmp(p, s, len) == 0;
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_url_parse_v(eshkol_sysbuiltin_value_t str_val) {
+    const char* input = sys_extract_string(str_val);
+    if (!input || !*input) return sys_make_bool(0);
+    const char* scheme_end = strstr(input, "://");
+    if (!scheme_end || scheme_end == input) return sys_make_bool(0);
+
+    const char* authority = scheme_end + 3;
+    const char* authority_end = sys_find_url_sep(authority);
+    if (authority == authority_end) return sys_make_bool(0);
+
+    const char* host_start = authority;
+    const char* host_end = authority_end;
+    int64_t port = 0;
+    const char* colon = NULL;
+    for (const char* p = authority_end; p > authority; p--) {
+        if (*(p - 1) == ':') {
+            colon = p - 1;
+            break;
+        }
+    }
+    if (colon && colon + 1 < authority_end) {
+        int all_digits = 1;
+        int64_t parsed = 0;
+        for (const char* p = colon + 1; p < authority_end; p++) {
+            if (*p < '0' || *p > '9') { all_digits = 0; break; }
+            parsed = parsed * 10 + (*p - '0');
+            if (parsed > 65535) { all_digits = 0; break; }
+        }
+        if (all_digits) {
+            host_end = colon;
+            port = parsed;
+        }
+    }
+    if (host_start == host_end) return sys_make_bool(0);
+
+    size_t scheme_len = (size_t)(scheme_end - input);
+    if (port == 0) {
+        if (sys_span_eq_cstr(input, scheme_len, "https")) port = 443;
+        else if (sys_span_eq_cstr(input, scheme_len, "http")) port = 80;
+    }
+
+    const char* path_start = authority_end;
+    const char* path_end = authority_end;
+    if (*path_start == '/') {
+        path_end = path_start;
+        while (*path_end && *path_end != '?' && *path_end != '#') path_end++;
+    }
+
+    const char* query_start = NULL;
+    const char* query_end = NULL;
+    const char* fragment_start = NULL;
+    for (const char* p = authority_end; *p; p++) {
+        if (*p == '?' && !query_start && !fragment_start) {
+            query_start = p + 1;
+            query_end = input + strlen(input);
+        } else if (*p == '#') {
+            fragment_start = p + 1;
+            if (query_start) query_end = p;
+            break;
+        }
+    }
+
+    eshkol_sysbuiltin_value_t result = sys_make_null();
+    if (fragment_start) {
+        result = sys_make_pair(sys_alist_entry("fragment", sys_make_string(fragment_start)), result);
+    }
+    if (query_start) {
+        result = sys_make_pair(sys_alist_entry("query",
+                              sys_make_string_len(query_start, (size_t)(query_end - query_start))), result);
+    }
+    if (*path_start == '/') {
+        result = sys_make_pair(sys_alist_entry("path",
+                              sys_make_string_len(path_start, (size_t)(path_end - path_start))), result);
+    } else {
+        result = sys_make_pair(sys_alist_entry("path", sys_make_string("/")), result);
+    }
+    if (port > 0) {
+        result = sys_make_pair(sys_alist_entry("port", sys_make_int64(port)), result);
+    }
+    result = sys_make_pair(sys_alist_entry("host",
+                          sys_make_string_len(host_start, (size_t)(host_end - host_start))), result);
+    result = sys_make_pair(sys_alist_entry("scheme",
+                          sys_make_string_len(input, scheme_len)), result);
+    return result;
+}
+
 static int sys_utf8_encode_codepoint(int cp, char* out) {
     if (!out) return 0;
     if (cp < 0) cp = ' ';
@@ -2544,6 +2667,7 @@ void eshkol_builtin_string_display_width(sv_t* out, const sv_t* a) { *out = eshk
 void eshkol_builtin_string_truncate_display(sv_t* out, const sv_t* a, const sv_t* b, const sv_t* c) { *out = eshkol_builtin_string_truncate_display_v(*a, *b, *c); }
 void eshkol_builtin_url_encode(sv_t* out, const sv_t* a) { *out = eshkol_builtin_url_encode_v(*a); }
 void eshkol_builtin_url_decode(sv_t* out, const sv_t* a) { *out = eshkol_builtin_url_decode_v(*a); }
+void eshkol_builtin_url_parse(sv_t* out, const sv_t* a) { *out = eshkol_builtin_url_parse_v(*a); }
 void eshkol_builtin_string_ends_with(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_string_ends_with_v(*a, *b); }
 void eshkol_builtin_string_index_of(sv_t* out, const sv_t* a, const sv_t* b, const sv_t* c) { *out = eshkol_builtin_string_index_of_v(*a, *b, *c); }
 void eshkol_builtin_string_pad_left(sv_t* out, const sv_t* a, const sv_t* b, const sv_t* c) { *out = eshkol_builtin_string_pad_v(*a, *b, *c, 1); }
