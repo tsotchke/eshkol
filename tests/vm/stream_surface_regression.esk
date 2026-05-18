@@ -1,0 +1,65 @@
+;; Standalone VM regression for pipe and polling line-reader primitives.
+
+(display "=== stream VM surface regression ===") (newline)
+
+(define pipe-pair (make-pipe))
+(define read-fd (if pipe-pair (car pipe-pair) #f))
+(define write-fd (if pipe-pair (cdr pipe-pair) #f))
+
+(display "T1 make-pipe returns fd pair: ")
+(display (if (and (number? read-fd)
+                  (number? write-fd)
+                  (> read-fd 1)
+                  (> write-fd 1))
+             "PASS"
+             (list "FAIL got " pipe-pair)))
+(newline)
+
+(define reader (if (number? read-fd)
+                   (make-line-reader read-fd #f)
+                   #f))
+
+(display "T2 make-line-reader returns handle: ")
+(display (if (and (number? reader) (> reader 0))
+             "PASS"
+             (list "FAIL got " reader)))
+(newline)
+
+(define written (if (number? write-fd)
+                    (fd-write write-fd "alpha\nbeta\n")
+                    #f))
+
+(display "T3 fd-write writes string bytes: ")
+(display (if (and (number? written) (= written 11))
+             "PASS"
+             (list "FAIL got " written)))
+(newline)
+
+(define (wait-line reader)
+  (let loop ((i 0))
+    (let ((line (line-reader-poll reader)))
+      (if (or (string? line) (>= i 20))
+          line
+          (begin
+            (sleep-ms 10)
+            (loop (+ i 1)))))))
+
+(define line1 (if (number? reader) (wait-line reader) #f))
+(define line2 (if (number? reader) (wait-line reader) #f))
+
+(display "T4 line-reader-poll returns complete lines: ")
+(display (if (and (string=? line1 "alpha")
+                  (string=? line2 "beta"))
+             "PASS"
+             (list "FAIL got " line1 line2)))
+(newline)
+
+(display "T5 line-reader-close and fd-close release handles: ")
+(display (if (and (or (not (number? reader)) (line-reader-close reader))
+                  (or (not (number? read-fd)) (fd-close read-fd))
+                  (or (not (number? write-fd)) (fd-close write-fd)))
+             "PASS"
+             "FAIL"))
+(newline)
+
+(display "=== stream VM surface complete ===") (newline)

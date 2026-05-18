@@ -799,10 +799,25 @@ zlib decompress.
 ### `(make-pipe) -> (read-fd . write-fd)`
 `pipe(2)`.
 
+Standalone VM native ID 1983 returns raw read/write file descriptors.
+
+### `(fd-write fd data) -> bytes-or-false`
+Standalone VM native ID 1984 writes a string or bytevector to a file descriptor.
+
 ### `(make-line-reader fd callback) -> reader`
 Buffer reads, deliver complete lines. The `readline.createInterface` equivalent.
+Standalone VM native ID 1985 creates a polling reader handle. The callback is
+accepted for API shape but not invoked from native code.
+
+### `(line-reader-poll reader) -> string-or-false`
+Standalone VM native ID 1986 returns a complete line without the trailing
+newline, or `#f` when no full line is available.
 
 ### `(line-reader-close reader) -> void`
+Standalone VM native ID 1987 releases the reader handle.
+
+### `(fd-close fd) -> bool`
+Standalone VM native ID 1988 closes a raw file descriptor.
 
 ---
 

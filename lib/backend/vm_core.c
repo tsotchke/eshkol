@@ -323,6 +323,13 @@ typedef struct VM {
         int active;
         void* regex;
     } regex_handles[32];
+
+    struct {
+        int active;
+        int fd;
+        int len;
+        char buffer[4096];
+    } line_readers[32];
 } VM;
 
 /* Command-line arguments (set in main, read by native 602) */
