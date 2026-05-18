@@ -4,7 +4,7 @@ Reproducibility package for **"The Self-Differentiating Neural Computer:
 Computable Transformers via Analytical Weight Construction"**
 (tsotchke 2026).
 
-## Pinned artifact
+## Historical Pinned Artifact
 
 - **Repository:** this repository (`tsotchke/eshkol`)
 - **Commit SHA:** `8235d9987d70086e6e62083d120f3cf51fac9e48`
@@ -12,7 +12,7 @@ Computable Transformers via Analytical Weight Construction"**
 - **Paper PDF:** see Noesis companion repo `docs/paper-computable-transformers/`
 - **Build environment:** LLVM 21, CMake 3.14+, C17/C++20 (see `docker/Dockerfile.paper`)
 
-To reproduce against the pinned artifact:
+To reproduce the historical pinned artifact:
 
 ```bash
 git clone https://github.com/tsotchke/eshkol.git
@@ -35,22 +35,24 @@ Output: populated `artifacts/paper/outputs/` with:
 - `weights.qlmw` — regenerated weight matrices (SHA-256 checksum below)
 - `vm-traces.jsonl` — per-step state traces from the reference C interpreter
 - `transformer-traces.jsonl` — per-step state traces from the compiled transformer
-- `comparison-report.json` — fieldwise agreement report (74/74 expected)
-- `opcode-coverage.json` — 57/83 weight-implemented, 26/83 delegated
+- `comparison-report.json` — fieldwise agreement report (123/123 expected)
+- `opcode-coverage.json` — 82/83 canonical opcodes weight-implemented in the
+  exercised bounded suite; `OP_NATIVE_CALL` remains the explicit external
+  boundary
 - `tables/*.tex` — regenerated LaTeX for every table in the paper
 
-## Expected checksums (post-regeneration)
+## Expected Checksums
 
 ```
-SHA-256  weights.qlmw              638376aab6d49e829da2c54d22b545d86c50aa1c2d508e8ec029d2a6d3f1e77d
-SHA-256  vm-traces.jsonl           564fbe1fa4dba5793db0c0e54d402932061f2c82b94da470c7541a5c421584f3
-SHA-256  transformer-traces.jsonl  5cc01b2a17e87d88628b13ef5f7602bd7bcd6380e407a0aac5c39b35a9570715
-SHA-256  comparison-report.json    8a7917d2b56254f9fad71a4cd5e59284504313e73f99c2b668b461a74e154aab
-SHA-256  opcode-coverage.json      aa0c666ad3c2b7a1034e4a69deee6e271e53261bddb12e07dce52fb55218438f
+SHA-256  weights.qlmw              381599e7a5607b4047ede0d6c8e6d270cb81dbdebfdb0bf0c0eba38758aa3f0c
+SHA-256  vm-traces.jsonl           4239cbb91dc9abb9abe80528c5b4ac4c2121a85db5a50dbf43c634a77e304801
+SHA-256  transformer-traces.jsonl  4239cbb91dc9abb9abe80528c5b4ac4c2121a85db5a50dbf43c634a77e304801
+SHA-256  comparison-report.json    80aa6fed4db40bca521217ae8777677173fe7eeb239baa69847111e7ac674105
+SHA-256  opcode-coverage.json      152a4bacc483d8985abeb08bc0d44112144f536ed663274bc7b1eeccbdd2dfe4
 ```
 
-The first regeneration at the pinned commit records these hashes; every
-subsequent regeneration on an IEEE 754 float32 platform should produce
+The current regeneration records these hashes; every subsequent regeneration
+from the same source tree on an IEEE 754 float32 platform should produce
 bit-identical outputs. Platform divergence is a bug; file an issue with
 the platform details.
 
@@ -66,7 +68,7 @@ between the reference C interpreter and the matrix forward pass. The
     vector matches bitwise (PC, SP, TOS, SOS, registers, memory, tape,
     flags).
 
-**Both metrics must equal `total_programs` (71/71).** If a regression
+**Both metrics must equal `total_programs` (currently 123/123).** If a regression
 ever introduces a divergence, it must be fixed — not documented as
 acceptable drift.
 
@@ -104,16 +106,17 @@ no architectural way to compute direct multiplication.
 - No claim on state-vector capacities beyond $D=256$.
 - No benchmark claims against frontier LLMs (see the Noesis companion paper for empirical comparisons).
 
-## Current implementation status
+## Current Implementation Status
 
-The scripts in `scripts/paper/` are functional skeletons as of commit
-`8235d99`. Each runs the existing upstream infrastructure where it
-exists and documents its remaining TODO items inline. The three-way
-verification harness is the priority path; weight export and trace
-dumps build on the standalone VM compile path documented in
-`CONTRIBUTING.md`.
+The scripts in `scripts/paper/` run the current SDNC verification path end to
+end. `scripts/paper/run_paper_suite.sh` builds `weight_matrices`, exports the
+QLMW artifact, dumps both reference-VM and matrix-forward traces, compares them
+fieldwise, and regenerates the paper tables.
 
-See each script's header for its specific status.
+The current bounded artifact verifies 126/126 inline programs and 123/123 traced
+programs. Opcode coverage is 82 weight-implemented / 0 native-delegated / 0
+transformer-native-assisted opcodes in the exercised suite. `OP_NATIVE_CALL`
+remains the intentional host-service boundary.
 
 ## Issues and questions
 
