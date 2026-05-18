@@ -288,14 +288,14 @@ static void vm_dispatch_native(VM* vm, int fid) {
         Value a = vm_pop(vm);
         int radix = (radix_val.type == VAL_INT) ? (int)radix_val.as.i : 10;
         char buf[128];
-        if (radix == 10 || radix <= 1 || radix > 16) {
+        if (radix == 10 || radix <= 1 || radix > 36) {
             if (a.type == VAL_INT) snprintf(buf, sizeof(buf), "%lld", (long long)a.as.i);
             else snprintf(buf, sizeof(buf), "%.15g", as_number(a));
         } else {
             int64_t n = (a.type == VAL_INT) ? a.as.i : (int64_t)as_number(a);
             if (n == 0) { buf[0] = '0'; buf[1] = '\0'; }
             else {
-                static const char digits[] = "0123456789abcdef";
+                static const char digits[] = "0123456789abcdefghijklmnopqrstuvwxyz";
                 char tmp[128]; int pos = 0, neg = (n < 0);
                 uint64_t un = neg ? (uint64_t)(-(n + 1)) + 1 : (uint64_t)n;
                 while (un > 0) { tmp[pos++] = digits[un % (uint64_t)radix]; un /= (uint64_t)radix; }
