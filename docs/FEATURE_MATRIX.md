@@ -777,8 +777,8 @@ This matrix documents all implemented and planned features for the Eshkol langua
 | Feature | Status | Notes |
 |---------|--------|-------|
 | **Bytecode VM** |
-| 63-opcode ISA | ✅ | Register+stack architecture, computed-goto dispatch |
-| 250+ native call IDs | ✅ | Math, string, IO, complex, rational, bignum, dual, AD, tensor, logic, inference, workspace, hash, bytevector, parameter |
+| 64-opcode core ISA | ✅ | Register+stack architecture, computed-goto dispatch |
+| 550+ native call IDs | ✅ | Math, string, IO, complex, rational, bignum, dual, AD, tensor, logic, inference, workspace, hash, bytevector, parameter |
 | ESKB binary format | ✅ | Section-based layout, LEB128 encoding, CRC32 checksums |
 | `-B` flag (bytecode emission) | ✅ | `eshkol-run input.esk -B output.eskb` |
 | VM compiler integration | ✅ | eshkol_vm.c linked into compiler build |

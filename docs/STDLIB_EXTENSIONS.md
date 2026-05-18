@@ -81,8 +81,9 @@ Every new function needs:
 | **JIT accessible** | Available in REPL prelude | The agent can generate code that uses it at runtime |
 
 New native IDs do NOT require changes to `weight_matrices.c` — `OP_NATIVE_CALL`
-already routes through `IS_NATIVE` to C dispatch. Only new core ISA opcodes
-(beyond the 63) would need weight matrix encoding.
+already routes through `IS_NATIVE` to C dispatch. Only new core VM opcodes
+(beyond the 64-opcode interpreter core, or beyond the 83-opcode canonical
+VM/AD ISA used by the SDNC artifact) need weight-matrix encoding.
 
 ---
 

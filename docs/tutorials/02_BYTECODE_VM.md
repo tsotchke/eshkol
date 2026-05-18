@@ -13,7 +13,7 @@ instant startup). This tutorial shows you when and how to use each.
 | Startup time | ~100ms (compile first) | Instant |
 | Execution speed | Native (fast) | Interpreted (~10-50x slower) |
 | Output format | Platform binary | `.eskb` portable bytecode |
-| Autodiff | Full (forward + reverse) | Forward-mode only (dual numbers) |
+| Autodiff | Full (forward + reverse) | Forward-mode + bounded reverse-mode AD |
 | Platform | Requires LLVM 21 | Runs anywhere (including WASM) |
 | Best for | Production, performance | REPL, prototyping, web, scripting |
 
@@ -92,7 +92,7 @@ $ eshkol-run program.esk -o program -B program.eskb
 
 The `.eskb` file is a section-based binary container:
 - Header with magic bytes and version
-- Instruction stream (63 opcodes)
+- Instruction stream (64 core opcodes)
 - Constant pool (numbers, strings, symbols)
 - Local variable table
 - CRC32 integrity check
@@ -103,8 +103,8 @@ The `.eskb` file is a section-based binary container:
 
 The bytecode VM is a hybrid register+stack machine:
 
-- **63 opcodes** — arithmetic, control flow, function calls, data structures
-- **555+ native call IDs** — builtins accessible from bytecode via `CALL_BUILTIN`
+- **64 core opcodes** — arithmetic, control flow, function calls, data structures
+- **555+ native call IDs** — builtins accessible from bytecode via `OP_NATIVE_CALL`
 - **Arena memory** — same OALR system as the native backend, zero GC
 - **Closure support** — first-class functions with captured environments
 - **Tail call optimization** — proper tail calls for unbounded recursion
@@ -117,7 +117,7 @@ The bytecode VM is a hybrid register+stack machine:
 | `POP` | Pop top of stack |
 | `ADD`, `SUB`, `MUL`, `DIV` | Arithmetic |
 | `CALL` | Call function (push frame, jump) |
-| `CALL_BUILTIN` | Call native builtin by ID |
+| `OP_NATIVE_CALL` | Call native builtin by ID |
 | `RET` | Return from function |
 | `JMP`, `JZ` | Unconditional/conditional jump |
 | `MAKE_CLOSURE` | Create closure with captured variables |
@@ -131,7 +131,7 @@ The bytecode VM is a hybrid register+stack machine:
 
 The VM compiles to WebAssembly, powering the browser REPL at
 [eshkol.ai](https://eshkol.ai). Everything you type in the browser runs
-through the same 63-opcode ISA:
+through the same 64-opcode core ISA:
 
 ```scheme
 ;; These all work in the browser REPL:
