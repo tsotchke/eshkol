@@ -1,0 +1,74 @@
+;; Standalone VM regression for Unix-domain socket primitives.
+;; Set ESHKOL_VM_UNIX_SOCKET_TEST to a listening AF_UNIX/SOCK_STREAM path to
+;; exercise the successful round-trip; without it this remains a hermetic
+;; negative/safety test for the default VM sweep.
+
+(display "=== unix socket VM surface regression ===") (newline)
+
+(define missing-path
+  (string-append "/tmp/eshkol-vm-missing-"
+                 (number->string (process-pid))
+                 ".sock"))
+
+(display "T1 unix-socket-connect missing path returns #f: ")
+(display (if (not (unix-socket-connect missing-path))
+             "PASS"
+             "FAIL"))
+(newline)
+
+(define socket-test-path (get-environment-variable "ESHKOL_VM_UNIX_SOCKET_TEST"))
+(define sock (if socket-test-path
+                 (unix-socket-connect socket-test-path)
+                 #f))
+
+(display "T2 unix-socket-connect env socket: ")
+(display (if (or (not socket-test-path)
+                 (and (number? sock) (> sock 1)))
+             "PASS"
+             (list "FAIL got " sock)))
+(newline)
+
+(define sent (if (number? sock)
+                 (socket-send sock "vm-socket-ping")
+                 #f))
+
+(display "T3 socket-send writes string bytes: ")
+(display (if (or (not socket-test-path)
+                 (and (number? sent) (= sent 14)))
+             "PASS"
+             (list "FAIL got " sent)))
+(newline)
+
+(define (socket-read-ready fd)
+  (let loop ((i 0))
+    (let ((chunk (socket-recv fd 256)))
+      (if (or (string? chunk) (>= i 20))
+          chunk
+          (begin
+            (poll (list fd) 50)
+            (sleep-ms 50)
+            (loop (+ i 1)))))))
+
+(define reply (if (and socket-test-path (number? sent))
+                  (socket-read-ready sock)
+                  #f))
+
+(display "T4 socket-recv reads response string: ")
+(display (if (or (not socket-test-path)
+                 (and (string? reply)
+                      (string=? reply "vm-socket-pong")))
+             "PASS"
+             (list "FAIL got " reply)))
+(newline)
+
+(define closed (if (number? sock)
+                   (socket-close sock)
+                   #t))
+
+(display "T5 socket-close succeeds: ")
+(display (if closed
+             "PASS"
+             "FAIL"))
+(newline)
+
+(display "=== unix socket VM surface complete ===") (newline)
