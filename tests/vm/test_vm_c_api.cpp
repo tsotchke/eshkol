@@ -176,6 +176,66 @@ EskbBuffer make_host_native_int64_chunk(int native_fid) {
     return file;
 }
 
+EskbBuffer make_native_string_compare_chunk(int native_fid, const char* a, const char* b,
+                                           const char* expected) {
+    EskbBuffer const_buf;
+    EskbBuffer code_buf;
+    EskbBuffer payload;
+    EskbBuffer file;
+    eskb_buf_init(&const_buf);
+    eskb_buf_init(&code_buf);
+    eskb_buf_init(&payload);
+    eskb_buf_init(&file);
+
+    eskb_buf_write_leb128(&const_buf, 6);
+    write_int64_const(&const_buf, static_cast<int64_t>(std::strlen(a)));
+    write_int64_const(&const_buf, static_cast<int64_t>(pack_ascii_string(a)));
+    write_int64_const(&const_buf, static_cast<int64_t>(std::strlen(b)));
+    write_int64_const(&const_buf, static_cast<int64_t>(pack_ascii_string(b)));
+    write_int64_const(&const_buf, static_cast<int64_t>(std::strlen(expected)));
+    write_int64_const(&const_buf, static_cast<int64_t>(pack_ascii_string(expected)));
+
+    const Instr main_code[] = {
+        {OP_CONST, 0},
+        {OP_CONST, 1},
+        {OP_NATIVE_CALL, 100},
+        {OP_CONST, 2},
+        {OP_CONST, 3},
+        {OP_NATIVE_CALL, 100},
+        {OP_NATIVE_CALL, native_fid},
+        {OP_CONST, 4},
+        {OP_CONST, 5},
+        {OP_NATIVE_CALL, 100},
+        {OP_NATIVE_CALL, 560},
+        {OP_HALT, 0},
+    };
+
+    eskb_buf_write_leb128(&code_buf, 1);
+    write_function(&code_buf, "main", main_code, sizeof(main_code) / sizeof(main_code[0]));
+
+    eskb_buf_write_leb128(&payload, 2);
+    eskb_buf_write_u8(&payload, ESKB_SECTION_CONST);
+    eskb_buf_write_leb128(&payload, const_buf.len);
+    eskb_buf_write_u8(&payload, ESKB_SECTION_CODE);
+    eskb_buf_write_leb128(&payload, code_buf.len);
+    eskb_buf_write(&payload, const_buf.data, const_buf.len);
+    eskb_buf_write(&payload, code_buf.data, code_buf.len);
+
+    EskbHeader hdr;
+    hdr.magic = ESKB_MAGIC;
+    hdr.version = ESKB_VERSION;
+    hdr.flags = ESKB_FLAG_LITTLE_ENDIAN;
+    hdr.checksum = eskb_crc32(payload.data, payload.len);
+
+    eskb_buf_write(&file, &hdr, sizeof(hdr));
+    eskb_buf_write(&file, payload.data, payload.len);
+
+    eskb_buf_free(&const_buf);
+    eskb_buf_free(&code_buf);
+    eskb_buf_free(&payload);
+    return file;
+}
+
 EskbBuffer make_test_chunk(void) {
     EskbBuffer const_buf;
     EskbBuffer code_buf;
@@ -293,6 +353,41 @@ void test_host_native_registry(void) {
     eskb_buf_free(&chunk);
 }
 
+void test_native_string_case(const char* label, int native_fid, const char* a, const char* b,
+                             const char* expected) {
+    EskbBuffer chunk = make_native_string_compare_chunk(native_fid, a, b, expected);
+    EshkolVmHandle* vm = eshkol_vm_load_chunk(chunk.data, chunk.len);
+
+    std::string load_label = std::string(label) + ": load chunk";
+    CHECK(vm != nullptr, load_label.c_str());
+    if (vm) {
+        std::string run_label = std::string(label) + ": run chunk";
+        CHECK(eshkol_vm_run(vm) == 0, run_label.c_str());
+
+        int64_t top = 0;
+        std::string read_label = std::string(label) + ": read comparison result";
+        CHECK(eshkol_vm_top_int64(vm, &top) == 0, read_label.c_str());
+
+        std::string value_label = std::string(label) + ": expected string";
+        CHECK(top == 1, value_label.c_str());
+        eshkol_vm_destroy(vm);
+    }
+
+    eskb_buf_free(&chunk);
+}
+
+void test_path_native_helpers(void) {
+#ifdef _WIN32
+    const char* relative_expected = "..\\c";
+    const char* resolve_expected = "a\\c";
+#else
+    const char* relative_expected = "../c";
+    const char* resolve_expected = "a/c";
+#endif
+    test_native_string_case("path-relative", 1727, "a/b", "a/c", relative_expected);
+    test_native_string_case("path-resolve", 1728, "a/b", "../c", resolve_expected);
+}
+
 void test_valid_chunk(void) {
     EskbBuffer chunk = make_test_chunk();
     EshkolVmHandle* vm = eshkol_vm_load_chunk(chunk.data, chunk.len);
@@ -326,6 +421,7 @@ int main(void) {
     test_valid_chunk();
     test_number_to_string_radix();
     test_host_native_registry();
+    test_path_native_helpers();
     test_bad_inputs();
     std::printf("\nResults: %d/%d checks passed\n", g_total - g_failures, g_total);
     return g_failures == 0 ? 0 : 1;
