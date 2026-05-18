@@ -113,7 +113,7 @@ Standalone VM startup stores the script path plus user arguments and builtin
 
 ---
 
-## A.3 Parallel primitives (620-628) — PARTIAL THREAD-POOL PATH
+## A.3 Parallel primitives (620-628) — WORKER VM PATH
 
 `parallel-map`, `parallel-filter`, `parallel-fold`, `parallel-for-each`,
 `parallel-execute`, `future`, `force`, `future-ready?`, `thread-pool-info`
@@ -123,17 +123,21 @@ when available. `thread-pool-info` / `thread-pool-size` report the standalone
 VM pool size. `parallel-execute` accepts the source-level variadic thunk form
 and schedules thunks through the same pool path. `future` now returns a
 standalone VM future handle backed by the same pool; `force-future` joins that
-handle and `future-ready?` checks it without forcing. User closure execution is
-still serialized through the main VM under the shared runtime/arena mutex.
-`parallel-fold` remains an order-preserving sequential fallback for arbitrary
-non-associative fold functions.
+handle and `future-ready?` checks it without forcing.
 
-**Remaining fix**: give each worker a fully independent VM execution context
-with its own stack/frame state and thread-local arena scope, then remove the
-shared main-VM closure mutex. The closure bridge
-(`vm_call_closure_from_native`) already exists; the missing piece is safe
-per-thread execution of closure bytecode over shared immutable code/constants
-with synchronized heap publication of returned values.
+Read-only user closures now run in isolated worker VM contexts. Each worker
+shares immutable bytecode/constants, clones the reachable heap graph into its
+own arena at stable heap indexes, executes with private stack/frame/heap state,
+and publishes returned worker-local cons/vector/string/numeric/tensor/bytevector
+graphs back to the main heap under the runtime mutex. This preserves the VM's
+arena allocation model without racing `Heap.next_free` or region-stack state.
+
+Closures whose bytecode may mutate shared state, call arbitrary closures, perform
+I/O, or return unsupported opaque objects deliberately fall back to the serialized
+main-VM closure bridge. That fallback is required for correctness because the VM
+does not have transactional shared-object semantics. `parallel-fold` also remains
+an order-preserving sequential fallback for arbitrary non-associative fold
+functions.
 
 Key implementation:
 ```c

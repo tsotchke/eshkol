@@ -1,0 +1,75 @@
+;; Standalone VM regression for isolated worker VM execution.
+;;
+;; These cases force parallel workers to allocate values in their private
+;; arenas, then return them to the main VM. The final case uses mutation and
+;; must stay on the serialized fallback path.
+
+(display "=== VM parallel worker context regression ===") (newline)
+
+(define xs (list 1 2 3 4 5 6 7 8))
+
+(define pair-results
+  (parallel-map (lambda (x) (list x (* x x))) xs))
+(display "T1 worker-local cons result publication: ")
+(display (if (and (= (length pair-results) 8)
+                  (= (list-ref (list-ref pair-results 0) 0) 1)
+                  (= (list-ref (list-ref pair-results 0) 1) 1)
+                  (= (list-ref (list-ref pair-results 7) 0) 8)
+                  (= (list-ref (list-ref pair-results 7) 1) 64))
+             "PASS"
+             (list "FAIL got " pair-results)))
+(newline)
+
+(define vector-results
+  (parallel-map (lambda (x) (vector x (+ x 100))) xs))
+(display "T2 worker-local vector result publication: ")
+(display (if (and (= (length vector-results) 8)
+                  (= (vector-ref (list-ref vector-results 2) 0) 3)
+                  (= (vector-ref (list-ref vector-results 2) 1) 103)
+                  (= (vector-ref (list-ref vector-results 6) 0) 7)
+                  (= (vector-ref (list-ref vector-results 6) 1) 107))
+             "PASS"
+             (list "FAIL got " vector-results)))
+(newline)
+
+(define future-list (future (lambda () (list 9 10 11))))
+(define forced-list (force-future future-list))
+(display "T3 future worker-local list publication: ")
+(display (if (and (future-ready? future-list)
+                  (= (length forced-list) 3)
+                  (= (list-ref forced-list 0) 9)
+                  (= (list-ref forced-list 2) 11))
+             "PASS"
+             (list "FAIL got " forced-list)))
+(newline)
+
+(define executed
+  (parallel-execute (lambda () (list 1 2))
+                    (lambda () (vector 3 (+ 3 1)))
+                    (lambda () 5)))
+(display "T4 parallel-execute mixed worker results: ")
+(display (if (and (= (length executed) 3)
+                  (= (list-ref (list-ref executed 0) 1) 2)
+                  (= (vector-ref (list-ref executed 1) 0) 3)
+                  (= (list-ref executed 2) 5))
+             "PASS"
+             (list "FAIL got " executed)))
+(newline)
+
+(define side-box (vector #f))
+(define ignored
+  (parallel-for-each
+    (lambda (x)
+      (vector-set! side-box 0
+                   (+ (if (number? (vector-ref side-box 0))
+                          (vector-ref side-box 0)
+                          0)
+                      x)))
+    xs))
+(display "T5 mutating closure serialized fallback: ")
+(display (if (= (vector-ref side-box 0) 36)
+             "PASS"
+             (list "FAIL got " (vector-ref side-box 0))))
+(newline)
+
+(display "=== VM parallel worker context complete ===") (newline)
