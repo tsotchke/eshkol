@@ -43,15 +43,21 @@
 (newline)
 
 (define f (future (lambda () 42)))
-(display "T6 future-ready? immediate future: ")
-(display (if (and (future-ready? f) (= (force-future f) 42)) "PASS"
+(display "T6 future handle force: ")
+(display (if (and (= (force-future f) 42) (future-ready? f)) "PASS"
              (list "FAIL got " f)))
+(newline)
+
+(define fv (future 123))
+(display "T7 future plain value: ")
+(display (if (and (future-ready? fv) (= (force-future fv) 123)) "PASS"
+             (list "FAIL got " fv)))
 (newline)
 
 (define executed (parallel-execute (lambda () 10)
                                    (lambda () 20)
                                    (lambda () 30)))
-(display "T7 parallel-execute variadic thunks: ")
+(display "T8 parallel-execute variadic thunks: ")
 (display (if (and (= (length executed) 3)
                   (= (list-ref executed 0) 10)
                   (= (list-ref executed 1) 20)

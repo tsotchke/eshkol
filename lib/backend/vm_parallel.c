@@ -2,12 +2,11 @@
  * @file vm_parallel.c
  * @brief Thread pool and parallel primitives for the Eshkol bytecode VM.
  *
- * Provides a work-stealing thread pool and parallel higher-order primitives
+ * Provides a pthread-backed task queue and parallel higher-order primitives
  * (parallel-map, parallel-filter, parallel-for-each, parallel-reduce).
  *
- * The bytecode VM is single-threaded, so parallel-map etc. currently execute
- * sequentially with the correct API — drop-in ready for true parallelism
- * when per-thread VM instances are added.
+ * User closure execution is still serialized through the main VM state while
+ * workers provide scheduling, futures, and the eventual per-thread-VM bridge.
  *
  * Native call IDs: 620-639
  *
@@ -403,6 +402,74 @@ static void vm_parthunk_task_fn(void* arg, void* result) {
     (void)result;
     task->output = vm_worker_call_closure(NULL, task->main_vm,
                                           task->closure, NULL, 0);
+}
+
+/*******************************************************************************
+ * Future Handles
+ ******************************************************************************/
+
+typedef struct {
+    VM*             main_vm;
+    Value           thunk_or_value;
+    Value           result;
+    int             ready;
+    pthread_mutex_t mutex;
+    pthread_cond_t  done;
+} VmFuture;
+
+static VmFuture* vm_future_create(VM* vm, Value thunk_or_value) {
+    VmFuture* fut = (VmFuture*)vm_alloc(&vm->heap.regions, sizeof(VmFuture));
+    if (!fut) return NULL;
+    memset(fut, 0, sizeof(VmFuture));
+    fut->main_vm = vm;
+    fut->thunk_or_value = thunk_or_value;
+    fut->result = NIL_VAL;
+    fut->ready = 0;
+    if (pthread_mutex_init(&fut->mutex, NULL) != 0) return NULL;
+    if (pthread_cond_init(&fut->done, NULL) != 0) {
+        pthread_mutex_destroy(&fut->mutex);
+        return NULL;
+    }
+    return fut;
+}
+
+static void vm_future_mark_ready(VmFuture* fut, Value result) {
+    pthread_mutex_lock(&fut->mutex);
+    fut->result = result;
+    fut->ready = 1;
+    pthread_cond_broadcast(&fut->done);
+    pthread_mutex_unlock(&fut->mutex);
+}
+
+static void vm_future_task_fn(void* arg, void* result_slot) {
+    (void)result_slot;
+    VmFuture* fut = (VmFuture*)arg;
+    if (!fut) return;
+    Value result = fut->thunk_or_value;
+    if (fut->thunk_or_value.type == VAL_CLOSURE) {
+        result = vm_worker_call_closure(NULL, fut->main_vm,
+                                        fut->thunk_or_value, NULL, 0);
+    }
+    vm_future_mark_ready(fut, result);
+}
+
+static int vm_future_is_ready(VmFuture* fut) {
+    if (!fut) return 1;
+    pthread_mutex_lock(&fut->mutex);
+    int ready = fut->ready;
+    pthread_mutex_unlock(&fut->mutex);
+    return ready;
+}
+
+static Value vm_future_force(VmFuture* fut) {
+    if (!fut) return NIL_VAL;
+    pthread_mutex_lock(&fut->mutex);
+    while (!fut->ready) {
+        pthread_cond_wait(&fut->done, &fut->mutex);
+    }
+    Value result = fut->result;
+    pthread_mutex_unlock(&fut->mutex);
+    return result;
 }
 
 /*******************************************************************************

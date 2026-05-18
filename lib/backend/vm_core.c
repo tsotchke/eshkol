@@ -178,6 +178,7 @@ typedef enum {
     HEAP_PARAMETER = 23,
     HEAP_HYPER_DUAL = 24,
     HEAP_RIEMANNIAN_ADAM_STATE = 25,
+    HEAP_FUTURE = 26,
 } HeapType;
 
 typedef struct {
@@ -468,6 +469,7 @@ static void print_value(VM* vm, Value v) {
         case VAL_MANIFOLD:    printf("<manifold>"); break;
         case VAL_RIEMANNIAN_ADAM_STATE: printf("<riemannian-adam-state>"); break;
         case VAL_PORT:        printf("<port>"); break;
+        case VAL_FUTURE:      printf("<future>"); break;
         case VAL_VOID:        break; /* unspecified — produces no output */
         default: printf("<unknown>"); break;
     }
