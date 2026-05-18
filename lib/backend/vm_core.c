@@ -177,6 +177,7 @@ typedef enum {
     HEAP_BYTEVECTOR = 22,
     HEAP_PARAMETER = 23,
     HEAP_HYPER_DUAL = 24,
+    HEAP_RIEMANNIAN_ADAM_STATE = 25,
 } HeapType;
 
 typedef struct {
@@ -290,6 +291,9 @@ typedef struct {
      * This enables transparent reverse-mode gradient computation. */
     void* active_tape;                /* AdTape* or NULL */
     int   ad_node_map[STACK_SIZE];    /* stack slot → tape node index (-1 = not tracked) */
+
+    /* VM-lifetime geometric optimizer state for compatibility builtins. */
+    void* geometric_adam_states[16];   /* VmRiemannianAdamState* */
 } VM;
 
 /* Command-line arguments (set in main, read by native 602) */
@@ -462,6 +466,7 @@ static void print_value(VM* vm, Value v) {
         case VAL_AD_TAPE:     printf("<ad-tape>"); break;
         case VAL_ERROR_OBJ:   printf("<error-object>"); break;
         case VAL_MANIFOLD:    printf("<manifold>"); break;
+        case VAL_RIEMANNIAN_ADAM_STATE: printf("<riemannian-adam-state>"); break;
         case VAL_PORT:        printf("<port>"); break;
         case VAL_VOID:        break; /* unspecified — produces no output */
         default: printf("<unknown>"); break;
@@ -583,4 +588,3 @@ typedef struct {
  *
  * Both the computed-goto and switch paths call this, eliminating duplication.
  ******************************************************************************/
-

@@ -1258,20 +1258,24 @@ These exist and work. We just need to `(require ...)` them:
 
 # Part A (continued): More Broken Stubs Found in Code
 
-## A.5 Riemannian Adam (builtin 840) — FALLS BACK TO SGD
+## A.5 Riemannian Adam (builtins 840, 860-861) — IMPLEMENTED
 
-**File**: `lib/backend/vm_geometric.c` line 661-662
+**File**: `lib/backend/vm_geometric.c`
 ```c
-(void)b1; (void)b2; /* Full Adam needs state — use SGD as fallback */
-for (int i = 0; i < n; i++) step[i] = -lr * gf[i];
+VmRiemannianAdamState* st = vm_default_riemannian_adam_state(vm, point);
+vm_riemannian_adam_euclidean_step(vm, point, grad, st, lr, beta1, beta2);
 ```
 
-**Fix**: Adam requires per-parameter momentum vectors `m` (first moment) and `v`
-(second moment). These must be stored outside the manifold object (e.g., in a
-separate state record). Two options:
-1. Add a `VmRiemannianAdamState` arena object with `m[]` and `v[]` arrays and
-   pass it as a 7th argument: `(riemannian-adam-step point gradient lr b1 b2 state curvature)`
-2. Thread the state through functional style (return `(values new-point new-state)`).
+**Status**: Adam now has per-parameter first and second moment vectors `m[]`
+and `v[]` in an arena-backed `VmRiemannianAdamState`. The existing six-argument
+`riemannian-adam-step` uses a VM-lifetime default state keyed by tensor shape for
+backward compatibility. Callers that need independent optimizer streams can use
+the explicit arena-backed state surface:
+
+```scheme
+(make-riemannian-adam-state point)                         ;; native 860
+(riemannian-adam-step! state point grad lr beta1 beta2 curv) ;; native 861
+```
 
 **Impact**: Proper Adam is needed for learning curvature and embedding parameters.
 
@@ -1339,7 +1343,7 @@ iterative training loops that need memory reclamation.
 ## B.24 Geometric Manifold VM Surface
 
 `lib/backend/vm_geometric.c` exposes geometric native calls in the standalone
-VM at IDs 804-859. The source VM now registers these names directly. When
+VM at IDs 804-861. The source VM now registers these names directly. When
 `ESHKOL_GEOMETRIC_ENABLED` is not linked, the standalone VM uses a portable
 constant-curvature fallback with arena-backed manifold handles, tensor-returning
 metric/connection/form operations, Euclidean approximations for map/transport
@@ -1414,7 +1418,9 @@ the raw builtin surface is no longer undefined:
 ### Riemannian optimization
 ```scheme
 (riemannian-sgd-step point grad lr curv)           ;; native 839
-(riemannian-adam-step pt grad lr b1 b2 curv)       ;; native 840 — NOTE: fallback to SGD (A.5)
+(riemannian-adam-step pt grad lr b1 b2 curv)       ;; native 840 — default Adam state
+(make-riemannian-adam-state point)                 ;; native 860
+(riemannian-adam-step! state pt grad lr b1 b2 curv);; native 861 — explicit Adam state
 (riemannian-grad euclidean-grad point curv)         ;; native 841
 (retraction base tangent curv)                     ;; native 842
 (vector-transport x y v curv)                      ;; native 843
@@ -1805,12 +1811,12 @@ continuously tune the manifold:
 | **A.2** | Fix `command-line` | 1 | Implemented |
 | **A.3** | Fix parallel primitives (620-628) | 9 | Partial thread-pool path |
 | **A.4** | Fix `term-cursor-pos` | 1 | Implemented |
-| **A.5** | Fix Riemannian Adam (840) | 1 | Falls back to SGD |
+| **A.5** | Fix Riemannian Adam (840) | 1 | Implemented |
 | **A.6** | Fix Christoffel symbols (830) | 1 | Implemented |
 | **A.7** | Fix pullback (838) | 1 | Implemented |
 | **A.8** | Wire reverse-mode AD tape (390-409) | 20 | Implemented |
 | **B.1-B.23** | Original missing functions | 148 | Truly missing |
-| **B.24** | Geometric manifold wrappers | 40 | VM surface registered (804-859); portable fallback implemented; wrapper still useful |
+| **B.24** | Geometric manifold wrappers | 40 | VM surface registered (804-861); portable fallback implemented; wrapper still useful |
 | **B.25** | Reverse-mode AD tape wrappers | 5 | A.8 VM surface implemented |
 | **B.26** | Workspace introspection (543-546) | 4 | C exists, no .esk |
 | **B.27** | Factor graph marginals + KB extensions | 6 | Implemented |

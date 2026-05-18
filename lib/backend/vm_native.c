@@ -5765,8 +5765,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
 
     default:
-        /* Check geometric manifold operations (804-859) */
-        if (fid >= 804 && fid <= 859) {
+        /* Check geometric manifold operations (804-861) */
+        if (fid >= 804 && fid <= 861) {
             vm_dispatch_geometric(vm, fid);
             break;
         }

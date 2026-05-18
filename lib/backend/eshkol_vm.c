@@ -328,6 +328,8 @@ static const BuiltinDef BUILTINS[] = {
     {"manifold-type", 857, 1},
     {"manifold-dim", 858, 1}, {"manifold-dimension", 858, 1},
     {"manifold-destroy!", 859, 1},
+    {"make-riemannian-adam-state", 860, 1},
+    {"riemannian-adam-step!", 861, 7},
     /* ═══════════════════════════════════════════════════════════════
      * Consciousness Engine — IDs 500-549
      * ═══════════════════════════════════════════════════════════════ */
