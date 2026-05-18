@@ -5594,6 +5594,8 @@ static const BuiltinDef BUILTINS[] = {
     {"condvar-wait!", 2011, 2}, {"condition-signal", 2012, 1},
     {"condvar-signal!", 2012, 1}, {"condition-broadcast", 2013, 1},
     {"condvar-broadcast!", 2013, 1},
+    {"json-get-in", 2014, 3}, {"json-stringify-pretty", 2015, 2},
+    {"json-merge", 2016, 2},
     {"string-ends-with?", 1956, 2}, {"string-index-of", 1957, 3},
     {"string-pad-left", 1958, 3}, {"string-pad-right", 1959, 3},
     /* Missing hash */
