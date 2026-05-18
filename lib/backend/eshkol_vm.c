@@ -423,6 +423,9 @@ static const BuiltinDef BUILTINS[] = {
     {"current-timestamp", 1972, 0}, {"current-time-ns", 1973, 0},
     {"format-iso8601", 1974, 1}, {"parse-iso8601", 1975, 1},
     {"format-relative", 1976, 1}, {"local-timezone-offset", 1977, 0},
+    {"diff-lines", 1978, 2}, {"fuzzy-match", 1979, 4},
+    {"semver-parse", 1980, 1}, {"semver-compare", 1981, 2},
+    {"semver-satisfies?", 1982, 2},
     {"string-ends-with?", 1956, 2}, {"string-index-of", 1957, 3},
     {"string-pad-left", 1958, 3}, {"string-pad-right", 1959, 3},
     /* Parallel primitives — IDs 620-628 */

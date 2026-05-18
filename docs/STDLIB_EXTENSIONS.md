@@ -812,6 +812,9 @@ Buffer reads, deliver complete lines. The `readline.createInterface` equivalent.
 Myers' O(ND) diff. Returns list of hunks with `=`, `+`, `-` lines.
 Needed for: file edit preview, screen buffer optimization, compaction diffs.
 
+Standalone VM native ID 1978 provides a deterministic line-level LCS diff for
+small inputs. It returns a list of strings prefixed with `=`, `+`, or `-`.
+
 ---
 
 ## B.17 Fuzzy Search
@@ -820,6 +823,10 @@ Needed for: file edit preview, screen buffer optimization, compaction diffs.
 Score-ranked fuzzy matching. Bonus for consecutive matches, word boundaries,
 camelCase. Returns `((score . candidate) ...)`.
 
+Standalone VM native ID 1979 ranks string candidates and returns up to `max`
+`(score . candidate)` pairs. The `key-fn` argument is accepted for API shape;
+the standalone VM implementation currently matches string candidates directly.
+
 ---
 
 ## B.18 Semantic Versioning
@@ -827,6 +834,10 @@ camelCase. Returns `((score . candidate) ...)`.
 ### `(semver-parse str) -> alist-or-false`
 ### `(semver-compare a b) -> -1|0|1`
 ### `(semver-satisfies? version range) -> bool`
+
+Standalone VM native IDs 1980-1982 parse SemVer strings into alists, compare
+versions including pre-release precedence, and support exact, `<`, `<=`, `>`,
+`>=`, `^`, and `~` ranges.
 
 ---
 

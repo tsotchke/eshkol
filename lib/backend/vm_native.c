@@ -1345,6 +1345,325 @@ static int64_t vm_local_timezone_offset_seconds(void) {
 #endif
 }
 
+typedef struct {
+    const char* data;
+    int len;
+} VmLineSlice;
+
+static int vm_split_lines(VmString* s, VmLineSlice* out, int cap) {
+    if (!s || !s->data || cap <= 0) return -1;
+    if (s->byte_len == 0) return 0;
+    int count = 0;
+    int start = 0;
+    for (int i = 0; i <= s->byte_len; i++) {
+        if (i == s->byte_len || s->data[i] == '\n') {
+            if (count >= cap) return -1;
+            out[count].data = s->data + start;
+            out[count].len = i - start;
+            count++;
+            start = i + 1;
+        }
+    }
+    return count;
+}
+
+static int vm_line_equal(VmLineSlice a, VmLineSlice b) {
+    return a.len == b.len && memcmp(a.data, b.data, (size_t)a.len) == 0;
+}
+
+static Value vm_prefixed_line_value(VM* vm, char prefix, VmLineSlice line) {
+    char* buf = (char*)malloc((size_t)line.len + 2);
+    if (!buf) return BOOL_VAL(0);
+    buf[0] = prefix;
+    if (line.len > 0) memcpy(buf + 1, line.data, (size_t)line.len);
+    buf[line.len + 1] = '\0';
+    Value v = vm_string_value(vm, buf, (int64_t)line.len + 1);
+    free(buf);
+    return v;
+}
+
+static Value vm_diff_lines_value(VM* vm, VmString* old_s, VmString* new_s) {
+    enum { MAX_LINES = 256 };
+    VmLineSlice old_lines[MAX_LINES];
+    VmLineSlice new_lines[MAX_LINES];
+    int n_old = vm_split_lines(old_s, old_lines, MAX_LINES);
+    int n_new = vm_split_lines(new_s, new_lines, MAX_LINES);
+    if (n_old < 0 || n_new < 0) return BOOL_VAL(0);
+
+    int cols = n_new + 1;
+    int cells = (n_old + 1) * (n_new + 1);
+    int* dp = (int*)calloc((size_t)cells, sizeof(int));
+    if (!dp) return BOOL_VAL(0);
+    for (int i = 1; i <= n_old; i++) {
+        for (int j = 1; j <= n_new; j++) {
+            if (vm_line_equal(old_lines[i - 1], new_lines[j - 1]))
+                dp[i * cols + j] = dp[(i - 1) * cols + (j - 1)] + 1;
+            else {
+                int a = dp[(i - 1) * cols + j];
+                int b = dp[i * cols + (j - 1)];
+                dp[i * cols + j] = a > b ? a : b;
+            }
+        }
+    }
+
+    int i = n_old;
+    int j = n_new;
+    Value rev = NIL_VAL;
+    while (i > 0 || j > 0) {
+        if (i > 0 && j > 0 && vm_line_equal(old_lines[i - 1], new_lines[j - 1])) {
+            rev = vm_cons_value(vm, vm_prefixed_line_value(vm, '=', old_lines[i - 1]), rev);
+            i--;
+            j--;
+        } else if (j > 0 && (i == 0 || dp[i * cols + (j - 1)] >= dp[(i - 1) * cols + j])) {
+            rev = vm_cons_value(vm, vm_prefixed_line_value(vm, '+', new_lines[j - 1]), rev);
+            j--;
+        } else {
+            rev = vm_cons_value(vm, vm_prefixed_line_value(vm, '-', old_lines[i - 1]), rev);
+            i--;
+        }
+    }
+    free(dp);
+    return rev;
+}
+
+static int vm_fuzzy_char_equal(char a, char b) {
+    return tolower((unsigned char)a) == tolower((unsigned char)b);
+}
+
+static int vm_fuzzy_score(const char* pattern, const char* candidate) {
+    if (!pattern || !candidate) return -1;
+    if (!*pattern) return 0;
+    int score = 0;
+    int pi = 0;
+    int last_match = -2;
+    for (int ci = 0; candidate[ci] && pattern[pi]; ci++) {
+        if (!vm_fuzzy_char_equal(pattern[pi], candidate[ci])) continue;
+        score += 10;
+        if (ci == last_match + 1) score += 5;
+        if (ci == 0 || candidate[ci - 1] == '-' || candidate[ci - 1] == '_' ||
+            candidate[ci - 1] == ' ' || candidate[ci - 1] == '/' ||
+            (islower((unsigned char)candidate[ci - 1]) && isupper((unsigned char)candidate[ci])))
+            score += 3;
+        score -= ci - last_match - 1;
+        last_match = ci;
+        pi++;
+    }
+    return pattern[pi] ? -1 : score;
+}
+
+typedef struct {
+    int score;
+    Value candidate;
+} VmFuzzyResult;
+
+static int vm_fuzzy_result_cmp(const void* a, const void* b) {
+    const VmFuzzyResult* ra = (const VmFuzzyResult*)a;
+    const VmFuzzyResult* rb = (const VmFuzzyResult*)b;
+    return rb->score - ra->score;
+}
+
+static Value vm_fuzzy_match_value(VM* vm, VmString* pattern, Value candidates, Value key_fn, int max_results) {
+    (void)key_fn;
+    if (!vm || !pattern || !pattern->data || max_results <= 0) return NIL_VAL;
+    VmFuzzyResult results[1024];
+    int n = 0;
+    while (candidates.type == VAL_PAIR && n < (int)(sizeof(results) / sizeof(results[0]))) {
+        HeapObject* pair = vm->heap.objects[candidates.as.ptr];
+        Value candidate = pair->cons.car;
+        VmString* s = vm_value_as_string(vm, candidate);
+        if (s && s->data) {
+            int score = vm_fuzzy_score(pattern->data, s->data);
+            if (score >= 0) {
+                results[n].score = score;
+                results[n].candidate = candidate;
+                n++;
+            }
+        }
+        candidates = pair->cons.cdr;
+    }
+    qsort(results, (size_t)n, sizeof(results[0]), vm_fuzzy_result_cmp);
+    if (max_results > n) max_results = n;
+    Value out = NIL_VAL;
+    for (int i = max_results - 1; i >= 0; i--) {
+        Value entry = vm_cons_value(vm, INT_VAL((int64_t)results[i].score), results[i].candidate);
+        out = vm_cons_value(vm, entry, out);
+    }
+    return out;
+}
+
+typedef struct {
+    int major;
+    int minor;
+    int patch;
+    char prerelease[128];
+    char build[128];
+} VmSemver;
+
+static int vm_parse_uint_component(const char** p, int* out) {
+    if (!p || !*p || !isdigit((unsigned char)**p)) return 0;
+    int value = 0;
+    while (isdigit((unsigned char)**p)) {
+        value = value * 10 + (**p - '0');
+        (*p)++;
+    }
+    *out = value;
+    return 1;
+}
+
+static int vm_semver_parse_cstr(const char* s, VmSemver* out) {
+    if (!s || !out) return 0;
+    memset(out, 0, sizeof(*out));
+    const char* p = s;
+    if (*p == 'v' || *p == 'V') p++;
+    if (!vm_parse_uint_component(&p, &out->major) || *p++ != '.') return 0;
+    if (!vm_parse_uint_component(&p, &out->minor) || *p++ != '.') return 0;
+    if (!vm_parse_uint_component(&p, &out->patch)) return 0;
+    if (*p == '-') {
+        p++;
+        int n = 0;
+        while (*p && *p != '+' && n < (int)sizeof(out->prerelease) - 1) {
+            out->prerelease[n++] = *p++;
+        }
+        out->prerelease[n] = '\0';
+        if (n == 0) return 0;
+    }
+    if (*p == '+') {
+        p++;
+        int n = 0;
+        while (*p && n < (int)sizeof(out->build) - 1) {
+            out->build[n++] = *p++;
+        }
+        out->build[n] = '\0';
+        if (n == 0) return 0;
+    }
+    return *p == '\0';
+}
+
+static int vm_semver_identifier_numeric(const char* s, int len) {
+    if (len <= 0) return 0;
+    for (int i = 0; i < len; i++)
+        if (!isdigit((unsigned char)s[i])) return 0;
+    return 1;
+}
+
+static int vm_semver_compare_prerelease(const char* a, const char* b) {
+    if (!a[0] && !b[0]) return 0;
+    if (!a[0]) return 1;
+    if (!b[0]) return -1;
+    const char* pa = a;
+    const char* pb = b;
+    while (*pa || *pb) {
+        const char* ea = strchr(pa, '.');
+        const char* eb = strchr(pb, '.');
+        int la = ea ? (int)(ea - pa) : (int)strlen(pa);
+        int lb = eb ? (int)(eb - pb) : (int)strlen(pb);
+        if (la == 0 && lb == 0) return 0;
+        if (la == 0) return -1;
+        if (lb == 0) return 1;
+        int na = vm_semver_identifier_numeric(pa, la);
+        int nb = vm_semver_identifier_numeric(pb, lb);
+        if (na && nb) {
+            long va = 0, vb = 0;
+            for (int i = 0; i < la; i++) va = va * 10 + (pa[i] - '0');
+            for (int i = 0; i < lb; i++) vb = vb * 10 + (pb[i] - '0');
+            if (va < vb) return -1;
+            if (va > vb) return 1;
+        } else if (na != nb) {
+            return na ? -1 : 1;
+        } else {
+            int cmp = strncmp(pa, pb, (size_t)(la < lb ? la : lb));
+            if (cmp < 0) return -1;
+            if (cmp > 0) return 1;
+            if (la < lb) return -1;
+            if (la > lb) return 1;
+        }
+        pa = ea ? ea + 1 : pa + la;
+        pb = eb ? eb + 1 : pb + lb;
+    }
+    return 0;
+}
+
+static int vm_semver_compare_structs(const VmSemver* a, const VmSemver* b) {
+    if (a->major != b->major) return a->major < b->major ? -1 : 1;
+    if (a->minor != b->minor) return a->minor < b->minor ? -1 : 1;
+    if (a->patch != b->patch) return a->patch < b->patch ? -1 : 1;
+    return vm_semver_compare_prerelease(a->prerelease, b->prerelease);
+}
+
+static Value vm_semver_parse_value(VM* vm, VmString* s) {
+    VmSemver v;
+    if (!s || !s->data || !vm_semver_parse_cstr(s->data, &v)) return BOOL_VAL(0);
+    Value result = NIL_VAL;
+    result = vm_cons_value(vm, vm_alist_entry(vm, "build", vm_string_value(vm, v.build, -1)), result);
+    result = vm_cons_value(vm, vm_alist_entry(vm, "prerelease", vm_string_value(vm, v.prerelease, -1)), result);
+    result = vm_cons_value(vm, vm_alist_entry(vm, "patch", INT_VAL((int64_t)v.patch)), result);
+    result = vm_cons_value(vm, vm_alist_entry(vm, "minor", INT_VAL((int64_t)v.minor)), result);
+    result = vm_cons_value(vm, vm_alist_entry(vm, "major", INT_VAL((int64_t)v.major)), result);
+    return result;
+}
+
+static Value vm_semver_compare_value(VM* vm, VmString* a_s, VmString* b_s) {
+    (void)vm;
+    VmSemver a, b;
+    if (!a_s || !b_s || !vm_semver_parse_cstr(a_s->data, &a) ||
+        !vm_semver_parse_cstr(b_s->data, &b))
+        return BOOL_VAL(0);
+    int cmp = vm_semver_compare_structs(&a, &b);
+    if (cmp < 0) return INT_VAL(-1);
+    if (cmp > 0) return INT_VAL(1);
+    return INT_VAL(0);
+}
+
+static int vm_semver_satisfies_range(const VmSemver* version, const char* range) {
+    while (*range && isspace((unsigned char)*range)) range++;
+    char op[3] = "";
+    if ((range[0] == '>' || range[0] == '<' || range[0] == '=') && range[1] == '=') {
+        op[0] = range[0];
+        op[1] = '=';
+        range += 2;
+    } else if (*range == '>' || *range == '<' || *range == '=') {
+        op[0] = *range++;
+    } else if (*range == '^' || *range == '~') {
+        op[0] = *range++;
+    }
+    while (*range && isspace((unsigned char)*range)) range++;
+
+    VmSemver target;
+    if (!vm_semver_parse_cstr(range, &target)) return 0;
+    int cmp = vm_semver_compare_structs(version, &target);
+    if (!op[0] || op[0] == '=') return cmp == 0;
+    if (strcmp(op, ">=") == 0) return cmp >= 0;
+    if (strcmp(op, "<=") == 0) return cmp <= 0;
+    if (strcmp(op, ">") == 0) return cmp > 0;
+    if (strcmp(op, "<") == 0) return cmp < 0;
+    if (op[0] == '^') {
+        if (cmp < 0) return 0;
+        VmSemver upper = target;
+        upper.major++;
+        upper.minor = 0;
+        upper.patch = 0;
+        upper.prerelease[0] = '\0';
+        return vm_semver_compare_structs(version, &upper) < 0;
+    }
+    if (op[0] == '~') {
+        if (cmp < 0) return 0;
+        VmSemver upper = target;
+        upper.minor++;
+        upper.patch = 0;
+        upper.prerelease[0] = '\0';
+        return vm_semver_compare_structs(version, &upper) < 0;
+    }
+    return 0;
+}
+
+static Value vm_semver_satisfies_value(VM* vm, VmString* version_s, VmString* range_s) {
+    (void)vm;
+    VmSemver version;
+    if (!version_s || !range_s || !vm_semver_parse_cstr(version_s->data, &version))
+        return BOOL_VAL(0);
+    return BOOL_VAL(vm_semver_satisfies_range(&version, range_s->data));
+}
+
 static int vm_string_ends_with_bytes(VmString* s, VmString* suffix) {
     if (!s || !suffix || !s->data || !suffix->data) return 0;
     if (suffix->byte_len > s->byte_len) return 0;
@@ -4642,6 +4961,37 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 1977: { /* local-timezone-offset() → seconds east of UTC */
         vm_push(vm, INT_VAL(vm_local_timezone_offset_seconds()));
+        break;
+    }
+    case 1978: { /* diff-lines(old, new) → list of prefixed lines */
+        Value new_val = vm_pop(vm), old_val = vm_pop(vm);
+        vm_push(vm, vm_diff_lines_value(vm, vm_value_as_string(vm, old_val),
+                                        vm_value_as_string(vm, new_val)));
+        break;
+    }
+    case 1979: { /* fuzzy-match(pattern, candidates, key-fn, max) → ((score . candidate) ...) */
+        Value max_val = vm_pop(vm), key_fn_val = vm_pop(vm);
+        Value candidates_val = vm_pop(vm), pattern_val = vm_pop(vm);
+        vm_push(vm, vm_fuzzy_match_value(vm, vm_value_as_string(vm, pattern_val),
+                                         candidates_val, key_fn_val,
+                                         (int)as_number(max_val)));
+        break;
+    }
+    case 1980: { /* semver-parse(str) → alist or #f */
+        Value str_val = vm_pop(vm);
+        vm_push(vm, vm_semver_parse_value(vm, vm_value_as_string(vm, str_val)));
+        break;
+    }
+    case 1981: { /* semver-compare(a, b) → -1, 0, 1, or #f */
+        Value b_val = vm_pop(vm), a_val = vm_pop(vm);
+        vm_push(vm, vm_semver_compare_value(vm, vm_value_as_string(vm, a_val),
+                                            vm_value_as_string(vm, b_val)));
+        break;
+    }
+    case 1982: { /* semver-satisfies?(version, range) → bool */
+        Value range_val = vm_pop(vm), version_val = vm_pop(vm);
+        vm_push(vm, vm_semver_satisfies_value(vm, vm_value_as_string(vm, version_val),
+                                              vm_value_as_string(vm, range_val)));
         break;
     }
     case 1956: { /* string-ends-with?(str, suffix) → bool */

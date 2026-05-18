@@ -1,0 +1,64 @@
+;; Standalone VM regression for diff, fuzzy search, and semver primitives.
+
+(display "=== text utility VM surface regression ===") (newline)
+
+(define diff (diff-lines "a\nb\nc" "a\nx\nc"))
+
+(display "T1 diff-lines returns prefixed line list: ")
+(display (if (and (string=? (list-ref diff 0) "=a")
+                  (string=? (list-ref diff 1) "-b")
+                  (string=? (list-ref diff 2) "+x")
+                  (string=? (list-ref diff 3) "=c"))
+             "PASS"
+             (list "FAIL got " diff)))
+(newline)
+
+(define fuzzy (fuzzy-match "fb"
+                           (list "foo-bar" "alpha" "fbar" "frame-buffer")
+                           #f
+                           2))
+
+(display "T2 fuzzy-match returns ranked score pairs: ")
+(display (if (and (pair? fuzzy)
+                  (string=? (cdr (car fuzzy)) "fbar")
+                  (number? (car (car fuzzy)))
+                  (pair? (cdr fuzzy)))
+             "PASS"
+             (list "FAIL got " fuzzy)))
+(newline)
+
+(define (alist-ref key alist)
+  (let ((entry (assoc key alist)))
+    (if entry (cdr entry) #f)))
+
+(define parsed (semver-parse "1.2.3-alpha.1+build.5"))
+
+(display "T3 semver-parse returns version alist: ")
+(display (if (and (= (alist-ref "major" parsed) 1)
+                  (= (alist-ref "minor" parsed) 2)
+                  (= (alist-ref "patch" parsed) 3)
+                  (string=? (alist-ref "prerelease" parsed) "alpha.1")
+                  (string=? (alist-ref "build" parsed) "build.5"))
+             "PASS"
+             (list "FAIL got " parsed)))
+(newline)
+
+(display "T4 semver-compare follows precedence: ")
+(display (if (and (= (semver-compare "1.2.3" "1.2.4") -1)
+                  (= (semver-compare "1.2.3" "1.2.3-alpha") 1)
+                  (= (semver-compare "2.0.0" "2.0.0") 0))
+             "PASS"
+             "FAIL"))
+(newline)
+
+(display "T5 semver-satisfies? handles common ranges: ")
+(display (if (and (semver-satisfies? "1.4.0" "^1.2.3")
+                  (not (semver-satisfies? "2.0.0" "^1.2.3"))
+                  (semver-satisfies? "1.2.9" "~1.2.3")
+                  (semver-satisfies? "1.2.3" ">=1.2.0")
+                  (not (semver-satisfies? "1.2.3-alpha" ">=1.2.3")))
+             "PASS"
+             "FAIL"))
+(newline)
+
+(display "=== text utility VM surface complete ===") (newline)
