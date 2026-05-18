@@ -157,6 +157,123 @@ static int vm_path_is_absolute_native(const char* path) {
 #endif
 }
 
+static VmBytevector* vm_file_mmap_copy_to_bytevector(VM* vm,
+                                                     const char* path,
+                                                     int64_t offset,
+                                                     int64_t len) {
+    if (!vm || !path || offset < 0) return NULL;
+
+#if defined(ESHKOL_VM_WASM)
+    (void)vm;
+    (void)path;
+    (void)offset;
+    (void)len;
+    return NULL;
+#elif defined(_WIN32)
+    HANDLE file = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, NULL,
+                              OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (file == INVALID_HANDLE_VALUE) return NULL;
+
+    LARGE_INTEGER file_size;
+    if (!GetFileSizeEx(file, &file_size) || file_size.QuadPart < 0 ||
+        offset > file_size.QuadPart) {
+        CloseHandle(file);
+        return NULL;
+    }
+
+    int64_t available = file_size.QuadPart - offset;
+    if (len < 0 || len > available) len = available;
+    if (len < 0 || len > INT32_MAX) {
+        CloseHandle(file);
+        return NULL;
+    }
+
+    if (len == 0) {
+        CloseHandle(file);
+        return vm_bv_alloc(&vm->heap.regions, 0);
+    }
+
+    HANDLE mapping = CreateFileMappingA(file, NULL, PAGE_READONLY, 0, 0, NULL);
+    if (!mapping) {
+        CloseHandle(file);
+        return NULL;
+    }
+
+    SYSTEM_INFO system_info;
+    GetSystemInfo(&system_info);
+    uint64_t granularity = system_info.dwAllocationGranularity
+        ? (uint64_t)system_info.dwAllocationGranularity
+        : 65536u;
+    uint64_t offset_u = (uint64_t)offset;
+    uint64_t aligned = offset_u - (offset_u % granularity);
+    size_t delta = (size_t)(offset_u - aligned);
+    uint64_t map_len_u = (uint64_t)delta + (uint64_t)len;
+    if (map_len_u > (uint64_t)SIZE_MAX) {
+        CloseHandle(mapping);
+        CloseHandle(file);
+        return NULL;
+    }
+
+    void* mapped = MapViewOfFile(mapping, FILE_MAP_READ,
+                                 (DWORD)(aligned >> 32),
+                                 (DWORD)(aligned & 0xffffffffu),
+                                 (SIZE_T)map_len_u);
+    if (!mapped) {
+        CloseHandle(mapping);
+        CloseHandle(file);
+        return NULL;
+    }
+
+    VmBytevector* bv = vm_bv_alloc(&vm->heap.regions, (int)len);
+    if (bv) {
+        memcpy(bv->data, (const uint8_t*)mapped + delta, (size_t)len);
+    }
+    UnmapViewOfFile(mapped);
+    CloseHandle(mapping);
+    CloseHandle(file);
+    return bv;
+#else
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return NULL;
+
+    struct stat st;
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) ||
+        offset > (int64_t)st.st_size) {
+        close(fd);
+        return NULL;
+    }
+
+    int64_t available = (int64_t)st.st_size - offset;
+    if (len < 0 || len > available) len = available;
+    if (len < 0 || len > INT32_MAX) {
+        close(fd);
+        return NULL;
+    }
+
+    if (len == 0) {
+        close(fd);
+        return vm_bv_alloc(&vm->heap.regions, 0);
+    }
+
+    long page = sysconf(_SC_PAGE_SIZE);
+    if (page <= 0) page = 4096;
+    int64_t aligned = offset - (offset % page);
+    size_t delta = (size_t)(offset - aligned);
+    size_t map_len = delta + (size_t)len;
+
+    void* mapped = mmap(NULL, map_len, PROT_READ, MAP_PRIVATE, fd, (off_t)aligned);
+    close(fd);
+    if (mapped == MAP_FAILED) return NULL;
+
+    VmBytevector* bv = vm_bv_alloc(&vm->heap.regions, (int)len);
+    if (bv) {
+        memcpy(bv->data, (const uint8_t*)mapped + delta, (size_t)len);
+    }
+    munmap(mapped, map_len);
+    return bv;
+#endif
+}
+
 static int vm_path_copy_cstr(char* dst, size_t dst_len, const char* src) {
     if (!dst || dst_len == 0 || !src) return 0;
     size_t len = strlen(src);
@@ -2452,16 +2569,27 @@ static void vm_dispatch_native(VM* vm, int fid) {
         vm_push(vm, NIL_VAL);
         break;
     }
-    case 582: { /* read-char — from stdin */
-        Value port = vm_pop(vm); (void)port;
-        int ch = getchar();
-        vm_push(vm, ch == EOF ? NIL_VAL : INT_VAL(ch));
+    case 582: { /* close-port(port) */
+        Value port_val = vm_pop(vm);
+        if (port_val.type == VAL_PORT && port_val.as.ptr >= 0 &&
+            port_val.as.ptr < vm->heap.next_free &&
+            vm->heap.objects[port_val.as.ptr]->type == HEAP_PORT) {
+            VmPort* port = (VmPort*)vm->heap.objects[port_val.as.ptr]->opaque.ptr;
+            vm_port_close(port);
+        }
+        vm_push(vm, (Value){.type = VAL_VOID});
         break;
     }
-    case 583: { /* peek-char */
-        Value port = vm_pop(vm); (void)port;
-        int ch = getchar();
-        if (ch != EOF) ungetc(ch, stdin);
+    case 583: { /* read-char(port) */
+        Value port_val = vm_pop(vm);
+        VmPort* port = NULL;
+        if (port_val.type == VAL_PORT && port_val.as.ptr >= 0 &&
+            port_val.as.ptr < vm->heap.next_free &&
+            vm->heap.objects[port_val.as.ptr]->type == HEAP_PORT) {
+            port = (VmPort*)vm->heap.objects[port_val.as.ptr]->opaque.ptr;
+        }
+        if (!port) port = vm_port_current_input();
+        int ch = vm_port_read_char(port);
         vm_push(vm, ch == EOF ? NIL_VAL : INT_VAL(ch));
         break;
     }
@@ -2471,13 +2599,21 @@ static void vm_dispatch_native(VM* vm, int fid) {
         vm_push(vm, NIL_VAL);
         break;
     }
-    case 585: { /* write-string(str, port) */
-        Value port = vm_pop(vm), s_val = vm_pop(vm); (void)port;
-        if (s_val.type == VAL_STRING && vm->heap.objects[s_val.as.ptr]->opaque.ptr) {
-            VmString* s = (VmString*)vm->heap.objects[s_val.as.ptr]->opaque.ptr;
-            printf("%.*s", s->byte_len, s->data);
+    case 585: { /* read-line(port) */
+        Value port_val = vm_pop(vm);
+        VmPort* port = NULL;
+        if (port_val.type == VAL_PORT && port_val.as.ptr >= 0 &&
+            port_val.as.ptr < vm->heap.next_free &&
+            vm->heap.objects[port_val.as.ptr]->type == HEAP_PORT) {
+            port = (VmPort*)vm->heap.objects[port_val.as.ptr]->opaque.ptr;
         }
-        vm_push(vm, NIL_VAL);
+        if (!port) port = vm_port_current_input();
+        VmString* line = vm_port_read_line(&vm->heap.regions, port);
+        if (line) {
+            VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, line);
+        } else {
+            vm_push(vm, NIL_VAL);
+        }
         break;
     }
     case 586: { /* write-char(char, port) — write to stdout if no port */
@@ -2487,13 +2623,22 @@ static void vm_dispatch_native(VM* vm, int fid) {
         vm_push(vm, (Value){.type = VAL_VOID});
         break;
     }
-    case 587: { /* write-string */
-        Value str = vm_pop(vm);
-        if (str.type == VAL_STRING && vm->heap.objects[str.as.ptr]->opaque.ptr) {
-            VmString* s = (VmString*)vm->heap.objects[str.as.ptr]->opaque.ptr;
-            fwrite(s->data, 1, s->byte_len, stdout);
-            fflush(stdout);
+    case 587: { /* write-string(str, port) */
+        Value port_val = vm_pop(vm);
+        Value str_val = vm_pop(vm);
+        VmString* str = (str_val.type == VAL_STRING &&
+                         str_val.as.ptr >= 0 && str_val.as.ptr < vm->heap.next_free &&
+                         vm->heap.objects[str_val.as.ptr]->type == HEAP_STRING)
+            ? (VmString*)vm->heap.objects[str_val.as.ptr]->opaque.ptr
+            : NULL;
+        VmPort* port = NULL;
+        if (port_val.type == VAL_PORT && port_val.as.ptr >= 0 &&
+            port_val.as.ptr < vm->heap.next_free &&
+            vm->heap.objects[port_val.as.ptr]->type == HEAP_PORT) {
+            port = (VmPort*)vm->heap.objects[port_val.as.ptr]->opaque.ptr;
         }
+        if (!port) port = vm_port_current_output();
+        vm_port_write_string(port, str);
         vm_push(vm, (Value){.type = VAL_VOID});
         break;
     }
@@ -4319,6 +4464,15 @@ static void vm_dispatch_native(VM* vm, int fid) {
 
     case 132: { /* force: force a promise (thunk memoization) */
         Value promise = vm_pop(vm);
+#ifndef ESHKOL_VM_WASM
+        if (promise.type == VAL_FUTURE && promise.as.ptr >= 0 &&
+            promise.as.ptr < vm->heap.next_free &&
+            vm->heap.objects[promise.as.ptr]->type == HEAP_FUTURE) {
+            VmFuture* handle = (VmFuture*)vm->heap.objects[promise.as.ptr]->opaque.ptr;
+            vm_push(vm, vm_future_force(handle));
+            break;
+        }
+#endif
         if (promise.type == VAL_VECTOR) {
             /* Promise is a vector: #(forced? thunk result) */
             VmVector* v = (VmVector*)vm->heap.objects[promise.as.ptr]->opaque.ptr;
@@ -5679,6 +5833,32 @@ static void vm_dispatch_native(VM* vm, int fid) {
         (void)path_val; (void)pattern_val;
 #endif
         vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+    case 1758: { /* file-mmap(path, offset, length) → bytevector or #f */
+        Value len_val = vm_pop(vm), offset_val = vm_pop(vm), path_val = vm_pop(vm);
+        int64_t offset = (int64_t)as_number(offset_val);
+        int64_t len = (int64_t)as_number(len_val);
+        if (path_val.type == VAL_STRING) {
+            HeapObject* obj = VM_VALIDATE_HEAP(vm, path_val);
+            VmString* ps = (obj && obj->type == HEAP_STRING)
+                ? (VmString*)obj->opaque.ptr
+                : NULL;
+            if (ps) {
+                VmBytevector* bv = vm_file_mmap_copy_to_bytevector(vm, ps->data, offset, len);
+                if (bv) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_BYTEVECTOR, VAL_BYTEVECTOR, bv); break; }
+            }
+        }
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+    case 1759: { /* file-munmap(bytevector) → void
+                  * The standalone VM returns arena-owned bytevectors from
+                  * file-mmap after copying mapped bytes, so unmap is a no-op. */
+        (void)vm_pop(vm);
+        vm_push(vm, (Value){.type = VAL_VOID});
         break;
     }
 
