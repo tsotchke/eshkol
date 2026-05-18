@@ -19,6 +19,37 @@ static Value vm_int_pair(VM* vm, int64_t car, int64_t cdr) {
     return PAIR_VAL(ptr);
 }
 
+static Value vm_cons_value(VM* vm, Value car, Value cdr) {
+    int32_t ptr = heap_alloc(&vm->heap);
+    if (ptr < 0) {
+        vm->error = 1;
+        return NIL_VAL;
+    }
+    vm->heap.objects[ptr]->type = HEAP_CONS;
+    vm->heap.objects[ptr]->cons.car = car;
+    vm->heap.objects[ptr]->cons.cdr = cdr;
+    return PAIR_VAL(ptr);
+}
+
+static Value vm_string_value(VM* vm, const char* data, int64_t len) {
+    if (!data) return NIL_VAL;
+    if (len < 0) len = (int64_t)strlen(data);
+    VmString* s = vm_string_new(&vm->heap.regions, data, len);
+    if (!s) return NIL_VAL;
+    int32_t ptr = heap_alloc(&vm->heap);
+    if (ptr < 0) {
+        vm->error = 1;
+        return NIL_VAL;
+    }
+    vm->heap.objects[ptr]->type = HEAP_STRING;
+    vm->heap.objects[ptr]->opaque.ptr = s;
+    return (Value){.type = VAL_STRING, .as.ptr = ptr};
+}
+
+static Value vm_alist_entry(VM* vm, const char* key, Value value) {
+    return vm_cons_value(vm, vm_string_value(vm, key, -1), value);
+}
+
 static int64_t vm_process_pid_from_value(VM* vm, Value value) {
     if (value.type == VAL_PAIR && is_valid_heap_ptr(vm, value.as.ptr)) {
         HeapObject* obj = vm->heap.objects[value.as.ptr];
@@ -101,6 +132,120 @@ static void vm_signal_handler(int sig) {
     vm_signal_count++;
 }
 #endif
+
+static int vm_term_stdout_is_tty(void) {
+#if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
+    return isatty(STDOUT_FILENO);
+#else
+    return 0;
+#endif
+}
+
+static int vm_term_stdin_is_tty(void) {
+#if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
+    return isatty(STDIN_FILENO);
+#else
+    return 0;
+#endif
+}
+
+static void vm_term_write_tty(const char* s) {
+#if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
+    if (s && vm_term_stdout_is_tty()) {
+        fputs(s, stdout);
+        fflush(stdout);
+    }
+#else
+    (void)s;
+#endif
+}
+
+static void vm_term_printf_tty(const char* fmt, int a, int b) {
+#if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
+    if (fmt && vm_term_stdout_is_tty()) {
+        printf(fmt, a, b);
+        fflush(stdout);
+    }
+#else
+    (void)fmt; (void)a; (void)b;
+#endif
+}
+
+static void vm_term_write_osc52_tty(const char* data, size_t len) {
+#if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
+    static const char table[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    if (!data || !vm_term_stdout_is_tty()) return;
+
+    fputs("\033]52;c;", stdout);
+    for (size_t i = 0; i < len; i += 3) {
+        unsigned b0 = (unsigned char)data[i];
+        unsigned b1 = (i + 1 < len) ? (unsigned char)data[i + 1] : 0;
+        unsigned b2 = (i + 2 < len) ? (unsigned char)data[i + 2] : 0;
+        fputc(table[(b0 >> 2) & 0x3F], stdout);
+        fputc(table[((b0 << 4) | (b1 >> 4)) & 0x3F], stdout);
+        fputc(i + 1 < len ? table[((b1 << 2) | (b2 >> 6)) & 0x3F] : '=', stdout);
+        fputc(i + 2 < len ? table[b2 & 0x3F] : '=', stdout);
+    }
+    fputc('\a', stdout);
+    fflush(stdout);
+#else
+    (void)data; (void)len;
+#endif
+}
+
+static Value vm_term_mouse_event_value(VM* vm, const char* buf) {
+    const char* start = buf ? strstr(buf, "\033[<") : NULL;
+    int raw = 0, x = 0, y = 0;
+    char suffix = '\0';
+    if (!start || sscanf(start, "\033[<%d;%d;%d%c", &raw, &x, &y, &suffix) != 4)
+        return BOOL_VAL(0);
+
+    int modifiers = 0;
+    if (raw & 4) modifiers |= 1;   /* shift */
+    if (raw & 8) modifiers |= 2;   /* meta */
+    if (raw & 16) modifiers |= 4;  /* control */
+
+    Value result = NIL_VAL;
+    result = vm_cons_value(vm, vm_string_value(vm, suffix == 'm' ? "release" : "press", -1), result);
+    result = vm_cons_value(vm, INT_VAL((int64_t)modifiers), result);
+    result = vm_cons_value(vm, INT_VAL((int64_t)y), result);
+    result = vm_cons_value(vm, INT_VAL((int64_t)x), result);
+    result = vm_cons_value(vm, INT_VAL((int64_t)(raw & 3)), result);
+    return result;
+}
+
+static Value vm_term_detect_capabilities(VM* vm) {
+    const char* term = getenv("TERM");
+    const char* colorterm = getenv("COLORTERM");
+    const char* term_program = getenv("TERM_PROGRAM");
+    const char* locale = getenv("LC_ALL");
+    if (!locale || !*locale) locale = getenv("LC_CTYPE");
+    if (!locale || !*locale) locale = getenv("LANG");
+
+    int color_depth = 4;
+    if (colorterm && (strstr(colorterm, "truecolor") || strstr(colorterm, "24bit")))
+        color_depth = 24;
+    else if (term && strstr(term, "256color"))
+        color_depth = 8;
+    else if (term && strcmp(term, "dumb") == 0)
+        color_depth = 0;
+
+    int unicode = locale && (strstr(locale, "UTF-8") || strstr(locale, "utf8") || strstr(locale, "UTF8"));
+    int tty = vm_term_stdout_is_tty();
+
+    Value alist = NIL_VAL;
+    alist = vm_cons_value(vm, vm_alist_entry(vm, "clipboard", BOOL_VAL(tty)), alist);
+    alist = vm_cons_value(vm, vm_alist_entry(vm, "mouse", BOOL_VAL(tty)), alist);
+    alist = vm_cons_value(vm, vm_alist_entry(vm, "alternate-screen", BOOL_VAL(tty)), alist);
+    alist = vm_cons_value(vm, vm_alist_entry(vm, "unicode", BOOL_VAL(unicode)), alist);
+    alist = vm_cons_value(vm, vm_alist_entry(vm, "color-depth", INT_VAL((int64_t)color_depth)), alist);
+    alist = vm_cons_value(vm, vm_alist_entry(vm, "tty?", BOOL_VAL(tty)), alist);
+    if (term_program && *term_program)
+        alist = vm_cons_value(vm, vm_alist_entry(vm, "term-program", vm_string_value(vm, term_program, -1)), alist);
+    if (term && *term)
+        alist = vm_cons_value(vm, vm_alist_entry(vm, "term", vm_string_value(vm, term, -1)), alist);
+    return alist;
+}
 
 #if defined(_WIN32) && !defined(ESHKOL_VM_WASM)
 static int vm_win_append_process_arg(char* out, size_t out_size, size_t* pos, const char* arg) {
@@ -2953,6 +3098,164 @@ static void vm_dispatch_native(VM* vm, int fid) {
         int col = 0;
         (void)vm_query_terminal_cursor(&row, &col);
         vm_push(vm, vm_int_pair(vm, row, col));
+        break;
+    }
+    case 1930: { /* term-set-scroll-region(top, bottom) → bool */
+        Value bottom_val = vm_pop(vm), top_val = vm_pop(vm);
+        int top = (int)as_number(top_val);
+        int bottom = (int)as_number(bottom_val);
+        if (top < 1) top = 1;
+        if (bottom >= top) {
+            vm_term_printf_tty("\033[%d;%dr", top, bottom);
+            vm_push(vm, BOOL_VAL(1));
+        } else {
+            vm_push(vm, BOOL_VAL(0));
+        }
+        break;
+    }
+    case 1931: { /* term-reset-scroll-region() → bool */
+        vm_term_write_tty("\033[r");
+        vm_push(vm, BOOL_VAL(1));
+        break;
+    }
+    case 1932: { /* term-enable-mouse() → bool */
+        vm_term_write_tty("\033[?1000h\033[?1006h");
+        vm_push(vm, BOOL_VAL(1));
+        break;
+    }
+    case 1933: { /* term-disable-mouse() → bool */
+        vm_term_write_tty("\033[?1006l\033[?1000l");
+        vm_push(vm, BOOL_VAL(1));
+        break;
+    }
+    case 1934: { /* term-read-mouse-event(timeout-ms) → (button x y modifiers type) or #f */
+        Value timeout_val = vm_pop(vm);
+#if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
+        int timeout_ms = (int)as_number(timeout_val);
+        if (timeout_ms < 0) timeout_ms = 0;
+        if (vm_term_stdin_is_tty()) {
+            struct pollfd pfd;
+            pfd.fd = STDIN_FILENO;
+            pfd.events = POLLIN;
+            pfd.revents = 0;
+            if (poll(&pfd, 1, timeout_ms) > 0 && (pfd.revents & POLLIN)) {
+                char buf[64];
+                int old_flags = fcntl(STDIN_FILENO, F_GETFL, 0);
+                if (old_flags >= 0 && fcntl(STDIN_FILENO, F_SETFL, old_flags | O_NONBLOCK) == 0) {
+                    ssize_t n = read(STDIN_FILENO, buf, sizeof(buf) - 1);
+                    (void)fcntl(STDIN_FILENO, F_SETFL, old_flags);
+                    if (n > 0) {
+                        buf[n] = '\0';
+                        int b = 0, x = 0, y = 0;
+                        char kind = '\0';
+                        if (sscanf(buf, "\033[<%d;%d;%d%c", &b, &x, &y, &kind) == 4) {
+                            const char* type = (kind == 'm') ? "release" : "press";
+                            int button = b & 3;
+                            int modifiers = b & (4 | 8 | 16);
+                            Value result = NIL_VAL;
+                            result = vm_cons_value(vm, vm_string_value(vm, type, -1), result);
+                            result = vm_cons_value(vm, INT_VAL(modifiers), result);
+                            result = vm_cons_value(vm, INT_VAL(y), result);
+                            result = vm_cons_value(vm, INT_VAL(x), result);
+                            result = vm_cons_value(vm, INT_VAL(button), result);
+                            vm_push(vm, result);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+#else
+        (void)timeout_val;
+#endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+    case 1935: { /* term-enable-alternate-screen() → bool */
+        vm_term_write_tty("\033[?1049h");
+        vm_push(vm, BOOL_VAL(1));
+        break;
+    }
+    case 1936: { /* term-disable-alternate-screen() → bool */
+        vm_term_write_tty("\033[?1049l");
+        vm_push(vm, BOOL_VAL(1));
+        break;
+    }
+    case 1937: { /* term-clipboard-write(text) → bool */
+        Value text_val = vm_pop(vm);
+        VmString* text = vm_value_as_string(vm, text_val);
+        if (!text || !text->data) {
+            vm_push(vm, BOOL_VAL(0));
+            break;
+        }
+#if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
+        if (vm_term_stdout_is_tty() && text->byte_len <= 4096) {
+            static const char table[] =
+                "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+            char encoded[5500];
+            int pos = 0;
+            for (int i = 0; i < text->byte_len; i += 3) {
+                unsigned int a = (unsigned char)text->data[i];
+                unsigned int b = (i + 1 < text->byte_len) ? (unsigned char)text->data[i + 1] : 0;
+                unsigned int c = (i + 2 < text->byte_len) ? (unsigned char)text->data[i + 2] : 0;
+                encoded[pos++] = table[(a >> 2) & 63];
+                encoded[pos++] = table[((a & 3) << 4) | ((b >> 4) & 15)];
+                encoded[pos++] = (i + 1 < text->byte_len) ? table[((b & 15) << 2) | ((c >> 6) & 3)] : '=';
+                encoded[pos++] = (i + 2 < text->byte_len) ? table[c & 63] : '=';
+            }
+            encoded[pos] = '\0';
+            fputs("\033]52;c;", stdout);
+            fputs(encoded, stdout);
+            fputs("\a", stdout);
+            fflush(stdout);
+        }
+#endif
+        vm_push(vm, BOOL_VAL(1));
+        break;
+    }
+    case 1938: { /* term-clipboard-read() → string or #f */
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+    case 1939: { /* term-hyperlink(url, text) → string */
+        Value text_val = vm_pop(vm), url_val = vm_pop(vm);
+        VmString* url = vm_value_as_string(vm, url_val);
+        VmString* text = vm_value_as_string(vm, text_val);
+        if (url && url->data && text && text->data) {
+            char buf[8192];
+            int n = snprintf(buf, sizeof(buf), "\033]8;;%s\033\\%s\033]8;;\033\\",
+                             url->data, text->data);
+            if (n >= 0 && n < (int)sizeof(buf)) {
+                vm_push(vm, vm_string_value(vm, buf, n));
+                break;
+            }
+        }
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+    case 1940: { /* term-detect-capabilities() → alist */
+        int color_depth = 8;
+        int unicode = 0;
+        const char* colorterm = getenv("COLORTERM");
+        const char* term = getenv("TERM");
+        const char* lang = getenv("LANG");
+        if (colorterm && (strstr(colorterm, "truecolor") || strstr(colorterm, "24bit")))
+            color_depth = 24;
+        else if (term && strstr(term, "256color"))
+            color_depth = 8;
+        if ((lang && (strstr(lang, "UTF-8") || strstr(lang, "utf8"))) ||
+            (term && strstr(term, "utf")))
+            unicode = 1;
+        Value result = NIL_VAL;
+        result = vm_cons_value(vm, vm_alist_entry(vm, "tty", BOOL_VAL(vm_term_stdout_is_tty())), result);
+        result = vm_cons_value(vm, vm_alist_entry(vm, "unicode", BOOL_VAL(unicode)), result);
+        result = vm_cons_value(vm, vm_alist_entry(vm, "color-depth", INT_VAL(color_depth)), result);
+        vm_push(vm, result);
+        break;
+    }
+    case 1941: { /* term-bell() → bool */
+        vm_term_write_tty("\a");
+        vm_push(vm, BOOL_VAL(1));
         break;
     }
 

@@ -5541,6 +5541,14 @@ static const BuiltinDef BUILTINS[] = {
     {"signal-install", 1794, 1}, {"signal-check", 1795, 0},
     {"signal-reset", 1796, 1}, {"signal-ignore", 1797, 1},
     {"signal-count", 1798, 0},
+    {"term-set-scroll-region", 1930, 2}, {"term-reset-scroll-region", 1931, 0},
+    {"term-enable-mouse", 1932, 0}, {"term-disable-mouse", 1933, 0},
+    {"term-read-mouse-event", 1934, 1},
+    {"term-enable-alternate-screen", 1935, 0},
+    {"term-disable-alternate-screen", 1936, 0},
+    {"term-clipboard-write", 1937, 1}, {"term-clipboard-read", 1938, 0},
+    {"term-hyperlink", 1939, 2}, {"term-detect-capabilities", 1940, 0},
+    {"term-bell", 1941, 0},
     /* Missing hash */
     {"hash-clear!", 668, 1},
     /* gcd / lcm */
