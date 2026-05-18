@@ -724,6 +724,13 @@ Repeat callback every interval-ms.
 
 ### `(interval-cancel! interval) -> void`
 
+Standalone VM native IDs 2001-2013 expose deterministic VM-lifetime handles
+for bounded channels, recursive mutexes, and condition variables. Channel
+send/receive operations are non-blocking in the standalone VM and return `#f`
+when a send would block, a receive is empty, or the channel is closed. Condition
+variables currently provide handle-compatible signal/wait/broadcast safe points
+for agent code; they do not park OS threads in the standalone VM.
+
 ---
 
 ## B.11 Date/Time

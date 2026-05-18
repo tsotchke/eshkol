@@ -1,0 +1,72 @@
+;; Standalone VM regression for channel and synchronization primitives.
+
+(display "=== concurrency VM surface regression ===") (newline)
+
+(define ch (make-channel 2))
+
+(display "T1 make-channel returns handle: ")
+(display (if (and (number? ch) (> ch 0))
+             "PASS"
+             (list "FAIL got " ch)))
+(newline)
+
+(define send-a (channel-send! ch "a"))
+(define send-b (channel-send! ch "b"))
+(define send-full (channel-send! ch "c"))
+
+(display "T2 channel-send! respects capacity: ")
+(display (if (and send-a send-b (not send-full))
+             "PASS"
+             "FAIL"))
+(newline)
+
+(display "T3 channel-receive preserves FIFO order: ")
+(display (if (and (string=? (channel-receive ch 0) "a")
+                  (string=? (channel-try-receive ch) "b")
+                  (not (channel-try-receive ch)))
+             "PASS"
+             "FAIL"))
+(newline)
+
+(define close-ok (channel-close! ch))
+(define send-closed (channel-send! ch "z"))
+
+(display "T4 channel-close! prevents new sends: ")
+(display (if (and close-ok (not send-closed))
+             "PASS"
+             "FAIL"))
+(newline)
+
+(define m (make-mutex))
+(define protected 0)
+(define with-result
+  (with-mutex m
+    (lambda ()
+      (set! protected (+ protected 7))
+      protected)))
+
+(display "T5 with-mutex locks, invokes thunk, unlocks: ")
+(display (if (and (= with-result 7)
+                  (= protected 7)
+                  (mutex-lock! m)
+                  (mutex-unlock! m))
+             "PASS"
+             "FAIL"))
+(newline)
+
+(define cv (make-condition-variable))
+(define m2 (make-mutex))
+(define cv-ok
+  (and (mutex-lock! m2)
+       (condition-signal cv)
+       (condition-broadcast cv)
+       (condition-wait cv m2)
+       (mutex-unlock! m2)))
+
+(display "T6 condition variable handles accept signal/wait/broadcast: ")
+(display (if cv-ok
+             "PASS"
+             "FAIL"))
+(newline)
+
+(display "=== concurrency VM surface complete ===") (newline)
