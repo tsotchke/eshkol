@@ -1257,6 +1257,11 @@ public:
         function_return_types["regex-match?"] = BuiltinTypes::Boolean;
         function_return_types["regex-match-groups"] = BuiltinTypes::Value;
         function_return_types["regex-split"] = BuiltinTypes::Value;
+        function_return_types["diff-lines"] = BuiltinTypes::Value;
+        function_return_types["fuzzy-match"] = BuiltinTypes::Value;
+        function_return_types["semver-parse"] = BuiltinTypes::Value;
+        function_return_types["semver-compare"] = BuiltinTypes::Integer;
+        function_return_types["semver-satisfies?"] = BuiltinTypes::Boolean;
         function_return_types["string-ends-with?"] = BuiltinTypes::Boolean;
         function_return_types["string-index-of"] = BuiltinTypes::Integer;
         function_return_types["string-pad-left"] = BuiltinTypes::String;
@@ -11969,6 +11974,11 @@ private:
         if (func_name == "regex-match?") return system_->regexMatchPredicate(op);
         if (func_name == "regex-match-groups") return system_->regexMatchGroups(op);
         if (func_name == "regex-split") return system_->regexSplit(op);
+        if (func_name == "diff-lines") return system_->diffLines(op);
+        if (func_name == "fuzzy-match") return system_->fuzzyMatch(op);
+        if (func_name == "semver-parse") return system_->semverParse(op);
+        if (func_name == "semver-compare") return system_->semverCompare(op);
+        if (func_name == "semver-satisfies?") return system_->semverSatisfies(op);
         if (func_name == "string-ends-with?") return system_->stringEndsWith(op);
         if (func_name == "string-index-of") return system_->stringIndexOf(op);
         if (func_name == "string-pad-left") return system_->stringPadLeft(op);
@@ -19904,6 +19914,8 @@ private:
             "constant-time-equal?", "sha256-file",
             "regex-compile", "regex-free", "regex-match", "regex-match?",
             "regex-match-groups", "regex-split",
+            "diff-lines", "fuzzy-match", "semver-parse",
+            "semver-compare", "semver-satisfies?",
             "string-ends-with?", "string-index-of",
             "string-pad-left", "string-pad-right",
             "kb-save", "kb-load", "tensor-token-estimate",
