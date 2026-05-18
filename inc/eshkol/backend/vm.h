@@ -53,6 +53,8 @@ int eshkol_vm_register_host_native(const char* name, eshkol_vm_host_native_fn fn
 /* Helpers callable only from a registered host-native callback. */
 int eshkol_vm_host_pop_int64(VM* vm, int64_t* out);
 int eshkol_vm_host_push_int64(VM* vm, int64_t value);
+int eshkol_vm_host_pop_double(VM* vm, double* out);
+int eshkol_vm_host_push_double(VM* vm, double value);
 
 #ifdef __cplusplus
 }

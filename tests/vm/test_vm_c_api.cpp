@@ -67,6 +67,11 @@ void write_int64_const(EskbBuffer* b, int64_t value) {
     eskb_buf_write_i64(b, value);
 }
 
+void write_f64_const(EskbBuffer* b, double value) {
+    eskb_buf_write_u8(b, ESKB_CONST_F64);
+    eskb_buf_write_f64(b, value);
+}
+
 uint64_t pack_ascii_string(const char* text) {
     uint64_t packed = 0;
     const size_t len = std::strlen(text);
@@ -142,6 +147,53 @@ EskbBuffer make_host_native_int64_chunk(int native_fid) {
     eskb_buf_write_leb128(&const_buf, 2);
     write_int64_const(&const_buf, 18);
     write_int64_const(&const_buf, 19);
+
+    const Instr main_code[] = {
+        {OP_CONST, 0},
+        {OP_CONST, 1},
+        {OP_NATIVE_CALL, native_fid},
+        {OP_HALT, 0},
+    };
+
+    eskb_buf_write_leb128(&code_buf, 1);
+    write_function(&code_buf, "main", main_code, sizeof(main_code) / sizeof(main_code[0]));
+
+    eskb_buf_write_leb128(&payload, 2);
+    eskb_buf_write_u8(&payload, ESKB_SECTION_CONST);
+    eskb_buf_write_leb128(&payload, const_buf.len);
+    eskb_buf_write_u8(&payload, ESKB_SECTION_CODE);
+    eskb_buf_write_leb128(&payload, code_buf.len);
+    eskb_buf_write(&payload, const_buf.data, const_buf.len);
+    eskb_buf_write(&payload, code_buf.data, code_buf.len);
+
+    EskbHeader hdr;
+    hdr.magic = ESKB_MAGIC;
+    hdr.version = ESKB_VERSION;
+    hdr.flags = ESKB_FLAG_LITTLE_ENDIAN;
+    hdr.checksum = eskb_crc32(payload.data, payload.len);
+
+    eskb_buf_write(&file, &hdr, sizeof(hdr));
+    eskb_buf_write(&file, payload.data, payload.len);
+
+    eskb_buf_free(&const_buf);
+    eskb_buf_free(&code_buf);
+    eskb_buf_free(&payload);
+    return file;
+}
+
+EskbBuffer make_host_native_double_chunk(int native_fid) {
+    EskbBuffer const_buf;
+    EskbBuffer code_buf;
+    EskbBuffer payload;
+    EskbBuffer file;
+    eskb_buf_init(&const_buf);
+    eskb_buf_init(&code_buf);
+    eskb_buf_init(&payload);
+    eskb_buf_init(&file);
+
+    eskb_buf_write_leb128(&const_buf, 2);
+    write_f64_const(&const_buf, 20.5);
+    write_f64_const(&const_buf, 21.5);
 
     const Instr main_code[] = {
         {OP_CONST, 0},
@@ -333,6 +385,14 @@ int host_add_with_offset(VM* vm) {
     return eshkol_vm_host_push_int64(vm, a + b + 5);
 }
 
+int host_add_double(VM* vm) {
+    double b = 0.0;
+    double a = 0.0;
+    if (eshkol_vm_host_pop_double(vm, &b) != 0) return -1;
+    if (eshkol_vm_host_pop_double(vm, &a) != 0) return -1;
+    return eshkol_vm_host_push_double(vm, a + b);
+}
+
 void test_host_native_registry(void) {
     int slot = eshkol_vm_register_host_native("test.add-with-offset", host_add_with_offset);
     CHECK(slot >= 0, "register host native");
@@ -351,6 +411,22 @@ void test_host_native_registry(void) {
         eshkol_vm_destroy(vm);
     }
     eskb_buf_free(&chunk);
+
+    int double_slot = eshkol_vm_register_host_native("test.add-double", host_add_double);
+    CHECK(double_slot >= 0, "register double host native");
+    if (double_slot < 0) return;
+
+    EskbBuffer double_chunk = make_host_native_double_chunk(ESHKOL_VM_HOST_NATIVE_BASE + double_slot);
+    EshkolVmHandle* double_vm = eshkol_vm_load_chunk(double_chunk.data, double_chunk.len);
+    CHECK(double_vm != nullptr, "load double host-native ESKB chunk");
+    if (double_vm) {
+        CHECK(eshkol_vm_run(double_vm) == 0, "run double host-native ESKB chunk");
+        int64_t top = 0;
+        CHECK(eshkol_vm_top_int64(double_vm, &top) == 0, "read double host-native result");
+        CHECK(top == 42, "double host-native result coerces to 42");
+        eshkol_vm_destroy(double_vm);
+    }
+    eskb_buf_free(&double_chunk);
 }
 
 void test_native_string_case(const char* label, int native_fid, const char* a, const char* b,
