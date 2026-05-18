@@ -651,6 +651,67 @@ static Value vm_url_decode_value(VM* vm, VmString* input) {
     return result;
 }
 
+static int vm_string_ends_with_bytes(VmString* s, VmString* suffix) {
+    if (!s || !suffix || !s->data || !suffix->data) return 0;
+    if (suffix->byte_len > s->byte_len) return 0;
+    return memcmp(s->data + s->byte_len - suffix->byte_len,
+                  suffix->data,
+                  (size_t)suffix->byte_len) == 0;
+}
+
+static Value vm_string_index_of_value(VmString* s, VmString* sub, int64_t start_idx) {
+    if (!s || !sub || !s->data || !sub->data) return BOOL_VAL(0);
+    if (start_idx < 0) start_idx = 0;
+    if (start_idx > s->char_len) return BOOL_VAL(0);
+    if (sub->byte_len == 0) return INT_VAL(start_idx);
+    int start_byte = vm_utf8_byte_offset(s->data, s->byte_len, (int)start_idx);
+    if (start_byte < 0) start_byte = s->byte_len;
+    for (int char_i = (int)start_idx, byte_i = start_byte;
+         byte_i + sub->byte_len <= s->byte_len && char_i <= s->char_len;
+         char_i++) {
+        if (memcmp(s->data + byte_i, sub->data, (size_t)sub->byte_len) == 0)
+            return INT_VAL(char_i);
+        int next = byte_i;
+        vm_utf8_decode(s->data, s->byte_len, &next);
+        if (next <= byte_i) next = byte_i + 1;
+        byte_i = next;
+    }
+    return BOOL_VAL(0);
+}
+
+static Value vm_string_pad_value(VM* vm, VmString* s, int64_t width, int cp, int left) {
+    if (!vm || !s || !s->data) return BOOL_VAL(0);
+    if (width <= s->char_len) return vm_string_value(vm, s->data, s->byte_len);
+    if (width > 1000000) width = 1000000;
+    char enc[4];
+    int enc_len = vm_utf8_encode(cp, enc);
+    if (enc_len <= 0) {
+        enc[0] = ' ';
+        enc_len = 1;
+    }
+    int64_t pad_count = width - s->char_len;
+    size_t out_len = (size_t)s->byte_len + (size_t)pad_count * (size_t)enc_len;
+    char* out = (char*)malloc(out_len + 1);
+    if (!out) return BOOL_VAL(0);
+    char* p = out;
+    if (!left) {
+        memcpy(p, s->data, (size_t)s->byte_len);
+        p += s->byte_len;
+    }
+    for (int64_t i = 0; i < pad_count; i++) {
+        memcpy(p, enc, (size_t)enc_len);
+        p += enc_len;
+    }
+    if (left) {
+        memcpy(p, s->data, (size_t)s->byte_len);
+        p += s->byte_len;
+    }
+    *p = '\0';
+    Value result = vm_string_value(vm, out, (int64_t)out_len);
+    free(out);
+    return result;
+}
+
 #if defined(_WIN32) && !defined(ESHKOL_VM_WASM)
 static int vm_win_append_process_arg(char* out, size_t out_size, size_t* pos, const char* arg) {
     if (!out || !pos || !arg) return 0;
@@ -3784,6 +3845,40 @@ static void vm_dispatch_native(VM* vm, int fid) {
         Value str_val = vm_pop(vm);
         VmString* s = vm_value_as_string(vm, str_val);
         vm_push(vm, vm_url_decode_value(vm, s));
+        break;
+    }
+    case 1956: { /* string-ends-with?(str, suffix) → bool */
+        Value suffix_val = vm_pop(vm);
+        Value str_val = vm_pop(vm);
+        vm_push(vm, BOOL_VAL(vm_string_ends_with_bytes(vm_value_as_string(vm, str_val),
+                                                       vm_value_as_string(vm, suffix_val))));
+        break;
+    }
+    case 1957: { /* string-index-of(str, substr, start) → integer or #f */
+        Value start_val = vm_pop(vm);
+        Value sub_val = vm_pop(vm);
+        Value str_val = vm_pop(vm);
+        vm_push(vm, vm_string_index_of_value(vm_value_as_string(vm, str_val),
+                                             vm_value_as_string(vm, sub_val),
+                                             (int64_t)as_number(start_val)));
+        break;
+    }
+    case 1958: { /* string-pad-left(str, width, ch) → string */
+        Value ch_val = vm_pop(vm);
+        Value width_val = vm_pop(vm);
+        Value str_val = vm_pop(vm);
+        vm_push(vm, vm_string_pad_value(vm, vm_value_as_string(vm, str_val),
+                                        (int64_t)as_number(width_val),
+                                        (int)as_number(ch_val), 1));
+        break;
+    }
+    case 1959: { /* string-pad-right(str, width, ch) → string */
+        Value ch_val = vm_pop(vm);
+        Value width_val = vm_pop(vm);
+        Value str_val = vm_pop(vm);
+        vm_push(vm, vm_string_pad_value(vm, vm_value_as_string(vm, str_val),
+                                        (int64_t)as_number(width_val),
+                                        (int)as_number(ch_val), 0));
         break;
     }
 

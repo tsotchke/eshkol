@@ -405,6 +405,8 @@ static const BuiltinDef BUILTINS[] = {
     {"temp-directory", 1951, 0}, {"prevent-sleep", 1952, 1},
     {"allow-sleep", 1953, 1},
     {"url-encode", 1954, 1}, {"url-decode", 1955, 1},
+    {"string-ends-with?", 1956, 2}, {"string-index-of", 1957, 3},
+    {"string-pad-left", 1958, 3}, {"string-pad-right", 1959, 3},
     /* Parallel primitives — IDs 620-628 */
     {"parallel-map", 620, 2}, {"parallel-filter", 621, 2},
     {"parallel-fold", 622, 3}, {"parallel-for-each", 623, 2},

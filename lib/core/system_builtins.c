@@ -2076,6 +2076,100 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_url_decode_v(eshkol_sysbuiltin_v
     return result;
 }
 
+static int sys_utf8_encode_codepoint(int cp, char* out) {
+    if (!out) return 0;
+    if (cp < 0) cp = ' ';
+    if (cp < 0x80) {
+        out[0] = (char)cp;
+        return 1;
+    }
+    if (cp < 0x800) {
+        out[0] = (char)(0xC0 | (cp >> 6));
+        out[1] = (char)(0x80 | (cp & 0x3F));
+        return 2;
+    }
+    if (cp < 0x10000) {
+        out[0] = (char)(0xE0 | (cp >> 12));
+        out[1] = (char)(0x80 | ((cp >> 6) & 0x3F));
+        out[2] = (char)(0x80 | (cp & 0x3F));
+        return 3;
+    }
+    if (cp <= 0x10FFFF) {
+        out[0] = (char)(0xF0 | (cp >> 18));
+        out[1] = (char)(0x80 | ((cp >> 12) & 0x3F));
+        out[2] = (char)(0x80 | ((cp >> 6) & 0x3F));
+        out[3] = (char)(0x80 | (cp & 0x3F));
+        return 4;
+    }
+    out[0] = ' ';
+    return 1;
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_string_ends_with_v(
+    eshkol_sysbuiltin_value_t str_val,
+    eshkol_sysbuiltin_value_t suffix_val) {
+    const char* s = sys_extract_string(str_val);
+    const char* suffix = sys_extract_string(suffix_val);
+    if (!s || !suffix) return sys_make_bool(0);
+    size_t s_len = strlen(s);
+    size_t suffix_len = strlen(suffix);
+    if (suffix_len > s_len) return sys_make_bool(0);
+    return sys_make_bool(memcmp(s + s_len - suffix_len, suffix, suffix_len) == 0);
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_string_index_of_v(
+    eshkol_sysbuiltin_value_t str_val,
+    eshkol_sysbuiltin_value_t sub_val,
+    eshkol_sysbuiltin_value_t start_val) {
+    const char* s = sys_extract_string(str_val);
+    const char* sub = sys_extract_string(sub_val);
+    if (!s || !sub) return sys_make_bool(0);
+    int64_t start = (int64_t)start_val.data;
+    size_t s_len = strlen(s);
+    if (start < 0) start = 0;
+    if ((size_t)start > s_len) return sys_make_bool(0);
+    if (*sub == '\0') return sys_make_int64(start);
+    const char* found = strstr(s + start, sub);
+    if (!found) return sys_make_bool(0);
+    return sys_make_int64((int64_t)(found - s));
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_string_pad_v(
+    eshkol_sysbuiltin_value_t str_val,
+    eshkol_sysbuiltin_value_t width_val,
+    eshkol_sysbuiltin_value_t ch_val,
+    int left) {
+    const char* s = sys_extract_string(str_val);
+    if (!s) return sys_make_bool(0);
+    int64_t width = (int64_t)width_val.data;
+    size_t s_len = strlen(s);
+    if (width <= (int64_t)s_len) return sys_make_string(s);
+    if (width > 1000000) width = 1000000;
+    char enc[4];
+    int enc_len = sys_utf8_encode_codepoint((int)((int64_t)ch_val.data), enc);
+    int64_t pad_count = width - (int64_t)s_len;
+    size_t out_len = s_len + (size_t)pad_count * (size_t)enc_len;
+    char* out = (char*)malloc(out_len + 1);
+    if (!out) return sys_make_bool(0);
+    char* p = out;
+    if (!left) {
+        memcpy(p, s, s_len);
+        p += s_len;
+    }
+    for (int64_t i = 0; i < pad_count; i++) {
+        memcpy(p, enc, (size_t)enc_len);
+        p += enc_len;
+    }
+    if (left) {
+        memcpy(p, s, s_len);
+        p += s_len;
+    }
+    *p = '\0';
+    eshkol_sysbuiltin_value_t result = sys_make_string(out);
+    free(out);
+    return result;
+}
+
 /* ═══════════════════════════════════════════════════════════════════
  * KB Persistence — save/load knowledge bases
  * ═══════════════════════════════════════════════════════════════════ */
@@ -2450,6 +2544,10 @@ void eshkol_builtin_string_display_width(sv_t* out, const sv_t* a) { *out = eshk
 void eshkol_builtin_string_truncate_display(sv_t* out, const sv_t* a, const sv_t* b, const sv_t* c) { *out = eshkol_builtin_string_truncate_display_v(*a, *b, *c); }
 void eshkol_builtin_url_encode(sv_t* out, const sv_t* a) { *out = eshkol_builtin_url_encode_v(*a); }
 void eshkol_builtin_url_decode(sv_t* out, const sv_t* a) { *out = eshkol_builtin_url_decode_v(*a); }
+void eshkol_builtin_string_ends_with(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_string_ends_with_v(*a, *b); }
+void eshkol_builtin_string_index_of(sv_t* out, const sv_t* a, const sv_t* b, const sv_t* c) { *out = eshkol_builtin_string_index_of_v(*a, *b, *c); }
+void eshkol_builtin_string_pad_left(sv_t* out, const sv_t* a, const sv_t* b, const sv_t* c) { *out = eshkol_builtin_string_pad_v(*a, *b, *c, 1); }
+void eshkol_builtin_string_pad_right(sv_t* out, const sv_t* a, const sv_t* b, const sv_t* c) { *out = eshkol_builtin_string_pad_v(*a, *b, *c, 0); }
 void eshkol_builtin_kb_save(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_kb_save_v(*a, *b); }
 void eshkol_builtin_kb_load(sv_t* out, const sv_t* a) { *out = eshkol_builtin_kb_load_v(*a); }
 void eshkol_builtin_tensor_token_estimate(sv_t* out, const sv_t* a) { *out = eshkol_builtin_tensor_token_estimate_v(*a); }

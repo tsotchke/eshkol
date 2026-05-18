@@ -596,13 +596,29 @@ for compatibility with the existing pure Eshkol URL library.
 `((scheme . "https") (host . "...") (port . 443) (path . "...") (query . "..."))`.
 
 ### `(string-ends-with? str suffix) -> bool`
+Return `#t` when `str` ends with `suffix`.
+
+Standalone VM native ID 1956 compares UTF-8 byte suffixes and returns `#f` for
+non-string inputs.
 
 ### `(string-index-of str substr start) -> integer-or-false`
 Find with start offset. Unlike `string-contains` which returns bool.
 
+Standalone VM native ID 1957 returns the character index of `substr` at or after
+`start`, or `#f` when no match is present. Empty substrings return the clamped
+start index.
+
 ### `(string-pad-left str width ch) -> string`
+Pad `str` on the left with Unicode codepoint `ch` until it reaches `width`
+characters.
+
+Standalone VM native ID 1958.
 
 ### `(string-pad-right str width ch) -> string`
+Pad `str` on the right with Unicode codepoint `ch` until it reaches `width`
+characters.
+
+Standalone VM native ID 1959.
 
 ### `(string-repeat str count) -> string`
 `(string-repeat "-" 40)` -> `"----------------------------------------"`
