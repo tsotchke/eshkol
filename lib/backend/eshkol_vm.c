@@ -27,6 +27,7 @@
 #include <ctype.h>
 #include <math.h>
 #include <stdint.h>
+#include <time.h>
 #ifndef ESHKOL_VM_WASM
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -419,6 +420,9 @@ static const BuiltinDef BUILTINS[] = {
     {"regex-compile", 1966, 1}, {"regex-free", 1967, 1},
     {"regex-match", 1968, 2}, {"regex-match?", 1969, 2},
     {"regex-match-groups", 1970, 2}, {"regex-split", 1971, 2},
+    {"current-timestamp", 1972, 0}, {"current-time-ns", 1973, 0},
+    {"format-iso8601", 1974, 1}, {"parse-iso8601", 1975, 1},
+    {"format-relative", 1976, 1}, {"local-timezone-offset", 1977, 0},
     {"string-ends-with?", 1956, 2}, {"string-index-of", 1957, 3},
     {"string-pad-left", 1958, 3}, {"string-pad-right", 1959, 3},
     /* Parallel primitives — IDs 620-628 */

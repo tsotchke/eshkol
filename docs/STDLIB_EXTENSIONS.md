@@ -728,10 +728,21 @@ Repeat callback every interval-ms.
 
 ## B.11 Date/Time
 
-### `(format-iso8601 epoch) -> string`
-`"2026-04-03T15:30:00Z"` via `gmtime_r` + `strftime`.
+The standalone VM exposes date/time native IDs 1972-1977:
+`current-timestamp`, `current-time-ns`, `format-iso8601`, `parse-iso8601`,
+`format-relative`, and `local-timezone-offset`.
+
+### `(current-timestamp) -> number`
+Seconds since the Unix epoch as a floating-point value.
+
+### `(current-time-ns) -> integer`
+Nanoseconds since the Unix epoch.
+
+### `(format-iso8601 epoch-ns) -> string`
+`"2026-04-03T15:30:00.000Z"` via UTC calendar formatting.
 
 ### `(parse-iso8601 str) -> integer-or-false`
+Parse `YYYY-MM-DDTHH:MM:SS[.mmm][Z|+HH:MM|-HH:MM]` into epoch nanoseconds.
 
 ### `(format-relative seconds-ago) -> string`
 30 -> `"30s ago"`, 3600 -> `"1h ago"`.

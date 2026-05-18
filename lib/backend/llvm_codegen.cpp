@@ -1166,8 +1166,11 @@ public:
         function_return_types["home-directory"] = BuiltinTypes::String;
         // Time API (#168)
         function_return_types["current-timestamp"] = BuiltinTypes::Number;
+        function_return_types["current-time-ns"] = BuiltinTypes::Integer;
         function_return_types["format-iso8601"] = BuiltinTypes::String;
         function_return_types["parse-iso8601"] = BuiltinTypes::Integer;
+        function_return_types["format-relative"] = BuiltinTypes::String;
+        function_return_types["local-timezone-offset"] = BuiltinTypes::Integer;
         function_return_types["sleep-ms"] = BuiltinTypes::Null;
         function_return_types["executable-exists?"] = BuiltinTypes::Boolean;
         function_return_types["executable-path"] = BuiltinTypes::String;
@@ -1248,6 +1251,12 @@ public:
         function_return_types["uuid-v4"] = BuiltinTypes::String;
         function_return_types["constant-time-equal?"] = BuiltinTypes::Boolean;
         function_return_types["sha256-file"] = BuiltinTypes::String;
+        function_return_types["regex-compile"] = BuiltinTypes::Integer;
+        function_return_types["regex-free"] = BuiltinTypes::Boolean;
+        function_return_types["regex-match"] = BuiltinTypes::String;
+        function_return_types["regex-match?"] = BuiltinTypes::Boolean;
+        function_return_types["regex-match-groups"] = BuiltinTypes::Value;
+        function_return_types["regex-split"] = BuiltinTypes::Value;
         function_return_types["string-ends-with?"] = BuiltinTypes::Boolean;
         function_return_types["string-index-of"] = BuiltinTypes::Integer;
         function_return_types["string-pad-left"] = BuiltinTypes::String;
@@ -11872,6 +11881,8 @@ private:
         if (func_name == "current-timestamp") return system_->currentTimestamp(op);
         if (func_name == "format-iso8601") return system_->formatIso8601(op);
         if (func_name == "parse-iso8601") return system_->parseIso8601(op);
+        if (func_name == "format-relative") return system_->formatRelative(op);
+        if (func_name == "local-timezone-offset") return system_->localTimezoneOffset(op);
         if (func_name == "sleep-ms") return system_->sleepMs(op);
         if (func_name == "executable-exists?") return system_->executableExists(op);
         if (func_name == "executable-path") return system_->executablePath(op);
@@ -11952,6 +11963,12 @@ private:
         if (func_name == "uuid-v4") return system_->uuidV4(op);
         if (func_name == "constant-time-equal?") return system_->constantTimeEqual(op);
         if (func_name == "sha256-file") return system_->sha256File(op);
+        if (func_name == "regex-compile") return system_->regexCompile(op);
+        if (func_name == "regex-free") return system_->regexFree(op);
+        if (func_name == "regex-match") return system_->regexMatch(op);
+        if (func_name == "regex-match?") return system_->regexMatchPredicate(op);
+        if (func_name == "regex-match-groups") return system_->regexMatchGroups(op);
+        if (func_name == "regex-split") return system_->regexSplit(op);
         if (func_name == "string-ends-with?") return system_->stringEndsWith(op);
         if (func_name == "string-index-of") return system_->stringIndexOf(op);
         if (func_name == "string-pad-left") return system_->stringPadLeft(op);
@@ -19859,7 +19876,8 @@ private:
             "cpu-count", "getpid", "home-directory",
             "sleep-ms", "executable-exists?", "executable-path",
             "monotonic-time-ms", "temp-directory", "prevent-sleep", "allow-sleep",
-            "current-timestamp", "format-iso8601", "parse-iso8601",
+            "current-timestamp", "current-time-ns", "format-iso8601", "parse-iso8601",
+            "format-relative", "local-timezone-offset",
             "path-join", "path-dirname", "path-basename", "path-extname",
             "path-is-absolute?", "path-normalize", "realpath",
             "file-stat", "file-copy", "mkdir-recursive", "mkdtemp",
@@ -19884,6 +19902,8 @@ private:
             "url-encode", "url-decode", "url-parse",
             "base64url-encode", "base64url-decode", "uuid-v4",
             "constant-time-equal?", "sha256-file",
+            "regex-compile", "regex-free", "regex-match", "regex-match?",
+            "regex-match-groups", "regex-split",
             "string-ends-with?", "string-index-of",
             "string-pad-left", "string-pad-right",
             "kb-save", "kb-load", "tensor-token-estimate",
