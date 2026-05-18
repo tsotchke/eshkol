@@ -1418,6 +1418,146 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_socket_close_v(eshkol_sysbuiltin
 #endif
 }
 
+/* Terminal helpers.  These mirror the standalone VM surface with conservative
+ * compiled-runtime behavior: write escape sequences only for real TTY output
+ * and return #f for interactive reads that need a terminal response. */
+static int eshkol_sys_stdout_is_tty(void) {
+#if !defined(_WIN32) && !defined(ESHKOL_VM_WASM)
+    return isatty(STDOUT_FILENO);
+#else
+    return 0;
+#endif
+}
+
+static void eshkol_sys_term_write_tty(const char* s) {
+#if !defined(_WIN32) && !defined(ESHKOL_VM_WASM)
+    if (s && eshkol_sys_stdout_is_tty()) {
+        fputs(s, stdout);
+        fflush(stdout);
+    }
+#else
+    (void)s;
+#endif
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_term_set_scroll_region_v(
+    eshkol_sysbuiltin_value_t top_val,
+    eshkol_sysbuiltin_value_t bottom_val) {
+    int64_t top = (int64_t)top_val.data;
+    int64_t bottom = (int64_t)bottom_val.data;
+    if (top <= 0 || bottom < top) return sys_make_bool(0);
+#if !defined(_WIN32) && !defined(ESHKOL_VM_WASM)
+    if (eshkol_sys_stdout_is_tty()) {
+        printf("\033[%lld;%lldr", (long long)top, (long long)bottom);
+        fflush(stdout);
+    }
+#endif
+    return sys_make_bool(1);
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_term_reset_scroll_region_v(void) {
+    eshkol_sys_term_write_tty("\033[r");
+    return sys_make_bool(1);
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_term_enable_mouse_v(void) {
+    eshkol_sys_term_write_tty("\033[?1000h\033[?1006h");
+    return sys_make_bool(1);
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_term_disable_mouse_v(void) {
+    eshkol_sys_term_write_tty("\033[?1006l\033[?1000l");
+    return sys_make_bool(1);
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_term_read_mouse_event_v(
+    eshkol_sysbuiltin_value_t timeout_val) {
+    (void)timeout_val;
+    return sys_make_bool(0);
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_term_enable_alternate_screen_v(void) {
+    eshkol_sys_term_write_tty("\033[?1049h");
+    return sys_make_bool(1);
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_term_disable_alternate_screen_v(void) {
+    eshkol_sys_term_write_tty("\033[?1049l");
+    return sys_make_bool(1);
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_term_clipboard_write_v(
+    eshkol_sysbuiltin_value_t text_val) {
+    const char* text = sys_extract_string(text_val);
+    if (!text) return sys_make_bool(0);
+#if !defined(_WIN32) && !defined(ESHKOL_VM_WASM)
+    if (eshkol_sys_stdout_is_tty() && strlen(text) <= 4096) {
+        static const char table[] =
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        size_t len = strlen(text);
+        fputs("\033]52;c;", stdout);
+        for (size_t i = 0; i < len; i += 3) {
+            unsigned b0 = (unsigned char)text[i];
+            unsigned b1 = (i + 1 < len) ? (unsigned char)text[i + 1] : 0;
+            unsigned b2 = (i + 2 < len) ? (unsigned char)text[i + 2] : 0;
+            fputc(table[(b0 >> 2) & 0x3F], stdout);
+            fputc(table[((b0 << 4) | (b1 >> 4)) & 0x3F], stdout);
+            fputc(i + 1 < len ? table[((b1 << 2) | (b2 >> 6)) & 0x3F] : '=', stdout);
+            fputc(i + 2 < len ? table[b2 & 0x3F] : '=', stdout);
+        }
+        fputc('\a', stdout);
+        fflush(stdout);
+    }
+#endif
+    return sys_make_bool(1);
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_term_clipboard_read_v(void) {
+    return sys_make_bool(0);
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_term_hyperlink_v(
+    eshkol_sysbuiltin_value_t url_val,
+    eshkol_sysbuiltin_value_t text_val) {
+    const char* url = sys_extract_string(url_val);
+    const char* text = sys_extract_string(text_val);
+    if (!url || !text) return sys_make_bool(0);
+    size_t len = strlen(url) + strlen(text) + 16;
+    void* arena = get_global_arena();
+    if (!arena) return sys_make_bool(0);
+    char* out = arena_allocate_string_with_header(arena, len);
+    if (!out) return sys_make_bool(0);
+    int n = snprintf(out, len + 1, "\033]8;;%s\033\\%s\033]8;;\033\\", url, text);
+    if (n <= 0 || (size_t)n > len) return sys_make_bool(0);
+    eshkol_sysbuiltin_value_t v = {0, 0, 0, 0, 0};
+    v.type = SYS_TYPE_HEAP_PTR;
+    v.flags = 0x01;
+    v.data = (uint64_t)out;
+    return v;
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_term_detect_capabilities_v(void) {
+    const char* term = getenv("TERM");
+    const char* colorterm = getenv("COLORTERM");
+    const char* lang = getenv("LANG");
+    int color_depth = 8;
+    if (colorterm && (strstr(colorterm, "truecolor") || strstr(colorterm, "24bit")))
+        color_depth = 24;
+    else if (term && strstr(term, "256color"))
+        color_depth = 8;
+    int unicode = (lang && (strstr(lang, "UTF-8") || strstr(lang, "utf8"))) ||
+                  (term && strstr(term, "utf"));
+    char buf[128];
+    snprintf(buf, sizeof(buf), "color-depth=%d unicode=%d tty=%d",
+             color_depth, unicode ? 1 : 0, eshkol_sys_stdout_is_tty());
+    return sys_make_string(buf);
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_term_bell_v(void) {
+    eshkol_sys_term_write_tty("\a");
+    return sys_make_bool(1);
+}
+
 typedef struct {
     int active;
     int recursive;
@@ -1547,6 +1687,154 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_fs_unwatch_v(eshkol_sysbuiltin_v
         return sys_make_bool(1);
     }
     return sys_make_bool(0);
+}
+
+static int sys_ansi_escape_len(const char* s, int len, int pos) {
+    if (!s || pos < 0 || pos >= len) return 0;
+    unsigned char c = (unsigned char)s[pos];
+
+    if (c == 0x9B) {
+        int i = pos + 1;
+        while (i < len) {
+            unsigned char ch = (unsigned char)s[i++];
+            if (ch >= 0x40 && ch <= 0x7E) return i - pos;
+        }
+        return len - pos;
+    }
+    if (c == 0x9D) {
+        int i = pos + 1;
+        while (i < len) {
+            unsigned char ch = (unsigned char)s[i];
+            if (ch == 0x07) return i + 1 - pos;
+            if (ch == 0x1B && i + 1 < len && s[i + 1] == '\\') return i + 2 - pos;
+            i++;
+        }
+        return len - pos;
+    }
+    if (c != 0x1B) return 0;
+    if (pos + 1 >= len) return 1;
+
+    unsigned char next = (unsigned char)s[pos + 1];
+    if (next == '[') {
+        int i = pos + 2;
+        while (i < len) {
+            unsigned char ch = (unsigned char)s[i++];
+            if (ch >= 0x40 && ch <= 0x7E) return i - pos;
+        }
+        return len - pos;
+    }
+    if (next == ']' || next == 'P' || next == '^' || next == '_' || next == 'X') {
+        int i = pos + 2;
+        while (i < len) {
+            unsigned char ch = (unsigned char)s[i];
+            if (ch == 0x07) return i + 1 - pos;
+            if (ch == 0x1B && i + 1 < len && s[i + 1] == '\\') return i + 2 - pos;
+            i++;
+        }
+        return len - pos;
+    }
+    if (strchr("()*+-./", next)) return (pos + 2 < len) ? 3 : 2;
+    return 2;
+}
+
+static int sys_display_is_wide_char(uint32_t cp) {
+    if (cp >= 0x4E00 && cp <= 0x9FFF) return 1;
+    if (cp >= 0x3400 && cp <= 0x4DBF) return 1;
+    if (cp >= 0x20000 && cp <= 0x2A6DF) return 1;
+    if (cp >= 0xF900 && cp <= 0xFAFF) return 1;
+    if (cp >= 0xAC00 && cp <= 0xD7AF) return 1;
+    if (cp >= 0xFF01 && cp <= 0xFF60) return 1;
+    if (cp >= 0xFFE0 && cp <= 0xFFE6) return 1;
+    if (cp >= 0x2E80 && cp <= 0x303E) return 1;
+    if (cp >= 0x3040 && cp <= 0x30FF) return 1;
+    if (cp >= 0x31F0 && cp <= 0x31FF) return 1;
+    if (cp >= 0x1F300 && cp <= 0x1F9FF) return 1;
+    if (cp >= 0x1FA00 && cp <= 0x1FAFF) return 1;
+    if (cp >= 0x2600 && cp <= 0x27BF) return 1;
+    return 0;
+}
+
+static int sys_display_is_zero_width(uint32_t cp) {
+    if (cp >= 0x0300 && cp <= 0x036F) return 1;
+    if (cp >= 0x1AB0 && cp <= 0x1AFF) return 1;
+    if (cp >= 0x1DC0 && cp <= 0x1DFF) return 1;
+    if (cp >= 0x20D0 && cp <= 0x20FF) return 1;
+    if (cp >= 0xFE20 && cp <= 0xFE2F) return 1;
+    if (cp == 0x200B || cp == 0x200C || cp == 0x200D ||
+        cp == 0x200E || cp == 0x200F || cp == 0xFEFF) return 1;
+    if (cp >= 0xFE00 && cp <= 0xFE0F) return 1;
+    if (cp >= 0xE0100 && cp <= 0xE01EF) return 1;
+    return 0;
+}
+
+static uint32_t sys_decode_utf8_display(const char* str, int len, int* pos) {
+    unsigned char c = (unsigned char)str[*pos];
+    uint32_t cp = 0xFFFD;
+    int bytes = 1;
+    if (c < 0x80) { cp = c; bytes = 1; }
+    else if (c >= 0xC2 && c < 0xE0) { cp = c & 0x1F; bytes = 2; }
+    else if (c >= 0xE0 && c < 0xF0) { cp = c & 0x0F; bytes = 3; }
+    else if (c >= 0xF0 && c < 0xF5) { cp = c & 0x07; bytes = 4; }
+    if (*pos + bytes > len) {
+        (*pos)++;
+        return 0xFFFD;
+    }
+    for (int i = 1; i < bytes; i++) {
+        unsigned char cc = (unsigned char)str[*pos + i];
+        if ((cc & 0xC0) != 0x80) {
+            (*pos)++;
+            return 0xFFFD;
+        }
+        cp = (cp << 6) | (cc & 0x3F);
+    }
+    *pos += bytes;
+    return cp;
+}
+
+static int64_t sys_string_display_width_bytes(const char* data, int len) {
+    if (!data || len <= 0) return 0;
+    int64_t width = 0;
+    int pos = 0;
+    while (pos < len) {
+        int skip = sys_ansi_escape_len(data, len, pos);
+        if (skip > 0) {
+            pos += skip;
+            continue;
+        }
+        uint32_t cp = sys_decode_utf8_display(data, len, &pos);
+        if (sys_display_is_zero_width(cp)) continue;
+        width += sys_display_is_wide_char(cp) ? 2 : 1;
+    }
+    return width;
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_ansi_strip_v(eshkol_sysbuiltin_value_t str_val) {
+    const char* input = sys_extract_string(str_val);
+    if (!input) return sys_make_bool(0);
+    int len = (int)strlen(input);
+    char* out = (char*)malloc((size_t)len + 1);
+    if (!out) return sys_make_bool(0);
+
+    int i = 0;
+    int j = 0;
+    while (i < len) {
+        int skip = sys_ansi_escape_len(input, len, i);
+        if (skip > 0) {
+            i += skip;
+            continue;
+        }
+        out[j++] = input[i++];
+    }
+    out[j] = '\0';
+    eshkol_sysbuiltin_value_t result = sys_make_string(out);
+    free(out);
+    return result;
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_string_display_width_v(eshkol_sysbuiltin_value_t str_val) {
+    const char* input = sys_extract_string(str_val);
+    if (!input) return sys_make_int64(0);
+    return sys_make_int64(sys_string_display_width_bytes(input, (int)strlen(input)));
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -1897,10 +2185,24 @@ void eshkol_builtin_unix_socket_connect(sv_t* out, const sv_t* a) { *out = eshko
 void eshkol_builtin_socket_send(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_socket_send_v(*a, *b); }
 void eshkol_builtin_socket_recv(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_socket_recv_v(*a, *b); }
 void eshkol_builtin_socket_close(sv_t* out, const sv_t* a) { *out = eshkol_builtin_socket_close_v(*a); }
+void eshkol_builtin_term_set_scroll_region(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_term_set_scroll_region_v(*a, *b); }
+void eshkol_builtin_term_reset_scroll_region(sv_t* out) { *out = eshkol_builtin_term_reset_scroll_region_v(); }
+void eshkol_builtin_term_enable_mouse(sv_t* out) { *out = eshkol_builtin_term_enable_mouse_v(); }
+void eshkol_builtin_term_disable_mouse(sv_t* out) { *out = eshkol_builtin_term_disable_mouse_v(); }
+void eshkol_builtin_term_read_mouse_event(sv_t* out, const sv_t* a) { *out = eshkol_builtin_term_read_mouse_event_v(*a); }
+void eshkol_builtin_term_enable_alternate_screen(sv_t* out) { *out = eshkol_builtin_term_enable_alternate_screen_v(); }
+void eshkol_builtin_term_disable_alternate_screen(sv_t* out) { *out = eshkol_builtin_term_disable_alternate_screen_v(); }
+void eshkol_builtin_term_clipboard_write(sv_t* out, const sv_t* a) { *out = eshkol_builtin_term_clipboard_write_v(*a); }
+void eshkol_builtin_term_clipboard_read(sv_t* out) { *out = eshkol_builtin_term_clipboard_read_v(); }
+void eshkol_builtin_term_hyperlink(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_term_hyperlink_v(*a, *b); }
+void eshkol_builtin_term_detect_capabilities(sv_t* out) { *out = eshkol_builtin_term_detect_capabilities_v(); }
+void eshkol_builtin_term_bell(sv_t* out) { *out = eshkol_builtin_term_bell_v(); }
 void eshkol_builtin_fs_watch_native(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_fs_watch_native_v(*a, *b); }
 void eshkol_builtin_fs_watch_recursive(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_fs_watch_recursive_v(*a, *b); }
 void eshkol_builtin_fs_watch_poll(sv_t* out, const sv_t* a) { *out = eshkol_builtin_fs_watch_poll_v(*a); }
 void eshkol_builtin_fs_unwatch(sv_t* out, const sv_t* a) { *out = eshkol_builtin_fs_unwatch_v(*a); }
+void eshkol_builtin_ansi_strip(sv_t* out, const sv_t* a) { *out = eshkol_builtin_ansi_strip_v(*a); }
+void eshkol_builtin_string_display_width(sv_t* out, const sv_t* a) { *out = eshkol_builtin_string_display_width_v(*a); }
 void eshkol_builtin_kb_save(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_kb_save_v(*a, *b); }
 void eshkol_builtin_kb_load(sv_t* out, const sv_t* a) { *out = eshkol_builtin_kb_load_v(*a); }
 void eshkol_builtin_tensor_token_estimate(sv_t* out, const sv_t* a) { *out = eshkol_builtin_tensor_token_estimate_v(*a); }

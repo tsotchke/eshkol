@@ -5551,6 +5551,7 @@ static const BuiltinDef BUILTINS[] = {
     {"term-bell", 1941, 0},
     {"fs-watch-native", 1942, 2}, {"fs-watch-recursive", 1943, 2},
     {"fs-watch-poll", 1944, 1}, {"fs-unwatch", 1945, 1},
+    {"ansi-strip", 1946, 1}, {"string-display-width", 1947, 1},
     /* Missing hash */
     {"hash-clear!", 668, 1},
     /* gcd / lcm */
