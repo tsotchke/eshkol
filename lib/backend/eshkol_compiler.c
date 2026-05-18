@@ -5553,6 +5553,9 @@ static const BuiltinDef BUILTINS[] = {
     {"fs-watch-poll", 1944, 1}, {"fs-unwatch", 1945, 1},
     {"ansi-strip", 1946, 1}, {"string-display-width", 1947, 1},
     {"string-truncate-display", 1948, 3},
+    {"executable-path", 1949, 1}, {"monotonic-time-ms", 1950, 0},
+    {"temp-directory", 1951, 0}, {"prevent-sleep", 1952, 1},
+    {"allow-sleep", 1953, 1},
     /* Missing hash */
     {"hash-clear!", 668, 1},
     /* gcd / lcm */

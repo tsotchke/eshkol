@@ -312,6 +312,12 @@ typedef struct VM {
         int64_t size;
         char path[1024];
     } fs_watchers[32];
+
+    struct {
+        int active;
+        int64_t handle;
+    } sleep_inhibitors[16];
+    int64_t next_sleep_inhibitor;
 } VM;
 
 /* Command-line arguments (set in main, read by native 602) */

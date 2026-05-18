@@ -432,6 +432,119 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_executable_exists_v(eshkol_sysbu
 #endif
 }
 
+static eshkol_sysbuiltin_value_t eshkol_builtin_executable_path_v(eshkol_sysbuiltin_value_t name_val) {
+    const char* name = sys_extract_string(name_val);
+    if (!name || !*name) return sys_make_bool(0);
+#ifndef _WIN32
+    if (strchr(name, '/')) {
+        if (access(name, X_OK) == 0) return sys_make_string(name);
+        return sys_make_bool(0);
+    }
+    const char* path_env = getenv("PATH");
+    if (!path_env || !*path_env) return sys_make_bool(0);
+    char* path_copy = strdup(path_env);
+    if (!path_copy) return sys_make_bool(0);
+    char* save = NULL;
+    for (char* dir = strtok_r(path_copy, ":", &save); dir; dir = strtok_r(NULL, ":", &save)) {
+        if (!*dir) dir = ".";
+        char full[PATH_MAX];
+        int n = snprintf(full, sizeof(full), "%s/%s", dir, name);
+        if (n > 0 && n < (int)sizeof(full) && access(full, X_OK) == 0) {
+            eshkol_sysbuiltin_value_t result = sys_make_string(full);
+            free(path_copy);
+            return result;
+        }
+    }
+    free(path_copy);
+    return sys_make_bool(0);
+#else
+    char result[MAX_PATH];
+    DWORD n = SearchPathA(NULL, name, ".exe", MAX_PATH, result, NULL);
+    if (n > 0 && n < MAX_PATH) return sys_make_string(result);
+    n = SearchPathA(NULL, name, NULL, MAX_PATH, result, NULL);
+    if (n > 0 && n < MAX_PATH) return sys_make_string(result);
+    return sys_make_bool(0);
+#endif
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_monotonic_time_ms_v(void) {
+#ifndef _WIN32
+    struct timespec ts;
+#ifdef CLOCK_MONOTONIC
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) == 0)
+        return sys_make_int64((int64_t)ts.tv_sec * 1000 + (int64_t)ts.tv_nsec / 1000000);
+#endif
+    return sys_make_int64((int64_t)time(NULL) * 1000);
+#else
+    return sys_make_int64((int64_t)GetTickCount64());
+#endif
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_temp_directory_v(void) {
+#ifndef _WIN32
+    const char* tmp = getenv("TMPDIR");
+    if (!tmp || !*tmp) tmp = getenv("TMP");
+    if (!tmp || !*tmp) tmp = getenv("TEMP");
+    if (!tmp || !*tmp) tmp = "/tmp";
+    return sys_make_string(tmp);
+#else
+    char buf[MAX_PATH];
+    DWORD n = GetTempPathA(MAX_PATH, buf);
+    if (n > 0 && n < MAX_PATH) {
+        while (n > 1 && (buf[n - 1] == '\\' || buf[n - 1] == '/')) buf[--n] = '\0';
+        return sys_make_string(buf);
+    }
+    const char* tmp = getenv("TEMP");
+    return sys_make_string((tmp && *tmp) ? tmp : ".");
+#endif
+}
+
+typedef struct {
+    int active;
+    int64_t handle;
+} eshkol_sys_sleep_inhibitor_t;
+
+static eshkol_sys_sleep_inhibitor_t g_sys_sleep_inhibitors[16];
+static int64_t g_sys_next_sleep_inhibitor = 1;
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_prevent_sleep_v(eshkol_sysbuiltin_value_t reason_val) {
+    (void)reason_val;
+    int slot = -1;
+    for (int i = 1; i < (int)(sizeof(g_sys_sleep_inhibitors) / sizeof(g_sys_sleep_inhibitors[0])); i++) {
+        if (!g_sys_sleep_inhibitors[i].active) {
+            slot = i;
+            break;
+        }
+    }
+    if (slot < 0) return sys_make_bool(0);
+    int64_t handle = g_sys_next_sleep_inhibitor++;
+    if (g_sys_next_sleep_inhibitor <= 0) g_sys_next_sleep_inhibitor = 1;
+    g_sys_sleep_inhibitors[slot].active = 1;
+    g_sys_sleep_inhibitors[slot].handle = handle;
+#ifdef _WIN32
+    SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED);
+#endif
+    return sys_make_int64(handle);
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_allow_sleep_v(eshkol_sysbuiltin_value_t handle_val) {
+    int64_t handle = (int64_t)handle_val.data;
+    if (handle <= 0) return sys_make_bool(0);
+    for (int i = 1; i < (int)(sizeof(g_sys_sleep_inhibitors) / sizeof(g_sys_sleep_inhibitors[0])); i++) {
+        if (g_sys_sleep_inhibitors[i].active && g_sys_sleep_inhibitors[i].handle == handle) {
+            memset(&g_sys_sleep_inhibitors[i], 0, sizeof(g_sys_sleep_inhibitors[i]));
+#ifdef _WIN32
+            int still_active = 0;
+            for (int j = 1; j < (int)(sizeof(g_sys_sleep_inhibitors) / sizeof(g_sys_sleep_inhibitors[0])); j++)
+                if (g_sys_sleep_inhibitors[j].active) still_active = 1;
+            if (!still_active) SetThreadExecutionState(ES_CONTINUOUS);
+#endif
+            return sys_make_bool(1);
+        }
+    }
+    return sys_make_bool(0);
+}
+
 /* ═══════════════════════════════════════════════════════════════════
  * Path Manipulation
  * ═══════════════════════════════════════════════════════════════════ */
@@ -2207,6 +2320,11 @@ void eshkol_builtin_format_iso8601(sv_t* out, const sv_t* a) { *out = eshkol_bui
 void eshkol_builtin_parse_iso8601(sv_t* out, const sv_t* a) { *out = eshkol_builtin_parse_iso8601_v(*a); }
 void eshkol_builtin_current_timestamp(sv_t* out) { *out = eshkol_builtin_current_timestamp_v(); }
 void eshkol_builtin_executable_exists(sv_t* out, const sv_t* a) { *out = eshkol_builtin_executable_exists_v(*a); }
+void eshkol_builtin_executable_path(sv_t* out, const sv_t* a) { *out = eshkol_builtin_executable_path_v(*a); }
+void eshkol_builtin_monotonic_time_ms(sv_t* out) { *out = eshkol_builtin_monotonic_time_ms_v(); }
+void eshkol_builtin_temp_directory(sv_t* out) { *out = eshkol_builtin_temp_directory_v(); }
+void eshkol_builtin_prevent_sleep(sv_t* out, const sv_t* a) { *out = eshkol_builtin_prevent_sleep_v(*a); }
+void eshkol_builtin_allow_sleep(sv_t* out, const sv_t* a) { *out = eshkol_builtin_allow_sleep_v(*a); }
 void eshkol_builtin_path_join(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_path_join_v(*a, *b); }
 void eshkol_builtin_path_dirname(sv_t* out, const sv_t* a) { *out = eshkol_builtin_path_dirname_v(*a); }
 void eshkol_builtin_path_basename(sv_t* out, const sv_t* a) { *out = eshkol_builtin_path_basename_v(*a); }

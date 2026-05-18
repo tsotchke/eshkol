@@ -536,19 +536,31 @@ Eliminates `which` shell-outs.
 ### `(executable-path name) -> string-or-false`
 Same but returns full path.
 
+Standalone VM native ID 1949 searches `PATH` (or uses the supplied path
+directly when it contains a separator) and returns the executable path or `#f`.
+
 ### `(current-time-ms) -> integer`
 `clock_gettime(CLOCK_REALTIME)` in milliseconds.
 
 ### `(monotonic-time-ms) -> integer`
 `clock_gettime(CLOCK_MONOTONIC)` in milliseconds. Not affected by NTP.
 
+Standalone VM native ID 1950.
+
 ### `(temp-directory) -> string`
 `$TMPDIR` or `/tmp`.
+
+Standalone VM native ID 1951.
 
 ### `(prevent-sleep reason) -> handle`
 macOS: `IOPMAssertionCreateWithName`. Linux: `systemd-inhibit`.
 
 ### `(allow-sleep handle) -> void`
+
+Standalone VM native IDs 1952 and 1953 return/release VM-lifetime inhibition
+handles. The Windows runtime maps active handles to `SetThreadExecutionState`;
+other standalone platforms currently keep deterministic handles without a power
+manager assertion.
 
 ---
 

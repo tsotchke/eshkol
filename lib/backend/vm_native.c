@@ -299,6 +299,118 @@ static int vm_file_watch_start(VM* vm, const char* path, int recursive) {
     return slot;
 }
 
+static Value vm_executable_path_value(VM* vm, const char* name) {
+    if (!vm || !name || !*name) return BOOL_VAL(0);
+#if defined(ESHKOL_VM_WASM)
+    (void)name;
+    return BOOL_VAL(0);
+#elif defined(_WIN32)
+    char result[MAX_PATH];
+    DWORD n = SearchPathA(NULL, name, ".exe", MAX_PATH, result, NULL);
+    if (n > 0 && n < MAX_PATH) return vm_string_value(vm, result, (int64_t)n);
+    n = SearchPathA(NULL, name, NULL, MAX_PATH, result, NULL);
+    if (n > 0 && n < MAX_PATH) return vm_string_value(vm, result, (int64_t)n);
+    return BOOL_VAL(0);
+#else
+    if (strchr(name, '/')) {
+        if (access(name, X_OK) == 0) return vm_string_value(vm, name, -1);
+        return BOOL_VAL(0);
+    }
+
+    const char* path_env = getenv("PATH");
+    if (!path_env || !*path_env) return BOOL_VAL(0);
+    char* path_copy = strdup(path_env);
+    if (!path_copy) return BOOL_VAL(0);
+    Value result = BOOL_VAL(0);
+    char* save = NULL;
+    for (char* dir = strtok_r(path_copy, ":", &save); dir; dir = strtok_r(NULL, ":", &save)) {
+        if (!*dir) dir = ".";
+        char full[4096];
+        int n = snprintf(full, sizeof(full), "%s/%s", dir, name);
+        if (n > 0 && n < (int)sizeof(full) && access(full, X_OK) == 0) {
+            result = vm_string_value(vm, full, n);
+            break;
+        }
+    }
+    free(path_copy);
+    return result;
+#endif
+}
+
+static int64_t vm_monotonic_time_ms(void) {
+#if defined(ESHKOL_VM_WASM)
+    return 0;
+#elif defined(_WIN32)
+    return (int64_t)GetTickCount64();
+#else
+    struct timespec ts;
+#ifdef CLOCK_MONOTONIC
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) == 0)
+        return (int64_t)ts.tv_sec * 1000 + (int64_t)ts.tv_nsec / 1000000;
+#endif
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return (int64_t)tv.tv_sec * 1000 + (int64_t)tv.tv_usec / 1000;
+#endif
+}
+
+static const char* vm_temp_directory_path(void) {
+#if defined(_WIN32)
+    static char buf[MAX_PATH];
+    DWORD n = GetTempPathA(MAX_PATH, buf);
+    if (n > 0 && n < MAX_PATH) {
+        while (n > 1 && (buf[n - 1] == '\\' || buf[n - 1] == '/')) buf[--n] = '\0';
+        return buf;
+    }
+    const char* tmp = getenv("TEMP");
+    if (tmp && *tmp) return tmp;
+    return ".";
+#else
+    const char* tmp = getenv("TMPDIR");
+    if (!tmp || !*tmp) tmp = getenv("TMP");
+    if (!tmp || !*tmp) tmp = getenv("TEMP");
+    if (!tmp || !*tmp) tmp = "/tmp";
+    return tmp;
+#endif
+}
+
+static int64_t vm_prevent_sleep_start(VM* vm) {
+    if (!vm) return 0;
+    int slot = -1;
+    for (int i = 1; i < (int)(sizeof(vm->sleep_inhibitors) / sizeof(vm->sleep_inhibitors[0])); i++) {
+        if (!vm->sleep_inhibitors[i].active) {
+            slot = i;
+            break;
+        }
+    }
+    if (slot < 0) return 0;
+    if (vm->next_sleep_inhibitor <= 0) vm->next_sleep_inhibitor = 1;
+    int64_t handle = vm->next_sleep_inhibitor++;
+    vm->sleep_inhibitors[slot].active = 1;
+    vm->sleep_inhibitors[slot].handle = handle;
+#if defined(_WIN32) && !defined(ESHKOL_VM_WASM)
+    SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED);
+#endif
+    return handle;
+}
+
+static int vm_prevent_sleep_stop(VM* vm, int64_t handle) {
+    if (!vm || handle <= 0) return 0;
+    for (int i = 1; i < (int)(sizeof(vm->sleep_inhibitors) / sizeof(vm->sleep_inhibitors[0])); i++) {
+        if (vm->sleep_inhibitors[i].active && vm->sleep_inhibitors[i].handle == handle) {
+            memset(&vm->sleep_inhibitors[i], 0, sizeof(vm->sleep_inhibitors[i]));
+#if defined(_WIN32) && !defined(ESHKOL_VM_WASM)
+            int still_active = 0;
+            for (int j = 1; j < (int)(sizeof(vm->sleep_inhibitors) / sizeof(vm->sleep_inhibitors[0])); j++)
+                if (vm->sleep_inhibitors[j].active) still_active = 1;
+            if (!still_active) SetThreadExecutionState(ES_CONTINUOUS);
+#endif
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static int vm_ansi_escape_len(const char* s, int len, int pos) {
     if (!s || pos < 0 || pos >= len) return 0;
     unsigned char c = (unsigned char)s[pos];
@@ -3572,6 +3684,34 @@ static void vm_dispatch_native(VM* vm, int fid) {
         VmString* s = vm_value_as_string(vm, str_val);
         VmString* suffix = vm_value_as_string(vm, suffix_val);
         vm_push(vm, vm_string_truncate_display_value(vm, s, (int64_t)as_number(max_val), suffix));
+        break;
+    }
+    case 1949: { /* executable-path(name) → string or #f */
+        Value name_val = vm_pop(vm);
+        VmString* name = vm_value_as_string(vm, name_val);
+        vm_push(vm, vm_executable_path_value(vm, name ? name->data : NULL));
+        break;
+    }
+    case 1950: { /* monotonic-time-ms() → integer */
+        vm_push(vm, INT_VAL(vm_monotonic_time_ms()));
+        break;
+    }
+    case 1951: { /* temp-directory() → string */
+        const char* tmp = vm_temp_directory_path();
+        vm_push(vm, vm_string_value(vm, tmp, -1));
+        break;
+    }
+    case 1952: { /* prevent-sleep(reason) → handle or #f */
+        Value reason_val = vm_pop(vm);
+        (void)reason_val;
+        int64_t handle = vm_prevent_sleep_start(vm);
+        if (handle > 0) vm_push(vm, INT_VAL(handle));
+        else vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+    case 1953: { /* allow-sleep(handle) → bool */
+        Value handle_val = vm_pop(vm);
+        vm_push(vm, BOOL_VAL(vm_prevent_sleep_stop(vm, (int64_t)as_number(handle_val))));
         break;
     }
 

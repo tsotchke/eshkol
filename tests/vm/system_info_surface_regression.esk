@@ -1,0 +1,53 @@
+;; Standalone VM regression for system-info utility builtins.
+
+(display "=== system info VM surface regression ===") (newline)
+
+(define shell-path (executable-path "sh"))
+
+(display "T1 executable-path finds sh or returns false consistently: ")
+(display (if (or (string? shell-path)
+                 (not (executable-exists? "sh")))
+             "PASS"
+             (list "FAIL got " shell-path)))
+(newline)
+
+(display "T2 executable-path missing executable returns false: ")
+(display (if (not (executable-path "eshkol-definitely-missing-executable"))
+             "PASS"
+             "FAIL"))
+(newline)
+
+(define t1 (monotonic-time-ms))
+(sleep-ms 2)
+(define t2 (monotonic-time-ms))
+
+(display "T3 monotonic-time-ms does not move backward: ")
+(display (if (and (integer? t1) (integer? t2) (>= t2 t1))
+             "PASS"
+             (list "FAIL got " t1 " then " t2)))
+(newline)
+
+(define tmp (temp-directory))
+
+(display "T4 temp-directory returns nonempty string: ")
+(display (if (and (string? tmp) (> (string-length tmp) 0))
+             "PASS"
+             (list "FAIL got " tmp)))
+(newline)
+
+(define sleep-handle (prevent-sleep "vm regression"))
+
+(display "T5 prevent-sleep returns handle: ")
+(display (if (and (integer? sleep-handle) (> sleep-handle 0))
+             "PASS"
+             (list "FAIL got " sleep-handle)))
+(newline)
+
+(display "T6 allow-sleep releases handle once: ")
+(display (if (and (allow-sleep sleep-handle)
+                  (not (allow-sleep sleep-handle)))
+             "PASS"
+             "FAIL"))
+(newline)
+
+(display "=== system info VM surface complete ===") (newline)

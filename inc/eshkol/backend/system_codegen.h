@@ -212,6 +212,11 @@ public:
     llvm::Value* homeDirectory(const eshkol_operations_t* op);
     llvm::Value* sleepMs(const eshkol_operations_t* op);
     llvm::Value* executableExists(const eshkol_operations_t* op);
+    llvm::Value* executablePath(const eshkol_operations_t* op);
+    llvm::Value* monotonicTimeMs(const eshkol_operations_t* op);
+    llvm::Value* tempDirectory(const eshkol_operations_t* op);
+    llvm::Value* preventSleep(const eshkol_operations_t* op);
+    llvm::Value* allowSleep(const eshkol_operations_t* op);
     llvm::Value* pathJoin(const eshkol_operations_t* op);
     llvm::Value* pathDirname(const eshkol_operations_t* op);
     llvm::Value* pathBasename(const eshkol_operations_t* op);
