@@ -290,6 +290,8 @@ public:
     llvm::Value* ansiStrip(const eshkol_operations_t* op);
     llvm::Value* stringDisplayWidth(const eshkol_operations_t* op);
     llvm::Value* stringTruncateDisplay(const eshkol_operations_t* op);
+    llvm::Value* urlEncode(const eshkol_operations_t* op);
+    llvm::Value* urlDecode(const eshkol_operations_t* op);
     llvm::Value* kbSave(const eshkol_operations_t* op);
     llvm::Value* kbLoad(const eshkol_operations_t* op);
     llvm::Value* tensorTokenEstimate(const eshkol_operations_t* op);

@@ -1,0 +1,35 @@
+;; Standalone VM regression for URL percent encoding and decoding.
+
+(display "=== URL codec VM surface regression ===") (newline)
+
+(display "T1 url-encode leaves unreserved characters unchanged: ")
+(display (if (string=? (url-encode "AZaz09-_.~") "AZaz09-_.~")
+             "PASS"
+             (list "FAIL got " (url-encode "AZaz09-_.~"))))
+(newline)
+
+(display "T2 url-encode percent-encodes reserved bytes: ")
+(display (if (string=? (url-encode "a b+c/d?x=1") "a%20b%2Bc%2Fd%3Fx%3D1")
+             "PASS"
+             (list "FAIL got " (url-encode "a b+c/d?x=1"))))
+(newline)
+
+(display "T3 url-decode reverses percent encoding and plus space: ")
+(display (if (string=? (url-decode "a%20b+c%2Fd") "a b c/d")
+             "PASS"
+             (list "FAIL got " (url-decode "a%20b+c%2Fd"))))
+(newline)
+
+(display "T4 url-decode leaves malformed percent literal: ")
+(display (if (string=? (url-decode "%ZZ%") "%ZZ%")
+             "PASS"
+             (list "FAIL got " (url-decode "%ZZ%"))))
+(newline)
+
+(display "T5 UTF-8 bytes round-trip: ")
+(display (if (string=? (url-decode (url-encode "界")) "界")
+             "PASS"
+             (list "FAIL got " (url-decode (url-encode "界")))))
+(newline)
+
+(display "=== URL codec VM surface complete ===") (newline)

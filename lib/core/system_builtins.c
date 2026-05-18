@@ -2013,6 +2013,69 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_string_truncate_display_v(
     return result;
 }
 
+static int sys_url_is_unreserved(unsigned char c) {
+    return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+           (c >= '0' && c <= '9') || c == '-' || c == '_' ||
+           c == '.' || c == '~';
+}
+
+static int sys_url_hex_value(unsigned char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    return -1;
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_url_encode_v(eshkol_sysbuiltin_value_t str_val) {
+    const char* input = sys_extract_string(str_val);
+    if (!input) return sys_make_bool(0);
+    static const char hex[] = "0123456789ABCDEF";
+    size_t len = strlen(input);
+    char* out = (char*)malloc(len * 3 + 1);
+    if (!out) return sys_make_bool(0);
+    size_t pos = 0;
+    for (size_t i = 0; i < len; i++) {
+        unsigned char c = (unsigned char)input[i];
+        if (sys_url_is_unreserved(c)) {
+            out[pos++] = (char)c;
+        } else {
+            out[pos++] = '%';
+            out[pos++] = hex[(c >> 4) & 0x0F];
+            out[pos++] = hex[c & 0x0F];
+        }
+    }
+    out[pos] = '\0';
+    eshkol_sysbuiltin_value_t result = sys_make_string(out);
+    free(out);
+    return result;
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_url_decode_v(eshkol_sysbuiltin_value_t str_val) {
+    const char* input = sys_extract_string(str_val);
+    if (!input) return sys_make_bool(0);
+    size_t len = strlen(input);
+    char* out = (char*)malloc(len + 1);
+    if (!out) return sys_make_bool(0);
+    size_t pos = 0;
+    for (size_t i = 0; i < len; i++) {
+        unsigned char c = (unsigned char)input[i];
+        if (c == '%' && i + 2 < len) {
+            int hi = sys_url_hex_value((unsigned char)input[i + 1]);
+            int lo = sys_url_hex_value((unsigned char)input[i + 2]);
+            if (hi >= 0 && lo >= 0) {
+                out[pos++] = (char)((hi << 4) | lo);
+                i += 2;
+                continue;
+            }
+        }
+        out[pos++] = (c == '+') ? ' ' : (char)c;
+    }
+    out[pos] = '\0';
+    eshkol_sysbuiltin_value_t result = sys_make_string(out);
+    free(out);
+    return result;
+}
+
 /* ═══════════════════════════════════════════════════════════════════
  * KB Persistence — save/load knowledge bases
  * ═══════════════════════════════════════════════════════════════════ */
@@ -2385,6 +2448,8 @@ void eshkol_builtin_fs_unwatch(sv_t* out, const sv_t* a) { *out = eshkol_builtin
 void eshkol_builtin_ansi_strip(sv_t* out, const sv_t* a) { *out = eshkol_builtin_ansi_strip_v(*a); }
 void eshkol_builtin_string_display_width(sv_t* out, const sv_t* a) { *out = eshkol_builtin_string_display_width_v(*a); }
 void eshkol_builtin_string_truncate_display(sv_t* out, const sv_t* a, const sv_t* b, const sv_t* c) { *out = eshkol_builtin_string_truncate_display_v(*a, *b, *c); }
+void eshkol_builtin_url_encode(sv_t* out, const sv_t* a) { *out = eshkol_builtin_url_encode_v(*a); }
+void eshkol_builtin_url_decode(sv_t* out, const sv_t* a) { *out = eshkol_builtin_url_decode_v(*a); }
 void eshkol_builtin_kb_save(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_kb_save_v(*a, *b); }
 void eshkol_builtin_kb_load(sv_t* out, const sv_t* a) { *out = eshkol_builtin_kb_load_v(*a); }
 void eshkol_builtin_tensor_token_estimate(sv_t* out, const sv_t* a) { *out = eshkol_builtin_tensor_token_estimate_v(*a); }

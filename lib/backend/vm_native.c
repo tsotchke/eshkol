@@ -591,6 +591,66 @@ static Value vm_string_truncate_display_value(VM* vm,
     return result;
 }
 
+static int vm_url_is_unreserved(unsigned char c) {
+    return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+           (c >= '0' && c <= '9') || c == '-' || c == '_' ||
+           c == '.' || c == '~';
+}
+
+static int vm_url_hex_value(unsigned char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    return -1;
+}
+
+static Value vm_url_encode_value(VM* vm, VmString* input) {
+    if (!vm || !input || !input->data) return BOOL_VAL(0);
+    static const char hex[] = "0123456789ABCDEF";
+    size_t cap = (size_t)input->byte_len * 3 + 1;
+    char* out = (char*)malloc(cap);
+    if (!out) return BOOL_VAL(0);
+    size_t pos = 0;
+    for (int i = 0; i < input->byte_len; i++) {
+        unsigned char c = (unsigned char)input->data[i];
+        if (vm_url_is_unreserved(c)) {
+            out[pos++] = (char)c;
+        } else {
+            out[pos++] = '%';
+            out[pos++] = hex[(c >> 4) & 0x0F];
+            out[pos++] = hex[c & 0x0F];
+        }
+    }
+    out[pos] = '\0';
+    Value result = vm_string_value(vm, out, (int64_t)pos);
+    free(out);
+    return result;
+}
+
+static Value vm_url_decode_value(VM* vm, VmString* input) {
+    if (!vm || !input || !input->data) return BOOL_VAL(0);
+    char* out = (char*)malloc((size_t)input->byte_len + 1);
+    if (!out) return BOOL_VAL(0);
+    int pos = 0;
+    for (int i = 0; i < input->byte_len; i++) {
+        unsigned char c = (unsigned char)input->data[i];
+        if (c == '%' && i + 2 < input->byte_len) {
+            int hi = vm_url_hex_value((unsigned char)input->data[i + 1]);
+            int lo = vm_url_hex_value((unsigned char)input->data[i + 2]);
+            if (hi >= 0 && lo >= 0) {
+                out[pos++] = (char)((hi << 4) | lo);
+                i += 2;
+                continue;
+            }
+        }
+        out[pos++] = (c == '+') ? ' ' : (char)c;
+    }
+    out[pos] = '\0';
+    Value result = vm_string_value(vm, out, pos);
+    free(out);
+    return result;
+}
+
 #if defined(_WIN32) && !defined(ESHKOL_VM_WASM)
 static int vm_win_append_process_arg(char* out, size_t out_size, size_t* pos, const char* arg) {
     if (!out || !pos || !arg) return 0;
@@ -3712,6 +3772,18 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 1953: { /* allow-sleep(handle) → bool */
         Value handle_val = vm_pop(vm);
         vm_push(vm, BOOL_VAL(vm_prevent_sleep_stop(vm, (int64_t)as_number(handle_val))));
+        break;
+    }
+    case 1954: { /* url-encode(str) → string */
+        Value str_val = vm_pop(vm);
+        VmString* s = vm_value_as_string(vm, str_val);
+        vm_push(vm, vm_url_encode_value(vm, s));
+        break;
+    }
+    case 1955: { /* url-decode(str) → string */
+        Value str_val = vm_pop(vm);
+        VmString* s = vm_value_as_string(vm, str_val);
+        vm_push(vm, vm_url_decode_value(vm, s));
         break;
     }
 
