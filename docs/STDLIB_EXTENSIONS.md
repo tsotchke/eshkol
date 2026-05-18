@@ -121,14 +121,19 @@ have correct VM APIs. `parallel-map`, `parallel-filter`, and
 `parallel-for-each` lazily initialize and use the VM thread pool for scheduling
 when available. `thread-pool-info` / `thread-pool-size` report the standalone
 VM pool size. `parallel-execute` accepts the source-level variadic thunk form
-and schedules thunks through the same pool path. User closure execution is
+and schedules thunks through the same pool path. `future` now returns a
+standalone VM future handle backed by the same pool; `force-future` joins that
+handle and `future-ready?` checks it without forcing. User closure execution is
 still serialized through the main VM under the shared runtime/arena mutex.
-`parallel-fold` and futures remain sequential fallbacks.
+`parallel-fold` remains an order-preserving sequential fallback for arbitrary
+non-associative fold functions.
 
-**Fix**: Implement a work-stealing thread pool using pthreads. Each worker
-thread gets its own VM stack. Use a shared work queue with mutex/condvar.
-The closure bridge (`vm_call_closure_from_native`) already exists — clone
-the VM context per thread, run the closure, merge results.
+**Remaining fix**: give each worker a fully independent VM execution context
+with its own stack/frame state and thread-local arena scope, then remove the
+shared main-VM closure mutex. The closure bridge
+(`vm_call_closure_from_native`) already exists; the missing piece is safe
+per-thread execution of closure bytecode over shared immutable code/constants
+with synchronized heap publication of returned values.
 
 Key implementation:
 ```c

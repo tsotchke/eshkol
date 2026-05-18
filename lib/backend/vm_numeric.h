@@ -44,6 +44,7 @@
 #define VAL_VOID        25   /* unspecified return value (display, newline)  */
 #define VAL_HYPER_DUAL  26   /* heap-allocated VmHyperDual (opaque)          */
 #define VAL_RIEMANNIAN_ADAM_STATE 27 /* heap-allocated optimizer state       */
+#define VAL_FUTURE      28   /* heap-allocated standalone VM future handle   */
 
 /* ── Heap Subtypes ── */
 #define VM_SUBTYPE_COMPLEX   5
@@ -65,6 +66,7 @@
 #define VM_SUBTYPE_BYTEVEC   22
 #define VM_SUBTYPE_PARAMETER 23
 #define VM_SUBTYPE_MULTI_VAL 4
+#define VM_SUBTYPE_FUTURE    26
 
 /* ── Complex Number ── */
 typedef struct {

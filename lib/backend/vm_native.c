@@ -2649,7 +2649,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
 
     /* ══════════════════════════════════════════════════════════════════════
-     * Parallel (620-628) — sequential fallback (VM is single-threaded)
+     * Parallel (620-628) — pool-backed scheduling with serialized VM closure calls
      * ══════════════════════════════════════════════════════════════════════ */
     case 620: { /* parallel-map(fn, list) — parallel via thread pool when available */
         Value list = vm_pop(vm), fn = vm_pop(vm);
@@ -2907,19 +2907,64 @@ static void vm_dispatch_native(VM* vm, int fid) {
         vm_push(vm, result);
         break;
     }
-    case 625: { /* future(thunk) — in single-threaded VM, evaluate immediately */
-        Value thunk = vm_pop(vm);
-        Value result = vm_call_closure_from_native(vm, thunk, NULL, 0);
-        vm_push(vm, result);
+    case 625: { /* future(thunk-or-value) — async handle when pool is available */
+        Value thunk_or_value = vm_pop(vm);
+#ifndef ESHKOL_VM_WASM
+        VmFuture* fut = vm_future_create(vm, thunk_or_value);
+        if (fut) {
+            int32_t fut_ptr = heap_alloc(&vm->heap);
+            if (fut_ptr < 0) {
+                if (thunk_or_value.type == VAL_CLOSURE)
+                    thunk_or_value = vm_call_closure_from_native(vm, thunk_or_value, NULL, 0);
+                vm_push(vm, thunk_or_value);
+                break;
+            }
+            vm->heap.objects[fut_ptr]->type = HEAP_FUTURE;
+            vm->heap.objects[fut_ptr]->opaque.ptr = fut;
+            Value fut_value = (Value){.type = VAL_FUTURE, .as.ptr = fut_ptr};
+
+            VmThreadPool* pool = vm_parallel_ensure_pool();
+            if (pool && thunk_or_value.type == VAL_CLOSURE &&
+                vm_pool_submit(pool, vm_future_task_fn, fut, NULL) == 0) {
+                vm_push(vm, fut_value);
+                break;
+            }
+            Value result = thunk_or_value;
+            if (thunk_or_value.type == VAL_CLOSURE)
+                result = vm_call_closure_from_native(vm, thunk_or_value, NULL, 0);
+            vm_future_mark_ready(fut, result);
+            vm_push(vm, fut_value);
+            break;
+        }
+#endif
+        if (thunk_or_value.type == VAL_CLOSURE)
+            thunk_or_value = vm_call_closure_from_native(vm, thunk_or_value, NULL, 0);
+        vm_push(vm, thunk_or_value);
         break;
     }
     case 626: { /* force-future */
         Value fut = vm_pop(vm);
-        vm_push(vm, fut); /* futures are just values in single-threaded mode */
+#ifndef ESHKOL_VM_WASM
+        if (fut.type == VAL_FUTURE && fut.as.ptr >= 0 && fut.as.ptr < vm->heap.next_free &&
+            vm->heap.objects[fut.as.ptr]->type == HEAP_FUTURE) {
+            VmFuture* handle = (VmFuture*)vm->heap.objects[fut.as.ptr]->opaque.ptr;
+            vm_push(vm, vm_future_force(handle));
+            break;
+        }
+#endif
+        vm_push(vm, fut); /* compatibility: forcing a plain value returns it */
         break;
     }
-    case 627: { /* future-ready? — always true in single-threaded mode */
-        Value fut = vm_pop(vm); (void)fut;
+    case 627: { /* future-ready? */
+        Value fut = vm_pop(vm);
+#ifndef ESHKOL_VM_WASM
+        if (fut.type == VAL_FUTURE && fut.as.ptr >= 0 && fut.as.ptr < vm->heap.next_free &&
+            vm->heap.objects[fut.as.ptr]->type == HEAP_FUTURE) {
+            VmFuture* handle = (VmFuture*)vm->heap.objects[fut.as.ptr]->opaque.ptr;
+            vm_push(vm, BOOL_VAL(vm_future_is_ready(handle)));
+            break;
+        }
+#endif
         vm_push(vm, BOOL_VAL(1));
         break;
     }
@@ -4514,6 +4559,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
             case VAL_PAIR: t = "pair"; break; case VAL_CLOSURE: t = "procedure"; break;
             case VAL_STRING: t = "string"; break; case VAL_VECTOR: t = "vector"; break;
             case VAL_COMPLEX: t = "complex"; break; case VAL_RATIONAL: t = "rational"; break;
+            case VAL_FUTURE: t = "future"; break;
         }
         VmString* s = vm_string_from_cstr(&vm->heap.regions, t);
         if (s) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, s); }
