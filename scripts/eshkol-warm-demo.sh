@@ -36,21 +36,21 @@ fi
 # Use named pipes so we can drive stdin/stdout/stderr independently.
 TMPDIR_=$(mktemp -d)
 trap 'rm -rf "$TMPDIR_"' EXIT
-IN="$TMPDIR_/in"
-OUT="$TMPDIR_/out"
-ERR="$TMPDIR_/err"
-mkfifo "$IN" "$OUT" "$ERR"
+IN_TMP="$TMPDIR_/in"
+OUT_TMP="$TMPDIR_/out"
+ERR_TMP="$TMPDIR_/err"
+mkfifo "$IN_TMP" "$OUT_TMP" "$ERR_TMP"
 
 # Spawn the REPL with all three streams piped to the named pipes.
-"$ESHKOL_REPL" --machine < "$IN" > "$OUT" 2> "$ERR" &
+"$ESHKOL_REPL" --machine < "$IN_TMP" > "$OUT_TMP" 2> "$ERR_TMP" &
 REPL_PID=$!
 
-# Open writer end of $IN so it doesn't EOF when the cat exits.
-exec 3>"$IN"
+# Open writer end of the input pipe so it doesn't EOF between writes.
+exec 3>"$IN_TMP"
 
 # Wait for READY on stderr.
 echo "[demo] waiting for JIT to warm up..." >&2
-while IFS= read -r line < "$ERR"; do
+while IFS= read -r line < "$ERR_TMP"; do
     case "$line" in
         "EREPL READY") echo "[demo] warm" >&2 ; break ;;
         EREPL\ FAIL)   echo "[demo] startup FAIL: $line" >&2 ; exit 1 ;;
@@ -70,4 +70,4 @@ exec 3>&-
 
 wait "$REPL_PID" || true
 wait "$READER_PID" 2>/dev/null || true
-echo "[demo] done. Output captured in $OUT (pipe; consumed by reader)" >&2
+echo "[demo] done. Output captured in $OUT_TMP (pipe; consumed by reader)" >&2

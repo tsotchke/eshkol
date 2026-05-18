@@ -15,10 +15,21 @@ RUN="$ROOT/${BUILD_DIR:-build}/eshkol-run"
 
 PASS=0; FAIL=0
 
+tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/eshkol-private-extern.XXXXXX") || exit 1
+case "$tmp_dir" in
+    "${TMPDIR:-/tmp}"/eshkol-private-extern.*) ;;
+    *) echo "FAIL: unexpected temp dir: $tmp_dir"; exit 1 ;;
+esac
+cleanup() {
+    [ -n "${tmp_dir:-}" ] && [ -d "$tmp_dir" ] && rm -rf -- "$tmp_dir"
+}
+trap cleanup EXIT
+
 # Make a throwaway stdlib module that hits the old crash pattern,
 # then have a user file require it.
-MOD="$ROOT/lib/core/_extern_rename_test_mod.esk"
-cat > "$MOD" <<'ESK'
+mkdir -p "$tmp_dir/core"
+mod_file="$tmp_dir/core/_extern_rename_test_mod.esk"
+cat > "$mod_file" <<'ESK'
 (require core.list.transform)
 (provide pub-fn)
 (define pub-fn (lambda () 'public))
@@ -26,22 +37,20 @@ cat > "$MOD" <<'ESK'
 (extern void some-c-helper :real strlen)
 (define (priv-helper) (some-c-helper))
 ESK
-USE=/tmp/extern_rename_test_use.esk
-cat > "$USE" <<'ESK'
+use_file="$tmp_dir/extern_rename_test_use.esk"
+cat > "$use_file" <<'ESK'
 (require core._extern_rename_test_mod)
 (display "ok")
 (newline)
 ESK
-BIN=/tmp/extern_rename_test_bin
-rm -f "$BIN"
-"$RUN" "$USE" -o "$BIN" >/dev/null 2>&1
+bin_file="$tmp_dir/extern_rename_test_bin"
+"$RUN" "$use_file" -o "$bin_file" >/dev/null 2>&1
 RC=$?
-rm -f "$MOD"
-if [ "$RC" -ne 139 ]; then
-    echo "PASS: precompiled module with private extern+ref doesn't SIGSEGV (rc=$RC)"
+if [ "$RC" -eq 0 ]; then
+    echo "PASS: precompiled module with private extern+ref compiles (rc=$RC)"
     PASS=$((PASS+1))
 else
-    echo "FAIL: still SIGSEGVs"
+    echo "FAIL: precompiled module with private extern+ref crashed or failed (rc=$RC)"
     FAIL=$((FAIL+1))
 fi
 
@@ -49,15 +58,14 @@ fi
 # require core.testing (which has a private extern). Pre-fix: 139.
 for esk in tests/v1_2_edge_cases/collections_test.esk tests/v1_2_edge_cases/cache_test.esk; do
     name=$(basename "$esk" .esk)
-    BIN=/tmp/${name}_xext_bin
-    rm -f "$BIN"
-    "$RUN" "$esk" -o "$BIN" >/dev/null 2>&1
+    bin_file="$tmp_dir/${name}_xext_bin"
+    "$RUN" "$esk" -o "$bin_file" >/dev/null 2>&1
     RC=$?
-    if [ "$RC" -ne 139 ]; then
-        echo "PASS: $name compiles without SIGSEGV (rc=$RC)"
+    if [ "$RC" -eq 0 ]; then
+        echo "PASS: $name compiles cleanly (rc=$RC)"
         PASS=$((PASS+1))
     else
-        echo "FAIL: $name SIGSEGV"
+        echo "FAIL: $name crashed or failed (rc=$RC)"
         FAIL=$((FAIL+1))
     fi
 done
