@@ -4471,6 +4471,11 @@ static void execute_chunk(FuncChunk* chunk) {
                         if (k.type == key.type) {
                             if (k.type == VAL_INT) match = (k.as.i == key.as.i);
                             else if (k.type == VAL_FLOAT) match = (k.as.f == key.as.f);
+                            else if (k.type == VAL_STRING)
+                                match = (heap[k.as.ptr].string.len == heap[key.as.ptr].string.len &&
+                                         memcmp(heap[k.as.ptr].string.data,
+                                                heap[key.as.ptr].string.data,
+                                                heap[k.as.ptr].string.len) == 0);
                             else match = (k.as.ptr == key.as.ptr);
                         }
                         if (match) { PUSH(pair); goto assoc_done; }
@@ -5557,6 +5562,7 @@ static const BuiltinDef BUILTINS[] = {
     {"temp-directory", 1951, 0}, {"prevent-sleep", 1952, 1},
     {"allow-sleep", 1953, 1},
     {"url-encode", 1954, 1}, {"url-decode", 1955, 1},
+    {"url-parse", 1960, 1},
     {"string-ends-with?", 1956, 2}, {"string-index-of", 1957, 3},
     {"string-pad-left", 1958, 3}, {"string-pad-right", 1959, 3},
     /* Missing hash */

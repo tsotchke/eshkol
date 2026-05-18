@@ -292,6 +292,7 @@ public:
     llvm::Value* stringTruncateDisplay(const eshkol_operations_t* op);
     llvm::Value* urlEncode(const eshkol_operations_t* op);
     llvm::Value* urlDecode(const eshkol_operations_t* op);
+    llvm::Value* urlParse(const eshkol_operations_t* op);
     llvm::Value* stringEndsWith(const eshkol_operations_t* op);
     llvm::Value* stringIndexOf(const eshkol_operations_t* op);
     llvm::Value* stringPadLeft(const eshkol_operations_t* op);
