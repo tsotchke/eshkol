@@ -1,0 +1,25 @@
+;; Standalone VM regression for number->string radix conversion.
+
+(display "=== number->string radix regression ===") (newline)
+
+(display "T1 default radix 10: ")
+(display (if (string=? (number->string 123) "123") "PASS" "FAIL"))
+(newline)
+
+(display "T2 binary radix 2: ")
+(display (if (string=? (number->string 10 2) "1010") "PASS" "FAIL"))
+(newline)
+
+(display "T3 negative hex radix 16: ")
+(display (if (string=? (number->string -255 16) "-ff") "PASS" "FAIL"))
+(newline)
+
+(display "T4 base36 digit: ")
+(display (if (string=? (number->string 35 36) "z") "PASS" "FAIL"))
+(newline)
+
+(display "T5 base36 carry: ")
+(display (if (string=? (number->string 36 36) "10") "PASS" "FAIL"))
+(newline)
+
+(display "=== number->string radix complete ===") (newline)

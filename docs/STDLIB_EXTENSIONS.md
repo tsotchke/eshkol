@@ -2021,7 +2021,8 @@ Pure Eshkol. Eliminates 100+ nested `string-append` chains across the agent.
 
 `(number->string n radix)` — radix 2-36
 
-VM case 51 only does `snprintf` with no radix. Extend.
+Implemented in standalone VM case 51 for integer radices 2-36; radix 10 keeps
+the existing integer/float formatting path.
 
 ---
 
