@@ -359,6 +359,12 @@ static const BuiltinDef BUILTINS[] = {
     {"delete-file", 600, 1},
     {"directory-entries", 601, 1}, {"command-line", 602, 0},
     {"term-cursor-pos", 603, 0},
+    /* Parallel primitives — IDs 620-628 */
+    {"parallel-map", 620, 2}, {"parallel-filter", 621, 2},
+    {"parallel-fold", 622, 3}, {"parallel-for-each", 623, 2},
+    {"future", 625, 1}, {"force-future", 626, 1},
+    {"future-ready?", 627, 1},
+    {"thread-pool-info", 628, 0}, {"thread-pool-size", 628, 0},
     /* ═══════════════════════════════════════════════════════════════
      * Hash tables — IDs 660-670
      * ═══════════════════════════════════════════════════════════════ */

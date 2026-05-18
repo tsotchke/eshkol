@@ -118,10 +118,12 @@ Standalone VM startup stores the script path plus user arguments and builtin
 `parallel-map`, `parallel-filter`, `parallel-fold`, `parallel-for-each`,
 `parallel-execute`, `future`, `force`, `future-ready?`, `thread-pool-info`
 have correct VM APIs. `parallel-map`, `parallel-filter`, and
-`parallel-for-each` use the VM thread pool for scheduling when available, but
-user closure execution is still serialized through the main VM under the
-shared runtime/arena mutex. `parallel-fold`, futures, and `thread-pool-info`
-remain sequential fallbacks.
+`parallel-for-each` lazily initialize and use the VM thread pool for scheduling
+when available. `thread-pool-info` / `thread-pool-size` report the standalone
+VM pool size. `parallel-execute` accepts the source-level variadic thunk form
+and schedules thunks through the same pool path. User closure execution is
+still serialized through the main VM under the shared runtime/arena mutex.
+`parallel-fold` and futures remain sequential fallbacks.
 
 **Fix**: Implement a work-stealing thread pool using pthreads. Each worker
 thread gets its own VM stack. Use a shared work queue with mutex/condvar.

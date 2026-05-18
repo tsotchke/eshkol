@@ -1,0 +1,63 @@
+;; Standalone VM regression for native parallel primitive registration and
+;; lazy thread-pool initialization.
+
+(display "=== VM parallel primitives regression ===") (newline)
+
+(define pool-size (thread-pool-info))
+(display "T1 thread-pool-info exact positive: ")
+(display (if (and (exact? pool-size) (>= pool-size 1)) "PASS"
+             (list "FAIL got " pool-size)))
+(newline)
+
+(define squares (parallel-map (lambda (x) (* x x)) (list 1 2 3 4 5 6 7 8)))
+(display "T2 parallel-map squares: ")
+(display (if (and (= (length squares) 8)
+                  (= (list-ref squares 0) 1)
+                  (= (list-ref squares 3) 16)
+                  (= (list-ref squares 7) 64))
+             "PASS"
+             (list "FAIL got " squares)))
+(newline)
+
+(define evens (parallel-filter (lambda (x) (= 0 (modulo x 2)))
+                               (list 1 2 3 4 5 6 7 8)))
+(display "T3 parallel-filter evens: ")
+(display (if (and (= (length evens) 4)
+                  (= (list-ref evens 0) 2)
+                  (= (list-ref evens 1) 4)
+                  (= (list-ref evens 2) 6)
+                  (= (list-ref evens 3) 8))
+             "PASS"
+             (list "FAIL got " evens)))
+(newline)
+
+(define sum (parallel-fold + 0 (list 1 2 3 4 5 6 7 8)))
+(display "T4 parallel-fold sum: ")
+(display (if (= sum 36) "PASS" (list "FAIL got " sum)))
+(newline)
+
+(define each-result (parallel-for-each (lambda (x) (* x x))
+                                       (list 1 2 3 4 5 6 7 8)))
+(display "T5 parallel-for-each returns nil: ")
+(display (if (null? each-result) "PASS" (list "FAIL got " each-result)))
+(newline)
+
+(define f (future (lambda () 42)))
+(display "T6 future-ready? immediate future: ")
+(display (if (and (future-ready? f) (= (force-future f) 42)) "PASS"
+             (list "FAIL got " f)))
+(newline)
+
+(define executed (parallel-execute (lambda () 10)
+                                   (lambda () 20)
+                                   (lambda () 30)))
+(display "T7 parallel-execute variadic thunks: ")
+(display (if (and (= (length executed) 3)
+                  (= (list-ref executed 0) 10)
+                  (= (list-ref executed 1) 20)
+                  (= (list-ref executed 2) 30))
+             "PASS"
+             (list "FAIL got " executed)))
+(newline)
+
+(display "=== VM parallel primitives complete ===") (newline)
