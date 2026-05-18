@@ -384,7 +384,7 @@ static const BuiltinDef BUILTINS[] = {
     /* Parallel primitives — IDs 620-628 */
     {"parallel-map", 620, 2}, {"parallel-filter", 621, 2},
     {"parallel-fold", 622, 3}, {"parallel-for-each", 623, 2},
-    {"future", 625, 1}, {"force-future", 626, 1},
+    {"future", 625, 1}, {"force", 626, 1}, {"force-future", 626, 1},
     {"future-ready?", 627, 1},
     {"thread-pool-info", 628, 0}, {"thread-pool-size", 628, 0},
     /* ═══════════════════════════════════════════════════════════════

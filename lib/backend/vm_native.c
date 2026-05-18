@@ -482,14 +482,33 @@ int eshkol_vm_register_host_native(const char* name, eshkol_vm_host_native_fn fn
     if (!name || !fn) return -1;
     size_t name_len = strlen(name);
     if (name_len == 0 || name_len >= VM_HOST_NATIVE_NAME_MAX) return -1;
-    if (g_host_native_count >= VM_HOST_NATIVE_MAX) return -1;
+    /* Tombstone-aware lookup: a tombstoned slot has fn == NULL and an empty
+     * name; live slots cannot duplicate `name`. */
     for (int i = 0; i < g_host_native_count; i++) {
-        if (strcmp(g_host_native_names[i], name) == 0) return -1;
+        if (g_host_natives[i] && strcmp(g_host_native_names[i], name) == 0) return -1;
     }
-    int slot = g_host_native_count++;
+    /* Prefer a tombstoned slot to preserve dense indexing and keep the table
+     * within capacity. Stable slot indices are essential because bytecode
+     * encodes the fid as ESHKOL_VM_HOST_NATIVE_BASE + slot. */
+    int slot = -1;
+    for (int i = 0; i < g_host_native_count; i++) {
+        if (g_host_natives[i] == NULL) { slot = i; break; }
+    }
+    if (slot < 0) {
+        if (g_host_native_count >= VM_HOST_NATIVE_MAX) return -1;
+        slot = g_host_native_count++;
+    }
     g_host_natives[slot] = fn;
     memcpy(g_host_native_names[slot], name, name_len + 1);
     return slot;
+}
+
+int eshkol_vm_unregister_host_native(int slot) {
+    if (slot < 0 || slot >= g_host_native_count) return -1;
+    if (g_host_natives[slot] == NULL) return -1;
+    g_host_natives[slot] = NULL;
+    g_host_native_names[slot][0] = '\0';
+    return 0;
 }
 
 int eshkol_vm_host_pop_int64(VM* vm, int64_t* out) {

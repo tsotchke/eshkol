@@ -122,8 +122,9 @@ have correct VM APIs. `parallel-map`, `parallel-filter`, and
 when available. `thread-pool-info` / `thread-pool-size` report the standalone
 VM pool size. `parallel-execute` accepts the source-level variadic thunk form
 and schedules thunks through the same pool path. `future` now returns a
-standalone VM future handle backed by the same pool; `force-future` joins that
-handle and `future-ready?` checks it without forcing.
+standalone VM future handle backed by the same pool; `force` joins that handle
+(`force-future` remains as a compatibility alias) and `future-ready?` checks it
+without forcing.
 
 Read-only user closures now run in isolated worker VM contexts. Each worker
 shares immutable bytecode/constants, clones the reachable heap graph into its

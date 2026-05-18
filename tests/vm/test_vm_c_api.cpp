@@ -427,6 +427,27 @@ void test_host_native_registry(void) {
         eshkol_vm_destroy(double_vm);
     }
     eskb_buf_free(&double_chunk);
+
+    CHECK(eshkol_vm_unregister_host_native(slot) == 0, "unregister host native");
+    CHECK(eshkol_vm_unregister_host_native(slot) == -1, "reject duplicate host-native unregister");
+
+    int reused_slot = eshkol_vm_register_host_native("test.add-with-offset", host_add_with_offset);
+    CHECK(reused_slot == slot, "reuse tombstoned host-native slot");
+    if (reused_slot >= 0) {
+        EskbBuffer reused_chunk = make_host_native_int64_chunk(ESHKOL_VM_HOST_NATIVE_BASE + reused_slot);
+        EshkolVmHandle* reused_vm = eshkol_vm_load_chunk(reused_chunk.data, reused_chunk.len);
+        CHECK(reused_vm != nullptr, "load reused host-native ESKB chunk");
+        if (reused_vm) {
+            CHECK(eshkol_vm_run(reused_vm) == 0, "run reused host-native ESKB chunk");
+            int64_t top = 0;
+            CHECK(eshkol_vm_top_int64(reused_vm, &top) == 0, "read reused host-native result");
+            CHECK(top == 42, "reused host-native result == 42");
+            eshkol_vm_destroy(reused_vm);
+        }
+        eskb_buf_free(&reused_chunk);
+        CHECK(eshkol_vm_unregister_host_native(reused_slot) == 0, "cleanup reused host native");
+    }
+    CHECK(eshkol_vm_unregister_host_native(double_slot) == 0, "cleanup double host native");
 }
 
 void test_native_string_case(const char* label, int native_fid, const char* a, const char* b,
