@@ -318,6 +318,11 @@ typedef struct VM {
         int64_t handle;
     } sleep_inhibitors[16];
     int64_t next_sleep_inhibitor;
+
+    struct {
+        int active;
+        void* regex;
+    } regex_handles[32];
 } VM;
 
 /* Command-line arguments (set in main, read by native 602) */

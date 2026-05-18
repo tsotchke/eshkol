@@ -1018,6 +1018,120 @@ static Value vm_sha256_file_value(VM* vm, VmString* path) {
     return vm_string_value(vm, out, 64);
 }
 
+static int vm_regex_compile_handle(VM* vm, VmString* pattern) {
+#if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
+    if (!vm || !pattern || !pattern->data) return -1;
+    int slot = -1;
+    for (int i = 1; i < (int)(sizeof(vm->regex_handles) / sizeof(vm->regex_handles[0])); i++) {
+        if (!vm->regex_handles[i].active) { slot = i; break; }
+    }
+    if (slot < 0) return -1;
+    regex_t* re = (regex_t*)calloc(1, sizeof(regex_t));
+    if (!re) return -1;
+    int rc = regcomp(re, pattern->data, REG_EXTENDED);
+    if (rc != 0) {
+        free(re);
+        return -1;
+    }
+    vm->regex_handles[slot].active = 1;
+    vm->regex_handles[slot].regex = re;
+    return slot;
+#else
+    (void)vm; (void)pattern;
+    return -1;
+#endif
+}
+
+static regex_t* vm_regex_get(VM* vm, Value handle_val) {
+#if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
+    if (!vm) return NULL;
+    int handle = (int)as_number(handle_val);
+    if (handle <= 0 || handle >= (int)(sizeof(vm->regex_handles) / sizeof(vm->regex_handles[0])) ||
+        !vm->regex_handles[handle].active)
+        return NULL;
+    return (regex_t*)vm->regex_handles[handle].regex;
+#else
+    (void)vm; (void)handle_val;
+    return NULL;
+#endif
+}
+
+static Value vm_regex_match_value(VM* vm, regex_t* re, VmString* subject, int boolean_only) {
+#if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
+    if (!vm || !re || !subject || !subject->data) return BOOL_VAL(0);
+    regmatch_t m[1];
+    int rc = regexec(re, subject->data, 1, m, 0);
+    if (rc != 0 || m[0].rm_so < 0) return BOOL_VAL(0);
+    if (boolean_only) return BOOL_VAL(1);
+    return vm_string_value(vm, subject->data + m[0].rm_so, (int64_t)(m[0].rm_eo - m[0].rm_so));
+#else
+    (void)vm; (void)re; (void)subject; (void)boolean_only;
+    return BOOL_VAL(0);
+#endif
+}
+
+static Value vm_regex_match_groups_value(VM* vm, regex_t* re, VmString* subject) {
+#if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
+    if (!vm || !re || !subject || !subject->data) return BOOL_VAL(0);
+    size_t nmatch = re->re_nsub + 1;
+    if (nmatch > 32) nmatch = 32;
+    regmatch_t matches[32];
+    int rc = regexec(re, subject->data, nmatch, matches, 0);
+    if (rc != 0 || matches[0].rm_so < 0) return BOOL_VAL(0);
+    Value groups = NIL_VAL;
+    for (size_t i = nmatch; i > 1; i--) {
+        regmatch_t m = matches[i - 1];
+        Value item = (m.rm_so >= 0)
+            ? vm_string_value(vm, subject->data + m.rm_so, (int64_t)(m.rm_eo - m.rm_so))
+            : vm_string_value(vm, "", 0);
+        groups = vm_cons_value(vm, item, groups);
+    }
+    Value result = NIL_VAL;
+    result = vm_cons_value(vm, vm_alist_entry(vm, "end", INT_VAL((int64_t)matches[0].rm_eo)), result);
+    result = vm_cons_value(vm, vm_alist_entry(vm, "start", INT_VAL((int64_t)matches[0].rm_so)), result);
+    result = vm_cons_value(vm, vm_alist_entry(vm, "groups", groups), result);
+    result = vm_cons_value(vm, vm_alist_entry(vm, "full",
+                          vm_string_value(vm, subject->data + matches[0].rm_so,
+                                          (int64_t)(matches[0].rm_eo - matches[0].rm_so))), result);
+    return result;
+#else
+    (void)vm; (void)re; (void)subject;
+    return BOOL_VAL(0);
+#endif
+}
+
+static Value vm_regex_split_value(VM* vm, regex_t* re, VmString* subject) {
+#if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
+    if (!vm || !re || !subject || !subject->data) return BOOL_VAL(0);
+    const char* base = subject->data;
+    int offset = 0;
+    Value rev = NIL_VAL;
+    int parts = 0;
+    while (offset <= subject->byte_len && parts < 1024) {
+        regmatch_t m[1];
+        int rc = regexec(re, base + offset, 1, m, 0);
+        if (rc != 0 || m[0].rm_so < 0) break;
+        int start = offset + (int)m[0].rm_so;
+        int end = offset + (int)m[0].rm_eo;
+        rev = vm_cons_value(vm, vm_string_value(vm, base + offset, start - offset), rev);
+        parts++;
+        if (end <= offset) break;
+        offset = end;
+    }
+    rev = vm_cons_value(vm, vm_string_value(vm, base + offset, subject->byte_len - offset), rev);
+    Value out = NIL_VAL;
+    while (rev.type == VAL_PAIR) {
+        Value car = vm->heap.objects[rev.as.ptr]->cons.car;
+        out = vm_cons_value(vm, car, out);
+        rev = vm->heap.objects[rev.as.ptr]->cons.cdr;
+    }
+    return out;
+#else
+    (void)vm; (void)re; (void)subject;
+    return BOOL_VAL(0);
+#endif
+}
+
 static int vm_string_ends_with_bytes(VmString* s, VmString* suffix) {
     if (!s || !suffix || !s->data || !suffix->data) return 0;
     if (suffix->byte_len > s->byte_len) return 0;
@@ -4252,6 +4366,55 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 1965: { /* sha256-file(path) → string or #f */
         Value path_val = vm_pop(vm);
         vm_push(vm, vm_sha256_file_value(vm, vm_value_as_string(vm, path_val)));
+        break;
+    }
+    case 1966: { /* regex-compile(pattern) → handle or #f */
+        Value pattern_val = vm_pop(vm);
+        int handle = vm_regex_compile_handle(vm, vm_value_as_string(vm, pattern_val));
+        if (handle > 0) vm_push(vm, INT_VAL((int64_t)handle));
+        else vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+    case 1967: { /* regex-free(handle) → bool */
+        Value handle_val = vm_pop(vm);
+#if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
+        int handle = (int)as_number(handle_val);
+        if (handle > 0 && handle < (int)(sizeof(vm->regex_handles) / sizeof(vm->regex_handles[0])) &&
+            vm->regex_handles[handle].active) {
+            regfree((regex_t*)vm->regex_handles[handle].regex);
+            free(vm->regex_handles[handle].regex);
+            memset(&vm->regex_handles[handle], 0, sizeof(vm->regex_handles[handle]));
+            vm_push(vm, BOOL_VAL(1));
+            break;
+        }
+#else
+        (void)handle_val;
+#endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+    case 1968: { /* regex-match(handle, subject) → string or #f */
+        Value subject_val = vm_pop(vm), handle_val = vm_pop(vm);
+        vm_push(vm, vm_regex_match_value(vm, vm_regex_get(vm, handle_val),
+                                         vm_value_as_string(vm, subject_val), 0));
+        break;
+    }
+    case 1969: { /* regex-match?(handle, subject) → bool */
+        Value subject_val = vm_pop(vm), handle_val = vm_pop(vm);
+        vm_push(vm, vm_regex_match_value(vm, vm_regex_get(vm, handle_val),
+                                         vm_value_as_string(vm, subject_val), 1));
+        break;
+    }
+    case 1970: { /* regex-match-groups(handle, subject) → alist or #f */
+        Value subject_val = vm_pop(vm), handle_val = vm_pop(vm);
+        vm_push(vm, vm_regex_match_groups_value(vm, vm_regex_get(vm, handle_val),
+                                                vm_value_as_string(vm, subject_val)));
+        break;
+    }
+    case 1971: { /* regex-split(handle, subject) → list or #f */
+        Value subject_val = vm_pop(vm), handle_val = vm_pop(vm);
+        vm_push(vm, vm_regex_split_value(vm, vm_regex_get(vm, handle_val),
+                                         vm_value_as_string(vm, subject_val)));
         break;
     }
     case 1956: { /* string-ends-with?(str, suffix) → bool */

@@ -654,9 +654,25 @@ compatibility extension.
 
 ## B.9 Regex Extensions
 
+The standalone VM exposes a POSIX extended-regular-expression handle table as
+native IDs 1966-1971: `regex-compile`, `regex-free`, `regex-match`,
+`regex-match?`, `regex-match-groups`, and `regex-split`. Windows and WASM return
+`#f` for the handle-backed operations.
+
+### `(regex-compile pattern) -> handle-or-false`
+Compile `pattern` and return an integer regex handle.
+
+### `(regex-free handle) -> bool`
+Release a standalone VM regex handle.
+
+### `(regex-match handle str) -> string-or-false`
+Return the full match string or `#f`.
+
+### `(regex-match? handle str) -> bool`
+Return whether `str` matches the compiled pattern.
+
 ### `(regex-match-groups handle str) -> list-or-false`
 Return capture groups: `((full . "text") (groups . ("g1" "g2")) (start . 0) (end . 5))`.
-The existing `regex-match` only returns the full match string.
 
 ### `(regex-split handle str) -> list`
 Split string on pattern matches.
