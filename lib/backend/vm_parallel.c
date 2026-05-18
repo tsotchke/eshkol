@@ -69,6 +69,9 @@ typedef struct {
 
 /* Single global pool */
 static VmThreadPool* g_pool = NULL;
+static pthread_mutex_t g_pool_init_mutex = PTHREAD_MUTEX_INITIALIZER;
+static int g_pool_atexit_registered = 0;
+static void vm_parallel_shutdown_global(void);
 
 /*******************************************************************************
  * Worker Thread
@@ -248,6 +251,28 @@ static void vm_pool_shutdown(VmThreadPool* pool) {
     free(pool);
 }
 
+static VmThreadPool* vm_parallel_ensure_pool(void) {
+    pthread_mutex_lock(&g_pool_init_mutex);
+    if (!g_pool) {
+        g_pool = vm_pool_init(0);
+        if (g_pool && !g_pool_atexit_registered) {
+            atexit(vm_parallel_shutdown_global);
+            g_pool_atexit_registered = 1;
+        }
+    }
+    VmThreadPool* pool = g_pool;
+    pthread_mutex_unlock(&g_pool_init_mutex);
+    return pool;
+}
+
+static void vm_parallel_shutdown_global(void) {
+    pthread_mutex_lock(&g_pool_init_mutex);
+    VmThreadPool* pool = g_pool;
+    g_pool = NULL;
+    pthread_mutex_unlock(&g_pool_init_mutex);
+    if (pool) vm_pool_shutdown(pool);
+}
+
 /* 622: vm_pool_submit — enqueue a task, returns 0 on success */
 static int vm_pool_submit(VmThreadPool* pool, void (*fn)(void* arg, void* result),
                           void* arg, void* result) {
@@ -365,6 +390,19 @@ static void vm_parmap_task_fn(void* arg, void* result) {
     (void)result;
     task->output = vm_worker_call_closure(NULL, task->main_vm,
                                           task->closure, &task->input, 1);
+}
+
+typedef struct {
+    VM*     main_vm;
+    Value   closure;
+    Value   output;
+} VmParThunkTask;
+
+static void vm_parthunk_task_fn(void* arg, void* result) {
+    VmParThunkTask* task = (VmParThunkTask*)arg;
+    (void)result;
+    task->output = vm_worker_call_closure(NULL, task->main_vm,
+                                          task->closure, NULL, 0);
 }
 
 /*******************************************************************************

@@ -2317,7 +2317,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
         /* Use thread pool if available and list is large enough.
          * WASM target has no pthread → vm_parallel.c is excluded; always sequential. */
 #ifndef ESHKOL_VM_WASM
-        if (g_pool && n >= 4) {
+        VmThreadPool* pool = vm_parallel_ensure_pool();
+        if (pool && n >= 4) {
             VmParMapTask* tasks = (VmParMapTask*)vm_alloc(&vm->heap.regions,
                                       (size_t)n * sizeof(VmParMapTask));
             if (tasks) {
@@ -2328,9 +2329,9 @@ static void vm_dispatch_native(VM* vm, int fid) {
                     tasks[i].output = NIL_VAL;
                 }
                 for (int i = 0; i < n; i++) {
-                    vm_pool_submit(g_pool, vm_parmap_task_fn, &tasks[i], NULL);
+                    vm_pool_submit(pool, vm_parmap_task_fn, &tasks[i], NULL);
                 }
-                vm_pool_wait_all(g_pool);
+                vm_pool_wait_all(pool);
                 for (int i = 0; i < n; i++) {
                     results[i] = tasks[i].output;
                 }
@@ -2382,7 +2383,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
 
         /* Evaluate predicates (parallel via pool if available; WASM is sequential). */
 #ifndef ESHKOL_VM_WASM
-        if (g_pool && n >= 4) {
+        VmThreadPool* pool = vm_parallel_ensure_pool();
+        if (pool && n >= 4) {
             VmParMapTask* tasks = (VmParMapTask*)vm_alloc(&vm->heap.regions,
                                       (size_t)n * sizeof(VmParMapTask));
             if (tasks) {
@@ -2391,8 +2393,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
                     tasks[i].input = elems[i]; tasks[i].output = NIL_VAL;
                 }
                 for (int i = 0; i < n; i++)
-                    vm_pool_submit(g_pool, vm_parmap_task_fn, &tasks[i], NULL);
-                vm_pool_wait_all(g_pool);
+                    vm_pool_submit(pool, vm_parmap_task_fn, &tasks[i], NULL);
+                vm_pool_wait_all(pool);
                 for (int i = 0; i < n; i++) preds[i] = tasks[i].output;
             } else {
                 for (int i = 0; i < n; i++)
@@ -2451,7 +2453,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
 
         /* parallel-for-each: parallel via pool if available; WASM is sequential. */
 #ifndef ESHKOL_VM_WASM
-        if (g_pool && n >= 4) {
+        VmThreadPool* pool = vm_parallel_ensure_pool();
+        if (pool && n >= 4) {
             VmParMapTask* tasks = (VmParMapTask*)vm_alloc(&vm->heap.regions,
                                       (size_t)n * sizeof(VmParMapTask));
             if (tasks) {
@@ -2460,8 +2463,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
                     tasks[i].input = elems[i]; tasks[i].output = NIL_VAL;
                 }
                 for (int i = 0; i < n; i++)
-                    vm_pool_submit(g_pool, vm_parmap_task_fn, &tasks[i], NULL);
-                vm_pool_wait_all(g_pool);
+                    vm_pool_submit(pool, vm_parmap_task_fn, &tasks[i], NULL);
+                vm_pool_wait_all(pool);
             } else {
                 for (int i = 0; i < n; i++)
                     vm_call_closure_from_native(vm, fn, &elems[i], 1);
@@ -2475,9 +2478,69 @@ static void vm_dispatch_native(VM* vm, int fid) {
         vm_push(vm, NIL_VAL);
         break;
     }
-    case 624: { /* parallel-execute(thunk) — sequential: just call the thunk */
-        Value thunk = vm_pop(vm);
-        Value result = vm_call_closure_from_native(vm, thunk, NULL, 0);
+    case 624: { /* parallel-execute(thunks-list) */
+        Value thunks = vm_pop(vm);
+
+        if (thunks.type == VAL_CLOSURE) {
+            Value result = vm_call_closure_from_native(vm, thunks, NULL, 0);
+            vm_push(vm, result);
+            break;
+        }
+
+        int n = 0;
+        Value cur = thunks;
+        while (cur.type == VAL_PAIR && n < 4096) {
+            n++;
+            cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
+        }
+        if (n == 0) { vm_push(vm, NIL_VAL); break; }
+
+        Value* closures = (Value*)vm_alloc(&vm->heap.regions, (size_t)n * sizeof(Value));
+        Value* results = (Value*)vm_alloc(&vm->heap.regions, (size_t)n * sizeof(Value));
+        if (!closures || !results) { vm_push(vm, NIL_VAL); break; }
+
+        cur = thunks;
+        for (int i = 0; i < n; i++) {
+            closures[i] = vm->heap.objects[cur.as.ptr]->cons.car;
+            results[i] = NIL_VAL;
+            cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
+        }
+
+#ifndef ESHKOL_VM_WASM
+        VmThreadPool* pool = vm_parallel_ensure_pool();
+        if (pool && n >= 2) {
+            VmParThunkTask* tasks = (VmParThunkTask*)vm_alloc(&vm->heap.regions,
+                                        (size_t)n * sizeof(VmParThunkTask));
+            if (tasks) {
+                for (int i = 0; i < n; i++) {
+                    tasks[i].main_vm = vm;
+                    tasks[i].closure = closures[i];
+                    tasks[i].output = NIL_VAL;
+                }
+                for (int i = 0; i < n; i++)
+                    vm_pool_submit(pool, vm_parthunk_task_fn, &tasks[i], NULL);
+                vm_pool_wait_all(pool);
+                for (int i = 0; i < n; i++) results[i] = tasks[i].output;
+            } else {
+                for (int i = 0; i < n; i++)
+                    results[i] = vm_call_closure_from_native(vm, closures[i], NULL, 0);
+            }
+        } else
+#endif
+        {
+            for (int i = 0; i < n; i++)
+                results[i] = vm_call_closure_from_native(vm, closures[i], NULL, 0);
+        }
+
+        Value result = NIL_VAL;
+        for (int i = n - 1; i >= 0; i--) {
+            int32_t p = heap_alloc(&vm->heap);
+            if (p < 0) break;
+            vm->heap.objects[p]->type = HEAP_CONS;
+            vm->heap.objects[p]->cons.car = results[i];
+            vm->heap.objects[p]->cons.cdr = result;
+            result = PAIR_VAL(p);
+        }
         vm_push(vm, result);
         break;
     }
@@ -2498,7 +2561,12 @@ static void vm_dispatch_native(VM* vm, int fid) {
         break;
     }
     case 628: { /* thread-pool-info */
-        vm_push(vm, INT_VAL(1)); /* 1 thread (main) */
+#ifndef ESHKOL_VM_WASM
+        VmThreadPool* pool = vm_parallel_ensure_pool();
+        vm_push(vm, INT_VAL(pool ? vm_pool_thread_count(pool) : 1));
+#else
+        vm_push(vm, INT_VAL(1));
+#endif
         break;
     }
 

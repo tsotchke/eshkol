@@ -1884,6 +1884,19 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         return;
     }
 
+    /* (parallel-execute thunk ...) → build a thunk list for native 624.
+     * The builtin table only supports fixed arities; keep this variadic form
+     * as a compiler surface while native 624 handles scheduling/fallbacks. */
+    if (is_sym(head, "parallel-execute") && node->n_children >= 1) {
+        chunk_emit(c, OP_NIL, 0);
+        for (int i = node->n_children - 1; i >= 1; i--) {
+            compile_expr(c, node->children[i], 0);
+            chunk_emit(c, OP_CONS, 0);
+        }
+        chunk_emit(c, OP_NATIVE_CALL, 624);
+        return;
+    }
+
     /* (make-promise val) / (promise? x) */
     if (is_sym(head, "promise?") && node->n_children == 2) {
         /* A promise is a vector of length 2 with first element being bool */
