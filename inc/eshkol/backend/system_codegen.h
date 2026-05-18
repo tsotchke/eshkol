@@ -266,6 +266,10 @@ public:
     llvm::Value* socketSend(const eshkol_operations_t* op);
     llvm::Value* socketRecv(const eshkol_operations_t* op);
     llvm::Value* socketClose(const eshkol_operations_t* op);
+    llvm::Value* fsWatchNative(const eshkol_operations_t* op);
+    llvm::Value* fsWatchRecursive(const eshkol_operations_t* op);
+    llvm::Value* fsWatchPoll(const eshkol_operations_t* op);
+    llvm::Value* fsUnwatch(const eshkol_operations_t* op);
     llvm::Value* kbSave(const eshkol_operations_t* op);
     llvm::Value* kbLoad(const eshkol_operations_t* op);
     llvm::Value* tensorTokenEstimate(const eshkol_operations_t* op);

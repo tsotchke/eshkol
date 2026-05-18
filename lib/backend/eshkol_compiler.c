@@ -5549,6 +5549,8 @@ static const BuiltinDef BUILTINS[] = {
     {"term-clipboard-write", 1937, 1}, {"term-clipboard-read", 1938, 0},
     {"term-hyperlink", 1939, 2}, {"term-detect-capabilities", 1940, 0},
     {"term-bell", 1941, 0},
+    {"fs-watch-native", 1942, 2}, {"fs-watch-recursive", 1943, 2},
+    {"fs-watch-poll", 1944, 1}, {"fs-unwatch", 1945, 1},
     /* Missing hash */
     {"hash-clear!", 668, 1},
     /* gcd / lcm */

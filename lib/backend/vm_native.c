@@ -247,6 +247,58 @@ static Value vm_term_detect_capabilities(VM* vm) {
     return alist;
 }
 
+static void vm_file_watch_signature(const char* path, int* exists, int64_t* mtime_ns, int64_t* size) {
+    if (exists) *exists = 0;
+    if (mtime_ns) *mtime_ns = 0;
+    if (size) *size = 0;
+    if (!path || !*path) return;
+#if defined(_WIN32) && !defined(ESHKOL_VM_WASM)
+    struct _stat64 st;
+    if (_stat64(path, &st) == 0) {
+        if (exists) *exists = 1;
+        if (mtime_ns) *mtime_ns = (int64_t)st.st_mtime * 1000000000LL;
+        if (size) *size = (int64_t)st.st_size;
+    }
+#elif !defined(ESHKOL_VM_WASM)
+    struct stat st;
+    if (stat(path, &st) == 0) {
+        if (exists) *exists = 1;
+#ifdef __APPLE__
+        if (mtime_ns) *mtime_ns = (int64_t)st.st_mtimespec.tv_sec * 1000000000LL +
+                                  (int64_t)st.st_mtimespec.tv_nsec;
+#else
+        if (mtime_ns) *mtime_ns = (int64_t)st.st_mtim.tv_sec * 1000000000LL +
+                                  (int64_t)st.st_mtim.tv_nsec;
+#endif
+        if (size) *size = (int64_t)st.st_size;
+    }
+#endif
+}
+
+static int vm_file_watch_start(VM* vm, const char* path, int recursive) {
+    if (!vm || !path || !*path) return -1;
+    int slot = -1;
+    for (int i = 1; i < (int)(sizeof(vm->fs_watchers) / sizeof(vm->fs_watchers[0])); i++) {
+        if (!vm->fs_watchers[i].active) {
+            slot = i;
+            break;
+        }
+    }
+    if (slot < 0) return -1;
+
+    int exists = 0;
+    int64_t mtime_ns = 0;
+    int64_t size = 0;
+    vm_file_watch_signature(path, &exists, &mtime_ns, &size);
+    vm->fs_watchers[slot].active = 1;
+    vm->fs_watchers[slot].recursive = recursive ? 1 : 0;
+    vm->fs_watchers[slot].exists = exists;
+    vm->fs_watchers[slot].mtime_ns = mtime_ns;
+    vm->fs_watchers[slot].size = size;
+    snprintf(vm->fs_watchers[slot].path, sizeof(vm->fs_watchers[slot].path), "%s", path);
+    return slot;
+}
+
 #if defined(_WIN32) && !defined(ESHKOL_VM_WASM)
 static int vm_win_append_process_arg(char* out, size_t out_size, size_t* pos, const char* arg) {
     if (!out || !pos || !arg) return 0;
@@ -3256,6 +3308,69 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 1941: { /* term-bell() → bool */
         vm_term_write_tty("\a");
         vm_push(vm, BOOL_VAL(1));
+        break;
+    }
+    case 1942: { /* fs-watch-native(path, callback) → watcher or #f */
+        Value callback_val = vm_pop(vm), path_val = vm_pop(vm);
+        (void)callback_val;
+        VmString* path = vm_value_as_string(vm, path_val);
+        int handle = path ? vm_file_watch_start(vm, path->data, 0) : -1;
+        if (handle > 0) vm_push(vm, INT_VAL((int64_t)handle));
+        else vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+    case 1943: { /* fs-watch-recursive(path, callback) → watcher or #f */
+        Value callback_val = vm_pop(vm), path_val = vm_pop(vm);
+        (void)callback_val;
+        VmString* path = vm_value_as_string(vm, path_val);
+        int handle = path ? vm_file_watch_start(vm, path->data, 1) : -1;
+        if (handle > 0) vm_push(vm, INT_VAL((int64_t)handle));
+        else vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+    case 1944: { /* fs-watch-poll(watcher) → "event\tpath" or #f */
+        Value handle_val = vm_pop(vm);
+        int handle = (int)as_number(handle_val);
+        if (handle > 0 && handle < (int)(sizeof(vm->fs_watchers) / sizeof(vm->fs_watchers[0])) &&
+            vm->fs_watchers[handle].active) {
+            int exists = 0;
+            int64_t mtime_ns = 0;
+            int64_t size = 0;
+            vm_file_watch_signature(vm->fs_watchers[handle].path, &exists, &mtime_ns, &size);
+            const char* event = NULL;
+            if (vm->fs_watchers[handle].exists && !exists)
+                event = "delete";
+            else if (!vm->fs_watchers[handle].exists && exists)
+                event = "create";
+            else if (exists && (mtime_ns != vm->fs_watchers[handle].mtime_ns ||
+                               size != vm->fs_watchers[handle].size))
+                event = "change";
+
+            vm->fs_watchers[handle].exists = exists;
+            vm->fs_watchers[handle].mtime_ns = mtime_ns;
+            vm->fs_watchers[handle].size = size;
+            if (event) {
+                char buf[1200];
+                int n = snprintf(buf, sizeof(buf), "%s\t%s", event, vm->fs_watchers[handle].path);
+                if (n > 0 && n < (int)sizeof(buf)) {
+                    vm_push(vm, vm_string_value(vm, buf, n));
+                    break;
+                }
+            }
+        }
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+    case 1945: { /* fs-unwatch(watcher) → bool */
+        Value handle_val = vm_pop(vm);
+        int handle = (int)as_number(handle_val);
+        if (handle > 0 && handle < (int)(sizeof(vm->fs_watchers) / sizeof(vm->fs_watchers[0])) &&
+            vm->fs_watchers[handle].active) {
+            memset(&vm->fs_watchers[handle], 0, sizeof(vm->fs_watchers[handle]));
+            vm_push(vm, BOOL_VAL(1));
+            break;
+        }
+        vm_push(vm, BOOL_VAL(0));
         break;
     }
 

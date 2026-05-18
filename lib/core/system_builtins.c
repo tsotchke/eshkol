@@ -40,6 +40,8 @@
 #include <windows.h>
 #include <direct.h>
 #include <process.h>
+#include <sys/stat.h>
+#include <io.h>
 /* Windows POSIX compatibility:
  *   - <limits.h> on MSVC defines _MAX_PATH (260) but not PATH_MAX.
  *   - <libgen.h> (dirname/basename) does not exist on Windows.
@@ -1416,6 +1418,137 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_socket_close_v(eshkol_sysbuiltin
 #endif
 }
 
+typedef struct {
+    int active;
+    int recursive;
+    int exists;
+    int64_t mtime_ns;
+    int64_t size;
+    char path[1024];
+} eshkol_sys_file_watcher_t;
+
+static eshkol_sys_file_watcher_t g_sys_file_watchers[32];
+
+static void eshkol_sys_file_watch_signature(const char* path,
+                                            int* exists,
+                                            int64_t* mtime_ns,
+                                            int64_t* size) {
+    if (exists) *exists = 0;
+    if (mtime_ns) *mtime_ns = 0;
+    if (size) *size = 0;
+    if (!path || !*path) return;
+#ifdef _WIN32
+    struct _stat64 st;
+    if (_stat64(path, &st) == 0) {
+        if (exists) *exists = 1;
+        if (mtime_ns) *mtime_ns = (int64_t)st.st_mtime * 1000000000LL;
+        if (size) *size = (int64_t)st.st_size;
+    }
+#else
+    struct stat st;
+    if (stat(path, &st) == 0) {
+        if (exists) *exists = 1;
+#ifdef __APPLE__
+        if (mtime_ns) *mtime_ns = (int64_t)st.st_mtimespec.tv_sec * 1000000000LL +
+                                  (int64_t)st.st_mtimespec.tv_nsec;
+#else
+        if (mtime_ns) *mtime_ns = (int64_t)st.st_mtim.tv_sec * 1000000000LL +
+                                  (int64_t)st.st_mtim.tv_nsec;
+#endif
+        if (size) *size = (int64_t)st.st_size;
+    }
+#endif
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_fs_watch_start_v(eshkol_sysbuiltin_value_t path_val,
+                                                                  int recursive) {
+    const char* path = sys_extract_string(path_val);
+    if (!path || !*path || strlen(path) >= sizeof(g_sys_file_watchers[0].path))
+        return sys_make_bool(0);
+
+    int slot = -1;
+    for (int i = 1; i < (int)(sizeof(g_sys_file_watchers) / sizeof(g_sys_file_watchers[0])); ++i) {
+        if (!g_sys_file_watchers[i].active) {
+            slot = i;
+            break;
+        }
+    }
+    if (slot < 0) return sys_make_bool(0);
+
+    int exists = 0;
+    int64_t mtime_ns = 0;
+    int64_t size = 0;
+    eshkol_sys_file_watch_signature(path, &exists, &mtime_ns, &size);
+    g_sys_file_watchers[slot].active = 1;
+    g_sys_file_watchers[slot].recursive = recursive ? 1 : 0;
+    g_sys_file_watchers[slot].exists = exists;
+    g_sys_file_watchers[slot].mtime_ns = mtime_ns;
+    g_sys_file_watchers[slot].size = size;
+    snprintf(g_sys_file_watchers[slot].path, sizeof(g_sys_file_watchers[slot].path), "%s", path);
+    return sys_make_int64(slot);
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_fs_watch_native_v(eshkol_sysbuiltin_value_t path_val,
+                                                                   eshkol_sysbuiltin_value_t callback_val) {
+    (void)callback_val;
+    return eshkol_builtin_fs_watch_start_v(path_val, 0);
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_fs_watch_recursive_v(eshkol_sysbuiltin_value_t path_val,
+                                                                      eshkol_sysbuiltin_value_t callback_val) {
+    (void)callback_val;
+    return eshkol_builtin_fs_watch_start_v(path_val, 1);
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_fs_watch_poll_v(eshkol_sysbuiltin_value_t handle_val) {
+    int handle = (int)((int64_t)handle_val.data);
+    if (handle <= 0 || handle >= (int)(sizeof(g_sys_file_watchers) / sizeof(g_sys_file_watchers[0])) ||
+        !g_sys_file_watchers[handle].active)
+        return sys_make_bool(0);
+
+    int exists = 0;
+    int64_t mtime_ns = 0;
+    int64_t size = 0;
+    eshkol_sys_file_watch_signature(g_sys_file_watchers[handle].path, &exists, &mtime_ns, &size);
+
+    const char* event = NULL;
+    if (g_sys_file_watchers[handle].exists && !exists)
+        event = "delete";
+    else if (!g_sys_file_watchers[handle].exists && exists)
+        event = "create";
+    else if (exists && (mtime_ns != g_sys_file_watchers[handle].mtime_ns ||
+                        size != g_sys_file_watchers[handle].size))
+        event = "change";
+
+    g_sys_file_watchers[handle].exists = exists;
+    g_sys_file_watchers[handle].mtime_ns = mtime_ns;
+    g_sys_file_watchers[handle].size = size;
+    if (!event) return sys_make_bool(0);
+
+    void* arena = get_global_arena();
+    if (!arena) return sys_make_bool(0);
+    char tmp[1200];
+    int n = snprintf(tmp, sizeof(tmp), "%s\t%s", event, g_sys_file_watchers[handle].path);
+    if (n <= 0 || n >= (int)sizeof(tmp)) return sys_make_bool(0);
+    char* out = arena_allocate_string_with_header(arena, (size_t)n);
+    if (!out) return sys_make_bool(0);
+    memcpy(out, tmp, (size_t)n + 1);
+    eshkol_sysbuiltin_value_t v = {0, 0, 0, 0, 0};
+    v.type = SYS_TYPE_HEAP_PTR;
+    v.data = (uint64_t)out;
+    return v;
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_fs_unwatch_v(eshkol_sysbuiltin_value_t handle_val) {
+    int handle = (int)((int64_t)handle_val.data);
+    if (handle > 0 && handle < (int)(sizeof(g_sys_file_watchers) / sizeof(g_sys_file_watchers[0])) &&
+        g_sys_file_watchers[handle].active) {
+        memset(&g_sys_file_watchers[handle], 0, sizeof(g_sys_file_watchers[handle]));
+        return sys_make_bool(1);
+    }
+    return sys_make_bool(0);
+}
+
 /* ═══════════════════════════════════════════════════════════════════
  * KB Persistence — save/load knowledge bases
  * ═══════════════════════════════════════════════════════════════════ */
@@ -1764,6 +1897,10 @@ void eshkol_builtin_unix_socket_connect(sv_t* out, const sv_t* a) { *out = eshko
 void eshkol_builtin_socket_send(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_socket_send_v(*a, *b); }
 void eshkol_builtin_socket_recv(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_socket_recv_v(*a, *b); }
 void eshkol_builtin_socket_close(sv_t* out, const sv_t* a) { *out = eshkol_builtin_socket_close_v(*a); }
+void eshkol_builtin_fs_watch_native(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_fs_watch_native_v(*a, *b); }
+void eshkol_builtin_fs_watch_recursive(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_fs_watch_recursive_v(*a, *b); }
+void eshkol_builtin_fs_watch_poll(sv_t* out, const sv_t* a) { *out = eshkol_builtin_fs_watch_poll_v(*a); }
+void eshkol_builtin_fs_unwatch(sv_t* out, const sv_t* a) { *out = eshkol_builtin_fs_unwatch_v(*a); }
 void eshkol_builtin_kb_save(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_kb_save_v(*a, *b); }
 void eshkol_builtin_kb_load(sv_t* out, const sv_t* a) { *out = eshkol_builtin_kb_load_v(*a); }
 void eshkol_builtin_tensor_token_estimate(sv_t* out, const sv_t* a) { *out = eshkol_builtin_tensor_token_estimate_v(*a); }

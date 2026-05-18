@@ -1,0 +1,100 @@
+;; Standalone VM regression for stat-polled file watcher handles.
+
+(display "=== file watch VM surface regression ===") (newline)
+
+(define path
+  (string-append "/tmp/eshkol-vm-watch-"
+                 (number->string (process-pid))
+                 ".txt"))
+
+(define out (open-output-file path))
+(write-string "a" out)
+(close-port out)
+
+(define watcher (fs-watch-native path #f))
+
+(display "T1 fs-watch-native returns watcher handle: ")
+(display (if (and (number? watcher) (> watcher 0))
+             "PASS"
+             (list "FAIL got " watcher)))
+(newline)
+
+(display "T2 initial fs-watch-poll has no event: ")
+(display (if (not (fs-watch-poll watcher))
+             "PASS"
+             "FAIL"))
+(newline)
+
+(define out2 (open-output-file path))
+(write-string "abcdef" out2)
+(close-port out2)
+
+(define (wait-watch-event h)
+  (let loop ((i 0))
+    (let ((event (fs-watch-poll h)))
+      (if (or (string? event) (>= i 20))
+          event
+          (begin
+            (sleep-ms 50)
+            (loop (+ i 1)))))))
+
+(define change-event (wait-watch-event watcher))
+
+(display "T3 fs-watch-poll observes file change: ")
+(display (if (and (string? change-event)
+                  (> (string-length change-event) 0))
+             "PASS"
+             (list "FAIL got " change-event)))
+(newline)
+
+(delete-file path)
+(define delete-event (wait-watch-event watcher))
+
+(display "T4 fs-watch-poll observes file delete: ")
+(display (if (and (string? delete-event)
+                  (> (string-length delete-event) 0))
+             "PASS"
+             (list "FAIL got " delete-event)))
+(newline)
+
+(define create-path
+  (string-append path ".created"))
+
+(if (file-exists? create-path)
+    (delete-file create-path)
+    #f)
+
+(define create-watcher (fs-watch-native create-path #f))
+
+(display "T5 fs-watch-native missing path returns watcher handle: ")
+(display (if (and (number? create-watcher) (> create-watcher 0))
+             "PASS"
+             (list "FAIL got " create-watcher)))
+(newline)
+
+(define out3 (open-output-file create-path))
+(write-string "created" out3)
+(close-port out3)
+(define create-event (wait-watch-event create-watcher))
+(define create-unwatched
+  (if (number? create-watcher)
+      (fs-unwatch create-watcher)
+      #f))
+
+(display "T6 fs-watch-poll observes file create: ")
+(display (if (and (string? create-event)
+                  (> (string-length create-event) 0)
+                  create-unwatched)
+             "PASS"
+             (list "FAIL got " create-event " exists " (file-exists? create-path))))
+(newline)
+
+(delete-file create-path)
+
+(display "T7 fs-unwatch releases handle: ")
+(display (if (fs-unwatch watcher)
+             "PASS"
+             "FAIL"))
+(newline)
+
+(display "=== file watch VM surface complete ===") (newline)

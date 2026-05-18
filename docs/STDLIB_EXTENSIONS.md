@@ -803,10 +803,24 @@ Use `kqueue` (macOS) or `inotify` (Linux) directly via FFI.
 `callback`: `(lambda (event-type filename) ...)`.
 `event-type`: `"change"`, `"create"`, `"delete"`, `"rename"`.
 
+Standalone VM native ID 1942 returns a watcher handle. The VM implementation
+uses native `stat(2)` signatures and explicit polling so tests and agent loops
+can avoid shelling out even when kqueue/inotify callbacks are unavailable.
+The callback argument is accepted for API shape but not invoked by the
+standalone VM.
+
 ### `(fs-watch-recursive path callback) -> watcher`
 Watch entire tree. Auto-add new subdirectories.
 
+Standalone VM native ID 1943 returns a watcher handle and records the recursive
+intent. Current standalone polling tracks the root path signature.
+
+### `(fs-watch-poll watcher) -> string-or-false`
+Standalone VM native ID 1944 returns `"event\tpath"` for `change`, `create`,
+or `delete`, or `#f` when no change is pending.
+
 ### `(fs-unwatch watcher) -> void`
+Standalone VM native ID 1945 releases the watcher handle.
 
 ---
 
