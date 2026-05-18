@@ -43,7 +43,7 @@ The backend is modular and already broad enough to serve as the primary native p
 
 The bytecode VM is already a real execution backend, not just a toy interpreter. It provides:
 
-- a 63-opcode VM
+- a 64-opcode core VM
 - ESKB bytecode format
 - portable execution
 - browser deployment

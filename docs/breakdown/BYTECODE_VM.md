@@ -2,7 +2,7 @@
 
 ## Overview
 
-Eshkol has a dual backend: the primary LLVM compiler generates native machine code, and a secondary bytecode VM interprets programs through a 63-opcode instruction set. The VM serves three purposes:
+Eshkol has a dual backend: the primary LLVM compiler generates native machine code, and a secondary bytecode VM interprets programs through a 64-opcode core instruction set. The SDNC verifier extends that core with 19 bounded reverse-mode AD opcodes, giving the paper artifact its 83-opcode canonical VM/AD ISA. The VM serves three purposes:
 
 1. **WebAssembly execution** — the browser REPL at eshkol.ai
 2. **Weight matrix compilation** — programs compile to transformer neural network weights (see [Computable Transformer](COMPUTABLE_TRANSFORMER.md))
@@ -15,8 +15,8 @@ The VM is a unity-build C system: `eshkol_vm.c` includes all modules via `#inclu
 ```
 eshkol_vm.c (hub)
  ├─ vm_core.c       — VM struct, stack, heap, value types
- ├─ vm_run.c        — 63-opcode dispatch loop (computed-goto + switch fallback)
- ├─ vm_native.c     — 400+ native function implementations
+ ├─ vm_run.c        — 64-opcode dispatch loop (computed-goto + switch fallback)
+ ├─ vm_native.c     — 550+ native function implementations
  ├─ vm_compiler.c   — bytecode compiler (S-expression → opcodes)
  ├─ vm_parser.c     — S-expression parser, FuncChunk, locals, upvalues
  ├─ vm_macro.c      — hygienic macro expansion (syntax-rules)
@@ -35,7 +35,7 @@ eshkol_vm.c (hub)
     └─ vm_prelude_cache.h (pre-compiled stdlib bytecode)
 ```
 
-## Instruction Set (63 Opcodes)
+## Core Instruction Set (64 Opcodes)
 
 | Opcode | Name | Description |
 |--------|------|-------------|
@@ -69,6 +69,12 @@ eshkol_vm.c (hub)
 | 59 | GET_EXN | Get current exception |
 | 60 | PACK_REST | Pack variadic args into list |
 | 61-62 | WIND_PUSH, WIND_POP | Dynamic-wind stack |
+| 63 | VOID | Push the VM void value |
+
+The SDNC weight-matrix artifact adds canonical opcodes 64-82 for bounded
+reverse-mode AD tape construction, backward propagation, and gradient reads.
+Those 19 AD opcodes are documented in [SDNC](../SDNC.md) and implemented in
+`lib/backend/weight_matrices.c`.
 
 ## Automatic Differentiation
 
