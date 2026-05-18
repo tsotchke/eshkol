@@ -1,0 +1,27 @@
+;; Regression for directory-delete-recursive: direct recursive deletion without
+;; shelling through rm -rf, including paths that contain shell quote characters.
+
+(display "=== directory-delete-recursive regression ===") (newline)
+
+(define root "/tmp/eshkol-delete-recursive-quote'case")
+(define nested (path-join root "a/b"))
+(define leaf (path-join nested "leaf"))
+
+;; Best-effort cleanup from any prior interrupted run.
+(directory-delete-recursive root)
+
+(mkdir-recursive nested)
+(file-copy "/dev/null" leaf)
+
+(display "T1 setup nested quoted path: ")
+(display (if (and (number? (file-size nested)) (number? (file-size leaf))) "PASS"
+             (list "FAIL root " root)))
+(newline)
+
+(define deleted (directory-delete-recursive root))
+(display "T2 recursive delete quoted path: ")
+(display (if (and deleted (not (number? (file-size root)))) "PASS"
+             (list "FAIL deleted=" deleted " size=" (file-size root))))
+(newline)
+
+(display "=== directory-delete-recursive complete ===") (newline)
