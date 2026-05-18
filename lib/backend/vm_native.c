@@ -1984,6 +1984,307 @@ static int vm_condvar_create(VM* vm) {
     return -1;
 }
 
+static int vm_json_alist_ref(VM* vm, Value obj, Value key, Value* out) {
+    Value cur = obj;
+    while (cur.type == VAL_PAIR && is_valid_heap_ptr(vm, cur.as.ptr)) {
+        HeapObject* node = vm->heap.objects[cur.as.ptr];
+        if (!node || node->type != HEAP_CONS) break;
+        Value entry = node->cons.car;
+        if (entry.type == VAL_PAIR && is_valid_heap_ptr(vm, entry.as.ptr)) {
+            HeapObject* pair = vm->heap.objects[entry.as.ptr];
+            if (pair && pair->type == HEAP_CONS &&
+                vm_values_equal_deep(vm, pair->cons.car, key, 0)) {
+                if (out) *out = pair->cons.cdr;
+                return 1;
+            }
+        }
+        cur = node->cons.cdr;
+    }
+    return 0;
+}
+
+static int vm_json_list_ref(VM* vm, Value obj, int index, Value* out) {
+    if (index < 0) return 0;
+    Value cur = obj;
+    int i = 0;
+    while (cur.type == VAL_PAIR && is_valid_heap_ptr(vm, cur.as.ptr)) {
+        HeapObject* node = vm->heap.objects[cur.as.ptr];
+        if (!node || node->type != HEAP_CONS) break;
+        if (i == index) {
+            if (out) *out = node->cons.car;
+            return 1;
+        }
+        i++;
+        cur = node->cons.cdr;
+    }
+    return 0;
+}
+
+static Value vm_json_get_in_value(VM* vm, Value obj, Value path, Value default_value) {
+    Value current = obj;
+    Value cur_path = path;
+    while (cur_path.type == VAL_PAIR && is_valid_heap_ptr(vm, cur_path.as.ptr)) {
+        HeapObject* node = vm->heap.objects[cur_path.as.ptr];
+        if (!node || node->type != HEAP_CONS) return default_value;
+        Value key = node->cons.car;
+        Value next = NIL_VAL;
+        int found = 0;
+
+        if (current.type == VAL_PAIR) {
+            if (key.type == VAL_INT || key.type == VAL_FLOAT)
+                found = vm_json_list_ref(vm, current, (int)as_number(key), &next);
+            if (!found)
+                found = vm_json_alist_ref(vm, current, key, &next);
+        } else if (current.type == VAL_VECTOR && is_valid_heap_ptr(vm, current.as.ptr) &&
+                   (key.type == VAL_INT || key.type == VAL_FLOAT)) {
+            VmVector* vec = (VmVector*)vm->heap.objects[current.as.ptr]->opaque.ptr;
+            int idx = (int)as_number(key);
+            if (vec && idx >= 0 && idx < vec->len) {
+                next = vec->items[idx];
+                found = 1;
+            }
+        }
+
+        if (!found) return default_value;
+        current = next;
+        cur_path = node->cons.cdr;
+    }
+    return current;
+}
+
+static int vm_json_key_in_alist(VM* vm, Value alist, Value key) {
+    Value ignored = NIL_VAL;
+    return vm_json_alist_ref(vm, alist, key, &ignored);
+}
+
+static Value vm_json_merge_value(VM* vm, Value a, Value b) {
+    Value entries[128];
+    int n = 0;
+    Value cur = a;
+    while (cur.type == VAL_PAIR && n < 128 && is_valid_heap_ptr(vm, cur.as.ptr)) {
+        HeapObject* node = vm->heap.objects[cur.as.ptr];
+        if (!node || node->type != HEAP_CONS) break;
+        Value entry = node->cons.car;
+        int overridden = 0;
+        if (entry.type == VAL_PAIR && is_valid_heap_ptr(vm, entry.as.ptr)) {
+            HeapObject* pair = vm->heap.objects[entry.as.ptr];
+            if (pair && pair->type == HEAP_CONS)
+                overridden = vm_json_key_in_alist(vm, b, pair->cons.car);
+        }
+        if (!overridden) entries[n++] = entry;
+        cur = node->cons.cdr;
+    }
+    cur = b;
+    while (cur.type == VAL_PAIR && n < 128 && is_valid_heap_ptr(vm, cur.as.ptr)) {
+        HeapObject* node = vm->heap.objects[cur.as.ptr];
+        if (!node || node->type != HEAP_CONS) break;
+        entries[n++] = node->cons.car;
+        cur = node->cons.cdr;
+    }
+    Value result = NIL_VAL;
+    for (int i = n - 1; i >= 0; i--)
+        result = vm_cons_value(vm, entries[i], result);
+    return result;
+}
+
+typedef struct {
+    char* data;
+    size_t cap;
+    size_t pos;
+    int ok;
+} VmJsonBuffer;
+
+static void vm_json_append(VmJsonBuffer* out, const char* s) {
+    if (!out || !out->ok || !s) return;
+    size_t len = strlen(s);
+    if (out->pos + len >= out->cap) {
+        out->ok = 0;
+        return;
+    }
+    memcpy(out->data + out->pos, s, len);
+    out->pos += len;
+    out->data[out->pos] = '\0';
+}
+
+static void vm_json_append_char(VmJsonBuffer* out, char c) {
+    if (!out || !out->ok || out->pos + 1 >= out->cap) {
+        if (out) out->ok = 0;
+        return;
+    }
+    out->data[out->pos++] = c;
+    out->data[out->pos] = '\0';
+}
+
+static void vm_json_indent(VmJsonBuffer* out, int level, int indent) {
+    for (int i = 0; i < level * indent; i++)
+        vm_json_append_char(out, ' ');
+}
+
+static void vm_json_write_value(VM* vm, VmJsonBuffer* out, Value value, int level, int indent);
+
+static int vm_json_list_is_object(VM* vm, Value list) {
+    int saw = 0;
+    Value cur = list;
+    while (cur.type == VAL_PAIR && is_valid_heap_ptr(vm, cur.as.ptr)) {
+        HeapObject* node = vm->heap.objects[cur.as.ptr];
+        if (!node || node->type != HEAP_CONS) return 0;
+        Value entry = node->cons.car;
+        if (entry.type != VAL_PAIR || !is_valid_heap_ptr(vm, entry.as.ptr)) return 0;
+        HeapObject* pair = vm->heap.objects[entry.as.ptr];
+        if (!pair || pair->type != HEAP_CONS || pair->cons.car.type != VAL_STRING)
+            return 0;
+        saw = 1;
+        cur = node->cons.cdr;
+    }
+    return saw && cur.type == VAL_NIL;
+}
+
+static void vm_json_write_string(VM* vm, VmJsonBuffer* out, Value value) {
+    VmString* s = vm_value_as_string(vm, value);
+    vm_json_append_char(out, '"');
+    if (s && s->data) {
+        for (int64_t i = 0; i < s->byte_len; i++) {
+            unsigned char c = (unsigned char)s->data[i];
+            char tmp[8];
+            switch (c) {
+            case '"': vm_json_append(out, "\\\""); break;
+            case '\\': vm_json_append(out, "\\\\"); break;
+            case '\n': vm_json_append(out, "\\n"); break;
+            case '\r': vm_json_append(out, "\\r"); break;
+            case '\t': vm_json_append(out, "\\t"); break;
+            default:
+                if (c < 0x20) {
+                    snprintf(tmp, sizeof(tmp), "\\u%04x", c);
+                    vm_json_append(out, tmp);
+                } else {
+                    vm_json_append_char(out, (char)c);
+                }
+                break;
+            }
+        }
+    }
+    vm_json_append_char(out, '"');
+}
+
+static void vm_json_write_array(VM* vm, VmJsonBuffer* out, Value list, int level, int indent) {
+    vm_json_append_char(out, '[');
+    Value cur = list;
+    int first = 1;
+    while (cur.type == VAL_PAIR && is_valid_heap_ptr(vm, cur.as.ptr)) {
+        HeapObject* node = vm->heap.objects[cur.as.ptr];
+        if (!node || node->type != HEAP_CONS) break;
+        if (!first) vm_json_append_char(out, ',');
+        if (indent > 0) {
+            vm_json_append_char(out, '\n');
+            vm_json_indent(out, level + 1, indent);
+        }
+        vm_json_write_value(vm, out, node->cons.car, level + 1, indent);
+        first = 0;
+        cur = node->cons.cdr;
+    }
+    if (!first && indent > 0) {
+        vm_json_append_char(out, '\n');
+        vm_json_indent(out, level, indent);
+    }
+    vm_json_append_char(out, ']');
+}
+
+static void vm_json_write_object(VM* vm, VmJsonBuffer* out, Value alist, int level, int indent) {
+    vm_json_append_char(out, '{');
+    Value cur = alist;
+    int first = 1;
+    while (cur.type == VAL_PAIR && is_valid_heap_ptr(vm, cur.as.ptr)) {
+        HeapObject* node = vm->heap.objects[cur.as.ptr];
+        if (!node || node->type != HEAP_CONS) break;
+        Value entry = node->cons.car;
+        if (entry.type == VAL_PAIR && is_valid_heap_ptr(vm, entry.as.ptr)) {
+            HeapObject* pair = vm->heap.objects[entry.as.ptr];
+            if (pair && pair->type == HEAP_CONS) {
+                if (!first) vm_json_append_char(out, ',');
+                if (indent > 0) {
+                    vm_json_append_char(out, '\n');
+                    vm_json_indent(out, level + 1, indent);
+                }
+                vm_json_write_string(vm, out, pair->cons.car);
+                vm_json_append(out, indent > 0 ? ": " : ":");
+                vm_json_write_value(vm, out, pair->cons.cdr, level + 1, indent);
+                first = 0;
+            }
+        }
+        cur = node->cons.cdr;
+    }
+    if (!first && indent > 0) {
+        vm_json_append_char(out, '\n');
+        vm_json_indent(out, level, indent);
+    }
+    vm_json_append_char(out, '}');
+}
+
+static void vm_json_write_value(VM* vm, VmJsonBuffer* out, Value value, int level, int indent) {
+    char num[64];
+    switch (value.type) {
+    case VAL_NIL:
+        vm_json_append(out, "null");
+        break;
+    case VAL_BOOL:
+        vm_json_append(out, value.as.b ? "true" : "false");
+        break;
+    case VAL_INT:
+        snprintf(num, sizeof(num), "%lld", (long long)value.as.i);
+        vm_json_append(out, num);
+        break;
+    case VAL_FLOAT:
+        snprintf(num, sizeof(num), "%.17g", value.as.f);
+        vm_json_append(out, num);
+        break;
+    case VAL_STRING:
+        vm_json_write_string(vm, out, value);
+        break;
+    case VAL_PAIR:
+        if (vm_json_list_is_object(vm, value))
+            vm_json_write_object(vm, out, value, level, indent);
+        else
+            vm_json_write_array(vm, out, value, level, indent);
+        break;
+    case VAL_VECTOR: {
+        if (!is_valid_heap_ptr(vm, value.as.ptr)) {
+            vm_json_append(out, "null");
+            break;
+        }
+        VmVector* vec = (VmVector*)vm->heap.objects[value.as.ptr]->opaque.ptr;
+        vm_json_append_char(out, '[');
+        for (int i = 0; vec && i < vec->len; i++) {
+            if (i > 0) vm_json_append_char(out, ',');
+            if (indent > 0) {
+                vm_json_append_char(out, '\n');
+                vm_json_indent(out, level + 1, indent);
+            }
+            vm_json_write_value(vm, out, vec->items[i], level + 1, indent);
+        }
+        if (vec && vec->len > 0 && indent > 0) {
+            vm_json_append_char(out, '\n');
+            vm_json_indent(out, level, indent);
+        }
+        vm_json_append_char(out, ']');
+        break;
+    }
+    default:
+        vm_json_append(out, "null");
+        break;
+    }
+}
+
+static Value vm_json_stringify_pretty_value(VM* vm, Value value, int indent) {
+    char buf[16384];
+    VmJsonBuffer out = {buf, sizeof(buf), 0, 1};
+    buf[0] = '\0';
+    if (indent < 0) indent = 0;
+    if (indent > 8) indent = 8;
+    vm_json_write_value(vm, &out, value, 0, indent);
+    if (!out.ok) return BOOL_VAL(0);
+    return vm_string_value(vm, out.data, (int64_t)out.pos);
+}
+
 static int vm_string_ends_with_bytes(VmString* s, VmString* suffix) {
     if (!s || !suffix || !s->data || !suffix->data) return 0;
     if (suffix->byte_len > s->byte_len) return 0;
@@ -5583,6 +5884,21 @@ static void vm_dispatch_native(VM* vm, int fid) {
         } else {
             vm_push(vm, BOOL_VAL(0));
         }
+        break;
+    }
+    case 2014: { /* json-get-in(obj, path, default) → value */
+        Value default_val = vm_pop(vm), path_val = vm_pop(vm), obj_val = vm_pop(vm);
+        vm_push(vm, vm_json_get_in_value(vm, obj_val, path_val, default_val));
+        break;
+    }
+    case 2015: { /* json-stringify-pretty(obj, indent) → string or #f */
+        Value indent_val = vm_pop(vm), obj_val = vm_pop(vm);
+        vm_push(vm, vm_json_stringify_pretty_value(vm, obj_val, (int)as_number(indent_val)));
+        break;
+    }
+    case 2016: { /* json-merge(a, b) → merged alist */
+        Value b_val = vm_pop(vm), a_val = vm_pop(vm);
+        vm_push(vm, vm_json_merge_value(vm, a_val, b_val));
         break;
     }
     case 1956: { /* string-ends-with?(str, suffix) → bool */

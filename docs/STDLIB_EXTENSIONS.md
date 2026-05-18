@@ -770,6 +770,12 @@ Human-readable JSON with indentation.
 ### `(json-merge a b) -> object`
 Deep merge. b overrides a. Arrays replaced (not merged).
 
+Standalone VM native IDs 2014-2016 support alist/list JSON-shaped values:
+`json-get-in` walks string-keyed alists and numeric list/vector indexes,
+`json-stringify-pretty` serializes primitive values, alists, lists, and vectors,
+and `json-merge` performs a shallow alist overlay where keys from `b` replace
+matching keys from `a`.
+
 ---
 
 ## B.13 SQLite Extensions

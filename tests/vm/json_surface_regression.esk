@@ -1,0 +1,53 @@
+;; Standalone VM regression for JSON-shaped alist/list helpers.
+
+(display "=== JSON VM surface regression ===") (newline)
+
+(define obj
+  (list (cons "usage"
+              (list (cons "input_tokens" 12)
+                    (cons "output_tokens" 5)))
+        (cons "items" (list "alpha" "beta"))))
+
+(display "T1 json-get-in walks nested alists: ")
+(display (if (= (json-get-in obj (list "usage" "input_tokens") 0) 12)
+             "PASS"
+             "FAIL"))
+(newline)
+
+(display "T2 json-get-in walks list indexes: ")
+(display (if (string=? (json-get-in obj (list "items" 1) "missing") "beta")
+             "PASS"
+             "FAIL"))
+(newline)
+
+(display "T3 json-get-in returns default for missing path: ")
+(display (if (string=? (json-get-in obj (list "usage" "cache_tokens") "missing") "missing")
+             "PASS"
+             "FAIL"))
+(newline)
+
+(define pretty (json-stringify-pretty obj 2))
+
+(display "T4 json-stringify-pretty returns object text: ")
+(display (if (and (string? pretty)
+                  (string-index-of pretty "\"usage\"" 0)
+                  (string-index-of pretty "\"input_tokens\"" 0))
+             "PASS"
+             (list "FAIL got " pretty)))
+(newline)
+
+(define merged
+  (json-merge (list (cons "a" 1)
+                    (cons "b" 2))
+              (list (cons "b" 3)
+                    (cons "c" 4))))
+
+(display "T5 json-merge overlays keys from b: ")
+(display (if (and (= (json-get-in merged (list "a") 0) 1)
+                  (= (json-get-in merged (list "b") 0) 3)
+                  (= (json-get-in merged (list "c") 0) 4))
+             "PASS"
+             "FAIL"))
+(newline)
+
+(display "=== JSON VM surface complete ===") (newline)
