@@ -340,6 +340,25 @@ The standalone VM exposes the underlying native ID 1788 as
 `(process-read-nonblocking proc-or-fd max)`, returning a string when bytes are
 available and `#f` on EOF, EAGAIN, or error.
 
+### `(signal-install signum) -> bool`
+Install a flag-only POSIX signal handler for `signum`. The standalone VM
+exposes this as native ID 1794; Windows and WASM return `#f`.
+
+### `(signal-check) -> integer`
+Return the last delivered signal number and clear it, or `0` when no signal is
+pending. The standalone VM exposes this as native ID 1795. Handlers only update
+`sig_atomic_t` flags; Scheme code polls at safe points.
+
+### `(signal-reset signum) -> bool`
+Restore the default POSIX handler for `signum`. Standalone native ID 1796.
+
+### `(signal-ignore signum) -> bool`
+Ignore `signum` via `sigaction(SIG_IGN)`. Standalone native ID 1797.
+
+### `(signal-count) -> integer`
+Return the number of signals handled by the standalone VM process. Standalone
+native ID 1798.
+
 ---
 
 ## B.4 HTTP and Networking
@@ -2032,8 +2051,12 @@ env-aware `process-spawn` native ID 1780. Its standalone signature is
 `(set-signal-handler! signal handler) -> old-handler`
 
 Already in qLLM (`eshkol_signal_install`/`eshkol_signal_check`). Needs:
-- VM builtin wiring
 - `(extern ...)` declarations for LLVM path
+
+**VM**: The standalone VM now exposes low-level polling primitives:
+`signal-install`, `signal-check`, `signal-reset`, `signal-ignore`, and
+`signal-count` (native IDs 1794-1798). These deliberately do not invoke Scheme
+closures from async signal context; they mirror qLLM's flag-and-poll model.
 
 ## E.4 Atexit Handlers — P1
 

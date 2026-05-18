@@ -45,7 +45,6 @@
       (if (or (string? chunk) (>= i 20))
           chunk
           (begin
-            (poll (list fd) 50)
             (sleep-ms 50)
             (loop (+ i 1)))))))
 

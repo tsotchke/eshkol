@@ -92,6 +92,16 @@ static VmBytevector* vm_value_as_bytevector(VM* vm, Value value) {
     return (VmBytevector*)obj->opaque.ptr;
 }
 
+#if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
+static volatile sig_atomic_t vm_last_signal = 0;
+static volatile sig_atomic_t vm_signal_count = 0;
+
+static void vm_signal_handler(int sig) {
+    vm_last_signal = sig;
+    vm_signal_count++;
+}
+#endif
+
 #if defined(_WIN32) && !defined(ESHKOL_VM_WASM)
 static int vm_win_append_process_arg(char* out, size_t out_size, size_t* pos, const char* arg) {
     if (!out || !pos || !arg) return 0;
@@ -7051,6 +7061,90 @@ static void vm_dispatch_native(VM* vm, int fid) {
         (void)fd_val;
 #endif
         vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+    case 1794: { /* signal-install(signum) → bool */
+        Value sig_val = vm_pop(vm);
+#if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
+        int signum = (int)as_number(sig_val);
+        if (signum > 0) {
+            struct sigaction sa;
+            memset(&sa, 0, sizeof(sa));
+            sa.sa_handler = vm_signal_handler;
+            sa.sa_flags = SA_RESTART;
+            sigemptyset(&sa.sa_mask);
+            if (sigaction(signum, &sa, NULL) == 0) {
+                vm_push(vm, BOOL_VAL(1));
+                break;
+            }
+        }
+#else
+        (void)sig_val;
+#endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+    case 1795: { /* signal-check() → signum or 0; consumes pending signal */
+#if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
+        int signum = (int)vm_last_signal;
+        if (signum != 0) vm_last_signal = 0;
+        vm_push(vm, INT_VAL((int64_t)signum));
+#else
+        vm_push(vm, INT_VAL(0));
+#endif
+        break;
+    }
+
+    case 1796: { /* signal-reset(signum) → bool */
+        Value sig_val = vm_pop(vm);
+#if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
+        int signum = (int)as_number(sig_val);
+        if (signum > 0) {
+            struct sigaction sa;
+            memset(&sa, 0, sizeof(sa));
+            sa.sa_handler = SIG_DFL;
+            sigemptyset(&sa.sa_mask);
+            if (sigaction(signum, &sa, NULL) == 0) {
+                vm_push(vm, BOOL_VAL(1));
+                break;
+            }
+        }
+#else
+        (void)sig_val;
+#endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+    case 1797: { /* signal-ignore(signum) → bool */
+        Value sig_val = vm_pop(vm);
+#if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
+        int signum = (int)as_number(sig_val);
+        if (signum > 0) {
+            struct sigaction sa;
+            memset(&sa, 0, sizeof(sa));
+            sa.sa_handler = SIG_IGN;
+            sigemptyset(&sa.sa_mask);
+            if (sigaction(signum, &sa, NULL) == 0) {
+                vm_push(vm, BOOL_VAL(1));
+                break;
+            }
+        }
+#else
+        (void)sig_val;
+#endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+    case 1798: { /* signal-count() → total handled signals */
+#if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
+        vm_push(vm, INT_VAL((int64_t)vm_signal_count));
+#else
+        vm_push(vm, INT_VAL(0));
+#endif
         break;
     }
 

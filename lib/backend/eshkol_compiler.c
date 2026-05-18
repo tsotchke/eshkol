@@ -5529,6 +5529,18 @@ static const BuiltinDef BUILTINS[] = {
     {"linspace", 746, 3}, {"eye", 745, 1},
     {"model-save", 800, 2}, {"model-load", 801, 1},
     {"tensor-save", 802, 2}, {"tensor-load", 803, 1},
+    /* Standalone VM system surfaces */
+    {"process-spawn", 1780, 3}, {"process-wait", 1781, 1},
+    {"process-spawn-with-env", 1780, 3},
+    {"process-kill", 1782, 2}, {"io-poll", 1783, 2},
+    {"poll", 1783, 2}, {"process-pid", 1784, 0},
+    {"process-setpgid", 1785, 2}, {"process-kill-tree", 1786, 2},
+    {"process-spawn-pty", 1787, 1}, {"process-read-nonblocking", 1788, 2},
+    {"unix-socket-connect", 1790, 1}, {"socket-send", 1791, 2},
+    {"socket-recv", 1792, 2}, {"socket-close", 1793, 1},
+    {"signal-install", 1794, 1}, {"signal-check", 1795, 0},
+    {"signal-reset", 1796, 1}, {"signal-ignore", 1797, 1},
+    {"signal-count", 1798, 0},
     /* Missing hash */
     {"hash-clear!", 668, 1},
     /* gcd / lcm */

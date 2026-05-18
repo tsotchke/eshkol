@@ -1,0 +1,84 @@
+;; Standalone VM regression for POSIX signal polling primitives.
+
+(display "=== signal VM surface regression ===") (newline)
+
+(define posix?
+  (or (string=? (os-type) "darwin")
+      (string=? (os-type) "linux")
+      (string=? (os-type) "freebsd")))
+
+(define sigterm 15)
+(define sigpipe 13)
+
+(define (wait-for-signal expected)
+  (let loop ((i 0))
+    (let ((seen (signal-check)))
+      (if (or (= seen expected) (>= i 20))
+          seen
+          (begin
+            (sleep-ms 50)
+            (loop (+ i 1)))))))
+
+(define count-before (signal-count))
+(define installed (if posix? (signal-install sigterm) #f))
+
+(display "T1 signal-install SIGTERM: ")
+(display (if (or (not posix?) installed)
+             "PASS"
+             "FAIL"))
+(newline)
+
+(define sent (if installed
+                 (process-kill (process-pid) sigterm)
+                 #f))
+
+(display "T2 process-kill self under installed handler: ")
+(display (if (or (not posix?) sent)
+             "PASS"
+             "FAIL"))
+(newline)
+
+(define seen (if sent
+                 (wait-for-signal sigterm)
+                 0))
+
+(display "T3 signal-check consumes delivered signal: ")
+(display (if (or (not posix?) (= seen sigterm))
+             "PASS"
+             (list "FAIL got " seen)))
+(newline)
+
+(display "T4 signal-check clears pending signal: ")
+(display (if (or (not posix?) (= (signal-check) 0))
+             "PASS"
+             "FAIL"))
+(newline)
+
+(display "T5 signal-count increments: ")
+(display (if (or (not posix?) (> (signal-count) count-before))
+             "PASS"
+             "FAIL"))
+(newline)
+
+(define reset-term (if installed
+                       (signal-reset sigterm)
+                       #t))
+
+(display "T6 signal-reset restores default handler: ")
+(display (if reset-term
+             "PASS"
+             "FAIL"))
+(newline)
+
+(define ignored (if posix? (signal-ignore sigpipe) #f))
+(define reset-pipe (if ignored
+                       (signal-reset sigpipe)
+                       #t))
+
+(display "T7 signal-ignore accepts SIGPIPE: ")
+(display (if (or (not posix?) (and ignored reset-pipe))
+             "PASS"
+             "FAIL"))
+(newline)
+
+(display "=== signal VM surface complete ===") (newline)
