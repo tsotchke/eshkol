@@ -247,7 +247,7 @@ typedef struct {
 #define MAX_FRAMES 256
 #define MAX_CONSTS 1024
 
-typedef struct {
+typedef struct VM {
     /* Program */
     Instr* code;
     int code_len;

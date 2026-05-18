@@ -118,6 +118,114 @@ static int vm_directory_delete_recursive_posix(const char* path, int depth) {
 }
 #endif
 
+static int vm_path_normalize_cstr(const char* input, char* result, size_t result_len) {
+    if (!input || !result || result_len == 0) return 0;
+
+    char buf[4096];
+    strncpy(buf, input, sizeof(buf) - 1);
+    buf[sizeof(buf) - 1] = 0;
+
+    char* parts[256];
+    int nparts = 0;
+    int absolute = (buf[0] == '/');
+    char* tok = strtok(buf, "/");
+    while (tok && nparts < 256) {
+        if (strcmp(tok, ".") == 0 || strcmp(tok, "") == 0) {
+            /* skip */
+        } else if (strcmp(tok, "..") == 0) {
+            if (nparts > 0 && strcmp(parts[nparts - 1], "..") != 0) {
+                nparts--;
+            } else if (!absolute) {
+                parts[nparts++] = tok;
+            }
+        } else {
+            parts[nparts++] = tok;
+        }
+        tok = strtok(NULL, "/");
+    }
+
+    size_t pos = 0;
+    if (absolute && pos < result_len - 1) result[pos++] = '/';
+    for (int i = 0; i < nparts; i++) {
+        if (i > 0 && pos < result_len - 1) result[pos++] = '/';
+        size_t len = strlen(parts[i]);
+        if (pos + len >= result_len) len = result_len - pos - 1;
+        memcpy(result + pos, parts[i], len);
+        pos += len;
+        if (pos >= result_len - 1) break;
+    }
+    if (pos == 0) result[pos++] = absolute ? '/' : '.';
+    result[pos] = 0;
+    return 1;
+}
+
+static int vm_path_split_mut(char* path, char** parts, int max_parts) {
+    int nparts = 0;
+    char* tok = strtok(path, "/");
+    while (tok && nparts < max_parts) {
+        if (*tok) parts[nparts++] = tok;
+        tok = strtok(NULL, "/");
+    }
+    return nparts;
+}
+
+static int vm_path_relative_cstr(const char* from, const char* to, char* result, size_t result_len) {
+    if (!from || !to || !result || result_len == 0) return 0;
+
+    char from_norm[4096];
+    char to_norm[4096];
+    if (!vm_path_normalize_cstr(from, from_norm, sizeof(from_norm)) ||
+        !vm_path_normalize_cstr(to, to_norm, sizeof(to_norm))) {
+        return 0;
+    }
+
+    int from_abs = (from_norm[0] == '/');
+    int to_abs = (to_norm[0] == '/');
+    if (from_abs != to_abs) {
+        strncpy(result, to_norm, result_len - 1);
+        result[result_len - 1] = 0;
+        return 1;
+    }
+
+    char from_buf[4096];
+    char to_buf[4096];
+    strncpy(from_buf, from_norm, sizeof(from_buf) - 1);
+    from_buf[sizeof(from_buf) - 1] = 0;
+    strncpy(to_buf, to_norm, sizeof(to_buf) - 1);
+    to_buf[sizeof(to_buf) - 1] = 0;
+
+    char* from_parts[256];
+    char* to_parts[256];
+    int n_from = vm_path_split_mut(from_buf, from_parts, 256);
+    int n_to = vm_path_split_mut(to_buf, to_parts, 256);
+
+    int common = 0;
+    while (common < n_from && common < n_to &&
+           strcmp(from_parts[common], to_parts[common]) == 0) {
+        common++;
+    }
+
+    size_t pos = 0;
+    for (int i = common; i < n_from; i++) {
+        if (pos > 0 && pos < result_len - 1) result[pos++] = '/';
+        if (pos + 2 >= result_len) break;
+        result[pos++] = '.';
+        result[pos++] = '.';
+    }
+    for (int i = common; i < n_to; i++) {
+        if (pos > 0 && pos < result_len - 1) result[pos++] = '/';
+        size_t len = strlen(to_parts[i]);
+        if (pos + len >= result_len) len = result_len - pos - 1;
+        memcpy(result + pos, to_parts[i], len);
+        pos += len;
+        if (pos >= result_len - 1) break;
+    }
+
+    if (pos == 0) result[pos++] = '.';
+    result[pos] = 0;
+    return 1;
+}
+
 static int vm_kb_extract_fact_datum(VM* vm, Value fact_val, Value* out) {
     if (!out) return 0;
     if (fact_val.type == VAL_PAIR && is_valid_heap_ptr(vm, fact_val.as.ptr)) {
@@ -227,7 +335,62 @@ static double vm_qrng_double(void) {
     return (double)(vm_qrng_next_u64() >> 11) * (1.0 / 9007199254740992.0);
 }
 
+/* Runtime host-native registry. Compile-time fids stay in the static switch
+ * below; fids >= ESHKOL_VM_HOST_NATIVE_BASE are looked up here by slot index
+ * (slot = fid - ESHKOL_VM_HOST_NATIVE_BASE). */
+#ifndef ESHKOL_VM_HOST_NATIVE_BASE
+#define ESHKOL_VM_HOST_NATIVE_BASE 100000
+#endif
+
+#define VM_HOST_NATIVE_MAX 64
+#define VM_HOST_NATIVE_NAME_MAX 128
+
+typedef int (*eshkol_vm_host_native_fn)(VM* vm);
+static eshkol_vm_host_native_fn g_host_natives[VM_HOST_NATIVE_MAX];
+static char g_host_native_names[VM_HOST_NATIVE_MAX][VM_HOST_NATIVE_NAME_MAX];
+static int g_host_native_count = 0;
+
+int eshkol_vm_register_host_native(const char* name, eshkol_vm_host_native_fn fn) {
+    if (!name || !fn) return -1;
+    size_t name_len = strlen(name);
+    if (name_len == 0 || name_len >= VM_HOST_NATIVE_NAME_MAX) return -1;
+    if (g_host_native_count >= VM_HOST_NATIVE_MAX) return -1;
+    for (int i = 0; i < g_host_native_count; i++) {
+        if (strcmp(g_host_native_names[i], name) == 0) return -1;
+    }
+    int slot = g_host_native_count++;
+    g_host_natives[slot] = fn;
+    memcpy(g_host_native_names[slot], name, name_len + 1);
+    return slot;
+}
+
+int eshkol_vm_host_pop_int64(VM* vm, int64_t* out) {
+    if (!vm || !out) return -1;
+    Value v = vm_pop(vm);
+    if (vm->error) return -1;
+    if (v.type == VAL_INT) { *out = v.as.i; return 0; }
+    if (v.type == VAL_FLOAT) { *out = (int64_t)v.as.f; return 0; }
+    if (v.type == VAL_BOOL) { *out = v.as.b ? 1 : 0; return 0; }
+    return -1;
+}
+
+int eshkol_vm_host_push_int64(VM* vm, int64_t value) {
+    if (!vm) return -1;
+    int32_t before = vm->sp;
+    vm_push(vm, INT_VAL(value));
+    return (!vm->error && vm->sp == before + 1) ? 0 : -1;
+}
+
 static void vm_dispatch_native(VM* vm, int fid) {
+    if (fid >= ESHKOL_VM_HOST_NATIVE_BASE) {
+        int slot = fid - ESHKOL_VM_HOST_NATIVE_BASE;
+        if (slot >= 0 && slot < g_host_native_count && g_host_natives[slot]) {
+            if (g_host_natives[slot](vm) != 0) vm->error = 1;
+        } else {
+            vm->error = 1;
+        }
+        return;
+    }
     switch (fid) {
     /* ══════════════════════════════════════════════════════════════════════
      * Math functions (20-35)
@@ -4798,6 +4961,50 @@ static void vm_dispatch_native(VM* vm, int fid) {
         break;
     }
 
+    case 1727: { /* path-relative(from, to) → string */
+        Value to_val = vm_pop(vm), from_val = vm_pop(vm);
+        if (from_val.type == VAL_STRING && to_val.type == VAL_STRING) {
+            VmString* fs = (VmString*)vm->heap.objects[from_val.as.ptr]->opaque.ptr;
+            VmString* ts = (VmString*)vm->heap.objects[to_val.as.ptr]->opaque.ptr;
+            if (fs && ts) {
+                char result[4096];
+                if (vm_path_relative_cstr(fs->data, ts->data, result, sizeof(result))) {
+                    VmString* s = vm_string_from_cstr(&vm->heap.regions, result);
+                    if (s) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, s); break; }
+                }
+            }
+        }
+        vm_push(vm, NIL_VAL);
+        break;
+    }
+
+    case 1728: { /* path-resolve(base, rel) → normalized absolute/relative path */
+        Value rel_val = vm_pop(vm), base_val = vm_pop(vm);
+        if (base_val.type == VAL_STRING && rel_val.type == VAL_STRING) {
+            VmString* bs = (VmString*)vm->heap.objects[base_val.as.ptr]->opaque.ptr;
+            VmString* rs = (VmString*)vm->heap.objects[rel_val.as.ptr]->opaque.ptr;
+            if (bs && rs) {
+                char joined[4096];
+                char result[4096];
+                const char* input = rs->data;
+                if (rs->data[0] != '/') {
+                    int n = snprintf(joined, sizeof(joined), "%s/%s", bs->data, rs->data);
+                    if (n <= 0 || n >= (int)sizeof(joined)) {
+                        vm_push(vm, NIL_VAL);
+                        break;
+                    }
+                    input = joined;
+                }
+                if (vm_path_normalize_cstr(input, result, sizeof(result))) {
+                    VmString* s = vm_string_from_cstr(&vm->heap.regions, result);
+                    if (s) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, s); break; }
+                }
+            }
+        }
+        vm_push(vm, NIL_VAL);
+        break;
+    }
+
     /* ══════════════════════════════════════════════════════════════════════
      * Filesystem Operations (1740-1769)
      * ══════════════════════════════════════════════════════════════════════ */
@@ -5876,6 +6083,15 @@ static void vm_dispatch_native(VM* vm, int fid) {
         (void)timeout_val; (void)fds_val;
 #endif
         vm_push(vm, NIL_VAL);
+        break;
+    }
+
+    case 1784: { /* process-pid() → current process id */
+#ifndef ESHKOL_VM_WASM
+        vm_push(vm, INT_VAL((int64_t)getpid()));
+#else
+        vm_push(vm, INT_VAL(0));
+#endif
         break;
     }
 

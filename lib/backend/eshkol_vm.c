@@ -28,6 +28,24 @@
 #include <math.h>
 #include <stdint.h>
 #ifndef ESHKOL_VM_WASM
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#include <direct.h>
+#include <io.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <sys/stat.h>
+#include <wchar.h>
+#ifndef getcwd
+#define getcwd _getcwd
+#endif
+#ifndef chdir
+#define chdir _chdir
+#endif
+#else
 #include <dirent.h>
 #include <unistd.h>
 #include <sys/stat.h>
@@ -38,6 +56,7 @@
 #include <errno.h>
 #ifndef _WIN32
 #include <termios.h>
+#endif
 #endif
 #endif
 
@@ -427,7 +446,8 @@ static const BuiltinDef BUILTINS[] = {
     {"path-join", 1720, 2}, {"path-dirname", 1721, 1},
     {"path-basename", 1722, 1}, {"path-extname", 1723, 1},
     {"path-is-absolute?", 1724, 1}, {"path-normalize", 1725, 1},
-    {"realpath", 1726, 1},
+    {"realpath", 1726, 1}, {"path-relative", 1727, 2},
+    {"path-resolve", 1728, 2},
     /* ═══════════════════════════════════════════════════════════════
      * Filesystem — IDs 1740-1769
      * ═══════════════════════════════════════════════════════════════ */
@@ -445,7 +465,9 @@ static const BuiltinDef BUILTINS[] = {
      * Process Management — IDs 1780-1799
      * ═══════════════════════════════════════════════════════════════ */
     {"process-spawn", 1780, 3}, {"process-wait", 1781, 1},
+    {"process-spawn-with-env", 1780, 3},
     {"process-kill", 1782, 2}, {"io-poll", 1783, 2},
+    {"poll", 1783, 2}, {"process-pid", 1784, 0},
     /* ═══════════════════════════════════════════════════════════════
      * KB Extensions — IDs 1800-1809
      * ═══════════════════════════════════════════════════════════════ */

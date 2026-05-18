@@ -38,6 +38,22 @@ void eshkol_vm_destroy(EshkolVmHandle* h);
  * on success, -1 if the stack is empty or the top is not coercible. */
 int eshkol_vm_top_int64(EshkolVmHandle* h, int64_t* out);
 
+#define ESHKOL_VM_HOST_NATIVE_BASE 100000
+
+/* Host-callback registry. Function pointer signature receives the opaque VM;
+ * the callback reads its arguments from the VM stack and pushes results back
+ * through the eshkol_vm_host_* helpers below.
+ * Returns the assigned slot index on success (>=0), -1 on failure
+ * (table full / duplicate name / null fn). The integer fid that bytecode
+ * should encode in OP_NATIVE_CALL is ESHKOL_VM_HOST_NATIVE_BASE + slot_index. */
+typedef struct VM VM;
+typedef int (*eshkol_vm_host_native_fn)(VM* vm);
+int eshkol_vm_register_host_native(const char* name, eshkol_vm_host_native_fn fn);
+
+/* Helpers callable only from a registered host-native callback. */
+int eshkol_vm_host_pop_int64(VM* vm, int64_t* out);
+int eshkol_vm_host_push_int64(VM* vm, int64_t value);
+
 #ifdef __cplusplus
 }
 #endif
