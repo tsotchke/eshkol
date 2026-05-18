@@ -1170,6 +1170,11 @@ public:
         function_return_types["parse-iso8601"] = BuiltinTypes::Integer;
         function_return_types["sleep-ms"] = BuiltinTypes::Null;
         function_return_types["executable-exists?"] = BuiltinTypes::Boolean;
+        function_return_types["executable-path"] = BuiltinTypes::String;
+        function_return_types["monotonic-time-ms"] = BuiltinTypes::Integer;
+        function_return_types["temp-directory"] = BuiltinTypes::String;
+        function_return_types["prevent-sleep"] = BuiltinTypes::Integer;
+        function_return_types["allow-sleep"] = BuiltinTypes::Boolean;
         function_return_types["path-join"] = BuiltinTypes::String;
         function_return_types["path-dirname"] = BuiltinTypes::String;
         function_return_types["path-basename"] = BuiltinTypes::String;
@@ -11857,6 +11862,11 @@ private:
         if (func_name == "parse-iso8601") return system_->parseIso8601(op);
         if (func_name == "sleep-ms") return system_->sleepMs(op);
         if (func_name == "executable-exists?") return system_->executableExists(op);
+        if (func_name == "executable-path") return system_->executablePath(op);
+        if (func_name == "monotonic-time-ms") return system_->monotonicTimeMs(op);
+        if (func_name == "temp-directory") return system_->tempDirectory(op);
+        if (func_name == "prevent-sleep") return system_->preventSleep(op);
+        if (func_name == "allow-sleep") return system_->allowSleep(op);
         if (func_name == "path-join") return system_->pathJoin(op);
         if (func_name == "path-dirname") return system_->pathDirname(op);
         if (func_name == "path-basename") return system_->pathBasename(op);
@@ -19823,7 +19833,8 @@ private:
             // v1.2 system/path/process
             "os-type", "os-arch", "hostname", "username",
             "cpu-count", "getpid", "home-directory",
-            "sleep-ms", "executable-exists?",
+            "sleep-ms", "executable-exists?", "executable-path",
+            "monotonic-time-ms", "temp-directory", "prevent-sleep", "allow-sleep",
             "current-timestamp", "format-iso8601", "parse-iso8601",
             "path-join", "path-dirname", "path-basename", "path-extname",
             "path-is-absolute?", "path-normalize", "realpath",

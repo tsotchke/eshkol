@@ -401,6 +401,9 @@ static const BuiltinDef BUILTINS[] = {
     {"fs-watch-poll", 1944, 1}, {"fs-unwatch", 1945, 1},
     {"ansi-strip", 1946, 1}, {"string-display-width", 1947, 1},
     {"string-truncate-display", 1948, 3},
+    {"executable-path", 1949, 1}, {"monotonic-time-ms", 1950, 0},
+    {"temp-directory", 1951, 0}, {"prevent-sleep", 1952, 1},
+    {"allow-sleep", 1953, 1},
     /* Parallel primitives — IDs 620-628 */
     {"parallel-map", 620, 2}, {"parallel-filter", 621, 2},
     {"parallel-fold", 622, 3}, {"parallel-for-each", 623, 2},

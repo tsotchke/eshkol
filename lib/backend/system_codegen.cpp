@@ -1383,6 +1383,11 @@ ONE_ARG_BUILTIN(parseIso8601, "eshkol_builtin_parse_iso8601")
 /* System ops with args */
 ONE_ARG_BUILTIN(sleepMs, "eshkol_builtin_sleep_ms")
 ONE_ARG_BUILTIN(executableExists, "eshkol_builtin_executable_exists")
+ONE_ARG_BUILTIN(executablePath, "eshkol_builtin_executable_path")
+ZERO_ARG_BUILTIN(monotonicTimeMs, "eshkol_builtin_monotonic_time_ms")
+ZERO_ARG_BUILTIN(tempDirectory, "eshkol_builtin_temp_directory")
+ONE_ARG_BUILTIN(preventSleep, "eshkol_builtin_prevent_sleep")
+ONE_ARG_BUILTIN(allowSleep, "eshkol_builtin_allow_sleep")
 
 /* Path manipulation */
 TWO_ARG_BUILTIN(pathJoin, "eshkol_builtin_path_join")
