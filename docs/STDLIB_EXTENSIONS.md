@@ -805,6 +805,11 @@ zlib decompress.
 
 ### `(gunzip data) -> bytevector-or-false`
 
+Standalone VM native IDs 2017-2021 expose this surface through runtime symbol
+lookup of the existing agent compression hooks. `(compression-available)` reports
+whether zlib-backed hooks are linked into the host; `deflate`, `inflate`,
+`gzip`, and `gunzip` return bytevectors when available and `#f` otherwise.
+
 ---
 
 ## B.15 Streams
