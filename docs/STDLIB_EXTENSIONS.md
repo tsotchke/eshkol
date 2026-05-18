@@ -313,10 +313,17 @@ Python/Node REPL, commands that detect `isatty`.
 ### `(process-setpgid proc pgid) -> bool`
 `setpgid(2)`. For process group management.
 
+Implemented in the standalone VM as native ID 1785.
+
 ### `(process-kill-tree pid signal) -> bool`
 Kill process + all descendants. Walk process tree via `pgrep -P` (macOS)
 or `/proc/PID/children` (Linux). Send signal bottom-up.
 Claude Code uses `tree-kill` npm package.
+
+Implemented in the standalone VM as native ID 1786 for VM-spawned children:
+`process-spawn` places each child in its own process group, and
+`process-kill-tree` signals that group with a direct-PID fallback for external
+processes.
 
 ### `(process-read-stdout-nonblocking proc max) -> string-or-false`
 `fcntl(O_NONBLOCK)` + `read(2)`. For MCP message polling.

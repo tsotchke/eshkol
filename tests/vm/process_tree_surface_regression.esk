@@ -1,0 +1,24 @@
+;; Standalone VM regression for process groups and process-kill-tree.
+
+(display "=== process tree VM surface regression ===") (newline)
+
+(define child
+  (process-spawn "/bin/sh" (list "-c" "sleep 20") #f))
+
+(display "T1 process-spawn returns child pid: ")
+(display (if (and (number? child) (> child 1))
+             "PASS"
+             (list "FAIL got " child)))
+(newline)
+
+(display "T2 process-kill-tree terminates spawned process group: ")
+(define killed (if (and (number? child) (> child 1))
+                   (process-kill-tree child 15)
+                   #f))
+(define status (if killed (process-wait child) 0))
+(display (if (and killed (number? status) (not (= status 0)))
+             "PASS"
+             (list "FAIL killed=" killed " status=" status)))
+(newline)
+
+(display "=== process tree VM surface complete ===") (newline)

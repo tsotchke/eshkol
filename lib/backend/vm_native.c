@@ -6522,10 +6522,16 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 pid_t pid = fork();
                 if (pid == 0) {
                     /* Child */
+#ifndef _WIN32
+                    (void)setpgid(0, 0);
+#endif
                     if (envp) execve(argv[0], argv, envp);
                     else execvp(argv[0], argv);
                     _exit(127);
                 } else if (pid > 0) {
+#ifndef _WIN32
+                    (void)setpgid(pid, pid);
+#endif
                     vm_push(vm, INT_VAL((int64_t)pid));
                     break;
                 }
@@ -6617,6 +6623,49 @@ static void vm_dispatch_native(VM* vm, int fid) {
 #else
         vm_push(vm, INT_VAL(0));
 #endif
+        break;
+    }
+
+    case 1785: { /* process-setpgid(pid, pgid) → #t or #f */
+        Value pgid_val = vm_pop(vm), pid_val = vm_pop(vm);
+#if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
+        pid_t pid = (pid_t)as_number(pid_val);
+        pid_t pgid = (pid_t)as_number(pgid_val);
+        if (pid > 0 && pgid >= 0 && setpgid(pid, pgid) == 0) {
+            vm_push(vm, BOOL_VAL(1));
+            break;
+        }
+#else
+        (void)pgid_val; (void)pid_val;
+#endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+    case 1786: { /* process-kill-tree(pid, signal) → #t or #f
+                  * process-spawn creates a new process group for each child.
+                  * Killing -pid therefore reaches the child and descendants
+                  * that stay in that group; direct kill is the fallback for
+                  * externally supplied non-group-leader PIDs. */
+        Value sig_val = vm_pop(vm), pid_val = vm_pop(vm);
+#if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
+        pid_t pid = (pid_t)as_number(pid_val);
+        int sig = (int)as_number(sig_val);
+        if (pid > 1 && sig > 0) {
+            int ok = 0;
+            if (getpgid(pid) == pid && kill(-pid, sig) == 0)
+                ok = 1;
+            if (!ok && kill(pid, sig) == 0)
+                ok = 1;
+            if (ok) {
+                vm_push(vm, BOOL_VAL(1));
+                break;
+            }
+        }
+#else
+        (void)sig_val; (void)pid_val;
+#endif
+        vm_push(vm, BOOL_VAL(0));
         break;
     }
 
