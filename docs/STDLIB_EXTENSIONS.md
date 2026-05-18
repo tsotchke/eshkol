@@ -567,6 +567,10 @@ marks/variation selectors as zero-width.
 ### `(string-truncate-display str max suffix) -> string`
 Truncate to `max` display columns. Never splits a wide char.
 
+Standalone VM native ID 1948 uses the same width accounting as
+`string-display-width`; suffix text is included only after the source string
+needs truncation, and the returned string is capped to `max` display columns.
+
 ### `(url-encode str) -> string`
 Percent-encoding. Unreserved chars: `A-Za-z0-9-_.~`.
 

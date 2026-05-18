@@ -1,0 +1,49 @@
+;; Standalone VM regression for display-width-aware string truncation.
+
+(display "=== string truncate display VM surface regression ===") (newline)
+
+(display "T1 no truncation returns original: ")
+(display (if (string=? (string-truncate-display "plain" 10 "...") "plain")
+             "PASS"
+             (list "FAIL got " (string-truncate-display "plain" 10 "..."))))
+(newline)
+
+(display "T2 ASCII truncates with suffix inside max width: ")
+(display (if (string=? (string-truncate-display "abcdef" 5 "...") "ab...")
+             "PASS"
+             (list "FAIL got " (string-truncate-display "abcdef" 5 "..."))))
+(newline)
+
+(display "T3 suffix is truncated when suffix alone exceeds max width: ")
+(display (if (string=? (string-truncate-display "abcdef" 2 "...") "..")
+             "PASS"
+             (list "FAIL got " (string-truncate-display "abcdef" 2 "..."))))
+(newline)
+
+(display "T4 CJK codepoint is not split: ")
+(display (if (string=? (string-truncate-display "界bc" 3 ".") "界.")
+             "PASS"
+             (list "FAIL got " (string-truncate-display "界bc" 3 "."))))
+(newline)
+
+(display "T5 combining mark stays attached at zero width: ")
+(display (if (string=? (string-truncate-display "ábc" 2 ".") "á.")
+             "PASS"
+             (list "FAIL got " (string-truncate-display "ábc" 2 "."))))
+(newline)
+
+(define link
+  (term-hyperlink "https://example.invalid" "label"))
+
+(define truncated-link
+  (string-truncate-display link 4 "."))
+
+(display "T6 ANSI hyperlink escapes are zero-width: ")
+(display (if (and (string=? (ansi-strip truncated-link) "lab.")
+                  (= (string-display-width truncated-link) 4))
+             "PASS"
+             (list "FAIL got " (ansi-strip truncated-link)
+                   " width " (string-display-width truncated-link))))
+(newline)
+
+(display "=== string truncate display VM surface complete ===") (newline)

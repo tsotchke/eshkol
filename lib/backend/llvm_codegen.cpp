@@ -1234,6 +1234,7 @@ public:
         function_return_types["fs-unwatch"] = BuiltinTypes::Boolean;
         function_return_types["ansi-strip"] = BuiltinTypes::String;
         function_return_types["string-display-width"] = BuiltinTypes::Integer;
+        function_return_types["string-truncate-display"] = BuiltinTypes::String;
         function_return_types["kb-save"] = BuiltinTypes::Boolean;
         function_return_types["kb-load"] = BuiltinTypes::Value;
         function_return_types["tensor-token-estimate"] = BuiltinTypes::Integer;
@@ -11920,6 +11921,7 @@ private:
         if (func_name == "fs-unwatch") return system_->fsUnwatch(op);
         if (func_name == "ansi-strip") return system_->ansiStrip(op);
         if (func_name == "string-display-width") return system_->stringDisplayWidth(op);
+        if (func_name == "string-truncate-display") return system_->stringTruncateDisplay(op);
         if (func_name == "kb-save") return system_->kbSave(op);
         if (func_name == "kb-load") return system_->kbLoad(op);
         if (func_name == "tensor-token-estimate") return system_->tensorTokenEstimate(op);
@@ -19843,7 +19845,7 @@ private:
             "term-clipboard-write", "term-clipboard-read", "term-hyperlink",
             "term-detect-capabilities", "term-bell",
             "fs-watch-native", "fs-watch-recursive", "fs-watch-poll", "fs-unwatch",
-            "ansi-strip", "string-display-width",
+            "ansi-strip", "string-display-width", "string-truncate-display",
             "kb-save", "kb-load", "tensor-token-estimate",
             "fg-marginal", "fg-entropy", "kb-retract!",
             "make-substitution", "unify", "walk",
