@@ -295,6 +295,12 @@ typedef struct VM {
 
     /* VM-lifetime geometric optimizer state for compatibility builtins. */
     void* geometric_adam_states[16];   /* VmRiemannianAdamState* */
+
+    /* VM-lifetime process handles.  A PTY process is exposed to Scheme as
+     * (pid . master-fd), while these slots let native wait/kill/read accept
+     * either that handle or the pid directly. */
+    struct { int64_t pid; int fd; } pty_handles[64];
+    int n_pty_handles;
 } VM;
 
 /* Command-line arguments (set in main, read by native 602) */

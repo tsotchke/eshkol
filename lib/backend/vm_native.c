@@ -19,6 +19,122 @@ static Value vm_int_pair(VM* vm, int64_t car, int64_t cdr) {
     return PAIR_VAL(ptr);
 }
 
+static int64_t vm_process_pid_from_value(VM* vm, Value value) {
+    if (value.type == VAL_PAIR && is_valid_heap_ptr(vm, value.as.ptr)) {
+        HeapObject* obj = vm->heap.objects[value.as.ptr];
+        if (obj && obj->type == HEAP_CONS)
+            return (int64_t)as_number(obj->cons.car);
+    }
+    return (int64_t)as_number(value);
+}
+
+static int vm_process_fd_from_value(VM* vm, Value value) {
+    if (value.type == VAL_PAIR && is_valid_heap_ptr(vm, value.as.ptr)) {
+        HeapObject* obj = vm->heap.objects[value.as.ptr];
+        if (obj && obj->type == HEAP_CONS)
+            return (int)as_number(obj->cons.cdr);
+    }
+
+    int64_t pid_or_fd = (int64_t)as_number(value);
+    for (int i = 0; i < vm->n_pty_handles; i++) {
+        if (vm->pty_handles[i].pid == pid_or_fd)
+            return vm->pty_handles[i].fd;
+    }
+    return (int)pid_or_fd;
+}
+
+static void vm_process_track_pty(VM* vm, int64_t pid, int fd) {
+    if (!vm || pid <= 0 || fd < 0) return;
+    for (int i = 0; i < vm->n_pty_handles; i++) {
+        if (vm->pty_handles[i].pid == pid) {
+            vm->pty_handles[i].fd = fd;
+            return;
+        }
+    }
+    if (vm->n_pty_handles < (int)(sizeof(vm->pty_handles) / sizeof(vm->pty_handles[0]))) {
+        vm->pty_handles[vm->n_pty_handles].pid = pid;
+        vm->pty_handles[vm->n_pty_handles].fd = fd;
+        vm->n_pty_handles++;
+    }
+}
+
+static void vm_process_forget_pty(VM* vm, int64_t pid, int close_fd) {
+    if (!vm || pid <= 0) return;
+    for (int i = 0; i < vm->n_pty_handles; i++) {
+        if (vm->pty_handles[i].pid == pid) {
+#if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
+            if (close_fd && vm->pty_handles[i].fd >= 0) close(vm->pty_handles[i].fd);
+#else
+            (void)close_fd;
+#endif
+            vm->pty_handles[i] = vm->pty_handles[vm->n_pty_handles - 1];
+            vm->n_pty_handles--;
+            return;
+        }
+    }
+}
+
+#if defined(_WIN32) && !defined(ESHKOL_VM_WASM)
+static int vm_win_append_process_arg(char* out, size_t out_size, size_t* pos, const char* arg) {
+    if (!out || !pos || !arg) return 0;
+
+    if (*pos + 1 >= out_size) return 0;
+    if (*pos > 0) out[(*pos)++] = ' ';
+
+    if (*pos + 1 >= out_size) return 0;
+    out[(*pos)++] = '"';
+
+    size_t backslashes = 0;
+    for (const char* p = arg; *p; ++p) {
+        if (*p == '\\') {
+            backslashes++;
+            continue;
+        }
+        if (*p == '"') {
+            while (backslashes > 0) {
+                backslashes--;
+                if (*pos + 2 >= out_size) return 0;
+                out[(*pos)++] = '\\';
+                out[(*pos)++] = '\\';
+            }
+            if (*pos + 2 >= out_size) return 0;
+            out[(*pos)++] = '\\';
+            out[(*pos)++] = '"';
+            continue;
+        }
+        while (backslashes > 0) {
+            backslashes--;
+            if (*pos + 1 >= out_size) return 0;
+            out[(*pos)++] = '\\';
+        }
+        if (*pos + 1 >= out_size) return 0;
+        out[(*pos)++] = *p;
+    }
+
+    while (backslashes > 0) {
+        backslashes--;
+        if (*pos + 2 >= out_size) return 0;
+        out[(*pos)++] = '\\';
+        out[(*pos)++] = '\\';
+    }
+
+    if (*pos + 2 > out_size) return 0;
+    out[(*pos)++] = '"';
+    out[*pos] = '\0';
+    return 1;
+}
+
+static int vm_win_build_process_command_line(char* out, size_t out_size, char** argv, int argc) {
+    if (!out || out_size == 0 || !argv || argc <= 0) return 0;
+    size_t pos = 0;
+    out[0] = '\0';
+    for (int i = 0; i < argc; ++i) {
+        if (!vm_win_append_process_arg(out, out_size, &pos, argv[i])) return 0;
+    }
+    return 1;
+}
+#endif
+
 static int vm_values_equal_deep(VM* vm, Value a, Value b, int depth) {
     if (depth > 128) return 0;
     if (a.type != b.type) {
@@ -6472,25 +6588,80 @@ static void vm_dispatch_native(VM* vm, int fid) {
                   * cmd: string, args: list of strings, env: alist of (name . value) or #f
                   * Returns child PID on success, #f on failure */
         Value env_val = vm_pop(vm), args_val = vm_pop(vm), cmd_val = vm_pop(vm);
-#ifndef ESHKOL_VM_WASM
-        if (cmd_val.type == VAL_STRING) {
-            VmString* cs = (VmString*)vm->heap.objects[cmd_val.as.ptr]->opaque.ptr;
-            if (cs) {
-                /* Build argv array */
-                char* argv[256];
+#if !defined(ESHKOL_VM_WASM)
+        if (cmd_val.type == VAL_STRING && is_valid_heap_ptr(vm, cmd_val.as.ptr)) {
+            HeapObject* cmd_obj = vm->heap.objects[cmd_val.as.ptr];
+            VmString* cs = cmd_obj ? (VmString*)cmd_obj->opaque.ptr : NULL;
+            if (cs && cs->data) {
+                char* argv_buf[256];
                 int argc_local = 0;
-                argv[argc_local++] = cs->data;
+                argv_buf[argc_local++] = cs->data;
                 Value acur = args_val;
-                while (acur.type == VAL_PAIR && argc_local < 255) {
-                    Value elem = vm->heap.objects[acur.as.ptr]->cons.car;
-                    if (elem.type == VAL_STRING) {
-                        VmString* es = (VmString*)vm->heap.objects[elem.as.ptr]->opaque.ptr;
-                        if (es) argv[argc_local++] = es->data;
+                while (acur.type == VAL_PAIR && argc_local < 255 && is_valid_heap_ptr(vm, acur.as.ptr)) {
+                    HeapObject* node = vm->heap.objects[acur.as.ptr];
+                    Value elem = node->cons.car;
+                    if (elem.type == VAL_STRING && is_valid_heap_ptr(vm, elem.as.ptr)) {
+                        HeapObject* elem_obj = vm->heap.objects[elem.as.ptr];
+                        VmString* es = elem_obj ? (VmString*)elem_obj->opaque.ptr : NULL;
+                        if (es && es->data) argv_buf[argc_local++] = es->data;
                     }
-                    acur = vm->heap.objects[acur.as.ptr]->cons.cdr;
+                    acur = node->cons.cdr;
                 }
-                argv[argc_local] = NULL;
+                argv_buf[argc_local] = NULL;
 
+#ifdef _WIN32
+                char cmdline[32768];
+                if (vm_win_build_process_command_line(cmdline, sizeof(cmdline), argv_buf, argc_local)) {
+                    char env_block[32768];
+                    char* env_block_ptr = NULL;
+                    size_t env_pos = 0;
+                    Value ecur = env_val;
+                    while (ecur.type == VAL_PAIR && env_pos + 2 < sizeof(env_block) &&
+                           is_valid_heap_ptr(vm, ecur.as.ptr)) {
+                        HeapObject* list_node = vm->heap.objects[ecur.as.ptr];
+                        Value pair = list_node->cons.car;
+                        if (pair.type == VAL_PAIR && is_valid_heap_ptr(vm, pair.as.ptr)) {
+                            HeapObject* pair_obj = vm->heap.objects[pair.as.ptr];
+                            Value key = pair_obj->cons.car;
+                            Value val = pair_obj->cons.cdr;
+                            if (key.type == VAL_STRING && val.type == VAL_STRING &&
+                                is_valid_heap_ptr(vm, key.as.ptr) &&
+                                is_valid_heap_ptr(vm, val.as.ptr)) {
+                                VmString* ks = (VmString*)vm->heap.objects[key.as.ptr]->opaque.ptr;
+                                VmString* vs = (VmString*)vm->heap.objects[val.as.ptr]->opaque.ptr;
+                                if (ks && ks->data && vs && vs->data) {
+                                    int n = snprintf(env_block + env_pos,
+                                                     sizeof(env_block) - env_pos,
+                                                     "%s=%s", ks->data, vs->data);
+                                    if (n < 0 || (size_t)n + 2 > sizeof(env_block) - env_pos) {
+                                        env_pos = 0;
+                                        break;
+                                    }
+                                    env_pos += (size_t)n + 1;
+                                    env_block_ptr = env_block;
+                                }
+                            }
+                        }
+                        ecur = list_node->cons.cdr;
+                    }
+                    if (env_block_ptr) env_block[env_pos++] = '\0';
+
+                    STARTUPINFOA si;
+                    PROCESS_INFORMATION pi;
+                    memset(&si, 0, sizeof(si));
+                    memset(&pi, 0, sizeof(pi));
+                    si.cb = sizeof(si);
+                    if (CreateProcessA(NULL, cmdline, NULL, NULL, FALSE,
+                                       CREATE_NEW_PROCESS_GROUP,
+                                       env_block_ptr, NULL, &si, &pi)) {
+                        CloseHandle(pi.hThread);
+                        DWORD pid = pi.dwProcessId;
+                        CloseHandle(pi.hProcess);
+                        vm_push(vm, INT_VAL((int64_t)pid));
+                        break;
+                    }
+                }
+#else
                 /* Build environment if provided */
                 char* envp_buf[256];
                 char env_strs[256][512];
@@ -6498,12 +6669,16 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 int envc = 0;
                 if (env_val.type == VAL_PAIR) {
                     Value ecur = env_val;
-                    while (ecur.type == VAL_PAIR && envc < 255) {
-                        Value pair = vm->heap.objects[ecur.as.ptr]->cons.car;
-                        if (pair.type == VAL_PAIR) {
-                            Value key = vm->heap.objects[pair.as.ptr]->cons.car;
-                            Value val = vm->heap.objects[pair.as.ptr]->cons.cdr;
-                            if (key.type == VAL_STRING && val.type == VAL_STRING) {
+                    while (ecur.type == VAL_PAIR && envc < 255 && is_valid_heap_ptr(vm, ecur.as.ptr)) {
+                        HeapObject* list_node = vm->heap.objects[ecur.as.ptr];
+                        Value pair = list_node->cons.car;
+                        if (pair.type == VAL_PAIR && is_valid_heap_ptr(vm, pair.as.ptr)) {
+                            HeapObject* pair_obj = vm->heap.objects[pair.as.ptr];
+                            Value key = pair_obj->cons.car;
+                            Value val = pair_obj->cons.cdr;
+                            if (key.type == VAL_STRING && val.type == VAL_STRING &&
+                                is_valid_heap_ptr(vm, key.as.ptr) &&
+                                is_valid_heap_ptr(vm, val.as.ptr)) {
                                 VmString* ks = (VmString*)vm->heap.objects[key.as.ptr]->opaque.ptr;
                                 VmString* vs = (VmString*)vm->heap.objects[val.as.ptr]->opaque.ptr;
                                 if (ks && vs) {
@@ -6513,7 +6688,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
                                 }
                             }
                         }
-                        ecur = vm->heap.objects[ecur.as.ptr]->cons.cdr;
+                        ecur = list_node->cons.cdr;
                     }
                     envp_buf[envc] = NULL;
                     envp = envp_buf;
@@ -6522,19 +6697,16 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 pid_t pid = fork();
                 if (pid == 0) {
                     /* Child */
-#ifndef _WIN32
                     (void)setpgid(0, 0);
-#endif
-                    if (envp) execve(argv[0], argv, envp);
-                    else execvp(argv[0], argv);
+                    if (envp) execve(argv_buf[0], argv_buf, envp);
+                    else execvp(argv_buf[0], argv_buf);
                     _exit(127);
                 } else if (pid > 0) {
-#ifndef _WIN32
                     (void)setpgid(pid, pid);
-#endif
                     vm_push(vm, INT_VAL((int64_t)pid));
                     break;
                 }
+#endif
             }
         }
 #else
@@ -6546,23 +6718,48 @@ static void vm_dispatch_native(VM* vm, int fid) {
 
     case 1781: { /* process-wait(pid) → exit-status integer */
         Value pid_val = vm_pop(vm);
-#ifndef ESHKOL_VM_WASM
+#if defined(_WIN32) && !defined(ESHKOL_VM_WASM)
+        DWORD pid = (DWORD)vm_process_pid_from_value(vm, pid_val);
+        HANDLE proc = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_INFORMATION, FALSE, pid);
+        if (proc) {
+            DWORD code = 0;
+            DWORD wait_rc = WaitForSingleObject(proc, INFINITE);
+            int ok = wait_rc == WAIT_OBJECT_0 && GetExitCodeProcess(proc, &code);
+            CloseHandle(proc);
+            if (ok) {
+                vm_process_forget_pty(vm, (int64_t)pid, 1);
+                vm_push(vm, INT_VAL((int64_t)code));
+                break;
+            }
+        }
+#elif !defined(ESHKOL_VM_WASM)
         int status = 0;
-        pid_t pid = (pid_t)as_number(pid_val);
+        pid_t pid = (pid_t)vm_process_pid_from_value(vm, pid_val);
         if (waitpid(pid, &status, 0) >= 0) {
+            vm_process_forget_pty(vm, (int64_t)pid, 1);
             vm_push(vm, INT_VAL(WIFEXITED(status) ? WEXITSTATUS(status) : -1));
-        } else
+            break;
+        }
 #else
         (void)pid_val;
 #endif
-        { vm_push(vm, INT_VAL(-1)); }
+        vm_push(vm, INT_VAL(-1));
         break;
     }
 
     case 1782: { /* process-kill(pid, signal) → #t or #f */
         Value sig_val = vm_pop(vm), pid_val = vm_pop(vm);
-#ifndef ESHKOL_VM_WASM
-        pid_t pid = (pid_t)as_number(pid_val);
+#if defined(_WIN32) && !defined(ESHKOL_VM_WASM)
+        DWORD pid = (DWORD)vm_process_pid_from_value(vm, pid_val);
+        UINT exit_code = (UINT)((int)as_number(sig_val) > 0 ? (int)as_number(sig_val) : 1);
+        HANDLE proc = OpenProcess(PROCESS_TERMINATE, FALSE, pid);
+        if (proc) {
+            int ok = TerminateProcess(proc, exit_code) != 0;
+            CloseHandle(proc);
+            if (ok) { vm_push(vm, BOOL_VAL(1)); break; }
+        }
+#elif !defined(ESHKOL_VM_WASM)
+        pid_t pid = (pid_t)vm_process_pid_from_value(vm, pid_val);
         int sig = (int)as_number(sig_val);
         if (kill(pid, sig) == 0) { vm_push(vm, BOOL_VAL(1)); break; }
 #else
@@ -6576,7 +6773,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
                   * fd-list: list of integer file descriptors
                   * timeout-ms: integer (-1 = block forever, 0 = non-blocking) */
         Value timeout_val = vm_pop(vm), fds_val = vm_pop(vm);
-#ifndef ESHKOL_VM_WASM
+#if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
         /* Count fds */
         int nfds = 0;
         Value cur = fds_val;
@@ -6588,7 +6785,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
             struct pollfd pfds[256];
             cur = fds_val;
             for (int i = 0; i < nfds; i++) {
-                pfds[i].fd = (int)as_number(vm->heap.objects[cur.as.ptr]->cons.car);
+                pfds[i].fd = vm_process_fd_from_value(vm, vm->heap.objects[cur.as.ptr]->cons.car);
                 pfds[i].events = POLLIN;
                 pfds[i].revents = 0;
                 cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
@@ -6618,7 +6815,9 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
 
     case 1784: { /* process-pid() → current process id */
-#ifndef ESHKOL_VM_WASM
+#if defined(_WIN32) && !defined(ESHKOL_VM_WASM)
+        vm_push(vm, INT_VAL((int64_t)GetCurrentProcessId()));
+#elif !defined(ESHKOL_VM_WASM)
         vm_push(vm, INT_VAL((int64_t)getpid()));
 #else
         vm_push(vm, INT_VAL(0));
@@ -6629,7 +6828,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 1785: { /* process-setpgid(pid, pgid) → #t or #f */
         Value pgid_val = vm_pop(vm), pid_val = vm_pop(vm);
 #if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
-        pid_t pid = (pid_t)as_number(pid_val);
+        pid_t pid = (pid_t)vm_process_pid_from_value(vm, pid_val);
         pid_t pgid = (pid_t)as_number(pgid_val);
         if (pid > 0 && pgid >= 0 && setpgid(pid, pgid) == 0) {
             vm_push(vm, BOOL_VAL(1));
@@ -6649,7 +6848,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
                   * externally supplied non-group-leader PIDs. */
         Value sig_val = vm_pop(vm), pid_val = vm_pop(vm);
 #if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
-        pid_t pid = (pid_t)as_number(pid_val);
+        pid_t pid = (pid_t)vm_process_pid_from_value(vm, pid_val);
         int sig = (int)as_number(sig_val);
         if (pid > 1 && sig > 0) {
             int ok = 0;
@@ -6664,6 +6863,66 @@ static void vm_dispatch_native(VM* vm, int fid) {
         }
 #else
         (void)sig_val; (void)pid_val;
+#endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+    case 1787: { /* process-spawn-pty(command) → (pid . master-fd) or #f */
+        Value cmd_val = vm_pop(vm);
+#if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
+        if (cmd_val.type == VAL_STRING && is_valid_heap_ptr(vm, cmd_val.as.ptr)) {
+            VmString* cmd = (VmString*)vm->heap.objects[cmd_val.as.ptr]->opaque.ptr;
+            if (cmd && cmd->data) {
+                int master_fd = -1;
+                pid_t pid = forkpty(&master_fd, NULL, NULL, NULL);
+                if (pid == 0) {
+                    (void)setpgid(0, 0);
+                    execlp("/bin/sh", "sh", "-c", cmd->data, (char*)NULL);
+                    _exit(127);
+                }
+                if (pid > 0 && master_fd >= 0) {
+                    (void)setpgid(pid, pid);
+                    Value handle = vm_int_pair(vm, (int64_t)pid, (int64_t)master_fd);
+                    if (handle.type != VAL_NIL) {
+                        vm_process_track_pty(vm, (int64_t)pid, master_fd);
+                        vm_push(vm, handle);
+                        break;
+                    }
+                    close(master_fd);
+                    (void)kill(pid, SIGTERM);
+                }
+                if (master_fd >= 0) close(master_fd);
+            }
+        }
+#else
+        (void)cmd_val;
+#endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+    case 1788: { /* process-read-nonblocking(proc-or-fd, max-bytes) → string or #f */
+        Value max_val = vm_pop(vm), proc_val = vm_pop(vm);
+#if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
+        int fd = vm_process_fd_from_value(vm, proc_val);
+        int max_bytes = (int)as_number(max_val);
+        if (fd >= 0 && max_bytes > 0) {
+            char buf[8192];
+            if (max_bytes > (int)sizeof(buf) - 1) max_bytes = (int)sizeof(buf) - 1;
+            int flags = fcntl(fd, F_GETFL, 0);
+            if (flags >= 0 && fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0) {
+                ssize_t n = read(fd, buf, (size_t)max_bytes);
+                (void)fcntl(fd, F_SETFL, flags);
+                if (n > 0) {
+                    buf[n] = '\0';
+                    VmString* s = vm_string_new(&vm->heap.regions, buf, (int64_t)n);
+                    if (s) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, s); break; }
+                }
+            }
+        }
+#else
+        (void)max_val; (void)proc_val;
 #endif
         vm_push(vm, BOOL_VAL(0));
         break;

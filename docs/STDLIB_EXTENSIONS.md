@@ -306,9 +306,15 @@ Resolve `.`, `..`, double slashes. No symlink resolution.
 Return the current process ID. Implemented in the standalone VM as native ID
 1784, matching the compiled runtime's current-process alias.
 
-### `(process-spawn-pty command cwd) -> proc`
+### `(process-spawn-pty command) -> proc`
 `forkpty(3)`. Child sees a real terminal. Needed for: interactive commands,
 Python/Node REPL, commands that detect `isatty`.
+
+The standalone VM exposes native ID 1787 as a POSIX-only low-level form. It
+returns a process handle `(pid . master-fd)`; on Windows and WASM it returns
+`#f`.
+`process-wait`, `process-kill`, `process-kill-tree`, `process-setpgid`,
+`io-poll`, and `process-read-nonblocking` accept that handle directly.
 
 ### `(process-setpgid proc pgid) -> bool`
 `setpgid(2)`. For process group management.
@@ -329,6 +335,10 @@ processes.
 `fcntl(O_NONBLOCK)` + `read(2)`. For MCP message polling.
 
 ### `(process-read-stderr-nonblocking proc max) -> string-or-false`
+
+The standalone VM exposes the underlying native ID 1788 as
+`(process-read-nonblocking proc-or-fd max)`, returning a string when bytes are
+available and `#f` on EOF, EAGAIN, or error.
 
 ---
 
