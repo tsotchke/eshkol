@@ -1,0 +1,36 @@
+;; Standalone VM regression for v1.2 path/process compatibility builtins.
+
+(display "=== path/process VM surface regression ===") (newline)
+
+(display "T1 path-relative sibling path: ")
+(display (if (string=? (path-relative "/usr/local" "/usr/bin") "../bin")
+             "PASS"
+             "FAIL"))
+(newline)
+
+(display "T2 path-relative same path: ")
+(display (if (string=? (path-relative "/usr/local" "/usr/local") ".")
+             "PASS"
+             "FAIL"))
+(newline)
+
+(display "T3 path-resolve parent and dot: ")
+(display (if (string=? (path-resolve "/usr/local" "../bin/./gcc") "/usr/bin/gcc")
+             "PASS"
+             "FAIL"))
+(newline)
+
+(define pid (process-pid))
+(display "T4 process-pid exact positive: ")
+(display (if (and (exact? pid) (> pid 0))
+             "PASS"
+             (list "FAIL got " pid)))
+(newline)
+
+(display "T5 poll empty list: ")
+(display (if (null? (poll '() 0))
+             "PASS"
+             "FAIL"))
+(newline)
+
+(display "=== path/process VM surface complete ===") (newline)

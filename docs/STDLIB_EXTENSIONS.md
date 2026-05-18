@@ -242,8 +242,13 @@ Extension including dot. `".gitignore"` -> `""`, `"a.tar.gz"` -> `".gz"`.
 ### `(path-relative from to) -> string`
 Compute relative path between two absolutes.
 
+Implemented in the standalone VM as native ID 1727.
+
 ### `(path-resolve . components) -> string`
 Resolve to absolute, prepending CWD if needed.
+
+The standalone VM exposes the two-argument form `(path-resolve base rel)` as
+native ID 1728.
 
 ### `(path-is-absolute? path) -> bool`
 Starts with `/`.
@@ -255,8 +260,9 @@ Resolve `.`, `..`, double slashes. No symlink resolution.
 
 ## B.3 Process Management
 
-### `(process-pid proc) -> integer`
-Extract PID from handle. Needed for `.pid` file writing.
+### `(process-pid) -> integer`
+Return the current process ID. Implemented in the standalone VM as native ID
+1784, matching the compiled runtime's current-process alias.
 
 ### `(process-spawn-pty command cwd) -> proc`
 `forkpty(3)`. Child sees a real terminal. Needed for: interactive commands,
@@ -1930,7 +1936,8 @@ broadcast history (last 100). Pure Eshkol wrapper over existing VM builtins.
 Agent's MCP transport busy-waits with `(sleep 0.05)` in a loop. Cannot handle
 SSE + subprocess + keyboard simultaneously.
 
-**VM**: New builtin (e.g., case 640). Wraps `poll(2)`.
+**VM**: Implemented in the standalone VM as an alias of `io-poll` (native ID
+1783). Wraps `poll(2)` and returns a list of ready file descriptors.
 **LLVM**: `extern "C" int eshkol_poll(int* fds, int* events, int nfds, int timeout_ms, int* ready)`
 
 ## E.2 Process Spawn With Environment — P0
@@ -1939,6 +1946,10 @@ SSE + subprocess + keyboard simultaneously.
 
 `subprocess.esk:41` passes `#f` for the env parameter to `qllm_process_spawn`.
 The C function already accepts env — just stop ignoring it.
+
+**VM**: The standalone VM exposes `process-spawn-with-env` as an alias of the
+env-aware `process-spawn` native ID 1780. Its standalone signature is
+`(process-spawn-with-env command argv-list env-alist)`.
 
 ## E.3 Signal Handling — P1
 
