@@ -1268,6 +1268,13 @@ public:
         function_return_types["line-reader-poll"] = BuiltinTypes::String;
         function_return_types["line-reader-close"] = BuiltinTypes::Boolean;
         function_return_types["fd-close"] = BuiltinTypes::Boolean;
+        function_return_types["make-lru-cache"] = BuiltinTypes::Integer;
+        function_return_types["lru-get"] = BuiltinTypes::Value;
+        function_return_types["lru-set!"] = BuiltinTypes::Boolean;
+        function_return_types["lru-has?"] = BuiltinTypes::Boolean;
+        function_return_types["lru-delete!"] = BuiltinTypes::Boolean;
+        function_return_types["lru-clear!"] = BuiltinTypes::Boolean;
+        function_return_types["lru-size"] = BuiltinTypes::Integer;
         function_return_types["string-ends-with?"] = BuiltinTypes::Boolean;
         function_return_types["string-index-of"] = BuiltinTypes::Integer;
         function_return_types["string-pad-left"] = BuiltinTypes::String;
@@ -11991,6 +11998,13 @@ private:
         if (func_name == "line-reader-poll") return system_->lineReaderPoll(op);
         if (func_name == "line-reader-close") return system_->lineReaderClose(op);
         if (func_name == "fd-close") return system_->fdClose(op);
+        if (func_name == "make-lru-cache") return system_->makeLruCache(op);
+        if (func_name == "lru-get") return system_->lruGet(op);
+        if (func_name == "lru-set!") return system_->lruSet(op);
+        if (func_name == "lru-has?") return system_->lruHas(op);
+        if (func_name == "lru-delete!") return system_->lruDelete(op);
+        if (func_name == "lru-clear!") return system_->lruClear(op);
+        if (func_name == "lru-size") return system_->lruSize(op);
         if (func_name == "string-ends-with?") return system_->stringEndsWith(op);
         if (func_name == "string-index-of") return system_->stringIndexOf(op);
         if (func_name == "string-pad-left") return system_->stringPadLeft(op);
@@ -19930,6 +19944,8 @@ private:
             "semver-compare", "semver-satisfies?",
             "make-pipe", "fd-write", "make-line-reader",
             "line-reader-poll", "line-reader-close", "fd-close",
+            "make-lru-cache", "lru-get", "lru-set!", "lru-has?",
+            "lru-delete!", "lru-clear!", "lru-size",
             "string-ends-with?", "string-index-of",
             "string-pad-left", "string-pad-right",
             "kb-save", "kb-load", "tensor-token-estimate",

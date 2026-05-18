@@ -1,0 +1,53 @@
+;; Standalone VM regression for LRU cache primitives.
+
+(display "=== LRU VM surface regression ===") (newline)
+
+(define cache (make-lru-cache 2))
+
+(display "T1 make-lru-cache returns handle: ")
+(display (if (and (number? cache) (> cache 0))
+             "PASS"
+             (list "FAIL got " cache)))
+(newline)
+
+(define set-a (lru-set! cache "a" 1))
+(define set-b (lru-set! cache "b" 2))
+
+(display "T2 lru-set!/lru-get store values: ")
+(display (if (and set-a set-b
+                  (= (lru-get cache "a") 1)
+                  (= (lru-get cache "b") 2)
+                  (= (lru-size cache) 2))
+             "PASS"
+             "FAIL"))
+(newline)
+
+(define touch-a (lru-get cache "a"))
+(define set-c (lru-set! cache "c" 3))
+
+(display "T3 LRU eviction preserves recently used key: ")
+(display (if (and set-c
+                  (lru-has? cache "a")
+                  (not (lru-has? cache "b"))
+                  (= (lru-get cache "c") 3))
+             "PASS"
+             "FAIL"))
+(newline)
+
+(display "T4 lru-delete! removes keys: ")
+(display (if (and (lru-delete! cache "a")
+                  (not (lru-has? cache "a"))
+                  (= (lru-size cache) 1))
+             "PASS"
+             "FAIL"))
+(newline)
+
+(display "T5 lru-clear! empties cache: ")
+(display (if (and (lru-clear! cache)
+                  (= (lru-size cache) 0)
+                  (not (lru-get cache "c")))
+             "PASS"
+             "FAIL"))
+(newline)
+
+(display "=== LRU VM surface complete ===") (newline)

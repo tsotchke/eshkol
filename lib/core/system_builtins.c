@@ -3084,6 +3084,131 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_fd_close_v(eshkol_sysbuiltin_val
 #endif
 }
 
+typedef struct {
+    int active;
+    int64_t tick;
+    eshkol_sysbuiltin_value_t key;
+    eshkol_sysbuiltin_value_t value;
+} SysLruEntry;
+
+typedef struct {
+    int active;
+    int max_size;
+    int size;
+    int64_t tick;
+    SysLruEntry entries[32];
+} SysLruCache;
+
+static SysLruCache g_sys_lru_caches[16];
+
+static int sys_values_equal_simple(eshkol_sysbuiltin_value_t a, eshkol_sysbuiltin_value_t b) {
+    const char* as = sys_extract_string(a);
+    const char* bs = sys_extract_string(b);
+    if (as || bs) return as && bs && strcmp(as, bs) == 0;
+    return a.type == b.type && a.flags == b.flags && a.data == b.data;
+}
+
+static int sys_lru_valid(int handle) {
+    return handle > 0 && handle < (int)(sizeof(g_sys_lru_caches) / sizeof(g_sys_lru_caches[0])) &&
+           g_sys_lru_caches[handle].active;
+}
+
+static int sys_lru_find(int handle, eshkol_sysbuiltin_value_t key) {
+    if (!sys_lru_valid(handle)) return -1;
+    for (int i = 0; i < g_sys_lru_caches[handle].max_size; ++i) {
+        if (g_sys_lru_caches[handle].entries[i].active &&
+            sys_values_equal_simple(g_sys_lru_caches[handle].entries[i].key, key))
+            return i;
+    }
+    return -1;
+}
+
+static int sys_lru_alloc_entry(int handle) {
+    if (!sys_lru_valid(handle)) return -1;
+    for (int i = 0; i < g_sys_lru_caches[handle].max_size; ++i)
+        if (!g_sys_lru_caches[handle].entries[i].active)
+            return i;
+    int evict = 0;
+    int64_t oldest = g_sys_lru_caches[handle].entries[0].tick;
+    for (int i = 1; i < g_sys_lru_caches[handle].max_size; ++i) {
+        if (g_sys_lru_caches[handle].entries[i].tick < oldest) {
+            oldest = g_sys_lru_caches[handle].entries[i].tick;
+            evict = i;
+        }
+    }
+    return evict;
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_make_lru_cache_v(eshkol_sysbuiltin_value_t max_val) {
+    int max_size = (int)sys_extract_int64(max_val);
+    if (max_size <= 0) return sys_make_bool(0);
+    if (max_size > 32) max_size = 32;
+    for (int i = 1; i < (int)(sizeof(g_sys_lru_caches) / sizeof(g_sys_lru_caches[0])); ++i) {
+        if (g_sys_lru_caches[i].active) continue;
+        memset(&g_sys_lru_caches[i], 0, sizeof(g_sys_lru_caches[i]));
+        g_sys_lru_caches[i].active = 1;
+        g_sys_lru_caches[i].max_size = max_size;
+        g_sys_lru_caches[i].tick = 1;
+        return sys_make_int64((int64_t)i);
+    }
+    return sys_make_bool(0);
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_lru_get_v(eshkol_sysbuiltin_value_t cache_val,
+                                                           eshkol_sysbuiltin_value_t key_val) {
+    int handle = (int)sys_extract_int64(cache_val);
+    int idx = sys_lru_find(handle, key_val);
+    if (idx < 0) return sys_make_bool(0);
+    g_sys_lru_caches[handle].entries[idx].tick = ++g_sys_lru_caches[handle].tick;
+    return g_sys_lru_caches[handle].entries[idx].value;
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_lru_set_v(eshkol_sysbuiltin_value_t cache_val,
+                                                           eshkol_sysbuiltin_value_t key_val,
+                                                           eshkol_sysbuiltin_value_t value_val) {
+    int handle = (int)sys_extract_int64(cache_val);
+    if (!sys_lru_valid(handle)) return sys_make_bool(0);
+    int idx = sys_lru_find(handle, key_val);
+    if (idx < 0) idx = sys_lru_alloc_entry(handle);
+    if (idx < 0) return sys_make_bool(0);
+    if (!g_sys_lru_caches[handle].entries[idx].active)
+        g_sys_lru_caches[handle].size++;
+    g_sys_lru_caches[handle].entries[idx].active = 1;
+    g_sys_lru_caches[handle].entries[idx].tick = ++g_sys_lru_caches[handle].tick;
+    g_sys_lru_caches[handle].entries[idx].key = key_val;
+    g_sys_lru_caches[handle].entries[idx].value = value_val;
+    return sys_make_bool(1);
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_lru_has_v(eshkol_sysbuiltin_value_t cache_val,
+                                                           eshkol_sysbuiltin_value_t key_val) {
+    return sys_make_bool(sys_lru_find((int)sys_extract_int64(cache_val), key_val) >= 0);
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_lru_delete_v(eshkol_sysbuiltin_value_t cache_val,
+                                                              eshkol_sysbuiltin_value_t key_val) {
+    int handle = (int)sys_extract_int64(cache_val);
+    int idx = sys_lru_find(handle, key_val);
+    if (idx < 0) return sys_make_bool(0);
+    memset(&g_sys_lru_caches[handle].entries[idx], 0, sizeof(g_sys_lru_caches[handle].entries[idx]));
+    if (g_sys_lru_caches[handle].size > 0) g_sys_lru_caches[handle].size--;
+    return sys_make_bool(1);
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_lru_clear_v(eshkol_sysbuiltin_value_t cache_val) {
+    int handle = (int)sys_extract_int64(cache_val);
+    if (!sys_lru_valid(handle)) return sys_make_bool(0);
+    memset(g_sys_lru_caches[handle].entries, 0, sizeof(g_sys_lru_caches[handle].entries));
+    g_sys_lru_caches[handle].size = 0;
+    return sys_make_bool(1);
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_lru_size_v(eshkol_sysbuiltin_value_t cache_val) {
+    int handle = (int)sys_extract_int64(cache_val);
+    return sys_lru_valid(handle) ? sys_make_int64((int64_t)g_sys_lru_caches[handle].size)
+                                 : sys_make_int64(0);
+}
+
 static int sys_utf8_encode_codepoint(int cp, char* out) {
     if (!out) return 0;
     if (cp < 0) cp = ' ';
@@ -3577,6 +3702,13 @@ void eshkol_builtin_make_line_reader(sv_t* out, const sv_t* a, const sv_t* b) { 
 void eshkol_builtin_line_reader_poll(sv_t* out, const sv_t* a) { *out = eshkol_builtin_line_reader_poll_v(*a); }
 void eshkol_builtin_line_reader_close(sv_t* out, const sv_t* a) { *out = eshkol_builtin_line_reader_close_v(*a); }
 void eshkol_builtin_fd_close(sv_t* out, const sv_t* a) { *out = eshkol_builtin_fd_close_v(*a); }
+void eshkol_builtin_make_lru_cache(sv_t* out, const sv_t* a) { *out = eshkol_builtin_make_lru_cache_v(*a); }
+void eshkol_builtin_lru_get(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_lru_get_v(*a, *b); }
+void eshkol_builtin_lru_set(sv_t* out, const sv_t* a, const sv_t* b, const sv_t* c) { *out = eshkol_builtin_lru_set_v(*a, *b, *c); }
+void eshkol_builtin_lru_has(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_lru_has_v(*a, *b); }
+void eshkol_builtin_lru_delete(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_lru_delete_v(*a, *b); }
+void eshkol_builtin_lru_clear(sv_t* out, const sv_t* a) { *out = eshkol_builtin_lru_clear_v(*a); }
+void eshkol_builtin_lru_size(sv_t* out, const sv_t* a) { *out = eshkol_builtin_lru_size_v(*a); }
 void eshkol_builtin_string_ends_with(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_string_ends_with_v(*a, *b); }
 void eshkol_builtin_string_index_of(sv_t* out, const sv_t* a, const sv_t* b, const sv_t* c) { *out = eshkol_builtin_string_index_of_v(*a, *b, *c); }
 void eshkol_builtin_string_pad_left(sv_t* out, const sv_t* a, const sv_t* b, const sv_t* c) { *out = eshkol_builtin_string_pad_v(*a, *b, *c, 1); }
