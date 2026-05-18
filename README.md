@@ -52,7 +52,7 @@ Eshkol brings **mathematical computing to Lisp** and delivers what other languag
 - **Zero-overhead abstractions** - Type-level proofs erase at compile time. Arena allocation is O(1). No runtime penalties for safety
 - **Deterministic performance** - No garbage collector means no unpredictable pauses. Critical for real-time systems and production ML
 - **Native compilation** - LLVM backend generates machine code competitive with hand-written C while preserving high-level expressiveness
-- **Web platform** - Compiles to WebAssembly with 59 DOM bindings. The project website is itself written in Eshkol. AD works in the browser via dual number propagation through a 63-opcode bytecode VM
+- **Web platform** - Compiles to WebAssembly with 59 DOM bindings. The project website is itself written in Eshkol. AD works in the browser via dual number propagation through a 64-opcode core bytecode VM
 - **Consciousness engine** - 22 compiled primitives: logic programming (unification, knowledge bases), active inference (factor graphs, belief propagation, free energy), and global workspace theory (softmax competition, content broadcasting)
 - **Mathematical rigor** - HoTT type foundations ensure correctness properties are mathematically provable, not just tested
 
@@ -62,7 +62,7 @@ Eshkol brings **mathematical computing to Lisp** and delivers what other languag
 
 **No installation required.** Visit **[eshkol.ai](https://eshkol.ai)** to try Eshkol in your browser:
 
-- **Playground** — Full REPL with 63 opcodes and 555+ built-in functions, running in WebAssembly
+- **Playground** — Full REPL with a 64-opcode core VM and 555+ built-in functions, running in WebAssembly
 - **Learn** — interactive textbook with runnable code examples, plus 27 in-depth tutorials
 - **Examples** — 11 complete programs you can run instantly (AD, neural networks, ODE solving, logic programming)
 
@@ -573,7 +573,7 @@ Execute: `eshkol-run gradient.esk -o gradient && ./gradient`
 - **Exact arithmetic**: Arbitrary-precision integers (bignums), rational numbers, R7RS numeric tower
 - **Consciousness engine**: Logic programming, factor graphs with belief propagation, global workspace
 - **First-class continuations**: `call/cc`, `dynamic-wind`, `guard`/`raise`
-- **Dual backend**: Bytecode VM (63 opcodes, ESKB format) alongside LLVM native compiler
+- **Dual backend**: Bytecode VM (64 core opcodes, ESKB format) alongside LLVM native compiler
 - **Windows support**: Native Visual Studio 2022 + ClangCL/LLVM 21 build with UTF-8 REPL and DLL bundling
 
 ### v1.2-scale Features
