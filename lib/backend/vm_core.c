@@ -343,6 +343,16 @@ typedef struct VM {
             Value value;
         } entries[64];
     } lru_caches[16];
+
+    struct {
+        int active;
+        struct {
+            int active;
+            int once;
+            Value event;
+            Value handler;
+        } listeners[64];
+    } event_emitters[16];
 } VM;
 
 /* Command-line arguments (set in main, read by native 602) */

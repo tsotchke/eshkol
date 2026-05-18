@@ -5582,6 +5582,8 @@ static const BuiltinDef BUILTINS[] = {
     {"lru-set!", 1991, 3}, {"lru-has?", 1992, 2},
     {"lru-delete!", 1993, 2}, {"lru-clear!", 1994, 1},
     {"lru-size", 1995, 1},
+    {"_emit-event", 1996, 3}, {"make-event-emitter", 1997, 0},
+    {"on!", 1998, 3}, {"once!", 1999, 3}, {"off!", 2000, 3},
     {"string-ends-with?", 1956, 2}, {"string-index-of", 1957, 3},
     {"string-pad-left", 1958, 3}, {"string-pad-right", 1959, 3},
     /* Missing hash */
@@ -5664,7 +5666,8 @@ static void compile_and_run(const char* source) {
         "(define + (lambda args (fold-left add2 0 args)))\n"
         "(define * (lambda args (fold-left mul2 1 args)))\n"
         "(define (- . args) (if (null? (cdr args)) (sub2 0 (car args)) (fold-left sub2 (car args) (cdr args))))\n"
-        "(define (/ . args) (if (null? (cdr args)) (div2 1 (car args)) (fold-left div2 (car args) (cdr args))))\n";
+        "(define (/ . args) (if (null? (cdr args)) (div2 1 (car args)) (fold-left div2 (car args) (cdr args))))\n"
+        "(define (emit! emitter event . args) (_emit-event emitter event args))\n";
     src_ptr = scheme_prelude;
     while (1) {
         skip_ws();
