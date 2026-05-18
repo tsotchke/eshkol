@@ -752,6 +752,150 @@ static Value vm_url_parse_value(VM* vm, VmString* input) {
     return result;
 }
 
+static int vm_bytes_from_value(VM* vm, Value value, const unsigned char** data, int64_t* len) {
+    VmString* s = vm_value_as_string(vm, value);
+    if (s && s->data) {
+        if (data) *data = (const unsigned char*)s->data;
+        if (len) *len = s->byte_len;
+        return 1;
+    }
+    VmBytevector* bv = vm_value_as_bytevector(vm, value);
+    if (bv && bv->data) {
+        if (data) *data = (const unsigned char*)bv->data;
+        if (len) *len = bv->len;
+        return 1;
+    }
+    return 0;
+}
+
+static Value vm_base64url_encode_value(VM* vm, Value input) {
+    static const char table[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    const unsigned char* data = NULL;
+    int64_t len = 0;
+    if (!vm_bytes_from_value(vm, input, &data, &len) || len < 0) return BOOL_VAL(0);
+    size_t out_len = ((size_t)len / 3) * 4;
+    if (len % 3 == 1) out_len += 2;
+    else if (len % 3 == 2) out_len += 3;
+    char* out = (char*)malloc(out_len + 1);
+    if (!out) return BOOL_VAL(0);
+    size_t pos = 0;
+    int64_t i = 0;
+    for (; i + 2 < len; i += 3) {
+        unsigned int n = ((unsigned int)data[i] << 16) |
+                         ((unsigned int)data[i + 1] << 8) |
+                         (unsigned int)data[i + 2];
+        out[pos++] = table[(n >> 18) & 63];
+        out[pos++] = table[(n >> 12) & 63];
+        out[pos++] = table[(n >> 6) & 63];
+        out[pos++] = table[n & 63];
+    }
+    if (i < len) {
+        unsigned int n = (unsigned int)data[i] << 16;
+        if (i + 1 < len) n |= (unsigned int)data[i + 1] << 8;
+        out[pos++] = table[(n >> 18) & 63];
+        out[pos++] = table[(n >> 12) & 63];
+        if (i + 1 < len) out[pos++] = table[(n >> 6) & 63];
+    }
+    out[pos] = '\0';
+    Value result = vm_string_value(vm, out, (int64_t)pos);
+    free(out);
+    return result;
+}
+
+static int vm_base64url_value(unsigned char c) {
+    if (c >= 'A' && c <= 'Z') return c - 'A';
+    if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+    if (c >= '0' && c <= '9') return c - '0' + 52;
+    if (c == '-') return 62;
+    if (c == '_') return 63;
+    return -1;
+}
+
+static Value vm_base64url_decode_value(VM* vm, Value input) {
+    const unsigned char* data = NULL;
+    int64_t len = 0;
+    if (!vm_bytes_from_value(vm, input, &data, &len) || len < 0) return BOOL_VAL(0);
+    while (len > 0 && data[len - 1] == '=') len--;
+    if ((len % 4) == 1) return BOOL_VAL(0);
+    size_t out_cap = ((size_t)len * 6) / 8 + 1;
+    char* out = (char*)malloc(out_cap);
+    if (!out) return BOOL_VAL(0);
+    int acc = 0;
+    int bits = 0;
+    size_t pos = 0;
+    for (int64_t i = 0; i < len; i++) {
+        int v = vm_base64url_value(data[i]);
+        if (v < 0) {
+            free(out);
+            return BOOL_VAL(0);
+        }
+        acc = (acc << 6) | v;
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            out[pos++] = (char)((acc >> bits) & 0xFF);
+        }
+    }
+    out[pos] = '\0';
+    Value result = vm_string_value(vm, out, (int64_t)pos);
+    free(out);
+    return result;
+}
+
+static int vm_random_bytes(unsigned char* out, size_t len) {
+    if (!out) return 0;
+#if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
+    int fd = open("/dev/urandom", O_RDONLY);
+    if (fd >= 0) {
+        size_t pos = 0;
+        while (pos < len) {
+            ssize_t n = read(fd, out + pos, len - pos);
+            if (n <= 0) break;
+            pos += (size_t)n;
+        }
+        close(fd);
+        if (pos == len) return 1;
+    }
+#endif
+    srand((unsigned)time(NULL) ^ (unsigned)(uintptr_t)out);
+    for (size_t i = 0; i < len; i++) out[i] = (unsigned char)(rand() & 0xFF);
+    return 1;
+}
+
+static Value vm_uuid_v4_value(VM* vm) {
+    unsigned char bytes[16];
+    if (!vm_random_bytes(bytes, sizeof(bytes))) return BOOL_VAL(0);
+    bytes[6] = (bytes[6] & 0x0F) | 0x40;
+    bytes[8] = (bytes[8] & 0x3F) | 0x80;
+    char buf[37];
+    snprintf(buf, sizeof(buf),
+             "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+             bytes[0], bytes[1], bytes[2], bytes[3],
+             bytes[4], bytes[5], bytes[6], bytes[7],
+             bytes[8], bytes[9], bytes[10], bytes[11],
+             bytes[12], bytes[13], bytes[14], bytes[15]);
+    return vm_string_value(vm, buf, 36);
+}
+
+static Value vm_constant_time_equal_value(VM* vm, Value a_val, Value b_val) {
+    const unsigned char* a = NULL;
+    const unsigned char* b = NULL;
+    int64_t a_len = 0;
+    int64_t b_len = 0;
+    if (!vm_bytes_from_value(vm, a_val, &a, &a_len) ||
+        !vm_bytes_from_value(vm, b_val, &b, &b_len))
+        return BOOL_VAL(0);
+    int64_t max_len = a_len > b_len ? a_len : b_len;
+    volatile unsigned char diff = (unsigned char)(a_len ^ b_len);
+    for (int64_t i = 0; i < max_len; i++) {
+        unsigned char ac = i < a_len ? a[i] : 0;
+        unsigned char bc = i < b_len ? b[i] : 0;
+        diff |= (unsigned char)(ac ^ bc);
+    }
+    return BOOL_VAL(diff == 0);
+}
+
 static int vm_string_ends_with_bytes(VmString* s, VmString* suffix) {
     if (!s || !suffix || !s->data || !suffix->data) return 0;
     if (suffix->byte_len > s->byte_len) return 0;
@@ -3962,6 +4106,25 @@ static void vm_dispatch_native(VM* vm, int fid) {
         Value str_val = vm_pop(vm);
         VmString* s = vm_value_as_string(vm, str_val);
         vm_push(vm, vm_url_parse_value(vm, s));
+        break;
+    }
+    case 1961: { /* base64url-encode(data) → string */
+        Value data_val = vm_pop(vm);
+        vm_push(vm, vm_base64url_encode_value(vm, data_val));
+        break;
+    }
+    case 1962: { /* base64url-decode(data) → string or #f */
+        Value data_val = vm_pop(vm);
+        vm_push(vm, vm_base64url_decode_value(vm, data_val));
+        break;
+    }
+    case 1963: { /* uuid-v4() → string */
+        vm_push(vm, vm_uuid_v4_value(vm));
+        break;
+    }
+    case 1964: { /* constant-time-equal?(a, b) → bool */
+        Value b_val = vm_pop(vm), a_val = vm_pop(vm);
+        vm_push(vm, vm_constant_time_equal_value(vm, a_val, b_val));
         break;
     }
     case 1956: { /* string-ends-with?(str, suffix) → bool */

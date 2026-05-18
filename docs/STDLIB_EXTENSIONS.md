@@ -488,13 +488,24 @@ Stream hash without loading file into memory.
 ### `(base64url-encode data) -> string`
 URL-safe base64 (`-_`, no padding). For JWT and PKCE.
 
+Standalone VM native ID 1961 accepts a string or bytevector and returns unpadded
+RFC 4648 base64url text. The compiled runtime exposes the string path.
+
 ### `(base64url-decode data) -> string-or-false`
+Standalone VM native ID 1962 accepts padded or unpadded base64url text and
+returns decoded bytes as a string, or `#f` for malformed input.
 
 ### `(uuid-v4) -> string`
 `"xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx"`. For session/message/request IDs.
 
+Standalone VM native ID 1963 reads OS entropy when available and sets RFC 4122
+version/variant bits.
+
 ### `(constant-time-equal? a b) -> bool`
 XOR-accumulate comparison. For HMAC verification.
+
+Standalone VM native ID 1964 compares string or bytevector bytes without early
+exit. The compiled runtime exposes the string path.
 
 ---
 

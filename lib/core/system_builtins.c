@@ -2199,6 +2199,134 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_url_parse_v(eshkol_sysbuiltin_va
     return result;
 }
 
+static eshkol_sysbuiltin_value_t eshkol_builtin_base64url_encode_v(eshkol_sysbuiltin_value_t data_val) {
+    static const char table[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    const char* data = sys_extract_string(data_val);
+    if (!data) return sys_make_bool(0);
+    size_t len = strlen(data);
+    size_t out_len = (len / 3) * 4;
+    if (len % 3 == 1) out_len += 2;
+    else if (len % 3 == 2) out_len += 3;
+    char* out = (char*)malloc(out_len + 1);
+    if (!out) return sys_make_bool(0);
+    size_t pos = 0;
+    size_t i = 0;
+    for (; i + 2 < len; i += 3) {
+        unsigned int n = ((unsigned int)(unsigned char)data[i] << 16) |
+                         ((unsigned int)(unsigned char)data[i + 1] << 8) |
+                         (unsigned int)(unsigned char)data[i + 2];
+        out[pos++] = table[(n >> 18) & 63];
+        out[pos++] = table[(n >> 12) & 63];
+        out[pos++] = table[(n >> 6) & 63];
+        out[pos++] = table[n & 63];
+    }
+    if (i < len) {
+        unsigned int n = (unsigned int)(unsigned char)data[i] << 16;
+        if (i + 1 < len) n |= (unsigned int)(unsigned char)data[i + 1] << 8;
+        out[pos++] = table[(n >> 18) & 63];
+        out[pos++] = table[(n >> 12) & 63];
+        if (i + 1 < len) out[pos++] = table[(n >> 6) & 63];
+    }
+    out[pos] = '\0';
+    eshkol_sysbuiltin_value_t result = sys_make_string_len(out, pos);
+    free(out);
+    return result;
+}
+
+static int sys_base64url_value(unsigned char c) {
+    if (c >= 'A' && c <= 'Z') return c - 'A';
+    if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+    if (c >= '0' && c <= '9') return c - '0' + 52;
+    if (c == '-') return 62;
+    if (c == '_') return 63;
+    return -1;
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_base64url_decode_v(eshkol_sysbuiltin_value_t data_val) {
+    const char* data = sys_extract_string(data_val);
+    if (!data) return sys_make_bool(0);
+    size_t len = strlen(data);
+    while (len > 0 && data[len - 1] == '=') len--;
+    if ((len % 4) == 1) return sys_make_bool(0);
+    size_t out_cap = (len * 6) / 8 + 1;
+    char* out = (char*)malloc(out_cap);
+    if (!out) return sys_make_bool(0);
+    int acc = 0;
+    int bits = 0;
+    size_t pos = 0;
+    for (size_t i = 0; i < len; i++) {
+        int v = sys_base64url_value((unsigned char)data[i]);
+        if (v < 0) {
+            free(out);
+            return sys_make_bool(0);
+        }
+        acc = (acc << 6) | v;
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            out[pos++] = (char)((acc >> bits) & 0xFF);
+        }
+    }
+    out[pos] = '\0';
+    eshkol_sysbuiltin_value_t result = sys_make_string_len(out, pos);
+    free(out);
+    return result;
+}
+
+static int sys_random_bytes(unsigned char* out, size_t len) {
+    if (!out) return 0;
+#ifndef _WIN32
+    int fd = open("/dev/urandom", O_RDONLY);
+    if (fd >= 0) {
+        size_t pos = 0;
+        while (pos < len) {
+            ssize_t n = read(fd, out + pos, len - pos);
+            if (n <= 0) break;
+            pos += (size_t)n;
+        }
+        close(fd);
+        if (pos == len) return 1;
+    }
+#endif
+    srand((unsigned)time(NULL) ^ (unsigned)(uintptr_t)out);
+    for (size_t i = 0; i < len; i++) out[i] = (unsigned char)(rand() & 0xFF);
+    return 1;
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_uuid_v4_v(void) {
+    unsigned char bytes[16];
+    if (!sys_random_bytes(bytes, sizeof(bytes))) return sys_make_bool(0);
+    bytes[6] = (bytes[6] & 0x0F) | 0x40;
+    bytes[8] = (bytes[8] & 0x3F) | 0x80;
+    char buf[37];
+    snprintf(buf, sizeof(buf),
+             "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+             bytes[0], bytes[1], bytes[2], bytes[3],
+             bytes[4], bytes[5], bytes[6], bytes[7],
+             bytes[8], bytes[9], bytes[10], bytes[11],
+             bytes[12], bytes[13], bytes[14], bytes[15]);
+    return sys_make_string(buf);
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_constant_time_equal_v(
+    eshkol_sysbuiltin_value_t a_val,
+    eshkol_sysbuiltin_value_t b_val) {
+    const char* a = sys_extract_string(a_val);
+    const char* b = sys_extract_string(b_val);
+    if (!a || !b) return sys_make_bool(0);
+    size_t a_len = strlen(a);
+    size_t b_len = strlen(b);
+    size_t max_len = a_len > b_len ? a_len : b_len;
+    volatile unsigned char diff = (unsigned char)(a_len ^ b_len);
+    for (size_t i = 0; i < max_len; i++) {
+        unsigned char ac = i < a_len ? (unsigned char)a[i] : 0;
+        unsigned char bc = i < b_len ? (unsigned char)b[i] : 0;
+        diff |= (unsigned char)(ac ^ bc);
+    }
+    return sys_make_bool(diff == 0);
+}
+
 static int sys_utf8_encode_codepoint(int cp, char* out) {
     if (!out) return 0;
     if (cp < 0) cp = ' ';
@@ -2668,6 +2796,10 @@ void eshkol_builtin_string_truncate_display(sv_t* out, const sv_t* a, const sv_t
 void eshkol_builtin_url_encode(sv_t* out, const sv_t* a) { *out = eshkol_builtin_url_encode_v(*a); }
 void eshkol_builtin_url_decode(sv_t* out, const sv_t* a) { *out = eshkol_builtin_url_decode_v(*a); }
 void eshkol_builtin_url_parse(sv_t* out, const sv_t* a) { *out = eshkol_builtin_url_parse_v(*a); }
+void eshkol_builtin_base64url_encode(sv_t* out, const sv_t* a) { *out = eshkol_builtin_base64url_encode_v(*a); }
+void eshkol_builtin_base64url_decode(sv_t* out, const sv_t* a) { *out = eshkol_builtin_base64url_decode_v(*a); }
+void eshkol_builtin_uuid_v4(sv_t* out) { *out = eshkol_builtin_uuid_v4_v(); }
+void eshkol_builtin_constant_time_equal(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_constant_time_equal_v(*a, *b); }
 void eshkol_builtin_string_ends_with(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_string_ends_with_v(*a, *b); }
 void eshkol_builtin_string_index_of(sv_t* out, const sv_t* a, const sv_t* b, const sv_t* c) { *out = eshkol_builtin_string_index_of_v(*a, *b, *c); }
 void eshkol_builtin_string_pad_left(sv_t* out, const sv_t* a, const sv_t* b, const sv_t* c) { *out = eshkol_builtin_string_pad_v(*a, *b, *c, 1); }

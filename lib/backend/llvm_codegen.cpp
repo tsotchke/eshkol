@@ -1243,6 +1243,10 @@ public:
         function_return_types["url-encode"] = BuiltinTypes::String;
         function_return_types["url-decode"] = BuiltinTypes::String;
         function_return_types["url-parse"] = BuiltinTypes::Value;
+        function_return_types["base64url-encode"] = BuiltinTypes::String;
+        function_return_types["base64url-decode"] = BuiltinTypes::String;
+        function_return_types["uuid-v4"] = BuiltinTypes::String;
+        function_return_types["constant-time-equal?"] = BuiltinTypes::Boolean;
         function_return_types["string-ends-with?"] = BuiltinTypes::Boolean;
         function_return_types["string-index-of"] = BuiltinTypes::Integer;
         function_return_types["string-pad-left"] = BuiltinTypes::String;
@@ -11942,6 +11946,10 @@ private:
         if (func_name == "url-encode") return system_->urlEncode(op);
         if (func_name == "url-decode") return system_->urlDecode(op);
         if (func_name == "url-parse") return system_->urlParse(op);
+        if (func_name == "base64url-encode") return system_->base64urlEncode(op);
+        if (func_name == "base64url-decode") return system_->base64urlDecode(op);
+        if (func_name == "uuid-v4") return system_->uuidV4(op);
+        if (func_name == "constant-time-equal?") return system_->constantTimeEqual(op);
         if (func_name == "string-ends-with?") return system_->stringEndsWith(op);
         if (func_name == "string-index-of") return system_->stringIndexOf(op);
         if (func_name == "string-pad-left") return system_->stringPadLeft(op);
@@ -19872,6 +19880,8 @@ private:
             "fs-watch-native", "fs-watch-recursive", "fs-watch-poll", "fs-unwatch",
             "ansi-strip", "string-display-width", "string-truncate-display",
             "url-encode", "url-decode", "url-parse",
+            "base64url-encode", "base64url-decode", "uuid-v4",
+            "constant-time-equal?",
             "string-ends-with?", "string-index-of",
             "string-pad-left", "string-pad-right",
             "kb-save", "kb-load", "tensor-token-estimate",
