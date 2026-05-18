@@ -28,6 +28,7 @@ mkdir -p "$TRACE_DIR"
 # Truncate so each run is a fresh evidence set; ICC reads the union of
 # events in the file, but stale PASS lines for now-broken probes would
 # otherwise mask regressions.
+: "${TRACE_FILE:?}"
 : > "$TRACE_FILE"
 
 ESHKOL_RUN="$REPO_ROOT/build/eshkol-run"
@@ -50,6 +51,7 @@ emit_event() {
     # Escape backslashes and quotes in snippet for JSON-safe embedding.
     local esc_snippet
     esc_snippet=$(printf '%s' "$snippet" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')
+    : "${TRACE_FILE:?}"
     printf '{"kind":"eshkol_smoke","name":"%s","value":"%s","snippet":"%s","confidence":0.95}\n' \
         "$probe_id" "$status" "$esc_snippet" >> "$TRACE_FILE"
 }

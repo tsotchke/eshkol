@@ -34,22 +34,27 @@ REPO_ROOT="$(pwd)"
 TRACE_DIR="$REPO_ROOT/scripts/icc_traces"
 OUT="$TRACE_DIR/sdnc_oracle.jsonl"
 mkdir -p "$TRACE_DIR"
+: "${OUT:?}"
 : > "$OUT"
 
 # Run the paper suite. It writes vm-traces.jsonl + transformer-traces.jsonl
 # + a structured comparison-report.json under artifacts/paper/outputs/.
-SUITE_LOG=$(mktemp)
-if ! bash "$REPO_ROOT/scripts/paper/run_paper_suite.sh" "$@" >"$SUITE_LOG" 2>&1; then
+SUITE_LOG_TMP=$(mktemp "${TMPDIR:-/tmp}/eshkol-sdnc-suite.XXXXXX") || exit 1
+cleanup() {
+    [ -n "${SUITE_LOG_TMP:-}" ] && [ -f "$SUITE_LOG_TMP" ] && rm -f -- "$SUITE_LOG_TMP"
+}
+trap cleanup EXIT
+
+if ! bash "$REPO_ROOT/scripts/paper/run_paper_suite.sh" "$@" >"$SUITE_LOG_TMP" 2>&1; then
     {
         printf '{"kind":"sdnc_paper_suite","name":"output_agreement","value":"FAIL","snippet":"paper suite exited non-zero","confidence":0.99}\n'
         printf '{"kind":"sdnc_paper_suite","name":"trace_agreement","value":"FAIL","snippet":"paper suite exited non-zero","confidence":0.99}\n'
+        : "${OUT:?}"
     } >> "$OUT"
-    cat "$SUITE_LOG" >&2
-    rm -f "$SUITE_LOG"
+    cat "$SUITE_LOG_TMP" >&2
     echo "scripts/run_sdnc_oracle.sh: paper suite failed; FAIL events written" >&2
     exit 1
 fi
-rm -f "$SUITE_LOG"
 
 # Parse the structured report. Stable schema:
 #   {output_agreeing_programs: N, fully_agreeing_programs: N,
@@ -59,6 +64,7 @@ if [ ! -f "$REPORT" ]; then
     {
         printf '{"kind":"sdnc_paper_suite","name":"output_agreement","value":"FAIL","snippet":"comparison-report.json not found","confidence":0.99}\n'
         printf '{"kind":"sdnc_paper_suite","name":"trace_agreement","value":"FAIL","snippet":"comparison-report.json not found","confidence":0.99}\n'
+        : "${OUT:?}"
     } >> "$OUT"
     echo "scripts/run_sdnc_oracle.sh: missing $REPORT; FAIL events written" >&2
     exit 1
@@ -126,5 +132,4 @@ if [ -f "$REPO_ROOT/artifacts/paper/outputs/vm-traces.jsonl" ]; then
     cp "$REPO_ROOT/artifacts/paper/outputs/vm-traces.jsonl" "$TRACE_DIR/sdnc_vm-traces.jsonl"
 fi
 
-rm -f "$SUITE_LOG"
 echo "SDNC oracle trace written: $OUT (output=$output_agree trace=$trace_agree)"
