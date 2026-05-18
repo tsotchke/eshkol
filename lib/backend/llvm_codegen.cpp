@@ -1262,6 +1262,12 @@ public:
         function_return_types["semver-parse"] = BuiltinTypes::Value;
         function_return_types["semver-compare"] = BuiltinTypes::Integer;
         function_return_types["semver-satisfies?"] = BuiltinTypes::Boolean;
+        function_return_types["make-pipe"] = BuiltinTypes::Value;
+        function_return_types["fd-write"] = BuiltinTypes::Integer;
+        function_return_types["make-line-reader"] = BuiltinTypes::Integer;
+        function_return_types["line-reader-poll"] = BuiltinTypes::String;
+        function_return_types["line-reader-close"] = BuiltinTypes::Boolean;
+        function_return_types["fd-close"] = BuiltinTypes::Boolean;
         function_return_types["string-ends-with?"] = BuiltinTypes::Boolean;
         function_return_types["string-index-of"] = BuiltinTypes::Integer;
         function_return_types["string-pad-left"] = BuiltinTypes::String;
@@ -11979,6 +11985,12 @@ private:
         if (func_name == "semver-parse") return system_->semverParse(op);
         if (func_name == "semver-compare") return system_->semverCompare(op);
         if (func_name == "semver-satisfies?") return system_->semverSatisfies(op);
+        if (func_name == "make-pipe") return system_->makePipe(op);
+        if (func_name == "fd-write") return system_->fdWrite(op);
+        if (func_name == "make-line-reader") return system_->makeLineReader(op);
+        if (func_name == "line-reader-poll") return system_->lineReaderPoll(op);
+        if (func_name == "line-reader-close") return system_->lineReaderClose(op);
+        if (func_name == "fd-close") return system_->fdClose(op);
         if (func_name == "string-ends-with?") return system_->stringEndsWith(op);
         if (func_name == "string-index-of") return system_->stringIndexOf(op);
         if (func_name == "string-pad-left") return system_->stringPadLeft(op);
@@ -19916,6 +19928,8 @@ private:
             "regex-match-groups", "regex-split",
             "diff-lines", "fuzzy-match", "semver-parse",
             "semver-compare", "semver-satisfies?",
+            "make-pipe", "fd-write", "make-line-reader",
+            "line-reader-poll", "line-reader-close", "fd-close",
             "string-ends-with?", "string-index-of",
             "string-pad-left", "string-pad-right",
             "kb-save", "kb-load", "tensor-token-estimate",
