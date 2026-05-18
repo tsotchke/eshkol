@@ -54,6 +54,7 @@
 #include <signal.h>
 #include <poll.h>
 #include <fcntl.h>
+#include <sys/mman.h>
 #include <glob.h>
 #include <fnmatch.h>
 #include <errno.h>
@@ -387,6 +388,12 @@ static const BuiltinDef BUILTINS[] = {
     {"future", 625, 1}, {"force", 626, 1}, {"force-future", 626, 1},
     {"future-ready?", 627, 1},
     {"thread-pool-info", 628, 0}, {"thread-pool-size", 628, 0},
+    /* Bytevectors — IDs 680-689 */
+    {"make-bytevector", 680, 2}, {"bytevector-length", 681, 1},
+    {"bytevector-u8-ref", 682, 2}, {"bytevector-u8-set!", 683, 3},
+    {"bytevector-append", 684, 2}, {"bytevector-copy!", 685, 3},
+    {"bytevector?", 686, 1}, {"bytevector-copy", 687, 1},
+    {"utf8->string", 688, 1}, {"string->utf8", 689, 1},
     /* ═══════════════════════════════════════════════════════════════
      * Hash tables — IDs 660-670
      * ═══════════════════════════════════════════════════════════════ */
@@ -463,6 +470,7 @@ static const BuiltinDef BUILTINS[] = {
     {"file-mtime", 1752, 1}, {"file-atime", 1753, 1},
     {"file-lock", 1754, 1}, {"file-unlock", 1755, 1},
     {"glob-expand", 1756, 1}, {"glob-match", 1757, 2},
+    {"file-mmap", 1758, 3}, {"file-munmap", 1759, 1},
     /* ═══════════════════════════════════════════════════════════════
      * Shell Utilities — IDs 1770-1779
      * ═══════════════════════════════════════════════════════════════ */

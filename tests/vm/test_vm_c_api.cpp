@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <string>
 
 #include <eshkol/backend/vm.h>
@@ -199,6 +200,115 @@ EskbBuffer make_host_native_double_chunk(int native_fid) {
         {OP_CONST, 0},
         {OP_CONST, 1},
         {OP_NATIVE_CALL, native_fid},
+        {OP_HALT, 0},
+    };
+
+    eskb_buf_write_leb128(&code_buf, 1);
+    write_function(&code_buf, "main", main_code, sizeof(main_code) / sizeof(main_code[0]));
+
+    eskb_buf_write_leb128(&payload, 2);
+    eskb_buf_write_u8(&payload, ESKB_SECTION_CONST);
+    eskb_buf_write_leb128(&payload, const_buf.len);
+    eskb_buf_write_u8(&payload, ESKB_SECTION_CODE);
+    eskb_buf_write_leb128(&payload, code_buf.len);
+    eskb_buf_write(&payload, const_buf.data, const_buf.len);
+    eskb_buf_write(&payload, code_buf.data, code_buf.len);
+
+    EskbHeader hdr;
+    hdr.magic = ESKB_MAGIC;
+    hdr.version = ESKB_VERSION;
+    hdr.flags = ESKB_FLAG_LITTLE_ENDIAN;
+    hdr.checksum = eskb_crc32(payload.data, payload.len);
+
+    eskb_buf_write(&file, &hdr, sizeof(hdr));
+    eskb_buf_write(&file, payload.data, payload.len);
+
+    eskb_buf_free(&const_buf);
+    eskb_buf_free(&code_buf);
+    eskb_buf_free(&payload);
+    return file;
+}
+
+EskbBuffer make_file_mmap_u8_ref_chunk(const char* path, int64_t offset, int64_t len,
+                                       int64_t index) {
+    EskbBuffer const_buf;
+    EskbBuffer code_buf;
+    EskbBuffer payload;
+    EskbBuffer file;
+    eskb_buf_init(&const_buf);
+    eskb_buf_init(&code_buf);
+    eskb_buf_init(&payload);
+    eskb_buf_init(&file);
+
+    eskb_buf_write_leb128(&const_buf, 5);
+    write_int64_const(&const_buf, static_cast<int64_t>(std::strlen(path)));
+    write_int64_const(&const_buf, static_cast<int64_t>(pack_ascii_string(path)));
+    write_int64_const(&const_buf, offset);
+    write_int64_const(&const_buf, len);
+    write_int64_const(&const_buf, index);
+
+    const Instr main_code[] = {
+        {OP_CONST, 0},
+        {OP_CONST, 1},
+        {OP_NATIVE_CALL, 100},
+        {OP_CONST, 2},
+        {OP_CONST, 3},
+        {OP_NATIVE_CALL, 1758},
+        {OP_CONST, 4},
+        {OP_NATIVE_CALL, 682},
+        {OP_HALT, 0},
+    };
+
+    eskb_buf_write_leb128(&code_buf, 1);
+    write_function(&code_buf, "main", main_code, sizeof(main_code) / sizeof(main_code[0]));
+
+    eskb_buf_write_leb128(&payload, 2);
+    eskb_buf_write_u8(&payload, ESKB_SECTION_CONST);
+    eskb_buf_write_leb128(&payload, const_buf.len);
+    eskb_buf_write_u8(&payload, ESKB_SECTION_CODE);
+    eskb_buf_write_leb128(&payload, code_buf.len);
+    eskb_buf_write(&payload, const_buf.data, const_buf.len);
+    eskb_buf_write(&payload, code_buf.data, code_buf.len);
+
+    EskbHeader hdr;
+    hdr.magic = ESKB_MAGIC;
+    hdr.version = ESKB_VERSION;
+    hdr.flags = ESKB_FLAG_LITTLE_ENDIAN;
+    hdr.checksum = eskb_crc32(payload.data, payload.len);
+
+    eskb_buf_write(&file, &hdr, sizeof(hdr));
+    eskb_buf_write(&file, payload.data, payload.len);
+
+    eskb_buf_free(&const_buf);
+    eskb_buf_free(&code_buf);
+    eskb_buf_free(&payload);
+    return file;
+}
+
+EskbBuffer make_file_mmap_length_chunk(const char* path, int64_t offset, int64_t len) {
+    EskbBuffer const_buf;
+    EskbBuffer code_buf;
+    EskbBuffer payload;
+    EskbBuffer file;
+    eskb_buf_init(&const_buf);
+    eskb_buf_init(&code_buf);
+    eskb_buf_init(&payload);
+    eskb_buf_init(&file);
+
+    eskb_buf_write_leb128(&const_buf, 4);
+    write_int64_const(&const_buf, static_cast<int64_t>(std::strlen(path)));
+    write_int64_const(&const_buf, static_cast<int64_t>(pack_ascii_string(path)));
+    write_int64_const(&const_buf, offset);
+    write_int64_const(&const_buf, len);
+
+    const Instr main_code[] = {
+        {OP_CONST, 0},
+        {OP_CONST, 1},
+        {OP_NATIVE_CALL, 100},
+        {OP_CONST, 2},
+        {OP_CONST, 3},
+        {OP_NATIVE_CALL, 1758},
+        {OP_NATIVE_CALL, 681},
         {OP_HALT, 0},
     };
 
@@ -450,6 +560,65 @@ void test_host_native_registry(void) {
     CHECK(eshkol_vm_unregister_host_native(double_slot) == 0, "cleanup double host native");
 }
 
+void test_file_mmap_native(void) {
+    namespace fs = std::filesystem;
+
+    std::error_code ec;
+    fs::path original_cwd = fs::current_path(ec);
+    CHECK(!ec, "capture current directory for mmap regression");
+    if (ec) return;
+
+    fs::path test_dir = fs::temp_directory_path(ec) / "eshkol_vm_mmap_api_test";
+    CHECK(!ec, "resolve temp directory for mmap regression");
+    if (ec) return;
+    fs::create_directories(test_dir, ec);
+    CHECK(!ec, "create temp directory for mmap regression");
+    if (ec) return;
+    fs::current_path(test_dir, ec);
+    CHECK(!ec, "enter temp directory for mmap regression");
+    if (ec) return;
+
+    const char* path = "mmap.bin";
+    FILE* f = std::fopen(path, "wb");
+    CHECK(f != nullptr, "create mmap regression fixture");
+    if (!f) {
+        fs::current_path(original_cwd, ec);
+        return;
+    }
+    const char bytes[] = "abcdef";
+    CHECK(std::fwrite(bytes, 1, 6, f) == 6, "write mmap regression fixture");
+    std::fclose(f);
+
+    EskbBuffer byte_chunk = make_file_mmap_u8_ref_chunk(path, 1, 3, 0);
+    EshkolVmHandle* byte_vm = eshkol_vm_load_chunk(byte_chunk.data, byte_chunk.len);
+    CHECK(byte_vm != nullptr, "load file-mmap byte chunk");
+    if (byte_vm) {
+        CHECK(eshkol_vm_run(byte_vm) == 0, "run file-mmap byte chunk");
+        int64_t top = 0;
+        CHECK(eshkol_vm_top_int64(byte_vm, &top) == 0, "read file-mmap byte result");
+        CHECK(top == 98, "file-mmap byte slice starts at 'b'");
+        eshkol_vm_destroy(byte_vm);
+    }
+    eskb_buf_free(&byte_chunk);
+
+    EskbBuffer empty_chunk = make_file_mmap_length_chunk(path, 6, 0);
+    EshkolVmHandle* empty_vm = eshkol_vm_load_chunk(empty_chunk.data, empty_chunk.len);
+    CHECK(empty_vm != nullptr, "load file-mmap empty chunk");
+    if (empty_vm) {
+        CHECK(eshkol_vm_run(empty_vm) == 0, "run file-mmap empty chunk");
+        int64_t top = -1;
+        CHECK(eshkol_vm_top_int64(empty_vm, &top) == 0, "read file-mmap empty length");
+        CHECK(top == 0, "file-mmap empty EOF slice length is zero");
+        eshkol_vm_destroy(empty_vm);
+    }
+    eskb_buf_free(&empty_chunk);
+
+    CHECK(std::remove(path) == 0, "remove mmap regression fixture");
+    fs::current_path(original_cwd, ec);
+    CHECK(!ec, "restore current directory after mmap regression");
+    fs::remove(test_dir, ec);
+}
+
 void test_native_string_case(const char* label, int native_fid, const char* a, const char* b,
                              const char* expected) {
     EskbBuffer chunk = make_native_string_compare_chunk(native_fid, a, b, expected);
@@ -518,6 +687,7 @@ int main(void) {
     test_valid_chunk();
     test_number_to_string_radix();
     test_host_native_registry();
+    test_file_mmap_native();
     test_path_native_helpers();
     test_bad_inputs();
     std::printf("\nResults: %d/%d checks passed\n", g_total - g_failures, g_total);

@@ -244,7 +244,17 @@ The standalone VM follows the compiled-runtime low-level form
 ### `(file-mmap path offset length) -> bytevector-or-false`
 `mmap(2)` with `PROT_READ | MAP_PRIVATE`. For large file hashing.
 
+Implemented in the standalone VM as native ID 1758. It maps the requested file
+range with the host mapping API (`mmap` on POSIX, file mappings on Windows),
+copies it into an arena-owned bytevector, then unmaps immediately so the result
+obeys the VM's arena lifetime model. WASM builds return `#f` because they do
+not expose the host file-mapping surface.
+
 ### `(file-munmap bv) -> void`
+
+Implemented in the standalone VM as native ID 1759. Because standalone
+`file-mmap` returns an arena-owned bytevector copy, this is a compatibility
+no-op.
 
 ### `(file-mtime path) -> integer-or-false`
 
