@@ -1,6 +1,6 @@
 /**
  * @file vm_geometric.c
- * @brief VM geometric manifold dispatch — native IDs 804-859.
+ * @brief VM geometric manifold dispatch — native IDs 804-861.
  *
  * When ESHKOL_GEOMETRIC_ENABLED is defined, calls semiclassical_qllm.
  * Otherwise uses a portable constant-curvature fallback allocated in the VM
@@ -51,6 +51,9 @@ static void vm_push_manifold(VM* vm, void* manifold) {
     vm_push(vm, (Value){.type = VAL_MANIFOLD, .as.ptr = ptr});
 }
 
+static VmTensor* vm_tensor_linear_combo_for_geometry(VM* vm, const VmTensor* a, double as,
+                                                     const VmTensor* b, double bs);
+
 #if !defined(ESHKOL_GEOMETRIC_ENABLED)
 typedef struct {
     int type;          /* 0 euclidean, 1 hyperbolic, 2 spherical, 3 product */
@@ -73,6 +76,126 @@ static void vm_push_fallback_manifold(VM* vm, int type, int dim, double curvatur
     vm_push_manifold(vm, m);
 }
 #endif
+
+typedef struct {
+    int      n_dims;
+    int64_t  shape[VM_TENSOR_MAX_DIMS];
+    int64_t  total;
+    int64_t  step;
+    double*  m;
+    double*  v;
+} VmRiemannianAdamState;
+
+static void* vm_geometric_alloc(VM* vm, size_t size, int vm_lifetime) {
+    if (!vm) return NULL;
+    if (vm_lifetime) return vm_arena_alloc(&vm->heap.regions.global_arena, size);
+    return vm_alloc(&vm->heap.regions, size);
+}
+
+static VmRiemannianAdamState* vm_riemannian_adam_state_new_with_lifetime(
+    VM* vm, const VmTensor* ref, int vm_lifetime) {
+    if (!vm || !ref || ref->total <= 0 || ref->n_dims <= 0 || ref->n_dims > VM_TENSOR_MAX_DIMS)
+        return NULL;
+
+    VmRiemannianAdamState* st = (VmRiemannianAdamState*)vm_geometric_alloc(
+        vm, sizeof(VmRiemannianAdamState), vm_lifetime);
+    if (!st) return NULL;
+    memset(st, 0, sizeof(VmRiemannianAdamState));
+    st->n_dims = ref->n_dims;
+    st->total = ref->total;
+    memcpy(st->shape, ref->shape, (size_t)ref->n_dims * sizeof(int64_t));
+    st->m = (double*)vm_geometric_alloc(vm, (size_t)ref->total * sizeof(double), vm_lifetime);
+    st->v = (double*)vm_geometric_alloc(vm, (size_t)ref->total * sizeof(double), vm_lifetime);
+    if (!st->m || !st->v) return NULL;
+    memset(st->m, 0, (size_t)ref->total * sizeof(double));
+    memset(st->v, 0, (size_t)ref->total * sizeof(double));
+    return st;
+}
+
+static VmRiemannianAdamState* vm_riemannian_adam_state_new(VM* vm, const VmTensor* ref) {
+    return vm_riemannian_adam_state_new_with_lifetime(vm, ref, 0);
+}
+
+static int vm_riemannian_adam_state_matches(const VmRiemannianAdamState* st,
+                                            const VmTensor* ref) {
+    if (!st || !ref || st->total != ref->total || st->n_dims != ref->n_dims) return 0;
+    for (int i = 0; i < ref->n_dims; i++)
+        if (st->shape[i] != ref->shape[i]) return 0;
+    return 1;
+}
+
+static VmRiemannianAdamState* vm_riemannian_adam_state_from_value(VM* vm, Value v) {
+    if (v.type != VAL_RIEMANNIAN_ADAM_STATE ||
+        !is_heap_type(vm, v, HEAP_RIEMANNIAN_ADAM_STATE))
+        return NULL;
+    return (VmRiemannianAdamState*)vm->heap.objects[v.as.ptr]->opaque.ptr;
+}
+
+static void vm_push_riemannian_adam_state(VM* vm, VmRiemannianAdamState* st) {
+    if (!st) { vm_push(vm, NIL_VAL); return; }
+    int32_t ptr = heap_alloc(&vm->heap);
+    if (ptr < 0) { vm_push(vm, NIL_VAL); return; }
+    vm->heap.objects[ptr]->type = HEAP_RIEMANNIAN_ADAM_STATE;
+    vm->heap.objects[ptr]->opaque.ptr = st;
+    vm_push(vm, (Value){.type = VAL_RIEMANNIAN_ADAM_STATE, .as.ptr = ptr});
+}
+
+static VmRiemannianAdamState* vm_default_riemannian_adam_state(VM* vm,
+                                                               const VmTensor* ref) {
+    enum { VM_GEOMETRIC_ADAM_SLOTS = 16 };
+    if (!vm || !ref) return NULL;
+    int empty = -1;
+    for (int i = 0; i < VM_GEOMETRIC_ADAM_SLOTS; i++) {
+        VmRiemannianAdamState* state =
+            (VmRiemannianAdamState*)vm->geometric_adam_states[i];
+        if (vm_riemannian_adam_state_matches(state, ref)) return state;
+        if (!state && empty < 0) empty = i;
+    }
+    if (empty < 0) empty = 0;
+    vm->geometric_adam_states[empty] =
+        vm_riemannian_adam_state_new_with_lifetime(vm, ref, 1);
+    return (VmRiemannianAdamState*)vm->geometric_adam_states[empty];
+}
+
+static VmTensor* vm_riemannian_adam_delta(VM* vm, const VmTensor* grad,
+                                          VmRiemannianAdamState* st,
+                                          double lr, double beta1, double beta2) {
+    if (!vm || !grad || !st || !grad->data || grad->total != st->total) return NULL;
+    if (beta1 < 0.0 || beta1 >= 1.0) beta1 = 0.9;
+    if (beta2 < 0.0 || beta2 >= 1.0) beta2 = 0.999;
+    if (lr < 0.0) lr = -lr;
+
+    VmTensor* delta = vm_tensor_zeros(&vm->heap.regions, grad->shape, grad->n_dims);
+    if (!delta) return NULL;
+    st->step++;
+    double b1_corr = 1.0 - pow(beta1, (double)st->step);
+    double b2_corr = 1.0 - pow(beta2, (double)st->step);
+    if (b1_corr <= 0.0) b1_corr = 1.0;
+    if (b2_corr <= 0.0) b2_corr = 1.0;
+
+    for (int64_t i = 0; i < grad->total; i++) {
+        double g = grad->data[i];
+        st->m[i] = beta1 * st->m[i] + (1.0 - beta1) * g;
+        st->v[i] = beta2 * st->v[i] + (1.0 - beta2) * g * g;
+        double m_hat = st->m[i] / b1_corr;
+        double v_hat = st->v[i] / b2_corr;
+        delta->data[i] = -lr * m_hat / (sqrt(v_hat) + 1e-8);
+    }
+    return delta;
+}
+
+static VmTensor* vm_riemannian_adam_euclidean_step(VM* vm, const VmTensor* point,
+                                                   const VmTensor* grad,
+                                                   VmRiemannianAdamState* st,
+                                                   double lr, double beta1,
+                                                   double beta2) {
+    if (!point || !grad || point->total != grad->total ||
+        !vm_riemannian_adam_state_matches(st, point))
+        return NULL;
+    VmTensor* delta = vm_riemannian_adam_delta(vm, grad, st, lr, beta1, beta2);
+    if (!delta) return NULL;
+    return vm_tensor_linear_combo_for_geometry(vm, point, 1.0, delta, 1.0);
+}
 
 static int vm_manifold_has_value(VM* vm, Value mv) {
     return mv.type == VAL_MANIFOLD && is_heap_type(vm, mv, HEAP_MANIFOLD) &&
@@ -249,7 +372,7 @@ static int vm_geometric_arity(int fid) {
     switch (fid) {
     case 804: case 806: case 808: case 823: case 824: case 825:
     case 826: case 827: case 829: case 831: case 832: case 835:
-    case 851: case 857: case 858: case 859:
+    case 851: case 857: case 858: case 859: case 860:
         return 1;
     case 805: case 807: case 813: case 819: case 821: case 822:
     case 828: case 830: case 834: case 836: case 837: case 838:
@@ -263,6 +386,8 @@ static int vm_geometric_arity(int fid) {
         return 4;
     case 840:
         return 6;
+    case 861:
+        return 7;
     default:
         return 0;
     }
@@ -608,12 +733,31 @@ static void vm_dispatch_geometric_fallback(VM* vm, int fid) {
     }
     case 840: { /* riemannian-adam-step(point, gradient, lr, beta1, beta2, curvature) */
         (void)as_number(vm_pop(vm));
-        (void)as_number(vm_pop(vm));
-        (void)as_number(vm_pop(vm));
+        double beta2 = as_number(vm_pop(vm));
+        double beta1 = as_number(vm_pop(vm));
         double lr = as_number(vm_pop(vm));
         VmTensor* grad = vm_get_tensor(vm, vm_pop(vm));
         VmTensor* point = vm_get_tensor(vm, vm_pop(vm));
-        vm_push_tensor_or_nil(vm, vm_tensor_linear_combo_for_geometry(vm, point, 1.0, grad, -lr));
+        VmRiemannianAdamState* st = vm_default_riemannian_adam_state(vm, point);
+        vm_push_tensor_or_nil(vm, vm_riemannian_adam_euclidean_step(
+            vm, point, grad, st, lr, beta1, beta2));
+        break;
+    }
+    case 860: { /* make-riemannian-adam-state(point) */
+        VmTensor* point = vm_get_tensor(vm, vm_pop(vm));
+        vm_push_riemannian_adam_state(vm, vm_riemannian_adam_state_new(vm, point));
+        break;
+    }
+    case 861: { /* riemannian-adam-step!(state, point, gradient, lr, beta1, beta2, curvature) */
+        (void)as_number(vm_pop(vm));
+        double beta2 = as_number(vm_pop(vm));
+        double beta1 = as_number(vm_pop(vm));
+        double lr = as_number(vm_pop(vm));
+        VmTensor* grad = vm_get_tensor(vm, vm_pop(vm));
+        VmTensor* point = vm_get_tensor(vm, vm_pop(vm));
+        VmRiemannianAdamState* st = vm_riemannian_adam_state_from_value(vm, vm_pop(vm));
+        vm_push_tensor_or_nil(vm, vm_riemannian_adam_euclidean_step(
+            vm, point, grad, st, lr, beta1, beta2));
         break;
     }
     case 841: { /* riemannian-grad(euclidean_grad, point, curvature) */
@@ -1381,21 +1525,49 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
     }
     case 840: { /* riemannian-adam-step(point, gradient, lr, beta1, beta2, curvature) */
         float c = (float)as_number(vm_pop(vm));
-        float b2 = (float)as_number(vm_pop(vm));
-        float b1 = (float)as_number(vm_pop(vm));
+        double b2 = as_number(vm_pop(vm));
+        double b1 = as_number(vm_pop(vm));
         float lr = (float)as_number(vm_pop(vm));
         VmTensor* gv = vm_get_tensor(vm, vm_pop(vm));
         VmTensor* pv = vm_get_tensor(vm, vm_pop(vm));
         if (pv && gv) {
-            /* Adam step: retract(-lr * grad) with momentum (simplified) */
             float* pf = vm_tensor_to_float(vm, pv);
-            float* gf = vm_tensor_to_float(vm, gv);
             int n = (int)pv->total;
-            float* step = (float*)vm_alloc(&vm->heap.regions, n * sizeof(float));
-            if (step) {
-                (void)b1; (void)b2; /* Full Adam needs state — use SGD as fallback */
-                for (int i = 0; i < n; i++) step[i] = -lr * gf[i];
-                qllm_tensor_t* result = qllm_hyperbolic_exp_map(pf, step, n, c);
+            VmRiemannianAdamState* st = vm_default_riemannian_adam_state(vm, pv);
+            VmTensor* delta = vm_riemannian_adam_delta(vm, gv, st, lr, b1, b2);
+            if (delta) {
+                float* df = vm_tensor_to_float(vm, delta);
+                qllm_tensor_t* result = qllm_hyperbolic_exp_map(pf, df, n, c);
+                if (result) {
+                    float* rd = (float*)qllm_tensor_get_data(result);
+                    VmTensor* out = vm_tensor_zeros(&vm->heap.regions, pv->shape, pv->n_dims);
+                    if (out && rd) for (int64_t i = 0; i < out->total; i++) out->data[i] = rd[i];
+                    qllm_tensor_destroy(result);
+                    if (out) { VM_PUSH_TENSOR(vm, out); break; }
+                }
+            }
+        }
+        vm_push(vm, NIL_VAL); break;
+    }
+    case 860: { /* make-riemannian-adam-state(point) */
+        VmTensor* point = vm_get_tensor(vm, vm_pop(vm));
+        vm_push_riemannian_adam_state(vm, vm_riemannian_adam_state_new(vm, point));
+        break;
+    }
+    case 861: { /* riemannian-adam-step!(state, point, gradient, lr, beta1, beta2, curvature) */
+        float c = (float)as_number(vm_pop(vm));
+        double b2 = as_number(vm_pop(vm));
+        double b1 = as_number(vm_pop(vm));
+        float lr = (float)as_number(vm_pop(vm));
+        VmTensor* gv = vm_get_tensor(vm, vm_pop(vm));
+        VmTensor* pv = vm_get_tensor(vm, vm_pop(vm));
+        VmRiemannianAdamState* st = vm_riemannian_adam_state_from_value(vm, vm_pop(vm));
+        if (pv && gv && vm_riemannian_adam_state_matches(st, pv)) {
+            float* pf = vm_tensor_to_float(vm, pv);
+            VmTensor* delta = vm_riemannian_adam_delta(vm, gv, st, lr, b1, b2);
+            if (delta) {
+                float* df = vm_tensor_to_float(vm, delta);
+                qllm_tensor_t* result = qllm_hyperbolic_exp_map(pf, df, (int)pv->total, c);
                 if (result) {
                     float* rd = (float*)qllm_tensor_get_data(result);
                     VmTensor* out = vm_tensor_zeros(&vm->heap.regions, pv->shape, pv->n_dims);

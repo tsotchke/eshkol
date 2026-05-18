@@ -43,6 +43,7 @@
 #define VAL_PORT        24   /* heap-allocated I/O port      (opaque)       */
 #define VAL_VOID        25   /* unspecified return value (display, newline)  */
 #define VAL_HYPER_DUAL  26   /* heap-allocated VmHyperDual (opaque)          */
+#define VAL_RIEMANNIAN_ADAM_STATE 27 /* heap-allocated optimizer state       */
 
 /* ── Heap Subtypes ── */
 #define VM_SUBTYPE_COMPLEX   5

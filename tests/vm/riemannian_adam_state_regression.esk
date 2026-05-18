@@ -1,0 +1,25 @@
+;; Standalone VM Riemannian Adam state regression.
+
+(define (near? a b)
+  (< (abs (- a b)) 0.000001))
+
+(define p (make-tensor '(2) 1.0))
+(define g (make-tensor '(2) 0.5))
+(define st (make-riemannian-adam-state p))
+
+(display (if st "PASS" "FAIL")) (display ": make-riemannian-adam-state") (newline)
+
+(define step1 (riemannian-adam-step! st p g 0.1 0.9 0.999 -1.0))
+(display (if (near? (tensor-ref step1 0) 0.9) "PASS" "FAIL"))
+(display ": adam stateful first step") (newline)
+
+(define step2 (riemannian-adam-step! st step1 g 0.1 0.9 0.999 -1.0))
+(display (if (near? (tensor-ref step2 0) 0.8) "PASS" "FAIL"))
+(display ": adam stateful second step keeps moments") (newline)
+
+(define legacy1 (riemannian-adam-step p g 0.1 0.9 0.999 -1.0))
+(display (if (near? (tensor-ref legacy1 0) 0.9) "PASS" "FAIL"))
+(display ": legacy riemannian-adam-step uses Adam update") (newline)
+
+(display "PASS: Riemannian Adam state regression complete")
+(newline)
