@@ -123,6 +123,8 @@ static VmBytevector* vm_value_as_bytevector(VM* vm, Value value) {
     return (VmBytevector*)obj->opaque.ptr;
 }
 
+typedef int32_t (*VmCompressionFn)(const char*, int32_t, char*, int32_t);
+
 #if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
 static volatile sig_atomic_t vm_last_signal = 0;
 static volatile sig_atomic_t vm_signal_count = 0;
@@ -2283,6 +2285,89 @@ static Value vm_json_stringify_pretty_value(VM* vm, Value value, int indent) {
     vm_json_write_value(vm, &out, value, 0, indent);
     if (!out.ok) return BOOL_VAL(0);
     return vm_string_value(vm, out.data, (int64_t)out.pos);
+}
+
+static VmCompressionFn vm_compression_symbol(const char* name) {
+#if !defined(_WIN32) && !defined(ESHKOL_VM_WASM)
+    if (!name) return NULL;
+    return (VmCompressionFn)(uintptr_t)dlsym(RTLD_DEFAULT, name);
+#else
+    (void)name;
+    return NULL;
+#endif
+}
+
+static int vm_compression_available(void) {
+#if !defined(_WIN32) && !defined(ESHKOL_VM_WASM)
+    typedef int32_t (*VmCompressionAvailableFn)(void);
+    VmCompressionAvailableFn fn =
+        (VmCompressionAvailableFn)(uintptr_t)dlsym(RTLD_DEFAULT, "eshkol_compression_available");
+    return fn && fn();
+#else
+    return 0;
+#endif
+}
+
+static int vm_compression_input(VM* vm, Value value, const char** data, int32_t* len) {
+    VmString* s = vm_value_as_string(vm, value);
+    if (s && s->data && s->byte_len >= 0 && s->byte_len <= INT32_MAX) {
+        *data = s->data;
+        *len = (int32_t)s->byte_len;
+        return 1;
+    }
+    VmBytevector* bv = vm_value_as_bytevector(vm, value);
+    if (bv && bv->data && bv->len >= 0 && bv->len <= INT32_MAX) {
+        *data = (const char*)bv->data;
+        *len = (int32_t)bv->len;
+        return 1;
+    }
+    return 0;
+}
+
+static Value vm_compression_call(VM* vm, Value input,
+                                 VmCompressionFn fn,
+                                 int inflate_like) {
+    const char* data = NULL;
+    int32_t len = 0;
+    if (!fn || !vm_compression_available() ||
+        !vm_compression_input(vm, input, &data, &len) || len <= 0)
+        return BOOL_VAL(0);
+
+    int32_t cap = inflate_like ? len * 16 + 4096 : len * 2 + 1024;
+    if (cap < 4096) cap = 4096;
+    if (cap > 1024 * 1024) cap = 1024 * 1024;
+    char* buf = (char*)malloc((size_t)cap);
+    if (!buf) return BOOL_VAL(0);
+
+    int32_t n = fn(data, len, buf, cap);
+    if (n < 0 && inflate_like && cap < 8 * 1024 * 1024) {
+        cap = 8 * 1024 * 1024;
+        char* bigger = (char*)realloc(buf, (size_t)cap);
+        if (bigger) {
+            buf = bigger;
+            n = fn(data, len, buf, cap);
+        }
+    }
+
+    if (n < 0) {
+        free(buf);
+        return BOOL_VAL(0);
+    }
+    VmBytevector* bv = vm_bv_make(&vm->heap.regions, n, 0);
+    if (!bv) {
+        free(buf);
+        return BOOL_VAL(0);
+    }
+    memcpy(bv->data, buf, (size_t)n);
+    free(buf);
+    int32_t ptr = heap_alloc(&vm->heap);
+    if (ptr < 0) {
+        vm->error = 1;
+        return BOOL_VAL(0);
+    }
+    vm->heap.objects[ptr]->type = HEAP_BYTEVECTOR;
+    vm->heap.objects[ptr]->opaque.ptr = bv;
+    return (Value){.type = VAL_BYTEVECTOR, .as.ptr = ptr};
 }
 
 static int vm_string_ends_with_bytes(VmString* s, VmString* suffix) {
@@ -5899,6 +5984,34 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 2016: { /* json-merge(a, b) → merged alist */
         Value b_val = vm_pop(vm), a_val = vm_pop(vm);
         vm_push(vm, vm_json_merge_value(vm, a_val, b_val));
+        break;
+    }
+    case 2017: { /* compression-available() → bool */
+        vm_push(vm, BOOL_VAL(vm_compression_available()));
+        break;
+    }
+    case 2018: { /* deflate(data) → bytevector or #f */
+        Value input_val = vm_pop(vm);
+        vm_push(vm, vm_compression_call(vm, input_val,
+                                        vm_compression_symbol("eshkol_deflate"), 0));
+        break;
+    }
+    case 2019: { /* inflate(data) → bytevector or #f */
+        Value input_val = vm_pop(vm);
+        vm_push(vm, vm_compression_call(vm, input_val,
+                                        vm_compression_symbol("eshkol_inflate_data"), 1));
+        break;
+    }
+    case 2020: { /* gzip(data) → bytevector or #f */
+        Value input_val = vm_pop(vm);
+        vm_push(vm, vm_compression_call(vm, input_val,
+                                        vm_compression_symbol("eshkol_gzip"), 0));
+        break;
+    }
+    case 2021: { /* gunzip(data) → bytevector or #f */
+        Value input_val = vm_pop(vm);
+        vm_push(vm, vm_compression_call(vm, input_val,
+                                        vm_compression_symbol("eshkol_gunzip"), 1));
         break;
     }
     case 1956: { /* string-ends-with?(str, suffix) → bool */

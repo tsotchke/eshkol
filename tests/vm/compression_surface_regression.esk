@@ -1,0 +1,39 @@
+;; Standalone VM regression for optional compression builtins.
+
+(display "=== compression VM surface regression ===") (newline)
+
+(define available (compression-available))
+
+(display "T1 compression-available returns bool: ")
+(display (if (boolean? available)
+             "PASS"
+             "FAIL"))
+(newline)
+
+(define deflated (deflate "hello compression"))
+(define inflated (if deflated (inflate deflated) #f))
+
+(display "T2 deflate/inflate roundtrip or cleanly unavailable: ")
+(display (if (if available
+                 (and (bytevector? deflated)
+                      (bytevector? inflated)
+                      (string=? (utf8->string inflated) "hello compression"))
+                 (and (not deflated) (not inflated)))
+             "PASS"
+             (list "FAIL got " deflated " " inflated)))
+(newline)
+
+(define gzipped (gzip "hello gzip"))
+(define gunzipped (if gzipped (gunzip gzipped) #f))
+
+(display "T3 gzip/gunzip roundtrip or cleanly unavailable: ")
+(display (if (if available
+                 (and (bytevector? gzipped)
+                      (bytevector? gunzipped)
+                      (string=? (utf8->string gunzipped) "hello gzip"))
+                 (and (not gzipped) (not gunzipped)))
+             "PASS"
+             (list "FAIL got " gzipped " " gunzipped)))
+(newline)
+
+(display "=== compression VM surface complete ===") (newline)
