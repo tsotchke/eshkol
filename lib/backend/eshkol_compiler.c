@@ -5566,6 +5566,9 @@ static const BuiltinDef BUILTINS[] = {
     {"base64url-encode", 1961, 1}, {"base64url-decode", 1962, 1},
     {"uuid-v4", 1963, 0}, {"constant-time-equal?", 1964, 2},
     {"sha256-file", 1965, 1},
+    {"regex-compile", 1966, 1}, {"regex-free", 1967, 1},
+    {"regex-match", 1968, 2}, {"regex-match?", 1969, 2},
+    {"regex-match-groups", 1970, 2}, {"regex-split", 1971, 2},
     {"string-ends-with?", 1956, 2}, {"string-index-of", 1957, 3},
     {"string-pad-left", 1958, 3}, {"string-pad-right", 1959, 3},
     /* Missing hash */

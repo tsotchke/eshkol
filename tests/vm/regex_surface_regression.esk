@@ -1,0 +1,62 @@
+;; Standalone VM regression for POSIX regex primitives.
+
+(display "=== regex VM surface regression ===") (newline)
+
+(define h (regex-compile "([a-z]+)-([0-9]+)"))
+
+(display "T1 regex-compile returns handle: ")
+(display (if (and (number? h) (> h 0))
+             "PASS"
+             (list "FAIL got " h)))
+(newline)
+
+(display "T2 regex-match? detects matches: ")
+(display (if (and (regex-match? h "xx abc-123 yy")
+                  (not (regex-match? h "no digits")))
+             "PASS"
+             "FAIL"))
+(newline)
+
+(display "T3 regex-match returns full match: ")
+(define full (regex-match h "xx abc-123 yy"))
+(display (if (string=? full "abc-123")
+             "PASS"
+             (list "FAIL got " full)))
+(newline)
+
+(define groups (regex-match-groups h "xx abc-123 yy"))
+(define (alist-ref key alist)
+  (let ((entry (assoc key alist)))
+    (if entry (cdr entry) #f)))
+(define captures (alist-ref "groups" groups))
+
+(display "T4 regex-match-groups returns alist captures: ")
+(display (if (and (string=? (alist-ref "full" groups) "abc-123")
+                  (= (alist-ref "start" groups) 3)
+                  (= (alist-ref "end" groups) 10)
+                  (string=? (car captures) "abc")
+                  (string=? (car (cdr captures)) "123"))
+             "PASS"
+             (list "FAIL got " groups)))
+(newline)
+
+(define comma (regex-compile ","))
+(define pieces (regex-split comma "a,b,c"))
+
+(display "T5 regex-split returns string list: ")
+(display (if (and (string=? (car pieces) "a")
+                  (string=? (car (cdr pieces)) "b")
+                  (string=? (car (cdr (cdr pieces))) "c"))
+             "PASS"
+             (list "FAIL got " pieces)))
+(newline)
+
+(display "T6 regex-free releases handles: ")
+(display (if (and (regex-free h)
+                  (regex-free comma)
+                  (not (regex-free h)))
+             "PASS"
+             "FAIL"))
+(newline)
+
+(display "=== regex VM surface complete ===") (newline)
