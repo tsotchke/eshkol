@@ -63,6 +63,61 @@ static int vm_values_equal_deep(VM* vm, Value a, Value b, int depth) {
     }
 }
 
+#ifndef ESHKOL_VM_WASM
+static int vm_directory_delete_forbidden_root(const char* path) {
+    if (!path || !*path) return 1;
+
+    char resolved[4096];
+    const char* p = path;
+    if (realpath(path, resolved)) p = resolved;
+
+    static const char* forbidden[] = {
+        "/", "/usr", "/bin", "/sbin", "/etc", "/var", "/home", "/Users",
+        "/System", "/Library", "/Applications", "/private", "/private/tmp",
+        NULL
+    };
+
+    for (int i = 0; forbidden[i]; i++) {
+        if (strcmp(p, forbidden[i]) == 0) return 1;
+    }
+    return 0;
+}
+
+static int vm_directory_delete_recursive_posix(const char* path, int depth) {
+    if (!path || depth > 128) return 0;
+
+    struct stat st;
+    if (lstat(path, &st) != 0) return 0;
+
+    if (S_ISDIR(st.st_mode) && !S_ISLNK(st.st_mode)) {
+        DIR* dir = opendir(path);
+        if (!dir) return 0;
+
+        int ok = 1;
+        struct dirent* ent;
+        while ((ent = readdir(dir)) != NULL) {
+            if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)
+                continue;
+
+            char child[4096];
+            int n = snprintf(child, sizeof(child), "%s/%s", path, ent->d_name);
+            if (n <= 0 || n >= (int)sizeof(child)) {
+                ok = 0;
+                continue;
+            }
+            if (!vm_directory_delete_recursive_posix(child, depth + 1))
+                ok = 0;
+        }
+        closedir(dir);
+
+        if (rmdir(path) != 0) ok = 0;
+        return ok;
+    }
+
+    return unlink(path) == 0;
+}
+#endif
+
 static int vm_kb_extract_fact_datum(VM* vm, Value fact_val, Value* out) {
     if (!out) return 0;
     if (fact_val.type == VAL_PAIR && is_valid_heap_ptr(vm, fact_val.as.ptr)) {
@@ -5005,18 +5060,10 @@ static void vm_dispatch_native(VM* vm, int fid) {
         if (path_val.type == VAL_STRING) {
             VmString* ps = (VmString*)vm->heap.objects[path_val.as.ptr]->opaque.ptr;
             if (ps) {
-                /* Use system rm -rf (safe: path validated) */
-                char cmd[4096];
-                /* Basic path safety: reject if contains ; | & ` $ */
-                int safe = 1;
-                for (const char* c = ps->data; *c; c++) {
-                    if (*c == ';' || *c == '|' || *c == '&' || *c == '`' || *c == '$') {
-                        safe = 0; break;
-                    }
-                }
-                if (safe) {
-                    snprintf(cmd, sizeof(cmd), "rm -rf '%s'", ps->data);
-                    if (system(cmd) == 0) { vm_push(vm, BOOL_VAL(1)); break; }
+                if (!vm_directory_delete_forbidden_root(ps->data) &&
+                    vm_directory_delete_recursive_posix(ps->data, 0)) {
+                    vm_push(vm, BOOL_VAL(1));
+                    break;
                 }
             }
         }

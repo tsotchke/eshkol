@@ -188,6 +188,9 @@ Needed for: memory file discovery (`find` replacement), glob tool, grep tool.
 Recursive delete with safety checks. Eliminates `rm -rf` shell-outs.
 MUST refuse `/`, `/usr`, `/bin`, `/etc`, `/var`, `/home`, `/Users`, `/System`.
 
+Implemented in the standalone VM as direct `opendir`/`lstat`/`unlink`/`rmdir`
+recursion with root-path refusal; no shell command is invoked.
+
 ### `(file-copy src dst) -> bool`
 Read/write in chunks. macOS can use `clonefile(2)` for CoW.
 
