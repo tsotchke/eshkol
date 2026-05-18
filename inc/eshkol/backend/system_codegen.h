@@ -297,6 +297,7 @@ public:
     llvm::Value* base64urlDecode(const eshkol_operations_t* op);
     llvm::Value* uuidV4(const eshkol_operations_t* op);
     llvm::Value* constantTimeEqual(const eshkol_operations_t* op);
+    llvm::Value* sha256File(const eshkol_operations_t* op);
     llvm::Value* stringEndsWith(const eshkol_operations_t* op);
     llvm::Value* stringIndexOf(const eshkol_operations_t* op);
     llvm::Value* stringPadLeft(const eshkol_operations_t* op);

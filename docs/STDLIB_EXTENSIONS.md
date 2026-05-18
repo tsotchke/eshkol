@@ -485,6 +485,9 @@ Standalone VM native ID 1941.
 ### `(sha256-file path) -> string-or-false`
 Stream hash without loading file into memory.
 
+Standalone VM native ID 1965 streams file bytes through an in-tree SHA-256
+implementation and returns a lowercase hex digest, or `#f` on open/read errors.
+
 ### `(base64url-encode data) -> string`
 URL-safe base64 (`-_`, no padding). For JWT and PKCE.
 
