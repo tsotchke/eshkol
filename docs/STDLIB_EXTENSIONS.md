@@ -424,34 +424,59 @@ Close a socket file descriptor. The standalone VM exposes this as native ID
 ### `(term-set-scroll-region top bottom) -> void`
 CSI DECSTBM. Fixed header/footer with scrollable content.
 
+Standalone VM native ID 1930. It emits only when stdout is a TTY and returns
+`#t` for valid regions.
+
 ### `(term-reset-scroll-region) -> void`
+Standalone VM native ID 1931.
 
 ### `(term-enable-mouse) -> void`
 SGR mouse tracking.
 
+Standalone VM native ID 1932 enables X10 + SGR mouse modes when stdout is a
+TTY.
+
 ### `(term-disable-mouse) -> void`
+Standalone VM native ID 1933.
 
 ### `(term-read-mouse-event timeout) -> (button x y modifiers type)-or-false`
+Standalone VM native ID 1934 parses SGR mouse events from stdin when attached
+to a TTY and returns `#f` on timeout or non-TTY input.
 
 ### `(term-enable-alternate-screen) -> void`
 `\033[?1049h`. Preserves shell history on exit.
 
+Standalone VM native ID 1935.
+
 ### `(term-disable-alternate-screen) -> void`
+Standalone VM native ID 1936.
 
 ### `(term-clipboard-write text) -> void`
 OSC 52.
 
+Standalone VM native ID 1937. Clipboard writes are TTY-gated.
+
 ### `(term-clipboard-read) -> string-or-false`
 OSC 52.
+
+Standalone VM native ID 1938 currently returns `#f` unless a terminal response
+backend is available.
 
 ### `(term-hyperlink url text) -> string`
 Return OSC 8 escape string for clickable links.
 
+Standalone VM native ID 1939.
+
 ### `(term-detect-capabilities) -> alist`
 Check `TERM`, `COLORTERM`, `TERM_PROGRAM`. Return `((color-depth . 24) (unicode . #t) ...)`.
 
+Standalone VM native ID 1940 returns string-keyed alist entries for
+`color-depth`, `unicode`, and `tty`.
+
 ### `(term-bell) -> void`
 BEL character.
+
+Standalone VM native ID 1941.
 
 ---
 

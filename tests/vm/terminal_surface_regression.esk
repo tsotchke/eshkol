@@ -1,0 +1,59 @@
+;; Standalone VM regression for terminal-control builtins.
+;; Non-TTY execution must be deterministic and must not emit escape sequences.
+
+(display "=== terminal VM surface regression ===") (newline)
+
+(display "T1 term-set/reset-scroll-region returns bools: ")
+(display (if (and (term-set-scroll-region 1 2)
+                  (term-reset-scroll-region))
+             "PASS"
+             "FAIL"))
+(newline)
+
+(display "T2 mouse enable/disable returns bools: ")
+(display (if (and (term-enable-mouse)
+                  (term-disable-mouse))
+             "PASS"
+             "FAIL"))
+(newline)
+
+(display "T3 alternate-screen enable/disable returns bools: ")
+(display (if (and (term-enable-alternate-screen)
+                  (term-disable-alternate-screen))
+             "PASS"
+             "FAIL"))
+(newline)
+
+(display "T4 term-read-mouse-event nonblocking no event: ")
+(display (if (not (term-read-mouse-event 0))
+             "PASS"
+             "FAIL"))
+(newline)
+
+(display "T5 term-hyperlink returns string: ")
+(define link (term-hyperlink "https://example.invalid" "example"))
+(display (if (and (string? link) (> (string-length link) 0))
+             "PASS"
+             (list "FAIL got " link)))
+(newline)
+
+(display "T6 term-detect-capabilities returns alist: ")
+(define caps (term-detect-capabilities))
+(display (if (pair? caps)
+             "PASS"
+             (list "FAIL got " caps)))
+(newline)
+
+(display "T7 clipboard read is false when unavailable: ")
+(display (if (not (term-clipboard-read))
+             "PASS"
+             "FAIL"))
+(newline)
+
+(display "T8 term-bell returns bool: ")
+(display (if (term-bell)
+             "PASS"
+             "FAIL"))
+(newline)
+
+(display "=== terminal VM surface complete ===") (newline)
