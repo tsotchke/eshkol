@@ -493,6 +493,9 @@ static const BuiltinDef BUILTINS[] = {
     {"process-spawn-pty", 1787, 1}, {"process-read-nonblocking", 1788, 2},
     {"unix-socket-connect", 1790, 1}, {"socket-send", 1791, 2},
     {"socket-recv", 1792, 2}, {"socket-close", 1793, 1},
+    {"signal-install", 1794, 1}, {"signal-check", 1795, 0},
+    {"signal-reset", 1796, 1}, {"signal-ignore", 1797, 1},
+    {"signal-count", 1798, 0},
     /* ═══════════════════════════════════════════════════════════════
      * KB Extensions — IDs 1800-1809
      * ═══════════════════════════════════════════════════════════════ */

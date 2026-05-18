@@ -262,6 +262,10 @@ public:
     llvm::Value* processPid(const eshkol_operations_t* op);
     llvm::Value* fileMmap(const eshkol_operations_t* op);
     llvm::Value* fileMunmap(const eshkol_operations_t* op);
+    llvm::Value* unixSocketConnect(const eshkol_operations_t* op);
+    llvm::Value* socketSend(const eshkol_operations_t* op);
+    llvm::Value* socketRecv(const eshkol_operations_t* op);
+    llvm::Value* socketClose(const eshkol_operations_t* op);
     llvm::Value* kbSave(const eshkol_operations_t* op);
     llvm::Value* kbLoad(const eshkol_operations_t* op);
     llvm::Value* tensorTokenEstimate(const eshkol_operations_t* op);

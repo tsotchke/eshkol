@@ -27,6 +27,8 @@
 #include <poll.h>
 #include <pwd.h>
 #include <fcntl.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 #include <glob.h>
 #include <fnmatch.h>
 #ifdef __APPLE__
@@ -1328,6 +1330,93 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_process_read_nonblocking_v(eshko
 }
 
 /* ═══════════════════════════════════════════════════════════════════
+ * Unix-domain socket helpers
+ * ═══════════════════════════════════════════════════════════════════ */
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_unix_socket_connect_v(eshkol_sysbuiltin_value_t path_val) {
+    const char* path = sys_extract_string(path_val);
+    if (!path || !*path) return sys_make_bool(0);
+#if !defined(_WIN32) && !defined(ESHKOL_VM_WASM)
+    size_t len = strlen(path);
+    if (len >= sizeof(((struct sockaddr_un*)0)->sun_path)) return sys_make_bool(0);
+
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) return sys_make_bool(0);
+#ifdef SO_NOSIGPIPE
+    int no_sigpipe = 1;
+    (void)setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &no_sigpipe, (socklen_t)sizeof(no_sigpipe));
+#endif
+
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    memcpy(addr.sun_path, path, len);
+    addr.sun_path[len] = '\0';
+
+    if (connect(fd, (struct sockaddr*)&addr, sizeof(addr)) == 0)
+        return sys_make_int64((int64_t)fd);
+
+    close(fd);
+#endif
+    return sys_make_bool(0);
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_socket_send_v(eshkol_sysbuiltin_value_t fd_val,
+                                                               eshkol_sysbuiltin_value_t data_val) {
+    int64_t fd = (int64_t)fd_val.data;
+    const char* data = sys_extract_string(data_val);
+    if (fd < 0 || !data) return sys_make_bool(0);
+#if !defined(_WIN32) && !defined(ESHKOL_VM_WASM)
+    int flags = 0;
+#ifdef MSG_NOSIGNAL
+    flags |= MSG_NOSIGNAL;
+#endif
+    ssize_t n = send((int)fd, data, strlen(data), flags);
+    if (n >= 0) return sys_make_int64((int64_t)n);
+#endif
+    return sys_make_bool(0);
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_socket_recv_v(eshkol_sysbuiltin_value_t fd_val,
+                                                               eshkol_sysbuiltin_value_t max_val) {
+    int64_t fd = (int64_t)fd_val.data;
+    int64_t max_bytes = (int64_t)max_val.data;
+    if (fd < 0 || max_bytes <= 0) return sys_make_bool(0);
+#if !defined(_WIN32) && !defined(ESHKOL_VM_WASM)
+    if (max_bytes > 65536) max_bytes = 65536;
+    void* arena = get_global_arena();
+    if (!arena) return sys_make_bool(0);
+    char* buf = arena_allocate_string_with_header(arena, (size_t)max_bytes);
+    if (!buf) return sys_make_bool(0);
+
+    int old_flags = fcntl((int)fd, F_GETFL, 0);
+    if (old_flags < 0 || fcntl((int)fd, F_SETFL, old_flags | O_NONBLOCK) != 0)
+        return sys_make_bool(0);
+
+    ssize_t n = recv((int)fd, buf, (size_t)max_bytes, 0);
+    (void)fcntl((int)fd, F_SETFL, old_flags);
+    if (n <= 0) return sys_make_bool(0);
+
+    buf[n] = '\0';
+    eshkol_sysbuiltin_value_t v = {0, 0, 0, 0, 0};
+    v.type = SYS_TYPE_HEAP_PTR;
+    v.data = (uint64_t)buf;
+    return v;
+#endif
+    return sys_make_bool(0);
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_socket_close_v(eshkol_sysbuiltin_value_t fd_val) {
+    int64_t fd = (int64_t)fd_val.data;
+    if (fd < 0) return sys_make_bool(0);
+#if !defined(_WIN32) && !defined(ESHKOL_VM_WASM)
+    return sys_make_bool(close((int)fd) == 0);
+#else
+    return sys_make_bool(0);
+#endif
+}
+
+/* ═══════════════════════════════════════════════════════════════════
  * KB Persistence — save/load knowledge bases
  * ═══════════════════════════════════════════════════════════════════ */
 
@@ -1671,6 +1760,10 @@ void eshkol_builtin_glob_match(sv_t* out, const sv_t* a, const sv_t* b) { *out =
 void eshkol_builtin_process_pid(sv_t* out) { *out = eshkol_builtin_process_pid_v(); }
 void eshkol_builtin_file_mmap(sv_t* out, const sv_t* a) { *out = eshkol_builtin_file_mmap_v(*a); }
 void eshkol_builtin_file_munmap(sv_t* out, const sv_t* a) { *out = eshkol_builtin_file_munmap_v(*a); }
+void eshkol_builtin_unix_socket_connect(sv_t* out, const sv_t* a) { *out = eshkol_builtin_unix_socket_connect_v(*a); }
+void eshkol_builtin_socket_send(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_socket_send_v(*a, *b); }
+void eshkol_builtin_socket_recv(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_socket_recv_v(*a, *b); }
+void eshkol_builtin_socket_close(sv_t* out, const sv_t* a) { *out = eshkol_builtin_socket_close_v(*a); }
 void eshkol_builtin_kb_save(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_kb_save_v(*a, *b); }
 void eshkol_builtin_kb_load(sv_t* out, const sv_t* a) { *out = eshkol_builtin_kb_load_v(*a); }
 void eshkol_builtin_tensor_token_estimate(sv_t* out, const sv_t* a) { *out = eshkol_builtin_tensor_token_estimate_v(*a); }

@@ -1212,6 +1212,10 @@ public:
         function_return_types["process-pid"] = BuiltinTypes::Integer;
         function_return_types["file-mmap"] = BuiltinTypes::String;
         function_return_types["file-munmap"] = BuiltinTypes::Boolean;
+        function_return_types["unix-socket-connect"] = BuiltinTypes::Integer;
+        function_return_types["socket-send"] = BuiltinTypes::Integer;
+        function_return_types["socket-recv"] = BuiltinTypes::String;
+        function_return_types["socket-close"] = BuiltinTypes::Boolean;
         function_return_types["kb-save"] = BuiltinTypes::Boolean;
         function_return_types["kb-load"] = BuiltinTypes::Value;
         function_return_types["tensor-token-estimate"] = BuiltinTypes::Integer;
@@ -11876,6 +11880,10 @@ private:
         if (func_name == "process-pid") return system_->processPid(op);
         if (func_name == "file-mmap") return system_->fileMmap(op);
         if (func_name == "file-munmap") return system_->fileMunmap(op);
+        if (func_name == "unix-socket-connect") return system_->unixSocketConnect(op);
+        if (func_name == "socket-send") return system_->socketSend(op);
+        if (func_name == "socket-recv") return system_->socketRecv(op);
+        if (func_name == "socket-close") return system_->socketClose(op);
         if (func_name == "kb-save") return system_->kbSave(op);
         if (func_name == "kb-load") return system_->kbLoad(op);
         if (func_name == "tensor-token-estimate") return system_->tensorTokenEstimate(op);
@@ -19792,6 +19800,7 @@ private:
             "process-setpgid", "process-kill-tree",
             "process-spawn-pty", "process-read-nonblocking",
             "process-pid", "file-mmap", "file-munmap",
+            "unix-socket-connect", "socket-send", "socket-recv", "socket-close",
             "kb-save", "kb-load", "tensor-token-estimate",
             "fg-marginal", "fg-entropy", "kb-retract!",
             "make-substitution", "unify", "walk",
