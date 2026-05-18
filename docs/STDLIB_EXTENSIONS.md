@@ -586,7 +586,11 @@ needs truncation, and the returned string is capped to `max` display columns.
 ### `(url-encode str) -> string`
 Percent-encoding. Unreserved chars: `A-Za-z0-9-_.~`.
 
+Standalone VM native ID 1954 percent-encodes UTF-8 bytes with uppercase hex.
+
 ### `(url-decode str) -> string`
+Standalone VM native ID 1955 decodes valid `%XX` triples and maps `+` to space
+for compatibility with the existing pure Eshkol URL library.
 
 ### `(url-parse str) -> alist-or-false`
 `((scheme . "https") (host . "...") (port . 443) (path . "...") (query . "..."))`.

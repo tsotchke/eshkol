@@ -404,6 +404,7 @@ static const BuiltinDef BUILTINS[] = {
     {"executable-path", 1949, 1}, {"monotonic-time-ms", 1950, 0},
     {"temp-directory", 1951, 0}, {"prevent-sleep", 1952, 1},
     {"allow-sleep", 1953, 1},
+    {"url-encode", 1954, 1}, {"url-decode", 1955, 1},
     /* Parallel primitives — IDs 620-628 */
     {"parallel-map", 620, 2}, {"parallel-filter", 621, 2},
     {"parallel-fold", 622, 3}, {"parallel-for-each", 623, 2},
