@@ -330,6 +330,19 @@ typedef struct VM {
         int len;
         char buffer[4096];
     } line_readers[32];
+
+    struct {
+        int active;
+        int max_size;
+        int size;
+        int64_t tick;
+        struct {
+            int active;
+            int64_t tick;
+            Value key;
+            Value value;
+        } entries[64];
+    } lru_caches[16];
 } VM;
 
 /* Command-line arguments (set in main, read by native 602) */

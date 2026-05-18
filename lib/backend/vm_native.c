@@ -1734,6 +1734,80 @@ static Value vm_line_reader_poll_value(VM* vm, int handle) {
     return BOOL_VAL(0);
 }
 
+static int vm_values_equal_deep(VM* vm, Value a, Value b, int depth);
+
+static int vm_lru_cache_valid(VM* vm, int handle) {
+    return vm && handle > 0 &&
+           handle < (int)(sizeof(vm->lru_caches) / sizeof(vm->lru_caches[0])) &&
+           vm->lru_caches[handle].active;
+}
+
+static int vm_lru_find_entry(VM* vm, int handle, Value key) {
+    if (!vm_lru_cache_valid(vm, handle)) return -1;
+    for (int i = 0; i < (int)(sizeof(vm->lru_caches[handle].entries) /
+                              sizeof(vm->lru_caches[handle].entries[0])); i++) {
+        if (vm->lru_caches[handle].entries[i].active &&
+            vm_values_equal_deep(vm, vm->lru_caches[handle].entries[i].key, key, 0))
+            return i;
+    }
+    return -1;
+}
+
+static int vm_lru_alloc_entry(VM* vm, int handle) {
+    if (!vm_lru_cache_valid(vm, handle)) return -1;
+    for (int i = 0; i < vm->lru_caches[handle].max_size; i++) {
+        if (!vm->lru_caches[handle].entries[i].active)
+            return i;
+    }
+    int victim = 0;
+    int64_t oldest = vm->lru_caches[handle].entries[0].tick;
+    for (int i = 1; i < vm->lru_caches[handle].max_size; i++) {
+        if (vm->lru_caches[handle].entries[i].tick < oldest) {
+            oldest = vm->lru_caches[handle].entries[i].tick;
+            victim = i;
+        }
+    }
+    return victim;
+}
+
+static int vm_lru_create(VM* vm, int max_size) {
+    if (!vm) return -1;
+    if (max_size < 1) max_size = 1;
+    if (max_size > 64) max_size = 64;
+    for (int i = 1; i < (int)(sizeof(vm->lru_caches) / sizeof(vm->lru_caches[0])); i++) {
+        if (vm->lru_caches[i].active) continue;
+        memset(&vm->lru_caches[i], 0, sizeof(vm->lru_caches[i]));
+        vm->lru_caches[i].active = 1;
+        vm->lru_caches[i].max_size = max_size;
+        vm->lru_caches[i].tick = 1;
+        return i;
+    }
+    return -1;
+}
+
+static Value vm_lru_get_value(VM* vm, int handle, Value key) {
+    int idx = vm_lru_find_entry(vm, handle, key);
+    if (idx < 0) return BOOL_VAL(0);
+    vm->lru_caches[handle].entries[idx].tick = ++vm->lru_caches[handle].tick;
+    return vm->lru_caches[handle].entries[idx].value;
+}
+
+static int vm_lru_set_value(VM* vm, int handle, Value key, Value value) {
+    if (!vm_lru_cache_valid(vm, handle)) return 0;
+    int idx = vm_lru_find_entry(vm, handle, key);
+    if (idx < 0) {
+        idx = vm_lru_alloc_entry(vm, handle);
+        if (idx < 0) return 0;
+        if (!vm->lru_caches[handle].entries[idx].active)
+            vm->lru_caches[handle].size++;
+    }
+    vm->lru_caches[handle].entries[idx].active = 1;
+    vm->lru_caches[handle].entries[idx].tick = ++vm->lru_caches[handle].tick;
+    vm->lru_caches[handle].entries[idx].key = key;
+    vm->lru_caches[handle].entries[idx].value = value;
+    return 1;
+}
+
 static int vm_string_ends_with_bytes(VmString* s, VmString* suffix) {
     if (!s || !suffix || !s->data || !suffix->data) return 0;
     if (suffix->byte_len > s->byte_len) return 0;
@@ -5143,6 +5217,62 @@ static void vm_dispatch_native(VM* vm, int fid) {
         (void)fd_val;
 #endif
         vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+    case 1989: { /* make-lru-cache(max-size) → cache or #f */
+        Value max_val = vm_pop(vm);
+        int handle = vm_lru_create(vm, (int)as_number(max_val));
+        if (handle > 0) vm_push(vm, INT_VAL((int64_t)handle));
+        else vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+    case 1990: { /* lru-get(cache, key) → value or #f */
+        Value key_val = vm_pop(vm), cache_val = vm_pop(vm);
+        vm_push(vm, vm_lru_get_value(vm, (int)as_number(cache_val), key_val));
+        break;
+    }
+    case 1991: { /* lru-set!(cache, key, value) → bool */
+        Value value_val = vm_pop(vm), key_val = vm_pop(vm), cache_val = vm_pop(vm);
+        vm_push(vm, BOOL_VAL(vm_lru_set_value(vm, (int)as_number(cache_val), key_val, value_val)));
+        break;
+    }
+    case 1992: { /* lru-has?(cache, key) → bool */
+        Value key_val = vm_pop(vm), cache_val = vm_pop(vm);
+        vm_push(vm, BOOL_VAL(vm_lru_find_entry(vm, (int)as_number(cache_val), key_val) >= 0));
+        break;
+    }
+    case 1993: { /* lru-delete!(cache, key) → bool */
+        Value key_val = vm_pop(vm), cache_val = vm_pop(vm);
+        int handle = (int)as_number(cache_val);
+        int idx = vm_lru_find_entry(vm, handle, key_val);
+        if (idx >= 0) {
+            memset(&vm->lru_caches[handle].entries[idx], 0, sizeof(vm->lru_caches[handle].entries[idx]));
+            if (vm->lru_caches[handle].size > 0) vm->lru_caches[handle].size--;
+            vm_push(vm, BOOL_VAL(1));
+        } else {
+            vm_push(vm, BOOL_VAL(0));
+        }
+        break;
+    }
+    case 1994: { /* lru-clear!(cache) → bool */
+        Value cache_val = vm_pop(vm);
+        int handle = (int)as_number(cache_val);
+        if (vm_lru_cache_valid(vm, handle)) {
+            memset(vm->lru_caches[handle].entries, 0, sizeof(vm->lru_caches[handle].entries));
+            vm->lru_caches[handle].size = 0;
+            vm_push(vm, BOOL_VAL(1));
+        } else {
+            vm_push(vm, BOOL_VAL(0));
+        }
+        break;
+    }
+    case 1995: { /* lru-size(cache) → integer */
+        Value cache_val = vm_pop(vm);
+        int handle = (int)as_number(cache_val);
+        if (vm_lru_cache_valid(vm, handle))
+            vm_push(vm, INT_VAL((int64_t)vm->lru_caches[handle].size));
+        else
+            vm_push(vm, INT_VAL(0));
         break;
     }
     case 1956: { /* string-ends-with?(str, suffix) → bool */

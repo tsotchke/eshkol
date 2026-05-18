@@ -429,6 +429,10 @@ static const BuiltinDef BUILTINS[] = {
     {"make-pipe", 1983, 0}, {"fd-write", 1984, 2},
     {"make-line-reader", 1985, 2}, {"line-reader-poll", 1986, 1},
     {"line-reader-close", 1987, 1}, {"fd-close", 1988, 1},
+    {"make-lru-cache", 1989, 1}, {"lru-get", 1990, 2},
+    {"lru-set!", 1991, 3}, {"lru-has?", 1992, 2},
+    {"lru-delete!", 1993, 2}, {"lru-clear!", 1994, 1},
+    {"lru-size", 1995, 1},
     {"string-ends-with?", 1956, 2}, {"string-index-of", 1957, 3},
     {"string-pad-left", 1958, 3}, {"string-pad-right", 1959, 3},
     /* Parallel primitives — IDs 620-628 */

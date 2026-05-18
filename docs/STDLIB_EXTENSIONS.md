@@ -868,6 +868,10 @@ Hash table + doubly-linked list. O(1) get/set/evict.
 ### `(lru-clear! cache) -> void`
 ### `(lru-size cache) -> integer`
 
+Standalone VM native IDs 1989-1995 expose fixed-size VM-lifetime cache handles.
+Keys use the VM's deep `equal?` semantics and least-recently-used entries are
+evicted when the configured capacity is reached.
+
 ---
 
 ## B.20 Event Emitter
