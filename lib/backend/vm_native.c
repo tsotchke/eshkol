@@ -74,6 +74,24 @@ static void vm_process_forget_pty(VM* vm, int64_t pid, int close_fd) {
     }
 }
 
+static VmString* vm_value_as_string(VM* vm, Value value) {
+    if (!vm || value.type != VAL_STRING || !is_valid_heap_ptr(vm, value.as.ptr))
+        return NULL;
+    HeapObject* obj = vm->heap.objects[value.as.ptr];
+    if (!obj || obj->type != HEAP_STRING)
+        return NULL;
+    return (VmString*)obj->opaque.ptr;
+}
+
+static VmBytevector* vm_value_as_bytevector(VM* vm, Value value) {
+    if (!vm || value.type != VAL_BYTEVECTOR || !is_valid_heap_ptr(vm, value.as.ptr))
+        return NULL;
+    HeapObject* obj = vm->heap.objects[value.as.ptr];
+    if (!obj || obj->type != HEAP_BYTEVECTOR)
+        return NULL;
+    return (VmBytevector*)obj->opaque.ptr;
+}
+
 #if defined(_WIN32) && !defined(ESHKOL_VM_WASM)
 static int vm_win_append_process_arg(char* out, size_t out_size, size_t* pos, const char* arg) {
     if (!out || !pos || !arg) return 0;
@@ -6923,6 +6941,114 @@ static void vm_dispatch_native(VM* vm, int fid) {
         }
 #else
         (void)max_val; (void)proc_val;
+#endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+    case 1790: { /* unix-socket-connect(path) → fd or #f */
+        Value path_val = vm_pop(vm);
+#if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
+        VmString* path = vm_value_as_string(vm, path_val);
+        if (path && path->data && path->byte_len > 0 &&
+            (size_t)path->byte_len < sizeof(((struct sockaddr_un*)0)->sun_path)) {
+            int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+            if (fd >= 0) {
+#ifdef SO_NOSIGPIPE
+                int no_sigpipe = 1;
+                (void)setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE,
+                                 &no_sigpipe, (socklen_t)sizeof(no_sigpipe));
+#endif
+                struct sockaddr_un addr;
+                memset(&addr, 0, sizeof(addr));
+                addr.sun_family = AF_UNIX;
+                memcpy(addr.sun_path, path->data, (size_t)path->byte_len);
+                addr.sun_path[path->byte_len] = '\0';
+                if (connect(fd, (struct sockaddr*)&addr, sizeof(addr)) == 0) {
+                    vm_push(vm, INT_VAL((int64_t)fd));
+                    break;
+                }
+                close(fd);
+            }
+        }
+#else
+        (void)path_val;
+#endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+    case 1791: { /* socket-send(fd, string-or-bytevector) → bytes-written or #f */
+        Value data_val = vm_pop(vm), fd_val = vm_pop(vm);
+#if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
+        int fd = vm_process_fd_from_value(vm, fd_val);
+        const void* data = NULL;
+        size_t len = 0;
+        VmString* s = vm_value_as_string(vm, data_val);
+        if (s && s->data) {
+            data = s->data;
+            len = (size_t)s->byte_len;
+        } else {
+            VmBytevector* bv = vm_value_as_bytevector(vm, data_val);
+            if (bv && bv->data) {
+                data = bv->data;
+                len = (size_t)bv->len;
+            }
+        }
+        if (fd >= 0 && data) {
+            int flags = 0;
+#ifdef MSG_NOSIGNAL
+            flags |= MSG_NOSIGNAL;
+#endif
+            ssize_t n = send(fd, data, len, flags);
+            if (n >= 0) {
+                vm_push(vm, INT_VAL((int64_t)n));
+                break;
+            }
+        }
+#else
+        (void)data_val; (void)fd_val;
+#endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+    case 1792: { /* socket-recv(fd, max-bytes) → string or #f */
+        Value max_val = vm_pop(vm), fd_val = vm_pop(vm);
+#if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
+        int fd = vm_process_fd_from_value(vm, fd_val);
+        int max_bytes = (int)as_number(max_val);
+        if (fd >= 0 && max_bytes > 0) {
+            char buf[8192];
+            if (max_bytes > (int)sizeof(buf) - 1) max_bytes = (int)sizeof(buf) - 1;
+            int old_flags = fcntl(fd, F_GETFL, 0);
+            if (old_flags >= 0 && fcntl(fd, F_SETFL, old_flags | O_NONBLOCK) == 0) {
+                ssize_t n = recv(fd, buf, (size_t)max_bytes, 0);
+                (void)fcntl(fd, F_SETFL, old_flags);
+                if (n > 0) {
+                    buf[n] = '\0';
+                    VmString* s = vm_string_new(&vm->heap.regions, buf, (int64_t)n);
+                    if (s) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, s); break; }
+                }
+            }
+        }
+#else
+        (void)max_val; (void)fd_val;
+#endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+    case 1793: { /* socket-close(fd) → bool */
+        Value fd_val = vm_pop(vm);
+#if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
+        int fd = vm_process_fd_from_value(vm, fd_val);
+        if (fd >= 0 && close(fd) == 0) {
+            vm_push(vm, BOOL_VAL(1));
+            break;
+        }
+#else
+        (void)fd_val;
 #endif
         vm_push(vm, BOOL_VAL(0));
         break;

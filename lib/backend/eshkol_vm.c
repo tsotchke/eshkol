@@ -53,6 +53,8 @@
 #include <sys/wait.h>
 #include <signal.h>
 #include <poll.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <glob.h>
@@ -489,6 +491,8 @@ static const BuiltinDef BUILTINS[] = {
     {"poll", 1783, 2}, {"process-pid", 1784, 0},
     {"process-setpgid", 1785, 2}, {"process-kill-tree", 1786, 2},
     {"process-spawn-pty", 1787, 1}, {"process-read-nonblocking", 1788, 2},
+    {"unix-socket-connect", 1790, 1}, {"socket-send", 1791, 2},
+    {"socket-recv", 1792, 2}, {"socket-close", 1793, 1},
     /* ═══════════════════════════════════════════════════════════════
      * KB Extensions — IDs 1800-1809
      * ═══════════════════════════════════════════════════════════════ */

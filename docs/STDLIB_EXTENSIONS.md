@@ -381,6 +381,23 @@ Binary frame.
 ### `(unix-socket-connect path) -> socket-or-false`
 For IDE IPC (VS Code's `VSCODE_IPC_HOOK`).
 
+The standalone VM exposes this POSIX-only surface as native ID 1790. It
+returns a raw socket file descriptor on success and `#f` on Windows, WASM, or
+connection failure.
+
+### `(socket-send socket string-or-bytevector) -> bytes-or-false`
+Write a string or bytevector to a socket. The standalone VM exposes this as
+native ID 1791 and returns the number of bytes written or `#f` on error.
+
+### `(socket-recv socket max) -> string-or-false`
+Read at most `max` bytes from a socket. The standalone VM exposes this as
+native ID 1792, performs a non-blocking read, and returns an arena-owned string
+when bytes are available or `#f` on EOF, EAGAIN, or error.
+
+### `(socket-close socket) -> bool`
+Close a socket file descriptor. The standalone VM exposes this as native ID
+1793.
+
 ---
 
 ## B.5 Terminal Extensions
