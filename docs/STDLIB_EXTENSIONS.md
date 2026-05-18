@@ -66,7 +66,7 @@ reverse-mode AD tape compute their results entirely in matrix multiplications.
 the native function ID as its operand. It remains the explicit external boundary
 for host services and high-level library calls. This is where
 consciousness engine (500-527), factor graphs (520-539), workspace (540-549),
-geometric manifolds (804-859), tensors (410-470), autodiff (370-409), and everything
+geometric manifolds (804-861), tensors (410-470), autodiff (370-409), and everything
 in this document executes.
 
 ### Implementation Pattern Per Function
@@ -86,34 +86,18 @@ already routes through `IS_NATIVE` to C dispatch. Only new core ISA opcodes
 
 ---
 
-# Part A: Already Exists But Needs Fixing
+# Part A: Originally Broken/Stale VM Builtins
 
-These builtins are registered in `vm_native.c` but return stubs (empty list,
-nil, or hardcoded values). They must be implemented properly.
+These builtins were registered in `vm_native.c` but originally returned stubs
+(empty list, nil, or hardcoded values). The status below reflects the current
+standalone VM surface.
 
-## A.1 `directory-entries` (builtin 601) — RETURNS EMPTY LIST
+## A.1 `directory-entries` (builtin 601) — IMPLEMENTED
 
-**Current**: `vm_push(vm, NIL_VAL)` with comment "No portable C89 readdir"
-
-**Fix**: Implement using `opendir(3)` / `readdir(3)` / `closedir(3)`. These
-are POSIX and available on macOS and Linux. Returns a list of filename strings
-(excluding `.` and `..`).
-
-```c
-// Replace the stub with:
-DIR* dir = opendir(path_str);
-if (!dir) { vm_push(vm, NIL_VAL); break; }
-Value result = NIL_VAL;
-struct dirent* ent;
-while ((ent = readdir(dir)) != NULL) {
-    if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) continue;
-    // Build cons cell with string
-    Value name = vm_make_string(vm, ent->d_name);
-    result = vm_cons(vm, name, result);
-}
-closedir(dir);
-vm_push(vm, vm_reverse_list(vm, result));
-```
+**Status**: The standalone VM now implements builtin 601 with
+`opendir(3)` / `readdir(3)` / `closedir(3)` on non-WASM targets. It returns a
+list of filename strings excluding `.` and `..`; the WASM build keeps the safe
+`nil` fallback because browser-hosted VM execution has no POSIX directory API.
 
 **Impact**: Eliminates `ls -1` shell-outs in 6+ files in eshkol-agent.
 
@@ -158,9 +142,8 @@ typedef struct {
 } ThreadPool;
 ```
 
-**Impact**: Tool execution in `query-loop.esk` would run tools in ACTUAL
-parallel (currently `parallel-map` is sequential). This alone makes our
-agent faster than Claude Code for multi-tool responses.
+**Impact**: Tool execution in `query-loop.esk` can run tools in actual
+parallel once closure execution no longer serializes through the main VM.
 
 ---
 
@@ -1162,7 +1145,7 @@ Use `core.functional` for cleaner code:
 
 | Section | Category | Count | Status |
 |---------|----------|-------|--------|
-| **A** | Fix broken stubs | **4** | In Eshkol, needs implementation |
+| **A** | Fix broken stubs | **4** | Mostly implemented; A.3 remains partial |
 | **B.1** | Filesystem | **16** | Truly missing |
 | **B.2** | Path | **8** | Truly missing |
 | **B.3** | Process | **6** | Truly missing |
@@ -1226,8 +1209,7 @@ These exist and work. We just need to `(require ...)` them:
 
 ## Implementation Priority
 
-**P0 — Do first (unblocks everything):**
-- A.1 Fix `directory-entries` (one function, eliminates 6 shell-outs)
+**P0 — Remaining work that unblocks everything:**
 - A.3 Fix parallel primitives (makes tool execution truly concurrent)
 - B.1 Filesystem: `mkdir-recursive`, `file-rename`, `file-size`, `directory-delete-recursive`
 - B.7 System: `os-type`, `home-directory`, `executable-exists?`, `current-time-ms`
@@ -2040,8 +2022,7 @@ VM case 51 only does `snprintf` with no radix. Extend.
 
 ## Complete Priority List (Final)
 
-**P0 — Unblocks everything (14 items):**
-- A.1 Fix `directory-entries`
+**P0 — Unblocks everything (remaining items):**
 - A.3 Fix parallel primitives (real concurrency)
 - B.1 `mkdir-recursive`, `file-rename`, `file-size`, `directory-delete-recursive`
 - B.7 `os-type`, `home-directory`, `executable-exists?`, `current-time-ms`
