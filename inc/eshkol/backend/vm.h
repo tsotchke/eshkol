@@ -50,6 +50,12 @@ typedef struct VM VM;
 typedef int (*eshkol_vm_host_native_fn)(VM* vm);
 int eshkol_vm_register_host_native(const char* name, eshkol_vm_host_native_fn fn);
 
+/* Release a previously-registered slot so it can be reused by a later
+ * register call. The slot index remains valid (as a tombstone) so any
+ * other live registrations keep their indices stable. Returns 0 on
+ * success, -1 if `slot` is out of range or already free. */
+int eshkol_vm_unregister_host_native(int slot);
+
 /* Helpers callable only from a registered host-native callback. */
 int eshkol_vm_host_pop_int64(VM* vm, int64_t* out);
 int eshkol_vm_host_push_int64(VM* vm, int64_t value);

@@ -33,7 +33,7 @@
 (newline)
 
 (define future-list (future (lambda () (list 9 10 11))))
-(define forced-list (force-future future-list))
+(define forced-list (force future-list))
 (display "T3 future worker-local list publication: ")
 (display (if (and (future-ready? future-list)
                   (= (length forced-list) 3)
