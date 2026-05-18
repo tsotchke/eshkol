@@ -58,6 +58,11 @@
 #include <glob.h>
 #include <fnmatch.h>
 #include <errno.h>
+#ifdef __APPLE__
+#include <util.h>
+#else
+#include <pty.h>
+#endif
 #ifndef _WIN32
 #include <termios.h>
 #endif
@@ -483,6 +488,7 @@ static const BuiltinDef BUILTINS[] = {
     {"process-kill", 1782, 2}, {"io-poll", 1783, 2},
     {"poll", 1783, 2}, {"process-pid", 1784, 0},
     {"process-setpgid", 1785, 2}, {"process-kill-tree", 1786, 2},
+    {"process-spawn-pty", 1787, 1}, {"process-read-nonblocking", 1788, 2},
     /* ═══════════════════════════════════════════════════════════════
      * KB Extensions — IDs 1800-1809
      * ═══════════════════════════════════════════════════════════════ */

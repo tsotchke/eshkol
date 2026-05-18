@@ -1,0 +1,40 @@
+;; Standalone VM regression for PTY-backed process handles.
+
+(display "=== process PTY VM surface regression ===") (newline)
+
+(define proc (process-spawn-pty "printf vm-pty-ready; sleep 20"))
+
+(display "T1 process-spawn-pty returns (pid . fd): ")
+(display (if (and (pair? proc)
+                  (number? (car proc))
+                  (number? (cdr proc))
+                  (> (car proc) 1)
+                  (> (cdr proc) 1))
+             "PASS"
+             (list "FAIL got " proc)))
+(newline)
+
+(define out
+  (let loop ((i 0))
+    (let ((chunk (process-read-nonblocking proc 256)))
+      (if (or (string? chunk) (>= i 20))
+          chunk
+          (begin
+            (sleep-ms 50)
+            (loop (+ i 1)))))))
+
+(display "T2 process-read-nonblocking reads PTY output: ")
+(display (if (and (string? out) (> (string-length out) 0))
+             "PASS"
+             (list "FAIL got " out)))
+(newline)
+
+(display "T3 process-kill-tree + process-wait accepts PTY handle: ")
+(define killed (process-kill-tree proc 15))
+(define status (if killed (process-wait proc) 0))
+(display (if (and killed (number? status) (not (= status 0)))
+             "PASS"
+             (list "FAIL killed=" killed " status=" status)))
+(newline)
+
+(display "=== process PTY VM surface complete ===") (newline)
