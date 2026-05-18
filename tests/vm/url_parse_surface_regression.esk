@@ -3,12 +3,12 @@
 (display "=== url parse VM surface regression ===") (newline)
 
 (define parsed (url-parse "https://example.com:8443/path/to?q=1#frag"))
-
-(define (alist-ref key alist)
-  (let ((entry (assoc key alist)))
-    (if entry
-        (cdr entry)
-        #f)))
+(define parsed-scheme (car parsed))
+(define parsed-host (car (cdr parsed)))
+(define parsed-port (car (cdr (cdr parsed))))
+(define parsed-path (car (cdr (cdr (cdr parsed)))))
+(define parsed-query (car (cdr (cdr (cdr (cdr parsed))))))
+(define parsed-fragment (car (cdr (cdr (cdr (cdr (cdr parsed)))))))
 
 (display "T1 url-parse returns alist: ")
 (display (if (pair? parsed)
@@ -17,31 +17,41 @@
 (newline)
 
 (display "T2 url-parse extracts scheme and host: ")
-(display (if (and (string=? (alist-ref "scheme" parsed) "https")
-                  (string=? (alist-ref "host" parsed) "example.com"))
+(display (if (and (string=? (car parsed-scheme) "scheme")
+                  (string=? (cdr parsed-scheme) "https")
+                  (string=? (car parsed-host) "host")
+                  (string=? (cdr parsed-host) "example.com"))
              "PASS"
              (list "FAIL got " parsed)))
 (newline)
 
 (display "T3 url-parse extracts port and path: ")
-(display (if (and (= (alist-ref "port" parsed) 8443)
-                  (string=? (alist-ref "path" parsed) "/path/to"))
+(display (if (and (string=? (car parsed-port) "port")
+                  (= (cdr parsed-port) 8443)
+                  (string=? (car parsed-path) "path")
+                  (string=? (cdr parsed-path) "/path/to"))
              "PASS"
              (list "FAIL got " parsed)))
 (newline)
 
 (display "T4 url-parse extracts query and fragment: ")
-(display (if (and (string=? (alist-ref "query" parsed) "q=1")
-                  (string=? (alist-ref "fragment" parsed) "frag"))
+(display (if (and (string=? (car parsed-query) "query")
+                  (string=? (cdr parsed-query) "q=1")
+                  (string=? (car parsed-fragment) "fragment")
+                  (string=? (cdr parsed-fragment) "frag"))
              "PASS"
              (list "FAIL got " parsed)))
 (newline)
 
 (define defaulted (url-parse "https://example.org"))
+(define defaulted-port (car (cdr (cdr defaulted))))
+(define defaulted-path (car (cdr (cdr (cdr defaulted)))))
 
 (display "T5 url-parse defaults https port and root path: ")
-(display (if (and (= (alist-ref "port" defaulted) 443)
-                  (string=? (alist-ref "path" defaulted) "/"))
+(display (if (and (string=? (car defaulted-port) "port")
+                  (= (cdr defaulted-port) 443)
+                  (string=? (car defaulted-path) "path")
+                  (string=? (cdr defaulted-path) "/"))
              "PASS"
              (list "FAIL got " defaulted)))
 (newline)

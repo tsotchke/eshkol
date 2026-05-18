@@ -5563,6 +5563,8 @@ static const BuiltinDef BUILTINS[] = {
     {"allow-sleep", 1953, 1},
     {"url-encode", 1954, 1}, {"url-decode", 1955, 1},
     {"url-parse", 1960, 1},
+    {"base64url-encode", 1961, 1}, {"base64url-decode", 1962, 1},
+    {"uuid-v4", 1963, 0}, {"constant-time-equal?", 1964, 2},
     {"string-ends-with?", 1956, 2}, {"string-index-of", 1957, 3},
     {"string-pad-left", 1958, 3}, {"string-pad-right", 1959, 3},
     /* Missing hash */

@@ -1,0 +1,57 @@
+;; Standalone VM regression for B.6 crypto utility primitives.
+
+(display "=== crypto VM surface regression ===") (newline)
+
+(display "T1 base64url-encode RFC examples: ")
+(display (if (and (string=? (base64url-encode "f") "Zg")
+                  (string=? (base64url-encode "fo") "Zm8")
+                  (string=? (base64url-encode "foo") "Zm9v")
+                  (string=? (base64url-encode "foobar") "Zm9vYmFy"))
+             "PASS"
+             "FAIL"))
+(newline)
+
+(display "T2 base64url-decode padded and unpadded: ")
+(display (if (and (string=? (base64url-decode "SGVsbG8") "Hello")
+                  (string=? (base64url-decode "SGVsbG8=") "Hello"))
+             "PASS"
+             "FAIL"))
+(newline)
+
+(display "T3 base64url roundtrip: ")
+(display (if (string=? (base64url-decode (base64url-encode "hello/world?x=1"))
+                       "hello/world?x=1")
+             "PASS"
+             "FAIL"))
+(newline)
+
+(display "T4 base64url-decode rejects malformed length: ")
+(display (if (not (base64url-decode "A"))
+             "PASS"
+             "FAIL"))
+(newline)
+
+(define uuid (uuid-v4))
+
+(display "T5 uuid-v4 shape and version: ")
+(display (if (and (string? uuid)
+                  (= (string-length uuid) 36)
+                  (string=? (substring uuid 8 9) "-")
+                  (string=? (substring uuid 13 14) "-")
+                  (string=? (substring uuid 14 15) "4")
+                  (string=? (substring uuid 18 19) "-")
+                  (string=? (substring uuid 23 24) "-")
+                  (string-index-of "89ab" (substring uuid 19 20) 0))
+             "PASS"
+             (list "FAIL got " uuid)))
+(newline)
+
+(display "T6 constant-time-equal? string bytes: ")
+(display (if (and (constant-time-equal? "same" "same")
+                  (not (constant-time-equal? "same" "diff"))
+                  (not (constant-time-equal? "same" "same!")))
+             "PASS"
+             "FAIL"))
+(newline)
+
+(display "=== crypto VM surface complete ===") (newline)

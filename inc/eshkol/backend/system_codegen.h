@@ -293,6 +293,10 @@ public:
     llvm::Value* urlEncode(const eshkol_operations_t* op);
     llvm::Value* urlDecode(const eshkol_operations_t* op);
     llvm::Value* urlParse(const eshkol_operations_t* op);
+    llvm::Value* base64urlEncode(const eshkol_operations_t* op);
+    llvm::Value* base64urlDecode(const eshkol_operations_t* op);
+    llvm::Value* uuidV4(const eshkol_operations_t* op);
+    llvm::Value* constantTimeEqual(const eshkol_operations_t* op);
     llvm::Value* stringEndsWith(const eshkol_operations_t* op);
     llvm::Value* stringIndexOf(const eshkol_operations_t* op);
     llvm::Value* stringPadLeft(const eshkol_operations_t* op);
