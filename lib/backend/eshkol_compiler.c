@@ -5557,6 +5557,8 @@ static const BuiltinDef BUILTINS[] = {
     {"temp-directory", 1951, 0}, {"prevent-sleep", 1952, 1},
     {"allow-sleep", 1953, 1},
     {"url-encode", 1954, 1}, {"url-decode", 1955, 1},
+    {"string-ends-with?", 1956, 2}, {"string-index-of", 1957, 3},
+    {"string-pad-left", 1958, 3}, {"string-pad-right", 1959, 3},
     /* Missing hash */
     {"hash-clear!", 668, 1},
     /* gcd / lcm */

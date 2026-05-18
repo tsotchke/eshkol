@@ -1242,6 +1242,10 @@ public:
         function_return_types["string-truncate-display"] = BuiltinTypes::String;
         function_return_types["url-encode"] = BuiltinTypes::String;
         function_return_types["url-decode"] = BuiltinTypes::String;
+        function_return_types["string-ends-with?"] = BuiltinTypes::Boolean;
+        function_return_types["string-index-of"] = BuiltinTypes::Integer;
+        function_return_types["string-pad-left"] = BuiltinTypes::String;
+        function_return_types["string-pad-right"] = BuiltinTypes::String;
         function_return_types["kb-save"] = BuiltinTypes::Boolean;
         function_return_types["kb-load"] = BuiltinTypes::Value;
         function_return_types["tensor-token-estimate"] = BuiltinTypes::Integer;
@@ -11936,6 +11940,10 @@ private:
         if (func_name == "string-truncate-display") return system_->stringTruncateDisplay(op);
         if (func_name == "url-encode") return system_->urlEncode(op);
         if (func_name == "url-decode") return system_->urlDecode(op);
+        if (func_name == "string-ends-with?") return system_->stringEndsWith(op);
+        if (func_name == "string-index-of") return system_->stringIndexOf(op);
+        if (func_name == "string-pad-left") return system_->stringPadLeft(op);
+        if (func_name == "string-pad-right") return system_->stringPadRight(op);
         if (func_name == "kb-save") return system_->kbSave(op);
         if (func_name == "kb-load") return system_->kbLoad(op);
         if (func_name == "tensor-token-estimate") return system_->tensorTokenEstimate(op);
@@ -19862,6 +19870,8 @@ private:
             "fs-watch-native", "fs-watch-recursive", "fs-watch-poll", "fs-unwatch",
             "ansi-strip", "string-display-width", "string-truncate-display",
             "url-encode", "url-decode",
+            "string-ends-with?", "string-index-of",
+            "string-pad-left", "string-pad-right",
             "kb-save", "kb-load", "tensor-token-estimate",
             "fg-marginal", "fg-entropy", "kb-retract!",
             "make-substitution", "unify", "walk",

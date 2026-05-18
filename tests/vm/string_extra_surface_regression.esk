@@ -1,0 +1,44 @@
+;; Standalone VM regression for extra B.8 string helpers.
+
+(display "=== string extra VM surface regression ===") (newline)
+
+(display "T1 string-ends-with? true/false: ")
+(display (if (and (string-ends-with? "abcdef" "def")
+                  (not (string-ends-with? "abcdef" "deX")))
+             "PASS"
+             "FAIL"))
+(newline)
+
+(display "T2 string-index-of finds from start offset: ")
+(display (if (and (= (string-index-of "abcabc" "bc" 0) 1)
+                  (= (string-index-of "abcabc" "bc" 2) 4)
+                  (not (string-index-of "abcabc" "zz" 0)))
+             "PASS"
+             (list "FAIL got " (string-index-of "abcabc" "bc" 2))))
+(newline)
+
+(display "T3 string-index-of empty substring returns start: ")
+(display (if (= (string-index-of "abc" "" 2) 2)
+             "PASS"
+             "FAIL"))
+(newline)
+
+(display "T4 string-pad-left pads with codepoint: ")
+(display (if (string=? (string-pad-left "7" 3 48) "007")
+             "PASS"
+             (list "FAIL got " (string-pad-left "7" 3 48))))
+(newline)
+
+(display "T5 string-pad-right returns original when wide enough: ")
+(display (if (string=? (string-pad-right "done" 2 46) "done")
+             "PASS"
+             (list "FAIL got " (string-pad-right "done" 2 46))))
+(newline)
+
+(display "T6 string-pad-right pads with codepoint: ")
+(display (if (string=? (string-pad-right "go" 4 33) "go!!")
+             "PASS"
+             (list "FAIL got " (string-pad-right "go" 4 33))))
+(newline)
+
+(display "=== string extra VM surface complete ===") (newline)
