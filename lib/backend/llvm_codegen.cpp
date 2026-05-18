@@ -1216,6 +1216,10 @@ public:
         function_return_types["socket-send"] = BuiltinTypes::Integer;
         function_return_types["socket-recv"] = BuiltinTypes::String;
         function_return_types["socket-close"] = BuiltinTypes::Boolean;
+        function_return_types["fs-watch-native"] = BuiltinTypes::Integer;
+        function_return_types["fs-watch-recursive"] = BuiltinTypes::Integer;
+        function_return_types["fs-watch-poll"] = BuiltinTypes::String;
+        function_return_types["fs-unwatch"] = BuiltinTypes::Boolean;
         function_return_types["kb-save"] = BuiltinTypes::Boolean;
         function_return_types["kb-load"] = BuiltinTypes::Value;
         function_return_types["tensor-token-estimate"] = BuiltinTypes::Integer;
@@ -11884,6 +11888,10 @@ private:
         if (func_name == "socket-send") return system_->socketSend(op);
         if (func_name == "socket-recv") return system_->socketRecv(op);
         if (func_name == "socket-close") return system_->socketClose(op);
+        if (func_name == "fs-watch-native") return system_->fsWatchNative(op);
+        if (func_name == "fs-watch-recursive") return system_->fsWatchRecursive(op);
+        if (func_name == "fs-watch-poll") return system_->fsWatchPoll(op);
+        if (func_name == "fs-unwatch") return system_->fsUnwatch(op);
         if (func_name == "kb-save") return system_->kbSave(op);
         if (func_name == "kb-load") return system_->kbLoad(op);
         if (func_name == "tensor-token-estimate") return system_->tensorTokenEstimate(op);
@@ -19801,6 +19809,7 @@ private:
             "process-spawn-pty", "process-read-nonblocking",
             "process-pid", "file-mmap", "file-munmap",
             "unix-socket-connect", "socket-send", "socket-recv", "socket-close",
+            "fs-watch-native", "fs-watch-recursive", "fs-watch-poll", "fs-unwatch",
             "kb-save", "kb-load", "tensor-token-estimate",
             "fg-marginal", "fg-entropy", "kb-retract!",
             "make-substitution", "unify", "walk",

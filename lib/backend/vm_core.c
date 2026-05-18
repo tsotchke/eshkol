@@ -301,6 +301,17 @@ typedef struct VM {
      * either that handle or the pid directly. */
     struct { int64_t pid; int fd; } pty_handles[64];
     int n_pty_handles;
+
+    /* VM-lifetime file watchers.  The standalone VM uses stat-based polling
+     * for deterministic, dependency-free watcher handles. */
+    struct {
+        int active;
+        int recursive;
+        int exists;
+        int64_t mtime_ns;
+        int64_t size;
+        char path[1024];
+    } fs_watchers[32];
 } VM;
 
 /* Command-line arguments (set in main, read by native 602) */

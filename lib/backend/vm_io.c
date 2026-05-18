@@ -16,11 +16,19 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
-#ifndef ESHKOL_VM_NO_DISASM
-/* Full POSIX I/O — not available in WASM */
+#ifndef ESHKOL_VM_WASM
+/* Full file-status/delete I/O is not available in WASM. */
+#ifdef _WIN32
+#include <sys/stat.h>
+#include <io.h>
+#ifndef unlink
+#define unlink _unlink
+#endif
+#else
 #include <sys/stat.h>
 #include <unistd.h>
 #include <errno.h>
+#endif
 #endif
 
 /* ── Port Types ── */
@@ -391,7 +399,7 @@ static int vm_port_is_output(VmPort* port) {
 
 /* 596: file-exists? */
 static int vm_port_file_exists(const char* path) {
-#ifdef ESHKOL_VM_NO_DISASM
+#ifdef ESHKOL_VM_WASM
     (void)path;
     return 0; /* No filesystem in WASM */
 #else
@@ -402,7 +410,7 @@ static int vm_port_file_exists(const char* path) {
 
 /* 597: delete-file */
 static int vm_port_delete_file(const char* path) {
-#ifdef ESHKOL_VM_NO_DISASM
+#ifdef ESHKOL_VM_WASM
     (void)path;
     return 0; /* No filesystem in WASM */
 #else
