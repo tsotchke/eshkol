@@ -31,6 +31,9 @@
 #include <sys/un.h>
 #include <glob.h>
 #include <fnmatch.h>
+#ifndef ESHKOL_VM_WASM
+#include <regex.h>
+#endif
 #ifdef __APPLE__
 #include <util.h>
 #else
@@ -181,6 +184,17 @@ static const char* sys_extract_string(eshkol_sysbuiltin_value_t v) {
         return (const char*)(uintptr_t)v.data;
     }
     return NULL;
+}
+
+static int64_t sys_extract_int64(eshkol_sysbuiltin_value_t v) {
+    if (v.type == SYS_TYPE_DOUBLE) {
+        double d = 0.0;
+        memcpy(&d, &v.data, sizeof(double));
+        return (int64_t)d;
+    }
+    int64_t i = 0;
+    memcpy(&i, &v.data, sizeof(int64_t));
+    return i;
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -424,6 +438,39 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_current_timestamp_v(void) {
     v -= 116444736000000000ULL;
     double secs = (double)v * 1e-7;
     return sys_make_double(secs);
+#endif
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_format_relative_v(eshkol_sysbuiltin_value_t seconds_val) {
+    int64_t seconds_ago = sys_extract_int64(seconds_val);
+    if (seconds_ago < 0) seconds_ago = 0;
+    char buf[32];
+    if (seconds_ago < 60)
+        snprintf(buf, sizeof(buf), "%llds ago", (long long)seconds_ago);
+    else if (seconds_ago < 3600)
+        snprintf(buf, sizeof(buf), "%lldm ago", (long long)(seconds_ago / 60));
+    else if (seconds_ago < 86400)
+        snprintf(buf, sizeof(buf), "%lldh ago", (long long)(seconds_ago / 3600));
+    else
+        snprintf(buf, sizeof(buf), "%lldd ago", (long long)(seconds_ago / 86400));
+    return sys_make_string(buf);
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_local_timezone_offset_v(void) {
+#if defined(ESHKOL_VM_WASM)
+    return sys_make_int64(0);
+#else
+    time_t now = time(NULL);
+    struct tm local_tm;
+    struct tm utc_tm;
+#if defined(_WIN32)
+    if (localtime_s(&local_tm, &now) != 0 || gmtime_s(&utc_tm, &now) != 0)
+        return sys_make_int64(0);
+#else
+    if (!localtime_r(&now, &local_tm) || !gmtime_r(&now, &utc_tm))
+        return sys_make_int64(0);
+#endif
+    return sys_make_int64((int64_t)difftime(mktime(&local_tm), mktime(&utc_tm)));
 #endif
 }
 
@@ -2448,6 +2495,163 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_sha256_file_v(eshkol_sysbuiltin_
     return sys_make_string(out);
 }
 
+typedef struct {
+    int active;
+    void* regex;
+} eshkol_sys_regex_handle_t;
+
+static eshkol_sys_regex_handle_t g_sys_regex_handles[32];
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_regex_compile_v(eshkol_sysbuiltin_value_t pattern_val) {
+#if !defined(_WIN32) && !defined(ESHKOL_VM_WASM)
+    const char* pattern = sys_extract_string(pattern_val);
+    if (!pattern) return sys_make_bool(0);
+    int slot = -1;
+    for (int i = 1; i < (int)(sizeof(g_sys_regex_handles) / sizeof(g_sys_regex_handles[0])); ++i) {
+        if (!g_sys_regex_handles[i].active) {
+            slot = i;
+            break;
+        }
+    }
+    if (slot < 0) return sys_make_bool(0);
+    regex_t* re = (regex_t*)calloc(1, sizeof(regex_t));
+    if (!re) return sys_make_bool(0);
+    if (regcomp(re, pattern, REG_EXTENDED) != 0) {
+        free(re);
+        return sys_make_bool(0);
+    }
+    g_sys_regex_handles[slot].active = 1;
+    g_sys_regex_handles[slot].regex = re;
+    return sys_make_int64((int64_t)slot);
+#else
+    (void)pattern_val;
+    return sys_make_bool(0);
+#endif
+}
+
+static void* sys_regex_get(eshkol_sysbuiltin_value_t handle_val) {
+#if !defined(_WIN32) && !defined(ESHKOL_VM_WASM)
+    int handle = (int)sys_extract_int64(handle_val);
+    if (handle <= 0 || handle >= (int)(sizeof(g_sys_regex_handles) / sizeof(g_sys_regex_handles[0])) ||
+        !g_sys_regex_handles[handle].active)
+        return NULL;
+    return g_sys_regex_handles[handle].regex;
+#else
+    (void)handle_val;
+    return NULL;
+#endif
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_regex_free_v(eshkol_sysbuiltin_value_t handle_val) {
+#if !defined(_WIN32) && !defined(ESHKOL_VM_WASM)
+    int handle = (int)sys_extract_int64(handle_val);
+    if (handle <= 0 || handle >= (int)(sizeof(g_sys_regex_handles) / sizeof(g_sys_regex_handles[0])) ||
+        !g_sys_regex_handles[handle].active)
+        return sys_make_bool(0);
+    regex_t* re = (regex_t*)g_sys_regex_handles[handle].regex;
+    if (re) {
+        regfree(re);
+        free(re);
+    }
+    memset(&g_sys_regex_handles[handle], 0, sizeof(g_sys_regex_handles[handle]));
+    return sys_make_bool(1);
+#else
+    (void)handle_val;
+    return sys_make_bool(0);
+#endif
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_regex_match_v(eshkol_sysbuiltin_value_t handle_val,
+                                                               eshkol_sysbuiltin_value_t subject_val,
+                                                               int boolean_only) {
+#if !defined(_WIN32) && !defined(ESHKOL_VM_WASM)
+    regex_t* re = (regex_t*)sys_regex_get(handle_val);
+    const char* subject = sys_extract_string(subject_val);
+    if (!re || !subject) return sys_make_bool(0);
+    regmatch_t m[1];
+    int rc = regexec(re, subject, 1, m, 0);
+    if (rc != 0 || m[0].rm_so < 0) return sys_make_bool(0);
+    if (boolean_only) return sys_make_bool(1);
+    return sys_make_string_len(subject + m[0].rm_so, (size_t)(m[0].rm_eo - m[0].rm_so));
+#else
+    (void)handle_val; (void)subject_val; (void)boolean_only;
+    return sys_make_bool(0);
+#endif
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_regex_match_groups_v(eshkol_sysbuiltin_value_t handle_val,
+                                                                      eshkol_sysbuiltin_value_t subject_val) {
+#if !defined(_WIN32) && !defined(ESHKOL_VM_WASM)
+    regex_t* re = (regex_t*)sys_regex_get(handle_val);
+    const char* subject = sys_extract_string(subject_val);
+    if (!re || !subject) return sys_make_bool(0);
+    size_t nmatch = re->re_nsub + 1;
+    if (nmatch > 32) nmatch = 32;
+    regmatch_t matches[32];
+    int rc = regexec(re, subject, nmatch, matches, 0);
+    if (rc != 0 || matches[0].rm_so < 0) return sys_make_bool(0);
+
+    eshkol_sysbuiltin_value_t groups = sys_make_null();
+    for (size_t i = nmatch; i > 1; --i) {
+        regmatch_t m = matches[i - 1];
+        eshkol_sysbuiltin_value_t item = (m.rm_so >= 0)
+            ? sys_make_string_len(subject + m.rm_so, (size_t)(m.rm_eo - m.rm_so))
+            : sys_make_string("");
+        groups = sys_make_pair(item, groups);
+    }
+
+    eshkol_sysbuiltin_value_t result = sys_make_null();
+    result = sys_make_pair(sys_alist_entry("end", sys_make_int64((int64_t)matches[0].rm_eo)), result);
+    result = sys_make_pair(sys_alist_entry("start", sys_make_int64((int64_t)matches[0].rm_so)), result);
+    result = sys_make_pair(sys_alist_entry("groups", groups), result);
+    result = sys_make_pair(sys_alist_entry("full",
+                          sys_make_string_len(subject + matches[0].rm_so,
+                                              (size_t)(matches[0].rm_eo - matches[0].rm_so))), result);
+    return result;
+#else
+    (void)handle_val; (void)subject_val;
+    return sys_make_bool(0);
+#endif
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_regex_split_v(eshkol_sysbuiltin_value_t handle_val,
+                                                               eshkol_sysbuiltin_value_t subject_val) {
+#if !defined(_WIN32) && !defined(ESHKOL_VM_WASM)
+    regex_t* re = (regex_t*)sys_regex_get(handle_val);
+    const char* subject = sys_extract_string(subject_val);
+    if (!re || !subject) return sys_make_bool(0);
+    int subject_len = (int)strlen(subject);
+    int offset = 0;
+    int parts = 0;
+    eshkol_sysbuiltin_value_t rev = sys_make_null();
+    while (offset <= subject_len && parts < 1024) {
+        regmatch_t m[1];
+        int rc = regexec(re, subject + offset, 1, m, 0);
+        if (rc != 0 || m[0].rm_so < 0) break;
+        int start = offset + (int)m[0].rm_so;
+        int end = offset + (int)m[0].rm_eo;
+        rev = sys_make_pair(sys_make_string_len(subject + offset, (size_t)(start - offset)), rev);
+        parts++;
+        if (end <= offset) break;
+        offset = end;
+    }
+    rev = sys_make_pair(sys_make_string_len(subject + offset, (size_t)(subject_len - offset)), rev);
+    eshkol_sysbuiltin_value_t out = sys_make_null();
+    while (rev.type == SYS_TYPE_HEAP_PTR && rev.flags == 0x00 && rev.data != 0) {
+        eshkol_sysbuiltin_value_t car;
+        eshkol_sysbuiltin_value_t cdr;
+        memcpy(&car, (void*)(uintptr_t)rev.data, sizeof(car));
+        memcpy(&cdr, (char*)(uintptr_t)rev.data + sizeof(car), sizeof(cdr));
+        out = sys_make_pair(car, out);
+        rev = cdr;
+    }
+    return out;
+#else
+    (void)handle_val; (void)subject_val;
+    return sys_make_bool(0);
+#endif
+}
+
 static int sys_utf8_encode_codepoint(int cp, char* out) {
     if (!out) return 0;
     if (cp < 0) cp = ' ';
@@ -2848,6 +3052,8 @@ void eshkol_builtin_sleep_ms(sv_t* out, const sv_t* a) { *out = eshkol_builtin_s
 void eshkol_builtin_format_iso8601(sv_t* out, const sv_t* a) { *out = eshkol_builtin_format_iso8601_v(*a); }
 void eshkol_builtin_parse_iso8601(sv_t* out, const sv_t* a) { *out = eshkol_builtin_parse_iso8601_v(*a); }
 void eshkol_builtin_current_timestamp(sv_t* out) { *out = eshkol_builtin_current_timestamp_v(); }
+void eshkol_builtin_format_relative(sv_t* out, const sv_t* a) { *out = eshkol_builtin_format_relative_v(*a); }
+void eshkol_builtin_local_timezone_offset(sv_t* out) { *out = eshkol_builtin_local_timezone_offset_v(); }
 void eshkol_builtin_executable_exists(sv_t* out, const sv_t* a) { *out = eshkol_builtin_executable_exists_v(*a); }
 void eshkol_builtin_executable_path(sv_t* out, const sv_t* a) { *out = eshkol_builtin_executable_path_v(*a); }
 void eshkol_builtin_monotonic_time_ms(sv_t* out) { *out = eshkol_builtin_monotonic_time_ms_v(); }
@@ -2922,6 +3128,12 @@ void eshkol_builtin_base64url_decode(sv_t* out, const sv_t* a) { *out = eshkol_b
 void eshkol_builtin_uuid_v4(sv_t* out) { *out = eshkol_builtin_uuid_v4_v(); }
 void eshkol_builtin_constant_time_equal(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_constant_time_equal_v(*a, *b); }
 void eshkol_builtin_sha256_file(sv_t* out, const sv_t* a) { *out = eshkol_builtin_sha256_file_v(*a); }
+void eshkol_builtin_regex_compile(sv_t* out, const sv_t* a) { *out = eshkol_builtin_regex_compile_v(*a); }
+void eshkol_builtin_regex_free(sv_t* out, const sv_t* a) { *out = eshkol_builtin_regex_free_v(*a); }
+void eshkol_builtin_regex_match(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_regex_match_v(*a, *b, 0); }
+void eshkol_builtin_regex_match_p(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_regex_match_v(*a, *b, 1); }
+void eshkol_builtin_regex_match_groups(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_regex_match_groups_v(*a, *b); }
+void eshkol_builtin_regex_split(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_regex_split_v(*a, *b); }
 void eshkol_builtin_string_ends_with(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_string_ends_with_v(*a, *b); }
 void eshkol_builtin_string_index_of(sv_t* out, const sv_t* a, const sv_t* b, const sv_t* c) { *out = eshkol_builtin_string_index_of_v(*a, *b, *c); }
 void eshkol_builtin_string_pad_left(sv_t* out, const sv_t* a, const sv_t* b, const sv_t* c) { *out = eshkol_builtin_string_pad_v(*a, *b, *c, 1); }

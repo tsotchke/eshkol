@@ -262,6 +262,8 @@ public:
     llvm::Value* formatIso8601(const eshkol_operations_t* op);
     llvm::Value* parseIso8601(const eshkol_operations_t* op);
     llvm::Value* currentTimestamp(const eshkol_operations_t* op);
+    llvm::Value* formatRelative(const eshkol_operations_t* op);
+    llvm::Value* localTimezoneOffset(const eshkol_operations_t* op);
 
     /* v1.2 batch 4 */
     llvm::Value* processPid(const eshkol_operations_t* op);
@@ -298,6 +300,12 @@ public:
     llvm::Value* uuidV4(const eshkol_operations_t* op);
     llvm::Value* constantTimeEqual(const eshkol_operations_t* op);
     llvm::Value* sha256File(const eshkol_operations_t* op);
+    llvm::Value* regexCompile(const eshkol_operations_t* op);
+    llvm::Value* regexFree(const eshkol_operations_t* op);
+    llvm::Value* regexMatch(const eshkol_operations_t* op);
+    llvm::Value* regexMatchPredicate(const eshkol_operations_t* op);
+    llvm::Value* regexMatchGroups(const eshkol_operations_t* op);
+    llvm::Value* regexSplit(const eshkol_operations_t* op);
     llvm::Value* stringEndsWith(const eshkol_operations_t* op);
     llvm::Value* stringIndexOf(const eshkol_operations_t* op);
     llvm::Value* stringPadLeft(const eshkol_operations_t* op);

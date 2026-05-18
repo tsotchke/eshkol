@@ -1042,22 +1042,60 @@ static int vm_regex_compile_handle(VM* vm, VmString* pattern) {
 #endif
 }
 
-static regex_t* vm_regex_get(VM* vm, Value handle_val) {
+static void* vm_regex_get(VM* vm, Value handle_val) {
 #if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
     if (!vm) return NULL;
     int handle = (int)as_number(handle_val);
     if (handle <= 0 || handle >= (int)(sizeof(vm->regex_handles) / sizeof(vm->regex_handles[0])) ||
         !vm->regex_handles[handle].active)
         return NULL;
-    return (regex_t*)vm->regex_handles[handle].regex;
+    return vm->regex_handles[handle].regex;
 #else
     (void)vm; (void)handle_val;
     return NULL;
 #endif
 }
 
-static Value vm_regex_match_value(VM* vm, regex_t* re, VmString* subject, int boolean_only) {
+static int vm_regex_free_handle(VM* vm, Value handle_val) {
 #if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
+    if (!vm) return 0;
+    int handle = (int)as_number(handle_val);
+    if (handle <= 0 || handle >= (int)(sizeof(vm->regex_handles) / sizeof(vm->regex_handles[0])) ||
+        !vm->regex_handles[handle].active)
+        return 0;
+    regex_t* re = (regex_t*)vm->regex_handles[handle].regex;
+    if (re) {
+        regfree(re);
+        free(re);
+    }
+    memset(&vm->regex_handles[handle], 0, sizeof(vm->regex_handles[handle]));
+    return 1;
+#else
+    (void)vm; (void)handle_val;
+    return 0;
+#endif
+}
+
+static void vm_regex_free_all(VM* vm) {
+#if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
+    if (!vm) return;
+    for (int i = 1; i < (int)(sizeof(vm->regex_handles) / sizeof(vm->regex_handles[0])); i++) {
+        if (!vm->regex_handles[i].active) continue;
+        regex_t* re = (regex_t*)vm->regex_handles[i].regex;
+        if (re) {
+            regfree(re);
+            free(re);
+        }
+        memset(&vm->regex_handles[i], 0, sizeof(vm->regex_handles[i]));
+    }
+#else
+    (void)vm;
+#endif
+}
+
+static Value vm_regex_match_value(VM* vm, void* re_ptr, VmString* subject, int boolean_only) {
+#if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
+    regex_t* re = (regex_t*)re_ptr;
     if (!vm || !re || !subject || !subject->data) return BOOL_VAL(0);
     regmatch_t m[1];
     int rc = regexec(re, subject->data, 1, m, 0);
@@ -1065,13 +1103,14 @@ static Value vm_regex_match_value(VM* vm, regex_t* re, VmString* subject, int bo
     if (boolean_only) return BOOL_VAL(1);
     return vm_string_value(vm, subject->data + m[0].rm_so, (int64_t)(m[0].rm_eo - m[0].rm_so));
 #else
-    (void)vm; (void)re; (void)subject; (void)boolean_only;
+    (void)vm; (void)re_ptr; (void)subject; (void)boolean_only;
     return BOOL_VAL(0);
 #endif
 }
 
-static Value vm_regex_match_groups_value(VM* vm, regex_t* re, VmString* subject) {
+static Value vm_regex_match_groups_value(VM* vm, void* re_ptr, VmString* subject) {
 #if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
+    regex_t* re = (regex_t*)re_ptr;
     if (!vm || !re || !subject || !subject->data) return BOOL_VAL(0);
     size_t nmatch = re->re_nsub + 1;
     if (nmatch > 32) nmatch = 32;
@@ -1095,13 +1134,14 @@ static Value vm_regex_match_groups_value(VM* vm, regex_t* re, VmString* subject)
                                           (int64_t)(matches[0].rm_eo - matches[0].rm_so))), result);
     return result;
 #else
-    (void)vm; (void)re; (void)subject;
+    (void)vm; (void)re_ptr; (void)subject;
     return BOOL_VAL(0);
 #endif
 }
 
-static Value vm_regex_split_value(VM* vm, regex_t* re, VmString* subject) {
+static Value vm_regex_split_value(VM* vm, void* re_ptr, VmString* subject) {
 #if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
+    regex_t* re = (regex_t*)re_ptr;
     if (!vm || !re || !subject || !subject->data) return BOOL_VAL(0);
     const char* base = subject->data;
     int offset = 0;
@@ -1127,8 +1167,181 @@ static Value vm_regex_split_value(VM* vm, regex_t* re, VmString* subject) {
     }
     return out;
 #else
-    (void)vm; (void)re; (void)subject;
+    (void)vm; (void)re_ptr; (void)subject;
     return BOOL_VAL(0);
+#endif
+}
+
+static int vm_time_is_leap_year(int year) {
+    return (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+}
+
+static int vm_time_days_in_month(int year, int month) {
+    static const int days[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+    if (month < 1 || month > 12) return 0;
+    if (month == 2 && vm_time_is_leap_year(year)) return 29;
+    return days[month - 1];
+}
+
+static int64_t vm_timegm_portable(int year, int month, int day,
+                                  int hour, int minute, int second) {
+    static const int days_before_month[] = {
+        0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334
+    };
+    int64_t days = 0;
+    if (year >= 1970) {
+        for (int y = 1970; y < year; y++)
+            days += vm_time_is_leap_year(y) ? 366 : 365;
+    } else {
+        for (int y = year; y < 1970; y++)
+            days -= vm_time_is_leap_year(y) ? 366 : 365;
+    }
+    days += days_before_month[month - 1];
+    if (month > 2 && vm_time_is_leap_year(year)) days++;
+    days += day - 1;
+    return days * 86400LL + (int64_t)hour * 3600LL +
+           (int64_t)minute * 60LL + (int64_t)second;
+}
+
+static int64_t vm_current_time_ns_now(void) {
+#if defined(ESHKOL_VM_WASM)
+    return 0;
+#elif defined(_WIN32)
+    FILETIME ft;
+    GetSystemTimeAsFileTime(&ft);
+    uint64_t v = ((uint64_t)ft.dwHighDateTime << 32) | ft.dwLowDateTime;
+    v -= 116444736000000000ULL;
+    return (int64_t)(v * 100ULL);
+#else
+    struct timespec ts;
+    if (clock_gettime(CLOCK_REALTIME, &ts) == 0)
+        return (int64_t)ts.tv_sec * 1000000000LL + (int64_t)ts.tv_nsec;
+    struct timeval tv;
+    if (gettimeofday(&tv, NULL) == 0)
+        return (int64_t)tv.tv_sec * 1000000000LL + (int64_t)tv.tv_usec * 1000LL;
+    return 0;
+#endif
+}
+
+static Value vm_format_iso8601_value(VM* vm, Value ns_val) {
+    int64_t ns;
+    if (ns_val.type == VAL_INT) {
+        ns = ns_val.as.i;
+    } else {
+        double d = as_number(ns_val);
+        if (fabs(d) >= 1000000000000000.0)
+            ns = (int64_t)llround(d / 1000000.0) * 1000000LL;
+        else
+            ns = (int64_t)d;
+    }
+    time_t secs = (time_t)(ns / 1000000000LL);
+    long ms = (long)((ns / 1000000LL) % 1000LL);
+    if (ms < 0) {
+        ms += 1000;
+        secs -= 1;
+    }
+
+    struct tm tmv;
+#if defined(_WIN32) && !defined(ESHKOL_VM_WASM)
+    if (gmtime_s(&tmv, &secs) != 0) return BOOL_VAL(0);
+#elif !defined(ESHKOL_VM_WASM)
+    if (!gmtime_r(&secs, &tmv)) return BOOL_VAL(0);
+#else
+    memset(&tmv, 0, sizeof(tmv));
+    tmv.tm_year = 70;
+    tmv.tm_mday = 1;
+#endif
+
+    char buf[40];
+    int n = snprintf(buf, sizeof(buf), "%04d-%02d-%02dT%02d:%02d:%02d.%03ldZ",
+                     tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday,
+                     tmv.tm_hour, tmv.tm_min, tmv.tm_sec, ms);
+    if (n <= 0 || n >= (int)sizeof(buf)) return BOOL_VAL(0);
+    return vm_string_value(vm, buf, n);
+}
+
+static Value vm_parse_iso8601_value(VM* vm, VmString* str) {
+    (void)vm;
+    if (!str || !str->data) return BOOL_VAL(0);
+    const char* s = str->data;
+    int year = 0, month = 0, day = 0, hour = 0, minute = 0, second = 0;
+    int ms = 0;
+    int n = 0;
+    if (sscanf(s, "%4d-%2d-%2d%*[T ]%2d:%2d:%2d%n",
+               &year, &month, &day, &hour, &minute, &second, &n) != 6)
+        return BOOL_VAL(0);
+    if (month < 1 || month > 12 || day < 1 ||
+        day > vm_time_days_in_month(year, month) ||
+        hour < 0 || hour > 23 || minute < 0 || minute > 59 ||
+        second < 0 || second > 59)
+        return BOOL_VAL(0);
+
+    const char* p = s + n;
+    if (*p == '.') {
+        p++;
+        int digits = 0;
+        int frac = 0;
+        while (*p >= '0' && *p <= '9' && digits < 9) {
+            frac = frac * 10 + (*p - '0');
+            digits++;
+            p++;
+        }
+        if (digits == 0) return BOOL_VAL(0);
+        while (digits < 3) { frac *= 10; digits++; }
+        while (digits > 3) { frac /= 10; digits--; }
+        ms = frac;
+    }
+
+    char tz_sign = 0;
+    int tz_hour = 0, tz_minute = 0;
+    if (*p == 'Z') {
+        p++;
+    } else if (*p == '+' || *p == '-') {
+        tz_sign = *p++;
+        int consumed = 0;
+        if (sscanf(p, "%2d:%2d%n", &tz_hour, &tz_minute, &consumed) != 2)
+            return BOOL_VAL(0);
+        if (tz_hour < 0 || tz_hour > 23 || tz_minute < 0 || tz_minute > 59)
+            return BOOL_VAL(0);
+        p += consumed;
+    }
+    if (*p != '\0') return BOOL_VAL(0);
+
+    int64_t secs = vm_timegm_portable(year, month, day, hour, minute, second);
+    if (tz_sign == '+') secs -= (int64_t)tz_hour * 3600LL + (int64_t)tz_minute * 60LL;
+    if (tz_sign == '-') secs += (int64_t)tz_hour * 3600LL + (int64_t)tz_minute * 60LL;
+    return INT_VAL(secs * 1000000000LL + (int64_t)ms * 1000000LL);
+}
+
+static Value vm_format_relative_value(VM* vm, int64_t seconds_ago) {
+    if (seconds_ago < 0) seconds_ago = 0;
+    char buf[32];
+    if (seconds_ago < 60)
+        snprintf(buf, sizeof(buf), "%llds ago", (long long)seconds_ago);
+    else if (seconds_ago < 3600)
+        snprintf(buf, sizeof(buf), "%lldm ago", (long long)(seconds_ago / 60));
+    else if (seconds_ago < 86400)
+        snprintf(buf, sizeof(buf), "%lldh ago", (long long)(seconds_ago / 3600));
+    else
+        snprintf(buf, sizeof(buf), "%lldd ago", (long long)(seconds_ago / 86400));
+    return vm_string_value(vm, buf, -1);
+}
+
+static int64_t vm_local_timezone_offset_seconds(void) {
+#if defined(ESHKOL_VM_WASM)
+    return 0;
+#else
+    time_t now = time(NULL);
+    struct tm local_tm;
+    struct tm utc_tm;
+#if defined(_WIN32)
+    if (localtime_s(&local_tm, &now) != 0 || gmtime_s(&utc_tm, &now) != 0)
+        return 0;
+#else
+    if (!localtime_r(&now, &local_tm) || !gmtime_r(&now, &utc_tm))
+        return 0;
+#endif
+    return (int64_t)difftime(mktime(&local_tm), mktime(&utc_tm));
 #endif
 }
 
@@ -4377,20 +4590,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 1967: { /* regex-free(handle) → bool */
         Value handle_val = vm_pop(vm);
-#if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
-        int handle = (int)as_number(handle_val);
-        if (handle > 0 && handle < (int)(sizeof(vm->regex_handles) / sizeof(vm->regex_handles[0])) &&
-            vm->regex_handles[handle].active) {
-            regfree((regex_t*)vm->regex_handles[handle].regex);
-            free(vm->regex_handles[handle].regex);
-            memset(&vm->regex_handles[handle], 0, sizeof(vm->regex_handles[handle]));
-            vm_push(vm, BOOL_VAL(1));
-            break;
-        }
-#else
-        (void)handle_val;
-#endif
-        vm_push(vm, BOOL_VAL(0));
+        vm_push(vm, BOOL_VAL(vm_regex_free_handle(vm, handle_val)));
         break;
     }
     case 1968: { /* regex-match(handle, subject) → string or #f */
@@ -4415,6 +4615,33 @@ static void vm_dispatch_native(VM* vm, int fid) {
         Value subject_val = vm_pop(vm), handle_val = vm_pop(vm);
         vm_push(vm, vm_regex_split_value(vm, vm_regex_get(vm, handle_val),
                                          vm_value_as_string(vm, subject_val)));
+        break;
+    }
+    case 1972: { /* current-timestamp() → seconds since epoch */
+        vm_push(vm, FLOAT_VAL((double)vm_current_time_ns_now() / 1000000000.0));
+        break;
+    }
+    case 1973: { /* current-time-ns() → integer nanoseconds since epoch */
+        vm_push(vm, INT_VAL(vm_current_time_ns_now()));
+        break;
+    }
+    case 1974: { /* format-iso8601(ns) → string */
+        Value ns_val = vm_pop(vm);
+        vm_push(vm, vm_format_iso8601_value(vm, ns_val));
+        break;
+    }
+    case 1975: { /* parse-iso8601(str) → integer nanoseconds or #f */
+        Value str_val = vm_pop(vm);
+        vm_push(vm, vm_parse_iso8601_value(vm, vm_value_as_string(vm, str_val)));
+        break;
+    }
+    case 1976: { /* format-relative(seconds-ago) → string */
+        Value seconds_val = vm_pop(vm);
+        vm_push(vm, vm_format_relative_value(vm, (int64_t)as_number(seconds_val)));
+        break;
+    }
+    case 1977: { /* local-timezone-offset() → seconds east of UTC */
+        vm_push(vm, INT_VAL(vm_local_timezone_offset_seconds()));
         break;
     }
     case 1956: { /* string-ends-with?(str, suffix) → bool */
