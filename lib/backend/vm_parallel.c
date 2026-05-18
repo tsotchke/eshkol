@@ -5,8 +5,9 @@
  * Provides a pthread-backed task queue and parallel higher-order primitives
  * (parallel-map, parallel-filter, parallel-for-each, parallel-reduce).
  *
- * User closure execution is still serialized through the main VM state while
- * workers provide scheduling, futures, and the eventual per-thread-VM bridge.
+ * Workers execute read-only closure bytecode in isolated VM/arena snapshots and
+ * publish returned values back to the main VM heap. Closures that may mutate
+ * shared VM state use a serialized fallback through the main VM.
  *
  * Native call IDs: 620-639
  *
@@ -323,38 +324,529 @@ static int vm_pool_pending_count(VmThreadPool* pool) {
 }
 
 /*******************************************************************************
- * Worker VM Context — lightweight per-thread execution context
+ * Worker VM Context
  *
- * Shares the main VM's heap and code but has its own stack and frames.
- * Enables true parallel closure execution across worker threads.
+ * Eshkol's VM heap is arena-backed and indexes heap objects by small integer
+ * handles. Worker execution therefore cannot share Heap.next_free or arena state
+ * with the main VM. For read-only closure bytecode, each worker receives:
+ *
+ *   - shared immutable code/constants,
+ *   - a private heap object table and private arena,
+ *   - cloned reachable heap objects at the same indexes as the main VM,
+ *   - new worker-local allocations starting at main_heap.next_free.
+ *
+ * Returned worker-local heap objects are deep-copied into the main heap under
+ * g_heap_mutex. Mutating or otherwise unsafe closures fall back to the old
+ * serialized bridge.
  ******************************************************************************/
 
-#define WORKER_STACK_SIZE 1024
-#define WORKER_MAX_FRAMES 64
-
-typedef struct {
-    Value   stack[WORKER_STACK_SIZE];
-    int32_t sp;
-    CallFrame frames[WORKER_MAX_FRAMES];
-    int32_t fp;
-    int     frame_count;
-    /* Shared with main VM: */
-    Heap*   heap;       /* pointer to main VM's heap (mutex-protected alloc) */
-    Instr*  code;       /* shared bytecode */
-    int     code_len;
-    Value*  constants;  /* shared constant pool */
-    int     n_constants;
-    int     halted;
-    int     error;
+typedef struct VmWorkerContext {
+    int unused;
 } VmWorkerContext;
 
 static pthread_mutex_t g_heap_mutex = PTHREAD_MUTEX_INITIALIZER;
 
-static int32_t worker_heap_alloc(Heap* heap) {
+static int vm_value_has_heap_index(Value v) {
+    switch ((int)v.type) {
+        case VAL_PAIR:
+        case VAL_CLOSURE:
+        case VAL_STRING:
+        case VAL_VECTOR:
+        case VAL_CONTINUATION:
+        case VAL_TENSOR:
+        case VAL_KB:
+        case VAL_COMPLEX:
+        case VAL_RATIONAL:
+        case VAL_BIGNUM:
+        case VAL_DUAL:
+        case VAL_FACTOR_GRAPH:
+        case VAL_WORKSPACE:
+        case VAL_SUBST:
+        case VAL_HASH:
+        case VAL_BYTEVECTOR:
+        case VAL_PARAMETER_OBJ:
+        case VAL_AD_TAPE:
+        case VAL_ERROR_OBJ:
+        case VAL_MANIFOLD:
+        case VAL_PORT:
+        case VAL_HYPER_DUAL:
+        case VAL_RIEMANNIAN_ADAM_STATE:
+        case VAL_FUTURE:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+static VmBignum* vm_bignum_clone_to(VmRegionStack* rs, const VmBignum* src) {
+    if (!src) return NULL;
+    VmBignum* dst = (VmBignum*)vm_alloc(rs, sizeof(VmBignum));
+    if (!dst) return NULL;
+    *dst = *src;
+    if (src->capacity > 0 && src->limbs) {
+        dst->limbs = (uint32_t*)vm_alloc(rs, (size_t)src->capacity * sizeof(uint32_t));
+        if (!dst->limbs) return NULL;
+        memcpy(dst->limbs, src->limbs, (size_t)src->n_limbs * sizeof(uint32_t));
+    } else {
+        dst->limbs = NULL;
+    }
+    return dst;
+}
+
+static int vm_clone_value_graph(VM* worker, VM* main_vm, Value v,
+                                int32_t base_next, int depth);
+
+static int vm_clone_object_at(VM* worker, VM* main_vm, int32_t idx,
+                              int32_t base_next, int depth) {
+    if (idx < 0 || idx >= base_next || depth > 256) return 0;
+    if (worker->heap.objects[idx]) return 1;
+
+    HeapObject* src = main_vm->heap.objects[idx];
+    if (!src) return 0;
+
+    HeapObject* dst = (HeapObject*)vm_alloc(&worker->heap.regions, sizeof(HeapObject));
+    if (!dst) return 0;
+    *dst = *src;
+    worker->heap.objects[idx] = dst;
+
+    switch (src->type) {
+        case HEAP_CONS:
+            return vm_clone_value_graph(worker, main_vm, src->cons.car, base_next, depth + 1) &&
+                   vm_clone_value_graph(worker, main_vm, src->cons.cdr, base_next, depth + 1);
+
+        case HEAP_CLOSURE:
+            for (int i = 0; i < src->closure.n_upvalues && i < 16; i++) {
+                if (!vm_clone_value_graph(worker, main_vm, src->closure.upvalues[i],
+                                          base_next, depth + 1)) {
+                    return 0;
+                }
+            }
+            return 1;
+
+        case HEAP_STRING: {
+            VmString* s = (VmString*)src->opaque.ptr;
+            dst->opaque.ptr = s ? vm_string_new(&worker->heap.regions, s->data, s->byte_len) : NULL;
+            return !s || dst->opaque.ptr != NULL;
+        }
+
+        case HEAP_VECTOR: {
+            VmVector* sv = (VmVector*)src->opaque.ptr;
+            if (!sv) { dst->opaque.ptr = NULL; return 1; }
+            VmVector* dv = (VmVector*)vm_alloc(&worker->heap.regions, sizeof(VmVector));
+            if (!dv) return 0;
+            dv->len = sv->len;
+            dv->cap = sv->cap;
+            dv->items = NULL;
+            if (sv->len > 0) {
+                dv->items = (Value*)vm_alloc(&worker->heap.regions,
+                                             (size_t)sv->len * sizeof(Value));
+                if (!dv->items) return 0;
+                memcpy(dv->items, sv->items, (size_t)sv->len * sizeof(Value));
+                for (int i = 0; i < sv->len; i++) {
+                    if (!vm_clone_value_graph(worker, main_vm, dv->items[i],
+                                              base_next, depth + 1)) {
+                        return 0;
+                    }
+                }
+            }
+            dst->opaque.ptr = dv;
+            return 1;
+        }
+
+        case HEAP_COMPLEX: {
+            VmComplex* src_z = (VmComplex*)src->opaque.ptr;
+            VmComplex* dst_z = src_z ? (VmComplex*)vm_alloc(&worker->heap.regions, sizeof(VmComplex)) : NULL;
+            if (src_z && !dst_z) return 0;
+            if (src_z) *dst_z = *src_z;
+            dst->opaque.ptr = dst_z;
+            return 1;
+        }
+
+        case HEAP_RATIONAL: {
+            VmRational* src_r = (VmRational*)src->opaque.ptr;
+            VmRational* dst_r = src_r ? (VmRational*)vm_alloc(&worker->heap.regions, sizeof(VmRational)) : NULL;
+            if (src_r && !dst_r) return 0;
+            if (src_r) *dst_r = *src_r;
+            dst->opaque.ptr = dst_r;
+            return 1;
+        }
+
+        case HEAP_BIGNUM:
+            dst->opaque.ptr = vm_bignum_clone_to(&worker->heap.regions,
+                                                 (VmBignum*)src->opaque.ptr);
+            return !src->opaque.ptr || dst->opaque.ptr != NULL;
+
+        case HEAP_DUAL: {
+            VmDual* src_d = (VmDual*)src->opaque.ptr;
+            VmDual* dst_d = src_d ? (VmDual*)vm_alloc(&worker->heap.regions, sizeof(VmDual)) : NULL;
+            if (src_d && !dst_d) return 0;
+            if (src_d) *dst_d = *src_d;
+            dst->opaque.ptr = dst_d;
+            return 1;
+        }
+
+        case HEAP_TENSOR:
+            dst->opaque.ptr = vm_tensor_copy(&worker->heap.regions, (VmTensor*)src->opaque.ptr);
+            return !src->opaque.ptr || dst->opaque.ptr != NULL;
+
+        case HEAP_BYTEVECTOR: {
+            VmBytevector* bv = (VmBytevector*)src->opaque.ptr;
+            dst->opaque.ptr = bv ? vm_bv_copy(&worker->heap.regions, bv, 0, bv->len) : NULL;
+            return !bv || dst->opaque.ptr != NULL;
+        }
+
+        case HEAP_HYPER_DUAL: {
+            VmHyperDual* src_h = (VmHyperDual*)src->opaque.ptr;
+            VmHyperDual* dst_h = src_h ? (VmHyperDual*)vm_alloc(&worker->heap.regions, sizeof(VmHyperDual)) : NULL;
+            if (src_h && !dst_h) return 0;
+            if (src_h) *dst_h = *src_h;
+            dst->opaque.ptr = dst_h;
+            return 1;
+        }
+
+        default:
+            return 1;
+    }
+}
+
+static int vm_clone_value_graph(VM* worker, VM* main_vm, Value v,
+                                int32_t base_next, int depth) {
+    if (!vm_value_has_heap_index(v)) return 1;
+    return vm_clone_object_at(worker, main_vm, v.as.ptr, base_next, depth);
+}
+
+static int vm_native_is_worker_safe(int fid) {
+    if ((fid >= 20 && fid <= 38) || (fid >= 40 && fid <= 51) || fid == 55 ||
+        (fid >= 71 && fid <= 73) || (fid >= 137 && fid <= 139) ||
+        (fid >= 160 && fid <= 166) || (fid >= 186 && fid <= 189) ||
+        fid == 235 || (fid >= 300 && fid <= 319) || (fid >= 330 && fid <= 350) ||
+        (fid >= 353 && fid <= 389) ||
+        (fid >= 720 && fid <= 722) || (fid >= 1680 && fid <= 1699) ||
+        (fid >= 1900 && fid <= 1921)) {
+        return 1;
+    }
+    return 0;
+}
+
+static int vm_opcode_is_worker_safe(Instr instr) {
+    switch (instr.op) {
+        case OP_NOP:
+        case OP_CONST:
+        case OP_NIL:
+        case OP_TRUE:
+        case OP_FALSE:
+        case OP_POP:
+        case OP_DUP:
+        case OP_ADD:
+        case OP_SUB:
+        case OP_MUL:
+        case OP_DIV:
+        case OP_MOD:
+        case OP_NEG:
+        case OP_ABS:
+        case OP_EQ:
+        case OP_LT:
+        case OP_GT:
+        case OP_LE:
+        case OP_GE:
+        case OP_NOT:
+        case OP_GET_LOCAL:
+        case OP_SET_LOCAL:
+        case OP_GET_UPVALUE:
+        case OP_CLOSURE:
+        case OP_RETURN:
+        case OP_JUMP:
+        case OP_JUMP_IF_FALSE:
+        case OP_LOOP:
+        case OP_CONS:
+        case OP_CAR:
+        case OP_CDR:
+        case OP_NULL_P:
+        case OP_VEC_CREATE:
+        case OP_VEC_REF:
+        case OP_VEC_LEN:
+        case OP_STR_REF:
+        case OP_STR_LEN:
+        case OP_PAIR_P:
+        case OP_NUM_P:
+        case OP_STR_P:
+        case OP_BOOL_P:
+        case OP_PROC_P:
+        case OP_VEC_P:
+        case OP_POPN:
+        case OP_PACK_REST:
+        case OP_VOID:
+            return 1;
+        case OP_NATIVE_CALL:
+            return vm_native_is_worker_safe(instr.operand);
+        default:
+            return 0;
+    }
+}
+
+static int vm_closure_is_worker_safe(VM* vm, Value closure) {
+    if (closure.type != VAL_CLOSURE || closure.as.ptr < 0 ||
+        closure.as.ptr >= vm->heap.next_free) {
+        return 0;
+    }
+    HeapObject* cl = vm->heap.objects[closure.as.ptr];
+    if (!cl || cl->type != HEAP_CLOSURE) return 0;
+
+    int start_pc = cl->closure.func_pc;
+    if (start_pc < 0 || start_pc >= vm->code_len) return 0;
+
+    uint8_t* seen = (uint8_t*)calloc((size_t)vm->code_len, sizeof(uint8_t));
+    int* work = (int*)calloc((size_t)vm->code_len, sizeof(int));
+    if (!seen || !work) {
+        free(seen);
+        free(work);
+        return 0;
+    }
+
+    int safe = 1;
+    int top = 0;
+    work[top++] = start_pc;
+
+    while (top > 0 && safe) {
+        int pc = work[--top];
+        if (pc < 0 || pc >= vm->code_len) { safe = 0; break; }
+        if (seen[pc]) continue;
+        seen[pc] = 1;
+
+        Instr instr = vm->code[pc];
+        if (!vm_opcode_is_worker_safe(instr)) { safe = 0; break; }
+
+        switch (instr.op) {
+            case OP_RETURN:
+                break;
+            case OP_JUMP:
+            case OP_LOOP:
+                if (top < vm->code_len) work[top++] = instr.operand;
+                else safe = 0;
+                break;
+            case OP_JUMP_IF_FALSE:
+                if (top + 2 <= vm->code_len) {
+                    work[top++] = instr.operand;
+                    work[top++] = pc + 1;
+                } else safe = 0;
+                break;
+            default:
+                if (pc + 1 < vm->code_len) {
+                    if (top < vm->code_len) work[top++] = pc + 1;
+                    else safe = 0;
+                }
+                break;
+        }
+    }
+
+    free(seen);
+    free(work);
+    return safe;
+}
+
+static int vm_publish_value_locked(VM* main_vm, VM* worker, Value in,
+                                   int32_t base_next, int32_t* remap,
+                                   int remap_len, Value* out, int depth);
+
+static int vm_publish_object_locked(VM* main_vm, VM* worker, Value in,
+                                    int32_t base_next, int32_t* remap,
+                                    int remap_len, Value* out, int depth) {
+    int32_t idx = in.as.ptr;
+    if (idx < 0 || idx >= worker->heap.next_free || depth > 256) return 0;
+    if (idx < base_next) { *out = in; return 1; }
+
+    int map_idx = idx - base_next;
+    if (map_idx < 0 || map_idx >= remap_len) return 0;
+    if (remap[map_idx] >= 0) {
+        *out = in;
+        out->as.ptr = remap[map_idx];
+        return 1;
+    }
+
+    HeapObject* src = worker->heap.objects[idx];
+    if (!src) return 0;
+
+    int32_t dst_idx = heap_alloc(&main_vm->heap);
+    if (dst_idx < 0) return 0;
+    remap[map_idx] = dst_idx;
+    HeapObject* dst = main_vm->heap.objects[dst_idx];
+    memset(dst, 0, sizeof(HeapObject));
+    dst->type = src->type;
+
+    *out = in;
+    out->as.ptr = dst_idx;
+
+    switch (src->type) {
+        case HEAP_CONS:
+            return vm_publish_value_locked(main_vm, worker, src->cons.car,
+                                           base_next, remap, remap_len,
+                                           &dst->cons.car, depth + 1) &&
+                   vm_publish_value_locked(main_vm, worker, src->cons.cdr,
+                                           base_next, remap, remap_len,
+                                           &dst->cons.cdr, depth + 1);
+
+        case HEAP_CLOSURE:
+            dst->closure.func_pc = src->closure.func_pc;
+            dst->closure.n_upvalues = src->closure.n_upvalues;
+            for (int i = 0; i < src->closure.n_upvalues && i < 16; i++) {
+                if (!vm_publish_value_locked(main_vm, worker, src->closure.upvalues[i],
+                                             base_next, remap, remap_len,
+                                             &dst->closure.upvalues[i], depth + 1)) {
+                    return 0;
+                }
+            }
+            return 1;
+
+        case HEAP_STRING: {
+            VmString* s = (VmString*)src->opaque.ptr;
+            dst->opaque.ptr = s ? vm_string_new(&main_vm->heap.regions, s->data, s->byte_len) : NULL;
+            return !s || dst->opaque.ptr != NULL;
+        }
+
+        case HEAP_VECTOR: {
+            VmVector* sv = (VmVector*)src->opaque.ptr;
+            if (!sv) { dst->opaque.ptr = NULL; return 1; }
+            VmVector* dv = (VmVector*)vm_alloc(&main_vm->heap.regions, sizeof(VmVector));
+            if (!dv) return 0;
+            dv->len = sv->len;
+            dv->cap = sv->cap;
+            dv->items = NULL;
+            if (sv->len > 0) {
+                dv->items = (Value*)vm_alloc(&main_vm->heap.regions,
+                                             (size_t)sv->len * sizeof(Value));
+                if (!dv->items) return 0;
+                for (int i = 0; i < sv->len; i++) {
+                    if (!vm_publish_value_locked(main_vm, worker, sv->items[i],
+                                                 base_next, remap, remap_len,
+                                                 &dv->items[i], depth + 1)) {
+                        return 0;
+                    }
+                }
+            }
+            dst->opaque.ptr = dv;
+            return 1;
+        }
+
+        case HEAP_COMPLEX: {
+            VmComplex* src_z = (VmComplex*)src->opaque.ptr;
+            VmComplex* dst_z = src_z ? (VmComplex*)vm_alloc(&main_vm->heap.regions, sizeof(VmComplex)) : NULL;
+            if (src_z && !dst_z) return 0;
+            if (src_z) *dst_z = *src_z;
+            dst->opaque.ptr = dst_z;
+            return 1;
+        }
+
+        case HEAP_RATIONAL: {
+            VmRational* src_r = (VmRational*)src->opaque.ptr;
+            VmRational* dst_r = src_r ? (VmRational*)vm_alloc(&main_vm->heap.regions, sizeof(VmRational)) : NULL;
+            if (src_r && !dst_r) return 0;
+            if (src_r) *dst_r = *src_r;
+            dst->opaque.ptr = dst_r;
+            return 1;
+        }
+
+        case HEAP_BIGNUM:
+            dst->opaque.ptr = vm_bignum_clone_to(&main_vm->heap.regions,
+                                                 (VmBignum*)src->opaque.ptr);
+            return !src->opaque.ptr || dst->opaque.ptr != NULL;
+
+        case HEAP_DUAL: {
+            VmDual* src_d = (VmDual*)src->opaque.ptr;
+            VmDual* dst_d = src_d ? (VmDual*)vm_alloc(&main_vm->heap.regions, sizeof(VmDual)) : NULL;
+            if (src_d && !dst_d) return 0;
+            if (src_d) *dst_d = *src_d;
+            dst->opaque.ptr = dst_d;
+            return 1;
+        }
+
+        case HEAP_TENSOR:
+            dst->opaque.ptr = vm_tensor_copy(&main_vm->heap.regions, (VmTensor*)src->opaque.ptr);
+            return !src->opaque.ptr || dst->opaque.ptr != NULL;
+
+        case HEAP_BYTEVECTOR: {
+            VmBytevector* bv = (VmBytevector*)src->opaque.ptr;
+            dst->opaque.ptr = bv ? vm_bv_copy(&main_vm->heap.regions, bv, 0, bv->len) : NULL;
+            return !bv || dst->opaque.ptr != NULL;
+        }
+
+        case HEAP_HYPER_DUAL: {
+            VmHyperDual* src_h = (VmHyperDual*)src->opaque.ptr;
+            VmHyperDual* dst_h = src_h ? (VmHyperDual*)vm_alloc(&main_vm->heap.regions, sizeof(VmHyperDual)) : NULL;
+            if (src_h && !dst_h) return 0;
+            if (src_h) *dst_h = *src_h;
+            dst->opaque.ptr = dst_h;
+            return 1;
+        }
+
+        default:
+            return 0;
+    }
+}
+
+static int vm_publish_value_locked(VM* main_vm, VM* worker, Value in,
+                                   int32_t base_next, int32_t* remap,
+                                   int remap_len, Value* out, int depth) {
+    if (!vm_value_has_heap_index(in)) {
+        *out = in;
+        return 1;
+    }
+    return vm_publish_object_locked(main_vm, worker, in, base_next,
+                                    remap, remap_len, out, depth);
+}
+
+static int vm_call_closure_from_native_isolated(VM* main_vm, Value closure,
+                                                Value* args, int argc,
+                                                Value* out) {
+    VM worker;
+    vm_init(&worker);
+    worker.code = main_vm->code;
+    worker.code_len = main_vm->code_len;
+    worker.n_constants = main_vm->n_constants;
+    memcpy(worker.constants, main_vm->constants,
+           (size_t)main_vm->n_constants * sizeof(Value));
+    memset(worker.ad_node_map, -1, sizeof(worker.ad_node_map));
+
+    int ok = 1;
+    int32_t base_next = 0;
+
     pthread_mutex_lock(&g_heap_mutex);
-    int32_t idx = heap_alloc(heap);
+    base_next = main_vm->heap.next_free;
+    worker.heap.next_free = base_next;
+    for (int i = 0; i < worker.n_constants && ok; i++) {
+        ok = vm_clone_value_graph(&worker, main_vm, worker.constants[i],
+                                  base_next, 0);
+    }
+    ok = ok && vm_clone_value_graph(&worker, main_vm, closure, base_next, 0);
+    for (int i = 0; i < argc && ok; i++) {
+        ok = vm_clone_value_graph(&worker, main_vm, args[i], base_next, 0);
+    }
     pthread_mutex_unlock(&g_heap_mutex);
-    return idx;
+
+    if (!ok) {
+        heap_destroy(&worker.heap);
+        return 0;
+    }
+
+    Value worker_result = vm_call_closure_from_native(&worker, closure, args, argc);
+    int remap_len = worker.heap.next_free - base_next;
+    int32_t* remap = NULL;
+    if (remap_len > 0) {
+        remap = (int32_t*)malloc((size_t)remap_len * sizeof(int32_t));
+        if (!remap) {
+            heap_destroy(&worker.heap);
+            return 0;
+        }
+        for (int i = 0; i < remap_len; i++) remap[i] = -1;
+    }
+
+    pthread_mutex_lock(&g_heap_mutex);
+    ok = vm_publish_value_locked(main_vm, &worker, worker_result, base_next,
+                                 remap, remap_len, out, 0);
+    pthread_mutex_unlock(&g_heap_mutex);
+
+    free(remap);
+    heap_destroy(&worker.heap);
+    return ok;
 }
 
 /* Execute a closure call in a worker context.
@@ -362,10 +854,15 @@ static int32_t worker_heap_alloc(Heap* heap) {
  * Returns the result as a Value. */
 static Value vm_worker_call_closure(VmWorkerContext* wctx, VM* main_vm,
                                     Value closure, Value* args, int nargs) {
-    /* Use main VM for closure execution (with mutex protection).
-     * This is the safe approach — full parallel closure execution with
-     * independent stacks requires VM bytecode interpreter refactoring.
-     * For now, serialize closure calls through the main VM. */
+    (void)wctx;
+    if (vm_closure_is_worker_safe(main_vm, closure)) {
+        Value isolated_result = NIL_VAL;
+        if (vm_call_closure_from_native_isolated(main_vm, closure, args, nargs,
+                                                 &isolated_result)) {
+            return isolated_result;
+        }
+    }
+
     Value result;
     pthread_mutex_lock(&g_heap_mutex);
     result = vm_call_closure_from_native(main_vm, closure, args, nargs);
