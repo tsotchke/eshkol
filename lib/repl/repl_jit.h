@@ -21,8 +21,10 @@ namespace llvm {
     namespace orc {
         class LLJIT;
         class ThreadSafeContext;
+        class ResourceTracker;
     }
 }
+#include <llvm/ExecutionEngine/Orc/Core.h>  // IntrusiveRefCntPtr for ResourceTrackerSP
 
 // C interface
 #include <eshkol/eshkol.h>
@@ -181,6 +183,16 @@ private:
     // Maps variable name -> (lambda function name, arity)
     // E.g., "test-func" -> ("lambda_0", 1)
     std::unordered_map<std::string, std::pair<std::string, size_t>> defined_lambdas_;
+
+    // Hot-reload: one llvm::orc::ResourceTracker per top-level user symbol.
+    // When a symbol is redefined, we call the previous tracker's remove() to
+    // fully evict the old module from the JIT (freeing memory and invalidating
+    // cached symbol resolutions) before adding the new module under a fresh
+    // tracker. This is LLVM ORC JIT's canonical hot-reload pattern —
+    // JITDylib::remove(SymbolNameSet) alone is unreliable because the dylib's
+    // symbol resolution cache doesn't always see the remove before the next
+    // addIRModule tries to define the same symbol.
+    std::unordered_map<std::string, llvm::orc::ResourceTrackerSP> symbol_trackers_;
 
     // Track which lambdas have been registered in the JIT dylib (to avoid duplicate registration)
     std::unordered_set<std::string> registered_lambdas_;
