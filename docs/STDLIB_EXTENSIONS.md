@@ -560,6 +560,10 @@ zero-width combining marks (0 cols), ANSI escapes (0 cols).
 Uses Unicode East Asian Width (UAX #11).
 **Critical for TUI correctness.**
 
+Standalone VM native ID 1947 strips ANSI escape sequences from the measured
+width, counts common CJK/emoji ranges as double-width, and treats combining
+marks/variation selectors as zero-width.
+
 ### `(string-truncate-display str max suffix) -> string`
 Truncate to `max` display columns. Never splits a wide char.
 
@@ -2137,6 +2141,8 @@ Race-free temp file creation. Eliminates `mkdir -p` shell-out in `temp.esk`.
 `(ansi-strip str) -> string`
 
 Pure Eshkol state machine. Needed for output capture and `string-display-width`.
+
+Standalone VM native ID 1946 removes CSI/OSC and related ANSI escape sequences.
 
 ## E.10 Tree-sitter Integration — P1 (highest-impact single addition)
 

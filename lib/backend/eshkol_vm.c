@@ -399,6 +399,7 @@ static const BuiltinDef BUILTINS[] = {
     {"term-bell", 1941, 0},
     {"fs-watch-native", 1942, 2}, {"fs-watch-recursive", 1943, 2},
     {"fs-watch-poll", 1944, 1}, {"fs-unwatch", 1945, 1},
+    {"ansi-strip", 1946, 1}, {"string-display-width", 1947, 1},
     /* Parallel primitives — IDs 620-628 */
     {"parallel-map", 620, 2}, {"parallel-filter", 621, 2},
     {"parallel-fold", 622, 3}, {"parallel-for-each", 623, 2},

@@ -1216,10 +1216,24 @@ public:
         function_return_types["socket-send"] = BuiltinTypes::Integer;
         function_return_types["socket-recv"] = BuiltinTypes::String;
         function_return_types["socket-close"] = BuiltinTypes::Boolean;
+        function_return_types["term-set-scroll-region"] = BuiltinTypes::Boolean;
+        function_return_types["term-reset-scroll-region"] = BuiltinTypes::Boolean;
+        function_return_types["term-enable-mouse"] = BuiltinTypes::Boolean;
+        function_return_types["term-disable-mouse"] = BuiltinTypes::Boolean;
+        function_return_types["term-read-mouse-event"] = BuiltinTypes::Value;
+        function_return_types["term-enable-alternate-screen"] = BuiltinTypes::Boolean;
+        function_return_types["term-disable-alternate-screen"] = BuiltinTypes::Boolean;
+        function_return_types["term-clipboard-write"] = BuiltinTypes::Boolean;
+        function_return_types["term-clipboard-read"] = BuiltinTypes::String;
+        function_return_types["term-hyperlink"] = BuiltinTypes::String;
+        function_return_types["term-detect-capabilities"] = BuiltinTypes::Value;
+        function_return_types["term-bell"] = BuiltinTypes::Boolean;
         function_return_types["fs-watch-native"] = BuiltinTypes::Integer;
         function_return_types["fs-watch-recursive"] = BuiltinTypes::Integer;
         function_return_types["fs-watch-poll"] = BuiltinTypes::String;
         function_return_types["fs-unwatch"] = BuiltinTypes::Boolean;
+        function_return_types["ansi-strip"] = BuiltinTypes::String;
+        function_return_types["string-display-width"] = BuiltinTypes::Integer;
         function_return_types["kb-save"] = BuiltinTypes::Boolean;
         function_return_types["kb-load"] = BuiltinTypes::Value;
         function_return_types["tensor-token-estimate"] = BuiltinTypes::Integer;
@@ -11888,10 +11902,24 @@ private:
         if (func_name == "socket-send") return system_->socketSend(op);
         if (func_name == "socket-recv") return system_->socketRecv(op);
         if (func_name == "socket-close") return system_->socketClose(op);
+        if (func_name == "term-set-scroll-region") return system_->termSetScrollRegion(op);
+        if (func_name == "term-reset-scroll-region") return system_->termResetScrollRegion(op);
+        if (func_name == "term-enable-mouse") return system_->termEnableMouse(op);
+        if (func_name == "term-disable-mouse") return system_->termDisableMouse(op);
+        if (func_name == "term-read-mouse-event") return system_->termReadMouseEvent(op);
+        if (func_name == "term-enable-alternate-screen") return system_->termEnableAlternateScreen(op);
+        if (func_name == "term-disable-alternate-screen") return system_->termDisableAlternateScreen(op);
+        if (func_name == "term-clipboard-write") return system_->termClipboardWrite(op);
+        if (func_name == "term-clipboard-read") return system_->termClipboardRead(op);
+        if (func_name == "term-hyperlink") return system_->termHyperlink(op);
+        if (func_name == "term-detect-capabilities") return system_->termDetectCapabilities(op);
+        if (func_name == "term-bell") return system_->termBell(op);
         if (func_name == "fs-watch-native") return system_->fsWatchNative(op);
         if (func_name == "fs-watch-recursive") return system_->fsWatchRecursive(op);
         if (func_name == "fs-watch-poll") return system_->fsWatchPoll(op);
         if (func_name == "fs-unwatch") return system_->fsUnwatch(op);
+        if (func_name == "ansi-strip") return system_->ansiStrip(op);
+        if (func_name == "string-display-width") return system_->stringDisplayWidth(op);
         if (func_name == "kb-save") return system_->kbSave(op);
         if (func_name == "kb-load") return system_->kbLoad(op);
         if (func_name == "tensor-token-estimate") return system_->tensorTokenEstimate(op);
@@ -19809,7 +19837,13 @@ private:
             "process-spawn-pty", "process-read-nonblocking",
             "process-pid", "file-mmap", "file-munmap",
             "unix-socket-connect", "socket-send", "socket-recv", "socket-close",
+            "term-set-scroll-region", "term-reset-scroll-region",
+            "term-enable-mouse", "term-disable-mouse", "term-read-mouse-event",
+            "term-enable-alternate-screen", "term-disable-alternate-screen",
+            "term-clipboard-write", "term-clipboard-read", "term-hyperlink",
+            "term-detect-capabilities", "term-bell",
             "fs-watch-native", "fs-watch-recursive", "fs-watch-poll", "fs-unwatch",
+            "ansi-strip", "string-display-width",
             "kb-save", "kb-load", "tensor-token-estimate",
             "fg-marginal", "fg-entropy", "kb-retract!",
             "make-substitution", "unify", "walk",

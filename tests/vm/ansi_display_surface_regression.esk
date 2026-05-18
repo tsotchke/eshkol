@@ -1,0 +1,38 @@
+;; Standalone VM regression for ANSI stripping and display-width builtins.
+
+(display "=== ANSI display VM surface regression ===") (newline)
+
+(define link
+  (term-hyperlink "https://example.invalid" "label"))
+
+(display "T1 ansi-strip removes OSC hyperlink sequence: ")
+(display (if (string=? (ansi-strip link) "label")
+             "PASS"
+             (list "FAIL got " (ansi-strip link))))
+(newline)
+
+(display "T2 string-display-width ignores OSC hyperlink sequence: ")
+(display (if (= (string-display-width link) 5)
+             "PASS"
+             (list "FAIL got " (string-display-width link))))
+(newline)
+
+(display "T3 ansi-strip leaves plain text unchanged: ")
+(display (if (string=? (ansi-strip "plain") "plain")
+             "PASS"
+             (list "FAIL got " (ansi-strip "plain"))))
+(newline)
+
+(display "T4 combining marks are zero-width: ")
+(display (if (= (string-display-width "áb") 2)
+             "PASS"
+             (list "FAIL got " (string-display-width "áb"))))
+(newline)
+
+(display "T5 CJK codepoint is double-width: ")
+(display (if (= (string-display-width "界") 2)
+             "PASS"
+             (list "FAIL got " (string-display-width "界"))))
+(newline)
+
+(display "=== ANSI display VM surface complete ===") (newline)

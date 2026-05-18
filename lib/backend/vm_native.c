@@ -299,6 +299,125 @@ static int vm_file_watch_start(VM* vm, const char* path, int recursive) {
     return slot;
 }
 
+static int vm_ansi_escape_len(const char* s, int len, int pos) {
+    if (!s || pos < 0 || pos >= len) return 0;
+    unsigned char c = (unsigned char)s[pos];
+
+    if (c == 0x9B) { /* C1 CSI */
+        int i = pos + 1;
+        while (i < len) {
+            unsigned char ch = (unsigned char)s[i++];
+            if (ch >= 0x40 && ch <= 0x7E) return i - pos;
+        }
+        return len - pos;
+    }
+    if (c == 0x9D) { /* C1 OSC */
+        int i = pos + 1;
+        while (i < len) {
+            unsigned char ch = (unsigned char)s[i];
+            if (ch == 0x07) return i + 1 - pos;
+            if (ch == 0x1B && i + 1 < len && s[i + 1] == '\\') return i + 2 - pos;
+            i++;
+        }
+        return len - pos;
+    }
+    if (c != 0x1B) return 0;
+    if (pos + 1 >= len) return 1;
+
+    unsigned char next = (unsigned char)s[pos + 1];
+    if (next == '[') { /* CSI */
+        int i = pos + 2;
+        while (i < len) {
+            unsigned char ch = (unsigned char)s[i++];
+            if (ch >= 0x40 && ch <= 0x7E) return i - pos;
+        }
+        return len - pos;
+    }
+    if (next == ']' || next == 'P' || next == '^' || next == '_' || next == 'X') {
+        int i = pos + 2;
+        while (i < len) {
+            unsigned char ch = (unsigned char)s[i];
+            if (ch == 0x07) return i + 1 - pos;
+            if (ch == 0x1B && i + 1 < len && s[i + 1] == '\\') return i + 2 - pos;
+            i++;
+        }
+        return len - pos;
+    }
+    if (strchr("()*+-./", next)) return (pos + 2 < len) ? 3 : 2;
+    return 2;
+}
+
+static int vm_display_is_wide_char(uint32_t cp) {
+    if (cp >= 0x4E00 && cp <= 0x9FFF) return 1;
+    if (cp >= 0x3400 && cp <= 0x4DBF) return 1;
+    if (cp >= 0x20000 && cp <= 0x2A6DF) return 1;
+    if (cp >= 0xF900 && cp <= 0xFAFF) return 1;
+    if (cp >= 0xAC00 && cp <= 0xD7AF) return 1;
+    if (cp >= 0xFF01 && cp <= 0xFF60) return 1;
+    if (cp >= 0xFFE0 && cp <= 0xFFE6) return 1;
+    if (cp >= 0x2E80 && cp <= 0x303E) return 1;
+    if (cp >= 0x3040 && cp <= 0x30FF) return 1;
+    if (cp >= 0x31F0 && cp <= 0x31FF) return 1;
+    if (cp >= 0x1F300 && cp <= 0x1F9FF) return 1;
+    if (cp >= 0x1FA00 && cp <= 0x1FAFF) return 1;
+    if (cp >= 0x2600 && cp <= 0x27BF) return 1;
+    return 0;
+}
+
+static int vm_display_is_zero_width(uint32_t cp) {
+    if (cp >= 0x0300 && cp <= 0x036F) return 1;
+    if (cp >= 0x1AB0 && cp <= 0x1AFF) return 1;
+    if (cp >= 0x1DC0 && cp <= 0x1DFF) return 1;
+    if (cp >= 0x20D0 && cp <= 0x20FF) return 1;
+    if (cp >= 0xFE20 && cp <= 0xFE2F) return 1;
+    if (cp == 0x200B || cp == 0x200C || cp == 0x200D ||
+        cp == 0x200E || cp == 0x200F || cp == 0xFEFF) return 1;
+    if (cp >= 0xFE00 && cp <= 0xFE0F) return 1;
+    if (cp >= 0xE0100 && cp <= 0xE01EF) return 1;
+    return 0;
+}
+
+static int64_t vm_string_display_width_bytes(const char* data, int len) {
+    if (!data || len <= 0) return 0;
+    int64_t width = 0;
+    int pos = 0;
+    while (pos < len) {
+        int skip = vm_ansi_escape_len(data, len, pos);
+        if (skip > 0) {
+            pos += skip;
+            continue;
+        }
+        int before = pos;
+        int cp = vm_utf8_decode(data, len, &pos);
+        if (pos <= before) pos = before + 1;
+        if (vm_display_is_zero_width((uint32_t)cp)) continue;
+        width += vm_display_is_wide_char((uint32_t)cp) ? 2 : 1;
+    }
+    return width;
+}
+
+static Value vm_ansi_strip_value(VM* vm, VmString* input) {
+    if (!vm || !input || !input->data) return BOOL_VAL(0);
+    int len = input->byte_len;
+    char* out = (char*)malloc((size_t)len + 1);
+    if (!out) return BOOL_VAL(0);
+
+    int i = 0;
+    int j = 0;
+    while (i < len) {
+        int skip = vm_ansi_escape_len(input->data, len, i);
+        if (skip > 0) {
+            i += skip;
+            continue;
+        }
+        out[j++] = input->data[i++];
+    }
+    out[j] = '\0';
+    Value result = vm_string_value(vm, out, j);
+    free(out);
+    return result;
+}
+
 #if defined(_WIN32) && !defined(ESHKOL_VM_WASM)
 static int vm_win_append_process_arg(char* out, size_t out_size, size_t* pos, const char* arg) {
     if (!out || !pos || !arg) return 0;
@@ -3371,6 +3490,18 @@ static void vm_dispatch_native(VM* vm, int fid) {
             break;
         }
         vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+    case 1946: { /* ansi-strip(str) → string or #f */
+        Value str_val = vm_pop(vm);
+        VmString* s = vm_value_as_string(vm, str_val);
+        vm_push(vm, vm_ansi_strip_value(vm, s));
+        break;
+    }
+    case 1947: { /* string-display-width(str) → integer */
+        Value str_val = vm_pop(vm);
+        VmString* s = vm_value_as_string(vm, str_val);
+        vm_push(vm, INT_VAL(s ? vm_string_display_width_bytes(s->data, s->byte_len) : 0));
         break;
     }
 
