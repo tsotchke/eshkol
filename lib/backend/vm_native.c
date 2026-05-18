@@ -509,6 +509,23 @@ int eshkol_vm_host_push_int64(VM* vm, int64_t value) {
     return (!vm->error && vm->sp == before + 1) ? 0 : -1;
 }
 
+int eshkol_vm_host_pop_double(VM* vm, double* out) {
+    if (!vm || !out) return -1;
+    Value v = vm_pop(vm);
+    if (vm->error) return -1;
+    if (v.type == VAL_FLOAT) { *out = v.as.f; return 0; }
+    if (v.type == VAL_INT)   { *out = (double)v.as.i; return 0; }
+    if (v.type == VAL_BOOL)  { *out = v.as.b ? 1.0 : 0.0; return 0; }
+    return -1;
+}
+
+int eshkol_vm_host_push_double(VM* vm, double value) {
+    if (!vm) return -1;
+    int32_t before = vm->sp;
+    vm_push(vm, FLOAT_VAL(value));
+    return (!vm->error && vm->sp == before + 1) ? 0 : -1;
+}
+
 static void vm_dispatch_native(VM* vm, int fid) {
     if (fid >= ESHKOL_VM_HOST_NATIVE_BASE) {
         int slot = fid - ESHKOL_VM_HOST_NATIVE_BASE;
