@@ -209,19 +209,40 @@ Read/write in chunks. macOS can use `clonefile(2)` for CoW.
 ### `(glob-match pattern path) -> bool`
 `fnmatch(3)` with `**` and `{}` extensions. For permission path matching.
 
+Implemented in the standalone VM as native ID 1757 using `fnmatch(3)` where
+available.
+
 ### `(glob-expand pattern root) -> list`
 Walk + match. Replaces the shell-based `agent.glob` module entirely.
+
+The standalone VM exposes the one-argument compiled-runtime form
+`(glob-expand pattern)` as native ID 1756, returning a newline-separated match
+string.
 
 ### `(file-lock path) -> lock-or-false`
 `flock(2)` with `LOCK_EX | LOCK_NB`. For session DB exclusive access.
 
+The standalone VM follows the compiled-runtime low-level form
+`(file-lock fd)` as native ID 1754.
+
 ### `(file-unlock lock) -> void`
 `flock(2)` with `LOCK_UN`.
+
+The standalone VM follows the compiled-runtime low-level form
+`(file-unlock fd)` as native ID 1755.
 
 ### `(file-mmap path offset length) -> bytevector-or-false`
 `mmap(2)` with `PROT_READ | MAP_PRIVATE`. For large file hashing.
 
 ### `(file-munmap bv) -> void`
+
+### `(file-mtime path) -> integer-or-false`
+
+Implemented in the standalone VM as native ID 1752.
+
+### `(file-atime path) -> integer-or-false`
+
+Implemented in the standalone VM as native ID 1753.
 
 ---
 
