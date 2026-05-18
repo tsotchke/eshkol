@@ -1,0 +1,52 @@
+;; Standalone VM regression for filesystem metadata, lock, and glob builtins.
+
+(display "=== filesystem/glob VM surface regression ===") (newline)
+
+(define root "/tmp/eshkol-vm-fsglob")
+(define leaf (path-join root "needle.esk"))
+(define other (path-join root "other.txt"))
+
+;; Best-effort cleanup from a prior interrupted run.
+(directory-delete-recursive root)
+(mkdir-recursive root)
+(file-copy "/dev/null" leaf)
+(file-copy "/dev/null" other)
+
+(display "T1 file-mtime/file-atime integers: ")
+(display (if (and (exact? (file-mtime leaf))
+                  (exact? (file-atime leaf)))
+             "PASS"
+             (list "FAIL mtime=" (file-mtime leaf)
+                   " atime=" (file-atime leaf))))
+(newline)
+
+(define lock-info (mkstemp "/tmp/eshkol-vm-lock-XXXXXX"))
+(define lock-fd (car lock-info))
+(define lock-path (cdr lock-info))
+
+(display "T2 file-lock/file-unlock fd: ")
+(display (if (and (file-lock lock-fd)
+                  (file-unlock lock-fd))
+             "PASS"
+             (list "FAIL fd=" lock-fd " path=" lock-path)))
+(newline)
+
+(display "T3 glob-match positive/negative: ")
+(display (if (and (glob-match "*.esk" "needle.esk")
+                  (not (glob-match "*.esk" "other.txt")))
+             "PASS"
+             "FAIL"))
+(newline)
+
+(define expanded (glob-expand (path-join root "*.esk")))
+(display "T4 glob-expand single match: ")
+(display (if (and (string? expanded)
+                  (string=? expanded leaf))
+             "PASS"
+             (list "FAIL got " expanded)))
+(newline)
+
+(delete-file lock-path)
+(directory-delete-recursive root)
+
+(display "=== filesystem/glob VM surface complete ===") (newline)

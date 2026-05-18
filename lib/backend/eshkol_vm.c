@@ -53,6 +53,9 @@
 #include <sys/wait.h>
 #include <signal.h>
 #include <poll.h>
+#include <fcntl.h>
+#include <glob.h>
+#include <fnmatch.h>
 #include <errno.h>
 #ifndef _WIN32
 #include <termios.h>
@@ -457,6 +460,9 @@ static const BuiltinDef BUILTINS[] = {
     {"symlink-create", 1746, 2}, {"symlink-read", 1747, 1},
     {"directory-walk", 1748, 1}, {"directory-delete-recursive", 1749, 1},
     {"mkstemp", 1750, 1}, {"mkdtemp", 1751, 1},
+    {"file-mtime", 1752, 1}, {"file-atime", 1753, 1},
+    {"file-lock", 1754, 1}, {"file-unlock", 1755, 1},
+    {"glob-expand", 1756, 1}, {"glob-match", 1757, 2},
     /* ═══════════════════════════════════════════════════════════════
      * Shell Utilities — IDs 1770-1779
      * ═══════════════════════════════════════════════════════════════ */

@@ -5480,6 +5480,143 @@ static void vm_dispatch_native(VM* vm, int fid) {
         break;
     }
 
+    case 1752: { /* file-mtime(path) → integer seconds or #f */
+        Value path_val = vm_pop(vm);
+#ifndef ESHKOL_VM_WASM
+        if (path_val.type == VAL_STRING) {
+            VmString* ps = (VmString*)vm->heap.objects[path_val.as.ptr]->opaque.ptr;
+            if (ps) {
+                struct stat st;
+                if (stat(ps->data, &st) == 0) {
+                    vm_push(vm, INT_VAL((int64_t)st.st_mtime));
+                    break;
+                }
+            }
+        }
+#else
+        (void)path_val;
+#endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+    case 1753: { /* file-atime(path) → integer seconds or #f */
+        Value path_val = vm_pop(vm);
+#ifndef ESHKOL_VM_WASM
+        if (path_val.type == VAL_STRING) {
+            VmString* ps = (VmString*)vm->heap.objects[path_val.as.ptr]->opaque.ptr;
+            if (ps) {
+                struct stat st;
+                if (stat(ps->data, &st) == 0) {
+                    vm_push(vm, INT_VAL((int64_t)st.st_atime));
+                    break;
+                }
+            }
+        }
+#else
+        (void)path_val;
+#endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+    case 1754: { /* file-lock(fd) → #t or #f */
+        Value fd_val = vm_pop(vm);
+#if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
+        struct flock fl;
+        memset(&fl, 0, sizeof(fl));
+        fl.l_type = F_WRLCK;
+        fl.l_whence = SEEK_SET;
+        if (fcntl((int)as_number(fd_val), F_SETLK, &fl) != -1) {
+            vm_push(vm, BOOL_VAL(1));
+            break;
+        }
+#else
+        (void)fd_val;
+#endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+    case 1755: { /* file-unlock(fd) → #t or #f */
+        Value fd_val = vm_pop(vm);
+#if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
+        struct flock fl;
+        memset(&fl, 0, sizeof(fl));
+        fl.l_type = F_UNLCK;
+        fl.l_whence = SEEK_SET;
+        if (fcntl((int)as_number(fd_val), F_SETLK, &fl) != -1) {
+            vm_push(vm, BOOL_VAL(1));
+            break;
+        }
+#else
+        (void)fd_val;
+#endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+    case 1756: { /* glob-expand(pattern) → newline-separated string or nil */
+        Value pattern_val = vm_pop(vm);
+#if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
+        if (pattern_val.type == VAL_STRING) {
+            VmString* ps = (VmString*)vm->heap.objects[pattern_val.as.ptr]->opaque.ptr;
+            if (ps) {
+                glob_t g;
+                memset(&g, 0, sizeof(g));
+                int rc = glob(ps->data, GLOB_NOSORT | GLOB_TILDE, NULL, &g);
+                if (rc == 0 && g.gl_pathc > 0) {
+                    size_t total = 0;
+                    for (size_t i = 0; i < g.gl_pathc; i++)
+                        total += strlen(g.gl_pathv[i]) + 1;
+                    char* buf = (char*)malloc(total + 1);
+                    if (buf) {
+                        char* p = buf;
+                        for (size_t i = 0; i < g.gl_pathc; i++) {
+                            size_t len = strlen(g.gl_pathv[i]);
+                            memcpy(p, g.gl_pathv[i], len);
+                            p += len;
+                            *p++ = '\n';
+                        }
+                        if (p > buf) p[-1] = 0;
+                        else *p = 0;
+                        VmString* s = vm_string_from_cstr(&vm->heap.regions, buf);
+                        free(buf);
+                        globfree(&g);
+                        if (s) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, s); break; }
+                    } else {
+                        globfree(&g);
+                    }
+                } else {
+                    globfree(&g);
+                }
+            }
+        }
+#else
+        (void)pattern_val;
+#endif
+        vm_push(vm, NIL_VAL);
+        break;
+    }
+
+    case 1757: { /* glob-match(pattern, path) → #t or #f */
+        Value path_val = vm_pop(vm), pattern_val = vm_pop(vm);
+#if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
+        if (pattern_val.type == VAL_STRING && path_val.type == VAL_STRING) {
+            VmString* ps = (VmString*)vm->heap.objects[pattern_val.as.ptr]->opaque.ptr;
+            VmString* ss = (VmString*)vm->heap.objects[path_val.as.ptr]->opaque.ptr;
+            if (ps && ss && fnmatch(ps->data, ss->data, 0) == 0) {
+                vm_push(vm, BOOL_VAL(1));
+                break;
+            }
+        }
+#else
+        (void)path_val; (void)pattern_val;
+#endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
     /* ══════════════════════════════════════════════════════════════════════
      * Shell Utilities (1770-1779)
      * ══════════════════════════════════════════════════════════════════════ */
