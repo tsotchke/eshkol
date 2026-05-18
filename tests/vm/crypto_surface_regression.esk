@@ -54,4 +54,12 @@
              "FAIL"))
 (newline)
 
+(display "T7 sha256-file hashes empty stream and rejects missing path: ")
+(display (if (and (string=? (sha256-file "/dev/null")
+                             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+                  (not (sha256-file "/tmp/eshkol-definitely-missing-sha256-file")))
+             "PASS"
+             "FAIL"))
+(newline)
+
 (display "=== crypto VM surface complete ===") (newline)
