@@ -482,6 +482,7 @@ static const BuiltinDef BUILTINS[] = {
     {"process-spawn-with-env", 1780, 3},
     {"process-kill", 1782, 2}, {"io-poll", 1783, 2},
     {"poll", 1783, 2}, {"process-pid", 1784, 0},
+    {"process-setpgid", 1785, 2}, {"process-kill-tree", 1786, 2},
     /* ═══════════════════════════════════════════════════════════════
      * KB Extensions — IDs 1800-1809
      * ═══════════════════════════════════════════════════════════════ */
