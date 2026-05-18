@@ -10,7 +10,7 @@ This hands-on tutorial introduces Eshkol's core features through practical examp
 
 Visit **[eshkol.ai](https://eshkol.ai)** to try Eshkol in your browser:
 
-- **Playground** — Full REPL with 63 opcodes and 555+ built-in functions running in WebAssembly
+- **Playground** — Full REPL with a 64-opcode core VM and 555+ built-in functions running in WebAssembly
 - **Learn** — interactive textbook with runnable code examples, plus 27 in-depth tutorials
 - **Examples** — 10 complete programs you can run instantly
 
