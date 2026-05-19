@@ -3735,6 +3735,9 @@ private:
                              func_name);
                 variadic_function_info.erase(stale_var);
             }
+            if (g_repl_mode_enabled) {
+                eshkol_repl_register_variadic_function(func_name, num_params, false);
+            }
         }
 
         // FUNCTION-AS-VALUE FIX: Record arity for closure wrapping when function is used as value
@@ -14542,6 +14545,139 @@ private:
                     {
                         std::lock_guard<std::mutex> lock(g_repl_mutex);
                         g_repl_function_arities[func_name] = fn_param_count;
+                    }
+
+                    if (!fwd_is_variadic) {
+                        std::vector<Value*> all_args;
+                        all_args.reserve(arity);
+                        for (uint64_t i = 0; i < arity; i++) {
+                            Value* arg = codegenAST(&op->call_op.variables[i]);
+                            if (builder->GetInsertBlock()->getTerminator()) {
+                                return UndefValue::get(tagged_value_type);
+                            }
+                            if (!arg) {
+                                if (builder->GetInsertBlock()->getTerminator()) return nullptr;
+                                arg = packNullToTaggedValue();
+                            }
+                            if (arg->getType() != tagged_value_type) {
+                                if (arg->getType()->isIntegerTy(64)) {
+                                    TypedValue tv = detectValueType(arg);
+                                    arg = typedValueToTaggedValue(tv);
+                                } else if (arg->getType()->isDoubleTy()) {
+                                    arg = packDoubleToTaggedValue(arg);
+                                } else if (arg->getType()->isPointerTy()) {
+                                    if (isa<Function>(arg)) {
+                                        arg = packPtrToTaggedValue(arg, ESHKOL_VALUE_CALLABLE);
+                                    } else {
+                                        arg = packPtrToTaggedValue(arg, ESHKOL_VALUE_HEAP_PTR);
+                                    }
+                                } else {
+                                    TypedValue tv = detectValueType(arg);
+                                    arg = typedValueToTaggedValue(tv);
+                                }
+                                if (builder->GetInsertBlock()->getTerminator()) {
+                                    return UndefValue::get(tagged_value_type);
+                                }
+                            }
+                            all_args.push_back(arg);
+                        }
+
+                        Value* func_ptr_raw = builder->CreateLoad(func_ptr_type, func_ptr_global, func_name + "_ptr");
+
+                        FunctionType* check_ft = FunctionType::get(
+                            ptr_type, {ptr_type, ptr_type, ptr_type}, false);
+                        FunctionCallee check_fn = module->getOrInsertFunction(
+                            "eshkol_check_forward_ref", check_ft);
+                        FunctionType* stub_addr_ft = FunctionType::get(ptr_type, {}, false);
+                        FunctionCallee stub_addr_fn = module->getOrInsertFunction(
+                            "eshkol_repl_forward_ref_stub_addr", stub_addr_ft);
+                        Value* stub_addr = builder->CreateCall(stub_addr_fn, {});
+                        Value* name_str = builder->CreateGlobalStringPtr(
+                            func_name, "fwd_ref_name_" + func_name);
+                        Value* func_ptr = builder->CreateCall(
+                            check_fn, {func_ptr_raw, stub_addr, name_str},
+                            func_name + "_checked");
+
+                        FunctionType* variadic_query_ft = FunctionType::get(
+                            int64_type, {ptr_type}, false);
+                        FunctionCallee variadic_query_fn = module->getOrInsertFunction(
+                            "eshkol_repl_variadic_fixed_params", variadic_query_ft);
+                        Value* runtime_fixed = builder->CreateCall(
+                            variadic_query_fn, {name_str}, func_name + "_variadic_fixed");
+                        Value* runtime_variadic = builder->CreateICmpSGE(
+                            runtime_fixed, ConstantInt::get(int64_type, 0));
+
+                        Function* parent = builder->GetInsertBlock()->getParent();
+                        BasicBlock* dyn_fixed_bb = BasicBlock::Create(*context, "fwd_fixed_call", parent);
+                        BasicBlock* dyn_variadic_bb = BasicBlock::Create(*context, "fwd_variadic_dispatch", parent);
+                        BasicBlock* dyn_done_bb = BasicBlock::Create(*context, "fwd_dynamic_done", parent);
+
+                        builder->CreateCondBr(runtime_variadic, dyn_variadic_bb, dyn_fixed_bb);
+
+                        builder->SetInsertPoint(dyn_fixed_bb);
+                        FunctionType* fixed_type = FunctionType::get(
+                            tagged_value_type,
+                            std::vector<Type*>(arity, tagged_value_type),
+                            false);
+                        Value* fixed_result = builder->CreateCall(
+                            fixed_type, func_ptr, all_args, func_name + "_fixed_result");
+                        builder->CreateBr(dyn_done_bb);
+                        BasicBlock* fixed_exit = builder->GetInsertBlock();
+
+                        builder->SetInsertPoint(dyn_variadic_bb);
+                        SwitchInst* fixed_switch = builder->CreateSwitch(
+                            runtime_fixed, dyn_fixed_bb, static_cast<unsigned>(arity + 1));
+
+                        std::vector<std::pair<BasicBlock*, Value*>> variadic_results;
+                        variadic_results.reserve(arity + 1);
+                        for (uint64_t fixed = 0; fixed <= arity; fixed++) {
+                            BasicBlock* case_bb = BasicBlock::Create(
+                                *context,
+                                "fwd_variadic_" + std::to_string(fixed),
+                                parent);
+                            fixed_switch->addCase(
+                                ConstantInt::get(int64_type, fixed), case_bb);
+
+                            builder->SetInsertPoint(case_bb);
+                            std::vector<Value*> variadic_args;
+                            variadic_args.reserve(fixed + 1);
+                            for (uint64_t i = 0; i < fixed; i++) {
+                                variadic_args.push_back(all_args[i]);
+                            }
+
+                            Value* rest_list = packPtrToTaggedValue(
+                                ConstantInt::get(int64_type, 0), ESHKOL_VALUE_NULL);
+                            for (int64_t i = (int64_t)arity - 1; i >= (int64_t)fixed; i--) {
+                                Value* cons_ptr_i64 = codegenTaggedArenaConsCellFromTaggedValue(
+                                    all_args[(size_t)i], rest_list);
+                                rest_list = packPtrToTaggedValue(cons_ptr_i64, ESHKOL_VALUE_HEAP_PTR);
+                            }
+                            variadic_args.push_back(rest_list);
+
+                            FunctionType* variadic_type = FunctionType::get(
+                                tagged_value_type,
+                                std::vector<Type*>(fixed + 1, tagged_value_type),
+                                false);
+                            Value* variadic_result = builder->CreateCall(
+                                variadic_type, func_ptr, variadic_args,
+                                func_name + "_variadic_result");
+                            builder->CreateBr(dyn_done_bb);
+                            variadic_results.push_back({builder->GetInsertBlock(), variadic_result});
+                        }
+
+                        builder->SetInsertPoint(dyn_done_bb);
+                        PHINode* result_phi = builder->CreatePHI(
+                            tagged_value_type,
+                            static_cast<unsigned>(variadic_results.size() + 1),
+                            func_name + "_dynamic_result");
+                        result_phi->addIncoming(fixed_result, fixed_exit);
+                        for (const auto& entry : variadic_results) {
+                            result_phi->addIncoming(entry.second, entry.first);
+                        }
+
+                        eshkol_debug("REPL: Created runtime-adaptive forward reference call for %s (arity=%zu)",
+                                     func_name.c_str(), arity);
+                        return result_phi;
                     }
 
                     // Generate arguments. For variadic calls, the first
@@ -32827,6 +32963,11 @@ void eshkol_repl_disable() {
     g_repl_symbol_addresses.clear();
     g_repl_function_addresses.clear();
     g_repl_function_arities.clear();
+    g_repl_lambda_names.clear();
+    g_repl_sexpr_values.clear();
+    g_repl_lambda_captures.clear();
+    g_repl_variadic_functions.clear();
+    g_repl_private_symbols.clear();
     g_repl_user_function_names.clear();
     g_repl_user_variable_names.clear();
     g_repl_native_c_functions.clear();
@@ -32884,7 +33025,21 @@ void eshkol_repl_register_native_c_function(const char* name) {
 void eshkol_repl_register_variadic_function(const char* name, size_t fixed_params, bool is_variadic) {
     if (!name) return;
     std::lock_guard<std::mutex> lock(g_repl_mutex);
-    g_repl_variadic_functions[name] = std::make_pair(fixed_params, is_variadic);
+    if (!is_variadic) {
+        g_repl_variadic_functions.erase(name);
+        return;
+    }
+    g_repl_variadic_functions[name] = std::make_pair(fixed_params, true);
+}
+
+int64_t eshkol_repl_variadic_fixed_params(const char* name) {
+    if (!name) return -1;
+    std::lock_guard<std::mutex> lock(g_repl_mutex);
+    auto it = g_repl_variadic_functions.find(name);
+    if (it == g_repl_variadic_functions.end() || !it->second.second) {
+        return -1;
+    }
+    return static_cast<int64_t>(it->second.first);
 }
 
 void eshkol_repl_register_lambda_name(const char* var_name, const char* lambda_name) {

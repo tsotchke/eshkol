@@ -1,0 +1,8 @@
+;; Companion fixture for repl_late_variadic_forward_ref_test.esk.
+;; These helpers are compiled before jj-callee is defined.
+
+(define (jj-helper-one)
+  (jj-callee #f #f #f))
+
+(define (jj-helper-two)
+  (jj-callee 1 2 3 4))
