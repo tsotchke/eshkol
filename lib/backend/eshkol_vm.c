@@ -459,6 +459,9 @@ static const BuiltinDef BUILTINS[] = {
     {"at-exit", 2031, 1},
     {"dlopen", 2032, 1}, {"dlsym", 2033, 2}, {"dlclose", 2034, 1},
     {"_format-list", 2035, 2},
+    {"yoga-node-create", 2036, 0}, {"yoga-node-set!", 2037, 3},
+    {"yoga-node-add-child!", 2038, 2}, {"yoga-node-calculate!", 2039, 3},
+    {"yoga-node-get-computed", 2040, 2}, {"yoga-node-free!", 2041, 1},
     {"string-ends-with?", 1956, 2}, {"string-index-of", 1957, 3},
     {"string-pad-left", 1958, 3}, {"string-pad-right", 1959, 3},
     /* Parallel primitives — IDs 620-628 */

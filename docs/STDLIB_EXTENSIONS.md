@@ -942,13 +942,27 @@ Bind Yoga C library. Properties: `width`, `height`, `flex-direction`,
 `justify-content`, `align-items`, `flex-grow`, `flex-shrink`, `padding`,
 `margin`, `overflow`, `position`, `border`, `gap`.
 
+Standalone VM native ID 2036 creates a VM-lifetime layout node. The standalone
+implementation is dependency-free and supports deterministic row/column flex
+layout for `width`, `height`, `flex-direction`, `flex-grow`, `flex-shrink`,
+`padding`, `margin`, and `gap`.
+
 ### `(yoga-node-set! node prop value) -> void`
+Standalone VM native ID 2037 returns a boolean success flag.
+
 ### `(yoga-node-add-child! parent child) -> void`
+Standalone VM native ID 2038 appends a child to a parent node.
+
 ### `(yoga-node-calculate! root width height) -> void`
+Standalone VM native ID 2039 computes layout for the root subtree.
+
 ### `(yoga-node-get-computed node prop) -> number`
 Props: `"left"`, `"top"`, `"width"`, `"height"`.
 
+Standalone VM native ID 2040 returns computed numeric layout values.
+
 ### `(yoga-node-free! node) -> void`
+Standalone VM native ID 2041 releases the node handle.
 
 ---
 
