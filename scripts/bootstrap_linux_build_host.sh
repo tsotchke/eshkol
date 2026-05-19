@@ -8,6 +8,8 @@
 #
 # Set LLVM_VERSION=21 to prefer LLVM/Clang 21 packages. If those packages are
 # unavailable, the script falls back to distro-default clang/llvm packages.
+# Use --user-deps on hosts where apt repositories are configured but sudo is
+# unavailable; packages are downloaded and extracted under ~/.local.
 
 set -euo pipefail
 
@@ -17,7 +19,10 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 BUILD_DIR="${BUILD_DIR:-build}"
 BUILD_TYPE="${BUILD_TYPE:-Release}"
 LLVM_VERSION="${LLVM_VERSION:-21}"
+USER_DEPS_DIR="${USER_DEPS_DIR:-$HOME/.local/eshkol-toolchain}"
+APT_DOWNLOAD_DIR="${APT_DOWNLOAD_DIR:-$HOME/.cache/eshkol-apt}"
 INSTALL_DEPS=1
+USER_DEPS=0
 CONFIGURE=1
 BUILD=1
 RUN_CTEST=0
@@ -31,6 +36,8 @@ Options:
   --build-type TYPE     CMake build type (default: Release)
   --llvm-version N      Preferred LLVM/Clang major version (default: 21)
   --no-install-deps     Skip apt dependency installation
+  --user-deps           Extract LLVM/Clang/Ninja packages under ~/.local; no sudo
+  --user-deps-dir DIR   User dependency prefix (default: ~/.local/eshkol-toolchain)
   --no-configure        Skip CMake configure
   --no-build            Skip CMake build
   --ctest               Run CTest after build
@@ -55,6 +62,16 @@ while [ "$#" -gt 0 ]; do
         --no-install-deps)
             INSTALL_DEPS=0
             shift
+            ;;
+        --user-deps)
+            INSTALL_DEPS=1
+            USER_DEPS=1
+            shift
+            ;;
+        --user-deps-dir)
+            USER_DEPS_DIR="$2"
+            USER_DEPS=1
+            shift 2
             ;;
         --no-configure)
             CONFIGURE=0
@@ -151,6 +168,61 @@ install_deps() {
     sudo_cmd env DEBIAN_FRONTEND=noninteractive apt-get install -y "${packages[@]}"
 }
 
+user_deps_packages() {
+    if ! apt_has_package "clang-${LLVM_VERSION}" ||
+       ! apt_has_package "llvm-${LLVM_VERSION}-dev" ||
+       ! apt_has_package "llvm-${LLVM_VERSION}-tools" ||
+       ! apt_has_package "lld-${LLVM_VERSION}"; then
+        cat >&2 <<EOF
+LLVM ${LLVM_VERSION} apt packages are not available from this host's configured repositories.
+Run with sudo-based dependency installation, or configure apt.llvm.org for this distro.
+EOF
+        exit 6
+    fi
+
+    printf '%s\n' \
+        "clang-${LLVM_VERSION}" \
+        "llvm-${LLVM_VERSION}" \
+        "llvm-${LLVM_VERSION}-dev" \
+        "llvm-${LLVM_VERSION}-runtime" \
+        "llvm-${LLVM_VERSION}-tools" \
+        "llvm-${LLVM_VERSION}-linker-tools" \
+        "libclang-cpp${LLVM_VERSION}" \
+        "libclang-common-${LLVM_VERSION}-dev" \
+        "libclang1-${LLVM_VERSION}" \
+        "libllvm${LLVM_VERSION}" \
+        "lld-${LLVM_VERSION}" \
+        "ninja-build"
+}
+
+activate_user_deps() {
+    export PATH="$USER_DEPS_DIR/usr/lib/llvm-${LLVM_VERSION}/bin:$USER_DEPS_DIR/usr/bin:$PATH"
+    export LD_LIBRARY_PATH="$USER_DEPS_DIR/usr/lib/llvm-${LLVM_VERSION}/lib:$USER_DEPS_DIR/usr/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH:-}"
+}
+
+install_user_deps() {
+    if ! test -r /etc/debian_version; then
+        echo "user dependency extraction currently supports Debian/Ubuntu hosts only" >&2
+        exit 4
+    fi
+
+    mkdir -p "$APT_DOWNLOAD_DIR" "$USER_DEPS_DIR"
+
+    mapfile -t packages < <(user_deps_packages)
+    (
+        cd "$APT_DOWNLOAD_DIR"
+        apt-get download "${packages[@]}"
+    )
+
+    local deb
+    for deb in "$APT_DOWNLOAD_DIR"/*.deb; do
+        dpkg-deb -x "$deb" "$USER_DEPS_DIR"
+    done
+
+    activate_user_deps
+    "$USER_DEPS_DIR/usr/lib/llvm-${LLVM_VERSION}/bin/llvm-config" --version >/dev/null
+}
+
 first_executable() {
     local candidate
     for candidate in "$@"; do
@@ -212,7 +284,13 @@ configure_build() {
 }
 
 if [ "$INSTALL_DEPS" -eq 1 ]; then
-    install_deps
+    if [ "$USER_DEPS" -eq 1 ]; then
+        install_user_deps
+    else
+        install_deps
+    fi
+elif [ "$USER_DEPS" -eq 1 ]; then
+    activate_user_deps
 fi
 
 if [ "$CONFIGURE" -eq 1 ]; then
