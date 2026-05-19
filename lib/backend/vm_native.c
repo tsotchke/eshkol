@@ -9487,6 +9487,91 @@ static void vm_dispatch_native(VM* vm, int fid) {
         break;
     }
 
+    case 1760: { /* make-temp-file(prefix, suffix, dir) → path or #f */
+        Value dir_val = vm_pop(vm), suffix_val = vm_pop(vm), prefix_val = vm_pop(vm);
+#if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
+        VmString* prefix = vm_value_as_string(vm, prefix_val);
+        VmString* suffix = vm_value_as_string(vm, suffix_val);
+        VmString* dir = vm_value_as_string(vm, dir_val);
+        const char* dir_path = (dir && dir->data && dir->byte_len > 0) ? dir->data : getenv("TMPDIR");
+        if (!dir_path || !*dir_path) dir_path = "/tmp";
+        if (prefix && prefix->data && suffix && suffix->data) {
+            const char* sep = (dir_path[strlen(dir_path) - 1] == '/') ? "" : "/";
+            struct timeval tv;
+            int created = 0;
+            gettimeofday(&tv, NULL);
+            for (int i = 0; i < 128; i++) {
+                char path[4096];
+                uint64_t nonce = ((uint64_t)(uint32_t)getpid() << 32) ^
+                                 (uint64_t)tv.tv_usec ^ ((uint64_t)i * 0x9e3779b97f4a7c15ULL);
+                int n = snprintf(path, sizeof(path), "%s%s%s%016llx%s",
+                                 dir_path, sep, prefix->data,
+                                 (unsigned long long)nonce, suffix->data);
+                if (n <= 0 || n >= (int)sizeof(path)) break;
+                int fd = open(path, O_CREAT | O_EXCL | O_RDWR, 0600);
+                if (fd >= 0) {
+                    close(fd);
+                    Value path_value = vm_string_value(vm, path, -1);
+                    if (path_value.type == VAL_STRING) {
+                        vm_push(vm, path_value);
+                        created = 1;
+                    } else {
+                        (void)unlink(path);
+                    }
+                    break;
+                }
+                if (errno != EEXIST) break;
+            }
+            if (created) break;
+        }
+#else
+        (void)dir_val; (void)suffix_val; (void)prefix_val;
+#endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+    case 1761: { /* make-temp-dir(prefix, dir) → path or #f */
+        Value dir_val = vm_pop(vm), prefix_val = vm_pop(vm);
+#if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
+        VmString* prefix = vm_value_as_string(vm, prefix_val);
+        VmString* dir = vm_value_as_string(vm, dir_val);
+        const char* dir_path = (dir && dir->data && dir->byte_len > 0) ? dir->data : getenv("TMPDIR");
+        if (!dir_path || !*dir_path) dir_path = "/tmp";
+        if (prefix && prefix->data) {
+            const char* sep = (dir_path[strlen(dir_path) - 1] == '/') ? "" : "/";
+            struct timeval tv;
+            int created = 0;
+            gettimeofday(&tv, NULL);
+            for (int i = 0; i < 128; i++) {
+                char path[4096];
+                uint64_t nonce = ((uint64_t)(uint32_t)getpid() << 32) ^
+                                 (uint64_t)tv.tv_usec ^ ((uint64_t)i * 0x9e3779b97f4a7c15ULL);
+                int n = snprintf(path, sizeof(path), "%s%s%s%016llx",
+                                 dir_path, sep, prefix->data,
+                                 (unsigned long long)nonce);
+                if (n <= 0 || n >= (int)sizeof(path)) break;
+                if (mkdir(path, 0700) == 0) {
+                    Value path_value = vm_string_value(vm, path, -1);
+                    if (path_value.type == VAL_STRING) {
+                        vm_push(vm, path_value);
+                        created = 1;
+                    } else {
+                        (void)rmdir(path);
+                    }
+                    break;
+                }
+                if (errno != EEXIST) break;
+            }
+            if (created) break;
+        }
+#else
+        (void)dir_val; (void)prefix_val;
+#endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
     /* ══════════════════════════════════════════════════════════════════════
      * Shell Utilities (1770-1779)
      * ══════════════════════════════════════════════════════════════════════ */

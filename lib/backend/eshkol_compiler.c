@@ -5546,6 +5546,7 @@ static const BuiltinDef BUILTINS[] = {
     {"signal-install", 1794, 1}, {"signal-check", 1795, 0},
     {"signal-reset", 1796, 1}, {"signal-ignore", 1797, 1},
     {"signal-count", 1798, 0},
+    {"make-temp-file", 1760, 3}, {"make-temp-dir", 1761, 2},
     {"term-set-scroll-region", 1930, 2}, {"term-reset-scroll-region", 1931, 0},
     {"term-enable-mouse", 1932, 0}, {"term-disable-mouse", 1933, 0},
     {"term-read-mouse-event", 1934, 1},

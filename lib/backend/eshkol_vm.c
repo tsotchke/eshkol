@@ -550,6 +550,7 @@ static const BuiltinDef BUILTINS[] = {
     {"file-lock", 1754, 1}, {"file-unlock", 1755, 1},
     {"glob-expand", 1756, 1}, {"glob-match", 1757, 2},
     {"file-mmap", 1758, 3}, {"file-munmap", 1759, 1},
+    {"make-temp-file", 1760, 3}, {"make-temp-dir", 1761, 2},
     /* ═══════════════════════════════════════════════════════════════
      * Shell Utilities — IDs 1770-1779
      * ═══════════════════════════════════════════════════════════════ */

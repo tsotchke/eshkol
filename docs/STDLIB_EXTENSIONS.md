@@ -2305,6 +2305,10 @@ but is not wired to the VM. Add case in vm_native.c.
 
 Race-free temp file creation. Eliminates `mkdir -p` shell-out in `temp.esk`.
 
+**VM**: The standalone VM exposes `make-temp-file` and `make-temp-dir` as
+native IDs 1760 and 1761. Both create paths directly with exclusive native file
+or directory creation; `make-temp-file` preserves the requested suffix.
+
 ## E.9 ANSI Escape Stripping — P1
 
 `(ansi-strip str) -> string`
