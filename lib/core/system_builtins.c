@@ -33,6 +33,9 @@
 #include <sys/un.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#ifndef ESHKOL_VM_WASM
+#include <netdb.h>
+#endif
 #include <glob.h>
 #include <fnmatch.h>
 #ifndef ESHKOL_VM_WASM
@@ -3603,6 +3606,379 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_http_server_close_v(eshkol_sysbu
     return sys_make_bool(1);
 }
 
+static int sys_http_request_parse_url(const char* url, char* host, size_t host_cap,
+                                      int* port, char* path, size_t path_cap) {
+    if (!url || !host || !port || !path || host_cap == 0 || path_cap == 0)
+        return 0;
+    const char* prefix = "http://";
+    size_t prefix_len = strlen(prefix);
+    if (strncmp(url, prefix, prefix_len) != 0) return 0;
+    const char* host_start = url + prefix_len;
+    const char* path_start = host_start;
+    while (*path_start && *path_start != '/') path_start++;
+    const char* colon = NULL;
+    for (const char* p = host_start; p < path_start; p++) {
+        if (*p == ':') colon = p;
+    }
+    size_t host_len = (size_t)((colon ? colon : path_start) - host_start);
+    if (host_len == 0 || host_len >= host_cap) return 0;
+    memcpy(host, host_start, host_len);
+    host[host_len] = '\0';
+    *port = 80;
+    if (colon) {
+        int parsed_port = atoi(colon + 1);
+        if (parsed_port <= 0 || parsed_port > 65535) return 0;
+        *port = parsed_port;
+    }
+    if (*path_start) {
+        size_t path_len = strlen(path_start);
+        if (path_len >= path_cap) return 0;
+        memcpy(path, path_start, path_len + 1);
+    } else {
+        snprintf(path, path_cap, "/");
+    }
+    return 1;
+}
+
+static int sys_http_request_connect(const char* host, int port, int timeout_ms) {
+#if !defined(_WIN32) && !defined(ESHKOL_VM_WASM)
+    char port_buf[16];
+    snprintf(port_buf, sizeof(port_buf), "%d", port);
+    struct addrinfo hints;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    struct addrinfo* res = NULL;
+    if (getaddrinfo(host, port_buf, &hints, &res) != 0) return -1;
+    int fd = -1;
+    for (struct addrinfo* ai = res; ai; ai = ai->ai_next) {
+        fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+        if (fd < 0) continue;
+        struct timeval tv;
+        tv.tv_sec = timeout_ms > 0 ? timeout_ms / 1000 : 30;
+        tv.tv_usec = timeout_ms > 0 ? (timeout_ms % 1000) * 1000 : 0;
+        (void)setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, (socklen_t)sizeof(tv));
+        (void)setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, (socklen_t)sizeof(tv));
+        if (connect(fd, ai->ai_addr, ai->ai_addrlen) == 0) break;
+        close(fd);
+        fd = -1;
+    }
+    freeaddrinfo(res);
+    return fd;
+#else
+    (void)host; (void)port; (void)timeout_ms;
+    return -1;
+#endif
+}
+
+static eshkol_sysbuiltin_value_t sys_http_response_value(int status,
+                                                         const char* headers,
+                                                         size_t headers_len,
+                                                         const char* body,
+                                                         size_t body_len) {
+    eshkol_sysbuiltin_value_t body_value = sys_make_string_len(body ? body : "", body_len);
+    eshkol_sysbuiltin_value_t headers_value = sys_make_string_len(headers ? headers : "", headers_len);
+    if (body_value.type != SYS_TYPE_HEAP_PTR || headers_value.type != SYS_TYPE_HEAP_PTR)
+        return sys_make_bool(0);
+    return sys_make_pair(sys_make_int64((int64_t)status),
+                         sys_make_pair(headers_value,
+                                       sys_make_pair(body_value, sys_make_null())));
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_http_request_v(
+    eshkol_sysbuiltin_value_t method_val,
+    eshkol_sysbuiltin_value_t url_val,
+    eshkol_sysbuiltin_value_t headers_val,
+    eshkol_sysbuiltin_value_t body_val,
+    eshkol_sysbuiltin_value_t timeout_val) {
+#if !defined(_WIN32) && !defined(ESHKOL_VM_WASM)
+    const char* method = sys_extract_string(method_val);
+    const char* url = sys_extract_string(url_val);
+    const char* headers = sys_extract_string(headers_val);
+    const char* body = sys_extract_string(body_val);
+    char host[256];
+    char path[2048];
+    int port = 80;
+    int timeout_ms = (int)sys_extract_int64(timeout_val);
+    if (timeout_ms <= 0) timeout_ms = 30000;
+    if (!method || !*method ||
+        !sys_http_request_parse_url(url, host, sizeof(host), &port, path, sizeof(path)))
+        return sys_make_bool(0);
+
+    int fd = sys_http_request_connect(host, port, timeout_ms);
+    if (fd < 0) return sys_make_bool(0);
+
+    const char* body_data = body ? body : "";
+    size_t body_len = body ? strlen(body) : 0;
+    const char* extra_headers = headers ? headers : "";
+    char header[8192];
+    int hlen = snprintf(header, sizeof(header),
+                        "%s %s HTTP/1.1\r\n"
+                        "Host: %s\r\n"
+                        "Connection: close\r\n"
+                        "%s%s"
+                        "Content-Length: %lld\r\n\r\n",
+                        method, path, host,
+                        extra_headers,
+                        extra_headers[0] ? (strstr(extra_headers, "\n") ? "" : "\r\n") : "",
+                        (long long)body_len);
+    int ok = hlen > 0 && hlen < (int)sizeof(header);
+    if (ok) ok = send(fd, header, (size_t)hlen, 0) == hlen;
+    if (ok && body_len > 0)
+        ok = send(fd, body_data, body_len, 0) == (ssize_t)body_len;
+
+    if (ok) {
+        int cap = 65536;
+        char* response = (char*)malloc((size_t)cap + 1);
+        if (response) {
+            int total = 0;
+            while (total < cap) {
+                ssize_t n = recv(fd, response + total, (size_t)(cap - total), 0);
+                if (n <= 0) break;
+                total += (int)n;
+            }
+            response[total] = '\0';
+            close(fd);
+            int status = 0;
+            (void)sscanf(response, "HTTP/%*s %d", &status);
+            char* body_start = strstr(response, "\r\n\r\n");
+            int header_len = total;
+            int body_offset = total;
+            if (body_start) {
+                body_start += 4;
+                body_offset = (int)(body_start - response);
+                header_len = body_offset - 4;
+            } else {
+                body_start = response + total;
+            }
+            eshkol_sysbuiltin_value_t result =
+                sys_http_response_value(status, response, (size_t)header_len,
+                                        body_start, (size_t)(total - body_offset));
+            free(response);
+            return result;
+        }
+    }
+    close(fd);
+#else
+    (void)method_val; (void)url_val; (void)headers_val; (void)body_val; (void)timeout_val;
+#endif
+    return sys_make_bool(0);
+}
+
+typedef struct {
+    int active;
+    int fd;
+    int closed;
+} SysWebSocketClient;
+
+static SysWebSocketClient g_sys_websocket_clients[16];
+
+static int sys_ws_parse_url(const char* url, char* host, size_t host_cap,
+                            int* port, char* path, size_t path_cap) {
+    if (!url) return 0;
+    const char* prefix = "ws://";
+    size_t prefix_len = strlen(prefix);
+    if (strncmp(url, prefix, prefix_len) != 0) return 0;
+    char http_url[4096];
+    int n = snprintf(http_url, sizeof(http_url), "http://%s", url + prefix_len);
+    if (n <= 0 || n >= (int)sizeof(http_url)) return 0;
+    return sys_http_request_parse_url(http_url, host, host_cap, port, path, path_cap);
+}
+
+static int sys_ws_valid(int handle) {
+    return handle > 0 &&
+           handle < (int)(sizeof(g_sys_websocket_clients) / sizeof(g_sys_websocket_clients[0])) &&
+           g_sys_websocket_clients[handle].active &&
+           !g_sys_websocket_clients[handle].closed;
+}
+
+static int sys_ws_store(int fd) {
+    for (int i = 1; i < (int)(sizeof(g_sys_websocket_clients) / sizeof(g_sys_websocket_clients[0])); i++) {
+        if (!g_sys_websocket_clients[i].active) {
+            g_sys_websocket_clients[i].active = 1;
+            g_sys_websocket_clients[i].fd = fd;
+            g_sys_websocket_clients[i].closed = 0;
+            return i;
+        }
+    }
+    return -1;
+}
+
+static int sys_ws_send_all(int fd, const void* data, size_t len) {
+#if !defined(_WIN32) && !defined(ESHKOL_VM_WASM)
+    const char* p = (const char*)data;
+    size_t sent_total = 0;
+    while (sent_total < len) {
+        ssize_t n = send(fd, p + sent_total, len - sent_total, 0);
+        if (n <= 0) return 0;
+        sent_total += (size_t)n;
+    }
+    return 1;
+#else
+    (void)fd; (void)data; (void)len;
+    return 0;
+#endif
+}
+
+static int sys_ws_send_frame(int fd, int opcode, const void* data, size_t len) {
+    unsigned char header[14];
+    int hlen = 0;
+    header[hlen++] = (unsigned char)(0x80 | (opcode & 0x0f));
+    if (len < 126) {
+        header[hlen++] = (unsigned char)(0x80 | len);
+    } else if (len <= 65535) {
+        header[hlen++] = 0x80 | 126;
+        header[hlen++] = (unsigned char)((len >> 8) & 0xff);
+        header[hlen++] = (unsigned char)(len & 0xff);
+    } else {
+        header[hlen++] = 0x80 | 127;
+        for (int i = 7; i >= 0; i--)
+            header[hlen++] = (unsigned char)((len >> (i * 8)) & 0xff);
+    }
+    unsigned char mask[4] = {0, 0, 0, 0};
+    memcpy(header + hlen, mask, sizeof(mask));
+    hlen += 4;
+    return sys_ws_send_all(fd, header, (size_t)hlen) &&
+           (len == 0 || sys_ws_send_all(fd, data, len));
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_websocket_connect_v(
+    eshkol_sysbuiltin_value_t url_val,
+    eshkol_sysbuiltin_value_t headers_val) {
+#if !defined(_WIN32) && !defined(ESHKOL_VM_WASM)
+    const char* url = sys_extract_string(url_val);
+    const char* headers = sys_extract_string(headers_val);
+    char host[256];
+    char path[2048];
+    int port = 80;
+    if (!sys_ws_parse_url(url, host, sizeof(host), &port, path, sizeof(path)))
+        return sys_make_bool(0);
+    int fd = sys_http_request_connect(host, port, 5000);
+    if (fd < 0) return sys_make_bool(0);
+
+    const char* extra_headers = headers ? headers : "";
+    char request[4096];
+    int n = snprintf(request, sizeof(request),
+                     "GET %s HTTP/1.1\r\n"
+                     "Host: %s\r\n"
+                     "Upgrade: websocket\r\n"
+                     "Connection: Upgrade\r\n"
+                     "Sec-WebSocket-Version: 13\r\n"
+                     "Sec-WebSocket-Key: ZXNoa29sLXZtLXdlYnNvY2tldA==\r\n"
+                     "%s%s"
+                     "\r\n",
+                     path, host, extra_headers,
+                     extra_headers[0] ? (strstr(extra_headers, "\n") ? "" : "\r\n") : "");
+    if (n > 0 && n < (int)sizeof(request) && sys_ws_send_all(fd, request, (size_t)n)) {
+        char response[4096];
+        ssize_t r = recv(fd, response, sizeof(response) - 1, 0);
+        if (r > 0) {
+            response[r] = '\0';
+            if (strstr(response, " 101 ") || strstr(response, " 101\r") ||
+                strstr(response, " 101\n")) {
+                int handle = sys_ws_store(fd);
+                if (handle > 0) return sys_make_int64((int64_t)handle);
+            }
+        }
+    }
+    close(fd);
+#else
+    (void)url_val; (void)headers_val;
+#endif
+    return sys_make_bool(0);
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_websocket_send_v(
+    eshkol_sysbuiltin_value_t ws_val,
+    eshkol_sysbuiltin_value_t data_val) {
+    int handle = (int)sys_extract_int64(ws_val);
+    const char* data = sys_extract_string(data_val);
+    if (!sys_ws_valid(handle) || !data) return sys_make_bool(0);
+    return sys_make_bool(sys_ws_send_frame(g_sys_websocket_clients[handle].fd, 1,
+                                           data, strlen(data)));
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_websocket_send_binary_v(
+    eshkol_sysbuiltin_value_t ws_val,
+    eshkol_sysbuiltin_value_t data_val) {
+    int handle = (int)sys_extract_int64(ws_val);
+    const char* data = sys_extract_string(data_val);
+    if (!sys_ws_valid(handle) || !data) return sys_make_bool(0);
+    return sys_make_bool(sys_ws_send_frame(g_sys_websocket_clients[handle].fd, 2,
+                                           data, strlen(data)));
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_websocket_receive_v(
+    eshkol_sysbuiltin_value_t ws_val,
+    eshkol_sysbuiltin_value_t timeout_val) {
+#if !defined(_WIN32) && !defined(ESHKOL_VM_WASM)
+    int handle = (int)sys_extract_int64(ws_val);
+    int timeout_ms = (int)sys_extract_int64(timeout_val);
+    if (timeout_ms < 0) timeout_ms = 0;
+    if (!sys_ws_valid(handle)) return sys_make_bool(0);
+    int fd = g_sys_websocket_clients[handle].fd;
+    struct pollfd pfd;
+    pfd.fd = fd;
+    pfd.events = POLLIN;
+    pfd.revents = 0;
+    if (poll(&pfd, 1, timeout_ms) <= 0 || !(pfd.revents & POLLIN))
+        return sys_make_bool(0);
+
+    unsigned char hdr[2];
+    if (recv(fd, hdr, 2, MSG_WAITALL) != 2) return sys_make_bool(0);
+    int opcode = hdr[0] & 0x0f;
+    int masked = hdr[1] & 0x80;
+    uint64_t len = hdr[1] & 0x7f;
+    if (len == 126) {
+        unsigned char ext[2];
+        if (recv(fd, ext, 2, MSG_WAITALL) != 2) return sys_make_bool(0);
+        len = ((uint64_t)ext[0] << 8) | ext[1];
+    } else if (len == 127) {
+        unsigned char ext[8];
+        if (recv(fd, ext, 8, MSG_WAITALL) != 8) return sys_make_bool(0);
+        len = 0;
+        for (int i = 0; i < 8; i++) len = (len << 8) | ext[i];
+    }
+    unsigned char mask[4] = {0, 0, 0, 0};
+    if (masked && recv(fd, mask, 4, MSG_WAITALL) != 4) return sys_make_bool(0);
+    if (len > 65536) return sys_make_bool(0);
+
+    char* payload = (char*)malloc((size_t)len + 1);
+    if (!payload) return sys_make_bool(0);
+    if (recv(fd, payload, (size_t)len, MSG_WAITALL) != (ssize_t)len) {
+        free(payload);
+        return sys_make_bool(0);
+    }
+    if (masked) {
+        for (uint64_t i = 0; i < len; i++) payload[i] ^= (char)mask[i % 4];
+    }
+    payload[len] = '\0';
+    const char* type = opcode == 1 ? "text" :
+                       opcode == 2 ? "binary" :
+                       opcode == 9 ? "ping" :
+                       opcode == 8 ? "close" : "unknown";
+    if (opcode == 8) g_sys_websocket_clients[handle].closed = 1;
+    eshkol_sysbuiltin_value_t result =
+        sys_make_pair(sys_make_string(type), sys_make_string_len(payload, (size_t)len));
+    free(payload);
+    return result;
+#else
+    (void)ws_val; (void)timeout_val;
+    return sys_make_bool(0);
+#endif
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_websocket_close_v(eshkol_sysbuiltin_value_t ws_val) {
+    int handle = (int)sys_extract_int64(ws_val);
+    if (!sys_ws_valid(handle)) return sys_make_bool(0);
+#if !defined(_WIN32) && !defined(ESHKOL_VM_WASM)
+    (void)sys_ws_send_frame(g_sys_websocket_clients[handle].fd, 8, "", 0);
+    close(g_sys_websocket_clients[handle].fd);
+#endif
+    memset(&g_sys_websocket_clients[handle], 0, sizeof(g_sys_websocket_clients[handle]));
+    return sys_make_bool(1);
+}
+
 static int sys_utf8_encode_codepoint(int cp, char* out) {
     if (!out) return 0;
     if (cp < 0) cp = ' ';
@@ -4113,6 +4489,12 @@ void eshkol_builtin_http_server_port(sv_t* out, const sv_t* a) { *out = eshkol_b
 void eshkol_builtin_http_server_accept(sv_t* out, const sv_t* a, const sv_t* b, const sv_t* c) { *out = eshkol_builtin_http_server_accept_v(*a, *b, *c); }
 void eshkol_builtin_http_server_respond(sv_t* out, const sv_t* a, const sv_t* b, const sv_t* c, const sv_t* d) { *out = eshkol_builtin_http_server_respond_v(*a, *b, *c, *d); }
 void eshkol_builtin_http_server_close(sv_t* out, const sv_t* a) { *out = eshkol_builtin_http_server_close_v(*a); }
+void eshkol_builtin_http_request(sv_t* out, const sv_t* a, const sv_t* b, const sv_t* c, const sv_t* d, const sv_t* e) { *out = eshkol_builtin_http_request_v(*a, *b, *c, *d, *e); }
+void eshkol_builtin_websocket_connect(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_websocket_connect_v(*a, *b); }
+void eshkol_builtin_websocket_send(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_websocket_send_v(*a, *b); }
+void eshkol_builtin_websocket_send_binary(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_websocket_send_binary_v(*a, *b); }
+void eshkol_builtin_websocket_receive(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_websocket_receive_v(*a, *b); }
+void eshkol_builtin_websocket_close(sv_t* out, const sv_t* a) { *out = eshkol_builtin_websocket_close_v(*a); }
 void eshkol_builtin_string_ends_with(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_string_ends_with_v(*a, *b); }
 void eshkol_builtin_string_index_of(sv_t* out, const sv_t* a, const sv_t* b, const sv_t* c) { *out = eshkol_builtin_string_index_of_v(*a, *b, *c); }
 void eshkol_builtin_string_pad_left(sv_t* out, const sv_t* a, const sv_t* b, const sv_t* c) { *out = eshkol_builtin_string_pad_v(*a, *b, *c, 1); }

@@ -406,16 +406,29 @@ Standalone VM native ID 2046 closes the listener and any pending client.
 WebSocket upgrade handshake. Using libcurl 7.86+ or raw TCP + TLS.
 Needed for: voice STT streaming, remote sessions, MCP WebSocket transport.
 
+Standalone VM native ID 2048 supports minimal `ws://` client upgrades. It
+validates the `101` response status but leaves `wss://`, extensions, and
+`Sec-WebSocket-Accept` verification to the compiled/runtime transport path.
+
 ### `(websocket-send ws data) -> bool`
 Text frame.
+
+Standalone VM native ID 2049 sends a masked single-frame text message.
 
 ### `(websocket-send-binary ws data) -> bool`
 Binary frame.
 
+Standalone VM native ID 2050 sends a masked single-frame binary message from a
+string or bytevector.
+
 ### `(websocket-receive ws timeout) -> (type . data)-or-false`
 `type`: `"text"`, `"binary"`, `"ping"`, `"close"`.
 
+Standalone VM native ID 2051 receives one non-fragmented frame and returns a
+pair `(type . data)`.
+
 ### `(websocket-close ws) -> void`
+Standalone VM native ID 2052 sends a close frame and releases the socket.
 
 ### `(unix-socket-connect path) -> socket-or-false`
 For IDE IPC (VS Code's `VSCODE_IPC_HOOK`).

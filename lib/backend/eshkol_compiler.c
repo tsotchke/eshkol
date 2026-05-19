@@ -5616,6 +5616,9 @@ static const BuiltinDef BUILTINS[] = {
     {"http-server-accept", 2044, 3}, {"http-server-respond", 2045, 4},
     {"http-server-close", 2046, 1},
     {"http-request", 2047, 5},
+    {"websocket-connect", 2048, 2}, {"websocket-send", 2049, 2},
+    {"websocket-send-binary", 2050, 2}, {"websocket-receive", 2051, 2},
+    {"websocket-close", 2052, 1},
     {"string-ends-with?", 1956, 2}, {"string-index-of", 1957, 3},
     {"string-pad-left", 1958, 3}, {"string-pad-right", 1959, 3},
     /* Missing hash */

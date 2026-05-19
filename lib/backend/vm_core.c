@@ -420,6 +420,12 @@ typedef struct VM {
         int client_fd;
         int port;
     } http_servers[8];
+
+    struct {
+        int active;
+        int fd;
+        int closed;
+    } websocket_clients[16];
 } VM;
 
 /* Command-line arguments (set in main, read by native 602) */
