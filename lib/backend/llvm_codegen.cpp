@@ -1292,6 +1292,18 @@ public:
         function_return_types["websocket-send-binary"] = BuiltinTypes::Boolean;
         function_return_types["websocket-receive"] = BuiltinTypes::Value;
         function_return_types["websocket-close"] = BuiltinTypes::Boolean;
+        function_return_types["ts-parser-new"] = BuiltinTypes::Integer;
+        function_return_types["ts-parser-free"] = BuiltinTypes::Boolean;
+        function_return_types["ts-parse"] = BuiltinTypes::Integer;
+        function_return_types["ts-tree-free"] = BuiltinTypes::Boolean;
+        function_return_types["ts-node-type"] = BuiltinTypes::String;
+        function_return_types["ts-node-text"] = BuiltinTypes::String;
+        function_return_types["ts-node-children"] = BuiltinTypes::Value;
+        function_return_types["ts-query-new"] = BuiltinTypes::Integer;
+        function_return_types["ts-query-matches"] = BuiltinTypes::Value;
+        function_return_types["ts-query-free"] = BuiltinTypes::Boolean;
+        function_return_types["ts-available"] = BuiltinTypes::Boolean;
+        function_return_types["ts-tree-root"] = BuiltinTypes::Integer;
         function_return_types["string-ends-with?"] = BuiltinTypes::Boolean;
         function_return_types["string-index-of"] = BuiltinTypes::Integer;
         function_return_types["string-pad-left"] = BuiltinTypes::String;
@@ -12079,6 +12091,18 @@ private:
         if (func_name == "websocket-send-binary") return system_->websocketSendBinary(op);
         if (func_name == "websocket-receive") return system_->websocketReceive(op);
         if (func_name == "websocket-close") return system_->websocketClose(op);
+        if (func_name == "ts-parser-new") return system_->tsParserNew(op);
+        if (func_name == "ts-parser-free") return system_->tsParserFree(op);
+        if (func_name == "ts-parse") return system_->tsParse(op);
+        if (func_name == "ts-tree-free") return system_->tsTreeFree(op);
+        if (func_name == "ts-node-type") return system_->tsNodeType(op);
+        if (func_name == "ts-node-text") return system_->tsNodeText(op);
+        if (func_name == "ts-node-children") return system_->tsNodeChildren(op);
+        if (func_name == "ts-query-new") return system_->tsQueryNew(op);
+        if (func_name == "ts-query-matches") return system_->tsQueryMatches(op);
+        if (func_name == "ts-query-free") return system_->tsQueryFree(op);
+        if (func_name == "ts-available") return system_->tsAvailable(op);
+        if (func_name == "ts-tree-root") return system_->tsTreeRoot(op);
         if (func_name == "string-ends-with?") return system_->stringEndsWith(op);
         if (func_name == "string-index-of") return system_->stringIndexOf(op);
         if (func_name == "string-pad-left") return system_->stringPadLeft(op);
@@ -20026,6 +20050,10 @@ private:
             "http-server-respond", "http-server-close", "http-request",
             "websocket-connect", "websocket-send", "websocket-send-binary",
             "websocket-receive", "websocket-close",
+            "ts-parser-new", "ts-parser-free", "ts-parse", "ts-tree-free",
+            "ts-node-type", "ts-node-text", "ts-node-children",
+            "ts-query-new", "ts-query-matches", "ts-query-free",
+            "ts-available", "ts-tree-root",
             "string-ends-with?", "string-index-of",
             "string-pad-left", "string-pad-right",
             "kb-save", "kb-load", "tensor-token-estimate",

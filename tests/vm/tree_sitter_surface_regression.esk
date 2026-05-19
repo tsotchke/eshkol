@@ -1,0 +1,73 @@
+;; Standalone VM regression for Tree-sitter-compatible structural handles.
+
+(display "=== tree-sitter VM surface regression ===") (newline)
+
+(define source "import os\n\ndef hello(name):\n  return name\n")
+
+(display "T1 ts-available reports fallback runtime: ")
+(display (if (ts-available)
+             "PASS"
+             "FAIL"))
+(newline)
+
+(define parser (ts-parser-new "python"))
+
+(display "T2 ts-parser-new returns parser handle: ")
+(display (if (and (number? parser) (> parser 0))
+             "PASS"
+             (list "FAIL got " parser)))
+(newline)
+
+(define tree (ts-parse parser source))
+(define root (ts-tree-root tree))
+
+(display "T3 ts-parse returns tree and root handles: ")
+(display (if (and (number? tree) (> tree 0)
+                  (number? root) (> root 0))
+             "PASS"
+             (list "FAIL got " tree root)))
+(newline)
+
+(display "T4 ts-node-type returns language root type: ")
+(display (if (string=? (ts-node-type root) "module")
+             "PASS"
+             (list "FAIL got " (ts-node-type root))))
+(newline)
+
+(define children (ts-node-children root))
+(define fn-node (list-ref children 1))
+(define fn-text (ts-node-text fn-node source))
+
+(display "T5 ts-node-children exposes line-level structural nodes: ")
+(display (if (and (pair? children)
+                  (string=? (ts-node-type fn-node) "function_definition")
+                  (string-index-of fn-text "hello" 0))
+             "PASS"
+             (list "FAIL got " children fn-text)))
+(newline)
+
+(define query (ts-query-new "python" "(function_definition) @fn"))
+(define matches (ts-query-matches query tree source))
+(define (alist-ref key alist)
+  (let ((entry (assoc key alist)))
+    (if entry (cdr entry) #f)))
+(define first-match (car matches))
+
+(display "T6 ts-query-matches returns capture alists: ")
+(display (if (and (pair? matches)
+                  (string=? (alist-ref "capture" first-match) "fn")
+                  (string=? (alist-ref "type" first-match) "function_definition")
+                  (string-index-of (alist-ref "text" first-match) "hello" 0))
+             "PASS"
+             (list "FAIL got " matches)))
+(newline)
+
+(display "T7 tree-sitter handles release cleanly: ")
+(display (if (and (ts-query-free query)
+                  (ts-tree-free tree)
+                  (ts-parser-free parser))
+             "PASS"
+             "FAIL"))
+(newline)
+
+(display "=== tree-sitter VM surface complete ===") (newline)
