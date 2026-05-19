@@ -2414,6 +2414,78 @@ static Value vm_http_response_value(VM* vm, int status,
     return result;
 }
 
+static int vm_ws_parse_url(VmString* url, char* host, size_t host_cap,
+                           int* port, char* path, size_t path_cap) {
+    if (!url || !url->data) return 0;
+    const char* s = url->data;
+    const char* prefix = "ws://";
+    size_t prefix_len = strlen(prefix);
+    if ((size_t)url->byte_len <= prefix_len || memcmp(s, prefix, prefix_len) != 0)
+        return 0;
+    VmString tmp = *url;
+    tmp.data = (char*)url->data;
+    tmp.byte_len = url->byte_len;
+    char http_url[4096];
+    int n = snprintf(http_url, sizeof(http_url), "http://%.*s",
+                     (int)(url->byte_len - (int64_t)prefix_len), s + prefix_len);
+    if (n <= 0 || n >= (int)sizeof(http_url)) return 0;
+    tmp.data = http_url;
+    tmp.byte_len = n;
+    return vm_http_parse_url(&tmp, host, host_cap, port, path, path_cap);
+}
+
+static int vm_ws_valid(VM* vm, int handle) {
+    return vm && handle > 0 &&
+           handle < (int)(sizeof(vm->websocket_clients) / sizeof(vm->websocket_clients[0])) &&
+           vm->websocket_clients[handle].active &&
+           !vm->websocket_clients[handle].closed;
+}
+
+static int vm_ws_store(VM* vm, int fd) {
+    for (int i = 1; i < (int)(sizeof(vm->websocket_clients) / sizeof(vm->websocket_clients[0])); i++) {
+        if (!vm->websocket_clients[i].active) {
+            vm->websocket_clients[i].active = 1;
+            vm->websocket_clients[i].fd = fd;
+            vm->websocket_clients[i].closed = 0;
+            return i;
+        }
+    }
+    return -1;
+}
+
+static int vm_ws_send_all(int fd, const void* data, size_t len) {
+    const char* p = (const char*)data;
+    size_t sent_total = 0;
+    while (sent_total < len) {
+        ssize_t n = send(fd, p + sent_total, len - sent_total, 0);
+        if (n <= 0) return 0;
+        sent_total += (size_t)n;
+    }
+    return 1;
+}
+
+static int vm_ws_send_frame(int fd, int opcode, const void* data, size_t len) {
+    unsigned char header[14];
+    int hlen = 0;
+    header[hlen++] = (unsigned char)(0x80 | (opcode & 0x0f));
+    if (len < 126) {
+        header[hlen++] = (unsigned char)(0x80 | len);
+    } else if (len <= 65535) {
+        header[hlen++] = 0x80 | 126;
+        header[hlen++] = (unsigned char)((len >> 8) & 0xff);
+        header[hlen++] = (unsigned char)(len & 0xff);
+    } else {
+        header[hlen++] = 0x80 | 127;
+        for (int i = 7; i >= 0; i--)
+            header[hlen++] = (unsigned char)((len >> (i * 8)) & 0xff);
+    }
+    unsigned char mask[4] = {0, 0, 0, 0};
+    memcpy(header + hlen, mask, sizeof(mask));
+    hlen += 4;
+    return vm_ws_send_all(fd, header, (size_t)hlen) &&
+           (len == 0 || vm_ws_send_all(fd, data, len));
+}
+
 static int vm_json_alist_ref(VM* vm, Value obj, Value key, Value* out) {
     Value cur = obj;
     while (cur.type == VAL_PAIR && is_valid_heap_ptr(vm, cur.as.ptr)) {
@@ -6879,6 +6951,169 @@ static void vm_dispatch_native(VM* vm, int fid) {
 #else
         (void)timeout_val; (void)body_val; (void)headers_val; (void)url_val; (void)method_val;
 #endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+    case 2048: { /* websocket-connect(url, headers) → ws or #f */
+        Value headers_val = vm_pop(vm), url_val = vm_pop(vm);
+#if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
+        VmString* url = vm_value_as_string(vm, url_val);
+        VmString* headers = vm_value_as_string(vm, headers_val);
+        char host[256];
+        char path[2048];
+        int port = 80;
+        if (vm_ws_parse_url(url, host, sizeof(host), &port, path, sizeof(path))) {
+            int fd = vm_http_connect(host, port, 5000);
+            if (fd >= 0) {
+                const char* extra_headers = (headers && headers->data) ? headers->data : "";
+                char request[4096];
+                int n = snprintf(request, sizeof(request),
+                                 "GET %s HTTP/1.1\r\n"
+                                 "Host: %s\r\n"
+                                 "Upgrade: websocket\r\n"
+                                 "Connection: Upgrade\r\n"
+                                 "Sec-WebSocket-Version: 13\r\n"
+                                 "Sec-WebSocket-Key: ZXNoa29sLXZtLXdlYnNvY2tldA==\r\n"
+                                 "%s%s"
+                                 "\r\n",
+                                 path, host, extra_headers,
+                                 extra_headers[0] ? (strstr(extra_headers, "\n") ? "" : "\r\n") : "");
+                if (n > 0 && n < (int)sizeof(request) &&
+                    vm_ws_send_all(fd, request, (size_t)n)) {
+                    char response[4096];
+                    ssize_t r = recv(fd, response, sizeof(response) - 1, 0);
+                    if (r > 0) {
+                        response[r] = '\0';
+                        if (strstr(response, " 101 ") || strstr(response, " 101\r") ||
+                            strstr(response, " 101\n")) {
+                            int handle = vm_ws_store(vm, fd);
+                            if (handle > 0) {
+                                vm_push(vm, INT_VAL((int64_t)handle));
+                                break;
+                            }
+                        }
+                    }
+                }
+                close(fd);
+            }
+        }
+#else
+        (void)headers_val; (void)url_val;
+#endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+    case 2049: { /* websocket-send(ws, data) → bool */
+        Value data_val = vm_pop(vm), ws_val = vm_pop(vm);
+        int handle = (int)as_number(ws_val);
+        VmString* data = vm_value_as_string(vm, data_val);
+        if (vm_ws_valid(vm, handle) && data && data->data) {
+            vm_push(vm, BOOL_VAL(vm_ws_send_frame(vm->websocket_clients[handle].fd, 1,
+                                                  data->data, (size_t)data->byte_len)));
+            break;
+        }
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+    case 2050: { /* websocket-send-binary(ws, data) → bool */
+        Value data_val = vm_pop(vm), ws_val = vm_pop(vm);
+        int handle = (int)as_number(ws_val);
+        const void* data = NULL;
+        size_t len = 0;
+        VmString* s = vm_value_as_string(vm, data_val);
+        if (s && s->data) {
+            data = s->data;
+            len = (size_t)s->byte_len;
+        } else {
+            VmBytevector* bv = vm_value_as_bytevector(vm, data_val);
+            if (bv && bv->data) {
+                data = bv->data;
+                len = (size_t)bv->len;
+            }
+        }
+        if (vm_ws_valid(vm, handle) && data) {
+            vm_push(vm, BOOL_VAL(vm_ws_send_frame(vm->websocket_clients[handle].fd, 2, data, len)));
+            break;
+        }
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+    case 2051: { /* websocket-receive(ws, timeout-ms) → (type . data) or #f */
+        Value timeout_val = vm_pop(vm), ws_val = vm_pop(vm);
+#if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
+        int handle = (int)as_number(ws_val);
+        int timeout_ms = (int)as_number(timeout_val);
+        if (timeout_ms < 0) timeout_ms = 0;
+        if (vm_ws_valid(vm, handle)) {
+            int fd = vm->websocket_clients[handle].fd;
+            struct pollfd pfd;
+            pfd.fd = fd;
+            pfd.events = POLLIN;
+            pfd.revents = 0;
+            if (poll(&pfd, 1, timeout_ms) > 0 && (pfd.revents & POLLIN)) {
+                unsigned char hdr[2];
+                if (recv(fd, hdr, 2, MSG_WAITALL) == 2) {
+                    int opcode = hdr[0] & 0x0f;
+                    int masked = hdr[1] & 0x80;
+                    uint64_t len = hdr[1] & 0x7f;
+                    if (len == 126) {
+                        unsigned char ext[2];
+                        if (recv(fd, ext, 2, MSG_WAITALL) != 2) len = 65537;
+                        else len = ((uint64_t)ext[0] << 8) | ext[1];
+                    } else if (len == 127) {
+                        unsigned char ext[8];
+                        if (recv(fd, ext, 8, MSG_WAITALL) != 8) len = 65537;
+                        else {
+                            len = 0;
+                            for (int i = 0; i < 8; i++) len = (len << 8) | ext[i];
+                        }
+                    }
+                    unsigned char mask[4] = {0, 0, 0, 0};
+                    if (masked && recv(fd, mask, 4, MSG_WAITALL) != 4) len = 65537;
+                    if (len <= 65536) {
+                        char* payload = (char*)malloc((size_t)len + 1);
+                        if (payload) {
+                            if (recv(fd, payload, (size_t)len, MSG_WAITALL) == (ssize_t)len) {
+                                if (masked) {
+                                    for (uint64_t i = 0; i < len; i++) payload[i] ^= (char)mask[i % 4];
+                                }
+                                payload[len] = '\0';
+                                const char* type = opcode == 1 ? "text" :
+                                                   opcode == 2 ? "binary" :
+                                                   opcode == 9 ? "ping" :
+                                                   opcode == 8 ? "close" : "unknown";
+                                if (opcode == 8) vm->websocket_clients[handle].closed = 1;
+                                Value result = vm_cons_value(vm,
+                                    vm_string_value(vm, type, -1),
+                                    vm_string_value(vm, payload, (int64_t)len));
+                                free(payload);
+                                vm_push(vm, result);
+                                break;
+                            }
+                            free(payload);
+                        }
+                    }
+                }
+            }
+        }
+#else
+        (void)timeout_val; (void)ws_val;
+#endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+    case 2052: { /* websocket-close(ws) → bool */
+        Value ws_val = vm_pop(vm);
+        int handle = (int)as_number(ws_val);
+        if (vm_ws_valid(vm, handle)) {
+#if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
+            (void)vm_ws_send_frame(vm->websocket_clients[handle].fd, 8, "", 0);
+            close(vm->websocket_clients[handle].fd);
+#endif
+            memset(&vm->websocket_clients[handle], 0, sizeof(vm->websocket_clients[handle]));
+            vm_push(vm, BOOL_VAL(1));
+            break;
+        }
         vm_push(vm, BOOL_VAL(0));
         break;
     }

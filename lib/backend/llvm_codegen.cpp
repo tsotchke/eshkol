@@ -1286,6 +1286,12 @@ public:
         function_return_types["http-server-accept"] = BuiltinTypes::String;
         function_return_types["http-server-respond"] = BuiltinTypes::Boolean;
         function_return_types["http-server-close"] = BuiltinTypes::Boolean;
+        function_return_types["http-request"] = BuiltinTypes::Value;
+        function_return_types["websocket-connect"] = BuiltinTypes::Integer;
+        function_return_types["websocket-send"] = BuiltinTypes::Boolean;
+        function_return_types["websocket-send-binary"] = BuiltinTypes::Boolean;
+        function_return_types["websocket-receive"] = BuiltinTypes::Value;
+        function_return_types["websocket-close"] = BuiltinTypes::Boolean;
         function_return_types["string-ends-with?"] = BuiltinTypes::Boolean;
         function_return_types["string-index-of"] = BuiltinTypes::Integer;
         function_return_types["string-pad-left"] = BuiltinTypes::String;
@@ -12067,6 +12073,12 @@ private:
         if (func_name == "http-server-accept") return system_->httpServerAccept(op);
         if (func_name == "http-server-respond") return system_->httpServerRespond(op);
         if (func_name == "http-server-close") return system_->httpServerClose(op);
+        if (func_name == "http-request") return system_->httpRequest(op);
+        if (func_name == "websocket-connect") return system_->websocketConnect(op);
+        if (func_name == "websocket-send") return system_->websocketSend(op);
+        if (func_name == "websocket-send-binary") return system_->websocketSendBinary(op);
+        if (func_name == "websocket-receive") return system_->websocketReceive(op);
+        if (func_name == "websocket-close") return system_->websocketClose(op);
         if (func_name == "string-ends-with?") return system_->stringEndsWith(op);
         if (func_name == "string-index-of") return system_->stringIndexOf(op);
         if (func_name == "string-pad-left") return system_->stringPadLeft(op);
@@ -20011,7 +20023,9 @@ private:
             "make-lru-cache", "lru-get", "lru-set!", "lru-has?",
             "lru-delete!", "lru-clear!", "lru-size", "format", "_format-list",
             "http-server-create", "http-server-port", "http-server-accept",
-            "http-server-respond", "http-server-close",
+            "http-server-respond", "http-server-close", "http-request",
+            "websocket-connect", "websocket-send", "websocket-send-binary",
+            "websocket-receive", "websocket-close",
             "string-ends-with?", "string-index-of",
             "string-pad-left", "string-pad-right",
             "kb-save", "kb-load", "tensor-token-estimate",

@@ -1474,12 +1474,33 @@ llvm::Value* SystemCodegen::method_name(const eshkol_operations_t* op) { \
     return callPtrRuntime(ctx_, f, {a, b, c, d}); \
 }
 
+#define FIVE_ARG_BUILTIN(method_name, c_func_name) \
+llvm::Value* SystemCodegen::method_name(const eshkol_operations_t* op) { \
+    if (op->call_op.num_vars != 5) return tagged_.packNull(); \
+    if (!codegen_ast_callback_) return tagged_.packNull(); \
+    llvm::Value* a = codegen_ast_callback_(&op->call_op.variables[0], callback_context_); \
+    llvm::Value* b = codegen_ast_callback_(&op->call_op.variables[1], callback_context_); \
+    llvm::Value* c = codegen_ast_callback_(&op->call_op.variables[2], callback_context_); \
+    llvm::Value* d = codegen_ast_callback_(&op->call_op.variables[3], callback_context_); \
+    llvm::Value* e = codegen_ast_callback_(&op->call_op.variables[4], callback_context_); \
+    if (!a || !b || !c || !d || !e) return tagged_.packNull(); \
+    llvm::Module* mod = ctx_.builder().GetInsertBlock()->getParent()->getParent(); \
+    llvm::Function* f = getOrDeclareRuntimeFuncAllPtr(ctx_, mod, c_func_name, 5); \
+    return callPtrRuntime(ctx_, f, {a, b, c, d, e}); \
+}
+
 THREE_ARG_BUILTIN(makeTempFile, "eshkol_builtin_make_temp_file")
 ONE_ARG_BUILTIN(httpServerCreate, "eshkol_builtin_http_server_create")
 ONE_ARG_BUILTIN(httpServerPort, "eshkol_builtin_http_server_port")
 THREE_ARG_BUILTIN(httpServerAccept, "eshkol_builtin_http_server_accept")
 FOUR_ARG_BUILTIN(httpServerRespond, "eshkol_builtin_http_server_respond")
 ONE_ARG_BUILTIN(httpServerClose, "eshkol_builtin_http_server_close")
+FIVE_ARG_BUILTIN(httpRequest, "eshkol_builtin_http_request")
+TWO_ARG_BUILTIN(websocketConnect, "eshkol_builtin_websocket_connect")
+TWO_ARG_BUILTIN(websocketSend, "eshkol_builtin_websocket_send")
+TWO_ARG_BUILTIN(websocketSendBinary, "eshkol_builtin_websocket_send_binary")
+TWO_ARG_BUILTIN(websocketReceive, "eshkol_builtin_websocket_receive")
+ONE_ARG_BUILTIN(websocketClose, "eshkol_builtin_websocket_close")
 
 /* Noesis requirements */
 TWO_ARG_BUILTIN(fgMarginal, "eshkol_builtin_fg_marginal")
@@ -1707,6 +1728,9 @@ ONE_ARG_BUILTIN(tensorTokenEstimate, "eshkol_builtin_tensor_token_estimate")
 #undef ZERO_ARG_BUILTIN
 #undef ONE_ARG_BUILTIN
 #undef TWO_ARG_BUILTIN
+#undef THREE_ARG_BUILTIN
+#undef FOUR_ARG_BUILTIN
+#undef FIVE_ARG_BUILTIN
 
 } // namespace eshkol
 

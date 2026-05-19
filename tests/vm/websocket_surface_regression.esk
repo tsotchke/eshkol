@@ -1,0 +1,47 @@
+;; Standalone VM regression for minimal WebSocket client primitives.
+
+(display "=== websocket VM surface regression ===") (newline)
+
+(display "T1 websocket-connect rejects unsupported wss scheme: ")
+(display (if (not (websocket-connect "wss://example.invalid/socket" ""))
+             "PASS"
+             "FAIL"))
+(newline)
+
+(define ws-url (get-environment-variable "ESHKOL_VM_WEBSOCKET_URL"))
+(define ws (if ws-url
+               (websocket-connect ws-url "")
+               #f))
+
+(display "T2 optional websocket-connect ws URL: ")
+(display (if (or (not ws-url)
+                 (and (number? ws) (> ws 0)))
+             "PASS"
+             (list "FAIL got " ws)))
+(newline)
+
+(define sent (if (number? ws)
+                 (websocket-send ws "ping")
+                 #t))
+(define received (if (number? ws)
+                     (websocket-receive ws 2000)
+                     #f))
+
+(display "T3 optional websocket text roundtrip: ")
+(display (if (or (not ws-url)
+                 (and sent
+                      (pair? received)
+                      (string=? (car received) "text")
+                      (string=? (cdr received) "pong")))
+             "PASS"
+             (list "FAIL got " received)))
+(newline)
+
+(display "T4 websocket-close releases handle: ")
+(display (if (or (not ws-url)
+                 (websocket-close ws))
+             "PASS"
+             "FAIL"))
+(newline)
+
+(display "=== websocket VM surface complete ===") (newline)

@@ -334,6 +334,12 @@ public:
     llvm::Value* httpServerAccept(const eshkol_operations_t* op);
     llvm::Value* httpServerRespond(const eshkol_operations_t* op);
     llvm::Value* httpServerClose(const eshkol_operations_t* op);
+    llvm::Value* httpRequest(const eshkol_operations_t* op);
+    llvm::Value* websocketConnect(const eshkol_operations_t* op);
+    llvm::Value* websocketSend(const eshkol_operations_t* op);
+    llvm::Value* websocketSendBinary(const eshkol_operations_t* op);
+    llvm::Value* websocketReceive(const eshkol_operations_t* op);
+    llvm::Value* websocketClose(const eshkol_operations_t* op);
     llvm::Value* stringEndsWith(const eshkol_operations_t* op);
     llvm::Value* stringIndexOf(const eshkol_operations_t* op);
     llvm::Value* stringPadLeft(const eshkol_operations_t* op);
