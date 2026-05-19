@@ -3979,6 +3979,37 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_websocket_close_v(eshkol_sysbuil
     return sys_make_bool(1);
 }
 
+static char g_sys_http_proxy_url[512];
+static char g_sys_http_tls_cert[512];
+static char g_sys_http_tls_key[512];
+static char g_sys_http_tls_ca[512];
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_http_set_proxy_v(eshkol_sysbuiltin_value_t proxy_val) {
+    const char* proxy = sys_extract_string(proxy_val);
+    if (!proxy || strlen(proxy) >= sizeof(g_sys_http_proxy_url))
+        return sys_make_bool(0);
+    snprintf(g_sys_http_proxy_url, sizeof(g_sys_http_proxy_url), "%s", proxy);
+    return sys_make_bool(1);
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_http_set_tls_client_cert_v(
+    eshkol_sysbuiltin_value_t cert_val,
+    eshkol_sysbuiltin_value_t key_val,
+    eshkol_sysbuiltin_value_t ca_val) {
+    const char* cert = sys_extract_string(cert_val);
+    const char* key = sys_extract_string(key_val);
+    const char* ca = sys_extract_string(ca_val);
+    if (!cert || !key || !ca ||
+        strlen(cert) >= sizeof(g_sys_http_tls_cert) ||
+        strlen(key) >= sizeof(g_sys_http_tls_key) ||
+        strlen(ca) >= sizeof(g_sys_http_tls_ca))
+        return sys_make_bool(0);
+    snprintf(g_sys_http_tls_cert, sizeof(g_sys_http_tls_cert), "%s", cert);
+    snprintf(g_sys_http_tls_key, sizeof(g_sys_http_tls_key), "%s", key);
+    snprintf(g_sys_http_tls_ca, sizeof(g_sys_http_tls_ca), "%s", ca);
+    return sys_make_bool(1);
+}
+
 typedef struct {
     int active;
     char language[32];
@@ -4895,6 +4926,8 @@ void eshkol_builtin_ts_query_matches(sv_t* out, const sv_t* a, const sv_t* b, co
 void eshkol_builtin_ts_query_free(sv_t* out, const sv_t* a) { *out = eshkol_builtin_ts_query_free_v(*a); }
 void eshkol_builtin_ts_available(sv_t* out) { *out = eshkol_builtin_ts_available_v(); }
 void eshkol_builtin_ts_tree_root(sv_t* out, const sv_t* a) { *out = eshkol_builtin_ts_tree_root_v(*a); }
+void eshkol_builtin_http_set_proxy(sv_t* out, const sv_t* a) { *out = eshkol_builtin_http_set_proxy_v(*a); }
+void eshkol_builtin_http_set_tls_client_cert(sv_t* out, const sv_t* a, const sv_t* b, const sv_t* c) { *out = eshkol_builtin_http_set_tls_client_cert_v(*a, *b, *c); }
 void eshkol_builtin_string_ends_with(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_string_ends_with_v(*a, *b); }
 void eshkol_builtin_string_index_of(sv_t* out, const sv_t* a, const sv_t* b, const sv_t* c) { *out = eshkol_builtin_string_index_of_v(*a, *b, *c); }
 void eshkol_builtin_string_pad_left(sv_t* out, const sv_t* a, const sv_t* b, const sv_t* c) { *out = eshkol_builtin_string_pad_v(*a, *b, *c, 1); }

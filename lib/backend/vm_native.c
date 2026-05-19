@@ -7520,6 +7520,39 @@ static void vm_dispatch_native(VM* vm, int fid) {
         vm_push(vm, BOOL_VAL(0));
         break;
     }
+    case 2065: { /* http-set-proxy(url) → bool */
+        Value proxy_val = vm_pop(vm);
+        VmString* proxy = vm_value_as_string(vm, proxy_val);
+        if (proxy && proxy->data && proxy->byte_len < (int64_t)sizeof(vm->http_proxy_url)) {
+            snprintf(vm->http_proxy_url, sizeof(vm->http_proxy_url),
+                     "%.*s", (int)proxy->byte_len, proxy->data);
+            vm_push(vm, BOOL_VAL(1));
+            break;
+        }
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+    case 2066: { /* http-set-tls-client-cert(cert, key, ca) → bool */
+        Value ca_val = vm_pop(vm), key_val = vm_pop(vm), cert_val = vm_pop(vm);
+        VmString* cert = vm_value_as_string(vm, cert_val);
+        VmString* key = vm_value_as_string(vm, key_val);
+        VmString* ca = vm_value_as_string(vm, ca_val);
+        if (cert && key && ca && cert->data && key->data && ca->data &&
+            cert->byte_len < (int64_t)sizeof(vm->http_tls_cert) &&
+            key->byte_len < (int64_t)sizeof(vm->http_tls_key) &&
+            ca->byte_len < (int64_t)sizeof(vm->http_tls_ca)) {
+            snprintf(vm->http_tls_cert, sizeof(vm->http_tls_cert),
+                     "%.*s", (int)cert->byte_len, cert->data);
+            snprintf(vm->http_tls_key, sizeof(vm->http_tls_key),
+                     "%.*s", (int)key->byte_len, key->data);
+            snprintf(vm->http_tls_ca, sizeof(vm->http_tls_ca),
+                     "%.*s", (int)ca->byte_len, ca->data);
+            vm_push(vm, BOOL_VAL(1));
+            break;
+        }
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
     case 2014: { /* json-get-in(obj, path, default) → value */
         Value default_val = vm_pop(vm), path_val = vm_pop(vm), obj_val = vm_pop(vm);
         vm_push(vm, vm_json_get_in_value(vm, obj_val, path_val, default_val));
