@@ -1,0 +1,17 @@
+;; Standalone VM regression for stderr display primitive.
+
+(display "=== display-error VM surface regression ===") (newline)
+
+(display "T1 display-error writes string and returns true: ")
+(display (if (display-error "display-error-stderr-marker\n")
+             "PASS"
+             "FAIL"))
+(newline)
+
+(display "T2 display-error rejects non-string: ")
+(display (if (not (display-error #f))
+             "PASS"
+             "FAIL"))
+(newline)
+
+(display "=== display-error VM surface complete ===") (newline)

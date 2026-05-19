@@ -4010,6 +4010,14 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_http_set_tls_client_cert_v(
     return sys_make_bool(1);
 }
 
+static eshkol_sysbuiltin_value_t eshkol_builtin_display_error_v(eshkol_sysbuiltin_value_t str_val) {
+    const char* str = sys_extract_string(str_val);
+    if (!str) return sys_make_bool(0);
+    fputs(str, stderr);
+    fflush(stderr);
+    return sys_make_bool(1);
+}
+
 typedef struct {
     int active;
     char language[32];
@@ -4928,6 +4936,7 @@ void eshkol_builtin_ts_available(sv_t* out) { *out = eshkol_builtin_ts_available
 void eshkol_builtin_ts_tree_root(sv_t* out, const sv_t* a) { *out = eshkol_builtin_ts_tree_root_v(*a); }
 void eshkol_builtin_http_set_proxy(sv_t* out, const sv_t* a) { *out = eshkol_builtin_http_set_proxy_v(*a); }
 void eshkol_builtin_http_set_tls_client_cert(sv_t* out, const sv_t* a, const sv_t* b, const sv_t* c) { *out = eshkol_builtin_http_set_tls_client_cert_v(*a, *b, *c); }
+void eshkol_builtin_display_error(sv_t* out, const sv_t* a) { *out = eshkol_builtin_display_error_v(*a); }
 void eshkol_builtin_string_ends_with(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_string_ends_with_v(*a, *b); }
 void eshkol_builtin_string_index_of(sv_t* out, const sv_t* a, const sv_t* b, const sv_t* c) { *out = eshkol_builtin_string_index_of_v(*a, *b, *c); }
 void eshkol_builtin_string_pad_left(sv_t* out, const sv_t* a, const sv_t* b, const sv_t* c) { *out = eshkol_builtin_string_pad_v(*a, *b, *c, 1); }

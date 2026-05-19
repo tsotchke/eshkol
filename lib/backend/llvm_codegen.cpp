@@ -1306,6 +1306,7 @@ public:
         function_return_types["ts-tree-root"] = BuiltinTypes::Integer;
         function_return_types["http-set-proxy"] = BuiltinTypes::Boolean;
         function_return_types["http-set-tls-client-cert"] = BuiltinTypes::Boolean;
+        function_return_types["display-error"] = BuiltinTypes::Boolean;
         function_return_types["string-ends-with?"] = BuiltinTypes::Boolean;
         function_return_types["string-index-of"] = BuiltinTypes::Integer;
         function_return_types["string-pad-left"] = BuiltinTypes::String;
@@ -12107,6 +12108,7 @@ private:
         if (func_name == "ts-tree-root") return system_->tsTreeRoot(op);
         if (func_name == "http-set-proxy") return system_->httpSetProxy(op);
         if (func_name == "http-set-tls-client-cert") return system_->httpSetTlsClientCert(op);
+        if (func_name == "display-error") return system_->displayError(op);
         if (func_name == "string-ends-with?") return system_->stringEndsWith(op);
         if (func_name == "string-index-of") return system_->stringIndexOf(op);
         if (func_name == "string-pad-left") return system_->stringPadLeft(op);
@@ -20059,6 +20061,7 @@ private:
             "ts-query-new", "ts-query-matches", "ts-query-free",
             "ts-available", "ts-tree-root",
             "http-set-proxy", "http-set-tls-client-cert",
+            "display-error",
             "string-ends-with?", "string-index-of",
             "string-pad-left", "string-pad-right",
             "kb-save", "kb-load", "tensor-token-estimate",

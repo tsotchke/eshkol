@@ -1,0 +1,28 @@
+;; Standalone VM regression for stderr/error-port primitives.
+
+(display "=== error port VM surface regression ===") (newline)
+
+(display "T1 current-error-port returns output port: ")
+(display (if (output-port? (current-error-port))
+             "PASS"
+             "BAD"))
+(newline)
+
+(display "T2 write-string accepts current-error-port: ")
+(write-string "error-port-smoke\n" (current-error-port))
+(display "PASS")
+(newline)
+
+(display "T3 display-error writes strings to stderr: ")
+(display (if (display-error "display-error-smoke\n")
+             "PASS"
+             "BAD"))
+(newline)
+
+(display "T4 display-error rejects non-strings: ")
+(display (if (not (display-error 42))
+             "PASS"
+             "BAD"))
+(newline)
+
+(display "=== error port VM surface complete ===") (newline)
