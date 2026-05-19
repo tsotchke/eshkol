@@ -1497,6 +1497,11 @@ Use builtins 680-689 for binary data:
 `bytevector-copy!`, `bytevector?`, `bytevector-copy`,
 `utf8->string`, `string->utf8`.
 
+**VM binary I/O**: The standalone VM exposes raw byte ports as native IDs
+2068-2073: `open-binary-input-file`, `open-binary-output-file`, `read-u8`,
+`write-u8`, `read-bytevector`, and `write-bytevector`. These write bytevectors
+as raw bytes, including values 128-255, without routing through UTF-8 display.
+
 ---
 
 ## C.17 Functional Combinators

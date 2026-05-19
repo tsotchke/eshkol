@@ -7566,6 +7566,66 @@ static void vm_dispatch_native(VM* vm, int fid) {
         vm_push(vm, BOOL_VAL(0));
         break;
     }
+    case 2068: { /* open-binary-input-file(path) → port or #f */
+        Value path_val = vm_pop(vm);
+        VmString* path = vm_value_as_string(vm, path_val);
+        VmPort* p = (path && path->data)
+            ? vm_port_open_binary_input_file(&vm->heap.regions, path->data)
+            : NULL;
+        if (p) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_PORT, VAL_PORT, p); break; }
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+    case 2069: { /* open-binary-output-file(path) → port or #f */
+        Value path_val = vm_pop(vm);
+        VmString* path = vm_value_as_string(vm, path_val);
+        VmPort* p = (path && path->data)
+            ? vm_port_open_binary_output_file(&vm->heap.regions, path->data)
+            : NULL;
+        if (p) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_PORT, VAL_PORT, p); break; }
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+    case 2070: { /* read-u8(port) → byte or eof */
+        Value port_val = vm_pop(vm);
+        VmPort* p = vm_value_as_port(vm, port_val);
+        int b = vm_port_read_u8(p);
+        vm_push(vm, b < 0 ? NIL_VAL : INT_VAL(b));
+        break;
+    }
+    case 2071: { /* write-u8(byte, port) → void */
+        Value port_val = vm_pop(vm), byte_val = vm_pop(vm);
+        VmPort* p = vm_value_as_port(vm, port_val);
+        vm_port_write_u8(p, (int)as_number(byte_val));
+        vm_push(vm, NIL_VAL);
+        break;
+    }
+    case 2072: { /* read-bytevector(k, port) → bytevector or eof */
+        Value port_val = vm_pop(vm), k_val = vm_pop(vm);
+        VmPort* p = vm_value_as_port(vm, port_val);
+        int k = (int)as_number(k_val);
+        if (!p || k < 0) { vm_push(vm, NIL_VAL); break; }
+        VmBytevector* bv = vm_bv_make(&vm->heap.regions, k, 0);
+        if (!bv) { vm_push(vm, NIL_VAL); break; }
+        int n = 0;
+        for (; n < k; n++) {
+            int b = vm_port_read_u8(p);
+            if (b < 0) break;
+            bv->data[n] = (uint8_t)b;
+        }
+        if (n == 0 && k > 0) { vm_push(vm, NIL_VAL); break; }
+        bv->len = n;
+        VM_PUSH_HEAP_OPAQUE(vm, HEAP_BYTEVECTOR, VAL_BYTEVECTOR, bv);
+        break;
+    }
+    case 2073: { /* write-bytevector(bv, port) → void */
+        Value port_val = vm_pop(vm), bv_val = vm_pop(vm);
+        VmPort* p = vm_value_as_port(vm, port_val);
+        VmBytevector* bv = vm_value_as_bytevector(vm, bv_val);
+        if (p && bv) vm_port_write_bytevector(p, (const char*)bv->data, bv->len);
+        vm_push(vm, NIL_VAL);
+        break;
+    }
     case 2014: { /* json-get-in(obj, path, default) → value */
         Value default_val = vm_pop(vm), path_val = vm_pop(vm), obj_val = vm_pop(vm);
         vm_push(vm, vm_json_get_in_value(vm, obj_val, path_val, default_val));

@@ -1,0 +1,44 @@
+;; Standalone VM regression for raw binary bytevector I/O.
+
+(display "=== binary I/O VM surface regression ===") (newline)
+
+(define path
+  (string-append "/tmp/eshkol-vm-binary-"
+                 (number->string (process-pid))
+                 ".bin"))
+
+(define bv (make-bytevector 4 0))
+(bytevector-u8-set! bv 0 0)
+(bytevector-u8-set! bv 1 255)
+(bytevector-u8-set! bv 2 128)
+(bytevector-u8-set! bv 3 65)
+
+(define out (open-binary-output-file path))
+(write-bytevector bv out)
+(write-u8 10 out)
+(close-port out)
+
+(define in (open-binary-input-file path))
+(define back (read-bytevector 5 in))
+(close-port in)
+
+(display "T1 read-bytevector returns five raw bytes: ")
+(display (if (and (bytevector? back)
+                  (= (bytevector-length back) 5))
+             "PASS"
+             (list "FAIL got " back)))
+(newline)
+
+(display "T2 high bytes round-trip without UTF-8 expansion: ")
+(display (if (and (= (bytevector-u8-ref back 0) 0)
+                  (= (bytevector-u8-ref back 1) 255)
+                  (= (bytevector-u8-ref back 2) 128)
+                  (= (bytevector-u8-ref back 3) 65)
+                  (= (bytevector-u8-ref back 4) 10))
+             "PASS"
+             "FAIL"))
+(newline)
+
+(delete-file path)
+
+(display "=== binary I/O VM surface complete ===") (newline)
