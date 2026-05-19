@@ -239,6 +239,7 @@ static struct option long_options[] = {
     {"dump-ir", no_argument, nullptr, 'i'},
     {"output", required_argument, nullptr, 'o'},
     {"compile-only", no_argument, nullptr, 'c'},
+    {"emit-object", no_argument, nullptr, 259},
     {"shared-lib", no_argument, nullptr, 's'},
     {"wasm", no_argument, nullptr, 'w'},
     {"lib", required_argument, nullptr, 'l'},
@@ -1363,7 +1364,11 @@ static void print_help(int x = 0)
         "\t--dump-ir:[-i] = Dumps the IR into a .ll file.\n"
         "\t--output:[-o] = Outputs into a binary file.\n"
         "\t--compile-only:[-c] = Compiles into an intermediate object file.\n"
+        "\t--emit-object = Alias for --compile-only.\n"
         "\t--shared-lib:[-s] = Compiles it into a shared library.\n"
+        "\t-fPIC = Accepted for build-system compatibility.\n"
+        "\t-I DIR = Add a source/module search path.\n"
+        "\t-D NAME[=VALUE] = Accepted for build-system compatibility.\n"
         "\t--wasm:[-w] = Compiles to WebAssembly (.wasm) format.\n"
         "\t--lib:[-l] = Links a shared library to the resulting executable.\n"
         "\t--lib-path:[-L] = Adds a directory to the library search path.\n"
@@ -2530,6 +2535,7 @@ int main(int argc, char **argv)
     std::vector<char*> compiled_files;
     std::vector<char*> linked_libs;
     std::vector<char*> lib_paths;
+    std::vector<char*> include_paths;
 
     std::vector<eshkol_ast_t> asts;
 
@@ -2540,7 +2546,7 @@ int main(int argc, char **argv)
     if (argc == 1) print_help(1);
 
     const char* eskb_output_path = nullptr;
-    while ((ch = getopt_long(argc, argv, "hdaio:cswl:L:ne:rgO:B:", long_options, nullptr)) != -1) {
+    while ((ch = getopt_long(argc, argv, "hdaio:cswl:L:ne:rgO:B:f:I:D:", long_options, nullptr)) != -1) {
         switch (ch) {
         case 'h':
             print_help(0);
@@ -2575,6 +2581,13 @@ int main(int argc, char **argv)
         case 'L':
             lib_paths.push_back(optarg);
             break;
+        case 'I':
+            include_paths.push_back(optarg);
+            break;
+        case 'D':
+            /* Accepted for CMake-style object builds; preprocessor defines are
+             * not part of Eshkol source semantics yet. */
+            break;
         case 'n':
             no_stdlib = 1;
             break;
@@ -2603,12 +2616,37 @@ int main(int argc, char **argv)
         case 258:
             printf("Eshkol Compiler v%s\n", ESHKOL_VER);
             return 0;
+        case 259:
+            compile_only = 1;
+            break;
+        case 'f':
+            /* Accept -fPIC/-f PIC for build-system compatibility. LLVM object
+             * emission already produces relocatable code for this path. */
+            break;
         case 'B':
             eskb_output_path = optarg;
             break;
         default:
             print_help(1);
         }
+    }
+
+    if (!include_paths.empty()) {
+        std::string merged;
+        const char* existing_path = std::getenv("ESHKOL_PATH");
+        if (existing_path && *existing_path) {
+            merged = existing_path;
+        }
+        for (char* path : include_paths) {
+            if (!path || !*path) continue;
+            if (!merged.empty()) merged.push_back(eshkol_path_separator);
+            merged += path;
+        }
+#ifdef _WIN32
+        _putenv_s("ESHKOL_PATH", merged.c_str());
+#else
+        setenv("ESHKOL_PATH", merged.c_str(), 1);
+#endif
     }
 
     // If we have an eval expression, use JIT mode
@@ -3123,7 +3161,11 @@ int main(int argc, char **argv)
             // Compile to object file
             std::string obj_filename;
             if (output) {
-                obj_filename = std::string(output) + ".o";
+                obj_filename = std::string(output);
+                if (obj_filename.size() < 2 ||
+                    obj_filename.substr(obj_filename.size() - 2) != ".o") {
+                    obj_filename += ".o";
+                }
             } else {
                 obj_filename = module_name + ".o";
             }
