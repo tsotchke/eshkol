@@ -5598,6 +5598,9 @@ static const BuiltinDef BUILTINS[] = {
     {"json-merge", 2016, 2},
     {"compression-available", 2017, 0}, {"deflate", 2018, 1},
     {"inflate", 2019, 1}, {"gzip", 2020, 1}, {"gunzip", 2021, 1},
+    {"make-timer", 2022, 2}, {"timer-cancel!", 2023, 1},
+    {"make-interval", 2024, 2}, {"interval-cancel!", 2025, 1},
+    {"timer-check", 2026, 1},
     {"string-ends-with?", 1956, 2}, {"string-index-of", 1957, 3},
     {"string-pad-left", 1958, 3}, {"string-pad-right", 1959, 3},
     /* Missing hash */

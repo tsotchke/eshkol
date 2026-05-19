@@ -1986,6 +1986,59 @@ static int vm_condvar_create(VM* vm) {
     return -1;
 }
 
+static int vm_timer_valid(VM* vm, int handle) {
+    return vm && handle > 0 &&
+           handle < (int)(sizeof(vm->timers) / sizeof(vm->timers[0])) &&
+           vm->timers[handle].allocated;
+}
+
+static int vm_timer_create(VM* vm, int64_t delay_ms, Value callback, int repeating) {
+    if (!vm || callback.type != VAL_CLOSURE) return -1;
+    if (delay_ms < 0) delay_ms = 0;
+    if (repeating && delay_ms <= 0) delay_ms = 1;
+    for (int i = 1; i < (int)(sizeof(vm->timers) / sizeof(vm->timers[0])); i++) {
+        if (vm->timers[i].allocated) continue;
+        memset(&vm->timers[i], 0, sizeof(vm->timers[i]));
+        vm->timers[i].allocated = 1;
+        vm->timers[i].active = 1;
+        vm->timers[i].repeating = repeating ? 1 : 0;
+        vm->timers[i].interval_ms = delay_ms;
+        vm->timers[i].next_due_ms = vm_monotonic_time_ms() + delay_ms;
+        vm->timers[i].callback = callback;
+        return i;
+    }
+    return -1;
+}
+
+static int vm_timer_cancel(VM* vm, int handle) {
+    if (!vm_timer_valid(vm, handle)) return 0;
+    memset(&vm->timers[handle], 0, sizeof(vm->timers[handle]));
+    return 1;
+}
+
+static void vm_timers_poll_due(VM* vm) {
+    if (!vm || vm->polling_timers) return;
+    vm->polling_timers = 1;
+    int64_t now = vm_monotonic_time_ms();
+    for (int i = 1; i < (int)(sizeof(vm->timers) / sizeof(vm->timers[0])); i++) {
+        if (!vm->timers[i].allocated || !vm->timers[i].active)
+            continue;
+        if (now < vm->timers[i].next_due_ms)
+            continue;
+        Value callback = vm->timers[i].callback;
+        if (vm->timers[i].fired_count < INT32_MAX)
+            vm->timers[i].fired_count++;
+        if (vm->timers[i].repeating) {
+            vm->timers[i].next_due_ms = now + vm->timers[i].interval_ms;
+        } else {
+            vm->timers[i].active = 0;
+        }
+        if (callback.type == VAL_CLOSURE)
+            (void)vm_call_closure_from_native(vm, callback, NULL, 0);
+    }
+    vm->polling_timers = 0;
+}
+
 static int vm_json_alist_ref(VM* vm, Value obj, Value key, Value* out) {
     Value cur = obj;
     while (cur.type == VAL_PAIR && is_valid_heap_ptr(vm, cur.as.ptr)) {
@@ -3136,6 +3189,7 @@ int eshkol_vm_host_push_double(VM* vm, double value) {
 }
 
 static void vm_dispatch_native(VM* vm, int fid) {
+    vm_timers_poll_due(vm);
     if (fid >= ESHKOL_VM_HOST_NATIVE_BASE) {
         int slot = fid - ESHKOL_VM_HOST_NATIVE_BASE;
         if (slot >= 0 && slot < g_host_native_count && g_host_natives[slot]) {
@@ -5965,6 +6019,41 @@ static void vm_dispatch_native(VM* vm, int fid) {
         int cv = (int)as_number(cv_val);
         if (vm_condvar_valid(vm, cv)) {
             vm->condvars[cv].signals++;
+            vm_push(vm, BOOL_VAL(1));
+        } else {
+            vm_push(vm, BOOL_VAL(0));
+        }
+        break;
+    }
+    case 2022: { /* make-timer(delay-ms, callback) → timer or #f */
+        Value callback_val = vm_pop(vm), delay_val = vm_pop(vm);
+        int handle = vm_timer_create(vm, (int64_t)as_number(delay_val), callback_val, 0);
+        if (handle > 0) vm_push(vm, INT_VAL((int64_t)handle));
+        else vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+    case 2023: { /* timer-cancel!(timer) → bool */
+        Value timer_val = vm_pop(vm);
+        vm_push(vm, BOOL_VAL(vm_timer_cancel(vm, (int)as_number(timer_val))));
+        break;
+    }
+    case 2024: { /* make-interval(interval-ms, callback) → interval or #f */
+        Value callback_val = vm_pop(vm), interval_val = vm_pop(vm);
+        int handle = vm_timer_create(vm, (int64_t)as_number(interval_val), callback_val, 1);
+        if (handle > 0) vm_push(vm, INT_VAL((int64_t)handle));
+        else vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+    case 2025: { /* interval-cancel!(interval) → bool */
+        Value interval_val = vm_pop(vm);
+        vm_push(vm, BOOL_VAL(vm_timer_cancel(vm, (int)as_number(interval_val))));
+        break;
+    }
+    case 2026: { /* timer-check(timer) → bool */
+        Value timer_val = vm_pop(vm);
+        int handle = (int)as_number(timer_val);
+        if (vm_timer_valid(vm, handle) && vm->timers[handle].fired_count > 0) {
+            vm->timers[handle].fired_count--;
             vm_push(vm, BOOL_VAL(1));
         } else {
             vm_push(vm, BOOL_VAL(0));

@@ -374,6 +374,17 @@ typedef struct VM {
         int active;
         int signals;
     } condvars[16];
+
+    struct {
+        int allocated;
+        int active;
+        int repeating;
+        int fired_count;
+        int64_t next_due_ms;
+        int64_t interval_ms;
+        Value callback;
+    } timers[32];
+    int polling_timers;
 } VM;
 
 /* Command-line arguments (set in main, read by native 602) */

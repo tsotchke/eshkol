@@ -717,15 +717,28 @@ pthread_cond.
 ### `(make-timer delay callback) -> timer`
 Schedule callback after delay-ms.
 
+Standalone VM native ID 2022 returns a VM-lifetime timer handle. Timers run
+callbacks at VM native-call safe points, matching the agent flag-and-poll model
+without invoking Scheme from an async thread.
+
 ### `(timer-cancel! timer) -> void`
+Standalone VM native ID 2023 releases a timer handle.
 
 ### `(make-interval interval callback) -> interval`
 Repeat callback every interval-ms.
 
-### `(interval-cancel! interval) -> void`
+Standalone VM native ID 2024 schedules a repeating safe-point callback.
 
-Standalone VM native IDs 2001-2013 expose deterministic VM-lifetime handles
-for bounded channels, recursive mutexes, and condition variables. Channel
+### `(interval-cancel! interval) -> void`
+Standalone VM native ID 2025 releases an interval handle.
+
+### `(timer-check timer) -> bool`
+Standalone VM native ID 2026 consumes one pending timer or interval firing. This
+is primarily useful for deterministic tests and agent loops that want explicit
+polling in addition to callback side effects.
+
+Standalone VM native IDs 2001-2013 expose deterministic VM-lifetime handles for
+bounded channels, recursive mutexes, and condition variables. Channel
 send/receive operations are non-blocking in the standalone VM and return `#f`
 when a send would block, a receive is empty, or the channel is closed. Condition
 variables currently provide handle-compatible signal/wait/broadcast safe points
