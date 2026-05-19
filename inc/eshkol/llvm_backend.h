@@ -242,6 +242,13 @@ void eshkol_repl_register_native_c_function(const char* name);
 void eshkol_repl_register_variadic_function(const char* name, size_t fixed_params, bool is_variadic);
 
 /*
+ * REPL Mode: Query variadic function info at runtime.
+ * @param name Function name
+ * @return fixed parameter count, or -1 when the name is not a variadic function
+ */
+int64_t eshkol_repl_variadic_fixed_params(const char* name);
+
+/*
  * REPL Mode: Register variable -> lambda name mapping for s-expression lookup
  * @param var_name Variable name (e.g., "square")
  * @param lambda_name Lambda function name (e.g., "lambda_0")

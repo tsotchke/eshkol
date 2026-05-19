@@ -1,0 +1,29 @@
+;; Regression for a loaded helper calling a later-defined variadic function.
+;; The forward-ref call site is compiled before jj-callee's rest-arg metadata
+;; exists, so runtime dispatch must still pack rest arguments into a list.
+
+(load "tests/v1_2_edge_cases/fixtures/repl_late_variadic_forward_ref_lib.esk")
+
+(define (jj-callee a b . rest)
+  rest)
+
+(define r1 (jj-helper-one))
+(define r2 (jj-helper-two))
+
+(display "late variadic forward ref one rest: ")
+(display (if (and (pair? r1)
+                  (not (car r1))
+                  (null? (cdr r1)))
+             "PASS"
+             (list "FAIL" r1)))
+(newline)
+
+(display "late variadic forward ref preserves tail: ")
+(display (if (and (pair? r2)
+                  (= (car r2) 3)
+                  (pair? (cdr r2))
+                  (= (car (cdr r2)) 4)
+                  (null? (cdr (cdr r2))))
+             "PASS"
+             (list "FAIL" r2)))
+(newline)

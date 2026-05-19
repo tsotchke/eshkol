@@ -106,6 +106,7 @@ extern "C" {
                                  int64_t cy, int64_t cx, int64_t radius,
                                  const double* channels, int64_t num_channels);
     void* eshkol_repl_forward_ref_stub_addr(void);
+    int64_t eshkol_repl_variadic_fixed_params(const char* name);
 #ifdef _WIN32
     double drand48(void);
     int clock_gettime(int clock_id, void* ts_raw);
@@ -670,6 +671,7 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_SYMBOL(eshkol_runtime_set_current_error_fp);
     ADD_SYMBOL(eshkol_check_forward_ref);
     ADD_SYMBOL(eshkol_repl_forward_ref_stub_addr);
+    ADD_SYMBOL(eshkol_repl_variadic_fixed_params);
     ADD_SYMBOL(eshkol_raise_not_pair);
     ADD_DATA_SYMBOL(g_lambda_registry);
 
