@@ -34,6 +34,9 @@
 ;;; Strings - extended string utilities
 (require core.strings)
 
+;;; Files - atomic writes and path helpers
+(require core.files)
+
 ;;; S-expression printer - handles dotted pairs and improper lists
 (require core.sexp)
 

@@ -1,0 +1,54 @@
+;; tests/stdlib/atomic_file_test.esk
+;; Regression for with-atomic-output-file and atomic-write-file.
+
+(require stdlib)
+
+(define passed 0)
+(define failed 0)
+
+(define (check label want got)
+  (if (equal? want got)
+      (begin
+        (set! passed (+ passed 1))
+        (display label) (display ": PASS") (newline))
+      (begin
+        (set! failed (+ failed 1))
+        (display label) (display ": FAIL want=")
+        (display want) (display " got=") (display got) (newline))))
+
+(define path "/tmp/eshkol-atomic-write-test.txt")
+(if (file-exists? path) (delete-file path) #t)
+
+(check "path-directory absolute" "/tmp" (path-directory path))
+(check "path-directory relative" "." (path-directory "plain.txt"))
+
+(check "atomic-write-file returns true"
+       #t
+       (atomic-write-file path "old"))
+(check "atomic-write-file content" "old" (read-file path))
+
+(check "with-atomic-output-file returns proc value"
+       'written
+       (with-atomic-output-file
+        path
+        (lambda (port)
+          (write-string "new" port)
+          'written)))
+(check "with-atomic-output-file replaced content" "new" (read-file path))
+
+(define raised
+  (guard (e (#t "caught"))
+    (with-atomic-output-file
+     path
+     (lambda (port)
+       (write-string "bad" port)
+       (raise "boom")))))
+
+(check "with-atomic-output-file re-raises proc exception" "caught" raised)
+(check "with-atomic-output-file preserves original on exception" "new" (read-file path))
+
+(delete-file path)
+
+(display "passed=") (display passed)
+(display " failed=") (display failed) (newline)
+(if (> failed 0) (exit 1) (display "OK\n"))

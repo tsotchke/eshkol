@@ -184,6 +184,15 @@ Eliminates 12+ `run-command-capture "mkdir -p"` calls.
 ### `(file-rename old new) -> bool`
 POSIX `rename(2)`. Eliminates `mv` shell-outs in `fs-write-atomic`.
 
+### `(with-atomic-output-file path proc) -> value-or-false`
+Open a temporary file in the destination directory, pass its output port to
+`proc`, then `file-rename` the temp path over `path` only after `proc` returns.
+The helper removes the temp file and re-raises if `proc` raises. This is a
+stdlib wrapper over `make-temp-file`, `open-output-file`, and `file-rename`.
+
+### `(atomic-write-file path contents) -> bool`
+Convenience wrapper for atomically writing a complete string to a path.
+
 ### `(file-size path) -> integer`
 `stat(2)` returning `st_size`. Eliminates `wc -c` + temp file hack.
 
