@@ -458,6 +458,7 @@ static const BuiltinDef BUILTINS[] = {
     {"db-last-insert-id", 2029, 1}, {"db-changes", 2030, 1},
     {"at-exit", 2031, 1},
     {"dlopen", 2032, 1}, {"dlsym", 2033, 2}, {"dlclose", 2034, 1},
+    {"_format-list", 2035, 2},
     {"string-ends-with?", 1956, 2}, {"string-index-of", 1957, 3},
     {"string-pad-left", 1958, 3}, {"string-pad-right", 1959, 3},
     /* Parallel primitives — IDs 620-628 */
@@ -995,6 +996,7 @@ static void compile_and_run_source_to_chunk(const char* source, FuncChunk* chunk
         "(define (max a . rest) (fold-left _max2 a rest))\n"
         "(define (min a . rest) (fold-left _min2 a rest))\n"
         "(define (string-append . args) (fold-left _string-append-2 \"\" args))\n"
+        "(define (format fmt . args) (_format-list fmt args))\n"
         "(define (emit! emitter event . args) (_emit-event emitter event args))\n"
         "(define (make-list n val) (let loop ((i 0) (acc (list))) (if (= i n) acc (loop (+ i 1) (cons val acc)))))\n"
         "(define (make-factor-graph n . rest) (if (null? rest) (_make-fg2 n (make-list n 2)) (_make-fg2 n (car rest))))\n"

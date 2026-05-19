@@ -1,0 +1,35 @@
+;; Standalone VM regression for Scheme-style format strings.
+
+(display "=== format VM surface regression ===") (newline)
+
+(define s1 (format "~a: ~d items" "box" 7))
+
+(display "T1 format handles ~a and ~d: ")
+(display (if (string=? s1 "box: 7 items")
+             "PASS"
+             (list "FAIL got " s1)))
+(newline)
+
+(define s2 (format "~s ~x ~f" "quoted" 255 3.5))
+
+(display "T2 format handles ~s, ~x, and ~f: ")
+(display (if (string=? s2 "\"quoted\" ff 3.5")
+             "PASS"
+             (list "FAIL got " s2)))
+(newline)
+
+(define s3 (format "line1~%line2 ~~ done"))
+
+(display "T3 format handles newline and literal tilde: ")
+(display (if (string=? s3 "line1\nline2 ~ done")
+             "PASS"
+             (list "FAIL got " s3)))
+(newline)
+
+(display "T4 format returns false for missing arguments: ")
+(display (if (not (format "~a ~d" "only-one"))
+             "PASS"
+             "FAIL"))
+(newline)
+
+(display "=== format VM surface complete ===") (newline)
