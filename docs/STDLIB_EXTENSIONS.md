@@ -796,13 +796,24 @@ matching keys from `a`.
 ### `(db-transaction db thunk) -> result`
 BEGIN + thunk + COMMIT. ROLLBACK on error.
 
+Standalone VM native ID 2027 uses runtime symbol lookup for the existing agent
+SQLite `exec` hook. It returns `#f` when SQLite hooks are not linked.
+
 ### `(db-busy-timeout db ms) -> void`
 Retry on SQLITE_BUSY.
 
+Standalone VM native ID 2028 applies `PRAGMA busy_timeout=<ms>` through the
+agent SQLite `exec` hook and returns a boolean success value.
+
 ### `(db-last-insert-id db) -> integer`
+Standalone VM native ID 2029 wraps the agent `sqlite-last-insert-rowid` hook and
+returns `#f` when unavailable.
 
 ### `(db-changes db) -> integer`
 Rows affected by last statement.
+
+Standalone VM native ID 2030 wraps the agent `sqlite-changes` hook and returns
+`#f` when unavailable.
 
 ---
 
