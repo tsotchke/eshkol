@@ -33,41 +33,93 @@ if [ ! -x "$ESHKOL_REPL" ]; then
     exit 1
 fi
 
-# Use named pipes so we can drive stdin/stdout/stderr independently.
+# Use a named pipe for stdin and regular files for stdout/stderr.  A
+# FIFO stdout with no reader can block the REPL before it reaches
+# READY, so the demo keeps output in files and prints it after exit.
 TMPDIR_=$(mktemp -d)
 trap 'rm -rf "$TMPDIR_"' EXIT
-IN_TMP="$TMPDIR_/in"
-OUT_TMP="$TMPDIR_/out"
-ERR_TMP="$TMPDIR_/err"
-mkfifo "$IN_TMP" "$OUT_TMP" "$ERR_TMP"
+IN_FIFO="$TMPDIR_/in"
+OUT_LOG="$TMPDIR_/stdout"
+ERR_LOG="$TMPDIR_/stderr"
+mkfifo "$IN_FIFO"
+: > "$OUT_LOG"
+: > "$ERR_LOG"
 
-# Spawn the REPL with all three streams piped to the named pipes.
-"$ESHKOL_REPL" --machine < "$IN_TMP" > "$OUT_TMP" 2> "$ERR_TMP" &
+# Spawn the REPL with machine framing on stderr and pure program output
+# on stdout.
+"$ESHKOL_REPL" --machine < "$IN_FIFO" > "$OUT_LOG" 2> "$ERR_LOG" &
 REPL_PID=$!
 
 # Open writer end of the input pipe so it doesn't EOF between writes.
-exec 3>"$IN_TMP"
+exec 3>"$IN_FIFO"
 
-# Wait for READY on stderr.
+wait_for_ready() {
+    local deadline now
+    deadline=$((SECONDS + 120))
+    while kill -0 "$REPL_PID" 2>/dev/null; do
+        if grep -qx "EREPL READY" "$ERR_LOG"; then
+            return 0
+        fi
+        if grep -qx "EREPL FAIL" "$ERR_LOG"; then
+            return 1
+        fi
+        now=$SECONDS
+        if [ "$now" -ge "$deadline" ]; then
+            return 1
+        fi
+        sleep 0.05
+    done
+    return 1
+}
+
+wait_for_done_after() {
+    local before deadline now count marker
+    before="$1"
+    deadline=$((SECONDS + 30))
+    while kill -0 "$REPL_PID" 2>/dev/null; do
+        count=$(grep -Ec '^EREPL (DONE|FAIL)$' "$ERR_LOG" || true)
+        if [ "$count" -gt "$before" ]; then
+            marker=$(grep -E '^EREPL (DONE|FAIL)$' "$ERR_LOG" | tail -n 1)
+            [ "$marker" = "EREPL DONE" ]
+            return $?
+        fi
+        now=$SECONDS
+        if [ "$now" -ge "$deadline" ]; then
+            return 1
+        fi
+        sleep 0.05
+    done
+    return 1
+}
+
+send_form() {
+    local form before
+    form="$1"
+    before=$(grep -Ec '^EREPL (DONE|FAIL)$' "$ERR_LOG" || true)
+    printf '%s\n' "$form" >&3
+    wait_for_done_after "$before"
+}
+
 echo "[demo] waiting for JIT to warm up..." >&2
-while IFS= read -r line < "$ERR_TMP"; do
-    case "$line" in
-        "EREPL READY") echo "[demo] warm" >&2 ; break ;;
-        EREPL\ FAIL)   echo "[demo] startup FAIL: $line" >&2 ; exit 1 ;;
-    esac
-done &
-READER_PID=$!
+if ! wait_for_ready; then
+    echo "[demo] startup failed or timed out" >&2
+    sed 's/^/[repl-stderr] /' "$ERR_LOG" >&2
+    kill "$REPL_PID" 2>/dev/null || true
+    exit 1
+fi
+echo "[demo] warm" >&2
 
-# Send three forms; each ends with a newline.  In machine mode the
+# Send forms; each ends with a newline.  In machine mode the
 # REPL reads until parens balance, so multi-line forms work too.
-echo '(display "hello from warm worker")' >&3
-echo '(newline)' >&3
-echo '(define x 42)' >&3
-echo '(display (* x x))(newline)' >&3
+send_form '(display "hello from warm worker")'
+send_form '(newline)'
+send_form '(define x 42)'
+send_form '(display (* x x))'
+send_form '(newline)'
 
 # Close writer side → REPL sees EOF, exits cleanly.
 exec 3>&-
 
 wait "$REPL_PID" || true
-wait "$READER_PID" 2>/dev/null || true
-echo "[demo] done. Output captured in $OUT_TMP (pipe; consumed by reader)" >&2
+cat "$OUT_LOG"
+echo "[demo] done" >&2

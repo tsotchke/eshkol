@@ -837,7 +837,9 @@ int main(int argc, char** argv) {
         }
     }
 
-    std::cout << "\n";
+    if (g_interactive) {
+        std::cout << "\n";
+    }
 
     // Machine-mode handshake: emit READY on stderr once init is done
     // so the controlling process knows it can start sending forms.
@@ -872,10 +874,14 @@ int main(int argc, char** argv) {
             // EOF (Ctrl+D)
             if (!input) {
                 if (!first_line && !input_str.empty()) {
-                    std::cout << color::dim() << " (force completing)" << color::reset() << "\n";
+                    if (g_interactive) {
+                        std::cout << color::dim() << " (force completing)" << color::reset() << "\n";
+                    }
                     break;
                 }
-                std::cout << "\n" << color::dim() << "Goodbye!" << color::reset() << "\n";
+                if (g_interactive) {
+                    std::cout << "\n" << color::dim() << "Goodbye!" << color::reset() << "\n";
+                }
                 repl_clean_exit(0);
             }
 
@@ -922,7 +928,9 @@ int main(int argc, char** argv) {
                               strcmp(input, "exit") == 0 ||
                               strcmp(input, "quit") == 0)) {
                 free(input);
-                std::cout << color::dim() << "Goodbye!" << color::reset() << "\n";
+                if (g_interactive) {
+                    std::cout << color::dim() << "Goodbye!" << color::reset() << "\n";
+                }
                 repl_clean_exit(0);
             }
 
