@@ -2042,6 +2042,24 @@ static void vm_timers_poll_due(VM* vm) {
     vm->polling_timers = 0;
 }
 
+static int vm_exit_handler_add(VM* vm, Value thunk) {
+    if (!vm || thunk.type != VAL_CLOSURE ||
+        vm->n_exit_handlers >= (int)(sizeof(vm->exit_handlers) / sizeof(vm->exit_handlers[0])))
+        return 0;
+    vm->exit_handlers[vm->n_exit_handlers++] = thunk;
+    return 1;
+}
+
+static void vm_run_exit_handlers(VM* vm) {
+    if (!vm || vm->exit_handlers_drained) return;
+    vm->exit_handlers_drained = 1;
+    for (int i = vm->n_exit_handlers - 1; i >= 0; i--) {
+        if (vm->exit_handlers[i].type == VAL_CLOSURE)
+            (void)vm_call_closure_from_native(vm, vm->exit_handlers[i], NULL, 0);
+    }
+    vm->n_exit_handlers = 0;
+}
+
 static void* vm_runtime_symbol(const char* name) {
 #if !defined(_WIN32) && !defined(ESHKOL_VM_WASM)
     if (!name) return NULL;
@@ -6132,6 +6150,11 @@ static void vm_dispatch_native(VM* vm, int fid) {
         } else {
             vm_push(vm, BOOL_VAL(0));
         }
+        break;
+    }
+    case 2031: { /* at-exit(thunk) → bool */
+        Value thunk_val = vm_pop(vm);
+        vm_push(vm, BOOL_VAL(vm_exit_handler_add(vm, thunk_val)));
         break;
     }
     case 2014: { /* json-get-in(obj, path, default) → value */

@@ -5603,6 +5603,7 @@ static const BuiltinDef BUILTINS[] = {
     {"timer-check", 2026, 1},
     {"db-transaction", 2027, 2}, {"db-busy-timeout", 2028, 2},
     {"db-last-insert-id", 2029, 1}, {"db-changes", 2030, 1},
+    {"at-exit", 2031, 1},
     {"string-ends-with?", 1956, 2}, {"string-index-of", 1957, 3},
     {"string-pad-left", 1958, 3}, {"string-pad-right", 1959, 3},
     /* Missing hash */

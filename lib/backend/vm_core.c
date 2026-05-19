@@ -385,6 +385,10 @@ typedef struct VM {
         Value callback;
     } timers[32];
     int polling_timers;
+
+    Value exit_handlers[32];
+    int n_exit_handlers;
+    int exit_handlers_drained;
 } VM;
 
 /* Command-line arguments (set in main, read by native 602) */

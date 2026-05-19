@@ -2273,6 +2273,10 @@ closures from async signal context; they mirror qLLM's flag-and-poll model.
 Register cleanup closures for program exit (MCP shutdown, terminal restore,
 session save).
 
+**VM**: The standalone VM exposes `at-exit` as native ID 2031. It stores
+VM-lifetime closure handlers and drains them in reverse registration order before
+source/bytecode VM teardown or C API handle destruction.
+
 ## E.5 stderr / Error Port — P1
 
 `(current-error-port) -> port` and `(display-error str) -> void`
