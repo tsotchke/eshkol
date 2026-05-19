@@ -1,7 +1,7 @@
 ;; String Operations Tests
-;; Tests string-upcase, string-downcase, string-contains, string-split,
-;; string-reverse, string-repeat, string-starts-with, string-ends-with,
-;; string-count, string-ci=?
+;; Tests string-upcase, string-downcase, string-contains/string-find,
+;; string-split, string-reverse, string-repeat, string-starts-with,
+;; string-ends-with, string-count, string-ci=?
 
 ;; Test counter
 (define tests-passed 0)
@@ -46,8 +46,12 @@
 
 (display "\n--- string-contains ---\n")
 
-(test-case "string-contains found" 2 (string-contains "hello" "llo"))
+(test-case "string-contains found" #t (string-contains "hello" "llo"))
 (test-case "string-contains not found" #f (string-contains "hello" "xyz"))
+(test-case "string-contains? found" #t (string-contains? "hello" "llo"))
+(test-case "string-find found" 2 (string-find "hello" "llo"))
+(test-case "string-find char found" 1 (string-find "hello" #\e))
+(test-case "string-find not found" #f (string-find "hello" "xyz"))
 
 ;; ============================================================================
 ;; Test: string-reverse
@@ -77,6 +81,8 @@
 (test-case "string-starts-with no match" #f (string-starts-with "hello" "world"))
 (test-case "string-ends-with match" #t (string-ends-with "hello" "llo"))
 (test-case "string-ends-with no match" #f (string-ends-with "hello" "hel"))
+(test-case "string-starts-with? char" #t (string-starts-with? "hello" #\h))
+(test-case "string-ends-with? char" #t (string-ends-with? "hello" #\o))
 
 ;; ============================================================================
 ;; Test: string-count
@@ -86,6 +92,8 @@
 
 (test-case "string-count banana a" 3 (string-count "banana" #\a))
 (test-case "string-count hello z" 0 (string-count "hello" #\z))
+(test-case "string-count repeated substring" 2 (string-count "aaaa" "aa"))
+(test-case "string-count empty needle" 0 (string-count "hello" ""))
 
 ;; ============================================================================
 ;; Test: string-ci=?

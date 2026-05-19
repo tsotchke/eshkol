@@ -23,19 +23,31 @@
              "FAIL"))
 (newline)
 
-(display "T4 string-pad-left pads with codepoint: ")
+(display "T4 string-index-of accepts char needle: ")
+(display (if (= (string-index-of "abc" #\b 0) 1)
+             "PASS"
+             (list "FAIL got " (string-index-of "abc" #\b 0))))
+(newline)
+
+(display "T5 string-ends-with? accepts char suffix: ")
+(display (if (string-ends-with? "abc" #\c)
+             "PASS"
+             "FAIL"))
+(newline)
+
+(display "T6 string-pad-left pads with codepoint: ")
 (display (if (string=? (string-pad-left "7" 3 48) "007")
              "PASS"
              (list "FAIL got " (string-pad-left "7" 3 48))))
 (newline)
 
-(display "T5 string-pad-right returns original when wide enough: ")
+(display "T7 string-pad-right returns original when wide enough: ")
 (display (if (string=? (string-pad-right "done" 2 46) "done")
              "PASS"
              (list "FAIL got " (string-pad-right "done" 2 46))))
 (newline)
 
-(display "T6 string-pad-right pads with codepoint: ")
+(display "T8 string-pad-right pads with codepoint: ")
 (display (if (string=? (string-pad-right "go" 4 33) "go!!")
              "PASS"
              (list "FAIL got " (string-pad-right "go" 4 33))))

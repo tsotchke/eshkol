@@ -13,11 +13,12 @@
 (string-append "hello" " " "world")   ;; => "hello world"
 (string-upcase "hello")               ;; => "HELLO"
 (string-downcase "HELLO")             ;; => "hello"
-(string-contains "hello world" "world")  ;; => 6 (index)
+(string-contains "hello world" "world")  ;; => #t
+(string-find "hello world" "world")      ;; => 6 (index)
 (string-reverse "abcde")              ;; => "edcba"
 (string-repeat "ab" 3)                ;; => "ababab"
-(string-starts-with "hello" "hel")    ;; => #t
-(string-ends-with "hello" "llo")      ;; => #t
+(string-starts-with? "hello" "hel")   ;; => #t
+(string-ends-with? "hello" "llo")     ;; => #t
 (string-count "banana" #\a)           ;; => 3
 ```
 
