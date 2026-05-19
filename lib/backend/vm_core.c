@@ -427,6 +427,11 @@ typedef struct VM {
         int closed;
     } websocket_clients[16];
 
+    char http_proxy_url[512];
+    char http_tls_cert[512];
+    char http_tls_key[512];
+    char http_tls_ca[512];
+
     struct {
         int active;
         char language[32];

@@ -371,11 +371,19 @@ Standalone VM native ID 2047 supports plain `http://` requests over TCP and
 returns `(status raw-headers body)`. TLS remains the responsibility of the
 compiled libcurl-backed agent path for now.
 
-### `(http-set-proxy url) -> void`
+### `(http-set-proxy url) -> bool`
 `curl_easy_setopt(CURLOPT_PROXY, ...)`. For enterprise environments.
 
-### `(http-set-tls-client-cert cert key ca) -> void`
+Standalone VM and compiled-runtime native ID 2065 stores the proxy URL and
+returns `#t` on success. The current raw standalone TCP transport does not apply
+the proxy yet; libcurl-backed transports can consume the same runtime setting.
+
+### `(http-set-tls-client-cert cert key ca) -> bool`
 mTLS via `CURLOPT_SSLCERT`/`CURLOPT_SSLKEY`/`CURLOPT_CAINFO`.
+
+Standalone VM and compiled-runtime native ID 2066 stores certificate, key, and
+CA paths and returns `#t` on success. Plain `http://` VM requests ignore these
+settings until TLS transport is linked.
 
 ### `(http-server-create handler) -> server`
 Bind TCP socket, parse HTTP/1.1, call `(handler method path query headers body)`.

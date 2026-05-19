@@ -1,0 +1,31 @@
+;; Standalone VM regression for HTTP client configuration setters.
+
+(display "=== http config VM surface regression ===") (newline)
+
+(display "T1 http-set-proxy stores proxy URL: ")
+(display (if (http-set-proxy "http://127.0.0.1:9")
+             "PASS"
+             "FAIL"))
+(newline)
+
+(display "T2 http-set-proxy accepts empty clear: ")
+(display (if (http-set-proxy "")
+             "PASS"
+             "FAIL"))
+(newline)
+
+(display "T3 http-set-tls-client-cert stores paths: ")
+(display (if (http-set-tls-client-cert "/tmp/client.pem"
+                                        "/tmp/client.key"
+                                        "/tmp/ca.pem")
+             "PASS"
+             "FAIL"))
+(newline)
+
+(display "T4 http-set-tls-client-cert accepts empty clear: ")
+(display (if (http-set-tls-client-cert "" "" "")
+             "PASS"
+             "FAIL"))
+(newline)
+
+(display "=== http config VM surface complete ===") (newline)
