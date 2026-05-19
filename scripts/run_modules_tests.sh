@@ -20,6 +20,13 @@ COMPILE_FAIL=0
 declare -a FAILED_TESTS
 declare -a RUNTIME_ERRORS
 
+RUN_DIR=$(mktemp -d "${TMPDIR:-/tmp}/eshkol-modules-tests.XXXXXX")
+cleanup() {
+    rm -rf "$RUN_DIR"
+    rm -f a.out a.out.tmp.o 2>/dev/null || true
+}
+trap cleanup EXIT
+
 echo "========================================="
 echo "  Eshkol Modules Test Suite"
 echo "========================================="
@@ -46,28 +53,30 @@ echo ""
 # Run each test
 for test_file in tests/modules/*.esk; do
     test_name=$(basename "$test_file")
+    test_bin="$RUN_DIR/${test_name%.esk}"
+    test_output="$RUN_DIR/${test_name%.esk}.out"
     printf "Testing %-50s " "$test_name"
 
     # Clean up stale temp files before each test
-    rm -f a.out a.out.tmp.o
+    rm -f "$test_bin" "$test_bin.tmp.o" "$test_output"
 
     # Check if this is a negative test (expected to fail)
     if grep -q ";;; Expected: Error" "$test_file"; then
         # Negative test - should fail to compile OR fail at runtime
         set +e
-        compile_output=$(./$BUILD_DIR/eshkol-run -L./$BUILD_DIR "$test_file" 2>&1)
+        compile_output=$(./$BUILD_DIR/eshkol-run -L./$BUILD_DIR "$test_file" -o "$test_bin" 2>&1)
         compile_exit=$?
         set -e
 
         # Check if compile failed OR compile output contains error (case-insensitive)
         if [ $compile_exit -ne 0 ] || echo "$compile_output" | grep -qi "error:"; then
             # Check if it's a compile-time failure
-            if [ $compile_exit -ne 0 ] || [ ! -f a.out ]; then
+            if [ $compile_exit -ne 0 ] || [ ! -f "$test_bin" ]; then
                 echo -e "${GREEN}✅ PASS (expected compile error)${NC}"
                 ((PASS++)) || true
             else
                 # Executable was created despite error, check runtime
-                if ./a.out > /dev/null 2>&1; then
+                if "$test_bin" > /dev/null 2>&1; then
                     # Runtime succeeded but should have failed
                     echo -e "${RED}❌ SHOULD HAVE FAILED${NC}"
                     FAILED_TESTS+=("$test_name (expected error)")
@@ -86,11 +95,11 @@ for test_file in tests/modules/*.esk; do
         fi
     else
         # Normal test - should compile and run successfully
-        if ./$BUILD_DIR/eshkol-run -L./$BUILD_DIR "$test_file" > /dev/null 2>&1; then
+        if ./$BUILD_DIR/eshkol-run -L./$BUILD_DIR "$test_file" -o "$test_bin" > /dev/null 2>&1; then
             # Compilation succeeded, try to run
-            if ./a.out > /tmp/test_output.txt 2>&1; then
+            if "$test_bin" > "$test_output" 2>&1; then
                 # Check if there were any errors in output
-                if grep -q "error:" /tmp/test_output.txt; then
+                if grep -q "error:" "$test_output"; then
                     echo -e "${YELLOW}⚠ RUNTIME ERROR${NC}"
                     RUNTIME_ERRORS+=("$test_name")
                     ((FAIL++)) || true
@@ -147,9 +156,6 @@ if [ $TOTAL -gt 0 ]; then
 fi
 
 echo ""
-
-# Clean up
-rm -f /tmp/test_output.txt a.out
 
 # Exit with appropriate code
 if [ $FAIL -eq 0 ]; then

@@ -20,6 +20,13 @@ COMPILE_FAIL=0
 declare -a FAILED_TESTS
 declare -a RUNTIME_ERRORS
 
+RUN_DIR=$(mktemp -d "${TMPDIR:-/tmp}/eshkol-stdlib-tests.XXXXXX")
+cleanup() {
+    rm -rf "$RUN_DIR"
+    rm -f a.out a.out.tmp.o 2>/dev/null || true
+}
+trap cleanup EXIT
+
 echo "========================================="
 echo "  Eshkol Stdlib Test Suite"
 echo "========================================="
@@ -46,17 +53,19 @@ echo ""
 # Run each test
 for test_file in tests/stdlib/*.esk; do
     test_name=$(basename "$test_file")
+    test_bin="$RUN_DIR/${test_name%.esk}"
+    test_output="$RUN_DIR/${test_name%.esk}.out"
     printf "Testing %-50s " "$test_name"
 
     # Clean up stale temp files before each test
-    rm -f a.out a.out.tmp.o
+    rm -f "$test_bin" "$test_bin.tmp.o" "$test_output"
 
     # Try to compile
-    if ./$BUILD_DIR/eshkol-run -L./$BUILD_DIR "$test_file" > /dev/null 2>&1; then
+    if ./$BUILD_DIR/eshkol-run -L./$BUILD_DIR "$test_file" -o "$test_bin" > /dev/null 2>&1; then
         # Compilation succeeded, try to run
-        if ./a.out > /tmp/test_output.txt 2>&1; then
+        if "$test_bin" > "$test_output" 2>&1; then
             # Check if there were any errors in output
-            if grep -q "error:" /tmp/test_output.txt; then
+            if grep -q "error:" "$test_output"; then
                 echo -e "${YELLOW}⚠ RUNTIME ERROR${NC}"
                 RUNTIME_ERRORS+=("$test_name")
                 ((FAIL++)) || true
@@ -112,9 +121,6 @@ if [ $TOTAL -gt 0 ]; then
 fi
 
 echo ""
-
-# Clean up
-rm -f /tmp/test_output.txt a.out
 
 # Exit with appropriate code
 if [ $FAIL -eq 0 ]; then
