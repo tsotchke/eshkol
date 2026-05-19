@@ -480,6 +480,9 @@ static const BuiltinDef BUILTINS[] = {
     {"ts-available", 2063, 0}, {"ts-tree-root", 2064, 1},
     {"http-set-proxy", 2065, 1}, {"http-set-tls-client-cert", 2066, 3},
     {"display-error", 2067, 1},
+    {"open-binary-input-file", 2068, 1}, {"open-binary-output-file", 2069, 1},
+    {"read-u8", 2070, 1}, {"write-u8", 2071, 2},
+    {"read-bytevector", 2072, 2}, {"write-bytevector", 2073, 2},
     {"string-ends-with?", 1956, 2}, {"string-index-of", 1957, 3},
     {"string-pad-left", 1958, 3}, {"string-pad-right", 1959, 3},
     /* Parallel primitives — IDs 620-628 */
