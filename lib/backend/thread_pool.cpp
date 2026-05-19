@@ -70,7 +70,9 @@ struct eshkol_thread_pool {
     std::atomic<bool> stop{false};
     std::atomic<bool> paused{false};
 
-    // Legacy queue mode (when work_stealing is disabled)
+    // Shared queue. In legacy mode this is the primary queue; in
+    // work-stealing mode it carries submissions from non-worker threads,
+    // because Chase-Lev worker deques are single-owner for push/pop.
     std::queue<eshkol_task*> legacy_queue;
     std::mutex queue_mutex;
     std::condition_variable queue_cv;
@@ -110,6 +112,25 @@ extern "C" int eshkol_thread_pool_is_worker(void) {
 thread_local size_t tls_arena_size = 0;
 thread_local size_t tls_worker_id = SIZE_MAX;
 thread_local size_t tls_epoch_slot = SIZE_MAX;
+
+static void thread_pool_note_queue_depth(eshkol_thread_pool_t* pool, size_t depth) {
+    size_t peak = pool->peak_queue_depth.load(std::memory_order_relaxed);
+    while (depth > peak &&
+           !pool->peak_queue_depth.compare_exchange_weak(
+               peak, depth, std::memory_order_relaxed)) {
+    }
+}
+
+static eshkol_task* thread_pool_try_pop_external_task(eshkol_thread_pool_t* pool) {
+    std::lock_guard<std::mutex> lock(pool->queue_mutex);
+    if (pool->paused.load(std::memory_order_relaxed) || pool->legacy_queue.empty()) {
+        return nullptr;
+    }
+
+    eshkol_task* task = pool->legacy_queue.front();
+    pool->legacy_queue.pop();
+    return task;
+}
 
 arena_t* get_thread_local_arena(void) {
     if (!tls_arena) {
@@ -211,6 +232,13 @@ static void work_stealing_worker_func(eshkol_thread_pool_t* pool, size_t worker_
             }
         }
 
+        if (!task) {
+            task = thread_pool_try_pop_external_task(pool);
+            if (task) {
+                idle_spins = 0;
+            }
+        }
+
         if (task) {
             // Execute the task
             pool->active_workers.fetch_add(1, std::memory_order_relaxed);
@@ -290,6 +318,7 @@ static void work_stealing_worker_func(eshkol_thread_pool_t* pool, size_t worker_
                 std::unique_lock<std::mutex> lock(pool->queue_mutex);
                 pool->queue_cv.wait_for(lock, std::chrono::milliseconds(1), [pool]() {
                     if (pool->stop.load(std::memory_order_relaxed)) return true;
+                    if (!pool->legacy_queue.empty()) return true;
                     for (const auto& d : pool->deques) {
                         if (!d->empty()) return true;
                     }
@@ -519,19 +548,19 @@ void thread_pool_destroy(eshkol_thread_pool_t* pool) {
                 }
             }
         }
-    } else {
-        while (!pool->legacy_queue.empty()) {
-            auto* task = pool->legacy_queue.front();
-            pool->legacy_queue.pop();
+    }
 
-            if (task->future) {
-                std::lock_guard<std::mutex> lock(task->future->mutex);
-                task->future->completed = true;
-                task->future->cv.notify_all();
-            }
+    while (!pool->legacy_queue.empty()) {
+        auto* task = pool->legacy_queue.front();
+        pool->legacy_queue.pop();
 
-            delete task;
+        if (task->future) {
+            std::lock_guard<std::mutex> lock(task->future->mutex);
+            task->future->completed = true;
+            task->future->cv.notify_all();
         }
+
+        delete task;
     }
 
     // Print final metrics if enabled
@@ -588,21 +617,21 @@ eshkol_future_t* thread_pool_submit(
     task->submit_time = std::chrono::steady_clock::now();
 
     if (pool->use_work_stealing) {
-        // Determine target deque
-        size_t target;
         if (tls_worker_id < pool->num_threads) {
-            // Called from worker thread - push to local deque
-            target = tls_worker_id;
+            // Called from the owning worker thread: local deque push is valid.
+            pool->deques[tls_worker_id]->push(task);
         } else {
-            // Called from external thread - distribute based on thread ID hash
-            target = std::hash<std::thread::id>{}(std::this_thread::get_id()) % pool->num_threads;
+            // External producers cannot safely push into Chase-Lev worker
+            // deques because those deques are single-owner for push/pop.
+            std::lock_guard<std::mutex> lock(pool->queue_mutex);
+            pool->legacy_queue.push(task);
+            thread_pool_note_queue_depth(pool, pool->legacy_queue.size());
         }
 
-        pool->deques[target]->push(task);
         pool->tasks_submitted.fetch_add(1, std::memory_order_relaxed);
 
         // Wake up a worker
-        pool->queue_cv.notify_one();
+        pool->queue_cv.notify_all();
     } else {
         // Legacy queue mode
         std::lock_guard<std::mutex> lock(pool->queue_mutex);
@@ -617,11 +646,7 @@ eshkol_future_t* thread_pool_submit(
         pool->tasks_submitted.fetch_add(1);
 
         // Update peak queue depth
-        size_t current_depth = pool->legacy_queue.size();
-        size_t peak = pool->peak_queue_depth.load();
-        while (current_depth > peak &&
-               !pool->peak_queue_depth.compare_exchange_weak(peak, current_depth)) {
-        }
+        thread_pool_note_queue_depth(pool, pool->legacy_queue.size());
 
         pool->queue_cv.notify_one();
     }
@@ -643,31 +668,44 @@ size_t thread_pool_submit_batch(
     size_t submitted = 0;
 
     if (pool->use_work_stealing) {
-        // Determine target deque
-        size_t target;
         if (tls_worker_id < pool->num_threads) {
-            target = tls_worker_id;
+            for (size_t i = 0; i < count; ++i) {
+                auto* future = new eshkol_future_t();
+                future->result = nullptr;
+                future->completed = false;
+                future->released = false;
+                future->start_time = std::chrono::steady_clock::now();
+
+                auto* task = new eshkol_task();
+                task->fn = fns[i];
+                task->arg = args[i];
+                task->future = future;
+                task->submit_time = std::chrono::steady_clock::now();
+
+                pool->deques[tls_worker_id]->push(task);
+                futures[i] = future;
+                submitted++;
+            }
         } else {
-            target = std::hash<std::thread::id>{}(std::this_thread::get_id()) % pool->num_threads;
-        }
+            std::lock_guard<std::mutex> lock(pool->queue_mutex);
+            for (size_t i = 0; i < count; ++i) {
+                auto* future = new eshkol_future_t();
+                future->result = nullptr;
+                future->completed = false;
+                future->released = false;
+                future->start_time = std::chrono::steady_clock::now();
 
-        for (size_t i = 0; i < count; ++i) {
-            auto* future = new eshkol_future_t();
-            future->result = nullptr;
-            future->completed = false;
-            future->released = false;
-            future->start_time = std::chrono::steady_clock::now();
+                auto* task = new eshkol_task();
+                task->fn = fns[i];
+                task->arg = args[i];
+                task->future = future;
+                task->submit_time = std::chrono::steady_clock::now();
 
-            auto* task = new eshkol_task();
-            task->fn = fns[i];
-            task->arg = args[i];
-            task->future = future;
-            task->submit_time = std::chrono::steady_clock::now();
-
-            // Round-robin distribution across deques for batch submissions
-            pool->deques[(target + i) % pool->num_threads]->push(task);
-            futures[i] = future;
-            submitted++;
+                pool->legacy_queue.push(task);
+                futures[i] = future;
+                submitted++;
+            }
+            thread_pool_note_queue_depth(pool, pool->legacy_queue.size());
         }
 
         pool->tasks_submitted.fetch_add(submitted, std::memory_order_relaxed);
@@ -701,11 +739,7 @@ size_t thread_pool_submit_batch(
 
         pool->tasks_submitted.fetch_add(submitted);
 
-        size_t current_depth = pool->legacy_queue.size();
-        size_t peak = pool->peak_queue_depth.load();
-        while (current_depth > peak &&
-               !pool->peak_queue_depth.compare_exchange_weak(peak, current_depth)) {
-        }
+        thread_pool_note_queue_depth(pool, pool->legacy_queue.size());
 
         for (size_t i = 0; i < submitted; ++i) {
             pool->queue_cv.notify_one();
@@ -731,16 +765,16 @@ bool thread_pool_submit_detached(
     task->submit_time = std::chrono::steady_clock::now();
 
     if (pool->use_work_stealing) {
-        size_t target;
         if (tls_worker_id < pool->num_threads) {
-            target = tls_worker_id;
+            pool->deques[tls_worker_id]->push(task);
         } else {
-            target = std::hash<std::thread::id>{}(std::this_thread::get_id()) % pool->num_threads;
+            std::lock_guard<std::mutex> lock(pool->queue_mutex);
+            pool->legacy_queue.push(task);
+            thread_pool_note_queue_depth(pool, pool->legacy_queue.size());
         }
 
-        pool->deques[target]->push(task);
         pool->tasks_submitted.fetch_add(1, std::memory_order_relaxed);
-        pool->queue_cv.notify_one();
+        pool->queue_cv.notify_all();
     } else {
         std::lock_guard<std::mutex> lock(pool->queue_mutex);
 
@@ -752,11 +786,7 @@ bool thread_pool_submit_detached(
         pool->legacy_queue.push(task);
         pool->tasks_submitted.fetch_add(1);
 
-        size_t current_depth = pool->legacy_queue.size();
-        size_t peak = pool->peak_queue_depth.load();
-        while (current_depth > peak &&
-               !pool->peak_queue_depth.compare_exchange_weak(peak, current_depth)) {
-        }
+        thread_pool_note_queue_depth(pool, pool->legacy_queue.size());
 
         pool->queue_cv.notify_one();
     }
@@ -963,6 +993,9 @@ void thread_pool_get_metrics(
         for (const auto& deque : pool->deques) {
             pending += deque->size();
         }
+        auto* p = const_cast<eshkol_thread_pool_t*>(pool);
+        std::lock_guard<std::mutex> lock(p->queue_mutex);
+        pending += p->legacy_queue.size();
         metrics->tasks_pending = pending;
     } else {
         auto* p = const_cast<eshkol_thread_pool_t*>(pool);
@@ -1060,6 +1093,8 @@ void thread_pool_wait_idle(eshkol_thread_pool_t* pool) {
             for (const auto& deque : pool->deques) {
                 pending += deque->size();
             }
+            std::lock_guard<std::mutex> qlock(pool->queue_mutex);
+            pending += pool->legacy_queue.size();
         } else {
             std::lock_guard<std::mutex> qlock(pool->queue_mutex);
             pending = pool->legacy_queue.size();
