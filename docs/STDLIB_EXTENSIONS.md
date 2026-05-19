@@ -578,6 +578,11 @@ Eliminates fragile `(or (getenv "HOME") "/tmp")` in 15+ files.
 ### `(unsetenv name) -> void`
 `unsetenv(3)`.
 
+### `(getenv name) -> string-or-false`
+Alias of `(get-environment-variable name)`. Standalone VM native ID 1715
+returns an arena-owned string so `string?`, `string-length`, `string->number`,
+and `display` agree on set variables.
+
 ### `(hostname) -> string`
 `gethostname(3)`.
 

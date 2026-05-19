@@ -5627,6 +5627,8 @@ static const BuiltinDef BUILTINS[] = {
     {"ts-available", 2063, 0}, {"ts-tree-root", 2064, 1},
     {"http-set-proxy", 2065, 1}, {"http-set-tls-client-cert", 2066, 3},
     {"display-error", 2067, 1},
+    {"setenv", 1712, 2}, {"unsetenv", 1713, 1},
+    {"getenv", 1715, 1}, {"get-environment-variable", 1715, 1},
     {"string-ends-with?", 1956, 2}, {"string-index-of", 1957, 3},
     {"string-pad-left", 1958, 3}, {"string-pad-right", 1959, 3},
     /* Missing hash */
