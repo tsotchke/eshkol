@@ -7,10 +7,14 @@
 (provide string-join string-trim string-trim-left string-trim-right
          string-replace string-reverse string-copy string-repeat
          string-starts-with? string-ends-with?
-         string-index string-last-index string-contains string-count
+         string-starts-with string-ends-with
+         string-index string-last-index string-contains string-contains? string-count
          string-find
          string-upcase string-downcase
          string-split-ordered)
+
+(define (string-needle x)
+  (if (char? x) (string x) x))
 
 ;; string-join: Join list of strings with delimiter
 ;; (string-join '("a" "b" "c") ",") => "a,b,c"
@@ -75,56 +79,70 @@
 
 ;; string-starts-with?: Check if string starts with prefix
 (define (string-starts-with? str prefix)
-  (and (>= (string-length str) (string-length prefix))
-       (string=? (substring str 0 (string-length prefix)) prefix)))
+  (let ((needle (string-needle prefix)))
+    (and (>= (string-length str) (string-length needle))
+         (string=? (substring str 0 (string-length needle)) needle))))
 
 ;; string-ends-with?: Check if string ends with suffix
 (define (string-ends-with? str suffix)
-  (let ((str-len (string-length str))
-        (suf-len (string-length suffix)))
+  (let* ((needle (string-needle suffix))
+         (str-len (string-length str))
+         (suf-len (string-length needle)))
     (and (>= str-len suf-len)
-         (string=? (substring str (- str-len suf-len) str-len) suffix))))
+         (string=? (substring str (- str-len suf-len) str-len) needle))))
+
+;; Backwards-compatible aliases used by older docs/tests.
+(define (string-starts-with str prefix)
+  (string-starts-with? str prefix))
+
+(define (string-ends-with str suffix)
+  (string-ends-with? str suffix))
 
 ;; string-index: Find first occurrence of substring, returns -1 if not found
 (define (string-index str substr)
-  (define str-len (string-length str))
-  (define sub-len (string-length substr))
-  (define (search i)
-    (if (> (+ i sub-len) str-len)
-        -1
-        (if (string=? (substring str i (+ i sub-len)) substr)
-            i
-            (search (+ i 1)))))
-  (search 0))
+  (let* ((needle (string-needle substr))
+         (str-len (string-length str))
+         (sub-len (string-length needle)))
+    (let search ((i 0))
+      (if (> (+ i sub-len) str-len)
+          -1
+          (if (string=? (substring str i (+ i sub-len)) needle)
+              i
+              (search (+ i 1)))))))
 
 ;; string-last-index: Find last occurrence of substring
 (define (string-last-index str substr)
-  (define str-len (string-length str))
-  (define sub-len (string-length substr))
-  (define (search i)
-    (if (< i 0)
-        -1
-        (if (and (<= (+ i sub-len) str-len)
-                 (string=? (substring str i (+ i sub-len)) substr))
-            i
-            (search (- i 1)))))
-  (search (- str-len sub-len)))
+  (let* ((needle (string-needle substr))
+         (str-len (string-length str))
+         (sub-len (string-length needle)))
+    (let search ((i (- str-len sub-len)))
+      (if (< i 0)
+          -1
+          (if (and (<= (+ i sub-len) str-len)
+                   (string=? (substring str i (+ i sub-len)) needle))
+              i
+              (search (- i 1)))))))
 
 ;; string-contains: Check if string contains substring
 (define (string-contains str substr)
   (>= (string-index str substr) 0))
 
+(define (string-contains? str substr)
+  (string-contains str substr))
+
 ;; string-count: Count occurrences of substring in string
 (define (string-count str substr)
-  (define str-len (string-length str))
-  (define sub-len (string-length substr))
-  (define (count i acc)
-    (if (> (+ i sub-len) str-len)
-        acc
-        (if (string=? (substring str i (+ i sub-len)) substr)
-            (count (+ i sub-len) (+ acc 1))
-            (count (+ i 1) acc))))
-  (count 0 0))
+  (let* ((needle (string-needle substr))
+         (str-len (string-length str))
+         (sub-len (string-length needle)))
+    (if (= sub-len 0)
+        0
+        (let count ((i 0) (acc 0))
+          (if (> (+ i sub-len) str-len)
+              acc
+              (if (string=? (substring str i (+ i sub-len)) needle)
+                  (count (+ i sub-len) (+ acc 1))
+                  (count (+ i 1) acc)))))))
 
 ;; string-upcase: Convert string to uppercase
 (define (string-upcase str)
