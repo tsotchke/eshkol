@@ -16,13 +16,13 @@ TMPDIR_=$(mktemp -d)
 trap 'rm -rf "$TMPDIR_"' EXIT
 
 IN_FIFO="$TMPDIR_/in"
-OUT_LOG="$TMPDIR_/stdout"
-ERR_LOG="$TMPDIR_/stderr"
+OUT_TMP="$TMPDIR_/stdout"
+ERR_TMP="$TMPDIR_/stderr"
 mkfifo "$IN_FIFO"
-: > "$OUT_LOG"
-: > "$ERR_LOG"
+: > "$OUT_TMP"
+: > "$ERR_TMP"
 
-"$REPL" --machine < "$IN_FIFO" > "$OUT_LOG" 2> "$ERR_LOG" &
+"$REPL" --machine < "$IN_FIFO" > "$OUT_TMP" 2> "$ERR_TMP" &
 REPL_PID=$!
 
 exec 3>"$IN_FIFO"
@@ -31,7 +31,7 @@ wait_for_ready() {
     local deadline now
     deadline=$((SECONDS + 120))
     while kill -0 "$REPL_PID" 2>/dev/null; do
-        if grep -qx "EREPL READY" "$ERR_LOG"; then
+        if grep -qx "EREPL READY" "$ERR_TMP"; then
             return 0
         fi
         now=$SECONDS
@@ -47,10 +47,10 @@ wait_for_done() {
     local deadline now
     deadline=$((SECONDS + 30))
     while kill -0 "$REPL_PID" 2>/dev/null; do
-        if grep -qx "EREPL DONE" "$ERR_LOG"; then
+        if grep -qx "EREPL DONE" "$ERR_TMP"; then
             return 0
         fi
-        if grep -qx "EREPL FAIL" "$ERR_LOG"; then
+        if grep -qx "EREPL FAIL" "$ERR_TMP"; then
             return 1
         fi
         now=$SECONDS
@@ -65,16 +65,16 @@ wait_for_done() {
 fail() {
     echo "FAIL: $1"
     echo "stdout:"
-    sed 's/^/  /' "$OUT_LOG"
+    sed 's/^/  /' "$OUT_TMP"
     echo "stderr:"
-    sed 's/^/  /' "$ERR_LOG"
+    sed 's/^/  /' "$ERR_TMP"
     kill "$REPL_PID" 2>/dev/null || true
     exit 1
 }
 
 wait_for_ready || fail "READY marker missing"
 
-if [ -s "$OUT_LOG" ]; then
+if [ -s "$OUT_TMP" ]; then
     fail "machine mode wrote stdout before user form"
 fi
 
@@ -84,12 +84,12 @@ wait_for_done || fail "DONE marker missing after form"
 exec 3>&-
 wait "$REPL_PID" || true
 
-OUT="$(cat "$OUT_LOG")"
+OUT="$(cat "$OUT_TMP")"
 if [ "$OUT" != "3" ]; then
     fail "stdout was not exactly user expression output"
 fi
 
-if grep -q "Goodbye" "$OUT_LOG"; then
+if grep -q "Goodbye" "$OUT_TMP"; then
     fail "machine mode leaked interactive goodbye text"
 fi
 
