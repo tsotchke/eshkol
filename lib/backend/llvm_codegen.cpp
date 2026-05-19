@@ -1275,6 +1275,8 @@ public:
         function_return_types["lru-delete!"] = BuiltinTypes::Boolean;
         function_return_types["lru-clear!"] = BuiltinTypes::Boolean;
         function_return_types["lru-size"] = BuiltinTypes::Integer;
+        function_return_types["format"] = BuiltinTypes::String;
+        function_return_types["_format-list"] = BuiltinTypes::String;
         function_return_types["string-ends-with?"] = BuiltinTypes::Boolean;
         function_return_types["string-index-of"] = BuiltinTypes::Integer;
         function_return_types["string-pad-left"] = BuiltinTypes::String;
@@ -10390,6 +10392,46 @@ private:
         return codegenClosureCall(func_result, call_args, "op-result-as-func");
     }
 
+    Value* codegenFormatBuiltin(const eshkol_operations_t* op) {
+        if (op->call_op.num_vars < 1) {
+            return packBoolToTaggedValue(ConstantInt::get(int1_type, 0));
+        }
+
+        Value* fmt = ensureTaggedValue(codegenAST(&op->call_op.variables[0]));
+        if (builder->GetInsertBlock()->getTerminator()) {
+            return UndefValue::get(tagged_value_type);
+        }
+        if (!fmt) fmt = packNullToTaggedValue();
+
+        Value* rest_list = packPtrToTaggedValue(
+            ConstantInt::get(int64_type, 0), ESHKOL_VALUE_NULL);
+        for (int64_t i = (int64_t)op->call_op.num_vars - 1; i >= 1; i--) {
+            Value* arg = ensureTaggedValue(codegenAST(&op->call_op.variables[i]));
+            if (builder->GetInsertBlock()->getTerminator()) {
+                return UndefValue::get(tagged_value_type);
+            }
+            if (!arg) arg = packNullToTaggedValue();
+            Value* cons_ptr_i64 = codegenTaggedArenaConsCellFromTaggedValue(arg, rest_list);
+            rest_list = packPtrToTaggedValue(cons_ptr_i64, ESHKOL_VALUE_HEAP_PTR);
+        }
+
+        Function* f = module->getFunction("eshkol_builtin_format_list");
+        if (!f) {
+            FunctionType* ft = FunctionType::get(
+                builder->getVoidTy(), {ptr_type, ptr_type, ptr_type}, false);
+            f = Function::Create(ft, Function::ExternalLinkage,
+                                 "eshkol_builtin_format_list", module.get());
+        }
+
+        Value* result_ptr = builder->CreateAlloca(tagged_value_type, nullptr, "format_out");
+        Value* fmt_ptr = builder->CreateAlloca(tagged_value_type, nullptr, "format_fmt");
+        Value* args_ptr = builder->CreateAlloca(tagged_value_type, nullptr, "format_args");
+        builder->CreateStore(fmt, fmt_ptr);
+        builder->CreateStore(rest_list, args_ptr);
+        builder->CreateCall(f, {result_ptr, fmt_ptr, args_ptr});
+        return builder->CreateLoad(tagged_value_type, result_ptr);
+    }
+
     Value* codegenCall(const eshkol_operations_t* op) {
         if (!op->call_op.func) {
             return nullptr;
@@ -10580,6 +10622,7 @@ private:
             return codegenModulo(op);
         if (func_name == "remainder") return codegenRemainder(op);
         if (func_name == "quotient") return codegenQuotient(op);
+        if (func_name == "format") return codegenFormatBuiltin(op);
         // R7RS truncate-quotient/truncate-remainder: same as quotient/remainder
         if (func_name == "truncate-quotient") return codegenQuotient(op);
         if (func_name == "truncate-remainder") return codegenRemainder(op);
@@ -12005,6 +12048,7 @@ private:
         if (func_name == "lru-delete!") return system_->lruDelete(op);
         if (func_name == "lru-clear!") return system_->lruClear(op);
         if (func_name == "lru-size") return system_->lruSize(op);
+        if (func_name == "_format-list") return system_->formatList(op);
         if (func_name == "string-ends-with?") return system_->stringEndsWith(op);
         if (func_name == "string-index-of") return system_->stringIndexOf(op);
         if (func_name == "string-pad-left") return system_->stringPadLeft(op);
@@ -19945,7 +19989,7 @@ private:
             "make-pipe", "fd-write", "make-line-reader",
             "line-reader-poll", "line-reader-close", "fd-close",
             "make-lru-cache", "lru-get", "lru-set!", "lru-has?",
-            "lru-delete!", "lru-clear!", "lru-size",
+            "lru-delete!", "lru-clear!", "lru-size", "format", "_format-list",
             "string-ends-with?", "string-index-of",
             "string-pad-left", "string-pad-right",
             "kb-save", "kb-load", "tensor-token-estimate",

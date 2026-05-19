@@ -324,6 +324,7 @@ public:
     llvm::Value* lruDelete(const eshkol_operations_t* op);
     llvm::Value* lruClear(const eshkol_operations_t* op);
     llvm::Value* lruSize(const eshkol_operations_t* op);
+    llvm::Value* formatList(const eshkol_operations_t* op);
     llvm::Value* stringEndsWith(const eshkol_operations_t* op);
     llvm::Value* stringIndexOf(const eshkol_operations_t* op);
     llvm::Value* stringPadLeft(const eshkol_operations_t* op);
