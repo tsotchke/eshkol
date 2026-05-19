@@ -28,6 +28,7 @@
 #include <poll.h>
 #include <pwd.h>
 #include <fcntl.h>
+#include <sys/time.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <glob.h>
@@ -899,6 +900,72 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_mkdtemp_v(eshkol_sysbuiltin_valu
 #endif
 }
 
+static const char* sys_temp_dir_or_default(const char* dir) {
+    if (dir && *dir) return dir;
+#ifndef _WIN32
+    const char* tmp = getenv("TMPDIR");
+    if (!tmp || !*tmp) tmp = getenv("TMP");
+    if (!tmp || !*tmp) tmp = getenv("TEMP");
+    return (tmp && *tmp) ? tmp : "/tmp";
+#else
+    return ".";
+#endif
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_make_temp_file_v(
+    eshkol_sysbuiltin_value_t prefix_val,
+    eshkol_sysbuiltin_value_t suffix_val,
+    eshkol_sysbuiltin_value_t dir_val) {
+    const char* prefix = sys_extract_string(prefix_val);
+    const char* suffix = sys_extract_string(suffix_val);
+    const char* dir = sys_temp_dir_or_default(sys_extract_string(dir_val));
+    if (!prefix || !suffix || !dir || !*dir) return sys_make_bool(0);
+#if !defined(_WIN32)
+    const char* sep = (dir[strlen(dir) - 1] == '/') ? "" : "/";
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    for (int i = 0; i < 128; i++) {
+        char path[4096];
+        uint64_t nonce = ((uint64_t)(uint32_t)getpid() << 32) ^
+                         (uint64_t)tv.tv_usec ^ ((uint64_t)i * 0x9e3779b97f4a7c15ULL);
+        int n = snprintf(path, sizeof(path), "%s%s%s%016llx%s",
+                         dir, sep, prefix, (unsigned long long)nonce, suffix);
+        if (n <= 0 || n >= (int)sizeof(path)) break;
+        int fd = open(path, O_CREAT | O_EXCL | O_RDWR, 0600);
+        if (fd >= 0) {
+            close(fd);
+            return sys_make_string(path);
+        }
+        if (errno != EEXIST) break;
+    }
+#endif
+    return sys_make_bool(0);
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_make_temp_dir_v(
+    eshkol_sysbuiltin_value_t prefix_val,
+    eshkol_sysbuiltin_value_t dir_val) {
+    const char* prefix = sys_extract_string(prefix_val);
+    const char* dir = sys_temp_dir_or_default(sys_extract_string(dir_val));
+    if (!prefix || !dir || !*dir) return sys_make_bool(0);
+#if !defined(_WIN32)
+    const char* sep = (dir[strlen(dir) - 1] == '/') ? "" : "/";
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    for (int i = 0; i < 128; i++) {
+        char path[4096];
+        uint64_t nonce = ((uint64_t)(uint32_t)getpid() << 32) ^
+                         (uint64_t)tv.tv_usec ^ ((uint64_t)i * 0x9e3779b97f4a7c15ULL);
+        int n = snprintf(path, sizeof(path), "%s%s%s%016llx",
+                         dir, sep, prefix, (unsigned long long)nonce);
+        if (n <= 0 || n >= (int)sizeof(path)) break;
+        if (mkdir(path, 0700) == 0) return sys_make_string(path);
+        if (errno != EEXIST) break;
+    }
+#endif
+    return sys_make_bool(0);
+}
+
 static int rmdir_recursive_impl(const char* path) {
     static int depth = 0;
     if (++depth > 100) { --depth; return -1; }
@@ -986,6 +1053,55 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_shell_quote_v(eshkol_sysbuiltin_
 /* ═══════════════════════════════════════════════════════════════════
  * Process Management
  * ═══════════════════════════════════════════════════════════════════ */
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_fork_v(void) {
+#if !defined(_WIN32)
+    pid_t pid = fork();
+    if (pid >= 0) return sys_make_int64((int64_t)pid);
+#endif
+    return sys_make_bool(0);
+}
+
+static int sys_execv_argv_from_list(eshkol_sysbuiltin_value_t list,
+                                    char** argv,
+                                    int max_args) {
+    int argc = 0;
+    eshkol_sysbuiltin_value_t cur = list;
+    while (cur.type == SYS_TYPE_HEAP_PTR && cur.flags == 0x00 && cur.data != 0) {
+        if (argc >= max_args - 1) return -1;
+        eshkol_sysbuiltin_value_t car;
+        eshkol_sysbuiltin_value_t cdr;
+        memcpy(&car, (void*)(uintptr_t)cur.data, sizeof(car));
+        memcpy(&cdr, (char*)(uintptr_t)cur.data + sizeof(car), sizeof(cdr));
+        const char* arg = sys_extract_string(car);
+        if (!arg) return -1;
+        argv[argc++] = (char*)arg;
+        cur = cdr;
+    }
+    if (cur.type != SYS_TYPE_NULL) return -1;
+    argv[argc] = NULL;
+    return argc;
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_execv_v(eshkol_sysbuiltin_value_t path_val,
+                                                         eshkol_sysbuiltin_value_t argv_val) {
+    const char* path = sys_extract_string(path_val);
+    if (!path || !*path) return sys_make_bool(0);
+#if !defined(_WIN32)
+    char* argv[256];
+    int argc = sys_execv_argv_from_list(argv_val, argv, (int)(sizeof(argv) / sizeof(argv[0])));
+    if (argc >= 0) {
+        if (argc == 0) {
+            argv[argc++] = (char*)path;
+            argv[argc] = NULL;
+        }
+        execv(path, argv);
+    }
+#else
+    (void)argv_val;
+#endif
+    return sys_make_bool(0);
+}
 
 static eshkol_sysbuiltin_value_t eshkol_builtin_process_spawn_v(eshkol_sysbuiltin_value_t cmd_val,
                                                         eshkol_sysbuiltin_value_t args_val) {
@@ -3748,8 +3864,12 @@ void eshkol_builtin_file_stat(sv_t* out, const sv_t* a) { *out = eshkol_builtin_
 void eshkol_builtin_file_copy(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_file_copy_v(*a, *b); }
 void eshkol_builtin_mkdir_recursive(sv_t* out, const sv_t* a) { *out = eshkol_builtin_mkdir_recursive_v(*a); }
 void eshkol_builtin_mkdtemp(sv_t* out, const sv_t* a) { *out = eshkol_builtin_mkdtemp_v(*a); }
+void eshkol_builtin_make_temp_file(sv_t* out, const sv_t* a, const sv_t* b, const sv_t* c) { *out = eshkol_builtin_make_temp_file_v(*a, *b, *c); }
+void eshkol_builtin_make_temp_dir(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_make_temp_dir_v(*a, *b); }
 void eshkol_builtin_directory_delete_recursive(sv_t* out, const sv_t* a) { *out = eshkol_builtin_directory_delete_recursive_v(*a); }
 void eshkol_builtin_shell_quote(sv_t* out, const sv_t* a) { *out = eshkol_builtin_shell_quote_v(*a); }
+void eshkol_builtin_fork(sv_t* out) { *out = eshkol_builtin_fork_v(); }
+void eshkol_builtin_execv(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_execv_v(*a, *b); }
 void eshkol_builtin_process_spawn(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_process_spawn_v(*a, *b); }
 void eshkol_builtin_process_wait(sv_t* out, const sv_t* a) { *out = eshkol_builtin_process_wait_v(*a); }
 void eshkol_builtin_poll_fd(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_poll_fd_v(*a, *b); }

@@ -564,11 +564,13 @@ static const BuiltinDef BUILTINS[] = {
     {"poll", 1783, 2}, {"process-pid", 1784, 0},
     {"process-setpgid", 1785, 2}, {"process-kill-tree", 1786, 2},
     {"process-spawn-pty", 1787, 1}, {"process-read-nonblocking", 1788, 2},
+    {"fork", 1789, 0},
     {"unix-socket-connect", 1790, 1}, {"socket-send", 1791, 2},
     {"socket-recv", 1792, 2}, {"socket-close", 1793, 1},
     {"signal-install", 1794, 1}, {"signal-check", 1795, 0},
     {"signal-reset", 1796, 1}, {"signal-ignore", 1797, 1},
     {"signal-count", 1798, 0},
+    {"execv", 1799, 2},
     /* ═══════════════════════════════════════════════════════════════
      * KB Extensions — IDs 1800-1809
      * ═══════════════════════════════════════════════════════════════ */

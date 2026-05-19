@@ -10522,6 +10522,18 @@ static void vm_dispatch_native(VM* vm, int fid) {
         break;
     }
 
+    case 1789: { /* fork() → 0 in child, child pid in parent, or #f */
+#if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
+        pid_t pid = fork();
+        if (pid >= 0) {
+            vm_push(vm, INT_VAL((int64_t)pid));
+            break;
+        }
+#endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
     case 1790: { /* unix-socket-connect(path) → fd or #f */
         Value path_val = vm_pop(vm);
 #if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
@@ -10711,6 +10723,38 @@ static void vm_dispatch_native(VM* vm, int fid) {
 #else
         vm_push(vm, INT_VAL(0));
 #endif
+        break;
+    }
+
+    case 1799: { /* execv(path, argv) → does not return on success, #f on error */
+        Value argv_val = vm_pop(vm), path_val = vm_pop(vm);
+#if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
+        VmString* path = vm_value_as_string(vm, path_val);
+        if (path && path->data && path->byte_len > 0) {
+            char* argv_buf[256];
+            int argc = 0;
+            Value cur = argv_val;
+            while (cur.type == VAL_PAIR && argc < 255 && is_valid_heap_ptr(vm, cur.as.ptr)) {
+                HeapObject* node = vm->heap.objects[cur.as.ptr];
+                if (!node || node->type != HEAP_CONS) break;
+                VmString* arg = vm_value_as_string(vm, node->cons.car);
+                if (!arg || !arg->data) {
+                    argc = -1;
+                    break;
+                }
+                argv_buf[argc++] = arg->data;
+                cur = node->cons.cdr;
+            }
+            if (argc >= 0 && cur.type == VAL_NIL) {
+                if (argc == 0) argv_buf[argc++] = path->data;
+                argv_buf[argc] = NULL;
+                execv(path->data, argv_buf);
+            }
+        }
+#else
+        (void)argv_val; (void)path_val;
+#endif
+        vm_push(vm, BOOL_VAL(0));
         break;
     }
 

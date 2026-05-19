@@ -1405,12 +1405,15 @@ ONE_ARG_BUILTIN(fileStat, "eshkol_builtin_file_stat")
 TWO_ARG_BUILTIN(fileCopy, "eshkol_builtin_file_copy")
 ONE_ARG_BUILTIN(mkdirRecursive, "eshkol_builtin_mkdir_recursive")
 ONE_ARG_BUILTIN(mkdtempBuiltin, "eshkol_builtin_mkdtemp")
+TWO_ARG_BUILTIN(makeTempDir, "eshkol_builtin_make_temp_dir")
 ONE_ARG_BUILTIN(directoryDeleteRecursive, "eshkol_builtin_directory_delete_recursive")
 
 /* Shell */
 ONE_ARG_BUILTIN(shellQuote, "eshkol_builtin_shell_quote")
 
 /* Process */
+ZERO_ARG_BUILTIN(forkBuiltin, "eshkol_builtin_fork")
+TWO_ARG_BUILTIN(execvBuiltin, "eshkol_builtin_execv")
 TWO_ARG_BUILTIN(processSpawn, "eshkol_builtin_process_spawn")
 ONE_ARG_BUILTIN(processWait, "eshkol_builtin_process_wait")
 
@@ -1470,6 +1473,8 @@ llvm::Value* SystemCodegen::method_name(const eshkol_operations_t* op) { \
     llvm::Function* f = getOrDeclareRuntimeFuncAllPtr(ctx_, mod, c_func_name, 4); \
     return callPtrRuntime(ctx_, f, {a, b, c, d}); \
 }
+
+THREE_ARG_BUILTIN(makeTempFile, "eshkol_builtin_make_temp_file")
 
 /* Noesis requirements */
 TWO_ARG_BUILTIN(fgMarginal, "eshkol_builtin_fg_marginal")

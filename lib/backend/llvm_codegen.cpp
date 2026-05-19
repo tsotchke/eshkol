@@ -1189,8 +1189,12 @@ public:
         function_return_types["file-copy"] = BuiltinTypes::Boolean;
         function_return_types["mkdir-recursive"] = BuiltinTypes::Boolean;
         function_return_types["mkdtemp"] = BuiltinTypes::String;
+        function_return_types["make-temp-file"] = BuiltinTypes::String;
+        function_return_types["make-temp-dir"] = BuiltinTypes::String;
         function_return_types["directory-delete-recursive"] = BuiltinTypes::Boolean;
         function_return_types["shell-quote"] = BuiltinTypes::String;
+        function_return_types["fork"] = BuiltinTypes::Integer;
+        function_return_types["execv"] = BuiltinTypes::Boolean;
         function_return_types["process-spawn"] = BuiltinTypes::Integer;
         function_return_types["process-wait"] = BuiltinTypes::Integer;
         function_return_types["poll-fd"] = BuiltinTypes::Boolean;
@@ -11962,8 +11966,12 @@ private:
         if (func_name == "file-copy") return system_->fileCopy(op);
         if (func_name == "mkdir-recursive") return system_->mkdirRecursive(op);
         if (func_name == "mkdtemp") return system_->mkdtempBuiltin(op);
+        if (func_name == "make-temp-file") return system_->makeTempFile(op);
+        if (func_name == "make-temp-dir") return system_->makeTempDir(op);
         if (func_name == "directory-delete-recursive") return system_->directoryDeleteRecursive(op);
         if (func_name == "shell-quote") return system_->shellQuote(op);
+        if (func_name == "fork") return system_->forkBuiltin(op);
+        if (func_name == "execv") return system_->execvBuiltin(op);
         if (func_name == "process-spawn") return system_->processSpawn(op);
         if (func_name == "process-wait") return system_->processWait(op);
         if (func_name == "poll-fd") return system_->pollFd(op);
@@ -19961,8 +19969,10 @@ private:
             "path-join", "path-dirname", "path-basename", "path-extname",
             "path-is-absolute?", "path-normalize", "realpath",
             "file-stat", "file-copy", "mkdir-recursive", "mkdtemp",
+            "make-temp-file", "make-temp-dir",
             "directory-delete-recursive",
-            "shell-quote", "process-spawn", "process-wait", "poll-fd",
+            "shell-quote", "fork", "execv",
+            "process-spawn", "process-wait", "poll-fd",
             "tensor-save", "tensor-load",
             "file-chmod", "symlink-create", "symlink-read",
             "directory-walk", "mkstemp", "process-kill",
