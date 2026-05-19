@@ -5619,6 +5619,12 @@ static const BuiltinDef BUILTINS[] = {
     {"websocket-connect", 2048, 2}, {"websocket-send", 2049, 2},
     {"websocket-send-binary", 2050, 2}, {"websocket-receive", 2051, 2},
     {"websocket-close", 2052, 1},
+    {"ts-parser-new", 2053, 1}, {"ts-parser-free", 2054, 1},
+    {"ts-parse", 2055, 2}, {"ts-tree-free", 2056, 1},
+    {"ts-node-type", 2057, 1}, {"ts-node-text", 2058, 2},
+    {"ts-node-children", 2059, 1}, {"ts-query-new", 2060, 2},
+    {"ts-query-matches", 2061, 3}, {"ts-query-free", 2062, 1},
+    {"ts-available", 2063, 0}, {"ts-tree-root", 2064, 1},
     {"string-ends-with?", 1956, 2}, {"string-index-of", 1957, 3},
     {"string-pad-left", 1958, 3}, {"string-pad-right", 1959, 3},
     /* Missing hash */

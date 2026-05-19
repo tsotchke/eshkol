@@ -2385,6 +2385,15 @@ Standalone VM native ID 1946 removes CSI/OSC and related ANSI escape sequences.
 10 C functions binding `libtree-sitter` + 10 language grammars. Enables
 go-to-definition, find-references, structural rename WITHOUT external LSP.
 
+Standalone VM and compiled-runtime native IDs 2053-2064 expose the same names
+with deterministic dependency-free behavior. Until real grammar libraries are
+linked, `ts-available` returns `#t` for the fallback runtime: parser/tree/node/
+query handles are real, root nodes are language-shaped, children are line-level
+structural nodes, and query matches are returned as alists with `capture`,
+`type`, `start`, `end`, and `text` fields. This gives agent code shell-free
+structural handles today while preserving the same API shape for future
+`libtree-sitter` backing.
+
 ## E.11 Dynamic Library Loading — P1
 
 `(dlopen path) -> handle`, `(dlsym handle name) -> ptr`, `(dlclose handle)`

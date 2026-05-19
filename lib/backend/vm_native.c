@@ -2486,6 +2486,195 @@ static int vm_ws_send_frame(int fd, int opcode, const void* data, size_t len) {
            (len == 0 || vm_ws_send_all(fd, data, len));
 }
 
+static int vm_ts_language_supported(const char* language) {
+    static const char* names[] = {
+        "javascript", "js", "typescript", "ts", "python", "py", "rust", "rs",
+        "go", "c", "cpp", "c++", "java", "ruby", "rb", "bash", "sh",
+        "scheme", "scm", "lisp", NULL
+    };
+    if (!language || !*language) return 0;
+    for (int i = 0; names[i]; i++) {
+        if (strcmp(language, names[i]) == 0) return 1;
+    }
+    return 0;
+}
+
+static const char* vm_ts_root_type(const char* language) {
+    if (!language) return "source_file";
+    if (strcmp(language, "python") == 0 || strcmp(language, "py") == 0)
+        return "module";
+    if (strcmp(language, "javascript") == 0 || strcmp(language, "js") == 0 ||
+        strcmp(language, "typescript") == 0 || strcmp(language, "ts") == 0)
+        return "program";
+    if (strcmp(language, "c") == 0 || strcmp(language, "cpp") == 0 ||
+        strcmp(language, "c++") == 0)
+        return "translation_unit";
+    return "source_file";
+}
+
+static int vm_ts_starts_with(const char* s, int64_t len, const char* prefix) {
+    size_t n = prefix ? strlen(prefix) : 0;
+    return s && prefix && len >= (int64_t)n && memcmp(s, prefix, n) == 0;
+}
+
+static int vm_ts_contains(const char* s, int64_t len, const char* needle) {
+    size_t n = needle ? strlen(needle) : 0;
+    if (!s || !needle || n == 0 || len < (int64_t)n) return 0;
+    for (int64_t i = 0; i <= len - (int64_t)n; i++) {
+        if (memcmp(s + i, needle, n) == 0) return 1;
+    }
+    return 0;
+}
+
+static const char* vm_ts_classify_line(const char* language, const char* line, int64_t len) {
+    while (len > 0 && isspace((unsigned char)*line)) {
+        line++;
+        len--;
+    }
+    if (len <= 0) return NULL;
+    if (language && (strcmp(language, "python") == 0 || strcmp(language, "py") == 0)) {
+        if (vm_ts_starts_with(line, len, "def ") || vm_ts_starts_with(line, len, "async def "))
+            return "function_definition";
+        if (vm_ts_starts_with(line, len, "class "))
+            return "class_definition";
+        if (vm_ts_starts_with(line, len, "import ") || vm_ts_starts_with(line, len, "from "))
+            return "import_statement";
+    } else if (language && (strcmp(language, "javascript") == 0 || strcmp(language, "js") == 0 ||
+                            strcmp(language, "typescript") == 0 || strcmp(language, "ts") == 0)) {
+        if (vm_ts_starts_with(line, len, "function ") || vm_ts_contains(line, len, "=>"))
+            return "function_declaration";
+        if (vm_ts_starts_with(line, len, "class "))
+            return "class_declaration";
+        if (vm_ts_starts_with(line, len, "import "))
+            return "import_statement";
+    } else if (language && (strcmp(language, "c") == 0 || strcmp(language, "cpp") == 0 ||
+                            strcmp(language, "c++") == 0)) {
+        if (vm_ts_starts_with(line, len, "#include"))
+            return "preproc_include";
+        if (vm_ts_contains(line, len, "(") && vm_ts_contains(line, len, ")") &&
+            vm_ts_contains(line, len, "{"))
+            return "function_definition";
+    } else if (language && (strcmp(language, "scheme") == 0 || strcmp(language, "scm") == 0 ||
+                            strcmp(language, "lisp") == 0)) {
+        if (vm_ts_starts_with(line, len, "(define "))
+            return "definition";
+        if (vm_ts_starts_with(line, len, "(lambda"))
+            return "lambda_expression";
+    }
+    return "line";
+}
+
+static int vm_ts_alloc_node(VM* vm, int tree, int parent, int64_t start,
+                            int64_t end, const char* type) {
+    if (!vm || !type) return -1;
+    for (int i = 16; i < (int)(sizeof(vm->ts_nodes) / sizeof(vm->ts_nodes[0])); i++) {
+        if (!vm->ts_nodes[i].active) {
+            vm->ts_nodes[i].active = 1;
+            vm->ts_nodes[i].tree = tree;
+            vm->ts_nodes[i].parent = parent;
+            vm->ts_nodes[i].start = start;
+            vm->ts_nodes[i].end = end;
+            snprintf(vm->ts_nodes[i].type, sizeof(vm->ts_nodes[i].type), "%s", type);
+            return i;
+        }
+    }
+    return -1;
+}
+
+static Value vm_reverse_list(VM* vm, Value list) {
+    Value out = NIL_VAL;
+    Value cur = list;
+    while (cur.type == VAL_PAIR && is_valid_heap_ptr(vm, cur.as.ptr)) {
+        HeapObject* cell = vm->heap.objects[cur.as.ptr];
+        if (!cell || cell->type != HEAP_CONS) break;
+        out = vm_cons_value(vm, cell->cons.car, out);
+        cur = cell->cons.cdr;
+    }
+    return out;
+}
+
+static Value vm_ts_node_children_value(VM* vm, int node_handle) {
+    if (!vm || node_handle <= 0 ||
+        node_handle >= (int)(sizeof(vm->ts_nodes) / sizeof(vm->ts_nodes[0])) ||
+        !vm->ts_nodes[node_handle].active)
+        return BOOL_VAL(0);
+
+    int tree_handle = vm->ts_nodes[node_handle].tree;
+    if (tree_handle <= 0 ||
+        tree_handle >= (int)(sizeof(vm->ts_trees) / sizeof(vm->ts_trees[0])) ||
+        !vm->ts_trees[tree_handle].active)
+        return BOOL_VAL(0);
+
+    const char* src = vm->ts_trees[tree_handle].source;
+    int64_t len = vm->ts_trees[tree_handle].source_len;
+    if (!src || len < 0) return BOOL_VAL(0);
+    if (vm->ts_nodes[node_handle].parent != 0)
+        return NIL_VAL;
+
+    Value result = NIL_VAL;
+    int64_t line_start = 0;
+    for (int64_t i = 0; i <= len; i++) {
+        if (i == len || src[i] == '\n') {
+            int64_t line_end = i;
+            const char* type = vm_ts_classify_line(vm->ts_trees[tree_handle].language,
+                                                   src + line_start, line_end - line_start);
+            if (type) {
+                int child = vm_ts_alloc_node(vm, tree_handle, node_handle, line_start, line_end, type);
+                if (child > 0)
+                    result = vm_cons_value(vm, INT_VAL((int64_t)child), result);
+            }
+            line_start = i + 1;
+        }
+    }
+    return vm_reverse_list(vm, result);
+}
+
+static void vm_ts_capture_name(const char* pattern, char* out, size_t out_cap) {
+    if (!out || out_cap == 0) return;
+    snprintf(out, out_cap, "match");
+    const char* at = pattern ? strchr(pattern, '@') : NULL;
+    if (!at) return;
+    at++;
+    size_t n = 0;
+    while (at[n] && (isalnum((unsigned char)at[n]) || at[n] == '_' || at[n] == '-' || at[n] == '.'))
+        n++;
+    if (n == 0) return;
+    if (n >= out_cap) n = out_cap - 1;
+    memcpy(out, at, n);
+    out[n] = '\0';
+}
+
+static int vm_ts_query_matches_text(const char* pattern, const char* type,
+                                    const char* text, int64_t text_len) {
+    if (!pattern || !*pattern) return 1;
+    if (type && strstr(pattern, type)) return 1;
+    int wants_structural = strstr(pattern, "function") || strstr(pattern, "definition") ||
+                           strstr(pattern, "class") || strstr(pattern, "import");
+    if (strstr(pattern, "function")) return type && strstr(type, "function");
+    if (strstr(pattern, "definition")) return type && strstr(type, "definition");
+    if (strstr(pattern, "class")) return type && strstr(type, "class");
+    if (strstr(pattern, "import")) return type && strstr(type, "import");
+    if (wants_structural) return 0;
+    if (strstr(pattern, "identifier")) {
+        for (int64_t i = 0; i < text_len; i++) {
+            if (isalpha((unsigned char)text[i]) || text[i] == '_') return 1;
+        }
+    }
+    return vm_ts_contains(text, text_len, pattern);
+}
+
+static Value vm_ts_match_value(VM* vm, const char* capture, const char* type,
+                               int64_t start, int64_t end, const char* text,
+                               int64_t text_len) {
+    Value match = NIL_VAL;
+    match = vm_cons_value(vm, vm_alist_entry(vm, "text", vm_string_value(vm, text, text_len)), match);
+    match = vm_cons_value(vm, vm_alist_entry(vm, "end", INT_VAL(end)), match);
+    match = vm_cons_value(vm, vm_alist_entry(vm, "start", INT_VAL(start)), match);
+    match = vm_cons_value(vm, vm_alist_entry(vm, "type", vm_string_value(vm, type, -1)), match);
+    match = vm_cons_value(vm, vm_alist_entry(vm, "capture", vm_string_value(vm, capture, -1)), match);
+    return match;
+}
+
 static int vm_json_alist_ref(VM* vm, Value obj, Value key, Value* out) {
     Value cur = obj;
     while (cur.type == VAL_PAIR && is_valid_heap_ptr(vm, cur.as.ptr)) {
@@ -7112,6 +7301,220 @@ static void vm_dispatch_native(VM* vm, int fid) {
 #endif
             memset(&vm->websocket_clients[handle], 0, sizeof(vm->websocket_clients[handle]));
             vm_push(vm, BOOL_VAL(1));
+            break;
+        }
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+    case 2053: { /* ts-parser-new(language) → parser or #f */
+        Value language_val = vm_pop(vm);
+        VmString* language = vm_value_as_string(vm, language_val);
+        if (language && language->data && vm_ts_language_supported(language->data)) {
+            int pushed = 0;
+            for (int i = 1; i < (int)(sizeof(vm->ts_parsers) / sizeof(vm->ts_parsers[0])); i++) {
+                if (!vm->ts_parsers[i].active) {
+                    vm->ts_parsers[i].active = 1;
+                    snprintf(vm->ts_parsers[i].language, sizeof(vm->ts_parsers[i].language),
+                             "%.*s", (int)language->byte_len, language->data);
+                    vm_push(vm, INT_VAL((int64_t)i));
+                    pushed = 1;
+                    break;
+                }
+            }
+            if (pushed) break;
+        }
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+    case 2054: { /* ts-parser-free(parser) → bool */
+        Value parser_val = vm_pop(vm);
+        int handle = (int)as_number(parser_val);
+        if (handle > 0 && handle < (int)(sizeof(vm->ts_parsers) / sizeof(vm->ts_parsers[0])) &&
+            vm->ts_parsers[handle].active) {
+            memset(&vm->ts_parsers[handle], 0, sizeof(vm->ts_parsers[handle]));
+            vm_push(vm, BOOL_VAL(1));
+            break;
+        }
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+    case 2055: { /* ts-parse(parser, source) → tree or #f */
+        Value source_val = vm_pop(vm), parser_val = vm_pop(vm);
+        int parser = (int)as_number(parser_val);
+        VmString* source = vm_value_as_string(vm, source_val);
+        if (parser > 0 && parser < (int)(sizeof(vm->ts_parsers) / sizeof(vm->ts_parsers[0])) &&
+            vm->ts_parsers[parser].active && source && source->data) {
+            int pushed = 0;
+            for (int i = 1; i < (int)(sizeof(vm->ts_trees) / sizeof(vm->ts_trees[0])); i++) {
+                if (!vm->ts_trees[i].active) {
+                    vm->ts_trees[i].active = 1;
+                    vm->ts_trees[i].parser = parser;
+                    vm->ts_trees[i].root_node = i;
+                    vm->ts_trees[i].source = source->data;
+                    vm->ts_trees[i].source_len = source->byte_len;
+                    snprintf(vm->ts_trees[i].language, sizeof(vm->ts_trees[i].language),
+                             "%s", vm->ts_parsers[parser].language);
+                    memset(&vm->ts_nodes[i], 0, sizeof(vm->ts_nodes[i]));
+                    vm->ts_nodes[i].active = 1;
+                    vm->ts_nodes[i].tree = i;
+                    vm->ts_nodes[i].parent = 0;
+                    vm->ts_nodes[i].start = 0;
+                    vm->ts_nodes[i].end = source->byte_len;
+                    snprintf(vm->ts_nodes[i].type, sizeof(vm->ts_nodes[i].type),
+                             "%s", vm_ts_root_type(vm->ts_trees[i].language));
+                    vm_push(vm, INT_VAL((int64_t)i));
+                    pushed = 1;
+                    break;
+                }
+            }
+            if (pushed) break;
+        }
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+    case 2056: { /* ts-tree-free(tree) → bool */
+        Value tree_val = vm_pop(vm);
+        int handle = (int)as_number(tree_val);
+        if (handle > 0 && handle < (int)(sizeof(vm->ts_trees) / sizeof(vm->ts_trees[0])) &&
+            vm->ts_trees[handle].active) {
+            for (int i = 0; i < (int)(sizeof(vm->ts_nodes) / sizeof(vm->ts_nodes[0])); i++) {
+                if (vm->ts_nodes[i].active && vm->ts_nodes[i].tree == handle)
+                    memset(&vm->ts_nodes[i], 0, sizeof(vm->ts_nodes[i]));
+            }
+            memset(&vm->ts_trees[handle], 0, sizeof(vm->ts_trees[handle]));
+            vm_push(vm, BOOL_VAL(1));
+            break;
+        }
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+    case 2057: { /* ts-node-type(node) → string or #f */
+        Value node_val = vm_pop(vm);
+        int node = (int)as_number(node_val);
+        if (node > 0 && node < (int)(sizeof(vm->ts_nodes) / sizeof(vm->ts_nodes[0])) &&
+            vm->ts_nodes[node].active) {
+            vm_push(vm, vm_string_value(vm, vm->ts_nodes[node].type, -1));
+            break;
+        }
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+    case 2058: { /* ts-node-text(node, source) → string or #f */
+        Value source_val = vm_pop(vm), node_val = vm_pop(vm);
+        int node = (int)as_number(node_val);
+        const char* source = NULL;
+        int64_t source_len = 0;
+        if (node > 0 && node < (int)(sizeof(vm->ts_nodes) / sizeof(vm->ts_nodes[0])) &&
+            vm->ts_nodes[node].active) {
+            int tree = vm->ts_nodes[node].tree;
+            if (tree > 0 && tree < (int)(sizeof(vm->ts_trees) / sizeof(vm->ts_trees[0])) &&
+                vm->ts_trees[tree].active) {
+                source = vm->ts_trees[tree].source;
+                source_len = vm->ts_trees[tree].source_len;
+            }
+            if (!source) {
+                VmString* fallback = vm_value_as_string(vm, source_val);
+                if (fallback && fallback->data) {
+                    source = fallback->data;
+                    source_len = fallback->byte_len;
+                }
+            }
+            if (source && vm->ts_nodes[node].start >= 0 && vm->ts_nodes[node].end <= source_len &&
+                vm->ts_nodes[node].start <= vm->ts_nodes[node].end) {
+                vm_push(vm, vm_string_value(vm, source + vm->ts_nodes[node].start,
+                                            vm->ts_nodes[node].end - vm->ts_nodes[node].start));
+                break;
+            }
+        }
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+    case 2059: { /* ts-node-children(node) → list or #f */
+        Value node_val = vm_pop(vm);
+        vm_push(vm, vm_ts_node_children_value(vm, (int)as_number(node_val)));
+        break;
+    }
+    case 2060: { /* ts-query-new(language, pattern) → query or #f */
+        Value pattern_val = vm_pop(vm), language_val = vm_pop(vm);
+        VmString* language = vm_value_as_string(vm, language_val);
+        VmString* pattern = vm_value_as_string(vm, pattern_val);
+        if (language && language->data && pattern && pattern->data &&
+            vm_ts_language_supported(language->data)) {
+            int pushed = 0;
+            for (int i = 1; i < (int)(sizeof(vm->ts_queries) / sizeof(vm->ts_queries[0])); i++) {
+                if (!vm->ts_queries[i].active) {
+                    vm->ts_queries[i].active = 1;
+                    snprintf(vm->ts_queries[i].language, sizeof(vm->ts_queries[i].language),
+                             "%.*s", (int)language->byte_len, language->data);
+                    snprintf(vm->ts_queries[i].pattern, sizeof(vm->ts_queries[i].pattern),
+                             "%.*s", (int)pattern->byte_len, pattern->data);
+                    vm_ts_capture_name(vm->ts_queries[i].pattern, vm->ts_queries[i].capture,
+                                       sizeof(vm->ts_queries[i].capture));
+                    vm_push(vm, INT_VAL((int64_t)i));
+                    pushed = 1;
+                    break;
+                }
+            }
+            if (pushed) break;
+        }
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+    case 2061: { /* ts-query-matches(query, tree, source) → list or #f */
+        Value source_val = vm_pop(vm), tree_val = vm_pop(vm), query_val = vm_pop(vm);
+        (void)source_val;
+        int query = (int)as_number(query_val);
+        int tree = (int)as_number(tree_val);
+        if (query > 0 && query < (int)(sizeof(vm->ts_queries) / sizeof(vm->ts_queries[0])) &&
+            tree > 0 && tree < (int)(sizeof(vm->ts_trees) / sizeof(vm->ts_trees[0])) &&
+            vm->ts_queries[query].active && vm->ts_trees[tree].active) {
+            const char* src = vm->ts_trees[tree].source;
+            int64_t len = vm->ts_trees[tree].source_len;
+            Value result = NIL_VAL;
+            int64_t line_start = 0;
+            for (int64_t i = 0; i <= len; i++) {
+                if (i == len || src[i] == '\n') {
+                    int64_t line_end = i;
+                    const char* type = vm_ts_classify_line(vm->ts_trees[tree].language,
+                                                           src + line_start, line_end - line_start);
+                    if (type && vm_ts_query_matches_text(vm->ts_queries[query].pattern, type,
+                                                         src + line_start, line_end - line_start)) {
+                        Value match = vm_ts_match_value(vm, vm->ts_queries[query].capture, type,
+                                                        line_start, line_end, src + line_start,
+                                                        line_end - line_start);
+                        result = vm_cons_value(vm, match, result);
+                    }
+                    line_start = i + 1;
+                }
+            }
+            vm_push(vm, vm_reverse_list(vm, result));
+            break;
+        }
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+    case 2062: { /* ts-query-free(query) → bool */
+        Value query_val = vm_pop(vm);
+        int handle = (int)as_number(query_val);
+        if (handle > 0 && handle < (int)(sizeof(vm->ts_queries) / sizeof(vm->ts_queries[0])) &&
+            vm->ts_queries[handle].active) {
+            memset(&vm->ts_queries[handle], 0, sizeof(vm->ts_queries[handle]));
+            vm_push(vm, BOOL_VAL(1));
+            break;
+        }
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+    case 2063: { /* ts-available() → bool */
+        vm_push(vm, BOOL_VAL(1));
+        break;
+    }
+    case 2064: { /* ts-tree-root(tree) → node or #f */
+        Value tree_val = vm_pop(vm);
+        int tree = (int)as_number(tree_val);
+        if (tree > 0 && tree < (int)(sizeof(vm->ts_trees) / sizeof(vm->ts_trees[0])) &&
+            vm->ts_trees[tree].active) {
+            vm_push(vm, INT_VAL((int64_t)vm->ts_trees[tree].root_node));
             break;
         }
         vm_push(vm, BOOL_VAL(0));

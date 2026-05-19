@@ -340,6 +340,18 @@ public:
     llvm::Value* websocketSendBinary(const eshkol_operations_t* op);
     llvm::Value* websocketReceive(const eshkol_operations_t* op);
     llvm::Value* websocketClose(const eshkol_operations_t* op);
+    llvm::Value* tsParserNew(const eshkol_operations_t* op);
+    llvm::Value* tsParserFree(const eshkol_operations_t* op);
+    llvm::Value* tsParse(const eshkol_operations_t* op);
+    llvm::Value* tsTreeFree(const eshkol_operations_t* op);
+    llvm::Value* tsNodeType(const eshkol_operations_t* op);
+    llvm::Value* tsNodeText(const eshkol_operations_t* op);
+    llvm::Value* tsNodeChildren(const eshkol_operations_t* op);
+    llvm::Value* tsQueryNew(const eshkol_operations_t* op);
+    llvm::Value* tsQueryMatches(const eshkol_operations_t* op);
+    llvm::Value* tsQueryFree(const eshkol_operations_t* op);
+    llvm::Value* tsAvailable(const eshkol_operations_t* op);
+    llvm::Value* tsTreeRoot(const eshkol_operations_t* op);
     llvm::Value* stringEndsWith(const eshkol_operations_t* op);
     llvm::Value* stringIndexOf(const eshkol_operations_t* op);
     llvm::Value* stringPadLeft(const eshkol_operations_t* op);

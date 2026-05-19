@@ -426,6 +426,36 @@ typedef struct VM {
         int fd;
         int closed;
     } websocket_clients[16];
+
+    struct {
+        int active;
+        char language[32];
+    } ts_parsers[16];
+
+    struct {
+        int active;
+        int parser;
+        int root_node;
+        const char* source;
+        int64_t source_len;
+        char language[32];
+    } ts_trees[16];
+
+    struct {
+        int active;
+        int tree;
+        int parent;
+        int64_t start;
+        int64_t end;
+        char type[48];
+    } ts_nodes[128];
+
+    struct {
+        int active;
+        char language[32];
+        char pattern[256];
+        char capture[64];
+    } ts_queries[32];
 } VM;
 
 /* Command-line arguments (set in main, read by native 602) */
