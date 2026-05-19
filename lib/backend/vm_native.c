@@ -2331,6 +2331,89 @@ static int vm_http_server_store(VM* vm, int listen_fd, int port) {
     return -1;
 }
 
+static int vm_http_parse_url(VmString* url, char* host, size_t host_cap,
+                             int* port, char* path, size_t path_cap) {
+    if (!url || !url->data || !host || !port || !path || host_cap == 0 || path_cap == 0)
+        return 0;
+    const char* s = url->data;
+    const char* prefix = "http://";
+    size_t prefix_len = strlen(prefix);
+    if ((size_t)url->byte_len <= prefix_len || memcmp(s, prefix, prefix_len) != 0)
+        return 0;
+    const char* host_start = s + prefix_len;
+    const char* end = s + url->byte_len;
+    const char* path_start = host_start;
+    while (path_start < end && *path_start != '/') path_start++;
+    const char* colon = NULL;
+    for (const char* p = host_start; p < path_start; p++) {
+        if (*p == ':') colon = p;
+    }
+    size_t host_len = (size_t)((colon ? colon : path_start) - host_start);
+    if (host_len == 0 || host_len >= host_cap) return 0;
+    memcpy(host, host_start, host_len);
+    host[host_len] = '\0';
+    *port = 80;
+    if (colon) {
+        int parsed_port = atoi(colon + 1);
+        if (parsed_port <= 0 || parsed_port > 65535) return 0;
+        *port = parsed_port;
+    }
+    size_t path_len = (path_start < end) ? (size_t)(end - path_start) : 1;
+    if (path_len >= path_cap) return 0;
+    if (path_start < end) {
+        memcpy(path, path_start, path_len);
+        path[path_len] = '\0';
+    } else {
+        snprintf(path, path_cap, "/");
+    }
+    return 1;
+}
+
+static int vm_http_connect(const char* host, int port, int timeout_ms) {
+#if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
+    char port_buf[16];
+    snprintf(port_buf, sizeof(port_buf), "%d", port);
+    struct addrinfo hints;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    struct addrinfo* res = NULL;
+    if (getaddrinfo(host, port_buf, &hints, &res) != 0) return -1;
+    int fd = -1;
+    for (struct addrinfo* ai = res; ai; ai = ai->ai_next) {
+        fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+        if (fd < 0) continue;
+        struct timeval tv;
+        tv.tv_sec = timeout_ms > 0 ? timeout_ms / 1000 : 30;
+        tv.tv_usec = timeout_ms > 0 ? (timeout_ms % 1000) * 1000 : 0;
+        (void)setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, (socklen_t)sizeof(tv));
+        (void)setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, (socklen_t)sizeof(tv));
+        if (connect(fd, ai->ai_addr, ai->ai_addrlen) == 0) break;
+        close(fd);
+        fd = -1;
+    }
+    freeaddrinfo(res);
+    return fd;
+#else
+    (void)host; (void)port; (void)timeout_ms;
+    return -1;
+#endif
+}
+
+static Value vm_http_response_value(VM* vm, int status,
+                                    const char* headers, int64_t headers_len,
+                                    const char* body, int64_t body_len) {
+    Value body_value = vm_string_value(vm, body ? body : "", body_len >= 0 ? body_len : 0);
+    Value headers_value = vm_string_value(vm, headers ? headers : "", headers_len >= 0 ? headers_len : 0);
+    if (body_value.type != VAL_STRING || headers_value.type != VAL_STRING)
+        return BOOL_VAL(0);
+    Value result = NIL_VAL;
+    result = vm_cons_value(vm, body_value, result);
+    result = vm_cons_value(vm, headers_value, result);
+    result = vm_cons_value(vm, INT_VAL((int64_t)status), result);
+    return result;
+}
+
 static int vm_json_alist_ref(VM* vm, Value obj, Value key, Value* out) {
     Value cur = obj;
     while (cur.type == VAL_PAIR && is_valid_heap_ptr(vm, cur.as.ptr)) {
@@ -6713,6 +6796,89 @@ static void vm_dispatch_native(VM* vm, int fid) {
             vm_push(vm, BOOL_VAL(1));
             break;
         }
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+    case 2047: { /* http-request(method, url, headers, body, timeout-ms) → (status headers body) or #f */
+        Value timeout_val = vm_pop(vm), body_val = vm_pop(vm), headers_val = vm_pop(vm);
+        Value url_val = vm_pop(vm), method_val = vm_pop(vm);
+#if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
+        VmString* method = vm_value_as_string(vm, method_val);
+        VmString* url = vm_value_as_string(vm, url_val);
+        VmString* headers = vm_value_as_string(vm, headers_val);
+        VmString* body = vm_value_as_string(vm, body_val);
+        char host[256];
+        char path[2048];
+        int port = 80;
+        int timeout_ms = (int)as_number(timeout_val);
+        if (timeout_ms <= 0) timeout_ms = 30000;
+        if (method && method->data && method->byte_len > 0 &&
+            vm_http_parse_url(url, host, sizeof(host), &port, path, sizeof(path))) {
+            int fd = vm_http_connect(host, port, timeout_ms);
+            if (fd >= 0) {
+                const char* body_data = (body && body->data) ? body->data : "";
+                int64_t body_len = (body && body->data) ? body->byte_len : 0;
+                const char* extra_headers = (headers && headers->data) ? headers->data : "";
+                char header[8192];
+                int hlen = snprintf(header, sizeof(header),
+                                    "%.*s %s HTTP/1.1\r\n"
+                                    "Host: %s\r\n"
+                                    "Connection: close\r\n"
+                                    "%s%s"
+                                    "Content-Length: %lld\r\n\r\n",
+                                    (int)method->byte_len, method->data,
+                                    path, host,
+                                    extra_headers,
+                                    extra_headers[0] ? (strstr(extra_headers, "\n") ? "" : "\r\n") : "",
+                                    (long long)body_len);
+                int ok = hlen > 0 && hlen < (int)sizeof(header);
+                if (ok) {
+                    ssize_t sent = send(fd, header, (size_t)hlen, 0);
+                    ok = sent == hlen;
+                }
+                if (ok && body_len > 0) {
+                    ssize_t sent = send(fd, body_data, (size_t)body_len, 0);
+                    ok = sent == body_len;
+                }
+                if (ok) {
+                    int cap = 65536;
+                    char* response = (char*)malloc((size_t)cap + 1);
+                    if (response) {
+                        int total = 0;
+                        while (total < cap) {
+                            ssize_t n = recv(fd, response + total, (size_t)(cap - total), 0);
+                            if (n <= 0) break;
+                            total += (int)n;
+                        }
+                        response[total] = '\0';
+                        close(fd);
+                        int status = 0;
+                        (void)sscanf(response, "HTTP/%*s %d", &status);
+                        char* body_start = strstr(response, "\r\n\r\n");
+                        int header_len = total;
+                        int body_offset = total;
+                        if (body_start) {
+                            body_start += 4;
+                            body_offset = (int)(body_start - response);
+                            header_len = body_offset - 4;
+                        } else {
+                            body_start = response + total;
+                        }
+                        Value result = vm_http_response_value(vm, status,
+                                                              response, header_len,
+                                                              body_start,
+                                                              total - body_offset);
+                        free(response);
+                        vm_push(vm, result);
+                        break;
+                    }
+                }
+                close(fd);
+            }
+        }
+#else
+        (void)timeout_val; (void)body_val; (void)headers_val; (void)url_val; (void)method_val;
+#endif
         vm_push(vm, BOOL_VAL(0));
         break;
     }

@@ -26,6 +26,63 @@
              "FAIL"))
 (newline)
 
+(define posix?
+  (or (string=? (os-type) "darwin")
+      (string=? (os-type) "linux")
+      (string=? (os-type) "freebsd")))
+
+(define marker-path (if http-available?
+                        (make-temp-file "eshkol-vm-http-client-" ".txt" (temp-directory))
+                        #f))
+(define client-pid (if (and http-available? posix?)
+                       (fork)
+                       #f))
+
+(if (and (number? client-pid) (= client-pid 0))
+    (begin
+      (sleep-ms 50)
+      (let ((response (http-request "GET"
+                                    (string-append "http://127.0.0.1:"
+                                                   (number->string port)
+                                                   "/client")
+                                    ""
+                                    ""
+                                    2000)))
+        (if (and response
+                 (= (car response) 200)
+                 (string=? (caddr response) "client-ok"))
+            (let ((out (open-output-file marker-path)))
+              (write-string "ok" out)
+              (close-port out))
+            #t))
+      (execv "/bin/sh" (list "sh" "-c" "exit 0"))
+      (process-kill (process-pid) 9))
+    #t)
+
+(define client-request (if (and http-available? (number? client-pid) (> client-pid 0))
+                           (http-server-accept srv 4096 5000)
+                           #f))
+(define client-responded (if client-request
+                             (http-server-respond srv 200 "text/plain" "client-ok")
+                             #t))
+(define client-status (if (and (number? client-pid) (> client-pid 0))
+                          (process-wait client-pid)
+                          0))
+
+(display "T4 http-request reaches loopback server: ")
+(display (if (or (not http-available?)
+                 (and (string? client-request)
+                      (string-index-of client-request "GET /client" 0)
+                      client-responded
+                      (= client-status 0)
+                      (number? (file-size marker-path))
+                      (= (file-size marker-path) 2)))
+             "PASS"
+             (list "FAIL got " client-request client-status)))
+(newline)
+
+(if (string? marker-path) (delete-file marker-path) #t)
+
 (define port-file (get-environment-variable "ESHKOL_VM_HTTP_PORT_FILE"))
 (define roundtrip? (and http-available? port-file))
 
@@ -39,7 +96,7 @@
                     (http-server-accept srv 4096 5000)
                     #f))
 
-(display "T4 optional http-server-accept reads request: ")
+(display "T5 optional http-server-accept reads request: ")
 (display (if (or (not roundtrip?)
                  (and (string? request)
                       (string-index-of request "GET /vm-http" 0)))
@@ -51,13 +108,13 @@
                       (http-server-respond srv 200 "text/plain" "vm-http-ok")
                       #t))
 
-(display "T5 optional http-server-respond writes response: ")
+(display "T6 optional http-server-respond writes response: ")
 (display (if responded
              "PASS"
              "FAIL"))
 (newline)
 
-(display "T6 http-server-close releases handle: ")
+(display "T7 http-server-close releases handle: ")
 (display (if (or (not http-available?)
                  (http-server-close srv))
              "PASS"
