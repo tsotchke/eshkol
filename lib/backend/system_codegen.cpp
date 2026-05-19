@@ -1515,6 +1515,7 @@ ZERO_ARG_BUILTIN(tsAvailable, "eshkol_builtin_ts_available")
 ONE_ARG_BUILTIN(tsTreeRoot, "eshkol_builtin_ts_tree_root")
 ONE_ARG_BUILTIN(httpSetProxy, "eshkol_builtin_http_set_proxy")
 THREE_ARG_BUILTIN(httpSetTlsClientCert, "eshkol_builtin_http_set_tls_client_cert")
+ONE_ARG_BUILTIN(displayError, "eshkol_builtin_display_error")
 
 /* Noesis requirements */
 TWO_ARG_BUILTIN(fgMarginal, "eshkol_builtin_fg_marginal")

@@ -354,6 +354,7 @@ public:
     llvm::Value* tsTreeRoot(const eshkol_operations_t* op);
     llvm::Value* httpSetProxy(const eshkol_operations_t* op);
     llvm::Value* httpSetTlsClientCert(const eshkol_operations_t* op);
+    llvm::Value* displayError(const eshkol_operations_t* op);
     llvm::Value* stringEndsWith(const eshkol_operations_t* op);
     llvm::Value* stringIndexOf(const eshkol_operations_t* op);
     llvm::Value* stringPadLeft(const eshkol_operations_t* op);

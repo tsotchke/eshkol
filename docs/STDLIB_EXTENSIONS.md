@@ -2338,12 +2338,12 @@ session save).
 VM-lifetime closure handlers and drains them in reverse registration order before
 source/bytecode VM teardown or C API handle destruction.
 
-## E.5 stderr / Error Port — P1
+## E.5 stderr / Error Port
 
-`(current-error-port) -> port` and `(display-error str) -> void`
+`(current-error-port) -> port` and `(display-error str) -> bool`
 
-All output currently goes to stdout. SDK/non-interactive mode can't distinguish
-errors from results.
+Standalone VM and compiled-runtime native ID 2067 writes `display-error` strings
+to stderr and returns `#t` on success. Non-string values return `#f`.
 
 ## E.6 getpid — P1
 

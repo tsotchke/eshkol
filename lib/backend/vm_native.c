@@ -7553,6 +7553,18 @@ static void vm_dispatch_native(VM* vm, int fid) {
         vm_push(vm, BOOL_VAL(0));
         break;
     }
+    case 2067: { /* display-error(str) → bool */
+        Value str_val = vm_pop(vm);
+        VmString* str = vm_value_as_string(vm, str_val);
+        if (str && str->data) {
+            fwrite(str->data, 1, (size_t)str->byte_len, stderr);
+            fflush(stderr);
+            vm_push(vm, BOOL_VAL(1));
+            break;
+        }
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
     case 2014: { /* json-get-in(obj, path, default) → value */
         Value default_val = vm_pop(vm), path_val = vm_pop(vm), obj_val = vm_pop(vm);
         vm_push(vm, vm_json_get_in_value(vm, obj_val, path_val, default_val));
@@ -9957,8 +9969,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
 
     case 1714: { /* current-error-port → port for stderr */
-        /* Return a pointer to the static vm_stderr_port (same pattern as current-output-port) */
-        VM_PUSH_HEAP_OPAQUE(vm, HEAP_PORT, VAL_PORT, &vm_stderr_port);
+        VM_PUSH_HEAP_OPAQUE(vm, HEAP_PORT, VAL_PORT, vm_port_current_error());
         break;
     }
 
