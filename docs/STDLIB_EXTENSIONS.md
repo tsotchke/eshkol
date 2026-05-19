@@ -758,7 +758,8 @@ pthread_mutex.
 ### `(mutex-unlock! m) -> void`
 
 ### `(with-mutex m thunk) -> value`
-Lock + dynamic-wind unlock.
+Lock, invoke `thunk`, unlock, and re-raise any thunk exception after
+unlocking.
 
 ### `(make-condition-variable) -> cv`
 pthread_cond.
