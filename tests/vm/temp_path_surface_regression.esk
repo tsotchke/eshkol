@@ -1,0 +1,59 @@
+;; Standalone VM regression for higher-level temporary path helpers.
+
+(display "=== temp path VM surface regression ===") (newline)
+
+(define tmp (temp-directory))
+(define temp-file (make-temp-file "eshkol-vm-temp-" ".txt" tmp))
+
+(display "T1 make-temp-file returns a path: ")
+(display (if (and (string? temp-file)
+                  (> (string-length temp-file) 0))
+             "PASS"
+             (list "FAIL got " temp-file)))
+(newline)
+
+(display "T2 make-temp-file creates an empty file: ")
+(display (if (and (string? temp-file)
+                  (number? (file-size temp-file))
+                  (= (file-size temp-file) 0))
+             "PASS"
+             "FAIL"))
+(newline)
+
+(display "T3 make-temp-file preserves suffix: ")
+(display (if (and (string? temp-file)
+                  (string-ends-with? temp-file ".txt"))
+             "PASS"
+             "FAIL"))
+(newline)
+
+(define temp-dir (make-temp-dir "eshkol-vm-tempdir-" tmp))
+
+(display "T4 make-temp-dir returns a path: ")
+(display (if (and (string? temp-dir)
+                  (> (string-length temp-dir) 0))
+             "PASS"
+             (list "FAIL got " temp-dir)))
+(newline)
+
+(define nested-path (if (string? temp-dir)
+                        (path-join temp-dir "child.txt")
+                        #f))
+(define nested-out (if nested-path (open-output-file nested-path) #f))
+(if nested-out
+    (begin
+      (write-string "ok" nested-out)
+      (close-port nested-out)))
+
+(display "T5 make-temp-dir creates a writable directory: ")
+(display (if (and nested-path
+                  (number? (file-size nested-path))
+                  (= (file-size nested-path) 2))
+             "PASS"
+             "FAIL"))
+(newline)
+
+(if (string? temp-file) (delete-file temp-file))
+(if (string? temp-dir) (directory-delete-recursive temp-dir))
+
+(display "=== temp path VM surface complete ===") (newline)
