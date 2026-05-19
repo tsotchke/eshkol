@@ -820,6 +820,15 @@ Seconds east of UTC.
 
 ## B.12 JSON Extensions
 
+### `(json-read source) -> value-or-false`
+Read JSON from a path string or input port. Path inputs are opened and closed by
+the helper; port inputs are left open for the caller.
+
+### `(json-write value target) -> bool`
+Write JSON to a path string or output port. For compatibility with older Noesis
+notes, `(json-write path value)` is also accepted when the first argument is a
+path string and the second argument is not an output port.
+
 ### `(json-get-in obj path default) -> value`
 Deep access: `(json-get-in resp '("usage" "input_tokens") 0)`.
 
