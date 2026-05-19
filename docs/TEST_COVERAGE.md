@@ -1,10 +1,14 @@
 # Eshkol v1.2.0-scale Test Coverage
 
 **Version**: v1.2.0-scale
-**Last Updated**: 2026-04-09
-**Status**: 35 suites, 438 tests, 100% pass rate
+**Last Updated**: 2026-05-19
+**Status**: 35 historical suites plus the active v1.2 edge/security suite,
+100% pass rate on the verified release gates
 
-**Additional verification**: Bytecode VM passes 331/332 tests (99.7%); the weight matrix transformer passes 126/126 inline verifier programs and 123/123 traced programs with 3-way verification.
+**Additional verification**: Bytecode VM passes 331/332 tests (99.7%); the
+weight matrix transformer passes 126/126 inline verifier programs and 123/123
+traced programs with 3-way verification. The current v1.2 edge/security suite
+passes 85/85, and the Noesis aggregate smoke exits with `NOESIS_ALL_RC=0`.
 
 ---
 

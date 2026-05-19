@@ -10,9 +10,28 @@ deep recursion doesn't blow the stack on Darwin, and a long tail of
 correctness/security bugs that surfaced under real workloads is now
 fixed.
 
-The headline addition isn't a feature — it's the **62-test edge-case
-regression suite** that catches every fix in this release going
-forward.
+The headline addition isn't a feature — it's the edge-case regression
+suite that catches every fix in this release going forward. The
+v1.2.0 release shipped with 62 tests; the current v1.2.x Noesis M0
+closeout build carries **85 passing edge/security tests** plus a full
+Noesis aggregate smoke pass.
+
+## v1.2.x Noesis M0 Closeout Addendum (May 19, 2026)
+
+The current v1.2-scale branch closes the Noesis M0 audit path:
+
+- `tests/v1_2_edge_cases` passes **85/85**, including shared
+  hash-table mutation under `parallel-map`, late variadic REPL forward
+  refs, binary I/O, match predicate binding, tensor pixel fill,
+  first-class builtins, channels, threads, and shell-level CLI/linker
+  probes.
+- Noesis `tests/smoke/all.esk` passes with `NOESIS_ALL_RC=0`.
+- The previously intermittent dual-neural crash is fixed by
+  serializing runtime hash-table access; the focused Noesis
+  `dual_neural` smoke passed 8/8 stress repeats on the fixed build.
+- Bug LL's underlying CLI behavior is fixed: `--emit-object` accepts
+  compatibility flags, writes the requested `-o path`, and no longer
+  creates the stale `.o.o` output.
 
 ## What's New in v1.2.0-scale
 
