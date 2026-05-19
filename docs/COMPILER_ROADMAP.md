@@ -79,24 +79,26 @@ Already-shipped items as of current branch:
 - Car/cdr type guards on non-pair input (#135) ✅
 - 179-test regression suite ✅
 
-**Remaining items to close v1.2 (Noesis M0 critical path)**
+**Noesis M0 closeout status (verified 2026-05-19)**
 
 | # | Item | Effort | Noesis tier |
 |---|---|---|---|
-| #138 | `define-record-type` codegen | 2-3 days | M0 |
-| #140 | `#:keyword` syntax | 0.5 day | M0 |
-| #142 | Testing framework (`define-test`, `check-equal?`) | 1 day | M0 |
-| #143 | `(time …)` macro | 1 hour | M0 |
-| #144 | Binary ports + bytevector I/O | 1-2 days | M0 |
-| #166 | `call-with-values` consumer-lambda stdlib | 1 day | M0 |
-| #167 | Regex capture groups | 1 day | M0 |
-| #168 | Time API (ISO8601 parse/format, duration) | 1-2 days | M0 |
-| #169 | CLI argument parser stdlib | 1 day | M0 |
-| #134 | Compile-to-binary `eval` linker | M (hand-triaged) | — |
-| #141 | match apostrophe-quote subject hang | 0.5 day | — |
+| #138 | `define-record-type` codegen | ✅ done | M0 |
+| #140 | keyword-symbol parsing used by Noesis `':keyword` paths | ✅ done | M0 |
+| #142 | Testing framework (`define-test`, `check-equal?`) | ✅ done | M0 |
+| #143 | timing helpers / `(time …)` surface | ✅ done | M0 |
+| #144 | Binary ports + bytevector I/O | ✅ done | M0 |
+| #166 | `call-with-values` consumer-lambda stdlib | ✅ done | M0 |
+| #167 | Regex capture groups | ✅ done | M0 |
+| #168 | Time API (ISO8601 parse/format, duration) | ✅ done | M0 |
+| #169 | CLI argument parser stdlib | ✅ done | M0 |
+| #134 | Compile-to-binary `eval` linker | ✅ done | — |
+| #141 | match apostrophe-quote subject hang | ✅ done | — |
 
-**Exit criterion for v1.2**: Noesis M0 is fully unblocked. All 11 items shipped.
-Full regression suite (179 + new suites for each item) passing.
+**Exit criterion for v1.2**: Noesis M0 is fully unblocked. All 11 closeout
+items shipped. The current v1.2 edge/security suite passes 85/85, CTest passes
+14/14, and Noesis `tests/smoke/all.esk` exits with `NOESIS_ALL_RC=0` using the
+v1.2-scale build.
 
 **Rename**: the next v1.2.x release should be tagged `v1.2.1-noesis-m0` so
 external consumers know the Noesis audit gaps are closed.
@@ -106,6 +108,12 @@ external consumers know the Noesis audit gaps are closed.
 ## v1.3 — "evolve" (June 2026)
 
 R7RS polish, language ergonomics, stdlib expansion, developer experience.
+
+Several items originally planned for v1.3 landed during v1.2.x Noesis closeout:
+LRU/memoization (#171), JSON Schema validation (#172), deterministic PRNG
+seeding (#173), and SRFI-41 streams (#174). Reflection (#170) has useful
+`procedure-arity` coverage but still needs the broader `record-fields` /
+`describe` completion pass before it should be treated as fully closed.
 
 ### R7RS / language
 - R7RS library system (`define-library`, `import` with renaming / prefixing / `only` / `except`)
@@ -384,13 +392,13 @@ target release version. Use this as the handoff cheatsheet.
 |---|---|---|---|
 | #136 | Quasiquote interpolation | M0 | v1.2.x ✅ |
 | #137 | Hash tables | M0 | v1.2.x ✅ |
-| #138 | `define-record-type` | M0 | v1.2.x |
+| #138 | `define-record-type` | M0 | v1.2.x ✅ |
 | #139 | match `(? pred)` | M0 | v1.2.x ✅ |
-| #140 | `#:keyword` syntax | M0 | v1.2.x |
-| #141 | match apostrophe-quote subject | — | v1.2.x |
-| #142 | Testing framework | M0 | v1.2.x |
-| #143 | `(time …)` macro | M0 | v1.2.x |
-| #144 | Binary ports + bytevector I/O | M0 | v1.2.x |
+| #140 | keyword-symbol parsing used by Noesis `':keyword` paths | M0 | v1.2.x ✅ |
+| #141 | match apostrophe-quote subject | — | v1.2.x ✅ |
+| #142 | Testing framework | M0 | v1.2.x ✅ |
+| #143 | `(time …)` macro | M0 | v1.2.x ✅ |
+| #144 | Binary ports + bytevector I/O | M0 | v1.2.x ✅ |
 | #145 | HTTP server | M1 | v1.4 |
 | #146 | WebSocket server | M1 | v1.4 |
 | #147 | Structured logging | M1 | v1.3 |
@@ -412,15 +420,15 @@ target release version. Use this as the handoff cheatsheet.
 | #163 | Protocol Buffers | M4 | v1.4 |
 | #164 | CRDT library | M4 | v1.8 |
 | #165 | Byzantine consensus | M4 | v2.0 |
-| #166 | call-with-values consumer | M0 | v1.2.x |
-| #167 | Regex capture groups | M0 | v1.2.x |
-| #168 | Time API (ISO8601 + duration) | M0 | v1.2.x |
-| #169 | CLI argparse | M0 | v1.2.x |
+| #166 | call-with-values consumer | M0 | v1.2.x ✅ |
+| #167 | Regex capture groups | M0 | v1.2.x ✅ |
+| #168 | Time API (ISO8601 + duration) | M0 | v1.2.x ✅ |
+| #169 | CLI argparse | M0 | v1.2.x ✅ |
 | #170 | Reflection (procedure-arity, etc.) | M1 | v1.3 |
-| #171 | LRU cache | M1 | v1.3 |
-| #172 | JSON Schema validation | M1 | v1.3 |
-| #173 | PRNG seeding + deterministic replay | M1 | v1.3 |
-| #174 | SRFI-41 streams | M2 stdlib | v1.3 |
+| #171 | LRU cache | M1 | v1.2.x ✅ |
+| #172 | JSON Schema validation | M1 | v1.2.x ✅ |
+| #173 | PRNG seeding + deterministic replay | M1 | v1.2.x ✅ |
+| #174 | SRFI-41 streams | M2 stdlib | v1.2.x ✅ |
 | #175 | CAS + Merkle trees | M2 | v1.4 |
 | #176 | Unicode NFC/NFD + TOML + YAML + URL | M2 stdlib | v1.3 |
 | #177 | SQLite migrations | M2 | v1.3 |
