@@ -248,6 +248,7 @@ static struct option long_options[] = {
     {"run", no_argument, nullptr, 'r'},
     {"strict-types", no_argument, nullptr, 256},
     {"unsafe", no_argument, nullptr, 257},
+    {"version", no_argument, nullptr, 258},
     {"debug-info", no_argument, nullptr, 'g'},
     {"optimize", required_argument, nullptr, 'O'},
     {"emit-eskb", required_argument, nullptr, 'B'},
@@ -1369,6 +1370,7 @@ static void print_help(int x = 0)
         "\t--no-stdlib:[-n] = Do not auto-load the standard library.\n"
         "\t--eval:[-e] = JIT evaluate an expression and print the result.\n"
         "\t--run:[-r] = JIT run a file (interpret without compiling).\n"
+        "\t--version = Print version information.\n"
         "\t--debug-info:[-g] = Emit DWARF debug info (enables lldb/gdb source-level debugging).\n"
         "\t--optimize:[-O] N = Set LLVM optimization level (0=none, 1=basic, 2=full, 3=aggressive).\n"
         "\t--strict-types = Type errors are fatal (default: gradual/warnings).\n"
@@ -2598,6 +2600,9 @@ int main(int argc, char **argv)
         case 257:
             unsafe_mode = 1;
             break;
+        case 258:
+            printf("Eshkol Compiler v%s\n", ESHKOL_VER);
+            return 0;
         case 'B':
             eskb_output_path = optarg;
             break;
