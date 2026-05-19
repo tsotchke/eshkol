@@ -37,6 +37,13 @@ void MemoryCodegen::createCoreArenaFunctions() {
     arena_create = createFunc("arena_create",
         llvm::FunctionType::get(ptr, {szTy}, false));
 
+    // get_global_arena: arena_t* ()
+    // Returns the runtime-owned thread-safe global arena. Standalone programs
+    // must use this for shared allocations because parallel workers can allocate
+    // closures and heap values concurrently.
+    get_global_arena = createFunc("get_global_arena",
+        llvm::FunctionType::get(ptr, {}, false));
+
     // arena_destroy: void (arena_t*)
     arena_destroy = createFunc("arena_destroy",
         llvm::FunctionType::get(voidTy, {ptr}, false));
