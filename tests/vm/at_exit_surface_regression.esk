@@ -1,0 +1,32 @@
+;; Standalone VM regression for at-exit shutdown handlers.
+
+(display "=== at-exit VM surface regression ===") (newline)
+
+(define order 0)
+
+(define report-registered
+  (at-exit
+   (lambda ()
+     (display "T2 at-exit handlers run in LIFO order: ")
+     (display (if (= order 21)
+                  "PASS"
+                  (list "FAIL got " order)))
+     (newline)
+     (display "=== at-exit VM surface complete ===")
+     (newline))))
+
+(define first-registered
+  (at-exit
+   (lambda ()
+     (set! order (+ (* order 10) 1)))))
+
+(define second-registered
+  (at-exit
+   (lambda ()
+     (set! order (+ (* order 10) 2)))))
+
+(display "T1 at-exit registers closure handlers: ")
+(display (if (and report-registered first-registered second-registered)
+             "PASS"
+             "FAIL"))
+(newline)

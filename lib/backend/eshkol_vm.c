@@ -191,6 +191,7 @@ static void run_compiled_chunk(FuncChunk* chunk) {
     vm->n_constants = chunk->n_constants;
 
     vm_run(vm);
+    vm_run_exit_handlers(vm);
     vm_free(vm);
 }
 /* Builtin function table: name → (native_id, arity) */
@@ -455,6 +456,7 @@ static const BuiltinDef BUILTINS[] = {
     {"timer-check", 2026, 1},
     {"db-transaction", 2027, 2}, {"db-busy-timeout", 2028, 2},
     {"db-last-insert-id", 2029, 1}, {"db-changes", 2030, 1},
+    {"at-exit", 2031, 1},
     {"string-ends-with?", 1956, 2}, {"string-index-of", 1957, 3},
     {"string-pad-left", 1958, 3}, {"string-pad-right", 1959, 3},
     /* Parallel primitives — IDs 620-628 */
@@ -1324,7 +1326,10 @@ int eshkol_vm_run(EshkolVmHandle* h) {
 
 void eshkol_vm_destroy(EshkolVmHandle* h) {
     if (!h) return;
-    if (h->vm) vm_free(h->vm);
+    if (h->vm) {
+        vm_run_exit_handlers(h->vm);
+        vm_free(h->vm);
+    }
     if (h->mod_owned) eskb_module_free(&h->mod);
     free(h);
 }
@@ -1390,6 +1395,7 @@ int main(int argc, char** argv) {
                     vm->n_constants = mod.n_constants;
                     printf("=== Eshkol VM — running %s ===\n", input);
                     vm_run(vm);
+                    vm_run_exit_handlers(vm);
                     printf("\n=== Execution complete ===\n");
                     vm_free(vm);
                     eskb_module_free(&mod);
