@@ -21,7 +21,7 @@
 
 (provide json-parse json-try-parse json-parse-result?
          json-result-ok? json-result-value json-result-error
-         json-stringify json-get json-get-in json-array-ref
+         json-stringify json-read json-write json-get json-get-in json-array-ref
          hash-table->alist alist->hash-table
          alist->json json-write-file alist-write-json json-read-file)
 
@@ -606,6 +606,27 @@
     (write-string (json-stringify data) port)
     (close-port port)))
 
+;; General JSON writer.  Preferred order is (json-write value target),
+;; where target is an output port or a path string.  For compatibility
+;; with earlier notes that sketched (json-write path object), a string
+;; first argument is also accepted as a path when the second argument is
+;; not an output port.
+(define (json-write value target)
+  (cond
+    ((output-port? target)
+     (begin
+       (write-string (json-stringify value) target)
+       #t))
+    ((string? target)
+     (begin
+       (json-write-file target value)
+       #t))
+    ((string? value)
+     (begin
+       (json-write-file value target)
+       #t))
+    (else #f)))
+
 ;; Write JSON to a file from an alist
 ;; Example: (alist-write-json "/tmp/data.json" '(("a" . 1) ("b" . 2)))
 (define (alist-write-json filename alist)
@@ -615,15 +636,28 @@
 ;; Example: (json-read-file "/tmp/data.json") -> #<hash>
 (define (json-read-file filename)
   (let ((port (open-input-file filename)))
-    (json-read-file-loop port "")))
+    (json-read-port-loop port "" #t)))
 
 (define (json-read-file-loop port acc)
+  (json-read-port-loop port acc #t))
+
+(define (json-read-port-loop port acc close?)
   (let ((line (read-line port)))
     (if (eof-object? line)
         (begin
-          (close-port port)
+          (if close? (close-port port) #t)
           (json-parse acc))
-        (json-read-file-loop port (string-append acc line)))))
+        (json-read-port-loop port (string-append acc line) close?))))
+
+;; General JSON reader from a path string or input port.  Port inputs are
+;; left open for the caller; path inputs are opened and closed here.
+(define (json-read source)
+  (cond
+    ((input-port? source)
+     (json-read-port-loop source "" #f))
+    ((string? source)
+     (json-read-file source))
+    (else #f)))
 
 ;; Nested path access into JSON structures
 ;; (json-get-in obj keys) follows nested hash-tables and lists

@@ -147,6 +147,31 @@
 (check "roundtrip numbers" (list 1 2 3 4 5) (json-get roundtrip "numbers"))
 
 ;; ============================================================================
+;; Section 6: json-read/json-write aliases
+;; ============================================================================
+(display "\n═══ Section 6: json-read/json-write aliases ═══\n")
+
+(define alias-file "/tmp/eshkol_test_json_alias.json")
+(check "json-write value path" #t (json-write original alias-file))
+(define alias-read (json-read alias-file))
+(check "json-read path test" "roundtrip" (json-get alias-read "test"))
+
+(define alias-file-legacy "/tmp/eshkol_test_json_alias_legacy.json")
+(check "json-write path value" #t (json-write alias-file-legacy original))
+(define alias-legacy-read (json-read alias-file-legacy))
+(check "json-read legacy path numbers" (list 1 2 3 4 5)
+       (json-get alias-legacy-read "numbers"))
+
+(define alias-port-file "/tmp/eshkol_test_json_alias_port.json")
+(define alias-out (open-output-file alias-port-file))
+(check "json-write output port" #t (json-write original alias-out))
+(close-port alias-out)
+(define alias-in (open-input-file alias-port-file))
+(define alias-port-read (json-read alias-in))
+(close-port alias-in)
+(check "json-read input port" "roundtrip" (json-get alias-port-read "test"))
+
+;; ============================================================================
 ;; Summary
 ;; ============================================================================
 (display "\n═══════════════════════════════════════════════════════════════\n")
