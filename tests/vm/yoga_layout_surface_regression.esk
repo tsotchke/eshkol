@@ -1,0 +1,50 @@
+;; Standalone VM regression for dependency-free Yoga-style layout handles.
+
+(display "=== yoga layout VM surface regression ===") (newline)
+
+(define root (yoga-node-create))
+(define left (yoga-node-create))
+(define right (yoga-node-create))
+
+(display "T1 yoga-node-create returns handles: ")
+(display (if (and (number? root) (number? left) (number? right)
+                  (> root 0) (> left 0) (> right 0))
+             "PASS"
+             (list "FAIL got " root left right)))
+(newline)
+
+(yoga-node-set! root "flex-direction" "row")
+(yoga-node-set! root "gap" 5)
+(yoga-node-set! left "width" 30)
+(yoga-node-set! right "flex-grow" 1)
+(yoga-node-add-child! root left)
+(yoga-node-add-child! root right)
+(yoga-node-calculate! root 100 20)
+
+(display "T2 fixed child width is preserved: ")
+(display (if (= (yoga-node-get-computed left "width") 30)
+             "PASS"
+             (list "FAIL got " (yoga-node-get-computed left "width"))))
+(newline)
+
+(display "T3 flex child receives remaining width: ")
+(display (if (= (yoga-node-get-computed right "width") 65)
+             "PASS"
+             (list "FAIL got " (yoga-node-get-computed right "width"))))
+(newline)
+
+(display "T4 row child offsets include gap: ")
+(display (if (= (yoga-node-get-computed right "left") 35)
+             "PASS"
+             (list "FAIL got " (yoga-node-get-computed right "left"))))
+(newline)
+
+(display "T5 free releases nodes: ")
+(display (if (and (yoga-node-free! left)
+                  (yoga-node-free! right)
+                  (yoga-node-free! root))
+             "PASS"
+             "FAIL"))
+(newline)
+
+(display "=== yoga layout VM surface complete ===") (newline)

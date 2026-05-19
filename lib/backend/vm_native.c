@@ -2226,6 +2226,92 @@ static Value vm_format_list_value(VM* vm, VmString* fmt, Value args) {
     return vm_string_value(vm, out, (int64_t)pos);
 }
 
+static int vm_yoga_valid(VM* vm, int handle) {
+    return vm && handle > 0 &&
+           handle < (int)(sizeof(vm->yoga_nodes) / sizeof(vm->yoga_nodes[0])) &&
+           vm->yoga_nodes[handle].active;
+}
+
+static int vm_yoga_alloc(VM* vm) {
+    for (int i = 1; i < (int)(sizeof(vm->yoga_nodes) / sizeof(vm->yoga_nodes[0])); i++) {
+        if (!vm->yoga_nodes[i].active) {
+            memset(&vm->yoga_nodes[i], 0, sizeof(vm->yoga_nodes[i]));
+            vm->yoga_nodes[i].active = 1;
+            vm->yoga_nodes[i].parent = 0;
+            vm->yoga_nodes[i].flex_direction = 0;
+            vm->yoga_nodes[i].flex_shrink = 1.0;
+            return i;
+        }
+    }
+    return -1;
+}
+
+static int vm_yoga_string_eq(VmString* s, const char* lit) {
+    return s && s->data && lit && s->byte_len == (int64_t)strlen(lit) &&
+           memcmp(s->data, lit, (size_t)s->byte_len) == 0;
+}
+
+static void vm_yoga_layout_node(VM* vm, int handle,
+                                double left, double top,
+                                double width, double height) {
+    if (!vm_yoga_valid(vm, handle)) return;
+    typeof(vm->yoga_nodes[handle])* node = &vm->yoga_nodes[handle];
+    if (width <= 0 && node->width > 0) width = node->width;
+    if (height <= 0 && node->height > 0) height = node->height;
+    node->computed_left = left + node->margin;
+    node->computed_top = top + node->margin;
+    node->computed_width = width > 2.0 * node->margin ? width - 2.0 * node->margin : width;
+    node->computed_height = height > 2.0 * node->margin ? height - 2.0 * node->margin : height;
+
+    int n = node->child_count;
+    if (n <= 0) return;
+
+    double pad = node->padding;
+    double gap_total = node->gap * (double)(n > 1 ? n - 1 : 0);
+    double avail_w = node->computed_width - 2.0 * pad;
+    double avail_h = node->computed_height - 2.0 * pad;
+    if (avail_w < 0) avail_w = 0;
+    if (avail_h < 0) avail_h = 0;
+
+    int row = node->flex_direction == 1;
+    double avail_main = (row ? avail_w : avail_h) - gap_total;
+    double avail_cross = row ? avail_h : avail_w;
+    if (avail_main < 0) avail_main = 0;
+    if (avail_cross < 0) avail_cross = 0;
+
+    double fixed = 0.0;
+    double flex = 0.0;
+    for (int i = 0; i < n; i++) {
+        int child_handle = node->children[i];
+        if (!vm_yoga_valid(vm, child_handle)) continue;
+        typeof(vm->yoga_nodes[child_handle])* child = &vm->yoga_nodes[child_handle];
+        double child_main = row ? child->width : child->height;
+        if (child_main > 0) fixed += child_main;
+        else flex += child->flex_grow > 0 ? child->flex_grow : 1.0;
+    }
+
+    double remaining = avail_main - fixed;
+    if (remaining < 0) remaining = 0;
+    double cursor = row ? node->computed_left + pad : node->computed_top + pad;
+    for (int i = 0; i < n; i++) {
+        int child_handle = node->children[i];
+        if (!vm_yoga_valid(vm, child_handle)) continue;
+        typeof(vm->yoga_nodes[child_handle])* child = &vm->yoga_nodes[child_handle];
+        double specified_main = row ? child->width : child->height;
+        double grow = child->flex_grow > 0 ? child->flex_grow : 1.0;
+        double child_main = specified_main > 0 ? specified_main : (flex > 0 ? remaining * grow / flex : 0);
+        double child_cross = row
+            ? (child->height > 0 ? child->height : avail_cross)
+            : (child->width > 0 ? child->width : avail_cross);
+        double child_left = row ? cursor : node->computed_left + pad;
+        double child_top = row ? node->computed_top + pad : cursor;
+        double child_width = row ? child_main : child_cross;
+        double child_height = row ? child_cross : child_main;
+        vm_yoga_layout_node(vm, child_handle, child_left, child_top, child_width, child_height);
+        cursor += child_main + node->gap;
+    }
+}
+
 static int vm_json_alist_ref(VM* vm, Value obj, Value key, Value* out) {
     Value cur = obj;
     while (cur.type == VAL_PAIR && is_valid_heap_ptr(vm, cur.as.ptr)) {
@@ -6357,6 +6443,120 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 2035: { /* _format-list(fmt, args) → string or #f */
         Value args_val = vm_pop(vm), fmt_val = vm_pop(vm);
         vm_push(vm, vm_format_list_value(vm, vm_value_as_string(vm, fmt_val), args_val));
+        break;
+    }
+    case 2036: { /* yoga-node-create() → node or #f */
+        int handle = vm_yoga_alloc(vm);
+        if (handle > 0) vm_push(vm, INT_VAL((int64_t)handle));
+        else vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+    case 2037: { /* yoga-node-set!(node, prop, value) → bool */
+        Value value_val = vm_pop(vm), prop_val = vm_pop(vm), node_val = vm_pop(vm);
+        int handle = (int)as_number(node_val);
+        VmString* prop = vm_value_as_string(vm, prop_val);
+        if (vm_yoga_valid(vm, handle) && prop && prop->data) {
+            typeof(vm->yoga_nodes[handle])* node = &vm->yoga_nodes[handle];
+            if (vm_yoga_string_eq(prop, "flex-direction")) {
+                VmString* direction = vm_value_as_string(vm, value_val);
+                if (vm_yoga_string_eq(direction, "row")) {
+                    node->flex_direction = 1;
+                    vm_push(vm, BOOL_VAL(1));
+                    break;
+                }
+                if (vm_yoga_string_eq(direction, "column")) {
+                    node->flex_direction = 0;
+                    vm_push(vm, BOOL_VAL(1));
+                    break;
+                }
+            } else {
+                double value = as_number(value_val);
+                if (vm_yoga_string_eq(prop, "width")) node->width = value;
+                else if (vm_yoga_string_eq(prop, "height")) node->height = value;
+                else if (vm_yoga_string_eq(prop, "flex-grow")) node->flex_grow = value;
+                else if (vm_yoga_string_eq(prop, "flex-shrink")) node->flex_shrink = value;
+                else if (vm_yoga_string_eq(prop, "padding")) node->padding = value;
+                else if (vm_yoga_string_eq(prop, "margin")) node->margin = value;
+                else if (vm_yoga_string_eq(prop, "gap")) node->gap = value;
+                else {
+                    vm_push(vm, BOOL_VAL(0));
+                    break;
+                }
+                vm_push(vm, BOOL_VAL(1));
+                break;
+            }
+        }
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+    case 2038: { /* yoga-node-add-child!(parent, child) → bool */
+        Value child_val = vm_pop(vm), parent_val = vm_pop(vm);
+        int parent = (int)as_number(parent_val);
+        int child = (int)as_number(child_val);
+        if (vm_yoga_valid(vm, parent) && vm_yoga_valid(vm, child) &&
+            parent != child && vm->yoga_nodes[parent].child_count < 16) {
+            int already_child = 0;
+            for (int i = 0; i < vm->yoga_nodes[parent].child_count; i++) {
+                if (vm->yoga_nodes[parent].children[i] == child) already_child = 1;
+            }
+            if (!already_child) {
+                vm->yoga_nodes[parent].children[vm->yoga_nodes[parent].child_count++] = child;
+                vm->yoga_nodes[child].parent = parent;
+            }
+            vm_push(vm, BOOL_VAL(1));
+            break;
+        }
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+    case 2039: { /* yoga-node-calculate!(root, width, height) → bool */
+        Value height_val = vm_pop(vm), width_val = vm_pop(vm), root_val = vm_pop(vm);
+        int root = (int)as_number(root_val);
+        if (vm_yoga_valid(vm, root)) {
+            vm_yoga_layout_node(vm, root, 0.0, 0.0, as_number(width_val), as_number(height_val));
+            vm_push(vm, BOOL_VAL(1));
+            break;
+        }
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+    case 2040: { /* yoga-node-get-computed(node, prop) → number or #f */
+        Value prop_val = vm_pop(vm), node_val = vm_pop(vm);
+        int handle = (int)as_number(node_val);
+        VmString* prop = vm_value_as_string(vm, prop_val);
+        if (vm_yoga_valid(vm, handle) && prop && prop->data) {
+            typeof(vm->yoga_nodes[handle])* node = &vm->yoga_nodes[handle];
+            if (vm_yoga_string_eq(prop, "left")) vm_push(vm, FLOAT_VAL(node->computed_left));
+            else if (vm_yoga_string_eq(prop, "top")) vm_push(vm, FLOAT_VAL(node->computed_top));
+            else if (vm_yoga_string_eq(prop, "width")) vm_push(vm, FLOAT_VAL(node->computed_width));
+            else if (vm_yoga_string_eq(prop, "height")) vm_push(vm, FLOAT_VAL(node->computed_height));
+            else {
+                vm_push(vm, BOOL_VAL(0));
+                break;
+            }
+            break;
+        }
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+    case 2041: { /* yoga-node-free!(node) → bool */
+        Value node_val = vm_pop(vm);
+        int handle = (int)as_number(node_val);
+        if (vm_yoga_valid(vm, handle)) {
+            int parent = vm->yoga_nodes[handle].parent;
+            if (vm_yoga_valid(vm, parent)) {
+                int out = 0;
+                for (int i = 0; i < vm->yoga_nodes[parent].child_count; i++) {
+                    int child = vm->yoga_nodes[parent].children[i];
+                    if (child != handle) vm->yoga_nodes[parent].children[out++] = child;
+                }
+                vm->yoga_nodes[parent].child_count = out;
+            }
+            memset(&vm->yoga_nodes[handle], 0, sizeof(vm->yoga_nodes[handle]));
+            vm_push(vm, BOOL_VAL(1));
+            break;
+        }
+        vm_push(vm, BOOL_VAL(0));
         break;
     }
     case 2014: { /* json-get-in(obj, path, default) → value */

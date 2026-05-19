@@ -394,6 +394,25 @@ typedef struct VM {
         int active;
         void* handle;
     } dynamic_libraries[32];
+
+    struct {
+        int active;
+        int parent;
+        int child_count;
+        int children[16];
+        int flex_direction; /* 0 = column, 1 = row */
+        double width;
+        double height;
+        double flex_grow;
+        double flex_shrink;
+        double padding;
+        double margin;
+        double gap;
+        double computed_left;
+        double computed_top;
+        double computed_width;
+        double computed_height;
+    } yoga_nodes[64];
 } VM;
 
 /* Command-line arguments (set in main, read by native 602) */
