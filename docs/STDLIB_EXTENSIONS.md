@@ -2346,6 +2346,10 @@ to `dlopen` opens the current process image.
 
 Pure Eshkol. Eliminates 100+ nested `string-append` chains across the agent.
 
+**VM**: The standalone VM defines variadic `format` through `_format-list`
+(native ID 2035). Supported directives are `~a`, `~s`, `~d`, `~x`, `~f`, `~%`,
+and `~~`; missing arguments or oversized output return `#f`.
+
 ## E.13 number->string With Radix — P2
 
 `(number->string n radix)` — radix 2-36

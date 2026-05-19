@@ -2120,6 +2120,112 @@ static void vm_dlopen_close_all(VM* vm) {
 #endif
 }
 
+static int vm_format_append(char* out, size_t cap, size_t* pos, const char* s, size_t len) {
+    if (!out || !pos || !s) return 0;
+    if (*pos + len >= cap) return 0;
+    memcpy(out + *pos, s, len);
+    *pos += len;
+    out[*pos] = '\0';
+    return 1;
+}
+
+static int vm_format_append_cstr(char* out, size_t cap, size_t* pos, const char* s) {
+    return vm_format_append(out, cap, pos, s ? s : "", s ? strlen(s) : 0);
+}
+
+static int vm_format_append_value(VM* vm, char* out, size_t cap, size_t* pos,
+                                  Value value, char directive) {
+    char buf[128];
+    switch (directive) {
+    case 'd':
+        snprintf(buf, sizeof(buf), "%lld", (long long)as_number(value));
+        return vm_format_append_cstr(out, cap, pos, buf);
+    case 'x':
+        snprintf(buf, sizeof(buf), "%llx", (unsigned long long)(int64_t)as_number(value));
+        return vm_format_append_cstr(out, cap, pos, buf);
+    case 'f':
+        snprintf(buf, sizeof(buf), "%.6g", as_number(value));
+        return vm_format_append_cstr(out, cap, pos, buf);
+    case 's':
+        if (value.type == VAL_STRING) {
+            VmString* s = vm_value_as_string(vm, value);
+            if (!vm_format_append_cstr(out, cap, pos, "\"")) return 0;
+            if (s && s->data &&
+                !vm_format_append(out, cap, pos, s->data, (size_t)s->byte_len))
+                return 0;
+            return vm_format_append_cstr(out, cap, pos, "\"");
+        }
+        /* fall through: non-strings print as display values */
+    case 'a':
+    default:
+        switch ((int)value.type) {
+        case VAL_STRING: {
+            VmString* s = vm_value_as_string(vm, value);
+            return s && s->data &&
+                   vm_format_append(out, cap, pos, s->data, (size_t)s->byte_len);
+        }
+        case VAL_INT:
+            snprintf(buf, sizeof(buf), "%lld", (long long)value.as.i);
+            return vm_format_append_cstr(out, cap, pos, buf);
+        case VAL_FLOAT:
+            snprintf(buf, sizeof(buf), "%.6g", value.as.f);
+            return vm_format_append_cstr(out, cap, pos, buf);
+        case VAL_BOOL:
+            return vm_format_append_cstr(out, cap, pos, value.as.b ? "#t" : "#f");
+        case VAL_NIL:
+            return vm_format_append_cstr(out, cap, pos, "()");
+        default:
+            snprintf(buf, sizeof(buf), "#<value:%d>", (int)value.type);
+            return vm_format_append_cstr(out, cap, pos, buf);
+        }
+    }
+}
+
+static int vm_format_next_arg(VM* vm, Value* args, Value* out) {
+    if (!vm || !args || !out || args->type != VAL_PAIR || !is_valid_heap_ptr(vm, args->as.ptr))
+        return 0;
+    HeapObject* cell = vm->heap.objects[args->as.ptr];
+    if (!cell || cell->type != HEAP_CONS) return 0;
+    *out = cell->cons.car;
+    *args = cell->cons.cdr;
+    return 1;
+}
+
+static Value vm_format_list_value(VM* vm, VmString* fmt, Value args) {
+    if (!fmt || !fmt->data) return BOOL_VAL(0);
+    char out[16384];
+    size_t pos = 0;
+    out[0] = '\0';
+    for (int64_t i = 0; i < fmt->byte_len; i++) {
+        char ch = fmt->data[i];
+        if (ch != '~') {
+            if (!vm_format_append(out, sizeof(out), &pos, &ch, 1)) return BOOL_VAL(0);
+            continue;
+        }
+        if (++i >= fmt->byte_len) {
+            if (!vm_format_append_cstr(out, sizeof(out), &pos, "~")) return BOOL_VAL(0);
+            break;
+        }
+        char directive = fmt->data[i];
+        if (directive == '~') {
+            if (!vm_format_append_cstr(out, sizeof(out), &pos, "~")) return BOOL_VAL(0);
+        } else if (directive == '%') {
+            if (!vm_format_append_cstr(out, sizeof(out), &pos, "\n")) return BOOL_VAL(0);
+        } else if (directive == 'a' || directive == 's' || directive == 'd' ||
+                   directive == 'x' || directive == 'f') {
+            Value arg = NIL_VAL;
+            if (!vm_format_next_arg(vm, &args, &arg)) return BOOL_VAL(0);
+            if (!vm_format_append_value(vm, out, sizeof(out), &pos, arg, directive))
+                return BOOL_VAL(0);
+        } else {
+            if (!vm_format_append_cstr(out, sizeof(out), &pos, "~") ||
+                !vm_format_append(out, sizeof(out), &pos, &directive, 1))
+                return BOOL_VAL(0);
+        }
+    }
+    return vm_string_value(vm, out, (int64_t)pos);
+}
+
 static int vm_json_alist_ref(VM* vm, Value obj, Value key, Value* out) {
     Value cur = obj;
     while (cur.type == VAL_PAIR && is_valid_heap_ptr(vm, cur.as.ptr)) {
@@ -6246,6 +6352,11 @@ static void vm_dispatch_native(VM* vm, int fid) {
         (void)handle_val;
 #endif
         vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+    case 2035: { /* _format-list(fmt, args) → string or #f */
+        Value args_val = vm_pop(vm), fmt_val = vm_pop(vm);
+        vm_push(vm, vm_format_list_value(vm, vm_value_as_string(vm, fmt_val), args_val));
         break;
     }
     case 2014: { /* json-get-in(obj, path, default) → value */

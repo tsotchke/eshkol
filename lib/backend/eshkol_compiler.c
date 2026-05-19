@@ -5605,6 +5605,7 @@ static const BuiltinDef BUILTINS[] = {
     {"db-last-insert-id", 2029, 1}, {"db-changes", 2030, 1},
     {"at-exit", 2031, 1},
     {"dlopen", 2032, 1}, {"dlsym", 2033, 2}, {"dlclose", 2034, 1},
+    {"_format-list", 2035, 2},
     {"string-ends-with?", 1956, 2}, {"string-index-of", 1957, 3},
     {"string-pad-left", 1958, 3}, {"string-pad-right", 1959, 3},
     /* Missing hash */
@@ -5688,6 +5689,7 @@ static void compile_and_run(const char* source) {
         "(define * (lambda args (fold-left mul2 1 args)))\n"
         "(define (- . args) (if (null? (cdr args)) (sub2 0 (car args)) (fold-left sub2 (car args) (cdr args))))\n"
         "(define (/ . args) (if (null? (cdr args)) (div2 1 (car args)) (fold-left div2 (car args) (cdr args))))\n"
+        "(define (format fmt . args) (_format-list fmt args))\n"
         "(define (emit! emitter event . args) (_emit-event emitter event args))\n";
     src_ptr = scheme_prelude;
     while (1) {
