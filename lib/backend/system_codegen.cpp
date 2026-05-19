@@ -1475,6 +1475,11 @@ llvm::Value* SystemCodegen::method_name(const eshkol_operations_t* op) { \
 }
 
 THREE_ARG_BUILTIN(makeTempFile, "eshkol_builtin_make_temp_file")
+ONE_ARG_BUILTIN(httpServerCreate, "eshkol_builtin_http_server_create")
+ONE_ARG_BUILTIN(httpServerPort, "eshkol_builtin_http_server_port")
+THREE_ARG_BUILTIN(httpServerAccept, "eshkol_builtin_http_server_accept")
+FOUR_ARG_BUILTIN(httpServerRespond, "eshkol_builtin_http_server_respond")
+ONE_ARG_BUILTIN(httpServerClose, "eshkol_builtin_http_server_close")
 
 /* Noesis requirements */
 TWO_ARG_BUILTIN(fgMarginal, "eshkol_builtin_fg_marginal")

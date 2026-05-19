@@ -413,6 +413,13 @@ typedef struct VM {
         double computed_width;
         double computed_height;
     } yoga_nodes[64];
+
+    struct {
+        int active;
+        int listen_fd;
+        int client_fd;
+        int port;
+    } http_servers[8];
 } VM;
 
 /* Command-line arguments (set in main, read by native 602) */

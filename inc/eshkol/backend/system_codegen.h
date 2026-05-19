@@ -329,6 +329,11 @@ public:
     llvm::Value* lruClear(const eshkol_operations_t* op);
     llvm::Value* lruSize(const eshkol_operations_t* op);
     llvm::Value* formatList(const eshkol_operations_t* op);
+    llvm::Value* httpServerCreate(const eshkol_operations_t* op);
+    llvm::Value* httpServerPort(const eshkol_operations_t* op);
+    llvm::Value* httpServerAccept(const eshkol_operations_t* op);
+    llvm::Value* httpServerRespond(const eshkol_operations_t* op);
+    llvm::Value* httpServerClose(const eshkol_operations_t* op);
     llvm::Value* stringEndsWith(const eshkol_operations_t* op);
     llvm::Value* stringIndexOf(const eshkol_operations_t* op);
     llvm::Value* stringPadLeft(const eshkol_operations_t* op);

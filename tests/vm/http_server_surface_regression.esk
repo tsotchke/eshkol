@@ -1,0 +1,67 @@
+;; Standalone VM regression for loopback HTTP server handles.
+
+(display "=== http server VM surface regression ===") (newline)
+
+(define srv (http-server-create 0))
+(define http-available? (and (number? srv) (> srv 0)))
+
+(display "T1 http-server-create returns handle: ")
+(display (if (or http-available? (not srv))
+             "PASS"
+             (list "FAIL got " srv)))
+(newline)
+
+(define port (if http-available? (http-server-port srv) #f))
+
+(display "T2 http-server-port returns loopback port: ")
+(display (if (or (not http-available?)
+                 (and (number? port) (> port 0) (< port 65536)))
+             "PASS"
+             (list "FAIL got " port)))
+(newline)
+
+(display "T3 http-server-accept timeout returns false: ")
+(display (if (not (http-server-accept srv 1024 0))
+             "PASS"
+             "FAIL"))
+(newline)
+
+(define port-file (get-environment-variable "ESHKOL_VM_HTTP_PORT_FILE"))
+(define roundtrip? (and http-available? port-file))
+
+(if roundtrip?
+    (let ((out (open-output-file port-file)))
+      (write-string (number->string port) out)
+      (close-port out))
+    #t)
+
+(define request (if roundtrip?
+                    (http-server-accept srv 4096 5000)
+                    #f))
+
+(display "T4 optional http-server-accept reads request: ")
+(display (if (or (not roundtrip?)
+                 (and (string? request)
+                      (string-index-of request "GET /vm-http" 0)))
+             "PASS"
+             (list "FAIL got " request)))
+(newline)
+
+(define responded (if (and roundtrip? request)
+                      (http-server-respond srv 200 "text/plain" "vm-http-ok")
+                      #t))
+
+(display "T5 optional http-server-respond writes response: ")
+(display (if responded
+             "PASS"
+             "FAIL"))
+(newline)
+
+(display "T6 http-server-close releases handle: ")
+(display (if (or (not http-available?)
+                 (http-server-close srv))
+             "PASS"
+             "FAIL"))
+(newline)
+
+(display "=== http server VM surface complete ===") (newline)

@@ -31,6 +31,8 @@
 #include <sys/time.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 #include <glob.h>
 #include <fnmatch.h>
 #ifndef ESHKOL_VM_WASM
@@ -3445,6 +3447,162 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_format_list_v(
     return sys_make_string_len(out, pos);
 }
 
+typedef struct {
+    int active;
+    int listen_fd;
+    int client_fd;
+    int port;
+} SysHttpServer;
+
+static SysHttpServer g_sys_http_servers[8];
+
+static int sys_http_server_valid(int handle) {
+    return handle > 0 &&
+           handle < (int)(sizeof(g_sys_http_servers) / sizeof(g_sys_http_servers[0])) &&
+           g_sys_http_servers[handle].active;
+}
+
+static int sys_http_server_store(int listen_fd, int port) {
+    for (int i = 1; i < (int)(sizeof(g_sys_http_servers) / sizeof(g_sys_http_servers[0])); i++) {
+        if (!g_sys_http_servers[i].active) {
+            g_sys_http_servers[i].active = 1;
+            g_sys_http_servers[i].listen_fd = listen_fd;
+            g_sys_http_servers[i].client_fd = -1;
+            g_sys_http_servers[i].port = port;
+            return i;
+        }
+    }
+    return -1;
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_http_server_create_v(eshkol_sysbuiltin_value_t port_val) {
+#if !defined(_WIN32)
+    int requested_port = (int)sys_extract_int64(port_val);
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd >= 0) {
+        int opt = 1;
+        (void)setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, (socklen_t)sizeof(opt));
+        struct sockaddr_in addr;
+        memset(&addr, 0, sizeof(addr));
+        addr.sin_family = AF_INET;
+        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        addr.sin_port = htons((uint16_t)requested_port);
+        if (bind(fd, (struct sockaddr*)&addr, sizeof(addr)) == 0 &&
+            listen(fd, 8) == 0) {
+            socklen_t addr_len = (socklen_t)sizeof(addr);
+            if (getsockname(fd, (struct sockaddr*)&addr, &addr_len) == 0) {
+                int handle = sys_http_server_store(fd, (int)ntohs(addr.sin_port));
+                if (handle > 0) return sys_make_int64((int64_t)handle);
+            }
+        }
+        close(fd);
+    }
+#else
+    (void)port_val;
+#endif
+    return sys_make_bool(0);
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_http_server_port_v(eshkol_sysbuiltin_value_t server_val) {
+    int handle = (int)sys_extract_int64(server_val);
+    return sys_http_server_valid(handle) ? sys_make_int64((int64_t)g_sys_http_servers[handle].port)
+                                         : sys_make_bool(0);
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_http_server_accept_v(
+    eshkol_sysbuiltin_value_t server_val,
+    eshkol_sysbuiltin_value_t buffer_val,
+    eshkol_sysbuiltin_value_t timeout_val) {
+#if !defined(_WIN32)
+    int handle = (int)sys_extract_int64(server_val);
+    int buffer_size = (int)sys_extract_int64(buffer_val);
+    int timeout_ms = (int)sys_extract_int64(timeout_val);
+    if (buffer_size < 128) buffer_size = 128;
+    if (buffer_size > 65536) buffer_size = 65536;
+    if (timeout_ms < 0) timeout_ms = 0;
+    if (!sys_http_server_valid(handle)) return sys_make_bool(0);
+
+    struct pollfd pfd;
+    pfd.fd = g_sys_http_servers[handle].listen_fd;
+    pfd.events = POLLIN;
+    pfd.revents = 0;
+    if (poll(&pfd, 1, timeout_ms) <= 0 || !(pfd.revents & POLLIN))
+        return sys_make_bool(0);
+
+    int client_fd = accept(g_sys_http_servers[handle].listen_fd, NULL, NULL);
+    if (client_fd < 0) return sys_make_bool(0);
+    if (g_sys_http_servers[handle].client_fd >= 0)
+        close(g_sys_http_servers[handle].client_fd);
+    g_sys_http_servers[handle].client_fd = client_fd;
+
+    char* buf = (char*)malloc((size_t)buffer_size + 1);
+    if (!buf) return sys_make_bool(0);
+    int total = 0;
+    while (total < buffer_size) {
+        ssize_t n = recv(client_fd, buf + total, (size_t)(buffer_size - total), 0);
+        if (n <= 0) break;
+        total += (int)n;
+        buf[total] = '\0';
+        if (strstr(buf, "\r\n\r\n") || strstr(buf, "\n\n")) break;
+    }
+    eshkol_sysbuiltin_value_t result = total > 0 ? sys_make_string_len(buf, (size_t)total)
+                                                  : sys_make_bool(0);
+    free(buf);
+    return result;
+#else
+    (void)server_val; (void)buffer_val; (void)timeout_val;
+    return sys_make_bool(0);
+#endif
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_http_server_respond_v(
+    eshkol_sysbuiltin_value_t server_val,
+    eshkol_sysbuiltin_value_t status_val,
+    eshkol_sysbuiltin_value_t type_val,
+    eshkol_sysbuiltin_value_t body_val) {
+#if !defined(_WIN32)
+    int handle = (int)sys_extract_int64(server_val);
+    int status = (int)sys_extract_int64(status_val);
+    const char* content_type = sys_extract_string(type_val);
+    const char* body = sys_extract_string(body_val);
+    if (!sys_http_server_valid(handle) || g_sys_http_servers[handle].client_fd < 0 || !body)
+        return sys_make_bool(0);
+    if (status <= 0) status = 200;
+    const char* reason = status == 404 ? "Not Found" :
+                         status == 500 ? "Internal Server Error" :
+                         status == 400 ? "Bad Request" : "OK";
+    const char* ctype = (content_type && *content_type) ? content_type : "text/plain";
+    size_t body_len = strlen(body);
+    char header[512];
+    int hlen = snprintf(header, sizeof(header),
+                        "HTTP/1.1 %d %s\r\n"
+                        "Content-Type: %s\r\n"
+                        "Content-Length: %lld\r\n"
+                        "Connection: close\r\n\r\n",
+                        status, reason, ctype, (long long)body_len);
+    int ok = hlen > 0 && hlen < (int)sizeof(header) &&
+             send(g_sys_http_servers[handle].client_fd, header, (size_t)hlen, 0) == hlen &&
+             send(g_sys_http_servers[handle].client_fd, body, body_len, 0) == (ssize_t)body_len;
+    close(g_sys_http_servers[handle].client_fd);
+    g_sys_http_servers[handle].client_fd = -1;
+    return sys_make_bool(ok);
+#else
+    (void)server_val; (void)status_val; (void)type_val; (void)body_val;
+    return sys_make_bool(0);
+#endif
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_http_server_close_v(eshkol_sysbuiltin_value_t server_val) {
+    int handle = (int)sys_extract_int64(server_val);
+    if (!sys_http_server_valid(handle)) return sys_make_bool(0);
+#if !defined(_WIN32)
+    if (g_sys_http_servers[handle].client_fd >= 0) close(g_sys_http_servers[handle].client_fd);
+    if (g_sys_http_servers[handle].listen_fd >= 0) close(g_sys_http_servers[handle].listen_fd);
+#endif
+    memset(&g_sys_http_servers[handle], 0, sizeof(g_sys_http_servers[handle]));
+    return sys_make_bool(1);
+}
+
 static int sys_utf8_encode_codepoint(int cp, char* out) {
     if (!out) return 0;
     if (cp < 0) cp = ' ';
@@ -3950,6 +4108,11 @@ void eshkol_builtin_lru_delete(sv_t* out, const sv_t* a, const sv_t* b) { *out =
 void eshkol_builtin_lru_clear(sv_t* out, const sv_t* a) { *out = eshkol_builtin_lru_clear_v(*a); }
 void eshkol_builtin_lru_size(sv_t* out, const sv_t* a) { *out = eshkol_builtin_lru_size_v(*a); }
 void eshkol_builtin_format_list(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_format_list_v(*a, *b); }
+void eshkol_builtin_http_server_create(sv_t* out, const sv_t* a) { *out = eshkol_builtin_http_server_create_v(*a); }
+void eshkol_builtin_http_server_port(sv_t* out, const sv_t* a) { *out = eshkol_builtin_http_server_port_v(*a); }
+void eshkol_builtin_http_server_accept(sv_t* out, const sv_t* a, const sv_t* b, const sv_t* c) { *out = eshkol_builtin_http_server_accept_v(*a, *b, *c); }
+void eshkol_builtin_http_server_respond(sv_t* out, const sv_t* a, const sv_t* b, const sv_t* c, const sv_t* d) { *out = eshkol_builtin_http_server_respond_v(*a, *b, *c, *d); }
+void eshkol_builtin_http_server_close(sv_t* out, const sv_t* a) { *out = eshkol_builtin_http_server_close_v(*a); }
 void eshkol_builtin_string_ends_with(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_string_ends_with_v(*a, *b); }
 void eshkol_builtin_string_index_of(sv_t* out, const sv_t* a, const sv_t* b, const sv_t* c) { *out = eshkol_builtin_string_index_of_v(*a, *b, *c); }
 void eshkol_builtin_string_pad_left(sv_t* out, const sv_t* a, const sv_t* b, const sv_t* c) { *out = eshkol_builtin_string_pad_v(*a, *b, *c, 1); }
