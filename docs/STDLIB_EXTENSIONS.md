@@ -367,6 +367,10 @@ native ID 1798.
 All methods: GET, POST, PUT, DELETE, PATCH, HEAD, OPTIONS.
 Return response headers as alist. Currently only GET/POST, no response headers.
 
+Standalone VM native ID 2047 supports plain `http://` requests over TCP and
+returns `(status raw-headers body)`. TLS remains the responsibility of the
+compiled libcurl-backed agent path for now.
+
 ### `(http-set-proxy url) -> void`
 `curl_easy_setopt(CURLOPT_PROXY, ...)`. For enterprise environments.
 

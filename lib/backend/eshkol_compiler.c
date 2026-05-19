@@ -5615,6 +5615,7 @@ static const BuiltinDef BUILTINS[] = {
     {"http-server-create", 2042, 1}, {"http-server-port", 2043, 1},
     {"http-server-accept", 2044, 3}, {"http-server-respond", 2045, 4},
     {"http-server-close", 2046, 1},
+    {"http-request", 2047, 5},
     {"string-ends-with?", 1956, 2}, {"string-index-of", 1957, 3},
     {"string-pad-left", 1958, 3}, {"string-pad-right", 1959, 3},
     /* Missing hash */
