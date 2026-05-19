@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <string>
 
+#include <eshkol/backend/thread_pool.h>
 #include <eshkol/backend/vm.h>
 
 extern "C" {
@@ -503,6 +504,122 @@ int host_add_double(VM* vm) {
     return eshkol_vm_host_push_double(vm, a + b);
 }
 
+void* no_op_pool_task(void* arg) {
+    return arg;
+}
+
+struct CrossPoolSubmitArg {
+    eshkol_thread_pool_t* target;
+    eshkol_future_t* first;
+    eshkol_future_t* second;
+};
+
+void* submit_to_bounded_target_pool(void* raw) {
+    auto* arg = static_cast<CrossPoolSubmitArg*>(raw);
+    arg->first = thread_pool_submit(arg->target, no_op_pool_task, nullptr);
+    arg->second = thread_pool_submit(arg->target, no_op_pool_task, nullptr);
+    return nullptr;
+}
+
+eshkol_thread_pool_t* create_paused_bounded_pool(size_t capacity, const char* name) {
+    eshkol_thread_pool_config_t config = ESHKOL_THREAD_POOL_DEFAULT_CONFIG;
+    config.num_threads = 2;
+    config.task_queue_capacity = capacity;
+    config.name = name;
+
+    eshkol_thread_pool_t* pool = thread_pool_create(&config);
+    if (pool) {
+        thread_pool_pause(pool);
+    }
+    return pool;
+}
+
+void test_thread_pool_bounded_external_queue(void) {
+    {
+        eshkol_thread_pool_t* pool = create_paused_bounded_pool(
+            1, "bounded-external-submit-test");
+        CHECK(pool != nullptr, "thread-pool bounded external submit: create pool");
+        if (pool) {
+            eshkol_future_t* first = thread_pool_submit(pool, no_op_pool_task, nullptr);
+            eshkol_future_t* second = thread_pool_submit(pool, no_op_pool_task, nullptr);
+            CHECK(first != nullptr, "thread-pool bounded external submit: accepts capacity slot");
+            CHECK(second == nullptr, "thread-pool bounded external submit: rejects full queue");
+            thread_pool_destroy(pool);
+            future_release(first);
+            future_release(second);
+        }
+    }
+
+    {
+        eshkol_thread_pool_t* pool = create_paused_bounded_pool(
+            2, "bounded-external-batch-test");
+        CHECK(pool != nullptr, "thread-pool bounded external batch: create pool");
+        if (pool) {
+            eshkol_task_fn fns[4] = {
+                no_op_pool_task, no_op_pool_task, no_op_pool_task, no_op_pool_task
+            };
+            void* args[4] = {nullptr, nullptr, nullptr, nullptr};
+            eshkol_future_t* futures[4] = {nullptr, nullptr, nullptr, nullptr};
+
+            size_t submitted = thread_pool_submit_batch(pool, fns, args, futures, 4);
+            CHECK(submitted == 2, "thread-pool bounded external batch: submits to capacity");
+            CHECK(futures[0] != nullptr && futures[1] != nullptr &&
+                      futures[2] == nullptr && futures[3] == nullptr,
+                  "thread-pool bounded external batch: leaves overflow futures empty");
+            thread_pool_destroy(pool);
+            for (size_t i = 0; i < submitted; ++i) {
+                future_release(futures[i]);
+            }
+        }
+    }
+
+    {
+        eshkol_thread_pool_t* pool = create_paused_bounded_pool(
+            1, "bounded-external-detached-test");
+        CHECK(pool != nullptr, "thread-pool bounded external detached: create pool");
+        if (pool) {
+            bool first = thread_pool_submit_detached(pool, no_op_pool_task, nullptr);
+            bool second = thread_pool_submit_detached(pool, no_op_pool_task, nullptr);
+            CHECK(first, "thread-pool bounded external detached: accepts capacity slot");
+            CHECK(!second, "thread-pool bounded external detached: rejects full queue");
+            thread_pool_destroy(pool);
+        }
+    }
+
+    {
+        eshkol_thread_pool_t* target = create_paused_bounded_pool(
+            1, "bounded-cross-pool-target-test");
+        CHECK(target != nullptr, "thread-pool bounded cross-pool submit: create target");
+
+        eshkol_thread_pool_config_t source_config = ESHKOL_THREAD_POOL_DEFAULT_CONFIG;
+        source_config.num_threads = 1;
+        source_config.name = "bounded-cross-pool-source-test";
+        eshkol_thread_pool_t* source = thread_pool_create(&source_config);
+        CHECK(source != nullptr, "thread-pool bounded cross-pool submit: create source");
+
+        if (target && source) {
+            CrossPoolSubmitArg arg = {target, nullptr, nullptr};
+            eshkol_future_t* submitter =
+                thread_pool_submit(source, submit_to_bounded_target_pool, &arg);
+            CHECK(submitter != nullptr, "thread-pool bounded cross-pool submit: submit worker task");
+            CHECK(future_wait(submitter, 5000),
+                  "thread-pool bounded cross-pool submit: worker task completes");
+            CHECK(arg.first != nullptr,
+                  "thread-pool bounded cross-pool submit: accepts target capacity slot");
+            CHECK(arg.second == nullptr,
+                  "thread-pool bounded cross-pool submit: rejects target overflow");
+            thread_pool_destroy(source);
+            future_release(submitter);
+            thread_pool_destroy(target);
+            future_release(arg.first);
+            future_release(arg.second);
+        } else {
+            if (source) thread_pool_destroy(source);
+            if (target) thread_pool_destroy(target);
+        }
+    }
+}
+
 void test_host_native_registry(void) {
     int slot = eshkol_vm_register_host_native("test.add-with-offset", host_add_with_offset);
     CHECK(slot >= 0, "register host native");
@@ -687,6 +804,7 @@ int main(void) {
     test_valid_chunk();
     test_number_to_string_radix();
     test_host_native_registry();
+    test_thread_pool_bounded_external_queue();
     test_file_mmap_native();
     test_path_native_helpers();
     test_bad_inputs();

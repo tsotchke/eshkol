@@ -104,6 +104,7 @@ struct eshkol_thread_pool {
 // Thread-local arena for worker threads
 thread_local arena_t* tls_arena = nullptr;
 thread_local bool tls_is_worker_thread = false;
+thread_local eshkol_thread_pool_t* tls_worker_pool = nullptr;
 
 /* Exported for arena_is_worker_thread() weak symbol linkage */
 extern "C" int eshkol_thread_pool_is_worker(void) {
@@ -113,12 +114,20 @@ thread_local size_t tls_arena_size = 0;
 thread_local size_t tls_worker_id = SIZE_MAX;
 thread_local size_t tls_epoch_slot = SIZE_MAX;
 
+static bool thread_pool_called_from_owner_worker(const eshkol_thread_pool_t* pool) {
+    return tls_worker_pool == pool && tls_worker_id < pool->num_threads;
+}
+
 static void thread_pool_note_queue_depth(eshkol_thread_pool_t* pool, size_t depth) {
     size_t peak = pool->peak_queue_depth.load(std::memory_order_relaxed);
     while (depth > peak &&
            !pool->peak_queue_depth.compare_exchange_weak(
                peak, depth, std::memory_order_relaxed)) {
     }
+}
+
+static bool thread_pool_legacy_queue_full_locked(const eshkol_thread_pool_t* pool) {
+    return pool->max_queue_size > 0 && pool->legacy_queue.size() >= pool->max_queue_size;
 }
 
 static eshkol_task* thread_pool_try_pop_external_task(eshkol_thread_pool_t* pool) {
@@ -167,6 +176,7 @@ void thread_pool_reset_thread_arena(void) {
 
 static void work_stealing_worker_func(eshkol_thread_pool_t* pool, size_t worker_id) {
     tls_is_worker_thread = true;
+    tls_worker_pool = pool;
     tls_arena_size = pool->thread_arena_size;
     tls_worker_id = worker_id;
 
@@ -337,6 +347,8 @@ static void work_stealing_worker_func(eshkol_thread_pool_t* pool, size_t worker_
     // clear the local alias afterwards to avoid a dangling pointer.
     eshkol_thread_shutdown_worker();
     tls_arena = nullptr;
+    tls_worker_pool = nullptr;
+    tls_worker_id = SIZE_MAX;
 
     eshkol_debug("[%s] Work-stealing worker %zu stopped", pool->name.c_str(), worker_id);
 }
@@ -347,6 +359,7 @@ static void work_stealing_worker_func(eshkol_thread_pool_t* pool, size_t worker_
 
 static void legacy_worker_func(eshkol_thread_pool_t* pool, size_t worker_id) {
     tls_is_worker_thread = true;
+    tls_worker_pool = pool;
     tls_arena_size = pool->thread_arena_size;
     tls_worker_id = worker_id;
 
@@ -437,6 +450,8 @@ static void legacy_worker_func(eshkol_thread_pool_t* pool, size_t worker_id) {
 
     eshkol_thread_shutdown_worker();
     tls_arena = nullptr;
+    tls_worker_pool = nullptr;
+    tls_worker_id = SIZE_MAX;
 
     eshkol_debug("[%s] Legacy worker %zu stopped", pool->name.c_str(), worker_id);
 }
@@ -617,13 +632,18 @@ eshkol_future_t* thread_pool_submit(
     task->submit_time = std::chrono::steady_clock::now();
 
     if (pool->use_work_stealing) {
-        if (tls_worker_id < pool->num_threads) {
+        if (thread_pool_called_from_owner_worker(pool)) {
             // Called from the owning worker thread: local deque push is valid.
             pool->deques[tls_worker_id]->push(task);
         } else {
             // External producers cannot safely push into Chase-Lev worker
             // deques because those deques are single-owner for push/pop.
             std::lock_guard<std::mutex> lock(pool->queue_mutex);
+            if (thread_pool_legacy_queue_full_locked(pool)) {
+                delete task;
+                delete future;
+                return nullptr;
+            }
             pool->legacy_queue.push(task);
             thread_pool_note_queue_depth(pool, pool->legacy_queue.size());
         }
@@ -668,7 +688,7 @@ size_t thread_pool_submit_batch(
     size_t submitted = 0;
 
     if (pool->use_work_stealing) {
-        if (tls_worker_id < pool->num_threads) {
+        if (thread_pool_called_from_owner_worker(pool)) {
             for (size_t i = 0; i < count; ++i) {
                 auto* future = new eshkol_future_t();
                 future->result = nullptr;
@@ -689,6 +709,10 @@ size_t thread_pool_submit_batch(
         } else {
             std::lock_guard<std::mutex> lock(pool->queue_mutex);
             for (size_t i = 0; i < count; ++i) {
+                if (thread_pool_legacy_queue_full_locked(pool)) {
+                    break;
+                }
+
                 auto* future = new eshkol_future_t();
                 future->result = nullptr;
                 future->completed = false;
@@ -765,10 +789,14 @@ bool thread_pool_submit_detached(
     task->submit_time = std::chrono::steady_clock::now();
 
     if (pool->use_work_stealing) {
-        if (tls_worker_id < pool->num_threads) {
+        if (thread_pool_called_from_owner_worker(pool)) {
             pool->deques[tls_worker_id]->push(task);
         } else {
             std::lock_guard<std::mutex> lock(pool->queue_mutex);
+            if (thread_pool_legacy_queue_full_locked(pool)) {
+                delete task;
+                return false;
+            }
             pool->legacy_queue.push(task);
             thread_pool_note_queue_depth(pool, pool->legacy_queue.size());
         }
