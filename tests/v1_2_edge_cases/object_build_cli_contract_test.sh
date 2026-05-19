@@ -21,19 +21,19 @@ if [ ! -x "$RUN" ]; then
     exit 0
 fi
 
-WORK=$(mktemp -d "${TMPDIR:-/tmp}/eshkol-object-cli.XXXXXX") || exit 1
+WORK_TMP=$(mktemp -d "${TMPDIR:-/tmp}/eshkol-object-cli.XXXXXX") || exit 1
 cleanup() {
-    [ -n "${WORK:-}" ] && [ -d "$WORK" ] && rm -rf -- "$WORK"
+    [ -n "${WORK_TMP:-}" ] && [ -d "$WORK_TMP" ] && rm -rf -- "$WORK_TMP"
 }
 trap cleanup EXIT
 
-mkdir -p "$WORK/src" "$WORK/include"
+mkdir -p "$WORK_TMP/src" "$WORK_TMP/include"
 
-cat > "$WORK/include/object_dep.esk" <<'ESK'
+cat > "$WORK_TMP/include/object_dep.esk" <<'ESK'
 (define (object-contract-value) 42)
 ESK
 
-cat > "$WORK/src/object_contract.esk" <<'ESK'
+cat > "$WORK_TMP/src/object_contract.esk" <<'ESK'
 (load "object_dep.esk")
 (define (object-contract-entry) (object-contract-value))
 ESK
@@ -53,39 +53,40 @@ check() {
     fi
 }
 
-requested="$WORK/requested.o"
-output="$WORK/emit.out"
+REQUESTED_TMP="$WORK_TMP/requested.o"
+OUTPUT_TMP="$WORK_TMP/emit.out"
 
 "$RUN" \
     --emit-object \
-    -o "$requested" \
+    -o "$REQUESTED_TMP" \
     --shared-lib \
     -fPIC \
-    -I "$WORK/include" \
+    -I "$WORK_TMP/include" \
     -D NOESIS_OBJECT_CONTRACT=1 \
-    "$WORK/src/object_contract.esk" >"$output" 2>&1
+    "$WORK_TMP/src/object_contract.esk" >"$OUTPUT_TMP" 2>&1
 rc=$?
 
 check "--emit-object command exits 0" "$([ "$rc" -eq 0 ] && echo yes || echo no)"
-check "requested object exists exactly" "$([ -f "$requested" ] && echo yes || echo no)"
-check "stale .o.o output is not created" "$([ ! -e "$requested.o" ] && echo yes || echo no)"
+check "requested object exists exactly" "$([ -f "$REQUESTED_TMP" ] && echo yes || echo no)"
+check "stale .o.o output is not created" "$([ ! -e "$REQUESTED_TMP.o" ] && echo yes || echo no)"
 
-compile_only="$WORK/compile-only.o"
-"$RUN" --compile-only -o "$compile_only" "$WORK/src/object_contract.esk" \
-    -I "$WORK/include" >"$WORK/compile-only.out" 2>&1
+COMPILE_ONLY_TMP="$WORK_TMP/compile-only.o"
+COMPILE_ONLY_OUT_TMP="$WORK_TMP/compile-only.out"
+"$RUN" --compile-only -o "$COMPILE_ONLY_TMP" "$WORK_TMP/src/object_contract.esk" \
+    -I "$WORK_TMP/include" >"$COMPILE_ONLY_OUT_TMP" 2>&1
 rc=$?
 
 check "--compile-only exact .o exits 0" "$([ "$rc" -eq 0 ] && echo yes || echo no)"
-check "--compile-only exact .o exists" "$([ -f "$compile_only" ] && echo yes || echo no)"
-check "--compile-only does not append .o" "$([ ! -e "$compile_only.o" ] && echo yes || echo no)"
+check "--compile-only exact .o exists" "$([ -f "$COMPILE_ONLY_TMP" ] && echo yes || echo no)"
+check "--compile-only does not append .o" "$([ ! -e "$COMPILE_ONLY_TMP.o" ] && echo yes || echo no)"
 
 echo
 echo "Passed: $PASS  Failed: $FAIL"
 [ "$FAIL" -gt 0 ] && {
     echo "--- emit-object output ---"
-    sed -n '1,40p' "$output"
+    sed -n '1,40p' "$OUTPUT_TMP"
     echo "--- compile-only output ---"
-    sed -n '1,40p' "$WORK/compile-only.out"
+    sed -n '1,40p' "$COMPILE_ONLY_OUT_TMP"
     exit 1
 }
 exit 0
