@@ -88,6 +88,27 @@
 (check "#125: map + parallel-map sequence in one let*"
        (equal? (map-then-par (list 1 2 3 4 5)) (list 4 6 8 10 12)))
 
+;; ----------------------------------------------------------------------
+;; External producer stress: main-thread submissions must not push directly
+;; into worker-owned Chase-Lev deques.  The pre-fix failure mode was a lost
+;; task and a permanent wait in future_get under larger aggregate smokes.
+;; ----------------------------------------------------------------------
+(define stress-xs (range 64))
+
+(define (parallel-submit-stress rounds)
+  (let loop ((i 0))
+    (if (>= i rounds)
+        #t
+        (let* ((ys (parallel-map (lambda (x) (+ (* x x) i)) stress-xs))
+               (sum (apply + ys))
+               (expected (+ 85344 (* i 64))))
+          (if (= sum expected)
+              (loop (+ i 1))
+              #f)))))
+
+(check "external main-thread parallel-map submissions do not lose tasks"
+       (parallel-submit-stress 25))
+
 (newline)
 (display "=== Summary ===") (newline)
 (display "Passed: ") (display pass-count) (newline)
