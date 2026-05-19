@@ -31,11 +31,9 @@
 #include <cstring>      // std::memset
 #include <filesystem>   // Bug W ask 2: provider-file scan
 #include <fstream>      // Bug W ask 2: read .esk files for provide/define lookup
+#include <mutex>
 #include <string>       // std::string for the provider scan
 #include <cctype>       // std::isspace / std::isalnum
-#ifdef _WIN32
-#include <mutex>
-#endif
 #endif
 
 // Default alignment for memory allocations
@@ -3806,7 +3804,10 @@ static int64_t find_slot(const eshkol_hash_table_t* table, const eshkol_tagged_v
     return -1;
 }
 
-// Resize the hash table when load factor exceeds threshold
+static std::mutex g_hash_table_mutex;
+
+// Resize the hash table when load factor exceeds threshold.
+// Caller must hold g_hash_table_mutex.
 static bool hash_table_resize(arena_t* arena, eshkol_hash_table_t* table, size_t new_capacity) {
     // Allocate new arrays
     eshkol_tagged_value_t* new_keys = (eshkol_tagged_value_t*)
@@ -3851,6 +3852,7 @@ static bool hash_table_resize(arena_t* arena, eshkol_hash_table_t* table, size_t
 bool hash_table_set(arena_t* arena, eshkol_hash_table_t* table,
                     const eshkol_tagged_value_t* key, const eshkol_tagged_value_t* value) {
     if (!arena || !table || !key || !value) return false;
+    std::lock_guard<std::mutex> lock(g_hash_table_mutex);
 
     // Check if we need to resize (load factor > 0.75)
     double load = (double)(table->size + table->tombstones) / table->capacity;
@@ -3895,6 +3897,7 @@ bool hash_table_set(arena_t* arena, eshkol_hash_table_t* table,
 bool hash_table_get(const eshkol_hash_table_t* table,
                     const eshkol_tagged_value_t* key, eshkol_tagged_value_t* out_value) {
     if (!table || !key) return false;
+    std::lock_guard<std::mutex> lock(g_hash_table_mutex);
 
     int64_t slot = find_slot(table, key, nullptr);
     if (slot < 0) return false;
@@ -3908,12 +3911,14 @@ bool hash_table_get(const eshkol_hash_table_t* table,
 // Check if a key exists in the hash table
 bool hash_table_has_key(const eshkol_hash_table_t* table, const eshkol_tagged_value_t* key) {
     if (!table || !key) return false;
+    std::lock_guard<std::mutex> lock(g_hash_table_mutex);
     return find_slot(table, key, nullptr) >= 0;
 }
 
 // Remove a key from the hash table
 bool hash_table_remove(eshkol_hash_table_t* table, const eshkol_tagged_value_t* key) {
     if (!table || !key) return false;
+    std::lock_guard<std::mutex> lock(g_hash_table_mutex);
 
     int64_t slot = find_slot(table, key, nullptr);
     if (slot < 0) return false;
@@ -3929,6 +3934,7 @@ bool hash_table_remove(eshkol_hash_table_t* table, const eshkol_tagged_value_t* 
 // Clear all entries from the hash table
 void hash_table_clear(eshkol_hash_table_t* table) {
     if (!table) return;
+    std::lock_guard<std::mutex> lock(g_hash_table_mutex);
 
     memset(table->status, HASH_ENTRY_EMPTY, table->capacity);
     table->size = 0;
@@ -3937,12 +3943,16 @@ void hash_table_clear(eshkol_hash_table_t* table) {
 
 // Get the number of entries in the hash table
 size_t hash_table_count(const eshkol_hash_table_t* table) {
-    return table ? table->size : 0;
+    if (!table) return 0;
+    std::lock_guard<std::mutex> lock(g_hash_table_mutex);
+    return table->size;
 }
 
 // Get all keys as a list
 arena_tagged_cons_cell_t* hash_table_keys(arena_t* arena, const eshkol_hash_table_t* table) {
-    if (!arena || !table || table->size == 0) return nullptr;
+    if (!arena || !table) return nullptr;
+    std::lock_guard<std::mutex> lock(g_hash_table_mutex);
+    if (table->size == 0) return nullptr;
 
     arena_tagged_cons_cell_t* head = nullptr;
     arena_tagged_cons_cell_t* tail = nullptr;
@@ -4020,7 +4030,9 @@ extern "C" void eshkol_list_reverse_tagged(
 
 // Get all values as a list
 arena_tagged_cons_cell_t* hash_table_values(arena_t* arena, const eshkol_hash_table_t* table) {
-    if (!arena || !table || table->size == 0) return nullptr;
+    if (!arena || !table) return nullptr;
+    std::lock_guard<std::mutex> lock(g_hash_table_mutex);
+    if (table->size == 0) return nullptr;
 
     arena_tagged_cons_cell_t* head = nullptr;
     arena_tagged_cons_cell_t* tail = nullptr;
