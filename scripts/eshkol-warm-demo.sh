@@ -39,15 +39,15 @@ fi
 TMPDIR_=$(mktemp -d)
 trap 'rm -rf "$TMPDIR_"' EXIT
 IN_FIFO="$TMPDIR_/in"
-OUT_LOG="$TMPDIR_/stdout"
-ERR_LOG="$TMPDIR_/stderr"
+OUT_TMP="$TMPDIR_/stdout"
+ERR_TMP="$TMPDIR_/stderr"
 mkfifo "$IN_FIFO"
-: > "$OUT_LOG"
-: > "$ERR_LOG"
+: > "$OUT_TMP"
+: > "$ERR_TMP"
 
 # Spawn the REPL with machine framing on stderr and pure program output
 # on stdout.
-"$ESHKOL_REPL" --machine < "$IN_FIFO" > "$OUT_LOG" 2> "$ERR_LOG" &
+"$ESHKOL_REPL" --machine < "$IN_FIFO" > "$OUT_TMP" 2> "$ERR_TMP" &
 REPL_PID=$!
 
 # Open writer end of the input pipe so it doesn't EOF between writes.
@@ -57,10 +57,10 @@ wait_for_ready() {
     local deadline now
     deadline=$((SECONDS + 120))
     while kill -0 "$REPL_PID" 2>/dev/null; do
-        if grep -qx "EREPL READY" "$ERR_LOG"; then
+        if grep -qx "EREPL READY" "$ERR_TMP"; then
             return 0
         fi
-        if grep -qx "EREPL FAIL" "$ERR_LOG"; then
+        if grep -qx "EREPL FAIL" "$ERR_TMP"; then
             return 1
         fi
         now=$SECONDS
@@ -77,9 +77,9 @@ wait_for_done_after() {
     before="$1"
     deadline=$((SECONDS + 30))
     while kill -0 "$REPL_PID" 2>/dev/null; do
-        count=$(grep -Ec '^EREPL (DONE|FAIL)$' "$ERR_LOG" || true)
+        count=$(grep -Ec '^EREPL (DONE|FAIL)$' "$ERR_TMP" || true)
         if [ "$count" -gt "$before" ]; then
-            marker=$(grep -E '^EREPL (DONE|FAIL)$' "$ERR_LOG" | tail -n 1)
+            marker=$(grep -E '^EREPL (DONE|FAIL)$' "$ERR_TMP" | tail -n 1)
             [ "$marker" = "EREPL DONE" ]
             return $?
         fi
@@ -95,7 +95,7 @@ wait_for_done_after() {
 send_form() {
     local form before
     form="$1"
-    before=$(grep -Ec '^EREPL (DONE|FAIL)$' "$ERR_LOG" || true)
+    before=$(grep -Ec '^EREPL (DONE|FAIL)$' "$ERR_TMP" || true)
     printf '%s\n' "$form" >&3
     wait_for_done_after "$before"
 }
@@ -103,7 +103,7 @@ send_form() {
 echo "[demo] waiting for JIT to warm up..." >&2
 if ! wait_for_ready; then
     echo "[demo] startup failed or timed out" >&2
-    sed 's/^/[repl-stderr] /' "$ERR_LOG" >&2
+    sed 's/^/[repl-stderr] /' "$ERR_TMP" >&2
     kill "$REPL_PID" 2>/dev/null || true
     exit 1
 fi
@@ -121,5 +121,5 @@ send_form '(newline)'
 exec 3>&-
 
 wait "$REPL_PID" || true
-cat "$OUT_LOG"
+cat "$OUT_TMP"
 echo "[demo] done" >&2
