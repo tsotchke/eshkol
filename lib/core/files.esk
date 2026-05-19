@@ -1,0 +1,46 @@
+;;; lib/core/files.esk - File-system convenience helpers
+;;; Part of the core library
+
+(require core.strings)
+
+(provide path-directory with-atomic-output-file atomic-write-file)
+
+;; Return the directory component of a path.  Relative paths without a slash
+;; use "." so temporary files can be created in the same directory as the
+;; destination and renamed atomically.
+(define (path-directory path)
+  (let ((idx (string-last-index path "/")))
+    (cond
+      ((< idx 0) ".")
+      ((= idx 0) "/")
+      (else (substring path 0 idx)))))
+
+;; Write to a temporary file in the destination directory, then rename it over
+;; the destination only after PROC returns.  PROC receives an output port and
+;; its return value is returned when the rename succeeds; #f indicates setup or
+;; rename failure.  On exceptions, the temporary file is removed and the
+;; original exception is re-raised.
+(define (with-atomic-output-file path proc)
+  (let ((tmp (make-temp-file "eshkol-atomic-" ".tmp" (path-directory path))))
+    (if (not tmp)
+        #f
+        (guard (e (#t
+                   (begin
+                     (guard (ignored (#t #f)) (delete-file tmp))
+                     (raise e))))
+          (let ((port (open-output-file tmp)))
+            (let ((result (proc port)))
+              (close-port port)
+              (if (file-rename tmp path)
+                  result
+                  (begin
+                    (guard (ignored (#t #f)) (delete-file tmp))
+                    #f))))))))
+
+;; Convenience wrapper for the common "write this complete string" case.
+(define (atomic-write-file path contents)
+  (with-atomic-output-file
+   path
+   (lambda (port)
+     (write-string contents port)
+     #t)))
