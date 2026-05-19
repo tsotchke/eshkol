@@ -123,10 +123,9 @@ external consumers know the Noesis audit gaps are closed.
 ### Noesis tracker reconciliation — 2026-05-19
 
 Noesis' checked-in tracker
-(`/Users/tyr/Desktop/noesis/docs/audits/eshkol-issue-tracker.md`) still lists
-W, Z, BB, GG, JJ, KK, and LL as open. That tracker was last verified against
-an older Eshkol build; current repro runs show the tracker needs a Noesis-side
-reconciliation pass.
+(`/Users/tyr/Desktop/noesis/docs/audits/eshkol-issue-tracker.md`) now records
+W, Z, BB, GG, JJ, KK, and LL as closed and lists zero open filed Eshkol bugs.
+The table below is the Eshkol-side evidence used for that reconciliation.
 
 | ID | Current Eshkol result | Disposition |
 |---|---|---|
@@ -136,11 +135,10 @@ reconciliation pass.
 | GG | `NOESIS_TEST_VAR=42 ... bug-GG-getenv-string-predicate-mismatch.esk` prints `string?: #t` and `display: 42`. | Close as fixed. |
 | JJ | `bug-JJ-loaded-helper-variadic-rest-raw.esk` now prints `rest: (#f)`, `pair?: #t`, `car rest: #f`, exit 0. | Close as fixed. |
 | KK | `eshkol-run --version` exits 0 and prints `Eshkol Compiler v1.2.0-scale`. | Close as fixed. |
-| LL | The old Noesis repro script still exits 1 unconditionally, but each probe inside it now succeeds: `--emit-object` is accepted, `-o requested.o` creates exactly that path, and `--shared-lib`, `-fPIC`, `-I`, and `-D` are accepted. Eshkol now has `tests/v1_2_edge_cases/object_build_cli_contract_test.sh` as the positive contract regression. | Close the underlying bug. Remaining work is Noesis-side tracker/script reconciliation. |
+| LL | The Noesis repro script and Eshkol's `tests/v1_2_edge_cases/object_build_cli_contract_test.sh` both verify the positive contract: `--emit-object` is accepted, `-o requested.o` creates exactly that path, no `.o.o` artifact is produced, and `--shared-lib`, `-fPIC`, `-I`, and `-D` are accepted. | Closed. Keep the Eshkol regression and docs as the build-system contract guard. |
 
 Result: there are no currently verified Noesis M0 substrate blockers left in
-Eshkol. The remaining work is either v1.3+ productization or stale Noesis
-tracker maintenance.
+Eshkol. The remaining work is release/tag preparation and v1.3+ productization.
 
 ---
 
@@ -165,8 +163,8 @@ in v1.3/v1.4 as listed below.
 
 Deliverables:
 - Publish `v1.2.1-noesis-m0`.
-- Update the Noesis tracker or open a Noesis PR closing W, Z, BB, GG, JJ, KK,
-  and LL based on the 2026-05-19 repro evidence above.
+- Keep the Noesis tracker's closed status for W, Z, BB, GG, JJ, KK, and LL in
+  sync with the 2026-05-19 repro evidence above.
 - Keep the positive LL contract regression on the Eshkol side so object-build
   compatibility does not depend on the stale Noesis failing script.
 - Keep the supported object-build command shape documented:
