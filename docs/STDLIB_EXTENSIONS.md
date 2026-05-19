@@ -1004,9 +1004,15 @@ compiler (`ReplJITContext` from `lib/repl/repl_jit.h`) accessible via `eval`.
 POSIX `execv(2)`. Replace the running process image with a new binary.
 This is how the agent replaces herself after recompilation.
 
+Standalone VM native ID 1799 calls POSIX `execv` directly and returns `#f` only
+when replacement fails or the host does not expose `execv`.
+
 ### `(fork) -> integer`
 POSIX `fork(2)`. Returns 0 in child, PID in parent.
 For safe self-replacement: fork, exec new binary in child, parent exits.
+
+Standalone VM native ID 1789 returns `0` in the child, the child PID in the
+parent, or `#f` on unsupported hosts or fork failure.
 
 ### `(read port) -> sexp`
 R7RS `read`. Parse an S-expression from a port or string.

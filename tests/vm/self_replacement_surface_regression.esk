@@ -1,0 +1,43 @@
+;; Standalone VM regression for fork/execv self-replacement primitives.
+
+(display "=== self replacement VM surface regression ===") (newline)
+
+(define posix?
+  (or (string=? (os-type) "darwin")
+      (string=? (os-type) "linux")
+      (string=? (os-type) "freebsd")))
+
+(define child-pid (if posix? (fork) #f))
+
+(if (and (number? child-pid) (= child-pid 0))
+    (begin
+      (execv "/bin/sh" (list "sh" "-c" "exit 0"))
+      (process-kill (process-pid) 9))
+    #t)
+
+(display "T1 fork returns child pid in parent: ")
+(display (if (or (not posix?)
+                 (and (number? child-pid) (> child-pid 0)))
+             "PASS"
+             (list "FAIL got " child-pid)))
+(newline)
+
+(define status (if (and posix? (number? child-pid) (> child-pid 0))
+                   (process-wait child-pid)
+                   0))
+
+(display "T2 execv child exits successfully: ")
+(display (if (or (not posix?) (= status 0))
+             "PASS"
+             (list "FAIL got " status)))
+(newline)
+
+(display "T3 execv reports missing binary failure: ")
+(display (if (or (not posix?)
+                 (not (execv "/tmp/eshkol-definitely-missing-execv-target"
+                             (list "missing"))))
+             "PASS"
+             "FAIL"))
+(newline)
+
+(display "=== self replacement VM surface complete ===") (newline)

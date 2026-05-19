@@ -228,8 +228,12 @@ public:
     llvm::Value* fileCopy(const eshkol_operations_t* op);
     llvm::Value* mkdirRecursive(const eshkol_operations_t* op);
     llvm::Value* mkdtempBuiltin(const eshkol_operations_t* op);
+    llvm::Value* makeTempFile(const eshkol_operations_t* op);
+    llvm::Value* makeTempDir(const eshkol_operations_t* op);
     llvm::Value* directoryDeleteRecursive(const eshkol_operations_t* op);
     llvm::Value* shellQuote(const eshkol_operations_t* op);
+    llvm::Value* forkBuiltin(const eshkol_operations_t* op);
+    llvm::Value* execvBuiltin(const eshkol_operations_t* op);
     llvm::Value* processSpawn(const eshkol_operations_t* op);
     llvm::Value* processWait(const eshkol_operations_t* op);
     llvm::Value* pollFd(const eshkol_operations_t* op);
