@@ -2265,12 +2265,11 @@ public:
 
                     // Add terminator to main function if it doesn't have one
                     if (!builder->GetInsertBlock()->getTerminator()) {
-                        // GLOBAL ARENA FIX: Cleanup arena before return (SKIP IN REPL MODE)
-                        // In REPL mode, s-expressions need to persist across evaluations
+                        // The runtime owns the global arena returned by get_global_arena().
+                        // Do not destroy it here: workers and runtime helpers may share it,
+                        // and process/runtime teardown owns its lifetime.
                         if (!g_repl_mode_enabled) {
-                            Value* arena_to_destroy = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
-                            builder->CreateCall(getArenaDestroyFunc(), {arena_to_destroy});
-                            eshkol_debug("Added global arena cleanup before main return (top-level expressions)");
+                            eshkol_debug("Skipped runtime-owned global arena cleanup before main return (top-level expressions)");
                         } else {
                             eshkol_debug("Skipped arena cleanup in REPL mode to preserve s-expressions (top-level)");
                         }
@@ -2403,8 +2402,7 @@ public:
                     );
                     arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), shared_arena_ref);
                 } else {
-                    Value* arena_size = sizeConst(8192);
-                    arena_ptr = builder->CreateCall(getArenaCreateFunc(), {arena_size});
+                    arena_ptr = builder->CreateCall(getGlobalArenaFunc(), {});
 
                     // Also store in __repl_shared_arena for runtime functions
                     GlobalVariable* shared_arena_ref = new GlobalVariable(
@@ -2416,6 +2414,7 @@ public:
                         "__repl_shared_arena"
                     );
                     builder->CreateStore(arena_ptr, shared_arena_ref);
+                    eshkol_debug("Loaded thread-safe global arena");
                 }
                 builder->CreateStore(arena_ptr, global_arena);
 
@@ -2516,10 +2515,9 @@ public:
                 Value* result = builder->CreateCall(user_main);
                 Value* result_int64 = unpackInt64FromTaggedValue(result);
 
-                // Step 6: Cleanup arena
+                // Step 6: Leave the runtime-owned global arena alive.
                 if (!g_repl_mode_enabled) {
-                    Value* arena_to_destroy = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
-                    builder->CreateCall(getArenaDestroyFunc(), {arena_to_destroy});
+                    eshkol_debug("Skipped runtime-owned global arena cleanup before main return (user main)");
                 }
 
                 // Step 7: Return
@@ -3371,6 +3369,7 @@ private:
 
     // Arena function accessors (forwarding to MemoryCodegen)
     Function* getArenaCreateFunc() { return mem->getArenaCreate(); }
+    Function* getGlobalArenaFunc() { return mem->getGlobalArena(); }
     Function* getArenaDestroyFunc() { return mem->getArenaDestroy(); }
     Function* getArenaAllocateFunc() { return mem->getArenaAllocate(); }
     Function* getArenaPushScopeFunc() { return mem->getArenaPushScope(); }
@@ -4151,9 +4150,8 @@ private:
                     arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), shared_arena_ref);
                     eshkol_debug("Loaded shared REPL arena");
                 } else {
-                    // Normal mode: create new arena
-                    Value* arena_size = sizeConst(8192);
-                    arena_ptr = builder->CreateCall(getArenaCreateFunc(), {arena_size});
+                    // Normal mode: use the runtime-owned thread-safe global arena.
+                    arena_ptr = builder->CreateCall(getGlobalArenaFunc(), {});
 
                     // Also store in __repl_shared_arena for runtime functions
                     GlobalVariable* shared_arena_ref = new GlobalVariable(
@@ -4165,7 +4163,7 @@ private:
                         "__repl_shared_arena"
                     );
                     builder->CreateStore(arena_ptr, shared_arena_ref);
-                    eshkol_debug("Created new arena in main wrapper");
+                    eshkol_debug("Loaded thread-safe global arena in main wrapper");
                 }
                 builder->CreateStore(arena_ptr, global_arena);
 
@@ -4281,9 +4279,8 @@ private:
                     arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), shared_arena_ref);
                     eshkol_debug("Loaded shared REPL arena (no lambdas case)");
                 } else {
-                    // Normal mode: create new arena
-                    Value* arena_size = sizeConst(8192);
-                    arena_ptr = builder->CreateCall(getArenaCreateFunc(), {arena_size});
+                    // Normal mode: use the runtime-owned thread-safe global arena.
+                    arena_ptr = builder->CreateCall(getGlobalArenaFunc(), {});
 
                     // Also store in __repl_shared_arena for runtime functions
                     GlobalVariable* shared_arena_ref = new GlobalVariable(
@@ -4295,7 +4292,7 @@ private:
                         "__repl_shared_arena"
                     );
                     builder->CreateStore(arena_ptr, shared_arena_ref);
-                    eshkol_debug("Created new arena in main wrapper");
+                    eshkol_debug("Loaded thread-safe global arena in main wrapper");
                 }
                 builder->CreateStore(arena_ptr, global_arena);
 
@@ -4310,12 +4307,11 @@ private:
             // CRITICAL FIX: scheme_main returns tagged_value, need to unpack to int64 first
             Value* result_int64 = unpackInt64FromTaggedValue(result);
 
-            // GLOBAL ARENA FIX: Cleanup arena before return (SKIP IN REPL MODE)
-            // In REPL mode, s-expressions need to persist across evaluations
+            // The runtime owns the global arena returned by get_global_arena().
+            // Do not destroy it here: workers and runtime helpers may share it,
+            // and process/runtime teardown owns its lifetime.
             if (!g_repl_mode_enabled) {
-                Value* arena_to_destroy = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
-                builder->CreateCall(getArenaDestroyFunc(), {arena_to_destroy});
-                eshkol_debug("Added global arena cleanup before main return");
+                eshkol_debug("Skipped runtime-owned global arena cleanup before main return");
             } else {
                 eshkol_debug("Skipped arena cleanup in REPL mode to preserve s-expressions");
             }
@@ -4413,9 +4409,8 @@ private:
                 arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), shared_arena_ref);
                 eshkol_debug("Loaded shared REPL arena (top-level expressions case)");
             } else {
-                // Normal mode: create new arena
-                Value* arena_size = sizeConst(8192);
-                arena_ptr = builder->CreateCall(getArenaCreateFunc(), {arena_size});
+                // Normal mode: use the runtime-owned thread-safe global arena.
+                arena_ptr = builder->CreateCall(getGlobalArenaFunc(), {});
 
                 // Also store in __repl_shared_arena for runtime functions
                 GlobalVariable* shared_arena_ref2 = new GlobalVariable(
@@ -4427,7 +4422,7 @@ private:
                     "__repl_shared_arena"
                 );
                 builder->CreateStore(arena_ptr, shared_arena_ref2);
-                eshkol_debug("Created new arena in main (top-level expressions case)");
+                eshkol_debug("Loaded thread-safe global arena in main (top-level expressions case)");
             }
             builder->CreateStore(arena_ptr, global_arena);
 
