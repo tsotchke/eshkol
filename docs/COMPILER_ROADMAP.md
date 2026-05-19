@@ -42,7 +42,7 @@ Delivered in the v1.2.x closeout:
 
 Verification snapshot:
 - `ctest --test-dir build --output-on-failure`: 14/14.
-- `scripts/run_v1_2_edge_cases_tests.sh`: 85/85.
+- `scripts/run_v1_2_edge_cases_tests.sh`: 86/86.
 - `scripts/run_stdlib_tests.sh`: 11/11.
 - `scripts/run_modules_tests.sh`: 5/5.
 - `scripts/run_parallel_tests.sh`: 7/7.
@@ -94,7 +94,7 @@ Already-shipped items as of current branch:
 - Symbol tagged-value consistency (#129) ✅
 - Python FFI structured returns + error recovery (#110) ✅
 - Car/cdr type guards on non-pair input (#135) ✅
-- v1.2 regression suite plus current 85-test edge/security suite ✅
+- v1.2 regression suite plus current 86-test edge/security suite ✅
 
 **Noesis M0 closeout status (verified 2026-05-19)**
 
@@ -113,7 +113,7 @@ Already-shipped items as of current branch:
 | #141 | match apostrophe-quote subject hang | ✅ done | — |
 
 **Exit criterion for v1.2**: Noesis M0 is fully unblocked. All 11 closeout
-items shipped. The current v1.2 edge/security suite passes 85/85, CTest passes
+items shipped. The current v1.2 edge/security suite passes 86/86, CTest passes
 14/14, and Noesis `tests/smoke/all.esk` exits with `NOESIS_ALL_RC=0` using the
 v1.2-scale build.
 
@@ -136,7 +136,7 @@ reconciliation pass.
 | GG | `NOESIS_TEST_VAR=42 ... bug-GG-getenv-string-predicate-mismatch.esk` prints `string?: #t` and `display: 42`. | Close as fixed. |
 | JJ | `bug-JJ-loaded-helper-variadic-rest-raw.esk` now prints `rest: (#f)`, `pair?: #t`, `car rest: #f`, exit 0. | Close as fixed. |
 | KK | `eshkol-run --version` exits 0 and prints `Eshkol Compiler v1.2.0-scale`. | Close as fixed. |
-| LL | The old Noesis repro script still exits 1 unconditionally, but each probe inside it now succeeds: `--emit-object` is accepted, `-o requested.o` creates exactly that path, and `--shared-lib`, `-fPIC`, `-I`, and `-D` are accepted. | Close the underlying bug. Keep v1.3 work to document the object-build CLI contract and convert the stale Noesis script into a positive regression. |
+| LL | The old Noesis repro script still exits 1 unconditionally, but each probe inside it now succeeds: `--emit-object` is accepted, `-o requested.o` creates exactly that path, and `--shared-lib`, `-fPIC`, `-I`, and `-D` are accepted. Eshkol now has `tests/v1_2_edge_cases/object_build_cli_contract_test.sh` as the positive contract regression. | Close the underlying bug. Remaining work is Noesis-side tracker/script reconciliation. |
 
 Result: there are no currently verified Noesis M0 substrate blockers left in
 Eshkol. The remaining work is either v1.3+ productization or stale Noesis
@@ -167,9 +167,9 @@ Deliverables:
 - Publish `v1.2.1-noesis-m0`.
 - Update the Noesis tracker or open a Noesis PR closing W, Z, BB, GG, JJ, KK,
   and LL based on the 2026-05-19 repro evidence above.
-- Add a positive LL contract regression on the Eshkol side so object-build
+- Keep the positive LL contract regression on the Eshkol side so object-build
   compatibility does not depend on the stale Noesis failing script.
-- Document the supported object-build command shape:
+- Keep the supported object-build command shape documented:
   `eshkol-run --emit-object -o path.o [--shared-lib] [-fPIC] [-I dir ...]
   [-D name[=value] ...] file.esk`.
 - Document the current `(provide ...)` semantics: informational export list

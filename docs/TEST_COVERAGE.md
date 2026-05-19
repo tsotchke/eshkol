@@ -8,7 +8,7 @@
 **Additional verification**: Bytecode VM passes 331/332 tests (99.7%); the
 weight matrix transformer passes 126/126 inline verifier programs and 123/123
 traced programs with 3-way verification. The current v1.2 edge/security suite
-passes 85/85, and the Noesis aggregate smoke exits with `NOESIS_ALL_RC=0`.
+passes 86/86, and the Noesis aggregate smoke exits with `NOESIS_ALL_RC=0`.
 
 ---
 
