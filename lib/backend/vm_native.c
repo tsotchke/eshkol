@@ -124,6 +124,9 @@ static VmBytevector* vm_value_as_bytevector(VM* vm, Value value) {
 }
 
 typedef int32_t (*VmCompressionFn)(const char*, int32_t, char*, int32_t);
+typedef int (*VmSqliteExecFn)(int64_t, const char*);
+typedef int64_t (*VmSqliteLastInsertIdFn)(int64_t);
+typedef int (*VmSqliteChangesFn)(int64_t);
 
 #if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
 static volatile sig_atomic_t vm_last_signal = 0;
@@ -2039,6 +2042,29 @@ static void vm_timers_poll_due(VM* vm) {
     vm->polling_timers = 0;
 }
 
+static void* vm_runtime_symbol(const char* name) {
+#if !defined(_WIN32) && !defined(ESHKOL_VM_WASM)
+    if (!name) return NULL;
+    return dlsym(RTLD_DEFAULT, name);
+#else
+    (void)name;
+    return NULL;
+#endif
+}
+
+static VmSqliteExecFn vm_sqlite_exec_symbol(void) {
+    return (VmSqliteExecFn)(uintptr_t)vm_runtime_symbol("eshkol_sqlite_exec");
+}
+
+static VmSqliteLastInsertIdFn vm_sqlite_last_insert_id_symbol(void) {
+    return (VmSqliteLastInsertIdFn)(uintptr_t)
+        vm_runtime_symbol("eshkol_sqlite_last_insert_rowid");
+}
+
+static VmSqliteChangesFn vm_sqlite_changes_symbol(void) {
+    return (VmSqliteChangesFn)(uintptr_t)vm_runtime_symbol("eshkol_sqlite_changes");
+}
+
 static int vm_json_alist_ref(VM* vm, Value obj, Value key, Value* out) {
     Value cur = obj;
     while (cur.type == VAL_PAIR && is_valid_heap_ptr(vm, cur.as.ptr)) {
@@ -2341,24 +2367,15 @@ static Value vm_json_stringify_pretty_value(VM* vm, Value value, int indent) {
 }
 
 static VmCompressionFn vm_compression_symbol(const char* name) {
-#if !defined(_WIN32) && !defined(ESHKOL_VM_WASM)
-    if (!name) return NULL;
-    return (VmCompressionFn)(uintptr_t)dlsym(RTLD_DEFAULT, name);
-#else
-    (void)name;
-    return NULL;
-#endif
+    return (VmCompressionFn)(uintptr_t)vm_runtime_symbol(name);
 }
 
 static int vm_compression_available(void) {
-#if !defined(_WIN32) && !defined(ESHKOL_VM_WASM)
     typedef int32_t (*VmCompressionAvailableFn)(void);
     VmCompressionAvailableFn fn =
-        (VmCompressionAvailableFn)(uintptr_t)dlsym(RTLD_DEFAULT, "eshkol_compression_available");
+        (VmCompressionAvailableFn)(uintptr_t)
+        vm_runtime_symbol("eshkol_compression_available");
     return fn && fn();
-#else
-    return 0;
-#endif
 }
 
 static int vm_compression_input(VM* vm, Value value, const char** data, int32_t* len) {
@@ -6055,6 +6072,63 @@ static void vm_dispatch_native(VM* vm, int fid) {
         if (vm_timer_valid(vm, handle) && vm->timers[handle].fired_count > 0) {
             vm->timers[handle].fired_count--;
             vm_push(vm, BOOL_VAL(1));
+        } else {
+            vm_push(vm, BOOL_VAL(0));
+        }
+        break;
+    }
+    case 2027: { /* db-transaction(db, thunk) → result or #f */
+        Value thunk_val = vm_pop(vm), db_val = vm_pop(vm);
+        VmSqliteExecFn exec_fn = vm_sqlite_exec_symbol();
+        int64_t db = (int64_t)as_number(db_val);
+        if (!exec_fn || thunk_val.type != VAL_CLOSURE || db < 0 ||
+            exec_fn(db, "BEGIN") != 0) {
+            vm_push(vm, BOOL_VAL(0));
+            break;
+        }
+        Value result = vm_call_closure_from_native(vm, thunk_val, NULL, 0);
+        if (exec_fn(db, "COMMIT") != 0) {
+            (void)exec_fn(db, "ROLLBACK");
+            vm_push(vm, BOOL_VAL(0));
+        } else {
+            vm_push(vm, result);
+        }
+        break;
+    }
+    case 2028: { /* db-busy-timeout(db, ms) → bool */
+        Value ms_val = vm_pop(vm), db_val = vm_pop(vm);
+        VmSqliteExecFn exec_fn = vm_sqlite_exec_symbol();
+        int64_t db = (int64_t)as_number(db_val);
+        int64_t ms = (int64_t)as_number(ms_val);
+        if (ms < 0) ms = 0;
+        if (exec_fn && db >= 0) {
+            char sql[96];
+            snprintf(sql, sizeof(sql), "PRAGMA busy_timeout=%lld", (long long)ms);
+            vm_push(vm, BOOL_VAL(exec_fn(db, sql) == 0));
+        } else {
+            vm_push(vm, BOOL_VAL(0));
+        }
+        break;
+    }
+    case 2029: { /* db-last-insert-id(db) → integer or #f */
+        Value db_val = vm_pop(vm);
+        VmSqliteLastInsertIdFn fn = vm_sqlite_last_insert_id_symbol();
+        if (fn) {
+            int64_t rowid = fn((int64_t)as_number(db_val));
+            if (rowid >= 0) {
+                vm_push(vm, INT_VAL(rowid));
+                break;
+            }
+        }
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+    case 2030: { /* db-changes(db) → integer or #f */
+        Value db_val = vm_pop(vm);
+        VmSqliteChangesFn fn = vm_sqlite_changes_symbol();
+        if (fn) {
+            int changes = fn((int64_t)as_number(db_val));
+            vm_push(vm, INT_VAL((int64_t)changes));
         } else {
             vm_push(vm, BOOL_VAL(0));
         }
