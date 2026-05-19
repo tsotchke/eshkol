@@ -5612,6 +5612,9 @@ static const BuiltinDef BUILTINS[] = {
     {"yoga-node-create", 2036, 0}, {"yoga-node-set!", 2037, 3},
     {"yoga-node-add-child!", 2038, 2}, {"yoga-node-calculate!", 2039, 3},
     {"yoga-node-get-computed", 2040, 2}, {"yoga-node-free!", 2041, 1},
+    {"http-server-create", 2042, 1}, {"http-server-port", 2043, 1},
+    {"http-server-accept", 2044, 3}, {"http-server-respond", 2045, 4},
+    {"http-server-close", 2046, 1},
     {"string-ends-with?", 1956, 2}, {"string-index-of", 1957, 3},
     {"string-pad-left", 1958, 3}, {"string-pad-right", 1959, 3},
     /* Missing hash */

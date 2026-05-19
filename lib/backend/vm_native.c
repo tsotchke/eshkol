@@ -2312,6 +2312,25 @@ static void vm_yoga_layout_node(VM* vm, int handle,
     }
 }
 
+static int vm_http_server_valid(VM* vm, int handle) {
+    return vm && handle > 0 &&
+           handle < (int)(sizeof(vm->http_servers) / sizeof(vm->http_servers[0])) &&
+           vm->http_servers[handle].active;
+}
+
+static int vm_http_server_store(VM* vm, int listen_fd, int port) {
+    for (int i = 1; i < (int)(sizeof(vm->http_servers) / sizeof(vm->http_servers[0])); i++) {
+        if (!vm->http_servers[i].active) {
+            vm->http_servers[i].active = 1;
+            vm->http_servers[i].listen_fd = listen_fd;
+            vm->http_servers[i].client_fd = -1;
+            vm->http_servers[i].port = port;
+            return i;
+        }
+    }
+    return -1;
+}
+
 static int vm_json_alist_ref(VM* vm, Value obj, Value key, Value* out) {
     Value cur = obj;
     while (cur.type == VAL_PAIR && is_valid_heap_ptr(vm, cur.as.ptr)) {
@@ -6553,6 +6572,144 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 vm->yoga_nodes[parent].child_count = out;
             }
             memset(&vm->yoga_nodes[handle], 0, sizeof(vm->yoga_nodes[handle]));
+            vm_push(vm, BOOL_VAL(1));
+            break;
+        }
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+    case 2042: { /* http-server-create(port) → server or #f */
+        Value port_val = vm_pop(vm);
+#if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
+        int requested_port = (int)as_number(port_val);
+        int fd = socket(AF_INET, SOCK_STREAM, 0);
+        if (fd >= 0) {
+            int opt = 1;
+            (void)setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, (socklen_t)sizeof(opt));
+            struct sockaddr_in addr;
+            memset(&addr, 0, sizeof(addr));
+            addr.sin_family = AF_INET;
+            addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+            addr.sin_port = htons((uint16_t)requested_port);
+            if (bind(fd, (struct sockaddr*)&addr, sizeof(addr)) == 0 &&
+                listen(fd, 8) == 0) {
+                socklen_t addr_len = (socklen_t)sizeof(addr);
+                if (getsockname(fd, (struct sockaddr*)&addr, &addr_len) == 0) {
+                    int handle = vm_http_server_store(vm, fd, (int)ntohs(addr.sin_port));
+                    if (handle > 0) {
+                        vm_push(vm, INT_VAL((int64_t)handle));
+                        break;
+                    }
+                }
+            }
+            close(fd);
+        }
+#else
+        (void)port_val;
+#endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+    case 2043: { /* http-server-port(server) → integer or #f */
+        Value server_val = vm_pop(vm);
+        int handle = (int)as_number(server_val);
+        if (vm_http_server_valid(vm, handle)) {
+            vm_push(vm, INT_VAL((int64_t)vm->http_servers[handle].port));
+            break;
+        }
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+    case 2044: { /* http-server-accept(server, buffer-size, timeout-ms) → request string or #f */
+        Value timeout_val = vm_pop(vm), buffer_val = vm_pop(vm), server_val = vm_pop(vm);
+#if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
+        int handle = (int)as_number(server_val);
+        int buffer_size = (int)as_number(buffer_val);
+        int timeout_ms = (int)as_number(timeout_val);
+        if (buffer_size < 128) buffer_size = 128;
+        if (buffer_size > 65536) buffer_size = 65536;
+        if (timeout_ms < 0) timeout_ms = 0;
+        if (vm_http_server_valid(vm, handle)) {
+            struct pollfd pfd;
+            pfd.fd = vm->http_servers[handle].listen_fd;
+            pfd.events = POLLIN;
+            pfd.revents = 0;
+            if (poll(&pfd, 1, timeout_ms) > 0 && (pfd.revents & POLLIN)) {
+                int client_fd = accept(vm->http_servers[handle].listen_fd, NULL, NULL);
+                if (client_fd >= 0) {
+                    if (vm->http_servers[handle].client_fd >= 0)
+                        close(vm->http_servers[handle].client_fd);
+                    vm->http_servers[handle].client_fd = client_fd;
+                    char* buf = (char*)malloc((size_t)buffer_size + 1);
+                    if (buf) {
+                        int total = 0;
+                        while (total < buffer_size) {
+                            ssize_t n = recv(client_fd, buf + total, (size_t)(buffer_size - total), 0);
+                            if (n <= 0) break;
+                            total += (int)n;
+                            buf[total] = '\0';
+                            if (strstr(buf, "\r\n\r\n") || strstr(buf, "\n\n")) break;
+                        }
+                        Value request = total > 0 ? vm_string_value(vm, buf, total) : BOOL_VAL(0);
+                        free(buf);
+                        vm_push(vm, request);
+                        break;
+                    }
+                }
+            }
+        }
+#else
+        (void)timeout_val; (void)buffer_val; (void)server_val;
+#endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+    case 2045: { /* http-server-respond(server, status, content-type, body) → bool */
+        Value body_val = vm_pop(vm), type_val = vm_pop(vm), status_val = vm_pop(vm), server_val = vm_pop(vm);
+#if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
+        int handle = (int)as_number(server_val);
+        int status = (int)as_number(status_val);
+        VmString* content_type = vm_value_as_string(vm, type_val);
+        VmString* body = vm_value_as_string(vm, body_val);
+        if (vm_http_server_valid(vm, handle) && vm->http_servers[handle].client_fd >= 0 &&
+            body && body->data) {
+            if (status <= 0) status = 200;
+            const char* reason = status == 404 ? "Not Found" :
+                                 status == 500 ? "Internal Server Error" :
+                                 status == 400 ? "Bad Request" : "OK";
+            const char* ctype = (content_type && content_type->data && content_type->byte_len > 0)
+                ? content_type->data : "text/plain";
+            char header[512];
+            int hlen = snprintf(header, sizeof(header),
+                                "HTTP/1.1 %d %s\r\n"
+                                "Content-Type: %s\r\n"
+                                "Content-Length: %lld\r\n"
+                                "Connection: close\r\n\r\n",
+                                status, reason, ctype, (long long)body->byte_len);
+            if (hlen > 0 && hlen < (int)sizeof(header) &&
+                send(vm->http_servers[handle].client_fd, header, (size_t)hlen, 0) == hlen &&
+                send(vm->http_servers[handle].client_fd, body->data, (size_t)body->byte_len, 0) == body->byte_len) {
+                close(vm->http_servers[handle].client_fd);
+                vm->http_servers[handle].client_fd = -1;
+                vm_push(vm, BOOL_VAL(1));
+                break;
+            }
+        }
+#else
+        (void)body_val; (void)type_val; (void)status_val; (void)server_val;
+#endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+    case 2046: { /* http-server-close(server) → bool */
+        Value server_val = vm_pop(vm);
+        int handle = (int)as_number(server_val);
+        if (vm_http_server_valid(vm, handle)) {
+#if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
+            if (vm->http_servers[handle].client_fd >= 0) close(vm->http_servers[handle].client_fd);
+            if (vm->http_servers[handle].listen_fd >= 0) close(vm->http_servers[handle].listen_fd);
+#endif
+            memset(&vm->http_servers[handle], 0, sizeof(vm->http_servers[handle]));
             vm_push(vm, BOOL_VAL(1));
             break;
         }

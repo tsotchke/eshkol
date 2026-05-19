@@ -1281,6 +1281,11 @@ public:
         function_return_types["lru-size"] = BuiltinTypes::Integer;
         function_return_types["format"] = BuiltinTypes::String;
         function_return_types["_format-list"] = BuiltinTypes::String;
+        function_return_types["http-server-create"] = BuiltinTypes::Integer;
+        function_return_types["http-server-port"] = BuiltinTypes::Integer;
+        function_return_types["http-server-accept"] = BuiltinTypes::String;
+        function_return_types["http-server-respond"] = BuiltinTypes::Boolean;
+        function_return_types["http-server-close"] = BuiltinTypes::Boolean;
         function_return_types["string-ends-with?"] = BuiltinTypes::Boolean;
         function_return_types["string-index-of"] = BuiltinTypes::Integer;
         function_return_types["string-pad-left"] = BuiltinTypes::String;
@@ -12057,6 +12062,11 @@ private:
         if (func_name == "lru-clear!") return system_->lruClear(op);
         if (func_name == "lru-size") return system_->lruSize(op);
         if (func_name == "_format-list") return system_->formatList(op);
+        if (func_name == "http-server-create") return system_->httpServerCreate(op);
+        if (func_name == "http-server-port") return system_->httpServerPort(op);
+        if (func_name == "http-server-accept") return system_->httpServerAccept(op);
+        if (func_name == "http-server-respond") return system_->httpServerRespond(op);
+        if (func_name == "http-server-close") return system_->httpServerClose(op);
         if (func_name == "string-ends-with?") return system_->stringEndsWith(op);
         if (func_name == "string-index-of") return system_->stringIndexOf(op);
         if (func_name == "string-pad-left") return system_->stringPadLeft(op);
@@ -20000,6 +20010,8 @@ private:
             "line-reader-poll", "line-reader-close", "fd-close",
             "make-lru-cache", "lru-get", "lru-set!", "lru-has?",
             "lru-delete!", "lru-clear!", "lru-size", "format", "_format-list",
+            "http-server-create", "http-server-port", "http-server-accept",
+            "http-server-respond", "http-server-close",
             "string-ends-with?", "string-index-of",
             "string-pad-left", "string-pad-right",
             "kb-save", "kb-load", "tensor-token-estimate",

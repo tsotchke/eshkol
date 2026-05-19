@@ -377,10 +377,26 @@ mTLS via `CURLOPT_SSLCERT`/`CURLOPT_SSLKEY`/`CURLOPT_CAINFO`.
 Bind TCP socket, parse HTTP/1.1, call `(handler method path query headers body)`.
 Needed for OAuth PKCE callback and MCP auth flow.
 
+Standalone VM native ID 2042 exposes the existing low-level agent server shape:
+`(http-server-create port) -> server`, binding loopback only. Use port `0` for
+an ephemeral port.
+
 ### `(http-server-listen server port) -> integer`
 Listen on port. Port 0 = random. Returns actual port.
 
+Standalone VM native ID 2043 is `(http-server-port server) -> integer`, matching
+`lib/agent/http_server.esk`.
+
+### `(http-server-accept server buffer-size timeout-ms) -> string-or-false`
+Standalone VM native ID 2044 accepts one loopback HTTP request and returns the
+raw request bytes as an arena-owned string, or `#f` on timeout/error.
+
+### `(http-server-respond server status content-type body) -> bool`
+Standalone VM native ID 2045 sends a close-delimited HTTP/1.1 response to the
+current accepted client.
+
 ### `(http-server-close server) -> void`
+Standalone VM native ID 2046 closes the listener and any pending client.
 
 ### `(websocket-connect url headers) -> ws`
 WebSocket upgrade handshake. Using libcurl 7.86+ or raw TCP + TLS.
