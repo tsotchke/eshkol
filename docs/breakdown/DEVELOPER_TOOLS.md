@@ -379,10 +379,15 @@ The `eshkol-run` binary (source: `exe/eshkol-run.cpp`) exposes several flags for
 | `--strict-types` | — | flag | Type errors are fatal instead of warnings |
 | `--unsafe` | — | flag | Skip all type checks |
 | `--compile-only` | `-c` | flag | Emit `.o` object file only, do not link to binary |
+| `--emit-object` | — | flag | Alias for `--compile-only`; build-system-friendly object mode |
 | `--shared-lib` | `-s` | flag | Build a shared library (no `main`; uses `LinkOnceODRLinkage`) |
+| `-fPIC` | — | flag | Accepted for build-system compatibility when emitting objects |
+| `-I <dir>` | — | option | Add a source/module search path for `load` and `require` resolution |
+| `-D NAME[=VALUE]` | — | option | Accepted for build-system compatibility; not source-level preprocessing |
 | `--no-stdlib` | `-n` | flag | Do not auto-load the standard library (`build/stdlib.o`) |
 | `--eval` | `-e` | string | JIT-evaluate a single expression and print result |
 | `--run` | `-r` | flag | JIT-run a file without compiling to disk |
+| `--version` | — | flag | Print `Eshkol Compiler v...` and exit 0 |
 
 ### 4.2 AST Dump (`--dump-ast`)
 

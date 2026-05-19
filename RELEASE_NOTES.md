@@ -13,18 +13,18 @@ fixed.
 The headline addition isn't a feature — it's the edge-case regression
 suite that catches every fix in this release going forward. The
 v1.2.0 release shipped with 62 tests; the current v1.2.x Noesis M0
-closeout build carries **85 passing edge/security tests** plus a full
+closeout build carries **86 passing edge/security tests** plus a full
 Noesis aggregate smoke pass.
 
 ## v1.2.x Noesis M0 Closeout Addendum (May 19, 2026)
 
 The current v1.2-scale branch closes the Noesis M0 audit path:
 
-- `tests/v1_2_edge_cases` passes **85/85**, including shared
+- `tests/v1_2_edge_cases` passes **86/86**, including shared
   hash-table mutation under `parallel-map`, late variadic REPL forward
   refs, binary I/O, match predicate binding, tensor pixel fill,
-  first-class builtins, channels, threads, and shell-level CLI/linker
-  probes.
+  first-class builtins, channels, threads, object-build CLI contract
+  coverage, and shell-level CLI/linker probes.
 - Noesis `tests/smoke/all.esk` passes with `NOESIS_ALL_RC=0`.
 - The previously intermittent dual-neural crash is fixed by
   serializing runtime hash-table access; the focused Noesis
