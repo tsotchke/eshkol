@@ -3209,6 +3209,126 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_lru_size_v(eshkol_sysbuiltin_val
                                  : sys_make_int64(0);
 }
 
+static int sys_format_append(char* out, size_t cap, size_t* pos, const char* s, size_t len) {
+    if (!out || !pos || !s) return 0;
+    if (*pos + len >= cap) return 0;
+    memcpy(out + *pos, s, len);
+    *pos += len;
+    out[*pos] = '\0';
+    return 1;
+}
+
+static int sys_format_append_cstr(char* out, size_t cap, size_t* pos, const char* s) {
+    return sys_format_append(out, cap, pos, s ? s : "", s ? strlen(s) : 0);
+}
+
+static double sys_extract_double_display(eshkol_sysbuiltin_value_t v) {
+    if (v.type == SYS_TYPE_DOUBLE) {
+        double d = 0.0;
+        memcpy(&d, &v.data, sizeof(double));
+        return d;
+    }
+    return (double)sys_extract_int64(v);
+}
+
+static int sys_format_append_value(char* out,
+                                   size_t cap,
+                                   size_t* pos,
+                                   eshkol_sysbuiltin_value_t value,
+                                   char directive) {
+    char buf[128];
+    switch (directive) {
+    case 'd':
+        snprintf(buf, sizeof(buf), "%lld", (long long)sys_extract_int64(value));
+        return sys_format_append_cstr(out, cap, pos, buf);
+    case 'x':
+        snprintf(buf, sizeof(buf), "%llx", (unsigned long long)sys_extract_int64(value));
+        return sys_format_append_cstr(out, cap, pos, buf);
+    case 'f':
+        snprintf(buf, sizeof(buf), "%.6g", sys_extract_double_display(value));
+        return sys_format_append_cstr(out, cap, pos, buf);
+    case 's': {
+        const char* s = sys_extract_string(value);
+        if (s) {
+            return sys_format_append_cstr(out, cap, pos, "\"") &&
+                   sys_format_append_cstr(out, cap, pos, s) &&
+                   sys_format_append_cstr(out, cap, pos, "\"");
+        }
+        /* fall through for non-strings */
+    }
+    case 'a':
+    default: {
+        const char* s = sys_extract_string(value);
+        if (s) return sys_format_append_cstr(out, cap, pos, s);
+        if (value.type == SYS_TYPE_INT64) {
+            snprintf(buf, sizeof(buf), "%lld", (long long)sys_extract_int64(value));
+            return sys_format_append_cstr(out, cap, pos, buf);
+        }
+        if (value.type == SYS_TYPE_DOUBLE) {
+            snprintf(buf, sizeof(buf), "%.6g", sys_extract_double_display(value));
+            return sys_format_append_cstr(out, cap, pos, buf);
+        }
+        if (value.type == SYS_TYPE_BOOL)
+            return sys_format_append_cstr(out, cap, pos, value.data ? "#t" : "#f");
+        if (value.type == SYS_TYPE_NULL)
+            return sys_format_append_cstr(out, cap, pos, "()");
+        snprintf(buf, sizeof(buf), "#<value:%u>", (unsigned)value.type);
+        return sys_format_append_cstr(out, cap, pos, buf);
+    }
+    }
+}
+
+static int sys_format_next_arg(eshkol_sysbuiltin_value_t* args,
+                               eshkol_sysbuiltin_value_t* out) {
+    if (!args || !out || args->type != SYS_TYPE_HEAP_PTR || args->flags != 0x00 ||
+        args->data == 0)
+        return 0;
+    memcpy(out, (void*)(uintptr_t)args->data, sizeof(*out));
+    memcpy(args, (char*)(uintptr_t)args->data + sizeof(*out), sizeof(*args));
+    return 1;
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_format_list_v(
+    eshkol_sysbuiltin_value_t fmt_val,
+    eshkol_sysbuiltin_value_t args_val) {
+    const char* fmt = sys_extract_string(fmt_val);
+    if (!fmt) return sys_make_bool(0);
+    size_t fmt_len = strlen(fmt);
+    char out[16384];
+    size_t pos = 0;
+    out[0] = '\0';
+
+    for (size_t i = 0; i < fmt_len; i++) {
+        char ch = fmt[i];
+        if (ch != '~') {
+            if (!sys_format_append(out, sizeof(out), &pos, &ch, 1)) return sys_make_bool(0);
+            continue;
+        }
+        if (++i >= fmt_len) {
+            if (!sys_format_append_cstr(out, sizeof(out), &pos, "~")) return sys_make_bool(0);
+            break;
+        }
+        char directive = fmt[i];
+        if (directive == '~') {
+            if (!sys_format_append_cstr(out, sizeof(out), &pos, "~")) return sys_make_bool(0);
+        } else if (directive == '%') {
+            if (!sys_format_append_cstr(out, sizeof(out), &pos, "\n")) return sys_make_bool(0);
+        } else if (directive == 'a' || directive == 's' || directive == 'd' ||
+                   directive == 'x' || directive == 'f') {
+            eshkol_sysbuiltin_value_t arg;
+            if (!sys_format_next_arg(&args_val, &arg)) return sys_make_bool(0);
+            if (!sys_format_append_value(out, sizeof(out), &pos, arg, directive))
+                return sys_make_bool(0);
+        } else {
+            if (!sys_format_append_cstr(out, sizeof(out), &pos, "~") ||
+                !sys_format_append(out, sizeof(out), &pos, &directive, 1))
+                return sys_make_bool(0);
+        }
+    }
+
+    return sys_make_string_len(out, pos);
+}
+
 static int sys_utf8_encode_codepoint(int cp, char* out) {
     if (!out) return 0;
     if (cp < 0) cp = ' ';
@@ -3709,6 +3829,7 @@ void eshkol_builtin_lru_has(sv_t* out, const sv_t* a, const sv_t* b) { *out = es
 void eshkol_builtin_lru_delete(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_lru_delete_v(*a, *b); }
 void eshkol_builtin_lru_clear(sv_t* out, const sv_t* a) { *out = eshkol_builtin_lru_clear_v(*a); }
 void eshkol_builtin_lru_size(sv_t* out, const sv_t* a) { *out = eshkol_builtin_lru_size_v(*a); }
+void eshkol_builtin_format_list(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_format_list_v(*a, *b); }
 void eshkol_builtin_string_ends_with(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_string_ends_with_v(*a, *b); }
 void eshkol_builtin_string_index_of(sv_t* out, const sv_t* a, const sv_t* b, const sv_t* c) { *out = eshkol_builtin_string_index_of_v(*a, *b, *c); }
 void eshkol_builtin_string_pad_left(sv_t* out, const sv_t* a, const sv_t* b, const sv_t* c) { *out = eshkol_builtin_string_pad_v(*a, *b, *c, 1); }
