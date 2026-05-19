@@ -2335,6 +2335,11 @@ go-to-definition, find-references, structural rename WITHOUT external LSP.
 REPL JIT already uses dlsym internally. Expose for runtime binding to ANY C
 library (tree-sitter, libgit2, etc.) without recompiling Eshkol.
 
+**VM**: The standalone VM exposes `dlopen`, `dlsym`, and `dlclose` as native IDs
+2032-2034 on POSIX hosts. Handles are VM-lifetime slots, `dlsym` returns a raw
+pointer integer, and all open handles are closed during `vm_free`. Passing `""`
+to `dlopen` opens the current process image.
+
 ## E.12 Format String Function — P2
 
 `(format "~a: ~d items" name count) -> string`

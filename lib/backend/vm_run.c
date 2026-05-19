@@ -1177,6 +1177,7 @@ VM* vm_create(void) {
 }
 void vm_free(VM* vm) {
     vm_regex_free_all(vm);
+    vm_dlopen_close_all(vm);
     heap_destroy(&vm->heap);
     free(vm->code);
     free(vm);

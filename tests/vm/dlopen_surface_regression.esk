@@ -1,0 +1,53 @@
+;; Standalone VM regression for dynamic library loading primitives.
+
+(display "=== dlopen VM surface regression ===") (newline)
+
+(define posix?
+  (or (string=? (os-type) "darwin")
+      (string=? (os-type) "linux")
+      (string=? (os-type) "freebsd")))
+
+(define self (dlopen ""))
+
+(display "T1 dlopen current process returns handle on POSIX: ")
+(display (if (or (not posix?)
+                 (and (number? self) (> self 0)))
+             "PASS"
+             (list "FAIL got " self)))
+(newline)
+
+(define printf-ptr (if (number? self)
+                       (dlsym self "printf")
+                       #f))
+
+(display "T2 dlsym finds printf from current process image: ")
+(display (if (or (not posix?)
+                 (and (number? printf-ptr) (> printf-ptr 0)))
+             "PASS"
+             (list "FAIL got " printf-ptr)))
+(newline)
+
+(display "T3 dlsym missing symbol returns false: ")
+(display (if (or (not posix?)
+                 (not (dlsym self "__eshkol_missing_symbol_for_regression__")))
+             "PASS"
+             "FAIL"))
+(newline)
+
+(define closed (if (number? self)
+                   (dlclose self)
+                   #t))
+
+(display "T4 dlclose releases handle: ")
+(display (if closed
+             "PASS"
+             "FAIL"))
+(newline)
+
+(display "T5 dlopen missing path returns false: ")
+(display (if (not (dlopen "/definitely/not/a/real/library.so"))
+             "PASS"
+             "FAIL"))
+(newline)
+
+(display "=== dlopen VM surface complete ===") (newline)
