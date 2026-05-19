@@ -43,6 +43,14 @@
         (lambda () 'nested-ok)))))
 (check "recursive with-mutex" 'nested-ok nested-result)
 
+;; ── Exception cleanup: with-mutex releases before re-raising ────────
+(define raised-result
+  (guard (e (#t "caught"))
+    (with-mutex m (lambda () (raise "boom")))))
+(check "with-mutex re-raises thunk exception" "caught" raised-result)
+(check "mutex free after with-mutex exception" 0 (mutex-trylock! m))
+(mutex-unlock! m)
+
 ;; ── Condvar lifecycle (no real waiter — we just create + signal) ────
 (define c (make-condvar))
 (check "condvar-signal! on no-waiter returns 0" 0 (condvar-signal! c))
