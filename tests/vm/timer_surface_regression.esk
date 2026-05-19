@@ -1,0 +1,72 @@
+;; Standalone VM regression for timer and interval safe-point callbacks.
+
+(display "=== timer VM surface regression ===") (newline)
+
+(define fired 0)
+(define timer
+  (make-timer 20
+              (lambda ()
+                (set! fired (+ fired 1)))))
+
+(display "T1 make-timer returns handle: ")
+(display (if (and (number? timer) (> timer 0))
+             "PASS"
+             (list "FAIL got " timer)))
+(newline)
+
+(display "T2 timer-check is initially false: ")
+(display (if (not (timer-check timer))
+             "PASS"
+             "FAIL"))
+(newline)
+
+(sleep-ms 40)
+(define timer-fired (timer-check timer))
+
+(display "T3 timer callback fires at safe point: ")
+(display (if (and timer-fired (= fired 1))
+             "PASS"
+             (list "FAIL got " timer-fired " fired " fired)))
+(newline)
+
+(display "T4 one-shot timer event is consumed: ")
+(display (if (not (timer-check timer))
+             "PASS"
+             "FAIL"))
+(newline)
+
+(define cancelled-timer (timer-cancel! timer))
+
+(display "T5 timer-cancel! releases handle: ")
+(display (if cancelled-timer
+             "PASS"
+             "FAIL"))
+(newline)
+
+(define interval-fired 0)
+(define interval
+  (make-interval 20
+                 (lambda ()
+                   (set! interval-fired (+ interval-fired 1)))))
+
+(sleep-ms 40)
+(define interval-first (timer-check interval))
+(sleep-ms 40)
+(define interval-second (timer-check interval))
+(define cancelled-interval (interval-cancel! interval))
+(sleep-ms 40)
+(define interval-after-cancel (timer-check interval))
+
+(display "T6 make-interval repeats at safe points: ")
+(display (if (and interval-first interval-second (>= interval-fired 2))
+             "PASS"
+             (list "FAIL got " interval-first " " interval-second " count " interval-fired)))
+(newline)
+
+(display "T7 interval-cancel! releases handle: ")
+(display (if (and cancelled-interval (not interval-after-cancel))
+             "PASS"
+             "FAIL"))
+(newline)
+
+(display "=== timer VM surface complete ===") (newline)
