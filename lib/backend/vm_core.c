@@ -389,6 +389,11 @@ typedef struct VM {
     Value exit_handlers[32];
     int n_exit_handlers;
     int exit_handlers_drained;
+
+    struct {
+        int active;
+        void* handle;
+    } dynamic_libraries[32];
 } VM;
 
 /* Command-line arguments (set in main, read by native 602) */

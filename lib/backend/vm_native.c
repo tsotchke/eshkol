@@ -2083,6 +2083,43 @@ static VmSqliteChangesFn vm_sqlite_changes_symbol(void) {
     return (VmSqliteChangesFn)(uintptr_t)vm_runtime_symbol("eshkol_sqlite_changes");
 }
 
+static int vm_dlopen_valid(VM* vm, int handle) {
+    return vm && handle > 0 &&
+           handle < (int)(sizeof(vm->dynamic_libraries) / sizeof(vm->dynamic_libraries[0])) &&
+           vm->dynamic_libraries[handle].active &&
+           vm->dynamic_libraries[handle].handle;
+}
+
+static int vm_dlopen_store(VM* vm, void* handle) {
+    if (!vm || !handle) return -1;
+    for (int i = 1; i < (int)(sizeof(vm->dynamic_libraries) /
+                              sizeof(vm->dynamic_libraries[0])); i++) {
+        if (vm->dynamic_libraries[i].active) continue;
+        vm->dynamic_libraries[i].active = 1;
+        vm->dynamic_libraries[i].handle = handle;
+        return i;
+    }
+#if !defined(_WIN32) && !defined(ESHKOL_VM_WASM)
+    dlclose(handle);
+#endif
+    return -1;
+}
+
+static void vm_dlopen_close_all(VM* vm) {
+    if (!vm) return;
+#if !defined(_WIN32) && !defined(ESHKOL_VM_WASM)
+    for (int i = 1; i < (int)(sizeof(vm->dynamic_libraries) /
+                              sizeof(vm->dynamic_libraries[0])); i++) {
+        if (vm->dynamic_libraries[i].active && vm->dynamic_libraries[i].handle)
+            dlclose(vm->dynamic_libraries[i].handle);
+        vm->dynamic_libraries[i].active = 0;
+        vm->dynamic_libraries[i].handle = NULL;
+    }
+#else
+    (void)vm;
+#endif
+}
+
 static int vm_json_alist_ref(VM* vm, Value obj, Value key, Value* out) {
     Value cur = obj;
     while (cur.type == VAL_PAIR && is_valid_heap_ptr(vm, cur.as.ptr)) {
@@ -6155,6 +6192,60 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 2031: { /* at-exit(thunk) → bool */
         Value thunk_val = vm_pop(vm);
         vm_push(vm, BOOL_VAL(vm_exit_handler_add(vm, thunk_val)));
+        break;
+    }
+    case 2032: { /* dlopen(path) → handle or #f */
+        Value path_val = vm_pop(vm);
+#if !defined(_WIN32) && !defined(ESHKOL_VM_WASM)
+        VmString* path = vm_value_as_string(vm, path_val);
+        if (path && path->data) {
+            const char* cpath = (path->byte_len == 0) ? NULL : path->data;
+            void* handle = dlopen(cpath, RTLD_LAZY | RTLD_LOCAL);
+            int slot = vm_dlopen_store(vm, handle);
+            if (slot > 0) {
+                vm_push(vm, INT_VAL((int64_t)slot));
+                break;
+            }
+        }
+#else
+        (void)path_val;
+#endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+    case 2033: { /* dlsym(handle, name) → pointer-integer or #f */
+        Value name_val = vm_pop(vm), handle_val = vm_pop(vm);
+#if !defined(_WIN32) && !defined(ESHKOL_VM_WASM)
+        int handle = (int)as_number(handle_val);
+        VmString* name = vm_value_as_string(vm, name_val);
+        if (vm_dlopen_valid(vm, handle) && name && name->data && name->byte_len > 0) {
+            void* ptr = dlsym(vm->dynamic_libraries[handle].handle, name->data);
+            if (ptr) {
+                vm_push(vm, INT_VAL((int64_t)(intptr_t)ptr));
+                break;
+            }
+        }
+#else
+        (void)name_val; (void)handle_val;
+#endif
+        vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+    case 2034: { /* dlclose(handle) → bool */
+        Value handle_val = vm_pop(vm);
+#if !defined(_WIN32) && !defined(ESHKOL_VM_WASM)
+        int handle = (int)as_number(handle_val);
+        if (vm_dlopen_valid(vm, handle) &&
+            dlclose(vm->dynamic_libraries[handle].handle) == 0) {
+            vm->dynamic_libraries[handle].active = 0;
+            vm->dynamic_libraries[handle].handle = NULL;
+            vm_push(vm, BOOL_VAL(1));
+            break;
+        }
+#else
+        (void)handle_val;
+#endif
+        vm_push(vm, BOOL_VAL(0));
         break;
     }
     case 2014: { /* json-get-in(obj, path, default) → value */
