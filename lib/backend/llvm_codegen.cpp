@@ -8910,6 +8910,46 @@ private:
         return function;
     }
 
+    bool isLocalCaptureStorage(Value* value) const {
+        if (!value) return false;
+
+        if (isa<Argument>(value) || isa<AllocaInst>(value) ||
+            isa<IntToPtrInst>(value) || isa<CallInst>(value)) {
+            return true;
+        }
+
+        return value->getType()->isPointerTy() && !isa<GlobalVariable>(value);
+    }
+
+    bool shouldDropReplTopLevelCapture(const std::string& name) const {
+        auto local_it = symbol_table.find(name);
+        if (local_it != symbol_table.end() &&
+            isLocalCaptureStorage(local_it->second)) {
+            // Keep captures that have already been lowered to local storage in
+            // an enclosing generated function. Named-let capture forwarding
+            // uses pointer Arguments named like `x_cap`; dropping those just
+            // because `x` is also a REPL top-level variable leaves nested
+            // lambdas referring to an outer function's argument directly.
+            return false;
+        }
+
+        return g_repl_user_function_names.count(name) > 0 ||
+               g_repl_user_variable_names.count(name) > 0;
+    }
+
+    void filterReplTopLevelCaptures(std::vector<std::string>& free_vars) {
+        if (!g_repl_mode_enabled || free_vars.empty()) {
+            return;
+        }
+
+        std::lock_guard<std::mutex> lock(g_repl_mutex);
+        free_vars.erase(
+            std::remove_if(free_vars.begin(), free_vars.end(),
+                [&](const std::string& v) {
+                    return shouldDropReplTopLevelCapture(v);
+                }),
+            free_vars.end());
+    }
 
     // Generate a nested function definition as a closure (like a lambda)
     Value* codegenNestedFunctionDefinition(const eshkol_operations_t* op) {
@@ -8945,16 +8985,7 @@ private:
         // REPL HOT RELOAD: top-level user bindings are looked up dynamically
         // through the host-owned slots, never captured. See codegenLambda for
         // the full rationale (R7RS section 4.1.4).
-        if (g_repl_mode_enabled && !free_vars.empty()) {
-            std::lock_guard<std::mutex> lock(g_repl_mutex);
-            free_vars.erase(
-                std::remove_if(free_vars.begin(), free_vars.end(),
-                    [&](const std::string& v) {
-                        return g_repl_user_function_names.count(v) > 0 ||
-                               g_repl_user_variable_names.count(v) > 0;
-                    }),
-                free_vars.end());
-        }
+        filterReplTopLevelCaptures(free_vars);
 
         eshkol_debug("Nested function %s found %zu free variables", func_name.c_str(), free_vars.size());
         for (const std::string& var : free_vars) {
@@ -21432,16 +21463,7 @@ private:
         // values of any free occurrences of variables in the lambda
         // expression" — and that environment is the *current* top-level
         // bindings, not a snapshot.
-        if (g_repl_mode_enabled && !free_vars.empty()) {
-            std::lock_guard<std::mutex> lock(g_repl_mutex);
-            free_vars.erase(
-                std::remove_if(free_vars.begin(), free_vars.end(),
-                    [&](const std::string& v) {
-                        return g_repl_user_function_names.count(v) > 0 ||
-                               g_repl_user_variable_names.count(v) > 0;
-                    }),
-                free_vars.end());
-        }
+        filterReplTopLevelCaptures(free_vars);
 
         eshkol_debug("Lambda %s found %zu free variables", lambda_name.c_str(), free_vars.size());
         for (const std::string& var : free_vars) {
