@@ -1239,6 +1239,7 @@ static const char* prelude_local_names[] = {
     "setenv",
     "unsetenv",
     "current-error-port",
+    "getenv",
     "get-environment-variable",
     "path-join",
     "path-dirname",

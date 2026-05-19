@@ -1,0 +1,37 @@
+;; Standalone VM regression for getenv / get-environment-variable parity.
+
+(display "=== getenv alias VM surface regression ===") (newline)
+
+(define env-name "ESHKOL_VM_GETENV_ALIAS_TEST")
+(setenv env-name "42")
+
+(define v (getenv env-name))
+(define v2 (get-environment-variable env-name))
+
+(display "T1 getenv returns a string for set variables: ")
+(display (if (and (string? v) (string=? v "42"))
+             "PASS"
+             (list "FAIL got " v)))
+(newline)
+
+(display "T2 getenv result supports string->number: ")
+(display (if (= (string->number v) 42)
+             "PASS"
+             "FAIL"))
+(newline)
+
+(display "T3 get-environment-variable matches getenv: ")
+(display (if (and (string? v2) (string=? v2 v))
+             "PASS"
+             (list "FAIL got " v2)))
+(newline)
+
+(unsetenv env-name)
+
+(display "T4 getenv returns false after unsetenv: ")
+(display (if (not (getenv env-name))
+             "PASS"
+             "FAIL"))
+(newline)
+
+(display "=== getenv alias VM surface complete ===") (newline)
