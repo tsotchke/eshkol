@@ -326,6 +326,7 @@ static void vm_port_write_bytes(VmPort* port, const char* data, int len) {
     if (!port || !port->is_open || port->dir != VM_PORT_OUTPUT || len <= 0) return;
 
     if (port->kind == VM_PORT_FILE) {
+        if (!port->file) return;
         fwrite(data, 1, len, port->file);
     } else { /* STRING output */
         if (!vm_port_string_ensure(port, len + 1)) return;

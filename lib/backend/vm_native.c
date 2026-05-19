@@ -114,6 +114,24 @@ static VmString* vm_value_as_string(VM* vm, Value value) {
     return (VmString*)obj->opaque.ptr;
 }
 
+static VmPort* vm_value_as_port(VM* vm, Value value) {
+    if (!vm || value.type != VAL_PORT || !is_valid_heap_ptr(vm, value.as.ptr))
+        return NULL;
+    HeapObject* obj = vm->heap.objects[value.as.ptr];
+    if (!obj || obj->type != HEAP_PORT || !obj->opaque.ptr)
+        return NULL;
+
+    void* opaque = obj->opaque.ptr;
+    if (opaque == (void*)stdin) return vm_port_current_input();
+    if (opaque == (void*)stdout) return vm_port_current_output();
+    if (opaque == (void*)stderr) return vm_port_current_error();
+
+    VmPort* port = (VmPort*)opaque;
+    if (port == &vm_stdin_port || port == &vm_stdout_port || port == &vm_stderr_port)
+        vm_io_init_std_ports();
+    return port;
+}
+
 static VmBytevector* vm_value_as_bytevector(VM* vm, Value value) {
     if (!vm || value.type != VAL_BYTEVECTOR || !is_valid_heap_ptr(vm, value.as.ptr))
         return NULL;
@@ -5735,10 +5753,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 582: { /* close-port(port) */
         Value port_val = vm_pop(vm);
-        if (port_val.type == VAL_PORT && port_val.as.ptr >= 0 &&
-            port_val.as.ptr < vm->heap.next_free &&
-            vm->heap.objects[port_val.as.ptr]->type == HEAP_PORT) {
-            VmPort* port = (VmPort*)vm->heap.objects[port_val.as.ptr]->opaque.ptr;
+        VmPort* port = vm_value_as_port(vm, port_val);
+        if (port) {
             vm_port_close(port);
         }
         vm_push(vm, (Value){.type = VAL_VOID});
@@ -5746,12 +5762,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 583: { /* read-char(port) */
         Value port_val = vm_pop(vm);
-        VmPort* port = NULL;
-        if (port_val.type == VAL_PORT && port_val.as.ptr >= 0 &&
-            port_val.as.ptr < vm->heap.next_free &&
-            vm->heap.objects[port_val.as.ptr]->type == HEAP_PORT) {
-            port = (VmPort*)vm->heap.objects[port_val.as.ptr]->opaque.ptr;
-        }
+        VmPort* port = vm_value_as_port(vm, port_val);
         if (!port) port = vm_port_current_input();
         int ch = vm_port_read_char(port);
         vm_push(vm, ch == EOF ? NIL_VAL : INT_VAL(ch));
@@ -5765,12 +5776,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 585: { /* read-line(port) */
         Value port_val = vm_pop(vm);
-        VmPort* port = NULL;
-        if (port_val.type == VAL_PORT && port_val.as.ptr >= 0 &&
-            port_val.as.ptr < vm->heap.next_free &&
-            vm->heap.objects[port_val.as.ptr]->type == HEAP_PORT) {
-            port = (VmPort*)vm->heap.objects[port_val.as.ptr]->opaque.ptr;
-        }
+        VmPort* port = vm_value_as_port(vm, port_val);
         if (!port) port = vm_port_current_input();
         VmString* line = vm_port_read_line(&vm->heap.regions, port);
         if (line) {
@@ -5795,12 +5801,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
                          vm->heap.objects[str_val.as.ptr]->type == HEAP_STRING)
             ? (VmString*)vm->heap.objects[str_val.as.ptr]->opaque.ptr
             : NULL;
-        VmPort* port = NULL;
-        if (port_val.type == VAL_PORT && port_val.as.ptr >= 0 &&
-            port_val.as.ptr < vm->heap.next_free &&
-            vm->heap.objects[port_val.as.ptr]->type == HEAP_PORT) {
-            port = (VmPort*)vm->heap.objects[port_val.as.ptr]->opaque.ptr;
-        }
+        VmPort* port = vm_value_as_port(vm, port_val);
         if (!port) port = vm_port_current_output();
         vm_port_write_string(port, str);
         vm_push(vm, (Value){.type = VAL_VOID});
@@ -5874,8 +5875,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 598: { /* get-output-string */
         Value port_val = vm_pop(vm);
-        if (port_val.as.ptr >= 0 && vm->heap.objects[port_val.as.ptr]->type == HEAP_PORT) {
-            VmPort* p = (VmPort*)vm->heap.objects[port_val.as.ptr]->opaque.ptr;
+        VmPort* p = vm_value_as_port(vm, port_val);
+        if (p) {
             VmString* s = vm_port_get_output_string(&vm->heap.regions, p);
             if (s) {
                 int32_t ptr = heap_alloc(&vm->heap);
@@ -9537,23 +9538,17 @@ static void vm_dispatch_native(VM* vm, int fid) {
         vm_push(vm, NIL_VAL); break; }
     case 728: { /* input-port? */
         Value a = vm_pop(vm);
-        int is_ip = 0;
-        if (a.type == VAL_PORT && a.as.ptr >= 0 && a.as.ptr < vm->heap.next_free) {
-            VmPort* p = (VmPort*)vm->heap.objects[a.as.ptr]->opaque.ptr;
-            is_ip = (p && p->dir == VM_PORT_INPUT);
-        }
+        VmPort* p = vm_value_as_port(vm, a);
+        int is_ip = (p && p->dir == VM_PORT_INPUT);
         vm_push(vm, BOOL_VAL(is_ip)); break; }
     case 729: { /* output-port? */
         Value a = vm_pop(vm);
-        int is_op = 0;
-        if (a.type == VAL_PORT && a.as.ptr >= 0 && a.as.ptr < vm->heap.next_free) {
-            VmPort* p = (VmPort*)vm->heap.objects[a.as.ptr]->opaque.ptr;
-            is_op = (p && p->dir == VM_PORT_OUTPUT);
-        }
+        VmPort* p = vm_value_as_port(vm, a);
+        int is_op = (p && p->dir == VM_PORT_OUTPUT);
         vm_push(vm, BOOL_VAL(is_op)); break; }
     case 730: { /* port? */
         Value a = vm_pop(vm);
-        vm_push(vm, BOOL_VAL(a.type == VAL_PORT)); break; }
+        vm_push(vm, BOOL_VAL(vm_value_as_port(vm, a) != NULL)); break; }
     case 740: { /* type-of */
         Value a = vm_pop(vm);
         const char* t = "unknown";
