@@ -24,7 +24,7 @@ research-grade Noesis.
 
 **Branch**: `master`
 **Last shipped release**: v1.2.0-scale (2026-05-01)
-**Current release line**: v1.2.1-noesis-m0 release prep.
+**Current release line**: v1.2-scale Noesis M0 closeout.
 
 Delivered in the v1.2.x closeout:
 - All v1.2 audit-fix items (#107–#133) — image I/O arena safety, symbol
@@ -117,8 +117,8 @@ items shipped. The current v1.2 edge/security suite passes 86/86, CTest passes
 14/14, and Noesis `tests/smoke/all.esk` exits with `NOESIS_ALL_RC=0` using the
 v1.2-scale build.
 
-**Rename**: the next v1.2.x release should be tagged `v1.2.1-noesis-m0` so
-external consumers know the Noesis audit gaps are closed.
+**Release naming**: stay on the v1.2-scale line unless the release owner
+explicitly requests a new tag.
 
 ### Noesis tracker reconciliation — 2026-05-19
 
@@ -134,11 +134,11 @@ The table below is the Eshkol-side evidence used for that reconciliation.
 | BB | The stale Noesis repro no longer reaches the original second-call SIGSEGV; it now stops earlier with the fixed W-style missing-load diagnostic. Eshkol's minimized double-call / cross-file indirector regressions pass, and the full Noesis aggregate smoke passes. | Close as fixed/stale-repro. If Noesis wants the historical PCC repro retained, update its loads and re-file only if a current SIGSEGV returns. |
 | GG | `NOESIS_TEST_VAR=42 ... bug-GG-getenv-string-predicate-mismatch.esk` prints `string?: #t` and `display: 42`. | Close as fixed. |
 | JJ | `bug-JJ-loaded-helper-variadic-rest-raw.esk` now prints `rest: (#f)`, `pair?: #t`, `car rest: #f`, exit 0. | Close as fixed. |
-| KK | `eshkol-run --version` exits 0 and prints `Eshkol Compiler v1.2.1-noesis-m0`. | Close as fixed. |
+| KK | `eshkol-run --version` exits 0 and prints `Eshkol Compiler v1.2.0-scale`. | Close as fixed. |
 | LL | The Noesis repro script and Eshkol's `tests/v1_2_edge_cases/object_build_cli_contract_test.sh` both verify the positive contract: `--emit-object` is accepted, `-o requested.o` creates exactly that path, no `.o.o` artifact is produced, and `--shared-lib`, `-fPIC`, `-I`, and `-D` are accepted. | Closed. Keep the Eshkol regression and docs as the build-system contract guard. |
 
 Result: there are no currently verified Noesis M0 substrate blockers left in
-Eshkol. The remaining work is release/tag preparation and v1.3+ productization.
+Eshkol. The remaining work is v1.3+ productization.
 
 ---
 
@@ -159,10 +159,11 @@ has a first implementation in `core.logging`; resource-limit primitives and a
 minimal blocking HTTP surface also exist, but their production integration stays
 in v1.3/v1.4 as listed below.
 
-### Phase 0 — reconcile and publish the v1.2 closeout
+### Phase 0 — reconcile the v1.2 closeout
 
 Deliverables:
-- Publish `v1.2.1-noesis-m0`.
+- Keep the v1.2-scale release identity unless a new tag is explicitly
+  requested by the release owner.
 - Keep the Noesis tracker's closed status for W, Z, BB, GG, JJ, KK, and LL in
   sync with the 2026-05-19 repro evidence above.
 - Keep the positive LL contract regression on the Eshkol side so object-build

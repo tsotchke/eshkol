@@ -8,8 +8,7 @@ if(POLICY CMP0091)
     cmake_policy(SET CMP0091 NEW)
 endif()
 
-set(ESHKOL_VERSION "1.2.1")
-set(ESHKOL_RELEASE_SUFFIX "noesis-m0")
+set(ESHKOL_VERSION "1.2.0")
 
 project("Eshkol" VERSION ${ESHKOL_VERSION} LANGUAGES C CXX)
 
@@ -999,7 +998,7 @@ endif()
 file(GLOB REPL_SRC RELATIVE ${CMAKE_SOURCE_DIR} "lib/repl/*.cpp")
 
 add_compile_definitions(
-  ESHKOL_VER="${ESHKOL_VERSION}-${ESHKOL_RELEASE_SUFFIX}"
+  ESHKOL_VER="${ESHKOL_VERSION}-scale"
 )
 
 if(ESHKOL_USING_MSVC)
