@@ -38,8 +38,8 @@ by Noesis aggregate validation.
   `Results: N passed, M failed` suite summaries, I/O tests no longer depend on
   Perl timeout behavior, system tests default `BUILD_DIR=build`, and the HTTP
   server smoke has bounded timeout/client cleanup.
-- Updated the Homebrew formula template to target `v1.2.1-scale` with the
-  computed release archive checksum.
+- Updated the Homebrew formula template to target the public `v1.2.1-scale`
+  archive; the tap formula carries the computed release checksum after tagging.
 
 ### Verified
 
