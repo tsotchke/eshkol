@@ -292,6 +292,7 @@ class EshkolRepl {
 
                 // Exception handling
                 eshkol_make_exception_with_header: (code, msg) => 0,
+                eshkol_type_error: () => { throw new Error('Eshkol type error (WASM stub)'); },
                 eshkol_deep_equal: (a, b) => false,
                 eshkol_display_value: (val) => {},
 
@@ -299,6 +300,7 @@ class EshkolRepl {
                 eshkol_lambda_registry_init: () => {},
                 eshkol_lambda_registry_add: (a, b, c) => {},
                 eshkol_lambda_registry_lookup: (a) => 0n,
+                eshkol_closure_get_arity: () => 0,
 
                 // Math functions
                 sin: Math.sin,
@@ -333,8 +335,22 @@ class EshkolRepl {
                 fmax: Math.max,
 
                 // System functions (stubs)
+                abort: () => { throw new Error('abort called'); },
                 exit: (code) => { throw new Error(`exit(${code})`); },
+                fprintf: (_stream, fmt, ..._args) => { console.log(this.readString(fmt)); return 0; },
+                snprintf: () => 0,
+                strcmp: (a, b) => {
+                    const av = this.readString(a);
+                    const bv = this.readString(b);
+                    return av === bv ? 0 : (av < bv ? -1 : 1);
+                },
+                strncmp: (a, b, n) => {
+                    const av = this.readString(a).slice(0, Number(n));
+                    const bv = this.readString(b).slice(0, Number(n));
+                    return av === bv ? 0 : (av < bv ? -1 : 1);
+                },
                 fopen: () => 0,
+                eshkol_fopen: () => 0,
                 fclose: () => 0,
                 fgets: () => 0,
                 feof: () => 1,
@@ -344,6 +360,7 @@ class EshkolRepl {
                 drand48: Math.random,
                 srand48: () => {},
                 time: () => BigInt(Math.floor(Date.now() / 1000)),
+                clock_gettime: () => 0,
                 getenv: () => 0,
                 setenv: () => 0,
                 unsetenv: () => 0,
@@ -351,7 +368,10 @@ class EshkolRepl {
                 usleep: () => 0,
                 access: () => -1,
                 remove: () => -1,
+                eshkol_remove: () => -1,
                 rename: () => -1,
+                eshkol_rename: () => -1,
+                eshkol_builtin_make_temp_file: () => 0,
                 mkdir: () => -1,
                 rmdir: () => -1,
                 getcwd: () => 0,
@@ -415,6 +435,16 @@ class EshkolRepl {
                 eshkol_check_recursion_depth: () => 0,
                 eshkol_decrement_recursion_depth: () => {},
                 eshkol_runtime_current_output_fp: () => 0,
+                eshkol_vref_unwrap_index: (_len, idx) => idx,
+
+                // String and UTF-8 helpers — enough for browser smoke/import
+                // validation; full native semantics live in lib/core/.
+                eshkol_string_byte_length: (ptr) => BigInt(this.readString(ptr).length),
+                eshkol_utf8_strlen: (ptr) => BigInt(Array.from(this.readString(ptr)).length),
+                eshkol_utf8_ref: () => 0,
+                eshkol_utf8_substring: () => 0,
+                eshkol_string_from_codepoints: () => 0,
+                eshkol_string_to_number_tagged: () => 0n,
 
                 // String ports — accumulate writes in a JS array; get-output-string
                 // splices them into a fresh bump-allocated NUL-terminated buffer.
@@ -475,14 +505,39 @@ class EshkolRepl {
 
                 // Bignum / rational runtime — degrade gracefully on the web
                 // (the JIT-on-WASM use case isn't a real bignum workload).
+                eshkol_bignum_from_int64:       () => 0,
                 eshkol_bignum_from_overflow:    () => 0,
                 eshkol_bignum_to_double:        () => 0.0,
+                eshkol_bignum_to_string:        () => 0,
                 eshkol_bignum_binary_tagged:    () => 0,
+                eshkol_bignum_compare_tagged:   () => 0,
+                eshkol_bignum_is_zero:          () => 0,
+                eshkol_bignum_is_even:          () => 0,
+                eshkol_bignum_is_odd:           () => 0,
+                eshkol_bignum_neg:              () => 0,
+                eshkol_bignum_pow_tagged:       () => 0,
                 eshkol_is_bignum_tagged:        () => 0,
                 eshkol_rational_create:           () => 0,
+                eshkol_double_to_rational:        () => 0,
                 eshkol_rational_to_double:        () => 0.0,
+                eshkol_rational_to_string:        () => 0,
                 eshkol_rational_binary_tagged_ptr:() => 0,
+                eshkol_rational_compare_tagged_ptr: () => 0,
+                eshkol_rational_floor:            () => 0,
                 eshkol_is_rational_tagged_ptr:  () => 0,
+                eshkol_list_reverse_tagged:      (value) => value,
+
+                // Lazy futures — no async worker runtime in browser WASM yet.
+                eshkol_lazy_future_is_ready: () => 1,
+                eshkol_lazy_future_is_async: () => 0,
+                eshkol_lazy_future_join_async: () => {},
+                eshkol_lazy_future_get_thunk_ptr: () => 0,
+                eshkol_lazy_future_get_thunk_type: () => 0,
+                eshkol_lazy_future_get_thunk_flags: () => 0,
+                eshkol_lazy_future_get_result_ptr: () => 0,
+                eshkol_lazy_future_get_result_type: () => 0,
+                eshkol_lazy_future_get_result_flags: () => 0,
+                eshkol_lazy_future_set_result_ptr: () => {},
 
                 // OALR regions — degrade to no-op (WASM has no region
                 // system; the heap allocator handles everything).

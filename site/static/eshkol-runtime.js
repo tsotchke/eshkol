@@ -302,12 +302,19 @@ class EshkolRuntime {
                 arena_allocate_ad_node: () => rt._bump(128),
                 arena_allocate_ad_node_with_header: () => rt._bump(136) + 8,
                 arena_allocate_tape: () => rt._bump(64),
+                arena_hash_table_create_with_header: () => rt._bump(32) + 8,
                 arena_tape_add_node: () => 0,
                 arena_tape_reset: () => {},
                 arena_tape_get_node: () => 0,
                 arena_tape_get_node_count: () => 0,
                 arena_allocate_string_with_header: (arena, len) => rt._bump(Number(len) + 9) + 8,
                 arena_allocate_closure_with_header: () => rt._bump(64),
+                arena_tagged_cons_get_int64: () => 0n,
+                arena_tagged_cons_get_double: () => 0.0,
+                arena_tagged_cons_get_ptr: () => 0n,
+                arena_tagged_cons_get_type: () => 0,
+                arena_tagged_cons_get_flags: () => 0,
+                arena_tagged_cons_set_double: () => {},
 
                 // Runtime functions
                 __eshkol_register_parallel_workers: () => {},
@@ -319,9 +326,11 @@ class EshkolRuntime {
                 eshkol_raise: (exc) => { console.error('Eshkol exception raised'); },
                 eshkol_display_value: () => {},
                 eshkol_deep_equal: () => 0,
+                eshkol_type_error: () => { throw new Error('Eshkol type error (WASM stub)'); },
                 eshkol_lambda_registry_init: () => {},
                 eshkol_lambda_registry_add: () => {},
                 eshkol_lambda_registry_lookup: () => 0,
+                eshkol_closure_get_arity: () => 0,
                 eshkol_bignum_binary_tagged: () => 0,
                 eshkol_bignum_compare_tagged: () => 0,
                 eshkol_is_bignum_tagged: () => 0,
@@ -338,6 +347,11 @@ class EshkolRuntime {
                         if (ca === 0) return 0;
                         i++;
                     }
+                },
+                strncmp: (a, b, n) => {
+                    const av = rt.readString(a).slice(0, Number(n));
+                    const bv = rt.readString(b).slice(0, Number(n));
+                    return av === bv ? 0 : (av < bv ? -1 : 1);
                 },
                 strlen: (s) => {
                     const mem = new Uint8Array(rt._importedMemory?.buffer || rt.instance?.exports?.memory?.buffer);
@@ -365,8 +379,22 @@ class EshkolRuntime {
                 snprintf: () => 0,
                 abort: () => { throw new Error('abort called'); },
                 exit: (code) => { console.log('exit:', code); },
+                eshkol_fopen: () => 0,
+                fclose: () => 0,
+                fgets: () => 0,
+                fputs: () => 0,
+                fseek: () => -1,
+                ftell: () => -1n,
+                fread: () => 0n,
+                fwrite: () => 0n,
+                eshkol_remove: () => -1,
+                eshkol_rename: () => -1,
+                eshkol_builtin_make_temp_file: () => 0,
+                clock_gettime: () => 0,
                 pow: Math.pow,
                 fmod: (a, b) => a % b,
+                remainder: (a, b) => a - Math.round(a / b) * b,
+                drand48: Math.random,
                 strlen: (ptr) => { let len = 0; const b = new Uint8Array(rt.memory?.buffer || rt.createImports().env.__linear_memory.buffer); while (b[ptr + len]) len++; return len; },
                 memcpy: (dst, src, n) => { const b = new Uint8Array(rt.memory?.buffer || new ArrayBuffer(0)); b.copyWithin(dst, src, src + n); return dst; },
                 memset: (ptr, val, n) => { const b = new Uint8Array(rt.memory?.buffer || new ArrayBuffer(0)); b.fill(val, ptr, ptr + n); return ptr; },
@@ -438,6 +466,17 @@ class EshkolRuntime {
                 eshkol_decrement_recursion_depth: () => {},
                 eshkol_runtime_current_output_fp: () => 0,
                 arena_tagged_cons_set_tagged_value: () => {},
+                eshkol_vref_unwrap_index: (_len, idx) => idx,
+                hash_table_set: () => false,
+                hash_table_get: () => false,
+                hash_table_has_key: () => false,
+                hash_table_keys: () => 0,
+                eshkol_string_byte_length: (ptr) => BigInt(rt.readString(ptr).length),
+                eshkol_utf8_strlen: (ptr) => BigInt(Array.from(rt.readString(ptr)).length),
+                eshkol_utf8_ref: () => 0,
+                eshkol_utf8_substring: () => 0,
+                eshkol_string_from_codepoints: () => 0,
+                eshkol_string_to_number_tagged: () => 0n,
 
                 // String ports — bump-allocate a buffer; reads/writes use a
                 // JS-side Map keyed by the buffer pointer so we can
@@ -502,13 +541,36 @@ class EshkolRuntime {
                 // native; for the website we degrade gracefully (return 0
                 // so subsequent operations hit type-checks rather than
                 // crashing).
+                eshkol_bignum_from_int64: () => 0,
                 eshkol_bignum_from_overflow: () => 0,
                 eshkol_bignum_to_double:     () => 0.0,
+                eshkol_bignum_to_string:     () => 0,
+                eshkol_bignum_is_zero:       () => 0,
+                eshkol_bignum_is_even:       () => 0,
+                eshkol_bignum_is_odd:        () => 0,
+                eshkol_bignum_neg:           () => 0,
+                eshkol_bignum_pow_tagged:    () => 0,
 
                 // Rational runtime — same degradation pattern as bignum.
                 eshkol_rational_create:           () => 0,
+                eshkol_double_to_rational:        () => 0,
                 eshkol_rational_to_double:        () => 0.0,
+                eshkol_rational_to_string:        () => 0,
                 eshkol_rational_binary_tagged_ptr:() => 0,
+                eshkol_rational_floor:            () => 0,
+                eshkol_list_reverse_tagged:       (value) => value,
+
+                // Lazy futures — no browser worker backing for this WASM glue.
+                eshkol_lazy_future_is_ready: () => 1,
+                eshkol_lazy_future_is_async: () => 0,
+                eshkol_lazy_future_join_async: () => {},
+                eshkol_lazy_future_get_thunk_ptr: () => 0,
+                eshkol_lazy_future_get_thunk_type: () => 0,
+                eshkol_lazy_future_get_thunk_flags: () => 0,
+                eshkol_lazy_future_get_result_ptr: () => 0,
+                eshkol_lazy_future_get_result_type: () => 0,
+                eshkol_lazy_future_get_result_flags: () => 0,
+                eshkol_lazy_future_set_result_ptr: () => {},
 
                 // OALR regions — JIT path uses these.  In WASM we don't
                 // have a region system; degrade to no-op (region_create
