@@ -41,8 +41,8 @@ The current `v1.2.1-scale` branch closes the Noesis M0 audit path:
 - Bug LL's underlying CLI behavior is fixed: `--emit-object` accepts
   compatibility flags, writes the requested `-o path`, and no longer
   creates the stale `.o.o` output.
-- The Homebrew formula template points at `v1.2.1-scale`; its `sha256`
-  placeholder remains zeroed until the GitHub release tarball is published.
+- The Homebrew formula template points at the `v1.2.1-scale` release archive
+  and includes the computed SHA256.
 
 ## What's New in v1.2.0-scale
 

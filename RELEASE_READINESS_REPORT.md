@@ -59,7 +59,7 @@ continuity.
 | Archive cleanup | ✅ | commit `39f145f`; deleted near-duplicate compilers |
 | v1_2_edge_cases in `run_all_tests.sh` | ✅ | new `scripts/run_v1_2_edge_cases_tests.sh` |
 | Sanitizer CI lane | ✅ | `linux-x64-asan-ubsan` lane in `ci.yml` |
-| Homebrew formula bumped | ✅ | `packaging/homebrew/eshkol.rb` → `v1.2.1-scale` template |
+| Homebrew formula bumped | ✅ | `packaging/homebrew/eshkol.rb` → `v1.2.1-scale` with computed SHA256 |
 | CHANGELOG + ROADMAP updated | ✅ | this PR |
 
 ### Known carry-forward to v1.3

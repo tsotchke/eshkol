@@ -31,7 +31,7 @@ PUSH_TAP="${2:-}"
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 FORMULA_PATH="$REPO_ROOT/packaging/homebrew/eshkol.rb"
-TARBALL_URL="https://github.com/tsotchke/eshkol/archive/refs/tags/${TAG}.tar.gz"
+TARBALL_URL="https://github.com/Tsotchke-Corporation/eshkol/archive/refs/tags/${TAG}.tar.gz"
 
 if [ ! -f "$FORMULA_PATH" ]; then
     echo "error: formula not found at $FORMULA_PATH" >&2
@@ -72,8 +72,8 @@ path, tag, sha = sys.argv[1:]
 with open(path) as f:
     src = f.read()
 src = re.sub(
-    r'url "https://github\.com/tsotchke/eshkol/archive/(refs/tags/)?[^"]+"',
-    f'url "https://github.com/tsotchke/eshkol/archive/refs/tags/{tag}.tar.gz"',
+    r'url "https://github\.com/(tsotchke|Tsotchke-Corporation)/eshkol/archive/(refs/tags/)?[^"]+"',
+    f'url "https://github.com/Tsotchke-Corporation/eshkol/archive/refs/tags/{tag}.tar.gz"',
     src,
 )
 src = re.sub(r'sha256 "[^"]*"', f'sha256 "{sha}"', src)
