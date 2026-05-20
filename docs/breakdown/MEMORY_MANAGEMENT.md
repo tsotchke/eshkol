@@ -409,19 +409,33 @@ typedef struct arena_tagged_cons_cell {
 
 ## Implementation Details
 
-### Global Arena
+### Global Arena and Per-Thread Arenas
 
 ```c
-// lib/core/arena_memory.cpp:45-47
-static arena_t* __global_arena = NULL;
-
-// Initialized at program start
-void arena_init(void) {
-    __global_arena = create_arena(8192);  // 8KB initial block
-}
+// lib/core/arena_memory.cpp
+extern arena_t* __global_arena;          // process-global, created threadsafe
+thread_local arena_t* __thread_local_arena;  // per-worker-thread, created via
+                                              // arena_create_thread_local
 ```
 
-**All allocations go through the global arena.** No per-function or per-scope arenas.
+The global arena is created via `arena_create_threadsafe` (so its
+`thread_safe` flag is true and the mutex protects concurrent
+allocations). Per-thread arenas are created via plain `arena_create`
+(no mutex), because each is accessed exclusively by its owning
+thread.
+
+`get_global_arena()` returns `__global_arena`. `arena_get_thread_local()`
+returns `__thread_local_arena` when set, falling back to the global
+arena otherwise. The selection of which arena a particular allocation
+targets depends on the caller's context — in the parallel-primitives
+code path, the global arena is passed explicitly (so result-list
+marshaling happens in the caller's arena); inside a worker context,
+the LLVM-codegen path uses `arena_get_thread_local()` so any heap
+allocation from the closure body routes to the worker's TLS arena.
+
+See "Per-Thread Arena Lifecycle" below for the lazy-init protocol,
+eager TLS warmup at worker startup, and the
+`arena_merge_to_parent` merge protocol.
 
 ### Block Growth Strategy
 
@@ -983,3 +997,395 @@ The corresponding LLVM codegen was updated to pass the address of the value inst
 - [Type System](TYPE_SYSTEM.md) - Object headers, type tags, subtypes
 - [Compiler Architecture](COMPILER_ARCHITECTURE.md) - Memory codegen, LLVM backend
 - [API Reference](../API_REFERENCE.md) - Memory management functions
+
+---
+
+## What Landed in v1.2 / v1.2.1
+
+The v1.2 release reorganized the memory subsystem around four architectural
+moves: per-thread arenas with explicit lifecycle (`arena_create_thread_local`,
+`arena_merge_to_parent`), scoped sub-arenas with LIFO push/pop on the main
+arena, a 512 MB stack configured at link time plus an `ESHKOL_STACK_SIZE`
+env override, and integer-overflow hardening on every variable-size
+allocation site (HARDENING.md §192). This section documents each, with
+citations to the current source.
+
+### The Object Header, Field by Field
+
+`inc/eshkol/eshkol.h` §322–331 gives the exact layout:
+
+```c
+typedef struct eshkol_object_header {
+    uint8_t  subtype;      // 1 byte  — HEAP_SUBTYPE_* (0..255)
+    uint8_t  flags;        // 1 byte  — ESHKOL_OBJ_FLAG_* bitfield
+    uint16_t ref_count;    // 2 bytes — shared/weak ref count (0 = not ref-counted)
+    uint32_t size;         // 4 bytes — object data size, excluding the header
+} eshkol_object_header_t;
+
+ESHKOL_STATIC_ASSERT(sizeof(eshkol_object_header_t) == 8,
+                     "Object header must be 8 bytes for alignment");
+```
+
+Total: 8 bytes, statically asserted. The header is prepended to every
+heap-allocated object; the data pointer returned by `arena_allocate_with_header`
+points to the byte immediately after the header. `ESHKOL_GET_HEADER(data_ptr)`
+in §446 is the macro that walks backwards by `sizeof(eshkol_object_header_t)`
+to recover the header pointer.
+
+The 4-byte `size` field caps the maximum single-object data size at
+`UINT32_MAX` = 4 GiB − 1 (see "Allocation Hardening" below). The
+`ref_count` is `uint16_t`, so 65 535 shared references is the upper bound
+before saturation. The `flags` byte is a bitfield of `ESHKOL_OBJ_FLAG_*`
+constants (§315–319): MARKED, LINEAR, BORROWED, CONSUMED, SHARED, WEAK,
+PINNED, EXTERNAL.
+
+### Arena Block Size: 1024-Byte Floor, 8192-Byte Default
+
+`arena_create` (`lib/core/arena_memory.cpp` §169–195) enforces a minimum
+block size of 1024 bytes. The common case is `arena_create(8192)` from
+`Arena` (the C++ wrapper, §2417). The REPL shared arena passes 8192 as
+well. Per-thread worker arenas pass 1 MB. The global arena and per-thread
+arenas are *not* a fixed size — the field is `default_block_size`,
+applied when a *new* block needs to be allocated. The initial block is
+created at arena creation time.
+
+When the current block cannot satisfy an allocation,
+`arena_allocate_aligned` (§290–339) allocates a new block sized
+`max(aligned_size, arena->default_block_size)` and links it at the head
+of the singly-linked block chain. Old blocks remain reachable for the
+arena's lifetime (until `arena_reset` or `arena_destroy`).
+
+### Allocation Hardening: SIZE_MAX and UINT32_MAX Guards
+
+`arena_allocate_with_header` (`lib/core/arena_memory.cpp` §358–403)
+guards against two integer-overflow classes flagged in HARDENING.md §192:
+
+```c
+// #192 CRITICAL: total_size overflow if data_size is near SIZE_MAX
+if (data_size > SIZE_MAX - sizeof(eshkol_object_header_t) - 8) {
+    eshkol_error("arena_allocate_with_header: data_size=%zu would overflow", data_size);
+    return nullptr;
+}
+
+// #192 HIGH: header->size is uint32_t — silently truncating a 4GB+ alloc
+//           to its low 32 bits makes downstream readers under-copy
+if (data_size > UINT32_MAX) {
+    eshkol_error("arena_allocate_with_header: data_size=%zu exceeds UINT32_MAX", data_size);
+    return nullptr;
+}
+```
+
+The first check prevents wrap-around: `data_size + sizeof(header) + 8`
+must not exceed `SIZE_MAX`, so the comparison is rearranged as
+`data_size > SIZE_MAX − sizeof(header) − 8`. Without this, a caller
+passing `data_size = SIZE_MAX − 4` would see the total compute to a
+small positive value (well under the requested data size), the alignment
+round-up would succeed, and the caller would receive a buffer much
+smaller than expected — an immediate heap-overflow primitive.
+
+The second check protects the header's 4-byte `size` field. Without it,
+a 5 GB allocation would succeed but record `size = 5G mod 2^32 ≈ 705 MB`,
+causing every downstream user that walks the object by header size to
+under-copy by 4 GB. Reject rather than truncate.
+
+Similar guards appear at every variable-size allocation site in
+`arena_memory.cpp`:
+
+- `arena_allocate_multi_value` §421–434 — `count * sizeof(tagged_value)
+  + sizeof(size_t)` overflow check.
+- `arena_allocate_tagged_cons_batch` §913–919 — `count *
+  sizeof(arena_tagged_cons_cell_t)` overflow check.
+- `arena_allocate_string_with_header` §517 — `length + sizeof(header) +
+  8` overflow check.
+- `arena_allocate_vector_with_header` §563–566 — `capacity *
+  sizeof(tagged_value) + header + 8` overflow check.
+- `arena_allocate_tensor_full` §3734–3748 — both `num_dims *
+  sizeof(uint64_t)` and `total_elements * sizeof(int64_t)` overflow
+  checks before the two component allocations.
+
+### Per-Thread Arena Lifecycle
+
+The v1.2 per-thread arena API is declared in `lib/core/arena_memory.h`
+§88–116:
+
+```c
+arena_t* arena_get_thread_local(void);
+arena_t* arena_create_thread_local(size_t size_hint);
+void     arena_merge_to_parent(arena_t* dest, arena_t* src);
+int      arena_is_worker_thread(void);
+void     eshkol_thread_init_worker(size_t arena_size_hint);
+void     eshkol_thread_shutdown_worker(void);
+```
+
+`arena_create_thread_local` (§1752–1760 in `arena_memory.cpp`):
+
+```c
+arena_t* arena_create_thread_local(size_t size_hint) {
+    if (__thread_local_arena) return __thread_local_arena;   // idempotent
+    size_t block_size = size_hint > 0 ? size_hint : (1024 * 1024);
+    __thread_local_arena = arena_create(block_size);
+    return __thread_local_arena;
+}
+```
+
+Default block size is 1 MB. The TLS variable is `__thread_local_arena`,
+a `thread_local arena_t*`. The pool's `thread_arena_size` config value
+(default 1 MB, see `inc/eshkol/backend/thread_pool.h` §49) flows into
+this size_hint.
+
+**Eager init at worker startup**. `eshkol_thread_init_worker`
+(§1787–1814) is called from `work_stealing_worker_func`
+(`lib/backend/thread_pool.cpp` §203) and `legacy_worker_func` (§383)
+before the first task runs. It touches every thread-local slot:
+
+- `__ad_tape_stack[MAX_TAPE_DEPTH]` (32 slots) and `__ad_tape_depth`
+  — explicitly zero so a JIT-emitted load on a fresh worker thread sees
+  a defined value even if the TLS image is not zero-filled.
+- `__outer_ad_node_stack[MAX_TAPE_DEPTH]` and `__outer_ad_node_depth`
+  — N-dimensional derivative state.
+- `__outer_ad_node_storage`, `__outer_ad_node_to_inner`,
+  `__outer_grad_accumulator`, `__inner_var_node_ptr`,
+  `__gradient_x_degree` — double-backward storage.
+- `__region_stack[MAX_REGION_DEPTH]` (64 slots) and
+  `__region_stack_depth` — OALR region stack.
+- The thread-local arena itself, via `arena_create_thread_local`.
+
+The architectural rationale (recorded in the source comment at
+§1762–1786): on POSIX+glibc, `thread_local` is lazily initialized on
+first access; on macOS Mach-O, it goes through `__tlv_*` wrappers.
+Explicitly touching each TLS slot at worker startup forces
+initialization before the first user task runs, preventing "silent
+zero" hazards where codegen reads a TLS slot before it has been
+materialized.
+
+**Merge on join**. `arena_merge_to_parent` (§1837–1871) is the
+collect-results-back-to-parent primitive:
+
+```c
+void arena_merge_to_parent(arena_t* dest, arena_t* src) {
+    if (!dest || !src || dest == src) return;
+    if (dest->thread_safe) arena_lock(dest);
+
+    // Append src's blocks to the END of dest's chain.
+    // dest->current_block stays unchanged — dest continues allocating
+    // from its own newest block. Src's blocks become "old" blocks
+    // containing finalized data that won't be allocated into.
+    if (src->current_block) {
+        if (dest->current_block) {
+            arena_block_t* dest_tail = dest->current_block;
+            while (dest_tail->next) dest_tail = dest_tail->next;
+            dest_tail->next = src->current_block;
+        } else {
+            dest->current_block = src->current_block;
+        }
+        dest->total_allocated += src->total_allocated;
+        // Clear src without freeing blocks (now owned by dest)
+        src->current_block = nullptr;
+        src->total_allocated = 0;
+    }
+
+    if (dest->thread_safe) arena_unlock(dest);
+}
+```
+
+The append is at the tail of dest's chain so that dest's
+`current_block` (the head of the chain) keeps allocating into the same
+block it was using before the merge. Src's blocks become read-only
+"old" blocks. Src is cleared without freeing the blocks themselves —
+they are now owned by dest. Src remains a valid `arena_t*` (with an
+empty block list) and can be reused for the next batch of allocations,
+or destroyed.
+
+**Shutdown**. `eshkol_thread_shutdown_worker` (§1818–1835) destroys
+the thread-local arena via `arena_destroy(__thread_local_arena)` and
+nulls every TLS slot, so a future pthread re-use does not observe
+stale tape or region pointers from a previous worker lifetime.
+
+**Worker detection**. `arena_is_worker_thread` (§1877–1883) delegates
+to `eshkol_thread_pool_is_worker` from `thread_pool.cpp`, declared as
+a weak symbol so the arena layer compiles even if the thread-pool
+layer is not linked.
+
+**Current parallel-primitives use of TLS arenas**. The parallel
+primitives (`parallel-map`, `parallel-filter`, `parallel-fold`,
+`parallel-execute`) currently use the *global arena* — passed to
+`vector_to_list` (`parallel_codegen.cpp` §186, 347) — for assembling
+result lists on the main thread after all workers complete. Workers
+write per-element results into a stack-allocated `std::vector<eshkol_tagged_value_t>`
+in the calling thread, via pointer. The thread-local arenas are
+available for use by closure bodies executing within workers (any
+`arena_allocate*` call from a worker context routes to the per-thread
+arena via the worker's TLS `__thread_local_arena`). They are not yet
+used by the parallel primitives' own marshaling infrastructure.
+
+### Scoped Sub-Arenas: arena_push_scope / arena_pop_scope
+
+The header (`lib/core/arena_memory.h` §39–43, 83–85) declares an
+`arena_scope_t` struct and a push/pop API:
+
+```c
+struct arena_scope {
+    arena_block_t* block;  // Block at scope start
+    size_t used;           // Used bytes at scope start
+    arena_scope_t* parent; // Parent scope (LIFO stack)
+};
+
+void arena_push_scope(arena_t* arena);
+void arena_pop_scope(arena_t* arena);
+```
+
+`arena_push_scope` (`arena_memory.cpp` §706–721) snapshots
+`{current_block, current_block->used}` into a malloc-allocated
+`arena_scope_t`, prepended to `arena->current_scope` (LIFO). No
+allocation of arena memory happens during push; this is a pure
+checkpoint.
+
+`arena_pop_scope` (§723–792) restores arena state to the scope start:
+
+```c
+void arena_pop_scope(arena_t* arena) {
+    if (!arena || !arena->current_scope) {
+        eshkol_error("Attempted to pop arena scope with no matching push — "
+                     "unbalanced scope operations risk memory corruption");
+        return;  // Graceful: skip the pop rather than kill the process
+    }
+
+    arena_scope_t* scope = arena->current_scope;
+
+    // Free any blocks allocated AFTER this scope (the chain walks back
+    // toward the older blocks; we free everything between the current
+    // head and the scope's saved block).
+    arena_block_t* block = arena->current_block;
+    while (block && block != scope->block) {
+        arena_block_t* next = block->next;
+        arena->total_allocated -= block->size;
+        free_arena_block(block);
+        block = next;
+    }
+
+    arena->current_block = scope->block;
+    if (arena->current_block) {
+        arena->current_block->used = scope->used;
+    }
+    arena->current_scope = scope->parent;
+    free(scope);
+}
+```
+
+**LIFO discipline is the invariant.** Cross-scope release corrupts
+memory; the function logs an error and skips the pop rather than
+kill the process. There is no magic sentinel on the scope object
+itself, but the matching wrapper type for AD tapes
+(`AdTapeOwned`) carries one — `magic = 0x5045544f444151` ("ADOWNER"
+in ASCII) — so the release path can verify it is operating on an
+owned tape rather than an arena-borrowed one. `ad_tape_release` on a
+non-owned tape silently no-ops.
+
+**The Bug I scenario.** A theorem-proving downstream (Noesis Sigma)
+was allocating one AD tape per Adam-optimizer iteration, ~75 000
+tapes per discover run, none freed. The main arena grew until
+`malloc` returned NULL; subsequent AD ops dereffed a NULL tape and
+crashed. The fix (commit `fb86bf1`, 2026-04-20) wraps each owned
+tape in `arena_push_scope` at creation and `arena_pop_scope` at
+explicit release, on the main arena. No separate arena per tape;
+just checkpoint/restore on the existing one. This is a textbook
+use of the scope API — many short-lived allocations followed by
+bulk release in LIFO order.
+
+**Diagnostic poisoning**. When `ESHKOL_ARENA_POISON=1`, the pop
+routine (§732–771) fills the released region with `0xCB` bytes before
+freeing the blocks. Any later dereference of a stale pointer crashes
+with an address containing `0xCB` in obvious positions, turning a
+silent SEGV at a mangled-looking address into an immediately-recognizable
+arena UAF. The byte was picked to be distinct from libc's
+MallocPreScribble (0xAA), MallocScribble (0x55), and glibc's
+`perturb_free` (0x42).
+
+### 512 MB Stack for Deep Recursion
+
+Two coordinated changes set the process stack to 512 MB:
+
+**Link-time, macOS** (`CMakeLists.txt` §1358–1359):
+
+```cmake
+# 512MB stack for deep recursion (main thread stack set at link time on macOS)
+target_link_options(eshkol-run PRIVATE "-Wl,-stack_size,0x20000000")
+```
+
+`0x20000000` = 512 × 1024 × 1024 bytes. macOS sets the main thread
+stack size at link time; `setrlimit(RLIMIT_STACK, ...)` after process
+start cannot increase it.
+
+**Link-time, Linux** (`CMakeLists.txt` §1371–1372):
+
+```cmake
+# 512MB stack for deep recursion
+target_link_options(eshkol-run PRIVATE "-Wl,-z,stack-size=536870912")
+```
+
+`536870912` = 512 × 1024 × 1024 bytes.
+
+**Runtime, both platforms**: `eshkol_init_stack_size`
+(`lib/core/arena_memory.cpp` §62–90) uses `setrlimit(RLIMIT_STACK,
+...)` to raise the soft limit for spawned threads, and as a Linux
+fallback if the link-time flag was not applied. `ESHKOL_STACK_SIZE`
+env var overrides:
+
+```c
+extern "C" void eshkol_init_stack_size() {
+#ifdef _WIN32
+    return;   // Windows thread stack sizing is handled at link/thread creation time
+#else
+    const rlim_t default_stack = 512ULL * 1024 * 1024;  // 512MB
+    rlim_t target = default_stack;
+    const char* env_val = getenv("ESHKOL_STACK_SIZE");
+    if (env_val) {
+        char* end = nullptr;
+        unsigned long long parsed = strtoull(env_val, &end, 0);
+        if (end != env_val && parsed >= 1024 * 1024) target = (rlim_t)parsed;
+    }
+    struct rlimit rl;
+    if (getrlimit(RLIMIT_STACK, &rl) == 0 && rl.rlim_cur < target) {
+        rl.rlim_cur = target;
+        if (rl.rlim_max != RLIM_INFINITY && rl.rlim_max < target) {
+            rl.rlim_cur = rl.rlim_max;
+        }
+        setrlimit(RLIMIT_STACK, &rl);
+    }
+#endif
+}
+```
+
+This is called from generated `main` functions and from REPL JIT
+init (via `ADD_SYMBOL(eshkol_init_stack_size)` in
+`repl_jit.cpp:664`). The env override has a 1 MiB floor to prevent
+accidentally setting an unusably small stack.
+
+**Worker thread stack**: workers do not get the 512 MB stack — they
+get a separate sizing via `pthread_attr_setstacksize`. The default
+is 16 MB (`thread_pool.cpp` §482), overridable by
+`ESHKOL_WORKER_STACK_BYTES`. The floor is `PTHREAD_STACK_MIN`.
+
+**Recursion-depth check**: independent of the OS stack size, the
+runtime tracks Scheme-level recursion depth in
+`lib/core/resource_limits.cpp` §261–266 and aborts when it exceeds
+`ESHKOL_DEFAULT_MAX_STACK_DEPTH = 100000`
+(`inc/eshkol/core/resource_limits.h` §41), overridable by
+`ESHKOL_MAX_STACK`. This is checked at function-prologue level by
+generated code, so it catches runaway recursion even if the OS
+stack is large enough to absorb it. The two limits are
+complementary: the OS stack prevents undefined behavior from
+overrunning the actual stack; the recursion-depth check prevents
+denial-of-service from intentionally deep recursion against an
+untrusted Scheme program.
+
+**Windows `jmp_buf` sizing**: `eshkol_jmp_buf_size` in
+`lib/core/platform_runtime.cpp` §551–553 returns `sizeof(jmp_buf)`
+at runtime. The codegen for `setjmp` allocates the buffer via
+`builder->CreateAlloca(int8_type, eshkol_jmp_buf_size_result, "jmp_buf")`
+rather than a compile-time constant, so the same generated IR
+links correctly against different `jmp_buf` sizes across libc
+implementations (glibc, musl, MSVCRT, Apple libc). See
+CONTINUATIONS.md §`Platform-Specific setjmp Lowering` for the
+companion architecture-specific intrinsic calls (`Intrinsic::sponentry`
+on Windows ARM64, `Intrinsic::frameaddress(0)` on Windows x64).

@@ -1088,12 +1088,126 @@ written back into caller-provided WASM linear memory buffers by the host.
 
 ---
 
-## 11. See Also
+## 11. Server-Side Counterparts — The Agent FFI
+
+The `lib/web/http.esk` surface documented above is the *client-in-the-
+browser* path: an Eshkol program is compiled to WASM, the browser
+fulfils every `(extern …)` declaration as a host import, and the
+fetch / DOM / canvas calls go through the JavaScript runtime. A
+complementary set of surfaces — the **agent FFI** — handles the
+inverse direction: Eshkol programs running natively on the host
+that need to make HTTPS calls, accept loopback HTTP requests, talk
+WebSocket framing, or drive local subprocesses. These surfaces are
+documented in full at [`AGENT_FFI.md`](AGENT_FFI.md); this section
+summarises how they relate to the browser path.
+
+### 11.1 Two paths to "an Eshkol program that does HTTP"
+
+| Aspect | Browser path (`--wasm`) | Agent FFI (native) |
+|---|---|---|
+| Compile target | `wasm32-unknown-unknown` via `eshkol_compile_llvm_ir_to_wasm` | host CPU / OS via standard LLVM backend |
+| HTTP source | `web-fetch` → JS `fetch()` | `(http-get url)` → libcurl |
+| Module | `lib/web/http.esk` | `lib/agent/http.esk` |
+| Host requirement | a browser or WASI runtime supplying `web_*` imports | a build with `ESHKOL_BUILD_AGENT_FFI=ON` and libcurl installed |
+| TLS | inherited from the browser's TLS stack | libcurl (OpenSSL / SecureTransport) with `CURLOPT_SSL_VERIFYPEER=1` by default |
+| Loopback HTTP server | not exposed (browsers can't listen) | `(http-server-create port)` — see [`AGENT_FFI.md` §4](AGENT_FFI.md#4-http-server-websocket-unix-domain-sockets-agenthttp_server) |
+| WebSocket client | not currently exposed in `lib/web/http.esk` | `eshkol_ws_*` family in `agent_http_server.c` |
+| Subprocess | impossible from a sandboxed WASM/browser environment | `(run-argv-capture argv)` — see [`AGENT_FFI.md` §6](AGENT_FFI.md#6-subprocess-agentsubprocess) |
+| Filesystem watch | not exposed (browsers cannot watch host filesystems) | native kqueue/inotify via `agent_watch.c` |
+| SQL store | the browser path uses `web-storage-set` / `localStorage` | `(sqlite-prepare db sql)` — full SQLite via `agent_sqlite.c` |
+
+### 11.2 Same FFI form, different binding target
+
+Both paths use the same `(extern …)` syntax. The difference is
+purely in how `:real` is resolved at link time:
+
+```scheme
+;; lib/web/http.esk — fulfilled by the WASM host as a JS import.
+(extern i32 web-fetch ptr i32 ptr i32 :real web_fetch)
+
+;; lib/agent/http.esk — fulfilled by libcurl through agent_http_client.c.
+(extern ptr http-get-raw ptr i32 :real qllm_http_get)
+```
+
+In the WASM build, `web_fetch` becomes a WebAssembly import that
+the surrounding JavaScript glue resolves to a `fetch()` wrapper.
+In the native build, `qllm_http_get` resolves through one of two
+mechanisms:
+
+- **AOT** — `eshkol-run` scans the AST for `(require agent.…)`
+  before `process_requires` inlines it (`eshkol-run.cpp §requires_agent_ffi`,
+  line 1620). When set, the link step splices
+  `ESHKOL_HOST_AGENT_FFI_LINK_ARGS` from `build_config.h.in:15`
+  into the link command so the agent archive, libcurl, sqlite3,
+  and pcre2 are all pulled in.
+- **JIT / REPL** — `lib/repl/repl_jit.cpp:534` attaches a
+  `DynamicLibrarySearchGenerator::GetForCurrentProcess` to the
+  main JITDylib. Because `eshkol-run` itself was linked with
+  `-force_load` against `libeshkol-agent-ffi.a`, every agent
+  symbol is live in the host process and `dlsym(RTLD_DEFAULT,
+  "qllm_http_get")` returns the real function pointer.
+
+### 11.3 Threat-model differences
+
+The two paths have asymmetric trust:
+
+- **Browser path** runs inside the user agent's sandbox. The
+  same-origin policy, mixed-content rules, and CSP are
+  enforced by the browser; Eshkol contributes no additional
+  policy. CORS preflights apply to `web-fetch` exactly as
+  they would to a plain JS `fetch()`.
+- **Agent FFI** has no sandbox — it runs with the user's
+  privileges. The hardening in [`AGENT_FFI.md` §10](AGENT_FFI.md#10-security-model--every-guard-with-citation)
+  exists precisely because there is no upper boundary to fall
+  back on: CRLF injection blocked at `http.esk §http-safe-string?`,
+  shell injection blocked by the argv form in `agent_subprocess.c`,
+  ReDoS blocked by PCRE2 match limits in `agent_regex.c`, SQLi
+  guarded by prepared statements or the `sqlite-exec-safe`
+  filter, and dynamic-linker injection blocked by the env
+  scrub in `agent_subprocess.c §eshkol_scrub_environ`.
+
+### 11.4 When to pick which
+
+Use the browser path (`--wasm`) when:
+
+- The artifact is a static page or PWA distributed to end
+  users — no install of the Eshkol toolchain.
+- The user agent is the trust boundary; you want the
+  browser's sandbox to apply.
+- You want the visual surface (Canvas, DOM, events) that
+  `lib/web/http.esk` exposes.
+
+Use the agent FFI when:
+
+- The program runs on the user's own host (CLI, daemon,
+  long-lived agent).
+- You need primitives the browser sandbox forbids:
+  filesystem watch, subprocess, SQL store, loopback HTTP
+  server for OAuth callbacks.
+- You want libcurl-grade TLS rather than browser-mediated
+  fetch (e.g. for calls that the browser would
+  preflight-reject under CORS).
+
+The two paths are designed to coexist in a single program
+build only at the language level: the same Eshkol source can
+in principle compile down both ways if it avoids reaching for
+host-specific APIs in unguarded branches. In practice agentic
+programs target one or the other and conditionally `require`
+the right module.
+
+For the full per-function ABI, security guards, and AOT link
+wiring, see [`AGENT_FFI.md`](AGENT_FFI.md).
+
+---
+
+## 12. See Also
 
 - `lib/web/http.esk` — Full source for all 73 extern declarations
 - `exe/eshkol-run.cpp` — `--wasm` flag handling and WASM file emission
 - `lib/backend/llvm_codegen.cpp` (`eshkol_compile_llvm_ir_to_wasm`) — LLVM
   WebAssembly backend integration
+- [Agent FFI](AGENT_FFI.md) — native HTTP / SQLite / subprocess / fs-watch
+  surfaces; the server-side counterpart to this browser path
 - [Compilation Guide](COMPILATION_GUIDE.md) — General compiler flags and
   build pipeline
 - [Getting Started](GETTING_STARTED.md) — Installation and first programs

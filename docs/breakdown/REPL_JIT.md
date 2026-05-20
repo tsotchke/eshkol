@@ -553,3 +553,318 @@ eshkol> (define (fib n) (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))
 - `docs/breakdown/COMPILER_ARCHITECTURE.md` — Full LLVM backend pipeline overview
 - `docs/breakdown/MEMORY_MANAGEMENT.md` — OALR arena model that the shared arena implements
 - `CHANGELOG.md` — v1.1-accelerate section covers JIT `CodeGenOptLevel` fix and stdlib duplicate-symbol fix (`LinkOnceODRLinkage`)
+
+---
+
+## 14. What Landed in v1.2 / v1.2.1
+
+The v1.2 release introduced two architectural moves in the REPL JIT path:
+a machine-driven framing mode (`--machine` / `-m`) that turns a single
+REPL process into a long-lived JIT-warm worker, and a preferred bitcode
+loading path (`stdlib.bc` via `addIRModule`) that replaces the legacy
+object-file loading path (`stdlib.o` via `addObjectFile`) for ABI parity
+with subsequent REPL batches. This section documents both, plus the
+variadic-attribute round-trip across the stdlib boundary, the explicit
+`__eshkol_lib_init__` invocation that v1.2 added, and the ORC compile-thread
+sizing change.
+
+### 14.1 The `--machine` / `-m` Warm-Worker Mode
+
+The motivating use case was a sister project (Noesis) running an
+80-frame asteroids benchmark via repeated `eshkol-run -r`. Each
+invocation paid a ~30 s JIT-init + stdlib-load tax. The team needed
+either a persistent `eshkol-server` daemon or a `(persist-runtime!)`
+primitive that would snapshot LLVM ORC state to disk. The latter is
+impractical: LLVM ORC holds relocations, RuntimeDyld symbol tables, and
+materialized object files in process memory with no clean serialization
+contract. A long-running process is the correct architectural answer.
+
+`exe/eshkol-repl.cpp` §764–851 introduces the `--machine` flag. When
+supplied, it:
+
+- Forces non-interactive mode (no banner, no readline prompt, no color
+  output): `g_interactive = false` (line 803).
+- Implies `--stdlib` (`load_stdlib = true` on line 788), because the
+  point of warm-worker mode is to be JIT-warm with stdlib pre-loaded.
+- Emits `EREPL READY\n` to stderr exactly once, *after* JIT init and
+  stdlib load complete (lines 848–851):
+
+  ```cpp
+  if (machine_mode) {
+      std::fputs(EREPL_READY, stderr);
+      std::fflush(stderr);
+  }
+  ```
+
+- After every top-level form's evaluation, emits `EREPL DONE\n` (success)
+  or `EREPL FAIL\n` (exception/crash) to stderr, with `fflush(stderr)`
+  so the client gets it without buffering delay (lines 1071–1075,
+  1079–1083).
+
+The three framing constants are verbatim from `exe/eshkol-repl.cpp`
+§774–776:
+
+```cpp
+static constexpr const char* EREPL_READY = "EREPL READY\n";
+static constexpr const char* EREPL_DONE  = "EREPL DONE\n";
+static constexpr const char* EREPL_FAIL  = "EREPL FAIL\n";
+```
+
+All program output stays on stdout. The framing markers go to stderr
+only, so binary writes like P6 PPM, JSON-L emission, or any custom
+machine-readable output round-trips cleanly through the warm worker.
+
+The companion shell driver `scripts/eshkol-warm-demo.sh` illustrates
+the protocol from the client side (named pipes for stdin/stdout/stderr
+separation, READY-then-loop pattern). Real clients use language-native
+subprocess libraries (Python `subprocess.Popen`, Node.js
+`child_process.spawn`, etc.).
+
+**Measured performance.** Five trivial `(display N)(newline)` forms:
+
+- 5× cold `eshkol-run -r` invocations: 3:59.74 wall (~48 s per form,
+  dominated by JIT init each time).
+- 5 forms via a single `eshkol-repl --machine`: 47.35 s wall (~9.5 s
+  amortized; one cold start, five essentially-free forms).
+
+This is ~5× at N=5 and the marginal cost per additional warm form is
+sub-millisecond. For an 80-frame benchmark, this is the difference
+between 64 minutes and ~30 s of overhead.
+
+**Caveats.**
+
+- `eshkol-repl` evaluates one top-level form per submission (existing
+  behavior: `parse_string` reads the first form and drops the rest).
+  Clients should send one form per submission unit, or use multi-line
+  forms with balanced parens.
+- Sentinels are line-prefix matches, not length-prefixed framing.
+  Robust enough for line-based protocols. If a form happens to emit
+  literal `EREPL DONE` text on stdout, the sentinel still does not
+  collide because the sentinel is stderr-only.
+
+### 14.2 stdlib.bc as the Preferred Loading Path
+
+Prior to v1.2, `ReplJITContext::loadStdlib()` loaded the precompiled
+`stdlib.o` via `jit_->addObjectFile`. That worked, but it crossed the
+native object-file ABI boundary for Eshkol aggregate values, which
+made it fragile in the same way the `CodeGenOptLevel::None` fix in §8
+addressed (ARM64 struct scalarization at -O2 vs -O0).
+
+The v1.2 preferred path uses `stdlib.bc` (LLVM bitcode), loaded as a
+`ThreadSafeModule` via `addIRModule`. Bitcode keeps stdlib's IR in the
+same ORC compilation pipeline as subsequent user-code modules, so they
+share the JIT's TargetMachine and ABI exactly. The legacy
+`addObjectFile` path remains as fallback for installed layouts that
+have not yet shipped `stdlib.bc`.
+
+The dispatch is in `lib/repl/repl_jit.cpp` §1804–1918. First branch
+(§1846–1892), bitcode fast path:
+
+```cpp
+std::string stdlib_bc_path = findStdlibBitcode();
+if (!stdlib_bc_path.empty()) {
+    auto buffer_or_err = MemoryBuffer::getFile(stdlib_bc_path);
+    if (buffer_or_err) {
+        auto module_context = std::make_unique<LLVMContext>();
+        auto mod_or_err = parseBitcodeFile(
+            buffer_or_err->get()->getMemBufferRef(), *module_context);
+        if (mod_or_err) {
+            std::unique_ptr<Module> stdlib_module = std::move(*mod_or_err);
+            if (stdlib_module->getDataLayout().isDefault()) {
+                stdlib_module->setDataLayout(jit_->getDataLayout());
+            }
+            auto ts_ctx = orc::ThreadSafeContext(std::move(module_context));
+            auto tsm = ThreadSafeModule(std::move(stdlib_module), ts_ctx);
+            if (auto err = jit_->addIRModule(std::move(tsm))) { /* fallback */ }
+            else { registerStdlibSymbols();
+                   run_stdlib_initializers(stdlib_bc_path);
+                   stdlib_loaded_ = true; return true; }
+        }
+    }
+}
+```
+
+Second branch (§1894–1918), legacy object-file path:
+
+```cpp
+std::string stdlib_obj_path = findStdlibObject();
+if (!stdlib_obj_path.empty()) {
+    auto buffer_or_err = MemoryBuffer::getFile(stdlib_obj_path);
+    auto err = jit_->addObjectFile(main_dylib, std::move(*buffer_or_err));
+    if (!err) { registerStdlibSymbols(); run_stdlib_initializers(stdlib_obj_path);
+                stdlib_loaded_ = true; return true; }
+}
+```
+
+`findStdlibBitcode()` (§1629–1660) searches a platform-specific list
+ending at `/usr/local/lib/eshkol/stdlib.bc` and `/usr/lib/eshkol/stdlib.bc`
+on POSIX. `findStdlibObject()` (§1597–1626) does the same for `stdlib.o`.
+
+### 14.3 `__eshkol_lib_init__` Explicit Invocation
+
+In AOT-compiled binaries, `main()` calls `__eshkol_lib_init__(arena)` to
+populate every module-local `define` after stdlib link time — e.g.
+`core.data.base64`'s `base64-chars` alphabet, `core.json`'s `JSON_SPACE`,
+`core.testing`'s counters. ORC does not call this Eshkol-level library
+initializer for REPL preloads (it has no equivalent of an Eshkol-defined
+constructor list), so the REPL must invoke it explicitly.
+
+`lib/repl/repl_jit.cpp` §1813–1830:
+
+```cpp
+auto run_stdlib_initializers = [this](const std::string& source_path) {
+    if (auto lib_init = jit_->lookup("__eshkol_lib_init__")) {
+        using LibInitFn = void (*)(void*);
+        auto fn = reinterpret_cast<LibInitFn>(lib_init->getValue());
+        fn(shared_arena_);
+    } else {
+        consumeError(lib_init.takeError());
+        std::cerr << "[REPL] Warning: stdlib loaded from " << source_path
+                  << " but __eshkol_lib_init__ was not found — module "
+                     "constants remain zero-initialised." << std::endl;
+    }
+    // ...
+};
+```
+
+Without this invocation, REPL users observed `base64-encode` returning
+all zeros, JSON parsing returning empty objects, and similar
+silent-zero failures: the stdlib functions resolved correctly, but
+their module-local data globals were still zero-initialized.
+
+The same lambda also explicitly invokes
+`__eshkol_init_parallel_workers` (§1837–1843), which the AOT path runs
+through `llvm.global_ctors`. The REPL never relied on ORC ctor
+execution, so this dependency was made explicit to keep the parallel
+runtime consistent across all stdlib loader paths (bitcode, object
+file, or any future loader).
+
+### 14.4 The `eshkol-variadic` Attribute
+
+Scheme-level variadic functions (e.g. `(make-list n . xs)`, `(partial
+f . args)`, `(log-info fmt . args)`) are erased to a fixed-arity
+single-`tagged_value`-argument signature in LLVM IR. Without an
+out-of-band marker, the REPL cannot distinguish a Scheme variadic
+function from a 1-argument fixed function at the bitcode level, so a
+REPL call like `(make-list 3 'x)` would silently pack the second arg
+as the entire args list, and the stdlib body's `(cdr args)` would read
+garbage.
+
+The fix introduces an LLVM function attribute that carries the
+fixed-parameter count. The codegen emits it in `llvm_codegen.cpp` §3739:
+
+```cpp
+function->addFnAttr("eshkol-variadic", std::to_string(num_params));
+```
+
+`ReplJITContext::registerStdlibSymbols` (`repl_jit.cpp` §1731–1742)
+reads it back when discovering stdlib symbols from `stdlib.bc`:
+
+```cpp
+if (F.hasFnAttribute("eshkol-variadic")) {
+    auto attr = F.getFnAttribute("eshkol-variadic");
+    size_t fixed_params = 0;
+    try { fixed_params = std::stoul(attr.getValueAsString().str()); }
+    catch (...) { fixed_params = 0; }
+    eshkol_repl_register_variadic_function(name.c_str(), fixed_params, true);
+}
+```
+
+The discovery loop logs the count of variadic entries restored:
+`[REPL] Discovered <funcs> functions, <globals> globals, <variadic>
+variadic entries from stdlib.bc`.
+
+### 14.5 Module-Level Tagged-Value Globals
+
+The same `registerStdlibSymbols` loop (`repl_jit.cpp` §1756–1786) also
+registers stdlib's top-level data globals — `define`s whose right-hand
+side is a value (not a lambda) and which lower to a `GlobalVariable` of
+type `%eshkol_tagged_value`. Without this registration, references to
+such names from inside a `delay`-generated lambda or any
+free-var-captured closure body fall through to the "Undefined variable"
+path. The check is:
+
+```cpp
+llvm::Type* gt = G.getValueType();
+if (gt && gt->isStructTy()) {
+    auto* st = llvm::cast<llvm::StructType>(gt);
+    if (st->hasName() && st->getName() == "eshkol_tagged_value") {
+        eshkol_repl_register_symbol(name.c_str(), 0);
+        defined_globals_.insert(name);
+    }
+}
+```
+
+This was discovered while implementing SRFI 41 streams (issue #174):
+`stream-null` is the empty stream defined as a plain value at module
+top level. `(stream-cons head (delay stream-null))` failed because
+`stream-null` inside the delay's lambda was not findable. The fix is
+general: any stdlib module-level tagged-value global that is referenced
+from a downstream user lambda needs to be in the REPL's symbol address
+table so that `lib/backend/llvm_codegen.cpp` §7480 emits an external
+`GlobalVariable` load, not a free-variable capture.
+
+The capture rules in REPL mode therefore are: data globals from stdlib
+are *not* captured as free variables in a user lambda; they are loaded
+directly via an external `GlobalVariable` declaration emitted at codegen
+time, with the address resolved by the JIT's `DynamicLibrarySearchGenerator`
+or by the entry registered via `g_repl_symbol_addresses`.
+
+### 14.6 ORC Compile-Thread Sizing
+
+`lib/repl/repl_jit.cpp` §492–499 sets the LLJIT's compile thread count.
+v1.1 hardcoded `setNumCompileThreads(1)`, which serialized every IR
+materialization. Profiling on a 24-core M2 Max showed 100% of worker
+time inside `MaterializationTask::run → CloneFunctionInto`, with eight
+parallel tasks delivering only 1.02× speedup. v1.2 makes the count
+dynamic:
+
+```cpp
+unsigned compile_threads = std::thread::hardware_concurrency();
+if (compile_threads == 0) compile_threads = 4;
+compile_threads = std::max(1u, compile_threads / 2);
+if (compile_threads > 16) compile_threads = 16;
+if (const char* env = std::getenv("ESHKOL_JIT_COMPILE_THREADS")) {
+    long v = std::strtol(env, nullptr, 10);
+    if (v > 0 && v <= 64) compile_threads = static_cast<unsigned>(v);
+}
+```
+
+Default is `hardware_concurrency()/2`, clamped to `[1, 16]`. The cap
+protects against memory pressure: each compile thread holds its own
+`LLVMContext` plus a cloned module, and at 16 threads on a 24-core
+M2 Max the working set is already several hundred megabytes.
+`ESHKOL_JIT_COMPILE_THREADS` overrides at runtime.
+
+This change reduces ORC compile-thread contention proportionally but
+does not eliminate the per-symbol materialization-lock contention. The
+real fix for that lives in `parallel_codegen.cpp` §`eshkol_parallel_map`,
+which runs `item[0]` synchronously before submitting the rest of the
+list (the JIT warmup phase documented in PARALLEL_COMPUTING.md
+§13.2).
+
+### 14.7 Loaded Module Set
+
+`registerStdlibSymbols` (§1665–1689) inserts a fixed list of 23 module
+names into `loaded_modules` before running discovery. Verbatim from
+source:
+
+```
+stdlib, core.io, core.operators.arithmetic, core.operators.compare,
+core.logic.predicates, core.logic.types, core.logic.boolean,
+core.functional.compose, core.functional.curry, core.functional.flip,
+core.control.trampoline, core.list.compound, core.list.generate,
+core.list.transform, core.list.query, core.list.sort,
+core.list.higher_order, core.list.search, core.list.convert,
+core.strings, core.json, core.data.csv, core.data.base64
+```
+
+A `(require core.list.transform)` after stdlib load is therefore a
+no-op (the module name is already in `loaded_modules` so the require
+short-circuits). Any module not in this set still triggers normal
+file-based loading via `resolveModulePath`. The hardcoded list is
+intentional: discovery from bitcode names the *symbols*, not the
+*modules*, so the module set has to be known a priori. Future work
+could parse `(provide)` declarations from stdlib's .esk sources to
+generate the list at build time, but the current arrangement is the
+v1.2 form.

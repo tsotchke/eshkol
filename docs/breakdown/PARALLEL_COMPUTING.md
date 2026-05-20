@@ -513,3 +513,276 @@ For production use, parallel autodiff is safe when gradient computations are con
 | `lib/backend/thread_pool.cpp` | 1,350 | Thread pool: work-stealing scheduler, futures, metrics, lazy future helpers |
 | `inc/eshkol/backend/thread_pool.h` | 371 | Thread pool API: C and C++ interfaces, configuration, metrics struct |
 | `inc/eshkol/backend/work_stealing_deque.h` | 667 | Chase-Lev deque, epoch-based reclamation, work-stealing scheduler |
+
+---
+
+## 13. What Landed in v1.2 / v1.2.1
+
+The v1.2 release made `parallel-map`, `parallel-filter`, and `parallel-execute`
+deliver real parallelism, where the previous gating logic had left them as
+single-threaded loops with a sequential codegen fallback. The v1.2.1 release
+hardened the worker scheduler against unsafe submissions from non-owner
+threads. This section documents both architectural moves with citations.
+
+### 13.1 The Flags-Byte Mis-Dispatch and the Default-On Flip
+
+Prior to v1.2, `parallel-map` measured at **1.01× sequential map** on
+CPU-bound workloads, despite a healthy work-stealing thread pool (8× speedup
+observable on OS-blocking workloads). The diagnosis arc, recorded in the
+project memory and confirmed against current source, was:
+
+1. The codegen path that submits tasks to the thread pool (`parallelMap` in
+   `lib/backend/parallel_llvm_codegen.cpp` §1437) was gated behind a default-off
+   environment flag. The fallback was a sequential inlined loop
+   (`parallelMapSequentialInline`, line 1527), so `parallel-map` was
+   functionally indistinguishable from `map`.
+2. When `ESHKOL_PARALLEL_ENABLE=1` was set, AOT workers crashed with `+:
+   operand is not a number, vector, or tensor`. Profiler traces on a 24-core
+   M2 Max showed 100% of worker time inside
+   `llvm::orc::MaterializationTask::run` — superficially indicating ORC
+   compile contention, but actually a symptom of the next layer.
+
+The root cause was at the C/LLVM task-boundary in `parallel_codegen.cpp`
+§`llvm_parallel_map_task` and the matching reconstruction in
+`parallel_llvm_codegen.cpp` §`generateMapWorker`. The C-side struct decomposes
+each tagged value into i64 fields, so no aggregate crosses the C/LLVM
+boundary. The old code packed only the `type` byte (low 8 bits of `item_type
+i64`) and the worker reconstructed the tagged value with `flags = 0`
+hardcoded. For an integer item like `'(1 2 3 4 5)`, that produced
+`{type=INT64, flags=0}` at the worker — losing `ESHKOL_VALUE_EXACT_FLAG =
+0x10` which the arithmetic-dispatch path checks to decide INT64-fast versus
+bignum-or-double-fallback. With `flags=0`, arithmetic on the worker mis-dispatched
+into the bignum path, which then triggered ORC materialization of bignum
+runtime helpers and crashed when the supposed bignum pointer was actually a
+small immediate integer.
+
+The fix repacks both bytes into `item_type i64`:
+
+```
+bits  0..7  : type  (eshkol_value_type_t)
+bits  8..15 : flags (EXACT_FLAG=0x10, INEXACT_FLAG=0x20, ...)
+bits 16..63 : reserved (zero)
+```
+
+C-side, `parallel_codegen.cpp` line 500:
+
+```cpp
+tasks[i].item_type = static_cast<uint64_t>(items[i].type)
+                   | (static_cast<uint64_t>(items[i].flags) << 8);
+tasks[i].item_data = items[i].data.raw_val;
+```
+
+Worker-side reconstruction in `parallel_llvm_codegen.cpp` §`generateMapWorker`
+lines 864–872:
+
+```cpp
+item = ctx_.builder().CreateInsertValue(item,
+    ctx_.builder().CreateTrunc(item_type, ctx_.int8Type()), {0});   // type
+llvm::Value* item_flags = ctx_.builder().CreateTrunc(
+    ctx_.builder().CreateLShr(item_type, ConstantInt::get(int64Type(), 8)),
+    ctx_.int8Type(), "item_flags");
+item = ctx_.builder().CreateInsertValue(item, item_flags, {1});     // flags
+item = ctx_.builder().CreateInsertValue(item, item_data, {4});      // data
+```
+
+The same `{type, flags}` packing is now used for `parallel_fold_task`
+(`arg1_type`, `arg2_type` — see `parallel_llvm_codegen.cpp` §`generateFoldWorker`
+lines 978–1000) and `parallel_filter_task` (lines 1097–1107).
+
+With the flags-byte issue fixed, the default at the codegen gate was flipped
+from opt-in to default-on. The current gate in
+`parallel_llvm_codegen.cpp` §1493–1497 is:
+
+```cpp
+const char* enable_env = std::getenv("ESHKOL_PARALLEL_ENABLE");
+const char* disable_env = std::getenv("ESHKOL_PARALLEL_DISABLE");
+bool use_parallel = !(disable_env && disable_env[0] == '1');
+if (enable_env && enable_env[0] == '0') use_parallel = false;
+```
+
+Default is true; `ESHKOL_PARALLEL_DISABLE=1` or the legacy
+`ESHKOL_PARALLEL_ENABLE=0` falls back to the sequential inlined loop. Both
+overrides are preserved so that benchmark scripts that explicitly opt out
+keep working, and so that regression diagnosis can isolate whether a
+particular slow-down is parallelism-induced.
+
+Measured outcome on a 24-core Apple M2 Max with an 8-element CPU-bound
+workload (busy-work loop, 5M iterations per element):
+
+| Mode                  | Sequential ms | Parallel ms | Speedup |
+|-----------------------|---------------|-------------|---------|
+| AOT (pre-fix, opt-in) | n/a           | crashes     | —       |
+| AOT (post-fix)        | (baseline)    | (baseline/5–12) | 5–12× |
+| JIT (post-fix)        | (baseline)    | (baseline/4–9)  | 4–9×  |
+| OS-blocking sleep     | 2435 ms       | 306 ms      | 8.0×    |
+
+(Master commits: `ba9b568` is the flags-byte packing fix plus the default
+flip; `59ebbea` is the analysis update confirming JIT also delivers real
+parallelism.)
+
+### 13.2 JIT Warmup Phase
+
+The JIT path remained sensitive to ORC's single-thread materialization lock
+even after the flags-byte fix, because the first time a closure body or any
+transitively-referenced stdlib helper is invoked, ORC must materialize it
+under a lock. If N tasks are submitted simultaneously, all N race for that
+lock, dominating runtime.
+
+`eshkol_parallel_map` (`parallel_codegen.cpp` §521–527) therefore runs
+`item[0]` synchronously on the calling thread before submitting `item[1..n]`
+to the pool. This forces materialization of the closure body and its
+transitive symbol set on a single thread, after which workers run
+pre-materialized native code with no JIT involvement:
+
+```cpp
+bool do_warmup = !getenv("ESHKOL_PARALLEL_NO_WARMUP");
+size_t parallel_start = 0;
+if (do_warmup && n > 1) {
+    g_parallel_map_worker(&tasks[0]);
+    parallel_start = 1;  // item[0] is already done
+}
+```
+
+`ESHKOL_PARALLEL_NO_WARMUP=1` skips the warmup, useful for diagnosing whether
+warmup itself introduces a regression on a particular workload.
+
+A second JIT-side change in `lib/repl/repl_jit.cpp` §492–499 raised the ORC
+compile-thread count from a hardcoded 1 to
+`max(1, hardware_concurrency()/2)`, capped at 16, with
+`ESHKOL_JIT_COMPILE_THREADS` overriding. Larger values reduce compile-thread
+contention proportionally but add memory pressure (each compile thread holds
+its own `LLVMContext` plus a cloned module).
+
+### 13.3 Per-Thread Arenas as the Default
+
+The `arena_create_thread_local` API documented in §9 is the v1.2 form. Worker
+threads now eagerly initialize all thread-local runtime state at startup,
+not lazily on first use. `work_stealing_worker_func` in
+`thread_pool.cpp` §203–204 calls `eshkol_thread_init_worker(pool->thread_arena_size)`
+which touches every thread-local slot:
+
+- the thread-local arena (`__thread_local_arena`),
+- the AD tape stack (`__ad_tape_stack[MAX_TAPE_DEPTH]`, `__ad_tape_depth`),
+- the outer-AD-node stack used by N-dimensional derivatives,
+- the OALR region stack (`__region_stack[MAX_REGION_DEPTH]`),
+- the double-backward AD storage slots.
+
+This eliminates a class of "silent zero" hazards where a JIT-emitted load of
+a TLS slot ran before the slot had been materialized by the OS thread-startup
+sequence (macOS Mach-O `__tlv_*` wrappers, POSIX lazy-init). For details on
+the arena lifecycle and the merge-on-join protocol, see
+MEMORY_MANAGEMENT.md §`Per-Thread Arena Lifecycle`.
+
+### 13.4 v1.2.1: External-Task-Submission Safety
+
+The Chase-Lev deque is single-owner for `push` and `pop` operations — only
+the owning worker thread may modify its bottom-end. The original v1.2 thread
+pool submission code (`thread_pool.cpp` §`thread_pool_submit`, pre-fix)
+allowed any thread that happened to have a worker `tls_worker_id` set to
+push directly into the corresponding worker's deque, even if that
+`tls_worker_id` belonged to a different pool, or if the current thread had
+since been reused by the OS for unrelated work.
+
+Two correctness gaps emerged:
+
+1. A `tls_worker_id < pool->num_threads` check is not sufficient on its own
+   to identify the *owner* of a specific deque, because `tls_worker_id` is
+   set when any pool's worker starts, and pools that share the same process
+   can collide if multiple `eshkol_thread_pool_t` instances exist.
+2. External producers (REPL main thread, signal handlers, ad-hoc test
+   helpers) had no safe path for submission. They would also try a deque
+   push, violating the Chase-Lev single-owner invariant.
+
+The v1.2.1 fix (commit `c927e8a`, "Honor external thread-pool queue
+capacity", and the preceding `673f847`, "Route external work-stealing
+submissions through queue") adds a per-pool `tls_worker_pool` thread-local
+that records *which* pool the current thread is a worker of, and a helper
+`thread_pool_called_from_owner_worker` that gates the local-deque-push path:
+
+```cpp
+// thread_pool.cpp §132-134
+static bool thread_pool_called_from_owner_worker(const eshkol_thread_pool_t* pool) {
+    return tls_worker_pool == pool && tls_worker_id < pool->num_threads;
+}
+```
+
+External producers are now routed through the pool's `legacy_queue`
+(a `std::queue<eshkol_task*>` protected by `queue_mutex`):
+
+```cpp
+// thread_pool.cpp §749-763 (thread_pool_submit)
+if (thread_pool_called_from_owner_worker(pool)) {
+    pool->deques[tls_worker_id]->push(task);   // single-owner path
+} else {
+    std::lock_guard<std::mutex> lock(pool->queue_mutex);
+    if (thread_pool_legacy_queue_full_locked(pool)) {
+        delete task; delete future; return nullptr;
+    }
+    pool->legacy_queue.push(task);             // external path
+    thread_pool_note_queue_depth(pool, pool->legacy_queue.size());
+}
+```
+
+Workers drain the external queue between local pops and steal attempts
+(`thread_pool.cpp` §260–265):
+
+```cpp
+if (!task) {
+    task = thread_pool_try_pop_external_task(pool);
+    if (task) { idle_spins = 0; }
+}
+```
+
+The shared queue's `max_queue_size` is now honored on the external path
+(was previously a no-op when `use_work_stealing` was true). The legacy
+queue is also drained on pool shutdown regardless of the work-stealing
+mode (the destructor no longer wraps the drain in an `else` branch).
+
+### 13.5 Lazy Worker Resolution
+
+`parallel_codegen.cpp` §148–167 (`eshkol_parallel_workers_lazy_resolve`)
+handles a platform-specific edge case: on Linux AArch64 with lld, the
+constructor that registers LLVM-generated workers
+(`__eshkol_init_parallel_workers`, emitted into `llvm.global_ctors` from
+`parallel_llvm_codegen.cpp`) is silently skipped by glibc's loader, because
+lld places it in `.ctors` instead of `.init_array`. The fix uses
+`dlsym(RTLD_DEFAULT, ...)` to resolve `__parallel_{map,fold,filter,execute}_worker`
+and `__eshkol_call_{unary,binary}_closure` at first call, idempotently.
+The user-binary link must pass `-Wl,--export-dynamic` so the statically-linked
+symbols end up in the dynamic symbol table; `eshkol-run` already does this
+for AArch64 Linux.
+
+### 13.6 Eager Future Submission
+
+`(future thunk)` v1.2 also added an eager-async path that submits the thunk
+to the global pool at future-creation time, rather than at first `force`.
+The submission piggy-backs on the existing `__parallel_execute_worker` and
+records the pool future in the lazy_future struct via
+`eshkol_lazy_future_submit_async` (`parallel_codegen.cpp` §254–281). `force`
+then dispatches to `eshkol_lazy_future_join_async` (§283–305) which
+`future_get`s the pool future and copies the worker's written result into
+the lazy_future's stored slot. Subsequent `force` calls return the cached
+result immediately.
+
+The async path can be disabled per-call if the user wants strict lazy
+semantics; the shadow struct layout in `parallel_codegen.cpp` lines 238–252
+mirrors `eshkol_lazy_future` in `thread_pool.cpp` and depends on field
+offsets staying in sync between the two files. A static_assert would be
+appropriate but is currently a comment-only contract.
+
+### 13.7 What Still Limits Parallel Speedup
+
+- **Result marshaling**: `vector_to_list` runs sequentially on the main
+  thread after all workers complete (`parallel_codegen.cpp` §347). For very
+  large result lists this becomes Amdahl-bounded. A future change could move
+  cons-cell allocation into workers (each writing into its own thread-local
+  arena) and concatenate the per-worker chains on the main thread.
+- **Global `__ad_mode_active` flag**: the AD tape stack is thread-local but
+  `__ad_mode_active` and `__current_ad_tape` are plain globals (see §12.3).
+  Gradient-computing closures inside `parallel-map` may observe a stale flag
+  written by another worker. The tape stack itself remains correctly isolated,
+  but the flag race can cause spurious or missed tape recording.
+- **Sequential fold**: `parallel-fold` is a sequential left-fold by design
+  (`parallel_codegen.cpp` §598–643). Tree-structured parallel reduction
+  would require associativity guarantees from the combining function, and
+  is not yet implemented.

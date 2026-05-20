@@ -530,12 +530,327 @@ intrinsics, CPS transformation passes, or runtime stack copying.
 
 - R7RS, Section 6.10: Control features (call/cc, dynamic-wind, values)
 - R7RS, Section 6.11: Exceptions (guard, raise, with-exception-handler)
-- `lib/backend/llvm_codegen.cpp`: codegenCallCC (line 14626), codegenDynamicWind
-  (line 14731), codegenGuard (line 14288), codegenRaise (line 14546),
-  continuation invocation dispatch (line 4751)
-- `lib/core/arena_memory.cpp`: eshkol_make_continuation_state (line 3845),
-  eshkol_make_continuation_closure (line 3859), wind stack runtime (lines
-  3979--4006), exception handler stack (lines 3714--3741)
-- `inc/eshkol/eshkol.h`: eshkol_continuation_state_t (line 984),
-  eshkol_dynamic_wind_entry_t (line 991), runtime function declarations
-  (lines 1001--1005)
+- `lib/backend/llvm_codegen.cpp`: codegenCallCC (§17324), codegenDynamicWind
+  (§17429), codegenGuard (§16948), codegenRaise (§17221), codegenWithExceptionHandler
+  (§17495), continuation invocation dispatch (§4751)
+- `lib/core/arena_memory.cpp`: eshkol_make_continuation_state (§4639),
+  eshkol_make_continuation_closure (§4653), wind stack runtime
+  (§4773–4801), exception handler stack (§4578–4586),
+  `call_thunk_closure` ABI dispatch (§4685–4763)
+- `inc/eshkol/eshkol.h`: eshkol_continuation_state_t, eshkol_dynamic_wind_entry_t,
+  runtime function declarations
+- `lib/core/platform_runtime.cpp`: `eshkol_jmp_buf_size` (§551–553)
+
+---
+
+## 9. What Landed in v1.2 / v1.2.1
+
+The v1.2 release fixed two long-standing bugs in the continuation
+subsystem: the free-variable analyser was silently skipping ~30 AST
+operation kinds, which caused `(call/cc ...)` inside `(dynamic-wind
+...)` (and other compositions) to fail with "Cannot capture k from
+outer function"; and the `jmp_buf` allocation was using a hardcoded
+size that did not match every libc on every platform. This section
+documents both, plus the platform-specific `setjmp` lowering on
+Windows.
+
+### 9.1 The findFreeVariablesImpl Coverage Fix
+
+`findFreeVariablesImpl` (`lib/backend/llvm_codegen.cpp` §20919) is the
+analyser used by lambda codegen to determine which outer-scope
+variables a lambda body references. The result drives closure
+environment capture — every referenced free variable must be packed
+into the closure's environment, otherwise the JIT-emitted lambda body
+loads from an undefined slot.
+
+Pre-v1.2, the function had a large `switch` over `op->op` with a
+`default: break;` fallback. This silently skipped recursion for every
+operation kind not explicitly listed, including the four
+continuation-related kinds (`ESHKOL_DYNAMIC_WIND_OP`,
+`ESHKOL_CALL_CC_OP`, `ESHKOL_GUARD_OP`, `ESHKOL_RAISE_OP`) plus the
+multi-value forms (`ESHKOL_VALUES_OP`, `ESHKOL_CALL_WITH_VALUES_OP`,
+`ESHKOL_LET_VALUES_OP`, `ESHKOL_LET_STAR_VALUES_OP`), pattern-match
+(`ESHKOL_MATCH_OP`), OALR forms (`ESHKOL_WITH_REGION_OP`,
+`ESHKOL_BORROW_OP`, `ESHKOL_OWNED_OP`, `ESHKOL_MOVE_OP`,
+`ESHKOL_SHARED_OP`, `ESHKOL_WEAK_REF_OP`), calculus operators
+(`ESHKOL_DIFF_OP`, `ESHKOL_JACOBIAN_OP`, `ESHKOL_HESSIAN_OP`,
+`ESHKOL_DIVERGENCE_OP`, `ESHKOL_CURL_OP`, `ESHKOL_LAPLACIAN_OP`), the
+logic/consciousness ops (`ESHKOL_UNIFY_OP`, `ESHKOL_MAKE_FACT_OP`,
+`ESHKOL_KB_QUERY_OP`, etc.), tensor literals (`ESHKOL_TENSOR_OP`),
+case-lambda, and others — roughly thirty kinds in total.
+
+**Symptom**: any lambda whose body transitively contained one of
+these forms but whose free variables flowed only through that form's
+sub-expressions would silently fail to capture the variables. A
+classic repro is `(call/cc ...)` inside `(dynamic-wind ...)`:
+
+```scheme
+(define (with-cleanup body cleanup)
+  (call/cc
+    (lambda (return)
+      (dynamic-wind
+        (lambda () #t)
+        (lambda () (body return))          ; <-- references `return`
+        cleanup))))
+```
+
+The lambda passed as the thunk references `return`, a captured
+variable from the outer lambda. The analyser walks the outer lambda's
+body, hits the `dynamic-wind` node, and (pre-fix) skipped recursion
+into its three sub-expressions. The thunk's free-variable set came up
+empty. At codegen time, the thunk's reference to `return` triggered
+"Cannot capture k from outer function" because there was no entry in
+the closure environment.
+
+**The fix** (current source, `lib/backend/llvm_codegen.cpp`
+§21265–21472) adds explicit cases for every missing operation kind.
+The four continuation cases are at §21265–21297:
+
+```cpp
+case ESHKOL_DYNAMIC_WIND_OP:
+    if (op->dynamic_wind_op.before) findFreeVariablesImpl(op->dynamic_wind_op.before, ...);
+    if (op->dynamic_wind_op.thunk)  findFreeVariablesImpl(op->dynamic_wind_op.thunk,  ...);
+    if (op->dynamic_wind_op.after)  findFreeVariablesImpl(op->dynamic_wind_op.after,  ...);
+    break;
+case ESHKOL_CALL_CC_OP:
+    if (op->call_cc_op.proc) findFreeVariablesImpl(op->call_cc_op.proc, ...);
+    break;
+case ESHKOL_GUARD_OP: {
+    for (uint64_t i = 0; i < op->guard_op.num_body_exprs; i++)
+        findFreeVariablesImpl(&op->guard_op.body[i], ...);
+    for (uint64_t i = 0; i < op->guard_op.num_clauses; i++)
+        findFreeVariablesImpl(&op->guard_op.clauses[i], ...);
+    break;
+}
+case ESHKOL_RAISE_OP:
+    if (op->raise_op.exception)
+        findFreeVariablesImpl(op->raise_op.exception, ...);
+    break;
+```
+
+The multi-value cases at §21298–21310 recurse into the producer and
+consumer of `call-with-values`, the value expressions of `values`, and
+(for `let-values` / `let*-values`, §21452–21494) the producers in the
+outer scope plus the body in the bound-extended scope. The match,
+calculus, and logic cases follow the same pattern: explicit recursion
+into every sub-AST that might contain a free reference.
+
+The lesson, recorded in the project memory: when adding a new AST op
+type, always add it to `findFreeVariablesImpl` too. Grepping for
+"Cannot capture" warnings in test output is the fastest way to detect
+a missing case.
+
+### 9.2 Dynamic jmp_buf Sizing
+
+`sizeof(jmp_buf)` varies wildly across libc implementations:
+
+- glibc on x86_64: 200 bytes (large because it stores SIMD and FPU state).
+- musl on x86_64: 88 bytes.
+- macOS libc on arm64: 192 bytes.
+- macOS libc on x86_64: 148 bytes.
+- MSVCRT on Windows x86_64: 256 bytes (the `_setjmpex` variant).
+
+Pre-v1.2 codegen allocated a hardcoded 200-byte buffer, which was
+correct on glibc x86_64 but underspecified on Windows and oversized
+elsewhere. The v1.2 fix removes the hardcode and queries the libc at
+runtime.
+
+`lib/core/platform_runtime.cpp` §551–553 exports the size:
+
+```cpp
+extern "C" std::uint64_t eshkol_jmp_buf_size() {
+    return sizeof(jmp_buf);
+}
+```
+
+The symbol name is centralized as a compile-time constant in
+`inc/eshkol/runtime_exports.h:21`:
+
+```cpp
+inline constexpr const char* jmp_buf_size_symbol = "eshkol_jmp_buf_size";
+```
+
+Codegen allocates with a runtime-sized alloca
+(`lib/backend/llvm_codegen.cpp` §32149–32164):
+
+```cpp
+Value* allocaJmpBuf(const char* name) {
+    FunctionType* size_type = FunctionType::get(int64_type, {}, false);
+    Function* size_func = module->getFunction(eshkol::runtime::jmp_buf_size_symbol);
+    if (!size_func) {
+        size_func = Function::Create(size_type, Function::ExternalLinkage,
+            eshkol::runtime::jmp_buf_size_symbol, module.get());
+    }
+    Value* size = builder->CreateCall(size_func, {}, std::string(name) + "_size");
+    AllocaInst* jmp_buf = builder->CreateAlloca(builder->getInt8Ty(), size, name);
+    jmp_buf->setAlignment(Align(16));
+    return jmp_buf;
+}
+```
+
+The 16-byte alignment is the worst-case requirement (glibc x86_64
+stores AVX registers in the buffer). The IR `alloca i8, %size`
+generates a dynamic alloca that LLVM lowers to a stack-pointer
+subtraction by the runtime-computed size. The same IR is emitted for
+both AOT and JIT; the resolution of `eshkol_jmp_buf_size` happens at
+link time (AOT) or via the JIT's `DynamicLibrarySearchGenerator`
+(REPL).
+
+### 9.3 Platform-Specific setjmp Lowering
+
+The `setjmp` symbol name and call convention differ across platforms.
+`lib/backend/llvm_codegen.cpp` §32166–32183 selects per target:
+
+```cpp
+Function* getOrDeclareSetjmpFunc() {
+    const Triple& target_triple = module->getTargetTriple();
+    const bool is_windows_target = target_triple.isOSWindows();
+    const char* setjmp_symbol = is_windows_target ? "_setjmpex" : "setjmp";
+    FunctionType* setjmp_type = is_windows_target
+        ? FunctionType::get(int32, {ptr, ptr}, false)    // 2 args on Windows
+        : FunctionType::get(int32, {ptr},      false);   // 1 arg elsewhere
+    Function* setjmp_func = module->getFunction(setjmp_symbol);
+    if (!setjmp_func) {
+        setjmp_func = Function::Create(setjmp_type, Function::ExternalLinkage,
+            setjmp_symbol, module.get());
+    }
+    setjmp_func->addFnAttr(Attribute::ReturnsTwice);
+    return setjmp_func;
+}
+```
+
+On POSIX targets, the call is `setjmp(jmp_buf)`. On Windows targets,
+the call is `_setjmpex(jmp_buf, context)` where `context` is an
+architecture-specific second argument:
+
+- **Windows ARM64**: `context = llvm.sponentry()`. The function-entry
+  stack pointer. This is what Clang's lowering uses, and the runtime
+  expects to find it in the second argument for SEH-aware unwinding.
+- **Windows x64**: `context = llvm.frameaddress(0)`. The current
+  frame address.
+
+`makeSetjmpArgs` (`lib/backend/llvm_codegen.cpp` §32185–32209)
+constructs the arguments:
+
+```cpp
+std::vector<Value*> makeSetjmpArgs(Value* jmp_buf_alloc) {
+    std::vector<Value*> args = {jmp_buf_alloc};
+    const Triple& target_triple = module->getTargetTriple();
+    if (!target_triple.isOSWindows()) return args;
+
+    Value* setjmp_context = nullptr;
+    if (target_triple.getArch() == Triple::aarch64) {
+        Function* sponentry = ESHKOL_GET_INTRINSIC(module.get(),
+            Intrinsic::sponentry, {builder->getPtrTy()});
+        setjmp_context = builder->CreateCall(sponentry, {}, "setjmp_sponentry");
+    } else {
+        Function* frameaddress = ESHKOL_GET_INTRINSIC(module.get(),
+            Intrinsic::frameaddress, {builder->getPtrTy()});
+        setjmp_context = builder->CreateCall(frameaddress,
+            {ConstantInt::get(builder->getInt32Ty(), 0)}, "setjmp_frame");
+    }
+    args.push_back(setjmp_context);
+    return args;
+}
+```
+
+The `ReturnsTwice` attribute on the `setjmp` function declaration is
+critical: it tells LLVM's optimizers that any value defined before the
+`setjmp` call may have a different value after it returns from a
+`longjmp`. Without this attribute, LLVM would assume the call is a
+normal one and would hoist or coalesce loads/stores around it,
+silently corrupting the call/cc and guard semantics.
+
+### 9.4 ARM64 16-Byte Struct Return ABI
+
+`eshkol_tagged_value_t` is a 16-byte struct (`{u8, u8, u16, u32, u64}`).
+The two dominant ABI families handle 16-byte aggregate return
+differently:
+
+- **x86-64 (System V) and Windows x64**: The caller passes a hidden
+  first argument — a pointer to the caller's return slot. The function
+  writes the return value there and returns `void`.
+- **AArch64 (both POSIX and Windows)**: Returns the 16-byte struct
+  directly in the `x0:x1` register pair. No hidden buffer is passed.
+
+The `call_thunk_closure` helper in `lib/core/arena_memory.cpp`
+§4685–4763 dispatches by architecture at compile time:
+
+```c
+#if defined(__aarch64__) || defined(_M_ARM64)
+    typedef eshkol_tagged_value_t (*fn0_t)(void);
+    typedef eshkol_tagged_value_t (*fn1_t)(void*);
+    // ... fn2_t through fn4_t follow the same pattern
+    result = ((fn0_t)(uintptr_t)closure->func_ptr)();
+#else
+    typedef void (*fn0_t)(eshkol_tagged_value_t*);
+    typedef void (*fn1_t)(eshkol_tagged_value_t*, void*);
+    // ... fn2_t through fn4_t follow the same pattern
+    ((fn0_t)(uintptr_t)closure->func_ptr)(&result);
+#endif
+```
+
+This trampoline is used by `call_thunk_from_tagged` (§4766–4772),
+which is called during `call/cc` continuation unwinding
+(§17421 — load `wind_mark`, call `eshkol_unwind_dynamic_wind`)
+and dynamic-wind before/after thunk invocation. Without the per-arch
+branch, ARM64 would treat the hidden return-buffer pointer as the
+first data argument, shifting all real arguments by one slot and
+corrupting the return value. See MEMORY_MANAGEMENT.md
+§`ARM64 Thunk Calling Convention` for the broader context on
+platform ABIs and Eshkol's aggregate-value handling.
+
+### 9.5 Continuation State and Wind-Mark Layout
+
+The continuation state struct (`inc/eshkol/eshkol.h`, declared near
+§984) is:
+
+```c
+typedef struct eshkol_continuation_state {
+    void* jmp_buf_ptr;              // offset 0:  pointer to jmp_buf on caller's stack
+    eshkol_tagged_value_t value;    // offset 8:  tagged value (16 bytes)
+    void* wind_mark;                // offset 24: saved g_dynamic_wind_stack pointer
+} eshkol_continuation_state_t;
+```
+
+Total: 32 bytes, arena-allocated. The struct is created by
+`eshkol_make_continuation_state` (`lib/core/arena_memory.cpp` §4639):
+
+```c
+extern "C" eshkol_continuation_state_t* eshkol_make_continuation_state(
+    void* arena_void, void* jmp_buf_ptr) {
+    arena_t* arena = (arena_t*)arena_void;
+    eshkol_continuation_state_t* state = (eshkol_continuation_state_t*)
+        arena_allocate_aligned(arena, sizeof(*state), 8);
+    state->jmp_buf_ptr = jmp_buf_ptr;
+    state->value.type = ESHKOL_VALUE_NULL;
+    state->value.data.raw_val = 0;
+    state->wind_mark = (void*)g_dynamic_wind_stack;
+    return state;
+}
+```
+
+`wind_mark` snapshots `g_dynamic_wind_stack` at capture time. The
+codegen for continuation invocation (`lib/backend/llvm_codegen.cpp`
+§4751) emits a call to `eshkol_unwind_dynamic_wind(saved_wind_mark)`
+before the `longjmp`. The unwind walks the wind stack down to the
+mark, calling each `after` thunk in LIFO order (the linked list is
+prepended at push, so the most recently pushed entry is at the head;
+walking from the head down to but not including the mark releases the
+correct subset).
+
+The wind entry struct (`inc/eshkol/eshkol.h` §991):
+
+```c
+typedef struct eshkol_dynamic_wind_entry {
+    eshkol_tagged_value_t before;
+    eshkol_tagged_value_t after;
+    struct eshkol_dynamic_wind_entry* prev;
+} eshkol_dynamic_wind_entry_t;
+```
+
+The global head pointer `g_dynamic_wind_stack` is in
+`lib/core/arena_memory.cpp` §4637, a plain C global (not thread-local)
+— continuation semantics inside parallel-map are therefore *not*
+isolated per worker, and this is a known limitation documented in
+PARALLEL_COMPUTING.md §13.7.
