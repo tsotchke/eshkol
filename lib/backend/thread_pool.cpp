@@ -28,6 +28,17 @@
 #include <functional>
 #include <cstring>
 #include <random>
+#include <cstdlib>
+
+#if !defined(_WIN32)
+#include <pthread.h>
+#endif
+
+#if !defined(_WIN32)
+#define ESHKOL_USE_PTHREAD_WORKERS 1
+#else
+#define ESHKOL_USE_PTHREAD_WORKERS 0
+#endif
 
 // ============================================================================
 // Internal Structures
@@ -66,7 +77,11 @@ struct eshkol_thread_pool {
     std::vector<std::mt19937> worker_rngs;
 
     // Thread management
+#if ESHKOL_USE_PTHREAD_WORKERS
+    std::vector<pthread_t> workers;
+#else
     std::vector<std::thread> workers;
+#endif
     std::atomic<bool> stop{false};
     std::atomic<bool> paused{false};
 
@@ -456,6 +471,91 @@ static void legacy_worker_func(eshkol_thread_pool_t* pool, size_t worker_id) {
     eshkol_debug("[%s] Legacy worker %zu stopped", pool->name.c_str(), worker_id);
 }
 
+#if ESHKOL_USE_PTHREAD_WORKERS
+struct eshkol_worker_start_args {
+    eshkol_thread_pool_t* pool;
+    size_t worker_id;
+    bool work_stealing;
+};
+
+static size_t thread_pool_default_worker_stack_size(void) {
+    size_t stack_size = 16 * 1024 * 1024;
+    const char* env = std::getenv("ESHKOL_WORKER_STACK_BYTES");
+    if (env && env[0] != '\0') {
+        char* end = nullptr;
+        unsigned long long parsed = std::strtoull(env, &end, 10);
+        if (end && *end == '\0' && parsed > 0) {
+            stack_size = static_cast<size_t>(parsed);
+        }
+    }
+
+#ifdef PTHREAD_STACK_MIN
+    if (stack_size < static_cast<size_t>(PTHREAD_STACK_MIN)) {
+        stack_size = static_cast<size_t>(PTHREAD_STACK_MIN);
+    }
+#endif
+
+    return stack_size;
+}
+
+static void* thread_pool_worker_entry(void* arg) {
+    std::unique_ptr<eshkol_worker_start_args> start(
+        static_cast<eshkol_worker_start_args*>(arg));
+    if (start->work_stealing) {
+        work_stealing_worker_func(start->pool, start->worker_id);
+    } else {
+        legacy_worker_func(start->pool, start->worker_id);
+    }
+    return nullptr;
+}
+#endif
+
+static bool thread_pool_start_worker(
+    eshkol_thread_pool_t* pool,
+    size_t worker_id,
+    bool work_stealing)
+{
+#if ESHKOL_USE_PTHREAD_WORKERS
+    pthread_attr_t attr;
+    int attr_rc = pthread_attr_init(&attr);
+    if (attr_rc != 0) {
+        eshkol_error("[%s] pthread_attr_init failed: %s",
+                     pool->name.c_str(), std::strerror(attr_rc));
+        return false;
+    }
+
+    size_t stack_size = thread_pool_default_worker_stack_size();
+    int stack_rc = pthread_attr_setstacksize(&attr, stack_size);
+    if (stack_rc != 0) {
+        eshkol_error("[%s] pthread_attr_setstacksize(%zu) failed: %s",
+                     pool->name.c_str(), stack_size, std::strerror(stack_rc));
+        pthread_attr_destroy(&attr);
+        return false;
+    }
+
+    auto* start = new eshkol_worker_start_args{pool, worker_id, work_stealing};
+    pthread_t worker{};
+    int create_rc = pthread_create(&worker, &attr, thread_pool_worker_entry, start);
+    pthread_attr_destroy(&attr);
+    if (create_rc != 0) {
+        delete start;
+        eshkol_error("[%s] pthread_create worker %zu failed: %s",
+                     pool->name.c_str(), worker_id, std::strerror(create_rc));
+        return false;
+    }
+
+    pool->workers.push_back(worker);
+    return true;
+#else
+    if (work_stealing) {
+        pool->workers.emplace_back(work_stealing_worker_func, pool, worker_id);
+    } else {
+        pool->workers.emplace_back(legacy_worker_func, pool, worker_id);
+    }
+    return true;
+#endif
+}
+
 // ============================================================================
 // Thread Pool Lifecycle
 // ============================================================================
@@ -509,7 +609,12 @@ eshkol_thread_pool_t* thread_pool_create(const eshkol_thread_pool_config_t* conf
         // Create work-stealing workers
         pool->workers.reserve(pool->num_threads);
         for (size_t i = 0; i < pool->num_threads; ++i) {
-            pool->workers.emplace_back(work_stealing_worker_func, pool, i);
+            if (!thread_pool_start_worker(pool, i, true)) {
+                pool->stop.store(true);
+                pool->queue_cv.notify_all();
+                pool->num_threads = pool->workers.size();
+                break;
+            }
         }
     } else {
         eshkol_info("[%s] Creating legacy thread pool with %zu threads",
@@ -518,7 +623,12 @@ eshkol_thread_pool_t* thread_pool_create(const eshkol_thread_pool_config_t* conf
         // Create legacy workers
         pool->workers.reserve(pool->num_threads);
         for (size_t i = 0; i < pool->num_threads; ++i) {
-            pool->workers.emplace_back(legacy_worker_func, pool, i);
+            if (!thread_pool_start_worker(pool, i, false)) {
+                pool->stop.store(true);
+                pool->queue_cv.notify_all();
+                pool->num_threads = pool->workers.size();
+                break;
+            }
         }
     }
 
@@ -542,9 +652,13 @@ void thread_pool_destroy(eshkol_thread_pool_t* pool) {
 
     // Wait for all workers to finish
     for (auto& worker : pool->workers) {
+#if ESHKOL_USE_PTHREAD_WORKERS
+        pthread_join(worker, nullptr);
+#else
         if (worker.joinable()) {
             worker.join();
         }
+#endif
     }
 
     // Cleanup remaining tasks

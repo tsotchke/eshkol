@@ -1,12 +1,12 @@
 #!/bin/bash
-# http_server_smoke_test.sh — agent.http_server FFI round-trip (#145).
+# http_server_smoke_test.sh — core HTTP server builtin round-trip (#145).
 #
 # Spins up the loopback HTTP server, fires a curl GET from a worker
 # thread (via core.threads / make-thread = eager future), asserts
 # the server sees a valid GET request and the client sees the body.
 #
-# Runs through the JIT (eshkol-run -r) because agent FFI symbols
-# aren't pulled into AOT-compiled user binaries by default.
+# Runs through the JIT (eshkol-run -r), matching the rest of the v1.2
+# edge-case suite's system-builtin coverage.
 
 set -u
 
@@ -29,7 +29,6 @@ trap 'rm -rf "$WORK"' EXIT
 cat > "$WORK/http_server.esk" <<'EOF'
 (require stdlib)
 (require core.threads)
-(require agent.http_server)
 (require agent.subprocess)
 
 (define passed 0)
@@ -54,23 +53,40 @@ cat > "$WORK/http_server.esk" <<'EOF'
         (else (loop (+ i 1)))))))
 
 ;; ── Server up ──────────────────────────────────────────────────────
-(define srv (http-server-create 0))
-(check "http-server-create returns positive handle" #t (> srv 0))
+(define (server-handle? h)
+  (and (number? h) (> h 0)))
 
-(define port (http-server-port srv))
-(check "http-server-port returns >0"  #t (> port 0))
-(check "http-server-port returns <65536" #t (< port 65536))
+(define (create-server-with-retry attempts)
+  (let loop ((remaining attempts))
+    (let ((srv (http-server-create 0)))
+      (if (server-handle? srv)
+          srv
+          (if (> remaining 0)
+              (begin (sleep-ms 50) (loop (- remaining 1)))
+              srv)))))
+
+(define srv (create-server-with-retry 5))
+(check "http-server-create returns positive handle" #t (server-handle? srv))
+
+(define port (if (server-handle? srv) (http-server-port srv) #f))
+(check "http-server-port returns >0"  #t (and (number? port) (> port 0)))
+(check "http-server-port returns <65536" #t (and (number? port) (< port 65536)))
 
 (define url
   (string-append "http://127.0.0.1:" (number->string port) "/health"))
 
 ;; ── Concurrent client ─────────────────────────────────────────────
 (define client-thread
-  (make-thread (lambda ()
-                 (run-argv-capture (list "curl" "-sS" "-m" "5" url)))))
+  (if (and (number? port) (> port 0))
+      (make-thread (lambda ()
+                     (run-argv-capture (list "curl" "-sS" "-m" "5" url))))
+      #f))
 
 ;; ── Server-side accept ────────────────────────────────────────────
-(define request (http-server-accept srv 4096 5000))
+(define request
+  (if client-thread
+      (http-server-accept srv 4096 5000)
+      #f))
 (check "accept returned a string" #t (string? request))
 (check "request begins with GET" #t
        (and (string? request)
@@ -80,9 +96,11 @@ cat > "$WORK/http_server.esk" <<'EOF'
        (and (string? request) (string-contains? request "/health")))
 
 ;; ── Server replies, client joins, both shut down ───────────────────
-(http-server-respond srv 200 "text/plain" "OK\n")
+(if client-thread
+    (http-server-respond srv 200 "text/plain" "OK\n")
+    #f)
 
-(define result (thread-join client-thread))
+(define result (if client-thread (thread-join client-thread) '()))
 (define stdout-pair (assq 'stdout result))
 (define exit-pair   (assq 'exit-code result))
 (check "client exited cleanly" 0 (and exit-pair (cdr exit-pair)))
@@ -91,7 +109,7 @@ cat > "$WORK/http_server.esk" <<'EOF'
             (string? (cdr stdout-pair))
             (string-contains? (cdr stdout-pair) "OK")))
 
-(http-server-close srv)
+(if (server-handle? srv) (http-server-close srv) #f)
 
 (display "---") (newline)
 (display "Passed: ") (display passed) (newline)

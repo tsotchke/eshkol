@@ -1475,6 +1475,26 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/repl/assoc_e
     )
 endif()
 
+if(ESHKOL_BUILD_TESTS AND NOT WIN32)
+    add_executable(eshkol-vm-standalone-test lib/backend/eshkol_vm.c)
+    target_include_directories(eshkol-vm-standalone-test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc
+        ${CMAKE_CURRENT_BINARY_DIR}/generated)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(eshkol-vm-standalone-test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(eshkol-vm-standalone-test PRIVATE
+        eshkol-static
+        ${ESHKOL_EXTRA_LINK_LIBS}
+        ${LLVM_LIBS_LIST}
+        ${LLVM_SYSTEM_LIBS_LIST}
+    )
+    add_test(NAME eshkol_vm_standalone_smoke
+        COMMAND eshkol-vm-standalone-test)
+    set_tests_properties(eshkol_vm_standalone_smoke PROPERTIES
+        ENVIRONMENT "ESHKOL_VM_NO_DISASM=1")
+endif()
+
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm/test_vm_c_api.cpp")
     add_executable(test_vm_c_api tests/vm/test_vm_c_api.cpp)
     target_compile_features(test_vm_c_api PRIVATE cxx_std_17)
