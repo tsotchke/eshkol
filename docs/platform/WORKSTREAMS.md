@@ -45,6 +45,7 @@ Split runtime responsibilities into core, hosted, and freestanding layers.
 ### Deliverables
 
 - runtime symbol inventory
+- explicit internal source sets for `runtime-core`, `runtime-hosted`, and split-pending runtime files
 - `runtime-core` boundary
 - `runtime-hosted` boundary
 - `runtime-freestanding` boundary
@@ -59,6 +60,7 @@ Split runtime responsibilities into core, hosted, and freestanding layers.
 - `lib/core/`
 - selected runtime-adjacent code in `lib/backend/`
 - build system and archive definitions
+- [RUNTIME_INVENTORY.md](RUNTIME_INVENTORY.md)
 
 ### Delegation scope
 
@@ -68,6 +70,8 @@ Delegate only file- or subsystem-bounded split work after the boundary is writte
 
 - hosted builds still pass
 - minimal freestanding runtime links without hosted-only symbols
+- runtime inventory stays current as boundaries move
+- internal source grouping is explicit in the build graph
 
 ## Workstream 3: LLVM Freestanding Native Path
 

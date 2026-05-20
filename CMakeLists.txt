@@ -1040,31 +1040,101 @@ else()
     set(ESHKOL_EXE_COMPILE_FLAGS -fPIE)
 endif()
 
-# Create static library for executables.
-add_library(eshkol-static STATIC ${LIB_SRC})
+# Runtime stratification starts here. These are internal source-set boundaries
+# only; `eshkol-static` remains the delivered aggregate archive for now.
+set(ESHKOL_RUNTIME_CORE_SRC
+  lib/core/ad_tape_builtins.c
+  lib/core/bignum.cpp
+  lib/core/rational.cpp
+)
+
+set(ESHKOL_RUNTIME_HOSTED_SRC
+  lib/backend/thread_pool.cpp
+  lib/core/config.cpp
+  lib/core/platform_runtime.cpp
+  lib/core/system_builtins.c
+)
+
+set(ESHKOL_RUNTIME_SPLIT_PENDING_SRC
+  lib/core/arena_memory.cpp
+  lib/core/logger.cpp
+  lib/core/printer.cpp
+  lib/core/resource_limits.cpp
+  lib/core/runtime.cpp
+)
+
+list(REMOVE_ITEM LIB_SRC
+  ${ESHKOL_RUNTIME_CORE_SRC}
+  ${ESHKOL_RUNTIME_HOSTED_SRC}
+  ${ESHKOL_RUNTIME_SPLIT_PENDING_SRC}
+)
+
+set(ESHKOL_NON_RUNTIME_SRC ${LIB_SRC})
+
+list(LENGTH ESHKOL_RUNTIME_CORE_SRC ESHKOL_RUNTIME_CORE_SRC_COUNT)
+list(LENGTH ESHKOL_RUNTIME_HOSTED_SRC ESHKOL_RUNTIME_HOSTED_SRC_COUNT)
+list(LENGTH ESHKOL_RUNTIME_SPLIT_PENDING_SRC ESHKOL_RUNTIME_SPLIT_PENDING_SRC_COUNT)
+message(STATUS
+  "Runtime source sets: core=${ESHKOL_RUNTIME_CORE_SRC_COUNT}, "
+  "hosted=${ESHKOL_RUNTIME_HOSTED_SRC_COUNT}, "
+  "split-pending=${ESHKOL_RUNTIME_SPLIT_PENDING_SRC_COUNT}"
+)
+
+set(ESHKOL_BUILD_INTERFACE_INCLUDE_DIRS
+  "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/inc/>"
+)
+if(DEFINED ESHKOL_GENERATED_INCLUDE_DIR)
+    list(APPEND ESHKOL_BUILD_INTERFACE_INCLUDE_DIRS
+      "$<BUILD_INTERFACE:${ESHKOL_GENERATED_INCLUDE_DIR}>"
+    )
+endif()
+
+function(eshkol_apply_common_compile_settings target_name)
+    target_include_directories(${target_name} PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/inc/"
+    )
+    if(DEFINED ESHKOL_GENERATED_INCLUDE_DIR)
+        target_include_directories(${target_name} PRIVATE "${ESHKOL_GENERATED_INCLUDE_DIR}")
+    endif()
+    target_compile_options(${target_name} PRIVATE
+      $<$<COMPILE_LANGUAGE:C,CXX>:${LLVM_CXXFLAGS_LIST}>
+      $<$<COMPILE_LANGUAGE:C,CXX>:${ESHKOL_WARNING_FLAGS}>
+      $<$<COMPILE_LANGUAGE:C,CXX>:${ESHKOL_HARDENING_FLAGS}>
+    )
+    if(NOT ESHKOL_USING_MSVC)
+        target_compile_definitions(${target_name} PRIVATE $<$<NOT:$<CONFIG:Debug>>:_FORTIFY_SOURCE=2>)
+    endif()
+    target_compile_definitions(${target_name} PRIVATE ESHKOL_LLVM_BACKEND_ENABLED)
+    target_compile_definitions(${target_name} PRIVATE ESHKOL_VM_LIBRARY_MODE)
+    eshkol_target_llvm_includes(${target_name})
+endfunction()
+
+add_library(eshkol-runtime-core-obj OBJECT ${ESHKOL_RUNTIME_CORE_SRC})
+add_library(eshkol-runtime-hosted-obj OBJECT ${ESHKOL_RUNTIME_HOSTED_SRC})
+add_library(eshkol-runtime-split-pending-obj OBJECT ${ESHKOL_RUNTIME_SPLIT_PENDING_SRC})
+
+foreach(_eshkol_runtime_obj_target IN ITEMS
+    eshkol-runtime-core-obj
+    eshkol-runtime-hosted-obj
+    eshkol-runtime-split-pending-obj
+)
+    eshkol_apply_common_compile_settings(${_eshkol_runtime_obj_target})
+endforeach()
+
+# Create static library for executables. Its object sources are now grouped
+# internally, but the public aggregate archive and link behavior stay unchanged.
+add_library(eshkol-static STATIC
+  ${ESHKOL_NON_RUNTIME_SRC}
+  $<TARGET_OBJECTS:eshkol-runtime-core-obj>
+  $<TARGET_OBJECTS:eshkol-runtime-hosted-obj>
+  $<TARGET_OBJECTS:eshkol-runtime-split-pending-obj>
+)
 target_include_directories(
   eshkol-static
   PUBLIC
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/inc/>
-    $<BUILD_INTERFACE:${ESHKOL_GENERATED_INCLUDE_DIR}>
+    ${ESHKOL_BUILD_INTERFACE_INCLUDE_DIRS}
 )
-
-# Always add LLVM support to static library
-# Enable strict warnings and security hardening
-target_compile_options(eshkol-static PRIVATE
-  $<$<COMPILE_LANGUAGE:C,CXX>:${LLVM_CXXFLAGS_LIST}>
-  $<$<COMPILE_LANGUAGE:C,CXX>:${ESHKOL_WARNING_FLAGS}>
-  $<$<COMPILE_LANGUAGE:C,CXX>:${ESHKOL_HARDENING_FLAGS}>
-)
-# Buffer overflow detection at compile time (requires optimization)
-if(NOT ESHKOL_USING_MSVC)
-    target_compile_definitions(eshkol-static PRIVATE $<$<NOT:$<CONFIG:Debug>>:_FORTIFY_SOURCE=2>)
-endif()
-target_compile_definitions(eshkol-static PRIVATE ESHKOL_LLVM_BACKEND_ENABLED)
-target_compile_definitions(eshkol-static PRIVATE ESHKOL_VM_LIBRARY_MODE)
-
-# Add LLVM include directories for enhanced cross-platform support
-eshkol_target_llvm_includes(eshkol-static)
+eshkol_apply_common_compile_settings(eshkol-static)
 
 # Extract library directories from LDFLAGS for proper linking
 if(NOT LLVM_LIBRARY_DIRS)

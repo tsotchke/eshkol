@@ -43,8 +43,9 @@ Read in this order:
 5. [SYNC_POLICY.md](SYNC_POLICY.md)
 6. [IMPLEMENTATION_WORKFLOW.md](IMPLEMENTATION_WORKFLOW.md)
 7. [SLICE_CHECKLIST.md](SLICE_CHECKLIST.md)
-8. [WORKSTREAMS.md](WORKSTREAMS.md)
-9. [MILESTONES_AND_EXIT_CRITERIA.md](MILESTONES_AND_EXIT_CRITERIA.md)
+8. [RUNTIME_INVENTORY.md](RUNTIME_INVENTORY.md)
+9. [WORKSTREAMS.md](WORKSTREAMS.md)
+10. [MILESTONES_AND_EXIT_CRITERIA.md](MILESTONES_AND_EXIT_CRITERIA.md)
 
 Use the remaining docs as operational references while implementation proceeds.
 
@@ -62,6 +63,8 @@ Use the remaining docs as operational references while implementation proceeds.
   - worktree layout, topic-branch lifecycle, merge flow, validation expectations
 - [SLICE_CHECKLIST.md](SLICE_CHECKLIST.md)
   - release-quality checklist for every platform change slice
+- [RUNTIME_INVENTORY.md](RUNTIME_INVENTORY.md)
+  - concrete file, header, and ownership baseline for the runtime split
 - [ARCHITECTURE.md](ARCHITECTURE.md)
   - technical architecture for profiles, runtimes, backends, BSPs, and kernel handoff
 - [WORKSTREAMS.md](WORKSTREAMS.md)
@@ -83,15 +86,18 @@ Use the remaining docs as operational references while implementation proceeds.
 
 Program phase:
 
-- documentation and planning complete enough to begin implementation
-- no freestanding profile architecture is merged yet
+- documentation and planning complete enough to guide implementation
+- execution profile architecture is merged on `master`
+- runtime inventory baseline is documented on `master`
+- runtime-core and runtime-hosted internal source sets are explicit in CMake
+- deeper runtime/freestanding implementation remains staged on `feature/platform-freestanding`
 - embedded targets remain a public `v1.8-platform` milestone
-- early program work should remain merge-safe during `v1.2-scale`
+- early program work should remain merge-safe during roadmap releases before `v1.8`
 
 Immediate priorities:
 
-- execution profile model
-- runtime stratification
+- split the current `runtime-split-pending` files along host-dependent seams
+- hosted leakage checks for runtime-core
 - low-level machine-facing language surface
 - freestanding LLVM object and ELF pipeline
 - stdlib capability partitioning
