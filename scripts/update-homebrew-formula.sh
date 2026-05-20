@@ -72,7 +72,7 @@ path, tag, sha = sys.argv[1:]
 with open(path) as f:
     src = f.read()
 src = re.sub(
-    r'url "https://github\.com/(tsotchke|Tsotchke-Corporation)/eshkol/archive/(refs/tags/)?[^"]+"',
+    r'url "https://github\.com/tsotchke/eshkol/archive/(refs/tags/)?[^"]+"',
     f'url "https://github.com/tsotchke/eshkol/archive/refs/tags/{tag}.tar.gz"',
     src,
 )
