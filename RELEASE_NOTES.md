@@ -1,7 +1,7 @@
 # Eshkol v1.2.1-scale — Noesis M0 Closeout
 
 **Base Release Date**: May 1, 2026
-**Closeout Date**: May 19, 2026
+**Closeout Date**: May 20, 2026
 
 Eshkol v1.2.1-scale is the closeout point release for v1.2.0-scale,
 the *production-readiness* release. The v1.1
@@ -15,25 +15,34 @@ fixed.
 The headline addition isn't a feature — it's the edge-case regression
 suite that catches every fix in this release going forward. The
 v1.2.0 release shipped with 62 tests; the current v1.2.x Noesis M0
-closeout build carries **86 passing edge/security tests** plus a full
-Noesis aggregate smoke pass.
+closeout build carries **87 passing edge/security tests**, a clean
+37-suite aggregate gate, and a full Noesis aggregate smoke pass.
 
-## v1.2.1 Noesis M0 Closeout Addendum (May 19, 2026)
+## v1.2.1 Noesis M0 Closeout Addendum (May 20, 2026)
 
 The current `v1.2.1-scale` branch closes the Noesis M0 audit path:
 
-- `tests/v1_2_edge_cases` passes **86/86**, including shared
+- `tests/v1_2_edge_cases` passes **87/87**, including shared
   hash-table mutation under `parallel-map`, late variadic REPL forward
   refs, binary I/O, match predicate binding, tensor pixel fill,
   first-class builtins, channels, threads, object-build CLI contract
-  coverage, and shell-level CLI/linker probes.
+  coverage, bounded HTTP server smoke coverage, and shell-level CLI/linker
+  probes.
+- `scripts/run_all_tests.sh` passes **37/37 suites** and **528/528
+  self-reported individual tests**. The aggregate now counts suites that
+  report `Results: N passed, M failed`, so the logic and v1.2 edge/security
+  runners are included in the release total.
 - Noesis `tests/smoke/all.esk` passes with `NOESIS_ALL_RC=0`.
+- VM C API checks pass **81/81**, CTest passes **15/15**, and stress tests
+  pass **3/3** on the final release-gate build.
 - The previously intermittent dual-neural crash is fixed by
   serializing runtime hash-table access; the focused Noesis
   `dual_neural` smoke passed 8/8 stress repeats on the fixed build.
 - Bug LL's underlying CLI behavior is fixed: `--emit-object` accepts
   compatibility flags, writes the requested `-o path`, and no longer
   creates the stale `.o.o` output.
+- The Homebrew formula template points at `v1.2.1-scale`; its `sha256`
+  placeholder remains zeroed until the GitHub release tarball is published.
 
 ## What's New in v1.2.0-scale
 
@@ -160,17 +169,19 @@ The current `v1.2.1-scale` branch closes the Noesis M0 audit path:
 
 ### Testing
 
-- **62-test v1.2 edge-case suite** at `tests/v1_2_edge_cases/`
+- **87-test v1.2 edge/security suite** at `tests/v1_2_edge_cases/`
   covering symbol consistency under gensym, AD tape state across
   worker threads, parser line tracking, stdlib symbol resolution,
-  the JSON Schema validator, every real bug fix in this release.
+  the JSON Schema validator, HTTP server smoke behavior, every real bug fix in
+  this release.
   Runs under `bash scripts/run_v1_2_edge_cases_tests.sh` (also
-  invoked by `run_all_tests.sh`).  Includes 3 shell-style tests
-  for compile-time diagnostics that don't fit the `.esk → run →
-  check exit`  shape.
-- **Master suite EXIT=0** end-to-end across 36 sub-suites:
+  invoked by `run_all_tests.sh`). Includes shell-style tests for compile-time
+  diagnostics, CLI/linker probes, REPL protocol checks, and server smoke paths
+  that don't fit the `.esk → run → check exit` shape.
+- **Master suite EXIT=0** end-to-end across 37 sub-suites and 528
+  self-reported tests:
   features, stdlib, list, memory, modules, types, typesystem,
-  autodiff, ml, neural, json, system, complex, cpp_type, parser,
+  autodiff, ml, neural, json, system, complex, cpp_type, vm, parser,
   control_flow, logic, bignum, rational, parallel, signal,
   optimization, examples, xla, gpu, error_handling, macros, repl,
   web, tco, io, benchmark, migration, codegen, numeric,

@@ -1,8 +1,8 @@
 # Eshkol System Architecture Reference
 
-**Version**: v1.2.0-scale
-**Release**: v1.2.0-scale
-**Date**: April 2026
+**Version**: v1.2.1-scale
+**Release**: v1.2.1-scale
+**Date**: May 2026
 **Status**: Production-ready compiler with GPU acceleration, consciousness engine, and exact arithmetic
 
 > **Note**: This document describes the **actual implemented system** based on comprehensive code analysis. Features marked as "planned" or "future" are documented separately in roadmap documents.
@@ -52,7 +52,7 @@ Eshkol is a production-grade compiler implementing a Scheme-like language with:
 | Parser | 7,551 lines ([`lib/frontend/parser.cpp`](../lib/frontend/parser.cpp:1)) |
 | Memory manager | 4,972 lines ([`lib/core/arena_memory.cpp`](../lib/core/arena_memory.cpp:1)) |
 | Weight matrix transformer | ~6,800 lines, 126/126 inline + 123/123 traced, 3-way verified |
-| Test suite | 438 tests across 35 suites (525+ assertions, 0 failures) |
+| Test suite | 528 self-reported tests across 37 suites (0 failures) |
 
 ---
 
@@ -1217,7 +1217,7 @@ This makes arena functions, autodiff tape operations, etc. available to JIT-comp
 
 ### Test Suite Organization
 
-**438 tests** across 35 suites:
+**528 self-reported tests** across 37 suites:
 
 | Category | Count | Purpose |
 |----------|-------|---------|
@@ -1549,4 +1549,4 @@ v1.1 resolves several production issues in the interactive JIT:
 
 ---
 
-*This document reflects the v1.2.0-scale release. All claims are verified against actual source code. For questions or corrections, see [`CONTRIBUTING.md`](../CONTRIBUTING.md).*
+*This document reflects the v1.2.1-scale release. All claims are verified against actual source code. For questions or corrections, see [`CONTRIBUTING.md`](../CONTRIBUTING.md).*

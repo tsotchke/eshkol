@@ -1,7 +1,7 @@
-# Eshkol v1.2.0-scale API Reference
+# Eshkol v1.2.1-scale API Reference
 
-**Version**: 1.2.0-scale
-**Last Updated**: 2026-05-01
+**Version**: 1.2.1-scale
+**Last Updated**: 2026-05-20
 **Audience**: Scientific Computing & AI Systems Programming
 
 This comprehensive reference documents all special forms, functions, and operations in the Eshkol language. All documentation is code-verified against the production compiler implementation (~232,000 lines of LLVM-based C++ code, 555+ builtins).
@@ -6950,7 +6950,7 @@ for composability and custom pipelines.
 **Main Backend**: [llvm_codegen.cpp](lib/backend/llvm_codegen.cpp) — 34,928 lines
 **Tensor Codegen**: [tensor_codegen.cpp](lib/backend/tensor_codegen.cpp) — 20,000+ lines
 **Compiler Modules**: 21 specialized code generators
-**Test Suite**: 35 test suites, 438 test files
+**Test Suite**: 37 suites, 528 self-reported tests
 **Verified Operations**: 700+ builtins, 300+ standard library functions
 
 ---

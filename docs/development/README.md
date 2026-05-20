@@ -32,7 +32,7 @@ See [Getting Started](../breakdown/GETTING_STARTED.md) for detailed installation
 
 ## Running Tests
 
-Eshkol includes 35 test suites with 438 test files:
+Eshkol includes 37 orchestrated suites with 528 self-reported tests:
 
 ```bash
 # Run all tests
@@ -94,7 +94,7 @@ eshkol/
 │   ├── tensor/       # Tensor utilities
 │   ├── repl/         # JIT compiler
 │   └── types/        # Type checker, HoTT types
-├── tests/            # Test suite (35 suites, 438 files)
+├── tests/            # Test suite (37 suites, 528 self-reported tests)
 ├── tools/            # Developer tools
 │   ├── lsp/          # Language Server Protocol
 │   ├── pkg/          # Package manager (eshkol-pkg)
@@ -123,7 +123,7 @@ When implementing new language features:
 
 ## Project Status
 
-**Current**: v1.2.0-scale (production-ready)
+**Current**: v1.2.1-scale (production-ready)
 
 See [Roadmap](../breakdown/ROADMAP.md) for planned features.
 
