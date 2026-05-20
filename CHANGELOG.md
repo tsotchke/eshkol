@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 (no entries — v1.2 is closed; new work targets v1.3-evolve)
 
-## [1.2.1-scale] - 2026-05-19
+## [1.2.1-scale] - 2026-05-20
 
 The v1.2-scale closeout point release. This release keeps the v1.2.0-scale
 feature surface and closes the remaining downstream substrate blockers found
@@ -34,10 +34,21 @@ by Noesis aggregate validation.
   `-I`, and `-D` compatibility.
 - Added stdlib/filesystem closeout items including atomic output-file writes
   and JSON read/write aliases.
+- Hardened the public release test harnesses: aggregate counting now includes
+  `Results: N passed, M failed` suite summaries, I/O tests no longer depend on
+  Perl timeout behavior, system tests default `BUILD_DIR=build`, and the HTTP
+  server smoke has bounded timeout/client cleanup.
+- Updated the Homebrew formula template to target `v1.2.1-scale`; the checksum
+  is still filled after the GitHub tarball exists.
 
 ### Verified
 
-- `tests/v1_2_edge_cases` passes 86/86.
+- `scripts/run_all_tests.sh` passes 37/37 suites and 528/528 self-reported
+  individual tests.
+- `tests/v1_2_edge_cases` passes 87/87.
+- `build/test_vm_c_api` passes 81/81.
+- `ctest --test-dir build --output-on-failure --timeout 180` passes 15/15.
+- `scripts/run_stress_tests.sh` passes 3/3.
 - Noesis `tests/smoke/all.esk` exits with `NOESIS_ALL_RC=0`.
 
 ## [1.2.0-scale] - 2026-05-01

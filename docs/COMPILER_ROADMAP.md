@@ -1,6 +1,6 @@
 # Eshkol compiler roadmap — v1.2-scale → v2.0-starlight
 
-**Date**: 2026-05-19
+**Date**: 2026-05-20
 **Authority**: this document supersedes the earlier single-axis trajectory.
 `docs/NOESIS_TRAJECTORY.md` remains valid as the Noesis-readiness view;
 this document is the authoritative version-by-version delivery plan.
@@ -20,7 +20,7 @@ research-grade Noesis.
 
 ---
 
-## Current status (verified 2026-05-19)
+## Current status (verified 2026-05-20)
 
 **Branch**: `master`
 **Last shipped release**: v1.2.0-scale (2026-05-01)
@@ -41,12 +41,14 @@ Delivered in the v1.2.x closeout:
   object-build CLI compatibility.
 
 Verification snapshot:
-- `ctest --test-dir build --output-on-failure`: 14/14.
-- `scripts/run_v1_2_edge_cases_tests.sh`: 86/86.
+- `scripts/run_all_tests.sh`: 37/37 suites, 528/528 self-reported tests.
+- `ctest --test-dir build --output-on-failure --timeout 180`: 15/15.
+- `scripts/run_v1_2_edge_cases_tests.sh`: 87/87.
 - `scripts/run_stdlib_tests.sh`: 11/11.
 - `scripts/run_modules_tests.sh`: 5/5.
 - `scripts/run_parallel_tests.sh`: 7/7.
 - `build/test_vm_c_api`: 81/81.
+- `scripts/run_stress_tests.sh`: 3/3.
 - Noesis focused neural smokes and `tests/smoke/all.esk`: passing,
   with aggregate `NOESIS_ALL_RC=0`.
 
@@ -94,7 +96,7 @@ Already-shipped items as of current branch:
 - Symbol tagged-value consistency (#129) ✅
 - Python FFI structured returns + error recovery (#110) ✅
 - Car/cdr type guards on non-pair input (#135) ✅
-- v1.2 regression suite plus current 86-test edge/security suite ✅
+- v1.2 regression suite plus current 87-test edge/security suite ✅
 
 **Noesis M0 closeout status (verified 2026-05-19)**
 
@@ -113,9 +115,10 @@ Already-shipped items as of current branch:
 | #141 | match apostrophe-quote subject hang | ✅ done | — |
 
 **Exit criterion for v1.2**: Noesis M0 is fully unblocked. All 11 closeout
-items shipped. The current v1.2 edge/security suite passes 86/86, CTest passes
-14/14, and Noesis `tests/smoke/all.esk` exits with `NOESIS_ALL_RC=0` using the
-v1.2-scale build.
+items shipped. The current v1.2 edge/security suite passes 87/87,
+`scripts/run_all_tests.sh` passes 37/37 suites and 528/528 self-reported tests,
+CTest passes 15/15, stress tests pass 3/3, and Noesis `tests/smoke/all.esk`
+exits with `NOESIS_ALL_RC=0` using the v1.2-scale build.
 
 **Release naming**: tag this closeout as `v1.2.1-scale`.
 
