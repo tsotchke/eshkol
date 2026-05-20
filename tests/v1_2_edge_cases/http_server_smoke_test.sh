@@ -1,9 +1,9 @@
 #!/bin/bash
 # http_server_smoke_test.sh — core HTTP server builtin round-trip (#145).
 #
-# Spins up the loopback HTTP server, fires a curl GET from a worker
-# thread (via core.threads / make-thread = eager future), asserts
-# the server sees a valid GET request and the client sees the body.
+# Spins up the loopback HTTP server, forks a child that performs a core
+# http-request GET, asserts the server sees a valid request and the client
+# sees the body.
 #
 # Runs through the JIT (eshkol-run -r), matching the rest of the v1.2
 # edge-case suite's system-builtin coverage.
@@ -18,18 +18,11 @@ if [ ! -x "$RUN" ]; then
     exit 0
 fi
 
-if ! command -v curl >/dev/null 2>&1; then
-    echo "SKIP: curl not on PATH"
-    exit 0
-fi
-
 WORK=$(mktemp -d -t eshkol_http_server.XXXXXX)
 trap 'rm -rf "$WORK"' EXIT
 
 cat > "$WORK/http_server.esk" <<'EOF'
 (require stdlib)
-(require core.threads)
-(require agent.subprocess)
 
 (define passed 0)
 (define failed 0)
@@ -43,7 +36,7 @@ cat > "$WORK/http_server.esk" <<'EOF'
              (set! failed (+ failed 1)))))
 
 (define (string-contains? haystack needle)
-  ;; Linear scan; haystack is HTTP request text or curl stdout.
+  ;; Linear scan over HTTP request text or response body.
   (let ((nlen (string-length needle))
         (hlen (string-length haystack)))
     (let loop ((i 0))
@@ -74,17 +67,35 @@ cat > "$WORK/http_server.esk" <<'EOF'
 
 (define url
   (string-append "http://127.0.0.1:" (number->string port) "/health"))
+(define marker-path
+  (string-append "/tmp/eshkol-http-server-client-"
+                 (number->string (getpid))
+                 ".txt"))
 
 ;; ── Concurrent client ─────────────────────────────────────────────
-(define client-thread
+(define client-pid
   (if (and (number? port) (> port 0))
-      (make-thread (lambda ()
-                     (run-argv-capture (list "curl" "-sS" "-m" "5" url))))
+      (fork)
       #f))
+
+(if (and (number? client-pid) (= client-pid 0))
+    (begin
+      (sleep-ms 50)
+      (let ((response (http-request "GET" url "" "" 5000)))
+        (if (and response
+                 (= (car response) 200)
+                 (string? (caddr response))
+                 (string-contains? (caddr response) "OK"))
+            (let ((out (open-output-file marker-path)))
+              (write-string "ok" out)
+              (close-port out))
+            #f))
+      (exit 0))
+    #t)
 
 ;; ── Server-side accept ────────────────────────────────────────────
 (define request
-  (if client-thread
+  (if (and (number? client-pid) (> client-pid 0))
       (http-server-accept srv 4096 5000)
       #f))
 (check "accept returned a string" #t (string? request))
@@ -96,20 +107,21 @@ cat > "$WORK/http_server.esk" <<'EOF'
        (and (string? request) (string-contains? request "/health")))
 
 ;; ── Server replies, client joins, both shut down ───────────────────
-(if client-thread
+(if (and (number? client-pid) (> client-pid 0) request)
     (http-server-respond srv 200 "text/plain" "OK\n")
     #f)
 
-(define result (if client-thread (thread-join client-thread) '()))
-(define stdout-pair (assq 'stdout result))
-(define exit-pair   (assq 'exit-code result))
-(check "client exited cleanly" 0 (and exit-pair (cdr exit-pair)))
+(define client-status
+  (if (and (number? client-pid) (> client-pid 0))
+      (process-wait client-pid)
+      #f))
+(check "client exited cleanly" 0 client-status)
 (check "client stdout contains body" #t
-       (and stdout-pair
-            (string? (cdr stdout-pair))
-            (string-contains? (cdr stdout-pair) "OK")))
+       (and (file-exists? marker-path)
+            (= (file-size marker-path) 2)))
 
 (if (server-handle? srv) (http-server-close srv) #f)
+(if (file-exists? marker-path) (delete-file marker-path) #f)
 
 (display "---") (newline)
 (display "Passed: ") (display passed) (newline)
