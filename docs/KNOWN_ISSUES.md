@@ -79,15 +79,15 @@ These are planned features, not deficiencies in the current release:
 | Feature | Target | Current Alternative |
 |---------|--------|-------------------|
 | `define-library` / R7RS import with renaming | v1.3 | `require`/`provide` module system |
-| Visual debugger | v1.2 | GDB/LLDB + `--dump-ir` |
-| Full FFI with callbacks | v1.2 | `extern` C function calls work |
-| Python bindings | v1.2 | File I/O or subprocess interop |
-| Distributed computing | v1.2 | Single-machine thread pool |
-| Multi-GPU dispatch | v1.2 | Single GPU (Metal or CUDA) |
-| Vulkan Compute | v1.2 | Metal (macOS) + CUDA (Linux) |
-| Model serialization / ONNX | v1.2 | Manual file I/O |
-| Profile-Guided Optimization | v1.3 | LLVM -O3 + SIMD micro-kernels |
-| Mobile/embedded targets | v1.4 | Desktop/server only |
+| Visual debugger UI | v1.3 | GDB/LLDB on the DWARF data already emitted by `-g`; `--dump-ir` for IR-level inspection |
+| Full C callbacks from foreign threads | v1.3 | `extern` C function calls (in-thread) work; native HTTP, SQLite, subprocess, fs-watch FFI surfaces shipped in v1.2 |
+| Python bindings | v1.3 | File I/O or subprocess interop |
+| Distributed computing | v1.3 | Single-machine thread pool with `parallel-map`/`parallel-fold`/`future` |
+| Multi-GPU dispatch | v1.3 | Single GPU (Metal or CUDA) chosen automatically by the cost model |
+| Vulkan compute shaders | v1.3 | Metal (macOS) + CUDA (Linux/Windows-with-NVIDIA) |
+| ONNX export | v1.3 | Eshkol's native `.eshkol-model` serialiser shipped in v1.2; manual file I/O for other formats |
+| Profile-guided optimisation (PGO) | v1.3 | LLVM `-O3` + SIMD micro-kernels |
+| Mobile / embedded targets | v1.4 + freestanding-platform programme | Desktop / server only |
 
 ---
 

@@ -25,7 +25,7 @@ The language design emerged from hard constraints:
 **Automatic differentiation as a first-class language feature.** Most AD systems bolt onto existing languages via operator overloading (C++) or metaprogramming (Python). Eshkol integrates AD into the type system and compiler:
 - **Symbolic mode**: AST rewriting at compile-time using 12 differentiation rules
 - **Forward mode**: 16-byte dual numbers `{value, derivative}` propagated through operators
-- **Reverse mode**: Computational graph with 16 AD node types, 32-level tape stack for nested gradients
+- **Reverse mode**: Computational graph spanning more than twenty AD node types (elementary arithmetic, transcendentals, scalar utilities, and neural-network activations), with a 32-level tape stack for nested gradients
 
 The `vref` operator is AD-aware: when extracting from tensors during gradient computation, it creates AD nodes; otherwise it's a simple pointer dereference. This context-sensitivity is achieved through runtime type inspection of closure arguments.
 
@@ -41,7 +41,7 @@ The `vref` operator is AD-aware: when extracting from tensors during gradient co
 
 3. **Type consolidation via object headers** — The pointer consolidation eliminates specific pointer types (CONS_PTR, STRING_PTR, etc.) in favor of polymorphic HEAP_PTR and CALLABLE types. The 8-byte header at offset -8 from the data pointer stores the specific subtype (18 subtypes as of v1.1). This trades one pointer dereference for extensible type space.
 
-4. **Modular code generation through callbacks** — The LLVM backend delegates to 21+ specialized modules via `std::function` callbacks. This inverts the typical dependency graph (modules call into main codegen rather than vice versa), enabling parallel development and incremental testing.
+4. **Modular code generation through callbacks** — The LLVM backend delegates to roughly thirty specialized modules via `std::function` callbacks. This inverts the typical dependency graph (modules call into main codegen rather than vice versa), enabling parallel development and incremental testing.
 
 5. **Compilation to LLVM IR, not C** — The implementation targets LLVM IR directly, providing access to LLVM's optimization infrastructure (function inlining, loop vectorization, dead code elimination) and its comprehensive backend support for x86-64, ARM64, WebAssembly, and other architectures.
 

@@ -47,7 +47,7 @@ All three modes compute **exact derivatives** (not numerical approximations) by 
 
 ## Symbolic Differentiation
 
-**Implementation:** [`lib/backend/autodiff_codegen.cpp:1366-1596`](lib/backend/autodiff_codegen.cpp:1366)
+**Implementation:** [`lib/backend/autodiff_codegen.cpp:1366-1596`](lib/backend/autodiff_codegen.cpp)
 
 Symbolic differentiation transforms ASTs at **compile-time** using 12 differentiation rules:
 
@@ -88,7 +88,7 @@ Symbolic differentiation transforms ASTs at **compile-time** using 12 differenti
 
 ## Forward-Mode AD (Dual Numbers)
 
-**Implementation:** [`lib/backend/autodiff_codegen.cpp:234-388`](lib/backend/autodiff_codegen.cpp:234)
+**Implementation:** [`lib/backend/autodiff_codegen.cpp:234-388`](lib/backend/autodiff_codegen.cpp)
 
 Forward-mode AD uses **dual numbers** to compute derivatives in a single forward pass. Each dual number stores both the function value and its derivative:
 
@@ -101,7 +101,7 @@ typedef struct eshkol_dual_number {
 } eshkol_dual_number_t;  // 16 bytes
 ```
 
-**Tagged value type:** [`ESHKOL_VALUE_DUAL_NUMBER`](inc/eshkol/eshkol.h:62) (type = 6)
+**Tagged value type:** [`ESHKOL_VALUE_DUAL_NUMBER`](inc/eshkol/eshkol.h) (type = 6)
 
 ### Dual Number Arithmetic
 
@@ -138,7 +138,7 @@ dual_div(a, b) = {a.value / b.value, (a.deriv * b.value - a.value * b.deriv) / (
 
 ## Reverse-Mode AD (Computational Graph)
 
-**Implementation:** [`lib/backend/autodiff_codegen.cpp:390-858`](lib/backend/autodiff_codegen.cpp:390)
+**Implementation:** [`lib/backend/autodiff_codegen.cpp:390-858`](lib/backend/autodiff_codegen.cpp)
 
 Reverse-mode AD builds a **computational graph** during the forward pass, then propagates gradients backward from outputs to inputs. This is the foundation of neural network training.
 
@@ -146,7 +146,7 @@ Reverse-mode AD builds a **computational graph** during the forward pass, then p
 
 ```c
 typedef struct ad_node {
-    ad_node_type_t type;     // Operation type (16 types total)
+    ad_node_type_t type;     // Operation type (see enum below)
     double value;            // Computed value (forward pass)
     double gradient;         // Accumulated gradient (backward pass)
     struct ad_node* input1;  // First parent node (NULL for leaves)
@@ -155,22 +155,44 @@ typedef struct ad_node {
 } ad_node_t;
 ```
 
-### AD Node Types (16 total)
+### AD Node Types
+
+The operation type is a small integer drawn from a contiguous opcode range. The canonical numbering lives in `lib/backend/autodiff_codegen.cpp` and `inc/eshkol/backend/autodiff_codegen.h`; the table below covers the elementary opcodes (0–11) and indicates the ranges occupied by activation functions and tensor primitives. New ML opcodes are appended as the framework adds operations, so this table can lag — refer to the source for the authoritative enum.
 
 ```c
 typedef enum {
-    AD_NODE_CONSTANT,    // Constant value (no gradient)
-    AD_NODE_VARIABLE,    // Input variable (accumulates gradient)
-    AD_NODE_ADD,         // Addition: f + g
-    AD_NODE_SUB,         // Subtraction: f - g
-    AD_NODE_MUL,         // Multiplication: f * g
-    AD_NODE_DIV,         // Division: f / g
-    AD_NODE_SIN,         // Sine: sin(f)
-    AD_NODE_COS,         // Cosine: cos(f)
-    AD_NODE_EXP,         // Exponential: exp(f)
-    AD_NODE_LOG,         // Natural logarithm: log(f)
-    AD_NODE_POW,         // Power: f^g
-    AD_NODE_NEG          // Negation: -f
+    /* Core arithmetic and transcendentals (0–11) */
+    AD_NODE_CONSTANT       = 0,   /* Constant value (no gradient) */
+    AD_NODE_VARIABLE       = 1,   /* Input variable (accumulates gradient) */
+    AD_NODE_ADD            = 2,   /* f + g */
+    AD_NODE_SUB            = 3,   /* f - g */
+    AD_NODE_MUL            = 4,   /* f * g */
+    AD_NODE_DIV            = 5,   /* f / g */
+    AD_NODE_SIN            = 6,
+    AD_NODE_COS            = 7,
+    AD_NODE_EXP            = 8,
+    AD_NODE_LOG            = 9,
+    AD_NODE_POW            = 10,  /* f^g */
+    AD_NODE_NEG            = 11,  /* -f */
+
+    /* Neural-network activations (12–18) */
+    AD_NODE_RELU           = 12,
+    AD_NODE_SIGMOID        = 13,
+    AD_NODE_TANH           = 15,
+    AD_NODE_GELU           = 16,
+    AD_NODE_LEAKY_RELU     = 17,
+    AD_NODE_SILU           = 18,  /* Swish */
+
+    /* Tensor / structured ops (19+) */
+    AD_NODE_CONV2D         = 19,
+    /* ... pooling, batchnorm, attention, etc. */
+
+    /* Scalar utilities (41–45) */
+    AD_NODE_SQRT           = 41,
+    AD_NODE_ABS            = 42,
+    AD_NODE_SQUARE         = 43,
+    AD_NODE_MAX            = 44,
+    AD_NODE_MIN            = 45,
 } ad_node_type_t;
 ```
 
@@ -188,7 +210,7 @@ typedef struct ad_tape {
 } ad_tape_t;
 ```
 
-**Nested gradient support:** 32-level tape stack for computing higher-order derivatives (implementation: [`lib/backend/autodiff_codegen.cpp:82-120`](lib/backend/autodiff_codegen.cpp:82))
+**Nested gradient support:** 32-level tape stack for computing higher-order derivatives (implementation: [`lib/backend/autodiff_codegen.cpp:82-120`](lib/backend/autodiff_codegen.cpp))
 
 ### Example: Reverse-Mode AD
 
@@ -292,10 +314,10 @@ Eshkol provides high-level vector calculus operators built on reverse-mode AD:
 
 | Component | File | Lines | Purpose |
 |-----------|------|-------|---------|
-| **AD Codegen** | [`lib/backend/autodiff_codegen.cpp`](lib/backend/autodiff_codegen.cpp:1) | 1,766 | All 3 AD modes, vector calculus |
-| **AD Runtime** | [`inc/eshkol/eshkol.h:565-603`](inc/eshkol/eshkol.h:565) | 38 | AD node structures, tape definition |
-| **Dual Numbers** | [`inc/eshkol/eshkol.h:135-144`](inc/eshkol/eshkol.h:135) | 10 | Forward-mode dual number struct |
-| **Type System** | [`lib/backend/type_system.cpp`](lib/backend/type_system.cpp:1) | 287 | AD type generation (dual_t, ad_node_t) |
+| **AD Codegen** | [`lib/backend/autodiff_codegen.cpp`](lib/backend/autodiff_codegen.cpp) | 1,766 | All 3 AD modes, vector calculus |
+| **AD Runtime** | [`inc/eshkol/eshkol.h:565-603`](inc/eshkol/eshkol.h) | 38 | AD node structures, tape definition |
+| **Dual Numbers** | [`inc/eshkol/eshkol.h:135-144`](inc/eshkol/eshkol.h) | 10 | Forward-mode dual number struct |
+| **Type System** | [`lib/backend/type_system.cpp`](lib/backend/type_system.cpp) | 287 | AD type generation (dual_t, ad_node_t) |
 
 ### AD Mode Detection
 
@@ -476,13 +498,13 @@ Where n = number of operations in the function.
 ;; Returns: #(6.0)
 ```
 
-**Implementation:** Closures check argument types at runtime and dispatch to the appropriate code path ([`lib/backend/function_codegen.cpp:456-523`](lib/backend/function_codegen.cpp:456)).
+**Implementation:** Closures check argument types at runtime and dispatch to the appropriate code path ([`lib/backend/function_codegen.cpp:456-523`](lib/backend/function_codegen.cpp)).
 
 ---
 
 ## Integration with Tensors
 
-Autodiff works seamlessly with tensor operations. The [`vref`](lib/backend/tensor_codegen.cpp:1234) operation creates AD nodes when in AD mode:
+Autodiff works seamlessly with tensor operations. The [`vref`](lib/backend/tensor_codegen.cpp) operation creates AD nodes when in AD mode:
 
 ```scheme
 ;; Gradient of tensor sum

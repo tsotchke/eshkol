@@ -27,7 +27,7 @@ Eshkol provides first-class functions with full closure support, enabling functi
 
 ## Closure Implementation
 
-**Implementation:** [`inc/eshkol/eshkol.h:649-658`](inc/eshkol/eshkol.h:649)
+**Implementation:** [`inc/eshkol/eshkol.h:649-658`](inc/eshkol/eshkol.h)
 
 Closures are **40-byte structures** allocated in the global arena:
 
@@ -73,7 +73,7 @@ The environment packing encodes three values in a single `uint64_t`:
 
 ## Lambda Registry (Homoiconicity)
 
-**Implementation:** [`inc/eshkol/eshkol.h:771-791`](inc/eshkol/eshkol.h:771)
+**Implementation:** [`inc/eshkol/eshkol.h:771-791`](inc/eshkol/eshkol.h)
 
 Eshkol maintains a **lambda registry** mapping function pointers to their S-expression representations:
 

@@ -40,7 +40,7 @@ The OALR system provides **five ownership modes** for different memory managemen
 | **Shared** | `(shared value)` | Reference-counted shared ownership | Complex shared data |
 | **Weak** | `(weak-ref value)` | Non-owning reference | Breaking reference cycles |
 
-**Implementation:** [`lib/backend/llvm_codegen.cpp:8234-8567`](lib/backend/llvm_codegen.cpp:8234)
+**Implementation:** [`lib/backend/llvm_codegen.cpp:8234-8567`](lib/backend/llvm_codegen.cpp)
 
 ### Example: Linear Types
 
@@ -70,7 +70,7 @@ The OALR system provides **five ownership modes** for different memory managemen
 
 ## Arena Allocation
 
-**Implementation:** [`lib/core/arena_memory.cpp:1-3210`](lib/core/arena_memory.cpp:1)
+**Implementation:** [`lib/core/arena_memory.cpp:1-3210`](lib/core/arena_memory.cpp)
 
 Eshkol uses a **hybrid arena model**: a global arena (`__global_arena`) for the main thread, plus **per-thread arenas** (1 MB each, lazily allocated via `thread_local` storage) for parallel worker threads. The global arena grows automatically as needed; per-thread arenas provide contention-free allocation during parallel operations.
 
@@ -293,10 +293,10 @@ Linear types ensure resources are **consumed exactly once** at compile-time. Att
 
 | Component | File | Lines | Purpose |
 |-----------|------|-------|---------|
-| **Arena Core** | [`lib/core/arena_memory.cpp`](lib/core/arena_memory.cpp:1) | 3,210 | Arena allocation, object headers, display |
-| **Arena Header** | [`lib/core/arena_memory.h`](lib/core/arena_memory.h:1) | 156 | Arena API, memory tracking |
-| **Object Headers** | [`inc/eshkol/eshkol.h:274-547`](inc/eshkol/eshkol.h:274) | 274 | Header structure, access macros |
-| **Memory Codegen** | [`lib/backend/memory_codegen.cpp`](lib/backend/memory_codegen.cpp:1) | 734 | OALR operator codegen |
+| **Arena Core** | [`lib/core/arena_memory.cpp`](lib/core/arena_memory.cpp) | 3,210 | Arena allocation, object headers, display |
+| **Arena Header** | [`lib/core/arena_memory.h`](lib/core/arena_memory.h) | 156 | Arena API, memory tracking |
+| **Object Headers** | [`inc/eshkol/eshkol.h:274-547`](inc/eshkol/eshkol.h) | 274 | Header structure, access macros |
+| **Memory Codegen** | [`lib/backend/memory_codegen.cpp`](lib/backend/memory_codegen.cpp) | 734 | OALR operator codegen |
 
 ### Allocation Functions
 
