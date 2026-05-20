@@ -27,8 +27,8 @@ if ! mkdir "$LOCK_DIR" 2>/dev/null; then
     exit 2
 fi
 TMP_WORK=$(mktemp -d "${TMPDIR:-/tmp}/eshkol_v12.XXXXXX")
-RUN_OUT="$TMP_WORK/run.out"
-COMPILE_ERR="$TMP_WORK/compile.err"
+RUN_OUT_TMP="$TMP_WORK/run.out"
+COMPILE_ERR_TMP="$TMP_WORK/compile.err"
 AOT_BIN="$TMP_WORK/aot-test"
 cleanup() {
     rm -rf "$TMP_WORK" "$LOCK_DIR"
@@ -55,7 +55,8 @@ echo "=== Eshkol v1.2 Edge-Case + Security Suite ==="
 echo ""
 
 for test in tests/v1_2_edge_cases/*.esk; do
-    name=$(basename "$test" .esk)
+    name=${test##*/}
+    name=${name%.esk}
     printf "  %-50s " "$name"
 
     # Honour `;; mode: jit` markers — these tests are explicitly
@@ -63,10 +64,10 @@ for test in tests/v1_2_edge_cases/*.esk; do
     # symbol resolution that AOT compilation can't reproduce).  Run
     # them through `eshkol-run -r` instead of compile-and-run.
     if head -1 "$test" | grep -qiE "^;;\s*mode:\s*jit"; then
-        if $ESHKOL -r "$test" >"$RUN_OUT" 2>&1; then
-            if has_failure_output "$RUN_OUT"; then
+        if $ESHKOL -r "$test" >"$RUN_OUT_TMP" 2>&1; then
+            if has_failure_output "$RUN_OUT_TMP"; then
                 echo "FAIL (JIT assertion)"
-                show_failure_output "$RUN_OUT"
+                show_failure_output "$RUN_OUT_TMP"
                 FAIL=$((FAIL + 1))
             else
                 echo "PASS (JIT)"
@@ -74,21 +75,21 @@ for test in tests/v1_2_edge_cases/*.esk; do
             fi
         else
             echo "FAIL (JIT)"
-            head -10 "$RUN_OUT" | sed 's/^/    /'
+            head -10 "$RUN_OUT_TMP" | sed 's/^/    /'
             FAIL=$((FAIL + 1))
         fi
         continue
     fi
 
     # Compile (AOT)
-    if $ESHKOL "$test" -o "$AOT_BIN" 2>"$COMPILE_ERR"; then
+    if $ESHKOL "$test" -o "$AOT_BIN" 2>"$COMPILE_ERR_TMP"; then
         # Run.  Some tests use (check-equal? ...) which prints "FAIL: ..."
         # and exits non-zero on mismatch; we treat both compile failure
         # and runtime non-zero as a failure.
-        if "$AOT_BIN" >"$RUN_OUT" 2>&1; then
-            if has_failure_output "$RUN_OUT"; then
+        if "$AOT_BIN" >"$RUN_OUT_TMP" 2>&1; then
+            if has_failure_output "$RUN_OUT_TMP"; then
                 echo "FAIL (assertion)"
-                show_failure_output "$RUN_OUT"
+                show_failure_output "$RUN_OUT_TMP"
                 FAIL=$((FAIL + 1))
             else
                 echo "PASS"
@@ -96,12 +97,12 @@ for test in tests/v1_2_edge_cases/*.esk; do
             fi
         else
             echo "FAIL (runtime)"
-            head -10 "$RUN_OUT" | sed 's/^/    /'
+            head -10 "$RUN_OUT_TMP" | sed 's/^/    /'
             FAIL=$((FAIL + 1))
         fi
     else
         echo "FAIL (compile)"
-        head -10 "$COMPILE_ERR" | sed 's/^/    /'
+        head -10 "$COMPILE_ERR_TMP" | sed 's/^/    /'
         FAIL=$((FAIL + 1))
     fi
 done
@@ -111,12 +112,13 @@ done
 # program because the test is *about* a compile failure).
 for test in tests/v1_2_edge_cases/*.sh; do
     [ -f "$test" ] || continue
-    name=$(basename "$test" .sh)
+    name=${test##*/}
+    name=${name%.sh}
     printf "  %-50s " "$name"
-    if bash "$test" >"$RUN_OUT" 2>&1; then
-        if has_failure_output "$RUN_OUT"; then
+    if bash "$test" >"$RUN_OUT_TMP" 2>&1; then
+        if has_failure_output "$RUN_OUT_TMP"; then
             echo "FAIL (shell assertion)"
-            show_failure_output "$RUN_OUT"
+            show_failure_output "$RUN_OUT_TMP"
             FAIL=$((FAIL + 1))
         else
             echo "PASS (shell)"
@@ -124,7 +126,7 @@ for test in tests/v1_2_edge_cases/*.sh; do
         fi
     else
         echo "FAIL (shell)"
-        head -10 "$RUN_OUT" | sed 's/^/    /'
+        head -10 "$RUN_OUT_TMP" | sed 's/^/    /'
         FAIL=$((FAIL + 1))
     fi
 done

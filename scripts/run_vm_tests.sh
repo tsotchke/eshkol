@@ -11,19 +11,19 @@ if [ ! -x "$VM" ]; then
     exit 2
 fi
 
-OUT="${TMPDIR:-/tmp}/eshkol_vm_standalone_tests.log"
+OUT_TMP="${TMPDIR:-/tmp}/eshkol_vm_standalone_tests.log"
 
 echo "========================================="
 echo "  Eshkol Bytecode VM Standalone Tests"
 echo "========================================="
 echo ""
 
-ESHKOL_VM_NO_DISASM=1 "$VM" >"$OUT" 2>&1
+ESHKOL_VM_NO_DISASM=1 "$VM" >"$OUT_TMP" 2>&1
 rc=$?
 
 if [ "$rc" -eq 0 ]; then
-    if grep -q "Source tests: " "$OUT"; then
-        grep "Source tests: " "$OUT" | tail -1
+    if grep -q "Source tests: " "$OUT_TMP"; then
+        grep "Source tests: " "$OUT_TMP" | tail -1
     fi
     echo ""
     echo "Passed: 1"
@@ -31,7 +31,7 @@ if [ "$rc" -eq 0 ]; then
     exit 0
 fi
 
-tail -80 "$OUT"
+tail -80 "$OUT_TMP"
 echo ""
 echo "Passed: 0"
 echo "Failed: 1"
