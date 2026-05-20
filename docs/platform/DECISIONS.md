@@ -152,3 +152,110 @@ Core architecture, syntax, runtime boundary, and repo-boundary decisions remain 
 
 - design coherence is preserved
 - helpers can still contribute effectively on decision-complete tasks
+
+---
+
+## D-0007
+
+- Date: 2026-04-15
+- Status: Accepted
+- Title: Keep the platform integration branch in its own dedicated worktree
+
+### Context
+
+The roadmap branch, the platform integration branch, and short-lived topic branches need to move in parallel without stash churn or accidental branch contamination.
+
+### Decision
+
+Use:
+
+- `~/Desktop/eshkol` for the active release/mainline branch
+- `~/Desktop/eshkol-platform` for `feature/platform-freestanding`
+- additional short-lived worktrees for active `topic/platform-*` branches when needed
+
+### Consequences
+
+- branch roles stay physically separated
+- the platform integration branch remains continuously available for sync and validation
+- topic branches remain disposable after merge
+
+---
+
+## D-0008
+
+- Date: 2026-04-15
+- Status: Accepted
+- Title: Use explicit merge commits for platform syncs and topic-branch integration
+
+### Context
+
+The platform program is long-running and will repeatedly reconcile roadmap syncs, topic slices, and eventual merge-back into the release stream.
+
+### Decision
+
+Use explicit merge commits for:
+
+- syncing mainline into `feature/platform-freestanding`
+- merging accepted `topic/platform-*` branches into `feature/platform-freestanding`
+
+### Consequences
+
+- integration history remains legible
+- platform slice boundaries stay visible
+- later audit, bisect, and rollback are safer
+
+---
+
+## D-0009
+
+- Date: 2026-04-15
+- Status: Accepted
+- Title: Runtime ownership is responsibility-based, not directory-based
+
+### Context
+
+The current implementation mixes allocator substrate, signal/process/runtime state, configuration, logging, image and ONNX helpers, knowledge-base persistence, and higher-level language services under `lib/core/`. Treating the entire directory as "the runtime" would produce a bad split and make freestanding support harder.
+
+### Decision
+
+The runtime split is responsibility-based:
+
+- `runtime-core` owns the value ABI, allocator substrate, and profile-independent runtime contracts
+- `runtime-hosted` owns process, filesystem, terminal, env, temp path, host compiler/linker, and hosted libc wrapper behavior
+- higher-level language services remain outside the runtime family split even if they live under `lib/core/`
+
+The concrete baseline for this classification is `docs/platform/RUNTIME_INVENTORY.md`.
+
+### Consequences
+
+- runtime extraction work is driven by documented ownership, not by directory moves
+- `platform_runtime.h` and `runtime_exports.h` are treated as hosted-runtime surfaces from the start
+- files such as `logic.cpp`, `workspace.cpp`, `inference.cpp`, and `introspection.cpp` are not silently folded into `runtime-core`
+
+---
+
+## D-0010
+
+- Date: 2026-04-15
+- Status: Accepted
+- Title: Runtime decomposition begins with internal source sets, not immediate archive changes
+
+### Context
+
+The runtime is still delivered as part of `eshkol-static`, and too many core files still straddle freestanding and hosted concerns to make a clean archive split in one step.
+
+### Decision
+
+Introduce explicit internal build buckets first:
+
+- `runtime-core`
+- `runtime-hosted`
+- `runtime-split-pending`
+
+These are represented in CMake as internal object libraries while `eshkol-static` remains the delivered aggregate archive.
+
+### Consequences
+
+- build ownership becomes explicit without destabilizing downstream link behavior
+- the remaining mixed files are visible instead of being silently misclassified
+- later runtime archive extraction can proceed incrementally from an already-structured build graph

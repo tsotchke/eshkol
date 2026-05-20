@@ -147,6 +147,13 @@ The runtime must be split into:
   - hook-driven runtime services
   - no implicit OS assumptions
 
+The concrete starting point for this split is documented in [RUNTIME_INVENTORY.md](RUNTIME_INVENTORY.md).
+
+Two architectural clarifications matter here:
+
+- `lib/core` is not the runtime boundary. It currently contains runtime substrate, hosted control-plane code, and higher-level language services.
+- `platform_runtime.h` and `runtime_exports.h` are already effectively hosted-runtime boundaries, even though they are still linked through the monolithic `eshkol-static` archive.
+
 ## 3.3 Native freestanding architecture
 
 The LLVM-native freestanding path must support:
