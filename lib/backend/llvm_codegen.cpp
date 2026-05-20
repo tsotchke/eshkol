@@ -38,6 +38,9 @@
 
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
 
+namespace eshkol { class CodegenContext; }
+extern "C" void eshkol_register_tensorcore_builtins(eshkol::CodegenContext*);
+
 namespace {
 
 void append_host_runtime_link_args(std::vector<std::string>& link_args) {
@@ -3141,6 +3144,16 @@ private:
         eshkol_lambda_registry_add_func = builtins_->getLambdaRegistryAdd();
         eshkol_lambda_registry_lookup_func = builtins_->getLambdaRegistryLookup();
         eshkol_debug("Created BuiltinDeclarations");
+
+        // tensorcore — opt-in via ESHKOL_ENABLE_TENSORCORE=1. Drops the 14
+        // tc_* C ABI symbols into the LLVM module as ExternalLinkage; link-time
+        // resolution requires the consumer binary to link against libtensorcore.a.
+        if (const char* tc_on = std::getenv("ESHKOL_ENABLE_TENSORCORE")) {
+            if (tc_on[0] == '1') {
+                eshkol_register_tensorcore_builtins(ctx_.get());
+                eshkol_debug("tensorcore: registered 14 external builtins");
+            }
+        }
 
         // Initialize TensorCodegen - tensor operations (needed by ArithmeticCodegen)
         tensor_ = std::make_unique<eshkol::TensorCodegen>(*ctx_, *tagged_, *mem);
