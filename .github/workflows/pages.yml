@@ -1,31 +1,176 @@
 name: Deploy Site
 
+# Build site/src/main.esk to WebAssembly via the host eshkol-run compiler,
+# regenerate the markdown-rendered content fragments, then publish the
+# resulting site/static tree to GitHub Pages.
+#
+# Trigger surface:
+#   - site/src/**           — the .esk source that becomes eshkol-site.wasm
+#   - site/static/**        — non-WASM assets (HTML, CSS, images, CNAME, JS glue)
+#   - lib/**, src/**,
+#     exe/**, CMakeLists.txt
+#                           — anything the WASM compile output depends on;
+#                             changing the compiler can change the .wasm even
+#                             with main.esk untouched.
+#   - root + docs/ markdown the site renders into HTML at deploy time
+#   - scripts/build-site*.sh
+#   - this workflow file itself
+#
+# The build invocation lives in scripts/build-site.sh — keep it in sync.
+#
+# What is NOT rebuilt here:
+#   site/static/eshkol-vm.{js,wasm} require the Emscripten SDK (`emcc`) and
+#   are produced from lib/backend/vm_wasm_repl.c.  They are committed
+#   artefacts; rebuild manually per CONTRIBUTING.md when the VM C surface
+#   changes.  Out of scope for this workflow.
+
 on:
   push:
     branches: [master]
     paths:
+      - 'site/src/**'
       - 'site/static/**'
+      - 'lib/**'
+      - 'src/**'
+      - 'exe/**'
+      - 'CMakeLists.txt'
+      - 'ESHKOL_LANGUAGE_GUIDE.md'
+      - 'ESHKOL_QUICK_REFERENCE.md'
+      - 'ROADMAP.md'
+      - 'CONTRIBUTING.md'
+      - 'docs/API_REFERENCE.md'
+      - 'docs/FEATURE_MATRIX.md'
+      - 'docs/QUICKSTART.md'
+      - 'scripts/build-site.sh'
+      - 'scripts/build-site-content.sh'
+      - '.github/workflows/pages.yml'
   workflow_dispatch:
 
 permissions:
   pages: write
   id-token: write
+  contents: read
 
+# Share the `pages` concurrency group with any other deploy workflow so
+# we never race the GitHub Pages backend.  Do not cancel an in-flight
+# deploy — let it finish before this one starts.
 concurrency:
   group: "pages"
   cancel-in-progress: false
 
+env:
+  LLVM_MAJOR: '21'
+
 jobs:
-  deploy:
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    runs-on: ubuntu-latest
+  build:
+    name: build-site-wasm
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v6
+
+      # ---------- LLVM 21 + build deps (mirror ci.yml's lite-lane install) ----------
+
+      - name: Add LLVM Repository
+        shell: bash
+        run: |
+          set -euxo pipefail
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
+          echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-${LLVM_MAJOR} main" | sudo tee /etc/apt/sources.list.d/llvm.list
+          sudo apt-get update
+
+      - name: Install Dependencies
+        shell: bash
+        run: |
+          set -euxo pipefail
+          # Same package set ci.yml's linux-x64-lite uses, plus pandoc for
+          # the markdown -> HTML site-content step.
+          sudo apt-get install -y \
+            cmake ninja-build \
+            llvm-${LLVM_MAJOR} llvm-${LLVM_MAJOR}-dev lld-${LLVM_MAJOR} \
+            libreadline-dev pkg-config \
+            libssl-dev libncurses-dev \
+            libpcre2-dev libsqlite3-dev \
+            git python3 pandoc
+          # eshkol's codegen passes -fuse-ld=lld for AArch64 Linux, and
+          # ci.yml symlinks ld.lld unversioned for the same reason.  We
+          # don't actually need ld.lld for the --wasm path (no host link
+          # happens), but the symlink is cheap and keeps this script
+          # bit-identical to the CI install so debugging is one less
+          # variable.
+          sudo ln -sf "/usr/bin/ld.lld-${LLVM_MAJOR}" /usr/bin/ld.lld
+
+      # ---------- Cache the CMake build tree across runs ----------
+      #
+      # Only the build directory is cached.  The WASM output lives in
+      # site/static/ and is uploaded as an artifact — caching it would
+      # defeat the point of rebuilding on every source change.
+      - name: Cache CMake build tree
+        uses: actions/cache@v4
+        with:
+          path: build
+          key: pages-build-${{ runner.os }}-llvm${{ env.LLVM_MAJOR }}-${{ hashFiles('CMakeLists.txt', 'src/**', 'lib/**', 'exe/**') }}
+          restore-keys: |
+            pages-build-${{ runner.os }}-llvm${{ env.LLVM_MAJOR }}-
+
+      # ---------- Configure + build eshkol-run ----------
+      #
+      # We deliberately call cmake here (rather than letting build-site.sh
+      # bootstrap its own build) so the LLVM_CONFIG_EXECUTABLE is pinned
+      # to the apt LLVM 21 just like ci.yml's lite lanes.  Once eshkol-run
+      # exists, build-site.sh handles the rest.
+      - name: Configure
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DESHKOL_REQUIRED_LLVM_MAJOR="${LLVM_MAJOR}" \
+            -DLLVM_CONFIG_EXECUTABLE="/usr/bin/llvm-config-${LLVM_MAJOR}" \
+            -DESHKOL_BUILD_TESTS=OFF \
+            -DESHKOL_XLA_ENABLED=OFF \
+            -DESHKOL_GPU_ENABLED=OFF
+
+      - name: Build eshkol-run
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cmake --build build --target eshkol-run --parallel
+
+      # ---------- Build the site bundle ----------
+      #
+      # This is the SAME command a developer runs locally:
+      #   BUILD_DIR=build scripts/build-site.sh
+      # Keep that contract.  If the helper script ever needs new env vars,
+      # they belong here too.
+      - name: Build site bundle (WASM + content)
+        shell: bash
+        env:
+          BUILD_DIR: build
+        run: |
+          set -euxo pipefail
+          ./scripts/build-site.sh
+          # Hard failure if the .wasm wasn't actually written — keeps a
+          # stale tree from sneaking into the deploy artefact.
+          test -s site/static/eshkol-site.wasm
+
+      # ---------- Stage + upload the GitHub Pages artefact ----------
+      #
+      # `actions/configure-pages` resolves the deployment target; the
+      # upload step packages site/static as the Pages artefact under the
+      # well-known name `github-pages` which `deploy-pages` (in the next
+      # job) picks up automatically.
       - uses: actions/configure-pages@v6
       - uses: actions/upload-pages-artifact@v5
         with:
           path: site/static
+
+  deploy:
+    name: deploy-site
+    needs: build
+    runs-on: ubuntu-22.04
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
       - id: deployment
         uses: actions/deploy-pages@v5
