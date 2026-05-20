@@ -116,6 +116,7 @@ TEST_SCRIPTS=(
     "run_system_tests.sh"
     "run_complex_tests.sh"
     "run_cpp_type_tests.sh"
+    "run_vm_tests.sh"
     "run_parser_tests.sh"
     "run_control_flow_tests.sh"
     "run_logic_tests.sh"

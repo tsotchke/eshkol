@@ -1463,7 +1463,8 @@ int main(int argc, char** argv) {
         test_map();
         test_closures();
         printf("\n=== Tests complete ===\n");
-        run_source_tests();
+        int source_failures = run_source_tests();
+        if (source_failures != 0) return 1;
     }
     return 0;
 }

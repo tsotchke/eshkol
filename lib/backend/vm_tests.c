@@ -687,7 +687,7 @@ static void source_test_expect(const char* name, const char* source, const char*
 #endif
 }
 
-static void run_source_tests(void) {
+static int run_source_tests(void) {
     printf("\n=== Source-Level Tests ===\n\n");
 
     /* Strings */
@@ -720,7 +720,7 @@ static void run_source_tests(void) {
         "(define (count n) (if (= n 0) 0 (count (- n 1)))) (display (count 1000000))", "0");
 
     /* Vectors */
-    source_test_expect("vector-ops", "(define v (vector 10 20 30)) (display (vector-ref v 1))", "20");
+    source_test_expect("vector-ops", "(define v (vector \"left\" 20 \"right\")) (display (vector-ref v 1))", "20");
     source_test_expect("vector-set",
         "(define v (make-vector 3 0)) (vector-set! v 1 42) (display (vector-ref v 1))", "42");
 
@@ -797,7 +797,7 @@ static void run_source_tests(void) {
     source_test("logic-var",       "(display (logic-var? '?x))");
 
     /* Workspace / inference */
-    source_test_expect("make-workspace",   "(define ws (make-workspace)) (display (workspace? ws))",   "#t");
+    source_test_expect("make-workspace",   "(define ws (make-workspace 3 8)) (display (workspace? ws))",   "#t");
     source_test_expect("make-factor-graph","(define fg (make-factor-graph 3)) (display (factor-graph? fg))", "#t");
 
     /* Lazy evaluation */
@@ -810,4 +810,5 @@ static void run_source_tests(void) {
         "(define (depth n) (if (= n 0) 0 (+ 1 (depth (- n 1))))) (display (depth 100))", "100");
 
     printf("\n  Source tests: %d/%d passed\n", source_test_pass, source_test_count);
+    return source_test_count - source_test_pass;
 }
