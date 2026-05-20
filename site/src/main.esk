@@ -374,7 +374,7 @@
         (let ((title (create-text "h1" "Build systems that think." left)))
           (web-add-class title "hero-title"))
 
-        (let ((sub (create-text "p" "Eshkol compiles automatic differentiation, probabilistic inference, and self-modifying code into native machine code." left)))
+        (let ((sub (create-text "p" "Eshkol is R7RS Scheme on LLVM 21 with automatic differentiation as a compiler primitive and a 22-builtin neuro-symbolic stack. v1.2.1-scale ships the constructive proof that a six-layer transformer can be an interpreter — the Self-Differentiating Neural Computer." left)))
           (web-add-class sub "hero-sub"))
 
         ;; Install command
@@ -485,7 +485,7 @@
 
       (let ((s2 (create-div inner)))
         (web-add-class s2 "stat-box")
-        (let ((v (create-text "div" "434" s2))) (web-add-class v "stat-value"))
+        (let ((v (create-text "div" "528" s2))) (web-add-class v "stat-value"))
         (let ((l (create-text "div" "Tests Passing" s2))) (web-add-class l "stat-label")))
 
       (let ((s3 (create-div inner)))
@@ -543,6 +543,52 @@
       (render-feature-card grid2
         "Consciousness Engine"
         "Knowledge bases with unification, factor graphs with belief propagation, global workspace theory. 22 built-in primitives for systems that reason about their own uncertainty."))
+
+    section))
+
+(define (render-v12-features parent)
+  (let ((section (create-section parent)))
+    (section-heading section "What's new in v1.2.1-scale")
+    (body-html section "<strong style='color:#a78bfa'>The production-readiness release.</strong> v1.1-accelerate proved the math (autodiff, tensors, the consciousness engine); v1.2.1-scale makes it shippable. Master suite exits 0 across 37 sub-suites and 528 self-reported tests; <code>tests/v1_2_edge_cases</code> carries 87 passing edge and security tests.")
+
+    (let ((grid (create-grid-3 section)))
+      (render-feature-card grid
+        "SDNC paper artefact"
+        "Constructive proof shipped: a six-layer transformer with 12.22M analytically-constructed parameters is bit-identical to a bounded 83-instruction bytecode VM with reverse-mode AD in the ISA. 82 of 83 opcodes are weight-implemented; the reproducibility harness verifies 126/126 inline and 123/123 traced programs.")
+
+      (render-feature-card grid
+        "Complete numeric tower"
+        "int64 to bignum to rational to double to complex, with automatic overflow promotion and demotion. Bignums route through every arithmetic, comparison, abs, min/max, expt, floor/ceil/round/truncate, and number-to-string path; rationals carry exact GCD simplification.")
+
+      (render-feature-card grid
+        "Consciousness engine, production"
+        "22 compiled primitives across logic, active inference, and global workspace. ws-step! drives module competition through real closures, fg-update-cpt! mutates CPTs and reconverges beliefs, free-energy / expected-free-energy run at native speed."))
+
+    (let ((grid2 (create-grid-3 section)))
+      (render-feature-card grid2
+        "Agent FFI surfaces"
+        "Native HTTP client over libcurl with live HTTPS verified through both AOT and JIT paths, sqlite-backed session persistence with dynamic column-text sizing, JSON parse with Result-typed errors, and subprocess spawn via posix_spawn (the shell-injection-prone popen path is gone). AOT binaries link the full agent FFI through ESHKOL_HOST_AGENT_FFI_LINK_ARGS.")
+
+      (render-feature-card grid2
+        "Real parallelism via parallel-map"
+        "Worker tagged-value flags-byte fix: parallel-map now scales 5-12x AOT and 4-9x JIT on 24 cores instead of the prior 1.01x. Per-thread arenas plus per-call captures (not GlobalVariable shuttles) keep nested closures thread-safe under cross-thread parallel-execute.")
+
+      (render-feature-card grid2
+        "Heterogeneous dispatch"
+        "Tensor operations dispatch through SIMD micro-kernels, cBLAS/Accelerate, Metal on Apple Silicon (with SF64 soft-float emulation), CUDA + cuBLAS on Linux, or XLA/StableHLO for very large or dynamic shapes. One expression, all backends."))
+
+    (let ((grid3 (create-grid-3 section)))
+      (render-feature-card grid3
+        "Model serialisation"
+        ".eshkol-model is an ESKB-extended binary format that round-trips trained networks (architecture, weights, metadata). Train on one box, load on another. Stable C ABI in inc/eshkol/c_abi.h; pip install eshkol gives you pybind11 bindings with NumPy zero-copy interop and gradients across the FFI.")
+
+      (render-feature-card grid3
+        "REPL --machine warm-worker"
+        "eshkol-repl --machine emits READY/DONE/FAIL framing on stderr for harness-driven interactive use. A persistent JIT worker is about 5x faster than cold eshkol-run -r, with marginal per-form cost approaching zero.")
+
+      (render-feature-card grid3
+        "Actionable diagnostics"
+        "Compile errors now report the exact source line and column with a caret underline. Parser comment-stripping preserves newlines; a cumulative file-line counter threads across every parse-next-ast-from-stream call. The 8 MB Darwin stack default is gone: every binary ships with LC_MAIN.stacksize = 512 MB."))
 
     section))
 
@@ -630,6 +676,7 @@
   (render-hero content)
   (render-app-cards content)
   (render-pillars content)
+  (render-v12-features content)
   (render-code-showcase content)
   (render-what-you-can-build content)
   (render-comparison-table content)
@@ -816,7 +863,7 @@
     ;; Go Deeper section
     (create-divider page)
     (section-subheading page "Go Deeper")
-    (body-text page "These 8 chapters scratch the surface. The full tutorial collection covers 20 feature areas and 6 complete project tutorials.")
+    (body-text page "These 8 chapters scratch the surface. The full tutorial collection has 30 documents: a First-5-Minutes intro, a Why-Eshkol comparison, a 30-recipe cookbook, 20 feature tutorials, and 6 complete project tutorials.")
 
     (let ((links (create-div page)))
       (style! links "display" "grid")
@@ -858,7 +905,7 @@
         (make-link-card "Self-Improving Programs"
           "Differentiable self-optimisation + active inference"
           "/tutorials")
-        (make-link-card "All 27 Tutorials"
+        (make-link-card "All 30 Tutorials"
           "Complete tutorial index with feature + project guides"
           "/tutorials")))
 
@@ -888,7 +935,7 @@
 
 (define (render-examples-page content)
   (let ((page (create-section content)))
-    (create-page-header page "Examples" "Curated code examples showing what Eshkol can do. Click Run to execute in the browser VM.")
+    (create-page-header page "Examples" "Curated code examples showing what Eshkol can do. Click Run to execute in the browser VM. The repository ships 12 runnable examples in examples/; the selection below is the subset that lives well inside a browser tab.")
 
     (let ((grid (create-grid-2 page)))
 
@@ -1262,7 +1309,7 @@
 
         ;; Welcome message
         (web-set-inner-html output
-          "<span style='color:#7c3aed;font-weight:bold'>Eshkol Bytecode VM</span> <span style='color:#71717a'>v1.2.0-scale</span>\n<span style='color:#71717a'>83-opcode ISA | Arena memory (OALR) | R7RS Scheme</span>\n<span style='color:#71717a'>Type an expression and press Enter.</span>\n\n"))
+          "<span style='color:#7c3aed;font-weight:bold'>Eshkol Bytecode VM</span> <span style='color:#71717a'>v1.2.1-scale</span>\n<span style='color:#71717a'>83-opcode ISA | Arena memory (OALR) | R7RS Scheme</span>\n<span style='color:#71717a'>Type an expression and press Enter.</span>\n\n"))
 
       ;; Terminal input area
       (let ((input-row (create-div terminal)))
@@ -1315,17 +1362,17 @@
     (let ((stats (create-grid-4 page)))
       (let ((s1 (create-card stats)))
         (web-add-class s1 "text-center")
-        (let ((v (create-text "div" "484KB" s1))) (web-add-class v "stat-value") (style! v "fontSize" "1.8rem"))
+        (let ((v (create-text "div" "581KB" s1))) (web-add-class v "stat-value") (style! v "fontSize" "1.8rem"))
         (let ((l (create-text "div" "Site WASM" s1))) (web-add-class l "stat-label")))
 
       (let ((s2 (create-card stats)))
         (web-add-class s2 "text-center")
-        (let ((v (create-text "div" "380KB" s2))) (web-add-class v "stat-value") (style! v "fontSize" "1.8rem"))
+        (let ((v (create-text "div" "427KB" s2))) (web-add-class v "stat-value") (style! v "fontSize" "1.8rem"))
         (let ((l (create-text "div" "VM WASM" s2))) (web-add-class l "stat-label")))
 
       (let ((s3 (create-card stats)))
         (web-add-class s3 "text-center")
-        (let ((v (create-text "div" "63" s3))) (web-add-class v "stat-value") (style! v "fontSize" "1.8rem"))
+        (let ((v (create-text "div" "83" s3))) (web-add-class v "stat-value") (style! v "fontSize" "1.8rem"))
         (let ((l (create-text "div" "VM Opcodes" s3))) (web-add-class l "stat-label")))
 
       (let ((s4 (create-card stats)))
