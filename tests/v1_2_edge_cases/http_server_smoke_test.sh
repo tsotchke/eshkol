@@ -49,13 +49,16 @@ cat > "$WORK/http_server.esk" <<'EOF'
 (define (server-handle? h)
   (and (number? h) (> h 0)))
 
+(define (candidate-port attempt)
+  (+ 20000 (remainder (+ (getpid) attempt) 20000)))
+
 (define (create-server-with-retry attempts)
-  (let loop ((remaining attempts))
-    (let ((srv (http-server-create 0)))
+  (let loop ((attempt 0))
+    (let ((srv (http-server-create (candidate-port attempt))))
       (if (server-handle? srv)
           srv
-          (if (> remaining 0)
-              (begin (sleep-ms 50) (loop (- remaining 1)))
+          (if (< attempt attempts)
+              (begin (sleep-ms 50) (loop (+ attempt 1)))
               srv)))))
 
 (define srv (create-server-with-retry 5))
