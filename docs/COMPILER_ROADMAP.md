@@ -10,8 +10,7 @@ Two axes are tracked side-by-side:
 1. **Release version** (v1.2, v1.3, …, v2.0) — when a feature ships to users.
    Monthly cadence since v1.1-accelerate (2026-04-10); v1.2.0-scale shipped 2026-05-01 on schedule.
 2. **Noesis milestone** (M0, M1, M2, M3, M4) — what Noesis capability each
-   feature unblocks. Taken from the 2026-04-17 gap audit
-   (`/Users/tyr/Desktop/noesis/docs/audits/eshkol-feature-gap-report-2026-04-17.md`).
+   feature unblocks. Taken from the 2026-04-17 Noesis gap audit.
 
 The two axes are orthogonal. A single feature has both coordinates. For
 example: `define-record-type` codegen is **v1.2-finalisation (release)** and
@@ -124,10 +123,9 @@ exits with `NOESIS_ALL_RC=0` using the v1.2-scale build.
 
 ### Noesis tracker reconciliation — 2026-05-19
 
-Noesis' checked-in tracker
-(`/Users/tyr/Desktop/noesis/docs/audits/eshkol-issue-tracker.md`) now records
-W, Z, BB, GG, JJ, KK, and LL as closed and lists zero open filed Eshkol bugs.
-The table below is the Eshkol-side evidence used for that reconciliation.
+Noesis' checked-in tracker now records W, Z, BB, GG, JJ, KK, and LL as closed
+and lists zero open filed Eshkol bugs. The table below is the Eshkol-side
+evidence used for that reconciliation.
 
 | ID | Current Eshkol result | Disposition |
 |---|---|---|
