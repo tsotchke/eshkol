@@ -254,7 +254,7 @@ Eshkol provides high-level vector calculus operators built on reverse-mode AD:
 | **Gradient** | ∇f = [∂f/∂x₁, ∂f/∂x₂, ..., ∂f/∂xₙ] | `(gradient f point)` |
 | **Hessian** | H_ij = ∂²f/(∂xᵢ∂xⱼ) | `(hessian f point)` |
 | **Laplacian** | ∇²f = ∂²f/∂x² + ∂²f/∂y² + ∂²f/∂z² | `(laplacian f point)` |
-| **Directional** | D_vf = ∇f · v | `(directional-deriv f point direction)` |
+| **Directional** | D_vf = ∇f · v | `(directional-derivative f point direction)` |
 
 ### Vector Field Operators (ℝⁿ → ℝᵐ)
 

@@ -1,6 +1,6 @@
 # Eshkol Web Platform
 
-**Status**: Stable — v1.2.0-scale
+**Status**: Stable — v1.2.1-scale
 **Module**: `web` / `web.http`
 **Source**: `lib/web/http.esk`
 **Compiler flag**: `--wasm` (`-w`)

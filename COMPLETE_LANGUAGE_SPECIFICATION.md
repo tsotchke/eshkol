@@ -3851,7 +3851,7 @@ Keep original name (exported via `provide`)
 
 ## 26. Version Information
 
-**Current Version:** v1.2.0-scale
+**Current Version:** v1.2.1-scale
 
 **Version History:**
 - v1.2.0-scale - Production readiness: model serialization, stable C ABI + Python bindings, per-thread arenas, 512 MB main-thread stack on Darwin, image I/O, plotting stdlib, actionable error messages with file:line:col + caret, JSON Schema validator (Draft 7 subset), R7RS-compliant scoping for stdlib redefines, --wasm self-contained emit, AD scalar derivative on inline lambdas, value-typed-capture LLVM verification, variadic-info hygiene on user redefines, 62-test edge-case suite + ASan/UBSan CI lane, 7 hardening fixes (subprocess injection, FFI AST injection, integer overflows, path traversal, ReDoS).
@@ -3961,7 +3961,7 @@ Dynamic binding of parameter objects. Parameters created with `make-parameter` a
 
 ## Conclusion
 
-This document provides a **complete** specification of the Eshkol programming language version v1.2.0-scale, documenting **every** feature, function, operator, and capability found in the implementation.
+This document provides a **complete** specification of the Eshkol programming language version v1.2.1-scale, documenting **every** feature, function, operator, and capability found in the implementation.
 
 **Total Coverage:**
 - All 101 special forms and parser operations

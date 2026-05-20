@@ -108,8 +108,8 @@ This means:
 (kb-query kb (make-fact 'parent ?p 'bob))
 ;; => ((parent alice bob))
 
-(define fg (make-factor-graph 3))
-(fg-add-factor! fg 0 1 #(0.9 0.1 0.1 0.9))
+(define fg (make-factor-graph 3 #(2 2 2)))
+(fg-add-factor! fg #(0 1) #(0.9 0.1 0.1 0.9))
 (fg-infer! fg 10)
 (free-energy fg #(0 1))
 ;; Bayesian inference in one line

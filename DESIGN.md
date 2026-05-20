@@ -305,4 +305,4 @@ The LLVM and VM backends share the same language semantics but use independent v
 
 ---
 
-*Eshkol v1.2.0-scale is a production compiler integrating automatic differentiation, deterministic memory management, homoiconic native code, GPU acceleration, cognitive computing primitives, and a dual backend architecture (LLVM + bytecode VM). The codebase ships with a 62-test edge-case regression suite, an ASan/UBSan CI lane, 555+ built-in functions, and 36 sub-suites passing end-to-end.*
+*Eshkol v1.2.1-scale is a production compiler integrating automatic differentiation, deterministic memory management, homoiconic native code, GPU acceleration, cognitive computing primitives, and a dual backend architecture (LLVM + bytecode VM). The codebase ships with a 62-test edge-case regression suite, an ASan/UBSan CI lane, 555+ built-in functions, and 36 sub-suites passing end-to-end.*

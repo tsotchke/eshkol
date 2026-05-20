@@ -1,6 +1,6 @@
 # Eshkol Agent FFI Subsystem
 
-**Status**: Stable — v1.2.0-scale
+**Status**: Stable — v1.2.1-scale
 **Modules**: `agent.http`, `agent.http_server`, `agent.sqlite`,
 `agent.subprocess`, `agent.regex`, `agent.crypto`, `agent.fs-watch`,
 `agent.glob`, `agent.keychain`, `agent.git-ffi`
