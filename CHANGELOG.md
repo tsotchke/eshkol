@@ -15,6 +15,12 @@ The Noesis M0 closeout point release. This release keeps the v1.2.0-scale
 feature surface and closes the remaining downstream substrate blockers found
 by Noesis aggregate validation.
 
+### Added
+
+- Added `examples/milli_mag_bohrification.esk`, a public executable sketch
+  that keeps the milli-magnetic Bohrification model inside today's Eshkol
+  surface and passes the examples suite.
+
 ### Fixed
 
 - Closed the remaining Noesis-filed Eshkol issues W, Z, BB, GG, JJ, KK, and
