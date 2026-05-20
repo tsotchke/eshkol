@@ -1036,9 +1036,9 @@ quantum properties are not required.
 
 | Topic                             | Reference                                      |
 |-----------------------------------|------------------------------------------------|
-| Linear algebra / tensors          | `docs/breakdown/TENSOR_SYSTEM.md`             |
+| Linear algebra / tensors          | `docs/breakdown/VECTOR_OPERATIONS.md`         |
 | Machine learning utilities        | `lib/ml/`                                      |
-| Built-in numeric types            | `docs/breakdown/NUMERIC_TOWER.md`             |
+| Built-in numeric types            | `docs/breakdown/EXACT_ARITHMETIC.md`           |
 | Compiler numeric codegen          | `lib/backend/llvm_codegen.cpp` (ArithmeticCodegen) |
 | BLAS/AMX tensor acceleration      | `lib/backend/blas_backend.cpp`                |
 | Language reference                | `ESHKOL_V1_LANGUAGE_REFERENCE.md`             |

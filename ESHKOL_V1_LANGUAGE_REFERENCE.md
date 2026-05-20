@@ -1,5 +1,5 @@
 # Eshkol Programming Language - Complete Reference
-## Version v1.2.0-scale
+## Version v1.2.1-scale
 
 **A Comprehensive Guide to Every Feature in Pure Eshkol**
 

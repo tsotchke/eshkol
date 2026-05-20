@@ -27,7 +27,7 @@ The architecture combines:
 - **S-expression parser** for R7RS-compatible Scheme syntax
 - **Hygienic macro expander** via `syntax-rules` pattern matching
 - **HoTT-inspired type checker** for gradual typing (warnings, not errors)
-- **Modular LLVM backend** with 21 specialized codegen modules (~232,000 lines)
+- **Modular LLVM backend** with roughly thirty specialized codegen modules (~85,500 lines)
 - **JIT compiler** for interactive REPL via LLVM OrcJIT (LLJIT)
 - **Pre-compiled standard library** (40 modules, compiled to `stdlib.o`)
 - **GPU dispatch** with SIMD/cBLAS/Metal cost model selection
@@ -62,8 +62,8 @@ The compiler executes a 5-phase pipeline. Source files (`.esk`) enter at Phase 1
        |
        v
 +------------------+
-| 4. LLVM IR       |  lib/backend/llvm_codegen.cpp (34,928 lines)
-|    GENERATION    |  AST -> LLVM IR via 21 codegen modules (~232,000 lines)
+| 4. LLVM IR       |  lib/backend/llvm_codegen.cpp (33,962 lines)
+|    GENERATION    |  AST -> LLVM IR via ~30 codegen modules (~85,500 lines)
 +------------------+
        |
        v
@@ -366,27 +366,29 @@ The LLVM backend distributes code generation across 21 specialized modules total
 
 | Module | Source File | Lines | Responsibility |
 |:---|:---|---:|:---|
-| **Main Codegen** | [`llvm_codegen.cpp`](lib/backend/llvm_codegen.cpp) | 34,928 | Orchestrator, AST dispatch, builtins, consciousness engine |
-| **Tensor** | [`tensor_codegen.cpp`](lib/backend/tensor_codegen.cpp) | 19,187 | Tensor ops, 75+ ML builtins, BLAS/GPU dispatch |
-| **Autodiff** | [`autodiff_codegen.cpp`](lib/backend/autodiff_codegen.cpp) | 3,694 | Forward/reverse/symbolic AD modes |
-| **String/IO** | [`string_io_codegen.cpp`](lib/backend/string_io_codegen.cpp) | 2,975 | String ops, display/write, file I/O, JSON, CSV |
-| **Parallel LLVM** | [`parallel_llvm_codegen.cpp`](lib/backend/parallel_llvm_codegen.cpp) | 2,401 | Work-stealing parallelism LLVM IR generation |
-| **Arithmetic** | [`arithmetic_codegen.cpp`](lib/backend/arithmetic_codegen.cpp) | 2,332 | +, -, *, /, bignum, rational, complex dispatch |
-| **Collections** | [`collection_codegen.cpp`](lib/backend/collection_codegen.cpp) | 2,139 | Vector, list, cons, bytevector operations |
-| **System** | [`system_codegen.cpp`](lib/backend/system_codegen.cpp) | 1,192 | System, environment, time, process, eval support |
-| **Bindings** | [`binding_codegen.cpp`](lib/backend/binding_codegen.cpp) | 1,178 | let/let*/letrec/letrec* with TCO context save/restore |
-| **Thread Pool** | [`thread_pool.cpp`](lib/backend/thread_pool.cpp) | 1,131 | Work-stealing thread pool runtime |
-| **Tensor Backward** | [`tensor_backward.cpp`](lib/backend/tensor_backward.cpp) | 1,078 | Backward-mode AD gradient computation for tensors |
-| **Call/Apply** | [`call_apply_codegen.cpp`](lib/backend/call_apply_codegen.cpp) | 960 | Function calls, apply, partial application, variadic |
-| **BLAS Backend** | [`blas_backend.cpp`](lib/backend/blas_backend.cpp) | 890 | BLAS dispatch, GPU cost model calibration |
-| **Tagged Values** | [`tagged_value_codegen.cpp`](lib/backend/tagged_value_codegen.cpp) | 822 | Pack/unpack tagged values, type extraction |
-| **Control Flow** | [`control_flow_codegen.cpp`](lib/backend/control_flow_codegen.cpp) | 800 | if/cond/case/match/when/unless/call-cc/guard |
-| **Map** | [`map_codegen.cpp`](lib/backend/map_codegen.cpp) | 784 | map/for-each/fold with closure dispatch |
-| **Parallel** | [`parallel_codegen.cpp`](lib/backend/parallel_codegen.cpp) | 705 | parallel-map/fold/filter/for-each runtime |
-| **Homoiconic** | [`homoiconic_codegen.cpp`](lib/backend/homoiconic_codegen.cpp) | 601 | Code-as-data, quote, lambda S-expressions, eval |
+| **Main Codegen** | [`llvm_codegen.cpp`](lib/backend/llvm_codegen.cpp) | 33,962 | Orchestrator, AST dispatch, builtins, consciousness engine |
+| **Autodiff** | [`autodiff_codegen.cpp`](lib/backend/autodiff_codegen.cpp) | 9,205 | Forward/reverse/symbolic AD modes |
+| **String/IO** | [`string_io_codegen.cpp`](lib/backend/string_io_codegen.cpp) | 3,293 | String ops, display/write, file I/O, JSON, CSV |
+| **Parallel LLVM** | [`parallel_llvm_codegen.cpp`](lib/backend/parallel_llvm_codegen.cpp) | 2,601 | Work-stealing parallelism LLVM IR generation |
+| **Arithmetic** | [`arithmetic_codegen.cpp`](lib/backend/arithmetic_codegen.cpp) | 2,491 | +, -, *, /, bignum, rational, complex dispatch |
+| **Collections** | [`collection_codegen.cpp`](lib/backend/collection_codegen.cpp) | 2,348 | Vector, list, cons, bytevector operations |
+| **System** | [`system_codegen.cpp`](lib/backend/system_codegen.cpp) | 1,752 | System, environment, time, process, eval support |
+| **Tensor (dispatch)** | [`tensor_codegen.cpp`](lib/backend/tensor_codegen.cpp) | 1,540 | Entry/dispatch shell; per-domain ops live in `tensor_*_codegen.cpp` siblings |
+| **Thread Pool** | [`thread_pool.cpp`](lib/backend/thread_pool.cpp) | 1,350 | Work-stealing thread pool runtime |
+| **Tensor Backward** | [`tensor_backward.cpp`](lib/backend/tensor_backward.cpp) | 1,321 | Backward-mode AD gradient computation for tensors |
+| **BLAS Backend** | [`blas_backend.cpp`](lib/backend/blas_backend.cpp) | 1,253 | BLAS dispatch, GPU cost model calibration |
+| **Bindings** | [`binding_codegen.cpp`](lib/backend/binding_codegen.cpp) | 1,242 | let/let*/letrec/letrec* with TCO context save/restore |
+| **Call/Apply** | [`call_apply_codegen.cpp`](lib/backend/call_apply_codegen.cpp) | 1,025 | Function calls, apply, partial application, variadic |
+| **Parallel** | [`parallel_codegen.cpp`](lib/backend/parallel_codegen.cpp) | 945 | parallel-map/fold/filter/for-each runtime |
+| **Map** | [`map_codegen.cpp`](lib/backend/map_codegen.cpp) | 879 | map/for-each/fold with closure dispatch |
+| **Control Flow** | [`control_flow_codegen.cpp`](lib/backend/control_flow_codegen.cpp) | 874 | if/cond/case/match/when/unless/call-cc/guard |
+| **Tagged Values** | [`tagged_value_codegen.cpp`](lib/backend/tagged_value_codegen.cpp) | 717 | Pack/unpack tagged values, type extraction |
 | **Hash** | [`hash_codegen.cpp`](lib/backend/hash_codegen.cpp) | 603 | make-hash, hash-ref, hash-set!, hash-for-each |
+| **Homoiconic** | [`homoiconic_codegen.cpp`](lib/backend/homoiconic_codegen.cpp) | 601 | Code-as-data, quote, lambda S-expressions, eval |
+| **Tail Calls** | [`tail_call_codegen.cpp`](lib/backend/tail_call_codegen.cpp) | 503 | TCO transformation, trampoline runtime |
 | **Complex** | [`complex_codegen.cpp`](lib/backend/complex_codegen.cpp) | 499 | Complex number arithmetic (Smith's formula division) |
-| **Tail Calls** | [`tail_call_codegen.cpp`](lib/backend/tail_call_codegen.cpp) | 497 | TCO transformation, trampoline runtime |
+
+The original `tensor_codegen.cpp` was decomposed in v1.2 into thirteen per-domain modules (`tensor_activation_codegen.cpp`, `tensor_arith_codegen.cpp`, `tensor_conv_codegen.cpp`, `tensor_creation_codegen.cpp`, `tensor_dataloader_codegen.cpp`, `tensor_extras_codegen.cpp`, `tensor_linalg_codegen.cpp`, `tensor_loss_codegen.cpp`, `tensor_reduce_codegen.cpp`, `tensor_shape_codegen.cpp`, `tensor_training_codegen.cpp`, `tensor_transformer_codegen.cpp`, `tensorcore_codegen.cpp`), totalling approximately 20,500 lines re-exported through the dispatcher above.
 
 **Additional backend components (not in the 21-module count):**
 
