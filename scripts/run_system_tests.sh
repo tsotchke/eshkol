@@ -9,6 +9,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$PROJECT_ROOT"
 
+# Honour $BUILD_DIR (CI passes it via the matrix); fall back to "build" for plain local runs.
+BUILD_DIR="${BUILD_DIR:-build}"
+
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
