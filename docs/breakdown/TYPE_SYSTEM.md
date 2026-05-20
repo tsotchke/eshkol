@@ -262,7 +262,9 @@ lower universe.
 | U₀ | Ground types (base values) | `Integer`, `Real`, `Boolean`, `String`, `Char`, `Symbol`, `Null`, `Complex`, `BigInt`, `Natural` |
 | U₁ | Type constructors (parameterized types) | `List<T>`, `Vector<T>`, `Tensor<T>`, `Pair<A,B>`, `(-> A B)`, `DualNumber`, `ADNode`, `HashTable` |
 | U₂ | Propositions (proof types, erased at runtime) | `Eq<A,a,b>`, `LessThan<a,b>`, `Bounded<n,lo,hi>`, `Subtype<A,B>` |
-| Uω | Universe-polymorphic operations | Polymorphic combinators that work across universe levels |
+| Uω | Universe-polymorphic operations *(target: v1.3+)* | Polymorphic combinators that work across universe levels |
+
+Universes U₀–U₂ are realised by the v1.2 type checker; the Uω row records the intended elaboration target for the next round of type-system work and is not currently exercised by the inference engine.
 
 **Formation rule:**
 

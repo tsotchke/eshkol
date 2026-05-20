@@ -62,7 +62,7 @@ Binds a value to a name in the current scope. Functions are first-class values.
 
 **Type**: Top-level or nested definition  
 **Returns**: Unspecified (implementation returns the defined value)  
-**Implementation**: [`codegenDefine()`](../lib/backend/llvm_codegen.cpp:6110)
+**Implementation**: [`codegenDefine()`](../lib/backend/llvm_codegen.cpp)
 
 ---
 
@@ -80,7 +80,7 @@ Creates an anonymous function (closure). Supports variable arity with rest param
 
 **Type**: Function expression  
 **Returns**: Closure (40-byte structure with captures and S-expression for homoiconicity)  
-**Implementation**: [`codegenLambda()`](../lib/backend/llvm_codegen.cpp:12962)  
+**Implementation**: [`codegenLambda()`](../lib/backend/llvm_codegen.cpp)
 **Closure Structure**: `{func_ptr(8), env(8), sexpr_ptr(8), return_type(1), arity(1), flags(1)}`
 
 **Advanced Features**:
@@ -113,7 +113,7 @@ Establishes local bindings. `let*` evaluates bindings sequentially (left-to-righ
 
 **Type**: Binding forms  
 **Scope**: `let` - parallel, `let*` - sequential, `letrec` - recursive  
-**Implementation**: [`codegenLet()`](../lib/backend/llvm_codegen.cpp:13923), [`BindingCodegen`](../lib/backend/binding_codegen.cpp)
+**Implementation**: [`codegenLet()`](../lib/backend/llvm_codegen.cpp), [`BindingCodegen`](../lib/backend/binding_codegen.cpp)
 
 ---
 
@@ -133,7 +133,7 @@ Mutates an existing variable. Works with parameters, let-bindings, and closure c
 
 **Type**: Mutation operator  
 **Returns**: Unspecified (implementation returns the new value)  
-**Implementation**: [`codegenSet()`](../lib/backend/llvm_codegen.cpp:7604)
+**Implementation**: [`codegenSet()`](../lib/backend/llvm_codegen.cpp)
 
 ---
 
@@ -267,7 +267,7 @@ Iteration construct with explicit state variables.
 
 **Type**: Iteration  
 **Returns**: Value of result expressions when test succeeds  
-**Implementation**: [`codegenDo()`](../lib/backend/llvm_codegen.cpp:11117)
+**Implementation**: [`codegenDo()`](../lib/backend/llvm_codegen.cpp)
 
 ---
 
@@ -285,7 +285,7 @@ Creates S-expressions as data structures. Quasiquote allows selective evaluation
 
 **Type**: Data literals  
 **Returns**: S-expression (cons-based data structure)  
-**Implementation**: [`codegenQuotedAST()`](../lib/backend/llvm_codegen.cpp:16279), [`HomoiconicCodegen`](../lib/backend/homoiconic_codegen.cpp)
+**Implementation**: [`codegenQuotedAST()`](../lib/backend/llvm_codegen.cpp), [`HomoiconicCodegen`](../lib/backend/homoiconic_codegen.cpp)
 
 ---
 
@@ -322,7 +322,7 @@ Exception handling with pattern matching on exception type.
 ```
 
 **Type**: Exception handler  
-**Implementation**: [`codegenGuard()`](../lib/backend/llvm_codegen.cpp:10201)
+**Implementation**: [`codegenGuard()`](../lib/backend/llvm_codegen.cpp)
 
 ---
 
@@ -338,7 +338,7 @@ Raises an exception. Uses longjmp-based unwinding.
 ```
 
 **Type**: Exception trigger  
-**Implementation**: [`codegenRaise()`](../lib/backend/llvm_codegen.cpp:10438)
+**Implementation**: [`codegenRaise()`](../lib/backend/llvm_codegen.cpp)
 
 ---
 
@@ -356,7 +356,7 @@ Returns multiple values from a function.
 ```
 
 **Type**: Multi-value constructor  
-**Implementation**: [`codegenValues()`](../lib/backend/llvm_codegen.cpp:10500)
+**Implementation**: [`codegenValues()`](../lib/backend/llvm_codegen.cpp)
 
 ---
 
@@ -373,7 +373,7 @@ Calls consumer with values produced by producer.
 ```
 
 **Type**: Multi-value application  
-**Implementation**: [`codegenCallWithValues()`](../lib/backend/llvm_codegen.cpp:10564)
+**Implementation**: [`codegenCallWithValues()`](../lib/backend/llvm_codegen.cpp)
 
 ---
 
@@ -396,7 +396,7 @@ Advanced pattern matching with support for literals, variables, cons patterns, l
 
 **Type**: Pattern matching  
 **Patterns**: `_` (wildcard), `var`, `literal`, `(p1 . p2)`, `(p...)`, `(? pred)`, `(or p...)`  
-**Implementation**: [`codegenMatch()`](../lib/backend/llvm_codegen.cpp:11117)
+**Implementation**: [`codegenMatch()`](../lib/backend/llvm_codegen.cpp)
 
 ---
 
@@ -415,7 +415,7 @@ Creates a lexical memory region, automatically freed after body execution.
 ```
 
 **Type**: Region-based memory management  
-**Implementation**: [`codegenWithRegion()`](../lib/backend/llvm_codegen.cpp:22635)
+**Implementation**: [`codegenWithRegion()`](../lib/backend/llvm_codegen.cpp)
 
 ---
 
@@ -425,7 +425,7 @@ Creates a lexical memory region, automatically freed after body execution.
 Ownership annotations for linear types and reference counting (compile-time tracking).
 
 **Type**: Ownership markers  
-**Implementation**: [`codegenOwned()`](../lib/backend/llvm_codegen.cpp:22705)
+**Implementation**: [`codegenOwned()`](../lib/backend/llvm_codegen.cpp)
 
 ---
 
@@ -443,7 +443,7 @@ Declares external C function for FFI.
 ```
 
 **Type**: FFI declaration  
-**Implementation**: [`codegenExtern()`](../lib/backend/llvm_codegen.cpp:12201)
+**Implementation**: [`codegenExtern()`](../lib/backend/llvm_codegen.cpp)
 
 ---
 
@@ -453,7 +453,7 @@ Declares external C function for FFI.
 Declares external C variable.
 
 **Type**: FFI variable  
-**Implementation**: [`codegenExternVar()`](../lib/backend/llvm_codegen.cpp:12157)
+**Implementation**: [`codegenExternVar()`](../lib/backend/llvm_codegen.cpp)
 
 ---
 
@@ -483,7 +483,7 @@ Symbolic differentiation at compile time. Returns S-expression of derivative for
 **Input**: Expression AST, variable symbol  
 **Output**: S-expression (simplified derivative formula)  
 **Rules**: Sum, product, quotient, chain rule for sin/cos/exp/log/pow/sqrt  
-**Implementation**: [`buildSymbolicDerivative()`](../lib/backend/llvm_codegen.cpp:16041)
+**Implementation**: [`buildSymbolicDerivative()`](../lib/backend/llvm_codegen.cpp)
 
 ---
 
@@ -509,7 +509,7 @@ Computes derivative using dual numbers (forward-mode AD).
 **Output**: Derivative value or derivative function  
 **Method**: Dual numbers `(a, a')` with automatic chain rule propagation  
 **Complexity**: O(1) overhead per operation  
-**Implementation**: [`codegenDerivative()`](../lib/backend/llvm_codegen.cpp:17451), [`AutodiffCodegen::derivative()`](../lib/backend/autodiff_codegen.cpp:902)
+**Implementation**: [`codegenDerivative()`](../lib/backend/llvm_codegen.cpp), [`AutodiffCodegen::derivative()`](../lib/backend/autodiff_codegen.cpp)
 
 **Dual Number Arithmetic**:
 - Addition: `(a, a') + (b, b') = (a+b, a'+b')`
@@ -542,7 +542,7 @@ Computes gradient vector using reverse-mode AD (backpropagation).
 **Output**: Gradient vector `∇f(x): ℝⁿ` (tensor)  
 **Method**: Computational graph with tape-based backpropagation  
 **Complexity**: O(1) backward pass (optimal for scalar outputs)  
-**Implementation**: [`codegenGradient()`](../lib/backend/llvm_codegen.cpp:18317)
+**Implementation**: [`codegenGradient()`](../lib/backend/llvm_codegen.cpp)
 
 **Graph Construction**:
 - Forward pass builds computation graph (AD nodes on tape)
@@ -569,7 +569,7 @@ Computes Jacobian matrix using reverse-mode AD.
 **Output**: Jacobian matrix `J[i,j] = ∂fᵢ/∂xⱼ` (m×n tensor)  
 **Method**: m gradient computations (one per output component)  
 **Complexity**: O(m) backward passes  
-**Implementation**: [`codegenJacobian()`](../lib/backend/llvm_codegen.cpp:20327)
+**Implementation**: [`codegenJacobian()`](../lib/backend/llvm_codegen.cpp)
 
 ---
 
@@ -590,7 +590,7 @@ Computes Hessian matrix (matrix of second derivatives).
 **Output**: Hessian matrix `H[i,j] = ∂²f/∂xᵢ∂xⱼ` (n×n tensor)  
 **Method**: Perturb each dimension, compute gradient, finite difference  
 **Complexity**: O(n²) gradient computations  
-**Implementation**: [`codegenHessian()`](../lib/backend/llvm_codegen.cpp:21175)
+**Implementation**: [`codegenHessian()`](../lib/backend/llvm_codegen.cpp)
 
 ---
 
@@ -611,7 +611,7 @@ Computes divergence of vector field: `∇·F = ∂F₁/∂x₁ + ... + ∂Fₙ/�
 **Input**: Vector field `F: ℝⁿ → ℝⁿ`, point `x: ℝⁿ`  
 **Output**: Scalar (sum of diagonal Jacobian elements)  
 **Physics**: Measures "source strength" at a point  
-**Implementation**: [`codegenDivergence()`](../lib/backend/llvm_codegen.cpp:21942)
+**Implementation**: [`codegenDivergence()`](../lib/backend/llvm_codegen.cpp)
 
 ---
 
@@ -631,7 +631,7 @@ Computes curl of 3D vector field: `∇×F`
 **Output**: Vector `(∂F₃/∂y - ∂F₂/∂z, ∂F₁/∂z - ∂F₃/∂x, ∂F₂/∂x - ∂F₁/∂y)`  
 **Physics**: Measures "rotation" of field  
 **Generalization**: Works for n≥2 (differential 2-forms)  
-**Implementation**: [`codegenCurl()`](../lib/backend/llvm_codegen.cpp:22059)
+**Implementation**: [`codegenCurl()`](../lib/backend/llvm_codegen.cpp)
 
 ---
 
@@ -651,7 +651,7 @@ Computes Laplacian: `∇²f = ∂²f/∂x₁² + ... + ∂²f/∂xₙ²`
 **Input**: Scalar field `f: ℝⁿ → ℝ`, point `x: ℝⁿ`  
 **Output**: Scalar (sum of second partial derivatives)  
 **Physics**: Fundamental in heat equation, wave equation, quantum mechanics  
-**Implementation**: [`codegenLaplacian()`](../lib/backend/llvm_codegen.cpp:22300)
+**Implementation**: [`codegenLaplacian()`](../lib/backend/llvm_codegen.cpp)
 
 ---
 
@@ -669,7 +669,7 @@ Computes directional derivative: `D_v f = ∇f · v`
 **Mode**: Gradient dot product  
 **Input**: Scalar field `f: ℝⁿ → ℝ`, point, direction vector  
 **Output**: Scalar (rate of change in specified direction)  
-**Implementation**: [`codegenDirectionalDerivative()`](../lib/backend/llvm_codegen.cpp:22422)
+**Implementation**: [`codegenDirectionalDerivative()`](../lib/backend/llvm_codegen.cpp)
 
 ---
 
@@ -704,7 +704,7 @@ Creates tensors filled with 0.0 or 1.0.
 
 **Type**: Tensor constructors  
 **Returns**: Tensor (HEAP_PTR with HEAP_SUBTYPE_TENSOR)  
-**Implementation**: [`zeros()`](../lib/backend/tensor_codegen.cpp:2311), [`ones()`](../lib/backend/tensor_codegen.cpp:2518)
+**Implementation**: [`zeros()`](../lib/backend/tensor_codegen.cpp), [`ones()`](../lib/backend/tensor_codegen.cpp)
 
 ---
 
@@ -720,7 +720,7 @@ Creates identity matrix.
 ```
 
 **Type**: Matrix constructor  
-**Implementation**: [`eye()`](../lib/backend/tensor_codegen.cpp:2718)
+**Implementation**: [`eye()`](../lib/backend/tensor_codegen.cpp)
 
 ---
 
@@ -737,7 +737,7 @@ Creates range of values (like NumPy arange).
 ```
 
 **Type**: Range constructor  
-**Implementation**: [`arange()`](../lib/backend/tensor_codegen.cpp:2788)
+**Implementation**: [`arange()`](../lib/backend/tensor_codegen.cpp)
 
 ---
 
@@ -752,7 +752,7 @@ Creates `num` evenly spaced values from `start` to `end` (inclusive).
 ```
 
 **Type**: Linear spacing constructor  
-**Implementation**: [`linspace()`](../lib/backend/tensor_codegen.cpp:2934)
+**Implementation**: [`linspace()`](../lib/backend/tensor_codegen.cpp)
 
 ---
 
@@ -774,7 +774,7 @@ N-dimensional tensor indexing with slicing support.
 **Type**: Tensor indexing  
 **Slicing**: Partial indexing returns view tensor (zero-copy)  
 **AD-Aware**: Preserves AD node pointers during gradient computation  
-**Implementation**: [`tensorGet()`](../lib/backend/tensor_codegen.cpp:130), [`codegenTensorVectorRef()`](../lib/backend/llvm_codegen.cpp:15054)
+**Implementation**: [`tensorGet()`](../lib/backend/tensor_codegen.cpp), [`codegenTensorVectorRef()`](../lib/backend/llvm_codegen.cpp)
 
 ---
 
@@ -790,7 +790,7 @@ Sets tensor element (mutable).
 ```
 
 **Type**: Tensor mutation  
-**Implementation**: [`tensorSet()`](../lib/backend/tensor_codegen.cpp:330)
+**Implementation**: [`tensorSet()`](../lib/backend/tensor_codegen.cpp)
 
 ---
 
@@ -806,7 +806,7 @@ Transposes 2D matrix (swaps rows and columns).
 
 **Type**: Matrix transformation  
 **Complexity**: O(mn) time, O(mn) space  
-**Implementation**: [`transpose()`](../lib/backend/tensor_codegen.cpp:1920)
+**Implementation**: [`transpose()`](../lib/backend/tensor_codegen.cpp)
 
 ---
 
@@ -823,7 +823,7 @@ Changes tensor shape (zero-copy view).
 
 **Type**: Shape transformation  
 **Constraint**: Total elements must match  
-**Implementation**: [`reshape()`](../lib/backend/tensor_codegen.cpp:2041)
+**Implementation**: [`reshape()`](../lib/backend/tensor_codegen.cpp)
 
 ---
 
@@ -838,7 +838,7 @@ Flattens N-dimensional tensor to 1D (zero-copy view).
 ```
 
 **Type**: Dimensionality reduction  
-**Implementation**: [`codegenFlatten()`](../lib/backend/llvm_codegen.cpp:15280)
+**Implementation**: [`codegenFlatten()`](../lib/backend/llvm_codegen.cpp)
 
 ---
 
@@ -854,7 +854,7 @@ Returns dimension sizes as Scheme list.
 
 **Type**: Metadata query  
 **Returns**: Cons-based list of int64 dimensions  
-**Implementation**: [`tensorShape()`](../lib/backend/tensor_codegen.cpp:1796)
+**Implementation**: [`tensorShape()`](../lib/backend/tensor_codegen.cpp)
 
 ---
 
@@ -933,7 +933,7 @@ Element-wise arithmetic operations. Supports both tensors and Scheme vectors.
 
 **Type**: Element-wise binary operations  
 **Constraint**: Operands must have same shape  
-**Implementation**: [`tensorArithmetic()`](../lib/backend/tensor_codegen.cpp:382)
+**Implementation**: [`tensorArithmetic()`](../lib/backend/tensor_codegen.cpp)
 
 ---
 
@@ -953,7 +953,7 @@ Matrix multiplication for 2D, dot product for 1D.
 
 **Type**: Linear algebra operation  
 **Complexity**: O(mnk) for m×k @ k×n matrices  
-**Implementation**: [`tensorDot()`](../lib/backend/tensor_codegen.cpp:662), [`codegenMatmul()`](../lib/backend/llvm_codegen.cpp:15333)
+**Implementation**: [`tensorDot()`](../lib/backend/tensor_codegen.cpp), [`codegenMatmul()`](../lib/backend/llvm_codegen.cpp)
 
 ---
 
@@ -968,7 +968,7 @@ Sum of diagonal elements.
 ```
 
 **Type**: Matrix invariant  
-**Implementation**: [`codegenTrace()`](../lib/backend/llvm_codegen.cpp:15495)
+**Implementation**: [`codegenTrace()`](../lib/backend/llvm_codegen.cpp)
 
 ---
 
@@ -983,7 +983,7 @@ Euclidean (L2) norm: `√(Σ xᵢ²)`
 ```
 
 **Type**: Vector magnitude  
-**Implementation**: [`codegenNorm()`](../lib/backend/llvm_codegen.cpp:15593)
+**Implementation**: [`codegenNorm()`](../lib/backend/llvm_codegen.cpp)
 
 ---
 
@@ -998,7 +998,7 @@ Outer product of vectors: `(u ⊗ v)[i,j] = uᵢ vⱼ`
 ```
 
 **Type**: Tensor product  
-**Implementation**: [`codegenOuterProduct()`](../lib/backend/llvm_codegen.cpp:15712)
+**Implementation**: [`codegenOuterProduct()`](../lib/backend/llvm_codegen.cpp)
 
 ---
 
@@ -1016,7 +1016,7 @@ Sum or mean of all elements.
 ```
 
 **Type**: Statistical reductions  
-**Implementation**: [`tensorSum()`](../lib/backend/tensor_codegen.cpp:1556), [`tensorMean()`](../lib/backend/tensor_codegen.cpp:1675)
+**Implementation**: [`tensorSum()`](../lib/backend/tensor_codegen.cpp), [`tensorMean()`](../lib/backend/tensor_codegen.cpp)
 
 ---
 
@@ -1032,7 +1032,7 @@ Reduces tensor with custom function.
 ```
 
 **Type**: Generalized reduction  
-**Implementation**: [`tensorReduceAll()`](../lib/backend/tensor_codegen.cpp:1152), [`tensorReduceWithDim()`](../lib/backend/tensor_codegen.cpp:1315)
+**Implementation**: [`tensorReduceAll()`](../lib/backend/tensor_codegen.cpp), [`tensorReduceWithDim()`](../lib/backend/tensor_codegen.cpp)
 
 ---
 
@@ -1047,7 +1047,7 @@ Maps function over tensor elements.
 ```
 
 **Type**: Element-wise map
-**Implementation**: [`tensorApply()`](../lib/backend/tensor_codegen.cpp:1022)
+**Implementation**: [`tensorApply()`](../lib/backend/tensor_codegen.cpp)
 
 ---
 
@@ -1319,7 +1319,7 @@ Creates cons cell. Fundamental list constructor.
 
 **Type**: Pair constructor  
 **Returns**: HEAP_PTR (consolidated pointer with HEAP_SUBTYPE_CONS)  
-**Implementation**: [`cons()`](../lib/backend/collection_codegen.cpp:94)
+**Implementation**: [`cons()`](../lib/backend/collection_codegen.cpp)
 
 ---
 
@@ -1337,7 +1337,7 @@ Extracts first element or rest of list. Also works with vectors/tensors.
 
 **Type**: Pair accessors  
 **Returns**: Tagged value (preserves type of stored element)  
-**Implementation**: [`car()`](../lib/backend/collection_codegen.cpp:121), [`cdr()`](../lib/backend/collection_codegen.cpp:550)
+**Implementation**: [`car()`](../lib/backend/collection_codegen.cpp), [`cdr()`](../lib/backend/collection_codegen.cpp)
 
 ---
 
@@ -1355,7 +1355,7 @@ Creates list from arguments.
 
 **Type**: List constructor  
 **Evaluation**: Left-to-right (preserves side-effect order)  
-**Implementation**: [`list()`](../lib/backend/collection_codegen.cpp:985)
+**Implementation**: [`list()`](../lib/backend/collection_codegen.cpp)
 
 ---
 
@@ -1371,7 +1371,7 @@ Improper list constructor (last arg becomes tail, not element).
 ```
 
 **Type**: Improper list constructor  
-**Implementation**: [`codegenListStar()`](../lib/backend/llvm_codegen.cpp:25470)
+**Implementation**: [`codegenListStar()`](../lib/backend/llvm_codegen.cpp)
 
 ---
 
@@ -1391,7 +1391,7 @@ Compound accessors (up to 4 levels deep).
 
 **Supported**: cadr, caddr, cadddr, caar, cdar, cddr, caaar, caadr, cadar, cdaar, cdadr, cddar, cdddr  
 **Optimization**: For vectors/tensors, uses direct indexing instead of traversal  
-**Implementation**: [`codegenCompoundCarCdr()`](../lib/backend/llvm_codegen.cpp:23506)
+**Implementation**: [`codegenCompoundCarCdr()`](../lib/backend/llvm_codegen.cpp)
 
 ---
 
@@ -1411,7 +1411,7 @@ Type predicates for lists.
 ```
 
 **Type**: Boolean predicates  
-**Implementation**: [`isNull()`](../lib/backend/collection_codegen.cpp:1035), [`isPair()`](../lib/backend/collection_codegen.cpp:1078)
+**Implementation**: [`isNull()`](../lib/backend/collection_codegen.cpp), [`isPair()`](../lib/backend/collection_codegen.cpp)
 
 ---
 
@@ -1430,7 +1430,7 @@ Mutates cons cell fields (destructive update).
 
 **Type**: Destructive update  
 **Returns**: Unspecified  
-**Implementation**: [`codegenSetCar()`](../lib/backend/llvm_codegen.cpp:24865)
+**Implementation**: [`codegenSetCar()`](../lib/backend/llvm_codegen.cpp)
 
 ---
 
@@ -1562,7 +1562,7 @@ Eshkol's standard library provides 25 modules with 180+ functions. Access via:
 
 **Type**: Numeric operations  
 **abs**: Preserves type (int→int, double→double)  
-**Implementation**: [`codegenAbs()`](../lib/backend/llvm_codegen.cpp:9698)
+**Implementation**: [`codegenAbs()`](../lib/backend/llvm_codegen.cpp)
 
 ---
 
@@ -1578,7 +1578,7 @@ Greatest common divisor and least common multiple.
 ```
 
 **Algorithm**: Euclidean algorithm  
-**Implementation**: [`codegenGCD()`](../lib/backend/llvm_codegen.cpp:9920)
+**Implementation**: [`codegenGCD()`](../lib/backend/llvm_codegen.cpp)
 
 ---
 
@@ -1618,7 +1618,7 @@ Equality predicates with different semantics.
 (eq? '(1 2) '(1 2))    ; => #f (different pointers)
 ```
 
-**Implementation**: [`codegenEq()`](../lib/backend/llvm_codegen.cpp:11893), [`codegenEqual()`](../lib/backend/llvm_codegen.cpp:12036)
+**Implementation**: [`codegenEq()`](../lib/backend/llvm_codegen.cpp), [`codegenEqual()`](../lib/backend/llvm_codegen.cpp)
 
 ---
 
@@ -1638,7 +1638,7 @@ All math functions support dual numbers (forward-mode AD) and AD nodes (reverse-
 ```
 
 **AD Support**: Chain rule automatically applied with dual numbers  
-**Implementation**: [`codegenMathFunction()`](../lib/backend/llvm_codegen.cpp:9569)
+**Implementation**: [`codegenMathFunction()`](../lib/backend/llvm_codegen.cpp)
 
 ---
 
@@ -1669,7 +1669,7 @@ All math functions support dual numbers (forward-mode AD) and AD nodes (reverse-
 ```
 
 **AD Support**: All functions differentiable  
-**Implementation**: [`dualExp()`](../lib/backend/autodiff_codegen.cpp:287), etc.
+**Implementation**: [`dualExp()`](../lib/backend/autodiff_codegen.cpp), etc.
 
 ---
 
@@ -1698,7 +1698,7 @@ All math functions support dual numbers (forward-mode AD) and AD nodes (reverse-
 (finite? 1e100) ; => #t
 ```
 
-**Implementation**: [`codegenNumericPredicate()`](../lib/backend/llvm_codegen.cpp:11836)
+**Implementation**: [`codegenNumericPredicate()`](../lib/backend/llvm_codegen.cpp)
 
 ---
 

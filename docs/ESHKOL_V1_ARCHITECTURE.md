@@ -49,8 +49,8 @@ Eshkol is a production-grade compiler implementing a Scheme-like language with:
 | LLVM backend | ~30 codegen modules, ~85,500 lines |
 | Bytecode VM | 64 core opcodes, 550+ native calls, ~41,000 lines |
 | Main codegen | 33,962 lines ([`lib/backend/llvm_codegen.cpp`](../lib/backend/llvm_codegen.cpp)) |
-| Parser | 7,551 lines ([`lib/frontend/parser.cpp`](../lib/frontend/parser.cpp:1)) |
-| Memory manager | 4,972 lines ([`lib/core/arena_memory.cpp`](../lib/core/arena_memory.cpp:1)) |
+| Parser | 7,551 lines ([`lib/frontend/parser.cpp`](../lib/frontend/parser.cpp)) |
+| Memory manager | 4,972 lines ([`lib/core/arena_memory.cpp`](../lib/core/arena_memory.cpp)) |
 | Weight matrix transformer | ~6,800 lines, 126/126 inline + 123/123 traced, 3-way verified |
 | Test suite | 528 self-reported tests across 37 suites (0 failures) |
 
@@ -107,7 +107,7 @@ Eshkol is a production-grade compiler implementing a Scheme-like language with:
 
 ## Memory Architecture (OALR)
 
-**Implementation**: [`lib/core/arena_memory.cpp`](../lib/core/arena_memory.cpp:1) (3,210 lines)
+**Implementation**: [`lib/core/arena_memory.cpp`](../lib/core/arena_memory.cpp) (3,210 lines)
 
 ### Core Principles
 
@@ -226,7 +226,7 @@ Eshkol uses **three layers** of type information for different purposes:
 
 ### Layer 1: Runtime Types (Tagged Values)
 
-**Implementation**: [`inc/eshkol/eshkol.h`](../inc/eshkol/eshkol.h:1) (1,497 lines)
+**Implementation**: [`inc/eshkol/eshkol.h`](../inc/eshkol/eshkol.h) (1,497 lines)
 
 ```c
 typedef struct eshkol_tagged_value {
@@ -281,7 +281,7 @@ ESHKOL_VALUE_CLOSURE_PTR (38)
 
 ### Layer 2: Compile-Time Types (HoTT)
 
-**Implementation**: [`lib/types/hott_types.cpp`](../lib/types/hott_types.cpp:1) (682 lines), [`lib/types/type_checker.cpp`](../lib/types/type_checker.cpp:1) (1,561 lines)
+**Implementation**: [`lib/types/hott_types.cpp`](../lib/types/hott_types.cpp) (682 lines), [`lib/types/type_checker.cpp`](../lib/types/type_checker.cpp) (1,561 lines)
 
 **Universe Hierarchy**:
 ```scheme
@@ -325,7 +325,7 @@ typedef struct {
 
 ### Layer 3: Dependent Types
 
-**Implementation**: [`lib/types/dependent.cpp`](../lib/types/dependent.cpp:1) (440 lines)
+**Implementation**: [`lib/types/dependent.cpp`](../lib/types/dependent.cpp) (440 lines)
 
 **Compile-Time Value Tracking**:
 ```c
@@ -354,7 +354,7 @@ DimensionChecker::Result checkMatMulDimensions(
 
 ## Automatic Differentiation
 
-**Implementation**: [`lib/backend/autodiff_codegen.cpp`](../lib/backend/autodiff_codegen.cpp:1) (1,766 lines), [`lib/backend/llvm_codegen.cpp`](../lib/backend/llvm_codegen.cpp:1) (lines 17750-23200)
+**Implementation**: [`lib/backend/autodiff_codegen.cpp`](../lib/backend/autodiff_codegen.cpp) (1,766 lines), [`lib/backend/llvm_codegen.cpp`](../lib/backend/llvm_codegen.cpp) (lines 17750-23200)
 
 Eshkol provides **three modes** of automatic differentiation, each optimized for different use cases:
 
@@ -367,7 +367,7 @@ Eshkol provides **three modes** of automatic differentiation, each optimized for
 (diff (+ (* a x) b) x)  ; Compiles to: a
 ```
 
-**Implementation**: [`buildSymbolicDerivative()`](../lib/backend/llvm_codegen.cpp:17750) in llvm_codegen.cpp
+**Implementation**: [`buildSymbolicDerivative()`](../lib/backend/llvm_codegen.cpp) in llvm_codegen.cpp
 
 **12 Differentiation Rules**:
 - Constants → 0
@@ -480,7 +480,7 @@ ad_node_t* __outer_ad_node_stack[16];  // Outer AD nodes for double backward
 
 ### Vector Calculus Operations
 
-**7 Vector Calculus Operators** (implemented in [`llvm_codegen.cpp`](../lib/backend/llvm_codegen.cpp:21000)):
+**7 Vector Calculus Operators** (implemented in [`llvm_codegen.cpp`](../lib/backend/llvm_codegen.cpp)):
 
 ```scheme
 ;; Gradient: ∇f: ℝⁿ → ℝⁿ (vector of partial derivatives)
@@ -505,13 +505,13 @@ ad_node_t* __outer_ad_node_stack[16];  // Outer AD nodes for double backward
 (directional-deriv f (vector x y) (vector dx dy))
 ```
 
-All implemented and tested in [`tests/autodiff/phase4_vector_calculus_test.esk`](../tests/autodiff/phase4_vector_calculus_test.esk:1).
+All implemented and tested in [`tests/autodiff/phase4_vector_calculus_test.esk`](../tests/autodiff/phase4_vector_calculus_test.esk).
 
 ---
 
 ## Closure System
 
-**Implementation**: [`lib/backend/llvm_codegen.cpp`](../lib/backend/llvm_codegen.cpp:15000), [`inc/eshkol/eshkol.h`](../inc/eshkol/eshkol.h:1)
+**Implementation**: [`lib/backend/llvm_codegen.cpp`](../lib/backend/llvm_codegen.cpp), [`inc/eshkol/eshkol.h`](../inc/eshkol/eshkol.h)
 
 ### Closure Structure (40 bytes)
 
@@ -579,7 +579,7 @@ Closures store **pointers** to captured variables, not values:
 (variadic-fn 1 2 3 4 5)  ; → (1 2 (3 4 5))
 ```
 
-**Closure call dispatch** ([`llvm_codegen.cpp:12000`](../lib/backend/llvm_codegen.cpp:12000)):
+**Closure call dispatch** ([`llvm_codegen.cpp:12000`](../lib/backend/llvm_codegen.cpp)):
 - Extracts variadic flag from packed `num_captures`
 - Builds rest list from extra arguments
 - Switches on capture count (0-32) for efficient dispatch
@@ -604,7 +604,7 @@ Enables type-directed optimizations in higher-order functions.
 
 ## N-Dimensional Tensors
 
-**Implementation**: [`lib/backend/tensor_codegen.cpp`](../lib/backend/tensor_codegen.cpp:1) (3,041 lines)
+**Implementation**: [`lib/backend/tensor_codegen.cpp`](../lib/backend/tensor_codegen.cpp) (3,041 lines)
 
 ### Tensor Structure
 
@@ -688,7 +688,7 @@ int64_t wrong = static_cast<int64_t>(value);  // → 3 (loses precision!)
 
 ## Compilation Pipeline
 
-**Implementation**: [`lib/backend/llvm_codegen.cpp`](../lib/backend/llvm_codegen.cpp:1) (main engine)
+**Implementation**: [`lib/backend/llvm_codegen.cpp`](../lib/backend/llvm_codegen.cpp) (main engine)
 
 ### 5-Phase Process
 
@@ -754,7 +754,7 @@ int64_t wrong = static_cast<int64_t>(value);  // → 3 (loses precision!)
 
 ## Module System
 
-**Implementation**: [`exe/eshkol-run.cpp`](../exe/eshkol-run.cpp:1) (2,260 lines)
+**Implementation**: [`exe/eshkol-run.cpp`](../exe/eshkol-run.cpp) (2,260 lines)
 
 ### Architecture
 
@@ -824,7 +824,7 @@ __test_modules_mod_a__helper
 
 ## REPL/JIT System
 
-**Implementation**: [`lib/repl/repl_jit.cpp`](../lib/repl/repl_jit.cpp:1) (1,108 lines), [`exe/eshkol-repl.cpp`](../exe/eshkol-repl.cpp:1) (1,051 lines)
+**Implementation**: [`lib/repl/repl_jit.cpp`](../lib/repl/repl_jit.cpp) (1,108 lines), [`exe/eshkol-repl.cpp`](../exe/eshkol-repl.cpp) (1,051 lines)
 
 ### Architecture
 
@@ -961,7 +961,7 @@ lib/
 
 ### Math Library Highlights
 
-**[`lib/math.esk`](../lib/math.esk:1)** (441 lines):
+**[`lib/math.esk`](../lib/math.esk)** (441 lines):
 
 ```scheme
 ;; Linear algebra
@@ -1280,13 +1280,13 @@ These features are **designed but not implemented**. See roadmap documents for d
 
 ### Primary Source Files (analyzed in detail)
 
-- [`inc/eshkol/eshkol.h`](../inc/eshkol/eshkol.h:1) - Main system header (1,497 lines)
-- [`lib/backend/llvm_codegen.cpp`](../lib/backend/llvm_codegen.cpp:1) - Core codegen (27,079 lines)
-- [`lib/core/arena_memory.cpp`](../lib/core/arena_memory.cpp:1) - Memory manager (3,210 lines)
-- [`lib/frontend/parser.cpp`](../lib/frontend/parser.cpp:1) - S-expr parser (5,487 lines)
-- [`lib/types/type_checker.cpp`](../lib/types/type_checker.cpp:1) - Type inference (1,561 lines)
-- [`lib/repl/repl_jit.cpp`](../lib/repl/repl_jit.cpp:1) - JIT compiler (1,108 lines)
-- [`exe/eshkol-run.cpp`](../exe/eshkol-run.cpp:1) - Compiler executable (2,260 lines)
+- [`inc/eshkol/eshkol.h`](../inc/eshkol/eshkol.h) - Main system header (1,497 lines)
+- [`lib/backend/llvm_codegen.cpp`](../lib/backend/llvm_codegen.cpp) - Core codegen (27,079 lines)
+- [`lib/core/arena_memory.cpp`](../lib/core/arena_memory.cpp) - Memory manager (3,210 lines)
+- [`lib/frontend/parser.cpp`](../lib/frontend/parser.cpp) - S-expr parser (5,487 lines)
+- [`lib/types/type_checker.cpp`](../lib/types/type_checker.cpp) - Type inference (1,561 lines)
+- [`lib/repl/repl_jit.cpp`](../lib/repl/repl_jit.cpp) - JIT compiler (1,108 lines)
+- [`exe/eshkol-run.cpp`](../exe/eshkol-run.cpp) - Compiler executable (2,260 lines)
 
 ### Design Documents (future features)
 
@@ -1317,20 +1317,20 @@ The v1.1-accelerate release adds six major subsystems to the compiler and runtim
 
 Eshkol v1.1 provides an optional XLA compilation path for tensor-heavy workloads. The backend operates in dual mode:
 
-1. **StableHLO/MLIR path**: Emits StableHLO dialect operations for dynamic shapes, broadcasting, and large tensor programs. The [`stablehlo_emitter.cpp`](../lib/backend/xla/stablehlo_emitter.cpp:1) translates Eshkol tensor AST nodes into StableHLO IR. [`xla_compiler.cpp`](../lib/backend/xla/xla_compiler.cpp:1) lowers StableHLO through the MLIR pipeline to executable code.
+1. **StableHLO/MLIR path**: Emits StableHLO dialect operations for dynamic shapes, broadcasting, and large tensor programs. The [`stablehlo_emitter.cpp`](../lib/backend/xla/stablehlo_emitter.cpp) translates Eshkol tensor AST nodes into StableHLO IR. [`xla_compiler.cpp`](../lib/backend/xla/xla_compiler.cpp) lowers StableHLO through the MLIR pipeline to executable code.
 
-2. **LLVM-direct fallback**: Operations that do not benefit from XLA overhead (small tensors, scalar-heavy code) remain on the standard LLVM codegen path. The cost model in [`xla_codegen.cpp`](../lib/backend/xla/xla_codegen.cpp:1) selects the appropriate backend per operation.
+2. **LLVM-direct fallback**: Operations that do not benefit from XLA overhead (small tensors, scalar-heavy code) remain on the standard LLVM codegen path. The cost model in [`xla_codegen.cpp`](../lib/backend/xla/xla_codegen.cpp) selects the appropriate backend per operation.
 
 **Key files**:
 
 | File | Role |
 |------|------|
-| [`xla_codegen.cpp`](../lib/backend/xla/xla_codegen.cpp:1) | Top-level dispatch, cost model, LLVM integration |
-| [`stablehlo_emitter.cpp`](../lib/backend/xla/stablehlo_emitter.cpp:1) | AST → StableHLO dialect translation |
-| [`xla_compiler.cpp`](../lib/backend/xla/xla_compiler.cpp:1) | StableHLO → executable lowering pipeline |
-| [`xla_runtime.cpp`](../lib/backend/xla/xla_runtime.cpp:1) | Runtime buffer management, execution |
-| [`xla_memory.cpp`](../lib/backend/xla/xla_memory.cpp:1) | XLA-specific memory allocation and lifetime |
-| [`xla_types.cpp`](../lib/backend/xla/xla_types.cpp:1) | Eshkol type ↔ XLA element type mapping |
+| [`xla_codegen.cpp`](../lib/backend/xla/xla_codegen.cpp) | Top-level dispatch, cost model, LLVM integration |
+| [`stablehlo_emitter.cpp`](../lib/backend/xla/stablehlo_emitter.cpp) | AST → StableHLO dialect translation |
+| [`xla_compiler.cpp`](../lib/backend/xla/xla_compiler.cpp) | StableHLO → executable lowering pipeline |
+| [`xla_runtime.cpp`](../lib/backend/xla/xla_runtime.cpp) | Runtime buffer management, execution |
+| [`xla_memory.cpp`](../lib/backend/xla/xla_memory.cpp) | XLA-specific memory allocation and lifetime |
+| [`xla_types.cpp`](../lib/backend/xla/xla_types.cpp) | Eshkol type ↔ XLA element type mapping |
 
 **ORC JIT integration**: StableHLO programs are compiled at runtime via LLVM ORC, enabling the REPL to execute XLA-accelerated tensor code without ahead-of-time compilation.
 
@@ -1345,13 +1345,13 @@ Two GPU backends provide hardware-accelerated tensor operations:
 **Metal (Apple Silicon)**:
 - [`gpu_memory.mm`](../lib/backend/gpu/gpu_memory.mm:1): Objective-C++ Metal API integration
 - Software float64 (SF64) emulation — Metal lacks native float64 support
-- [`metal_softfloat.h`](../lib/backend/gpu/metal_softfloat.h:1): IEEE 754 double-precision arithmetic in Metal shading language
+- [`metal_softfloat.h`](../lib/backend/gpu/metal_softfloat.h): IEEE 754 double-precision arithmetic in Metal shading language
 - Shader source embedded at build time; no runtime file I/O
 
 **CUDA**:
-- [`gpu_memory_cuda.cpp`](../lib/backend/gpu/gpu_memory_cuda.cpp:1): CUDA API integration
+- [`gpu_memory_cuda.cpp`](../lib/backend/gpu/gpu_memory_cuda.cpp): CUDA API integration
 - [`gpu_cuda_kernels.cu`](../lib/backend/gpu/gpu_cuda_kernels.cu:1): Native float64 kernels, cuBLAS for matrix operations
-- [`gpu_memory_stub.cpp`](../lib/backend/gpu/gpu_memory_stub.cpp:1): No-op stub for builds without GPU support
+- [`gpu_memory_stub.cpp`](../lib/backend/gpu/gpu_memory_stub.cpp): No-op stub for builds without GPU support
 
 **Cost-Model Dispatch**:
 
@@ -1373,13 +1373,13 @@ Dispatch proceeds SIMD → cBLAS → GPU; the GPU path is selected only when the
 
 ### Consciousness Engine
 
-**Implementation**: [`lib/core/logic.cpp`](../lib/core/logic.cpp:1), [`lib/core/inference.cpp`](../lib/core/inference.cpp:1), [`lib/core/workspace.cpp`](../lib/core/workspace.cpp:1)
+**Implementation**: [`lib/core/logic.cpp`](../lib/core/logic.cpp), [`lib/core/inference.cpp`](../lib/core/inference.cpp), [`lib/core/workspace.cpp`](../lib/core/workspace.cpp)
 
 Three interconnected subsystems implement a compiled consciousness architecture:
 
 #### Logic Programming
 
-**Files**: [`inc/eshkol/core/logic.h`](../inc/eshkol/core/logic.h:1), [`lib/core/logic.cpp`](../lib/core/logic.cpp:1)
+**Files**: [`inc/eshkol/core/logic.h`](../inc/eshkol/core/logic.h), [`lib/core/logic.cpp`](../lib/core/logic.cpp)
 
 - First-order unification (Martelli-Montanari algorithm) with occurs check and triangular substitution chains
 - Knowledge base with fact assertion and pattern-matching conjunctive query
@@ -1388,7 +1388,7 @@ Three interconnected subsystems implement a compiled consciousness architecture:
 
 #### Active Inference
 
-**Files**: [`inc/eshkol/core/inference.h`](../inc/eshkol/core/inference.h:1), [`lib/core/inference.cpp`](../lib/core/inference.cpp:1)
+**Files**: [`inc/eshkol/core/inference.h`](../inc/eshkol/core/inference.h), [`lib/core/inference.cpp`](../lib/core/inference.cpp)
 
 - Factor graphs: bipartite graph G = (V, F, E) with discrete variable nodes and factor nodes
 - Conditional probability tables (CPTs) as flat log-probability tensors indexed by joint state assignment
@@ -1400,7 +1400,7 @@ Three interconnected subsystems implement a compiled consciousness architecture:
 
 #### Global Workspace
 
-**Files**: [`inc/eshkol/core/workspace.h`](../inc/eshkol/core/workspace.h:1), [`lib/core/workspace.cpp`](../lib/core/workspace.cpp:1)
+**Files**: [`inc/eshkol/core/workspace.h`](../inc/eshkol/core/workspace.h), [`lib/core/workspace.cpp`](../lib/core/workspace.cpp)
 
 - Module registration with closure-based content generators
 - Softmax competition across modules (temperature-controlled)
@@ -1421,7 +1421,7 @@ Three interconnected subsystems implement a compiled consciousness architecture:
 
 ### Parallel Worker Thread Pool
 
-**Implementation**: [`lib/backend/parallel_llvm_codegen.cpp`](../lib/backend/parallel_llvm_codegen.cpp:1)
+**Implementation**: [`lib/backend/parallel_llvm_codegen.cpp`](../lib/backend/parallel_llvm_codegen.cpp)
 
 Work-stealing deque architecture for data-parallel operations:
 
@@ -1451,7 +1451,7 @@ Two exact numeric types extend the R7RS numeric tower beyond machine integers an
 
 #### Bignum (Arbitrary-Precision Integers)
 
-**Implementation**: [`inc/eshkol/core/bignum.h`](../inc/eshkol/core/bignum.h:1), [`lib/core/bignum.cpp`](../lib/core/bignum.cpp:1)
+**Implementation**: [`inc/eshkol/core/bignum.h`](../inc/eshkol/core/bignum.h), [`lib/core/bignum.cpp`](../lib/core/bignum.cpp)
 
 - Sign-magnitude representation with dynamic limb array
 - Automatic int64 → bignum promotion on overflow; demotion back to int64 when result fits
@@ -1468,15 +1468,15 @@ Two exact numeric types extend the R7RS numeric tower beyond machine integers an
 | `eshkol_bignum_from_string` | Parse arbitrarily long integer literals |
 | `eshkol_is_bignum_tagged` | Type predicate for dispatch |
 
-**Codegen helpers**: `emitBignumBinaryCall`, `emitBignumCompareCall`, `emitIsBignumCheck` in [`arithmetic_codegen.cpp`](../lib/backend/arithmetic_codegen.cpp:1).
+**Codegen helpers**: `emitBignumBinaryCall`, `emitBignumCompareCall`, `emitIsBignumCheck` in [`arithmetic_codegen.cpp`](../lib/backend/arithmetic_codegen.cpp).
 
 #### Rational (Exact Fractions)
 
-**Implementation**: [`inc/eshkol/core/rational.h`](../inc/eshkol/core/rational.h:1), [`lib/core/rational.cpp`](../lib/core/rational.cpp:1)
+**Implementation**: [`inc/eshkol/core/rational.h`](../inc/eshkol/core/rational.h), [`lib/core/rational.cpp`](../lib/core/rational.cpp)
 
 - GCD-reduced canonical form with positive denominator invariant
 - Heap-allocated as `HEAP_PTR` with subtype discrimination
-- `eshkol_rational_compare_tagged_ptr` for comparison dispatch in [`arithmetic_codegen.cpp`](../lib/backend/arithmetic_codegen.cpp:1)
+- `eshkol_rational_compare_tagged_ptr` for comparison dispatch in [`arithmetic_codegen.cpp`](../lib/backend/arithmetic_codegen.cpp)
 
 #### Numeric Tower
 
@@ -1525,7 +1525,7 @@ All functions operate on Eshkol tensors. The module compiles to `stdlib.o` and i
 
 ### REPL JIT Enhancements
 
-**Implementation**: [`lib/repl/repl_jit.cpp`](../lib/repl/repl_jit.cpp:1), [`exe/eshkol-repl.cpp`](../exe/eshkol-repl.cpp:1)
+**Implementation**: [`lib/repl/repl_jit.cpp`](../lib/repl/repl_jit.cpp), [`exe/eshkol-repl.cpp`](../exe/eshkol-repl.cpp)
 
 v1.1 resolves several production issues in the interactive JIT:
 

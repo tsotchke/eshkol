@@ -145,7 +145,7 @@ The completion handler extracts the word being typed at the cursor using `get_wo
 
 Three completion item sources are merged:
 
-**Keywords (LSP kind 14 = Keyword)** — 33 special forms and syntax keywords:
+**Keywords (LSP kind 14 = Keyword)** — 47 special forms and syntax keywords:
 
 ```
 define   lambda    if       cond       else      case

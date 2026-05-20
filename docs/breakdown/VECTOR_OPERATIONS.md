@@ -53,7 +53,7 @@ Eshkol supports **two distinct array types**, each optimized for different use c
 
 ## Scheme Vectors (Heterogeneous)
 
-**Implementation**: [`lib/backend/collection_codegen.cpp`](../../lib/backend/collection_codegen.cpp:1195)
+**Implementation**: [`lib/backend/collection_codegen.cpp`](../../lib/backend/collection_codegen.cpp)
 
 Scheme vectors can hold **any type** of element:
 
@@ -127,7 +127,7 @@ For numeric computation, use **tensors** instead.
 
 ## Tensors (Homogeneous Numeric)
 
-**Implementation**: [`lib/backend/tensor_codegen.cpp`](../../lib/backend/tensor_codegen.cpp:1) (3,041 lines)
+**Implementation**: [`lib/backend/tensor_codegen.cpp`](../../lib/backend/tensor_codegen.cpp) (3,041 lines)
 
 Tensors are **N-dimensional numeric arrays** optimized for scientific computing:
 
