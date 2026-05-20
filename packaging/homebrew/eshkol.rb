@@ -11,10 +11,11 @@
 class Eshkol < Formula
   desc "Functional programming language with HoTT types and autodiff"
   homepage "https://eshkol.ai"
-  url "https://github.com/Tsotchke-Corporation/eshkol/archive/refs/tags/v1.2.1-scale.tar.gz"
-  sha256 "d9b1207508ddf50d96f0af70a6685182f351064d0543e7f482b96a6a9209a40c"
+  url "https://github.com/tsotchke/eshkol/archive/refs/tags/v1.2.1-scale.tar.gz"
+  # sha256 is filled in by scripts/update-homebrew-formula.sh after the release tarball is published
+  sha256 "0000000000000000000000000000000000000000000000000000000000000000"
   license "MIT"
-  head "https://github.com/Tsotchke-Corporation/eshkol.git", branch: "master"
+  head "https://github.com/tsotchke/eshkol.git", branch: "master"
 
   depends_on "cmake" => :build
   depends_on "ninja" => :build
