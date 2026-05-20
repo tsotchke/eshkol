@@ -632,7 +632,13 @@ static void source_test(const char* name, const char* source) {
     source_test_count++;
     printf("  %s: ", name);
     fflush(stdout);
+#if defined(_POSIX_VERSION) || defined(__APPLE__)
+    setenv("ESHKOL_VM_NO_DISASM", "1", 1);
     compile_and_run(source);
+    unsetenv("ESHKOL_VM_NO_DISASM");
+#else
+    compile_and_run(source);
+#endif
     source_test_pass++;
     printf("PASS\n");
 }
