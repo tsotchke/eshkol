@@ -134,10 +134,10 @@ else
     run_remote "cd $repo_q && ${user_env}ctest --test-dir $build_q --output-on-failure"
 fi
 
-run_remote "cd $repo_q/$build_q && ${user_env}./eshkol-run -r ../tests/v1_2_edge_cases/parallel_hash_table_mutation_test.esk"
+run_remote "cd $repo_q/$build_q && ${user_env}ESHKOL_PATH=$repo_q ./eshkol-run -r ../tests/v1_2_edge_cases/parallel_hash_table_mutation_test.esk"
 
 if [ "$RUN_STRESS" -eq 1 ]; then
-    run_remote "cd $repo_q/$build_q && ${user_env}{ failed=0; for lap in \$(seq 1 $STRESS_REPEAT); do echo \"=== Stress lap \$lap ===\"; for h in ../tests/stress/stress_fd_exhaustion.esk ../tests/stress/stress_alloc_loop.esk ../tests/stress/stress_parallel_at_scale.esk; do printf '  %-50s ' \"\$(basename \"\$h\")\"; if ./eshkol-run -r \"\$h\" 2>/dev/null | tail -1 | grep -q 'RESULT: OK'; then echo PASS; else echo FAIL; failed=1; fi; done; done; exit \$failed; }"
+    run_remote "cd $repo_q/$build_q && ${user_env}{ failed=0; for lap in \$(seq 1 $STRESS_REPEAT); do echo \"=== Stress lap \$lap ===\"; for h in ../tests/stress/stress_fd_exhaustion.esk ../tests/stress/stress_alloc_loop.esk ../tests/stress/stress_parallel_at_scale.esk; do printf '  %-50s ' \"\$(basename \"\$h\")\"; if ESHKOL_PATH=$repo_q ./eshkol-run -r \"\$h\" 2>/dev/null | tail -1 | grep -q 'RESULT: OK'; then echo PASS; else echo FAIL; failed=1; fi; done; done; exit \$failed; }"
 fi
 
 run_remote "cd $repo_q && git diff --check && git status --short --branch"
