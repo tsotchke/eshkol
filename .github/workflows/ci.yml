@@ -120,7 +120,7 @@ jobs:
             artifact_name: ''
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Add LLVM Repository (Linux)
         if: runner.os == 'Linux'
@@ -214,7 +214,7 @@ jobs:
 
       - name: Upload Artifacts
         if: matrix.upload_artifact == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact_name }}
           path: |
@@ -292,11 +292,11 @@ jobs:
             upload_artifact: 'false'
             artifact_name: ''
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Restore LLVM SDK Cache
         id: llvm-cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: C:\src\clang+llvm-${{ env.WINDOWS_LLVM_SDK_VERSION }}-${{ matrix.llvm_suffix }}-pc-windows-msvc
           key: windows-llvm-sdk-${{ matrix.arch }}-${{ env.WINDOWS_LLVM_SDK_VERSION }}
@@ -350,7 +350,7 @@ jobs:
 
       - name: Save LLVM SDK Cache
         if: steps.llvm-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         with:
           path: C:\src\clang+llvm-${{ env.WINDOWS_LLVM_SDK_VERSION }}-${{ matrix.llvm_suffix }}-pc-windows-msvc
           key: windows-llvm-sdk-${{ matrix.arch }}-${{ env.WINDOWS_LLVM_SDK_VERSION }}
@@ -397,7 +397,7 @@ jobs:
 
       - name: Upload Artifacts
         if: matrix.upload_artifact == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact_name }}
           path: |
