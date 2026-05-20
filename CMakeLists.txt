@@ -456,9 +456,29 @@ if(ESHKOL_USING_MSVC)
     list(FILTER LLVM_CXXFLAGS_LIST EXCLUDE REGEX "^/EH")
     list(FILTER LLVM_CXXFLAGS_LIST EXCLUDE REGEX "^-fno-exceptions$")
 else()
+    list(FILTER LLVM_CXXFLAGS_LIST EXCLUDE REGEX "^-I")
     list(FILTER LLVM_CXXFLAGS_LIST EXCLUDE REGEX "^-std=")
     list(FILTER LLVM_CXXFLAGS_LIST EXCLUDE REGEX "^-fno-exceptions$")
 endif()
+
+set(ESHKOL_LLVM_INCLUDE_OPTIONS "")
+if(LLVM_INCLUDE_DIRS AND NOT ESHKOL_USING_MSVC)
+    foreach(llvm_include_dir IN LISTS LLVM_INCLUDE_DIRS)
+        list(APPEND ESHKOL_LLVM_INCLUDE_OPTIONS "-idirafter" "${llvm_include_dir}")
+    endforeach()
+endif()
+
+function(eshkol_target_llvm_includes target_name)
+    if(NOT LLVM_INCLUDE_DIRS)
+        return()
+    endif()
+
+    if(ESHKOL_USING_MSVC)
+        target_include_directories(${target_name} PRIVATE ${LLVM_INCLUDE_DIRS})
+    else()
+        target_compile_options(${target_name} PRIVATE ${ESHKOL_LLVM_INCLUDE_OPTIONS})
+    endif()
+endfunction()
 
 # Debug output for troubleshooting
 if(ESHKOL_LLVM_USE_CMAKE_PACKAGE)
@@ -1038,9 +1058,7 @@ target_compile_definitions(eshkol-static PRIVATE ESHKOL_LLVM_BACKEND_ENABLED)
 target_compile_definitions(eshkol-static PRIVATE ESHKOL_VM_LIBRARY_MODE)
 
 # Add LLVM include directories for enhanced cross-platform support
-if(LLVM_INCLUDE_DIRS)
-    target_include_directories(eshkol-static PRIVATE ${LLVM_INCLUDE_DIRS})
-endif()
+eshkol_target_llvm_includes(eshkol-static)
 
 # Extract library directories from LDFLAGS for proper linking
 if(NOT LLVM_LIBRARY_DIRS)
@@ -1113,9 +1131,7 @@ foreach (exe ${EXE_SRC})
   target_include_directories(${exename} PRIVATE inc/)
   
   # Add LLVM include directories for enhanced cross-platform support
-  if(LLVM_INCLUDE_DIRS)
-      target_include_directories(${exename} PRIVATE ${LLVM_INCLUDE_DIRS})
-  endif()
+  eshkol_target_llvm_includes(${exename})
   
   # Add library directories for executables
   if(LLVM_LIBRARY_DIRS)
@@ -1191,9 +1207,7 @@ if(REPL_SRC)
   target_compile_options(eshkol-repl-lib PRIVATE ${LLVM_CXXFLAGS_LIST})
   target_compile_definitions(eshkol-repl-lib PRIVATE ESHKOL_LLVM_BACKEND_ENABLED)
 
-  if(LLVM_INCLUDE_DIRS)
-    target_include_directories(eshkol-repl-lib PRIVATE ${LLVM_INCLUDE_DIRS})
-  endif()
+  eshkol_target_llvm_includes(eshkol-repl-lib)
 
   if(LLVM_LIBRARY_DIRS)
     target_link_directories(eshkol-repl-lib PRIVATE ${LLVM_LIBRARY_DIRS})
@@ -1210,9 +1224,7 @@ if(REPL_SRC)
     target_compile_definitions(eshkol-repl PRIVATE ESHKOL_LLVM_BACKEND_ENABLED)
     target_include_directories(eshkol-repl PRIVATE inc/)
 
-    if(LLVM_INCLUDE_DIRS)
-      target_include_directories(eshkol-repl PRIVATE ${LLVM_INCLUDE_DIRS})
-    endif()
+    eshkol_target_llvm_includes(eshkol-repl)
 
     if(LLVM_LIBRARY_DIRS)
       target_link_directories(eshkol-repl PRIVATE ${LLVM_LIBRARY_DIRS})
@@ -1402,9 +1414,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/lsp/eshkol_lsp.cpp")
     target_compile_definitions(eshkol-lsp PRIVATE ESHKOL_LLVM_BACKEND_ENABLED)
     target_include_directories(eshkol-lsp PRIVATE inc/)
 
-    if(LLVM_INCLUDE_DIRS)
-        target_include_directories(eshkol-lsp PRIVATE ${LLVM_INCLUDE_DIRS})
-    endif()
+    eshkol_target_llvm_includes(eshkol-lsp)
 
     if(LLVM_LIBRARY_DIRS)
         target_link_directories(eshkol-lsp PRIVATE ${LLVM_LIBRARY_DIRS})
@@ -1427,9 +1437,7 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/model_i
     add_executable(model_io_test tests/core/model_io_test.cpp)
     target_compile_features(model_io_test PRIVATE cxx_std_20)
     target_include_directories(model_io_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
-    if(LLVM_INCLUDE_DIRS)
-        target_include_directories(model_io_test PRIVATE ${LLVM_INCLUDE_DIRS})
-    endif()
+    eshkol_target_llvm_includes(model_io_test)
     if(LLVM_LIBRARY_DIRS)
         target_link_directories(model_io_test PRIVATE ${LLVM_LIBRARY_DIRS})
     endif()
@@ -1441,9 +1449,7 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/ex
     add_executable(execution_profile_test tests/toolchain/execution_profile_test.cpp)
     target_compile_features(execution_profile_test PRIVATE cxx_std_17)
     target_include_directories(execution_profile_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/inc")
-    if(LLVM_INCLUDE_DIRS)
-        target_include_directories(execution_profile_test PRIVATE ${LLVM_INCLUDE_DIRS})
-    endif()
+    eshkol_target_llvm_includes(execution_profile_test)
     if(LLVM_LIBRARY_DIRS)
         target_link_directories(execution_profile_test PRIVATE ${LLVM_LIBRARY_DIRS})
     endif()
@@ -1632,9 +1638,7 @@ if(ESHKOL_XLA_ENABLED AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/xla/xla_code
 
     target_compile_options(xla_codegen_test PRIVATE ${LLVM_CXXFLAGS_LIST})
 
-    if(LLVM_INCLUDE_DIRS)
-        target_include_directories(xla_codegen_test PRIVATE ${LLVM_INCLUDE_DIRS})
-    endif()
+    eshkol_target_llvm_includes(xla_codegen_test)
 
     if(LLVM_LIBRARY_DIRS)
         target_link_directories(xla_codegen_test PRIVATE ${LLVM_LIBRARY_DIRS})
