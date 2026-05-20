@@ -77,10 +77,10 @@ Coverage includes: arithmetic (int/float/rational/complex/bignum), strings (appe
 | 17 | Logic | `run_logic_tests.sh` | 6 | Unification, logic variables, knowledge base (`kb-assert!`/`kb-query`), factor graphs (`fg-add-factor!`/`fg-infer!`), global workspace (`ws-register!`/`ws-step!`), continuous learning |
 | 18 | Bignum | `run_bignum_tests.sh` | 2 | Arbitrary-precision integer arithmetic, edge cases (overflow, sign, exponentiation, mixed exact/inexact) |
 | 19 | Rational | `run_rational_tests.sh` | 3 | Exact fraction arithmetic, `rationalize`, comprehensive rational operations, comparison, conversion |
-| 20 | Parallel | `run_parallel_tests.sh` | 6 | `parallel-map`, `parallel-fold`, `parallel-filter`, `parallel-for-each`, `parallel-execute`, futures |
+| 20 | Parallel | `run_parallel_tests.sh` | 7 | `parallel-map`, `parallel-fold`, `parallel-filter`, `parallel-for-each`, `parallel-execute`, futures, flags-byte regression |
 | 21 | Signal | `run_signal_tests.sh` | 2 | DSP filters, comprehensive FFT (windowing, spectral analysis) |
 | 22 | Optimization | `run_optimization_tests.sh` | 1 | ML optimizer convergence: gradient descent, Adam, conjugate gradient |
-| 23 | Examples | `run_examples_tests.sh` | 0 | End-to-end example programs (compile + run validation); directory currently empty |
+| 23 | Examples | `run_examples_tests.sh` | 6 | End-to-end example programs (compile + run validation); proprietary/unreleased examples are skipped |
 | 24 | XLA | `run_xla_tests.sh` | 12 | XLA/StableHLO tensor operations: matmul (basic, large, accuracy, special), transpose, shape ops, elementwise, reduce, dispatch threshold |
 | 25 | GPU | `run_gpu_tests.sh` | 12 | Metal/CUDA dispatch: elementwise, reduce, matmul, transpose, softmax/normalize, scale correctness, sf64 primitives (uniform/non-uniform), large matmul, diagnostics |
 | 26 | Error Handling | `run_error_handling_tests.sh` | 7 | `guard`/`raise`, advanced guard patterns, nested exceptions, bounds checking, division by zero, edge cases, stack overflow detection |
@@ -354,8 +354,10 @@ Key files: `optimization_test.esk`
 
 End-to-end example program validation. The test script compiles and runs
 every `.esk` file in the `examples/` directory, verifying that example
-programs remain functional as the compiler evolves. The directory is
-currently empty; examples will be populated as the v1.1 API stabilizes.
+programs remain functional as the compiler evolves. The current public
+examples cover hello-world, autodiff, tensors, parallelism, consciousness,
+and a milli-magnetic Bohrification sketch; proprietary/unreleased examples
+are explicitly skipped by the script.
 
 ### 24. XLA (`tests/xla/`)
 
