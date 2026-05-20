@@ -534,6 +534,9 @@ static std::unordered_map<Function*, std::string> lambda_sexpr_map;
 // This prevents exponential IR generation when processing nested lambdas in S-expression generation
 static std::unordered_map<const eshkol_operations_t*, std::string> lambda_ast_to_name;
 
+static constexpr size_t LIB_INIT_AST_CHUNK_SIZE = 4;
+static constexpr size_t LIB_INIT_LAMBDA_SEXPR_CHUNK_SIZE = 4;
+
 // Helper function to check if a function name is a lambda name
 // Handles both old format "lambda_N" and new format "prefix_lambda_N"
 static bool isLambdaName(const std::string& name) {
@@ -3934,6 +3937,127 @@ private:
         }
     }
 
+    bool isLibraryInitAST(const eshkol_ast_t& ast) const {
+        if (ast.type != ESHKOL_OP) {
+            return false;
+        }
+        if (ast.operation.op == ESHKOL_DEFINE_OP) {
+            return !ast.operation.define_op.is_function;
+        }
+        return ast.operation.op == ESHKOL_SET_OP;
+    }
+
+    void codegenLibraryInitAST(const eshkol_ast_t& ast) {
+        codegenAST(&ast);
+        if (ast.operation.op == ESHKOL_DEFINE_OP) {
+            eshkol_debug("Library init: initialized global variable: %s",
+                         ast.operation.define_op.name);
+        } else if (ast.operation.op == ESHKOL_SET_OP) {
+            eshkol_debug("Library init: executed set! for: %s",
+                         ast.operation.set_op.name ? ast.operation.set_op.name : "(unknown)");
+        }
+    }
+
+    Function* createLibraryInitChunkFunction(
+        FunctionType* init_type,
+        size_t chunk_index,
+        const eshkol_ast_t* asts,
+        const std::vector<size_t>& init_indices,
+        size_t begin_index,
+        size_t end_index
+    ) {
+        std::string chunk_name = "__eshkol_lib_init_chunk_" + std::to_string(chunk_index);
+        Function* chunk_func = Function::Create(init_type, Function::InternalLinkage,
+                                                chunk_name, module.get());
+        chunk_func->addFnAttr(Attribute::NoInline);
+
+        BasicBlock* entry = BasicBlock::Create(*context, "entry", chunk_func);
+        IRBuilderBase::InsertPoint saved_point = builder->saveIP();
+        Function* saved_function = current_function;
+
+        builder->SetInsertPoint(entry);
+        current_function = chunk_func;
+
+        Value* arena_param = chunk_func->arg_begin();
+        arena_param->setName("arena");
+        builder->CreateStore(arena_param, global_arena);
+
+        for (size_t i = begin_index; i < end_index; i++) {
+            codegenLibraryInitAST(asts[init_indices[i]]);
+        }
+
+        if (builder->GetInsertBlock() && !builder->GetInsertBlock()->getTerminator()) {
+            builder->CreateRetVoid();
+        }
+
+        builder->restoreIP(saved_point);
+        current_function = saved_function;
+        return chunk_func;
+    }
+
+    void emitLambdaSExprRegistration(const LambdaSExprMetadata& meta) {
+        Value* sexpr_ptr = codegenLambdaToSExpr(meta.lambda_ast);
+        std::string sexpr_key = meta.lambda_name + "_sexpr";
+        GlobalVariable* sexpr_global = module->getNamedGlobal(sexpr_key);
+        if (!sexpr_global) {
+            sexpr_global = new GlobalVariable(
+                *module, int64_type, false,
+                sexprGlobalLinkage(library_mode),
+                ConstantInt::get(int64_type, 0),
+                sexpr_key
+            );
+        }
+        builder->CreateStore(sexpr_ptr, sexpr_global);
+        global_symbol_table[sexpr_key] = sexpr_global;
+
+        // Register this lambda in the registry for homoiconic display
+        Function* lambda_func = resolveFunctionByLogicalName(meta.lambda_name);
+        if (lambda_func) {
+            Value* func_ptr_int = builder->CreatePtrToInt(lambda_func, intptr_type);
+            Value* name_str = builder->CreateGlobalString(meta.lambda_name);
+            builder->CreateCall(eshkol_lambda_registry_add_func,
+                {func_ptr_int, toIntPtr(sexpr_ptr), name_str});
+            eshkol_debug("Library init: registered lambda '%s' in homoiconic registry",
+                         meta.lambda_name.c_str());
+        }
+    }
+
+    Function* createLibraryLambdaSExprChunkFunction(
+        FunctionType* init_type,
+        size_t chunk_index,
+        size_t begin_index,
+        size_t end_index
+    ) {
+        std::string chunk_name = "__eshkol_lib_init_sexpr_chunk_" + std::to_string(chunk_index);
+        Function* chunk_func = Function::Create(init_type, Function::InternalLinkage,
+                                                chunk_name, module.get());
+        chunk_func->addFnAttr(Attribute::NoInline);
+
+        BasicBlock* entry = BasicBlock::Create(*context, "entry", chunk_func);
+        BasicBlock* sexpr_continue = BasicBlock::Create(*context, "sexpr_continue", chunk_func);
+        IRBuilderBase::InsertPoint saved_point = builder->saveIP();
+        Function* saved_function = current_function;
+
+        builder->SetInsertPoint(entry);
+        current_function = chunk_func;
+
+        Value* arena_param = chunk_func->arg_begin();
+        arena_param->setName("arena");
+        builder->CreateStore(arena_param, global_arena);
+
+        for (size_t i = begin_index; i < end_index; i++) {
+            emitLambdaSExprRegistration(pending_lambda_sexprs[i]);
+        }
+
+        builder->CreateBr(sexpr_continue);
+        builder->SetInsertPoint(sexpr_continue);
+        builder->CreateRetVoid();
+
+        builder->restoreIP(saved_point);
+        current_function = saved_function;
+        return chunk_func;
+    }
+
     // LIBRARY MODE: Create initialization function instead of main
     // This function initializes global state but doesn't create an entry point
     void createLibraryInitFunction(const eshkol_ast_t* asts, size_t num_asts) {
@@ -3953,22 +4077,27 @@ private:
         arena_param->setName("arena");
         builder->CreateStore(arena_param, global_arena);
 
-        // Process global variable definitions (non-function defines) and set! statements
+        std::vector<size_t> init_ast_indices;
         for (size_t i = 0; i < num_asts; i++) {
-            if (asts[i].type == ESHKOL_OP &&
-                asts[i].operation.op == ESHKOL_DEFINE_OP &&
-                !asts[i].operation.define_op.is_function) {
-                codegenAST(&asts[i]);
-                eshkol_debug("Library init: initialized global variable: %s",
-                            asts[i].operation.define_op.name);
+            if (isLibraryInitAST(asts[i])) {
+                init_ast_indices.push_back(i);
             }
-            // Also process top-level set! statements (for forward declaration patterns)
-            else if (asts[i].type == ESHKOL_OP &&
-                     asts[i].operation.op == ESHKOL_SET_OP) {
-                codegenAST(&asts[i]);
-                eshkol_debug("Library init: executed set! for: %s",
-                            asts[i].operation.set_op.name ? asts[i].operation.set_op.name : "(unknown)");
-            }
+        }
+
+        // Process global variable definitions and top-level set! statements in
+        // noinline chunks. Large aggregate libraries otherwise produce one huge
+        // __eshkol_lib_init__ text atom, which trips Apple ld branch-island
+        // placement limits.
+        std::vector<Function*> init_chunks;
+        for (size_t begin = 0, chunk_index = 0;
+             begin < init_ast_indices.size();
+             begin += LIB_INIT_AST_CHUNK_SIZE, chunk_index++) {
+            size_t end = std::min(begin + LIB_INIT_AST_CHUNK_SIZE, init_ast_indices.size());
+            init_chunks.push_back(createLibraryInitChunkFunction(
+                init_type, chunk_index, asts, init_ast_indices, begin, end));
+        }
+        for (Function* chunk_func : init_chunks) {
+            builder->CreateCall(chunk_func, {arena_param});
         }
 
         // Call __lambda_init__ to initialize lambda captures
@@ -3984,38 +4113,18 @@ private:
 
         // Generate S-expressions for lambdas and register them
         if (!pending_lambda_sexprs.empty()) {
-            // Create a continuation block for after S-expression generation
-            BasicBlock* sexpr_continue = BasicBlock::Create(*context, "sexpr_continue", init_func);
-
-            for (const auto& meta : pending_lambda_sexprs) {
-                Value* sexpr_ptr = codegenLambdaToSExpr(meta.lambda_ast);
-                std::string sexpr_key = meta.lambda_name + "_sexpr";
-                GlobalVariable* sexpr_global = module->getNamedGlobal(sexpr_key);
-                if (!sexpr_global) {
-                    sexpr_global = new GlobalVariable(
-                        *module, int64_type, false,
-                        sexprGlobalLinkage(library_mode),
-                        ConstantInt::get(int64_type, 0),
-                        sexpr_key
-                    );
-                }
-                builder->CreateStore(sexpr_ptr, sexpr_global);
-                global_symbol_table[sexpr_key] = sexpr_global;
-
-                // Register this lambda in the registry for homoiconic display
-                Function* lambda_func = resolveFunctionByLogicalName(meta.lambda_name);
-                if (lambda_func) {
-                    Value* func_ptr_int = builder->CreatePtrToInt(lambda_func, intptr_type);
-                    Value* name_str = builder->CreateGlobalString(meta.lambda_name);
-                    builder->CreateCall(eshkol_lambda_registry_add_func,
-                        {func_ptr_int, toIntPtr(sexpr_ptr), name_str});
-                    eshkol_debug("Library init: registered lambda '%s' in homoiconic registry", meta.lambda_name.c_str());
-                }
+            std::vector<Function*> sexpr_chunks;
+            for (size_t begin = 0, chunk_index = 0;
+                 begin < pending_lambda_sexprs.size();
+                 begin += LIB_INIT_LAMBDA_SEXPR_CHUNK_SIZE, chunk_index++) {
+                size_t end = std::min(begin + LIB_INIT_LAMBDA_SEXPR_CHUNK_SIZE,
+                                      pending_lambda_sexprs.size());
+                sexpr_chunks.push_back(createLibraryLambdaSExprChunkFunction(
+                    init_type, chunk_index, begin, end));
             }
-
-            // Branch to continuation
-            builder->CreateBr(sexpr_continue);
-            builder->SetInsertPoint(sexpr_continue);
+            for (Function* chunk_func : sexpr_chunks) {
+                builder->CreateCall(chunk_func, {arena_param});
+            }
 
             pending_lambda_sexprs.clear();
         }
