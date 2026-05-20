@@ -1,4 +1,4 @@
-# Known Issues — Eshkol v1.2.0-scale
+# Known Issues — Eshkol v1.2.1-scale
 
 **Status**: Production release
 

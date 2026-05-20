@@ -47,7 +47,9 @@
 ;; runs-fine variant (no cross-file load) is in
 ;; tests/bug_BB_indirector_double_call.esk for comparison.
 
-(load "/Users/tyr/Desktop/noesis/src/core/self_modify/self_modify.esk")
+;; Replace this placeholder with the path to an external Noesis checkout before
+;; running this historical minimized repro manually.
+(load "NOESIS_ROOT/src/core/self_modify/self_modify.esk")
 
 (define (mk-ctx)
   (let* ((dkb (make-dkb 4)) (mneme (make-mneme 64)) (ws (make-workspace 1.0))

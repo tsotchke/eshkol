@@ -49,7 +49,7 @@
 
 (define (process-spawn command cwd)
   "Spawn a legacy command string. Returns process handle or #f on failure.
-   command: shell-compatible command string. The native layer may bypass the
+   command: shell-compatible command string. The runtime layer may bypass the
    platform shell for simple commands where direct argv execution is equivalent.
    cwd: working directory."
   (process-spawn-raw command cwd #f 0))

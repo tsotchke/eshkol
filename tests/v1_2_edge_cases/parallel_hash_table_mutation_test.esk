@@ -1,0 +1,64 @@
+;; Regression: shared hash tables must survive parallel-map worker mutation.
+;;
+;; Noesis' neural BoW cache writes a global hash table while scoring tactic
+;; candidates in parallel. The old open-addressing table had no internal
+;; synchronization, so concurrent hash-set! could corrupt probe state and leave
+;; future_get waiting forever, or segfault in generated worker code.
+
+(require stdlib)
+
+(display "=== Parallel hash-table mutation regression ===") (newline)
+
+(define pass-count 0)
+(define fail-count 0)
+
+(define (check name cond)
+  (if cond
+      (begin
+        (set! pass-count (+ pass-count 1))
+        (display "PASS: ") (display name) (newline))
+      (begin
+        (set! fail-count (+ fail-count 1))
+        (display "FAIL: ") (display name) (newline))))
+
+(define (range-n n)
+  (let loop ((i 0) (acc '()))
+    (if (>= i n)
+        (reverse acc)
+        (loop (+ i 1) (cons i acc)))))
+
+(define shared (make-hash-table))
+(define xs (range-n 64))
+
+(define (parallel-hash-worker round x)
+  (let ((key (string-append (number->string round) ":"
+                            (number->string x))))
+    (hash-set! shared key (+ round x))
+    (hash-ref shared key -1)))
+
+(define (stress round limit)
+  (if (>= round limit)
+      #t
+      (let* ((ys (parallel-map (lambda (x)
+                                 (parallel-hash-worker round x))
+                               xs))
+             (sum (apply + ys))
+             (expected-sum (+ (* 64 round) 2016))
+             (expected-count (* (+ round 1) 64)))
+        (if (and (= sum expected-sum)
+                 (= (hash-count shared) expected-count))
+            (stress (+ round 1) limit)
+            #f))))
+
+(check "parallel hash-set!/hash-ref stress completes with all entries"
+       (stress 0 20))
+
+(check "hash-keys sees every parallel insertion"
+       (= (length (hash-keys shared)) 1280))
+
+(newline)
+(display "=== Summary ===") (newline)
+(display "Passed: ") (display pass-count) (newline)
+(display "Failed: ") (display fail-count) (newline)
+(display (if (= fail-count 0) "RESULT: ALL PASS" "RESULT: FAILURES DETECTED"))
+(newline)

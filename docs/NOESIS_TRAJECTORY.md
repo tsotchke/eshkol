@@ -8,10 +8,9 @@ views stay consistent; use whichever lens fits the question. Individual
 items link to the task tracker; task descriptions give the API spec,
 dependencies, and effort estimate.
 
-**Scope update (2026-04-17 post-audit)**: the 694-line Noesis gap report at
-`/Users/tyr/Desktop/noesis/docs/audits/eshkol-feature-gap-report-2026-04-17.md`
-surfaced 14 additional items not originally in the trajectory. They are
-filed as #166-#177 and incorporated below.
+**Scope update (2026-04-17 post-audit)**: the 694-line Noesis gap report
+surfaced 14 additional items not originally in the trajectory. They are filed
+as #166-#177 and incorporated below.
 
 This file is the plan of record for compiler work between v1.2-scale (current)
 and the zero-compromise Noesis deploy target. It is tiered by milestone, not by

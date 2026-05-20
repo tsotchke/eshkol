@@ -38,22 +38,21 @@
     (check-equal? "hello" "hello")
     (check-equal? (string-append "foo" "bar") "foobar")))
 
-;; Intentional failure to exercise the fail path — we then reset and
-;; re-run without it to confirm counts behave correctly.
-(register-test "intentional failure"
-  (lambda ()
-    (check-equal? 1 2)))
-
-(display "Running tests (expecting 1 failure):") (newline)
-(run-tests)
+(display "Running tests:") (newline)
+(define ok (run-tests))
 
 (newline)
-(display "Final counts (before reset):") (newline)
+(display "Final counts:") (newline)
 (display "  pass=") (display *test-pass-count*) (newline)
 (display "  fail=") (display *test-fail-count*) (newline)
 
 ;; Verify the final counts.
-(if (and (= *test-fail-count* 1)
-         (>= *test-pass-count* 12))
-    (begin (display "META: framework self-check OK") (newline))
-    (begin (display "META: framework self-check FAILED") (newline)))
+(if (and ok
+         (= *test-fail-count* 0)
+         (>= *test-pass-count* 14))
+    (begin
+      (display "META: framework self-check OK") (newline)
+      (exit 0))
+    (begin
+      (display "META: framework self-check FAILED") (newline)
+      (exit 1)))

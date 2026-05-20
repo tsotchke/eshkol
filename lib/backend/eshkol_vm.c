@@ -896,11 +896,13 @@ static void compile_and_run(const char* source) {
         "STRRF","STRLN",
         "PAIRP","NUMP","STRP","BOOLP","PROCP","VECP",
         "SETCR","SETCD","POPN","OCLOS","CCALL","IVCC",
-        "GUARD","UNGRD","GETXN","PKRST","WNDPS","WNDPP"
+        "GUARD","UNGRD","GETXN","PKRST","WNDPS","WNDPP","VOID"
     };
+    const size_t opn_count = sizeof(opn) / sizeof(opn[0]);
     for (int i = 0; i < main_chunk.code_len; i++) {
         Instr ins = main_chunk.code[i];
-        printf("    [%3d] %-6s %d", i, ins.op < OP_COUNT ? opn[ins.op] : "???", ins.operand);
+        const char* op_name = ((unsigned)ins.op < opn_count) ? opn[ins.op] : "???";
+        printf("    [%3d] %-6s %d", i, op_name, ins.operand);
         if (ins.op == OP_CONST && ins.operand < main_chunk.n_constants) {
             Value v = main_chunk.constants[ins.operand];
             if (v.type == VAL_INT) printf("  ; %lld", (long long)v.as.i);
@@ -1463,7 +1465,8 @@ int main(int argc, char** argv) {
         test_map();
         test_closures();
         printf("\n=== Tests complete ===\n");
-        run_source_tests();
+        int source_failures = run_source_tests();
+        if (source_failures != 0) return 1;
     }
     return 0;
 }

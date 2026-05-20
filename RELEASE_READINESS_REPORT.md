@@ -1,10 +1,28 @@
-# Eshkol v1.2.0-scale Release Readiness Report
+# Eshkol v1.2-scale Release Readiness Report
 
-**Date**: April 30, 2026
-**Version**: v1.2.0-scale
+**Date**: May 20, 2026
+**Version**: v1.2.1-scale
 **Author**: tsotchke
 
 ---
+
+## v1.2.1 Final Release Gate
+
+The v1.2.1-scale closeout is release-gate clean on the current tree.
+
+| Gate | Result |
+|---|---:|
+| `scripts/run_all_tests.sh` | 37/37 suites, 528/528 self-reported tests |
+| `scripts/run_v1_2_edge_cases_tests.sh` | 87/87 tests |
+| `build/test_vm_c_api` | 81/81 checks |
+| `ctest --test-dir build --output-on-failure --timeout 180` | 15/15 tests |
+| `scripts/run_stress_tests.sh` | 3/3 stress tests |
+| Noesis aggregate smoke | `NOESIS_ALL_RC=0` |
+
+The final harness fixes are in place: aggregate counting includes
+`Results: N passed, M failed` suite summaries, I/O timeout handling is
+shell-based, the system runner defaults `BUILD_DIR=build`, and the HTTP server
+smoke cannot hang indefinitely under restricted socket environments.
 
 ## v1.2-scale Executive Summary
 
@@ -17,7 +35,7 @@ files, IR-identical to the prior monolith), a Bug X fix in
 `codegenNamedLet` (Noesis-reported `loop` arity-mismatch caused by
 the function leaking its user-visible name into the parent scope), an
 ASan / UBSan CI lane running the v1.2 edge-case + security regression
-suite (58 tests), and the rebased Homebrew formula.
+suite, and the rebased Homebrew formula.
 
 The v1.1-accelerate readiness summary follows for historical
 continuity.
@@ -41,7 +59,7 @@ continuity.
 | Archive cleanup | ✅ | commit `39f145f`; deleted near-duplicate compilers |
 | v1_2_edge_cases in `run_all_tests.sh` | ✅ | new `scripts/run_v1_2_edge_cases_tests.sh` |
 | Sanitizer CI lane | ✅ | `linux-x64-asan-ubsan` lane in `ci.yml` |
-| Homebrew formula bumped | ✅ | `packaging/homebrew/eshkol.rb` → `v1.2.0-scale` |
+| Homebrew formula bumped | ✅ | `packaging/homebrew/eshkol.rb` → public `v1.2.1-scale` template |
 | CHANGELOG + ROADMAP updated | ✅ | this PR |
 
 ### Known carry-forward to v1.3
@@ -419,7 +437,7 @@ Eshkol v1.1-accelerate was **READY FOR PRODUCTION RELEASE** as of April 9, 2026.
 - Compiler supports multiple output modes (exe/eshkol-run.cpp)
 - REPL with LLVM ORC JIT and precompiled stdlib loading (lib/repl/repl_jit.cpp)
 - LSP server for editor integration (tools/lsp/eshkol_lsp.cpp)
-- 438 test files with comprehensive coverage across 35 test suites
+- 528 self-reported tests with comprehensive coverage across 37 suites
 - CMakeLists.txt with cross-platform support
 - Debian, Ubuntu, and CUDA Docker images (docker/)
 
@@ -467,7 +485,7 @@ Eshkol v1.1-accelerate was **READY FOR PRODUCTION RELEASE** as of April 9, 2026.
 | **Web Tests** | ✅ Pass | Good |
 | **XLA Tests** | ✅ Pass | Good |
 
-**Total**: 35 test suites, 438 test files, **100% pass rate**
+**Total**: 37 suites, 528 self-reported tests, **100% pass rate**
 
 **Assessment**: Test coverage is comprehensive across all subsystems. Every v1.1 feature has dedicated test suites.
 
@@ -747,7 +765,7 @@ The following items from the v1.0 limitation list are now **fully resolved**:
 
 - **Architecture**: Modular LLVM backend with 21 specialized codegen modules
 - **Code Quality**: Production-grade C17/C++20 implementation
-- **Testing**: 35 test suites, 438 test files, 100% pass rate
+- **Testing**: 37 suites, 528 self-reported tests, 100% pass rate
 - **Error Handling**: Proper exception system with source locations, guard/raise
 - **Memory Safety**: Ownership analysis prevents use-after-move, thread-safe arenas
 - **Performance**: LLVM-native execution, deterministic timing, GPU/parallel acceleration
@@ -763,7 +781,7 @@ The following items from the v1.0 limitation list are now **fully resolved**:
 
 ### Stability and Reliability
 
-- **All Tests Passing**: 35 suites, 438 test files execute successfully
+- **All Tests Passing**: 37 suites, 528 self-reported tests execute successfully
 - **No Critical Bugs**: All known issues documented and addressed (35/35 bignum gaps, PHI bugs, TCO corruption, etc.)
 - **Cross-Platform**: Verified on macOS, Linux, and Windows (MSYS2/MinGW64)
 - **Reproducible Builds**: Docker containers provided (Debian, Ubuntu, CUDA)
@@ -838,7 +856,7 @@ Eshkol v1.1-accelerate delivers capabilities **no other language provides**:
 ### Market Readiness
 
 - **Technical Leadership**: Unprecedented combination of AD, consciousness engine, GPU, and parallelism
-- **Production Quality**: Complete, tested, documented across 35 test suites
+- **Production Quality**: Complete, tested, documented across the 37-suite gate
 - **Clear Roadmap**: Distributed computing and model deployment in v1.2 (Q2 2026)
 - **Differentiation**: Unique combination unmatched by any competitor
 
@@ -904,13 +922,13 @@ Eshkol v1.1-accelerate represents a **complete, production-quality compiler** th
 - **Web platform** with 73 functions and WASM compilation target
 - **Deterministic memory management** eliminating garbage collection entirely, now thread-safe
 - **Homoiconic native code** preserving S-expressions in 40-byte closures at LLVM speed
-- **555+ language features** with 39 special forms across 35 test suites (438 tests, 100% pass rate)
+- **555+ language features** with 39 special forms across 37 suites (528 self-reported tests, 100% pass rate)
 
 ### Recommendation
 
 **APPROVE FOR PRODUCTION RELEASE**
 
-Eshkol v1.1-accelerate achieves every stated goal and extends the v1.0-foundation with comprehensive performance acceleration. The implementation is complete, thoroughly tested across 35 suites with 100% pass rate, and ready for production use in:
+Eshkol v1.1-accelerate achieves every stated goal and extends the v1.0-foundation with comprehensive performance acceleration. The implementation is complete, thoroughly tested across the current 37-suite gate with 100% pass rate, and ready for production use in:
 - Gradient-based optimization with GPU acceleration
 - Neural network development with parallel training
 - Scientific computing with exact arithmetic and signal processing

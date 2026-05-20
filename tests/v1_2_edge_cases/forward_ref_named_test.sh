@@ -26,9 +26,8 @@ expect_named() {
     local script="$2"
     local expected_name="$3"
 
-    local out err rc
+    local err rc
     err=$("$RUN" -r "$script" 2>&1 1>/dev/null)
-    "$RUN" -r "$script" 2>/dev/null 1>/dev/null
     rc=$?
 
     local ok_msg="no"
