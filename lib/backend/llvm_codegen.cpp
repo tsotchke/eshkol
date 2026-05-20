@@ -2596,12 +2596,12 @@ public:
                 return std::make_pair(nullptr, nullptr);
             }
 
-            // Coerce mismatched integer call-arg types before verification
-            // so wasm32 (where size_t is i32) doesn't trip on the 144 codegen
-            // sites that emit i64 sizes for arena_allocate-family calls.  On
-            // native this is a no-op since szTy already == i64.  See the
-            // pass definition above optimizeModule().
+            // Coerce mismatched integer types before verification so wasm32
+            // does not trip on i32 size_t / i64 byte-count mismatches in
+            // generated calls or binary operators.  On native this is usually
+            // a no-op since size_t is already i64.
             coerceCallArgIntegerTypes(*module);
+            coerceIntegerBinaryOperandTypes(*module);
 
             // Verify the module
             std::string error_str;
