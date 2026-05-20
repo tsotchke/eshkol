@@ -1033,7 +1033,7 @@ than PHI nodes for all mutable state.
 
 ## Unification Algorithm
 
-The logic engine implements Robinson's unification algorithm with occurs-check, operating over Eshkol's tagged value system. The core entry point is `eshkol_unify` in `/Users/tyr/Desktop/eshkol/lib/core/logic.cpp` (line 339).
+The logic engine implements Robinson's unification algorithm with occurs-check, operating over Eshkol's tagged value system. The core entry point is `eshkol_unify` in `lib/core/logic.cpp`.
 
 ### Algorithm Structure
 
@@ -1169,7 +1169,7 @@ The current implementation is O(n * k) per query where n is the number of facts 
 
 ## Sum-Product Belief Propagation
 
-The inference engine implements loopy belief propagation using the sum-product algorithm entirely in log-space. The implementation is in `/Users/tyr/Desktop/eshkol/lib/core/inference.cpp`.
+The inference engine implements loopy belief propagation using the sum-product algorithm entirely in log-space. The implementation is in `lib/core/inference.cpp`.
 
 ### Factor Graph Structure
 
