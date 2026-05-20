@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [master]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   LLVM_MAJOR: '21'
   WINDOWS_LLVM_SDK_VERSION: '21.1.8'

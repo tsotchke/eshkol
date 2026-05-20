@@ -5,6 +5,10 @@ on:
     tags:
       - 'v*'
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: write
 
@@ -100,17 +104,23 @@ jobs:
           set -euxo pipefail
           sudo apt-get install -y \
             cmake ninja-build \
-            llvm-${LLVM_MAJOR} llvm-${LLVM_MAJOR}-dev \
+            llvm-${LLVM_MAJOR} llvm-${LLVM_MAJOR}-dev lld-${LLVM_MAJOR} \
             libreadline-dev pkg-config \
             libssl-dev libncurses-dev \
+            libpcre2-dev libsqlite3-dev \
             git python3
+          # Keep release builds aligned with CI: generated AArch64
+          # executables use -fuse-ld=lld, which resolves unversioned
+          # ld.lld from PATH.
+          sudo ln -sf "/usr/bin/ld.lld-${LLVM_MAJOR}" /usr/bin/ld.lld
+          ld.lld --version
 
       - name: Install Dependencies (macOS)
         if: runner.os == 'macOS'
         shell: bash
         run: |
           set -euxo pipefail
-          brew install llvm@${LLVM_MAJOR} cmake ninja readline
+          brew install llvm@${LLVM_MAJOR} cmake ninja readline pcre2 sqlite
 
       - name: Configure
         shell: bash
@@ -137,6 +147,15 @@ jobs:
         run: |
           set -euxo pipefail
           cmake --build "${{ matrix.build_dir }}" --parallel
+
+      - name: Check WASM env imports
+        if: matrix.xla_enabled == 'OFF' && matrix.gpu_enabled == 'OFF' && matrix.build_dir == 'build'
+        shell: bash
+        env:
+          BUILD_DIR: ${{ matrix.build_dir }}
+        run: |
+          set -euxo pipefail
+          python3 scripts/check_wasm_imports.py --build-dir "$BUILD_DIR"
 
       - name: Run Tests
         shell: bash
@@ -314,6 +333,10 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $platform = if ('${{ matrix.arch }}' -eq 'arm64') { 'ARM64' } else { 'x64' }
+          $hostCxx = "$env:LLVM_HOME\bin\clang++.exe"
+          if (-not (Test-Path $hostCxx)) {
+            throw "clang++.exe not found in LLVM SDK at $hostCxx"
+          }
           cmake -S . -B '${{ matrix.build_dir }}' `
             -G 'Visual Studio 17 2022' `
             -A $platform `
@@ -321,6 +344,7 @@ jobs:
             -DBUILD_REPL=ON `
             -DESHKOL_BUILD_TESTS=OFF `
             -DESHKOL_REQUIRED_LLVM_MAJOR=${{ env.LLVM_MAJOR }} `
+            -DESHKOL_HOST_CXX_COMPILER="$hostCxx" `
             -DESHKOL_XLA_ENABLED=${{ matrix.xla_enabled }} `
             -DESHKOL_GPU_ENABLED=${{ matrix.gpu_enabled }} `
             -DLLVM_DIR="$env:LLVM_DIR"
