@@ -781,7 +781,7 @@ Eshkol can compile to WebAssembly for browser deployment, with a DOM API for bui
 
 ```bash
 # Compile to WebAssembly
-eshkol-run program.esk --target wasm -o program.wasm
+eshkol-run program.esk --wasm -o program.wasm
 
 # Generates: program.wasm + program.js (loader)
 ```

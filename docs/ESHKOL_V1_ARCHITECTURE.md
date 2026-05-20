@@ -45,10 +45,10 @@ Eshkol is a production-grade compiler implementing a Scheme-like language with:
 
 | Metric | Value |
 |--------|-------|
-| Total codebase | ~232,000 lines |
-| LLVM backend | 21 codegen modules, ~86,000 lines |
+| Total backend (`lib/backend/`) | ~147,000 lines indexed |
+| LLVM backend | ~30 codegen modules, ~85,500 lines |
 | Bytecode VM | 64 core opcodes, 550+ native calls, ~41,000 lines |
-| Main codegen | 35,074 lines ([`lib/backend/llvm_codegen.cpp`](../lib/backend/llvm_codegen.cpp:1)) |
+| Main codegen | 33,962 lines ([`lib/backend/llvm_codegen.cpp`](../lib/backend/llvm_codegen.cpp)) |
 | Parser | 7,551 lines ([`lib/frontend/parser.cpp`](../lib/frontend/parser.cpp:1)) |
 | Memory manager | 4,972 lines ([`lib/core/arena_memory.cpp`](../lib/core/arena_memory.cpp:1)) |
 | Weight matrix transformer | ~6,800 lines, 126/126 inline + 123/123 traced, 3-way verified |

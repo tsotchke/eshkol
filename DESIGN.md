@@ -1,6 +1,6 @@
 # Eshkol Design Document
 
-## v1.2.0-scale
+## v1.2.1-scale
 
 Eshkol is a compiled programming language for scientific computing, machine learning, and cognitive architectures. It compiles Scheme (R7RS) source through LLVM to native binaries, combining Lisp's homoiconicity with deterministic arena-based memory, compiler-integrated automatic differentiation, and a consciousness engine built on unification, active inference, and global workspace theory.
 
@@ -31,7 +31,7 @@ Source (.esk)
  Typed AST
      |
      v
- LLVM IR Generation     21 specialized codegen modules (~232,000 lines)
+ LLVM IR Generation     34 specialized codegen modules (~85,500 lines)
      |                  Tagged value lowering, closure compilation, AD dispatch
      v
  LLVM Optimization      Inlining, LICM, GVN, loop unrolling, auto-vectorization
@@ -50,33 +50,35 @@ Compilation command: `eshkol-run file.esk -o binary`
 
 ### Modular Code Generation
 
-The LLVM backend delegates to 21 specialized modules via `std::function` callbacks. This inverts the typical dependency graph: modules call into main codegen rather than vice versa, enabling parallel development and incremental testing.
+The LLVM backend delegates to roughly thirty specialized modules via `std::function` callbacks. This inverts the typical dependency graph: modules call into main codegen rather than vice versa, enabling parallel development and incremental testing. Line counts below reflect the v1.2.1-scale tree.
 
 | Module | Lines | Responsibility |
 |:---|---:|:---|
-| llvm_codegen.cpp | 34,928 | Main codegen, dispatch, builtins |
-| tensor_codegen.cpp | 19,187 | Tensor ops, ML builtins (168 functions) |
-| autodiff_codegen.cpp | 3,694 | Forward/reverse mode AD |
-| string_io_codegen.cpp | 2,975 | String, I/O, JSON, CSV operations |
-| parallel_llvm_codegen.cpp | 2,401 | Work-stealing parallelism codegen |
-| arithmetic_codegen.cpp | 2,332 | Numeric ops, bignum, rational, complex |
-| collection_codegen.cpp | 2,139 | Vector, list, hash table operations |
-| system_codegen.cpp | 1,192 | System, environment, time, process |
-| binding_codegen.cpp | 1,178 | let/let\*/letrec/letrec\* with TCO |
-| thread_pool.cpp | 1,131 | Work-stealing thread pool |
-| tensor_backward.cpp | 1,078 | Backward-mode AD gradients |
-| call_apply_codegen.cpp | 960 | Function calls, apply, partial application |
-| blas_backend.cpp | 890 | BLAS dispatch, GPU cost model |
-| tagged_value_codegen.cpp | 822 | Tagged value pack/unpack |
-| control_flow_codegen.cpp | 800 | if/cond/case/match/call-cc |
-| map_codegen.cpp | 784 | map/for-each/fold with closures |
-| parallel_codegen.cpp | 705 | parallel-map/fold/filter/for-each |
-| homoiconic_codegen.cpp | 601 | Code-as-data, eval |
+| llvm_codegen.cpp | 33,962 | Main codegen, dispatch, builtins |
+| autodiff_codegen.cpp | 9,205 | Forward/reverse mode AD |
+| string_io_codegen.cpp | 3,293 | String, I/O, JSON, CSV operations |
+| parallel_llvm_codegen.cpp | 2,601 | Work-stealing parallelism codegen |
+| arithmetic_codegen.cpp | 2,491 | Numeric ops, bignum, rational, complex |
+| collection_codegen.cpp | 2,348 | Vector, list, hash table operations |
+| system_codegen.cpp | 1,752 | System, environment, time, process |
+| tensor_codegen.cpp | 1,540 | Tensor ops dispatch shell (post v1.2 split) |
+| thread_pool.cpp | 1,350 | Work-stealing thread pool |
+| tensor_backward.cpp | 1,321 | Backward-mode AD gradients |
+| blas_backend.cpp | 1,253 | BLAS dispatch, GPU cost model |
+| binding_codegen.cpp | 1,242 | let/let\*/letrec/letrec\* with TCO |
+| call_apply_codegen.cpp | 1,025 | Function calls, apply, partial application |
+| parallel_codegen.cpp | 945 | parallel-map/fold/filter/for-each |
+| map_codegen.cpp | 879 | map/for-each/fold with closures |
+| control_flow_codegen.cpp | 874 | if/cond/case/match/call-cc |
+| tagged_value_codegen.cpp | 717 | Tagged value pack/unpack |
 | hash_codegen.cpp | 603 | Hash operations |
+| homoiconic_codegen.cpp | 601 | Code-as-data, eval |
+| tail_call_codegen.cpp | 503 | TCO transformation |
 | complex_codegen.cpp | 499 | Complex number ops (Smith's formula) |
-| tail_call_codegen.cpp | 497 | TCO transformation |
 
-Additional backends: XLA/StableHLO (4,003 lines across 5 files), GPU/Metal (8,888 lines across 4 files).
+The original `tensor_codegen.cpp` was split in v1.2 into thirteen per-domain modules (`tensor_activation_codegen.cpp`, `tensor_arith_codegen.cpp`, `tensor_conv_codegen.cpp`, `tensor_creation_codegen.cpp`, `tensor_dataloader_codegen.cpp`, `tensor_extras_codegen.cpp`, `tensor_linalg_codegen.cpp`, `tensor_loss_codegen.cpp`, `tensor_reduce_codegen.cpp`, `tensor_shape_codegen.cpp`, `tensor_training_codegen.cpp`, `tensor_transformer_codegen.cpp`, `tensorcore_codegen.cpp`), totalling roughly 20,500 lines and re-exported through the original `tensor_codegen.cpp` dispatcher.
+
+Additional backends (XLA/StableHLO, Metal, CUDA, the bytecode VM and weight-matrix transformer artefacts) live alongside these modules in `lib/backend/`; the directory totals approximately 147,000 lines indexed.
 
 ---
 

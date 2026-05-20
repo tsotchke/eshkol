@@ -259,7 +259,7 @@ When a variadic closure is created, the variadic flag is set and the rest parame
 
 ---
 
-## Composition Patterns
+## Advanced Composition Patterns
 
 ### Pipeline Composition
 
