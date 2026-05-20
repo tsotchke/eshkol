@@ -158,41 +158,84 @@ bank**. The architecture rationale, from the cached papers:
   mental model: every opcode is a known fixed function on the state, the
   weights are *constructions*, not learned parameters.
 
-### 3.1. Zone E: bounded heap bank
+### 3.1. Zone E: bounded arena bank — final landed layout
 
+The original design called for 16 cells × 8 fields. The landed
+implementation (`weight_matrices.c §88-96`, §207-263) collapsed this to
+**16 cells × 5 fields = 80 dims of payload + 47 dims of operation
+transients = 127 dims**, leaving the high dimension `255` as the last
+transient. The design intuition (one Lisp cell per arena slot, fields
+for kind/car/cdr plus the per-field type) survives; what changed is
+that the type tags live in dedicated lanes within the cell rather than
+in a parallel type bank, which keeps the layout cache-line-aligned and
+saves the alternative `d_model = 320`-or-384 expansion that §5.4
+originally entertained:
+
+```text
+S_ARENA_BASE = 128
+ARENA_CELLS = 16
+ARENA_CELL_FIELDS = 5
+S_ARENA_NEXT = 208  (bump pointer; first transient slot, also the next-free index)
+
+Cell i occupies dims [128 + 5i, 128 + 5i + 5):
+  ARENA_F_KIND     = 0  (cell kind: empty=0, pair=1, vector=2, vec_elem=3, closure=4)
+  ARENA_F_CAR_VAL  = 1  (cons car / vec head / closure func-PC)
+  ARENA_F_CDR_VAL  = 2  (cons cdr / vec tail / closure upvalue-count)
+  ARENA_F_CAR_TYPE = 3  (type tag for car)
+  ARENA_F_CDR_TYPE = 4  (type tag for cdr)
 ```
-Zone E (128-255)  heap bank — 16 cells × 8 fields
-  S_HEAP_BASE = 128
-  Cell i lives at dims [128 + i*8, 128 + i*8 + 8)
-  Field layout per cell:
-    F_TYPE   = 0   (cell_type ∈ {empty, pair, vector, string, closure})
-    F_CAR    = 1   (cons car / vec elem 0 / str char 0 / clos func)
-    F_CDR    = 2   (cons cdr / vec elem 1 / str char 1 / clos env_ptr)
-    F_LEN    = 3   (vector length / string length / 0 for pair)
-    F_DATA0  = 4   (vec elem 2 / str char 2 / clos upval 0)
-    F_DATA1  = 5
-    F_DATA2  = 6
-    F_DATA3  = 7
-```
 
-**Bound rationale.** 16 cells × 4 inline-data slots = 64 cells of effective
-inline payload; plus pair-cells form linked structures of arbitrary length
-within the bank. `tail-sum(100)` runs without heap because numbers stay on
-the stack; the test programs in the artifact (52 base) use ≤ 12 simultaneous
-heap cells. We cap at 16 for the artifact contract; production deployments
-extend `MEM_SIZE` linearly (FFN width grows linearly with cell count, see §7).
+The cell kinds (`weight_matrices.c §90-95`):
 
-Inline overflow — vectors of length > 4, strings of length > 4 — chain
-through F_CDR with `F_TYPE = vector_chain` / `string_chain`. This mirrors
-the classical Lisp implementation of strings as cdr-coded character lists,
-gives bit-identical agreement on programs of bounded heap, and degrades
-gracefully (overflow drops the cell; the runtime detects and refuses to halt
-silently).
+| Kind value | Constant            | Use                                                                  |
+|-----------:|---------------------|----------------------------------------------------------------------|
+| 0.0        | `ARENA_KIND_EMPTY`   | Unallocated; the bump pointer never reuses these                     |
+| 1.0        | `ARENA_KIND_PAIR`    | Cons cell — `car/cdr` are arbitrary tagged values                    |
+| 2.0        | `ARENA_KIND_VECTOR`  | Vector header — `car = length`, `cdr` = first vec_elem cell index    |
+| 3.0        | `ARENA_KIND_VEC_ELEM`| Vector element — `car = value`, `cdr` = next vec_elem cell (or -1)   |
+| 4.0        | `ARENA_KIND_CLOSURE` | Closure header — `car = entry_pc`, `cdr = reserved upvalue count`    |
+| 7.0        | `CONT_RESTORE_MARKER`| Bounded escape-continuation marker (see §5.10)                        |
 
-**Free-list pointer** lives in `S_HEAP_FREE` (claim slot 7 of Zone D's spare
-range). It is the index of the lowest cell with `F_TYPE = empty`. Allocation
-increments it; `OP_CDR` of a freed cell returns `nil` (already trivially
-true because empty cells have all fields = 0).
+The 80 payload dims plus the 47 transient dims (`S_ARENA_NEXT`
+through `S_ARENA_LIST_HAS_E3`, declared as a contiguous enum block at
+`weight_matrices.c §214-261`) span exactly the upper 128 dimensions of
+the residual stream. There is no slack: every dimension is either a
+persistent cell field, the bump pointer, an operation scratch lane, or
+a list-construction scratch lane. The transient block is sub-divided
+into three windows: per-cell write scratch (`S_ARENA_WRITE_KIND..
+S_ARENA_NEW_CDR_TYPE`, 11 dims), bounded inline-vector scratch
+(`S_ARENA_VEC_*`, 16 dims), and bounded list construction scratch
+(`S_ARENA_LIST_*`, 20 dims). All three are cleared every cycle by
+Layer 3's universal transient-clear loop (`weight_matrices.c §1394`).
+
+**Bound rationale.** 16 cells × {pair = 1 cell, vector header + 4 elem cells = 5 cells,
+closure header + 4 upvalue cells = 5 cells, escape continuation = 4 cells}
+gives a working budget of, roughly, two simultaneous bounded vectors plus
+one closure plus a pair chain, which suffices for every program in the
+123-program traced suite. The exercised cases are: simple `(cons a b)` chains
+to length ≤ 12; vectors of declared length ≤ 4; strings of declared length ≤ 4;
+closures with up to 4 upvalues; one outstanding bounded escape continuation
+at a time. The bump pointer `S_ARENA_NEXT` increments by 1 per allocation
+(by 5 for the bounded list-construction path, which writes four pair cells
+in a single cycle: `weight_matrices.c §S_ARENA_LIST_*`).
+
+**Free-list policy.** None. The arena is a bump allocator: allocation
+returns the cell at `S_ARENA_NEXT` and increments. Garbage collection is
+not implemented; the contract is that a program completes before the bump
+pointer reaches 16. The reference VM and the matrix path both `reset` the
+arena at the start of each `test()` invocation (`weight_matrices.c §5491-5498`
+issues `vm_arena_reset` and reinitialises the `g_heap_ptr`,
+`g_frame_count`, exception, closure, and wind globals), so the per-program
+budget of 16 cells is exact, not a worst-case-across-suite bound.
+
+**Why an arena, not a heap.** In the bounded-state-vector regime, the
+distinction matters. A heap would require a free-list pointer to be
+indexable, which means a Tracr-style attention over `(cell, kind == empty)`
+keys followed by a `min` aggregate — two extra heads. A bump allocator
+just reads and writes `S_ARENA_NEXT`, which is a single scalar dim. The
+arena layout is structurally the analogue of Eshkol's *runtime* arena
+model in `vm_arena.h`; the in-state-vector implementation mirrors it
+precisely.
 
 ### 3.2. Type tag extension
 
@@ -304,209 +347,623 @@ two FFN entries — sign-pair on the SCALE bias, like
 **~28 new neurons total**, well inside the FFN budget. No layer count
 change. No `d_model` change.
 
-### 5.2. `OP_NULL_P` (currently delegated, encodable)
+**Landed Layer 2 construction (`weight_matrices.c §1297-1303`).** The
+seven type-indicator slots are computed in the preprocess FFN by:
+
+```c
+out[S_TYPE_IS_NUM]  = indicator(x[S_TYPE_TOS], TYPE_NUMBER);   /* 0 */
+out[S_TYPE_IS_BOOL] = indicator(x[S_TYPE_TOS], TYPE_BOOL);     /* 1 */
+out[S_TYPE_IS_PAIR] = indicator(x[S_TYPE_TOS], TYPE_PAIR);     /* 2 */
+out[S_TYPE_IS_PROC] = indicator(x[S_TYPE_TOS], TYPE_CLOSURE);  /* 3 */
+out[S_TYPE_IS_STR]  = indicator(x[S_TYPE_TOS], TYPE_STRING);   /* 4 */
+out[S_TYPE_IS_VEC]  = indicator(x[S_TYPE_TOS], TYPE_VECTOR);   /* 5 */
+out[S_TYPE_IS_NIL]  = indicator(x[S_TYPE_TOS], TYPE_NIL);      /* 6 */
+```
+
+The `indicator(x, k)` helper at `weight_matrices.c §334-336` is the
+sigmoid-difference pulse
+
+$$
+\text{indicator}(x, k) = \sigma\bigl(\text{SCALE}\cdot(x - k + 0.5)\bigr) -
+\sigma\bigl(\text{SCALE}\cdot(x - k - 0.5)\bigr),
+$$
+
+which saturates to $1$ when $x = k$ (the only integer with both
+sigmoids at $+1$ and $0$) and to $0$ for every other integer. With
+$\text{SCALE} = 300$ the off-target leakage is below $\exp(-150) \approx 0$
+in float32. The Layer-2 outputs land in `S_TYPE_IS_*` (dims 121-127),
+which the universal transient-clear in Layer 3 then zeroes; this is
+why the predicate dispatch and the `OP_NULL_P` slot live in the *same*
+cycle as the indicator computation.
+
+**Landed Layer 3 dispatch.** Each of the six predicates becomes two
+`add_gated_pair` invocations (the second clears `S_TYPE_TOS` to
+`TYPE_BOOL`). The total budget is therefore 12 gated pairs × 2
+sign-conjugate neurons = 24 FFN-3 neurons, dwarfed by the 2304-wide
+Layer-3 FFN. No `d_model` extension required — the entire stage-1
+"type predicates" lift fits inside the existing residual stream
+because the seven indicator slots reuse Zone D's spare range that
+were previously named `S_AD_SPARE2..S_AD_SPARE8` (the source code
+keeps both enum names as aliases for the same numeric slot, lines
+197-206, so legacy comments mentioning `S_AD_SPARE*` and new comments
+mentioning `S_TYPE_IS_*` refer to the same dimensions).
+
+### 5.2. `OP_NULL_P` (landed)
 
 `(null? x)` returns true if `x = '()`. In Eshkol's value encoding `nil` has
-`type_tos = 6` and `tos = -1` (Layer 0 const-emit pattern, line 330). The
-predicate is:
+`type_tos = TYPE_NIL = 6` and `tos = -1` (set by `OP_NIL` at
+`weight_matrices.c §439-441`). The predicate is then:
 
+$$
+\text{TOS}' = \mathbf{1}[\text{S\_TYPE\_TOS} = 6], \qquad
+\text{TYPE\_TOS}' = \text{TYPE\_BOOL}
+$$
+
+The encoding pattern is identical to §5.1's six predicates: Layer 2
+emits `S_TYPE_IS_NIL` into dim 127, Layer 3 dispatches a single
+`add_gated_pair` to write the residual delta into `S_TOS` and a second
+to clear `S_TYPE_TOS` to `TYPE_BOOL`. Crucially, `OP_NULL_P` uses
+*exactly the same* Layer-2 precompute that `OP_PAIR_P`…`OP_VEC_P` use,
+so the type-predicate family is one indicator computation followed by
+seven mutually-exclusive Layer-3 gates over `S_OPCODE`. Cost: two
+gated pairs in Layer 3, zero new precompute slots. This was the
+unblocking insight for the §5.1 family: once `S_TYPE_IS_NIL` is on
+the residual stream, every type predicate is a single residual write,
+no two-layer composition needed.
+
+### 5.3. `OP_POPN` (landed)
+
+`POPN n` pops `n` values *below* TOS, keeping TOS at the top. With $n \in
+\{1, 2, 3\}$ — Eshkol's compiler emits exactly this range for let-binding
+cleanup — the residual delta on the four-register file is:
+
+| Operand $n$ | $\text{TOS}'$ | $\text{SOS}'$ | $\text{R2}'$ | $\text{R3}'$ | $\text{DEPTH}'$ |
+|:-:|:-:|:-:|:-:|:-:|:-:|
+| 1 | TOS | R2  | R3 | 0  | DEPTH − 1 |
+| 2 | TOS | R3  | 0  | 0  | DEPTH − 2 |
+| 3 | TOS | 0   | 0  | 0  | DEPTH − 3 |
+
+Encoded as three `add_gated_opcode_index` invocations
+(`weight_matrices.c §3012-3035`), one per operand value. The helper
+adds `S_OPERAND` to the gate at scale 100·SCALE (the `index_scale`
+constant at line 3018), so the gate signature
+$\mathbf{1}[opcode = \text{OP\_POPN}\ \wedge\ operand = n]$ is again a
+single sigmoid-difference pair with the same float32 saturation as
+opcode-only dispatch. Per operand the residual writes are five gated
+pairs (one per register being moved or cleared), totalling 3 × 5 = 15
+gated pairs = 30 sign-conjugate neurons; well within the Layer-3 FFN
+budget.
+
+The type tags `S_TYPE_TOS..S_TYPE_R3` shift in lock-step, using the
+same gated-pair shape over `(S_TYPE_SOS, S_TYPE_R2, …)` lanes. Going
+beyond $n = 3$ would require either (a) one additional operand index
+per `n` (linear in budget; trivial), or (b) a RASP-style aggregate
+attention over the stack-depth field with a `≤ n` mask (one extra
+head; encodable but unneeded for the current artifact contract because
+the compiler never emits the larger pop). The landed implementation
+chose (a) for clarity.
+
+### 5.4. `OP_CONS`, `OP_CAR`, `OP_CDR`, `OP_SET_CAR`, `OP_SET_CDR` (landed)
+
+The landed form uses the 5-field Zone E layout (§3.1) and the existing
+six-layer schedule — Layer 3 computes the operation transients
+(`S_ARENA_TARGET`, `S_ARENA_NEW_KIND`, etc.) and Layer 4 performs the
+arena cell mutation. No Layer 6/7 was needed: the cell fetch happens
+in Layer 2 (which already has a 16-way indicator loop available for
+the AD tape) and the cell write happens in Layer 4 (which already has
+the dual-input AND gating pattern from the AD tape writes).
+
+**`(cons a b)` — landed form.** Pre-state: `TOS = b, SOS = a`.
+
+Layer 3 (`weight_matrices.c §codegenCons block`):
+
+1. emits the cell at index `S_ARENA_NEXT` with `kind = ARENA_KIND_PAIR`,
+   `car_val = SOS, cdr_val = TOS`,
+   `car_type = S_TYPE_SOS, cdr_type = S_TYPE_TOS`. The five values land
+   in the per-cell write scratch slots
+   `S_ARENA_WRITE_KIND, S_ARENA_NEW_CAR, S_ARENA_NEW_CDR,
+   S_ARENA_NEW_CAR_TYPE, S_ARENA_NEW_CDR_TYPE`;
+2. sets `S_ARENA_TARGET = S_ARENA_NEXT`;
+3. replaces `TOS` with the new cell index (= old `S_ARENA_NEXT`) and
+   sets `S_TYPE_TOS = TYPE_PAIR`;
+4. pops `SOS` into `R2`'s lane, shifting the register file as
+   `OP_POP` does;
+5. increments `S_ARENA_NEXT` by 1 via an unconditional add gated on
+   the opcode indicator.
+
+Layer 4 (`weight_matrices.c §arena cell-write block`) then sees
+`S_ARENA_TARGET` set and runs the per-cell indicator loop:
+
+$$
+\text{cell}_i.\text{field}_j\ \mathrel{+}= \mathbf{1}[\text{S\_ARENA\_TARGET} = i] \cdot \bigl(\text{NEW\_field}_j - \text{cell}_i.\text{field}_j\bigr)
+$$
+
+for every $i \in [0, 16)$ and every field $j \in [0, 5)$. The dual-input
+AND pattern from §6.3 of `docs/SDNC.md` applies: the target indicator
+is at gate weight $\text{SCALE}$ and the kind-is-being-set
+indicator (= `S_ARENA_TARGET >= 0` plus a write-flag from Layer 3) is
+at $10\cdot\text{SCALE}$. Cost: 16 cells × 5 fields × 2 sign-conjugate
+neurons = 160 Layer-4 FFN neurons. Out of 2304 Layer-4 FFN positions,
+this is ≈ 7% of the available width.
+
+**`(car p)` / `(cdr p)`.** Pre-state: `TOS = pair-ptr`,
+`S_TYPE_TOS = TYPE_PAIR`.
+
+Layer 2 (`weight_matrices.c §arena read block`) loops over the 16
+cells, indicator-gated on `S_TOS = i`, and projects the cell's
+`F_CAR_VAL, F_CDR_VAL, F_CAR_TYPE, F_CDR_TYPE` into the read scratch
+slots `S_ARENA_READ_CAR, S_ARENA_READ_CDR` and the corresponding type
+lanes. Cost: 16 cells × 4 fields × 2 = 128 Layer-2 neurons.
+
+Layer 3 then writes the residual:
+
+$$
+\Delta\text{S\_TOS}\ =\ \mathbf{1}[\text{opcode} = \text{OP\_CAR}] \cdot (\text{S\_ARENA\_READ\_CAR} - \text{S\_TOS}),
+$$
+
+$$
+\Delta\text{S\_TYPE\_TOS}\ =\ \mathbf{1}[\text{opcode} = \text{OP\_CAR}] \cdot (\text{S\_ARENA\_READ\_CAR\_TYPE} - \text{S\_TYPE\_TOS}),
+$$
+
+with the obvious twins for `OP_CDR` using `S_ARENA_READ_CDR`. Cost: 4
+gated pairs (2 ops × {TOS write, TYPE_TOS write}) in Layer 3 = 8
+neurons.
+
+**`(set-car! p v)` / `(set-cdr! p v)`.** Pre-state: `TOS = v, SOS = p`.
+Layer 3 sets `S_ARENA_TARGET = SOS` and writes the value lane of the
+target cell:
+
+$$
+\Delta\text{cell}_i.\text{F\_CAR\_VAL}\ =\ \mathbf{1}[\text{S\_ARENA\_TARGET} = i] \cdot \mathbf{1}[\text{opcode} = \text{OP\_SET\_CAR}] \cdot (\text{S\_TOS} - \text{cell}_i.\text{F\_CAR\_VAL}),
+$$
+
+plus the matching `F_CAR_TYPE` write. `OP_SET_CDR` is the symmetric
+case. Cost: 16 cells × 2 fields × 2 ops = 64 Layer-4 neurons.
+
+**Why the Layer 6/7 design was abandoned.** The original plan called
+for a dedicated cell-fetch attention head in a new Layer 6 and a
+dedicated heap-mutate FFN in a new Layer 7. The implementation review
+found that (a) Layer 0's instruction-fetch attention pattern can be
+reused inside Layer 2 as a 16-way indicator loop (the head dimension
+HD = 2 is enough for a 16-key lookup with SCALE = 300), and (b) Layer
+4's existing dual-input AND gating already handles target-indexed
+writes for the AD tape. Promoting both to dedicated layers would have
+added a third forward pass through the FFN matrices on every cycle
+for what amounts to a one-cell-per-op operation. The landed
+implementation reuses Layer 2 for the read and Layer 4 for the write,
+keeping the schedule at six layers and the matrix-mode wall time
+under one minute for the full traced suite.
+
+### 5.5. Cross-references and historical encoding notes
+
+- `OP_NULL_P` is covered in §5.2 (the seven-way `S_TYPE_TOS` lookup
+  shares its `S_TYPE_IS_NIL` indicator with the predicate family).
+- `OP_SET_CAR` and `OP_SET_CDR` are covered in §5.4 (they share the
+  Layer-4 arena-cell-write loop with `OP_CONS`).
+
+The earlier design split here — separate sections for predicates,
+pair construction, and pair mutation — collapsed in the landed
+implementation because all three operations resolve into the *same*
+two pieces of hardware: a Zone-D-resident transient set produced by
+Layer 2 indicators, plus a Layer-4 indicator-gated cell write. The
+section headings are preserved for archaeological clarity but the
+body has been folded.
+
+### 5.6. `OP_VEC_CREATE`, `OP_VEC_REF`, `OP_VEC_SET`, `OP_VEC_LEN` (landed, bounded)
+
+The landed vector encoding uses two cell kinds: a header cell
+(`ARENA_KIND_VECTOR`) whose `car = length` and `cdr` = the cell index
+of the first element, plus `ARENA_MAX_INLINE_VECTOR = 4` element
+cells (`ARENA_KIND_VEC_ELEM`) chained through `cdr`. So a vector of
+length $n \le 4$ occupies $1 + n$ arena cells: one header plus $n$
+elements.
+
+**`(vector v0 v1 v2 v3)` — Layer 3 + Layer 4.**
+
+Layer 3 (`weight_matrices.c §codegenVecCreate`) populates the vector
+write scratch window:
+
+- `S_ARENA_VEC_BASE = S_ARENA_NEXT`  (the header cell index)
+- `S_ARENA_VEC_LEN = operand`         (the requested length, $\le 4$)
+- `S_ARENA_VEC_E[0..3] = ` register-file extraction:
+  - `S_ARENA_VEC_E0 = R3` (operand 4),
+  - `S_ARENA_VEC_E1 = R2` (operand 3),
+  - `S_ARENA_VEC_E2 = SOS` (operand 2),
+  - `S_ARENA_VEC_E3 = TOS` (operand 1) — i.e. reversed stack order so
+    `vector-ref 0` reads $v_0$;
+- `S_ARENA_VEC_T[0..3]` carry the matching `S_TYPE_R3..S_TYPE_TOS`;
+- `S_ARENA_VEC_HAS_E[0..3]` are 1.0 for the first `operand` slots and
+  0 otherwise, computed via `add_gated_opcode_index` against
+  `operand`.
+
+Layer 4 writes the five $1+n$ arena cells. For each cell $i$ and each
+of the five fields:
+
+$$
+\Delta\text{cell}_i.\text{kind}\ =\ \mathbf{1}[i = \text{S\_ARENA\_VEC\_BASE}]\cdot(\text{ARENA\_KIND\_VECTOR} - \text{cell}_i.\text{kind})
+$$
+
+for the header cell, and similar element-cell writes gated by
+`S_ARENA_VEC_HAS_E[k]` for $k \in [0, 4)$. The cell-chain `cdr` field
+is computed inline as `S_ARENA_VEC_BASE + k + 1`. Cost: 16 cells × 5
+fields × 5 (1 header + 4 elements) = 400 Layer-4 neurons; in
+practice the gates are sparse because `S_ARENA_VEC_HAS_E[k]` zeros
+out the unused element writes. The bump pointer `S_ARENA_NEXT`
+increments by `1 + S_ARENA_VEC_LEN` after the write.
+
+**`(vector-ref v i)`.** Pre-state: `TOS = i, SOS = v-ptr`. The chain
+walk needed for unbounded `i` is what §5.6 originally feared and
+what kept this op delegated. The bounded landed form sidesteps it:
+since vectors are at most 4 elements long, the runtime relation
+between `i` and the target cell is
+
+$$
+\text{target\_cell} = \text{header\_cell} + 1 + i,\qquad 0 \le i \le 3.
+$$
+
+Layer 2's arena-read indicator loop reads `cell.F_CAR_VAL` (and the
+type) into `S_ARENA_READ_CAR` after Layer 3 has computed the target
+cell index. Layer 3 itself uses a two-tier indicator
+(`add_gated_opcode_index`) keyed on `(S_OPCODE, S_TOS)` — for each
+$i \in [0, 4)$ and each valid header cell index $h \in [0, 16)$, one
+gated pair fires when `S_OPCODE = OP_VEC_REF` and `S_TOS = i` and
+sets `S_ARENA_TARGET = h + 1 + i`. This is $4 \times 16 = 64$ Layer-3
+neurons. The subsequent Layer-4 cycle is unused for this opcode;
+the read result lands in the residual on the *same* cycle because
+Layer 2 already loaded the cell into the read scratch slots.
+
+**`(vector-set! v i x)`.** Combines VEC_REF's target computation with
+the SET_CAR write pattern. The bounded form uses the same
+$(h + 1 + i)$ target arithmetic as `OP_VEC_REF` and the same
+Layer-4 cell-write loop as `OP_SET_CAR`. Cost: 64 Layer-3 neurons
+for target computation + 16 × 2 Layer-4 neurons for write = 96
+neurons in addition to those already paid by VEC_REF and SET_CAR.
+
+**`(vector-length v)`.** Trivial: Layer 2 reads the header cell into
+`S_ARENA_READ_CAR` (= the length field), Layer 3 writes
+`S_TOS = S_ARENA_READ_CAR` gated on `S_OPCODE = OP_VEC_LEN`. One
+gated pair.
+
+**Out-of-bounds and chain.** Programs that index past the bounded
+inline window are not in the artifact contract. The Layer-3
+`S_TOS = i` indicators saturate to zero for $i \ge 4$, leaving the
+residual unchanged — an instructive failure mode where the matrix
+forward path stalls but does not corrupt state. The production VM
+handles unbounded vectors by allocating into the runtime arena
+outside Zone E; programs that mix bounded inline vectors with
+unbounded vectors must keep them disjoint or fall back to the
+production VM entirely.
+
+### 5.7. `OP_STR_REF`, `OP_STR_LEN` (landed, read-only)
+
+Strings reuse the vector cell layout: a header cell with `car = length`
+and a chain of `ARENA_KIND_VEC_ELEM` cells holding character codes
+(one per element). The only landed string ops are the *reads*, because
+the artifact's program suite uses strings as literal display values
+and function names — no string construction or mutation appears in
+any traced program.
+
+`OP_STR_REF` and `OP_STR_LEN` use the same Layer-2 arena read +
+Layer-3 residual write as `OP_VEC_REF` and `OP_VEC_LEN` respectively.
+The only difference is the `S_TYPE_TOS` value set on the result:
+`OP_STR_REF` writes `TYPE_NUMBER` (the character code is a number),
+`OP_STR_LEN` writes `TYPE_NUMBER` (the length is a number),
+`OP_VEC_REF` writes the cell's `F_CAR_TYPE`, `OP_VEC_LEN` writes
+`TYPE_NUMBER`. The bounded length constraint is the same: $\le 4$.
+
+Dedicated string construction (e.g. `string-append`, `number->string`)
+is left to the production runtime via `OP_NATIVE_CALL`; the artifact
+contract is that *reading* a string already in the arena is in the
+weight path.
+
+### 5.8. Closures and upvalues — `OP_CLOSURE, OP_GET_UPVALUE, OP_SET_UPVALUE, OP_CLOSE_UPVALUE, OP_OPEN_CLOSURE` (landed)
+
+A closure occupies $1 + k$ arena cells: the header
+(`kind = ARENA_KIND_CLOSURE = 4.0`, `car = entry_pc`, `cdr = k`) plus
+$k$ upvalue cells whose `car` carries the upvalue value and whose
+`car_type` carries the upvalue type. The landed bound is $k \le 4$,
+matching `ARENA_MAX_INLINE_VECTOR` and the four-slot MEM register file.
+
+The persistent state dimension `S_CUR_CLOSURE` (dim 15, the last
+Zone A register) holds the *currently executing* closure's arena cell
+index, or a sentinel of -100.0 when the program is in top-level
+context.
+
+**`OP_CLOSURE function-pc`.** Layer 3 emits a header write at
+`S_ARENA_NEXT` with `kind = ARENA_KIND_CLOSURE`, `car_val = operand`
+(= function PC), and `cdr_val = 4` (= upvalue count). The header
+write uses the same Layer-4 indicator-gated cell mutation pattern as
+`OP_CONS`. `S_ARENA_NEXT` increments by 5 to reserve the four
+upvalue cells; the upvalue cells start zero-initialised and are
+written by subsequent `OP_SET_UPVALUE` or `OP_CLOSE_UPVALUE`
+invocations. `S_TOS` is updated to the new closure index and
+`S_TYPE_TOS = TYPE_CLOSURE`.
+
+**`OP_OPEN_CLOSURE`.** Layer 3 writes
+`S_CUR_CLOSURE = S_TOS`, which Layer 4 then preserves through the
+call frame. The reference VM saves and restores `g_current_closure_ptr`
+across `OP_CALL`/`OP_RETURN` (see `weight_matrices.c §g_frames`
+infrastructure); the matrix path uses an `exec_loop_postprocess`
+shim that mirrors the same save/restore at the dispatch loop level.
+This is the one remaining piece of the closure encoding where the
+matrix path leans on a host post-process; the closure cell *contents*
+are entirely weight-encoded, but the *frame discipline* of `S_CUR_CLOSURE`
+during nested calls is handled by the dispatch loop.
+
+**`OP_GET_UPVALUE k`.** Two-tier read: first, Layer 2 computes the
+existing MEM-backed fallback using the `S_LOADVAL` slot
+(this is the same address-resolution loop that `OP_GET_LOCAL` uses,
+`weight_matrices.c §1261-1262`); then, Layer 4 overwrites `S_TOS`
+from `arena[S_CUR_CLOSURE + 1 + k].car` when `S_CUR_CLOSURE`
+is in range $[0, 16)$. The "in range" check is again a dual-input
+AND: gate weight $\text{SCALE}$ on `S_OPCODE = OP_GET_UPVALUE`,
+$\text{SCALE}$ on `S_OPERAND = k`, plus the `S_CUR_CLOSURE`
+indicator over the closure cell index. Cost: 4 operand values × 16
+closure indices = 64 Layer-4 neurons for the arena read; the MEM
+fallback adds the standard 4-slot lookup from `OP_GET_LOCAL`.
+
+**`OP_SET_UPVALUE k`.** Writes to both the MEM fallback *and* the
+arena cell, gated identically to `OP_GET_UPVALUE`. Cost: 64 Layer-4
+neurons for the arena write + the MEM-write counterpart.
+
+**`OP_CLOSE_UPVALUE k`.** Copies `MEM[k]` into the arena cell
+`arena[S_CUR_CLOSURE + 1 + k]`. Layer 2 reads `MEM[k]` into
+`S_LOADVAL`; Layer 4 writes the arena cell from `S_LOADVAL`. Cost:
+matches `OP_SET_UPVALUE` (the same target arithmetic, different
+source dim).
+
+**What stays outside.** The bounded slice covers $k \le 4$ upvalues
+and a single closure depth at a time (the active closure index is a
+single scalar). Multi-level closure capture (closure-over-closure
+where the inner closure references the outer's upvalues by *closure
+chain* rather than by name) requires either a recursive arena walk
+(Looped-Transformer pattern: iterate the dispatch loop with an
+incremented "chain depth" register) or a widened closure header
+with an enclosing-closure pointer. Neither is in the current
+artifact.
+
+### 5.9. `OP_PACK_REST` (landed, bounded)
+
+`(pack-rest n_fixed)` packs `MEM[n_fixed..3]` into a single list. The
+bounded form writes a contiguous arena pair chain *in a single VM
+step* (no looping), exploiting the fact that the rest range is at
+most $4 - n_{\text{fixed}}$ cells.
+
+**Layer 3 setup.** A bounded list-construction scratch window lives in
+Zone E's transient region (`S_ARENA_LIST_BASE`,
+`S_ARENA_LIST_E[0..3]`, `S_ARENA_LIST_T[0..3]`,
+`S_ARENA_LIST_CDR[0..3]`, `S_ARENA_LIST_CDRT[0..3]`,
+`S_ARENA_LIST_HAS_E[0..3]`, 20 dims total at
+`weight_matrices.c §241-262`). Layer 3 populates:
+
+- `S_ARENA_LIST_BASE = S_ARENA_NEXT` — first pair cell index;
+- `S_ARENA_LIST_E[k] = MEM[n_fixed + k]` for $k \in [0, 4-n_{\text{fixed}})$;
+- `S_ARENA_LIST_T[k] = ` corresponding type tag;
+- `S_ARENA_LIST_CDR[k] = ` next cell index, with the chain closed by
+  `S_ARENA_LIST_CDR[last] = -1` (the nil sentinel from `OP_NIL`);
+- `S_ARENA_LIST_HAS_E[k] = 1` for cells within the rest range,
+  `0` otherwise.
+
+**Layer 4 fan-out.** Four pair-cell writes execute in parallel (one
+per element). The Layer-4 cell-write loop already iterates over 16
+target indices, so the four cells $S_{\text{ARENA\_LIST\_BASE}} +
+k$ each get their gate fired by an indicator-pair on
+`(S_ARENA_LIST_HAS_E[k], target = base + k)`. Each cell receives
+`kind = ARENA_KIND_PAIR`, `car_val = S_ARENA_LIST_E[k]`,
+`cdr_val = S_ARENA_LIST_CDR[k]`, plus the two type lanes.
+
+**MEM update.** `MEM[n_fixed]` is overwritten with `S_ARENA_LIST_BASE`
+(the list head pointer) and `S_TYPE_MEM[n_fixed] = TYPE_PAIR`. The
+bump pointer `S_ARENA_NEXT` advances by $4 - n_{\text{fixed}}$.
+
+**Cost.** Per arena cell: 5 fields × 2 sign-conjugate neurons = 10
+Layer-4 neurons; four cells × 10 = 40 neurons, plus the
+indicator-pair budget at Layer 3 for the scratch population. Total
+≈ 80 neurons for `OP_PACK_REST`. The opcode appears in 4 of the 123
+traced programs (variadic-call tests). Unbounded rest-list lengths
+would require looping the dispatch — re-issuing `OP_PACK_REST` with
+an incremented register window — or expanding the
+`S_ARENA_LIST_*` window beyond four slots.
+
+### 5.10. `OP_TAIL_CALL`, plus bounded escape continuations (`OP_CALLCC` / `OP_INVOKE_CC`)
+
+**`OP_TAIL_CALL n`** is `OP_CALL n` followed immediately by `OP_RETURN`
+with frame reuse. The semantic delta from `OP_CALL` is that the
+current call frame is *overwritten* rather than pushed, so the dispatch
+loop's `g_frame_count` does not increment. The bounded encoding covers
+arities $n \in \{0, 1, 2, 3, 4\}$: Layer 3 dispatches one
+`add_gated_opcode_index` per arity, with the residual delta computed as:
+
+- `PC = TOS` (the function PC was on top of the stack);
+- `MEM0..MEM2 ← SOS, R2, R3` for the first three arguments
+  (gated by the arity indicator);
+- `MEM3 ← 0` if `n < 4`, else `MEM3 ← R3`;
+- `TOS, SOS, R2, R3 ← 0` (stack reset);
+- `S_TYPE_TOS..S_TYPE_R3 ← TYPE_NUMBER` (stack-type reset);
+- `S_DEPTH ← S_DEPTH - (1 + n)` (depth decrement);
+- `S_CUR_CLOSURE` *not* reset — tail-call reuses the closure frame.
+
+The dual-input AND pattern on `(S_OPCODE, S_OPERAND)` makes each
+arity a 16-neuron block (8 fields × 2 sign-conjugate); the five
+arities together account for ≈ 80 Layer-3 neurons.
+
+Broader arities require the same arena-list path as `OP_PACK_REST`
+(loop the dispatch, re-issue with shifted register windows) or a
+widened MEM register file.
+
+**`OP_CALLCC` / `OP_INVOKE_CC`** (bounded escape continuations).
+The general R7RS `call/cc` captures the *full* stack, the heap, the
+exception handler chain, and the dynamic-wind frames into a
+re-instatable continuation object. That is out of scope for the
+bounded artefact. What *is* in scope is the bounded **escape
+continuation**: a captured continuation that is only invoked once,
+and only to unwind back to its capture point, with no re-entry and
+no dynamic-wind interaction. The bounded form is sufficient for
+direct-style exception simulation and for one-shot non-local exits.
+
+The encoding uses **four contiguous arena cells in Zone E**
+(`ARENA_CONT_CELLS = 4` at `weight_matrices.c §96`):
+
+- cell 0 — kind = `CONT_RESTORE_MARKER = 7.0`, `car = saved_PC`,
+  `cdr = saved_FP`;
+- cell 1 — `car = saved_TOS`, `cdr = saved_SOS`,
+  `car_type/cdr_type` = the two type tags;
+- cell 2 — `car = saved_R2`, `cdr = saved_R3`, types as above;
+- cell 3 — `car = saved_DEPTH`, `cdr = saved_CUR_CLOSURE`.
+
+`OP_CALLCC` reserves four arena cells, snapshots the live state into
+them, and pushes the continuation's first-cell index onto `S_TOS`
+with `S_TYPE_TOS = TYPE_CONT = 7`. `OP_INVOKE_CC` indicator-loops
+over the 16 cells, finds the one with
+`kind = CONT_RESTORE_MARKER`, and restores all eight saved fields
+in a single Layer-4 write. Cost: ≈ 80 Layer-3 neurons for the
+snapshot (16 cells × ≈ 5 fields × 2-pair gates, with most gates zero
+for non-target cells) and the same again for the restore. The
+exercised programs use bounded `call/cc` for one-shot escape from
+nested computations.
+
+Full R7RS first-class continuations — re-entry, dynamic-wind
+interaction, exception unwinding through `OP_PUSH_HANDLER` /
+`OP_POP_HANDLER` — remain at the host runtime via `OP_NATIVE_CALL`.
+The bounded escape-continuation slice closes the *case that
+arises in the bounded artifact*; it does not claim to solve the
+general continuation problem.
+
+### 5.11. AD transcendentals — `OP_AD_DIV`, `OP_AD_POW`, `OP_AD_SIN`, `OP_AD_COS` (landed, table form)
+
+The four "transcendental" AD opcodes were originally delegated to the
+host runtime for *precision*, not for any side-effect reason. The
+landed strict-artifact form table-encodes the verifier-exercised
+input range; broader general-input precision sits behind a separate
+"relaxed precision" build target (see §8 Stage 4).
+
+#### 5.11.1 `AD_SIN`, `AD_COS` — integer-input table
+
+Constants from `weight_matrices.c §98-99`:
+
+```c
+#define AD_TRIG_WEIGHT_MIN_INPUT -4
+#define AD_TRIG_WEIGHT_MAX_INPUT  4
 ```
-TOS_new = indicator(S_TYPE_TOS, TYPE_NIL=6)
-TYPE_TOS_new = TYPE_BOOL
+
+For integer $x \in [-4, 4]$ (nine values), Layer 3's forward AD
+dispatch table-looks-up
+
+$$
+\sin(x), \quad \frac{d}{dx}\sin(x) = \cos(x), \quad
+\cos(x), \quad \frac{d}{dx}\cos(x) = -\sin(x)
+$$
+
+via `add_gated_opcode_index` keyed on $(S_{\text{OPCODE}}, x_{\text{round}})$
+where $x_{\text{round}}$ is the value at the tape's input slot. Each
+of the 9 input values × 2 ops × 2 quantities (value + saved
+derivative) gives 36 table entries, each implemented as one
+gated-pair = 72 Layer-3 neurons. Layer 4's tape-write path then
+records the resulting node onto the AD tape as `AD_OP_SIN` or
+`AD_OP_COS` with the saved derivative loaded.
+
+Traced coverage: the artefact exercises $x \in \{-1, 0, 1\}$,
+demonstrating both positive and negative gradient propagation
+through trigonometric layers.
+
+#### 5.11.2 `AD_DIV` — bounded-denominator table
+
+`AD_DIV` is encoded for positive integer denominator $d \in [1, 16]$.
+Constants from `weight_matrices.c §305-309`:
+
+```c
+#define DIV_WEIGHT_MAX_DENOM 16
 ```
 
-Identical pattern to §5.1. Cost: one gated pair. Move from `S_IS_NATIVE`
-delegation to weight implementation.
+The forward computes $\ell / d$ for the integer denominator; the
+saved value is $1/d$ (the left-derivative factor). The backward
+rule (`ad_backward_step` at line 1077-1082) gives
 
-### 5.3. `OP_POPN` (currently delegated, encodable)
+$$
+\partial L / \partial \ell = \text{grad} \cdot (1/d) = \text{grad} \cdot \text{saved},
+$$
 
-`POPN n` pops `n` values *below* TOS, keeping TOS at the top. With `n ≤ 3`
-(typical compiler emission for let-binding cleanup), it is:
+$$
+\partial L / \partial d = \text{grad} \cdot \ell \cdot (-1/d^2).
+$$
 
-```
-n=1: TOS_new = TOS, SOS_new = R2, R2_new = R3, R3_new = 0,  DEPTH -= 1
-n=2: TOS_new = TOS, SOS_new = R3, R2_new = 0,  R3_new = 0,  DEPTH -= 2
-n=3: TOS_new = TOS, SOS_new = 0,  R2_new = 0,  R3_new = 0,  DEPTH -= 3
-```
+The right-side gradient is the interesting one because $d^2$ would
+require a second square activation. The encoding sidesteps this by
+storing $1/d$ as `saved` and computing
+$\text{grad} \cdot \ell \cdot (-(1/d) \cdot (1/d))$ via two
+polarisation products in Layer 1 followed by Layer 5's gradient
+write — but the bounded table simplifies further: for each
+denominator $d \in [1, 16]$, a single gated value $-1/d^2$ is
+precomputed and table-looked-up by the `(opcode, denominator)`
+pair-index. Cost: 16 denominator values × {forward, left-grad,
+right-grad} × 2 sign-pair neurons ≈ 96 Layer-3+5 neurons total.
 
-Three indicator-gated pairs over `(opcode, operand)` in Layer 3. Eshkol's
-compiler currently emits `POPN n` only with `n ∈ {1,2,3}` for top-of-let
-cleanup; larger `n` would require a full register-shift block (RASP-style:
-`select(operand-positions-below-TOS, ≤, n) → aggregate`), which is encodable
-but adds an attention head. **Recommendation:** stage 1 covers `n ≤ 3`,
-catches all current emissions; stage 2 generalises if the compiler ever
-emits `POPN n>3`.
+Verifier coverage includes both `d(x/2)/dx` (where $\ell$ is the AD
+variable) and `d(6/y)/dy` (where $d$ is the AD variable), exercising
+both sides of the binary gradient rule.
 
-### 5.4. `OP_CONS` and `OP_CAR`/`OP_CDR` (3 of the 12 heap ops)
+#### 5.11.3 `AD_POW` — bounded base+exponent table
 
-`(cons a b)` pre-state: TOS = b, SOS = a. Post-state: TOS = pointer-to-new-pair,
-type_tos = 2. The cell to write into is `S_HEAP_FREE`; afterwards
-`S_HEAP_FREE += 1`.
+`AD_POW` covers $b \in [1, 8]$ and $e \in [1, 4]$. Constants
+(`weight_matrices.c §311-312`):
 
-**Layer 3** sets `S_IS_HEAP_WRITE = 1`, `S_HEAP_TARGET = S_HEAP_FREE`,
-loads the new car/cdr into `S_NEW_CAR_VAL` / `S_NEW_CDR_VAL` (where
-"new"-slots live in Zone D spare).
-
-**Layer 7** — the heap-mutate FFN — fires when `S_IS_HEAP_WRITE = 1`:
-
-```
-For each cell i ∈ [0, 16):
-  cell_targeted = indicator(S_HEAP_TARGET, i) · alive
-  Δ heap[i].F_TYPE  = cell_targeted · (TYPE_PAIR  - heap[i].F_TYPE)
-  Δ heap[i].F_CAR   = cell_targeted · (S_NEW_CAR  - heap[i].F_CAR)
-  Δ heap[i].F_CDR   = cell_targeted · (S_NEW_CDR  - heap[i].F_CDR)
+```c
+#define AD_POW_WEIGHT_MAX_BASE 8
+#define AD_POW_WEIGHT_MAX_EXP  4
 ```
 
-Cost in weight count: 16 cells × 3 fields × {gate, up, down} = 144 entries.
-Each entry is one row of the FFN's gate/up/down matrices, so one weight
-column triple. The gated-FFN width grows by 144 from cell-fetch alone.
+The forward computes $b^e$ for the integer pair; the saved value is
+$e \cdot b^{e-1}$ (the base-derivative factor). Backward rule
+(`ad_backward_step §1083-1088`):
 
-`OP_CAR` / `OP_CDR`: Layer 6 (cell fetch) reads the pair at `S_TOS`, exposes
-`F_CAR` / `F_CDR` in `S_LOAD_F0` / `S_LOAD_F1`. Layer 3 then writes
-`S_TOS = S_LOAD_F1` (CAR — wait, this is wrong; let me re-check encoding).
+$$
+\partial L / \partial b = \text{grad} \cdot e \cdot b^{e-1} = \text{grad} \cdot \text{saved},
+$$
 
-**Correction.** `(car p)` returns the *first* element. `F_CAR` field is at
-offset 1 within the cell (`F_CAR=1` from §3.1). Layer 6's projection lands
-F_CAR into `S_LOAD_F1` (the second slot, indexed by field number, not
-position-on-stack). Layer 3 writes:
+$$
+\partial L / \partial e = \text{grad} \cdot b^e \cdot \log b = \text{grad} \cdot \text{val} \cdot \log b.
+$$
 
-```
-Δ S_TOS = indicator(opcode, OP_CAR) · alive · (S_LOAD_F1 - S_TOS)
-Δ S_TYPE_TOS = indicator(opcode, OP_CAR) · alive · (S_LOAD_F0_TYPE - S_TYPE_TOS)
-```
+The base gradient uses the standard polarisation product; the
+exponent gradient requires a $\log b$ value, which is table-looked-up
+by the base index. Cost: 8 bases × 4 exponents × 3 fields × 2 = 192
+Layer-3+5 neurons. Traced coverage includes `d(pow(x, 2))/dx` and
+`d(pow(2, y))/dy`.
 
-where `S_LOAD_F0_TYPE` is a parallel read-out from a *type lane* in the
-heap bank: type tags for each field stored at offset 32 in Zone E (§3.1
-revision: each cell needs 8 value lanes + 4 type lanes; we widen Zone E to
-12 fields per cell, total 16 × 12 = 192 dims, so `d_model = 128 + 192 = 320`,
-rounded to 384 for SIMD alignment, or we accept 8 value lanes only and
-constrain car/cdr/elements to be self-typed via a side table).
+#### 5.11.4 Other unary AD ops — sigmoid, tanh, exp, log, sqrt, abs, relu
 
-**Decision.** Self-typed lanes (no separate type lanes) for stage 1: any
-cell field carries a number/pair-pointer/nil mix. The TOS type tag is set
-by *which opcode is reading* — `CAR` of a pair-cell knows its result has
-the pair's recorded `F_TYPE_CAR` (we add a 4-bit type per slot at the cost
-of 16 dims, well within budget). Final cell layout: 8 fields × 12 bits each
-(8-bit value + 4-bit type, packed into a single float at `1.0f * value +
-type * 16384.0f` or whatever encoding is bit-stable in float32 — TBD via
-ablation), but to keep the artifact contract clean we **just double the
-fields**: 8 value + 4 type = 12 fields per cell, `d_model = 256`, 16 cells,
-type lanes at fields 8-11 mirroring fields 1-4. Done.
+The bounded artefact table-encodes:
 
-### 5.5. `OP_NULL_P`, `OP_SET_CAR`, `OP_SET_CDR`
+- `AD_ABS`, `AD_RELU` for bounded nonzero integer-scale cases;
+- `AD_EXP` at $x = 0$;
+- `AD_SIGMOID` at $x = 0$ and $x = 1$;
+- `AD_TANH` at $x = 0$;
+- `AD_LOG` at $x = 1$;
+- `AD_SQRT` at $x = 4$.
 
-`OP_NULL_P` covered in §5.2.
+The pattern is identical to `AD_SIN`/`AD_COS`: gated `(opcode,
+input)` indicator, table-lookup of `(value, saved_derivative)`,
+Layer-4 tape append. Each saved-derivative table entry is one
+`add_gated_opcode_index` pair = 2 neurons.
 
-`OP_SET_CAR` pre-state: TOS = val, SOS = pair-ptr. Layer 3 sets
-`S_IS_HEAP_WRITE = 1`, `S_HEAP_TARGET = S_SOS`, `S_NEW_CAR = S_TOS`,
-`S_HEAP_WRITE_FIELD_MASK = 0b00000010` (only F_CAR field). Layer 7
-selectively updates only the masked field. Cost: 16 cells × 1 field = 16
-gated entries (small).
+#### 5.11.5 Out-of-scope: general libm precision
 
-### 5.6. `OP_VEC_CREATE`, `OP_VEC_REF`, `OP_VEC_SET`, `OP_VEC_LEN`
+Broader transcendental coverage — general $\sin(x)$ for non-integer
+$x$, general $\exp$ / $\log$, general $\text{pow}(a, b)$ — would
+require one of:
 
-`OP_VEC_CREATE n` pops `n` values, packs into a vector cell. For `n ≤ 4`
-(inline fits in one cell), one Layer-7 write touches all 4 data slots
-(F_CAR, F_CDR, F_DATA0, F_DATA1) and `F_LEN = n`. For `n > 4`, the cell's
-`F_TYPE = vector_chain` and `F_CDR` points to the next cell which holds
-the spillover. **Stage 1** covers `n ≤ 4` only — covers all artifact
-test programs except `large_vector_test` (n=10). **Stage 2** adds chain
-walking via Layer 6 attention over multiple cells in sequence.
+- **Taylor series**: 5-term Taylor for $\sin$/$\cos$ is IEEE-correct
+  to ≈ 3 ULP for $x \in [-\pi, \pi]$; range-reduction is
+  matrix-encodable but adds one pass through Layer 3;
+- **Newton-Raphson reciprocal** for `pow(a, b) = exp(b * log a)`,
+  which converges in 4 iterations from a good initial guess;
+- **`exp(b * log a)` composition**, which depends on `AD_EXP` /
+  `AD_LOG` covering a wider input range.
 
-`OP_VEC_REF`: pre-state TOS = idx, SOS = vec-ptr. Layer 6 fetches the
-cell at SOS. Layer 3 selects `F_DATA[idx mod 4]` via a soft-indicator over
-the field offset (4 indicator gates); for `idx ≥ 4` (chain), Layer 6 must
-walk via F_CDR — recursion that the **looped transformer** absorbs by
-re-issuing the same instruction with PC unchanged but a "chain depth"
-counter incremented (Giannou §3.2 pattern). **Stage 1:** `idx ≤ 3` only.
-
-`OP_VEC_SET`: combines VEC_REF's read with SET_CAR's write pattern. One
-Layer-7 entry per (cell, field) targeted.
-
-`OP_VEC_LEN`: trivial — Layer 6 fetches `F_LEN` into `S_LOAD_F3`, Layer 3
-writes `S_TOS = S_LOAD_F3`. One indicator gate.
-
-### 5.7. `OP_STR_REF`, `OP_STR_LEN`
-
-Landed bounded form: identical to vector reads over the arena length-header
-layout. `OP_STR_REF` reads `header + 1 + index` and returns the element car
-as a character code; `OP_STR_LEN` reads the header car. Dedicated string
-construction and chained strings remain future work.
-
-The artifact's strings are short (function names: `"map"`, `"foldr"`,
-display literals: `"hello"`). Stage-1 `len ≤ 4` covers ~80% of artifact
-strings; we extend to length 32 in stage 2 by chaining 8 cells.
-
-### 5.8. Closures and upvalues (5 ops)
-
-Landed subset: `OP_CLOSURE` now creates an arena closure header and reserves
-four bounded upvalue cells immediately after the header. `S_CUR_CLOSURE` holds
-the active arena closure pointer across calls; `OP_OPEN_CLOSURE` sets it from
-`TOS`, and the host call-frame postprocess saves/restores it for ordinary
-`OP_CALL`/`OP_RETURN` frame management. `OP_GET_UPVALUE` first computes the
-existing MEM-backed fallback using `S_LOADVAL`, then Layer 4 overwrites `TOS`
-from `arena[S_CUR_CLOSURE + 1 + operand].car` when the current closure pointer
-is in range. `OP_SET_UPVALUE` writes both the MEM fallback and the arena cell;
-`OP_CLOSE_UPVALUE` copies `MEM[operand]` into that arena cell.
-
-A closure is an arena cell with `kind = closure`, `car = function-pc`, and
-`cdr = 4` for the reserved bounded upvalue capacity. The upvalue cells live at
-`closure + 1 + k` and store the value/type in the normal arena `car` lanes.
-Captures beyond four upvalues still require a chained or widened representation.
-
-This slice keeps the artifact's direct-entry `OP_CLOSURE` operand shape; the
-full compiler's constant-index/open-slot encodings still need a bridge before
-claiming arbitrary compiled Scheme closure parity.
-
-### 5.9. `OP_PACK_REST`
-
-`(pack-rest n_fixed)` packs `MEM[n_fixed..3]` into a single list. The landed
-bounded form writes a contiguous arena pair chain in one VM step: Layer 3
-precomputes the list base, element values, cdr links, and type lanes; Layer 4
-writes up to four pair cells into the in-state arena bank. `MEM[n_fixed]`
-receives the new list pointer. Larger rest lists need the same operation
-repeated over additional register windows.
-
-### 5.10. `OP_TAIL_CALL`
-
-`TAIL_CALL n` is `CALL n` followed by `RETURN` with frame reuse. Already
-encoded for bounded stack-register arities 0..4: `PC = TOS`, `MEM0..MEM2`
-receive `SOS/R2/R3` when present, `MEM3` is cleared, the stack/type
-registers are reset, and depth is decremented by `1 + argc`. Broader arity
-support needs the same list/arena path as `OP_PACK_REST`.
-
-### 5.11. AD transcendentals (4 ops): `OP_AD_DIV`, `OP_AD_POW`, `OP_AD_SIN`, `OP_AD_COS`
-
-These are delegated for *precision*, not for runtime side-effect. The strict
-artifact build now table-encodes `AD_SIN` and `AD_COS` for integer inputs -4..4,
-including saved reverse-mode derivatives (`cos(x)` for `sin`, `-sin(x)` for
-`cos`) and traced representative cases at -1, 0, and 1. It also table-encodes
-bounded `AD_DIV` for positive integer denominators 1..16. Division stores
-`1/right` as the saved left-derivative factor and gates the right derivative
-`-grad*left/(right^2)` by denominator. Bounded `AD_POW` covers positive integer
-bases 1..8 and exponents 1..4; it stores `right * left^(right-1)` as the saved
-base-derivative factor and gates the exponent derivative
-`grad * left^right * log(left)` by the `(base, exponent)` table key. Broader
-transcendental coverage can use the existing AD forward dispatch shape, but
-general inputs require:
-
-- `sin(x)` / `cos(x)`: Bhaskara's approximation or Taylor (5 terms ≈
-  IEEE-correct for x ∈ [-π, π], precision drops outside; range-reduction
-  is matrix-encodable but adds a second pass).
-- `pow(a, b)`: `exp(b · log(a))`, but this needs broader EXP/LOG support
-  than the current exercised-input AD table path.
-- `div(a, b)`: Newton-Raphson reciprocal `r_{n+1} = r_n · (2 - b · r_n)`
-  converges to `1/b` in 4 iterations from a good initial guess; multiply
-  by `a`. The looped-transformer pattern handles the iterations.
-
-**Stage 3** (most ambitious). The bit-identical agreement contract requires
-matching the C runtime's `libm sin/cos` to the float32 ULP, which Taylor
-approximations *do not* — they agree to about 3 ULPs. We **change the
-agreement contract** to "matches to 4 ULPs at the AD output" for the
-transcendental ops, document the relaxation, and ship a Taylor-encoded
-transformer alongside the strict-agreement libm-delegated transformer.
-Two builds, two contracts. The Taylor build is the "all memory ops are
-in the transformer" build; the libm build remains the artifact reference.
+None of these match the C runtime's `libm` bit-identically.
+Adopting them requires shifting the agreement contract from
+"bit-identical at every step" to "matches to N ULPs at the AD
+output", which is a different artefact — see §8 Stage 4.
 
 ## 6. Genuinely-native operations (out of scope)
 
@@ -725,6 +1182,40 @@ if newly weight-encoded opcodes change state-vector trajectories.
 - [ ] General `OP_AD_DIV` via Newton-Raphson 4-iter loop
 - [ ] **Acceptance:** Taylor-build matches reference to ≤ 4 ULPs on AD ops,
   documented relaxation; libm-delegated build remains bit-identical
+
+### Stage 0 — Bit-identity fixes (pre-stage 1)
+
+Before any of stages 1-4 could expand the weight-encoded opcode set,
+the **agreement contract had to be tightened from "output matches" to
+"every byte of every step matches"**. The contract change exposed five
+distinct weight-encoding bugs that had been hiding inside the inline
+0.01-tolerance output check. Each fix is documented in commit
+**`7301dc4 fix(paper): bit-identical SDNC agreement — 71/71 full
+per-step state`**; the full narrative is in
+`docs/SDNC.md §6`. Summary table for the milestone log:
+
+| # | Symptom                                                    | Root cause                                                                      | Fix location in `weight_matrices.c`                              |
+|--:|------------------------------------------------------------|--------------------------------------------------------------------------------|-------------------------------------------------------------------|
+| 1 | `tail sum(100)` matrix `tos = 4.4e-16` vs reference `0`     | `SCALE = 100` left $\exp(-35.4)$ residue in Layer 0 attention softmax           | `#define SCALE 300.0f`, lines 59-85                                |
+| 2 | `tape[1] = 7` on AD-VAR programs during backward            | Layer 4 forward tape-write missing the `S_AD_IS_FORWARD` row of the gate        | `add S_AD_IS_FORWARD coefficient = 10·SCALE`, lines 4880-4951      |
+| 3 | After fix 2, gate re-opens at high `S_AD_TAPE_LEN`         | Symmetric AND with both inputs at `SCALE` fails when one input swings wider     | Asymmetric weighting: `10·SCALE` on the binary input, lines 3752-3779 |
+| 4 | One-cycle PC/register/tos drift after backward finishes    | Cursor-done indicator at `cursor == -1` fires one cycle late                    | `at_done = indicator(cursor, 0.0f)`, lines 1352-1371 + 3744-3779   |
+| 5 | `sigmoid` AD gradient `0.393223852` vs `0.393223763`        | Reference VM multiplied `grad * saved` directly while matrix uses polarisation | `POLARIZATION_PRODUCT` macro in `ad_backward_step`, lines 1064-1096 |
+
+Acceptance after Stage 0 was 71/71 traced programs on both the
+output-agreement and the full-per-step-state-agreement metrics
+(commit `7301dc4`). Stages 1-4 then expanded the weight coverage
+while preserving both metrics, ending at the current 123/123 status.
+
+The lesson encoded in this milestone — *bit-identity is a stronger
+contract than approximate agreement, and the agreement metric the
+artifact reports must be the stronger one* — is now folded into the
+`compare_traces.py` exit policy
+(`scripts/paper/compare_traces.py §335`): the script exits non-zero
+when `output_agreeing_programs < total_programs`, and the regenerator
+refuses to ship a new QLMW file if the inline `test()` count of
+failures is nonzero. A future patch that introduces a drift on either
+metric must either revert or fix.
 
 ## 9. Risk & mitigation
 

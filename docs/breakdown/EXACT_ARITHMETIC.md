@@ -1,255 +1,477 @@
-# Exact Arithmetic in Eshkol: Bignums and Rationals
+# Exact Arithmetic in Eshkol — Bignum, Rational, Complex, Double and Dual
 
-This document describes the design and implementation of Eshkol's exact arithmetic
-subsystem, covering arbitrary-precision integers (bignums) and exact rational numbers.
-The system implements the R7RS numeric tower with automatic promotion, demotion, and
-mixed-exactness dispatch.
+This document is the canonical reference for the numeric tower implemented in
+Eshkol v1.2.1-scale. Its scope is the *exact* and *inexact* numeric types —
+`int64`, arbitrary-precision integers (bignums), exact rationals, IEEE 754
+doubles, dual numbers (forward-mode automatic differentiation) and complex
+numbers — together with the dispatch architecture that ties them into a single
+polymorphic arithmetic surface compatible with R7RS §6.2 *Numbers*.
 
----
-
-## 1. Numeric Tower
-
-Eshkol implements a five-level numeric tower, ordered by increasing generality:
-
-```
-int64 < bignum < rational < double < complex
-```
-
-Each level has a distinct runtime representation:
-
-| Level    | Type Tag                  | Heap Subtype             | Width    |
-|----------|---------------------------|--------------------------|----------|
-| int64    | `ESHKOL_VALUE_INT64` (2)  | N/A (inline)             | 8 bytes  |
-| bignum   | `ESHKOL_VALUE_HEAP_PTR` (8) | `HEAP_SUBTYPE_BIGNUM` (11)  | variable |
-| rational | `ESHKOL_VALUE_HEAP_PTR` (8) | `HEAP_SUBTYPE_RATIONAL` (19) | 16 bytes |
-| double   | `ESHKOL_VALUE_DOUBLE` (3) | N/A (inline)             | 8 bytes  |
-| complex  | `ESHKOL_VALUE_HEAP_PTR` (8) | heap-allocated           | 16 bytes |
-
-All values are transported as tagged values: a 16-byte struct
-`{type:i8, flags:i8, reserved:i16, padding:i32, data:i64}`. The `data` field holds
-either an inline int64/double (bit-punned) or a pointer to heap-allocated storage.
-
-### 1.1. Exactness Semantics (R7RS 6.2.3)
-
-The fundamental invariant governing arithmetic dispatch:
-
-- **Exact + Exact = Exact.** An int64 added to a bignum yields a bignum (or int64 if
-  the result fits). A rational divided by a rational yields a rational.
-
-- **Exact + Inexact = Inexact.** Any operation involving a double converts the exact
-  operand to double first, and the result is a double. This is a one-way gate:
-  exactness, once lost, is not recovered.
-
-- **Promotion preserves value.** An int64 promoted to bignum represents the identical
-  integer. A bignum promoted to double may lose precision (this is the
-  exact-to-inexact conversion).
-
-- **Demotion recovers compactness.** After an exact operation, if the bignum result
-  fits in the range `[-2^63, 2^63 - 1]`, it is demoted back to int64. This avoids
-  unnecessary heap allocation for values that transiently exceeded int64 range.
+The treatment is post-doctoral in register and faithful to the source. Every
+function name, dispatch order, layout constant and demotion rule cited below
+maps to a concrete line in the v1.2.1-scale source tree. Where the v1.2 release
+closed gaps that were latent in earlier branches, the gap and its fix are
+described with file-level citations.
 
 ---
 
-## 2. Bignum Implementation
+## 1. Numeric tower overview
 
-### 2.1. Representation
+Eshkol implements a six-level numeric tower. Five of the levels are standard
+R7RS numbers; the sixth is the forward-mode automatic-differentiation type
+`dual` (R7RS-compatible because a dual reduces to its primal under
+`extractAsDouble`). The tower, ordered by increasing generality of the values
+it can represent (not by storage size), is
 
-Bignums use a sign-magnitude representation with a dynamic array of 64-bit limbs
-stored in little-endian order (least significant limb first). The layout in memory is:
+$$\texttt{int64} \;\subseteq\; \texttt{bignum} \;\subseteq\; \texttt{rational}
+  \;\subseteq\; \texttt{double} \;\subseteq\; \texttt{complex}$$
 
+with $\texttt{dual}$ as a side branch isomorphic to $\mathbb{R}[\varepsilon]
+/(\varepsilon^{2})$ — that is, ordered pairs $(v, v') \in \mathbb{R}^{2}$
+treated as truncated jets.
+
+The following table maps every type to its runtime representation as the source
+defines it. The numeric constants are taken from `inc/eshkol/eshkol.h` §70–113
+and §337–360.
+
+| Type     | Type tag (value)                  | Heap subtype                          | Payload layout                                                                 | Exactness            | AD-aware |
+|----------|-----------------------------------|---------------------------------------|--------------------------------------------------------------------------------|----------------------|----------|
+| int64    | `ESHKOL_VALUE_INT64` = 1          | n/a (inline in `data.int_val`)        | 64-bit two's complement, range $[-2^{63}, 2^{63}-1]$                            | exact                | yes      |
+| bignum   | `ESHKOL_VALUE_HEAP_PTR` = 8       | `HEAP_SUBTYPE_BIGNUM` = 11            | sign-magnitude, `int32_t sign + uint32_t num_limbs + uint64_t limbs[]`         | exact                | lossy    |
+| rational | `ESHKOL_VALUE_HEAP_PTR` = 8       | `HEAP_SUBTYPE_RATIONAL` = 19          | `int64_t numerator + int64_t denominator`, GCD-reduced, denominator > 0        | exact                | lossy    |
+| double   | `ESHKOL_VALUE_DOUBLE` = 2         | n/a (inline in `data.double_val`)     | IEEE 754 binary64                                                              | inexact              | yes      |
+| complex  | `ESHKOL_VALUE_COMPLEX` = 7        | n/a (pointer in `data.ptr_val`)       | `double real + double imag`, heap-allocated 16-byte block                      | always inexact       | no       |
+| dual     | `ESHKOL_VALUE_DUAL_NUMBER` = 6    | n/a (inline pair, 16 bytes)           | `double value + double derivative`                                             | inexact              | native   |
+
+The "lossy" entry in the AD column means that `extractAsDouble` on a bignum or
+rational performs an `eshkol_bignum_to_double` / `eshkol_rational_to_double`
+call, which is exact only when the value fits in the 53-bit IEEE 754
+significand. The hand-off is documented in
+`arithmetic_codegen.cpp §extractAsDouble` (lines 1613–1742).
+
+The static-assertion blocks at `eshkol.h:153`, `eshkol.h:164`, and `eshkol.h:175`
+constrain the tagged value, dual number and complex number to fit in 16 bytes,
+which the codegen relies upon when emitting `alloca` / `getelementptr`
+sequences.
+
+### 1.1 Exactness flags
+
+`eshkol.h:117–128` defines two flag bits that flow alongside the type tag:
+
+* `ESHKOL_VALUE_EXACT_FLAG = 0x10`
+* `ESHKOL_VALUE_INEXACT_FLAG = 0x20`
+
+R7RS-mandated predicates `exact?` / `inexact?` are implemented in terms of
+these flag bits via `ESHKOL_IS_EXACT(type)` / `ESHKOL_IS_INEXACT(type)`
+(`eshkol.h:295–296`). The runtime tagged-value constructors enforce the rule:
+
+* `eshkol_make_int64(val, exact=true)` sets `flags = ESHKOL_VALUE_EXACT_FLAG`
+  (`eshkol.h:179–186`).
+* `eshkol_make_double(val)` sets `flags = ESHKOL_VALUE_INEXACT_FLAG`
+  (`eshkol.h:188–195`).
+* `eshkol_make_complex(ptr)` sets `flags = ESHKOL_VALUE_INEXACT_FLAG`
+  (`eshkol.h:206–213`) because Eshkol complex numbers are stored as a pair of
+  doubles — there is no exact-complex representation.
+
+The bignum binary dispatch (`bignum.cpp:805–807`) explicitly stamps
+`result->flags = ESHKOL_VALUE_EXACT_FLAG` on the heap-pointer result; this
+matters for `exact?` / `inexact?` predicates that downstream code uses to
+decide whether to call `exact->inexact` before printing.
+
+---
+
+## 2. Tagged value layout
+
+All runtime values flow through a single 16-byte structure defined at
+`eshkol.h:140–150`:
+
+```c
+typedef struct eshkol_tagged_value {
+    uint8_t  type;        // value type (eshkol_value_type_t)
+    uint8_t  flags;       // exactness and other flags
+    uint16_t reserved;    // reserved for future use
+    union {
+        int64_t  int_val;
+        double   double_val;
+        uint64_t ptr_val;
+        uint64_t raw_val;
+    } data;
+} eshkol_tagged_value_t;
 ```
-[eshkol_object_header_t][eshkol_bignum_t][limbs[0], limbs[1], ..., limbs[n-1]]
+
+Field offsets (assuming default packing on the platforms Eshkol targets, all of
+which align an `int64_t` on an 8-byte boundary):
+
+| Offset | Field      | Size | Notes                                                  |
+|--------|------------|------|--------------------------------------------------------|
+| 0      | `type`     | 1    | one of `ESHKOL_VALUE_*` (0–63 reserved for base types) |
+| 1      | `flags`    | 1    | `EXACT_FLAG`, `INEXACT_FLAG`, port-direction flags     |
+| 2      | `reserved` | 2    | currently unused; future GC bits                       |
+| 4      | padding    | 4    | implicit alignment padding before the 8-byte union     |
+| 8      | `data`     | 8    | int64, double bit pattern, or heap pointer             |
+
+When the LLVM codegen wants to read the data union it uses
+`CreateExtractValue(tagged, {4})` — index 4, not 3, because the LLVM struct
+layout is `{i8, i8, i16, i32, i64}`. The padding word at index 3 was the source
+of a long-standing class of off-by-one bugs in v1.1 (`MEMORY.md`: "Tagged value
+data field index").
+
+### 2.1 What `data` holds per type
+
+The mapping from `type` to which union field is semantically active is:
+
+| Type tag                       | Active field     | Interpretation                                                                                  |
+|--------------------------------|------------------|-------------------------------------------------------------------------------------------------|
+| `ESHKOL_VALUE_NULL`            | `int_val = 0`    | `()`, the empty list / null                                                                     |
+| `ESHKOL_VALUE_INT64`           | `int_val`        | signed 64-bit integer, two's complement                                                         |
+| `ESHKOL_VALUE_DOUBLE`          | `double_val`     | IEEE 754 binary64                                                                               |
+| `ESHKOL_VALUE_BOOL`            | `int_val`        | 0 or 1                                                                                          |
+| `ESHKOL_VALUE_CHAR`            | `int_val`        | Unicode codepoint as int64                                                                      |
+| `ESHKOL_VALUE_SYMBOL`          | `int_val`        | symbol-table id, interned                                                                       |
+| `ESHKOL_VALUE_DUAL_NUMBER`     | `int_val`        | bit-cast of the `eshkol_dual_number_t` (forward AD)                                             |
+| `ESHKOL_VALUE_COMPLEX`         | `ptr_val`        | pointer to heap `{double real, double imag}` block                                              |
+| `ESHKOL_VALUE_HEAP_PTR`        | `ptr_val`        | pointer to heap object, subtype distinguished by 8-byte header at `ptr - 8`                     |
+| `ESHKOL_VALUE_CALLABLE`        | `ptr_val`        | pointer to closure/lambda-sexpr/ad-node, subtype distinguished by header                        |
+| `ESHKOL_VALUE_LOGIC_VAR`       | `int_val`        | logic variable id `?x` (neuro-symbolic engine)                                                  |
+
+The crucial invariant for the numeric tower is that **bignum and rational both
+sit under `ESHKOL_VALUE_HEAP_PTR`**, distinguished only by the heap object
+header subtype byte at `ptr - 8`. The complex type is *not* a HEAP_PTR — it has
+its own dedicated tag, partly to avoid loading the header on every complex
+operation, and partly because complex numbers have no exact form.
+
+### 2.2 Heap object header
+
+Every heap-allocated object is prefixed by an 8-byte
+`eshkol_object_header_t` (`eshkol.h:322–327`):
+
+```c
+typedef struct eshkol_object_header {
+    uint8_t  subtype;      // distinguishes types within HEAP_PTR / CALLABLE
+    uint8_t  flags;        // GC marks, linear status, etc.
+    uint16_t ref_count;    // 0 = not ref-counted
+    uint32_t size;         // object size excluding header
+} eshkol_object_header_t;
 ```
 
-The `eshkol_bignum_t` structure (`inc/eshkol/core/bignum.h:36-40`):
+The numeric subtypes are:
+
+* `HEAP_SUBTYPE_BIGNUM = 11` (`eshkol.h:349`)
+* `HEAP_SUBTYPE_RATIONAL = 19` (`eshkol.h:358`)
+
+Subtype lookup from a tagged value is:
+
+```c
+#define ESHKOL_GET_HEADER(data_ptr) \
+    ((eshkol_object_header_t*)((uint8_t*)(data_ptr) - sizeof(eshkol_object_header_t)))
+#define ESHKOL_GET_SUBTYPE(data_ptr) \
+    (ESHKOL_GET_HEADER(data_ptr)->subtype)
+```
+
+(`eshkol.h:446–456`).
+
+The macro `ESHKOL_IS_BIGNUM(val)` (`eshkol.h:555–558`) packages the heap-ptr
+check with the subtype dereference:
+
+```c
+#define ESHKOL_IS_BIGNUM(val) \
+    ((val).type == ESHKOL_VALUE_HEAP_PTR && \
+     (val).data.ptr_val != 0 && \
+     ESHKOL_GET_SUBTYPE((void*)(val).data.ptr_val) == HEAP_SUBTYPE_BIGNUM)
+```
+
+There is no symmetrical `ESHKOL_IS_RATIONAL` macro at the header level; the
+runtime exposes `eshkol_is_rational_tagged_ptr` (`rational.cpp:232–234`) which
+the codegen calls from `emitIsRationalCheck` (`arithmetic_codegen.cpp:573–586`)
+to keep the rational-vs-bignum subtype decision in one place.
+
+---
+
+## 3. Bignum implementation
+
+### 3.1 Representation
+
+Bignums use a sign-magnitude representation with a dynamic array of 64-bit
+limbs stored little-endian (least significant limb first). The struct
+(`inc/eshkol/core/bignum.h:36–40`) is
 
 ```c
 typedef struct eshkol_bignum {
-    int32_t  sign;       /* 0 = non-negative, 1 = negative */
-    uint32_t num_limbs;  /* Number of 64-bit limbs */
-    /* uint64_t limbs[] follows in memory */
+    int32_t  sign;       // 0 = non-negative, 1 = negative
+    uint32_t num_limbs;  // number of 64-bit limbs
+    // uint64_t limbs[] follows in memory
 } eshkol_bignum_t;
 ```
 
-The numeric value represented is:
+with the limb array placed in-band immediately after the struct, accessed via
+the `BIGNUM_LIMBS(bn)` macro (`bignum.h:43`). The full heap layout for a
+bignum with $n$ limbs is
 
 ```
-value = (-1)^sign * sum(limbs[i] * 2^(64*i), i = 0..num_limbs-1)
+[eshkol_object_header_t : 8 B] [eshkol_bignum_t : 8 B] [limb_0 : 8 B] ... [limb_{n-1} : 8 B]
 ```
 
-Zero is canonicalized as `{sign=0, num_limbs=1, limbs[0]=0}`. The macro
-`BIGNUM_LIMBS(bn)` accesses the limb array at the fixed offset past the struct
-(`bignum.h:43`).
+so a bignum of $n$ limbs occupies $16 + 8n$ bytes on the arena. The numeric
+value represented is
 
-All bignums are arena-allocated and immutable: every arithmetic operation returns a
-freshly allocated bignum. There are no in-place mutations. This simplifies reasoning
-about aliasing and is consistent with the functional semantics of Scheme numerics.
+$$\mathrm{val}(b) \;=\; (-1)^{b.\mathrm{sign}} \cdot \sum_{i=0}^{b.\mathrm{num\_limbs}-1}
+    b.\mathrm{limbs}[i] \cdot 2^{64 i}.$$
 
-### 2.2. Construction
+Zero is canonicalised as `{sign=0, num_limbs=1, limbs[0]=0}`. The invariant is
+maintained by `bignum_normalize` (`bignum.cpp:44–54`), which trims trailing
+zero limbs (keeping at least one) and forces the sign back to zero when the
+trimmed value is zero. Every public bignum function returns a normalised
+result.
 
-Three entry points create bignums:
+All bignums are arena-allocated and immutable. There are no in-place mutations;
+every arithmetic operation returns a freshly allocated bignum. This decision
+simplifies aliasing analysis, eliminates a class of double-free bugs that
+plagued earlier sign-magnitude libraries, and is consistent with the functional
+semantics of Scheme numerics.
 
-- **`eshkol_bignum_from_int64(arena, value)`** (`bignum.cpp:331`): Creates a
-  single-limb bignum. Handles `INT64_MIN` specially since `-INT64_MIN` overflows
-  signed int64 (it stores the magnitude as `(uint64_t)INT64_MAX + 1`).
+The allocator helper `bignum_alloc(arena, num_limbs)` (`bignum.cpp:33–42`)
+calls `arena_allocate_with_header(arena, data_size, HEAP_SUBTYPE_BIGNUM, 0)`
+and zeroes the limb array.
 
-- **`eshkol_bignum_from_overflow(arena, a, b, op)`** (`bignum.cpp:348`): Called from
-  LLVM-generated overflow handlers. Promotes both int64 operands to bignums, then
-  performs the operation. Op codes: 0=add, 1=sub, 2=mul.
+### 3.2 Construction
 
-- **`eshkol_bignum_from_string(arena, str, len)`** (`bignum.cpp:362`): Parses
-  arbitrary-length decimal integers. Processes digits left-to-right via repeated
-  multiply-by-10-and-add, growing the limb array as needed.
+Three entry points create bignums (`bignum.h:49–60`, `bignum.cpp:331–403`):
 
-### 2.3. Arithmetic Algorithms
+* `eshkol_bignum_from_int64(arena, value)` — single-limb construction with a
+  special case for `INT64_MIN`, because `-INT64_MIN` overflows signed int64.
+  The magnitude is stored as `(uint64_t)INT64_MAX + 1`. (`bignum.cpp:331–346`)
 
-The core algorithms in `lib/core/bignum.cpp`:
+* `eshkol_bignum_from_overflow(arena, a, b, op)` — called from LLVM-generated
+  overflow handlers. Promotes both int64 operands to bignums, then performs
+  the operation. Op codes: `0=add`, `1=sub`, `2=mul`. (`bignum.cpp:348–360`)
 
-**Addition** (`bignum_add_abs`, line 72): Schoolbook addition with 128-bit
-intermediate sums. Uses `__uint128_t` to detect carry without branching:
+* `eshkol_bignum_from_string(arena, str, len)` — parses arbitrary-length
+  decimal integers. Processes digits left-to-right via repeated multiply-by-10
+  and add-digit. When the limb array overflows on the multiplication step the
+  function allocates a wider bignum and copies the limbs. (`bignum.cpp:362–403`)
 
-```c
-__uint128_t sum = (__uint128_t)av + (__uint128_t)bv + carry;
-lr[i] = (uint64_t)sum;
-carry = (uint64_t)(sum >> 64);
-```
+### 3.3 Arithmetic algorithms
 
-Signed addition (`eshkol_bignum_add`, line 405) dispatches based on sign agreement:
-same signs add magnitudes; different signs subtract the smaller from the larger and
-take the sign of the larger.
+The five core arithmetic operations live in `lib/core/bignum.cpp`:
 
-**Subtraction** (`bignum_sub_abs`, line 98): Schoolbook subtraction with borrow
-propagation. Requires `|a| >= |b|`; the caller ensures correct ordering.
+| Operation       | Function                              | Algorithm                                                       |
+|-----------------|---------------------------------------|-----------------------------------------------------------------|
+| addition        | `eshkol_bignum_add` (lines 405–430)   | sign dispatch onto `bignum_add_abs` / `bignum_sub_abs`          |
+| subtraction     | `eshkol_bignum_sub` (lines 432–458)   | identical sign dispatch                                         |
+| multiplication  | `eshkol_bignum_mul` (lines 460–483)   | schoolbook $O(nm)$ via `bignum_addmul_limb`                     |
+| division        | `eshkol_bignum_div` (lines 485–501)   | wraps `bignum_divmod_abs`, sign handled by caller               |
+| modulo          | `eshkol_bignum_mod` (lines 503–519)   | wraps `bignum_divmod_abs`, sign follows dividend                |
+| negation        | `eshkol_bignum_neg` (lines 521–529)   | copies limbs, flips sign bit, special-cases zero                |
 
-**Multiplication** (`eshkol_bignum_mul`, line 460): Schoolbook O(n*m) multiplication.
-For each limb of the multiplier, `bignum_addmul_limb` (line 124) performs a
-multiply-accumulate pass using `__uint128_t` products. The result is allocated with
-`a.num_limbs + b.num_limbs` limbs.
+The 128-bit primitives all rest on GCC/Clang's `__uint128_t` and `__int128_t`
+intrinsics:
 
-**Division** (`bignum_divmod_abs`, line 164): Implements Knuth's Algorithm D with
-trial quotient refinement. For single-limb divisors, a fast path
-(`bignum_div_limb`, line 140) uses 128-bit division. For multi-limb divisors,
-the algorithm normalizes the divisor (left-shifts until the high bit is set),
-computes trial quotients, and corrects via the add-back step. The complexity is
-O(n*m) where n and m are the limb counts of dividend and divisor.
+* `bignum_add_abs` (lines 72–96) uses
+  $\texttt{sum} = (\texttt{av} + \texttt{bv} + \texttt{carry})$ in 128-bit
+  width to detect carry without branching.
+* `bignum_sub_abs` (lines 99–121) propagates borrow via two integer comparisons
+  per limb.
+* `bignum_addmul_limb` (lines 124–137) computes
+  $\texttt{result}[i+\mathrm{offset}] \mathrel{+}= a[i] \cdot b_{\mathrm{limb}} + \mathrm{carry}$
+  in 128-bit width per limb.
 
-**Negation** (`eshkol_bignum_neg`, line 521): Copies the limb array and flips the
-sign bit. Zero remains non-negative.
+Division (`bignum_divmod_abs`, lines 164–324) implements Knuth's Algorithm D
+with trial-quotient refinement. The single-limb fast path lives in
+`bignum_div_limb` (lines 140–160) and uses 128-bit division. For multi-limb
+divisors the algorithm
 
-**Exponentiation** (`eshkol_bignum_pow`, line 862): Repeated squaring in O(log n)
-multiplications. For each bit of the exponent, the base is squared; if the bit is
-set, the accumulator is multiplied by the current base.
+1. normalises the divisor by left-shifting so its top limb's high bit is set
+   (computed via `__builtin_clzll`),
+2. allocates shifted copies of both operands on the arena,
+3. iterates from the most significant quotient limb downward, computing a
+   trial quotient $\hat{q} = \lfloor (u_{j+n} \cdot 2^{64} + u_{j+n-1}) / v_{n-1} \rfloor$,
+4. refines $\hat{q}$ until Knuth's test
+   $\hat{q} \cdot v_{n-2} \le \hat{r} \cdot 2^{64} + u_{j+n-2}$ holds,
+5. multiplies and subtracts in place, with an add-back step when the
+   subtraction goes negative.
 
-### 2.4. Normalization
+Complexity is $O(nm)$ where $n$ and $m$ are the limb counts of dividend and
+divisor.
 
-After every operation, `bignum_normalize` (line 44) trims trailing zero limbs and
-ensures zero has a non-negative sign. This maintains the canonical form invariant.
+### 3.4 Comparison
 
-### 2.5. Comparison
+`eshkol_bignum_compare(a, b)` (`bignum.cpp:550–562`) is three-way:
 
-`eshkol_bignum_compare` (line 550) implements three-way comparison:
-1. Different signs: negative < positive (with a special case for both being zero).
-2. Same sign: compare magnitudes via `bignum_compare_abs` (line 57), then negate
-   the result if both are negative.
+1. Different signs: the negative one is smaller, with a special case for both
+   being zero.
+2. Same sign: `bignum_compare_abs` (lines 57–69) compares magnitudes by limb
+   count first, then by limbs from most significant to least; the result is
+   negated when both are negative.
 
-`eshkol_bignum_compare_int64` (line 564) provides a fast path for comparing against
-a single int64, using a stack-allocated temporary bignum to avoid arena allocation.
+The fast path `eshkol_bignum_compare_int64` (lines 564–599) handles
+single-limb bignums inline without arena allocation; for multi-limb bignums it
+constructs a stack-resident `{eshkol_bignum_t hdr; uint64_t limb;}` aggregate
+and delegates to `eshkol_bignum_compare`.
 
-### 2.6. Predicates and Conversion
+### 3.5 Predicates and conversion
 
-- `eshkol_bignum_is_zero/negative/positive/even/odd` (lines 603-624): Direct
-  inspection of sign and least-significant limb.
+* `eshkol_bignum_is_zero/negative/positive/even/odd` (`bignum.cpp:603–624`)
+  inspect the sign field and `limbs[0]`.
+* `eshkol_bignum_fits_int64(bn, out)` (`bignum.cpp:626–646`) returns true
+  when `num_limbs == 1` and the magnitude lies in
+  $[0, \texttt{INT64\_MAX}]$ for non-negative, or in
+  $[0, \texttt{INT64\_MAX}+1]$ for negative (allowing `INT64_MIN`).
+  This is the demotion oracle.
+* `eshkol_bignum_to_double(bn)` (`bignum.cpp:650–665`) accumulates
+  $\sum_i b_i \cdot 2^{64i}$ in double precision. Intentionally lossy for
+  $|b| > 2^{53}$.
+* `eshkol_bignum_to_string(arena, bn)` (`bignum.cpp:667–720`) extracts decimal
+  digits by repeated division by 10 (using the limb-divisor fast path) and
+  reverses the buffer. The result is allocated via
+  `arena_allocate_string_with_header`, so it is a first-class Eshkol string
+  with header byte count.
 
-- `eshkol_bignum_fits_int64` (line 626): Returns true if the bignum is a single limb
-  whose magnitude fits in `[0, INT64_MAX]` (non-negative) or `[0, INT64_MAX+1]`
-  (negative, for `INT64_MIN`). This is the demotion check.
+### 3.6 Two's-complement bitwise operations (R7RS)
 
-- `eshkol_bignum_to_double` (line 650): Accumulates `(double)limbs[i] * 2^(64*i)`.
-  This is intentionally lossy for values exceeding 2^53.
+R7RS requires bitwise operations on integers to follow two's complement
+semantics, including for negative bignums. The implementation
+(`bignum.cpp:1092–1335`) converts each operand to a two's complement limb
+buffer via `to_twos_complement` (lines 1126–1141), performs the bitwise
+operation, and converts back via `from_twos_complement` (lines 1144–1169).
 
-- `eshkol_bignum_to_string` (line 667): Extracts decimal digits by repeated division
-  by 10, then reverses the digit buffer. The result is arena-allocated with a string
-  header for the display system.
+Operations supported:
 
-### 2.7. Bitwise Operations (R7RS)
+* `bitwise-and`, `bitwise-or`, `bitwise-xor` — element-wise on the two's
+  complement representation, sign-extended to the longer operand
+  (`bignum.cpp:1171–1216`).
+* `bitwise-not` — special-cased to $a \in \mathbb{Z} \mapsto -(a+1)$, since
+  $\sim a$ in two's complement equals $-(a+1)$ regardless of width
+  (`bignum.cpp:1218–1232`).
+* `arithmetic-shift` — positive count is left shift (limb-aware), negative
+  count is right shift with sign extension to $-\infty$
+  (`bignum.cpp:1234–1292`).
 
-Bitwise operations (`bignum.cpp:1092-1335`) use two's complement semantics for
-negative bignums, as required by R7RS. The implementation converts sign-magnitude to
-two's complement limbs (`to_twos_complement`, line 1097), performs the bitwise
-operation, and converts back (`from_twos_complement`, line 1115). Operations
-supported: `bitwise-and`, `bitwise-or`, `bitwise-xor`, `bitwise-not`, and
-`arithmetic-shift` (positive count = left shift, negative = right shift with
-sign extension).
+The dispatch entry point is `eshkol_bignum_bitwise_tagged`
+(`bignum.cpp:1294–1364`), which uses op codes `0=and, 1=or, 2=xor, 3=not,
+4=arithmetic-shift` and demotes the result to int64 when it fits.
+
+### 3.7 Exponentiation
+
+`eshkol_bignum_pow(arena, base, exp)` (`bignum.cpp:866–899`) implements
+repeated squaring:
+
+$$\text{base}^{\,\text{exp}} = \prod_{i : \text{exp}_i = 1} \text{base}^{2^i}$$
+
+requiring $O(\log_2 \text{exp})$ multiplications. Special cases at lines
+869–879 handle `exp == 0` (returns 1) and `exp == 1` (returns a copy of the
+base via `bignum_mul(base, 1)`).
+
+The tagged-value entry point `eshkol_bignum_pow_tagged`
+(`bignum.cpp:901–950`) dispatches into the exact path only when
+
+* the base is `ESHKOL_VALUE_INT64` or `ESHKOL_VALUE_HEAP_PTR` (which is
+  necessarily a bignum because rational `expt` is not in this code path),
+* the exponent is `ESHKOL_VALUE_INT64`, and
+* the exponent is non-negative.
+
+If any of those fail, the function falls back to libm `pow()` on
+double-precision extracted from both operands. The exact path attempts to
+demote the result to int64 via `eshkol_bignum_fits_int64`.
 
 ---
 
-## 3. Overflow Detection and Promotion
+## 4. Overflow detection and promotion
 
-The critical bridge between int64 and bignum arithmetic is the overflow detection
-path, implemented in `lib/backend/arithmetic_codegen.cpp`.
+The critical bridge between int64 and bignum arithmetic is the overflow
+detection path in `lib/backend/arithmetic_codegen.cpp`.
 
-### 3.1. LLVM Overflow Intrinsics
+### 4.1 LLVM overflow intrinsics
 
-For each integer arithmetic operation, the codegen emits LLVM's checked arithmetic
-intrinsics rather than plain `add`/`sub`/`mul`. For addition
-(`arithmetic_codegen.cpp:767-768`):
+For each integer arithmetic operation the codegen emits LLVM's checked
+arithmetic intrinsics rather than plain `add`, `sub`, `mul`. The addition
+case at `arithmetic_codegen.cpp:770–774`:
 
 ```cpp
 llvm::Function* sadd_ovf = ESHKOL_GET_INTRINSIC(
     &ctx_.module(), llvm::Intrinsic::sadd_with_overflow, {ctx_.int64Type()});
-llvm::Value* add_ovf_result = ctx_.builder().CreateCall(sadd_ovf, {left_int, right_int});
-llvm::Value* add_int_val = ctx_.builder().CreateExtractValue(add_ovf_result, 0);
+llvm::Value* add_ovf_result =
+    ctx_.builder().CreateCall(sadd_ovf, {left_int, right_int});
+llvm::Value* add_int_val   = ctx_.builder().CreateExtractValue(add_ovf_result, 0);
 llvm::Value* add_overflowed = ctx_.builder().CreateExtractValue(add_ovf_result, 1);
 ```
 
-These intrinsics return a struct `{i64, i1}` where the second element is the
-overflow flag. The generated code branches on this flag:
+These intrinsics return `{i64, i1}` where the second element is the overflow
+flag. The generated code branches on the flag:
 
-- **No overflow**: Pack the i64 result as a tagged int64.
-- **Overflow**: Call `emitBignumPromotion` (line 60).
+* **no overflow** — pack the i64 result as a tagged int64
+  (`tagged_.packInt64(add_int_val, /*exact=*/true)`);
+* **overflow** — call `emitBignumPromotion` (`arithmetic_codegen.cpp:60–84`).
 
 The same pattern applies to subtraction (`llvm::Intrinsic::ssub_with_overflow`)
 and multiplication (`llvm::Intrinsic::smul_with_overflow`).
 
-### 3.2. The Promotion Path
+### 4.2 The promotion path
 
-`emitBignumPromotion` (`arithmetic_codegen.cpp:60-84`) calls the runtime function
-`eshkol_bignum_from_overflow(arena, a, b, op)`, which:
+`emitBignumPromotion(ctx, tagged, left_int, right_int, op_code)`
+(`arithmetic_codegen.cpp:60–84`):
 
-1. Promotes both int64 operands to single-limb bignums via `eshkol_bignum_from_int64`.
-2. Performs the operation using bignum arithmetic (which cannot overflow).
-3. Returns an `eshkol_bignum_t*`.
+1. Loads the global arena pointer through `getArenaPtr(ctx)`
+   (`arithmetic_codegen.cpp:34–38`). If the arena is unavailable (an
+   instantiation-time failure that should not happen at runtime) the function
+   falls back to a double computation with a debug log message.
+2. Calls `eshkol_bignum_from_overflow(arena, a, b, op)`
+   (`bignum.cpp:348–360`), which promotes both int64 operands to single-limb
+   bignums via `eshkol_bignum_from_int64` and dispatches into the bignum
+   operation.
+3. Packs the returned `eshkol_bignum_t*` into a tagged value with type
+   `ESHKOL_VALUE_HEAP_PTR` via `tagged.packPtr(bignum_ptr, ESHKOL_VALUE_HEAP_PTR)`.
 
-The codegen packs this pointer into a tagged value with type
-`ESHKOL_VALUE_HEAP_PTR` (8). If the arena is unavailable (should not happen in
-normal execution), a fallback path promotes both operands to double.
+### 4.3 The demotion path
 
-### 3.3. The Demotion Path
-
-After every bignum binary operation, `eshkol_bignum_binary_tagged`
-(`bignum.cpp:797-804`) checks whether the result fits in int64:
+Every bignum binary operation funnels through `eshkol_bignum_binary_tagged`
+(`bignum.cpp:736–809`), which after computing the result performs
 
 ```c
 int64_t fits;
 if (eshkol_bignum_fits_int64(r, &fits)) {
-    *result = eshkol_make_int64(fits, true);
+    *result = eshkol_make_int64(fits, /*exact=*/true);
 } else {
     *result = eshkol_make_ptr((uint64_t)(void*)r, ESHKOL_VALUE_HEAP_PTR);
     result->flags = ESHKOL_VALUE_EXACT_FLAG;
 }
 ```
 
-This ensures that temporary excursions into bignum space (e.g., computing
-`INT64_MAX + 1 - 1`) return to int64 representation, avoiding unnecessary
-heap pressure.
+(`bignum.cpp:801–808`). This ensures that temporary excursions into bignum
+space — for example computing $(\texttt{INT64\_MAX} + 1) - 1$ — return to int64
+representation and avoid persistent heap pressure. The flag bit is set
+explicitly so downstream `exact?` queries report `#t` for the demoted int64
+(consistent with the explicit `exact=true` parameter to `eshkol_make_int64`).
+
+### 4.4 The entry-block alloca pattern
+
+A critical implementation detail: every `alloca` used by the dispatch helpers
+(`emitIsBignumCheck`, `emitBignumBinaryCall`, `emitBignumCompareCall`,
+`emitIsRationalCheck`, `emitRationalBinaryCall`, `emitRationalCompareCall`)
+is placed in the function's *entry block*, not at the current insertion point.
+This is achieved via a fresh `IRBuilder` positioned at
+`fn->getEntryBlock().begin()`:
+
+```cpp
+llvm::Function* fn = ctx_.builder().GetInsertBlock()->getParent();
+llvm::IRBuilder<> entry_builder(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+llvm::Value* left_alloca  = entry_builder.CreateAlloca(ctx_.taggedValueType(), nullptr, "bn_l");
+```
+
+(`arithmetic_codegen.cpp:484–487, 498–502, 516–520, 575–580, 604–607, 621–624`).
+
+If allocas were placed inside loop bodies, each iteration would grow the stack,
+eventually causing stack overflow. Entry-block placement ensures constant stack
+usage regardless of iteration count. This matters because tail-call
+optimisation in Eshkol depends on stable stack frames across loop iterations.
 
 ---
 
-## 4. Rational Implementation
+## 5. Rational implementation
 
-### 4.1. Representation
+### 5.1 Representation
 
-Rationals are stored as a pair of int64 values (`inc/eshkol/core/rational.h:23-26`):
+Rationals are stored as a pair of int64 values
+(`inc/eshkol/core/rational.h:22–26`):
 
 ```c
 typedef struct {
@@ -258,279 +480,1103 @@ typedef struct {
 } eshkol_rational_t;
 ```
 
-Heap layout:
+with the heap layout
 
 ```
-[eshkol_object_header_t (subtype=HEAP_SUBTYPE_RATIONAL=19)][eshkol_rational_t]
+[eshkol_object_header_t : 8 B] [eshkol_rational_t : 16 B]
 ```
+
+— a total of 24 bytes. The header subtype byte is set to
+`HEAP_SUBTYPE_RATIONAL = 19` at construction time
+(`rational.cpp:112–116`).
+
+Crucially, the rational's numerator and denominator are *int64*, not bignums.
+This means that an exact rational arithmetic that overflows int64 cannot be
+represented and must demote (see §5.5 on overflow-to-double fallback). The
+design choice trades full closure under rational arithmetic for cheap
+$O(1)$ component access; arbitrary-precision rationals are a documented
+future-work item.
 
 Two invariants are maintained at all times:
-1. **Positive denominator**: If the input denominator is negative, both numerator and
-   denominator are negated.
-2. **GCD-reduced**: The numerator and denominator are divided by their greatest
-   common divisor. This ensures a unique canonical form for each rational value.
 
-### 4.2. Construction and Reduction
+1. **Positive denominator.** If the input denominator is negative, both
+   numerator and denominator are negated.
+2. **GCD-reduced.** Numerator and denominator are divided by their greatest
+   common divisor, giving a unique canonical form for each rational value.
 
-`eshkol_rational_create` (`rational.cpp:72-98`) enforces both invariants:
+### 5.2 Construction and reduction
 
-```c
-if (denom < 0) { num = -num; denom = -denom; }
-int64_t g = gcd(num, denom);
-if (g > 1) { num /= g; denom /= g; }
-```
-
-The GCD is computed via the Euclidean algorithm (`rational.cpp:22-31`). For
-intermediate results that may exceed int64 range, a 128-bit GCD function
-(`gcd128`, line 34) is used by `rational_create_safe` (line 52), which falls back
-to double arithmetic if the reduced result still does not fit in int64.
-
-### 4.3. Arithmetic
-
-All four operations are implemented with 128-bit intermediate arithmetic to prevent
-overflow (`rational.cpp:100-138`):
-
-- **Addition**: `a/b + c/d = (a*d + c*b) / (b*d)` using `__int128_t` products.
-- **Subtraction**: `a/b - c/d = (a*d - c*b) / (b*d)`.
-- **Multiplication**: `a/b * c/d = (a*c) / (b*d)`.
-- **Division**: `a/b / c/d = (a*d) / (b*c)`. Raises a divide-by-zero exception if
-  `c == 0`.
-
-Each result is passed through `rational_create_safe`, which reduces by GCD128 and
-checks whether the reduced numerator and denominator fit in int64. If they do not
-fit, the function returns `NULL`, signaling the caller to fall back to double
-arithmetic. This overflow-to-double fallback preserves the R7RS guarantee that
-arithmetic never fails, at the cost of exactness.
-
-### 4.4. Comparison
-
-`eshkol_rational_compare` (`rational.cpp:140-149`) uses cross-multiplication to
-avoid division:
+`eshkol_rational_create(arena, num, denom)` (`rational.cpp:76–117`) enforces
+both invariants. The implementation includes an audit-driven safety check
+(Audit C7, `rational.cpp:84–98`) for the case `num == INT64_MIN` or
+`denom == INT64_MIN`: because `-INT64_MIN == INT64_MIN` in two's complement,
+the naive negation `denom = -denom` would silently produce a
+non-normalised rational. The check raises a runtime error and returns `0/1` as
+the safe fallback:
 
 ```c
-__int128_t lhs = (__int128_t)ra->numerator * rb->denominator;
-__int128_t rhs = (__int128_t)rb->numerator * ra->denominator;
+if (denom == INT64_MIN || num == INT64_MIN) {
+    eshkol_error("rational: INT64_MIN numerator/denominator cannot be "
+                 "sign-normalised without overflow");
+    denom = 1;
+    num = 0;
+}
 ```
 
-Since both denominators are positive (by invariant), the sign of `lhs - rhs`
-directly gives the comparison result. The 128-bit multiplication prevents overflow
-for all int64 numerator/denominator pairs.
+The GCD is computed via the Euclidean algorithm
+(`rational.cpp:24–35`). For 128-bit intermediates (the result of multiplying
+two int64s) there is a separate `gcd128` (`rational.cpp:38–47`).
 
-### 4.5. Rounding Functions
+A division-by-zero in the denominator triggers `eshkol_error` and returns the
+safe rational `0/1` (`rational.cpp:77–82`).
 
-Four rounding modes are implemented for exact rationals (`rational.cpp:528-570`):
+### 5.3 Arithmetic and the safe-create wrapper
 
-- **floor** (toward negative infinity): `n / d`, adjusted by `-1` when the
-  remainder is negative.
-- **ceil** (toward positive infinity): `n / d`, adjusted by `+1` when the
-  remainder is positive.
-- **truncate** (toward zero): Plain C integer division `n / d`.
-- **round** (nearest, ties to even): Compares `2 * |remainder|` against `d`.
-  When equal (exact half), rounds to even quotient (banker's rounding).
+All four binary operations are implemented with `__int128_t` intermediates to
+prevent overflow on the cross-multiplication step (`rational.cpp:119–157`):
 
-### 4.6. Rationalize (R7RS)
+$$\frac{a}{b} + \frac{c}{d} = \frac{ad + cb}{bd},\quad
+  \frac{a}{b} - \frac{c}{d} = \frac{ad - cb}{bd},\quad
+  \frac{a}{b} \cdot \frac{c}{d} = \frac{ac}{bd},\quad
+  \frac{a}{b} \div \frac{c}{d} = \frac{ad}{bc}.$$
 
-`eshkol_rationalize_tagged` (`rational.cpp:408-522`) implements the R7RS
-`rationalize` procedure using a Stern-Brocot mediant search. Given a value `x` and
-tolerance `epsilon`, it finds the simplest rational `p/q` (smallest denominator)
-such that `|x - p/q| <= epsilon`. The search terminates when the mediant falls
-within the target interval or the denominator exceeds 10^9.
+Each result is passed through `rational_create_safe`
+(`rational.cpp:56–74`), which:
+
+1. Normalises the denominator sign (negates both if `denom < 0`).
+2. Reduces by `gcd128(num, denom)`.
+3. Checks whether the reduced 128-bit values fit in int64 via
+   `fits_int64` (`rational.cpp:50–52`).
+4. Returns `NULL` if either doesn't fit, signalling overflow.
+
+Division (`rational.cpp:146–157`) explicitly checks `rb->numerator == 0`
+and raises an `ESHKOL_EXCEPTION_DIVIDE_BY_ZERO` exception via
+`eshkol_make_exception` and `eshkol_raise`. The unreachable `return nullptr`
+exists to satisfy the compiler.
+
+### 5.4 Comparison
+
+`eshkol_rational_compare(a, b)` (`rational.cpp:159–168`) uses
+cross-multiplication to avoid division. Because both denominators are positive
+by invariant, the sign of $(an \cdot bd - bn \cdot ad)$ directly gives the
+comparison result:
+
+$$\frac{a_n}{a_d} \lessgtr \frac{b_n}{b_d} \iff a_n b_d \lessgtr b_n a_d \quad (a_d, b_d > 0).$$
+
+The 128-bit multiplication prevents overflow for all int64 numerator /
+denominator pairs.
+
+### 5.5 The rational binary tagged dispatch
+
+`eshkol_rational_binary_tagged_ptr(arena, a, b, op, result)`
+(`rational.cpp:237–242`) is the entry point called from the codegen. It
+dereferences both pointers and delegates to `eshkol_rational_binary_tagged`
+(`rational.cpp:245–348`), whose dispatch order is:
+
+1. **Double check (R7RS exact + inexact $\to$ inexact).** If either operand
+   is `ESHKOL_VALUE_DOUBLE`, both operands are converted to double (via
+   `eshkol_rational_to_double` for rationals, `SIToFP` for ints, bit-cast for
+   doubles) and the operation is performed as IEEE arithmetic
+   (`rational.cpp:257–292`).
+2. **Promote int to rational.** Integers are wrapped as `n/1` via
+   `eshkol_rational_create` (`rational.cpp:299–309`).
+3. **Operate.** Dispatch on op code 0=add, 1=sub, 2=mul, 3=div
+   (`rational.cpp:311–318`).
+4. **Overflow fallback.** If `rational_create_safe` returned `NULL`, fall back
+   to double arithmetic on the rationals' double approximations
+   (`rational.cpp:320–337`). This preserves the R7RS guarantee that
+   arithmetic never silently fails, at the documented cost of exactness.
+5. **Demote on integer result.** If the result has `denominator == 1`, return
+   as `ESHKOL_VALUE_INT64` (`rational.cpp:340–342`); otherwise wrap as a
+   `HEAP_PTR` (`rational.cpp:343–346`).
+
+### 5.6 Rational comparison tagged dispatch
+
+`eshkol_rational_compare_tagged_ptr(arena, a, b, op, result)`
+(`rational.cpp:354–423`) mirrors the binary dispatch:
+
+1. Double check (R7RS exact + inexact $\to$ inexact for comparison: both
+   sides become doubles, `FCmp*` performed at double precision).
+2. Promote int to rational `n/1`.
+3. `eshkol_rational_compare` cross-multiplies and the sign decides the result.
+4. Result is written into `result->data.int_val` as 0 / 1 and
+   `result->type = ESHKOL_VALUE_BOOL`.
+
+Op codes are `0=lt, 1=gt, 2=eq, 3=le, 4=ge` — identical to the bignum compare
+op encoding, so the codegen can use a single op-code computation site
+(`arithmetic_codegen.cpp:1861–1864`) for both.
+
+### 5.7 Rounding functions
+
+Four rounding modes are implemented for exact rationals
+(`rational.cpp:566–607`), returning exact int64:
+
+* **`eshkol_rational_floor`** (lines 566–572) — toward $-\infty$.
+  C division truncates toward zero, so for a negative non-integer
+  rational the truncated quotient is one too high; the function detects
+  `n < 0 && n % d != 0` and subtracts 1.
+
+* **`eshkol_rational_ceil`** (lines 575–580) — toward $+\infty$, symmetrical
+  to floor.
+
+* **`eshkol_rational_truncate`** (lines 583–586) — toward zero. Plain C
+  integer division.
+
+* **`eshkol_rational_round`** (lines 589–607) — to nearest, ties to even
+  (banker's rounding, R7RS-mandated). The implementation compares
+  $2 \cdot |\text{rem}|$ to $d$:
+
+  - $2 |\text{rem}| > d$: round away from zero.
+  - $2 |\text{rem}| = d$ (exact half): round to even quotient.
+  - $2 |\text{rem}| < d$: truncate.
+
+These functions are called from `codegenMathFunction` in `llvm_codegen.cpp`
+when the operand is a rational; see §8 for the dispatch.
+
+### 5.8 Rationalize (R7RS)
+
+`eshkol_rationalize_tagged(arena, x, eps, result)`
+(`rational.cpp:445–559`) implements the R7RS `rationalize` procedure: given
+$x$ and $\varepsilon$, find the simplest rational $p/q$ (smallest denominator)
+such that $|x - p/q| \le \varepsilon$.
+
+The implementation uses a Stern–Brocot mediant search. The loop:
+
+1. Sets initial bounds $a = \lfloor \text{lo} \rfloor / 1$ and
+   $b = (\lfloor \text{lo} \rfloor + 1) / 1$.
+2. If either bound is in $[\text{lo}, \text{hi}]$, return it as an integer.
+3. Otherwise iterate (up to 1000 times, or until $m_d > 10^{9}$) computing the
+   mediant $m = (a_n + b_n) / (a_d + b_d)$ and tightening the appropriate
+   bound.
+
+The denominator cap at $10^{9}$ (line 516) and the iteration cap at 1000
+(line 511) ensure termination even for hostile inputs (irrationals or
+$\varepsilon = 0$ on a transcendental); the fallback returns the closer of the
+two final bounds.
+
+### 5.9 Inexact-to-exact
+
+`eshkol_double_to_rational(arena, d)` (`rational.cpp:188–200`) converts an
+IEEE 754 double to a rational by scaling. The loop multiplies `abs_d` by 2 and
+doubles the denominator until either `abs_d` is integral or the denominator
+hits $2^{52}$. After the loop, `num = (int64_t)abs_d` and the rational is
+constructed via `eshkol_rational_create` (which then GCD-reduces). This gives
+the exact rational representation of the double's bit pattern up to the IEEE
+754 53-bit significand.
 
 ---
 
-## 5. Mixed-Exactness Dispatch
+## 6. Complex implementation
 
-### 5.1. Tagged Value Runtime Dispatch
+### 6.1 Representation
 
-The runtime dispatch functions accept tagged value pointers and handle all type
-combinations internally. The bignum dispatch function
-`eshkol_bignum_binary_tagged` (`bignum.cpp:732-805`) follows this priority order:
+The complex type uses its own tag `ESHKOL_VALUE_COMPLEX = 7`
+(`eshkol.h:77`), distinct from `HEAP_PTR`. The struct
+(`eshkol.h:169–176`) is
 
-1. **Unary negation** (op 7): Convert operand to bignum, negate, return.
-2. **Double operand check** (R7RS exact+inexact rule): If either operand has type
-   `ESHKOL_VALUE_DOUBLE`, convert both to double, perform the operation as double
-   arithmetic, and return a double result. Bignums are converted via
-   `eshkol_bignum_to_double`.
-3. **Exact path**: Convert both operands to bignum (promoting int64 if necessary via
-   `tagged_to_bignum`, line 720), perform the operation, and attempt demotion.
+```c
+typedef struct eshkol_complex_number {
+    double real;        // ℜ
+    double imag;        // 𝕴
+} eshkol_complex_number_t;
+```
 
-For division (op 3), the exact path first checks whether the remainder is zero. If
-so, it returns the exact quotient; otherwise, it converts both operands to double
-and returns an inexact result.
+— 16 bytes (statically asserted at `eshkol.h:175`). The tagged value's
+`data.ptr_val` points to a heap-allocated `eshkol_complex_number_t`. The
+allocator is `mem_.getArenaAllocate()` and the heap pointer is then stored
+into via `CreateStore(complex, complex_heap_ptr)`
+(`complex_codegen.cpp:78–128`).
 
-### 5.2. Rational Tagged Dispatch
+There is no exact-complex representation: complex is always
+`ESHKOL_VALUE_INEXACT_FLAG`, as the constructor `eshkol_make_complex`
+explicitly states (`eshkol.h:206–213`).
 
-`eshkol_rational_binary_tagged` (`rational.cpp:208-311`) follows an analogous
-pattern:
+### 6.2 Basic arithmetic
 
-1. If either operand is a double, convert both to double and return double.
-2. Otherwise, promote int64 operands to rational (denominator 1) and perform
-   exact rational arithmetic.
-3. If the rational result overflows int64 (NULL return from `rational_create_safe`),
-   fall back to double.
-4. If the result has denominator 1, demote to int64.
+The four basic operations are implemented in `complex_codegen.cpp` lines
+142–263. Letting $z_1 = a + bi$ and $z_2 = c + di$:
 
-### 5.3. Codegen-Level Type Dispatch
+* **Addition** (lines 142–153):
+  $z_1 + z_2 = (a+c) + (b+d)i$.
 
-At the LLVM IR level, `ArithmeticCodegen::extractAsDouble`
-(`arithmetic_codegen.cpp:1586`) provides a 4-way dispatch that converts any numeric
-tagged value to a double:
+* **Subtraction** (lines 155–166):
+  $z_1 - z_2 = (a-c) + (b-d)i$.
 
-1. `ESHKOL_VALUE_CALLABLE` with AD node subtype: extract primal double from the AD
-   node struct.
-2. `ESHKOL_VALUE_DOUBLE`: unpack directly.
-3. `ESHKOL_VALUE_HEAP_PTR`: call `eshkol_bignum_to_double` runtime function.
-4. `ESHKOL_VALUE_INT64`: `SIToFP` conversion.
+* **Multiplication** (lines 168–186):
+  $z_1 \cdot z_2 = (ac - bd) + (ad + bc)i$.
 
-This function is used whenever a numeric value must be converted to floating-point
-for inexact operations (e.g., trigonometric functions, mixed exact+inexact
-arithmetic at the codegen level).
+* **Negation** (lines 254–263) and **conjugation** (lines 265–273) are
+  elementwise.
+
+### 6.3 Smith's division formula
+
+Naive complex division $z_1 / z_2 = (z_1 \bar{z_2}) / |z_2|^2$ overflows when
+$|z_2|^2$ exceeds the double range (i.e. when $|c|$ or $|d|$ approaches
+$\sqrt{\texttt{DBL\_MAX}} \approx 1.34 \times 10^{154}$). The implementation
+(`complex_codegen.cpp:188–252`) uses Smith's formula, which scales by the
+larger-magnitude denominator component:
+
+If $|d| \le |c|$:
+
+$$r = d/c,\qquad \text{denom} = c + dr,\qquad
+  \Re(z_1/z_2) = \frac{a + br}{\text{denom}},\qquad
+  \Im(z_1/z_2) = \frac{b - ar}{\text{denom}}.$$
+
+Else $(|d| > |c|)$:
+
+$$r = c/d,\qquad \text{denom} = d + cr,\qquad
+  \Re(z_1/z_2) = \frac{ar + b}{\text{denom}},\qquad
+  \Im(z_1/z_2) = \frac{br - a}{\text{denom}}.$$
+
+The branch is selected via an `FCmpOLE` on `abs_c` vs `abs_d`. Each branch
+performs five FP operations; the two branches converge through PHI nodes
+on the real and imaginary results.
+
+### 6.4 Overflow-safe magnitude
+
+`complexMagnitude(z)` (`complex_codegen.cpp:279–310`) computes
+$|z| = \sqrt{a^2 + b^2}$ with overflow protection:
+
+$$|z| = \max(|a|, |b|) \cdot \sqrt{\left(\frac{a}{\max(|a|,|b|)}\right)^{2}
+  + \left(\frac{b}{\max(|a|,|b|)}\right)^{2}}.$$
+
+A guard $\max(|a|, |b|) = 0$ (when both components are zero) is detected via
+`FCmpOEQ` and short-circuits to 0.0 to avoid `0/0` propagating NaN. Without
+the scaling, computing $a^2 + b^2$ would overflow when $|a|$ or $|b|$ exceeds
+$\sqrt{\texttt{DBL\_MAX}}$.
+
+### 6.5 Transcendentals
+
+* `complexAngle(z)` = $\text{atan2}(b, a)$ (`complex_codegen.cpp:312–319`),
+  delegating to libm `atan2` which is declared on demand
+  (`getAtan2Intrinsic`, lines 482–495).
+
+* `complexExp(z)` = $e^{a}(\cos b + i \sin b)$ (lines 321–338).
+
+* `complexLog(z)` = $\log |z| + i \cdot \text{arg}(z)$ (lines 340–349).
+
+* `complexSqrt(z)` = $\sqrt{|z|} \cdot (\cos(\text{arg}/2) + i\sin(\text{arg}/2))$
+  (lines 351–371).
+
+* `complexSin(z)` = $\sin a \cosh b + i \cos a \sinh b$ (lines 373–403).
+
+* `complexCos(z)` = $\cos a \cosh b - i \sin a \sinh b$ (lines 405–433).
+
+The hyperbolic intermediates use the identity
+$\cosh x = (e^{x} + e^{-x})/2$, $\sinh x = (e^{x} - e^{-x})/2$ rather than
+calling libm `cosh`/`sinh` directly — this keeps the SLP vectorizer's job
+easier and avoids one round trip through the libm symbol table.
+
+### 6.6 Polar form
+
+`makeFromPolar(magnitude, angle)` (lines 439–451) implements
+$z = r \cdot e^{i\theta} = r\cos\theta + ir\sin\theta$.
+
+### 6.7 Interaction with the AD types
+
+Complex numbers and dual numbers are mutually exclusive in the dispatch tree
+of `ArithmeticCodegen::add` / `sub` / `mul` / `div`: dual is checked first
+(line 711 of `arithmetic_codegen.cpp`), and if no dual is detected, complex is
+checked next (line 733). The conversion `convertToComplex`
+(`arithmetic_codegen.cpp:369–437`) promotes an integer, bignum or double
+operand to $(v, 0)$, including the lossy bignum → double conversion for
+HEAP_PTR operands. Bignum to complex is intentionally lossy because complex is
+already inexact; the conversion logs `eshkol_debug("complex: bignum->double
+conversion is lossy")` at line 399.
 
 ---
 
-## 6. String Conversion
+## 7. Dispatch architecture
 
-### 6.1. Number to String
+### 7.1 Polymorphic arithmetic surface
 
-`eshkol_bignum_to_string` (`bignum.cpp:667-716`) converts a bignum to its decimal
-representation by repeated division by 10. Each division extracts the least
-significant digit; the digits are reversed to produce the final string. The string
-is allocated with a header via `arena_allocate_string_with_header` for integration
-with the display and `write` subsystems.
+The polymorphic arithmetic surface is `class ArithmeticCodegen`
+(`inc/eshkol/backend/arithmetic_codegen.h:43–323`). Its public method set is:
 
-For rationals, `eshkol_rational_to_string` (`rational.cpp:169-184`) formats as
-`"num/denom"` when the denominator is not 1, or as a plain integer string when it
-is 1.
+* Binary: `add`, `sub`, `mul`, `div`, `mod`
+* Unary: `neg`, `abs`
+* Comparison: `compare(left, right, op_str)` where `op_str ∈ {lt, gt, eq, le, ge}`
+* Math: `mathFunc(operand, func_name)`, `pow(base, exp)`, `min`, `max`,
+  `remainder`, `quotient`
+* Coercion: `intToDouble`, `doubleToInt`, `extractAsDouble`
+* AD entry points: `withADBinaryDispatch`, `withADUnaryDispatch`
+* Bignum / rational helpers (public so `equal?` can use them):
+  `emitBignumBinaryCall`, `emitBignumCompareCall`, `emitIsBignumCheck`,
+  `emitIsRationalCheck`, `emitRationalBinaryCall`,
+  `emitRationalCompareCall`
 
-### 6.2. String to Number
+### 7.2 The dispatch tree of `add`
 
-`eshkol_string_to_number_tagged` (`bignum.cpp:950-1028`) parses numeric strings
-with a multi-strategy approach:
+The binary additions all follow the same dispatch shape; `add` is canonical
+(`arithmetic_codegen.cpp:638–804`). Reading the actual block sequence
+top-down:
 
-1. **Syntax scan**: Scan for `/` (rational), `.` or `e`/`E` (floating-point).
-2. **Rational syntax** (`"num/denom"`): Parse numerator and denominator as int64 via
-   `strtoll`, then create a rational via `eshkol_rational_create`. Falls through to
-   double if parsing fails.
-3. **Floating-point syntax**: Parse via `strtod`, return as double.
-4. **Integer syntax**: Attempt `strtoll`. If it succeeds without `ERANGE`, return as
-   int64. If `ERANGE` is set (overflow), fall to bignum parsing via
-   `eshkol_bignum_from_string`.
-5. **Final fallback**: Parse as double via `strtod`.
+1. **AD wrapping.** The body is wrapped in `withADBinaryDispatch(left, right,
+   AD_NODE_ADD=2, regular_fn)` (lines 644). If either operand is a
+   `CALLABLE` whose subtype is `CALLABLE_SUBTYPE_AD_NODE`, both operands are
+   promoted to AD nodes (via `convertToADNode`) and a binary op is recorded
+   on the autodiff tape. Otherwise control falls through to `regular_fn`.
 
-This cascade ensures that `(string->number "99999999999999999999999999999")` returns
-an exact bignum rather than losing precision through double conversion.
+2. **Bignum check.** Inside `regular_fn`, the first runtime check is
+   `emitIsBignumCheck(left, right)` (line 672). This calls
+   `eshkol_is_bignum_tagged` on each operand and ORs the results. If true,
+   control enters `bignum_path` which calls `emitBignumBinaryCall(left, right,
+   0)` — the same call site that handles INT64+BIGNUM, BIGNUM+INT64 and
+   BIGNUM+BIGNUM combinations because the runtime promotes int operands via
+   `tagged_to_bignum` (`bignum.cpp:724–730`).
+
+3. **Rational check.** If no bignum, the second runtime check is
+   `emitIsRationalCheck(left, right)` (line 685). If true, dispatch to
+   `emitRationalBinaryCall(left, right, 0)`.
+
+4. **Vector / tensor check.** If either operand has `ESHKOL_VALUE_HEAP_PTR`
+   type with a non-bignum, non-rational subtype, control enters `vector_path`
+   which invokes the tensor codegen.
+
+5. **Dual check.** If either operand has `ESHKOL_VALUE_DUAL_NUMBER` type,
+   both operands are promoted to dual via `convertToDual` and `dualAdd` is
+   used.
+
+6. **Complex check.** If either operand has `ESHKOL_VALUE_COMPLEX` type,
+   both operands are promoted to complex via `convertToComplex` and
+   `complexAdd` is used.
+
+7. **Double check.** If either operand is `ESHKOL_VALUE_DOUBLE`, both are
+   extracted to double (via `unpackDouble` or `SIToFP`) and `FAdd` is used.
+
+8. **Int path with overflow.** Final fallback: `sadd.with.overflow.i64`
+   intrinsic, with the overflow branch entering `emitBignumPromotion`.
+
+The PHI merge (`arithmetic_codegen.cpp:791–800`) has eight incoming edges,
+one per dispatch path.
+
+This dispatch order is dictated by *type ownership*: a bignum operand cannot
+appear in any of the other paths' fast paths (because `unpackInt64` on a
+HEAP_PTR returns the pointer-as-int64, not the numeric value), so the bignum
+check must be first.
+
+### 7.3 The dispatch tree of `compare`
+
+`compare(left, right, op_str)` (`arithmetic_codegen.cpp:1748–1923`) follows
+the same shape:
+
+1. Extract base types.
+2. Validate that both operands are numbers (or chars) — R7RS-ish: char is
+   accepted because stdlib code historically writes `(= c 32)` to test for a
+   space byte (lines 1788–1816). Non-numeric operands enter
+   `type_error_path` which raises `eshkol_type_error`.
+3. **Bignum check** via `emitIsBignumCheck`. If true,
+   `emitBignumCompareCall(left, right, cmp_op)` where `cmp_op ∈ {0..4}` is
+   the int encoding of `lt/gt/eq/le/ge`.
+4. **Rational check** via `emitIsRationalCheck`. If true,
+   `emitRationalCompareCall(left, right, cmp_op)`.
+5. **Double or AD-callable check**: if any operand is `DOUBLE` or
+   `CALLABLE`, both operands are extracted to double via `extractAsDouble`
+   and `FCmpO{LT,GT,EQ,LE,GE}` is used. `extractAsDouble` itself dispatches
+   into AD-node, bignum, rational and int paths internally.
+6. **Int path**: `ICmpS{LT,GT,EQ,LE,GE}` on `unpackInt64`.
+
+The PHI has five incoming edges (error, bignum, rational, double, int).
+
+### 7.4 The dispatch tree of `abs`
+
+`abs(operand)` (`arithmetic_codegen.cpp:1484–1599`) is wrapped in
+`withADUnaryDispatch(operand, AD_NODE_ABS=42, regular_fn)`. Inside the
+regular path:
+
+1. **Heap check.** If the type is `ESHKOL_VALUE_HEAP_PTR` (which means
+   bignum here — rational `abs` goes through a different code path that
+   constructs the negated numerator), compare the operand to 0 via
+   `emitBignumCompareCall(operand, zero, 0=lt)`. If `is_negative` is true,
+   call `emitBignumBinaryCall(operand, operand, 7=neg)`; otherwise return
+   the operand unchanged.
+
+2. **Double check.** If `ESHKOL_VALUE_DOUBLE`, use `FNeg` and `Select` based
+   on `FCmpOLT(val, 0.0)`.
+
+3. **Int path.** Standard `Neg`+`Select`, with a special case at
+   `val == INT64_MIN` that promotes to bignum (calls
+   `eshkol_bignum_from_int64` then `eshkol_bignum_neg`) — because
+   `-INT64_MIN` overflows signed int64.
+
+The PHI has three incoming edges (heap, double, int).
+
+### 7.5 The dispatch tree of `min` / `max`
+
+`min` (`arithmetic_codegen.cpp:2035–2078`) and `max`
+(`arithmetic_codegen.cpp:2080–2123`) both follow
+
+1. **Bignum check** via `emitIsBignumCheck`. If true,
+   `emitBignumCompareCall(left, right, 0=lt)` (for min) /
+   `(left, right, 1=gt)` (for max), then `Select` between the *original*
+   tagged operands based on the comparison result.
+
+2. **Double path** via `extractAsDouble` + `FCmpOLE` / `FCmpOGE`.
+
+The key correctness point: the bignum check exists so that `min`/`max` on
+bignums $> 2^{53}$ preserves precision. Without it, the double path's
+`extractAsDouble → eshkol_bignum_to_double` would lose bits and pick the
+wrong operand for adversarial inputs near $2^{63}$.
+
+The pattern of selecting between *original tagged operands* (lines 2073–2076,
+2118–2121) — rather than between extracted-double values — is essential to
+prevent precision loss on the output: even though the bignum compare is exact,
+returning the operand verbatim avoids any double round-trip.
+
+### 7.6 The dispatch tree of `pow`
+
+`pow(base, exp)` (`arithmetic_codegen.cpp:1927–2031`) is wrapped in
+`withADBinaryDispatch(base, exp, AD_NODE_POW=10, regular_fn)`. Inside:
+
+1. **Dual check** (lines 1947–1965). If either operand is dual, both are
+   promoted to dual and `autodiff_.dualPow` is used.
+
+2. **Exact-int test** (lines 1968–1981):
+   - `base_is_exact = (base_base == INT64) || (base_base == HEAP_PTR)` (i.e.
+     int64 or bignum),
+   - `exp_is_int = (exp_base == INT64)`,
+   - `exp_non_neg = (exp_val >= 0)`,
+   - `use_exact = base_is_exact && exp_is_int && exp_non_neg`.
+
+3. **Exact path** (lines 1984–2002). Call `eshkol_bignum_pow_tagged(arena,
+   base, exp, result)`, which uses repeated squaring and demotes via
+   `eshkol_bignum_fits_int64`.
+
+4. **Regular path** (lines 2005–2019). Both operands to double via
+   `extractAsDouble`, then libm `pow()`.
+
+### 7.7 `extractAsDouble` and the unified 6-way dispatch
+
+`extractAsDouble(tagged)` (`arithmetic_codegen.cpp:1613–1742`) is the single
+choke point through which every "I need a double" caller flows. The dispatch
+tree has six leaves:
+
+1. **Raw `double` LLVM value** — returned as-is (line 1620).
+2. **Raw `i64` LLVM value** — `SIToFP` to double (lines 1623–1625).
+3. **Tagged value, type = `CALLABLE` with `CALLABLE_SUBTYPE_AD_NODE`** —
+   load primal value from field 1 of the AD node struct
+   (lines 1647–1662).
+4. **Tagged value, type = `DOUBLE`** — `unpackDouble` (lines 1665–1672).
+5. **Tagged value, type = `HEAP_PTR`, subtype = `RATIONAL`** — call
+   `eshkol_rational_to_double` (lines 1692–1699).
+6. **Tagged value, type = `HEAP_PTR`, subtype = `BIGNUM`** — call
+   `eshkol_bignum_to_double` (lines 1701–1717).
+7. **Tagged value, type = `HEAP_PTR`, non-numeric subtype** — return 0.0
+   instead of crashing (lines 1719–1723). This is a defensive fallback that
+   shows up when a user passes a string to a numeric operation; the
+   `compare` path raises a type error upstream, so this branch is reached
+   only from places like `mathFunc` that have already validated their
+   inputs.
+8. **Tagged value, type = `INT64`** — `unpackInt64` then `SIToFP`
+   (lines 1726–1730).
+
+The PHI at line 1734 has six incoming edges, one per non-fallthrough leaf.
+
+This function is the architectural reason the rest of the numeric tower stays
+clean: every place that needs to do a numeric computation in double-precision
+calls `extractAsDouble` and stops worrying about which exact-arithmetic type
+it received.
 
 ---
 
-## 7. Codegen Architecture
+## 8. R7RS exact + inexact dispatch — the precise rules
 
-### 7.1. Runtime Dispatch vs. Inline LLVM IR
+R7RS §6.2.3 mandates that an operation involving any inexact operand produces
+an inexact result. The implementation enforces this at every dispatch level:
 
-The codegen uses a hybrid approach:
+### 8.1 Bignum + double → double
 
-**Inline LLVM IR** (fast path): For int64 arithmetic, the codegen emits native LLVM
-instructions (`add`, `sub`, `mul`) with overflow intrinsics. This path avoids
-function call overhead for the common case where both operands are small integers
-and no overflow occurs.
+`eshkol_bignum_binary_tagged` (`bignum.cpp:750–770`) has an explicit
+double-operand check at the top of the dispatch tree, *before* the
+`tagged_to_bignum` promotion attempt:
 
-**Runtime dispatch** (slow path): When overflow is detected or when either operand is
-a bignum/rational, the codegen calls into C runtime functions. These functions handle
-type-checking, promotion, the actual arbitrary-precision arithmetic, and demotion.
+```c
+if (left->type == ESHKOL_VALUE_DOUBLE || right->type == ESHKOL_VALUE_DOUBLE) {
+    double ld = (left->type == ESHKOL_VALUE_DOUBLE) ? left->data.double_val
+               : (left->type == ESHKOL_VALUE_HEAP_PTR && left->data.ptr_val != 0)
+                 ? eshkol_bignum_to_double((eshkol_bignum_t*)(void*)left->data.ptr_val)
+               : (double)left->data.int_val;
+    double rd = ...;
+    double r;
+    switch (op) {
+        case 0: r = ld + rd; break;
+        case 1: r = ld - rd; break;
+        case 2: r = ld * rd; break;
+        case 3: r = (rd != 0.0) ? ld / rd : 0.0; break;
+    }
+    *result = eshkol_make_double(r);
+    return;
+}
+```
 
-### 7.2. Codegen Helper Functions
+This is the bug class documented in `MEMORY.md` as "bignum+double returns 0":
+before this dispatch was hoisted above the exact path, `tagged_to_bignum`
+returned NULL for type DOUBLE (because doubles don't have a HEAP_PTR field to
+unwrap), and the function fell through the `if (!a || !b)` guard and returned
+int64 zero. The fix places the double check first so the bignum path is never
+entered when an inexact operand is present.
 
-`ArithmeticCodegen` in `arithmetic_codegen.cpp` provides three key helpers that
-emit the calls to the runtime dispatch layer:
+### 8.2 Rational + double → double
 
-- **`emitIsBignumCheck(left, right)`** (line 480): Allocates two tagged values on
-  the stack, stores the operands, calls `eshkol_is_bignum_tagged` on each, and
-  returns the logical OR. Used to branch into the bignum path before attempting
-  int64 arithmetic.
+The same rule applies in `eshkol_rational_binary_tagged`
+(`rational.cpp:257–292`): the double check is at the top of the dispatch.
 
-- **`emitBignumBinaryCall(left, right, op_code)`** (line 494): Allocates stack space
-  for left, right, and result tagged values. Stores operands, calls
-  `eshkol_bignum_binary_tagged`, loads and returns the result. All allocas are placed
-  in the function's entry block to avoid stack growth in loops (critical for TCO).
+### 8.3 Examples (concrete behaviour)
 
-- **`emitBignumCompareCall(left, right, op_code)`** (line 520+): Same alloca pattern
-  as the binary call, but invokes `eshkol_bignum_compare_tagged`. Op codes:
-  0=lt, 1=gt, 2=eq, 3=le, 4=ge.
+* `(+ (expt 10 30) 0.5)` — `expt` returns a bignum. The `+` enters the bignum
+  path's runtime, sees a DOUBLE operand, falls through to the double
+  computation. Result: a double close to $10^{30}$.
 
-For rationals, `emitRationalCompareCall` follows the same pattern, calling
-`eshkol_rational_compare_tagged_ptr` with pointer-based arguments to avoid ABI
-issues with passing 16-byte structs by value on different architectures.
+* `(* 1/3 2.0)` — the `*` enters the rational binary tagged dispatch, sees a
+  DOUBLE operand, falls through to double. Result: `0.6666666666666666`.
 
-### 7.3. Entry Block Alloca Pattern
+* `(< (- (expt 2 100) 1) 1e30)` — `expt` returns a bignum, `-` keeps it a
+  bignum (the runtime demotes only if `fits_int64`, which it doesn't here).
+  The `<` enters `compare`'s bignum path because the LHS is bignum; the
+  bignum compare path's runtime sees `1e30` is DOUBLE and falls through to
+  the double compare branch (`bignum.cpp:819–836`). The bignum is converted
+  to double via `eshkol_bignum_to_double`; result: `#f` because
+  $2^{100} - 1 \approx 1.27 \times 10^{30} > 10^{30}$.
 
-A critical implementation detail: all `alloca` instructions used by the dispatch
-helpers are placed in the function's entry block, not at the current insertion point.
-This is achieved by creating a temporary `IRBuilder` positioned at the entry block:
+* `(modulo (* (expt 2 64) 3) (expt 2 64))` — `expt` and `*` both stay in
+  bignum. `modulo` reaches `codegenModulo` in `llvm_codegen.cpp:16570–16666`,
+  which (since the fix at commit 51ec814) checks `emitIsBignumCheck` first
+  and dispatches into `emitBignumBinaryCall(op=4)`. Without that check, the
+  raw `SRem` would have been applied to the heap pointer bits, returning a
+  small multiple of the pointer — the original symptom of the 35-gap audit's
+  modulo bug.
+
+### 8.4 Exactness flag propagation
+
+The bignum binary dispatch explicitly sets `result->flags =
+ESHKOL_VALUE_EXACT_FLAG` on the HEAP_PTR return path
+(`bignum.cpp:807`). The `eshkol_make_double` constructor sets
+`ESHKOL_VALUE_INEXACT_FLAG` (`eshkol.h:188–195`). The
+`eshkol_make_int64(val, /*exact=*/true)` constructor used on the demoted
+return path sets `ESHKOL_VALUE_EXACT_FLAG` (`eshkol.h:179–186`).
+
+This means the chain of `(exact? (+ 1/3 1/6))` $\to$ `#t`, `(exact? (+ 1/3
+0.5))` $\to$ `#f`, `(exact? (expt 2 100))` $\to$ `#t`, `(exact? (+ (expt 2
+100) 0.0))` $\to$ `#f` all flow correctly through the dispatch tree.
+
+---
+
+## 9. Floor / ceil / round / truncate
+
+The four R7RS rounding functions live in `codegenMathFunction`
+(`llvm_codegen.cpp:16352–16432`). The dispatch keys
+`func_name ∈ {"floor", "ceil", "trunc", "round"}` enter the rounding-specific
+branch (line 16356) and follow a three-way path:
+
+1. **Exact-int / bignum identity.** If the operand is INT64 or HEAP_PTR with
+   subtype BIGNUM (`is_exact_int = arg_is_int || arg_is_bignum`, line 16360),
+   return the operand unchanged. Floor/ceil/round/truncate of an integer are
+   the integer.
+
+2. **Rational path.** If the operand is HEAP_PTR with subtype RATIONAL
+   (lines 16376–16399), call the appropriate runtime:
+   - `floor` $\to$ `eshkol_rational_floor`
+   - `ceil` $\to$ `eshkol_rational_ceil`
+   - `trunc` $\to$ `eshkol_rational_truncate`
+   - `round` $\to$ `eshkol_rational_round`
+   each of which returns a raw int64 that is packed as exact int64.
+
+3. **Float path.** Otherwise (operand is DOUBLE) call the libm function, with
+   the special case `round` $\to$ `llvm.roundeven` (the LLVM IEEE 754 round-half-to-even
+   intrinsic) at line 16407.
+
+The PHI at line 16416 merges three incoming edges: exact-identity, rational,
+float.
+
+### 9.1 The PHI predecessor mismatch fix
+
+A subtle correctness lesson is documented in `MEMORY.md` as the
+"floor/ceil/round/truncate PHI predecessor mismatch": when
+`extractDoubleFromTagged` is called inside `float_path`, it internally
+creates basic blocks (specifically, the bignum / rational subdispatch in
+`extractAsDouble`), shifting the builder's insertion point. The PHI for the
+outer `regular_merge` therefore must capture the *actual* exit block of
+`float_path` via `builder->GetInsertBlock()` after the `CreateBr(merge)`, not
+the block originally allocated as `float_path`:
 
 ```cpp
-llvm::Function* fn = ctx_.builder().GetInsertBlock()->getParent();
-llvm::IRBuilder<> entry_builder(&fn->getEntryBlock(), fn->getEntryBlock().begin());
-llvm::Value* left_alloca = entry_builder.CreateAlloca(ctx_.taggedValueType(), ...);
+BasicBlock* float_exit = builder->GetInsertBlock();  // line 16413
 ```
 
-If allocas were placed inside loop bodies, each iteration would grow the stack,
-eventually causing a stack overflow in tight loops. Entry block placement ensures
-constant stack usage regardless of iteration count.
+(`llvm_codegen.cpp:16413`). The same precaution applies to `rational_exit`
+(line 16399). Without these recaptures, the PHI claims a predecessor that
+isn't its actual predecessor and the LLVM verifier rejects the module.
+
+This is the same lesson the AD dispatch uses: any helper that may create
+basic blocks (`extractAsDouble`, `extractDoubleFromTagged`,
+`packDoubleToTaggedValue`, `isHeapSubtype`, `emitBignumCompareCall`,
+`emitBignumBinaryCall`, etc.) requires the caller to recapture the insertion
+block before adding incoming edges.
+
+### 9.2 Two-argument round
+
+`codegenRound(op)` (`llvm_codegen.cpp:16520–16546`) handles two-argument
+`(round x precision)` separately, always in double:
+
+```cpp
+Value* scaled = builder->CreateFDiv(val, precision);
+Function* roundeven_fn = ESHKOL_GET_INTRINSIC(module.get(), Intrinsic::roundeven, {double_type});
+Value* rounded = builder->CreateCall(roundeven_fn, {scaled});
+Value* result = builder->CreateFMul(rounded, precision);
+return packDoubleToTaggedValue(result);
+```
+
+Two-argument round is never exact, even when both arguments are integers; the
+output is always a double. This is consistent with the IEEE 754 round-half-to-even
+semantic exposed by `llvm.roundeven`.
 
 ---
 
-## 8. Code Examples
+## 10. Number ↔ string conversion
 
-### 8.1. Large Factorials
+### 10.1 Number to string
 
-```scheme
-(define (factorial n)
-  (if (<= n 1) 1
-      (* n (factorial (- n 1)))))
+`numberToString(op)` (`string_io_codegen.cpp:671–868`) dispatches on the
+operand's runtime type:
 
-(display (factorial 50))
-;; => 30414093201713378043612608166979581188299763898377856820553615673507270386838265
-;;    2522168640000000000000
-```
+* **Two-argument form `(number->string n radix)`** — radix in $[2, 36]$,
+  calls the C-level helper `eshkol_number_to_string_radix_raw`
+  (`system_builtins.c:4630–4656`). This handler is int64-only; it does not
+  yet support bignums or rationals in a non-decimal radix. The character set
+  is `0-9a-z` (line 4633).
 
-The multiplication `(* n ...)` uses the int64 fast path for small values of `n`. When
-the accumulator exceeds `2^63 - 1`, the `smul.with.overflow.i64` intrinsic triggers
-bignum promotion. Subsequent multiplications proceed through
-`eshkol_bignum_binary_tagged` with op code 2 (mul).
+* **One-argument form** with runtime-typed tagged value:
+  - HEAP_PTR with subtype = RATIONAL: call `eshkol_rational_to_string`
+    (`rational.cpp:206–221`), which uses `snprintf("%lld/%lld", num, denom)`
+    and returns an arena-allocated string with header. The denominator-1
+    case (integer rational) elides the `/denom` portion.
+  - HEAP_PTR with subtype = BIGNUM: call `eshkol_bignum_to_string`
+    (`bignum.cpp:667–720`), which extracts decimal digits by repeated
+    division by 10 using the limb-divisor fast path and reverses the buffer.
+  - DOUBLE: `snprintf("%g", val)`.
+  - INT64: `snprintf("%lld", val)`.
 
-### 8.2. Rational Arithmetic
+The PHI at line 832 merges four buffer pointers; double/int reuse a 64-byte
+pre-allocated buffer, while rational and bignum allocate their own via the
+runtime helpers. The header byte count is patched to the exact written length
+via `truncate_header(written)` (line 730–743), because the allocator stamps
+the header size to `buf_size + 1` regardless of how many bytes `snprintf`
+actually wrote.
 
-```scheme
-(display (+ 1/3 1/6))    ;; => 1/2
-(display (* 2/3 3/4))    ;; => 1/2
-(display (- 1/2 1/3))    ;; => 1/6
-(display (/ 5/7 10/21))  ;; => 3/2
-```
+### 10.2 String to number
 
-Each operation produces an exact rational in canonical form. The GCD reduction
-ensures `1/3 + 1/6 = 3/6 = 1/2` rather than `3/6`.
+`stringToNumber(op)` (`string_io_codegen.cpp:628–658`) is a thin LLVM wrapper
+that calls the runtime `eshkol_string_to_number_tagged(arena, str, result)`.
+The runtime (`bignum.cpp:954–1057`) implements the multi-strategy parse:
 
-### 8.3. Numeric Tower Promotion
+1. **Sentinel.** Empty string, whitespace-only, or leading non-digit
+   non-`+/-/.` $\to$ return `#f` (the R7RS sentinel for "not a number"). The
+   `#f` value is constructed as `eshkol_tagged_value_t{type=BOOL, data.int_val=0}`
+   (lines 958–963).
 
-```scheme
-(display (+ 1 0.5))            ;; => 1.5 (int64 + double = double)
-(display (exact? (* 2 3)))     ;; => #t  (int64 * int64 = int64)
-(display (exact? (expt 2 100)));; => #t  (exact exponentiation = bignum)
-(display (+ (expt 2 100) 0.0));; => 1.2676506002282294e+30 (bignum + double = double)
-```
+2. **Syntax scan.** Walk the string looking for `/` (rational marker),
+   `.`, `e`, or `E` (float marker). The presence flags `is_rational` and
+   `is_float` direct the parse strategy.
 
-The `(expt 2 100)` call enters `eshkol_bignum_pow_tagged`, which detects that both
-operands are exact integers with a non-negative exponent, and delegates to
-`eshkol_bignum_pow` for exact repeated squaring. Adding `0.0` triggers the
-inexact promotion path in `eshkol_bignum_binary_tagged`, converting the bignum to
-double via `eshkol_bignum_to_double`.
+3. **Rational syntax** `"num/denom"` (lines 998–1017):
+   - Parse numerator via `strtoll`. If the endpoint is the slash and no
+     `ERANGE`, parse denominator via `strtoll`. If neither overflowed and
+     denom $\ne 0$, construct the rational via `eshkol_rational_create`.
+   - Falls back to `#f` if any step fails.
+
+4. **Float syntax** (lines 1019–1031):
+   - `strtod`; the entire string must be consumed (modulo trailing
+     whitespace). Returns DOUBLE on success, `#f` otherwise.
+
+5. **Integer syntax** (lines 1033–1043):
+   - `strtoll`; entire string must be consumed.
+   - If `errno != ERANGE` and parse succeeded $\to$ return INT64.
+
+6. **Integer overflow fallback** (lines 1045–1053):
+   - If `strtoll` set `ERANGE`, parse as bignum via
+     `eshkol_bignum_from_string(arena, start, strlen(start))`. If parse
+     succeeds, return HEAP_PTR (BIGNUM) with EXACT flag set.
+
+7. **Final `#f`** (line 1056) — none of the strategies matched.
+
+This cascade ensures that `(string->number "99999999999999999999999999999")`
+returns an exact bignum rather than losing precision through double
+conversion. The fix is documented in `MEMORY.md` as
+"string->number missing bignum".
+
+### 10.3 What's *not* yet supported
+
+The string-to-number parser intentionally does not handle:
+
+* Radix prefixes `#b`, `#o`, `#d`, `#x` (binary, octal, decimal, hex). The
+  R7RS-mandated prefixes are recognised by Eshkol's *lexer* in the source
+  parser, but `string->number` operates on already-Eshkol-string inputs and
+  currently rejects them.
+* Exactness prefixes `#e`, `#i`. Same reason — `string->number` does not
+  observe these markers.
+* Complex syntax `a+bi`. The complex type has no string parser.
+
+These are documented gaps; user code that needs e.g. hex parsing must wrap
+the input with `(string-append "#x" hex)` and route through the lexer via
+`read`, not through `string->number`.
 
 ---
 
-## References
+## 11. The 35-gap audit closure
 
-- `inc/eshkol/core/bignum.h` -- Bignum type definition, public API declarations
-- `lib/core/bignum.cpp` -- Bignum arithmetic, tagged dispatch, bitwise operations
-- `inc/eshkol/core/rational.h` -- Rational type definition, rounding functions
-- `lib/core/rational.cpp` -- Rational arithmetic, comparison, rationalize
-- `lib/backend/arithmetic_codegen.cpp` -- LLVM IR emission for overflow detection and runtime dispatch
-- R7RS Section 6.2 -- Numerical operations specification
+The v1.2 release closed a 35-gap audit of the bignum / rational dispatch
+surface. The CHANGELOG entry at `CHANGELOG.md:723–726` records the closure:
+
+> Bignum arithmetic: full 35-gap audit closed, including rational
+> comparison, `abs`, `min`/`max` precision, `expt` with exact integer
+> exponents, `number->string` / `string->number` bignum round-trip,
+> and `bignum + double` → double per R7RS exact+inexact semantics.
+
+The gaps fell into four classes, each illustrated by representative source
+fixes:
+
+### 11.1 Class A — dispatch fall-through (operand path skips bignum check)
+
+The pattern: a primitive operates on an int64 fast path without first checking
+whether either operand is a bignum HEAP_PTR. Because `unpackInt64` on a
+HEAP_PTR returns the pointer-as-int64 (not the numeric value), the fast path
+silently produces garbage.
+
+**Representative fixes:**
+
+* **`codegenModulo`** (`llvm_codegen.cpp:16570–16666`). The safe path now
+  checks `emitIsBignumCheck` before the `SRem` (line 16634). Without this,
+  `(modulo (* big-int 2) (expt 2 64))` returned a small multiple of the
+  pointer.
+
+* **`ArithmeticCodegen::compare`** (`arithmetic_codegen.cpp:1856–1867`). The
+  bignum check (line 1856) and rational check (line 1871) precede the
+  double/int dispatch. Before the fix, rationals fell through to the int
+  path, which compared their *pointer addresses* — non-deterministic ordering
+  depending on arena allocation order.
+
+* **`ArithmeticCodegen::abs`** (`arithmetic_codegen.cpp:1484–1599`). The
+  heap-pointer path (lines 1489–1529) handles bignums by `emitBignumCompareCall`
+  + `emitBignumBinaryCall(op=7=neg)`. Before the fix, `codegenAbs` always
+  routed through `extractAsDouble` and packed via `packDouble`, returning an
+  inexact result for negative bignums.
+
+### 11.2 Class B — precision loss on bignum → double
+
+The pattern: a primitive normalises both operands to double via
+`extractAsDouble` and operates on the doubles. For bignums larger than
+$2^{53}$ this loses bits and can produce a *wrong* result, not merely an
+inexact one.
+
+**Representative fixes:**
+
+* **`min` / `max`** (`arithmetic_codegen.cpp:2035–2123`). The bignum check
+  dispatches to `emitBignumCompareCall` and selects between the *original*
+  tagged operands, preserving exactness. Without the check, `(min (expt 2
+  100) (+ (expt 2 100) 1))` would return whichever happens to round to the
+  smaller double.
+
+* **`compare`** for bignum-rational mixed operands. The rational path is
+  reached only when neither operand is a bignum; if one is a bignum and the
+  other a rational, the bignum-compare runtime promotes the rational to its
+  double approximation via the `tagged_to_bignum` fallback — a documented
+  precision loss for adversarial inputs. Closing this fully would require a
+  bignum-rational comparison path; it's a documented but as-yet-unfilled
+  gap.
+
+### 11.3 Class C — exact-result-loss on integer exponents
+
+* **`expt`** (`arithmetic_codegen.cpp:1927–2031` + `bignum.cpp:866–950`).
+  Before the fix, `(expt 2 100)` always went through libm `pow`, returning a
+  double approximation. After the fix:
+  - codegen tests `base_is_exact && exp_is_int && exp_non_neg`,
+  - dispatches into `eshkol_bignum_pow_tagged`,
+  - runtime does repeated squaring in bignum arithmetic,
+  - result is demoted via `eshkol_bignum_fits_int64`.
+  This makes `(exact? (expt 2 100))` $\to$ `#t` and the printed value is
+  exact.
+
+### 11.4 Class D — ABI mismatch on tagged-value passing
+
+* **`emitRationalCompareCall`** (`arithmetic_codegen.cpp:602–617`). The
+  runtime entry point `eshkol_rational_compare_tagged_ptr`
+  (`rational.cpp:354–423`) takes pointers to tagged values, not tagged values
+  by value. The codegen `alloca`s the tagged values in the entry block and
+  passes the pointers — avoiding ABI issues on platforms where 16-byte
+  structs are passed in two registers or split across registers and the
+  stack.
+
+  The accompanying helper `eshkol_is_rational_tagged_ptr`
+  (`rational.cpp:232–234`) wraps the pass-by-value
+  `eshkol_is_rational_tagged` (`rational.cpp:224–229`) for the same reason.
+
+### 11.5 Class E — number↔string round trip
+
+* **`numberToString`** (`string_io_codegen.cpp:671–868`). The runtime-type
+  dispatch added explicit HEAP_PTR subtype check at lines 775–805 (rational
+  vs bignum). Before the fix, `(number->string (expt 2 100))` printed raw
+  pointer bits.
+
+* **`string->number`** (`bignum.cpp:954–1057`). The cascade
+  `strtoll` $\to$ `ERANGE` $\to$ bignum parse $\to$ `strtod` ensures that
+  `(string->number "<long integer>")` produces exact bignum, not lossy
+  double. Before the fix, the function used `strtod` only.
+
+### 11.6 Class F — conversion-to-AD types missing bignum
+
+* **`convertToComplex`** (`arithmetic_codegen.cpp:369–437`). The HEAP_PTR
+  branch dispatches into `eshkol_bignum_to_double` (lines 400–408). Before
+  the fix, bignums were treated as int64 via `unpackInt64` + `SIToFP`, which
+  applied `SIToFP` to the pointer bits — producing a meaningless double.
+
+* **`convertToDual`** (`arithmetic_codegen.cpp:100–166`). Same fix: the
+  HEAP_PTR branch (lines 124–139) calls `eshkol_bignum_to_double`.
+
+### 11.7 Five concrete fixes with citations
+
+To make the audit's surface concrete, here are five representative fixes with
+exact source locations:
+
+1. **`codegenAbs` missing bignum path** — fixed by delegating to
+   `ArithmeticCodegen::abs` at `llvm_codegen.cpp:16506`, which handles bignum
+   via `emitBignumCompareCall` / `emitBignumBinaryCall` at
+   `arithmetic_codegen.cpp:1504–1529`.
+
+2. **`ArithmeticCodegen::compare` missing rational path** — fixed by adding
+   `emitIsRationalCheck` at `arithmetic_codegen.cpp:1871` and
+   `emitRationalCompareCall` at lines 1875–1877. Without this, rationals
+   fell through to integer comparison on raw pointer bits.
+
+3. **`min/max` precision loss for bignums > $2^{53}$** — fixed at
+   `arithmetic_codegen.cpp:2050–2057` (min) and 2095–2102 (max). The bignum
+   check uses exact 128-bit comparison and selects between the original
+   operands.
+
+4. **`bignum + double` returning 0** — fixed at `bignum.cpp:750–770`. The
+   double check was hoisted above the `tagged_to_bignum` promotion attempt
+   in `eshkol_bignum_binary_tagged`.
+
+5. **`number->string` missing bignum** — fixed at
+   `string_io_codegen.cpp:777–805`. The HEAP_PTR subtype is read at
+   `ptr - 8`, then dispatches to `eshkol_bignum_to_string` or
+   `eshkol_rational_to_string`.
+
+A sixth fix worth mentioning, although technically Class A: the
+**`floor/ceil/round/truncate` PHI predecessor mismatch** at
+`llvm_codegen.cpp:16413` — recapturing `float_exit` via
+`builder->GetInsertBlock()` after `CreateBr(merge)`. This one was an LLVM
+verifier failure rather than a silent wrong-answer bug.
+
+### 11.8 Regression test coverage
+
+`tests/v1_2_edge_cases/bignum_modulo_test.esk` is the documented regression
+template (`MEMORY.md`: "Bignum dispatch in arithmetic codegen"). The pattern
+extends: any new integer op added inline in `llvm_codegen.cpp` must include
+a bignum-modulo-style regression test.
+
+---
+
+## 12. Performance characteristics
+
+### 12.1 Int64 fast path
+
+The int64 fast path is the cheapest by an order of magnitude. For `(+ a b)`
+where both are int64:
+
+* No allocation.
+* Three LLVM instructions: `sadd.with.overflow.i64`, `extractvalue 0`,
+  `extractvalue 1`, plus a `br` on the overflow flag (which the branch
+  predictor handles trivially because overflow is rare).
+* No function call into the runtime.
+
+The `sadd.with.overflow.i64` intrinsic emits a single `addq` plus a
+conditional move on x86, and a single `adds` on AArch64.
+
+### 12.2 Bignum demotion
+
+The demotion check `eshkol_bignum_fits_int64` (`bignum.cpp:626–646`) is
+roughly four integer comparisons and a sign-conditional cast — cheaper than
+the bignum allocation itself. Demotion ensures that "transient bignum"
+patterns like
+
+```scheme
+(- (+ INT64_MAX 1) 1)
+```
+
+return to int64 representation. The intermediate `(+ INT64_MAX 1)` is a
+bignum, but the final `-` step demotes back. Without demotion, the result
+would be a HEAP_PTR with all the downstream allocator and dispatch costs.
+
+### 12.3 Rational normalisation
+
+Each rational arithmetic op pays for:
+
+* One `__int128_t` multiplication per numerator (and one per denominator).
+* One `gcd128` call on the result, which is $O(\log \min(n, d))$ iterations
+  of 128-bit modulo.
+* One `arena_allocate_with_header` if the result is a HEAP_PTR (skipped if
+  the result is integer and is demoted to INT64).
+
+For "small" rationals (numerator and denominator below $2^{32}$) the
+`gcd128` is dominated by branch overhead rather than arithmetic. For larger
+operands the 128-bit modulo becomes the hot path.
+
+### 12.4 Complex arithmetic
+
+Complex add/sub/mul/conj are four to eight FP ops with no allocation in the
+arithmetic itself, but `packComplexToTagged` allocates 16 bytes on the arena
+to store the result. Operations that chain (e.g. `(* z1 z2 z3)`) therefore
+allocate $n - 1$ complex blocks for $n$ operands. The arena is bump-allocated
+so per-block cost is two integer adds and a bounds check, but the cumulative
+allocator pressure is visible in profiling for tight complex loops.
+
+Complex division goes through Smith's formula's two-way branch; on modern
+out-of-order cores the branch is well-predicted because the two paths have
+similar latency and the decision is data-driven.
+
+### 12.5 Double fast path
+
+For pure-double code the dispatch tree of `add` evaluates seven `ICmpEQ`
+predicates before reaching the double path. LLVM's instruction combiner
+folds these into a single switch when the operand types are statically
+known via the type-inference layer, but for fully dynamic code (e.g. values
+flowing through `hash-table-ref`) the predicates remain.
+
+---
+
+## 13. Limitations and future work
+
+The source explicitly defers four features:
+
+### 13.1 Arbitrary-precision rationals
+
+The rational struct holds int64 numerator and denominator. When
+`rational_create_safe` (`rational.cpp:56–74`) cannot fit the reduced
+fraction in int64, it returns `NULL`, triggering the
+`eshkol_rational_binary_tagged` overflow-to-double fallback
+(`rational.cpp:321–337`). The fall-back is documented as preserving R7RS's
+"arithmetic never fails" guarantee at the cost of exactness. A future
+extension would replace the int64 fields with bignum pointers; the
+`rational.cpp:84–98` Audit C7 comment notes:
+
+> legitimate rationals at INT64_MIN magnitude are rare and can be
+> re-expressed once bignum rationals land.
+
+### 13.2 Bignum rationals (transitively)
+
+Same scope as 13.1, listed separately because the upgrade is non-trivial:
+every arithmetic on a bignum-rational must dispatch through the bignum
+runtime, requiring O(1) allocation for the numerator and denominator
+intermediate even for tiny operands. The performance cost would be
+significant for the common case.
+
+### 13.3 Radix prefixes in `string->number`
+
+The R7RS `#b`, `#o`, `#d`, `#x`, `#e`, `#i` prefixes are recognised by the
+*lexer* but not by `string->number`. See §10.3.
+
+### 13.4 Complex `string->number` / `number->string`
+
+Complex numbers have no built-in string parser or printer in
+`stringToNumber` / `numberToString`. User code can construct
+`a + bi` strings manually via concatenation, but round-tripping through
+`string->number` returns `#f`. The display system in
+`lib/core/printer.cpp` does print complex numbers as `<real>+<imag>i`,
+which is asymmetric.
+
+### 13.5 Big-radix `number->string`
+
+`eshkol_number_to_string_radix_raw` (`system_builtins.c:4630–4656`) is
+int64-only. Calling `(number->string (expt 2 100) 16)` falls back to the
+single-argument path because the codegen rejects non-int64 operands in the
+two-argument form (`string_io_codegen.cpp:684–705`).
+
+### 13.6 Quaternions / hypercomplex
+
+Not present in the codebase. The `ESHKOL_VALUE_*` enum reserves space for
+future type tags but no hypercomplex implementation exists.
+
+### 13.7 IEEE 754 binary128 / extended
+
+Eshkol is IEEE 754 binary64 throughout. There is no extended-precision FP
+type. The codegen uses LLVM's `Double` type uniformly.
+
+### 13.8 Decimal floating point
+
+Not present. R7RS does not require it.
+
+---
+
+## 14. R7RS conformance summary
+
+The R7RS numeric tower requirements that Eshkol fully implements:
+
+* §6.2.1 — exact / inexact distinction with `EXACT_FLAG` / `INEXACT_FLAG`.
+* §6.2.2 — number types: int, rational, real, complex (exact and inexact
+  variants where applicable).
+* §6.2.3 — exact + inexact $\to$ inexact (universal rule).
+* §6.2.5 — predicates: `integer?`, `rational?`, `real?`, `complex?`,
+  `number?`, `exact?`, `inexact?`.
+* §6.2.6 — `+`, `-`, `*`, `/`, `abs`, `quotient`, `remainder`, `modulo`,
+  `gcd`, `lcm`, `numerator`, `denominator`, `floor`, `ceiling`, `truncate`,
+  `round`, `rationalize`, `exact`, `inexact`, `expt`.
+* §6.2.7 — `<`, `>`, `<=`, `>=`, `=` with R7RS-mandated type validation.
+* §6.2.10 — `string->number`, `number->string` (single-argument, plus
+  int64-only two-argument with radix).
+
+Partial:
+
+* §6.2.6 — `rationalize` works for finite inputs via Stern–Brocot; for
+  irrationals the iteration cap of 1000 may produce a near-but-not-exact
+  result.
+* §6.2.10 — radix prefixes for `string->number` not honoured.
+
+---
+
+## 15. References
+
+### Headers
+
+* `inc/eshkol/eshkol.h` — tagged value layout (lines 130–150),
+  type/subtype constants (lines 70–113, 337–360), helper macros
+  (lines 446–558).
+* `inc/eshkol/core/bignum.h` — bignum API.
+* `inc/eshkol/core/rational.h` — rational API.
+* `inc/eshkol/backend/arithmetic_codegen.h` — codegen surface for
+  polymorphic arithmetic.
+
+### Runtime
+
+* `lib/core/bignum.cpp` — sign-magnitude limbs, Knuth division, tagged
+  dispatch, two's complement bitwise, string ↔ number.
+* `lib/core/rational.cpp` — GCD reduction, 128-bit intermediates,
+  tagged dispatch, rounding, rationalize.
+
+### Codegen
+
+* `lib/backend/arithmetic_codegen.cpp` — `add`, `sub`, `mul`, `div`,
+  `mod`, `neg`, `abs`, `compare`, `pow`, `min`, `max`, `remainder`,
+  `quotient`, `extractAsDouble`, the AD dispatch entry points, and the
+  bignum / rational helpers.
+* `lib/backend/complex_codegen.cpp` — complex arithmetic with Smith's
+  division and overflow-safe magnitude.
+* `lib/backend/string_io_codegen.cpp` — `numberToString` and
+  `stringToNumber` codegen entry points.
+* `lib/backend/llvm_codegen.cpp §codegenModulo`, `§codegenAbs`,
+  `§codegenRound`, `§codegenMathFunction` (the rounding-function branch),
+  `§codegenMinMax` — the dispatch sites the 35-gap audit fixed.
+
+### Standards
+
+* R7RS, §6.2 *Numbers*. Eshkol implements the R7RS-small numeric tower
+  with the partial-conformance notes documented in §14.
+
+### Project memory
+
+* `~/.claude/projects/-Users-tyr-Desktop-eshkol/memory/MEMORY.md` — index
+  of bug-and-fix entries, including the bignum-dispatch lessons documented
+  here. The entries are point-in-time observations; this document supersedes
+  them where source verification is required.
+* `~/.claude/projects/-Users-tyr-Desktop-eshkol/memory/project_bignum_dispatch_pattern.md`
+  — the dispatch pattern for new integer ops; cites the
+  `codegenModulo` fix at commit `51ec814`.
