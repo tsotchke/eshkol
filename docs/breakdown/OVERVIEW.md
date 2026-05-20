@@ -500,7 +500,7 @@ Both pursue memory safety without garbage collection:
 
 ## Production Readiness
 
-Eshkol v1.2.0-scale represents a **mature, production-ready implementation** for scientific computing, machine learning, and cognitive architecture deployment.
+Eshkol v1.2.1-scale represents a **mature, production-ready implementation** for scientific computing, machine learning, and cognitive architecture deployment.
 
 ### Implementation Scale
 

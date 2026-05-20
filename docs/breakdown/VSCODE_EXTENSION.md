@@ -1,6 +1,6 @@
 # VS Code Extension
 
-**Status:** Production (v1.2.0-scale)
+**Status:** Production (v1.2.1-scale)
 **Applies to:** Eshkol compiler v1.2.0-scale and later
 
 ---

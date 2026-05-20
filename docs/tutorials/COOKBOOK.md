@@ -76,9 +76,14 @@ as a compiled program.
 (derivative (lambda (x) (* x x)) 3.0)  ;; => 6.0
 ```
 
-**Gradient of 2-variable function:**
+**Gradient of a 2-variable function:**
 ```scheme
-(gradient (lambda (x y) (+ (* x x) (* y y))) 3.0 4.0)
+;; gradient takes (function vector) — pack the two variables into a vector.
+(gradient (lambda (v)
+            (let ((x (vector-ref v 0))
+                  (y (vector-ref v 1)))
+              (+ (* x x) (* y y))))
+          #(3.0 4.0))
 ;; => #(6.0 8.0)
 ```
 

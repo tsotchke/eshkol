@@ -1,6 +1,6 @@
 # Vectors and Tensors in Eshkol
 
-**Status**: v1.2.0-scale - Production-ready
+**Status**: v1.2.1-scale - Production-ready
 **Last Updated**: March 2026
 
 > This document describes the **actual implemented** vector and tensor systems based on source code verification.

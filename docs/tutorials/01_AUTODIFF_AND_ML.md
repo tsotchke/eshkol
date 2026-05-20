@@ -42,11 +42,16 @@ For functions of multiple variables, `gradient` returns a vector of partial
 derivatives.
 
 ```scheme
-;; f(x, y) = x^2 + x*y + y^2
-(define (f x y) (+ (* x x) (* x y) (* y y)))
+;; f takes a vector v = (x, y) and returns x^2 + x*y + y^2.
+;; `gradient` is `(gradient function vector)` — the function consumes
+;; one vector argument; partial derivatives are with respect to each component.
+(define (f v)
+  (let ((x (vector-ref v 0))
+        (y (vector-ref v 1)))
+    (+ (* x x) (* x y) (* y y))))
 
 ;; grad f at (1, 2) = (df/dx, df/dy) = (2x+y, x+2y) = (4, 5)
-(display (gradient f 1.0 2.0))
+(display (gradient f #(1.0 2.0)))
 (newline)
 ;; => #(4.0 5.0)
 ```
@@ -80,13 +85,17 @@ differentiate a derivative to get second derivatives:
 Or use `hessian` directly for the matrix of second partial derivatives:
 
 ```scheme
-(define (g x y) (+ (* x x y) (* y y y)))
+;; g(v) = x^2 * y + y^3, with v = (x, y).
+(define (g v)
+  (let ((x (vector-ref v 0))
+        (y (vector-ref v 1)))
+    (+ (* x x y) (* y y y))))
 
 ;; Hessian at (1, 2):
 ;; [[d2g/dxdx, d2g/dxdy], [d2g/dydx, d2g/dydy]]
 ;; = [[2y, 2x], [2x, 6y]]
 ;; = [[4, 2], [2, 12]]
-(display (hessian g 1.0 2.0))
+(display (hessian g #(1.0 2.0)))
 (newline)
 ```
 
@@ -180,9 +189,13 @@ For models with multiple parameters, use `gradient`:
         (+ (* err err) (mse w0 w1 (cdr data))))))
 
 ;; Compute gradient with respect to (w0, w1)
-;; and update both parameters simultaneously
+;; and update both parameters simultaneously.
+;; gradient takes a single-vector-argument function, so we pack
+;; the two weights into a vector and unpack inside the wrapper.
 (define (step-2d w0 w1 lr data)
-  (let ((grad (gradient (lambda (a b) (mse a b data)) w0 w1)))
+  (let* ((loss (lambda (w)
+                 (mse (vector-ref w 0) (vector-ref w 1) data)))
+         (grad (gradient loss (vector w0 w1))))
     (let ((dw0 (vector-ref grad 0))
           (dw1 (vector-ref grad 1)))
       (list (- w0 (* lr dw0))

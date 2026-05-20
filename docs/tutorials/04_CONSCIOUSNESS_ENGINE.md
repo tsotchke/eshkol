@@ -1,8 +1,11 @@
 # Tutorial 4: The Consciousness Engine
 
 Eshkol's consciousness engine integrates three computational frameworks —
-logic programming, active inference, and global workspace theory — into 22
-builtins. This tutorial shows you how to use each one.
+logic programming, active inference, and global workspace theory — into a
+small set of compiler builtins. This tutorial shows you how to use each
+one. Every form below matches the actual argument shape the compiler
+expects (see `lib/backend/logic_workspace_codegen.cpp` and
+`lib/core/{logic,inference,workspace}.cpp`).
 
 ---
 
@@ -65,7 +68,7 @@ terms equal:
 ### Type Predicates
 
 ```scheme
-(logic-var? ?x)           ;; => #t (bare ?x, no quote)
+(logic-var? ?x)           ;; => #t  (bare ?x, no quote)
 (logic-var? 'hello)       ;; => #f
 (substitution? s1)        ;; => #t
 (kb? kb)                  ;; => #t
@@ -81,78 +84,121 @@ propagation to infer hidden states from observations.
 
 ### Factor Graphs
 
+A factor graph has a fixed number of variables; each variable has a fixed
+number of discrete states; factors connect groups of variables and carry
+a conditional probability table (CPT). The signature is
+`(make-factor-graph num-vars dims-tensor)` — two arguments — where
+`dims-tensor` gives the number of states for each variable.
+
 ```scheme
-;; Create a factor graph with 3 variables, each with 2 states
-(define fg (make-factor-graph 3))
+;; Three variables, each with two discrete states.
+(define fg (make-factor-graph 3 #(2 2 2)))
 
-;; Add factors (conditional probability tables)
-;; Factor connecting variables 0 and 1
-(fg-add-factor! fg 0 1 #(0.9 0.1 0.2 0.8))
+;; Add a binary factor connecting variables 0 and 1.
+;; - var-indices is a tensor of variable ids the factor depends on.
+;; - cpt is a tensor of conditional probabilities, flattened in row-major
+;;   order over the (states of var 0) x (states of var 1) grid.
+;;   CPTs are stored in log space internally; you supply natural-scale
+;;   probabilities and the runtime takes the log.
+(fg-add-factor! fg #(0 1) #(0.9 0.1 0.2 0.8))
 
-;; Factor connecting variables 1 and 2
-(fg-add-factor! fg 1 2 #(0.7 0.3 0.4 0.6))
+;; Binary factor connecting variables 1 and 2.
+(fg-add-factor! fg #(1 2) #(0.7 0.3 0.4 0.6))
 
-;; Run belief propagation (10 iterations)
+;; Run loopy belief propagation for 10 iterations.
 (fg-infer! fg 10)
-
-;; Read the inferred beliefs
-(display "Beliefs after inference:")
-(newline)
 ```
+
+After `fg-infer!`, each variable's belief vector is converged (modulo the
+iteration bound). The runtime stores beliefs internally; you read them out
+indirectly through `free-energy` and `expected-free-energy`, or directly
+through `fg-marginal` (a system builtin, not in the core 22).
 
 ### Free Energy
 
 Free energy quantifies surprise — how much the model's predictions diverge
-from observations:
+from the observed evidence:
 
 ```scheme
-;; Compute variational free energy
-;; Low free energy = good model of the data
-(define fe (free-energy fg #(0 0)))  ;; observe var 0 in state 0
+;; Observations are encoded as #(var-index observed-state) pairs.
+;; Passing a single 2-element tensor #(0 0) is read as: variable 0 was
+;; observed in state 0.
+(define fe (free-energy fg #(0 0)))
 (display fe)
 (newline)
 
-;; Expected free energy for action selection
-(define efe (expected-free-energy fg #(0 0)))
+;; For multiple observations, pass a tensor of pair tensors.
+;;   #(#(0 0) #(2 1))  =>  var 0 in state 0  AND  var 2 in state 1.
+
+;; Expected free energy for action selection takes the variable that the
+;; agent intends to act on, plus the state it would push that variable to:
+;;   (expected-free-energy fg action-var action-state)
+(define efe (expected-free-energy fg 0 0))
 (display efe)
 (newline)
 ```
 
+The pair format keeps observation specifications terse: a state vector
+over every variable would force you to encode "unobserved" with a
+sentinel, whereas a list of pairs only mentions the variables that were
+actually clamped.
+
 ### Learning with CPT Updates
 
+`fg-update-cpt!` rewrites the CPT of an existing factor (referenced by
+its insertion index — the same order in which `fg-add-factor!` was
+called). After updating a factor, the message cache is reset so the next
+`fg-infer!` reconverges from the new CPT.
+
 ```scheme
-;; Update conditional probability table based on new evidence
+;; Update factor 0's CPT in light of new evidence.
 (fg-update-cpt! fg 0 #(0.95 0.05 0.15 0.85))
 
-;; Re-run inference — beliefs reconverge with new evidence
+;; Re-run inference — beliefs reconverge with the updated factor.
 (fg-infer! fg 10)
 ```
+
+`fg-observe!` is the related primitive for clamping a variable to a
+specific observed state (closer in spirit to "evidence" than "learning");
+it also resets the message cache so subsequent `fg-infer!` calls see the
+clamp.
 
 ---
 
 ## Part 3: Global Workspace Theory
 
 The workspace implements a cognitive architecture where specialised
-modules compete for global broadcast via softmax competition.
+modules compete for global broadcast via softmax competition. The
+signature is `(make-workspace dim max-modules)` — `dim` is the
+dimensionality of each module's content vector; `max-modules` is the
+maximum number of modules the workspace can hold (the runtime hard-caps
+at 16, regardless of what you pass).
 
 ### Creating a Workspace
 
 ```scheme
-;; Create a workspace
-(define ws (make-workspace))
+;; A workspace with 3-element content vectors, capacity for up to 4 modules.
+(define ws (make-workspace 3 4))
 
-;; Register processing modules (each is a closure that takes
-;; input and returns a content tensor with a salience score)
-(ws-register! ws
-  (lambda (input) #(0.8 0.5 0.3)))  ;; module 1: visual
-(ws-register! ws
-  (lambda (input) #(0.2 0.9 0.1)))  ;; module 2: auditory
-(ws-register! ws
-  (lambda (input) #(0.5 0.5 0.5)))  ;; module 3: memory
+;; Register processing modules. Each is a triple of (workspace, name, fn).
+;; The closure must take one argument (the current workspace content) and
+;; return a content tensor of length dim. Salience is read from the
+;; returned tensor's norm, and the softmax winner's tensor becomes the new
+;; broadcast content.
+(ws-register! ws "visual"
+  (lambda (content) #(0.8 0.5 0.3)))
+(ws-register! ws "auditory"
+  (lambda (content) #(0.2 0.9 0.1)))
+(ws-register! ws "memory"
+  (lambda (content) #(0.5 0.5 0.5)))
 
-;; Step the workspace — modules compete via softmax,
-;; winner broadcasts to all others
-(ws-step! ws #(1.0 0.0 0.0))  ;; input stimulus
+;; Step the workspace — modules compete via softmax, the winner broadcasts.
+;; ws-step! takes exactly one argument (the workspace) and reads the
+;; current content from the workspace itself; you do not pass a stimulus
+;; vector — instead, drive the content via subsequent ws-register! /
+;; ws-step! cycles, or by calling the runtime helper
+;; eshkol_ws_make_content_tensor before the cycle.
+(ws-step! ws)
 ```
 
 ### Type Predicates
@@ -169,57 +215,69 @@ modules compete for global broadcast via softmax competition.
 The real power is combining logic + inference + workspace:
 
 ```scheme
-;; 1. Logic layer: store structured knowledge
+;; 1. Logic layer: store structured symptom knowledge.
 (define kb (make-kb))
 (kb-assert! kb (make-fact 'symptom 'fever))
 (kb-assert! kb (make-fact 'symptom 'cough))
 
-;; 2. Inference layer: model causal relationships
-(define fg (make-factor-graph 3))
-(fg-add-factor! fg 0 1 #(0.8 0.2 0.1 0.9))  ;; fever → flu
-(fg-add-factor! fg 1 2 #(0.7 0.3 0.3 0.7))  ;; flu → fatigue
+;; 2. Inference layer: model causal relationships.
+;;    Three binary variables: symptom -> illness -> consequence.
+(define fg (make-factor-graph 3 #(2 2 2)))
+(fg-add-factor! fg #(0 1) #(0.8 0.2 0.1 0.9))  ;; fever -> flu
+(fg-add-factor! fg #(1 2) #(0.7 0.3 0.3 0.7))  ;; flu -> fatigue
 (fg-infer! fg 10)
 
-;; 3. Workspace layer: compete for attention
-(define ws (make-workspace))
-;; Each module queries a different aspect of the problem
-(ws-register! ws (lambda (in)
-  ;; Logic module: query KB
-  (if (null? (kb-query kb (make-fact 'symptom ?s)))
-      #(0.1) #(0.9))))
-(ws-register! ws (lambda (in)
-  ;; Inference module: check free energy
-  #(0.5)))
+;; 3. Workspace layer: compete for attention.
+(define ws (make-workspace 1 4))
+(ws-register! ws "logic"
+  (lambda (content)
+    ;; salience is high when the KB has at least one symptom asserted
+    (if (null? (kb-query kb (make-fact 'symptom ?s)))
+        #(0.1)
+        #(0.9))))
+(ws-register! ws "inference"
+  (lambda (content)
+    ;; salience could be derived from the model's free energy on a
+    ;; per-cycle observation; placeholder constant for now.
+    #(0.5)))
+(ws-step! ws)
 ```
 
 ---
 
-## All 22 Builtins
+## The Consciousness Engine Builtins
 
-| Builtin | Description |
-|---|---|
-| `make-substitution` | Create empty substitution |
-| `unify` | Unify two terms under a substitution |
-| `walk` | Resolve a variable through substitutions |
-| `make-fact` | Create a fact from a list pattern |
-| `make-kb` | Create an empty knowledge base |
-| `kb-assert!` | Add a fact to a KB |
-| `kb-query` | Query a KB with a pattern (returns matching facts) |
-| `logic-var?` | Test if value is a logic variable |
-| `substitution?` | Test if value is a substitution |
-| `kb?` | Test if value is a knowledge base |
-| `fact?` | Test if value is a fact |
-| `make-factor-graph` | Create a factor graph with N variables |
-| `fg-add-factor!` | Add a factor (CPT) between two variables |
-| `fg-infer!` | Run belief propagation for N iterations |
-| `fg-update-cpt!` | Update a factor's conditional probability table |
-| `free-energy` | Compute variational free energy |
-| `expected-free-energy` | Compute expected free energy for action selection |
-| `factor-graph?` | Test if value is a factor graph |
-| `make-workspace` | Create a global workspace |
-| `ws-register!` | Register a processing module (closure) |
-| `ws-step!` | Step the workspace (softmax competition + broadcast) |
-| `workspace?` | Test if value is a workspace |
+The user-visible 22-builtin surface (logic + inference + workspace, plus
+predicates). Two further primitives — `fg-observe!` and
+`kb-query-prefix` — are emitted by the parser as dedicated ops too,
+and `fg-marginal`, `fg-entropy`, `kb-retract!` reach the runtime through
+`SystemCodegen`; refer to
+`docs/breakdown/CONSCIOUSNESS_ENGINE.md` for the full surface.
+
+| Builtin | Arity | Description |
+|---|---|---|
+| `make-substitution` | 0 | Create an empty substitution |
+| `unify` | 3 | Unify two terms under a substitution |
+| `walk` | 2 | Resolve a variable through a substitution |
+| `make-fact` | 1 + | Create a fact from a predicate and arguments |
+| `make-kb` | 0 | Create an empty knowledge base |
+| `kb-assert!` | 2 | Add a fact to a KB |
+| `kb-query` | 2 | Query a KB with a fact pattern; returns matching facts |
+| `logic-var?` | 1 | Test if value is a logic variable |
+| `substitution?` | 1 | Test if value is a substitution |
+| `kb?` | 1 | Test if value is a knowledge base |
+| `fact?` | 1 | Test if value is a fact |
+| `make-factor-graph` | 2 | `(make-factor-graph num-vars dims-tensor)` |
+| `fg-add-factor!` | 3 | `(fg-add-factor! fg var-indices-tensor cpt-tensor)` |
+| `fg-infer!` | 2 | `(fg-infer! fg max-iters)` |
+| `fg-update-cpt!` | 3 | `(fg-update-cpt! fg factor-idx new-cpt-tensor)` |
+| `free-energy` | 2 | `(free-energy fg observations-tensor)` |
+| `expected-free-energy` | 3 | `(expected-free-energy fg action-var action-state)` |
+| `factor-graph?` | 1 | Test if value is a factor graph |
+| `make-workspace` | 2 | `(make-workspace dim max-modules)` |
+| `ws-register!` | 3 | `(ws-register! ws name process-fn)` |
+| `ws-step!` | 1 | Step the workspace — one softmax cycle, winner broadcasts |
+| `workspace?` | 1 | Test if value is a workspace |
 
 ---
 

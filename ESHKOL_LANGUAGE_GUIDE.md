@@ -160,7 +160,7 @@ Eshkol uses **S-expression syntax** familiar to Lisp/Scheme programmers:
 | Substitution | `(make-substitution)` | Logic binding map |
 | Knowledge Base | `(make-kb)` | Fact store |
 | Factor Graph | `(make-factor-graph n)` | Probabilistic graphical model |
-| Workspace | `(make-workspace)` | Global workspace (consciousness) |
+| Workspace | `(make-workspace dim max-modules)` | Global workspace (consciousness) |
 
 ### 555+ Built-in Functions
 
@@ -654,23 +654,27 @@ Eshkol v1.1 includes a built-in **active inference consciousness engine** implem
 ### Factor Graphs and Probabilistic Inference
 
 ```scheme
-;; Create a factor graph with 3 variables
-(define fg (make-factor-graph 3))
+;; Create a factor graph: 3 binary variables.
+;; Signature: (make-factor-graph num-vars dims-tensor)
+(define fg (make-factor-graph 3 #(2 2 2)))
 
-;; Add factors connecting variables with conditional probability tables
-(fg-add-factor! fg (list 0 1) cpt-matrix)
+;; Add factors connecting variables with conditional probability tables.
+;; var-indices is a tensor of variable ids; cpt is a flat tensor of probs.
+(fg-add-factor! fg #(0 1) cpt-matrix)
 
-;; Run belief propagation inference
-(fg-infer! fg 10)           ;; 10 iterations of message passing
+;; Run belief propagation inference (10 iterations)
+(fg-infer! fg 10)
 
-;; Update CPTs for learning
+;; Update factor 0's CPT for learning
 (fg-update-cpt! fg 0 new-cpt)
 
-;; Compute free energy (surprise)
+;; Compute free energy (surprise).
+;; observations are #(var_idx observed_state) pairs, e.g. #(0 1).
 (free-energy fg observations)
 
-;; Expected free energy for action selection
-(expected-free-energy fg action)
+;; Expected free energy for action selection.
+;; Signature: (expected-free-energy fg action-var action-state)
+(expected-free-energy fg 0 0)
 
 ;; Type predicates
 (fact? f)                   ;; -> #t
@@ -680,16 +684,21 @@ Eshkol v1.1 includes a built-in **active inference consciousness engine** implem
 ### Global Workspace
 
 ```scheme
-;; Create a workspace (Global Workspace Theory)
-(define ws (make-workspace))
+;; Create a workspace (Global Workspace Theory).
+;; Signature: (make-workspace dim max-modules).
+;; dim is the content-vector dimensionality; max-modules is the capacity.
+(define ws (make-workspace 3 4))
 
-;; Register cognitive modules (each is a closure returning a content tensor)
+;; Register cognitive modules. Each is (workspace, name, closure).
+;; The closure takes the current content vector and returns a new tensor
+;; of length `dim`. The softmax winner becomes the broadcast content.
 (ws-register! ws "perception" perception-module)
 (ws-register! ws "memory" memory-module)
 (ws-register! ws "planning" planning-module)
 
-;; Step the workspace: modules compete via softmax, winner broadcasts
-(ws-step! ws input-tensor)
+;; Step the workspace: modules compete via softmax, winner broadcasts.
+;; ws-step! takes exactly one argument (the workspace itself).
+(ws-step! ws)
 
 ;; Type predicate
 (workspace? ws)             ;; -> #t
@@ -698,17 +707,18 @@ Eshkol v1.1 includes a built-in **active inference consciousness engine** implem
 ### Example: Bayesian Sensor Fusion
 
 ```scheme
-;; Two noisy sensors observing the same binary state
-(define fg (make-factor-graph 3))  ;; state + 2 sensors
+;; Two noisy sensors observing the same binary state.
+;; 3 binary variables: latent state + 2 sensor readings.
+(define fg (make-factor-graph 3 #(2 2 2)))
 
-;; Prior: uniform
-(fg-add-factor! fg (list 0) #(0.5 0.5))
+;; Prior on the latent state: uniform.
+(fg-add-factor! fg #(0) #(0.5 0.5))
 
-;; Sensor 1: 90% accurate
-(fg-add-factor! fg (list 0 1) #(0.9 0.1 0.1 0.9))
+;; Sensor 1: 90% accurate (P(s1 | state)).
+(fg-add-factor! fg #(0 1) #(0.9 0.1 0.1 0.9))
 
-;; Sensor 2: 80% accurate
-(fg-add-factor! fg (list 0 2) #(0.8 0.2 0.2 0.8))
+;; Sensor 2: 80% accurate.
+(fg-add-factor! fg #(0 2) #(0.8 0.2 0.2 0.8))
 
 ;; Observe both sensors reporting state 0
 (fg-infer! fg 20)
@@ -1016,7 +1026,7 @@ Map Eshkol names to C names:
 
 ```
 $ ./eshkol-repl
-Eshkol REPL v1.2.0-scale
+Eshkol REPL v1.2.1-scale
 Type :help for assistance, :quit to exit
 
 eshkol> (define (square x) (* x x))
@@ -1368,5 +1378,5 @@ MIT License - Copyright (C) tsotchke
 ---
 
 <p align="center">
-<strong>Eshkol v1.2.0-scale</strong>: Where functional programming meets scientific computing, GPU acceleration, and machine consciousness.
+<strong>Eshkol v1.2.1-scale</strong>: Where functional programming meets scientific computing, GPU acceleration, and machine consciousness.
 </p>

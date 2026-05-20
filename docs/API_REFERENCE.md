@@ -655,15 +655,15 @@ Computes Laplacian: `∇²f = ∂²f/∂x₁² + ... + ∂²f/∂xₙ²`
 
 ---
 
-#### `directional-deriv`
-**Syntax**: `(directional-deriv f point direction)`
+#### `directional-derivative`
+**Syntax**: `(directional-derivative f point direction)`
 
 Computes directional derivative: `D_v f = ∇f · v`
 
 **Examples**:
 ```scheme
 (define (f v) (* (vref v 0) (vref v 1)))
-(directional-deriv f #(2.0 3.0) #(1.0 0.0))  ; => 3.0
+(directional-derivative f #(2.0 3.0) #(1.0 0.0))  ; => 3.0
 ```
 
 **Mode**: Gradient dot product  

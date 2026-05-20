@@ -502,7 +502,7 @@ ad_node_t* __outer_ad_node_stack[16];  // Outer AD nodes for double backward
 (laplacian f (vector x y))
 
 ;; Directional derivative: D_v f = ∇f · v
-(directional-deriv f (vector x y) (vector dx dy))
+(directional-derivative f (vector x y) (vector dx dy))
 ```
 
 All implemented and tested in [`tests/autodiff/phase4_vector_calculus_test.esk`](../tests/autodiff/phase4_vector_calculus_test.esk).
@@ -742,7 +742,7 @@ int64_t wrong = static_cast<int64_t>(value);  // → 3 (loses precision!)
 
 **Memory**: `with-region`, `owned`, `move`, `borrow`, `shared`, `weak-ref`
 
-**Autodiff**: `diff`, `derivative`, `gradient`, `jacobian`, `hessian`, `divergence`, `curl`, `laplacian`, `directional-deriv`
+**Autodiff**: `diff`, `derivative`, `gradient`, `jacobian`, `hessian`, `divergence`, `curl`, `laplacian`, `directional-derivative`
 
 **Exceptions**: `guard`, `raise`
 

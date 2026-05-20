@@ -43,10 +43,16 @@ program — gradient descent literally rewrites them.
   (fold-left + 0.0 (map point-error xs)))
 
 ;; --- Self-improvement loop ---
+;; gradient takes (function vector); we pack the three coefficients
+;; into a vector and unpack inside the lambda passed to gradient.
 (define (improve c1 c2 c3 lr steps)
   (if (= steps 0)
       (list c1 c2 c3)
-      (let ((g (gradient loss c1 c2 c3)))
+      (let* ((loss-v (lambda (c)
+                       (loss (vector-ref c 0)
+                             (vector-ref c 1)
+                             (vector-ref c 2))))
+             (g (gradient loss-v (vector c1 c2 c3))))
         (improve (- c1 (* lr (vector-ref g 0)))
                  (- c2 (* lr (vector-ref g 1)))
                  (- c3 (* lr (vector-ref g 2)))
@@ -93,9 +99,10 @@ program — gradient descent literally rewrites them.
 
 The program doesn't just COMPUTE — it modifies its own behaviour.
 The coefficients `c1, c2, c3` are the program's knowledge, and
-`(gradient loss c1 c2 c3)` tells the program exactly how to change
-that knowledge to reduce error. After training, the `model` function
-produces different outputs than before — it has literally taught itself.
+`(gradient loss-v (vector c1 c2 c3))` tells the program exactly how to
+change that knowledge to reduce error. After training, the `model`
+function produces different outputs than before — it has literally
+taught itself.
 
 In most languages, you'd need a framework for this. In Eshkol, it's
 just `gradient` — the compiler differentiates through your code.

@@ -1,6 +1,6 @@
 # Eshkol Quick Reference Card
 
-**v1.2.0-scale** -- 555+ built-in functions
+**v1.2.1-scale** -- 555+ built-in functions
 
 ## Basics
 
@@ -66,8 +66,8 @@
 (list-copy lst)           ;; shallow copy
 (member x lst)            ;; find element
 (assoc key alist)         ;; lookup in assoc list
-(take n lst)              ;; first n elements
-(drop n lst)              ;; skip first n elements
+(take lst n)              ;; first n elements
+(drop lst n)              ;; skip first n elements
 ```
 
 ## Higher-Order Functions
@@ -295,22 +295,22 @@
 (fact? f)                      ;; -> #t
 
 ;; Factor graphs (probabilistic inference)
-(define fg (make-factor-graph n))      ;; n variables
-(fg-add-factor! fg vars cpt)          ;; add factor with CPT
-(fg-infer! fg iterations)             ;; belief propagation
-(fg-update-cpt! fg factor-idx new-cpt) ;; update CPT (learning)
-(factor-graph? fg)                     ;; -> #t
+(define fg (make-factor-graph n dims))   ;; n variables; dims tensor gives states per var
+(fg-add-factor! fg var-indices cpt)      ;; var-indices is a tensor, cpt is a tensor
+(fg-infer! fg iterations)                ;; belief propagation
+(fg-update-cpt! fg factor-idx new-cpt)   ;; update factor's CPT (learning)
+(factor-graph? fg)                       ;; -> #t
 
 ;; Free energy
-(free-energy fg observations)          ;; surprise measure
-;; observations: #(var_idx observed_state) pairs
-(expected-free-energy fg action)       ;; EFE for action selection
+(free-energy fg observations)            ;; surprise measure
+;; observations: #(var_idx observed_state) pairs (single pair = #(0 1))
+(expected-free-energy fg action-var action-state)  ;; EFE for action selection
 
 ;; Global workspace (consciousness)
-(define ws (make-workspace))
-(ws-register! ws "name" module-closure)  ;; register cognitive module
-(ws-step! ws input-tensor)              ;; competition + broadcast
-(workspace? ws)                         ;; -> #t
+(define ws (make-workspace dim max-modules))     ;; e.g. (make-workspace 3 4)
+(ws-register! ws "name" module-closure)          ;; register cognitive module
+(ws-step! ws)                                    ;; competition + broadcast (1 arg)
+(workspace? ws)                                  ;; -> #t
 ```
 
 ## Signal Processing
@@ -340,7 +340,7 @@
 ## Web Platform (WASM)
 
 ```scheme
-;; Compile: eshkol-run prog.esk --target wasm -o prog.wasm
+;; Compile: eshkol-run prog.esk --wasm -o prog.wasm
 
 ;; DOM manipulation
 (web-create-element tag)           ;; create element
@@ -498,5 +498,5 @@ eshkol-run [options] file.esk
 -L PATH             Library path
 -n, --no-stdlib     Skip stdlib
 --shared-lib        Compile as library (LinkOnceODR)
---target wasm       WebAssembly output
+--wasm       WebAssembly output
 ```

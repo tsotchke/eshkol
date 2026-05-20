@@ -124,7 +124,7 @@ This matrix documents all implemented and planned features for the Eshkol langua
 | `divergence` operator | ✅ | Reverse | 5+ tests |
 | `curl` operator | ✅ | Reverse | 5+ tests |
 | `laplacian` operator | ✅ | Reverse | 5+ tests |
-| `directional-deriv` operator | ✅ | Reverse | 5+ tests |
+| `directional-derivative` operator | ✅ | Reverse | 5+ tests |
 
 ---
 
