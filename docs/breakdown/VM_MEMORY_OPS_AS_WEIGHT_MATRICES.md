@@ -1,8 +1,8 @@
-# VM-as-Transformer: Encoding the 26 Delegated Memory Operations as Weight Matrices
+# VM-as-Transformer: Encoding Delegated Memory Operations as Weight Matrices
 
-**Status:** design draft
+**Status:** active design + landed slices; coverage has expanded past the original "26 delegated" scope (see implementation note below). The document is maintained alongside the work but is *not* a frozen specification.
 **Worktree:** `feature/vm-transformer-memory`
-**Author of this draft:** internal architecture review, 2026-05-08
+**Origin draft:** internal architecture review, 2026-05-08
 **Companion artifact:** `research/papers/` (33 cached PDFs, content-addressed)
 **Companion bib:** `research/vm-transformer-bib.bib`
 
@@ -89,17 +89,16 @@ This document specifies the encoding scheme.
 From `weight_matrices.c:537-548`:
 
 | Class | Count | Opcodes |
-|---|---|---|
+|---|---:|---|
 | Arithmetic delegated for precision | 2 | `OP_DIV`, `OP_MOD` |
 | Heap data structures | 12 | `OP_CONS`, `OP_CAR`, `OP_CDR`, `OP_NULL_P`, `OP_VEC_CREATE`, `OP_VEC_REF`, `OP_VEC_SET`, `OP_VEC_LEN`, `OP_STR_REF`, `OP_STR_LEN`, `OP_SET_CAR`, `OP_SET_CDR` |
 | Type predicates | 6 | `OP_PAIR_P`, `OP_NUM_P`, `OP_STR_P`, `OP_BOOL_P`, `OP_PROC_P`, `OP_VEC_P` |
 | Closures + upvalues | 5 | `OP_CLOSURE`, `OP_GET_UPVALUE`, `OP_SET_UPVALUE`, `OP_CLOSE_UPVALUE`, `OP_OPEN_CLOSURE` |
-| Control flow (R7RS) | 8 | `OP_TAIL_CALL`, `OP_NATIVE_CALL`, `OP_CALLCC`, `OP_INVOKE_CC`, `OP_PUSH_HANDLER`, `OP_POP_HANDLER`, `OP_GET_EXN`, `OP_PACK_REST`, `OP_WIND_PUSH`, `OP_WIND_POP` |
+| Control flow (R7RS) | 10 | `OP_TAIL_CALL`, `OP_NATIVE_CALL`, `OP_CALLCC`, `OP_INVOKE_CC`, `OP_PUSH_HANDLER`, `OP_POP_HANDLER`, `OP_GET_EXN`, `OP_PACK_REST`, `OP_WIND_PUSH`, `OP_WIND_POP` |
 | Stack housekeeping | 1 | `OP_POPN` |
 | AD transcendentals | 4 | `OP_AD_DIV`, `OP_AD_POW`, `OP_AD_SIN`, `OP_AD_COS` |
 
-(Count drift: `OP_VOID=63` is not one of the original 26 delegated memory
-operations; the weight path now explicitly emits PC++ for it.)
+The original "26 delegated memory operations" scope, as recorded in `weight_matrices.c:537-548`, comprised the arithmetic, heap, type-predicate, closure, stack, and AD-transcendental rows above (2 + 12 + 6 + 5 + 1 + 4 = 30, of which 26 were judged in scope for the first lift — `OP_VOID` and a handful of bookkeeping ops were excluded). The R7RS control-flow class (10 opcodes) was added once the bounded escape-continuation construction proved tractable. Total currently-encoded coverage is reported in the implementation note at the top of this document.
 
 We classify these by **whether the runtime side-effect is essential or
 incidental**:

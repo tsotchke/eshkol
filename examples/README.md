@@ -32,6 +32,10 @@ These examples demonstrate research-grade capabilities and may require additiona
 | **[agent.esk](agent.esk)** | Agent architecture with tool dispatch and knowledge base |
 | **[consciousness_inference.esk](consciousness_inference.esk)** | Active inference with factor graphs and belief propagation |
 | **[consciousness_model_analysis.esk](consciousness_model_analysis.esk)** | Geometric signal analysis for consciousness models |
+| **[consciousness_grr_inference.esk](consciousness_grr_inference.esk)** | Goal-conditioned reflexive reasoning over the consciousness engine |
+| **[selene_agent.esk](selene_agent.esk)** | Selene agent harness — long-running tool-using loop with persistent state |
+| **[selene_tools.esk](selene_tools.esk)** | Tool-surface definitions consumed by the Selene agent |
+| **[milli_mag_bohrification.esk](milli_mag_bohrification.esk)** | Physical-constants demonstration (v1.2.1-scale): CODATA-based magnetic-moment calculation through the exact numeric tower |
 
 ## What to Try First
 
@@ -42,4 +46,4 @@ These examples demonstrate research-grade capabilities and may require additiona
 
 ## Try in the Browser
 
-Visit **[eshkol.ai](https://eshkol.ai)** to run Eshkol code without installing anything. The website includes a REPL, 27 tutorials, and 11 runnable examples.
+Visit **[eshkol.ai](https://eshkol.ai)** to run Eshkol code without installing anything. The website ships a browser REPL alongside an evolving subset of the tutorial collection (the repository hosts 30 tutorials and 12 runnable examples in this directory).

@@ -29,6 +29,10 @@ tools/icc_extras/
 ├── parity_ledger.json                 the ledger itself (committed; reviewed)
 ├── generate_parity_ledger.py          scrapes the codebase and emits the ledger
 ├── codegen_audit_rules.json           ICC guard-diff rules (regex + skip-context)
+├── codegen_audit.py                   runs the rules against the source tree and
+│                                      compares results against the saved baseline
+├── audit_baseline.json                the accepted baseline of known findings
+│                                      (deviations from this file fail the audit)
 └── verifier_coverage.md               audit of where verifyModule already runs
 ```
 

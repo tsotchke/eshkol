@@ -12,7 +12,6 @@ default `run_all_tests.sh` suite; drive them from CI separately.
 | `stress_parallel_at_scale.esk` | 1-5 min | `parallel-map` / `parallel-fold` at N=1M |
 | `stress_alloc_loop.esk` | 10 min | Arena alloc/free cycling — leak detection |
 | `stress_fd_exhaustion.esk` | 30 s | Subprocess spawn/destroy loop — fd cleanup |
-| `stress_long_subprocess.esk` | 1 min | Chatty child w/ big output — pipe drain stability |
 
 ## Running
 

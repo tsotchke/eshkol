@@ -77,9 +77,11 @@ Eshkol v1.0-foundation delivers a complete, production-ready compiler with unpre
 |---------|-----------|--------|-------|
 | **v1.0-foundation** | **2025** | **✅ COMPLETE** | **Core compiler, AD system, arena memory, REPL** |
 | **v1.1-accelerate** | **Q1 2026** | **✅ COMPLETE** | **XLA backend, GPU acceleration, parallelism, consciousness engine** |
-| **v1.2-scale** | **Q2 2026** | 📋 Planned | **GPU acceleration, distributed computing** |
-| **v1.5-intelligence** | **Q2-3 2026** | 📋 Planned | **Neuro-symbolic integration, advanced optimizers** |
-| **v2.0-quantum** | **Q4 2026+** | 🔬 Research | **Quantum computing, formal verification** |
+| **v1.2-scale** | **Q2 2026** | **✅ COMPLETE** | **Full numeric tower (bignum / rational / complex), Metal + CUDA, XLA dual-mode, FFI hardening (HTTP / SQLite / subprocess / fs-watch), 22-builtin consciousness engine** |
+| **v1.2.1-scale** | **2026-05-20** | **✅ COMPLETE** | **Edge-case hardening: stdlib `LinkOnceODR`, parser line-tracking, closure capture in `dynamic-wind` / `call-cc` / `guard`, TCO context preservation, agent-FFI link wiring** |
+| **v1.3-evolve** | **Target Q3 2026** | 📋 Planned | **Effect/refinement type system, PGO + whole-program opt, distributed training, automatic C-header bindings** |
+| **v1.5-intelligence** | **Q4 2026** | 📋 Planned | **Neuro-symbolic integration, advanced optimizers, VM-as-transformer Stage 3 (lift remaining delegated opcodes into weight matrices)** |
+| **v2.0-quantum** | **2027+** | 🔬 Research | **Quantum computing, formal verification, fully verified compilation chain** |
 
 ## v1.1-accelerate: Performance and Parallelism (Q1 2026)
 
