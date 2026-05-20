@@ -165,10 +165,14 @@ The `eshkol-repl` binary provides an interactive JIT-compiled read-eval-print lo
 ### Starting the REPL
 
 ```bash
-eshkol-repl
+eshkol-repl                # interactive session
+eshkol-repl --machine      # machine-driven warm-worker mode (EREPL framing on stderr)
+eshkol-repl -m             # short form of --machine
 ```
 
 The REPL automatically loads the standard library at startup if `stdlib.o` is found in the build directory.
+
+The `--machine` (`-m`) mode disables the interactive readline frontend and emits machine-readable framing on stderr: `EREPL READY` after stdlib load, `EREPL DONE` after each form completes successfully, and `EREPL FAIL <reason>` on error. The form's value still goes to stdout. This mode is intended for orchestrators (such as the Noesis warm-worker harness) that want to drive a persistent JIT worker without paying cold-start cost on every form.
 
 ### REPL Commands
 
@@ -201,6 +205,7 @@ All REPL commands start with `:`. Eshkol expressions are entered directly withou
 | `:ast <expr>` | (none) | Show the parsed AST structure of an expression |
 | `:env` | `:e` | Show defined symbols in the current session |
 | `:doc <name>` | `:d <name>` | Show documentation for a function or keyword |
+| `:examples` | (none) | List bundled example programs in `examples/` with one-line descriptions |
 
 #### Performance
 

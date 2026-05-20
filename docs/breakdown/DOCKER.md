@@ -104,6 +104,29 @@ docker build -f docker/xla/Dockerfile -t eshkol-xla .
 
 ---
 
+### 6. Paper Reproducibility (`docker/Dockerfile.paper`)
+
+**Base image:** `ubuntu:22.04`
+
+Pinned reproducibility environment for the artifact accompanying *The Self-Differentiating Neural Computer: Computable Transformers via Analytical Weight Construction* (Atkins, 2026). The image fixes Clang/LLVM at 21, installs `numpy==1.26.4` for the trace comparator and table generator, and defaults its entrypoint to `scripts/paper/run_paper_suite.sh`, which drives the bit-identical agreement gate between the reference C interpreter and the matrix forward pass.
+
+**When to use:** When reproducing the SDNC paper's numerical results, regenerating its tables, or running the agreement oracle on a fresh host.
+
+**Build and run:**
+```bash
+docker build -f docker/Dockerfile.paper -t eshkol-paper .
+
+# Default: run the full paper suite against the mounted source tree.
+docker run --rm -v "$(pwd):/work" -w /work eshkol-paper
+
+# Or drop into the same pinned environment for ad-hoc work.
+docker run --rm -it -v "$(pwd):/work" -w /work eshkol-paper bash
+```
+
+**Additional packages:** `clang-21`, `llvm-21`, `llvm-21-dev`, `cmake`, `ninja-build`, `pkg-config`, `python3`, `python3-pip`, `numpy==1.26.4`.
+
+---
+
 ## Common Build Pattern
 
 All Dockerfiles follow the same structure:
@@ -164,6 +187,7 @@ docker run --gpus all --rm -v $(pwd):/work -w /work eshkol-cuda \
 | Debian Release | ubuntu:22.04 | ~2 GB | No | No | CI-matched builds |
 | Ubuntu Release | ubuntu:22.04 | ~2 GB | No | No | CI-matched builds |
 | XLA | ubuntu:22.04 | ~3 GB | XLA/MLIR | No | Tensor operations |
+| Paper reproducibility | ubuntu:22.04 | ~2 GB | No | No | SDNC paper artefact suite |
 
 ---
 

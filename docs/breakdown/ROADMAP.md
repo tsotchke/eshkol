@@ -1,18 +1,25 @@
 # Eshkol Development Roadmap
 
 ## Table of Contents
-- [v1.0-Architecture Status](#v10-architecture-status)
-- [Post-v1.0 Roadmap](#post-v10-roadmap)
+- [Current Release](#current-release)
+- [Released](#released)
+- [Forward Roadmap](#forward-roadmap)
 - [Long-term Vision](#long-term-vision)
 - [Release Philosophy](#release-philosophy)
 
 ---
 
-## v1.0-Architecture Status
+## Current Release
 
-**Current Release**: v1.0.0-foundation
+**Current Release:** v1.2.1-scale (2026-05-20). See [`../../RELEASE_NOTES.md`](../../RELEASE_NOTES.md) for the closeout and [`../../RELEASE_READINESS_REPORT.md`](../../RELEASE_READINESS_REPORT.md) for the v1.2 acceptance evidence (37-suite aggregate gate, 87 passing edge / security tests, zero outstanding audit blockers).
 
-Eshkol v1.0-architecture represents a **production-ready foundation** for scientific computing and machine learning:
+The remainder of this document is organised as: (1) a recap of features delivered across the four shipped lines (`v1.0-foundation`, `v1.1-accelerate`, `v1.2-scale`, `v1.2.1-scale`); (2) the forward roadmap for `v1.3-evolve` and beyond; and (3) long-term vision items that remain research-scope.
+
+---
+
+## Released
+
+### v1.0-foundation
 
 ### Implemented Core Features
 
@@ -53,7 +60,7 @@ Eshkol v1.0-architecture represents a **production-ready foundation** for scient
 - AD integration (`vref` creates graph nodes)
 
 ✅ **Compiler Infrastructure**
-- LLVM 21 backend with 21 modular codegen components
+- LLVM 21 backend with roughly thirty modular codegen components
 - 5-phase compilation: macro expansion → parsing → type checking → LLVM IR → optimization
 - AOT compiler (`eshkol-run`) and JIT REPL (`eshkol-repl`)
 - Function cache for lambda deduplication
@@ -74,60 +81,84 @@ Eshkol v1.0-architecture represents a **production-ready foundation** for scient
 
 ---
 
-## Post-v1.0 Roadmap
+### v1.1-accelerate (Q1 2026, COMPLETE)
 
-### v1.1 - Ecosystem Foundations (Q1 2026)
-
-**Package Management**
-- ✅ Central package repository (`eshkol-pkg` with 9 commands)
+**Package management**
+- ✅ Central package repository (`eshkol-pkg` with nine commands)
 - ✅ Dependency resolution
-- ✅ Versioning system (`@1.0.0` syntax)
+- ✅ Versioning syntax (`@1.0.0`)
 - ✅ Lock files for reproducible builds
 
-**Developer Tooling**
-- ✅ Language Server Protocol (LSP) implementation (`eshkol-lsp`, 5 LSP methods)
-- VS Code extension with syntax highlighting, autocomplete
-- Source-level debugger (DWARF via `-g` flag; visual debugger planned)
-- Documentation generator from type annotations
+**Developer tooling**
+- ✅ Language Server Protocol (`eshkol-lsp`)
+- ✅ VS Code extension with syntax highlighting, autocomplete, hover docs
+- DWARF source-level debug info (`-g`); visual debugger remains a v1.3+ item
+- Documentation generator from type annotations remains a v1.3+ item
 
-**Language Features**
-- ✅ `eval` implementation (via REPL JIT)
-- ✅ Full `call/cc` support with `dynamic-wind` (first-class continuations)
-- Pattern matching expansion (beyond basic `match`)
+**Language features**
+- ✅ `eval` (via REPL JIT)
+- ✅ Full `call/cc` with `dynamic-wind` (first-class continuations)
+- ✅ Pattern matching (`match`) shipped; richer guard syntax in v1.3+
 
-### v1.2 - Performance and Interoperability (Q1-2 2026)
+### v1.2-scale (Q1-2 2026, COMPLETE)
 
-**Optimization**
-- Profile-guided optimization (PGO) integration
-- Whole-program optimization across modules
-- SIMD auto-vectorization improvements
-- Specialized tensor operations for common ML patterns
+**Numeric tower**
+- ✅ Exact bignum arithmetic with rational + double dispatch
+- ✅ Full complex numbers (Smith's-formula division, magnitude overflow handling)
+- ✅ Arbitrary-precision rationals with automatic int64 demotion
+- Arbitrary-precision floating point and symbolic algebra remain v1.3+
 
-**Foreign Function Interface (FFI)**
-- C/C++ library integration
-- Automatic binding generation from headers
-- Zero-copy data exchange with NumPy, PyTorch
-- Shared memory for inter-process communication
+**GPU acceleration**
+- ✅ Metal backend (macOS) with SF64 / DF64 / F32 / FP24 / FP53 precision tiers
+- ✅ CUDA backend (cuBLAS dispatch, cost-model gate)
+- ✅ XLA / StableHLO backend with dual JIT / batch paths
+- Vulkan compute shaders remain v1.3+
 
-**GPU Acceleration**
-- CUDA backend for tensor operations
-- Metal backend (macOS)
-- Vulkan compute shaders
-- Automatic host/device memory management
+**Optimisation**
+- ✅ SIMD vectorisation (auto-vectorised inner loops, SLP)
+- ✅ Work-stealing parallel-map / parallel-fold / parallel-filter (4-12× on 24 cores)
+- ✅ Specialised tensor operations for activations, convolutions, transformers
+- Profile-guided optimisation and whole-program optimisation remain v1.3+
 
-### v1.3 - Advanced Type System (Q2 2026)
+**Foreign function interface**
+- ✅ Native HTTP client (libcurl), SQLite, subprocess, filesystem-watch FFI surfaces
+- ✅ Agent FFI link wiring via `ESHKOL_HOST_AGENT_FFI_LINK_ARGS`
+- Automatic binding generation from C headers and zero-copy NumPy / PyTorch bridges remain v1.3+
 
-**Type System Enhancements**
+**Consciousness engine**
+- ✅ Logic kernel (`logic.cpp` — unification, substitutions, knowledge base)
+- ✅ Active inference (`inference.cpp` — factor graphs, belief propagation, free / expected free energy)
+- ✅ Global workspace (`workspace.cpp` — modules, softmax competition, learnable CPTs)
+- ✅ Twenty-two LLVM-codegen builtins covering the above
+
+**Hardening (v1.2.1)**
+- ✅ Stdlib `LinkOnceODR` linkage so user definitions can shadow stdlib symbols
+- ✅ Parser line-tracking through `(load …)` and per-form REPL streams
+- ✅ Closure variable capture in `dynamic-wind` / `call-cc` / `guard` / `raise`
+- ✅ TCO context preservation across nested `letrec`
+- ✅ Test-script grep tightened against `Failed: 0` false positives
+
+## Forward Roadmap
+
+### v1.3-evolve (target Q3 2026)
+
+**Type system**
 - Effect system for side-effect tracking
 - Row polymorphism for extensible records
-- Refinement types (dependent types with predicates)
+- Refinement / predicate types
 - Type-level computation (type families)
+- Visual debugger UI on top of existing DWARF data
+- Documentation generator from type annotations
 
-**Numeric Tower**
-- Exact rational arithmetic (bignum library integration)
-- Complex numbers (full implementation beyond AD context)
-- Arbitrary precision floating point
-- Symbolic algebra system
+**Backends and runtime**
+- Profile-guided optimisation (PGO)
+- Whole-program optimisation across modules
+- Vulkan compute shaders for non-NVIDIA / non-Apple GPUs
+- Automatic C-header binding generation
+- Zero-copy bridge surfaces for NumPy and PyTorch
+
+**Bytecode VM as transformer (research track)**
+- Stage 3 of the VM memory-ops → weight-matrix programme: lift the remaining 24 of 26 delegated opcodes into analytic weight constructions; raise `d_model` from 128 to 256; add Layers 6/7. See [`VM_MEMORY_OPS_AS_WEIGHT_MATRICES.md`](VM_MEMORY_OPS_AS_WEIGHT_MATRICES.md).
 
 ---
 
