@@ -7,7 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Current v1.2-scale closeout work on `master`. No new v1.2 tag has been assigned.
+(no entries — v1.2 is closed; new work targets v1.3-evolve)
+
+## [1.2.1-scale] - 2026-05-19
+
+The v1.2-scale closeout point release. This release keeps the v1.2.0-scale
+feature surface and closes the remaining downstream substrate blockers found
+by Noesis aggregate validation.
 
 ### Added
 
@@ -18,8 +24,7 @@ Current v1.2-scale closeout work on `master`. No new v1.2 tag has been assigned.
 ### Fixed
 
 - Closed the remaining Noesis-filed Eshkol issues W, Z, BB, GG, JJ, KK, and
-  LL on the v1.2-scale line, with the Noesis tracker reconciled to zero open
-  filed substrate bugs.
+  LL, with the Noesis tracker reconciled to zero open filed substrate bugs.
 - Fixed the intermittent Noesis dual-neural crash by serializing runtime
   hash-table access.
 - Fixed work-stealing external task submission so main-thread `parallel-map`
