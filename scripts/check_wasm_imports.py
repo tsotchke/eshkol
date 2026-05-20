@@ -187,33 +187,43 @@ def extract_env_keys(js_text: str) -> set[str]:
         # Strip line comments line-by-line.
         clean_lines = [_LINE_COMMENT_RE.sub("", ln) for ln in block.splitlines()]
 
-        # We want only depth-1 keys.  Walk the block tracking brace depth.
+        # We want only depth-1 keys, including comma-separated entries on the
+        # same physical line (e.g. `sin: Math.sin, cos: Math.cos`).  Flatten
+        # nested object/function bodies to spaces, then scan top-level entries.
         d = 0
         in_str = None
-        line_no = 0
+        top_level_chars: list[str] = []
         for ln in clean_lines:
-            line_no += 1
             j = 0
-            # Match a key at the start of a logical entry only when d == 0.
-            if d == 0 and not in_str:
-                m = _KEY_RE.match(ln)
-                if m:
-                    keys.add(m.group(1))
             while j < len(ln):
                 ch = ln[j]
                 if in_str:
                     if ch == "\\":
+                        top_level_chars.extend("  ")
                         j += 2
                         continue
                     if ch == in_str:
                         in_str = None
+                    top_level_chars.append(" ")
                 elif ch in ('"', "'", "`"):
                     in_str = ch
+                    top_level_chars.append(" ")
                 elif ch == "{":
                     d += 1
+                    top_level_chars.append(" ")
                 elif ch == "}":
                     d -= 1
+                    top_level_chars.append(" ")
+                elif d == 0:
+                    top_level_chars.append(ch)
+                else:
+                    top_level_chars.append(" ")
                 j += 1
+            top_level_chars.append("\n")
+
+        top_level = "".join(top_level_chars)
+        for m in re.finditer(r"(?:^|,)\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*:", top_level, re.MULTILINE):
+            keys.add(m.group(1))
     return keys
 
 
@@ -241,7 +251,9 @@ def compile_smoke_wasm(server_bin: Path, source: str) -> bytes | None:
     return None
 
 
-def compile_smoke_wasm_via_cli(eshkol_run: Path, source: str) -> bytes | None:
+def compile_smoke_wasm_via_cli(
+    eshkol_run: Path, source: str, timeout: int
+) -> bytes | None:
     """Use `eshkol-run --wasm <src> -o <out.wasm>` to produce the .wasm.
     Returns the WASM bytes, or None if the toolchain refuses."""
     with tempfile.TemporaryDirectory() as tmp:
@@ -252,11 +264,22 @@ def compile_smoke_wasm_via_cli(eshkol_run: Path, source: str) -> bytes | None:
             res = subprocess.run(
                 [str(eshkol_run), "--wasm", str(src_path), "-o", str(out_path)],
                 capture_output=True,
-                timeout=60,
+                timeout=timeout,
             )
-        except (subprocess.TimeoutExpired, FileNotFoundError):
+        except subprocess.TimeoutExpired:
+            print(f"warning: wasm smoke compile timed out after {timeout}s", file=sys.stderr)
+            return None
+        except FileNotFoundError:
+            print(f"warning: {eshkol_run} not found", file=sys.stderr)
             return None
         if res.returncode != 0 or not out_path.exists():
+            stderr = res.stderr.decode("utf-8", errors="replace").strip()
+            if stderr:
+                print(stderr[-4000:], file=sys.stderr)
+            print(
+                f"warning: wasm smoke compile failed with exit code {res.returncode}",
+                file=sys.stderr,
+            )
             return None
         return out_path.read_bytes()
 
@@ -274,6 +297,9 @@ def main() -> int:
     ap.add_argument("--prebuilt-wasm-dir", type=Path, default=None,
                     help="Directory of pre-compiled .wasm files (one per smoke surface). "
                          "If passed, skip compilation and just check imports against JS.")
+    ap.add_argument("--compile-timeout", type=int, default=180,
+                    help="Per-surface timeout, in seconds, for eshkol-run --wasm "
+                         "smoke compiles (default: 180).")
     ap.add_argument("--strict", action="store_true",
                     help="Also fail if the JS provides keys that no WASM import requested "
                          "(catches stale stubs).")
@@ -307,7 +333,10 @@ def main() -> int:
         with tempfile.TemporaryDirectory() as tmp:
             tmpdir = Path(tmp)
             for surface, src in SMOKE_PROGRAMS.items():
-                wasm = compile_smoke_wasm_via_cli(eshkol_run, src)
+                print(f"compiling WASM smoke surface: {surface}", file=sys.stderr)
+                wasm = compile_smoke_wasm_via_cli(
+                    eshkol_run, src, args.compile_timeout
+                )
                 if wasm is None:
                     surfaces_failed.append(surface)
                     continue
@@ -376,6 +405,14 @@ def main() -> int:
               "returns, or implement properly when the WASM-side semantics "
               "depend on the helper.")
         return 1
+
+    if surfaces_failed:
+        print(
+            "\nerror: one or more WASM smoke surfaces failed to compile; "
+            "the import coverage would be incomplete.",
+            file=sys.stderr,
+        )
+        return 2
 
     print("OK — all WASM env imports are provided by the JS glue.")
     return 0

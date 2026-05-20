@@ -95,7 +95,17 @@ jobs:
           set -euxo pipefail
           wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
           echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-${LLVM_MAJOR} main" | sudo tee /etc/apt/sources.list.d/llvm.list
-          sudo apt-get update
+          apt_update() {
+            for attempt in 1 2 3; do
+              if sudo apt-get update -o Acquire::Retries=5; then
+                return 0
+              fi
+              sudo rm -rf /var/lib/apt/lists/*
+              sleep $((attempt * 15))
+            done
+            sudo apt-get update -o Acquire::Retries=5
+          }
+          apt_update
 
       - name: Install Dependencies (Linux)
         if: runner.os == 'Linux'

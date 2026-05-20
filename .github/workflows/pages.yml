@@ -76,7 +76,17 @@ jobs:
           set -euxo pipefail
           wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
           echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-${LLVM_MAJOR} main" | sudo tee /etc/apt/sources.list.d/llvm.list
-          sudo apt-get update
+          apt_update() {
+            for attempt in 1 2 3; do
+              if sudo apt-get update -o Acquire::Retries=5; then
+                return 0
+              fi
+              sudo rm -rf /var/lib/apt/lists/*
+              sleep $((attempt * 15))
+            done
+            sudo apt-get update -o Acquire::Retries=5
+          }
+          apt_update
 
       - name: Install Dependencies
         shell: bash
@@ -98,19 +108,6 @@ jobs:
           # bit-identical to the CI install so debugging is one less
           # variable.
           sudo ln -sf "/usr/bin/ld.lld-${LLVM_MAJOR}" /usr/bin/ld.lld
-
-      # ---------- Cache the CMake build tree across runs ----------
-      #
-      # Only the build directory is cached.  The WASM output lives in
-      # site/static/ and is uploaded as an artifact — caching it would
-      # defeat the point of rebuilding on every source change.
-      - name: Cache CMake build tree
-        uses: actions/cache@v4
-        with:
-          path: build
-          key: pages-build-${{ runner.os }}-llvm${{ env.LLVM_MAJOR }}-${{ hashFiles('CMakeLists.txt', 'src/**', 'lib/**', 'exe/**') }}
-          restore-keys: |
-            pages-build-${{ runner.os }}-llvm${{ env.LLVM_MAJOR }}-
 
       # ---------- Configure + build eshkol-run ----------
       #
