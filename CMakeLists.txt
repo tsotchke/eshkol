@@ -991,6 +991,12 @@ list(FILTER LIB_SRC EXCLUDE REGEX "lib/backend/weight_compiler\\.cpp$")
 # platform_runtime.cpp stays in eshkol-static so the REPL, compiler, and JIT
 # share the same path/process helpers on every platform.
 
+# file(GLOB_RECURSE) is evaluated at configure time, so make newly added
+# optional backend bridges explicit for incremental build trees too.
+if(NOT "lib/backend/tensorcore_codegen.cpp" IN_LIST LIB_SRC)
+    list(APPEND LIB_SRC lib/backend/tensorcore_codegen.cpp)
+endif()
+
 # Native Windows REPL builds do not use the bytecode VM / ESKB compiler path.
 # Building the VM currently drags in a large POSIX-only unity build, so use a
 # stub there and keep the full VM everywhere else.

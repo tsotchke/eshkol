@@ -1,23 +1,9 @@
 /*
- * tensorcore_codegen.cpp — Eshkol LLVM-codegen bridge for tensorcore.
+ * tensorcore_codegen.cpp - Eshkol LLVM-codegen bridge for tensorcore.
  *
- * Drop-in to eshkol-platform/lib/backend/.  Models the same pattern used by
- * builtin_declarations.cpp and tensor_codegen.cpp: declares the tensorcore
- * C ABI as ExternalLinkage functions in the Eshkol LLVM module, then exposes
- * Eshkol-callable wrappers (`__tc-init`, `__tc-gemm`, `__tc-attention-forward`,
- * `__tc-attention-backward`, `__tc-buffer-alloc`, `__tc-buffer-map`,
- * `__tc-buffer-free`, `__tc-last-backend`).
- *
- * Integration steps in eshkol-platform:
- *   1. Drop this file into lib/backend/.
- *   2. Add to CMakeLists.txt:
- *        target_link_libraries(eshkol PUBLIC tensorcore::tensorcore)
- *        target_sources(eshkol PRIVATE lib/backend/tensorcore_codegen.cpp)
- *   3. Call TensorcoreDeclarations(ctx) from CodegenContext init alongside
- *      BuiltinDeclarations.
- *   4. Register the Scheme bindings:
- *        (use tensorcore)
- *      which loads eshkol/tensorcore.esk (the .esk file in this repo).
+ * Declares the tensorcore C ABI as ExternalLinkage functions in generated
+ * LLVM modules. Registration is opt-in through ESHKOL_ENABLE_TENSORCORE=1 so
+ * normal builds do not emit references that require a tensorcore runtime.
  */
 
 #include <eshkol/backend/codegen_context.h>
@@ -192,16 +178,12 @@ private:
 };
 
 /* ====================================================================== *
- *  Public entry point — call from CodegenContext init.                    *
+ *  Public entry point - call from CodegenContext init.                    *
  * ====================================================================== */
-static TensorcoreDeclarations* g_tc_decls = nullptr;
-
 extern "C" void eshkol_register_tensorcore_builtins(CodegenContext* ctx) {
     if (!ctx) return;
-    if (!g_tc_decls) {
-        g_tc_decls = new TensorcoreDeclarations(*ctx);
-        eshkol_info("tensorcore: %d external builtins registered", 14);
-    }
+    TensorcoreDeclarations declarations(*ctx);
+    eshkol_info("tensorcore: %d external declarations registered", 14);
 }
 
 }  /* namespace eshkol */
