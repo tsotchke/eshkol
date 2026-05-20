@@ -9,6 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 (no entries — v1.2 is closed; new work targets v1.3-evolve)
 
+## [1.2.1-noesis-m0] - 2026-05-19
+
+The Noesis M0 closeout point release. This release keeps the v1.2.0-scale
+feature surface and closes the remaining downstream substrate blockers found
+by Noesis aggregate validation.
+
+### Fixed
+
+- Closed the remaining Noesis-filed Eshkol issues W, Z, BB, GG, JJ, KK, and
+  LL, with the Noesis tracker reconciled to zero open filed substrate bugs.
+- Fixed the intermittent Noesis dual-neural crash by serializing runtime
+  hash-table access.
+- Fixed work-stealing external task submission so main-thread `parallel-map`
+  producers cannot push into worker-owned Chase-Lev deques.
+- Added the object-build CLI contract required by Noesis build integration:
+  `--emit-object`, exact `-o path.o` handling, `--shared-lib`, `-fPIC`,
+  `-I`, and `-D` compatibility.
+- Added stdlib/filesystem closeout items including atomic output-file writes
+  and JSON read/write aliases.
+
+### Verified
+
+- `tests/v1_2_edge_cases` passes 86/86.
+- Noesis `tests/smoke/all.esk` exits with `NOESIS_ALL_RC=0`.
+
 ## [1.2.0-scale] - 2026-05-01
 
 The production-readiness release.  Closes 14 audit blockers,

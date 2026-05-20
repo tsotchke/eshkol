@@ -1,8 +1,10 @@
-# Eshkol v1.2.0-scale — Production Readiness
+# Eshkol v1.2.1-noesis-m0 — Noesis M0 Closeout
 
-**Release Date**: May 1, 2026
+**Base Release Date**: May 1, 2026
+**Closeout Date**: May 19, 2026
 
-Eshkol v1.2.0-scale is the *production-readiness* release. The v1.1
+Eshkol v1.2.1-noesis-m0 is the closeout point release for
+v1.2.0-scale, the *production-readiness* release. The v1.1
 line proved the math (autodiff, tensors, the consciousness engine);
 v1.2 makes it shippable: trained models save and load, error messages
 point at the actual line, the Python FFI is stable and zero-copy,
@@ -16,9 +18,9 @@ v1.2.0 release shipped with 62 tests; the current v1.2.x Noesis M0
 closeout build carries **86 passing edge/security tests** plus a full
 Noesis aggregate smoke pass.
 
-## v1.2.x Noesis M0 Closeout Addendum (May 19, 2026)
+## v1.2.1 Noesis M0 Closeout Addendum (May 19, 2026)
 
-The current v1.2-scale branch closes the Noesis M0 audit path:
+The current `v1.2.1-noesis-m0` branch closes the Noesis M0 audit path:
 
 - `tests/v1_2_edge_cases` passes **86/86**, including shared
   hash-table mutation under `parallel-map`, late variadic REPL forward
