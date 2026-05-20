@@ -1538,6 +1538,15 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/ex
     add_test(NAME execution_profile_test COMMAND execution_profile_test)
 endif()
 
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/runtime_core_boundary_test.cpp")
+    add_executable(runtime_core_boundary_test tests/toolchain/runtime_core_boundary_test.cpp)
+    target_compile_features(runtime_core_boundary_test PRIVATE cxx_std_17)
+    add_test(
+        NAME runtime_core_boundary_test
+        COMMAND runtime_core_boundary_test "${CMAKE_CURRENT_SOURCE_DIR}"
+    )
+endif()
+
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/repl/assoc_eval_test.cpp")
     add_executable(assoc_eval_test tests/repl/assoc_eval_test.cpp)
     target_compile_features(assoc_eval_test PRIVATE cxx_std_17)
