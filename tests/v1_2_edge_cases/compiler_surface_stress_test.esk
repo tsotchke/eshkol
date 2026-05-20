@@ -1,0 +1,176 @@
+;;; v1.2 compiler surface integration stress.
+;;;
+;;; This is intentionally cross-feature: individual suites cover these APIs
+;;; in isolation, while this test makes the compiler lower them together in
+;;; one AOT program.
+
+(require stdlib)
+(require core.testing)
+(require core.argparse)
+
+(reset-tests!)
+
+(define-record-type work-item
+  (make-work-item id score stamp)
+  work-item?
+  (id work-item-id)
+  (score work-item-score set-work-item-score!)
+  (stamp work-item-stamp))
+
+(define args-spec
+  (list (list '--size 'integer 16 "number of inputs")
+        (list '--mode 'string "json" "output mode")
+        (list '--verbose 'boolean #f "verbose output")))
+
+(define parsed-args
+  (parse-args (list "--size=16" "--mode" "json" "--verbose" "payload")
+              args-spec))
+
+(define n (arg-get parsed-args '--size))
+(define ids (range 0 n))
+(define epoch-ns (parse-iso8601 "2024-01-01T00:00:00Z"))
+(define json-path "/tmp/eshkol-v12-compiler-surface.json")
+(define bin-path "/tmp/eshkol-v12-compiler-surface.bin")
+
+(define (make-surface-item i)
+  (make-work-item i
+                  (* i i)
+                  (format-iso8601 (+ epoch-ns (* i 1000000000)))))
+
+(define items (parallel-map make-surface-item ids))
+
+(define (sum-scores xs)
+  (apply + (map work-item-score xs)))
+
+(define item-table (make-hash-table))
+(define (store-items! xs)
+  (if (null? xs)
+      #t
+      (begin
+        (hash-set! item-table (work-item-id (car xs)) (car xs))
+        (store-items! (cdr xs)))))
+(store-items! items)
+
+(define bytes (make-bytevector 4 0))
+(bytevector-u8-set! bytes 0 0)
+(bytevector-u8-set! bytes 1 127)
+(bytevector-u8-set! bytes 2 128)
+(bytevector-u8-set! bytes 3 255)
+
+(define (write-bytes!)
+  (let ((out (open-binary-output-file bin-path)))
+    (write-bytevector bytes out)
+    (close-port out)))
+
+(define (read-bytes)
+  (let* ((in (open-binary-input-file bin-path))
+         (back (read-bytevector 4 in)))
+    (close-port in)
+    back))
+
+(define (classify value)
+  (match value
+    ((? work-item?) "item")
+    ((? hash-table?) "hash")
+    ((? bytevector?) "bytes")
+    ((? string?) "string")
+    (_ "other")))
+
+(define (metrics)
+  (values (length items) (sum-scores items)))
+
+(define (build-report)
+  (let ((report (make-hash-table)))
+    (hash-set! report "count" (length items))
+    (hash-set! report "score" (sum-scores items))
+    (hash-set! report "mode" (arg-get parsed-args '--mode))
+    (hash-set! report "stamp" (format-iso8601 epoch-ns))
+    (hash-set! report "ids" ids)
+    report))
+
+(define report-schema
+  (json-parse
+   "{\"type\":\"object\",
+     \"properties\":{
+       \"count\":{\"type\":\"integer\",\"minimum\":1},
+       \"score\":{\"type\":\"integer\",\"minimum\":0},
+       \"mode\":{\"type\":\"string\"},
+       \"stamp\":{\"type\":\"string\",\"pattern\":\"Z\"},
+       \"ids\":{\"type\":\"array\",\"items\":{\"type\":\"integer\"}}
+     },
+     \"required\":[\"count\",\"score\",\"mode\",\"stamp\",\"ids\"],
+     \"additionalProperties\":false}"))
+
+(register-test "argparse config drives workload"
+  (lambda ()
+    (check-equal? n 16)
+    (check-equal? (arg-get parsed-args '--mode) "json")
+    (check-equal? (arg-get parsed-args '--verbose) #t)
+    (check-equal? (arg-positional parsed-args) (list "payload"))))
+
+(register-test "parallel-map builds record values"
+  (lambda ()
+    (check-equal? (length items) 16)
+    (check-true (work-item? (car items)))
+    (check-equal? (work-item-id (car items)) 0)
+    (check-equal? (work-item-score (car items)) 0)
+    (check-equal? (work-item-stamp (car items))
+                  "2024-01-01T00:00:00.000Z")
+    (check-equal? (sum-scores items) 1240)))
+
+(register-test "records survive mutation through hash-table lookup"
+  (lambda ()
+    (let ((item (hash-ref item-table 7 #f)))
+      (check-true (work-item? item))
+      (set-work-item-score! item 50)
+      (check-equal? (work-item-score (hash-ref item-table 7 #f)) 50)
+      (set-work-item-score! item 49)
+      (check-equal? (sum-scores items) 1240))))
+
+(register-test "match predicates dispatch over mixed heap values"
+  (lambda ()
+    (check-equal? (classify (hash-ref item-table 3 #f)) "item")
+    (check-equal? (classify item-table) "hash")
+    (check-equal? (classify bytes) "bytes")
+    (check-equal? (classify "x") "string")
+    (check-equal? (classify 99) "other")))
+
+(register-test "multiple values compose with stdlib consumers"
+  (lambda ()
+    (check-equal? (call-with-values metrics list) (list 16 1240))
+    (check-equal? (call-with-values metrics +) 1256)))
+
+(register-test "binary bytevector round-trip preserves boundary bytes"
+  (lambda ()
+    (write-bytes!)
+    (let ((back (read-bytes)))
+      (check-equal? (bytevector-length back) 4)
+      (check-equal? (bytevector-u8-ref back 0) 0)
+      (check-equal? (bytevector-u8-ref back 1) 127)
+      (check-equal? (bytevector-u8-ref back 2) 128)
+      (check-equal? (bytevector-u8-ref back 3) 255))))
+
+(register-test "atomic JSON write/read validates schema"
+  (lambda ()
+    (let ((report (build-report)))
+      (check-true (atomic-write-file json-path (json-stringify report)))
+      (let ((parsed (json-read json-path)))
+        (check-equal? (json-get parsed "count") 16)
+        (check-equal? (json-get parsed "score") 1240)
+        (check-equal? (json-get parsed "mode") "json")
+        (check-equal? (json-get parsed "stamp")
+                      "2024-01-01T00:00:00.000Z")
+        (check-true (json-schema-valid? report-schema parsed))))))
+
+(register-test "delay forces file-backed computation once"
+  (lambda ()
+    (let ((p (delay (json-get (json-read json-path) "score"))))
+      (check-equal? (force p) 1240)
+      (check-equal? (force p) 1240))))
+
+(define ok (run-tests))
+
+(if (file-exists? json-path) (delete-file json-path) #t)
+(if (file-exists? bin-path) (delete-file bin-path) #t)
+
+(if ok (exit 0) (exit 1))

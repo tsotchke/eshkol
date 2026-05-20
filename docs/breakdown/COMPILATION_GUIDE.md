@@ -278,13 +278,18 @@ Usage: eshkol-run [options] <input.esk|input.o> [input.esk|input.o]
 | `--dump-ast` | `-a` | Dump the AST to a `.ast` file |
 | `--dump-ir` | `-i` | Dump LLVM IR to a `.ll` file |
 | `--compile-only` | `-c` | Compile to object file only (no linking) |
+| `--emit-object` | | Alias for `--compile-only`; intended for build-system integrations |
 | `--shared-lib` | `-s` | Compile as a shared library |
+| `-fPIC` | | Accepted for build-system compatibility when emitting objects |
+| `-I <dir>` | | Add a source/module search path for `load` and `require` resolution |
+| `-D NAME[=VALUE]` | | Accepted for build-system compatibility; defines are not source semantics yet |
 | `--wasm` | `-w` | Compile to WebAssembly (`.wasm`) format |
 | `--eval <expr>` | `-e` | JIT evaluate an expression and print the result |
 | `--run` | `-r` | JIT run a file (interpret without creating a binary) |
 | `--lib <name>` | `-l` | Link a shared library to the resulting executable |
 | `--lib-path <dir>` | `-L` | Add a directory to the library search path |
 | `--no-stdlib` | `-n` | Do not auto-load the standard library |
+| `--version` | | Print a concise version string and exit 0 |
 | `--strict-types` | | Type errors are fatal (default: gradual/warnings) |
 | `--unsafe` | | Skip all type checks |
 
@@ -310,6 +315,28 @@ eshkol-run -e '(map (lambda (x) (* x x)) (list 1 2 3 4 5))'
 # Compile to WebAssembly
 eshkol-run program.esk --wasm -o program.wasm
 ```
+
+### Object-Build Contract
+
+Build systems should use `--emit-object` when they want an object file without
+linking:
+
+```bash
+eshkol-run --emit-object -o build/foo.o \
+  --shared-lib -fPIC -I src -D FEATURE=1 src/foo.esk
+```
+
+This contract is intentionally CMake-friendly:
+
+- `--emit-object` is accepted as an alias for `--compile-only`.
+- `-o build/foo.o` creates exactly `build/foo.o`; Eshkol does not append a
+  second `.o` suffix.
+- `--shared-lib` emits library-style code with no generated `main`.
+- `-I dir` extends Eshkol's module/source search path.
+- `-D NAME[=VALUE]` is accepted for compatibility with existing build rules,
+  but preprocessor-style defines are not part of Eshkol source semantics yet.
+- `-fPIC` is accepted for compatibility; emitted LLVM object code is already
+  relocatable for this path.
 
 ---
 

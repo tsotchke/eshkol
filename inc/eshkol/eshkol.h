@@ -10,8 +10,8 @@
 // Version information
 #define ESHKOL_VERSION_MAJOR 1
 #define ESHKOL_VERSION_MINOR 2
-#define ESHKOL_VERSION_PATCH 0
-#define ESHKOL_VERSION_STRING "1.2.0-scale"
+#define ESHKOL_VERSION_PATCH 1
+#define ESHKOL_VERSION_STRING "1.2.1-scale"
 
 #include <stdint.h>
 #include <stdbool.h>

@@ -19,6 +19,30 @@ COMPILE_FAIL=0
 # Results array
 declare -a FAILED_TESTS
 
+run_with_timeout() {
+    local seconds="$1"
+    shift
+
+    "$@" &
+    local cmd_pid=$!
+
+    (
+        sleep "$seconds"
+        if kill -0 "$cmd_pid" 2>/dev/null; then
+            kill "$cmd_pid" 2>/dev/null || true
+        fi
+    ) &
+    local watchdog_pid=$!
+
+    wait "$cmd_pid"
+    local rc=$?
+
+    kill "$watchdog_pid" 2>/dev/null || true
+    wait "$watchdog_pid" 2>/dev/null || true
+
+    return "$rc"
+}
+
 echo "========================================="
 echo "  Eshkol I/O Test Suite"
 echo "========================================="
@@ -50,7 +74,7 @@ for test_file in tests/io/*.esk; do
 
     if ./$BUILD_DIR/eshkol-run -L./$BUILD_DIR "$test_file" > /dev/null 2>&1; then
         # Use timeout to prevent hangs (some IO tests may block on unimplemented port reads)
-        if perl -e 'alarm 10; exec @ARGV' ./a.out > /tmp/test_output.txt 2>&1; then
+        if run_with_timeout 10 ./a.out > /tmp/test_output.txt 2>&1; then
             if grep -q "^FAIL" /tmp/test_output.txt; then
                 echo -e "${RED}❌ FAIL${NC}"
                 FAILED_TESTS+=("$test_name")

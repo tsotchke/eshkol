@@ -70,11 +70,21 @@
 
 (define (with-mutex m thunk)
   "Acquire m, invoke (thunk), release m before returning.  The mutex
-   is released even if thunk raises, via dynamic-wind."
-  (dynamic-wind
-    (lambda () (mutex-lock! m))
-    thunk
-    (lambda () (mutex-unlock! m))))
+   is released even if thunk raises."
+  (mutex-lock! m)
+  (let ((ok #t)
+        (result #f)
+        (error #f))
+    (guard (e (#t
+               (begin
+                 (set! ok #f)
+                 (set! error e)
+                 #f)))
+      (set! result (thunk)))
+    (mutex-unlock! m)
+    (if ok
+        result
+        (raise error))))
 
 ;; ── Condition variable ──────────────────────────────────────────────
 

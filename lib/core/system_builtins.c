@@ -113,6 +113,7 @@ typedef struct {
 #define SYS_TYPE_INT64   1
 #define SYS_TYPE_DOUBLE  2
 #define SYS_TYPE_BOOL    3
+#define SYS_TYPE_CHAR    4
 #define SYS_TYPE_HEAP_PTR 8
 
 static eshkol_sysbuiltin_value_t sys_make_null(void) {
@@ -4435,11 +4436,24 @@ static int sys_utf8_encode_codepoint(int cp, char* out) {
     return 1;
 }
 
+static const char* sys_extract_string_or_char(eshkol_sysbuiltin_value_t v,
+                                              char char_buf[5]) {
+    const char* s = sys_extract_string(v);
+    if (s) return s;
+    if (v.type == SYS_TYPE_INT64 || v.type == SYS_TYPE_DOUBLE || v.type == SYS_TYPE_CHAR) {
+        int n = sys_utf8_encode_codepoint((int)sys_extract_int64(v), char_buf);
+        char_buf[n] = '\0';
+        return char_buf;
+    }
+    return NULL;
+}
+
 static eshkol_sysbuiltin_value_t eshkol_builtin_string_ends_with_v(
     eshkol_sysbuiltin_value_t str_val,
     eshkol_sysbuiltin_value_t suffix_val) {
+    char suffix_buf[5];
     const char* s = sys_extract_string(str_val);
-    const char* suffix = sys_extract_string(suffix_val);
+    const char* suffix = sys_extract_string_or_char(suffix_val, suffix_buf);
     if (!s || !suffix) return sys_make_bool(0);
     size_t s_len = strlen(s);
     size_t suffix_len = strlen(suffix);
@@ -4451,8 +4465,9 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_string_index_of_v(
     eshkol_sysbuiltin_value_t str_val,
     eshkol_sysbuiltin_value_t sub_val,
     eshkol_sysbuiltin_value_t start_val) {
+    char sub_buf[5];
     const char* s = sys_extract_string(str_val);
-    const char* sub = sys_extract_string(sub_val);
+    const char* sub = sys_extract_string_or_char(sub_val, sub_buf);
     if (!s || !sub) return sys_make_bool(0);
     int64_t start = (int64_t)start_val.data;
     size_t s_len = strlen(s);

@@ -16,6 +16,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 cd "$PROJECT_DIR"
 
+BUILD_DIR="${BUILD_DIR:-build}"
 ESHKOL_RUN="${ESHKOL_RUN:-./$BUILD_DIR/eshkol-run}"
 if [[ ! -x "$ESHKOL_RUN" ]]; then
     echo "eshkol-run not found at $ESHKOL_RUN — build first." >&2

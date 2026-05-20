@@ -1,0 +1,45 @@
+;; mode: jit
+;; REPL top-level variables that are forwarded into a named-let as capture
+;; pointers must still be captured by nested lambdas.  Before this regression,
+;; the REPL hot-reload filter dropped total-cell/total-mutex from the nested
+;; lambda captures because their names were also top-level user variables,
+;; leaving the lambda body with direct references to the named-let function's
+;; pointer arguments and failing LLVM verification.
+
+(require stdlib)
+(require core.threads)
+
+(define passed 0)
+(define failed 0)
+
+(define (check label expected actual)
+  (if (equal? expected actual)
+      (begin (display "PASS: ") (display label) (newline)
+             (set! passed (+ passed 1)))
+      (begin (display "FAIL: ") (display label)
+             (display " (expected ") (display expected)
+             (display ", got ") (display actual) (display ")") (newline)
+             (set! failed (+ failed 1)))))
+
+(define total-cell (vector 0))
+(define total-mutex (make-mutex))
+
+(parallel-map
+  (lambda (_)
+    (let loop ((j 0) (sum 0))
+      (if (< j 1)
+          (loop (+ j 1) (+ sum 1))
+          (begin
+            (with-mutex total-mutex
+              (lambda ()
+                (vector-set! total-cell 0 (+ (vector-ref total-cell 0) sum))))
+            'done))))
+  '(0 1))
+
+(check "nested lambda captures named-let forwarded REPL vars"
+       2 (vector-ref total-cell 0))
+
+(display "---") (newline)
+(display "Passed: ") (display passed) (newline)
+(display "Failed: ") (display failed) (newline)
+(if (> failed 0) (exit 1) (exit 0))

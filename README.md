@@ -8,7 +8,7 @@
 
 Eshkol is a Scheme-based programming language that unifies functional programming with native automatic differentiation, providing a mathematically rigorous foundation for gradient-based optimization, numerical simulation, and machine learning research. Built on Homotopy Type Theory foundations and compiled to native code via LLVM, Eshkol delivers mathematical correctness and deterministic performance without sacrificing the elegance of homoiconic Lisp syntax.
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![Version](https://img.shields.io/badge/version-v1.2.0--scale-green.svg)](RELEASE_NOTES.md) [![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)](CMakeLists.txt)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![Version](https://img.shields.io/badge/version-v1.2.1--scale-green.svg)](RELEASE_NOTES.md) [![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)](CMakeLists.txt)
 
 <br>
 
@@ -590,7 +590,7 @@ Execute: `eshkol-run gradient.esk -o gradient && ./gradient`
 - **R7RS-compliant scoping**: User redefines of stdlib functions cleanly shadow the stdlib version (LinkOnceODR linkage; variadic-info hygiene)
 - **WASM library mode**: `--wasm` produces self-contained module without falling through to native link
 - **Hardening**: subprocess shell-injection fix, Python FFI AST-injection fix, integer-overflow guards (arena/KB/image), path-traversal defence, ReDoS protection, sanitizer-clean ASan/UBSan CI lane
-- **62-test edge-case suite**: regression coverage for symbol consistency, AD tape state, parser line tracking, stdlib symbol resolution, every fix in this release
+- **87-test edge/security suite**: regression coverage for symbol consistency, AD tape state, parser line tracking, stdlib symbol resolution, HTTP/server smoke behavior, and every fix in this release
 
 ### Modern Language Features
 
@@ -613,7 +613,7 @@ The **REPL** provides full compilation and execution via LLVM JIT:
 ```
 $ eshkol-repl
 
-Welcome to Eshkol REPL v1.2.0-scale
+Welcome to Eshkol REPL v1.2.1-scale
 Type :help for commands, :quit to exit
 
 eshkol> (define (f x) (* x x x))
@@ -768,7 +768,7 @@ Eshkol is released under the **MIT License**. For academic use, please cite:
 @software{eshkol2025,
   title = {Eshkol: A Programming Language for Mathematical Computing},
   author = {tsotchke},
-  version = {1.2.0-scale},
+  version = {1.2.1-scale},
   year = {2026},
   url = {https://github.com/tsotchke/eshkol},
   note = {Scheme-based language with native automatic differentiation}
@@ -784,7 +784,7 @@ Eshkol is released under the **MIT License**. For academic use, please cite:
 - **Memory**: Arena-based allocation with deterministic cleanup
 - **Types**: HoTT-based gradual typing with dependent type support
 - **AD**: Forward/reverse/symbolic modes with nested computation
-- **Testing**: 438 tests across 35 suites with automated verification
+- **Testing**: 528 self-reported tests across 37 suites with automated verification
 - **Platform**: macOS (Intel/Apple Silicon), Linux (x86_64/ARM64), Windows (native x86_64 via Visual Studio 2022 + LLVM 21)
 
 ---

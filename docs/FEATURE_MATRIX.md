@@ -1,8 +1,8 @@
-# Eshkol v1.2.0-scale Feature Matrix
+# Eshkol v1.2.1-scale Feature Matrix
 
 **Status Key**: ✅ Production | 🚧 In Progress | 📋 Planned | ❌ Not Planned
 
-This matrix documents all implemented and planned features for the Eshkol language ecosystem. All **Production** features are code-verified with extensive test coverage (35 test suites, 438 test files).
+This matrix documents all implemented and planned features for the Eshkol language ecosystem. All **Production** features are code-verified with extensive test coverage (37 suites, 528 self-reported tests).
 
 ---
 
@@ -858,7 +858,7 @@ This matrix documents all implemented and planned features for the Eshkol langua
 - Consciousness engine (logic, inference, workspace)
 - Signal processing library (FFT, filters, window functions)
 - R7RS extensions (call/cc, dynamic-wind, bytevectors)
-- 700+ builtins, 35 test suites, 438 test files
+- 700+ builtins, 37 test suites, 528 self-reported tests
 
 **Codebase**: ~232,000 lines of production C/C++
 
@@ -904,7 +904,7 @@ See [CONTRIBUTING.md](../CONTRIBUTING.md) for development guidelines.
 
 ---
 
-**Last Updated**: 2026-05-01
-**Document Version**: 1.2.0-scale
+**Last Updated**: 2026-05-20
+**Document Version**: 1.2.1-scale
 
 For detailed API documentation, see [API_REFERENCE.md](API_REFERENCE.md)

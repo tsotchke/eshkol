@@ -38,6 +38,9 @@
 
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
 
+namespace eshkol { class CodegenContext; }
+extern "C" void eshkol_register_tensorcore_builtins(eshkol::CodegenContext*);
+
 namespace {
 
 void append_host_runtime_link_args(std::vector<std::string>& link_args) {
@@ -2265,12 +2268,11 @@ public:
 
                     // Add terminator to main function if it doesn't have one
                     if (!builder->GetInsertBlock()->getTerminator()) {
-                        // GLOBAL ARENA FIX: Cleanup arena before return (SKIP IN REPL MODE)
-                        // In REPL mode, s-expressions need to persist across evaluations
+                        // The runtime owns the global arena returned by get_global_arena().
+                        // Do not destroy it here: workers and runtime helpers may share it,
+                        // and process/runtime teardown owns its lifetime.
                         if (!g_repl_mode_enabled) {
-                            Value* arena_to_destroy = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
-                            builder->CreateCall(getArenaDestroyFunc(), {arena_to_destroy});
-                            eshkol_debug("Added global arena cleanup before main return (top-level expressions)");
+                            eshkol_debug("Skipped runtime-owned global arena cleanup before main return (top-level expressions)");
                         } else {
                             eshkol_debug("Skipped arena cleanup in REPL mode to preserve s-expressions (top-level)");
                         }
@@ -2403,8 +2405,7 @@ public:
                     );
                     arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), shared_arena_ref);
                 } else {
-                    Value* arena_size = sizeConst(8192);
-                    arena_ptr = builder->CreateCall(getArenaCreateFunc(), {arena_size});
+                    arena_ptr = builder->CreateCall(getGlobalArenaFunc(), {});
 
                     // Also store in __repl_shared_arena for runtime functions
                     GlobalVariable* shared_arena_ref = new GlobalVariable(
@@ -2416,6 +2417,7 @@ public:
                         "__repl_shared_arena"
                     );
                     builder->CreateStore(arena_ptr, shared_arena_ref);
+                    eshkol_debug("Loaded thread-safe global arena");
                 }
                 builder->CreateStore(arena_ptr, global_arena);
 
@@ -2516,10 +2518,9 @@ public:
                 Value* result = builder->CreateCall(user_main);
                 Value* result_int64 = unpackInt64FromTaggedValue(result);
 
-                // Step 6: Cleanup arena
+                // Step 6: Leave the runtime-owned global arena alive.
                 if (!g_repl_mode_enabled) {
-                    Value* arena_to_destroy = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
-                    builder->CreateCall(getArenaDestroyFunc(), {arena_to_destroy});
+                    eshkol_debug("Skipped runtime-owned global arena cleanup before main return (user main)");
                 }
 
                 // Step 7: Return
@@ -3144,6 +3145,16 @@ private:
         eshkol_lambda_registry_lookup_func = builtins_->getLambdaRegistryLookup();
         eshkol_debug("Created BuiltinDeclarations");
 
+        // tensorcore — opt-in via ESHKOL_ENABLE_TENSORCORE=1. Drops the 14
+        // tc_* C ABI symbols into the LLVM module as ExternalLinkage; link-time
+        // resolution requires the consumer binary to link against libtensorcore.a.
+        if (const char* tc_on = std::getenv("ESHKOL_ENABLE_TENSORCORE")) {
+            if (tc_on[0] == '1') {
+                eshkol_register_tensorcore_builtins(ctx_.get());
+                eshkol_debug("tensorcore: registered 14 external builtins");
+            }
+        }
+
         // Initialize TensorCodegen - tensor operations (needed by ArithmeticCodegen)
         tensor_ = std::make_unique<eshkol::TensorCodegen>(*ctx_, *tagged_, *mem);
         // Set up callbacks for AST evaluation (uses same pattern as other modules)
@@ -3371,6 +3382,7 @@ private:
 
     // Arena function accessors (forwarding to MemoryCodegen)
     Function* getArenaCreateFunc() { return mem->getArenaCreate(); }
+    Function* getGlobalArenaFunc() { return mem->getGlobalArena(); }
     Function* getArenaDestroyFunc() { return mem->getArenaDestroy(); }
     Function* getArenaAllocateFunc() { return mem->getArenaAllocate(); }
     Function* getArenaPushScopeFunc() { return mem->getArenaPushScope(); }
@@ -4151,9 +4163,8 @@ private:
                     arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), shared_arena_ref);
                     eshkol_debug("Loaded shared REPL arena");
                 } else {
-                    // Normal mode: create new arena
-                    Value* arena_size = sizeConst(8192);
-                    arena_ptr = builder->CreateCall(getArenaCreateFunc(), {arena_size});
+                    // Normal mode: use the runtime-owned thread-safe global arena.
+                    arena_ptr = builder->CreateCall(getGlobalArenaFunc(), {});
 
                     // Also store in __repl_shared_arena for runtime functions
                     GlobalVariable* shared_arena_ref = new GlobalVariable(
@@ -4165,7 +4176,7 @@ private:
                         "__repl_shared_arena"
                     );
                     builder->CreateStore(arena_ptr, shared_arena_ref);
-                    eshkol_debug("Created new arena in main wrapper");
+                    eshkol_debug("Loaded thread-safe global arena in main wrapper");
                 }
                 builder->CreateStore(arena_ptr, global_arena);
 
@@ -4281,9 +4292,8 @@ private:
                     arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), shared_arena_ref);
                     eshkol_debug("Loaded shared REPL arena (no lambdas case)");
                 } else {
-                    // Normal mode: create new arena
-                    Value* arena_size = sizeConst(8192);
-                    arena_ptr = builder->CreateCall(getArenaCreateFunc(), {arena_size});
+                    // Normal mode: use the runtime-owned thread-safe global arena.
+                    arena_ptr = builder->CreateCall(getGlobalArenaFunc(), {});
 
                     // Also store in __repl_shared_arena for runtime functions
                     GlobalVariable* shared_arena_ref = new GlobalVariable(
@@ -4295,7 +4305,7 @@ private:
                         "__repl_shared_arena"
                     );
                     builder->CreateStore(arena_ptr, shared_arena_ref);
-                    eshkol_debug("Created new arena in main wrapper");
+                    eshkol_debug("Loaded thread-safe global arena in main wrapper");
                 }
                 builder->CreateStore(arena_ptr, global_arena);
 
@@ -4310,12 +4320,11 @@ private:
             // CRITICAL FIX: scheme_main returns tagged_value, need to unpack to int64 first
             Value* result_int64 = unpackInt64FromTaggedValue(result);
 
-            // GLOBAL ARENA FIX: Cleanup arena before return (SKIP IN REPL MODE)
-            // In REPL mode, s-expressions need to persist across evaluations
+            // The runtime owns the global arena returned by get_global_arena().
+            // Do not destroy it here: workers and runtime helpers may share it,
+            // and process/runtime teardown owns its lifetime.
             if (!g_repl_mode_enabled) {
-                Value* arena_to_destroy = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
-                builder->CreateCall(getArenaDestroyFunc(), {arena_to_destroy});
-                eshkol_debug("Added global arena cleanup before main return");
+                eshkol_debug("Skipped runtime-owned global arena cleanup before main return");
             } else {
                 eshkol_debug("Skipped arena cleanup in REPL mode to preserve s-expressions");
             }
@@ -4413,9 +4422,8 @@ private:
                 arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), shared_arena_ref);
                 eshkol_debug("Loaded shared REPL arena (top-level expressions case)");
             } else {
-                // Normal mode: create new arena
-                Value* arena_size = sizeConst(8192);
-                arena_ptr = builder->CreateCall(getArenaCreateFunc(), {arena_size});
+                // Normal mode: use the runtime-owned thread-safe global arena.
+                arena_ptr = builder->CreateCall(getGlobalArenaFunc(), {});
 
                 // Also store in __repl_shared_arena for runtime functions
                 GlobalVariable* shared_arena_ref2 = new GlobalVariable(
@@ -4427,7 +4435,7 @@ private:
                     "__repl_shared_arena"
                 );
                 builder->CreateStore(arena_ptr, shared_arena_ref2);
-                eshkol_debug("Created new arena in main (top-level expressions case)");
+                eshkol_debug("Loaded thread-safe global arena in main (top-level expressions case)");
             }
             builder->CreateStore(arena_ptr, global_arena);
 
@@ -8915,6 +8923,46 @@ private:
         return function;
     }
 
+    bool isLocalCaptureStorage(Value* value) const {
+        if (!value) return false;
+
+        if (isa<Argument>(value) || isa<AllocaInst>(value) ||
+            isa<IntToPtrInst>(value) || isa<CallInst>(value)) {
+            return true;
+        }
+
+        return value->getType()->isPointerTy() && !isa<GlobalVariable>(value);
+    }
+
+    bool shouldDropReplTopLevelCapture(const std::string& name) const {
+        auto local_it = symbol_table.find(name);
+        if (local_it != symbol_table.end() &&
+            isLocalCaptureStorage(local_it->second)) {
+            // Keep captures that have already been lowered to local storage in
+            // an enclosing generated function. Named-let capture forwarding
+            // uses pointer Arguments named like `x_cap`; dropping those just
+            // because `x` is also a REPL top-level variable leaves nested
+            // lambdas referring to an outer function's argument directly.
+            return false;
+        }
+
+        return g_repl_user_function_names.count(name) > 0 ||
+               g_repl_user_variable_names.count(name) > 0;
+    }
+
+    void filterReplTopLevelCaptures(std::vector<std::string>& free_vars) {
+        if (!g_repl_mode_enabled || free_vars.empty()) {
+            return;
+        }
+
+        std::lock_guard<std::mutex> lock(g_repl_mutex);
+        free_vars.erase(
+            std::remove_if(free_vars.begin(), free_vars.end(),
+                [&](const std::string& v) {
+                    return shouldDropReplTopLevelCapture(v);
+                }),
+            free_vars.end());
+    }
 
     // Generate a nested function definition as a closure (like a lambda)
     Value* codegenNestedFunctionDefinition(const eshkol_operations_t* op) {
@@ -8950,16 +8998,7 @@ private:
         // REPL HOT RELOAD: top-level user bindings are looked up dynamically
         // through the host-owned slots, never captured. See codegenLambda for
         // the full rationale (R7RS section 4.1.4).
-        if (g_repl_mode_enabled && !free_vars.empty()) {
-            std::lock_guard<std::mutex> lock(g_repl_mutex);
-            free_vars.erase(
-                std::remove_if(free_vars.begin(), free_vars.end(),
-                    [&](const std::string& v) {
-                        return g_repl_user_function_names.count(v) > 0 ||
-                               g_repl_user_variable_names.count(v) > 0;
-                    }),
-                free_vars.end());
-        }
+        filterReplTopLevelCaptures(free_vars);
 
         eshkol_debug("Nested function %s found %zu free variables", func_name.c_str(), free_vars.size());
         for (const std::string& var : free_vars) {
@@ -21437,16 +21476,7 @@ private:
         // values of any free occurrences of variables in the lambda
         // expression" — and that environment is the *current* top-level
         // bindings, not a snapshot.
-        if (g_repl_mode_enabled && !free_vars.empty()) {
-            std::lock_guard<std::mutex> lock(g_repl_mutex);
-            free_vars.erase(
-                std::remove_if(free_vars.begin(), free_vars.end(),
-                    [&](const std::string& v) {
-                        return g_repl_user_function_names.count(v) > 0 ||
-                               g_repl_user_variable_names.count(v) > 0;
-                    }),
-                free_vars.end());
-        }
+        filterReplTopLevelCaptures(free_vars);
 
         eshkol_debug("Lambda %s found %zu free variables", lambda_name.c_str(), free_vars.size());
         for (const std::string& var : free_vars) {

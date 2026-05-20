@@ -37,6 +37,7 @@ public:
 
     // Core arena management
     llvm::Function* getArenaCreate() const { return arena_create; }
+    llvm::Function* getGlobalArena() const { return get_global_arena; }
     llvm::Function* getArenaDestroy() const { return arena_destroy; }
     llvm::Function* getArenaAllocate() const { return arena_allocate; }
     llvm::Function* getArenaAllocateWithHeader() const { return arena_allocate_with_header; }
@@ -99,6 +100,7 @@ private:
 
     // Core arena management
     llvm::Function* arena_create;
+    llvm::Function* get_global_arena;
     llvm::Function* arena_destroy;
     llvm::Function* arena_allocate;
     llvm::Function* arena_allocate_with_header;
