@@ -86,7 +86,7 @@ jobs:
             test_command: ./scripts/run_xla_tests.sh
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Add LLVM Repository (Linux)
         if: runner.os == 'Linux'
@@ -201,7 +201,7 @@ jobs:
           tar -czf "$RUNNER_TEMP/$archive_root.tar.gz" -C "$RUNNER_TEMP" "$archive_root"
 
       - name: Upload Packaged Asset
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-asset-${{ matrix.name }}
           path: ${{ runner.temp }}/eshkol-${{ github.ref_name }}-${{ matrix.name }}.tar.gz
@@ -265,11 +265,11 @@ jobs:
             test_mode: gpu
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Restore LLVM SDK Cache
         id: llvm-cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: C:\src\clang+llvm-${{ env.WINDOWS_LLVM_SDK_VERSION }}-${{ matrix.llvm_suffix }}-pc-windows-msvc
           key: windows-llvm-sdk-${{ matrix.arch }}-${{ env.WINDOWS_LLVM_SDK_VERSION }}
@@ -323,7 +323,7 @@ jobs:
 
       - name: Save LLVM SDK Cache
         if: steps.llvm-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         with:
           path: C:\src\clang+llvm-${{ env.WINDOWS_LLVM_SDK_VERSION }}-${{ matrix.llvm_suffix }}-pc-windows-msvc
           key: windows-llvm-sdk-${{ matrix.arch }}-${{ env.WINDOWS_LLVM_SDK_VERSION }}
@@ -443,7 +443,7 @@ jobs:
           Compress-Archive -Path $pkgDir -DestinationPath $archivePath -CompressionLevel Optimal
 
       - name: Upload Packaged Asset
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-asset-${{ matrix.name }}
           path: ${{ runner.temp }}\eshkol-${{ github.ref_name }}-${{ matrix.name }}.zip
@@ -458,7 +458,7 @@ jobs:
 
     steps:
       - name: Download Packaged Assets
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: dist
           pattern: release-asset-*
