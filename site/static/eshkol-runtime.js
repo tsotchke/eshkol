@@ -283,6 +283,7 @@ class EshkolRuntime {
                 // All params may be BigInt (i64) — convert with Number()
                 arena_create: () => 1,
                 arena_create_threadsafe: () => 1,
+                get_global_arena: () => 1,
                 arena_destroy: () => {},
                 arena_allocate: (arena, size) => { return rt._bump(Number(size)); },
                 arena_allocate_with_header: (arena, size) => { return rt._bump(Number(size) + 8) + 8; },

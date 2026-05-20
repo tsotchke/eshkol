@@ -2081,7 +2081,13 @@ static void vm_run_exit_handlers(VM* vm) {
 static void* vm_runtime_symbol(const char* name) {
 #if !defined(_WIN32) && !defined(ESHKOL_VM_WASM)
     if (!name) return NULL;
+#ifdef RTLD_DEFAULT
     return dlsym(RTLD_DEFAULT, name);
+#else
+    static void* self_handle = NULL;
+    if (!self_handle) self_handle = dlopen(NULL, RTLD_LAZY);
+    return self_handle ? dlsym(self_handle, name) : NULL;
+#endif
 #else
     (void)name;
     return NULL;
