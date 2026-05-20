@@ -259,6 +259,7 @@ class EshkolRepl {
                 arena_allocate_tape: (arena, size) => 0,
                 arena_hash_table_create: (arena) => 0,
                 arena_hash_table_create_with_header: (arena) => 0,
+                get_global_arena: () => 0,
 
                 // Tagged cons operations
                 arena_tagged_cons_get_int64: (cell, iscar) => 0n,
