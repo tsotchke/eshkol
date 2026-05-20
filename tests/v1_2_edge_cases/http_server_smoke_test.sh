@@ -20,6 +20,40 @@ fi
 
 WORK=$(mktemp -d -t eshkol_http_server.XXXXXX)
 trap 'rm -rf "$WORK"' EXIT
+RUN_TIMEOUT="${ESHKOL_HTTP_SERVER_SMOKE_TIMEOUT:-120}"
+
+run_with_timeout() {
+    local seconds="$1"
+    shift
+
+    local timeout_marker="$WORK/timeout"
+    rm -f "$timeout_marker"
+
+    "$@" &
+    local cmd_pid=$!
+
+    (
+        sleep "$seconds"
+        if kill -0 "$cmd_pid" 2>/dev/null; then
+            touch "$timeout_marker"
+            kill "$cmd_pid" 2>/dev/null || true
+            sleep 1
+            kill -9 "$cmd_pid" 2>/dev/null || true
+        fi
+    ) &
+    local watchdog_pid=$!
+
+    wait "$cmd_pid"
+    local rc=$?
+
+    kill "$watchdog_pid" 2>/dev/null || true
+    wait "$watchdog_pid" 2>/dev/null || true
+
+    if [ -f "$timeout_marker" ]; then
+        return 124
+    fi
+    return "$rc"
+}
 
 cat > "$WORK/http_server.esk" <<'EOF'
 (require stdlib)
@@ -105,7 +139,7 @@ cat > "$WORK/http_server.esk" <<'EOF'
 ;; ── Server-side accept ────────────────────────────────────────────
 (define request
   (if (and (number? client-pid) (> client-pid 0))
-      (http-server-accept srv 4096 5000)
+      (http-server-accept srv 4096 2000)
       #f))
 (check "accept returned a string" #t (string? request))
 (check "request begins with GET" #t
@@ -118,6 +152,10 @@ cat > "$WORK/http_server.esk" <<'EOF'
 ;; ── Server replies, client joins, both shut down ───────────────────
 (if (and (number? client-pid) (> client-pid 0) request)
     (http-server-respond srv 200 "text/plain" "OK\n")
+    #f)
+
+(if (and (number? client-pid) (> client-pid 0) (not request))
+    (process-kill client-pid 15)
     #f)
 
 (define client-status
@@ -138,4 +176,9 @@ cat > "$WORK/http_server.esk" <<'EOF'
 (if (> failed 0) (exit 1) (exit 0))
 EOF
 
-ESHKOL_PATH="$ROOT" "$RUN" -r "$WORK/http_server.esk"
+ESHKOL_PATH="$ROOT" run_with_timeout "$RUN_TIMEOUT" "$RUN" -r "$WORK/http_server.esk"
+rc=$?
+if [ "$rc" -eq 124 ]; then
+    echo "FAIL: http server smoke timed out after ${RUN_TIMEOUT}s"
+fi
+exit "$rc"

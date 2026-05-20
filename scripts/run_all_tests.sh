@@ -227,12 +227,31 @@ extract_failures() {
         fi
     done < "$clean_file"
 
-    # Count passes and fails from suite summary lines
-    # Handles: "Passed: N", "Working: N", "Failed: N", "Compile Failures: N"
+    # Count passes and fails from suite summary lines.
+    # Handles:
+    #   "Passed: N"
+    #   "Working: N"
+    #   "Failed: N"
+    #   "Results: N passed, M failed"
     local suite_passed=$(grep -oE '(Passed|Working):[[:space:]]+[0-9]+' "$clean_file" | tail -1 | grep -oE '[0-9]+' || echo 0)
     local suite_failed=$(grep -oE 'Failed:[[:space:]]+[0-9]+' "$clean_file" | tail -1 | grep -oE '[0-9]+' || echo 0)
     if [ -z "$suite_passed" ]; then suite_passed=0; fi
     if [ -z "$suite_failed" ]; then suite_failed=0; fi
+
+    if [ "$suite_passed" -eq 0 ]; then
+        local results_passed=$(grep -oE 'Results:[[:space:]]+[0-9]+[[:space:]]+passed' "$clean_file" | tail -1 | grep -oE '[0-9]+' || echo 0)
+        if [ -n "$results_passed" ]; then
+            suite_passed=$results_passed
+        fi
+    fi
+
+    if [ "$suite_failed" -eq 0 ]; then
+        local results_failed=$(grep -oE 'Results:[[:space:]]+[0-9]+[[:space:]]+passed,[[:space:]]+[0-9]+[[:space:]]+failed' "$clean_file" | tail -1 | sed -E 's/.*passed,[[:space:]]+([0-9]+)[[:space:]]+failed.*/\1/' || echo 0)
+        if [ -n "$results_failed" ]; then
+            suite_failed=$results_failed
+        fi
+    fi
+
     TOTAL_TESTS_PASS=$(( TOTAL_TESTS_PASS + suite_passed ))
     TOTAL_TESTS_FAIL=$(( TOTAL_TESTS_FAIL + suite_failed ))
 }
