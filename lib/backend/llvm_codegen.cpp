@@ -173,7 +173,7 @@ static llvm::OptimizationLevel getPassBuilderOptLevel() {
 
 /* Coerce mismatched integer call-argument types to match each callee's
  * declared parameter type.  Necessary on the wasm32 target where many
- * arena_allocate callsites (~144 across lib/backend/*_codegen.cpp) emit
+ * arena_allocate callsites across backend codegen files emit
  * an i64 size argument while the function is declared with i32 size_t.
  * On native (size_t = i64) this loop is a near-no-op since types already
  * match; on wasm32 it inserts ZExt/Trunc to satisfy the LLVM verifier
@@ -224,12 +224,63 @@ static void coerceCallArgIntegerTypes(llvm::Module& module) {
     }
 }
 
+/* Coerce invalid integer binary-operator operands back to the instruction's
+ * result type before verification.  The wasm32 target exposes this when byte
+ * sizes are computed from i64 tensor/vector lengths and i32 size_t constants
+ * (for example: `mul i64 %len, i32 8`).  LLVM's verifier rejects that IR, and
+ * the intent at those callsites is a byte count in the result width.
+ */
+static void coerceIntegerBinaryOperandTypes(llvm::Module& module) {
+    using namespace llvm;
+
+    SmallVector<BinaryOperator*, 32> binary_ops;
+    for (Function& F : module) {
+        for (BasicBlock& BB : F) {
+            for (Instruction& I : BB) {
+                if (auto* BO = dyn_cast<BinaryOperator>(&I)) {
+                    binary_ops.push_back(BO);
+                }
+            }
+        }
+    }
+
+    for (BinaryOperator* BO : binary_ops) {
+        auto* result_type = dyn_cast<IntegerType>(BO->getType());
+        if (!result_type) continue;
+
+        IRBuilder<> builder(BO);
+        for (unsigned i = 0; i < 2; ++i) {
+            Value* operand = BO->getOperand(i);
+            if (operand->getType() == result_type) continue;
+
+            auto* operand_type = dyn_cast<IntegerType>(operand->getType());
+            if (!operand_type) continue;
+
+            Value* coerced = nullptr;
+            if (auto* constant = dyn_cast<ConstantInt>(operand)) {
+                coerced = ConstantInt::get(
+                    result_type,
+                    constant->getValue().zextOrTrunc(result_type->getBitWidth()));
+            } else {
+                coerced = builder.CreateZExtOrTrunc(
+                    operand,
+                    result_type,
+                    operand->hasName()
+                        ? operand->getName() + ".binop.coerced"
+                        : Twine("binop.coerced"));
+            }
+            BO->setOperand(i, coerced);
+        }
+    }
+}
+
 // Run LLVM optimization passes on a module before codegen
 static void optimizeModule(llvm::Module& module, llvm::TargetMachine* TM, bool is_wasm = false) {
-    // Always coerce mismatched integer call-arg types first.  On native this
-    // is a no-op; on wasm32 it fixes the size_t (i32) vs i64 mismatch that
-    // would otherwise fail module verification before WASM emission.
+    // Always coerce mismatched integer types first.  On native this is a no-op;
+    // on wasm32 it fixes size_t (i32) vs i64 mismatches that would otherwise
+    // fail module verification before WASM emission.
     coerceCallArgIntegerTypes(module);
+    coerceIntegerBinaryOperandTypes(module);
 
     auto opt_level = getPassBuilderOptLevel();
 
