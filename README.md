@@ -121,8 +121,12 @@ Automatic differentiation is not a library feature—it is intrinsic to the lang
   (let ((predictions (neural-network params data)))
     (mean-squared-error predictions (data-labels data))))
 
-;; Compute exact gradients - no frameworks, no approximations
-(define gradients (gradient loss-function initial-params training-data))
+;; Compute exact gradients - no frameworks, no approximations.
+;; `gradient` takes (function vector); close over the data inside a
+;; one-vector-argument lambda so the gradient is taken w.r.t. params only.
+(define gradients
+  (gradient (lambda (p) (loss-function p training-data))
+            initial-params))
 
 ;; Nested gradients to arbitrary depth
 (define hessian-trace 
