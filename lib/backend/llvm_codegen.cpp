@@ -1294,6 +1294,8 @@ public:
         function_return_types["atomic-load"] = BuiltinTypes::Value;
         function_return_types["atomic-store!"] = BuiltinTypes::Null;
         function_return_types["atomic-exchange!"] = BuiltinTypes::Value;
+        function_return_types["atomic-fetch-add!"] = BuiltinTypes::Value;
+        function_return_types["atomic-fetch-sub!"] = BuiltinTypes::Value;
         function_return_types["target-intrinsic"] = BuiltinTypes::Value;
         function_return_types["compiler-fence"] = BuiltinTypes::Null;
         function_return_types["memory-fence"] = BuiltinTypes::Null;
@@ -5373,13 +5375,15 @@ private:
                         return TypedValue(val, ESHKOL_VALUE_NULL,
                                          eshkol::hott::BuiltinTypes::Null, true);
                     }
-                    if (func_name == "atomic-exchange!") {
+                    if (func_name == "atomic-exchange!" ||
+                        func_name == "atomic-fetch-add!" ||
+                        func_name == "atomic-fetch-sub!") {
                         if (ast->operation.call_op.num_vars < 1) {
                             return TypedValue();
                         }
 
                         auto type_info = resolveMemoryAccessTypeInfo(
-                            &ast->operation.call_op.variables[0], "atomic-exchange!");
+                            &ast->operation.call_op.variables[0], func_name.c_str());
                         Value* val = codegenAST(ast);
                         if (!val || !type_info) return TypedValue();
                         return makeLowLevelTypedValue(val, *type_info);
@@ -12097,6 +12101,46 @@ private:
                                                  lowLevelABIAlignment(type_info->llvm_type),
                                                  *ordering);
             rmw->setName("atomic_exchange");
+            return rmw;
+        }
+        if (func_name == "atomic-fetch-add!" || func_name == "atomic-fetch-sub!") {
+            if (op->call_op.num_vars != 4) {
+                eshkol_error("%s requires exactly 4 arguments", func_name.c_str());
+                return nullptr;
+            }
+
+            auto type_info = resolveMemoryAccessTypeInfo(&op->call_op.variables[0],
+                                                         func_name.c_str());
+            auto ordering = resolveAtomicRMWOrdering(&op->call_op.variables[3],
+                                                     func_name.c_str());
+            if (!type_info || !ordering) return nullptr;
+            if (type_info->is_pointer) {
+                eshkol_error("%s requires an integer machine type", func_name.c_str());
+                return nullptr;
+            }
+
+            TypedValue ptr_tv = codegenTypedAST(&op->call_op.variables[1]);
+            TypedValue value_tv = codegenTypedAST(&op->call_op.variables[2]);
+            if (!ptr_tv.llvm_value || !value_tv.llvm_value) return nullptr;
+
+            const LowLevelValueTypeInfo pointer_info{
+                eshkol::hott::BuiltinTypes::Pointer, ptr_type, false, true, false};
+            Value* raw_ptr = coerceValueToLowLevelScalar(ptr_tv, pointer_info,
+                                                         func_name.c_str());
+            if (!raw_ptr) return nullptr;
+
+            Value* delta_value =
+                coerceValueToLowLevelScalar(value_tv, *type_info, func_name.c_str());
+            if (!delta_value) return nullptr;
+
+            const AtomicRMWInst::BinOp op_kind =
+                func_name == "atomic-fetch-add!" ? AtomicRMWInst::Add
+                                                  : AtomicRMWInst::Sub;
+            auto* rmw = builder->CreateAtomicRMW(op_kind, raw_ptr, delta_value,
+                                                 lowLevelABIAlignment(type_info->llvm_type),
+                                                 *ordering);
+            rmw->setName(func_name == "atomic-fetch-add!" ? "atomic_fetch_add"
+                                                          : "atomic_fetch_sub");
             return rmw;
         }
         if (func_name == "target-intrinsic") {
@@ -21465,7 +21509,8 @@ private:
             "exact->inexact", "inexact->exact", "exact", "inexact",
             "addr-of", "compiler-fence", "memory-fence",
             "null-ptr", "ptr->usize", "usize->ptr", "ptr-add",
-            "atomic-load", "atomic-store!", "atomic-exchange!", "target-intrinsic",
+            "atomic-load", "atomic-store!", "atomic-exchange!",
+            "atomic-fetch-add!", "atomic-fetch-sub!", "target-intrinsic",
             "volatile-load", "volatile-store!",
             "exact-integer?", "square",
             "floor-quotient", "floor-remainder", "floor/",
