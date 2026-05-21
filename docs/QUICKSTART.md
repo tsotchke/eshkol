@@ -703,8 +703,10 @@ Explore the `examples/` directory:
 - `examples/tensors.esk` - Linear algebra with BLAS / GPU dispatch
 - `examples/parallel.esk` - Work-stealing parallel-map / futures
 - `examples/consciousness.esk` - Logic + factor-graph + workspace stack
-- `examples/agent.esk` - Agent loop with tools and KB
+- `examples/milli_mag_bohrification.esk` - Exact-numeric tower applied to CODATA physical-constants computation
 - `tests/ml/impressive_demo.esk` - ML showcase
+
+For agent harnesses and the larger research-grade examples (`agent.esk`, `selene_*.esk`, `consciousness_inference.esk`), see the project tutorials at [`tutorials/`](tutorials/) — Tutorial 04 covers the consciousness engine and Tutorials 21–26 cover project-scale examples.
 
 ### Standard Library
 
