@@ -8,7 +8,9 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Master is the public release gate. Let those runs finish so we get a
+  # complete matrix signal even while follow-up commits are landing.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
 
 env:
   LLVM_MAJOR: '21'
