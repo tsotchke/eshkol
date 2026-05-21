@@ -1011,7 +1011,8 @@ TypeCheckResult TypeChecker::synthesizeApplication(eshkol_ast_t* expr) {
 
     const auto should_skip_builtin_designator_arg = [&](size_t index) {
         return has_builtin_name &&
-               (builtin_name == "compiler-fence" || builtin_name == "memory-fence") &&
+               (builtin_name == "compiler-fence" || builtin_name == "memory-fence" ||
+                builtin_name == "volatile-load" || builtin_name == "volatile-store!") &&
                index == 0;
     };
 
@@ -1206,6 +1207,49 @@ TypeCheckResult TypeChecker::synthesizeApplication(eshkol_ast_t* expr) {
         }
 
         // Low-level pointer conversions
+        auto resolve_low_level_type_designator =
+            [&](const eshkol_ast_t& type_arg, const char* builtin,
+                const char* role, bool allow_null) -> std::optional<TypeId> {
+            if (type_arg.type != ESHKOL_VAR || !type_arg.variable.id) {
+                reportTypeIssue(std::string(builtin) + " expects a " + role + " type name",
+                                &type_arg);
+                return std::nullopt;
+            }
+
+            auto type_id = env_.lookupType(type_arg.variable.id);
+            if (!type_id) {
+                reportTypeIssue(std::string(builtin) + " received unknown " + role + " type '" +
+                                    std::string(type_arg.variable.id) + "'",
+                                &type_arg);
+                return std::nullopt;
+            }
+
+            switch (type_id->id) {
+                case BuiltinTypes::Int8.id:
+                case BuiltinTypes::Int16.id:
+                case BuiltinTypes::Int32.id:
+                case BuiltinTypes::Int64.id:
+                case BuiltinTypes::ISize.id:
+                case BuiltinTypes::UInt8.id:
+                case BuiltinTypes::UInt16.id:
+                case BuiltinTypes::UInt32.id:
+                case BuiltinTypes::UInt64.id:
+                case BuiltinTypes::USize.id:
+                case BuiltinTypes::Pointer.id:
+                    return *type_id;
+                case BuiltinTypes::Null.id:
+                    if (allow_null) {
+                        return *type_id;
+                    }
+                    [[fallthrough]];
+                default:
+                    reportTypeIssue(std::string(builtin) + " does not support " + role +
+                                        " type '" + std::string(type_arg.variable.id) + "'",
+                                    &type_arg);
+                    return std::nullopt;
+            }
+        };
+
         auto resolve_fence_ordering =
             [&](const eshkol_ast_t& ordering_arg, const char* builtin) -> bool {
             if (ordering_arg.type != ESHKOL_VAR || !ordering_arg.variable.id) {
@@ -1228,6 +1272,76 @@ TypeCheckResult TypeChecker::synthesizeApplication(eshkol_ast_t* expr) {
                             &ordering_arg);
             return false;
         };
+
+        if (func_name == "volatile-load") {
+            auto load_type = call.num_vars >= 1
+                                 ? resolve_low_level_type_designator(
+                                       call.variables[0], "volatile-load", "machine", false)
+                                 : std::nullopt;
+
+            if (call.num_vars != 2) {
+                reportTypeIssue("volatile-load expects exactly 2 arguments", expr);
+            } else if (arg_types[1].success) {
+                TypeId pointer_type = arg_types[1].inferred_type;
+                if (pointer_type == BuiltinTypes::Value &&
+                    call.variables[1].type == ESHKOL_VAR &&
+                    call.variables[1].variable.id) {
+                    ctx_.bind(call.variables[1].variable.id, BuiltinTypes::Pointer);
+                } else if (pointer_type != BuiltinTypes::Pointer) {
+                    reportTypeIssue("volatile-load expects a Ptr address operand",
+                                    &call.variables[1]);
+                }
+            }
+
+            return TypeCheckResult::ok(load_type.value_or(BuiltinTypes::Value));
+        }
+
+        if (func_name == "volatile-store!") {
+            auto store_type = call.num_vars >= 1
+                                  ? resolve_low_level_type_designator(
+                                        call.variables[0], "volatile-store!", "machine", false)
+                                  : std::nullopt;
+
+            if (call.num_vars != 3) {
+                reportTypeIssue("volatile-store! expects exactly 3 arguments", expr);
+            } else {
+                if (arg_types[1].success) {
+                    TypeId pointer_type = arg_types[1].inferred_type;
+                    if (pointer_type == BuiltinTypes::Value &&
+                        call.variables[1].type == ESHKOL_VAR &&
+                        call.variables[1].variable.id) {
+                        ctx_.bind(call.variables[1].variable.id, BuiltinTypes::Pointer);
+                    } else if (pointer_type != BuiltinTypes::Pointer) {
+                        reportTypeIssue("volatile-store! expects a Ptr address operand",
+                                        &call.variables[1]);
+                    }
+                }
+
+                if (store_type && arg_types[2].success) {
+                    TypeId value_type = arg_types[2].inferred_type;
+                    if (*store_type == BuiltinTypes::Pointer) {
+                        if (value_type == BuiltinTypes::Value &&
+                            call.variables[2].type == ESHKOL_VAR &&
+                            call.variables[2].variable.id) {
+                            ctx_.bind(call.variables[2].variable.id, BuiltinTypes::Pointer);
+                        } else if (value_type != BuiltinTypes::Pointer) {
+                            reportTypeIssue("volatile-store! expects a Ptr value for pointer stores",
+                                            &call.variables[2]);
+                        }
+                    } else if (value_type == BuiltinTypes::Value &&
+                               call.variables[2].type == ESHKOL_VAR &&
+                               call.variables[2].variable.id) {
+                        ctx_.bind(call.variables[2].variable.id, *store_type);
+                    } else if (!env_.isSubtype(value_type, BuiltinTypes::Integer)) {
+                        reportTypeIssue(
+                            "volatile-store! expects an integer value compatible with the machine type",
+                            &call.variables[2]);
+                    }
+                }
+            }
+
+            return TypeCheckResult::ok(BuiltinTypes::Null);
+        }
 
         if (func_name == "compiler-fence") {
             if (call.num_vars != 1) {

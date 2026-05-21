@@ -96,6 +96,7 @@ Program phase:
 - tracked `Ptr` bindings round-trip through variable storage and typed codegen without collapsing back into generic heap-object handling
 - `addr-of` exists for storage-backed bindings, giving the low-level surface a direct address-taking primitive without widening the general procedure ABI
 - `compiler-fence` and `memory-fence` exist with explicit ordering operands for compiler-only and system-scope barrier emission
+- `volatile-load` and `volatile-store!` exist for typed MMIO-style load/store lowering over raw pointers
 - deeper runtime/freestanding implementation remains staged on `feature/platform-freestanding`
 - embedded targets remain a public `v1.8-platform` milestone
 - early program work should remain merge-safe during roadmap releases before `v1.8`
