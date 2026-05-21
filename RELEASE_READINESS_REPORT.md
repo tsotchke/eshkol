@@ -322,7 +322,7 @@ Eshkol v1.1-accelerate was **READY FOR PRODUCTION RELEASE** as of April 9, 2026.
 
 **Evidence**:
 - Web module (lib/web/)
-- HTTP module (lib/web/http.esk)
+ - Browser FFI module (lib/web/web.esk)
 - Web tests passing (tests/web/)
 
 ### REPL JIT (Updated in v1.1)

@@ -5882,8 +5882,8 @@ Initializes the PRNG with a time-based seed, ensuring different sequences on eac
 
 DOM manipulation and browser APIs for building web applications. All functions operate on integer handles that reference JavaScript objects. Requires compilation with `eshkol-run --wasm`.
 
-**Module**: `lib/web/http.esk`
-**Import**: `(require "web/http")`
+**Module**: `lib/web/web.esk`
+**Import**: `(require web)`
 
 ### Special Handles
 
