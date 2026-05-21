@@ -134,7 +134,7 @@ Escape Analysis Result:
 - Macro system (define-syntax with syntax-rules)
 - Internal defines transformed to letrec
 
-## Target Domains (v1.0-architecture)
+## Target Domains
 
 ### Currently Supported
 
@@ -316,9 +316,9 @@ struct eshkol_closure_env {
 
 ## The Path Forward
 
-Eshkol v1.0-architecture establishes a **solid foundation** for advanced computational programming:
+Eshkol's v1.0-foundation established the architectural baseline that v1.1-accelerate and v1.2-scale built on; the current production line is **v1.2.1-scale**:
 
-**Current State (v1.0):**
+**Current State (v1.0-foundation baseline):**
 - ✅ Production compiler with comprehensive test suite
 - ✅ Automatic differentiation for gradient-based optimization
 - ✅ Neural network training capability
@@ -362,4 +362,4 @@ See [FUTURE_ROADMAP.md](FUTURE_ROADMAP.md) for detailed development plans.
 
 ---
 
-*Eshkol v1.0-architecture represents a genuine achievement in programming language implementation: a complete, working compiler that successfully integrates automatic differentiation, deterministic memory management, and homoiconic closures while maintaining compatibility with Scheme's elegant semantics.*
+*Eshkol's v1.0-foundation established a complete, working compiler that integrates automatic differentiation, deterministic arena memory management, and homoiconic closures while maintaining R7RS compatibility. The current production line (v1.2.1-scale) builds on that baseline with the exact-numeric tower, GPU dispatch, the agent FFI surface, and the v1.2.1 hardening fixes.*
