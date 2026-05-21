@@ -94,6 +94,7 @@ Program phase:
 - machine integer and raw pointer annotation surfaces exist in the HoTT parser/type-checker path
 - pointer conversion builtins exist for the low-level surface: `null-ptr`, `ptr->usize`, and `usize->ptr`
 - tracked `Ptr` bindings round-trip through variable storage and typed codegen without collapsing back into generic heap-object handling
+- `addr-of` exists for storage-backed bindings, giving the low-level surface a direct address-taking primitive without widening the general procedure ABI
 - deeper runtime/freestanding implementation remains staged on `feature/platform-freestanding`
 - embedded targets remain a public `v1.8-platform` milestone
 - early program work should remain merge-safe during roadmap releases before `v1.8`

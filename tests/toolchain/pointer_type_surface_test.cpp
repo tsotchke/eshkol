@@ -1,11 +1,15 @@
 #include <eshkol/eshkol.h>
+#include <eshkol/llvm_backend.h>
 #include <eshkol/types/hott_types.h>
 #include <eshkol/types/type_checker.h>
 
+#include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <unistd.h>
 
 using namespace eshkol::hott;
 
@@ -22,6 +26,15 @@ bool expect_equal(const T& actual, const T& expected, const std::string& label) 
 
 bool expect_string(const char* actual, const char* expected, const std::string& label) {
     if (actual && std::strcmp(actual, expected) == 0) {
+        return true;
+    }
+    std::cerr << "FAIL: " << label << std::endl;
+    return false;
+}
+
+bool expect_contains(const std::string& haystack, const std::string& needle,
+                     const std::string& label) {
+    if (haystack.find(needle) != std::string::npos) {
         return true;
     }
     std::cerr << "FAIL: " << label << std::endl;
@@ -212,6 +225,79 @@ bool test_pointer_builtin_variable_flow() {
                         "usize->ptr usize binding result");
 }
 
+bool test_addr_of_variable_flow() {
+    TypeEnvironment env;
+    TypeChecker checker(env);
+    checker.context().bind("uart-base", BuiltinTypes::UInt64);
+
+    eshkol_ast_t addr_of_ast = parse_single("(addr-of uart-base)");
+    const TypeCheckResult addr_of_result = checker.synthesize(&addr_of_ast);
+
+    return expect_equal(addr_of_result.success, true, "addr-of type synthesis succeeds") &&
+           expect_equal(addr_of_result.inferred_type, BuiltinTypes::Pointer,
+                        "addr-of returns Ptr") &&
+           expect_equal(checker.hasErrors(), false,
+                        "addr-of variable reference has no type errors");
+}
+
+bool test_addr_of_rejects_non_variable_reference() {
+    TypeEnvironment env;
+    TypeChecker checker(env);
+
+    eshkol_ast_t addr_of_ast = parse_single("(addr-of (+ 1 2))");
+    const TypeCheckResult addr_of_result = checker.synthesize(&addr_of_ast);
+
+    return expect_equal(addr_of_result.success, true,
+                        "addr-of non-variable still synthesizes") &&
+           expect_equal(addr_of_result.inferred_type, BuiltinTypes::Pointer,
+                        "addr-of non-variable still reports Ptr result") &&
+           expect_equal(checker.hasErrors(), true,
+                        "addr-of non-variable records a type error");
+}
+
+bool test_addr_of_ir_lowering() {
+    eshkol_set_uses_stdlib(0);
+    eshkol_set_target(nullptr);
+
+    eshkol_ast_t asts[2] = {
+        parse_single("(define uart-base 42)"),
+        parse_single("(define (addr-test) : usize (ptr->usize (addr-of uart-base)))"),
+    };
+
+    LLVMModuleRef module = eshkol_generate_llvm_ir_library(asts, 2, "addr_of_pointer_test");
+    if (!module) {
+        std::cerr << "FAIL: addr-of LLVM module generation" << std::endl;
+        return false;
+    }
+
+    char ir_path[] = "/tmp/eshkol-addr-of-ir-XXXXXX";
+    const int fd = mkstemp(ir_path);
+    if (fd == -1) {
+        std::cerr << "FAIL: addr-of temp IR path" << std::endl;
+        eshkol_dispose_llvm_module(module);
+        return false;
+    }
+    close(fd);
+
+    bool ok = false;
+    if (eshkol_dump_llvm_ir_to_file(module, ir_path) != 0) {
+        std::cerr << "FAIL: addr-of IR dump" << std::endl;
+    } else {
+        std::ifstream ir_stream(ir_path);
+        std::stringstream ir_buffer;
+        ir_buffer << ir_stream.rdbuf();
+        const std::string ir = ir_buffer.str();
+
+        ok = expect_contains(ir, "ptrtoint", "addr-of lowers through ptrtoint") &&
+             expect_contains(ir, "uart-base", "addr-of IR mentions target binding") &&
+             expect_contains(ir, "addr-test", "addr-of lowering survives in function IR");
+    }
+
+    std::remove(ir_path);
+    eshkol_dispose_llvm_module(module);
+    return ok;
+}
+
 }  // namespace
 
 int main() {
@@ -234,6 +320,15 @@ int main() {
         return 1;
     }
     if (!test_pointer_builtin_variable_flow()) {
+        return 1;
+    }
+    if (!test_addr_of_variable_flow()) {
+        return 1;
+    }
+    if (!test_addr_of_rejects_non_variable_reference()) {
+        return 1;
+    }
+    if (!test_addr_of_ir_lowering()) {
         return 1;
     }
 

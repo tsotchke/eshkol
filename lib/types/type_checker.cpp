@@ -1190,6 +1190,15 @@ TypeCheckResult TypeChecker::synthesizeApplication(eshkol_ast_t* expr) {
         }
 
         // Low-level pointer conversions
+        if (func_name == "addr-of") {
+            if (call.num_vars != 1) {
+                reportTypeIssue("addr-of expects exactly 1 argument", expr);
+            } else if (call.variables[0].type != ESHKOL_VAR ||
+                       !call.variables[0].variable.id) {
+                reportTypeIssue("addr-of requires a variable reference", &call.variables[0]);
+            }
+            return TypeCheckResult::ok(BuiltinTypes::Pointer);
+        }
         if (func_name == "null-ptr") {
             return TypeCheckResult::ok(BuiltinTypes::Pointer);
         }
