@@ -189,10 +189,12 @@ bool test_pointer_builtin_synthesis() {
     eshkol_ast_t null_ptr_ast = parse_single("(null-ptr)");
     eshkol_ast_t ptr_to_usize_ast = parse_single("(ptr->usize (null-ptr))");
     eshkol_ast_t usize_to_ptr_ast = parse_single("(usize->ptr 4096)");
+    eshkol_ast_t ptr_add_ast = parse_single("(ptr-add (null-ptr) 4)");
 
     const TypeCheckResult null_ptr_result = checker.synthesize(&null_ptr_ast);
     const TypeCheckResult ptr_to_usize_result = checker.synthesize(&ptr_to_usize_ast);
     const TypeCheckResult usize_to_ptr_result = checker.synthesize(&usize_to_ptr_ast);
+    const TypeCheckResult ptr_add_result = checker.synthesize(&ptr_add_ast);
 
     return expect_equal(null_ptr_result.success, true, "null-ptr type synthesis succeeds") &&
            expect_equal(null_ptr_result.inferred_type, BuiltinTypes::Pointer,
@@ -202,7 +204,10 @@ bool test_pointer_builtin_synthesis() {
                         "ptr->usize returns usize") &&
            expect_equal(usize_to_ptr_result.success, true, "usize->ptr type synthesis succeeds") &&
            expect_equal(usize_to_ptr_result.inferred_type, BuiltinTypes::Pointer,
-                        "usize->ptr returns Ptr");
+                        "usize->ptr returns Ptr") &&
+           expect_equal(ptr_add_result.success, true, "ptr-add type synthesis succeeds") &&
+           expect_equal(ptr_add_result.inferred_type, BuiltinTypes::Pointer,
+                        "ptr-add returns Ptr");
 }
 
 bool test_pointer_builtin_variable_flow() {
@@ -210,19 +215,54 @@ bool test_pointer_builtin_variable_flow() {
     TypeChecker checker(env);
     checker.context().bind("uart-base", BuiltinTypes::Pointer);
     checker.context().bind("page-base", BuiltinTypes::USize);
+    checker.context().bind("offset", BuiltinTypes::USize);
 
     eshkol_ast_t ptr_to_usize_ast = parse_single("(ptr->usize uart-base)");
     eshkol_ast_t usize_to_ptr_ast = parse_single("(usize->ptr page-base)");
+    eshkol_ast_t ptr_add_ast = parse_single("(ptr-add uart-base offset)");
 
     const TypeCheckResult ptr_to_usize_result = checker.synthesize(&ptr_to_usize_ast);
     const TypeCheckResult usize_to_ptr_result = checker.synthesize(&usize_to_ptr_ast);
+    const TypeCheckResult ptr_add_result = checker.synthesize(&ptr_add_ast);
 
     return expect_equal(ptr_to_usize_result.success, true, "ptr->usize accepts pointer binding") &&
            expect_equal(ptr_to_usize_result.inferred_type, BuiltinTypes::USize,
                         "ptr->usize pointer binding result") &&
            expect_equal(usize_to_ptr_result.success, true, "usize->ptr accepts usize binding") &&
            expect_equal(usize_to_ptr_result.inferred_type, BuiltinTypes::Pointer,
-                        "usize->ptr usize binding result");
+                        "usize->ptr usize binding result") &&
+           expect_equal(ptr_add_result.success, true, "ptr-add accepts pointer/integer bindings") &&
+           expect_equal(ptr_add_result.inferred_type, BuiltinTypes::Pointer,
+                        "ptr-add variable binding result") &&
+           expect_equal(checker.hasErrors(), false, "pointer conversion flow has no type errors");
+}
+
+bool test_ptr_add_rejects_bad_operands() {
+    TypeEnvironment base_env;
+    TypeChecker base_checker(base_env);
+    base_checker.context().bind("not-a-pointer", BuiltinTypes::USize);
+    eshkol_ast_t bad_base_ast = parse_single("(ptr-add not-a-pointer 4)");
+    const TypeCheckResult bad_base_result = base_checker.synthesize(&bad_base_ast);
+
+    TypeEnvironment offset_env;
+    TypeChecker offset_checker(offset_env);
+    offset_checker.context().bind("uart-base", BuiltinTypes::Pointer);
+    offset_checker.context().bind("offset-ptr", BuiltinTypes::Pointer);
+    eshkol_ast_t bad_offset_ast = parse_single("(ptr-add uart-base offset-ptr)");
+    const TypeCheckResult bad_offset_result = offset_checker.synthesize(&bad_offset_ast);
+
+    return expect_equal(bad_base_result.success, true,
+                        "ptr-add bad base still synthesizes") &&
+           expect_equal(bad_base_result.inferred_type, BuiltinTypes::Pointer,
+                        "ptr-add bad base keeps Ptr fallback") &&
+           expect_equal(base_checker.hasErrors(), true,
+                        "ptr-add records non-pointer base error") &&
+           expect_equal(bad_offset_result.success, true,
+                        "ptr-add bad offset still synthesizes") &&
+           expect_equal(bad_offset_result.inferred_type, BuiltinTypes::Pointer,
+                        "ptr-add bad offset keeps Ptr fallback") &&
+           expect_equal(offset_checker.hasErrors(), true,
+                        "ptr-add records non-integer offset error");
 }
 
 bool test_addr_of_variable_flow() {
@@ -298,6 +338,55 @@ bool test_addr_of_ir_lowering() {
     return ok;
 }
 
+bool test_ptr_add_ir_lowering() {
+    eshkol_set_uses_stdlib(0);
+    eshkol_set_target(nullptr);
+
+    eshkol_ast_t asts[3] = {
+        parse_single("(define mmio-base (usize->ptr 4096))"),
+        parse_single("(define (next-ptr) : ptr (ptr-add mmio-base 4))"),
+        parse_single("(define (next-addr) : usize (ptr->usize (ptr-add mmio-base 8)))"),
+    };
+
+    LLVMModuleRef module = eshkol_generate_llvm_ir_library(asts, 3, "ptr_add_test");
+    if (!module) {
+        std::cerr << "FAIL: ptr-add LLVM module generation" << std::endl;
+        return false;
+    }
+
+    char ir_path[] = "/tmp/eshkol-ptr-add-ir-XXXXXX";
+    const int fd = mkstemp(ir_path);
+    if (fd == -1) {
+        std::cerr << "FAIL: ptr-add temp IR path" << std::endl;
+        eshkol_dispose_llvm_module(module);
+        return false;
+    }
+    close(fd);
+
+    bool ok = false;
+    if (eshkol_dump_llvm_ir_to_file(module, ir_path) != 0) {
+        std::cerr << "FAIL: ptr-add IR dump" << std::endl;
+    } else {
+        std::ifstream ir_stream(ir_path);
+        std::stringstream ir_buffer;
+        ir_buffer << ir_stream.rdbuf();
+        const std::string ir = ir_buffer.str();
+
+        ok = expect_contains(ir, "getelementptr i8",
+                             "ptr-add lowers as byte-offset GEP") &&
+             expect_contains(ir, "ptr_add",
+                             "ptr-add IR keeps named pointer arithmetic") &&
+             expect_contains(ir, "next-ptr",
+                             "ptr-add pointer result survives in function IR") &&
+             expect_contains(ir, "next-addr",
+                             "ptr-add composes with ptr->usize");
+    }
+
+    std::remove(ir_path);
+    eshkol_dispose_llvm_module(module);
+    return ok;
+}
+
 }  // namespace
 
 int main() {
@@ -322,6 +411,9 @@ int main() {
     if (!test_pointer_builtin_variable_flow()) {
         return 1;
     }
+    if (!test_ptr_add_rejects_bad_operands()) {
+        return 1;
+    }
     if (!test_addr_of_variable_flow()) {
         return 1;
     }
@@ -329,6 +421,9 @@ int main() {
         return 1;
     }
     if (!test_addr_of_ir_lowering()) {
+        return 1;
+    }
+    if (!test_ptr_add_ir_lowering()) {
         return 1;
     }
 

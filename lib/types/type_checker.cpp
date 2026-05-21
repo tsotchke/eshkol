@@ -1465,6 +1465,36 @@ TypeCheckResult TypeChecker::synthesizeApplication(eshkol_ast_t* expr) {
             }
             return TypeCheckResult::ok(BuiltinTypes::Pointer);
         }
+        if (func_name == "ptr-add") {
+            if (call.num_vars != 2) {
+                reportTypeIssue("ptr-add expects exactly 2 arguments", expr);
+            } else {
+                if (arg_types[0].success) {
+                    TypeId pointer_type = arg_types[0].inferred_type;
+                    if (pointer_type == BuiltinTypes::Value &&
+                        call.variables[0].type == ESHKOL_VAR &&
+                        call.variables[0].variable.id) {
+                        ctx_.bind(call.variables[0].variable.id, BuiltinTypes::Pointer);
+                    } else if (pointer_type != BuiltinTypes::Pointer) {
+                        reportTypeIssue("ptr-add expects a Ptr base operand",
+                                        &call.variables[0]);
+                    }
+                }
+
+                if (arg_types[1].success) {
+                    TypeId offset_type = arg_types[1].inferred_type;
+                    if (offset_type == BuiltinTypes::Value &&
+                        call.variables[1].type == ESHKOL_VAR &&
+                        call.variables[1].variable.id) {
+                        ctx_.bind(call.variables[1].variable.id, BuiltinTypes::ISize);
+                    } else if (!env_.isSubtype(offset_type, BuiltinTypes::Integer)) {
+                        reportTypeIssue("ptr-add expects an integer byte offset",
+                                        &call.variables[1]);
+                    }
+                }
+            }
+            return TypeCheckResult::ok(BuiltinTypes::Pointer);
+        }
 
         // Vector operations
         if (func_name == "vector" || func_name == "make-vector" || func_name == "vector-copy") {

@@ -236,7 +236,7 @@ The language needs new machine-facing primitives.
 ## 4.2 Required operations
 
 - pointer/integer casts
-- pointer-to-pointer casts
+- byte-offset pointer arithmetic
 - `addr-of`
 - `volatile-load`
 - `volatile-store!`
