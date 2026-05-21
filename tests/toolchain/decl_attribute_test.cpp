@@ -38,6 +38,15 @@ bool expect_contains(const std::string& haystack, const std::string& needle,
     return false;
 }
 
+bool expect_not_contains(const std::string& haystack, const std::string& needle,
+                         const std::string& label) {
+    if (haystack.find(needle) == std::string::npos) {
+        return true;
+    }
+    std::cerr << "FAIL: " << label << std::endl;
+    return false;
+}
+
 bool expect_line_contains(const std::string& text, const std::string& anchor,
                           const std::string& needle, const std::string& label) {
     std::stringstream lines(text);
@@ -75,6 +84,35 @@ bool expect_line_not_contains(const std::string& text, const std::string& anchor
 eshkol_ast_t parse_single(const std::string& source) {
     std::stringstream stream(source);
     return eshkol_parse_next_ast_from_stream(stream);
+}
+
+bool dump_module_ir(LLVMModuleRef module, std::string* ir_out, const std::string& label) {
+    if (!module || !ir_out) {
+        std::cerr << "FAIL: " << label << " module setup" << std::endl;
+        return false;
+    }
+
+    char ir_path[] = "/tmp/eshkol-decl-attrs-ir-XXXXXX";
+    const int fd = mkstemp(ir_path);
+    if (fd == -1) {
+        std::cerr << "FAIL: " << label << " temp IR path" << std::endl;
+        return false;
+    }
+    close(fd);
+
+    bool ok = false;
+    if (eshkol_dump_llvm_ir_to_file(module, ir_path) != 0) {
+        std::cerr << "FAIL: " << label << " IR dump" << std::endl;
+    } else {
+        std::ifstream ir_stream(ir_path);
+        std::stringstream ir_buffer;
+        ir_buffer << ir_stream.rdbuf();
+        *ir_out = ir_buffer.str();
+        ok = true;
+    }
+
+    std::remove(ir_path);
+    return ok;
 }
 
 bool test_define_attribute_parse_surface() {
@@ -146,43 +184,44 @@ bool test_extern_var_attribute_parse_surface() {
                          "extern-var real symbol name parses");
 }
 
+bool test_define_attribute_rejects_invalid_tails() {
+    eshkol_ast_t unknown_modifier =
+        parse_single("(define (f) : null 1 :bogus)");
+    eshkol_ast_t bad_alignment =
+        parse_single("(define (f) : null 1 :align 3)");
+    eshkol_ast_t overlarge_alignment =
+        parse_single("(define boot-flag 1 :align 9223372036854775808)");
+
+    return expect_equal(unknown_modifier.type, ESHKOL_INVALID,
+                        "function define rejects unknown declaration modifier") &&
+           expect_equal(bad_alignment.type, ESHKOL_INVALID,
+                        "function define rejects non-power-of-two alignment") &&
+           expect_equal(overlarge_alignment.type, ESHKOL_INVALID,
+                        "define rejects alignments above LLVM maximum");
+}
+
 bool test_declaration_attribute_ir_lowering() {
     eshkol_set_uses_stdlib(0);
     eshkol_set_target("x86_64-unknown-linux-gnu");
 
-    eshkol_ast_t asts[3] = {
-        parse_single("(extern void halt :extern-symbol abort :weak :no-return)"),
+    eshkol_ast_t asts[4] = {
+        parse_single("(extern void halt :extern-symbol abort :weak)"),
+        parse_single("(extern-var int errno-slot :extern-symbol errno)"),
         parse_single("(define boot-flag 1 :link-section \".boot.data\" :align 32 :used :weak :export-symbol boot_flag_symbol)"),
         parse_single("(define (entry) : null (compiler-fence seq-cst) :link-section \".boot.text\" :align 16 :used :export-symbol entry_symbol :no-return)"),
     };
 
     LLVMModuleRef module =
-        eshkol_generate_llvm_ir_library(asts, 3, "decl_attribute_test");
+        eshkol_generate_llvm_ir_library(asts, 4, "decl_attribute_test");
     if (!module) {
         std::cerr << "FAIL: declaration attribute LLVM module generation" << std::endl;
         eshkol_set_target(nullptr);
         return false;
     }
 
-    char ir_path[] = "/tmp/eshkol-decl-attrs-ir-XXXXXX";
-    const int fd = mkstemp(ir_path);
-    if (fd == -1) {
-        std::cerr << "FAIL: declaration attribute temp IR path" << std::endl;
-        eshkol_dispose_llvm_module(module);
-        eshkol_set_target(nullptr);
-        return false;
-    }
-    close(fd);
-
     bool ok = false;
-    if (eshkol_dump_llvm_ir_to_file(module, ir_path) != 0) {
-        std::cerr << "FAIL: declaration attribute IR dump" << std::endl;
-    } else {
-        std::ifstream ir_stream(ir_path);
-        std::stringstream ir_buffer;
-        ir_buffer << ir_stream.rdbuf();
-        const std::string ir = ir_buffer.str();
-
+    std::string ir;
+    if (dump_module_ir(module, &ir, "declaration attribute")) {
         ok = expect_contains(ir, "target triple = \"x86_64-unknown-linux-gnu\"",
                              "library-mode IR honors explicit target triple") &&
              expect_line_contains(ir, "@boot_flag_symbol", "weak",
@@ -193,6 +232,10 @@ bool test_declaration_attribute_ir_lowering() {
                                   "global align lowering survives in IR") &&
              expect_contains(ir, "declare extern_weak void @abort()",
                              "extern weak symbol lowering survives in IR") &&
+             expect_contains(ir, "@errno = external global i32",
+                             "extern-var real symbol lowering survives in IR") &&
+             expect_not_contains(ir, "@errno-slot",
+                                 "extern-var source name is not emitted as a global") &&
              expect_line_contains(ir, "@entry_symbol(", "section \".boot.text\"",
                                   "function link-section lowering survives in IR") &&
              expect_line_contains(ir, "@entry_symbol(", "align 16",
@@ -202,12 +245,37 @@ bool test_declaration_attribute_ir_lowering() {
              expect_contains(ir, "@llvm.used",
                              "used declarations lower through llvm.used") &&
              expect_contains(ir, "noreturn",
-                             "no-return lowers to LLVM noreturn attributes");
+                             "function no-return lowers to LLVM noreturn attributes");
     }
 
-    std::remove(ir_path);
     eshkol_dispose_llvm_module(module);
     eshkol_set_target(nullptr);
+    return ok;
+}
+
+bool test_extern_no_return_ir_lowering() {
+    eshkol_set_uses_stdlib(0);
+
+    eshkol_ast_t asts[1] = {
+        parse_single("(extern void fatal :extern-symbol abort :no-return)"),
+    };
+
+    LLVMModuleRef module =
+        eshkol_generate_llvm_ir_library(asts, 1, "extern_no_return_test");
+    if (!module) {
+        std::cerr << "FAIL: extern no-return LLVM module generation" << std::endl;
+        return false;
+    }
+
+    std::string ir;
+    const bool ok =
+        dump_module_ir(module, &ir, "extern no-return") &&
+        expect_contains(ir, "declare void @abort()",
+                        "extern no-return symbol lowering survives in IR") &&
+        expect_contains(ir, "noreturn",
+                        "extern no-return lowers to LLVM noreturn attributes");
+
+    eshkol_dispose_llvm_module(module);
     return ok;
 }
 
@@ -226,7 +294,13 @@ int main() {
     if (!test_extern_var_attribute_parse_surface()) {
         return 1;
     }
+    if (!test_define_attribute_rejects_invalid_tails()) {
+        return 1;
+    }
     if (!test_declaration_attribute_ir_lowering()) {
+        return 1;
+    }
+    if (!test_extern_no_return_ir_lowering()) {
         return 1;
     }
 

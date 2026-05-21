@@ -2220,14 +2220,17 @@ public:
             preGenerateTopLevelLambdas(asts_to_use, num_asts_to_use);
             eshkol_debug("Pre-generated all top-level lambdas");
 
-            // Step 1.9: Process extern declarations BEFORE function bodies
-            // This ensures extern functions are registered in function_table so they can be called
+            // Step 1.9: Process external declarations BEFORE function bodies.
+            // This ensures extern functions and variables are registered before
+            // user functions reference them.
             for (size_t i = 0; i < num_asts_to_use; i++) {
-                if (asts_to_use[i].type == ESHKOL_OP && asts_to_use[i].operation.op == ESHKOL_EXTERN_OP) {
+                if (asts_to_use[i].type == ESHKOL_OP &&
+                    (asts_to_use[i].operation.op == ESHKOL_EXTERN_OP ||
+                     asts_to_use[i].operation.op == ESHKOL_EXTERN_VAR_OP)) {
                     codegenAST(&asts_to_use[i]);
                 }
             }
-            eshkol_debug("Processed all extern declarations");
+            eshkol_debug("Processed all external declarations");
 
             // Step 2: Generate function definitions
             for (size_t i = 0; i < num_asts_to_use; i++) {
