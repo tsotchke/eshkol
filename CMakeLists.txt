@@ -1587,6 +1587,23 @@ if(NOT WIN32 AND ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test
             COMMAND freestanding_object_smoke_test $<TARGET_FILE:eshkol-run>
         )
     endif()
+
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/freestanding_lowlevel_object_test.cpp")
+        add_executable(freestanding_lowlevel_object_test tests/toolchain/freestanding_lowlevel_object_test.cpp)
+        target_compile_features(freestanding_lowlevel_object_test PRIVATE cxx_std_17)
+        add_dependencies(freestanding_lowlevel_object_test eshkol-run)
+        if(ESHKOL_LLVM_DIS_EXECUTABLE)
+            add_test(
+                NAME freestanding_lowlevel_object_test
+                COMMAND freestanding_lowlevel_object_test $<TARGET_FILE:eshkol-run> "${ESHKOL_LLVM_DIS_EXECUTABLE}"
+            )
+        else()
+            add_test(
+                NAME freestanding_lowlevel_object_test
+                COMMAND freestanding_lowlevel_object_test $<TARGET_FILE:eshkol-run>
+            )
+        endif()
+    endif()
 endif()
 
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/machine_integer_types_test.cpp")
