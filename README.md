@@ -755,6 +755,24 @@ Eshkol welcomes contributions from researchers and practitioners. The codebase i
 
 See **[CONTRIBUTING.md](CONTRIBUTING.md)** for development setup and coding standards.
 
+### Documentation Map
+
+| Document | Purpose |
+|---|---|
+| **[QUICKSTART](docs/QUICKSTART.md)** | 15-minute getting-started guide |
+| **[Tutorials](docs/tutorials/README.md)** | 27 step-by-step tutorials |
+| **[API Reference](docs/API_REFERENCE.md)** | Complete reference (555+ builtins, 336 documented procedures) |
+| **[Language Guide](ESHKOL_LANGUAGE_GUIDE.md)** | Conceptual user guide |
+| **[Quick Reference](ESHKOL_QUICK_REFERENCE.md)** | One-page cheat sheet |
+| **[Standard Library API](docs/STDLIB_V1_2_API.md)** | Stdlib module surfaces, including infrastructure modules (Appendix B) |
+| **[Architecture deep-dives](docs/breakdown/README.md)** | Per-subsystem technical breakdowns (37 docs) |
+| **[FAQ](docs/FAQ.md)** | Installation, troubleshooting, common questions |
+| **[Test Coverage](docs/TEST_COVERAGE.md)** | What the 37-suite gate verifies |
+| **[Known Issues](docs/KNOWN_ISSUES.md)** | Current limitations and v1.3+ items |
+| **[ROADMAP](ROADMAP.md)** | Canonical release plan |
+| **[Release Notes](RELEASE_NOTES.md)** | Per-release changelog |
+| **[SDNC Paper Artefact](docs/SDNC.md)** | Self-Differentiating Neural Computer |
+
 ### Research Applications
 
 Eshkol is designed for:
