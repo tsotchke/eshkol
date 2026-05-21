@@ -472,12 +472,16 @@ int eshkol_gpu_matmul_f64(EshkolGPUBuffer* A, EshkolGPUBuffer* B, EshkolGPUBuffe
 
 #if ESHKOL_GPU_CUDA_AVAILABLE
     if (g_active_backend == ESHKOL_GPU_CUDA) {
-        GPU_LOG("matmul %llux%llu @ %llux%llu → CUDA cuBLAS", M, K, K, N);
+        GPU_LOG("matmul %llux%llu @ %llux%llu -> CUDA cuBLAS",
+                (unsigned long long)M, (unsigned long long)K,
+                (unsigned long long)K, (unsigned long long)N);
         return cuda_matmul_f64(A, B, C, M, K, N);
     }
 #endif
 
-    GPU_LOG("matmul %llux%llu @ %llux%llu → CPU", M, K, K, N);
+    GPU_LOG("matmul %llux%llu @ %llux%llu -> CPU",
+            (unsigned long long)M, (unsigned long long)K,
+            (unsigned long long)K, (unsigned long long)N);
     // CPU fallback
     extern void eshkol_matmul_f64(const double*, const double*, double*, uint64_t, uint64_t, uint64_t);
     eshkol_matmul_f64((const double*)A->host_ptr, (const double*)B->host_ptr,
@@ -532,9 +536,9 @@ void eshkol_matmul_dispatch(const double* A, const double* B, double* C,
     size_t num_elements = M * N;
 
     if (eshkol_gpu_should_use(num_elements)) {
-        EshkolGPUBuffer buf_a = {0};
-        EshkolGPUBuffer buf_b = {0};
-        EshkolGPUBuffer buf_c = {0};
+        EshkolGPUBuffer buf_a{};
+        EshkolGPUBuffer buf_b{};
+        EshkolGPUBuffer buf_c{};
         const int wrapped_a = (eshkol_gpu_wrap_host((void*)A, M * K * sizeof(double), &buf_a) == 0);
         const int wrapped_b = (eshkol_gpu_wrap_host((void*)B, K * N * sizeof(double), &buf_b) == 0);
         const int wrapped_c = (eshkol_gpu_wrap_host((void*)C, M * N * sizeof(double), &buf_c) == 0);
