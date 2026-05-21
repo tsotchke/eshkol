@@ -47,7 +47,7 @@ Most well-formed R7RS Scheme programs compile and run in Eshkol without modifica
 | **4.2.1** Conditionals | `cond`, `case`, `and`, `or`, `when`, `unless` | ✅ | Including `=>` clause in `cond` |
 | **4.2.2** Binding | `let`, `let*`, `letrec`, `letrec*`, `let-values`, `let*-values` | ✅ | `letrec*` with correct R7RS semantics |
 | **4.2.3** Sequencing | `begin` | ✅ | |
-| **4.2.4** Iteration | `do`, named `let` | ✅ | `do` at [llvm_codegen.cpp:15408](lib/backend/llvm_codegen.cpp#L15408) |
+| **4.2.4** Iteration | `do`, named `let` | ✅ | `do` at [llvm_codegen.cpp](../../lib/backend/llvm_codegen.cpp) |
 | **4.2.5** Delayed evaluation | `delay`, `delay-force`, `force`, `make-promise`, `promise?` | ✅ | Full iterative forcing; see [Promises](#promises) |
 | **4.2.6** Dynamic bindings | `make-parameter`, `parameterize` | ✅ | Macro-transformed at parse time |
 | **4.2.7** Exception handling | `guard`, `raise`, `raise-continuable` | ⚠️ | `guard`/`raise` full; `raise-continuable` missing |
@@ -196,7 +196,7 @@ x
   (map helper (filter (lambda (x) (> x threshold)) data)))
 ```
 
-**Implementation note:** Internal definitions are transformed to `letrec*` by the parser ([parser.cpp:1171](lib/frontend/parser.cpp#L1171)). Only consecutive defines at the start of a body are collected; once a non-define expression appears, subsequent defines are treated as expressions. This matches R7RS semantics and prevents side-effect reordering.
+**Implementation note:** Internal definitions are transformed to `letrec*` by the parser ([parser.cpp](../../lib/frontend/parser.cpp)). Only consecutive defines at the start of a body are collected; once a non-define expression appears, subsequent defines are treated as expressions. This matches R7RS semantics and prevents side-effect reordering.
 
 ---
 
@@ -428,7 +428,7 @@ The full R7RS numeric tower is implemented with 31+ procedures:
 
 Eshkol implements `call-with-current-continuation` (aliased as `call/cc`) using an exception-based model built on `setjmp`/`longjmp`.
 
-**Implementation:** [llvm_codegen.cpp:14243](lib/backend/llvm_codegen.cpp#L14243) (`codegenCallCC`)
+**Implementation:** `codegenCallCC` in [lib/backend/llvm_codegen.cpp](../../lib/backend/llvm_codegen.cpp)
 
 ```scheme
 ;; Basic continuation capture
@@ -468,7 +468,7 @@ For most practical Scheme patterns (early return, exception handling, coroutine-
 
 `dynamic-wind` installs before/after thunks that execute on entry to and exit from a dynamic extent, including non-local exits via continuations.
 
-**Implementation:** [llvm_codegen.cpp:14354](lib/backend/llvm_codegen.cpp#L14354) (`codegenDynamicWind`)
+**Implementation:** `codegenDynamicWind` in [lib/backend/llvm_codegen.cpp](../../lib/backend/llvm_codegen.cpp)
 
 ```scheme
 ;; Resource cleanup on non-local exit
@@ -583,7 +583,7 @@ R7RS requires that exact operations on exact arguments produce exact results. Es
 
 Eshkol implements the full R7RS promise system (R7RS 4.2.5) with memoization and iterative forcing.
 
-**Implementation:** [llvm_codegen.cpp:10360-10466](lib/backend/llvm_codegen.cpp#L10360)
+**Implementation:** [llvm_codegen.cpp](../../lib/backend/llvm_codegen.cpp)
 
 Promises are heap-allocated objects (`HEAP_SUBTYPE_PROMISE = 18`) with a 40-byte structure:
 
@@ -612,7 +612,7 @@ Promises are heap-allocated objects (`HEAP_SUBTYPE_PROMISE = 18`) with a 40-byte
   (cons (delay n) (delay-force (integers-from (+ n 1)))))
 ```
 
-The parser desugars `delay` to `(%make-lazy-promise (lambda () expr))` and `delay-force` to `(%make-lazy-promise-force (lambda () expr))` ([parser.cpp:1894-1925](lib/frontend/parser.cpp#L1894)). The `delay-force` form enables iterative (non-recursive) forcing, preventing stack overflow on deeply chained promises.
+The parser desugars `delay` to `(%make-lazy-promise (lambda () expr))` and `delay-force` to `(%make-lazy-promise-force (lambda () expr))` ([parser.cpp](../../lib/frontend/parser.cpp)). The `delay-force` form enables iterative (non-recursive) forcing, preventing stack overflow on deeply chained promises.
 
 ---
 
@@ -620,7 +620,7 @@ The parser desugars `delay` to `(%make-lazy-promise (lambda () expr))` and `dela
 
 Eshkol implements `eval` as a compiler-level builtin that compiles and executes S-expressions at runtime.
 
-**Implementation:** [llvm_codegen.cpp:16811](lib/backend/llvm_codegen.cpp#L16811) (`codegenEval`)
+**Implementation:** `codegenEval` in [lib/backend/llvm_codegen.cpp](../../lib/backend/llvm_codegen.cpp)
 
 ```scheme
 ;; Basic eval
@@ -647,9 +647,9 @@ Eshkol implements `eval` as a compiler-level builtin that compiles and executes 
 | `(null-environment version)` | Returns an environment with only syntax keywords (no procedure bindings) |
 
 **Implementation details:**
-- `interaction-environment` ([llvm_codegen.cpp:16967](lib/backend/llvm_codegen.cpp#L16967)) walks the symbol table to build an environment containing all currently-visible bindings.
-- `scheme-report-environment` ([llvm_codegen.cpp:16856](lib/backend/llvm_codegen.cpp#L16856)) constructs an environment with the 232 R7RS standard procedures.
-- `null-environment` ([llvm_codegen.cpp:16850](lib/backend/llvm_codegen.cpp#L16850)) creates an empty environment containing only syntax keywords.
+- `interaction-environment` ([llvm_codegen.cpp](../../lib/backend/llvm_codegen.cpp)) walks the symbol table to build an environment containing all currently-visible bindings.
+- `scheme-report-environment` ([llvm_codegen.cpp](../../lib/backend/llvm_codegen.cpp)) constructs an environment with the 232 R7RS standard procedures.
+- `null-environment` ([llvm_codegen.cpp](../../lib/backend/llvm_codegen.cpp)) creates an empty environment containing only syntax keywords.
 
 The runtime functions `eshkol_eval` and `eshkol_eval_env` handle the actual compilation and execution of the evaluated expression. Because Eshkol is a compiled language, `eval` involves a full compilation step (parse → type-check → codegen → execute), which makes it slower than in interpreted Scheme implementations but produces optimized native code.
 

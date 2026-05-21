@@ -328,7 +328,7 @@ The [lib/web/web.esk](lib/web/web.esk) module provides browser interop via an in
 
 ### Eval and Environments
 
-Full R7RS `eval` with environment support ([llvm_codegen.cpp:16811](lib/backend/llvm_codegen.cpp#L16811)):
+Full R7RS `eval` with environment support ([llvm_codegen.cpp](../../lib/backend/llvm_codegen.cpp)):
 
 ```scheme
 (eval '(+ 1 2))                       ; => 3
