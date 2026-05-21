@@ -318,7 +318,7 @@ Compile Eshkol programs to WebAssembly with 73 DOM/Canvas/Event API bindings:
 eshkol-run --wasm app.esk            # compile to WASM
 ```
 
-The [lib/web/http.esk](lib/web/http.esk) module provides browser interop via an integer handle system:
+The [lib/web/web.esk](lib/web/web.esk) module provides browser interop via an integer handle system:
 - DOM element creation, tree manipulation, attributes, CSS classes
 - Event handling (click, keyboard, mouse, timer events)
 - Canvas 2D drawing API (rectangles, paths, arcs, text, transforms)
