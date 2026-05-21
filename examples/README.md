@@ -25,17 +25,13 @@ Or compile to a standalone binary:
 
 ## Advanced
 
-These examples demonstrate research-grade capabilities and may require additional libraries.
+These examples exercise the production language surface beyond the basics.
 
 | Example | What It Shows |
 |---------|--------------|
-| **[agent.esk](agent.esk)** | Agent architecture with tool dispatch and knowledge base |
-| **[consciousness_inference.esk](consciousness_inference.esk)** | Active inference with factor graphs and belief propagation |
-| **[consciousness_model_analysis.esk](consciousness_model_analysis.esk)** | Geometric signal analysis for consciousness models |
-| **[consciousness_grr_inference.esk](consciousness_grr_inference.esk)** | Goal-conditioned reflexive reasoning over the consciousness engine |
-| **[selene_agent.esk](selene_agent.esk)** | Selene agent harness — long-running tool-using loop with persistent state |
-| **[selene_tools.esk](selene_tools.esk)** | Tool-surface definitions consumed by the Selene agent |
 | **[milli_mag_bohrification.esk](milli_mag_bohrification.esk)** | Physical-constants demonstration (v1.2.1-scale): CODATA-based magnetic-moment calculation through the exact numeric tower |
+
+> A larger set of research-grade examples — agent harnesses (`agent.esk`, `selene_*.esk`) and consciousness-engine variants (`consciousness_inference.esk`, `consciousness_model_analysis.esk`, `consciousness_grr_inference.esk`) — lives in the development tree but is not part of the public release because each carries an evolving external dependency or experimental surface. The tutorials at [`../docs/tutorials/`](../docs/tutorials/) cover the same techniques in self-contained form (see Tutorial 04 for the consciousness engine and Tutorials 21–26 for project-scale examples).
 
 ## What to Try First
 
@@ -46,4 +42,4 @@ These examples demonstrate research-grade capabilities and may require additiona
 
 ## Try in the Browser
 
-Visit **[eshkol.ai](https://eshkol.ai)** to run Eshkol code without installing anything. The website ships a browser REPL alongside an evolving subset of the tutorial collection (the repository hosts 30 tutorials and 12 runnable examples in this directory).
+Visit **[eshkol.ai](https://eshkol.ai)** to run Eshkol code without installing anything. The website ships a browser REPL alongside an evolving subset of the tutorial collection (the repository hosts 29 tutorials at [`../docs/tutorials/`](../docs/tutorials/) and 6 public examples in this directory).
