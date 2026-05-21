@@ -50,6 +50,7 @@ Current guard:
   - verifies `ptr` / `pointer` aliases in the HoTT environment
   - verifies `(ptr T)` parsing, copying, and stringification
   - verifies parser + type-checker integration for pointer annotations
+  - verifies `ptr-add` type-checking diagnostics and byte-offset LLVM IR lowering
 - `tests/toolchain/fence_ops_test.cpp`
   - verifies parser, type-checker, and IR lowering for `compiler-fence` and `memory-fence`
 - `tests/toolchain/volatile_ops_test.cpp`

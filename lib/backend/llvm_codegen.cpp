@@ -1294,6 +1294,7 @@ public:
         function_return_types["null-ptr"] = BuiltinTypes::Pointer;
         function_return_types["ptr->usize"] = BuiltinTypes::USize;
         function_return_types["usize->ptr"] = BuiltinTypes::Pointer;
+        function_return_types["ptr-add"] = BuiltinTypes::Pointer;
 
         // R7RS division
         function_return_types["floor-quotient"] = BuiltinTypes::Int64;
@@ -5304,6 +5305,12 @@ private:
                                          eshkol::hott::BuiltinTypes::USize, true);
                     }
                     if (func_name == "usize->ptr") {
+                        Value* val = codegenAST(ast);
+                        if (!val) return TypedValue();
+                        return TypedValue(val, ESHKOL_VALUE_HEAP_PTR,
+                                         eshkol::hott::BuiltinTypes::Pointer, true);
+                    }
+                    if (func_name == "ptr-add") {
                         Value* val = codegenAST(ast);
                         if (!val) return TypedValue();
                         return TypedValue(val, ESHKOL_VALUE_HEAP_PTR,
@@ -11996,6 +12003,34 @@ private:
 
             return builder->CreateIntToPtr(
                 toIntPtr(addr), cast<PointerType>(ptr_type), "usize_to_ptr");
+        }
+        if (func_name == "ptr-add") {
+            if (op->call_op.num_vars != 2) {
+                eshkol_error("ptr-add requires exactly 2 arguments");
+                return nullptr;
+            }
+
+            TypedValue base_tv = codegenTypedAST(&op->call_op.variables[0]);
+            TypedValue offset_tv = codegenTypedAST(&op->call_op.variables[1]);
+            if (!base_tv.llvm_value || !offset_tv.llvm_value) return nullptr;
+
+            const LowLevelValueTypeInfo pointer_info{
+                eshkol::hott::BuiltinTypes::Pointer, ptr_type, false, true, false};
+            Value* raw_ptr = coerceValueToLowLevelScalar(base_tv, pointer_info, "ptr-add");
+            if (!raw_ptr) return nullptr;
+
+            Value* offset = offset_tv.llvm_value;
+            if (offset->getType() == tagged_value_type) {
+                offset = unpackInt64FromTaggedValue(offset);
+            } else if (offset->getType()->isPointerTy()) {
+                eshkol_error("ptr-add requires an integer byte offset");
+                return nullptr;
+            } else if (!offset->getType()->isIntegerTy()) {
+                eshkol_error("ptr-add requires an integer byte offset");
+                return nullptr;
+            }
+
+            return builder->CreateGEP(int8_type, raw_ptr, toIntPtr(offset), "ptr_add");
         }
         // R7RS exact->inexact / inexact (convert exact to inexact)
         if (func_name == "exact->inexact" || func_name == "inexact") {
@@ -21155,7 +21190,7 @@ private:
             "number?", "integer?", "real?", "complex?",
             "exact->inexact", "inexact->exact", "exact", "inexact",
             "addr-of", "compiler-fence", "memory-fence",
-            "null-ptr", "ptr->usize", "usize->ptr",
+            "null-ptr", "ptr->usize", "usize->ptr", "ptr-add",
             "target-intrinsic", "volatile-load", "volatile-store!",
             "exact-integer?", "square",
             "floor-quotient", "floor-remainder", "floor/",

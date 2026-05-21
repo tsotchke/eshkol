@@ -510,3 +510,33 @@ Do not add `packed`, `interrupt-handler`, `naked`, arbitrary attribute bags, inl
 - linker-script sections and retention roots can be expressed directly in Eshkol source
 - the feature remains narrow enough to verify through parser and LLVM IR tests
 - target-specific ABI attributes and object-level layout validation remain later platform work
+
+---
+
+## D-0020
+
+- Date: 2026-05-21
+- Status: Accepted
+- Title: Pointer arithmetic starts as byte-offset `Ptr` addition
+
+### Context
+
+The low-level platform surface needs address arithmetic for MMIO register windows, linker-defined memory ranges, and freestanding startup code. A C-style pointer arithmetic model would require stable pointee layout, scaled element semantics, address spaces, provenance policy, and broader raw-pointer ABI rules that are not ready to merge.
+
+### Decision
+
+Add `ptr-add` as the first pointer arithmetic primitive:
+
+```scheme
+(ptr-add base offset)
+```
+
+`base` must be a `Ptr`. `offset` must be an integer byte count. The result is a `Ptr`. The backend lowers the operation as byte-offset LLVM `getelementptr i8`, not as element-scaled pointer arithmetic.
+
+Do not add pointer subtraction, comparisons, address-space-aware pointers, field offsets, scaled element semantics, or generic pointer arithmetic operators in this slice.
+
+### Consequences
+
+- MMIO and startup code can compute byte-offset addresses without round-tripping through ad hoc integer arithmetic at every use site
+- the pointer model stays narrow and explicit while the low-level ABI continues to mature
+- richer pointer semantics remain later platform-language work once layout and address-space policy are defined
