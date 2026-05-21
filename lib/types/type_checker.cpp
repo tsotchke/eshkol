@@ -1019,6 +1019,14 @@ TypeCheckResult TypeChecker::synthesizeApplication(eshkol_ast_t* expr) {
             return index == 0;
         }
 
+        if (builtin_name == "atomic-load") {
+            return index == 0 || index == 2;
+        }
+
+        if (builtin_name == "atomic-store!") {
+            return index == 0 || index == 3;
+        }
+
         if (builtin_name == "target-intrinsic") {
             return index == 0 || (index >= 2 && (index % 2) == 0);
         }
@@ -1283,6 +1291,34 @@ TypeCheckResult TypeChecker::synthesizeApplication(eshkol_ast_t* expr) {
             return false;
         };
 
+        auto resolve_atomic_ordering =
+            [&](const eshkol_ast_t& ordering_arg, const char* builtin,
+                bool for_store) -> bool {
+            if (ordering_arg.type != ESHKOL_VAR || !ordering_arg.variable.id) {
+                reportTypeIssue(std::string(builtin) +
+                                    " expects a memory ordering designator",
+                                &ordering_arg);
+                return false;
+            }
+
+            const std::string ordering_name = ordering_arg.variable.id;
+            if (ordering_name == "relaxed" || ordering_name == "seq-cst") {
+                return true;
+            }
+            if (!for_store && ordering_name == "acquire") {
+                return true;
+            }
+            if (for_store && ordering_name == "release") {
+                return true;
+            }
+
+            reportTypeIssue(std::string(builtin) + " does not support memory ordering '" +
+                                ordering_name + "' for " +
+                                (for_store ? "atomic stores" : "atomic loads"),
+                            &ordering_arg);
+            return false;
+        };
+
         if (func_name == "volatile-load") {
             auto load_type = call.num_vars >= 1
                                  ? resolve_low_level_type_designator(
@@ -1348,6 +1384,81 @@ TypeCheckResult TypeChecker::synthesizeApplication(eshkol_ast_t* expr) {
                             &call.variables[2]);
                     }
                 }
+            }
+
+            return TypeCheckResult::ok(BuiltinTypes::Null);
+        }
+
+        if (func_name == "atomic-load") {
+            auto load_type = call.num_vars >= 1
+                                 ? resolve_low_level_type_designator(
+                                       call.variables[0], "atomic-load", "machine", false)
+                                 : std::nullopt;
+
+            if (call.num_vars != 3) {
+                reportTypeIssue("atomic-load expects exactly 3 arguments", expr);
+            } else {
+                if (arg_types[1].success) {
+                    TypeId pointer_type = arg_types[1].inferred_type;
+                    if (pointer_type == BuiltinTypes::Value &&
+                        call.variables[1].type == ESHKOL_VAR &&
+                        call.variables[1].variable.id) {
+                        ctx_.bind(call.variables[1].variable.id, BuiltinTypes::Pointer);
+                    } else if (pointer_type != BuiltinTypes::Pointer) {
+                        reportTypeIssue("atomic-load expects a Ptr address operand",
+                                        &call.variables[1]);
+                    }
+                }
+                resolve_atomic_ordering(call.variables[2], "atomic-load", false);
+            }
+
+            return TypeCheckResult::ok(load_type.value_or(BuiltinTypes::Value));
+        }
+
+        if (func_name == "atomic-store!") {
+            auto store_type = call.num_vars >= 1
+                                  ? resolve_low_level_type_designator(
+                                        call.variables[0], "atomic-store!", "machine", false)
+                                  : std::nullopt;
+
+            if (call.num_vars != 4) {
+                reportTypeIssue("atomic-store! expects exactly 4 arguments", expr);
+            } else {
+                if (arg_types[1].success) {
+                    TypeId pointer_type = arg_types[1].inferred_type;
+                    if (pointer_type == BuiltinTypes::Value &&
+                        call.variables[1].type == ESHKOL_VAR &&
+                        call.variables[1].variable.id) {
+                        ctx_.bind(call.variables[1].variable.id, BuiltinTypes::Pointer);
+                    } else if (pointer_type != BuiltinTypes::Pointer) {
+                        reportTypeIssue("atomic-store! expects a Ptr address operand",
+                                        &call.variables[1]);
+                    }
+                }
+
+                if (store_type && arg_types[2].success) {
+                    TypeId value_type = arg_types[2].inferred_type;
+                    if (*store_type == BuiltinTypes::Pointer) {
+                        if (value_type == BuiltinTypes::Value &&
+                            call.variables[2].type == ESHKOL_VAR &&
+                            call.variables[2].variable.id) {
+                            ctx_.bind(call.variables[2].variable.id, BuiltinTypes::Pointer);
+                        } else if (value_type != BuiltinTypes::Pointer) {
+                            reportTypeIssue("atomic-store! expects a Ptr value for pointer stores",
+                                            &call.variables[2]);
+                        }
+                    } else if (value_type == BuiltinTypes::Value &&
+                               call.variables[2].type == ESHKOL_VAR &&
+                               call.variables[2].variable.id) {
+                        ctx_.bind(call.variables[2].variable.id, *store_type);
+                    } else if (!env_.isSubtype(value_type, BuiltinTypes::Integer)) {
+                        reportTypeIssue(
+                            "atomic-store! expects an integer value compatible with the machine type",
+                            &call.variables[2]);
+                    }
+                }
+
+                resolve_atomic_ordering(call.variables[3], "atomic-store!", true);
             }
 
             return TypeCheckResult::ok(BuiltinTypes::Null);

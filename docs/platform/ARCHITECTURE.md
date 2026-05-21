@@ -240,6 +240,8 @@ The language needs new machine-facing primitives.
 - `addr-of`
 - `volatile-load`
 - `volatile-store!`
+- `atomic-load`
+- `atomic-store!`
 - compiler and memory fences
 
 ## 4.3 Required attributes

@@ -540,3 +540,36 @@ Do not add pointer subtraction, comparisons, address-space-aware pointers, field
 - MMIO and startup code can compute byte-offset addresses without round-tripping through ad hoc integer arithmetic at every use site
 - the pointer model stays narrow and explicit while the low-level ABI continues to mature
 - richer pointer semantics remain later platform-language work once layout and address-space policy are defined
+
+---
+
+## D-0021
+
+- Date: 2026-05-21
+- Status: Accepted
+- Title: Atomic memory access starts as typed load/store over raw `Ptr`
+
+### Context
+
+After fences, volatile memory access, and byte-offset pointer arithmetic, the platform surface needs a minimal atomic memory access vocabulary for shared flags, bootstrap handoff state, and low-level runtime coordination. A full atomic/RMW model would require compare-exchange semantics, failure orderings, typed pointer provenance, and target policy that are not needed for the first usable slice.
+
+### Decision
+
+Add two typed atomic memory primitives:
+
+```scheme
+(atomic-load type ptr ordering)
+(atomic-store! type ptr value ordering)
+```
+
+The `type` operand is a low-level type designator, not a runtime expression. Supported designators are machine integer types and `ptr`. The address operand must be a `Ptr`; pointer loads return `Ptr`, integer loads return the requested machine integer type, and stores return `Null`.
+
+Load orderings are `relaxed`, `acquire`, and `seq-cst`. Store orderings are `relaxed`, `release`, and `seq-cst`. The backend lowers `relaxed` to LLVM `monotonic`, uses explicit ABI alignment, and emits LLVM atomic load/store instructions directly.
+
+Do not add read-modify-write operations, compare-exchange, address spaces, volatile+atomic combined forms, inline assembly, or target-specific atomic policy in this slice.
+
+### Consequences
+
+- Eshkol can express the first typed atomic memory accesses needed for low-level platform code
+- the operation set stays explicit about access size and memory ordering
+- richer atomic operations and target memory-model policy remain later v1.8 platform-language work

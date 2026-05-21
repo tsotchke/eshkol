@@ -1287,6 +1287,8 @@ public:
         function_return_types["square"] = BuiltinTypes::Number;
         function_return_types["volatile-load"] = BuiltinTypes::Value;
         function_return_types["volatile-store!"] = BuiltinTypes::Null;
+        function_return_types["atomic-load"] = BuiltinTypes::Value;
+        function_return_types["atomic-store!"] = BuiltinTypes::Null;
         function_return_types["target-intrinsic"] = BuiltinTypes::Value;
         function_return_types["compiler-fence"] = BuiltinTypes::Null;
         function_return_types["memory-fence"] = BuiltinTypes::Null;
@@ -5256,13 +5258,30 @@ private:
                             return TypedValue();
                         }
 
-                        auto type_info = resolveVolatileTypeInfo(
+                        auto type_info = resolveMemoryAccessTypeInfo(
                             &ast->operation.call_op.variables[0], "volatile-load");
                         Value* val = codegenAST(ast);
                         if (!val || !type_info) return TypedValue();
                         return makeLowLevelTypedValue(val, *type_info);
                     }
                     if (func_name == "volatile-store!") {
+                        Value* val = codegenAST(ast);
+                        if (!val) return TypedValue();
+                        return TypedValue(val, ESHKOL_VALUE_NULL,
+                                         eshkol::hott::BuiltinTypes::Null, true);
+                    }
+                    if (func_name == "atomic-load") {
+                        if (ast->operation.call_op.num_vars < 1) {
+                            return TypedValue();
+                        }
+
+                        auto type_info = resolveMemoryAccessTypeInfo(
+                            &ast->operation.call_op.variables[0], "atomic-load");
+                        Value* val = codegenAST(ast);
+                        if (!val || !type_info) return TypedValue();
+                        return makeLowLevelTypedValue(val, *type_info);
+                    }
+                    if (func_name == "atomic-store!") {
                         Value* val = codegenAST(ast);
                         if (!val) return TypedValue();
                         return TypedValue(val, ESHKOL_VALUE_NULL,
@@ -7394,8 +7413,8 @@ private:
         }
     }
 
-    std::optional<LowLevelValueTypeInfo> resolveVolatileTypeInfo(const eshkol_ast_t* type_ast,
-                                                                 const char* builtin_name) const {
+    std::optional<LowLevelValueTypeInfo> resolveMemoryAccessTypeInfo(
+        const eshkol_ast_t* type_ast, const char* builtin_name) const {
         return resolveLowLevelTypeInfo(type_ast, builtin_name, "machine", false);
     }
 
@@ -7578,6 +7597,38 @@ private:
         eshkol_error("%s does not support fence ordering '%s'",
                      builtin_name, ordering_ast->variable.id);
         return std::nullopt;
+    }
+
+    std::optional<AtomicOrdering> resolveAtomicOrdering(const eshkol_ast_t* ordering_ast,
+                                                        const char* builtin_name,
+                                                        bool for_store) const {
+        if (!ordering_ast || ordering_ast->type != ESHKOL_VAR || !ordering_ast->variable.id) {
+            eshkol_error("%s expects a memory ordering designator", builtin_name);
+            return std::nullopt;
+        }
+
+        const std::string ordering_name = ordering_ast->variable.id;
+        if (ordering_name == "relaxed") {
+            return AtomicOrdering::Monotonic;
+        }
+        if (ordering_name == "seq-cst") {
+            return AtomicOrdering::SequentiallyConsistent;
+        }
+        if (!for_store && ordering_name == "acquire") {
+            return AtomicOrdering::Acquire;
+        }
+        if (for_store && ordering_name == "release") {
+            return AtomicOrdering::Release;
+        }
+
+        eshkol_error("%s does not support memory ordering '%s' for %s",
+                     builtin_name, ordering_ast->variable.id,
+                     for_store ? "atomic stores" : "atomic loads");
+        return std::nullopt;
+    }
+
+    Align lowLevelABIAlignment(Type* type) const {
+        return module->getDataLayout().getABITypeAlign(type);
     }
 
     eshkol::hott::TypeId resolveDeclaredHottTypeId(const hott_type_expr_t* type_expr) const {
@@ -11775,7 +11826,7 @@ private:
                 return nullptr;
             }
 
-            auto type_info = resolveVolatileTypeInfo(&op->call_op.variables[0], "volatile-load");
+            auto type_info = resolveMemoryAccessTypeInfo(&op->call_op.variables[0], "volatile-load");
             if (!type_info) return nullptr;
 
             TypedValue ptr_tv = codegenTypedAST(&op->call_op.variables[1]);
@@ -11805,7 +11856,7 @@ private:
                 return packNullToTaggedValue();
             }
 
-            auto type_info = resolveVolatileTypeInfo(&op->call_op.variables[0], "volatile-store!");
+            auto type_info = resolveMemoryAccessTypeInfo(&op->call_op.variables[0], "volatile-store!");
             if (!type_info) return packNullToTaggedValue();
 
             TypedValue ptr_tv = codegenTypedAST(&op->call_op.variables[1]);
@@ -11823,6 +11874,68 @@ private:
 
             auto* store = builder->CreateStore(store_value, raw_ptr);
             store->setVolatile(true);
+            return packNullToTaggedValue();
+        }
+        if (func_name == "atomic-load") {
+            if (op->call_op.num_vars != 3) {
+                eshkol_error("atomic-load requires exactly 3 arguments");
+                return nullptr;
+            }
+
+            auto type_info = resolveMemoryAccessTypeInfo(&op->call_op.variables[0], "atomic-load");
+            auto ordering = resolveAtomicOrdering(&op->call_op.variables[2], "atomic-load",
+                                                  false);
+            if (!type_info || !ordering) return nullptr;
+
+            TypedValue ptr_tv = codegenTypedAST(&op->call_op.variables[1]);
+            if (!ptr_tv.llvm_value) return nullptr;
+
+            const LowLevelValueTypeInfo pointer_info{
+                eshkol::hott::BuiltinTypes::Pointer, ptr_type, false, true, false};
+            Value* raw_ptr = coerceValueToLowLevelScalar(ptr_tv, pointer_info, "atomic-load");
+            if (!raw_ptr) return nullptr;
+
+            auto* load = builder->CreateLoad(type_info->llvm_type, raw_ptr, "atomic_load");
+            load->setAtomic(*ordering);
+            load->setAlignment(lowLevelABIAlignment(type_info->llvm_type));
+
+            if (type_info->is_pointer) {
+                return load;
+            }
+
+            if (!load->getType()->isIntegerTy(64)) {
+                return builder->CreateIntCast(load, int64_type, type_info->is_signed_integer,
+                                              "atomic_load_value");
+            }
+            return load;
+        }
+        if (func_name == "atomic-store!") {
+            if (op->call_op.num_vars != 4) {
+                eshkol_error("atomic-store! requires exactly 4 arguments");
+                return packNullToTaggedValue();
+            }
+
+            auto type_info = resolveMemoryAccessTypeInfo(&op->call_op.variables[0], "atomic-store!");
+            auto ordering = resolveAtomicOrdering(&op->call_op.variables[3], "atomic-store!",
+                                                  true);
+            if (!type_info || !ordering) return packNullToTaggedValue();
+
+            TypedValue ptr_tv = codegenTypedAST(&op->call_op.variables[1]);
+            TypedValue value_tv = codegenTypedAST(&op->call_op.variables[2]);
+            if (!ptr_tv.llvm_value || !value_tv.llvm_value) return packNullToTaggedValue();
+
+            const LowLevelValueTypeInfo pointer_info{
+                eshkol::hott::BuiltinTypes::Pointer, ptr_type, false, true, false};
+            Value* raw_ptr = coerceValueToLowLevelScalar(ptr_tv, pointer_info, "atomic-store!");
+            if (!raw_ptr) return packNullToTaggedValue();
+
+            Value* store_value =
+                coerceValueToLowLevelScalar(value_tv, *type_info, "atomic-store!");
+            if (!store_value) return packNullToTaggedValue();
+
+            auto* store = builder->CreateStore(store_value, raw_ptr);
+            store->setAtomic(*ordering);
+            store->setAlignment(lowLevelABIAlignment(type_info->llvm_type));
             return packNullToTaggedValue();
         }
         if (func_name == "target-intrinsic") {
@@ -21191,7 +21304,8 @@ private:
             "exact->inexact", "inexact->exact", "exact", "inexact",
             "addr-of", "compiler-fence", "memory-fence",
             "null-ptr", "ptr->usize", "usize->ptr", "ptr-add",
-            "target-intrinsic", "volatile-load", "volatile-store!",
+            "atomic-load", "atomic-store!", "target-intrinsic",
+            "volatile-load", "volatile-store!",
             "exact-integer?", "square",
             "floor-quotient", "floor-remainder", "floor/",
             "truncate-quotient", "truncate-remainder", "truncate/",

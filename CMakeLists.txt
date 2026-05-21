@@ -1636,6 +1636,24 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/vo
     add_test(NAME volatile_ops_test COMMAND volatile_ops_test)
 endif()
 
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/atomic_ops_test.cpp")
+    add_executable(atomic_ops_test tests/toolchain/atomic_ops_test.cpp)
+    target_compile_features(atomic_ops_test PRIVATE cxx_std_17)
+    target_compile_definitions(atomic_ops_test PRIVATE ESHKOL_LLVM_BACKEND_ENABLED)
+    target_include_directories(atomic_ops_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    eshkol_target_llvm_includes(atomic_ops_test)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(atomic_ops_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(atomic_ops_test PRIVATE
+        eshkol-static
+        ${ESHKOL_EXTRA_LINK_LIBS}
+        ${LLVM_LIBS_LIST}
+        ${LLVM_SYSTEM_LIBS_LIST}
+    )
+    add_test(NAME atomic_ops_test COMMAND atomic_ops_test)
+endif()
+
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/target_intrinsic_test.cpp")
     add_executable(target_intrinsic_test tests/toolchain/target_intrinsic_test.cpp)
     target_compile_features(target_intrinsic_test PRIVATE cxx_std_17)
