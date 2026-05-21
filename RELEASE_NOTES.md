@@ -428,7 +428,7 @@ Novel AI primitives integrated at the compiler level:
 ### Dual Backend Architecture
 
 Eshkol now ships with a complete bytecode VM alongside the LLVM native compiler:
-- **Bytecode VM**: 63 opcodes, 250+ native calls, ESKB binary format, invoked via `-B` flag
+- **Bytecode VM**: 64 opcodes, 250+ native calls, ESKB binary format, invoked via `-B` flag
 - **Weight Matrix Transformer**: 126/126 inline programs and 123/123 traced programs passing, 3-way verified, 12.22M analytical parameters
 - **qLLM Bridge**: Eshkol-to-qLLM tensor conversion for semiclassical inference
 

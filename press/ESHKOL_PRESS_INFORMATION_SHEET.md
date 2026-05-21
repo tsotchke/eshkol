@@ -569,7 +569,7 @@ without native code. There are 73 DOM, Canvas, Event, Fetch, and
 LocalStorage bindings exposed through an integer-handle system. The
 interactive textbook has every example runnable in-browser.
 
-The browser REPL uses the bytecode VM rather than LLVM JIT: 63 opcodes,
+The browser REPL uses the bytecode VM rather than LLVM JIT: 64 opcodes,
 250+ native call IDs, ESKB binary format with LEB128 encoding and CRC32
 checksums (*DESIGN.md §Dual backend architecture*).
 
@@ -582,7 +582,7 @@ independent value representations:
 
 - **LLVM native** (primary). 16-byte tagged values, ~30 codegen modules,
   ~85,500 lines, the default for `eshkol-run`.
-- **Bytecode VM** (*lib/backend/eshkol_vm.c*, 8,457 lines). 63 opcodes,
+- **Bytecode VM** (*lib/backend/eshkol_vm.c*, 1,473 lines). 64 opcodes,
   250+ native call IDs, ESKB binary format (section-based, LEB128, CRC32).
   Invoked via `eshkol-run input.esk -B output.eskb`. Coverage: arithmetic,
   closures, continuations, exception handling, tensors, complex / rational
