@@ -1,6 +1,6 @@
 # Eshkol: Automatic Differentiation for Neural Networks and Gradient-Based Optimization
 
-This document details Eshkol v1.0-architecture's **production automatic differentiation system** - a compiler-integrated implementation supporting forward-mode dual numbers, reverse-mode computational graphs, and nested gradients.
+This document details Eshkol's **production automatic differentiation system** (established in v1.0-foundation and extended through v1.2.1-scale) — a compiler-integrated implementation supporting forward-mode dual numbers, reverse-mode computational graphs, and nested gradients.
 
 ## The AD Challenge in ML/AI
 
@@ -720,4 +720,4 @@ See [FUTURE_ROADMAP.md](FUTURE_ROADMAP.md) for:
 
 ---
 
-*Eshkol v1.0-architecture delivers a **working automatic differentiation system** with production-quality implementation, comprehensive test coverage, and the foundation for advanced ML/AI development. The AD system is not a prototype - it's a fully functional compiler integration with support for nested gradients, vector calculus, and arbitrary function composition.*
+*Eshkol delivers a production automatic-differentiation system as a first-class language feature — established in v1.0-foundation, extended through v1.2.1-scale with rational + complex + bignum dispatch in the AD value tower. The implementation has comprehensive test coverage and supports nested gradients, vector calculus, and arbitrary function composition. AD operates through the same codegen as ordinary code, so closures, recursion, and library calls differentiate without a framework boundary.*
