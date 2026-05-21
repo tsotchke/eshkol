@@ -290,7 +290,7 @@ The LLVM and VM backends share the same language semantics but use independent v
 | **Total compiler infrastructure** | **~232,000** | **130+** |
 | Standard library (.esk, auto-loaded) | ~4,400 | 35 modules |
 | Standard library (.esk, full tree including opt-in modules) | ~10,200 | 57 modules |
-| Test code (.esk) | ~34,000 | 438 files |
+| Test code (.esk) | ~42,900 | 586 files |
 
 37 automated test suites, 528 self-reported tests + 87 v1.2 edge cases, 0 failures. Bytecode VM: 331/332 tests (99.7%). Weight matrices: 126/126 inline + 123/123 traced (3-way verified).
 
