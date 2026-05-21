@@ -1,12 +1,12 @@
-# Eshkol v1.0-architecture: Technical Implementation Deep Dive
+# Eshkol Technical Implementation Deep Dive
 
 **A Production Compiler with Integrated Automatic Differentiation**
 
-This document provides a detailed technical analysis of the Eshkol v1.0-architecture implementation - the actual production compiler, not aspirational features. For the broader vision, see [TECHNICAL_WHITE_PAPER.md](TECHNICAL_WHITE_PAPER.md).
+This document provides a detailed technical analysis of the Eshkol compiler as it stands in the current v1.2.1-scale production release, building on the architectural baseline established in v1.0-foundation. It describes the actual production compiler, not aspirational features. For the broader vision, see [TECHNICAL_WHITE_PAPER.md](TECHNICAL_WHITE_PAPER.md).
 
 ## Abstract
 
-Eshkol v1.0-architecture is a production-ready Scheme dialect compiler built on LLVM infrastructure, featuring compiler-integrated automatic differentiation, deterministic arena memory management, and a HoTT-inspired gradual type system. This paper examines the actual implementation architecture, focusing on the modular LLVM backend design, the tagged value runtime system, the automatic differentiation implementation with nested gradient support, and the ownership-aware lexical region memory model. We present the technical innovations that enable Eshkol to combine Scheme's homoiconicity with native code performance while maintaining deterministic memory behavior suitable for real-time applications.
+Eshkol is a production-ready Scheme dialect compiler built on LLVM 21 infrastructure, featuring compiler-integrated automatic differentiation, deterministic arena memory management, and a HoTT-inspired gradual type system. The v1.0-foundation baseline established the modular LLVM backend, the tagged-value runtime, the AD implementation with nested-gradient support, and the ownership-aware lexical-region (OALR) memory model; v1.1-accelerate added GPU dispatch and work-stealing parallelism, and v1.2-scale (closed out as v1.2.1-scale) added the exact-numeric tower, the native agent FFI surface, and the v1.2.1 hardening pass. This paper examines that implementation architecture, focusing on how the compiler combines Scheme's homoiconicity with native-code performance while maintaining deterministic memory behaviour suitable for real-time applications.
 
 ## 1. Compiler Architecture
 
@@ -1350,12 +1350,12 @@ quantum_noise(x)        // Quantum uncertainty simulation
 
 ## Conclusion
 
-Eshkol v1.0-architecture represents a substantial implementation achievement: a production compiler combining Scheme semantics, LLVM performance, compiler-integrated automatic differentiation, and deterministic memory management. The modular backend architecture, sophisticated AD system with nested gradient support, and arena-based memory model provide a solid foundation for scientific computing and machine learning applications.
+Eshkol is a production compiler combining Scheme semantics, LLVM-21 native performance, compiler-integrated automatic differentiation, and deterministic arena memory management. The modular backend architecture, the AD system with nested-gradient support, and the OALR memory model — all baselined in v1.0-foundation and extended through v1.2.1-scale — provide a working foundation for scientific computing and machine-learning workloads.
 
-The technical innovations - particularly the integrated AD system operating at compiler, runtime, and IR levels simultaneously, and the ownership-aware lexical region memory model - demonstrate novel approaches to long-standing challenges in language implementation.
+The architectural choices that drive Eshkol's properties — the integrated AD system operating at compiler, runtime, and IR levels simultaneously, and the ownership-aware lexical region memory model — address long-standing challenges in language implementation: differentiation as a first-class language feature rather than a framework boundary, and predictable memory release without a garbage-collection pause.
 
-While v1.0 focuses on core capabilities (gradient-based optimization, neural network fundamentals, numerical computing), it establishes the architectural patterns and implementation quality necessary for future expansions including GPU acceleration, distributed training, and quantum computing integration.
+The v1.0-foundation baseline (gradient-based optimisation, neural-network fundamentals, numerical computing) established the architectural patterns. v1.1-accelerate added GPU dispatch (Metal + CUDA + XLA) and work-stealing parallelism. v1.2-scale added the exact-numeric tower (bignum + rational + complex), the native agent FFI surface (HTTP / SQLite / subprocess / fs-watch), and production-grade model serialisation; v1.2.1 closed out the release with stdlib `LinkOnceODR` linkage, parser line tracking, closure capture in `dynamic-wind` / `call-cc` / `guard`, TCO context preservation, and the agent-FFI link wiring.
 
 ---
 
-*This document describes the actual v1.0-architecture implementation as it exists in the production codebase. For aspirational features and long-term vision, see [TECHNICAL_WHITE_PAPER.md](TECHNICAL_WHITE_PAPER.md) and [FUTURE_ROADMAP.md](FUTURE_ROADMAP.md).*
+*This document describes the compiler implementation as it exists in the v1.2.1-scale production codebase, organised around the architectural baseline established in v1.0-foundation. For aspirational features and the long-term vision, see [TECHNICAL_WHITE_PAPER.md](TECHNICAL_WHITE_PAPER.md) and [FUTURE_ROADMAP.md](FUTURE_ROADMAP.md).*

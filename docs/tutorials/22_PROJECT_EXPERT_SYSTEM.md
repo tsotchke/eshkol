@@ -93,14 +93,16 @@ Save as `diagnosis.esk` and run with `eshkol-run diagnosis.esk -o diagnosis && .
 
 ;; --- Probabilistic reasoning with factor graph ---
 ;; Model: symptom observations → disease probability
-
-(define fg (make-factor-graph 3))
+;; Three binary variables (each with 2 states).
+;; Signature: (make-factor-graph num-vars dims-tensor)
+(define fg (make-factor-graph 3 #(2 2 2)))
 
 ;; Factor: fever → flu (high correlation)
-(fg-add-factor! fg 0 1 #(0.8 0.2 0.1 0.9))
+;; Signature: (fg-add-factor! fg var-indices-tensor cpt-tensor)
+(fg-add-factor! fg #(0 1) #(0.8 0.2 0.1 0.9))
 
 ;; Factor: flu → fatigue (secondary symptom)
-(fg-add-factor! fg 1 2 #(0.7 0.3 0.3 0.7))
+(fg-add-factor! fg #(1 2) #(0.7 0.3 0.3 0.7))
 
 ;; Run belief propagation
 (fg-infer! fg 10)
