@@ -1183,6 +1183,8 @@ public:
         function_return_types["exact"] = BuiltinTypes::Int64;
         function_return_types["exact-integer?"] = BuiltinTypes::Boolean;
         function_return_types["square"] = BuiltinTypes::Number;
+        function_return_types["volatile-load"] = BuiltinTypes::Value;
+        function_return_types["volatile-store!"] = BuiltinTypes::Null;
         function_return_types["compiler-fence"] = BuiltinTypes::Null;
         function_return_types["memory-fence"] = BuiltinTypes::Null;
         function_return_types["addr-of"] = BuiltinTypes::Pointer;
@@ -5126,6 +5128,23 @@ private:
                         return TypedValue(val, ESHKOL_VALUE_NULL,
                                          eshkol::hott::BuiltinTypes::Null, true);
                     }
+                    if (func_name == "volatile-load") {
+                        if (ast->operation.call_op.num_vars < 1) {
+                            return TypedValue();
+                        }
+
+                        auto type_info = resolveVolatileTypeInfo(
+                            &ast->operation.call_op.variables[0], "volatile-load");
+                        Value* val = codegenAST(ast);
+                        if (!val || !type_info) return TypedValue();
+                        return makeLowLevelTypedValue(val, *type_info);
+                    }
+                    if (func_name == "volatile-store!") {
+                        Value* val = codegenAST(ast);
+                        if (!val) return TypedValue();
+                        return TypedValue(val, ESHKOL_VALUE_NULL,
+                                         eshkol::hott::BuiltinTypes::Null, true);
+                    }
                     if (func_name == "addr-of") {
                         eshkol::hott::TypeId pointee_type = eshkol::hott::BuiltinTypes::Value;
                         if (ast->operation.call_op.num_vars == 1) {
@@ -7165,6 +7184,149 @@ private:
                type_id == BuiltinTypes::UInt64 ||
                type_id == BuiltinTypes::USize ||
                type_id == BuiltinTypes::Char;
+    }
+
+    struct LowLevelValueTypeInfo {
+        eshkol::hott::TypeId hott_type;
+        Type* llvm_type;
+        bool is_signed_integer;
+        bool is_pointer;
+        bool is_null;
+    };
+
+    std::optional<LowLevelValueTypeInfo> resolveLowLevelTypeInfo(const eshkol_ast_t* type_ast,
+                                                                 const char* builtin_name,
+                                                                 const char* role,
+                                                                 bool allow_null) const {
+        using namespace eshkol::hott;
+
+        if (!type_ast || type_ast->type != ESHKOL_VAR || !type_ast->variable.id) {
+            eshkol_error("%s expects a %s type name", builtin_name, role);
+            return std::nullopt;
+        }
+
+        auto type_id = ctx_->hottTypes().lookupType(type_ast->variable.id);
+        if (!type_id) {
+            eshkol_error("%s received unknown %s type '%s'",
+                         builtin_name, role, type_ast->variable.id);
+            return std::nullopt;
+        }
+
+        switch (type_id->id) {
+            case BuiltinTypes::Int8.id:
+                return LowLevelValueTypeInfo{*type_id, int8_type, true, false, false};
+            case BuiltinTypes::Int16.id:
+                return LowLevelValueTypeInfo{*type_id, int16_type, true, false, false};
+            case BuiltinTypes::Int32.id:
+                return LowLevelValueTypeInfo{*type_id, int32_type, true, false, false};
+            case BuiltinTypes::Int64.id:
+                return LowLevelValueTypeInfo{*type_id, int64_type, true, false, false};
+            case BuiltinTypes::ISize.id:
+                return LowLevelValueTypeInfo{*type_id, intptr_type, true, false, false};
+            case BuiltinTypes::UInt8.id:
+                return LowLevelValueTypeInfo{*type_id, int8_type, false, false, false};
+            case BuiltinTypes::UInt16.id:
+                return LowLevelValueTypeInfo{*type_id, int16_type, false, false, false};
+            case BuiltinTypes::UInt32.id:
+                return LowLevelValueTypeInfo{*type_id, int32_type, false, false, false};
+            case BuiltinTypes::UInt64.id:
+                return LowLevelValueTypeInfo{*type_id, int64_type, false, false, false};
+            case BuiltinTypes::USize.id:
+                return LowLevelValueTypeInfo{*type_id, intptr_type, false, false, false};
+            case BuiltinTypes::Pointer.id:
+                return LowLevelValueTypeInfo{*type_id, ptr_type, false, true, false};
+            case BuiltinTypes::Null.id:
+                if (allow_null) {
+                    return LowLevelValueTypeInfo{
+                        *type_id, Type::getVoidTy(*context), false, false, true};
+                }
+                [[fallthrough]];
+            default:
+                eshkol_error("%s does not support %s type '%s'",
+                             builtin_name, role, type_ast->variable.id);
+                return std::nullopt;
+        }
+    }
+
+    std::optional<LowLevelValueTypeInfo> resolveVolatileTypeInfo(const eshkol_ast_t* type_ast,
+                                                                 const char* builtin_name) const {
+        return resolveLowLevelTypeInfo(type_ast, builtin_name, "machine", false);
+    }
+
+    TypedValue makeLowLevelTypedValue(Value* raw_value, const LowLevelValueTypeInfo& type_info) {
+        using namespace eshkol::hott;
+
+        if (!raw_value) return TypedValue();
+
+        if (type_info.is_null) {
+            return TypedValue(raw_value, ESHKOL_VALUE_NULL, BuiltinTypes::Null, true);
+        }
+
+        if (type_info.is_pointer) {
+            auto ptr_type_info = ctx_->hottTypes().makePointerType(BuiltinTypes::Value);
+            return TypedValue(raw_value, ESHKOL_VALUE_HEAP_PTR,
+                             BuiltinTypes::Pointer, ptr_type_info, true);
+        }
+
+        Value* widened = raw_value;
+        if (!widened->getType()->isIntegerTy(64)) {
+            widened = builder->CreateIntCast(widened, int64_type, type_info.is_signed_integer,
+                                             "low_level_value_cast");
+        }
+        return TypedValue(widened, ESHKOL_VALUE_INT64, type_info.hott_type, true);
+    }
+
+    Value* coerceValueToLowLevelScalar(const TypedValue& tv,
+                                       const LowLevelValueTypeInfo& type_info,
+                                       const char* builtin_name) {
+        if (!tv.llvm_value) {
+            eshkol_error("%s received an empty value", builtin_name);
+            return nullptr;
+        }
+
+        Value* raw_value = tv.llvm_value;
+        Type* raw_type = raw_value->getType();
+
+        if (type_info.is_pointer) {
+            if (raw_type == tagged_value_type) {
+                Value* ptr_bits = unpackInt64FromTaggedValue(raw_value);
+                return builder->CreateIntToPtr(
+                    toIntPtr(ptr_bits), cast<PointerType>(ptr_type), "low_level_ptr_from_tagged");
+            }
+            if (raw_type->isIntegerTy()) {
+                return builder->CreateIntToPtr(
+                    toIntPtr(raw_value), cast<PointerType>(ptr_type), "low_level_ptr_from_int");
+            }
+            if (raw_type->isPointerTy()) {
+                return builder->CreatePointerCast(raw_value, cast<PointerType>(ptr_type),
+                                                  "low_level_ptr_cast");
+            }
+
+            eshkol_error("%s expects a pointer-compatible value", builtin_name);
+            return nullptr;
+        }
+
+        if (type_info.is_null) {
+            eshkol_error("%s does not accept Null operands", builtin_name);
+            return nullptr;
+        }
+
+        if (raw_type == tagged_value_type) {
+            raw_value = unpackInt64FromTaggedValue(raw_value);
+            raw_type = raw_value->getType();
+        } else if (raw_type->isPointerTy()) {
+            eshkol_error("%s expects an integer-compatible value", builtin_name);
+            return nullptr;
+        } else if (!raw_type->isIntegerTy()) {
+            eshkol_error("%s expects an integer-compatible value", builtin_name);
+            return nullptr;
+        }
+
+        if (raw_type != type_info.llvm_type) {
+            raw_value = builder->CreateIntCast(raw_value, type_info.llvm_type,
+                                               type_info.is_signed_integer, "low_level_scalar_cast");
+        }
+        return raw_value;
     }
 
     std::optional<AtomicOrdering> resolveFenceOrdering(const eshkol_ast_t* ordering_ast,
@@ -11374,6 +11536,62 @@ private:
             Value* is_double = builder->CreateICmpEQ(base_type, ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
             Value* is_ad = isCallableSubtype(arg, CALLABLE_SUBTYPE_AD_NODE);
             return packBoolToTaggedValue(builder->CreateOr(is_double, is_ad));
+        }
+        if (func_name == "volatile-load") {
+            if (op->call_op.num_vars != 2) {
+                eshkol_error("volatile-load requires exactly 2 arguments");
+                return nullptr;
+            }
+
+            auto type_info = resolveVolatileTypeInfo(&op->call_op.variables[0], "volatile-load");
+            if (!type_info) return nullptr;
+
+            TypedValue ptr_tv = codegenTypedAST(&op->call_op.variables[1]);
+            if (!ptr_tv.llvm_value) return nullptr;
+
+            const LowLevelValueTypeInfo pointer_info{
+                eshkol::hott::BuiltinTypes::Pointer, ptr_type, false, true, false};
+            Value* raw_ptr = coerceValueToLowLevelScalar(ptr_tv, pointer_info, "volatile-load");
+            if (!raw_ptr) return nullptr;
+
+            auto* load = builder->CreateLoad(type_info->llvm_type, raw_ptr, "volatile_load");
+            load->setVolatile(true);
+
+            if (type_info->is_pointer) {
+                return load;
+            }
+
+            if (!load->getType()->isIntegerTy(64)) {
+                return builder->CreateIntCast(load, int64_type, type_info->is_signed_integer,
+                                              "volatile_load_value");
+            }
+            return load;
+        }
+        if (func_name == "volatile-store!") {
+            if (op->call_op.num_vars != 3) {
+                eshkol_error("volatile-store! requires exactly 3 arguments");
+                return packNullToTaggedValue();
+            }
+
+            auto type_info = resolveVolatileTypeInfo(&op->call_op.variables[0], "volatile-store!");
+            if (!type_info) return packNullToTaggedValue();
+
+            TypedValue ptr_tv = codegenTypedAST(&op->call_op.variables[1]);
+            TypedValue value_tv = codegenTypedAST(&op->call_op.variables[2]);
+            if (!ptr_tv.llvm_value || !value_tv.llvm_value) return packNullToTaggedValue();
+
+            const LowLevelValueTypeInfo pointer_info{
+                eshkol::hott::BuiltinTypes::Pointer, ptr_type, false, true, false};
+            Value* raw_ptr = coerceValueToLowLevelScalar(ptr_tv, pointer_info, "volatile-store!");
+            if (!raw_ptr) return packNullToTaggedValue();
+
+            Value* store_value =
+                coerceValueToLowLevelScalar(value_tv, *type_info, "volatile-store!");
+            if (!store_value) return packNullToTaggedValue();
+
+            auto* store = builder->CreateStore(store_value, raw_ptr);
+            store->setVolatile(true);
+            return packNullToTaggedValue();
         }
         if (func_name == "compiler-fence") {
             if (op->call_op.num_vars != 1) {
@@ -20666,6 +20884,7 @@ private:
             "exact->inexact", "inexact->exact", "exact", "inexact",
             "addr-of", "compiler-fence", "memory-fence",
             "null-ptr", "ptr->usize", "usize->ptr",
+            "volatile-load", "volatile-store!",
             "exact-integer?", "square",
             "floor-quotient", "floor-remainder", "floor/",
             "truncate-quotient", "truncate-remainder", "truncate/",

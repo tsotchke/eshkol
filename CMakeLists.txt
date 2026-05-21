@@ -1612,6 +1612,24 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/fe
     add_test(NAME fence_ops_test COMMAND fence_ops_test)
 endif()
 
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/volatile_ops_test.cpp")
+    add_executable(volatile_ops_test tests/toolchain/volatile_ops_test.cpp)
+    target_compile_features(volatile_ops_test PRIVATE cxx_std_17)
+    target_compile_definitions(volatile_ops_test PRIVATE ESHKOL_LLVM_BACKEND_ENABLED)
+    target_include_directories(volatile_ops_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    eshkol_target_llvm_includes(volatile_ops_test)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(volatile_ops_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(volatile_ops_test PRIVATE
+        eshkol-static
+        ${ESHKOL_EXTRA_LINK_LIBS}
+        ${LLVM_LIBS_LIST}
+        ${LLVM_SYSTEM_LIBS_LIST}
+    )
+    add_test(NAME volatile_ops_test COMMAND volatile_ops_test)
+endif()
+
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/runtime_core_boundary_test.cpp")
     add_executable(runtime_core_boundary_test tests/toolchain/runtime_core_boundary_test.cpp)
     target_compile_features(runtime_core_boundary_test PRIVATE cxx_std_17)

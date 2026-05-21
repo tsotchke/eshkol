@@ -418,3 +418,33 @@ Do not add atomic load/store/RMW builtins, target-specific barrier intrinsics, o
 - ordering tokens are treated as source-level designators rather than undefined runtime variables
 - the fence surface stays portable across the existing LLVM path without committing yet to a larger atomic or intrinsic language design
 - richer atomics, architecture-specific barriers, and intrinsic escape hatches remain later slices
+
+---
+
+## D-0017
+
+- Date: 2026-04-16
+- Status: Accepted
+- Title: Volatile operations are typed MMIO primitives over raw pointers
+
+### Context
+
+With pointer conversions, `addr-of`, and fence builtins in place, the platform surface still needed a direct way to express MMIO-style loads and stores. Treating this as a general memory model or atomic/RMW design would force a much larger language decision than the current HAL/bootstrap slice needs.
+
+### Decision
+
+Add two builtins now:
+
+- `volatile-load`
+- `volatile-store!`
+
+The first operand is a low-level type designator, not a runtime expression. Supported designators in this slice are machine integer types and `ptr`. The address operand must be a `Ptr`; pointer loads return `Ptr`, integer loads return the requested machine integer type, and stores return `Null`.
+
+Lower the builtins to LLVM `load volatile` and `store volatile` directly. Do not add atomic memory ordering, address spaces, target intrinsics, or inline assembly in this slice.
+
+### Consequences
+
+- Eshkol can now express typed volatile MMIO reads and writes through the LLVM backend
+- type designators stay explicit and do not require undefined runtime variables
+- the primitive stays narrow enough to compose with the existing pointer/fence surface
+- richer atomics, address-space-aware pointers, and architecture-specific intrinsics remain later platform-language work
