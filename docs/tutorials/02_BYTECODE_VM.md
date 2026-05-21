@@ -28,7 +28,7 @@ The REPL uses the LLVM JIT backend by default:
 
 ```bash
 $ eshkol-repl
-Eshkol REPL v1.1.13-accelerate
+Eshkol REPL v1.2.1-scale
 > (+ 1 2 3)
 6
 > (define (fib n) (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))
