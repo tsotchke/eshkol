@@ -195,4 +195,4 @@ All vision documents in this directory:
 
 ---
 
-*This directory documents the Eshkol compiler vision. v1.1-accelerate is the current production release with GPU acceleration, consciousness engine, parallel primitives, exact arithmetic, dual backend architecture (LLVM + bytecode VM), and 75+ ML builtins. 438 tests across 35 suites.*
+*This directory documents the Eshkol compiler vision. The current production release is **v1.2.1-scale** (closed out 2026-05-20), shipping on top of the v1.1-accelerate baseline with the full exact-numeric tower (bignum / rational / complex), Metal + CUDA + XLA acceleration, the native agent FFI surface (HTTP / SQLite / subprocess / fs-watch), production-grade model serialisation, plus v1.2.1 hardening (stdlib `LinkOnceODR`, parser line tracking, closure capture in `dynamic-wind` / `call-cc` / `guard`, TCO context preservation). The aggregate gate at release is **37/37 test suites, 528/528 self-reported tests, 87/87 v1.2 edge-case checks**.*

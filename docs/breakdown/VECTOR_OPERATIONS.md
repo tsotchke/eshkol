@@ -127,7 +127,7 @@ For numeric computation, use **tensors** instead.
 
 ## Tensors (Homogeneous Numeric)
 
-**Implementation**: [`lib/backend/tensor_codegen.cpp`](../../lib/backend/tensor_codegen.cpp) (3,041 lines)
+**Implementation**: [`lib/backend/tensor_codegen.cpp`](../../lib/backend/tensor_codegen.cpp) (1,540-line dispatcher; ~19,200 lines across twelve `tensor_*_codegen.cpp` siblings after the v1.2 split)
 
 Tensors are **N-dimensional numeric arrays** optimized for scientific computing:
 

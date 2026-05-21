@@ -2,9 +2,9 @@
 
 ## Mission Statement
 
-Eshkol v1.0-architecture delivers a **production-ready programming language** for gradient-based optimization, neural network development, and scientific computing. Built on a sophisticated LLVM compiler infrastructure, Eshkol combines Scheme's homoiconicity with compiler-integrated automatic differentiation and deterministic arena memory management.
+Eshkol delivers a **production-ready programming language** for gradient-based optimisation, neural-network development, and scientific computing. Built on an LLVM-21 compiler with a Scheme front end, Eshkol combines homoiconic syntax with compiler-integrated automatic differentiation, deterministic arena memory, an exact numeric tower (bignum / rational / complex), GPU acceleration (Metal + CUDA + XLA), parallel work-stealing primitives, and a neuro-symbolic stack delivered as compiler builtins. The current production line is **v1.2.1-scale**.
 
-## What Eshkol Actually Is (v1.0)
+## What Eshkol Actually Is (v1.0 baseline, extended through v1.2.1)
 
 Eshkol is a **compiled Scheme dialect** that excels at:
 

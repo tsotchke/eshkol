@@ -50,13 +50,13 @@ The compiler executes a 5-phase pipeline. Source files (`.esk`) enter at Phase 1
        |
        v
 +------------------+
-| 2. S-EXPRESSION  |  lib/frontend/parser.cpp (7,540 lines)
+| 2. S-EXPRESSION  |  lib/frontend/parser.cpp (8,368 lines)
 |    PARSING       |  Builds eshkol_ast_t tree, 94 operation types
 +------------------+
        |
        v
 +------------------+
-| 3. HoTT TYPE     |  lib/types/type_checker.cpp (1,999 lines)
+| 3. HoTT TYPE     |  lib/types/type_checker.cpp (2,048 lines)
 |    CHECKING      |  Constraint generation + unification (non-blocking)
 +------------------+
        |
@@ -109,7 +109,7 @@ Several R7RS derived forms (`case-lambda`, `parameterize`, `cond-expand`, `defin
 
 ### S-Expression Parser
 
-**Implementation:** [`lib/frontend/parser.cpp`](lib/frontend/parser.cpp) (7,540 lines)
+**Implementation:** [`lib/frontend/parser.cpp`](lib/frontend/parser.cpp) (8,368 lines)
 
 The parser is a recursive descent processor that builds an AST from S-expressions:
 
@@ -155,7 +155,7 @@ typedef struct eshkol_ast {
 
 ## Type Checking (HoTT System)
 
-**Implementation:** [`lib/types/type_checker.cpp`](lib/types/type_checker.cpp) (1,999 lines)
+**Implementation:** [`lib/types/type_checker.cpp`](lib/types/type_checker.cpp) (2,048 lines)
 
 Eshkol uses a Homotopy Type Theory-inspired type system with a universe hierarchy:
 
@@ -207,7 +207,7 @@ typedef struct hott_type_expr {
 
 ## LLVM Backend
 
-**Implementation:** [`lib/backend/llvm_codegen.cpp`](lib/backend/llvm_codegen.cpp) (34,928 lines)
+**Implementation:** [`lib/backend/llvm_codegen.cpp`](lib/backend/llvm_codegen.cpp) (33,999 lines)
 
 The LLVM backend is the heart of the compiler. It translates ASTs to LLVM IR and orchestrates 21 specialized codegen modules.
 
@@ -515,7 +515,7 @@ Continuations are `HEAP_PTR` objects with `HEAP_SUBTYPE_PROMISE` (for promises) 
 
 ### Machine Learning Framework (75+ Builtins)
 
-**Implementation:** [`tensor_codegen.cpp`](lib/backend/tensor_codegen.cpp) (19,187 lines), [`tensor_backward.cpp`](lib/backend/tensor_backward.cpp) (1,078 lines)
+**Implementation:** [`tensor_codegen.cpp`](lib/backend/tensor_codegen.cpp) (1,540-line dispatcher; ~19,200 lines across twelve sibling `tensor_*_codegen.cpp` files after the v1.2 split), [`tensor_backward.cpp`](lib/backend/tensor_backward.cpp) (1,321 lines)
 
 Categories: activations (16), loss functions (14), optimizers (5+3), weight initializers (5), LR schedulers (4), CNN layers (7), transformer operations (8), data loading (6), plus tensor creation/manipulation ops.
 
@@ -830,7 +830,7 @@ Package manager with TOML manifests and git-based registry: `eshkol-pkg init/bui
 
 ### Global Arena
 
-**Implementation:** [`lib/core/arena_memory.cpp`](lib/core/arena_memory.cpp) (~4,972 lines)
+**Implementation:** [`lib/core/arena_memory.cpp`](lib/core/arena_memory.cpp) (~6,200 lines)
 
 - Single allocator for all heap objects
 - 8KB minimum block size, doubling growth strategy

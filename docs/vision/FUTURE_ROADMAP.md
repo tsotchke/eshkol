@@ -154,64 +154,56 @@ Building on the v1.0 foundation, this release focuses on **computational acceler
 - Regression analysis
 - Time series analysis
 
-## v1.2-scale: GPU and Distributed Computing (Q2 2026)
+## v1.2-scale: Numeric Tower, GPU, Agent FFI, Production Deployment (Q2 2026)
 
-**Status:** 📋 **Planned**
+**Status:** ✅ **COMPLETE (Production Release).** Closed out as v1.2.1-scale on 2026-05-20.
 
-This release extends Eshkol's reach to GPUs and distributed systems, enabling large-scale training and deployment.
+The release combined a production-grade numeric tower with the GPU dispatch infrastructure (Metal + CUDA + XLA) and the native agent FFI surface, plus the hardening pass that brought sanitiser-clean status across the regression suite.
 
-### GPU Acceleration
+### Numeric tower
 
-**CUDA Backend:**
-- CUDA kernel generation from Eshkol tensor operations
-- Automatic memory transfer (host ↔ device)
-- Multi-GPU support
-- Unified memory management with arena system
+- Arbitrary-precision integers (bignum) with R7RS exact-arithmetic semantics
+- Exact rationals (16-byte int64 numerator / int64 denominator, auto-reduced by GCD; bignum-pair rationals remain a future extension)
+- Full complex numbers with Smith's-formula division and overflow-safe magnitude
+- Dual numbers for forward-mode AD; tape-based reverse-mode AD spanning more than twenty AD node types
 
-**Metal Backend (macOS/iOS):**
-- Metal Shading Language generation
-- Apple Silicon optimization
-- iPhone/iPad deployment
+### GPU acceleration (shipped)
 
-**Vulkan Compute:**
-- Cross-platform GPU support
-- Compute shader generation
-- Mobile and desktop GPUs
+- **Metal backend (macOS, Apple Silicon)** — full SF64 / DF64 / F32 / FP24 / FP53 precision tiers with software-float64 emulation when the GPU lacks native fp64.
+- **CUDA backend (Linux + Windows with NVIDIA)** — cuBLAS dispatch, dynamic feature detection.
+- **XLA backend (StableHLO via MLIR; LLVM-direct fallback)** — cost-model dispatch on tensor size.
+- **Cost-model dispatcher** — SIMD → cBLAS → GPU based on element count and runtime-calibrated FLOPS estimates.
 
-**Automatic Target Selection:**
-```scheme
-; Same code runs on CPU or GPU
-(define result (tensor-dot W x))
-; Compiler/runtime selects optimal target
-```
+### Agent FFI (shipped)
 
-### Distributed Training
+- Native libcurl HTTP client (TLS verify-on by default, redirect-follow, NOSIGNAL for thread safety)
+- sqlite3 binding with dynamic column-text allocation (fixes the v1.2-era truncation bug)
+- posix_spawn subprocess (no shell metacharacter exposure on the safe path); macOS uses kqueue+EVFILT_PROC, Linux falls back to pthread drainers
+- inotify / FSEvents / ReadDirectoryChangesW filesystem watching
 
-**Multi-Node Framework:**
-- Data parallelism across machines
-- Model parallelism for large networks
-- Gradient synchronization (AllReduce)
-- Fault tolerance and checkpointing
+### Production deployment (shipped)
 
-**Communication:**
-- MPI integration for HPC clusters
-- gRPC for cloud deployments
-- NCCL for multi-GPU communication
+- `.eshkol-model` binary serialiser (ESKM, CRC32-checksummed) for save-on-training / load-on-inference workflows
+- Stable C FFI in `inc/eshkol/eshkol_ffi.h`; Python bindings via pybind11
+- `eshkol-pkg` package manager with central registry, dependency resolution, lock files
 
-### Model Deployment
+### v1.2.1 hardening (shipped)
 
-**Inference Optimization:**
-- Operator fusion
-- Quantization (int8, int16)
-- Model pruning
-- Static graph optimization
+- Stdlib `LinkOnceODR` linkage so user `(define …)` can shadow stdlib names without duplicate-symbol errors
+- Parser line tracking through `(load …)` and per-form REPL streams
+- Free-variable capture across `dynamic-wind` / `call-cc` / `guard` / `raise`
+- TCO context preservation across nested `letrec`
+- Agent-FFI link wiring through `ESHKOL_HOST_AGENT_FFI_LINK_ARGS`
+- 87/87 v1.2 edge-case suite; 37/37 aggregate suite gate; ASan + UBSan + TSan clean
 
-**Export Formats:**
-- ONNX export for interoperability
-- TensorFlow Lite for mobile
-- Core ML for Apple platforms
+### Items considered for v1.2 but deferred to v1.3+
 
-## v1.5-intelligence: Neuro-Symbolic Integration (Q2-3 2026)
+- **Vulkan compute shaders** — Metal + CUDA cover the v1.2 platform matrix; Vulkan deferred.
+- **Multi-node distributed training (MPI / gRPC / NCCL)** — out of scope; deferred to v1.3.
+- **ONNX / Core ML / TF Lite export** — Eshkol's native `.eshkol-model` ships; cross-framework exports deferred.
+- **Multi-GPU dispatch** — single-GPU works; multi-GPU deferred.
+
+## v1.5-intelligence: Neuro-Symbolic Integration (Q4 2026)
 
 **Status:** 📋 **Planned**
 

@@ -49,8 +49,8 @@ Eshkol is a production-grade compiler implementing a Scheme-like language with:
 | LLVM backend | ~30 codegen modules, ~85,500 lines |
 | Bytecode VM | 64 core opcodes, 550+ native calls, ~41,000 lines |
 | Main codegen | 33,962 lines ([`lib/backend/llvm_codegen.cpp`](../lib/backend/llvm_codegen.cpp)) |
-| Parser | 7,551 lines ([`lib/frontend/parser.cpp`](../lib/frontend/parser.cpp)) |
-| Memory manager | 4,972 lines ([`lib/core/arena_memory.cpp`](../lib/core/arena_memory.cpp)) |
+| Parser | 8,368 lines ([`lib/frontend/parser.cpp`](../lib/frontend/parser.cpp)) |
+| Memory manager | 6,186 lines ([`lib/core/arena_memory.cpp`](../lib/core/arena_memory.cpp)) |
 | Weight matrix transformer | ~6,800 lines, 126/126 inline + 123/123 traced, 3-way verified |
 | Test suite | 528 self-reported tests across 37 suites (0 failures) |
 
@@ -107,7 +107,7 @@ Eshkol is a production-grade compiler implementing a Scheme-like language with:
 
 ## Memory Architecture (OALR)
 
-**Implementation**: [`lib/core/arena_memory.cpp`](../lib/core/arena_memory.cpp) (3,210 lines)
+**Implementation**: [`lib/core/arena_memory.cpp`](../lib/core/arena_memory.cpp) (6,186 lines)
 
 ### Core Principles
 
@@ -281,7 +281,7 @@ ESHKOL_VALUE_CLOSURE_PTR (38)
 
 ### Layer 2: Compile-Time Types (HoTT)
 
-**Implementation**: [`lib/types/hott_types.cpp`](../lib/types/hott_types.cpp) (682 lines), [`lib/types/type_checker.cpp`](../lib/types/type_checker.cpp) (1,561 lines)
+**Implementation**: [`lib/types/hott_types.cpp`](../lib/types/hott_types.cpp) (819 lines), [`lib/types/type_checker.cpp`](../lib/types/type_checker.cpp) (2,048 lines)
 
 **Universe Hierarchy**:
 ```scheme
@@ -354,7 +354,7 @@ DimensionChecker::Result checkMatMulDimensions(
 
 ## Automatic Differentiation
 
-**Implementation**: [`lib/backend/autodiff_codegen.cpp`](../lib/backend/autodiff_codegen.cpp) (1,766 lines), [`lib/backend/llvm_codegen.cpp`](../lib/backend/llvm_codegen.cpp) (lines 17750-23200)
+**Implementation**: [`lib/backend/autodiff_codegen.cpp`](../lib/backend/autodiff_codegen.cpp) (9,205 lines), with reverse-mode AD dispatch sites inside [`lib/backend/llvm_codegen.cpp`](../lib/backend/llvm_codegen.cpp)
 
 Eshkol provides **three modes** of automatic differentiation, each optimized for different use cases:
 
@@ -604,7 +604,7 @@ Enables type-directed optimizations in higher-order functions.
 
 ## N-Dimensional Tensors
 
-**Implementation**: [`lib/backend/tensor_codegen.cpp`](../lib/backend/tensor_codegen.cpp) (3,041 lines)
+**Implementation**: [`lib/backend/tensor_codegen.cpp`](../lib/backend/tensor_codegen.cpp) (1,540-line dispatcher; per-domain ops in twelve `tensor_*_codegen.cpp` siblings totalling ~19,200 lines)
 
 ### Tensor Structure
 
@@ -1038,10 +1038,10 @@ eshkol/
 │   ├── math.esk            # Math library (441 lines)
 │   │
 │   ├── backend/            # 21 backend modules (~20K lines)
-│   │   ├── llvm_codegen.cpp      # Main engine (27,079 lines!)
+│   │   ├── llvm_codegen.cpp      # Main engine (33,999 lines)
 │   │   ├── arithmetic_codegen.cpp# Polymorphic arithmetic (1,478 lines)
-│   │   ├── autodiff_codegen.cpp  # AD operations (1,766 lines)
-│   │   ├── tensor_codegen.cpp    # Tensor ops (3,041 lines)
+│   │   ├── autodiff_codegen.cpp  # AD operations (9,205 lines)
+│   │   ├── tensor_codegen.cpp    # Tensor-op dispatcher (1,540 lines); per-domain in tensor_*_codegen.cpp
 │   │   ├── collection_codegen.cpp# Lists/vectors (1,560 lines)
 │   │   ├── control_flow_codegen.cpp # if/cond/and/or (780 lines)
 │   │   ├── binding_codegen.cpp   # define/let/set! (910 lines)
@@ -1060,7 +1060,7 @@ eshkol/
 │   │   └── function_codegen.cpp  # Lambda/closure (131 lines)
 │   │
 │   ├── core/               # Core runtime (C)
-│   │   ├── arena_memory.cpp # Memory manager (3,210 lines)
+│   │   ├── arena_memory.cpp # Memory manager (6,186 lines)
 │   │   ├── arena_memory.h   # Memory header (469 lines)
 │   │   ├── ast.cpp          # AST manipulation (562 lines)
 │   │   ├── logger.cpp       # Logging
@@ -1068,12 +1068,12 @@ eshkol/
 │   │   └── *.esk            # Stdlib modules (25 files)
 │   │
 │   ├── frontend/
-│   │   ├── parser.cpp       # S-expr parser (5,487 lines)
-│   │   └── macro_expander.cpp # Macro system (579 lines)
+│   │   ├── parser.cpp       # S-expr parser (8,368 lines)
+│   │   └── macro_expander.cpp # Macro system (1,304 lines)
 │   │
 │   ├── types/
-│   │   ├── hott_types.cpp   # HoTT types (682 lines)
-│   │   ├── type_checker.cpp # Type inference (1,561 lines)
+│   │   ├── hott_types.cpp   # HoTT types (819 lines)
+│   │   ├── type_checker.cpp # Type inference (2,048 lines)
 │   │   └── dependent.cpp    # Dependent types (440 lines)
 │   │
 │   ├── repl/
@@ -1280,28 +1280,25 @@ These features are **designed but not implemented**. See roadmap documents for d
 
 ### Primary Source Files (analyzed in detail)
 
-- [`inc/eshkol/eshkol.h`](../inc/eshkol/eshkol.h) - Main system header (1,497 lines)
-- [`lib/backend/llvm_codegen.cpp`](../lib/backend/llvm_codegen.cpp) - Core codegen (27,079 lines)
-- [`lib/core/arena_memory.cpp`](../lib/core/arena_memory.cpp) - Memory manager (3,210 lines)
-- [`lib/frontend/parser.cpp`](../lib/frontend/parser.cpp) - S-expr parser (5,487 lines)
-- [`lib/types/type_checker.cpp`](../lib/types/type_checker.cpp) - Type inference (1,561 lines)
-- [`lib/repl/repl_jit.cpp`](../lib/repl/repl_jit.cpp) - JIT compiler (1,108 lines)
-- [`exe/eshkol-run.cpp`](../exe/eshkol-run.cpp) - Compiler executable (2,260 lines)
+- [`inc/eshkol/eshkol.h`](../inc/eshkol/eshkol.h) - Main system header (1,912 lines)
+- [`lib/backend/llvm_codegen.cpp`](../lib/backend/llvm_codegen.cpp) - Core codegen (33,999 lines)
+- [`lib/core/arena_memory.cpp`](../lib/core/arena_memory.cpp) - Memory manager (6,186 lines)
+- [`lib/frontend/parser.cpp`](../lib/frontend/parser.cpp) - S-expr parser (8,368 lines)
+- [`lib/types/type_checker.cpp`](../lib/types/type_checker.cpp) - Type inference (2,048 lines)
+- [`lib/repl/repl_jit.cpp`](../lib/repl/repl_jit.cpp) - JIT compiler (3,382 lines)
+- [`exe/eshkol-run.cpp`](../exe/eshkol-run.cpp) - Compiler executable (3,484 lines)
 
-### Design Documents (future features)
+### Forward-looking design documents
 
-- `docs/QUANTUM_STOCHASTIC_COMPUTING_ARCHITECTURE.md` - Quantum computing roadmap
-- `docs/NEURO_SYMBOLIC_COMPLETE_ARCHITECTURE.md` - Logic programming & KB
-- `docs/MULTIMEDIA_SYSTEM_ARCHITECTURE.md` - Graphics/audio/hardware
-- `docs/HOTT_TYPE_SYSTEM_EXTENSION.md` - Full HoTT integration
+- [`future/NEURO_SYMBOLIC_COMPLETE_ARCHITECTURE.md`](future/NEURO_SYMBOLIC_COMPLETE_ARCHITECTURE.md) — neuro-symbolic stack beyond v1.2
+- [`future/MULTIMEDIA_SYSTEM_ARCHITECTURE.md`](future/MULTIMEDIA_SYSTEM_ARCHITECTURE.md) — multimedia / graphics / audio roadmap
+- (Quantum-stochastic and full HoTT integration documents were planned but are not in the public tree; the project memory tracks both as v2.0+ research items.)
 
 ### Related Documentation
 
-- [`API_REFERENCE.md`](API_REFERENCE.md) - Complete API with examples
-- [`QUICKSTART.md`](QUICKSTART.md) - 15-minute getting started guide
-- [`API_REFERENCE.md`](API_REFERENCE.md) - Complete API documentation (700+ builtins)
-- [`KNOWN_ISSUES.md`](KNOWN_ISSUES.md) - Current limitations and planned features
-- [`QUICKSTART.md`](QUICKSTART.md) - Getting started guide
+- [`API_REFERENCE.md`](API_REFERENCE.md) - Complete API reference with examples
+- [`QUICKSTART.md`](QUICKSTART.md) - 15-minute getting-started guide
+- [`KNOWN_ISSUES.md`](KNOWN_ISSUES.md) - Current limitations and roadmap items
 
 ---
 

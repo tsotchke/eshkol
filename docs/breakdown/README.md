@@ -129,11 +129,11 @@ build/eshkol-run hello.esk
 
 ### Implementation Statistics
 
-- **Frontend**: S-expression parser (5,487 lines), macro expander (1,234 lines)
-- **Type Checker**: HoTT-inspired gradual typing (1,561 lines)
-- **LLVM Backend**: Main codegen (34,928 lines) + 21 modules (~20K lines)
-- **Runtime**: Arena memory (3,210 lines), closure system, AD tape infrastructure
-- **JIT**: REPL with LLVM OrcJIT (1,108 lines)
+- **Frontend**: S-expression parser (8,368 lines), macro expander (1,304 lines)
+- **Type Checker**: HoTT-inspired gradual typing (2,048 lines)
+- **LLVM Backend**: Main codegen (33,999 lines) + roughly thirty specialised modules (~85,000 lines, including the post-v1.2 tensor split)
+- **Runtime**: Arena memory (6,186 lines), closure system, AD tape infrastructure
+- **JIT**: REPL with LLVM OrcJIT (3,382 lines)
 
 ## How to Navigate
 
