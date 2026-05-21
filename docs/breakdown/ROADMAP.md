@@ -1,4 +1,11 @@
-# Eshkol Development Roadmap
+# Eshkol Development Roadmap (breakdown summary)
+
+> **Position in the doc set:** this is the short-form roadmap surfaced
+> from the per-subsystem `docs/breakdown/` documentation. For the
+> canonical release plan, see [`ROADMAP.md`](../../ROADMAP.md) at the
+> repo root; for engineering detail see
+> [`COMPILER_ROADMAP.md`](../COMPILER_ROADMAP.md). When this document
+> disagrees with `ROADMAP.md`, `ROADMAP.md` is correct.
 
 ## Table of Contents
 - [Current Release](#current-release)

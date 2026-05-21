@@ -1,9 +1,11 @@
 # Eshkol compiler roadmap — v1.2-scale → v2.0-starlight
 
 **Date**: 2026-05-20
-**Authority**: this document supersedes the earlier single-axis trajectory.
-`docs/NOESIS_TRAJECTORY.md` remains valid as the Noesis-readiness view;
-this document is the authoritative version-by-version delivery plan.
+**Position in the doc set**: this is the **engineering-detail companion** to
+the canonical [`ROADMAP.md`](../ROADMAP.md) at the repo root. When the two
+disagree, `ROADMAP.md` is correct and this document needs updating.
+`docs/NOESIS_TRAJECTORY.md` is the Noesis-readiness view of the same plan;
+both stay consistent with `ROADMAP.md`.
 
 Two axes are tracked side-by-side:
 
