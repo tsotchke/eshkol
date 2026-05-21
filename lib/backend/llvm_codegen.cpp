@@ -7299,6 +7299,12 @@ private:
                 if (ptoi) {
                     // Heuristic: tensor operations have specific naming patterns
                     std::string name = ptoi->getName().str();
+                    if (name.find("ptr_to_usize") != std::string::npos ||
+                        name.find("ptr_bits") != std::string::npos) {
+                        eshkol_debug("detectValueType: pointer conversion bits (%s), treating as INT64", name.c_str());
+                        return TypedValue(llvm_val, ESHKOL_VALUE_INT64,
+                                          eshkol::hott::BuiltinTypes::USize, true);
+                    }
                     if (name.find("tensor") != std::string::npos ||
                         name.find("vector") != std::string::npos ||
                         name.find("gradient") != std::string::npos ||
@@ -7856,20 +7862,12 @@ private:
             // MUTABLE CAPTURE FIX: If it's an Argument with pointer type (closure capture storage),
             // load the value from the pointed-to storage
             if (isa<Argument>(sym_val) && sym_val->getType()->isPointerTy()) {
-                if (tracked_hott_type == eshkol::hott::BuiltinTypes::Pointer &&
-                    sym_val->getType() != tagged_value_type) {
-                    return sym_val;
-                }
                 Value* loaded = builder->CreateLoad(tagged_value_type, sym_val, var_name + ".load");
                 return emitUseAfterMoveCheck(loaded, var_name);
             }
             // MUTABLE CAPTURE FIX: If it's any other pointer (e.g., IntToPtr result from
             // unpacking an alloca pointer stored in closure env), load from it
             if (sym_val->getType()->isPointerTy()) {
-                if (tracked_hott_type == eshkol::hott::BuiltinTypes::Pointer &&
-                    sym_val->getType() != tagged_value_type) {
-                    return sym_val;
-                }
                 Value* loaded = builder->CreateLoad(tagged_value_type, sym_val, var_name + ".load");
                 return emitUseAfterMoveCheck(loaded, var_name);
             }
@@ -11359,7 +11357,12 @@ private:
             }
 
             Value* ptr_bits = builder->CreatePtrToInt(raw_ptr, intptr_type, "ptr_bits");
-            return builder->CreateIntCast(ptr_bits, int64_type, false, "ptr_to_usize");
+            Value* bits64 = builder->CreateIntCast(ptr_bits, int64_type, false, "ptr_to_usize");
+            if (isa<PtrToIntInst>(bits64)) {
+                bits64 = builder->CreateAdd(
+                    bits64, ConstantInt::get(int64_type, 0), "ptr_to_usize");
+            }
+            return bits64;
         }
         if (func_name == "usize->ptr") {
             if (op->call_op.num_vars != 1) {
