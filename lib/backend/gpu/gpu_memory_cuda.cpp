@@ -66,6 +66,10 @@ static std::mutex g_gpu_init_mutex;
 static cudaStream_t g_cuda_stream = nullptr;
 static cublasHandle_t g_cublas_handle = nullptr;
 
+static constexpr uint32_t CUDA_FLAG_WRAPPED_HOST = 1u << 0;
+static constexpr uint32_t CUDA_FLAG_COPY_BACK = 1u << 1;
+static constexpr uint32_t CUDA_FLAG_HOST_REGISTERED = 1u << 2;
+
 static int cuda_init(void) {
     int device_count = 0;
     cudaError_t err = cudaGetDeviceCount(&device_count);
@@ -143,11 +147,21 @@ static int cuda_alloc(size_t size_bytes, EshkolMemoryType mem_type, EshkolGPUBuf
 }
 
 static void cuda_free(EshkolGPUBuffer* buffer) {
+    if ((buffer->flags & CUDA_FLAG_COPY_BACK) && buffer->backend_data &&
+        buffer->host_ptr && buffer->host_ptr != buffer->backend_data) {
+        cudaStreamSynchronize(g_cuda_stream);
+        memcpy(buffer->backend_data, buffer->host_ptr, buffer->size_bytes);
+    }
+
     switch (buffer->mem_type) {
         case ESHKOL_MEM_HOST_PINNED:
-            if (buffer->host_ptr) cudaFreeHost(buffer->host_ptr);
-            if (buffer->device_ptr && buffer->device_ptr != buffer->host_ptr) {
-                cudaFree(buffer->device_ptr);
+            if ((buffer->flags & CUDA_FLAG_HOST_REGISTERED) && buffer->host_ptr) {
+                cudaHostUnregister(buffer->host_ptr);
+            } else {
+                if (buffer->host_ptr) cudaFreeHost(buffer->host_ptr);
+                if (buffer->device_ptr && buffer->device_ptr != buffer->host_ptr) {
+                    cudaFree(buffer->device_ptr);
+                }
             }
             break;
         default:
@@ -158,6 +172,23 @@ static void cuda_free(EshkolGPUBuffer* buffer) {
 
 static int cuda_sync(EshkolGPUBuffer* buffer, EshkolSyncDirection direction) {
     if (buffer->mem_type == ESHKOL_MEM_UNIFIED) {
+        cudaStreamSynchronize(g_cuda_stream);
+        if ((buffer->flags & CUDA_FLAG_COPY_BACK) && buffer->backend_data &&
+            buffer->host_ptr && buffer->host_ptr != buffer->backend_data &&
+            (direction == ESHKOL_SYNC_DEVICE_TO_HOST ||
+             direction == ESHKOL_SYNC_BIDIRECTIONAL)) {
+            memcpy(buffer->backend_data, buffer->host_ptr, buffer->size_bytes);
+        }
+        if ((buffer->flags & CUDA_FLAG_COPY_BACK) && buffer->backend_data &&
+            buffer->host_ptr && buffer->host_ptr != buffer->backend_data &&
+            (direction == ESHKOL_SYNC_HOST_TO_DEVICE ||
+             direction == ESHKOL_SYNC_BIDIRECTIONAL)) {
+            memcpy(buffer->host_ptr, buffer->backend_data, buffer->size_bytes);
+        }
+        return 0;
+    }
+
+    if ((buffer->flags & CUDA_FLAG_HOST_REGISTERED) && buffer->mem_type == ESHKOL_MEM_HOST_PINNED) {
         cudaStreamSynchronize(g_cuda_stream);
         return 0;
     }
@@ -219,22 +250,31 @@ static int cuda_matmul_f32(EshkolGPUBuffer* A, EshkolGPUBuffer* B, EshkolGPUBuff
 }
 
 static int cuda_wrap_host(void* host_ptr, size_t size_bytes, EshkolGPUBuffer* out) {
-    cudaError_t err = cudaHostRegister(host_ptr, size_bytes, cudaHostRegisterDefault);
-    if (err != cudaSuccess) {
-        // Fallback: allocate and copy
-        int result = cuda_alloc(size_bytes, ESHKOL_MEM_UNIFIED, out);
-        if (result != 0) return result;
-        memcpy(out->host_ptr, host_ptr, size_bytes);
-        return 0;
+    cudaError_t err = cudaHostRegister(host_ptr, size_bytes, cudaHostRegisterMapped);
+    if (err == cudaSuccess) {
+        void* device_ptr = nullptr;
+        err = cudaHostGetDevicePointer(&device_ptr, host_ptr, 0);
+        if (err == cudaSuccess && device_ptr) {
+            out->host_ptr = host_ptr;
+            out->device_ptr = device_ptr;
+            out->size_bytes = size_bytes;
+            out->mem_type = ESHKOL_MEM_HOST_PINNED;
+            out->backend = ESHKOL_GPU_CUDA;
+            out->flags = CUDA_FLAG_WRAPPED_HOST | CUDA_FLAG_HOST_REGISTERED;
+            out->backend_data = nullptr;
+            return 0;
+        }
+        cudaHostUnregister(host_ptr);
     }
 
-    out->host_ptr = host_ptr;
-    out->device_ptr = host_ptr;
-    out->size_bytes = size_bytes;
-    out->mem_type = ESHKOL_MEM_HOST_PINNED;
-    out->backend = ESHKOL_GPU_CUDA;
-    out->flags = 1;  // Wrapped
-    out->backend_data = nullptr;
+    // Fallback: allocate managed memory and keep the caller's host pointer
+    // for synchronization/copy-back. This path covers stack/unaligned memory
+    // and hosts where mapped pinned registration is not available.
+    int result = cuda_alloc(size_bytes, ESHKOL_MEM_UNIFIED, out);
+    if (result != 0) return result;
+    memcpy(out->host_ptr, host_ptr, size_bytes);
+    out->flags = CUDA_FLAG_WRAPPED_HOST | CUDA_FLAG_COPY_BACK;
+    out->backend_data = host_ptr;
 
     return 0;
 }
@@ -329,6 +369,10 @@ int eshkol_gpu_backend_available(EshkolGPUBackend backend) {
 int eshkol_gpu_supports_f64(void) {
     // CUDA supports f64 on all modern GPUs
     return (g_active_backend == ESHKOL_GPU_CUDA) ? 1 : 0;
+}
+
+int eshkol_gpu_has_fp64(void) {
+    return eshkol_gpu_supports_f64();
 }
 
 int eshkol_gpu_alloc(size_t size_bytes, EshkolMemoryType mem_type, EshkolGPUBuffer* out_buffer) {
@@ -488,18 +532,26 @@ void eshkol_matmul_dispatch(const double* A, const double* B, double* C,
     size_t num_elements = M * N;
 
     if (eshkol_gpu_should_use(num_elements)) {
-        EshkolGPUBuffer buf_a, buf_b, buf_c;
-        if (eshkol_gpu_wrap_host((void*)A, M * K * sizeof(double), &buf_a) == 0 &&
-            eshkol_gpu_wrap_host((void*)B, K * N * sizeof(double), &buf_b) == 0 &&
-            eshkol_gpu_wrap_host((void*)C, M * N * sizeof(double), &buf_c) == 0) {
+        EshkolGPUBuffer buf_a = {0};
+        EshkolGPUBuffer buf_b = {0};
+        EshkolGPUBuffer buf_c = {0};
+        const int wrapped_a = (eshkol_gpu_wrap_host((void*)A, M * K * sizeof(double), &buf_a) == 0);
+        const int wrapped_b = (eshkol_gpu_wrap_host((void*)B, K * N * sizeof(double), &buf_b) == 0);
+        const int wrapped_c = (eshkol_gpu_wrap_host((void*)C, M * N * sizeof(double), &buf_c) == 0);
 
+        if (wrapped_a && wrapped_b && wrapped_c) {
             if (eshkol_gpu_matmul_f64(&buf_a, &buf_b, &buf_c, M, K, N) == 0) {
+                eshkol_gpu_sync(&buf_c, ESHKOL_SYNC_DEVICE_TO_HOST);
                 eshkol_gpu_free(&buf_a);
                 eshkol_gpu_free(&buf_b);
                 eshkol_gpu_free(&buf_c);
                 return;
             }
         }
+
+        if (wrapped_a) eshkol_gpu_free(&buf_a);
+        if (wrapped_b) eshkol_gpu_free(&buf_b);
+        if (wrapped_c) eshkol_gpu_free(&buf_c);
     }
 
     extern void eshkol_matmul_f64(const double*, const double*, double*, uint64_t, uint64_t, uint64_t);

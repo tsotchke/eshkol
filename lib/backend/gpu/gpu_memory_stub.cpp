@@ -51,6 +51,10 @@ int eshkol_gpu_supports_f64(void) {
     return 0;
 }
 
+int eshkol_gpu_has_fp64(void) {
+    return 0;
+}
+
 // ===== Memory Allocation =====
 
 int eshkol_gpu_alloc(size_t size_bytes, EshkolMemoryType mem_type,
