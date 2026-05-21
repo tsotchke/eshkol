@@ -1003,11 +1003,27 @@ TypeCheckResult TypeChecker::synthesizeApplication(eshkol_ast_t* expr) {
         return TypeCheckResult::ok(BuiltinTypes::Value);
     }
 
+    std::string builtin_name;
+    const bool has_builtin_name = func_expr->type == ESHKOL_VAR && func_expr->variable.id;
+    if (has_builtin_name) {
+        builtin_name = func_expr->variable.id;
+    }
+
+    const auto should_skip_builtin_designator_arg = [&](size_t index) {
+        return has_builtin_name &&
+               (builtin_name == "compiler-fence" || builtin_name == "memory-fence") &&
+               index == 0;
+    };
+
     // Pre-synthesize all arguments to ensure nested expressions are type-checked
     // (e.g., (display (vector-ref v -1)) must check the vector-ref even though
     // display itself doesn't need arg types for its return type)
     std::vector<TypeCheckResult> arg_types;
     for (size_t i = 0; i < call.num_vars; ++i) {
+        if (should_skip_builtin_designator_arg(i)) {
+            arg_types.push_back(TypeCheckResult::ok(BuiltinTypes::Value));
+            continue;
+        }
         arg_types.push_back(synthesize(const_cast<eshkol_ast_t*>(&call.variables[i])));
     }
 
@@ -1190,6 +1206,47 @@ TypeCheckResult TypeChecker::synthesizeApplication(eshkol_ast_t* expr) {
         }
 
         // Low-level pointer conversions
+        auto resolve_fence_ordering =
+            [&](const eshkol_ast_t& ordering_arg, const char* builtin) -> bool {
+            if (ordering_arg.type != ESHKOL_VAR || !ordering_arg.variable.id) {
+                reportTypeIssue(std::string(builtin) +
+                                    " expects a fence ordering as its first argument",
+                                &ordering_arg);
+                return false;
+            }
+
+            const std::string ordering_name = ordering_arg.variable.id;
+            if (ordering_name == "acquire" ||
+                ordering_name == "release" ||
+                ordering_name == "acq-rel" ||
+                ordering_name == "seq-cst") {
+                return true;
+            }
+
+            reportTypeIssue(std::string(builtin) + " does not support fence ordering '" +
+                                ordering_name + "'",
+                            &ordering_arg);
+            return false;
+        };
+
+        if (func_name == "compiler-fence") {
+            if (call.num_vars != 1) {
+                reportTypeIssue("compiler-fence expects exactly 1 ordering argument", expr);
+            } else {
+                resolve_fence_ordering(call.variables[0], "compiler-fence");
+            }
+            return TypeCheckResult::ok(BuiltinTypes::Null);
+        }
+
+        if (func_name == "memory-fence") {
+            if (call.num_vars != 1) {
+                reportTypeIssue("memory-fence expects exactly 1 ordering argument", expr);
+            } else {
+                resolve_fence_ordering(call.variables[0], "memory-fence");
+            }
+            return TypeCheckResult::ok(BuiltinTypes::Null);
+        }
+
         if (func_name == "addr-of") {
             if (call.num_vars != 1) {
                 reportTypeIssue("addr-of expects exactly 1 argument", expr);

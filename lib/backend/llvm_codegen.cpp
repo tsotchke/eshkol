@@ -1183,6 +1183,8 @@ public:
         function_return_types["exact"] = BuiltinTypes::Int64;
         function_return_types["exact-integer?"] = BuiltinTypes::Boolean;
         function_return_types["square"] = BuiltinTypes::Number;
+        function_return_types["compiler-fence"] = BuiltinTypes::Null;
+        function_return_types["memory-fence"] = BuiltinTypes::Null;
         function_return_types["addr-of"] = BuiltinTypes::Pointer;
         function_return_types["null-ptr"] = BuiltinTypes::Pointer;
         function_return_types["ptr->usize"] = BuiltinTypes::USize;
@@ -5118,6 +5120,12 @@ private:
                     }
 
                     // Low-level pointer conversions
+                    if (func_name == "compiler-fence" || func_name == "memory-fence") {
+                        Value* val = codegenAST(ast);
+                        if (!val) return TypedValue();
+                        return TypedValue(val, ESHKOL_VALUE_NULL,
+                                         eshkol::hott::BuiltinTypes::Null, true);
+                    }
                     if (func_name == "addr-of") {
                         eshkol::hott::TypeId pointee_type = eshkol::hott::BuiltinTypes::Value;
                         if (ast->operation.call_op.num_vars == 1) {
@@ -7157,6 +7165,32 @@ private:
                type_id == BuiltinTypes::UInt64 ||
                type_id == BuiltinTypes::USize ||
                type_id == BuiltinTypes::Char;
+    }
+
+    std::optional<AtomicOrdering> resolveFenceOrdering(const eshkol_ast_t* ordering_ast,
+                                                       const char* builtin_name) const {
+        if (!ordering_ast || ordering_ast->type != ESHKOL_VAR || !ordering_ast->variable.id) {
+            eshkol_error("%s expects a fence ordering as its first argument", builtin_name);
+            return std::nullopt;
+        }
+
+        const std::string ordering_name = ordering_ast->variable.id;
+        if (ordering_name == "acquire") {
+            return AtomicOrdering::Acquire;
+        }
+        if (ordering_name == "release") {
+            return AtomicOrdering::Release;
+        }
+        if (ordering_name == "acq-rel") {
+            return AtomicOrdering::AcquireRelease;
+        }
+        if (ordering_name == "seq-cst") {
+            return AtomicOrdering::SequentiallyConsistent;
+        }
+
+        eshkol_error("%s does not support fence ordering '%s'",
+                     builtin_name, ordering_ast->variable.id);
+        return std::nullopt;
     }
 
     eshkol::hott::TypeId resolveDeclaredHottTypeId(const hott_type_expr_t* type_expr) const {
@@ -11340,6 +11374,30 @@ private:
             Value* is_double = builder->CreateICmpEQ(base_type, ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
             Value* is_ad = isCallableSubtype(arg, CALLABLE_SUBTYPE_AD_NODE);
             return packBoolToTaggedValue(builder->CreateOr(is_double, is_ad));
+        }
+        if (func_name == "compiler-fence") {
+            if (op->call_op.num_vars != 1) {
+                eshkol_error("compiler-fence requires exactly 1 ordering argument");
+                return packNullToTaggedValue();
+            }
+
+            auto ordering = resolveFenceOrdering(&op->call_op.variables[0], "compiler-fence");
+            if (!ordering) return packNullToTaggedValue();
+
+            builder->CreateFence(*ordering, SyncScope::SingleThread);
+            return packNullToTaggedValue();
+        }
+        if (func_name == "memory-fence") {
+            if (op->call_op.num_vars != 1) {
+                eshkol_error("memory-fence requires exactly 1 ordering argument");
+                return packNullToTaggedValue();
+            }
+
+            auto ordering = resolveFenceOrdering(&op->call_op.variables[0], "memory-fence");
+            if (!ordering) return packNullToTaggedValue();
+
+            builder->CreateFence(*ordering);
+            return packNullToTaggedValue();
         }
         if (func_name == "addr-of") {
             if (op->call_op.num_vars != 1) {
@@ -20606,6 +20664,7 @@ private:
             "exact?", "inexact?", "zero?", "positive?", "negative?",
             "number?", "integer?", "real?", "complex?",
             "exact->inexact", "inexact->exact", "exact", "inexact",
+            "addr-of", "compiler-fence", "memory-fence",
             "null-ptr", "ptr->usize", "usize->ptr",
             "exact-integer?", "square",
             "floor-quotient", "floor-remainder", "floor/",
