@@ -1010,10 +1010,20 @@ TypeCheckResult TypeChecker::synthesizeApplication(eshkol_ast_t* expr) {
     }
 
     const auto should_skip_builtin_designator_arg = [&](size_t index) {
-        return has_builtin_name &&
-               (builtin_name == "compiler-fence" || builtin_name == "memory-fence" ||
-                builtin_name == "volatile-load" || builtin_name == "volatile-store!") &&
-               index == 0;
+        if (!has_builtin_name) {
+            return false;
+        }
+
+        if (builtin_name == "compiler-fence" || builtin_name == "memory-fence" ||
+            builtin_name == "volatile-load" || builtin_name == "volatile-store!") {
+            return index == 0;
+        }
+
+        if (builtin_name == "target-intrinsic") {
+            return index == 0 || (index >= 2 && (index % 2) == 0);
+        }
+
+        return false;
     };
 
     // Pre-synthesize all arguments to ensure nested expressions are type-checked
@@ -1341,6 +1351,62 @@ TypeCheckResult TypeChecker::synthesizeApplication(eshkol_ast_t* expr) {
             }
 
             return TypeCheckResult::ok(BuiltinTypes::Null);
+        }
+
+        if (func_name == "target-intrinsic") {
+            auto return_type = call.num_vars >= 1
+                                   ? resolve_low_level_type_designator(
+                                         call.variables[0], "target-intrinsic", "return", true)
+                                   : std::nullopt;
+
+            if (call.num_vars < 2) {
+                reportTypeIssue(
+                    "target-intrinsic expects a return type, intrinsic name, and zero or more typed arguments",
+                    expr);
+            } else {
+                if (call.variables[1].type != ESHKOL_STRING || !call.variables[1].str_val.ptr) {
+                    reportTypeIssue(
+                        "target-intrinsic expects an LLVM intrinsic name string as its second argument",
+                        &call.variables[1]);
+                }
+
+                if ((call.num_vars % 2) != 0) {
+                    reportTypeIssue(
+                        "target-intrinsic expects argument type/value pairs after the intrinsic name",
+                        expr);
+                }
+
+                for (size_t i = 2; i + 1 < call.num_vars; i += 2) {
+                    auto arg_type = resolve_low_level_type_designator(
+                        call.variables[i], "target-intrinsic", "argument", false);
+                    if (!arg_type || !arg_types[i + 1].success) {
+                        continue;
+                    }
+
+                    TypeId value_type = arg_types[i + 1].inferred_type;
+                    if (*arg_type == BuiltinTypes::Pointer) {
+                        if (value_type == BuiltinTypes::Value &&
+                            call.variables[i + 1].type == ESHKOL_VAR &&
+                            call.variables[i + 1].variable.id) {
+                            ctx_.bind(call.variables[i + 1].variable.id, BuiltinTypes::Pointer);
+                        } else if (value_type != BuiltinTypes::Pointer) {
+                            reportTypeIssue(
+                                "target-intrinsic expects a Ptr value for pointer-typed arguments",
+                                &call.variables[i + 1]);
+                        }
+                    } else if (value_type == BuiltinTypes::Value &&
+                               call.variables[i + 1].type == ESHKOL_VAR &&
+                               call.variables[i + 1].variable.id) {
+                        ctx_.bind(call.variables[i + 1].variable.id, *arg_type);
+                    } else if (!env_.isSubtype(value_type, BuiltinTypes::Integer)) {
+                        reportTypeIssue(
+                            "target-intrinsic expects integer-compatible values for machine integer arguments",
+                            &call.variables[i + 1]);
+                    }
+                }
+            }
+
+            return TypeCheckResult::ok(return_type.value_or(BuiltinTypes::Value));
         }
 
         if (func_name == "compiler-fence") {
