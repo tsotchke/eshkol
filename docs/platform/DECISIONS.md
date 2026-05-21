@@ -356,3 +356,33 @@ Lower them through the typed codegen path and make tracked `Ptr` locals/globals 
 - typed codegen can recover raw pointers from tracked `Ptr` bindings instead of collapsing them into generic heap-object handling
 - low-level pointer work can proceed without forcing an immediate closure/function ABI rewrite
 - passing raw pointers through fully generic higher-order call paths remains a later slice, alongside volatility and explicit low-level calling-convention work
+
+---
+
+## D-0015
+
+- Date: 2026-04-15
+- Status: Accepted
+- Title: `addr-of` is limited to storage-backed bindings in the initial low-level surface
+
+### Context
+
+After landing pointer conversions, the next missing primitive was direct address-taking. The current compiler still treats many values as by-value tagged procedure arguments rather than true addressable lvalues. A full `addr-of` that worked over arbitrary expressions, temporaries, fields, and by-value parameters would require a broader lvalue model and ABI rewrite.
+
+### Decision
+
+Add `addr-of` now, but limit it to bindings that already have concrete storage in the current compiler model:
+
+- local `alloca`-backed bindings
+- global variables
+- external variables
+- existing capture-storage pointers used by closure lowering
+
+Reject non-variable expressions and non-addressable bindings in this slice.
+
+### Consequences
+
+- Eshkol gains a real address-taking primitive for low-level work and linker/global symbol integration
+- the primitive is honest about current compiler boundaries instead of fabricating lvalue semantics the runtime does not yet support
+- future work on volatility, MMIO, and linker-defined symbols can build on a stable address-of baseline
+- a broader `addr-of` semantics for temporaries, fields, and by-value parameters remains deferred until the low-level ABI surface expands

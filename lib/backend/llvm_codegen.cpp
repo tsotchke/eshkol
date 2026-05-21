@@ -1183,6 +1183,7 @@ public:
         function_return_types["exact"] = BuiltinTypes::Int64;
         function_return_types["exact-integer?"] = BuiltinTypes::Boolean;
         function_return_types["square"] = BuiltinTypes::Number;
+        function_return_types["addr-of"] = BuiltinTypes::Pointer;
         function_return_types["null-ptr"] = BuiltinTypes::Pointer;
         function_return_types["ptr->usize"] = BuiltinTypes::USize;
         function_return_types["usize->ptr"] = BuiltinTypes::Pointer;
@@ -5117,6 +5118,19 @@ private:
                     }
 
                     // Low-level pointer conversions
+                    if (func_name == "addr-of") {
+                        eshkol::hott::TypeId pointee_type = eshkol::hott::BuiltinTypes::Value;
+                        if (ast->operation.call_op.num_vars == 1) {
+                            TypedValue target = codegenTypedAST(&ast->operation.call_op.variables[0]);
+                            pointee_type = target.hott_type;
+                        }
+                        auto ptr_type_info = ctx_->hottTypes().makePointerType(pointee_type);
+
+                        Value* val = codegenAST(ast);
+                        if (!val) return TypedValue();
+                        return TypedValue(val, ESHKOL_VALUE_HEAP_PTR,
+                                         eshkol::hott::BuiltinTypes::Pointer, ptr_type_info, true);
+                    }
                     if (func_name == "null-ptr") {
                         Value* val = codegenAST(ast);
                         if (!val) return TypedValue();
@@ -11326,6 +11340,66 @@ private:
             Value* is_double = builder->CreateICmpEQ(base_type, ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
             Value* is_ad = isCallableSubtype(arg, CALLABLE_SUBTYPE_AD_NODE);
             return packBoolToTaggedValue(builder->CreateOr(is_double, is_ad));
+        }
+        if (func_name == "addr-of") {
+            if (op->call_op.num_vars != 1) {
+                eshkol_error("addr-of requires exactly 1 argument");
+                return nullptr;
+            }
+
+            const eshkol_ast_t* target_ast = &op->call_op.variables[0];
+            if (target_ast->type != ESHKOL_VAR || !target_ast->variable.id) {
+                eshkol_error("addr-of requires a variable reference");
+                return nullptr;
+            }
+
+            std::string target_name = target_ast->variable.id;
+            auto lookupAddressableStorage = [&](const std::string& name) -> Value* {
+                auto local_it = symbol_table.find(name);
+                if (local_it != symbol_table.end() && local_it->second) {
+                    Value* storage = local_it->second;
+                    if (isa<AllocaInst>(storage) || isa<GlobalVariable>(storage)) {
+                        return storage;
+                    }
+                    if (isa<Argument>(storage) && storage->getType()->isPointerTy()) {
+                        Argument* arg = cast<Argument>(storage);
+                        if (!current_function || arg->getParent() == current_function) {
+                            return storage;
+                        }
+                    }
+                    if (isa<IntToPtrInst>(storage)) {
+                        return storage;
+                    }
+                    if (isa<CallInst>(storage) && storage->getType()->isPointerTy()) {
+                        return storage;
+                    }
+                }
+
+                auto global_it = global_symbol_table.find(name);
+                if (global_it != global_symbol_table.end() && global_it->second) {
+                    Value* storage = global_it->second;
+                    if (isa<GlobalVariable>(storage)) {
+                        return storage;
+                    }
+                }
+
+                return nullptr;
+            };
+
+            Value* storage = lookupAddressableStorage(target_name);
+            if (!storage) {
+                eshkol_error("addr-of target '%s' is not addressable in the current context",
+                             target_name.c_str());
+                return nullptr;
+            }
+
+            if (!storage->getType()->isPointerTy()) {
+                eshkol_error("addr-of target '%s' does not have addressable storage",
+                             target_name.c_str());
+                return nullptr;
+            }
+
+            return storage;
         }
         if (func_name == "null-ptr") {
             if (op->call_op.num_vars != 0) {
