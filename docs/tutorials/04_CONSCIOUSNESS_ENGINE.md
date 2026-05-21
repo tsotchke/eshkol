@@ -181,16 +181,17 @@ at 16, regardless of what you pass).
 (define ws (make-workspace 3 4))
 
 ;; Register processing modules. Each is a triple of (workspace, name, fn).
-;; The closure must take one argument (the current workspace content) and
-;; return a content tensor of length dim. Salience is read from the
-;; returned tensor's norm, and the softmax winner's tensor becomes the new
-;; broadcast content.
+;; The closure takes the current workspace content and must return a
+;; `(cons salience proposal-tensor)` pair: the salience is a scalar
+;; (double) used in softmax competition, and the proposal-tensor is a
+;; tensor of length `dim` that becomes the broadcast content if this
+;; module wins. The salience is read from `car`; the tensor from `cdr`.
 (ws-register! ws "visual"
-  (lambda (content) #(0.8 0.5 0.3)))
+  (lambda (content) (cons 0.8 #(0.8 0.5 0.3))))
 (ws-register! ws "auditory"
-  (lambda (content) #(0.2 0.9 0.1)))
+  (lambda (content) (cons 0.6 #(0.2 0.9 0.1))))
 (ws-register! ws "memory"
-  (lambda (content) #(0.5 0.5 0.5)))
+  (lambda (content) (cons 0.3 #(0.5 0.5 0.5))))
 
 ;; Step the workspace — modules compete via softmax, the winner broadcasts.
 ;; ws-step! takes exactly one argument (the workspace) and reads the
@@ -231,15 +232,16 @@ The real power is combining logic + inference + workspace:
 (define ws (make-workspace 1 4))
 (ws-register! ws "logic"
   (lambda (content)
-    ;; salience is high when the KB has at least one symptom asserted
+    ;; Closure returns (cons salience proposal-tensor).
+    ;; Salience is high when the KB has at least one symptom asserted.
     (if (null? (kb-query kb (make-fact 'symptom ?s)))
-        #(0.1)
-        #(0.9))))
+        (cons 0.1 #(0.1))
+        (cons 0.9 #(0.9)))))
 (ws-register! ws "inference"
   (lambda (content)
-    ;; salience could be derived from the model's free energy on a
+    ;; Salience could be derived from the model's free energy on a
     ;; per-cycle observation; placeholder constant for now.
-    #(0.5)))
+    (cons 0.5 #(0.5))))
 (ws-step! ws)
 ```
 
