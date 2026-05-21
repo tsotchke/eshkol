@@ -464,7 +464,7 @@ Native Windows builds are now supported:
 
 **Release Date**: December 12, 2025
 
-We are proud to announce the **production release** of Eshkol v1.0-foundation - a complete, production-ready programming language that delivers unprecedented integration of compiler-level automatic differentiation, deterministic arena memory management, and homoiconic native code execution.
+v1.0-foundation marks the first production release of Eshkol — a programming language that integrates compiler-level automatic differentiation, deterministic arena memory management, and homoiconic native-code execution as first-class language features rather than library overlays.
 
 ## What is Eshkol?
 

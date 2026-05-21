@@ -7,11 +7,11 @@
 > and first-class continuations (call/cc, dynamic-wind). See [CHANGELOG.md](../../CHANGELOG.md)
 > and [V1.1 Scope](../V1.1_SCOPE.md).
 
-This directory contains vision documents for Eshkol v1.0-architecture, grounded in the actual production compiler implementation.
+This directory contains vision documents tracing Eshkol's architectural baseline (v1.0-foundation through the current v1.2.1-scale production release), grounded in the actual compiler implementation.
 
-## What is Eshkol v1.0-architecture?
+## What is Eshkol?
 
-Eshkol is a **production-ready Scheme dialect** with a sophisticated LLVM-based compiler (C/C++) that delivers:
+Eshkol is a **production-ready Scheme dialect** with a sophisticated LLVM-21 compiler (C/C++) that delivers:
 
 - **Native code generation** via modular LLVM backend
 - **Compiler-integrated automatic differentiation** (forward/reverse modes with nested gradient support)
