@@ -126,10 +126,10 @@ Eshkol isn't just theoretically interesting—it's designed to solve real proble
 
 For those interested in the technical details, Eshkol achieves its unique capabilities through a sophisticated architecture:
 
-- **Compilation to C** for maximum performance and portability
-- **Advanced type inference** that minimizes the need for explicit annotations
-- **Powerful macro system** for extending the language
-- **Scheme compatibility** for leveraging existing code and knowledge
+- **Direct compilation to LLVM IR** (LLVM 21), producing native binaries on macOS / Linux / Windows; the WebAssembly target uses the same in-memory codegen path.
+- **Bidirectional HoTT-inspired type checking** with gradual-typing defaults; type annotations are optional and most errors surface as warnings, with `--strict-types` available for a hard gate.
+- **Hygienic `syntax-rules` macros** for extending the language.
+- **R7RS compatibility** for leveraging existing Scheme code, plus first-class Scheme features (call/cc, dynamic-wind, multiple return values, bytevectors, exact numerics).
 
 The language combines influences from multiple programming traditions:
 
@@ -163,14 +163,16 @@ More complex examples showcase Eshkol's scientific computing capabilities:
                 (+ i 1))))))
 ```
 
-## The Future of Eshkol
+## What's Shipping Today
 
-Eshkol is actively evolving, with several exciting developments on the horizon:
+As of v1.2.1-scale, the following are production features and not future work:
 
-- **Advanced concurrency** for better utilization of multi-core processors
-- **GPU acceleration** for massively parallel workloads
-- **Quantum computing extensions** for the next generation of computing
-- **Interactive development environment** for rapid prototyping and visualization
+- **Work-stealing parallelism** — Chase-Lev deques per worker, per-thread arenas, measured 4–12× speed-up on 24-core `parallel-map`.
+- **GPU acceleration** — Metal (macOS, full precision tiers via software-float64 emulation when needed), CUDA + cuBLAS (Linux + Windows with NVIDIA), and an XLA / StableHLO backend with cost-model dispatch on tensor size.
+- **Interactive REPL** — `eshkol-repl` uses LLVM OrcJIT; the `--machine` warm-worker mode amortises JIT cold-start over many forms and frames its output for orchestrator tooling.
+- **Constructive proof of computable transformers** — the SDNC paper artefact ships in `docs/SDNC.md` with a one-command reproducibility container that verifies a fixed-weight, 12.22M-parameter, six-layer transformer is bit-identical to an 83-opcode VM.
+
+Genuinely future-facing items include quantum-computing extensions (research track), formal verification of the compilation chain, multi-node distributed training, and Vulkan compute shaders for non-NVIDIA / non-Apple GPUs.
 
 ## Why Eshkol Matters
 

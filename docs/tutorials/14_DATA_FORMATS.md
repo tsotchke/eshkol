@@ -58,14 +58,18 @@ Eshkol includes built-in support for common data interchange formats.
 ```scheme
 (require core.data.base64)
 
+;; `base64-encode` operates on a byte list; `base64-encode-string` is the
+;; string entry point that does the conversion for you. `base64-decode`
+;; returns bytes; `base64-decode-string` returns a string.
+
 ;; Encode string to Base64
-(define encoded (base64-encode "Hello, world!"))
+(define encoded (base64-encode-string "Hello, world!"))
 (display encoded)
 (newline)
 ;; => "SGVsbG8sIHdvcmxkIQ=="
 
-;; Decode Base64 to string
-(define decoded (base64-decode encoded))
+;; Decode Base64 back to string
+(define decoded (base64-decode-string encoded))
 (display decoded)
 (newline)
 ;; => "Hello, world!"

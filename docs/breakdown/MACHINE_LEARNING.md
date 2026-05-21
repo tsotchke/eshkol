@@ -2,7 +2,7 @@
 
 ## Technical Reference
 
-**Source:** `lib/backend/tensor_codegen.cpp` (19,187 lines)
+**Source:** `lib/backend/tensor_codegen.cpp` (1,540-line dispatcher) plus the twelve `tensor_*_codegen.cpp` per-domain modules (~19,200 lines combined) introduced by the v1.2 split
 **Implementation level:** Compiler-level builtins via LLVM IR codegen
 **Tensor representation:** Homogeneous `double` arrays stored as `int64` bitpatterns (8 bytes per element)
 **Acceleration:** SIMD vectorization (ARM NEON / x86 SSE/AVX), Apple Accelerate (cBLAS/AMX), Metal GPU

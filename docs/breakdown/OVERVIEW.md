@@ -64,7 +64,7 @@ Hygienic macro expansion via `syntax-rules` pattern matching. The system support
 ;; Output: (if (> x 0) (begin (display x)) #f)
 ```
 
-**Phase 2: S-Expression Parsing** (7,540 lines in [parser.cpp](lib/frontend/parser.cpp))
+**Phase 2: S-Expression Parsing** (8,368 lines in [parser.cpp](lib/frontend/parser.cpp))
 
 Builds an AST from S-expressions. The parser is a recursive descent processor that handles:
 - 94 operation types (see `eshkol_op_t` enum in [eshkol.h](inc/eshkol/eshkol.h))
@@ -88,15 +88,15 @@ Hindley-Milner-style inference with universe hierarchy extensions. The algorithm
 
 Unlike traditional type checkers, Eshkol's is **non-blocking**: type errors don't prevent compilation. This enables rapid prototyping but requires runtime type guards for safety (via tagged values).
 
-**Phase 4: LLVM IR Generation** (34,928 lines in [llvm_codegen.cpp](lib/backend/llvm_codegen.cpp) + 21 modules totaling ~232,000 lines)
+**Phase 4: LLVM IR Generation** (33,999 lines in [llvm_codegen.cpp](lib/backend/llvm_codegen.cpp) plus roughly thirty specialised modules; the compiler tree as a whole totals about 233,000 lines)
 
 Translates ASTs to LLVM IR. The modular architecture distributes code generation across specialized modules:
 
 | Module | Lines | Responsibility |
 |:---|---:|:---|
-| [llvm_codegen.cpp](lib/backend/llvm_codegen.cpp) | 34,928 | Main codegen, dispatch, builtins |
-| [tensor_codegen.cpp](lib/backend/tensor_codegen.cpp) | 19,187 | Tensor ops, ML builtins (75+ functions) |
-| [autodiff_codegen.cpp](lib/backend/autodiff_codegen.cpp) | 3,694 | Forward/reverse mode AD |
+| [llvm_codegen.cpp](lib/backend/llvm_codegen.cpp) | 33,999 | Main codegen, dispatch, builtins |
+| [tensor_codegen.cpp](lib/backend/tensor_codegen.cpp) | 1,540 | Tensor-op dispatch shell; per-domain ops live in twelve `tensor_*_codegen.cpp` siblings (~19,200 lines combined) |
+| [autodiff_codegen.cpp](lib/backend/autodiff_codegen.cpp) | 9,205 | Forward/reverse mode AD |
 | [string_io_codegen.cpp](lib/backend/string_io_codegen.cpp) | 2,975 | String, I/O, JSON, CSV operations |
 | [parallel_llvm_codegen.cpp](lib/backend/parallel_llvm_codegen.cpp) | 2,401 | Work-stealing parallelism codegen |
 | [arithmetic_codegen.cpp](lib/backend/arithmetic_codegen.cpp) | 2,332 | Numeric ops, bignum, rational, complex |
@@ -139,7 +139,7 @@ Eshkol applies LLVM's standard optimization pipeline:
 
 ### Runtime Architecture
 
-**Global Arena** ([arena_memory.cpp](lib/core/arena_memory.cpp), 4,972 lines):
+**Global Arena** ([arena_memory.cpp](lib/core/arena_memory.cpp), 6,186 lines):
 - Single allocator for all heap objects
 - 8KB minimum block size, doubling growth strategy
 - No individual `free()`; memory reclaimed via arena reset
@@ -228,7 +228,7 @@ v1.1-accelerate adds eight major feature systems to the v1.0-foundation core:
 
 ### Machine Learning Framework (75+ Builtins)
 
-A complete ML framework implemented as compiler-level builtins in [tensor_codegen.cpp](lib/backend/tensor_codegen.cpp) (19,187 lines), with SIMD acceleration and automatic GPU dispatch:
+A complete ML framework implemented as compiler-level builtins. The dispatch entry point is [tensor_codegen.cpp](lib/backend/tensor_codegen.cpp) (1,540 lines after the v1.2 split); the per-domain implementations live in twelve `tensor_*_codegen.cpp` siblings (~19,200 lines combined) with SIMD acceleration and automatic GPU dispatch:
 
 - **Activations** (16): relu, relu6, sigmoid, tanh, gelu, swish, mish, softmax, log-softmax, softplus, softsign, leaky-relu, prelu, elu, selu, celu
 - **Loss functions** (14): mse-loss, mae-loss, cross-entropy-loss, bce-loss, huber-loss, kl-div-loss, hinge-loss, smooth-l1-loss, focal-loss, triplet-loss, contrastive-loss, label-smoothing-loss, cosine-embedding-loss

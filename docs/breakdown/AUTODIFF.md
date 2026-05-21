@@ -314,7 +314,7 @@ Eshkol provides high-level vector calculus operators built on reverse-mode AD:
 
 | Component | File | Lines | Purpose |
 |-----------|------|-------|---------|
-| **AD Codegen** | [`lib/backend/autodiff_codegen.cpp`](lib/backend/autodiff_codegen.cpp) | 1,766 | All 3 AD modes, vector calculus |
+| **AD Codegen** | [`lib/backend/autodiff_codegen.cpp`](lib/backend/autodiff_codegen.cpp) | 9,205 | All 3 AD modes, vector calculus |
 | **AD Runtime** | [`inc/eshkol/eshkol.h:565-603`](inc/eshkol/eshkol.h) | 38 | AD node structures, tape definition |
 | **Dual Numbers** | [`inc/eshkol/eshkol.h:135-144`](inc/eshkol/eshkol.h) | 10 | Forward-mode dual number struct |
 | **Type System** | [`lib/backend/type_system.cpp`](lib/backend/type_system.cpp) | 287 | AD type generation (dual_t, ad_node_t) |
