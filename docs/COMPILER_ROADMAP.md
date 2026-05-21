@@ -10,7 +10,7 @@ both stay consistent with `ROADMAP.md`.
 Two axes are tracked side-by-side:
 
 1. **Release version** (v1.2, v1.3, …, v2.0) — when a feature ships to users.
-   Monthly cadence since v1.1-accelerate (2026-04-10); v1.2.0-scale shipped 2026-05-01 on schedule.
+   Monthly cadence since v1.1-accelerate (2026-04-10); v1.2.0-scale shipped 2026-05-01 on schedule, and the v1.2.1-scale closeout point release shipped 2026-05-20.
 2. **Noesis milestone** (M0, M1, M2, M3, M4) — what Noesis capability each
    feature unblocks. Taken from the 2026-04-17 Noesis gap audit.
 
@@ -24,8 +24,9 @@ research-grade Noesis.
 ## Current status (verified 2026-05-20)
 
 **Branch**: `master`
-**Last shipped release**: v1.2.0-scale (2026-05-01)
-**Current release line**: v1.2.1-scale closeout.
+**Last shipped release**: v1.2.1-scale (2026-05-20)
+**Base release**: v1.2.0-scale (2026-05-01).
+**Status**: v1.2.1-scale closeout complete — all M0 audit blockers cleared.
 
 Delivered in the v1.2.x closeout:
 - All v1.2 audit-fix items (#107–#133) — image I/O arena safety, symbol
