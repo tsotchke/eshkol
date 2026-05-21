@@ -61,11 +61,11 @@
                (s1   (substring hex 8 12))   ; xxxx
                (s2-3 (substring hex 13 16))  ; 3 nibbles after forced '4'
                (v    (string-ref hex 16))
-               (vn   (cond ((or (equal? v #\0) (equal? v #\1)
-                                (equal? v #\2) (equal? v #\3)) #\8)
-                           ((or (equal? v #\4) (equal? v #\5)
-                                (equal? v #\6) (equal? v #\7)) #\9)
-                           ((or (equal? v #\8) (equal? v #\9)) #\a)
+               (vn   (cond ((or (char=? v #\0) (char=? v #\1)
+                                (char=? v #\2) (char=? v #\3)) #\8)
+                           ((or (char=? v #\4) (char=? v #\5)
+                                (char=? v #\6) (char=? v #\7)) #\9)
+                           ((or (char=? v #\8) (char=? v #\9)) #\a)
                            (else #\b)))
                (s3-rest (substring hex 17 20))
                (s4   (substring hex 20 32)))
@@ -79,13 +79,13 @@
 ;; ----------------------------------------------------------------------------
 
 (define (base64url-encode-char c)
-  (cond ((equal? c #\+) #\-)
-        ((equal? c #\/) #\_)
+  (cond ((char=? c #\+) #\-)
+        ((char=? c #\/) #\_)
         (else c)))
 
 (define (base64url-decode-char c)
-  (cond ((equal? c #\-) #\+)
-        ((equal? c #\_) #\/)
+  (cond ((char=? c #\-) #\+)
+        ((char=? c #\_) #\/)
         (else c)))
 
 (define (string-translate s translator)
@@ -102,7 +102,7 @@
   (let loop ((len (string-length s)))
     (cond
       ((= len 0) s)
-      ((equal? (string-ref s (- len 1)) ch) (loop (- len 1)))
+      ((char=? (string-ref s (- len 1)) ch) (loop (- len 1)))
       (else (substring s 0 len)))))
 
 (define (pad-to-4 s)

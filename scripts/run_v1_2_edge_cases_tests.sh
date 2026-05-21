@@ -19,6 +19,7 @@ set -e
 # to a missing ./build/eshkol-run.
 BUILD_DIR="${BUILD_DIR:-build}"
 ESHKOL="./${BUILD_DIR}/eshkol-run"
+FAILURE_LINES="${ESHKOL_EDGE_FAILURE_LINES:-40}"
 PASS=0
 FAIL=0
 LOCK_DIR="${TMPDIR:-/tmp}/eshkol_v12_edge.lock"
@@ -40,7 +41,7 @@ has_failure_output() {
 }
 
 show_failure_output() {
-    grep -En '^[[:space:]]*FAIL:|RESULT: FAIL|RESULT: FAILURES|FAILURES DETECTED|SOME FAILED|SOME TESTS FAILED|TESTS FAILED' "$1" | head -10 | sed 's/^/    /'
+    grep -En '^[[:space:]]*FAIL:|RESULT: FAIL|RESULT: FAILURES|FAILURES DETECTED|SOME FAILED|SOME TESTS FAILED|TESTS FAILED' "$1" | head -n "$FAILURE_LINES" | sed 's/^/    /'
 }
 
 # Some edge-case tests use `(load "tests/v1_2_edge_cases/foo.esk")` —
@@ -75,7 +76,7 @@ for test in tests/v1_2_edge_cases/*.esk; do
             fi
         else
             echo "FAIL (JIT)"
-            head -10 "$RUN_OUT_TMP" | sed 's/^/    /'
+            head -n "$FAILURE_LINES" "$RUN_OUT_TMP" | sed 's/^/    /'
             FAIL=$((FAIL + 1))
         fi
         continue
@@ -97,12 +98,12 @@ for test in tests/v1_2_edge_cases/*.esk; do
             fi
         else
             echo "FAIL (runtime)"
-            head -10 "$RUN_OUT_TMP" | sed 's/^/    /'
+            head -n "$FAILURE_LINES" "$RUN_OUT_TMP" | sed 's/^/    /'
             FAIL=$((FAIL + 1))
         fi
     else
         echo "FAIL (compile)"
-        head -10 "$COMPILE_ERR_TMP" | sed 's/^/    /'
+        head -n "$FAILURE_LINES" "$COMPILE_ERR_TMP" | sed 's/^/    /'
         FAIL=$((FAIL + 1))
     fi
 done
@@ -126,7 +127,7 @@ for test in tests/v1_2_edge_cases/*.sh; do
         fi
     else
         echo "FAIL (shell)"
-        head -10 "$RUN_OUT_TMP" | sed 's/^/    /'
+        head -n "$FAILURE_LINES" "$RUN_OUT_TMP" | sed 's/^/    /'
         FAIL=$((FAIL + 1))
     fi
 done

@@ -6,10 +6,21 @@
 (define total 0)
 (define passed 0)
 
+(define (same? expected actual)
+  (cond
+    ((and (string? expected) (string? actual)) (string=? expected actual))
+    ((and (number? expected) (number? actual)) (= expected actual))
+    ((and (boolean? expected) (boolean? actual)) (eq? expected actual))
+    ((and (null? expected) (null? actual)) #t)
+    ((and (pair? expected) (pair? actual))
+     (and (same? (car expected) (car actual))
+          (same? (cdr expected) (cdr actual))))
+    (else (equal? expected actual))))
+
 (define (check name expected actual)
   (set! total (+ total 1))
   (cond
-    ((equal? expected actual)
+    ((same? expected actual)
      (set! passed (+ passed 1))
      (display "PASS: ") (display name) (newline))
     (else

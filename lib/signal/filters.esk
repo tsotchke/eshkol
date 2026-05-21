@@ -19,7 +19,8 @@
 ;;; Constants
 ;;; ============================================================
 
-(define *pi* 3.141592653589793)
+(define (window-ratio i denom)
+  (/ (exact->inexact i) (exact->inexact denom)))
 
 ;;; ============================================================
 ;;; Window Functions
@@ -34,7 +35,8 @@
               (if (< i N)
                   (begin
                     (vector-set! result i
-                      (- 0.54 (* 0.46 (cos (* 2.0 *pi* (/ i denom))))))
+                      (- 0.54 (* 0.46 (cos (* 2.0 3.141592653589793
+                                             (window-ratio i denom))))))
                     (loop (+ i 1)))
                   result))))
       (loop 0))))
@@ -48,7 +50,8 @@
               (if (< i N)
                   (begin
                     (vector-set! result i
-                      (* 0.5 (- 1.0 (cos (* 2.0 *pi* (/ i denom))))))
+                      (* 0.5 (- 1.0 (cos (* 2.0 3.141592653589793
+                                           (window-ratio i denom))))))
                     (loop (+ i 1)))
                   result))))
       (loop 0))))
@@ -60,11 +63,11 @@
         (denom (- N 1)))
     (letrec ((loop (lambda (i)
               (if (< i N)
-                  (let ((x (/ i denom)))
+                  (let ((x (window-ratio i denom)))
                     (vector-set! result i
                       (+ 0.42
-                         (- (* 0.5 (cos (* 2.0 *pi* x))))
-                         (* 0.08 (cos (* 4.0 *pi* x)))))
+                         (- (* 0.5 (cos (* 2.0 3.141592653589793 x))))
+                         (* 0.08 (cos (* 4.0 3.141592653589793 x)))))
                     (loop (+ i 1)))
                   result))))
       (loop 0))))
@@ -88,7 +91,7 @@
         (i0-beta (bessel-i0 beta)))
     (letrec ((loop (lambda (i)
               (if (< i N)
-                  (let* ((normalized (- (* 2.0 (/ i denom)) 1.0))
+                  (let* ((normalized (- (* 2.0 (window-ratio i denom)) 1.0))
                          (arg (* beta (sqrt (max 0.0 (- 1.0 (* normalized normalized)))))))
                     (vector-set! result i (/ (bessel-i0 arg) i0-beta))
                     (loop (+ i 1)))
@@ -267,7 +270,7 @@
   (let ((result (make-vector order (make-rectangular 0.0 0.0))))
     (letrec ((loop (lambda (k)
               (if (< k order)
-                  (let ((angle (/ (* *pi* (+ (* 2 k) order 1)) (* 2 order))))
+                  (let ((angle (/ (* 3.141592653589793 (+ (* 2 k) order 1)) (* 2 order))))
                     (vector-set! result k (make-rectangular (cos angle) (sin angle)))
                     (loop (+ k 1)))
                   result))))
@@ -322,7 +325,7 @@
 ;; cutoff: normalized cutoff frequency (0 to 1, where 1 = Nyquist)
 ;; Returns (b-coeffs . a-coeffs)
 (define (butterworth-lowpass order cutoff)
-  (let* ((wc (* *pi* cutoff))
+  (let* ((wc (* 3.141592653589793 cutoff))
          (T (* 2.0 (tan (/ wc 2.0))))
          ;; Get analog prototype poles and transform to z-plane
          (s-poles (butterworth-poles order))
@@ -406,7 +409,7 @@
         (na (vector-length a-coeffs)))
     (letrec ((outer (lambda (i)
               (if (< i n-points)
-                  (let* ((w (* *pi* (/ i (- n-points 1))))
+                  (let* ((w (* 3.141592653589793 (/ i (- n-points 1))))
                          ;; Evaluate H(e^jw) = B(e^jw) / A(e^jw)
                          (num (make-rectangular 0.0 0.0))
                          (den (make-rectangular 0.0 0.0)))

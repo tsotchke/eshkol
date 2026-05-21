@@ -10,12 +10,9 @@
 ;; Base64 Alphabet
 ;; =============================================================================
 
-;; Standard Base64 alphabet
-(define base64-chars "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/")
-
 ;;; base64-char-at: Get the base64 character for a 6-bit value (0-63)
 (define (base64-char-at index)
-  (string-ref base64-chars index))
+  (string-ref "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/" index))
 
 ;;; base64-value: Get the 6-bit value for a base64 character
 (define (base64-value ch)
