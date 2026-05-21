@@ -1066,7 +1066,7 @@ Shape (3, 1)    + Shape (3,)       → Error: trailing dims (1 vs empty, not 1 v
 
 Broadcasting applies to: `tensor-add`, `tensor-sub`, `tensor-mul`, `tensor-div`, and all
 element-wise operations. Internally implemented via `eshkol_broadcast_elementwise_f64()`
-in [tensor_codegen.cpp:852–936](lib/backend/tensor_codegen.cpp#L852-L936).
+in [lib/backend/tensor_codegen.cpp](../lib/backend/tensor_codegen.cpp).
 
 ---
 
@@ -1082,7 +1082,7 @@ arguments directly rather than a list.
 
 Uniform random tensor with values in [0, 1). Uses `drand48()` internally.
 
-**Implementation:** [tensor_codegen.cpp:5762](lib/backend/tensor_codegen.cpp#L5762) (`tensorRand`).
+**Implementation:** `tensorRand` in [lib/backend/tensor_codegen.cpp](../lib/backend/tensor_codegen.cpp).
 
 ```scheme
 (rand 3)       ; => #(0.482 0.917 0.123)
@@ -1096,7 +1096,7 @@ Uniform random tensor with values in [0, 1). Uses `drand48()` internally.
 Standard normal N(0, 1) random tensor. Uses the Box-Muller transform internally:
 generates pairs of uniform samples u₁, u₂ and computes z = √(-2 ln u₁) · cos(2π u₂).
 
-**Implementation:** [tensor_codegen.cpp:5833](lib/backend/tensor_codegen.cpp#L5833) (`tensorRandn`).
+**Implementation:** `tensorRandn` in [lib/backend/tensor_codegen.cpp](../lib/backend/tensor_codegen.cpp).
 
 ```scheme
 (randn 5)      ; => #(-0.31 1.24 0.08 -1.53 0.67) (varies)
@@ -1109,7 +1109,7 @@ generates pairs of uniform samples u₁, u₂ and computes z = √(-2 ln u₁) �
 
 Random integer tensor with values in [lo, hi).
 
-**Implementation:** [tensor_codegen.cpp:5929](lib/backend/tensor_codegen.cpp#L5929) (`tensorRandint`).
+**Implementation:** `tensorRandint` in [lib/backend/tensor_codegen.cpp](../lib/backend/tensor_codegen.cpp).
 
 ```scheme
 (randint 0 10 5)     ; => #(3.0 7.0 1.0 9.0 4.0) (integers as doubles)
@@ -1135,7 +1135,7 @@ diagonal, U is upper-triangular, and P is a permutation matrix.
 
 **Complexity:** O(n³/3) for n×n matrices.
 
-**Implementation:** [tensor_codegen.cpp:13102](lib/backend/tensor_codegen.cpp#L13102) (`tensorLU`).
+**Implementation:** `tensorLU` in [lib/backend/tensor_linalg_codegen.cpp](../lib/backend/tensor_linalg_codegen.cpp).
 
 ```scheme
 (define A #((2.0 1.0) (1.0 3.0)))
@@ -1153,7 +1153,7 @@ Matrix determinant computed via LU decomposition: det(A) = ∏ diag(U) · sign(P
 
 **Complexity:** O(n³/3) — dominated by the LU factorization.
 
-**Implementation:** [tensor_codegen.cpp:13272](lib/backend/tensor_codegen.cpp#L13272) (`tensorDet`).
+**Implementation:** `tensorDet` in [lib/backend/tensor_linalg_codegen.cpp](../lib/backend/tensor_linalg_codegen.cpp).
 
 ```scheme
 (tensor-det #((2.0 1.0) (1.0 3.0)))   ; => 5.0
@@ -1168,7 +1168,7 @@ Matrix inverse A⁻¹ via LU decomposition with forward and back substitution.
 
 **Complexity:** O(n³). Raises an error for singular matrices (det ≈ 0).
 
-**Implementation:** [tensor_codegen.cpp:13348](lib/backend/tensor_codegen.cpp#L13348) (`tensorInverse`).
+**Implementation:** `tensorInverse` in [lib/backend/tensor_linalg_codegen.cpp](../lib/backend/tensor_linalg_codegen.cpp).
 
 ```scheme
 (define A #((2.0 1.0) (1.0 3.0)))
@@ -1184,7 +1184,7 @@ Solves the linear system Ax = b via LU decomposition with forward and back subst
 
 **Complexity:** O(n³/3) for LU + O(n²) for substitution.
 
-**Implementation:** [tensor_codegen.cpp:13452](lib/backend/tensor_codegen.cpp#L13452) (`tensorSolve`).
+**Implementation:** `tensorSolve` in [lib/backend/tensor_linalg_codegen.cpp](../lib/backend/tensor_linalg_codegen.cpp).
 
 ```scheme
 (define A #((2.0 1.0) (1.0 3.0)))
@@ -1206,7 +1206,7 @@ positive-definite.
 **Use case:** Solving symmetric positive-definite systems (covariance matrices, kernel
 matrices in Gaussian processes). Twice as efficient as general LU.
 
-**Implementation:** [tensor_codegen.cpp:13588](lib/backend/tensor_codegen.cpp#L13588) (`tensorCholesky`).
+**Implementation:** `tensorCholesky` in [lib/backend/tensor_linalg_codegen.cpp](../lib/backend/tensor_linalg_codegen.cpp).
 
 ```scheme
 (define A #((4.0 2.0) (2.0 3.0)))   ; symmetric positive-definite
@@ -1226,7 +1226,7 @@ QR decomposition: A = QR where Q is orthogonal (Q^T Q = I) and R is upper-triang
 
 **Use case:** Least-squares problems (∥Ax - b∥² minimization), eigenvalue algorithms (QR iteration).
 
-**Implementation:** [tensor_codegen.cpp:13684](lib/backend/tensor_codegen.cpp#L13684) (`tensorQR`).
+**Implementation:** `tensorQR` in [lib/backend/tensor_linalg_codegen.cpp](../lib/backend/tensor_linalg_codegen.cpp).
 
 ```scheme
 (define A #((1.0 1.0) (0.0 1.0) (1.0 0.0)))   ; 3×2
@@ -1251,7 +1251,7 @@ with non-negative entries (singular values) in descending order.
 **Use case:** Principal Component Analysis (PCA), low-rank approximation (truncated SVD),
 matrix pseudoinverse, condition number computation.
 
-**Implementation:** [tensor_codegen.cpp:13869](lib/backend/tensor_codegen.cpp#L13869) (`tensorSVD`).
+**Implementation:** `tensorSVD` in [lib/backend/tensor_linalg_codegen.cpp](../lib/backend/tensor_linalg_codegen.cpp).
 
 ```scheme
 (define A #((1.0 2.0) (3.0 4.0) (5.0 6.0)))   ; 3×2
@@ -1278,7 +1278,7 @@ traces, transposes, and outer products. The `spec` string follows NumPy's einsum
 | `"ij,ij->"` | Frobenius inner product | `(einsum "ij,ij->" A B)` → scalar |
 | `"i,i->"` | Dot product | `(einsum "i,i->" u v)` → scalar |
 
-**Implementation:** [tensor_codegen.cpp:14092](lib/backend/tensor_codegen.cpp#L14092) (`tensorEinsum`).
+**Implementation:** `tensorEinsum` in [lib/backend/tensor_linalg_codegen.cpp](../lib/backend/tensor_linalg_codegen.cpp).
 
 ```scheme
 (define A #((1.0 2.0) (3.0 4.0)))
@@ -3054,8 +3054,8 @@ permanently ceasing to learn.
 
 **Use case:** Default activation for hidden layers in most architectures.
 
-**Implementation:** [tensor_codegen.cpp:3058](lib/backend/tensor_codegen.cpp#L3058) (`tensorRelu`).
-Backward: [tensor_codegen.cpp:5128](lib/backend/tensor_codegen.cpp#L5128) (`tensorReluBackward`).
+**Implementation:** `tensorRelu` in [lib/backend/tensor_activation_codegen.cpp](../lib/backend/tensor_activation_codegen.cpp).
+Backward: `tensorReluBackward` in [lib/backend/tensor_activation_codegen.cpp](../lib/backend/tensor_activation_codegen.cpp).
 
 #### `sigmoid`
 
@@ -3068,8 +3068,8 @@ x ≫ 0), causing vanishing gradients in deep networks. Outputs are not zero-cen
 
 **Use case:** Binary classification output layers, gating mechanisms (LSTM, GRU).
 
-**Implementation:** [tensor_codegen.cpp:3203](lib/backend/tensor_codegen.cpp#L3203) (`tensorSigmoid`).
-Backward: [tensor_codegen.cpp:5223](lib/backend/tensor_codegen.cpp#L5223).
+**Implementation:** `tensorSigmoid` in [lib/backend/tensor_activation_codegen.cpp](../lib/backend/tensor_activation_codegen.cpp).
+Backward: [lib/backend/tensor_codegen.cpp](../lib/backend/tensor_codegen.cpp).
 
 #### `softmax`
 
@@ -3085,8 +3085,8 @@ Numerically stabilized: internally computes exp(x_i - max(x)) to prevent overflo
 **Use case:** Multi-class classification output (produces a probability distribution that sums to 1),
 attention weight normalization in transformers.
 
-**Implementation:** [tensor_codegen.cpp:3371](lib/backend/tensor_codegen.cpp#L3371) (`tensorSoftmax`).
-Backward: [tensor_codegen.cpp:4994](lib/backend/tensor_codegen.cpp#L4994).
+**Implementation:** `tensorSoftmax` in [lib/backend/tensor_activation_codegen.cpp](../lib/backend/tensor_activation_codegen.cpp).
+Backward: [lib/backend/tensor_codegen.cpp](../lib/backend/tensor_codegen.cpp).
 
 #### `gelu`
 
@@ -3101,8 +3101,8 @@ inputs, enabling information flow through negative activations.
 **Use case:** Transformer architectures (BERT, GPT, ViT). Outperforms ReLU in language
 modeling tasks due to smoother optimization landscape.
 
-**Implementation:** [tensor_codegen.cpp:3631](lib/backend/tensor_codegen.cpp#L3631) (`tensorGelu`).
-Backward: [tensor_codegen.cpp:5318](lib/backend/tensor_codegen.cpp#L5318).
+**Implementation:** `tensorGelu` in [lib/backend/tensor_activation_codegen.cpp](../lib/backend/tensor_activation_codegen.cpp).
+Backward: [lib/backend/tensor_codegen.cpp](../lib/backend/tensor_codegen.cpp).
 
 #### `leaky-relu`
 
@@ -3115,8 +3115,8 @@ eliminates dead neurons — every unit always receives non-zero gradient.
 
 **Use case:** Drop-in replacement for ReLU when dead neurons are observed during training.
 
-**Implementation:** [tensor_codegen.cpp:3821](lib/backend/tensor_codegen.cpp#L3821) (`tensorLeakyRelu`).
-Backward: [tensor_codegen.cpp:5435](lib/backend/tensor_codegen.cpp#L5435).
+**Implementation:** `tensorLeakyRelu` in [lib/backend/tensor_activation_codegen.cpp](../lib/backend/tensor_activation_codegen.cpp).
+Backward: [lib/backend/tensor_codegen.cpp](../lib/backend/tensor_codegen.cpp).
 
 #### `silu`
 
@@ -3129,8 +3129,8 @@ non-monotonic, and bounded below. Gradients flow more uniformly than ReLU.
 
 **Use case:** EfficientNet, modern ConvNets. Often outperforms both ReLU and GELU.
 
-**Implementation:** [tensor_codegen.cpp:3963](lib/backend/tensor_codegen.cpp#L3963) (`tensorSilu`).
-Backward: [tensor_codegen.cpp:5531](lib/backend/tensor_codegen.cpp#L5531).
+**Implementation:** `tensorSilu` in [lib/backend/tensor_activation_codegen.cpp](../lib/backend/tensor_activation_codegen.cpp).
+Backward: [lib/backend/tensor_codegen.cpp](../lib/backend/tensor_codegen.cpp).
 
 #### `elu`
 
@@ -3143,7 +3143,7 @@ activations closer to zero, reducing the bias shift effect and accelerating conv
 
 **Use case:** When negative outputs are needed and mean activation near zero is desirable.
 
-**Implementation:** [tensor_codegen.cpp:4060](lib/backend/tensor_codegen.cpp#L4060) (`tensorElu`).
+**Implementation:** `tensorElu` in [lib/backend/tensor_activation_codegen.cpp](../lib/backend/tensor_activation_codegen.cpp).
 
 #### `selu`
 
@@ -3160,7 +3160,7 @@ need for batch normalization.
 
 **Use case:** Deep fully-connected networks without batch normalization.
 
-**Implementation:** [tensor_codegen.cpp:4182](lib/backend/tensor_codegen.cpp#L4182) (`tensorSelu`).
+**Implementation:** `tensorSelu` in [lib/backend/tensor_activation_codegen.cpp](../lib/backend/tensor_activation_codegen.cpp).
 
 #### `mish`
 
@@ -3173,7 +3173,7 @@ differentiable), unlike ReLU (non-differentiable at 0) or Leaky ReLU (non-smooth
 
 **Use case:** Object detection (YOLOv4 adopted Mish as default activation).
 
-**Implementation:** [tensor_codegen.cpp:4300](lib/backend/tensor_codegen.cpp#L4300) (`tensorMish`).
+**Implementation:** `tensorMish` in [lib/backend/tensor_activation_codegen.cpp](../lib/backend/tensor_activation_codegen.cpp).
 
 #### `hard-swish`
 
@@ -3187,7 +3187,7 @@ accuracy difference in practice.
 **Use case:** Mobile and edge deployment (MobileNetV3). Optimized for inference speed
 on resource-constrained devices.
 
-**Implementation:** [tensor_codegen.cpp:4428](lib/backend/tensor_codegen.cpp#L4428) (`tensorHardSwish`).
+**Implementation:** `tensorHardSwish` in [lib/backend/tensor_activation_codegen.cpp](../lib/backend/tensor_activation_codegen.cpp).
 
 #### `hard-sigmoid`
 
@@ -3200,7 +3200,7 @@ Piecewise linear approximation of sigmoid: f(x) = min(max(x + 3, 0), 6) / 6.
 **Use case:** Mobile architectures where sigmoid's exponential is expensive. Gating in
 efficient architectures.
 
-**Implementation:** [tensor_codegen.cpp:4526](lib/backend/tensor_codegen.cpp#L4526) (`tensorHardSigmoid`).
+**Implementation:** `tensorHardSigmoid` in [lib/backend/tensor_activation_codegen.cpp](../lib/backend/tensor_activation_codegen.cpp).
 
 #### `softplus`
 
@@ -3214,7 +3214,7 @@ stabilized for large x: softplus(x) ≈ x when x ≫ 0.
 **Use case:** Parameterizing positive-only quantities (e.g., variance in variational inference,
 concentration parameters in Bayesian models).
 
-**Implementation:** [tensor_codegen.cpp:4621](lib/backend/tensor_codegen.cpp#L4621) (`tensorSoftplus`).
+**Implementation:** `tensorSoftplus` in [lib/backend/tensor_activation_codegen.cpp](../lib/backend/tensor_activation_codegen.cpp).
 
 #### `celu`
 
@@ -3227,7 +3227,7 @@ discontinuity at x = 0). This smoothness property improves optimization converge
 
 **Use case:** Research architectures requiring smooth activation functions.
 
-**Implementation:** [tensor_codegen.cpp:4875](lib/backend/tensor_codegen.cpp#L4875) (`tensorCelu`).
+**Implementation:** `tensorCelu` in [lib/backend/tensor_activation_codegen.cpp](../lib/backend/tensor_activation_codegen.cpp).
 
 #### `dropout`
 
@@ -3246,7 +3246,7 @@ scales surviving elements by 1/(1 - rate) to maintain expected value. During inf
 inference over an ensemble of 2^n sub-networks, where n is the number of units. It prevents
 co-adaptation of feature detectors.
 
-**Implementation:** [tensor_codegen.cpp:4753](lib/backend/tensor_codegen.cpp#L4753) (`tensorDropout`).
+**Implementation:** `tensorDropout` in [lib/backend/tensor_activation_codegen.cpp](../lib/backend/tensor_activation_codegen.cpp).
 
 #### Activation Function Examples
 
@@ -3286,7 +3286,7 @@ N(y | ŷ, σ²) with fixed σ.
 
 **Use case:** Regression tasks with Gaussian-distributed residuals.
 
-**Implementation:** [tensor_codegen.cpp:14330](lib/backend/tensor_codegen.cpp#L14330) (`mseLoss`).
+**Implementation:** `mseLoss` in [lib/backend/tensor_loss_codegen.cpp](../lib/backend/tensor_loss_codegen.cpp).
 
 #### `mae-loss`
 
@@ -3301,7 +3301,7 @@ compared to MSE, but non-differentiable at ŷ_i = y_i (subgradient used).
 
 **Use case:** Regression with outliers; median regression.
 
-**Implementation:** [tensor_codegen.cpp:14816](lib/backend/tensor_codegen.cpp#L14816) (`maeLoss`).
+**Implementation:** `maeLoss` in [lib/backend/tensor_loss_codegen.cpp](../lib/backend/tensor_loss_codegen.cpp).
 
 #### `cross-entropy-loss`
 
@@ -3317,7 +3317,7 @@ difference between predicted and target probabilities.
 
 **Use case:** Multi-class classification. `targets` should be one-hot encoded.
 
-**Implementation:** [tensor_codegen.cpp:14424](lib/backend/tensor_codegen.cpp#L14424) (`crossEntropyLoss`).
+**Implementation:** `crossEntropyLoss` in [lib/backend/tensor_loss_codegen.cpp](../lib/backend/tensor_loss_codegen.cpp).
 
 #### `bce-loss`
 
@@ -3330,7 +3330,7 @@ to [ε, 1-ε] for numerical stability.
 
 **Use case:** Binary classification, multi-label classification.
 
-**Implementation:** [tensor_codegen.cpp:14589](lib/backend/tensor_codegen.cpp#L14589) (`bceLoss`).
+**Implementation:** `bceLoss` in [lib/backend/tensor_loss_codegen.cpp](../lib/backend/tensor_loss_codegen.cpp).
 
 #### `binary-cross-entropy-loss`
 
@@ -3352,7 +3352,7 @@ gradients near the optimum.
 
 **Use case:** Regression that needs robustness without the non-differentiability of MAE.
 
-**Implementation:** [tensor_codegen.cpp:14705](lib/backend/tensor_codegen.cpp#L14705) (`huberLoss`).
+**Implementation:** `huberLoss` in [lib/backend/tensor_loss_codegen.cpp](../lib/backend/tensor_loss_codegen.cpp).
 
 #### `kl-div-loss`
 
@@ -3365,7 +3365,7 @@ Kullback-Leibler Divergence: D_KL(P ‖ Q) = Σ_i P_i · log(P_i / Q_i).
 **Use case:** Distribution matching in variational autoencoders (VAEs), knowledge distillation.
 In VAEs, minimizes D_KL(q(z|x) ‖ p(z)) where q is the encoder and p is the prior.
 
-**Implementation:** [tensor_codegen.cpp:15037](lib/backend/tensor_codegen.cpp#L15037) (`klDivLoss`).
+**Implementation:** `klDivLoss` in [lib/backend/tensor_loss_codegen.cpp](../lib/backend/tensor_loss_codegen.cpp).
 
 #### `hinge-loss`
 
@@ -3378,7 +3378,7 @@ confidence ≥ 1 incur zero loss.
 
 **Use case:** Support Vector Machine (SVM) classification.
 
-**Implementation:** [tensor_codegen.cpp:15149](lib/backend/tensor_codegen.cpp#L15149) (`hingeLoss`).
+**Implementation:** `hingeLoss` in [lib/backend/tensor_loss_codegen.cpp](../lib/backend/tensor_loss_codegen.cpp).
 
 #### `smooth-l1-loss`
 
@@ -3389,7 +3389,7 @@ Smooth L1 (Huber variant): parameterized by β (default 1.0). Equivalent to `hub
 
 **Use case:** Object detection bounding box regression (Faster R-CNN, SSD).
 
-**Implementation:** [tensor_codegen.cpp:15244](lib/backend/tensor_codegen.cpp#L15244) (`smoothL1Loss`).
+**Implementation:** `smoothL1Loss` in [lib/backend/tensor_loss_codegen.cpp](../lib/backend/tensor_loss_codegen.cpp).
 
 #### `focal-loss`
 
@@ -3405,7 +3405,7 @@ of easy examples (high p_t), focusing the training signal on hard, misclassified
 **Use case:** Severe class imbalance (RetinaNet for object detection, where background examples
 vastly outnumber foreground objects).
 
-**Implementation:** [tensor_codegen.cpp:15372](lib/backend/tensor_codegen.cpp#L15372) (`focalLoss`).
+**Implementation:** `focalLoss` in [lib/backend/tensor_loss_codegen.cpp](../lib/backend/tensor_loss_codegen.cpp).
 
 #### `triplet-loss`
 
@@ -3419,7 +3419,7 @@ distance by at least `margin`. When satisfied, loss is zero (no gradient signal 
 
 **Use case:** Metric learning, face recognition (FaceNet), retrieval systems.
 
-**Implementation:** [tensor_codegen.cpp:15504](lib/backend/tensor_codegen.cpp#L15504) (`tripletLoss`).
+**Implementation:** `tripletLoss` in [lib/backend/tensor_loss_codegen.cpp](../lib/backend/tensor_loss_codegen.cpp).
 
 #### `contrastive-loss`
 
@@ -3430,7 +3430,7 @@ Default margin = 1.0. Label y = 0 for similar pairs, y = 1 for dissimilar pairs.
 
 **Use case:** Siamese networks, pairwise similarity learning.
 
-**Implementation:** [tensor_codegen.cpp:15609](lib/backend/tensor_codegen.cpp#L15609) (`contrastiveLoss`).
+**Implementation:** `contrastiveLoss` in [lib/backend/tensor_loss_codegen.cpp](../lib/backend/tensor_loss_codegen.cpp).
 
 #### `label-smoothing-loss`
 
@@ -3443,7 +3443,7 @@ mass ε uniformly across all classes. Improves calibration and generalization (S
 
 **Use case:** Large classification tasks, knowledge distillation, model calibration.
 
-**Implementation:** [tensor_codegen.cpp:15703](lib/backend/tensor_codegen.cpp#L15703) (`labelSmoothingLoss`).
+**Implementation:** `labelSmoothingLoss` in [lib/backend/tensor_loss_codegen.cpp](../lib/backend/tensor_loss_codegen.cpp).
 
 #### `cosine-embedding-loss`
 
@@ -3454,7 +3454,7 @@ Default margin = 0.0.
 
 **Use case:** Sentence similarity, image-text matching, embedding alignment tasks.
 
-**Implementation:** [tensor_codegen.cpp:15861](lib/backend/tensor_codegen.cpp#L15861) (`cosineEmbeddingLoss`).
+**Implementation:** `cosineEmbeddingLoss` in [lib/backend/tensor_loss_codegen.cpp](../lib/backend/tensor_loss_codegen.cpp).
 
 #### Loss Function Examples
 
@@ -3507,7 +3507,7 @@ to accumulate gradient history.
 - `momentum` — momentum coefficient μ (scalar, optional)
 - `velocity` — velocity tensor (modified in-place, optional, same shape as params)
 
-**Implementation:** [tensor_codegen.cpp:11575](lib/backend/tensor_codegen.cpp#L11575) (`sgdStep`).
+**Implementation:** `sgdStep` in [lib/backend/tensor_training_codegen.cpp](../lib/backend/tensor_training_codegen.cpp).
 
 #### `adam-step`
 
@@ -3534,7 +3534,7 @@ v̂_t = v_t / (1 - β₂^t)                         (bias correction)
 - `v` — second moment tensor (modified in-place, initialized to zeros)
 - `t` — step count (integer, for bias correction; starts at 1)
 
-**Implementation:** [tensor_codegen.cpp:11717](lib/backend/tensor_codegen.cpp#L11717) (`adamStep`).
+**Implementation:** `adamStep` in [lib/backend/tensor_training_codegen.cpp](../lib/backend/tensor_training_codegen.cpp).
 
 #### `adamw-step`
 
@@ -3552,7 +3552,7 @@ from counteracting the regularization effect.
 
 **Defaults:** β₁ = 0.9, β₂ = 0.999, ε = 1e-8, wd = 0.01.
 
-**Implementation:** [tensor_codegen.cpp:12200](lib/backend/tensor_codegen.cpp#L12200) (`adamwStep`).
+**Implementation:** `adamwStep` in [lib/backend/tensor_training_codegen.cpp](../lib/backend/tensor_training_codegen.cpp).
 
 #### `rmsprop-step`
 
@@ -3571,7 +3571,7 @@ v_t = α · v_{t-1} + (1 - α) · g_t²
 **Intuition:** Reduces the effective learning rate for parameters with large gradients (steep
 directions) and increases it for parameters with small gradients (flat directions).
 
-**Implementation:** [tensor_codegen.cpp:12074](lib/backend/tensor_codegen.cpp#L12074) (`rmspropStep`).
+**Implementation:** `rmspropStep` in [lib/backend/tensor_training_codegen.cpp](../lib/backend/tensor_training_codegen.cpp).
 
 #### `adagrad-step`
 
@@ -3590,7 +3590,7 @@ G_t = G_{t-1} + g_t²
 Adagrad well-suited for sparse features (common in NLP) but may cause premature convergence
 for dense features. RMSprop was developed as a fix for this issue.
 
-**Implementation:** [tensor_codegen.cpp:12349](lib/backend/tensor_codegen.cpp#L12349) (`adagradStep`).
+**Implementation:** `adagradStep` in [lib/backend/tensor_training_codegen.cpp](../lib/backend/tensor_training_codegen.cpp).
 
 #### `zero-grad!`
 
@@ -3600,7 +3600,7 @@ Zeros all elements in the gradient tensor in-place. Must be called before each f
 to prevent gradient accumulation across mini-batches (unless accumulation is intentional,
 e.g., for gradient accumulation with large effective batch sizes).
 
-**Implementation:** [tensor_codegen.cpp:11895](lib/backend/tensor_codegen.cpp#L11895) (`zeroGrad`).
+**Implementation:** `zeroGrad` in [lib/backend/tensor_training_codegen.cpp](../lib/backend/tensor_training_codegen.cpp).
 
 #### `clip-grad-norm!`
 
@@ -3613,7 +3613,7 @@ If the L2 norm of the gradient tensor exceeds `max-norm`, scales the gradient by
 networks and transformers, where gradients can explode due to repeated matrix multiplication
 in the computational graph. The returned norm can be monitored for training health diagnostics.
 
-**Implementation:** [tensor_codegen.cpp:11952](lib/backend/tensor_codegen.cpp#L11952) (`clipGradNorm`).
+**Implementation:** `clipGradNorm` in [lib/backend/tensor_training_codegen.cpp](../lib/backend/tensor_training_codegen.cpp).
 
 #### `check-grad-health`
 
@@ -3624,7 +3624,7 @@ healthy gradient tensor. Non-zero values indicate numerical instability — typi
 by learning rates that are too high, division by zero in the loss function, or overflow in
 deep computational graphs.
 
-**Implementation:** [tensor_codegen.cpp:12437](lib/backend/tensor_codegen.cpp#L12437) (`checkGradHealth`).
+**Implementation:** `checkGradHealth` in [lib/backend/tensor_training_codegen.cpp](../lib/backend/tensor_training_codegen.cpp).
 
 #### Optimizer Examples
 
@@ -3668,7 +3668,7 @@ Glorot & Bengio (2010): U[-√(6/(fi+fo)), √(6/(fi+fo))].
 **Variance:** 2/(fi+fo). Derived to preserve forward and backward signal variance
 simultaneously under linear activations. Optimal for sigmoid and tanh networks.
 
-**Implementation:** [tensor_codegen.cpp:12509](lib/backend/tensor_codegen.cpp#L12509) (`xavierUniform`).
+**Implementation:** `xavierUniform` in [lib/backend/tensor_training_codegen.cpp](../lib/backend/tensor_training_codegen.cpp).
 
 #### `xavier-normal!`
 
@@ -3676,7 +3676,7 @@ simultaneously under linear activations. Optimal for sigmoid and tanh networks.
 
 Gaussian variant: N(0, √(2/(fi+fo))). Same variance as Xavier uniform.
 
-**Implementation:** [tensor_codegen.cpp:12579](lib/backend/tensor_codegen.cpp#L12579) (`xavierNormal`).
+**Implementation:** `xavierNormal` in [lib/backend/tensor_training_codegen.cpp](../lib/backend/tensor_training_codegen.cpp).
 
 #### `kaiming-uniform!`
 
@@ -3687,7 +3687,7 @@ He et al. (2015): U[-√(6/fi), √(6/fi)].
 **Variance:** 2/fi. Derived for ReLU activations, which zero out half the signal (effectively
 halving the variance). Compensates by doubling the initialization variance compared to Xavier.
 
-**Implementation:** [tensor_codegen.cpp:12673](lib/backend/tensor_codegen.cpp#L12673) (`kaimingUniform`).
+**Implementation:** `kaimingUniform` in [lib/backend/tensor_training_codegen.cpp](../lib/backend/tensor_training_codegen.cpp).
 
 #### `kaiming-normal!`
 
@@ -3695,7 +3695,7 @@ halving the variance). Compensates by doubling the initialization variance compa
 
 Gaussian variant: N(0, √(2/fi)). Same variance as Kaiming uniform.
 
-**Implementation:** [tensor_codegen.cpp:12740](lib/backend/tensor_codegen.cpp#L12740) (`kaimingNormal`).
+**Implementation:** `kaimingNormal` in [lib/backend/tensor_training_codegen.cpp](../lib/backend/tensor_training_codegen.cpp).
 
 #### `lecun-normal!`
 
@@ -3706,7 +3706,7 @@ LeCun et al. (1998): N(0, √(1/fi)).
 **Variance:** 1/fi. Designed for SELU activations (required for the self-normalizing property).
 Also suitable for tanh-based networks.
 
-**Implementation:** [tensor_codegen.cpp:12829](lib/backend/tensor_codegen.cpp#L12829) (`lecunNormal`).
+**Implementation:** `lecunNormal` in [lib/backend/tensor_training_codegen.cpp](../lib/backend/tensor_training_codegen.cpp).
 
 #### Initializer Selection Guide
 
@@ -3734,7 +3734,7 @@ The gradual decay avoids the abrupt drops of step-based schedules.
 
 **Use case:** Standard for transformer training (BERT, GPT).
 
-**Implementation:** [tensor_codegen.cpp:12921](lib/backend/tensor_codegen.cpp#L12921) (`cosineAnnealingLR`).
+**Implementation:** `cosineAnnealingLR` in [lib/backend/tensor_training_codegen.cpp](../lib/backend/tensor_training_codegen.cpp).
 
 #### `step-decay-lr`
 
@@ -3746,7 +3746,7 @@ Reduces the learning rate by factor γ every `size` steps. Common values: γ = 0
 
 **Use case:** Classic ResNet training schedule.
 
-**Implementation:** [tensor_codegen.cpp:12964](lib/backend/tensor_codegen.cpp#L12964) (`stepDecayLR`).
+**Implementation:** `stepDecayLR` in [lib/backend/tensor_training_codegen.cpp](../lib/backend/tensor_training_codegen.cpp).
 
 #### `linear-warmup-lr`
 
@@ -3763,7 +3763,7 @@ statistics before taking large steps.
 
 **Use case:** Combined with cosine annealing for transformer training.
 
-**Implementation:** [tensor_codegen.cpp:13006](lib/backend/tensor_codegen.cpp#L13006) (`linearWarmupLR`).
+**Implementation:** `linearWarmupLR` in [lib/backend/tensor_training_codegen.cpp](../lib/backend/tensor_training_codegen.cpp).
 
 #### `exponential-decay-lr`
 
@@ -3773,7 +3773,7 @@ Exponential decay: η_t = base-lr · γ^step.
 
 Continuous exponential decay — more aggressive than step decay as it reduces every step.
 
-**Implementation:** [tensor_codegen.cpp:13036](lib/backend/tensor_codegen.cpp#L13036) (`exponentialDecayLR`).
+**Implementation:** `exponentialDecayLR` in [lib/backend/tensor_training_codegen.cpp](../lib/backend/tensor_training_codegen.cpp).
 
 #### Scheduler Composition Example
 
@@ -3811,7 +3811,7 @@ spatial computation (or the im2col transformation + GEMM) is more efficient.
 
 **Use case:** Time-series processing, audio analysis, 1D signal convolution.
 
-**Implementation:** [tensor_codegen.cpp:9370](lib/backend/tensor_codegen.cpp#L9370) (`conv1d`).
+**Implementation:** `conv1d` in [lib/backend/tensor_conv_codegen.cpp](../lib/backend/tensor_conv_codegen.cpp).
 
 #### `conv2d`
 
@@ -3827,7 +3827,7 @@ use of highly optimized BLAS routines (cBLAS/Apple Accelerate).
 - Output: (batch, out_H, out_W, out_channels)
   where out_H = ⌊(H + 2·padding - kH) / stride⌋ + 1 (analogous for W)
 
-**Implementation:** [tensor_codegen.cpp:9588](lib/backend/tensor_codegen.cpp#L9588) (`conv2d`).
+**Implementation:** `conv2d` in [lib/backend/tensor_conv_codegen.cpp](../lib/backend/tensor_conv_codegen.cpp).
 
 #### `conv3d`
 
@@ -3840,7 +3840,7 @@ use of highly optimized BLAS routines (cBLAS/Apple Accelerate).
 - Kernel: (out_channels, in_channels, kD, kH, kW)
 - Output: (batch, out_D, out_H, out_W, out_channels)
 
-**Implementation:** [tensor_codegen.cpp:11236](lib/backend/tensor_codegen.cpp#L11236) (`conv3d`).
+**Implementation:** `conv3d` in [lib/backend/tensor_extras_codegen.cpp](../lib/backend/tensor_extras_codegen.cpp).
 
 #### `max-pool2d`
 
@@ -3852,7 +3852,7 @@ invariance.
 
 **Output:** (batch, ⌊(H + 2·padding - kernel_size) / stride⌋ + 1, analogous for W, channels)
 
-**Implementation:** [tensor_codegen.cpp:8793](lib/backend/tensor_codegen.cpp#L8793) (`maxPool2d`).
+**Implementation:** `maxPool2d` in [lib/backend/tensor_conv_codegen.cpp](../lib/backend/tensor_conv_codegen.cpp).
 
 #### `avg-pool2d`
 
@@ -3861,7 +3861,7 @@ invariance.
 2D average pooling: computes the mean value in each kernel-sized window. Smoother than
 max pooling — preserves more information about the spatial distribution of activations.
 
-**Implementation:** [tensor_codegen.cpp:9089](lib/backend/tensor_codegen.cpp#L9089) (`avgPool2d`).
+**Implementation:** `avgPool2d` in [lib/backend/tensor_conv_codegen.cpp](../lib/backend/tensor_conv_codegen.cpp).
 
 #### `batch-norm`
 
@@ -3880,7 +3880,7 @@ representational power after normalization.
 **Properties:** Reduces internal covariate shift, enables higher learning rates, acts as
 regularization. Batch-dependent — behavior changes between training and inference.
 
-**Implementation:** [tensor_codegen.cpp:9854](lib/backend/tensor_codegen.cpp#L9854) (`batchNorm`).
+**Implementation:** `batchNorm` in [lib/backend/tensor_conv_codegen.cpp](../lib/backend/tensor_conv_codegen.cpp).
 
 #### `layer-norm`
 
@@ -3896,7 +3896,7 @@ Unlike batch norm, statistics are computed per-sample, making layer norm indepen
 batch size. This is critical for transformer architectures where batch sizes vary and
 sequence positions must be processed independently.
 
-**Implementation:** [tensor_codegen.cpp:10100](lib/backend/tensor_codegen.cpp#L10100) (`layerNorm`).
+**Implementation:** `layerNorm` in [lib/backend/tensor_conv_codegen.cpp](../lib/backend/tensor_conv_codegen.cpp).
 
 #### CNN Example
 
@@ -3942,7 +3942,7 @@ Core attention mechanism: softmax(QK^T / √d_k + mask) · V.
 
 **Complexity:** O(seq_q · seq_k · d_k) for the QK^T product.
 
-**Implementation:** [tensor_codegen.cpp:16638](lib/backend/tensor_codegen.cpp#L16638) (`scaledDotProductAttention`).
+**Implementation:** `scaledDotProductAttention` in [lib/backend/tensor_transformer_codegen.cpp](../lib/backend/tensor_transformer_codegen.cpp).
 
 #### `multi-head-attention`
 
@@ -3961,7 +3961,7 @@ Full multi-head attention:
 - W_O: (d_model, d_model) — output projection
 - n-heads must evenly divide d_model
 
-**Implementation:** [tensor_codegen.cpp:17182](lib/backend/tensor_codegen.cpp#L17182) (`multiHeadAttention`).
+**Implementation:** `multiHeadAttention` in [lib/backend/tensor_transformer_codegen.cpp](../lib/backend/tensor_transformer_codegen.cpp).
 
 #### `positional-encoding`
 
@@ -3979,7 +3979,7 @@ PE(pos, 2i+1) = cos(pos / 10000^(2i/d_model))
 The sinusoidal design enables the model to generalize to sequence lengths not seen during
 training, and allows it to learn relative position attention via linear combinations.
 
-**Implementation:** [tensor_codegen.cpp:17989](lib/backend/tensor_codegen.cpp#L17989) (`positionalEncoding`).
+**Implementation:** `positionalEncoding` in [lib/backend/tensor_transformer_codegen.cpp](../lib/backend/tensor_transformer_codegen.cpp).
 
 #### `rotary-embedding`
 
@@ -3995,7 +3995,7 @@ m - n, not absolute positions — enabling length generalization.
 **Advantages over sinusoidal PE:** Encodes relative positions naturally, decays with distance,
 and is more efficient (no additive embedding table needed).
 
-**Implementation:** [tensor_codegen.cpp:18120](lib/backend/tensor_codegen.cpp#L18120) (`rotaryEmbedding`).
+**Implementation:** `rotaryEmbedding` in [lib/backend/tensor_transformer_codegen.cpp](../lib/backend/tensor_transformer_codegen.cpp).
 
 #### `causal-mask`
 
@@ -4007,7 +4007,7 @@ upper triangle filled with -∞. Shape: (seq-len, seq-len).
 Prevents position i from attending to positions j > i, enforcing the left-to-right
 generation constraint in decoder models (GPT, language models).
 
-**Implementation:** [tensor_codegen.cpp:18328](lib/backend/tensor_codegen.cpp#L18328) (`causalMask`).
+**Implementation:** `causalMask` in [lib/backend/tensor_transformer_codegen.cpp](../lib/backend/tensor_transformer_codegen.cpp).
 
 #### `padding-mask`
 
@@ -4018,7 +4018,7 @@ padding positions as -∞. Shape: (batch, max-len).
 
 `lengths` is a tensor of actual sequence lengths for each batch element.
 
-**Implementation:** [tensor_codegen.cpp:18420](lib/backend/tensor_codegen.cpp#L18420) (`paddingMask`).
+**Implementation:** `paddingMask` in [lib/backend/tensor_transformer_codegen.cpp](../lib/backend/tensor_transformer_codegen.cpp).
 
 #### `feed-forward`
 
@@ -4029,7 +4029,7 @@ Position-wise feed-forward network: FFN(x) = W₂ · ReLU(W₁x + b₁) + b₂.
 This is the standard two-layer MLP applied independently to each position in the sequence.
 Typically d_ff = 4 · d_model (the inner dimension is 4× the model dimension).
 
-**Implementation:** [tensor_codegen.cpp:18552](lib/backend/tensor_codegen.cpp#L18552) (`feedForward`).
+**Implementation:** `feedForward` in [lib/backend/tensor_transformer_codegen.cpp](../lib/backend/tensor_transformer_codegen.cpp).
 
 #### `embedding`
 
@@ -4043,7 +4043,7 @@ the weight matrix.
 - weights: (vocab_size, d_model) — embedding matrix
 - Output: (batch, seq, d_model)
 
-**Implementation:** [tensor_codegen.cpp:19031](lib/backend/tensor_codegen.cpp#L19031) (`embedding`).
+**Implementation:** `embedding` in [lib/backend/tensor_transformer_codegen.cpp](../lib/backend/tensor_transformer_codegen.cpp).
 
 #### Transformer Example
 
@@ -6594,7 +6594,7 @@ position and returns consecutive slices of `batch-size` elements on each call to
 - `batch-size` — number of samples per batch (integer)
 - `shuffle` — if `#t`, randomly permutes the data indices. Default: `#f`
 
-**Implementation:** [tensor_codegen.cpp:15994](lib/backend/tensor_codegen.cpp#L15994) (`makeDataloader`).
+**Implementation:** `makeDataloader` in [lib/backend/tensor_dataloader_codegen.cpp](../lib/backend/tensor_dataloader_codegen.cpp).
 
 ### `dataloader-next`
 
@@ -6604,7 +6604,7 @@ Returns the next batch tensor, or null when all batches have been consumed. Adva
 internal position by `batch-size`. The last batch may be smaller than `batch-size` if the
 dataset size is not evenly divisible.
 
-**Implementation:** [tensor_codegen.cpp:16212](lib/backend/tensor_codegen.cpp#L16212) (`dataloaderNext`).
+**Implementation:** `dataloaderNext` in [lib/backend/tensor_dataloader_codegen.cpp](../lib/backend/tensor_dataloader_codegen.cpp).
 
 ### `dataloader-reset!`
 
@@ -6613,7 +6613,7 @@ dataset size is not evenly divisible.
 Resets the internal position to 0. If the dataloader was created with `shuffle = #t`,
 re-permutes the indices. Returns the loader for chaining.
 
-**Implementation:** [tensor_codegen.cpp:16413](lib/backend/tensor_codegen.cpp#L16413) (`dataloaderReset`).
+**Implementation:** `dataloaderReset` in [lib/backend/tensor_dataloader_codegen.cpp](../lib/backend/tensor_dataloader_codegen.cpp).
 
 ### `dataloader-length`
 
@@ -6621,7 +6621,7 @@ re-permutes the indices. Returns the loader for chaining.
 
 Returns the number of batches: ⌈n / batch-size⌉.
 
-**Implementation:** [tensor_codegen.cpp:16434](lib/backend/tensor_codegen.cpp#L16434) (`dataloaderLength`).
+**Implementation:** `dataloaderLength` in [lib/backend/tensor_dataloader_codegen.cpp](../lib/backend/tensor_dataloader_codegen.cpp).
 
 ### `dataloader-has-next?`
 
@@ -6629,7 +6629,7 @@ Returns the number of batches: ⌈n / batch-size⌉.
 
 Returns `#t` if more batches remain, `#f` otherwise.
 
-**Implementation:** [tensor_codegen.cpp:16467](lib/backend/tensor_codegen.cpp#L16467) (`dataloaderHasNext`).
+**Implementation:** `dataloaderHasNext` in [lib/backend/tensor_dataloader_codegen.cpp](../lib/backend/tensor_dataloader_codegen.cpp).
 
 ### `train-test-split`
 
@@ -6641,7 +6641,7 @@ before splitting.
 
 **Returns:** A vector of four tensors: `(train-data train-labels test-data test-labels)`.
 
-**Implementation:** [tensor_codegen.cpp:16495](lib/backend/tensor_codegen.cpp#L16495) (`trainTestSplit`).
+**Implementation:** `trainTestSplit` in [lib/backend/tensor_dataloader_codegen.cpp](../lib/backend/tensor_dataloader_codegen.cpp).
 
 ### Dataloader Example
 
