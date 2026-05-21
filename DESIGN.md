@@ -241,7 +241,7 @@ Interactive development via LLVM OrcJIT (2,062 lines). Preloads 237 stdlib funct
 
 ### Package Manager
 
-`eshkol-pkg` (721 lines) with TOML manifests and git-based registry. Commands: init, build, run, add, clean. 40 stdlib modules organized under core, math, signal, ml, and web namespaces with automatic recursive module discovery.
+`eshkol-pkg` (721 lines) with TOML manifests and git-based registry. Commands: init, build, run, add, clean. 35 auto-loaded stdlib modules (plus ~22 opt-in modules) organized under core, math, signal, ml, web, random, and types namespaces with automatic recursive module discovery.
 
 ### Dual Backend Architecture
 
@@ -288,7 +288,8 @@ The LLVM and VM backends share the same language semantics but use independent v
 | Headers | ~16,000 | 52 |
 | Weight matrix transformer | ~6,800 | 1 |
 | **Total compiler infrastructure** | **~232,000** | **130+** |
-| Standard library (.esk) | ~5,200 | 40 modules |
+| Standard library (.esk, auto-loaded) | ~4,400 | 35 modules |
+| Standard library (.esk, full tree including opt-in modules) | ~10,200 | 57 modules |
 | Test code (.esk) | ~34,000 | 438 files |
 
 37 automated test suites, 528 self-reported tests + 87 v1.2 edge cases, 0 failures. Bytecode VM: 331/332 tests (99.7%). Weight matrices: 126/126 inline + 123/123 traced (3-way verified).
