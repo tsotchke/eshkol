@@ -251,6 +251,9 @@ The language needs new machine-facing primitives.
 - `atomic-exchange!`
 - `atomic-fetch-add!`
 - `atomic-fetch-sub!`
+- `atomic-fetch-and!`
+- `atomic-fetch-or!`
+- `atomic-fetch-xor!`
 - compiler and memory fences
 
 ## 4.3 Required attributes
