@@ -1183,6 +1183,9 @@ public:
         function_return_types["exact"] = BuiltinTypes::Int64;
         function_return_types["exact-integer?"] = BuiltinTypes::Boolean;
         function_return_types["square"] = BuiltinTypes::Number;
+        function_return_types["null-ptr"] = BuiltinTypes::Pointer;
+        function_return_types["ptr->usize"] = BuiltinTypes::USize;
+        function_return_types["usize->ptr"] = BuiltinTypes::Pointer;
 
         // R7RS division
         function_return_types["floor-quotient"] = BuiltinTypes::Int64;
@@ -5113,6 +5116,26 @@ private:
                                          eshkol::hott::BuiltinTypes::Int64, true);
                     }
 
+                    // Low-level pointer conversions
+                    if (func_name == "null-ptr") {
+                        Value* val = codegenAST(ast);
+                        if (!val) return TypedValue();
+                        return TypedValue(val, ESHKOL_VALUE_HEAP_PTR,
+                                         eshkol::hott::BuiltinTypes::Pointer, true);
+                    }
+                    if (func_name == "ptr->usize") {
+                        Value* val = codegenAST(ast);
+                        if (!val) return TypedValue();
+                        return TypedValue(val, ESHKOL_VALUE_INT64,
+                                         eshkol::hott::BuiltinTypes::USize, true);
+                    }
+                    if (func_name == "usize->ptr") {
+                        Value* val = codegenAST(ast);
+                        if (!val) return TypedValue();
+                        return TypedValue(val, ESHKOL_VALUE_HEAP_PTR,
+                                         eshkol::hott::BuiltinTypes::Pointer, true);
+                    }
+
                     // CLOSURE FIX: Check if callee returns a lambda
                     // Case 1: Lambda calling lambda (make-adder pattern)
                     auto callee_it = global_symbol_table.find(func_name + "_func");
@@ -5259,6 +5282,13 @@ private:
                         return TypedValue(raw_bool, ESHKOL_VALUE_BOOL, hott_type, true);
                     }
 
+                    if (hott_type == BuiltinTypes::Pointer) {
+                        Value* raw_int = unpackInt64FromTaggedValue(val);
+                        Value* raw_ptr = builder->CreateIntToPtr(
+                            toIntPtr(raw_int), cast<PointerType>(ptr_type), "ptr_unbox");
+                        return TypedValue(raw_ptr, ESHKOL_VALUE_HEAP_PTR, hott_type, true);
+                    }
+
                     // For unknown types, return tagged value as-is
                     // Callers that need raw values must handle extraction themselves
                     if (param_type.has_value()) {
@@ -5280,6 +5310,9 @@ private:
                     }
                     return TypedValue(val, ESHKOL_VALUE_DOUBLE, hott_type, false);
                 } else if (llvm_type->isPointerTy()) {
+                    if (hott_type == eshkol::hott::BuiltinTypes::Pointer) {
+                        return TypedValue(val, ESHKOL_VALUE_HEAP_PTR, hott_type, true);
+                    }
                     // HOMOICONIC FIX: Handle Function* (lambdas) properly
                     if (isa<Function>(val)) {
                         Value* as_int = builder->CreatePtrToInt(val, int64_type);
@@ -7328,6 +7361,16 @@ private:
             return packDoubleToTaggedValue(tv.llvm_value);
         }
 
+        if (tv.hott_type == eshkol::hott::BuiltinTypes::Pointer) {
+            Value* ptr_bits = tv.llvm_value;
+            if (llvm_type->isPointerTy()) {
+                ptr_bits = builder->CreatePtrToInt(tv.llvm_value, int64_type, "ptr_bits");
+            } else if (llvm_type->isIntegerTy() && llvm_type != int64_type) {
+                ptr_bits = builder->CreateIntCast(tv.llvm_value, int64_type, false, "ptr_bits");
+            }
+            return packInt64ToTaggedValue(ptr_bits, true);
+        }
+
         // For other types, use TypedValue semantic type
         if (tv.isInt64()) {
             return packInt64ToTaggedValue(tv.llvm_value, tv.is_exact);
@@ -7760,6 +7803,42 @@ private:
         if (!ast->variable.id) return nullptr;
 
         std::string var_name = ast->variable.id;
+        auto lookupTrackedHottType = [&](const std::string& name) -> eshkol::hott::TypeId {
+            auto local_it = symbol_hott_types.find(name);
+            if (local_it != symbol_hott_types.end()) {
+                return local_it->second;
+            }
+            auto global_it = global_symbol_hott_types.find(name);
+            if (global_it != global_symbol_hott_types.end()) {
+                return global_it->second;
+            }
+            return eshkol::hott::BuiltinTypes::Value;
+        };
+        const eshkol::hott::TypeId tracked_hott_type = lookupTrackedHottType(var_name);
+
+        auto loadTrackedValue = [&](Value* storage) -> Value* {
+            Type* storage_type = nullptr;
+            if (AllocaInst* alloca = dyn_cast<AllocaInst>(storage)) {
+                storage_type = alloca->getAllocatedType();
+            } else if (GlobalVariable* global = dyn_cast<GlobalVariable>(storage)) {
+                storage_type = global->getValueType();
+            }
+
+            if (!storage_type) {
+                return nullptr;
+            }
+            if (tracked_hott_type == eshkol::hott::BuiltinTypes::Pointer &&
+                storage_type->isPointerTy() &&
+                storage_type != tagged_value_type) {
+                return builder->CreateLoad(storage_type, storage, var_name + ".ptr");
+            }
+
+            Value* loaded = builder->CreateLoad(storage_type, storage, var_name + ".load");
+            if (storage_type == tagged_value_type) {
+                return emitUseAfterMoveCheck(loaded, var_name);
+            }
+            return loaded;
+        };
 
         // TCO FIX: Check symbol_table FIRST for parameters that might be overridden with allocas
         // This is essential for TCO where we need to load from allocas, not use the original arguments
@@ -7768,23 +7847,29 @@ private:
             Value* sym_val = sym_it->second;
             // If it's an alloca (TCO parameter), load from it
             if (isa<AllocaInst>(sym_val)) {
-                Value* loaded = builder->CreateLoad(tagged_value_type, sym_val, var_name + ".load");
-                return emitUseAfterMoveCheck(loaded, var_name);
+                return loadTrackedValue(sym_val);
             }
             // If it's a GlobalVariable, load from it
             if (isa<GlobalVariable>(sym_val)) {
-                Value* loaded = builder->CreateLoad(tagged_value_type, sym_val, var_name + ".load");
-                return emitUseAfterMoveCheck(loaded, var_name);
+                return loadTrackedValue(sym_val);
             }
             // MUTABLE CAPTURE FIX: If it's an Argument with pointer type (closure capture storage),
             // load the value from the pointed-to storage
             if (isa<Argument>(sym_val) && sym_val->getType()->isPointerTy()) {
+                if (tracked_hott_type == eshkol::hott::BuiltinTypes::Pointer &&
+                    sym_val->getType() != tagged_value_type) {
+                    return sym_val;
+                }
                 Value* loaded = builder->CreateLoad(tagged_value_type, sym_val, var_name + ".load");
                 return emitUseAfterMoveCheck(loaded, var_name);
             }
             // MUTABLE CAPTURE FIX: If it's any other pointer (e.g., IntToPtr result from
             // unpacking an alloca pointer stored in closure env), load from it
             if (sym_val->getType()->isPointerTy()) {
+                if (tracked_hott_type == eshkol::hott::BuiltinTypes::Pointer &&
+                    sym_val->getType() != tagged_value_type) {
+                    return sym_val;
+                }
                 Value* loaded = builder->CreateLoad(tagged_value_type, sym_val, var_name + ".load");
                 return emitUseAfterMoveCheck(loaded, var_name);
             }
@@ -8188,8 +8273,7 @@ private:
 
             // If it's a GlobalVariable, load its value
             if (isa<GlobalVariable>(var_ptr)) {
-                GlobalVariable* global = dyn_cast<GlobalVariable>(var_ptr);
-                return builder->CreateLoad(global->getValueType(), var_ptr);
+                return loadTrackedValue(var_ptr);
             }
             // If it's a Function, return it directly (for first-class functions)
             else if (isa<Function>(var_ptr)) {
@@ -10011,6 +10095,9 @@ private:
                                         value_type == ESHKOL_VALUE_CALLABLE ||
                                         value_type == ESHKOL_VALUE_HEAP_PTR ||
                                         value_type == ESHKOL_VALUE_BOOL));
+                if (hott_type == eshkol::hott::BuiltinTypes::Pointer) {
+                    needs_tagged_packing = false;
+                }
                 if (needs_tagged_packing && storage_type != tagged_value_type) {
                     actual_storage_type = tagged_value_type;
 
@@ -10208,11 +10295,13 @@ private:
                 // CRITICAL FIX: Check if there's a pre-declared GlobalVariable for this name
                 // If so, store to that instead of creating an AllocaInst
                 GlobalVariable* pre_declared_global = module->getNamedGlobal(var_name);
-                if (pre_declared_global) {
-                    // Store to the pre-declared global variable
-                    Value* store_value = value;
-                    if (store_value->getType() != tagged_value_type) {
-                        // Pack value into tagged_value format
+                    if (pre_declared_global) {
+                        // Store to the pre-declared global variable
+                        Value* store_value = value;
+                        Type* declared_storage_type = pre_declared_global->getValueType();
+                        if (declared_storage_type == tagged_value_type &&
+                            store_value->getType() != tagged_value_type) {
+                            // Pack value into tagged_value format
                         // M1 Migration: Handle both legacy and consolidated types
                         if (value_type == ESHKOL_VALUE_HEAP_PTR || value_type == ESHKOL_VALUE_HEAP_PTR) {
                             // Use consolidated HEAP_PTR (subtype in object header)
@@ -10254,6 +10343,7 @@ private:
                          value_type == ESHKOL_VALUE_HEAP_PTR ||
                          value_type == ESHKOL_VALUE_CALLABLE ||
                          value_type == ESHKOL_VALUE_HEAP_PTR) &&
+                        hott_type != eshkol::hott::BuiltinTypes::Pointer &&
                         storage_type != tagged_value_type) {
                         actual_storage_type = tagged_value_type;
                         if (value_type == ESHKOL_VALUE_HEAP_PTR || value_type == ESHKOL_VALUE_HEAP_PTR) {
@@ -11238,6 +11328,58 @@ private:
             Value* is_double = builder->CreateICmpEQ(base_type, ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
             Value* is_ad = isCallableSubtype(arg, CALLABLE_SUBTYPE_AD_NODE);
             return packBoolToTaggedValue(builder->CreateOr(is_double, is_ad));
+        }
+        if (func_name == "null-ptr") {
+            if (op->call_op.num_vars != 0) {
+                eshkol_error("null-ptr takes no arguments");
+                return nullptr;
+            }
+            return ConstantPointerNull::get(cast<PointerType>(ptr_type));
+        }
+        if (func_name == "ptr->usize") {
+            if (op->call_op.num_vars != 1) {
+                eshkol_error("ptr->usize requires exactly 1 argument");
+                return nullptr;
+            }
+
+            TypedValue ptr_tv = codegenTypedAST(&op->call_op.variables[0]);
+            if (!ptr_tv.llvm_value) return nullptr;
+
+            Value* raw_ptr = ptr_tv.llvm_value;
+            if (raw_ptr->getType() == tagged_value_type) {
+                Value* ptr_bits = unpackInt64FromTaggedValue(raw_ptr);
+                raw_ptr = builder->CreateIntToPtr(
+                    toIntPtr(ptr_bits), cast<PointerType>(ptr_type), "ptr_from_tagged");
+            } else if (raw_ptr->getType()->isIntegerTy()) {
+                raw_ptr = builder->CreateIntToPtr(
+                    toIntPtr(raw_ptr), cast<PointerType>(ptr_type), "ptr_from_int");
+            } else if (!raw_ptr->getType()->isPointerTy()) {
+                eshkol_error("ptr->usize received a non-pointer value");
+                return nullptr;
+            }
+
+            Value* ptr_bits = builder->CreatePtrToInt(raw_ptr, intptr_type, "ptr_bits");
+            return builder->CreateIntCast(ptr_bits, int64_type, false, "ptr_to_usize");
+        }
+        if (func_name == "usize->ptr") {
+            if (op->call_op.num_vars != 1) {
+                eshkol_error("usize->ptr requires exactly 1 argument");
+                return nullptr;
+            }
+
+            TypedValue addr_tv = codegenTypedAST(&op->call_op.variables[0]);
+            if (!addr_tv.llvm_value) return nullptr;
+
+            Value* addr = addr_tv.llvm_value;
+            if (addr->getType() == tagged_value_type) {
+                addr = unpackInt64FromTaggedValue(addr);
+            } else if (!addr->getType()->isIntegerTy()) {
+                eshkol_error("usize->ptr requires an integer address value");
+                return nullptr;
+            }
+
+            return builder->CreateIntToPtr(
+                toIntPtr(addr), cast<PointerType>(ptr_type), "usize_to_ptr");
         }
         // R7RS exact->inexact / inexact (convert exact to inexact)
         if (func_name == "exact->inexact" || func_name == "inexact") {
@@ -20387,6 +20529,7 @@ private:
             "exact?", "inexact?", "zero?", "positive?", "negative?",
             "number?", "integer?", "real?", "complex?",
             "exact->inexact", "inexact->exact", "exact", "inexact",
+            "null-ptr", "ptr->usize", "usize->ptr",
             "exact-integer?", "square",
             "floor-quotient", "floor-remainder", "floor/",
             "truncate-quotient", "truncate-remainder", "truncate/",

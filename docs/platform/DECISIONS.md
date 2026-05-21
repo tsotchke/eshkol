@@ -327,3 +327,32 @@ Add a raw pointer type constructor to the HoTT type surface first. The accepted 
 - pointer type expressions copy and print round-trip as `(ptr T)`
 - the pointer surface depends on the machine integer vocabulary already present in `master`
 - pointer conversions, address-of, volatile load/store, and stricter ABI semantics remain separate follow-up slices
+
+---
+
+## D-0014
+
+- Date: 2026-04-15
+- Status: Accepted
+- Title: Pointer conversion builtins use tracked `Ptr` bindings, while the procedure ABI stays tagged
+
+### Context
+
+The next low-level slice needs value-level pointer conversions, but the current compiler still routes ordinary procedure arguments, closure captures, and most generic runtime plumbing through tagged values. A full raw-pointer procedure ABI would cut across function lowering, closure dispatch, captures, REPL/module boundaries, and runtime tagging all at once.
+
+### Decision
+
+Add the first pointer conversion builtins now:
+
+- `null-ptr`
+- `ptr->usize`
+- `usize->ptr`
+
+Lower them through the typed codegen path and make tracked `Ptr` locals/globals recoverable as raw pointers during typed code generation. Do not broaden the general procedure ABI in this slice; generic call/capture paths remain tagged-first until a later low-level ABI pass exists.
+
+### Consequences
+
+- Eshkol now has the first value-level raw-pointer primitives required for MMIO and address manipulation
+- typed codegen can recover raw pointers from tracked `Ptr` bindings instead of collapsing them into generic heap-object handling
+- low-level pointer work can proceed without forcing an immediate closure/function ABI rewrite
+- passing raw pointers through fully generic higher-order call paths remains a later slice, alongside volatility and explicit low-level calling-convention work
