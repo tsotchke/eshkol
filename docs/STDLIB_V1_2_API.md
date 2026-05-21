@@ -670,9 +670,9 @@ milliseconds even on the largest realistic inputs.
   regex.
 - The standalone VM exposes a different regex surface
   (`tests/vm/regex_surface_regression.esk`) that returns an alist instead of a
-  list. The VM-side surface is documented in
-  [`docs/STDLIB_EXTENSIONS.md`](STDLIB_EXTENSIONS.md). This module documents
-  the LLVM/JIT/AOT path.
+  list. This document covers the LLVM/JIT/AOT path; the VM-side surface differs
+  in shape (alist vs list) — cross-check `tests/vm/regex_surface_regression.esk`
+  before porting code between targets.
 
 ---
 
@@ -1755,13 +1755,14 @@ name:
 
 ### Where to look next
 
-- The v1.2 hardening plan (`docs/V1.2_HARDENING_PLAN.md`) lists the audit
-  blockers each of these modules closes.
-- The standalone VM's surface for the *same* primitives is documented in
-  [`docs/STDLIB_EXTENSIONS.md`](STDLIB_EXTENSIONS.md). The shapes sometimes
-  differ — for example, `regex-match-groups` returns a list in the LLVM/JIT
-  surface but an alist in the VM surface — so cross-check before porting
-  code between targets.
+- The v1.2 hardening trail (audit blockers each of these modules closed)
+  lives in [`HARDENING.md`](../HARDENING.md) and in the v1.2.x sections
+  of [`RELEASE_NOTES.md`](../RELEASE_NOTES.md).
+- The standalone VM's surface for some of the same primitives differs
+  in shape — `regex-match-groups` returns a list in the LLVM/JIT surface
+  but an alist in the VM surface, for example. Cross-check
+  `tests/vm/regex_surface_regression.esk` and the per-target tests under
+  `tests/vm/` before porting code between targets.
 - For changes in v1.3-evolve and later, follow the per-release section of
   [`CHANGELOG.md`](../CHANGELOG.md).
 

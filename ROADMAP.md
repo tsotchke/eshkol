@@ -385,7 +385,6 @@ Informed by the [Multimedia System Architecture](docs/future/MULTIMEDIA_SYSTEM_A
 
 **Focus:** Quantum computing meets formal verification.
 
-Informed by the [Quantum Computing Architecture](docs/future/external/eshkol_quantum_computing.md).
 Leverages OALR linear types (no-cloning theorem) and AD (variational circuits).
 
 ### Quantum Type System
