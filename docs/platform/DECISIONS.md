@@ -479,3 +479,34 @@ Do not add inline assembly, arbitrary external symbol calls, target feature disp
 - intrinsic signatures are checked against LLVM instead of being trusted stringly-typed calls
 - the feature composes with existing machine integer, pointer, fence, and volatile primitives
 - architecture-specific policy, target feature gating, and external symbol/linker integration remain later platform work
+
+---
+
+## D-0019
+
+- Date: 2026-05-20
+- Status: Accepted
+- Title: Declaration attributes are bounded tail modifiers for low-level symbols
+
+### Context
+
+The platform surface needs enough symbol control for startup code, linker-script sections, weak target hooks, and external ABI names. A generic attribute framework would pull in target-specific validation, packed layouts, interrupt handlers, naked functions, and broader ABI policy before the freestanding pipeline is ready.
+
+### Decision
+
+Add bounded declaration-tail modifiers now:
+
+- `define`: `:link-section`, `:align`, `:used`, `:weak`, `:export-symbol`, and function-only `:no-return`
+- `extern`: `:extern-symbol` / `:real`, `:weak`, and `:no-return`
+- `extern-var`: `:extern-symbol` / `:real`
+
+Modifiers are tail-only. `:align` accepts only positive power-of-two integers. `:export-symbol` may force public linkage with the source name or accept an explicit emitted symbol name. The LLVM backend lowers these to section names, alignment, weak/extern-weak linkage, `llvm.used`, exported symbol renaming, and `noreturn` metadata.
+
+Do not add `packed`, `interrupt-handler`, `naked`, arbitrary attribute bags, inline assembly, or object/linker policy in this slice.
+
+### Consequences
+
+- freestanding and HAL-facing code can name exported/imported symbols without C shims
+- linker-script sections and retention roots can be expressed directly in Eshkol source
+- the feature remains narrow enough to verify through parser and LLVM IR tests
+- target-specific ABI attributes and object-level layout validation remain later platform work

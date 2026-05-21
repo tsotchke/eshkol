@@ -267,6 +267,14 @@ eshkol_ast_t* convert_define(eshkol_tagged_value_t sexp) {
         ast->operation.define_op.is_external = 0;
         ast->operation.define_op.return_type = nullptr;
         ast->operation.define_op.param_types = nullptr;
+        ast->operation.define_op.link_section = nullptr;
+        ast->operation.define_op.alignment = 0;
+        ast->operation.define_op.has_alignment = 0;
+        ast->operation.define_op.is_used = 0;
+        ast->operation.define_op.is_weak = 0;
+        ast->operation.define_op.export_symbol = 0;
+        ast->operation.define_op.export_name = nullptr;
+        ast->operation.define_op.is_no_return = 0;
     } else if (is_pair(second)) {
         // Function define: (define (name params...) body...)
         eshkol_tagged_value_t name_sexp = pair_car(second);
@@ -336,6 +344,14 @@ eshkol_ast_t* convert_define(eshkol_tagged_value_t sexp) {
         ast->operation.define_op.is_external = 0;
         ast->operation.define_op.return_type = nullptr;
         ast->operation.define_op.param_types = nullptr;
+        ast->operation.define_op.link_section = nullptr;
+        ast->operation.define_op.alignment = 0;
+        ast->operation.define_op.has_alignment = 0;
+        ast->operation.define_op.is_used = 0;
+        ast->operation.define_op.is_weak = 0;
+        ast->operation.define_op.export_symbol = 0;
+        ast->operation.define_op.export_name = nullptr;
+        ast->operation.define_op.is_no_return = 0;
     } else {
         eshkol_error("sexp_to_ast: invalid define form");
         return nullptr;

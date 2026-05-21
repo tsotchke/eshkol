@@ -1500,6 +1500,14 @@ typedef struct eshkol_operation {
             // HoTT type annotations
             hott_type_expr_t *return_type;    // Return type annotation (NULL if not annotated)
             hott_type_expr_t **param_types;   // Array of parameter type annotations (NULL entries for unannotated)
+            char *link_section;       // Optional section name for top-level symbols
+            uint64_t alignment;       // Optional ABI alignment
+            uint8_t has_alignment;    // True if alignment was explicitly set
+            uint8_t is_used;          // Force retention through llvm.used
+            uint8_t is_weak;          // Emit weak linkage
+            uint8_t export_symbol;    // Force public/exported linkage for the definition
+            char *export_name;        // Optional emitted symbol name
+            uint8_t is_no_return;     // Function never returns normally
         } define_op;
         struct {
             struct eshkol_ast *expressions;
@@ -1511,10 +1519,13 @@ typedef struct eshkol_operation {
             char *return_type;
             struct eshkol_ast *parameters;
             uint64_t num_params;
+            uint8_t is_weak;          // Imported function may be absent at link/load time
+            uint8_t is_no_return;     // Imported function never returns normally
         } extern_op;
         struct {
             char *name;
             char *type;
+            char *real_name;
         } extern_var_op;
 	struct {
 	           struct eshkol_ast *parameters;

@@ -111,6 +111,7 @@ void append_host_runtime_link_args(std::vector<std::string>& link_args) {
 #include <llvm/Transforms/InstCombine/InstCombine.h>
 #include <llvm/Transforms/Scalar.h>
 #include <llvm/Transforms/Scalar/GVN.h>
+#include <llvm/Transforms/Utils/ModuleUtils.h>
 #include <llvm/ADT/StringMap.h>
 #include <llvm/IR/GlobalValue.h>
 #include <llvm/Config/llvm-config.h>
@@ -970,6 +971,107 @@ private:
             return builder->CreateIntCast(v, intptr_type, false);
         }
         return v;
+    }
+
+    void markGlobalValueUsed(GlobalValue* value) {
+        if (!value) return;
+        SmallVector<GlobalValue*, 1> used_values;
+        used_values.push_back(value);
+        appendToUsed(*module, used_values);
+    }
+
+    bool applyExportedSymbolName(const char* export_name,
+                                 const char* source_name,
+                                 GlobalValue* value) {
+        if (!value || !export_name || g_repl_mode_enabled) {
+            return true;
+        }
+
+        if (value->getName() == export_name) {
+            return true;
+        }
+
+        if (GlobalValue* existing = module->getNamedValue(export_name)) {
+            if (existing != value) {
+                eshkol_error("exported symbol name '%s' for '%s' conflicts with an existing definition",
+                             export_name, source_name ? source_name : value->getName().str().c_str());
+                markFatalCodegenError();
+                return false;
+            }
+        }
+
+        value->setName(export_name);
+        return true;
+    }
+
+    void applyDefineObjectAttributes(const decltype(((eshkol_operations_t*)nullptr)->define_op)& def,
+                                     GlobalObject* object) {
+        if (!object) return;
+
+        if (def.is_weak) {
+            object->setLinkage(GlobalValue::WeakAnyLinkage);
+        } else if (def.export_symbol && !g_repl_mode_enabled) {
+            object->setLinkage(GlobalValue::ExternalLinkage);
+            object->setVisibility(GlobalValue::DefaultVisibility);
+            object->setDSOLocal(false);
+        }
+
+        if (def.link_section) {
+            object->setSection(def.link_section);
+        }
+
+        applyExportedSymbolName(def.export_name, def.name, object);
+
+        if (def.has_alignment) {
+            if (auto* global = dyn_cast<GlobalVariable>(object)) {
+                global->setAlignment(Align(def.alignment));
+            } else if (auto* function = dyn_cast<Function>(object)) {
+                function->setAlignment(Align(def.alignment));
+            }
+        }
+
+        if (def.is_used) {
+            markGlobalValueUsed(object);
+        }
+    }
+
+    void applyDefineVariableAttributes(const decltype(((eshkol_operations_t*)nullptr)->define_op)& def) {
+        if (!def.name) return;
+
+        Value* value = nullptr;
+        auto global_it = global_symbol_table.find(def.name);
+        if (global_it != global_symbol_table.end()) {
+            value = global_it->second;
+        } else {
+            auto local_it = symbol_table.find(def.name);
+            if (local_it != symbol_table.end()) {
+                value = local_it->second;
+            }
+        }
+
+        if (auto* object = dyn_cast_or_null<GlobalObject>(value)) {
+            applyDefineObjectAttributes(def, object);
+        }
+    }
+
+    void applyDefineFunctionAttributes(const decltype(((eshkol_operations_t*)nullptr)->define_op)& def,
+                                       Function* function) {
+        if (!function) return;
+        applyDefineObjectAttributes(def, function);
+        if (def.is_no_return) {
+            function->addFnAttr(Attribute::NoReturn);
+        }
+    }
+
+    void applyExternFunctionAttributes(const decltype(((eshkol_operations_t*)nullptr)->extern_op)& ext,
+                                       Function* function) {
+        if (!function) return;
+        if (ext.is_weak) {
+            function->setLinkage(GlobalValue::ExternalWeakLinkage);
+        }
+        if (ext.is_no_return) {
+            function->addFnAttr(Attribute::NoReturn);
+        }
     }
 
     // LIBRARY MODE: When true, skip main function creation and export all symbols
@@ -3758,6 +3860,7 @@ private:
             llvm_func_name,
             module.get()
         );
+        applyDefineFunctionAttributes(ast->operation.define_op, function);
 
         // Set parameter names
         auto arg_it = function->arg_begin();
@@ -4228,7 +4331,22 @@ private:
                 // vec-scale collided with lib/math/ode.esk's helper
                 // vec-scale because both were strong external.
                 if (!isLambdaName(pair.first)) {
-                    pair.second->setLinkage(publicDefinitionLinkage(true));
+                    bool has_explicit_linkage = false;
+                    for (size_t i = 0; i < num_asts; ++i) {
+                        if (asts[i].type == ESHKOL_OP &&
+                            asts[i].operation.op == ESHKOL_DEFINE_OP &&
+                            asts[i].operation.define_op.is_function &&
+                            asts[i].operation.define_op.name &&
+                            pair.first == asts[i].operation.define_op.name) {
+                            has_explicit_linkage =
+                                asts[i].operation.define_op.export_symbol ||
+                                asts[i].operation.define_op.is_weak;
+                            break;
+                        }
+                    }
+                    if (!has_explicit_linkage) {
+                        pair.second->setLinkage(publicDefinitionLinkage(true));
+                    }
                 } else {
                     pair.second->setLinkage(GlobalValue::InternalLinkage);
                 }
@@ -9288,11 +9406,14 @@ private:
                 // Register in symbol tables so lookups find it
                 symbol_table[name] = gv;
                 global_symbol_table[name] = gv;
+                applyDefineObjectAttributes(op->define_op, gv);
                 return packNullToTaggedValue();
             }
             // REFACTOR: Use new BindingCodegen for variable definitions
             // This fixes the issue with ports and other tagged values
-            return binding_->define(op);
+            Value* result = binding_->define(op);
+            applyDefineVariableAttributes(op->define_op);
+            return result;
         }
     }
 
@@ -9325,10 +9446,13 @@ private:
             }
             symbol_table[name] = gv;
             global_symbol_table[name] = gv;
+            applyDefineObjectAttributes(op->define_op, gv);
             return packNullToTaggedValue();
         }
 
-        return binding_->define(op);
+        Value* result = binding_->define(op);
+        applyDefineVariableAttributes(op->define_op);
+        return result;
     }
 
     Value* codegenFunctionDefinition(const eshkol_ast_t* ast) {
@@ -9820,6 +9944,7 @@ private:
             func_name,
             module.get()
         );
+        applyDefineFunctionAttributes(op->define_op, nested_func);
 
         // CRITICAL: Register the function BEFORE compiling body to support recursion
         function_table[func_name] = nested_func;
@@ -20806,6 +20931,7 @@ private:
 
     Value* codegenExternVar(const eshkol_operations_t* op) {
         const char* var_name = op->extern_var_op.name;
+        const char* real_name = op->extern_var_op.real_name ? op->extern_var_op.real_name : var_name;
 
         // Check if the variable is already in the symbol table
         auto it = symbol_table.find(var_name);
@@ -20830,20 +20956,25 @@ private:
         // Get the LLVM type based on the operation's type string
         Type* var_type = mapStringToType(op->extern_var_op.type);
 
-        // Create a global variable with external linkage
-        GlobalVariable* externVar = new GlobalVariable(
-            *module,
-            var_type,
-            false, // isConstant
-            GlobalValue::ExternalLinkage,
-            nullptr,
-            var_name
-        );
+        GlobalVariable* externVar = module->getNamedGlobal(real_name);
+        if (!externVar) {
+            // Create a global variable with external linkage
+            externVar = new GlobalVariable(
+                *module,
+                var_type,
+                false, // isConstant
+                GlobalValue::ExternalLinkage,
+                nullptr,
+                real_name
+            );
+        }
 
         // Add to symbol table so it can be used later
-        symbol_table[var_name] = externVar;                                                                 
+        symbol_table[var_name] = externVar;
+        global_symbol_table[var_name] = externVar;
                                                                                                         
-        eshkol_debug("Declared external variable: %s with type %s", var_name, op->extern_var_op.type);
+        eshkol_debug("Declared external variable: %s (real: %s) with type %s",
+                     var_name, real_name, op->extern_var_op.type);
 
         return externVar;
     }                        
@@ -20863,6 +20994,7 @@ private:
         // which causes LLVM to create mangled names like printf.4
         if (Function* existing_func = module->getFunction(real_func_name)) {
             // Function already exists - use the existing declaration
+            applyExternFunctionAttributes(op->extern_op, existing_func);
             function_table[func_name] = existing_func;
             eshkol_info("External function '%s' already declared, reusing existing declaration", real_func_name);
             return nullptr;
@@ -20871,6 +21003,7 @@ private:
         // Also check function_table in case it was declared with a different real name
         auto ft_it = function_table.find(func_name);
         if (ft_it != function_table.end() && ft_it->second) {
+            applyExternFunctionAttributes(op->extern_op, ft_it->second);
             eshkol_info("External function '%s' already in function_table, skipping re-declaration", func_name);
             return nullptr;
         }
@@ -20927,6 +21060,7 @@ private:
             real_func_name,
             module.get()
         );
+        applyExternFunctionAttributes(op->extern_op, extern_func);
 
         // Add to function table using the given name so it can be called by that name
         function_table[func_name] = extern_func;
@@ -33738,7 +33872,7 @@ LLVMModuleRef eshkol_generate_llvm_ir(const eshkol_ast_t* asts, size_t num_asts,
 
 LLVMModuleRef eshkol_generate_llvm_ir_library(const eshkol_ast_t* asts, size_t num_asts, const char* module_name) {
     try {
-        EshkolLLVMCodeGen codegen(module_name, true);  // library mode
+        EshkolLLVMCodeGen codegen(module_name, true, g_codegen_target_triple);  // library mode
         auto result = codegen.generateIR(asts, num_asts);
 
         if (!result.first || !result.second) {
