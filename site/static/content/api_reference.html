@@ -1,7 +1,7 @@
-<h1 id="eshkol-v1.1-accelerate-api-reference">Eshkol v1.1-accelerate API
+<h1 id="eshkol-v1.2.1-scale-api-reference">Eshkol v1.2.1-scale API
 Reference</h1>
-<p><strong>Version</strong>: 1.1 <strong>Last Updated</strong>:
-2026-03-03 <strong>Audience</strong>: Scientific Computing &amp; AI
+<p><strong>Version</strong>: 1.2.1-scale <strong>Last Updated</strong>:
+2026-05-20 <strong>Audience</strong>: Scientific Computing &amp; AI
 Systems Programming</p>
 <p>This comprehensive reference documents all special forms, functions,
 and operations in the Eshkol language. All documentation is
@@ -64,7 +64,7 @@ first-class values.</p>
 <strong>Returns</strong>: Unspecified (implementation returns the
 defined value)<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/llvm_codegen.cpp:6110"><code>codegenDefine()</code></a></p>
+href="../lib/backend/llvm_codegen.cpp"><code>codegenDefine()</code></a></p>
 <hr />
 <h4 id="lambda"><code>lambda</code></h4>
 <p><strong>Syntax</strong>: <code>(lambda (params...) body)</code> or
@@ -79,7 +79,7 @@ rest parameters.</p>
 <strong>Returns</strong>: Closure (40-byte structure with captures and
 S-expression for homoiconicity)<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/llvm_codegen.cpp:12962"><code>codegenLambda()</code></a><br />
+href="../lib/backend/llvm_codegen.cpp"><code>codegenLambda()</code></a>
 <strong>Closure Structure</strong>:
 <code>{func_ptr(8), env(8), sexpr_ptr(8), return_type(1), arity(1), flags(1)}</code></p>
 <p><strong>Advanced Features</strong>: - <strong>Mutable
@@ -111,8 +111,7 @@ recursive definitions.</p>
 <strong>Scope</strong>: <code>let</code> - parallel, <code>let*</code> -
 sequential, <code>letrec</code> - recursive<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/llvm_codegen.cpp:13923"><code>codegenLet()</code></a>,
-<a
+href="../lib/backend/llvm_codegen.cpp"><code>codegenLet()</code></a>, <a
 href="../lib/backend/binding_codegen.cpp"><code>BindingCodegen</code></a></p>
 <hr />
 <h4 id="set"><code>set!</code></h4>
@@ -129,7 +128,7 @@ and closure captures.</p>
 <strong>Returns</strong>: Unspecified (implementation returns the new
 value)<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/llvm_codegen.cpp:7604"><code>codegenSet()</code></a></p>
+href="../lib/backend/llvm_codegen.cpp"><code>codegenSet()</code></a></p>
 <hr />
 <h4 id="if"><code>if</code></h4>
 <p><strong>Syntax</strong>:
@@ -236,7 +235,7 @@ href="../lib/backend/control_flow_codegen.cpp"><code>codegenWhen()</code></a></p
 <strong>Returns</strong>: Value of result expressions when test
 succeeds<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/llvm_codegen.cpp:11117"><code>codegenDo()</code></a></p>
+href="../lib/backend/llvm_codegen.cpp"><code>codegenDo()</code></a></p>
 <hr />
 <h4 id="quote-quasiquote-unquote"><code>quote</code>,
 <code>quasiquote</code>, <code>unquote</code></h4>
@@ -251,7 +250,7 @@ evaluation.</p>
 <p><strong>Type</strong>: Data literals<br />
 <strong>Returns</strong>: S-expression (cons-based data structure)<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/llvm_codegen.cpp:16279"><code>codegenQuotedAST()</code></a>,
+href="../lib/backend/llvm_codegen.cpp"><code>codegenQuotedAST()</code></a>,
 <a
 href="../lib/backend/homoiconic_codegen.cpp"><code>HomoiconicCodegen</code></a></p>
 <hr />
@@ -279,7 +278,7 @@ href="../lib/backend/call_apply_codegen.cpp"><code>codegenApply()</code></a></p>
   (/ 1 0))</code></pre>
 <p><strong>Type</strong>: Exception handler<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/llvm_codegen.cpp:10201"><code>codegenGuard()</code></a></p>
+href="../lib/backend/llvm_codegen.cpp"><code>codegenGuard()</code></a></p>
 <hr />
 <h4 id="raise"><code>raise</code></h4>
 <p><strong>Syntax</strong>: <code>(raise obj)</code></p>
@@ -289,7 +288,7 @@ href="../lib/backend/llvm_codegen.cpp:10201"><code>codegenGuard()</code></a></p>
 (if (&lt; x 0) (raise &quot;negative value&quot;) x)</code></pre>
 <p><strong>Type</strong>: Exception trigger<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/llvm_codegen.cpp:10438"><code>codegenRaise()</code></a></p>
+href="../lib/backend/llvm_codegen.cpp"><code>codegenRaise()</code></a></p>
 <hr />
 <h3 id="multiple-return-values">Multiple Return Values</h3>
 <h4 id="values"><code>values</code></h4>
@@ -300,7 +299,7 @@ href="../lib/backend/llvm_codegen.cpp:10438"><code>codegenRaise()</code></a></p>
 (define (divmod a b) (values (quotient a b) (remainder a b)))</code></pre>
 <p><strong>Type</strong>: Multi-value constructor<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/llvm_codegen.cpp:10500"><code>codegenValues()</code></a></p>
+href="../lib/backend/llvm_codegen.cpp"><code>codegenValues()</code></a></p>
 <hr />
 <h4 id="call-with-values"><code>call-with-values</code></h4>
 <p><strong>Syntax</strong>:
@@ -312,7 +311,7 @@ href="../lib/backend/llvm_codegen.cpp:10500"><code>codegenValues()</code></a></p
   (lambda (a b) (+ a b)))  ; =&gt; 3</code></pre>
 <p><strong>Type</strong>: Multi-value application<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/llvm_codegen.cpp:10564"><code>codegenCallWithValues()</code></a></p>
+href="../lib/backend/llvm_codegen.cpp"><code>codegenCallWithValues()</code></a></p>
 <hr />
 <h3 id="pattern-matching">Pattern Matching</h3>
 <h4 id="match"><code>match</code></h4>
@@ -332,7 +331,7 @@ patterns, lists, wildcards, predicates, and or-patterns.</p>
 <code>literal</code>, <code>(p1 . p2)</code>, <code>(p...)</code>,
 <code>(? pred)</code>, <code>(or p...)</code><br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/llvm_codegen.cpp:11117"><code>codegenMatch()</code></a></p>
+href="../lib/backend/llvm_codegen.cpp"><code>codegenMatch()</code></a></p>
 <hr />
 <h3 id="memory-management-oalr">Memory Management (OALR)</h3>
 <h4 id="with-region"><code>with-region</code></h4>
@@ -346,7 +345,7 @@ execution.</p>
     (process big-data)))  ; Memory freed after block</code></pre>
 <p><strong>Type</strong>: Region-based memory management<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/llvm_codegen.cpp:22635"><code>codegenWithRegion()</code></a></p>
+href="../lib/backend/llvm_codegen.cpp"><code>codegenWithRegion()</code></a></p>
 <hr />
 <h4 id="owned-move-borrow-shared"><code>owned</code>, <code>move</code>,
 <code>borrow</code>, <code>shared</code></h4>
@@ -357,7 +356,7 @@ href="../lib/backend/llvm_codegen.cpp:22635"><code>codegenWithRegion()</code></a
 (compile-time tracking).</p>
 <p><strong>Type</strong>: Ownership markers<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/llvm_codegen.cpp:22705"><code>codegenOwned()</code></a></p>
+href="../lib/backend/llvm_codegen.cpp"><code>codegenOwned()</code></a></p>
 <hr />
 <h3 id="external-interface">External Interface</h3>
 <h4 id="extern"><code>extern</code></h4>
@@ -369,14 +368,14 @@ href="../lib/backend/llvm_codegen.cpp:22705"><code>codegenOwned()</code></a></p>
 (extern &quot;int&quot; &quot;puts&quot; &quot;string&quot;)</code></pre>
 <p><strong>Type</strong>: FFI declaration<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/llvm_codegen.cpp:12201"><code>codegenExtern()</code></a></p>
+href="../lib/backend/llvm_codegen.cpp"><code>codegenExtern()</code></a></p>
 <hr />
 <h4 id="extern-var"><code>extern-var</code></h4>
 <p><strong>Syntax</strong>: <code>(extern-var type name)</code></p>
 <p>Declares external C variable.</p>
 <p><strong>Type</strong>: FFI variable<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/llvm_codegen.cpp:12157"><code>codegenExternVar()</code></a></p>
+href="../lib/backend/llvm_codegen.cpp"><code>codegenExternVar()</code></a></p>
 <hr />
 <h2 id="automatic-differentiation">Automatic Differentiation</h2>
 <p>Eshkol provides <strong>three modes</strong> of automatic
@@ -405,7 +404,7 @@ formula)<br />
 <strong>Rules</strong>: Sum, product, quotient, chain rule for
 sin/cos/exp/log/pow/sqrt<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/llvm_codegen.cpp:16041"><code>buildSymbolicDerivative()</code></a></p>
+href="../lib/backend/llvm_codegen.cpp"><code>buildSymbolicDerivative()</code></a></p>
 <hr />
 <h3 id="forward-mode-ad-dual-numbers">Forward-Mode AD (Dual
 Numbers)</h3>
@@ -428,9 +427,9 @@ Numbers)</h3>
 automatic chain rule propagation<br />
 <strong>Complexity</strong>: O(1) overhead per operation<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/llvm_codegen.cpp:17451"><code>codegenDerivative()</code></a>,
+href="../lib/backend/llvm_codegen.cpp"><code>codegenDerivative()</code></a>,
 <a
-href="../lib/backend/autodiff_codegen.cpp:902"><code>AutodiffCodegen::derivative()</code></a></p>
+href="../lib/backend/autodiff_codegen.cpp"><code>AutodiffCodegen::derivative()</code></a></p>
 <p><strong>Dual Number Arithmetic</strong>: - Addition:
 <code>(a, a') + (b, b') = (a+b, a'+b')</code> - Multiplication:
 <code>(a, a') * (b, b') = (ab, a'b + ab')</code> - Sin:
@@ -461,7 +460,7 @@ backpropagation<br />
 <strong>Complexity</strong>: O(1) backward pass (optimal for scalar
 outputs)<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/llvm_codegen.cpp:18317"><code>codegenGradient()</code></a></p>
+href="../lib/backend/llvm_codegen.cpp"><code>codegenGradient()</code></a></p>
 <p><strong>Graph Construction</strong>: - Forward pass builds
 computation graph (AD nodes on tape) - Backward pass propagates
 gradients via chain rule - Supports nested gradients (arbitrary depth)
@@ -484,7 +483,7 @@ with tape stack</p>
 component)<br />
 <strong>Complexity</strong>: O(m) backward passes<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/llvm_codegen.cpp:20327"><code>codegenJacobian()</code></a></p>
+href="../lib/backend/llvm_codegen.cpp"><code>codegenJacobian()</code></a></p>
 <hr />
 <h4 id="hessian"><code>hessian</code></h4>
 <p><strong>Syntax</strong>: <code>(hessian f point)</code></p>
@@ -503,7 +502,7 @@ on gradient)<br />
 finite difference<br />
 <strong>Complexity</strong>: O(n²) gradient computations<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/llvm_codegen.cpp:21175"><code>codegenHessian()</code></a></p>
+href="../lib/backend/llvm_codegen.cpp"><code>codegenHessian()</code></a></p>
 <hr />
 <h3 id="vector-calculus-operators">Vector Calculus Operators</h3>
 <h4 id="divergence"><code>divergence</code></h4>
@@ -520,7 +519,7 @@ href="../lib/backend/llvm_codegen.cpp:21175"><code>codegenHessian()</code></a></
 elements)<br />
 <strong>Physics</strong>: Measures “source strength” at a point<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/llvm_codegen.cpp:21942"><code>codegenDivergence()</code></a></p>
+href="../lib/backend/llvm_codegen.cpp"><code>codegenDivergence()</code></a></p>
 <hr />
 <h4 id="curl"><code>curl</code></h4>
 <p><strong>Syntax</strong>: <code>(curl f point)</code></p>
@@ -537,7 +536,7 @@ href="../lib/backend/llvm_codegen.cpp:21942"><code>codegenDivergence()</code></a
 <strong>Generalization</strong>: Works for n≥2 (differential
 2-forms)<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/llvm_codegen.cpp:22059"><code>codegenCurl()</code></a></p>
+href="../lib/backend/llvm_codegen.cpp"><code>codegenCurl()</code></a></p>
 <hr />
 <h4 id="laplacian"><code>laplacian</code></h4>
 <p><strong>Syntax</strong>: <code>(laplacian f point)</code></p>
@@ -554,22 +553,22 @@ derivatives)<br />
 <strong>Physics</strong>: Fundamental in heat equation, wave equation,
 quantum mechanics<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/llvm_codegen.cpp:22300"><code>codegenLaplacian()</code></a></p>
+href="../lib/backend/llvm_codegen.cpp"><code>codegenLaplacian()</code></a></p>
 <hr />
-<h4 id="directional-deriv"><code>directional-deriv</code></h4>
+<h4 id="directional-derivative"><code>directional-derivative</code></h4>
 <p><strong>Syntax</strong>:
-<code>(directional-deriv f point direction)</code></p>
+<code>(directional-derivative f point direction)</code></p>
 <p>Computes directional derivative: <code>D_v f = ∇f · v</code></p>
 <p><strong>Examples</strong>:</p>
 <pre class="scheme"><code>(define (f v) (* (vref v 0) (vref v 1)))
-(directional-deriv f #(2.0 3.0) #(1.0 0.0))  ; =&gt; 3.0</code></pre>
+(directional-derivative f #(2.0 3.0) #(1.0 0.0))  ; =&gt; 3.0</code></pre>
 <p><strong>Mode</strong>: Gradient dot product<br />
 <strong>Input</strong>: Scalar field <code>f: ℝⁿ → ℝ</code>, point,
 direction vector<br />
 <strong>Output</strong>: Scalar (rate of change in specified
 direction)<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/llvm_codegen.cpp:22422"><code>codegenDirectionalDerivative()</code></a></p>
+href="../lib/backend/llvm_codegen.cpp"><code>codegenDirectionalDerivative()</code></a></p>
 <hr />
 <h2 id="tensor-operations">Tensor Operations</h2>
 <p>Tensors are N-dimensional arrays with homogeneous double-precision
@@ -595,9 +594,8 @@ elements stored as int64 bit patterns.</p>
 <strong>Returns</strong>: Tensor (HEAP_PTR with
 HEAP_SUBTYPE_TENSOR)<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/tensor_codegen.cpp:2311"><code>zeros()</code></a>,
-<a
-href="../lib/backend/tensor_codegen.cpp:2518"><code>ones()</code></a></p>
+href="../lib/backend/tensor_codegen.cpp"><code>zeros()</code></a>, <a
+href="../lib/backend/tensor_codegen.cpp"><code>ones()</code></a></p>
 <hr />
 <h4 id="eye"><code>eye</code></h4>
 <p><strong>Syntax</strong>: <code>(eye n)</code> or
@@ -608,7 +606,7 @@ href="../lib/backend/tensor_codegen.cpp:2518"><code>ones()</code></a></p>
 (eye 2 3)    ; =&gt; #((1.0 0.0 0.0) (0.0 1.0 0.0))</code></pre>
 <p><strong>Type</strong>: Matrix constructor<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/tensor_codegen.cpp:2718"><code>eye()</code></a></p>
+href="../lib/backend/tensor_codegen.cpp"><code>eye()</code></a></p>
 <hr />
 <h4 id="arange"><code>arange</code></h4>
 <p><strong>Syntax</strong>: <code>(arange n)</code> or
@@ -620,7 +618,7 @@ href="../lib/backend/tensor_codegen.cpp:2718"><code>eye()</code></a></p>
 (arange 0.0 1.0 0.25) ; =&gt; #(0.0 0.25 0.5 0.75)</code></pre>
 <p><strong>Type</strong>: Range constructor<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/tensor_codegen.cpp:2788"><code>arange()</code></a></p>
+href="../lib/backend/tensor_codegen.cpp"><code>arange()</code></a></p>
 <hr />
 <h4 id="linspace"><code>linspace</code></h4>
 <p><strong>Syntax</strong>: <code>(linspace start end num)</code></p>
@@ -630,7 +628,7 @@ to <code>end</code> (inclusive).</p>
 <pre class="scheme"><code>(linspace 0.0 1.0 5)  ; =&gt; #(0.0 0.25 0.5 0.75 1.0)</code></pre>
 <p><strong>Type</strong>: Linear spacing constructor<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/tensor_codegen.cpp:2934"><code>linspace()</code></a></p>
+href="../lib/backend/tensor_codegen.cpp"><code>linspace()</code></a></p>
 <hr />
 <h3 id="tensor-access-manipulation">Tensor Access &amp;
 Manipulation</h3>
@@ -649,9 +647,9 @@ Manipulation</h3>
 <strong>AD-Aware</strong>: Preserves AD node pointers during gradient
 computation<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/tensor_codegen.cpp:130"><code>tensorGet()</code></a>,
+href="../lib/backend/tensor_codegen.cpp"><code>tensorGet()</code></a>,
 <a
-href="../lib/backend/llvm_codegen.cpp:15054"><code>codegenTensorVectorRef()</code></a></p>
+href="../lib/backend/llvm_codegen.cpp"><code>codegenTensorVectorRef()</code></a></p>
 <hr />
 <h4 id="tensor-set"><code>tensor-set</code></h4>
 <p><strong>Syntax</strong>:
@@ -662,7 +660,7 @@ href="../lib/backend/llvm_codegen.cpp:15054"><code>codegenTensorVectorRef()</cod
 (tensor-set M 99 0 1)  ; M[0,1] := 99</code></pre>
 <p><strong>Type</strong>: Tensor mutation<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/tensor_codegen.cpp:330"><code>tensorSet()</code></a></p>
+href="../lib/backend/tensor_codegen.cpp"><code>tensorSet()</code></a></p>
 <hr />
 <h4 id="transpose"><code>transpose</code></h4>
 <p><strong>Syntax</strong>: <code>(transpose matrix)</code></p>
@@ -672,7 +670,7 @@ href="../lib/backend/tensor_codegen.cpp:330"><code>tensorSet()</code></a></p>
 <p><strong>Type</strong>: Matrix transformation<br />
 <strong>Complexity</strong>: O(mn) time, O(mn) space<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/tensor_codegen.cpp:1920"><code>transpose()</code></a></p>
+href="../lib/backend/tensor_codegen.cpp"><code>transpose()</code></a></p>
 <hr />
 <h4 id="reshape"><code>reshape</code></h4>
 <p><strong>Syntax</strong>: <code>(reshape tensor dim...)</code> or
@@ -684,7 +682,7 @@ href="../lib/backend/tensor_codegen.cpp:1920"><code>transpose()</code></a></p>
 <p><strong>Type</strong>: Shape transformation<br />
 <strong>Constraint</strong>: Total elements must match<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/tensor_codegen.cpp:2041"><code>reshape()</code></a></p>
+href="../lib/backend/tensor_codegen.cpp"><code>reshape()</code></a></p>
 <hr />
 <h4 id="flatten"><code>flatten</code></h4>
 <p><strong>Syntax</strong>: <code>(flatten tensor)</code></p>
@@ -693,7 +691,7 @@ href="../lib/backend/tensor_codegen.cpp:2041"><code>reshape()</code></a></p>
 <pre class="scheme"><code>(flatten #((1 2) (3 4)))  ; =&gt; #(1 2 3 4)</code></pre>
 <p><strong>Type</strong>: Dimensionality reduction<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/llvm_codegen.cpp:15280"><code>codegenFlatten()</code></a></p>
+href="../lib/backend/llvm_codegen.cpp"><code>codegenFlatten()</code></a></p>
 <hr />
 <h4 id="tensor-shape"><code>tensor-shape</code></h4>
 <p><strong>Syntax</strong>: <code>(tensor-shape tensor)</code></p>
@@ -703,7 +701,7 @@ href="../lib/backend/llvm_codegen.cpp:15280"><code>codegenFlatten()</code></a></
 <p><strong>Type</strong>: Metadata query<br />
 <strong>Returns</strong>: Cons-based list of int64 dimensions<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/tensor_codegen.cpp:1796"><code>tensorShape()</code></a></p>
+href="../lib/backend/tensor_codegen.cpp"><code>tensorShape()</code></a></p>
 <hr />
 <h4 id="tensor-save"><code>tensor-save</code></h4>
 <p><strong>Syntax</strong>: <code>(tensor-save path tensor)</code></p>
@@ -756,7 +754,7 @@ vectors.</p>
 <p><strong>Type</strong>: Element-wise binary operations<br />
 <strong>Constraint</strong>: Operands must have same shape<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/tensor_codegen.cpp:382"><code>tensorArithmetic()</code></a></p>
+href="../lib/backend/tensor_codegen.cpp"><code>tensorArithmetic()</code></a></p>
 <hr />
 <h4 id="tensor-dot"><code>tensor-dot</code></h4>
 <p><strong>Syntax</strong>: <code>(tensor-dot A B)</code> or
@@ -771,9 +769,9 @@ href="../lib/backend/tensor_codegen.cpp:382"><code>tensorArithmetic()</code></a>
 <p><strong>Type</strong>: Linear algebra operation<br />
 <strong>Complexity</strong>: O(mnk) for m×k @ k×n matrices<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/tensor_codegen.cpp:662"><code>tensorDot()</code></a>,
+href="../lib/backend/tensor_codegen.cpp"><code>tensorDot()</code></a>,
 <a
-href="../lib/backend/llvm_codegen.cpp:15333"><code>codegenMatmul()</code></a></p>
+href="../lib/backend/llvm_codegen.cpp"><code>codegenMatmul()</code></a></p>
 <hr />
 <h4 id="trace"><code>trace</code></h4>
 <p><strong>Syntax</strong>: <code>(trace matrix)</code></p>
@@ -782,7 +780,7 @@ href="../lib/backend/llvm_codegen.cpp:15333"><code>codegenMatmul()</code></a></p
 <pre class="scheme"><code>(trace #((1 2) (3 4)))  ; =&gt; 5</code></pre>
 <p><strong>Type</strong>: Matrix invariant<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/llvm_codegen.cpp:15495"><code>codegenTrace()</code></a></p>
+href="../lib/backend/llvm_codegen.cpp"><code>codegenTrace()</code></a></p>
 <hr />
 <h4 id="norm"><code>norm</code></h4>
 <p><strong>Syntax</strong>: <code>(norm vector)</code></p>
@@ -791,7 +789,7 @@ href="../lib/backend/llvm_codegen.cpp:15495"><code>codegenTrace()</code></a></p>
 <pre class="scheme"><code>(norm #(3.0 4.0))  ; =&gt; 5.0</code></pre>
 <p><strong>Type</strong>: Vector magnitude<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/llvm_codegen.cpp:15593"><code>codegenNorm()</code></a></p>
+href="../lib/backend/llvm_codegen.cpp"><code>codegenNorm()</code></a></p>
 <hr />
 <h4 id="outer"><code>outer</code></h4>
 <p><strong>Syntax</strong>: <code>(outer u v)</code></p>
@@ -800,7 +798,7 @@ href="../lib/backend/llvm_codegen.cpp:15593"><code>codegenNorm()</code></a></p>
 <pre class="scheme"><code>(outer #(1 2) #(3 4 5))  ; =&gt; #((3 4 5) (6 8 10))</code></pre>
 <p><strong>Type</strong>: Tensor product<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/llvm_codegen.cpp:15712"><code>codegenOuterProduct()</code></a></p>
+href="../lib/backend/llvm_codegen.cpp"><code>codegenOuterProduct()</code></a></p>
 <hr />
 <h3 id="tensor-reductions">Tensor Reductions</h3>
 <h4 id="tensor-sum-tensor-mean"><code>tensor-sum</code>,
@@ -813,9 +811,9 @@ href="../lib/backend/llvm_codegen.cpp:15712"><code>codegenOuterProduct()</code><
 (tensor-mean #(2 4 6 8))    ; =&gt; 5.0</code></pre>
 <p><strong>Type</strong>: Statistical reductions<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/tensor_codegen.cpp:1556"><code>tensorSum()</code></a>,
+href="../lib/backend/tensor_codegen.cpp"><code>tensorSum()</code></a>,
 <a
-href="../lib/backend/tensor_codegen.cpp:1675"><code>tensorMean()</code></a></p>
+href="../lib/backend/tensor_codegen.cpp"><code>tensorMean()</code></a></p>
 <hr />
 <h4 id="tensor-reduce"><code>tensor-reduce</code></h4>
 <p><strong>Syntax</strong>:
@@ -827,9 +825,9 @@ href="../lib/backend/tensor_codegen.cpp:1675"><code>tensorMean()</code></a></p>
 (tensor-reduce matrix max -inf 0) ; Row-wise maximum</code></pre>
 <p><strong>Type</strong>: Generalized reduction<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/tensor_codegen.cpp:1152"><code>tensorReduceAll()</code></a>,
+href="../lib/backend/tensor_codegen.cpp"><code>tensorReduceAll()</code></a>,
 <a
-href="../lib/backend/tensor_codegen.cpp:1315"><code>tensorReduceWithDim()</code></a></p>
+href="../lib/backend/tensor_codegen.cpp"><code>tensorReduceWithDim()</code></a></p>
 <hr />
 <h4 id="tensor-apply"><code>tensor-apply</code></h4>
 <p><strong>Syntax</strong>: <code>(tensor-apply tensor func)</code></p>
@@ -838,7 +836,7 @@ href="../lib/backend/tensor_codegen.cpp:1315"><code>tensorReduceWithDim()</code>
 <pre class="scheme"><code>(tensor-apply #(1 2 3) (lambda (x) (* x x)))  ; =&gt; #(1 4 9)</code></pre>
 <p><strong>Type</strong>: Element-wise map
 <strong>Implementation</strong>: <a
-href="../lib/backend/tensor_codegen.cpp:1022"><code>tensorApply()</code></a></p>
+href="../lib/backend/tensor_codegen.cpp"><code>tensorApply()</code></a></p>
 <hr />
 <h3 id="broadcasting-rules">Broadcasting Rules</h3>
 <p>When operating on tensors of different shapes, Eshkol applies
@@ -1050,7 +1048,7 @@ storage per element).</p>
 <strong>Returns</strong>: HEAP_PTR (consolidated pointer with
 HEAP_SUBTYPE_CONS)<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/collection_codegen.cpp:94"><code>cons()</code></a></p>
+href="../lib/backend/collection_codegen.cpp"><code>cons()</code></a></p>
 <hr />
 <h4 id="car-cdr"><code>car</code>, <code>cdr</code></h4>
 <p><strong>Syntax</strong>: <code>(car pair)</code>,
@@ -1065,9 +1063,8 @@ vectors/tensors.</p>
 <strong>Returns</strong>: Tagged value (preserves type of stored
 element)<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/collection_codegen.cpp:121"><code>car()</code></a>,
-<a
-href="../lib/backend/collection_codegen.cpp:550"><code>cdr()</code></a></p>
+href="../lib/backend/collection_codegen.cpp"><code>car()</code></a>, <a
+href="../lib/backend/collection_codegen.cpp"><code>cdr()</code></a></p>
 <hr />
 <h4 id="list"><code>list</code></h4>
 <p><strong>Syntax</strong>: <code>(list expr...)</code></p>
@@ -1080,7 +1077,7 @@ href="../lib/backend/collection_codegen.cpp:550"><code>cdr()</code></a></p>
 <strong>Evaluation</strong>: Left-to-right (preserves side-effect
 order)<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/collection_codegen.cpp:985"><code>list()</code></a></p>
+href="../lib/backend/collection_codegen.cpp"><code>list()</code></a></p>
 <hr />
 <h4 id="list-1"><code>list*</code></h4>
 <p><strong>Syntax</strong>: <code>(list* e1 e2 ... en)</code></p>
@@ -1090,7 +1087,7 @@ href="../lib/backend/collection_codegen.cpp:985"><code>list()</code></a></p>
 (list* &#39;a &#39;b &#39;c)      ; =&gt; (a b . c)</code></pre>
 <p><strong>Type</strong>: Improper list constructor<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/llvm_codegen.cpp:25470"><code>codegenListStar()</code></a></p>
+href="../lib/backend/llvm_codegen.cpp"><code>codegenListStar()</code></a></p>
 <hr />
 <h3 id="compound-accessors">Compound Accessors</h3>
 <h4 id="cadr-caddr-cadddr-etc."><code>cadr</code>, <code>caddr</code>,
@@ -1107,7 +1104,7 @@ caaar, caadr, cadar, cdaar, cdadr, cddar, cdddr<br />
 <strong>Optimization</strong>: For vectors/tensors, uses direct indexing
 instead of traversal<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/llvm_codegen.cpp:23506"><code>codegenCompoundCarCdr()</code></a></p>
+href="../lib/backend/llvm_codegen.cpp"><code>codegenCompoundCarCdr()</code></a></p>
 <hr />
 <h3 id="predicates">Predicates</h3>
 <h4 id="null-pair-list"><code>null?</code>, <code>pair?</code>,
@@ -1122,9 +1119,9 @@ href="../lib/backend/llvm_codegen.cpp:23506"><code>codegenCompoundCarCdr()</code
 (list? &#39;(1 . 2))   ; =&gt; #f (improper list)</code></pre>
 <p><strong>Type</strong>: Boolean predicates<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/collection_codegen.cpp:1035"><code>isNull()</code></a>,
+href="../lib/backend/collection_codegen.cpp"><code>isNull()</code></a>,
 <a
-href="../lib/backend/collection_codegen.cpp:1078"><code>isPair()</code></a></p>
+href="../lib/backend/collection_codegen.cpp"><code>isPair()</code></a></p>
 <hr />
 <h3 id="mutators">Mutators</h3>
 <h4 id="set-car-set-cdr"><code>set-car!</code>,
@@ -1138,7 +1135,7 @@ href="../lib/backend/collection_codegen.cpp:1078"><code>isPair()</code></a></p>
 <p><strong>Type</strong>: Destructive update<br />
 <strong>Returns</strong>: Unspecified<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/llvm_codegen.cpp:24865"><code>codegenSetCar()</code></a></p>
+href="../lib/backend/llvm_codegen.cpp"><code>codegenSetCar()</code></a></p>
 <hr />
 <h3 id="higher-order-list-functions">Higher-Order List Functions</h3>
 <h4 id="map"><code>map</code></h4>
@@ -1245,7 +1242,7 @@ etc.</p>
 <p><strong>Type</strong>: Numeric operations<br />
 <strong>abs</strong>: Preserves type (int→int, double→double)<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/llvm_codegen.cpp:9698"><code>codegenAbs()</code></a></p>
+href="../lib/backend/llvm_codegen.cpp"><code>codegenAbs()</code></a></p>
 <hr />
 <h4 id="gcd-lcm"><code>gcd</code>, <code>lcm</code></h4>
 <p><strong>Syntax</strong>: <code>(gcd a b)</code>,
@@ -1256,7 +1253,7 @@ href="../lib/backend/llvm_codegen.cpp:9698"><code>codegenAbs()</code></a></p>
 (lcm 12 18)  ; =&gt; 36</code></pre>
 <p><strong>Algorithm</strong>: Euclidean algorithm<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/llvm_codegen.cpp:9920"><code>codegenGCD()</code></a></p>
+href="../lib/backend/llvm_codegen.cpp"><code>codegenGCD()</code></a></p>
 <hr />
 <h3 id="comparison-operators">Comparison Operators</h3>
 <h4 id="section-1"><code>=</code>, <code>&lt;</code>, <code>&gt;</code>,
@@ -1291,9 +1288,8 @@ lists)</li>
 (equal? &#39;(1 2) &#39;(1 2)) ; =&gt; #t
 (eq? &#39;(1 2) &#39;(1 2))    ; =&gt; #f (different pointers)</code></pre>
 <p><strong>Implementation</strong>: <a
-href="../lib/backend/llvm_codegen.cpp:11893"><code>codegenEq()</code></a>,
-<a
-href="../lib/backend/llvm_codegen.cpp:12036"><code>codegenEqual()</code></a></p>
+href="../lib/backend/llvm_codegen.cpp"><code>codegenEq()</code></a>, <a
+href="../lib/backend/llvm_codegen.cpp"><code>codegenEqual()</code></a></p>
 <hr />
 <h2 id="math-functions">Math Functions</h2>
 <p>All math functions support dual numbers (forward-mode AD) and AD
@@ -1309,7 +1305,7 @@ nodes (reverse-mode AD) automatically.</p>
 <p><strong>AD Support</strong>: Chain rule automatically applied with
 dual numbers<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/llvm_codegen.cpp:9569"><code>codegenMathFunction()</code></a></p>
+href="../lib/backend/llvm_codegen.cpp"><code>codegenMathFunction()</code></a></p>
 <hr />
 <h3 id="hyperbolic-functions">Hyperbolic Functions</h3>
 <p><strong>Functions</strong>: <code>sinh</code>, <code>cosh</code>,
@@ -1332,7 +1328,7 @@ number support</p>
 (sqrt 16)       ; =&gt; 4.0</code></pre>
 <p><strong>AD Support</strong>: All functions differentiable<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/autodiff_codegen.cpp:287"><code>dualExp()</code></a>,
+href="../lib/backend/autodiff_codegen.cpp"><code>dualExp()</code></a>,
 etc.</p>
 <hr />
 <h3 id="rounding-functions">Rounding Functions</h3>
@@ -1355,7 +1351,7 @@ etc.</p>
 (nan? (/ 0.0 0.0))  ; =&gt; #t
 (finite? 1e100) ; =&gt; #t</code></pre>
 <p><strong>Implementation</strong>: <a
-href="../lib/backend/llvm_codegen.cpp:11836"><code>codegenNumericPredicate()</code></a></p>
+href="../lib/backend/llvm_codegen.cpp"><code>codegenNumericPredicate()</code></a></p>
 <hr />
 <h2 id="string-operations">String Operations</h2>
 <p>Strings are heap-allocated with header (HEAP_SUBTYPE_STRING).</p>
@@ -6407,8 +6403,8 @@ href="lib/backend/llvm_codegen.cpp">llvm_codegen.cpp</a> — 34,928 lines
 <strong>Tensor Codegen</strong>: <a
 href="lib/backend/tensor_codegen.cpp">tensor_codegen.cpp</a> — 20,000+
 lines <strong>Compiler Modules</strong>: 21 specialized code generators
-<strong>Test Suite</strong>: 35 test suites, 438 test files
-<strong>Verified Operations</strong>: 700+ builtins, 300+ standard
+<strong>Test Suite</strong>: 37 suites, 528 self-reported tests
+<strong>Verified Operations</strong>: 555+ builtins, 300+ standard
 library functions</p>
 <hr />
 <h2 id="see-also">See Also</h2>
