@@ -476,7 +476,8 @@ function(eshkol_target_llvm_includes target_name)
     if(ESHKOL_USING_MSVC)
         target_include_directories(${target_name} PRIVATE ${LLVM_INCLUDE_DIRS})
     else()
-        target_compile_options(${target_name} PRIVATE ${ESHKOL_LLVM_INCLUDE_OPTIONS})
+        target_compile_options(${target_name} PRIVATE
+            $<$<COMPILE_LANGUAGE:C,CXX>:${ESHKOL_LLVM_INCLUDE_OPTIONS}>)
     endif()
 endfunction()
 
@@ -796,6 +797,13 @@ if(ESHKOL_GPU_ENABLED)
             endif()
 
             add_compile_definitions(ESHKOL_GPU_CUDA_ENABLED)
+            if(UNIX AND NOT APPLE)
+                if(NOT CMAKE_CUDA_FLAGS MATCHES "(^| )-U_GNU_SOURCE($| )")
+                    string(APPEND CMAKE_CUDA_FLAGS " -U_GNU_SOURCE")
+                    set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS}" CACHE STRING
+                        "Flags used by the CUDA compiler" FORCE)
+                endif()
+            endif()
             enable_language(CUDA)
             message(STATUS "GPU: NVIDIA CUDA")
 
