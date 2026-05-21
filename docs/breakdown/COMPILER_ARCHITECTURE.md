@@ -808,7 +808,7 @@ eshkol-repl
 > (define (fib n) (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))
 > (fib 30)
 832040
-> (gradient (lambda (x) (* x x)) 3.0)
+> (derivative (lambda (x) (* x x)) 3.0)
 6.0
 ```
 

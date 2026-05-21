@@ -357,7 +357,7 @@ eshkol> (define (factorial n)
 eshkol> (factorial 20)
 2432902008176640000
 
-eshkol> (gradient (lambda (x) (* x x)) 3.0)
+eshkol> (derivative (lambda (x) (* x x)) 3.0)
 6.0
 
 eshkol> :type (+ 1 2)

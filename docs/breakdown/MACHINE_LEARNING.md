@@ -559,8 +559,10 @@ Adam update, and cosine-annealed learning rate with warmup.
           (define probs (softmax (tensor+ (matmul (gelu (tensor+ (matmul x W1) b1)) W2) b2)))
           (define loss (cross-entropy-loss probs y))
 
-          ;; Backward (AD)
-          (define grads (gradient loss (list W1 b1 W2 b2)))
+          ;; Backward (AD). `gradient` takes (function vector); flatten the
+          ;; parameter list into a single tensor and the lambda picks the
+          ;; relevant slices back out.
+          (define grads (gradient loss (vector W1 b1 W2 b2)))
 
           ;; Clip and update
           (when (check-grad-health (list-ref grads 0))
