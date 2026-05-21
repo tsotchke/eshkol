@@ -787,7 +787,7 @@ Full R7RS 6.9 bytevector support:
 
 Eshkol implements proper tail calls as required by R7RS. Functions in tail position are compiled to loop-back branches rather than recursive calls, preventing stack overflow.
 
-**Implementation:** The `TailCallContext` in [binding_codegen.h:283](inc/eshkol/backend/binding_codegen.h#L283) tracks whether a call is in tail position. When TCO is active, `codegenCall` emits a branch back to the function entry point instead of a call instruction.
+**Implementation:** The `TailCallContext` in [binding_codegen.h](inc/eshkol/backend/binding_codegen.h) tracks whether a call is in tail position. When TCO is active, `codegenCall` emits a branch back to the function entry point instead of a call instruction.
 
 ```scheme
 ;; This runs in O(1) stack space

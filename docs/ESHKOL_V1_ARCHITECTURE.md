@@ -579,7 +579,7 @@ Closures store **pointers** to captured variables, not values:
 (variadic-fn 1 2 3 4 5)  ; → (1 2 (3 4 5))
 ```
 
-**Closure call dispatch** ([`llvm_codegen.cpp:12000`](../lib/backend/llvm_codegen.cpp)):
+**Closure call dispatch** ([`llvm_codegen.cpp`](../lib/backend/llvm_codegen.cpp)):
 - Extracts variadic flag from packed `num_captures`
 - Builds rest list from extra arguments
 - Switches on capture count (0-32) for efficient dispatch

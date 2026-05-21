@@ -66,14 +66,14 @@ tensor of identical shape.
 
 ### Key Implementations
 
-**ReLU** (`tensor_codegen.cpp:3064-3193`): `f(x) = max(0, x)`. The SIMD path uses
+**ReLU** (`tensor_codegen.cpp`): `f(x) = max(0, x)`. The SIMD path uses
 `fcmp ogt` followed by `select` on vector types for branchless evaluation.
 
 ```scheme
 (relu #(1.0 -2.0 3.0 -0.5))  ; => #(1.0 0.0 3.0 0.0)
 ```
 
-**Sigmoid** (`tensor_codegen.cpp:3206-3370`): Uses a numerically stable formulation
+**Sigmoid** (`tensor_codegen.cpp`): Uses a numerically stable formulation
 that computes `exp(-|x|)` (argument always non-positive, preventing overflow), then
 selects between two equivalent forms:
 
@@ -82,16 +82,16 @@ selects between two equivalent forms:
 
 Both SIMD and scalar paths employ `llvm.exp` and `llvm.fabs` vector intrinsics.
 
-**Softmax** (`tensor_codegen.cpp:3371-3483+`): Three-pass numerically stable algorithm:
+**Softmax** (`tensor_codegen.cpp`): Three-pass numerically stable algorithm:
 (1) find global max, (2) compute `exp(x_i - max)` and accumulate sum, (3) divide.
 The two-argument form `(softmax tensor axis)` delegates to `eshkol_xla_softmax` for
 axis-aware computation in transformer batch dimensions.
 
-**GELU** (`tensor_codegen.cpp:3631+`): PyTorch-standard tanh approximation:
+**GELU** (`tensor_codegen.cpp`): PyTorch-standard tanh approximation:
 `0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))`. A dedicated backward
 pass (`tensorGeluBackward`) computes exact analytical gradients.
 
-**Leaky ReLU** (`tensor_codegen.cpp:3824-3932`): `x > 0 ? x : alpha*x` with
+**Leaky ReLU** (`tensor_codegen.cpp`): `x > 0 ? x : alpha*x` with
 default alpha=0.01. SIMD path uses `fmul` for scaling and `select` for branching.
 
 ### Complete Activation Reference
@@ -125,17 +125,17 @@ applications. Each returns a scalar tensor (1-element) representing the aggregat
 
 ### Key Implementations
 
-**MSE Loss** (`tensor_codegen.cpp:14330+`): `L = (1/N) * sum((y_hat - y)^2)`.
+**MSE Loss** (`tensor_codegen.cpp`): `L = (1/N) * sum((y_hat - y)^2)`.
 Gradient: `2(y_hat - y)/N`. Sensitive to outliers, strong gradients far from optimum.
 
-**Cross-Entropy Loss** (`tensor_codegen.cpp:14424+`): `L = -(1/N) * sum(y * log(y_hat + eps))`.
+**Cross-Entropy Loss** (`tensor_codegen.cpp`): `L = -(1/N) * sum(y * log(y_hat + eps))`.
 Expects post-softmax probabilities and one-hot targets. Epsilon `1e-12` prevents log(0).
 
-**BCE Loss** (`tensor_codegen.cpp:14590+`):
+**BCE Loss** (`tensor_codegen.cpp`):
 `L = -(1/N) * sum(y*log(p+eps) + (1-y)*log(1-p+eps))`. For binary classification with
 sigmoid output. Aliased as `binary-cross-entropy-loss`.
 
-**Huber Loss** (`tensor_codegen.cpp:14705+`): Quadratic for |error| <= delta, linear
+**Huber Loss** (`tensor_codegen.cpp`): Quadratic for |error| <= delta, linear
 otherwise. Default delta=1.0. Combines MSE precision with MAE outlier robustness.
 
 ```scheme
@@ -173,7 +173,7 @@ element arrays without allocation.
 ### 4.1 SGD with Momentum
 
 **Signature:** `(sgd-step! params grads lr [momentum velocity])`
-**Implementation:** `tensor_codegen.cpp:11576+`
+**Implementation:** `tensor_codegen.cpp`
 
     Without momentum:  theta <- theta - lr * grad
     With momentum:     v <- momentum * v + grad;  theta <- theta - lr * v
@@ -186,7 +186,7 @@ element arrays without allocation.
 ### 4.2 Adam
 
 **Signature:** `(adam-step! params grads lr m v t [beta1 beta2 eps])`
-**Implementation:** `tensor_codegen.cpp:11718+`
+**Implementation:** `tensor_codegen.cpp`
 
     m <- beta1*m + (1-beta1)*grad                 (first moment)
     v <- beta2*v + (1-beta2)*grad^2               (second moment)
@@ -199,7 +199,7 @@ Defaults: beta1=0.9, beta2=0.999, eps=1e-8. Bias correction uses C `pow`.
 ### 4.3 AdamW
 
 **Signature:** `(adamw-step! params grads lr m v t [beta1 beta2 eps weight_decay])`
-**Implementation:** `tensor_codegen.cpp:12201+`
+**Implementation:** `tensor_codegen.cpp`
 
 Decoupled weight decay (Loshchilov & Hutter, 2017). Weight decay is applied directly
 to parameters, not through the gradient:
@@ -211,7 +211,7 @@ Default weight_decay=0.01. Recommended for transformer training.
 ### 4.4 RMSprop
 
 **Signature:** `(rmsprop-step! params grads lr v [alpha eps])`
-**Implementation:** `tensor_codegen.cpp:12075+`
+**Implementation:** `tensor_codegen.cpp`
 
     v <- alpha*v + (1-alpha)*grad^2;  theta <- theta - lr*grad/(sqrt(v)+eps)
 
@@ -220,7 +220,7 @@ Default: alpha=0.99, eps=1e-8. Effective for RNNs and non-stationary objectives.
 ### 4.5 Adagrad
 
 **Signature:** `(adagrad-step! params grads lr accum [eps])`
-**Implementation:** `tensor_codegen.cpp:12350+`
+**Implementation:** `tensor_codegen.cpp`
 
     accum <- accum + grad^2;  theta <- theta - lr*grad/(sqrt(accum)+eps)
 
@@ -243,20 +243,20 @@ Five initialization strategies based on fan-in/fan-out analysis. All mutate in-p
 
 ### Formulas
 
-**Xavier Uniform** (`tensor_codegen.cpp:12509-12577`):
+**Xavier Uniform** (`tensor_codegen.cpp`):
 `U(-limit, limit)` where `limit = sqrt(6 / (fan_in + fan_out))`.
 Uses `drand48()` scaled to range. Glorot & Bengio (2010).
 
-**Xavier Normal** (`tensor_codegen.cpp:12579+`):
+**Xavier Normal** (`tensor_codegen.cpp`):
 `N(0, std^2)` where `std = sqrt(2 / (fan_in + fan_out))`.
 
-**Kaiming Uniform** (`tensor_codegen.cpp:12673+`):
+**Kaiming Uniform** (`tensor_codegen.cpp`):
 `U(-limit, limit)` where `limit = sqrt(6 / fan_in)`. He et al. (2015), for ReLU.
 
-**Kaiming Normal** (`tensor_codegen.cpp:12740+`):
+**Kaiming Normal** (`tensor_codegen.cpp`):
 `N(0, std^2)` where `std = sqrt(2 / fan_in)`. Standard for ReLU/Leaky ReLU.
 
-**LeCun Normal** (`tensor_codegen.cpp:12829+`):
+**LeCun Normal** (`tensor_codegen.cpp`):
 `N(0, std^2)` where `std = sqrt(1 / fan_in)`. LeCun et al. (1998), for SELU.
 
 ```scheme
@@ -278,16 +278,16 @@ Uses `drand48()` scaled to range. Glorot & Bengio (2010).
 
 Pure functions computing the learning rate for the current step. No mutable state.
 
-**Linear Warmup** (`tensor_codegen.cpp:13007+`):
+**Linear Warmup** (`tensor_codegen.cpp`):
 `lr = base_lr * min(1.0, step / warmup_steps)`. Essential for transformer training.
 
-**Step Decay** (`tensor_codegen.cpp:12965+`):
+**Step Decay** (`tensor_codegen.cpp`):
 `lr = base_lr * gamma^(floor(epoch / step_size))`. Classic CNN schedule.
 
-**Exponential Decay** (`tensor_codegen.cpp:13037+`):
+**Exponential Decay** (`tensor_codegen.cpp`):
 `lr = base_lr * gamma^epoch`. Smooth per-epoch decay.
 
-**Cosine Annealing** (`tensor_codegen.cpp:12922+`):
+**Cosine Annealing** (`tensor_codegen.cpp`):
 `lr = min_lr + 0.5*(base_lr - min_lr)*(1 + cos(pi * step / total_steps))`.
 Smooth warmdown, commonly combined with linear warmup.
 
@@ -307,13 +307,13 @@ Three convolution operations, two pooling operations, and two normalization laye
 
 ### Convolutions
 
-**Conv1d** (`tensor_codegen.cpp:9370+`): `(conv1d input kernel stride)`.
+**Conv1d** (`tensor_codegen.cpp`): `(conv1d input kernel stride)`.
 Output: `L_out = floor((L_in - K) / stride) + 1`. Direct convolution.
 
-**Conv2d** (`tensor_codegen.cpp:9588+`): `(conv2d input kernel stride)`.
+**Conv2d** (`tensor_codegen.cpp`): `(conv2d input kernel stride)`.
 Kernel must be >= 2D. `H_out = floor((H_in - K_h) / stride) + 1`. Runtime guard on rank.
 
-**Conv3d** (`tensor_codegen.cpp:11236+`): `(conv3d input kernel [stride] [padding])`.
+**Conv3d** (`tensor_codegen.cpp`): `(conv3d input kernel [stride] [padding])`.
 Both tensors must be >= 3D. Six nested loops (3 output + 3 kernel dimensions).
 
 ```scheme
@@ -323,19 +323,19 @@ Both tensors must be >= 3D. Six nested loops (3 output + 3 kernel dimensions).
 
 ### Pooling
 
-**Max Pool 2D** (`tensor_codegen.cpp:8794+`): `(max-pool2d input kernel-size stride)`.
+**Max Pool 2D** (`tensor_codegen.cpp`): `(max-pool2d input kernel-size stride)`.
 Selects maximum within each window. Preserves strongest activations.
 
-**Avg Pool 2D** (`tensor_codegen.cpp:9090+`): `(avg-pool2d input kernel-size stride)`.
+**Avg Pool 2D** (`tensor_codegen.cpp`): `(avg-pool2d input kernel-size stride)`.
 Mean within each window. Smoother downsampling.
 
 ### Normalization
 
-**Batch Norm** (`tensor_codegen.cpp:9855+`): `(batch-norm input gamma beta epsilon [axis])`.
+**Batch Norm** (`tensor_codegen.cpp`): `(batch-norm input gamma beta epsilon [axis])`.
 `y = gamma * (x - mean) / sqrt(var + eps) + beta`. Normalizes across batch dimension.
 5-argument form delegates to runtime for axis-aware normalization.
 
-**Layer Norm** (`tensor_codegen.cpp:10101+`): `(layer-norm input gamma beta epsilon [axis])`.
+**Layer Norm** (`tensor_codegen.cpp`): `(layer-norm input gamma beta epsilon [axis])`.
 Same formula but normalizes across the feature dimension (per-sample). Standard for
 transformers. Independent of batch size.
 
@@ -348,7 +348,7 @@ Complete building blocks for encoder-decoder, decoder-only, and encoder-only arc
 ### Scaled Dot-Product Attention
 
 **Signature:** `(scaled-dot-attention Q K V [mask])`
-**Implementation:** `tensor_codegen.cpp:16647+`
+**Implementation:** `tensor_codegen.cpp`
 
     Attention(Q, K, V) = softmax(Q * K^T / sqrt(d_k)) * V
 
@@ -358,7 +358,7 @@ Complete building blocks for encoder-decoder, decoder-only, and encoder-only arc
 ### Multi-Head Attention
 
 **Signature:** `(multi-head-attention Q K V num-heads W_Q W_K W_V W_O [mask])`
-**Implementation:** `tensor_codegen.cpp:17186+`
+**Implementation:** `tensor_codegen.cpp`
 
 Projects Q/K/V through learned weight matrices, splits into `num-heads` parallel
 heads, applies scaled dot-product attention independently, concatenates, and
@@ -373,7 +373,7 @@ projects through W_O.
 
 ### Positional Encoding
 
-**Signature:** `(positional-encoding max-len d-model)` -- `tensor_codegen.cpp:17990+`
+**Signature:** `(positional-encoding max-len d-model)` -- `tensor_codegen.cpp`
 
 Sinusoidal encodings from Vaswani et al. (2017):
 `PE(pos,2i) = sin(pos/10000^(2i/d))`, `PE(pos,2i+1) = cos(pos/10000^(2i/d))`.
@@ -381,28 +381,28 @@ Returns `[max-len, d-model]` tensor added to input embeddings.
 
 ### Rotary Position Embedding (RoPE)
 
-**Signature:** `(rotary-embedding x seq-positions dim)` -- `tensor_codegen.cpp:18128+`
+**Signature:** `(rotary-embedding x seq-positions dim)` -- `tensor_codegen.cpp`
 
 Su et al. (2021). Encodes position through rotation of feature pairs. Standard in
 modern LLMs (LLaMA, Mistral) for superior length generalization.
 
 ### Masking
 
-**`(causal-mask seq-len)`** (`tensor_codegen.cpp:18329+`): Lower-triangular additive
+**`(causal-mask seq-len)`** (`tensor_codegen.cpp`): Lower-triangular additive
 mask, upper triangle set to `-1e9`. For autoregressive decoders.
 
-**`(padding-mask lengths max-len)`** (`tensor_codegen.cpp:18421+`): Creates mask from
+**`(padding-mask lengths max-len)`** (`tensor_codegen.cpp`): Creates mask from
 sequence lengths. Positions beyond actual length are masked.
 
 ### Feed-Forward Network
 
-**Signature:** `(feed-forward x W1 b1 W2 b2)` -- `tensor_codegen.cpp:18556+`
+**Signature:** `(feed-forward x W1 b1 W2 b2)` -- `tensor_codegen.cpp`
 
 Position-wise FFN: `W2 * relu(W1 * x + b1) + b2`. Fused two-layer linear transform.
 
 ### Embedding
 
-**Signature:** `(embedding indices weights)` -- `tensor_codegen.cpp:19031+`
+**Signature:** `(embedding indices weights)` -- `tensor_codegen.cpp`
 
 Lookup table: maps integer indices to dense vectors. Weight matrix must be 2D
 `[vocab-size, embed-dim]`. Runtime guard validates rank.
@@ -419,7 +419,7 @@ Lookup table: maps integer indices to dense vectors. Weight matrix must be 2D
 
 Batched iteration with optional shuffling for SGD-based training.
 
-**`(make-dataloader data batch-size [shuffle])`** (`tensor_codegen.cpp:15995+`):
+**`(make-dataloader data batch-size [shuffle])`** (`tensor_codegen.cpp`):
 Creates dataloader (64-byte struct: position, batch size, length, shuffle index array).
 
 | Function | Signature | Description |
@@ -429,7 +429,7 @@ Creates dataloader (64-byte struct: position, batch size, length, shuffle index 
 | `dataloader-reset!` | `(dataloader-reset! loader)` | Resets cursor; re-shuffles if enabled |
 | `dataloader-length` | `(dataloader-length loader)` | Total number of batches |
 
-**`(train-test-split data ratio [shuffle])`** (`tensor_codegen.cpp:16496+`):
+**`(train-test-split data ratio [shuffle])`** (`tensor_codegen.cpp`):
 Returns pair of tensors. Ratio specifies training fraction (e.g., 0.8 for 80/20 split).
 
 ```scheme
@@ -451,33 +451,33 @@ compile to LLVM IR loops over tensor element arrays — no LAPACK dependency req
 
 ### Decompositions
 
-**LU Decomposition** (`tensor_codegen.cpp:13102+`): `(tensor-lu A)`.
+**LU Decomposition** (`tensor_codegen.cpp`): `(tensor-lu A)`.
 Factorizes `A = P * L * U` via partial pivoting. Returns a list `(L U P)` where P is
 a permutation vector. O(n^3) for n x n matrix. Foundation for determinant and solve.
 
-**Cholesky Decomposition** (`tensor_codegen.cpp:13588+`): `(tensor-cholesky A)`.
+**Cholesky Decomposition** (`tensor_codegen.cpp`): `(tensor-cholesky A)`.
 Factorizes symmetric positive-definite `A = L * L^T`. Returns lower-triangular L.
 Half the cost of LU. Raises error if A is not positive-definite (diagonal element
 becomes non-positive during factorization).
 
-**QR Decomposition** (`tensor_codegen.cpp:13684+`): `(tensor-qr A)`.
+**QR Decomposition** (`tensor_codegen.cpp`): `(tensor-qr A)`.
 Factorizes `A = Q * R` via modified Gram-Schmidt. Returns list `(Q R)`.
 Used for least-squares and eigenvalue algorithms.
 
-**SVD** (`tensor_codegen.cpp:13869+`): `(tensor-svd A)`.
+**SVD** (`tensor_codegen.cpp`): `(tensor-svd A)`.
 Singular Value Decomposition `A = U * S * V^T`. Returns list `(U S V)` where S is
 a vector of singular values. Iterative algorithm with convergence threshold.
 
 ### Solvers
 
-**Linear Solve** (`tensor_codegen.cpp:13452+`): `(tensor-solve A b)`.
+**Linear Solve** (`tensor_codegen.cpp`): `(tensor-solve A b)`.
 Solves `Ax = b` via LU decomposition with forward/backward substitution. Returns x.
 
-**Determinant** (`tensor_codegen.cpp:13272+`): `(tensor-det A)`.
+**Determinant** (`tensor_codegen.cpp`): `(tensor-det A)`.
 Computes det(A) via LU decomposition as product of diagonal elements of U,
 adjusted for permutation sign.
 
-**Matrix Inverse** (`tensor_codegen.cpp:13348+`): `(tensor-inverse A)`.
+**Matrix Inverse** (`tensor_codegen.cpp`): `(tensor-inverse A)`.
 Computes A^(-1) by solving `A * X = I` column by column via LU.
 
 ```scheme
@@ -495,7 +495,7 @@ Computes A^(-1) by solving `A * X = I` column by column via LU.
 
 ## 11. Einstein Summation
 
-**Signature:** `(einsum spec A B)` -- `tensor_codegen.cpp:14092+`
+**Signature:** `(einsum spec A B)` -- `tensor_codegen.cpp`
 
 General tensor contraction using Einstein summation convention. The `spec` string
 encodes index patterns following NumPy/PyTorch notation:

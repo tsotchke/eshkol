@@ -120,7 +120,7 @@ materialisation request. The materialiser holds a serialising mutex
 inside `ThreadSafeModule::withModuleDo` for the entire ARM64 codegen
 pass, so all workers queue behind it.
 
-`setNumCompileThreads(N>1)` (recently changed at `repl_jit.cpp:479`,
+`setNumCompileThreads(N>1)` (recently changed at `repl_jit.cpp`,
 default now `hardware_concurrency() / 2`, capped 16) does *not* fix this:
 materialisation requests are dispatched serially through
 `ExecutionSession::lookup`, and each request takes the
@@ -173,7 +173,7 @@ Pre-materialise all stdlib + closure-body functions **eagerly** before
 `parallel-map` enters the thread-pool dispatch. This eliminates the
 contention root cause. Implementation:
 
-1. In `eshkol_parallel_map` (`parallel_codegen.cpp:401`), before the
+1. In `eshkol_parallel_map` (`parallel_codegen.cpp`), before the
    `for (i = 0; i < n; ++i) thread_pool_submit(...)` loop, walk the
    closure's IR for all referenced symbols and call
    `LLJIT::lookupLinkerMangled` on each in the calling thread.
@@ -188,7 +188,7 @@ Recompile the artifact with a **fresh AOT build** using
 `ESHKOL_PARALLEL_ENABLE=1`. The AOT path has no JIT, so the contention
 disappears. **Currently blocked** by a worker-thread tagged-value
 reconstruction bug (`+: operand is not a number, vector, or tensor`) at
-the boundary in `parallel_llvm_codegen.cpp:854-859` — the worker
+the boundary in `parallel_llvm_codegen.cpp` — the worker
 hardcodes `flags=0` when reconstructing the tagged value, losing the
 EXACT_FLAG bit. Filed as a follow-up bug; not blocking this analysis.
 
@@ -227,8 +227,8 @@ hadn't been materialised yet.
 | `PARALLEL=1` + warmup (cb400f7) | 0.82× | crashes |
 | **Flags fix + default-on (ba9b568)** | **3.9–8.7×** | **3.8–11.8×** |
 
-The fix is one line of intent at `parallel_codegen.cpp:177`
-(packing) plus one line of intent at `parallel_llvm_codegen.cpp:854`
+The fix is one line of intent at `parallel_codegen.cpp`
+(packing) plus one line of intent at `parallel_llvm_codegen.cpp`
 (unpacking) — preserve the EXACT_FLAG bit through the worker
 struct round-trip.
 

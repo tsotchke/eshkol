@@ -80,7 +80,7 @@ Modules from the brief that have *no separate file* in `lib/core/`:
 - **`core.control` (`call-with-values` finalisation)**: there *is* a
   `lib/core/control/trampoline.esk`, but `call-with-values` itself is not in
   it — it is a parser-recognised special form with codegen in
-  `llvm_codegen.cpp:17684`. The v1.2 work was the named-consumer
+  `llvm_codegen.cpp`. The v1.2 work was the named-consumer
   resolution fix listed in `CHANGELOG.md:758`. Documented in section 11.
 
 ---
@@ -127,7 +127,7 @@ predicate and error-list variant.)
 | `not`                  | any                       | subschema must NOT validate                                                    |
 
 A schema of `#t` accepts every value; a schema of `#f` rejects every value
-(`json_schema.esk:116-117`). Both cases were added per Draft 6/7 boolean
+(`json_schema.esk`). Both cases were added per Draft 6/7 boolean
 shorthand.
 
 ### `(json-schema-valid? schema value)` → boolean
@@ -143,7 +143,7 @@ in terms of `json-schema-validate` (line 364-365):
 **Edge cases**:
 
 - A non-`hash-table` schema (other than `#t`/`#f`) passes through as valid
-  (`json_schema.esk:118`). This is deliberate so that callers can pass `'()`
+  (`json_schema.esk`). This is deliberate so that callers can pass `'()`
   for "no constraint".
 - An empty array (`'()`) is treated as type `"array"` by `jsv-matches-type?`
   (line 65, 86) — i.e. `(json-schema-valid? '#hash(("type" . "array")) '())`
@@ -152,7 +152,7 @@ in terms of `json-schema-validate` (line 364-365):
 ### `(json-schema-validate schema value)` → list of strings
 
 Returns the full error list. Each error string carries a JSON-pointer-style
-path joined by `/` (`json_schema.esk:103-104`):
+path joined by `/` (`json_schema.esk`):
 
 ```
 "/users/0/age: expected integer, got string"
@@ -165,7 +165,7 @@ Empty list means valid. The path begins empty at the root and is extended via
 
 - The implementation distinguishes `hash-table` and `list` value types so a
   string is never misclassified as an array even though `(list? x)` is
-  permissive on heap pointers (`json_schema.esk:55-64`, fix logged in
+  permissive on heap pointers (`json_schema.esk`, fix logged in
   `CHANGELOG.md:377-382`).
 - `validate-array-items` walks the cons chain recursively (line 298). For a
   long list (>~10⁴ elements) this is `O(n)` stack frames; the validator does
@@ -207,7 +207,7 @@ pointer `/users/0/score` and the keyword `minimum`.
   [`regex-compile`](#4-libagentregexesk) and check separately — the JSON Schema
   validator deliberately does not pull in `agent/regex.esk` to keep its
   dependency footprint to `core.list.*`, `core.strings`, and `core.json`
-  (`json_schema.esk:33-37`).
+  (`json_schema.esk`).
 
 ---
 
@@ -355,7 +355,7 @@ has not yet been built — the file documents the implementation plan inline
 `lib/backend/llvm_codegen.cpp` (lines 12004-12131, return-type metadata at
 lines 1174-1183).
 **Module require line**: none — every name below is a codegen builtin and is
-available without `(require …)`. The `vm_prelude_cache.h:1064-1087` exports
+available without `(require …)`. The `vm_prelude_cache.h` exports
 them to the standalone VM as well.
 
 There is **no** `core.time` module. The brief listed one; what actually ships
@@ -383,7 +383,7 @@ value (`function_return_types["current-time-ns"] = BuiltinTypes::Integer`).
 
 Wall-clock seconds since the Unix epoch as a `double`. The C implementation
 uses `clock_gettime(CLOCK_REALTIME)` on POSIX and `GetSystemTimeAsFileTime` on
-Windows (`system_builtins.c:435-450`).
+Windows (`system_builtins.c`).
 
 ```scheme
 (define t (current-timestamp))
@@ -395,7 +395,7 @@ Windows (`system_builtins.c:435-450`).
 
 Formats an `int64` nanosecond timestamp as
 `"YYYY-MM-DDTHH:MM:SS.mmmZ"` (always UTC, always millisecond precision,
-always `Z` suffix). Source: `system_builtins.c:326-357`.
+always `Z` suffix). Source: `system_builtins.c`.
 
 ```scheme
 (format-iso8601 0)                          ; → "1970-01-01T00:00:00.000Z"
@@ -407,7 +407,7 @@ always `Z` suffix). Source: `system_builtins.c:326-357`.
 
 - Accepts both `int64`-tagged and `double`-tagged input. If the input is a
   double (e.g. `(format-iso8601 1.7e18)`) the implementation casts back to
-  `int64` (`system_builtins.c:331-336`).
+  `int64` (`system_builtins.c`).
 - Negative ns values are accepted and represent pre-epoch dates; the formatter
   uses `gmtime_r` and is bounded by what `time_t` can hold on the host.
 
@@ -418,7 +418,7 @@ epoch. Returns `#f` on any malformed input — so callers can disambiguate
 "this string is garbage" from "this string represents epoch zero" (which
 is the `int64` value `0`).
 
-Accepted forms (`system_builtins.c:381-433`):
+Accepted forms (`system_builtins.c`):
 
 - `2024-01-01T00:00:00Z`                — base form, UTC
 - `2024-01-01 00:00:00Z`                — space accepted as the `T` separator
@@ -435,7 +435,7 @@ Rejected (returns `#f`):
 ### `(format-relative seconds-ago)` → string
 
 Renders a non-negative `int64` of seconds into a coarse human-readable string.
-Source: `system_builtins.c:452-465`.
+Source: `system_builtins.c`.
 
 | `seconds-ago` range | Output template      | Example                                 |
 |---------------------|----------------------|-----------------------------------------|
@@ -450,7 +450,7 @@ Negative input is clamped to `0` (line 454).
 
 Returns the local timezone offset in seconds east of UTC. Implementation uses
 `localtime_r(now)` and `gmtime_r(now)` followed by `difftime(mktime(local), mktime(utc))`
-(`system_builtins.c:467-483`).
+(`system_builtins.c`).
 
 On the WebAssembly build (`ESHKOL_VM_WASM`) this returns `0` unconditionally
 since the browser sandbox does not expose a deterministic timezone API.
@@ -459,7 +459,7 @@ since the browser sandbox does not expose a deterministic timezone API.
 
 Monotonic milliseconds since some unspecified origin. Use it only for
 *elapsed-time* measurements. On Linux/macOS it uses `clock_gettime(CLOCK_MONOTONIC)`;
-on Windows it uses `GetTickCount64`. (`system_builtins.c:550-561`.)
+on Windows it uses `GetTickCount64`. (`system_builtins.c`.)
 
 ### High-precision timing helpers (in `lib/stdlib.esk`)
 
@@ -564,13 +564,13 @@ additions; the earlier surface only supported match-or-no-match.)
 
 Bitwise-OR them and pass the result to `regex-compile`'s optional second
 argument. They map to PCRE2's `PCRE2_CASELESS`, `PCRE2_MULTILINE`,
-`PCRE2_DOTALL` (`agent_regex.c:57-60`). The compile call always sets
+`PCRE2_DOTALL` (`agent_regex.c`). The compile call always sets
 `PCRE2_UTF`.
 
 ### `(regex-compile pattern [flags])` → integer handle or `-1`
 
 Compiles a PCRE2 pattern. Returns a small positive integer handle (1 ≤ h <
-256, taken from a fixed-size handle pool in `agent_regex.c:21-28`) or `-1` on
+256, taken from a fixed-size handle pool in `agent_regex.c`) or `-1` on
 compile failure. The pool is process-global; do not leak handles or you will
 run out — call `(regex-free h)` when done.
 
@@ -583,24 +583,24 @@ run out — call `(regex-free h)` when done.
 
 Returns the first matching substring or `#f` if no match. The internal buffer
 is `4096` bytes; matches longer than that are truncated at the first NUL
-(`regex.esk:32-46`).
+(`regex.esk`).
 
 ### `(regex-match? handle subject)` → boolean
 
 Cheap predicate form. Passes `#f` for the match buffer so no string allocation
-occurs (`regex.esk:48-50`).
+occurs (`regex.esk`).
 
 ### `(regex-match-all handle subject [max])` → list of strings
 
 Returns up to `max` (default 100) non-overlapping matches. The underlying
 buffer is sized `max * 256` bytes; matches share the buffer and are split on
-embedded NULs. Returns `'()` on no matches (`regex.esk:52-66`).
+embedded NULs. Returns `'()` on no matches (`regex.esk`).
 
 ### `(regex-replace handle subject replacement)` → string
 
 PCRE2 substitution; replaces all non-overlapping matches. The buffer is sized
 `2 * (|subject| + |replacement|)`. On replace failure (negative return code)
-returns the original `subject` unchanged (`regex.esk:68-72`).
+returns the original `subject` unchanged (`regex.esk`).
 
 ### `(regex-free handle)` → none
 
@@ -616,18 +616,18 @@ Matches `subject` and returns `(list full-match group1 group2 …)` on a match,
 `#f` on no match. `group 0` is the full match; `group 1..N` are the captured
 subgroups in left-to-right declaration order. An unset optional group
 (e.g. the `b` in `a(b)?c` when `b` is absent) is returned as the empty
-string `""` (`regex.esk:80-103`).
+string `""` (`regex.esk`).
 
 #### `(regex-group match-groups idx)` → string or `#f`
 
 Accessor by integer index into the list returned by `regex-match-groups`.
 Index `0` is the full match. Out-of-range indices return `#f`
-(`regex.esk:105-110`).
+(`regex.esk`).
 
 #### `(regex-named-group-number handle name)` → integer
 
 Returns the integer index of a PCRE2 named capture group `(?<name>...)`, or
-`-1` if no such name exists in the compiled pattern (`regex.esk:112-114`).
+`-1` if no such name exists in the compiled pattern (`regex.esk`).
 Combine with `regex-group` to do "give me the group called 'year'":
 
 ```scheme
@@ -640,7 +640,7 @@ Combine with `regex-group` to do "give me the group called 'year'":
 
 ### ReDoS protection
 
-`agent_regex.c:91-104` installs a process-global `pcre2_match_context` with
+`agent_regex.c` installs a process-global `pcre2_match_context` with
 a match-limit of 10 million backtrack steps and a depth-limit of 100 000.
 Pathological patterns like `(a+)+$` against a long subject of `a`s with one
 trailing non-`a` will return *no match* rather than hang the calling thread.
@@ -705,7 +705,7 @@ which covers the typical agent-workflow cache.
 ### Internal representation
 
 Each cache handle is a 3-element vector `#(capacity counter-box ht)`
-(`cache.esk:34-37`):
+(`cache.esk`):
 
 - `capacity` — the configured max entry count.
 - `counter-box` — a single-cell `(list n)` used as a mutable monotonic timestamp.
@@ -745,14 +745,14 @@ Returns the cached value and bumps its timestamp on a hit. On a miss returns
 ### `(lru-get/default cache key default)` → value or `default`
 
 Like `lru-get` but returns `default` on a miss. Still bumps the timestamp on
-a hit (`cache.esk:66-74`).
+a hit (`cache.esk`).
 
 ### `(lru-set! cache key value)` → unspecified
 
 Stores `value` under `key`. If `key` already exists, updates the value and
 touches the timestamp (does not change `lru-size`). Otherwise inserts, and if
 this would exceed `capacity`, evicts the lowest-timestamp entry first
-(`cache.esk:76-88`).
+(`cache.esk`).
 
 ### `(lru-delete! cache key)` → boolean
 
@@ -761,7 +761,7 @@ otherwise.
 
 ### `(lru-clear! cache)` → unspecified
 
-Drops every entry (`cache.esk:96-97`).
+Drops every entry (`cache.esk`).
 
 ### `memoize` family
 
@@ -780,7 +780,7 @@ Memoize a 1-argument function with the given capacity.
 #### `(memoize2 fn)` → 2-ary function
 
 Memoize a 2-argument function. The cache key is the string concatenation of
-`(display x port)` and `(display y port)` separated by NUL (`cache.esk:163-168`),
+`(display x port)` and `(display y port)` separated by NUL (`cache.esk`),
 so structural-equality (`equal?`-style) matching is achieved without
 allocating a fresh cons cell per call.
 
@@ -796,7 +796,7 @@ arity is implicit.
 **Why only 1- and 2-ary memoization?** Variadic
 `(lambda args …)` capturing free variables interacts badly with the closure-
 ABI codepath in compile-to-binary mode (see the explanatory comment in
-`cache.esk:120-127`). Callers needing N-ary memoization should pre-curry
+`cache.esk`). Callers needing N-ary memoization should pre-curry
 their arguments into a single list and memoize the 1-ary wrapper.
 
 ### Worked example: memoized Fibonacci with LRU eviction
@@ -846,7 +846,7 @@ their arguments into a single list and memoize the 1-ary wrapper.
   purpose.
 - For very large caches (>10⁶ entries) the `O(n)` eviction scan becomes
   measurable; the source-level comment recommends an external store at that
-  scale (`cache.esk:21-23`).
+  scale (`cache.esk`).
 
 ---
 
@@ -878,13 +878,13 @@ mechanics, and a `.esk` library for the distribution-sampling helpers.
 
 The codegen for `(random)` calls libc's `drand48`. On Linux/macOS this is the
 system implementation; on Windows it routes through the `eshkol`-shipped shim
-in `platform_runtime.cpp` (`prng.cpp:32-42`).
+in `platform_runtime.cpp` (`prng.cpp`).
 
 #### `(set-random-seed! seed)` → unspecified
 
 Seed the global PRNG. The codegen for `set-random-seed!` also flips a
 `__random_seeded__` marker so the runtime's auto-seed-from-time path (which
-fires on first `(random)` of a program) is suppressed (`prng.cpp:88-94`).
+fires on first `(random)` of a program) is suppressed (`prng.cpp`).
 
 #### `(random)` → real in `[0.0, 1.0)`
 
@@ -903,7 +903,7 @@ Allocates a fresh PRNG state on the arena, seeded as
 `(seed << 16) | 0x330E` (matching POSIX `srand48`). The handle is a heap
 pointer with header subtype `HEAP_SUBTYPE_PRNG`. The same seed produces the
 same sequence as a freshly-seeded global PRNG (the documentation comment at
-`prng.cpp:15-17` calls this out explicitly).
+`prng.cpp` calls this out explicitly).
 
 #### `(prng-random p)` → real in `[0.0, 1.0)`
 
@@ -913,7 +913,7 @@ Advance the given PRNG state and return the next double. Lock-free.
 
 Advance the given PRNG state and return the next integer in `[0, n)`. Uses
 multiply-then-floor; bias is `< 1/2^48`, well below user-visible
-(`prng.cpp:80-87`). Returns `0` if `n ≤ 0` or `p` is null.
+(`prng.cpp`). Returns `0` if `n ≤ 0` or `p` is null.
 
 #### `(prng? x)` → boolean
 
@@ -1010,7 +1010,7 @@ is `(set-random-seed! (current-time-seed))`.
 
 - For `parallel-map` workloads where each worker needs its own randomness,
   use `make-prng` not the global `(random)`. The global form serialises on
-  a mutex; the per-stream form is lock-free (`prng.cpp:19-21`).
+  a mutex; the per-stream form is lock-free (`prng.cpp`).
 - For the consciousness-engine workspace's stochastic broadcasts, use
   `make-prng` to give each module its own reproducible stream.
 
@@ -1060,7 +1060,7 @@ at most once even if `stream-cdr` is called repeatedly.
 Eshkol has no `define-syntax`, so SRFI 41's macro form
 `(stream-cons head tail-expr)` (which would implicitly delay `tail-expr`) is
 unavailable. **Callers must wrap the tail with `delay` explicitly**
-(`streams.esk:9-20`):
+(`streams.esk`):
 
 ```scheme
 (define (from n) (stream-cons n (delay (from (+ n 1)))))
@@ -1192,7 +1192,7 @@ actually parse `command-line` need.
 A spec is a list of four-element lists in the form `(name type default
 desc)` — purely positional because Eshkol's reader at v1.2 does not support
 `#:default`-style keyword arguments in list literals
-(`argparse.esk:19-21`).
+(`argparse.esk`).
 
 ```scheme
 (define spec
@@ -1284,7 +1284,7 @@ callers that want richer help should iterate the spec themselves.
 ### Edge cases
 
 - `--name` with no following token: the flag is silently skipped
-  (`argparse.esk:142-143`).
+  (`argparse.esk`).
 - Unknown flag like `--bogus`: the literal string `"--bogus"` ends up in
   `arg-positional`. There is no warning.
 - `--` consumes itself and forces all subsequent tokens (including ones that
@@ -1402,12 +1402,12 @@ Use a small alist helper to read fields:
 (display (alist-ref "query" u)) (newline)    ; → v=2
 ```
 
-Source: `system_builtins.c:2286-2370`; regression-tested in
+Source: `system_builtins.c`; regression-tested in
 `tests/vm/url_parse_surface_regression.esk`.
 
 **Port handling**: the parser refuses ports outside `[0, 65535]` and refuses
 non-numeric "port-like" suffixes; in either case the colon and following
-characters stay part of the host (`system_builtins.c:2306-2318`).
+characters stay part of the host (`system_builtins.c`).
 
 ### `(base64url-encode str)` and `(base64url-decode str)`
 
@@ -1493,7 +1493,7 @@ standard base64 primitives, pure Eshkol) plus the base64url variants from
 | `(bytes->string bytes)`           | byte-list → string                   | Per-byte `integer->char` then `string-append`            |
 
 The alphabet is `"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"`
-(`base64.esk:14`).
+(`base64.esk`).
 
 `base64-encode` always emits padding (`=` / `==`); `base64-decode` accepts
 both padded and unpadded forms (`base64-remove-padding` walks back from the
@@ -1607,10 +1607,10 @@ routing** at line 718.
 The codegen handles three cases:
 
 1. `producer` returns no values via `(values)`: `consumer` is called with no
-   arguments (`llvm_codegen.cpp:17789`).
+   arguments (`llvm_codegen.cpp`).
 2. `producer` returns exactly N values via `(values v1 … vN)`: `consumer` is
    called with N arguments — there is a small switch over N
-   (`llvm_codegen.cpp:17781`).
+   (`llvm_codegen.cpp`).
 3. `producer` returns a single ordinary value: `consumer` is called with one
    argument.
 
@@ -1626,7 +1626,7 @@ Before the named-consumer routing fix, an expression like
 
 failed because the codegen could not resolve the bare symbol `list` to its
 honest first-class procedure value (the symbol resolution wandered into the
-inline-expansion path used for direct calls). The fix at `llvm_codegen.cpp:8172-8188`
+inline-expansion path used for direct calls). The fix at `llvm_codegen.cpp`
 forces bare-symbol consumers to evaluate as honest values, so any stdlib
 function that takes the right number of arguments can sit in the consumer
 slot.
@@ -1738,7 +1738,7 @@ by `stdlib`):
 For each procedure cited above, the symbol was verified to be present in the
 implementing file's `(provide …)` block (for `.esk` modules) or in the codegen
 dispatch table (for builtins). The `function_return_types` table in
-`lib/backend/llvm_codegen.cpp:1174-1183` and the `vm_prelude_cache.h:1064-1087`
+`lib/backend/llvm_codegen.cpp` and the `vm_prelude_cache.h`
 exported-name lists serve as secondary cross-references for the codegen-builtin
 surfaces.
 
@@ -1796,7 +1796,7 @@ All are part of the auto-loaded `(require stdlib)` set unless the
 (require core.merkle)
 ```
 
-Exports (`merkle.esk:28-37`):
+Exports (`merkle.esk`):
 
 ```scheme
 (provide
@@ -1827,7 +1827,7 @@ Key entry points:
 (require core.metrics)
 ```
 
-Exports (`metrics.esk:5-9`):
+Exports (`metrics.esk`):
 
 ```scheme
 (provide make-counter counter-inc! counter-add!
@@ -1838,7 +1838,7 @@ Exports (`metrics.esk:5-9`):
 
 Counters are monotonically non-decreasing; gauges can move in either direction. `metrics-register!` adds a metric to the global registry; `metrics-render` produces a Prometheus exposition-format string suitable for HTTP `GET /metrics`.
 
-Internally a histogram type is implemented but not exported pending the label-key reconstruction edge case mentioned at `metrics.esk:39-43`.
+Internally a histogram type is implemented but not exported pending the label-key reconstruction edge case mentioned at `metrics.esk`.
 
 ### B.3 `core.logging`
 
@@ -1846,7 +1846,7 @@ Internally a histogram type is implemented but not exported pending the label-ke
 (require core.logging)
 ```
 
-Exports (`logging.esk:5-8`):
+Exports (`logging.esk`):
 
 ```scheme
 (provide log-debug log-info log-warn log-error
@@ -1863,7 +1863,7 @@ JSON-Lines structured logging. Each call emits a single line with `level`, `ts` 
 (require core.collections)
 ```
 
-Exports (`collections.esk:37-49`):
+Exports (`collections.esk`):
 
 ```scheme
 (provide
@@ -1884,7 +1884,7 @@ Priority queue is a binary min-heap backed by a growable vector; the optional th
 (require core.channels)
 ```
 
-Exports (`channels.esk:38-43`):
+Exports (`channels.esk`):
 
 ```scheme
 (provide
@@ -1903,7 +1903,7 @@ Bounded MPSC-style channels designed to coordinate `parallel-map` workers. `(mak
 (require core.threads)
 ```
 
-Exports (`threads.esk:27-30`):
+Exports (`threads.esk`):
 
 ```scheme
 (provide
@@ -1920,7 +1920,7 @@ POSIX-pthread wrappers. Mutexes are recursive (SRFI 18-compatible — re-enterin
 (require core.plot)
 ```
 
-Exports (`plot.esk:1`):
+Exports (`plot.esk`):
 
 ```scheme
 (provide sparkline bar-chart histogram)
@@ -1934,7 +1934,7 @@ Terminal-side numeric visualisation. `(sparkline xs)` returns a Unicode block-ch
 (require core.sexp)
 ```
 
-Exports (`sexp.esk:1-2`):
+Exports (`sexp.esk`):
 
 ```scheme
 (provide sexp->string
@@ -1949,7 +1949,7 @@ Exports (`sexp.esk:1-2`):
 (require core.files)
 ```
 
-Exports (`files.esk:1`):
+Exports (`files.esk`):
 
 ```scheme
 (provide path-directory with-atomic-output-file atomic-write-file)
@@ -1965,7 +1965,7 @@ Exports (`files.esk:1`):
 (require core.testing)   ; explicit — not auto-loaded by (require stdlib)
 ```
 
-Exports (`testing.esk:1-6`):
+Exports (`testing.esk`):
 
 ```scheme
 (provide register-test
@@ -1986,7 +1986,7 @@ Not auto-loaded because baking `core.testing` into `stdlib.o` triggers the symbo
 (require core.manifold)
 ```
 
-Exports (`manifold.esk:1-5`):
+Exports (`manifold.esk`):
 
 ```scheme
 (provide make-euclidean-manifold make-hyperbolic-manifold make-spherical-manifold

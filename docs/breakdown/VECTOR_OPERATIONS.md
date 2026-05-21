@@ -345,7 +345,7 @@ The critical insight is that GPU is almost never faster for double-precision: sf
 
 ### 2. GPU Tensor Transfer
 
-Eshkol tensors store elements as `int64_t` bit-patterns representing `double` values. When transferring to GPU, the `double*` data pointer is obtained by `reinterpret_cast<double*>(result->elements)` (see `xla_runtime.cpp:104`), which is safe because `sizeof(double) == sizeof(int64_t) == 8`.
+Eshkol tensors store elements as `int64_t` bit-patterns representing `double` values. When transferring to GPU, the `double*` data pointer is obtained by `reinterpret_cast<double*>(result->elements)` (see `xla_runtime.cpp`), which is safe because `sizeof(double) == sizeof(int64_t) == 8`.
 
 **Metal buffer wrapping** (`metal_wrap_host()` in `gpu_memory.mm:2626`):
 
@@ -364,7 +364,7 @@ The unified memory flag is detected at initialization: `g_metal_unified_memory =
 
 **Result marshaling:**
 
-After GPU kernel execution, results are available in the output buffer immediately (unified memory). If the output buffer was allocated via fallback (host_ptr diverged from original pointer), an explicit `memcpy` copies results back (`blas_backend.cpp:2474-2475`):
+After GPU kernel execution, results are available in the output buffer immediately (unified memory). If the output buffer was allocated via fallback (host_ptr diverged from original pointer), an explicit `memcpy` copies results back (`blas_backend.cpp`):
 
 ```cpp
 if (buf_c.host_ptr != (void*)C) {
@@ -399,15 +399,15 @@ The LLVM codegen emits a size check: if `total_elements >= xla_get_threshold()`,
 | `eshkol_xla_argreduce` | Argmax/argmin | CPU only |
 | `eshkol_xla_scale_inplace` | Scalar multiply (for MEAN gradient) | CPU only |
 
-**Op code translation:** XLA and GPU enums differ because the GPU enum inserts NEG(4) and ABS(5). The translation table at `xla_runtime.cpp:164` maps XLA unary ops 4-10 to GPU ops 6-12.
+**Op code translation:** XLA and GPU enums differ because the GPU enum inserts NEG(4) and ABS(5). The translation table at `xla_runtime.cpp` maps XLA unary ops 4-10 to GPU ops 6-12.
 
 **Broadcasting semantics** (`eshkol_xla_broadcast` at line 883): Source shape is right-aligned with target shape. For each target dimension, if the corresponding source dimension is 1 (or absent because source rank is lower), the value is replicated. This follows NumPy/XLA broadcasting conventions. Implemented via stride-based index mapping on CPU.
 
-**Fusion:** Currently, XLA operations are dispatched as individual C runtime calls (LLVM-only mode, `xla_codegen.cpp:570`). The MLIR/StableHLO path (guarded by `ESHKOL_XLA_FULL_MLIR`) would enable operation fusion for compound patterns like matmul + bias + activation, but this path is not yet active. Each runtime function independently checks for GPU dispatch, so a fused `matmul -> relu` currently incurs two GPU dispatch round-trips.
+**Fusion:** Currently, XLA operations are dispatched as individual C runtime calls (LLVM-only mode, `xla_codegen.cpp`). The MLIR/StableHLO path (guarded by `ESHKOL_XLA_FULL_MLIR`) would enable operation fusion for compound patterns like matmul + bias + activation, but this path is not yet active. Each runtime function independently checks for GPU dispatch, so a fused `matmul -> relu` currently incurs two GPU dispatch round-trips.
 
 ### 4. AD with Tensors
 
-Eshkol implements reverse-mode automatic differentiation for all major tensor operations. Forward passes record AD nodes with saved tensor data onto a tape. During backpropagation, `eshkol_tensor_backward_dispatch()` (`tensor_backward.cpp:719`) reads each node's type and dispatches to the appropriate backward function.
+Eshkol implements reverse-mode automatic differentiation for all major tensor operations. Forward passes record AD nodes with saved tensor data onto a tape. During backpropagation, `eshkol_tensor_backward_dispatch()` (`tensor_backward.cpp`) reads each node's type and dispatches to the appropriate backward function.
 
 **Operations with backward passes** (from `tensor_backward.cpp` and `tensor_backward.h`):
 
@@ -433,7 +433,7 @@ Eshkol implements reverse-mode automatic differentiation for all major tensor op
 - `dA = grad_C @ B^T` -- shape (M,N) @ (N,K) = (M,K)
 - `dB = A^T @ grad_C` -- shape (K,M) @ (M,N) = (K,N)
 
-The BLAS backend also provides `matmul_backward()` (`blas_backend.cpp:262`) which uses `cblas_dgemm` with `CblasTrans` for efficient transposed multiplication with `beta=1.0` for gradient accumulation.
+The BLAS backend also provides `matmul_backward()` (`blas_backend.cpp`) which uses `cblas_dgemm` with `CblasTrans` for efficient transposed multiplication with `beta=1.0` for gradient accumulation.
 
 **Reshape/transpose gradients:** Reshape backward is a `memcpy` because reshape only changes the dimension metadata, not the underlying data. Transpose backward is simply the transpose of the upstream gradient: `grad_in[j*rows + i] = grad_out[i*cols + j]`.
 
@@ -443,9 +443,9 @@ The BLAS backend also provides `matmul_backward()` (`blas_backend.cpp:262`) whic
 
 ### 5. Reshape Semantics
 
-Reshape in Eshkol is a **zero-copy** operation. The implementation (`tensor_codegen.cpp:7323-7713`) allocates only a new tensor struct header and dimension array via the arena allocator; the `elements` pointer is reused from the source tensor without copying element data.
+Reshape in Eshkol is a **zero-copy** operation. The implementation (`tensor_codegen.cpp`) allocates only a new tensor struct header and dimension array via the arena allocator; the `elements` pointer is reused from the source tensor without copying element data.
 
-The key line is at `tensor_codegen.cpp:7706`:
+The key line is at `tensor_codegen.cpp`:
 
 ```cpp
 // Field 2: elements pointer (reused from source - no copy for reshape)
