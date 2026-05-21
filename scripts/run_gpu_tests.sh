@@ -57,7 +57,13 @@ for test_file in tests/gpu/*.esk; do
     # Try to compile
     if ./"$BUILD_DIR"/eshkol-run "$test_file" -L./"$BUILD_DIR" > /dev/null 2>&1; then
         # Compilation succeeded, try to run
-        if ./a.out > /tmp/gpu_test_output.txt 2>&1; then
+        if [ "$test_name" = "cuda_host_sync_regression_test.esk" ]; then
+            runtime_cmd=(env ESHKOL_GPU_THRESHOLD=1 ESHKOL_GPU_VERBOSE=1 ./a.out)
+        else
+            runtime_cmd=(./a.out)
+        fi
+
+        if "${runtime_cmd[@]}" > /tmp/gpu_test_output.txt 2>&1; then
             # Check for FAIL markers in output
             if grep -qE "^FAIL:|Failed:[[:space:]]+[1-9]" /tmp/gpu_test_output.txt; then
                 echo -e "${YELLOW}FAIL MARKER${NC}"
