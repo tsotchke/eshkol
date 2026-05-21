@@ -2551,6 +2551,7 @@ int main(int argc, char **argv)
     uint8_t run_mode = 0;       // For -r/--run flag (JIT run file)
     const char* profile_name = nullptr;
     const char* target_triple = nullptr;
+    bool freestanding_native_profile = false;
 
     if (argc == 1) print_help(1);
 
@@ -2682,7 +2683,12 @@ int main(int argc, char **argv)
         compile_only = resolved.compile_only ? 1 : 0;
         no_stdlib = resolved.no_stdlib ? 1 : 0;
         wasm_output = resolved.wasm_output ? 1 : 0;
+        freestanding_native_profile =
+            resolved.profile &&
+            resolved.profile->freestanding &&
+            resolved.profile->backend == eshkol::profile::Backend::Native;
         eshkol_set_target(resolved.target_triple);
+        eshkol_set_freestanding_codegen(freestanding_native_profile ? 1 : 0);
     }
 
     if (!include_paths.empty()) {
@@ -3142,7 +3148,8 @@ int main(int argc, char **argv)
 
         // Generate LLVM IR (use library mode if --shared-lib flag is set)
         LLVMModuleRef llvm_module;
-        if (shared_lib) {
+        const bool library_codegen = shared_lib || freestanding_native_profile;
+        if (library_codegen) {
             eshkol_info("Using library mode (no main function)");
             llvm_module = eshkol_generate_llvm_ir_library(
                 asts.data(),

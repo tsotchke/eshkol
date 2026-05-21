@@ -483,6 +483,7 @@ namespace {
     std::string g_cached_target_triple;
     std::string g_cached_cpu_name;
     std::string g_cached_features;
+    bool g_freestanding_codegen = false;
 }
 
 // TypedValue structure to carry both LLVM value and type information
@@ -1076,6 +1077,7 @@ private:
 
     // LIBRARY MODE: When true, skip main function creation and export all symbols
     bool library_mode;
+    bool freestanding_codegen_;
     bool fatal_codegen_error_;
 
     // Module prefix for unique lambda naming (prevents symbol collision when linking)
@@ -1095,11 +1097,13 @@ private:
 
 public:
     EshkolLLVMCodeGen(const char* module_name, bool is_library_mode = false,
-                       const char* target_triple = nullptr) {
+                       const char* target_triple = nullptr,
+                       bool is_freestanding_codegen = false) {
         // Determine target BEFORE any type initialization
         bool is_wasm32 = target_triple &&
                           std::string(target_triple).find("wasm32") != std::string::npos;
         library_mode = is_library_mode;
+        freestanding_codegen_ = is_freestanding_codegen;
         fatal_codegen_error_ = false;
         // Create a sanitized module prefix for lambda naming
         module_prefix = module_name;
@@ -2722,6 +2726,8 @@ public:
                 return std::make_pair(nullptr, nullptr);
             }
 
+            pruneUnusedFreestandingDeclarations();
+
             // Coerce mismatched integer types before verification so wasm32
             // does not trip on i32 size_t / i64 byte-count mismatches in
             // generated calls or binary operators.  On native this is usually
@@ -3511,13 +3517,20 @@ private:
         func_ = std::make_unique<eshkol::FunctionCodegen>(*ctx_, *tagged_, *mem);
         eshkol_debug("Created FunctionCodegen");
 
-        // Initialize ParallelCodegen - parallel execution primitives
-        parallel_ = std::make_unique<eshkol::ParallelCodegen>(*ctx_);
-        parallel_->setCodegenASTCallback(
-            ControlFlowCallbacks::codegenASTWrapper,
-            this
-        );
-        eshkol_debug("Created ParallelCodegen");
+        // Initialize ParallelCodegen - parallel execution primitives.
+        // Its constructor emits worker dispatchers and a registration ctor, so
+        // keep it out of freestanding object mode unless a hosted runtime is
+        // available to satisfy those symbols.
+        if (!freestanding_codegen_) {
+            parallel_ = std::make_unique<eshkol::ParallelCodegen>(*ctx_);
+            parallel_->setCodegenASTCallback(
+                ControlFlowCallbacks::codegenASTWrapper,
+                this
+            );
+            eshkol_debug("Created ParallelCodegen");
+        } else {
+            eshkol_debug("Skipped ParallelCodegen for freestanding object mode");
+        }
 
         // Populate function_table for backward compatibility
         registerArenaFunctions();
@@ -3554,8 +3567,12 @@ private:
 
         eshkol_debug("Registered arena functions from MemoryCodegen");
 
-        // Create additional display/utility functions (these need full codegen, not just declarations)
-        createDisplayTensorRecursiveFunction();
+        // Create additional display/utility functions (these need full codegen, not just declarations).
+        // Freestanding object mode keeps hosted display helpers out of trivial
+        // platform objects so they do not pull printf or other hosted symbols.
+        if (!freestanding_codegen_) {
+            createDisplayTensorRecursiveFunction();
+        }
     }
 
     // Note: Old createArenaFunctions was ~600 lines - now in MemoryCodegen
@@ -3589,6 +3606,12 @@ private:
     Function* getArenaTapeGetNodeFunc() { return mem->getArenaTapeGetNode(); }
     Function* getArenaTapeGetNodeCountFunc() { return mem->getArenaTapeGetNodeCount(); }
     Function* getArenaAllocateAdNodeFunc() { return mem->getArenaAllocateAdNode(); }
+
+    Value* unavailableParallelBuiltin(const std::string& func_name) {
+        eshkol_error("Builtin '%s' is not available in freestanding codegen",
+                     func_name.c_str());
+        return nullptr;
+    }
 
     // Legacy code removed - arena functions are now in MemoryCodegen (~600 lines saved)
     // The old createArenaFunctions() method has been replaced by:
@@ -3981,6 +4004,7 @@ private:
         Function* init_func = Function::Create(init_type, Function::InternalLinkage,
                                                 "__lambda_init__", module.get());
         BasicBlock* init_entry = BasicBlock::Create(*context, "entry", init_func);
+        bool generated_any = false;
 
         IRBuilderBase::InsertPoint saved_point = builder->saveIP();
         Function* saved_function = current_function;
@@ -4002,6 +4026,7 @@ private:
                     value->operation.op == ESHKOL_LAMBDA_OP) {
 
                     eshkol_debug("Pre-generating lambda for top-level define: %s", var_name);
+                    generated_any = true;
 
                     // Generate the lambda function
                     Value* lambda_func = codegenLambda(&value->operation);
@@ -4036,15 +4061,17 @@ private:
             }
         }
 
-        // Clean up: add return to init function (even though we won't call it)
-        builder->CreateRetVoid();
+        if (generated_any) {
+            builder->CreateRetVoid();
+        }
 
         // Restore state
         builder->restoreIP(saved_point);
         current_function = saved_function;
 
-        // Note: We keep the init function in the module but it's internal linkage
-        // and will be removed by dead code elimination
+        if (!generated_any) {
+            init_func->eraseFromParent();
+        }
     }
 
     // Note: We don't pre-declare nested functions anymore - they're generated at codegen time
@@ -4236,80 +4263,7 @@ private:
         return chunk_func;
     }
 
-    // LIBRARY MODE: Create initialization function instead of main
-    // This function initializes global state but doesn't create an entry point
-    void createLibraryInitFunction(const eshkol_ast_t* asts, size_t num_asts) {
-        // Create library init function: void __eshkol_lib_init__(void* arena)
-        // Takes an arena pointer as parameter so caller can manage memory
-        std::vector<Type*> init_args = { PointerType::getUnqual(*context) }; // arena pointer
-        FunctionType* init_type = FunctionType::get(void_type, init_args, false);
-        Function* init_func = Function::Create(init_type, Function::ExternalLinkage,
-                                               "__eshkol_lib_init__", module.get());
-
-        BasicBlock* entry = BasicBlock::Create(*context, "entry", init_func);
-        builder->SetInsertPoint(entry);
-        current_function = init_func;
-
-        // Get arena parameter and store in global
-        Value* arena_param = init_func->arg_begin();
-        arena_param->setName("arena");
-        builder->CreateStore(arena_param, global_arena);
-
-        std::vector<size_t> init_ast_indices;
-        for (size_t i = 0; i < num_asts; i++) {
-            if (isLibraryInitAST(asts[i])) {
-                init_ast_indices.push_back(i);
-            }
-        }
-
-        // Process global variable definitions and top-level set! statements in
-        // noinline chunks. Large aggregate libraries otherwise produce one huge
-        // __eshkol_lib_init__ text atom, which trips Apple ld branch-island
-        // placement limits.
-        std::vector<Function*> init_chunks;
-        for (size_t begin = 0, chunk_index = 0;
-             begin < init_ast_indices.size();
-             begin += LIB_INIT_AST_CHUNK_SIZE, chunk_index++) {
-            size_t end = std::min(begin + LIB_INIT_AST_CHUNK_SIZE, init_ast_indices.size());
-            init_chunks.push_back(createLibraryInitChunkFunction(
-                init_type, chunk_index, asts, init_ast_indices, begin, end));
-        }
-        for (Function* chunk_func : init_chunks) {
-            builder->CreateCall(chunk_func, {arena_param});
-        }
-
-        // Call __lambda_init__ to initialize lambda captures
-        Function* lambda_init_func = module->getFunction("__lambda_init__");
-        if (lambda_init_func) {
-            builder->CreateCall(lambda_init_func);
-            eshkol_debug("Library init: called __lambda_init__ for lambda captures");
-        }
-
-        // Initialize lambda registry (caller may not have done it yet)
-        builder->CreateCall(eshkol_lambda_registry_init_func);
-        eshkol_debug("Library init: initialized lambda registry");
-
-        // Generate S-expressions for lambdas and register them
-        if (!pending_lambda_sexprs.empty()) {
-            std::vector<Function*> sexpr_chunks;
-            for (size_t begin = 0, chunk_index = 0;
-                 begin < pending_lambda_sexprs.size();
-                 begin += LIB_INIT_LAMBDA_SEXPR_CHUNK_SIZE, chunk_index++) {
-                size_t end = std::min(begin + LIB_INIT_LAMBDA_SEXPR_CHUNK_SIZE,
-                                      pending_lambda_sexprs.size());
-                sexpr_chunks.push_back(createLibraryLambdaSExprChunkFunction(
-                    init_type, chunk_index, begin, end));
-            }
-            for (Function* chunk_func : sexpr_chunks) {
-                builder->CreateCall(chunk_func, {arena_param});
-            }
-
-            pending_lambda_sexprs.clear();
-        }
-
-        // Return void
-        builder->CreateRetVoid();
-
+    void finalizeLibrarySymbols(const eshkol_ast_t* asts, size_t num_asts) {
         // Make named functions external linkage for library export
         // Keep lambda functions as internal to avoid conflicts with user code
         for (auto& pair : function_table) {
@@ -4365,8 +4319,138 @@ private:
                 G.setLinkage(GlobalValue::InternalLinkage);
             }
         }
+    }
+
+    // LIBRARY MODE: Create initialization function instead of main
+    // This function initializes global state but doesn't create an entry point
+    void createLibraryInitFunction(const eshkol_ast_t* asts, size_t num_asts) {
+        std::vector<size_t> init_ast_indices;
+        for (size_t i = 0; i < num_asts; i++) {
+            if (isLibraryInitAST(asts[i])) {
+                init_ast_indices.push_back(i);
+            }
+        }
+
+        Function* lambda_init_func = module->getFunction("__lambda_init__");
+        if (freestanding_codegen_ &&
+            init_ast_indices.empty() &&
+            !lambda_init_func &&
+            pending_lambda_sexprs.empty()) {
+            finalizeLibrarySymbols(asts, num_asts);
+            eshkol_info("Skipped library init function for freestanding object mode");
+            return;
+        }
+
+        // Create library init function: void __eshkol_lib_init__(void* arena)
+        // Takes an arena pointer as parameter so caller can manage memory
+        std::vector<Type*> init_args = { PointerType::getUnqual(*context) }; // arena pointer
+        FunctionType* init_type = FunctionType::get(void_type, init_args, false);
+        Function* init_func = Function::Create(init_type, Function::ExternalLinkage,
+                                               "__eshkol_lib_init__", module.get());
+
+        BasicBlock* entry = BasicBlock::Create(*context, "entry", init_func);
+        builder->SetInsertPoint(entry);
+        current_function = init_func;
+
+        // Get arena parameter and store in global
+        Value* arena_param = init_func->arg_begin();
+        arena_param->setName("arena");
+        builder->CreateStore(arena_param, global_arena);
+
+        // Process global variable definitions and top-level set! statements in
+        // noinline chunks. Large aggregate libraries otherwise produce one huge
+        // __eshkol_lib_init__ text atom, which trips Apple ld branch-island
+        // placement limits.
+        std::vector<Function*> init_chunks;
+        for (size_t begin = 0, chunk_index = 0;
+             begin < init_ast_indices.size();
+             begin += LIB_INIT_AST_CHUNK_SIZE, chunk_index++) {
+            size_t end = std::min(begin + LIB_INIT_AST_CHUNK_SIZE, init_ast_indices.size());
+            init_chunks.push_back(createLibraryInitChunkFunction(
+                init_type, chunk_index, asts, init_ast_indices, begin, end));
+        }
+        for (Function* chunk_func : init_chunks) {
+            builder->CreateCall(chunk_func, {arena_param});
+        }
+
+        // Call __lambda_init__ to initialize lambda captures
+        if (lambda_init_func) {
+            builder->CreateCall(lambda_init_func);
+            eshkol_debug("Library init: called __lambda_init__ for lambda captures");
+        }
+
+        // Initialize lambda registry (caller may not have done it yet)
+        builder->CreateCall(eshkol_lambda_registry_init_func);
+        eshkol_debug("Library init: initialized lambda registry");
+
+        // Generate S-expressions for lambdas and register them
+        if (!pending_lambda_sexprs.empty()) {
+            std::vector<Function*> sexpr_chunks;
+            for (size_t begin = 0, chunk_index = 0;
+                 begin < pending_lambda_sexprs.size();
+                 begin += LIB_INIT_LAMBDA_SEXPR_CHUNK_SIZE, chunk_index++) {
+                size_t end = std::min(begin + LIB_INIT_LAMBDA_SEXPR_CHUNK_SIZE,
+                                      pending_lambda_sexprs.size());
+                sexpr_chunks.push_back(createLibraryLambdaSExprChunkFunction(
+                    init_type, chunk_index, begin, end));
+            }
+            for (Function* chunk_func : sexpr_chunks) {
+                builder->CreateCall(chunk_func, {arena_param});
+            }
+
+            pending_lambda_sexprs.clear();
+        }
+
+        // Return void
+        builder->CreateRetVoid();
+
+        finalizeLibrarySymbols(asts, num_asts);
 
         eshkol_info("Created library init function: __eshkol_lib_init__");
+    }
+
+    void pruneUnusedFreestandingDeclarations() {
+        if (!freestanding_codegen_) return;
+
+        unsigned removed_functions = 0;
+        unsigned removed_globals = 0;
+        bool changed = true;
+        while (changed) {
+            changed = false;
+
+            std::vector<Function*> functions_to_remove;
+            for (Function& function : *module) {
+                if (function.getName().starts_with("llvm.")) continue;
+                if (!function.use_empty()) continue;
+                if (function.isDeclaration() || function.hasLocalLinkage()) {
+                    functions_to_remove.push_back(&function);
+                }
+            }
+            for (Function* function : functions_to_remove) {
+                function->eraseFromParent();
+                removed_functions++;
+                changed = true;
+            }
+
+            std::vector<GlobalVariable*> globals_to_remove;
+            for (GlobalVariable& global : module->globals()) {
+                if (global.getName().starts_with("llvm.")) continue;
+                if (!global.use_empty()) continue;
+                if (global.isDeclaration() || global.hasLocalLinkage()) {
+                    globals_to_remove.push_back(&global);
+                }
+            }
+            for (GlobalVariable* global : globals_to_remove) {
+                global->eraseFromParent();
+                removed_globals++;
+                changed = true;
+            }
+        }
+
+        if (removed_functions || removed_globals) {
+            eshkol_debug("Freestanding cleanup removed %u unused functions and %u unused globals",
+                         removed_functions, removed_globals);
+        }
     }
 
     void createMainWrapper() {
@@ -9760,11 +9844,13 @@ private:
         
         current_function = prev_function;
 
-        // Add named function to pending_lambda_sexprs for S-expression generation and registry
-        // This enables homoiconic display: (display double) shows (lambda (x) (* x 2))
-        pending_lambda_sexprs.push_back({op, std::string(func_name)});
-        lambda_ast_to_name[op] = std::string(func_name);  // MEMOIZATION FIX
-        eshkol_debug("Added named function %s to pending_lambda_sexprs for homoiconic display", func_name);
+        // Add named function to pending_lambda_sexprs for S-expression generation and registry.
+        // Freestanding object mode does not include the hosted homoiconic display registry.
+        if (!freestanding_codegen_) {
+            pending_lambda_sexprs.push_back({op, std::string(func_name)});
+            lambda_ast_to_name[op] = std::string(func_name);  // MEMOIZATION FIX
+            eshkol_debug("Added named function %s to pending_lambda_sexprs for homoiconic display", func_name);
+        }
 
         eshkol_debug("Generated function: %s", func_name);
 
@@ -13558,14 +13644,14 @@ private:
         if (func_name == "quantum-random-range") return codegenQuantumRandomRange(op);
 
         // Handle parallel execution primitives - DELEGATED to ParallelCodegen
-        if (func_name == "parallel-map") return parallel_->parallelMap(op);
-        if (func_name == "parallel-fold") return parallel_->parallelFold(op);
-        if (func_name == "parallel-filter") return parallel_->parallelFilter(op);
-        if (func_name == "parallel-for-each") return parallel_->parallelForEach(op);
-        if (func_name == "parallel-execute") return parallel_->parallelExecute(op);
-        if (func_name == "thread-pool-info") return parallel_->threadPoolInfo(op);
-        if (func_name == "thread-pool-size") return parallel_->threadPoolInfo(op);  // Alias
-        if (func_name == "thread-pool-stats") return parallel_->threadPoolStats(op);
+        if (func_name == "parallel-map") return parallel_ ? parallel_->parallelMap(op) : unavailableParallelBuiltin(func_name);
+        if (func_name == "parallel-fold") return parallel_ ? parallel_->parallelFold(op) : unavailableParallelBuiltin(func_name);
+        if (func_name == "parallel-filter") return parallel_ ? parallel_->parallelFilter(op) : unavailableParallelBuiltin(func_name);
+        if (func_name == "parallel-for-each") return parallel_ ? parallel_->parallelForEach(op) : unavailableParallelBuiltin(func_name);
+        if (func_name == "parallel-execute") return parallel_ ? parallel_->parallelExecute(op) : unavailableParallelBuiltin(func_name);
+        if (func_name == "thread-pool-info") return parallel_ ? parallel_->threadPoolInfo(op) : unavailableParallelBuiltin(func_name);
+        if (func_name == "thread-pool-size") return parallel_ ? parallel_->threadPoolInfo(op) : unavailableParallelBuiltin(func_name);  // Alias
+        if (func_name == "thread-pool-stats") return parallel_ ? parallel_->threadPoolStats(op) : unavailableParallelBuiltin(func_name);
 
         // R7RS promises: delay/force with memoization
         // %make-lazy-promise is produced by parser desugaring of (delay expr)
@@ -13669,8 +13755,8 @@ private:
         }
 
         // Handle future primitives - DELEGATED to ParallelCodegen
-        if (func_name == "future") return parallel_->future(op);
-        if (func_name == "future-ready?") return parallel_->futureReady(op);
+        if (func_name == "future") return parallel_ ? parallel_->future(op) : unavailableParallelBuiltin(func_name);
+        if (func_name == "future-ready?") return parallel_ ? parallel_->futureReady(op) : unavailableParallelBuiltin(func_name);
 
         // force: handles R7RS promises and falls through to parallel futures
         if (func_name == "force") {
@@ -33999,9 +34085,18 @@ const char* eshkol_get_target(void) {
     return g_codegen_target_triple;
 }
 
+void eshkol_set_freestanding_codegen(int enabled) {
+    g_freestanding_codegen = (enabled != 0);
+}
+
+int eshkol_get_freestanding_codegen(void) {
+    return g_freestanding_codegen ? 1 : 0;
+}
+
 LLVMModuleRef eshkol_generate_llvm_ir(const eshkol_ast_t* asts, size_t num_asts, const char* module_name) {
     try {
-        EshkolLLVMCodeGen codegen(module_name, false, g_codegen_target_triple);
+        EshkolLLVMCodeGen codegen(module_name, false, g_codegen_target_triple,
+                                  g_freestanding_codegen);
         auto result = codegen.generateIR(asts, num_asts);
 
         if (!result.first || !result.second) {
@@ -34024,7 +34119,8 @@ LLVMModuleRef eshkol_generate_llvm_ir(const eshkol_ast_t* asts, size_t num_asts,
 
 LLVMModuleRef eshkol_generate_llvm_ir_library(const eshkol_ast_t* asts, size_t num_asts, const char* module_name) {
     try {
-        EshkolLLVMCodeGen codegen(module_name, true, g_codegen_target_triple);  // library mode
+        EshkolLLVMCodeGen codegen(module_name, true, g_codegen_target_triple,
+                                  g_freestanding_codegen);  // library mode
         auto result = codegen.generateIR(asts, num_asts);
 
         if (!result.first || !result.second) {
@@ -34309,17 +34405,28 @@ int eshkol_compile_llvm_ir_to_object(LLVMModuleRef module_ref, const char* filen
         }
 
 #if LLVM_VERSION_MAJOR >= 21
-        Triple cached_triple(g_cached_target_triple);
-        module->setTargetTriple(cached_triple);
+        Triple current_module_triple = module->getTargetTriple();
+        const bool module_has_target = !current_module_triple.str().empty();
+        Triple object_triple = module_has_target
+            ? current_module_triple
+            : Triple(g_cached_target_triple);
+        const std::string object_triple_str = object_triple.str();
+        module->setTargetTriple(object_triple);
 #else
-        module->setTargetTriple(g_cached_target_triple);
+        std::string current_module_triple = module->getTargetTriple();
+        const bool module_has_target = !current_module_triple.empty();
+        std::string object_triple_str = module_has_target
+            ? current_module_triple
+            : g_cached_target_triple;
+        Triple object_triple(object_triple_str);
+        module->setTargetTriple(object_triple_str);
 #endif
 
         std::string error;
 #if LLVM_VERSION_MAJOR >= 21
-        const Target* target = TargetRegistry::lookupTarget(cached_triple, error);
+        const Target* target = TargetRegistry::lookupTarget(object_triple, error);
 #else
-        const Target* target = TargetRegistry::lookupTarget(g_cached_target_triple, error);
+        const Target* target = TargetRegistry::lookupTarget(object_triple_str, error);
 #endif
         if (!target) {
             eshkol_error("Failed to lookup target: %s", error.c_str());
@@ -34340,13 +34447,11 @@ int eshkol_compile_llvm_ir_to_object(LLVMModuleRef module_ref, const char* filen
         //     per ABI). Range overflow doesn't bite there.
         std::optional<llvm::CodeModel::Model> code_model;
 #if LLVM_VERSION_MAJOR >= 21
-        const bool use_large_aarch64_code_model = cached_triple.getArch() == Triple::aarch64 &&
-                                                  !cached_triple.isOSWindows();
+        const bool use_large_aarch64_code_model = object_triple.getArch() == Triple::aarch64 &&
+                                                  !object_triple.isOSWindows();
 #else
-        const std::string& triple_str_for_cm = g_cached_target_triple;
-        const Triple triple_for_cm(triple_str_for_cm);
-        const bool use_large_aarch64_code_model = triple_for_cm.getArch() == Triple::aarch64 &&
-                                                  !triple_for_cm.isOSWindows();
+        const bool use_large_aarch64_code_model = object_triple.getArch() == Triple::aarch64 &&
+                                                  !object_triple.isOSWindows();
 #endif
         if (use_large_aarch64_code_model) {
             code_model = llvm::CodeModel::Large;
@@ -34354,19 +34459,22 @@ int eshkol_compile_llvm_ir_to_object(LLVMModuleRef module_ref, const char* filen
 
         TargetOptions target_options;
         auto codegen_opt = getCodeGenOptLevel();
+        const bool use_host_cpu_features = (object_triple_str == g_cached_target_triple);
+        const std::string cpu_name = use_host_cpu_features ? g_cached_cpu_name : "generic";
+        const std::string feature_string = use_host_cpu_features ? g_cached_features : "";
         std::unique_ptr<TargetMachine> target_machine(
 #if LLVM_VERSION_MAJOR >= 21
-            target->createTargetMachine(cached_triple, g_cached_cpu_name, g_cached_features,
+            target->createTargetMachine(object_triple, cpu_name, feature_string,
                                        target_options, Reloc::PIC_, code_model,
                                        codegen_opt));
 #else
-            target->createTargetMachine(g_cached_target_triple, g_cached_cpu_name, g_cached_features,
+            target->createTargetMachine(object_triple_str, cpu_name, feature_string,
                                        target_options, Reloc::PIC_, code_model,
                                        codegen_opt));
 #endif
 
         if (!target_machine) {
-            eshkol_error("Failed to create target machine for %s", g_cached_target_triple.c_str());
+            eshkol_error("Failed to create target machine for %s", object_triple_str.c_str());
             return -1;
         }
 

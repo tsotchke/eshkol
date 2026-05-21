@@ -98,6 +98,13 @@ void eshkol_set_target(const char* triple);
 const char* eshkol_get_target(void);
 
 /*
+ * Enable freestanding codegen policy for the next generated module.
+ * Must be set before eshkol_generate_llvm_ir*().
+ */
+void eshkol_set_freestanding_codegen(int enabled);
+int eshkol_get_freestanding_codegen(void);
+
+/*
  * Write LLVM IR to a file in textual format
  * @param module LLVM module reference
  * @param filename Output filename (should end with .ll)
@@ -330,6 +337,8 @@ void eshkol_repl_clear_last_value(void);
 #define eshkol_set_optimization_level(level) do {} while(0)
 #define eshkol_set_source_context(filepath, source_text) do {} while(0)
 #define eshkol_get_optimization_level() (0)
+#define eshkol_set_freestanding_codegen(enabled) do {} while(0)
+#define eshkol_get_freestanding_codegen() (0)
 #define eshkol_dump_llvm_ir_to_file(module, filename) (-1)
 #define eshkol_compile_llvm_ir_to_object(module, filename) (-1)
 #define eshkol_compile_llvm_ir_to_bitcode(module, filename) (-1)
