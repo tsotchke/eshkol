@@ -801,8 +801,12 @@ Probabilistic Inference</h3>
 (define ws (make-workspace 3 4))
 
 ;; Register cognitive modules. Each is (workspace, name, closure).
-;; The closure takes the current content vector and returns a new tensor
-;; of length `dim`. The softmax winner becomes the broadcast content.
+;; The closure takes the current content vector and must return a
+;; `(cons salience proposal-tensor)` pair: the salience is a scalar
+;; used in softmax competition, the proposal-tensor is a tensor of
+;; length `dim` that becomes the broadcast content if this module
+;; wins. Example shape (where each module is something like
+;;   (lambda (content) (cons 0.7 #(1.0 0.0 0.0)))):
 (ws-register! ws &quot;perception&quot; perception-module)
 (ws-register! ws &quot;memory&quot; memory-module)
 (ws-register! ws &quot;planning&quot; planning-module)
@@ -1152,24 +1156,29 @@ Estimation</h3>
 (define pi-estimate (* 4.0 (/ hits samples)))
 (display &quot;Pi ~ &quot;) (display pi-estimate) (newline)</code></pre>
 <h3 id="active-inference-agent">Active Inference Agent</h3>
-<pre class="scheme"><code>;; Simple agent using consciousness engine for decision making
-(define fg (make-factor-graph 4))  ;; state + 3 actions
+<pre class="scheme"><code>;; Simple agent using consciousness engine for decision making.
+;; Four binary variables: state + 3 candidate actions.
+;; Signature: (make-factor-graph num-vars dims-tensor)
+(define fg (make-factor-graph 4 #(2 2 2 2)))
 
 ;; Prior beliefs about state
-(fg-add-factor! fg (list 0) #(0.5 0.5))
+;; Signature: (fg-add-factor! fg var-indices-tensor cpt-tensor)
+(fg-add-factor! fg #(0) #(0.5 0.5))
 
 ;; Action-outcome models
-(fg-add-factor! fg (list 0 1) #(0.8 0.2 0.3 0.7))
-(fg-add-factor! fg (list 0 2) #(0.4 0.6 0.6 0.4))
-(fg-add-factor! fg (list 0 3) #(0.5 0.5 0.5 0.5))
+(fg-add-factor! fg #(0 1) #(0.8 0.2 0.3 0.7))
+(fg-add-factor! fg #(0 2) #(0.4 0.6 0.6 0.4))
+(fg-add-factor! fg #(0 3) #(0.5 0.5 0.5 0.5))
 
 ;; Observe current state
 (fg-infer! fg 20)
 
-;; Select action minimizing expected free energy
-(define efe-1 (expected-free-energy fg 1))
-(define efe-2 (expected-free-energy fg 2))
-(define efe-3 (expected-free-energy fg 3))
+;; Select action minimising expected free energy.
+;; Signature: (expected-free-energy fg action-var action-state).
+;; We pick the most-favoured outcome state (state 0 = &quot;good&quot; here).
+(define efe-1 (expected-free-energy fg 1 0))
+(define efe-2 (expected-free-energy fg 2 0))
+(define efe-3 (expected-free-energy fg 3 0))
 
 (display &quot;Action EFEs: &quot;)
 (display (list efe-1 efe-2 efe-3))

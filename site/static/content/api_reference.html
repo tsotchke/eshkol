@@ -852,7 +852,7 @@ Shape (3, 1)    + Shape (3,)       → Error: trailing dims (1 vs empty, not 1 v
 <code>tensor-sub</code>, <code>tensor-mul</code>,
 <code>tensor-div</code>, and all element-wise operations. Internally
 implemented via <code>eshkol_broadcast_elementwise_f64()</code> in <a
-href="lib/backend/tensor_codegen.cpp#L852-L936">tensor_codegen.cpp:852–936</a>.</p>
+href="../lib/backend/tensor_codegen.cpp">lib/backend/tensor_codegen.cpp</a>.</p>
 <hr />
 <h3 id="tensor-random-number-generation">Tensor Random Number
 Generation</h3>
@@ -864,9 +864,8 @@ variadic dimension arguments directly rather than a list.</p>
 <p><strong>Syntax:</strong> <code>(rand d₁ d₂ ...)</code> → Tensor</p>
 <p>Uniform random tensor with values in [0, 1). Uses
 <code>drand48()</code> internally.</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L5762">tensor_codegen.cpp:5762</a>
-(<code>tensorRand</code>).</p>
+<p><strong>Implementation:</strong> <code>tensorRand</code> in <a
+href="../lib/backend/tensor_codegen.cpp">lib/backend/tensor_codegen.cpp</a>.</p>
 <pre class="scheme"><code>(rand 3)       ; =&gt; #(0.482 0.917 0.123)
 (rand 2 3)     ; =&gt; 2×3 tensor with uniform random values</code></pre>
 <h4 id="randn"><code>randn</code></h4>
@@ -874,18 +873,16 @@ href="lib/backend/tensor_codegen.cpp#L5762">tensor_codegen.cpp:5762</a>
 <p>Standard normal N(0, 1) random tensor. Uses the Box-Muller transform
 internally: generates pairs of uniform samples u₁, u₂ and computes z =
 √(-2 ln u₁) · cos(2π u₂).</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L5833">tensor_codegen.cpp:5833</a>
-(<code>tensorRandn</code>).</p>
+<p><strong>Implementation:</strong> <code>tensorRandn</code> in <a
+href="../lib/backend/tensor_codegen.cpp">lib/backend/tensor_codegen.cpp</a>.</p>
 <pre class="scheme"><code>(randn 5)      ; =&gt; #(-0.31 1.24 0.08 -1.53 0.67) (varies)
 (randn 3 3)    ; =&gt; 3×3 tensor with standard normal values</code></pre>
 <h4 id="randint"><code>randint</code></h4>
 <p><strong>Syntax:</strong> <code>(randint lo hi d₁ d₂ ...)</code> →
 Tensor</p>
 <p>Random integer tensor with values in [lo, hi).</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L5929">tensor_codegen.cpp:5929</a>
-(<code>tensorRandint</code>).</p>
+<p><strong>Implementation:</strong> <code>tensorRandint</code> in <a
+href="../lib/backend/tensor_codegen.cpp">lib/backend/tensor_codegen.cpp</a>.</p>
 <pre class="scheme"><code>(randint 0 10 5)     ; =&gt; #(3.0 7.0 1.0 9.0 4.0) (integers as doubles)
 (randint 1 7 2 3)    ; =&gt; 2×3 tensor, dice rolls</code></pre>
 <hr />
@@ -903,9 +900,8 @@ permutation matrix.</p>
 <p><strong>Algorithm:</strong> Gaussian elimination with partial
 pivoting (row swaps for numerical stability).</p>
 <p><strong>Complexity:</strong> O(n³/3) for n×n matrices.</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L13102">tensor_codegen.cpp:13102</a>
-(<code>tensorLU</code>).</p>
+<p><strong>Implementation:</strong> <code>tensorLU</code> in <a
+href="../lib/backend/tensor_linalg_codegen.cpp">lib/backend/tensor_linalg_codegen.cpp</a>.</p>
 <pre class="scheme"><code>(define A #((2.0 1.0) (1.0 3.0)))
 (let ((result (tensor-lu A)))
   (let ((L (car result)) (U (cadr result)) (P (caddr result)))
@@ -917,9 +913,8 @@ href="lib/backend/tensor_codegen.cpp#L13102">tensor_codegen.cpp:13102</a>
 · sign(P).</p>
 <p><strong>Complexity:</strong> O(n³/3) — dominated by the LU
 factorization.</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L13272">tensor_codegen.cpp:13272</a>
-(<code>tensorDet</code>).</p>
+<p><strong>Implementation:</strong> <code>tensorDet</code> in <a
+href="../lib/backend/tensor_linalg_codegen.cpp">lib/backend/tensor_linalg_codegen.cpp</a>.</p>
 <pre class="scheme"><code>(tensor-det #((2.0 1.0) (1.0 3.0)))   ; =&gt; 5.0
 (tensor-det #((1.0 0.0) (0.0 1.0)))   ; =&gt; 1.0 (identity)</code></pre>
 <h4 id="tensor-inverse"><code>tensor-inverse</code></h4>
@@ -928,9 +923,8 @@ href="lib/backend/tensor_codegen.cpp#L13272">tensor_codegen.cpp:13272</a>
 substitution.</p>
 <p><strong>Complexity:</strong> O(n³). Raises an error for singular
 matrices (det ≈ 0).</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L13348">tensor_codegen.cpp:13348</a>
-(<code>tensorInverse</code>).</p>
+<p><strong>Implementation:</strong> <code>tensorInverse</code> in <a
+href="../lib/backend/tensor_linalg_codegen.cpp">lib/backend/tensor_linalg_codegen.cpp</a>.</p>
 <pre class="scheme"><code>(define A #((2.0 1.0) (1.0 3.0)))
 (define Ainv (tensor-inverse A))
 (tensor-matmul A Ainv)   ; =&gt; ~identity matrix</code></pre>
@@ -940,9 +934,8 @@ href="lib/backend/tensor_codegen.cpp#L13348">tensor_codegen.cpp:13348</a>
 back substitution.</p>
 <p><strong>Complexity:</strong> O(n³/3) for LU + O(n²) for
 substitution.</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L13452">tensor_codegen.cpp:13452</a>
-(<code>tensorSolve</code>).</p>
+<p><strong>Implementation:</strong> <code>tensorSolve</code> in <a
+href="../lib/backend/tensor_linalg_codegen.cpp">lib/backend/tensor_linalg_codegen.cpp</a>.</p>
 <pre class="scheme"><code>(define A #((2.0 1.0) (1.0 3.0)))
 (define b #(3.0 5.0))
 (tensor-solve A b)   ; =&gt; #(0.8 1.4) — solution x where Ax = b</code></pre>
@@ -958,9 +951,8 @@ decomposition.</p>
 <p><strong>Use case:</strong> Solving symmetric positive-definite
 systems (covariance matrices, kernel matrices in Gaussian processes).
 Twice as efficient as general LU.</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L13588">tensor_codegen.cpp:13588</a>
-(<code>tensorCholesky</code>).</p>
+<p><strong>Implementation:</strong> <code>tensorCholesky</code> in <a
+href="../lib/backend/tensor_linalg_codegen.cpp">lib/backend/tensor_linalg_codegen.cpp</a>.</p>
 <pre class="scheme"><code>(define A #((4.0 2.0) (2.0 3.0)))   ; symmetric positive-definite
 (define L (tensor-cholesky A))
 ;; L·L^T = A</code></pre>
@@ -974,9 +966,8 @@ stable and efficient.</p>
 ≥ n.</p>
 <p><strong>Use case:</strong> Least-squares problems (∥Ax - b∥²
 minimization), eigenvalue algorithms (QR iteration).</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L13684">tensor_codegen.cpp:13684</a>
-(<code>tensorQR</code>).</p>
+<p><strong>Implementation:</strong> <code>tensorQR</code> in <a
+href="../lib/backend/tensor_linalg_codegen.cpp">lib/backend/tensor_linalg_codegen.cpp</a>.</p>
 <pre class="scheme"><code>(define A #((1.0 1.0) (0.0 1.0) (1.0 0.0)))   ; 3×2
 (let ((result (tensor-qr A)))
   (let ((Q (car result)) (R (cadr result)))
@@ -994,9 +985,8 @@ descending order.</p>
 <p><strong>Use case:</strong> Principal Component Analysis (PCA),
 low-rank approximation (truncated SVD), matrix pseudoinverse, condition
 number computation.</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L13869">tensor_codegen.cpp:13869</a>
-(<code>tensorSVD</code>).</p>
+<p><strong>Implementation:</strong> <code>tensorSVD</code> in <a
+href="../lib/backend/tensor_linalg_codegen.cpp">lib/backend/tensor_linalg_codegen.cpp</a>.</p>
 <pre class="scheme"><code>(define A #((1.0 2.0) (3.0 4.0) (5.0 6.0)))   ; 3×2
 (let ((result (tensor-svd A)))
   (let ((U (car result)) (S (cadr result)) (Vt (caddr result)))
@@ -1018,9 +1008,8 @@ scalar | | <code>"ij,ij-&gt;"</code> | Frobenius inner product |
 <code>(einsum "ij,ij-&gt;" A B)</code> → scalar | |
 <code>"i,i-&gt;"</code> | Dot product |
 <code>(einsum "i,i-&gt;" u v)</code> → scalar |</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L14092">tensor_codegen.cpp:14092</a>
-(<code>tensorEinsum</code>).</p>
+<p><strong>Implementation:</strong> <code>tensorEinsum</code> in <a
+href="../lib/backend/tensor_linalg_codegen.cpp">lib/backend/tensor_linalg_codegen.cpp</a>.</p>
 <pre class="scheme"><code>(define A #((1.0 2.0) (3.0 4.0)))
 (define B #((5.0 6.0) (7.0 8.0)))
 (einsum &quot;ij,jk-&gt;ik&quot; A B)   ; matrix multiply: #((19.0 22.0) (43.0 50.0))
@@ -1978,12 +1967,19 @@ systems.</p>
 </tr>
 </tbody>
 </table>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/llvm_codegen.cpp#L7129-L7173">llvm_codegen.cpp:7129–7173</a>
-(dispatch), <a
-href="lib/backend/llvm_codegen.cpp#L33230-L33810">llvm_codegen.cpp:33230–33810</a>
-(codegen methods). Runtime: <a
-href="inc/eshkol/backend/logic.h">logic.h</a> / <a
+<p><strong>Implementation:</strong> <code>LogicWorkspaceCodegen</code>
+in <a
+href="../lib/backend/logic_workspace_codegen.cpp">lib/backend/logic_workspace_codegen.cpp</a>
+holds the codegen methods (<code>codegenMakeFactorGraph</code>,
+<code>codegenFGAddFactor</code>, <code>codegenFGInfer</code>,
+<code>codegenFreeEnergy</code>, <code>codegenEFE</code>,
+<code>codegenFGUpdateCPT</code>, <code>codegenFGObserve</code>,
+<code>codegenMakeWorkspace</code>, <code>codegenWSRegister</code>,
+<code>codegenWSStep</code>, plus the logic-engine entry points); the
+dispatch table lives in
+<code>LLVMCodeGenerator::codegenSpecialOperation</code> in <a
+href="../lib/backend/llvm_codegen.cpp">lib/backend/llvm_codegen.cpp</a>.
+Runtime: <a href="inc/eshkol/backend/logic.h">logic.h</a> / <a
 href="lib/backend/logic.cpp">logic.cpp</a>, <a
 href="inc/eshkol/backend/inference.h">inference.h</a> / <a
 href="lib/backend/inference.cpp">inference.cpp</a>, <a
@@ -2019,8 +2015,9 @@ maps to a term that may reference other variables, but never itself
 (guaranteed by the occurs check).</p>
 <p><strong>Returns:</strong> An empty <code>Substitution</code> (heap
 subtype 12).</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/llvm_codegen.cpp#L33266">llvm_codegen.cpp:33266</a>,
+<p><strong>Implementation:</strong>
+<code>LogicWorkspaceCodegen::codegenMakeSubst</code> in <a
+href="../lib/backend/logic_workspace_codegen.cpp">lib/backend/logic_workspace_codegen.cpp</a>,
 runtime <code>eshkol_make_substitution_tagged</code>.</p>
 <h4 id="unify"><code>unify</code></h4>
 <p><strong>Syntax:</strong> <code>(unify t₁ t₂ σ)</code> → Substitution
@@ -2049,8 +2046,9 @@ would create an infinite term. This is essential for soundness.</p>
 <p><strong>Complexity:</strong> O(n · α(n)) amortized with path
 compression, where n is the number of variables in the terms and α is
 the inverse Ackermann function. In practice, near-linear.</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/llvm_codegen.cpp#L33243">llvm_codegen.cpp:33243</a>,
+<p><strong>Implementation:</strong>
+<code>LogicWorkspaceCodegen::codegenUnify</code> in <a
+href="../lib/backend/logic_workspace_codegen.cpp">lib/backend/logic_workspace_codegen.cpp</a>,
 runtime <code>eshkol_unify_tagged</code>.</p>
 <pre class="scheme"><code>(define s (make-substitution))
 (define s1 (unify ?x 42 s))           ; bind ?x → 42
@@ -2066,8 +2064,9 @@ value.</p>
 <p><strong>Invariant:</strong> Substitutions are triangular by
 construction (the occurs check prevents cycles). Therefore,
 <code>walk</code> always terminates.</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/llvm_codegen.cpp#L33280">llvm_codegen.cpp:33280</a>,
+<p><strong>Implementation:</strong>
+<code>LogicWorkspaceCodegen::codegenWalk</code> in <a
+href="../lib/backend/logic_workspace_codegen.cpp">lib/backend/logic_workspace_codegen.cpp</a>,
 runtime <code>eshkol_walk_tagged</code>.</p>
 <pre class="scheme"><code>(define s (make-substitution))
 (define s1 (unify ?x ?y s))
@@ -2087,8 +2086,9 @@ Fact</p>
 <p>Creates a structured fact with a predicate symbol and zero or more
 arguments. Facts are first-class values (heap subtype 13) that can be
 stored in knowledge bases or manipulated directly.</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/llvm_codegen.cpp#L33301">llvm_codegen.cpp:33301</a>,
+<p><strong>Implementation:</strong>
+<code>LogicWorkspaceCodegen::codegenMakeFact</code> in <a
+href="../lib/backend/logic_workspace_codegen.cpp">lib/backend/logic_workspace_codegen.cpp</a>,
 runtime <code>eshkol_make_fact_tagged</code>.</p>
 <pre class="scheme"><code>(make-fact &#39;parent &#39;alice &#39;bob)      ; parent(alice, bob)
 (make-fact &#39;edge 1 2 5.0)            ; edge(1, 2, 5.0) — weighted graph edge
@@ -2099,16 +2099,18 @@ runtime <code>eshkol_make_fact_tagged</code>.</p>
 facts that supports assertion and unification-based query.</p>
 <p><strong>Returns:</strong> An empty <code>KnowledgeBase</code> (heap
 subtype 15).</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/llvm_codegen.cpp#L33337">llvm_codegen.cpp:33337</a>,
+<p><strong>Implementation:</strong>
+<code>LogicWorkspaceCodegen::codegenMakeKB</code> in <a
+href="../lib/backend/logic_workspace_codegen.cpp">lib/backend/logic_workspace_codegen.cpp</a>,
 runtime <code>eshkol_make_kb_tagged</code>.</p>
 <h4 id="kb-assert"><code>kb-assert!</code></h4>
 <p><strong>Syntax:</strong> <code>(kb-assert! kb fact)</code> → void</p>
 <p>Adds a fact to the knowledge base. This is a mutating operation — the
 KB is modified in-place. Facts are stored in insertion order and all are
 considered during queries.</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/llvm_codegen.cpp#L33351">llvm_codegen.cpp:33351</a>,
+<p><strong>Implementation:</strong>
+<code>LogicWorkspaceCodegen::codegenKBAssert</code> in <a
+href="../lib/backend/logic_workspace_codegen.cpp">lib/backend/logic_workspace_codegen.cpp</a>,
 runtime <code>eshkol_kb_assert_tagged</code>.</p>
 <h4 id="kb-query"><code>kb-query</code></h4>
 <p><strong>Syntax:</strong> <code>(kb-query kb pattern)</code> → List of
@@ -2120,8 +2122,9 @@ pattern. An empty list indicates no matches.</p>
 <p><strong>Algorithm:</strong> For each fact f in kb, attempt
 <code>(unify pattern f (make-substitution))</code>. Collect all
 successful substitutions into a list.</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/llvm_codegen.cpp#L33371">llvm_codegen.cpp:33371</a>,
+<p><strong>Implementation:</strong>
+<code>LogicWorkspaceCodegen::codegenKBQuery</code> in <a
+href="../lib/backend/logic_workspace_codegen.cpp">lib/backend/logic_workspace_codegen.cpp</a>,
 runtime <code>eshkol_kb_query_tagged</code>.</p>
 <pre class="scheme"><code>;; Build a family knowledge base
 (define kb (make-kb))
@@ -2172,11 +2175,13 @@ runtime <code>eshkol_kb_query_tagged</code>.</p>
 </tr>
 </tbody>
 </table>
-<p>All return <code>#t</code> or <code>#f</code>. Implementation: <a
-href="lib/backend/llvm_codegen.cpp#L33392">llvm_codegen.cpp:33392</a>
-(logic-var?), <a
-href="lib/backend/llvm_codegen.cpp#L33645">llvm_codegen.cpp:33645</a>
-(fact?, factor-graph?, etc.).</p>
+<p>All return <code>#t</code> or <code>#f</code>. Implementation lives
+in the predicate helpers
+<code>LLVMCodeGenerator::codegenLogicVarPred</code>,
+<code>codegenSubstPred</code>, <code>codegenKBPred</code>,
+<code>codegenFactPred</code>, <code>codegenFactorGraphPred</code>, and
+<code>codegenWorkspacePred</code> in <a
+href="../lib/backend/llvm_codegen.cpp">lib/backend/llvm_codegen.cpp</a>.</p>
 <h3 id="active-inference">Active Inference</h3>
 <p>Active inference (Friston, 2010) models perception and action as
 variational inference on a generative model. Eshkol implements this via
@@ -2213,8 +2218,9 @@ heterogeneous state spaces (e.g., one binary variable and one ternary
 variable).</p>
 <p><strong>Returns:</strong> A <code>FactorGraph</code> (heap subtype
 16) with no factors attached.</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/llvm_codegen.cpp#L33484">llvm_codegen.cpp:33484</a>,
+<p><strong>Implementation:</strong>
+<code>LogicWorkspaceCodegen::codegenMakeFactorGraph</code> in <a
+href="../lib/backend/logic_workspace_codegen.cpp">lib/backend/logic_workspace_codegen.cpp</a>,
 runtime <code>eshkol_make_factor_graph_tagged</code>.</p>
 <pre class="scheme"><code>;; Two binary variables (each with 2 states)
 (define fg (make-factor-graph 2 #(2 2)))
@@ -2234,8 +2240,9 @@ with |S_a| and |S_b| states respectively, the CPT has |S_a| × |S_b|
 entries. Entry at index <code>i * |S_b| + j</code> corresponds to log
 P(v_a = i, v_b = j) (or the conditional log P(v_b = j | v_a = i),
 depending on the model structure).</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/llvm_codegen.cpp#L33503">llvm_codegen.cpp:33503</a>,
+<p><strong>Implementation:</strong>
+<code>LogicWorkspaceCodegen::codegenFGAddFactor</code> in <a
+href="../lib/backend/logic_workspace_codegen.cpp">lib/backend/logic_workspace_codegen.cpp</a>,
 runtime <code>eshkol_fg_add_factor_tagged</code>.</p>
 <pre class="scheme"><code>;; Unary factor: prior over variable 0 (binary)
 ;; P(sunny) = 0.7, P(rainy) = 0.3
@@ -2271,8 +2278,9 @@ problems.</p>
 <p><strong>Returns:</strong> A flat tensor of beliefs concatenated
 across variables: beliefs for variable 0 (|S_0| entries), then variable
 1 (|S_1| entries), etc.</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/llvm_codegen.cpp#L33524">llvm_codegen.cpp:33524</a>,
+<p><strong>Implementation:</strong>
+<code>LogicWorkspaceCodegen::codegenFGInfer</code> in <a
+href="../lib/backend/logic_workspace_codegen.cpp">lib/backend/logic_workspace_codegen.cpp</a>,
 runtime <code>eshkol_fg_infer_tagged</code>.</p>
 <pre class="scheme"><code>(define beliefs (fg-infer! fg 20))    ; run 20 iterations of BP
 ;; beliefs: #(0.7 0.3 0.65 0.35)
@@ -2290,8 +2298,9 @@ parameters.</p>
 iteratively updating CPTs based on observed data (e.g., via gradient
 descent on the free energy), the model adapts its generative
 structure.</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/llvm_codegen.cpp#L33585">llvm_codegen.cpp:33585</a>,
+<p><strong>Implementation:</strong>
+<code>LogicWorkspaceCodegen::codegenFGUpdateCPT</code> in <a
+href="../lib/backend/logic_workspace_codegen.cpp">lib/backend/logic_workspace_codegen.cpp</a>,
 runtime <code>eshkol_fg_update_cpt_tagged</code>.</p>
 <pre class="scheme"><code>;; Update the prior: now P(sunny) = 0.2, P(rainy) = 0.8
 (fg-update-cpt! fg 0 #(-1.6094 -0.2231))   ; log(0.2), log(0.8)
@@ -2313,8 +2322,9 @@ Each pair specifies one observed variable and its observed state.</p>
 <p><strong>Interpretation:</strong> Lower free energy indicates better
 model fit. Minimizing F with respect to model parameters (CPTs) is
 equivalent to maximizing the evidence lower bound (ELBO).</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/llvm_codegen.cpp#L33543">llvm_codegen.cpp:33543</a>,
+<p><strong>Implementation:</strong>
+<code>LogicWorkspaceCodegen::codegenFreeEnergy</code> in <a
+href="../lib/backend/logic_workspace_codegen.cpp">lib/backend/logic_workspace_codegen.cpp</a>,
 runtime <code>eshkol_free_energy_tagged</code>.</p>
 <pre class="scheme"><code>;; Observe: variable 1 (umbrella) is in state 0 (yes)
 (define F (free-energy fg #(1.0 0.0)))
@@ -2344,8 +2354,9 @@ that simultaneously maximize information gain and goal achievement.</p>
 <code>action-state</code> — the specific action state to evaluate</p>
 <p><strong>Returns:</strong> Scalar expected free energy for the given
 action.</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/llvm_codegen.cpp#L33562">llvm_codegen.cpp:33562</a>,
+<p><strong>Implementation:</strong>
+<code>LogicWorkspaceCodegen::codegenEFE</code> in <a
+href="../lib/backend/logic_workspace_codegen.cpp">lib/backend/logic_workspace_codegen.cpp</a>,
 runtime <code>eshkol_efe_tagged</code>.</p>
 <pre class="scheme"><code>;; Evaluate expected free energy for each possible action
 (define g0 (expected-free-energy fg 0 0))   ; EFE of action-var 0, state 0
@@ -2356,8 +2367,9 @@ runtime <code>eshkol_efe_tagged</code>.</p>
 <p><strong>Syntax:</strong> <code>(factor-graph? x)</code> → Boolean</p>
 <p>Returns <code>#t</code> if <code>x</code> is a factor graph (heap
 subtype 16), <code>#f</code> otherwise.</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/llvm_codegen.cpp#L33645">llvm_codegen.cpp:33645</a>.</p>
+<p><strong>Implementation:</strong>
+<code>LLVMCodeGenerator::codegenFactorGraphPred</code> in <a
+href="../lib/backend/llvm_codegen.cpp">lib/backend/llvm_codegen.cpp</a>.</p>
 <h4 id="complete-active-inference-example">Complete Active Inference
 Example</h4>
 <pre class="scheme"><code>;; Weather→Umbrella Bayesian network as a factor graph
@@ -2432,8 +2444,9 @@ the content tensor (integer) - <code>max-modules</code> — maximum number
 of module slots (integer)</p>
 <p><strong>Returns:</strong> A <code>Workspace</code> (heap subtype 17)
 initialized with a zero content tensor.</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/llvm_codegen.cpp#L33721">llvm_codegen.cpp:33721</a>,
+<p><strong>Implementation:</strong>
+<code>LogicWorkspaceCodegen::codegenMakeWorkspace</code> in <a
+href="../lib/backend/logic_workspace_codegen.cpp">lib/backend/logic_workspace_codegen.cpp</a>,
 runtime <code>eshkol_make_workspace_tagged</code>.</p>
 <pre class="scheme"><code>(define ws (make-workspace 4 3))   ; 4-dimensional content, 3 module slots</code></pre>
 <h4 id="ws-register"><code>ws-register!</code></h4>
@@ -2453,8 +2466,9 @@ broadcast</li>
 <code>name</code> — a string identifier for the module (for
 debugging/inspection) - <code>process-fn</code> — a closure with
 signature <code>(tensor → (cons number tensor))</code></p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/llvm_codegen.cpp#L33740">llvm_codegen.cpp:33740</a>,
+<p><strong>Implementation:</strong>
+<code>LogicWorkspaceCodegen::codegenWSRegister</code> in <a
+href="../lib/backend/logic_workspace_codegen.cpp">lib/backend/logic_workspace_codegen.cpp</a>,
 runtime <code>eshkol_ws_register_tagged</code>.</p>
 <pre class="scheme"><code>(ws-register! ws &quot;perception&quot;
   (lambda (content)
@@ -2486,8 +2500,9 @@ content.</li>
 argument</strong> (the workspace). There is no separate input parameter
 — modules receive the current broadcast content, which serves as the
 input.</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/llvm_codegen.cpp#L33760">llvm_codegen.cpp:33760</a>.
+<p><strong>Implementation:</strong>
+<code>LogicWorkspaceCodegen::codegenWSStep</code> in <a
+href="../lib/backend/logic_workspace_codegen.cpp">lib/backend/logic_workspace_codegen.cpp</a>.
 The codegen generates a loop calling <code>codegenClosureCall</code> for
 each registered module. C runtime helpers
 <code>eshkol_ws_make_content_tensor</code> and
@@ -2505,8 +2520,9 @@ broadcast respectively.</p>
 <p><strong>Syntax:</strong> <code>(workspace? x)</code> → Boolean</p>
 <p>Returns <code>#t</code> if <code>x</code> is a workspace (heap
 subtype 17), <code>#f</code> otherwise.</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/llvm_codegen.cpp#L33682">llvm_codegen.cpp:33682</a>.</p>
+<p><strong>Implementation:</strong>
+<code>LLVMCodeGenerator::codegenWorkspacePred</code> in <a
+href="../lib/backend/llvm_codegen.cpp">lib/backend/llvm_codegen.cpp</a>.</p>
 <h4 id="complete-global-workspace-example">Complete Global Workspace
 Example</h4>
 <pre class="scheme"><code>;; Multi-modal integration: perception + memory + planning
@@ -2601,8 +2617,9 @@ library wrappers — enabling SIMD acceleration for large tensors,
 automatic GPU dispatch above cost model thresholds, and seamless
 integration with Eshkol’s automatic differentiation system via
 <code>gradient</code>.</p>
-<p><strong>Architecture:</strong> Operations are dispatched in <a
-href="lib/backend/llvm_codegen.cpp#L11444-L11557">llvm_codegen.cpp:11444–11557</a>
+<p><strong>Architecture:</strong> Operations are dispatched in
+<code>LLVMCodeGenerator::codegenCall</code> in <a
+href="../lib/backend/llvm_codegen.cpp">lib/backend/llvm_codegen.cpp</a>
 and implemented in <a
 href="lib/backend/tensor_codegen.cpp">tensor_codegen.cpp</a>. Backward
 passes are available for AD integration (e.g.,
@@ -2626,11 +2643,10 @@ that output zero for all inputs and receive zero gradient, permanently
 ceasing to learn.</p>
 <p><strong>Use case:</strong> Default activation for hidden layers in
 most architectures.</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L3058">tensor_codegen.cpp:3058</a>
-(<code>tensorRelu</code>). Backward: <a
-href="lib/backend/tensor_codegen.cpp#L5128">tensor_codegen.cpp:5128</a>
-(<code>tensorReluBackward</code>).</p>
+<p><strong>Implementation:</strong> <code>tensorRelu</code> in <a
+href="../lib/backend/tensor_activation_codegen.cpp">lib/backend/tensor_activation_codegen.cpp</a>.
+Backward: <code>tensorReluBackward</code> in <a
+href="../lib/backend/tensor_activation_codegen.cpp">lib/backend/tensor_activation_codegen.cpp</a>.</p>
 <h4 id="sigmoid"><code>sigmoid</code></h4>
 <p><strong>Syntax:</strong> <code>(sigmoid t)</code> → Tensor</p>
 <p>Logistic sigmoid: σ(x) = 1 / (1 + e^(-x)).</p>
@@ -2639,10 +2655,10 @@ href="lib/backend/tensor_codegen.cpp#L5128">tensor_codegen.cpp:5128</a>
 in deep networks. Outputs are not zero-centered.</p>
 <p><strong>Use case:</strong> Binary classification output layers,
 gating mechanisms (LSTM, GRU).</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L3203">tensor_codegen.cpp:3203</a>
-(<code>tensorSigmoid</code>). Backward: <a
-href="lib/backend/tensor_codegen.cpp#L5223">tensor_codegen.cpp:5223</a>.</p>
+<p><strong>Implementation:</strong> <code>tensorSigmoid</code> in <a
+href="../lib/backend/tensor_activation_codegen.cpp">lib/backend/tensor_activation_codegen.cpp</a>.
+Backward: <a
+href="../lib/backend/tensor_codegen.cpp">lib/backend/tensor_codegen.cpp</a>.</p>
 <h4 id="softmax"><code>softmax</code></h4>
 <p><strong>Syntax:</strong> <code>(softmax t)</code> → Tensor</p>
 <p>Normalized exponential: softmax(x)_i = exp(x_i) / Σ_j exp(x_j).</p>
@@ -2654,10 +2670,10 @@ prevent overflow.</p>
 <p><strong>Use case:</strong> Multi-class classification output
 (produces a probability distribution that sums to 1), attention weight
 normalization in transformers.</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L3371">tensor_codegen.cpp:3371</a>
-(<code>tensorSoftmax</code>). Backward: <a
-href="lib/backend/tensor_codegen.cpp#L4994">tensor_codegen.cpp:4994</a>.</p>
+<p><strong>Implementation:</strong> <code>tensorSoftmax</code> in <a
+href="../lib/backend/tensor_activation_codegen.cpp">lib/backend/tensor_activation_codegen.cpp</a>.
+Backward: <a
+href="../lib/backend/tensor_codegen.cpp">lib/backend/tensor_codegen.cpp</a>.</p>
 <h4 id="gelu"><code>gelu</code></h4>
 <p><strong>Syntax:</strong> <code>(gelu t)</code> → Tensor</p>
 <p>Gaussian Error Linear Unit: GELU(x) = x · Φ(x) ≈ x · σ(1.702x), where
@@ -2668,10 +2684,10 @@ flow through negative activations.</p>
 <p><strong>Use case:</strong> Transformer architectures (BERT, GPT,
 ViT). Outperforms ReLU in language modeling tasks due to smoother
 optimization landscape.</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L3631">tensor_codegen.cpp:3631</a>
-(<code>tensorGelu</code>). Backward: <a
-href="lib/backend/tensor_codegen.cpp#L5318">tensor_codegen.cpp:5318</a>.</p>
+<p><strong>Implementation:</strong> <code>tensorGelu</code> in <a
+href="../lib/backend/tensor_activation_codegen.cpp">lib/backend/tensor_activation_codegen.cpp</a>.
+Backward: <a
+href="../lib/backend/tensor_codegen.cpp">lib/backend/tensor_codegen.cpp</a>.</p>
 <h4 id="leaky-relu"><code>leaky-relu</code></h4>
 <p><strong>Syntax:</strong> <code>(leaky-relu t [α])</code> → Tensor</p>
 <p>Leaky ReLU: f(x) = x if x &gt; 0, αx otherwise. Default α = 0.01.</p>
@@ -2680,10 +2696,10 @@ small positive slope for negative inputs eliminates dead neurons — every
 unit always receives non-zero gradient.</p>
 <p><strong>Use case:</strong> Drop-in replacement for ReLU when dead
 neurons are observed during training.</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L3821">tensor_codegen.cpp:3821</a>
-(<code>tensorLeakyRelu</code>). Backward: <a
-href="lib/backend/tensor_codegen.cpp#L5435">tensor_codegen.cpp:5435</a>.</p>
+<p><strong>Implementation:</strong> <code>tensorLeakyRelu</code> in <a
+href="../lib/backend/tensor_activation_codegen.cpp">lib/backend/tensor_activation_codegen.cpp</a>.
+Backward: <a
+href="../lib/backend/tensor_codegen.cpp">lib/backend/tensor_codegen.cpp</a>.</p>
 <h4 id="silu"><code>silu</code></h4>
 <p><strong>Syntax:</strong> <code>(silu t)</code> → Tensor</p>
 <p>Sigmoid Linear Unit (Swish): SiLU(x) = x · σ(x).</p>
@@ -2692,10 +2708,10 @@ learnable gate on the linear signal. Smooth, non-monotonic, and bounded
 below. Gradients flow more uniformly than ReLU.</p>
 <p><strong>Use case:</strong> EfficientNet, modern ConvNets. Often
 outperforms both ReLU and GELU.</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L3963">tensor_codegen.cpp:3963</a>
-(<code>tensorSilu</code>). Backward: <a
-href="lib/backend/tensor_codegen.cpp#L5531">tensor_codegen.cpp:5531</a>.</p>
+<p><strong>Implementation:</strong> <code>tensorSilu</code> in <a
+href="../lib/backend/tensor_activation_codegen.cpp">lib/backend/tensor_activation_codegen.cpp</a>.
+Backward: <a
+href="../lib/backend/tensor_codegen.cpp">lib/backend/tensor_codegen.cpp</a>.</p>
 <h4 id="elu"><code>elu</code></h4>
 <p><strong>Syntax:</strong> <code>(elu t [α])</code> → Tensor</p>
 <p>Exponential Linear Unit: f(x) = x if x &gt; 0, α(e^x - 1) otherwise.
@@ -2705,9 +2721,8 @@ Negative saturation pushes mean activations closer to zero, reducing the
 bias shift effect and accelerating convergence.</p>
 <p><strong>Use case:</strong> When negative outputs are needed and mean
 activation near zero is desirable.</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L4060">tensor_codegen.cpp:4060</a>
-(<code>tensorElu</code>).</p>
+<p><strong>Implementation:</strong> <code>tensorElu</code> in <a
+href="../lib/backend/tensor_activation_codegen.cpp">lib/backend/tensor_activation_codegen.cpp</a>.</p>
 <h4 id="selu"><code>selu</code></h4>
 <p><strong>Syntax:</strong> <code>(selu t)</code> → Tensor</p>
 <p>Scaled Exponential Linear Unit: SELU(x) = λ · ELU(x, α) where λ ≈
@@ -2721,9 +2736,8 @@ the need for batch normalization.</p>
 initialization (<code>lecun-normal!</code>).</p>
 <p><strong>Use case:</strong> Deep fully-connected networks without
 batch normalization.</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L4182">tensor_codegen.cpp:4182</a>
-(<code>tensorSelu</code>).</p>
+<p><strong>Implementation:</strong> <code>tensorSelu</code> in <a
+href="../lib/backend/tensor_activation_codegen.cpp">lib/backend/tensor_activation_codegen.cpp</a>.</p>
 <h4 id="mish"><code>mish</code></h4>
 <p><strong>Syntax:</strong> <code>(mish t)</code> → Tensor</p>
 <p>Mish: f(x) = x · tanh(softplus(x)) = x · tanh(ln(1 + e^x)).</p>
@@ -2733,9 +2747,8 @@ unlike ReLU (non-differentiable at 0) or Leaky ReLU (non-smooth at
 0).</p>
 <p><strong>Use case:</strong> Object detection (YOLOv4 adopted Mish as
 default activation).</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L4300">tensor_codegen.cpp:4300</a>
-(<code>tensorMish</code>).</p>
+<p><strong>Implementation:</strong> <code>tensorMish</code> in <a
+href="../lib/backend/tensor_activation_codegen.cpp">lib/backend/tensor_activation_codegen.cpp</a>.</p>
 <h4 id="hard-swish"><code>hard-swish</code></h4>
 <p><strong>Syntax:</strong> <code>(hard-swish t)</code> → Tensor</p>
 <p>Piecewise linear approximation of Swish: f(x) = x · min(max(x + 3,
@@ -2744,9 +2757,8 @@ href="lib/backend/tensor_codegen.cpp#L4300">tensor_codegen.cpp:4300</a>
 than SiLU/Swish. Negligible accuracy difference in practice.</p>
 <p><strong>Use case:</strong> Mobile and edge deployment (MobileNetV3).
 Optimized for inference speed on resource-constrained devices.</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L4428">tensor_codegen.cpp:4428</a>
-(<code>tensorHardSwish</code>).</p>
+<p><strong>Implementation:</strong> <code>tensorHardSwish</code> in <a
+href="../lib/backend/tensor_activation_codegen.cpp">lib/backend/tensor_activation_codegen.cpp</a>.</p>
 <h4 id="hard-sigmoid"><code>hard-sigmoid</code></h4>
 <p><strong>Syntax:</strong> <code>(hard-sigmoid t)</code> → Tensor</p>
 <p>Piecewise linear approximation of sigmoid: f(x) = min(max(x + 3, 0),
@@ -2755,9 +2767,8 @@ href="lib/backend/tensor_codegen.cpp#L4428">tensor_codegen.cpp:4428</a>
 (0, linear, 1).</p>
 <p><strong>Use case:</strong> Mobile architectures where sigmoid’s
 exponential is expensive. Gating in efficient architectures.</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L4526">tensor_codegen.cpp:4526</a>
-(<code>tensorHardSigmoid</code>).</p>
+<p><strong>Implementation:</strong> <code>tensorHardSigmoid</code> in <a
+href="../lib/backend/tensor_activation_codegen.cpp">lib/backend/tensor_activation_codegen.cpp</a>.</p>
 <h4 id="softplus"><code>softplus</code></h4>
 <p><strong>Syntax:</strong> <code>(softplus t)</code> → Tensor</p>
 <p>Smooth approximation of ReLU: f(x) = ln(1 + e^x).</p>
@@ -2767,9 +2778,8 @@ softplus(x) ≈ x when x ≫ 0.</p>
 <p><strong>Use case:</strong> Parameterizing positive-only quantities
 (e.g., variance in variational inference, concentration parameters in
 Bayesian models).</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L4621">tensor_codegen.cpp:4621</a>
-(<code>tensorSoftplus</code>).</p>
+<p><strong>Implementation:</strong> <code>tensorSoftplus</code> in <a
+href="../lib/backend/tensor_activation_codegen.cpp">lib/backend/tensor_activation_codegen.cpp</a>.</p>
 <h4 id="celu"><code>celu</code></h4>
 <p><strong>Syntax:</strong> <code>(celu t [α])</code> → Tensor</p>
 <p>Continuously Differentiable ELU: f(x) = max(0, x) + min(0, α(e^(x/α)
@@ -2779,9 +2789,8 @@ href="lib/backend/tensor_codegen.cpp#L4621">tensor_codegen.cpp:4621</a>
 smoothness property improves optimization convergence.</p>
 <p><strong>Use case:</strong> Research architectures requiring smooth
 activation functions.</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L4875">tensor_codegen.cpp:4875</a>
-(<code>tensorCelu</code>).</p>
+<p><strong>Implementation:</strong> <code>tensorCelu</code> in <a
+href="../lib/backend/tensor_activation_codegen.cpp">lib/backend/tensor_activation_codegen.cpp</a>.</p>
 <h4 id="dropout"><code>dropout</code></h4>
 <p><strong>Syntax:</strong> <code>(dropout t rate training)</code> →
 Tensor</p>
@@ -2797,9 +2806,8 @@ inference</p>
 interpreted as approximate Bayesian inference over an ensemble of 2^n
 sub-networks, where n is the number of units. It prevents co-adaptation
 of feature detectors.</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L4753">tensor_codegen.cpp:4753</a>
-(<code>tensorDropout</code>).</p>
+<p><strong>Implementation:</strong> <code>tensorDropout</code> in <a
+href="../lib/backend/tensor_activation_codegen.cpp">lib/backend/tensor_activation_codegen.cpp</a>.</p>
 <h4 id="activation-function-examples">Activation Function Examples</h4>
 <pre class="scheme"><code>(define x #(-2.0 -1.0 0.0 1.0 2.0))
 (relu x)               ; =&gt; #(0.0 0.0 0.0 1.0 2.0)
@@ -2832,9 +2840,8 @@ log-likelihood under a Gaussian noise model N(y | ŷ, σ²) with fixed
 σ.</p>
 <p><strong>Use case:</strong> Regression tasks with Gaussian-distributed
 residuals.</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L14330">tensor_codegen.cpp:14330</a>
-(<code>mseLoss</code>).</p>
+<p><strong>Implementation:</strong> <code>mseLoss</code> in <a
+href="../lib/backend/tensor_loss_codegen.cpp">lib/backend/tensor_loss_codegen.cpp</a>.</p>
 <h4 id="mae-loss"><code>mae-loss</code></h4>
 <p><strong>Syntax:</strong> <code>(mae-loss pred target)</code> →
 Number</p>
@@ -2846,9 +2853,8 @@ non-differentiable at ŷ_i = y_i (subgradient used).</p>
 log-likelihood under Laplacian noise.</p>
 <p><strong>Use case:</strong> Regression with outliers; median
 regression.</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L14816">tensor_codegen.cpp:14816</a>
-(<code>maeLoss</code>).</p>
+<p><strong>Implementation:</strong> <code>maeLoss</code> in <a
+href="../lib/backend/tensor_loss_codegen.cpp">lib/backend/tensor_loss_codegen.cpp</a>.</p>
 <h4 id="cross-entropy-loss"><code>cross-entropy-loss</code></h4>
 <p><strong>Syntax:</strong>
 <code>(cross-entropy-loss logits targets)</code> → Number</p>
@@ -2862,9 +2868,8 @@ simple — the error signal is the difference between predicted and target
 probabilities.</p>
 <p><strong>Use case:</strong> Multi-class classification.
 <code>targets</code> should be one-hot encoded.</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L14424">tensor_codegen.cpp:14424</a>
-(<code>crossEntropyLoss</code>).</p>
+<p><strong>Implementation:</strong> <code>crossEntropyLoss</code> in <a
+href="../lib/backend/tensor_loss_codegen.cpp">lib/backend/tensor_loss_codegen.cpp</a>.</p>
 <h4 id="bce-loss"><code>bce-loss</code></h4>
 <p><strong>Syntax:</strong> <code>(bce-loss pred target)</code> →
 Number</p>
@@ -2874,9 +2879,8 @@ log(1 - ŷ_i)].</p>
 layer. Internally clamped to [ε, 1-ε] for numerical stability.</p>
 <p><strong>Use case:</strong> Binary classification, multi-label
 classification.</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L14589">tensor_codegen.cpp:14589</a>
-(<code>bceLoss</code>).</p>
+<p><strong>Implementation:</strong> <code>bceLoss</code> in <a
+href="../lib/backend/tensor_loss_codegen.cpp">lib/backend/tensor_loss_codegen.cpp</a>.</p>
 <h4
 id="binary-cross-entropy-loss"><code>binary-cross-entropy-loss</code></h4>
 <p><strong>Syntax:</strong>
@@ -2884,8 +2888,8 @@ id="binary-cross-entropy-loss"><code>binary-cross-entropy-loss</code></h4>
 <p>Alias for <code>bce-loss</code>. Accepts probability inputs
 (post-sigmoid).</p>
 <p><strong>Implementation:</strong> Dispatches to <code>bceLoss</code>
-at <a
-href="lib/backend/llvm_codegen.cpp#L11494">llvm_codegen.cpp:11494</a>.</p>
+at <code>LLVMCodeGenerator::codegenCall</code> in <a
+href="../lib/backend/llvm_codegen.cpp">lib/backend/llvm_codegen.cpp</a>.</p>
 <h4 id="huber-loss"><code>huber-loss</code></h4>
 <p><strong>Syntax:</strong> <code>(huber-loss pred target [δ])</code> →
 Number</p>
@@ -2897,9 +2901,8 @@ provides robustness to outliers while maintaining smooth gradients near
 the optimum.</p>
 <p><strong>Use case:</strong> Regression that needs robustness without
 the non-differentiability of MAE.</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L14705">tensor_codegen.cpp:14705</a>
-(<code>huberLoss</code>).</p>
+<p><strong>Implementation:</strong> <code>huberLoss</code> in <a
+href="../lib/backend/tensor_loss_codegen.cpp">lib/backend/tensor_loss_codegen.cpp</a>.</p>
 <h4 id="kl-div-loss"><code>kl-div-loss</code></h4>
 <p><strong>Syntax:</strong> <code>(kl-div-loss P Q)</code> → Number</p>
 <p>Kullback-Leibler Divergence: D_KL(P ‖ Q) = Σ_i P_i · log(P_i /
@@ -2909,9 +2912,8 @@ Q_i).</p>
 <p><strong>Use case:</strong> Distribution matching in variational
 autoencoders (VAEs), knowledge distillation. In VAEs, minimizes
 D_KL(q(z|x) ‖ p(z)) where q is the encoder and p is the prior.</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L15037">tensor_codegen.cpp:15037</a>
-(<code>klDivLoss</code>).</p>
+<p><strong>Implementation:</strong> <code>klDivLoss</code> in <a
+href="../lib/backend/tensor_loss_codegen.cpp">lib/backend/tensor_loss_codegen.cpp</a>.</p>
 <h4 id="hinge-loss"><code>hinge-loss</code></h4>
 <p><strong>Syntax:</strong> <code>(hinge-loss pred target)</code> →
 Number</p>
@@ -2920,9 +2922,8 @@ Number</p>
 classified examples with confidence ≥ 1 incur zero loss.</p>
 <p><strong>Use case:</strong> Support Vector Machine (SVM)
 classification.</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L15149">tensor_codegen.cpp:15149</a>
-(<code>hingeLoss</code>).</p>
+<p><strong>Implementation:</strong> <code>hingeLoss</code> in <a
+href="../lib/backend/tensor_loss_codegen.cpp">lib/backend/tensor_loss_codegen.cpp</a>.</p>
 <h4 id="smooth-l1-loss"><code>smooth-l1-loss</code></h4>
 <p><strong>Syntax:</strong>
 <code>(smooth-l1-loss pred target [β])</code> → Number</p>
@@ -2931,9 +2932,8 @@ Equivalent to <code>huber-loss</code> with δ = β, but follows the
 convention used in object detection literature.</p>
 <p><strong>Use case:</strong> Object detection bounding box regression
 (Faster R-CNN, SSD).</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L15244">tensor_codegen.cpp:15244</a>
-(<code>smoothL1Loss</code>).</p>
+<p><strong>Implementation:</strong> <code>smoothL1Loss</code> in <a
+href="../lib/backend/tensor_loss_codegen.cpp">lib/backend/tensor_loss_codegen.cpp</a>.</p>
 <h4 id="focal-loss"><code>focal-loss</code></h4>
 <p><strong>Syntax:</strong> <code>(focal-loss pred target [γ])</code> →
 Number</p>
@@ -2946,9 +2946,8 @@ focusing the training signal on hard, misclassified examples. When γ =
 <p><strong>Use case:</strong> Severe class imbalance (RetinaNet for
 object detection, where background examples vastly outnumber foreground
 objects).</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L15372">tensor_codegen.cpp:15372</a>
-(<code>focalLoss</code>).</p>
+<p><strong>Implementation:</strong> <code>focalLoss</code> in <a
+href="../lib/backend/tensor_loss_codegen.cpp">lib/backend/tensor_loss_codegen.cpp</a>.</p>
 <h4 id="triplet-loss"><code>triplet-loss</code></h4>
 <p><strong>Syntax:</strong>
 <code>(triplet-loss anchor positive negative [margin])</code> →
@@ -2961,9 +2960,8 @@ distance is smaller than anchor-negative distance by at least
 from easy triplets).</p>
 <p><strong>Use case:</strong> Metric learning, face recognition
 (FaceNet), retrieval systems.</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L15504">tensor_codegen.cpp:15504</a>
-(<code>tripletLoss</code>).</p>
+<p><strong>Implementation:</strong> <code>tripletLoss</code> in <a
+href="../lib/backend/tensor_loss_codegen.cpp">lib/backend/tensor_loss_codegen.cpp</a>.</p>
 <h4 id="contrastive-loss"><code>contrastive-loss</code></h4>
 <p><strong>Syntax:</strong>
 <code>(contrastive-loss t1 t2 y [margin])</code> → Number</p>
@@ -2972,9 +2970,8 @@ href="lib/backend/tensor_codegen.cpp#L15504">tensor_codegen.cpp:15504</a>
 for dissimilar pairs.</p>
 <p><strong>Use case:</strong> Siamese networks, pairwise similarity
 learning.</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L15609">tensor_codegen.cpp:15609</a>
-(<code>contrastiveLoss</code>).</p>
+<p><strong>Implementation:</strong> <code>contrastiveLoss</code> in <a
+href="../lib/backend/tensor_loss_codegen.cpp">lib/backend/tensor_loss_codegen.cpp</a>.</p>
 <h4 id="label-smoothing-loss"><code>label-smoothing-loss</code></h4>
 <p><strong>Syntax:</strong>
 <code>(label-smoothing-loss logits targets n-classes [ε])</code> →
@@ -2987,9 +2984,9 @@ all classes. Improves calibration and generalization (Szegedy et al.,
 2016).</p>
 <p><strong>Use case:</strong> Large classification tasks, knowledge
 distillation, model calibration.</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L15703">tensor_codegen.cpp:15703</a>
-(<code>labelSmoothingLoss</code>).</p>
+<p><strong>Implementation:</strong> <code>labelSmoothingLoss</code> in
+<a
+href="../lib/backend/tensor_loss_codegen.cpp">lib/backend/tensor_loss_codegen.cpp</a>.</p>
 <h4 id="cosine-embedding-loss"><code>cosine-embedding-loss</code></h4>
 <p><strong>Syntax:</strong>
 <code>(cosine-embedding-loss t1 t2 y [margin])</code> → Number</p>
@@ -2997,9 +2994,9 @@ href="lib/backend/tensor_codegen.cpp#L15703">tensor_codegen.cpp:15703</a>
 t2) - margin) if y = -1. Default margin = 0.0.</p>
 <p><strong>Use case:</strong> Sentence similarity, image-text matching,
 embedding alignment tasks.</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L15861">tensor_codegen.cpp:15861</a>
-(<code>cosineEmbeddingLoss</code>).</p>
+<p><strong>Implementation:</strong> <code>cosineEmbeddingLoss</code> in
+<a
+href="../lib/backend/tensor_loss_codegen.cpp">lib/backend/tensor_loss_codegen.cpp</a>.</p>
 <h4 id="loss-function-examples">Loss Function Examples</h4>
 <pre class="scheme"><code>(define pred #(2.0 1.0 0.1))
 (define target #(1.0 0.0 0.0))            ; one-hot: class 0
@@ -3041,9 +3038,8 @@ as params) - <code>lr</code> — learning rate η (scalar) -
 <code>momentum</code> — momentum coefficient μ (scalar, optional) -
 <code>velocity</code> — velocity tensor (modified in-place, optional,
 same shape as params)</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L11575">tensor_codegen.cpp:11575</a>
-(<code>sgdStep</code>).</p>
+<p><strong>Implementation:</strong> <code>sgdStep</code> in <a
+href="../lib/backend/tensor_training_codegen.cpp">lib/backend/tensor_training_codegen.cpp</a>.</p>
 <h4 id="adam-step"><code>adam-step</code></h4>
 <p><strong>Syntax:</strong>
 <code>(adam-step params grads lr m v t [β₁ β₂ ε])</code> → void</p>
@@ -3062,9 +3058,8 @@ v̂_t = v_t / (1 - β₂^t)                         (bias correction)
 (modified in-place, initialized to zeros) - <code>v</code> — second
 moment tensor (modified in-place, initialized to zeros) - <code>t</code>
 — step count (integer, for bias correction; starts at 1)</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L11717">tensor_codegen.cpp:11717</a>
-(<code>adamStep</code>).</p>
+<p><strong>Implementation:</strong> <code>adamStep</code> in <a
+href="../lib/backend/tensor_training_codegen.cpp">lib/backend/tensor_training_codegen.cpp</a>.</p>
 <h4 id="adamw-step"><code>adamw-step</code></h4>
 <p><strong>Syntax:</strong>
 <code>(adamw-step params grads lr m v t [β₁ β₂ ε wd])</code> → void</p>
@@ -3077,9 +3072,8 @@ decoupling prevents the adaptive learning rate from counteracting the
 regularization effect.</p>
 <p><strong>Defaults:</strong> β₁ = 0.9, β₂ = 0.999, ε = 1e-8, wd =
 0.01.</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L12200">tensor_codegen.cpp:12200</a>
-(<code>adamwStep</code>).</p>
+<p><strong>Implementation:</strong> <code>adamwStep</code> in <a
+href="../lib/backend/tensor_training_codegen.cpp">lib/backend/tensor_training_codegen.cpp</a>.</p>
 <h4 id="rmsprop-step"><code>rmsprop-step</code></h4>
 <p><strong>Syntax:</strong>
 <code>(rmsprop-step params grads lr v [α ε])</code> → void</p>
@@ -3091,9 +3085,8 @@ rate by a running average of gradient magnitudes:</p>
 <p><strong>Intuition:</strong> Reduces the effective learning rate for
 parameters with large gradients (steep directions) and increases it for
 parameters with small gradients (flat directions).</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L12074">tensor_codegen.cpp:12074</a>
-(<code>rmspropStep</code>).</p>
+<p><strong>Implementation:</strong> <code>rmspropStep</code> in <a
+href="../lib/backend/tensor_training_codegen.cpp">lib/backend/tensor_training_codegen.cpp</a>.</p>
 <h4 id="adagrad-step"><code>adagrad-step</code></h4>
 <p><strong>Syntax:</strong>
 <code>(adagrad-step params grads lr accum [ε])</code> → void</p>
@@ -3106,9 +3099,8 @@ time steps:</p>
 monotonically decreases over training. This makes Adagrad well-suited
 for sparse features (common in NLP) but may cause premature convergence
 for dense features. RMSprop was developed as a fix for this issue.</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L12349">tensor_codegen.cpp:12349</a>
-(<code>adagradStep</code>).</p>
+<p><strong>Implementation:</strong> <code>adagradStep</code> in <a
+href="../lib/backend/tensor_training_codegen.cpp">lib/backend/tensor_training_codegen.cpp</a>.</p>
 <h4 id="zero-grad"><code>zero-grad!</code></h4>
 <p><strong>Syntax:</strong> <code>(zero-grad! grad-tensor)</code> →
 void</p>
@@ -3116,9 +3108,8 @@ void</p>
 before each forward pass to prevent gradient accumulation across
 mini-batches (unless accumulation is intentional, e.g., for gradient
 accumulation with large effective batch sizes).</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L11895">tensor_codegen.cpp:11895</a>
-(<code>zeroGrad</code>).</p>
+<p><strong>Implementation:</strong> <code>zeroGrad</code> in <a
+href="../lib/backend/tensor_training_codegen.cpp">lib/backend/tensor_training_codegen.cpp</a>.</p>
 <h4 id="clip-grad-norm"><code>clip-grad-norm!</code></h4>
 <p><strong>Syntax:</strong>
 <code>(clip-grad-norm! grads max-norm)</code> → Number</p>
@@ -3130,9 +3121,8 @@ essential for training recurrent networks and transformers, where
 gradients can explode due to repeated matrix multiplication in the
 computational graph. The returned norm can be monitored for training
 health diagnostics.</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L11952">tensor_codegen.cpp:11952</a>
-(<code>clipGradNorm</code>).</p>
+<p><strong>Implementation:</strong> <code>clipGradNorm</code> in <a
+href="../lib/backend/tensor_training_codegen.cpp">lib/backend/tensor_training_codegen.cpp</a>.</p>
 <h4 id="check-grad-health"><code>check-grad-health</code></h4>
 <p><strong>Syntax:</strong> <code>(check-grad-health tensor)</code> →
 Integer</p>
@@ -3141,9 +3131,8 @@ of 0 indicates a healthy gradient tensor. Non-zero values indicate
 numerical instability — typically caused by learning rates that are too
 high, division by zero in the loss function, or overflow in deep
 computational graphs.</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L12437">tensor_codegen.cpp:12437</a>
-(<code>checkGradHealth</code>).</p>
+<p><strong>Implementation:</strong> <code>checkGradHealth</code> in <a
+href="../lib/backend/tensor_training_codegen.cpp">lib/backend/tensor_training_codegen.cpp</a>.</p>
 <h4 id="optimizer-examples">Optimizer Examples</h4>
 <pre class="scheme"><code>;; Simple SGD training step
 (define params #(1.0 2.0 3.0))
@@ -3179,17 +3168,15 @@ void</p>
 <p><strong>Variance:</strong> 2/(fi+fo). Derived to preserve forward and
 backward signal variance simultaneously under linear activations.
 Optimal for sigmoid and tanh networks.</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L12509">tensor_codegen.cpp:12509</a>
-(<code>xavierUniform</code>).</p>
+<p><strong>Implementation:</strong> <code>xavierUniform</code> in <a
+href="../lib/backend/tensor_training_codegen.cpp">lib/backend/tensor_training_codegen.cpp</a>.</p>
 <h4 id="xavier-normal"><code>xavier-normal!</code></h4>
 <p><strong>Syntax:</strong> <code>(xavier-normal! t fi fo)</code> →
 void</p>
 <p>Gaussian variant: N(0, √(2/(fi+fo))). Same variance as Xavier
 uniform.</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L12579">tensor_codegen.cpp:12579</a>
-(<code>xavierNormal</code>).</p>
+<p><strong>Implementation:</strong> <code>xavierNormal</code> in <a
+href="../lib/backend/tensor_training_codegen.cpp">lib/backend/tensor_training_codegen.cpp</a>.</p>
 <h4 id="kaiming-uniform"><code>kaiming-uniform!</code></h4>
 <p><strong>Syntax:</strong> <code>(kaiming-uniform! t fi)</code> →
 void</p>
@@ -3197,26 +3184,23 @@ void</p>
 <p><strong>Variance:</strong> 2/fi. Derived for ReLU activations, which
 zero out half the signal (effectively halving the variance). Compensates
 by doubling the initialization variance compared to Xavier.</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L12673">tensor_codegen.cpp:12673</a>
-(<code>kaimingUniform</code>).</p>
+<p><strong>Implementation:</strong> <code>kaimingUniform</code> in <a
+href="../lib/backend/tensor_training_codegen.cpp">lib/backend/tensor_training_codegen.cpp</a>.</p>
 <h4 id="kaiming-normal"><code>kaiming-normal!</code></h4>
 <p><strong>Syntax:</strong> <code>(kaiming-normal! t fi)</code> →
 void</p>
 <p>Gaussian variant: N(0, √(2/fi)). Same variance as Kaiming
 uniform.</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L12740">tensor_codegen.cpp:12740</a>
-(<code>kaimingNormal</code>).</p>
+<p><strong>Implementation:</strong> <code>kaimingNormal</code> in <a
+href="../lib/backend/tensor_training_codegen.cpp">lib/backend/tensor_training_codegen.cpp</a>.</p>
 <h4 id="lecun-normal"><code>lecun-normal!</code></h4>
 <p><strong>Syntax:</strong> <code>(lecun-normal! t fi)</code> → void</p>
 <p>LeCun et al. (1998): N(0, √(1/fi)).</p>
 <p><strong>Variance:</strong> 1/fi. Designed for SELU activations
 (required for the self-normalizing property). Also suitable for
 tanh-based networks.</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L12829">tensor_codegen.cpp:12829</a>
-(<code>lecunNormal</code>).</p>
+<p><strong>Implementation:</strong> <code>lecunNormal</code> in <a
+href="../lib/backend/tensor_training_codegen.cpp">lib/backend/tensor_training_codegen.cpp</a>.</p>
 <h4 id="initializer-selection-guide">Initializer Selection Guide</h4>
 <table>
 <colgroup>
@@ -3269,9 +3253,8 @@ total)).</p>
 avoids the abrupt drops of step-based schedules.</p>
 <p><strong>Use case:</strong> Standard for transformer training (BERT,
 GPT).</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L12921">tensor_codegen.cpp:12921</a>
-(<code>cosineAnnealingLR</code>).</p>
+<p><strong>Implementation:</strong> <code>cosineAnnealingLR</code> in <a
+href="../lib/backend/tensor_training_codegen.cpp">lib/backend/tensor_training_codegen.cpp</a>.</p>
 <h4 id="step-decay-lr"><code>step-decay-lr</code></h4>
 <p><strong>Syntax:</strong>
 <code>(step-decay-lr step size γ base-lr)</code> → Number</p>
@@ -3279,9 +3262,8 @@ href="lib/backend/tensor_codegen.cpp#L12921">tensor_codegen.cpp:12921</a>
 <p>Reduces the learning rate by factor γ every <code>size</code> steps.
 Common values: γ = 0.1, size = 30 epochs.</p>
 <p><strong>Use case:</strong> Classic ResNet training schedule.</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L12964">tensor_codegen.cpp:12964</a>
-(<code>stepDecayLR</code>).</p>
+<p><strong>Implementation:</strong> <code>stepDecayLR</code> in <a
+href="../lib/backend/tensor_training_codegen.cpp">lib/backend/tensor_training_codegen.cpp</a>.</p>
 <h4 id="linear-warmup-lr"><code>linear-warmup-lr</code></h4>
 <p><strong>Syntax:</strong>
 <code>(linear-warmup-lr step warmup base-lr)</code> → Number</p>
@@ -3295,18 +3277,17 @@ divergence. Warmup allows the optimizer state to accumulate meaningful
 statistics before taking large steps.</p>
 <p><strong>Use case:</strong> Combined with cosine annealing for
 transformer training.</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L13006">tensor_codegen.cpp:13006</a>
-(<code>linearWarmupLR</code>).</p>
+<p><strong>Implementation:</strong> <code>linearWarmupLR</code> in <a
+href="../lib/backend/tensor_training_codegen.cpp">lib/backend/tensor_training_codegen.cpp</a>.</p>
 <h4 id="exponential-decay-lr"><code>exponential-decay-lr</code></h4>
 <p><strong>Syntax:</strong>
 <code>(exponential-decay-lr step γ base-lr)</code> → Number</p>
 <p>Exponential decay: η_t = base-lr · γ^step.</p>
 <p>Continuous exponential decay — more aggressive than step decay as it
 reduces every step.</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L13036">tensor_codegen.cpp:13036</a>
-(<code>exponentialDecayLR</code>).</p>
+<p><strong>Implementation:</strong> <code>exponentialDecayLR</code> in
+<a
+href="../lib/backend/tensor_training_codegen.cpp">lib/backend/tensor_training_codegen.cpp</a>.</p>
 <h4 id="scheduler-composition-example">Scheduler Composition
 Example</h4>
 <pre class="scheme"><code>;; Warmup for 1000 steps, then cosine decay for 9000 steps
@@ -3338,9 +3319,8 @@ out_length, out_channels) where out_length = ⌊(length + 2·padding -
 kernel_size) / stride⌋ + 1</p>
 <p><strong>Use case:</strong> Time-series processing, audio analysis, 1D
 signal convolution.</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L9370">tensor_codegen.cpp:9370</a>
-(<code>conv1d</code>).</p>
+<p><strong>Implementation:</strong> <code>conv1d</code> in <a
+href="../lib/backend/tensor_conv_codegen.cpp">lib/backend/tensor_conv_codegen.cpp</a>.</p>
 <h4 id="conv2d"><code>conv2d</code></h4>
 <p><strong>Syntax:</strong>
 <code>(conv2d input kernel stride padding)</code> → Tensor</p>
@@ -3352,9 +3332,8 @@ optimized BLAS routines (cBLAS/Apple Accelerate).</p>
 Kernel: (out_channels, in_channels, kH, kW) - Output: (batch, out_H,
 out_W, out_channels) where out_H = ⌊(H + 2·padding - kH) / stride⌋ + 1
 (analogous for W)</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L9588">tensor_codegen.cpp:9588</a>
-(<code>conv2d</code>).</p>
+<p><strong>Implementation:</strong> <code>conv2d</code> in <a
+href="../lib/backend/tensor_conv_codegen.cpp">lib/backend/tensor_conv_codegen.cpp</a>.</p>
 <h4 id="conv3d"><code>conv3d</code></h4>
 <p><strong>Syntax:</strong>
 <code>(conv3d input kernel stride padding)</code> → Tensor</p>
@@ -3363,9 +3342,8 @@ clouds).</p>
 <p><strong>Shapes:</strong> - Input: (batch, D, H, W, in_channels) -
 Kernel: (out_channels, in_channels, kD, kH, kW) - Output: (batch, out_D,
 out_H, out_W, out_channels)</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L11236">tensor_codegen.cpp:11236</a>
-(<code>conv3d</code>).</p>
+<p><strong>Implementation:</strong> <code>conv3d</code> in <a
+href="../lib/backend/tensor_extras_codegen.cpp">lib/backend/tensor_extras_codegen.cpp</a>.</p>
 <h4 id="max-pool2d"><code>max-pool2d</code></h4>
 <p><strong>Syntax:</strong>
 <code>(max-pool2d input kernel-size stride padding)</code> → Tensor</p>
@@ -3374,18 +3352,16 @@ Reduces spatial dimensions while retaining the most activated features.
 Provides partial translation invariance.</p>
 <p><strong>Output:</strong> (batch, ⌊(H + 2·padding - kernel_size) /
 stride⌋ + 1, analogous for W, channels)</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L8793">tensor_codegen.cpp:8793</a>
-(<code>maxPool2d</code>).</p>
+<p><strong>Implementation:</strong> <code>maxPool2d</code> in <a
+href="../lib/backend/tensor_conv_codegen.cpp">lib/backend/tensor_conv_codegen.cpp</a>.</p>
 <h4 id="avg-pool2d"><code>avg-pool2d</code></h4>
 <p><strong>Syntax:</strong>
 <code>(avg-pool2d input kernel-size stride padding)</code> → Tensor</p>
 <p>2D average pooling: computes the mean value in each kernel-sized
 window. Smoother than max pooling — preserves more information about the
 spatial distribution of activations.</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L9089">tensor_codegen.cpp:9089</a>
-(<code>avgPool2d</code>).</p>
+<p><strong>Implementation:</strong> <code>avgPool2d</code> in <a
+href="../lib/backend/tensor_conv_codegen.cpp">lib/backend/tensor_conv_codegen.cpp</a>.</p>
 <h4 id="batch-norm"><code>batch-norm</code></h4>
 <p><strong>Syntax:</strong> <code>(batch-norm input γ β ε)</code> →
 Tensor</p>
@@ -3399,9 +3375,8 @@ normalization.</p>
 <p><strong>Properties:</strong> Reduces internal covariate shift,
 enables higher learning rates, acts as regularization. Batch-dependent —
 behavior changes between training and inference.</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L9854">tensor_codegen.cpp:9854</a>
-(<code>batchNorm</code>).</p>
+<p><strong>Implementation:</strong> <code>batchNorm</code> in <a
+href="../lib/backend/tensor_conv_codegen.cpp">lib/backend/tensor_conv_codegen.cpp</a>.</p>
 <h4 id="layer-norm"><code>layer-norm</code></h4>
 <p><strong>Syntax:</strong> <code>(layer-norm input γ β ε)</code> →
 Tensor</p>
@@ -3412,9 +3387,8 @@ within each sample:</p>
 norm independent of batch size. This is critical for transformer
 architectures where batch sizes vary and sequence positions must be
 processed independently.</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L10100">tensor_codegen.cpp:10100</a>
-(<code>layerNorm</code>).</p>
+<p><strong>Implementation:</strong> <code>layerNorm</code> in <a
+href="../lib/backend/tensor_conv_codegen.cpp">lib/backend/tensor_conv_codegen.cpp</a>.</p>
 <h4 id="cnn-example">CNN Example</h4>
 <pre class="scheme"><code>;; Simple convolutional feature extractor
 (define (cnn-forward x conv-k1 conv-k2 gamma beta)
@@ -3445,9 +3419,9 @@ seq_k, d_k) — keys - V: (…, seq_k, d_v) — values - mask (optional): (…,
 seq_q, seq_k) — 0 = attend, -∞ = block - Output: (…, seq_q, d_v)</p>
 <p><strong>Complexity:</strong> O(seq_q · seq_k · d_k) for the QK^T
 product.</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L16638">tensor_codegen.cpp:16638</a>
-(<code>scaledDotProductAttention</code>).</p>
+<p><strong>Implementation:</strong>
+<code>scaledDotProductAttention</code> in <a
+href="../lib/backend/tensor_transformer_codegen.cpp">lib/backend/tensor_transformer_codegen.cpp</a>.</p>
 <h4 id="multi-head-attention"><code>multi-head-attention</code></h4>
 <p><strong>Syntax:</strong>
 <code>(multi-head-attention Q K V n-heads W_Q W_K W_V W_O [mask])</code>
@@ -3465,9 +3439,9 @@ head</li>
 <p><strong>Shapes:</strong> - W_Q, W_K, W_V: (d_model, d_model) —
 projection matrices - W_O: (d_model, d_model) — output projection -
 n-heads must evenly divide d_model</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L17182">tensor_codegen.cpp:17182</a>
-(<code>multiHeadAttention</code>).</p>
+<p><strong>Implementation:</strong> <code>multiHeadAttention</code> in
+<a
+href="../lib/backend/tensor_transformer_codegen.cpp">lib/backend/tensor_transformer_codegen.cpp</a>.</p>
 <h4 id="positional-encoding"><code>positional-encoding</code></h4>
 <p><strong>Syntax:</strong>
 <code>(positional-encoding max-len d-model)</code> → Tensor</p>
@@ -3479,9 +3453,9 @@ embeddings to inject position information.</p>
 <p>The sinusoidal design enables the model to generalize to sequence
 lengths not seen during training, and allows it to learn relative
 position attention via linear combinations.</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L17989">tensor_codegen.cpp:17989</a>
-(<code>positionalEncoding</code>).</p>
+<p><strong>Implementation:</strong> <code>positionalEncoding</code> in
+<a
+href="../lib/backend/tensor_transformer_codegen.cpp">lib/backend/tensor_transformer_codegen.cpp</a>.</p>
 <h4 id="rotary-embedding"><code>rotary-embedding</code></h4>
 <p><strong>Syntax:</strong>
 <code>(rotary-embedding x seq-positions dim)</code> → Tensor</p>
@@ -3494,9 +3468,8 @@ positions — enabling length generalization.</p>
 <p><strong>Advantages over sinusoidal PE:</strong> Encodes relative
 positions naturally, decays with distance, and is more efficient (no
 additive embedding table needed).</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L18120">tensor_codegen.cpp:18120</a>
-(<code>rotaryEmbedding</code>).</p>
+<p><strong>Implementation:</strong> <code>rotaryEmbedding</code> in <a
+href="../lib/backend/tensor_transformer_codegen.cpp">lib/backend/tensor_transformer_codegen.cpp</a>.</p>
 <h4 id="causal-mask"><code>causal-mask</code></h4>
 <p><strong>Syntax:</strong> <code>(causal-mask seq-len)</code> →
 Tensor</p>
@@ -3506,9 +3479,8 @@ seq-len).</p>
 <p>Prevents position i from attending to positions j &gt; i, enforcing
 the left-to-right generation constraint in decoder models (GPT, language
 models).</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L18328">tensor_codegen.cpp:18328</a>
-(<code>causalMask</code>).</p>
+<p><strong>Implementation:</strong> <code>causalMask</code> in <a
+href="../lib/backend/tensor_transformer_codegen.cpp">lib/backend/tensor_transformer_codegen.cpp</a>.</p>
 <h4 id="padding-mask"><code>padding-mask</code></h4>
 <p><strong>Syntax:</strong> <code>(padding-mask lengths max-len)</code>
 → Tensor</p>
@@ -3516,9 +3488,8 @@ href="lib/backend/tensor_codegen.cpp#L18328">tensor_codegen.cpp:18328</a>
 positions as 0 and padding positions as -∞. Shape: (batch, max-len).</p>
 <p><code>lengths</code> is a tensor of actual sequence lengths for each
 batch element.</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L18420">tensor_codegen.cpp:18420</a>
-(<code>paddingMask</code>).</p>
+<p><strong>Implementation:</strong> <code>paddingMask</code> in <a
+href="../lib/backend/tensor_transformer_codegen.cpp">lib/backend/tensor_transformer_codegen.cpp</a>.</p>
 <h4 id="feed-forward"><code>feed-forward</code></h4>
 <p><strong>Syntax:</strong> <code>(feed-forward x W₁ b₁ W₂ b₂)</code> →
 Tensor</p>
@@ -3527,9 +3498,8 @@ b₂.</p>
 <p>This is the standard two-layer MLP applied independently to each
 position in the sequence. Typically d_ff = 4 · d_model (the inner
 dimension is 4× the model dimension).</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L18552">tensor_codegen.cpp:18552</a>
-(<code>feedForward</code>).</p>
+<p><strong>Implementation:</strong> <code>feedForward</code> in <a
+href="../lib/backend/tensor_transformer_codegen.cpp">lib/backend/tensor_transformer_codegen.cpp</a>.</p>
 <h4 id="embedding"><code>embedding</code></h4>
 <p><strong>Syntax:</strong> <code>(embedding indices weights)</code> →
 Tensor</p>
@@ -3538,9 +3508,8 @@ by indexing into the weight matrix.</p>
 <p><strong>Shapes:</strong> - indices: (batch, seq) — integer token IDs
 - weights: (vocab_size, d_model) — embedding matrix - Output: (batch,
 seq, d_model)</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L19031">tensor_codegen.cpp:19031</a>
-(<code>embedding</code>).</p>
+<p><strong>Implementation:</strong> <code>embedding</code> in <a
+href="../lib/backend/tensor_transformer_codegen.cpp">lib/backend/tensor_transformer_codegen.cpp</a>.</p>
 <h4 id="transformer-example">Transformer Example</h4>
 <pre class="scheme"><code>;; Transformer decoder block
 (define (decoder-block x n-heads W_Q W_K W_V W_O
@@ -6051,9 +6020,8 @@ of <code>batch-size</code> elements on each call to
 - <code>batch-size</code> — number of samples per batch (integer) -
 <code>shuffle</code> — if <code>#t</code>, randomly permutes the data
 indices. Default: <code>#f</code></p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L15994">tensor_codegen.cpp:15994</a>
-(<code>makeDataloader</code>).</p>
+<p><strong>Implementation:</strong> <code>makeDataloader</code> in <a
+href="../lib/backend/tensor_dataloader_codegen.cpp">lib/backend/tensor_dataloader_codegen.cpp</a>.</p>
 <h3 id="dataloader-next"><code>dataloader-next</code></h3>
 <p><strong>Syntax:</strong> <code>(dataloader-next loader)</code> →
 Tensor | null</p>
@@ -6061,33 +6029,29 @@ Tensor | null</p>
 consumed. Advances the internal position by <code>batch-size</code>. The
 last batch may be smaller than <code>batch-size</code> if the dataset
 size is not evenly divisible.</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L16212">tensor_codegen.cpp:16212</a>
-(<code>dataloaderNext</code>).</p>
+<p><strong>Implementation:</strong> <code>dataloaderNext</code> in <a
+href="../lib/backend/tensor_dataloader_codegen.cpp">lib/backend/tensor_dataloader_codegen.cpp</a>.</p>
 <h3 id="dataloader-reset"><code>dataloader-reset!</code></h3>
 <p><strong>Syntax:</strong> <code>(dataloader-reset! loader)</code> →
 Dataloader</p>
 <p>Resets the internal position to 0. If the dataloader was created with
 <code>shuffle = #t</code>, re-permutes the indices. Returns the loader
 for chaining.</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L16413">tensor_codegen.cpp:16413</a>
-(<code>dataloaderReset</code>).</p>
+<p><strong>Implementation:</strong> <code>dataloaderReset</code> in <a
+href="../lib/backend/tensor_dataloader_codegen.cpp">lib/backend/tensor_dataloader_codegen.cpp</a>.</p>
 <h3 id="dataloader-length"><code>dataloader-length</code></h3>
 <p><strong>Syntax:</strong> <code>(dataloader-length loader)</code> →
 Integer</p>
 <p>Returns the number of batches: ⌈n / batch-size⌉.</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L16434">tensor_codegen.cpp:16434</a>
-(<code>dataloaderLength</code>).</p>
+<p><strong>Implementation:</strong> <code>dataloaderLength</code> in <a
+href="../lib/backend/tensor_dataloader_codegen.cpp">lib/backend/tensor_dataloader_codegen.cpp</a>.</p>
 <h3 id="dataloader-has-next"><code>dataloader-has-next?</code></h3>
 <p><strong>Syntax:</strong> <code>(dataloader-has-next? loader)</code> →
 Boolean</p>
 <p>Returns <code>#t</code> if more batches remain, <code>#f</code>
 otherwise.</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L16467">tensor_codegen.cpp:16467</a>
-(<code>dataloaderHasNext</code>).</p>
+<p><strong>Implementation:</strong> <code>dataloaderHasNext</code> in <a
+href="../lib/backend/tensor_dataloader_codegen.cpp">lib/backend/tensor_dataloader_codegen.cpp</a>.</p>
 <h3 id="train-test-split"><code>train-test-split</code></h3>
 <p><strong>Syntax:</strong>
 <code>(train-test-split data labels ratio [shuffle])</code> → Vector of
@@ -6098,9 +6062,8 @@ href="lib/backend/tensor_codegen.cpp#L16467">tensor_codegen.cpp:16467</a>
 indices are permuted before splitting.</p>
 <p><strong>Returns:</strong> A vector of four tensors:
 <code>(train-data train-labels test-data test-labels)</code>.</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/tensor_codegen.cpp#L16495">tensor_codegen.cpp:16495</a>
-(<code>trainTestSplit</code>).</p>
+<p><strong>Implementation:</strong> <code>trainTestSplit</code> in <a
+href="../lib/backend/tensor_dataloader_codegen.cpp">lib/backend/tensor_dataloader_codegen.cpp</a>.</p>
 <h3 id="dataloader-example">Dataloader Example</h3>
 <pre class="scheme"><code>;; Create shuffled dataloader with batch size 32
 (define loader (make-dataloader training-data 32 #t))
@@ -6128,11 +6091,11 @@ satisfy the universal property: given f: A → C and g: B → C, there
 exists a unique h: A + B → C implementing case analysis.</p>
 <p>Sum types are represented as tagged pairs <code>(tag . value)</code>
 where tag is 0 (left) or 1 (right).</p>
-<p><strong>Implementation:</strong> <a
-href="lib/backend/llvm_codegen.cpp#L10572-L10577">llvm_codegen.cpp:10572–10577</a>
-(dispatch), <a
-href="lib/backend/llvm_codegen.cpp#L30125-L30200">llvm_codegen.cpp:30125–30200</a>
-(codegen).</p>
+<p><strong>Implementation:</strong> dispatched from
+<code>LLVMCodeGenerator::codegenCall</code> in <a
+href="../lib/backend/llvm_codegen.cpp">lib/backend/llvm_codegen.cpp</a>;
+<code>inject-left</code> / <code>inject-right</code> lower through
+<code>codegenSumInject</code>.</p>
 <h3 id="inject-left"><code>inject-left</code></h3>
 <p><strong>Syntax:</strong> <code>(inject-left value)</code> → Sum</p>
 <p>Wraps <code>value</code> as the left variant of a sum type. Returns a
@@ -6200,8 +6163,9 @@ from a record instance.</li>
 values in-place.</li>
 </ol>
 <p><strong>Implementation:</strong> Parser transforms
-<code>define-record-type</code> into vector operations (<a
-href="lib/frontend/parser.cpp#L4509">parser.cpp:4509</a>). The
+<code>define-record-type</code> into vector operations
+(<code>ESHKOL_DEFINE_RECORD_TYPE_OP</code> branch in <a
+href="../lib/frontend/parser.cpp">lib/frontend/parser.cpp</a>). The
 constructor creates a tagged vector with a unique type identifier, the
 predicate checks this identifier, and accessors/mutators map to
 <code>vector-ref</code> / <code>vector-set!</code>.</p>
