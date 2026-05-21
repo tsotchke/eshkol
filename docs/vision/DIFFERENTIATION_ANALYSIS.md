@@ -1,6 +1,12 @@
-# Eshkol v1.0-architecture: The Next Era of Scientific Computing and Integrated AI
+# Eshkol differentiation analysis (vs. adjacent languages and runtimes)
 
-Eshkol represents a fundamental breakthrough in programming language design, unifying compiler-integrated automatic differentiation, deterministic memory management, and homoiconic native code execution. This document analyzes how Eshkol v1.0-architecture establishes new standards that existing languages cannot match.
+Eshkol combines compiler-integrated automatic differentiation, deterministic
+arena memory management, and homoiconic native-code execution in one
+language. This document compares Eshkol against the languages it most
+often gets weighed against — Scheme, Julia, JAX, Racket, Rust — on the
+specific axes that the choice usually turns on. The intent is a
+sober side-by-side, not a marketing pitch; where Eshkol trails on an
+axis the comparison says so.
 
 ## Comparison Framework
 
@@ -595,18 +601,23 @@ f = make_multiplier(5)
    - Universe hierarchy
    - Warnings, not errors
 
-## Conclusion: A New Standard for Computational Science
+## Summary
 
-Eshkol v1.0-architecture establishes unprecedented capabilities:
-- **Dominates** Scheme with 10-100x performance through LLVM compilation
-- **Surpasses** Python/Julia with deterministic arena memory eliminating GC pauses entirely
-- **Uniquely provides** homoiconicity at native performance - code-as-data without interpretation overhead
-- **Stands alone** with compiler-integrated AD operating on AST, runtime, and LLVM IR simultaneously
+Where Eshkol leads on the axes above:
+- **vs. Scheme**: 10–100× faster across the standard numerical benchmarks (compilation through LLVM IR vs. interpretation or JIT-from-source).
+- **vs. Python / Julia**: deterministic arena memory removes GC pauses; useful where latency tail matters (real-time control, online inference).
+- **vs. JAX / PyTorch**: AD is integrated at three levels (AST-rewrite symbolic, forward-mode dual numbers, reverse-mode tape) and dispatches through the same codegen as ordinary code, so closures, recursion, and library calls differentiate without a framework boundary.
+- **vs. Rust**: comparable safety story (arena + linear-types for ownership tracking) without the borrow-checker tax for code that fits the arena model.
 
-With XLA, SIMD, parallelism, GPU acceleration, consciousness engine, and exact arithmetic all shipped in v1.1, Eshkol now **defines the standard** for:
-- **Gradient-based AI** - where differentiation is a natural language operation, not a framework constraint
-- **Real-time scientific computing** - where deterministic memory enables millisecond-precision control
-- **Integrated symbolic-numeric systems** - where homoiconic code enables self-modification at native speed
+Where Eshkol is behind, by acknowledgement:
+- Polished IDE / debugger / package-ecosystem footprint compared to Python or Rust.
+- Library breadth — Eshkol ships about 555 builtins and roughly 70 stdlib modules; Python ships orders of magnitude more.
+- Distributed-training story: single-GPU dispatch is in v1.2; multi-node ships in v1.3.
+
+With XLA / SIMD / parallel-map / GPU dispatch / consciousness engine / exact-numeric tower shipped in v1.1–v1.2, the niche where Eshkol is currently strongest is:
+- **Gradient-based AI** — where differentiation is a built-in language operation, not a framework boundary.
+- **Real-time scientific computing** — where deterministic memory enables millisecond-precision control loops.
+- **Integrated symbolic-numeric systems** — where homoiconic code can rewrite itself at native speed without an interpreter in the loop.
 - **Neuro-symbolic intelligence** - where logic programming meets active inference in a compiled language
 
 **Eshkol v1.1-accelerate** delivers what no competitor can: a production compiler combining automatic differentiation, deterministic memory, homoiconicity, GPU acceleration, parallel computing, and a consciousness engine. Future releases will add distributed computing (v1.2-scale), multi-GPU support (v1.2-scale), and full R7RS library system (v1.3-evolve).
