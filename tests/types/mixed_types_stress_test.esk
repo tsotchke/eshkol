@@ -74,10 +74,9 @@
 (define ff-result (+ 1.1 2.2))
 (check "float + float result type" 2 (type-of ff-result))
 
-;; Division of ints - currently returns int (Scheme typically returns rational or float)
+;; Division of ints returns an exact rational heap object.
 (define div-result (/ 10 3))
-;; Note: In standard Scheme, (/ 10 3) would be a rational. Here it's truncated int.
-(check "division result type" 1 (type-of div-result))
+(check "division result type" 8 (type-of div-result))
 
 ;; Integer operations
 (define mod-result (modulo 17 5))
@@ -137,9 +136,8 @@
 (define sum (reduce + 0 int-list))
 (check "reduce with + gives INT64" 1 (type-of sum))
 
-;; Note: reduce currently doesn't promote types based on init value
 (define float-sum (reduce + 0.0 int-list))
-(check "reduce with float init gives INT64" 1 (type-of float-sum))  ; TODO: should be DOUBLE
+(check "reduce with float init gives DOUBLE" 2 (type-of float-sum))
 
 ;; ============================================================================
 ;; Section 4: Lambda and Closure Types
