@@ -3611,6 +3611,7 @@ private:
     Value* unavailableParallelBuiltin(const std::string& func_name) {
         eshkol_error("Builtin '%s' is not available in freestanding codegen",
                      func_name.c_str());
+        markFatalCodegenError();
         return nullptr;
     }
 
