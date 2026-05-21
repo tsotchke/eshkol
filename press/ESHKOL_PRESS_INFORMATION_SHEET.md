@@ -103,7 +103,7 @@ and *lib/frontend/macro_expander.cpp* (861 lines).
 
 Total compiler infrastructure is approximately 232,000 lines of C17 and C++20
 across more than 130 files. The standard library, written in pure Eshkol,
-adds roughly 5,200 lines across forty modules
+adds roughly 4,400 lines across thirty-five auto-loaded modules (the broader stdlib tree under `lib/`, including opt-in modules like `core.merkle` / `core.threads` / `core.testing`, totals ~10,200 lines across 57 modules)
 (*DESIGN.md §Implementation Scale*).
 
 ### Target backend
@@ -600,7 +600,7 @@ Exports use the QLMW binary format for qLLM consumption.
 
 ## Standard library
 
-Roughly 5,200 lines across forty modules, compiled to `build/stdlib.o` via
+Roughly 4,400 lines across thirty-five auto-loaded modules, compiled to `build/stdlib.o` via
 `--shared-lib`. Namespaces:
 
 - `core.functional.*` — composition, currying, combinators
