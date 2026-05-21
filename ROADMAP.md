@@ -1,5 +1,25 @@
 # Eshkol Development Roadmap
 
+> **This is the canonical roadmap.** It is the single source of truth for
+> Eshkol's release plan. Other roadmap-shaped documents are derived
+> views — they exist to answer specific questions and should not
+> contradict this file:
+>
+> - [`docs/COMPILER_ROADMAP.md`](docs/COMPILER_ROADMAP.md) — engineering
+>   detail by release line (M0–M4 task tiers), including the per-release
+>   work breakdown for compiler engineers.
+> - [`docs/breakdown/ROADMAP.md`](docs/breakdown/ROADMAP.md) — short
+>   summary for readers in the breakdown / per-subsystem documentation
+>   set.
+> - [`docs/vision/FUTURE_ROADMAP.md`](docs/vision/FUTURE_ROADMAP.md) —
+>   forward-looking vision and long-horizon research items.
+> - [`docs/NOESIS_TRAJECTORY.md`](docs/NOESIS_TRAJECTORY.md) — the
+>   Noesis-readiness view, tracked separately because Noesis has a
+>   distinct downstream cadence.
+>
+> When any of those docs disagrees with this one, this one is correct
+> and the others should be updated.
+
 This roadmap tracks Eshkol's evolution from the **completed v1.0-foundation release** through upcoming versions that will establish Eshkol as the definitive platform for gradient-based computing and integrated AI.
 
 > **Parallel platform program**: The internal freestanding / kernel / embedded architecture work begins during `v1.2-scale` as a mergeable infrastructure program and converges publicly at `v1.8-platform`. See [docs/platform/README.md](docs/platform/README.md) and [docs/platform/ROADMAP_ALIGNMENT.md](docs/platform/ROADMAP_ALIGNMENT.md).

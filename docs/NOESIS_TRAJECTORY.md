@@ -2,10 +2,13 @@
 
 **Date**: 2026-04-17
 **Source audit**: Noesis faculty-layer runtime feature audit, 2026-04-17
-**Authority**: this document is the **Noesis-readiness view**. The unified
-version-by-version delivery plan lives in `docs/COMPILER_ROADMAP.md` — both
-views stay consistent; use whichever lens fits the question. Individual
-items link to the task tracker; task descriptions give the API spec,
+**Position in the doc set**: this is the **Noesis-readiness view** of the
+roadmap. The canonical, project-wide release plan is
+[`ROADMAP.md`](../ROADMAP.md) at the repo root;
+[`docs/COMPILER_ROADMAP.md`](COMPILER_ROADMAP.md) is the
+engineering-detail companion. All three views stay consistent with
+`ROADMAP.md`. Individual items link to the task tracker; task
+descriptions give the API spec,
 dependencies, and effort estimate.
 
 **Scope update (2026-04-17 post-audit)**: the 694-line Noesis gap report

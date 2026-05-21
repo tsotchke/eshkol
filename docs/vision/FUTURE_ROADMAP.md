@@ -1,4 +1,12 @@
-# Eshkol: Development Roadmap
+# Eshkol: Development Roadmap (vision view)
+
+> **Position in the doc set:** this is the long-horizon, vision-oriented
+> view of the roadmap, grouped by capability rather than by release.
+> For the canonical, time-ordered release plan see
+> [`ROADMAP.md`](../../ROADMAP.md) at the repo root; for engineering
+> detail see [`docs/COMPILER_ROADMAP.md`](../COMPILER_ROADMAP.md).
+> When this document disagrees with `ROADMAP.md`, `ROADMAP.md` is
+> correct.
 
 This document outlines Eshkol's evolution from the **completed v1.0-foundation** through upcoming releases that will establish Eshkol as the definitive platform for gradient-based computing.
 
