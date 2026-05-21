@@ -102,6 +102,12 @@ Introduce the following first-class profiles:
 - `freestanding-mcu-native`
 - `freestanding-vm`
 
+The driver surface is `eshkol-run --profile NAME` with optional
+`--target TRIPLE`. Freestanding native profiles require an explicit target
+triple, imply compile-only object output, and imply `--no-stdlib` until the
+freestanding runtime and stdlib partitions are available. `--wasm` remains a
+compatibility alias for the hosted WASM profile.
+
 Each profile must define:
 
 - backend

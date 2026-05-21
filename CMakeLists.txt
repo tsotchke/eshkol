@@ -1545,6 +1545,16 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/ex
     add_test(NAME execution_profile_test COMMAND execution_profile_test)
 endif()
 
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/eshkol_run_profile_cli_test.cpp")
+    add_executable(eshkol_run_profile_cli_test tests/toolchain/eshkol_run_profile_cli_test.cpp)
+    target_compile_features(eshkol_run_profile_cli_test PRIVATE cxx_std_17)
+    add_dependencies(eshkol_run_profile_cli_test eshkol-run)
+    add_test(
+        NAME eshkol_run_profile_cli_test
+        COMMAND eshkol_run_profile_cli_test $<TARGET_FILE:eshkol-run>
+    )
+endif()
+
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/machine_integer_types_test.cpp")
     add_executable(machine_integer_types_test tests/toolchain/machine_integer_types_test.cpp)
     target_compile_features(machine_integer_types_test PRIVATE cxx_std_17)

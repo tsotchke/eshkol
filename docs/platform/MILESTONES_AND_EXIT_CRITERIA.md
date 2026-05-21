@@ -40,6 +40,7 @@ All milestone sign-off is owned by the founder/maintainer unless explicitly dele
 - profile-aware CLI parsing
 - profile-aware diagnostics
 - tests for valid and invalid profile combinations
+- driver-level smoke coverage for `eshkol-run --profile` and `--target`
 
 ### Not required yet
 

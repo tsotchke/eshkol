@@ -573,3 +573,46 @@ Do not add read-modify-write operations, compare-exchange, address spaces, volat
 - Eshkol can express the first typed atomic memory accesses needed for low-level platform code
 - the operation set stays explicit about access size and memory ordering
 - richer atomic operations and target memory-model policy remain later v1.8 platform-language work
+
+---
+
+## D-0022
+
+- Date: 2026-05-21
+- Status: Accepted
+- Title: Execution profiles are selected through the compiler driver
+
+### Context
+
+The profile resolver existed as a toolchain model, but `eshkol-run` still
+exposed only ad hoc hosted flags such as `--wasm`, `--compile-only`, and
+`--no-stdlib`. That made profile behavior hard to test from the actual user
+entrypoint and left freestanding object work dependent on implicit flag
+combinations.
+
+### Decision
+
+Add driver-level profile and target selection:
+
+```text
+eshkol-run --profile NAME [--target TRIPLE] ...
+```
+
+`--profile` accepts the documented profile names from the execution profile
+model. `--target` sets the LLVM target triple before code generation. The
+driver resolves the selected profile once after option parsing and applies the
+resulting compile-only, no-stdlib, WASM, and target settings through the same
+resolver used by the unit tests.
+
+Freestanding native profiles require `--target <triple>`, reject hosted-only
+JIT/linking combinations, imply compile-only object output, and imply
+`--no-stdlib`. `--wasm` remains supported as a compatibility alias for hosted
+WASM output.
+
+### Consequences
+
+- the platform profile model is now reachable from the production compiler
+  entrypoint
+- invalid profile/target combinations fail before parsing and code generation
+- the next freestanding object slice can depend on an explicit driver contract
+  instead of layering more behavior onto legacy flags

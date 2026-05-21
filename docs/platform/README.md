@@ -88,6 +88,7 @@ Program phase:
 
 - documentation and planning complete enough to guide implementation
 - execution profile architecture is merged on `master`
+- `eshkol-run` exposes profile-aware CLI selection through `--profile NAME` and explicit target selection through `--target TRIPLE`
 - runtime inventory baseline is documented on `master`
 - runtime-core and runtime-hosted internal source sets are explicit in CMake
 - hosted `runtime_exports.h` wrappers now live in a dedicated `runtime_exports_hosted.cpp` unit

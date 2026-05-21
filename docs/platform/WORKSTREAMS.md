@@ -35,6 +35,7 @@ Safe to delegate once profile names and semantics are fixed.
 
 - hosted behavior unchanged
 - all profile resolution tests pass
+- driver-level profile CLI smoke tests pass
 
 ## Workstream 2: Runtime Stratification
 
