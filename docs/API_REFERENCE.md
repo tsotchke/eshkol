@@ -2400,8 +2400,14 @@ The engine spans six distinct type representations:
 | Factor Graph | Heap subtype `16` (`HEAP_SUBTYPE_FACTOR_GRAPH`) | Bipartite probabilistic graphical model |
 | Workspace | Heap subtype `17` (`HEAP_SUBTYPE_WORKSPACE`) | Competitive module broadcast arena |
 
-**Implementation:** [llvm_codegen.cpp:7129–7173](lib/backend/llvm_codegen.cpp#L7129-L7173) (dispatch),
-[llvm_codegen.cpp:33230–33810](lib/backend/llvm_codegen.cpp#L33230-L33810) (codegen methods).
+**Implementation:** `LogicWorkspaceCodegen` in
+[lib/backend/logic_workspace_codegen.cpp](../lib/backend/logic_workspace_codegen.cpp)
+holds the codegen methods (`codegenMakeFactorGraph`, `codegenFGAddFactor`,
+`codegenFGInfer`, `codegenFreeEnergy`, `codegenEFE`, `codegenFGUpdateCPT`,
+`codegenFGObserve`, `codegenMakeWorkspace`, `codegenWSRegister`,
+`codegenWSStep`, plus the logic-engine entry points); the dispatch
+table lives in `LLVMCodeGenerator::codegenSpecialOperation` in
+[lib/backend/llvm_codegen.cpp](../lib/backend/llvm_codegen.cpp).
 Runtime: [logic.h](inc/eshkol/backend/logic.h) / [logic.cpp](lib/backend/logic.cpp),
 [inference.h](inc/eshkol/backend/inference.h) / [inference.cpp](lib/backend/inference.cpp),
 [workspace.h](inc/eshkol/backend/workspace.h) / [workspace.cpp](lib/backend/workspace.cpp).
