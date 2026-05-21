@@ -206,10 +206,10 @@ Eshkol v1.1-accelerate was **READY FOR PRODUCTION RELEASE** as of April 9, 2026.
 | **ESKB Binary Format** | ✅ Complete | 100% | Production |
 | **Assembler** | ✅ Complete | 100% | Production |
 
-**Assessment**: Full bytecode VM with 63 opcodes, 250+ native call dispatch, and ESKB binary format for serialized program distribution.
+**Assessment**: Full bytecode VM with 64 opcodes, 250+ native call dispatch, and ESKB binary format for serialized program distribution.
 
 **Evidence**:
-- 63 opcodes covering arithmetic, control flow, closures, tensors, and native calls
+- 64 opcodes covering arithmetic, control flow, closures, tensors, and native calls
 - ESKB binary format: assembler (lib/backend/eskb_writer.c) and reader (lib/backend/eskb_reader.c)
 - VM implementation (lib/backend/eshkol_vm.c) with arena-based memory
 - 331/332 VM tests passing

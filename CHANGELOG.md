@@ -61,7 +61,7 @@ edge-case suite was widened: parser line markers, stdlib LinkOnceODR
 linkage, macOS stack-flag wiring, --wasm path separation, AD
 scalar-derivative through runtime closures, value-typed-capture
 LLVM verification, variadic-info hygiene on user redefines.
-Master suite exits 0 across 36 sub-suites.
+Master suite exits 0 across 37 sub-suites.
 
 The detailed changelog runs from "Fixed — SDNC paper artifact
 (weight_matrices.c)" below through the original 2026-04-24 release
