@@ -121,7 +121,7 @@ Targets currently supported:
 
 The release pipeline produces sixteen build artefacts per tag (six Windows,
 six Linux, four macOS) across lite, XLA, and CUDA variants
-(*RELEASE_NOTES.md §v1.1.13-accelerate*).
+(*RELEASE_NOTES.md §v1.2.1-scale*).
 
 ### Positioning
 
@@ -158,11 +158,13 @@ consists of:
 - An 8-byte object header prepended to every heap object
   `{subtype:u8, flags:u8, ref_count:u16, size:u32}`. The header is at
   offset −8 from the data pointer returned by allocators.
-- Eighteen heap subtypes and three callable subtypes as of v1.1, which
-  enables consolidating eight historical pointer types into two
-  supertypes (`HEAP_PTR`, `CALLABLE`) and freeing tag space for the
-  v1.1 neuro-symbolic types (substitution, fact, knowledge base, factor
-  graph, workspace, promise, continuation).
+- Nineteen heap-subtype slots assigned through v1.2 (slot 14 is
+  reserved for the v1.3 `RULE`) and five callable subtypes as of
+  v1.2.1, which enables consolidating eight historical pointer types
+  into two supertypes (`HEAP_PTR`, `CALLABLE`) and freeing tag space
+  for the v1.1 neuro-symbolic types (substitution, fact, knowledge
+  base, factor graph, workspace, promise, continuation) plus the v1.2
+  exact-numeric types (bignum, rational).
 - 16-byte tagged values laid out `{type:u8, flags:u8, reserved:u16,
   padding:u32, data:u64}`. When the compiler can prove the type at
   compile time it emits untagged LLVM IR, eliminating the tagging
@@ -525,7 +527,7 @@ fixes. The list, with severities preserved from *HARDENING.md*:
 Sanitizer infrastructure (ASan, UBSan, TSan, MSan, LSan) is wired through
 `scripts/build-sanitizer.sh` (`#188`).
 
-**v1.2.0-scale closeout audits, dated 2026-04-19.**
+**v1.2.1-scale closeout audits, dated 2026-04-19.**
 
 - *Memory safety*: ASan + UBSan clean. 196 checks across 9 suites
   (`bug_regression_test`, `agent_ffi_jit_test`, `first_class_builtins_test`,
