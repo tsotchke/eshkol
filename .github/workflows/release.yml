@@ -7,7 +7,7 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -477,6 +477,48 @@ jobs:
           path: dist
           pattern: release-asset-*
           merge-multiple: true
+
+      - name: Validate Release Asset Set
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          expected=(
+            "eshkol-${GITHUB_REF_NAME}-linux-x64-lite.tar.gz"
+            "eshkol-${GITHUB_REF_NAME}-linux-arm64-lite.tar.gz"
+            "eshkol-${GITHUB_REF_NAME}-linux-x64-xla.tar.gz"
+            "eshkol-${GITHUB_REF_NAME}-linux-arm64-xla.tar.gz"
+            "eshkol-${GITHUB_REF_NAME}-linux-x64-cuda.tar.gz"
+            "eshkol-${GITHUB_REF_NAME}-linux-arm64-cuda.tar.gz"
+            "eshkol-${GITHUB_REF_NAME}-macos-arm64-lite.tar.gz"
+            "eshkol-${GITHUB_REF_NAME}-macos-x64-lite.tar.gz"
+            "eshkol-${GITHUB_REF_NAME}-macos-arm64-xla.tar.gz"
+            "eshkol-${GITHUB_REF_NAME}-macos-x64-xla.tar.gz"
+            "eshkol-${GITHUB_REF_NAME}-windows-x64-lite.zip"
+            "eshkol-${GITHUB_REF_NAME}-windows-arm64-lite.zip"
+            "eshkol-${GITHUB_REF_NAME}-windows-x64-xla.zip"
+            "eshkol-${GITHUB_REF_NAME}-windows-arm64-xla.zip"
+            "eshkol-${GITHUB_REF_NAME}-windows-x64-cuda.zip"
+            "eshkol-${GITHUB_REF_NAME}-windows-arm64-cuda.zip"
+          )
+
+          cd dist
+          missing=0
+          for asset in "${expected[@]}"; do
+            if [[ ! -s "$asset" ]]; then
+              echo "Missing release asset: $asset" >&2
+              missing=1
+            fi
+          done
+
+          asset_count="$(find . -maxdepth 1 -type f ! -name SHA256SUMS.txt | wc -l | tr -d ' ')"
+          if [[ "$asset_count" -ne "${#expected[@]}" ]]; then
+            echo "Expected ${#expected[@]} release assets, found $asset_count:" >&2
+            find . -maxdepth 1 -type f -print | sort >&2
+            missing=1
+          fi
+
+          exit "$missing"
 
       - name: Generate Checksums
         shell: bash
