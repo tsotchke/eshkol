@@ -230,10 +230,13 @@ struct {
 - **Initial Capacity:** 16 buckets
 - **Syntax:** `(make-hash-table)`, `(hash key1 val1 key2 val2 ...)`
 - **Operations:** `hash-set!`, `hash-ref`, `hash-has-key?`, `hash-remove!`, `hash-keys`, `hash-values`, `hash-count`, `hash-clear!`
+- **SRFI-125 aliases (also wired at `lib/backend/llvm_codegen.cpp:12694-12704`):**
+  `hash-table-ref`, `hash-table-ref/default`, `hash-table-set!`, `hash-table-contains?`, `hash-table-exists?`, `hash-table-delete!`, `hash-table-keys`, `hash-table-values`, `hash-table-size`, `hash-table-clear!`. The `hash-table-*` and `hash-*` names are interchangeable; tutorial 16 uses the SRFI-125 form.
 - **Example:** 
   ```scheme
   (define h (hash 'a 1 'b 2))
-  (hash-ref h 'a)  ; => 1
+  (hash-ref h 'a)         ; => 1
+  (hash-table-ref h 'a)   ; => 1 (SRFI-125 alias)
   ```
 
 ##### EXCEPTION
@@ -3669,7 +3672,7 @@ eshkol_qrng_bytes(buf, len)  // Fill buffer with random bytes
 
 ### 22.6 All Hash Table Operations (10+)
 
-`make-hash-table`, `hash`, `hash-ref`, `hash-set!`, `hash-has-key?`, `hash-remove!`, `hash-keys`, `hash-values`, `hash-count`, `hash-clear!`, `hash-table?`
+`make-hash-table`, `hash`, `hash-ref`, `hash-set!`, `hash-has-key?`, `hash-remove!`, `hash-keys`, `hash-values`, `hash-count`, `hash-clear!`, `hash-table?`. SRFI-125 aliases also accepted (interchangeable with the non-prefixed names above): `hash-table-ref`, `hash-table-ref/default`, `hash-table-set!`, `hash-table-contains?`, `hash-table-exists?`, `hash-table-delete!`, `hash-table-keys`, `hash-table-values`, `hash-table-size`, `hash-table-clear!`.
 
 ### 22.7 All Autodiff Operators (8)
 

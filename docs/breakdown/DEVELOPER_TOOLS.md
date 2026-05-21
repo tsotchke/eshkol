@@ -19,9 +19,9 @@ This document covers the full architecture, feature set, configuration options, 
 
 | Property | Value |
 |----------|-------|
-| Source file | `tools/lsp/eshkol_lsp.cpp` (1018 lines) |
+| Source file | `tools/lsp/eshkol_lsp.cpp` (1019 lines) |
 | Binary name | `eshkol-lsp` |
-| Version | `1.1.13` |
+| Version | `1.1.0` |
 | License | MIT |
 | External dependencies | None (JSON implemented inline) |
 
@@ -90,7 +90,7 @@ Advertised in the `initialize` response:
   },
   "serverInfo": {
     "name": "eshkol-lsp",
-    "version": "1.1.13"
+    "version": "1.1.0"
   }
 }
 ```
@@ -161,7 +161,7 @@ values   call-with-values  call-with-current-continuation
 dynamic-wind  parameterize  make-parameter
 ```
 
-**Builtins (LSP kind 3 = Function)** — approximately 80 built-in functions spanning arithmetic, predicates, pairs/lists, strings, vectors, I/O, tensor operations, autodiff, parallel primitives, and system calls. The complete list is defined in the `builtins()` static method (lines 437–488).
+**Builtins (LSP kind 3 = Function)** — roughly 130 unique built-in functions spanning arithmetic, predicates, pairs/lists, strings, vectors, I/O, tensor operations, autodiff, parallel primitives, and system calls. The complete list is defined in the `builtins()` static method (lines 438–489); `display` and `newline` appear twice in the raw array, so the unique count is below the array length. (Earlier doc revisions said "approximately 80", which was off by a factor of more than 1.5×.)
 
 **Document-local defines (LSP kind 3 or 6)** — extracted from the open document by `extract_defines()` (line 912). Function definitions (`(define (name ...)`) get kind 3 (Function); variable definitions (`(define name ...)`) get kind 6 (Variable), unless the variable's value starts with `(lambda`, in which case it is also classified as kind 3.
 
@@ -219,7 +219,7 @@ Limitation: go-to-definition is document-local only. Cross-file navigation (e.g.
 | Entry point | `src/extension.ts` |
 | Publisher | `tsotchke` |
 | Extension ID | `tsotchke.eshkol` |
-| Version | `1.1.13` |
+| Version | `1.1.0` |
 | VSCode engine requirement | `^1.75.0` |
 | Runtime dependency | `vscode-languageclient ^9.0.1` |
 | Language | TypeScript (compiled to `out/extension.js`) |
@@ -527,7 +527,7 @@ The following source locations are the primary entry points for each tool compon
 | LSP capabilities | `tools/lsp/eshkol_lsp.cpp` | 542–574 (`handle_initialize()`) |
 | Diagnostics | `tools/lsp/eshkol_lsp.cpp` | 621–718 (`publish_diagnostics()`) |
 | Completion | `tools/lsp/eshkol_lsp.cpp` | 721–780 (`handle_completion()`) |
-| Keyword list | `tools/lsp/eshkol_lsp.cpp` | 419–434 (`keywords()`) |
+| Keyword list | `tools/lsp/eshkol_lsp.cpp` | 420–435 (`keywords()`) |
 | Builtin list | `tools/lsp/eshkol_lsp.cpp` | 437–488 (`builtins()`) |
 | Hover docs | `tools/lsp/eshkol_lsp.cpp` | 491–518 (`get_doc()`) |
 | Hover handler | `tools/lsp/eshkol_lsp.cpp` | 783–832 (`handle_hover()`) |

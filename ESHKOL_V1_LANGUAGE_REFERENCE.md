@@ -1145,6 +1145,26 @@ s                             ; => "Hello"
 (hash-table? '(a b c))           ; => #f
 ```
 
+### 10.6 SRFI-125 aliases
+
+The shorter `hash-*` names above are the canonical Eshkol form; the SRFI-125
+`hash-table-*` names are accepted as aliases and route to the same codegen
+helpers (`lib/backend/llvm_codegen.cpp:12694-12704`):
+
+| Eshkol canonical | SRFI-125 alias |
+|---|---|
+| `hash-ref` | `hash-table-ref`, `hash-table-ref/default` |
+| `hash-set!` | `hash-table-set!` |
+| `hash-has-key?` | `hash-table-contains?`, `hash-table-exists?` |
+| `hash-remove!` | `hash-table-delete!` |
+| `hash-keys` | `hash-table-keys` |
+| `hash-values` | `hash-table-values` |
+| `hash-count` | `hash-table-size` |
+| `hash-clear!` | `hash-table-clear!` |
+
+Tutorial 16 uses the SRFI-125 form throughout; the two surfaces are
+interchangeable.
+
 ---
 
 ## 11. Higher-Order Functions
