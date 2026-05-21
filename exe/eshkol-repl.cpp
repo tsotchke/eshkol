@@ -548,7 +548,7 @@ bool handle_command(const std::string& input, eshkol::ReplJITContext& repl_ctx) 
 
     if (cmd == ":version" || cmd == ":v") {
         std::cout << color::bold() << "Eshkol" << color::reset() << " version "
-                  << color::bright_cyan() << "0.1.1" << color::reset() << "\n";
+                  << color::bright_cyan() << ESHKOL_VERSION_STRING << color::reset() << "\n";
         std::cout << color::dim() << "A Scheme dialect with automatic differentiation" << color::reset() << "\n";
         return true;
     }

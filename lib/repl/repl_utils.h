@@ -13,6 +13,7 @@
 #include <cstdlib>
 #include <iostream>
 
+#include <eshkol/eshkol.h>
 #include <eshkol/platform_runtime.h>
 
 namespace eshkol {
@@ -321,7 +322,7 @@ inline void print_welcome_banner() {
     std::cout << R"(  ╰────────────────────────────────────────────────────────────────╯)" << reset() << "\n";
     std::cout << "\n";
 
-    std::cout << dim() << "  Version " << reset() << "0.1.1" << dim() << " | ";
+    std::cout << dim() << "  Version " << reset() << ESHKOL_VERSION_STRING << dim() << " | ";
     std::cout << "Type " << reset() << bright_blue() << ":help" << reset() << dim() << " for commands | ";
     std::cout << "Type " << reset() << bright_blue() << ":examples" << reset() << dim() << " for demos" << reset() << "\n";
     std::cout << dim() << "  Press " << reset() << "Ctrl+D" << dim() << " or type " << reset() << bright_blue() << "(exit)" << reset() << dim() << " to quit" << reset() << "\n";

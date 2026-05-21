@@ -255,7 +255,21 @@ void eshkol_ffi_clear_error(void);
 #define ESHKOL_FFI_TYPE_HEAP_PTR 8   /* Heap data: cons, string, vector, tensor */
 #define ESHKOL_FFI_TYPE_CALLABLE 9   /* Callables: closure, lambda, primitive */
 
-/* Heap subtype markers (stored in flags field for HEAP_PTR values) */
+/*
+ * FFI-side subtype tags.
+ *
+ * IMPORTANT: these constants are FFI-only markers stored in the `flags`
+ * byte of `eshkol_ffi_value_t`. They are NOT the canonical runtime heap
+ * subtypes (defined as `heap_subtype_t` in `eshkol.h`, where
+ * HEAP_SUBTYPE_CONS=0, _STRING=1, _VECTOR=2, _TENSOR=3, and the byte lives
+ * in the object header at `ptr - sizeof(eshkol_object_header_t)`).
+ *
+ * Cross-FFI consumers should classify heap values via these flag markers;
+ * code inside the Eshkol runtime should read the canonical subtype from
+ * the object header using `ESHKOL_GET_SUBTYPE`. Do not assume the numeric
+ * values below agree with `heap_subtype_t` — they were chosen
+ * independently and are stable for the FFI ABI.
+ */
 #define ESHKOL_FFI_SUBTYPE_STRING  0x01
 #define ESHKOL_FFI_SUBTYPE_PAIR    0x02
 #define ESHKOL_FFI_SUBTYPE_TENSOR  0x03
