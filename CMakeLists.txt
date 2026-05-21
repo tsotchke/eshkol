@@ -1555,6 +1555,32 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/es
     )
 endif()
 
+if(NOT WIN32 AND ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/freestanding_object_smoke_test.cpp")
+    get_filename_component(ESHKOL_LLVM_BIN_DIR "${LLVM_CONFIG_EXECUTABLE}" DIRECTORY)
+    find_program(ESHKOL_LLVM_DIS_EXECUTABLE
+        NAMES llvm-dis
+        HINTS "${ESHKOL_LLVM_BIN_DIR}"
+        NO_DEFAULT_PATH)
+    if(NOT ESHKOL_LLVM_DIS_EXECUTABLE)
+        find_program(ESHKOL_LLVM_DIS_EXECUTABLE NAMES llvm-dis)
+    endif()
+
+    add_executable(freestanding_object_smoke_test tests/toolchain/freestanding_object_smoke_test.cpp)
+    target_compile_features(freestanding_object_smoke_test PRIVATE cxx_std_17)
+    add_dependencies(freestanding_object_smoke_test eshkol-run)
+    if(ESHKOL_LLVM_DIS_EXECUTABLE)
+        add_test(
+            NAME freestanding_object_smoke_test
+            COMMAND freestanding_object_smoke_test $<TARGET_FILE:eshkol-run> "${ESHKOL_LLVM_DIS_EXECUTABLE}"
+        )
+    else()
+        add_test(
+            NAME freestanding_object_smoke_test
+            COMMAND freestanding_object_smoke_test $<TARGET_FILE:eshkol-run>
+        )
+    endif()
+endif()
+
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/machine_integer_types_test.cpp")
     add_executable(machine_integer_types_test tests/toolchain/machine_integer_types_test.cpp)
     target_compile_features(machine_integer_types_test PRIVATE cxx_std_17)
