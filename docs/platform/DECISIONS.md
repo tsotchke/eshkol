@@ -698,3 +698,45 @@ target-specific memory-model rules in this slice.
   inside arithmetic atomic operations
 - compare-exchange remains a later v1.8 slice with a separately documented
   failure-ordering contract
+
+---
+
+## D-0025
+
+- Date: 2026-05-21
+- Status: Accepted
+- Title: Atomic bitwise fetch operations are integer-only RMW primitives
+
+### Context
+
+Arithmetic fetch-add/sub supports counters, but low-level platform code also
+needs flag-word updates for device state, scheduler masks, and bootstrap
+coordination. Compare-exchange still has a larger contract because it needs a
+structured observed-value/success result and success/failure ordering rules.
+
+### Decision
+
+Add three typed bitwise read-modify-write primitives:
+
+```scheme
+(atomic-fetch-and! type ptr value ordering)
+(atomic-fetch-or! type ptr value ordering)
+(atomic-fetch-xor! type ptr value ordering)
+```
+
+The `type` operand uses the existing low-level machine integer designators.
+The address operand must be a `Ptr`, the value must be integer-compatible with
+the requested type, and the result is the previous value at that address.
+Supported orderings match the other RMW forms: `relaxed`, `acquire`,
+`release`, `acq-rel`, and `seq-cst`; `relaxed` lowers to LLVM `monotonic`.
+
+Do not support pointer designators for these bitwise RMW forms. Do not add
+compare-exchange, fetch-nand, weak/strong CAS policy, or target-specific
+memory-model rules in this slice.
+
+### Consequences
+
+- Eshkol can express atomic flag-word updates without CAS loops in source
+- the RMW family now covers exchange, arithmetic counters, and bitwise masks
+- compare-exchange remains a later v1.8 slice with a separately documented
+  result and failure-ordering contract

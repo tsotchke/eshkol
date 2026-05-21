@@ -1296,6 +1296,9 @@ public:
         function_return_types["atomic-exchange!"] = BuiltinTypes::Value;
         function_return_types["atomic-fetch-add!"] = BuiltinTypes::Value;
         function_return_types["atomic-fetch-sub!"] = BuiltinTypes::Value;
+        function_return_types["atomic-fetch-and!"] = BuiltinTypes::Value;
+        function_return_types["atomic-fetch-or!"] = BuiltinTypes::Value;
+        function_return_types["atomic-fetch-xor!"] = BuiltinTypes::Value;
         function_return_types["target-intrinsic"] = BuiltinTypes::Value;
         function_return_types["compiler-fence"] = BuiltinTypes::Null;
         function_return_types["memory-fence"] = BuiltinTypes::Null;
@@ -5377,7 +5380,10 @@ private:
                     }
                     if (func_name == "atomic-exchange!" ||
                         func_name == "atomic-fetch-add!" ||
-                        func_name == "atomic-fetch-sub!") {
+                        func_name == "atomic-fetch-sub!" ||
+                        func_name == "atomic-fetch-and!" ||
+                        func_name == "atomic-fetch-or!" ||
+                        func_name == "atomic-fetch-xor!") {
                         if (ast->operation.call_op.num_vars < 1) {
                             return TypedValue();
                         }
@@ -12103,7 +12109,9 @@ private:
             rmw->setName("atomic_exchange");
             return rmw;
         }
-        if (func_name == "atomic-fetch-add!" || func_name == "atomic-fetch-sub!") {
+        if (func_name == "atomic-fetch-add!" || func_name == "atomic-fetch-sub!" ||
+            func_name == "atomic-fetch-and!" || func_name == "atomic-fetch-or!" ||
+            func_name == "atomic-fetch-xor!") {
             if (op->call_op.num_vars != 4) {
                 eshkol_error("%s requires exactly 4 arguments", func_name.c_str());
                 return nullptr;
@@ -12133,14 +12141,25 @@ private:
                 coerceValueToLowLevelScalar(value_tv, *type_info, func_name.c_str());
             if (!delta_value) return nullptr;
 
-            const AtomicRMWInst::BinOp op_kind =
-                func_name == "atomic-fetch-add!" ? AtomicRMWInst::Add
-                                                  : AtomicRMWInst::Sub;
+            AtomicRMWInst::BinOp op_kind = AtomicRMWInst::Add;
+            const char* result_name = "atomic_fetch_add";
+            if (func_name == "atomic-fetch-sub!") {
+                op_kind = AtomicRMWInst::Sub;
+                result_name = "atomic_fetch_sub";
+            } else if (func_name == "atomic-fetch-and!") {
+                op_kind = AtomicRMWInst::And;
+                result_name = "atomic_fetch_and";
+            } else if (func_name == "atomic-fetch-or!") {
+                op_kind = AtomicRMWInst::Or;
+                result_name = "atomic_fetch_or";
+            } else if (func_name == "atomic-fetch-xor!") {
+                op_kind = AtomicRMWInst::Xor;
+                result_name = "atomic_fetch_xor";
+            }
             auto* rmw = builder->CreateAtomicRMW(op_kind, raw_ptr, delta_value,
                                                  lowLevelABIAlignment(type_info->llvm_type),
                                                  *ordering);
-            rmw->setName(func_name == "atomic-fetch-add!" ? "atomic_fetch_add"
-                                                          : "atomic_fetch_sub");
+            rmw->setName(result_name);
             return rmw;
         }
         if (func_name == "target-intrinsic") {
@@ -21510,7 +21529,8 @@ private:
             "addr-of", "compiler-fence", "memory-fence",
             "null-ptr", "ptr->usize", "usize->ptr", "ptr-add",
             "atomic-load", "atomic-store!", "atomic-exchange!",
-            "atomic-fetch-add!", "atomic-fetch-sub!", "target-intrinsic",
+            "atomic-fetch-add!", "atomic-fetch-sub!", "atomic-fetch-and!",
+            "atomic-fetch-or!", "atomic-fetch-xor!", "target-intrinsic",
             "volatile-load", "volatile-store!",
             "exact-integer?", "square",
             "floor-quotient", "floor-remainder", "floor/",

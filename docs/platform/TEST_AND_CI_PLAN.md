@@ -70,7 +70,7 @@ Current guard:
 - `tests/toolchain/volatile_ops_test.cpp`
   - verifies typed volatile load/store parsing, type-checking, and LLVM volatile IR lowering
 - `tests/toolchain/atomic_ops_test.cpp`
-  - verifies typed atomic load/store/exchange/fetch-add/fetch-sub parsing, ordering diagnostics, and LLVM atomic IR lowering
+  - verifies typed atomic load/store/exchange/fetch-add/fetch-sub/fetch-and/fetch-or/fetch-xor parsing, ordering diagnostics, and LLVM atomic IR lowering
 - `tests/toolchain/freestanding_elf_link_smoke_test.cpp`
   - verifies a freestanding object can link with a minimal ELF linker script without hosted runtime symbols
 - `tests/toolchain/freestanding_reject_hosted_builtin_test.cpp`

@@ -1024,7 +1024,9 @@ TypeCheckResult TypeChecker::synthesizeApplication(eshkol_ast_t* expr) {
         }
 
         if (builtin_name == "atomic-store!" || builtin_name == "atomic-exchange!" ||
-            builtin_name == "atomic-fetch-add!" || builtin_name == "atomic-fetch-sub!") {
+            builtin_name == "atomic-fetch-add!" || builtin_name == "atomic-fetch-sub!" ||
+            builtin_name == "atomic-fetch-and!" || builtin_name == "atomic-fetch-or!" ||
+            builtin_name == "atomic-fetch-xor!") {
             return index == 0 || index == 3;
         }
 
@@ -1538,7 +1540,9 @@ TypeCheckResult TypeChecker::synthesizeApplication(eshkol_ast_t* expr) {
             return TypeCheckResult::ok(exchange_type.value_or(BuiltinTypes::Value));
         }
 
-        if (func_name == "atomic-fetch-add!" || func_name == "atomic-fetch-sub!") {
+        if (func_name == "atomic-fetch-add!" || func_name == "atomic-fetch-sub!" ||
+            func_name == "atomic-fetch-and!" || func_name == "atomic-fetch-or!" ||
+            func_name == "atomic-fetch-xor!") {
             const char* builtin = func_name.c_str();
             auto rmw_type = call.num_vars >= 1
                                 ? resolve_low_level_type_designator(
