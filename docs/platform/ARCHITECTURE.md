@@ -248,6 +248,7 @@ The language needs new machine-facing primitives.
 - `volatile-store!`
 - `atomic-load`
 - `atomic-store!`
+- `atomic-exchange!`
 - compiler and memory fences
 
 ## 4.3 Required attributes

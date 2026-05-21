@@ -1293,6 +1293,7 @@ public:
         function_return_types["volatile-store!"] = BuiltinTypes::Null;
         function_return_types["atomic-load"] = BuiltinTypes::Value;
         function_return_types["atomic-store!"] = BuiltinTypes::Null;
+        function_return_types["atomic-exchange!"] = BuiltinTypes::Value;
         function_return_types["target-intrinsic"] = BuiltinTypes::Value;
         function_return_types["compiler-fence"] = BuiltinTypes::Null;
         function_return_types["memory-fence"] = BuiltinTypes::Null;
@@ -5371,6 +5372,17 @@ private:
                         return TypedValue(val, ESHKOL_VALUE_NULL,
                                          eshkol::hott::BuiltinTypes::Null, true);
                     }
+                    if (func_name == "atomic-exchange!") {
+                        if (ast->operation.call_op.num_vars < 1) {
+                            return TypedValue();
+                        }
+
+                        auto type_info = resolveMemoryAccessTypeInfo(
+                            &ast->operation.call_op.variables[0], "atomic-exchange!");
+                        Value* val = codegenAST(ast);
+                        if (!val || !type_info) return TypedValue();
+                        return makeLowLevelTypedValue(val, *type_info);
+                    }
                     if (func_name == "target-intrinsic") {
                         auto intrinsic_info = resolveTargetIntrinsicCall(
                             &ast->operation, "target-intrinsic");
@@ -7708,6 +7720,35 @@ private:
         eshkol_error("%s does not support memory ordering '%s' for %s",
                      builtin_name, ordering_ast->variable.id,
                      for_store ? "atomic stores" : "atomic loads");
+        return std::nullopt;
+    }
+
+    std::optional<AtomicOrdering> resolveAtomicRMWOrdering(const eshkol_ast_t* ordering_ast,
+                                                           const char* builtin_name) const {
+        if (!ordering_ast || ordering_ast->type != ESHKOL_VAR || !ordering_ast->variable.id) {
+            eshkol_error("%s expects a memory ordering designator", builtin_name);
+            return std::nullopt;
+        }
+
+        const std::string ordering_name = ordering_ast->variable.id;
+        if (ordering_name == "relaxed") {
+            return AtomicOrdering::Monotonic;
+        }
+        if (ordering_name == "acquire") {
+            return AtomicOrdering::Acquire;
+        }
+        if (ordering_name == "release") {
+            return AtomicOrdering::Release;
+        }
+        if (ordering_name == "acq-rel") {
+            return AtomicOrdering::AcquireRelease;
+        }
+        if (ordering_name == "seq-cst") {
+            return AtomicOrdering::SequentiallyConsistent;
+        }
+
+        eshkol_error("%s does not support memory ordering '%s' for atomic read-modify-write operations",
+                     builtin_name, ordering_ast->variable.id);
         return std::nullopt;
     }
 
@@ -12023,6 +12064,39 @@ private:
             store->setAtomic(*ordering);
             store->setAlignment(lowLevelABIAlignment(type_info->llvm_type));
             return packNullToTaggedValue();
+        }
+        if (func_name == "atomic-exchange!") {
+            if (op->call_op.num_vars != 4) {
+                eshkol_error("atomic-exchange! requires exactly 4 arguments");
+                return nullptr;
+            }
+
+            auto type_info = resolveMemoryAccessTypeInfo(&op->call_op.variables[0],
+                                                         "atomic-exchange!");
+            auto ordering = resolveAtomicRMWOrdering(&op->call_op.variables[3],
+                                                     "atomic-exchange!");
+            if (!type_info || !ordering) return nullptr;
+
+            TypedValue ptr_tv = codegenTypedAST(&op->call_op.variables[1]);
+            TypedValue value_tv = codegenTypedAST(&op->call_op.variables[2]);
+            if (!ptr_tv.llvm_value || !value_tv.llvm_value) return nullptr;
+
+            const LowLevelValueTypeInfo pointer_info{
+                eshkol::hott::BuiltinTypes::Pointer, ptr_type, false, true, false};
+            Value* raw_ptr = coerceValueToLowLevelScalar(ptr_tv, pointer_info,
+                                                         "atomic-exchange!");
+            if (!raw_ptr) return nullptr;
+
+            Value* exchange_value =
+                coerceValueToLowLevelScalar(value_tv, *type_info, "atomic-exchange!");
+            if (!exchange_value) return nullptr;
+
+            auto* rmw = builder->CreateAtomicRMW(AtomicRMWInst::Xchg, raw_ptr,
+                                                 exchange_value,
+                                                 lowLevelABIAlignment(type_info->llvm_type),
+                                                 *ordering);
+            rmw->setName("atomic_exchange");
+            return rmw;
         }
         if (func_name == "target-intrinsic") {
             auto intrinsic_info = resolveTargetIntrinsicCall(op, "target-intrinsic");
@@ -21390,7 +21464,7 @@ private:
             "exact->inexact", "inexact->exact", "exact", "inexact",
             "addr-of", "compiler-fence", "memory-fence",
             "null-ptr", "ptr->usize", "usize->ptr", "ptr-add",
-            "atomic-load", "atomic-store!", "target-intrinsic",
+            "atomic-load", "atomic-store!", "atomic-exchange!", "target-intrinsic",
             "volatile-load", "volatile-store!",
             "exact-integer?", "square",
             "floor-quotient", "floor-remainder", "floor/",
