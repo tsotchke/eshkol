@@ -8,6 +8,7 @@
 #include <eshkol/logger.h>
 #include <eshkol/core/runtime.h>
 #include <eshkol/core/resource_limits.h>
+#include <eshkol/core/execution_profile.h>
 #include <eshkol/build_config.h>
 #include <eshkol/platform_runtime.h>
 
@@ -253,6 +254,8 @@ static struct option long_options[] = {
     {"debug-info", no_argument, nullptr, 'g'},
     {"optimize", required_argument, nullptr, 'O'},
     {"emit-eskb", required_argument, nullptr, 'B'},
+    {"profile", required_argument, nullptr, 260},
+    {"target", required_argument, nullptr, 261},
     {0, 0, 0, 0}
 };
 
@@ -1370,6 +1373,10 @@ static void print_help(int x = 0)
         "\t-I DIR = Add a source/module search path.\n"
         "\t-D NAME[=VALUE] = Accepted for build-system compatibility.\n"
         "\t--wasm:[-w] = Compiles to WebAssembly (.wasm) format.\n"
+        "\t--profile NAME = Use an execution profile.\n"
+        "\t    Profiles: hosted-native, hosted-wasm, hosted-vm, freestanding-kernel-native,\n"
+        "\t              freestanding-mcu-native, freestanding-vm.\n"
+        "\t--target TRIPLE = Set the LLVM target triple.\n"
         "\t--lib:[-l] = Links a shared library to the resulting executable.\n"
         "\t--lib-path:[-L] = Adds a directory to the library search path.\n"
         "\t--no-stdlib:[-n] = Do not auto-load the standard library.\n"
@@ -2542,6 +2549,8 @@ int main(int argc, char **argv)
     char *output = nullptr;
     char *eval_expr = nullptr;  // For -e/--eval flag
     uint8_t run_mode = 0;       // For -r/--run flag (JIT run file)
+    const char* profile_name = nullptr;
+    const char* target_triple = nullptr;
 
     if (argc == 1) print_help(1);
 
@@ -2573,7 +2582,6 @@ int main(int argc, char **argv)
             break;
         case 'w':
             wasm_output = 1;
-            eshkol_set_target("wasm32-unknown-unknown");
             break;
         case 'l':
             linked_libs.push_back(optarg);
@@ -2626,9 +2634,55 @@ int main(int argc, char **argv)
         case 'B':
             eskb_output_path = optarg;
             break;
+        case 260:
+            profile_name = optarg;
+            break;
+        case 261:
+            target_triple = optarg;
+            break;
         default:
             print_help(1);
         }
+    }
+
+    {
+        eshkol::profile::Selection selection;
+
+        if (profile_name) {
+            const auto* profile = eshkol::profile::find(profile_name);
+            if (!profile) {
+                fprintf(stderr,
+                        "Unknown execution profile: %s\nSupported profiles: %s\n",
+                        profile_name,
+                        eshkol::profile::supported_names().c_str());
+                return 1;
+            }
+            selection.requested = profile->id;
+            selection.explicit_request = true;
+        } else if (wasm_output) {
+            selection.requested = eshkol::profile::ExecutionProfile::HostedWasm;
+        }
+
+        selection.explicit_target_triple = target_triple;
+        selection.compile_only = compile_only != 0;
+        selection.shared_lib = shared_lib != 0;
+        selection.wasm_flag = wasm_output != 0;
+        selection.no_stdlib = no_stdlib != 0;
+        selection.eval_mode = eval_expr != nullptr;
+        selection.run_mode = run_mode != 0;
+        selection.has_eskb_output = eskb_output_path != nullptr;
+        selection.has_linked_libs = !linked_libs.empty();
+
+        const auto resolved = eshkol::profile::resolve(selection);
+        if (!resolved.error.empty()) {
+            fprintf(stderr, "%s\n", resolved.error.c_str());
+            return 1;
+        }
+
+        compile_only = resolved.compile_only ? 1 : 0;
+        no_stdlib = resolved.no_stdlib ? 1 : 0;
+        wasm_output = resolved.wasm_output ? 1 : 0;
+        eshkol_set_target(resolved.target_triple);
     }
 
     if (!include_paths.empty()) {

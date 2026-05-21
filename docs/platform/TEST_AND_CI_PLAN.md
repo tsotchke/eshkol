@@ -25,6 +25,20 @@ Suggested location:
 
 - `tests/freestanding/profile/`
 
+Current guard:
+
+- `tests/toolchain/execution_profile_test.cpp`
+  - verifies profile-name resolution and valid/invalid profile combinations
+  - verifies freestanding native profiles require explicit targets and imply compile-only/no-stdlib
+- `tests/toolchain/eshkol_run_profile_cli_test.cpp`
+  - verifies `eshkol-run` parses `--profile` and `--target` through the production driver
+  - verifies hosted/freestanding incompatible flag combinations fail at the CLI boundary
+  - verifies freestanding native profile selection can emit an exact requested object path
+- `tests/v1_2_edge_cases/object_build_cli_contract_test.sh`
+  - verifies `eshkol-run --profile freestanding-kernel-native` rejects a missing target
+  - verifies `--profile freestanding-kernel-native --target <triple>` emits the exact requested object path
+  - verifies unknown profile names produce a clear diagnostic
+
 ## 2. Low-level language tests
 
 Purpose:
