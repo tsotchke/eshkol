@@ -172,7 +172,7 @@ eshkol-repl -m             # short form of --machine
 
 The REPL automatically loads the standard library at startup if `stdlib.o` is found in the build directory.
 
-The `--machine` (`-m`) mode disables the interactive readline frontend and emits machine-readable framing on stderr: `EREPL READY` after stdlib load, `EREPL DONE` after each form completes successfully, and `EREPL FAIL <reason>` on error. The form's value still goes to stdout. This mode is intended for orchestrators (such as the Noesis warm-worker harness) that want to drive a persistent JIT worker without paying cold-start cost on every form.
+The `--machine` (`-m`) mode disables the interactive readline frontend and emits machine-readable framing on stderr: `EREPL READY\n` after stdlib load, `EREPL DONE\n` after each form completes successfully, and `EREPL FAIL\n` on error. The marker is bare (no `<reason>` follows on the same line); any human-readable error message is printed via the REPL's normal error path before the marker, so the orchestrator should treat the marker as a frame boundary and parse anything emitted before it as form output / diagnostic text. The form's value still goes to stdout. This mode is intended for orchestrators (such as the Noesis warm-worker harness) that want to drive a persistent JIT worker without paying cold-start cost on every form.
 
 ### REPL Commands
 
