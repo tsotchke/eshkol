@@ -1,0 +1,48 @@
+;; CUDA host-buffer synchronization regression.
+;;
+;; scripts/run_gpu_tests.sh runs this file with ESHKOL_GPU_THRESHOLD=1 and
+;; ESHKOL_GPU_VERBOSE=1. On CUDA builds, that forces matmul through the
+;; host-wrapped GPU output-buffer path; on stub/non-GPU builds it falls back
+;; cleanly to CPU.
+
+(extern i32 gpu-init :real eshkol_gpu_init)
+(define gpu-ready (gpu-init))
+(when (= gpu-ready 0)
+  (display "SKIP: no active GPU backend; validating CPU fallback only")
+  (newline))
+
+(define N 8)
+(define size (* N N))
+(define A-data (make-vector size 0.0))
+(define I-data (make-vector size 0.0))
+
+;; Fill A with non-zero, position-dependent values so an unsynchronized output
+;; buffer cannot accidentally look correct.
+(do ((i 0 (+ i 1)))
+    ((>= i size))
+  (vector-set! A-data i (+ 1.0 i)))
+
+;; Identity matrix: A * I must copy the GPU result back exactly.
+(do ((i 0 (+ i 1)))
+    ((>= i N))
+  (vector-set! I-data (+ (* i N) i) 1.0))
+
+(define A (reshape A-data N N))
+(define I (reshape I-data N N))
+(define C (matmul A I))
+(define C-data (tensor-data C))
+
+(define ok #t)
+(do ((i 0 (+ i 1)))
+    ((or (>= i size) (not ok)))
+  (when (> (abs (- (vector-ref C-data i) (vector-ref A-data i))) 0.000001)
+    (set! ok #f)))
+
+(if ok
+    (display "PASS: CUDA host-wrapped matmul output synchronized")
+    (begin
+      (display "FAIL: CUDA host-wrapped matmul output was not synchronized; first=")
+      (display (vector-ref C-data 0))
+      (display " expected=")
+      (display (vector-ref A-data 0))))
+(newline)
