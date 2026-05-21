@@ -386,3 +386,35 @@ Reject non-variable expressions and non-addressable bindings in this slice.
 - the primitive is honest about current compiler boundaries instead of fabricating lvalue semantics the runtime does not yet support
 - future work on volatility, MMIO, and linker-defined symbols can build on a stable address-of baseline
 - a broader `addr-of` semantics for temporaries, fields, and by-value parameters remains deferred until the low-level ABI surface expands
+
+---
+
+## D-0016
+
+- Date: 2026-04-16
+- Status: Accepted
+- Title: Fence builtins use explicit ordering designators and LLVM sync scopes
+
+### Context
+
+After address-taking and pointer conversions, the low-level surface needs barrier emission for startup, HAL, and MMIO-adjacent code. The backend can already express LLVM fence instructions, but the language lacked a bounded way to distinguish compiler-only ordering barriers from system-scope memory fences. A broader atomic/RMW or target-specific barrier surface would widen this slice beyond the immediate need.
+
+### Decision
+
+Add two builtins now:
+
+- `compiler-fence`
+- `memory-fence`
+
+The first operand is an explicit fence-ordering designator, not a normal synthesized runtime expression. Supported orderings in this slice are `acquire`, `release`, `acq-rel`, and `seq-cst`.
+
+`compiler-fence` lowers to an LLVM `fence` with `singlethread` sync scope. `memory-fence` lowers to a normal system-scope LLVM `fence`. Both builtins return `Null`.
+
+Do not add atomic load/store/RMW builtins, target-specific barrier intrinsics, or inline assembly in this slice.
+
+### Consequences
+
+- Eshkol can express the first explicit compiler-only and system-scope barrier forms needed for low-level startup and HAL code
+- ordering tokens are treated as source-level designators rather than undefined runtime variables
+- the fence surface stays portable across the existing LLVM path without committing yet to a larger atomic or intrinsic language design
+- richer atomics, architecture-specific barriers, and intrinsic escape hatches remain later slices
