@@ -308,7 +308,7 @@
 
 ;; Global workspace (consciousness)
 (define ws (make-workspace dim max-modules))     ;; e.g. (make-workspace 3 4)
-(ws-register! ws "name" module-closure)          ;; register cognitive module
+(ws-register! ws "name" module-closure)          ;; closure returns (cons salience #(...))
 (ws-step! ws)                                    ;; competition + broadcast (1 arg)
 (workspace? ws)                                  ;; -> #t
 ```

@@ -690,8 +690,12 @@ Eshkol v1.1 includes a built-in **active inference consciousness engine** implem
 (define ws (make-workspace 3 4))
 
 ;; Register cognitive modules. Each is (workspace, name, closure).
-;; The closure takes the current content vector and returns a new tensor
-;; of length `dim`. The softmax winner becomes the broadcast content.
+;; The closure takes the current content vector and must return a
+;; `(cons salience proposal-tensor)` pair: the salience is a scalar
+;; used in softmax competition, the proposal-tensor is a tensor of
+;; length `dim` that becomes the broadcast content if this module
+;; wins. Example shape (where each module is something like
+;;   (lambda (content) (cons 0.7 #(1.0 0.0 0.0)))):
 (ws-register! ws "perception" perception-module)
 (ws-register! ws "memory" memory-module)
 (ws-register! ws "planning" planning-module)
