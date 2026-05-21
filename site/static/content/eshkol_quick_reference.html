@@ -261,7 +261,7 @@ Handling</h2>
 
 ;; Global workspace (consciousness)
 (define ws (make-workspace dim max-modules))     ;; e.g. (make-workspace 3 4)
-(ws-register! ws &quot;name&quot; module-closure)          ;; register cognitive module
+(ws-register! ws &quot;name&quot; module-closure)          ;; closure returns (cons salience #(...))
 (ws-step! ws)                                    ;; competition + broadcast (1 arg)
 (workspace? ws)                                  ;; -&gt; #t</code></pre>
 <h2 id="signal-processing">Signal Processing</h2>
