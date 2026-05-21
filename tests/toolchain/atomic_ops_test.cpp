@@ -66,6 +66,21 @@ bool test_atomic_store_type_synthesis() {
                         "atomic-store! pointer/value/order operands accepted");
 }
 
+bool test_atomic_exchange_type_synthesis() {
+    TypeEnvironment env;
+    TypeChecker checker(env);
+    checker.context().bind("mmio-base", BuiltinTypes::Pointer);
+
+    eshkol_ast_t ast = parse_single("(atomic-exchange! u32 mmio-base 7 acq-rel)");
+    const TypeCheckResult result = checker.synthesize(&ast);
+
+    return expect_equal(result.success, true, "atomic-exchange! type synthesis succeeds") &&
+           expect_equal(result.inferred_type, BuiltinTypes::UInt32,
+                        "atomic-exchange! returns previous value type") &&
+           expect_equal(checker.hasErrors(), false,
+                        "atomic-exchange! pointer/value/order operands accepted");
+}
+
 bool test_atomic_pointer_type_synthesis() {
     TypeEnvironment env;
     TypeChecker checker(env);
@@ -84,6 +99,22 @@ bool test_atomic_pointer_type_synthesis() {
            expect_equal(store_result.inferred_type, BuiltinTypes::Null,
                         "atomic-store! ptr returns Null") &&
            expect_equal(checker.hasErrors(), false, "atomic ptr operands are accepted");
+}
+
+bool test_atomic_exchange_rejects_invalid_ordering() {
+    TypeEnvironment env;
+    TypeChecker checker(env);
+    checker.context().bind("mmio-base", BuiltinTypes::Pointer);
+
+    eshkol_ast_t ast = parse_single("(atomic-exchange! u8 mmio-base 1 consume)");
+    const TypeCheckResult result = checker.synthesize(&ast);
+
+    return expect_equal(result.success, true,
+                        "atomic-exchange! still synthesizes after ordering issue") &&
+           expect_equal(result.inferred_type, BuiltinTypes::UInt8,
+                        "atomic-exchange! keeps requested type after ordering issue") &&
+           expect_equal(checker.hasErrors(), true,
+                        "atomic-exchange! records invalid ordering");
 }
 
 bool test_atomic_load_rejects_store_only_ordering() {
@@ -138,7 +169,7 @@ bool test_atomic_ir_lowering() {
     eshkol_set_uses_stdlib(0);
     eshkol_set_target(nullptr);
 
-    eshkol_ast_t asts[7] = {
+    eshkol_ast_t asts[8] = {
         parse_single("(define mmio-base (usize->ptr 4096))"),
         parse_single("(define next-base (usize->ptr 8192))"),
         parse_single("(define (peek) : u8 (atomic-load u8 mmio-base acquire))"),
@@ -146,9 +177,10 @@ bool test_atomic_ir_lowering() {
         parse_single("(define (poke (v : u16)) : null (atomic-store! u16 mmio-base v release))"),
         parse_single("(define (peek-next) : ptr (atomic-load ptr mmio-base seq-cst))"),
         parse_single("(define (poke-next) : null (atomic-store! ptr mmio-base next-base seq-cst))"),
+        parse_single("(define (swap32 (v : u32)) : u32 (atomic-exchange! u32 mmio-base v acq-rel))"),
     };
 
-    LLVMModuleRef module = eshkol_generate_llvm_ir_library(asts, 7, "atomic_ops_test");
+    LLVMModuleRef module = eshkol_generate_llvm_ir_library(asts, 8, "atomic_ops_test");
     if (!module) {
         std::cerr << "FAIL: atomic LLVM module generation" << std::endl;
         return false;
@@ -190,8 +222,13 @@ bool test_atomic_ir_lowering() {
                              "atomic-store! ptr lowers to atomic ptr store") &&
              expect_contains(ir, "seq_cst",
                              "atomic pointer ops keep seq-cst ordering") &&
+             expect_contains(ir, "atomicrmw xchg",
+                             "atomic-exchange! lowers to atomicrmw xchg") &&
+             expect_contains(ir, "acq_rel",
+                             "atomic-exchange! keeps acq-rel ordering") &&
              expect_contains(ir, "peek", "atomic load survives in function IR") &&
-             expect_contains(ir, "poke", "atomic store survives in function IR");
+             expect_contains(ir, "poke", "atomic store survives in function IR") &&
+             expect_contains(ir, "swap32", "atomic exchange survives in function IR");
     }
 
     std::remove(ir_path);
@@ -208,7 +245,13 @@ int main() {
     if (!test_atomic_store_type_synthesis()) {
         return 1;
     }
+    if (!test_atomic_exchange_type_synthesis()) {
+        return 1;
+    }
     if (!test_atomic_pointer_type_synthesis()) {
+        return 1;
+    }
+    if (!test_atomic_exchange_rejects_invalid_ordering()) {
         return 1;
     }
     if (!test_atomic_load_rejects_store_only_ordering()) {

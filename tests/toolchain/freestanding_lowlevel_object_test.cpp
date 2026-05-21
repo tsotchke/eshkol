@@ -171,6 +171,7 @@ int main(int argc, char** argv) {
             << "    (atomic-store! u16 (ptr-add (usize->ptr 8192) 2)\n"
             << "                   (atomic-load u16 (ptr-add (usize->ptr 8192) 2) acquire)\n"
             << "                   release)\n"
+            << "    (atomic-exchange! u16 (ptr-add (usize->ptr 8192) 2) 7 acq-rel)\n"
             << "    (compiler-fence release))\n"
             << "  :export-symbol kernel_lowlevel)\n";
     }
@@ -244,6 +245,10 @@ int main(int argc, char** argv) {
                 return fail("freestanding low-level IR missing '" + needle +
                             "'\n" + ir.output);
             }
+        }
+        if (!contains(ir.output, "atomicrmw xchg") && !contains(ir.output, "cmpxchg")) {
+            return fail("freestanding low-level IR missing atomic exchange lowering\n" +
+                        ir.output);
         }
         for (const auto& symbol : forbidden_symbols()) {
             if (contains(ir.output, symbol)) {

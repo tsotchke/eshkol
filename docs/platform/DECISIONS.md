@@ -616,3 +616,42 @@ WASM output.
 - invalid profile/target combinations fail before parsing and code generation
 - the next freestanding object slice can depend on an explicit driver contract
   instead of layering more behavior onto legacy flags
+
+---
+
+## D-0023
+
+- Date: 2026-05-21
+- Status: Accepted
+- Title: Atomic exchange is the first read-modify-write primitive
+
+### Context
+
+The initial atomic surface deliberately stopped at typed loads and stores.
+Low-level runtime and bootstrap code still needs one operation that can publish
+a new value and observe the previous value without introducing the full
+compare-exchange contract.
+
+### Decision
+
+Add a typed exchange primitive:
+
+```scheme
+(atomic-exchange! type ptr value ordering)
+```
+
+The `type` operand uses the same low-level machine designators as
+`atomic-load` and `atomic-store!`. The address operand must be a `Ptr`, the
+value must match the requested machine type, and the result is the previous
+value at that address. Supported orderings are `relaxed`, `acquire`,
+`release`, `acq-rel`, and `seq-cst`; `relaxed` lowers to LLVM `monotonic`.
+
+Do not add compare-exchange, fetch-add/sub families, weak/strong CAS policy, or
+target-specific memory-model rules in this slice.
+
+### Consequences
+
+- Eshkol now has a minimal typed RMW operation for lock-free handoff patterns
+- compare-exchange remains a later v1.8 slice with explicit failure-ordering
+  design
+- the atomic test surface now checks both load/store and RMW IR lowering

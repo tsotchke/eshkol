@@ -70,7 +70,7 @@ Current guard:
 - `tests/toolchain/volatile_ops_test.cpp`
   - verifies typed volatile load/store parsing, type-checking, and LLVM volatile IR lowering
 - `tests/toolchain/atomic_ops_test.cpp`
-  - verifies typed atomic load/store parsing, load/store-specific ordering diagnostics, and LLVM atomic IR lowering
+  - verifies typed atomic load/store/exchange parsing, ordering diagnostics, and LLVM atomic IR lowering
 - `tests/toolchain/target_intrinsic_test.cpp`
   - verifies typed LLVM intrinsic parsing, type-checking diagnostics, and IR lowering
 - `tests/toolchain/decl_attribute_test.cpp`

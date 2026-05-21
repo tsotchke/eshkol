@@ -1023,7 +1023,7 @@ TypeCheckResult TypeChecker::synthesizeApplication(eshkol_ast_t* expr) {
             return index == 0 || index == 2;
         }
 
-        if (builtin_name == "atomic-store!") {
+        if (builtin_name == "atomic-store!" || builtin_name == "atomic-exchange!") {
             return index == 0 || index == 3;
         }
 
@@ -1319,6 +1319,30 @@ TypeCheckResult TypeChecker::synthesizeApplication(eshkol_ast_t* expr) {
             return false;
         };
 
+        auto resolve_atomic_rmw_ordering =
+            [&](const eshkol_ast_t& ordering_arg, const char* builtin) -> bool {
+            if (ordering_arg.type != ESHKOL_VAR || !ordering_arg.variable.id) {
+                reportTypeIssue(std::string(builtin) +
+                                    " expects a memory ordering designator",
+                                &ordering_arg);
+                return false;
+            }
+
+            const std::string ordering_name = ordering_arg.variable.id;
+            if (ordering_name == "relaxed" ||
+                ordering_name == "acquire" ||
+                ordering_name == "release" ||
+                ordering_name == "acq-rel" ||
+                ordering_name == "seq-cst") {
+                return true;
+            }
+
+            reportTypeIssue(std::string(builtin) + " does not support memory ordering '" +
+                                ordering_name + "' for atomic read-modify-write operations",
+                            &ordering_arg);
+            return false;
+        };
+
         if (func_name == "volatile-load") {
             auto load_type = call.num_vars >= 1
                                  ? resolve_low_level_type_designator(
@@ -1462,6 +1486,55 @@ TypeCheckResult TypeChecker::synthesizeApplication(eshkol_ast_t* expr) {
             }
 
             return TypeCheckResult::ok(BuiltinTypes::Null);
+        }
+
+        if (func_name == "atomic-exchange!") {
+            auto exchange_type = call.num_vars >= 1
+                                     ? resolve_low_level_type_designator(
+                                           call.variables[0], "atomic-exchange!", "machine", false)
+                                     : std::nullopt;
+
+            if (call.num_vars != 4) {
+                reportTypeIssue("atomic-exchange! expects exactly 4 arguments", expr);
+            } else {
+                if (arg_types[1].success) {
+                    TypeId pointer_type = arg_types[1].inferred_type;
+                    if (pointer_type == BuiltinTypes::Value &&
+                        call.variables[1].type == ESHKOL_VAR &&
+                        call.variables[1].variable.id) {
+                        ctx_.bind(call.variables[1].variable.id, BuiltinTypes::Pointer);
+                    } else if (pointer_type != BuiltinTypes::Pointer) {
+                        reportTypeIssue("atomic-exchange! expects a Ptr address operand",
+                                        &call.variables[1]);
+                    }
+                }
+
+                if (exchange_type && arg_types[2].success) {
+                    TypeId value_type = arg_types[2].inferred_type;
+                    if (*exchange_type == BuiltinTypes::Pointer) {
+                        if (value_type == BuiltinTypes::Value &&
+                            call.variables[2].type == ESHKOL_VAR &&
+                            call.variables[2].variable.id) {
+                            ctx_.bind(call.variables[2].variable.id, BuiltinTypes::Pointer);
+                        } else if (value_type != BuiltinTypes::Pointer) {
+                            reportTypeIssue("atomic-exchange! expects a Ptr value for pointer exchanges",
+                                            &call.variables[2]);
+                        }
+                    } else if (value_type == BuiltinTypes::Value &&
+                               call.variables[2].type == ESHKOL_VAR &&
+                               call.variables[2].variable.id) {
+                        ctx_.bind(call.variables[2].variable.id, *exchange_type);
+                    } else if (!env_.isSubtype(value_type, BuiltinTypes::Integer)) {
+                        reportTypeIssue(
+                            "atomic-exchange! expects an integer value compatible with the machine type",
+                            &call.variables[2]);
+                    }
+                }
+
+                resolve_atomic_rmw_ordering(call.variables[3], "atomic-exchange!");
+            }
+
+            return TypeCheckResult::ok(exchange_type.value_or(BuiltinTypes::Value));
         }
 
         if (func_name == "target-intrinsic") {
