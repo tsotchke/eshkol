@@ -12,8 +12,9 @@
  * - Subtype checking with caching
  * - Type promotion for arithmetic
  *
- * This is Phase 1 of the HoTT implementation, providing the foundation
- * for gradual typing in Eshkol v1.0-foundation.
+ * This is Phase 1 of the HoTT implementation, providing the gradual-typing
+ * foundation established in Eshkol v1.0-foundation and extended through
+ * v1.2.1-scale.
  */
 #ifndef ESHKOL_TYPES_HOTT_TYPES_H
 #define ESHKOL_TYPES_HOTT_TYPES_H
