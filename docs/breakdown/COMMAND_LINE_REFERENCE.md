@@ -184,6 +184,7 @@ All REPL commands start with `:`. Eshkol expressions are entered directly withou
 |---------|-------|-------------|
 | `:help` | `:h` | Show available commands |
 | `:quit` | `:q` | Exit the REPL. Also accepts `(exit)` or `exit`. |
+| `:cancel` | `:c` | Cancel the current multi-line input buffer (useful when typing a long form and you want to start over without exiting). |
 | `:clear` | (none) | Clear the terminal screen |
 | `:version` | `:v` | Show Eshkol version information |
 | `:history` | (none) | Show the last 20 commands from the readline history |
