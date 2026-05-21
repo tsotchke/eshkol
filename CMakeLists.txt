@@ -1556,6 +1556,23 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/ma
     add_test(NAME machine_integer_types_test COMMAND machine_integer_types_test)
 endif()
 
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/pointer_type_surface_test.cpp")
+    add_executable(pointer_type_surface_test tests/toolchain/pointer_type_surface_test.cpp)
+    target_compile_features(pointer_type_surface_test PRIVATE cxx_std_17)
+    target_include_directories(pointer_type_surface_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    eshkol_target_llvm_includes(pointer_type_surface_test)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(pointer_type_surface_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(pointer_type_surface_test PRIVATE
+        eshkol-static
+        ${ESHKOL_EXTRA_LINK_LIBS}
+        ${LLVM_LIBS_LIST}
+        ${LLVM_SYSTEM_LIBS_LIST}
+    )
+    add_test(NAME pointer_type_surface_test COMMAND pointer_type_surface_test)
+endif()
+
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/runtime_core_boundary_test.cpp")
     add_executable(runtime_core_boundary_test tests/toolchain/runtime_core_boundary_test.cpp)
     target_compile_features(runtime_core_boundary_test PRIVATE cxx_std_17)

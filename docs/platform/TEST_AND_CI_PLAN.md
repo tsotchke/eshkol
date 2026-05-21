@@ -46,6 +46,10 @@ Current guard:
   - verifies machine integer aliases in the HoTT environment
   - verifies builtin-name resolution for `u8`/`usize`-style annotations
   - verifies parser + type-checker integration for annotated machine integer signatures
+- `tests/toolchain/pointer_type_surface_test.cpp`
+  - verifies `ptr` / `pointer` aliases in the HoTT environment
+  - verifies `(ptr T)` parsing, copying, and stringification
+  - verifies parser + type-checker integration for pointer annotations
 
 ## 3. Runtime isolation tests
 

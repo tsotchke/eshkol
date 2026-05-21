@@ -225,6 +225,7 @@ namespace BuiltinTypes {
     inline constexpr TypeId Function{103, Universe::U1, 0};
     inline constexpr TypeId Tensor{104, Universe::U1, 0};
     inline constexpr TypeId Closure{105, Universe::U1, 0};
+    inline constexpr TypeId Pointer{109, Universe::U1, 0};
 
     // Autodiff types (U1) - for forward and reverse mode AD
     inline constexpr TypeId DualNumber{106, Universe::U1, 0};  // Forward-mode AD: (primal, tangent)
@@ -554,6 +555,11 @@ public:
      * Create a Vector type with the given element type.
      */
     ParameterizedType makeVectorType(TypeId element_type) const;
+
+    /**
+     * Create a Ptr type with the given pointee type.
+     */
+    ParameterizedType makePointerType(TypeId element_type) const;
 
     /**
      * Create a HashTable type with the given key and value types.

@@ -7146,6 +7146,8 @@ private:
                 return BuiltinTypes::Vector;
             case HOTT_TYPE_TENSOR:
                 return BuiltinTypes::Tensor;
+            case HOTT_TYPE_POINTER:
+                return BuiltinTypes::Pointer;
             case HOTT_TYPE_PAIR:
             case HOTT_TYPE_PRODUCT:
             case HOTT_TYPE_SUM:

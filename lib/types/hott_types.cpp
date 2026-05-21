@@ -152,6 +152,8 @@ void TypeEnvironment::initializeBuiltinTypes() {
                        RuntimeRep::Pointer);
     registerTypeFamily(Tensor.id, "Tensor", Universe::U1, {"a", "shape"},
                        RuntimeRep::Pointer);
+    registerTypeFamily(Pointer.id, "Ptr", Universe::U1, {"a"},
+                       RuntimeRep::Pointer);
     registerTypeFamily(Closure.id, "Closure", Universe::U1, {"a", "b"},
                        RuntimeRep::Pointer);
 
@@ -226,6 +228,8 @@ void TypeEnvironment::initializeBuiltinTypes() {
     name_to_id_["list"] = List;
     name_to_id_["vector"] = Vector;
     name_to_id_["tensor"] = Tensor;
+    name_to_id_["ptr"] = Pointer;
+    name_to_id_["pointer"] = Pointer;
     name_to_id_["null"] = Null;
     name_to_id_["nil"] = Null;
     name_to_id_["symbol"] = Symbol;
@@ -584,6 +588,10 @@ ParameterizedType TypeEnvironment::makeListType(TypeId element_type) const {
 
 ParameterizedType TypeEnvironment::makeVectorType(TypeId element_type) const {
     return instantiateType(BuiltinTypes::Vector, {element_type});
+}
+
+ParameterizedType TypeEnvironment::makePointerType(TypeId element_type) const {
+    return instantiateType(BuiltinTypes::Pointer, {element_type});
 }
 
 ParameterizedType TypeEnvironment::makeHashTableType(TypeId key_type, TypeId value_type) const {

@@ -248,6 +248,12 @@ hott_type_expr_t* hott_make_tensor_type(hott_type_expr_t* element_type) {
     return type;
 }
 
+hott_type_expr_t* hott_make_pointer_type(hott_type_expr_t* element_type) {
+    hott_type_expr_t* type = hott_alloc_type_expr(HOTT_TYPE_POINTER);
+    type->container.element_type = hott_copy_type_expr(element_type);
+    return type;
+}
+
 // Pair and product types
 hott_type_expr_t* hott_make_pair_type(hott_type_expr_t* left, hott_type_expr_t* right) {
     hott_type_expr_t* type = hott_alloc_type_expr(HOTT_TYPE_PAIR);
@@ -327,6 +333,8 @@ hott_type_expr_t* hott_copy_type_expr(const hott_type_expr_t* type) {
 
         case HOTT_TYPE_LIST:
         case HOTT_TYPE_VECTOR:
+        case HOTT_TYPE_TENSOR:
+        case HOTT_TYPE_POINTER:
             copy->container.element_type = hott_copy_type_expr(type->container.element_type);
             break;
 
@@ -441,6 +449,20 @@ char* hott_type_to_string(const hott_type_expr_t* type) {
 
         case HOTT_TYPE_VECTOR: {
             BUF_APPEND("(vector ");
+            char* elem_str = hott_type_to_string(type->container.element_type);
+            BUF_APPEND("%s)", elem_str);
+            return arena_strdup(buffer);
+        }
+
+        case HOTT_TYPE_TENSOR: {
+            BUF_APPEND("(tensor ");
+            char* elem_str = hott_type_to_string(type->container.element_type);
+            BUF_APPEND("%s)", elem_str);
+            return arena_strdup(buffer);
+        }
+
+        case HOTT_TYPE_POINTER: {
+            BUF_APPEND("(ptr ");
             char* elem_str = hott_type_to_string(type->container.element_type);
             BUF_APPEND("%s)", elem_str);
             return arena_strdup(buffer);
