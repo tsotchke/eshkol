@@ -1614,6 +1614,16 @@ if(NOT WIN32 AND ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test
             COMMAND freestanding_elf_link_smoke_test $<TARGET_FILE:eshkol-run>
         )
     endif()
+
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/freestanding_reject_hosted_builtin_test.cpp")
+        add_executable(freestanding_reject_hosted_builtin_test tests/toolchain/freestanding_reject_hosted_builtin_test.cpp)
+        target_compile_features(freestanding_reject_hosted_builtin_test PRIVATE cxx_std_17)
+        add_dependencies(freestanding_reject_hosted_builtin_test eshkol-run)
+        add_test(
+            NAME freestanding_reject_hosted_builtin_test
+            COMMAND freestanding_reject_hosted_builtin_test $<TARGET_FILE:eshkol-run>
+        )
+    endif()
 endif()
 
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/machine_integer_types_test.cpp")
