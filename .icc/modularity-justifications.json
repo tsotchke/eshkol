@@ -1,0 +1,41 @@
+{
+  "schema_version": "1.0",
+  "thresholds": {
+    "max_file_lines": 2000
+  },
+  "justifications": [
+    {
+      "path_patterns": [
+        "lib/backend/llvm_codegen.cpp",
+        "tools/icc_extras/parity_ledger.json",
+        "lib/backend/vm_native.c",
+        "lib/backend/autodiff_codegen.cpp",
+        "lib/frontend/parser.cpp",
+        "lib/backend/weight_matrices.c",
+        "site/static/content/api_reference.html",
+        "lib/core/arena_memory.cpp",
+        "lib/backend/eshkol_compiler.c",
+        "lib/core/system_builtins.c",
+        "lib/backend/gpu/metal_softfloat.h",
+        "lib/backend/gpu/gpu_memory.mm",
+        "site/static/content/feature_matrix.html",
+        "exe/eshkol-run.cpp",
+        "lib/repl/repl_jit.cpp",
+        "lib/backend/string_io_codegen.cpp",
+        "lib/backend/tensor_activation_codegen.cpp",
+        "lib/backend/parallel_llvm_codegen.cpp",
+        "lib/backend/tensor_transformer_codegen.cpp",
+        "scripts/icc_traces/sdnc_vm-traces.jsonl",
+        "lib/backend/arithmetic_codegen.cpp",
+        "lib/backend/collection_codegen.cpp",
+        "lib/backend/vm_compiler.c",
+        "CMakeLists.txt",
+        "lib/types/type_checker.cpp"
+      ],
+      "status": "temporary_legacy_boundary",
+      "task_id": "eshkol-v1.8-modular-boundaries",
+      "reason": "These oversized architecture-bearing files are existing legacy implementation, generated reference, or integration surfaces kept stable while the v1.8 platform/runtime boundaries are split incrementally.",
+      "mitigation": "Keep new behavior in focused modules when practical, document exceptions during platform work, and split these files behind existing public interfaces over tracked v1.8 follow-up tasks."
+    }
+  ]
+}
