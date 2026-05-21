@@ -6780,9 +6780,10 @@ The `define-record-type` form defines:
 4. **Mutators** (optional) — procedures that modify field values in-place.
 
 **Implementation:** Parser transforms `define-record-type` into vector operations
-([parser.cpp:4509](lib/frontend/parser.cpp#L4509)). The constructor creates a tagged vector
-with a unique type identifier, the predicate checks this identifier, and accessors/mutators
-map to `vector-ref` / `vector-set!`.
+(`ESHKOL_DEFINE_RECORD_TYPE_OP` branch in
+[lib/frontend/parser.cpp](../lib/frontend/parser.cpp)). The constructor creates a tagged
+vector with a unique type identifier, the predicate checks this identifier, and
+accessors/mutators map to `vector-ref` / `vector-set!`.
 
 ### Examples
 
