@@ -39,7 +39,7 @@ The `vref` operator is AD-aware: when extracting from tensors during gradient co
 
 2. **Tagged values as the universal representation** — Every value is a 16-byte `{type:u8, flags:u8, reserved:u16, padding:u32, data:u64}` structure. Immediate values (integers, floats, booleans) store data inline; pointers store 64-bit addresses to objects with prepended headers. This uniformity simplifies the compiler but requires careful attention to alignment and cache behavior.
 
-3. **Type consolidation via object headers** — The pointer consolidation eliminates specific pointer types (CONS_PTR, STRING_PTR, etc.) in favor of polymorphic HEAP_PTR and CALLABLE types. The 8-byte header at offset -8 from the data pointer stores the specific subtype (18 subtypes as of v1.1). This trades one pointer dereference for extensible type space.
+3. **Type consolidation via object headers** — The pointer consolidation eliminates specific pointer types (CONS_PTR, STRING_PTR, etc.) in favor of polymorphic HEAP_PTR and CALLABLE types. The 8-byte header at offset -8 from the data pointer stores the specific subtype (19 heap-subtype slots assigned through v1.2; slot 14 is reserved for the v1.3 RULE). This trades one pointer dereference for extensible type space.
 
 4. **Modular code generation through callbacks** — The LLVM backend delegates to roughly thirty specialized modules via `std::function` callbacks. This inverts the typical dependency graph (modules call into main codegen rather than vice versa), enabling parallel development and incremental testing.
 
@@ -194,7 +194,7 @@ OALR (Ownership-Aware Lexical Regions) reconciles functional programming's desir
 
 The type system operates on three levels:
 
-**Runtime level:** 16-byte tagged values with an 8-bit type field. Types 0-7 store data directly (int64, double, bool, char, symbol, nil, complex); types 8-9 are consolidated pointers requiring header inspection for subtype. 18 heap subtypes and 3 callable subtypes as of v1.1.
+**Runtime level:** 16-byte tagged values with an 8-bit type field. Types 0-7 store data directly (int64, double, bool, char, symbol, nil, complex); types 8-9 are consolidated pointers requiring header inspection for subtype. 19 heap-subtype slots and 5 callable subtypes as of v1.2.1; slot 14 reserved for the v1.3 RULE.
 
 **HoTT level:** Type expressions representing primitives, compounds (list, vector, tensor, arrow), polymorphic types (forall quantification), and a universe hierarchy (U_0 for values, U_1 for types, U_2 for type operators). Type checking generates constraints and solves via unification; failure produces warnings, not errors.
 
@@ -522,7 +522,7 @@ Eshkol v1.2.1-scale represents a **mature, production-ready implementation** for
 ### Test Coverage
 
 - **38 test directories** organized by feature: autodiff, bignum, closures, collections, complex, control_flow, error_handling, features, gpu, integration, io, json, lists, logic, macros, memory, migration, ml, modules, neural, numeric, parallel, parser, rational, repl, signal, stdlib, string, system, tco, types, typesystem, web, xla, benchmark, codegen
-- **438 test files** with 35 automated test suites via shell scripts
+- **528 self-reported tests** across 37 automated test suites via shell scripts (plus the 87-test v1.2 edge-case gate)
 - **~32,000 lines** of test code
 
 ### Tooling

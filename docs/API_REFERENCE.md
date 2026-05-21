@@ -6951,7 +6951,7 @@ for composability and custom pipelines.
 **Tensor Codegen**: [tensor_codegen.cpp](lib/backend/tensor_codegen.cpp) — 20,000+ lines
 **Compiler Modules**: 21 specialized code generators
 **Test Suite**: 37 suites, 528 self-reported tests
-**Verified Operations**: 700+ builtins, 300+ standard library functions
+**Verified Operations**: 555+ builtins, 300+ standard library functions
 
 ---
 

@@ -1062,7 +1062,7 @@ Eshkol includes comprehensive test suites verifying Scheme compatibility:
 ./scripts/run_complex_tests.sh        # Complex numbers
 ./scripts/run_io_tests.sh             # I/O and ports
 
-# Run all 35 test suites (438 tests)
+# Run all 37 test suites (528 self-reported tests)
 ./scripts/run_all_tests.sh
 ```
 

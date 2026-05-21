@@ -94,7 +94,7 @@ Every Eshkol value is a 16-byte structure:
 
 LLVM type: `{i8, i8, i16, i32, i64}` -- five fields, with data at index 4.
 
-Immediate types (0-7) store data inline: int64, double, bool, char, symbol, nil, complex. Pointer types (8-9) consolidate all heap references into two supertypes -- HEAP_PTR and CALLABLE -- with an 8-byte object header at offset -8 storing the specific subtype. This consolidation freed type tag space for the 7 new heap subtypes added in v1.1 (substitution, fact, knowledge base, factor graph, workspace, promise, continuation), bringing the total to 18 heap subtypes and 3 callable subtypes.
+Immediate types (0-7) store data inline: int64, double, bool, char, symbol, nil, complex. Pointer types (8-9) consolidate all heap references into two supertypes -- HEAP_PTR and CALLABLE -- with an 8-byte object header at offset -8 storing the specific subtype. This consolidation freed type tag space for the 7 new heap subtypes added in v1.1 (substitution, fact, knowledge base, factor graph, workspace, promise, continuation), bringing the total to 19 heap-subtype slots and 5 callable subtypes; slot 14 is reserved for the v1.3 RULE.
 
 When the type is known at compile time, the compiler generates untagged LLVM IR, eliminating tagging overhead entirely.
 
@@ -291,7 +291,7 @@ The LLVM and VM backends share the same language semantics but use independent v
 | Standard library (.esk) | ~5,200 | 40 modules |
 | Test code (.esk) | ~34,000 | 438 files |
 
-35 automated test suites, 438 test files, 525+ assertions, 0 failures. Bytecode VM: 331/332 tests (99.7%). Weight matrices: 126/126 inline + 123/123 traced (3-way verified).
+37 automated test suites, 528 self-reported tests + 87 v1.2 edge cases, 0 failures. Bytecode VM: 331/332 tests (99.7%). Weight matrices: 126/126 inline + 123/123 traced (3-way verified).
 
 ---
 
