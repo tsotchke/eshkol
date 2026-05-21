@@ -47,7 +47,7 @@ Eshkol source (.esk)
    .wasm binary
 ```
 
-Internally, `eshkol_compile_llvm_ir_to_wasm` (`llvm_codegen.cpp:34796`)
+Internally, `eshkol_compile_llvm_ir_to_wasm` (`llvm_codegen.cpp`)
 initializes the WebAssembly LLVM backend, sets the target triple to
 `wasm32-unknown-unknown`, applies standard optimization passes, and emits
 a binary WASM module via `PassManager::run`. The output is a self-contained

@@ -185,7 +185,7 @@ dropped under LTO; they declare each `name` with weak
 linkage so the JIT can fall back to a null-check if a build
 omitted the underlying library. The full list of agent symbols
 registered by hand (rather than discovered via dlsym) spans
-`repl_jit.cpp:170-407` — that is the authoritative inventory
+`repl_jit.cpp` — that is the authoritative inventory
 of which native symbols every JIT and AOT run has visible.
 
 ---
@@ -196,7 +196,7 @@ of which native symbols every JIT and AOT run has visible.
 
 The HTTP client wraps libcurl's *easy* interface. The whole
 translation unit is gated by `#ifdef ESHKOL_HAVE_LIBCURL`
-(`agent_http_client.c:33`) so the build degrades cleanly when
+(`agent_http_client.c`) so the build degrades cleanly when
 libcurl is absent. Each call creates and destroys its own
 `CURL*` handle — libcurl easy handles are documented as per-
 thread, which lets multiple Eshkol threads call the FFI
@@ -204,7 +204,7 @@ concurrently without synchronisation
 (`agent_http_client.c §threading` comment).
 
 Common-options application is centralised in `apply_common_opts`
-(`agent_http_client.c:101-115`) so TLS verification and
+(`agent_http_client.c`) so TLS verification and
 redirect policy stay identical across `get`/`post`/`post_json`:
 
 ```c
@@ -227,10 +227,10 @@ TLS verification is **on by default and not toggleable through
 the API surface**. A caller that needs to talk to a self-signed
 dev origin has to do so via `subprocess` + `curl --insecure`
 until an explicit insecure-mode flag is wired
-(`agent_http_client.c:110-114`).
+(`agent_http_client.c`).
 
 The body buffer grows geometrically in `write_cb`
-(`agent_http_client.c:81-96`) — initial capacity 4096, doubled
+(`agent_http_client.c`) — initial capacity 4096, doubled
 each time it runs short — keeping amortised cost O(n). A NUL
 terminator is always written one byte past the live region so
 the caller can use the body as a C string, but the binary-safe
@@ -249,21 +249,21 @@ don't crash (lines 182, 209, 247).
 
 | Symbol | Signature | File:line |
 |---|---|---|
-| `qllm_http_init` | `int32_t (void)` | `agent_http_client.c:145` |
-| `qllm_http_shutdown` | `void (void)` | `agent_http_client.c:159` |
-| `qllm_http_has_ssl` | `int32_t (void)` | `agent_http_client.c:170` |
-| `qllm_http_get` | `qllm_http_response_t* (const char* url, int32_t timeout_ms)` | `agent_http_client.c:178` |
-| `qllm_http_post` | `qllm_http_response_t* (url, headers[], hdr_count, body, body_len, timeout_ms)` | `agent_http_client.c:202` |
-| `qllm_http_post_json` | `qllm_http_response_t* (url, body, auth_header, timeout_ms)` | `agent_http_client.c:242` |
-| `qllm_http_response_status` | `int32_t (qllm_http_response_t*)` | `agent_http_client.c:283` |
-| `qllm_http_response_body` | `const char* (qllm_http_response_t*)` | `agent_http_client.c:287` |
-| `qllm_http_response_body_len` | `int64_t (qllm_http_response_t*)` | `agent_http_client.c:291` |
-| `qllm_http_response_free` | `void (qllm_http_response_t*)` | `agent_http_client.c:295` |
-| `qllm_http_error_string` | `const char* (int32_t code)` | `agent_http_client.c:302` |
+| `qllm_http_init` | `int32_t (void)` | `agent_http_client.c` |
+| `qllm_http_shutdown` | `void (void)` | `agent_http_client.c` |
+| `qllm_http_has_ssl` | `int32_t (void)` | `agent_http_client.c` |
+| `qllm_http_get` | `qllm_http_response_t* (const char* url, int32_t timeout_ms)` | `agent_http_client.c` |
+| `qllm_http_post` | `qllm_http_response_t* (url, headers[], hdr_count, body, body_len, timeout_ms)` | `agent_http_client.c` |
+| `qllm_http_post_json` | `qllm_http_response_t* (url, body, auth_header, timeout_ms)` | `agent_http_client.c` |
+| `qllm_http_response_status` | `int32_t (qllm_http_response_t*)` | `agent_http_client.c` |
+| `qllm_http_response_body` | `const char* (qllm_http_response_t*)` | `agent_http_client.c` |
+| `qllm_http_response_body_len` | `int64_t (qllm_http_response_t*)` | `agent_http_client.c` |
+| `qllm_http_response_free` | `void (qllm_http_response_t*)` | `agent_http_client.c` |
+| `qllm_http_error_string` | `const char* (int32_t code)` | `agent_http_client.c` |
 
 Resource ownership: every successful call returns a heap-allocated
 `qllm_http_response_t`. The caller must invoke `qllm_http_response_free`
-or the malloc'd body buffer leaks (`agent_http_client.c:25-31`,
+or the malloc'd body buffer leaks (`agent_http_client.c`,
 `:295`). The Scheme wrapper handles this automatically.
 
 ### 3.2 Eshkol surface — `lib/agent/http.esk`
@@ -279,14 +279,14 @@ or the malloc'd body buffer leaks (`agent_http_client.c:25-31`,
 
 The wrapper's contract is `(cons status-code body-string)` for
 success, `#f` for a libcurl transport-level error
-(`http.esk:117-127`). HTTP error statuses (4xx / 5xx) still
+(`http.esk`). HTTP error statuses (4xx / 5xx) still
 produce a `cons`; only complete failures to receive a response
 return `#f`.
 
 #### Security guard — `http-safe-string?`
 
 Before any URL or header reaches libcurl, the Scheme layer runs
-`http-safe-string?` (`http.esk:92-101`):
+`http-safe-string?` (`http.esk`):
 
 ```scheme
 (define (http-safe-string? s)
@@ -301,8 +301,8 @@ Before any URL or header reaches libcurl, the Scheme layer runs
        ))
 ```
 
-`http-check-url` (`http.esk:103-105`) and `http-check-headers`
-(`http.esk:107-115`) call this for the URL and every header
+`http-check-url` (`http.esk`) and `http-check-headers`
+(`http.esk`) call this for the URL and every header
 name/value, raising `error` on rejection. The threat model is
 documented in the surrounding comment: CRLF injection lets an
 attacker append a second request to the same TCP stream that
@@ -314,9 +314,9 @@ re-split header values on horizontal tab.
 
 #### SSE streaming — deliberately unimplemented
 
-The `qllm_http_stream_*` family at `agent_http_client.c:320-344`
+The `qllm_http_stream_*` family at `agent_http_client.c`
 returns `NULL` / `-1` / closes immediately. The Eshkol wrapper
-(`http.esk:161-187`) honours the stub return values and
+(`http.esk`) honours the stub return values and
 surfaces them as `#f` to the caller. Streaming SSE for chat
 APIs is therefore **not yet a first-class agent FFI**; callers
 that need it today use `subprocess` to drive `curl -N` and
@@ -360,8 +360,8 @@ rejected at `http-check-headers` before any byte hits the wire.
 The HTTP server is intentionally minimal: single-connection,
 blocking, loopback-only. It exists for OAuth PKCE callbacks,
 MCP authentication handshakes, and `/health` endpoints — *not*
-production web serving (`agent_http_server.c:8-9`,
-`http_server.esk:7-13`). The bind socket address is hard-coded
+production web serving (`agent_http_server.c`,
+`http_server.esk`). The bind socket address is hard-coded
 to `INADDR_LOOPBACK`:
 
 ```c
@@ -369,24 +369,24 @@ addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);  /* Bind to localhost only */
 addr.sin_port = htons((uint16_t)port);
 ```
 
-(`agent_http_server.c:68-69`). Programs that need to expose
+(`agent_http_server.c`). Programs that need to expose
 themselves on a public interface must do so behind a real
 reverse proxy — this surface is deliberately not pluggable.
 
 Server slots are a fixed `MAX_HTTP_SERVERS = 4` table
-(`agent_http_server.c:37-45`); each entry holds the listening
+(`agent_http_server.c`); each entry holds the listening
 fd plus the currently-accepted client fd. `eshkol_http_server_create(0)`
 asks the kernel to allocate a free port and reads it back via
 `getsockname` so callers can advertise the bound port to a
-peer (`agent_http_server.c:82-89`). Accept is poll-driven with
+peer (`agent_http_server.c`). Accept is poll-driven with
 a caller-supplied timeout and a fixed 5-second per-client
 `SO_RCVTIMEO` so a slow client can't pin the server forever
-(`agent_http_server.c:117-129`).
+(`agent_http_server.c`).
 
 Response framing is one shot — `eshkol_http_server_respond`
 writes the status line, headers (`Content-Type`, `Content-Length`,
 `Connection: close`), the body, and closes the socket
-(`agent_http_server.c:148-178`). Recognised reason phrases:
+(`agent_http_server.c`). Recognised reason phrases:
 200 OK / 301 Moved / 400 Bad Request / 404 Not Found / 500
 Internal Server Error. Any other status emits "OK" — callers
 that need a richer reason set should send the raw bytes via
@@ -399,23 +399,23 @@ wraps an existing TCP fd after the HTTP/1.1 upgrade has
 completed. The implementation supports text (opcode `0x1`)
 and binary (`0x2`) frames, close (`0x8`), ping (`0x9`),
 pong (`0xA`), and auto-replies to ping with pong
-(`agent_http_server.c:384-387`). It does *not* support:
+(`agent_http_server.c`). It does *not* support:
 
 - Permessage-deflate (no extension negotiation).
 - Fragmented frames (every frame must arrive in one piece).
 - Masking with non-zero keys on outbound frames (the all-
   zero mask is per-RFC valid but unusual; see comment at
-  `agent_http_server.c:278-285`).
+  `agent_http_server.c`).
 
 The handle table is fixed at `MAX_WS_HANDLES = 8`
-(`agent_http_server.c:224`). The wrapper module
+(`agent_http_server.c`). The wrapper module
 `http_server.esk` documents this as suitable for MCP-over-WS
 and voice streaming; for production WS work, link libcurl
 7.86+ or libwebsockets.
 
 #### Unix domain socket — IDE IPC
 
-`eshkol_unix_socket_connect(path)` (`agent_http_server.c:196-211`)
+`eshkol_unix_socket_connect(path)` (`agent_http_server.c`)
 connects to a `SOCK_STREAM` AF_UNIX socket at `path` and
 returns the raw fd. The only intended consumer today is the
 VS Code `VSCODE_IPC_HOOK` IPC channel that the Eshkol
@@ -426,17 +426,17 @@ IPC channel that exchanges WebSocket-framed messages.
 
 | Symbol | Signature | File:line |
 |---|---|---|
-| `eshkol_http_server_create` | `int64_t (int32_t port)` | `agent_http_server.c:52` |
-| `eshkol_http_server_port` | `int32_t (int64_t handle)` | `agent_http_server.c:97` |
-| `eshkol_http_server_accept` | `int32_t (handle, buf, buf_size, timeout_ms)` | `agent_http_server.c:110` |
-| `eshkol_http_server_respond` | `void (handle, status, ct, body)` | `agent_http_server.c:148` |
-| `eshkol_http_server_close` | `void (int64_t handle)` | `agent_http_server.c:183` |
-| `eshkol_unix_socket_connect` | `int64_t (const char* path)` | `agent_http_server.c:196` |
-| `eshkol_ws_wrap_fd` | `int64_t (int32_t fd)` | `agent_http_server.c:239` |
-| `eshkol_ws_send_text` | `int32_t (handle, data, len)` | `agent_http_server.c:254` |
-| `eshkol_ws_send_binary` | `int32_t (handle, data, len)` | `agent_http_server.c:290` |
-| `eshkol_ws_receive` | `int32_t (handle, buf, buf_size, frame_type*, timeout_ms)` | `agent_http_server.c:320` |
-| `eshkol_ws_close` | `void (int64_t handle)` | `agent_http_server.c:393` |
+| `eshkol_http_server_create` | `int64_t (int32_t port)` | `agent_http_server.c` |
+| `eshkol_http_server_port` | `int32_t (int64_t handle)` | `agent_http_server.c` |
+| `eshkol_http_server_accept` | `int32_t (handle, buf, buf_size, timeout_ms)` | `agent_http_server.c` |
+| `eshkol_http_server_respond` | `void (handle, status, ct, body)` | `agent_http_server.c` |
+| `eshkol_http_server_close` | `void (int64_t handle)` | `agent_http_server.c` |
+| `eshkol_unix_socket_connect` | `int64_t (const char* path)` | `agent_http_server.c` |
+| `eshkol_ws_wrap_fd` | `int64_t (int32_t fd)` | `agent_http_server.c` |
+| `eshkol_ws_send_text` | `int32_t (handle, data, len)` | `agent_http_server.c` |
+| `eshkol_ws_send_binary` | `int32_t (handle, data, len)` | `agent_http_server.c` |
+| `eshkol_ws_receive` | `int32_t (handle, buf, buf_size, frame_type*, timeout_ms)` | `agent_http_server.c` |
+| `eshkol_ws_close` | `void (int64_t handle)` | `agent_http_server.c` |
 
 ### 4.2 Eshkol surface — `lib/agent/http_server.esk`
 
@@ -456,7 +456,7 @@ IPC channel that exchanges WebSocket-framed messages.
 
 `(http-server-accept …)` returns the raw request bytes as a
 string with `"METHOD PATH\r\n…headers…\r\n\r\n…body"` shape
-(`http_server.esk:67-80`). The Eshkol code is expected to
+(`http_server.esk`). The Eshkol code is expected to
 parse this — the runtime deliberately does not.
 
 `(ws-receive …)` returns `(cons frame-type payload)` where
@@ -499,14 +499,14 @@ returns; the caller may still observe and log them.
 `agent_sqlite.c` is a thin handle-table over the `sqlite3`
 public C API. Database handles are kept in a 64-slot table,
 prepared statements in a 512-slot table
-(`agent_sqlite.c:20-26`). The slot allocator scans forward
+(`agent_sqlite.c`). The slot allocator scans forward
 from `g_next_db`/`g_next_stmt`, wrapping around when the
 first half is full, so handle IDs are stable for the lifetime
 of the open object but reuse after close
-(`agent_sqlite.c:28-46`).
+(`agent_sqlite.c`).
 
 Every database is opened with WAL journaling and a 5-second
-busy timeout (`agent_sqlite.c:62-85`):
+busy timeout (`agent_sqlite.c`):
 
 ```c
 sqlite3_open_v2(path, &db,
@@ -552,44 +552,44 @@ The Scheme wrapper `(sqlite-column-text stmt idx)` then
 queries `sqlite-column-bytes-raw` first, allocates a buffer
 of exactly that size, and copies the payload in one shot —
 2 MB session JSON round-trips losslessly
-(`sqlite.esk:92-107`).
+(`sqlite.esk`).
 
 `eshkol_sqlite_column_text` itself also encodes an overflow
 signal: if the caller's buffer was too small, the return is
 `-(len + 1)` rather than the truncated count, so a wrapper
 that hasn't migrated to the new sizing path can still detect
 truncation and retry rather than silently drop bytes
-(`agent_sqlite.c:213-224`).
+(`agent_sqlite.c`).
 
 #### Public ABI
 
 | Symbol | Signature | File:line |
 |---|---|---|
-| `eshkol_sqlite_open` | `int64_t (const char* path)` | `agent_sqlite.c:62` |
-| `eshkol_sqlite_close` | `void (int64_t handle)` | `agent_sqlite.c:87` |
-| `eshkol_sqlite_exec` | `int (int64_t handle, const char* sql)` | `agent_sqlite.c:95` |
-| `eshkol_sqlite_prepare` | `int64_t (int64_t db, const char* sql)` | `agent_sqlite.c:109` |
-| `eshkol_sqlite_step` | `int (int64_t stmt)` | `agent_sqlite.c:125` |
-| `eshkol_sqlite_reset` | `int (int64_t stmt)` | `agent_sqlite.c:131` |
-| `eshkol_sqlite_finalize` | `void (int64_t stmt)` | `agent_sqlite.c:137` |
-| `eshkol_sqlite_bind_text` | `int (stmt, idx, text)` | `agent_sqlite.c:149` |
-| `eshkol_sqlite_bind_int` | `int (stmt, idx, int64_t value)` | `agent_sqlite.c:155` |
-| `eshkol_sqlite_bind_double` | `int (stmt, idx, double value)` | `agent_sqlite.c:161` |
-| `eshkol_sqlite_bind_null` | `int (stmt, idx)` | `agent_sqlite.c:167` |
-| `eshkol_sqlite_column_bytes` | `int64_t (stmt, idx)` | `agent_sqlite.c:183` |
-| `eshkol_sqlite_column_text` | `int (stmt, idx, buf, buf_size)` | `agent_sqlite.c:194` |
-| `eshkol_sqlite_column_int` | `int64_t (stmt, idx)` | `agent_sqlite.c:227` |
-| `eshkol_sqlite_column_double` | `double (stmt, idx)` | `agent_sqlite.c:233` |
-| `eshkol_sqlite_column_count` | `int (stmt)` | `agent_sqlite.c:239` |
-| `eshkol_sqlite_column_name` | `int (stmt, idx, buf, buf_size)` | `agent_sqlite.c:245` |
-| `eshkol_sqlite_column_type` | `int (stmt, idx)` | `agent_sqlite.c:259` |
-| `eshkol_sqlite_last_error` | `int (db, buf, buf_size)` | `agent_sqlite.c:269` |
-| `eshkol_sqlite_last_insert_rowid` | `int64_t (db)` | `agent_sqlite.c:281` |
-| `eshkol_sqlite_changes` | `int (db)` | `agent_sqlite.c:287` |
+| `eshkol_sqlite_open` | `int64_t (const char* path)` | `agent_sqlite.c` |
+| `eshkol_sqlite_close` | `void (int64_t handle)` | `agent_sqlite.c` |
+| `eshkol_sqlite_exec` | `int (int64_t handle, const char* sql)` | `agent_sqlite.c` |
+| `eshkol_sqlite_prepare` | `int64_t (int64_t db, const char* sql)` | `agent_sqlite.c` |
+| `eshkol_sqlite_step` | `int (int64_t stmt)` | `agent_sqlite.c` |
+| `eshkol_sqlite_reset` | `int (int64_t stmt)` | `agent_sqlite.c` |
+| `eshkol_sqlite_finalize` | `void (int64_t stmt)` | `agent_sqlite.c` |
+| `eshkol_sqlite_bind_text` | `int (stmt, idx, text)` | `agent_sqlite.c` |
+| `eshkol_sqlite_bind_int` | `int (stmt, idx, int64_t value)` | `agent_sqlite.c` |
+| `eshkol_sqlite_bind_double` | `int (stmt, idx, double value)` | `agent_sqlite.c` |
+| `eshkol_sqlite_bind_null` | `int (stmt, idx)` | `agent_sqlite.c` |
+| `eshkol_sqlite_column_bytes` | `int64_t (stmt, idx)` | `agent_sqlite.c` |
+| `eshkol_sqlite_column_text` | `int (stmt, idx, buf, buf_size)` | `agent_sqlite.c` |
+| `eshkol_sqlite_column_int` | `int64_t (stmt, idx)` | `agent_sqlite.c` |
+| `eshkol_sqlite_column_double` | `double (stmt, idx)` | `agent_sqlite.c` |
+| `eshkol_sqlite_column_count` | `int (stmt)` | `agent_sqlite.c` |
+| `eshkol_sqlite_column_name` | `int (stmt, idx, buf, buf_size)` | `agent_sqlite.c` |
+| `eshkol_sqlite_column_type` | `int (stmt, idx)` | `agent_sqlite.c` |
+| `eshkol_sqlite_last_error` | `int (db, buf, buf_size)` | `agent_sqlite.c` |
+| `eshkol_sqlite_last_insert_rowid` | `int64_t (db)` | `agent_sqlite.c` |
+| `eshkol_sqlite_changes` | `int (db)` | `agent_sqlite.c` |
 
 `sqlite3_bind_text` uses `SQLITE_TRANSIENT` so SQLite copies the
 text immediately; the Eshkol-side string can be freed or rebound
-before `sqlite_step` runs (`agent_sqlite.c:152`).
+before `sqlite_step` runs (`agent_sqlite.c`).
 
 ### 5.2 Eshkol surface — `lib/agent/sqlite.esk`
 
@@ -604,7 +604,7 @@ and two convenience macros for resource management:
   (lambda (stmt) …))         ;; finalize on exit
 ```
 
-Both use `dynamic-wind` (`sqlite.esk:129-143`) so the close /
+Both use `dynamic-wind` (`sqlite.esk`) so the close /
 finalize fires on normal return AND on every escape from the
 body — including `error`, continuation jumps, and exceptions.
 
@@ -612,7 +612,7 @@ body — including `error`, continuation jumps, and exceptions.
 
 `sqlite-exec` takes raw SQL with the explicit documented
 expectation that the caller is providing trusted literal text
-(`sqlite.esk:48-61`):
+(`sqlite.esk`):
 
 ```
 SECURITY (#195): sqlite-exec takes raw SQL — any caller that
@@ -621,7 +621,7 @@ to SQL injection. Prefer sqlite-prepare + sqlite-bind-* +
 sqlite-step for anything with user-controlled values.
 ```
 
-`sqlite-exec-safe` (`sqlite.esk:63-77`) refuses statements
+`sqlite-exec-safe` (`sqlite.esk`) refuses statements
 containing any of `;` (multi-statement), `--` (line comment),
 or `/*` (block comment). The documented contract is that this
 is **not a substitute for prepared statements** — it merely
@@ -686,7 +686,7 @@ qllm_process_spawn        /* legacy compatibility — bypasses sh for safe input
 ```
 
 The boundary contract is documented at
-`agent_subprocess.c:80-93`. Callers that interpolate
+`agent_subprocess.c`. Callers that interpolate
 user-controlled values are required to use `argv`; callers
 that need shell grammar (pipes, redirections, globs) use
 `shell` and quote interpolated values themselves.
@@ -706,7 +706,7 @@ which closed VT/FF/ESC/DEL holes) and any 8th-bit byte. Skipping
 Inside `eshkol-run`, the host address space is ~200 MB plus a
 worker thread pool. A naive `fork()` would copy-on-write the
 page tables and snapshot every libsystem thread, costing
-10-15 ms per spawn (`agent_subprocess.c:756-773`). The hot
+10-15 ms per spawn (`agent_subprocess.c`). The hot
 path uses `posix_spawn` instead:
 
 ```c
@@ -726,7 +726,7 @@ On macOS the spawn additionally uses `POSIX_SPAWN_CLOEXEC_DEFAULT`,
 which makes every fd not explicitly preserved in the file
 actions close-on-exec — saving six `addclose` entries per
 spawn and an implicit fd-table walk in the child
-(`agent_subprocess.c:441-461`).
+(`agent_subprocess.c`).
 
 #### Pipe leak fix — v1.2.1
 
@@ -742,7 +742,7 @@ When the first call succeeded and the second failed, the
 two stdin-pipe fds leaked — a classical partial-success
 resource leak (HARDENING.md §`#182`). The current code gates
 every `pipe()` separately so cleanup closes exactly the fds
-that actually opened (`agent_subprocess.c:399-418` for shell
+that actually opened (`agent_subprocess.c` for shell
 form, `:730-753` for argv form). The pattern is identical on
 both paths.
 
@@ -755,7 +755,7 @@ spawn even when the child itself was sub-millisecond — entirely
 pthread setup + signal-handler bookkeeping. The current
 implementation on macOS / FreeBSD uses kqueue with
 `EVFILT_PROC NOTE_EXIT` joined to `EVFILT_READ` on the two
-pipe fds (`agent_subprocess.c:1300-1378`):
+pipe fds (`agent_subprocess.c`):
 
 ```c
 EV_SET(&evs[nev++], proc->pid, EVFILT_PROC,
@@ -775,7 +775,7 @@ modern Linux distros are already past that and the fallback
 is the simpler-but-slower path.
 
 Per-stream drain cap is 16 MiB
-(`agent_subprocess.c:1268-1270`). Past the cap, the drainer
+(`agent_subprocess.c`). Past the cap, the drainer
 keeps reading from the pipe so the child doesn't deadlock on
 write but drops the bytes — agents that capture sub-tool
 output should size with this ceiling in mind.
@@ -803,11 +803,11 @@ cached under a mutex (`g_env_cache`) so repeated spawns don't
 redo the linear walk of `environ` each time. On the fork+exec
 fallback path, `eshkol_unset_env_injection_vars` performs the
 equivalent scrub in the child after fork but before exec
-(`agent_subprocess.c:264-280`).
+(`agent_subprocess.c`).
 
 #### Resource limits — audit H7
 
-`eshkol_apply_subproc_rlimits` (`agent_subprocess.c:204-258`)
+`eshkol_apply_subproc_rlimits` (`agent_subprocess.c`)
 applies four `setrlimit(2)` caps inside the fork+exec child
 before `execvp`:
 
@@ -834,29 +834,29 @@ valid-looking but malformed command line (HARDENING.md `#193`
 HIGH). The current code measures `"cmd /c " + command` ahead
 of time, rejects ≥ 32768 (the Windows cmdline limit), and
 heap-allocates the exact size — no silent truncation, no
-overflow (`agent_subprocess.c:589-622`).
+overflow (`agent_subprocess.c`).
 
 #### Public ABI (POSIX + Windows)
 
 | Symbol | Returns | File:line |
 |---|---|---|
-| `qllm_process_spawn` | `eshkol_subprocess_t*` | `agent_subprocess.c:648` |
-| `qllm_process_spawn_shell` | `eshkol_subprocess_t*` | `agent_subprocess.c:654` |
-| `qllm_process_spawn_argv` | `eshkol_subprocess_t*` | `agent_subprocess.c:896` |
-| `qllm_process_spawn_argv_flags` | `eshkol_subprocess_t*` | `agent_subprocess.c:712` |
-| `qllm_process_write_stdin` | `int64_t bytes_written` | `agent_subprocess.c:905` |
-| `qllm_process_close_stdin` | `void` | `agent_subprocess.c:929` |
-| `qllm_process_read_stdout` | `int64_t bytes_read` | `agent_subprocess.c:942` |
-| `qllm_process_read_stderr` | `int64_t bytes_read` | `agent_subprocess.c:956` |
-| `qllm_process_read_all_stdout` | `char* (caller frees via qllm_process_free_buffer)` | `agent_subprocess.c:1037` |
-| `qllm_process_read_all_stderr` | `char*` | `agent_subprocess.c:1049` |
-| `qllm_process_wait` | `int32_t (0=exited, 1=timeout, -1=error)` | `agent_subprocess.c:1263` |
-| `qllm_process_running` | `int32_t (1=running, 0=exited)` | `agent_subprocess.c:1461` |
-| `qllm_process_exit_code` | `int32_t` | `agent_subprocess.c:1467` |
-| `qllm_process_pid` | `int64_t` | `agent_subprocess.c:1496` |
-| `qllm_process_kill` | `void (proc, signal)` | `agent_subprocess.c:1477` |
-| `qllm_process_destroy` | `void` | `agent_subprocess.c:1501` |
-| `qllm_process_free_buffer` | `void (char* buf)` | `agent_subprocess.c:660` |
+| `qllm_process_spawn` | `eshkol_subprocess_t*` | `agent_subprocess.c` |
+| `qllm_process_spawn_shell` | `eshkol_subprocess_t*` | `agent_subprocess.c` |
+| `qllm_process_spawn_argv` | `eshkol_subprocess_t*` | `agent_subprocess.c` |
+| `qllm_process_spawn_argv_flags` | `eshkol_subprocess_t*` | `agent_subprocess.c` |
+| `qllm_process_write_stdin` | `int64_t bytes_written` | `agent_subprocess.c` |
+| `qllm_process_close_stdin` | `void` | `agent_subprocess.c` |
+| `qllm_process_read_stdout` | `int64_t bytes_read` | `agent_subprocess.c` |
+| `qllm_process_read_stderr` | `int64_t bytes_read` | `agent_subprocess.c` |
+| `qllm_process_read_all_stdout` | `char* (caller frees via qllm_process_free_buffer)` | `agent_subprocess.c` |
+| `qllm_process_read_all_stderr` | `char*` | `agent_subprocess.c` |
+| `qllm_process_wait` | `int32_t (0=exited, 1=timeout, -1=error)` | `agent_subprocess.c` |
+| `qllm_process_running` | `int32_t (1=running, 0=exited)` | `agent_subprocess.c` |
+| `qllm_process_exit_code` | `int32_t` | `agent_subprocess.c` |
+| `qllm_process_pid` | `int64_t` | `agent_subprocess.c` |
+| `qllm_process_kill` | `void (proc, signal)` | `agent_subprocess.c` |
+| `qllm_process_destroy` | `void` | `agent_subprocess.c` |
+| `qllm_process_free_buffer` | `void (char* buf)` | `agent_subprocess.c` |
 
 `qllm_process_wait` returns 0/1/-1 not the exit code — the
 caller reads the code separately. This is corrected from the
@@ -896,10 +896,10 @@ association list of `((exit-code . N) (stdout . "…") (stderr . "…"))`.
 On timeout the exit code is 124 (matches GNU coreutils
 `timeout(1)` convention) and stderr is suffixed with
 `"\n[Process timed out after Ns]"`
-(`subprocess.esk:228-244`, `:283-294`).
+(`subprocess.esk`).
 
 `process-spawn-argv` enforces the argv invariants via
-`process-argv-check-args` (`subprocess.esk:85-97`): every
+`process-argv-check-args` (`subprocess.esk`): every
 element must be a string, contain no literal tab byte (which
 would be re-split by the tab-separated wire format) and no
 NUL byte (which would truncate at the C boundary).
@@ -937,29 +937,29 @@ layers**, and the choice matters.
 `agent_watch.c` is the proper native watcher. On macOS / FreeBSD
 it uses kqueue with `EVFILT_VNODE` and the
 `NOTE_WRITE|NOTE_DELETE|NOTE_RENAME|NOTE_ATTRIB` flags
-(`agent_watch.c:74-92`); on Linux it uses inotify with
+(`agent_watch.c`); on Linux it uses inotify with
 `IN_CREATE|IN_DELETE|IN_MODIFY|IN_MOVED_FROM|IN_MOVED_TO`
-(`agent_watch.c:111-122`). Recursive mode walks the directory
+(`agent_watch.c`). Recursive mode walks the directory
 tree at start time and adds a watch for each subdirectory
-(`agent_watch.c:94-109`, `:124-139`); new directories created
+(`agent_watch.c`); new directories created
 after start are **not** auto-watched.
 
 Events accumulate in an internal ring buffer with capacity 64
-(`agent_watch.c:40-71`). The agent calls `eshkol_watch_poll`
+(`agent_watch.c`). The agent calls `eshkol_watch_poll`
 in its event loop and receives one "type\tpath" string per
 poll, or 0 when the buffer is empty and the OS has no new
 events. Overflowing the ring drops oldest events
-(`agent_watch.c:66-72`).
+(`agent_watch.c`).
 
 Public ABI:
 
 | Symbol | Signature | File:line |
 |---|---|---|
-| `eshkol_watch_start` | `int64_t (const char* path, int32_t recursive)` | `agent_watch.c:148` |
-| `eshkol_watch_poll` | `int32_t (handle, buf, buf_size)` | `agent_watch.c:189` |
-| `eshkol_watch_stop` | `void (int64_t handle)` | `agent_watch.c:267` |
+| `eshkol_watch_start` | `int64_t (const char* path, int32_t recursive)` | `agent_watch.c` |
+| `eshkol_watch_poll` | `int32_t (handle, buf, buf_size)` | `agent_watch.c` |
+| `eshkol_watch_stop` | `void (int64_t handle)` | `agent_watch.c` |
 
-The JIT symbol table registers these at `repl_jit.cpp:914-916`,
+The JIT symbol table registers these at `repl_jit.cpp`,
 so they are available under `eshkol-repl` and `eshkol-run -e`.
 **No `.esk` extern wrapper currently exposes these symbols** —
 they are reachable from Scheme only by writing a fresh
@@ -983,7 +983,7 @@ function_return_types entries above them). This path does
 The watcher table is fixed-size; events are derived from
 mtime/size diff between two consecutive `fs-watch-poll`
 calls, emitted as `"create"`, `"change"`, or `"delete"`
-(`system_builtins.c:1962-1969`). This is suitable for single
+(`system_builtins.c`). This is suitable for single
 files or coarse-grained polling but not for high-frequency
 directory monitoring — for that, use the native watcher
 above.
@@ -1005,9 +1005,9 @@ symbols.
 ### 8.1 C runtime — `lib/agent/c/agent_regex.c`
 
 PCRE2 with UTF-8 (`PCRE2_CODE_UNIT_WIDTH=8`) is the default
-compile-time width (`agent_regex.c:10-11`,
+compile-time width (`agent_regex.c`,
 `CMakeLists.txt:1819`). Compiled patterns are stored in a
-256-slot handle table (`agent_regex.c:21-43`) with the same
+256-slot handle table (`agent_regex.c`) with the same
 wrap-around allocator the other agent modules use.
 
 Flags surfaced to Eshkol:
@@ -1016,8 +1016,8 @@ Flags surfaced to Eshkol:
 1 PCRE2_CASELESS   2 PCRE2_MULTILINE   4 PCRE2_DOTALL
 ```
 
-(`agent_regex.c:57-60`). UTF mode is always on
-(`agent_regex.c:57`).
+(`agent_regex.c`). UTF mode is always on
+(`agent_regex.c`).
 
 #### ReDoS hardening — audit `#195`
 
@@ -1047,22 +1047,22 @@ context is read-only during matching).
 
 | Symbol | Signature | File:line |
 |---|---|---|
-| `eshkol_regex_compile` | `int64_t (const char* pattern, int flags)` | `agent_regex.c:54` |
-| `eshkol_regex_match` | `int (handle, subject, match_buf, buf_size)` | `agent_regex.c:106` |
-| `eshkol_regex_match_all` | `int (handle, subject, buf, buf_size, max)` | `agent_regex.c:135` |
-| `eshkol_regex_replace` | `int (handle, subject, replacement, out, out_size)` | `agent_regex.c:174` |
-| `eshkol_regex_free` | `void (int64_t handle)` | `agent_regex.c:200` |
-| `eshkol_regex_match_groups_count` | `int (handle, subject)` | `agent_regex.c:227` |
-| `eshkol_regex_match_groups` | `int (handle, subject, out_buf, buf_size)` | `agent_regex.c:243` |
-| `eshkol_regex_named_group_number` | `int (handle, name)` | `agent_regex.c:287` |
+| `eshkol_regex_compile` | `int64_t (const char* pattern, int flags)` | `agent_regex.c` |
+| `eshkol_regex_match` | `int (handle, subject, match_buf, buf_size)` | `agent_regex.c` |
+| `eshkol_regex_match_all` | `int (handle, subject, buf, buf_size, max)` | `agent_regex.c` |
+| `eshkol_regex_replace` | `int (handle, subject, replacement, out, out_size)` | `agent_regex.c` |
+| `eshkol_regex_free` | `void (int64_t handle)` | `agent_regex.c` |
+| `eshkol_regex_match_groups_count` | `int (handle, subject)` | `agent_regex.c` |
+| `eshkol_regex_match_groups` | `int (handle, subject, out_buf, buf_size)` | `agent_regex.c` |
+| `eshkol_regex_named_group_number` | `int (handle, name)` | `agent_regex.c` |
 
 `eshkol_regex_match_all` and `eshkol_regex_match_groups`
 return their results as a flat NUL-separated buffer
 (`"match0\0match1\0…"`) so the Scheme wrapper can split on
-NUL bytes into a list of strings (`agent_regex.c:218-222`).
+NUL bytes into a list of strings (`agent_regex.c`).
 Unset optional groups (e.g. `(a(b)?c)` where the `b` was
 absent) are emitted as empty strings, not skipped
-(`agent_regex.c:268-271`).
+(`agent_regex.c`).
 
 ### 8.2 Eshkol surface — `lib/agent/regex.esk`
 
@@ -1083,7 +1083,7 @@ Flags constants:
 
 `regex-match-groups` returns a list whose head is the full
 match and whose tail elements are the captured subgroups in
-order (`regex.esk:87-103`). The walk over the NUL-separated
+order (`regex.esk`). The walk over the NUL-separated
 buffer is bounded by both `count` and `buf-size` so a
 malformed result (or a buffer overflow inside the C side)
 returns whatever was readable rather than going past the
@@ -1110,7 +1110,7 @@ The vendor backend is selected at compile time:
 #endif
 ```
 
-(`agent_crypto.c:14-24`). Random bytes use `SecRandomCopyBytes`
+(`agent_crypto.c`). Random bytes use `SecRandomCopyBytes`
 on macOS or `RAND_bytes` on Linux — both cryptographically
 secure CSPRNG interfaces. HMAC and SHA256 produce 32-byte
 digests, hex-encoded into a 65-byte output buffer (64 hex
@@ -1142,12 +1142,12 @@ All return 0 on success, non-zero on failure.
 `uuid-v4` derives 16 random bytes via `random-hex`, then
 patches the version (nibble 12 = `4`) and variant (nibble 16
 in `{8,9,a,b}`) bits in place to comply with RFC 4122
-(`crypto.esk:52-73`).
+(`crypto.esk`).
 
 `base64url-encode` and `base64url-decode` route through
 `base64-encode-string` / `base64-decode-string` from
 `core.data.base64`. The MEMORY.md note *Bug HH —
-base64url-encode wrong API entry* (`crypto.esk:118-126`,
+base64url-encode wrong API entry* (`crypto.esk`,
 `:131-138`) documents that the previous version called
 `base64-encode` directly with a string, which expected a list
 of bytes and aborted with `cdr: argument is not a pair` —
@@ -1182,7 +1182,7 @@ on the explicit understanding that they own the quoting.
 |---|---|---|
 | `sqlite-prepare` + `sqlite-bind-*` | parameterised queries — SQLite binds the value, no interpolation | `agent_sqlite.c §eshkol_sqlite_bind_*` (lines 149-170) |
 | `sqlite-exec-safe` | rejects `;`, `--`, `/*` | `sqlite.esk §sqlite-exec-safe` (line 63) |
-| `sqlite-exec` (raw) | **DOCUMENTED as risky** | `sqlite.esk:48-61` — caller responsibility |
+| `sqlite-exec` (raw) | **DOCUMENTED as risky** | `sqlite.esk` — caller responsibility |
 
 `sqlite-exec-safe` is explicitly *not* a substitute for prepared
 statements — it blocks the dumbest injection attempts on call
@@ -1231,7 +1231,7 @@ returns a non-match instead of pinning the thread.
 
 | Surface | Mitigation | Implementation |
 |---|---|---|
-| `qllm_process_spawn_command_impl` (Windows branch) | heap-alloc exact size, reject ≥ 32768 | `agent_subprocess.c:589-622` |
+| `qllm_process_spawn_command_impl` (Windows branch) | heap-alloc exact size, reject ≥ 32768 | `agent_subprocess.c` |
 
 `CreateProcessA` mutates lpCommandLine in place; the previous
 4096-byte stack buffer was overflowable. The fix measures the
@@ -1255,7 +1255,7 @@ spawn boundary.
 
 | Surface | Mitigation | Implementation |
 |---|---|---|
-| `qllm_process_spawn*` | separate gate per pipe() call | `agent_subprocess.c:399-418`, `:730-753` (HARDENING.md `#182`) |
+| `qllm_process_spawn*` | separate gate per pipe() call | `agent_subprocess.c` (HARDENING.md `#182`) |
 
 ### 10.9 Resource limits — RLIMIT_AS / CPU / NOFILE / NPROC
 
@@ -1299,31 +1299,31 @@ binary.
 
 Items called out explicitly in the source as deferred:
 
-- **SSE / streaming HTTP** (`agent_http_client.c:317-344`).
+- **SSE / streaming HTTP** (`agent_http_client.c`).
   The `qllm_http_stream_*` functions are stubs; `http-stream-open`
   returns `#f` today. Real SSE needs the libcurl multi
   interface or chunked-transfer line parsing. `MEMORY.md
   §native HTTP client (#234)` lists this as a follow-up.
 
-- **TLS insecure mode** (`agent_http_client.c:110-114`). No
+- **TLS insecure mode** (`agent_http_client.c`). No
   way through the API to disable peer/host verification.
   Callers needing self-signed dev origins shell out to
   `curl --insecure` via `subprocess`.
 
 - **`qllm_http_request` / `qllm_http_post` with header
-  arrays** (`http.esk:138-149`). The Eshkol wrapper currently
+  arrays** (`http.esk`). The Eshkol wrapper currently
   routes everything via `qllm_http_post_json` and synthesises
   a single auth header from the alist; the full pass-through
   for arbitrary header lists is wired in the C ABI but not in
   the wrapper.
 
 - **Subprocess spawn on Windows with argv form**
-  (`agent_subprocess.c:886-890`). The argv path is POSIX-only;
+  (`agent_subprocess.c`). The argv path is POSIX-only;
   the Windows branch returns NULL. A Windows port needs to
   build the cmdline string per Windows quoting rules and call
   CreateProcessW (or accept the lossy CreateProcessA path).
 
-- **Recursive watch — new directories** (`agent_watch.c:94-109`).
+- **Recursive watch — new directories** (`agent_watch.c`).
   Recursive mode enumerates subdirectories at start time and
   adds a watch per directory. Directories created *after*
   start are not auto-watched. Linux inotify supports
@@ -1331,15 +1331,15 @@ Items called out explicitly in the source as deferred:
   detect and add new dirs; macOS kqueue would require an
   FSEvents migration.
 
-- **WebSocket extensions** (`agent_http_server.c:218-222`).
+- **WebSocket extensions** (`agent_http_server.c`).
   No permessage-deflate, no fragmentation handling. Production
   workloads should link libwebsockets or libcurl 7.86+.
 
-- **HTTP server beyond loopback** (`agent_http_server.c:68-69`).
+- **HTTP server beyond loopback** (`agent_http_server.c`).
   The bind is hard-coded to `INADDR_LOOPBACK`. Programs
   needing public exposure must front with a proper proxy.
 
-- **Match-callback regex substitution** (`agent_regex.c:295-297`).
+- **Match-callback regex substitution** (`agent_regex.c`).
   `pcre2_substitute_callback` is not part of PCRE2's stable
   API; the Scheme layer composes `regex-match-groups` +
   `regex-replace` for the equivalent.

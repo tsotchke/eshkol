@@ -11,15 +11,15 @@ Scalar  -->  SIMD  -->  cBLAS  -->  GPU
 (tiny)      (small)   (medium)   (massive)
 ```
 
-The dispatch entry point is `eshkol_matmul_f64` (`blas_backend.cpp:748`):
+The dispatch entry point is `eshkol_matmul_f64` (`blas_backend.cpp`):
 
 - **Tiny** (output elements <= 16): Scalar. SIMD/BLAS overhead exceeds compute.
 - **Small to massive** (17 to 1B elements): cBLAS via Apple Accelerate (AMX) or
-  OpenBLAS. Accelerate sustains 1100+ GFLOPS on M-series. (`blas_backend.cpp:767`)
+  OpenBLAS. Accelerate sustains 1100+ GFLOPS on M-series. (`blas_backend.cpp`)
 - **Super-massive** (>= 1B elements, ~31600x31600+): GPU vs BLAS cost model
-  comparison. GPU lazily initialized on first encounter. (`blas_backend.cpp:780`)
+  comparison. GPU lazily initialized on first encounter. (`blas_backend.cpp`)
 
-Backend selection cascades via `[[fallthrough]]` (`blas_backend.cpp:798-845`):
+Backend selection cascades via `[[fallthrough]]` (`blas_backend.cpp`):
 if the chosen backend fails, execution falls through to the next-best option.
 
 | File | Lines | Role |
@@ -33,7 +33,7 @@ if the chosen backend fails, execution falls through to the next-best option.
 
 Build-time flags select the backend: `ESHKOL_GPU_METAL_ENABLED` (macOS),
 `ESHKOL_GPU_CUDA_ENABLED` (Linux/Windows), or the stub (no GPU). The stub logs
-actionable errors via `eshkol_error()` (`gpu_memory_stub.cpp:56`).
+actionable errors via `eshkol_error()` (`gpu_memory_stub.cpp`).
 
 ---
 
@@ -41,7 +41,7 @@ actionable errors via `eshkol_error()` (`gpu_memory_stub.cpp:56`).
 
 ### Estimation Formula
 
-Defined in `estimate_matmul_cost` (`blas_backend.cpp:99`):
+Defined in `estimate_matmul_cost` (`blas_backend.cpp`):
 
 ```
 flops = 2 * M * K * N
@@ -53,7 +53,7 @@ cost_b       = overhead_b + compute_b
 The efficiency term models ramp-up: small matrices cannot saturate the backend,
 so throughput scales linearly until `efficiency_scale` elements are reached.
 
-### Calibrated Parameters (`blas_backend.cpp:44-65`)
+### Calibrated Parameters (`blas_backend.cpp`)
 
 | Parameter | Value | Description |
 |-----------|-------|-------------|
@@ -67,12 +67,12 @@ so throughput scales linearly until `efficiency_scale` elements are reached.
 | `simd_peak_gflops` | 25 | Peak NEON/AVX throughput |
 | `simd_efficiency_scale` | 1,000 | SIMD saturates quickly |
 
-### Backend Selection (`blas_backend.cpp:134`)
+### Backend Selection (`blas_backend.cpp`)
 
 `select_best_backend` compares estimated costs and selects the minimum. Given
 the above parameters, the GPU path is only selected when output elements exceed
-~1 billion (`g_gpu_matmul_threshold`, `blas_backend.cpp:71`). The SIMD-to-BLAS
-threshold is 64 elements (`blas_backend.cpp:183`) -- cBLAS overhead (~5us) is
+~1 billion (`g_gpu_matmul_threshold`, `blas_backend.cpp`). The SIMD-to-BLAS
+threshold is 64 elements (`blas_backend.cpp`) -- cBLAS overhead (~5us) is
 negligible versus its 100x advantage over naive SIMD.
 
 ---
@@ -132,7 +132,7 @@ residue pair, then reconstruct via CRT. Constants are precomputed using
 Apple Silicon GPUs lack native f64 hardware. SF64 emulates full IEEE 754
 double-precision using `uint2` (two 32-bit integers) on Metal's integer ALU.
 
-### Representation (`metal_softfloat.h:28`)
+### Representation (`metal_softfloat.h`)
 
 ```metal
 typedef uint2 sf64;  // .x = high 32 bits, .y = low 32 bits
@@ -144,22 +144,22 @@ mantissa (52 bits, implicit leading 1). 128-bit intermediates use
 
 ### Core Operations
 
-**Addition** (`metal_softfloat.h:418`): 11 guard bits via left-shift. After
+**Addition** (`metal_softfloat.h`): 11 guard bits via left-shift. After
 magnitude add/subtract, normalize leading 1 to bit 62, extract 10 round bits
 (`& 0x3FF`), delegate to `sf64_round_pack()`.
 
-**Multiplication** (`metal_softfloat.h:537`): 64x64 -> 128 bit multiply via
+**Multiplication** (`metal_softfloat.h`): 64x64 -> 128 bit multiply via
 `mul64x64()` using Metal's `mulhi()` intrinsic for 32-bit high-word extraction.
 4 partial products with branchless carry propagation.
 
-**FMA** (`metal_softfloat.h:696`): True single-rounding using 128-bit
+**FMA** (`metal_softfloat.h`): True single-rounding using 128-bit
 intermediate. Fast path (all operands normal) skips 13 NaN/Inf/Zero/subnormal
 checks -- the hot path in matmul accumulation.
 
-**Division** (`metal_softfloat.h:606`): 63-iteration long division. Remainder
+**Division** (`metal_softfloat.h`): 63-iteration long division. Remainder
 preserved as sticky bit for correct rounding.
 
-### Rounding (`metal_softfloat.h:378`)
+### Rounding (`metal_softfloat.h`)
 
 IEEE 754 round-to-nearest-even with 10 rounding bits, halfway at `0x200`:
 
@@ -173,7 +173,7 @@ halfway point, causing systematic rounding errors.
 
 ### Performance
 
-`shr128_jam` (`metal_softfloat.h:239`) includes a hand-optimized 1-31 bit
+`shr128_jam` (`metal_softfloat.h`) includes a hand-optimized 1-31 bit
 fast path (direct 4-word shifts, no nested calls) for FMA exponent alignment.
 Each operation introduces at most 0.5 ULP error, matching hardware f64.
 
@@ -184,12 +184,12 @@ Each operation introduces at most 0.5 ULP error, matching hardware f64.
 The CUDA backend (`gpu_memory_cuda.cpp`) provides native f64 GPU acceleration on
 NVIDIA hardware -- no software emulation required.
 
-### Initialization (`gpu_memory_cuda.cpp:69`)
+### Initialization (`gpu_memory_cuda.cpp`)
 
 Enumerate devices, select device 0, create CUDA stream and cuBLAS handle, bind
 handle to stream. Thread-safe via `std::mutex` + double-check pattern.
 
-### cuBLAS Matmul (`gpu_memory_cuda.cpp:183`)
+### cuBLAS Matmul (`gpu_memory_cuda.cpp`)
 
 cuBLAS is column-major; Eshkol tensors are row-major. The transpose trick:
 ```cpp
@@ -248,7 +248,7 @@ A size-binned buffer pool (`gpu_memory.mm:611-653`) reuses `MTLBuffer` objects.
 Sizes are rounded to the next power of 2; each bucket holds up to 8 buffers
 (`POOL_MAX_PER_BUCKET`). Excess buffers are dropped (freed by ARC).
 
-### CUDA Memory Types (`gpu_memory_cuda.cpp:102-143`)
+### CUDA Memory Types (`gpu_memory_cuda.cpp`)
 
 - `ESHKOL_MEM_UNIFIED`: `cudaMallocManaged()` -- automatic page migration
 - `ESHKOL_MEM_DEVICE`: `cudaMalloc()` -- device-only, maximum throughput
@@ -280,18 +280,18 @@ bit 0 prevents deallocation of externally-owned memory.
 
 | Variable | Default | Source |
 |----------|---------|--------|
-| `ESHKOL_GPU_MATMUL_THRESHOLD` | 1,000,000,000 | `blas_backend.cpp:71` |
-| `ESHKOL_BLAS_THRESHOLD` | 64 | `blas_backend.cpp:183` |
+| `ESHKOL_GPU_MATMUL_THRESHOLD` | 1,000,000,000 | `blas_backend.cpp` |
+| `ESHKOL_BLAS_THRESHOLD` | 64 | `blas_backend.cpp` |
 | `ESHKOL_FORCE_GPU=1` | -- | Force GPU for all ops |
 | `ESHKOL_FORCE_CPU=1` | -- | Disable GPU |
-| `ESHKOL_GPU_PRECISION` | "exact" | "exact"/"high"/"fast" (`blas_backend.cpp:82`) |
+| `ESHKOL_GPU_PRECISION` | "exact" | "exact"/"high"/"fast" (`blas_backend.cpp`) |
 
 **Cost model tuning:**
 
 | Variable | Default | Source |
 |----------|---------|--------|
-| `ESHKOL_BLAS_PEAK_GFLOPS` | 1100 | `blas_backend.cpp:163` |
-| `ESHKOL_GPU_PEAK_GFLOPS` | 200 | `blas_backend.cpp:166` |
+| `ESHKOL_BLAS_PEAK_GFLOPS` | 1100 | `blas_backend.cpp` |
+| `ESHKOL_GPU_PEAK_GFLOPS` | 200 | `blas_backend.cpp` |
 
 **Metal kernel tuning:**
 
@@ -335,21 +335,21 @@ occupancy scores, making it straightforward to assess auto-tuned optimality.
 The SIMD tier provides architecture-specific matmul as a middle ground between
 scalar and cBLAS:
 
-- **ARM NEON** (`blas_backend.cpp:377`): Cache-blocked with 64x64x64 tiles
+- **ARM NEON** (`blas_backend.cpp`): Cache-blocked with 64x64x64 tiles
   tuned for M-series L1 (64KB data). 4x4 register micro-kernel with
   `vfmaq_f64` FMA and 8 `float64x2_t` accumulators.
 
-- **x86 AVX** (`blas_backend.cpp:495`): 64x64x64 tiles for x86 L1 (~32KB).
+- **x86 AVX** (`blas_backend.cpp`): 64x64x64 tiles for x86 L1 (~32KB).
   4x8 micro-kernel with `_mm256_fmadd_pd` (FMA3) or separate mul+add, 8
   `__m256d` accumulators.
 
-- **x86 SSE2** (`blas_backend.cpp:617`): Fallback for older x86. 4x4
+- **x86 SSE2** (`blas_backend.cpp`): Fallback for older x86. 4x4
   micro-kernel with `__m128d`, 64x64x64 blocking.
 
 Edge tiles that do not fill a complete micro-kernel fall back to scalar
 computation via `scalar_block` / `avx_scalar_block` / `sse_scalar_block`.
 All SIMD implementations zero the result matrix with `memset` before blocked
-accumulation to support the `C[i][j] += sum` pattern (`blas_backend.cpp:448`).
+accumulation to support the `C[i][j] += sum` pattern (`blas_backend.cpp`).
 
 ---
 
@@ -364,7 +364,7 @@ algorithms.
 
 A `double` is 64 bits. Metal's Shading Language provides `uint2` (two 32-bit
 unsigned integers), which SF64 uses as its storage type
-(`metal_softfloat.h:28`):
+(`metal_softfloat.h`):
 
 ```metal
 typedef uint2 sf64;   // .x = high 32 bits, .y = low 32 bits
@@ -381,33 +381,33 @@ The IEEE 754 layout maps as follows:
 
 Constants `SF64_SIGN_MASK` (0x80000000), `SF64_EXP_MASK` (0x7FF00000), and
 `SF64_MANT_HI_MASK` (0x000FFFFF) extract each field
-(`metal_softfloat.h:43-46`). Classification functions (`sf64_is_zero`,
+(`metal_softfloat.h`). Classification functions (`sf64_is_zero`,
 `sf64_is_inf`, `sf64_is_nan`, `sf64_is_subnormal`, `sf64_is_signaling_nan`)
-operate purely on these bitfields (`metal_softfloat.h:73-92`).
+operate purely on these bitfields (`metal_softfloat.h`).
 
 On little-endian ARM64, a `double` in memory stores `[low32, high32]`, but
 `uint2.x` is the first word. The `native_to_sf64` / `sf64_to_native` helpers
-(`metal_softfloat.h:1267-1268`) perform the swap inline in every kernel,
+(`metal_softfloat.h`) perform the swap inline in every kernel,
 eliminating the need for a separate word-swap dispatch pass.
 
 ### 128-Bit Intermediates
 
 For multiply and FMA, SF64 needs more than 64 bits of intermediate precision.
-The `sf128` struct (`metal_softfloat.h:221`) holds two `sf64` values as
+The `sf128` struct (`metal_softfloat.h`) holds two `sf64` values as
 high and low halves:
 
 ```metal
 struct sf128 { sf64 hi; sf64 lo; };   // 128-bit value
 ```
 
-The `uint128_t` struct (`metal_softfloat.h:329-331`) provides a 4-word
+The `uint128_t` struct (`metal_softfloat.h`) provides a 4-word
 representation (`w3..w0`, MSW first) used for multiplication output. These
 are not hardware-supported -- all 128-bit operations are synthesized from
 32-bit word arithmetic with explicit carry/borrow propagation.
 
 ### Core Operations
 
-**Addition** (`sf64_add`, `metal_softfloat.h:418`): The algorithm uses 11
+**Addition** (`sf64_add`, `metal_softfloat.h`): The algorithm uses 11
 guard bits by left-shifting both significands by 11, placing the implicit
 leading 1 at bit 63. After aligning exponents via `shr64_jam` (which
 preserves rounding information as a sticky bit), it adds or subtracts
@@ -415,11 +415,11 @@ magnitudes. On same-sign overflow (carry out of bit 63), it shifts right by
 2 and sets bit 62. On subtraction, it normalizes via `clz64` to place the
 leading 1 at bit 62. Finally, 10 round bits are extracted from the low 10
 bits (`& 0x3FF`), the significand is shifted right by 10, and `sf64_round_pack`
-produces the final result (`metal_softfloat.h:516-519`).
+produces the final result (`metal_softfloat.h`).
 
-**Multiplication** (`sf64_mul`, `metal_softfloat.h:537`): Both significands are
+**Multiplication** (`sf64_mul`, `metal_softfloat.h`): Both significands are
 shifted to have the leading 1 at bit 63. The 64x64-bit multiply is performed
-by `mul64x64` (`metal_softfloat.h:336`), which decomposes into 4 partial
+by `mul64x64` (`metal_softfloat.h`), which decomposes into 4 partial
 products using Metal's `mulhi()` intrinsic for the high 32-bit word of each
 32x32 product. Carries are propagated branchlessly via `select(0u, 1u, ...)`.
 The result is a 128-bit product in `uint128_t{w3,w2,w1,w0}`. The product's
@@ -427,7 +427,7 @@ leading 1 is at bit 126 or 127; if bit 127 (overflow), the high word is
 shifted right by 1 and the exponent incremented. Bits w1|w0 contribute a
 sticky bit for correct rounding.
 
-**Fused Multiply-Add** (`sf64_fma`, `metal_softfloat.h:696`): This is the
+**Fused Multiply-Add** (`sf64_fma`, `metal_softfloat.h`): This is the
 critical inner-loop operation for matmul (C[i][j] += A[i][k] * B[k][j]).
 It computes a*b+c with a single rounding at the end, matching IEEE 754
 semantics. The implementation has two paths:
@@ -445,13 +445,13 @@ The product a*b is computed as a full 128-bit value. The addend c is widened
 to 128 bits by shifting its 53-bit significand to bit 126
 (`shl64(sigC, 10)` into the high half). After aligning exponents via
 `shr128_jam`, the 128-bit addition or subtraction is performed with
-4-word carry propagation (`add128`/`sub128`, `metal_softfloat.h:285-306`).
+4-word carry propagation (`add128`/`sub128`, `metal_softfloat.h`).
 On subtraction with cancellation, `clz128` finds the new leading 1 and
 `shl128` normalizes. The sticky bit is computed from the low 64 bits
 (`R.lo.x | R.lo.y`), 10 round bits are extracted from `R.hi.y`, and
 `sf64_round_pack` produces the single-rounded result.
 
-**Division** (`sf64_div`, `metal_softfloat.h:606`): Uses 63-iteration long
+**Division** (`sf64_div`, `metal_softfloat.h`): Uses 63-iteration long
 division. The dividend significand is placed at bit 62 (aligned); if the
 dividend is less than the divisor, it is shifted left by 1 and the exponent
 decremented. Each iteration compares the remainder against the divisor,
@@ -461,7 +461,7 @@ exact results but is the most expensive SF64 operation at 63 serial iterations.
 
 ### Rounding: Round-to-Nearest-Even
 
-`sf64_round_pack` (`metal_softfloat.h:378`) implements IEEE 754
+`sf64_round_pack` (`metal_softfloat.h`) implements IEEE 754
 round-to-nearest-even using 10 rounding bits. The halfway point is at
 `0x200` (bit 9):
 
@@ -476,16 +476,16 @@ If rounding causes the mantissa to overflow (bit 52 carries into bit 53),
 the significand is shifted right and the exponent incremented. Overflow to
 infinity and underflow to subnormal/zero are handled as edge cases.
 
-The `0x3FF` mask was a critical bug fix (documented in `metal_softfloat.h:376`
+The `0x3FF` mask was a critical bug fix (documented in `metal_softfloat.h`
 and the project memory). The earlier `0x7FF` (11 bits) shifted the halfway
 point, causing systematic rounding errors in matmul accumulation.
 
 ### The `shr128_jam` Fast Path
 
-The `shr128_jam` function (`metal_softfloat.h:239`) is the hot path in FMA
+The `shr128_jam` function (`metal_softfloat.h`) is the hot path in FMA
 exponent alignment. For shifts of 1-31 bits (the common case when aligning
 operands with similar exponents), it uses a hand-optimized 4-word direct
-shift (`metal_softfloat.h:252-260`):
+shift (`metal_softfloat.h`):
 
 ```metal
 if (n < 32) {
@@ -506,25 +506,25 @@ bit preserves information about shifted-out bits for correct rounding.
 Metal has no native f64 math functions. SF64 implements them using
 FMA-chain polynomial approximations:
 
-- **`sf64_exp`** (`metal_softfloat.h:952`): Cody-Waite range reduction
+- **`sf64_exp`** (`metal_softfloat.h`): Cody-Waite range reduction
   (x = n*ln2 + r, |r| < ln2/2), then 13-term Horner evaluation using
   `sf64_fma` for each coefficient (1/n! for n=2..13). Final scaling by
   2^n via direct exponent adjustment.
 
-- **`sf64_log`** (`metal_softfloat.h:1054`): Extracts exponent and mantissa,
+- **`sf64_log`** (`metal_softfloat.h`): Extracts exponent and mantissa,
   reduces to [sqrt(2)/2, sqrt(2)] range, computes s=(f-1)/(f+1), then
   evaluates an odd-power series (2/(2k+1) for k=1..6) via Horner form.
   Result: n*ln2 + log(f).
 
-- **`sf64_sin` / `sf64_cos`** (`metal_softfloat.h:1188-1222`): Cody-Waite
+- **`sf64_sin` / `sf64_cos`** (`metal_softfloat.h`): Cody-Waite
   reduction to [-pi/4, pi/4] via `sf64_trig_reduce`, then minimax polynomials
   (`sf64_sin_poly`: 5 odd terms, `sf64_cos_poly`: 5 even terms), with
   quadrant-based sign/function selection.
 
-- **`sf64_sqrt`** (`metal_softfloat.h:930`): Newton-Raphson with 5 iterations.
+- **`sf64_sqrt`** (`metal_softfloat.h`): Newton-Raphson with 5 iterations.
   Initial estimate halves the exponent. Each iteration: y = (y + x/y) * 0.5.
 
-- **`sf64_tanh`** (`metal_softfloat.h:1226`): Computed as (e^(2x)-1)/(e^(2x)+1)
+- **`sf64_tanh`** (`metal_softfloat.h`): Computed as (e^(2x)-1)/(e^(2x)+1)
   with saturation to +/-1 for |x| >= 20.
 
 All transcendentals use `sf64_fma` in their polynomial evaluations, maintaining
@@ -616,7 +616,7 @@ Each kernel type uses a specific threadgroup geometry:
   of `ceil(N/256)` groups (`gpu_memory.mm:1384-1386`).
 
 - **Reduce**: 256 threads per group with tree reduction in threadgroup memory
-  (`metal_softfloat.h:1329`). Two-pass: first pass reduces chunks of 256
+  (`metal_softfloat.h`). Two-pass: first pass reduces chunks of 256
   to partial results, host launches second pass if needed.
 
 ### GPU Warmup
@@ -785,27 +785,27 @@ hardware, so no precision emulation is needed.
 
 ### What Is Fully Implemented
 
-**Initialization** (`gpu_memory_cuda.cpp:69-89`): Device enumeration via
+**Initialization** (`gpu_memory_cuda.cpp`): Device enumeration via
 `cudaGetDeviceCount`, device 0 selection, CUDA stream creation, cuBLAS
 handle creation and stream binding. Thread-safe via `std::mutex` +
-double-check pattern in `eshkol_gpu_init` (`gpu_memory_cuda.cpp:267-296`).
+double-check pattern in `eshkol_gpu_init` (`gpu_memory_cuda.cpp`).
 
-**Memory management** (`gpu_memory_cuda.cpp:102-157`): Three allocation modes:
+**Memory management** (`gpu_memory_cuda.cpp`): Three allocation modes:
 - `ESHKOL_MEM_UNIFIED`: `cudaMallocManaged()` -- automatic page migration
   between host and device
 - `ESHKOL_MEM_DEVICE`: `cudaMalloc()` -- device-only, maximum throughput
 - `ESHKOL_MEM_HOST_PINNED`: `cudaMallocHost()` -- pinned host memory for
   async DMA
 
-Host wrapping (`gpu_memory_cuda.cpp:221-240`) uses `cudaHostRegister()` to
+Host wrapping (`gpu_memory_cuda.cpp`) uses `cudaHostRegister()` to
 pin existing memory. If registration fails (e.g., already-registered or
 non-page-aligned), it falls back to unified allocation + memcpy.
 
-Sync (`gpu_memory_cuda.cpp:159-181`) handles bidirectional transfers:
+Sync (`gpu_memory_cuda.cpp`) handles bidirectional transfers:
 unified memory uses `cudaStreamSynchronize`, pinned memory uses
 `cudaMemcpyAsync` with explicit direction.
 
-**Matmul via cuBLAS** (`gpu_memory_cuda.cpp:183-219`): Both f64 (`cublasDgemm`)
+**Matmul via cuBLAS** (`gpu_memory_cuda.cpp`): Both f64 (`cublasDgemm`)
 and f32 (`cublasSgemm`) are implemented. The row-major to column-major
 conversion uses the standard transpose trick:
 
@@ -818,7 +818,7 @@ This computes C^T = B^T * A^T in column-major, which is equivalent to
 C = A * B in row-major.
 
 **Custom kernels** (`gpu_cuda_kernels.cu`, 409 lines, launched via extern "C"
-declarations in `gpu_memory_cuda.cpp:31-47`):
+declarations in `gpu_memory_cuda.cpp`):
 - Elementwise: 15 operations dispatched by integer op code, 256 threads/block
 - Reduce: Two-pass block reduction with `__shfl_down_sync` warp shuffle
 - Reduce axis: N-dimensional axis reduction
@@ -827,7 +827,7 @@ declarations in `gpu_memory_cuda.cpp:31-47`):
 - Normalize: Layer normalization (mean, variance, scale+shift)
 
 **Full public API**: All `eshkol_gpu_*` functions
-(`gpu_memory_cuda.cpp:267-757`) are implemented: `init`, `shutdown`, `alloc`,
+(`gpu_memory_cuda.cpp`) are implemented: `init`, `shutdown`, `alloc`,
 `alloc_aligned`, `free`, `wrap_host`, `sync`, `sync_async`, `wait`,
 `matmul_f64`, `matmul_f32`, `elementwise_f64`, `reduce_f64`,
 `reduce_axis_f64`, `transpose_f64`, `softmax_f64`, `normalize_f64`,
@@ -835,7 +835,7 @@ declarations in `gpu_memory_cuda.cpp:31-47`):
 
 Every GPU function has a CPU fallback path: if the CUDA backend is not
 active or the GPU operation fails, the function falls through to a scalar
-CPU implementation in the same file (`gpu_memory_cuda.cpp:454-507`).
+CPU implementation in the same file (`gpu_memory_cuda.cpp`).
 
 ### What Is Not Implemented
 
@@ -853,9 +853,9 @@ CPU implementation in the same file (`gpu_memory_cuda.cpp:454-507`).
 
 cuBLAS is the primary compute backend. The integration is minimal:
 
-1. `cublasCreate` + `cublasSetStream` at init (`gpu_memory_cuda.cpp:80-86`)
-2. `cublasDgemm` / `cublasSgemm` for matmul (`gpu_memory_cuda.cpp:190-218`)
-3. `cublasDestroy` at shutdown (`gpu_memory_cuda.cpp:93`)
+1. `cublasCreate` + `cublasSetStream` at init (`gpu_memory_cuda.cpp`)
+2. `cublasDgemm` / `cublasSgemm` for matmul (`gpu_memory_cuda.cpp`)
+3. `cublasDestroy` at shutdown (`gpu_memory_cuda.cpp`)
 
 Custom CUDA kernels handle all non-matmul operations (elementwise, reduce,
 transpose, softmax, normalize) because cuBLAS only provides BLAS-level
@@ -872,7 +872,7 @@ Metal and CUDA coexist via compile-time guards and runtime detection:
   A stub file (`gpu_memory_stub.cpp`, 341 lines) provides no-op
   implementations when neither backend is available.
 
-- **Runtime**: `eshkol_gpu_init` (`gpu_memory_cuda.cpp:267`) tries CUDA
+- **Runtime**: `eshkol_gpu_init` (`gpu_memory_cuda.cpp`) tries CUDA
   first (on builds with `ESHKOL_GPU_CUDA_AVAILABLE`). The Metal backend
   (`gpu_memory.mm`) follows the same pattern. The first backend that
   successfully initializes sets `g_active_backend`; subsequent API calls
@@ -881,5 +881,5 @@ Metal and CUDA coexist via compile-time guards and runtime detection:
 - **Backend query**: `eshkol_gpu_get_backend()` returns the active enum
   (`ESHKOL_GPU_METAL`, `ESHKOL_GPU_CUDA`, or `ESHKOL_GPU_NONE`).
   `eshkol_gpu_supports_f64()` returns true for CUDA (native) and false
-  for "no GPU" (`gpu_memory_cuda.cpp:329-332`). The Metal backend reports
+  for "no GPU" (`gpu_memory_cuda.cpp`). The Metal backend reports
   f64 support via SF64 emulation.

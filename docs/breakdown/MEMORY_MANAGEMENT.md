@@ -1358,7 +1358,7 @@ extern "C" void eshkol_init_stack_size() {
 
 This is called from generated `main` functions and from REPL JIT
 init (via `ADD_SYMBOL(eshkol_init_stack_size)` in
-`repl_jit.cpp:664`). The env override has a 1 MiB floor to prevent
+`repl_jit.cpp`). The env override has a 1 MiB floor to prevent
 accidentally setting an unusably small stack.
 
 **Worker thread stack**: workers do not get the 512 MB stack — they
