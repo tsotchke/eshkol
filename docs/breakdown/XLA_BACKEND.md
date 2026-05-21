@@ -71,7 +71,7 @@ Or programmatically via `xla_set_threshold(n)` (`inc/eshkol/backend/xla/xla_code
 ### 2.3 GPU Initialization
 
 GPU initialization uses `std::call_once` to guarantee thread-safe one-time setup
-(`lib/backend/xla/xla_runtime.cpp:33-39`):
+(`lib/backend/xla/xla_runtime.cpp`):
 
 ```cpp
 static std::once_flag g_xla_gpu_init_flag;
@@ -94,7 +94,7 @@ or JIT contexts.
 ### 3.1 Core Struct
 
 Tensors in the XLA runtime are represented by `eshkol_tensor_t`
-(`lib/backend/xla/xla_runtime.cpp:49-54`):
+(`lib/backend/xla/xla_runtime.cpp`):
 
 ```c
 typedef struct eshkol_tensor {
@@ -132,7 +132,7 @@ All tensors are allocated from the Eshkol arena via `arena_allocate_tensor_full`
 ```c
 extern "C" eshkol_tensor_t* arena_allocate_tensor_full(
     void* arena, uint64_t num_dims, uint64_t total_elements);
-// lib/backend/xla/xla_runtime.cpp:56-57
+// lib/backend/xla/xla_runtime.cpp
 ```
 
 This function allocates a single contiguous block containing:
@@ -154,7 +154,7 @@ and `slice`. This limit is enforced by stack-allocated working arrays of size 16
 
 ```c
 if (rank > 16) return nullptr; // max 16D tensors supported
-// lib/backend/xla/xla_runtime.cpp:310
+// lib/backend/xla/xla_runtime.cpp
 ```
 
 ---
@@ -169,7 +169,7 @@ void* eshkol_xla_matmul(
     const double* a_data, const double* b_data,
     const int64_t* a_shape, const int64_t* b_shape,
     int64_t a_rank, int64_t b_rank)
-// lib/backend/xla/xla_runtime.cpp:67
+// lib/backend/xla/xla_runtime.cpp
 ```
 
 **Constraints**: Only 2-D tensors. Inner dimensions must match (`a_shape[1] == b_shape[0]`).
@@ -190,7 +190,7 @@ void* eshkol_xla_elementwise(
     int64_t total_elements,
     const uint64_t* shape, int64_t rank,
     int64_t op_code)
-// lib/backend/xla/xla_runtime.cpp:134
+// lib/backend/xla/xla_runtime.cpp
 ```
 
 **Op codes** (match `ElementwiseOp` enum in `inc/eshkol/backend/xla/xla_codegen.h:41-53`):
@@ -217,7 +217,7 @@ remaps XLA codes 4-10 to GPU codes 6-12:
 
 ```c
 static const int xla_to_gpu_elemwise[] = {0, 1, 2, 3, 6, 7, 8, 9, 10, 11, 12};
-// lib/backend/xla/xla_runtime.cpp:164
+// lib/backend/xla/xla_runtime.cpp
 ```
 
 **Complexity**: O(N) per element.
@@ -230,7 +230,7 @@ void* eshkol_xla_reduce(
     const double* data, int64_t total_elements,
     const uint64_t* shape, int64_t rank,
     int64_t axis, int64_t op_code)
-// lib/backend/xla/xla_runtime.cpp:234
+// lib/backend/xla/xla_runtime.cpp
 ```
 
 **Op codes** (match `ReduceOp` enum in `inc/eshkol/backend/xla/xla_codegen.h:56-62`):
@@ -251,7 +251,7 @@ Axis-specific reduction removes that axis from the output shape.
 
 ```c
 static const int xla_to_gpu_reduce[] = {0, 4, 3, 2, 1};
-// lib/backend/xla/xla_runtime.cpp:261
+// lib/backend/xla/xla_runtime.cpp
 ```
 
 **CPU axis-reduce algorithm**: Uses outer/inner stride decomposition. For an input
@@ -277,7 +277,7 @@ stride arithmetic.
 
 ```c
 void* eshkol_xla_scale_inplace(double* data, int64_t total_elements, double scale)
-// lib/backend/xla/xla_runtime.cpp:391
+// lib/backend/xla/xla_runtime.cpp
 ```
 
 Multiplies every element of `data` by `scale` in-place without allocation. Used by the
@@ -294,7 +294,7 @@ void* eshkol_xla_softmax(
     const double* data, int64_t total_elements,
     const uint64_t* shape, int64_t rank,
     int64_t axis)
-// lib/backend/xla/xla_runtime.cpp:404
+// lib/backend/xla/xla_runtime.cpp
 ```
 
 Numerically stable softmax using the log-sum-exp trick. For each slice along `axis`:
@@ -320,7 +320,7 @@ void* eshkol_xla_normalize(
     const double* data, int64_t total_elements,
     const uint64_t* shape, int64_t rank,
     int64_t axis, double gamma, double beta, double epsilon)
-// lib/backend/xla/xla_runtime.cpp:513
+// lib/backend/xla/xla_runtime.cpp
 ```
 
 Computes layer normalization along `axis`:
@@ -346,7 +346,7 @@ void* eshkol_xla_argreduce(
     const double* data, int64_t total_elements,
     const uint64_t* shape, int64_t rank,
     int64_t axis, int64_t is_max)   // 1=argmax, 0=argmin
-// lib/backend/xla/xla_runtime.cpp:593
+// lib/backend/xla/xla_runtime.cpp
 ```
 
 Returns a tensor of indices (stored as `double` values) locating the maximum or minimum
@@ -373,7 +373,7 @@ void* eshkol_xla_reduce_gradient(
     int64_t total_input,
     int64_t axis,
     int64_t op_code)   // 2=MAX, 3=MIN, 4=PROD
-// lib/backend/xla/xla_runtime.cpp:677
+// lib/backend/xla/xla_runtime.cpp
 ```
 
 Computes `dL/dinput` given `dL/doutput = grad_data` and the forward `input_data`. The
@@ -411,7 +411,7 @@ void* eshkol_xla_transpose(
     const uint64_t* shape,
     int64_t rank,
     const int64_t* perm)
-// lib/backend/xla/xla_runtime.cpp:807
+// lib/backend/xla/xla_runtime.cpp
 ```
 
 General N-dimensional axis permutation. `perm[i]` specifies which source axis maps to output
@@ -432,7 +432,7 @@ for flat in range(total):
         remaining %= dst_strides[d]
         src_flat += idx * src_strides[perm[d]]
     out[flat] = data[src_flat]
-// lib/backend/xla/xla_runtime.cpp:865-876
+// lib/backend/xla/xla_runtime.cpp
 ```
 
 **Complexity**: O(N) with rank-proportional index arithmetic per element.
@@ -445,7 +445,7 @@ void* eshkol_xla_broadcast(
     const double* data,
     const uint64_t* src_shape, int64_t src_rank,
     const uint64_t* tgt_shape, int64_t tgt_rank)
-// lib/backend/xla/xla_runtime.cpp:883
+// lib/backend/xla/xla_runtime.cpp
 ```
 
 NumPy-style right-aligned broadcasting. Shapes are aligned from the right; source dimensions
@@ -460,7 +460,7 @@ int64_t src_d = d - offset;
 if (src_d >= 0 && src_d < src_rank && src_shape[src_d] > 1) {
     src_flat += idx * src_strides[src_d];
 }
-// lib/backend/xla/xla_runtime.cpp:928-931
+// lib/backend/xla/xla_runtime.cpp
 ```
 
 **Complexity**: O(N_target) — proportional to output size, independent of source size.
@@ -475,7 +475,7 @@ void* eshkol_xla_slice(
     const int64_t* starts,
     const int64_t* limits,
     const int64_t* strides)
-// lib/backend/xla/xla_runtime.cpp:941
+// lib/backend/xla/xla_runtime.cpp
 ```
 
 Extracts a sub-tensor with per-dimension `[start, limit)` ranges and optional stride.
@@ -494,7 +494,7 @@ implement the equivalent of Python's `tensor[::2]` downsampling.
 
 The GPU dispatch decision is made by `eshkol_gpu_should_use(n)` defined in
 `inc/eshkol/backend/gpu/gpu_memory.h:237`. The underlying cost model
-(`lib/backend/blas_backend.cpp:44-65`) calibrates two backends:
+(`lib/backend/blas_backend.cpp`) calibrates two backends:
 
 | Backend | Peak throughput | Fixed overhead | Efficiency scale |
 |---|---|---|---|
@@ -521,7 +521,7 @@ N > (gpu_overhead - blas_overhead) / (1/blas_gflops - 1/gpu_gflops)
 ```
 
 This analysis explains the `g_gpu_matmul_threshold = 1,000,000,000` default
-(`lib/backend/blas_backend.cpp:71`): GPU matmul is effectively reserved for matrices
+(`lib/backend/blas_backend.cpp`): GPU matmul is effectively reserved for matrices
 beyond ~31,623 × 31,623. For elementwise operations, which have lower per-element cost
 on CPU, the threshold is `ESHKOL_XLA_THRESHOLD = 100,000`.
 
@@ -538,7 +538,7 @@ if (eshkol_gpu_wrap_host((void*)a_data, M * K * sizeof(double), &buf_a) == 0) {
     ...
     eshkol_gpu_free(&buf_a);  // release MTLBuffer reference / unpin
 }
-// lib/backend/xla/xla_runtime.cpp:113-122
+// lib/backend/xla/xla_runtime.cpp
 ```
 
 On Apple Silicon with unified memory, `eshkol_gpu_wrap_host` is zero-copy: it creates an
@@ -558,7 +558,7 @@ opportunistic acceleration, not a required code path.
 
 ### 6.1 Implementation Structure
 
-The `XLARuntime` class uses the PIMPL idiom (`lib/backend/xla/xla_runtime.cpp:1003-1011`):
+The `XLARuntime` class uses the PIMPL idiom (`lib/backend/xla/xla_runtime.cpp`):
 
 ```cpp
 class XLARuntime::Impl {
@@ -609,18 +609,18 @@ struct ExecutionResult {          // inc/eshkol/backend/xla/xla_runtime.h:37-41
 `initialize(Target)` sets `impl_->target_` and calls `eshkol_gpu_init()` for non-CPU
 targets. If the requested GPU backend is not available, it still marks `initialized_ = true`
 because all XLA runtime functions have CPU fallbacks
-(`lib/backend/xla/xla_runtime.cpp:1020-1047`).
+(`lib/backend/xla/xla_runtime.cpp`).
 
 The `getDefaultRuntime()` singleton auto-detects the best available backend via
 `eshkol_gpu_get_backend()` and initializes once using `std::call_once`
-(`lib/backend/xla/xla_runtime.cpp:1229-1246`).
+(`lib/backend/xla/xla_runtime.cpp`).
 
 ### 6.6 Execute and ExecuteAsync
 
 `execute()` casts the `executable` pointer to a function pointer of type
 `void(*)(const void* const*, void* const*)` and calls it directly. This interface is
 designed for future StableHLO JIT executables, which conform to the same calling convention
-(`lib/backend/xla/xla_runtime.cpp:1062-1098`).
+(`lib/backend/xla/xla_runtime.cpp`).
 
 `executeAsync()` wraps the `execute()` call in `std::async(std::launch::async, ...)` and
 stores the resulting `std::future<ExecutionResult>` keyed by an integer handle. Callers
@@ -801,10 +801,10 @@ Extreme sizes use separate processes" due to arena accumulation.
 
 ### 10.4 Elementwise Loop Optimization
 
-The CPU fallback loops in `eshkol_xla_elementwise` (`lib/backend/xla/xla_runtime.cpp:190-226`)
+The CPU fallback loops in `eshkol_xla_elementwise` (`lib/backend/xla/xla_runtime.cpp`)
 are simple scalar loops. LLVM's auto-vectorizer will vectorize these loops when the target
 has AVX/NEON support. The `TensorCodegen::attachLoopMetadata` method
-(`lib/backend/tensor_codegen.cpp:73`) emits LLVM loop metadata to hint at vectorization
+(`lib/backend/tensor_codegen.cpp`) emits LLVM loop metadata to hint at vectorization
 width when the direct SIMD path is used instead.
 
 ### 10.5 Slice and Transpose Cache Behavior

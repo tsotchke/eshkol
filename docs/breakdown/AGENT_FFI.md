@@ -136,7 +136,7 @@ The critical sequencing in `exe/eshkol-run.cpp` is that the
 agent-FFI usage flag must be captured *before* `process_requires`
 inlines the user's `(require agent.…)` form into the AST tree.
 After inlining, the top-level `ESHKOL_REQUIRE_OP` no longer
-exists and the scanner would miss it (`eshkol-run.cpp:2952-2965`):
+exists and the scanner would miss it (`eshkol-run.cpp`):
 
 ```cpp
 // #248: capture agent-FFI usage BEFORE process_requires expands
@@ -154,10 +154,10 @@ for (const auto &source_file : source_files) {
 }
 ```
 
-`requires_agent_ffi` (`eshkol-run.cpp:1620-1633`) walks the top-
+`requires_agent_ffi` (`eshkol-run.cpp`) walks the top-
 level AST and returns true whenever any module name on a
 `(require …)` form begins with `agent.`. The downstream effect
-is that the link block at `eshkol-run.cpp:3363-3376` splices
+is that the link block at `eshkol-run.cpp` splices
 `ESHKOL_HOST_AGENT_FFI_LINK_ARGS` into the link command only
 when `needs_agent_ffi` is true — programs that never touch
 agent.* are linked without libcurl, sqlite3, or pcre2, paying
@@ -167,7 +167,7 @@ no cost.
 
 For REPL JIT runs, the LLJIT instance attaches a
 `DynamicLibrarySearchGenerator::GetForCurrentProcess` generator
-to the main JITDylib (`lib/repl/repl_jit.cpp:534`). Because
+to the main JITDylib (`lib/repl/repl_jit.cpp`). Because
 eshkol-run was linked with `-force_load`/`--whole-archive`
 against `libeshkol-agent-ffi.a`, every agent symbol — `qllm_http_*`,
 `eshkol_sqlite_*`, `qllm_process_*`, `eshkol_http_server_*`,
@@ -178,7 +178,7 @@ real function pointer at the first `(extern :real qllm_http_get)`
 lookup the JIT performs.
 
 The macros `ESHKOL_AGENT_FFI_SYMBOL(name)` and
-`ADD_OPTIONAL_AGENT_FFI_SYMBOL(name)` (`lib/repl/repl_jit.cpp:290`
+`ADD_OPTIONAL_AGENT_FFI_SYMBOL(name)` (`lib/repl/repl_jit.cpp`
 and `:578`) additionally make every optional agent symbol's
 *address* visible to the linker so the static archive isn't
 dropped under LTO; they declare each `name` with weak
@@ -535,7 +535,7 @@ companion function that returns the exact byte length without
 copying:
 
 ```c
-/* lib/agent/c/agent_sqlite.c:183 */
+/* lib/agent/c/agent_sqlite.c */
 int64_t eshkol_sqlite_column_bytes(int64_t stmt_handle, int index) {
     sqlite3_stmt* stmt = get_stmt(stmt_handle);
     if (!stmt) return -1;
@@ -975,7 +975,7 @@ Separately, `lib/core/system_builtins.c §eshkol_builtin_fs_watch_start_v`
 mtime + size of the watched path on each call. It is exposed
 to user code via the codegen builtins `fs-watch-native`,
 `fs-watch-recursive`, `fs-watch-poll`, and `fs-unwatch`
-(`lib/backend/llvm_codegen.cpp:12197-12200` and the
+(`lib/backend/llvm_codegen.cpp` and the
 function_return_types entries above them). This path does
 *not* use kqueue / inotify and is independent of
 `agent_watch.c`.
@@ -1038,7 +1038,7 @@ pcre2_set_depth_limit(s_ctx, 100000);
 ```
 
 Every `pcre2_match` and `pcre2_substitute` in the file passes
-this context (`agent_regex.c:115, 151, 234, 251`). The context
+this context (`agent_regex.c`). The context
 is allocated once and never freed — process-lifetime is fine
 and reusing one context is documented as thread-safe (the
 context is read-only during matching).
@@ -1364,7 +1364,7 @@ Items called out explicitly in the source as deferred:
 - `exe/eshkol-run.cpp §requires_agent_ffi` — AOT link-arg gating
 - `cmake/build_config.h.in:15` — `ESHKOL_HOST_AGENT_FFI_LINK_ARGS`
 - `CMakeLists.txt:1711-2007` — agent FFI build wiring and force-load
-- `lib/repl/repl_jit.cpp:160-413` — JIT symbol registration for agent FFI
+- `lib/repl/repl_jit.cpp` — JIT symbol registration for agent FFI
 - `HARDENING.md` `#178`, `#182`, `#190`, `#191`, `#192`, `#193`, `#195` —
   the hardening commits that closed each guard documented above
 - [`WEB_PLATFORM.md`](WEB_PLATFORM.md) — browser-side counterpart;

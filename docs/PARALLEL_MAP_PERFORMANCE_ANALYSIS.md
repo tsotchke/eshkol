@@ -55,7 +55,7 @@ parallelise CPU-bound work in the default JIT path.**
 
 ### Issue 1 — codegen routes `parallel-map` to a sequential inlined loop by default
 
-`lib/backend/parallel_llvm_codegen.cpp:1461`:
+`lib/backend/parallel_llvm_codegen.cpp`:
 
 ```cpp
 const char* env = std::getenv("ESHKOL_PARALLEL_ENABLE");

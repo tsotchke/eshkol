@@ -193,7 +193,7 @@ to keep the rational-vs-bignum subtype decision in one place.
 
 Bignums use a sign-magnitude representation with a dynamic array of 64-bit
 limbs stored little-endian (least significant limb first). The struct
-(`inc/eshkol/core/bignum.h:36–40`) is
+(`inc/eshkol/core/bignum.h`) is
 
 ```c
 typedef struct eshkol_bignum {
@@ -457,7 +457,7 @@ llvm::IRBuilder<> entry_builder(&fn->getEntryBlock(), fn->getEntryBlock().begin(
 llvm::Value* left_alloca  = entry_builder.CreateAlloca(ctx_.taggedValueType(), nullptr, "bn_l");
 ```
 
-(`arithmetic_codegen.cpp:484–487, 498–502, 516–520, 575–580, 604–607, 621–624`).
+(`arithmetic_codegen.cpp`).
 
 If allocas were placed inside loop bodies, each iteration would grow the stack,
 eventually causing stack overflow. Entry-block placement ensures constant stack
@@ -471,7 +471,7 @@ optimisation in Eshkol depends on stable stack frames across loop iterations.
 ### 5.1 Representation
 
 Rationals are stored as a pair of int64 values
-(`inc/eshkol/core/rational.h:22–26`):
+(`inc/eshkol/core/rational.h`):
 
 ```c
 typedef struct {
@@ -791,7 +791,7 @@ conversion is lossy")` at line 399.
 ### 7.1 Polymorphic arithmetic surface
 
 The polymorphic arithmetic surface is `class ArithmeticCodegen`
-(`inc/eshkol/backend/arithmetic_codegen.h:43–323`). Its public method set is:
+(`inc/eshkol/backend/arithmetic_codegen.h`). Its public method set is:
 
 * Binary: `add`, `sub`, `mul`, `div`, `mod`
 * Unary: `neg`, `abs`
