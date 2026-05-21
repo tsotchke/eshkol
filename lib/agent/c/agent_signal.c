@@ -24,6 +24,13 @@
 #include <stdint.h>
 #include <signal.h>
 #include <unistd.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <sys/wait.h>
+#include <sys/types.h>
+#if defined(__linux__)
+#  include <dirent.h>
+#endif
 
 /*******************************************************************************
  * Signal Flag Table
@@ -149,24 +156,113 @@ int32_t eshkol_atexit_init(void) {
  * On Linux: reads /proc/PID/children
  ******************************************************************************/
 
-static void kill_tree_recursive(pid_t pid, int sig) {
-    /* Find children first */
-    char cmd[128];
-    snprintf(cmd, sizeof(cmd), "pgrep -P %d 2>/dev/null", (int)pid);
+/* Visit each direct child of `pid` via `cb`. Returns 0 on success.
+ *
+ * Linux: read /proc/<pid>/task/<tid>/children for every task in the
+ * process. No shell, no PATH, no popen; closes the popen-pgrep
+ * injection vector the previous implementation exposed.
+ *
+ * macOS/BSD: fork + execv("/usr/bin/pgrep", ["pgrep", "-P", "<pid>", NULL])
+ * with stdout captured via a pipe. Still uses pgrep, but no shell or
+ * PATH lookup is involved.
+ */
+typedef void (*eshkol_kt_visitor)(pid_t child, void* ctx);
 
-    FILE* fp = popen(cmd, "r");
-    if (fp) {
-        char line[32];
-        while (fgets(line, sizeof(line), fp)) {
-            pid_t child = (pid_t)atoi(line);
-            if (child > 0) {
-                kill_tree_recursive(child, sig);
-            }
+/* Forward declaration so kt_recurse_cb can refer back. */
+static void kill_tree_recursive(pid_t pid, int sig);
+
+#if defined(__linux__)
+static void kt_visit_children(pid_t pid, eshkol_kt_visitor cb, void* ctx) {
+    char task_dir[64];
+    snprintf(task_dir, sizeof(task_dir), "/proc/%d/task", (int)pid);
+    DIR* td = opendir(task_dir);
+    if (!td) return;
+    struct dirent* tent;
+    while ((tent = readdir(td)) != NULL) {
+        if (tent->d_name[0] < '0' || tent->d_name[0] > '9') continue;
+        char child_file[128];
+        snprintf(child_file, sizeof(child_file),
+                 "/proc/%d/task/%s/children", (int)pid, tent->d_name);
+        FILE* fp = fopen(child_file, "r");
+        if (!fp) continue;
+        char buf[1024];
+        size_t got = fread(buf, 1, sizeof(buf) - 1, fp);
+        fclose(fp);
+        if (got == 0) continue;
+        buf[got] = '\0';
+        char* p = buf;
+        while (*p) {
+            while (*p == ' ' || *p == '\n' || *p == '\t') p++;
+            if (!*p) break;
+            pid_t child = (pid_t)atoi(p);
+            if (child > 0) cb(child, ctx);
+            while (*p && *p != ' ' && *p != '\n' && *p != '\t') p++;
         }
-        pclose(fp);
     }
+    closedir(td);
+}
+#else
+static void kt_visit_children(pid_t pid, eshkol_kt_visitor cb, void* ctx) {
+    int pipefd[2];
+    if (pipe(pipefd) != 0) return;
+    pid_t worker = fork();
+    if (worker < 0) {
+        close(pipefd[0]);
+        close(pipefd[1]);
+        return;
+    }
+    if (worker == 0) {
+        /* child: redirect stdout to the pipe, exec pgrep with argv list */
+        close(pipefd[0]);
+        if (pipefd[1] != STDOUT_FILENO) {
+            dup2(pipefd[1], STDOUT_FILENO);
+            close(pipefd[1]);
+        }
+        /* silence stderr */
+        int devnull = open("/dev/null", O_WRONLY);
+        if (devnull >= 0) {
+            dup2(devnull, STDERR_FILENO);
+            close(devnull);
+        }
+        char pidbuf[16];
+        snprintf(pidbuf, sizeof(pidbuf), "%d", (int)pid);
+        char* const argv[] = {(char*)"pgrep", (char*)"-P", pidbuf, NULL};
+        execv("/usr/bin/pgrep", argv);
+        _exit(127);
+    }
+    /* parent */
+    close(pipefd[1]);
+    char buf[1024];
+    size_t total = 0;
+    ssize_t r;
+    while (total < sizeof(buf) - 1 &&
+           (r = read(pipefd[0], buf + total, sizeof(buf) - 1 - total)) > 0) {
+        total += (size_t)r;
+    }
+    close(pipefd[0]);
+    int status;
+    while (waitpid(worker, &status, 0) < 0 && errno == EINTR) { /* retry */ }
+    if (total == 0) return;
+    buf[total] = '\0';
+    char* p = buf;
+    while (*p) {
+        while (*p == ' ' || *p == '\n' || *p == '\t') p++;
+        if (!*p) break;
+        pid_t child = (pid_t)atoi(p);
+        if (child > 0) cb(child, ctx);
+        while (*p && *p != ' ' && *p != '\n' && *p != '\t') p++;
+    }
+}
+#endif
 
-    /* Kill this process after children */
+static void kt_recurse_cb(pid_t child, void* ctx) {
+    int sig = *(const int*)ctx;
+    kill_tree_recursive(child, sig);
+}
+
+static void kill_tree_recursive(pid_t pid, int sig) {
+    /* Find children first, then kill this process. */
+    kt_visit_children(pid, kt_recurse_cb, &sig);
     kill(pid, sig);
 }
 

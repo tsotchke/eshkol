@@ -29,6 +29,48 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <poll.h>
+#include <time.h>
+
+/*
+ * Cryptographically strong random fill for the WebSocket client masking
+ * key. RFC 6455 section 5.3 requires that the mask be unpredictable per frame
+ * to prevent intermediate-cache poisoning. Prior versions of this file
+ * shipped an all-zero mask, which is RFC-non-compliant.
+ *
+ * Source preference: arc4random_buf (macOS / BSDs / glibc >= 2.36) is
+ * the best portable option. Fall back to /dev/urandom if the system
+ * does not provide arc4random_buf.
+ */
+#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__)
+#  include <stdlib.h>  /* arc4random_buf */
+#  define ESHKOL_WS_HAS_ARC4RANDOM 1
+#elif defined(__GLIBC__) && (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 36))
+#  include <stdlib.h>
+#  define ESHKOL_WS_HAS_ARC4RANDOM 1
+#else
+#  define ESHKOL_WS_HAS_ARC4RANDOM 0
+#endif
+
+static void eshkol_ws_random_mask(unsigned char out[4]) {
+#if ESHKOL_WS_HAS_ARC4RANDOM
+    arc4random_buf(out, 4);
+#else
+    FILE* urnd = fopen("/dev/urandom", "rb");
+    if (urnd) {
+        size_t got = fread(out, 1, 4, urnd);
+        fclose(urnd);
+        if (got == 4) return;
+    }
+    /* Last-resort fallback: time-mixed bytes. Not crypto-strength but
+     * better than all-zero. Triggers only if both arc4random_buf and
+     * /dev/urandom are unavailable, which on POSIX is essentially never. */
+    unsigned int seed = (unsigned int)time(NULL) ^ (unsigned int)(uintptr_t)out;
+    for (int i = 0; i < 4; i++) {
+        seed = seed * 1103515245u + 12345u;
+        out[i] = (unsigned char)(seed >> 16);
+    }
+#endif
+}
 
 /*******************************************************************************
  * HTTP Server — Minimal, single-connection, for OAuth callbacks
@@ -275,14 +317,35 @@ int32_t eshkol_ws_send_text(int64_t handle, const char* data, int32_t len) {
         }
     }
 
-    /* Masking key (all zeros for simplicity — still valid per RFC 6455) */
-    unsigned char mask[4] = {0, 0, 0, 0};
+    /* Masking key: cryptographically random per RFC 6455 section 5.3. */
+    unsigned char mask[4];
+    eshkol_ws_random_mask(mask);
     memcpy(header + hlen, mask, 4);
     hlen += 4;
 
     if (send(ws->fd, header, (size_t)hlen, 0) != hlen) return -1;
-    /* Data is unmasked because mask key is all zeros */
-    if (send(ws->fd, data, (size_t)len, 0) != len) return -1;
+    /* Mask the payload in-place into a stack buffer when it fits, else
+     * stream-mask in chunks. Avoids a heap allocation for small frames. */
+    if (len > 0) {
+        if (len <= 4096) {
+            unsigned char buf[4096];
+            for (int i = 0; i < len; i++) {
+                buf[i] = (unsigned char)data[i] ^ mask[i & 3];
+            }
+            if (send(ws->fd, buf, (size_t)len, 0) != len) return -1;
+        } else {
+            unsigned char buf[4096];
+            int sent = 0;
+            while (sent < len) {
+                int chunk = len - sent < 4096 ? len - sent : 4096;
+                for (int i = 0; i < chunk; i++) {
+                    buf[i] = (unsigned char)data[sent + i] ^ mask[(sent + i) & 3];
+                }
+                if (send(ws->fd, buf, (size_t)chunk, 0) != chunk) return -1;
+                sent += chunk;
+            }
+        }
+    }
     return 0;
 }
 
@@ -307,12 +370,33 @@ int32_t eshkol_ws_send_binary(int64_t handle, const char* data, int32_t len) {
             header[hlen++] = (unsigned char)((len >> (i * 8)) & 0xFF);
         }
     }
-    unsigned char mask[4] = {0, 0, 0, 0};
+    /* Masking key: cryptographically random per RFC 6455 section 5.3. */
+    unsigned char mask[4];
+    eshkol_ws_random_mask(mask);
     memcpy(header + hlen, mask, 4);
     hlen += 4;
 
     if (send(ws->fd, header, (size_t)hlen, 0) != hlen) return -1;
-    if (send(ws->fd, data, (size_t)len, 0) != len) return -1;
+    if (len > 0) {
+        if (len <= 4096) {
+            unsigned char buf[4096];
+            for (int i = 0; i < len; i++) {
+                buf[i] = (unsigned char)data[i] ^ mask[i & 3];
+            }
+            if (send(ws->fd, buf, (size_t)len, 0) != len) return -1;
+        } else {
+            unsigned char buf[4096];
+            int sent = 0;
+            while (sent < len) {
+                int chunk = len - sent < 4096 ? len - sent : 4096;
+                for (int i = 0; i < chunk; i++) {
+                    buf[i] = (unsigned char)data[sent + i] ^ mask[(sent + i) & 3];
+                }
+                if (send(ws->fd, buf, (size_t)chunk, 0) != chunk) return -1;
+                sent += chunk;
+            }
+        }
+    }
     return 0;
 }
 
