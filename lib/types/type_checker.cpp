@@ -147,6 +147,8 @@ static hott_type_expr_t* substituteTypeVars(
 
         case HOTT_TYPE_LIST:
         case HOTT_TYPE_VECTOR:
+        case HOTT_TYPE_TENSOR:
+        case HOTT_TYPE_POINTER:
             result->container.element_type = substituteTypeVars(
                 type_expr->container.element_type, substitutions);
             break;
@@ -1759,6 +1761,9 @@ TypeId TypeChecker::resolveType(const hott_type_expr_t* type_expr) {
 
         case HOTT_TYPE_TENSOR:
             return BuiltinTypes::Tensor;
+
+        case HOTT_TYPE_POINTER:
+            return BuiltinTypes::Pointer;
 
         case HOTT_TYPE_PAIR:
             return BuiltinTypes::Pair;

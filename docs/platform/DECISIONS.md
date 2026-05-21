@@ -304,3 +304,26 @@ Keep `platform_runtime.cpp` focused on `platform_runtime.h`, and move the `runti
 - the hosted wrapper surface now has an explicit build boundary
 - later `runtime-core` and `runtime-freestanding` work can reason about `platform_runtime` and `runtime_exports` independently
 - generated-code ABI glue is not implicitly bundled into future freestanding runtime layers
+
+---
+
+## D-0013
+
+- Date: 2026-04-15
+- Status: Accepted
+- Title: Raw pointer types start as an annotation surface before pointer operations
+
+### Context
+
+The platform roadmap needs `ptr<T>`-style vocabulary for MMIO, foreign calls, buffer views, and later freestanding ABI lowering. Landing pointer conversions, address-of, volatile memory access, and pointer arithmetic all at once would couple parser syntax, type checking, codegen, memory safety policy, and runtime representation in one large change.
+
+### Decision
+
+Add a raw pointer type constructor to the HoTT type surface first. The accepted spelling is `(ptr T)`, with `pointer` as a parser alias and `ptr` / `pointer` as builtin type aliases. The initial runtime representation is the existing pointer representation, and type resolution preserves the `Ptr` builtin family while later slices add conversions and address-producing operations.
+
+### Consequences
+
+- Eshkol can now parse and resolve pointer annotations such as `(ptr u8)`
+- pointer type expressions copy and print round-trip as `(ptr T)`
+- the pointer surface depends on the machine integer vocabulary already present in `master`
+- pointer conversions, address-of, volatile load/store, and stricter ABI semantics remain separate follow-up slices

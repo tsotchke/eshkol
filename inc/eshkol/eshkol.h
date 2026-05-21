@@ -1142,6 +1142,7 @@ typedef enum {
     HOTT_TYPE_LIST,         // (list a) list type
     HOTT_TYPE_VECTOR,       // (vector a) vector type
     HOTT_TYPE_TENSOR,       // (tensor a) tensor type (multi-dimensional array)
+    HOTT_TYPE_POINTER,      // (ptr a) raw pointer type
     HOTT_TYPE_PAIR,         // (pair a b) cons pair type
     // Polymorphic types
     HOTT_TYPE_VAR,          // type variable (e.g., 'a in forall)
@@ -1176,7 +1177,7 @@ typedef struct hott_type_expr {
             struct hott_type_expr* body;
         } forall;
 
-        // For compound types: list, vector, etc.
+        // For compound single-parameter types: list, vector, tensor, ptr
         struct {
             struct hott_type_expr* element_type;
         } container;
@@ -1856,6 +1857,7 @@ hott_type_expr_t* hott_make_arrow_type(hott_type_expr_t** param_types, uint64_t 
 hott_type_expr_t* hott_make_list_type(hott_type_expr_t* element_type);
 hott_type_expr_t* hott_make_vector_type(hott_type_expr_t* element_type);
 hott_type_expr_t* hott_make_tensor_type(hott_type_expr_t* element_type);
+hott_type_expr_t* hott_make_pointer_type(hott_type_expr_t* element_type);
 hott_type_expr_t* hott_make_pair_type(hott_type_expr_t* left, hott_type_expr_t* right);
 hott_type_expr_t* hott_make_product_type(hott_type_expr_t* left, hott_type_expr_t* right);
 hott_type_expr_t* hott_make_sum_type(hott_type_expr_t* left, hott_type_expr_t* right);

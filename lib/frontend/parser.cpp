@@ -1178,6 +1178,20 @@ static hott_type_expr_t* parseTypeExpression(SchemeTokenizer& tokenizer) {
                 return result;
             }
 
+            if (lower == "ptr" || lower == "pointer") {
+                // (ptr element-type) - raw pointer type constructor
+                hott_type_expr_t* elem = parseTypeExpression(tokenizer);
+                Token rparen = tokenizer.nextToken();
+                if (rparen.type != TOKEN_RPAREN) {
+                    PARSE_ERROR_AT(token, "expected ) after ptr element type");
+                    hott_free_type_expr(elem);
+                    return nullptr;
+                }
+                hott_type_expr_t* result = hott_make_pointer_type(elem);
+                hott_free_type_expr(elem);
+                return result;
+            }
+
             if (lower == "pair") {
                 // (pair left right)
                 hott_type_expr_t* left = parseTypeExpression(tokenizer);
