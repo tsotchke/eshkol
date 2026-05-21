@@ -1,11 +1,11 @@
-<h1 id="eshkol-v1.1-accelerate-feature-matrix">Eshkol v1.1-accelerate
-Feature Matrix</h1>
+<h1 id="eshkol-v1.2.1-scale-feature-matrix">Eshkol v1.2.1-scale Feature
+Matrix</h1>
 <p><strong>Status Key</strong>: ✅ Production | 🚧 In Progress | 📋
 Planned | ❌ Not Planned</p>
 <p>This matrix documents all implemented and planned features for the
 Eshkol language ecosystem. All <strong>Production</strong> features are
-code-verified with extensive test coverage (35 test suites, 438 test
-files).</p>
+code-verified with extensive test coverage (37 suites, 528 self-reported
+tests).</p>
 <hr />
 <h2 id="core-language-features">Core Language Features</h2>
 <table>
@@ -665,7 +665,7 @@ files).</p>
 <td>5+ tests</td>
 </tr>
 <tr>
-<td><code>directional-deriv</code> operator</td>
+<td><code>directional-derivative</code> operator</td>
 <td>✅</td>
 <td>Reverse</td>
 <td>5+ tests</td>
@@ -2377,7 +2377,7 @@ files).</p>
 <td>API Reference</td>
 <td>✅</td>
 <td>Complete</td>
-<td>700+ builtins</td>
+<td>555+ builtins</td>
 </tr>
 <tr>
 <td>Quickstart Guide</td>
@@ -3652,7 +3652,7 @@ quantitative type theory</li>
 <h2 id="production-readiness">Production Readiness</h2>
 <h3 id="production-ready-v1.1">✅ Production-Ready (v1.1)</h3>
 <ul>
-<li>Core language (70+ special forms, 700+ builtins)</li>
+<li>Core language (39 special forms, 555+ builtins)</li>
 <li>Automatic differentiation (3 modes)</li>
 <li>Tensor operations (30+ functions)</li>
 <li>List processing (50+ operations)</li>
@@ -3706,12 +3706,12 @@ quantitative type theory</li>
 <td></td>
 </tr>
 <tr>
-<td>63-opcode ISA</td>
+<td>64-opcode core ISA</td>
 <td>✅</td>
 <td>Register+stack architecture, computed-goto dispatch</td>
 </tr>
 <tr>
-<td>250+ native call IDs</td>
+<td>550+ native call IDs</td>
 <td>✅</td>
 <td>Math, string, IO, complex, rational, bignum, dual, AD, tensor,
 logic, inference, workspace, hash, bytevector, parameter</td>
@@ -3764,7 +3764,8 @@ logic, inference, workspace, hash, bytevector, parameter</td>
 <tr>
 <td>3-way verification</td>
 <td>✅</td>
-<td>Reference = simulated = matrix-based (126/126 inline, 123/123 traced)</td>
+<td>Reference = simulated = matrix-based (126/126 inline, 123/123
+traced)</td>
 </tr>
 <tr>
 <td>QLMW binary export</td>
@@ -3774,7 +3775,8 @@ logic, inference, workspace, hash, bytevector, parameter</td>
 <tr>
 <td>82 canonical opcodes in weights</td>
 <td>✅</td>
-<td><code>OP_NATIVE_CALL</code> remains the external dispatch boundary</td>
+<td><code>OP_NATIVE_CALL</code> remains the external dispatch
+boundary</td>
 </tr>
 <tr>
 <td><strong>qLLM Bridge</strong></td>
@@ -3947,8 +3949,9 @@ acceleration - GPU acceleration: Metal (Apple Silicon) + CUDA (NVIDIA) -
 Parallel primitives with work-stealing thread pool - Arbitrary-precision
 arithmetic (bignums + rationals) - Consciousness engine (logic,
 inference, workspace) - Signal processing library (FFT, filters, window
-functions) - R7RS extensions (call/cc, dynamic-wind, bytevectors) - 700+
-builtins, 35 test suites, 438 test files</p>
+functions) - R7RS extensions (call/cc, dynamic-wind, bytevectors) - 555+
+builtins, 37 test suites, 528 self-reported tests (87/87 v1.2 edge
+cases)</p>
 <p><strong>Codebase</strong>: ~232,000 lines of production C/C++</p>
 <h3 id="v1.0-december-2025---foundation-release">v1.0 (December 2025) -
 Foundation Release</h3>
@@ -3974,7 +3977,7 @@ infrastructure) - Scheme community (language design inspiration) -
 JAX/PyTorch (AD implementation insights) - Julia (technical computing
 design patterns)</p>
 <hr />
-<p><strong>Last Updated</strong>: 2026-05-01 <strong>Document
-Version</strong>: 1.2.0-scale</p>
+<p><strong>Last Updated</strong>: 2026-05-20 <strong>Document
+Version</strong>: 1.2.1-scale</p>
 <p>For detailed API documentation, see <a
 href="API_REFERENCE.md">API_REFERENCE.md</a></p>

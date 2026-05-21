@@ -9,8 +9,8 @@ systems programming.</p>
 <p>Visit <strong><a href="https://eshkol.ai">eshkol.ai</a></strong> to
 try Eshkol in your browser:</p>
 <ul>
-<li><strong>Playground</strong> — Full REPL with 63 opcodes and 555+
-built-in functions running in WebAssembly</li>
+<li><strong>Playground</strong> — Full REPL with a 64-opcode core VM and
+555+ built-in functions running in WebAssembly</li>
 <li><strong>Learn</strong> — interactive textbook with runnable code
 examples, plus 27 in-depth tutorials</li>
 <li><strong>Examples</strong> — 10 complete programs you can run
@@ -587,12 +587,16 @@ Reference</a></strong> — Comprehensive language guide</li>
 Dive</a></strong> — Three differentiation modes in detail</li>
 </ol>
 <h3 id="example-programs">Example Programs</h3>
-<p>Explore the examples directory: -
-<code>examples-dep/neural_network_complete.esk</code> - Full neural
-network - <code>examples-dep/vector_calculus.esk</code> - Physics
-simulations - <code>examples-dep/function_composition_closure.esk</code>
-- Functional programming patterns -
-<code>tests/ml/impressive_demo.esk</code> - ML showcase</p>
+<p>Explore the <code>examples/</code> directory: -
+<code>examples/hello.esk</code> - Simplest program -
+<code>examples/autodiff.esk</code> - Forward and reverse-mode automatic
+differentiation - <code>examples/tensors.esk</code> - Linear algebra
+with BLAS / GPU dispatch - <code>examples/parallel.esk</code> -
+Work-stealing parallel-map / futures -
+<code>examples/consciousness.esk</code> - Logic + factor-graph +
+workspace stack - <code>examples/agent.esk</code> - Agent loop with
+tools and KB - <code>tests/ml/impressive_demo.esk</code> - ML
+showcase</p>
 <h3 id="standard-library">Standard Library</h3>
 <pre class="scheme"><code>; Import modules
 (require core.list.higher_order)  ; fold, filter, any, every
@@ -957,9 +961,9 @@ localStorage, fetch, timers.</p>
 <li><strong>Documentation</strong>: <a
 href="."><code>docs/</code></a></li>
 <li><strong>Examples</strong>: <a
-href="../examples-dep"><code>examples-dep/</code></a></li>
+href="../examples"><code>examples/</code></a></li>
 <li><strong>Tests</strong>: <a href="../tests"><code>tests/</code></a>
-(438 test files across 35 suites)</li>
+(528 self-reported tests across 37 suites)</li>
 </ul>
 <hr />
 <h2 id="community-support">Community &amp; Support</h2>
