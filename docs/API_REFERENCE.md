@@ -2448,7 +2448,7 @@ where each variable maps to a term that may reference other variables, but never
 
 **Returns:** An empty `Substitution` (heap subtype 12).
 
-**Implementation:** [llvm_codegen.cpp:33266](lib/backend/llvm_codegen.cpp#L33266),
+**Implementation:** `LogicWorkspaceCodegen::codegenMakeSubst` in [lib/backend/logic_workspace_codegen.cpp](../lib/backend/logic_workspace_codegen.cpp),
 runtime `eshkol_make_substitution_tagged`.
 
 #### `unify`
@@ -2475,7 +2475,7 @@ binding ?x → (list ?x) would create an infinite term. This is essential for so
 **Complexity:** O(n · α(n)) amortized with path compression, where n is the number of
 variables in the terms and α is the inverse Ackermann function. In practice, near-linear.
 
-**Implementation:** [llvm_codegen.cpp:33243](lib/backend/llvm_codegen.cpp#L33243),
+**Implementation:** `LogicWorkspaceCodegen::codegenUnify` in [lib/backend/logic_workspace_codegen.cpp](../lib/backend/logic_workspace_codegen.cpp),
 runtime `eshkol_unify_tagged`.
 
 ```scheme
@@ -2496,7 +2496,7 @@ follows the chain of bindings until reaching either an unbound variable or a non
 **Invariant:** Substitutions are triangular by construction (the occurs check prevents cycles).
 Therefore, `walk` always terminates.
 
-**Implementation:** [llvm_codegen.cpp:33280](lib/backend/llvm_codegen.cpp#L33280),
+**Implementation:** `LogicWorkspaceCodegen::codegenWalk` in [lib/backend/logic_workspace_codegen.cpp](../lib/backend/logic_workspace_codegen.cpp),
 runtime `eshkol_walk_tagged`.
 
 ```scheme
@@ -2523,7 +2523,7 @@ Creates a structured fact with a predicate symbol and zero or more arguments. Fa
 first-class values (heap subtype 13) that can be stored in knowledge bases or manipulated
 directly.
 
-**Implementation:** [llvm_codegen.cpp:33301](lib/backend/llvm_codegen.cpp#L33301),
+**Implementation:** `LogicWorkspaceCodegen::codegenMakeFact` in [lib/backend/logic_workspace_codegen.cpp](../lib/backend/logic_workspace_codegen.cpp),
 runtime `eshkol_make_fact_tagged`.
 
 ```scheme
@@ -2541,7 +2541,7 @@ assertion and unification-based query.
 
 **Returns:** An empty `KnowledgeBase` (heap subtype 15).
 
-**Implementation:** [llvm_codegen.cpp:33337](lib/backend/llvm_codegen.cpp#L33337),
+**Implementation:** `LogicWorkspaceCodegen::codegenMakeKB` in [lib/backend/logic_workspace_codegen.cpp](../lib/backend/logic_workspace_codegen.cpp),
 runtime `eshkol_make_kb_tagged`.
 
 #### `kb-assert!`
@@ -2551,7 +2551,7 @@ runtime `eshkol_make_kb_tagged`.
 Adds a fact to the knowledge base. This is a mutating operation — the KB is modified
 in-place. Facts are stored in insertion order and all are considered during queries.
 
-**Implementation:** [llvm_codegen.cpp:33351](lib/backend/llvm_codegen.cpp#L33351),
+**Implementation:** `LogicWorkspaceCodegen::codegenKBAssert` in [lib/backend/logic_workspace_codegen.cpp](../lib/backend/logic_workspace_codegen.cpp),
 runtime `eshkol_kb_assert_tagged`.
 
 #### `kb-query`
@@ -2565,7 +2565,7 @@ An empty list indicates no matches.
 **Algorithm:** For each fact f in kb, attempt `(unify pattern f (make-substitution))`.
 Collect all successful substitutions into a list.
 
-**Implementation:** [llvm_codegen.cpp:33371](lib/backend/llvm_codegen.cpp#L33371),
+**Implementation:** `LogicWorkspaceCodegen::codegenKBQuery` in [lib/backend/logic_workspace_codegen.cpp](../lib/backend/logic_workspace_codegen.cpp),
 runtime `eshkol_kb_query_tagged`.
 
 ```scheme
@@ -2597,9 +2597,10 @@ runtime `eshkol_kb_query_tagged`.
 | `(fact? x)` | Fact | Heap subtype 13 |
 | `(kb? x)` | Knowledge base | Heap subtype 15 |
 
-All return `#t` or `#f`. Implementation:
-[llvm_codegen.cpp:33392](lib/backend/llvm_codegen.cpp#L33392) (logic-var?),
-[llvm_codegen.cpp:33645](lib/backend/llvm_codegen.cpp#L33645) (fact?, factor-graph?, etc.).
+All return `#t` or `#f`. Implementation lives in the predicate helpers
+`LLVMCodeGenerator::codegenLogicVarPred`, `codegenSubstPred`,
+`codegenKBPred`, `codegenFactPred`, `codegenFactorGraphPred`, and
+`codegenWorkspacePred` in [lib/backend/llvm_codegen.cpp](../lib/backend/llvm_codegen.cpp).
 
 ### Active Inference
 
@@ -2634,7 +2635,7 @@ This allows heterogeneous state spaces (e.g., one binary variable and one ternar
 
 **Returns:** A `FactorGraph` (heap subtype 16) with no factors attached.
 
-**Implementation:** [llvm_codegen.cpp:33484](lib/backend/llvm_codegen.cpp#L33484),
+**Implementation:** `LogicWorkspaceCodegen::codegenMakeFactorGraph` in [lib/backend/logic_workspace_codegen.cpp](../lib/backend/logic_workspace_codegen.cpp),
 runtime `eshkol_make_factor_graph_tagged`.
 
 ```scheme
@@ -2658,7 +2659,7 @@ the CPT has |S_a| × |S_b| entries. Entry at index `i * |S_b| + j` corresponds t
 log P(v_a = i, v_b = j) (or the conditional log P(v_b = j | v_a = i), depending on the
 model structure).
 
-**Implementation:** [llvm_codegen.cpp:33503](lib/backend/llvm_codegen.cpp#L33503),
+**Implementation:** `LogicWorkspaceCodegen::codegenFGAddFactor` in [lib/backend/logic_workspace_codegen.cpp](../lib/backend/logic_workspace_codegen.cpp),
 runtime `eshkol_fg_add_factor_tagged`.
 
 ```scheme
@@ -2708,7 +2709,7 @@ generally reliable for well-conditioned problems.
 **Returns:** A flat tensor of beliefs concatenated across variables: beliefs for variable 0
 (|S_0| entries), then variable 1 (|S_1| entries), etc.
 
-**Implementation:** [llvm_codegen.cpp:33524](lib/backend/llvm_codegen.cpp#L33524),
+**Implementation:** `LogicWorkspaceCodegen::codegenFGInfer` in [lib/backend/logic_workspace_codegen.cpp](../lib/backend/logic_workspace_codegen.cpp),
 runtime `eshkol_fg_infer_tagged`.
 
 ```scheme
@@ -2730,7 +2731,7 @@ This is the key primitive enabling **learning**: by iteratively updating CPTs ba
 observed data (e.g., via gradient descent on the free energy), the model adapts its
 generative structure.
 
-**Implementation:** [llvm_codegen.cpp:33585](lib/backend/llvm_codegen.cpp#L33585),
+**Implementation:** `LogicWorkspaceCodegen::codegenFGUpdateCPT` in [lib/backend/logic_workspace_codegen.cpp](../lib/backend/logic_workspace_codegen.cpp),
 runtime `eshkol_fg_update_cpt_tagged`.
 
 ```scheme
@@ -2760,7 +2761,7 @@ vectors. Each pair specifies one observed variable and its observed state.
 **Interpretation:** Lower free energy indicates better model fit. Minimizing F with respect
 to model parameters (CPTs) is equivalent to maximizing the evidence lower bound (ELBO).
 
-**Implementation:** [llvm_codegen.cpp:33543](lib/backend/llvm_codegen.cpp#L33543),
+**Implementation:** `LogicWorkspaceCodegen::codegenFreeEnergy` in [lib/backend/logic_workspace_codegen.cpp](../lib/backend/logic_workspace_codegen.cpp),
 runtime `eshkol_free_energy_tagged`.
 
 ```scheme
@@ -2799,7 +2800,7 @@ goal achievement.
 
 **Returns:** Scalar expected free energy for the given action.
 
-**Implementation:** [llvm_codegen.cpp:33562](lib/backend/llvm_codegen.cpp#L33562),
+**Implementation:** `LogicWorkspaceCodegen::codegenEFE` in [lib/backend/logic_workspace_codegen.cpp](../lib/backend/logic_workspace_codegen.cpp),
 runtime `eshkol_efe_tagged`.
 
 ```scheme
@@ -2816,7 +2817,7 @@ runtime `eshkol_efe_tagged`.
 
 Returns `#t` if `x` is a factor graph (heap subtype 16), `#f` otherwise.
 
-**Implementation:** [llvm_codegen.cpp:33645](lib/backend/llvm_codegen.cpp#L33645).
+**Implementation:** `LLVMCodeGenerator::codegenFactorGraphPred` in [lib/backend/llvm_codegen.cpp](../lib/backend/llvm_codegen.cpp).
 
 #### Complete Active Inference Example
 
@@ -2894,7 +2895,7 @@ up to `max-modules` registered modules.
 
 **Returns:** A `Workspace` (heap subtype 17) initialized with a zero content tensor.
 
-**Implementation:** [llvm_codegen.cpp:33721](lib/backend/llvm_codegen.cpp#L33721),
+**Implementation:** `LogicWorkspaceCodegen::codegenMakeWorkspace` in [lib/backend/logic_workspace_codegen.cpp](../lib/backend/logic_workspace_codegen.cpp),
 runtime `eshkol_make_workspace_tagged`.
 
 ```scheme
@@ -2917,7 +2918,7 @@ pair `(cons salience proposal-tensor)` where:
 - `name` — a string identifier for the module (for debugging/inspection)
 - `process-fn` — a closure with signature `(tensor → (cons number tensor))`
 
-**Implementation:** [llvm_codegen.cpp:33740](lib/backend/llvm_codegen.cpp#L33740),
+**Implementation:** `LogicWorkspaceCodegen::codegenWSRegister` in [lib/backend/logic_workspace_codegen.cpp](../lib/backend/logic_workspace_codegen.cpp),
 runtime `eshkol_ws_register_tagged`.
 
 ```scheme
@@ -2950,7 +2951,7 @@ Executes one complete competition cycle:
 **Note:** This function takes exactly **one argument** (the workspace). There is no separate
 input parameter — modules receive the current broadcast content, which serves as the input.
 
-**Implementation:** [llvm_codegen.cpp:33760](lib/backend/llvm_codegen.cpp#L33760).
+**Implementation:** `LogicWorkspaceCodegen::codegenWSStep` in [lib/backend/logic_workspace_codegen.cpp](../lib/backend/logic_workspace_codegen.cpp).
 The codegen generates a loop calling `codegenClosureCall` for each registered module.
 C runtime helpers `eshkol_ws_make_content_tensor` and `eshkol_ws_step_finalize` handle
 tensor wrapping and softmax broadcast respectively.
@@ -2972,7 +2973,7 @@ tensor wrapping and softmax broadcast respectively.
 
 Returns `#t` if `x` is a workspace (heap subtype 17), `#f` otherwise.
 
-**Implementation:** [llvm_codegen.cpp:33682](lib/backend/llvm_codegen.cpp#L33682).
+**Implementation:** `LLVMCodeGenerator::codegenWorkspacePred` in [lib/backend/llvm_codegen.cpp](../lib/backend/llvm_codegen.cpp).
 
 #### Complete Global Workspace Example
 
@@ -3027,7 +3028,7 @@ dispatched through the LLVM codegen pipeline — not library wrappers — enabli
 for large tensors, automatic GPU dispatch above cost model thresholds, and seamless integration
 with Eshkol's automatic differentiation system via `gradient`.
 
-**Architecture:** Operations are dispatched in [llvm_codegen.cpp:11444–11557](lib/backend/llvm_codegen.cpp#L11444-L11557)
+**Architecture:** Operations are dispatched in `LLVMCodeGenerator::codegenCall` in [lib/backend/llvm_codegen.cpp](../lib/backend/llvm_codegen.cpp)
 and implemented in [tensor_codegen.cpp](lib/backend/tensor_codegen.cpp). Backward passes are
 available for AD integration (e.g., `tensorReluBackward`, `tensorSigmoidBackward`).
 
@@ -3337,7 +3338,7 @@ to [ε, 1-ε] for numerical stability.
 
 Alias for `bce-loss`. Accepts probability inputs (post-sigmoid).
 
-**Implementation:** Dispatches to `bceLoss` at [llvm_codegen.cpp:11494](lib/backend/llvm_codegen.cpp#L11494).
+**Implementation:** Dispatches to `bceLoss` at `LLVMCodeGenerator::codegenCall` in [lib/backend/llvm_codegen.cpp](../lib/backend/llvm_codegen.cpp).
 
 #### `huber-loss`
 
@@ -6675,8 +6676,8 @@ h: A + B → C implementing case analysis.
 
 Sum types are represented as tagged pairs `(tag . value)` where tag is 0 (left) or 1 (right).
 
-**Implementation:** [llvm_codegen.cpp:10572–10577](lib/backend/llvm_codegen.cpp#L10572-L10577) (dispatch),
-[llvm_codegen.cpp:30125–30200](lib/backend/llvm_codegen.cpp#L30125-L30200) (codegen).
+**Implementation:** dispatched from `LLVMCodeGenerator::codegenCall` in [lib/backend/llvm_codegen.cpp](../lib/backend/llvm_codegen.cpp);
+`inject-left` / `inject-right` lower through `codegenSumInject`.
 
 ### `inject-left`
 
