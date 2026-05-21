@@ -50,6 +50,15 @@ Current guard:
   - verifies `ptr` / `pointer` aliases in the HoTT environment
   - verifies `(ptr T)` parsing, copying, and stringification
   - verifies parser + type-checker integration for pointer annotations
+- `tests/toolchain/fence_ops_test.cpp`
+  - verifies parser, type-checker, and IR lowering for `compiler-fence` and `memory-fence`
+- `tests/toolchain/volatile_ops_test.cpp`
+  - verifies typed volatile load/store parsing, type-checking, and LLVM volatile IR lowering
+- `tests/toolchain/target_intrinsic_test.cpp`
+  - verifies typed LLVM intrinsic parsing, type-checking diagnostics, and IR lowering
+- `tests/toolchain/decl_attribute_test.cpp`
+  - verifies declaration attribute parsing for `define`, `extern`, and `extern-var`
+  - verifies IR lowering for section placement, alignment, weak imports/definitions, `llvm.used`, exported symbol names, and `noreturn`
 
 ## 3. Runtime isolation tests
 

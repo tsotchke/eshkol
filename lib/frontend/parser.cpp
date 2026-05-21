@@ -1029,6 +1029,280 @@ static eshkol_ast_t parse_quoted_data_with_token(SchemeTokenizer& tokenizer, Tok
 static eshkol_ast_t parse_quoted_list_internal(SchemeTokenizer& tokenizer);
 static hott_type_expr_t* parseTypeExpression(SchemeTokenizer& tokenizer);
 
+static char* copy_token_text(const std::string& value) {
+    char* ptr = new char[value.length() + 1];
+    if (ptr) {
+        memcpy(ptr, value.c_str(), value.length() + 1);
+    }
+    return ptr;
+}
+
+static bool parse_uint64_token(const Token& token, uint64_t* out) {
+    if (!out || token.type != TOKEN_NUMBER || token.value.empty()) {
+        return false;
+    }
+    if (token.value[0] == '-' ||
+        token.value.find('.') != std::string::npos ||
+        token.value.find('/') != std::string::npos ||
+        token.value.find('e') != std::string::npos ||
+        token.value.find('E') != std::string::npos) {
+        return false;
+    }
+
+    try {
+        size_t consumed = 0;
+        unsigned long long parsed = std::stoull(token.value, &consumed, 10);
+        if (consumed != token.value.length()) {
+            return false;
+        }
+        *out = static_cast<uint64_t>(parsed);
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+static bool is_power_of_two_u64(uint64_t value) {
+    return value != 0 && (value & (value - 1)) == 0;
+}
+
+static bool is_declaration_modifier_start(const Token& token) {
+    return token.type == TOKEN_COLON ||
+           (token.type == TOKEN_SYMBOL && token.value.size() > 1 && token.value[0] == ':');
+}
+
+static std::string declaration_modifier_name(const Token& token, SchemeTokenizer& tokenizer) {
+    if (token.type == TOKEN_SYMBOL && token.value.size() > 1 && token.value[0] == ':') {
+        return token.value.substr(1);
+    }
+    if (token.type == TOKEN_COLON) {
+        Token modifier = tokenizer.nextToken();
+        if (modifier.type == TOKEN_SYMBOL && !modifier.value.empty()) {
+            return modifier.value[0] == ':' ? modifier.value.substr(1) : modifier.value;
+        }
+    }
+    return "";
+}
+
+static bool is_known_define_modifier(const std::string& name) {
+    return name == "link-section" || name == "align" || name == "used" ||
+           name == "weak" || name == "export-symbol" || name == "no-return";
+}
+
+static bool starts_known_define_modifier(const Token& token, SchemeTokenizer& tokenizer) {
+    if (token.type == TOKEN_SYMBOL && token.value.size() > 1 && token.value[0] == ':') {
+        return is_known_define_modifier(token.value.substr(1));
+    }
+    if (token.type != TOKEN_COLON) {
+        return false;
+    }
+    Token peek = tokenizer.peekToken();
+    return peek.type == TOKEN_SYMBOL && is_known_define_modifier(peek.value);
+}
+
+static bool parse_define_modifier_tail(SchemeTokenizer& tokenizer,
+                                       eshkol_ast_t* ast,
+                                       Token modifier_start) {
+    if (!ast || ast->type != ESHKOL_OP || ast->operation.op != ESHKOL_DEFINE_OP) {
+        PARSE_ERROR_AT(modifier_start, "internal parser error: define modifier target is invalid");
+        return false;
+    }
+
+    while (true) {
+        std::string modifier = declaration_modifier_name(modifier_start, tokenizer);
+        if (modifier.empty()) {
+            PARSE_ERROR_AT(modifier_start, "define declaration modifier name must follow ':'");
+            return false;
+        }
+
+        if (modifier == "link-section") {
+            Token value = tokenizer.nextToken();
+            if (value.type != TOKEN_STRING &&
+                (value.type != TOKEN_SYMBOL || is_declaration_modifier_start(value))) {
+                PARSE_ERROR_AT(value, "define :link-section requires a section name");
+                return false;
+            }
+            if (ast->operation.define_op.link_section) {
+                PARSE_ERROR_AT(modifier_start, "define :link-section may only appear once");
+                return false;
+            }
+            ast->operation.define_op.link_section = copy_token_text(value.value);
+        } else if (modifier == "align") {
+            Token value = tokenizer.nextToken();
+            uint64_t alignment = 0;
+            if (!parse_uint64_token(value, &alignment) || !is_power_of_two_u64(alignment)) {
+                PARSE_ERROR_AT(value, "define :align requires a positive power-of-two integer");
+                return false;
+            }
+            if (ast->operation.define_op.has_alignment) {
+                PARSE_ERROR_AT(modifier_start, "define :align may only appear once");
+                return false;
+            }
+            ast->operation.define_op.alignment = alignment;
+            ast->operation.define_op.has_alignment = 1;
+        } else if (modifier == "used") {
+            if (ast->operation.define_op.is_used) {
+                PARSE_ERROR_AT(modifier_start, "define :used may only appear once");
+                return false;
+            }
+            ast->operation.define_op.is_used = 1;
+        } else if (modifier == "weak") {
+            if (ast->operation.define_op.is_weak) {
+                PARSE_ERROR_AT(modifier_start, "define :weak may only appear once");
+                return false;
+            }
+            ast->operation.define_op.is_weak = 1;
+        } else if (modifier == "export-symbol") {
+            if (ast->operation.define_op.export_symbol) {
+                PARSE_ERROR_AT(modifier_start, "define :export-symbol may only appear once");
+                return false;
+            }
+            ast->operation.define_op.export_symbol = 1;
+            Token next = tokenizer.nextToken();
+            if (next.type == TOKEN_STRING ||
+                (next.type == TOKEN_SYMBOL && !is_declaration_modifier_start(next))) {
+                ast->operation.define_op.export_name = copy_token_text(next.value);
+                next = tokenizer.nextToken();
+            }
+            if (next.type == TOKEN_RPAREN) {
+                return true;
+            }
+            if (!is_declaration_modifier_start(next)) {
+                PARSE_ERROR_AT(next, "define declaration modifiers must appear at the end of the form");
+                return false;
+            }
+            modifier_start = next;
+            continue;
+        } else if (modifier == "no-return") {
+            if (!ast->operation.define_op.is_function) {
+                PARSE_ERROR_AT(modifier_start, "define :no-return is only valid on function definitions");
+                return false;
+            }
+            if (ast->operation.define_op.is_no_return) {
+                PARSE_ERROR_AT(modifier_start, "define :no-return may only appear once");
+                return false;
+            }
+            ast->operation.define_op.is_no_return = 1;
+        } else {
+            PARSE_ERROR_AT(modifier_start, "unsupported define declaration modifier '%s'",
+                           modifier.c_str());
+            return false;
+        }
+
+        Token next = tokenizer.nextToken();
+        if (next.type == TOKEN_RPAREN) {
+            return true;
+        }
+        if (!is_declaration_modifier_start(next)) {
+            PARSE_ERROR_AT(next, "define declaration modifiers must appear at the end of the form");
+            return false;
+        }
+        modifier_start = next;
+    }
+}
+
+static bool parse_extern_modifier_tail(SchemeTokenizer& tokenizer,
+                                       eshkol_ast_t* ast,
+                                       Token modifier_start) {
+    if (!ast || ast->type != ESHKOL_OP || ast->operation.op != ESHKOL_EXTERN_OP) {
+        PARSE_ERROR_AT(modifier_start, "internal parser error: extern modifier target is invalid");
+        return false;
+    }
+
+    while (true) {
+        std::string modifier = declaration_modifier_name(modifier_start, tokenizer);
+        if (modifier.empty()) {
+            PARSE_ERROR_AT(modifier_start, "extern declaration modifier name must follow ':'");
+            return false;
+        }
+
+        if (modifier == "extern-symbol" || modifier == "real") {
+            Token value = tokenizer.nextToken();
+            if (value.type != TOKEN_STRING &&
+                (value.type != TOKEN_SYMBOL || is_declaration_modifier_start(value))) {
+                PARSE_ERROR_AT(value, "extern :%s requires a symbol name", modifier.c_str());
+                return false;
+            }
+            if (ast->operation.extern_op.real_name) {
+                PARSE_ERROR_AT(modifier_start, "extern symbol name modifier may only appear once");
+                return false;
+            }
+            ast->operation.extern_op.real_name = copy_token_text(value.value);
+        } else if (modifier == "weak") {
+            if (ast->operation.extern_op.is_weak) {
+                PARSE_ERROR_AT(modifier_start, "extern :weak may only appear once");
+                return false;
+            }
+            ast->operation.extern_op.is_weak = 1;
+        } else if (modifier == "no-return") {
+            if (ast->operation.extern_op.is_no_return) {
+                PARSE_ERROR_AT(modifier_start, "extern :no-return may only appear once");
+                return false;
+            }
+            ast->operation.extern_op.is_no_return = 1;
+        } else {
+            PARSE_ERROR_AT(modifier_start, "unsupported extern declaration modifier '%s'",
+                           modifier.c_str());
+            return false;
+        }
+
+        Token next = tokenizer.nextToken();
+        if (next.type == TOKEN_RPAREN) {
+            return true;
+        }
+        if (!is_declaration_modifier_start(next)) {
+            PARSE_ERROR_AT(next, "extern declaration modifiers must appear at the end of the form");
+            return false;
+        }
+        modifier_start = next;
+    }
+}
+
+static bool parse_extern_var_modifier_tail(SchemeTokenizer& tokenizer,
+                                           eshkol_ast_t* ast,
+                                           Token modifier_start) {
+    if (!ast || ast->type != ESHKOL_OP || ast->operation.op != ESHKOL_EXTERN_VAR_OP) {
+        PARSE_ERROR_AT(modifier_start, "internal parser error: extern-var modifier target is invalid");
+        return false;
+    }
+
+    while (true) {
+        std::string modifier = declaration_modifier_name(modifier_start, tokenizer);
+        if (modifier.empty()) {
+            PARSE_ERROR_AT(modifier_start, "extern-var declaration modifier name must follow ':'");
+            return false;
+        }
+
+        if (modifier == "extern-symbol" || modifier == "real") {
+            Token value = tokenizer.nextToken();
+            if (value.type != TOKEN_STRING &&
+                (value.type != TOKEN_SYMBOL || is_declaration_modifier_start(value))) {
+                PARSE_ERROR_AT(value, "extern-var :%s requires a symbol name", modifier.c_str());
+                return false;
+            }
+            if (ast->operation.extern_var_op.real_name) {
+                PARSE_ERROR_AT(modifier_start, "extern-var symbol name modifier may only appear once");
+                return false;
+            }
+            ast->operation.extern_var_op.real_name = copy_token_text(value.value);
+        } else {
+            PARSE_ERROR_AT(modifier_start, "unsupported extern-var declaration modifier '%s'",
+                           modifier.c_str());
+            return false;
+        }
+
+        Token next = tokenizer.nextToken();
+        if (next.type == TOKEN_RPAREN) {
+            return true;
+        }
+        if (!is_declaration_modifier_start(next)) {
+            PARSE_ERROR_AT(next, "extern-var declaration modifiers must appear at the end of the form");
+            return false;
+        }
+        modifier_start = next;
+    }
+}
+
 // ===== HoTT TYPE EXPRESSION PARSING =====
 // Parse type expressions for the HoTT type system
 // Supports: primitive types, arrow types, container types, forall, etc.
@@ -2510,6 +2784,8 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
 
                 // Parse function body (can be multiple expressions)
                 std::vector<eshkol_ast_t> body_expressions;
+                bool has_modifier_tail = false;
+                Token modifier_start;
                 
                 while (true) {
                     token = tokenizer.nextToken();
@@ -2518,6 +2794,11 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                         PARSE_ERROR_AT(token, "unexpected end of input in function body");
                         ast.type = ESHKOL_INVALID;
                         return ast;
+                    }
+                    if (starts_known_define_modifier(token, tokenizer)) {
+                        has_modifier_tail = true;
+                        modifier_start = token;
+                        break;
                     }
 
                     eshkol_ast_t expr;
@@ -2603,6 +2884,12 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 }
                 ast.operation.define_op.return_type = func_signature.eshkol_func.return_type;
 
+                if (has_modifier_tail) {
+                    if (!parse_define_modifier_tail(tokenizer, &ast, modifier_start)) {
+                        ast.type = ESHKOL_INVALID;
+                    }
+                }
+
                 return ast;
                 
             } else if (token.type == TOKEN_SYMBOL) {
@@ -2614,7 +2901,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 
                 // Check for closing paren
                 token = tokenizer.nextToken();
-                if (token.type != TOKEN_RPAREN) {
+                if (token.type != TOKEN_RPAREN && !is_declaration_modifier_start(token)) {
                     PARSE_ERROR_AT(token, "expected closing parenthesis after variable value");
                     ast.type = ESHKOL_INVALID;
                     return ast;
@@ -2631,6 +2918,12 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 ast.operation.define_op.is_function = 0;
                 ast.operation.define_op.parameters = nullptr;
                 ast.operation.define_op.num_params = 0;
+
+                if (is_declaration_modifier_start(token)) {
+                    if (!parse_define_modifier_tail(tokenizer, &ast, token)) {
+                        ast.type = ESHKOL_INVALID;
+                    }
+                }
                 
                 return ast;
                 
@@ -7101,7 +7394,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Parse type
             token = tokenizer.nextToken();
             if (token.type != TOKEN_SYMBOL) {
-                PARSE_ERROR_AT(token, "extern requires return type as first argument");
+                PARSE_ERROR_AT(token, "extern-var requires type as first argument");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -7113,7 +7406,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Parse variable name
             token = tokenizer.nextToken();
             if (token.type != TOKEN_SYMBOL) {
-                PARSE_ERROR_AT(token, "extern requires function name as second argument");
+                PARSE_ERROR_AT(token, "extern-var requires variable name as second argument");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
@@ -7121,6 +7414,21 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             { size_t _len = token.value.length();
             ast.operation.extern_var_op.name = new char[_len + 1];
             memcpy(ast.operation.extern_var_op.name, token.value.c_str(), _len + 1); }
+            ast.operation.extern_var_op.real_name = nullptr;
+
+            token = tokenizer.nextToken();
+            if (is_declaration_modifier_start(token)) {
+                if (!parse_extern_var_modifier_tail(tokenizer, &ast, token)) {
+                    ast.type = ESHKOL_INVALID;
+                }
+                return ast;
+            }
+
+            if (token.type != TOKEN_RPAREN) {
+                PARSE_ERROR_AT(token, "extern-var takes exactly a type, a name, and optional declaration modifiers");
+                ast.type = ESHKOL_INVALID;
+            }
+            return ast;
         } else if (ast.operation.op == ESHKOL_EXTERN_OP) {
             // Syntax: (extern return-type function-name param1-type param2-type ...)
             // Example: (extern void print_hello)
@@ -7150,12 +7458,12 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             ast.operation.extern_op.name = new char[_len + 1];
             memcpy(ast.operation.extern_op.name, token.value.c_str(), _len + 1); }
             
-            // Initialize real_name to nullptr (will be set if :real modifier is used)
+            // Initialize declaration modifiers
             ast.operation.extern_op.real_name = nullptr;
+            ast.operation.extern_op.is_weak = 0;
+            ast.operation.extern_op.is_no_return = 0;
 
-            // Parse parameter types and :real modifier
-            // Syntax: (extern return-type func-name param-types... :real real-name)
-            // The :real modifier can appear at the end after all parameter types
+            // Parse parameter types and declaration modifiers.
             std::vector<eshkol_ast_t> param_types;
             token = tokenizer.nextToken();
 
@@ -7167,44 +7475,9 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                     return ast;
                 }
 
-                // Check for :real modifier. Two tokenizations are valid:
-                //   1. TOKEN_COLON followed by SYMBOL "real" — the original
-                //      whitespace-separated form `(extern … : real …)`.
-                //   2. SYMBOL ":real" as a single token — the keyword-style
-                //      form `(extern … :real …)` that the colon-keyword
-                //      tokenizer (Noesis residual audit v3 BUG A) emits when
-                //      `:` is glued to its identifier with no space. Both
-                //      forms are accepted for backwards compatibility.
-                bool is_real_modifier =
-                    (token.type == TOKEN_COLON) ||
-                    (token.type == TOKEN_SYMBOL && token.value == ":real");
-                if (is_real_modifier) {
-                    if (token.type == TOKEN_COLON) {
-                        Token next = tokenizer.nextToken();
-                        if (next.type != TOKEN_SYMBOL || next.value != "real") {
-                            PARSE_ERROR_AT(next, "unexpected ':' in extern declaration (did you mean :real?)");
-                            ast.type = ESHKOL_INVALID;
-                            return ast;
-                        }
-                    }
-                    // Parse the real function name
-                    token = tokenizer.nextToken();
-                    if (token.type != TOKEN_SYMBOL) {
-                        PARSE_ERROR_AT(token, "extern :real requires function name as argument");
+                if (is_declaration_modifier_start(token)) {
+                    if (!parse_extern_modifier_tail(tokenizer, &ast, token)) {
                         ast.type = ESHKOL_INVALID;
-                        return ast;
-                    }
-
-                    { size_t _len = token.value.length();
-                    ast.operation.extern_op.real_name = new char[_len + 1];
-                    memcpy(ast.operation.extern_op.real_name, token.value.c_str(), _len + 1); }
-
-                    // Expect closing paren after :real name
-                    token = tokenizer.nextToken();
-                    if (token.type != TOKEN_RPAREN) {
-                        PARSE_ERROR_AT(token, ":real modifier must be at end of extern declaration");
-                        ast.type = ESHKOL_INVALID;
-                        return ast;
                     }
                     break;
                 }

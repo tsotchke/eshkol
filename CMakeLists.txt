@@ -1648,6 +1648,24 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/ta
     add_test(NAME target_intrinsic_test COMMAND target_intrinsic_test)
 endif()
 
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/decl_attribute_test.cpp")
+    add_executable(decl_attribute_test tests/toolchain/decl_attribute_test.cpp)
+    target_compile_features(decl_attribute_test PRIVATE cxx_std_17)
+    target_compile_definitions(decl_attribute_test PRIVATE ESHKOL_LLVM_BACKEND_ENABLED)
+    target_include_directories(decl_attribute_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    eshkol_target_llvm_includes(decl_attribute_test)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(decl_attribute_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(decl_attribute_test PRIVATE
+        eshkol-static
+        ${ESHKOL_EXTRA_LINK_LIBS}
+        ${LLVM_LIBS_LIST}
+        ${LLVM_SYSTEM_LIBS_LIST}
+    )
+    add_test(NAME decl_attribute_test COMMAND decl_attribute_test)
+endif()
+
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/runtime_core_boundary_test.cpp")
     add_executable(runtime_core_boundary_test tests/toolchain/runtime_core_boundary_test.cpp)
     target_compile_features(runtime_core_boundary_test PRIVATE cxx_std_17)

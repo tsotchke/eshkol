@@ -255,6 +255,8 @@ The language needs new machine-facing primitives.
 - `naked`
 - `no-return`
 
+Initial declaration-attribute support has landed for `link-section`, `used`, `weak`, `align`, `extern-symbol`, `export-symbol`, and `no-return`. `packed`, `interrupt-handler`, and `naked` remain separate target/ABI policy work.
+
 ## 4.4 Required escape hatch
 
 One of the following must exist before deeper systems work:
