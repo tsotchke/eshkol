@@ -1023,7 +1023,8 @@ TypeCheckResult TypeChecker::synthesizeApplication(eshkol_ast_t* expr) {
             return index == 0 || index == 2;
         }
 
-        if (builtin_name == "atomic-store!" || builtin_name == "atomic-exchange!") {
+        if (builtin_name == "atomic-store!" || builtin_name == "atomic-exchange!" ||
+            builtin_name == "atomic-fetch-add!" || builtin_name == "atomic-fetch-sub!") {
             return index == 0 || index == 3;
         }
 
@@ -1535,6 +1536,53 @@ TypeCheckResult TypeChecker::synthesizeApplication(eshkol_ast_t* expr) {
             }
 
             return TypeCheckResult::ok(exchange_type.value_or(BuiltinTypes::Value));
+        }
+
+        if (func_name == "atomic-fetch-add!" || func_name == "atomic-fetch-sub!") {
+            const char* builtin = func_name.c_str();
+            auto rmw_type = call.num_vars >= 1
+                                ? resolve_low_level_type_designator(
+                                      call.variables[0], builtin, "machine", false)
+                                : std::nullopt;
+
+            if (rmw_type && *rmw_type == BuiltinTypes::Pointer) {
+                reportTypeIssue(func_name + " requires an integer machine type",
+                                &call.variables[0]);
+            }
+
+            if (call.num_vars != 4) {
+                reportTypeIssue(func_name + " expects exactly 4 arguments", expr);
+            } else {
+                if (arg_types[1].success) {
+                    TypeId pointer_type = arg_types[1].inferred_type;
+                    if (pointer_type == BuiltinTypes::Value &&
+                        call.variables[1].type == ESHKOL_VAR &&
+                        call.variables[1].variable.id) {
+                        ctx_.bind(call.variables[1].variable.id, BuiltinTypes::Pointer);
+                    } else if (pointer_type != BuiltinTypes::Pointer) {
+                        reportTypeIssue(func_name + " expects a Ptr address operand",
+                                        &call.variables[1]);
+                    }
+                }
+
+                if (rmw_type && *rmw_type != BuiltinTypes::Pointer &&
+                    arg_types[2].success) {
+                    TypeId value_type = arg_types[2].inferred_type;
+                    if (value_type == BuiltinTypes::Value &&
+                        call.variables[2].type == ESHKOL_VAR &&
+                        call.variables[2].variable.id) {
+                        ctx_.bind(call.variables[2].variable.id, *rmw_type);
+                    } else if (!env_.isSubtype(value_type, BuiltinTypes::Integer)) {
+                        reportTypeIssue(
+                            func_name + " expects an integer value compatible with the machine type",
+                            &call.variables[2]);
+                    }
+                }
+
+                resolve_atomic_rmw_ordering(call.variables[3], builtin);
+            }
+
+            return TypeCheckResult::ok(rmw_type.value_or(BuiltinTypes::Value));
         }
 
         if (func_name == "target-intrinsic") {

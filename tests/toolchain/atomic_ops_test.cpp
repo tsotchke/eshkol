@@ -81,6 +81,21 @@ bool test_atomic_exchange_type_synthesis() {
                         "atomic-exchange! pointer/value/order operands accepted");
 }
 
+bool test_atomic_fetch_add_type_synthesis() {
+    TypeEnvironment env;
+    TypeChecker checker(env);
+    checker.context().bind("mmio-base", BuiltinTypes::Pointer);
+
+    eshkol_ast_t ast = parse_single("(atomic-fetch-add! u32 mmio-base 4 acq-rel)");
+    const TypeCheckResult result = checker.synthesize(&ast);
+
+    return expect_equal(result.success, true, "atomic-fetch-add! type synthesis succeeds") &&
+           expect_equal(result.inferred_type, BuiltinTypes::UInt32,
+                        "atomic-fetch-add! returns previous value type") &&
+           expect_equal(checker.hasErrors(), false,
+                        "atomic-fetch-add! pointer/value/order operands accepted");
+}
+
 bool test_atomic_pointer_type_synthesis() {
     TypeEnvironment env;
     TypeChecker checker(env);
@@ -115,6 +130,23 @@ bool test_atomic_exchange_rejects_invalid_ordering() {
                         "atomic-exchange! keeps requested type after ordering issue") &&
            expect_equal(checker.hasErrors(), true,
                         "atomic-exchange! records invalid ordering");
+}
+
+bool test_atomic_fetch_add_rejects_pointer_type() {
+    TypeEnvironment env;
+    TypeChecker checker(env);
+    checker.context().bind("mmio-base", BuiltinTypes::Pointer);
+    checker.context().bind("next-base", BuiltinTypes::Pointer);
+
+    eshkol_ast_t ast = parse_single("(atomic-fetch-add! ptr mmio-base next-base acq-rel)");
+    const TypeCheckResult result = checker.synthesize(&ast);
+
+    return expect_equal(result.success, true,
+                        "atomic-fetch-add! still synthesizes after type issue") &&
+           expect_equal(result.inferred_type, BuiltinTypes::Pointer,
+                        "atomic-fetch-add! keeps requested type after type issue") &&
+           expect_equal(checker.hasErrors(), true,
+                        "atomic-fetch-add! records pointer designator error");
 }
 
 bool test_atomic_load_rejects_store_only_ordering() {
@@ -169,7 +201,7 @@ bool test_atomic_ir_lowering() {
     eshkol_set_uses_stdlib(0);
     eshkol_set_target(nullptr);
 
-    eshkol_ast_t asts[8] = {
+    eshkol_ast_t asts[10] = {
         parse_single("(define mmio-base (usize->ptr 4096))"),
         parse_single("(define next-base (usize->ptr 8192))"),
         parse_single("(define (peek) : u8 (atomic-load u8 mmio-base acquire))"),
@@ -178,9 +210,11 @@ bool test_atomic_ir_lowering() {
         parse_single("(define (peek-next) : ptr (atomic-load ptr mmio-base seq-cst))"),
         parse_single("(define (poke-next) : null (atomic-store! ptr mmio-base next-base seq-cst))"),
         parse_single("(define (swap32 (v : u32)) : u32 (atomic-exchange! u32 mmio-base v acq-rel))"),
+        parse_single("(define (add32 (v : u32)) : u32 (atomic-fetch-add! u32 mmio-base v acq-rel))"),
+        parse_single("(define (sub16 (v : u16)) : u16 (atomic-fetch-sub! u16 mmio-base v release))"),
     };
 
-    LLVMModuleRef module = eshkol_generate_llvm_ir_library(asts, 8, "atomic_ops_test");
+    LLVMModuleRef module = eshkol_generate_llvm_ir_library(asts, 10, "atomic_ops_test");
     if (!module) {
         std::cerr << "FAIL: atomic LLVM module generation" << std::endl;
         return false;
@@ -224,11 +258,17 @@ bool test_atomic_ir_lowering() {
                              "atomic pointer ops keep seq-cst ordering") &&
              expect_contains(ir, "atomicrmw xchg",
                              "atomic-exchange! lowers to atomicrmw xchg") &&
+             expect_contains(ir, "atomicrmw add",
+                             "atomic-fetch-add! lowers to atomicrmw add") &&
+             expect_contains(ir, "atomicrmw sub",
+                             "atomic-fetch-sub! lowers to atomicrmw sub") &&
              expect_contains(ir, "acq_rel",
                              "atomic-exchange! keeps acq-rel ordering") &&
              expect_contains(ir, "peek", "atomic load survives in function IR") &&
              expect_contains(ir, "poke", "atomic store survives in function IR") &&
-             expect_contains(ir, "swap32", "atomic exchange survives in function IR");
+             expect_contains(ir, "swap32", "atomic exchange survives in function IR") &&
+             expect_contains(ir, "add32", "atomic fetch-add survives in function IR") &&
+             expect_contains(ir, "sub16", "atomic fetch-sub survives in function IR");
     }
 
     std::remove(ir_path);
@@ -248,10 +288,16 @@ int main() {
     if (!test_atomic_exchange_type_synthesis()) {
         return 1;
     }
+    if (!test_atomic_fetch_add_type_synthesis()) {
+        return 1;
+    }
     if (!test_atomic_pointer_type_synthesis()) {
         return 1;
     }
     if (!test_atomic_exchange_rejects_invalid_ordering()) {
+        return 1;
+    }
+    if (!test_atomic_fetch_add_rejects_pointer_type()) {
         return 1;
     }
     if (!test_atomic_load_rejects_store_only_ordering()) {

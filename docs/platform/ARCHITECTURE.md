@@ -249,6 +249,8 @@ The language needs new machine-facing primitives.
 - `atomic-load`
 - `atomic-store!`
 - `atomic-exchange!`
+- `atomic-fetch-add!`
+- `atomic-fetch-sub!`
 - compiler and memory fences
 
 ## 4.3 Required attributes

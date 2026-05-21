@@ -655,3 +655,46 @@ target-specific memory-model rules in this slice.
 - compare-exchange remains a later v1.8 slice with explicit failure-ordering
   design
 - the atomic test surface now checks both load/store and RMW IR lowering
+
+---
+
+## D-0024
+
+- Date: 2026-05-21
+- Status: Accepted
+- Title: Atomic fetch-add/sub are bounded integer RMW primitives
+
+### Context
+
+After `atomic-exchange!`, low-level runtime and bootstrap code still needs
+simple counters and reference-style handoff state. Compare-exchange remains a
+larger semantic commitment because it needs success/failure orderings, weak vs.
+strong policy, and a value/result shape for the observed load.
+
+### Decision
+
+Add two typed arithmetic read-modify-write primitives:
+
+```scheme
+(atomic-fetch-add! type ptr value ordering)
+(atomic-fetch-sub! type ptr value ordering)
+```
+
+The `type` operand uses the existing low-level machine integer designators.
+The address operand must be a `Ptr`, the value must be integer-compatible with
+the requested type, and the result is the previous value at that address.
+Supported orderings match `atomic-exchange!`: `relaxed`, `acquire`, `release`,
+`acq-rel`, and `seq-cst`; `relaxed` lowers to LLVM `monotonic`.
+
+Do not support pointer designators for these arithmetic RMW forms. Do not add
+compare-exchange, fetch-and/or/xor families, weak/strong CAS policy, or
+target-specific memory-model rules in this slice.
+
+### Consequences
+
+- Eshkol can express atomic integer counters without resorting to CAS loops in
+  source
+- pointer arithmetic remains explicit through `ptr-add` instead of being hidden
+  inside arithmetic atomic operations
+- compare-exchange remains a later v1.8 slice with a separately documented
+  failure-ordering contract

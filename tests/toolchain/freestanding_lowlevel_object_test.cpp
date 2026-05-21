@@ -172,6 +172,8 @@ int main(int argc, char** argv) {
             << "                   (atomic-load u16 (ptr-add (usize->ptr 8192) 2) acquire)\n"
             << "                   release)\n"
             << "    (atomic-exchange! u16 (ptr-add (usize->ptr 8192) 2) 7 acq-rel)\n"
+            << "    (atomic-fetch-add! u16 (ptr-add (usize->ptr 8192) 2) 1 release)\n"
+            << "    (atomic-fetch-sub! u16 (ptr-add (usize->ptr 8192) 2) 1 acq-rel)\n"
             << "    (compiler-fence release))\n"
             << "  :export-symbol kernel_lowlevel)\n";
     }
