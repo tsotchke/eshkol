@@ -1,8 +1,8 @@
 # Eshkol Web Platform
 
 **Status**: Stable — v1.2.1-scale
-**Module**: `web` / `web.http`
-**Source**: `lib/web/http.esk`
+**Module**: `web`
+**Source**: `lib/web/web.esk`
 **Compiler flag**: `--wasm` (`-w`)
 
 ---
@@ -173,10 +173,12 @@ Loading in HTML:
 ```scheme
 ;; Import the entire web module
 (require web)
-
-;; Or import the specific sub-module
-(require web.http)
 ```
+
+The browser web platform is a single module (`lib/web/web.esk`); there is
+no `web.http` sub-module. For server-side HTTP client / server work, use
+the agent FFI surface documented in
+[`AGENT_FFI.md`](AGENT_FFI.md) (`agent.http`, `agent.http_server`).
 
 ---
 
@@ -1090,7 +1092,7 @@ written back into caller-provided WASM linear memory buffers by the host.
 
 ## 11. Server-Side Counterparts — The Agent FFI
 
-The `lib/web/http.esk` surface documented above is the *client-in-the-
+The `lib/web/web.esk` surface documented above is the *client-in-the-
 browser* path: an Eshkol program is compiled to WASM, the browser
 fulfils every `(extern …)` declaration as a host import, and the
 fetch / DOM / canvas calls go through the JavaScript runtime. A
@@ -1107,11 +1109,11 @@ summarises how they relate to the browser path.
 |---|---|---|
 | Compile target | `wasm32-unknown-unknown` via `eshkol_compile_llvm_ir_to_wasm` | host CPU / OS via standard LLVM backend |
 | HTTP source | `web-fetch` → JS `fetch()` | `(http-get url)` → libcurl |
-| Module | `lib/web/http.esk` | `lib/agent/http.esk` |
+| Module | `lib/web/web.esk` | `lib/agent/http.esk` |
 | Host requirement | a browser or WASI runtime supplying `web_*` imports | a build with `ESHKOL_BUILD_AGENT_FFI=ON` and libcurl installed |
 | TLS | inherited from the browser's TLS stack | libcurl (OpenSSL / SecureTransport) with `CURLOPT_SSL_VERIFYPEER=1` by default |
 | Loopback HTTP server | not exposed (browsers can't listen) | `(http-server-create port)` — see [`AGENT_FFI.md` §4](AGENT_FFI.md#4-http-server-websocket-unix-domain-sockets-agenthttp_server) |
-| WebSocket client | not currently exposed in `lib/web/http.esk` | `eshkol_ws_*` family in `agent_http_server.c` |
+| WebSocket client | not currently exposed in `lib/web/web.esk` | `eshkol_ws_*` family in `agent_http_server.c` |
 | Subprocess | impossible from a sandboxed WASM/browser environment | `(run-argv-capture argv)` — see [`AGENT_FFI.md` §6](AGENT_FFI.md#6-subprocess-agentsubprocess) |
 | Filesystem watch | not exposed (browsers cannot watch host filesystems) | native kqueue/inotify via `agent_watch.c` |
 | SQL store | the browser path uses `web-storage-set` / `localStorage` | `(sqlite-prepare db sql)` — full SQLite via `agent_sqlite.c` |
@@ -1122,7 +1124,7 @@ Both paths use the same `(extern …)` syntax. The difference is
 purely in how `:real` is resolved at link time:
 
 ```scheme
-;; lib/web/http.esk — fulfilled by the WASM host as a JS import.
+;; lib/web/web.esk — fulfilled by the WASM host as a JS import.
 (extern i32 web-fetch ptr i32 ptr i32 :real web_fetch)
 
 ;; lib/agent/http.esk — fulfilled by libcurl through agent_http_client.c.
@@ -1175,7 +1177,7 @@ Use the browser path (`--wasm`) when:
 - The user agent is the trust boundary; you want the
   browser's sandbox to apply.
 - You want the visual surface (Canvas, DOM, events) that
-  `lib/web/http.esk` exposes.
+  `lib/web/web.esk` exposes.
 
 Use the agent FFI when:
 
@@ -1202,7 +1204,7 @@ wiring, see [`AGENT_FFI.md`](AGENT_FFI.md).
 
 ## 12. See Also
 
-- `lib/web/http.esk` — Full source for all 73 extern declarations
+- `lib/web/web.esk` — Full source for all 73 extern declarations
 - `exe/eshkol-run.cpp` — `--wasm` flag handling and WASM file emission
 - `lib/backend/llvm_codegen.cpp` (`eshkol_compile_llvm_ir_to_wasm`) — LLVM
   WebAssembly backend integration

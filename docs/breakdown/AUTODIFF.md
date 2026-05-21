@@ -533,12 +533,32 @@ Eshkol v1.1 introduces a full reverse-mode backward pass for tensor operations, 
 | Convolution | conv2d | `eshkol_backward_conv2d` |
 | Normalization | batch norm, layer norm | `eshkol_backward_batchnorm`, `eshkol_backward_layernorm` |
 | Linear algebra | matmul | `eshkol_backward_matmul` |
-| Attention | single-head, multi-head | `eshkol_backward_attention`, `eshkol_backward_multihead_attention` |
-| Embedding | embedding lookup | `eshkol_backward_embedding` |
+| Attention | single-head | `tensor_attention_backward` — **stub in v1.2** (see Known limitations below) |
+| Embedding | embedding lookup | `tensor_embedding_backward` — **stub in v1.2** (see Known limitations below) |
 
 **Matmul backward** implements the standard matrix calculus rules: for a forward pass `C = A @ B` where A is (M,K), B is (K,N), and C is (M,N), the backward pass computes `dA = grad_C @ B^T` and `dB = A^T @ grad_C`. Both input matrices are saved during the forward pass in the `ad_node_t.saved_tensors` array.
 
-**Attention backward** is the most complex operation, computing five distinct gradient flows through the softmax-scaled dot-product attention: `d_V = attn^T @ grad_out`, `d_attn = grad_out @ V^T`, then softmax backward `d_scores[i][j] = attn[i][j] * (d_attn[i][j] - dot(attn[i], d_attn[i]))`, and finally `d_Q = d_scores @ K` and `d_K = d_scores^T @ Q`. Multi-head attention decomposes this per-head and additionally backpropagates through the projection weight matrices (W_Q, W_K, W_V, W_O).
+**Attention backward** in v1.2-scale is a value-passthrough stub
+(`tensor_attention_backward` at `lib/bridge/tensor_backward.cpp:589`).
+It accumulates `dy` into the V input's gradient slot only; gradients
+into Q and K are zero, and the softmax chain through
+`softmax(Q K^T / sqrt(d)) V` is skipped. The runtime prints a
+one-shot stderr warning the first time the function is invoked so the
+limitation cannot hit silently during training. The full backward —
+`d_V = attn^T @ grad_out`, `d_attn = grad_out @ V^T`,
+`d_scores[i][j] = attn[i][j] * (d_attn[i][j] - dot(attn[i], d_attn[i]))`,
+then `d_Q = d_scores @ K` and `d_K = d_scores^T @ Q`, decomposed per-head
+for multi-head with backprop through (W_Q, W_K, W_V, W_O) — ships in
+v1.3-evolve as part of the attention-codegen rewrite. Training attention
+layers under v1.2 will not converge correctly.
+
+**Embedding backward** in v1.2-scale is also a stub
+(`tensor_embedding_backward` at `lib/bridge/tensor_backward.cpp:567`).
+It scatters the upstream gradient into row 0 of the weight tensor only,
+because the lookup-index tensor is not yet threaded through the AD-node
+shape. A one-shot stderr warning fires on first invocation. The full
+indexed scatter — `dW[idx[i]] += dy[i]` over the lookup-index vector —
+ships in v1.3-evolve.
 
 **Integration with the forward-mode dual number system:** Eshkol's AD architecture is a hybrid. Forward-mode uses dual numbers (struct `{double primal, double tangent}`) for scalar derivatives and is implemented entirely in LLVM IR generation (`autodiff_codegen.cpp`). Reverse-mode uses a tape-based computational graph with `ad_node_t` nodes. The key bridge is the `propagateGradient` function in `autodiff_codegen.cpp`, which implements a two-path dispatch:
 
