@@ -1066,6 +1066,8 @@ static bool is_power_of_two_u64(uint64_t value) {
     return value != 0 && (value & (value - 1)) == 0;
 }
 
+static constexpr uint64_t kMaxLlvmGlobalAlignment = uint64_t{1} << 32;
+
 static bool is_declaration_modifier_start(const Token& token) {
     return token.type == TOKEN_COLON ||
            (token.type == TOKEN_SYMBOL && token.value.size() > 1 && token.value[0] == ':');
@@ -1082,22 +1084,6 @@ static std::string declaration_modifier_name(const Token& token, SchemeTokenizer
         }
     }
     return "";
-}
-
-static bool is_known_define_modifier(const std::string& name) {
-    return name == "link-section" || name == "align" || name == "used" ||
-           name == "weak" || name == "export-symbol" || name == "no-return";
-}
-
-static bool starts_known_define_modifier(const Token& token, SchemeTokenizer& tokenizer) {
-    if (token.type == TOKEN_SYMBOL && token.value.size() > 1 && token.value[0] == ':') {
-        return is_known_define_modifier(token.value.substr(1));
-    }
-    if (token.type != TOKEN_COLON) {
-        return false;
-    }
-    Token peek = tokenizer.peekToken();
-    return peek.type == TOKEN_SYMBOL && is_known_define_modifier(peek.value);
 }
 
 static bool parse_define_modifier_tail(SchemeTokenizer& tokenizer,
@@ -1132,6 +1118,10 @@ static bool parse_define_modifier_tail(SchemeTokenizer& tokenizer,
             uint64_t alignment = 0;
             if (!parse_uint64_token(value, &alignment) || !is_power_of_two_u64(alignment)) {
                 PARSE_ERROR_AT(value, "define :align requires a positive power-of-two integer");
+                return false;
+            }
+            if (alignment > kMaxLlvmGlobalAlignment) {
+                PARSE_ERROR_AT(value, "define :align must not exceed LLVM's maximum global alignment");
                 return false;
             }
             if (ast->operation.define_op.has_alignment) {
@@ -2795,7 +2785,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                         ast.type = ESHKOL_INVALID;
                         return ast;
                     }
-                    if (starts_known_define_modifier(token, tokenizer)) {
+                    if (is_declaration_modifier_start(token)) {
                         has_modifier_tail = true;
                         modifier_start = token;
                         break;
