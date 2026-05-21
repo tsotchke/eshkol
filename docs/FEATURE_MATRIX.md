@@ -454,7 +454,7 @@ This matrix documents all implemented and planned features for the Eshkol langua
 | Debugger | 📋 | Interactive debugging | Planned |
 | Profiler | 📋 | Performance analysis | Planned |
 | **Documentation** |
-| API Reference | ✅ | Complete | 700+ builtins |
+| API Reference | ✅ | Complete | 555+ builtins |
 | Quickstart Guide | ✅ | Tutorial | 15-minute intro |
 | Architecture Guide | ✅ | Internals | System design |
 | Type System Guide | ✅ | HoTT types | Dependent types |
@@ -739,7 +739,7 @@ This matrix documents all implemented and planned features for the Eshkol langua
 
 ### ✅ Production-Ready (v1.1)
 
-- Core language (70+ special forms, 700+ builtins)
+- Core language (39 special forms, 555+ builtins)
 - Automatic differentiation (3 modes)
 - Tensor operations (30+ functions)
 - List processing (50+ operations)
@@ -858,7 +858,7 @@ This matrix documents all implemented and planned features for the Eshkol langua
 - Consciousness engine (logic, inference, workspace)
 - Signal processing library (FFT, filters, window functions)
 - R7RS extensions (call/cc, dynamic-wind, bytevectors)
-- 700+ builtins, 37 test suites, 528 self-reported tests
+- 555+ builtins, 37 test suites, 528 self-reported tests (87/87 v1.2 edge cases)
 
 **Codebase**: ~232,000 lines of production C/C++
 
