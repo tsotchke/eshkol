@@ -29,43 +29,16 @@
 (require core.list.search)
 
 ;; ============================================================================
-;; Character code constants (ASCII)
-;; ============================================================================
-(define JSON_SPACE 32)
-(define JSON_TAB 9)
-(define JSON_NEWLINE 10)
-(define JSON_RETURN 13)
-(define JSON_QUOTE 34)
-(define JSON_COMMA 44)
-(define JSON_COLON 58)
-(define JSON_LBRACKET 91)
-(define JSON_RBRACKET 93)
-(define JSON_LBRACE 123)
-(define JSON_RBRACE 125)
-(define JSON_BACKSLASH 92)
-(define JSON_SLASH 47)
-(define JSON_MINUS 45)
-(define JSON_PLUS 43)
-(define JSON_DOT 46)
-(define JSON_ZERO 48)
-(define JSON_NINE 57)
-(define JSON_e_LOWER 101)
-(define JSON_E_UPPER 69)
-(define JSON_t 116)
-(define JSON_f 102)
-(define JSON_n 110)
-
-;; ============================================================================
 ;; Internal Helpers
 ;; ============================================================================
 
 ;; Check if character code is whitespace
 (define (json-whitespace? c)
-  (or (= c JSON_SPACE) (= c JSON_TAB) (= c JSON_NEWLINE) (= c JSON_RETURN)))
+  (or (= c 32) (= c 9) (= c 10) (= c 13)))
 
 ;; Check if character code is a digit
 (define (json-digit? c)
-  (and (>= c JSON_ZERO) (<= c JSON_NINE)))
+  (and (>= c 48) (<= c 57)))
 
 ;; Skip whitespace in string starting at position
 (define (json-skip-ws str pos len)
@@ -87,10 +60,10 @@
         (cons result p)
         (let ((c (char->integer (string-ref str p))))
           (cond
-            ((= c JSON_QUOTE)
+            ((= c 34)
              ;; End of string
              (cons result (+ p 1)))
-            ((= c JSON_BACKSLASH)
+            ((= c 92)
              ;; Escape sequence
              (if (>= (+ p 1) len)
                  (cons result p)
@@ -102,11 +75,11 @@
                       (loop (+ p 2) (string-append result "\t")))
                      ((= next 114) ;; \r
                       (loop (+ p 2) (string-append result "\r")))
-                     ((= next JSON_BACKSLASH)
+                     ((= next 92)
                       (loop (+ p 2) (string-append result "\\")))
-                     ((= next JSON_QUOTE)
+                     ((= next 34)
                       (loop (+ p 2) (string-append result "\"")))
-                     ((= next JSON_SLASH)
+                     ((= next 47)
                       (loop (+ p 2) (string-append result "/")))
                      (else
                       (loop (+ p 2) (string-append result (make-string 1 (integer->char next)))))))))
@@ -123,7 +96,7 @@
 ;; Returns: (cons parsed-number new-position)
 (define (json-parse-num str pos len)
   ;; Check for negative sign
-  (define neg (and (< pos len) (= (char->integer (string-ref str pos)) JSON_MINUS)))
+  (define neg (and (< pos len) (= (char->integer (string-ref str pos)) 45)))
   (define start-pos (if neg (+ pos 1) pos))
 
   (define (loop p result has-dot has-exp)
@@ -133,11 +106,11 @@
           (cond
             ((json-digit? c)
              (loop (+ p 1) (string-append result (make-string 1 (string-ref str p))) has-dot has-exp))
-            ((and (= c JSON_DOT) (not has-dot) (not has-exp))
+            ((and (= c 46) (not has-dot) (not has-exp))
              (loop (+ p 1) (string-append result ".") #t has-exp))
-            ((and (or (= c JSON_e_LOWER) (= c JSON_E_UPPER)) (not has-exp))
+            ((and (or (= c 101) (= c 69)) (not has-exp))
              (loop (+ p 1) (string-append result "e") has-dot #t))
-            ((and (or (= c JSON_PLUS) (= c JSON_MINUS)) has-exp)
+            ((and (or (= c 43) (= c 45)) has-exp)
              ;; Sign after exponent
              (loop (+ p 1) (string-append result (make-string 1 (string-ref str p))) has-dot has-exp))
             (else
@@ -158,7 +131,7 @@
     (let ((p2 (json-skip-ws str p len)))
       (if (>= p2 len)
           (cons (reverse elements) p2)
-          (if (= (char->integer (string-ref str p2)) JSON_RBRACKET)
+          (if (= (char->integer (string-ref str p2)) 93)
               (cons (reverse elements) (+ p2 1))
               ;; Parse element
               (let ((val-result (json-parse-val str p2 len)))
@@ -167,9 +140,9 @@
                       (cons (reverse (cons (car val-result) elements)) p3)
                       (let ((c3 (char->integer (string-ref str p3))))
                         (cond
-                          ((= c3 JSON_COMMA)
+                          ((= c3 44)
                            (loop (+ p3 1) (cons (car val-result) elements)))
-                          ((= c3 JSON_RBRACKET)
+                          ((= c3 93)
                            (cons (reverse (cons (car val-result) elements)) (+ p3 1)))
                           (else
                            (cons (reverse (cons (car val-result) elements)) p3)))))))))))
@@ -189,16 +162,16 @@
         (cons ht p2)
         (let ((c2 (char->integer (string-ref str p2))))
           (cond
-            ((= c2 JSON_RBRACE)
+            ((= c2 125)
              (cons ht (+ p2 1)))
-            ((= c2 JSON_QUOTE)
+            ((= c2 34)
              ;; Parse key
              (let* ((key-result (json-parse-str str (+ p2 1) len))
                     (key (car key-result))
                     (key-pos (cdr key-result))
                     (p3 (json-skip-ws str key-pos len)))
                (if (or (>= p3 len)
-                       (not (= (char->integer (string-ref str p3)) JSON_COLON)))
+                       (not (= (char->integer (string-ref str p3)) 58)))
                    (cons ht p3)
                    ;; Parse value
                    (let ((val-result (json-parse-val str (+ p3 1) len)))
@@ -208,9 +181,9 @@
                            (cons ht p4)
                            (let ((c4 (char->integer (string-ref str p4))))
                              (cond
-                               ((= c4 JSON_COMMA)
+                               ((= c4 44)
                                 (json-parse-obj-loop str (+ p4 1) len ht))
-                               ((= c4 JSON_RBRACE)
+                               ((= c4 125)
                                 (cons ht (+ p4 1)))
                                (else
                                 (cons ht p4))))))))))
@@ -225,23 +198,23 @@
         (let ((c (char->integer (string-ref str p))))
           (cond
             ;; String
-            ((= c JSON_QUOTE)
+            ((= c 34)
              (json-parse-str str (+ p 1) len))
 
             ;; Number
-            ((or (json-digit? c) (= c JSON_MINUS))
+            ((or (json-digit? c) (= c 45))
              (json-parse-num str p len))
 
             ;; Object
-            ((= c JSON_LBRACE)
+            ((= c 123)
              (json-parse-obj str (+ p 1) len))
 
             ;; Array
-            ((= c JSON_LBRACKET)
+            ((= c 91)
              (json-parse-arr str (+ p 1) len))
 
             ;; true
-            ((= c JSON_t)
+            ((= c 116)
              (if (and (>= len (+ p 4))
                       (= (char->integer (string-ref str (+ p 1))) 114)  ;; r
                       (= (char->integer (string-ref str (+ p 2))) 117)  ;; u
@@ -250,7 +223,7 @@
                  (cons '() p)))
 
             ;; false
-            ((= c JSON_f)
+            ((= c 102)
              (if (and (>= len (+ p 5))
                       (= (char->integer (string-ref str (+ p 1))) 97)   ;; a
                       (= (char->integer (string-ref str (+ p 2))) 108)  ;; l
@@ -260,7 +233,7 @@
                  (cons '() p)))
 
             ;; null
-            ((= c JSON_n)
+            ((= c 110)
              (if (and (>= len (+ p 4))
                       (= (char->integer (string-ref str (+ p 1))) 117)  ;; u
                       (= (char->integer (string-ref str (+ p 2))) 108)  ;; l
@@ -432,15 +405,15 @@
         (string-append "\"" result "\"")
         (let ((c (char->integer (string-ref str p))))
           (cond
-            ((= c JSON_QUOTE)
+            ((= c 34)
              (loop (+ p 1) len (string-append result "\\\"")))
-            ((= c JSON_BACKSLASH)
+            ((= c 92)
              (loop (+ p 1) len (string-append result "\\\\")))
-            ((= c JSON_NEWLINE)
+            ((= c 10)
              (loop (+ p 1) len (string-append result "\\n")))
-            ((= c JSON_TAB)
+            ((= c 9)
              (loop (+ p 1) len (string-append result "\\t")))
-            ((= c JSON_RETURN)
+            ((= c 13)
              (loop (+ p 1) len (string-append result "\\r")))
             (else
              (loop (+ p 1) len (string-append result (make-string 1 (string-ref str p)))))))))

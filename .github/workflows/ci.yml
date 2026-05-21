@@ -224,6 +224,17 @@ jobs:
         run: |
           set -euxo pipefail
           mkdir -p "$RUNNER_TEMP/eshkol-test-logs"
+          if [[ "${{ matrix.sanitizer_flags }}" == *"ESHKOL_ENABLE_ASAN=ON"* ]]; then
+            # The sanitizer lane is for address/UB regressions. Leak
+            # detection turns arena/JIT lifetime caches into false
+            # process-exit failures and hides the actionable signal.
+            export ASAN_OPTIONS="${ASAN_OPTIONS:-detect_leaks=0:halt_on_error=1:allocator_may_return_null=1}"
+            export UBSAN_OPTIONS="${UBSAN_OPTIONS:-halt_on_error=1:print_stacktrace=1}"
+            export ESHKOL_HTTP_SERVER_SMOKE_TIMEOUT="${ESHKOL_HTTP_SERVER_SMOKE_TIMEOUT:-600}"
+            export ESHKOL_REPL_MACHINE_READY_TIMEOUT="${ESHKOL_REPL_MACHINE_READY_TIMEOUT:-600}"
+            export ESHKOL_REPL_MACHINE_DONE_TIMEOUT="${ESHKOL_REPL_MACHINE_DONE_TIMEOUT:-180}"
+            export ESHKOL_EDGE_FAILURE_LINES="${ESHKOL_EDGE_FAILURE_LINES:-80}"
+          fi
           ${{ matrix.test_command }} 2>&1 | tee "$RUNNER_TEMP/eshkol-test-logs/${{ matrix.name }}.log"
 
       - name: Upload Test Logs

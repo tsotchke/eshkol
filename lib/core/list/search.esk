@@ -3,12 +3,22 @@
 
 (provide member member? memq memv assoc assq assv list-ref list-tail list-set!)
 
+(define (list-search-equal? a b)
+  (cond
+    ((and (string? a) (string? b)) (string=? a b))
+    ((and (number? a) (number? b)) (= a b))
+    ((and (boolean? a) (boolean? b)) (eq? a b))
+    ((and (char? a) (char? b)) (char=? a b))
+    ((and (symbol? a) (symbol? b)) (eq? a b))
+    ((and (null? a) (null? b)) #t)
+    (else (equal? a b))))
+
 ;;; member: Return sublist starting with first element equal? to x, or #f
 ;;; (member 3 '(1 2 3 4 5)) => (3 4 5)
 (define (member x lst)
   (if (null? lst)
       #f
-      (if (equal? x (car lst))
+      (if (list-search-equal? x (car lst))
           lst
           (member x (cdr lst)))))
 
@@ -38,7 +48,7 @@
 (define (assoc key alist)
   (if (null? alist)
       #f
-      (if (equal? key (caar alist))
+      (if (list-search-equal? key (caar alist))
           (car alist)
           (assoc key (cdr alist)))))
 

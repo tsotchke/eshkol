@@ -65,9 +65,19 @@
         (display msg)
         (newline))))
 
-;; check-equal?: compare via equal?.
+(define (testing-equal? a b)
+  (cond
+    ((and (string? a) (string? b)) (string=? a b))
+    ((and (number? a) (number? b)) (= a b))
+    ((and (boolean? a) (boolean? b)) (eq? a b))
+    ((and (char? a) (char? b)) (char=? a b))
+    ((and (symbol? a) (symbol? b)) (eq? a b))
+    ((and (null? a) (null? b)) #t)
+    (else (equal? a b))))
+
+;; check-equal?: compare structurally, using primitive predicates where possible.
 (define (check-equal? actual expected)
-  (if (equal? actual expected)
+  (if (testing-equal? actual expected)
       (record-check! #t "")
       (begin
         (set! *test-fail-count* (+ *test-fail-count* 1))

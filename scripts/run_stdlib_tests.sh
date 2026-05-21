@@ -20,10 +20,14 @@ COMPILE_FAIL=0
 declare -a FAILED_TESTS
 declare -a RUNTIME_ERRORS
 
+ROOT_DIR="$(pwd)"
+BUILD_DIR="${BUILD_DIR:-build}"
+ESHKOL_RUN="$ROOT_DIR/$BUILD_DIR/eshkol-run"
+FAILURE_LINES="${ESHKOL_TEST_FAILURE_LINES:-40}"
 RUN_DIR=$(mktemp -d "${TMPDIR:-/tmp}/eshkol-stdlib-tests.XXXXXX")
 cleanup() {
     rm -rf "$RUN_DIR"
-    rm -f a.out a.out.tmp.o 2>/dev/null || true
+    rm -f "$ROOT_DIR/a.out" "$ROOT_DIR/a.out.tmp.o" 2>/dev/null || true
 }
 trap cleanup EXIT
 
@@ -32,17 +36,14 @@ echo "  Eshkol Stdlib Test Suite"
 echo "========================================="
 echo ""
 
-# Honour $BUILD_DIR (CI passes it via the matrix); fall back to "build" for plain local runs.
-BUILD_DIR="${BUILD_DIR:-build}"
-
 # Ensure build directory exists
-if [ ! -d "$BUILD_DIR" ]; then
+if [ ! -d "$ROOT_DIR/$BUILD_DIR" ]; then
     echo -e "${RED}Error: build directory not found. Run cmake first.${NC}"
     exit 1
 fi
 
 # Check if compiler exists
-if [ ! -f "$BUILD_DIR/eshkol-run" ]; then
+if [ ! -f "$ESHKOL_RUN" ]; then
     echo -e "${RED}Error: eshkol-run not found. Run make first.${NC}"
     exit 1
 fi
@@ -51,22 +52,24 @@ echo "Testing all files in tests/stdlib/ directory..."
 echo ""
 
 # Run each test
-for test_file in tests/stdlib/*.esk; do
+for test_file in "$ROOT_DIR"/tests/stdlib/*.esk; do
     test_name=$(basename "$test_file")
     test_bin="$RUN_DIR/${test_name%.esk}"
     test_output="$RUN_DIR/${test_name%.esk}.out"
+    compile_output="$RUN_DIR/${test_name%.esk}.compile.out"
     printf "Testing %-50s " "$test_name"
 
     # Clean up stale temp files before each test
-    rm -f "$test_bin" "$test_bin.tmp.o" "$test_output"
+    rm -f "$test_bin" "$test_bin.tmp.o" "$test_output" "$compile_output"
 
     # Try to compile
-    if ./$BUILD_DIR/eshkol-run -L./$BUILD_DIR "$test_file" -o "$test_bin" > /dev/null 2>&1; then
+    if "$ESHKOL_RUN" -L"$ROOT_DIR/$BUILD_DIR" "$test_file" -o "$test_bin" > "$compile_output" 2>&1; then
         # Compilation succeeded, try to run
         if "$test_bin" > "$test_output" 2>&1; then
             # Check if there were any errors in output
             if grep -q "error:" "$test_output"; then
                 echo -e "${YELLOW}⚠ RUNTIME ERROR${NC}"
+                head -n "$FAILURE_LINES" "$test_output" | sed 's/^/    /'
                 RUNTIME_ERRORS+=("$test_name")
                 ((FAIL++)) || true
             else
@@ -75,11 +78,13 @@ for test_file in tests/stdlib/*.esk; do
             fi
         else
             echo -e "${RED}❌ RUNTIME FAIL${NC}"
+            head -n "$FAILURE_LINES" "$test_output" | sed 's/^/    /'
             FAILED_TESTS+=("$test_name")
             ((FAIL++)) || true
         fi
     else
         echo -e "${RED}❌ COMPILE FAIL${NC}"
+        head -n "$FAILURE_LINES" "$compile_output" | sed 's/^/    /'
         FAILED_TESTS+=("$test_name")
         ((COMPILE_FAIL++)) || true
         ((FAIL++)) || true

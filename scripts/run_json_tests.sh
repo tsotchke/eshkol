@@ -27,6 +27,7 @@ echo ""
 
 # Honour $BUILD_DIR (CI passes it via the matrix); fall back to "build" for plain local runs.
 BUILD_DIR="${BUILD_DIR:-build}"
+FAILURE_LINES="${ESHKOL_TEST_FAILURE_LINES:-40}"
 
 # Ensure build directory exists
 if [ ! -d "$BUILD_DIR" ]; then
@@ -49,15 +50,16 @@ for test_file in tests/json/*.esk; do
     printf "Testing %-50s " "$test_name"
 
     # Clean up stale temp files before each test
-    rm -f a.out a.out.tmp.o
+    rm -f a.out a.out.tmp.o /tmp/test_output.txt /tmp/test_compile_output.txt
 
     # Try to compile
-    if ./$BUILD_DIR/eshkol-run -L./$BUILD_DIR "$test_file" > /dev/null 2>&1; then
+    if ./$BUILD_DIR/eshkol-run -L./$BUILD_DIR "$test_file" > /tmp/test_compile_output.txt 2>&1; then
         # Compilation succeeded, try to run
         if ./a.out > /tmp/test_output.txt 2>&1; then
             # Check if there were any errors in output
             if grep -q "error:" /tmp/test_output.txt; then
                 echo -e "${YELLOW}RUNTIME ERROR${NC}"
+                head -n "$FAILURE_LINES" /tmp/test_output.txt | sed 's/^/    /'
                 RUNTIME_ERRORS+=("$test_name")
                 ((FAIL++)) || true
             else
@@ -66,11 +68,13 @@ for test_file in tests/json/*.esk; do
             fi
         else
             echo -e "${RED}RUNTIME FAIL${NC}"
+            head -n "$FAILURE_LINES" /tmp/test_output.txt | sed 's/^/    /'
             FAILED_TESTS+=("$test_name")
             ((FAIL++)) || true
         fi
     else
         echo -e "${RED}COMPILE FAIL${NC}"
+        head -n "$FAILURE_LINES" /tmp/test_compile_output.txt | sed 's/^/    /'
         FAILED_TESTS+=("$test_name")
         ((COMPILE_FAIL++)) || true
         ((FAIL++)) || true
@@ -105,7 +109,7 @@ if [ ${#RUNTIME_ERRORS[@]} -gt 0 ]; then
 fi
 
 # Clean up
-rm -f a.out a.out.tmp.o /tmp/test_output.txt
+rm -f a.out a.out.tmp.o /tmp/test_output.txt /tmp/test_compile_output.txt
 
 echo ""
 if [ $FAIL -eq 0 ]; then

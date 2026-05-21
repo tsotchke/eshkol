@@ -29,7 +29,8 @@
 (display "file-mtime: ") (display (> (file-mtime "/tmp") 0)) (newline)
 
 ;; symlink
-(symlink-create "/tmp" "/tmp/eshkol-v12-test/link")
+(write-file "/tmp/eshkol-v12-test/target.txt" "target")
+(symlink-create "/tmp/eshkol-v12-test/target.txt" "/tmp/eshkol-v12-test/link")
 (display "symlink-read: ") (display (symlink-read "/tmp/eshkol-v12-test/link")) (newline)
 
 ;; mkstemp

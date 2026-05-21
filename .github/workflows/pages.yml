@@ -1,8 +1,13 @@
 name: Deploy Site
 
-# Build site/src/main.esk to WebAssembly via the host eshkol-run compiler,
-# regenerate the markdown-rendered content fragments, then publish the
-# resulting site/static tree to GitHub Pages.
+# Publish the committed site/static tree to GitHub Pages.
+#
+# Important: the public site must not rebuild site/src/main.esk during deploy.
+# The website WASM is a release artifact checked into site/static; rebuilding it
+# with a moving Linux runner/toolchain has produced browser-invalid WASM while
+# still letting Pages report success. CI validates the compiler/WebAssembly
+# import surface separately. This workflow is intentionally a static deploy with
+# a browser-compile gate for the committed bundle.
 #
 # Trigger surface:
 #   - site/src/**           — the .esk source that becomes eshkol-site.wasm
@@ -16,13 +21,12 @@ name: Deploy Site
 #   - scripts/build-site*.sh
 #   - this workflow file itself
 #
-# The build invocation lives in scripts/build-site.sh — keep it in sync.
-#
 # What is NOT rebuilt here:
-#   site/static/eshkol-vm.{js,wasm} require the Emscripten SDK (`emcc`) and
-#   are produced from lib/backend/vm_wasm_repl.c.  They are committed
-#   artefacts; rebuild manually per CONTRIBUTING.md when the VM C surface
-#   changes.  Out of scope for this workflow.
+#   - site/static/eshkol-site.wasm, produced by scripts/build-site.sh
+#   - site/static/eshkol-vm.{js,wasm}, produced with the Emscripten SDK
+#
+# Rebuild those locally and commit the outputs when the website source or VM
+# browser bundle intentionally changes.
 
 on:
   push:
@@ -58,97 +62,37 @@ concurrency:
   group: "pages"
   cancel-in-progress: false
 
-env:
-  LLVM_MAJOR: '21'
-
 jobs:
   build:
-    name: build-site-wasm
+    name: validate-site-artifact
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v6
 
-      # ---------- LLVM 21 + build deps (mirror ci.yml's lite-lane install) ----------
-
-      - name: Add LLVM Repository
+      - name: Validate committed site bundle
         shell: bash
         run: |
           set -euxo pipefail
-          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
-          echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-${LLVM_MAJOR} main" | sudo tee /etc/apt/sources.list.d/llvm.list
-          apt_update() {
-            for attempt in 1 2 3; do
-              if sudo apt-get update -o Acquire::Retries=5; then
-                return 0
-              fi
-              sudo rm -rf /var/lib/apt/lists/*
-              sleep $((attempt * 15))
-            done
-            sudo apt-get update -o Acquire::Retries=5
-          }
-          apt_update
-
-      - name: Install Dependencies
-        shell: bash
-        run: |
-          set -euxo pipefail
-          # Same package set ci.yml's linux-x64-lite uses, plus pandoc for
-          # the markdown -> HTML site-content step.
-          sudo apt-get install -y \
-            cmake ninja-build \
-            llvm-${LLVM_MAJOR} llvm-${LLVM_MAJOR}-dev lld-${LLVM_MAJOR} \
-            libreadline-dev pkg-config \
-            libssl-dev libncurses-dev \
-            libpcre2-dev libsqlite3-dev \
-            git python3 pandoc
-          # eshkol's codegen passes -fuse-ld=lld for AArch64 Linux, and
-          # ci.yml symlinks ld.lld unversioned for the same reason.  We
-          # don't actually need ld.lld for the --wasm path (no host link
-          # happens), but the symlink is cheap and keeps this script
-          # bit-identical to the CI install so debugging is one less
-          # variable.
-          sudo ln -sf "/usr/bin/ld.lld-${LLVM_MAJOR}" /usr/bin/ld.lld
-
-      # ---------- Configure + build eshkol-run ----------
-      #
-      # We deliberately call cmake here (rather than letting build-site.sh
-      # bootstrap its own build) so the LLVM_CONFIG_EXECUTABLE is pinned
-      # to the apt LLVM 21 just like ci.yml's lite lanes.  Once eshkol-run
-      # exists, build-site.sh handles the rest.
-      - name: Configure
-        shell: bash
-        run: |
-          set -euxo pipefail
-          cmake -S . -B build -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DESHKOL_REQUIRED_LLVM_MAJOR="${LLVM_MAJOR}" \
-            -DLLVM_CONFIG_EXECUTABLE="/usr/bin/llvm-config-${LLVM_MAJOR}" \
-            -DESHKOL_BUILD_TESTS=OFF \
-            -DESHKOL_XLA_ENABLED=OFF \
-            -DESHKOL_GPU_ENABLED=OFF
-
-      - name: Build eshkol-run
-        shell: bash
-        run: |
-          set -euxo pipefail
-          cmake --build build --target eshkol-run --parallel
-
-      # ---------- Build the site bundle ----------
-      #
-      # This is the SAME command a developer runs locally:
-      #   BUILD_DIR=build scripts/build-site.sh
-      # Keep that contract.  If the helper script ever needs new env vars,
-      # they belong here too.
-      - name: Build site bundle (WASM + content)
-        shell: bash
-        env:
-          BUILD_DIR: build
-        run: |
-          set -euxo pipefail
-          ./scripts/build-site.sh
-          # Hard failure if the .wasm wasn't actually written — keeps a
-          # stale tree from sneaking into the deploy artefact.
           test -s site/static/eshkol-site.wasm
+          test -s site/static/eshkol-vm.wasm
+          test -s site/static/eshkol-runtime.js
+          test -s site/static/index.html
+          node <<'NODE'
+          const fs = require('fs');
+          const path = 'site/static/eshkol-site.wasm';
+          const wasm = fs.readFileSync(path);
+          const maxBytes = 5 * 1024 * 1024;
+          if (wasm.length > maxBytes) {
+            throw new Error(`${path} is ${wasm.length} bytes; refusing to deploy an oversized site WASM`);
+          }
+          WebAssembly.compile(wasm).then(
+            () => console.log(`${path} compiles in the browser engine (${wasm.length} bytes)`),
+            (err) => {
+              console.error(`${path} is not browser-valid WebAssembly: ${err.message}`);
+              process.exit(1);
+            }
+          );
+          NODE
 
       # ---------- Stage + upload the GitHub Pages artefact ----------
       #

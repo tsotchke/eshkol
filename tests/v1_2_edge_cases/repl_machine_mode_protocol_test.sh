@@ -6,6 +6,8 @@ set -u
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 REPL="$ROOT/${BUILD_DIR:-build}/eshkol-repl"
+READY_TIMEOUT="${ESHKOL_REPL_MACHINE_READY_TIMEOUT:-120}"
+DONE_TIMEOUT="${ESHKOL_REPL_MACHINE_DONE_TIMEOUT:-30}"
 
 if [ ! -x "$REPL" ]; then
     echo "SKIP: $REPL not built"
@@ -29,7 +31,7 @@ exec 3>"$IN_FIFO"
 
 wait_for_ready() {
     local deadline now
-    deadline=$((SECONDS + 120))
+    deadline=$((SECONDS + READY_TIMEOUT))
     while kill -0 "$REPL_PID" 2>/dev/null; do
         if grep -qx "EREPL READY" "$ERR_TMP"; then
             return 0
@@ -45,7 +47,7 @@ wait_for_ready() {
 
 wait_for_done() {
     local deadline now
-    deadline=$((SECONDS + 30))
+    deadline=$((SECONDS + DONE_TIMEOUT))
     while kill -0 "$REPL_PID" 2>/dev/null; do
         if grep -qx "EREPL DONE" "$ERR_TMP"; then
             return 0

@@ -189,12 +189,23 @@ Each packaged artifact contains:
 
 ### Trigger
 
-- **Push** to `master` when files under `site/static/` change
+- **Push** to `master` when website assets, website source, compiler/runtime
+  inputs, selected docs, the site build helpers, or `pages.yml` change
 - **Manual dispatch** via GitHub UI
 
 ### What It Does
 
-Deploys the contents of `site/static/` to GitHub Pages. This is a simple static site deployment with no build step -- the site content is pre-built and committed to the repository.
+Deploys the contents of `site/static/` to GitHub Pages. This is intentionally a
+static deployment: `site/static/eshkol-site.wasm` and
+`site/static/eshkol-vm.{js,wasm}` are pre-built release artifacts committed to
+the repository. Rebuild them locally with the documented site scripts and commit
+the outputs when the website source or VM browser bundle changes.
+
+Before upload, the workflow validates that the committed site bundle exists and
+that `site/static/eshkol-site.wasm` compiles in the runner's browser WebAssembly
+engine. It also rejects oversized site WASM artifacts, which prevents a Pages
+deploy from publishing browser-invalid compiler output while still reporting a
+successful deployment.
 
 ### Configuration
 
