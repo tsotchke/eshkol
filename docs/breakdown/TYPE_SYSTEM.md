@@ -67,8 +67,8 @@ compile-time guarantees with runtime tensor operations.
 | Component | File | Lines | Purpose |
 |-----------|------|-------|---------|
 | Runtime Types | [eshkol.h](../../inc/eshkol/eshkol.h) | ~550 | Type tags, struct definitions, macros |
-| HoTT Environment | [hott_types.cpp](../../lib/types/hott_types.cpp) | 752 | Universe hierarchy, subtyping, type nodes |
-| Type Checker | [type_checker.cpp](../../lib/types/type_checker.cpp) | 1,999 | Bidirectional checking, constraint solving |
+| HoTT Environment | [hott_types.cpp](../../lib/types/hott_types.cpp) | 819 | Universe hierarchy, subtyping, type nodes |
+| Type Checker | [type_checker.cpp](../../lib/types/type_checker.cpp) | 2,048 | Bidirectional checking, constraint solving |
 | Dependent Types | [dependent.cpp](../../lib/types/dependent.cpp) | 440 | Compile-time value tracking, dimension checks |
 | LLVM Type Gen | [type_system.cpp](../../lib/backend/type_system.cpp) | 130 | Type-to-LLVM-type mapping |
 
