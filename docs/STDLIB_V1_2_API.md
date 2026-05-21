@@ -1773,22 +1773,24 @@ name:
 The v1.2 stdlib also ships eleven infrastructure-oriented modules that
 the main sections above only listed by name. The signatures below come
 directly from each module's `(provide …)` block (cited in the table).
-All are part of the auto-loaded `(require stdlib)` set unless the
-"Auto-loaded" column says otherwise.
+The "Auto-loaded" column says whether `(require stdlib)` pulls the
+module in or whether you need an explicit `(require ...)` line; the
+exact set of auto-loaded modules is the `(require …)` chain in
+`lib/stdlib.esk`.
 
 | Module | File | Auto-loaded? | Public surface |
 |---|---|---|---|
-| `core.merkle` | `lib/core/merkle.esk` | Yes | Content hashing + Merkle proofs + CAS |
-| `core.metrics` | `lib/core/metrics.esk` | Yes | Prometheus-style counters / gauges |
-| `core.logging` | `lib/core/logging.esk` | Yes | JSONL structured logging |
-| `core.collections` | `lib/core/collections.esk` | Yes | Priority queue, hash set, deque |
-| `core.channels` | `lib/core/channels.esk` | Yes | Go-style bounded channels |
-| `core.threads` | `lib/core/threads.esk` | Yes | POSIX-mutex / condvar / thread primitives |
+| `core.merkle` | `lib/core/merkle.esk` | **No** — `(require core.merkle)` | Content hashing + Merkle proofs + CAS |
+| `core.metrics` | `lib/core/metrics.esk` | **No** — `(require core.metrics)` | Prometheus-style counters / gauges |
+| `core.logging` | `lib/core/logging.esk` | **No** — `(require core.logging)` | JSONL structured logging |
+| `core.collections` | `lib/core/collections.esk` | **No** — `(require core.collections)` | Priority queue, hash set, deque |
+| `core.channels` | `lib/core/channels.esk` | **No** — `(require core.channels)` | Go-style bounded channels |
+| `core.threads` | `lib/core/threads.esk` | **No** — `(require core.threads)` | POSIX-mutex / condvar / thread primitives |
 | `core.plot` | `lib/core/plot.esk` | Yes | Terminal sparkline / bar chart / histogram |
 | `core.sexp` | `lib/core/sexp.esk` | Yes | S-expression string + canonical-string formatters |
 | `core.files` | `lib/core/files.esk` | Yes | Path-component helpers + atomic-write |
 | `core.testing` | `lib/core/testing.esk` | **No** — `(require core.testing)` | `check-*` assertions + `run-tests` |
-| `core.manifold` | `lib/core/manifold.esk` | Yes | Manifold operations (placeholders pending native VM ops) |
+| `core.manifold` | `lib/core/manifold.esk` | **No** — `(require core.manifold)` | Manifold operations (placeholders pending native VM ops) |
 
 ### B.1 `core.merkle`
 
