@@ -1571,6 +1571,26 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/po
         ${LLVM_SYSTEM_LIBS_LIST}
     )
     add_test(NAME pointer_type_surface_test COMMAND pointer_type_surface_test)
+    if(TARGET eshkol-run)
+        add_test(
+            NAME pointer_conversion_direct_runtime_smoke
+            COMMAND $<TARGET_FILE:eshkol-run> -e "(display (ptr->usize (usize->ptr 4096)))"
+        )
+        set_tests_properties(pointer_conversion_direct_runtime_smoke
+            PROPERTIES PASS_REGULAR_EXPRESSION "4096")
+        add_test(
+            NAME pointer_conversion_define_runtime_smoke
+            COMMAND $<TARGET_FILE:eshkol-run> -e "(begin (define p (usize->ptr 4096)) (display (ptr->usize p)))"
+        )
+        set_tests_properties(pointer_conversion_define_runtime_smoke
+            PROPERTIES PASS_REGULAR_EXPRESSION "4096")
+        add_test(
+            NAME pointer_conversion_capture_runtime_smoke
+            COMMAND $<TARGET_FILE:eshkol-run> -e "(display ((lambda (base) (let ((reader (lambda () (ptr->usize base)))) (reader))) (usize->ptr 4096)))"
+        )
+        set_tests_properties(pointer_conversion_capture_runtime_smoke
+            PROPERTIES PASS_REGULAR_EXPRESSION "4096")
+    endif()
 endif()
 
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/runtime_core_boundary_test.cpp")
