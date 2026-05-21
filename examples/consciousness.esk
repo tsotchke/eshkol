@@ -13,7 +13,9 @@
 
 ;; Factor graph for probabilistic inference
 (define fg (make-factor-graph 2 #(3 3)))
-(fg-infer! fg 10 0.01)
+;; fg-infer! takes (fg max-iters) — the runtime BP loop runs until
+;; convergence or hits max-iters; there is no separate tolerance arg.
+(fg-infer! fg 10)
 (display "Free energy: ") (display (free-energy fg #())) (newline)
 
 ;; Global workspace
