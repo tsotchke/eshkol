@@ -2422,7 +2422,7 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_base64url_decode_v(eshkol_sysbui
     size_t out_cap = (len * 6) / 8 + 1;
     char* out = (char*)malloc(out_cap);
     if (!out) return sys_make_bool(0);
-    int acc = 0;
+    uint32_t acc = 0;
     int bits = 0;
     size_t pos = 0;
     for (size_t i = 0; i < len; i++) {
@@ -2431,7 +2431,7 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_base64url_decode_v(eshkol_sysbui
             free(out);
             return sys_make_bool(0);
         }
-        acc = (acc << 6) | v;
+        acc = (acc << 6) | (uint32_t)v;
         bits += 6;
         if (bits >= 8) {
             bits -= 8;

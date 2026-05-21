@@ -367,7 +367,7 @@ else()
         if(NOT ESHKOL_WINDOWS_LLVM_HAS_LIBXML2)
             list(REMOVE_ITEM LLVM_LIBS_LIST LLVMWindowsManifest)
         endif()
-        set(LLVM_SYSTEM_LIBS_LIST "")
+        set(LLVM_SYSTEM_LIBS_LIST ${LLVM_SYSTEM_LIBS})
 
         # The official Windows SDK ships release libraries only. Map the other
         # multi-config variants to Release so native VS generators stay usable.
@@ -889,6 +889,12 @@ if(NOT APPLE)
     foreach(_extra_runtime_lib IN LISTS ESHKOL_EXTRA_LINK_LIBS)
         eshkol_append_host_runtime_link_arg("${_extra_runtime_lib}")
     endforeach()
+
+    if(WIN32)
+        foreach(_llvm_runtime_lib IN LISTS LLVM_LIBS_LIST LLVM_SYSTEM_LIBS_LIST)
+            eshkol_append_host_runtime_link_arg("${_llvm_runtime_lib}")
+        endforeach()
+    endif()
 
     if(BLAS_FOUND AND BLAS_LIBRARIES)
         foreach(_blas_lib IN LISTS BLAS_LIBRARIES)

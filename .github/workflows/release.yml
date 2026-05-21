@@ -173,6 +173,10 @@ jobs:
           BUILD_DIR: ${{ matrix.build_dir }}
         run: |
           set -euxo pipefail
+          export ESHKOL_HTTP_SERVER_SMOKE_TIMEOUT="${ESHKOL_HTTP_SERVER_SMOKE_TIMEOUT:-600}"
+          export ESHKOL_REPL_MACHINE_READY_TIMEOUT="${ESHKOL_REPL_MACHINE_READY_TIMEOUT:-600}"
+          export ESHKOL_REPL_MACHINE_DONE_TIMEOUT="${ESHKOL_REPL_MACHINE_DONE_TIMEOUT:-180}"
+          export ESHKOL_EDGE_FAILURE_LINES="${ESHKOL_EDGE_FAILURE_LINES:-80}"
           ${{ matrix.test_command }}
 
       - name: Package Release Asset
