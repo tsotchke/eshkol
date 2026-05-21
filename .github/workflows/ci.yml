@@ -215,12 +215,22 @@ jobs:
           python3 scripts/check_wasm_imports.py --build-dir "$BUILD_DIR"
 
       - name: Run Tests
+        timeout-minutes: 90
         shell: bash
         env:
           BUILD_DIR: ${{ matrix.build_dir }}
         run: |
           set -euxo pipefail
-          ${{ matrix.test_command }}
+          mkdir -p "$RUNNER_TEMP/eshkol-test-logs"
+          ${{ matrix.test_command }} 2>&1 | tee "$RUNNER_TEMP/eshkol-test-logs/${{ matrix.name }}.log"
+
+      - name: Upload Test Logs
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.name }}-test-log
+          path: ${{ runner.temp }}/eshkol-test-logs/${{ matrix.name }}.log
+          if-no-files-found: ignore
 
       - name: Upload Artifacts
         if: matrix.upload_artifact == 'true'
@@ -397,13 +407,24 @@ jobs:
           cmake --build '${{ matrix.build_dir }}' --config Release --target @($targets) --parallel
 
       - name: Run Tests
+        timeout-minutes: 120
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          & .\scripts\run_all_tests.ps1 -BuildDir ".\${{ matrix.build_dir }}" -SkipConfigureBuild -Mode '${{ matrix.test_mode }}'
+          New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\eshkol-test-logs" | Out-Null
+          & .\scripts\run_all_tests.ps1 -BuildDir ".\${{ matrix.build_dir }}" -SkipConfigureBuild -Mode '${{ matrix.test_mode }}' *>&1 |
+            Tee-Object -FilePath "$env:RUNNER_TEMP\eshkol-test-logs\${{ matrix.name }}.log"
           if ($LASTEXITCODE -ne 0) {
             exit $LASTEXITCODE
           }
+
+      - name: Upload Test Logs
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.name }}-test-log
+          path: ${{ runner.temp }}/eshkol-test-logs/${{ matrix.name }}.log
+          if-no-files-found: ignore
 
       - name: Upload Artifacts
         if: matrix.upload_artifact == 'true'
