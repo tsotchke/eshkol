@@ -448,3 +448,34 @@ Lower the builtins to LLVM `load volatile` and `store volatile` directly. Do not
 - type designators stay explicit and do not require undefined runtime variables
 - the primitive stays narrow enough to compose with the existing pointer/fence surface
 - richer atomics, address-space-aware pointers, and architecture-specific intrinsics remain later platform-language work
+
+---
+
+## D-0018
+
+- Date: 2026-04-17
+- Status: Accepted
+- Title: Target intrinsics are explicit typed calls to LLVM intrinsic declarations
+
+### Context
+
+The low-level platform surface needs an escape hatch for compiler-recognized operations such as byte swaps, traps, frame addresses, and later target-specific hooks. Adding inline assembly or a broad foreign-call facility would couple this slice to freestanding runtime and target-linker work that is not ready to merge.
+
+### Decision
+
+Add `target-intrinsic` as a typed LLVM intrinsic form:
+
+```scheme
+(target-intrinsic return-type "llvm.intrinsic.name" arg-type arg ...)
+```
+
+The return type and every argument type are explicit low-level type designators. Supported designators in this slice are machine integer types, `ptr`, and `null` for void-returning intrinsics. The backend resolves the LLVM intrinsic by base name, checks the requested signature against LLVM's intrinsic type table, declares the intrinsic in the module, and lowers a direct typed call.
+
+Do not add inline assembly, arbitrary external symbol calls, target feature dispatch, or freestanding linker integration in this slice.
+
+### Consequences
+
+- Eshkol can express selected LLVM intrinsics without inventing a new backend-specific surface for each operation
+- intrinsic signatures are checked against LLVM instead of being trusted stringly-typed calls
+- the feature composes with existing machine integer, pointer, fence, and volatile primitives
+- architecture-specific policy, target feature gating, and external symbol/linker integration remain later platform work

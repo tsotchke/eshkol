@@ -1185,6 +1185,7 @@ public:
         function_return_types["square"] = BuiltinTypes::Number;
         function_return_types["volatile-load"] = BuiltinTypes::Value;
         function_return_types["volatile-store!"] = BuiltinTypes::Null;
+        function_return_types["target-intrinsic"] = BuiltinTypes::Value;
         function_return_types["compiler-fence"] = BuiltinTypes::Null;
         function_return_types["memory-fence"] = BuiltinTypes::Null;
         function_return_types["addr-of"] = BuiltinTypes::Pointer;
@@ -5145,6 +5146,17 @@ private:
                         return TypedValue(val, ESHKOL_VALUE_NULL,
                                          eshkol::hott::BuiltinTypes::Null, true);
                     }
+                    if (func_name == "target-intrinsic") {
+                        auto intrinsic_info = resolveTargetIntrinsicCall(
+                            &ast->operation, "target-intrinsic");
+                        if (!intrinsic_info) {
+                            return TypedValue();
+                        }
+
+                        Value* val = codegenAST(ast);
+                        if (!val) return TypedValue();
+                        return makeLowLevelTypedValue(val, intrinsic_info->return_type);
+                    }
                     if (func_name == "addr-of") {
                         eshkol::hott::TypeId pointee_type = eshkol::hott::BuiltinTypes::Value;
                         if (ast->operation.call_op.num_vars == 1) {
@@ -7194,6 +7206,12 @@ private:
         bool is_null;
     };
 
+    struct TargetIntrinsicCallInfo {
+        LowLevelValueTypeInfo return_type;
+        std::vector<LowLevelValueTypeInfo> arg_types;
+        Function* declaration;
+    };
+
     std::optional<LowLevelValueTypeInfo> resolveLowLevelTypeInfo(const eshkol_ast_t* type_ast,
                                                                  const char* builtin_name,
                                                                  const char* role,
@@ -7327,6 +7345,85 @@ private:
                                                type_info.is_signed_integer, "low_level_scalar_cast");
         }
         return raw_value;
+    }
+
+    std::optional<TargetIntrinsicCallInfo> resolveTargetIntrinsicCall(
+        const eshkol_operations_t* op, const char* builtin_name) {
+        if (!op || op->call_op.num_vars < 2) {
+            eshkol_error("%s requires a return type, intrinsic name, and zero or more typed arguments",
+                         builtin_name);
+            return std::nullopt;
+        }
+
+        if ((op->call_op.num_vars % 2) != 0) {
+            eshkol_error("%s requires argument type/value pairs after the intrinsic name",
+                         builtin_name);
+            return std::nullopt;
+        }
+
+        auto return_type = resolveLowLevelTypeInfo(
+            &op->call_op.variables[0], builtin_name, "return", true);
+        if (!return_type) {
+            return std::nullopt;
+        }
+
+        const eshkol_ast_t& name_ast = op->call_op.variables[1];
+        if (name_ast.type != ESHKOL_STRING || !name_ast.str_val.ptr) {
+            eshkol_error("%s expects an LLVM intrinsic name string as its second argument",
+                         builtin_name);
+            return std::nullopt;
+        }
+
+        const std::string intrinsic_name = name_ast.str_val.ptr;
+        Intrinsic::ID intrinsic_id = Intrinsic::lookupIntrinsicID(intrinsic_name);
+        if (intrinsic_id == Intrinsic::not_intrinsic) {
+            eshkol_error("%s received unknown LLVM intrinsic '%s'",
+                         builtin_name, intrinsic_name.c_str());
+            return std::nullopt;
+        }
+
+        if (Intrinsic::getBaseName(intrinsic_id) != intrinsic_name) {
+            eshkol_error("%s expects the LLVM intrinsic base name '%s'",
+                         builtin_name, Intrinsic::getBaseName(intrinsic_id).str().c_str());
+            return std::nullopt;
+        }
+
+        std::vector<Type*> param_types;
+        std::vector<LowLevelValueTypeInfo> arg_types;
+        for (size_t i = 2; i + 1 < op->call_op.num_vars; i += 2) {
+            auto arg_type = resolveLowLevelTypeInfo(
+                &op->call_op.variables[i], builtin_name, "argument", false);
+            if (!arg_type) {
+                return std::nullopt;
+            }
+            arg_types.push_back(*arg_type);
+            param_types.push_back(arg_type->llvm_type);
+        }
+
+        FunctionType* requested_type = FunctionType::get(
+            return_type->llvm_type, param_types, false);
+
+        SmallVector<Intrinsic::IITDescriptor, 8> intrinsic_infos;
+        Intrinsic::getIntrinsicInfoTableEntries(intrinsic_id, intrinsic_infos);
+        ArrayRef<Intrinsic::IITDescriptor> intrinsic_info_ref(intrinsic_infos);
+
+        SmallVector<Type*, 8> overload_types;
+        auto match = Intrinsic::matchIntrinsicSignature(
+            requested_type, intrinsic_info_ref, overload_types);
+        if (match != Intrinsic::MatchIntrinsicTypes_Match) {
+            eshkol_error("%s signature does not match LLVM intrinsic '%s'",
+                         builtin_name, intrinsic_name.c_str());
+            return std::nullopt;
+        }
+
+        Function* declaration = ESHKOL_GET_INTRINSIC(module.get(), intrinsic_id, overload_types);
+        if (!declaration) {
+            eshkol_error("%s could not declare LLVM intrinsic '%s'",
+                         builtin_name, intrinsic_name.c_str());
+            return std::nullopt;
+        }
+
+        return TargetIntrinsicCallInfo{*return_type, std::move(arg_types), declaration};
     }
 
     std::optional<AtomicOrdering> resolveFenceOrdering(const eshkol_ast_t* ordering_ast,
@@ -11592,6 +11689,44 @@ private:
             auto* store = builder->CreateStore(store_value, raw_ptr);
             store->setVolatile(true);
             return packNullToTaggedValue();
+        }
+        if (func_name == "target-intrinsic") {
+            auto intrinsic_info = resolveTargetIntrinsicCall(op, "target-intrinsic");
+            if (!intrinsic_info) {
+                return nullptr;
+            }
+
+            SmallVector<Value*, 8> call_args;
+            for (size_t i = 0; i < intrinsic_info->arg_types.size(); ++i) {
+                TypedValue arg_tv = codegenTypedAST(&op->call_op.variables[3 + (i * 2)]);
+                if (!arg_tv.llvm_value) {
+                    return intrinsic_info->return_type.is_null ? packNullToTaggedValue() : nullptr;
+                }
+
+                Value* raw_arg = coerceValueToLowLevelScalar(
+                    arg_tv, intrinsic_info->arg_types[i], "target-intrinsic");
+                if (!raw_arg) {
+                    return intrinsic_info->return_type.is_null ? packNullToTaggedValue() : nullptr;
+                }
+                call_args.push_back(raw_arg);
+            }
+
+            CallInst* call = builder->CreateCall(
+                intrinsic_info->declaration, call_args,
+                intrinsic_info->return_type.is_null ? "" : "target_intrinsic");
+
+            if (intrinsic_info->return_type.is_null) {
+                return packNullToTaggedValue();
+            }
+            if (intrinsic_info->return_type.is_pointer) {
+                return call;
+            }
+            if (!call->getType()->isIntegerTy(64)) {
+                return builder->CreateIntCast(
+                    call, int64_type, intrinsic_info->return_type.is_signed_integer,
+                    "target_intrinsic_value");
+            }
+            return call;
         }
         if (func_name == "compiler-fence") {
             if (op->call_op.num_vars != 1) {
@@ -20884,7 +21019,7 @@ private:
             "exact->inexact", "inexact->exact", "exact", "inexact",
             "addr-of", "compiler-fence", "memory-fence",
             "null-ptr", "ptr->usize", "usize->ptr",
-            "volatile-load", "volatile-store!",
+            "target-intrinsic", "volatile-load", "volatile-store!",
             "exact-integer?", "square",
             "floor-quotient", "floor-remainder", "floor/",
             "truncate-quotient", "truncate-remainder", "truncate/",
