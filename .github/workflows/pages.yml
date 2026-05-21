@@ -68,6 +68,38 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Check site source artifact pairing
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          before="${{ github.event.before }}"
+          after="${{ github.sha }}"
+          changed="$RUNNER_TEMP/changed-files.txt"
+
+          if [[ -z "$before" || "$before" =~ ^0+$ ]]; then
+            echo "No stable before SHA for this push; skipping pairing check."
+            exit 0
+          fi
+
+          if ! git cat-file -e "$before^{commit}" 2>/dev/null; then
+            echo "Before SHA $before is not available locally; skipping pairing check."
+            exit 0
+          fi
+
+          git diff --name-only "$before" "$after" > "$changed"
+
+          if grep -Eq '^site/src/' "$changed" &&
+             ! grep -qx 'site/static/eshkol-site.wasm' "$changed"; then
+            echo "::error file=site/static/eshkol-site.wasm::site/src changed without a regenerated site/static/eshkol-site.wasm in the same push."
+            echo "Changed files were:"
+            cat "$changed"
+            exit 1
+          fi
 
       - name: Validate committed site bundle
         shell: bash
