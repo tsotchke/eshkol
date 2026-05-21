@@ -1764,3 +1764,236 @@ name:
   code between targets.
 - For changes in v1.3-evolve and later, follow the per-release section of
   [`CHANGELOG.md`](../CHANGELOG.md).
+
+---
+
+## Appendix B: Infrastructure stdlib modules
+
+The v1.2 stdlib also ships eleven infrastructure-oriented modules that
+the main sections above only listed by name. The signatures below come
+directly from each module's `(provide …)` block (cited in the table).
+All are part of the auto-loaded `(require stdlib)` set unless the
+"Auto-loaded" column says otherwise.
+
+| Module | File | Auto-loaded? | Public surface |
+|---|---|---|---|
+| `core.merkle` | `lib/core/merkle.esk` | Yes | Content hashing + Merkle proofs + CAS |
+| `core.metrics` | `lib/core/metrics.esk` | Yes | Prometheus-style counters / gauges |
+| `core.logging` | `lib/core/logging.esk` | Yes | JSONL structured logging |
+| `core.collections` | `lib/core/collections.esk` | Yes | Priority queue, hash set, deque |
+| `core.channels` | `lib/core/channels.esk` | Yes | Go-style bounded channels |
+| `core.threads` | `lib/core/threads.esk` | Yes | POSIX-mutex / condvar / thread primitives |
+| `core.plot` | `lib/core/plot.esk` | Yes | Terminal sparkline / bar chart / histogram |
+| `core.sexp` | `lib/core/sexp.esk` | Yes | S-expression string + canonical-string formatters |
+| `core.files` | `lib/core/files.esk` | Yes | Path-component helpers + atomic-write |
+| `core.testing` | `lib/core/testing.esk` | **No** — `(require core.testing)` | `check-*` assertions + `run-tests` |
+| `core.manifold` | `lib/core/manifold.esk` | Yes | Manifold operations (placeholders pending native VM ops) |
+
+### B.1 `core.merkle`
+
+```scheme
+(require core.merkle)
+```
+
+Exports (`merkle.esk:28-37`):
+
+```scheme
+(provide
+  ;; Hash
+  fnv1a-64 hash->hex
+  ;; Merkle tree
+  merkle-leaf merkle-leaf? merkle-inode? merkle-root merkle-data
+  merkle-tree merkle-tree-with-hash
+  merkle-leaves
+  merkle-proof merkle-verify
+  ;; Content-addressable store
+  make-cas make-cas-with-hash cas? cas-put! cas-get cas-has? cas-size cas-keys)
+```
+
+Key entry points:
+
+- `(fnv1a-64 bytes-or-string) → int64` — non-cryptographic 64-bit hash. The inner loop is in `lib/core/merkle.c` to get correct uint64 overflow semantics (the Eshkol-side implementation truncated on bignum modulo for inputs ≥ 2⁵³).
+- `(hash->hex h) → string` — 16-character hex encoding of a 64-bit hash.
+- `(merkle-tree leaf-list [hash-fn]) → root` — builds a balanced Merkle tree; `hash-fn` defaults to `fnv1a-64`. Returns the root node.
+- `(merkle-root tree) → hash` — accessor.
+- `(merkle-proof tree leaf-index) → proof-list` — sibling-hash chain from leaf to root.
+- `(merkle-verify proof leaf root-hash) → bool` — verify a proof against a claimed root.
+- Content-addressable store: `(make-cas [hash-fn])` returns a hash → blob store; `(cas-put! cas blob)` returns the hash; `(cas-get cas hash)` returns the blob or `#f`.
+
+### B.2 `core.metrics`
+
+```scheme
+(require core.metrics)
+```
+
+Exports (`metrics.esk:5-9`):
+
+```scheme
+(provide make-counter counter-inc! counter-add!
+         make-gauge gauge-set! gauge-inc! gauge-dec!
+         metrics-register! metrics-render metrics-reset!
+         metric-name metric-help metric-kind)
+```
+
+Counters are monotonically non-decreasing; gauges can move in either direction. `metrics-register!` adds a metric to the global registry; `metrics-render` produces a Prometheus exposition-format string suitable for HTTP `GET /metrics`.
+
+Internally a histogram type is implemented but not exported pending the label-key reconstruction edge case mentioned at `metrics.esk:39-43`.
+
+### B.3 `core.logging`
+
+```scheme
+(require core.logging)
+```
+
+Exports (`logging.esk:5-8`):
+
+```scheme
+(provide log-debug log-info log-warn log-error
+         log-set-level! log-set-output!
+         log-with-trace!
+         log-level log-output-port)
+```
+
+JSON-Lines structured logging. Each call emits a single line with `level`, `ts` (ISO-8601), and any additional key/value pairs the caller passes. `log-set-output!` accepts a port or a path string; `log-set-level!` thresholds at `'debug` / `'info` / `'warn` / `'error`. `log-with-trace!` enables a `trace_id` field that propagates through nested calls — useful for request-scoped logging.
+
+### B.4 `core.collections`
+
+```scheme
+(require core.collections)
+```
+
+Exports (`collections.esk:37-49`):
+
+```scheme
+(provide
+  make-pq pq-push! pq-pop! pq-peek pq-size pq-empty?
+  make-set set-add! set-remove! set-contains? set-size
+  set->list set-clear! set-union set-intersect set-difference
+  make-deque deque-push-front! deque-push-back!
+  deque-pop-front! deque-pop-back!
+  deque-peek-front deque-peek-back
+  deque-size deque-empty? deque->list)
+```
+
+Priority queue is a binary min-heap backed by a growable vector; the optional third argument to `make-pq` is a comparator with the usual `(<0 / 0 / >0)` contract (defaults to scalar subtraction). Hash-set is backed by `core.hash-table`; deque is a circular buffer that grows by doubling.
+
+### B.5 `core.channels`
+
+```scheme
+(require core.channels)
+```
+
+Exports (`channels.esk:38-43`):
+
+```scheme
+(provide
+  make-channel channel? channel-capacity channel-len channel-closed?
+  channel-send! channel-recv!
+  channel-try-send! channel-try-recv!
+  channel-close!
+  channel-closed-sentinel)
+```
+
+Bounded MPSC-style channels designed to coordinate `parallel-map` workers. `(make-channel cap)` creates an open channel with capacity ≥ 1. `channel-send!` and `channel-recv!` block; `channel-try-send!` / `channel-try-recv!` return `#f` on contention. After `channel-close!`, send raises, recv drains buffered items, and subsequent recvs return `(channel-closed-sentinel)`.
+
+### B.6 `core.threads`
+
+```scheme
+(require core.threads)
+```
+
+Exports (`threads.esk:27-30`):
+
+```scheme
+(provide
+  make-mutex mutex-lock! mutex-trylock! mutex-unlock! mutex-destroy! with-mutex
+  make-condvar condvar-wait! condvar-signal! condvar-broadcast! condvar-destroy!
+  make-thread thread-join thread? thread-result-ready?)
+```
+
+POSIX-pthread wrappers. Mutexes are recursive (SRFI 18-compatible — re-entering the same mutex from the same thread does not deadlock). `make-thread` spawns the thunk on a thread-pool worker; `thread-join` blocks until completion. The Windows path is currently stubbed (returns `NULL` / error from every entry point pending the v1.4-platform program).
+
+### B.7 `core.plot`
+
+```scheme
+(require core.plot)
+```
+
+Exports (`plot.esk:1`):
+
+```scheme
+(provide sparkline bar-chart histogram)
+```
+
+Terminal-side numeric visualisation. `(sparkline xs)` returns a Unicode block-character string for an inline summary; `(bar-chart pairs)` produces a multi-line bar chart; `(histogram xs bins)` bins a sample into a column chart. All three return strings; the caller chooses what to do with the output (`display`, `string-append` into a log line, etc.).
+
+### B.8 `core.sexp`
+
+```scheme
+(require core.sexp)
+```
+
+Exports (`sexp.esk:1-2`):
+
+```scheme
+(provide sexp->string
+         sexp->canonical-string)
+```
+
+`sexp->string` is a readable formatter — preserves source-like whitespace. `sexp->canonical-string` is the canonical form: deterministic key ordering for hash-tables, no insignificant whitespace, sorted alists. The canonical form is intended for content-hashing via `core.merkle` (matching s-exprs hash to the same `fnv1a-64`).
+
+### B.9 `core.files`
+
+```scheme
+(require core.files)
+```
+
+Exports (`files.esk:1`):
+
+```scheme
+(provide path-directory with-atomic-output-file atomic-write-file)
+```
+
+- `(path-directory path) → string` — returns the directory component (uses `"."` for relative paths without a slash).
+- `(atomic-write-file path data)` — writes via a temp file in the same directory then `rename(2)`s into place; safe against torn writes on crash.
+- `(with-atomic-output-file path proc)` — opens a temp file, calls `(proc port)`, then atomically renames to `path` on normal return; deletes the temp on exception.
+
+### B.10 `core.testing`
+
+```scheme
+(require core.testing)   ; explicit — not auto-loaded by (require stdlib)
+```
+
+Exports (`testing.esk:1-6`):
+
+```scheme
+(provide register-test
+         check-equal? check-true check-false
+         check-approx check-raises
+         run-tests reset-tests!
+         *tests* *test-pass-count* *test-fail-count*
+         *current-test-fails* *current-test-name*)
+```
+
+A minimal test harness. `(register-test name thunk)` adds a test to the global registry; `(run-tests)` invokes them all and returns `(values pass-count fail-count)`. Inside a thunk, `check-equal?`, `check-true`, `check-false`, `check-approx` (with tolerance), and `check-raises` (with expected exception kind) record per-test failure messages without aborting the whole batch.
+
+Not auto-loaded because baking `core.testing` into `stdlib.o` triggers the symbol-renamer / external-decl path interactions documented at `lib/stdlib.esk:64-69` — embedded test fixtures end up with duplicate `_*tests*` globals in the user's object file.
+
+### B.11 `core.manifold`
+
+```scheme
+(require core.manifold)
+```
+
+Exports (`manifold.esk:1-5`):
+
+```scheme
+(provide make-euclidean-manifold make-hyperbolic-manifold make-spherical-manifold
+         manifold-exp-map manifold-log-map manifold-distance
+         manifold-parallel-transport manifold-curvature
+         manifold-dimension manifold-type)
+```
+
+Manifold operations for Riemannian computation. The three constructors return tagged manifold values; `manifold-exp-map` / `manifold-log-map` / `manifold-distance` / `manifold-parallel-transport` / `manifold-curvature` are dispatched on the manifold type.
+
+The current v1.2 implementation is a placeholder layer — `manifold-dimension` and `manifold-type` return constants pending the native VM ops planned for v1.3-evolve. Consumers should prefer the higher-level `lib/tsotchke/riemannian_training.esk` API for actual gradient-descent-on-manifolds workflows.
