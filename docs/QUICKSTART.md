@@ -697,10 +697,13 @@ Solve the 1D heat equation: ∂u/∂t = α∇²u
 
 ### Example Programs
 
-Explore the examples directory:
-- `examples-dep/neural_network_complete.esk` - Full neural network
-- `examples-dep/vector_calculus.esk` - Physics simulations
-- `examples-dep/function_composition_closure.esk` - Functional programming patterns
+Explore the `examples/` directory:
+- `examples/hello.esk` - Simplest program
+- `examples/autodiff.esk` - Forward and reverse-mode automatic differentiation
+- `examples/tensors.esk` - Linear algebra with BLAS / GPU dispatch
+- `examples/parallel.esk` - Work-stealing parallel-map / futures
+- `examples/consciousness.esk` - Logic + factor-graph + workspace stack
+- `examples/agent.esk` - Agent loop with tools and KB
 - `tests/ml/impressive_demo.esk` - ML showcase
 
 ### Standard Library
@@ -1185,7 +1188,7 @@ eshkol-run --wasm app.esk -o app.wasm
 
 - **GitHub**: https://github.com/tsotchke/eshkol
 - **Documentation**: [`docs/`](.)
-- **Examples**: [`examples-dep/`](../examples-dep)
+- **Examples**: [`examples/`](../examples)
 - **Tests**: [`tests/`](../tests) (528 self-reported tests across 37 suites)
 
 ---
