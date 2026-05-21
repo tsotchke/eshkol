@@ -574,7 +574,24 @@ extern "C" void tensor_embedding_backward(ad_node_t* node) {
     double* dy = (double*)node->tensor_gradient;
     double* dW = (double*)W->tensor_gradient;
     /* Conservative fallback — accumulate into row 0. Replace with
-     * indexed scatter once node carries the lookup-index tensor. */
+     * indexed scatter once node carries the lookup-index tensor.
+     *
+     * Loud one-shot warning so training that depends on multi-row
+     * embedding gradients can't hit this silently. */
+    {
+        static int warned = 0;
+        if (!warned) {
+            warned = 1;
+            fprintf(stderr,
+                "WARNING: tensor_embedding_backward is a row-0 stub — "
+                "gradients past row 0 are dropped. This is a known v1.2 "
+                "limitation; full indexed scatter ships in v1.3. Training "
+                "with embeddings against rows other than 0 will not "
+                "converge correctly. See "
+                "lib/bridge/tensor_backward.cpp tensor_embedding_backward "
+                "and docs/breakdown/AUTODIFF.md for the tracking note.\n");
+        }
+    }
     size_t feat_dim = (node->ndim >= 2) ? (size_t)node->shape[1]
                                         : (n_out > 0 ? n_out : 0);
     size_t write = feat_dim > 0 ? feat_dim : n_out;
@@ -595,6 +612,24 @@ extern "C" void tensor_attention_backward(ad_node_t* node) {
     if (v->tensor_gradient == NULL) v->tensor_gradient = alloc_grad(n);
     double* dV = (double*)v->tensor_gradient;
     double* dy = (double*)node->tensor_gradient;
+    /* Conservative fallback — passes dy through to V's gradient slot
+     * only. Q and K receive no gradient; the softmax chain is skipped.
+     * Proper backward ships with the full attention codegen rewrite. */
+    {
+        static int warned = 0;
+        if (!warned) {
+            warned = 1;
+            fprintf(stderr,
+                "WARNING: tensor_attention_backward is a value-passthrough "
+                "stub — gradients flow only into V, never into Q or K, and "
+                "the softmax chain through softmax(Q K^T / sqrt(d)) V is "
+                "skipped. This is a known v1.2 limitation; full backward "
+                "ships in v1.3. Training attention layers will not "
+                "converge correctly. See "
+                "lib/bridge/tensor_backward.cpp tensor_attention_backward "
+                "and docs/breakdown/AUTODIFF.md for the tracking note.\n");
+        }
+    }
     size_t m = n < n_out ? n : n_out;
     for (size_t i = 0; i < m; i++) dV[i] += dy[i];
 }
