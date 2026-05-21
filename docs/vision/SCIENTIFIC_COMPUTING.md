@@ -1,6 +1,6 @@
 # Eshkol: Scientific Computing with Deterministic Memory and Integrated Numerics
 
-This document details Eshkol v1.0-architecture's capabilities for scientific computing, focusing on the **arena memory management system**, **tensor operations**, and **numerical algorithms** actually implemented in the compiler and standard library.
+This document details Eshkol's capabilities for scientific computing (the v1.0-foundation architectural baseline extended through v1.2.1-scale), focusing on the **arena memory management system**, **tensor operations**, and **numerical algorithms** actually implemented in the compiler and standard library.
 
 ## The Scientific Computing Landscape
 
@@ -813,4 +813,4 @@ See [FUTURE_ROADMAP.md](FUTURE_ROADMAP.md) for:
 
 ---
 
-*Eshkol v1.0-architecture provides a solid foundation for scientific computing through deterministic memory management, compiler-integrated automatic differentiation, and numerical algorithms implemented in the language itself. The arena system eliminates garbage collection pauses while the AD system enables natural expression of gradient-based algorithms.*
+*Eshkol provides a production-grade foundation for scientific computing through deterministic arena memory management, compiler-integrated automatic differentiation, and a numerical-algorithm library implemented in the language itself. The arena system eliminates garbage-collection pauses; the AD system enables natural expression of gradient-based algorithms; and v1.2.1-scale extends both with the exact-numeric tower (bignum / rational / complex), GPU dispatch (Metal + CUDA + XLA), and work-stealing parallel primitives.*
