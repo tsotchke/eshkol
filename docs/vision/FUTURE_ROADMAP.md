@@ -14,7 +14,7 @@ This document outlines Eshkol's evolution from the **completed v1.0-foundation**
 
 **Status:** ✅ **Production Release**
 
-Eshkol v1.0-foundation delivers a complete, production-ready compiler with unprecedented integration of automatic differentiation, deterministic memory management, and homoiconic native code execution.
+Eshkol v1.0-foundation delivers a production-ready compiler that tightly integrates automatic differentiation, deterministic arena memory management, and homoiconic native-code execution.
 
 ### Completed Achievements
 
