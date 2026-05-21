@@ -38,8 +38,14 @@ All three modes compute **exact derivatives** (not numerical approximations) by 
 (derivative (lambda (x) (* x x)) 3.0)
 ;; Returns: 6.0 (derivative at x=3.0)
 
-;; Reverse-mode AD (runtime, computational graph)
-(gradient (lambda (x y) (+ (* x x) (* y y))) (vector 3.0 4.0))
+;; Reverse-mode AD (runtime, computational graph).
+;; `gradient` takes a function that accepts a vector and a vector point;
+;; unpack the components inside the function body.
+(gradient (lambda (v)
+            (let ((x (vector-ref v 0))
+                  (y (vector-ref v 1)))
+              (+ (* x x) (* y y))))
+          (vector 3.0 4.0))
 ;; Returns: #(6.0 8.0) (gradient at (3.0, 4.0))
 ```
 
