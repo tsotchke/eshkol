@@ -168,6 +168,13 @@ build/eshkol-run hello.esk
 2. [Package Manager](PACKAGE_MANAGER.md) — Project setup, dependency management
 3. [Developer Tools](DEVELOPER_TOOLS.md) — LSP, VSCode extension, debugging
 
+**Building agents that touch the host?**
+1. [Agent FFI](AGENT_FFI.md) — Native HTTP / SQLite / subprocess / fs-watch surfaces and how the AOT link wiring (`ESHKOL_HOST_AGENT_FFI_LINK_ARGS`) hooks them into compiled binaries
+
+**Forward-looking work (research / v1.3+ track)?**
+1. [Roadmap](ROADMAP.md) — Short-form summary surfaced from the breakdown set; the canonical plan is [`../../ROADMAP.md`](../../ROADMAP.md)
+2. [VM Memory Ops as Weight Matrices](VM_MEMORY_OPS_AS_WEIGHT_MATRICES.md) — Design for lifting the remaining 24 of 26 delegated VM opcodes into transformer weight constructions, raising `d_model` from 128 to 256 and adding Layers 6/7
+
 **Contributing?**
 - See [Scheme Compatibility](SCHEME_COMPATIBILITY.md) for R7RS compliance status
 - Check [Feature Matrix](../FEATURE_MATRIX.md) for implementation status
