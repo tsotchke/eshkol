@@ -1150,24 +1150,29 @@ Goodbye!
 ### Active Inference Agent
 
 ```scheme
-;; Simple agent using consciousness engine for decision making
-(define fg (make-factor-graph 4))  ;; state + 3 actions
+;; Simple agent using consciousness engine for decision making.
+;; Four binary variables: state + 3 candidate actions.
+;; Signature: (make-factor-graph num-vars dims-tensor)
+(define fg (make-factor-graph 4 #(2 2 2 2)))
 
 ;; Prior beliefs about state
-(fg-add-factor! fg (list 0) #(0.5 0.5))
+;; Signature: (fg-add-factor! fg var-indices-tensor cpt-tensor)
+(fg-add-factor! fg #(0) #(0.5 0.5))
 
 ;; Action-outcome models
-(fg-add-factor! fg (list 0 1) #(0.8 0.2 0.3 0.7))
-(fg-add-factor! fg (list 0 2) #(0.4 0.6 0.6 0.4))
-(fg-add-factor! fg (list 0 3) #(0.5 0.5 0.5 0.5))
+(fg-add-factor! fg #(0 1) #(0.8 0.2 0.3 0.7))
+(fg-add-factor! fg #(0 2) #(0.4 0.6 0.6 0.4))
+(fg-add-factor! fg #(0 3) #(0.5 0.5 0.5 0.5))
 
 ;; Observe current state
 (fg-infer! fg 20)
 
-;; Select action minimizing expected free energy
-(define efe-1 (expected-free-energy fg 1))
-(define efe-2 (expected-free-energy fg 2))
-(define efe-3 (expected-free-energy fg 3))
+;; Select action minimising expected free energy.
+;; Signature: (expected-free-energy fg action-var action-state).
+;; We pick the most-favoured outcome state (state 0 = "good" here).
+(define efe-1 (expected-free-energy fg 1 0))
+(define efe-2 (expected-free-energy fg 2 0))
+(define efe-3 (expected-free-energy fg 3 0))
 
 (display "Action EFEs: ")
 (display (list efe-1 efe-2 efe-3))

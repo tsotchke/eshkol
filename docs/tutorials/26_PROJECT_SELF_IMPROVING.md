@@ -138,14 +138,16 @@ This program models an agent that:
 ;; Variable 0: Weather (0=sunny, 1=rainy)
 ;; Variable 1: Ground (0=dry, 1=wet)
 ;; Variable 2: People (0=no-umbrella, 1=umbrella)
-(define world (make-factor-graph 3))
+;; Signature: (make-factor-graph num-vars dims-tensor)
+(define world (make-factor-graph 3 #(2 2 2)))
 
 ;; Prior beliefs (before seeing anything):
 ;; P(wet ground | rainy) = 0.9, P(wet ground | sunny) = 0.1
-(fg-add-factor! world 0 1 #(0.9 0.1 0.1 0.9))
+;; Signature: (fg-add-factor! fg var-indices-tensor cpt-tensor)
+(fg-add-factor! world #(0 1) #(0.9 0.1 0.1 0.9))
 
 ;; P(umbrella | rainy) = 0.8, P(umbrella | sunny) = 0.2
-(fg-add-factor! world 0 2 #(0.8 0.2 0.2 0.8))
+(fg-add-factor! world #(0 2) #(0.8 0.2 0.2 0.8))
 
 ;; --- Step 1: Initial beliefs (no evidence yet) ---
 (display "Step 1: Prior beliefs (no evidence)")
