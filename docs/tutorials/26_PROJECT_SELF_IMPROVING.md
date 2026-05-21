@@ -193,7 +193,10 @@ This program models an agent that:
 ;; --- Step 5: Expected free energy for decision-making ---
 (display "Step 5: Decision — should I take an umbrella?")
 (newline)
-(define efe (expected-free-energy world #(0 1)))
+;; Signature: (expected-free-energy fg action-var action-state).
+;; Asking: what's the expected free energy of pushing weather (var 0)
+;; toward the rainy state (state 1)?
+(define efe (expected-free-energy world 0 1))
 (display "  Expected free energy of 'go outside': ") (display efe) (newline)
 (display "  Agent decides: 'High EFE → take an umbrella to reduce future surprise.'")
 (newline) (newline)
@@ -244,4 +247,4 @@ intelligence that improves itself.
 
 ---
 
-*This is Tutorial 26 in the [Eshkol Tutorial Series](https://github.com/tsotchke/eshkol/blob/master/docs/tutorials/README.md).*
+*This is Tutorial 26 in the [Eshkol Tutorial Series](README.md).*
