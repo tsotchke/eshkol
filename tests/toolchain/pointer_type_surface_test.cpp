@@ -169,6 +169,49 @@ bool test_parser_define_signature_resolution() {
                         "define return pointer element resolves to UInt8");
 }
 
+bool test_pointer_builtin_synthesis() {
+    TypeEnvironment env;
+    TypeChecker checker(env);
+
+    eshkol_ast_t null_ptr_ast = parse_single("(null-ptr)");
+    eshkol_ast_t ptr_to_usize_ast = parse_single("(ptr->usize (null-ptr))");
+    eshkol_ast_t usize_to_ptr_ast = parse_single("(usize->ptr 4096)");
+
+    const TypeCheckResult null_ptr_result = checker.synthesize(&null_ptr_ast);
+    const TypeCheckResult ptr_to_usize_result = checker.synthesize(&ptr_to_usize_ast);
+    const TypeCheckResult usize_to_ptr_result = checker.synthesize(&usize_to_ptr_ast);
+
+    return expect_equal(null_ptr_result.success, true, "null-ptr type synthesis succeeds") &&
+           expect_equal(null_ptr_result.inferred_type, BuiltinTypes::Pointer,
+                        "null-ptr returns Ptr") &&
+           expect_equal(ptr_to_usize_result.success, true, "ptr->usize type synthesis succeeds") &&
+           expect_equal(ptr_to_usize_result.inferred_type, BuiltinTypes::USize,
+                        "ptr->usize returns usize") &&
+           expect_equal(usize_to_ptr_result.success, true, "usize->ptr type synthesis succeeds") &&
+           expect_equal(usize_to_ptr_result.inferred_type, BuiltinTypes::Pointer,
+                        "usize->ptr returns Ptr");
+}
+
+bool test_pointer_builtin_variable_flow() {
+    TypeEnvironment env;
+    TypeChecker checker(env);
+    checker.context().bind("uart-base", BuiltinTypes::Pointer);
+    checker.context().bind("page-base", BuiltinTypes::USize);
+
+    eshkol_ast_t ptr_to_usize_ast = parse_single("(ptr->usize uart-base)");
+    eshkol_ast_t usize_to_ptr_ast = parse_single("(usize->ptr page-base)");
+
+    const TypeCheckResult ptr_to_usize_result = checker.synthesize(&ptr_to_usize_ast);
+    const TypeCheckResult usize_to_ptr_result = checker.synthesize(&usize_to_ptr_ast);
+
+    return expect_equal(ptr_to_usize_result.success, true, "ptr->usize accepts pointer binding") &&
+           expect_equal(ptr_to_usize_result.inferred_type, BuiltinTypes::USize,
+                        "ptr->usize pointer binding result") &&
+           expect_equal(usize_to_ptr_result.success, true, "usize->ptr accepts usize binding") &&
+           expect_equal(usize_to_ptr_result.inferred_type, BuiltinTypes::Pointer,
+                        "usize->ptr usize binding result");
+}
+
 }  // namespace
 
 int main() {
@@ -185,6 +228,12 @@ int main() {
         return 1;
     }
     if (!test_parser_define_signature_resolution()) {
+        return 1;
+    }
+    if (!test_pointer_builtin_synthesis()) {
+        return 1;
+    }
+    if (!test_pointer_builtin_variable_flow()) {
         return 1;
     }
 

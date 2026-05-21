@@ -1189,6 +1189,37 @@ TypeCheckResult TypeChecker::synthesizeApplication(eshkol_ast_t* expr) {
             return TypeCheckResult::ok(BuiltinTypes::Float64);
         }
 
+        // Low-level pointer conversions
+        if (func_name == "null-ptr") {
+            return TypeCheckResult::ok(BuiltinTypes::Pointer);
+        }
+        if (func_name == "ptr->usize") {
+            if (call.num_vars >= 1 && arg_types[0].success) {
+                TypeId arg_type = arg_types[0].inferred_type;
+                if (arg_type == BuiltinTypes::Value &&
+                    call.variables[0].type == ESHKOL_VAR &&
+                    call.variables[0].variable.id) {
+                    ctx_.bind(call.variables[0].variable.id, BuiltinTypes::Pointer);
+                } else if (arg_type != BuiltinTypes::Pointer) {
+                    reportTypeIssue("ptr->usize expects a Ptr argument", &call.variables[0]);
+                }
+            }
+            return TypeCheckResult::ok(BuiltinTypes::USize);
+        }
+        if (func_name == "usize->ptr") {
+            if (call.num_vars >= 1 && arg_types[0].success) {
+                TypeId arg_type = arg_types[0].inferred_type;
+                if (arg_type == BuiltinTypes::Value &&
+                    call.variables[0].type == ESHKOL_VAR &&
+                    call.variables[0].variable.id) {
+                    ctx_.bind(call.variables[0].variable.id, BuiltinTypes::USize);
+                } else if (!env_.isSubtype(arg_type, BuiltinTypes::Integer)) {
+                    reportTypeIssue("usize->ptr expects an integer address value", &call.variables[0]);
+                }
+            }
+            return TypeCheckResult::ok(BuiltinTypes::Pointer);
+        }
+
         // Vector operations
         if (func_name == "vector" || func_name == "make-vector" || func_name == "vector-copy") {
             return TypeCheckResult::ok(BuiltinTypes::Vector);
