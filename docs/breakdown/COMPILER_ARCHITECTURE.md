@@ -254,7 +254,7 @@ class LLVMCodeGenerator {
 Each module is constructed via `std::make_unique` during initialization. Modules receive a `CodegenContext&` reference for shared LLVM state, and inter-module calls use **static wrapper callbacks** (via a `ControlFlowCallbacks` helper class), not `std::function` lambdas. For example:
 
 ```cpp
-// Module initialization (lib/backend/llvm_codegen.cpp:2370+)
+// Module initialization (lib/backend/llvm_codegen.cpp)
 tensor_ = std::make_unique<eshkol::TensorCodegen>(*ctx_, *tagged_, *mem);
 tensor_->setCodegenCallbacks(
     ControlFlowCallbacks::codegenASTWrapper,
@@ -528,7 +528,7 @@ All ML builtins integrate with reverse-mode AD -- calling `gradient` on any comp
 Eshkol uses LLVM's **New Pass Manager** (not the deprecated Legacy PassManagerBuilder):
 
 ```cpp
-// lib/backend/llvm_codegen.cpp:119-141
+// lib/backend/llvm_codegen.cpp
 static void optimizeModule(llvm::Module& module, llvm::TargetMachine* TM) {
     auto opt_level = getPassBuilderOptLevel();
     if (opt_level == llvm::OptimizationLevel::O0) return;
@@ -624,7 +624,7 @@ User Input: "(+ 1 2)"
 The JIT's `CodeGenOptLevel` **must** match the optimization level used to compile `stdlib.o`:
 
 ```cpp
-// lib/repl/repl_jit.cpp:132-144
+// lib/repl/repl_jit.cpp
 auto jtmb = orc::JITTargetMachineBuilder::detectHost();
 // detectHost() defaults to CodeGenOptLevel::Default (-O2)
 // BUT stdlib.o is compiled at -O0

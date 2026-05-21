@@ -29,7 +29,7 @@ through the imperative web API.
 ### 2.1 WASM Compilation Pipeline
 
 The `--wasm` (`-w`) flag routes compilation through a dedicated code path in
-`eshkol-run.cpp` (`exe/eshkol-run.cpp:2709`):
+`eshkol-run.cpp` (`exe/eshkol-run.cpp`):
 
 ```
 Eshkol source (.esk)
@@ -1142,7 +1142,7 @@ mechanisms:
   `ESHKOL_HOST_AGENT_FFI_LINK_ARGS` from `build_config.h.in:15`
   into the link command so the agent archive, libcurl, sqlite3,
   and pcre2 are all pulled in.
-- **JIT / REPL** — `lib/repl/repl_jit.cpp:534` attaches a
+- **JIT / REPL** — `lib/repl/repl_jit.cpp` attaches a
   `DynamicLibrarySearchGenerator::GetForCurrentProcess` to the
   main JITDylib. Because `eshkol-run` itself was linked with
   `-force_load` against `libeshkol-agent-ffi.a`, every agent

@@ -856,8 +856,8 @@ their arguments into a single list and memoize the 1-ary wrapper.
 
 - [`lib/core/prng.cpp`](../lib/core/prng.cpp) — C runtime backing the
   per-stream isolated PRNG state.
-- `lib/backend/llvm_codegen.cpp:12478-12482` — codegen dispatch.
-- `lib/backend/llvm_codegen.cpp:28028-28140` — the inline documentation block
+- `lib/backend/llvm_codegen.cpp` — codegen dispatch.
+- `lib/backend/llvm_codegen.cpp` — the inline documentation block
   describing the API and the registration pattern.
 - [`lib/random/random.esk`](../lib/random/random.esk) — high-level
   distribution sampling built on top of the global `(random)` function.
@@ -1582,8 +1582,8 @@ substitution.
 
 ## 11. `call-with-values` finalisation (codegen builtin)
 
-**Source**: parser dispatch at `lib/frontend/parser.cpp:981, 3309-3363`;
-codegen at `lib/backend/llvm_codegen.cpp:17684-17808`.
+**Source**: parser dispatch at `lib/frontend/parser.cpp, 3309-3363`;
+codegen at `lib/backend/llvm_codegen.cpp`.
 **Module require line**: none — `call-with-values` is a parser-recognised
 special form, available everywhere.
 

@@ -53,7 +53,7 @@ All three modes compute **exact derivatives** (not numerical approximations) by 
 
 ## Symbolic Differentiation
 
-**Implementation:** [`lib/backend/autodiff_codegen.cpp:1366-1596`](lib/backend/autodiff_codegen.cpp)
+**Implementation:** [`lib/backend/autodiff_codegen.cpp`](lib/backend/autodiff_codegen.cpp)
 
 Symbolic differentiation transforms ASTs at **compile-time** using 12 differentiation rules:
 
@@ -94,7 +94,7 @@ Symbolic differentiation transforms ASTs at **compile-time** using 12 differenti
 
 ## Forward-Mode AD (Dual Numbers)
 
-**Implementation:** [`lib/backend/autodiff_codegen.cpp:234-388`](lib/backend/autodiff_codegen.cpp)
+**Implementation:** [`lib/backend/autodiff_codegen.cpp`](lib/backend/autodiff_codegen.cpp)
 
 Forward-mode AD uses **dual numbers** to compute derivatives in a single forward pass. Each dual number stores both the function value and its derivative:
 
@@ -144,7 +144,7 @@ dual_div(a, b) = {a.value / b.value, (a.deriv * b.value - a.value * b.deriv) / (
 
 ## Reverse-Mode AD (Computational Graph)
 
-**Implementation:** [`lib/backend/autodiff_codegen.cpp:390-858`](lib/backend/autodiff_codegen.cpp)
+**Implementation:** [`lib/backend/autodiff_codegen.cpp`](lib/backend/autodiff_codegen.cpp)
 
 Reverse-mode AD builds a **computational graph** during the forward pass, then propagates gradients backward from outputs to inputs. This is the foundation of neural network training.
 
@@ -216,7 +216,7 @@ typedef struct ad_tape {
 } ad_tape_t;
 ```
 
-**Nested gradient support:** 32-level tape stack for computing higher-order derivatives (implementation: [`lib/backend/autodiff_codegen.cpp:82-120`](lib/backend/autodiff_codegen.cpp))
+**Nested gradient support:** 32-level tape stack for computing higher-order derivatives (implementation: [`lib/backend/autodiff_codegen.cpp`](lib/backend/autodiff_codegen.cpp))
 
 ### Example: Reverse-Mode AD
 
@@ -330,7 +330,7 @@ Eshkol provides high-level vector calculus operators built on reverse-mode AD:
 The compiler automatically selects the AD mode based on the operator used:
 
 ```cpp
-// lib/backend/autodiff_codegen.cpp:1294-1366
+// lib/backend/autodiff_codegen.cpp
 case ESHKOL_DIFF_OP:       → Symbolic differentiation
 case ESHKOL_DERIVATIVE_OP: → Forward or reverse (auto-selected)
 case ESHKOL_GRADIENT_OP:   → Reverse-mode (always)
@@ -344,7 +344,7 @@ case ESHKOL_HESSIAN_OP:    → Nested reverse-mode
 **Tape Stack:** 32-level nested gradient support for computing derivatives of derivatives:
 
 ```cpp
-// Global tape stack (lib/backend/autodiff_codegen.cpp:82-86)
+// Global tape stack (lib/backend/autodiff_codegen.cpp)
 static ad_tape_t* g_ad_tape_stack[32];
 static int g_ad_tape_depth = 0;
 
@@ -504,7 +504,7 @@ Where n = number of operations in the function.
 ;; Returns: #(6.0)
 ```
 
-**Implementation:** Closures check argument types at runtime and dispatch to the appropriate code path ([`lib/backend/function_codegen.cpp:456-523`](lib/backend/function_codegen.cpp)).
+**Implementation:** Closures check argument types at runtime and dispatch to the appropriate code path ([`lib/backend/function_codegen.cpp`](lib/backend/function_codegen.cpp)).
 
 ---
 
@@ -545,7 +545,7 @@ Eshkol v1.1 introduces a full reverse-mode backward pass for tensor operations, 
 **Matmul backward** implements the standard matrix calculus rules: for a forward pass `C = A @ B` where A is (M,K), B is (K,N), and C is (M,N), the backward pass computes `dA = grad_C @ B^T` and `dB = A^T @ grad_C`. Both input matrices are saved during the forward pass in the `ad_node_t.saved_tensors` array.
 
 **Attention backward** in v1.2-scale is a value-passthrough stub
-(`tensor_attention_backward` at `lib/bridge/tensor_backward.cpp:589`).
+(`tensor_attention_backward` at `lib/bridge/tensor_backward.cpp`).
 It accumulates `dy` into the V input's gradient slot only; gradients
 into Q and K are zero, and the softmax chain through
 `softmax(Q K^T / sqrt(d)) V` is skipped. The runtime prints a
@@ -559,7 +559,7 @@ v1.3-evolve as part of the attention-codegen rewrite. Training attention
 layers under v1.2 will not converge correctly.
 
 **Embedding backward** in v1.2-scale is also a stub
-(`tensor_embedding_backward` at `lib/bridge/tensor_backward.cpp:567`).
+(`tensor_embedding_backward` at `lib/bridge/tensor_backward.cpp`).
 It scatters the upstream gradient into row 0 of the weight tensor only,
 because the lookup-index tensor is not yet threaded through the AD-node
 shape. A one-shot stderr warning fires on first invocation. The full

@@ -57,7 +57,7 @@ Process symbol resolution works because `eshkol-repl` is linked with `-force_loa
 
 ## 3. JIT Initialization
 
-`ReplJITContext::initializeJIT()` — `lib/repl/repl_jit.cpp:119`
+`ReplJITContext::initializeJIT()` — `lib/repl/repl_jit.cpp`
 
 ### 3.1 LLVM Target Setup
 
@@ -114,7 +114,7 @@ The arena is created with 8 KB initial block size. Because `__repl_shared_arena`
 
 ## 4. Symbol Registration
 
-`ReplJITContext::registerRuntimeSymbols()` — `lib/repl/repl_jit.cpp:198`
+`ReplJITContext::registerRuntimeSymbols()` — `lib/repl/repl_jit.cpp`
 
 Two macros drive registration:
 
@@ -159,7 +159,7 @@ symbols[ES.intern("sin")] = {
 
 ### 5.1 Fast Path: addObjectFile
 
-`ReplJITContext::loadStdlib()` — `lib/repl/repl_jit.cpp:866`
+`ReplJITContext::loadStdlib()` — `lib/repl/repl_jit.cpp`
 
 ```cpp
 std::string stdlib_obj_path = findStdlibObject();
@@ -171,7 +171,7 @@ auto err = jit_->addObjectFile(main_dylib, std::move(*buffer_or_err));
 
 ### 5.2 Symbol Discovery via .bc Metadata
 
-`ReplJITContext::registerStdlibSymbols()` — `lib/repl/repl_jit.cpp:787`
+`ReplJITContext::registerStdlibSymbols()` — `lib/repl/repl_jit.cpp`
 
 ```cpp
 auto mod_or_err = parseBitcodeFile(buf->getMemBufferRef(), *ctx);
@@ -215,7 +215,7 @@ This prevents `(require core.list.transform)` from triggering a redundant load.
 
 ### 6.1 Single Expression: `execute(ast)`
 
-`ReplJITContext::execute()` — `lib/repl/repl_jit.cpp:1404`
+`ReplJITContext::execute()` — `lib/repl/repl_jit.cpp`
 
 Full pipeline for one REPL expression:
 
@@ -248,13 +248,13 @@ Full pipeline for one REPL expression:
 
 ### 6.2 Batch Execution: `executeBatch(asts, silent)`
 
-`ReplJITContext::executeBatch()` — `lib/repl/repl_jit.cpp:1219`
+`ReplJITContext::executeBatch()` — `lib/repl/repl_jit.cpp`
 
 Used when loading a module file (which may define many functions). All ASTs are passed to `eshkol_generate_llvm_ir(asts.data(), asts.size(), ...)` in a single call, enabling forward references between functions within the same file. The entry function is renamed `__repl_batch_eval_N`.
 
 ### 6.3 Module Path Resolution
 
-`resolveModulePath()` — `lib/repl/repl_jit.cpp:1158`
+`resolveModulePath()` — `lib/repl/repl_jit.cpp`
 
 Dot-separated module names are converted to filesystem paths:
 
@@ -272,7 +272,7 @@ Search order:
 
 ### 6.4 Typed Results: `executeTagged(ast)`
 
-`ReplJITContext::executeTagged()` — `lib/repl/repl_jit.cpp:1784`
+`ReplJITContext::executeTagged()` — `lib/repl/repl_jit.cpp`
 
 Returns `eshkol_tagged_value_t` (16 bytes: `{type:u8, flags:u8, reserved:u16, padding:u32, data:u64}`). The raw `int64_t` return from `execute()` is reinterpreted based on the AST's `inferred_hott_type` field:
 
@@ -292,7 +292,7 @@ When `inferred_hott_type == 0` (type inference did not run), the function falls 
 
 ## 7. Hot Reload
 
-`ReplJITContext::addModule()` — `lib/repl/repl_jit.cpp:458`
+`ReplJITContext::addModule()` — `lib/repl/repl_jit.cpp`
 
 ### 7.1 Symbol Removal for Redefinition
 
@@ -372,7 +372,7 @@ At `-O2`, the ARM64 backend uses LLVM's struct scalarization pass, which decompo
 ### 8.2 The Fix
 
 ```cpp
-// lib/repl/repl_jit.cpp:144
+// lib/repl/repl_jit.cpp
 jtmb->setCodeGenOptLevel(CodeGenOptLevel::None);
 ```
 
@@ -421,7 +421,7 @@ The XLA backend runtime (`lib/backend/xla/xla_runtime.cpp`) is an archive member
 | `ESHKOL_DUMP_REPL_IR=1` | Dumps the LLVM IR of each JIT module to stderr before `addIRModule`. Equivalent to `--dump-ir` in the AOT compiler. |
 | `ESHKOL_DEBUG_DL=1` | Prints DataLayout string and target triple for both the module and the LLJIT instance. Used to diagnose ABI mismatches. |
 
-Both checks occur at `lib/repl/repl_jit.cpp:572-580`:
+Both checks occur at `lib/repl/repl_jit.cpp`:
 
 ```cpp
 if (getenv("ESHKOL_DUMP_REPL_IR")) {

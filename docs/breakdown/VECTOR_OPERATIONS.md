@@ -296,9 +296,9 @@ Use **tensors** when:
 
 ### 1. Cost Model Dispatch
 
-Tensor matmul uses a three-tier dispatch hierarchy: **SIMD -> cBLAS -> GPU**. The dispatch logic lives in `eshkol_matmul_f64()` (`lib/backend/blas_backend.cpp:747`) and is backed by an adaptive cost model defined in the `CostModelParams` struct at line 44.
+Tensor matmul uses a three-tier dispatch hierarchy: **SIMD -> cBLAS -> GPU**. The dispatch logic lives in `eshkol_matmul_f64()` (`lib/backend/blas_backend.cpp`) and is backed by an adaptive cost model defined in the `CostModelParams` struct at line 44.
 
-**Cost model parameters** (from `lib/backend/blas_backend.cpp:44-65`):
+**Cost model parameters** (from `lib/backend/blas_backend.cpp`):
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
@@ -378,7 +378,7 @@ GPU buffers are freed immediately after each operation via `eshkol_gpu_free()` (
 
 ### 3. XLA Integration
 
-The XLA layer provides a high-level runtime for tensor operations that internally dispatches to GPU, BLAS, or SIMD depending on tensor size. XLA dispatch is governed by a threshold of **100,000 elements** (~316x316 matrix), configurable via `ESHKOL_XLA_THRESHOLD` (defined in `lib/backend/xla/xla_codegen.cpp:55`).
+The XLA layer provides a high-level runtime for tensor operations that internally dispatches to GPU, BLAS, or SIMD depending on tensor size. XLA dispatch is governed by a threshold of **100,000 elements** (~316x316 matrix), configurable via `ESHKOL_XLA_THRESHOLD` (defined in `lib/backend/xla/xla_codegen.cpp`).
 
 **Dispatch hierarchy at codegen time** (from `tensor_codegen.cpp`):
 

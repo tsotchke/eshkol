@@ -40,7 +40,7 @@ The OALR system provides **five ownership modes** for different memory managemen
 | **Shared** | `(shared value)` | Reference-counted shared ownership | Complex shared data |
 | **Weak** | `(weak-ref value)` | Non-owning reference | Breaking reference cycles |
 
-**Implementation:** [`lib/backend/llvm_codegen.cpp:8234-8567`](lib/backend/llvm_codegen.cpp)
+**Implementation:** [`lib/backend/llvm_codegen.cpp`](lib/backend/llvm_codegen.cpp)
 
 ### Example: Linear Types
 
@@ -94,7 +94,7 @@ typedef struct arena {
 ### Allocation Strategy
 
 ```c
-// lib/core/arena_memory.cpp:145-198
+// lib/core/arena_memory.cpp
 void* arena_alloc(size_t size) {
     // Round up to 8-byte alignment
     size = (size + 7) & ~7;
@@ -302,13 +302,13 @@ Linear types ensure resources are **consumed exactly once** at compile-time. Att
 
 **Core allocator:**
 ```c
-// lib/core/arena_memory.cpp:145
+// lib/core/arena_memory.cpp
 void* arena_alloc(size_t size);
 ```
 
 **Type-specific allocators (with headers):**
 ```c
-// lib/core/arena_memory.cpp:856-1234
+// lib/core/arena_memory.cpp
 void* arena_alloc_cons(void);           // 32-byte cons cell with header
 void* arena_alloc_string(size_t len);   // String with header
 void* arena_alloc_vector(size_t cap);   // Vector with header
@@ -321,7 +321,7 @@ void* arena_alloc_closure(...);         // Closure with header
 **32-byte tagged cons cell** with direct tagged value storage:
 
 ```c
-// lib/core/arena_memory.h:67-72
+// lib/core/arena_memory.h
 typedef struct arena_tagged_cons_cell {
     eshkol_object_header_t header;  // 8 bytes (subtype=HEAP_SUBTYPE_CONS)
     eshkol_tagged_value_t car;      // 16 bytes (type + data)
@@ -440,7 +440,7 @@ eager TLS warmup at worker startup, and the
 ### Block Growth Strategy
 
 ```c
-// lib/core/arena_memory.cpp:178-185
+// lib/core/arena_memory.cpp
 // When current block is full, allocate new block
 size_t new_size = max(8192, requested_size * 2);
 arena_block_t* new_block = malloc(sizeof(arena_block_t));
@@ -460,14 +460,14 @@ arena->current = new_block;
 All allocations are **8-byte aligned** for optimal performance:
 
 ```c
-// lib/core/arena_memory.cpp:152
+// lib/core/arena_memory.cpp
 size = (size + 7) & ~7;  // Round up to 8-byte boundary
 ```
 
 ### Memory Statistics
 
 ```c
-// lib/core/arena_memory.cpp:2890-2950
+// lib/core/arena_memory.cpp
 typedef struct arena_stats {
     size_t total_allocated;      // Total bytes allocated
     size_t total_used;            // Bytes currently used
@@ -938,7 +938,7 @@ Eshkol's runtime passes `eshkol_tagged_value_t` (a 16-byte struct) across functi
 
 ### ARM64 Thunk Calling Convention (`call_thunk_closure`)
 
-**File:** `lib/core/arena_memory.cpp:3908`
+**File:** `lib/core/arena_memory.cpp`
 
 Dynamic-wind and `call/cc` thunks are zero-argument closures invoked through a trampoline (`call_thunk_closure`). The trampoline bridges a typed function pointer (stored as `void*` in the closure) back to a call returning `eshkol_tagged_value_t`.
 
@@ -970,7 +970,7 @@ The fix introduces a compile-time branch:
 
 ### Windows x64 Struct-by-Value Parameter Fix (`region_escape_tagged_value_into`)
 
-**File:** `lib/core/arena_memory.cpp:1909`
+**File:** `lib/core/arena_memory.cpp`
 
 The Windows x64 ABI requires that structs larger than 8 bytes be passed by pointer, not by value. `region_escape_tagged_value_into` previously took `eshkol_tagged_value_t val` by value (16 bytes), violating this convention and causing misaligned stack frames on Windows.
 
