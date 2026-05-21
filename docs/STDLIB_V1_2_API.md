@@ -1997,4 +1997,4 @@ Exports (`manifold.esk`):
 
 Manifold operations for Riemannian computation. The three constructors return tagged manifold values; `manifold-exp-map` / `manifold-log-map` / `manifold-distance` / `manifold-parallel-transport` / `manifold-curvature` are dispatched on the manifold type.
 
-The current v1.2 implementation is a placeholder layer — `manifold-dimension` and `manifold-type` return constants pending the native VM ops planned for v1.3-evolve. Consumers should prefer the higher-level `lib/tsotchke/riemannian_training.esk` API for actual gradient-descent-on-manifolds workflows.
+The current v1.2 implementation is a placeholder layer — `manifold-dimension` and `manifold-type` return constants pending the native VM ops planned for v1.3-evolve. For actual gradient-descent-on-manifolds workflows, build on top of `core.manifold` directly together with `gradient` / `tensor-*` and the exact-numeric tower; a higher-level Riemannian-training API ships in v1.3-evolve along with the native VM ops.
