@@ -15,31 +15,46 @@
 ;;     lock between the worker and the arithmetic — `(make-prng seed)`
 ;;     and the float inner loop run as native code.
 
-;; Each shard is encoded as a single integer that combines a worker
-;; index in the high bits with the sample count in the low bits.  That
-;; keeps the parallel-map closure single-argument while still letting
-;; the worker derive a unique PRNG seed.
-(define samples-per-shard 200000)
+;; Each shard carries a numeric id and a private PRNG stream.  The PRNGs
+;; are created before parallel-map starts; workers only advance their
+;; assigned stream and count hits.
+(define samples-per-batch 100)
+(define batches-per-shard 2000)
+(define samples-per-shard (* samples-per-batch batches-per-shard))
 (define monte-carlo-seed-base 123456789)
 (define monte-carlo-seed-step 2654435761)
 
-(define (count-hits-in-shard shard-id)
-  "shard-id is a small integer 0..N-1.  Each worker derives an
-   independent PRNG stream from it."
-  (let ((rng (make-prng (+ (* shard-id monte-carlo-seed-step)
-                           monte-carlo-seed-base))))
-    (let loop ((i 0) (hits 0))
-      (if (= i samples-per-shard)
+(define (make-shard shard-id)
+  "Create the worker payload on the main thread.  The PRNG stream remains
+   private to one shard, but allocation does not happen inside the worker."
+  (list shard-id
+        (make-prng (+ (* shard-id monte-carlo-seed-step)
+                      monte-carlo-seed-base))))
+
+(define (sample-hit rng hits)
+  (let* ((x  (prng-random rng))
+         (y  (prng-random rng))
+         (r2 (+ (* x x) (* y y))))
+    (if (< r2 1.0) (+ hits 1) hits)))
+
+(define (count-batch rng remaining hits)
+  (if (= remaining 0)
+      hits
+      (count-batch rng (- remaining 1) (sample-hit rng hits))))
+
+(define (count-hits-in-shard shard)
+  "Each shard owns one PRNG stream.  The outer loop is batched so generated
+   x64 worker code never depends on very deep worker-thread tail recursion."
+  (let ((rng (cadr shard)))
+    (let loop ((batch 0) (hits 0))
+      (if (= batch batches-per-shard)
           hits
-          (let* ((x  (prng-random rng))
-                 (y  (prng-random rng))
-                 (r2 (+ (* x x) (* y y))))
-            (if (< r2 1.0)
-                (loop (+ i 1) (+ hits 1))
-                (loop (+ i 1) hits)))))))
+          (loop (+ batch 1)
+                (count-batch rng samples-per-batch hits))))))
 
 ;; Eight independent shards of 200,000 samples each = 1.6M samples.
-(define shards '(0 1 2 3 4 5 6 7))
+(define shard-ids '(0 1 2 3 4 5 6 7))
+(define shards (map make-shard shard-ids))
 (define total-samples (* samples-per-shard (length shards)))
 
 (display "=== Monte Carlo π via parallel-map ===") (newline)
