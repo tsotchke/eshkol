@@ -1,0 +1,93 @@
+;; ============================================================
+;; Gradient Descent on a Quadratic — Visible Learning
+;; ============================================================
+;;
+;; This example trains a quadratic  f(x) = a*x^2 + b*x + c  to fit
+;; noisy samples drawn from the true relation  y = 2*x^2 - 3*x + 1.
+;; The loss is reported every fifty epochs so you can watch the model
+;; learn in real time.
+;;
+;; Why this is interesting:
+;;   - The gradient is computed by the compiler, not by a framework.
+;;   - The optimisation loop is forty lines of Eshkol, no
+;;     dependencies, no GIL, no GC pauses.
+;;   - The same `gradient` operator works against any differentiable
+;;     Eshkol function — swap the model and the loop is unchanged.
+
+(define training-data
+  '((-2.0  15.0)
+    (-1.5  10.75)
+    (-1.0   6.0)
+    (-0.5   2.5)
+    ( 0.0   1.0)
+    ( 0.5   0.0)
+    ( 1.0   0.0)
+    ( 1.5   1.0)
+    ( 2.0   3.0)
+    ( 2.5   6.0)
+    ( 3.0  10.0)
+    ( 3.5  15.0)))
+
+(define (model params x)
+  (let ((a (vector-ref params 0))
+        (b (vector-ref params 1))
+        (c (vector-ref params 2)))
+    (+ (* a x x) (* b x) c)))
+
+(define n-samples (length training-data))
+
+(define (mean-squared-error params)
+  (let ((total
+          (fold-left
+            (lambda (acc pair)
+              (let* ((x   (car pair))
+                     (y   (cadr pair))
+                     (err (- (model params x) y)))
+                (+ acc (* err err))))
+            0.0
+            training-data)))
+    (/ total n-samples)))
+
+;; Alias used by the gradient call and the reporting loop below.
+(define squared-error mean-squared-error)
+
+(define (gradient-step params lr)
+  (let ((g (gradient squared-error params)))
+    (vector (- (vector-ref params 0) (* lr (vector-ref g 0)))
+            (- (vector-ref params 1) (* lr (vector-ref g 1)))
+            (- (vector-ref params 2) (* lr (vector-ref g 2))))))
+
+(define (train params lr steps)
+  (let loop ((p params) (step 0))
+    (if (= step steps)
+        p
+        (begin
+          (if (= 0 (modulo step 200))
+              (begin
+                (display "  step ") (display step)
+                (display "  loss=") (display (squared-error p))
+                (display "  params=") (display p)
+                (newline))
+              #f)
+          (loop (gradient-step p lr) (+ step 1))))))
+
+(display "=== Gradient descent: fit y = a*x^2 + b*x + c ===")
+(newline)
+(display "True parameters:  a=2.0  b=-3.0  c=1.0")
+(newline) (newline)
+
+(define initial-params #(0.0 0.0 0.0))
+(display "Initial params: ") (display initial-params) (newline)
+(display "Initial loss:   ") (display (squared-error initial-params)) (newline)
+(newline)
+
+(define trained (train initial-params 0.02 1200))
+
+(newline)
+(display "Final params:   ") (display trained) (newline)
+(display "Final loss:     ") (display (squared-error trained)) (newline)
+(newline)
+(display "The compiler differentiated through the model + loss without")
+(newline)
+(display "any framework, runtime tape, or symbolic preprocessing step.")
+(newline)

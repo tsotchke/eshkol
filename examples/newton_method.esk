@@ -1,0 +1,70 @@
+;; ============================================================
+;; Newton's Method via Compiler-Integrated Autodiff
+;; ============================================================
+;;
+;; Find roots of arbitrary differentiable functions using
+;;
+;;     x_{n+1}  =  x_n  -  f(x_n) / f'(x_n)
+;;
+;; where f'(x_n) is computed by Eshkol's `derivative` operator
+;; at compile time — no symbolic preprocessing, no finite differences.
+;;
+;; The optimisation loop is fifteen lines.  Replace the function and
+;; the loop is unchanged.
+
+;; Returns (cons root iterations-used).  Caller prints both.
+(define (newton f x0 tolerance max-iters)
+  (let loop ((x x0) (i 0))
+    (cond
+      ((= i max-iters) (cons x -1))
+      ((< (abs (f x)) tolerance) (cons x i))
+      (else
+        (let* ((fx     (f x))
+               (fprime (derivative f x))
+               (next   (- x (/ fx fprime))))
+          (loop next (+ i 1)))))))
+
+(define (report label result)
+  (let ((root  (car result))
+        (iters (cdr result)))
+    (display "  ") (display label) (display "  root ≈ ") (display root)
+    (display "    (")
+    (if (< iters 0)
+        (display "did not converge")
+        (begin (display "converged in ") (display iters) (display " iters")))
+    (display ")") (newline)))
+
+;; ---- Example 1: cube root of 27 -----------------------------
+;; f(x) = x^3 - 27 has a root at x=3.
+(display "=== Newton's method ===")
+(newline) (newline)
+(display "Cube root of 27 (solve x^3 - 27 = 0):") (newline)
+(define cube-fn (lambda (x) (- (* x x x) 27.0)))
+(report "x^3 = 27       " (newton cube-fn 4.0 1e-12 50))
+(newline)
+
+;; ---- Example 2: square root of 2 ----------------------------
+;; Classic.  f(x) = x^2 - 2.
+(display "Square root of 2 (solve x^2 - 2 = 0):") (newline)
+(define sqrt2-fn (lambda (x) (- (* x x) 2.0)))
+(report "x^2 = 2        " (newton sqrt2-fn 1.0 1e-15 50))
+(newline)
+
+;; ---- Example 3: a transcendental root -----------------------
+;; f(x) = x - cos(x) has the famous Dottie-number root near 0.739.
+(display "Dottie number (solve x - cos(x) = 0):") (newline)
+(define dottie (lambda (x) (- x (cos x))))
+(report "x = cos(x)     " (newton dottie 1.0 1e-12 50))
+(newline)
+
+;; ---- Example 4: an explicitly defined polynomial ------------
+;; A trickier root: f(x) = x^5 - 3x + 1.
+(display "Real root of x^5 - 3x + 1:") (newline)
+(define quintic (lambda (x) (+ (* x x x x x) (* -3.0 x) 1.0)))
+(report "x^5 - 3x + 1=0 " (newton quintic 0.5 1e-12 50))
+(newline)
+
+(display "Every call above used the same fifteen-line `newton` loop —")
+(newline)
+(display "the compiler differentiated each function inline.")
+(newline)
