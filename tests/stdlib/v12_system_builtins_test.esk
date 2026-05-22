@@ -10,6 +10,8 @@
 (display "getpid: ") (display (getpid)) (newline)
 (display "process-pid: ") (display (process-pid)) (newline)
 (display "home-directory: ") (display (home-directory)) (newline)
+(define tmp-root (temp-directory))
+(define test-root (path-join tmp-root "eshkol-v12-test"))
 
 (display "=== Path Manipulation ===") (newline)
 (display "path-join: ") (display (path-join "/usr" "local/bin")) (newline)
@@ -18,35 +20,42 @@
 (display "path-extname: ") (display (path-extname "/tmp/file.txt")) (newline)
 (display "path-is-absolute?: ") (display (path-is-absolute? "/usr")) (newline)
 (display "path-normalize: ") (display (path-normalize "/usr/local/../bin/./gcc")) (newline)
-(display "realpath /tmp: ") (display (realpath "/tmp")) (newline)
+(display "realpath temp: ") (display (realpath tmp-root)) (newline)
 (display "path-relative: ") (display (path-relative "/usr/local" "/usr/bin")) (newline)
 
 (display "=== Filesystem ===") (newline)
-(mkdir-recursive "/tmp/eshkol-v12-test/sub1/sub2")
-(display "mkdir-recursive: ") (display (file-exists? "/tmp/eshkol-v12-test/sub1/sub2")) (newline)
-(file-copy "/dev/null" "/tmp/eshkol-v12-test/copied")
-(display "file-copy: ") (display (file-exists? "/tmp/eshkol-v12-test/copied")) (newline)
-(display "file-mtime: ") (display (> (file-mtime "/tmp") 0)) (newline)
+(mkdir-recursive (path-join test-root "sub1/sub2"))
+(display "mkdir-recursive: ") (display (file-exists? (path-join test-root "sub1/sub2"))) (newline)
+(define copy-src (path-join test-root "source.txt"))
+(define copy-dst (path-join test-root "copied.txt"))
+(write-file copy-src "copy source")
+(file-copy copy-src copy-dst)
+(display "file-copy: ") (display (file-exists? copy-dst)) (newline)
+(define src-mtime (file-mtime copy-src))
+(display "file-mtime: ") (display (and (number? src-mtime) (> src-mtime 0))) (newline)
 
 ;; symlink
-(write-file "/tmp/eshkol-v12-test/target.txt" "target")
-(symlink-create "/tmp/eshkol-v12-test/target.txt" "/tmp/eshkol-v12-test/link")
-(display "symlink-read: ") (display (symlink-read "/tmp/eshkol-v12-test/link")) (newline)
+(define symlink-target (path-join test-root "target.txt"))
+(define symlink-link (path-join test-root "link"))
+(write-file symlink-target "target")
+(symlink-create symlink-target symlink-link)
+(display "symlink-read: ") (display (symlink-read symlink-link)) (newline)
 
 ;; mkstemp
-(let ((tmp (mkstemp "/tmp/eshkol-XXXXXX")))
+(let ((tmp (mkstemp (path-join tmp-root "eshkol-XXXXXX"))))
   (display "mkstemp: ") (display (string? tmp)) (newline)
   (if (string? tmp) (delete-file tmp) #f))
 
 ;; cleanup
-(directory-delete-recursive "/tmp/eshkol-v12-test")
-(display "cleanup: ") (display (not (file-exists? "/tmp/eshkol-v12-test"))) (newline)
+(directory-delete-recursive test-root)
+(display "cleanup: ") (display (not (file-exists? test-root))) (newline)
 
 ;; file-mmap
-(write-file "/tmp/eshkol-mmap.txt" "test data")
-(define mapped (file-mmap "/tmp/eshkol-mmap.txt"))
-(display "file-mmap: ") (display (string=? mapped "test data")) (newline)
-(delete-file "/tmp/eshkol-mmap.txt")
+(define mmap-path (path-join tmp-root "eshkol-mmap.txt"))
+(write-file mmap-path "test data")
+(define mapped (file-mmap mmap-path))
+(display "file-mmap: ") (display (and (string? mapped) (string=? mapped "test data"))) (newline)
+(delete-file mmap-path)
 
 (display "=== Glob ===") (newline)
 (display "glob-match *.esk: ") (display (glob-match "*.esk" "foo.esk")) (newline)

@@ -16,10 +16,12 @@
         (display label) (display ": FAIL want=")
         (display want) (display " got=") (display got) (newline))))
 
-(define path "/tmp/eshkol-atomic-write-test.txt")
+(define temp-root (temp-directory))
+(define path (path-join temp-root "eshkol-atomic-write-test.txt"))
+(define root (path-dirname path))
 (if (file-exists? path) (delete-file path) #t)
 
-(check "path-directory absolute" "/tmp" (path-directory path))
+(check "path-directory absolute" root (path-directory path))
 (check "path-directory relative" "." (path-directory "plain.txt"))
 
 (check "atomic-write-file returns true"

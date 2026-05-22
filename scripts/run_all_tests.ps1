@@ -1,7 +1,7 @@
 param(
     [string]$BuildDir = "",
     [switch]$SkipConfigureBuild,
-    [ValidateSet("all", "xla", "gpu")]
+    [ValidateSet("all", "xla", "gpu", "windows-lite")]
     [string]$Mode = "all"
 )
 
@@ -522,12 +522,20 @@ function Invoke-SimpleCompileRunSuite {
         [string]$FailRegex = "",
         [string]$RuntimeErrorRegex = "",
         [int]$TimeoutSec = 120,
+        [string[]]$IncludeNames = @(),
+        [string[]]$ExcludeNames = @(),
         [switch]$Recurse
     )
 
     Write-Section $Title
     $suite = New-SuiteState $SuiteName
     $files = Get-TestFiles -ProjectRoot $script:ProjectRoot -Patterns $Patterns -Recurse:$Recurse
+    if ($IncludeNames.Count -gt 0) {
+        $files = @($files | Where-Object { $IncludeNames -contains (Split-Path -Leaf $_) })
+    }
+    if ($ExcludeNames.Count -gt 0) {
+        $files = @($files | Where-Object { $ExcludeNames -notcontains (Split-Path -Leaf $_) })
+    }
 
     if ($files.Count -eq 0) {
         Add-Skip $suite "No test files found."
@@ -1387,6 +1395,66 @@ switch ($Mode) {
     }
     "gpu" {
         $suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "gpu" -Title "Eshkol GPU Test Suite" -Patterns @("tests/gpu/*.esk") -FailRegex "^FAIL:|Failed:\s+[1-9]"
+    }
+    "windows-lite" {
+        $suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "features" -Title "Eshkol Windows Feature Smoke Suite" -Patterns @("tests/features/*.esk") -RuntimeErrorRegex "error:" -IncludeNames @(
+            "bitwise_ops_test.esk",
+            "bytevector_test.esk",
+            "char_predicates_test.esk",
+            "data_encoding_test.esk",
+            "exception_test.esk",
+            "hott_return_types.esk",
+            "r7rs_wave2_test.esk",
+            "r7rs_wave3_test.esk",
+            "trig_hyperbolic_test.esk",
+            "type_predicates_test.esk"
+        )
+        $suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "stdlib" -Title "Eshkol Windows Stdlib Smoke Suite" -Patterns @("tests/stdlib/*.esk") -RuntimeErrorRegex "error:"
+        $suiteResults += Invoke-MemorySuite
+        $suiteResults += Invoke-ModulesSuite
+        $suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "types" -Title "Eshkol Windows Type Smoke Suite" -Patterns @("tests/types/*.esk") -RuntimeErrorRegex "error:" -IncludeNames @(
+            "comprehensive_type_test.esk",
+            "hash_table_types_test.esk",
+            "hott_integration_test.esk",
+            "hott_type_system_test.esk",
+            "symbol_ops_test.esk",
+            "type_predicate_matrix_test.esk"
+        )
+        $suiteResults += Invoke-TypesystemSuite
+        $suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "autodiff" -Title "Eshkol Windows Autodiff Smoke Suite" -Patterns @("tests/autodiff/*.esk") -RuntimeErrorRegex "error:" -IncludeNames @(
+            "autodiff_edge_test.esk",
+            "debug_gradient_only.esk",
+            "debug_minimal.esk",
+            "gradient_scalar_test.esk",
+            "phase0_diff_fixes.esk",
+            "phase2_forward_test.esk",
+            "phase3_real_ad_test.esk",
+            "simple_diff_test.esk",
+            "test_gradient_direct.esk",
+            "test_simple_multiply.esk",
+            "validation_01_type_detection.esk"
+        )
+        $suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "system" -Title "Eshkol Windows System Smoke Suite" -Patterns @("tests/system/*.esk") -IncludeNames @(
+            "display_int_test.esk",
+            "file_io_simple_test.esk",
+            "hash_simple_test.esk",
+            "system_test.esk"
+        )
+        $suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "examples" -Title "Eshkol Windows Examples Smoke Suite" -Patterns @("examples/*.esk") -IncludeNames @(
+            "autodiff.esk",
+            "bayesian_diagnosis.esk",
+            "gradient_descent_demo.esk",
+            "hello.esk",
+            "monte_carlo_pi.esk",
+            "newton_method.esk",
+            "streaming_stats.esk",
+            "symbolic_diff.esk"
+        )
+        $suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "parallel" -Title "Eshkol Windows Parallel Smoke Suite" -Patterns @("tests/parallel/*.esk") -FailRegex "^FAIL:|Failed:\s+[1-9]" -IncludeNames @(
+            "parallel_execute_test.esk",
+            "parallel_flags_byte_regression.esk",
+            "parallel_map_test.esk"
+        )
     }
 }
 
