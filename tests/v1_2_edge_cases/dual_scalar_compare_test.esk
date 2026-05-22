@@ -130,6 +130,23 @@
 (check "d/dx (remainder x 3) = 1 in another segment"
        (= (derivative g-rem 4.7) 1.0))
 
+;; gcd / lcm — integer-theoretic; no meaningful continuous derivative.
+;; Fix returns 0 and ensures no crash + normal integer path still works.
+(define (g-gcd x) (gcd x 6))
+(define (g-lcm x) (lcm x 4))
+(check "(gcd dual scalar) — no crash"
+       (number? (derivative g-gcd 10.0)))
+(check "d/dx (gcd x 6) = 0 (integer-theoretic)"
+       (= (derivative g-gcd 10.0) 0.0))
+(check "(lcm dual scalar) — no crash"
+       (number? (derivative g-lcm 6.0)))
+(check "d/dx (lcm x 4) = 0 (integer-theoretic)"
+       (= (derivative g-lcm 6.0) 0.0))
+(check "gcd normal int path still works"
+       (= (gcd 12 18) 6))
+(check "lcm normal int path still works"
+       (= (lcm 4 6) 12))
+
 ;; ─── Case 5 ────────────────────────────────────────────────────────
 ;; A recursive integrator that terminates on a `(< y 0.0)` test —
 ;; exactly the canonical motivating case from
