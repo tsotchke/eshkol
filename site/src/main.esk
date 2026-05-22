@@ -1205,7 +1205,7 @@
 
     ;; ── Build from Source ──────────────────────────────────────
     (section-subheading page "Build from Source")
-    (body-text page "Requires LLVM 21+, a C++17 compiler, and CMake 3.14+.")
+    (body-text page "Requires LLVM 21+, a C++20 compiler (GCC 12+ or Clang 15+), and CMake 3.14+.")
     (create-code-block page
       "<code style='color:#22c55e'>$</code> git clone https://github.com/tsotchke/eshkol.git\n<code style='color:#22c55e'>$</code> cd eshkol && mkdir build && cd build\n<code style='color:#22c55e'>$</code> cmake .. -DCMAKE_BUILD_TYPE=Release\n<code style='color:#22c55e'>$</code> make -j$(nproc)\n<code style='color:#22c55e'>$</code> sudo make install")
 
