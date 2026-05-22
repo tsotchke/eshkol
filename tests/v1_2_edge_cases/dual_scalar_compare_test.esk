@@ -133,15 +133,25 @@
 ;; gcd / lcm — integer-theoretic; no meaningful continuous derivative.
 ;; Fix returns 0 and ensures no crash + normal integer path still works.
 (define (g-gcd x) (gcd x 6))
+(define (g-gcd-right x) (gcd 6 x))
 (define (g-lcm x) (lcm x 4))
+(define (g-lcm-right x) (lcm 4 x))
 (check "(gcd dual scalar) — no crash"
        (number? (derivative g-gcd 10.0)))
 (check "d/dx (gcd x 6) = 0 (integer-theoretic)"
        (= (derivative g-gcd 10.0) 0.0))
+(check "(gcd scalar dual) — no crash"
+       (number? (derivative g-gcd-right 10.0)))
+(check "d/dx (gcd 6 x) = 0 (integer-theoretic)"
+       (= (derivative g-gcd-right 10.0) 0.0))
 (check "(lcm dual scalar) — no crash"
        (number? (derivative g-lcm 6.0)))
 (check "d/dx (lcm x 4) = 0 (integer-theoretic)"
        (= (derivative g-lcm 6.0) 0.0))
+(check "(lcm scalar dual) — no crash"
+       (number? (derivative g-lcm-right 6.0)))
+(check "d/dx (lcm 4 x) = 0 (integer-theoretic)"
+       (= (derivative g-lcm-right 6.0) 0.0))
 (check "gcd normal int path still works"
        (= (gcd 12 18) 6))
 (check "lcm normal int path still works"
