@@ -17875,6 +17875,46 @@ private:
         Value* arg1 = typedValueToTaggedValue(tv1);
         Value* arg2 = typedValueToTaggedValue(tv2);
 
+        // DUAL NUMBER FAST PATH (forward-mode AD): if either operand is a
+        // dual, route through fmod on the primals and keep the left's
+        // tangent. Modulo is piecewise linear with slope 1 in x between
+        // discontinuities, so d/dx (mod x c) = 1 almost everywhere.
+        // Without this branch, unpackInt64FromTaggedValue below would
+        // read the dual's heap-pointer data field as a raw int and SRem
+        // garbage / crash downstream consumers expecting a dual result.
+        Value* arg1_base = tagged_->getBaseType(tagged_->getType(arg1));
+        Value* arg2_base = tagged_->getBaseType(tagged_->getType(arg2));
+        Value* arg1_is_dual = builder->CreateICmpEQ(arg1_base,
+            ConstantInt::get(int8_type, ESHKOL_VALUE_DUAL_NUMBER));
+        Value* arg2_is_dual = builder->CreateICmpEQ(arg2_base,
+            ConstantInt::get(int8_type, ESHKOL_VALUE_DUAL_NUMBER));
+        Value* any_dual_mod = builder->CreateOr(arg1_is_dual, arg2_is_dual);
+
+        Function* mod_outer = builder->GetInsertBlock()->getParent();
+        BasicBlock* dual_mod_bb       = BasicBlock::Create(*context, "mod_dual",       mod_outer);
+        BasicBlock* normal_mod_bb     = BasicBlock::Create(*context, "mod_normal",     mod_outer);
+        BasicBlock* mod_outer_merge   = BasicBlock::Create(*context, "mod_outer_merge", mod_outer);
+        builder->CreateCondBr(any_dual_mod, dual_mod_bb, normal_mod_bb);
+
+        // Dual path — compute primals, fmod, repack with left's tangent.
+        builder->SetInsertPoint(dual_mod_bb);
+        Value* l_primal = arith_->extractAsDouble(arg1);
+        Value* r_primal = arith_->extractAsDouble(arg2);
+        Value* mod_primal = builder->CreateFRem(l_primal, r_primal, "mod_dual_primal");
+        Value* l_dbl_for_dual = builder->CreateICmpEQ(arg1_base,
+            ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
+        Value* l_dual = arith_->convertToDual(arg1, arg1_is_dual, l_dbl_for_dual);
+        Value* l_tangent = builder->CreateExtractValue(l_dual, {1}, "mod_l_tangent");
+        Value* result_dual = UndefValue::get(ctx_->dualNumberType());
+        result_dual = builder->CreateInsertValue(result_dual, mod_primal, {0});
+        result_dual = builder->CreateInsertValue(result_dual, l_tangent, {1});
+        Value* mod_dual_tagged = autodiff_->packDualToTagged(result_dual);
+        BasicBlock* dual_exit_mod = builder->GetInsertBlock();
+        builder->CreateBr(mod_outer_merge);
+
+        // Normal path: continue with the original codegen below.
+        builder->SetInsertPoint(normal_mod_bb);
+
         // Unpack integers
         Value* int_val1 = unpackInt64FromTaggedValue(arg1);
         Value* int_val2 = unpackInt64FromTaggedValue(arg2);
@@ -17952,12 +17992,20 @@ private:
         BasicBlock* int_exit = builder->GetInsertBlock();
         builder->CreateBr(mrg_bb);
 
-        // Merge.
+        // Merge (bn vs int paths).
         builder->SetInsertPoint(mrg_bb);
         PHINode* result_phi = builder->CreatePHI(tagged_value_type, 2, "modulo_phi");
         result_phi->addIncoming(bn_result, bn_exit);
         result_phi->addIncoming(int_tagged, int_exit);
-        return result_phi;
+        BasicBlock* normal_exit_mod = builder->GetInsertBlock();
+        builder->CreateBr(mod_outer_merge);
+
+        // Outer merge (dual vs normal).
+        builder->SetInsertPoint(mod_outer_merge);
+        PHINode* outer_phi = builder->CreatePHI(tagged_value_type, 2, "modulo_outer_phi");
+        outer_phi->addIncoming(mod_dual_tagged, dual_exit_mod);
+        outer_phi->addIncoming(result_phi, normal_exit_mod);
+        return outer_phi;
     }
 
     // Remainder operation - handles both integer and floating point

@@ -251,6 +251,17 @@ public:
      */
     void emitTypeError(const char* message);
 
+    /**
+     * Convert operand to dual number (promote constants to dual with zero tangent).
+     * Public so other codegen modules can route non-arithmetic ops — modulo,
+     * min/max, comparisons — through the forward-mode AD path.
+     * @param operand Tagged value operand
+     * @param is_dual Whether operand is already a dual number
+     * @param is_double Whether operand is a double
+     * @return Dual number struct
+     */
+    llvm::Value* convertToDual(llvm::Value* operand, llvm::Value* is_dual, llvm::Value* is_double);
+
 private:
     CodegenContext& ctx_;
     TaggedValueCodegen& tagged_;
@@ -259,15 +270,6 @@ private:
     ComplexCodegen& complex_;
 
     // === Internal Helpers ===
-
-    /**
-     * Convert operand to dual number (promote constants to dual with zero tangent).
-     * @param operand Tagged value operand
-     * @param is_dual Whether operand is already a dual number
-     * @param is_double Whether operand is a double
-     * @return Dual number struct
-     */
-    llvm::Value* convertToDual(llvm::Value* operand, llvm::Value* is_dual, llvm::Value* is_double);
 
     /**
      * Convert operand to AD node (promote constants to constant AD nodes).

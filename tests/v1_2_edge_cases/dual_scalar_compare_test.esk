@@ -94,6 +94,27 @@
        (= (derivative h-max 1.0) 0.0))
 
 ;; ─── Case 4 ────────────────────────────────────────────────────────
+;; modulo with a dual operand used to SIGSEGV — codegenModulo called
+;; unpackInt64FromTaggedValue on the dual's heap-pointer data field,
+;; computed SRem on garbage, and crashed when the resulting raw int
+;; was dereffed as a dual struct by downstream AD code.
+;;
+;; Fix: at the top of codegenModulo, route dual operands through a
+;; dedicated FRem path that produces a fresh dual {mod_primal,
+;; left_tangent}. Modulo is piecewise linear with slope 1 in the
+;; left operand between discontinuities, so d/dx (mod x c) = 1
+;; almost everywhere.
+
+(define (g-mod x) (modulo x 3))
+
+(check "(modulo dual scalar) — no crash"
+       (number? (derivative g-mod 10.5)))
+(check "d/dx (modulo x 3) = 1 inside a segment"
+       (= (derivative g-mod 10.5) 1.0))
+(check "d/dx (modulo x 3) = 1 in another segment"
+       (= (derivative g-mod 2.5) 1.0))
+
+;; ─── Case 5 ────────────────────────────────────────────────────────
 ;; A recursive integrator that terminates on a `(< y 0.0)` test —
 ;; exactly the canonical motivating case from
 ;; examples/differentiable_physics.esk.  The fix should let the
