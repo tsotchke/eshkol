@@ -10,10 +10,11 @@
 ## 1. Overview
 
 Eshkol's web platform enables compiling Eshkol programs to WebAssembly for
-direct execution in browsers or WASM runtimes. The library provides 73
-functions covering DOM manipulation, events, canvas drawing, timers, fetch,
-local storage, and browser window/location APIs — all accessible from
-Eshkol's functional S-expression syntax.
+direct execution in browsers or WASM runtimes. The library provides 97
+host-side bindings (verified by `grep -cE '^\(extern ' lib/web/web.esk`)
+covering DOM manipulation, events, canvas drawing, timers, fetch, local
+storage, and browser window/location APIs — all accessible from Eshkol's
+functional S-expression syntax.
 
 The design prioritizes simplicity at the language boundary: every browser
 object is represented as a 32-bit integer handle, every call crosses the
@@ -77,7 +78,7 @@ Eshkol compiler to emit a WASM import rather than a native call:
 The `:real` keyword provides the C symbol name that the WASM runtime must
 supply as a host import. The browser-side JavaScript glue layer (or any
 compliant WASM host) must export these symbols into the WASM module's import
-namespace before instantiation. All 73 functions follow this pattern.
+namespace before instantiation. All 97 functions follow this pattern.
 
 Supported FFI types in the web API:
 
