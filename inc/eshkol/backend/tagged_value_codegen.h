@@ -198,9 +198,9 @@ public:
     llvm::Value* unpackInt64(llvm::Value* tagged_val);
 
     /**
-     * Unpack a double from a tagged value.
-     * @param tagged_val The tagged_value struct
-     * @return The double value (bitcast from i64)
+     * Unpack a double from a tagged value or raw numeric LLVM value.
+     * @param tagged_val The tagged_value struct or raw i64/double
+     * @return The double value
      */
     llvm::Value* unpackDouble(llvm::Value* tagged_val);
 
