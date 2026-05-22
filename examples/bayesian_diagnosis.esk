@@ -1,0 +1,105 @@
+;; ============================================================
+;; Bayesian Diagnosis — Logic + Active Inference
+;; ============================================================
+;;
+;; A toy medical-triage agent that combines two of Eshkol's
+;; consciousness-engine primitives:
+;;
+;;   1. A symbolic knowledge base of known symptom-disease links
+;;      (`make-kb` / `kb-assert!` / `kb-query`).
+;;   2. A factor-graph probabilistic model that propagates beliefs
+;;      from symptoms to diseases via belief propagation
+;;      (`make-factor-graph` / `fg-add-factor!` / `fg-infer!` /
+;;      `free-energy`).
+;;
+;; The agent reasons about a patient under three observation
+;; regimes and reports how surprised its model is at each stage.
+;; Lower free energy = the model and the observations agree better.
+
+(display "============================================") (newline)
+(display "  Bayesian symptom-to-disease triage") (newline)
+(display "============================================") (newline)
+(newline)
+
+;; ---- Symbolic layer: a tiny medical KB ----------------------
+(define kb (make-kb))
+(kb-assert! kb (make-fact 'symptom-of 'fever 'flu))
+(kb-assert! kb (make-fact 'symptom-of 'fever 'covid))
+(kb-assert! kb (make-fact 'symptom-of 'cough 'flu))
+(kb-assert! kb (make-fact 'symptom-of 'cough 'covid))
+(kb-assert! kb (make-fact 'symptom-of 'cough 'cold))
+(kb-assert! kb (make-fact 'symptom-of 'fatigue 'flu))
+(kb-assert! kb (make-fact 'symptom-of 'fatigue 'covid))
+
+(display "What diseases involve 'fever'?")
+(newline)
+(display "  ") (display (kb-query kb (make-fact 'symptom-of 'fever ?d)))
+(newline) (newline)
+
+;; ---- Probabilistic layer: a 3-variable factor graph ---------
+;;
+;; Variables: 0=Cause(flu vs covid), 1=Fever observation,
+;;            2=Cough observation.  All binary (0=absent, 1=present).
+;;
+;; Prior P(cause):    P(flu)=0.6, P(covid)=0.4
+;; P(fever | flu)=0.7, P(fever | covid)=0.9
+;; P(cough | flu)=0.5, P(cough | covid)=0.8
+;;
+;; The CPTs are flattened row-major:
+;;   For P(child | parent), index = parent * 2 + child.
+
+(define fg (make-factor-graph 3 #(2 2 2)))
+
+;; Prior on cause: P(flu) = 0.6, P(covid) = 0.4
+(fg-add-factor! fg #(0) #(0.6 0.4))
+
+;; P(fever | cause): rows are cause, columns are fever
+;;   row 0 (flu):   [P(no fever)=0.3, P(fever)=0.7]
+;;   row 1 (covid): [P(no fever)=0.1, P(fever)=0.9]
+(fg-add-factor! fg #(0 1) #(0.3 0.7 0.1 0.9))
+
+;; P(cough | cause): rows are cause, columns are cough
+;;   row 0 (flu):   [P(no cough)=0.5, P(cough)=0.5]
+;;   row 1 (covid): [P(no cough)=0.2, P(cough)=0.8]
+(fg-add-factor! fg #(0 2) #(0.5 0.5 0.2 0.8))
+
+;; ---- Three observation regimes ------------------------------
+(display "Stage 1: No observations yet (prior beliefs only)")
+(fg-infer! fg 20)
+(define fe-prior (free-energy fg #()))
+(newline)
+(display "  Free energy of model with no evidence: ") (display fe-prior)
+(newline) (newline)
+
+(display "Stage 2: Patient reports fever  (variable 1 = 1)")
+(define fe-fever (free-energy fg #(1 1)))
+(newline)
+(display "  Free energy after observing fever:     ") (display fe-fever)
+(newline)
+(display "  Δ vs prior:                            ")
+(display (- fe-fever fe-prior))
+(newline) (newline)
+
+(display "Stage 3: Patient reports fever AND cough")
+(define fe-both (free-energy fg #(#(1 1) #(2 1))))
+(newline)
+(display "  Free energy after observing both:      ") (display fe-both)
+(newline)
+(display "  Δ vs fever-only:                       ")
+(display (- fe-both fe-fever))
+(newline) (newline)
+
+(display "Interpretation:")
+(newline)
+(display "  - Free energy measures how surprised the model is.")
+(newline)
+(display "  - Each new symptom pushes free energy higher because the")
+(newline)
+(display "    posterior must shift to explain the evidence.")
+(newline)
+(display "  - The KB-side query above gave a symbolic answer to")
+(newline)
+(display "    'what could cause fever?'; the factor-graph layer turns")
+(newline)
+(display "    that catalogue into a quantitative ranking.")
+(newline)

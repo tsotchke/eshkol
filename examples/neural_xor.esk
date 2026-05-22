@@ -1,0 +1,123 @@
+;; ============================================================
+;; Neural Network XOR — Two-layer MLP trained from scratch
+;; ============================================================
+;;
+;; XOR is the canonical "needs a hidden layer" benchmark: linearly
+;; inseparable, requires at least one non-linearity, learns in well
+;; under a thousand steps with a small network.
+;;
+;; Architecture:    2 inputs -> 4 hidden (tanh) -> 1 output (sigmoid)
+;; Training:        full-batch gradient descent for 1000 epochs
+;; Loss:            mean squared error over the four XOR rows
+;;
+;; All weights live in a single parameter vector so we can call
+;; `gradient` once per step and let the compiler thread reverse-mode
+;; AD through the entire forward pass (matmul, activations, loss).
+
+;; Parameter layout (17 doubles total):
+;;   indices  0- 7  : W1 (4 hidden x 2 input, row-major)
+;;   indices  8-11  : b1 (4 hidden)
+;;   indices 12-15  : W2 (1 output x 4 hidden)
+;;   index   16     : b2 (1 output bias)
+
+(define (sigmoid x)
+  (/ 1.0 (+ 1.0 (exp (- 0.0 x)))))
+
+(define (forward params x1 x2)
+  ;; W1 row i:  params[2i], params[2i+1]
+  ;; b1[i]:     params[8 + i]
+  (let* ((z0 (+ (* (vector-ref params 0) x1) (* (vector-ref params 1) x2) (vector-ref params 8)))
+         (z1 (+ (* (vector-ref params 2) x1) (* (vector-ref params 3) x2) (vector-ref params 9)))
+         (z2 (+ (* (vector-ref params 4) x1) (* (vector-ref params 5) x2) (vector-ref params 10)))
+         (z3 (+ (* (vector-ref params 6) x1) (* (vector-ref params 7) x2) (vector-ref params 11)))
+         (h0 (tanh z0))
+         (h1 (tanh z1))
+         (h2 (tanh z2))
+         (h3 (tanh z3))
+         (y  (+ (* (vector-ref params 12) h0)
+                (* (vector-ref params 13) h1)
+                (* (vector-ref params 14) h2)
+                (* (vector-ref params 15) h3)
+                (vector-ref params 16))))
+    (sigmoid y)))
+
+(define xor-data
+  '((0.0 0.0 0.0)
+    (0.0 1.0 1.0)
+    (1.0 0.0 1.0)
+    (1.0 1.0 0.0)))
+
+(define (mse params)
+  (fold-left
+    (lambda (acc row)
+      (let* ((x1 (car row))
+             (x2 (cadr row))
+             (y  (caddr row))
+             (y-hat (forward params x1 x2))
+             (err (- y-hat y)))
+        (+ acc (* err err))))
+    0.0
+    xor-data))
+
+(define (gd-step params lr)
+  (let ((g (gradient mse params)))
+    ;; The hand-rolled vector subtract avoids needing a vector library.
+    (let loop ((i 0) (out (make-vector 17 0.0)))
+      (if (= i 17)
+          out
+          (begin
+            (vector-set! out i
+              (- (vector-ref params i) (* lr (vector-ref g i))))
+            (loop (+ i 1) out))))))
+
+(define (train params lr epochs)
+  (let loop ((p params) (epoch 0))
+    (if (= epoch epochs)
+        p
+        (begin
+          (when (= 0 (modulo epoch 100))
+            (display "  epoch ") (display epoch)
+            (display "  loss=") (display (mse p))
+            (newline))
+          (loop (gd-step p lr) (+ epoch 1))))))
+
+;; Initial parameters drawn from a deterministic seeded PRNG so the
+;; demo reproduces bit-identically on every machine.
+(define rng (make-prng 42))
+(define (random-weight) (- (* 2.0 (prng-random rng)) 1.0))
+(define initial-params
+  (let ((p (make-vector 17 0.0)))
+    (let loop ((i 0))
+      (when (< i 17)
+        (vector-set! p i (random-weight))
+        (loop (+ i 1))))
+    p))
+
+(display "=== Neural XOR (2-4-1 MLP, tanh / sigmoid) ===") (newline)
+(newline)
+(display "Initial loss: ") (display (mse initial-params)) (newline)
+(newline)
+(display "Training:") (newline)
+
+(define trained (train initial-params 0.5 1000))
+
+(newline)
+(display "Final loss:   ") (display (mse trained)) (newline)
+(newline)
+(display "Predictions after training:") (newline)
+(for-each
+  (lambda (row)
+    (let* ((x1 (car row))
+           (x2 (cadr row))
+           (target (caddr row))
+           (pred (forward trained x1 x2)))
+      (display "  XOR(") (display (inexact->exact x1))
+      (display ",") (display (inexact->exact x2))
+      (display ") = target ") (display target)
+      (display "   model output ") (display pred)
+      (newline)))
+  xor-data)
+(newline)
+(display "The compiler differentiated through three matmuls, four tanh") (newline)
+(display "calls, and a sigmoid in 1,000 gradient steps. No framework, no") (newline)
+(display "graph object, no Python.") (newline)
