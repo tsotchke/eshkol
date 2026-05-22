@@ -59,6 +59,41 @@
 (check "(= dual scalar)" (= (derivative g-eq  1.0)  2.0))    ;; 2x at x=1
 
 ;; ─── Case 3 ────────────────────────────────────────────────────────
+;; min / max on a (dual, scalar) pair must return a dual on the AD
+;; trace path.  Before the fix, min/max's regular_fn extracted both
+;; sides as doubles, then PHI-merged the ORIGINAL tagged values —
+;; which meant a scalar leaked out when the scalar side won, and
+;; downstream AD ops dereffed it as a dual struct (SIGSEGV).
+;; Fix: both operands convertToDual'd, comparison on primals, the
+;; chosen dual repacked as a tagged dual.
+
+(define (g-min x) (min x 5.0))
+(define (g-max x) (max x 5.0))
+
+(check "(derivative (min x 5.0) at x=3)   — x wins, d/dx(x) = 1"
+       (= (derivative g-min 3.0) 1.0))
+(check "(derivative (min x 5.0) at x=10)  — 5 wins, scalar branch, deriv = 0"
+       (= (derivative g-min 10.0) 0.0))
+(check "(derivative (max x 5.0) at x=3)   — 5 wins, scalar branch, deriv = 0"
+       (= (derivative g-max 3.0) 0.0))
+(check "(derivative (max x 5.0) at x=10)  — x wins, d/dx(x) = 1"
+       (= (derivative g-max 10.0) 1.0))
+
+;; min/max with a non-trivial inner expression — exercises the
+;; gradient flowing back through the chosen dual.
+(define (h-min x) (min (* x x) 100.0))   ;; deriv = 2x while x^2 < 100, else 0
+(define (h-max x) (max (* x x) 4.0))     ;; deriv = 2x while x^2 > 4, else 0
+
+(check "min picks the dual side: d/dx min(x^2,100) at x=3 = 6"
+       (= (derivative h-min 3.0) 6.0))
+(check "min picks the scalar side: d/dx min(x^2,100) at x=20 = 0"
+       (= (derivative h-min 20.0) 0.0))
+(check "max picks the dual side: d/dx max(x^2,4) at x=10 = 20"
+       (= (derivative h-max 10.0) 20.0))
+(check "max picks the scalar side: d/dx max(x^2,4) at x=1 = 0"
+       (= (derivative h-max 1.0) 0.0))
+
+;; ─── Case 4 ────────────────────────────────────────────────────────
 ;; A recursive integrator that terminates on a `(< y 0.0)` test —
 ;; exactly the canonical motivating case from
 ;; examples/differentiable_physics.esk.  The fix should let the

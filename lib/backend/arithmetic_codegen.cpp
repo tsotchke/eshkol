@@ -2082,18 +2082,57 @@ llvm::Value* ArithmeticCodegen::min(llvm::Value* left, llvm::Value* right) {
 
     return withADBinaryDispatch(left, right, 45 /*AD_NODE_MIN*/, [&]() -> llvm::Value* {
         llvm::Function* func = ctx_.builder().GetInsertBlock()->getParent();
+        llvm::BasicBlock* dual_check = llvm::BasicBlock::Create(ctx_.context(), "min_dual_check", func);
+        llvm::BasicBlock* dual_path = llvm::BasicBlock::Create(ctx_.context(), "min_dual", func);
         llvm::BasicBlock* bn_path = llvm::BasicBlock::Create(ctx_.context(), "min_bn", func);
         llvm::BasicBlock* dbl_path = llvm::BasicBlock::Create(ctx_.context(), "min_dbl", func);
         llvm::BasicBlock* pick_left = llvm::BasicBlock::Create(ctx_.context(), "min_left", func);
         llvm::BasicBlock* pick_right = llvm::BasicBlock::Create(ctx_.context(), "min_right", func);
         llvm::BasicBlock* min_merge = llvm::BasicBlock::Create(ctx_.context(), "min_merge", func);
 
+        ctx_.builder().CreateBr(dual_check);
+
+        // DUAL NUMBER PATH: forward-mode AD propagation.
+        // If either operand is a dual, the result must also be a dual so
+        // the AD harness can continue threading derivatives through the
+        // expression that uses (min …) — otherwise a scalar leaking out
+        // (when min selects the non-dual side) crashes downstream code
+        // that expects a dual struct.
+        ctx_.builder().SetInsertPoint(dual_check);
+        llvm::Value* lbase = tagged_.getBaseType(tagged_.getType(left));
+        llvm::Value* rbase = tagged_.getBaseType(tagged_.getType(right));
+        llvm::Value* l_is_dual = ctx_.builder().CreateICmpEQ(lbase,
+            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DUAL_NUMBER));
+        llvm::Value* r_is_dual = ctx_.builder().CreateICmpEQ(rbase,
+            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DUAL_NUMBER));
+        llvm::Value* any_dual = ctx_.builder().CreateOr(l_is_dual, r_is_dual);
+        ctx_.builder().CreateCondBr(any_dual, dual_path, bn_path);
+
+        // Dual path: convert both sides to dual structs (the non-dual one
+        // gets a zero tangent), compare primals, pack the chosen dual.
+        ctx_.builder().SetInsertPoint(dual_path);
+        llvm::Value* l_is_dbl_for_dual = ctx_.builder().CreateICmpEQ(lbase,
+            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DOUBLE));
+        llvm::Value* r_is_dbl_for_dual = ctx_.builder().CreateICmpEQ(rbase,
+            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DOUBLE));
+        llvm::Value* l_dual = convertToDual(left, l_is_dual, l_is_dbl_for_dual);
+        llvm::Value* r_dual = convertToDual(right, r_is_dual, r_is_dbl_for_dual);
+        llvm::Value* l_primal = ctx_.builder().CreateExtractValue(l_dual, {0}, "min_l_primal");
+        llvm::Value* r_primal = ctx_.builder().CreateExtractValue(r_dual, {0}, "min_r_primal");
+        llvm::Value* dual_is_le = ctx_.builder().CreateFCmpOLE(l_primal, r_primal, "min_dual_le");
+        llvm::Value* chosen_dual = ctx_.builder().CreateSelect(dual_is_le, l_dual, r_dual, "min_chosen_dual");
+        llvm::Value* dual_tagged = autodiff_.packDualToTagged(chosen_dual);
+        ctx_.builder().CreateBr(min_merge);
+        llvm::BasicBlock* dual_exit = ctx_.builder().GetInsertBlock();
+
         // Check if either operand is bignum for exact comparison
+        ctx_.builder().SetInsertPoint(bn_path);
         llvm::Value* any_bignum = emitIsBignumCheck(left, right);
-        ctx_.builder().CreateCondBr(any_bignum, bn_path, dbl_path);
+        llvm::BasicBlock* bn_cmp_bb = llvm::BasicBlock::Create(ctx_.context(), "min_bn_cmp", func);
+        ctx_.builder().CreateCondBr(any_bignum, bn_cmp_bb, dbl_path);
 
         // Bignum path: use exact comparison (op 0 = lt: left < right)
-        ctx_.builder().SetInsertPoint(bn_path);
+        ctx_.builder().SetInsertPoint(bn_cmp_bb);
         llvm::Value* bn_cmp = emitBignumCompareCall(left, right, 0); // lt
         llvm::Value* bn_is_lt = tagged_.unpackBool(bn_cmp);
         ctx_.builder().CreateCondBr(bn_is_lt, pick_left, pick_right);
@@ -2107,14 +2146,17 @@ llvm::Value* ArithmeticCodegen::min(llvm::Value* left, llvm::Value* right) {
 
         ctx_.builder().SetInsertPoint(pick_left);
         ctx_.builder().CreateBr(min_merge);
+        llvm::BasicBlock* pick_left_exit = ctx_.builder().GetInsertBlock();
 
         ctx_.builder().SetInsertPoint(pick_right);
         ctx_.builder().CreateBr(min_merge);
+        llvm::BasicBlock* pick_right_exit = ctx_.builder().GetInsertBlock();
 
         ctx_.builder().SetInsertPoint(min_merge);
-        llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2, "min_result");
-        phi->addIncoming(left, pick_left);
-        phi->addIncoming(right, pick_right);
+        llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 3, "min_result");
+        phi->addIncoming(dual_tagged, dual_exit);
+        phi->addIncoming(left, pick_left_exit);
+        phi->addIncoming(right, pick_right_exit);
         return phi;
     });
 }
@@ -2127,18 +2169,50 @@ llvm::Value* ArithmeticCodegen::max(llvm::Value* left, llvm::Value* right) {
 
     return withADBinaryDispatch(left, right, 44 /*AD_NODE_MAX*/, [&]() -> llvm::Value* {
         llvm::Function* func = ctx_.builder().GetInsertBlock()->getParent();
+        llvm::BasicBlock* dual_check = llvm::BasicBlock::Create(ctx_.context(), "max_dual_check", func);
+        llvm::BasicBlock* dual_path = llvm::BasicBlock::Create(ctx_.context(), "max_dual", func);
         llvm::BasicBlock* bn_path = llvm::BasicBlock::Create(ctx_.context(), "max_bn", func);
         llvm::BasicBlock* dbl_path = llvm::BasicBlock::Create(ctx_.context(), "max_dbl", func);
         llvm::BasicBlock* pick_left = llvm::BasicBlock::Create(ctx_.context(), "max_left", func);
         llvm::BasicBlock* pick_right = llvm::BasicBlock::Create(ctx_.context(), "max_right", func);
         llvm::BasicBlock* max_merge = llvm::BasicBlock::Create(ctx_.context(), "max_merge", func);
 
+        ctx_.builder().CreateBr(dual_check);
+
+        // DUAL NUMBER PATH (mirrors min above).  See min for rationale.
+        ctx_.builder().SetInsertPoint(dual_check);
+        llvm::Value* lbase = tagged_.getBaseType(tagged_.getType(left));
+        llvm::Value* rbase = tagged_.getBaseType(tagged_.getType(right));
+        llvm::Value* l_is_dual = ctx_.builder().CreateICmpEQ(lbase,
+            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DUAL_NUMBER));
+        llvm::Value* r_is_dual = ctx_.builder().CreateICmpEQ(rbase,
+            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DUAL_NUMBER));
+        llvm::Value* any_dual = ctx_.builder().CreateOr(l_is_dual, r_is_dual);
+        ctx_.builder().CreateCondBr(any_dual, dual_path, bn_path);
+
+        ctx_.builder().SetInsertPoint(dual_path);
+        llvm::Value* l_is_dbl_for_dual = ctx_.builder().CreateICmpEQ(lbase,
+            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DOUBLE));
+        llvm::Value* r_is_dbl_for_dual = ctx_.builder().CreateICmpEQ(rbase,
+            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DOUBLE));
+        llvm::Value* l_dual = convertToDual(left, l_is_dual, l_is_dbl_for_dual);
+        llvm::Value* r_dual = convertToDual(right, r_is_dual, r_is_dbl_for_dual);
+        llvm::Value* l_primal = ctx_.builder().CreateExtractValue(l_dual, {0}, "max_l_primal");
+        llvm::Value* r_primal = ctx_.builder().CreateExtractValue(r_dual, {0}, "max_r_primal");
+        llvm::Value* dual_is_ge = ctx_.builder().CreateFCmpOGE(l_primal, r_primal, "max_dual_ge");
+        llvm::Value* chosen_dual = ctx_.builder().CreateSelect(dual_is_ge, l_dual, r_dual, "max_chosen_dual");
+        llvm::Value* dual_tagged = autodiff_.packDualToTagged(chosen_dual);
+        ctx_.builder().CreateBr(max_merge);
+        llvm::BasicBlock* dual_exit = ctx_.builder().GetInsertBlock();
+
         // Check if either operand is bignum for exact comparison
+        ctx_.builder().SetInsertPoint(bn_path);
         llvm::Value* any_bignum = emitIsBignumCheck(left, right);
-        ctx_.builder().CreateCondBr(any_bignum, bn_path, dbl_path);
+        llvm::BasicBlock* bn_cmp_bb = llvm::BasicBlock::Create(ctx_.context(), "max_bn_cmp", func);
+        ctx_.builder().CreateCondBr(any_bignum, bn_cmp_bb, dbl_path);
 
         // Bignum path: use exact comparison (op 1 = gt: left > right)
-        ctx_.builder().SetInsertPoint(bn_path);
+        ctx_.builder().SetInsertPoint(bn_cmp_bb);
         llvm::Value* bn_cmp = emitBignumCompareCall(left, right, 1); // gt
         llvm::Value* bn_is_gt = tagged_.unpackBool(bn_cmp);
         ctx_.builder().CreateCondBr(bn_is_gt, pick_left, pick_right);
@@ -2152,14 +2226,17 @@ llvm::Value* ArithmeticCodegen::max(llvm::Value* left, llvm::Value* right) {
 
         ctx_.builder().SetInsertPoint(pick_left);
         ctx_.builder().CreateBr(max_merge);
+        llvm::BasicBlock* pick_left_exit = ctx_.builder().GetInsertBlock();
 
         ctx_.builder().SetInsertPoint(pick_right);
         ctx_.builder().CreateBr(max_merge);
+        llvm::BasicBlock* pick_right_exit = ctx_.builder().GetInsertBlock();
 
         ctx_.builder().SetInsertPoint(max_merge);
-        llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2, "max_result");
-        phi->addIncoming(left, pick_left);
-        phi->addIncoming(right, pick_right);
+        llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 3, "max_result");
+        phi->addIncoming(dual_tagged, dual_exit);
+        phi->addIncoming(left, pick_left_exit);
+        phi->addIncoming(right, pick_right_exit);
         return phi;
     });
 }
