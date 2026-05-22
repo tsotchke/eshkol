@@ -452,7 +452,7 @@
 
     (body-html section "<strong style='color:#a78bfa'>Autonomous Agents.</strong> Build systems that reason about their own uncertainty using the consciousness engine: knowledge bases with Prolog-style unification, factor graphs with belief propagation, and global workspace theory for competing cognitive modules.")
 
-    (body-html section "<strong style='color:#a78bfa'>Full-Stack Applications.</strong> Compile to native executables, or target WebAssembly for the browser. This entire website is a single Eshkol source file compiled to WASM. 59 DOM bindings, canvas API, hash-based routing, and a live bytecode REPL -- all from one language.")
+    (body-html section "<strong style='color:#a78bfa'>Full-Stack Applications.</strong> Compile to native executables, or target WebAssembly for the browser. This entire website is a single Eshkol source file compiled to WASM. 97 browser-host bindings (DOM, events, canvas, timers, fetch, localStorage, window), hash-based routing, and a live bytecode REPL -- all from one language.")
 
     section))
 
