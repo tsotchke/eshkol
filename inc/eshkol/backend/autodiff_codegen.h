@@ -83,6 +83,13 @@ public:
      */
     llvm::Value* unpackDualFromTagged(llvm::Value* tagged);
 
+    // Like unpackDualFromTagged, but tolerates a non-dual tagged input
+    // (e.g., a scalar returned by a constant lambda body inside
+    // (derivative f x)). Returns {primal, 0.0} for non-duals.
+    // Introduces basic blocks — callers must not assume the builder
+    // stays in the current block.
+    llvm::Value* safeUnpackDualFromTagged(llvm::Value* tagged);
+
     /**
      * Add two dual numbers: (a + b, a' + b')
      * @param left Left dual number

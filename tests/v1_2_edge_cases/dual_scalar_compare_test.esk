@@ -130,6 +130,41 @@
 (check "d/dx (remainder x 3) = 1 in another segment"
        (= (derivative g-rem 4.7) 1.0))
 
+;; ─── Case 4b ───────────────────────────────────────────────────────
+;; Constant lambdas and predicate-driven branches that return literal
+;; scalars used to SIGSEGV inside derivative() because the post-call
+;; extractor unconditionally dereffed the result's data field as a
+;; heap pointer to a dual_number_t.  A non-dual return crashed.
+;;
+;; Fix: derivative()'s result unpacker now uses a "safe" variant that
+;; dispatches on the result's type tag.  If it's DUAL_NUMBER, load the
+;; struct; otherwise synthesise {primal, 0.0} so the extracted
+;; derivative comes out as 0 — matching every other AD system.
+
+(define (k-const x) 5.0)
+(check "(derivative const-fn at x=2) — no crash"
+       (number? (derivative k-const 2.0)))
+(check "(derivative const-fn at x=2) = 0"
+       (= (derivative k-const 2.0) 0.0))
+
+(define (k-pos x) (if (positive? x) 1.0 -1.0))
+(check "(derivative (if positive? 1 -1) at x=2) — no crash"
+       (number? (derivative k-pos 2.0)))
+(check "(derivative (if positive? 1 -1) at x=2) = 0 (constant branches)"
+       (= (derivative k-pos 2.0) 0.0))
+(check "(derivative (if positive? 1 -1) at x=-2) = 0 (constant branches)"
+       (= (derivative k-pos -2.0) 0.0))
+
+(define (k-zero x) (if (zero? x) 0.0 (* x x)))
+(check "(derivative (if zero? 0 x^2) at x=3) = 6 (live branch is x^2)"
+       (= (derivative k-zero 3.0) 6.0))
+
+(define (k-even x) (if (even? x) (* 10.0 x) (* x x)))
+(check "(derivative (if even? 10x x^2) at x=4) = 10 (even branch live)"
+       (= (derivative k-even 4.0) 10.0))
+(check "(derivative (if even? 10x x^2) at x=3) = 6 (odd branch, x^2 live)"
+       (= (derivative k-even 3.0) 6.0))
+
 ;; gcd / lcm — integer-theoretic; no meaningful continuous derivative.
 ;; Fix returns 0 and ensures no crash + normal integer path still works.
 (define (g-gcd x) (gcd x 6))
