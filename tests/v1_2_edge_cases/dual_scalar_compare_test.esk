@@ -1,0 +1,88 @@
+;; dual_scalar_compare_test.esk — Dual-number ↔ scalar comparison
+;;
+;; Before fix (commit 46fdee6): forward-mode AD traces hit
+;;   "Type error in <: expected number"
+;; the moment a `(< y 0.0)` or similar conditional saw a dual number
+;; on the left.  Reason: ArithmeticCodegen::compare's numeric-operand
+;; predicate set covered DOUBLE / INT64 / HEAP_PTR / CALLABLE / CHAR
+;; but not ESHKOL_VALUE_DUAL_NUMBER (type tag 6).  Dual operands fell
+;; to the type-error path.
+;;
+;; Fix: added DUAL_NUMBER to compare()'s predicate set + a 5th
+;; dispatch arm in extractAsDouble that loads the heap-allocated
+;; eshkol_dual_number_t and reads field 0 (value).  Comparing a
+;; dual to a scalar now uses the dual's primal, matching the
+;; convention in Julia ForwardDiff / JAX / autograd / Stan.
+;;
+;; This file pins the fix so future refactors of arithmetic_codegen
+;; cannot silently regress it.
+
+(define passed 0)
+(define failed 0)
+(define (check name cond)
+  (if cond
+      (begin (display "PASS: ") (display name) (newline)
+             (set! passed (+ passed 1)))
+      (begin (display "FAIL: ") (display name) (newline)
+             (set! failed (+ failed 1)))))
+
+;; ─── Case 1 ────────────────────────────────────────────────────────
+;; A function that branches on the sign of its input.
+;; (derivative f 2.0) drives `x` through the f body as a dual; the
+;; `(if (< x 0.0) ...)` then sees a dual on the left of `<`.
+;; Before the fix, this raised "Type error in <: expected number".
+;; After the fix, the comparison resolves on the primal (2.0), the
+;; positive branch is taken, and the dual derivative flows through.
+(define (f-branch x)
+  (if (< x 0.0)
+      (* x x)        ;; negative branch (deriv 2x)
+      (* 3.0 x x)))  ;; positive branch (deriv 6x)
+
+(check "derivative through (< dual scalar)"
+       (= (derivative f-branch 2.0) 12.0))   ;; 6*2 = 12 on positive branch
+
+(check "derivative on negative side of branch"
+       (= (derivative f-branch -2.0) -4.0))  ;; 2*(-2) = -4 on negative branch
+
+;; ─── Case 2 ────────────────────────────────────────────────────────
+;; Conditionals using >, <=, >=, =.  All five comparison operators
+;; route through the same compare() lowering, so verifying one of
+;; each is enough to pin the predicate set.
+(define (g-gt x)   (if (>  x  1.0)  (* x x)        x))
+(define (g-le x)   (if (<= x  1.0)  x              (* x x)))
+(define (g-ge x)   (if (>= x  0.0)  (* 2.0 x)      (* -2.0 x)))
+(define (g-eq x)   (if (=  x  0.0)  1.0            (* x x)))
+
+(check "(> dual scalar)" (= (derivative g-gt  3.0)  6.0))    ;; 2x at x=3
+(check "(<= dual scalar)" (= (derivative g-le 0.5)  1.0))    ;; deriv of x at x=0.5
+(check "(>= dual scalar)" (= (derivative g-ge 1.0)  2.0))    ;; 2 on positive branch
+(check "(= dual scalar)" (= (derivative g-eq  1.0)  2.0))    ;; 2x at x=1
+
+;; ─── Case 3 ────────────────────────────────────────────────────────
+;; A recursive integrator that terminates on a `(< y 0.0)` test —
+;; exactly the canonical motivating case from
+;; examples/differentiable_physics.esk.  The fix should let the
+;; loop run unchanged inside `derivative` / `gradient`.
+(define (integrate theta)
+  (let loop ((y 1.0) (step 0))
+    (cond
+      ((= step 100)             y)
+      ((and (< y 0.0) (> step 1)) y)
+      (else
+        (loop (- y (* 0.01 theta)) (+ step 1))))))
+
+;; Forward-mode derivative through the integrator (theta is the
+;; differentiated input; the dual flows through the recursion).
+(check "derivative through recursive (< dual scalar)"
+       (let ((g (derivative integrate 1.0)))
+         ;; The exact gradient is bounded; we just check it computes
+         ;; without throwing.  Any finite real result means the
+         ;; comparison no longer signals a type error.
+         (and (number? g) (not (eqv? g +inf.0)) (not (eqv? g -inf.0)))))
+
+;; ─── Summary ───────────────────────────────────────────────────────
+(display "Results: ") (display passed) (display " passed, ")
+(display failed) (display " failed") (newline)
+(if (= failed 0)
+    (begin (display "PASS: dual_scalar_compare_test") (newline))
+    (begin (display "FAIL: dual_scalar_compare_test") (newline)))
