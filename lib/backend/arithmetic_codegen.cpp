@@ -2255,6 +2255,39 @@ llvm::Value* ArithmeticCodegen::remainder(llvm::Value* dividend, llvm::Value* di
     llvm::Value* dividend_base = tagged_.getBaseType(dividend_type);
     llvm::Value* divisor_base = tagged_.getBaseType(divisor_type);
 
+    // DUAL NUMBER FAST PATH (forward-mode AD): truncated remainder is
+    // piecewise linear with slope 1 in the dividend between
+    // discontinuities — same shape as modulo/fmod. Propagate the
+    // dividend's tangent.
+    llvm::Value* dividend_is_dual = ctx_.builder().CreateICmpEQ(dividend_base,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DUAL_NUMBER));
+    llvm::Value* divisor_is_dual = ctx_.builder().CreateICmpEQ(divisor_base,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DUAL_NUMBER));
+    llvm::Value* any_dual_rem = ctx_.builder().CreateOr(dividend_is_dual, divisor_is_dual);
+
+    llvm::Function* func = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::BasicBlock* dual_rem_bb = llvm::BasicBlock::Create(ctx_.context(), "rem_dual", func);
+    llvm::BasicBlock* normal_rem_bb = llvm::BasicBlock::Create(ctx_.context(), "rem_normal", func);
+    llvm::BasicBlock* outer_rem_merge = llvm::BasicBlock::Create(ctx_.context(), "rem_outer_merge", func);
+    ctx_.builder().CreateCondBr(any_dual_rem, dual_rem_bb, normal_rem_bb);
+
+    ctx_.builder().SetInsertPoint(dual_rem_bb);
+    llvm::Value* rem_l_primal = extractAsDouble(dividend);
+    llvm::Value* rem_r_primal = extractAsDouble(divisor);
+    llvm::Value* rem_primal = ctx_.builder().CreateFRem(rem_l_primal, rem_r_primal, "rem_dual_primal");
+    llvm::Value* rem_l_dbl_for_dual = ctx_.builder().CreateICmpEQ(dividend_base,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DOUBLE));
+    llvm::Value* rem_l_dual = convertToDual(dividend, dividend_is_dual, rem_l_dbl_for_dual);
+    llvm::Value* rem_l_tangent = ctx_.builder().CreateExtractValue(rem_l_dual, {1}, "rem_l_tangent");
+    llvm::Value* rem_result_dual = llvm::UndefValue::get(ctx_.dualNumberType());
+    rem_result_dual = ctx_.builder().CreateInsertValue(rem_result_dual, rem_primal, {0});
+    rem_result_dual = ctx_.builder().CreateInsertValue(rem_result_dual, rem_l_tangent, {1});
+    llvm::Value* rem_dual_tagged = autodiff_.packDualToTagged(rem_result_dual);
+    llvm::BasicBlock* dual_rem_exit = ctx_.builder().GetInsertBlock();
+    ctx_.builder().CreateBr(outer_rem_merge);
+
+    ctx_.builder().SetInsertPoint(normal_rem_bb);
+
     // Check operand types
     llvm::Value* dividend_is_int = ctx_.builder().CreateICmpEQ(dividend_base,
         llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_INT64));
@@ -2262,7 +2295,6 @@ llvm::Value* ArithmeticCodegen::remainder(llvm::Value* dividend, llvm::Value* di
         llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_INT64));
     llvm::Value* both_int = ctx_.builder().CreateAnd(dividend_is_int, divisor_is_int);
 
-    llvm::Function* func = ctx_.builder().GetInsertBlock()->getParent();
     llvm::BasicBlock* bn_path = llvm::BasicBlock::Create(ctx_.context(), "rem_bn", func);
     llvm::BasicBlock* scalar_path = llvm::BasicBlock::Create(ctx_.context(), "rem_scalar", func);
     llvm::BasicBlock* int_path = llvm::BasicBlock::Create(ctx_.context(), "rem_int", func);
@@ -2327,14 +2359,21 @@ llvm::Value* ArithmeticCodegen::remainder(llvm::Value* dividend, llvm::Value* di
     ctx_.builder().CreateBr(merge);
     llvm::BasicBlock* dbl_exit = ctx_.builder().GetInsertBlock();
 
-    // Merge
+    // Merge (bn / int / double).
     ctx_.builder().SetInsertPoint(merge);
     llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 3, "remainder_result");
     phi->addIncoming(bn_rem_tagged, bn_exit);
     phi->addIncoming(int_tagged, int_exit);
     phi->addIncoming(dbl_tagged, dbl_exit);
+    llvm::BasicBlock* normal_rem_exit = ctx_.builder().GetInsertBlock();
+    ctx_.builder().CreateBr(outer_rem_merge);
 
-    return phi;
+    // Outer merge (dual vs normal).
+    ctx_.builder().SetInsertPoint(outer_rem_merge);
+    llvm::PHINode* outer_phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2, "remainder_outer");
+    outer_phi->addIncoming(rem_dual_tagged, dual_rem_exit);
+    outer_phi->addIncoming(phi, normal_rem_exit);
+    return outer_phi;
 }
 
 // === Quotient Function ===
@@ -2351,6 +2390,42 @@ llvm::Value* ArithmeticCodegen::quotient(llvm::Value* dividend, llvm::Value* div
     llvm::Value* dividend_base = tagged_.getBaseType(dividend_type);
     llvm::Value* divisor_base = tagged_.getBaseType(divisor_type);
 
+    // DUAL NUMBER FAST PATH (forward-mode AD): quotient is integer
+    // truncation — a piecewise-constant function of its inputs, so its
+    // derivative is 0 almost everywhere. Without this branch, downstream
+    // AD code crashes dereffing the int64 result as a dual struct.
+    llvm::Value* dividend_is_dual = ctx_.builder().CreateICmpEQ(dividend_base,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DUAL_NUMBER));
+    llvm::Value* divisor_is_dual = ctx_.builder().CreateICmpEQ(divisor_base,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DUAL_NUMBER));
+    llvm::Value* any_dual_quot = ctx_.builder().CreateOr(dividend_is_dual, divisor_is_dual);
+
+    llvm::Function* func = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::BasicBlock* dual_quot_bb = llvm::BasicBlock::Create(ctx_.context(), "quot_dual", func);
+    llvm::BasicBlock* normal_quot_bb = llvm::BasicBlock::Create(ctx_.context(), "quot_normal", func);
+    llvm::BasicBlock* outer_quot_merge = llvm::BasicBlock::Create(ctx_.context(), "quot_outer_merge", func);
+    ctx_.builder().CreateCondBr(any_dual_quot, dual_quot_bb, normal_quot_bb);
+
+    ctx_.builder().SetInsertPoint(dual_quot_bb);
+    llvm::Value* l_primal_q = extractAsDouble(dividend);
+    llvm::Value* r_primal_q = extractAsDouble(divisor);
+    // Truncated division: trunc(l/r)
+    llvm::Value* q_div = ctx_.builder().CreateFDiv(l_primal_q, r_primal_q);
+    llvm::FunctionType* trunc_fty_q = llvm::FunctionType::get(
+        ctx_.doubleType(), {ctx_.doubleType()}, false);
+    llvm::FunctionCallee trunc_q = ctx_.module().getOrInsertFunction("trunc", trunc_fty_q);
+    llvm::Value* q_primal = ctx_.builder().CreateCall(trunc_q, {q_div}, "quot_dual_primal");
+    // Tangent = 0 (truncation kills the derivative).
+    llvm::Value* q_zero_tangent = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
+    llvm::Value* q_dual = llvm::UndefValue::get(ctx_.dualNumberType());
+    q_dual = ctx_.builder().CreateInsertValue(q_dual, q_primal, {0});
+    q_dual = ctx_.builder().CreateInsertValue(q_dual, q_zero_tangent, {1});
+    llvm::Value* q_dual_tagged = autodiff_.packDualToTagged(q_dual);
+    llvm::BasicBlock* dual_quot_exit = ctx_.builder().GetInsertBlock();
+    ctx_.builder().CreateBr(outer_quot_merge);
+
+    ctx_.builder().SetInsertPoint(normal_quot_bb);
+
     // Check operand types
     llvm::Value* dividend_is_int = ctx_.builder().CreateICmpEQ(dividend_base,
         llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_INT64));
@@ -2358,7 +2433,6 @@ llvm::Value* ArithmeticCodegen::quotient(llvm::Value* dividend, llvm::Value* div
         llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_INT64));
     llvm::Value* both_int = ctx_.builder().CreateAnd(dividend_is_int, divisor_is_int);
 
-    llvm::Function* func = ctx_.builder().GetInsertBlock()->getParent();
     llvm::BasicBlock* bn_path = llvm::BasicBlock::Create(ctx_.context(), "quot_bn", func);
     llvm::BasicBlock* scalar_path = llvm::BasicBlock::Create(ctx_.context(), "quot_scalar", func);
     llvm::BasicBlock* int_path = llvm::BasicBlock::Create(ctx_.context(), "quot_int", func);
@@ -2425,14 +2499,21 @@ llvm::Value* ArithmeticCodegen::quotient(llvm::Value* dividend, llvm::Value* div
     ctx_.builder().CreateBr(merge);
     llvm::BasicBlock* dbl_exit = ctx_.builder().GetInsertBlock();
 
-    // Merge
+    // Merge (bn / int / double).
     ctx_.builder().SetInsertPoint(merge);
     llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 3, "quotient_result");
     phi->addIncoming(bn_quot_tagged, bn_exit);
     phi->addIncoming(int_tagged, int_exit);
     phi->addIncoming(dbl_tagged, dbl_exit);
+    llvm::BasicBlock* normal_quot_exit = ctx_.builder().GetInsertBlock();
+    ctx_.builder().CreateBr(outer_quot_merge);
 
-    return phi;
+    // Outer merge (dual vs normal).
+    ctx_.builder().SetInsertPoint(outer_quot_merge);
+    llvm::PHINode* outer_phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2, "quotient_outer");
+    outer_phi->addIncoming(q_dual_tagged, dual_quot_exit);
+    outer_phi->addIncoming(phi, normal_quot_exit);
+    return outer_phi;
 }
 
 // === Unary Math Functions ===

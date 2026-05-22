@@ -114,6 +114,22 @@
 (check "d/dx (modulo x 3) = 1 in another segment"
        (= (derivative g-mod 2.5) 1.0))
 
+;; quotient: integer truncation, piecewise constant ⇒ derivative = 0.
+(define (g-quot x) (quotient x 3))
+(check "(quotient dual scalar) — no crash"
+       (number? (derivative g-quot 10.5)))
+(check "d/dx (quotient x 3) = 0 (truncation kills the derivative)"
+       (= (derivative g-quot 10.5) 0.0))
+
+;; remainder (truncated): piecewise linear with slope 1 in dividend.
+(define (g-rem x) (remainder x 3))
+(check "(remainder dual scalar) — no crash"
+       (number? (derivative g-rem 10.5)))
+(check "d/dx (remainder x 3) = 1 inside a segment"
+       (= (derivative g-rem 10.5) 1.0))
+(check "d/dx (remainder x 3) = 1 in another segment"
+       (= (derivative g-rem 4.7) 1.0))
+
 ;; ─── Case 5 ────────────────────────────────────────────────────────
 ;; A recursive integrator that terminates on a `(< y 0.0)` test —
 ;; exactly the canonical motivating case from
