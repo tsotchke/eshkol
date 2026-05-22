@@ -292,6 +292,22 @@ llvm::Value* TaggedValueCodegen::unpackInt64(llvm::Value* tagged_val) {
 }
 
 llvm::Value* TaggedValueCodegen::unpackDouble(llvm::Value* tagged_val) {
+    if (!tagged_val) {
+        return llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
+    }
+
+    llvm::Type* val_type = tagged_val->getType();
+    if (val_type->isDoubleTy()) {
+        return tagged_val;
+    }
+    if (val_type->isIntegerTy()) {
+        return ctx_.builder().CreateSIToFP(tagged_val, ctx_.doubleType());
+    }
+    if (val_type != ctx_.taggedValueType()) {
+        eshkol_warn("unpackDouble: unsupported raw LLVM type, returning 0.0");
+        return llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
+    }
+
     llvm::Value* data_i64 = ctx_.builder().CreateExtractValue(tagged_val, {4});
     return ctx_.builder().CreateBitCast(data_i64, ctx_.doubleType());
 }

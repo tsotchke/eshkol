@@ -2236,33 +2236,36 @@ void ParallelCodegen::generateWorkerRegistration() {
         llvm::ConstantPointerNull::get(ctx_.ptrType())
     });
 
-    // Get or create llvm.global_ctors array
+    // Get or create llvm.global_ctors array. Some backend modes may leave an
+    // empty or incompatible declaration behind; only index compatible array
+    // initializers, because Constant::getAggregateElement asserts otherwise.
     llvm::GlobalVariable* ctors = ctx_.module().getNamedGlobal("llvm.global_ctors");
+    std::vector<llvm::Constant*> new_entries;
     if (ctors) {
-        // Append to existing array
-        llvm::Constant* old_init = ctors->getInitializer();
-        llvm::ArrayType* old_type = llvm::cast<llvm::ArrayType>(old_init->getType());
-        unsigned old_size = old_type->getNumElements();
-
-        std::vector<llvm::Constant*> new_entries;
-        for (unsigned i = 0; i < old_size; ++i) {
-            new_entries.push_back(old_init->getAggregateElement(i));
+        if (ctors->hasInitializer()) {
+            llvm::Constant* old_init = ctors->getInitializer();
+            if (old_init && old_init->getType()->isArrayTy()) {
+                auto* old_type = llvm::cast<llvm::ArrayType>(old_init->getType());
+                if (old_type->getElementType() == ctor_type) {
+                    unsigned old_size = old_type->getNumElements();
+                    for (unsigned i = 0; i < old_size; ++i) {
+                        if (llvm::Constant* entry = old_init->getAggregateElement(i)) {
+                            new_entries.push_back(entry);
+                        }
+                    }
+                }
+            }
         }
-        new_entries.push_back(ctor_entry);
-
-        llvm::ArrayType* new_type = llvm::ArrayType::get(ctor_type, new_entries.size());
-        llvm::Constant* new_init = llvm::ConstantArray::get(new_type, new_entries);
 
         ctors->eraseFromParent();
-        ctors = new llvm::GlobalVariable(ctx_.module(), new_type, false,
-            llvm::GlobalValue::AppendingLinkage, new_init, "llvm.global_ctors");
-    } else {
-        // Create new array
-        llvm::ArrayType* ctors_type = llvm::ArrayType::get(ctor_type, 1);
-        llvm::Constant* ctors_init = llvm::ConstantArray::get(ctors_type, {ctor_entry});
-        ctors = new llvm::GlobalVariable(ctx_.module(), ctors_type, false,
-            llvm::GlobalValue::AppendingLinkage, ctors_init, "llvm.global_ctors");
     }
+
+    new_entries.push_back(ctor_entry);
+
+    llvm::ArrayType* ctors_type = llvm::ArrayType::get(ctor_type, new_entries.size());
+    llvm::Constant* ctors_init = llvm::ConstantArray::get(ctors_type, new_entries);
+    ctors = new llvm::GlobalVariable(ctx_.module(), ctors_type, false,
+        llvm::GlobalValue::AppendingLinkage, ctors_init, "llvm.global_ctors");
 
     eshkol_debug("Generated worker registration in llvm.global_ctors");
 

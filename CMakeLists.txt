@@ -201,6 +201,19 @@ endif()
 # LLVM backend is always enabled
 set(ESHKOL_BUILD_BACKEND ON)
 
+# Generated build config for toolchain/runtime helpers.  Keep this available
+# for every build mode; hosted runtime code includes it before the lite/XLA
+# target graph is assembled.
+set(ESHKOL_HOST_RUNTIME_LINK_ARGS "")
+set(ESHKOL_HOST_AGENT_FFI_LINK_ARGS "")
+set(ESHKOL_GENERATED_INCLUDE_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
+file(MAKE_DIRECTORY "${ESHKOL_GENERATED_INCLUDE_DIR}/eshkol")
+configure_file(
+  "${CMAKE_CURRENT_SOURCE_DIR}/cmake/build_config.h.in"
+  "${ESHKOL_GENERATED_INCLUDE_DIR}/eshkol/build_config.h"
+  @ONLY
+)
+
 # ===== LLVM Configuration =====
 # Two modes:
 # 1. STABLEHLO_ROOT set: Use StableHLO's bundled LLVM (XLA build)
@@ -286,17 +299,6 @@ else()
     set(USING_STABLEHLO_LLVM FALSE)
 
     eshkol_find_lite_llvm()
-
-    # Generated build config for toolchain/runtime helpers (Windows port)
-    set(ESHKOL_HOST_RUNTIME_LINK_ARGS "")
-    set(ESHKOL_HOST_AGENT_FFI_LINK_ARGS "")
-    set(ESHKOL_GENERATED_INCLUDE_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
-    file(MAKE_DIRECTORY "${ESHKOL_GENERATED_INCLUDE_DIR}/eshkol")
-    configure_file(
-      "${CMAKE_CURRENT_SOURCE_DIR}/cmake/build_config.h.in"
-      "${ESHKOL_GENERATED_INCLUDE_DIR}/eshkol/build_config.h"
-      @ONLY
-    )
 
     if(WIN32)
         set(ESHKOL_LLVM_USE_CMAKE_PACKAGE TRUE)
@@ -464,7 +466,7 @@ endif()
 set(ESHKOL_LLVM_INCLUDE_OPTIONS "")
 if(LLVM_INCLUDE_DIRS AND NOT ESHKOL_USING_MSVC)
     foreach(llvm_include_dir IN LISTS LLVM_INCLUDE_DIRS)
-        list(APPEND ESHKOL_LLVM_INCLUDE_OPTIONS "-idirafter" "${llvm_include_dir}")
+        list(APPEND ESHKOL_LLVM_INCLUDE_OPTIONS "SHELL:-idirafter ${llvm_include_dir}")
     endforeach()
 endif()
 
