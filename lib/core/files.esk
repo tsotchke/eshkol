@@ -9,10 +9,14 @@
 ;; use "." so temporary files can be created in the same directory as the
 ;; destination and renamed atomically.
 (define (path-directory path)
-  (let ((idx (string-last-index path "/")))
+  (let* ((slash-idx (string-last-index path "/"))
+         (backslash-idx (string-last-index path "\\"))
+         (idx (if (> slash-idx backslash-idx) slash-idx backslash-idx)))
     (cond
       ((< idx 0) ".")
       ((= idx 0) "/")
+      ((and (= idx 2) (char=? (string-ref path 1) #\:))
+       (substring path 0 3))
       (else (substring path 0 idx)))))
 
 ;; Write to a temporary file in the destination directory, then rename it over

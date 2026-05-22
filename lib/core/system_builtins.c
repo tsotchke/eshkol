@@ -13,6 +13,7 @@
 #include <stdint.h>
 #include <ctype.h>
 #include <time.h>   /* struct tm, gmtime_s/gmtime_r — used on every platform */
+#include <errno.h>
 
 #ifndef _WIN32
 #include <unistd.h>
@@ -23,7 +24,6 @@
 #include <dirent.h>
 #include <libgen.h>
 #include <limits.h>
-#include <errno.h>
 #include <signal.h>
 #include <poll.h>
 #include <pwd.h>
@@ -834,6 +834,18 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_file_copy_v(eshkol_sysbuiltin_va
 #endif
 }
 
+static eshkol_sysbuiltin_value_t eshkol_builtin_file_rename_v(eshkol_sysbuiltin_value_t old_val, eshkol_sysbuiltin_value_t new_val) {
+    const char* old_path = sys_extract_string(old_val);
+    const char* new_path = sys_extract_string(new_val);
+    if (!old_path || !new_path) return sys_make_bool(0);
+#ifndef _WIN32
+    return sys_make_bool(rename(old_path, new_path) == 0);
+#else
+    return sys_make_bool(MoveFileExA(old_path, new_path,
+                                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED) != 0);
+#endif
+}
+
 static int mkdir_recursive_impl(const char* path) {
 #ifndef _WIN32
     struct stat st;
@@ -914,7 +926,14 @@ static const char* sys_temp_dir_or_default(const char* dir) {
     if (!tmp || !*tmp) tmp = getenv("TEMP");
     return (tmp && *tmp) ? tmp : "/tmp";
 #else
-    return ".";
+    static char buf[MAX_PATH];
+    DWORD n = GetTempPathA(MAX_PATH, buf);
+    if (n > 0 && n < MAX_PATH) {
+        while (n > 1 && (buf[n - 1] == '\\' || buf[n - 1] == '/')) buf[--n] = '\0';
+        return buf;
+    }
+    const char* tmp = getenv("TEMP");
+    return (tmp && *tmp) ? tmp : ".";
 #endif
 }
 
@@ -926,8 +945,8 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_make_temp_file_v(
     const char* suffix = sys_extract_string(suffix_val);
     const char* dir = sys_temp_dir_or_default(sys_extract_string(dir_val));
     if (!prefix || !suffix || !dir || !*dir) return sys_make_bool(0);
-#if !defined(_WIN32)
     const char* sep = (dir[strlen(dir) - 1] == '/') ? "" : "/";
+#if !defined(_WIN32)
     struct timeval tv;
     gettimeofday(&tv, NULL);
     for (int i = 0; i < 128; i++) {
@@ -944,6 +963,27 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_make_temp_file_v(
         }
         if (errno != EEXIST) break;
     }
+#else
+    sep = (dir[strlen(dir) - 1] == '\\' || dir[strlen(dir) - 1] == '/') ? "" : "\\";
+    uint64_t tick = (uint64_t)GetTickCount64();
+    uint32_t pid = (uint32_t)_getpid();
+    for (int i = 0; i < 128; i++) {
+        char path[MAX_PATH];
+        int n = snprintf(path, sizeof(path), "%s%s%s%08lx%08lx%s",
+                         dir, sep, prefix,
+                         (unsigned long)(pid & 0xffffffffu),
+                         (unsigned long)((tick + (uint64_t)i) & 0xffffffffu),
+                         suffix);
+        if (n <= 0 || n >= (int)sizeof(path)) break;
+        HANDLE h = CreateFileA(path, GENERIC_READ | GENERIC_WRITE, 0, NULL,
+                               CREATE_NEW, FILE_ATTRIBUTE_TEMPORARY, NULL);
+        if (h != INVALID_HANDLE_VALUE) {
+            CloseHandle(h);
+            return sys_make_string(path);
+        }
+        DWORD err = GetLastError();
+        if (err != ERROR_FILE_EXISTS && err != ERROR_ALREADY_EXISTS) break;
+    }
 #endif
     return sys_make_bool(0);
 }
@@ -954,8 +994,8 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_make_temp_dir_v(
     const char* prefix = sys_extract_string(prefix_val);
     const char* dir = sys_temp_dir_or_default(sys_extract_string(dir_val));
     if (!prefix || !dir || !*dir) return sys_make_bool(0);
-#if !defined(_WIN32)
     const char* sep = (dir[strlen(dir) - 1] == '/') ? "" : "/";
+#if !defined(_WIN32)
     struct timeval tv;
     gettimeofday(&tv, NULL);
     for (int i = 0; i < 128; i++) {
@@ -966,6 +1006,20 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_make_temp_dir_v(
                          dir, sep, prefix, (unsigned long long)nonce);
         if (n <= 0 || n >= (int)sizeof(path)) break;
         if (mkdir(path, 0700) == 0) return sys_make_string(path);
+        if (errno != EEXIST) break;
+    }
+#else
+    sep = (dir[strlen(dir) - 1] == '\\' || dir[strlen(dir) - 1] == '/') ? "" : "\\";
+    uint64_t tick = (uint64_t)GetTickCount64();
+    uint32_t pid = (uint32_t)_getpid();
+    for (int i = 0; i < 128; i++) {
+        char path[MAX_PATH];
+        int n = snprintf(path, sizeof(path), "%s%s%s%08lx%08lx",
+                         dir, sep, prefix,
+                         (unsigned long)(pid & 0xffffffffu),
+                         (unsigned long)((tick + (uint64_t)i) & 0xffffffffu));
+        if (n <= 0 || n >= (int)sizeof(path)) break;
+        if (_mkdir(path) == 0) return sys_make_string(path);
         if (errno != EEXIST) break;
     }
 #endif
@@ -1383,6 +1437,14 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_file_mtime_v(eshkol_sysbuiltin_v
     if (stat(path, &st) == 0) {
         return sys_make_int64((int64_t)st.st_mtime);
     }
+#else
+    WIN32_FILE_ATTRIBUTE_DATA fad;
+    if (GetFileAttributesExA(path, GetFileExInfoStandard, &fad)) {
+        ULARGE_INTEGER ticks;
+        ticks.LowPart = fad.ftLastWriteTime.dwLowDateTime;
+        ticks.HighPart = fad.ftLastWriteTime.dwHighDateTime;
+        return sys_make_int64((int64_t)((ticks.QuadPart - 116444736000000000ULL) / 10000000ULL));
+    }
 #endif
     return sys_make_null();
 }
@@ -1394,6 +1456,14 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_file_atime_v(eshkol_sysbuiltin_v
     struct stat st;
     if (stat(path, &st) == 0) {
         return sys_make_int64((int64_t)st.st_atime);
+    }
+#else
+    WIN32_FILE_ATTRIBUTE_DATA fad;
+    if (GetFileAttributesExA(path, GetFileExInfoStandard, &fad)) {
+        ULARGE_INTEGER ticks;
+        ticks.LowPart = fad.ftLastAccessTime.dwLowDateTime;
+        ticks.HighPart = fad.ftLastAccessTime.dwHighDateTime;
+        return sys_make_int64((int64_t)((ticks.QuadPart - 116444736000000000ULL) / 10000000ULL));
     }
 #endif
     return sys_make_null();
@@ -4838,6 +4908,7 @@ void eshkol_builtin_path_normalize(sv_t* out, const sv_t* a) { *out = eshkol_bui
 void eshkol_builtin_realpath(sv_t* out, const sv_t* a) { *out = eshkol_builtin_realpath_v(*a); }
 void eshkol_builtin_file_stat(sv_t* out, const sv_t* a) { *out = eshkol_builtin_file_stat_v(*a); }
 void eshkol_builtin_file_copy(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_file_copy_v(*a, *b); }
+void eshkol_builtin_file_rename(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_file_rename_v(*a, *b); }
 void eshkol_builtin_mkdir_recursive(sv_t* out, const sv_t* a) { *out = eshkol_builtin_mkdir_recursive_v(*a); }
 void eshkol_builtin_mkdtemp(sv_t* out, const sv_t* a) { *out = eshkol_builtin_mkdtemp_v(*a); }
 void eshkol_builtin_make_temp_file(sv_t* out, const sv_t* a, const sv_t* b, const sv_t* c) { *out = eshkol_builtin_make_temp_file_v(*a, *b, *c); }

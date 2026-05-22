@@ -10339,8 +10339,16 @@ static void vm_dispatch_native(VM* vm, int fid) {
         if (old_val.type == VAL_STRING && new_val.type == VAL_STRING) {
             VmString* os = (VmString*)vm->heap.objects[old_val.as.ptr]->opaque.ptr;
             VmString* ns = (VmString*)vm->heap.objects[new_val.as.ptr]->opaque.ptr;
-            if (os && ns && rename(os->data, ns->data) == 0) {
-                vm_push(vm, BOOL_VAL(1)); break;
+            if (os && ns) {
+#ifdef _WIN32
+                if (MoveFileExA(os->data, ns->data, MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED)) {
+                    vm_push(vm, BOOL_VAL(1)); break;
+                }
+#else
+                if (rename(os->data, ns->data) == 0) {
+                    vm_push(vm, BOOL_VAL(1)); break;
+                }
+#endif
             }
         }
 #else

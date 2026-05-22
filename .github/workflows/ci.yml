@@ -275,7 +275,7 @@ jobs:
             build_dir: build
             xla_enabled: 'OFF'
             gpu_enabled: 'OFF'
-            test_mode: all
+            test_mode: windows-lite
             upload_artifact: 'true'
             artifact_name: eshkol-windows-x64
           - name: windows-arm64-lite
@@ -285,7 +285,7 @@ jobs:
             build_dir: build
             xla_enabled: 'OFF'
             gpu_enabled: 'OFF'
-            test_mode: all
+            test_mode: windows-lite
             upload_artifact: 'true'
             artifact_name: eshkol-windows-arm64
           - name: windows-x64-xla

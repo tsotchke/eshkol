@@ -25,6 +25,11 @@
 
 namespace eshkol {
 
+llvm::Function* getOrDeclareRuntimeFuncAllPtr(CodegenContext& ctx, llvm::Module* mod,
+                                               const std::string& name, int nargs);
+static llvm::Value* callPtrRuntime(CodegenContext& ctx, llvm::Function* f,
+                                   llvm::ArrayRef<llvm::Value*> args);
+
 SystemCodegen::SystemCodegen(CodegenContext& ctx, TaggedValueCodegen& tagged, MemoryCodegen& mem,
                              std::unordered_map<std::string, llvm::Function*>& function_table)
     : ctx_(ctx)
@@ -707,23 +712,15 @@ llvm::Value* SystemCodegen::fileRename(const eshkol_operations_t* op) {
         return nullptr;
     }
 
-    llvm::Function* rename_func = function_table_["rename"];
-    if (!rename_func) return tagged_.packBool(llvm::ConstantInt::getFalse(ctx_.context()));
-
     if (!codegen_ast_callback_) return tagged_.packNull();
 
     llvm::Value* old_arg = codegen_ast_callback_(&op->call_op.variables[0], callback_context_);
     llvm::Value* new_arg = codegen_ast_callback_(&op->call_op.variables[1], callback_context_);
     if (!old_arg || !new_arg) return nullptr;
 
-    llvm::Value* old_ptr = extractStringPtr(old_arg);
-    llvm::Value* new_ptr = extractStringPtr(new_arg);
-
-    // Call rename(old, new)
-    llvm::Value* result = ctx_.builder().CreateCall(rename_func, {old_ptr, new_ptr});
-
-    llvm::Value* success = ctx_.builder().CreateICmpEQ(result, llvm::ConstantInt::get(ctx_.int32Type(), 0));
-    return tagged_.packBool(success);
+    llvm::Module* mod = ctx_.builder().GetInsertBlock()->getParent()->getParent();
+    llvm::Function* rename_func = getOrDeclareRuntimeFuncAllPtr(ctx_, mod, "eshkol_builtin_file_rename", 2);
+    return callPtrRuntime(ctx_, rename_func, {old_arg, new_arg});
 }
 
 llvm::Value* SystemCodegen::fileSize(const eshkol_operations_t* op) {
