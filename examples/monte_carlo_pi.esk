@@ -20,11 +20,14 @@
 ;; keeps the parallel-map closure single-argument while still letting
 ;; the worker derive a unique PRNG seed.
 (define samples-per-shard 200000)
+(define monte-carlo-seed-base 123456789)
+(define monte-carlo-seed-step 2654435761)
 
 (define (count-hits-in-shard shard-id)
   "shard-id is a small integer 0..N-1.  Each worker derives an
    independent PRNG stream from it."
-  (let ((rng (make-prng (+ (* shard-id 2654435761) 11400714819323198485))))
+  (let ((rng (make-prng (+ (* shard-id monte-carlo-seed-step)
+                           monte-carlo-seed-base))))
     (let loop ((i 0) (hits 0))
       (if (= i samples-per-shard)
           hits
