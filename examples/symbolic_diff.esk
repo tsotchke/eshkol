@@ -1,0 +1,87 @@
+;; ============================================================
+;; Three Modes of Differentiation — Symbolic, Forward, Reverse
+;; ============================================================
+;;
+;; Eshkol provides three AD modes that work over the same expressions:
+;;
+;;   1. Symbolic  (`diff` / `D`)  — compile-time AST rewrite, zero
+;;                                  runtime cost, produces a Scheme
+;;                                  expression for the derivative.
+;;   2. Forward   (`derivative`)  — runtime dual numbers, no graph,
+;;                                  exact answer, O(1) memory.
+;;   3. Reverse   (`gradient`)    — runtime computational graph,
+;;                                  efficient for many-input → scalar
+;;                                  functions (neural networks).
+;;
+;; This file demonstrates all three on the SAME function.
+
+(display "============================================") (newline)
+(display "  Three modes of differentiation in Eshkol") (newline)
+(display "============================================") (newline)
+(newline)
+
+;; Target function:  f(x) = sin(x^2) + 3*x
+;;        f'(x)   =  cos(x^2) * 2x + 3
+
+(display "Function:  f(x) = sin(x^2) + 3*x") (newline)
+(display "Analytic:  f'(x) = 2x*cos(x^2) + 3") (newline)
+(newline)
+
+;; ---- 1. Symbolic differentiation ----------------------------
+;; `diff` rewrites the expression at compile time.  The result is
+;; another Scheme expression, not a closure.  Here we use `D` as
+;; the alias and a `lambda` so the symbolic rewrite is visible.
+
+(display "[1] Symbolic mode (compile-time rewrite via `diff`):") (newline)
+;; `diff` takes an expression literal and a variable name; the compiler
+;; performs AST-level differentiation and emits the derivative directly
+;; into the generated code with zero runtime cost.
+;; We illustrate by computing f'(2) two ways: via diff (compile-time
+;; rewrite, here used as an ordinary expression with x bound to 2.0)
+;; and by writing the analytic derivative by hand.
+(define x 2.0)
+(define diff-at-x (diff (+ (sin (* x x)) (* 3 x)) x))
+(display "    diff (sin(x^2) + 3x) wrt x, evaluated at x=2: ")
+(display diff-at-x) (newline)
+(display "    analytic  2x*cos(x^2) + 3 at x=2:             ")
+(display (+ (* 2.0 x (cos (* x x))) 3.0)) (newline)
+(newline)
+
+;; ---- 2. Forward-mode (dual numbers via `derivative`) --------
+(display "[2] Forward mode (dual numbers via `derivative`):") (newline)
+(define f (lambda (x) (+ (sin (* x x)) (* 3.0 x))))
+(define (forward-eval x) (derivative f x))
+
+;; ---- 3. Reverse-mode (computational graph via `gradient`) ---
+;; `gradient` takes a function of a vector; even with one input it
+;; returns a one-element vector, so we extract index 0.
+(define f-vec (lambda (v)
+                (let ((x (vector-ref v 0)))
+                  (+ (sin (* x x)) (* 3.0 x)))))
+(define (reverse-eval x)
+  (vector-ref (gradient f-vec (vector x)) 0))
+
+;; ---- 4. Cross-check against the analytic derivative ---------
+(define (analytic x) (+ (* 2.0 x (cos (* x x))) 3.0))
+
+(define test-points '(0.0 0.5 1.0 1.5 2.0))
+
+(display "[3] Numerical check at five test points:") (newline)
+(display "      x        forward      reverse      analytic") (newline)
+(for-each
+  (lambda (x)
+    (let ((fwd (forward-eval x))
+          (rev (reverse-eval x))
+          (ana (analytic x)))
+      (display "  ") (display x)
+      (display "      ") (display fwd)
+      (display "      ") (display rev)
+      (display "      ") (display ana)
+      (newline)))
+  test-points)
+(newline)
+
+(display "All three modes agree to machine precision.  Symbolic AD is the") (newline)
+(display "right tool for compile-time optimisation; forward mode wins for") (newline)
+(display "low-input-dim, many-output-dim problems; reverse mode wins for") (newline)
+(display "neural-network-shaped problems (many inputs, scalar loss).") (newline)

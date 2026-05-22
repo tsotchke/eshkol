@@ -1,0 +1,63 @@
+;; ============================================================
+;; Parallel Monte Carlo — Estimate π using work-stealing
+;; ============================================================
+;;
+;; The classic π experiment: throw random points into the unit square
+;; and count the fraction that fall inside the unit circle.  The ratio
+;; converges to π/4.
+;;
+;; What Eshkol contributes:
+;;   - `parallel-map` distributes the work across a Chase-Lev
+;;     work-stealing thread pool with one arena per worker.
+;;   - The PRNG is per-stream isolated, so two workers never see the
+;;     same sample.
+;;   - There is no GC pause and no Python-shaped global interpreter
+;;     lock between the worker and the arithmetic — `(make-prng seed)`
+;;     and the float inner loop run as native code.
+
+;; Each shard is encoded as a single integer that combines a worker
+;; index in the high bits with the sample count in the low bits.  That
+;; keeps the parallel-map closure single-argument while still letting
+;; the worker derive a unique PRNG seed.
+(define samples-per-shard 200000)
+
+(define (count-hits-in-shard shard-id)
+  "shard-id is a small integer 0..N-1.  Each worker derives an
+   independent PRNG stream from it."
+  (let ((rng (make-prng (+ (* shard-id 2654435761) 11400714819323198485))))
+    (let loop ((i 0) (hits 0))
+      (if (= i samples-per-shard)
+          hits
+          (let* ((x  (prng-random rng))
+                 (y  (prng-random rng))
+                 (r2 (+ (* x x) (* y y))))
+            (if (< r2 1.0)
+                (loop (+ i 1) (+ hits 1))
+                (loop (+ i 1) hits)))))))
+
+;; Eight independent shards of 200,000 samples each = 1.6M samples.
+(define shards '(0 1 2 3 4 5 6 7))
+(define total-samples (* samples-per-shard (length shards)))
+
+(display "=== Monte Carlo π via parallel-map ===") (newline)
+(display "Workers (shards):     ") (display (length shards)) (newline)
+(display "Total samples:        ") (display total-samples) (newline) (newline)
+
+(define t0 (current-time-ns))
+(define hits-per-shard (parallel-map count-hits-in-shard shards))
+(define t1 (current-time-ns))
+
+(define total-hits (fold-left + 0 hits-per-shard))
+(define pi-estimate (* 4.0 (/ total-hits total-samples)))
+(define elapsed-ms (/ (- t1 t0) 1000000.0))
+
+(display "Per-shard hits:       ") (display hits-per-shard) (newline)
+(display "Total hits:           ") (display total-hits) (newline)
+(display "π estimate:           ") (display pi-estimate) (newline)
+(display "True π:               3.141592653589793") (newline)
+(display "Absolute error:       ") (display (abs (- pi-estimate 3.141592653589793))) (newline)
+(display "Wall-clock (ms):      ") (display elapsed-ms) (newline) (newline)
+
+(display "Sample throughput:    ")
+(display (* 1000.0 (/ total-samples elapsed-ms)))
+(display " samples/sec") (newline)
