@@ -6902,12 +6902,14 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 return ast;
             }
 
-            eshkol_ast_t point;
-            if (token.type == TOKEN_LPAREN) {
-                point = parse_list(tokenizer);
-            } else {
-                point = parse_atom(token);
-            }
+            // Use pushBack + parse_expression so the point can be ANY
+            // expression — including `#(...)` tensor literals, `'(...)`
+            // quoted data, and back-quotes.  The previous manual
+            // LPAREN/atom dispatch silently dropped TOKEN_VECTOR_START
+            // (`#(`) tokens; that family of bug is documented at
+            // parser.cpp:6372 and MEMORY.md.
+            tokenizer.pushBack(token);
+            eshkol_ast_t point = parse_expression(tokenizer);
 
             if (point.type == ESHKOL_INVALID) {
                 ast.type = ESHKOL_INVALID;
@@ -7001,26 +7003,22 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 return ast;
             }
             
-            // Parse the evaluation point (vector)
+            // Parse the evaluation point (vector).  Use pushBack +
+            // parse_expression so `#(...)` tensor literals work.
             token = tokenizer.nextToken();
             if (token.type == TOKEN_EOF) {
                 PARSE_ERROR_AT(token, "jacobian requires evaluation vector as second argument");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
-            
-            eshkol_ast_t point;
-            if (token.type == TOKEN_LPAREN) {
-                point = parse_list(tokenizer);
-            } else {
-                point = parse_atom(token);
-            }
-            
+            tokenizer.pushBack(token);
+            eshkol_ast_t point = parse_expression(tokenizer);
+
             if (point.type == ESHKOL_INVALID) {
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
-            
+
             // Check for closing paren
             Token close_token = tokenizer.nextToken();
             if (close_token.type != TOKEN_RPAREN) {
@@ -7028,14 +7026,14 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
-            
+
             // Set up jacobian operation
             ast.operation.jacobian_op.function = new eshkol_ast_t;
             *ast.operation.jacobian_op.function = function;
-            
+
             ast.operation.jacobian_op.point = new eshkol_ast_t;
             *ast.operation.jacobian_op.point = point;
-            
+
             return ast;
         }
         
@@ -7064,20 +7062,16 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 return ast;
             }
             
-            // Parse the evaluation point (vector)
+            // Parse the evaluation point (vector).  Use pushBack +
+            // parse_expression so `#(...)` tensor literals work.
             token = tokenizer.nextToken();
             if (token.type == TOKEN_EOF) {
                 PARSE_ERROR_AT(token, "hessian requires evaluation vector as second argument");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
-            
-            eshkol_ast_t point;
-            if (token.type == TOKEN_LPAREN) {
-                point = parse_list(tokenizer);
-            } else {
-                point = parse_atom(token);
-            }
+            tokenizer.pushBack(token);
+            eshkol_ast_t point = parse_expression(tokenizer);
             
             if (point.type == ESHKOL_INVALID) {
                 ast.type = ESHKOL_INVALID;
@@ -7127,20 +7121,16 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 return ast;
             }
             
-            // Parse the evaluation point (vector)
+            // Parse the evaluation point (vector).  Use pushBack +
+            // parse_expression so `#(...)` tensor literals work.
             token = tokenizer.nextToken();
             if (token.type == TOKEN_EOF) {
                 PARSE_ERROR_AT(token, "divergence requires evaluation vector as second argument");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
-            
-            eshkol_ast_t point;
-            if (token.type == TOKEN_LPAREN) {
-                point = parse_list(tokenizer);
-            } else {
-                point = parse_atom(token);
-            }
+            tokenizer.pushBack(token);
+            eshkol_ast_t point = parse_expression(tokenizer);
             
             if (point.type == ESHKOL_INVALID) {
                 ast.type = ESHKOL_INVALID;
@@ -7190,20 +7180,16 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 return ast;
             }
             
-            // Parse the evaluation point (vector)
+            // Parse the evaluation point (vector).  Use pushBack +
+            // parse_expression so `#(...)` tensor literals work.
             token = tokenizer.nextToken();
             if (token.type == TOKEN_EOF) {
                 PARSE_ERROR_AT(token, "curl requires evaluation vector as second argument");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
-            
-            eshkol_ast_t point;
-            if (token.type == TOKEN_LPAREN) {
-                point = parse_list(tokenizer);
-            } else {
-                point = parse_atom(token);
-            }
+            tokenizer.pushBack(token);
+            eshkol_ast_t point = parse_expression(tokenizer);
             
             if (point.type == ESHKOL_INVALID) {
                 ast.type = ESHKOL_INVALID;
@@ -7253,20 +7239,16 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 return ast;
             }
             
-            // Parse the evaluation point (vector)
+            // Parse the evaluation point (vector).  Use pushBack +
+            // parse_expression so `#(...)` tensor literals work.
             token = tokenizer.nextToken();
             if (token.type == TOKEN_EOF) {
                 PARSE_ERROR_AT(token, "laplacian requires evaluation vector as second argument");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
-            
-            eshkol_ast_t point;
-            if (token.type == TOKEN_LPAREN) {
-                point = parse_list(tokenizer);
-            } else {
-                point = parse_atom(token);
-            }
+            tokenizer.pushBack(token);
+            eshkol_ast_t point = parse_expression(tokenizer);
             
             if (point.type == ESHKOL_INVALID) {
                 ast.type = ESHKOL_INVALID;
