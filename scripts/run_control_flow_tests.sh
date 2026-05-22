@@ -23,6 +23,13 @@ echo ""
 # Honour $BUILD_DIR (CI passes it via the matrix); fall back to "build" for plain local runs.
 BUILD_DIR="${BUILD_DIR:-build}"
 
+# Some O0 AOT control-flow tests have large generated stack frames. Raise the
+# stack limit for child test binaries where the host allows it, so the harness
+# checks generated behavior instead of the caller shell's small default stack.
+if ! ulimit -s unlimited 2>/dev/null; then
+    ulimit -s 65532 2>/dev/null || true
+fi
+
 # Ensure build directory exists
 if [ ! -d "$BUILD_DIR" ]; then
     echo -e "${RED}Error: build directory not found. Run cmake first.${NC}"
