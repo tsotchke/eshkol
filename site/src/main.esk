@@ -626,9 +626,9 @@
           (style! h "letterSpacing" "1px")
           (style! h "marginBottom" "16px"))
         (create-runnable-code-block card2
-          "(define v #(1.0 2.0 3.0 4.0 5.0))\n(display (fold-left + 0 (list 1 2 3 4 5)))"
-          "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.82rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(define</span> v <span style='color:#00ff88'>#(1.0 2.0 3.0 4.0 5.0)</span><span style='color:#c084fc'>)</span>\n\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(fold-left</span> + <span style='color:#00ff88'>0</span> <span style='color:#c084fc'>(list</span> <span style='color:#00ff88'>1 2 3 4 5</span><span style='color:#c084fc'>)))</span>\n<span style='color:#606078'>;; => 15</span></pre>")
-        (let ((cap (create-text "p" "Vectors, lists, and fold operations." card2)))
+          "(define M (reshape #(1.0 2.0 3.0 4.0) 2 2))\n(define x #(5.0 6.0))\n(display (tensor-matmul M x))\n;; => #(17 39) — M times column vector x"
+          "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.82rem;line-height:1.6;color:#e8e8f0'><span style='color:#606078'>;; 2x2 matrix times 2-vector — one expression, all backends</span>\n<span style='color:#c084fc'>(define</span> M <span style='color:#c084fc'>(reshape</span> <span style='color:#00ff88'>#(1.0 2.0 3.0 4.0)</span> <span style='color:#00ff88'>2</span> <span style='color:#00ff88'>2</span><span style='color:#c084fc'>))</span>\n<span style='color:#c084fc'>(define</span> x <span style='color:#00ff88'>#(5.0 6.0)</span><span style='color:#c084fc'>)</span>\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(tensor-matmul</span> M x<span style='color:#c084fc'>))</span>\n<span style='color:#606078'>;; => #(17 39)  (= [[1,2],[3,4]] * [5,6])</span></pre>")
+        (let ((cap (create-text "p" "Tensor ops dispatch through SIMD, BLAS, Metal, or CUDA at runtime." card2)))
           (style! cap "color" "#71717a")
           (style! cap "fontSize" "0.8rem")
           (style! cap "marginTop" "12px")
