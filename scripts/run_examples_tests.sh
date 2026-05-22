@@ -41,6 +41,14 @@ cleanup_example_artifacts() {
     rm -f a.out a.out.tmp.o
 }
 
+run_log_has_runtime_error() {
+    local run_log="$1"
+
+    # Match actual diagnostics without flagging ordinary domain text such as
+    # "absolute error" or "squared error" in numerical examples.
+    grep -Eiq '^[[:space:]]*(error|fatal error|runtime error|panic|exception|uncaught|unhandled|assertion failed|segmentation fault|abort(ed)?)([[:space:]:]|$)|(^|[^[:alnum:]_])(segmentation fault|abort trap|core dumped)([^[:alnum:]_]|$)' "$run_log"
+}
+
 ensure_examples_build() {
     if [ ! -d "$BUILD_DIR" ]; then
         echo -e "${RED}Error: build directory '$BUILD_DIR' not found. Run cmake first.${NC}"
@@ -129,7 +137,7 @@ for test_file in examples/*.esk; do
         if ./a.out > "$run_log" 2>&1; then
             exit_code=$?
             # Check if there were any errors in output
-            if grep -qi "error\|segmentation fault\|abort" "$run_log"; then
+            if run_log_has_runtime_error "$run_log"; then
                 echo -e "${YELLOW}⚠ RUNTIME ERROR${NC}"
                 RUNTIME_ERRORS+=("$test_name")
                 ((RUNTIME_ERROR++))
