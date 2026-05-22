@@ -89,7 +89,7 @@ if(ESHKOL_USING_MSVC AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
 endif()
 
 if(WIN32)
-    list(APPEND ESHKOL_EXTRA_LINK_LIBS Advapi32.lib)
+    list(APPEND ESHKOL_EXTRA_LINK_LIBS Advapi32.lib Ntdll.lib)
 endif()
 
 include(CTest)

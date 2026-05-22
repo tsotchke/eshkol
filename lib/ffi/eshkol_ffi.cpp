@@ -10,10 +10,10 @@
 
 #include <eshkol/eshkol_ffi.h>
 #include <eshkol/eshkol.h>
+#include <eshkol/core/eval_bridge.h>
 #include <eshkol/core/runtime.h>
 #include <eshkol/core/sexp_to_ast.h>
 #include "../../lib/core/arena_memory.h"
-#include "../../lib/repl/repl_jit.h"
 
 #include <cstring>
 #include <cstdlib>
@@ -49,7 +49,9 @@ static void ffi_set_error(const char* fmt, ...) {
 /* ── Context — holds the JIT engine ── */
 struct eshkol_ffi_context {
     bool initialized;
-    eshkol::ReplJITContext* jit;
+    void* jit;
+    eshkol_eval_jit_execute_fn_t execute;
+    eshkol_eval_jit_lookup_fn_t lookup;
 };
 
 /* ── Convert between FFI and runtime value types ── */
@@ -80,21 +82,54 @@ extern "C" eshkol_ffi_context_t* eshkol_ffi_init(void) {
 
     eshkol_runtime_init();
 
-    /* Create JIT context — same engine used by the REPL */
-    try {
-        ctx->jit = new eshkol::ReplJITContext();
-    } catch (const std::exception& e) {
-        ffi_set_error("Failed to initialize JIT: %s", e.what());
-        free(ctx);
-        return NULL;
-    } catch (...) {
-        ffi_set_error("Failed to initialize JIT (unknown error)");
+    eshkol_eval_jit_acquire_fn_t acquire = eshkol_eval_jit_get_acquire();
+    ctx->execute = eshkol_eval_jit_get_execute();
+    ctx->lookup = eshkol_eval_jit_get_lookup();
+    if (!acquire || !ctx->execute || !ctx->lookup) {
+        eshkol_eval_jit_warn_missing("eshkol_ffi_init");
+        ffi_set_error("FFI JIT runtime is not linked; link eshkol-repl-lib");
         free(ctx);
         return NULL;
     }
 
-    /* Load stdlib for the JIT context */
-    ctx->jit->loadStdlib();
+    /* Acquire the process-wide REPL JIT through the eval bridge. This keeps
+     * eshkol_ffi.cpp linkable from eshkol-static even when eshkol-repl-lib is
+     * not present in generated user executables. */
+    try {
+        ctx->jit = acquire();
+    } catch (const std::exception& e) {
+        ffi_set_error("Failed to initialize JIT: %s", e.what());
+        free(ctx);
+        return NULL;
+    }
+    if (!ctx->jit) {
+        ffi_set_error("Failed to initialize JIT");
+        free(ctx);
+        return NULL;
+    }
+
+    /* Preserve the old FFI behavior of preloading stdlib, but do it through
+     * the bridge so this translation unit has no direct ReplJITContext symbols. */
+    eshkol_ast_t stdlib_ast;
+    std::memset(&stdlib_ast, 0, sizeof(stdlib_ast));
+    try {
+        std::istringstream stdlib_stream("(require stdlib)");
+        stdlib_ast = eshkol_parse_next_ast_from_stream(stdlib_stream);
+        if (stdlib_ast.type != ESHKOL_INVALID) {
+            ctx->execute(ctx->jit, &stdlib_ast);
+        }
+        eshkol_ast_clean(&stdlib_ast);
+    } catch (const std::exception& e) {
+        eshkol_ast_clean(&stdlib_ast);
+        ffi_set_error("Failed to load stdlib: %s", e.what());
+        free(ctx);
+        return NULL;
+    } catch (...) {
+        eshkol_ast_clean(&stdlib_ast);
+        ffi_set_error("Failed to load stdlib (unknown error)");
+        free(ctx);
+        return NULL;
+    }
 
     ctx->initialized = true;
     g_ffi_error[0] = 0;
@@ -103,10 +138,6 @@ extern "C" eshkol_ffi_context_t* eshkol_ffi_init(void) {
 
 extern "C" void eshkol_ffi_shutdown(eshkol_ffi_context_t* ctx) {
     if (!ctx) return;
-    if (ctx->jit) {
-        delete ctx->jit;
-        ctx->jit = nullptr;
-    }
     if (ctx->initialized) {
         eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_REQUESTED);
     }
@@ -263,7 +294,7 @@ extern "C" int eshkol_ffi_eval(eshkol_ffi_context_t* ctx,
             eshkol_ast_t* to_run = (i == last && wrapper) ? wrapper : &asts[i];
             if (to_run->type == ESHKOL_INVALID) continue;
             try {
-                ctx->jit->execute(to_run);
+                ctx->execute(ctx->jit, to_run);
             } catch (const std::exception& e) {
                 eshkol_pop_exception_handler();
                 ffi_set_error("JIT execution failed: %s", e.what());
@@ -301,7 +332,7 @@ extern "C" int eshkol_ffi_eval(eshkol_ffi_context_t* ctx,
 
     /* If we wrapped the last AST, read back the stored tagged_value. */
     if (wrapper) {
-        uint64_t addr = ctx->jit->lookupSymbol(result_name);
+        uint64_t addr = ctx->lookup(ctx->jit, result_name.c_str());
         if (addr != 0 && result) {
             eshkol_tagged_value_t tv;
             std::memcpy(&tv, reinterpret_cast<void*>(addr), sizeof(tv));
