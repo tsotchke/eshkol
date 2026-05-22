@@ -18099,34 +18099,35 @@ private:
             return ConstantInt::get(int64_type, 0);
         }
 
-        // Convert first arg to |arg[0]|
-        TypedValue tv0 = codegenTypedAST(&op->call_op.variables[0]);
-        if (!tv0.llvm_value) return nullptr;
+        std::vector<TypedValue> args;
+        args.reserve(op->call_op.num_vars);
+        bool has_tagged_operand = false;
+        for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
+            TypedValue tv = codegenTypedAST(&op->call_op.variables[i]);
+            if (!tv.llvm_value) return nullptr;
+            has_tagged_operand = has_tagged_operand ||
+                                 tv.llvm_value->getType() == tagged_value_type;
+            args.push_back(tv);
+        }
 
-        // DUAL NUMBER FAST PATH: gcd is an integer-theoretic op with no
-        // meaningful continuous derivative. Detect dual operands, compute
-        // gcd on the truncated primals, and pack as a dual with zero
-        // tangent so downstream AD code (e.g. inside `derivative`) gets a
-        // dual struct instead of a raw int and crashing.
-        if (tv0.llvm_value->getType() == tagged_value_type) {
-            Value* tv0_tagged = tv0.llvm_value;
-            Value* any_dual_gcd = builder->CreateICmpEQ(
-                getBaseType(getTaggedValueType(tv0_tagged)),
-                ConstantInt::get(int8_type, ESHKOL_VALUE_DUAL_NUMBER));
-            for (uint64_t i = 1; i < op->call_op.num_vars; i++) {
-                TypedValue tvi = codegenTypedAST(&op->call_op.variables[i]);
-                if (tvi.llvm_value && tvi.llvm_value->getType() == tagged_value_type) {
-                    Value* tvi_is_dual = builder->CreateICmpEQ(
-                        getBaseType(getTaggedValueType(tvi.llvm_value)),
-                        ConstantInt::get(int8_type, ESHKOL_VALUE_DUAL_NUMBER));
-                    any_dual_gcd = builder->CreateOr(any_dual_gcd, tvi_is_dual);
-                }
+        // GCD has no meaningful continuous derivative. If any operand is
+        // dual, compute gcd on truncated primals and return a dual with a
+        // zero tangent so downstream AD code keeps receiving a dual value.
+        if (has_tagged_operand) {
+            std::vector<Value*> tagged_args;
+            tagged_args.reserve(args.size());
+            Value* any_dual_gcd = ConstantInt::get(int1_type, 0);
+            for (const TypedValue& arg : args) {
+                Value* tagged_arg = (arg.llvm_value->getType() == tagged_value_type)
+                                    ? arg.llvm_value
+                                    : typedValueToTaggedValue(arg);
+                tagged_args.push_back(tagged_arg);
+                Value* arg_is_dual = builder->CreateICmpEQ(
+                    getBaseType(getTaggedValueType(tagged_arg)),
+                    ConstantInt::get(int8_type, ESHKOL_VALUE_DUAL_NUMBER));
+                any_dual_gcd = builder->CreateOr(any_dual_gcd, arg_is_dual);
             }
-            // Re-emit args after the scan — codegenTypedAST is cheap on
-            // the same AST nodes (LLVM CSEs duplicate work). Cleaner than
-            // restructuring.
-            // We'll just dispatch on any_dual_gcd at runtime: if true,
-            // route through extractAsDouble + FPToSI + abs, then GCD.
+
             Function* gcd_func = builder->GetInsertBlock()->getParent();
             BasicBlock* dual_gcd_bb = BasicBlock::Create(*context, "gcd_dual", gcd_func);
             BasicBlock* normal_gcd_bb = BasicBlock::Create(*context, "gcd_normal", gcd_func);
@@ -18143,17 +18144,9 @@ private:
                 Value* neg = builder->CreateICmpSLT(i, z);
                 return builder->CreateSelect(neg, builder->CreateNeg(i), i);
             };
-            Value* dual_result = extract_abs_int(tv0_tagged);
-            for (uint64_t i = 1; i < op->call_op.num_vars; i++) {
-                TypedValue tvi = codegenTypedAST(&op->call_op.variables[i]);
-                if (!tvi.llvm_value) {
-                    dual_result = ConstantInt::get(int64_type, 0);
-                    break;
-                }
-                Value* tagged_i = (tvi.llvm_value->getType() == tagged_value_type)
-                                  ? tvi.llvm_value
-                                  : typedValueToTaggedValue(tvi);
-                Value* arg_int = extract_abs_int(tagged_i);
+            Value* dual_result = extract_abs_int(tagged_args[0]);
+            for (uint64_t i = 1; i < tagged_args.size(); i++) {
+                Value* arg_int = extract_abs_int(tagged_args[i]);
                 dual_result = emitGCDPair(dual_result, arg_int);
             }
             Value* dual_result_dbl = builder->CreateSIToFP(dual_result, double_type);
@@ -18166,11 +18159,9 @@ private:
 
             // Normal path: existing int fold.
             builder->SetInsertPoint(normal_gcd_bb);
-            Value* result = toAbsInt64(tv0_tagged);
-            for (uint64_t i = 1; i < op->call_op.num_vars; i++) {
-                TypedValue tv = codegenTypedAST(&op->call_op.variables[i]);
-                if (!tv.llvm_value) return nullptr;
-                Value* arg = toAbsInt64(tv.llvm_value);
+            Value* result = toAbsInt64(args[0].llvm_value);
+            for (uint64_t i = 1; i < args.size(); i++) {
+                Value* arg = toAbsInt64(args[i].llvm_value);
                 result = emitGCDPair(result, arg);
             }
             // Pack as int64 tagged value so the outer merge PHI has matching types.
@@ -18187,7 +18178,7 @@ private:
         }
 
         // Original raw-int64 path (preserved for non-tagged callers).
-        Value* result = toAbsInt64(tv0.llvm_value);
+        Value* result = toAbsInt64(args[0].llvm_value);
 
         // (gcd n) → |n|
         if (op->call_op.num_vars == 1) {
@@ -18195,10 +18186,8 @@ private:
         }
 
         // Fold: result = gcd(result, |arg[i]|) for each subsequent arg
-        for (uint64_t i = 1; i < op->call_op.num_vars; i++) {
-            TypedValue tv = codegenTypedAST(&op->call_op.variables[i]);
-            if (!tv.llvm_value) return nullptr;
-            Value* arg = toAbsInt64(tv.llvm_value);
+        for (uint64_t i = 1; i < args.size(); i++) {
+            Value* arg = toAbsInt64(args[i].llvm_value);
             result = emitGCDPair(result, arg);
         }
 
@@ -18248,28 +18237,35 @@ private:
             return ConstantInt::get(int64_type, 1);
         }
 
-        // Convert first arg to |arg[0]|
-        TypedValue tv0 = codegenTypedAST(&op->call_op.variables[0]);
-        if (!tv0.llvm_value) return nullptr;
+        std::vector<TypedValue> args;
+        args.reserve(op->call_op.num_vars);
+        bool has_tagged_operand = false;
+        for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
+            TypedValue tv = codegenTypedAST(&op->call_op.variables[i]);
+            if (!tv.llvm_value) return nullptr;
+            has_tagged_operand = has_tagged_operand ||
+                                 tv.llvm_value->getType() == tagged_value_type;
+            args.push_back(tv);
+        }
 
-        // DUAL NUMBER FAST PATH (matches codegenGCD above).  lcm has no
-        // meaningful continuous derivative; return a dual with zero
-        // tangent so downstream AD code does not crash deref'ing the
-        // raw int as a dual struct.
-        if (tv0.llvm_value->getType() == tagged_value_type) {
-            Value* tv0_tagged = tv0.llvm_value;
-            Value* any_dual_lcm = builder->CreateICmpEQ(
-                getBaseType(getTaggedValueType(tv0_tagged)),
-                ConstantInt::get(int8_type, ESHKOL_VALUE_DUAL_NUMBER));
-            for (uint64_t i = 1; i < op->call_op.num_vars; i++) {
-                TypedValue tvi = codegenTypedAST(&op->call_op.variables[i]);
-                if (tvi.llvm_value && tvi.llvm_value->getType() == tagged_value_type) {
-                    Value* tvi_is_dual = builder->CreateICmpEQ(
-                        getBaseType(getTaggedValueType(tvi.llvm_value)),
-                        ConstantInt::get(int8_type, ESHKOL_VALUE_DUAL_NUMBER));
-                    any_dual_lcm = builder->CreateOr(any_dual_lcm, tvi_is_dual);
-                }
+        // LCM is also integer-valued and piecewise constant. Preserve AD
+        // shape by returning a zero-tangent dual whenever any operand is
+        // dual, independent of operand order.
+        if (has_tagged_operand) {
+            std::vector<Value*> tagged_args;
+            tagged_args.reserve(args.size());
+            Value* any_dual_lcm = ConstantInt::get(int1_type, 0);
+            for (const TypedValue& arg : args) {
+                Value* tagged_arg = (arg.llvm_value->getType() == tagged_value_type)
+                                    ? arg.llvm_value
+                                    : typedValueToTaggedValue(arg);
+                tagged_args.push_back(tagged_arg);
+                Value* arg_is_dual = builder->CreateICmpEQ(
+                    getBaseType(getTaggedValueType(tagged_arg)),
+                    ConstantInt::get(int8_type, ESHKOL_VALUE_DUAL_NUMBER));
+                any_dual_lcm = builder->CreateOr(any_dual_lcm, arg_is_dual);
             }
+
             Function* lcm_func = builder->GetInsertBlock()->getParent();
             BasicBlock* dual_lcm_bb = BasicBlock::Create(*context, "lcm_dual", lcm_func);
             BasicBlock* normal_lcm_bb = BasicBlock::Create(*context, "lcm_normal", lcm_func);
@@ -18284,17 +18280,9 @@ private:
                 Value* neg = builder->CreateICmpSLT(i, z);
                 return builder->CreateSelect(neg, builder->CreateNeg(i), i);
             };
-            Value* dual_result = extract_abs_int(tv0_tagged);
-            for (uint64_t i = 1; i < op->call_op.num_vars; i++) {
-                TypedValue tvi = codegenTypedAST(&op->call_op.variables[i]);
-                if (!tvi.llvm_value) {
-                    dual_result = ConstantInt::get(int64_type, 1);
-                    break;
-                }
-                Value* tagged_i = (tvi.llvm_value->getType() == tagged_value_type)
-                                  ? tvi.llvm_value
-                                  : typedValueToTaggedValue(tvi);
-                Value* arg_int = extract_abs_int(tagged_i);
+            Value* dual_result = extract_abs_int(tagged_args[0]);
+            for (uint64_t i = 1; i < tagged_args.size(); i++) {
+                Value* arg_int = extract_abs_int(tagged_args[i]);
                 dual_result = emitLCMPair(dual_result, arg_int);
             }
             Value* dual_result_dbl = builder->CreateSIToFP(dual_result, double_type);
@@ -18306,11 +18294,9 @@ private:
             builder->CreateBr(lcm_outer_merge);
 
             builder->SetInsertPoint(normal_lcm_bb);
-            Value* result = toAbsInt64(tv0_tagged);
-            for (uint64_t i = 1; i < op->call_op.num_vars; i++) {
-                TypedValue tv = codegenTypedAST(&op->call_op.variables[i]);
-                if (!tv.llvm_value) return nullptr;
-                Value* arg = toAbsInt64(tv.llvm_value);
+            Value* result = toAbsInt64(args[0].llvm_value);
+            for (uint64_t i = 1; i < args.size(); i++) {
+                Value* arg = toAbsInt64(args[i].llvm_value);
                 result = emitLCMPair(result, arg);
             }
             Value* normal_tagged = packInt64ToTaggedValue(result, true);
@@ -18325,7 +18311,7 @@ private:
         }
 
         // Original raw-int64 path (preserved for non-tagged callers).
-        Value* result = toAbsInt64(tv0.llvm_value);
+        Value* result = toAbsInt64(args[0].llvm_value);
 
         // (lcm n) → |n|
         if (op->call_op.num_vars == 1) {
@@ -18333,10 +18319,8 @@ private:
         }
 
         // Fold: result = lcm(result, |arg[i]|) for each subsequent arg
-        for (uint64_t i = 1; i < op->call_op.num_vars; i++) {
-            TypedValue tv = codegenTypedAST(&op->call_op.variables[i]);
-            if (!tv.llvm_value) return nullptr;
-            Value* arg = toAbsInt64(tv.llvm_value);
+        for (uint64_t i = 1; i < args.size(); i++) {
+            Value* arg = toAbsInt64(args[i].llvm_value);
             result = emitLCMPair(result, arg);
         }
 
