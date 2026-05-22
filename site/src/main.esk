@@ -1115,8 +1115,11 @@
         ;; Reference
         (let ((g3 (render-sidebar-group sidebar "REFERENCE")))
           (render-sidebar-item g3 "API Reference" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/API_REFERENCE.md")
+          (render-sidebar-item g3 "Standard Library API" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/STDLIB_V1_2_API.md")
           (render-sidebar-item g3 "Feature Matrix" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/FEATURE_MATRIX.md")
-          (render-sidebar-item g3 "Known Issues" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/KNOWN_ISSUES.md"))
+          (render-sidebar-item g3 "Quick Reference" "https://raw.githubusercontent.com/tsotchke/eshkol/master/ESHKOL_QUICK_REFERENCE.md")
+          (render-sidebar-item g3 "Known Issues" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/KNOWN_ISSUES.md")
+          (render-sidebar-item g3 "FAQ" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/FAQ.md"))
 
         ;; Architecture
         (let ((g4 (render-sidebar-group sidebar "ARCHITECTURE")))
@@ -1129,8 +1132,19 @@
         (let ((g5 (render-sidebar-group sidebar "TOPICS")))
           (render-sidebar-item g5 "Automatic Differentiation" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/breakdown/AUTODIFF.md")
           (render-sidebar-item g5 "Vector Operations" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/breakdown/VECTOR_OPERATIONS.md")
+          (render-sidebar-item g5 "Machine Learning" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/breakdown/MACHINE_LEARNING.md")
           (render-sidebar-item g5 "GPU Acceleration" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/breakdown/GPU_ACCELERATION.md")
+          (render-sidebar-item g5 "Consciousness Engine" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/breakdown/CONSCIOUSNESS_ENGINE.md")
+          (render-sidebar-item g5 "Bytecode VM" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/breakdown/BYTECODE_VM.md")
+          (render-sidebar-item g5 "Agent FFI" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/breakdown/AGENT_FFI.md")
+          (render-sidebar-item g5 "Parallel Computing" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/breakdown/PARALLEL_COMPUTING.md")
           (render-sidebar-item g5 "Scheme Compatibility" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/breakdown/SCHEME_COMPATIBILITY.md"))
+
+        ;; Paper Artefact
+        (let ((gs (render-sidebar-group sidebar "PAPER ARTEFACT")))
+          (render-sidebar-item gs "SDNC Paper" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/SDNC.md")
+          (render-sidebar-item gs "Computable Transformer" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/breakdown/COMPUTABLE_TRANSFORMER.md")
+          (render-sidebar-item gs "VM as Weight Matrices" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/breakdown/VM_MEMORY_OPS_AS_WEIGHT_MATRICES.md"))
 
         ;; Project
         (let ((g6 (render-sidebar-group sidebar "PROJECT")))
