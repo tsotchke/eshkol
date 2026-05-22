@@ -1624,12 +1624,14 @@ llvm::Value* ArithmeticCodegen::extractAsDouble(llvm::Value* tagged_val) {
         return ctx_.builder().CreateSIToFP(tagged_val, ctx_.doubleType());
     }
 
-    // Handle tagged value with 4-way dispatch: CALLABLE(AD node), DOUBLE, HEAP_PTR(bignum), INT64
+    // Handle tagged value with 5-way dispatch: CALLABLE(AD node), DUAL_NUMBER, DOUBLE, HEAP_PTR(bignum/rational), INT64
     llvm::Value* type_tag = tagged_.getType(tagged_val);
     llvm::Value* base_type = tagged_.getBaseType(type_tag);
 
     llvm::Value* is_callable = ctx_.builder().CreateICmpEQ(base_type,
         llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CALLABLE));
+    llvm::Value* is_dual = ctx_.builder().CreateICmpEQ(base_type,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DUAL_NUMBER));
     llvm::Value* is_double = ctx_.builder().CreateICmpEQ(base_type,
         llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DOUBLE));
     llvm::Value* is_heap_ptr = ctx_.builder().CreateICmpEQ(base_type,
@@ -1638,6 +1640,8 @@ llvm::Value* ArithmeticCodegen::extractAsDouble(llvm::Value* tagged_val) {
     llvm::Function* func = ctx_.builder().GetInsertBlock()->getParent();
     llvm::BasicBlock* ad_check_bb = llvm::BasicBlock::Create(ctx_.context(), "ead_ad_check", func);
     llvm::BasicBlock* ad_bb = llvm::BasicBlock::Create(ctx_.context(), "ead_ad", func);
+    llvm::BasicBlock* dual_check_bb = llvm::BasicBlock::Create(ctx_.context(), "ead_dual_check", func);
+    llvm::BasicBlock* dual_bb = llvm::BasicBlock::Create(ctx_.context(), "ead_dual", func);
     llvm::BasicBlock* dbl_check_bb = llvm::BasicBlock::Create(ctx_.context(), "ead_dbl_check", func);
     llvm::BasicBlock* dbl_bb = llvm::BasicBlock::Create(ctx_.context(), "ead_dbl", func);
     llvm::BasicBlock* heap_bb = llvm::BasicBlock::Create(ctx_.context(), "ead_heap", func);
@@ -1645,12 +1649,12 @@ llvm::Value* ArithmeticCodegen::extractAsDouble(llvm::Value* tagged_val) {
     llvm::BasicBlock* merge_bb = llvm::BasicBlock::Create(ctx_.context(), "ead_merge", func);
 
     // First check: CALLABLE → potential AD node (must extract primal value)
-    ctx_.builder().CreateCondBr(is_callable, ad_check_bb, dbl_check_bb);
+    ctx_.builder().CreateCondBr(is_callable, ad_check_bb, dual_check_bb);
 
     // AD CHECK: Verify subtype is AD_NODE, extract primal double from field 1
     ctx_.builder().SetInsertPoint(ad_check_bb);
     llvm::Value* is_ad = tagged_.checkCallableSubtype(tagged_val, CALLABLE_SUBTYPE_AD_NODE);
-    ctx_.builder().CreateCondBr(is_ad, ad_bb, dbl_check_bb);
+    ctx_.builder().CreateCondBr(is_ad, ad_bb, dual_check_bb);
 
     // AD NODE PATH: Load primal value (field 1 = double value)
     ctx_.builder().SetInsertPoint(ad_bb);
@@ -1660,6 +1664,23 @@ llvm::Value* ArithmeticCodegen::extractAsDouble(llvm::Value* tagged_val) {
     llvm::Value* ad_val = ctx_.builder().CreateLoad(ctx_.doubleType(), ad_val_ptr, "ad_primal");
     ctx_.builder().CreateBr(merge_bb);
     ad_bb = ctx_.builder().GetInsertBlock();
+
+    // DUAL NUMBER CHECK: forward-mode dual carries primal in field 0.
+    // Extracting as double drops the derivative — comparisons, prints,
+    // and any code that asks "what scalar does this dual represent?"
+    // all want the primal.
+    ctx_.builder().SetInsertPoint(dual_check_bb);
+    ctx_.builder().CreateCondBr(is_dual, dual_bb, dbl_check_bb);
+
+    // DUAL PATH: load the eshkol_dual_number_t pointed to by the
+    // tagged value's data field, then read field 0 (value).
+    ctx_.builder().SetInsertPoint(dual_bb);
+    llvm::Value* dual_ptr = tagged_.unpackPtr(tagged_val);
+    llvm::Value* dual_val_ptr = ctx_.builder().CreateStructGEP(
+        ctx_.dualNumberType(), dual_ptr, 0);
+    llvm::Value* dual_val = ctx_.builder().CreateLoad(ctx_.doubleType(), dual_val_ptr, "dual_primal");
+    ctx_.builder().CreateBr(merge_bb);
+    dual_bb = ctx_.builder().GetInsertBlock();
 
     // Double check
     ctx_.builder().SetInsertPoint(dbl_check_bb);
@@ -1731,8 +1752,9 @@ llvm::Value* ArithmeticCodegen::extractAsDouble(llvm::Value* tagged_val) {
 
     // Merge
     ctx_.builder().SetInsertPoint(merge_bb);
-    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.doubleType(), 6, "as_double");
+    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.doubleType(), 7, "as_double");
     phi->addIncoming(ad_val, ad_bb);
+    phi->addIncoming(dual_val, dual_bb);
     phi->addIncoming(dbl_val, dbl_bb);
     phi->addIncoming(rat_dbl, rational_bb);
     phi->addIncoming(bn_dbl, actual_bignum_bb);
@@ -1785,6 +1807,20 @@ llvm::Value* ArithmeticCodegen::compare(llvm::Value* left, llvm::Value* right,
         llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CALLABLE));
     llvm::Value* any_callable = ctx_.builder().CreateOr(left_is_callable, right_is_callable);
 
+    // DUAL NUMBER AWARENESS: forward-mode AD dual numbers carry a primal value
+    // in field 0 of the heap-allocated dual struct.  Comparisons against scalars
+    // use the primal (dropping the derivative) — the standard semantics in
+    // every other AD system (Julia ForwardDiff, JAX, autograd, Stan).  Without
+    // this branch, conditionals inside a forward-mode AD-traced function would
+    // raise "Type error in <: expected number" the moment the AD harness
+    // pushed a dual through them.  See examples/differentiable_physics.esk
+    // for the canonical motivating case.
+    llvm::Value* left_is_dual = ctx_.builder().CreateICmpEQ(left_base,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DUAL_NUMBER));
+    llvm::Value* right_is_dual = ctx_.builder().CreateICmpEQ(right_base,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DUAL_NUMBER));
+    llvm::Value* any_dual = ctx_.builder().CreateOr(left_is_dual, right_is_dual);
+
     // CHAR ACCEPTANCE: numeric comparisons accept characters by their codepoint.
     // Stdlib code historically wrote `(= c 32)` to test for a space byte
     // because string-ref returns a CHAR (data field = codepoint as int64).
@@ -1805,14 +1841,18 @@ llvm::Value* ArithmeticCodegen::compare(llvm::Value* left, llvm::Value* right,
     // error in real programs.)
     llvm::Value* left_is_number = ctx_.builder().CreateOr(
         ctx_.builder().CreateOr(
-            ctx_.builder().CreateOr(left_is_double, left_is_int),
-            ctx_.builder().CreateOr(left_is_heap, left_is_callable)),
-        left_is_char);
+            ctx_.builder().CreateOr(
+                ctx_.builder().CreateOr(left_is_double, left_is_int),
+                ctx_.builder().CreateOr(left_is_heap, left_is_callable)),
+            left_is_char),
+        left_is_dual);
     llvm::Value* right_is_number = ctx_.builder().CreateOr(
         ctx_.builder().CreateOr(
-            ctx_.builder().CreateOr(right_is_double, right_is_int),
-            ctx_.builder().CreateOr(right_is_heap, right_is_callable)),
-        right_is_char);
+            ctx_.builder().CreateOr(
+                ctx_.builder().CreateOr(right_is_double, right_is_int),
+                ctx_.builder().CreateOr(right_is_heap, right_is_callable)),
+            right_is_char),
+        right_is_dual);
     llvm::Value* both_numbers = ctx_.builder().CreateAnd(left_is_number, right_is_number);
 
     llvm::Function* func = ctx_.builder().GetInsertBlock()->getParent();
@@ -1877,9 +1917,11 @@ llvm::Value* ArithmeticCodegen::compare(llvm::Value* left, llvm::Value* right,
     ctx_.builder().CreateBr(merge);
     llvm::BasicBlock* rational_cmp_exit = ctx_.builder().GetInsertBlock();
 
-    // Check for double or AD node operands (AD nodes contain doubles, extracted by extractAsDouble)
+    // Check for double, AD node, or dual-number operands (all extract via primal/value to double)
     ctx_.builder().SetInsertPoint(check_double);
-    llvm::Value* any_double_or_ad = ctx_.builder().CreateOr(any_double, any_callable);
+    llvm::Value* any_double_or_ad = ctx_.builder().CreateOr(
+        ctx_.builder().CreateOr(any_double, any_callable),
+        any_dual);
     ctx_.builder().CreateCondBr(any_double_or_ad, dbl_cmp_path, int_path);
 
     // Double comparison: use extractAsDouble which handles DOUBLE, INT64, HEAP_PTR, and AD nodes

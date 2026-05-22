@@ -1,0 +1,95 @@
+;; ============================================================
+;; Differentiable Physics — Launch Angle Optimisation
+;; ============================================================
+;;
+;; You stand at the origin and want to throw a projectile to land on
+;; a target at horizontal distance D = 12 metres on flat ground.
+;; Wind drag is linear with coefficient k = 0.08.  Initial speed is
+;; fixed at v0 = 14 m/s.  What launch angle θ minimises the squared
+;; landing-distance error?
+;;
+;; Most physics simulators are NOT differentiable: you can run the
+;; forward simulation, but you can't ask the simulator for ∂error/∂θ.
+;; Eshkol differentiates THROUGH the simulator — `gradient` walks the
+;; same recursive trajectory loop the forward pass uses.
+
+(define g 9.81)         ; gravity
+(define k 0.08)         ; linear drag coefficient
+(define v0 14.0)        ; fixed launch speed
+(define target-x 12.0)
+(define dt 0.01)        ; integration step (seconds)
+(define max-steps 800)
+
+;; Forward simulation: terminate the integration as soon as the
+;; projectile crosses below ground (y < 0) on its descent.  The
+;; `(< y 0.0)` comparison sees a dual number when `theta` is being
+;; differentiated by `gradient`; the comparison routes through the
+;; dual's primal value transparently (lib/backend/arithmetic_codegen.cpp
+;; ArithmeticCodegen::compare and ArithmeticCodegen::extractAsDouble
+;; recognise ESHKOL_VALUE_DUAL_NUMBER and lift the value field).
+(define (simulate-landing theta)
+  (let* ((vx0 (* v0 (cos theta)))
+         (vy0 (* v0 (sin theta))))
+    (let loop ((x 0.0) (y 0.0) (vx vx0) (vy vy0) (step 0))
+      (cond
+        ((= step max-steps) x)
+        ((and (< y 0.0) (> step 1)) x)
+        (else
+          (let* ((ax (* (- 0.0 k) vx))
+                 (ay (- (* (- 0.0 k) vy) g))
+                 (vx-next (+ vx (* ax dt)))
+                 (vy-next (+ vy (* ay dt)))
+                 (x-next (+ x (* vx-next dt)))
+                 (y-next (+ y (* vy-next dt))))
+            (loop x-next y-next vx-next vy-next (+ step 1))))))))
+
+(define (landing-error params)
+  (let* ((theta (vector-ref params 0))
+         (x-land (simulate-landing theta))
+         (err (- x-land target-x)))
+    (* err err)))
+
+(define (optimise-angle theta0 lr steps)
+  (let loop ((p (vector theta0)) (i 0))
+    (if (= i steps)
+        p
+        (let* ((g (gradient landing-error p))
+               (next (vector (- (vector-ref p 0)
+                                 (* lr (vector-ref g 0))))))
+          (when (= 0 (modulo i 25))
+            (display "  step ") (display i)
+            (display "  theta=") (display (vector-ref p 0))
+            (display "  x_land=") (display (simulate-landing (vector-ref p 0)))
+            (display "  err^2=") (display (landing-error p))
+            (newline))
+          (loop next (+ i 1))))))
+
+(display "=== Differentiable physics: throw to hit a target ===") (newline)
+(display "Target distance:    ") (display target-x) (display " m") (newline)
+(display "Launch speed v0:    ") (display v0) (display " m/s") (newline)
+(display "Drag coefficient k: ") (display k) (newline)
+(newline)
+
+(define initial-theta 0.5)   ;; ~28 degrees, a poor guess
+(display "Starting angle: ") (display initial-theta) (display " rad (~")
+(display (* initial-theta (/ 180.0 3.141592653589793))) (display " deg)")
+(newline)
+(display "Initial landing x: ") (display (simulate-landing initial-theta))
+(newline) (newline)
+
+(define optimised (optimise-angle initial-theta 0.00005 200))
+(define final-theta (vector-ref optimised 0))
+
+(newline)
+(display "Optimised angle:   ") (display final-theta) (display " rad (~")
+(display (* final-theta (/ 180.0 3.141592653589793))) (display " deg)")
+(newline)
+(display "Final landing x:   ") (display (simulate-landing final-theta))
+(newline)
+(display "Squared error:     ") (display (landing-error optimised)) (newline)
+(newline)
+(display "The optimiser walked through 200 calls to a recursive Euler") (newline)
+(display "integrator and asked the compiler for d(error)/d(theta) each") (newline)
+(display "step.  No symbolic preprocessing, no finite differences,") (newline)
+(display "and no manual reverse-mode framework — `gradient` just works") (newline)
+(display "through the same loop the forward simulation runs.") (newline)
