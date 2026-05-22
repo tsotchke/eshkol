@@ -125,11 +125,75 @@ llvm::Value* AutodiffCodegen::packDualToTagged(llvm::Value* dual) {
 llvm::Value* AutodiffCodegen::unpackDualFromTagged(llvm::Value* tagged_val) {
     if (!tagged_val) return nullptr;
 
-    // Extract pointer from tagged value
+    // Extract pointer from tagged value.  This is the straight-line
+    // hot path used by every dual arithmetic site (sin/cos/exp/log/…),
+    // which only invokes this after already branching on
+    // `arg_is_dual`.  We MUST NOT introduce basic blocks here — many
+    // callers immediately set up their own PHIs and assume the builder
+    // is still in the same block they were in before this call.
+    //
+    // For callers that may have a non-dual tagged value (e.g.
+    // `derivative()`'s post-call extractor when the lambda body returns
+    // a constant), use `safeUnpackDualFromTagged` below, which does the
+    // dispatch as separate basic blocks.
     llvm::Value* ptr_val = tagged_.unpackPtr(tagged_val);
 
     // Load and return dual number
     return ctx_.builder().CreateLoad(ctx_.dualNumberType(), ptr_val);
+}
+
+// Safe variant: handles the case where `tagged_val` may not actually be
+// a dual.  Returns a dual struct: the original dual if it is one,
+// otherwise {primal, 0.0} synthesised from the scalar.
+//
+// Required for `derivative()` results: the lambda body may return a
+// non-dual (constant function, predicate-driven branch with literal
+// branches, etc.).  Without this, dereferencing a scalar's data field
+// as a heap pointer crashes.
+llvm::Value* AutodiffCodegen::safeUnpackDualFromTagged(llvm::Value* tagged_val) {
+    if (!tagged_val) return nullptr;
+
+    llvm::Value* type_tag = tagged_.getType(tagged_val);
+    llvm::Value* base_type = tagged_.getBaseType(type_tag);
+    llvm::Value* is_dual = ctx_.builder().CreateICmpEQ(base_type,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DUAL_NUMBER));
+
+    llvm::Function* func = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::BasicBlock* dual_path = llvm::BasicBlock::Create(ctx_.context(), "sudft_dual", func);
+    llvm::BasicBlock* scalar_path = llvm::BasicBlock::Create(ctx_.context(), "sudft_scalar", func);
+    llvm::BasicBlock* merge_bb = llvm::BasicBlock::Create(ctx_.context(), "sudft_merge", func);
+
+    ctx_.builder().CreateCondBr(is_dual, dual_path, scalar_path);
+
+    // Dual path: load the heap-allocated dual struct.
+    ctx_.builder().SetInsertPoint(dual_path);
+    llvm::Value* dual_ptr = tagged_.unpackPtr(tagged_val);
+    llvm::Value* loaded_dual = ctx_.builder().CreateLoad(ctx_.dualNumberType(), dual_ptr, "sudft_loaded");
+    llvm::BasicBlock* dual_exit = ctx_.builder().GetInsertBlock();
+    ctx_.builder().CreateBr(merge_bb);
+
+    // Scalar path: extract a primal double, build {primal, 0.0}.  Use
+    // base_type to pick between bitcast (DOUBLE) and SIToFP (everything
+    // else with a numeric data field — INT64, BOOL, CHAR).
+    ctx_.builder().SetInsertPoint(scalar_path);
+    llvm::Value* data_int = ctx_.builder().CreateExtractValue(tagged_val, {4}, "sudft_data");
+    llvm::Value* primal_si = ctx_.builder().CreateSIToFP(data_int, ctx_.doubleType(), "sudft_primal_si");
+    llvm::Value* primal_bc = ctx_.builder().CreateBitCast(data_int, ctx_.doubleType(), "sudft_primal_bc");
+    llvm::Value* is_double = ctx_.builder().CreateICmpEQ(base_type,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DOUBLE));
+    llvm::Value* primal_final = ctx_.builder().CreateSelect(is_double, primal_bc, primal_si, "sudft_primal");
+    llvm::Value* synth_dual = llvm::UndefValue::get(ctx_.dualNumberType());
+    synth_dual = ctx_.builder().CreateInsertValue(synth_dual, primal_final, {0});
+    synth_dual = ctx_.builder().CreateInsertValue(synth_dual,
+        llvm::ConstantFP::get(ctx_.doubleType(), 0.0), {1});
+    llvm::BasicBlock* scalar_exit = ctx_.builder().GetInsertBlock();
+    ctx_.builder().CreateBr(merge_bb);
+
+    ctx_.builder().SetInsertPoint(merge_bb);
+    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.dualNumberType(), 2, "sudft_result");
+    phi->addIncoming(loaded_dual, dual_exit);
+    phi->addIncoming(synth_dual, scalar_exit);
+    return phi;
 }
 
 // Dual arithmetic: (a, a') + (b, b') = (a+b, a'+b')
@@ -2043,10 +2107,14 @@ llvm::Value* AutodiffCodegen::codegenDerivativeMonolith(const eshkol_operations_
     // Call function with dual number input and captures
     // The function will automatically use dual arithmetic, propagating derivatives
     Value* result_tagged = ctx_.builder().CreateCall(func_ptr, deriv_call_args);
-    
-    // Unpack result from tagged_value
-    Value* result_dual = unpackDualFromTagged(result_tagged);
-    
+
+    // Unpack result from tagged_value.  Use the safe variant: a lambda
+    // body that doesn't depend on x (constant fn, predicate-driven
+    // branch with literal branches, etc.) returns a non-dual scalar,
+    // which the plain unpack would deref as a heap pointer and crash.
+    // safeUnpackDualFromTagged returns {primal, 0.0} in that case.
+    Value* result_dual = safeUnpackDualFromTagged(result_tagged);
+
     // Extract derivative component from result
     Value* value = getDualPrimal(result_dual);
                     Value* derivative = getDualTangent(result_dual);
@@ -5232,8 +5300,9 @@ llvm::Value* AutodiffCodegen::derivativeStaticOnly(const eshkol_operations_t* op
     // Call function with dual number input and captures
     Value* result_tagged = ctx_.builder().CreateCall(func_ptr, deriv_call_args);
 
-    // Unpack result from tagged_value
-    Value* result_dual = unpackDualFromTagged(result_tagged);
+    // Unpack result from tagged_value.  See sibling derivative() above
+    // for the rationale on using the safe variant.
+    Value* result_dual = safeUnpackDualFromTagged(result_tagged);
 
     // Extract derivative component from result
     Value* derivative_val = getDualTangent(result_dual);
