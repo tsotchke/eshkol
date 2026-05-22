@@ -192,6 +192,30 @@
 (check "lcm normal int path still works"
        (= (lcm 4 6) 12))
 
+;; ─── Case 4c ───────────────────────────────────────────────────────
+;; atan2 with dual operand used to silently return derivative 0
+;; (codegenBinaryMathFunction collapsed both operands to their primals
+;; via extractDoubleFromTagged and packed the result as a tagged
+;; DOUBLE — the AD harness then synthesised a zero tangent).
+;;
+;; Fix: dual-aware branch in codegenBinaryMathFunction.  For atan2(y,x):
+;;   ∂/∂y atan2(y,x) =  x / (x² + y²)
+;;   ∂/∂x atan2(y,x) = -y / (x² + y²)
+;;   d(atan2(y,x)) = (x·dy - y·dx) / (x² + y²)
+;; Both convertToDual'd, chain rule applied on primals/tangents.
+
+(define (a-atan-y x) (atan x 2.0))      ;; d/dx atan(x,2)= 2/(4+x²)
+(define (a-atan-x x) (atan 2.0 x))      ;; d/dx atan(2,x)=-2/(4+x²)
+
+(check "(atan2 dual scalar) — no crash"
+       (number? (derivative a-atan-y 1.0)))
+(check "d/dx atan2(x,2) at x=1 = 0.4"
+       (< (abs (- (derivative a-atan-y 1.0) 0.4)) 1e-10))
+(check "d/dx atan2(2,x) at x=1 = -0.4"
+       (< (abs (- (derivative a-atan-x 1.0) -0.4)) 1e-10))
+(check "atan2 normal path still works (atan2(1,1) = π/4)"
+       (< (abs (- (atan 1.0 1.0) 0.78539816339744828)) 1e-10))
+
 ;; ─── Case 5 ────────────────────────────────────────────────────────
 ;; A recursive integrator that terminates on a `(< y 0.0)` test —
 ;; exactly the canonical motivating case from

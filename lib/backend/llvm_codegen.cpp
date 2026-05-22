@@ -17852,6 +17852,75 @@ private:
         Value* arg2 = codegenAST(&op->call_op.variables[1]);
         if (!arg1 || !arg2) return nullptr;
 
+        // DUAL NUMBER FAST PATH (forward-mode AD).
+        //
+        // For atan2(y, x):
+        //   ∂/∂y atan2(y,x) =  x / (x² + y²)
+        //   ∂/∂x atan2(y,x) = -y / (x² + y²)
+        // Forward-mode chain rule on a dual {y, dy} and dual {x, dx}:
+        //   d(atan2(y,x)) = (x*dy - y*dx) / (x² + y²)
+        //
+        // Without this branch, dual operands collapsed to their primal
+        // via extractDoubleFromTagged and the result was packed as a
+        // tagged DOUBLE — downstream AD then synthesised a zero tangent
+        // via safeUnpackDualFromTagged, giving 0 where the true
+        // derivative is non-zero.
+        if (func_name == "atan2") {
+            Value* arg1_base = getBaseType(getTaggedValueType(arg1));
+            Value* arg2_base = getBaseType(getTaggedValueType(arg2));
+            Value* arg1_is_dual = builder->CreateICmpEQ(arg1_base,
+                ConstantInt::get(int8_type, ESHKOL_VALUE_DUAL_NUMBER));
+            Value* arg2_is_dual = builder->CreateICmpEQ(arg2_base,
+                ConstantInt::get(int8_type, ESHKOL_VALUE_DUAL_NUMBER));
+            Value* any_dual = builder->CreateOr(arg1_is_dual, arg2_is_dual);
+
+            Function* outer_func = builder->GetInsertBlock()->getParent();
+            BasicBlock* dual_bb = BasicBlock::Create(*context, "atan2_dual", outer_func);
+            BasicBlock* normal_bb = BasicBlock::Create(*context, "atan2_normal", outer_func);
+            BasicBlock* merge_bb = BasicBlock::Create(*context, "atan2_merge", outer_func);
+            builder->CreateCondBr(any_dual, dual_bb, normal_bb);
+
+            builder->SetInsertPoint(dual_bb);
+            Value* a1_is_dbl = builder->CreateICmpEQ(arg1_base,
+                ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
+            Value* a2_is_dbl = builder->CreateICmpEQ(arg2_base,
+                ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
+            Value* y_dual = arith_->convertToDual(arg1, arg1_is_dual, a1_is_dbl);
+            Value* x_dual = arith_->convertToDual(arg2, arg2_is_dual, a2_is_dbl);
+            Value* y = builder->CreateExtractValue(y_dual, {0}, "atan2_y");
+            Value* dy = builder->CreateExtractValue(y_dual, {1}, "atan2_dy");
+            Value* x = builder->CreateExtractValue(x_dual, {0}, "atan2_x");
+            Value* dx = builder->CreateExtractValue(x_dual, {1}, "atan2_dx");
+            Value* primal_d = builder->CreateCall(function_table["atan2"], {y, x}, "atan2_primal");
+            Value* xx = builder->CreateFMul(x, x);
+            Value* yy = builder->CreateFMul(y, y);
+            Value* denom = builder->CreateFAdd(xx, yy, "atan2_denom");
+            Value* num_y = builder->CreateFMul(x, dy);
+            Value* num_x = builder->CreateFMul(y, dx);
+            Value* num = builder->CreateFSub(num_y, num_x, "atan2_num");
+            Value* tangent_d = builder->CreateFDiv(num, denom, "atan2_tangent");
+            Value* result_dual = UndefValue::get(ctx_->dualNumberType());
+            result_dual = builder->CreateInsertValue(result_dual, primal_d, {0});
+            result_dual = builder->CreateInsertValue(result_dual, tangent_d, {1});
+            Value* dual_tagged = autodiff_->packDualToTagged(result_dual);
+            BasicBlock* dual_exit = builder->GetInsertBlock();
+            builder->CreateBr(merge_bb);
+
+            builder->SetInsertPoint(normal_bb);
+            Value* val1 = extractDoubleFromTagged(arg1);
+            Value* val2 = extractDoubleFromTagged(arg2);
+            Value* result = builder->CreateCall(function_table[func_name], {val1, val2});
+            Value* normal_tagged = packDoubleToTaggedValue(result);
+            BasicBlock* normal_exit = builder->GetInsertBlock();
+            builder->CreateBr(merge_bb);
+
+            builder->SetInsertPoint(merge_bb);
+            PHINode* phi = builder->CreatePHI(tagged_value_type, 2, "atan2_result");
+            phi->addIncoming(dual_tagged, dual_exit);
+            phi->addIncoming(normal_tagged, normal_exit);
+            return phi;
+        }
+
         // Convert to double
         Value* val1 = extractDoubleFromTagged(arg1);
         Value* val2 = extractDoubleFromTagged(arg2);
