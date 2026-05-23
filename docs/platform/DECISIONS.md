@@ -449,6 +449,35 @@ implementation replacement behind the same ABI.
 
 ---
 
+## D-0038
+
+- Date: 2026-05-23
+- Status: Accepted
+- Title: Extract hosted process stack setup
+
+### Context
+
+`arena_memory.cpp` still carried `eshkol_init_stack_size`, which is not arena
+allocation substrate. Its current implementation reads `ESHKOL_STACK_SIZE` and,
+on POSIX hosts, calls `getrlimit` / `setrlimit` for `RLIMIT_STACK` before
+generated code runs. That is hosted process startup behavior and keeps
+`sys/resource.h` coupled to the arena split-pending file.
+
+### Decision
+
+Move `eshkol_init_stack_size` into `lib/core/runtime_stack_hosted.cpp`,
+classified as `runtime-hosted`. Keep the ABI name unchanged for generated code
+and the REPL JIT symbol registry.
+
+### Consequences
+
+- `arena_memory.cpp` no longer includes `sys/resource.h`
+- hosted stack-limit setup is explicit in the runtime-hosted source set
+- freestanding profiles can later provide target startup or no-op stack setup
+  behind the same ABI
+
+---
+
 ## D-0037
 
 - Date: 2026-05-23
