@@ -1354,3 +1354,44 @@ hook ABI or resource-limit policy object in this slice.
   `eshkol-static` still aggregates all internal source sets
 - future slices can focus on the real hard seams: arena/string-port/threading
   in `arena_memory.cpp` and signal/process/shutdown behavior in `runtime.cpp`
+
+---
+
+## D-0045
+
+- Date: 2026-05-23
+- Status: Accepted
+- Title: Extract continuation and dynamic-wind runtime helpers
+
+### Context
+
+`arena_memory.cpp` still carried the runtime helpers for first-class
+continuations and `dynamic-wind`: continuation state allocation, continuation
+closure construction, the global wind stack, and thunk dispatch used while
+unwinding non-local exits. These helpers use arena allocation, closure metadata,
+and generated-code ABI conventions, but they do not depend on hosted files,
+process state, environment variables, or thread/process APIs.
+
+Keeping this block in the split-pending arena file made the remaining
+allocator/data-structure split less clear and hid a freestanding-safe runtime
+surface inside a file that still contains unrelated high-level helpers.
+
+### Decision
+
+Move the continuation and dynamic-wind helper ABI into
+`lib/core/runtime_continuations.cpp`, classified as `runtime-core`. Preserve the
+existing exported symbol names and the `g_dynamic_wind_stack` global so
+generated code, REPL JIT symbol registration, and hosted behavior remain
+unchanged.
+
+Do not change the single-shot continuation semantics, dynamic-wind thunk
+dispatch ABI, or exception handler runtime in this slice.
+
+### Consequences
+
+- `arena_memory.cpp` no longer owns continuation state or dynamic-wind runtime
+  machinery
+- runtime-core explicitly owns the current continuation helper implementation
+- the remaining split-pending arena file is narrowed further toward allocator,
+  AD, region/shared-memory, hash-table, tensor-allocation, and math helper
+  groups

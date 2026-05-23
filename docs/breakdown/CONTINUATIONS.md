@@ -9,7 +9,7 @@ interaction between `call/cc`, `dynamic-wind`, and the exception system
 (`guard`/`raise`/`with-exception-handler`).
 
 All continuation-related codegen resides in `lib/backend/llvm_codegen.cpp`
-(34,928 lines). Runtime support functions are in `lib/core/arena_memory.cpp`.
+(34,928 lines). Runtime support functions are in `lib/core/runtime_continuations.cpp`.
 Type definitions live in `inc/eshkol/eshkol.h`.
 
 ---
@@ -88,10 +88,10 @@ LLVM IR sequence:
 
 1. **Allocate jmp_buf** on the current stack frame (200 bytes, platform-safe).
 2. **Create continuation state** via `eshkol_make_continuation_state(arena, jmp_buf)`
-   (`arena_memory.cpp`). This arena-allocates the state struct and records
+   (`runtime_continuations.cpp`). This arena-allocates the state struct and records
    the current `g_dynamic_wind_stack` as `wind_mark`.
 3. **Create continuation closure** via `eshkol_make_continuation_closure(arena, state)`
-   (`arena_memory.cpp`). This allocates a standard closure with one capture
+   (`runtime_continuations.cpp`). This allocates a standard closure with one capture
    (the state pointer) and overrides the header subtype to
    `CALLABLE_SUBTYPE_CONTINUATION`.
 4. **Package as tagged value** with type `ESHKOL_VALUE_CALLABLE`.
@@ -165,7 +165,7 @@ typedef struct eshkol_dynamic_wind_entry {
 } eshkol_dynamic_wind_entry_t;
 ```
 
-The global head pointer is `g_dynamic_wind_stack` (`arena_memory.cpp`).
+The global head pointer is `g_dynamic_wind_stack` (`runtime_continuations.cpp`).
 
 ### 3.3 Codegen for dynamic-wind
 
@@ -176,10 +176,10 @@ The `codegenDynamicWind` function at `llvm_codegen.cpp` emits:
    function entry block for LLVM dominance correctness).
 3. Call `before()` via `codegenClosureCall` with zero arguments.
 4. Push the wind entry via `eshkol_push_dynamic_wind(arena, &before, &after)`
-   (`arena_memory.cpp`). The push happens *after* `before()` succeeds,
+   (`runtime_continuations.cpp`). The push happens *after* `before()` succeeds,
    per R7RS semantics.
 5. Call `thunk()` via `codegenClosureCall`, capturing the result.
-6. Pop the wind entry via `eshkol_pop_dynamic_wind()` (`arena_memory.cpp`).
+6. Pop the wind entry via `eshkol_pop_dynamic_wind()` (`runtime_continuations.cpp`).
 7. Call `after()` via `codegenClosureCall`.
 8. Return thunk's result.
 
@@ -187,7 +187,7 @@ The `codegenDynamicWind` function at `llvm_codegen.cpp` emits:
 
 When a continuation is invoked (Section 2.4, step 5), the codegen loads the
 `wind_mark` from the continuation state (offset 24 in the struct) and calls
-`eshkol_unwind_dynamic_wind(wind_mark)` (`arena_memory.cpp`):
+`eshkol_unwind_dynamic_wind(wind_mark)` (`runtime_continuations.cpp`):
 
 ```c
 void eshkol_unwind_dynamic_wind(void* saved_wind_mark) {
@@ -205,9 +205,9 @@ saved mark, calling each `after` thunk along the way. The `wind_mark` was
 captured at `call/cc` time, so this unwinds exactly those `dynamic-wind` scopes
 that were entered after the continuation was created.
 
-The `call_thunk_from_tagged` helper (`arena_memory.cpp`) extracts the
+The `call_thunk_from_tagged` helper (`runtime_continuations.cpp`) extracts the
 closure pointer from a tagged `CALLABLE` value and calls `call_thunk_closure`
-(`arena_memory.cpp`), which dispatches by capture count (0 through 4).
+(`runtime_continuations.cpp`), which dispatches by capture count (0 through 4).
 
 **Platform ABI note:** `call_thunk_closure` uses a compile-time branch on `__aarch64__` because `eshkol_tagged_value_t` (16 bytes) is returned differently on ARM64 (register pairs) vs x86/Windows (hidden return buffer). See [MEMORY_MANAGEMENT.md — Platform-Specific ABI Considerations](MEMORY_MANAGEMENT.md#platform-specific-abi-considerations).
 
@@ -234,7 +234,7 @@ The `codegenGuard` function at `llvm_codegen.cpp` emits:
 
 1. **Setup block**: Allocate a 200-byte `jmp_buf` on the stack. Push an
    exception handler via `eshkol_push_exception_handler(jmp_buf)`
-   (`arena_memory.cpp`), which prepends a handler entry to the global
+   (`runtime_exceptions_hosted.cpp`), which prepends a handler entry to the global
    `g_exception_handler_stack`.
 2. **Call setjmp**: Branch to the try block (result = 0) or handler block
    (result != 0).
@@ -533,10 +533,10 @@ intrinsics, CPS transformation passes, or runtime stack copying.
 - `lib/backend/llvm_codegen.cpp`: codegenCallCC (§17324), codegenDynamicWind
   (§17429), codegenGuard (§16948), codegenRaise (§17221), codegenWithExceptionHandler
   (§17495), continuation invocation dispatch (§4751)
-- `lib/core/arena_memory.cpp`: eshkol_make_continuation_state (§4639),
-  eshkol_make_continuation_closure (§4653), wind stack runtime
-  (§4773–4801), exception handler stack (§4578–4586),
-  `call_thunk_closure` ABI dispatch (§4685–4763)
+- `lib/core/runtime_continuations.cpp`: eshkol_make_continuation_state,
+  eshkol_make_continuation_closure, wind stack runtime,
+  `call_thunk_closure` ABI dispatch
+- `lib/core/runtime_exceptions_hosted.cpp`: exception handler stack
 - `inc/eshkol/eshkol.h`: eshkol_continuation_state_t, eshkol_dynamic_wind_entry_t,
   runtime function declarations
 - `lib/core/platform_runtime.cpp`: `eshkol_jmp_buf_size` (§551–553)
@@ -773,8 +773,8 @@ differently:
 - **AArch64 (both POSIX and Windows)**: Returns the 16-byte struct
   directly in the `x0:x1` register pair. No hidden buffer is passed.
 
-The `call_thunk_closure` helper in `lib/core/arena_memory.cpp`
-§4685–4763 dispatches by architecture at compile time:
+The `call_thunk_closure` helper in `lib/core/runtime_continuations.cpp`
+dispatches by architecture at compile time:
 
 ```c
 #if defined(__aarch64__) || defined(_M_ARM64)
@@ -814,7 +814,7 @@ typedef struct eshkol_continuation_state {
 ```
 
 Total: 32 bytes, arena-allocated. The struct is created by
-`eshkol_make_continuation_state` (`lib/core/arena_memory.cpp` §4639):
+`eshkol_make_continuation_state` (`lib/core/runtime_continuations.cpp`):
 
 ```c
 extern "C" eshkol_continuation_state_t* eshkol_make_continuation_state(
@@ -850,7 +850,7 @@ typedef struct eshkol_dynamic_wind_entry {
 ```
 
 The global head pointer `g_dynamic_wind_stack` is in
-`lib/core/arena_memory.cpp` §4637, a plain C global (not thread-local)
+`lib/core/runtime_continuations.cpp`, a plain C global (not thread-local)
 — continuation semantics inside parallel-map are therefore *not*
 isolated per worker, and this is a known limitation documented in
 PARALLEL_COMPUTING.md §13.7.
