@@ -107,6 +107,7 @@ Program phase:
 - hosted logger/resource-limit implementations are classified as `runtime-hosted`, and the AST pretty-printer is no longer treated as runtime substrate
 - freestanding-safe bytevector helpers now live in a dedicated runtime-core translation unit instead of the hosted-heavy runtime state implementation
 - closure reflection and lambda-registry helpers now live in a dedicated runtime-core translation unit instead of `arena_memory.cpp`
+- continuation and dynamic-wind helpers now live in a dedicated runtime-core translation unit instead of `arena_memory.cpp`
 - freestanding-safe tensor index helpers now live in a dedicated runtime-core translation unit instead of the hosted-heavy runtime state implementation
 - freestanding-safe tensor fill helpers now live in a dedicated runtime-core translation unit instead of the hosted-heavy runtime state implementation
 - machine integer and raw pointer annotation surfaces exist in the HoTT parser/type-checker path
@@ -124,7 +125,7 @@ Program phase:
 
 Immediate priorities:
 
-- split the remaining `runtime-split-pending` files, `runtime.cpp` and `arena_memory.cpp`, along host-dependent seams
+- split the remaining `runtime-split-pending` file, `arena_memory.cpp`, along host-dependent seams
 - hosted leakage checks for runtime-core
 - low-level machine-facing language surface
 - freestanding LLVM object and ELF pipeline
