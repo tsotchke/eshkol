@@ -449,6 +449,38 @@ implementation replacement behind the same ABI.
 
 ---
 
+## D-0036
+
+- Date: 2026-05-23
+- Status: Accepted
+- Title: Extract hosted runtime signal handlers
+
+### Context
+
+The remaining `runtime.cpp` signal block owns host signal and exception
+installation, saved signal dispositions, Windows unhandled-exception filtering,
+signal-safe write/exit helpers, and volatile signal-shadow state. That code is
+needed by the hosted runtime, but it is not the lifecycle state machine itself
+and is not a freestanding-safe runtime-core implementation.
+
+### Decision
+
+Move hosted signal and exception handler installation/restoration into
+`lib/core/runtime_signals_hosted.cpp`, classified as `runtime-hosted`.
+Keep the public interrupt flag ABI in `runtime.cpp`, and update signal-shadow
+state through private hosted helpers from `runtime_hosted_internal.h`.
+
+### Consequences
+
+- runtime-hosted explicitly owns the current POSIX/Windows signal and exception
+  handler implementation
+- `runtime.cpp` no longer owns saved signal dispositions, fatal-signal handlers,
+  or signal-safe shadow variables directly
+- a later freestanding runtime profile can provide target-specific trap,
+  interrupt, or polling hooks behind the same public interrupt ABI
+
+---
+
 ## D-0035
 
 - Date: 2026-05-23

@@ -12,6 +12,8 @@
 
 namespace eshkol::runtime_hosted {
 
+void set_signal_runtime_state(eshkol_runtime_state_t state);
+void set_signal_shutdown_reason(eshkol_shutdown_reason_t reason);
 void run_shutdown_hooks(eshkol_shutdown_reason_t reason);
 
 }  // namespace eshkol::runtime_hosted
