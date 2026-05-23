@@ -415,6 +415,40 @@ ABI replaces the hosted sink.
 
 ---
 
+## D-0033
+
+- Date: 2026-05-23
+- Status: Accepted
+- Title: Extract hosted dynamic parameter storage
+
+### Context
+
+The current `make-parameter` / `parameterize` implementation is a generated-code
+ABI surface, but its storage path is not the final freestanding design. Parameter
+objects are arena allocated, while each dynamic binding stack grows through
+`malloc` / `realloc` and reports stack-growth failures through the hosted logger.
+Keeping this block in `runtime.cpp` makes the remaining lifecycle split harder
+to review.
+
+### Decision
+
+Move `eshkol_make_parameter`, `eshkol_parameter_push`,
+`eshkol_parameter_pop`, `eshkol_parameter_ref`, and the pointer ABI wrappers
+into `lib/core/runtime_parameters_hosted.cpp` and classify that file as
+`runtime-hosted`. Preserve the symbol names and aggregate `eshkol-static` link
+behavior. Treat a freestanding arena-backed parameter stack as a later
+implementation replacement behind the same ABI.
+
+### Consequences
+
+- `runtime.cpp` no longer owns generated-code parameter storage helpers
+- runtime-hosted explicitly owns the current malloc/realloc-backed parameter
+  implementation
+- the remaining `runtime.cpp` split can focus on lifecycle, signal handling,
+  in-flight operations, and shutdown hooks
+
+---
+
 ## D-0011
 
 - Date: 2026-04-15

@@ -170,7 +170,8 @@ int main(int argc, char** argv) {
             {"lib/backend/thread_pool.cpp", "lib/core/config.cpp",
              "lib/core/logger.cpp", "lib/core/platform_runtime.cpp",
              "lib/core/resource_limits.cpp", "lib/core/runtime_errors_hosted.cpp",
-             "lib/core/runtime_exports_hosted.cpp", "lib/core/system_builtins.c"},
+             "lib/core/runtime_exports_hosted.cpp",
+             "lib/core/runtime_parameters_hosted.cpp", "lib/core/system_builtins.c"},
             "runtime hosted source set")) {
         return rc;
     }
