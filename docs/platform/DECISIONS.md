@@ -382,6 +382,39 @@ will be split as a later platform slice.
 
 ---
 
+## D-0032
+
+- Date: 2026-05-23
+- Status: Accepted
+- Title: Extract hosted runtime error handling
+
+### Context
+
+The current fatal/type-error implementation is a generated-code ABI surface, but
+its behavior is hosted: it writes diagnostics through stderr/logger state, builds
+hosted exception objects, raises through the hosted handler path, and finally
+terminates the process. Keeping that implementation in `runtime.cpp` obscures
+the remaining lifecycle state work and makes the future freestanding panic hook
+harder to see.
+
+### Decision
+
+Move `eshkol_runtime_fatal`, `eshkol_type_error`, and
+`eshkol_type_error_with_value` into `lib/core/runtime_errors_hosted.cpp` and
+classify that file as `runtime-hosted`. Preserve the symbol names and aggregate
+`eshkol-static` link behavior. Runtime-core bytevector helpers can keep
+delegating error paths to this symbol until the freestanding panic/error hook
+ABI replaces the hosted sink.
+
+### Consequences
+
+- `runtime.cpp` is narrower and no longer owns the stderr/exit fatal path
+- runtime-hosted now explicitly owns the current fatal/type-error sink
+- the remaining runtime split can focus on lifecycle/signal state and parameter
+  object storage
+
+---
+
 ## D-0011
 
 - Date: 2026-04-15

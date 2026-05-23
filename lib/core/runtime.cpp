@@ -31,44 +31,9 @@
 #include <chrono>
 #include <thread>
 #include <condition_variable>
-#include <cstdarg>
 #include <cstring>
 #include <csignal>
-#include <cstdlib>
 #include <cstdio>
-
-// ----------------------------------------------------------------------------
-// Fatal error helper
-// ----------------------------------------------------------------------------
-//
-// Used by runtime functions that detect a non-recoverable user error (type
-// error, OOB index, OOM, null bytevector, etc). Constructs an exception
-// object and calls eshkol_raise() so any installed `with-exception-handler`
-// can intercept it. If no handler is installed, eshkol_raise exits the
-// process (we still print to stderr first so embedding hosts see the
-// message even if eshkol_raise's exit path is muted).
-//
-// Replaces the prior pattern of `fprintf(stderr, ...); std::abort();` which
-// bypassed the exception handler entirely and produced SIGABRT in embedding
-// scenarios.
-extern "C" void eshkol_runtime_fatal(eshkol_exception_type_t type, const char* fmt, ...) {
-    char buf[512];
-    va_list args;
-    va_start(args, fmt);
-    vsnprintf(buf, sizeof(buf), fmt, args);
-    va_end(args);
-
-    fprintf(stderr, "%s\n", buf);
-
-    eshkol_exception_t* exc = eshkol_make_exception(type, buf);
-    if (exc) {
-        eshkol_raise(exc);
-        // eshkol_raise normally does not return. If it does (very rare —
-        // means the handler ran a longjmp back out and returned cleanly),
-        // we still must not proceed. Fall through to exit(1).
-    }
-    std::exit(1);
-}
 
 // ============================================================================
 // Global State
@@ -683,37 +648,6 @@ bool eshkol_runtime_drain_operations(int timeout_ms) {
 uint32_t eshkol_runtime_get_operation_count(void) {
     std::lock_guard<std::mutex> lock(g_operations_mutex);
     return static_cast<uint32_t>(g_in_flight_operations.size());
-}
-
-// ----------------------------------------------------------------------------
-// Type Errors (R7RS Compliance)
-// ----------------------------------------------------------------------------
-
-void eshkol_type_error(const char* proc_name, const char* expected_type) {
-    // Format: "Error in <proc>: expected <type>"
-    eshkol_error("Type error in %s: expected %s",
-                 proc_name ? proc_name : "<unknown>",
-                 expected_type ? expected_type : "<type>");
-
-    eshkol_runtime_fatal(ESHKOL_EXCEPTION_TYPE_ERROR,
-                         "Type error in %s: expected %s",
-                         proc_name ? proc_name : "<unknown>",
-                         expected_type ? expected_type : "<type>");
-}
-
-void eshkol_type_error_with_value(const char* proc_name, const char* expected_type,
-                                   const char* actual_type) {
-    // Format: "Error in <proc>: expected <type>, got <actual>"
-    eshkol_error("Type error in %s: expected %s, got %s",
-                 proc_name ? proc_name : "<unknown>",
-                 expected_type ? expected_type : "<type>",
-                 actual_type ? actual_type : "<unknown>");
-
-    eshkol_runtime_fatal(ESHKOL_EXCEPTION_TYPE_ERROR,
-                         "Type error in %s: expected %s, got %s",
-                         proc_name ? proc_name : "<unknown>",
-                         expected_type ? expected_type : "<type>",
-                         actual_type ? actual_type : "<unknown>");
 }
 
 // ----------------------------------------------------------------------------
