@@ -159,7 +159,8 @@ int main(int argc, char** argv) {
 
     if (const int rc = require_entries(runtime_core_src,
             {"lib/core/ad_tape_builtins.c", "lib/core/bignum.cpp",
-             "lib/core/rational.cpp", "lib/core/runtime_string.cpp",
+             "lib/core/rational.cpp", "lib/core/runtime_bytevector.cpp",
+             "lib/core/runtime_string.cpp",
              "lib/core/runtime_tensor_index.cpp",
              "lib/core/runtime_tensor_fill.cpp"},
             "runtime core source set")) {
