@@ -271,6 +271,15 @@ extern "C" FILE* eshkol_fopen(const char* path, const char* mode) {
     return std::fopen(normalized.string().c_str(), mode);
 }
 
+extern "C" int eshkol_fputs(const char* str, FILE* stream) {
+    if (str == nullptr || stream == nullptr) {
+        errno = EINVAL;
+        return EOF;
+    }
+
+    return std::fputs(str, stream);
+}
+
 extern "C" int eshkol_access(const char* path, int mode) {
     if (path == nullptr) {
         errno = EINVAL;
