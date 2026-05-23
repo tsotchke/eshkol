@@ -449,6 +449,35 @@ implementation replacement behind the same ABI.
 
 ---
 
+## D-0041
+
+- Date: 2026-05-23
+- Status: Accepted
+- Title: Extract hosted S-expression reader
+
+### Context
+
+`arena_memory.cpp` still carried the implementation of `eshkol_read_sexpr`.
+That reader is not allocator substrate: it tokenizes hosted `FILE*` streams with
+`fgetc` / `ungetc`, applies reader-specific depth and token guards, allocates
+tagged values into the arena, and interns symbols through the process-global
+symbol table.
+
+### Decision
+
+Move the reader implementation into `lib/core/runtime_reader_hosted.cpp`,
+classified as `runtime-hosted`. Keep the exported ABI name
+`eshkol_read_sexpr` unchanged for generated code and REPL/JIT callers.
+
+### Consequences
+
+- `arena_memory.cpp` no longer owns the FILE-backed S-expression reader
+- hosted reader behavior is explicit in the runtime-hosted source set
+- a later freestanding profile can provide a target-specific reader stream
+  behind the same generated-code ABI
+
+---
+
 ## D-0040
 
 - Date: 2026-05-23
