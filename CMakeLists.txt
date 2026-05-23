@@ -1076,6 +1076,7 @@ set(ESHKOL_RUNTIME_HOSTED_SRC
   lib/core/resource_limits.cpp
   lib/core/runtime_errors_hosted.cpp
   lib/core/runtime_exports_hosted.cpp
+  lib/core/runtime_operations_hosted.cpp
   lib/core/runtime_parameters_hosted.cpp
   lib/core/system_builtins.c
 )
