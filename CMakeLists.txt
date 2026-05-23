@@ -1062,6 +1062,7 @@ set(ESHKOL_RUNTIME_CORE_SRC
   lib/core/ad_tape_builtins.c
   lib/core/bignum.cpp
   lib/core/rational.cpp
+  lib/core/runtime.cpp
   lib/core/runtime_bytevector.cpp
   lib/core/runtime_string.cpp
   lib/core/runtime_tensor_index.cpp
@@ -1076,6 +1077,7 @@ set(ESHKOL_RUNTIME_HOSTED_SRC
   lib/core/resource_limits.cpp
   lib/core/runtime_errors_hosted.cpp
   lib/core/runtime_exports_hosted.cpp
+  lib/core/runtime_lifecycle_hosted.cpp
   lib/core/runtime_operations_hosted.cpp
   lib/core/runtime_parameters_hosted.cpp
   lib/core/runtime_shutdown_hooks_hosted.cpp
@@ -1085,7 +1087,6 @@ set(ESHKOL_RUNTIME_HOSTED_SRC
 
 set(ESHKOL_RUNTIME_SPLIT_PENDING_SRC
   lib/core/arena_memory.cpp
-  lib/core/runtime.cpp
 )
 
 list(REMOVE_ITEM LIB_SRC

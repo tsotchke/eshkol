@@ -159,7 +159,8 @@ int main(int argc, char** argv) {
 
     if (const int rc = require_entries(runtime_core_src,
             {"lib/core/ad_tape_builtins.c", "lib/core/bignum.cpp",
-             "lib/core/rational.cpp", "lib/core/runtime_bytevector.cpp",
+             "lib/core/rational.cpp", "lib/core/runtime.cpp",
+             "lib/core/runtime_bytevector.cpp",
              "lib/core/runtime_string.cpp",
              "lib/core/runtime_tensor_index.cpp",
              "lib/core/runtime_tensor_fill.cpp"},
@@ -171,6 +172,7 @@ int main(int argc, char** argv) {
              "lib/core/logger.cpp", "lib/core/platform_runtime.cpp",
              "lib/core/resource_limits.cpp", "lib/core/runtime_errors_hosted.cpp",
              "lib/core/runtime_exports_hosted.cpp",
+             "lib/core/runtime_lifecycle_hosted.cpp",
              "lib/core/runtime_operations_hosted.cpp",
              "lib/core/runtime_parameters_hosted.cpp",
              "lib/core/runtime_shutdown_hooks_hosted.cpp",
@@ -180,7 +182,7 @@ int main(int argc, char** argv) {
         return rc;
     }
     if (const int rc = require_entries(split_pending_src,
-            {"lib/core/arena_memory.cpp", "lib/core/runtime.cpp"},
+            {"lib/core/arena_memory.cpp"},
             "runtime split-pending source set")) {
         return rc;
     }

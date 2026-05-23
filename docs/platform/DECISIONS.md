@@ -449,6 +449,39 @@ implementation replacement behind the same ABI.
 
 ---
 
+## D-0037
+
+- Date: 2026-05-23
+- Status: Accepted
+- Title: Extract hosted runtime lifecycle
+
+### Context
+
+After generated-code helpers, error sinks, dynamic parameters, in-flight
+operations, shutdown hooks, and signal handlers were split out, `runtime.cpp`
+still owned hosted lifecycle state: runtime/shutdown atomics, interrupt
+request/clear behavior, stdout buffering, operation draining, hook dispatch,
+signal restore sequencing, and lifecycle logging. The only freestanding-safe
+piece left in that file was the public interrupt flag used by the inline hot
+path in `runtime.h`.
+
+### Decision
+
+Move `eshkol_runtime_init`, `eshkol_runtime_shutdown`, interrupt request/clear,
+shutdown reason access, and runtime state access into
+`lib/core/runtime_lifecycle_hosted.cpp`, classified as `runtime-hosted`.
+Keep `lib/core/runtime.cpp` as a tiny runtime-core translation unit defining
+`g_eshkol_interrupt_flag`.
+
+### Consequences
+
+- `runtime.cpp` no longer owns hosted lifecycle state or shutdown sequencing
+- runtime-hosted explicitly owns the current process-oriented runtime lifecycle
+  implementation
+- the split-pending runtime family is narrowed to `arena_memory.cpp`
+
+---
+
 ## D-0036
 
 - Date: 2026-05-23
