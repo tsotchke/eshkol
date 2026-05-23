@@ -258,6 +258,34 @@ These are represented in CMake as internal object libraries while `eshkol-static
 
 - build ownership becomes explicit without destabilizing downstream link behavior
 - the remaining mixed files are visible instead of being silently misclassified
+
+---
+
+## D-0028
+
+- Date: 2026-05-23
+- Status: Accepted
+- Title: Extract tensor fill helpers from hosted runtime state
+
+### Context
+
+`lib/core/runtime.cpp` mixed hosted runtime lifecycle code with generated-code
+helpers that are freestanding-safe. The native tensor fill primitives do not
+need signals, process state, files, environment variables, allocation, or host
+threading.
+
+### Decision
+
+Move `eshkol_tensor_rect_fill` and `eshkol_tensor_disk_fill` into
+`lib/core/runtime_tensor_fill.cpp` and classify that file as `runtime-core`.
+Keep `runtime.cpp` in `runtime-split-pending` until its remaining hosted and
+core responsibilities are separated.
+
+### Consequences
+
+- runtime-core now owns a concrete extracted piece of the former runtime.cpp
+- tensor fill helpers are covered by the runtime boundary test
+- the aggregate `eshkol-static` link contract remains unchanged
 - later runtime archive extraction can proceed incrementally from an already-structured build graph
 
 ---
