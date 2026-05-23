@@ -76,6 +76,37 @@ static inline uint64_t jit_lookup(void* jit, const char* name) {
     return lookup ? lookup(jit, name) : 0;
 }
 
+static std::string repl_var_storage_symbol_name(const char* name) {
+    std::string out = "__repl_storage_";
+    char encoded[4];
+    for (const unsigned char* p = reinterpret_cast<const unsigned char*>(name);
+         p && *p;
+         ++p) {
+        unsigned char ch = *p;
+        bool alnum = (ch >= '0' && ch <= '9') ||
+                     (ch >= 'A' && ch <= 'Z') ||
+                     (ch >= 'a' && ch <= 'z');
+        if (alnum) {
+            out.push_back(static_cast<char>(ch));
+        } else {
+            std::snprintf(encoded, sizeof(encoded), "_%02X", ch);
+            out += encoded;
+        }
+    }
+    return out;
+}
+
+static uint64_t jit_lookup_repl_variable_storage(void* jit, const char* name) {
+    uint64_t addr = jit_lookup(jit, name);
+    if (addr != 0) return addr;
+
+    // REPL hot-reload keeps user variables in a private storage namespace so
+    // they can shadow functions/builtins. `eval` captures expression results
+    // via a generated top-level define, so read back that storage symbol too.
+    std::string storage_name = repl_var_storage_symbol_name(name);
+    return jit_lookup(jit, storage_name.c_str());
+}
+
 // Serialize a tagged value (S-expression) to a string buffer
 // Returns a malloc'd string that the caller must free
 char* serialize_sexp_to_string(eshkol_tagged_value_t value) {
@@ -746,7 +777,7 @@ eshkol_tagged_value_t eshkol_eval(eshkol_tagged_value_t sexp, void* arena) {
     jit_exec(jit, wrapper);
 
     // Read back the value from the named global's memory.
-    uint64_t addr = jit_lookup(jit, name_buf);
+    uint64_t addr = jit_lookup_repl_variable_storage(jit, name_buf);
     eshkol_tagged_value_t result;
     memset(&result, 0, sizeof(result));
     if (addr != 0) {

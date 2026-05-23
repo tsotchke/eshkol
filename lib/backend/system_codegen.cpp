@@ -476,6 +476,13 @@ llvm::Value* SystemCodegen::exitProgram(const eshkol_operations_t* op) {
 
     // exit() doesn't return, but we need something for the compiler
     ctx_.builder().CreateUnreachable();
+
+    // Keep callers that do not immediately notice the no-return terminator from
+    // appending cleanup or capture IR after the unreachable instruction.
+    llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::BasicBlock* post_exit = llvm::BasicBlock::Create(
+        ctx_.context(), "post_exit_dead", current_func);
+    ctx_.builder().SetInsertPoint(post_exit);
     return nullptr;
 }
 

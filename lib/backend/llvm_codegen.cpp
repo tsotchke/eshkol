@@ -8604,6 +8604,43 @@ private:
             }
         }
 
+        // REPL HOT RELOAD: user variables live in a separate namespace from
+        // functions and builtins. Check that namespace before wrapping bare
+        // builtin names as first-class procedures so `(define log2 "...")`
+        // shadows the host math function when read as a value.
+        if (g_repl_mode_enabled) {
+            bool is_repl_user_var = false;
+            bool is_private = false;
+            {
+                std::lock_guard<std::mutex> lock(g_repl_mutex);
+                is_repl_user_var =
+                    g_repl_user_variable_names.count(var_name) > 0 &&
+                    g_repl_symbol_addresses.count(var_name) > 0;
+                is_private = g_repl_private_symbols.count(var_name) > 0;
+            }
+            if (is_private) {
+                eshkol_error("Variable '%s' is private (not exported from its module)", var_name.c_str());
+                markFatalCodegenError();
+                return nullptr;
+            }
+            if (is_repl_user_var) {
+                std::string storage_name = replVarStorageSymbolName(var_name);
+                GlobalVariable* global_var = module->getGlobalVariable(storage_name);
+                if (!global_var) {
+                    global_var = new GlobalVariable(
+                        *module,
+                        tagged_value_type,
+                        false,
+                        GlobalValue::ExternalLinkage,
+                        nullptr,
+                        storage_name
+                    );
+                }
+                Value* loaded = builder->CreateLoad(global_var->getValueType(), global_var);
+                return emitUseAfterMoveCheck(loaded, var_name);
+            }
+        }
+
         // BUILTIN FIRST-CLASS FIX: Check math builtins FIRST before function_table lookup
         // This prevents returning raw C functions (double->double) which cause ABI mismatch
         // when called through closure dispatch (tagged_value->tagged_value)
