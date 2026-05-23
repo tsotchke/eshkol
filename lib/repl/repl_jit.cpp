@@ -702,6 +702,7 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_SYMBOL(eshkol_unsetenv);
     ADD_SYMBOL(eshkol_usleep);
     ADD_SYMBOL(eshkol_fopen);
+    ADD_SYMBOL(eshkol_fputs);
     ADD_SYMBOL(eshkol_access);
     ADD_SYMBOL(eshkol_remove);
     ADD_SYMBOL(eshkol_rename);
@@ -1666,12 +1667,12 @@ static std::string findStdlibObject() {
     };
 #else
     std::vector<std::filesystem::path> candidates = {
-        cwd / "stdlib.o",
-        cwd / "build/stdlib.o",
-        cwd.parent_path() / "build/stdlib.o",
         exe_dir / "stdlib.o",
         exe_dir / "../lib/stdlib.o",
         exe_dir / "../lib/eshkol/stdlib.o",
+        cwd / "stdlib.o",
+        cwd / "build/stdlib.o",
+        cwd.parent_path() / "build/stdlib.o",
     };
 #endif
 
@@ -1699,12 +1700,12 @@ static std::string findStdlibBitcode() {
     };
 #else
     std::vector<std::filesystem::path> candidates = {
-        cwd / "stdlib.bc",
-        cwd / "build/stdlib.bc",
-        cwd.parent_path() / "build/stdlib.bc",
         exe_dir / "stdlib.bc",
         exe_dir / "../lib/stdlib.bc",
         exe_dir / "../lib/eshkol/stdlib.bc",
+        cwd / "stdlib.bc",
+        cwd / "build/stdlib.bc",
+        cwd.parent_path() / "build/stdlib.bc",
     };
 #endif
 

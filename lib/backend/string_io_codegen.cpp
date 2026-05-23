@@ -1886,10 +1886,11 @@ static llvm::Function* getOrDeclareFclose(CodegenContext& ctx) {
 
 // Helper to get or declare fputs
 static llvm::Function* getOrDeclareFputs(CodegenContext& ctx) {
-    if (auto* existing = ctx.module().getFunction("fputs")) return existing;
+    if (auto* existing = ctx.module().getFunction("eshkol_fputs")) return existing;
     auto* ft = llvm::FunctionType::get(ctx.int32Type(),
         {ctx.ptrType(), ctx.ptrType()}, false);
-    return llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "fputs", ctx.module());
+    return llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+        "eshkol_fputs", ctx.module());
 }
 
 // Helper to get or declare fputc
