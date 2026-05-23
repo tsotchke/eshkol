@@ -69,8 +69,8 @@ This inventory uses the following target families:
 | `inc/eshkol/platform_runtime.h` | `runtime-hosted` | direct | Explicitly host-facing: executable paths, shell quoting, compiler lookup, temp files, command execution, host linker args. |
 | `inc/eshkol/runtime_exports.h` | `runtime-hosted` | direct | Generated-code ABI wrappers around `FILE*`, env, filesystem, directory, and libc/process behavior. |
 | `inc/eshkol/core/config.h` | `runtime-hosted` control plane | direct | Environment variables, config files, optimization flags, logging configuration. |
-| `inc/eshkol/core/resource_limits.h` | split candidate | split required | Policy surface may remain shared, but env loading, timers, warnings, and watchdog behavior are hosted today. |
-| `inc/eshkol/logger.h` | split candidate | split required | Formatting and severity model are generally reusable, but sinks, files, colors, and stacktraces are hosted today. |
+| `inc/eshkol/core/resource_limits.h` | hosted implementation API + future core policy | partially classified | Policy surface may remain shared later, but the current implementation is env/timer/logging oriented and is classified with `runtime-hosted`. |
+| `inc/eshkol/logger.h` | hosted implementation API + future core sink contract | partially classified | Formatting and severity vocabulary may survive as a freestanding hook contract later, but the current implementation is hosted and is classified with `runtime-hosted`. |
 | `inc/eshkol/eshkol_ffi.h` | `out-of-runtime` hosted consumer | direct | Embedding/JIT API; not part of the freestanding runtime families. |
 
 ## Native Runtime Inventory
@@ -85,7 +85,6 @@ This inventory uses the following target families:
 | `lib/core/bignum.cpp` | `runtime-core` | direct | Numeric runtime support with no obvious host/process dependency. |
 | `lib/core/rational.cpp` | `runtime-core` | direct | Numeric runtime support with no obvious host/process dependency. |
 | `lib/core/ad_tape_builtins.c` | `runtime-core` optional | direct | Runtime numeric/AD helper surface. |
-| `lib/core/printer.cpp` | `runtime-core` formatting + hosted sinks | split required | Value formatting belongs near the runtime, but `FILE*`-centric output and port plumbing should not remain fused into the core layer. |
 
 ### Hosted runtime and hosted runtime-adjacent code
 
@@ -95,8 +94,8 @@ This inventory uses the following target families:
 | `lib/core/runtime_exports_hosted.cpp` | `runtime-hosted` | direct | Dedicated hosted implementation for the `runtime_exports.h` generated-code ABI wrappers. |
 | `lib/core/system_builtins.c` | `runtime-hosted` | direct | Heavy OS dependency surface: env, path, temp files, directory traversal, fork/exec, wait, symlink, file copy, process spawn. |
 | `lib/core/config.cpp` | `runtime-hosted` | direct | Reads env, discovers home/config files, and binds host-facing optimization and logging controls. |
-| `lib/core/resource_limits.cpp` | split candidate | split required | Core policy can survive, but env loading, timers, warning logs, and watchdog behavior are hosted. |
-| `lib/core/logger.cpp` | split candidate | split required | Current implementation depends on stderr/files, ANSI colors, OS-specific backtraces, and platform symbolization. |
+| `lib/core/resource_limits.cpp` | `runtime-hosted` | direct current implementation | Current implementation reads env, owns timeout/timer behavior, emits warning logs, and requests hosted runtime interrupts. A later core policy object can be extracted under a new slice. |
+| `lib/core/logger.cpp` | `runtime-hosted` | direct current implementation | Current implementation depends on stderr/files, ANSI colors, OS-specific backtraces, platform symbolization, and hosted timestamps. A later freestanding logger hook can share the severity vocabulary without this sink implementation. |
 | `lib/backend/thread_pool.cpp` | `runtime-hosted` adjunct | direct | Uses `std::thread` and env-driven host tuning. Important to the current hosted parallel runtime, but not part of freestanding v1. |
 
 ### Hosted services outside the runtime family split
@@ -119,6 +118,7 @@ These files consume the runtime, but they are not the runtime and should not mov
 | `lib/core/ast.cpp` | `out-of-runtime` | direct | Front-end / AST layer. |
 | `lib/core/sexp_to_ast.cpp` | `out-of-runtime` | direct | Front-end lowering, even though it uses arena helpers. |
 | `lib/core/execution_profile.cpp` | `out-of-runtime` | direct | Toolchain configuration, not runtime substrate. |
+| `lib/core/printer.cpp` | `out-of-runtime` | direct | AST pretty-printer/debug surface. It prints compiler data structures and should not be counted as runtime substrate. |
 | `lib/core/logic.cpp` | `out-of-runtime` | direct | Language service built on top of the core runtime. |
 | `lib/core/logic_builtins.cpp` | `out-of-runtime` | direct | Language service built on top of the core runtime. |
 | `lib/core/inference.cpp` | `out-of-runtime` | direct | Higher-level logic/inference engine. |
@@ -201,10 +201,14 @@ The runtime split should proceed in this order:
 
 1. Keep `runtime-core`, `runtime-hosted`, and `runtime-split-pending` explicit in CMake while still producing `eshkol-static`.
 2. Keep `platform_runtime.cpp` and `runtime_exports_hosted.cpp` as distinct hosted runtime units instead of a fused host/runtime-export file.
-3. Split `runtime.cpp`, `logger.cpp`, `resource_limits.cpp`, `printer.cpp`, and `arena_memory.cpp` along host-dependent seams so they can leave `runtime-split-pending`.
-4. Add hosted-leakage tests that fail if `runtime-core` depends on env, files, temp streams, process control, or host threading primitives.
-5. Decompose `eshkol_vm.c` into `vm-core`, `vm-hosted`, and VM toolchain buckets.
-6. Introduce the first real `runtime-freestanding` hooks and stub implementation.
+3. Classify the current hosted logger and resource-limit implementations as
+   `runtime-hosted`, and keep the AST pretty-printer out of the runtime source
+   families.
+4. Split `runtime.cpp` and `arena_memory.cpp` along host-dependent seams so
+   they can leave `runtime-split-pending`.
+5. Add hosted-leakage tests that fail if `runtime-core` depends on env, files, temp streams, process control, or host threading primitives.
+6. Decompose `eshkol_vm.c` into `vm-core`, `vm-hosted`, and VM toolchain buckets.
+7. Introduce the first real `runtime-freestanding` hooks and stub implementation.
 
 ## Non-Goals of This Slice
 
