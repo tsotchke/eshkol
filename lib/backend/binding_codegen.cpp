@@ -14,6 +14,8 @@
 #include <eshkol/logger.h>
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/Instructions.h>
+#include <cctype>
+#include <cstdio>
 
 using namespace llvm;
 
@@ -30,6 +32,39 @@ static Function* getCurrentFunction(Function** ptr) {
 // Helper to check REPL mode
 static bool isReplMode(bool* ptr) {
     return ptr ? *ptr : false;
+}
+
+static std::string replVarStorageSymbolName(const std::string& name) {
+    std::string out = "__repl_storage_";
+    char encoded[4];
+    for (unsigned char ch : name) {
+        if (std::isalnum(ch)) {
+            out.push_back(static_cast<char>(ch));
+        } else {
+            std::snprintf(encoded, sizeof(encoded), "_%02X", ch);
+            out += encoded;
+        }
+    }
+    return out;
+}
+
+static std::string bindingStorageName(const std::string& name, bool is_repl) {
+    return is_repl ? replVarStorageSymbolName(name) : name;
+}
+
+static void emitReplVarMarker(CodegenContext& ctx, const std::string& name) {
+    std::string marker_name = std::string("__repl_var_") + name;
+    if (!ctx.module().getNamedGlobal(marker_name)) {
+        new GlobalVariable(
+            ctx.module(),
+            ctx.int8Type(),
+            true,
+            GlobalValue::WeakODRLinkage,
+            ConstantInt::get(ctx.int8Type(), 1),
+            marker_name
+        );
+    }
+    eshkol_repl_mark_user_variable(name.c_str());
 }
 
 Value* BindingCodegen::ensureTaggedValue(Value* value, eshkol_value_type_t value_type) {
@@ -113,21 +148,24 @@ Value* BindingCodegen::storeBinding(
     if (!tagged_val) return nullptr;
 
     if (is_global) {
+        bool is_repl = isReplMode(repl_mode_);
+        std::string storage_name = bindingStorageName(name, is_repl);
         // Create or get GlobalVariable
-        GlobalVariable* gv = ctx_.module().getNamedGlobal(name);
+        GlobalVariable* gv = ctx_.module().getNamedGlobal(storage_name);
         if (!gv) {
-            // Create zero-initialized tagged_value global
-            bool is_repl = isReplMode(repl_mode_);
-            Constant* zero_init = ConstantAggregateZero::get(ctx_.taggedValueType());
+            Constant* zero_init = is_repl ? nullptr : ConstantAggregateZero::get(ctx_.taggedValueType());
             gv = new GlobalVariable(
                 ctx_.module(),
                 ctx_.taggedValueType(),
                 false,  // not constant
-                is_repl ? GlobalValue::LinkOnceODRLinkage : GlobalValue::ExternalLinkage,
+                GlobalValue::ExternalLinkage,
                 zero_init,
-                name
+                storage_name
             );
             gv->setAlignment(Align(16));
+        }
+        if (is_repl) {
+            emitReplVarMarker(ctx_, name);
         }
 
         // Store the value
@@ -226,43 +264,29 @@ Value* BindingCodegen::define(const eshkol_operations_t* op) {
     bool is_lib_init = current && current->getName() == "__eshkol_lib_init__";
     bool is_repl = isReplMode(repl_mode_);
     bool is_main = current && current->getName() == "main";
-    GlobalVariable* existing_global = ctx_.module().getNamedGlobal(var_name);
+    const std::string var_storage_name = bindingStorageName(var_name, is_repl);
+    GlobalVariable* existing_global = ctx_.module().getNamedGlobal(var_storage_name);
     // Top-level defines in main should always be global, not local
     bool use_global = !current || is_global_init || is_lib_init || is_repl || is_main;
 
-    Value* pre_declared_binding = nullptr;
     if (is_lambda) {
         if (use_global) {
             // Pre-declare global variable
-            GlobalVariable* gv = ctx_.module().getNamedGlobal(var_name);
+            GlobalVariable* gv = ctx_.module().getNamedGlobal(var_storage_name);
             if (!gv) {
                 if (is_repl) {
-                    // REPL HOT RELOAD: emit @<name> as a pure external
-                    // declaration. The REPL host backs it with a 16-byte
-                    // tagged_value heap slot registered as an absolute symbol,
-                    // so redefinition is just a store into shared storage.
+                    // REPL HOT RELOAD: keep user variable storage in a private
+                    // namespace so variables can shadow stdlib/math symbols.
                     gv = new GlobalVariable(
                         ctx_.module(),
                         ctx_.taggedValueType(),
                         false,
                         GlobalValue::ExternalLinkage,
                         nullptr,            // no initializer = external decl
-                        var_name
+                        var_storage_name
                     );
                     gv->setAlignment(Align(16));
-                    // Marker so addModule knows to allocate the heap slot.
-                    std::string marker_name = std::string("__repl_var_") + var_name;
-                    if (!ctx_.module().getNamedGlobal(marker_name)) {
-                        new GlobalVariable(
-                            ctx_.module(),
-                            ctx_.int8Type(),
-                            true,           // constant
-                            GlobalValue::WeakODRLinkage,
-                            ConstantInt::get(ctx_.int8Type(), 1),
-                            marker_name
-                        );
-                    }
-                    eshkol_repl_mark_user_variable(var_name);
+                    emitReplVarMarker(ctx_, var_name);
                 } else {
                     Constant* zero_init = ConstantAggregateZero::get(ctx_.taggedValueType());
                     gv = new GlobalVariable(
@@ -276,7 +300,6 @@ Value* BindingCodegen::define(const eshkol_operations_t* op) {
                     gv->setAlignment(Align(16));
                 }
             }
-            pre_declared_binding = gv;
             if (symbol_table_) (*symbol_table_)[var_name] = gv;
             if (global_symbol_table_) (*global_symbol_table_)[var_name] = gv;
         } else {
@@ -287,7 +310,6 @@ Value* BindingCodegen::define(const eshkol_operations_t* op) {
                 var_name
             );
             alloca->setAlignment(Align(16));
-            pre_declared_binding = alloca;
             if (symbol_table_) (*symbol_table_)[var_name] = alloca;
         }
         eshkol_debug("Pre-declared binding for recursive lambda: %s", var_name);
@@ -359,40 +381,28 @@ Value* BindingCodegen::define(const eshkol_operations_t* op) {
     // Store the binding
     if (use_global) {
         // Create or get GlobalVariable
-        GlobalVariable* gv = ctx_.module().getNamedGlobal(var_name);
+        GlobalVariable* gv = ctx_.module().getNamedGlobal(var_storage_name);
         // REPL HOT RELOAD: every top-level variable definition (re)claims the
         // user-variable namespace, even when Step 1.5 / the lambda branch
         // already created the external decl. This handles the (define f ...)
         // following (define (f x) ...) case where `gv` is non-null but the
         // function namespace still owned `f`.
         if (is_repl) {
-            eshkol_repl_mark_user_variable(var_name);
+            emitReplVarMarker(ctx_, var_name);
         }
         if (!gv) {
             if (is_repl) {
-                // REPL HOT RELOAD: see lambda branch above — variable storage
-                // is host-owned heap registered as an absolute symbol.
+                // REPL HOT RELOAD: see lambda branch above.
                 gv = new GlobalVariable(
                     ctx_.module(),
                     ctx_.taggedValueType(),
                     false,
                     GlobalValue::ExternalLinkage,
                     nullptr,                // no initializer = external decl
-                    var_name
+                    var_storage_name
                 );
                 gv->setAlignment(Align(16));
-                std::string marker_name = std::string("__repl_var_") + var_name;
-                if (!ctx_.module().getNamedGlobal(marker_name)) {
-                    new GlobalVariable(
-                        ctx_.module(),
-                        ctx_.int8Type(),
-                        true,               // constant
-                        GlobalValue::WeakODRLinkage,
-                        ConstantInt::get(ctx_.int8Type(), 1),
-                        marker_name
-                    );
-                }
-                eshkol_repl_mark_user_variable(var_name);
+                emitReplVarMarker(ctx_, var_name);
             } else {
                 Constant* zero_init = ConstantAggregateZero::get(ctx_.taggedValueType());
                 gv = new GlobalVariable(
@@ -1220,10 +1230,19 @@ Value* BindingCodegen::lookupVariable(const std::string& name) {
         }
     }
 
-    // Check module globals
-    GlobalVariable* gv = ctx_.module().getNamedGlobal(name);
+    // Check module globals. In REPL mode the LLVM symbol is deliberately
+    // private so user variables can shadow host/runtime function names.
+    const std::string storage_name = bindingStorageName(name, isReplMode(repl_mode_));
+    GlobalVariable* gv = ctx_.module().getNamedGlobal(storage_name);
     if (gv) {
         return gv;
+    }
+
+    if (storage_name != name) {
+        gv = ctx_.module().getNamedGlobal(name);
+        if (gv) {
+            return gv;
+        }
     }
 
     return nullptr;

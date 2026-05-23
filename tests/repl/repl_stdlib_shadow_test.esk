@@ -9,10 +9,27 @@
     ((x) (+ x 1))
     ((x y) (+ x y))))
 
+;; Also cover host/math symbols. `log2` is declared as an LLVM math function;
+;; a user variable with the same Scheme name must still get REPL storage that
+;; nested closures and dynamic-wind thunks can load/store.
+(define log2 "")
+(define log2-result
+  (call-with-current-continuation
+    (lambda (k)
+      (dynamic-wind
+        (lambda () (set! log2 (string-append log2 "B")))
+        (lambda () (k 99))
+        (lambda () (set! log2 (string-append log2 "A")))))))
+
 (if (and (= (describe) 10)
          (= (describe 41) 42)
-         (= (describe 20 22) 42))
-    (exit 0)
+         (= (describe 20 22) 42)
+         (= log2-result 99)
+         (equal? log2 "BA"))
+    (begin
+      (display "PASS: repl stdlib/math shadow")
+      (newline)
+      (exit 0))
     (begin
       (display "FAIL: user variable did not shadow stdlib function")
       (newline)

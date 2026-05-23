@@ -1950,7 +1950,9 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND EXISTS "${CMAKE_CURRENT_SOURCE_D
                 -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/repl/repl_stdlib_shadow_test.esk"
                 -L"${CMAKE_CURRENT_BINARY_DIR}"
     )
-    set_tests_properties(repl_stdlib_shadow_test PROPERTIES TIMEOUT 300)
+    set_tests_properties(repl_stdlib_shadow_test PROPERTIES
+        TIMEOUT 300
+        PASS_REGULAR_EXPRESSION "PASS: repl stdlib/math shadow")
 endif()
 
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/windows_suite_surface_test.cpp")
