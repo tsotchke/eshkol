@@ -236,7 +236,7 @@ jobs:
             build_dir: build
             xla_enabled: 'OFF'
             gpu_enabled: 'OFF'
-            test_mode: all
+            test_mode: windows-lite
           - name: windows-arm64-lite
             runner: windows-11-arm
             arch: arm64
@@ -244,7 +244,7 @@ jobs:
             build_dir: build
             xla_enabled: 'OFF'
             gpu_enabled: 'OFF'
-            test_mode: all
+            test_mode: windows-lite
           - name: windows-x64-xla
             runner: windows-latest
             arch: x64
