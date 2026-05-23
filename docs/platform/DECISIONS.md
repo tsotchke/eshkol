@@ -286,6 +286,36 @@ core responsibilities are separated.
 - runtime-core now owns a concrete extracted piece of the former runtime.cpp
 - tensor fill helpers are covered by the runtime boundary test
 - the aggregate `eshkol-static` link contract remains unchanged
+
+---
+
+## D-0029
+
+- Date: 2026-05-23
+- Status: Accepted
+- Title: Extract tensor index helpers from hosted runtime state
+
+### Context
+
+`lib/core/runtime.cpp` still contains several generated-code helper groups
+that do not depend on hosted runtime lifecycle behavior. The tensor index
+helpers normalize tagged scalar/list indices and compute tensor row-major
+offsets using only tagged value layout, cons-cell accessors, tensor metadata,
+and raw dimension arrays.
+
+### Decision
+
+Move `eshkol_unwrap_list_index`, `eshkol_tensor_linear_from_index_arg`,
+`eshkol_vref_unwrap_index`, and `eshkol_tensor_index_arg_count` into
+`lib/core/runtime_tensor_index.cpp` and classify that file as `runtime-core`.
+Keep `runtime.cpp` in `runtime-split-pending` until its remaining hosted and
+core responsibilities are separated.
+
+### Consequences
+
+- runtime-core now owns tensor index normalization alongside tensor fill helpers
+- generated tensor-ref/tensor-set code keeps the same symbol names and link path
+- the aggregate `eshkol-static` link contract remains unchanged
 - later runtime archive extraction can proceed incrementally from an already-structured build graph
 
 ---
