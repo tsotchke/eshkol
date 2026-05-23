@@ -95,6 +95,7 @@ Program phase:
 - hosted runtime fatal/type-error handling now lives in a dedicated `runtime_errors_hosted.cpp` unit
 - hosted dynamic parameter storage now lives in a dedicated `runtime_parameters_hosted.cpp` unit
 - hosted in-flight operation tracking now lives in a dedicated `runtime_operations_hosted.cpp` unit
+- hosted shutdown-hook registration and dispatch now lives in a dedicated `runtime_shutdown_hooks_hosted.cpp` unit
 - hosted logger/resource-limit implementations are classified as `runtime-hosted`, and the AST pretty-printer is no longer treated as runtime substrate
 - freestanding-safe bytevector helpers now live in a dedicated runtime-core translation unit instead of the hosted-heavy runtime state implementation
 - freestanding-safe tensor index helpers now live in a dedicated runtime-core translation unit instead of the hosted-heavy runtime state implementation

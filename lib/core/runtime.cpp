@@ -12,6 +12,8 @@
 #include <eshkol/eshkol.h>
 #include <eshkol/logger.h>
 
+#include "runtime_hosted_internal.h"
+
 #ifdef _WIN32
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -23,10 +25,6 @@
 #include <unistd.h>    // STDERR_FILENO, write(), _exit()
 #endif
 #include <atomic>
-#include <mutex>
-#include <vector>
-#include <string>
-#include <algorithm>
 #include <cstring>
 #include <csignal>
 #include <cstdio>
@@ -55,18 +53,6 @@ std::atomic<eshkol_shutdown_reason_t> g_shutdown_reason{ESHKOL_SHUTDOWN_NONE};
 // handler reads/writes. Normal API functions update both atomics and shadows.
 volatile sig_atomic_t g_sig_runtime_state = ESHKOL_RUNTIME_INITIALIZING;
 volatile sig_atomic_t g_sig_shutdown_reason = ESHKOL_SHUTDOWN_NONE;
-
-// Shutdown hooks
-struct ShutdownHook {
-    uint32_t id;
-    eshkol_shutdown_hook_t callback;
-    void* context;
-    std::string name;
-};
-
-std::mutex g_hooks_mutex;
-std::vector<ShutdownHook> g_shutdown_hooks;
-std::atomic<uint32_t> g_next_hook_id{1};
 
 // Original signal handlers (for restoration)
 #ifdef _WIN32
@@ -408,51 +394,6 @@ eshkol_shutdown_reason_t eshkol_runtime_get_shutdown_reason(void) {
 }
 
 // ----------------------------------------------------------------------------
-// Shutdown Hooks
-// ----------------------------------------------------------------------------
-
-uint32_t eshkol_register_shutdown_hook(eshkol_shutdown_hook_t hook,
-                                        void* context,
-                                        const char* name) {
-    if (!hook) {
-        return 0;
-    }
-
-    std::lock_guard<std::mutex> lock(g_hooks_mutex);
-
-    uint32_t id = g_next_hook_id.fetch_add(1, std::memory_order_relaxed);
-
-    g_shutdown_hooks.push_back({
-        .id = id,
-        .callback = hook,
-        .context = context,
-        .name = name ? name : "(unnamed)"
-    });
-
-    eshkol_debug("Registered shutdown hook %u: %s", id, name ? name : "(unnamed)");
-    return id;
-}
-
-bool eshkol_unregister_shutdown_hook(uint32_t hook_id) {
-    if (hook_id == 0) {
-        return false;
-    }
-
-    std::lock_guard<std::mutex> lock(g_hooks_mutex);
-
-    auto it = std::find_if(g_shutdown_hooks.begin(), g_shutdown_hooks.end(),
-                           [hook_id](const ShutdownHook& h) { return h.id == hook_id; });
-
-    if (it != g_shutdown_hooks.end()) {
-        eshkol_debug("Unregistered shutdown hook %u: %s", hook_id, it->name.c_str());
-        g_shutdown_hooks.erase(it);
-        return true;
-    }
-
-    return false;
-}
-
-// ----------------------------------------------------------------------------
 // Runtime Lifecycle
 // ----------------------------------------------------------------------------
 
@@ -531,22 +472,7 @@ void eshkol_runtime_shutdown(eshkol_shutdown_reason_t reason) {
         }
     }
 
-    // Call shutdown hooks in reverse registration order
-    std::vector<ShutdownHook> hooks_copy;
-    {
-        std::lock_guard<std::mutex> lock(g_hooks_mutex);
-        hooks_copy = g_shutdown_hooks;
-    }
-
-    std::reverse(hooks_copy.begin(), hooks_copy.end());
-
-    for (const auto& hook : hooks_copy) {
-        eshkol_debug("Calling shutdown hook: %s", hook.name.c_str());
-        int result = hook.callback(hook.context, reason);
-        if (result != 0) {
-            eshkol_warn("Shutdown hook '%s' returned error: %d", hook.name.c_str(), result);
-        }
-    }
+    eshkol::runtime_hosted::run_shutdown_hooks(reason);
 
     // Restore signal handlers
     eshkol_runtime_restore_signals();

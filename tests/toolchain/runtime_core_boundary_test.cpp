@@ -172,7 +172,9 @@ int main(int argc, char** argv) {
              "lib/core/resource_limits.cpp", "lib/core/runtime_errors_hosted.cpp",
              "lib/core/runtime_exports_hosted.cpp",
              "lib/core/runtime_operations_hosted.cpp",
-             "lib/core/runtime_parameters_hosted.cpp", "lib/core/system_builtins.c"},
+             "lib/core/runtime_parameters_hosted.cpp",
+             "lib/core/runtime_shutdown_hooks_hosted.cpp",
+             "lib/core/system_builtins.c"},
             "runtime hosted source set")) {
         return rc;
     }
