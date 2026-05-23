@@ -19,9 +19,6 @@
 #include <string.h>
 #include <assert.h>
 #include <setjmp.h>
-#ifndef _WIN32
-#include <pthread.h>
-#endif
 
 #ifdef __cplusplus
 #include <new>      // for std::bad_alloc
@@ -31,10 +28,17 @@
 #include <cstring>      // std::memset
 #include <filesystem>   // Bug W ask 2: provider-file scan
 #include <fstream>      // Bug W ask 2: read .esk files for provide/define lookup
-#include <mutex>
 #include <string>       // std::string for the provider scan
 #include <cctype>       // std::isspace / std::isalnum
 #endif
+
+void* eshkol_arena_mutex_create(void);
+void eshkol_arena_mutex_destroy(void* mutex);
+void eshkol_arena_mutex_lock(void* mutex);
+void eshkol_arena_mutex_unlock(void* mutex);
+void eshkol_arena_global_once(void (*init)(void));
+void eshkol_hash_table_lock(void);
+void eshkol_hash_table_unlock(void);
 
 // Default alignment for memory allocations
 #define DEFAULT_ALIGNMENT 8
@@ -164,29 +168,12 @@ arena_t* arena_create_threadsafe(size_t default_block_size) {
         return nullptr;
     }
 
-    // Allocate and initialize mutex
-#ifdef _WIN32
-    std::mutex* mutex = new (std::nothrow) std::mutex();
+    void* mutex = eshkol_arena_mutex_create();
     if (!mutex) {
-        eshkol_error("Failed to allocate mutex for thread-safe arena");
+        eshkol_error("Failed to create mutex for thread-safe arena");
         arena_destroy(arena);
         return nullptr;
     }
-#else
-    pthread_mutex_t* mutex = (pthread_mutex_t*)malloc(sizeof(pthread_mutex_t));
-    if (!mutex) {
-        eshkol_error("Failed to allocate mutex for thread-safe arena");
-        arena_destroy(arena);
-        return nullptr;
-    }
-
-    if (pthread_mutex_init(mutex, nullptr) != 0) {
-        eshkol_error("Failed to initialize mutex for thread-safe arena");
-        free(mutex);
-        arena_destroy(arena);
-        return nullptr;
-    }
-#endif
 
     arena->mutex = mutex;
     arena->thread_safe = true;
@@ -198,21 +185,13 @@ arena_t* arena_create_threadsafe(size_t default_block_size) {
 // Thread-safety control functions
 void arena_lock(arena_t* arena) {
     if (arena && arena->thread_safe && arena->mutex) {
-#ifdef _WIN32
-        static_cast<std::mutex*>(arena->mutex)->lock();
-#else
-        pthread_mutex_lock((pthread_mutex_t*)arena->mutex);
-#endif
+        eshkol_arena_mutex_lock(arena->mutex);
     }
 }
 
 void arena_unlock(arena_t* arena) {
     if (arena && arena->thread_safe && arena->mutex) {
-#ifdef _WIN32
-        static_cast<std::mutex*>(arena->mutex)->unlock();
-#else
-        pthread_mutex_unlock((pthread_mutex_t*)arena->mutex);
-#endif
+        eshkol_arena_mutex_unlock(arena->mutex);
     }
 }
 
@@ -221,12 +200,7 @@ void arena_destroy(arena_t* arena) {
 
     // Destroy mutex if thread-safe
     if (arena->thread_safe && arena->mutex) {
-#ifdef _WIN32
-        delete static_cast<std::mutex*>(arena->mutex);
-#else
-        pthread_mutex_destroy((pthread_mutex_t*)arena->mutex);
-        free(arena->mutex);
-#endif
+        eshkol_arena_mutex_destroy(arena->mutex);
     }
 
     // Free all blocks
@@ -1654,13 +1628,6 @@ thread_local uint64_t __region_stack_depth = 0;
 // Use weak linkage so generated code can override in standalone mode
 __attribute__((weak)) arena_t* __global_arena = nullptr;
 
-// Thread-safe global arena initialization
-#ifdef _WIN32
-static std::once_flag global_arena_once;
-#else
-static pthread_once_t global_arena_once = PTHREAD_ONCE_INIT;
-#endif
-
 // Forward declaration — defined below in per-thread arena section
 static thread_local arena_t* __thread_local_arena;
 
@@ -1677,11 +1644,7 @@ static void init_global_arena_internal() {
 // Main thread gets the global thread-safe arena.
 arena_t* get_global_arena() {
     // Use platform once semantics for thread-safe initialization.
-#ifdef _WIN32
-    std::call_once(global_arena_once, init_global_arena_internal);
-#else
-    pthread_once(&global_arena_once, init_global_arena_internal);
-#endif
+    eshkol_arena_global_once(init_global_arena_internal);
 
     // On worker threads, use the per-thread arena if available.
     // This eliminates mutex contention in parallel-map/fold/filter.
@@ -1693,11 +1656,7 @@ arena_t* get_global_arena() {
 // Get the global arena specifically (bypasses per-thread override).
 // Used when allocation MUST go into the shared arena (e.g. result lists).
 arena_t* get_global_arena_shared() {
-#ifdef _WIN32
-    std::call_once(global_arena_once, init_global_arena_internal);
-#else
-    pthread_once(&global_arena_once, init_global_arena_internal);
-#endif
+    eshkol_arena_global_once(init_global_arena_internal);
     return __global_arena;
 }
 
@@ -3767,10 +3726,15 @@ static int64_t find_slot(const eshkol_hash_table_t* table, const eshkol_tagged_v
     return -1;
 }
 
-static std::mutex g_hash_table_mutex;
+struct hash_table_lock_guard {
+    hash_table_lock_guard() { eshkol_hash_table_lock(); }
+    ~hash_table_lock_guard() { eshkol_hash_table_unlock(); }
+    hash_table_lock_guard(const hash_table_lock_guard&) = delete;
+    hash_table_lock_guard& operator=(const hash_table_lock_guard&) = delete;
+};
 
 // Resize the hash table when load factor exceeds threshold.
-// Caller must hold g_hash_table_mutex.
+// Caller must hold hash_table_lock_guard.
 static bool hash_table_resize(arena_t* arena, eshkol_hash_table_t* table, size_t new_capacity) {
     // Allocate new arrays
     eshkol_tagged_value_t* new_keys = (eshkol_tagged_value_t*)
@@ -3815,7 +3779,7 @@ static bool hash_table_resize(arena_t* arena, eshkol_hash_table_t* table, size_t
 bool hash_table_set(arena_t* arena, eshkol_hash_table_t* table,
                     const eshkol_tagged_value_t* key, const eshkol_tagged_value_t* value) {
     if (!arena || !table || !key || !value) return false;
-    std::lock_guard<std::mutex> lock(g_hash_table_mutex);
+    hash_table_lock_guard lock;
 
     // Check if we need to resize (load factor > 0.75)
     double load = (double)(table->size + table->tombstones) / table->capacity;
@@ -3860,7 +3824,7 @@ bool hash_table_set(arena_t* arena, eshkol_hash_table_t* table,
 bool hash_table_get(const eshkol_hash_table_t* table,
                     const eshkol_tagged_value_t* key, eshkol_tagged_value_t* out_value) {
     if (!table || !key) return false;
-    std::lock_guard<std::mutex> lock(g_hash_table_mutex);
+    hash_table_lock_guard lock;
 
     int64_t slot = find_slot(table, key, nullptr);
     if (slot < 0) return false;
@@ -3874,14 +3838,14 @@ bool hash_table_get(const eshkol_hash_table_t* table,
 // Check if a key exists in the hash table
 bool hash_table_has_key(const eshkol_hash_table_t* table, const eshkol_tagged_value_t* key) {
     if (!table || !key) return false;
-    std::lock_guard<std::mutex> lock(g_hash_table_mutex);
+    hash_table_lock_guard lock;
     return find_slot(table, key, nullptr) >= 0;
 }
 
 // Remove a key from the hash table
 bool hash_table_remove(eshkol_hash_table_t* table, const eshkol_tagged_value_t* key) {
     if (!table || !key) return false;
-    std::lock_guard<std::mutex> lock(g_hash_table_mutex);
+    hash_table_lock_guard lock;
 
     int64_t slot = find_slot(table, key, nullptr);
     if (slot < 0) return false;
@@ -3897,7 +3861,7 @@ bool hash_table_remove(eshkol_hash_table_t* table, const eshkol_tagged_value_t* 
 // Clear all entries from the hash table
 void hash_table_clear(eshkol_hash_table_t* table) {
     if (!table) return;
-    std::lock_guard<std::mutex> lock(g_hash_table_mutex);
+    hash_table_lock_guard lock;
 
     memset(table->status, HASH_ENTRY_EMPTY, table->capacity);
     table->size = 0;
@@ -3907,14 +3871,14 @@ void hash_table_clear(eshkol_hash_table_t* table) {
 // Get the number of entries in the hash table
 size_t hash_table_count(const eshkol_hash_table_t* table) {
     if (!table) return 0;
-    std::lock_guard<std::mutex> lock(g_hash_table_mutex);
+    hash_table_lock_guard lock;
     return table->size;
 }
 
 // Get all keys as a list
 arena_tagged_cons_cell_t* hash_table_keys(arena_t* arena, const eshkol_hash_table_t* table) {
     if (!arena || !table) return nullptr;
-    std::lock_guard<std::mutex> lock(g_hash_table_mutex);
+    hash_table_lock_guard lock;
     if (table->size == 0) return nullptr;
 
     arena_tagged_cons_cell_t* head = nullptr;
@@ -3994,7 +3958,7 @@ extern "C" void eshkol_list_reverse_tagged(
 // Get all values as a list
 arena_tagged_cons_cell_t* hash_table_values(arena_t* arena, const eshkol_hash_table_t* table) {
     if (!arena || !table) return nullptr;
-    std::lock_guard<std::mutex> lock(g_hash_table_mutex);
+    hash_table_lock_guard lock;
     if (table->size == 0) return nullptr;
 
     arena_tagged_cons_cell_t* head = nullptr;

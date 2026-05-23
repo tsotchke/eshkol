@@ -449,6 +449,39 @@ implementation replacement behind the same ABI.
 
 ---
 
+## D-0040
+
+- Date: 2026-05-23
+- Status: Accepted
+- Title: Extract hosted arena synchronization primitives
+
+### Context
+
+`arena_memory.cpp` still owned platform synchronization setup for
+thread-safe arenas, hash-table mutation/iteration guards, and global arena
+initialization. That code selected between Windows `std::mutex` /
+`std::call_once` and POSIX `pthread_mutex_t` / `pthread_once_t`, keeping direct
+hosted thread primitives in the allocator split-pending file even though the
+arena code only needs opaque lock handles and a once gate.
+
+### Decision
+
+Move arena lock creation/destruction/lock/unlock helpers, the hash-table lock,
+and the global arena once gate into `lib/core/runtime_arena_sync_hosted.cpp`,
+classified as `runtime-hosted`. Keep `arena_create_threadsafe`, `arena_lock`,
+`arena_unlock`, hash-table APIs, and global arena selection in
+`arena_memory.cpp` so existing runtime callers keep the same public ABI.
+
+### Consequences
+
+- `arena_memory.cpp` no longer includes `pthread.h` or `<mutex>`
+- hosted arena and hash-table synchronization is explicit in the
+  runtime-hosted source set
+- a later freestanding profile can replace the internal sync helpers with
+  target-specific critical-section and once primitives
+
+---
+
 ## D-0039
 
 - Date: 2026-05-23
