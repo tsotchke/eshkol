@@ -27,6 +27,7 @@
 #include <new>      // for std::bad_alloc
 #include <stdexcept>
 #include <atomic>
+#include <cmath>
 #include <cstring>      // std::memset
 #include <filesystem>   // Bug W ask 2: provider-file scan
 #include <fstream>      // Bug W ask 2: read .esk files for provide/define lookup
@@ -4762,109 +4763,6 @@ extern "C" void eshkol_unwind_dynamic_wind(void* saved_wind_mark) {
 }
 
 // ===== END FIRST-CLASS CONTINUATIONS RUNTIME =====
-
-// ===== STRING PORT RUNTIME FUNCTIONS =====
-// String ports use fmemopen (input) / open_memstream (output) to create
-// FILE*-backed ports from in-memory strings. All existing I/O operations
-// work unchanged since they operate on FILE* pointers.
-
-#include <cmath>
-#include <cstring>
-#include <cstdlib>
-
-// Side table tracking open_memstream buffers for get-output-string
-#define MAX_STRING_OUTPUT_PORTS 256
-static struct {
-    FILE* fp;
-    char* buf;
-    size_t size;
-} string_output_ports[MAX_STRING_OUTPUT_PORTS];
-static int num_string_output_ports = 0;
-
-extern "C" void* eshkol_open_input_string(void* arena_void, const char* str, int64_t len) {
-    if (len == 0) {
-        // tmpfile() is portable and returns EOF immediately on first read.
-        return tmpfile();
-    }
-#ifdef _WIN32
-    (void)arena_void;
-    FILE* fp = tmpfile();
-    if (!fp) {
-        return NULL;
-    }
-    if (fwrite(str, 1, (size_t)len, fp) != (size_t)len) {
-        fclose(fp);
-        return NULL;
-    }
-    rewind(fp);
-    return fp;
-#else
-    arena_t* arena = (arena_t*)arena_void;
-    // Copy string to arena so fmemopen has a stable buffer
-    char* copy = (char*)arena_allocate(arena, len + 1);
-    memcpy(copy, str, len);
-    copy[len] = '\0';
-    FILE* fp = fmemopen(copy, len, "r");
-    return fp;
-#endif
-}
-
-extern "C" void* eshkol_open_output_string(void) {
-    if (num_string_output_ports >= MAX_STRING_OUTPUT_PORTS) return NULL;
-    int idx = num_string_output_ports++;
-    string_output_ports[idx].buf = NULL;
-    string_output_ports[idx].size = 0;
-#ifdef _WIN32
-    FILE* fp = tmpfile();
-#else
-    FILE* fp = open_memstream(&string_output_ports[idx].buf,
-                              &string_output_ports[idx].size);
-#endif
-    string_output_ports[idx].fp = fp;
-    return fp;
-}
-
-extern "C" void* eshkol_get_output_string(void* arena_void, void* fp_void) {
-    arena_t* arena = (arena_t*)arena_void;
-    FILE* fp = (FILE*)fp_void;
-    fflush(fp);
-    for (int i = 0; i < num_string_output_ports; i++) {
-        if (string_output_ports[i].fp == fp) {
-#ifdef _WIN32
-            long saved_pos = ftell(fp);
-            if (saved_pos < 0) {
-                saved_pos = 0;
-            }
-            if (fseek(fp, 0, SEEK_END) != 0) {
-                break;
-            }
-            long end_pos = ftell(fp);
-            if (end_pos < 0) {
-                break;
-            }
-            rewind(fp);
-            size_t len = (size_t)end_pos;
-            char* result = (char*)arena_allocate_with_header(
-                arena, len + 1, HEAP_SUBTYPE_STRING, 0);
-            size_t read_len = len > 0 ? fread(result, 1, len, fp) : 0;
-            result[read_len] = '\0';
-            fseek(fp, saved_pos, SEEK_SET);
-            return result;
-#else
-            size_t len = string_output_ports[i].size;
-            char* result = (char*)arena_allocate_with_header(
-                arena, len + 1, HEAP_SUBTYPE_STRING, 0);
-            memcpy(result, string_output_ports[i].buf, len);
-            result[len] = '\0';
-            return result;
-#endif
-        }
-    }
-    // Not found - return empty string
-    char* result = (char*)arena_allocate_with_header(arena, 1, HEAP_SUBTYPE_STRING, 0);
-    result[0] = '\0';
-    return result;
-}
 
 // ===== S-EXPRESSION READER (R7RS `read`) =====
 // Lightweight runtime S-expression reader: tokenizer + recursive descent parser

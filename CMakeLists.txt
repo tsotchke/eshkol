@@ -1083,6 +1083,7 @@ set(ESHKOL_RUNTIME_HOSTED_SRC
   lib/core/runtime_shutdown_hooks_hosted.cpp
   lib/core/runtime_signals_hosted.cpp
   lib/core/runtime_stack_hosted.cpp
+  lib/core/runtime_string_ports_hosted.cpp
   lib/core/system_builtins.c
 )
 
