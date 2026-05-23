@@ -320,6 +320,36 @@ core responsibilities are separated.
 
 ---
 
+## D-0030
+
+- Date: 2026-05-23
+- Status: Accepted
+- Title: Extract string and UTF-8 helpers into runtime core
+
+### Context
+
+`lib/core/runtime.cpp` still mixes hosted lifecycle behavior with generated-code
+helpers. The string byte-length and UTF-8 helpers only inspect Eshkol string
+headers, walk byte sequences, and allocate substring results through the arena
+string allocator. They do not need host files, environment variables, process
+state, signals, or threads.
+
+### Decision
+
+Move `eshkol_string_byte_length`, `eshkol_utf8_strlen`, `eshkol_utf8_ref`, and
+`eshkol_utf8_substring` into `lib/core/runtime_string.cpp` and classify that
+file as `runtime-core`. Keep `runtime.cpp` in `runtime-split-pending` until its
+remaining hosted lifecycle and core parameter/bytevector helpers are split.
+
+### Consequences
+
+- generated string code keeps the same exported helper symbol names
+- runtime-core now owns the header-backed string/UTF-8 helper surface
+- `runtime.cpp` is smaller and more focused on hosted lifecycle plus remaining
+  unsplit helper groups
+
+---
+
 ## D-0011
 
 - Date: 2026-04-15
