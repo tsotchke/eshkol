@@ -172,6 +172,7 @@ int main(int argc, char** argv) {
              "lib/core/logger.cpp", "lib/core/platform_runtime.cpp",
              "lib/core/resource_limits.cpp",
              "lib/core/runtime_arena_sync_hosted.cpp",
+             "lib/core/runtime_display_hosted.cpp",
              "lib/core/runtime_errors_hosted.cpp",
              "lib/core/runtime_exports_hosted.cpp",
              "lib/core/runtime_lifecycle_hosted.cpp",

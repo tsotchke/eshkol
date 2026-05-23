@@ -102,6 +102,7 @@ Program phase:
 - hosted FILE-backed string-port helpers now live in a dedicated `runtime_string_ports_hosted.cpp` unit
 - hosted arena/hash-table mutex and once primitives now live in a dedicated `runtime_arena_sync_hosted.cpp` unit
 - hosted S-expression reader helpers now live in a dedicated `runtime_reader_hosted.cpp` unit
+- hosted display/write and current-port helpers now live in a dedicated `runtime_display_hosted.cpp` unit
 - hosted logger/resource-limit implementations are classified as `runtime-hosted`, and the AST pretty-printer is no longer treated as runtime substrate
 - freestanding-safe bytevector helpers now live in a dedicated runtime-core translation unit instead of the hosted-heavy runtime state implementation
 - freestanding-safe tensor index helpers now live in a dedicated runtime-core translation unit instead of the hosted-heavy runtime state implementation
