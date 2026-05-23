@@ -93,6 +93,7 @@ Program phase:
 - runtime-core and runtime-hosted internal source sets are explicit in CMake
 - hosted `runtime_exports.h` wrappers now live in a dedicated `runtime_exports_hosted.cpp` unit
 - hosted logger/resource-limit implementations are classified as `runtime-hosted`, and the AST pretty-printer is no longer treated as runtime substrate
+- freestanding-safe tensor fill helpers now live in a dedicated runtime-core translation unit instead of the hosted-heavy runtime state implementation
 - machine integer and raw pointer annotation surfaces exist in the HoTT parser/type-checker path
 - pointer conversion and byte-offset arithmetic builtins exist for the low-level surface: `null-ptr`, `ptr->usize`, `usize->ptr`, and `ptr-add`
 - tracked `Ptr` bindings round-trip through variable storage and typed codegen without collapsing back into generic heap-object handling

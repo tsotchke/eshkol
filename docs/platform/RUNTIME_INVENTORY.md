@@ -82,6 +82,7 @@ This inventory uses the following target families:
 | `lib/core/arena_memory.h` | `runtime-core` | split required | Public arena substrate and object-allocation helpers are core, but the implementation currently includes pthread locking and string-port helpers that are not freestanding-safe. |
 | `lib/core/arena_memory.cpp` | `runtime-core` | split required | Core allocator and tagged-object substrate. Must be split to remove pthread mutex setup and `tmpfile` / `open_memstream` string-port plumbing from the core slice. |
 | `lib/core/runtime.cpp` | `runtime-core` API + `runtime-hosted` backend | split required | Interface is foundational, but current behavior depends on signals, condition variables, threads, stderr, and OS shutdown semantics. |
+| `lib/core/runtime_tensor_fill.cpp` | `runtime-core` | direct | Native `tensor-rect-fill!` / `tensor-disk-fill!` helpers. Operate only on tagged tensor layout and raw memory, with no allocation or hosted process/thread/file dependency. |
 | `lib/core/bignum.cpp` | `runtime-core` | direct | Numeric runtime support with no obvious host/process dependency. |
 | `lib/core/rational.cpp` | `runtime-core` | direct | Numeric runtime support with no obvious host/process dependency. |
 | `lib/core/ad_tape_builtins.c` | `runtime-core` optional | direct | Runtime numeric/AD helper surface. |
@@ -204,8 +205,11 @@ The runtime split should proceed in this order:
 3. Classify the current hosted logger and resource-limit implementations as
    `runtime-hosted`, and keep the AST pretty-printer out of the runtime source
    families.
-4. Split `runtime.cpp` and `arena_memory.cpp` along host-dependent seams so
-   they can leave `runtime-split-pending`.
+4. Continue splitting `runtime.cpp` and `arena_memory.cpp` along
+   host-dependent seams. The first runtime.cpp extraction moved the
+   freestanding-safe tensor-fill helpers into `runtime_tensor_fill.cpp`;
+   the remaining file still needs lifecycle, fatal-error, parameter, bytevector,
+   and index-helper boundaries separated.
 5. Add hosted-leakage tests that fail if `runtime-core` depends on env, files, temp streams, process control, or host threading primitives.
 6. Decompose `eshkol_vm.c` into `vm-core`, `vm-hosted`, and VM toolchain buckets.
 7. Introduce the first real `runtime-freestanding` hooks and stub implementation.
