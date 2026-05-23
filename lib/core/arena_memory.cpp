@@ -21,7 +21,6 @@
 #include <setjmp.h>
 #ifndef _WIN32
 #include <pthread.h>
-#include <sys/resource.h>
 #endif
 
 #ifdef __cplusplus
@@ -51,43 +50,6 @@ ad_tape_t* __current_ad_tape = nullptr;
 // CRITICAL: Must be shared so lambdas from one LLVM module can see AD mode
 // set by another module (cross-module AD in REPL).
 bool __ad_mode_active = false;
-
-// ============================================================================
-// Stack Size Initialization
-// ============================================================================
-// Increases process stack size for deep recursion support.
-// On macOS, the main thread stack is set at link time (-Wl,-stack_size),
-// but setrlimit still helps for spawned threads and as a Linux fallback.
-// Env var ESHKOL_STACK_SIZE overrides the default (in bytes).
-extern "C" void eshkol_init_stack_size() {
-#ifdef _WIN32
-    // Windows thread stack sizing is handled at link/thread creation time.
-    return;
-#else
-    const rlim_t default_stack = 512ULL * 1024 * 1024;  // 512MB
-    rlim_t target = default_stack;
-
-    const char* env_val = getenv("ESHKOL_STACK_SIZE");
-    if (env_val) {
-        char* end = nullptr;
-        unsigned long long parsed = strtoull(env_val, &end, 0);
-        if (end != env_val && parsed >= 1024 * 1024) {  // min 1MB
-            target = (rlim_t)parsed;
-        }
-    }
-
-    struct rlimit rl;
-    if (getrlimit(RLIMIT_STACK, &rl) == 0) {
-        if (rl.rlim_cur < target) {
-            rl.rlim_cur = target;
-            if (rl.rlim_max != RLIM_INFINITY && rl.rlim_max < target) {
-                rl.rlim_cur = rl.rlim_max;  // cannot exceed hard limit
-            }
-            setrlimit(RLIMIT_STACK, &rl);
-        }
-    }
-#endif
-}
 
 // Debug helper to print AD mode state
 void debug_print_ad_mode(const char* context) {
