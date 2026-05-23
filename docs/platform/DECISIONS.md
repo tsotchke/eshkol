@@ -449,6 +449,36 @@ implementation replacement behind the same ABI.
 
 ---
 
+## D-0042
+
+- Date: 2026-05-23
+- Status: Accepted
+- Title: Extract hosted display and current-port runtime
+
+### Context
+
+`arena_memory.cpp` still carried the display/write implementation and the
+runtime cells for `current-output-port`, `current-input-port`, and
+`current-error-port`. That code is not allocator substrate: it formats values to
+hosted `FILE*` streams, uses `stdout` / `stdin` / `stderr` defaults, emits
+UTF-8, and renders higher-level runtime values through hosted output sinks.
+
+### Decision
+
+Move the display/write and current-port implementation into
+`lib/core/runtime_display_hosted.cpp`, classified as `runtime-hosted`. Keep the
+existing public ABI names for display/write, current-port accessors, list/vector
+display, and UTF-8 string construction unchanged.
+
+### Consequences
+
+- `arena_memory.cpp` no longer owns hosted display/write or current-port state
+- runtime-hosted explicitly owns the current `FILE*` display sink behavior
+- a later freestanding profile can provide target-specific display sinks behind
+  the same generated-code ABI
+
+---
+
 ## D-0041
 
 - Date: 2026-05-23
