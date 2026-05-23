@@ -177,6 +177,7 @@ int main(int argc, char** argv) {
              "lib/core/runtime_lifecycle_hosted.cpp",
              "lib/core/runtime_operations_hosted.cpp",
              "lib/core/runtime_parameters_hosted.cpp",
+             "lib/core/runtime_reader_hosted.cpp",
              "lib/core/runtime_shutdown_hooks_hosted.cpp",
              "lib/core/runtime_signals_hosted.cpp",
              "lib/core/runtime_stack_hosted.cpp",
