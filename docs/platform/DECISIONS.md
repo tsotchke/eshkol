@@ -449,6 +449,36 @@ implementation replacement behind the same ABI.
 
 ---
 
+## D-0039
+
+- Date: 2026-05-23
+- Status: Accepted
+- Title: Extract hosted string-port helpers
+
+### Context
+
+`arena_memory.cpp` still carried the runtime helpers for `open-input-string`,
+`open-output-string`, and `get-output-string`. These helpers are not arena
+allocation substrate: they allocate hosted `FILE*` ports using `tmpfile`,
+`fmemopen`, and `open_memstream`, plus a hosted side table for output buffers.
+Keeping them in the arena split-pending file tied string-port I/O and temporary
+file behavior to the core allocator slice.
+
+### Decision
+
+Move the string-port helper ABI into `lib/core/runtime_string_ports_hosted.cpp`
+and classify that unit as `runtime-hosted`. Keep the exported symbol names
+unchanged for generated code and REPL/JIT callers.
+
+### Consequences
+
+- `arena_memory.cpp` no longer owns FILE-backed string-port construction
+- hosted string-port behavior is explicit in the runtime-hosted source set
+- a later freestanding profile can replace this implementation with target
+  string streams behind the same generated-code ABI
+
+---
+
 ## D-0038
 
 - Date: 2026-05-23

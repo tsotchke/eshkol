@@ -99,6 +99,7 @@ Program phase:
 - hosted signal and exception handler installation now lives in a dedicated `runtime_signals_hosted.cpp` unit
 - hosted runtime lifecycle and interrupt state now lives in a dedicated `runtime_lifecycle_hosted.cpp` unit
 - hosted process stack-limit setup now lives in a dedicated `runtime_stack_hosted.cpp` unit
+- hosted FILE-backed string-port helpers now live in a dedicated `runtime_string_ports_hosted.cpp` unit
 - hosted logger/resource-limit implementations are classified as `runtime-hosted`, and the AST pretty-printer is no longer treated as runtime substrate
 - freestanding-safe bytevector helpers now live in a dedicated runtime-core translation unit instead of the hosted-heavy runtime state implementation
 - freestanding-safe tensor index helpers now live in a dedicated runtime-core translation unit instead of the hosted-heavy runtime state implementation
