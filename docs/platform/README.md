@@ -92,6 +92,7 @@ Program phase:
 - runtime inventory baseline is documented on `master`
 - runtime-core and runtime-hosted internal source sets are explicit in CMake
 - hosted `runtime_exports.h` wrappers now live in a dedicated `runtime_exports_hosted.cpp` unit
+- hosted logger/resource-limit implementations are classified as `runtime-hosted`, and the AST pretty-printer is no longer treated as runtime substrate
 - machine integer and raw pointer annotation surfaces exist in the HoTT parser/type-checker path
 - pointer conversion and byte-offset arithmetic builtins exist for the low-level surface: `null-ptr`, `ptr->usize`, `usize->ptr`, and `ptr-add`
 - tracked `Ptr` bindings round-trip through variable storage and typed codegen without collapsing back into generic heap-object handling
@@ -107,7 +108,7 @@ Program phase:
 
 Immediate priorities:
 
-- split the current `runtime-split-pending` files along host-dependent seams
+- split the remaining `runtime-split-pending` files, `runtime.cpp` and `arena_memory.cpp`, along host-dependent seams
 - hosted leakage checks for runtime-core
 - low-level machine-facing language surface
 - freestanding LLVM object and ELF pipeline

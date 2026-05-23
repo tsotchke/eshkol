@@ -164,14 +164,14 @@ int main(int argc, char** argv) {
     }
     if (const int rc = require_entries(runtime_hosted_src,
             {"lib/backend/thread_pool.cpp", "lib/core/config.cpp",
-             "lib/core/platform_runtime.cpp", "lib/core/runtime_exports_hosted.cpp",
+             "lib/core/logger.cpp", "lib/core/platform_runtime.cpp",
+             "lib/core/resource_limits.cpp", "lib/core/runtime_exports_hosted.cpp",
              "lib/core/system_builtins.c"},
             "runtime hosted source set")) {
         return rc;
     }
     if (const int rc = require_entries(split_pending_src,
-            {"lib/core/arena_memory.cpp", "lib/core/logger.cpp", "lib/core/printer.cpp",
-             "lib/core/resource_limits.cpp", "lib/core/runtime.cpp"},
+            {"lib/core/arena_memory.cpp", "lib/core/runtime.cpp"},
             "runtime split-pending source set")) {
         return rc;
     }

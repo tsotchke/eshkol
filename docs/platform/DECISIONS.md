@@ -787,3 +787,41 @@ policy, or a structured CAS result type in this slice.
 - CAS success remains explicit in source through ordinary value comparison
 - a future structured result type can be added later without changing the
   observed-value primitive
+
+---
+
+## D-0027
+
+- Date: 2026-05-23
+- Status: Accepted
+- Title: Classify current logger and resource-limit implementations as hosted runtime
+
+### Context
+
+The runtime source sets already separate direct core runtime files from direct
+hosted runtime files, but `runtime-split-pending` still mixed several different
+kinds of work. `logger.cpp` and `resource_limits.cpp` are current hosted
+implementations: they depend on process stderr/files, platform backtraces,
+environment variables, timers, logging sinks, and hosted runtime interrupts.
+`printer.cpp` is not runtime substrate at all; it is an AST pretty-printer and
+debugging surface for compiler data structures.
+
+### Decision
+
+Move the current implementations of `lib/core/logger.cpp` and
+`lib/core/resource_limits.cpp` from `runtime-split-pending` to
+`runtime-hosted`. Remove `lib/core/printer.cpp` from the runtime family source
+sets entirely so it remains part of the aggregate library as out-of-runtime
+tooling code.
+
+Keep `arena_memory.cpp` and `runtime.cpp` in `runtime-split-pending` until
+their host-dependent seams are split. Do not introduce a freestanding logger
+hook ABI or resource-limit policy object in this slice.
+
+### Consequences
+
+- the remaining split-pending runtime set is smaller and more honest
+- hosted logger/resource-limit behavior remains unchanged because
+  `eshkol-static` still aggregates all internal source sets
+- future slices can focus on the real hard seams: arena/string-port/threading
+  in `arena_memory.cpp` and signal/process/shutdown behavior in `runtime.cpp`
