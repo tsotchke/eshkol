@@ -1062,6 +1062,7 @@ set(ESHKOL_RUNTIME_CORE_SRC
   lib/core/ad_tape_builtins.c
   lib/core/bignum.cpp
   lib/core/rational.cpp
+  lib/core/runtime_string.cpp
   lib/core/runtime_tensor_index.cpp
   lib/core/runtime_tensor_fill.cpp
 )
