@@ -449,6 +449,36 @@ implementation replacement behind the same ABI.
 
 ---
 
+## D-0043
+
+- Date: 2026-05-23
+- Status: Accepted
+- Title: Extract closure reflection and lambda registry
+
+### Context
+
+`arena_memory.cpp` still carried the generated-code ABI helpers for closure
+reflection and the homoiconic lambda registry. These helpers read closure
+metadata, allocate procedure-name strings into the arena, and maintain a
+function-pointer to S-expression registry for display/JIT integration, but they
+are not allocator implementation.
+
+### Decision
+
+Move the closure reflection helpers and lambda registry into
+`lib/core/runtime_closure_reflection.cpp`, classified as `runtime-core`. Keep the
+existing ABI names for `procedure-arity`, `procedure-name`, variadic checks, and
+lambda registry registration/lookup unchanged.
+
+### Consequences
+
+- `arena_memory.cpp` no longer owns closure reflection or lambda registry state
+- runtime-core explicitly owns the generated-code closure reflection ABI
+- hosted display can depend on the registry without keeping that registry in the
+  split-pending arena file
+
+---
+
 ## D-0042
 
 - Date: 2026-05-23
