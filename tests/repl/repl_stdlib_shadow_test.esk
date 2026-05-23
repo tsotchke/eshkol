@@ -1,0 +1,19 @@
+(require stdlib)
+
+;; A user top-level variable must be able to shadow a preloaded stdlib
+;; function with the same Scheme name. This used to collide with stdlib's
+;; JIT symbol for `describe` and crash during ORC absolute-symbol setup.
+(define describe
+  (case-lambda
+    (() 10)
+    ((x) (+ x 1))
+    ((x y) (+ x y))))
+
+(if (and (= (describe) 10)
+         (= (describe 41) 42)
+         (= (describe 20 22) 42))
+    (exit 0)
+    (begin
+      (display "FAIL: user variable did not shadow stdlib function")
+      (newline)
+      (exit 1)))

@@ -41,6 +41,7 @@
 #include <iostream>
 #include <fstream>
 #include <sstream>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <cmath>
@@ -1195,6 +1196,20 @@ static std::string strip_repl_version_suffix(const std::string& vname) {
     return vname.substr(0, pos);
 }
 
+static std::string repl_var_storage_symbol_name(const std::string& name) {
+    std::string out = "__repl_var_storage_";
+    char encoded[4];
+    for (unsigned char ch : name) {
+        if (std::isalnum(ch)) {
+            out.push_back(static_cast<char>(ch));
+        } else {
+            std::snprintf(encoded, sizeof(encoded), "_%02X", ch);
+            out += encoded;
+        }
+    }
+    return out;
+}
+
 void ReplJITContext::addModule(std::unique_ptr<Module> module, std::unique_ptr<LLVMContext> module_context) {
     if (!jit_) {
         initializeJIT();
@@ -1236,16 +1251,35 @@ void ReplJITContext::addModule(std::unique_ptr<Module> module, std::unique_ptr<L
         }
     }
 
+    auto remap_repl_var_global = [&](const std::string& var_name,
+                                     const std::string& storage_symbol) {
+        if (storage_symbol == var_name) return;
+        if (auto* gv = module->getNamedGlobal(var_name)) {
+            if (gv->isDeclaration()) {
+                gv->setName(storage_symbol);
+            }
+        }
+    };
+
+    // Any later module that references a REPL variable whose backing storage
+    // had to be privatized must link against the private storage symbol, not
+    // the user-visible Scheme name that may still name a stdlib function.
+    for (const auto& [var_name, storage_symbol] : repl_var_storage_symbols_) {
+        remap_repl_var_global(var_name, storage_symbol);
+    }
+
     // STEP 1B: Scan for __repl_var_<X> markers — codegen emits these whenever
     // a top-level user variable @X is declared as an external in this module.
     // For each marker we (1) ensure a 16-byte tagged_value heap slot exists for
     // X (allocated lazily on first definition; reused on redefinition), (2)
-    // register `@X` as an absolute JIT symbol pointing at that slot, so all
-    // present and future modules' load/store of `@X` go through shared host
+    // register an absolute JIT symbol pointing at that slot, so all present
+    // and future modules' load/store of `@X` go through shared host
     // storage, and (3) drop the marker from IR so the JIT does not materialize
-    // it. The marker itself carries no data — its sole purpose is to identify
-    // host-managed variable externals so we don't accidentally back random
-    // unresolved externals (runtime symbols, builtin globals, etc.).
+    // it. If X shadows an existing JIT symbol, the storage symbol is private
+    // and the module's external @X declaration is renamed to it before
+    // materialization. The marker itself carries no data — its sole purpose is
+    // to identify host-managed variable externals so we don't accidentally
+    // back random unresolved externals (runtime symbols, builtin globals, etc.).
     {
         std::vector<std::string> var_markers;
         for (auto& gv : module->globals()) {
@@ -1257,9 +1291,28 @@ void ReplJITContext::addModule(std::unique_ptr<Module> module, std::unique_ptr<L
         for (const std::string& marker : var_markers) {
             std::string var_name = marker.substr(strlen("__repl_var_"));
 
+            std::string storage_symbol;
+            auto storage_symbol_it = repl_var_storage_symbols_.find(var_name);
+            if (storage_symbol_it != repl_var_storage_symbols_.end()) {
+                storage_symbol = storage_symbol_it->second;
+            } else {
+                bool collides_with_existing_jit_symbol = false;
+                auto existing = jit_->lookup(var_name);
+                if (existing) {
+                    collides_with_existing_jit_symbol = true;
+                } else {
+                    consumeError(existing.takeError());
+                }
+                storage_symbol = collides_with_existing_jit_symbol
+                    ? repl_var_storage_symbol_name(var_name)
+                    : var_name;
+                repl_var_storage_symbols_[var_name] = storage_symbol;
+            }
+            remap_repl_var_global(var_name, storage_symbol);
+
             if (repl_var_storage_.count(var_name) == 0) {
                 // First definition: allocate a 16-byte aligned tagged_value
-                // slot, zero-initialize it, and register the variable's name
+                // slot, zero-initialize it, and register the storage symbol
                 // as an absolute symbol pointing at the slot. Subsequent
                 // definitions reuse the same address, so a store from any
                 // module's entry function writes to shared storage.
@@ -1277,7 +1330,7 @@ void ReplJITContext::addModule(std::unique_ptr<Module> module, std::unique_ptr<L
                 repl_var_storage_[var_name] = storage;
 
                 orc::SymbolMap sym;
-                sym[jit_->mangleAndIntern(var_name)] = {
+                sym[jit_->mangleAndIntern(storage_symbol)] = {
                     orc::ExecutorAddr::fromPtr(storage),
                     JITSymbolFlags::Exported
                 };
@@ -1288,13 +1341,17 @@ void ReplJITContext::addModule(std::unique_ptr<Module> module, std::unique_ptr<L
                     err_stream << err;
                     consumeError(std::move(err));
                     std::cerr << "REPL: failed to register absolute symbol for "
-                              << var_name << ": " << err_msg << std::endl;
+                              << storage_symbol << ": " << err_msg << std::endl;
                 }
 
                 // Register in the codegen-visible symbol map so future
                 // modules' variable read paths see this name and emit an
-                // external @<name> declaration that resolves to our slot.
+                // external @<name> declaration that we remap to the storage
+                // symbol above before handing the module to ORC.
                 defined_globals_.insert(var_name);
+                symbol_table_.erase(var_name);
+                defined_lambdas_.erase(var_name);
+                registered_lambdas_.erase(var_name);
                 eshkol_repl_register_symbol(
                     var_name.c_str(),
                     reinterpret_cast<uint64_t>(storage));

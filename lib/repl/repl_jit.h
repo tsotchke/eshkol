@@ -248,6 +248,13 @@ private:
     // Maps user variable name -> heap pointer (16-byte aligned).
     std::unordered_map<std::string, void*> repl_var_storage_;
 
+    // Some REPL variables shadow symbols that already exist in the JIT
+    // dylib, notably stdlib functions. Those variables still have the
+    // user-visible Scheme name, but their backing storage must be linked
+    // through a private LLVM symbol to avoid duplicate JIT definitions.
+    // Maps user variable name -> LLVM storage symbol.
+    std::unordered_map<std::string, std::string> repl_var_storage_symbols_;
+
     // Initialize the JIT (called from constructor)
     void initializeJIT();
 
