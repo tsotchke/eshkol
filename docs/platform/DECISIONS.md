@@ -449,6 +449,35 @@ implementation replacement behind the same ABI.
 
 ---
 
+## D-0044
+
+- Date: 2026-05-23
+- Status: Accepted
+- Title: Extract hosted exception runtime
+
+### Context
+
+`arena_memory.cpp` still carried R7RS exception state, `longjmp` handler
+dispatch, hosted stderr fallback printing, and REPL forward-reference provider
+diagnostics. The provider diagnostic path scans project `.esk` files using the
+host filesystem and is explicitly not allocator substrate.
+
+### Decision
+
+Move exception allocation, raised-value state, handler stack management,
+forward-reference diagnostics, and exception display into
+`lib/core/runtime_exceptions_hosted.cpp`, classified as `runtime-hosted`. Keep
+the existing public ABI symbols for generated code and REPL JIT registration.
+
+### Consequences
+
+- `arena_memory.cpp` no longer owns exception state or hosted provider-file scans
+- runtime-hosted explicitly owns the current `longjmp`/stderr exception sink
+- the remaining split-pending arena file no longer includes filesystem/fstream
+  just for exception diagnostics
+
+---
+
 ## D-0043
 
 - Date: 2026-05-23

@@ -270,9 +270,9 @@ The `codegenRaise` function at `llvm_codegen.cpp` emits:
 3. Call `eshkol_raise(exception)`, which is marked `noreturn`.
 4. Emit `unreachable`.
 
-The `eshkol_raise` runtime function (`arena_memory.cpp`) stores the
-exception globally and performs `longjmp` to the top of the exception handler
-stack. If no handler exists, it prints a diagnostic and calls `exit(1)`.
+The `eshkol_raise` runtime function (`runtime_exceptions_hosted.cpp`) stores
+the exception globally and performs `longjmp` to the top of the exception
+handler stack. If no handler exists, it prints a diagnostic and calls `exit(1)`.
 
 ### 4.3 with-exception-handler
 
