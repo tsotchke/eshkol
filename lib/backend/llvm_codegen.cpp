@@ -417,12 +417,16 @@ namespace {
     //                                              REPL host allocates a 16-byte
     //                                              tagged_value heap slot on
     //                                              first definition and registers
-    //                                              `@<name>` as an absolute JIT
-    //                                              symbol pointing to it. Stores
-    //                                              and loads of `@<name>` then
-    //                                              naturally write to / read from
-    //                                              that shared heap location, so
-    //                                              redefinition is just a store.
+    //                                              `@__repl_storage_<name>`
+    //                                              as an absolute JIT symbol
+    //                                              pointing to it. Stores and
+    //                                              loads of that private symbol
+    //                                              then naturally write to / read
+    //                                              from the shared heap location,
+    //                                              so redefinition is just a
+    //                                              store. The private storage
+    //                                              name avoids clashes with LLVM
+    //                                              functions like `log2`.
     //                                              The marker global
     //                                              `__repl_var_<name>` tells the
     //                                              host which externals to back
@@ -445,6 +449,20 @@ namespace {
     // in tryResolveReplFunction() for the full coercion sequence.
     std::unordered_set<std::string> g_repl_native_c_functions;
     std::mutex g_repl_mutex;  // Thread safety for REPL symbol access
+
+    static std::string replVarStorageSymbolName(const std::string& name) {
+        std::string out = "__repl_storage_";
+        char encoded[4];
+        for (unsigned char ch : name) {
+            if (std::isalnum(ch)) {
+                out.push_back(static_cast<char>(ch));
+            } else {
+                std::snprintf(encoded, sizeof(encoded), "_%02X", ch);
+                out += encoded;
+            }
+        }
+        return out;
+    }
 
     /* REPL LAST-VALUE CAPTURE
      *
@@ -2151,7 +2169,11 @@ public:
                 if (asts_to_use[i].type == ESHKOL_OP && asts_to_use[i].operation.op == ESHKOL_DEFINE_OP &&
                     !asts_to_use[i].operation.define_op.is_function) {
                     const char* var_name = asts_to_use[i].operation.define_op.name;
-                    if (var_name && !module->getNamedGlobal(var_name)) {
+                    std::string storage_name = var_name ? std::string(var_name) : std::string();
+                    if (g_repl_mode_enabled && var_name) {
+                        storage_name = replVarStorageSymbolName(var_name);
+                    }
+                    if (var_name && !module->getNamedGlobal(storage_name)) {
                         GlobalVariable* global_var = nullptr;
                         if (g_repl_mode_enabled) {
                             global_var = new GlobalVariable(
@@ -2160,7 +2182,7 @@ public:
                                 false,                          // not constant
                                 GlobalValue::ExternalLinkage,
                                 nullptr,                        // no initializer = external decl
-                                var_name
+                                storage_name
                             );
                             global_var->setAlignment(Align(16));
                             {
@@ -2206,7 +2228,7 @@ public:
                                 false, // not constant
                                 GlobalValue::ExternalLinkage,
                                 nullptr, // no initializer = external declaration
-                                var_name
+                                storage_name
                             );
                             global_var->setAlignment(Align(16));
                         } else {
@@ -2216,7 +2238,7 @@ public:
                                 false, // not constant
                                 GlobalValue::ExternalLinkage,
                                 UndefValue::get(tagged_value_type),
-                                var_name
+                                storage_name
                             );
                             global_var->setAlignment(Align(16));
                         }
@@ -9059,7 +9081,8 @@ private:
             auto repl_it = g_repl_symbol_addresses.find(var_name);
             if (repl_it != g_repl_symbol_addresses.end()) {
                 // Variable exists in REPL context - create external global declaration
-                GlobalVariable* global_var = module->getGlobalVariable(var_name);
+                std::string storage_name = replVarStorageSymbolName(var_name);
+                GlobalVariable* global_var = module->getGlobalVariable(storage_name);
                 if (!global_var) {
                     // Create external declaration for this global variable
                     // Use tagged_value type to preserve type information across modules
@@ -9069,7 +9092,7 @@ private:
                         false,  // not constant
                         GlobalValue::ExternalLinkage,
                         nullptr,  // no initializer for external declaration
-                        var_name
+                        storage_name
                     );
                 }
 
@@ -10859,8 +10882,18 @@ private:
                         init_value = UndefValue::get(actual_storage_type);
                     }
 
-                    // Check if GlobalVariable was pre-declared (for forward references from functions)
-                    GlobalVariable* global_var = module->getNamedGlobal(var_name);
+                    // Check if a GlobalVariable was pre-declared. In REPL mode,
+                    // a user variable may shadow an existing LLVM function
+                    // symbol such as `log2`, so the predeclared storage can
+                    // have a private `__repl_storage_*` name.
+                    GlobalVariable* global_var = nullptr;
+                    auto sym_it = symbol_table.find(var_name);
+                    if (sym_it != symbol_table.end()) {
+                        global_var = dyn_cast<GlobalVariable>(sym_it->second);
+                    }
+                    if (!global_var) {
+                        global_var = module->getNamedGlobal(var_name);
+                    }
                     if (global_var) {
                         // Use existing pre-declared global variable
                         eshkol_debug("Using pre-declared GlobalVariable for %s", var_name);
@@ -10869,6 +10902,10 @@ private:
                         GlobalValue::LinkageTypes linkage = is_repl_eval
                             ? GlobalValue::WeakAnyLinkage
                             : GlobalValue::InternalLinkage;
+                        std::string global_name = var_name;
+                        if (is_repl_eval) {
+                            global_name = replVarStorageSymbolName(var_name);
+                        }
 
                         global_var = new GlobalVariable(
                             *module,
@@ -10876,8 +10913,21 @@ private:
                             false, // not constant
                             linkage,
                             init_value,
-                            var_name
+                            global_name
                         );
+                        if (is_repl_eval) {
+                            std::string marker_name = std::string("__repl_var_") + var_name;
+                            if (!module->getNamedGlobal(marker_name)) {
+                                new GlobalVariable(
+                                    *module,
+                                    int8_type,
+                                    true,
+                                    GlobalValue::WeakODRLinkage,
+                                    ConstantInt::get(int8_type, 1),
+                                    marker_name
+                                );
+                            }
+                        }
                         eshkol_debug("Created new GlobalVariable for %s in %s", var_name,
                                     is_repl_eval ? "REPL mode" : "__global_init");
                     }
@@ -11309,7 +11359,8 @@ private:
             auto repl_it = g_repl_symbol_addresses.find(var_name);
             if (repl_it != g_repl_symbol_addresses.end()) {
                 // Variable exists in REPL context - create external global declaration
-                GlobalVariable* global_var = module->getGlobalVariable(var_name);
+                std::string storage_name = replVarStorageSymbolName(var_name);
+                GlobalVariable* global_var = module->getGlobalVariable(storage_name);
                 if (!global_var) {
                     // Create external declaration for this global variable
                     global_var = new GlobalVariable(
@@ -11318,7 +11369,7 @@ private:
                         false,  // not constant
                         GlobalValue::ExternalLinkage,
                         nullptr,  // no initializer for external declaration
-                        var_name
+                        storage_name
                     );
                 }
                 var_ptr = global_var;
@@ -15984,7 +16035,8 @@ private:
                     if (repl_it != g_repl_symbol_addresses.end()) {
                         // Symbol exists in JIT from previous evaluation
                         // Create an external GlobalVariable reference and load the closure
-                        GlobalVariable* ext_var = module->getNamedGlobal(func_name);
+                        std::string storage_name = replVarStorageSymbolName(func_name);
+                        GlobalVariable* ext_var = module->getNamedGlobal(storage_name);
                         if (!ext_var) {
                             ext_var = new GlobalVariable(
                                 *module,
@@ -15992,7 +16044,7 @@ private:
                                 false, // not constant
                                 GlobalValue::ExternalLinkage,
                                 nullptr, // external - no initializer
-                                func_name
+                                storage_name
                             );
                             eshkol_debug("REPL: Created external reference for %s", func_name.c_str());
                         }
@@ -23368,7 +23420,8 @@ private:
                     auto sym_it = g_repl_symbol_addresses.find(var_name);
                     if (sym_it != g_repl_symbol_addresses.end()) {
                         // Create external declaration for the global
-                        GlobalVariable* global_var = module->getGlobalVariable(var_name);
+                        std::string storage_name = replVarStorageSymbolName(var_name);
+                        GlobalVariable* global_var = module->getGlobalVariable(storage_name);
                         if (!global_var) {
                             global_var = new GlobalVariable(
                                 *module,
@@ -23376,7 +23429,7 @@ private:
                                 false,
                                 GlobalValue::ExternalLinkage,
                                 nullptr,  // external - no initializer
-                                var_name
+                                storage_name
                             );
                         }
                         // Load the captured value
@@ -24665,7 +24718,8 @@ private:
                                  loop_name.c_str(), fv.c_str());
                     markFatalCodegenError();
                 } else if (g_repl_symbol_addresses.find(fv) != g_repl_symbol_addresses.end()) {
-                    GlobalVariable* repl_global = module->getGlobalVariable(fv);
+                    std::string storage_name = replVarStorageSymbolName(fv);
+                    GlobalVariable* repl_global = module->getGlobalVariable(storage_name);
                     if (!repl_global) {
                         repl_global = new GlobalVariable(
                             *module,
@@ -24673,7 +24727,7 @@ private:
                             false,
                             GlobalValue::ExternalLinkage,
                             nullptr,
-                            fv
+                            storage_name
                         );
                     }
                     outer_val = repl_global;

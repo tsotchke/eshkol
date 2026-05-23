@@ -1198,7 +1198,7 @@ static std::string strip_repl_version_suffix(const std::string& vname) {
 }
 
 static std::string repl_var_storage_symbol_name(const std::string& name) {
-    std::string out = "__repl_var_storage_";
+    std::string out = "__repl_storage_";
     char encoded[4];
     for (unsigned char ch : name) {
         if (std::isalnum(ch)) {
@@ -1285,7 +1285,7 @@ void ReplJITContext::addModule(std::unique_ptr<Module> module, std::unique_ptr<L
         std::vector<std::string> var_markers;
         for (auto& gv : module->globals()) {
             std::string name = gv.getName().str();
-            if (name.find("__repl_var_") == 0) {
+            if (gv.hasInitializer() && name.find("__repl_var_") == 0) {
                 var_markers.push_back(name);
             }
         }
@@ -1297,16 +1297,14 @@ void ReplJITContext::addModule(std::unique_ptr<Module> module, std::unique_ptr<L
             if (storage_symbol_it != repl_var_storage_symbols_.end()) {
                 storage_symbol = storage_symbol_it->second;
             } else {
-                bool collides_with_existing_jit_symbol = false;
-                auto existing = jit_->lookup(var_name);
-                if (existing) {
-                    collides_with_existing_jit_symbol = true;
-                } else {
-                    consumeError(existing.takeError());
-                }
-                storage_symbol = collides_with_existing_jit_symbol
-                    ? repl_var_storage_symbol_name(var_name)
-                    : var_name;
+                // Keep all REPL variable storage in a private symbol namespace.
+                // LLVM has one module-level namespace for functions and globals,
+                // so user variables named like host/math functions (`log2`, etc.)
+                // can be auto-renamed if we try to materialize them as @<name>.
+                // Codegen emits the same storage name for first-definition
+                // modules; later modules are remapped through
+                // repl_var_storage_symbols_ below.
+                storage_symbol = repl_var_storage_symbol_name(var_name);
                 repl_var_storage_symbols_[var_name] = storage_symbol;
             }
             remap_repl_var_global(var_name, storage_symbol);
