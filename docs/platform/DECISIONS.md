@@ -449,6 +449,41 @@ implementation replacement behind the same ABI.
 
 ---
 
+## D-0034
+
+- Date: 2026-05-23
+- Status: Accepted
+- Title: Extract hosted runtime operation tracking
+
+### Context
+
+The runtime shutdown path tracks in-flight hosted operations so shutdown can
+wait for active work to drain. The current implementation uses `std::mutex`,
+`std::condition_variable`, `std::vector`, `std::string`, and steady-clock
+durations. Those choices are appropriate for the hosted runtime, but they keep
+threading and STL synchronization state in `runtime.cpp` while the remaining
+file is being narrowed toward lifecycle and signal behavior.
+
+### Decision
+
+Move `eshkol_runtime_begin_operation`, `eshkol_runtime_end_operation`,
+`eshkol_runtime_drain_operations`, and
+`eshkol_runtime_get_operation_count` into
+`lib/core/runtime_operations_hosted.cpp`, classified as `runtime-hosted`.
+Preserve the public ABI and keep `eshkol_runtime_shutdown` calling those APIs
+rather than reaching into operation storage directly.
+
+### Consequences
+
+- runtime-hosted explicitly owns the current condition-variable-backed
+  operation-drain implementation
+- `runtime.cpp` no longer owns operation vectors, operation mutexes, or
+  condition-variable state
+- a later freestanding runtime profile can replace the operation tracking
+  implementation behind the same public symbols
+
+---
+
 ## D-0011
 
 - Date: 2026-04-15
