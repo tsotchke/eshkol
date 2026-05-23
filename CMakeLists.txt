@@ -1929,6 +1929,18 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND EXISTS "${CMAKE_CURRENT_SOURCE_D
     set_tests_properties(repl_stdlib_shadow_test PROPERTIES TIMEOUT 300)
 endif()
 
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/repl/forward_ref_diagnostic_test.cmake")
+    add_test(
+        NAME repl_forward_ref_diagnostic_test
+        COMMAND ${CMAKE_COMMAND}
+                -DESHKOL_RUN=$<TARGET_FILE:eshkol-run>
+                -DESHKOL_BUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}
+                -DESHKOL_FORWARD_REF_WORKDIR=${CMAKE_CURRENT_BINARY_DIR}/forward_ref_scan_fixture
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/repl/forward_ref_diagnostic_test.cmake"
+    )
+    set_tests_properties(repl_forward_ref_diagnostic_test PROPERTIES TIMEOUT 150)
+endif()
+
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/windows_suite_surface_test.cpp")
     add_executable(windows_suite_surface_test tests/toolchain/windows_suite_surface_test.cpp)
     target_compile_features(windows_suite_surface_test PRIVATE cxx_std_17)
