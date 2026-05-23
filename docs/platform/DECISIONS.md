@@ -449,6 +449,38 @@ implementation replacement behind the same ABI.
 
 ---
 
+## D-0035
+
+- Date: 2026-05-23
+- Status: Accepted
+- Title: Extract hosted runtime shutdown hooks
+
+### Context
+
+Runtime shutdown hooks are registered through a public ABI but currently use
+hosted C++ storage: `std::mutex`, `std::vector`, `std::string`, reverse-order
+iteration, and hosted logging. Keeping that registry in `runtime.cpp` leaves
+threading and STL ownership beside signal/lifecycle state even after the
+operation tracker was split into hosted code.
+
+### Decision
+
+Move `eshkol_register_shutdown_hook`, `eshkol_unregister_shutdown_hook`, and
+reverse-order shutdown-hook dispatch into
+`lib/core/runtime_shutdown_hooks_hosted.cpp`, classified as `runtime-hosted`.
+Keep `runtime.cpp` responsible for lifecycle sequencing and call a private
+hosted helper to run registered hooks during shutdown.
+
+### Consequences
+
+- runtime-hosted explicitly owns the current mutex/vector-backed hook registry
+- `runtime.cpp` no longer owns hook vectors, hook mutexes, or reverse-order hook
+  dispatch details
+- a later freestanding runtime profile can replace hook storage and dispatch
+  behind the same public registration ABI
+
+---
+
 ## D-0034
 
 - Date: 2026-05-23
