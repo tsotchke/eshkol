@@ -1822,6 +1822,29 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/ru
     )
 endif()
 
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/forward_ref_scan_boundary_test.cpp")
+    add_executable(forward_ref_scan_boundary_test
+        tests/toolchain/forward_ref_scan_boundary_test.cpp)
+    target_compile_features(forward_ref_scan_boundary_test PRIVATE cxx_std_17)
+    target_include_directories(forward_ref_scan_boundary_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    eshkol_target_llvm_includes(forward_ref_scan_boundary_test)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(forward_ref_scan_boundary_test PRIVATE
+            ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(forward_ref_scan_boundary_test PRIVATE
+        eshkol-static
+        ${ESHKOL_EXTRA_LINK_LIBS}
+        ${LLVM_LIBS_LIST}
+        ${LLVM_SYSTEM_LIBS_LIST}
+    )
+    add_test(
+        NAME forward_ref_scan_boundary_test
+        COMMAND forward_ref_scan_boundary_test "${CMAKE_CURRENT_BINARY_DIR}"
+    )
+endif()
+
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/repl/assoc_eval_test.cpp")
     add_executable(assoc_eval_test tests/repl/assoc_eval_test.cpp)
     target_compile_features(assoc_eval_test PRIVATE cxx_std_17)
@@ -1927,18 +1950,6 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND EXISTS "${CMAKE_CURRENT_SOURCE_D
                 -L"${CMAKE_CURRENT_BINARY_DIR}"
     )
     set_tests_properties(repl_stdlib_shadow_test PROPERTIES TIMEOUT 300)
-endif()
-
-if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/repl/forward_ref_diagnostic_test.cmake")
-    add_test(
-        NAME repl_forward_ref_diagnostic_test
-        COMMAND ${CMAKE_COMMAND}
-                -DESHKOL_RUN=$<TARGET_FILE:eshkol-run>
-                -DESHKOL_BUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}
-                -DESHKOL_FORWARD_REF_WORKDIR=${CMAKE_CURRENT_BINARY_DIR}/forward_ref_scan_fixture
-                -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/repl/forward_ref_diagnostic_test.cmake"
-    )
-    set_tests_properties(repl_forward_ref_diagnostic_test PROPERTIES TIMEOUT 150)
 endif()
 
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/windows_suite_surface_test.cpp")
