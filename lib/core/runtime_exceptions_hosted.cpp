@@ -357,6 +357,19 @@ bool name_at(const std::string& haystack, size_t pos, const std::string& name) {
     return true;
 }
 
+bool is_generated_scan_dir(const std::string& dirname) {
+    if (dirname.empty() || dirname[0] == '.') return true;
+    if (dirname == "build" || dirname.rfind("build-", 0) == 0 ||
+        dirname.rfind("build_", 0) == 0 ||
+        dirname.rfind("cmake-build", 0) == 0) {
+        return true;
+    }
+    return dirname == "CMakeFiles" || dirname == "_deps" ||
+           dirname == "node_modules" || dirname == "deps" ||
+           dirname == "dist" || dirname == "artifacts" ||
+           dirname == "Testing";
+}
+
 int score_file_text(const std::string& text, const std::string& name) {
     int best = 0;
     size_t pos = 0;
@@ -420,13 +433,10 @@ void scan_dir(const std::filesystem::path& dir, const std::string& name,
         const auto& entry = *it;
         std::error_code ec2;
         if (entry.is_directory(ec2)) {
-            // Skip well-known build / vendor / hidden dirs
+            // Skip generated, vendor, and hidden dirs. Build directories in
+            // this repo are routinely named build-verify/build-codex-*.
             std::string dn = entry.path().filename().string();
-            if (dn.empty() || dn[0] == '.' ||
-                dn == "build" || dn == "build-x64" || dn == "build-asan" ||
-                dn == "build-xla" || dn == "build-cuda" || dn == "build-debug" ||
-                dn == "node_modules" || dn == "deps" || dn == "dist" ||
-                dn == "artifacts" || dn == "Testing") continue;
+            if (is_generated_scan_dir(dn)) continue;
             scan_dir(entry.path(), name, depth + 1, out);
             continue;
         }
