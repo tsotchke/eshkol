@@ -740,3 +740,50 @@ memory-model rules in this slice.
 - the RMW family now covers exchange, arithmetic counters, and bitwise masks
 - compare-exchange remains a later v1.8 slice with a separately documented
   result and failure-ordering contract
+
+---
+
+## D-0026
+
+- Date: 2026-05-22
+- Status: Accepted
+- Title: Atomic compare-exchange returns the observed value
+
+### Context
+
+The atomic RMW family now covers exchange, arithmetic counters, and bitwise
+flag updates. Freestanding runtime code still needs a bounded CAS primitive for
+lock-free state transitions, but introducing a new structured return type would
+expand the low-level surface more than this slice requires.
+
+### Decision
+
+Add a strong typed compare-exchange primitive:
+
+```scheme
+(atomic-compare-exchange! type ptr expected desired success-order failure-order)
+```
+
+The `type` operand uses the existing low-level machine designators, including
+`ptr`. The address operand must be a `Ptr`; `expected` and `desired` must match
+the requested machine type. The result is the observed value read from memory:
+on success it equals `expected`, and on failure it is the current value at the
+address. Source code can test success by comparing the returned observed value
+with `expected`.
+
+Success orderings match the other RMW forms: `relaxed`, `acquire`, `release`,
+`acq-rel`, and `seq-cst`. Failure orderings are limited to `relaxed`,
+`acquire`, and `seq-cst`, and must not be stronger than the success ordering.
+The backend lowers `relaxed` to LLVM `monotonic` and emits LLVM `cmpxchg`
+directly with explicit ABI alignment.
+
+Do not add weak compare-exchange, retry-loop helpers, fetch-nand, address-space
+policy, or a structured CAS result type in this slice.
+
+### Consequences
+
+- Eshkol can now express lock-free state transitions without relying on opaque
+  target intrinsics
+- CAS success remains explicit in source through ordinary value comparison
+- a future structured result type can be added later without changing the
+  observed-value primitive
