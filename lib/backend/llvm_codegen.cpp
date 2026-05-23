@@ -1294,6 +1294,7 @@ public:
         function_return_types["atomic-load"] = BuiltinTypes::Value;
         function_return_types["atomic-store!"] = BuiltinTypes::Null;
         function_return_types["atomic-exchange!"] = BuiltinTypes::Value;
+        function_return_types["atomic-compare-exchange!"] = BuiltinTypes::Value;
         function_return_types["atomic-fetch-add!"] = BuiltinTypes::Value;
         function_return_types["atomic-fetch-sub!"] = BuiltinTypes::Value;
         function_return_types["atomic-fetch-and!"] = BuiltinTypes::Value;
@@ -5379,6 +5380,7 @@ private:
                                          eshkol::hott::BuiltinTypes::Null, true);
                     }
                     if (func_name == "atomic-exchange!" ||
+                        func_name == "atomic-compare-exchange!" ||
                         func_name == "atomic-fetch-add!" ||
                         func_name == "atomic-fetch-sub!" ||
                         func_name == "atomic-fetch-and!" ||
@@ -7761,6 +7763,52 @@ private:
         eshkol_error("%s does not support memory ordering '%s' for atomic read-modify-write operations",
                      builtin_name, ordering_ast->variable.id);
         return std::nullopt;
+    }
+
+    std::optional<AtomicOrdering> resolveAtomicCmpXchgFailureOrdering(
+        const eshkol_ast_t* ordering_ast,
+        const char* builtin_name) const {
+        if (!ordering_ast || ordering_ast->type != ESHKOL_VAR || !ordering_ast->variable.id) {
+            eshkol_error("%s expects a failure memory ordering designator", builtin_name);
+            return std::nullopt;
+        }
+
+        const std::string ordering_name = ordering_ast->variable.id;
+        if (ordering_name == "relaxed") {
+            return AtomicOrdering::Monotonic;
+        }
+        if (ordering_name == "acquire") {
+            return AtomicOrdering::Acquire;
+        }
+        if (ordering_name == "seq-cst") {
+            return AtomicOrdering::SequentiallyConsistent;
+        }
+
+        eshkol_error("%s failure ordering must be relaxed, acquire, or seq-cst",
+                     builtin_name);
+        return std::nullopt;
+    }
+
+    bool isAtomicCmpXchgFailureOrderingAllowed(AtomicOrdering success_ordering,
+                                               AtomicOrdering failure_ordering) const {
+        switch (success_ordering) {
+            case AtomicOrdering::Monotonic:
+                return failure_ordering == AtomicOrdering::Monotonic;
+            case AtomicOrdering::Acquire:
+                return failure_ordering == AtomicOrdering::Monotonic ||
+                       failure_ordering == AtomicOrdering::Acquire;
+            case AtomicOrdering::Release:
+                return failure_ordering == AtomicOrdering::Monotonic;
+            case AtomicOrdering::AcquireRelease:
+                return failure_ordering == AtomicOrdering::Monotonic ||
+                       failure_ordering == AtomicOrdering::Acquire;
+            case AtomicOrdering::SequentiallyConsistent:
+                return failure_ordering == AtomicOrdering::Monotonic ||
+                       failure_ordering == AtomicOrdering::Acquire ||
+                       failure_ordering == AtomicOrdering::SequentiallyConsistent;
+            default:
+                return false;
+        }
     }
 
     Align lowLevelABIAlignment(Type* type) const {
@@ -12108,6 +12156,54 @@ private:
                                                  *ordering);
             rmw->setName("atomic_exchange");
             return rmw;
+        }
+        if (func_name == "atomic-compare-exchange!") {
+            if (op->call_op.num_vars != 6) {
+                eshkol_error("atomic-compare-exchange! requires exactly 6 arguments");
+                return nullptr;
+            }
+
+            auto type_info = resolveMemoryAccessTypeInfo(&op->call_op.variables[0],
+                                                         "atomic-compare-exchange!");
+            auto success_ordering = resolveAtomicRMWOrdering(&op->call_op.variables[4],
+                                                             "atomic-compare-exchange!");
+            auto failure_ordering = resolveAtomicCmpXchgFailureOrdering(
+                &op->call_op.variables[5], "atomic-compare-exchange!");
+            if (!type_info || !success_ordering || !failure_ordering) return nullptr;
+
+            if (!isAtomicCmpXchgFailureOrderingAllowed(*success_ordering,
+                                                       *failure_ordering)) {
+                eshkol_error(
+                    "atomic-compare-exchange! failure ordering cannot be stronger than success ordering");
+                return nullptr;
+            }
+
+            TypedValue ptr_tv = codegenTypedAST(&op->call_op.variables[1]);
+            TypedValue expected_tv = codegenTypedAST(&op->call_op.variables[2]);
+            TypedValue desired_tv = codegenTypedAST(&op->call_op.variables[3]);
+            if (!ptr_tv.llvm_value || !expected_tv.llvm_value || !desired_tv.llvm_value) {
+                return nullptr;
+            }
+
+            const LowLevelValueTypeInfo pointer_info{
+                eshkol::hott::BuiltinTypes::Pointer, ptr_type, false, true, false};
+            Value* raw_ptr = coerceValueToLowLevelScalar(ptr_tv, pointer_info,
+                                                         "atomic-compare-exchange!");
+            if (!raw_ptr) return nullptr;
+
+            Value* expected_value = coerceValueToLowLevelScalar(
+                expected_tv, *type_info, "atomic-compare-exchange!");
+            Value* desired_value = coerceValueToLowLevelScalar(
+                desired_tv, *type_info, "atomic-compare-exchange!");
+            if (!expected_value || !desired_value) return nullptr;
+
+            auto* cmpxchg = builder->CreateAtomicCmpXchg(
+                raw_ptr, expected_value, desired_value,
+                lowLevelABIAlignment(type_info->llvm_type),
+                *success_ordering, *failure_ordering);
+            cmpxchg->setName("atomic_compare_exchange");
+            return builder->CreateExtractValue(
+                cmpxchg, 0, "atomic_compare_exchange_value");
         }
         if (func_name == "atomic-fetch-add!" || func_name == "atomic-fetch-sub!" ||
             func_name == "atomic-fetch-and!" || func_name == "atomic-fetch-or!" ||
@@ -21789,6 +21885,7 @@ private:
             "addr-of", "compiler-fence", "memory-fence",
             "null-ptr", "ptr->usize", "usize->ptr", "ptr-add",
             "atomic-load", "atomic-store!", "atomic-exchange!",
+            "atomic-compare-exchange!",
             "atomic-fetch-add!", "atomic-fetch-sub!", "atomic-fetch-and!",
             "atomic-fetch-or!", "atomic-fetch-xor!", "target-intrinsic",
             "volatile-load", "volatile-store!",

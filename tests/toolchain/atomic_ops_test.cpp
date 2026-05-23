@@ -81,6 +81,23 @@ bool test_atomic_exchange_type_synthesis() {
                         "atomic-exchange! pointer/value/order operands accepted");
 }
 
+bool test_atomic_compare_exchange_type_synthesis() {
+    TypeEnvironment env;
+    TypeChecker checker(env);
+    checker.context().bind("mmio-base", BuiltinTypes::Pointer);
+
+    eshkol_ast_t ast =
+        parse_single("(atomic-compare-exchange! u32 mmio-base 1 2 acq-rel acquire)");
+    const TypeCheckResult result = checker.synthesize(&ast);
+
+    return expect_equal(result.success, true,
+                        "atomic-compare-exchange! type synthesis succeeds") &&
+           expect_equal(result.inferred_type, BuiltinTypes::UInt32,
+                        "atomic-compare-exchange! returns observed value type") &&
+           expect_equal(checker.hasErrors(), false,
+                        "atomic-compare-exchange! pointer/value/order operands accepted");
+}
+
 bool test_atomic_fetch_add_type_synthesis() {
     TypeEnvironment env;
     TypeChecker checker(env);
@@ -116,11 +133,15 @@ bool test_atomic_pointer_type_synthesis() {
     TypeChecker checker(env);
     checker.context().bind("mmio-base", BuiltinTypes::Pointer);
     checker.context().bind("next-base", BuiltinTypes::Pointer);
+    checker.context().bind("old-base", BuiltinTypes::Pointer);
 
     eshkol_ast_t load_ast = parse_single("(atomic-load ptr mmio-base seq-cst)");
     eshkol_ast_t store_ast = parse_single("(atomic-store! ptr mmio-base next-base seq-cst)");
+    eshkol_ast_t cas_ast =
+        parse_single("(atomic-compare-exchange! ptr mmio-base old-base next-base seq-cst acquire)");
     const TypeCheckResult load_result = checker.synthesize(&load_ast);
     const TypeCheckResult store_result = checker.synthesize(&store_ast);
+    const TypeCheckResult cas_result = checker.synthesize(&cas_ast);
 
     return expect_equal(load_result.success, true, "atomic-load ptr synthesis succeeds") &&
            expect_equal(load_result.inferred_type, BuiltinTypes::Pointer,
@@ -128,6 +149,10 @@ bool test_atomic_pointer_type_synthesis() {
            expect_equal(store_result.success, true, "atomic-store! ptr synthesis succeeds") &&
            expect_equal(store_result.inferred_type, BuiltinTypes::Null,
                         "atomic-store! ptr returns Null") &&
+           expect_equal(cas_result.success, true,
+                        "atomic-compare-exchange! ptr synthesis succeeds") &&
+           expect_equal(cas_result.inferred_type, BuiltinTypes::Pointer,
+                        "atomic-compare-exchange! ptr returns Ptr") &&
            expect_equal(checker.hasErrors(), false, "atomic ptr operands are accepted");
 }
 
@@ -162,6 +187,41 @@ bool test_atomic_fetch_add_rejects_pointer_type() {
                         "atomic-fetch-add! keeps requested type after type issue") &&
            expect_equal(checker.hasErrors(), true,
                         "atomic-fetch-add! records pointer designator error");
+}
+
+bool test_atomic_compare_exchange_rejects_invalid_failure_ordering() {
+    TypeEnvironment env;
+    TypeChecker checker(env);
+    checker.context().bind("mmio-base", BuiltinTypes::Pointer);
+
+    eshkol_ast_t ast =
+        parse_single("(atomic-compare-exchange! u8 mmio-base 1 2 acq-rel release)");
+    const TypeCheckResult result = checker.synthesize(&ast);
+
+    return expect_equal(result.success, true,
+                        "atomic-compare-exchange! still synthesizes after ordering issue") &&
+           expect_equal(result.inferred_type, BuiltinTypes::UInt8,
+                        "atomic-compare-exchange! keeps requested type after ordering issue") &&
+           expect_equal(checker.hasErrors(), true,
+                        "atomic-compare-exchange! records invalid failure ordering");
+}
+
+bool test_atomic_compare_exchange_rejects_value_mismatch() {
+    TypeEnvironment env;
+    TypeChecker checker(env);
+    checker.context().bind("mmio-base", BuiltinTypes::Pointer);
+    checker.context().bind("next-base", BuiltinTypes::Pointer);
+
+    eshkol_ast_t ast =
+        parse_single("(atomic-compare-exchange! u32 mmio-base next-base 2 acq-rel acquire)");
+    const TypeCheckResult result = checker.synthesize(&ast);
+
+    return expect_equal(result.success, true,
+                        "atomic-compare-exchange! still synthesizes after value issue") &&
+           expect_equal(result.inferred_type, BuiltinTypes::UInt32,
+                        "atomic-compare-exchange! keeps requested type after value issue") &&
+           expect_equal(checker.hasErrors(), true,
+                        "atomic-compare-exchange! records integer value mismatch");
 }
 
 bool test_atomic_fetch_and_rejects_pointer_type() {
@@ -233,7 +293,7 @@ bool test_atomic_ir_lowering() {
     eshkol_set_uses_stdlib(0);
     eshkol_set_target(nullptr);
 
-    eshkol_ast_t asts[13] = {
+    eshkol_ast_t asts[15] = {
         parse_single("(define mmio-base (usize->ptr 4096))"),
         parse_single("(define next-base (usize->ptr 8192))"),
         parse_single("(define (peek) : u8 (atomic-load u8 mmio-base acquire))"),
@@ -242,6 +302,8 @@ bool test_atomic_ir_lowering() {
         parse_single("(define (peek-next) : ptr (atomic-load ptr mmio-base seq-cst))"),
         parse_single("(define (poke-next) : null (atomic-store! ptr mmio-base next-base seq-cst))"),
         parse_single("(define (swap32 (v : u32)) : u32 (atomic-exchange! u32 mmio-base v acq-rel))"),
+        parse_single("(define (cas32 (expected : u32) (desired : u32)) : u32 (atomic-compare-exchange! u32 mmio-base expected desired acq-rel acquire))"),
+        parse_single("(define (casptr) : ptr (atomic-compare-exchange! ptr mmio-base next-base mmio-base seq-cst acquire))"),
         parse_single("(define (add32 (v : u32)) : u32 (atomic-fetch-add! u32 mmio-base v acq-rel))"),
         parse_single("(define (sub16 (v : u16)) : u16 (atomic-fetch-sub! u16 mmio-base v release))"),
         parse_single("(define (and32 (v : u32)) : u32 (atomic-fetch-and! u32 mmio-base v acq-rel))"),
@@ -249,7 +311,7 @@ bool test_atomic_ir_lowering() {
         parse_single("(define (xor32 (v : u32)) : u32 (atomic-fetch-xor! u32 mmio-base v acq-rel))"),
     };
 
-    LLVMModuleRef module = eshkol_generate_llvm_ir_library(asts, 13, "atomic_ops_test");
+    LLVMModuleRef module = eshkol_generate_llvm_ir_library(asts, 15, "atomic_ops_test");
     if (!module) {
         std::cerr << "FAIL: atomic LLVM module generation" << std::endl;
         return false;
@@ -293,6 +355,12 @@ bool test_atomic_ir_lowering() {
                              "atomic pointer ops keep seq-cst ordering") &&
              expect_contains(ir, "atomicrmw xchg",
                              "atomic-exchange! lowers to atomicrmw xchg") &&
+             expect_contains(ir, "cmpxchg",
+                             "atomic-compare-exchange! lowers to cmpxchg") &&
+             expect_contains(ir, "cmpxchg ptr",
+                             "atomic-compare-exchange! ptr lowers to pointer cmpxchg") &&
+             expect_contains(ir, "acq_rel acquire",
+                             "atomic-compare-exchange! keeps success/failure orderings") &&
              expect_contains(ir, "atomicrmw add",
                              "atomic-fetch-add! lowers to atomicrmw add") &&
              expect_contains(ir, "atomicrmw sub",
@@ -308,6 +376,8 @@ bool test_atomic_ir_lowering() {
              expect_contains(ir, "peek", "atomic load survives in function IR") &&
              expect_contains(ir, "poke", "atomic store survives in function IR") &&
              expect_contains(ir, "swap32", "atomic exchange survives in function IR") &&
+             expect_contains(ir, "cas32", "atomic compare-exchange survives in function IR") &&
+             expect_contains(ir, "casptr", "atomic pointer compare-exchange survives in function IR") &&
              expect_contains(ir, "add32", "atomic fetch-add survives in function IR") &&
              expect_contains(ir, "sub16", "atomic fetch-sub survives in function IR") &&
              expect_contains(ir, "and32", "atomic fetch-and survives in function IR") &&
@@ -332,6 +402,9 @@ int main() {
     if (!test_atomic_exchange_type_synthesis()) {
         return 1;
     }
+    if (!test_atomic_compare_exchange_type_synthesis()) {
+        return 1;
+    }
     if (!test_atomic_fetch_add_type_synthesis()) {
         return 1;
     }
@@ -345,6 +418,12 @@ int main() {
         return 1;
     }
     if (!test_atomic_fetch_add_rejects_pointer_type()) {
+        return 1;
+    }
+    if (!test_atomic_compare_exchange_rejects_invalid_failure_ordering()) {
+        return 1;
+    }
+    if (!test_atomic_compare_exchange_rejects_value_mismatch()) {
         return 1;
     }
     if (!test_atomic_fetch_and_rejects_pointer_type()) {

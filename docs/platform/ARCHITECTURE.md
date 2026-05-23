@@ -249,6 +249,7 @@ The language needs new machine-facing primitives.
 - `atomic-load`
 - `atomic-store!`
 - `atomic-exchange!`
+- `atomic-compare-exchange!`
 - `atomic-fetch-add!`
 - `atomic-fetch-sub!`
 - `atomic-fetch-and!`

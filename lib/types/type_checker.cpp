@@ -1030,6 +1030,10 @@ TypeCheckResult TypeChecker::synthesizeApplication(eshkol_ast_t* expr) {
             return index == 0 || index == 3;
         }
 
+        if (builtin_name == "atomic-compare-exchange!") {
+            return index == 0 || index == 4 || index == 5;
+        }
+
         if (builtin_name == "target-intrinsic") {
             return index == 0 || (index >= 2 && (index % 2) == 0);
         }
@@ -1346,6 +1350,71 @@ TypeCheckResult TypeChecker::synthesizeApplication(eshkol_ast_t* expr) {
             return false;
         };
 
+        auto atomic_cmpxchg_failure_ordering_allowed =
+            [](const std::string& success_name,
+               const std::string& failure_name) -> bool {
+            if (failure_name == "release" || failure_name == "acq-rel") {
+                return false;
+            }
+            if (success_name == "relaxed") {
+                return failure_name == "relaxed";
+            }
+            if (success_name == "acquire") {
+                return failure_name == "relaxed" || failure_name == "acquire";
+            }
+            if (success_name == "release") {
+                return failure_name == "relaxed";
+            }
+            if (success_name == "acq-rel") {
+                return failure_name == "relaxed" || failure_name == "acquire";
+            }
+            if (success_name == "seq-cst") {
+                return failure_name == "relaxed" || failure_name == "acquire" ||
+                       failure_name == "seq-cst";
+            }
+            return false;
+        };
+
+        auto resolve_atomic_cmpxchg_failure_ordering =
+            [&](const eshkol_ast_t& success_arg, const eshkol_ast_t& failure_arg,
+                const char* builtin) -> bool {
+            if (failure_arg.type != ESHKOL_VAR || !failure_arg.variable.id) {
+                reportTypeIssue(std::string(builtin) +
+                                    " expects a failure memory ordering designator",
+                                &failure_arg);
+                return false;
+            }
+
+            const std::string failure_name = failure_arg.variable.id;
+            if (failure_name != "relaxed" && failure_name != "acquire" &&
+                failure_name != "seq-cst") {
+                reportTypeIssue(std::string(builtin) +
+                                    " failure ordering must be relaxed, acquire, or seq-cst",
+                                &failure_arg);
+                return false;
+            }
+
+            if (success_arg.type != ESHKOL_VAR || !success_arg.variable.id) {
+                return true;
+            }
+
+            const std::string success_name = success_arg.variable.id;
+            if (success_name != "relaxed" && success_name != "acquire" &&
+                success_name != "release" && success_name != "acq-rel" &&
+                success_name != "seq-cst") {
+                return true;
+            }
+
+            if (!atomic_cmpxchg_failure_ordering_allowed(success_name, failure_name)) {
+                reportTypeIssue(std::string(builtin) +
+                                    " failure ordering cannot be stronger than success ordering",
+                                &failure_arg);
+                return false;
+            }
+
+            return true;
+        };
+
         if (func_name == "volatile-load") {
             auto load_type = call.num_vars >= 1
                                  ? resolve_low_level_type_designator(
@@ -1538,6 +1607,71 @@ TypeCheckResult TypeChecker::synthesizeApplication(eshkol_ast_t* expr) {
             }
 
             return TypeCheckResult::ok(exchange_type.value_or(BuiltinTypes::Value));
+        }
+
+        if (func_name == "atomic-compare-exchange!") {
+            auto cas_type = call.num_vars >= 1
+                                ? resolve_low_level_type_designator(
+                                      call.variables[0], "atomic-compare-exchange!",
+                                      "machine", false)
+                                : std::nullopt;
+
+            if (call.num_vars != 6) {
+                reportTypeIssue("atomic-compare-exchange! expects exactly 6 arguments",
+                                expr);
+            } else {
+                if (arg_types[1].success) {
+                    TypeId pointer_type = arg_types[1].inferred_type;
+                    if (pointer_type == BuiltinTypes::Value &&
+                        call.variables[1].type == ESHKOL_VAR &&
+                        call.variables[1].variable.id) {
+                        ctx_.bind(call.variables[1].variable.id, BuiltinTypes::Pointer);
+                    } else if (pointer_type != BuiltinTypes::Pointer) {
+                        reportTypeIssue("atomic-compare-exchange! expects a Ptr address operand",
+                                        &call.variables[1]);
+                    }
+                }
+
+                auto check_cas_value_operand = [&](size_t index, const char* role) {
+                    if (!cas_type || !arg_types[index].success) {
+                        return;
+                    }
+
+                    TypeId value_type = arg_types[index].inferred_type;
+                    if (*cas_type == BuiltinTypes::Pointer) {
+                        if (value_type == BuiltinTypes::Value &&
+                            call.variables[index].type == ESHKOL_VAR &&
+                            call.variables[index].variable.id) {
+                            ctx_.bind(call.variables[index].variable.id,
+                                      BuiltinTypes::Pointer);
+                        } else if (value_type != BuiltinTypes::Pointer) {
+                            reportTypeIssue(
+                                std::string("atomic-compare-exchange! expects a Ptr ") +
+                                    role + " value for pointer compare-exchanges",
+                                &call.variables[index]);
+                        }
+                    } else if (value_type == BuiltinTypes::Value &&
+                               call.variables[index].type == ESHKOL_VAR &&
+                               call.variables[index].variable.id) {
+                        ctx_.bind(call.variables[index].variable.id, *cas_type);
+                    } else if (!env_.isSubtype(value_type, BuiltinTypes::Integer)) {
+                        reportTypeIssue(
+                            std::string("atomic-compare-exchange! expects an integer ") +
+                                role + " value compatible with the machine type",
+                            &call.variables[index]);
+                    }
+                };
+
+                check_cas_value_operand(2, "expected");
+                check_cas_value_operand(3, "desired");
+
+                resolve_atomic_rmw_ordering(call.variables[4],
+                                            "atomic-compare-exchange!");
+                resolve_atomic_cmpxchg_failure_ordering(
+                    call.variables[4], call.variables[5], "atomic-compare-exchange!");
+            }
+
+            return TypeCheckResult::ok(cas_type.value_or(BuiltinTypes::Value));
         }
 
         if (func_name == "atomic-fetch-add!" || func_name == "atomic-fetch-sub!" ||

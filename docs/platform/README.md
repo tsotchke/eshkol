@@ -98,7 +98,7 @@ Program phase:
 - `addr-of` exists for storage-backed bindings, giving the low-level surface a direct address-taking primitive without widening the general procedure ABI
 - `compiler-fence` and `memory-fence` exist with explicit ordering operands for compiler-only and system-scope barrier emission
 - `volatile-load` and `volatile-store!` exist for typed MMIO-style load/store lowering over raw pointers
-- `atomic-load`, `atomic-store!`, `atomic-exchange!`, `atomic-fetch-add!`, `atomic-fetch-sub!`, `atomic-fetch-and!`, `atomic-fetch-or!`, and `atomic-fetch-xor!` exist for typed raw-pointer atomic access with explicit memory orderings
+- `atomic-load`, `atomic-store!`, `atomic-exchange!`, `atomic-compare-exchange!`, `atomic-fetch-add!`, `atomic-fetch-sub!`, `atomic-fetch-and!`, `atomic-fetch-or!`, and `atomic-fetch-xor!` exist for typed raw-pointer atomic access with explicit memory orderings
 - `target-intrinsic` exists as a typed LLVM intrinsic escape hatch for low-level codegen
 - declaration attributes exist for section placement, alignment, symbol export/remapping, weak linkage, used retention, and no-return metadata
 - deeper runtime/freestanding implementation remains staged on `feature/platform-freestanding`
