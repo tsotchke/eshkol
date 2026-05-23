@@ -645,8 +645,14 @@ void thread_pool_destroy(eshkol_thread_pool_t* pool) {
 
     eshkol_info("[%s] Shutting down thread pool", pool->name.c_str());
 
-    // Signal workers to stop
-    pool->stop.store(true);
+    // Signal workers to stop. Clear paused while holding the queue mutex so
+    // workers blocked on either condition variable cannot remain parked during
+    // teardown of a paused pool.
+    {
+        std::lock_guard<std::mutex> lock(pool->queue_mutex);
+        pool->stop.store(true, std::memory_order_release);
+        pool->paused.store(false, std::memory_order_release);
+    }
     pool->queue_cv.notify_all();
     pool->pause_cv.notify_all();
 
