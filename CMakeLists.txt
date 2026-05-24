@@ -1587,6 +1587,17 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         PROPERTIES
             PASS_REGULAR_EXPRESSION "PASS: gradient of scaled dot product = scaled basis vector"
             FAIL_REGULAR_EXPRESSION "FAIL:")
+    add_test(
+        NAME empty_collection_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/collections/empty_collection_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(empty_collection_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "TEST: Empty collection edge cases"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
 endif()
 
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/runtime_shutdown_hooks_test.cpp")

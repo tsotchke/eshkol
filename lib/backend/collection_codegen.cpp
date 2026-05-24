@@ -2138,9 +2138,47 @@ llvm::Value* CollectionCodegen::vectorToList(const eshkol_operations_t* op) {
     llvm::Value* vec_arg = codegen_ast_callback_(&op->call_op.variables[0], callback_context_);
     if (!vec_arg) return nullptr;
 
-    // Extract vector pointer and length
+    // Vector literals may be represented either as Scheme vectors
+    // ([length][tagged elements...]) or as tensor-backed numeric vectors.
+    // Distinguish them by the heap object header before choosing the length
+    // and element layout.
     llvm::Value* vec_ptr = ctx_.builder().CreateIntToPtr(tagged_.unpackInt64(vec_arg), ctx_.ptrType());
-    llvm::Value* vec_len = ctx_.builder().CreateLoad(ctx_.int64Type(), vec_ptr, "v2l_len");
+    llvm::Value* header_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), vec_ptr,
+        llvm::ConstantInt::get(ctx_.int64Type(), -8));
+    llvm::Value* subtype = ctx_.builder().CreateLoad(ctx_.int8Type(), header_ptr, "v2l_subtype");
+    llvm::Value* is_tensor = ctx_.builder().CreateICmpEQ(subtype,
+        llvm::ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_TENSOR));
+
+    llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::BasicBlock* length_tensor = llvm::BasicBlock::Create(ctx_.context(), "v2l_length_tensor", current_func);
+    llvm::BasicBlock* length_vector = llvm::BasicBlock::Create(ctx_.context(), "v2l_length_vector", current_func);
+    llvm::BasicBlock* length_merge = llvm::BasicBlock::Create(ctx_.context(), "v2l_length_merge", current_func);
+
+    ctx_.builder().CreateCondBr(is_tensor, length_tensor, length_vector);
+
+    ctx_.builder().SetInsertPoint(length_tensor);
+    llvm::Value* tensor_elems_field = ctx_.builder().CreateStructGEP(ctx_.tensorType(), vec_ptr, 2);
+    llvm::Value* tensor_elem_base = ctx_.builder().CreateLoad(ctx_.ptrType(), tensor_elems_field, "v2l_tensor_elems");
+    llvm::Value* tensor_total_field = ctx_.builder().CreateStructGEP(ctx_.tensorType(), vec_ptr, 3);
+    llvm::Value* tensor_len = ctx_.builder().CreateLoad(ctx_.int64Type(), tensor_total_field, "v2l_tensor_len");
+    ctx_.builder().CreateBr(length_merge);
+    llvm::BasicBlock* length_tensor_exit = ctx_.builder().GetInsertBlock();
+
+    ctx_.builder().SetInsertPoint(length_vector);
+    llvm::Value* vector_len = ctx_.builder().CreateLoad(ctx_.int64Type(), vec_ptr, "v2l_len");
+    llvm::Value* vector_elem_base_bytes = ctx_.builder().CreateGEP(ctx_.int8Type(), vec_ptr,
+        llvm::ConstantInt::get(ctx_.int64Type(), 8));
+    llvm::Value* vector_elem_base = ctx_.builder().CreatePointerCast(vector_elem_base_bytes, ctx_.ptrType());
+    ctx_.builder().CreateBr(length_merge);
+    llvm::BasicBlock* length_vector_exit = ctx_.builder().GetInsertBlock();
+
+    ctx_.builder().SetInsertPoint(length_merge);
+    llvm::PHINode* vec_len = ctx_.builder().CreatePHI(ctx_.int64Type(), 2, "v2l_len_merged");
+    vec_len->addIncoming(tensor_len, length_tensor_exit);
+    vec_len->addIncoming(vector_len, length_vector_exit);
+    llvm::PHINode* elem_base = ctx_.builder().CreatePHI(ctx_.ptrType(), 2, "v2l_elem_base");
+    elem_base->addIncoming(tensor_elem_base, length_tensor_exit);
+    elem_base->addIncoming(vector_elem_base, length_vector_exit);
 
     // Get optional start/end
     llvm::Value* start;
@@ -2165,40 +2203,82 @@ llvm::Value* CollectionCodegen::vectorToList(const eshkol_operations_t* op) {
         end = vec_len;
     }
 
-    // Get element base
-    llvm::Value* elem_base = ctx_.builder().CreateGEP(ctx_.int8Type(), vec_ptr,
-        llvm::ConstantInt::get(ctx_.int64Type(), 8));
-    llvm::Value* elem_typed = ctx_.builder().CreatePointerCast(elem_base, ctx_.ptrType());
-
     // Build list right-to-left (from end-1 down to start)
     // Start with null (empty list)
-    llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
     llvm::BasicBlock* loop_header = llvm::BasicBlock::Create(ctx_.context(), "v2l_header", current_func);
     llvm::BasicBlock* loop_body = llvm::BasicBlock::Create(ctx_.context(), "v2l_body", current_func);
     llvm::BasicBlock* loop_exit = llvm::BasicBlock::Create(ctx_.context(), "v2l_exit", current_func);
 
     llvm::Value* init_i = ctx_.builder().CreateSub(end, llvm::ConstantInt::get(ctx_.int64Type(), 1));
+    llvm::Value* init_acc = tagged_.packNull();
+    llvm::BasicBlock* preheader = ctx_.builder().GetInsertBlock();
     ctx_.builder().CreateBr(loop_header);
 
     ctx_.builder().SetInsertPoint(loop_header);
     llvm::PHINode* i = ctx_.builder().CreatePHI(ctx_.int64Type(), 2, "v2l_i");
     llvm::PHINode* list_acc = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2, "v2l_acc");
-    i->addIncoming(init_i, loop_header->getSinglePredecessor());
-    list_acc->addIncoming(tagged_.packNull(), loop_header->getSinglePredecessor());
+    i->addIncoming(init_i, preheader);
+    list_acc->addIncoming(init_acc, preheader);
 
     llvm::Value* done = ctx_.builder().CreateICmpSLT(i, start);
     ctx_.builder().CreateCondBr(done, loop_exit, loop_body);
 
     ctx_.builder().SetInsertPoint(loop_body);
-    llvm::Value* elem_ptr = ctx_.builder().CreateGEP(ctx_.taggedValueType(), elem_typed, i);
-    llvm::Value* elem = ctx_.builder().CreateLoad(ctx_.taggedValueType(), elem_ptr, "v2l_elem");
+    llvm::BasicBlock* elem_tensor = llvm::BasicBlock::Create(ctx_.context(), "v2l_elem_tensor", current_func);
+    llvm::BasicBlock* elem_vector = llvm::BasicBlock::Create(ctx_.context(), "v2l_elem_vector", current_func);
+    llvm::BasicBlock* elem_merge = llvm::BasicBlock::Create(ctx_.context(), "v2l_elem_merge", current_func);
+    ctx_.builder().CreateCondBr(is_tensor, elem_tensor, elem_vector);
+
+    ctx_.builder().SetInsertPoint(elem_tensor);
+    llvm::Value* tensor_elem_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), elem_base, i);
+    llvm::Value* tensor_elem_i64 = ctx_.builder().CreateLoad(ctx_.int64Type(), tensor_elem_ptr, "v2l_tensor_elem");
+    llvm::Value* not_zero = ctx_.builder().CreateICmpNE(tensor_elem_i64,
+        llvm::ConstantInt::get(ctx_.int64Type(), 0));
+    llvm::Value* in_ptr_range = ctx_.builder().CreateICmpULT(tensor_elem_i64,
+        llvm::ConstantInt::get(ctx_.int64Type(), 0x0001000000000000ULL));
+    llvm::Value* could_be_ad_ptr = ctx_.builder().CreateAnd(not_zero, in_ptr_range);
+
+    llvm::BasicBlock* elem_tensor_ad = llvm::BasicBlock::Create(ctx_.context(), "v2l_tensor_ad", current_func);
+    llvm::BasicBlock* elem_tensor_double = llvm::BasicBlock::Create(ctx_.context(), "v2l_tensor_double", current_func);
+    llvm::BasicBlock* elem_tensor_tagged = llvm::BasicBlock::Create(ctx_.context(), "v2l_tensor_tagged", current_func);
+    ctx_.builder().CreateCondBr(could_be_ad_ptr, elem_tensor_ad, elem_tensor_double);
+
+    ctx_.builder().SetInsertPoint(elem_tensor_ad);
+    llvm::Value* tensor_ad_result = tagged_.packPtr(tensor_elem_i64, ESHKOL_VALUE_CALLABLE);
+    ctx_.builder().CreateBr(elem_tensor_tagged);
+    llvm::BasicBlock* elem_tensor_ad_exit = ctx_.builder().GetInsertBlock();
+
+    ctx_.builder().SetInsertPoint(elem_tensor_double);
+    llvm::Value* tensor_elem_double = ctx_.builder().CreateBitCast(tensor_elem_i64, ctx_.doubleType());
+    llvm::Value* tensor_double_result = tagged_.packDouble(tensor_elem_double);
+    ctx_.builder().CreateBr(elem_tensor_tagged);
+    llvm::BasicBlock* elem_tensor_double_exit = ctx_.builder().GetInsertBlock();
+
+    ctx_.builder().SetInsertPoint(elem_tensor_tagged);
+    llvm::PHINode* tensor_elem = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2, "v2l_tensor_tagged_elem");
+    tensor_elem->addIncoming(tensor_ad_result, elem_tensor_ad_exit);
+    tensor_elem->addIncoming(tensor_double_result, elem_tensor_double_exit);
+    ctx_.builder().CreateBr(elem_merge);
+    llvm::BasicBlock* elem_tensor_exit = ctx_.builder().GetInsertBlock();
+
+    ctx_.builder().SetInsertPoint(elem_vector);
+    llvm::Value* elem_ptr = ctx_.builder().CreateGEP(ctx_.taggedValueType(), elem_base, i);
+    llvm::Value* vector_elem = ctx_.builder().CreateLoad(ctx_.taggedValueType(), elem_ptr, "v2l_elem");
+    ctx_.builder().CreateBr(elem_merge);
+    llvm::BasicBlock* elem_vector_exit = ctx_.builder().GetInsertBlock();
+
+    ctx_.builder().SetInsertPoint(elem_merge);
+    llvm::PHINode* elem = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2, "v2l_elem_merged");
+    elem->addIncoming(tensor_elem, elem_tensor_exit);
+    elem->addIncoming(vector_elem, elem_vector_exit);
 
     // cons elem onto list_acc
     llvm::Value* new_cell = allocConsCell(elem, list_acc);
 
     llvm::Value* prev_i = ctx_.builder().CreateSub(i, llvm::ConstantInt::get(ctx_.int64Type(), 1));
-    i->addIncoming(prev_i, loop_body);
-    list_acc->addIncoming(new_cell, loop_body);
+    llvm::BasicBlock* loop_latch = ctx_.builder().GetInsertBlock();
+    i->addIncoming(prev_i, loop_latch);
+    list_acc->addIncoming(new_cell, loop_latch);
     ctx_.builder().CreateBr(loop_header);
 
     ctx_.builder().SetInsertPoint(loop_exit);
