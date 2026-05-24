@@ -116,6 +116,7 @@ Program phase:
 - generated-code list reverse, quasiquote append/splice, recursion-depth, and list/vector guard helpers now live in a dedicated runtime-core translation unit instead of `arena_memory.cpp`
 - region stack/lifecycle/escape helpers and per-worker thread-local arena setup now live in a dedicated runtime-core translation unit instead of `arena_memory.cpp`
 - deep structural equality for tagged values now lives in a dedicated runtime-core translation unit instead of `arena_memory.cpp`
+- header-aware tagged-object allocation helpers now live in a dedicated runtime-core translation unit instead of `arena_memory.cpp`
 - shared allocation and weak-reference helpers now live in a dedicated runtime-core translation unit instead of `arena_memory.cpp`
 - freestanding-safe tensor index helpers now live in a dedicated runtime-core translation unit instead of the hosted-heavy runtime state implementation
 - freestanding-safe tensor fill helpers now live in a dedicated runtime-core translation unit instead of the hosted-heavy runtime state implementation
@@ -134,7 +135,7 @@ Program phase:
 
 Immediate priorities:
 
-- split the remaining `runtime-split-pending` file, `arena_memory.cpp`, along allocator-region seams
+- split the remaining `runtime-split-pending` file, `arena_memory.cpp`, along raw allocator/accessor and C++ wrapper seams
 - hosted leakage checks for runtime-core
 - low-level machine-facing language surface
 - freestanding LLVM object and ELF pipeline

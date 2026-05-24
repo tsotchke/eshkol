@@ -1745,3 +1745,48 @@ comparison, vector recursion, and tensor value comparison.
   block/scope tests
 - the remaining split-pending arena file is narrowed toward raw allocator,
   tagged object allocation/accessors, and C++ wrapper groups
+
+---
+
+## D-0055
+
+- Date: 2026-05-24
+- Status: Accepted
+- Title: Extract header-aware object allocation helpers
+
+### Context
+
+`arena_memory.cpp` still carried the header-aware allocation ABI for tagged heap
+objects: `arena_allocate_with_header`, `arena_allocate_with_header_zeroed`,
+`arena_allocate_multi_value`, `arena_allocate_cons_with_header`,
+`arena_allocate_string_with_header`, `arena_allocate_vector_with_header`, and
+`arena_allocate_symbol_with_header`. These helpers use the raw arena allocator
+and object header layout, but they are object-construction wrappers rather than
+raw arena block/scope mechanics.
+
+Keeping them in the split-pending arena file made the remaining allocator work
+less clear and forced object-header regressions through broad arena or language
+tests.
+
+### Decision
+
+Move the header-aware object allocation helpers into
+`lib/core/runtime_object_alloc.cpp`, classified as `runtime-core`. Preserve the
+exported ABI, object-header layout, payload initialization, and existing size
+guards for generic, zeroed, multi-value, cons, string, vector, and symbol
+allocation.
+
+Add `runtime_object_alloc_test` to cover null/zero-size rejection, header
+metadata, zeroed payloads, multi-value count storage, initialized cons cells,
+NUL-terminated string payloads, vector payload sizing, and symbol payload
+sizing.
+
+### Consequences
+
+- `arena_memory.cpp` no longer owns header-aware tagged-object construction
+- runtime-core explicitly owns object-header allocation wrappers above the raw
+  arena substrate
+- object-header allocation behavior has a focused CTest regression independent
+  of broad arena/language tests
+- the remaining split-pending arena file is narrowed toward raw allocator,
+  tagged object accessors, and C++ wrapper groups
