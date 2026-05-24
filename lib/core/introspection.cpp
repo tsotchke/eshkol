@@ -13,6 +13,7 @@
 #include <eshkol/core/introspection.h>
 #include <eshkol/core/sexp_to_ast.h>
 #include <eshkol/core/eval_bridge.h>
+#include <eshkol/llvm_backend.h>
 #include <eshkol/logger.h>
 #include "arena_memory.h"
 
@@ -96,15 +97,37 @@ static std::string repl_var_storage_symbol_name(const char* name) {
     return out;
 }
 
+static uint64_t jit_lookup_repl_storage_only(void* jit, const char* name) {
+    std::string storage_name = repl_var_storage_symbol_name(name);
+    return jit_lookup(jit, storage_name.c_str());
+}
+
 static uint64_t jit_lookup_repl_variable_storage(void* jit, const char* name) {
-    uint64_t addr = jit_lookup(jit, name);
+    uint64_t addr = jit_lookup_repl_storage_only(jit, name);
     if (addr != 0) return addr;
 
     // REPL hot-reload keeps user variables in a private storage namespace so
     // they can shadow functions/builtins. `eval` captures expression results
     // via a generated top-level define, so read back that storage symbol too.
-    std::string storage_name = repl_var_storage_symbol_name(name);
-    return jit_lookup(jit, storage_name.c_str());
+    return jit_lookup(jit, name);
+}
+
+static void refresh_repl_define_storage(void* jit, const eshkol_ast_t* ast) {
+    if (!jit || !ast || ast->type != ESHKOL_OP ||
+        ast->operation.op != ESHKOL_DEFINE_OP ||
+        ast->operation.define_op.is_function ||
+        !ast->operation.define_op.name) {
+        return;
+    }
+
+    const char* name = ast->operation.define_op.name;
+    uint64_t addr = jit_lookup_repl_storage_only(jit, name);
+    if (addr == 0) {
+        return;
+    }
+
+    eshkol_repl_register_symbol(name, addr);
+    eshkol_repl_mark_user_variable(name);
 }
 
 // Serialize a tagged value (S-expression) to a string buffer
@@ -1087,6 +1110,7 @@ eshkol_tagged_value_t eshkol_eval_string(const char* str, void* arena) {
     // executeTagged() analyzes the AST's inferred_hott_type field to return
     // a properly typed tagged value instead of a raw pointer
     eshkol_tagged_value_t result = jit_exec(jit, &ast);
+    refresh_repl_define_storage(jit, &ast);
 
     (void)arena;  // Arena passed for potential allocation needs
     return result;
