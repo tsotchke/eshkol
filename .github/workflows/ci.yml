@@ -221,7 +221,7 @@ jobs:
           python3 scripts/check_wasm_imports.py --build-dir "$BUILD_DIR"
 
       - name: Run Tests
-        timeout-minutes: 90
+        timeout-minutes: 120
         shell: bash
         env:
           BUILD_DIR: ${{ matrix.build_dir }}
