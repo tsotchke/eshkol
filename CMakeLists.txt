@@ -1063,6 +1063,7 @@ set(ESHKOL_RUNTIME_CORE_SRC
   lib/core/bignum.cpp
   lib/core/rational.cpp
   lib/core/runtime.cpp
+  lib/core/runtime_autodiff.cpp
   lib/core/runtime_bytevector.cpp
   lib/core/runtime_closure_reflection.cpp
   lib/core/runtime_continuations.cpp
@@ -1095,7 +1096,6 @@ set(ESHKOL_RUNTIME_HOSTED_SRC
 
 set(ESHKOL_RUNTIME_SPLIT_PENDING_SRC
   lib/core/arena_memory.cpp
-  lib/core/runtime_autodiff.cpp
 )
 
 list(REMOVE_ITEM LIB_SRC

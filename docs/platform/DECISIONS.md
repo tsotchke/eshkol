@@ -1395,3 +1395,36 @@ dispatch ABI, or exception handler runtime in this slice.
 - the remaining split-pending arena file is narrowed further toward allocator,
   AD, region/shared-memory, hash-table, tensor-allocation, and math helper
   groups
+
+---
+
+## D-0046
+
+- Date: 2026-05-24
+- Status: Accepted
+- Title: Extract automatic differentiation runtime helpers
+
+### Context
+
+`arena_memory.cpp` still carried the generated-code ABI for dual numbers,
+AD nodes, AD tapes, and nested-gradient thread-local state. These helpers use
+arena allocation and the tagged object layout, but they do not depend on
+filesystem, process, environment, socket, or platform thread APIs.
+
+Keeping them in the split-pending arena file hid a freestanding-safe runtime
+surface inside the remaining allocator/data-structure implementation.
+
+### Decision
+
+Move the AD helper ABI into `lib/core/runtime_autodiff.cpp`, classified as
+`runtime-core`. Preserve the existing exported symbol names and TLS globals so
+LLVM codegen, REPL JIT registration, and generated executables keep the same
+ABI.
+
+### Consequences
+
+- `arena_memory.cpp` no longer owns AD tape/node allocation or nested-gradient
+  TLS state
+- runtime-core explicitly owns the current AD runtime helper implementation
+- the remaining split-pending arena file is narrowed further toward allocator,
+  region/shared-memory, hash-table, tensor-allocation, and math helper groups
