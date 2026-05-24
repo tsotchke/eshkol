@@ -26,6 +26,8 @@
 
 namespace eshkol {
 
+class AutodiffCodegen;
+
 // Forward declaration for XLA backend
 namespace xla {
     class XLACodegen;
@@ -50,6 +52,14 @@ public:
      * Destructor - defined in .cpp where XLACodegen is complete.
      */
     ~TensorCodegen();
+
+    /**
+     * Wire autodiff support for tensor reductions that must return AD nodes
+     * while gradient mode is active.
+     */
+    void setAutodiffCodegen(AutodiffCodegen* autodiff) {
+        autodiff_ = autodiff;
+    }
 
     // === Tensor Creation ===
 
@@ -1085,6 +1095,7 @@ private:
     CodegenContext& ctx_;
     TaggedValueCodegen& tagged_;
     MemoryCodegen& mem_;
+    AutodiffCodegen* autodiff_ = nullptr;
 
 #ifdef ESHKOL_XLA_ENABLED
     // XLA backend for accelerated tensor operations on large tensors
@@ -1119,6 +1130,16 @@ private:
      * @return Tagged tensor result (reduced along axis)
      */
     llvm::Value* emitAxisReduce(llvm::Value* tensor_val, llvm::Value* axis_val, int64_t op_code);
+
+    /**
+     * Convert a raw tensor element slot to an AD node pointer.
+     *
+     * AD tensors store node pointers in the same int64 element slots that
+     * ordinary tensors use for double bit patterns. In gradient mode, values
+     * with IEEE754 exponent bits are treated as double constants; pointer-like
+     * values become existing AD nodes.
+     */
+    llvm::Value* adNodeFromTensorElementBits(llvm::Value* elem_bits, const std::string& name);
 
     /**
      * Coerce a numeric value to a runtime double.

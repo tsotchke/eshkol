@@ -3400,6 +3400,7 @@ private:
         autodiff_->setFunctionArityTable(&function_arity_table);
         autodiff_->setNestedFunctionCaptures(&nested_function_captures);
         autodiff_->setGetClosureAllocFunc(ControlFlowCallbacks::getClosureAllocWrapper);
+        tensor_->setAutodiffCodegen(autodiff_.get());
         eshkol_debug("Created AutodiffCodegen with function table and callbacks");
 
         // Initialize ComplexCodegen - complex number arithmetic

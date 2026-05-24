@@ -1571,6 +1571,16 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     )
     set_tests_properties(tensor_integer_shaped_literal_runtime_smoke
         PROPERTIES PASS_REGULAR_EXPRESSION "#\\(\\(1 2\\) \\(3 4\\)\\)")
+    add_test(
+        NAME autodiff_tensor_reductions_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/autodiff_tensor_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(autodiff_tensor_reductions_runtime_smoke
+        PROPERTIES
+            PASS_REGULAR_EXPRESSION "PASS: gradient of scaled dot product = scaled basis vector"
+            FAIL_REGULAR_EXPRESSION "FAIL:")
 endif()
 
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/runtime_shutdown_hooks_test.cpp")
