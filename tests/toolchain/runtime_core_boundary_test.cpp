@@ -168,6 +168,7 @@ int main(int argc, char** argv) {
              "lib/core/runtime_deep_equal.cpp",
              "lib/core/runtime_hash_table.cpp",
              "lib/core/runtime_list_helpers.cpp",
+             "lib/core/runtime_object_alloc.cpp",
              "lib/core/runtime_regions.cpp",
              "lib/core/runtime_shared_memory.cpp",
              "lib/core/runtime_string.cpp",
