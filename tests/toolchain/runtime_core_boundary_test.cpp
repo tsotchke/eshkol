@@ -160,6 +160,7 @@ int main(int argc, char** argv) {
     if (const int rc = require_entries(runtime_core_src,
             {"lib/core/ad_tape_builtins.c", "lib/core/bignum.cpp",
              "lib/core/rational.cpp", "lib/core/runtime.cpp",
+             "lib/core/runtime_autodiff.cpp",
              "lib/core/runtime_bytevector.cpp",
              "lib/core/runtime_closure_reflection.cpp",
              "lib/core/runtime_continuations.cpp",
