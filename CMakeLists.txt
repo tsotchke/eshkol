@@ -1072,6 +1072,7 @@ set(ESHKOL_RUNTIME_CORE_SRC
   lib/core/runtime_tensor_alloc.cpp
   lib/core/runtime_tensor_index.cpp
   lib/core/runtime_tensor_fill.cpp
+  lib/core/runtime_tensor_math.cpp
 )
 
 set(ESHKOL_RUNTIME_HOSTED_SRC
