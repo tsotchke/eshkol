@@ -21,6 +21,7 @@
 
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
 
+#include <eshkol/backend/autodiff_codegen.h>
 #include <eshkol/backend/cpu_features.h>
 #include <eshkol/logger.h>
 #include <llvm/IR/Constants.h>
@@ -42,6 +43,61 @@
 #endif
 
 namespace eshkol {
+
+llvm::Value* TensorCodegen::adNodeFromTensorElementBits(llvm::Value* elem_bits, const std::string& name) {
+    if (!autodiff_ || !elem_bits) {
+        return nullptr;
+    }
+
+    llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::BasicBlock* check_large = llvm::BasicBlock::Create(ctx_.context(), name + "_check_large", current_func);
+    llvm::BasicBlock* const_small = llvm::BasicBlock::Create(ctx_.context(), name + "_const_small", current_func);
+    llvm::BasicBlock* const_double = llvm::BasicBlock::Create(ctx_.context(), name + "_const_double", current_func);
+    llvm::BasicBlock* existing_node = llvm::BasicBlock::Create(ctx_.context(), name + "_existing_node", current_func);
+    llvm::BasicBlock* merge = llvm::BasicBlock::Create(ctx_.context(), name + "_merge", current_func);
+
+    llvm::Value* is_small = ctx_.builder().CreateICmpULT(elem_bits,
+        llvm::ConstantInt::get(ctx_.int64Type(), 1000));
+    ctx_.builder().CreateCondBr(is_small, const_small, check_large);
+
+    ctx_.builder().SetInsertPoint(const_small);
+    llvm::Value* small_as_double = ctx_.builder().CreateSIToFP(elem_bits, ctx_.doubleType());
+    llvm::Value* small_node = autodiff_->createADConstant(small_as_double);
+    ctx_.builder().CreateBr(merge);
+    llvm::BasicBlock* const_small_exit = ctx_.builder().GetInsertBlock();
+
+    ctx_.builder().SetInsertPoint(check_large);
+    llvm::Value* exponent_mask = llvm::ConstantInt::get(ctx_.int64Type(), 0x7FF0000000000000ULL);
+    llvm::Value* exponent_bits = ctx_.builder().CreateAnd(elem_bits, exponent_mask);
+    llvm::Value* has_exponent = ctx_.builder().CreateICmpNE(exponent_bits,
+        llvm::ConstantInt::get(ctx_.int64Type(), 0));
+    llvm::Value* no_exponent = ctx_.builder().CreateNot(has_exponent);
+    llvm::Value* non_zero = ctx_.builder().CreateICmpNE(elem_bits,
+        llvm::ConstantInt::get(ctx_.int64Type(), 0));
+    llvm::Value* below_pointer_ceiling = ctx_.builder().CreateICmpULT(elem_bits,
+        llvm::ConstantInt::get(ctx_.int64Type(), 0x0001000000000000ULL));
+    llvm::Value* pointer_like = ctx_.builder().CreateAnd(no_exponent,
+        ctx_.builder().CreateAnd(non_zero, below_pointer_ceiling));
+    ctx_.builder().CreateCondBr(pointer_like, existing_node, const_double);
+
+    ctx_.builder().SetInsertPoint(const_double);
+    llvm::Value* double_value = ctx_.builder().CreateBitCast(elem_bits, ctx_.doubleType());
+    llvm::Value* double_node = autodiff_->createADConstant(double_value);
+    ctx_.builder().CreateBr(merge);
+    llvm::BasicBlock* const_double_exit = ctx_.builder().GetInsertBlock();
+
+    ctx_.builder().SetInsertPoint(existing_node);
+    llvm::Value* ptr_node = ctx_.builder().CreateIntToPtr(elem_bits, ctx_.ptrType());
+    ctx_.builder().CreateBr(merge);
+    llvm::BasicBlock* existing_node_exit = ctx_.builder().GetInsertBlock();
+
+    ctx_.builder().SetInsertPoint(merge);
+    llvm::PHINode* node_phi = ctx_.builder().CreatePHI(ctx_.ptrType(), 3, name + "_node");
+    node_phi->addIncoming(small_node, const_small_exit);
+    node_phi->addIncoming(double_node, const_double_exit);
+    node_phi->addIncoming(ptr_node, existing_node_exit);
+    return node_phi;
+}
 
 // ===== SIMD-ACCELERATED MATRIX MULTIPLICATION =====
 // Vectorizes the j-loop (columns) to process SIMD_WIDTH columns at a time
@@ -467,6 +523,55 @@ llvm::Value* TensorCodegen::tensorDot(const eshkol_operations_t* op) {
     // Falls back to scalar when SIMD_WIDTH == 1
     ctx_.builder().SetInsertPoint(dot_1d_block);
 
+    llvm::Value* ad_dot_tagged_result = nullptr;
+    llvm::BasicBlock* ad_dot_exit_block = nullptr;
+    if (autodiff_) {
+        llvm::Value* in_ad_mode = ctx_.builder().CreateLoad(ctx_.int1Type(), ctx_.adModeActive());
+        llvm::BasicBlock* ad_dot_block = llvm::BasicBlock::Create(ctx_.context(), "dot1d_ad", current_func);
+        llvm::BasicBlock* numeric_dot_block = llvm::BasicBlock::Create(ctx_.context(), "dot1d_numeric", current_func);
+        ctx_.builder().CreateCondBr(in_ad_mode, ad_dot_block, numeric_dot_block);
+
+        ctx_.builder().SetInsertPoint(ad_dot_block);
+        llvm::Value* ad_acc = ctx_.builder().CreateAlloca(ctx_.ptrType(), nullptr, "dot1d_ad_acc");
+        llvm::Value* ad_counter = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "dot1d_ad_i");
+        llvm::Value* zero_node = autodiff_->createADConstant(llvm::ConstantFP::get(ctx_.doubleType(), 0.0));
+        ctx_.builder().CreateStore(zero_node, ad_acc);
+        ctx_.builder().CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), ad_counter);
+
+        llvm::BasicBlock* ad_loop_cond = llvm::BasicBlock::Create(ctx_.context(), "dot1d_ad_cond", current_func);
+        llvm::BasicBlock* ad_loop_body = llvm::BasicBlock::Create(ctx_.context(), "dot1d_ad_body", current_func);
+        llvm::BasicBlock* ad_loop_exit = llvm::BasicBlock::Create(ctx_.context(), "dot1d_ad_exit", current_func);
+        ctx_.builder().CreateBr(ad_loop_cond);
+
+        ctx_.builder().SetInsertPoint(ad_loop_cond);
+        llvm::Value* ad_i = ctx_.builder().CreateLoad(ctx_.int64Type(), ad_counter);
+        llvm::Value* ad_has_elem = ctx_.builder().CreateICmpULT(ad_i, a_total);
+        ctx_.builder().CreateCondBr(ad_has_elem, ad_loop_body, ad_loop_exit);
+
+        ctx_.builder().SetInsertPoint(ad_loop_body);
+        llvm::Value* ad_a_elem_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), typed_a_elements_ptr, ad_i);
+        llvm::Value* ad_b_elem_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), typed_b_elements_ptr, ad_i);
+        llvm::Value* ad_a_elem_bits = ctx_.builder().CreateLoad(ctx_.int64Type(), ad_a_elem_ptr);
+        llvm::Value* ad_b_elem_bits = ctx_.builder().CreateLoad(ctx_.int64Type(), ad_b_elem_ptr);
+        llvm::Value* ad_a_node = adNodeFromTensorElementBits(ad_a_elem_bits, "dot1d_ad_a");
+        llvm::Value* ad_b_node = adNodeFromTensorElementBits(ad_b_elem_bits, "dot1d_ad_b");
+        llvm::Value* ad_product = autodiff_->recordADNodeBinary(4, ad_a_node, ad_b_node);
+        llvm::Value* ad_old_acc = ctx_.builder().CreateLoad(ctx_.ptrType(), ad_acc);
+        llvm::Value* ad_new_acc = autodiff_->recordADNodeBinary(2, ad_old_acc, ad_product);
+        ctx_.builder().CreateStore(ad_new_acc, ad_acc);
+        llvm::Value* ad_next_i = ctx_.builder().CreateAdd(ad_i, llvm::ConstantInt::get(ctx_.int64Type(), 1));
+        ctx_.builder().CreateStore(ad_next_i, ad_counter);
+        ctx_.builder().CreateBr(ad_loop_cond);
+
+        ctx_.builder().SetInsertPoint(ad_loop_exit);
+        llvm::Value* final_ad_dot = ctx_.builder().CreateLoad(ctx_.ptrType(), ad_acc);
+        ad_dot_tagged_result = tagged_.packPtr(final_ad_dot, ESHKOL_VALUE_CALLABLE);
+        ctx_.builder().CreateBr(tensor_merge);
+        ad_dot_exit_block = ctx_.builder().GetInsertBlock();
+
+        ctx_.builder().SetInsertPoint(numeric_dot_block);
+    }
+
     const unsigned SIMD_WIDTH = getSIMDWidth();
     llvm::VectorType* vec_type = getSIMDVectorType();
     const bool use_simd = (SIMD_WIDTH > 1 && vec_type != nullptr);
@@ -577,7 +682,9 @@ llvm::Value* TensorCodegen::tensorDot(const eshkol_operations_t* op) {
     // Final result
     ctx_.builder().SetInsertPoint(loop_exit_1d);
     llvm::Value* dot_result_1d = ctx_.builder().CreateLoad(ctx_.doubleType(), sum_alloca);
+    llvm::Value* dot_tagged_result_1d = tagged_.packDouble(dot_result_1d);
     ctx_.builder().CreateBr(tensor_merge);
+    llvm::BasicBlock* dot_numeric_1d_exit = ctx_.builder().GetInsertBlock();
 
     // 2D Matrix Multiplication: C = A @ B
     // A is (M x K), B is (K x N), C is (M x N)
@@ -822,7 +929,12 @@ llvm::Value* TensorCodegen::tensorDot(const eshkol_operations_t* op) {
 
     // Tensor merge for 1D scalar path - pack and branch to scalar_merge
     ctx_.builder().SetInsertPoint(tensor_merge);
-    llvm::Value* scalar_result_1d = tagged_.packDouble(dot_result_1d);
+    llvm::PHINode* scalar_result_1d = ctx_.builder().CreatePHI(ctx_.taggedValueType(),
+        ad_dot_exit_block ? 2 : 1, "dot1d_scalar_result");
+    scalar_result_1d->addIncoming(dot_tagged_result_1d, dot_numeric_1d_exit);
+    if (ad_dot_exit_block && ad_dot_tagged_result) {
+        scalar_result_1d->addIncoming(ad_dot_tagged_result, ad_dot_exit_block);
+    }
     ctx_.builder().CreateBr(scalar_merge);
     llvm::BasicBlock* tensor_1d_exit = ctx_.builder().GetInsertBlock();
 
@@ -1383,6 +1495,7 @@ llvm::Value* TensorCodegen::tensorSum(const eshkol_operations_t* op) {
 
     ctx_.builder().SetInsertPoint(svec_loop_exit);
     llvm::Value* svec_result = ctx_.builder().CreateLoad(ctx_.doubleType(), svec_sum);
+    llvm::Value* svec_tagged_result = tagged_.packDouble(svec_result);
     ctx_.builder().CreateBr(sum_merge);
     llvm::BasicBlock* svec_exit_block = ctx_.builder().GetInsertBlock();
 
@@ -1412,6 +1525,51 @@ llvm::Value* TensorCodegen::tensorSum(const eshkol_operations_t* op) {
     // Accumulator and counter allocas - placed before XLA check so all paths can use them
     llvm::Value* sum = ctx_.builder().CreateAlloca(ctx_.doubleType(), nullptr, "sum_acc");
     llvm::Value* scalar_counter = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "sum_scalar_i");
+
+    llvm::Value* ad_sum_tagged_result = nullptr;
+    llvm::BasicBlock* ad_sum_exit_block = nullptr;
+    if (autodiff_) {
+        llvm::Value* in_ad_mode = ctx_.builder().CreateLoad(ctx_.int1Type(), ctx_.adModeActive());
+        llvm::BasicBlock* ad_sum_block = llvm::BasicBlock::Create(ctx_.context(), "tsum_ad", current_func);
+        llvm::BasicBlock* numeric_sum_block = llvm::BasicBlock::Create(ctx_.context(), "tsum_numeric", current_func);
+        ctx_.builder().CreateCondBr(in_ad_mode, ad_sum_block, numeric_sum_block);
+
+        ctx_.builder().SetInsertPoint(ad_sum_block);
+        llvm::Value* ad_acc = ctx_.builder().CreateAlloca(ctx_.ptrType(), nullptr, "tsum_ad_acc");
+        llvm::Value* ad_counter = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "tsum_ad_i");
+        llvm::Value* zero_node = autodiff_->createADConstant(llvm::ConstantFP::get(ctx_.doubleType(), 0.0));
+        ctx_.builder().CreateStore(zero_node, ad_acc);
+        ctx_.builder().CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), ad_counter);
+
+        llvm::BasicBlock* ad_loop_cond = llvm::BasicBlock::Create(ctx_.context(), "tsum_ad_cond", current_func);
+        llvm::BasicBlock* ad_loop_body = llvm::BasicBlock::Create(ctx_.context(), "tsum_ad_body", current_func);
+        llvm::BasicBlock* ad_loop_exit = llvm::BasicBlock::Create(ctx_.context(), "tsum_ad_exit", current_func);
+        ctx_.builder().CreateBr(ad_loop_cond);
+
+        ctx_.builder().SetInsertPoint(ad_loop_cond);
+        llvm::Value* ad_i = ctx_.builder().CreateLoad(ctx_.int64Type(), ad_counter);
+        llvm::Value* ad_has_elem = ctx_.builder().CreateICmpULT(ad_i, src_total);
+        ctx_.builder().CreateCondBr(ad_has_elem, ad_loop_body, ad_loop_exit);
+
+        ctx_.builder().SetInsertPoint(ad_loop_body);
+        llvm::Value* ad_elem_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), typed_src_elements, ad_i);
+        llvm::Value* ad_elem_bits = ctx_.builder().CreateLoad(ctx_.int64Type(), ad_elem_ptr);
+        llvm::Value* ad_elem_node = adNodeFromTensorElementBits(ad_elem_bits, "tsum_ad_elem");
+        llvm::Value* ad_old_acc = ctx_.builder().CreateLoad(ctx_.ptrType(), ad_acc);
+        llvm::Value* ad_new_acc = autodiff_->recordADNodeBinary(2, ad_old_acc, ad_elem_node);
+        ctx_.builder().CreateStore(ad_new_acc, ad_acc);
+        llvm::Value* ad_next_i = ctx_.builder().CreateAdd(ad_i, llvm::ConstantInt::get(ctx_.int64Type(), 1));
+        ctx_.builder().CreateStore(ad_next_i, ad_counter);
+        ctx_.builder().CreateBr(ad_loop_cond);
+
+        ctx_.builder().SetInsertPoint(ad_loop_exit);
+        llvm::Value* final_ad_sum = ctx_.builder().CreateLoad(ctx_.ptrType(), ad_acc);
+        ad_sum_tagged_result = tagged_.packPtr(final_ad_sum, ESHKOL_VALUE_CALLABLE);
+        ctx_.builder().CreateBr(sum_merge);
+        ad_sum_exit_block = ctx_.builder().GetInsertBlock();
+
+        ctx_.builder().SetInsertPoint(numeric_sum_block);
+    }
 
 #ifdef ESHKOL_XLA_ENABLED
     // ===== XLA DISPATCH FOR LARGE TENSOR SUM =====
@@ -1531,16 +1689,20 @@ llvm::Value* TensorCodegen::tensorSum(const eshkol_operations_t* op) {
     // Final result
     ctx_.builder().SetInsertPoint(loop_exit);
     llvm::Value* tensor_result = ctx_.builder().CreateLoad(ctx_.doubleType(), sum);
+    llvm::Value* tensor_tagged_result = tagged_.packDouble(tensor_result);
     ctx_.builder().CreateBr(sum_merge);
     llvm::BasicBlock* tensor_exit_block = ctx_.builder().GetInsertBlock();
 
     // === MERGE RESULTS ===
     ctx_.builder().SetInsertPoint(sum_merge);
-    llvm::PHINode* result_phi = ctx_.builder().CreatePHI(ctx_.doubleType(), 2, "sum_result");
-    result_phi->addIncoming(svec_result, svec_exit_block);
-    result_phi->addIncoming(tensor_result, tensor_exit_block);
+    llvm::PHINode* result_phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), ad_sum_exit_block ? 3 : 2, "sum_result");
+    result_phi->addIncoming(svec_tagged_result, svec_exit_block);
+    result_phi->addIncoming(tensor_tagged_result, tensor_exit_block);
+    if (ad_sum_exit_block && ad_sum_tagged_result) {
+        result_phi->addIncoming(ad_sum_tagged_result, ad_sum_exit_block);
+    }
 
-    return tagged_.packDouble(result_phi);
+    return result_phi;
 }
 
 llvm::Value* TensorCodegen::tensorMean(const eshkol_operations_t* op) {

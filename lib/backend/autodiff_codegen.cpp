@@ -3383,6 +3383,11 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
     actual_input->addIncoming(ad_promoted_tagged, ad_node_exit);  // Nested gradient path
     actual_input->addIncoming(promoted_vector_tagged, scalar_input_exit);
     actual_input->addIncoming(vector_val, vector_input_exit);
+
+    PHINode* input_was_scalar_promoted = ctx_.builder().CreatePHI(ctx_.int1Type(), 3, "gradient_input_was_scalar");
+    input_was_scalar_promoted->addIncoming(ConstantInt::get(ctx_.int1Type(), 1), ad_node_exit);
+    input_was_scalar_promoted->addIncoming(ConstantInt::get(ctx_.int1Type(), 1), scalar_input_exit);
+    input_was_scalar_promoted->addIncoming(ConstantInt::get(ctx_.int1Type(), 0), vector_input_exit);
     
     // Continue with gradient computation using merged input (guaranteed to be tensor!)
     Value* vector_ptr_int = tagged_.unpackInt64(actual_input);
@@ -3698,12 +3703,13 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
 
 
     Value* n_is_one = ctx_.builder().CreateICmpEQ(n, ConstantInt::get(ctx_.int64Type(), 1));
+    Value* use_scalar_call = ctx_.builder().CreateAnd(n_is_one, input_was_scalar_promoted);
     
     BasicBlock* scalar_call = BasicBlock::Create(ctx_.context(), "grad_scalar_call", current_func);
     BasicBlock* vector_call = BasicBlock::Create(ctx_.context(), "grad_vector_call", current_func);
     BasicBlock* after_func_call = BasicBlock::Create(ctx_.context(), "grad_after_func_call", current_func);
     
-    ctx_.builder().CreateCondBr(n_is_one, scalar_call, vector_call);
+    ctx_.builder().CreateCondBr(use_scalar_call, scalar_call, vector_call);
     
     // SCALAR: Extract single AD node and pass directly
     ctx_.builder().SetInsertPoint(scalar_call);
