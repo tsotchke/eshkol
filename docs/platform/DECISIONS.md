@@ -1542,3 +1542,41 @@ codegen, REPL JIT registration, generated executables, and tensor examples.
   allocation, indexing, and fill helpers
 - the remaining split-pending arena file is narrowed further toward allocator,
   region/shared-memory, and list/error helper groups
+
+---
+
+## D-0050
+
+- Date: 2026-05-24
+- Status: Accepted
+- Title: Extract list helper runtime ABI
+
+### Context
+
+`arena_memory.cpp` still carried generated-code ABI helpers for tagged-list
+reverse, quasiquote append/splice, recursion-depth accounting, and list/vector
+error guards. These helpers operate on tagged cons cells and arena allocation,
+but they are not allocator substrate. Keeping them in the split-pending arena
+file obscured the remaining platform work and kept a dynamic-array buffering
+path in quasiquote append.
+
+### Decision
+
+Move the list helper ABI into `lib/core/runtime_list_helpers.cpp`, classified
+as `runtime-core`. Preserve the exported symbol names used by LLVM codegen and
+REPL JIT registration. Replace the quasiquote append helper's temporary dynamic
+buffer with a single forward arena walk that copies cons cells in order and
+attaches the right-hand tail.
+
+Keep list/vector guard errors behind `eshkol_runtime_fatal` for now, matching
+the existing runtime-core pattern where generated-code helpers delegate to the
+hosted fatal sink until a freestanding panic hook ABI exists.
+
+### Consequences
+
+- `arena_memory.cpp` no longer owns list reverse, quasiquote append/splice,
+  recursion-depth, or list/vector guard helper implementations
+- runtime-core explicitly owns the current generated-code list helper ABI
+- quasiquote append no longer allocates a temporary host-side dynamic buffer
+- the remaining split-pending arena file is narrowed further toward allocator
+  and region/shared-memory groups

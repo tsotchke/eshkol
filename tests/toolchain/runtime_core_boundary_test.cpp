@@ -165,6 +165,7 @@ int main(int argc, char** argv) {
              "lib/core/runtime_closure_reflection.cpp",
              "lib/core/runtime_continuations.cpp",
              "lib/core/runtime_hash_table.cpp",
+             "lib/core/runtime_list_helpers.cpp",
              "lib/core/runtime_string.cpp",
              "lib/core/runtime_tensor_alloc.cpp",
              "lib/core/runtime_tensor_index.cpp",

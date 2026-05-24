@@ -112,6 +112,7 @@ Program phase:
 - hash-table allocation, key hashing/equality, and mutation helpers now live in a dedicated runtime-core translation unit instead of `arena_memory.cpp`
 - tensor allocation helpers now live in a dedicated runtime-core translation unit instead of `arena_memory.cpp`
 - tensor linalg, broadcast, shape-conversion, concat, and batched-matmul helpers now live in a dedicated runtime-core translation unit instead of `arena_memory.cpp`
+- generated-code list reverse, quasiquote append/splice, recursion-depth, and list/vector guard helpers now live in a dedicated runtime-core translation unit instead of `arena_memory.cpp`
 - freestanding-safe tensor index helpers now live in a dedicated runtime-core translation unit instead of the hosted-heavy runtime state implementation
 - freestanding-safe tensor fill helpers now live in a dedicated runtime-core translation unit instead of the hosted-heavy runtime state implementation
 - machine integer and raw pointer annotation surfaces exist in the HoTT parser/type-checker path
@@ -129,7 +130,7 @@ Program phase:
 
 Immediate priorities:
 
-- split the remaining `runtime-split-pending` file, `arena_memory.cpp`, along host-dependent and higher-level data-structure seams
+- split the remaining `runtime-split-pending` file, `arena_memory.cpp`, along allocator-region seams
 - hosted leakage checks for runtime-core
 - low-level machine-facing language surface
 - freestanding LLVM object and ELF pipeline
