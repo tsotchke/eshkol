@@ -40,50 +40,6 @@ void eshkol_hash_table_unlock(void);
 // Default alignment for memory allocations
 #define DEFAULT_ALIGNMENT 8
 
-// Global tape pointer for AD operations.
-// NOTE: Not thread_local — LLVM ExternalLinkage globals cannot link against
-// C thread_local symbols portably (macOS ARM64 TLS ABI mismatch). Thread
-// safety is ensured by the AD tape STACK (__ad_tape_stack) which IS thread_local.
-// parallel-map workers don't perform AD internally; the main thread controls
-// AD mode. If parallel AD is needed (v1.2+), use per-task tape allocation.
-ad_tape_t* __current_ad_tape = nullptr;
-
-// Global AD mode flag — same portability constraint as __current_ad_tape.
-// CRITICAL: Must be shared so lambdas from one LLVM module can see AD mode
-// set by another module (cross-module AD in REPL).
-bool __ad_mode_active = false;
-
-// Debug helper to print AD mode state
-void debug_print_ad_mode(const char* context) {
-    fprintf(stderr, "[AD_MODE_DEBUG] %s: __ad_mode_active = %s\n",
-            context, __ad_mode_active ? "TRUE" : "FALSE");
-}
-
-// Debug helper to print pointer value
-void debug_print_ptr(const char* context, void* ptr) {
-    fprintf(stderr, "[PTR_DEBUG] %s: ptr = %p (0x%llx)\n",
-            context, ptr, (unsigned long long)(uintptr_t)ptr);
-}
-
-// NESTED GRADIENT FIX: Tape stack for arbitrary-depth nested gradients
-// MAX_TAPE_DEPTH must match the value in llvm_codegen.cpp
-// thread_local: AD tape state is per-thread to prevent corruption under parallel autodiff
-#define MAX_TAPE_DEPTH 32
-thread_local ad_tape_t* __ad_tape_stack[MAX_TAPE_DEPTH] = {nullptr};
-thread_local uint64_t __ad_tape_depth = 0;
-
-// DOUBLE BACKWARD: Storage for outer AD node when in nested gradient
-thread_local void* __outer_ad_node_storage = nullptr;
-thread_local void* __outer_ad_node_to_inner = nullptr;
-thread_local void* __outer_grad_accumulator = nullptr;
-thread_local void* __inner_var_node_ptr = nullptr;
-thread_local uint64_t __gradient_x_degree = 0;
-
-// N-DIMENSIONAL DERIVATIVES: Stack of outer AD nodes for arbitrary depth nesting
-// Uses same MAX_TAPE_DEPTH (32)
-thread_local void* __outer_ad_node_stack[MAX_TAPE_DEPTH] = {nullptr};
-thread_local uint64_t __outer_ad_node_depth = 0;
-
 // Global shared arena for REPL mode (persistent across evaluations)
 // Atomic to synchronize writes (REPL init) and reads (runtime exception handlers)
 extern "C" std::atomic<arena_t*> __repl_shared_arena{nullptr};
@@ -1340,280 +1296,6 @@ bool eshkol_deep_equal(const eshkol_tagged_value_t* val1, const eshkol_tagged_va
     }
 }
 
-// ===== AD MEMORY MANAGEMENT IMPLEMENTATION =====
-
-// Dual number allocation
-eshkol_dual_number_t* arena_allocate_dual_number(arena_t* arena) {
-    if (!arena) {
-        eshkol_error("Cannot allocate dual number: null arena");
-        return nullptr;
-    }
-    
-    eshkol_dual_number_t* dual = (eshkol_dual_number_t*)
-        arena_allocate_aligned(arena, sizeof(eshkol_dual_number_t), 8);
-    
-    if (dual) {
-        dual->value = 0.0;
-        dual->derivative = 0.0;
-    }
-    
-    return dual;
-}
-
-eshkol_dual_number_t* arena_allocate_dual_batch(arena_t* arena, size_t count) {
-    if (!arena || count == 0) {
-        eshkol_error("Invalid parameters for batch dual number allocation");
-        return nullptr;
-    }
-    
-    size_t total_size = sizeof(eshkol_dual_number_t) * count;
-    eshkol_dual_number_t* duals = (eshkol_dual_number_t*)
-        arena_allocate_aligned(arena, total_size, 8);
-    
-    if (duals) {
-        for (size_t i = 0; i < count; i++) {
-            duals[i].value = 0.0;
-            duals[i].derivative = 0.0;
-        }
-    }
-    
-    return duals;
-}
-
-// AD node allocation for computational graphs
-ad_node_t* arena_allocate_ad_node(arena_t* arena) {
-    if (!arena) {
-        eshkol_error("Cannot allocate AD node: null arena");
-        return nullptr;
-    }
-
-    ad_node_t* node = (ad_node_t*)
-        arena_allocate_aligned(arena, sizeof(ad_node_t), 8);
-
-    if (node) {
-        node->type = AD_NODE_CONSTANT;
-        node->value = 0.0;
-        node->gradient = 0.0;
-        node->input1 = nullptr;
-        node->input2 = nullptr;
-        node->id = 0;
-        // Zero-initialize extended tensor AD fields
-        node->tensor_value = nullptr;
-        node->tensor_gradient = nullptr;
-        node->input3 = nullptr;
-        node->input4 = nullptr;
-        node->saved_tensors = nullptr;
-        node->num_saved = 0;
-        memset(&node->params, 0, sizeof(node->params));
-        node->shape = nullptr;
-        node->ndim = 0;
-    }
-
-    return node;
-}
-
-// AD node allocation with object header (for consolidated CALLABLE type)
-ad_node_t* arena_allocate_ad_node_with_header(arena_t* arena) {
-    if (!arena) {
-        eshkol_error("Cannot allocate AD node with header: null arena");
-        return nullptr;
-    }
-
-    // Calculate size: header + ad_node structure
-    size_t data_size = sizeof(ad_node_t);
-    size_t total = sizeof(eshkol_object_header_t) + data_size;
-    total = (total + 7) & ~7;  // Align to 8 bytes
-
-    uint8_t* mem = (uint8_t*)arena_allocate_aligned(arena, total, 8);
-    if (!mem) {
-        eshkol_error("Failed to allocate AD node with header");
-        return nullptr;
-    }
-
-    // Initialize header with AD_NODE subtype
-    eshkol_object_header_t* hdr = (eshkol_object_header_t*)mem;
-    hdr->subtype = CALLABLE_SUBTYPE_AD_NODE;
-    hdr->flags = 0;
-    hdr->ref_count = 0;
-    hdr->size = (uint32_t)data_size;
-
-    // Initialize AD node (all 15 fields)
-    ad_node_t* node = (ad_node_t*)(mem + sizeof(eshkol_object_header_t));
-    node->type = AD_NODE_CONSTANT;
-    node->value = 0.0;
-    node->gradient = 0.0;
-    node->input1 = nullptr;
-    node->input2 = nullptr;
-    node->id = 0;
-    // Zero-initialize extended tensor AD fields
-    node->tensor_value = nullptr;
-    node->tensor_gradient = nullptr;
-    node->input3 = nullptr;
-    node->input4 = nullptr;
-    node->saved_tensors = nullptr;
-    node->num_saved = 0;
-    memset(&node->params, 0, sizeof(node->params));
-    node->shape = nullptr;
-    node->ndim = 0;
-
-    return node;
-}
-
-ad_node_t* arena_allocate_ad_batch(arena_t* arena, size_t count) {
-    if (!arena || count == 0) {
-        eshkol_error("Invalid parameters for batch AD node allocation");
-        return nullptr;
-    }
-    
-    size_t total_size = sizeof(ad_node_t) * count;
-    ad_node_t* nodes = (ad_node_t*)
-        arena_allocate_aligned(arena, total_size, 8);
-    
-    if (nodes) {
-        for (size_t i = 0; i < count; i++) {
-            nodes[i].type = AD_NODE_CONSTANT;
-            nodes[i].value = 0.0;
-            nodes[i].gradient = 0.0;
-            nodes[i].input1 = nullptr;
-            nodes[i].input2 = nullptr;
-            nodes[i].id = 0;
-            // Zero-initialize extended tensor AD fields
-            nodes[i].tensor_value = nullptr;
-            nodes[i].tensor_gradient = nullptr;
-            nodes[i].input3 = nullptr;
-            nodes[i].input4 = nullptr;
-            nodes[i].saved_tensors = nullptr;
-            nodes[i].num_saved = 0;
-            memset(&nodes[i].params, 0, sizeof(nodes[i].params));
-            nodes[i].shape = nullptr;
-            nodes[i].ndim = 0;
-        }
-    }
-    
-    return nodes;
-}
-
-// Tape allocation and management
-ad_tape_t* arena_allocate_tape(arena_t* arena, size_t initial_capacity) {
-    if (!arena) {
-        eshkol_error("Cannot allocate tape: null arena");
-        return nullptr;
-    }
-    
-    if (initial_capacity == 0) {
-        initial_capacity = 64; // Default capacity
-    }
-    
-    ad_tape_t* tape = (ad_tape_t*)
-        arena_allocate_aligned(arena, sizeof(ad_tape_t), 8);
-    
-    if (!tape) {
-        eshkol_error("Failed to allocate tape structure");
-        return nullptr;
-    }
-    
-    // Allocate nodes array
-    size_t nodes_size = sizeof(ad_node_t*) * initial_capacity;
-    tape->nodes = (ad_node_t**)arena_allocate_aligned(arena, nodes_size, 8);
-    
-    if (!tape->nodes) {
-        eshkol_error("Failed to allocate tape nodes array");
-        return nullptr;
-    }
-    
-    tape->num_nodes = 0;
-    tape->capacity = initial_capacity;
-    tape->variables = nullptr;
-    tape->num_variables = 0;
-    
-    return tape;
-}
-
-void arena_tape_add_node(ad_tape_t* tape, ad_node_t* node) {
-    if (!tape || !node) {
-        eshkol_error("Cannot add node to tape: null parameter");
-        return;
-    }
-
-    if (tape->num_nodes >= tape->capacity) {
-        // Dynamic growth: allocate 2x capacity from the arena, copy existing nodes
-        arena_t* arena = __repl_shared_arena.load();
-        if (!arena) {
-            eshkol_error("Tape capacity exceeded and no arena available for growth: %zu/%zu",
-                         tape->num_nodes, tape->capacity);
-            return;
-        }
-
-        size_t new_capacity = tape->capacity * 2;
-        if (new_capacity < 128) new_capacity = 128;  // minimum growth
-
-        size_t new_size = sizeof(ad_node_t*) * new_capacity;
-        ad_node_t** new_nodes = (ad_node_t**)arena_allocate_aligned(arena, new_size, 8);
-
-        if (!new_nodes) {
-            eshkol_error("Failed to grow tape from %zu to %zu nodes",
-                         tape->capacity, new_capacity);
-            return;
-        }
-
-        // Copy existing nodes to the new array
-        memcpy(new_nodes, tape->nodes, sizeof(ad_node_t*) * tape->num_nodes);
-
-        // Update tape to use the new array (old array is arena-allocated, freed with arena)
-        tape->nodes = new_nodes;
-        tape->capacity = new_capacity;
-    }
-
-    tape->nodes[tape->num_nodes++] = node;
-}
-
-void arena_tape_reset(ad_tape_t* tape) {
-    if (!tape) {
-        eshkol_error("Cannot reset tape: null parameter");
-        return;
-    }
-    
-    // CRITICAL FIX: Reset gradients BEFORE resetting node count!
-    // The loop was never executing because num_nodes was already 0
-    size_t node_count = tape->num_nodes;
-    
-    // Reset all node gradients to 0
-    for (size_t i = 0; i < node_count; i++) {
-        if (tape->nodes[i]) {
-            tape->nodes[i]->gradient = 0.0;
-        }
-    }
-    
-    // Now reset node count (for next forward pass)
-    tape->num_nodes = 0;
-}
-
-// Additional tape query functions
-ad_node_t* arena_tape_get_node(const ad_tape_t* tape, size_t index) {
-    if (!tape) {
-        eshkol_error("Cannot get node from null tape");
-        return nullptr;
-    }
-    
-    if (index >= tape->num_nodes) {
-        eshkol_error("Tape index out of bounds: %zu >= %zu", index, tape->num_nodes);
-        return nullptr;
-    }
-    
-    return tape->nodes[index];
-}
-
-size_t arena_tape_get_node_count(const ad_tape_t* tape) {
-    if (!tape) {
-        eshkol_error("Cannot get node count from null tape");
-        return 0;
-    }
-    
-    return tape->num_nodes;
-}
-
-// ===== END AD MEMORY MANAGEMENT IMPLEMENTATION =====
-
 // ===== OALR (Ownership-Aware Lexical Regions) IMPLEMENTATION =====
 
 // Thread-local region stack (safe for parallel-map + with-region)
@@ -1685,9 +1367,9 @@ arena_t* arena_create_thread_local(size_t size_hint) {
  * (with-region). Those primitives read/write the following thread_local
  * variables declared above:
  *
- *   __ad_tape_stack[MAX_TAPE_DEPTH]   (line 105)
- *   __ad_tape_depth                    (line 106)
- *   __outer_ad_node_stack[MAX_TAPE_DEPTH]
+ *   __ad_tape_stack[ESHKOL_ARENA_MAX_TAPE_DEPTH]
+ *   __ad_tape_depth
+ *   __outer_ad_node_stack[ESHKOL_ARENA_MAX_TAPE_DEPTH]
  *   __outer_ad_node_depth
  *   __region_stack[MAX_REGION_DEPTH]   (line 1606)
  *   __region_stack_depth                (line 1607)
@@ -1706,7 +1388,7 @@ arena_t* arena_create_thread_local(size_t size_hint) {
 void eshkol_thread_init_worker(size_t arena_size_hint) {
     /* AD tape TLS slots: explicit zero so readers get defined values even if
      * the TLS image is not zero-filled (conservative; on POSIX it is). */
-    for (size_t i = 0; i < MAX_TAPE_DEPTH; ++i) {
+    for (size_t i = 0; i < ESHKOL_ARENA_MAX_TAPE_DEPTH; ++i) {
         __ad_tape_stack[i] = nullptr;
         __outer_ad_node_stack[i] = nullptr;
     }
@@ -1741,7 +1423,7 @@ void eshkol_thread_shutdown_worker(void) {
     }
     /* Clear tape + region stack pointers so stale tape pointers from a
      * previous worker lifetime are never observed after pthread re-use. */
-    for (size_t i = 0; i < MAX_TAPE_DEPTH; ++i) {
+    for (size_t i = 0; i < ESHKOL_ARENA_MAX_TAPE_DEPTH; ++i) {
         __ad_tape_stack[i] = nullptr;
         __outer_ad_node_stack[i] = nullptr;
     }
