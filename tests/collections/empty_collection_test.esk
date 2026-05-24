@@ -109,3 +109,13 @@
 
 ; 35. Nested empty: list containing empty list has length 1
 (display (if (= (length '(())) 1) "PASS" "FAIL")) (display ": list containing empty list has length 1") (newline)
+
+; 36. vector->list on tensor-backed numeric vector
+(let ((xs (vector->list #(1.0 2.0 3.0))))
+  (display (if (and (= (length xs) 3)
+                    (= (car xs) 1.0)
+                    (= (car (cdr xs)) 2.0)
+                    (= (car (cdr (cdr xs))) 3.0))
+               "PASS"
+               "FAIL")))
+(display ": vector->list of tensor-backed numeric vector") (newline)
