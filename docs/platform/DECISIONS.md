@@ -1705,3 +1705,43 @@ transfer.
   logging of region names
 - the remaining split-pending arena file is narrowed toward raw allocator,
   tagged object allocation/accessors, deep equality, and C++ wrapper groups
+
+---
+
+## D-0054
+
+- Date: 2026-05-24
+- Status: Accepted
+- Title: Extract deep structural equality runtime helper
+
+### Context
+
+`arena_memory.cpp` still carried `eshkol_deep_equal`, the recursive structural
+comparison helper used by generated `equal?` lowering. The helper depends on
+tagged object layout, cons accessors, bignum comparison, vector layout, and
+tensor metadata, but it is not arena block/scope mechanics.
+
+Keeping this comparison logic in the split-pending arena file obscured the
+remaining raw allocator substrate and made equality regressions share the arena
+test surface.
+
+### Decision
+
+Move `eshkol_deep_equal` into `lib/core/runtime_deep_equal.cpp`, classified as
+`runtime-core`. Preserve the exported ABI and comparison behavior for nulls,
+immediate numbers/booleans, legacy and header-backed strings, header-backed
+symbols, recursive cons cells, vectors, bignums, tensors, and callable pointer
+identity.
+
+Add `runtime_deep_equal_test` to cover pointer-null handling, numeric
+cross-type equality, legacy/header string equality, symbol equality, nested cons
+comparison, vector recursion, and tensor value comparison.
+
+### Consequences
+
+- `arena_memory.cpp` no longer owns generated `equal?` structural comparison
+- runtime-core explicitly owns the deep-equality ABI used by generated code
+- equality behavior now has a focused CTest regression independent of arena
+  block/scope tests
+- the remaining split-pending arena file is narrowed toward raw allocator,
+  tagged object allocation/accessors, and C++ wrapper groups
