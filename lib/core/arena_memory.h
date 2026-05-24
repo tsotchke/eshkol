@@ -284,7 +284,7 @@ extern thread_local eshkol_region_t* __region_stack[MAX_REGION_DEPTH];
 extern thread_local uint64_t __region_stack_depth;
 
 // Thread-local AD tape stack for nested gradient operations (double-backward)
-// MAX_TAPE_DEPTH must match arena_memory.cpp and codegen_context.h
+// MAX_TAPE_DEPTH must match runtime_autodiff.cpp and codegen_context.h
 #define ESHKOL_ARENA_MAX_TAPE_DEPTH 32
 extern thread_local ad_tape_t* __ad_tape_stack[ESHKOL_ARENA_MAX_TAPE_DEPTH];
 extern thread_local uint64_t __ad_tape_depth;

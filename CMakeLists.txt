@@ -1095,6 +1095,7 @@ set(ESHKOL_RUNTIME_HOSTED_SRC
 
 set(ESHKOL_RUNTIME_SPLIT_PENDING_SRC
   lib/core/arena_memory.cpp
+  lib/core/runtime_autodiff.cpp
 )
 
 list(REMOVE_ITEM LIB_SRC
