@@ -1067,6 +1067,7 @@ set(ESHKOL_RUNTIME_CORE_SRC
   lib/core/runtime_bytevector.cpp
   lib/core/runtime_closure_reflection.cpp
   lib/core/runtime_continuations.cpp
+  lib/core/runtime_hash_table.cpp
   lib/core/runtime_string.cpp
   lib/core/runtime_tensor_index.cpp
   lib/core/runtime_tensor_fill.cpp

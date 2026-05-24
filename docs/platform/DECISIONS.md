@@ -1428,3 +1428,45 @@ ABI.
 - runtime-core explicitly owns the current AD runtime helper implementation
 - the remaining split-pending arena file is narrowed further toward allocator,
   region/shared-memory, hash-table, tensor-allocation, and math helper groups
+
+---
+
+## D-0047
+
+- Date: 2026-05-24
+- Status: Accepted
+- Title: Extract hash-table runtime helpers
+
+### Context
+
+`arena_memory.cpp` still carried the generated-code ABI for hash-table
+allocation, tagged-key hashing/equality, open-addressing mutation/lookup, and
+key/value list materialization. These helpers use arena allocation, tagged
+object layout, bignum comparison, and the existing abstract hash-table lock
+hooks, but they do not depend directly on filesystem, process, environment,
+socket, or host thread APIs.
+
+Keeping them in the split-pending arena file made the remaining arena split
+less precise and hid another freestanding-safe data-structure surface behind
+unrelated allocator and tensor-allocation code.
+
+### Decision
+
+Move the hash-table helper ABI into `lib/core/runtime_hash_table.cpp`,
+classified as `runtime-core`. Preserve the exported symbol names used by LLVM
+codegen, REPL JIT registration, generated executables, and existing hash-table
+tests.
+
+Keep the current lock/unlock calls behind the `eshkol_hash_table_lock` /
+`eshkol_hash_table_unlock` ABI. The hosted implementation still lives in
+`runtime_arena_sync_hosted.cpp`; a later freestanding profile can provide a
+target-specific critical-section implementation behind the same symbols.
+
+### Consequences
+
+- `arena_memory.cpp` no longer owns hash-table hashing, equality, allocation,
+  lookup, mutation, or key/value list materialization
+- runtime-core explicitly owns the current hash-table runtime helper
+  implementation
+- the remaining split-pending arena file is narrowed further toward allocator,
+  region/shared-memory, tensor-allocation, and math helper groups
