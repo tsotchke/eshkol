@@ -172,6 +172,7 @@ int main(int argc, char** argv) {
              "lib/core/runtime_regions.cpp",
              "lib/core/runtime_shared_memory.cpp",
              "lib/core/runtime_string.cpp",
+             "lib/core/runtime_tagged_cons.cpp",
              "lib/core/runtime_tensor_alloc.cpp",
              "lib/core/runtime_tensor_index.cpp",
              "lib/core/runtime_tensor_fill.cpp",
