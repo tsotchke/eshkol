@@ -118,6 +118,9 @@ Program phase:
 - deep structural equality for tagged values now lives in a dedicated runtime-core translation unit instead of `arena_memory.cpp`
 - header-aware tagged-object allocation helpers now live in a dedicated runtime-core translation unit instead of `arena_memory.cpp`
 - tagged cons allocation and accessor helpers now live in a dedicated runtime-core translation unit instead of `arena_memory.cpp`
+- raw arena block allocation, scope reset/pop, statistics, and legacy list-node allocation now live in a dedicated runtime-core translation unit instead of `arena_memory.cpp`
+- hosted arena poison diagnostics now live behind a profile hook instead of making runtime-core read process environment variables
+- the C++ `Arena` RAII wrapper now lives in its own split-pending translation unit instead of sharing raw arena substrate
 - shared allocation and weak-reference helpers now live in a dedicated runtime-core translation unit instead of `arena_memory.cpp`
 - freestanding-safe tensor index helpers now live in a dedicated runtime-core translation unit instead of the hosted-heavy runtime state implementation
 - freestanding-safe tensor fill helpers now live in a dedicated runtime-core translation unit instead of the hosted-heavy runtime state implementation
@@ -136,7 +139,7 @@ Program phase:
 
 Immediate priorities:
 
-- split the remaining `runtime-split-pending` file, `arena_memory.cpp`, along raw allocator and C++ wrapper seams
+- classify the remaining split-pending C++ `Arena` wrapper and retire `runtime-split-pending`
 - hosted leakage checks for runtime-core
 - low-level machine-facing language surface
 - freestanding LLVM object and ELF pipeline

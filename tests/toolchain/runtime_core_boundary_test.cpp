@@ -160,6 +160,7 @@ int main(int argc, char** argv) {
     if (const int rc = require_entries(runtime_core_src,
             {"lib/core/ad_tape_builtins.c", "lib/core/bignum.cpp",
              "lib/core/rational.cpp", "lib/core/runtime.cpp",
+             "lib/core/runtime_arena_core.cpp",
              "lib/core/runtime_autodiff.cpp",
              "lib/core/runtime_bytevector.cpp",
              "lib/core/runtime_closure_alloc.cpp",
@@ -184,6 +185,7 @@ int main(int argc, char** argv) {
             {"lib/backend/thread_pool.cpp", "lib/core/config.cpp",
              "lib/core/logger.cpp", "lib/core/platform_runtime.cpp",
              "lib/core/resource_limits.cpp",
+             "lib/core/runtime_arena_diagnostics_hosted.cpp",
              "lib/core/runtime_arena_sync_hosted.cpp",
              "lib/core/runtime_display_hosted.cpp",
              "lib/core/runtime_errors_hosted.cpp",
@@ -202,7 +204,7 @@ int main(int argc, char** argv) {
         return rc;
     }
     if (const int rc = require_entries(split_pending_src,
-            {"lib/core/arena_memory.cpp"},
+            {"lib/core/runtime_arena_cpp.cpp"},
             "runtime split-pending source set")) {
         return rc;
     }
