@@ -1618,3 +1618,43 @@ behavior.
 - shared memory behavior has a focused CTest regression
 - the remaining split-pending arena file is narrowed further toward allocator
   and region stack/escape groups
+
+---
+
+## D-0052
+
+- Date: 2026-05-24
+- Status: Accepted
+- Title: Extract closure allocation runtime helpers
+
+### Context
+
+`arena_memory.cpp` still carried the closure allocation ABI used by generated
+closure code and continuation setup: `arena_allocate_closure_env`,
+`arena_allocate_closure`, and `arena_allocate_closure_with_header`. These
+helpers depend on arena allocation and closure metadata packing, but they are
+not arena block/scope mechanics.
+
+Keeping them in the split-pending arena file made it harder to tell raw arena
+substrate from higher-level callable object construction.
+
+### Decision
+
+Move the closure allocation helpers into `lib/core/runtime_closure_alloc.cpp`,
+classified as `runtime-core`. Preserve the exported ABI and the legacy/headered
+allocation behavior, including variadic and named closure metadata, HoTT return
+type bits, lambda-sexpr subtype selection for zero-capture header allocations,
+and null-initialized capture slots.
+
+Add `runtime_closure_alloc_test` to cover closure environment initialization,
+packed metadata preservation, legacy closure allocation, zero-capture
+header-backed lambda allocation, and capturing header-backed closure
+allocation.
+
+### Consequences
+
+- `arena_memory.cpp` no longer owns closure object/environment construction
+- runtime-core explicitly owns closure allocation above the raw arena substrate
+- closure allocation behavior has a focused CTest regression
+- the remaining split-pending arena file is narrowed toward raw allocator,
+  region, thread-local arena, deep-equality, and C++ wrapper groups

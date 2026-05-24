@@ -106,6 +106,7 @@ Program phase:
 - hosted exception handling and forward-reference provider diagnostics now live in a dedicated `runtime_exceptions_hosted.cpp` unit
 - hosted logger/resource-limit implementations are classified as `runtime-hosted`, and the AST pretty-printer is no longer treated as runtime substrate
 - freestanding-safe bytevector helpers now live in a dedicated runtime-core translation unit instead of the hosted-heavy runtime state implementation
+- closure environment and callable allocation helpers now live in a dedicated runtime-core translation unit instead of `arena_memory.cpp`
 - closure reflection and lambda-registry helpers now live in a dedicated runtime-core translation unit instead of `arena_memory.cpp`
 - continuation and dynamic-wind helpers now live in a dedicated runtime-core translation unit instead of `arena_memory.cpp`
 - automatic-differentiation tape/node helpers now live in a dedicated runtime-core translation unit instead of `arena_memory.cpp`

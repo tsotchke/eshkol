@@ -162,6 +162,7 @@ int main(int argc, char** argv) {
              "lib/core/rational.cpp", "lib/core/runtime.cpp",
              "lib/core/runtime_autodiff.cpp",
              "lib/core/runtime_bytevector.cpp",
+             "lib/core/runtime_closure_alloc.cpp",
              "lib/core/runtime_closure_reflection.cpp",
              "lib/core/runtime_continuations.cpp",
              "lib/core/runtime_hash_table.cpp",
