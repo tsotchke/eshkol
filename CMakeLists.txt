@@ -1063,6 +1063,7 @@ set(ESHKOL_RUNTIME_CORE_SRC
   lib/core/bignum.cpp
   lib/core/rational.cpp
   lib/core/runtime.cpp
+  lib/core/runtime_arena_core.cpp
   lib/core/runtime_autodiff.cpp
   lib/core/runtime_bytevector.cpp
   lib/core/runtime_closure_alloc.cpp
@@ -1088,6 +1089,7 @@ set(ESHKOL_RUNTIME_HOSTED_SRC
   lib/core/logger.cpp
   lib/core/platform_runtime.cpp
   lib/core/resource_limits.cpp
+  lib/core/runtime_arena_diagnostics_hosted.cpp
   lib/core/runtime_arena_sync_hosted.cpp
   lib/core/runtime_display_hosted.cpp
   lib/core/runtime_errors_hosted.cpp
@@ -1105,7 +1107,7 @@ set(ESHKOL_RUNTIME_HOSTED_SRC
 )
 
 set(ESHKOL_RUNTIME_SPLIT_PENDING_SRC
-  lib/core/arena_memory.cpp
+  lib/core/runtime_arena_cpp.cpp
 )
 
 list(REMOVE_ITEM LIB_SRC
@@ -1672,6 +1674,30 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/runtime
     endif()
     target_link_libraries(runtime_deep_equal_test PRIVATE eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
     add_test(NAME runtime_deep_equal_test COMMAND runtime_deep_equal_test)
+endif()
+
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/runtime_arena_core_test.cpp")
+    add_executable(runtime_arena_core_test tests/core/runtime_arena_core_test.cpp)
+    target_compile_features(runtime_arena_core_test PRIVATE cxx_std_17)
+    target_include_directories(runtime_arena_core_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    eshkol_target_llvm_includes(runtime_arena_core_test)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(runtime_arena_core_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(runtime_arena_core_test PRIVATE eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+    add_test(NAME runtime_arena_core_test COMMAND runtime_arena_core_test)
+endif()
+
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/runtime_arena_cpp_test.cpp")
+    add_executable(runtime_arena_cpp_test tests/core/runtime_arena_cpp_test.cpp)
+    target_compile_features(runtime_arena_cpp_test PRIVATE cxx_std_17)
+    target_include_directories(runtime_arena_cpp_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    eshkol_target_llvm_includes(runtime_arena_cpp_test)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(runtime_arena_cpp_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(runtime_arena_cpp_test PRIVATE eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+    add_test(NAME runtime_arena_cpp_test COMMAND runtime_arena_cpp_test)
 endif()
 
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/runtime_object_alloc_test.cpp")

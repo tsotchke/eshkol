@@ -1828,3 +1828,59 @@ allocation initialization, and convenience constructors.
 - `arena_memory.cpp` no longer owns tagged cons accessor behavior
 - the remaining split-pending arena file is narrowed toward raw arena
   block/scope/statistics helpers and the C++ `Arena` wrapper
+
+---
+
+## D-0057
+
+- Date: 2026-05-24
+- Status: Accepted
+- Title: Extract raw arena core and C++ wrapper seam
+
+### Context
+
+After the object-allocation and tagged-cons extractions, `arena_memory.cpp`
+contained the raw arena block/scope/statistics substrate, legacy list-node
+allocation, the weak generated-code argument globals, the REPL shared-arena
+global, and the C++ `Arena` RAII wrapper.
+
+The raw allocator is freestanding-critical, but its diagnostic poison path still
+read `ESHKOL_ARENA_POISON` directly from the process environment. The C++ RAII
+wrapper is not the generated-code runtime ABI and has different policy questions
+because it exposes C++ exception behavior.
+
+### Decision
+
+Move raw arena creation/destruction, aligned allocation, zeroed allocation,
+scope push/pop/reset, statistics, weak generated-code argument globals, the REPL
+shared-arena global, and legacy list-node allocation into
+`lib/core/runtime_arena_core.cpp`, classified as `runtime-core`.
+
+Move the C++ `Arena` RAII wrapper into `lib/core/runtime_arena_cpp.cpp`, kept as
+the remaining `runtime-split-pending` source until its final family is decided.
+
+Move hosted arena poison policy into
+`lib/core/runtime_arena_diagnostics_hosted.cpp`. Runtime-core now calls an
+abstract `eshkol_arena_poison_enabled` hook instead of reading process
+environment variables directly.
+
+While extracting the allocator, fix over-aligned allocation so
+`arena_allocate_aligned` aligns the returned absolute pointer address, not just
+the offset within the current block. Also reject non-power-of-two alignments and
+overflowing aligned/list-node allocation sizes.
+
+Add `runtime_arena_core_test` and `runtime_arena_cpp_test` to cover raw arena
+statistics, block/scope behavior, over-aligned pointers, invalid alignment,
+overflow rejection, legacy list allocation, RAII scope restoration, typed array
+allocation, move semantics, and wrapper reset behavior.
+
+### Consequences
+
+- the old `lib/core/arena_memory.cpp` implementation file is removed
+- runtime-core owns the raw allocator substrate needed by freestanding profiles
+- process environment access for arena poison diagnostics is isolated in a
+  hosted policy hook
+- the remaining split-pending runtime surface is a single explicit C++ wrapper
+  file rather than the arena implementation monolith
+- allocator alignment now satisfies over-aligned C++ wrapper allocations instead
+  of relying on the base address returned by `malloc`

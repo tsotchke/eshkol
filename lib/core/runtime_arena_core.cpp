@@ -3,30 +3,27 @@
  *
  * SPDX-License-Identifier: MIT
  *
- * Arena Memory Management Implementation
+ * Raw arena block, scope, statistics, and legacy list allocation runtime.
  */
 
 #include "arena_memory.h"
 #include "../../inc/eshkol/logger.h"
-#include "../../inc/eshkol/eshkol.h"
+
+#include <assert.h>
 #include <stdlib.h>
 #include <string.h>
-#include <assert.h>
 
 #ifdef __cplusplus
-#include <new>      // for std::bad_alloc
-#include <stdexcept>
 #include <atomic>
-#include <cmath>
-#include <cstdlib>
-#include <cstring>      // std::memset
+#include <cstring>
 #endif
 
 void* eshkol_arena_mutex_create(void);
 void eshkol_arena_mutex_destroy(void* mutex);
 void eshkol_arena_mutex_lock(void* mutex);
 void eshkol_arena_mutex_unlock(void* mutex);
-void eshkol_arena_global_once(void (*init)(void));
+
+extern "C" int eshkol_arena_poison_enabled(void);
 
 // Default alignment for memory allocations
 #define DEFAULT_ALIGNMENT 8
@@ -46,6 +43,12 @@ static size_t align_size(size_t size, size_t alignment) {
     return (size + alignment - 1) & ~(alignment - 1);
 }
 
+static size_t align_block_offset(const arena_block_t* block, size_t used, size_t alignment) {
+    uintptr_t raw_addr = (uintptr_t)(block->memory + used);
+    uintptr_t aligned_addr = (raw_addr + alignment - 1) & ~(uintptr_t)(alignment - 1);
+    return (size_t)(aligned_addr - (uintptr_t)block->memory);
+}
+
 // Create a new arena block
 static arena_block_t* create_arena_block(size_t size) {
     arena_block_t* block = (arena_block_t*)malloc(sizeof(arena_block_t));
@@ -53,18 +56,18 @@ static arena_block_t* create_arena_block(size_t size) {
         eshkol_error("Failed to allocate arena block structure");
         return nullptr;
     }
-    
+
     block->memory = (uint8_t*)malloc(size);
     if (!block->memory) {
         eshkol_error("Failed to allocate arena block memory of size %zu", size);
         free(block);
         return nullptr;
     }
-    
+
     block->size = size;
     block->used = 0;
     block->next = nullptr;
-    
+
     return block;
 }
 
@@ -175,18 +178,34 @@ void* arena_allocate_aligned(arena_t* arena, size_t size, size_t alignment) {
     arena_lock(arena);
 
     if (alignment == 0) alignment = DEFAULT_ALIGNMENT;
+    if ((alignment & (alignment - 1)) != 0) {
+        eshkol_error("Invalid arena alignment %zu: alignment must be a power of two", alignment);
+        arena_unlock(arena);
+        return nullptr;
+    }
+    if (size > SIZE_MAX - (alignment - 1)) {
+        eshkol_error("Arena allocation size overflow: size=%zu alignment=%zu", size, alignment);
+        arena_unlock(arena);
+        return nullptr;
+    }
 
-    // Align the size
+    // Align the requested size and the absolute returned pointer address.
     size_t aligned_size = align_size(size, alignment);
+    if (aligned_size > SIZE_MAX - (alignment - 1)) {
+        eshkol_error("Arena allocation block size overflow: size=%zu alignment=%zu", size, alignment);
+        arena_unlock(arena);
+        return nullptr;
+    }
 
     // Check if current block has enough space
     arena_block_t* block = arena->current_block;
-    size_t current_used = align_size(block->used, alignment);
+    size_t current_used = align_block_offset(block, block->used, alignment);
 
     if (current_used + aligned_size > block->size) {
         // Need a new block
-        size_t new_block_size = (aligned_size > arena->default_block_size) ?
-                               aligned_size : arena->default_block_size;
+        size_t min_block_size = aligned_size + alignment - 1;
+        size_t new_block_size = (min_block_size > arena->default_block_size) ?
+                               min_block_size : arena->default_block_size;
 
         arena_block_t* new_block = create_arena_block(new_block_size);
         if (!new_block) {
@@ -201,7 +220,7 @@ void* arena_allocate_aligned(arena_t* arena, size_t size, size_t alignment) {
         arena->total_allocated += new_block_size;
 
         block = new_block;
-        current_used = 0;
+        current_used = align_block_offset(block, 0, alignment);
     }
 
     // Allocate from current block
@@ -229,57 +248,42 @@ void* arena_allocate_zeroed(arena_t* arena, size_t size) {
 // Scope management
 void arena_push_scope(arena_t* arena) {
     if (!arena) return;
-    
+
     arena_scope_t* scope = (arena_scope_t*)malloc(sizeof(arena_scope_t));
     if (!scope) {
         eshkol_error("Failed to allocate arena scope");
         return;
     }
-    
+
     scope->block = arena->current_block;
     scope->used = arena->current_block->used;
     scope->parent = arena->current_scope;
     arena->current_scope = scope;
-    
+
     eshkol_debug("Pushed arena scope");
 }
 
 void arena_pop_scope(arena_t* arena) {
     if (!arena || !arena->current_scope) {
-        eshkol_error("Attempted to pop arena scope with no matching push — "
+        eshkol_error("Attempted to pop arena scope with no matching push - "
                      "unbalanced scope operations risk memory corruption");
         return;  // Graceful: skip the pop rather than kill the process
     }
 
     arena_scope_t* scope = arena->current_scope;
 
-    /* Bug-BB-class diagnostic: when ESHKOL_ARENA_POISON=1 is set in
-     * the environment, fill the popped region with a recognisable
-     * sentinel byte (0xCB) before releasing it.  Any later
-     * dereference of a stale pointer into that region will crash
-     * with an address that contains the byte 0xCB in obvious
-     * positions — turning a silent SEGV at a random-looking
-     * mangled address into a "this was an arena UAF" diagnosis.
+    /* Bug-BB-class diagnostic: when the hosted poison hook is enabled, fill
+     * the popped region with a recognisable sentinel byte (0xCB) before
+     * releasing it. Any later dereference of a stale pointer into that region
+     * will crash with an address that contains the byte 0xCB in obvious
+     * positions, turning a silent SEGV at a random-looking mangled address
+     * into a clear "this was an arena UAF" diagnosis.
      *
-     * This is opt-in (default off) because it adds work to every
-     * pop; turn it on when investigating a "second-call SEGV" or
-     * any state-corruption-shaped bug, then bisect by which arena
-     * scope's pop precedes the crash.
-     *
-     * The byte 0xCB picked because:
-     *   - High-bit set so addresses look "obviously poisoned" in
-     *     register dumps (e.g. 0xCB...CB...) without colliding with
-     *     real heap addresses on macOS arm64.
-     *   - Distinct from libc's MallocPreScribble (0xAA) and
-     *     MallocScribble (0x55) so they don't shadow each other.
-     *   - Distinct from glibc malloc's perturb_free (0x42).
+     * The hook is profile-provided: hosted builds currently back it with
+     * ESHKOL_ARENA_POISON, while freestanding profiles can provide a target
+     * policy without making runtime-core read process environment variables.
      */
-    static int poison_enabled = -1;
-    if (poison_enabled < 0) {
-        const char* env = std::getenv("ESHKOL_ARENA_POISON");
-        poison_enabled = (env && env[0] && env[0] != '0') ? 1 : 0;
-    }
-    if (poison_enabled) {
+    if (eshkol_arena_poison_enabled()) {
         // Poison anything between scope's saved-used and current block's
         // current-used, plus any blocks beyond scope->block.
         if (scope->block && scope->block == arena->current_block) {
@@ -317,11 +321,11 @@ void arena_pop_scope(arena_t* arena) {
 
 void arena_reset(arena_t* arena) {
     if (!arena) return;
-    
+
     // Reset all blocks except the first one
     arena_block_t* first_block = nullptr;
     arena_block_t* block = arena->current_block;
-    
+
     // Find the last block (first allocated)
     while (block) {
         if (block->next == nullptr) {
@@ -330,7 +334,7 @@ void arena_reset(arena_t* arena) {
         }
         block = block->next;
     }
-    
+
     // Free all blocks except the first
     block = arena->current_block;
     while (block && block != first_block) {
@@ -339,14 +343,14 @@ void arena_reset(arena_t* arena) {
         free_arena_block(block);
         block = next;
     }
-    
+
     // Reset first block
     if (first_block) {
         first_block->used = 0;
         first_block->next = nullptr;
         arena->current_block = first_block;
     }
-    
+
     // Clear all scopes
     arena_scope_t* scope = arena->current_scope;
     while (scope) {
@@ -355,14 +359,14 @@ void arena_reset(arena_t* arena) {
         scope = parent;
     }
     arena->current_scope = nullptr;
-    
+
     eshkol_debug("Reset arena");
 }
 
 // Statistics
 size_t arena_get_used_memory(const arena_t* arena) {
     if (!arena) return 0;
-    
+
     size_t used = 0;
     arena_block_t* block = arena->current_block;
     while (block) {
@@ -378,7 +382,7 @@ size_t arena_get_total_memory(const arena_t* arena) {
 
 size_t arena_get_block_count(const arena_t* arena) {
     if (!arena) return 0;
-    
+
     size_t count = 0;
     arena_block_t* block = arena->current_block;
     while (block) {
@@ -390,78 +394,15 @@ size_t arena_get_block_count(const arena_t* arena) {
 
 // List-specific allocation functions
 arena_cons_cell_t* arena_allocate_cons_cell(arena_t* arena) {
-    return (arena_cons_cell_t*)arena_allocate_aligned(arena, sizeof(arena_cons_cell_t), 
+    return (arena_cons_cell_t*)arena_allocate_aligned(arena, sizeof(arena_cons_cell_t),
                                                      alignof(arena_cons_cell_t));
 }
 
 void* arena_allocate_list_node(arena_t* arena, size_t element_size, size_t count) {
+    if (count != 0 && element_size > SIZE_MAX / count) {
+        eshkol_error("Arena list-node allocation overflow: element_size=%zu count=%zu",
+                     element_size, count);
+        return nullptr;
+    }
     return arena_allocate(arena, element_size * count);
 }
-
-#ifdef __cplusplus
-
-// C++ Arena wrapper implementation
-Arena::Arena(size_t default_block_size) : arena_(arena_create(default_block_size)) {
-    if (!arena_) {
-        throw std::bad_alloc();
-    }
-}
-
-Arena::~Arena() {
-    arena_destroy(arena_);
-}
-
-Arena::Arena(Arena&& other) noexcept : arena_(other.arena_) {
-    other.arena_ = nullptr;
-}
-
-Arena& Arena::operator=(Arena&& other) noexcept {
-    if (this != &other) {
-        arena_destroy(arena_);
-        arena_ = other.arena_;
-        other.arena_ = nullptr;
-    }
-    return *this;
-}
-
-void* Arena::allocate(size_t size) {
-    return arena_allocate(arena_, size);
-}
-
-void* Arena::allocate_aligned(size_t size, size_t alignment) {
-    return arena_allocate_aligned(arena_, size, alignment);
-}
-
-void* Arena::allocate_zeroed(size_t size) {
-    return arena_allocate_zeroed(arena_, size);
-}
-
-size_t Arena::get_used_memory() const {
-    return arena_get_used_memory(arena_);
-}
-
-size_t Arena::get_total_memory() const {
-    return arena_get_total_memory(arena_);
-}
-
-size_t Arena::get_block_count() const {
-    return arena_get_block_count(arena_);
-}
-
-void Arena::reset() {
-    arena_reset(arena_);
-}
-
-// Arena::Scope implementation
-Arena::Scope::Scope(Arena& arena) : arena_(&arena), active_(true) {
-    arena_push_scope(arena.arena_);
-}
-
-Arena::Scope::~Scope() {
-    if (active_) {
-        arena_pop_scope(arena_->arena_);
-    }
-}
-
-
-#endif // __cplusplus
