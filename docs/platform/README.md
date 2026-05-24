@@ -109,6 +109,7 @@ Program phase:
 - closure reflection and lambda-registry helpers now live in a dedicated runtime-core translation unit instead of `arena_memory.cpp`
 - continuation and dynamic-wind helpers now live in a dedicated runtime-core translation unit instead of `arena_memory.cpp`
 - automatic-differentiation tape/node helpers now live in a dedicated runtime-core translation unit instead of `arena_memory.cpp`
+- hash-table allocation, key hashing/equality, and mutation helpers now live in a dedicated runtime-core translation unit instead of `arena_memory.cpp`
 - freestanding-safe tensor index helpers now live in a dedicated runtime-core translation unit instead of the hosted-heavy runtime state implementation
 - freestanding-safe tensor fill helpers now live in a dedicated runtime-core translation unit instead of the hosted-heavy runtime state implementation
 - machine integer and raw pointer annotation surfaces exist in the HoTT parser/type-checker path
