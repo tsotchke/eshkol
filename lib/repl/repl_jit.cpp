@@ -1291,6 +1291,7 @@ void ReplJITContext::addModule(std::unique_ptr<Module> module, std::unique_ptr<L
         }
         for (const std::string& marker : var_markers) {
             std::string var_name = marker.substr(strlen("__repl_var_"));
+            eshkol_repl_mark_user_variable(var_name.c_str());
 
             std::string storage_symbol;
             auto storage_symbol_it = repl_var_storage_symbols_.find(var_name);

@@ -80,6 +80,13 @@ void test_double_literal(void) {
           "3.14: double_val ~= 3.14");
 }
 
+void test_repl_user_variable_shadows_math_builtin(void) {
+    (void)eshkol_eval_string("(define log2 \"\")", nullptr);
+    eshkol_tagged_value_t v = eshkol_eval_string("log2", nullptr);
+    CHECK(ESHKOL_IS_STRING_COMPAT(v),
+          "REPL user variable log2 shadows math builtin across evals");
+}
+
 }  // namespace
 
 int main(void) {
@@ -90,6 +97,7 @@ int main(void) {
     test_addition();
     test_multiplication();
     test_double_literal();
+    test_repl_user_variable_shadows_math_builtin();
 
     std::printf("\nResults: %d/%d checks passed\n",
                 g_total - g_failures, g_total);

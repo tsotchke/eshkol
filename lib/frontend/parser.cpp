@@ -8521,7 +8521,11 @@ eshkol_ast_t eshkol_parse_next_ast_from_stream(std::istream &in_stream)
                 // Found atom at top level - read until whitespace or special char
                 while (!in_stream.eof()) {
                     int next_c = in_stream.peek();
-                    if (std::isspace(next_c) || next_c == '(' || next_c == ')' || next_c == ';') {
+                    if (next_c == EOF || next_c == std::char_traits<char>::eof()) {
+                        break;
+                    }
+                    if (std::isspace(static_cast<unsigned char>(next_c)) ||
+                        next_c == '(' || next_c == ')' || next_c == ';') {
                         break;
                     }
                     c = in_stream.get();
