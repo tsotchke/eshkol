@@ -1580,3 +1580,41 @@ hosted fatal sink until a freestanding panic hook ABI exists.
 - quasiquote append no longer allocates a temporary host-side dynamic buffer
 - the remaining split-pending arena file is narrowed further toward allocator
   and region/shared-memory groups
+
+---
+
+## D-0051
+
+- Date: 2026-05-24
+- Status: Accepted
+- Title: Extract shared memory runtime helpers
+
+### Context
+
+`arena_memory.cpp` still carried the shared allocation and weak-reference ABI:
+`shared_allocate`, `shared_allocate_typed`, `shared_retain`,
+`shared_release`, `shared_ref_count`, `shared_get_header`, and the
+`weak_ref_*` helpers registered with the REPL JIT. These helpers manage
+reference-count metadata around process-independent allocations; they are not
+arena block/scope mechanics or region stack behavior.
+
+Leaving them in the split-pending arena file made the remaining allocator work
+less precise and left this ABI without a focused regression test.
+
+### Decision
+
+Move the shared/weak-reference helper implementation into
+`lib/core/runtime_shared_memory.cpp`, classified as `runtime-core`. Preserve
+the exported symbol names used by REPL JIT registration and ownership paths.
+Add `runtime_shared_memory_test` to exercise typed allocation, ref-count
+retain/release, weak upgrade, final destructor dispatch, and dead weak-ref
+behavior.
+
+### Consequences
+
+- `arena_memory.cpp` no longer owns shared allocation or weak-reference helper
+  implementations
+- runtime-core explicitly owns the current shared/weak-reference ABI
+- shared memory behavior has a focused CTest regression
+- the remaining split-pending arena file is narrowed further toward allocator
+  and region stack/escape groups
