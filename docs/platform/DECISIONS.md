@@ -1658,3 +1658,50 @@ allocation.
 - closure allocation behavior has a focused CTest regression
 - the remaining split-pending arena file is narrowed toward raw allocator,
   region, thread-local arena, deep-equality, and C++ wrapper groups
+
+---
+
+## D-0053
+
+- Date: 2026-05-24
+- Status: Accepted
+- Title: Extract region and thread-local arena runtime helpers
+
+### Context
+
+`arena_memory.cpp` still carried the OALR region stack, global arena
+selection, per-worker thread-local arena lifecycle, worker TLS reset logic,
+arena merge ownership transfer, and region escape helpers. These routines use
+the raw arena allocator, but they are not arena block/scope mechanics.
+
+This grouping also contained two cleanup hazards: destroying an active region
+could continue after `region_pop()` had already destroyed the region arena, and
+region destruction logged the arena-owned name after freeing the region arena.
+
+### Decision
+
+Move the region/thread-local arena helper implementation into
+`lib/core/runtime_regions.cpp`, classified as `runtime-core`. Preserve the
+exported ABI used by generated `with-region` code and REPL JIT registration:
+`get_global_arena`, `get_global_arena_shared`, worker arena lifecycle,
+`arena_merge_to_parent`, `arena_is_worker_thread`, `region_*`, and
+`region_escape_*`.
+
+Keep raw arena creation/allocation/scope functions in `arena_memory.cpp`.
+Tighten region cleanup so active-region destruction returns after popping, and
+so region destruction logs before freeing arena-owned region names.
+
+Add `runtime_regions_test` to cover worker TLS arena override/shutdown, active
+region destruction, nested-region escape into a parent arena, header-backed
+string/tagged-value escape, cons-cell escape, and arena merge ownership
+transfer.
+
+### Consequences
+
+- `arena_memory.cpp` no longer owns region stack/lifecycle/escape behavior or
+  per-worker thread-local arena setup
+- runtime-core explicitly owns the OALR/generated-code region ABI
+- active region destruction no longer risks double-destroy or use-after-free
+  logging of region names
+- the remaining split-pending arena file is narrowed toward raw allocator,
+  tagged object allocation/accessors, deep equality, and C++ wrapper groups

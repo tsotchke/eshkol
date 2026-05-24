@@ -114,6 +114,7 @@ Program phase:
 - tensor allocation helpers now live in a dedicated runtime-core translation unit instead of `arena_memory.cpp`
 - tensor linalg, broadcast, shape-conversion, concat, and batched-matmul helpers now live in a dedicated runtime-core translation unit instead of `arena_memory.cpp`
 - generated-code list reverse, quasiquote append/splice, recursion-depth, and list/vector guard helpers now live in a dedicated runtime-core translation unit instead of `arena_memory.cpp`
+- region stack/lifecycle/escape helpers and per-worker thread-local arena setup now live in a dedicated runtime-core translation unit instead of `arena_memory.cpp`
 - shared allocation and weak-reference helpers now live in a dedicated runtime-core translation unit instead of `arena_memory.cpp`
 - freestanding-safe tensor index helpers now live in a dedicated runtime-core translation unit instead of the hosted-heavy runtime state implementation
 - freestanding-safe tensor fill helpers now live in a dedicated runtime-core translation unit instead of the hosted-heavy runtime state implementation
