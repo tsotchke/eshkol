@@ -6577,152 +6577,150 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 return ast;
                 
             } else {
-                // Generic tensor: (tensor dim1 dim2 ... dimN element1 element2 ...)
-                std::vector<uint64_t> dimensions;
+                // Generic tensor supports both:
+                //   (tensor 1.0 2.0 3.0)              => 1D tensor
+                //   (tensor 2 2 1.0 2.0 3.0 4.0)      => shaped tensor
+                //   (tensor 2 2 1 2 3 4)              => shaped integer tensor
+                // All-integer operands are ambiguous, so choose a dimensions
+                // prefix only when its product exactly matches the remaining
+                // operand count. Otherwise treat the operands as 1D elements.
+                struct tensor_operand_t {
+                    eshkol_ast_t ast;
+                    bool dimension_candidate;
+                    uint64_t dimension_value;
+                };
 
-                // Parse dimensions until we hit a non-integer token
-                // Dimensions must be integers (no decimal point or exponent)
+                auto is_unsigned_integer_token = [](const std::string& value) -> bool {
+                    if (value.empty()) return false;
+                    for (char c : value) {
+                        if (c < '0' || c > '9') return false;
+                    }
+                    return true;
+                };
+
+                std::vector<tensor_operand_t> operands;
                 while (true) {
                     token = tokenizer.nextToken();
-                    if (token.type == TOKEN_NUMBER) {
-                        // Check if it's an integer (no decimal point or exponent)
-                        bool is_integer = true;
-                        for (char c : token.value) {
-                            if (c == '.' || c == 'e' || c == 'E') {
-                                is_integer = false;
-                                break;
-                            }
-                        }
-                        if (is_integer) {
-                            dimensions.push_back(std::stoull(token.value));
-                        } else {
-                            break; // Float starts the elements
-                        }
-                    } else {
-                        break; // Non-number token starts the elements
-                    }
-                }
-                
-                if (dimensions.empty()) {
-                    // No integer dimensions found — treat as 1D tensor from elements
-                    // (tensor 1.0 2.0 3.0) → 1D tensor [1.0, 2.0, 3.0]
-                    std::vector<eshkol_ast_t> tensor_elements;
-
-                    // First non-integer token is the first element
-                    if (token.type != TOKEN_RPAREN && token.type != TOKEN_EOF) {
-                        eshkol_ast_t element;
-                        if (token.type == TOKEN_LPAREN) {
-                            element = parse_list(tokenizer);
-                        } else {
-                            element = parse_atom(token);
-                        }
-                        tensor_elements.push_back(element);
-                    }
-
-                    // Parse remaining elements
-                    while (true) {
-                        token = tokenizer.nextToken();
-                        if (token.type == TOKEN_RPAREN) break;
-                        if (token.type == TOKEN_EOF) {
-                            PARSE_ERROR_AT(token, "unexpected end of input in tensor literal");
-                            ast.type = ESHKOL_INVALID;
-                            return ast;
-                        }
-                        eshkol_ast_t element;
-                        if (token.type == TOKEN_LPAREN) {
-                            element = parse_list(tokenizer);
-                        } else {
-                            element = parse_atom(token);
-                        }
-                        tensor_elements.push_back(element);
-                    }
-
-                    // Set up as 1D tensor
-                    ast.operation.tensor_op.num_dimensions = 1;
-                    ast.operation.tensor_op.dimensions = new uint64_t[1];
-                    ast.operation.tensor_op.dimensions[0] = tensor_elements.size();
-                    ast.operation.tensor_op.total_elements = tensor_elements.size();
-                    if (ast.operation.tensor_op.total_elements > 0) {
-                        ast.operation.tensor_op.elements = new eshkol_ast_t[ast.operation.tensor_op.total_elements];
-                        for (size_t i = 0; i < ast.operation.tensor_op.total_elements; i++) {
-                            ast.operation.tensor_op.elements[i] = tensor_elements[i];
-                        }
-                    } else {
-                        ast.operation.tensor_op.elements = nullptr;
-                    }
-                    return ast;
-                }
-                
-                // Calculate total elements
-                uint64_t total_elements = 1;
-                for (uint64_t dim : dimensions) {
-                    total_elements *= dim;
-                }
-                
-                // Parse tensor elements, starting with the token we just read
-                std::vector<eshkol_ast_t> tensor_elements;
-                
-                // Handle the first element we already read
-                if (token.type != TOKEN_RPAREN && token.type != TOKEN_EOF) {
-                    eshkol_ast_t element;
-                    if (token.type == TOKEN_LPAREN) {
-                        element = parse_list(tokenizer);
-                    } else {
-                        element = parse_atom(token);
-                    }
-                    tensor_elements.push_back(element);
-                }
-                
-                // Parse remaining elements
-                for (uint64_t i = tensor_elements.size(); i < total_elements; i++) {
-                    token = tokenizer.nextToken();
-                    if (token.type == TOKEN_RPAREN) {
-                        if (i < total_elements - 1) {
-                            PARSE_ERROR_AT(token, "tensor has insufficient elements: expected %llu, got %llu", 
-                                       (unsigned long long)total_elements, (unsigned long long)i);
-                            ast.type = ESHKOL_INVALID;
-                            return ast;
-                        }
-                        break;
-                    }
+                    if (token.type == TOKEN_RPAREN) break;
                     if (token.type == TOKEN_EOF) {
                         PARSE_ERROR_AT(token, "unexpected end of input in tensor literal");
                         ast.type = ESHKOL_INVALID;
                         return ast;
                     }
-                    
-                    eshkol_ast_t element;
+
+                    tensor_operand_t operand{};
+                    operand.dimension_candidate =
+                        token.type == TOKEN_NUMBER && is_unsigned_integer_token(token.value);
+                    operand.dimension_value =
+                        operand.dimension_candidate ? std::stoull(token.value) : 0;
+
                     if (token.type == TOKEN_LPAREN) {
-                        element = parse_list(tokenizer);
+                        operand.ast = parse_list(tokenizer);
                     } else {
-                        element = parse_atom(token);
+                        operand.ast = parse_atom(token);
                     }
-                    tensor_elements.push_back(element);
-                }
-                
-                // Consume closing parenthesis if not already consumed
-                if (tensor_elements.size() == total_elements) {
-                    token = tokenizer.nextToken();
-                    if (token.type != TOKEN_RPAREN) {
-                        PARSE_ERROR_AT(token, "expected closing parenthesis after tensor elements");
+                    if (operand.ast.type == ESHKOL_INVALID) {
                         ast.type = ESHKOL_INVALID;
                         return ast;
                     }
+                    operands.push_back(operand);
                 }
-                
-                // Set up generic tensor
+
+                size_t dimension_count = 0;
+                uint64_t total_elements = 0;
+                bool use_explicit_dimensions = false;
+                size_t first_non_dimension = operands.size();
+                for (size_t i = 0; i < operands.size(); i++) {
+                    if (!operands[i].dimension_candidate) {
+                        first_non_dimension = i;
+                        break;
+                    }
+                }
+
+                auto compute_product = [&](size_t count, uint64_t* out) -> bool {
+                    uint64_t product = 1;
+                    for (size_t i = 0; i < count; i++) {
+                        const uint64_t dim = operands[i].dimension_value;
+                        if (dim != 0 && product > UINT64_MAX / dim) {
+                            return false;
+                        }
+                        product *= dim;
+                    }
+                    *out = product;
+                    return true;
+                };
+
+                if (first_non_dimension > 0 && first_non_dimension < operands.size()) {
+                    dimension_count = first_non_dimension;
+                    if (!compute_product(dimension_count, &total_elements)) {
+                        PARSE_ERROR_AT(token, "tensor dimensions overflow");
+                        ast.type = ESHKOL_INVALID;
+                        return ast;
+                    }
+                    const uint64_t provided_elements =
+                        (uint64_t)(operands.size() - dimension_count);
+                    if (provided_elements != total_elements) {
+                        PARSE_ERROR_AT(token,
+                            "tensor has insufficient elements: expected %llu, got %llu",
+                            (unsigned long long)total_elements,
+                            (unsigned long long)provided_elements);
+                        ast.type = ESHKOL_INVALID;
+                        return ast;
+                    }
+                    use_explicit_dimensions = true;
+                } else if (first_non_dimension == operands.size() && !operands.empty()) {
+                    for (size_t candidate_count = 1; candidate_count <= operands.size();
+                         candidate_count++) {
+                        uint64_t candidate_total = 0;
+                        if (!compute_product(candidate_count, &candidate_total)) {
+                            break;
+                        }
+                        const size_t remaining = operands.size() - candidate_count;
+                        if (candidate_total == (uint64_t)remaining) {
+                            dimension_count = candidate_count;
+                            total_elements = candidate_total;
+                            use_explicit_dimensions = true;
+                            break;
+                        }
+                    }
+                }
+
+                std::vector<uint64_t> dimensions;
+                std::vector<eshkol_ast_t> tensor_elements;
+                if (use_explicit_dimensions) {
+                    dimensions.reserve(dimension_count);
+                    for (size_t i = 0; i < dimension_count; i++) {
+                        dimensions.push_back(operands[i].dimension_value);
+                    }
+                    tensor_elements.reserve((size_t)total_elements);
+                    for (size_t i = dimension_count; i < operands.size(); i++) {
+                        tensor_elements.push_back(operands[i].ast);
+                    }
+                } else {
+                    dimensions.push_back((uint64_t)operands.size());
+                    total_elements = (uint64_t)operands.size();
+                    tensor_elements.reserve(operands.size());
+                    for (const tensor_operand_t& operand : operands) {
+                        tensor_elements.push_back(operand.ast);
+                    }
+                }
+
                 ast.operation.tensor_op.num_dimensions = dimensions.size();
                 ast.operation.tensor_op.dimensions = new uint64_t[dimensions.size()];
                 for (size_t i = 0; i < dimensions.size(); i++) {
                     ast.operation.tensor_op.dimensions[i] = dimensions[i];
                 }
+
                 ast.operation.tensor_op.total_elements = total_elements;
-                ast.operation.tensor_op.elements = new eshkol_ast_t[total_elements];
-                
-                for (size_t i = 0; i < total_elements; i++) {
-                    ast.operation.tensor_op.elements[i] = tensor_elements[i];
+                if (total_elements > 0) {
+                    ast.operation.tensor_op.elements = new eshkol_ast_t[total_elements];
+                    for (size_t i = 0; i < total_elements; i++) {
+                        ast.operation.tensor_op.elements[i] = tensor_elements[i];
+                    }
+                } else {
+                    ast.operation.tensor_op.elements = nullptr;
                 }
-                
+
                 return ast;
             }
         }

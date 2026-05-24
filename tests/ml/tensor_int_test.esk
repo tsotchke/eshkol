@@ -1,11 +1,32 @@
-;;; Test tensor function with integers
+;;; Test integer tensor literal parsing.
 
-(define (test-tensor-int)
-  (display "Testing tensor with ints...")
-  (newline)
-  (let ((k (tensor 1 2 3)))
-    (display "tensor 1 2 3: ")
-    (display k)
-    (newline)))
+(define failed 0)
 
-(test-tensor-int)
+(define (check name ok)
+  (if ok
+      (begin
+        (display "PASS: ")
+        (display name)
+        (newline))
+      (begin
+        (set! failed (+ failed 1))
+        (display "FAIL: ")
+        (display name)
+        (newline))))
+
+(let ((v (tensor 1 2 3)))
+  (check "all-integer vector literal keeps elements"
+         (and (equal? (tensor-shape v) '(3))
+              (= (tensor-ref v 0) 1)
+              (= (tensor-ref v 1) 2)
+              (= (tensor-ref v 2) 3))))
+
+(let ((m (tensor 2 2 1 2 3 4)))
+  (check "all-integer shaped literal uses dimension prefix"
+         (and (equal? (tensor-shape m) '(2 2))
+              (= (tensor-ref m 0 0) 1)
+              (= (tensor-ref m 0 1) 2)
+              (= (tensor-ref m 1 0) 3)
+              (= (tensor-ref m 1 1) 4))))
+
+(if (> failed 0) (exit 1) (exit 0))
