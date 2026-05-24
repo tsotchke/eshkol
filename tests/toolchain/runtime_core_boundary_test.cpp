@@ -168,7 +168,8 @@ int main(int argc, char** argv) {
              "lib/core/runtime_string.cpp",
              "lib/core/runtime_tensor_alloc.cpp",
              "lib/core/runtime_tensor_index.cpp",
-             "lib/core/runtime_tensor_fill.cpp"},
+             "lib/core/runtime_tensor_fill.cpp",
+             "lib/core/runtime_tensor_math.cpp"},
             "runtime core source set")) {
         return rc;
     }

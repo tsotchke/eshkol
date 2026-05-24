@@ -1506,3 +1506,39 @@ executables, and hosted tensor consumers keep the same link contract.
   tensor fill helpers
 - the remaining split-pending arena file is narrowed further toward allocator,
   region/shared-memory, list/error helper, and math helper groups
+
+---
+
+## D-0049
+
+- Date: 2026-05-24
+- Status: Accepted
+- Title: Extract tensor math runtime helpers
+
+### Context
+
+`arena_memory.cpp` still carried generated-code ABI helpers for tensor linear
+algebra, broadcast, shape conversion, concatenation, and batched matrix
+multiplication. These helpers implement symbols such as `eshkol_lu_decompose`,
+`eshkol_tensor_svd`, `eshkol_broadcast_elementwise_f64`,
+`eshkol_cons_list_to_dims`, `eshkol_tensor_to_dims`, `eshkol_concat_strided`,
+and `eshkol_batch_matmul_f64`.
+
+The helpers operate on raw tensor dimensions/elements, arena tagged cons-cell
+accessors, and C math/memory primitives. They do not depend on filesystem,
+process, environment, socket, or host thread APIs.
+
+### Decision
+
+Move the tensor math helper ABI into `lib/core/runtime_tensor_math.cpp`,
+classified as `runtime-core`. Preserve the exported symbol names used by LLVM
+codegen, REPL JIT registration, generated executables, and tensor examples.
+
+### Consequences
+
+- `arena_memory.cpp` no longer owns tensor linalg, broadcast, shape-conversion,
+  concat, or batched-matmul helper implementations
+- runtime-core explicitly owns the tensor math surface next to tensor
+  allocation, indexing, and fill helpers
+- the remaining split-pending arena file is narrowed further toward allocator,
+  region/shared-memory, and list/error helper groups
