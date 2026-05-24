@@ -1069,6 +1069,7 @@ set(ESHKOL_RUNTIME_CORE_SRC
   lib/core/runtime_continuations.cpp
   lib/core/runtime_hash_table.cpp
   lib/core/runtime_string.cpp
+  lib/core/runtime_tensor_alloc.cpp
   lib/core/runtime_tensor_index.cpp
   lib/core/runtime_tensor_fill.cpp
 )
@@ -1555,6 +1556,21 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/model_i
     endif()
     target_link_libraries(model_io_test PRIVATE eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
     add_test(NAME model_io_test COMMAND model_io_test)
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    add_test(
+        NAME tensor_integer_vector_literal_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run> -e "(display (tensor 1 2 3))"
+    )
+    set_tests_properties(tensor_integer_vector_literal_runtime_smoke
+        PROPERTIES PASS_REGULAR_EXPRESSION "#\\(1 2 3\\)")
+    add_test(
+        NAME tensor_integer_shaped_literal_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run> -e "(display (tensor 2 2 1 2 3 4))"
+    )
+    set_tests_properties(tensor_integer_shaped_literal_runtime_smoke
+        PROPERTIES PASS_REGULAR_EXPRESSION "#\\(\\(1 2\\) \\(3 4\\)\\)")
 endif()
 
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/runtime_shutdown_hooks_test.cpp")

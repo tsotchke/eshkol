@@ -1470,3 +1470,39 @@ target-specific critical-section implementation behind the same symbols.
   implementation
 - the remaining split-pending arena file is narrowed further toward allocator,
   region/shared-memory, tensor-allocation, and math helper groups
+
+---
+
+## D-0048
+
+- Date: 2026-05-24
+- Status: Accepted
+- Title: Extract tensor allocation runtime helpers
+
+### Context
+
+`arena_memory.cpp` still carried the exported tensor allocation ABI:
+`arena_allocate_tensor_with_header` and `arena_allocate_tensor_full`. These
+helpers allocate header-backed tensor objects plus dimensions/elements arrays
+through the arena allocator, initialize tensor metadata, and zero element
+storage for generated code, FFI, model IO, BLAS/XLA stubs, and REPL JIT
+programs.
+
+The helpers use arena allocation, tagged object layout, and raw memory
+initialization. They do not depend on filesystem, process, environment, socket,
+or host thread APIs.
+
+### Decision
+
+Move the tensor allocation helper ABI into
+`lib/core/runtime_tensor_alloc.cpp`, classified as `runtime-core`. Preserve the
+existing exported symbol names so codegen, REPL JIT registration, generated
+executables, and hosted tensor consumers keep the same link contract.
+
+### Consequences
+
+- `arena_memory.cpp` no longer owns tensor object or tensor payload allocation
+- runtime-core explicitly owns tensor allocation next to tensor indexing and
+  tensor fill helpers
+- the remaining split-pending arena file is narrowed further toward allocator,
+  region/shared-memory, list/error helper, and math helper groups
