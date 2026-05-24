@@ -8614,8 +8614,7 @@ private:
             {
                 std::lock_guard<std::mutex> lock(g_repl_mutex);
                 is_repl_user_var =
-                    g_repl_user_variable_names.count(var_name) > 0 &&
-                    g_repl_symbol_addresses.count(var_name) > 0;
+                    g_repl_user_variable_names.count(var_name) > 0;
                 is_private = g_repl_private_symbols.count(var_name) > 0;
             }
             if (is_private) {
@@ -9116,7 +9115,8 @@ private:
             } else {
 
             auto repl_it = g_repl_symbol_addresses.find(var_name);
-            if (repl_it != g_repl_symbol_addresses.end()) {
+            if (repl_it != g_repl_symbol_addresses.end() ||
+                g_repl_user_variable_names.count(var_name) > 0) {
                 // Variable exists in REPL context - create external global declaration
                 std::string storage_name = replVarStorageSymbolName(var_name);
                 GlobalVariable* global_var = module->getGlobalVariable(storage_name);
