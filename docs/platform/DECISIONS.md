@@ -1790,3 +1790,41 @@ sizing.
   of broad arena/language tests
 - the remaining split-pending arena file is narrowed toward raw allocator,
   tagged object accessors, and C++ wrapper groups
+
+---
+
+## D-0056
+
+- Date: 2026-05-24
+- Status: Accepted
+- Title: Extract tagged cons allocation and accessor helpers
+
+### Context
+
+`arena_memory.cpp` still owned the exported tagged cons ABI used by generated
+list code, tensor index helpers, hash-table materialization, REPL/JIT symbol
+registration, and FFI paths. This group includes raw tagged cons allocation,
+batch allocation, convenience constructors, typed getters/setters, type/flag
+queries, and full tagged-value copy helpers.
+
+These helpers are freestanding-safe and depend only on raw arena allocation and
+the tagged-value layout. Keeping them in the split-pending arena file obscured
+the remaining raw allocator/C++ wrapper work.
+
+### Decision
+
+Move tagged cons allocation and accessor helpers into
+`lib/core/runtime_tagged_cons.cpp`, classified as `runtime-core`. Preserve the
+exported symbol names and exact tagged-value initialization/copy behavior.
+
+Add `runtime_tagged_cons_test` to cover allocation initialization, typed
+set/get helpers, pointer/null behavior, flags, whole tagged-value copies, batch
+allocation initialization, and convenience constructors.
+
+### Consequences
+
+- generated-code and REPL/JIT tagged cons symbols now live in an explicit
+  runtime-core unit
+- `arena_memory.cpp` no longer owns tagged cons accessor behavior
+- the remaining split-pending arena file is narrowed toward raw arena
+  block/scope/statistics helpers and the C++ `Arena` wrapper
