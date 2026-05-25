@@ -1173,6 +1173,31 @@ void test_valid_chunk(void) {
               "function name lookup rejects negative index");
         CHECK(eshkol_vm_function_name(vm, 3) == nullptr,
               "function name lookup rejects past-end index");
+        EshkolVmFunctionInfo fn_info{};
+        CHECK(eshkol_vm_function_info(nullptr, 0, &fn_info) == -1,
+              "function info rejects null handle");
+        CHECK(eshkol_vm_function_info(vm, -1, &fn_info) == -1,
+              "function info rejects negative index");
+        CHECK(eshkol_vm_function_info(vm, 3, &fn_info) == -1,
+              "function info rejects past-end index");
+        CHECK(eshkol_vm_function_info(vm, 0, nullptr) == -1,
+              "function info rejects null output");
+        CHECK(eshkol_vm_function_info(vm, 0, &fn_info) == 0,
+              "function info exposes main metadata");
+        CHECK(fn_info.name && std::strcmp(fn_info.name, "main") == 0,
+              "function info exposes main name");
+        CHECK(fn_info.n_params == 0, "main function has zero params");
+        CHECK(fn_info.n_upvalues == 0, "main function has zero upvalues");
+        CHECK(fn_info.code_offset == 0, "main function starts at code offset zero");
+        CHECK(fn_info.code_len > 0, "main function reports code length");
+        CHECK(eshkol_vm_function_info(vm, 2, &fn_info) == 0,
+              "function info exposes helper metadata");
+        CHECK(fn_info.name && std::strcmp(fn_info.name, "helper2") == 0,
+              "function info exposes helper name");
+        CHECK(fn_info.n_params == 0, "helper function has zero params");
+        CHECK(fn_info.n_upvalues == 0, "helper function has zero upvalues");
+        CHECK(fn_info.code_offset > 0, "helper function starts after main");
+        CHECK(fn_info.code_len > 0, "helper function reports code length");
 
         CHECK(eshkol_vm_run(vm) == 0, "run loaded chunk");
         int64_t top = 0;

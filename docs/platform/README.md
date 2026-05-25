@@ -143,6 +143,8 @@ Program phase:
   build-time ESKB admission and removes rejected bytecode outputs
 - the public VM C ABI can enumerate decoded ESKB function entries, so product
   tooling can inspect emitted hooks without reaching into `EskbModule`
+- VM function metadata is available through the public ABI for hook arity,
+  closure, and bytecode-budget inspection
 - hosted Windows x86_64 validation now has a remote SSH harness for Jack's
   Tailscale Windows PC: `scripts/remote_windows_verify.sh` builds the native
   Visual Studio 2022 + ClangCL tree and runs the bounded `windows-lite` suite

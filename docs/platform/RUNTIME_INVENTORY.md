@@ -257,7 +257,9 @@ output file on admission failure. For `embedded-vm`, that validation uses the
 same host-native-only, no-string, no-desktop-native policy as product loading.
 Tooling can enumerate the decoded function table through
 `eshkol_vm_function_count` and `eshkol_vm_function_name` without depending on
-`EskbModule` internals.
+`EskbModule` internals. `eshkol_vm_function_info` exposes borrowed names plus
+parameter count, locals, upvalue count, code offset, and code length for
+signature and budget inspection.
 
 ### VM toolchain/compiler family
 

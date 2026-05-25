@@ -1695,6 +1695,22 @@ const char* eshkol_vm_function_name(EshkolVmHandle* h, int index) {
     return h->mod.functions[index].name;
 }
 
+int eshkol_vm_function_info(EshkolVmHandle* h, int index,
+                            EshkolVmFunctionInfo* out) {
+    if (!h || !h->vm || !out || index < 0 || index >= h->mod.n_functions) {
+        return -1;
+    }
+
+    const EskbFunction* fn = &h->mod.functions[index];
+    out->name = fn->name;
+    out->n_params = fn->n_params;
+    out->n_locals = fn->n_locals;
+    out->n_upvalues = fn->n_upvalues;
+    out->code_offset = fn->code_offset;
+    out->code_len = fn->code_len;
+    return 0;
+}
+
 void eshkol_vm_destroy(EshkolVmHandle* h) {
     if (!h) return;
     if (h->vm) {

@@ -2440,3 +2440,40 @@ without exposing VM internals.
   loader and `--require-vm-entry` CLI gate
 - the VM C API test now covers count, ordered names, null handles, and
   out-of-range index rejection
+
+---
+
+## D-0071
+
+- Date: 2026-05-25
+- Status: Accepted
+- Title: Expose VM function metadata
+
+### Context
+
+Function-table enumeration lets tooling list emitted VM hooks, but product
+admission often needs more than names. A firmware loop may need to verify hook
+arity, reject closures for fixed entry contracts, or estimate bytecode budget
+before packaging.
+
+The ESKB CODE section already stores function metadata during decoding, and the
+VM loader validates that metadata before creating a handle. Keeping that data
+private forced tools to either duplicate ESKB parsing or limit themselves to
+name-only checks.
+
+### Decision
+
+Add `EshkolVmFunctionInfo` and `eshkol_vm_function_info` to the public VM C ABI.
+The accessor fills borrowed function name, parameter count, local count,
+upvalue count, code offset, and code length for an indexed decoded function.
+Invalid handles, invalid indices, and null output pointers return `-1`.
+
+### Consequences
+
+- product tooling can inspect hook arity and closedness without decoding ESKB
+  directly
+- bytecode packaging can use code-length and local-count metadata for early
+  budget checks
+- native Windows stubs expose the same symbol while the full bytecode VM remains
+  disabled there
+- the VM C API tests now cover metadata success and invalid-input rejection
