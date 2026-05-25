@@ -2524,3 +2524,39 @@ is created.
 - the VM C API tests now cover matching metadata requirements, wildcard
   requirements, arity mismatch, closure/upvalue rejection, local/code budget
   rejection, and invalid requirement inputs
+
+---
+
+## D-0073
+
+- Date: 2026-05-25
+- Status: Accepted
+- Title: Keep public VM entry dispatch zero-argument
+
+### Context
+
+`eshkol_vm_run` and `eshkol_vm_call` reset VM execution state and dispatch an
+ESKB entry, but the public C ABI does not yet include an argument-passing
+surface. After function metadata became public, hosts could see that an entry
+declared parameters, but the call API still attempted to run it with an empty
+stack.
+
+### Decision
+
+Treat the current entry-dispatch ABI as explicitly zero-argument:
+
+- `eshkol_vm_run` rejects a first function whose decoded parameter count is not
+  zero
+- `eshkol_vm_call` rejects named functions whose decoded parameter count is not
+  zero
+
+Hosts that need argumentful hooks must wait for a separate argument-passing API
+instead of relying on implicit stack state.
+
+### Consequences
+
+- no-argument product hooks such as `init`, `tick`, and `render` keep their
+  existing call path
+- parameterized hooks fail before VM execution starts
+- load-time metadata requirements remain the right place to enforce expected
+  hook arity during admission
