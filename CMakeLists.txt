@@ -1068,12 +1068,15 @@ set(ESHKOL_VM_MAX_FRAMES "256" CACHE STRING
     "Bytecode VM call frame capacity")
 set(ESHKOL_VM_MAX_CONSTS "1024" CACHE STRING
     "Bytecode VM constant pool capacity")
+set(ESHKOL_VM_MAX_CODE "100000" CACHE STRING
+    "Bytecode VM decoded instruction capacity")
 
 foreach(_eshkol_vm_limit_name IN ITEMS
     ESHKOL_VM_HEAP_SIZE
     ESHKOL_VM_STACK_SIZE
     ESHKOL_VM_MAX_FRAMES
     ESHKOL_VM_MAX_CONSTS
+    ESHKOL_VM_MAX_CODE
 )
     if(NOT "${${_eshkol_vm_limit_name}}" MATCHES "^[1-9][0-9]*$")
         message(FATAL_ERROR
@@ -1088,6 +1091,7 @@ function(eshkol_apply_vm_limit_definitions target_name)
         ESHKOL_VM_STACK_SIZE=${ESHKOL_VM_STACK_SIZE}
         ESHKOL_VM_MAX_FRAMES=${ESHKOL_VM_MAX_FRAMES}
         ESHKOL_VM_MAX_CONSTS=${ESHKOL_VM_MAX_CONSTS}
+        ESHKOL_VM_MAX_CODE=${ESHKOL_VM_MAX_CODE}
     )
 endfunction()
 
@@ -1117,7 +1121,8 @@ message(STATUS
   "VM limits: heap=${ESHKOL_VM_HEAP_SIZE}, "
   "stack=${ESHKOL_VM_STACK_SIZE}, "
   "frames=${ESHKOL_VM_MAX_FRAMES}, "
-  "consts=${ESHKOL_VM_MAX_CONSTS}"
+  "consts=${ESHKOL_VM_MAX_CONSTS}, "
+  "code=${ESHKOL_VM_MAX_CODE}"
 )
 
 # Image I/O (stb_image — single-header, MIT/public domain)
@@ -2144,6 +2149,7 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm/test_vm_c
     target_include_directories(test_vm_c_api PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/inc
         ${CMAKE_CURRENT_SOURCE_DIR}/lib/backend)
+    eshkol_apply_vm_limit_definitions(test_vm_c_api)
     if(LLVM_LIBRARY_DIRS)
         target_link_directories(test_vm_c_api PRIVATE ${LLVM_LIBRARY_DIRS})
     endif()
