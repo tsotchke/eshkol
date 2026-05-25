@@ -256,6 +256,7 @@ static int eskb_parse_payload(const uint8_t* payload, size_t payload_len, EskbMo
             }
             if (sr.pos != sr.len) return -1;
         } else if (sections[s].id == ESKB_SECTION_META) {
+            if (mod->has_debug) return -1;
             mod->has_debug = 1;
             if (eskb_read_string(&sr, mod->source_file,
                                  sizeof(mod->source_file), NULL) < 0) {

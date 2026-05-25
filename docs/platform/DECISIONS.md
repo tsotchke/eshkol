@@ -2731,3 +2731,35 @@ sections remain skippable only when their size is declared in the section table.
 - reserved or future sections remain possible, but only as explicit section
   table entries
 - the public VM C API tests include a payload trailing-byte regression
+
+---
+
+## D-0079
+
+- Date: 2026-05-25
+- Status: Accepted
+- Title: Reject duplicate known ESKB sections
+
+### Context
+
+ESKB decoding already rejects duplicate CONST and CODE sections because those
+sections allocate the constant table and function/code table. META was still
+accepted repeatedly, with later metadata able to overwrite earlier source-file
+metadata. That made known-section cardinality inconsistent and left room for
+ambiguous debug provenance in admitted bytecode.
+
+Product firmware admission should treat each known section as having one
+authoritative instance. Additional metadata should be represented by a future
+explicit section schema rather than repeated META records.
+
+### Decision
+
+Reject a second META section during ESKB payload decoding, matching the existing
+duplicate CONST and duplicate CODE rejection. Reserved section IDs are still
+skipped according to their declared sizes.
+
+### Consequences
+
+- CONST, CODE, and META each decode from a single authoritative section
+- duplicate META chunks fail before VM profile validation or execution
+- the public VM C API tests include a duplicate-META malformed chunk

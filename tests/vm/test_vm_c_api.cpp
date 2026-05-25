@@ -650,6 +650,64 @@ EskbBuffer make_trailing_payload_chunk(void) {
     return file;
 }
 
+EskbBuffer make_duplicate_meta_section_chunk(void) {
+    EskbBuffer const_buf;
+    EskbBuffer code_buf;
+    EskbBuffer meta_a_buf;
+    EskbBuffer meta_b_buf;
+    EskbBuffer payload;
+    EskbBuffer file;
+    eskb_buf_init(&const_buf);
+    eskb_buf_init(&code_buf);
+    eskb_buf_init(&meta_a_buf);
+    eskb_buf_init(&meta_b_buf);
+    eskb_buf_init(&payload);
+    eskb_buf_init(&file);
+
+    eskb_buf_write_leb128(&const_buf, 1);
+    write_int64_const(&const_buf, 17);
+
+    const Instr main_code[] = {
+        {OP_CONST, 0},
+        {OP_HALT, 0},
+    };
+
+    eskb_buf_write_leb128(&code_buf, 1);
+    write_function(&code_buf, "main", main_code, sizeof(main_code) / sizeof(main_code[0]));
+    eskb_buf_write_string(&meta_a_buf, "first.esk", std::strlen("first.esk"));
+    eskb_buf_write_string(&meta_b_buf, "second.esk", std::strlen("second.esk"));
+
+    eskb_buf_write_leb128(&payload, 4);
+    eskb_buf_write_u8(&payload, ESKB_SECTION_CONST);
+    eskb_buf_write_leb128(&payload, const_buf.len);
+    eskb_buf_write_u8(&payload, ESKB_SECTION_CODE);
+    eskb_buf_write_leb128(&payload, code_buf.len);
+    eskb_buf_write_u8(&payload, ESKB_SECTION_META);
+    eskb_buf_write_leb128(&payload, meta_a_buf.len);
+    eskb_buf_write_u8(&payload, ESKB_SECTION_META);
+    eskb_buf_write_leb128(&payload, meta_b_buf.len);
+    eskb_buf_write(&payload, const_buf.data, const_buf.len);
+    eskb_buf_write(&payload, code_buf.data, code_buf.len);
+    eskb_buf_write(&payload, meta_a_buf.data, meta_a_buf.len);
+    eskb_buf_write(&payload, meta_b_buf.data, meta_b_buf.len);
+
+    EskbHeader hdr;
+    hdr.magic = ESKB_MAGIC;
+    hdr.version = ESKB_VERSION;
+    hdr.flags = ESKB_FLAG_LITTLE_ENDIAN;
+    hdr.checksum = eskb_crc32(payload.data, payload.len);
+
+    eskb_buf_write(&file, &hdr, sizeof(hdr));
+    eskb_buf_write(&file, payload.data, payload.len);
+
+    eskb_buf_free(&const_buf);
+    eskb_buf_free(&code_buf);
+    eskb_buf_free(&meta_a_buf);
+    eskb_buf_free(&meta_b_buf);
+    eskb_buf_free(&payload);
+    return file;
+}
+
 EskbBuffer make_uncalled_desktop_native_helper_chunk(void) {
     EskbBuffer const_buf;
     EskbBuffer code_buf;
@@ -2008,6 +2066,12 @@ void test_bad_inputs(void) {
                                trailing_payload_chunk.len) == nullptr,
           "reject ESKB payload trailing bytes outside sections");
     eskb_buf_free(&trailing_payload_chunk);
+
+    EskbBuffer duplicate_meta_chunk = make_duplicate_meta_section_chunk();
+    CHECK(eshkol_vm_load_chunk(duplicate_meta_chunk.data,
+                               duplicate_meta_chunk.len) == nullptr,
+          "reject duplicate ESKB META section");
+    eskb_buf_free(&duplicate_meta_chunk);
 
     EskbBuffer cross_branch_chunk = make_cross_function_branch_chunk();
     CHECK(eshkol_vm_load_chunk(cross_branch_chunk.data,
