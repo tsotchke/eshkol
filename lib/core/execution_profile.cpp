@@ -12,13 +12,14 @@ namespace eshkol::profile {
 
 namespace {
 
-constexpr std::array<Info, 6> kProfiles = {{
+constexpr std::array<Info, 7> kProfiles = {{
     {ExecutionProfile::HostedNative, "hosted-native", Backend::Native, true, false, false, false, false, nullptr},
     {ExecutionProfile::HostedWasm, "hosted-wasm", Backend::Wasm, true, false, false, false, false, "wasm32-unknown-unknown"},
     {ExecutionProfile::HostedVm, "hosted-vm", Backend::Vm, true, false, true, false, false, nullptr},
     {ExecutionProfile::FreestandingKernelNative, "freestanding-kernel-native", Backend::Native, false, true, true, true, true, nullptr},
     {ExecutionProfile::FreestandingMcuNative, "freestanding-mcu-native", Backend::Native, false, true, true, true, true, nullptr},
     {ExecutionProfile::FreestandingVm, "freestanding-vm", Backend::Vm, false, true, true, false, true, nullptr},
+    {ExecutionProfile::EmbeddedVm, "embedded-vm", Backend::Vm, false, true, true, false, true, nullptr},
 }};
 
 }  // namespace
@@ -182,6 +183,38 @@ Resolution resolve(const Selection& selection) {
         }
         resolved.no_stdlib = true;
         resolved.vm_only = true;
+        resolved.wasm_output = false;
+        resolved.target_triple = nullptr;
+        break;
+
+    case ExecutionProfile::EmbeddedVm:
+        if (!selection.has_eskb_output) {
+            resolved.error = "--profile embedded-vm requires --emit-eskb <path>";
+            break;
+        }
+        if (selection.eval_mode || selection.run_mode) {
+            resolved.error = "--profile embedded-vm does not support JIT eval/run";
+            break;
+        }
+        if (selection.shared_lib) {
+            resolved.error = "--profile embedded-vm cannot be combined with --shared-lib";
+            break;
+        }
+        if (selection.wasm_flag) {
+            resolved.error = "--profile embedded-vm cannot be combined with --wasm";
+            break;
+        }
+        if (selection.has_linked_libs) {
+            resolved.error = "--profile embedded-vm cannot be combined with --lib";
+            break;
+        }
+        if (selection.explicit_target_triple) {
+            resolved.error = "--profile embedded-vm cannot be combined with --target";
+            break;
+        }
+        resolved.no_stdlib = true;
+        resolved.vm_only = true;
+        resolved.embedded_vm = true;
         resolved.wasm_output = false;
         resolved.target_triple = nullptr;
         break;

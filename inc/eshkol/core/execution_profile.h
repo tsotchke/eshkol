@@ -25,7 +25,8 @@ enum class ExecutionProfile {
     HostedVm,
     FreestandingKernelNative,
     FreestandingMcuNative,
-    FreestandingVm
+    FreestandingVm,
+    EmbeddedVm
 };
 
 struct Info {
@@ -60,6 +61,7 @@ struct Resolution {
     bool no_stdlib = false;
     bool wasm_output = false;
     bool vm_only = false;
+    bool embedded_vm = false;
     const char* target_triple = nullptr;
     std::string error;
 };

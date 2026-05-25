@@ -101,6 +101,7 @@ Introduce the following first-class profiles:
 - `freestanding-kernel-native`
 - `freestanding-mcu-native`
 - `freestanding-vm`
+- `embedded-vm`
 
 The driver surface is `eshkol-run --profile NAME` with optional
 `--target TRIPLE`. Freestanding native profiles require an explicit target

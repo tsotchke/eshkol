@@ -148,6 +148,13 @@ Examples:
 - hook-driven VM execution
 - host-native-only native-call policy
 
+### embedded-vm
+
+- ESKB
+- host-native-only native-call policy
+- load-time embedded profile gates for string constants, desktop native fids,
+  and required entry points
+
 ## Feature Availability Rules
 
 Hosted-only subsystems remain unavailable in freestanding profiles unless explicitly supported:
