@@ -1327,6 +1327,21 @@ int eshkol_vm_get_profile_limits(EshkolVmProfileLimits* out) {
     return 0;
 }
 
+int eshkol_vm_set_native_policy(EshkolVmHandle* h, int policy) {
+    if (!h || !h->vm) return -1;
+    if (policy != ESHKOL_VM_NATIVE_POLICY_DESKTOP &&
+        policy != ESHKOL_VM_NATIVE_POLICY_HOST_ONLY) {
+        return -1;
+    }
+    h->vm->native_policy = policy;
+    return 0;
+}
+
+int eshkol_vm_get_native_policy(EshkolVmHandle* h) {
+    if (!h || !h->vm) return -1;
+    return h->vm->native_policy;
+}
+
 static int eshkol_vm_validate_stack_operand(int32_t operand) {
     return operand >= 0 && operand < ESHKOL_VM_STACK_SIZE;
 }

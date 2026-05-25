@@ -687,6 +687,57 @@ void test_static_host_native_table(void) {
           "empty static host-native table remains empty");
 }
 
+void test_host_only_native_policy(void) {
+    CHECK(eshkol_vm_set_native_policy(nullptr, ESHKOL_VM_NATIVE_POLICY_HOST_ONLY) == -1,
+          "native policy setter rejects null VM");
+    CHECK(eshkol_vm_get_native_policy(nullptr) == -1,
+          "native policy getter rejects null VM");
+
+    eshkol_vm_clear_host_natives();
+    const EshkolVmHostNative table[] = {
+        {"test.host-only-add", host_add_with_offset},
+    };
+    CHECK(eshkol_vm_install_host_natives(table, 1) == 0,
+          "install host-only native table");
+
+    EskbBuffer host_chunk = make_host_native_int64_chunk(ESHKOL_VM_HOST_NATIVE_BASE);
+    EshkolVmHandle* host_vm = eshkol_vm_load_chunk(host_chunk.data, host_chunk.len);
+    CHECK(host_vm != nullptr, "load host-only host-native chunk");
+    if (host_vm) {
+        CHECK(eshkol_vm_get_native_policy(host_vm) == ESHKOL_VM_NATIVE_POLICY_DESKTOP,
+              "loaded VM defaults to desktop native policy");
+        CHECK(eshkol_vm_set_native_policy(host_vm, 9999) == -1,
+              "native policy setter rejects invalid policy");
+        CHECK(eshkol_vm_set_native_policy(host_vm, ESHKOL_VM_NATIVE_POLICY_HOST_ONLY) == 0,
+              "switch VM to host-native-only policy");
+        CHECK(eshkol_vm_get_native_policy(host_vm) == ESHKOL_VM_NATIVE_POLICY_HOST_ONLY,
+              "native policy getter reports host-native-only policy");
+        CHECK(eshkol_vm_run(host_vm) == 0,
+              "host-native-only policy permits fixed host-native slot");
+        int64_t top = 0;
+        CHECK(eshkol_vm_top_int64(host_vm, &top) == 0,
+              "read host-native-only result");
+        CHECK(top == 42, "host-native-only result == 42");
+        eshkol_vm_destroy(host_vm);
+    }
+    eskb_buf_free(&host_chunk);
+
+    EskbBuffer desktop_chunk =
+        make_number_to_string_radix_chunk(10, 2, "1010");
+    EshkolVmHandle* desktop_vm =
+        eshkol_vm_load_chunk(desktop_chunk.data, desktop_chunk.len);
+    CHECK(desktop_vm != nullptr, "load desktop-native policy regression chunk");
+    if (desktop_vm) {
+        CHECK(eshkol_vm_set_native_policy(desktop_vm, ESHKOL_VM_NATIVE_POLICY_HOST_ONLY) == 0,
+              "switch desktop-native chunk to host-native-only policy");
+        CHECK(eshkol_vm_run(desktop_vm) == -1,
+              "host-native-only policy rejects desktop native fid");
+        eshkol_vm_destroy(desktop_vm);
+    }
+    eskb_buf_free(&desktop_chunk);
+    eshkol_vm_clear_host_natives();
+}
+
 void* no_op_pool_task(void* arg) {
     return arg;
 }
@@ -1066,6 +1117,7 @@ int main(void) {
     test_profile_limits();
     test_number_to_string_radix();
     test_static_host_native_table();
+    test_host_only_native_policy();
     test_host_native_registry();
     test_thread_pool_bounded_external_queue();
     test_file_mmap_native();

@@ -123,8 +123,9 @@ Program phase:
 - the C++ `Arena` RAII wrapper now lives outside runtime source families as a C++ adapter around the C arena ABI
 - the `runtime-split-pending` source set has been retired; remaining runtime implementation files are classified as `runtime-core` or `runtime-hosted`
 - the bytecode VM unity hub now builds through `eshkol-vm-unity-obj`, with explicit `vm-core`, `vm-hosted`, VM toolchain, and VM test component families guarded by a boundary test
-- bytecode VM heap, stack, frame, and constant-pool capacities are now CMake cache profile knobs, with shared defaults in `inc/eshkol/backend/vm_limits.h`
+- bytecode VM heap, stack, frame, constant-pool, and instruction capacities are now CMake cache profile knobs, with shared defaults in `inc/eshkol/backend/vm_limits.h`
 - embedders can install a deterministic VM host-native table through the public C ABI, giving firmware/product profiles stable native-call slots before the desktop native table is physically split
+- VM handles can switch to host-native-only native-call policy, so embedded/product runtimes can reject the broad desktop native table while still allowing fixed host-call slots
 - loaded ESKB chunks now retain their function table, and embedders can query
   and run named VM entry points through the public C ABI
 - hosted Windows x86_64 validation now has a remote SSH harness for Jack's

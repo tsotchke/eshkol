@@ -216,6 +216,12 @@ native-call table can be partitioned by capability.
 whose slots map directly to `ESHKOL_VM_HOST_NATIVE_BASE + index`; the existing
 dynamic registration path remains available for desktop tests and tools.
 
+VM handles also expose a native-call policy switch. The default policy preserves
+the desktop native table; `ESHKOL_VM_NATIVE_POLICY_HOST_ONLY` rejects desktop
+native fids at dispatch time and permits only fixed host-native slots. This is
+the current product-runtime guardrail until `vm_native.c` is physically split by
+capability.
+
 `eskb_reader.c` now preserves the ESKB function table instead of discarding
 non-zero function records. The public VM ABI can query and execute a named
 function entry, which gives embedded/product runtimes a stable path for

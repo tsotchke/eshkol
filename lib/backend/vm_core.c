@@ -1,5 +1,9 @@
 #include "eshkol/backend/vm_limits.h"
 
+#ifndef ESHKOL_VM_NATIVE_POLICY_DESKTOP
+#define ESHKOL_VM_NATIVE_POLICY_DESKTOP 0
+#endif
+
 /*******************************************************************************
  * Instruction Set
  ******************************************************************************/
@@ -280,6 +284,7 @@ typedef struct VM {
     /* Status */
     int halted;
     int error;
+    int native_policy;
 
     /* Reverse-mode AD tracing context.
      * When active_tape != NULL, arithmetic operations (+,-,*,/,sin,cos,...)
@@ -467,6 +472,7 @@ static void vm_set_command_line(int argc, char** argv) { g_vm_argc = argc; g_vm_
 static void vm_init(VM* vm) {
     memset(vm, 0, sizeof(VM));
     heap_init(&vm->heap);
+    vm->native_policy = ESHKOL_VM_NATIVE_POLICY_DESKTOP;
     vm->active_tape = NULL;
     memset(vm->ad_node_map, -1, sizeof(vm->ad_node_map));
 }

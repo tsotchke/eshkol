@@ -63,6 +63,15 @@ int eshkol_vm_top_int64(EshkolVmHandle* h, int64_t* out);
 
 #define ESHKOL_VM_HOST_NATIVE_BASE 100000
 
+#define ESHKOL_VM_NATIVE_POLICY_DESKTOP 0
+#define ESHKOL_VM_NATIVE_POLICY_HOST_ONLY 1
+
+/* Control which native-call surface OP_NATIVE_CALL can reach for this VM.
+ * DESKTOP preserves the existing broad native table. HOST_ONLY rejects all
+ * desktop native fids and permits only ESHKOL_VM_HOST_NATIVE_BASE + slot. */
+int eshkol_vm_set_native_policy(EshkolVmHandle* h, int policy);
+int eshkol_vm_get_native_policy(EshkolVmHandle* h);
+
 /* Host-callback registry. Function pointer signature receives the opaque VM;
  * the callback reads its arguments from the VM stack and pushes results back
  * through the eshkol_vm_host_* helpers below.

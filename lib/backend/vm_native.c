@@ -3764,6 +3764,14 @@ static double vm_qrng_double(void) {
 #define ESHKOL_VM_HOST_NATIVE_BASE 100000
 #endif
 
+#ifndef ESHKOL_VM_NATIVE_POLICY_DESKTOP
+#define ESHKOL_VM_NATIVE_POLICY_DESKTOP 0
+#endif
+
+#ifndef ESHKOL_VM_NATIVE_POLICY_HOST_ONLY
+#define ESHKOL_VM_NATIVE_POLICY_HOST_ONLY 1
+#endif
+
 #define VM_HOST_NATIVE_MAX 64
 #define VM_HOST_NATIVE_NAME_MAX 128
 
@@ -3906,6 +3914,11 @@ static void vm_dispatch_native(VM* vm, int fid) {
         } else {
             vm->error = 1;
         }
+        return;
+    }
+    if (vm->native_policy == ESHKOL_VM_NATIVE_POLICY_HOST_ONLY) {
+        fprintf(stderr, "VM native policy rejected desktop native fid %d\n", fid);
+        vm->error = 1;
         return;
     }
     switch (fid) {
