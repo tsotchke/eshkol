@@ -143,6 +143,7 @@ extern "C" int unsetenv(const char* name) {
     return eshkol_unsetenv(name);
 }
 
+#ifndef __MINGW32__
 extern "C" int clock_gettime(int clock_id, void* ts_raw) {
     (void)clock_id;
     if (ts_raw == nullptr) {
@@ -206,6 +207,7 @@ extern "C" int gettimeofday(void* tv_raw, void* tz_raw) {
     tv->tv_usec = static_cast<std::int64_t>((unix_100ns % 10000000ULL) / 10ULL);
     return 0;
 }
+#endif
 #endif
 
 extern "C" void eshkol_srand48(std::int64_t seed) {
