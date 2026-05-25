@@ -2560,3 +2560,41 @@ instead of relying on implicit stack state.
 - parameterized hooks fail before VM execution starts
 - load-time metadata requirements remain the right place to enforce expected
   hook arity during admission
+
+---
+
+## D-0074
+
+- Date: 2026-05-25
+- Status: Accepted
+- Title: Gate zero-argument VM hooks during ESKB emission
+
+### Context
+
+The public VM dispatch ABI is now explicitly zero-argument, and the loader can
+enforce function metadata requirements. But the profile CLI still only exposed
+name-based `--require-vm-entry` admission, so an embedded build could require a
+hook named `tick`, emit `(define (tick dt) ...)`, and only discover the arity
+mismatch later when `eshkol_vm_call` rejected the entry.
+
+Product builds need the normal bytecode-emission command to fail before a
+firmware package contains an entry that the current public dispatch ABI cannot
+call.
+
+### Decision
+
+Add `--require-vm-entry-zero-arg NAME` for VM profiles. The option can be
+repeated and lowers each name to an `EshkolVmFunctionRequirement` with
+`n_params = 0` during emitted-bytecode admission. Rejected outputs are removed,
+matching the existing required-entry admission behavior.
+
+Name-only `--require-vm-entry` remains available for tools that only need
+presence checks.
+
+### Consequences
+
+- embedded VM builds can require callable no-argument hooks such as `init` and
+  `tick`
+- parameterized hooks fail during ESKB emission instead of at product runtime
+- the profile CLI test covers accepted zero-argument hooks and rejected
+  parameterized hooks

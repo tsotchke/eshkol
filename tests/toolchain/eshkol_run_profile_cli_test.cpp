@@ -305,6 +305,20 @@ int main(int argc, char** argv) {
         return fail("embedded VM required-entry ESKB file was not created");
     }
 
+    const fs::path zero_arg_required_path = temp_root / "embedded-zero-arg-required.eskb";
+    ProcessResult embedded_zero_arg_required = run_process_capture(
+        {run_binary.string(), "--profile", "embedded-vm",
+         "--emit-eskb", zero_arg_required_path.string(),
+         "--require-vm-entry-zero-arg", "entry", source_path.string()},
+        temp_root);
+    if (int rc = expect_success("embedded VM zero-arg required entry admission",
+                                embedded_zero_arg_required)) {
+        return rc;
+    }
+    if (!fs::exists(zero_arg_required_path)) {
+        return fail("embedded VM zero-arg required-entry ESKB file was not created");
+    }
+
     const fs::path missing_required_path = temp_root / "embedded-missing-required.eskb";
     ProcessResult embedded_missing_required = run_process_capture(
         {run_binary.string(), "--profile", "embedded-vm",
@@ -318,6 +332,27 @@ int main(int argc, char** argv) {
     }
     if (fs::exists(missing_required_path)) {
         return fail("embedded VM kept ESKB after missing required entry");
+    }
+
+    const fs::path argful_entry_source = temp_root / "argful-entry.esk";
+    {
+        std::ofstream source(argful_entry_source);
+        source << "(define (tick dt) dt)\n";
+    }
+
+    const fs::path argful_required_path = temp_root / "embedded-argful-required.eskb";
+    ProcessResult embedded_argful_required = run_process_capture(
+        {run_binary.string(), "--profile", "embedded-vm",
+         "--emit-eskb", argful_required_path.string(),
+         "--require-vm-entry-zero-arg", "tick", argful_entry_source.string()},
+        temp_root);
+    if (int rc = expect_failure_containing("embedded VM rejects argumentful required entry",
+                                           embedded_argful_required,
+                                           "ESKB admission failed for profile embedded-vm")) {
+        return rc;
+    }
+    if (fs::exists(argful_required_path)) {
+        return fail("embedded VM kept ESKB after argumentful required entry");
     }
 
     const fs::path desktop_native_source = temp_root / "desktop-native.esk";
