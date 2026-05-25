@@ -77,6 +77,12 @@ int main(int argc, char** argv) {
                          "Windows suite cleanup removes only the resolved regular file") &&
          expect_contains(script, "function Start-RegularFileProcess",
                          "Windows suite declares guarded process launcher") &&
+         expect_contains(script, "function Join-WindowsProcessArguments",
+                         "Windows suite declares Windows PowerShell argument joiner") &&
+         expect_contains(script, "$psi.GetType().GetProperty(\"ArgumentList\")",
+                         "Windows suite detects ProcessStartInfo.ArgumentList before use") &&
+         expect_contains(script, "$psi.Arguments = Join-WindowsProcessArguments -Arguments $Arguments",
+                         "Windows suite falls back to quoted Arguments on Windows PowerShell") &&
          expect_contains(script, "Refusing to start missing or non-regular executable",
                          "Windows suite guarded launcher rejects non-regular executables") &&
          expect_contains(script, "Test-RegularFile -Path (Join-Path $binDir \"eshkol-run.exe\")",
