@@ -253,6 +253,8 @@ Good delegation candidate for a VM-focused contributor with a fixed host-hook co
   loading and covered by the VM C API and profile CLI tests
 - strict consumption of known ESKB sections is covered by a VM C API malformed
   CODE-section regression
+- strict consumption of the full ESKB payload is covered by a VM C API payload
+  trailing-byte regression
 
 ## Workstream 7: BSP Contract and Reference Targets
 

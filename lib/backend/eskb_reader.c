@@ -130,6 +130,7 @@ static int eskb_parse_payload(const uint8_t* payload, size_t payload_len, EskbMo
         section_offsets[i] = offset;
         offset += sections[i].size;
     }
+    if (offset != payload_len) return -1;
 
     for (uint64_t s = 0; s < n_sections; s++) {
         EskbReader sr;
