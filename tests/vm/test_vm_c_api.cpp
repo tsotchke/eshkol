@@ -27,6 +27,7 @@ enum : uint8_t {
     OP_CONST = 1,
     OP_FALSE = 4,
     OP_ADD = 7,
+    OP_JUMP = 28,
     OP_JUMP_IF_FALSE = 29,
     OP_HALT = 36,
     OP_NATIVE_CALL = 37,
@@ -518,6 +519,62 @@ EskbBuffer make_uncalled_desktop_native_helper_chunk(void) {
     eskb_buf_write_leb128(&code_buf, 2);
     write_function(&code_buf, "main", main_code, sizeof(main_code) / sizeof(main_code[0]));
     write_function(&code_buf, "helper", helper_code, sizeof(helper_code) / sizeof(helper_code[0]));
+
+    eskb_buf_write_leb128(&payload, 2);
+    eskb_buf_write_u8(&payload, ESKB_SECTION_CONST);
+    eskb_buf_write_leb128(&payload, const_buf.len);
+    eskb_buf_write_u8(&payload, ESKB_SECTION_CODE);
+    eskb_buf_write_leb128(&payload, code_buf.len);
+    eskb_buf_write(&payload, const_buf.data, const_buf.len);
+    eskb_buf_write(&payload, code_buf.data, code_buf.len);
+
+    EskbHeader hdr;
+    hdr.magic = ESKB_MAGIC;
+    hdr.version = ESKB_VERSION;
+    hdr.flags = ESKB_FLAG_LITTLE_ENDIAN;
+    hdr.checksum = eskb_crc32(payload.data, payload.len);
+
+    eskb_buf_write(&file, &hdr, sizeof(hdr));
+    eskb_buf_write(&file, payload.data, payload.len);
+
+    eskb_buf_free(&const_buf);
+    eskb_buf_free(&code_buf);
+    eskb_buf_free(&payload);
+    return file;
+}
+
+EskbBuffer make_cross_function_branch_chunk(void) {
+    EskbBuffer const_buf;
+    EskbBuffer code_buf;
+    EskbBuffer payload;
+    EskbBuffer file;
+    eskb_buf_init(&const_buf);
+    eskb_buf_init(&code_buf);
+    eskb_buf_init(&payload);
+    eskb_buf_init(&file);
+
+    eskb_buf_write_leb128(&const_buf, 1);
+    write_int64_const(&const_buf, 1);
+
+    const Instr main_code[] = {
+        {OP_CONST, 0},
+        {OP_HALT, 0},
+    };
+    const Instr jumping_helper_code[] = {
+        {OP_JUMP, 2},
+        {OP_HALT, 0},
+    };
+    const Instr target_helper_code[] = {
+        {OP_CONST, 0},
+        {OP_HALT, 0},
+    };
+
+    eskb_buf_write_leb128(&code_buf, 3);
+    write_function(&code_buf, "main", main_code, sizeof(main_code) / sizeof(main_code[0]));
+    write_function(&code_buf, "jumping-helper", jumping_helper_code,
+                   sizeof(jumping_helper_code) / sizeof(jumping_helper_code[0]));
+    write_function(&code_buf, "target-helper", target_helper_code,
+                   sizeof(target_helper_code) / sizeof(target_helper_code[0]));
 
     eskb_buf_write_leb128(&payload, 2);
     eskb_buf_write_u8(&payload, ESKB_SECTION_CONST);
@@ -1574,6 +1631,12 @@ void test_bad_inputs(void) {
     CHECK(eshkol_vm_load_chunk(chunk.data, chunk.len) == nullptr,
           "reject checksum-corrupted chunk");
     eskb_buf_free(&chunk);
+
+    EskbBuffer cross_branch_chunk = make_cross_function_branch_chunk();
+    CHECK(eshkol_vm_load_chunk(cross_branch_chunk.data,
+                               cross_branch_chunk.len) == nullptr,
+          "reject function-local branch target outside function body");
+    eskb_buf_free(&cross_branch_chunk);
 }
 
 }  // namespace
