@@ -2156,3 +2156,50 @@ instead of producing an integer placeholder.
 - the VM C API test now exercises a string constant through `OP_STR_LEN`
 - embedded product profiles still need compiler/profile policy for whether
   dynamic script strings are allowed or replaced with content-pack IDs
+
+---
+
+## D-0064
+
+- Date: 2026-05-25
+- Status: Accepted
+- Title: Add load-time VM policy options for embedded profiles
+
+### Context
+
+The public VM loader now materializes ESKB string constants correctly, and VM
+handles can be switched to host-native-only dispatch after loading. That is
+right for desktop compatibility, but embedded/product hosts need policy to be
+visible before bytecode runs.
+
+Tamatsotchke-style firmware should be able to load scripts directly into a
+fixed host-call surface and reject dynamic script strings so user-facing text
+can come from a read-only content pack. Requiring callers to load first and then
+apply those policies leaves a window where the runtime state does not describe
+the intended product profile.
+
+### Decision
+
+Add `EshkolVmLoadOptions` to the public VM C ABI with:
+
+- `native_policy`
+- `reject_string_constants`
+
+Add `eshkol_vm_default_load_options` and `eshkol_vm_load_chunk_with_options`.
+The existing `eshkol_vm_load_chunk` remains the desktop-compatible default:
+desktop native policy and ESKB string constants enabled.
+
+`eshkol_vm_load_chunk_with_options` validates the requested native policy before
+decoding completes, applies it to the loaded VM handle, and can reject
+`ESKB_CONST_STRING` constants during constant materialization.
+
+### Consequences
+
+- embedded/product hosts can load bytecode directly into host-native-only mode
+- product profiles can reject dynamic ESKB strings at load time while desktop
+  embedders continue to receive VM string objects
+- the public VM C API tests now cover default option initialization, invalid
+  native-policy rejection, host-only load policy, string materialization, and
+  embedded string rejection
+- compiler-side embedded target checks are still needed so unsupported strings
+  and desktop native calls fail before bytecode is deployed

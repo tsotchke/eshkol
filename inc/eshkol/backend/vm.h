@@ -32,13 +32,28 @@ typedef struct EshkolVmProfileLimits {
     int max_instructions;
 } EshkolVmProfileLimits;
 
+typedef struct EshkolVmLoadOptions {
+    int native_policy;
+    int reject_string_constants;
+} EshkolVmLoadOptions;
+
 /* Return the VM profile limits compiled into this runtime. */
 int eshkol_vm_get_profile_limits(EshkolVmProfileLimits* out);
+
+/* Fill load options with the desktop-compatible defaults used by
+ * eshkol_vm_load_chunk: desktop native policy and string constants allowed. */
+int eshkol_vm_default_load_options(EshkolVmLoadOptions* out);
 
 /* Decode an ESKB chunk from an in-memory buffer and create a runnable VM.
  * Returns NULL on bad magic, version mismatch, CRC mismatch, allocation
  * failure, profile-limit violation, or NULL/zero-size input. */
 EshkolVmHandle* eshkol_vm_load_chunk(const void* buffer, size_t size);
+
+/* Decode an ESKB chunk with explicit load policy. Passing NULL options is
+ * equivalent to eshkol_vm_load_chunk. `reject_string_constants` lets embedded
+ * profiles refuse dynamic ESKB strings and route text through content packs. */
+EshkolVmHandle* eshkol_vm_load_chunk_with_options(const void* buffer, size_t size,
+                                                 const EshkolVmLoadOptions* options);
 
 /* Run the loaded bytecode to completion. Returns 0 on success, -1 if the
  * VM raised an error or the handle is invalid. */

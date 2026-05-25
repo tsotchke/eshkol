@@ -1327,6 +1327,27 @@ int eshkol_vm_get_profile_limits(EshkolVmProfileLimits* out) {
     return 0;
 }
 
+int eshkol_vm_default_load_options(EshkolVmLoadOptions* out) {
+    if (!out) return -1;
+    out->native_policy = ESHKOL_VM_NATIVE_POLICY_DESKTOP;
+    out->reject_string_constants = 0;
+    return 0;
+}
+
+static int eshkol_vm_normalize_load_options(const EshkolVmLoadOptions* options,
+                                            EshkolVmLoadOptions* out) {
+    if (eshkol_vm_default_load_options(out) != 0) return -1;
+    if (options) {
+        *out = *options;
+    }
+    if (out->native_policy != ESHKOL_VM_NATIVE_POLICY_DESKTOP &&
+        out->native_policy != ESHKOL_VM_NATIVE_POLICY_HOST_ONLY) {
+        return -1;
+    }
+    out->reject_string_constants = out->reject_string_constants ? 1 : 0;
+    return 0;
+}
+
 int eshkol_vm_set_native_policy(EshkolVmHandle* h, int policy) {
     if (!h || !h->vm) return -1;
     if (policy != ESHKOL_VM_NATIVE_POLICY_DESKTOP &&
@@ -1413,7 +1434,8 @@ static int eshkol_vm_validate_module_profile(const EskbModule* mod) {
     return 0;
 }
 
-static int eshkol_vm_materialize_eskb_constants(VM* vm, const EskbModule* mod) {
+static int eshkol_vm_materialize_eskb_constants(VM* vm, const EskbModule* mod,
+                                                int reject_string_constants) {
     if (!vm || !mod) return -1;
     if (mod->n_constants < 0 || mod->n_constants > MAX_CONSTS) return -1;
 
@@ -1432,6 +1454,7 @@ static int eshkol_vm_materialize_eskb_constants(VM* vm, const EskbModule* mod) {
             vm->constants[i] = BOOL_VAL((int)mod->const_ints[i]);
             break;
         case ESKB_CONST_STRING:
+            if (reject_string_constants) return -1;
             if (!mod->const_strings || !mod->const_strings[i]) return -1;
             vm->constants[i] = vm_string_value(vm, mod->const_strings[i],
                                                mod->const_ints[i]);
@@ -1447,6 +1470,13 @@ static int eshkol_vm_materialize_eskb_constants(VM* vm, const EskbModule* mod) {
 }
 
 EshkolVmHandle* eshkol_vm_load_chunk(const void* buffer, size_t size) {
+    return eshkol_vm_load_chunk_with_options(buffer, size, NULL);
+}
+
+EshkolVmHandle* eshkol_vm_load_chunk_with_options(const void* buffer, size_t size,
+                                                 const EshkolVmLoadOptions* options) {
+    EshkolVmLoadOptions effective_options;
+    if (eshkol_vm_normalize_load_options(options, &effective_options) != 0) return NULL;
     if (!buffer || size == 0) return NULL;
     EshkolVmHandle* h = (EshkolVmHandle*)calloc(1, sizeof(EshkolVmHandle));
     if (!h) return NULL;
@@ -1461,6 +1491,7 @@ EshkolVmHandle* eshkol_vm_load_chunk(const void* buffer, size_t size) {
     }
     h->vm = vm_create();
     if (!h->vm) { eskb_module_free(&h->mod); free(h); return NULL; }
+    h->vm->native_policy = effective_options.native_policy;
     free(h->vm->code);
     h->vm->code = (Instr*)calloc(h->mod.code_len ? h->mod.code_len : 1, sizeof(Instr));
     if (!h->vm->code) { vm_free(h->vm); eskb_module_free(&h->mod); free(h); return NULL; }
@@ -1468,7 +1499,8 @@ EshkolVmHandle* eshkol_vm_load_chunk(const void* buffer, size_t size) {
     for (int i = 0; i < h->mod.code_len; i++) {
         h->vm->code[i] = (Instr){h->mod.opcodes[i], h->mod.operands[i]};
     }
-    if (eshkol_vm_materialize_eskb_constants(h->vm, &h->mod) != 0) {
+    if (eshkol_vm_materialize_eskb_constants(
+            h->vm, &h->mod, effective_options.reject_string_constants) != 0) {
         vm_free(h->vm);
         eskb_module_free(&h->mod);
         free(h);
@@ -1582,7 +1614,7 @@ int main(int argc, char** argv) {
                     vm->code_len = mod.code_len;
                     for (int i = 0; i < mod.code_len; i++)
                         vm->code[i] = (Instr){mod.opcodes[i], mod.operands[i]};
-                    if (eshkol_vm_materialize_eskb_constants(vm, &mod) != 0) {
+                    if (eshkol_vm_materialize_eskb_constants(vm, &mod, 0) != 0) {
                         fprintf(stderr, "ERROR: invalid ESKB constants in %s\n", input);
                         vm_free(vm);
                         eskb_module_free(&mod);
