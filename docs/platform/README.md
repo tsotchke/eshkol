@@ -146,8 +146,9 @@ Program phase:
 - VM function metadata is available through the public ABI for hook arity,
   closure, and bytecode-budget inspection
 - hosted Windows x86_64 validation now has a remote SSH harness for Jack's
-  Tailscale Windows PC: `scripts/remote_windows_verify.sh` builds the native
-  Visual Studio 2022 + ClangCL tree and runs the bounded `windows-lite` suite
+  Tailscale Windows PC: `scripts/remote_windows_verify.sh` can build the native
+  Visual Studio 2022 + ClangCL tree, or use `--suite-only` against Jack's cached
+  MSYS/UCRT build for bounded `windows-lite` validation without hosted runners
 - shared allocation and weak-reference helpers now live in a dedicated runtime-core translation unit instead of `arena_memory.cpp`
 - freestanding-safe tensor index helpers now live in a dedicated runtime-core translation unit instead of the hosted-heavy runtime state implementation
 - freestanding-safe tensor fill helpers now live in a dedicated runtime-core translation unit instead of the hosted-heavy runtime state implementation

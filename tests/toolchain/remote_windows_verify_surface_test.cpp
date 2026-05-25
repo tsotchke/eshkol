@@ -65,6 +65,8 @@ int main(int argc, char** argv) {
                          "remote Windows verifier defaults to x64") &&
          expect_contains(script, "LLVM_VERSION=\"${LLVM_VERSION:-21}\"",
                          "remote Windows verifier pins LLVM 21 by default") &&
+         expect_contains(script, "TEST_MODE=\"${TEST_MODE:-windows-lite}\"",
+                         "remote Windows verifier defaults to the bounded Windows suite") &&
          expect_contains(script, "require_option_value()",
                          "remote Windows verifier validates valued options") &&
          expect_contains(script, "missing value for option: $option",
@@ -81,6 +83,12 @@ int main(int argc, char** argv) {
                          "remote Windows verifier fetches origin/master") &&
          expect_contains(script, "git @(\"merge\", \"--ff-only\", $FetchRefArg)",
                          "remote Windows verifier fast-forwards without merge commits") &&
+         expect_contains(script, "emit_ps_bool RunConfigureBuildArg \"$RUN_CONFIGURE_BUILD\"",
+                         "remote Windows verifier emits the configure/build switch") &&
+         expect_contains(script, "emit_ps_arg TestModeArg \"$TEST_MODE\"",
+                         "remote Windows verifier emits the selected PowerShell suite mode") &&
+         expect_contains(script, "if ($RunConfigureBuildArg)",
+                         "remote Windows verifier can skip configure/build for cached local Windows builds") &&
          expect_contains(script, "\"-DESHKOL_BUILD_TESTS=ON\"",
                          "remote Windows verifier enables CTest targets") &&
          expect_contains(script, "\"-DESHKOL_REQUIRED_LLVM_MAJOR=$LLVMVersionArg\"",
@@ -94,10 +102,16 @@ int main(int argc, char** argv) {
                          "remote Windows verifier runs the Windows CTest surface guard") &&
          expect_contains(script, "Join-Path $RepoDir \"scripts\\run_all_tests.ps1\"",
                          "remote Windows verifier invokes the existing PowerShell suite") &&
-         expect_contains(script, "\"-Mode\", \"windows-lite\"",
-                         "remote Windows verifier runs the bounded Windows smoke suite") &&
+         expect_contains(script, "\"-Mode\", $TestModeArg",
+                         "remote Windows verifier passes the selected PowerShell suite mode") &&
          expect_contains(script, "git @(\"diff\", \"--check\")",
                          "remote Windows verifier checks whitespace after validation") &&
+         expect_contains(script, "--suite-only",
+                         "remote Windows verifier exposes a cached-build suite-only mode") &&
+         expect_contains(script, "RUN_CONFIGURE_BUILD=0",
+                         "remote Windows verifier suite-only mode skips configure/build") &&
+         expect_contains(script, "RUN_CTEST=0",
+                         "remote Windows verifier suite-only mode skips CTest") &&
          expect_contains(script, "mktemp \"${TMPDIR:-/tmp}/eshkol-remote-windows.XXXXXX\"",
                          "remote Windows verifier writes a local temporary PowerShell script") &&
          expect_contains(script, "run_with_retries ssh -n \"$HOST\" powershell.exe -NoLogo -NoProfile -Command '$env:TEMP'",
