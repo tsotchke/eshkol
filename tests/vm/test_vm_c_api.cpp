@@ -21,12 +21,14 @@ extern "C" {
 namespace {
 
 enum : uint8_t {
+    OP_NOP = 0,
     OP_CONST = 1,
     OP_FALSE = 4,
     OP_ADD = 7,
     OP_JUMP_IF_FALSE = 29,
     OP_HALT = 36,
     OP_NATIVE_CALL = 37,
+    OP_INVALID = 255,
 };
 
 struct Instr {
@@ -60,6 +62,18 @@ void write_function(EskbBuffer* b, const char* name, const Instr* code, size_t n
     eskb_buf_write_string(b, name, std::strlen(name));
     eskb_buf_write_u8(b, 0);
     eskb_buf_write_leb128(b, 0);
+    eskb_buf_write_u8(b, 0);
+    eskb_buf_write_leb128(b, n_code);
+    for (size_t i = 0; i < n_code; ++i) {
+        write_instr(b, code[i]);
+    }
+}
+
+void write_function_with_locals(EskbBuffer* b, const char* name, uint64_t n_locals,
+                                const Instr* code, size_t n_code) {
+    eskb_buf_write_string(b, name, std::strlen(name));
+    eskb_buf_write_u8(b, 0);
+    eskb_buf_write_leb128(b, n_locals);
     eskb_buf_write_u8(b, 0);
     eskb_buf_write_leb128(b, n_code);
     for (size_t i = 0; i < n_code; ++i) {
@@ -445,6 +459,49 @@ EskbBuffer make_test_chunk(void) {
     write_function(&code_buf, "main", main_code, sizeof(main_code) / sizeof(main_code[0]));
     write_function(&code_buf, "helper1", helper_code, sizeof(helper_code) / sizeof(helper_code[0]));
     write_function(&code_buf, "helper2", helper_branch_code, sizeof(helper_branch_code) / sizeof(helper_branch_code[0]));
+
+    eskb_buf_write_leb128(&payload, 2);
+    eskb_buf_write_u8(&payload, ESKB_SECTION_CONST);
+    eskb_buf_write_leb128(&payload, const_buf.len);
+    eskb_buf_write_u8(&payload, ESKB_SECTION_CODE);
+    eskb_buf_write_leb128(&payload, code_buf.len);
+    eskb_buf_write(&payload, const_buf.data, const_buf.len);
+    eskb_buf_write(&payload, code_buf.data, code_buf.len);
+
+    EskbHeader hdr;
+    hdr.magic = ESKB_MAGIC;
+    hdr.version = ESKB_VERSION;
+    hdr.flags = ESKB_FLAG_LITTLE_ENDIAN;
+    hdr.checksum = eskb_crc32(payload.data, payload.len);
+
+    eskb_buf_write(&file, &hdr, sizeof(hdr));
+    eskb_buf_write(&file, payload.data, payload.len);
+
+    eskb_buf_free(&const_buf);
+    eskb_buf_free(&code_buf);
+    eskb_buf_free(&payload);
+    return file;
+}
+
+EskbBuffer make_profile_validation_chunk(size_t n_constants,
+                                         uint64_t n_locals,
+                                         const std::vector<Instr>& code) {
+    EskbBuffer const_buf;
+    EskbBuffer code_buf;
+    EskbBuffer payload;
+    EskbBuffer file;
+    eskb_buf_init(&const_buf);
+    eskb_buf_init(&code_buf);
+    eskb_buf_init(&payload);
+    eskb_buf_init(&file);
+
+    eskb_buf_write_leb128(&const_buf, n_constants);
+    for (size_t i = 0; i < n_constants; ++i) {
+        write_int64_const(&const_buf, static_cast<int64_t>(i));
+    }
+
+    eskb_buf_write_leb128(&code_buf, 1);
+    write_function_with_locals(&code_buf, "main", n_locals, code.data(), code.size());
 
     eskb_buf_write_leb128(&payload, 2);
     eskb_buf_write_u8(&payload, ESKB_SECTION_CONST);
@@ -938,6 +995,57 @@ void test_valid_chunk(void) {
     eskb_buf_free(&chunk);
 }
 
+void test_profile_limits(void) {
+    EshkolVmProfileLimits limits{};
+    CHECK(eshkol_vm_get_profile_limits(&limits) == 0,
+          "query compiled VM profile limits");
+    CHECK(limits.heap_objects == ESHKOL_VM_HEAP_SIZE,
+          "profile exposes compiled heap limit");
+    CHECK(limits.stack_slots == ESHKOL_VM_STACK_SIZE,
+          "profile exposes compiled stack limit");
+    CHECK(limits.max_frames == ESHKOL_VM_MAX_FRAMES,
+          "profile exposes compiled frame limit");
+    CHECK(limits.max_constants == ESHKOL_VM_MAX_CONSTS,
+          "profile exposes compiled constant limit");
+    CHECK(limits.max_instructions == ESHKOL_VM_MAX_CODE,
+          "profile exposes compiled instruction limit");
+    CHECK(eshkol_vm_get_profile_limits(nullptr) == -1,
+          "profile limit query rejects null output");
+
+    const std::vector<Instr> halt_code = {{OP_HALT, 0}};
+    EskbBuffer too_many_consts =
+        make_profile_validation_chunk(static_cast<size_t>(limits.max_constants) + 1,
+                                      0,
+                                      halt_code);
+    CHECK(eshkol_vm_load_chunk(too_many_consts.data, too_many_consts.len) == nullptr,
+          "reject ESKB chunk over constant-pool profile limit");
+    eskb_buf_free(&too_many_consts);
+
+    const std::vector<Instr> invalid_opcode_code = {{OP_INVALID, 0}};
+    EskbBuffer invalid_opcode =
+        make_profile_validation_chunk(0, 0, invalid_opcode_code);
+    CHECK(eshkol_vm_load_chunk(invalid_opcode.data, invalid_opcode.len) == nullptr,
+          "reject ESKB chunk with invalid opcode before dispatch");
+    eskb_buf_free(&invalid_opcode);
+
+    std::vector<Instr> too_much_code(static_cast<size_t>(limits.max_instructions) + 1,
+                                     {OP_NOP, 0});
+    EskbBuffer too_many_instructions =
+        make_profile_validation_chunk(0, 0, too_much_code);
+    CHECK(eshkol_vm_load_chunk(too_many_instructions.data,
+                               too_many_instructions.len) == nullptr,
+          "reject ESKB chunk over instruction profile limit");
+    eskb_buf_free(&too_many_instructions);
+
+    EskbBuffer too_many_locals =
+        make_profile_validation_chunk(0,
+                                      static_cast<uint64_t>(limits.stack_slots) + 1,
+                                      halt_code);
+    CHECK(eshkol_vm_load_chunk(too_many_locals.data, too_many_locals.len) == nullptr,
+          "reject ESKB function over stack/local profile limit");
+    eskb_buf_free(&too_many_locals);
+}
+
 void test_bad_inputs(void) {
     CHECK(eshkol_vm_load_chunk(nullptr, 0) == nullptr, "reject null chunk");
 
@@ -955,6 +1063,7 @@ void test_bad_inputs(void) {
 int main(void) {
     std::printf("=== VM C API tests ===\n");
     test_valid_chunk();
+    test_profile_limits();
     test_number_to_string_radix();
     test_static_host_native_table();
     test_host_native_registry();

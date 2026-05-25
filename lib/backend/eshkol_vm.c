@@ -80,6 +80,7 @@
 #endif
 
 #include "eshkol/backend/vm_limits.h"
+#include "eshkol/backend/vm.h"
 
 #if defined(_WIN32) || defined(ESHKOL_VM_WASM)
 typedef void regex_t;
@@ -1316,6 +1317,87 @@ typedef struct EshkolVmHandle {
     int        mod_owned;  /* 1 if mod is heap-decoded and must be freed */
 } EshkolVmHandle;
 
+int eshkol_vm_get_profile_limits(EshkolVmProfileLimits* out) {
+    if (!out) return -1;
+    out->heap_objects = ESHKOL_VM_HEAP_SIZE;
+    out->stack_slots = ESHKOL_VM_STACK_SIZE;
+    out->max_frames = ESHKOL_VM_MAX_FRAMES;
+    out->max_constants = ESHKOL_VM_MAX_CONSTS;
+    out->max_instructions = ESHKOL_VM_MAX_CODE;
+    return 0;
+}
+
+static int eshkol_vm_validate_stack_operand(int32_t operand) {
+    return operand >= 0 && operand < ESHKOL_VM_STACK_SIZE;
+}
+
+static int eshkol_vm_validate_module_profile(const EskbModule* mod) {
+    if (!mod) return -1;
+    if (mod->n_constants < 0 || mod->n_constants > ESHKOL_VM_MAX_CONSTS) return -1;
+    if (mod->code_len <= 0 || mod->code_len > ESHKOL_VM_MAX_CODE) return -1;
+    if (mod->n_functions <= 0 || !mod->functions) return -1;
+    if (!mod->opcodes || !mod->operands) return -1;
+
+    for (int fi = 0; fi < mod->n_functions; fi++) {
+        const EskbFunction* fn = &mod->functions[fi];
+        if (!fn->name || fn->code_len <= 0) return -1;
+        if (fn->n_locals < 0 || fn->n_locals > ESHKOL_VM_STACK_SIZE) return -1;
+        if (fn->n_upvalues < 0 || fn->n_upvalues > 16) return -1;
+        if (fn->code_offset < 0 || fn->code_offset >= mod->code_len) return -1;
+        if (fn->code_len > mod->code_len - fn->code_offset) return -1;
+    }
+
+    for (int pc = 0; pc < mod->code_len; pc++) {
+        const uint8_t op = mod->opcodes[pc];
+        const int32_t operand = mod->operands[pc];
+        if (op >= OP_COUNT) return -1;
+
+        switch (op) {
+        case OP_CONST:
+            if (operand < 0 || operand >= mod->n_constants) return -1;
+            break;
+        case OP_CLOSURE: {
+            if (operand < 0) return -1;
+            int const_idx = operand & 0xFFFF;
+            int n_upvalues = (operand >> 16) & 0xFF;
+            if (const_idx < 0 || const_idx >= mod->n_constants) return -1;
+            if (mod->const_types && mod->const_types[const_idx] != ESKB_CONST_INT64) return -1;
+            if (n_upvalues < 0 || n_upvalues > 16) return -1;
+            break;
+        }
+        case OP_GET_LOCAL:
+        case OP_SET_LOCAL:
+            if (!eshkol_vm_validate_stack_operand(operand)) return -1;
+            break;
+        case OP_GET_UPVALUE:
+        case OP_SET_UPVALUE:
+        case OP_OPEN_CLOSURE:
+            if (operand < 0 || operand >= 16) return -1;
+            break;
+        case OP_CALL:
+        case OP_TAIL_CALL:
+        case OP_VEC_CREATE:
+        case OP_POPN:
+        case OP_PACK_REST:
+            if (!eshkol_vm_validate_stack_operand(operand)) return -1;
+            break;
+        case OP_JUMP:
+        case OP_JUMP_IF_FALSE:
+        case OP_LOOP:
+        case OP_PUSH_HANDLER:
+            if (operand < 0 || operand >= mod->code_len) return -1;
+            break;
+        case OP_NATIVE_CALL:
+            if (operand < 0) return -1;
+            break;
+        default:
+            break;
+        }
+    }
+
+    return 0;
+}
+
 EshkolVmHandle* eshkol_vm_load_chunk(const void* buffer, size_t size) {
     if (!buffer || size == 0) return NULL;
     EshkolVmHandle* h = (EshkolVmHandle*)calloc(1, sizeof(EshkolVmHandle));
@@ -1324,14 +1406,13 @@ EshkolVmHandle* eshkol_vm_load_chunk(const void* buffer, size_t size) {
         free(h); return NULL;
     }
     h->mod_owned = 1;
-    h->vm = vm_create();
-    if (!h->vm) { eskb_module_free(&h->mod); free(h); return NULL; }
-    if (h->mod.n_constants > MAX_CONSTS) {
-        vm_free(h->vm);
+    if (eshkol_vm_validate_module_profile(&h->mod) != 0) {
         eskb_module_free(&h->mod);
         free(h);
         return NULL;
     }
+    h->vm = vm_create();
+    if (!h->vm) { eskb_module_free(&h->mod); free(h); return NULL; }
     free(h->vm->code);
     h->vm->code = (Instr*)calloc(h->mod.code_len ? h->mod.code_len : 1, sizeof(Instr));
     if (!h->vm->code) { vm_free(h->vm); eskb_module_free(&h->mod); free(h); return NULL; }

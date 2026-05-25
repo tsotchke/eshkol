@@ -24,6 +24,10 @@
 #define ESHKOL_VM_MAX_CONSTS 1024
 #endif
 
+#ifndef ESHKOL_VM_MAX_CODE
+#define ESHKOL_VM_MAX_CODE 100000
+#endif
+
 #if ESHKOL_VM_HEAP_SIZE <= 0
 #error "ESHKOL_VM_HEAP_SIZE must be positive"
 #endif
@@ -40,6 +44,10 @@
 #error "ESHKOL_VM_MAX_CONSTS must be positive"
 #endif
 
+#if ESHKOL_VM_MAX_CODE <= 0
+#error "ESHKOL_VM_MAX_CODE must be positive"
+#endif
+
 /* Legacy aliases used inside the current unity-built VM components. Keep these
  * local to VM sources; new build/profile code should use the ESHKOL_VM_* names. */
 #undef HEAP_SIZE
@@ -53,5 +61,8 @@
 
 #undef MAX_CONSTS
 #define MAX_CONSTS ESHKOL_VM_MAX_CONSTS
+
+#undef MAX_CODE
+#define MAX_CODE ESHKOL_VM_MAX_CODE
 
 #endif /* ESHKOL_BACKEND_VM_LIMITS_H */

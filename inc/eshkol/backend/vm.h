@@ -15,6 +15,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "eshkol/backend/vm_limits.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -22,9 +24,20 @@ extern "C" {
 /* Opaque VM handle. Returned by eshkol_vm_load_chunk; freed by eshkol_vm_destroy. */
 typedef struct EshkolVmHandle EshkolVmHandle;
 
+typedef struct EshkolVmProfileLimits {
+    int heap_objects;
+    int stack_slots;
+    int max_frames;
+    int max_constants;
+    int max_instructions;
+} EshkolVmProfileLimits;
+
+/* Return the VM profile limits compiled into this runtime. */
+int eshkol_vm_get_profile_limits(EshkolVmProfileLimits* out);
+
 /* Decode an ESKB chunk from an in-memory buffer and create a runnable VM.
  * Returns NULL on bad magic, version mismatch, CRC mismatch, allocation
- * failure, or NULL/zero-size input. */
+ * failure, profile-limit violation, or NULL/zero-size input. */
 EshkolVmHandle* eshkol_vm_load_chunk(const void* buffer, size_t size);
 
 /* Run the loaded bytecode to completion. Returns 0 on success, -1 if the

@@ -3767,11 +3767,13 @@ static double vm_qrng_double(void) {
 #define VM_HOST_NATIVE_MAX 64
 #define VM_HOST_NATIVE_NAME_MAX 128
 
+#ifndef ESHKOL_BACKEND_VM_H
 typedef int (*eshkol_vm_host_native_fn)(VM* vm);
 typedef struct EshkolVmHostNative {
     const char* name;
     eshkol_vm_host_native_fn fn;
 } EshkolVmHostNative;
+#endif
 
 static eshkol_vm_host_native_fn g_host_natives[VM_HOST_NATIVE_MAX];
 static char g_host_native_names[VM_HOST_NATIVE_MAX][VM_HOST_NATIVE_NAME_MAX];

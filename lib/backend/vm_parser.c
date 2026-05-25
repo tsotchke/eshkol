@@ -258,7 +258,9 @@ static void free_node(Node* n) { if (!n) return; for (int i=0;i<n->n_children;i+
  * Compiler: AST → Bytecode
  ******************************************************************************/
 
+#ifndef MAX_CODE
 #define MAX_CODE 32768
+#endif
 #define MAX_LOCALS 512
 #define MAX_FUNCS 64
 

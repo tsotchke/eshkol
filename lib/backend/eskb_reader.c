@@ -6,6 +6,7 @@
  */
 
 #include "eskb_format.h"
+#include "eshkol/backend/vm_limits.h"
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -207,7 +208,7 @@ static int eskb_parse_payload(const uint8_t* payload, size_t payload_len, EskbMo
                 if (eskb_read_u8(&sr, &np) < 0) { free(fname); return -1; }
                 if (eskb_read_leb(&sr, &nl) < 0 || nl > INT_MAX) { free(fname); return -1; }
                 if (eskb_read_u8(&sr, &nuv) < 0) { free(fname); return -1; }
-                if (eskb_read_leb(&sr, &cl) < 0 || cl > 100000 || cl > INT_MAX) {
+                if (eskb_read_leb(&sr, &cl) < 0 || cl > ESHKOL_VM_MAX_CODE || cl > INT_MAX) {
                     free(fname);
                     return -1;
                 }
@@ -218,6 +219,10 @@ static int eskb_parse_payload(const uint8_t* payload, size_t payload_len, EskbMo
 
                 int code_offset = mod->code_len;
                 int new_code_len = mod->code_len + (int)cl;
+                if (new_code_len > ESHKOL_VM_MAX_CODE) {
+                    free(fname);
+                    return -1;
+                }
                 size_t alloc_count = new_code_len ? (size_t)new_code_len : 1;
                 uint8_t* new_opcodes = (uint8_t*)realloc(mod->opcodes, alloc_count * sizeof(uint8_t));
                 if (!new_opcodes) { free(fname); return -1; }
