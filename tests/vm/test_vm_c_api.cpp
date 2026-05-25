@@ -9,6 +9,7 @@
 #include <cstring>
 #include <filesystem>
 #include <string>
+#include <vector>
 
 #include <eshkol/backend/thread_pool.h>
 #include <eshkol/backend/vm.h>
@@ -504,6 +505,121 @@ int host_add_double(VM* vm) {
     return eshkol_vm_host_push_double(vm, a + b);
 }
 
+void test_static_host_native_table(void) {
+    eshkol_vm_clear_host_natives();
+    CHECK(eshkol_vm_host_native_capacity() >= 2,
+          "host-native table exposes usable capacity");
+    CHECK(eshkol_vm_host_native_count() == 0,
+          "host-native table starts empty after clear");
+
+    const EshkolVmHostNative table[] = {
+        {"test.static-add-with-offset", host_add_with_offset},
+        {"test.static-add-double", host_add_double},
+    };
+    CHECK(eshkol_vm_install_host_natives(table, 2) == 0,
+          "install static host-native table");
+    CHECK(eshkol_vm_host_native_count() == 2,
+          "static host-native table count is fixed");
+
+    const EshkolVmHostNative duplicate_table[] = {
+        {"test.static-duplicate", host_add_with_offset},
+        {"test.static-duplicate", host_add_double},
+    };
+    CHECK(eshkol_vm_install_host_natives(duplicate_table, 2) == -1,
+          "reject duplicate static host-native table");
+    CHECK(eshkol_vm_host_native_count() == 2,
+          "duplicate static table does not mutate installed table");
+
+    CHECK(eshkol_vm_install_host_natives(table, -1) == -1,
+          "reject negative static host-native table count");
+    CHECK(eshkol_vm_host_native_count() == 2,
+          "negative static table count does not mutate installed table");
+    CHECK(eshkol_vm_install_host_natives(nullptr, 1) == -1,
+          "reject null static host-native table with positive count");
+    CHECK(eshkol_vm_host_native_count() == 2,
+          "null static table does not mutate installed table");
+
+    const EshkolVmHostNative bad_name_table[] = {
+        {"test.static-add-with-offset", host_add_with_offset},
+        {"", host_add_double},
+    };
+    CHECK(eshkol_vm_install_host_natives(bad_name_table, 2) == -1,
+          "reject empty static host-native name");
+    CHECK(eshkol_vm_host_native_count() == 2,
+          "empty static name does not mutate installed table");
+
+    const EshkolVmHostNative null_fn_table[] = {
+        {"test.static-add-with-offset", host_add_with_offset},
+        {"test.static-null-fn", nullptr},
+    };
+    CHECK(eshkol_vm_install_host_natives(null_fn_table, 2) == -1,
+          "reject null static host-native callback");
+    CHECK(eshkol_vm_host_native_count() == 2,
+          "null static callback does not mutate installed table");
+
+    std::vector<std::string> overflow_names;
+    std::vector<EshkolVmHostNative> overflow_table;
+    const int overflow_count = eshkol_vm_host_native_capacity() + 1;
+    overflow_names.reserve(static_cast<size_t>(overflow_count));
+    overflow_table.reserve(static_cast<size_t>(overflow_count));
+    for (int i = 0; i < overflow_count; ++i) {
+        overflow_names.push_back("test.static-overflow-" + std::to_string(i));
+        overflow_table.push_back({overflow_names.back().c_str(), host_add_with_offset});
+    }
+    CHECK(eshkol_vm_install_host_natives(overflow_table.data(), overflow_count) == -1,
+          "reject over-capacity static host-native table");
+    CHECK(eshkol_vm_host_native_count() == 2,
+          "over-capacity static table does not mutate installed table");
+
+    CHECK(eshkol_vm_register_host_native("test.static-add-with-offset",
+                                         host_add_with_offset) == -1,
+          "dynamic host-native register rejects installed static duplicate");
+    int dynamic_slot = eshkol_vm_register_host_native("test.dynamic-after-static",
+                                                     host_add_with_offset);
+    CHECK(dynamic_slot == 2, "dynamic host-native appends after static table");
+    if (dynamic_slot >= 0) {
+        CHECK(eshkol_vm_unregister_host_native(dynamic_slot) == 0,
+              "cleanup dynamic host-native after static table");
+    }
+
+    EskbBuffer int_chunk = make_host_native_int64_chunk(ESHKOL_VM_HOST_NATIVE_BASE);
+    EshkolVmHandle* int_vm = eshkol_vm_load_chunk(int_chunk.data, int_chunk.len);
+    CHECK(int_vm != nullptr, "load static int64 host-native chunk");
+    if (int_vm) {
+        CHECK(eshkol_vm_run(int_vm) == 0, "run static int64 host-native chunk");
+        int64_t top = 0;
+        CHECK(eshkol_vm_top_int64(int_vm, &top) == 0,
+              "read static int64 host-native result");
+        CHECK(top == 42, "static int64 host-native result == 42");
+        eshkol_vm_destroy(int_vm);
+    }
+    eskb_buf_free(&int_chunk);
+
+    EskbBuffer double_chunk =
+        make_host_native_double_chunk(ESHKOL_VM_HOST_NATIVE_BASE + 1);
+    EshkolVmHandle* double_vm =
+        eshkol_vm_load_chunk(double_chunk.data, double_chunk.len);
+    CHECK(double_vm != nullptr, "load static double host-native chunk");
+    if (double_vm) {
+        CHECK(eshkol_vm_run(double_vm) == 0,
+              "run static double host-native chunk");
+        int64_t top = 0;
+        CHECK(eshkol_vm_top_int64(double_vm, &top) == 0,
+              "read static double host-native result");
+        CHECK(top == 42, "static double host-native result coerces to 42");
+        eshkol_vm_destroy(double_vm);
+    }
+    eskb_buf_free(&double_chunk);
+
+    eshkol_vm_clear_host_natives();
+    CHECK(eshkol_vm_host_native_count() == 0,
+          "clear static host-native table");
+    CHECK(eshkol_vm_install_host_natives(nullptr, 0) == 0,
+          "install empty static host-native table");
+    CHECK(eshkol_vm_host_native_count() == 0,
+          "empty static host-native table remains empty");
+}
+
 void* no_op_pool_task(void* arg) {
     return arg;
 }
@@ -621,11 +737,16 @@ void test_thread_pool_bounded_external_queue(void) {
 }
 
 void test_host_native_registry(void) {
+    eshkol_vm_clear_host_natives();
+
     int slot = eshkol_vm_register_host_native("test.add-with-offset", host_add_with_offset);
     CHECK(slot >= 0, "register host native");
     CHECK(eshkol_vm_register_host_native("test.add-with-offset", host_add_with_offset) == -1,
           "reject duplicate host native");
-    if (slot < 0) return;
+    if (slot < 0) {
+        eshkol_vm_clear_host_natives();
+        return;
+    }
 
     EskbBuffer chunk = make_host_native_int64_chunk(ESHKOL_VM_HOST_NATIVE_BASE + slot);
     EshkolVmHandle* vm = eshkol_vm_load_chunk(chunk.data, chunk.len);
@@ -641,7 +762,10 @@ void test_host_native_registry(void) {
 
     int double_slot = eshkol_vm_register_host_native("test.add-double", host_add_double);
     CHECK(double_slot >= 0, "register double host native");
-    if (double_slot < 0) return;
+    if (double_slot < 0) {
+        eshkol_vm_clear_host_natives();
+        return;
+    }
 
     EskbBuffer double_chunk = make_host_native_double_chunk(ESHKOL_VM_HOST_NATIVE_BASE + double_slot);
     EshkolVmHandle* double_vm = eshkol_vm_load_chunk(double_chunk.data, double_chunk.len);
@@ -675,6 +799,7 @@ void test_host_native_registry(void) {
         CHECK(eshkol_vm_unregister_host_native(reused_slot) == 0, "cleanup reused host native");
     }
     CHECK(eshkol_vm_unregister_host_native(double_slot) == 0, "cleanup double host native");
+    eshkol_vm_clear_host_natives();
 }
 
 void test_file_mmap_native(void) {
@@ -803,6 +928,7 @@ int main(void) {
     std::printf("=== VM C API tests ===\n");
     test_valid_chunk();
     test_number_to_string_radix();
+    test_static_host_native_table();
     test_host_native_registry();
     test_thread_pool_bounded_external_queue();
     test_file_mmap_native();

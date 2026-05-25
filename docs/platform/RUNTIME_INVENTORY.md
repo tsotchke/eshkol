@@ -211,6 +211,11 @@ directories, time, polling, signals, processes, dynamic loading, sockets, or
 host threading. `vm_native.c` remains intentionally mixed here until its
 native-call table can be partitioned by capability.
 
+`vm_native.c` now exposes a deterministic host-native install API through
+`inc/eshkol/backend/vm.h`. Embedders can install a fixed table of host calls
+whose slots map directly to `ESHKOL_VM_HOST_NATIVE_BASE + index`; the existing
+dynamic registration path remains available for desktop tests and tools.
+
 ### VM toolchain/compiler family
 
 - `vm_parser.c`
