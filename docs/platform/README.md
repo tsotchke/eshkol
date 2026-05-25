@@ -130,6 +130,9 @@ Program phase:
   and run named VM entry points through the public C ABI
 - public VM loading now materializes ESKB string constants as VM strings instead
   of silently degrading them to integer lengths
+- VM load options can select host-native-only policy and reject ESKB string
+  constants at load time, giving embedded profiles a checked path toward
+  content-pack-only text
 - hosted Windows x86_64 validation now has a remote SSH harness for Jack's
   Tailscale Windows PC: `scripts/remote_windows_verify.sh` builds the native
   Visual Studio 2022 + ClangCL tree and runs the bounded `windows-lite` suite

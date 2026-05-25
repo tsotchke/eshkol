@@ -234,6 +234,13 @@ still choose to reject dynamic script strings and route text through read-only
 content packs, but the desktop/public loader no longer loses decoded string
 constants.
 
+`eshkol_vm_load_chunk_with_options` exposes the first load-time product profile
+controls through the public C ABI. Embedders can start a loaded VM in
+`ESHKOL_VM_NATIVE_POLICY_HOST_ONLY` and can reject `ESKB_CONST_STRING` entries
+before bytecode runs. The default `eshkol_vm_load_chunk` path remains
+desktop-compatible: desktop native calls are allowed and string constants are
+materialized.
+
 ### VM toolchain/compiler family
 
 - `vm_parser.c`

@@ -739,6 +739,8 @@ void test_host_only_native_policy(void) {
           "native policy setter rejects null VM");
     CHECK(eshkol_vm_get_native_policy(nullptr) == -1,
           "native policy getter rejects null VM");
+    CHECK(eshkol_vm_default_load_options(nullptr) == -1,
+          "default load options reject null output");
 
     eshkol_vm_clear_host_natives();
     const EshkolVmHostNative table[] = {
@@ -748,17 +750,23 @@ void test_host_only_native_policy(void) {
           "install host-only native table");
 
     EskbBuffer host_chunk = make_host_native_int64_chunk(ESHKOL_VM_HOST_NATIVE_BASE);
-    EshkolVmHandle* host_vm = eshkol_vm_load_chunk(host_chunk.data, host_chunk.len);
+    EshkolVmLoadOptions host_only_options{};
+    CHECK(eshkol_vm_default_load_options(&host_only_options) == 0,
+          "initialize default VM load options");
+    host_only_options.native_policy = ESHKOL_VM_NATIVE_POLICY_HOST_ONLY;
+    EshkolVmHandle* host_vm =
+        eshkol_vm_load_chunk_with_options(host_chunk.data, host_chunk.len,
+                                          &host_only_options);
     CHECK(host_vm != nullptr, "load host-only host-native chunk");
     if (host_vm) {
-        CHECK(eshkol_vm_get_native_policy(host_vm) == ESHKOL_VM_NATIVE_POLICY_DESKTOP,
-              "loaded VM defaults to desktop native policy");
+        CHECK(eshkol_vm_get_native_policy(host_vm) == ESHKOL_VM_NATIVE_POLICY_HOST_ONLY,
+              "load options set host-native-only policy");
         CHECK(eshkol_vm_set_native_policy(host_vm, 9999) == -1,
               "native policy setter rejects invalid policy");
+        CHECK(eshkol_vm_set_native_policy(host_vm, ESHKOL_VM_NATIVE_POLICY_DESKTOP) == 0,
+              "native policy setter can switch back to desktop");
         CHECK(eshkol_vm_set_native_policy(host_vm, ESHKOL_VM_NATIVE_POLICY_HOST_ONLY) == 0,
-              "switch VM to host-native-only policy");
-        CHECK(eshkol_vm_get_native_policy(host_vm) == ESHKOL_VM_NATIVE_POLICY_HOST_ONLY,
-              "native policy getter reports host-native-only policy");
+              "native policy setter can restore host-native-only policy");
         CHECK(eshkol_vm_run(host_vm) == 0,
               "host-native-only policy permits fixed host-native slot");
         int64_t top = 0;
@@ -768,6 +776,15 @@ void test_host_only_native_policy(void) {
         eshkol_vm_destroy(host_vm);
     }
     eskb_buf_free(&host_chunk);
+
+    host_only_options.native_policy = 9999;
+    EskbBuffer invalid_options_chunk =
+        make_host_native_int64_chunk(ESHKOL_VM_HOST_NATIVE_BASE);
+    CHECK(eshkol_vm_load_chunk_with_options(invalid_options_chunk.data,
+                                            invalid_options_chunk.len,
+                                            &host_only_options) == nullptr,
+          "load options reject invalid native policy");
+    eskb_buf_free(&invalid_options_chunk);
 
     EskbBuffer desktop_chunk =
         make_number_to_string_radix_chunk(10, 2, "1010");
@@ -1158,6 +1175,14 @@ void test_string_constant_materialization(void) {
               "ESKB string constant materializes as VM string");
         eshkol_vm_destroy(vm);
     }
+
+    EshkolVmLoadOptions reject_strings{};
+    CHECK(eshkol_vm_default_load_options(&reject_strings) == 0,
+          "initialize string-rejecting VM load options");
+    reject_strings.reject_string_constants = 1;
+    CHECK(eshkol_vm_load_chunk_with_options(chunk.data, chunk.len,
+                                            &reject_strings) == nullptr,
+          "embedded load options reject ESKB string constants");
     eskb_buf_free(&chunk);
 }
 
