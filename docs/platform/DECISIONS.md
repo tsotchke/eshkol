@@ -2598,3 +2598,36 @@ presence checks.
 - parameterized hooks fail during ESKB emission instead of at product runtime
 - the profile CLI test covers accepted zero-argument hooks and rejected
   parameterized hooks
+
+---
+
+## D-0075
+
+- Date: 2026-05-25
+- Status: Accepted
+- Title: Reject upvalue VM entries in public dispatch
+
+### Context
+
+The public VM dispatch ABI now rejects entries with parameters, but direct entry
+execution also resets frame/stack state and does not construct a closure object
+or upvalue environment. A decoded ESKB function can still declare upvalues, and
+running that entry directly would let invalid closure metadata reach execution.
+
+Product hooks called through `eshkol_vm_run` or `eshkol_vm_call` must be closed
+entries, not just zero-argument entries.
+
+### Decision
+
+Make `eshkol_vm_run` and `eshkol_vm_call` reject decoded entries whose
+`n_upvalues` is non-zero before resetting VM state and executing bytecode. The
+function-info and load-time metadata APIs remain the way for tooling to inspect
+or enforce this before dispatch.
+
+### Consequences
+
+- public direct-entry dispatch now accepts only closed zero-argument entries
+- hand-authored or malformed ESKB cannot rely on implicit closure state during
+  public entry calls
+- the public VM C API tests cover both named upvalue-entry rejection and main
+  upvalue-entry rejection

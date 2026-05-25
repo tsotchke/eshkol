@@ -246,6 +246,8 @@ Good delegation candidate for a VM-focused contributor with a fixed host-hook co
 - public VM function-table enumeration is exercised by the VM C API tests
 - public VM function metadata is exercised by the VM C API tests
 - load-time VM entry metadata requirements are exercised by the VM C API tests
+- public zero-argument VM dispatch rejection for parameterized and upvalue
+  entries is exercised by the VM C API tests
 
 ## Workstream 7: BSP Contract and Reference Targets
 

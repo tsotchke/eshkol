@@ -693,6 +693,101 @@ EskbBuffer make_parameterized_main_chunk(void) {
     return file;
 }
 
+EskbBuffer make_upvalue_entry_chunk(void) {
+    EskbBuffer const_buf;
+    EskbBuffer code_buf;
+    EskbBuffer payload;
+    EskbBuffer file;
+    eskb_buf_init(&const_buf);
+    eskb_buf_init(&code_buf);
+    eskb_buf_init(&payload);
+    eskb_buf_init(&file);
+
+    eskb_buf_write_leb128(&const_buf, 1);
+    write_int64_const(&const_buf, 11);
+
+    const Instr main_code[] = {
+        {OP_CONST, 0},
+        {OP_HALT, 0},
+    };
+    const Instr upvalue_code[] = {
+        {OP_CONST, 0},
+        {OP_HALT, 0},
+    };
+
+    eskb_buf_write_leb128(&code_buf, 2);
+    write_function(&code_buf, "main", main_code, sizeof(main_code) / sizeof(main_code[0]));
+    write_function_with_metadata(&code_buf, "closed-over", 0, 0, 1, upvalue_code,
+                                 sizeof(upvalue_code) / sizeof(upvalue_code[0]));
+
+    eskb_buf_write_leb128(&payload, 2);
+    eskb_buf_write_u8(&payload, ESKB_SECTION_CONST);
+    eskb_buf_write_leb128(&payload, const_buf.len);
+    eskb_buf_write_u8(&payload, ESKB_SECTION_CODE);
+    eskb_buf_write_leb128(&payload, code_buf.len);
+    eskb_buf_write(&payload, const_buf.data, const_buf.len);
+    eskb_buf_write(&payload, code_buf.data, code_buf.len);
+
+    EskbHeader hdr;
+    hdr.magic = ESKB_MAGIC;
+    hdr.version = ESKB_VERSION;
+    hdr.flags = ESKB_FLAG_LITTLE_ENDIAN;
+    hdr.checksum = eskb_crc32(payload.data, payload.len);
+
+    eskb_buf_write(&file, &hdr, sizeof(hdr));
+    eskb_buf_write(&file, payload.data, payload.len);
+
+    eskb_buf_free(&const_buf);
+    eskb_buf_free(&code_buf);
+    eskb_buf_free(&payload);
+    return file;
+}
+
+EskbBuffer make_upvalue_main_chunk(void) {
+    EskbBuffer const_buf;
+    EskbBuffer code_buf;
+    EskbBuffer payload;
+    EskbBuffer file;
+    eskb_buf_init(&const_buf);
+    eskb_buf_init(&code_buf);
+    eskb_buf_init(&payload);
+    eskb_buf_init(&file);
+
+    eskb_buf_write_leb128(&const_buf, 1);
+    write_int64_const(&const_buf, 13);
+
+    const Instr main_code[] = {
+        {OP_CONST, 0},
+        {OP_HALT, 0},
+    };
+
+    eskb_buf_write_leb128(&code_buf, 1);
+    write_function_with_metadata(&code_buf, "main", 0, 0, 1, main_code,
+                                 sizeof(main_code) / sizeof(main_code[0]));
+
+    eskb_buf_write_leb128(&payload, 2);
+    eskb_buf_write_u8(&payload, ESKB_SECTION_CONST);
+    eskb_buf_write_leb128(&payload, const_buf.len);
+    eskb_buf_write_u8(&payload, ESKB_SECTION_CODE);
+    eskb_buf_write_leb128(&payload, code_buf.len);
+    eskb_buf_write(&payload, const_buf.data, const_buf.len);
+    eskb_buf_write(&payload, code_buf.data, code_buf.len);
+
+    EskbHeader hdr;
+    hdr.magic = ESKB_MAGIC;
+    hdr.version = ESKB_VERSION;
+    hdr.flags = ESKB_FLAG_LITTLE_ENDIAN;
+    hdr.checksum = eskb_crc32(payload.data, payload.len);
+
+    eskb_buf_write(&file, &hdr, sizeof(hdr));
+    eskb_buf_write(&file, payload.data, payload.len);
+
+    eskb_buf_free(&const_buf);
+    eskb_buf_free(&code_buf);
+    eskb_buf_free(&payload);
+    return file;
+}
+
 EskbBuffer make_profile_validation_chunk(size_t n_constants,
                                          uint64_t n_locals,
                                          const std::vector<Instr>& code) {
@@ -1546,6 +1641,17 @@ void test_zero_arg_entry_dispatch(void) {
     }
     eskb_buf_free(&chunk);
 
+    EskbBuffer upvalue_entry = make_upvalue_entry_chunk();
+    EshkolVmHandle* upvalue_vm =
+        eshkol_vm_load_chunk(upvalue_entry.data, upvalue_entry.len);
+    CHECK(upvalue_vm != nullptr, "load upvalue named entry chunk");
+    if (upvalue_vm) {
+        CHECK(eshkol_vm_call(upvalue_vm, "closed-over") == -1,
+              "zero-arg call API rejects named entry requiring upvalues");
+        eshkol_vm_destroy(upvalue_vm);
+    }
+    eskb_buf_free(&upvalue_entry);
+
     EskbBuffer parameterized_main = make_parameterized_main_chunk();
     EshkolVmHandle* parameterized_vm =
         eshkol_vm_load_chunk(parameterized_main.data, parameterized_main.len);
@@ -1556,6 +1662,17 @@ void test_zero_arg_entry_dispatch(void) {
         eshkol_vm_destroy(parameterized_vm);
     }
     eskb_buf_free(&parameterized_main);
+
+    EskbBuffer upvalue_main = make_upvalue_main_chunk();
+    EshkolVmHandle* upvalue_main_vm =
+        eshkol_vm_load_chunk(upvalue_main.data, upvalue_main.len);
+    CHECK(upvalue_main_vm != nullptr, "load upvalue main entry chunk");
+    if (upvalue_main_vm) {
+        CHECK(eshkol_vm_run(upvalue_main_vm) == -1,
+              "zero-arg run API rejects main entry requiring upvalues");
+        eshkol_vm_destroy(upvalue_main_vm);
+    }
+    eskb_buf_free(&upvalue_main);
 }
 
 void test_profile_limits(void) {

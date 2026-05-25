@@ -143,6 +143,8 @@ Program phase:
   build-time ESKB admission and removes rejected bytecode outputs
 - `eshkol-run --profile embedded-vm --require-vm-entry-zero-arg NAME` lowers
   hook arity contracts to VM metadata admission during bytecode emission
+- public VM entry dispatch now rejects decoded entries that require upvalues, so
+  zero-argument calls only run closed function entries
 - the public VM C ABI can enumerate decoded ESKB function entries, so product
   tooling can inspect emitted hooks without reaching into `EskbModule`
 - VM function metadata is available through the public ABI for hook arity,
