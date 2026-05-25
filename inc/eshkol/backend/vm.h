@@ -95,8 +95,9 @@ int eshkol_vm_run(EshkolVmHandle* h);
 
 /* Run a named function from the loaded ESKB code section. This resets the VM
  * instruction/stack/frame state before dispatch while preserving VM heap and
- * host resources owned by the handle. Returns 0 on success, -1 for a missing
- * entry point, invalid handle, or VM error. */
+ * host resources owned by the handle. This zero-argument API rejects entries
+ * whose decoded metadata declares parameters. Returns 0 on success, -1 for a
+ * missing entry point, invalid handle, unsupported arity, or VM error. */
 int eshkol_vm_call(EshkolVmHandle* h, const char* name);
 
 /* Return 1 if the loaded ESKB chunk contains a function with `name`, 0 if it

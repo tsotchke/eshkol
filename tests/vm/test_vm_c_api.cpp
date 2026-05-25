@@ -648,6 +648,51 @@ EskbBuffer make_metadata_test_chunk(void) {
     return file;
 }
 
+EskbBuffer make_parameterized_main_chunk(void) {
+    EskbBuffer const_buf;
+    EskbBuffer code_buf;
+    EskbBuffer payload;
+    EskbBuffer file;
+    eskb_buf_init(&const_buf);
+    eskb_buf_init(&code_buf);
+    eskb_buf_init(&payload);
+    eskb_buf_init(&file);
+
+    eskb_buf_write_leb128(&const_buf, 1);
+    write_int64_const(&const_buf, 9);
+
+    const Instr main_code[] = {
+        {OP_CONST, 0},
+        {OP_HALT, 0},
+    };
+
+    eskb_buf_write_leb128(&code_buf, 1);
+    write_function_with_metadata(&code_buf, "main", 1, 0, 0, main_code,
+                                 sizeof(main_code) / sizeof(main_code[0]));
+
+    eskb_buf_write_leb128(&payload, 2);
+    eskb_buf_write_u8(&payload, ESKB_SECTION_CONST);
+    eskb_buf_write_leb128(&payload, const_buf.len);
+    eskb_buf_write_u8(&payload, ESKB_SECTION_CODE);
+    eskb_buf_write_leb128(&payload, code_buf.len);
+    eskb_buf_write(&payload, const_buf.data, const_buf.len);
+    eskb_buf_write(&payload, code_buf.data, code_buf.len);
+
+    EskbHeader hdr;
+    hdr.magic = ESKB_MAGIC;
+    hdr.version = ESKB_VERSION;
+    hdr.flags = ESKB_FLAG_LITTLE_ENDIAN;
+    hdr.checksum = eskb_crc32(payload.data, payload.len);
+
+    eskb_buf_write(&file, &hdr, sizeof(hdr));
+    eskb_buf_write(&file, payload.data, payload.len);
+
+    eskb_buf_free(&const_buf);
+    eskb_buf_free(&code_buf);
+    eskb_buf_free(&payload);
+    return file;
+}
+
 EskbBuffer make_profile_validation_chunk(size_t n_constants,
                                          uint64_t n_locals,
                                          const std::vector<Instr>& code) {
@@ -1488,6 +1533,31 @@ void test_required_function_metadata_options(void) {
     eskb_buf_free(&chunk);
 }
 
+void test_zero_arg_entry_dispatch(void) {
+    EskbBuffer chunk = make_metadata_test_chunk();
+    EshkolVmHandle* vm = eshkol_vm_load_chunk(chunk.data, chunk.len);
+    CHECK(vm != nullptr, "load metadata chunk for zero-arg dispatch checks");
+    if (vm) {
+        CHECK(eshkol_vm_call(vm, "main") == 0,
+              "zero-arg call API accepts zero-parameter entry");
+        CHECK(eshkol_vm_call(vm, "captured") == -1,
+              "zero-arg call API rejects parameterized named entry");
+        eshkol_vm_destroy(vm);
+    }
+    eskb_buf_free(&chunk);
+
+    EskbBuffer parameterized_main = make_parameterized_main_chunk();
+    EshkolVmHandle* parameterized_vm =
+        eshkol_vm_load_chunk(parameterized_main.data, parameterized_main.len);
+    CHECK(parameterized_vm != nullptr, "load parameterized main entry chunk");
+    if (parameterized_vm) {
+        CHECK(eshkol_vm_run(parameterized_vm) == -1,
+              "zero-arg run API rejects parameterized main entry");
+        eshkol_vm_destroy(parameterized_vm);
+    }
+    eskb_buf_free(&parameterized_main);
+}
+
 void test_profile_limits(void) {
     EshkolVmProfileLimits limits{};
     CHECK(eshkol_vm_get_profile_limits(&limits) == 0,
@@ -1645,6 +1715,7 @@ int main(void) {
     std::printf("=== VM C API tests ===\n");
     test_valid_chunk();
     test_required_function_metadata_options();
+    test_zero_arg_entry_dispatch();
     test_profile_limits();
     test_string_constant_materialization();
     test_embedded_eskb_emission_load_policy();
