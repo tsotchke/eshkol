@@ -9,6 +9,7 @@
 #include <eshkol/core/runtime.h>
 #include <eshkol/core/resource_limits.h>
 #include <eshkol/core/execution_profile.h>
+#include <eshkol/backend/vm.h>
 #include <eshkol/build_config.h>
 #include <eshkol/platform_runtime.h>
 
@@ -258,10 +259,6 @@ static struct option long_options[] = {
     {"target", required_argument, nullptr, 261},
     {0, 0, 0, 0}
 };
-
-/* Bytecode VM compiler — emit ESKB format */
-extern "C" int eshkol_emit_eskb(const char* source, const char* output_path);
-extern "C" int eshkol_emit_eskb_embedded(const char* source, const char* output_path);
 
 // Set to track imported files (prevent circular imports)
 static std::set<std::string> imported_files;

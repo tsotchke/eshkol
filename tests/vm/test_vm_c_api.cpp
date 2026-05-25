@@ -16,8 +16,6 @@
 #include <eshkol/backend/thread_pool.h>
 #include <eshkol/backend/vm.h>
 
-extern "C" int eshkol_emit_eskb_embedded(const char* source, const char* output_path);
-
 extern "C" {
 #include "eskb_format.h"
 }

@@ -16,3 +16,10 @@ int eshkol_emit_eskb(const char* source, const char* output_path) {
     fprintf(stderr, "ESKB emission is not available in the native Windows build.\n");
     return -1;
 }
+
+int eshkol_emit_eskb_embedded(const char* source, const char* output_path) {
+    (void)source;
+    (void)output_path;
+    fprintf(stderr, "Embedded ESKB emission is not available in the native Windows build.\n");
+    return -1;
+}
