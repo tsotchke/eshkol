@@ -605,6 +605,51 @@ EskbBuffer make_trailing_code_section_chunk(void) {
     return file;
 }
 
+EskbBuffer make_trailing_payload_chunk(void) {
+    EskbBuffer const_buf;
+    EskbBuffer code_buf;
+    EskbBuffer payload;
+    EskbBuffer file;
+    eskb_buf_init(&const_buf);
+    eskb_buf_init(&code_buf);
+    eskb_buf_init(&payload);
+    eskb_buf_init(&file);
+
+    eskb_buf_write_leb128(&const_buf, 1);
+    write_int64_const(&const_buf, 11);
+
+    const Instr main_code[] = {
+        {OP_CONST, 0},
+        {OP_HALT, 0},
+    };
+
+    eskb_buf_write_leb128(&code_buf, 1);
+    write_function(&code_buf, "main", main_code, sizeof(main_code) / sizeof(main_code[0]));
+
+    eskb_buf_write_leb128(&payload, 2);
+    eskb_buf_write_u8(&payload, ESKB_SECTION_CONST);
+    eskb_buf_write_leb128(&payload, const_buf.len);
+    eskb_buf_write_u8(&payload, ESKB_SECTION_CODE);
+    eskb_buf_write_leb128(&payload, code_buf.len);
+    eskb_buf_write(&payload, const_buf.data, const_buf.len);
+    eskb_buf_write(&payload, code_buf.data, code_buf.len);
+    eskb_buf_write_u8(&payload, 0x7f);
+
+    EskbHeader hdr;
+    hdr.magic = ESKB_MAGIC;
+    hdr.version = ESKB_VERSION;
+    hdr.flags = ESKB_FLAG_LITTLE_ENDIAN;
+    hdr.checksum = eskb_crc32(payload.data, payload.len);
+
+    eskb_buf_write(&file, &hdr, sizeof(hdr));
+    eskb_buf_write(&file, payload.data, payload.len);
+
+    eskb_buf_free(&const_buf);
+    eskb_buf_free(&code_buf);
+    eskb_buf_free(&payload);
+    return file;
+}
+
 EskbBuffer make_uncalled_desktop_native_helper_chunk(void) {
     EskbBuffer const_buf;
     EskbBuffer code_buf;
@@ -1957,6 +2002,12 @@ void test_bad_inputs(void) {
                                trailing_code_chunk.len) == nullptr,
           "reject CODE section with trailing bytes");
     eskb_buf_free(&trailing_code_chunk);
+
+    EskbBuffer trailing_payload_chunk = make_trailing_payload_chunk();
+    CHECK(eshkol_vm_load_chunk(trailing_payload_chunk.data,
+                               trailing_payload_chunk.len) == nullptr,
+          "reject ESKB payload trailing bytes outside sections");
+    eskb_buf_free(&trailing_payload_chunk);
 
     EskbBuffer cross_branch_chunk = make_cross_function_branch_chunk();
     CHECK(eshkol_vm_load_chunk(cross_branch_chunk.data,

@@ -2697,3 +2697,37 @@ also reject the payload instead of being ignored.
 - unknown/reserved sections remain skipped by the current reader until a stable
   consumer is added
 - the public VM C API tests include a CODE-section trailing-byte regression
+
+---
+
+## D-0078
+
+- Date: 2026-05-25
+- Status: Accepted
+- Title: Require ESKB payload coverage by the section table
+
+### Context
+
+Strict section decoding ensures that known CONST, CODE, and META sections do
+not carry unused bytes inside their declared bounds. But an ESKB payload also
+has an outer section table followed by section data. Before this decision, a
+payload with a valid checksum could still append bytes after all declared
+sections, and the reader would ignore that tail.
+
+Product firmware admission should treat bytecode payloads as fully accounted
+artifacts: every payload byte must belong to a declared section, even if some
+reserved section IDs are currently skipped.
+
+### Decision
+
+After reading section descriptors and computing each section offset, reject the
+payload unless the declared sections consume exactly the full payload length.
+Known sections still perform their own internal cursor checks, and reserved
+sections remain skippable only when their size is declared in the section table.
+
+### Consequences
+
+- valid checksums can no longer hide bytes after the declared ESKB sections
+- reserved or future sections remain possible, but only as explicit section
+  table entries
+- the public VM C API tests include a payload trailing-byte regression

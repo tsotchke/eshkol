@@ -150,6 +150,8 @@ Program phase:
   product hook admission and dispatch are never order-dependent
 - known ESKB sections must be fully consumed during decoding; trailing bytes in
   CODE/CONST/META sections are rejected before VM loading
+- ESKB payloads must be fully covered by the declared section table, so valid
+  checksums cannot hide trailing bytes outside sections
 - the public VM C ABI can enumerate decoded ESKB function entries, so product
   tooling can inspect emitted hooks without reaching into `EskbModule`
 - VM function metadata is available through the public ABI for hook arity,

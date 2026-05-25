@@ -290,7 +290,8 @@ upvalues, because the public call surface does not provide a closure environment
 for direct entry execution. The VM loader also rejects empty or duplicate decoded
 function names, making named hook admission and dispatch unambiguous. Known ESKB
 sections are strict: CONST, CODE, and META must be fully consumed by their
-decoders, so trailing section bytes fail before VM loading.
+decoders, and the declared section table must cover the full payload, so
+trailing section or payload bytes fail before VM loading.
 
 ### VM test family
 
