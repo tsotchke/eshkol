@@ -144,8 +144,6 @@ int main(int argc, char** argv) {
         parse_cmake_list(cmake_contents, "ESHKOL_RUNTIME_CORE_SRC");
     const std::vector<std::string> runtime_hosted_src =
         parse_cmake_list(cmake_contents, "ESHKOL_RUNTIME_HOSTED_SRC");
-    const std::vector<std::string> split_pending_src =
-        parse_cmake_list(cmake_contents, "ESHKOL_RUNTIME_SPLIT_PENDING_SRC");
 
     if (runtime_core_src.empty()) {
         return fail("runtime core source set is empty or missing");
@@ -153,8 +151,9 @@ int main(int argc, char** argv) {
     if (runtime_hosted_src.empty()) {
         return fail("runtime hosted source set is empty or missing");
     }
-    if (split_pending_src.empty()) {
-        return fail("runtime split-pending source set is empty or missing");
+    if (contains_marker(cmake_contents, "ESHKOL_RUNTIME_SPLIT_PENDING_SRC") ||
+        contains_marker(cmake_contents, "eshkol-runtime-split-pending-obj")) {
+        return fail("runtime split-pending source set should be retired");
     }
 
     if (const int rc = require_entries(runtime_core_src,
@@ -203,16 +202,17 @@ int main(int argc, char** argv) {
             "runtime hosted source set")) {
         return rc;
     }
-    if (const int rc = require_entries(split_pending_src,
-            {"lib/core/runtime_arena_cpp.cpp"},
-            "runtime split-pending source set")) {
-        return rc;
+    if (has_entry(runtime_core_src, "lib/core/runtime_arena_cpp.cpp") ||
+        has_entry(runtime_hosted_src, "lib/core/runtime_arena_cpp.cpp")) {
+        return fail("C++ Arena adapter should stay outside runtime source families");
+    }
+    if (!std::filesystem::exists(source_root / "lib/core/runtime_arena_cpp.cpp")) {
+        return fail("C++ Arena adapter source does not exist");
     }
 
     if (const int rc = require_disjoint({
             {"runtime core", runtime_core_src},
             {"runtime hosted", runtime_hosted_src},
-            {"runtime split-pending", split_pending_src},
         })) {
         return rc;
     }
@@ -225,18 +225,11 @@ int main(int argc, char** argv) {
                          "add_library(eshkol-runtime-hosted-obj OBJECT ${ESHKOL_RUNTIME_HOSTED_SRC})")) {
         return fail("runtime hosted source set is not compiled through eshkol-runtime-hosted-obj");
     }
-    if (!contains_marker(cmake_contents,
-                         "add_library(eshkol-runtime-split-pending-obj OBJECT ${ESHKOL_RUNTIME_SPLIT_PENDING_SRC})")) {
-        return fail("runtime split-pending source set is not compiled through eshkol-runtime-split-pending-obj");
-    }
 
     if (const int rc = require_sources_exist(source_root, runtime_core_src, "runtime core")) {
         return rc;
     }
     if (const int rc = require_sources_exist(source_root, runtime_hosted_src, "runtime hosted")) {
-        return rc;
-    }
-    if (const int rc = require_sources_exist(source_root, split_pending_src, "runtime split-pending")) {
         return rc;
     }
 

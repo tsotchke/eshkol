@@ -46,7 +46,7 @@ Split runtime responsibilities into core, hosted, and freestanding layers.
 ### Deliverables
 
 - runtime symbol inventory
-- explicit internal source sets for `runtime-core`, `runtime-hosted`, and split-pending runtime files
+- explicit internal source sets for `runtime-core` and `runtime-hosted`
 - `runtime-core` boundary
 - `runtime-hosted` boundary
 - `runtime-freestanding` boundary

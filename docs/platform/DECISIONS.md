@@ -1884,3 +1884,42 @@ allocation, move semantics, and wrapper reset behavior.
   file rather than the arena implementation monolith
 - allocator alignment now satisfies over-aligned C++ wrapper allocations instead
   of relying on the base address returned by `malloc`
+
+---
+
+## D-0058
+
+- Date: 2026-05-24
+- Status: Accepted
+- Title: Retire runtime-split-pending source set
+
+### Context
+
+After extracting raw arena mechanics and hosted arena diagnostics, the only
+remaining `runtime-split-pending` source was `runtime_arena_cpp.cpp`, the C++
+`Arena` RAII wrapper around the C arena ABI.
+
+That wrapper is useful for C++ consumers and tests, but it is not part of the
+generated-code runtime ABI. It also exposes C++ exception and convenience-wrapper
+semantics that should not be treated as freestanding runtime-core substrate.
+
+### Decision
+
+Retire `ESHKOL_RUNTIME_SPLIT_PENDING_SRC` and the
+`eshkol-runtime-split-pending-obj` object library. Keep `runtime_arena_cpp.cpp`
+compiled through the aggregate `eshkol-static` archive via the non-runtime
+source set, and explicitly keep it out of both `runtime-core` and
+`runtime-hosted`.
+
+Update the runtime boundary test so it fails if a split-pending source set or
+object target is reintroduced, and so it verifies that the C++ `Arena` adapter
+stays outside runtime source families.
+
+### Consequences
+
+- the runtime implementation is now classified into explicit `runtime-core` and
+  `runtime-hosted` source sets, with no split-pending bucket
+- the C++ `Arena` wrapper remains available to existing consumers without
+  widening freestanding runtime-core policy
+- future runtime decomposition work can move to hosted-leakage enforcement,
+  freestanding hook definitions, VM runtime decomposition, and target ABI work

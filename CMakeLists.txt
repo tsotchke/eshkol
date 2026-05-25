@@ -1106,25 +1106,18 @@ set(ESHKOL_RUNTIME_HOSTED_SRC
   lib/core/system_builtins.c
 )
 
-set(ESHKOL_RUNTIME_SPLIT_PENDING_SRC
-  lib/core/runtime_arena_cpp.cpp
-)
-
 list(REMOVE_ITEM LIB_SRC
   ${ESHKOL_RUNTIME_CORE_SRC}
   ${ESHKOL_RUNTIME_HOSTED_SRC}
-  ${ESHKOL_RUNTIME_SPLIT_PENDING_SRC}
 )
 
 set(ESHKOL_NON_RUNTIME_SRC ${LIB_SRC})
 
 list(LENGTH ESHKOL_RUNTIME_CORE_SRC ESHKOL_RUNTIME_CORE_SRC_COUNT)
 list(LENGTH ESHKOL_RUNTIME_HOSTED_SRC ESHKOL_RUNTIME_HOSTED_SRC_COUNT)
-list(LENGTH ESHKOL_RUNTIME_SPLIT_PENDING_SRC ESHKOL_RUNTIME_SPLIT_PENDING_SRC_COUNT)
 message(STATUS
   "Runtime source sets: core=${ESHKOL_RUNTIME_CORE_SRC_COUNT}, "
-  "hosted=${ESHKOL_RUNTIME_HOSTED_SRC_COUNT}, "
-  "split-pending=${ESHKOL_RUNTIME_SPLIT_PENDING_SRC_COUNT}"
+  "hosted=${ESHKOL_RUNTIME_HOSTED_SRC_COUNT}"
 )
 
 set(ESHKOL_BUILD_INTERFACE_INCLUDE_DIRS
@@ -1158,12 +1151,10 @@ endfunction()
 
 add_library(eshkol-runtime-core-obj OBJECT ${ESHKOL_RUNTIME_CORE_SRC})
 add_library(eshkol-runtime-hosted-obj OBJECT ${ESHKOL_RUNTIME_HOSTED_SRC})
-add_library(eshkol-runtime-split-pending-obj OBJECT ${ESHKOL_RUNTIME_SPLIT_PENDING_SRC})
 
 foreach(_eshkol_runtime_obj_target IN ITEMS
     eshkol-runtime-core-obj
     eshkol-runtime-hosted-obj
-    eshkol-runtime-split-pending-obj
 )
     eshkol_apply_common_compile_settings(${_eshkol_runtime_obj_target})
 endforeach()
@@ -1174,7 +1165,6 @@ add_library(eshkol-static STATIC
   ${ESHKOL_NON_RUNTIME_SRC}
   $<TARGET_OBJECTS:eshkol-runtime-core-obj>
   $<TARGET_OBJECTS:eshkol-runtime-hosted-obj>
-  $<TARGET_OBJECTS:eshkol-runtime-split-pending-obj>
 )
 target_include_directories(
   eshkol-static
