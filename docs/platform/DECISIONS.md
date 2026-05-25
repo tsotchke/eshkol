@@ -2229,7 +2229,8 @@ Extend `EshkolVmLoadOptions` with `reject_desktop_native_calls`.
 
 When this option is enabled, `eshkol_vm_load_chunk_with_options` scans decoded
 ESKB instructions after structural/profile validation and rejects any
-`OP_NATIVE_CALL` operand below `ESHKOL_VM_HOST_NATIVE_BASE`. The default loader
+`OP_NATIVE_CALL` operand below `ESHKOL_VM_HOST_NATIVE_BASE`, including calls in
+helper function bodies that have not been invoked yet. The default loader
 continues to allow desktop native calls so existing desktop VM behavior remains
 unchanged.
 
@@ -2239,7 +2240,8 @@ unchanged.
   instead of waiting for execution to reach them
 - fixed host-native slots remain valid under the embedded admission policy
 - the VM C API tests now prove both acceptance of host-native slots and
-  rejection of desktop native fids through load options
+  rejection of desktop native fids through load options, including desktop
+  native calls in helper functions
 - compiler-side target checks are still needed to report source-level reasons
   before bytecode is emitted
 
