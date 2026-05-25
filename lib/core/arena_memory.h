@@ -18,6 +18,12 @@
 // Include main Eshkol header for tagged data types
 #include "../../inc/eshkol/eshkol.h"
 
+#if defined(__GNUC__) && !defined(_WIN32)
+#define ESHKOL_RUNTIME_WEAK __attribute__((weak))
+#else
+#define ESHKOL_RUNTIME_WEAK
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif

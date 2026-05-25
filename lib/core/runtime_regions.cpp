@@ -22,9 +22,9 @@ thread_local eshkol_region_t* __region_stack[MAX_REGION_DEPTH] = {nullptr};
 thread_local uint64_t __region_stack_depth = 0;
 
 // Default global arena for allocations outside any region.
-// Non-static to allow JIT code to access it directly. Weak so generated
-// standalone code may override it.
-__attribute__((weak)) arena_t* __global_arena = nullptr;
+// Non-static to allow JIT code to access it directly. Weak where object format
+// support lets generated standalone code override it.
+ESHKOL_RUNTIME_WEAK arena_t* __global_arena = nullptr;
 
 static thread_local arena_t* __thread_local_arena = nullptr;
 
