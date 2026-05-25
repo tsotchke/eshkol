@@ -2048,7 +2048,9 @@ dispatch a known script function repeatedly from the host loop.
 
 Keep the existing ESKB section format, but preserve the decoded function table
 inside `EskbModule`. Concatenate function bodies into the loaded VM instruction
-array and store each function's code offset/length and name.
+array and store each function's code offset/length and name. Branch targets stay
+function-local during decoding: a jump or handler target that escapes its source
+function body rejects the ESKB before concatenated offsets are exposed.
 
 Extend `inc/eshkol/backend/vm.h` with:
 
