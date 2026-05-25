@@ -146,6 +146,8 @@ Program phase:
   during bytecode emission
 - public VM entry dispatch now rejects decoded entries that require upvalues, so
   zero-argument calls only run closed function entries
+- public VM loading rejects empty or duplicate decoded function names, so named
+  product hook admission and dispatch are never order-dependent
 - the public VM C ABI can enumerate decoded ESKB function entries, so product
   tooling can inspect emitted hooks without reaching into `EskbModule`
 - VM function metadata is available through the public ABI for hook arity,

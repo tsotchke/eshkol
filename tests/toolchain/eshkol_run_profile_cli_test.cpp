@@ -355,6 +355,28 @@ int main(int argc, char** argv) {
         return fail("embedded VM kept ESKB after argumentful required entry");
     }
 
+    const fs::path duplicate_entry_source = temp_root / "duplicate-entry.esk";
+    {
+        std::ofstream source(duplicate_entry_source);
+        source << "(define (tick) 1)\n";
+        source << "(define (tick) 2)\n";
+    }
+
+    const fs::path duplicate_required_path = temp_root / "embedded-duplicate-required.eskb";
+    ProcessResult embedded_duplicate_required = run_process_capture(
+        {run_binary.string(), "--profile", "embedded-vm",
+         "--emit-eskb", duplicate_required_path.string(),
+         "--require-vm-entry-zero-arg", "tick", duplicate_entry_source.string()},
+        temp_root);
+    if (int rc = expect_failure_containing("embedded VM rejects duplicate required entry",
+                                           embedded_duplicate_required,
+                                           "ESKB admission failed for profile embedded-vm")) {
+        return rc;
+    }
+    if (fs::exists(duplicate_required_path)) {
+        return fail("embedded VM kept ESKB after duplicate required entry");
+    }
+
     const fs::path captured_entry_source = temp_root / "captured-entry.esk";
     {
         std::ofstream source(captured_entry_source);

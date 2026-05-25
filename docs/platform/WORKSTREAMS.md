@@ -249,6 +249,8 @@ Good delegation candidate for a VM-focused contributor with a fixed host-hook co
 - load-time VM entry metadata requirements are exercised by the VM C API tests
 - public zero-argument VM dispatch rejection for parameterized and upvalue
   entries is exercised by the VM C API tests
+- empty and duplicate decoded VM function names are rejected during public VM
+  loading and covered by the VM C API and profile CLI tests
 
 ## Workstream 7: BSP Contract and Reference Targets
 
