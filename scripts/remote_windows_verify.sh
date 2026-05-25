@@ -13,7 +13,9 @@ CONFIG="${CONFIG:-Release}"
 LLVM_VERSION="${LLVM_VERSION:-21}"
 LLVM_DIR="${LLVM_DIR:-}"
 FETCH_REF="${FETCH_REF:-origin/master}"
+TEST_MODE="${TEST_MODE:-windows-lite}"
 UPDATE=1
+RUN_CONFIGURE_BUILD=1
 RUN_CTEST=1
 RUN_WINDOWS_LITE=1
 
@@ -31,9 +33,12 @@ Options:
   --llvm-version N       Required LLVM major version (default: 21)
   --llvm-dir DIR         Remote LLVM CMake package directory
   --fetch-ref REF        Remote ref to fast-forward to (default: origin/master)
+  --test-mode MODE       PowerShell suite mode (default: windows-lite)
   --no-update            Do not fetch/fast-forward the remote checkout
+  --skip-configure-build Use an existing remote build directory
   --no-ctest             Skip the Windows CTest surface guard
-  --no-windows-lite      Skip scripts/run_all_tests.ps1 -Mode windows-lite
+  --no-windows-lite      Skip scripts/run_all_tests.ps1
+  --suite-only           Only run the PowerShell suite against an existing build
   -h, --help             Show this help
 USAGE
 }
@@ -97,7 +102,9 @@ remote_script() {
     emit_ps_arg LLVMVersionArg "$LLVM_VERSION"
     emit_ps_arg LLVMDirArg "$LLVM_DIR"
     emit_ps_arg FetchRefArg "$FETCH_REF"
+    emit_ps_arg TestModeArg "$TEST_MODE"
     emit_ps_bool UpdateArg "$UPDATE"
+    emit_ps_bool RunConfigureBuildArg "$RUN_CONFIGURE_BUILD"
     emit_ps_bool RunCtestArg "$RUN_CTEST"
     emit_ps_bool RunWindowsLiteArg "$RUN_WINDOWS_LITE"
 
@@ -162,37 +169,39 @@ if ($LASTEXITCODE -ne 0) {
 }
 Write-Host ("HEAD: {0}" -f $Head)
 
-$cmakeArgs = @()
-if (-not [string]::IsNullOrWhiteSpace($GeneratorArg)) {
-    $cmakeArgs += @("-G", $GeneratorArg)
-    if ($GeneratorArg -like "Visual Studio*") {
-        if (-not [string]::IsNullOrWhiteSpace($ArchArg)) {
-            $cmakeArgs += @("-A", $ArchArg)
-        }
-        if (-not [string]::IsNullOrWhiteSpace($ToolsetArg)) {
-            $cmakeArgs += @("-T", $ToolsetArg)
+if ($RunConfigureBuildArg) {
+    $cmakeArgs = @()
+    if (-not [string]::IsNullOrWhiteSpace($GeneratorArg)) {
+        $cmakeArgs += @("-G", $GeneratorArg)
+        if ($GeneratorArg -like "Visual Studio*") {
+            if (-not [string]::IsNullOrWhiteSpace($ArchArg)) {
+                $cmakeArgs += @("-A", $ArchArg)
+            }
+            if (-not [string]::IsNullOrWhiteSpace($ToolsetArg)) {
+                $cmakeArgs += @("-T", $ToolsetArg)
+            }
         }
     }
-}
-$cmakeArgs += @(
-    "-S", $RepoDir,
-    "-B", $BuildDir,
-    "-DESHKOL_BUILD_TESTS=ON",
-    "-DESHKOL_REQUIRED_LLVM_MAJOR=$LLVMVersionArg"
-)
-if (-not [string]::IsNullOrWhiteSpace($LLVMDirArg)) {
-    $cmakeArgs += "-DLLVM_DIR=$LLVMDirArg"
-}
+    $cmakeArgs += @(
+        "-S", $RepoDir,
+        "-B", $BuildDir,
+        "-DESHKOL_BUILD_TESTS=ON",
+        "-DESHKOL_REQUIRED_LLVM_MAJOR=$LLVMVersionArg"
+    )
+    if (-not [string]::IsNullOrWhiteSpace($LLVMDirArg)) {
+        $cmakeArgs += "-DLLVM_DIR=$LLVMDirArg"
+    }
 
-Invoke-External cmake $cmakeArgs
+    Invoke-External cmake $cmakeArgs
 
-$buildArgs = @(
-    "--build", $BuildDir,
-    "--config", $ConfigArg,
-    "--target", "eshkol-run", "eshkol-repl", "stdlib", "windows_suite_surface_test",
-    "--parallel"
-)
-Invoke-External cmake $buildArgs
+    $buildArgs = @(
+        "--build", $BuildDir,
+        "--config", $ConfigArg,
+        "--target", "eshkol-run", "eshkol-repl", "stdlib", "windows_suite_surface_test",
+        "--parallel"
+    )
+    Invoke-External cmake $buildArgs
+}
 
 if ($RunCtestArg) {
     $ctestArgs = @(
@@ -212,7 +221,7 @@ if ($RunWindowsLiteArg) {
         "-ExecutionPolicy", "Bypass",
         "-File", $suitePath,
         "-BuildDir", $BuildDir,
-        "-Mode", "windows-lite"
+        "-Mode", $TestModeArg
     )
 }
 
@@ -317,8 +326,17 @@ while [ "$#" -gt 0 ]; do
             FETCH_REF="$2"
             shift 2
             ;;
+        --test-mode)
+            require_option_value "$@"
+            TEST_MODE="$2"
+            shift 2
+            ;;
         --no-update)
             UPDATE=0
+            shift
+            ;;
+        --skip-configure-build)
+            RUN_CONFIGURE_BUILD=0
             shift
             ;;
         --no-ctest)
@@ -327,6 +345,12 @@ while [ "$#" -gt 0 ]; do
             ;;
         --no-windows-lite)
             RUN_WINDOWS_LITE=0
+            shift
+            ;;
+        --suite-only)
+            RUN_CONFIGURE_BUILD=0
+            RUN_CTEST=0
+            RUN_WINDOWS_LITE=1
             shift
             ;;
         -h|--help)
