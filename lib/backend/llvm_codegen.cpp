@@ -35312,6 +35312,7 @@ int eshkol_compile_llvm_ir_to_executable(LLVMModuleRef module_ref, const char* f
 #ifdef __APPLE__
         link_args.emplace_back("-Wl,-stack_size,0x20000000");
 #elif defined(_WIN32)
+        link_args.emplace_back("-fuse-ld=lld");
 #ifdef __MINGW32__
         link_args.emplace_back("-Wl,--stack,536870912");
 #else

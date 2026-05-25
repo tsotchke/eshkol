@@ -3447,6 +3447,7 @@ int main(int argc, char **argv)
 // .o inputs (the common `eshkol-run file.esk -o exe` flow) was
 // missing the Darwin branch.
 #ifdef _WIN32
+        link_args.emplace_back("-fuse-ld=lld");
 #ifdef __MINGW32__
         link_args.emplace_back("-Wl,--stack,536870912");
 #else
