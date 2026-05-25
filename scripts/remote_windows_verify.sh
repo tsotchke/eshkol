@@ -38,6 +38,15 @@ Options:
 USAGE
 }
 
+require_option_value() {
+    local option="$1"
+    if [ "$#" -lt 2 ] || [[ "$2" == -* ]]; then
+        echo "missing value for option: $option" >&2
+        usage >&2
+        exit 2
+    fi
+}
+
 ps_quote() {
     local value=${1//\'/\'\'}
     printf "'%s'" "$value"
@@ -205,38 +214,47 @@ run_remote() {
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --repo)
+            require_option_value "$@"
             REPO_DIR="$2"
             shift 2
             ;;
         --build-dir)
+            require_option_value "$@"
             BUILD_DIR="$2"
             shift 2
             ;;
         --generator)
+            require_option_value "$@"
             GENERATOR="$2"
             shift 2
             ;;
         --arch)
+            require_option_value "$@"
             ARCH="$2"
             shift 2
             ;;
         --toolset)
+            require_option_value "$@"
             TOOLSET="$2"
             shift 2
             ;;
         --config)
+            require_option_value "$@"
             CONFIG="$2"
             shift 2
             ;;
         --llvm-version)
+            require_option_value "$@"
             LLVM_VERSION="$2"
             shift 2
             ;;
         --llvm-dir)
+            require_option_value "$@"
             LLVM_DIR="$2"
             shift 2
             ;;
         --fetch-ref)
+            require_option_value "$@"
             FETCH_REF="$2"
             shift 2
             ;;
