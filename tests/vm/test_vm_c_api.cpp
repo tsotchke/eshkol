@@ -1093,6 +1093,47 @@ void test_path_native_helpers(void) {
 
 void test_valid_chunk(void) {
     EskbBuffer chunk = make_test_chunk();
+    EshkolVmLoadOptions required_options{};
+    CHECK(eshkol_vm_default_load_options(&required_options) == 0,
+          "initialize required-entry load options");
+    CHECK(required_options.required_functions == nullptr &&
+          required_options.required_function_count == 0,
+          "default VM load options do not require named entries");
+
+    const char* required_entries[] = {"main", "helper2"};
+    required_options.required_functions = required_entries;
+    required_options.required_function_count = 2;
+    EshkolVmHandle* required_vm =
+        eshkol_vm_load_chunk_with_options(chunk.data, chunk.len,
+                                          &required_options);
+    CHECK(required_vm != nullptr, "load chunk with required named entries");
+    if (required_vm) eshkol_vm_destroy(required_vm);
+
+    const char* missing_entries[] = {"main", "tick"};
+    required_options.required_functions = missing_entries;
+    required_options.required_function_count = 2;
+    CHECK(eshkol_vm_load_chunk_with_options(chunk.data, chunk.len,
+                                            &required_options) == nullptr,
+          "load options reject missing required named entry");
+
+    const char* invalid_entries[] = {"main", nullptr};
+    required_options.required_functions = invalid_entries;
+    required_options.required_function_count = 2;
+    CHECK(eshkol_vm_load_chunk_with_options(chunk.data, chunk.len,
+                                            &required_options) == nullptr,
+          "load options reject null required named entry");
+
+    required_options.required_functions = nullptr;
+    required_options.required_function_count = 1;
+    CHECK(eshkol_vm_load_chunk_with_options(chunk.data, chunk.len,
+                                            &required_options) == nullptr,
+          "load options reject required-entry count without names");
+
+    required_options.required_function_count = -1;
+    CHECK(eshkol_vm_load_chunk_with_options(chunk.data, chunk.len,
+                                            &required_options) == nullptr,
+          "load options reject negative required-entry count");
+
     EshkolVmHandle* vm = eshkol_vm_load_chunk(chunk.data, chunk.len);
     CHECK(vm != nullptr, "load in-memory ESKB chunk");
     if (vm) {

@@ -36,6 +36,8 @@ typedef struct EshkolVmLoadOptions {
     int native_policy;
     int reject_string_constants;
     int reject_desktop_native_calls;
+    const char* const* required_functions;
+    int required_function_count;
 } EshkolVmLoadOptions;
 
 /* Return the VM profile limits compiled into this runtime. */
@@ -54,7 +56,8 @@ EshkolVmHandle* eshkol_vm_load_chunk(const void* buffer, size_t size);
  * equivalent to eshkol_vm_load_chunk. `reject_string_constants` lets embedded
  * profiles refuse dynamic ESKB strings and route text through content packs.
  * `reject_desktop_native_calls` rejects OP_NATIVE_CALL operands below
- * ESHKOL_VM_HOST_NATIVE_BASE before bytecode can run. */
+ * ESHKOL_VM_HOST_NATIVE_BASE before bytecode can run. `required_functions`
+ * can name entry points that must exist in the decoded ESKB function table. */
 EshkolVmHandle* eshkol_vm_load_chunk_with_options(const void* buffer, size_t size,
                                                  const EshkolVmLoadOptions* options);
 

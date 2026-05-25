@@ -2242,3 +2242,44 @@ unchanged.
   rejection of desktop native fids through load options
 - compiler-side target checks are still needed to report source-level reasons
   before bytecode is emitted
+
+---
+
+## D-0066
+
+- Date: 2026-05-25
+- Status: Accepted
+- Title: Enforce required VM entries during product-script loading
+
+### Context
+
+The public VM ABI can query and run named ESKB function entries, which is enough
+for a host loop to call `init`, `tick`, `input`, or `render`. But before this
+decision, the loader still accepted chunks that lacked those entries. Product
+runtimes then had to discover the mistake after load, or encode entry checks as
+out-of-band convention.
+
+Tamatsotchke-style firmware needs script admission to prove that the bytecode
+contains the hooks the device loop will call repeatedly.
+
+### Decision
+
+Extend `EshkolVmLoadOptions` with:
+
+- `required_functions`
+- `required_function_count`
+
+`eshkol_vm_load_chunk_with_options` now validates those names against the
+decoded ESKB function table after structural/profile validation. Missing,
+empty, or null required names reject the chunk. The default loader continues to
+require no named entries.
+
+### Consequences
+
+- product hosts can fail missing script-entry contracts at load time
+- existing desktop VM loading remains unchanged
+- the public VM C API tests now cover required-entry success, missing entry
+  rejection, null required-name rejection, missing required-name array rejection,
+  and negative count rejection
+- compiler-side embedded target checks should still produce source-level
+  diagnostics before ESKB emission
