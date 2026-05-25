@@ -2667,3 +2667,33 @@ lookup run.
   duplicate-name chunk before lookup
 - the profile CLI test verifies duplicate source hooks fail emitted-bytecode
   admission and remove the rejected output
+
+---
+
+## D-0077
+
+- Date: 2026-05-25
+- Status: Accepted
+- Title: Require strict consumption of known ESKB sections
+
+### Context
+
+ESKB decoding uses section sizes to bound CONST, CODE, and META parsing. But
+before this decision, a known section could contain valid leading records
+followed by trailing bytes, and the reader would silently ignore the unused
+tail. That weakens byte-for-byte admission for product firmware artifacts.
+
+### Decision
+
+After decoding a known CONST, CODE, or META section, require the section reader
+cursor to land exactly at the declared section end. Malformed META strings now
+also reject the payload instead of being ignored.
+
+### Consequences
+
+- known ESKB sections are consumed exactly according to their declared records
+- trailing bytes in a known section fail before VM profile validation or
+  execution
+- unknown/reserved sections remain skipped by the current reader until a stable
+  consumer is added
+- the public VM C API tests include a CODE-section trailing-byte regression

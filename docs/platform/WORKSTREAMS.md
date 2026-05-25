@@ -251,6 +251,8 @@ Good delegation candidate for a VM-focused contributor with a fixed host-hook co
   entries is exercised by the VM C API tests
 - empty and duplicate decoded VM function names are rejected during public VM
   loading and covered by the VM C API and profile CLI tests
+- strict consumption of known ESKB sections is covered by a VM C API malformed
+  CODE-section regression
 
 ## Workstream 7: BSP Contract and Reference Targets
 
