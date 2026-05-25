@@ -35244,6 +35244,10 @@ int eshkol_compile_llvm_ir_to_executable(LLVMModuleRef module_ref, const char* f
             // Windows MSVC uses /WHOLEARCHIVE.
 #if defined(__APPLE__)
             link_args.emplace_back("-Wl,-force_load," + runtime_lib_path.generic_string());
+#elif defined(_WIN32) && defined(__MINGW32__)
+            link_args.emplace_back("-Wl,--whole-archive");
+            link_args.emplace_back(runtime_lib_path.generic_string());
+            link_args.emplace_back("-Wl,--no-whole-archive");
 #elif defined(_WIN32)
             link_args.emplace_back("-Xlinker");
             link_args.emplace_back("/WHOLEARCHIVE:" + runtime_lib_path.generic_string());
@@ -35312,8 +35316,12 @@ int eshkol_compile_llvm_ir_to_executable(LLVMModuleRef module_ref, const char* f
 #ifdef __APPLE__
         link_args.emplace_back("-Wl,-stack_size,0x20000000");
 #elif defined(_WIN32)
+#ifdef __MINGW32__
+        link_args.emplace_back("-Wl,--stack,536870912");
+#else
         link_args.emplace_back("-Xlinker");
         link_args.emplace_back("/STACK:536870912");
+#endif
 #elif defined(__linux__)
         link_args.emplace_back("-Wl,-z,stack-size=536870912");
         // --export-dynamic places static-linked symbols into the dynamic

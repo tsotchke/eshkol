@@ -3447,8 +3447,12 @@ int main(int argc, char **argv)
 // .o inputs (the common `eshkol-run file.esk -o exe` flow) was
 // missing the Darwin branch.
 #ifdef _WIN32
+#ifdef __MINGW32__
+        link_args.emplace_back("-Wl,--stack,536870912");
+#else
         link_args.emplace_back("-Xlinker");
         link_args.emplace_back("/STACK:536870912");
+#endif
 #elif defined(__APPLE__)
         link_args.emplace_back("-Wl,-stack_size,0x20000000");
 #elif defined(__linux__)
