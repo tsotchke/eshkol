@@ -65,6 +65,12 @@ int main(int argc, char** argv) {
                          "remote Windows verifier defaults to x64") &&
          expect_contains(script, "LLVM_VERSION=\"${LLVM_VERSION:-21}\"",
                          "remote Windows verifier pins LLVM 21 by default") &&
+         expect_contains(script, "require_option_value()",
+                         "remote Windows verifier validates valued options") &&
+         expect_contains(script, "missing value for option: $option",
+                         "remote Windows verifier reports missing option values") &&
+         expect_contains(script, "require_option_value \"$@\"",
+                         "remote Windows verifier calls the valued-option guard") &&
          expect_contains(script, "return (Join-Path $env:USERPROFILE \"projects\\eshkol\")",
                          "remote Windows verifier has a user-profile checkout default") &&
          expect_contains(script, "Test-Path -LiteralPath $RepoDir -PathType Container",
