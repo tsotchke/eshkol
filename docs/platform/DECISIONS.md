@@ -2070,3 +2070,47 @@ the VM handle.
 - a future product profile should still add compiler-side manifest checks so
   required entries are declared explicitly and unsupported entries fail before
   bytecode deployment
+
+---
+
+## D-0062
+
+- Date: 2026-05-25
+- Status: Accepted
+- Title: Add a host-native-only VM dispatch policy
+
+### Context
+
+The deterministic host-native table gives product runtimes stable native-call
+slots, but it does not by itself prevent bytecode from calling the broad desktop
+native table in `vm_native.c`. That table still owns files, processes, sockets,
+dynamic loading, terminal behavior, and other hosted subsystems that firmware
+profiles must not expose.
+
+Physically splitting `vm_native.c` by capability remains necessary, but
+Tamatsotchke-style runtime work needs an immediate guardrail that can run
+bytecode with fixed host calls while rejecting desktop native fids.
+
+### Decision
+
+Keep desktop behavior as the default native-call policy for loaded VM handles.
+Add a per-handle policy API to `inc/eshkol/backend/vm.h`:
+
+- `ESHKOL_VM_NATIVE_POLICY_DESKTOP`
+- `ESHKOL_VM_NATIVE_POLICY_HOST_ONLY`
+- `eshkol_vm_set_native_policy`
+- `eshkol_vm_get_native_policy`
+
+When a VM handle is set to `ESHKOL_VM_NATIVE_POLICY_HOST_ONLY`,
+`vm_dispatch_native` rejects any fid below `ESHKOL_VM_HOST_NATIVE_BASE` and
+continues to allow only deterministic host-native table slots.
+
+### Consequences
+
+- embedded/product hosts can load normal ESKB chunks and run them with a checked
+  host-call-only native surface
+- desktop VM behavior and existing native-call tests remain unchanged by default
+- the public VM C API tests now prove that fixed host calls still execute under
+  host-only policy and desktop native fids fail under that policy
+- this is a runtime guardrail, not a replacement for compiler-side embedded
+  target checks or the eventual physical split of `vm_native.c`

@@ -146,6 +146,7 @@ Examples:
 
 - ESKB
 - hook-driven VM execution
+- host-native-only native-call policy
 
 ## Feature Availability Rules
 
