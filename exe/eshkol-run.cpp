@@ -261,6 +261,7 @@ static struct option long_options[] = {
 
 /* Bytecode VM compiler — emit ESKB format */
 extern "C" int eshkol_emit_eskb(const char* source, const char* output_path);
+extern "C" int eshkol_emit_eskb_embedded(const char* source, const char* output_path);
 
 // Set to track imported files (prevent circular imports)
 static std::set<std::string> imported_files;
@@ -2552,6 +2553,8 @@ int main(int argc, char **argv)
     const char* profile_name = nullptr;
     const char* target_triple = nullptr;
     bool freestanding_native_profile = false;
+    bool vm_only_profile = false;
+    bool embedded_vm_profile = false;
 
     if (argc == 1) print_help(1);
 
@@ -2687,6 +2690,8 @@ int main(int argc, char **argv)
             resolved.profile &&
             resolved.profile->freestanding &&
             resolved.profile->backend == eshkol::profile::Backend::Native;
+        vm_only_profile = resolved.vm_only;
+        embedded_vm_profile = resolved.embedded_vm;
         eshkol_set_target(resolved.target_triple);
         eshkol_set_freestanding_codegen(freestanding_native_profile ? 1 : 0);
     }
@@ -2913,6 +2918,42 @@ int main(int argc, char **argv)
             source_files.push_back(argv[optind]);
         else if (ends_with(tmp, ".o"))
             compiled_files.push_back(argv[optind]);
+    }
+
+    if (vm_only_profile) {
+        if (source_files.empty()) {
+            eshkol_error("VM profile requires an input .esk source file");
+            eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
+            return 1;
+        }
+        if (source_files.size() != 1 || !compiled_files.empty()) {
+            eshkol_error("VM profiles currently support exactly one .esk source file and no .o inputs");
+            eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
+            return 1;
+        }
+
+        std::ifstream eskb_src(source_files[0]);
+        if (!eskb_src.is_open()) {
+            eshkol_error("Failed to open file: %s", source_files[0]);
+            eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
+            return 1;
+        }
+
+        std::string eskb_source((std::istreambuf_iterator<char>(eskb_src)),
+                                std::istreambuf_iterator<char>());
+        int eskb_result = embedded_vm_profile
+                              ? eshkol_emit_eskb_embedded(eskb_source.c_str(), eskb_output_path)
+                              : eshkol_emit_eskb(eskb_source.c_str(), eskb_output_path);
+        if (eskb_result != 0) {
+            eshkol_error("ESKB emission failed for profile %s",
+                         profile_name ? profile_name : "hosted-vm");
+            eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
+            return 1;
+        }
+
+        printf("[ESKB] Emitted bytecode to %s\n", eskb_output_path);
+        eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_NONE);
+        return 0;
     }
 
     // First pass: Load source files to check for stdlib requirements

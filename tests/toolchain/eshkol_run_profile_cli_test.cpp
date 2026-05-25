@@ -219,6 +219,10 @@ int main(int argc, char** argv) {
         return fail("invalid profile diagnostic did not list supported profiles\n" +
                     invalid_profile.output);
     }
+    if (!contains(invalid_profile.output, "embedded-vm")) {
+        return fail("invalid profile diagnostic did not list embedded-vm\n" +
+                    invalid_profile.output);
+    }
 
     ProcessResult hosted_native_wasm = run_process_capture(
         {run_binary.string(), "--profile", "hosted-native", "--wasm", source_path.string()},
@@ -261,6 +265,50 @@ int main(int argc, char** argv) {
     }
     if (fs::exists(temp_root / "profile-object.o.o")) {
         return fail("freestanding object path appended .o unexpectedly");
+    }
+
+    ProcessResult embedded_missing_eskb = run_process_capture(
+        {run_binary.string(), "--profile", "embedded-vm", source_path.string()},
+        temp_root);
+    if (int rc = expect_failure_containing("embedded VM missing ESKB",
+                                           embedded_missing_eskb,
+                                           "--profile embedded-vm requires --emit-eskb <path>")) {
+        return rc;
+    }
+
+    const fs::path embedded_eskb_path = temp_root / "embedded.eskb";
+    ProcessResult embedded_eskb = run_process_capture(
+        {run_binary.string(), "--profile", "embedded-vm",
+         "--emit-eskb", embedded_eskb_path.string(), source_path.string()},
+        temp_root);
+    if (int rc = expect_success("embedded VM ESKB emission", embedded_eskb)) {
+        return rc;
+    }
+    if (!fs::exists(embedded_eskb_path)) {
+        return fail("embedded VM ESKB file was not created");
+    }
+    if (fs::exists(temp_root / "a.out") || fs::exists(temp_root / "a.exe")) {
+        return fail("embedded VM profile unexpectedly produced a native executable");
+    }
+
+    const fs::path desktop_native_source = temp_root / "desktop-native.esk";
+    {
+        std::ofstream source(desktop_native_source);
+        source << "(make-vector 1 0)\n";
+    }
+
+    ProcessResult embedded_desktop_native = run_process_capture(
+        {run_binary.string(), "--profile", "embedded-vm",
+         "--emit-eskb", (temp_root / "desktop-native.eskb").string(),
+         desktop_native_source.string()},
+        temp_root);
+    if (int rc = expect_failure_containing("embedded VM desktop native rejection",
+                                           embedded_desktop_native,
+                                           "rejected desktop native call")) {
+        return rc;
+    }
+    if (fs::exists(temp_root / "desktop-native.eskb")) {
+        return fail("embedded VM wrote ESKB after rejecting desktop native bytecode");
     }
 
     fs::remove_all(temp_root, ec);
