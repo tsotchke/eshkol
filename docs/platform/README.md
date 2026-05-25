@@ -124,6 +124,7 @@ Program phase:
 - the `runtime-split-pending` source set has been retired; remaining runtime implementation files are classified as `runtime-core` or `runtime-hosted`
 - the bytecode VM unity hub now builds through `eshkol-vm-unity-obj`, with explicit `vm-core`, `vm-hosted`, VM toolchain, and VM test component families guarded by a boundary test
 - bytecode VM heap, stack, frame, and constant-pool capacities are now CMake cache profile knobs, with shared defaults in `inc/eshkol/backend/vm_limits.h`
+- embedders can install a deterministic VM host-native table through the public C ABI, giving firmware/product profiles stable native-call slots before the desktop native table is physically split
 - hosted Windows x86_64 validation now has a remote SSH harness for Jack's
   Tailscale Windows PC: `scripts/remote_windows_verify.sh` builds the native
   Visual Studio 2022 + ClangCL tree and runs the bounded `windows-lite` suite
@@ -146,6 +147,7 @@ Program phase:
 Immediate priorities:
 
 - physical VM source extraction behind the explicit VM source families
+- embedded VM loader/export-table profile work
 - first `runtime-freestanding` hook definitions
 - low-level machine-facing language surface
 - freestanding LLVM object and ELF pipeline

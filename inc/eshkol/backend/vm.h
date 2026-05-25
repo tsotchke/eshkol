@@ -48,6 +48,21 @@ int eshkol_vm_top_int64(EshkolVmHandle* h, int64_t* out);
  * should encode in OP_NATIVE_CALL is ESHKOL_VM_HOST_NATIVE_BASE + slot_index. */
 typedef struct VM VM;
 typedef int (*eshkol_vm_host_native_fn)(VM* vm);
+
+typedef struct EshkolVmHostNative {
+    const char* name;
+    eshkol_vm_host_native_fn fn;
+} EshkolVmHostNative;
+
+/* Install a deterministic host-native table. Slots map directly to the input
+ * array order, so bytecode fids are ESHKOL_VM_HOST_NATIVE_BASE + index.
+ * Validation is all-or-nothing: invalid names, null callbacks, duplicates, or
+ * over-capacity tables leave the existing registry unchanged. */
+int eshkol_vm_install_host_natives(const EshkolVmHostNative* entries, int count);
+void eshkol_vm_clear_host_natives(void);
+int eshkol_vm_host_native_capacity(void);
+int eshkol_vm_host_native_count(void);
+
 int eshkol_vm_register_host_native(const char* name, eshkol_vm_host_native_fn fn);
 
 /* Release a previously-registered slot so it can be reused by a later

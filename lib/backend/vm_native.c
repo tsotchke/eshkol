@@ -3768,14 +3768,72 @@ static double vm_qrng_double(void) {
 #define VM_HOST_NATIVE_NAME_MAX 128
 
 typedef int (*eshkol_vm_host_native_fn)(VM* vm);
+typedef struct EshkolVmHostNative {
+    const char* name;
+    eshkol_vm_host_native_fn fn;
+} EshkolVmHostNative;
+
 static eshkol_vm_host_native_fn g_host_natives[VM_HOST_NATIVE_MAX];
 static char g_host_native_names[VM_HOST_NATIVE_MAX][VM_HOST_NATIVE_NAME_MAX];
 static int g_host_native_count = 0;
 
-int eshkol_vm_register_host_native(const char* name, eshkol_vm_host_native_fn fn) {
-    if (!name || !fn) return -1;
+static int vm_host_native_name_is_valid(const char* name) {
+    if (!name) return 0;
     size_t name_len = strlen(name);
-    if (name_len == 0 || name_len >= VM_HOST_NATIVE_NAME_MAX) return -1;
+    return name_len > 0 && name_len < VM_HOST_NATIVE_NAME_MAX;
+}
+
+static void vm_host_native_clear_slot(int slot) {
+    g_host_natives[slot] = NULL;
+    g_host_native_names[slot][0] = '\0';
+}
+
+static void vm_host_native_copy_slot(int slot,
+                                     const char* name,
+                                     eshkol_vm_host_native_fn fn) {
+    size_t name_len = strlen(name);
+    g_host_natives[slot] = fn;
+    memcpy(g_host_native_names[slot], name, name_len + 1);
+}
+
+int eshkol_vm_install_host_natives(const EshkolVmHostNative* entries, int count) {
+    if (count < 0 || count > VM_HOST_NATIVE_MAX) return -1;
+    if (count > 0 && !entries) return -1;
+
+    for (int i = 0; i < count; i++) {
+        if (!entries[i].fn || !vm_host_native_name_is_valid(entries[i].name)) return -1;
+        for (int j = 0; j < i; j++) {
+            if (strcmp(entries[i].name, entries[j].name) == 0) return -1;
+        }
+    }
+
+    for (int i = 0; i < VM_HOST_NATIVE_MAX; i++) {
+        vm_host_native_clear_slot(i);
+    }
+    for (int i = 0; i < count; i++) {
+        vm_host_native_copy_slot(i, entries[i].name, entries[i].fn);
+    }
+    g_host_native_count = count;
+    return 0;
+}
+
+void eshkol_vm_clear_host_natives(void) {
+    for (int i = 0; i < VM_HOST_NATIVE_MAX; i++) {
+        vm_host_native_clear_slot(i);
+    }
+    g_host_native_count = 0;
+}
+
+int eshkol_vm_host_native_capacity(void) {
+    return VM_HOST_NATIVE_MAX;
+}
+
+int eshkol_vm_host_native_count(void) {
+    return g_host_native_count;
+}
+
+int eshkol_vm_register_host_native(const char* name, eshkol_vm_host_native_fn fn) {
+    if (!fn || !vm_host_native_name_is_valid(name)) return -1;
     /* Tombstone-aware lookup: a tombstoned slot has fn == NULL and an empty
      * name; live slots cannot duplicate `name`. */
     for (int i = 0; i < g_host_native_count; i++) {
@@ -3792,16 +3850,14 @@ int eshkol_vm_register_host_native(const char* name, eshkol_vm_host_native_fn fn
         if (g_host_native_count >= VM_HOST_NATIVE_MAX) return -1;
         slot = g_host_native_count++;
     }
-    g_host_natives[slot] = fn;
-    memcpy(g_host_native_names[slot], name, name_len + 1);
+    vm_host_native_copy_slot(slot, name, fn);
     return slot;
 }
 
 int eshkol_vm_unregister_host_native(int slot) {
     if (slot < 0 || slot >= g_host_native_count) return -1;
     if (g_host_natives[slot] == NULL) return -1;
-    g_host_natives[slot] = NULL;
-    g_host_native_names[slot][0] = '\0';
+    vm_host_native_clear_slot(slot);
     return 0;
 }
 
