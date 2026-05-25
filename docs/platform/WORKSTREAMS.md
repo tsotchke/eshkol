@@ -199,6 +199,7 @@ Make the VM a valid non-hosted runtime target.
 - named VM entry-point dispatch for product runtime loops
 - ESKB string constant loading plus explicit embedded string rejection/content-pack
   policy at load time
+- load-time rejection for desktop native fids in embedded bytecode profiles
 
 ### Dependencies
 
@@ -231,6 +232,8 @@ Good delegation candidate for a VM-focused contributor with a fixed host-hook co
 - named ESKB entry points are exercised by the public VM C API tests
 - ESKB string constant materialization and embedded rejection behavior are
   exercised by the public VM C API tests
+- embedded bytecode admission rejects desktop native calls before VM execution
+  in the public VM C API tests
 
 ## Workstream 7: BSP Contract and Reference Targets
 

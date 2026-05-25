@@ -753,7 +753,10 @@ void test_host_only_native_policy(void) {
     EshkolVmLoadOptions host_only_options{};
     CHECK(eshkol_vm_default_load_options(&host_only_options) == 0,
           "initialize default VM load options");
+    CHECK(host_only_options.reject_desktop_native_calls == 0,
+          "default VM load options allow desktop native calls");
     host_only_options.native_policy = ESHKOL_VM_NATIVE_POLICY_HOST_ONLY;
+    host_only_options.reject_desktop_native_calls = 1;
     EshkolVmHandle* host_vm =
         eshkol_vm_load_chunk_with_options(host_chunk.data, host_chunk.len,
                                           &host_only_options);
@@ -785,6 +788,16 @@ void test_host_only_native_policy(void) {
                                             &host_only_options) == nullptr,
           "load options reject invalid native policy");
     eskb_buf_free(&invalid_options_chunk);
+
+    host_only_options.native_policy = ESHKOL_VM_NATIVE_POLICY_HOST_ONLY;
+    host_only_options.reject_desktop_native_calls = 1;
+    EskbBuffer rejected_desktop_chunk =
+        make_number_to_string_radix_chunk(10, 2, "1010");
+    CHECK(eshkol_vm_load_chunk_with_options(rejected_desktop_chunk.data,
+                                            rejected_desktop_chunk.len,
+                                            &host_only_options) == nullptr,
+          "embedded load options reject desktop native fid before run");
+    eskb_buf_free(&rejected_desktop_chunk);
 
     EskbBuffer desktop_chunk =
         make_number_to_string_radix_chunk(10, 2, "1010");
