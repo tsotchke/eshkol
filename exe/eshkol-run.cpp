@@ -25,6 +25,8 @@
 #include <errno.h>
 #include <filesystem>
 
+#include <fstream>
+#include <iterator>
 #include <string>
 #include <vector>
 #include <set>
@@ -257,6 +259,7 @@ static struct option long_options[] = {
     {"emit-eskb", required_argument, nullptr, 'B'},
     {"profile", required_argument, nullptr, 260},
     {"target", required_argument, nullptr, 261},
+    {"require-vm-entry", required_argument, nullptr, 262},
     {0, 0, 0, 0}
 };
 
@@ -1375,6 +1378,7 @@ static void print_help(int x = 0)
         "\t    Profiles: hosted-native, hosted-wasm, hosted-vm, freestanding-kernel-native,\n"
         "\t              freestanding-mcu-native, freestanding-vm, embedded-vm.\n"
         "\t--target TRIPLE = Set the LLVM target triple.\n"
+        "\t--require-vm-entry NAME = Require a named VM entry in emitted ESKB.\n"
         "\t--lib:[-l] = Links a shared library to the resulting executable.\n"
         "\t--lib-path:[-L] = Adds a directory to the library search path.\n"
         "\t--no-stdlib:[-n] = Do not auto-load the standard library.\n"
@@ -2552,6 +2556,7 @@ int main(int argc, char **argv)
     bool freestanding_native_profile = false;
     bool vm_only_profile = false;
     bool embedded_vm_profile = false;
+    std::vector<std::string> required_vm_entries;
 
     if (argc == 1) print_help(1);
 
@@ -2641,6 +2646,13 @@ int main(int argc, char **argv)
         case 261:
             target_triple = optarg;
             break;
+        case 262:
+            if (!optarg || !*optarg) {
+                fprintf(stderr, "--require-vm-entry requires a non-empty name\n");
+                return 1;
+            }
+            required_vm_entries.emplace_back(optarg);
+            break;
         default:
             print_help(1);
         }
@@ -2691,6 +2703,11 @@ int main(int argc, char **argv)
         embedded_vm_profile = resolved.embedded_vm;
         eshkol_set_target(resolved.target_triple);
         eshkol_set_freestanding_codegen(freestanding_native_profile ? 1 : 0);
+    }
+
+    if (!required_vm_entries.empty() && !vm_only_profile) {
+        fprintf(stderr, "--require-vm-entry requires a VM profile with --emit-eskb\n");
+        return 1;
     }
 
     if (!include_paths.empty()) {
@@ -2946,6 +2963,69 @@ int main(int argc, char **argv)
                          profile_name ? profile_name : "hosted-vm");
             eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
             return 1;
+        }
+
+        if (!required_vm_entries.empty()) {
+            std::ifstream emitted_eskb(eskb_output_path, std::ios::binary);
+            if (!emitted_eskb.is_open()) {
+                eshkol_error("Failed to open emitted ESKB for admission: %s",
+                             eskb_output_path);
+                std::error_code remove_ec;
+                std::filesystem::remove(eskb_output_path, remove_ec);
+                eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
+                return 1;
+            }
+
+            std::vector<uint8_t> emitted_bytes(
+                (std::istreambuf_iterator<char>(emitted_eskb)),
+                std::istreambuf_iterator<char>());
+            if (emitted_bytes.empty()) {
+                eshkol_error("ESKB admission failed: emitted bytecode is empty");
+                std::error_code remove_ec;
+                std::filesystem::remove(eskb_output_path, remove_ec);
+                eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
+                return 1;
+            }
+
+            EshkolVmLoadOptions admission_options;
+            if (eshkol_vm_default_load_options(&admission_options) != 0) {
+                eshkol_error("ESKB admission failed: could not initialize VM load options");
+                std::error_code remove_ec;
+                std::filesystem::remove(eskb_output_path, remove_ec);
+                eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
+                return 1;
+            }
+            if (embedded_vm_profile) {
+                admission_options.native_policy = ESHKOL_VM_NATIVE_POLICY_HOST_ONLY;
+                admission_options.reject_string_constants = 1;
+                admission_options.reject_desktop_native_calls = 1;
+            }
+
+            EshkolVmHandle* admission_vm =
+                eshkol_vm_load_chunk_with_options(emitted_bytes.data(),
+                                                  emitted_bytes.size(),
+                                                  &admission_options);
+            if (!admission_vm) {
+                eshkol_error("ESKB admission failed for profile %s",
+                             profile_name ? profile_name : "hosted-vm");
+                std::error_code remove_ec;
+                std::filesystem::remove(eskb_output_path, remove_ec);
+                eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
+                return 1;
+            }
+
+            for (const std::string& entry : required_vm_entries) {
+                if (eshkol_vm_has_function(admission_vm, entry.c_str()) != 1) {
+                    eshkol_error("ESKB admission failed: missing required VM entry '%s'",
+                                 entry.c_str());
+                    eshkol_vm_destroy(admission_vm);
+                    std::error_code remove_ec;
+                    std::filesystem::remove(eskb_output_path, remove_ec);
+                    eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
+                    return 1;
+                }
+            }
+            eshkol_vm_destroy(admission_vm);
         }
 
         printf("[ESKB] Emitted bytecode to %s\n", eskb_output_path);

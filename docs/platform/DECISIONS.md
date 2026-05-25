@@ -2364,3 +2364,40 @@ execution but are not advertised as product hooks yet.
   both `main` and `tick`, then calls `tick` and verifies its result
 - export-manifest diagnostics are still a compiler/profile responsibility above
   this conservative function-table emission
+
+---
+
+## D-0069
+
+- Date: 2026-05-25
+- Status: Accepted
+- Title: Gate VM ESKB output with required entry checks
+
+### Context
+
+The compiler now emits named ESKB function records for closed top-level source
+functions, and the VM loader can reject chunks that lack required entries. But
+without a CLI gate, product build scripts still had to run a separate loader
+check after `eshkol-run --profile embedded-vm --emit-eskb`.
+
+Firmware builds need the normal bytecode-emission command to fail atomically
+when a script lacks hooks such as `init` or `tick`.
+
+### Decision
+
+Add `--require-vm-entry NAME` to `eshkol-run` for VM profiles. The option can
+be repeated. After ESKB emission, the CLI reloads the emitted bytecode through
+the public VM loader and checks every requested entry. For `embedded-vm`, the
+admission load uses the product policy: host-native-only dispatch, rejected
+ESKB string constants, and rejected desktop-native calls.
+
+If admission fails, `eshkol-run` reports the missing entry or profile admission
+failure, removes the emitted `.eskb` path, and exits non-zero.
+
+### Consequences
+
+- product builds can fail missing VM hook contracts in the ESKB emission step
+- rejected bytecode artifacts are not left behind for firmware packaging
+- hosted VM profiles can also use explicit required-entry checks while retaining
+  desktop-compatible load policy
+- richer manifest formats can build on top of this explicit entry list
