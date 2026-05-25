@@ -2203,3 +2203,42 @@ decoding completes, applies it to the loaded VM handle, and can reject
   embedded string rejection
 - compiler-side embedded target checks are still needed so unsupported strings
   and desktop native calls fail before bytecode is deployed
+
+---
+
+## D-0065
+
+- Date: 2026-05-25
+- Status: Accepted
+- Title: Reject desktop native calls during embedded VM loading
+
+### Context
+
+`ESHKOL_VM_NATIVE_POLICY_HOST_ONLY` rejects desktop native fids when bytecode
+executes, but that still lets a product host accept bytecode containing desktop
+native dependencies. For firmware profiles, admission should fail before the VM
+handle is exposed to the host loop.
+
+The deterministic host-native range already gives product runtimes a stable
+boundary: embedded bytecode should call `ESHKOL_VM_HOST_NATIVE_BASE + slot` and
+should not contain direct calls into the broad desktop native table.
+
+### Decision
+
+Extend `EshkolVmLoadOptions` with `reject_desktop_native_calls`.
+
+When this option is enabled, `eshkol_vm_load_chunk_with_options` scans decoded
+ESKB instructions after structural/profile validation and rejects any
+`OP_NATIVE_CALL` operand below `ESHKOL_VM_HOST_NATIVE_BASE`. The default loader
+continues to allow desktop native calls so existing desktop VM behavior remains
+unchanged.
+
+### Consequences
+
+- embedded/product hosts can reject desktop native dependencies at load time
+  instead of waiting for execution to reach them
+- fixed host-native slots remain valid under the embedded admission policy
+- the VM C API tests now prove both acceptance of host-native slots and
+  rejection of desktop native fids through load options
+- compiler-side target checks are still needed to report source-level reasons
+  before bytecode is emitted

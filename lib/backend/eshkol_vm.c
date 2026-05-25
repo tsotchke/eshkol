@@ -1331,6 +1331,7 @@ int eshkol_vm_default_load_options(EshkolVmLoadOptions* out) {
     if (!out) return -1;
     out->native_policy = ESHKOL_VM_NATIVE_POLICY_DESKTOP;
     out->reject_string_constants = 0;
+    out->reject_desktop_native_calls = 0;
     return 0;
 }
 
@@ -1345,6 +1346,7 @@ static int eshkol_vm_normalize_load_options(const EshkolVmLoadOptions* options,
         return -1;
     }
     out->reject_string_constants = out->reject_string_constants ? 1 : 0;
+    out->reject_desktop_native_calls = out->reject_desktop_native_calls ? 1 : 0;
     return 0;
 }
 
@@ -1469,6 +1471,20 @@ static int eshkol_vm_materialize_eskb_constants(VM* vm, const EskbModule* mod,
     return 0;
 }
 
+static int eshkol_vm_validate_load_policy(const EskbModule* mod,
+                                          const EshkolVmLoadOptions* options) {
+    if (!mod || !options) return -1;
+    if (!options->reject_desktop_native_calls) return 0;
+
+    for (int pc = 0; pc < mod->code_len; pc++) {
+        if (mod->opcodes[pc] == OP_NATIVE_CALL &&
+            mod->operands[pc] < ESHKOL_VM_HOST_NATIVE_BASE) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
 EshkolVmHandle* eshkol_vm_load_chunk(const void* buffer, size_t size) {
     return eshkol_vm_load_chunk_with_options(buffer, size, NULL);
 }
@@ -1485,6 +1501,11 @@ EshkolVmHandle* eshkol_vm_load_chunk_with_options(const void* buffer, size_t siz
     }
     h->mod_owned = 1;
     if (eshkol_vm_validate_module_profile(&h->mod) != 0) {
+        eskb_module_free(&h->mod);
+        free(h);
+        return NULL;
+    }
+    if (eshkol_vm_validate_load_policy(&h->mod, &effective_options) != 0) {
         eskb_module_free(&h->mod);
         free(h);
         return NULL;
