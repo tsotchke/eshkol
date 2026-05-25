@@ -113,6 +113,9 @@ struct Token {
     uint32_t column;  // 1-based column number
 };
 
+static constexpr char kStringInterpolationStart = '\x1e';
+static constexpr char kStringInterpolationEnd = '\x1f';
+
 class SchemeTokenizer {
 private:
     std::string input;
@@ -439,6 +442,72 @@ private:
                     }
                     default: value += esc; break;
                 }
+            } else if (input[pos] == '~' &&
+                       pos + 2 < length &&
+                       input[pos + 1] == '~' &&
+                       input[pos + 2] == '{') {
+                // `~~{` is a literal `~{`, so users can write the
+                // interpolation opener without starting an interpolation.
+                value += "~{";
+                pos += 3;
+                column_ += 3;
+                continue;
+            } else if (input[pos] == '~' &&
+                       pos + 1 < length &&
+                       input[pos + 1] == '{') {
+                Token marker{TOKEN_STRING, "~{", pos, line_, column_};
+                pos += 2;
+                column_ += 2;
+
+                std::string expr_source;
+                bool in_expr_string = false;
+                bool escaped = false;
+                bool closed = false;
+
+                while (pos < length) {
+                    char c = input[pos];
+                    if (!in_expr_string && c == '}') {
+                        closed = true;
+                        break;
+                    }
+
+                    expr_source += c;
+
+                    if (in_expr_string) {
+                        if (escaped) {
+                            escaped = false;
+                        } else if (c == '\\') {
+                            escaped = true;
+                        } else if (c == '"') {
+                            in_expr_string = false;
+                        }
+                    } else if (c == '"') {
+                        in_expr_string = true;
+                    }
+
+                    if (c == '\n') {
+                        line_++;
+                        pos++;
+                        line_start_ = pos;
+                        column_ = 1;
+                    } else {
+                        pos++;
+                        column_++;
+                    }
+                }
+
+                if (!closed) {
+                    PARSE_ERROR_AT(marker, "unterminated string interpolation");
+                    return {TOKEN_STRING, value, start, tok_line, tok_col};
+                }
+
+                value += kStringInterpolationStart;
+                value += expr_source;
+                value += kStringInterpolationEnd;
+
+                pos++; // skip closing interpolation brace
+                column_++;
+                continue;
             } else if (input[pos] == '\n') {
                 value += input[pos];
                 line_++;
@@ -745,6 +814,142 @@ private:
     }
 };
 
+static eshkol_ast_t parse_expression(SchemeTokenizer& tokenizer);
+
+static eshkol_ast_t make_parser_string_ast(const std::string& value,
+                                           uint32_t line,
+                                           uint32_t column) {
+    eshkol_ast_t ast = {};
+    ast.line = line;
+    ast.column = column;
+    size_t len = value.length();
+    char* ptr = new char[len + 1];
+    if (ptr) memcpy(ptr, value.c_str(), len + 1);
+    eshkol_ast_make_string(&ast, ptr, len + 1);
+    return ast;
+}
+
+static eshkol_ast_t make_parser_var_ast(const char* name,
+                                        uint32_t line,
+                                        uint32_t column) {
+    eshkol_ast_t ast = {};
+    ast.type = ESHKOL_VAR;
+    ast.line = line;
+    ast.column = column;
+    size_t len = strlen(name);
+    ast.variable.id = new char[len + 1];
+    if (ast.variable.id) memcpy(ast.variable.id, name, len + 1);
+    ast.variable.data = nullptr;
+    return ast;
+}
+
+static eshkol_ast_t make_parser_call_ast(const char* name,
+                                         const std::vector<eshkol_ast_t>& args,
+                                         uint32_t line,
+                                         uint32_t column) {
+    eshkol_ast_t ast = {};
+    ast.type = ESHKOL_OP;
+    ast.line = line;
+    ast.column = column;
+    ast.operation.op = ESHKOL_CALL_OP;
+    ast.operation.call_op.func = new eshkol_ast_t;
+    *ast.operation.call_op.func = make_parser_var_ast(name, line, column);
+    ast.operation.call_op.num_vars = args.size();
+    if (!args.empty()) {
+        ast.operation.call_op.variables = new eshkol_ast_t[args.size()];
+        for (size_t i = 0; i < args.size(); i++) {
+            ast.operation.call_op.variables[i] = args[i];
+        }
+    } else {
+        ast.operation.call_op.variables = nullptr;
+    }
+    return ast;
+}
+
+static bool is_blank_string(const std::string& value) {
+    for (char c : value) {
+        if (!std::isspace(static_cast<unsigned char>(c))) return false;
+    }
+    return true;
+}
+
+static eshkol_ast_t parse_string_interpolation_expr(const Token& token,
+                                                    const std::string& source) {
+    if (is_blank_string(source)) {
+        PARSE_ERROR_AT(token, "string interpolation expression cannot be empty");
+        return {.type = ESHKOL_INVALID};
+    }
+
+    SchemeTokenizer expr_tokenizer(source, token.line, token.column);
+    eshkol_ast_t expr = parse_expression(expr_tokenizer);
+    if (expr.type == ESHKOL_INVALID) {
+        PARSE_ERROR_AT(token, "failed to parse string interpolation expression");
+        return expr;
+    }
+
+    Token trailing = expr_tokenizer.nextToken();
+    if (trailing.type != TOKEN_EOF) {
+        PARSE_ERROR_AT(token, "string interpolation accepts exactly one expression");
+        return {.type = ESHKOL_INVALID};
+    }
+
+    std::vector<eshkol_ast_t> args;
+    args.push_back(make_parser_string_ast("~a", token.line, token.column));
+    args.push_back(expr);
+    return make_parser_call_ast("format", args, token.line, token.column);
+}
+
+static eshkol_ast_t parse_interpolated_string_token(const Token& token) {
+    if (token.value.find(kStringInterpolationStart) == std::string::npos) {
+        return make_parser_string_ast(token.value, token.line, token.column);
+    }
+
+    std::vector<eshkol_ast_t> parts;
+    std::string literal;
+
+    size_t i = 0;
+    while (i < token.value.size()) {
+        if (token.value[i] != kStringInterpolationStart) {
+            literal += token.value[i++];
+            continue;
+        }
+
+        if (!literal.empty()) {
+            parts.push_back(make_parser_string_ast(literal, token.line, token.column));
+            literal.clear();
+        }
+
+        size_t expr_start = i + 1;
+        size_t expr_end = token.value.find(kStringInterpolationEnd, expr_start);
+        if (expr_end == std::string::npos) {
+            PARSE_ERROR_AT(token, "unterminated string interpolation");
+            return {.type = ESHKOL_INVALID};
+        }
+
+        eshkol_ast_t formatted =
+            parse_string_interpolation_expr(token,
+                                            token.value.substr(expr_start,
+                                                               expr_end - expr_start));
+        if (formatted.type == ESHKOL_INVALID) {
+            return formatted;
+        }
+        parts.push_back(formatted);
+        i = expr_end + 1;
+    }
+
+    if (!literal.empty()) {
+        parts.push_back(make_parser_string_ast(literal, token.line, token.column));
+    }
+
+    if (parts.empty()) {
+        return make_parser_string_ast("", token.line, token.column);
+    }
+    if (parts.size() == 1) {
+        return parts[0];
+    }
+    return make_parser_call_ast("string-append", parts, token.line, token.column);
+}
+
 static eshkol_ast_t parse_atom(const Token& token) {
     eshkol_ast_t ast = {};  // Zero-initialize all fields
     ast.type = ESHKOL_INVALID;
@@ -753,10 +958,7 @@ static eshkol_ast_t parse_atom(const Token& token) {
 
     switch (token.type) {
         case TOKEN_STRING: {
-            size_t _len = token.value.length();
-            char* ptr = new char[_len + 1];
-            if (ptr) memcpy(ptr, token.value.c_str(), _len + 1);
-            eshkol_ast_make_string(&ast, ptr, _len + 1);
+            ast = parse_interpolated_string_token(token);
             break;
         }
 

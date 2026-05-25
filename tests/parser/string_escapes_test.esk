@@ -80,6 +80,24 @@
 (test-case "string-append empty" "hello" (string-append "hello" ""))
 (test-case "string-append three" "abc" (string-append "a" "b" "c"))
 
+;; String interpolation
+(define interpolation-name "Eshkol")
+(test-case "interpolation literal and variable"
+           "Hello, Eshkol!"
+           "Hello, ~{interpolation-name}!")
+(test-case "interpolation expression"
+           "sum=42"
+           "sum=~{(+ 19 23)}")
+(test-case "multiple interpolation"
+           "2 + 3 = 5"
+           "~{2} + ~{3} = ~{(+ 2 3)}")
+(test-case "escaped interpolation opener"
+           "literal ~~{x}"
+           "literal ~~{x}")
+(test-case "nested interpolation expression"
+           "value=84"
+           "value=~{(* (+ 19 23) 2)}")
+
 ;; substring
 (test-case "substring start" "hel" (substring "hello" 0 3))
 (test-case "substring middle" "ll" (substring "hello" 2 4))

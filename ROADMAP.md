@@ -305,7 +305,7 @@ v2.0 ─────────────────────────
 **Focus:** Make the language a joy to use day-to-day.
 
 - [ ] Full R7RS library system (`define-library` / `import` with renaming and prefixing)
-- [ ] String interpolation (`~{expr}` within strings)
+- [x] String interpolation (`~{expr}` within strings)
 - [ ] Named keyword arguments (`(f #:key value)`)
 - [ ] Pattern matching in `let` bindings (destructuring `let-match`)
 - [ ] Profile-guided optimization (runtime profiling feeds codegen)

@@ -343,6 +343,7 @@ This matrix documents all implemented and planned features for the Eshkol langua
 | S-expression manipulation | ✅ | Stable | quote, quasiquote |
 | Lambda S-expression display | ✅ | Stable | Shows source code |
 | Macro system | ✅ | Stable | `define-syntax` |
+| String interpolation | ✅ | Experimental | `~{expr}` inside strings; `~~{` escapes the opener |
 | **Exception Handling** |
 | `guard` / `raise` | ✅ | Stable | setjmp/longjmp |
 | Exception types | ✅ | Stable | User-defined |

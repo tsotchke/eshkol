@@ -1,0 +1,3 @@
+;;; Expected: Error
+
+(display "empty interpolation: ~{}")
