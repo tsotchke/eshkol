@@ -1478,11 +1478,15 @@ static int eshkol_vm_validate_module_profile(const EskbModule* mod) {
 
     for (int fi = 0; fi < mod->n_functions; fi++) {
         const EskbFunction* fn = &mod->functions[fi];
-        if (!fn->name || fn->code_len <= 0) return -1;
+        if (!fn->name || !fn->name[0] || fn->code_len <= 0) return -1;
         if (fn->n_locals < 0 || fn->n_locals > ESHKOL_VM_STACK_SIZE) return -1;
         if (fn->n_upvalues < 0 || fn->n_upvalues > 16) return -1;
         if (fn->code_offset < 0 || fn->code_offset >= mod->code_len) return -1;
         if (fn->code_len > mod->code_len - fn->code_offset) return -1;
+        for (int fj = fi + 1; fj < mod->n_functions; fj++) {
+            const EskbFunction* other = &mod->functions[fj];
+            if (other->name && strcmp(fn->name, other->name) == 0) return -1;
+        }
     }
 
     for (int pc = 0; pc < mod->code_len; pc++) {

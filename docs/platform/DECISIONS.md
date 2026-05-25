@@ -2632,3 +2632,38 @@ or enforce this before dispatch.
   public entry calls
 - the public VM C API tests cover both named upvalue-entry rejection and main
   upvalue-entry rejection
+
+---
+
+## D-0076
+
+- Date: 2026-05-25
+- Status: Accepted
+- Title: Reject invalid VM function names during loading
+
+### Context
+
+ESKB CODE sections can carry multiple named function descriptors, and product
+hosts use those names for required-entry admission and direct dispatch through
+`eshkol_vm_call`. Before this decision, a malformed or hand-authored chunk could
+decode an empty function name or two functions with the same name. Lookup then
+depended on non-contractual names or table order, which is not a defensible
+contract for firmware hooks.
+
+### Decision
+
+Extend the public VM load-profile validation to reject empty or duplicate
+decoded function names before load options, metadata requirements, or dispatch
+lookup run.
+
+### Consequences
+
+- required hook admission and `eshkol_vm_call` now operate over a unique
+  non-empty function-name table
+- invalid or ambiguous ESKB chunks fail at load time instead of selecting the
+  first match
+- the public VM C API tests include empty-name and duplicate-name chunks and
+  verify plain loading rejects both; required-entry loading also rejects the
+  duplicate-name chunk before lookup
+- the profile CLI test verifies duplicate source hooks fail emitted-bytecode
+  admission and remove the rejected output

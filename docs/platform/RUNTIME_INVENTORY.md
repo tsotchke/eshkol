@@ -287,7 +287,8 @@ required hooks whose decoded function metadata is incompatible with the current
 zero-argument public dispatch ABI: entries must declare zero parameters and no
 upvalues. The runtime dispatch path itself also rejects entries that declare
 upvalues, because the public call surface does not provide a closure environment
-for direct entry execution.
+for direct entry execution. The VM loader also rejects empty or duplicate decoded
+function names, making named hook admission and dispatch unambiguous.
 
 ### VM test family
 
