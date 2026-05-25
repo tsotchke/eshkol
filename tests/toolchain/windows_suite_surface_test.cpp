@@ -151,12 +151,16 @@ int main(int argc, char** argv) {
     ok = ok &&
          expect_contains(eshkol_run, "#ifdef __MINGW32__",
                          "eshkol-run generated link path has a MinGW branch") &&
+         expect_contains(eshkol_run, "link_args.emplace_back(\"-fuse-ld=lld\");",
+                         "eshkol-run generated link path uses lld on Windows") &&
          expect_contains(eshkol_run, "\"-Wl,--stack,536870912\"",
                          "eshkol-run generated link path uses GNU PE stack flag on MinGW") &&
          expect_contains(eshkol_run, "\"/STACK:536870912\"",
                          "eshkol-run generated link path preserves MSVC stack flag") &&
          expect_contains(llvm_codegen, "\"-Wl,--whole-archive\"",
                          "LLVM executable link path keeps ELF whole-archive support") &&
+         expect_contains(llvm_codegen, "link_args.emplace_back(\"-fuse-ld=lld\");",
+                         "LLVM executable link path uses lld on Windows") &&
          expect_contains(llvm_codegen, "\"-Wl,--stack,536870912\"",
                          "LLVM executable link path uses GNU PE stack flag on MinGW") &&
          expect_contains(llvm_codegen, "\"/STACK:536870912\"",
