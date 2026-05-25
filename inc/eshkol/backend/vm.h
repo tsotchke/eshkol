@@ -40,6 +40,15 @@ typedef struct EshkolVmLoadOptions {
     int required_function_count;
 } EshkolVmLoadOptions;
 
+typedef struct EshkolVmFunctionInfo {
+    const char* name;
+    int n_params;
+    int n_locals;
+    int n_upvalues;
+    int code_offset;
+    int code_len;
+} EshkolVmFunctionInfo;
+
 /* Return the VM profile limits compiled into this runtime. */
 int eshkol_vm_get_profile_limits(EshkolVmProfileLimits* out);
 
@@ -87,6 +96,12 @@ int eshkol_vm_function_count(EshkolVmHandle* h);
 /* Return a borrowed function name for `index`, valid until the VM handle is
  * destroyed. Returns NULL for invalid handles or out-of-range indices. */
 const char* eshkol_vm_function_name(EshkolVmHandle* h, int index);
+
+/* Fill decoded ESKB function metadata for `index`. `name` is borrowed and is
+ * valid until the VM handle is destroyed. Returns 0 on success, -1 for invalid
+ * handles, out-of-range indices, or NULL output. */
+int eshkol_vm_function_info(EshkolVmHandle* h, int index,
+                            EshkolVmFunctionInfo* out);
 
 /* Destroy the VM handle and release the decoded ESKB module. NULL-safe. */
 void eshkol_vm_destroy(EshkolVmHandle* h);

@@ -36,3 +36,11 @@ const char* eshkol_vm_function_name(EshkolVmHandle* h, int index) {
     (void)index;
     return NULL;
 }
+
+int eshkol_vm_function_info(EshkolVmHandle* h, int index,
+                            EshkolVmFunctionInfo* out) {
+    (void)h;
+    (void)index;
+    (void)out;
+    return -1;
+}
