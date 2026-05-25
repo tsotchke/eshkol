@@ -1108,8 +1108,47 @@ static int emit_eskb_from_chunk(const FuncChunk* main_chunk,
         else { consts[i].type = ESKB_CONST_NIL; }
     }
 
-    int result = eskb_write_file(output_path, instrs, main_chunk->code_len,
-                                  consts, main_chunk->n_constants, NULL);
+    int n_functions = 1 + main_chunk->n_entries;
+    EskbFunctionDef* functions =
+        (EskbFunctionDef*)calloc((size_t)n_functions, sizeof(EskbFunctionDef));
+    if (!functions) {
+        free(instrs);
+        free(consts);
+        return -1;
+    }
+
+    functions[0].name = "main";
+    functions[0].n_params = 0;
+    functions[0].n_locals = (uint32_t)main_chunk->n_locals;
+    functions[0].n_upvalues = 0;
+    functions[0].code = instrs;
+    functions[0].code_len = main_chunk->code_len;
+    functions[0].code_base = 0;
+
+    for (int i = 0; i < main_chunk->n_entries; i++) {
+        const ChunkEntry* entry = &main_chunk->entries[i];
+        if (entry->code_offset < 0 || entry->code_len <= 0 ||
+            entry->code_offset + entry->code_len > main_chunk->code_len ||
+            entry->n_params < 0 || entry->n_params > 255 ||
+            entry->n_upvalues < 0 || entry->n_upvalues > 255) {
+            free(functions);
+            free(instrs);
+            free(consts);
+            return -1;
+        }
+        functions[i + 1].name = entry->name;
+        functions[i + 1].n_params = (uint8_t)entry->n_params;
+        functions[i + 1].n_locals = (uint32_t)entry->n_locals;
+        functions[i + 1].n_upvalues = (uint8_t)entry->n_upvalues;
+        functions[i + 1].code = instrs + entry->code_offset;
+        functions[i + 1].code_len = entry->code_len;
+        functions[i + 1].code_base = entry->code_offset;
+    }
+
+    int result = eskb_write_file_with_functions(output_path, consts,
+                                                main_chunk->n_constants,
+                                                functions, n_functions, NULL);
+    free(functions);
     free(instrs);
     free(consts);
     return result;

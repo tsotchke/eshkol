@@ -942,6 +942,10 @@ static void compile_form_define(FuncChunk* c, Node* node, int tail) {
             }
             chunk_emit_instr(c, fi);
         }
+        if (c->enclosing == NULL && func.n_upvalues == 0 && strcmp(fname, "main") != 0) {
+            chunk_add_entry(c, fname, func.param_count, func.n_locals,
+                            func.n_upvalues, actual_func_pc, func.code_len);
+        }
 
         /* Patch jump over function body */
         patch(c, jover, OP_JUMP, c->code_len);

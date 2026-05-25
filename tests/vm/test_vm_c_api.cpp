@@ -1262,7 +1262,7 @@ void test_embedded_eskb_emission_load_policy(void) {
     if (ec) return;
 
     const fs::path ok_path = test_dir / "ok.eskb";
-    CHECK(eshkol_emit_eskb_embedded("(define answer (+ 19 23))\n",
+    CHECK(eshkol_emit_eskb_embedded("(define (tick) (+ 19 23))\n(tick)\n",
                                     ok_path.string().c_str()) == 0,
           "embedded ESKB emitter accepts opcode-only source");
     const std::vector<uint8_t> ok_bytes = read_binary_file(ok_path);
@@ -1274,16 +1274,27 @@ void test_embedded_eskb_emission_load_policy(void) {
     embedded_options.native_policy = ESHKOL_VM_NATIVE_POLICY_HOST_ONLY;
     embedded_options.reject_string_constants = 1;
     embedded_options.reject_desktop_native_calls = 1;
-    const char* required_entries[] = {"main"};
+    const char* required_entries[] = {"main", "tick"};
     embedded_options.required_functions = required_entries;
-    embedded_options.required_function_count = 1;
+    embedded_options.required_function_count = 2;
     EshkolVmHandle* embedded_vm = ok_bytes.empty()
         ? nullptr
         : eshkol_vm_load_chunk_with_options(ok_bytes.data(), ok_bytes.size(),
                                             &embedded_options);
     CHECK(embedded_vm != nullptr,
           "embedded loader accepts compiler-emitted embedded ESKB");
-    if (embedded_vm) eshkol_vm_destroy(embedded_vm);
+    if (embedded_vm) {
+        CHECK(eshkol_vm_has_function(embedded_vm, "tick") == 1,
+              "embedded ESKB exposes emitted tick entry");
+        CHECK(eshkol_vm_call(embedded_vm, "tick") == 0,
+              "embedded ESKB can call emitted tick entry");
+        int64_t tick_result = 0;
+        CHECK(eshkol_vm_top_int64(embedded_vm, &tick_result) == 0,
+              "read emitted tick entry result");
+        CHECK(tick_result == 42,
+              "emitted tick entry returns expected result");
+        eshkol_vm_destroy(embedded_vm);
+    }
 
     const fs::path rejected_path = test_dir / "rejected.eskb";
     CHECK(eshkol_emit_eskb_embedded("(display \"dynamic string\")\n",

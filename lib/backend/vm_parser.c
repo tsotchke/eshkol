@@ -279,15 +279,26 @@ typedef struct {
     int boxed;           /* 1 = the captured variable is heap-boxed */
 } Upvalue;
 
+typedef struct {
+    char* name;   /* heap-allocated via strdup() */
+    int n_params;
+    int n_locals;
+    int n_upvalues;
+    int code_offset;
+    int code_len;
+} ChunkEntry;
+
 #define MAX_UPVALUES 32
 #define CHUNK_INIT_CODE 256
 #define CHUNK_INIT_CONSTS 64
 #define CHUNK_INIT_LOCALS 32
+#define CHUNK_INIT_ENTRIES 8
 
 typedef struct FuncChunk {
     Instr* code;         int code_len;     int code_cap;
     Value* constants;    int n_constants;  int const_cap;
     Local* locals;       int n_locals;     int local_cap;
+    ChunkEntry* entries; int n_entries;    int entry_cap;
     Upvalue upvalues[MAX_UPVALUES];
     int n_upvalues;
     int scope_depth;
@@ -306,9 +317,11 @@ static int chunk_init_arrays(FuncChunk* c) {
     c->constants = (Value*)calloc(c->const_cap, sizeof(Value));
     c->local_cap = CHUNK_INIT_LOCALS;
     c->locals = (Local*)calloc(c->local_cap, sizeof(Local));
-    if (!c->code || !c->constants || !c->locals) {
-        free(c->code); free(c->constants); free(c->locals);
-        c->code = NULL; c->constants = NULL; c->locals = NULL;
+    c->entry_cap = CHUNK_INIT_ENTRIES;
+    c->entries = (ChunkEntry*)calloc(c->entry_cap, sizeof(ChunkEntry));
+    if (!c->code || !c->constants || !c->locals || !c->entries) {
+        free(c->code); free(c->constants); free(c->locals); free(c->entries);
+        c->code = NULL; c->constants = NULL; c->locals = NULL; c->entries = NULL;
         fprintf(stderr, "ERROR: cannot allocate FuncChunk arrays\n");
         return -1;
     }
@@ -319,9 +332,10 @@ static int chunk_init_arrays(FuncChunk* c) {
 static void chunk_free_arrays(FuncChunk* c) {
     if (!c) return;
     for (int i = 0; i < c->n_locals; i++) free(c->locals[i].name);
+    for (int i = 0; i < c->n_entries; i++) free(c->entries[i].name);
     for (int i = 0; i < c->n_upvalues; i++) free(c->upvalues[i].name);
-    free(c->code); free(c->constants); free(c->locals);
-    c->code = NULL; c->constants = NULL; c->locals = NULL;
+    free(c->code); free(c->constants); free(c->locals); free(c->entries);
+    c->code = NULL; c->constants = NULL; c->locals = NULL; c->entries = NULL;
 }
 
 /* Heap-allocate a FuncChunk with dynamic arrays (~300 bytes vs. 354KB fixed) */
@@ -334,8 +348,10 @@ static FuncChunk* chunk_create(void) {
     c->constants = (Value*)calloc(c->const_cap, sizeof(Value));
     c->local_cap = CHUNK_INIT_LOCALS;
     c->locals = (Local*)calloc(c->local_cap, sizeof(Local));
-    if (!c->code || !c->constants || !c->locals) {
-        free(c->code); free(c->constants); free(c->locals); free(c);
+    c->entry_cap = CHUNK_INIT_ENTRIES;
+    c->entries = (ChunkEntry*)calloc(c->entry_cap, sizeof(ChunkEntry));
+    if (!c->code || !c->constants || !c->locals || !c->entries) {
+        free(c->code); free(c->constants); free(c->locals); free(c->entries); free(c);
         fprintf(stderr, "ERROR: cannot allocate FuncChunk arrays\n");
         return NULL;
     }
@@ -344,8 +360,9 @@ static FuncChunk* chunk_create(void) {
 static void chunk_destroy(FuncChunk* c) {
     if (!c) return;
     for (int i = 0; i < c->n_locals; i++) free(c->locals[i].name);
+    for (int i = 0; i < c->n_entries; i++) free(c->entries[i].name);
     for (int i = 0; i < c->n_upvalues; i++) free(c->upvalues[i].name);
-    free(c->code); free(c->constants); free(c->locals);
+    free(c->code); free(c->constants); free(c->locals); free(c->entries);
     free(c);
 }
 
@@ -419,6 +436,38 @@ static int add_local(FuncChunk* c, const char* name) {
     c->locals[c->n_locals].boxed = 0;
     c->n_locals++;
     return slot;
+}
+
+static int chunk_add_entry(FuncChunk* c, const char* name, int n_params,
+                           int n_locals, int n_upvalues, int code_offset,
+                           int code_len) {
+    if (!c || !name || !name[0] || code_offset < 0 || code_len <= 0) return -1;
+    if (n_params < 0 || n_params > 255) return -1;
+    if (n_locals < 0 || n_upvalues < 0 || n_upvalues > 255) return -1;
+    if (c->n_entries >= c->entry_cap) {
+        int new_cap = c->entry_cap * 2;
+        ChunkEntry* new_entries =
+            (ChunkEntry*)realloc(c->entries, new_cap * sizeof(ChunkEntry));
+        if (!new_entries) {
+            fprintf(stderr, "ERROR: entry table realloc failed\n");
+            return -1;
+        }
+        memset(new_entries + c->entry_cap, 0,
+               (size_t)(new_cap - c->entry_cap) * sizeof(ChunkEntry));
+        c->entries = new_entries;
+        c->entry_cap = new_cap;
+    }
+    ChunkEntry* entry = &c->entries[c->n_entries];
+    memset(entry, 0, sizeof(*entry));
+    entry->name = strdup(name);
+    if (!entry->name) return -1;
+    entry->n_params = n_params;
+    entry->n_locals = n_locals;
+    entry->n_upvalues = n_upvalues;
+    entry->code_offset = code_offset;
+    entry->code_len = code_len;
+    c->n_entries++;
+    return 0;
 }
 
 static void compile_expr(FuncChunk* c, Node* node, int tail_position);
