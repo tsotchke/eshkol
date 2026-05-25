@@ -58,9 +58,10 @@ static llvm::GlobalValue::LinkageTypes workerHelperLinkage() {
 
 static llvm::GlobalValue::LinkageTypes workerInitLinkage() {
 #ifdef _WIN32
-    // COFF/lld-link does not reliably fold linkonce_odr constructors when a
-    // generated object and stdlib.o both carry the registration init symbol.
-    return llvm::GlobalValue::WeakAnyLinkage;
+    // COFF/lld-link does not reliably fold constructor symbols when a generated
+    // object and stdlib.o both carry the registration init. Keep the generated
+    // constructor module-local, matching the Windows helper bodies.
+    return llvm::GlobalValue::InternalLinkage;
 #else
     return llvm::GlobalValue::LinkOnceODRLinkage;
 #endif
@@ -2200,13 +2201,11 @@ void ParallelCodegen::generateWorkerRegistration() {
 
     // 2. Create init function __eshkol_init_parallel_workers
     //
-    // LinkOnceODRLinkage / WeakAnyLinkage: visible across modules (so the REPL JIT
-    // can explicitly look it up and call it after addObjectFile —
-    // which bypasses llvm.global_ctors execution), but deduped on
-    // the link path so multiple user JIT batches each emitting it
-    // don't fail with duplicate-symbol.  Without explicit lookup
-    // + call, g_parallel_execute_worker stays NULL in JIT mode
-    // and parallel-execute / (future thunk) eager-spawn break.
+    // LinkOnceODRLinkage on ELF/Mach-O: visible across modules so the REPL JIT
+    // can explicitly look it up and call it after addObjectFile, which bypasses
+    // llvm.global_ctors execution. Native Windows uses InternalLinkage here to
+    // avoid COFF duplicate-symbol failures when linking generated programs with
+    // stdlib.o.
     llvm::FunctionType* init_type = llvm::FunctionType::get(ctx_.voidType(), {}, false);
     llvm::Function* init_func = llvm::Function::Create(
         init_type, workerInitLinkage(),

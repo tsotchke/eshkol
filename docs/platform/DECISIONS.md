@@ -2763,3 +2763,39 @@ skipped according to their declared sizes.
 - CONST, CODE, and META each decode from a single authoritative section
 - duplicate META chunks fail before VM profile validation or execution
 - the public VM C API tests include a duplicate-META malformed chunk
+
+---
+
+## D-0080
+
+- Date: 2026-05-25
+- Status: Accepted
+- Title: Keep generated parallel worker initializers local on native Windows
+
+### Context
+
+The release matrix builds hosted Windows x64 packages with Visual Studio
+ClangCL and lld-link. That path links generated user objects with the
+precompiled `stdlib.o` artifact that also carries the generated parallel worker
+registration constructor.
+
+`LinkOnceODRLinkage` and then `WeakAnyLinkage` were not enough for the COFF
+linker to fold `__eshkol_init_parallel_workers` reliably in this release
+configuration. The failure surfaced before packaging as duplicate-symbol link
+errors in ordinary Windows smoke tests.
+
+### Decision
+
+Use `InternalLinkage` for the generated `__eshkol_init_parallel_workers`
+constructor on native Windows, matching the existing Windows linkage for the
+parallel helper bodies. Keep `LinkOnceODRLinkage` on ELF/Mach-O so the REPL JIT
+can continue to look up the initializer explicitly when object-file loading
+bypasses `llvm.global_ctors`.
+
+### Consequences
+
+- Windows generated programs can link with `stdlib.o` without duplicate
+  parallel initializer symbols
+- hosted release packaging keeps running the Windows smoke suite before
+  archive upload
+- non-Windows JIT and static link behavior remains unchanged
