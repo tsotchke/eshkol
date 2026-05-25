@@ -2114,3 +2114,45 @@ continues to allow only deterministic host-native table slots.
   host-only policy and desktop native fids fail under that policy
 - this is a runtime guardrail, not a replacement for compiler-side embedded
   target checks or the eventual physical split of `vm_native.c`
+
+---
+
+## D-0063
+
+- Date: 2026-05-25
+- Status: Accepted
+- Title: Materialize ESKB string constants in the public VM loader
+
+### Context
+
+`eskb_reader.c` decoded `ESKB_CONST_STRING` entries into owned strings and
+recorded their lengths, but `eshkol_vm_load_chunk` did not turn those constants
+into VM string values. The default constant conversion path silently converted
+unknown constant types into integers, so public VM embedders saw string
+constants as their lengths instead of as `VAL_STRING` heap objects.
+
+Tamatsotchke-style firmware may still avoid dynamic script strings on device and
+route user-facing text through a read-only content pack, but the desktop/public
+VM loader must faithfully execute ESKB chunks that contain strings.
+
+### Decision
+
+Add a shared ESKB constant materialization helper for VM loading. The helper
+maps:
+
+- `ESKB_CONST_NIL` to `NIL_VAL`
+- `ESKB_CONST_INT64` to `INT_VAL`
+- `ESKB_CONST_F64` to `FLOAT_VAL`
+- `ESKB_CONST_BOOL` to `BOOL_VAL`
+- `ESKB_CONST_STRING` to a VM string allocated in the VM heap/region state
+
+Use the helper from both `eshkol_vm_load_chunk` and the standalone `.eskb`
+execution path. If a string constant cannot be materialized, loading fails
+instead of producing an integer placeholder.
+
+### Consequences
+
+- public VM embedders can execute bytecode that uses ESKB string constants
+- the VM C API test now exercises a string constant through `OP_STR_LEN`
+- embedded product profiles still need compiler/profile policy for whether
+  dynamic script strings are allowed or replaced with content-pack IDs

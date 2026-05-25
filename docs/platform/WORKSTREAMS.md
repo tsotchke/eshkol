@@ -197,6 +197,8 @@ Make the VM a valid non-hosted runtime target.
 - deterministic host-call table ABI for product runtimes such as Tamatsotchke
 - host-native-only VM dispatch policy that rejects desktop native calls
 - named VM entry-point dispatch for product runtime loops
+- ESKB string constant loading or explicit embedded string rejection/content-pack
+  policy
 
 ### Dependencies
 
@@ -227,6 +229,7 @@ Good delegation candidate for a VM-focused contributor with a fixed host-hook co
 - fixed host-call slots are exercised by the public VM C API tests
 - host-native-only policy is exercised by the public VM C API tests
 - named ESKB entry points are exercised by the public VM C API tests
+- ESKB string constant behavior is exercised by the public VM C API tests
 
 ## Workstream 7: BSP Contract and Reference Targets
 

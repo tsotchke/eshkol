@@ -1413,6 +1413,39 @@ static int eshkol_vm_validate_module_profile(const EskbModule* mod) {
     return 0;
 }
 
+static int eshkol_vm_materialize_eskb_constants(VM* vm, const EskbModule* mod) {
+    if (!vm || !mod) return -1;
+    if (mod->n_constants < 0 || mod->n_constants > MAX_CONSTS) return -1;
+
+    for (int i = 0; i < mod->n_constants; i++) {
+        switch (mod->const_types[i]) {
+        case ESKB_CONST_NIL:
+            vm->constants[i] = NIL_VAL;
+            break;
+        case ESKB_CONST_INT64:
+            vm->constants[i] = INT_VAL(mod->const_ints[i]);
+            break;
+        case ESKB_CONST_F64:
+            vm->constants[i] = FLOAT_VAL(mod->const_floats[i]);
+            break;
+        case ESKB_CONST_BOOL:
+            vm->constants[i] = BOOL_VAL((int)mod->const_ints[i]);
+            break;
+        case ESKB_CONST_STRING:
+            if (!mod->const_strings || !mod->const_strings[i]) return -1;
+            vm->constants[i] = vm_string_value(vm, mod->const_strings[i],
+                                               mod->const_ints[i]);
+            if (vm->error || vm->constants[i].type != VAL_STRING) return -1;
+            break;
+        default:
+            vm->constants[i] = INT_VAL(mod->const_ints[i]);
+            break;
+        }
+    }
+    vm->n_constants = mod->n_constants;
+    return 0;
+}
+
 EshkolVmHandle* eshkol_vm_load_chunk(const void* buffer, size_t size) {
     if (!buffer || size == 0) return NULL;
     EshkolVmHandle* h = (EshkolVmHandle*)calloc(1, sizeof(EshkolVmHandle));
@@ -1435,16 +1468,12 @@ EshkolVmHandle* eshkol_vm_load_chunk(const void* buffer, size_t size) {
     for (int i = 0; i < h->mod.code_len; i++) {
         h->vm->code[i] = (Instr){h->mod.opcodes[i], h->mod.operands[i]};
     }
-    for (int i = 0; i < h->mod.n_constants && i < MAX_CONSTS; i++) {
-        switch (h->mod.const_types[i]) {
-        case ESKB_CONST_NIL:   h->vm->constants[i] = NIL_VAL; break;
-        case ESKB_CONST_INT64: h->vm->constants[i] = INT_VAL(h->mod.const_ints[i]); break;
-        case ESKB_CONST_F64:   h->vm->constants[i] = FLOAT_VAL(h->mod.const_floats[i]); break;
-        case ESKB_CONST_BOOL:  h->vm->constants[i] = BOOL_VAL((int)h->mod.const_ints[i]); break;
-        default:               h->vm->constants[i] = INT_VAL(h->mod.const_ints[i]); break;
-        }
+    if (eshkol_vm_materialize_eskb_constants(h->vm, &h->mod) != 0) {
+        vm_free(h->vm);
+        eskb_module_free(&h->mod);
+        free(h);
+        return NULL;
     }
-    h->vm->n_constants = h->mod.n_constants;
     return h;
 }
 
@@ -1553,16 +1582,12 @@ int main(int argc, char** argv) {
                     vm->code_len = mod.code_len;
                     for (int i = 0; i < mod.code_len; i++)
                         vm->code[i] = (Instr){mod.opcodes[i], mod.operands[i]};
-                    for (int i = 0; i < mod.n_constants && i < MAX_CONSTS; i++) {
-                        switch (mod.const_types[i]) {
-                        case ESKB_CONST_NIL:   vm->constants[i] = NIL_VAL; break;
-                        case ESKB_CONST_INT64: vm->constants[i] = INT_VAL(mod.const_ints[i]); break;
-                        case ESKB_CONST_F64:   vm->constants[i] = FLOAT_VAL(mod.const_floats[i]); break;
-                        case ESKB_CONST_BOOL:  vm->constants[i] = BOOL_VAL((int)mod.const_ints[i]); break;
-                        default:               vm->constants[i] = INT_VAL(mod.const_ints[i]); break;
-                        }
+                    if (eshkol_vm_materialize_eskb_constants(vm, &mod) != 0) {
+                        fprintf(stderr, "ERROR: invalid ESKB constants in %s\n", input);
+                        vm_free(vm);
+                        eskb_module_free(&mod);
+                        return 1;
                     }
-                    vm->n_constants = mod.n_constants;
                     printf("=== Eshkol VM — running %s ===\n", input);
                     vm_run(vm);
                     vm_run_exit_handlers(vm);

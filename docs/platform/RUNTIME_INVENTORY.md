@@ -228,6 +228,12 @@ function entry, which gives embedded/product runtimes a stable path for
 `init`/`tick`/`render`-style scripts before a dedicated export manifest format
 lands.
 
+The public VM loader and standalone `.eskb` path now materialize
+`ESKB_CONST_STRING` entries as VM string heap objects. Firmware profiles may
+still choose to reject dynamic script strings and route text through read-only
+content packs, but the desktop/public loader no longer loses decoded string
+constants.
+
 ### VM toolchain/compiler family
 
 - `vm_parser.c`
