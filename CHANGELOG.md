@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 (no entries — v1.2 is closed; new work targets v1.3-evolve)
 
+## [1.2.2-scale] - 2026-05-25
+
+Packaging closeout for the v1.2 line. This patch release keeps the v1.2.1
+language/runtime surface and republishes through the guarded 16-asset platform
+release workflow.
+
+### Added
+
+- Added `release_workflow_surface_test`, which checks that every `v*` tag
+  publishes the complete Linux/macOS/Windows lite/XLA/CUDA asset set,
+  generates `SHA256SUMS.txt`, and refuses to append to an existing release.
+
+### Changed
+
+- Updated release-facing version metadata and the Homebrew formula template to
+  target `v1.2.2-scale`.
+
 ## [1.2.1-scale] - 2026-05-20
 
 The v1.2-scale closeout point release. This release keeps the v1.2.0-scale
