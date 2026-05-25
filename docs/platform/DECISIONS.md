@@ -2283,3 +2283,43 @@ require no named entries.
   and negative count rejection
 - compiler-side embedded target checks should still produce source-level
   diagnostics before ESKB emission
+
+---
+
+## D-0067
+
+- Date: 2026-05-25
+- Status: Accepted
+- Title: Expose guarded ESKB emission through the VM header
+
+### Context
+
+`embedded-vm` now has a guarded ESKB emission path: it omits the desktop VM
+prelude and rejects bytecode that still contains desktop-native
+`OP_NATIVE_CALL` operands. The CLI and VM C API tests were using that symbol as
+an ad hoc cross-language declaration, and native Windows builds use
+`eshkol_vm_stub.c` instead of the full VM unity hub.
+
+Jack's Windows x86 validation makes this a real deployment boundary: every
+symbol used by `eshkol-run` must exist in both the full VM build and the native
+Windows stub build.
+
+### Decision
+
+Declare both ESKB emitters in `inc/eshkol/backend/vm.h`:
+
+- `eshkol_emit_eskb`
+- `eshkol_emit_eskb_embedded`
+
+Make `eshkol-run` include that header instead of locally redeclaring the
+symbols, and add an `eshkol_emit_eskb_embedded` stub beside the existing native
+Windows `eshkol_emit_eskb` stub.
+
+### Consequences
+
+- C and C++ callers now share one public declaration for desktop and embedded
+  ESKB emission
+- native Windows builds stay link-complete even though full ESKB emission still
+  returns an unavailable diagnostic there
+- the embedded emitter remains backed by the full VM/toolchain path on hosted
+  non-Windows builds

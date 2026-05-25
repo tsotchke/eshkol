@@ -47,6 +47,12 @@ int eshkol_vm_get_profile_limits(EshkolVmProfileLimits* out);
  * eshkol_vm_load_chunk: desktop native policy and string constants allowed. */
 int eshkol_vm_default_load_options(EshkolVmLoadOptions* out);
 
+/* Compile Eshkol source to ESKB bytecode. The default emitter preserves the
+ * desktop VM prelude. The embedded emitter omits that prelude and fails if
+ * emitted bytecode still reaches desktop-native OP_NATIVE_CALL ids. */
+int eshkol_emit_eskb(const char* source, const char* output_path);
+int eshkol_emit_eskb_embedded(const char* source, const char* output_path);
+
 /* Decode an ESKB chunk from an in-memory buffer and create a runnable VM.
  * Returns NULL on bad magic, version mismatch, CRC mismatch, allocation
  * failure, profile-limit violation, or NULL/zero-size input. */

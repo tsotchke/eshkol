@@ -134,6 +134,9 @@ Program phase:
   constants at load time, giving embedded profiles a checked path toward
   content-pack-only text, pre-run desktop-native rejection, and required named
   script entries
+- `embedded-vm` emits no-desktop-preamble ESKB through the public VM header and
+  rejects desktop-native bytecode during emission; native Windows stubs expose
+  the same symbols while the full VM remains disabled there
 - hosted Windows x86_64 validation now has a remote SSH harness for Jack's
   Tailscale Windows PC: `scripts/remote_windows_verify.sh` builds the native
   Visual Studio 2022 + ClangCL tree and runs the bounded `windows-lite` suite

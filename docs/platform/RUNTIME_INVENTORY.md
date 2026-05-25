@@ -257,7 +257,10 @@ and string constants are materialized.
 
 The `.c` components are classified as `ESHKOL_VM_TOOLCHAIN_COMPONENT_SRC`.
 The prelude headers/cache generator remain VM toolchain adjuncts rather than
-runtime families.
+runtime families. `inc/eshkol/backend/vm.h` now declares both desktop ESKB
+emission and the embedded emitter that omits the desktop VM prelude and rejects
+desktop-native bytecode during emission. Native Windows builds still stub these
+symbols while the full bytecode VM remains disabled for that target.
 
 ### VM test family
 
