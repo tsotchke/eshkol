@@ -178,6 +178,7 @@ static int eskb_parse_payload(const uint8_t* payload, size_t payload_len, EskbMo
                     break;
                 }
             }
+            if (sr.pos != sr.len) return -1;
         } else if (sections[s].id == ESKB_SECTION_CODE) {
             uint64_t nf;
             if (eskb_read_leb(&sr, &nf) < 0 || nf > 4096 || nf > INT_MAX) return -1;
@@ -252,9 +253,14 @@ static int eskb_parse_payload(const uint8_t* payload, size_t payload_len, EskbMo
                 }
                 mod->code_len = new_code_len;
             }
+            if (sr.pos != sr.len) return -1;
         } else if (sections[s].id == ESKB_SECTION_META) {
             mod->has_debug = 1;
-            eskb_read_string(&sr, mod->source_file, sizeof(mod->source_file), NULL);
+            if (eskb_read_string(&sr, mod->source_file,
+                                 sizeof(mod->source_file), NULL) < 0) {
+                return -1;
+            }
+            if (sr.pos != sr.len) return -1;
         }
     }
 

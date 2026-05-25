@@ -148,6 +148,8 @@ Program phase:
   zero-argument calls only run closed function entries
 - public VM loading rejects empty or duplicate decoded function names, so named
   product hook admission and dispatch are never order-dependent
+- known ESKB sections must be fully consumed during decoding; trailing bytes in
+  CODE/CONST/META sections are rejected before VM loading
 - the public VM C ABI can enumerate decoded ESKB function entries, so product
   tooling can inspect emitted hooks without reaching into `EskbModule`
 - VM function metadata is available through the public ABI for hook arity,

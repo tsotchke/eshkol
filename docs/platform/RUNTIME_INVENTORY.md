@@ -288,7 +288,9 @@ zero-argument public dispatch ABI: entries must declare zero parameters and no
 upvalues. The runtime dispatch path itself also rejects entries that declare
 upvalues, because the public call surface does not provide a closure environment
 for direct entry execution. The VM loader also rejects empty or duplicate decoded
-function names, making named hook admission and dispatch unambiguous.
+function names, making named hook admission and dispatch unambiguous. Known ESKB
+sections are strict: CONST, CODE, and META must be fully consumed by their
+decoders, so trailing section bytes fail before VM loading.
 
 ### VM test family
 
