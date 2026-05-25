@@ -22,7 +22,7 @@ usage() {
 Usage: scripts/remote_windows_verify.sh HOST [options]
 
 Options:
-  --repo DIR             Remote repo path (default: %USERPROFILE%\projects\eshkol)
+  --repo DIR             Remote repo path (default: %USERPROFILE%\src\eshkol)
   --build-dir DIR        Remote build directory (default: build-windows-x64)
   --generator NAME       CMake generator (default: Visual Studio 17 2022)
   --arch ARCH            Visual Studio target architecture (default: x64)
@@ -58,6 +58,21 @@ ps_bool() {
     else
         printf '$false'
     fi
+}
+
+run_with_retries() {
+    local attempt
+    local rc
+    for attempt in 1 2 3; do
+        if "$@"; then
+            return 0
+        fi
+        rc=$?
+        if [ "$attempt" -lt 3 ]; then
+            sleep 1
+        fi
+    done
+    return "$rc"
 }
 
 emit_ps_arg() {
@@ -97,7 +112,7 @@ function Resolve-RepoDir {
     if (-not [string]::IsNullOrWhiteSpace($env:ESHKOL_REMOTE_REPO)) {
         return $env:ESHKOL_REMOTE_REPO
     }
-    return (Join-Path $env:USERPROFILE "projects\eshkol")
+    return (Join-Path $env:USERPROFILE "src\eshkol")
 }
 
 function Resolve-BuildDir {
@@ -207,8 +222,52 @@ PS_SCRIPT
 }
 
 run_remote() {
-    remote_script | ssh "$HOST" \
-        "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command -"
+    local local_script
+    local remote_tmp_dir
+    local remote_name
+    local remote_path
+    local rc
+
+    local_script="$(mktemp "${TMPDIR:-/tmp}/eshkol-remote-windows.XXXXXX")"
+    remote_name="eshkol-remote-windows-$$.ps1"
+    remote_script > "$local_script"
+
+    if remote_tmp_dir="$(run_with_retries ssh -n "$HOST" powershell.exe -NoLogo -NoProfile -Command '$env:TEMP')"; then
+        :
+    else
+        rc=$?
+        rm -f "$local_script"
+        return "$rc"
+    fi
+    remote_tmp_dir="${remote_tmp_dir//$'\r'/}"
+    if [ -z "$remote_tmp_dir" ]; then
+        echo "could not resolve remote TEMP directory" >&2
+        rm -f "$local_script"
+        return 2
+    fi
+
+    remote_path="${remote_tmp_dir//\\//}/$remote_name"
+
+    if run_with_retries scp "$local_script" "$HOST:$remote_path"; then
+        :
+    else
+        rc=$?
+        rm -f "$local_script"
+        return "$rc"
+    fi
+
+    if ssh -n "$HOST" powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass \
+        -File "$remote_path"; then
+        rc=0
+    else
+        rc=$?
+    fi
+
+    ssh -n "$HOST" powershell.exe -NoLogo -NoProfile -Command \
+        "Remove-Item -LiteralPath $(ps_quote "$remote_path") -Force -ErrorAction SilentlyContinue" \
+        >/dev/null 2>&1 || true
+    rm -f "$local_script"
+    return "$rc"
 }
 
 while [ "$#" -gt 0 ]; do

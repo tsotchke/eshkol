@@ -3,6 +3,8 @@
  * Merged from eshkol_compiler.c — single interpreter, one dispatch table.
  ******************************************************************************/
 
+#include "eshkol/backend/vm_limits.h"
+
 /*******************************************************************************
  * S-Expression Parser (reused from stackvm_codegen.c)
  ******************************************************************************/
@@ -257,9 +259,6 @@ static void free_node(Node* n) { if (!n) return; for (int i=0;i<n->n_children;i+
  ******************************************************************************/
 
 #define MAX_CODE 32768
-#ifndef MAX_CONSTS
-#define MAX_CONSTS 1024
-#endif
 #define MAX_LOCALS 512
 #define MAX_FUNCS 64
 
@@ -552,4 +551,3 @@ static void compile_quote(FuncChunk* c, Node* datum) {
     }
     chunk_emit(c, OP_NIL, 0); /* fallback */
 }
-

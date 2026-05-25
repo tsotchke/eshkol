@@ -71,7 +71,9 @@ int main(int argc, char** argv) {
                          "remote Windows verifier reports missing option values") &&
          expect_contains(script, "require_option_value \"$@\"",
                          "remote Windows verifier calls the valued-option guard") &&
-         expect_contains(script, "return (Join-Path $env:USERPROFILE \"projects\\eshkol\")",
+         expect_contains(script, "run_with_retries()",
+                         "remote Windows verifier retries setup transport calls") &&
+         expect_contains(script, "return (Join-Path $env:USERPROFILE \"src\\eshkol\")",
                          "remote Windows verifier has a user-profile checkout default") &&
          expect_contains(script, "Test-Path -LiteralPath $RepoDir -PathType Container",
                          "remote Windows verifier checks the checkout directory literally") &&
@@ -96,15 +98,29 @@ int main(int argc, char** argv) {
                          "remote Windows verifier runs the bounded Windows smoke suite") &&
          expect_contains(script, "git @(\"diff\", \"--check\")",
                          "remote Windows verifier checks whitespace after validation") &&
+         expect_contains(script, "mktemp \"${TMPDIR:-/tmp}/eshkol-remote-windows.XXXXXX\"",
+                         "remote Windows verifier writes a local temporary PowerShell script") &&
+         expect_contains(script, "run_with_retries ssh -n \"$HOST\" powershell.exe -NoLogo -NoProfile -Command '$env:TEMP'",
+                         "remote Windows verifier resolves the remote temporary directory") &&
+         expect_contains(script, "run_with_retries scp \"$local_script\" \"$HOST:$remote_path\"",
+                         "remote Windows verifier copies the script with scp") &&
          expect_contains(script,
-                         "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command -",
-                         "remote Windows verifier sends a PowerShell script over SSH");
+                         "ssh -n \"$HOST\" powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass",
+                         "remote Windows verifier invokes PowerShell with execution-policy bypass") &&
+         expect_contains(script, "-File \"$remote_path\"",
+                         "remote Windows verifier runs the copied script file") &&
+         expect_contains(script, "ssh -n \"$HOST\" powershell.exe -NoLogo -NoProfile -Command",
+                         "remote Windows verifier performs cleanup through SSH") &&
+         expect_contains(script, "Remove-Item -LiteralPath $(ps_quote \"$remote_path\")",
+                         "remote Windows verifier removes the copied script");
 
     ok = ok &&
          expect_not_contains(script, "git reset --hard",
                              "remote Windows verifier must not reset remote worktrees") &&
          expect_not_contains(script, "Remove-Item -Recurse",
                              "remote Windows verifier must not delete remote trees") &&
+         expect_not_contains(script, "-EncodedCommand",
+                             "remote Windows verifier should not send a long encoded command") &&
          expect_not_contains(script, "-Mode\", \"all\"",
                              "remote Windows verifier should stay bounded to windows-lite by default");
 

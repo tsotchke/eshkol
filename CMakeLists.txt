@@ -1066,6 +1066,37 @@ set(ESHKOL_VM_STUB_SRC
   lib/backend/vm_autodiff.c
 )
 
+set(ESHKOL_VM_HEAP_SIZE "65536" CACHE STRING
+    "Bytecode VM heap object table capacity")
+set(ESHKOL_VM_STACK_SIZE "4096" CACHE STRING
+    "Bytecode VM value stack slot count")
+set(ESHKOL_VM_MAX_FRAMES "256" CACHE STRING
+    "Bytecode VM call frame capacity")
+set(ESHKOL_VM_MAX_CONSTS "1024" CACHE STRING
+    "Bytecode VM constant pool capacity")
+
+foreach(_eshkol_vm_limit_name IN ITEMS
+    ESHKOL_VM_HEAP_SIZE
+    ESHKOL_VM_STACK_SIZE
+    ESHKOL_VM_MAX_FRAMES
+    ESHKOL_VM_MAX_CONSTS
+)
+    if(NOT "${${_eshkol_vm_limit_name}}" MATCHES "^[1-9][0-9]*$")
+        message(FATAL_ERROR
+            "${_eshkol_vm_limit_name} must be a positive integer, got "
+            "'${${_eshkol_vm_limit_name}}'")
+    endif()
+endforeach()
+
+function(eshkol_apply_vm_limit_definitions target_name)
+    target_compile_definitions(${target_name} PRIVATE
+        ESHKOL_VM_HEAP_SIZE=${ESHKOL_VM_HEAP_SIZE}
+        ESHKOL_VM_STACK_SIZE=${ESHKOL_VM_STACK_SIZE}
+        ESHKOL_VM_MAX_FRAMES=${ESHKOL_VM_MAX_FRAMES}
+        ESHKOL_VM_MAX_CONSTS=${ESHKOL_VM_MAX_CONSTS}
+    )
+endfunction()
+
 set(ESHKOL_VM_UNITY_SRC)
 
 # Native Windows REPL builds do not use the bytecode VM / ESKB compiler path.
@@ -1087,6 +1118,12 @@ message(STATUS
   "hosted=${ESHKOL_VM_HOSTED_COMPONENT_SRC_COUNT}, "
   "toolchain=${ESHKOL_VM_TOOLCHAIN_COMPONENT_SRC_COUNT}, "
   "test=${ESHKOL_VM_TEST_COMPONENT_SRC_COUNT}"
+)
+message(STATUS
+  "VM limits: heap=${ESHKOL_VM_HEAP_SIZE}, "
+  "stack=${ESHKOL_VM_STACK_SIZE}, "
+  "frames=${ESHKOL_VM_MAX_FRAMES}, "
+  "consts=${ESHKOL_VM_MAX_CONSTS}"
 )
 
 # Image I/O (stb_image — single-header, MIT/public domain)
@@ -1229,6 +1266,7 @@ foreach(_eshkol_runtime_obj_target IN ITEMS
 endforeach()
 if(TARGET eshkol-vm-unity-obj)
     eshkol_apply_common_compile_settings(eshkol-vm-unity-obj)
+    eshkol_apply_vm_limit_definitions(eshkol-vm-unity-obj)
 endif()
 
 # Create static library for executables. Its object sources are now grouped
@@ -2040,6 +2078,15 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/vm
     )
 endif()
 
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/vm_limits_surface_test.cpp")
+    add_executable(vm_limits_surface_test tests/toolchain/vm_limits_surface_test.cpp)
+    target_compile_features(vm_limits_surface_test PRIVATE cxx_std_17)
+    add_test(
+        NAME vm_limits_surface_test
+        COMMAND vm_limits_surface_test "${CMAKE_CURRENT_SOURCE_DIR}"
+    )
+endif()
+
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/forward_ref_scan_boundary_test.cpp")
     add_executable(forward_ref_scan_boundary_test
         tests/toolchain/forward_ref_scan_boundary_test.cpp)
@@ -2081,6 +2128,7 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
     target_include_directories(eshkol-vm-standalone-test PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/inc
         ${CMAKE_CURRENT_BINARY_DIR}/generated)
+    eshkol_apply_vm_limit_definitions(eshkol-vm-standalone-test)
     if(LLVM_LIBRARY_DIRS)
         target_link_directories(eshkol-vm-standalone-test PRIVATE ${LLVM_LIBRARY_DIRS})
     endif()

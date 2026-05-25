@@ -79,6 +79,8 @@
 #endif
 #endif
 
+#include "eshkol/backend/vm_limits.h"
+
 #if defined(_WIN32) || defined(ESHKOL_VM_WASM)
 typedef void regex_t;
 #endif

@@ -1,3 +1,5 @@
+#include "eshkol/backend/vm_limits.h"
+
 /*******************************************************************************
  * Instruction Set
  ******************************************************************************/
@@ -149,8 +151,6 @@ static Value number_val(double d) {
  * Heap (arena-based, OALR)
  ******************************************************************************/
 
-#define HEAP_SIZE 65536
-
 typedef enum {
     HEAP_CONS = 0,
     HEAP_CLOSURE = 1,
@@ -243,10 +243,6 @@ typedef struct {
 /*******************************************************************************
  * VM State
  ******************************************************************************/
-
-#define STACK_SIZE 4096
-#define MAX_FRAMES 256
-#define MAX_CONSTS 1024
 
 typedef struct VM {
     /* Program */
