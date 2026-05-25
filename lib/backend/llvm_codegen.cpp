@@ -35245,21 +35245,15 @@ int eshkol_compile_llvm_ir_to_executable(LLVMModuleRef module_ref, const char* f
             // R_AARCH64_CALL26 reach issue — see below) makes the
             // user binary silently lose its parallel-execute support.
             //
-            // Force-load every object (including the constructor)
-            // so it is preserved unconditionally. This matches the
-            // link strategy used by the eshkol-run binary itself
-            // (see CMakeLists.txt). macOS uses -force_load (one flag
-            // per archive); ELF uses --whole-archive bracketing;
-            // Windows MSVC uses /WHOLEARCHIVE.
+            // Force-load every object (including the constructor) on
+            // platforms where generated binaries need the static archive
+            // constructor path. Windows user binaries must not force-load
+            // the monolithic compiler archive: that drags LLVM's command-line
+            // registries into ordinary generated executables.
 #if defined(__APPLE__)
             link_args.emplace_back("-Wl,-force_load," + runtime_lib_path.generic_string());
-#elif defined(_WIN32) && defined(__MINGW32__)
-            link_args.emplace_back("-Wl,--whole-archive");
-            link_args.emplace_back(runtime_lib_path.generic_string());
-            link_args.emplace_back("-Wl,--no-whole-archive");
 #elif defined(_WIN32)
-            link_args.emplace_back("-Xlinker");
-            link_args.emplace_back("/WHOLEARCHIVE:" + runtime_lib_path.generic_string());
+            link_args.emplace_back(runtime_lib_path.generic_string());
 #else
             link_args.emplace_back("-Wl,--whole-archive");
             link_args.emplace_back(runtime_lib_path.generic_string());

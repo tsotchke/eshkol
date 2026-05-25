@@ -47,6 +47,7 @@ int main(int argc, char** argv) {
     }
 
     const fs::path source_root = argv[1];
+    const std::string cmake = read_file(source_root / "CMakeLists.txt");
     const fs::path script_path = source_root / "scripts" / "run_all_tests.ps1";
     if (!fs::exists(script_path)) {
         return fail("run_all_tests.ps1 not found under source root");
@@ -154,22 +155,26 @@ int main(int argc, char** argv) {
                          "eshkol-run generated link path uses GNU PE stack flag on MinGW") &&
          expect_contains(eshkol_run, "\"/STACK:536870912\"",
                          "eshkol-run generated link path preserves MSVC stack flag") &&
-         expect_contains(llvm_codegen, "#elif defined(_WIN32) && defined(__MINGW32__)",
-                         "LLVM executable link path has a MinGW whole-archive branch") &&
          expect_contains(llvm_codegen, "\"-Wl,--whole-archive\"",
-                         "LLVM executable link path uses GNU whole-archive on MinGW") &&
+                         "LLVM executable link path keeps ELF whole-archive support") &&
          expect_contains(llvm_codegen, "\"-Wl,--stack,536870912\"",
                          "LLVM executable link path uses GNU PE stack flag on MinGW") &&
-         expect_contains(llvm_codegen, "\"/WHOLEARCHIVE:\" + runtime_lib_path.generic_string()",
-                         "LLVM executable link path preserves MSVC whole-archive flag") &&
          expect_contains(llvm_codegen, "\"/STACK:536870912\"",
                          "LLVM executable link path preserves MSVC stack flag") &&
+         expect_contains(llvm_codegen, "link_args.emplace_back(runtime_lib_path.generic_string());",
+                         "LLVM executable link path links Windows runtime archive selectively") &&
          expect_contains(llvm_codegen,
                          "arena_use_external_only = true;",
                          "LLVM codegen uses runtime-owned arena globals on Windows") &&
          expect_contains(llvm_codegen,
                          "use_external_only = true;",
-                         "LLVM codegen uses runtime-owned command-line globals on Windows");
+                         "LLVM codegen uses runtime-owned command-line globals on Windows") &&
+         expect_not_contains(llvm_codegen,
+                             "\"/WHOLEARCHIVE:\" + runtime_lib_path.generic_string()",
+                             "LLVM executable link path should not force-load compiler archive on Windows") &&
+         expect_not_contains(cmake,
+                             "foreach(_llvm_runtime_lib IN LISTS LLVM_LIBS_LIST LLVM_SYSTEM_LIBS_LIST)",
+                             "generated Windows binaries should not inherit compiler LLVM link libraries");
 
     if (!ok) {
         return 1;

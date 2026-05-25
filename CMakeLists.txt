@@ -900,12 +900,6 @@ if(NOT APPLE)
         eshkol_append_host_runtime_link_arg("${_extra_runtime_lib}")
     endforeach()
 
-    if(WIN32)
-        foreach(_llvm_runtime_lib IN LISTS LLVM_LIBS_LIST LLVM_SYSTEM_LIBS_LIST)
-            eshkol_append_host_runtime_link_arg("${_llvm_runtime_lib}")
-        endforeach()
-    endif()
-
     if(BLAS_FOUND AND BLAS_LIBRARIES)
         foreach(_blas_lib IN LISTS BLAS_LIBRARIES)
             eshkol_append_host_runtime_link_arg("${_blas_lib}")
