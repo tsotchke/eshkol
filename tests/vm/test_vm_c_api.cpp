@@ -901,10 +901,28 @@ void test_valid_chunk(void) {
     EshkolVmHandle* vm = eshkol_vm_load_chunk(chunk.data, chunk.len);
     CHECK(vm != nullptr, "load in-memory ESKB chunk");
     if (vm) {
+        CHECK(eshkol_vm_has_function(vm, "main") == 1,
+              "loaded chunk exposes main function");
+        CHECK(eshkol_vm_has_function(vm, "helper2") == 1,
+              "loaded chunk exposes helper function");
+        CHECK(eshkol_vm_has_function(vm, "missing") == 0,
+              "loaded chunk rejects missing function lookup");
+        CHECK(eshkol_vm_has_function(vm, nullptr) == -1,
+              "function lookup rejects null name");
+
         CHECK(eshkol_vm_run(vm) == 0, "run loaded chunk");
         int64_t top = 0;
         CHECK(eshkol_vm_top_int64(vm, &top) == 0, "read top-of-stack int64");
         CHECK(top == 42, "top-of-stack value == 42");
+
+        CHECK(eshkol_vm_call(vm, "helper2") == 0, "run named helper entry");
+        CHECK(eshkol_vm_top_int64(vm, &top) == 0, "read named helper result");
+        CHECK(top == 41, "named helper result == 41");
+
+        CHECK(eshkol_vm_call(vm, "missing") == -1, "reject missing named entry");
+        CHECK(eshkol_vm_call(vm, "main") == 0, "rerun named main entry");
+        CHECK(eshkol_vm_top_int64(vm, &top) == 0, "read rerun main result");
+        CHECK(top == 42, "rerun main result == 42");
         eshkol_vm_destroy(vm);
     }
     eskb_buf_free(&chunk);

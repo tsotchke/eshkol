@@ -9,8 +9,18 @@
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 /* Loaded bytecode module */
+typedef struct {
+    char* name;
+    int n_params;
+    int n_locals;
+    int n_upvalues;
+    int code_offset;
+    int code_len;
+} EskbFunction;
+
 typedef struct {
     /* Instructions */
     uint8_t* opcodes;
@@ -23,6 +33,9 @@ typedef struct {
     double*  const_floats;  /* double values (or 0 if not float) */
     char**   const_strings; /* string values (or NULL) */
     int n_constants;
+
+    EskbFunction* functions;
+    int n_functions;
 
     /* Metadata */
     char source_file[256];
@@ -38,6 +51,10 @@ void eskb_module_free(EskbModule* m) {
     if (m->const_strings) {
         for (int i = 0; i < m->n_constants; i++) free(m->const_strings[i]);
         free(m->const_strings);
+    }
+    if (m->functions) {
+        for (int i = 0; i < m->n_functions; i++) free(m->functions[i].name);
+        free(m->functions);
     }
     memset(m, 0, sizeof(*m));
 }
@@ -149,39 +166,68 @@ static int eskb_parse_payload(const uint8_t* payload, size_t payload_len, EskbMo
             }
         } else if (sections[s].id == ESKB_SECTION_CODE) {
             uint64_t nf;
-            if (eskb_read_leb(&sr, &nf) < 0) return -1;
-            if (mod->opcodes) return -1;
+            if (eskb_read_leb(&sr, &nf) < 0 || nf > 4096 || nf > INT_MAX) return -1;
+            if (mod->opcodes || mod->functions) return -1;
 
+            mod->n_functions = (int)nf;
+            mod->functions = (EskbFunction*)calloc(nf ? (size_t)nf : 1, sizeof(EskbFunction));
+            if (!mod->functions) return -1;
             for (uint64_t fi = 0; fi < nf; fi++) {
-                char fname[128];
+                char* fname = NULL;
                 size_t fname_len;
-                if (eskb_read_string(&sr, fname, sizeof(fname), &fname_len) < 0) return -1;
+                if (eskb_read_string_alloc(&sr, &fname, &fname_len) < 0) return -1;
+                if (fname_len == 0 || fname_len > 255) {
+                    free(fname);
+                    return -1;
+                }
+                for (uint64_t prev = 0; prev < fi; prev++) {
+                    if (strcmp(mod->functions[prev].name, fname) == 0) {
+                        free(fname);
+                        return -1;
+                    }
+                }
 
                 uint8_t np;
                 uint64_t nl;
                 uint8_t nuv;
                 uint64_t cl;
-                if (eskb_read_u8(&sr, &np) < 0) return -1;
-                if (eskb_read_leb(&sr, &nl) < 0) return -1;
-                if (eskb_read_u8(&sr, &nuv) < 0) return -1;
-                if (eskb_read_leb(&sr, &cl) < 0 || cl > 100000 || cl > INT_MAX) return -1;
+                if (eskb_read_u8(&sr, &np) < 0) { free(fname); return -1; }
+                if (eskb_read_leb(&sr, &nl) < 0 || nl > INT_MAX) { free(fname); return -1; }
+                if (eskb_read_u8(&sr, &nuv) < 0) { free(fname); return -1; }
+                if (eskb_read_leb(&sr, &cl) < 0 || cl > 100000 || cl > INT_MAX) {
+                    free(fname);
+                    return -1;
+                }
+                if (mod->code_len > INT_MAX - (int)cl) {
+                    free(fname);
+                    return -1;
+                }
 
-                if (fi == 0) {
-                    mod->code_len = (int)cl;
-                    size_t alloc_count = cl ? (size_t)cl : 1;
-                    mod->opcodes = (uint8_t*)calloc(alloc_count, sizeof(uint8_t));
-                    mod->operands = (int32_t*)calloc(alloc_count, sizeof(int32_t));
-                    if (!mod->opcodes || !mod->operands) return -1;
-                    for (uint64_t i = 0; i < cl; i++) {
-                        if (eskb_read_instruction(&sr, &mod->opcodes[i], &mod->operands[i]) < 0) return -1;
-                    }
-                } else {
-                    for (uint64_t i = 0; i < cl; i++) {
-                        uint8_t op;
-                        int32_t operand;
-                        if (eskb_read_instruction(&sr, &op, &operand) < 0) return -1;
+                int code_offset = mod->code_len;
+                int new_code_len = mod->code_len + (int)cl;
+                size_t alloc_count = new_code_len ? (size_t)new_code_len : 1;
+                uint8_t* new_opcodes = (uint8_t*)realloc(mod->opcodes, alloc_count * sizeof(uint8_t));
+                if (!new_opcodes) { free(fname); return -1; }
+                mod->opcodes = new_opcodes;
+                int32_t* new_operands = (int32_t*)realloc(mod->operands, alloc_count * sizeof(int32_t));
+                if (!new_operands) { free(fname); return -1; }
+                mod->operands = new_operands;
+
+                mod->functions[fi].name = fname;
+                mod->functions[fi].n_params = np;
+                mod->functions[fi].n_locals = (int)nl;
+                mod->functions[fi].n_upvalues = nuv;
+                mod->functions[fi].code_offset = code_offset;
+                mod->functions[fi].code_len = (int)cl;
+
+                for (uint64_t i = 0; i < cl; i++) {
+                    if (eskb_read_instruction(&sr,
+                                              &mod->opcodes[code_offset + (int)i],
+                                              &mod->operands[code_offset + (int)i]) < 0) {
+                        return -1;
                     }
                 }
+                mod->code_len = new_code_len;
             }
         } else if (sections[s].id == ESKB_SECTION_META) {
             mod->has_debug = 1;

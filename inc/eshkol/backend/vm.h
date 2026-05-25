@@ -31,6 +31,16 @@ EshkolVmHandle* eshkol_vm_load_chunk(const void* buffer, size_t size);
  * VM raised an error or the handle is invalid. */
 int eshkol_vm_run(EshkolVmHandle* h);
 
+/* Run a named function from the loaded ESKB code section. This resets the VM
+ * instruction/stack/frame state before dispatch while preserving VM heap and
+ * host resources owned by the handle. Returns 0 on success, -1 for a missing
+ * entry point, invalid handle, or VM error. */
+int eshkol_vm_call(EshkolVmHandle* h, const char* name);
+
+/* Return 1 if the loaded ESKB chunk contains a function with `name`, 0 if it
+ * does not, and -1 for invalid inputs. */
+int eshkol_vm_has_function(EshkolVmHandle* h, const char* name);
+
 /* Destroy the VM handle and release the decoded ESKB module. NULL-safe. */
 void eshkol_vm_destroy(EshkolVmHandle* h);
 

@@ -216,6 +216,12 @@ native-call table can be partitioned by capability.
 whose slots map directly to `ESHKOL_VM_HOST_NATIVE_BASE + index`; the existing
 dynamic registration path remains available for desktop tests and tools.
 
+`eskb_reader.c` now preserves the ESKB function table instead of discarding
+non-zero function records. The public VM ABI can query and execute a named
+function entry, which gives embedded/product runtimes a stable path for
+`init`/`tick`/`render`-style scripts before a dedicated export manifest format
+lands.
+
 ### VM toolchain/compiler family
 
 - `vm_parser.c`

@@ -1352,10 +1352,50 @@ EshkolVmHandle* eshkol_vm_load_chunk(const void* buffer, size_t size) {
     return h;
 }
 
+static int eshkol_vm_function_index(EshkolVmHandle* h, const char* name) {
+    if (!h || !name) return -1;
+    for (int i = 0; i < h->mod.n_functions; i++) {
+        if (h->mod.functions[i].name && strcmp(h->mod.functions[i].name, name) == 0) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static void eshkol_vm_prepare_entry(EshkolVmHandle* h, int function_index) {
+    VM* vm = h->vm;
+    vm->pc = h->mod.functions[function_index].code_offset;
+    vm->sp = 0;
+    vm->fp = 0;
+    vm->frame_count = 0;
+    vm->halted = 0;
+    vm->error = 0;
+    vm->n_handlers = 0;
+    vm->n_winds = 0;
+    vm->current_exception = NIL_VAL;
+    memset(vm->ad_node_map, -1, sizeof(vm->ad_node_map));
+}
+
 int eshkol_vm_run(EshkolVmHandle* h) {
     if (!h || !h->vm) return -1;
+    if (h->mod.n_functions <= 0) return -1;
+    eshkol_vm_prepare_entry(h, 0);
     vm_run(h->vm);
     return h->vm->error ? -1 : 0;
+}
+
+int eshkol_vm_call(EshkolVmHandle* h, const char* name) {
+    if (!h || !h->vm) return -1;
+    int function_index = eshkol_vm_function_index(h, name);
+    if (function_index < 0) return -1;
+    eshkol_vm_prepare_entry(h, function_index);
+    vm_run(h->vm);
+    return h->vm->error ? -1 : 0;
+}
+
+int eshkol_vm_has_function(EshkolVmHandle* h, const char* name) {
+    if (!h || !h->vm || !name) return -1;
+    return eshkol_vm_function_index(h, name) >= 0 ? 1 : 0;
 }
 
 void eshkol_vm_destroy(EshkolVmHandle* h) {

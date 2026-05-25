@@ -2024,3 +2024,49 @@ fixed table, while duplicate names remain rejected across both paths.
 - this does not make `vm_native.c` freestanding; the broad desktop native table
   still needs capability partitioning before a small VM target can omit hosted
   subsystems
+
+---
+
+## D-0061
+
+- Date: 2026-05-25
+- Status: Accepted
+- Title: Preserve ESKB function tables for named VM entry points
+
+### Context
+
+The public VM C ABI could load an in-memory ESKB chunk and run its first
+function, but product runtimes need stable script entry points such as `init`,
+`tick`, `input`, and `render`. The ESKB code section already carries function
+names and per-function code bodies, but the reader validated and then discarded
+every function after the first one.
+
+Tamatsotchke-style firmware can use fixed host-call slots only if it can also
+dispatch a known script function repeatedly from the host loop.
+
+### Decision
+
+Keep the existing ESKB section format, but preserve the decoded function table
+inside `EskbModule`. Concatenate function bodies into the loaded VM instruction
+array and store each function's code offset/length and name.
+
+Extend `inc/eshkol/backend/vm.h` with:
+
+- `eshkol_vm_has_function`
+- `eshkol_vm_call`
+
+`eshkol_vm_run` now dispatches the first function after resetting instruction,
+stack, frame, handler, wind, halt, error, and autodiff-tracking state.
+`eshkol_vm_call` applies the same execution reset and starts at the named
+function's decoded code offset while preserving heap and host resources owned by
+the VM handle.
+
+### Consequences
+
+- embedded/product hosts can drive stable named script hooks without relinking
+  the full desktop VM or inventing a side-channel entry table
+- the public VM C API tests now verify function lookup, missing-entry rejection,
+  named helper execution, and repeat named dispatch
+- a future product profile should still add compiler-side manifest checks so
+  required entries are declared explicitly and unsupported entries fail before
+  bytecode deployment
