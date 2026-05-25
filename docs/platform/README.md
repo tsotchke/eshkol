@@ -137,6 +137,8 @@ Program phase:
 - `embedded-vm` emits no-desktop-preamble ESKB through the public VM header and
   rejects desktop-native bytecode during emission; native Windows stubs expose
   the same symbols while the full VM remains disabled there
+- compiler-produced ESKB now includes closed top-level VM function entries, so
+  product hooks such as `tick` can satisfy load-time required-entry checks
 - hosted Windows x86_64 validation now has a remote SSH harness for Jack's
   Tailscale Windows PC: `scripts/remote_windows_verify.sh` builds the native
   Visual Studio 2022 + ClangCL tree and runs the bounded `windows-lite` suite
@@ -159,7 +161,8 @@ Program phase:
 Immediate priorities:
 
 - physical VM source extraction behind the explicit VM source families
-- embedded compiler checks for product entry-point manifests
+- compiler diagnostics for product entry-point manifests beyond VM function-table
+  admission
 - first `runtime-freestanding` hook definitions
 - low-level machine-facing language surface
 - freestanding LLVM object and ELF pipeline
