@@ -45,13 +45,15 @@ The CI runs as two matrix jobs: one Unix matrix and one Windows matrix.
 
 #### Windows matrix
 
+Routine CI runs hosted Windows ARM64 lanes only. Windows x86-64 smoke
+validation runs on Jack's local Windows machine with:
+`scripts/remote_windows_verify.sh jack-blupc --build-dir build-jack-msys-ucrt --suite-only`.
+The release workflow still builds hosted Windows x86-64 packages.
+
 | Job | Runner | Variant |
 |-----|--------|---------|
-| `windows-x64-lite` | `windows-latest` | Lite |
 | `windows-arm64-lite` | `windows-11-arm` | Lite |
-| `windows-x64-xla` | `windows-latest` | XLA |
 | `windows-arm64-xla` | `windows-11-arm` | XLA |
-| `windows-x64-cuda` | `windows-latest` | CUDA |
 | `windows-arm64-cuda` | `windows-11-arm` | CUDA |
 
 ### Steps (per job)
@@ -79,7 +81,6 @@ Release builds upload platform-specific artifacts:
 | `eshkol-linux-arm64` | Linux ARM64 binaries |
 | `eshkol-macos-arm64` | macOS Apple Silicon binaries |
 | `eshkol-macos-x64` | macOS Intel binaries |
-| `eshkol-windows-x64` | Windows x86-64 binaries |
 | `eshkol-windows-arm64` | Windows ARM64 binaries |
 
 ---
