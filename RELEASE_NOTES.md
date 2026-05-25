@@ -1,10 +1,11 @@
-# Eshkol v1.2.1-scale — Noesis M0 Closeout
+# Eshkol v1.2.2-scale — Platform Artifact Closeout
 
 **Base Release Date**: May 1, 2026
 **Closeout Date**: May 20, 2026
+**Platform Artifact Date**: May 25, 2026
 
-Eshkol v1.2.1-scale is the closeout point release for v1.2.0-scale,
-the *production-readiness* release. The v1.1
+Eshkol v1.2.2-scale is the platform-artifact closeout point release for
+v1.2.0-scale, the *production-readiness* release. The v1.1
 line proved the math (autodiff, tensors, the consciousness engine);
 v1.2 makes it shippable: trained models save and load, error messages
 point at the actual line, the Python FFI is stable and zero-copy,
@@ -18,9 +19,27 @@ v1.2.0 release shipped with 62 tests; the current v1.2.x Noesis M0
 closeout build carries **87 passing edge/security tests**, a clean
 37-suite aggregate gate, and a full Noesis aggregate smoke pass.
 
+## v1.2.2 Platform Artifact Addendum (May 25, 2026)
+
+`v1.2.2-scale` is a packaging and release-integrity patch over the v1.2.1
+language/runtime surface:
+
+- the release workflow now treats the 16-package platform set as a checked
+  contract before publishing:
+  - Linux x64/ARM64 lite/XLA/CUDA tarballs
+  - macOS arm64/x64 lite/XLA tarballs
+  - Windows x64/ARM64 lite/XLA/CUDA zips
+- `SHA256SUMS.txt` is generated from the final merged `dist/` directory.
+- the publish job refuses to append to or overwrite an existing GitHub release.
+- `release_workflow_surface_test` pins this behavior in CTest so future
+  release-workflow edits cannot silently drop platform artifacts.
+- the Homebrew formula template now targets the public `v1.2.2-scale` archive;
+  the tap formula still needs its computed SHA256 after the release tarball is
+  published.
+
 ## v1.2.1 Noesis M0 Closeout Addendum (May 20, 2026)
 
-The current `v1.2.1-scale` branch closes the Noesis M0 audit path:
+`v1.2.1-scale` closed the Noesis M0 audit path:
 
 - `tests/v1_2_edge_cases` passes **87/87**, including shared
   hash-table mutation under `parallel-map`, late variadic REPL forward

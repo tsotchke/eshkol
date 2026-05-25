@@ -270,7 +270,8 @@ v2.0 ─────────────────────────
 - [x] Tagged release artifact contract: the GitHub release workflow
       validates the full 16-asset platform matrix before publishing
       (Linux x64/ARM64 lite/XLA/CUDA, macOS arm64/x64 lite/XLA,
-      Windows x64/ARM64 lite/XLA/CUDA) and emits `SHA256SUMS.txt`.
+      Windows x64/ARM64 lite/XLA/CUDA) and emits `SHA256SUMS.txt`;
+      published as the `v1.2.2-scale` packaging closeout.
 - [x] Stdlib correctness: user `(define (foo …))` after `(require
       stdlib)` cleanly shadows stdlib's `foo` at link time
       (LinkOnceODR linkage on stdlib functions) and at call-site
