@@ -213,8 +213,8 @@ int main(int argc, char** argv) {
     ok = ok &&
          expect_contains(parallel_llvm_codegen, "static llvm::GlobalValue::LinkageTypes workerInitLinkage()",
                          "parallel worker init linkage is centralized") &&
-         expect_contains(parallel_llvm_codegen, "return llvm::GlobalValue::WeakAnyLinkage;",
-                         "parallel worker init uses COFF weak-any linkage on Windows") &&
+         expect_contains(parallel_llvm_codegen, "return llvm::GlobalValue::InternalLinkage;",
+                         "parallel worker init uses module-local linkage on Windows") &&
          expect_contains(parallel_llvm_codegen, "init_type, workerInitLinkage(),",
                          "parallel worker init symbol uses platform-specific linkage");
 

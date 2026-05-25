@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 (no entries — v1.2 is closed; new work targets v1.3-evolve)
 
+## [1.2.3-scale] - 2026-05-25
+
+Packaging closeout for the v1.2 line. This patch supersedes the unpublished
+`v1.2.2-scale` tag attempt, which failed before GitHub release publication in
+the hosted Windows x64 artifact job.
+
+### Fixed
+
+- Fixed hosted Windows x64 release packaging links by keeping generated
+  parallel worker initializer symbols module-local on native Windows.
+
 ## [1.2.2-scale] - 2026-05-25
 
 Packaging closeout for the v1.2 line. This patch release keeps the v1.2.1
