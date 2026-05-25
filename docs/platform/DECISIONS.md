@@ -2323,3 +2323,44 @@ Windows `eshkol_emit_eskb` stub.
   returns an unavailable diagnostic there
 - the embedded emitter remains backed by the full VM/toolchain path on hosted
   non-Windows builds
+
+---
+
+## D-0068
+
+- Date: 2026-05-25
+- Status: Accepted
+- Title: Emit named VM entries from source ESKB output
+
+### Context
+
+The public VM loader can preserve, query, and call named ESKB functions, and
+load options can require entries such as `init` or `tick`. Before this
+decision, compiler-produced ESKB still emitted a single synthetic `main`
+function record, so product entry checks were only useful for hand-authored
+or post-processed bytecode.
+
+`embedded-vm` needs the normal source-to-bytecode path to produce the same
+entry table that product runtimes validate at load time.
+
+### Decision
+
+Extend the ESKB writer with a multi-function CODE-section path while keeping
+the existing single-function writer API as a compatibility wrapper. The VM
+source compiler records closed top-level function definitions as named entries
+alongside synthetic `main`, and the embedded emitter writes those entries into
+the ESKB function table.
+
+Only closed top-level functions are exported as independent entries in this
+slice. Functions that capture upvalues remain reachable through normal VM
+execution but are not advertised as product hooks yet.
+
+### Consequences
+
+- compiler-produced embedded ESKB can satisfy required-entry load options for
+  hooks such as `tick`
+- product hosts can call emitted source hooks through `eshkol_vm_call`
+- the public VM C API test now loads compiler-emitted embedded ESKB requiring
+  both `main` and `tick`, then calls `tick` and verifies its result
+- export-manifest diagnostics are still a compiler/profile responsibility above
+  this conservative function-table emission
