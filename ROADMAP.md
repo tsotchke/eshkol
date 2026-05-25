@@ -267,6 +267,10 @@ v2.0 ─────────────────────────
 - [x] v1.2 edge-case + security regression suite (62 tests) wired into
       `run_all_tests.sh` and a new `linux-x64-asan-ubsan` CI lane.
       Includes 3 shell-style tests for compile-time diagnostics.
+- [x] Tagged release artifact contract: the GitHub release workflow
+      validates the full 16-asset platform matrix before publishing
+      (Linux x64/ARM64 lite/XLA/CUDA, macOS arm64/x64 lite/XLA,
+      Windows x64/ARM64 lite/XLA/CUDA) and emits `SHA256SUMS.txt`.
 - [x] Stdlib correctness: user `(define (foo …))` after `(require
       stdlib)` cleanly shadows stdlib's `foo` at link time
       (LinkOnceODR linkage on stdlib functions) and at call-site

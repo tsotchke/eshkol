@@ -2279,6 +2279,16 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/ma
     )
 endif()
 
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/release_workflow_surface_test.cpp")
+    add_executable(release_workflow_surface_test
+        tests/toolchain/release_workflow_surface_test.cpp)
+    target_compile_features(release_workflow_surface_test PRIVATE cxx_std_17)
+    add_test(
+        NAME release_workflow_surface_test
+        COMMAND release_workflow_surface_test "${CMAKE_CURRENT_SOURCE_DIR}"
+    )
+endif()
+
 # ===== SDNC Paper Artifact: weight_matrices ===================================
 # The paper "The Self-Differentiating Neural Computer: Computable Transformers
 # via Analytical Weight Construction" (tsotchke 2026) reports a 2.8M-parameter
