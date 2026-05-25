@@ -59,6 +59,10 @@ int main(int argc, char** argv) {
         read_file(source_root / "lib" / "core" / "runtime_arena_core.cpp");
     const std::string runtime_regions =
         read_file(source_root / "lib" / "core" / "runtime_regions.cpp");
+    const std::string eshkol_run =
+        read_file(source_root / "exe" / "eshkol-run.cpp");
+    const std::string llvm_codegen =
+        read_file(source_root / "lib" / "backend" / "llvm_codegen.cpp");
     bool ok = true;
 
     ok = ok &&
@@ -118,8 +122,10 @@ int main(int argc, char** argv) {
                              "Windows suite should not start the web server without the guard helper");
 
     ok = ok &&
-         expect_contains(arena_header, "#if defined(__GNUC__) && !defined(_WIN32)",
-                         "runtime weak-linkage macro excludes Windows COFF") &&
+         expect_contains(arena_header, "#if defined(_WIN32)",
+                         "runtime weak-linkage macro has a Windows COFF branch") &&
+         expect_contains(arena_header, "#define ESHKOL_RUNTIME_WEAK __declspec(selectany)",
+                         "runtime weak-linkage macro uses COFF selectany on Windows") &&
          expect_contains(arena_header, "#define ESHKOL_RUNTIME_WEAK __attribute__((weak))",
                          "runtime weak-linkage macro preserves ELF/Mach-O weak defaults") &&
          expect_contains(runtime_arena_core,
@@ -140,6 +146,24 @@ int main(int argc, char** argv) {
          expect_not_contains(runtime_regions,
                              "__attribute__((weak)) arena_t* __global_arena",
                              "runtime arena default should not use direct weak attribute");
+
+    ok = ok &&
+         expect_contains(eshkol_run, "#ifdef __MINGW32__",
+                         "eshkol-run generated link path has a MinGW branch") &&
+         expect_contains(eshkol_run, "\"-Wl,--stack,536870912\"",
+                         "eshkol-run generated link path uses GNU PE stack flag on MinGW") &&
+         expect_contains(eshkol_run, "\"/STACK:536870912\"",
+                         "eshkol-run generated link path preserves MSVC stack flag") &&
+         expect_contains(llvm_codegen, "#elif defined(_WIN32) && defined(__MINGW32__)",
+                         "LLVM executable link path has a MinGW whole-archive branch") &&
+         expect_contains(llvm_codegen, "\"-Wl,--whole-archive\"",
+                         "LLVM executable link path uses GNU whole-archive on MinGW") &&
+         expect_contains(llvm_codegen, "\"-Wl,--stack,536870912\"",
+                         "LLVM executable link path uses GNU PE stack flag on MinGW") &&
+         expect_contains(llvm_codegen, "\"/WHOLEARCHIVE:\" + runtime_lib_path.generic_string()",
+                         "LLVM executable link path preserves MSVC whole-archive flag") &&
+         expect_contains(llvm_codegen, "\"/STACK:536870912\"",
+                         "LLVM executable link path preserves MSVC stack flag");
 
     if (!ok) {
         return 1;
