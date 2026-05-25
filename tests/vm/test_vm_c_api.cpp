@@ -1154,6 +1154,25 @@ void test_valid_chunk(void) {
               "loaded chunk rejects missing function lookup");
         CHECK(eshkol_vm_has_function(vm, nullptr) == -1,
               "function lookup rejects null name");
+        CHECK(eshkol_vm_function_count(nullptr) == -1,
+              "function count rejects null handle");
+        CHECK(eshkol_vm_function_name(nullptr, 0) == nullptr,
+              "function name lookup rejects null handle");
+        CHECK(eshkol_vm_function_count(vm) == 3,
+              "loaded chunk reports function table size");
+        const char* fn0 = eshkol_vm_function_name(vm, 0);
+        const char* fn1 = eshkol_vm_function_name(vm, 1);
+        const char* fn2 = eshkol_vm_function_name(vm, 2);
+        CHECK(fn0 && std::strcmp(fn0, "main") == 0,
+              "function table exposes main name");
+        CHECK(fn1 && std::strcmp(fn1, "helper1") == 0,
+              "function table exposes first helper name");
+        CHECK(fn2 && std::strcmp(fn2, "helper2") == 0,
+              "function table exposes second helper name");
+        CHECK(eshkol_vm_function_name(vm, -1) == nullptr,
+              "function name lookup rejects negative index");
+        CHECK(eshkol_vm_function_name(vm, 3) == nullptr,
+              "function name lookup rejects past-end index");
 
         CHECK(eshkol_vm_run(vm) == 0, "run loaded chunk");
         int64_t top = 0;

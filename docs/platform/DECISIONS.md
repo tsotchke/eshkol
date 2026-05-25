@@ -2401,3 +2401,42 @@ failure, removes the emitted `.eskb` path, and exits non-zero.
 - hosted VM profiles can also use explicit required-entry checks while retaining
   desktop-compatible load policy
 - richer manifest formats can build on top of this explicit entry list
+
+---
+
+## D-0070
+
+- Date: 2026-05-25
+- Status: Accepted
+- Title: Expose VM function table enumeration
+
+### Context
+
+Product hosts and build tools can already ask whether a specific VM entry is
+present and can call it by name. That is enough for a fixed hook contract, but
+inspection tools still had to know the requested hook names up front or reach
+into decoded ESKB internals to show what a bytecode artifact actually exports.
+
+The compiler now emits closed top-level source functions as named ESKB entries,
+so the public ABI needs a way to list those entries without exposing
+`EskbModule`.
+
+### Decision
+
+Add two public VM C ABI calls:
+
+- `eshkol_vm_function_count`
+- `eshkol_vm_function_name`
+
+The count call reports the decoded function-table size for a loaded VM handle.
+The name call returns a borrowed pointer for an in-range function index, valid
+until the VM handle is destroyed. Invalid handles and out-of-range indices fail
+without exposing VM internals.
+
+### Consequences
+
+- product tooling can list emitted hooks before packaging or deployment
+- embedders can build richer manifest checks above the existing required-entry
+  loader and `--require-vm-entry` CLI gate
+- the VM C API test now covers count, ordered names, null handles, and
+  out-of-range index rejection
