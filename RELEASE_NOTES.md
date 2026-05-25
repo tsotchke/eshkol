@@ -43,6 +43,10 @@ The current `v1.2.1-scale` branch closes the Noesis M0 audit path:
   creates the stale `.o.o` output.
 - The Homebrew formula template points at the public `v1.2.1-scale` release
   archive; the public tap formula carries the computed SHA256 after tagging.
+- The release workflow's platform asset matrix is now guarded by
+  `release_workflow_surface_test`: every `v*` tag must publish the 16 expected
+  Linux/macOS/Windows lite/XLA/CUDA archives, generate `SHA256SUMS.txt`, and
+  refuse to append assets to an existing release.
 
 ## What's New in v1.2.0-scale
 
@@ -141,6 +145,10 @@ The current `v1.2.1-scale` branch closes the Noesis M0 audit path:
   suite under `-DESHKOL_ENABLE_ASAN=ON -DESHKOL_ENABLE_UBSAN=ON`.
   `ESHKOL_ENABLE_TSAN=ON` and `ESHKOL_ENABLE_MSAN=ON` are scaffolded;
   TSan/MSan-built libstdc++ on apt.llvm.org is a v1.3 prerequisite.
+- **Tagged release assets**: the release workflow treats the complete
+  16-package platform set as a checked contract before publishing:
+  Linux x64/ARM64 lite/XLA/CUDA tarballs, macOS arm64/x64 lite/XLA tarballs,
+  Windows x64/ARM64 lite/XLA/CUDA zips, plus `SHA256SUMS.txt`.
 - **`stdlib.o` rebuild correctness** — `file(GLOB_RECURSE …
   CONFIGURE_DEPENDS)` now watches every `lib/{core,math,signal,
   random,web,tensor,quantum,ml}/*.esk` so editing a transitive
