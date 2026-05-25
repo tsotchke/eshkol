@@ -139,6 +139,8 @@ Program phase:
   the same symbols while the full VM remains disabled there
 - compiler-produced ESKB now includes closed top-level VM function entries, so
   product hooks such as `tick` can satisfy load-time required-entry checks
+- `eshkol-run --profile embedded-vm --require-vm-entry NAME` now performs
+  build-time ESKB admission and removes rejected bytecode outputs
 - hosted Windows x86_64 validation now has a remote SSH harness for Jack's
   Tailscale Windows PC: `scripts/remote_windows_verify.sh` builds the native
   Visual Studio 2022 + ClangCL tree and runs the bounded `windows-lite` suite
@@ -161,8 +163,8 @@ Program phase:
 Immediate priorities:
 
 - physical VM source extraction behind the explicit VM source families
-- compiler diagnostics for product entry-point manifests beyond VM function-table
-  admission
+- richer product entry-point manifest diagnostics beyond explicit
+  `--require-vm-entry` admission
 - first `runtime-freestanding` hook definitions
 - low-level machine-facing language surface
 - freestanding LLVM object and ELF pipeline

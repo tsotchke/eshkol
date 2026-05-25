@@ -291,6 +291,35 @@ int main(int argc, char** argv) {
         return fail("embedded VM profile unexpectedly produced a native executable");
     }
 
+    const fs::path required_eskb_path = temp_root / "embedded-required.eskb";
+    ProcessResult embedded_required = run_process_capture(
+        {run_binary.string(), "--profile", "embedded-vm",
+         "--emit-eskb", required_eskb_path.string(),
+         "--require-vm-entry", "entry", source_path.string()},
+        temp_root);
+    if (int rc = expect_success("embedded VM required entry admission",
+                                embedded_required)) {
+        return rc;
+    }
+    if (!fs::exists(required_eskb_path)) {
+        return fail("embedded VM required-entry ESKB file was not created");
+    }
+
+    const fs::path missing_required_path = temp_root / "embedded-missing-required.eskb";
+    ProcessResult embedded_missing_required = run_process_capture(
+        {run_binary.string(), "--profile", "embedded-vm",
+         "--emit-eskb", missing_required_path.string(),
+         "--require-vm-entry", "tick", source_path.string()},
+        temp_root);
+    if (int rc = expect_failure_containing("embedded VM missing required entry",
+                                           embedded_missing_required,
+                                           "missing required VM entry 'tick'")) {
+        return rc;
+    }
+    if (fs::exists(missing_required_path)) {
+        return fail("embedded VM kept ESKB after missing required entry");
+    }
+
     const fs::path desktop_native_source = temp_root / "desktop-native.esk";
     {
         std::ofstream source(desktop_native_source);

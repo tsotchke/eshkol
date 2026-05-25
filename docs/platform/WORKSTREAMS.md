@@ -239,6 +239,8 @@ Good delegation candidate for a VM-focused contributor with a fixed host-hook co
   tests
 - compiler-produced embedded ESKB exposes closed top-level hooks such as `tick`
   through the function table and required-entry loader path
+- `--require-vm-entry` is exercised by the profile CLI test for both accepted
+  and rejected embedded ESKB outputs
 
 ## Workstream 7: BSP Contract and Reference Targets
 

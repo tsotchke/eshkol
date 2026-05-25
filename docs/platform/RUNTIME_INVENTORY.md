@@ -250,6 +250,12 @@ hooks fail during loading. The default `eshkol_vm_load_chunk` path remains
 desktop-compatible: desktop native calls are allowed, no entries are required,
 and string constants are materialized.
 
+`eshkol-run` also exposes build-time VM entry admission for VM profiles through
+`--require-vm-entry NAME`. After ESKB emission, the CLI reloads the bytecode
+through the public VM loader, checks the requested entry names, and removes the
+output file on admission failure. For `embedded-vm`, that validation uses the
+same host-native-only, no-string, no-desktop-native policy as product loading.
+
 ### VM toolchain/compiler family
 
 - `vm_parser.c`
