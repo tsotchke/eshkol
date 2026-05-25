@@ -74,6 +74,8 @@ int main(int argc, char** argv) {
         read_file(source_root / "lib" / "backend" / "eshkol_vm_stub.c");
     const std::string llvm_codegen =
         read_file(source_root / "lib" / "backend" / "llvm_codegen.cpp");
+    const std::string parallel_llvm_codegen =
+        read_file(source_root / "lib" / "backend" / "parallel_llvm_codegen.cpp");
     bool ok = true;
 
     ok = ok &&
@@ -207,6 +209,14 @@ int main(int argc, char** argv) {
          expect_not_contains(cmake,
                              "foreach(_llvm_runtime_lib IN LISTS LLVM_LIBS_LIST LLVM_SYSTEM_LIBS_LIST)",
                              "generated Windows binaries should not inherit compiler LLVM link libraries");
+
+    ok = ok &&
+         expect_contains(parallel_llvm_codegen, "static llvm::GlobalValue::LinkageTypes workerInitLinkage()",
+                         "parallel worker init linkage is centralized") &&
+         expect_contains(parallel_llvm_codegen, "return llvm::GlobalValue::WeakAnyLinkage;",
+                         "parallel worker init uses COFF weak-any linkage on Windows") &&
+         expect_contains(parallel_llvm_codegen, "init_type, workerInitLinkage(),",
+                         "parallel worker init symbol uses platform-specific linkage");
 
     ok = ok &&
          expect_contains(eshkol_vm_stub, "int eshkol_vm_default_load_options",
