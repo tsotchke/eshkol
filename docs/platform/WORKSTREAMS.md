@@ -194,7 +194,7 @@ Make the VM a valid non-hosted runtime target.
 - ESKB smoke tests in non-hosted mode
 - embedded profile limits for static RAM, stack, frames, constants, and
   bytecode size
-- static host-call table for product runtimes such as Tamatsotchke
+- deterministic host-call table ABI for product runtimes such as Tamatsotchke
 
 ### Dependencies
 
@@ -222,6 +222,7 @@ Good delegation candidate for a VM-focused contributor with a fixed host-hook co
 - hook-based smoke tests pass
 - embedded VM rejects unsupported desktop native calls and enforces static
   memory/budget limits
+- fixed host-call slots are exercised by the public VM C API tests
 
 ## Workstream 7: BSP Contract and Reference Targets
 
