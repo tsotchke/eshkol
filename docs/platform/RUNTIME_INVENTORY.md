@@ -282,6 +282,9 @@ desktop-native bytecode during emission. Native Windows builds still stub these
 symbols while the full bytecode VM remains disabled for that target. The
 emitter's product-entry table is intentionally conservative: only closed
 top-level functions are exported as independent named entries in this slice.
+The `eshkol-run --require-vm-entry-zero-arg` gate lets embedded VM builds reject
+required hooks whose decoded function metadata is incompatible with the current
+zero-argument public dispatch ABI.
 
 ### VM test family
 

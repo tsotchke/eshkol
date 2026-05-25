@@ -141,6 +141,8 @@ Program phase:
   product hooks such as `tick` can satisfy load-time required-entry checks
 - `eshkol-run --profile embedded-vm --require-vm-entry NAME` now performs
   build-time ESKB admission and removes rejected bytecode outputs
+- `eshkol-run --profile embedded-vm --require-vm-entry-zero-arg NAME` lowers
+  hook arity contracts to VM metadata admission during bytecode emission
 - the public VM C ABI can enumerate decoded ESKB function entries, so product
   tooling can inspect emitted hooks without reaching into `EskbModule`
 - VM function metadata is available through the public ABI for hook arity,

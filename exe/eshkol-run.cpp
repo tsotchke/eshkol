@@ -260,6 +260,7 @@ static struct option long_options[] = {
     {"profile", required_argument, nullptr, 260},
     {"target", required_argument, nullptr, 261},
     {"require-vm-entry", required_argument, nullptr, 262},
+    {"require-vm-entry-zero-arg", required_argument, nullptr, 263},
     {0, 0, 0, 0}
 };
 
@@ -1379,6 +1380,7 @@ static void print_help(int x = 0)
         "\t              freestanding-mcu-native, freestanding-vm, embedded-vm.\n"
         "\t--target TRIPLE = Set the LLVM target triple.\n"
         "\t--require-vm-entry NAME = Require a named VM entry in emitted ESKB.\n"
+        "\t--require-vm-entry-zero-arg NAME = Require a named zero-argument VM entry in emitted ESKB.\n"
         "\t--lib:[-l] = Links a shared library to the resulting executable.\n"
         "\t--lib-path:[-L] = Adds a directory to the library search path.\n"
         "\t--no-stdlib:[-n] = Do not auto-load the standard library.\n"
@@ -2557,6 +2559,7 @@ int main(int argc, char **argv)
     bool vm_only_profile = false;
     bool embedded_vm_profile = false;
     std::vector<std::string> required_vm_entries;
+    std::vector<std::string> required_zero_arg_vm_entries;
 
     if (argc == 1) print_help(1);
 
@@ -2653,6 +2656,13 @@ int main(int argc, char **argv)
             }
             required_vm_entries.emplace_back(optarg);
             break;
+        case 263:
+            if (!optarg || !*optarg) {
+                fprintf(stderr, "--require-vm-entry-zero-arg requires a non-empty name\n");
+                return 1;
+            }
+            required_zero_arg_vm_entries.emplace_back(optarg);
+            break;
         default:
             print_help(1);
         }
@@ -2707,6 +2717,10 @@ int main(int argc, char **argv)
 
     if (!required_vm_entries.empty() && !vm_only_profile) {
         fprintf(stderr, "--require-vm-entry requires a VM profile with --emit-eskb\n");
+        return 1;
+    }
+    if (!required_zero_arg_vm_entries.empty() && !vm_only_profile) {
+        fprintf(stderr, "--require-vm-entry-zero-arg requires a VM profile with --emit-eskb\n");
         return 1;
     }
 
@@ -2965,7 +2979,9 @@ int main(int argc, char **argv)
             return 1;
         }
 
-        if (!required_vm_entries.empty()) {
+        const bool require_vm_admission =
+            !required_vm_entries.empty() || !required_zero_arg_vm_entries.empty();
+        if (require_vm_admission) {
             std::ifstream emitted_eskb(eskb_output_path, std::ios::binary);
             if (!emitted_eskb.is_open()) {
                 eshkol_error("Failed to open emitted ESKB for admission: %s",
@@ -2999,6 +3015,24 @@ int main(int argc, char **argv)
                 admission_options.native_policy = ESHKOL_VM_NATIVE_POLICY_HOST_ONLY;
                 admission_options.reject_string_constants = 1;
                 admission_options.reject_desktop_native_calls = 1;
+            }
+
+            std::vector<EshkolVmFunctionRequirement> required_zero_arg_entries;
+            required_zero_arg_entries.reserve(required_zero_arg_vm_entries.size());
+            for (const std::string& entry : required_zero_arg_vm_entries) {
+                EshkolVmFunctionRequirement requirement;
+                requirement.name = entry.c_str();
+                requirement.n_params = 0;
+                requirement.max_locals = -1;
+                requirement.max_code_len = -1;
+                requirement.require_no_upvalues = 0;
+                required_zero_arg_entries.push_back(requirement);
+            }
+            if (!required_zero_arg_entries.empty()) {
+                admission_options.required_function_metadata =
+                    required_zero_arg_entries.data();
+                admission_options.required_function_metadata_count =
+                    static_cast<int>(required_zero_arg_entries.size());
             }
 
             EshkolVmHandle* admission_vm =
