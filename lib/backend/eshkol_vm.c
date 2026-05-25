@@ -1332,6 +1332,8 @@ int eshkol_vm_default_load_options(EshkolVmLoadOptions* out) {
     out->native_policy = ESHKOL_VM_NATIVE_POLICY_DESKTOP;
     out->reject_string_constants = 0;
     out->reject_desktop_native_calls = 0;
+    out->required_functions = NULL;
+    out->required_function_count = 0;
     return 0;
 }
 
@@ -1347,6 +1349,8 @@ static int eshkol_vm_normalize_load_options(const EshkolVmLoadOptions* options,
     }
     out->reject_string_constants = out->reject_string_constants ? 1 : 0;
     out->reject_desktop_native_calls = out->reject_desktop_native_calls ? 1 : 0;
+    if (out->required_function_count < 0) return -1;
+    if (out->required_function_count > 0 && !out->required_functions) return -1;
     return 0;
 }
 
@@ -1474,6 +1478,22 @@ static int eshkol_vm_materialize_eskb_constants(VM* vm, const EskbModule* mod,
 static int eshkol_vm_validate_load_policy(const EskbModule* mod,
                                           const EshkolVmLoadOptions* options) {
     if (!mod || !options) return -1;
+    if (options->required_function_count > mod->n_functions) return -1;
+
+    for (int i = 0; i < options->required_function_count; i++) {
+        const char* required = options->required_functions[i];
+        int found = 0;
+        if (!required || !required[0]) return -1;
+        for (int fi = 0; fi < mod->n_functions; fi++) {
+            if (mod->functions[fi].name &&
+                strcmp(mod->functions[fi].name, required) == 0) {
+                found = 1;
+                break;
+            }
+        }
+        if (!found) return -1;
+    }
+
     if (!options->reject_desktop_native_calls) return 0;
 
     for (int pc = 0; pc < mod->code_len; pc++) {

@@ -132,7 +132,8 @@ Program phase:
   of silently degrading them to integer lengths
 - VM load options can select host-native-only policy and reject ESKB string
   constants at load time, giving embedded profiles a checked path toward
-  content-pack-only text and pre-run desktop-native rejection
+  content-pack-only text, pre-run desktop-native rejection, and required named
+  script entries
 - hosted Windows x86_64 validation now has a remote SSH harness for Jack's
   Tailscale Windows PC: `scripts/remote_windows_verify.sh` builds the native
   Visual Studio 2022 + ClangCL tree and runs the bounded `windows-lite` suite
