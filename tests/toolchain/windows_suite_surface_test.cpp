@@ -12,7 +12,15 @@ std::string read_file(const fs::path& path) {
     std::ifstream input(path, std::ios::binary);
     std::ostringstream buffer;
     buffer << input.rdbuf();
-    return buffer.str();
+    std::string contents = buffer.str();
+    std::string normalized;
+    normalized.reserve(contents.size());
+    for (char ch : contents) {
+        if (ch != '\r') {
+            normalized.push_back(ch);
+        }
+    }
+    return normalized;
 }
 
 bool expect_contains(const std::string& haystack, const std::string& needle,
