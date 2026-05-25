@@ -53,6 +53,12 @@ int main(int argc, char** argv) {
     }
 
     const std::string script = read_file(script_path);
+    const std::string arena_header =
+        read_file(source_root / "lib" / "core" / "arena_memory.h");
+    const std::string runtime_arena_core =
+        read_file(source_root / "lib" / "core" / "runtime_arena_core.cpp");
+    const std::string runtime_regions =
+        read_file(source_root / "lib" / "core" / "runtime_regions.cpp");
     bool ok = true;
 
     ok = ok &&
@@ -104,6 +110,30 @@ int main(int argc, char** argv) {
                              "Windows suite should not remove variable paths without the guard helper") &&
          expect_not_contains(script, "$server = Start-Process",
                              "Windows suite should not start the web server without the guard helper");
+
+    ok = ok &&
+         expect_contains(arena_header, "#if defined(__GNUC__) && !defined(_WIN32)",
+                         "runtime weak-linkage macro excludes Windows COFF") &&
+         expect_contains(arena_header, "#define ESHKOL_RUNTIME_WEAK __attribute__((weak))",
+                         "runtime weak-linkage macro preserves ELF/Mach-O weak defaults") &&
+         expect_contains(runtime_arena_core,
+                         "ESHKOL_RUNTIME_WEAK int32_t __eshkol_argc = 0;",
+                         "runtime argc default uses portable weak-linkage macro") &&
+         expect_contains(runtime_arena_core,
+                         "ESHKOL_RUNTIME_WEAK char** __eshkol_argv = nullptr;",
+                         "runtime argv default uses portable weak-linkage macro") &&
+         expect_contains(runtime_regions,
+                         "ESHKOL_RUNTIME_WEAK arena_t* __global_arena = nullptr;",
+                         "runtime arena default uses portable weak-linkage macro") &&
+         expect_not_contains(runtime_arena_core,
+                             "__attribute__((weak)) int32_t __eshkol_argc",
+                             "runtime argc default should not use direct weak attribute") &&
+         expect_not_contains(runtime_arena_core,
+                             "__attribute__((weak)) char** __eshkol_argv",
+                             "runtime argv default should not use direct weak attribute") &&
+         expect_not_contains(runtime_regions,
+                             "__attribute__((weak)) arena_t* __global_arena",
+                             "runtime arena default should not use direct weak attribute");
 
     if (!ok) {
         return 1;

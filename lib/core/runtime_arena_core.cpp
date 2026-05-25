@@ -34,9 +34,9 @@ extern "C" std::atomic<arena_t*> __repl_shared_arena{nullptr};
 
 // Global command-line arguments (for (command-line) procedure)
 // In REPL mode, these remain zero/null since there's no real main()
-// Use weak linkage so generated code can override in standalone mode
-__attribute__((weak)) int32_t __eshkol_argc = 0;
-__attribute__((weak)) char** __eshkol_argv = nullptr;
+// Use weak linkage where object format support lets standalone code override.
+ESHKOL_RUNTIME_WEAK int32_t __eshkol_argc = 0;
+ESHKOL_RUNTIME_WEAK char** __eshkol_argv = nullptr;
 
 // Utility function to align size to boundary
 static size_t align_size(size_t size, size_t alignment) {
