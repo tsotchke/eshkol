@@ -1004,46 +1004,57 @@ static void compile_and_run(const char* source) {
  * Unified main() — handles .esk source, .eskb bytecode, and built-in tests
  ******************************************************************************/
 
-/* Compile source into a FuncChunk without executing it.
- * Used by eshkol_emit_eskb to produce bytecode for export. */
-static void compile_and_run_source_to_chunk(const char* source, FuncChunk* chunk) {
-    /* Reuse compile_and_run's logic but skip execution */
-    emit_builtin_preamble(chunk);
+typedef struct VmEskbEmitOptions {
+    int include_desktop_prelude;
+    int reject_desktop_native_calls;
+} VmEskbEmitOptions;
 
-    /* Scheme prelude */
-    static const char* prelude =
-        "(define (map f lst) (let loop ((l lst) (acc (list))) (if (null? l) (reverse acc) (loop (cdr l) (cons (f (car l)) acc)))))\n"
-        "(define (filter pred lst) (let loop ((l lst) (acc (list))) (if (null? l) (reverse acc) (if (pred (car l)) (loop (cdr l) (cons (car l) acc)) (loop (cdr l) acc)))))\n"
-        "(define (fold-left f init lst) (let loop ((l lst) (acc init)) (if (null? l) acc (loop (cdr l) (f acc (car l))))))\n"
-        "(define (fold-right f init lst) (if (null? lst) init (f (car lst) (fold-right f init (cdr lst)))))\n"
-        "(define (for-each f lst) (if (null? lst) 0 (begin (f (car lst)) (for-each f (cdr lst)))))\n"
-        "(define + (lambda args (fold-left add2 0 args)))\n"
-        "(define * (lambda args (fold-left mul2 1 args)))\n"
-        "(define (- . args) (if (null? (cdr args)) (sub2 0 (car args)) (fold-left sub2 (car args) (cdr args))))\n"
-        "(define (/ . args) (if (null? (cdr args)) (div2 1 (car args)) (fold-left div2 (car args) (cdr args))))\n"
-        "(define _append-2 append)\n"
-        "(define (append . lists) (fold-right _append-2 '() lists))\n"
-        "(define (number->string n . args) (_number->string-2 n (if (null? args) 10 (car args))))\n"
-        "(define (atan x . rest) (if (null? rest) (_atan1 x) (_atan2 x (car rest))))\n"
-        "(define (max a . rest) (fold-left _max2 a rest))\n"
-        "(define (min a . rest) (fold-left _min2 a rest))\n"
-        "(define (string-append . args) (fold-left _string-append-2 \"\" args))\n"
-        "(define (format fmt . args) (_format-list fmt args))\n"
-        "(define (emit! emitter event . args) (_emit-event emitter event args))\n"
-        "(define (make-list n val) (let loop ((i 0) (acc (list))) (if (= i n) acc (loop (+ i 1) (cons val acc)))))\n"
-        "(define (make-factor-graph n . rest) (if (null? rest) (_make-fg2 n (make-list n 2)) (_make-fg2 n (car rest))))\n"
-        "(define (tensor-sum t . args) (if (null? args) (_tensor-reduce-sum t -1) (_tensor-reduce-sum t (car args))))\n"
-        "(define (tensor-mean t . args) (if (null? args) (_tensor-reduce-mean t -1) (_tensor-reduce-mean t (car args))))\n"
-        "(define (tensor-max t . args) (if (null? args) (_tensor-reduce-max t -1) (_tensor-reduce-max t (car args))))\n"
-        "(define (tensor-min t . args) (if (null? args) (_tensor-reduce-min t -1) (_tensor-reduce-min t (car args))))\n";
-    src_ptr = prelude;
-    while (1) {
-        skip_ws(); if (!*src_ptr) break;
-        Node* expr = parse_sexp(); if (!expr) break;
-        int lb = chunk->n_locals;
-        compile_expr(chunk, expr, 0);
-        if (chunk->n_locals == lb) chunk_emit(chunk, OP_POP, 0);
-        free_node(expr);
+/* Compile source into a FuncChunk without executing it.
+ * Used by ESKB emitters to produce bytecode for export. */
+static void compile_source_to_chunk_with_options(const char* source,
+                                                 FuncChunk* chunk,
+                                                 const VmEskbEmitOptions* options) {
+    int include_desktop_prelude = 1;
+    if (options) include_desktop_prelude = options->include_desktop_prelude ? 1 : 0;
+
+    if (include_desktop_prelude) {
+        emit_builtin_preamble(chunk);
+
+        /* Scheme prelude */
+        static const char* prelude =
+            "(define (map f lst) (let loop ((l lst) (acc (list))) (if (null? l) (reverse acc) (loop (cdr l) (cons (f (car l)) acc)))))\n"
+            "(define (filter pred lst) (let loop ((l lst) (acc (list))) (if (null? l) (reverse acc) (if (pred (car l)) (loop (cdr l) (cons (car l) acc)) (loop (cdr l) acc)))))\n"
+            "(define (fold-left f init lst) (let loop ((l lst) (acc init)) (if (null? l) acc (loop (cdr l) (f acc (car l))))))\n"
+            "(define (fold-right f init lst) (if (null? lst) init (f (car lst) (fold-right f init (cdr lst)))))\n"
+            "(define (for-each f lst) (if (null? lst) 0 (begin (f (car lst)) (for-each f (cdr lst)))))\n"
+            "(define + (lambda args (fold-left add2 0 args)))\n"
+            "(define * (lambda args (fold-left mul2 1 args)))\n"
+            "(define (- . args) (if (null? (cdr args)) (sub2 0 (car args)) (fold-left sub2 (car args) (cdr args))))\n"
+            "(define (/ . args) (if (null? (cdr args)) (div2 1 (car args)) (fold-left div2 (car args) (cdr args))))\n"
+            "(define _append-2 append)\n"
+            "(define (append . lists) (fold-right _append-2 '() lists))\n"
+            "(define (number->string n . args) (_number->string-2 n (if (null? args) 10 (car args))))\n"
+            "(define (atan x . rest) (if (null? rest) (_atan1 x) (_atan2 x (car rest))))\n"
+            "(define (max a . rest) (fold-left _max2 a rest))\n"
+            "(define (min a . rest) (fold-left _min2 a rest))\n"
+            "(define (string-append . args) (fold-left _string-append-2 \"\" args))\n"
+            "(define (format fmt . args) (_format-list fmt args))\n"
+            "(define (emit! emitter event . args) (_emit-event emitter event args))\n"
+            "(define (make-list n val) (let loop ((i 0) (acc (list))) (if (= i n) acc (loop (+ i 1) (cons val acc)))))\n"
+            "(define (make-factor-graph n . rest) (if (null? rest) (_make-fg2 n (make-list n 2)) (_make-fg2 n (car rest))))\n"
+            "(define (tensor-sum t . args) (if (null? args) (_tensor-reduce-sum t -1) (_tensor-reduce-sum t (car args))))\n"
+            "(define (tensor-mean t . args) (if (null? args) (_tensor-reduce-mean t -1) (_tensor-reduce-mean t (car args))))\n"
+            "(define (tensor-max t . args) (if (null? args) (_tensor-reduce-max t -1) (_tensor-reduce-max t (car args))))\n"
+            "(define (tensor-min t . args) (if (null? args) (_tensor-reduce-min t -1) (_tensor-reduce-min t (car args))))\n";
+        src_ptr = prelude;
+        while (1) {
+            skip_ws(); if (!*src_ptr) break;
+            Node* expr = parse_sexp(); if (!expr) break;
+            int lb = chunk->n_locals;
+            compile_expr(chunk, expr, 0);
+            if (chunk->n_locals == lb) chunk_emit(chunk, OP_POP, 0);
+            free_node(expr);
+        }
     }
 
     /* Compile user source */
@@ -1059,36 +1070,75 @@ static void compile_and_run_source_to_chunk(const char* source, FuncChunk* chunk
     chunk_emit(chunk, OP_HALT, 0);
 }
 
-/* Public API: compile Eshkol source to ESKB bytecode file.
- * Called from eshkol-run via extern "C" linkage. */
-int eshkol_emit_eskb(const char* source, const char* output_path) {
-    FuncChunk main_chunk; chunk_init_arrays(&main_chunk);
+static int validate_eskb_emit_policy(const FuncChunk* chunk,
+                                     const VmEskbEmitOptions* options) {
+    if (!chunk || !options) return -1;
+    if (!options->reject_desktop_native_calls) return 0;
+    for (int pc = 0; pc < chunk->code_len; pc++) {
+        const Instr ins = chunk->code[pc];
+        if (ins.op == OP_NATIVE_CALL && ins.operand < ESHKOL_VM_HOST_NATIVE_BASE) {
+            fprintf(stderr,
+                    "ERROR: embedded-vm ESKB emission rejected desktop native call %d at pc %d\n",
+                    ins.operand, pc);
+            return -1;
+        }
+    }
+    return 0;
+}
 
-    /* Compile prelude + builtins + source */
-    compile_and_run_source_to_chunk(source, &main_chunk);
+static int emit_eskb_from_chunk(const FuncChunk* main_chunk,
+                                const char* output_path,
+                                const VmEskbEmitOptions* options) {
+    if (!main_chunk || !output_path || !options) return -1;
+    if (validate_eskb_emit_policy(main_chunk, options) != 0) return -1;
 
-    /* Convert to ESKB format */
-    EskbInstr* instrs = (EskbInstr*)calloc(main_chunk.code_len, sizeof(EskbInstr));
-    EskbConst* consts = (EskbConst*)calloc(main_chunk.n_constants > 0 ? main_chunk.n_constants : 1, sizeof(EskbConst));
+    EskbInstr* instrs = (EskbInstr*)calloc(main_chunk->code_len, sizeof(EskbInstr));
+    EskbConst* consts = (EskbConst*)calloc(main_chunk->n_constants > 0 ? main_chunk->n_constants : 1, sizeof(EskbConst));
     if (!instrs || !consts) { free(instrs); free(consts); return -1; }
 
-    for (int i = 0; i < main_chunk.code_len; i++) {
-        instrs[i].op = main_chunk.code[i].op;
-        instrs[i].operand = main_chunk.code[i].operand;
+    for (int i = 0; i < main_chunk->code_len; i++) {
+        instrs[i].op = main_chunk->code[i].op;
+        instrs[i].operand = main_chunk->code[i].operand;
     }
-    for (int i = 0; i < main_chunk.n_constants; i++) {
-        Value v = main_chunk.constants[i];
+    for (int i = 0; i < main_chunk->n_constants; i++) {
+        Value v = main_chunk->constants[i];
         if (v.type == VAL_INT) { consts[i].type = ESKB_CONST_INT64; consts[i].as.i = v.as.i; }
         else if (v.type == VAL_FLOAT) { consts[i].type = ESKB_CONST_F64; consts[i].as.f = v.as.f; }
         else if (v.type == VAL_BOOL) { consts[i].type = ESKB_CONST_BOOL; consts[i].as.b = v.as.b; }
         else { consts[i].type = ESKB_CONST_NIL; }
     }
 
-    int result = eskb_write_file(output_path, instrs, main_chunk.code_len,
-                                  consts, main_chunk.n_constants, NULL);
+    int result = eskb_write_file(output_path, instrs, main_chunk->code_len,
+                                  consts, main_chunk->n_constants, NULL);
     free(instrs);
     free(consts);
     return result;
+}
+
+static int emit_eskb_with_options(const char* source,
+                                  const char* output_path,
+                                  const VmEskbEmitOptions* options) {
+    if (!source || !output_path || !options) return -1;
+    FuncChunk main_chunk; chunk_init_arrays(&main_chunk);
+    compile_source_to_chunk_with_options(source, &main_chunk, options);
+    int result = emit_eskb_from_chunk(&main_chunk, output_path, options);
+    chunk_free_arrays(&main_chunk);
+    return result;
+}
+
+/* Public API: compile Eshkol source to desktop-compatible ESKB bytecode file.
+ * Called from eshkol-run via extern "C" linkage. */
+int eshkol_emit_eskb(const char* source, const char* output_path) {
+    VmEskbEmitOptions options = {1, 0};
+    return emit_eskb_with_options(source, output_path, &options);
+}
+
+/* Public API: compile source for embedded/product VM admission. This omits
+ * the desktop builtin preamble and rejects bytecode that still reaches the
+ * desktop native table. */
+int eshkol_emit_eskb_embedded(const char* source, const char* output_path) {
+    VmEskbEmitOptions options = {0, 1};
+    return emit_eskb_with_options(source, output_path, &options);
 }
 
 /*******************************************************************************
