@@ -91,6 +91,19 @@ static int eskb_read_instruction(EskbReader* r, uint8_t* op, int32_t* operand) {
     return 0;
 }
 
+static int eskb_operand_is_code_target(uint8_t op) {
+    enum {
+        ESKB_OP_JUMP = 28,
+        ESKB_OP_JUMP_IF_FALSE = 29,
+        ESKB_OP_LOOP = 30,
+        ESKB_OP_PUSH_HANDLER = 57,
+    };
+    return op == ESKB_OP_JUMP ||
+           op == ESKB_OP_JUMP_IF_FALSE ||
+           op == ESKB_OP_LOOP ||
+           op == ESKB_OP_PUSH_HANDLER;
+}
+
 static int eskb_parse_payload(const uint8_t* payload, size_t payload_len, EskbModule* mod) {
     EskbReader r;
     eskb_reader_init(&r, payload, payload_len);
@@ -225,6 +238,11 @@ static int eskb_parse_payload(const uint8_t* payload, size_t payload_len, EskbMo
                                               &mod->opcodes[code_offset + (int)i],
                                               &mod->operands[code_offset + (int)i]) < 0) {
                         return -1;
+                    }
+                    if (eskb_operand_is_code_target(mod->opcodes[code_offset + (int)i])) {
+                        int32_t operand = mod->operands[code_offset + (int)i];
+                        if (operand < 0 || operand >= (int32_t)cl) return -1;
+                        mod->operands[code_offset + (int)i] = operand + code_offset;
                     }
                 }
                 mod->code_len = new_code_len;
