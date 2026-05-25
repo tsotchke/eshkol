@@ -394,6 +394,48 @@ function New-ProcessCaptureResult {
     }
 }
 
+function Join-WindowsProcessArguments {
+    param([string[]]$Arguments = @())
+
+    $quoted = foreach ($arg in $Arguments) {
+        if ($null -eq $arg) {
+            $arg = ""
+        }
+        if ($arg -ne "" -and $arg -notmatch '[\s"]') {
+            $arg
+            continue
+        }
+
+        $builder = [System.Text.StringBuilder]::new()
+        [void]$builder.Append('"')
+        $backslashes = 0
+        foreach ($ch in ([string]$arg).ToCharArray()) {
+            if ($ch -eq '\') {
+                $backslashes++
+            } elseif ($ch -eq '"') {
+                if ($backslashes -gt 0) {
+                    [void]$builder.Append('\' * ($backslashes * 2))
+                    $backslashes = 0
+                }
+                [void]$builder.Append('\"')
+            } else {
+                if ($backslashes -gt 0) {
+                    [void]$builder.Append('\' * $backslashes)
+                    $backslashes = 0
+                }
+                [void]$builder.Append($ch)
+            }
+        }
+        if ($backslashes -gt 0) {
+            [void]$builder.Append('\' * ($backslashes * 2))
+        }
+        [void]$builder.Append('"')
+        $builder.ToString()
+    }
+
+    return ($quoted -join " ")
+}
+
 function Invoke-ProcessCapture {
     param(
         [string]$FilePath,
@@ -417,8 +459,12 @@ function Invoke-ProcessCapture {
     $psi.RedirectStandardInput = ($InputText -ne "")
     $psi.CreateNoWindow = $true
 
-    foreach ($arg in $Arguments) {
-        [void]$psi.ArgumentList.Add([string]$arg)
+    if ($psi.GetType().GetProperty("ArgumentList")) {
+        foreach ($arg in $Arguments) {
+            [void]$psi.ArgumentList.Add([string]$arg)
+        }
+    } else {
+        $psi.Arguments = Join-WindowsProcessArguments -Arguments $Arguments
     }
 
     $process = [System.Diagnostics.Process]::new()
