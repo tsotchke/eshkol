@@ -2506,9 +2506,9 @@ entries. A requirement names a function and can enforce:
 - maximum code length (`-1` skips the check)
 - no upvalues for closed product hooks
 
-Invalid requirement arrays, invalid wildcard values, missing names, missing
-functions, and metadata mismatches reject the chunk before a VM handle is
-created.
+Invalid requirement arrays, invalid wildcard/boolean values, missing names,
+missing functions, and metadata mismatches reject the chunk before a VM handle
+is created.
 
 ### Consequences
 

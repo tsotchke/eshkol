@@ -1604,6 +1604,9 @@ static int eshkol_vm_validate_function_requirements(
             req->max_code_len < -1) {
             return -1;
         }
+        if (req->require_no_upvalues != 0 && req->require_no_upvalues != 1) {
+            return -1;
+        }
 
         const EskbFunction* fn = eshkol_vm_find_module_function(mod, req->name);
         if (!fn) return -1;

@@ -1328,6 +1328,22 @@ void test_required_function_metadata_options(void) {
                                             &options) == nullptr,
           "load options reject function code-length budget overflow");
 
+    const EshkolVmFunctionRequirement missing_function[] = {
+        {"render", -1, -1, -1, 0},
+    };
+    options.required_function_metadata = missing_function;
+    CHECK(eshkol_vm_load_chunk_with_options(chunk.data, chunk.len,
+                                            &options) == nullptr,
+          "load options reject missing metadata-required function");
+
+    const EshkolVmFunctionRequirement empty_name[] = {
+        {"", -1, -1, -1, 0},
+    };
+    options.required_function_metadata = empty_name;
+    CHECK(eshkol_vm_load_chunk_with_options(chunk.data, chunk.len,
+                                            &options) == nullptr,
+          "load options reject empty metadata-required function name");
+
     const EshkolVmFunctionRequirement invalid_requirement[] = {
         {"captured", -2, -1, -1, 0},
     };
@@ -1335,6 +1351,14 @@ void test_required_function_metadata_options(void) {
     CHECK(eshkol_vm_load_chunk_with_options(chunk.data, chunk.len,
                                             &options) == nullptr,
           "load options reject invalid metadata requirement fields");
+
+    const EshkolVmFunctionRequirement invalid_closedness[] = {
+        {"captured", -1, -1, -1, 2},
+    };
+    options.required_function_metadata = invalid_closedness;
+    CHECK(eshkol_vm_load_chunk_with_options(chunk.data, chunk.len,
+                                            &options) == nullptr,
+          "load options reject invalid metadata closedness field");
 
     options.required_function_metadata = nullptr;
     options.required_function_metadata_count = 1;
