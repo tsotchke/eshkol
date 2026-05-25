@@ -255,6 +255,8 @@ Good delegation candidate for a VM-focused contributor with a fixed host-hook co
   CODE-section regression
 - strict consumption of the full ESKB payload is covered by a VM C API payload
   trailing-byte regression
+- duplicate known-section rejection is covered by a VM C API duplicate-META
+  regression
 
 ## Workstream 7: BSP Contract and Reference Targets
 

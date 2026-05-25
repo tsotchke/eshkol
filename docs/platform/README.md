@@ -152,6 +152,8 @@ Program phase:
   CODE/CONST/META sections are rejected before VM loading
 - ESKB payloads must be fully covered by the declared section table, so valid
   checksums cannot hide trailing bytes outside sections
+- duplicate known ESKB sections are rejected during decoding; CONST, CODE, and
+  META each have a single authoritative instance
 - the public VM C ABI can enumerate decoded ESKB function entries, so product
   tooling can inspect emitted hooks without reaching into `EskbModule`
 - VM function metadata is available through the public ABI for hook arity,

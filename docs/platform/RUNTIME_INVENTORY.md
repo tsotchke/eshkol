@@ -291,7 +291,9 @@ for direct entry execution. The VM loader also rejects empty or duplicate decode
 function names, making named hook admission and dispatch unambiguous. Known ESKB
 sections are strict: CONST, CODE, and META must be fully consumed by their
 decoders, and the declared section table must cover the full payload, so
-trailing section or payload bytes fail before VM loading.
+trailing section or payload bytes fail before VM loading. Duplicate known
+sections are also rejected, giving CONST, CODE, and META one authoritative
+section instance each.
 
 ### VM test family
 
