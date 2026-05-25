@@ -3025,7 +3025,7 @@ int main(int argc, char **argv)
                 requirement.n_params = 0;
                 requirement.max_locals = -1;
                 requirement.max_code_len = -1;
-                requirement.require_no_upvalues = 0;
+                requirement.require_no_upvalues = 1;
                 required_zero_arg_entries.push_back(requirement);
             }
             if (!required_zero_arg_entries.empty()) {

@@ -142,7 +142,8 @@ Program phase:
 - `eshkol-run --profile embedded-vm --require-vm-entry NAME` now performs
   build-time ESKB admission and removes rejected bytecode outputs
 - `eshkol-run --profile embedded-vm --require-vm-entry-zero-arg NAME` lowers
-  hook arity contracts to VM metadata admission during bytecode emission
+  hook callability contracts to zero-argument/no-upvalue VM metadata admission
+  during bytecode emission
 - public VM entry dispatch now rejects decoded entries that require upvalues, so
   zero-argument calls only run closed function entries
 - the public VM C ABI can enumerate decoded ESKB function entries, so product

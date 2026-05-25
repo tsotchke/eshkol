@@ -241,8 +241,9 @@ Good delegation candidate for a VM-focused contributor with a fixed host-hook co
   through the function table and required-entry loader path
 - `--require-vm-entry` is exercised by the profile CLI test for both accepted
   and rejected embedded ESKB outputs
-- `--require-vm-entry-zero-arg` is exercised by the profile CLI test for
-  accepted zero-argument hooks and rejected parameterized hooks
+- `--require-vm-entry-zero-arg` lowers to zero-parameter/no-upvalue metadata
+  admission and is exercised by the profile CLI test for accepted
+  zero-argument hooks and rejected parameterized hooks
 - public VM function-table enumeration is exercised by the VM C API tests
 - public VM function metadata is exercised by the VM C API tests
 - load-time VM entry metadata requirements are exercised by the VM C API tests
