@@ -1710,6 +1710,7 @@ int eshkol_vm_run(EshkolVmHandle* h) {
     if (!h || !h->vm) return -1;
     if (h->mod.n_functions <= 0) return -1;
     if (h->mod.functions[0].n_params != 0) return -1;
+    if (h->mod.functions[0].n_upvalues != 0) return -1;
     eshkol_vm_prepare_entry(h, 0);
     vm_run(h->vm);
     return h->vm->error ? -1 : 0;
@@ -1720,6 +1721,7 @@ int eshkol_vm_call(EshkolVmHandle* h, const char* name) {
     int function_index = eshkol_vm_function_index(h, name);
     if (function_index < 0) return -1;
     if (h->mod.functions[function_index].n_params != 0) return -1;
+    if (h->mod.functions[function_index].n_upvalues != 0) return -1;
     eshkol_vm_prepare_entry(h, function_index);
     vm_run(h->vm);
     return h->vm->error ? -1 : 0;
