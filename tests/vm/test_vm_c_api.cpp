@@ -22,7 +22,9 @@ namespace {
 
 enum : uint8_t {
     OP_CONST = 1,
+    OP_FALSE = 4,
     OP_ADD = 7,
+    OP_JUMP_IF_FALSE = 29,
     OP_HALT = 36,
     OP_NATIVE_CALL = 37,
 };
@@ -430,11 +432,19 @@ EskbBuffer make_test_chunk(void) {
         {OP_CONST, 0},
         {OP_HALT, 0},
     };
+    const Instr helper_branch_code[] = {
+        {OP_FALSE, 0},
+        {OP_JUMP_IF_FALSE, 4},
+        {OP_CONST, 0},
+        {OP_HALT, 0},
+        {OP_CONST, 1},
+        {OP_HALT, 0},
+    };
 
     eskb_buf_write_leb128(&code_buf, 3);
     write_function(&code_buf, "main", main_code, sizeof(main_code) / sizeof(main_code[0]));
     write_function(&code_buf, "helper1", helper_code, sizeof(helper_code) / sizeof(helper_code[0]));
-    write_function(&code_buf, "helper2", helper_code, sizeof(helper_code) / sizeof(helper_code[0]));
+    write_function(&code_buf, "helper2", helper_branch_code, sizeof(helper_branch_code) / sizeof(helper_branch_code[0]));
 
     eskb_buf_write_leb128(&payload, 2);
     eskb_buf_write_u8(&payload, ESKB_SECTION_CONST);
@@ -917,7 +927,7 @@ void test_valid_chunk(void) {
 
         CHECK(eshkol_vm_call(vm, "helper2") == 0, "run named helper entry");
         CHECK(eshkol_vm_top_int64(vm, &top) == 0, "read named helper result");
-        CHECK(top == 41, "named helper result == 41");
+        CHECK(top == 1, "named helper branch result == 1");
 
         CHECK(eshkol_vm_call(vm, "missing") == -1, "reject missing named entry");
         CHECK(eshkol_vm_call(vm, "main") == 0, "rerun named main entry");
