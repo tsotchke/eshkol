@@ -128,6 +128,8 @@ Program phase:
 - VM handles can switch to host-native-only native-call policy, so embedded/product runtimes can reject the broad desktop native table while still allowing fixed host-call slots
 - loaded ESKB chunks now retain their function table, and embedders can query
   and run named VM entry points through the public C ABI
+- public VM loading now materializes ESKB string constants as VM strings instead
+  of silently degrading them to integer lengths
 - hosted Windows x86_64 validation now has a remote SSH harness for Jack's
   Tailscale Windows PC: `scripts/remote_windows_verify.sh` builds the native
   Visual Studio 2022 + ClangCL tree and runs the bounded `windows-lite` suite

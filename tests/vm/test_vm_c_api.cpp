@@ -28,6 +28,7 @@ enum : uint8_t {
     OP_JUMP_IF_FALSE = 29,
     OP_HALT = 36,
     OP_NATIVE_CALL = 37,
+    OP_STR_LEN = 44,
     OP_INVALID = 255,
 };
 
@@ -502,6 +503,52 @@ EskbBuffer make_profile_validation_chunk(size_t n_constants,
 
     eskb_buf_write_leb128(&code_buf, 1);
     write_function_with_locals(&code_buf, "main", n_locals, code.data(), code.size());
+
+    eskb_buf_write_leb128(&payload, 2);
+    eskb_buf_write_u8(&payload, ESKB_SECTION_CONST);
+    eskb_buf_write_leb128(&payload, const_buf.len);
+    eskb_buf_write_u8(&payload, ESKB_SECTION_CODE);
+    eskb_buf_write_leb128(&payload, code_buf.len);
+    eskb_buf_write(&payload, const_buf.data, const_buf.len);
+    eskb_buf_write(&payload, code_buf.data, code_buf.len);
+
+    EskbHeader hdr;
+    hdr.magic = ESKB_MAGIC;
+    hdr.version = ESKB_VERSION;
+    hdr.flags = ESKB_FLAG_LITTLE_ENDIAN;
+    hdr.checksum = eskb_crc32(payload.data, payload.len);
+
+    eskb_buf_write(&file, &hdr, sizeof(hdr));
+    eskb_buf_write(&file, payload.data, payload.len);
+
+    eskb_buf_free(&const_buf);
+    eskb_buf_free(&code_buf);
+    eskb_buf_free(&payload);
+    return file;
+}
+
+EskbBuffer make_string_constant_len_chunk(const char* text) {
+    EskbBuffer const_buf;
+    EskbBuffer code_buf;
+    EskbBuffer payload;
+    EskbBuffer file;
+    eskb_buf_init(&const_buf);
+    eskb_buf_init(&code_buf);
+    eskb_buf_init(&payload);
+    eskb_buf_init(&file);
+
+    eskb_buf_write_leb128(&const_buf, 1);
+    eskb_buf_write_u8(&const_buf, ESKB_CONST_STRING);
+    eskb_buf_write_string(&const_buf, text, std::strlen(text));
+
+    const Instr main_code[] = {
+        {OP_CONST, 0},
+        {OP_STR_LEN, 0},
+        {OP_HALT, 0},
+    };
+
+    eskb_buf_write_leb128(&code_buf, 1);
+    write_function(&code_buf, "main", main_code, sizeof(main_code) / sizeof(main_code[0]));
 
     eskb_buf_write_leb128(&payload, 2);
     eskb_buf_write_u8(&payload, ESKB_SECTION_CONST);
@@ -1097,6 +1144,23 @@ void test_profile_limits(void) {
     eskb_buf_free(&too_many_locals);
 }
 
+void test_string_constant_materialization(void) {
+    EskbBuffer chunk = make_string_constant_len_chunk("pet-script");
+    EshkolVmHandle* vm = eshkol_vm_load_chunk(chunk.data, chunk.len);
+    CHECK(vm != nullptr, "load ESKB string constant chunk");
+    if (vm) {
+        CHECK(eshkol_vm_run(vm) == 0,
+              "run ESKB string constant chunk");
+        int64_t top = 0;
+        CHECK(eshkol_vm_top_int64(vm, &top) == 0,
+              "read ESKB string length result");
+        CHECK(top == 10,
+              "ESKB string constant materializes as VM string");
+        eshkol_vm_destroy(vm);
+    }
+    eskb_buf_free(&chunk);
+}
+
 void test_bad_inputs(void) {
     CHECK(eshkol_vm_load_chunk(nullptr, 0) == nullptr, "reject null chunk");
 
@@ -1115,6 +1179,7 @@ int main(void) {
     std::printf("=== VM C API tests ===\n");
     test_valid_chunk();
     test_profile_limits();
+    test_string_constant_materialization();
     test_number_to_string_radix();
     test_static_host_native_table();
     test_host_only_native_policy();
