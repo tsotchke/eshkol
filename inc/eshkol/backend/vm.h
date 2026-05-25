@@ -37,6 +37,7 @@ typedef struct EshkolVmFunctionRequirement {
     int n_params;
     int max_locals;
     int max_code_len;
+    /* 0 allows closures, 1 requires a closed/no-upvalue entry. */
     int require_no_upvalues;
 } EshkolVmFunctionRequirement;
 
