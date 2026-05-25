@@ -122,6 +122,7 @@ Program phase:
 - hosted arena poison diagnostics now live behind a profile hook instead of making runtime-core read process environment variables
 - the C++ `Arena` RAII wrapper now lives outside runtime source families as a C++ adapter around the C arena ABI
 - the `runtime-split-pending` source set has been retired; remaining runtime implementation files are classified as `runtime-core` or `runtime-hosted`
+- the bytecode VM unity hub now builds through `eshkol-vm-unity-obj`, with explicit `vm-core`, `vm-hosted`, VM toolchain, and VM test component families guarded by a boundary test
 - shared allocation and weak-reference helpers now live in a dedicated runtime-core translation unit instead of `arena_memory.cpp`
 - freestanding-safe tensor index helpers now live in a dedicated runtime-core translation unit instead of the hosted-heavy runtime state implementation
 - freestanding-safe tensor fill helpers now live in a dedicated runtime-core translation unit instead of the hosted-heavy runtime state implementation
@@ -140,7 +141,8 @@ Program phase:
 
 Immediate priorities:
 
-- hosted leakage checks for runtime-core
+- physical VM source extraction behind the explicit VM source families
+- first `runtime-freestanding` hook definitions
 - low-level machine-facing language surface
 - freestanding LLVM object and ELF pipeline
 - stdlib capability partitioning

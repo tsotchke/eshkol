@@ -25,12 +25,15 @@ Current build behavior:
 
 - `CMakeLists.txt` globs most of `lib/**/*.cpp` and `lib/**/*.c`
 - backend standalone `.c` files are filtered out
-- `lib/backend/eshkol_vm.c` is appended as a unity-build hub
+- `lib/backend/eshkol_vm.c` is compiled through `eshkol-vm-unity-obj`
+  while its included VM components are classified into explicit source
+  families
 - `lib/core/image_io.c` is appended explicitly
 - `lib/ffi/eshkol_ffi.cpp` is appended explicitly
 - internal object libraries now exist for:
   - `eshkol-runtime-core-obj`
   - `eshkol-runtime-hosted-obj`
+  - `eshkol-vm-unity-obj`
 - REPL, toolchain binaries, and generated programs still rely on `eshkol-static`
 
 This means the runtime split has started as an internal source-set decomposition while preserving the current aggregate output and link contract.
@@ -157,9 +160,13 @@ These files consume the runtime, but they are not the runtime and should not mov
 
 ## VM Inventory
 
-`lib/backend/eshkol_vm.c` is currently a unity-build hub, not a runtime family boundary. It mixes four different concerns into one compilation unit.
+`lib/backend/eshkol_vm.c` is still a unity-build hub for compilation-order
+reasons, but its build boundary is no longer implicit. `CMakeLists.txt` now
+owns explicit VM source families and builds the hub through
+`eshkol-vm-unity-obj`, with `vm_source_boundary_test` checking that every
+included VM component remains classified.
 
-### VM core candidates
+### VM core family
 
 - `vm_core.c`
 - `vm_run.c`
@@ -181,20 +188,30 @@ These files consume the runtime, but they are not the runtime and should not mov
 - `vm_multivalue.c`
 - `vm_error.c`
 - `vm_parameter.c`
+- `vm_geometric.c`
+- `vm_symbolic_ad.c`
 
-These are the natural `vm-core` candidates because they define the VM value model, data structures, opcode execution, and language-runtime semantics.
+These are classified as `ESHKOL_VM_CORE_COMPONENT_SRC` because they define the
+VM value model, data structures, opcode execution, numeric/runtime semantics,
+and core tensor/logic/workspace behavior without direct file/process/thread
+ownership.
 
-### VM hosted/runtime-adjacent candidates
+### VM hosted/runtime-adjacent family
 
 - `vm_io.c`
+- `vm_model_io.c`
 - `vm_parallel.c`
-- hosted portions of `vm_native.c`
-- file-oriented parts of `eskb_reader.c`
-- file-oriented parts of `eskb_writer.c`
+- `vm_native.c`
+- `eskb_reader.c`
+- `eskb_writer.c`
 
-These pieces are the current hosted runtime surface inside the VM path. They depend on files, directories, time, polling, signals, processes, or host threading.
+These pieces are classified as `ESHKOL_VM_HOSTED_COMPONENT_SRC`. They are the
+current hosted runtime surface inside the VM path and depend on files,
+directories, time, polling, signals, processes, dynamic loading, sockets, or
+host threading. `vm_native.c` remains intentionally mixed here until its
+native-call table can be partitioned by capability.
 
-### VM toolchain/compiler components
+### VM toolchain/compiler family
 
 - `vm_parser.c`
 - `vm_macro.c`
@@ -204,13 +221,15 @@ These pieces are the current hosted runtime surface inside the VM path. They dep
 - `vm_prelude_cache.c`
 - `vm_prelude_cache.h`
 
-These belong to the VM toolchain path rather than the runtime families.
+The `.c` components are classified as `ESHKOL_VM_TOOLCHAIN_COMPONENT_SRC`.
+The prelude headers/cache generator remain VM toolchain adjuncts rather than
+runtime families.
 
-### VM tests
+### VM test family
 
 - `vm_tests.c`
 
-This remains test-only and should be isolated when the VM hub is decomposed.
+This is classified as `ESHKOL_VM_TEST_COMPONENT_SRC` and remains test-only.
 
 ## Current Dependency Pressure
 
@@ -238,8 +257,11 @@ The runtime split should proceed in this order:
    `runtime-core`, hosted diagnostics policy in `runtime-hosted`, and the C++
    `Arena` wrapper as a non-runtime adapter around the C ABI.
 5. Add hosted-leakage tests that fail if `runtime-core` depends on env, files, temp streams, process control, or host threading primitives.
-6. Decompose `eshkol_vm.c` into `vm-core`, `vm-hosted`, and VM toolchain buckets.
-7. Introduce the first real `runtime-freestanding` hooks and stub implementation.
+6. Compile the VM unity hub through its own object target and classify its
+   included components into `vm-core`, `vm-hosted`, VM toolchain, and VM test
+   buckets.
+7. Physically split `eshkol_vm.c` behind the now-explicit VM source families.
+8. Introduce the first real `runtime-freestanding` hooks and stub implementation.
 
 ## Non-Goals of This Slice
 

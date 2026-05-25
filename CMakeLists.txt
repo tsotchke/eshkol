@@ -1013,17 +1013,81 @@ if(NOT "lib/backend/tensorcore_codegen.cpp" IN_LIST LIB_SRC)
     list(APPEND LIB_SRC lib/backend/tensorcore_codegen.cpp)
 endif()
 
+set(ESHKOL_VM_CORE_COMPONENT_SRC
+  lib/backend/vm_core.c
+  lib/backend/vm_run.c
+  lib/backend/vm_complex.c
+  lib/backend/vm_rational.c
+  lib/backend/vm_bignum.c
+  lib/backend/vm_dual.c
+  lib/backend/vm_hyperdual.c
+  lib/backend/vm_autodiff.c
+  lib/backend/vm_tensor.c
+  lib/backend/vm_tensor_ops.c
+  lib/backend/vm_logic.c
+  lib/backend/vm_inference.c
+  lib/backend/vm_workspace.c
+  lib/backend/vm_string.c
+  lib/backend/vm_hashtable.c
+  lib/backend/vm_bytevector.c
+  lib/backend/vm_multivalue.c
+  lib/backend/vm_error.c
+  lib/backend/vm_parameter.c
+  lib/backend/vm_geometric.c
+  lib/backend/vm_symbolic_ad.c
+)
+
+set(ESHKOL_VM_HOSTED_COMPONENT_SRC
+  lib/backend/eskb_writer.c
+  lib/backend/eskb_reader.c
+  lib/backend/vm_io.c
+  lib/backend/vm_model_io.c
+  lib/backend/vm_parallel.c
+  lib/backend/vm_native.c
+)
+
+set(ESHKOL_VM_TOOLCHAIN_COMPONENT_SRC
+  lib/backend/vm_parser.c
+  lib/backend/vm_macro.c
+  lib/backend/vm_compiler.c
+  lib/backend/vm_peephole.c
+)
+
+set(ESHKOL_VM_TEST_COMPONENT_SRC
+  lib/backend/vm_tests.c
+)
+
+set(ESHKOL_VM_FULL_UNITY_SRC
+  lib/backend/eshkol_vm.c
+)
+
+set(ESHKOL_VM_STUB_SRC
+  lib/backend/eshkol_vm_stub.c
+  lib/backend/vm_autodiff.c
+)
+
+set(ESHKOL_VM_UNITY_SRC)
+
 # Native Windows REPL builds do not use the bytecode VM / ESKB compiler path.
 # Building the VM currently drags in a large POSIX-only unity build, so use a
 # stub there and keep the full VM everywhere else.
 if(WIN32)
-    list(APPEND LIB_SRC lib/backend/eshkol_vm_stub.c)
-    list(APPEND LIB_SRC lib/backend/vm_autodiff.c)
+    list(APPEND LIB_SRC ${ESHKOL_VM_STUB_SRC})
     message(STATUS "Bytecode VM / ESKB emission: DISABLED for native Windows builds")
 else()
-    # Add eshkol_vm.c (unity build: includes vm_*.c, eskb_*.c internally)
-    list(APPEND LIB_SRC lib/backend/eshkol_vm.c)
+    set(ESHKOL_VM_UNITY_SRC ${ESHKOL_VM_FULL_UNITY_SRC})
 endif()
+
+list(LENGTH ESHKOL_VM_CORE_COMPONENT_SRC ESHKOL_VM_CORE_COMPONENT_SRC_COUNT)
+list(LENGTH ESHKOL_VM_HOSTED_COMPONENT_SRC ESHKOL_VM_HOSTED_COMPONENT_SRC_COUNT)
+list(LENGTH ESHKOL_VM_TOOLCHAIN_COMPONENT_SRC ESHKOL_VM_TOOLCHAIN_COMPONENT_SRC_COUNT)
+list(LENGTH ESHKOL_VM_TEST_COMPONENT_SRC ESHKOL_VM_TEST_COMPONENT_SRC_COUNT)
+message(STATUS
+  "VM source families: core=${ESHKOL_VM_CORE_COMPONENT_SRC_COUNT}, "
+  "hosted=${ESHKOL_VM_HOSTED_COMPONENT_SRC_COUNT}, "
+  "toolchain=${ESHKOL_VM_TOOLCHAIN_COMPONENT_SRC_COUNT}, "
+  "test=${ESHKOL_VM_TEST_COMPONENT_SRC_COUNT}"
+)
 
 # Image I/O (stb_image — single-header, MIT/public domain)
 list(APPEND LIB_SRC lib/core/image_io.c)
@@ -1151,6 +1215,11 @@ endfunction()
 
 add_library(eshkol-runtime-core-obj OBJECT ${ESHKOL_RUNTIME_CORE_SRC})
 add_library(eshkol-runtime-hosted-obj OBJECT ${ESHKOL_RUNTIME_HOSTED_SRC})
+set(ESHKOL_VM_UNITY_OBJECTS)
+if(ESHKOL_VM_UNITY_SRC)
+    add_library(eshkol-vm-unity-obj OBJECT ${ESHKOL_VM_UNITY_SRC})
+    set(ESHKOL_VM_UNITY_OBJECTS $<TARGET_OBJECTS:eshkol-vm-unity-obj>)
+endif()
 
 foreach(_eshkol_runtime_obj_target IN ITEMS
     eshkol-runtime-core-obj
@@ -1158,6 +1227,9 @@ foreach(_eshkol_runtime_obj_target IN ITEMS
 )
     eshkol_apply_common_compile_settings(${_eshkol_runtime_obj_target})
 endforeach()
+if(TARGET eshkol-vm-unity-obj)
+    eshkol_apply_common_compile_settings(eshkol-vm-unity-obj)
+endif()
 
 # Create static library for executables. Its object sources are now grouped
 # internally, but the public aggregate archive and link behavior stay unchanged.
@@ -1165,6 +1237,7 @@ add_library(eshkol-static STATIC
   ${ESHKOL_NON_RUNTIME_SRC}
   $<TARGET_OBJECTS:eshkol-runtime-core-obj>
   $<TARGET_OBJECTS:eshkol-runtime-hosted-obj>
+  ${ESHKOL_VM_UNITY_OBJECTS}
 )
 target_include_directories(
   eshkol-static
@@ -1955,6 +2028,15 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/ru
     add_test(
         NAME runtime_core_boundary_test
         COMMAND runtime_core_boundary_test "${CMAKE_CURRENT_SOURCE_DIR}"
+    )
+endif()
+
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/vm_source_boundary_test.cpp")
+    add_executable(vm_source_boundary_test tests/toolchain/vm_source_boundary_test.cpp)
+    target_compile_features(vm_source_boundary_test PRIVATE cxx_std_17)
+    add_test(
+        NAME vm_source_boundary_test
+        COMMAND vm_source_boundary_test "${CMAKE_CURRENT_SOURCE_DIR}"
     )
 endif()
 
