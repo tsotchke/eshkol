@@ -90,8 +90,16 @@ int main(int argc, char** argv) {
                          "Windows suite declares guarded output cleanup") &&
          expect_contains(script, "Remove-Item -LiteralPath $item.FullName -Force -ErrorAction Stop",
                          "Windows suite cleanup removes only the resolved regular file") &&
+         expect_contains(script, "function Test-TransientProcessStartError",
+                         "Windows suite classifies transient executable sharing violations") &&
+         expect_contains(script, "$current.NativeErrorCode -eq 32",
+                         "Windows suite recognizes sharing-violation process start failures") &&
+         expect_contains(script, "function Start-ProcessWithTransientRetry",
+                         "Windows suite retries transient process start failures") &&
          expect_contains(script, "function Start-RegularFileProcess",
                          "Windows suite declares guarded process launcher") &&
+         expect_contains(script, "return Start-ProcessWithTransientRetry -Start",
+                         "Windows suite guarded launcher uses transient start retry") &&
          expect_contains(script, "function Join-WindowsProcessArguments",
                          "Windows suite declares Windows PowerShell argument joiner") &&
          expect_contains(script, "$psi.GetType().GetProperty(\"ArgumentList\")",
@@ -104,6 +112,8 @@ int main(int argc, char** argv) {
                          "Windows suite build resolver requires a regular eshkol-run.exe") &&
          expect_contains(script, "Remove-RegularFileIfPresent -Path @($exePath, $OutputBase)",
                          "Windows suite compile cleanup rejects non-regular output artifacts") &&
+         expect_contains(script, "Start-ProcessWithTransientRetry -Start {\n            [void]$process.Start()\n        }",
+                         "Windows suite captured process launcher retries transient sharing violations") &&
          expect_contains(script,
                          "Success  = ($captured.ExitCode -eq 0 -and (Test-RegularFile -Path $exePath))",
                          "Windows suite compile success requires a regular executable") &&

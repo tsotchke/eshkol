@@ -239,6 +239,41 @@ function Remove-RegularFileIfPresent {
     }
 }
 
+function Test-TransientProcessStartError {
+    param([System.Exception]$Exception)
+
+    $current = $Exception
+    while ($null -ne $current) {
+        if (($current -is [System.ComponentModel.Win32Exception]) -and
+            ($current.NativeErrorCode -eq 32)) {
+            return $true
+        }
+        if ($current.Message -match "being used by another process") {
+            return $true
+        }
+        $current = $current.InnerException
+    }
+    return $false
+}
+
+function Start-ProcessWithTransientRetry {
+    param([scriptblock]$Start)
+
+    $delayMs = 100
+    for ($attempt = 1; $attempt -le 6; $attempt++) {
+        try {
+            return (& $Start)
+        } catch {
+            if (($attempt -ge 6) -or
+                (-not (Test-TransientProcessStartError -Exception $_.Exception))) {
+                throw
+            }
+            Start-Sleep -Milliseconds $delayMs
+            $delayMs = [Math]::Min($delayMs * 2, 1000)
+        }
+    }
+}
+
 function Start-RegularFileProcess {
     param(
         [string]$FilePath,
@@ -252,7 +287,9 @@ function Start-RegularFileProcess {
         throw "Refusing to start missing or non-regular executable: $FilePath"
     }
 
-    return Start-Process -FilePath $FilePath -ArgumentList $ArgumentList -WorkingDirectory $WorkingDirectory -RedirectStandardOutput $RedirectStandardOutput -RedirectStandardError $RedirectStandardError -PassThru
+    return Start-ProcessWithTransientRetry -Start {
+        Start-Process -FilePath $FilePath -ArgumentList $ArgumentList -WorkingDirectory $WorkingDirectory -RedirectStandardOutput $RedirectStandardOutput -RedirectStandardError $RedirectStandardError -PassThru
+    }
 }
 
 function Get-Text {
@@ -471,7 +508,9 @@ function Invoke-ProcessCapture {
     $process.StartInfo = $psi
 
     try {
-        [void]$process.Start()
+        Start-ProcessWithTransientRetry -Start {
+            [void]$process.Start()
+        }
         $stdoutTask = $process.StandardOutput.ReadToEndAsync()
         $stderrTask = $process.StandardError.ReadToEndAsync()
 
