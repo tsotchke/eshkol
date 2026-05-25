@@ -1811,6 +1811,12 @@ public:
             // In library mode: external declaration (no initializer) - provided by main
             // In normal mode: external definition (with initializer) - defines the symbol
             bool arena_use_external_only = library_mode || g_repl_mode_enabled;
+#ifdef _WIN32
+            // Windows binaries get the runtime-owned COFF definitions from
+            // libeshkol-static; defining these data symbols in generated
+            // objects conflicts with GNU/COFF linkers.
+            arena_use_external_only = true;
+#endif
             global_arena = new GlobalVariable(
                 *module,
                 PointerType::getUnqual(*context),
@@ -1828,6 +1834,9 @@ public:
             // In library mode, use external linkage without initializers (defined elsewhere)
             // In standalone mode, define with initializers
             bool use_external_only = library_mode || g_repl_mode_enabled;
+#ifdef _WIN32
+            use_external_only = true;
+#endif
             new GlobalVariable(
                 *module,
                 int32_type,

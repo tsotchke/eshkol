@@ -163,7 +163,13 @@ int main(int argc, char** argv) {
          expect_contains(llvm_codegen, "\"/WHOLEARCHIVE:\" + runtime_lib_path.generic_string()",
                          "LLVM executable link path preserves MSVC whole-archive flag") &&
          expect_contains(llvm_codegen, "\"/STACK:536870912\"",
-                         "LLVM executable link path preserves MSVC stack flag");
+                         "LLVM executable link path preserves MSVC stack flag") &&
+         expect_contains(llvm_codegen,
+                         "arena_use_external_only = true;",
+                         "LLVM codegen uses runtime-owned arena globals on Windows") &&
+         expect_contains(llvm_codegen,
+                         "use_external_only = true;",
+                         "LLVM codegen uses runtime-owned command-line globals on Windows");
 
     if (!ok) {
         return 1;
