@@ -598,6 +598,7 @@ Execute: `eshkol-run gradient.esk -o gradient && ./gradient`
 
 ### Modern Language Features
 
+- **String interpolation** via `~{expr}` inside strings, with `~~{` for a literal opener
 - **Pattern matching** with algebraic data type support
 - **Module system** with dependency resolution, package manager (`eshkol-pkg`)
 - **Exception handling** via `guard`/`raise` with typed exception hierarchies

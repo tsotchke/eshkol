@@ -7,7 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-(no entries — v1.2 is closed; new work targets v1.3-evolve)
+### Added
+
+- Started v1.3-evolve with parser-level string interpolation: string literals
+  can embed `~{expr}` forms, each expression is formatted with display
+  semantics, and `~~{` preserves a literal interpolation opener.
 
 ## [1.2.3-scale] - 2026-05-25
 

@@ -699,6 +699,10 @@ static int run_source_tests(void) {
     /* Strings */
     source_test_expect("string-length",   "(display (string-length \"hello\"))",         "5");
     source_test_expect("string-append",   "(display (string-append \"hello\" \" world\"))","hello world");
+    source_test_expect("string-interpolation-var",
+        "(define who \"vm\") (display \"hello ~{who}\")", "hello vm");
+    source_test_expect("string-interpolation-expr",
+        "(display \"sum=~{(+ 19 23)} literal=~~{x}\")", "sum=42 literal=~{x}");
 
     /* Higher-order functions — list output format varies; use smoke tests */
     source_test("map-square",    "(display (map (lambda (x) (* x x)) (list 1 2 3 4 5)))");

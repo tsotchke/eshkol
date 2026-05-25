@@ -74,6 +74,221 @@ static void add_child(Node* p, Node* c) {
 
 static void free_node(Node* n);
 static Node* parse_sexp(void);
+
+static int append_char_buf(char** buf, int* len, int* cap, char ch) {
+    if (!buf || !*buf || !len || !cap) return -1;
+    if (*len >= *cap - 2) {
+        int next_cap = *cap * 2;
+        char* next = (char*)realloc(*buf, next_cap);
+        if (!next) return -1;
+        *buf = next;
+        *cap = next_cap;
+    }
+    (*buf)[(*len)++] = ch;
+    return 0;
+}
+
+static Node* make_symbol_node(const char* text) {
+    Node* n = make_node(N_SYMBOL);
+    if (!n) return NULL;
+    strncpy(n->symbol, text ? text : "", 127);
+    n->symbol[127] = 0;
+    return n;
+}
+
+static Node* make_string_node(const char* text) {
+    Node* n = make_node(N_STRING);
+    if (!n) return NULL;
+    strncpy(n->symbol, text ? text : "", 127);
+    n->symbol[127] = 0;
+    return n;
+}
+
+static Node* make_call_node(const char* name) {
+    Node* call = make_node(N_LIST);
+    if (!call) return NULL;
+    Node* head = make_symbol_node(name);
+    if (!head) { free_node(call); return NULL; }
+    add_child(call, head);
+    return call;
+}
+
+static Node* parse_sexp_from_string(const char* source) {
+    const char* saved_src = src_ptr;
+    src_ptr = source ? source : "";
+    skip_ws();
+    if (!*src_ptr) {
+        fprintf(stderr, "ERROR: string interpolation expression cannot be empty\n");
+        src_ptr = saved_src;
+        return NULL;
+    }
+    Node* expr = parse_sexp();
+    skip_ws();
+    if (*src_ptr) {
+        fprintf(stderr, "ERROR: string interpolation accepts exactly one expression\n");
+        free_node(expr);
+        expr = NULL;
+    }
+    src_ptr = saved_src;
+    return expr;
+}
+
+static int add_part(Node*** parts, int* n_parts, int* cap_parts, Node* part) {
+    if (!parts || !n_parts || !cap_parts || !part) return -1;
+    if (*n_parts >= *cap_parts) {
+        int next_cap = *cap_parts ? *cap_parts * 2 : 4;
+        Node** next = (Node**)realloc(*parts, next_cap * sizeof(Node*));
+        if (!next) return -1;
+        *parts = next;
+        *cap_parts = next_cap;
+    }
+    (*parts)[(*n_parts)++] = part;
+    return 0;
+}
+
+static Node* make_format_display_node(Node* expr) {
+    Node* call = make_call_node("format");
+    if (!call) return NULL;
+    add_child(call, make_string_node("~a"));
+    add_child(call, expr);
+    return call;
+}
+
+static Node* make_string_append_node(Node** parts, int n_parts) {
+    if (n_parts <= 0) return make_string_node("");
+    if (n_parts == 1) return parts[0];
+
+    Node* call = make_call_node("string-append");
+    if (!call) return NULL;
+    for (int i = 0; i < n_parts; i++) add_child(call, parts[i]);
+    return call;
+}
+
+static Node* parse_string_literal(void) {
+    src_ptr++; /* skip opening quote */
+
+    int buf_cap = 256;
+    char* buf = (char*)malloc(buf_cap);
+    if (!buf) return NULL;
+    int len = 0;
+
+    Node** parts = NULL;
+    int n_parts = 0;
+    int cap_parts = 0;
+    int has_interpolation = 0;
+
+    while (*src_ptr && *src_ptr != '"') {
+        if (src_ptr[0] == '\\' && src_ptr[1]) {
+            src_ptr++;
+            char out = *src_ptr;
+            switch (*src_ptr) {
+                case 'n': out = '\n'; break;
+                case 't': out = '\t'; break;
+                case '\\': out = '\\'; break;
+                case '"': out = '"'; break;
+                default: break;
+            }
+            if (append_char_buf(&buf, &len, &buf_cap, out) != 0) {
+                free(buf); free(parts); return NULL;
+            }
+            src_ptr++;
+            continue;
+        }
+
+        if (src_ptr[0] == '~' && src_ptr[1] == '~' && src_ptr[2] == '{') {
+            if (append_char_buf(&buf, &len, &buf_cap, '~') != 0 ||
+                append_char_buf(&buf, &len, &buf_cap, '{') != 0) {
+                free(buf); free(parts); return NULL;
+            }
+            src_ptr += 3;
+            continue;
+        }
+
+        if (src_ptr[0] == '~' && src_ptr[1] == '{') {
+            has_interpolation = 1;
+            if (len > 0) {
+                buf[len] = 0;
+                if (add_part(&parts, &n_parts, &cap_parts, make_string_node(buf)) != 0) {
+                    free(buf); free(parts); return NULL;
+                }
+                len = 0;
+            }
+
+            src_ptr += 2;
+            int expr_cap = 128;
+            char* expr_buf = (char*)malloc(expr_cap);
+            if (!expr_buf) { free(buf); free(parts); return NULL; }
+            int expr_len = 0;
+            int in_expr_string = 0;
+            int escaped = 0;
+            int closed = 0;
+
+            while (*src_ptr) {
+                char ch = *src_ptr;
+                if (!in_expr_string && ch == '}') {
+                    closed = 1;
+                    break;
+                }
+
+                if (append_char_buf(&expr_buf, &expr_len, &expr_cap, ch) != 0) {
+                    free(expr_buf); free(buf); free(parts); return NULL;
+                }
+
+                if (in_expr_string) {
+                    if (escaped) escaped = 0;
+                    else if (ch == '\\') escaped = 1;
+                    else if (ch == '"') in_expr_string = 0;
+                } else if (ch == '"') {
+                    in_expr_string = 1;
+                }
+                src_ptr++;
+            }
+
+            if (!closed) {
+                fprintf(stderr, "ERROR: unterminated string interpolation\n");
+                free(expr_buf); free(buf); free(parts); return NULL;
+            }
+
+            expr_buf[expr_len] = 0;
+            Node* expr = parse_sexp_from_string(expr_buf);
+            free(expr_buf);
+            if (!expr) { free(buf); free(parts); return NULL; }
+
+            Node* formatted = make_format_display_node(expr);
+            if (add_part(&parts, &n_parts, &cap_parts, formatted) != 0) {
+                free_node(formatted); free(buf); free(parts); return NULL;
+            }
+            src_ptr++; /* skip closing interpolation brace */
+            continue;
+        }
+
+        if (append_char_buf(&buf, &len, &buf_cap, *src_ptr) != 0) {
+            free(buf); free(parts); return NULL;
+        }
+        src_ptr++;
+    }
+
+    if (*src_ptr == '"') src_ptr++; /* skip closing quote */
+    buf[len] = 0;
+
+    if (!has_interpolation) {
+        Node* n = make_string_node(buf);
+        free(buf);
+        return n;
+    }
+
+    if (len > 0) {
+        if (add_part(&parts, &n_parts, &cap_parts, make_string_node(buf)) != 0) {
+            free(buf); free(parts); return NULL;
+        }
+    }
+    free(buf);
+
+    Node* result = make_string_append_node(parts, n_parts);
+    free(parts);
+    return result;
+}
+
 static Node* parse_list(void) {
     Node* list = make_node(N_LIST);
     if (!list) return NULL;
@@ -132,35 +347,7 @@ static Node* parse_sexp(void) {
     }
     /* String literal */
     if (*src_ptr == '"') {
-        src_ptr++; /* skip opening quote */
-        int buf_cap = 256;
-        char* buf = (char*)malloc(buf_cap);
-        int i = 0;
-        while (*src_ptr && *src_ptr != '"') {
-            if (i >= buf_cap - 2) {
-                buf_cap *= 2;
-                buf = (char*)realloc(buf, buf_cap);
-            }
-            if (*src_ptr == '\\' && src_ptr[1]) {
-                src_ptr++;
-                switch (*src_ptr) {
-                    case 'n': buf[i++] = '\n'; break;
-                    case 't': buf[i++] = '\t'; break;
-                    case '\\': buf[i++] = '\\'; break;
-                    case '"': buf[i++] = '"'; break;
-                    default: buf[i++] = *src_ptr; break;
-                }
-                src_ptr++;
-            } else {
-                buf[i++] = *src_ptr++;
-            }
-        }
-        if (*src_ptr == '"') src_ptr++; /* skip closing quote */
-        buf[i] = 0;
-        Node* n = make_node(N_STRING); if (!n) { free(buf); return NULL; }
-        strncpy(n->symbol, buf, 127); n->symbol[127] = 0;
-        free(buf);
-        return n;
+        return parse_string_literal();
     }
     if (*src_ptr == '#') {
         if (src_ptr[1] == 't' && (src_ptr[2] == 0 || isspace(src_ptr[2]) || src_ptr[2] == ')')) {
