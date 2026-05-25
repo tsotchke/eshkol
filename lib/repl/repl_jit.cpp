@@ -110,7 +110,9 @@ extern "C" {
     int64_t eshkol_repl_variadic_fixed_params(const char* name);
 #ifdef _WIN32
     double drand48(void);
+#ifndef __MINGW32__
     int clock_gettime(int clock_id, void* ts_raw);
+#endif
 #endif
 }
 
