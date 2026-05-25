@@ -228,6 +228,11 @@ function entry, which gives embedded/product runtimes a stable path for
 `init`/`tick`/`render`-style scripts before a dedicated export manifest format
 lands.
 
+`eskb_writer.c` can now write multiple CODE function records. The source VM
+emitter keeps its synthetic `main` entry and also records closed top-level
+function definitions as named ESKB entries, allowing compiler-produced embedded
+bytecode to satisfy load-time required-entry policies.
+
 The public VM loader and standalone `.eskb` path now materialize
 `ESKB_CONST_STRING` entries as VM string heap objects. Firmware profiles may
 still choose to reject dynamic script strings and route text through read-only
@@ -260,7 +265,9 @@ The prelude headers/cache generator remain VM toolchain adjuncts rather than
 runtime families. `inc/eshkol/backend/vm.h` now declares both desktop ESKB
 emission and the embedded emitter that omits the desktop VM prelude and rejects
 desktop-native bytecode during emission. Native Windows builds still stub these
-symbols while the full bytecode VM remains disabled for that target.
+symbols while the full bytecode VM remains disabled for that target. The
+emitter's product-entry table is intentionally conservative: only closed
+top-level functions are exported as independent named entries in this slice.
 
 ### VM test family
 

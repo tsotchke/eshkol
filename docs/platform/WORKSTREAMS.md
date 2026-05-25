@@ -237,6 +237,8 @@ Good delegation candidate for a VM-focused contributor with a fixed host-hook co
   in the public VM C API tests
 - required named VM entries are enforced by load options in the public VM C API
   tests
+- compiler-produced embedded ESKB exposes closed top-level hooks such as `tick`
+  through the function table and required-entry loader path
 
 ## Workstream 7: BSP Contract and Reference Targets
 
