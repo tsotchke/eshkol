@@ -81,6 +81,13 @@ int eshkol_vm_call(EshkolVmHandle* h, const char* name);
  * does not, and -1 for invalid inputs. */
 int eshkol_vm_has_function(EshkolVmHandle* h, const char* name);
 
+/* Return the decoded ESKB function-table size, or -1 for invalid input. */
+int eshkol_vm_function_count(EshkolVmHandle* h);
+
+/* Return a borrowed function name for `index`, valid until the VM handle is
+ * destroyed. Returns NULL for invalid handles or out-of-range indices. */
+const char* eshkol_vm_function_name(EshkolVmHandle* h, int index);
+
 /* Destroy the VM handle and release the decoded ESKB module. NULL-safe. */
 void eshkol_vm_destroy(EshkolVmHandle* h);
 

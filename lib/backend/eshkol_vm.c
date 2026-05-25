@@ -1685,6 +1685,16 @@ int eshkol_vm_has_function(EshkolVmHandle* h, const char* name) {
     return eshkol_vm_function_index(h, name) >= 0 ? 1 : 0;
 }
 
+int eshkol_vm_function_count(EshkolVmHandle* h) {
+    if (!h || !h->vm) return -1;
+    return h->mod.n_functions;
+}
+
+const char* eshkol_vm_function_name(EshkolVmHandle* h, int index) {
+    if (!h || !h->vm || index < 0 || index >= h->mod.n_functions) return NULL;
+    return h->mod.functions[index].name;
+}
+
 void eshkol_vm_destroy(EshkolVmHandle* h) {
     if (!h) return;
     if (h->vm) {

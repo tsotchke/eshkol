@@ -241,6 +241,7 @@ Good delegation candidate for a VM-focused contributor with a fixed host-hook co
   through the function table and required-entry loader path
 - `--require-vm-entry` is exercised by the profile CLI test for both accepted
   and rejected embedded ESKB outputs
+- public VM function-table enumeration is exercised by the VM C API tests
 
 ## Workstream 7: BSP Contract and Reference Targets
 
