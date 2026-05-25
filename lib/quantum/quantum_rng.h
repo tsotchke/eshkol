@@ -6,7 +6,11 @@
 #ifdef _WIN32
 #include <winsock2.h>
 #include <process.h>
+#ifdef __MINGW32__
+#include <sys/types.h>
+#else
 typedef int pid_t;
+#endif
 #else
 #include <unistd.h>
 #include <sys/time.h>
