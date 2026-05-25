@@ -243,6 +243,7 @@ Good delegation candidate for a VM-focused contributor with a fixed host-hook co
   and rejected embedded ESKB outputs
 - public VM function-table enumeration is exercised by the VM C API tests
 - public VM function metadata is exercised by the VM C API tests
+- load-time VM entry metadata requirements are exercised by the VM C API tests
 
 ## Workstream 7: BSP Contract and Reference Targets
 

@@ -32,12 +32,22 @@ typedef struct EshkolVmProfileLimits {
     int max_instructions;
 } EshkolVmProfileLimits;
 
+typedef struct EshkolVmFunctionRequirement {
+    const char* name;
+    int n_params;
+    int max_locals;
+    int max_code_len;
+    int require_no_upvalues;
+} EshkolVmFunctionRequirement;
+
 typedef struct EshkolVmLoadOptions {
     int native_policy;
     int reject_string_constants;
     int reject_desktop_native_calls;
     const char* const* required_functions;
     int required_function_count;
+    const EshkolVmFunctionRequirement* required_function_metadata;
+    int required_function_metadata_count;
 } EshkolVmLoadOptions;
 
 typedef struct EshkolVmFunctionInfo {
@@ -72,7 +82,9 @@ EshkolVmHandle* eshkol_vm_load_chunk(const void* buffer, size_t size);
  * profiles refuse dynamic ESKB strings and route text through content packs.
  * `reject_desktop_native_calls` rejects OP_NATIVE_CALL operands below
  * ESHKOL_VM_HOST_NATIVE_BASE before bytecode can run. `required_functions`
- * can name entry points that must exist in the decoded ESKB function table. */
+ * can name entry points that must exist in the decoded ESKB function table.
+ * `required_function_metadata` can additionally require hook arity, closedness,
+ * and local/code budget ceilings. Use -1 to skip optional integer checks. */
 EshkolVmHandle* eshkol_vm_load_chunk_with_options(const void* buffer, size_t size,
                                                  const EshkolVmLoadOptions* options);
 

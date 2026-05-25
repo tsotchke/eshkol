@@ -68,27 +68,27 @@ void write_instr(EskbBuffer* b, const Instr& instr) {
     eskb_buf_write_leb128(b, zigzag);
 }
 
-void write_function(EskbBuffer* b, const char* name, const Instr* code, size_t n_code) {
+void write_function_with_metadata(EskbBuffer* b, const char* name,
+                                  uint8_t n_params, uint64_t n_locals,
+                                  uint8_t n_upvalues, const Instr* code,
+                                  size_t n_code) {
     eskb_buf_write_string(b, name, std::strlen(name));
-    eskb_buf_write_u8(b, 0);
-    eskb_buf_write_leb128(b, 0);
-    eskb_buf_write_u8(b, 0);
+    eskb_buf_write_u8(b, n_params);
+    eskb_buf_write_leb128(b, n_locals);
+    eskb_buf_write_u8(b, n_upvalues);
     eskb_buf_write_leb128(b, n_code);
     for (size_t i = 0; i < n_code; ++i) {
         write_instr(b, code[i]);
     }
 }
 
+void write_function(EskbBuffer* b, const char* name, const Instr* code, size_t n_code) {
+    write_function_with_metadata(b, name, 0, 0, 0, code, n_code);
+}
+
 void write_function_with_locals(EskbBuffer* b, const char* name, uint64_t n_locals,
                                 const Instr* code, size_t n_code) {
-    eskb_buf_write_string(b, name, std::strlen(name));
-    eskb_buf_write_u8(b, 0);
-    eskb_buf_write_leb128(b, n_locals);
-    eskb_buf_write_u8(b, 0);
-    eskb_buf_write_leb128(b, n_code);
-    for (size_t i = 0; i < n_code; ++i) {
-        write_instr(b, code[i]);
-    }
+    write_function_with_metadata(b, name, 0, n_locals, 0, code, n_code);
 }
 
 void write_int64_const(EskbBuffer* b, int64_t value) {
@@ -484,6 +484,55 @@ EskbBuffer make_test_chunk(void) {
     hdr.flags = ESKB_FLAG_LITTLE_ENDIAN;
     hdr.checksum = eskb_crc32(payload.data, payload.len);
 
+    eskb_buf_write(&file, &hdr, sizeof(hdr));
+    eskb_buf_write(&file, payload.data, payload.len);
+
+    eskb_buf_free(&const_buf);
+    eskb_buf_free(&code_buf);
+    eskb_buf_free(&payload);
+    return file;
+}
+
+EskbBuffer make_metadata_test_chunk(void) {
+    EskbBuffer const_buf;
+    EskbBuffer code_buf;
+    EskbBuffer payload;
+    EskbBuffer file;
+    eskb_buf_init(&const_buf);
+    eskb_buf_init(&code_buf);
+    eskb_buf_init(&payload);
+    eskb_buf_init(&file);
+
+    eskb_buf_write_leb128(&const_buf, 1);
+    write_int64_const(&const_buf, 7);
+
+    const Instr main_code[] = {
+        {OP_CONST, 0},
+        {OP_HALT, 0},
+    };
+    const Instr captured_code[] = {
+        {OP_CONST, 0},
+        {OP_HALT, 0},
+    };
+
+    eskb_buf_write_leb128(&code_buf, 2);
+    write_function(&code_buf, "main", main_code, sizeof(main_code) / sizeof(main_code[0]));
+    write_function_with_metadata(&code_buf, "captured", 1, 1, 1, captured_code,
+                                 sizeof(captured_code) / sizeof(captured_code[0]));
+
+    eskb_buf_write_leb128(&payload, 2);
+    eskb_buf_write_u8(&payload, ESKB_SECTION_CONST);
+    eskb_buf_write_leb128(&payload, const_buf.len);
+    eskb_buf_write_u8(&payload, ESKB_SECTION_CODE);
+    eskb_buf_write_leb128(&payload, code_buf.len);
+    eskb_buf_write(&payload, const_buf.data, const_buf.len);
+    eskb_buf_write(&payload, code_buf.data, code_buf.len);
+
+    EskbHeader hdr;
+    hdr.magic = ESKB_MAGIC;
+    hdr.version = ESKB_VERSION;
+    hdr.flags = ESKB_FLAG_LITTLE_ENDIAN;
+    hdr.checksum = eskb_crc32(payload.data, payload.len);
     eskb_buf_write(&file, &hdr, sizeof(hdr));
     eskb_buf_write(&file, payload.data, payload.len);
 
@@ -1217,6 +1266,90 @@ void test_valid_chunk(void) {
     eskb_buf_free(&chunk);
 }
 
+void test_required_function_metadata_options(void) {
+    EskbBuffer chunk = make_metadata_test_chunk();
+
+    EshkolVmLoadOptions options{};
+    CHECK(eshkol_vm_default_load_options(&options) == 0,
+          "initialize required metadata load options");
+
+    const EshkolVmFunctionRequirement valid_requirements[] = {
+        {"main", 0, 0, 2, 1},
+        {"captured", 1, 1, 2, 0},
+    };
+    options.required_function_metadata = valid_requirements;
+    options.required_function_metadata_count = 2;
+    EshkolVmHandle* valid_vm =
+        eshkol_vm_load_chunk_with_options(chunk.data, chunk.len, &options);
+    CHECK(valid_vm != nullptr,
+          "load options accept matching function metadata requirements");
+    if (valid_vm) eshkol_vm_destroy(valid_vm);
+
+    const EshkolVmFunctionRequirement wildcard_requirements[] = {
+        {"captured", -1, -1, -1, 0},
+    };
+    options.required_function_metadata = wildcard_requirements;
+    options.required_function_metadata_count = 1;
+    EshkolVmHandle* wildcard_vm =
+        eshkol_vm_load_chunk_with_options(chunk.data, chunk.len, &options);
+    CHECK(wildcard_vm != nullptr,
+          "load options accept wildcard function metadata requirements");
+    if (wildcard_vm) eshkol_vm_destroy(wildcard_vm);
+
+    const EshkolVmFunctionRequirement arity_mismatch[] = {
+        {"captured", 0, -1, -1, 0},
+    };
+    options.required_function_metadata = arity_mismatch;
+    CHECK(eshkol_vm_load_chunk_with_options(chunk.data, chunk.len,
+                                            &options) == nullptr,
+          "load options reject function arity mismatch");
+
+    const EshkolVmFunctionRequirement closure_mismatch[] = {
+        {"captured", 1, -1, -1, 1},
+    };
+    options.required_function_metadata = closure_mismatch;
+    CHECK(eshkol_vm_load_chunk_with_options(chunk.data, chunk.len,
+                                            &options) == nullptr,
+          "load options reject required closed entry with upvalues");
+
+    const EshkolVmFunctionRequirement locals_mismatch[] = {
+        {"captured", -1, 0, -1, 0},
+    };
+    options.required_function_metadata = locals_mismatch;
+    CHECK(eshkol_vm_load_chunk_with_options(chunk.data, chunk.len,
+                                            &options) == nullptr,
+          "load options reject function local budget overflow");
+
+    const EshkolVmFunctionRequirement code_len_mismatch[] = {
+        {"captured", -1, -1, 1, 0},
+    };
+    options.required_function_metadata = code_len_mismatch;
+    CHECK(eshkol_vm_load_chunk_with_options(chunk.data, chunk.len,
+                                            &options) == nullptr,
+          "load options reject function code-length budget overflow");
+
+    const EshkolVmFunctionRequirement invalid_requirement[] = {
+        {"captured", -2, -1, -1, 0},
+    };
+    options.required_function_metadata = invalid_requirement;
+    CHECK(eshkol_vm_load_chunk_with_options(chunk.data, chunk.len,
+                                            &options) == nullptr,
+          "load options reject invalid metadata requirement fields");
+
+    options.required_function_metadata = nullptr;
+    options.required_function_metadata_count = 1;
+    CHECK(eshkol_vm_load_chunk_with_options(chunk.data, chunk.len,
+                                            &options) == nullptr,
+          "load options reject metadata count without requirements");
+
+    options.required_function_metadata_count = -1;
+    CHECK(eshkol_vm_load_chunk_with_options(chunk.data, chunk.len,
+                                            &options) == nullptr,
+          "load options reject negative metadata requirement count");
+
+    eskb_buf_free(&chunk);
+}
+
 void test_profile_limits(void) {
     EshkolVmProfileLimits limits{};
     CHECK(eshkol_vm_get_profile_limits(&limits) == 0,
@@ -1367,6 +1500,7 @@ void test_bad_inputs(void) {
 int main(void) {
     std::printf("=== VM C API tests ===\n");
     test_valid_chunk();
+    test_required_function_metadata_options();
     test_profile_limits();
     test_string_constant_materialization();
     test_embedded_eskb_emission_load_policy();

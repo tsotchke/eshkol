@@ -1423,6 +1423,8 @@ int eshkol_vm_default_load_options(EshkolVmLoadOptions* out) {
     out->reject_desktop_native_calls = 0;
     out->required_functions = NULL;
     out->required_function_count = 0;
+    out->required_function_metadata = NULL;
+    out->required_function_metadata_count = 0;
     return 0;
 }
 
@@ -1440,6 +1442,11 @@ static int eshkol_vm_normalize_load_options(const EshkolVmLoadOptions* options,
     out->reject_desktop_native_calls = out->reject_desktop_native_calls ? 1 : 0;
     if (out->required_function_count < 0) return -1;
     if (out->required_function_count > 0 && !out->required_functions) return -1;
+    if (out->required_function_metadata_count < 0) return -1;
+    if (out->required_function_metadata_count > 0 &&
+        !out->required_function_metadata) {
+        return -1;
+    }
     return 0;
 }
 
@@ -1564,24 +1571,57 @@ static int eshkol_vm_materialize_eskb_constants(VM* vm, const EskbModule* mod,
     return 0;
 }
 
-static int eshkol_vm_validate_load_policy(const EskbModule* mod,
-                                          const EshkolVmLoadOptions* options) {
+static const EskbFunction* eshkol_vm_find_module_function(const EskbModule* mod,
+                                                          const char* name) {
+    if (!mod || !name) return NULL;
+    for (int fi = 0; fi < mod->n_functions; fi++) {
+        if (mod->functions[fi].name &&
+            strcmp(mod->functions[fi].name, name) == 0) {
+            return &mod->functions[fi];
+        }
+    }
+    return NULL;
+}
+
+static int eshkol_vm_validate_function_requirements(
+    const EskbModule* mod,
+    const EshkolVmLoadOptions* options) {
     if (!mod || !options) return -1;
     if (options->required_function_count > mod->n_functions) return -1;
 
     for (int i = 0; i < options->required_function_count; i++) {
         const char* required = options->required_functions[i];
-        int found = 0;
         if (!required || !required[0]) return -1;
-        for (int fi = 0; fi < mod->n_functions; fi++) {
-            if (mod->functions[fi].name &&
-                strcmp(mod->functions[fi].name, required) == 0) {
-                found = 1;
-                break;
-            }
-        }
-        if (!found) return -1;
+        if (!eshkol_vm_find_module_function(mod, required)) return -1;
     }
+
+    if (options->required_function_metadata_count > mod->n_functions) return -1;
+    for (int i = 0; i < options->required_function_metadata_count; i++) {
+        const EshkolVmFunctionRequirement* req =
+            &options->required_function_metadata[i];
+        if (!req->name || !req->name[0]) return -1;
+        if (req->n_params < -1 || req->max_locals < -1 ||
+            req->max_code_len < -1) {
+            return -1;
+        }
+
+        const EskbFunction* fn = eshkol_vm_find_module_function(mod, req->name);
+        if (!fn) return -1;
+        if (req->n_params >= 0 && fn->n_params != req->n_params) return -1;
+        if (req->max_locals >= 0 && fn->n_locals > req->max_locals) return -1;
+        if (req->max_code_len >= 0 && fn->code_len > req->max_code_len) {
+            return -1;
+        }
+        if (req->require_no_upvalues && fn->n_upvalues != 0) return -1;
+    }
+
+    return 0;
+}
+
+static int eshkol_vm_validate_load_policy(const EskbModule* mod,
+                                          const EshkolVmLoadOptions* options) {
+    if (!mod || !options) return -1;
+    if (eshkol_vm_validate_function_requirements(mod, options) != 0) return -1;
 
     if (!options->reject_desktop_native_calls) return 0;
 

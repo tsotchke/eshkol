@@ -2477,3 +2477,46 @@ Invalid handles, invalid indices, and null output pointers return `-1`.
 - native Windows stubs expose the same symbol while the full bytecode VM remains
   disabled there
 - the VM C API tests now cover metadata success and invalid-input rejection
+
+---
+
+## D-0072
+
+- Date: 2026-05-25
+- Status: Accepted
+- Title: Enforce VM entry metadata during loading
+
+### Context
+
+Product admission can require named VM entries, and tooling can inspect function
+metadata after loading. That still left signature and budget checks outside the
+loader: hosts had to load a chunk, enumerate metadata, then reject it manually if
+`tick` had the wrong arity, captured upvalues, or exceeded a local/code budget.
+
+Firmware entry contracts should fail during the same load-time admission pass
+that checks required hook names and embedded native-call policy.
+
+### Decision
+
+Extend `EshkolVmLoadOptions` with optional `EshkolVmFunctionRequirement`
+entries. A requirement names a function and can enforce:
+
+- exact parameter count (`-1` skips the check)
+- maximum local count (`-1` skips the check)
+- maximum code length (`-1` skips the check)
+- no upvalues for closed product hooks
+
+Invalid requirement arrays, invalid wildcard values, missing names, missing
+functions, and metadata mismatches reject the chunk before a VM handle is
+created.
+
+### Consequences
+
+- product loaders can enforce hook arity, closedness, and bytecode budget in one
+  admission call
+- name-only required-entry checks remain supported and unchanged
+- richer manifest formats can lower to the public load options without
+  duplicating ESKB parsing
+- the VM C API tests now cover matching metadata requirements, wildcard
+  requirements, arity mismatch, closure/upvalue rejection, local/code budget
+  rejection, and invalid requirement inputs

@@ -259,7 +259,9 @@ Tooling can enumerate the decoded function table through
 `eshkol_vm_function_count` and `eshkol_vm_function_name` without depending on
 `EskbModule` internals. `eshkol_vm_function_info` exposes borrowed names plus
 parameter count, locals, upvalue count, code offset, and code length for
-signature and budget inspection.
+signature and budget inspection. Load options can also require that named
+entries match exact arity, have no upvalues, and stay under local/code-length
+ceilings before a VM handle is admitted.
 
 ### VM toolchain/compiler family
 
