@@ -2181,6 +2181,16 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/wi
     )
 endif()
 
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/remote_windows_verify_surface_test.cpp")
+    add_executable(remote_windows_verify_surface_test
+        tests/toolchain/remote_windows_verify_surface_test.cpp)
+    target_compile_features(remote_windows_verify_surface_test PRIVATE cxx_std_17)
+    add_test(
+        NAME remote_windows_verify_surface_test
+        COMMAND remote_windows_verify_surface_test "${CMAKE_CURRENT_SOURCE_DIR}"
+    )
+endif()
+
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/aggregate_shell_suite_surface_test.cpp")
     add_executable(aggregate_shell_suite_surface_test
         tests/toolchain/aggregate_shell_suite_surface_test.cpp)

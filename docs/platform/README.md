@@ -123,6 +123,9 @@ Program phase:
 - the C++ `Arena` RAII wrapper now lives outside runtime source families as a C++ adapter around the C arena ABI
 - the `runtime-split-pending` source set has been retired; remaining runtime implementation files are classified as `runtime-core` or `runtime-hosted`
 - the bytecode VM unity hub now builds through `eshkol-vm-unity-obj`, with explicit `vm-core`, `vm-hosted`, VM toolchain, and VM test component families guarded by a boundary test
+- hosted Windows x86_64 validation now has a remote SSH harness for Jack's
+  Tailscale Windows PC: `scripts/remote_windows_verify.sh` builds the native
+  Visual Studio 2022 + ClangCL tree and runs the bounded `windows-lite` suite
 - shared allocation and weak-reference helpers now live in a dedicated runtime-core translation unit instead of `arena_memory.cpp`
 - freestanding-safe tensor index helpers now live in a dedicated runtime-core translation unit instead of the hosted-heavy runtime state implementation
 - freestanding-safe tensor fill helpers now live in a dedicated runtime-core translation unit instead of the hosted-heavy runtime state implementation

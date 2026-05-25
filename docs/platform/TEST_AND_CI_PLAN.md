@@ -13,6 +13,30 @@ This document defines how the platform program is verified while protecting host
 
 ## Test Categories
 
+## 0. Hosted platform validation
+
+Purpose:
+
+- keep the supported desktop hosts green while freestanding work lands
+- make Windows x86_64 a real pre-deployment build/test gate instead of a
+  surface-only promise
+
+Current guard:
+
+- `scripts/remote_linux_verify.sh`
+  - verifies maintained Linux checkouts over SSH
+  - builds the configured tree, runs CTest, and runs a runtime smoke
+- `scripts/remote_windows_verify.sh`
+  - verifies a native Windows x86_64 checkout over SSH
+  - defaults to Visual Studio 2022 + ClangCL + LLVM 21
+  - builds `eshkol-run`, `eshkol-repl`, `stdlib`, and
+    `windows_suite_surface_test`
+  - runs the Windows CTest surface guard and
+    `scripts/run_all_tests.ps1 -Mode windows-lite`
+- `tests/toolchain/remote_windows_verify_surface_test.cpp`
+  - keeps the remote Windows verifier tied to the bounded Windows suite and
+    prevents it from becoming destructive
+
 ## 1. Profile tests
 
 Purpose:

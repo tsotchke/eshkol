@@ -45,6 +45,13 @@ Status:
 
 - Tier 1
 
+Current validation:
+
+- macOS local build and hosted CTest
+- Linux remote build/CTest slices on maintained Tailscale hosts
+- Windows x86_64 native build on Jack's Tailscale Windows PC via
+  `scripts/remote_windows_verify.sh`
+
 ## Freestanding native reference targets
 
 ### x86_64 QEMU PC
