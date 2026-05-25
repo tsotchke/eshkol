@@ -493,6 +493,55 @@ EskbBuffer make_test_chunk(void) {
     return file;
 }
 
+EskbBuffer make_uncalled_desktop_native_helper_chunk(void) {
+    EskbBuffer const_buf;
+    EskbBuffer code_buf;
+    EskbBuffer payload;
+    EskbBuffer file;
+    eskb_buf_init(&const_buf);
+    eskb_buf_init(&code_buf);
+    eskb_buf_init(&payload);
+    eskb_buf_init(&file);
+
+    eskb_buf_write_leb128(&const_buf, 1);
+    write_int64_const(&const_buf, 42);
+
+    const Instr main_code[] = {
+        {OP_CONST, 0},
+        {OP_HALT, 0},
+    };
+    const Instr helper_code[] = {
+        {OP_NATIVE_CALL, 100},
+        {OP_HALT, 0},
+    };
+
+    eskb_buf_write_leb128(&code_buf, 2);
+    write_function(&code_buf, "main", main_code, sizeof(main_code) / sizeof(main_code[0]));
+    write_function(&code_buf, "helper", helper_code, sizeof(helper_code) / sizeof(helper_code[0]));
+
+    eskb_buf_write_leb128(&payload, 2);
+    eskb_buf_write_u8(&payload, ESKB_SECTION_CONST);
+    eskb_buf_write_leb128(&payload, const_buf.len);
+    eskb_buf_write_u8(&payload, ESKB_SECTION_CODE);
+    eskb_buf_write_leb128(&payload, code_buf.len);
+    eskb_buf_write(&payload, const_buf.data, const_buf.len);
+    eskb_buf_write(&payload, code_buf.data, code_buf.len);
+
+    EskbHeader hdr;
+    hdr.magic = ESKB_MAGIC;
+    hdr.version = ESKB_VERSION;
+    hdr.flags = ESKB_FLAG_LITTLE_ENDIAN;
+    hdr.checksum = eskb_crc32(payload.data, payload.len);
+
+    eskb_buf_write(&file, &hdr, sizeof(hdr));
+    eskb_buf_write(&file, payload.data, payload.len);
+
+    eskb_buf_free(&const_buf);
+    eskb_buf_free(&code_buf);
+    eskb_buf_free(&payload);
+    return file;
+}
+
 EskbBuffer make_metadata_test_chunk(void) {
     EskbBuffer const_buf;
     EskbBuffer code_buf;
@@ -856,6 +905,14 @@ void test_host_only_native_policy(void) {
                                             &host_only_options) == nullptr,
           "embedded load options reject desktop native fid before run");
     eskb_buf_free(&rejected_desktop_chunk);
+
+    EskbBuffer rejected_helper_chunk =
+        make_uncalled_desktop_native_helper_chunk();
+    CHECK(eshkol_vm_load_chunk_with_options(rejected_helper_chunk.data,
+                                            rejected_helper_chunk.len,
+                                            &host_only_options) == nullptr,
+          "embedded load options reject desktop native fid in helper function");
+    eskb_buf_free(&rejected_helper_chunk);
 
     EskbBuffer desktop_chunk =
         make_number_to_string_radix_chunk(10, 2, "1010");

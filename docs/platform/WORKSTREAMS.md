@@ -233,8 +233,8 @@ Good delegation candidate for a VM-focused contributor with a fixed host-hook co
 - named ESKB entry points are exercised by the public VM C API tests
 - ESKB string constant materialization and embedded rejection behavior are
   exercised by the public VM C API tests
-- embedded bytecode admission rejects desktop native calls before VM execution
-  in the public VM C API tests
+- embedded bytecode admission rejects desktop native calls, including helper
+  function calls, before VM execution in the public VM C API tests
 - required named VM entries are enforced by load options in the public VM C API
   tests
 - compiler-produced embedded ESKB exposes closed top-level hooks such as `tick`

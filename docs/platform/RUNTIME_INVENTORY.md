@@ -244,7 +244,8 @@ controls through the public C ABI. Embedders can start a loaded VM in
 `ESHKOL_VM_NATIVE_POLICY_HOST_ONLY` and can reject `ESKB_CONST_STRING` entries
 before bytecode runs. They can also reject `OP_NATIVE_CALL` operands below
 `ESHKOL_VM_HOST_NATIVE_BASE`, which makes desktop-native dependencies fail at
-load time instead of at first execution. Product hosts can also provide a list
+load time instead of at first execution, including calls in helper function
+bodies that the host has not invoked yet. Product hosts can also provide a list
 of required function entries so scripts missing `init`/`tick`/`render`-style
 hooks fail during loading. The default `eshkol_vm_load_chunk` path remains
 desktop-compatible: desktop native calls are allowed, no entries are required,
