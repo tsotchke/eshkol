@@ -70,6 +70,8 @@ int main(int argc, char** argv) {
         read_file(source_root / "lib" / "core" / "runtime_regions.cpp");
     const std::string eshkol_run =
         read_file(source_root / "exe" / "eshkol-run.cpp");
+    const std::string eshkol_vm_stub =
+        read_file(source_root / "lib" / "backend" / "eshkol_vm_stub.c");
     const std::string llvm_codegen =
         read_file(source_root / "lib" / "backend" / "llvm_codegen.cpp");
     bool ok = true;
@@ -195,6 +197,25 @@ int main(int argc, char** argv) {
          expect_not_contains(cmake,
                              "foreach(_llvm_runtime_lib IN LISTS LLVM_LIBS_LIST LLVM_SYSTEM_LIBS_LIST)",
                              "generated Windows binaries should not inherit compiler LLVM link libraries");
+
+    ok = ok &&
+         expect_contains(eshkol_vm_stub, "int eshkol_vm_default_load_options",
+                         "native Windows VM stub exports default load options") &&
+         expect_contains(eshkol_vm_stub, "EshkolVmHandle* eshkol_vm_load_chunk_with_options",
+                         "native Windows VM stub exports policy-aware load entry") &&
+         expect_contains(eshkol_vm_stub, "int eshkol_vm_has_function",
+                         "native Windows VM stub exports function lookup") &&
+         expect_contains(eshkol_vm_stub, "void eshkol_vm_destroy",
+                         "native Windows VM stub exports VM destruction") &&
+         expect_contains(eshkol_vm_stub,
+                         "out->required_function_metadata = NULL;",
+                         "native Windows VM stub initializes metadata requirements") &&
+         expect_contains(eshkol_vm_stub,
+                         "out->required_function_metadata_count = 0;",
+                         "native Windows VM stub initializes metadata requirement count") &&
+         expect_contains(eshkol_vm_stub,
+                         "return NULL;",
+                         "native Windows VM stub keeps VM loading disabled");
 
     if (!ok) {
         return 1;

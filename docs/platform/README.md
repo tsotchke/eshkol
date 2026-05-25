@@ -145,6 +145,8 @@ Program phase:
   tooling can inspect emitted hooks without reaching into `EskbModule`
 - VM function metadata is available through the public ABI for hook arity,
   closure, and bytecode-budget inspection
+- VM load options can enforce required hook metadata, including exact arity,
+  no-upvalue entry points, local ceilings, and code-length ceilings
 - hosted Windows x86_64 validation now has a remote SSH harness for Jack's
   Tailscale Windows PC: `scripts/remote_windows_verify.sh` can build the native
   Visual Studio 2022 + ClangCL tree, or use `--suite-only` against Jack's cached
