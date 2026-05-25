@@ -169,6 +169,12 @@ int main(int argc, char** argv) {
          expect_contains(llvm_codegen,
                          "use_external_only = true;",
                          "LLVM codegen uses runtime-owned command-line globals on Windows") &&
+         expect_contains(llvm_codegen,
+                         "? GlobalValue::LinkOnceODRLinkage",
+                         "shared-library mode keeps COFF stdlib symbols as COMDAT definitions") &&
+         expect_not_contains(llvm_codegen,
+                             "COFF treats linkonce_odr as an ODR contract",
+                             "shared-library mode should not emit COFF weak external aliases") &&
          expect_not_contains(llvm_codegen,
                              "\"/WHOLEARCHIVE:\" + runtime_lib_path.generic_string()",
                              "LLVM executable link path should not force-load compiler archive on Windows") &&

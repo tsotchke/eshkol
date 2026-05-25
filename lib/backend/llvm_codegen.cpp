@@ -636,13 +636,6 @@ static GlobalValue::LinkageTypes publicDefinitionLinkage(bool library_mode) {
     if (g_repl_mode_enabled) {
         return GlobalValue::ExternalLinkage;
     }
-#ifdef _WIN32
-    if (library_mode) {
-        // COFF treats linkonce_odr as an ODR contract, which is too strict for
-        // stdlib symbols that user code is allowed to redefine.
-        return GlobalValue::WeakAnyLinkage;
-    }
-#endif
     return library_mode
         ? GlobalValue::LinkOnceODRLinkage
         : GlobalValue::ExternalLinkage;
