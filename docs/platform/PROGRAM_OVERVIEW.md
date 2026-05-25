@@ -90,6 +90,7 @@ The end-state decomposition is:
   - freestanding-kernel-native
   - freestanding-mcu-native
   - freestanding-vm
+  - embedded-vm
 - Backends
   - LLVM native
   - bytecode VM / ESKB

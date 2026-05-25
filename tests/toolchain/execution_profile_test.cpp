@@ -19,6 +19,10 @@ int main() {
         return fail("failed to resolve hosted-native profile");
     }
 
+    if (const Info* info = find("embedded-vm"); !info || info->id != ExecutionProfile::EmbeddedVm) {
+        return fail("failed to resolve embedded-vm profile");
+    }
+
     if (find("not-a-profile") != nullptr) {
         return fail("unexpectedly resolved an invalid profile name");
     }
@@ -115,6 +119,52 @@ int main() {
         Resolution resolved = resolve(selection);
         if (!resolved.error.empty() || !resolved.vm_only || !resolved.no_stdlib) {
             return fail("freestanding-vm should resolve to vm-only mode and imply no-stdlib");
+        }
+    }
+
+    {
+        Selection selection;
+        selection.requested = ExecutionProfile::EmbeddedVm;
+        selection.explicit_request = true;
+        Resolution resolved = resolve(selection);
+        if (resolved.error.empty()) {
+            return fail("embedded-vm without --emit-eskb should fail");
+        }
+    }
+
+    {
+        Selection selection;
+        selection.requested = ExecutionProfile::EmbeddedVm;
+        selection.explicit_request = true;
+        selection.has_eskb_output = true;
+        Resolution resolved = resolve(selection);
+        if (!resolved.error.empty() || !resolved.vm_only || !resolved.no_stdlib ||
+            !resolved.embedded_vm || resolved.target_triple != nullptr) {
+            return fail("embedded-vm should resolve to embedded vm-only no-stdlib mode");
+        }
+    }
+
+    {
+        Selection selection;
+        selection.requested = ExecutionProfile::EmbeddedVm;
+        selection.explicit_request = true;
+        selection.has_eskb_output = true;
+        selection.has_linked_libs = true;
+        Resolution resolved = resolve(selection);
+        if (resolved.error.empty()) {
+            return fail("embedded-vm + --lib should fail");
+        }
+    }
+
+    {
+        Selection selection;
+        selection.requested = ExecutionProfile::EmbeddedVm;
+        selection.explicit_request = true;
+        selection.has_eskb_output = true;
+        selection.explicit_target_triple = "thumbv7em-none-eabi";
+        Resolution resolved = resolve(selection);
+        if (resolved.error.empty()) {
+            return fail("embedded-vm + --target should fail");
         }
     }
 

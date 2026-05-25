@@ -187,7 +187,7 @@ Make the VM a valid non-hosted runtime target.
 
 ### Deliverables
 
-- `freestanding-vm` profile
+- `freestanding-vm` and `embedded-vm` profiles
 - VM host-hook ABI
 - hook-driven allocator and console behavior
 - freestanding VM build target

@@ -1375,7 +1375,7 @@ static void print_help(int x = 0)
         "\t--wasm:[-w] = Compiles to WebAssembly (.wasm) format.\n"
         "\t--profile NAME = Use an execution profile.\n"
         "\t    Profiles: hosted-native, hosted-wasm, hosted-vm, freestanding-kernel-native,\n"
-        "\t              freestanding-mcu-native, freestanding-vm.\n"
+        "\t              freestanding-mcu-native, freestanding-vm, embedded-vm.\n"
         "\t--target TRIPLE = Set the LLVM target triple.\n"
         "\t--lib:[-l] = Links a shared library to the resulting executable.\n"
         "\t--lib-path:[-L] = Adds a directory to the library search path.\n"
