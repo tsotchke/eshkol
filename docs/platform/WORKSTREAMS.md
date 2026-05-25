@@ -192,6 +192,9 @@ Make the VM a valid non-hosted runtime target.
 - hook-driven allocator and console behavior
 - freestanding VM build target
 - ESKB smoke tests in non-hosted mode
+- embedded profile limits for static RAM, stack, frames, constants, and
+  bytecode size
+- static host-call table for product runtimes such as Tamatsotchke
 
 ### Dependencies
 
@@ -202,6 +205,10 @@ Make the VM a valid non-hosted runtime target.
 
 - `lib/backend/eshkol_vm.c`
 - VM submodules
+- `inc/eshkol/backend/vm.h`
+- `lib/backend/vm_core.c`
+- `lib/backend/vm_native.c`
+- `lib/backend/eskb_reader.c`
 - ESKB tooling
 - build rules
 
@@ -213,6 +220,8 @@ Good delegation candidate for a VM-focused contributor with a fixed host-hook co
 
 - VM builds in both hosted and freestanding modes
 - hook-based smoke tests pass
+- embedded VM rejects unsupported desktop native calls and enforces static
+  memory/budget limits
 
 ## Workstream 7: BSP Contract and Reference Targets
 

@@ -1923,3 +1923,54 @@ stays outside runtime source families.
   widening freestanding runtime-core policy
 - future runtime decomposition work can move to hosted-leakage enforcement,
   freestanding hook definitions, VM runtime decomposition, and target ABI work
+
+---
+
+## D-0059
+
+- Date: 2026-05-24
+- Status: Accepted
+- Title: Classify the bytecode VM unity hub into explicit source families
+
+### Context
+
+`lib/backend/eshkol_vm.c` is still compiled as a unity-build hub because the VM
+submodules share internal static types, include-order assumptions, and the
+compiler/parser/native dispatch table. That arrangement kept desktop VM behavior
+working, but it also hid the boundary needed for freestanding and embedded
+profiles.
+
+The Tamatsotchke scripting use case needs a much smaller VM profile: static
+memory limits, no desktop native table, fixed host calls, flash/content-pack
+loading, and budget checks. That cannot be built safely while `eshkol_vm.c`
+remains an unclassified blob inside the aggregate archive.
+
+### Decision
+
+Keep `eshkol_vm.c` as the temporary compile-order hub, but compile it through a
+dedicated `eshkol-vm-unity-obj` object target instead of appending it directly to
+`LIB_SRC`.
+
+Add explicit CMake component families for the files included by the hub:
+
+- `ESHKOL_VM_CORE_COMPONENT_SRC`
+- `ESHKOL_VM_HOSTED_COMPONENT_SRC`
+- `ESHKOL_VM_TOOLCHAIN_COMPONENT_SRC`
+- `ESHKOL_VM_TEST_COMPONENT_SRC`
+
+Add `vm_source_boundary_test` so the build fails if a VM component is included
+by the unity hub without being classified, if component families overlap, if the
+hub is silently appended back into `LIB_SRC`, or if VM core files grow direct
+hosted-only dependencies such as files, processes, sockets, dynamic loading, or
+host threads.
+
+### Consequences
+
+- the shipped aggregate archive and desktop VM behavior remain unchanged
+- VM decomposition now has a checked build-graph boundary before physical file
+  extraction begins
+- embedded VM work can start from concrete families: keep core, replace hosted
+  natives with a static host-call table, and constrain toolchain/loader behavior
+  for firmware scripts
+- `vm_native.c` remains classified as hosted until its broad desktop native
+  table is split by capability
