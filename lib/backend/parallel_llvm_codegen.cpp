@@ -56,6 +56,16 @@ static llvm::GlobalValue::LinkageTypes workerHelperLinkage() {
 #endif
 }
 
+static llvm::GlobalValue::LinkageTypes workerInitLinkage() {
+#ifdef _WIN32
+    // COFF/lld-link does not reliably fold linkonce_odr constructors when a
+    // generated object and stdlib.o both carry the registration init symbol.
+    return llvm::GlobalValue::WeakAnyLinkage;
+#else
+    return llvm::GlobalValue::LinkOnceODRLinkage;
+#endif
+}
+
 ParallelCodegen::ParallelCodegen(CodegenContext& ctx)
     : ctx_(ctx)
     , parallel_map_func_(nullptr)
@@ -2190,7 +2200,7 @@ void ParallelCodegen::generateWorkerRegistration() {
 
     // 2. Create init function __eshkol_init_parallel_workers
     //
-    // LinkOnceODRLinkage: visible across modules (so the REPL JIT
+    // LinkOnceODRLinkage / WeakAnyLinkage: visible across modules (so the REPL JIT
     // can explicitly look it up and call it after addObjectFile —
     // which bypasses llvm.global_ctors execution), but deduped on
     // the link path so multiple user JIT batches each emitting it
@@ -2199,7 +2209,7 @@ void ParallelCodegen::generateWorkerRegistration() {
     // and parallel-execute / (future thunk) eager-spawn break.
     llvm::FunctionType* init_type = llvm::FunctionType::get(ctx_.voidType(), {}, false);
     llvm::Function* init_func = llvm::Function::Create(
-        init_type, llvm::Function::LinkOnceODRLinkage,
+        init_type, workerInitLinkage(),
         "__eshkol_init_parallel_workers", &ctx_.module());
 
     llvm::BasicBlock* entry = llvm::BasicBlock::Create(llvm_ctx, "entry", init_func);
