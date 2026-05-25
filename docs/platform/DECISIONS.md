@@ -1974,3 +1974,53 @@ host threads.
   for firmware scripts
 - `vm_native.c` remains classified as hosted until its broad desktop native
   table is split by capability
+
+---
+
+## D-0060
+
+- Date: 2026-05-25
+- Status: Accepted
+- Title: Add deterministic VM host-native table installation
+
+### Context
+
+The public bytecode VM C ABI already allowed embedders to register host-native
+callbacks dynamically by name. That is sufficient for desktop tools and tests,
+but it is not deterministic enough for firmware/product runtimes such as
+Tamatsotchke, where bytecode needs stable native-call fids and a fixed host-call
+surface.
+
+The embedded profile work also needs a migration path that does not require the
+full desktop native table to be physically split before any product-runtime
+experiments can begin.
+
+### Decision
+
+Extend `inc/eshkol/backend/vm.h` with `EshkolVmHostNative` and a deterministic
+host-native table API:
+
+- `eshkol_vm_install_host_natives`
+- `eshkol_vm_clear_host_natives`
+- `eshkol_vm_host_native_capacity`
+- `eshkol_vm_host_native_count`
+
+Installed entries map directly to slots by array index, so bytecode calls use
+`ESHKOL_VM_HOST_NATIVE_BASE + index`. Table installation validates the whole
+input before mutating the current registry, rejecting null callbacks, invalid
+names, duplicate names, and over-capacity tables without partially changing
+dispatch state.
+
+Keep `eshkol_vm_register_host_native` and `eshkol_vm_unregister_host_native` for
+desktop embedders and tests. Dynamic registrations append after the installed
+fixed table, while duplicate names remain rejected across both paths.
+
+### Consequences
+
+- product runtimes can define fixed host-call slots before ESKB export-table and
+  embedded loader work lands
+- the public VM C API tests now execute bytecode against fixed host-native slots
+  and verify all-or-nothing table validation
+- this does not make `vm_native.c` freestanding; the broad desktop native table
+  still needs capability partitioning before a small VM target can omit hosted
+  subsystems
