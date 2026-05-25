@@ -284,9 +284,10 @@ emitter's product-entry table is intentionally conservative: only closed
 top-level functions are exported as independent named entries in this slice.
 The `eshkol-run --require-vm-entry-zero-arg` gate lets embedded VM builds reject
 required hooks whose decoded function metadata is incompatible with the current
-zero-argument public dispatch ABI. The runtime dispatch path itself also rejects
-entries that declare upvalues, because the public call surface does not provide
-a closure environment for direct entry execution.
+zero-argument public dispatch ABI: entries must declare zero parameters and no
+upvalues. The runtime dispatch path itself also rejects entries that declare
+upvalues, because the public call surface does not provide a closure environment
+for direct entry execution.
 
 ### VM test family
 

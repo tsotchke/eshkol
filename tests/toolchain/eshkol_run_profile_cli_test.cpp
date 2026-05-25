@@ -355,6 +355,28 @@ int main(int argc, char** argv) {
         return fail("embedded VM kept ESKB after argumentful required entry");
     }
 
+    const fs::path captured_entry_source = temp_root / "captured-entry.esk";
+    {
+        std::ofstream source(captured_entry_source);
+        source << "(define scale 2)\n";
+        source << "(define (tick) scale)\n";
+    }
+
+    const fs::path captured_required_path = temp_root / "hosted-captured-required.eskb";
+    ProcessResult hosted_captured_required = run_process_capture(
+        {run_binary.string(), "--profile", "hosted-vm",
+         "--emit-eskb", captured_required_path.string(),
+         "--require-vm-entry-zero-arg", "tick", captured_entry_source.string()},
+        temp_root);
+    if (int rc = expect_failure_containing("hosted VM rejects captured required entry",
+                                           hosted_captured_required,
+                                           "ESKB admission failed for profile hosted-vm")) {
+        return rc;
+    }
+    if (fs::exists(captured_required_path)) {
+        return fail("hosted VM kept ESKB after captured required entry");
+    }
+
     const fs::path desktop_native_source = temp_root / "desktop-native.esk";
     {
         std::ofstream source(desktop_native_source);

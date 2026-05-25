@@ -2585,16 +2585,17 @@ call.
 
 Add `--require-vm-entry-zero-arg NAME` for VM profiles. The option can be
 repeated and lowers each name to an `EshkolVmFunctionRequirement` with
-`n_params = 0` during emitted-bytecode admission. Rejected outputs are removed,
-matching the existing required-entry admission behavior.
+`n_params = 0` and `require_no_upvalues = 1` during emitted-bytecode admission.
+Rejected outputs are removed, matching the existing required-entry admission
+behavior.
 
 Name-only `--require-vm-entry` remains available for tools that only need
 presence checks.
 
 ### Consequences
 
-- embedded VM builds can require callable no-argument hooks such as `init` and
-  `tick`
+- embedded VM builds can require callable closed no-argument hooks such as
+  `init` and `tick`
 - parameterized hooks fail during ESKB emission instead of at product runtime
 - the profile CLI test covers accepted zero-argument hooks and rejected
   parameterized hooks
