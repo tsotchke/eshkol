@@ -8,11 +8,15 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <string>
 #include <vector>
 
 #include <eshkol/backend/thread_pool.h>
 #include <eshkol/backend/vm.h>
+
+extern "C" int eshkol_emit_eskb_embedded(const char* source, const char* output_path);
 
 extern "C" {
 #include "eskb_format.h"
@@ -50,6 +54,13 @@ int g_failures = 0;
             ++g_failures;                                       \
         }                                                       \
     } while (0)
+
+std::vector<uint8_t> read_binary_file(const std::filesystem::path& path) {
+    std::ifstream input(path, std::ios::binary);
+    if (!input) return {};
+    return std::vector<uint8_t>((std::istreambuf_iterator<char>(input)),
+                                std::istreambuf_iterator<char>());
+}
 
 void write_instr(EskbBuffer* b, const Instr& instr) {
     eskb_buf_write_u8(b, instr.op);
@@ -1240,6 +1251,52 @@ void test_string_constant_materialization(void) {
     eskb_buf_free(&chunk);
 }
 
+void test_embedded_eskb_emission_load_policy(void) {
+    namespace fs = std::filesystem;
+
+    std::error_code ec;
+    const fs::path test_dir = fs::temp_directory_path(ec) / "eshkol_vm_embedded_emit_test";
+    CHECK(!ec, "resolve temp directory for embedded ESKB emission");
+    if (ec) return;
+    fs::remove_all(test_dir, ec);
+    fs::create_directories(test_dir, ec);
+    CHECK(!ec, "create temp directory for embedded ESKB emission");
+    if (ec) return;
+
+    const fs::path ok_path = test_dir / "ok.eskb";
+    CHECK(eshkol_emit_eskb_embedded("(define answer (+ 19 23))\n",
+                                    ok_path.string().c_str()) == 0,
+          "embedded ESKB emitter accepts opcode-only source");
+    const std::vector<uint8_t> ok_bytes = read_binary_file(ok_path);
+    CHECK(!ok_bytes.empty(), "read embedded ESKB output bytes");
+
+    EshkolVmLoadOptions embedded_options{};
+    CHECK(eshkol_vm_default_load_options(&embedded_options) == 0,
+          "initialize embedded load options for emitted ESKB");
+    embedded_options.native_policy = ESHKOL_VM_NATIVE_POLICY_HOST_ONLY;
+    embedded_options.reject_string_constants = 1;
+    embedded_options.reject_desktop_native_calls = 1;
+    const char* required_entries[] = {"main"};
+    embedded_options.required_functions = required_entries;
+    embedded_options.required_function_count = 1;
+    EshkolVmHandle* embedded_vm = ok_bytes.empty()
+        ? nullptr
+        : eshkol_vm_load_chunk_with_options(ok_bytes.data(), ok_bytes.size(),
+                                            &embedded_options);
+    CHECK(embedded_vm != nullptr,
+          "embedded loader accepts compiler-emitted embedded ESKB");
+    if (embedded_vm) eshkol_vm_destroy(embedded_vm);
+
+    const fs::path rejected_path = test_dir / "rejected.eskb";
+    CHECK(eshkol_emit_eskb_embedded("(display \"dynamic string\")\n",
+                                    rejected_path.string().c_str()) != 0,
+          "embedded ESKB emitter rejects desktop-native string construction");
+    CHECK(!fs::exists(rejected_path),
+          "embedded ESKB emitter does not write rejected output");
+
+    fs::remove_all(test_dir, ec);
+}
+
 void test_bad_inputs(void) {
     CHECK(eshkol_vm_load_chunk(nullptr, 0) == nullptr, "reject null chunk");
 
@@ -1259,6 +1316,7 @@ int main(void) {
     test_valid_chunk();
     test_profile_limits();
     test_string_constant_materialization();
+    test_embedded_eskb_emission_load_policy();
     test_number_to_string_radix();
     test_static_host_native_table();
     test_host_only_native_policy();
