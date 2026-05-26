@@ -1,0 +1,7 @@
+;;; Test simple R7RS import lowering to the existing require machinery.
+
+(import (scheme base))
+
+(if (= (+ 19 23) 42)
+    (display "PASS: simple R7RS import")
+    (exit 1))
