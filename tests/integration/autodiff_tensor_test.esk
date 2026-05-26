@@ -415,3 +415,60 @@
              (approx= (vector-ref g 2) 4.0 1e-6))
         "PASS" "FAIL"))
   (display ": gradient through tensor-mul tensor-sum matches multiplier") (newline))
+
+;; ============================================================
+;; Test 28: Gradient through tensor-exp then tensor-sum
+;; f(x) = sum(exp(x)), gradient = exp(x)
+;; ============================================================
+(let* ((g (gradient
+            (lambda (x) (tensor-sum (tensor-exp x)))
+            (tensor 2 0.0 1.0))))
+  (display
+    (if (and (= (vector-length g) 2)
+             (approx= (vector-ref g 0) 1.0 1e-6)
+             (approx= (vector-ref g 1) 2.718281828459045 1e-5))
+        "PASS" "FAIL"))
+  (display ": gradient through tensor-exp tensor-sum matches exp") (newline))
+
+;; ============================================================
+;; Test 29: Gradient through tensor-sqrt then tensor-sum
+;; f(x) = sum(sqrt(x)), gradient = 1/(2*sqrt(x))
+;; ============================================================
+(let* ((g (gradient
+            (lambda (x) (tensor-sum (tensor-sqrt x)))
+            (tensor 2 4.0 9.0))))
+  (display
+    (if (and (= (vector-length g) 2)
+             (approx= (vector-ref g 0) 0.25 1e-6)
+             (approx= (vector-ref g 1) 0.16666666666666666 1e-5))
+        "PASS" "FAIL"))
+  (display ": gradient through tensor-sqrt tensor-sum matches reciprocal roots") (newline))
+
+;; ============================================================
+;; Test 30: Gradient through relu then tensor-sum
+;; f(x) = sum(relu(x)), gradient is the positive mask
+;; ============================================================
+(let* ((g (gradient
+            (lambda (x) (tensor-sum (relu x)))
+            (tensor 3 -1.0 0.0 2.0))))
+  (display
+    (if (and (= (vector-length g) 3)
+             (approx= (vector-ref g 0) 0.0 1e-6)
+             (approx= (vector-ref g 1) 0.0 1e-6)
+             (approx= (vector-ref g 2) 1.0 1e-6))
+        "PASS" "FAIL"))
+  (display ": gradient through relu tensor-sum matches positive mask") (newline))
+
+;; ============================================================
+;; Test 31: Gradient through sigmoid then tensor-sum
+;; f(x) = sum(sigmoid(x)), gradient = sigmoid(x)*(1-sigmoid(x))
+;; ============================================================
+(let* ((g (gradient
+            (lambda (x) (tensor-sum (sigmoid x)))
+            (tensor 2 0.0 1.0))))
+  (display
+    (if (and (= (vector-length g) 2)
+             (approx= (vector-ref g 0) 0.25 1e-6)
+             (approx= (vector-ref g 1) 0.19661193324148185 1e-5))
+        "PASS" "FAIL"))
+  (display ": gradient through sigmoid tensor-sum matches sigmoid derivative") (newline))
