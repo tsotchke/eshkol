@@ -18035,9 +18035,20 @@ private:
             return nullptr;
         }
 
-        // Get both arguments
-        Value* arg1 = codegenAST(&op->call_op.variables[0]);
-        Value* arg2 = codegenAST(&op->call_op.variables[1]);
+        // Get both arguments. atan2 needs typed lowering so tensor element
+        // references preserve AD-node tags for reverse-mode gradients.
+        Value* arg1 = nullptr;
+        Value* arg2 = nullptr;
+        if (func_name == "atan2") {
+            TypedValue arg1_tv = codegenTypedAST(&op->call_op.variables[0]);
+            TypedValue arg2_tv = codegenTypedAST(&op->call_op.variables[1]);
+            if (!arg1_tv.llvm_value || !arg2_tv.llvm_value) return nullptr;
+            arg1 = typedValueToTaggedValue(arg1_tv);
+            arg2 = typedValueToTaggedValue(arg2_tv);
+        } else {
+            arg1 = codegenAST(&op->call_op.variables[0]);
+            arg2 = codegenAST(&op->call_op.variables[1]);
+        }
         if (!arg1 || !arg2) return nullptr;
 
         // DUAL NUMBER FAST PATH (forward-mode AD).
