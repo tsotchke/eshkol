@@ -3402,15 +3402,17 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
     Value* dims_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), dims_field_ptr);
     Value* typed_dims_ptr = ctx_.builder().CreatePointerCast(dims_ptr, ctx_.builder().getPtrTy());
 
+    Value* num_dims_field_ptr = ctx_.builder().CreateStructGEP(ctx_.tensorType(), vector_ptr, 1);
+    Value* input_num_dims = ctx_.builder().CreateLoad(ctx_.int64Type(), num_dims_field_ptr);
+
     Value* elements_field_ptr = ctx_.builder().CreateStructGEP(ctx_.tensorType(), vector_ptr, 2);
     Value* elements_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), elements_field_ptr);
     Value* typed_elements_ptr = ctx_.builder().CreatePointerCast(elements_ptr, ctx_.builder().getPtrTy());
 
-    // Load dimension n from tensor (RUNTIME value, NOT hardcoded)
-    Value* dim0_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), typed_dims_ptr,
-        ConstantInt::get(ctx_.int64Type(), 0));
-
-    Value* n = ctx_.builder().CreateLoad(ctx_.int64Type(), dim0_ptr);
+    // Differentiate one scalar component per tensor element, not just dims[0].
+    // The AD tensor passed to the user function still keeps the original shape.
+    Value* total_elements_field_ptr = ctx_.builder().CreateStructGEP(ctx_.tensorType(), vector_ptr, 3);
+    Value* n = ctx_.builder().CreateLoad(ctx_.int64Type(), total_elements_field_ptr);
     
     // VALIDATION: Check dimension > 0 (scalars already promoted to tensors, so type check not needed)
     Value* n_is_positive = ctx_.builder().CreateICmpUGT(n, ConstantInt::get(ctx_.int64Type(), 0));
@@ -3655,13 +3657,34 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
         PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
     Function* alloc_tensor_full = mem_.getArenaAllocateTensorFull();
     Value* typed_ad_tensor_ptr = ctx_.builder().CreateCall(alloc_tensor_full,
-        {ad_arena_ptr, ConstantInt::get(ctx_.int64Type(), 1), n}, "ad_tensor");
+        {ad_arena_ptr, input_num_dims, n}, "ad_tensor");
 
-    // Set AD tensor dimensions (same as input) - dims[0] = n
+    // Set AD tensor dimensions to match the input tensor shape.
     Value* ad_dims_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()),
         ctx_.builder().CreateStructGEP(ctx_.tensorType(), typed_ad_tensor_ptr, 0));
-    ctx_.builder().CreateStore(n, ctx_.builder().CreateGEP(ctx_.int64Type(), ad_dims_ptr,
-        ConstantInt::get(ctx_.int64Type(), 0)));
+
+    Value* copy_dim_idx = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "grad_ad_dim_i");
+    ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 0), copy_dim_idx);
+    BasicBlock* copy_dims_cond = BasicBlock::Create(ctx_.context(), "grad_ad_dims_cond", current_func);
+    BasicBlock* copy_dims_body = BasicBlock::Create(ctx_.context(), "grad_ad_dims_body", current_func);
+    BasicBlock* copy_dims_exit = BasicBlock::Create(ctx_.context(), "grad_ad_dims_exit", current_func);
+    ctx_.builder().CreateBr(copy_dims_cond);
+
+    ctx_.builder().SetInsertPoint(copy_dims_cond);
+    Value* dim_i = ctx_.builder().CreateLoad(ctx_.int64Type(), copy_dim_idx);
+    Value* has_dim = ctx_.builder().CreateICmpULT(dim_i, input_num_dims);
+    ctx_.builder().CreateCondBr(has_dim, copy_dims_body, copy_dims_exit);
+
+    ctx_.builder().SetInsertPoint(copy_dims_body);
+    Value* src_dim_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), typed_dims_ptr, dim_i);
+    Value* dst_dim_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), ad_dims_ptr, dim_i);
+    Value* dim_value = ctx_.builder().CreateLoad(ctx_.int64Type(), src_dim_ptr);
+    ctx_.builder().CreateStore(dim_value, dst_dim_ptr);
+    Value* next_dim_i = ctx_.builder().CreateAdd(dim_i, ConstantInt::get(ctx_.int64Type(), 1));
+    ctx_.builder().CreateStore(next_dim_i, copy_dim_idx);
+    ctx_.builder().CreateBr(copy_dims_cond);
+
+    ctx_.builder().SetInsertPoint(copy_dims_exit);
 
     // Get elements array (already allocated by arena_allocate_tensor_full)
     Value* typed_ad_elems_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()),

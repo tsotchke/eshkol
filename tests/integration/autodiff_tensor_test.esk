@@ -296,3 +296,19 @@
              (approx= (vector-ref g 2) 0.0 1e-6))
         "PASS" "FAIL"))
   (display ": gradient of scaled dot product = scaled basis vector") (newline))
+
+;; ============================================================
+;; Test 21: Multi-dimensional tensor gradient flattens all elements
+;; f(x) = sum(x) for x:[2,2], gradient = [1, 1, 1, 1]
+;; ============================================================
+(let* ((g (gradient
+            (lambda (x) (tensor-sum x))
+            (tensor 2 2 1.0 2.0 3.0 4.0))))
+  (display
+    (if (and (= (vector-length g) 4)
+             (approx= (vector-ref g 0) 1.0 1e-6)
+             (approx= (vector-ref g 1) 1.0 1e-6)
+             (approx= (vector-ref g 2) 1.0 1e-6)
+             (approx= (vector-ref g 3) 1.0 1e-6))
+        "PASS" "FAIL"))
+  (display ": gradient of 2x2 tensor-sum covers all elements") (newline))
