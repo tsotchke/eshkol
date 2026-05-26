@@ -666,3 +666,48 @@
              (approx= (vector-ref g 5) 0.2825874510794421 1e-5))
         "PASS" "FAIL"))
   (display ": gradient through axis softmax tensor-sum matches row Jacobians") (newline))
+
+;; ============================================================
+;; Test 44: Gradients through phase-4 activation functions
+;; Defaults: ELU/CELU alpha=1, softplus beta=1.
+;; ============================================================
+(let* ((g-softplus (gradient
+                    (lambda (x) (tensor-sum (softplus x)))
+                    (tensor 2 0.0 1.0)))
+       (g-elu (gradient
+               (lambda (x) (tensor-sum (elu x)))
+               (tensor 2 -1.0 2.0)))
+       (g-selu (gradient
+                (lambda (x) (tensor-sum (selu x)))
+                (tensor 2 -1.0 2.0)))
+       (g-mish (gradient
+                (lambda (x) (tensor-sum (mish x)))
+                (tensor 2 0.0 1.0)))
+       (g-hard-sigmoid (gradient
+                        (lambda (x) (tensor-sum (hard-sigmoid x)))
+                        (tensor 3 -4.0 0.0 4.0)))
+       (g-hard-swish (gradient
+                      (lambda (x) (tensor-sum (hard-swish x)))
+                      (tensor 3 -4.0 0.0 2.0)))
+       (g-celu (gradient
+                (lambda (x) (tensor-sum (celu x)))
+                (tensor 2 -1.0 2.0))))
+  (display
+    (if (and (approx= (vector-ref g-softplus 0) 0.5 1e-6)
+             (approx= (vector-ref g-softplus 1) 0.7310585786300049 1e-5)
+             (approx= (vector-ref g-elu 0) 0.36787944117144233 1e-5)
+             (approx= (vector-ref g-elu 1) 1.0 1e-6)
+             (approx= (vector-ref g-selu 0) 0.6467686030348149 1e-5)
+             (approx= (vector-ref g-selu 1) 1.0507009873554805 1e-5)
+             (approx= (vector-ref g-mish 0) 0.6 1e-6)
+             (approx= (vector-ref g-mish 1) 1.0490362200997922 1e-5)
+             (approx= (vector-ref g-hard-sigmoid 0) 0.0 1e-6)
+             (approx= (vector-ref g-hard-sigmoid 1) 0.16666666666666666 1e-5)
+             (approx= (vector-ref g-hard-sigmoid 2) 0.0 1e-6)
+             (approx= (vector-ref g-hard-swish 0) 0.0 1e-6)
+             (approx= (vector-ref g-hard-swish 1) 0.5 1e-6)
+             (approx= (vector-ref g-hard-swish 2) 1.1666666666666667 1e-5)
+             (approx= (vector-ref g-celu 0) 0.36787944117144233 1e-5)
+             (approx= (vector-ref g-celu 1) 1.0 1e-6))
+        "PASS" "FAIL"))
+  (display ": phase4 activation gradients match expected defaults") (newline))

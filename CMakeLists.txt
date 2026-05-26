@@ -1689,7 +1689,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     )
     set_tests_properties(autodiff_tensor_reductions_runtime_smoke
         PROPERTIES
-            PASS_REGULAR_EXPRESSION "PASS: gradient through axis softmax tensor-sum matches row Jacobians"
+            PASS_REGULAR_EXPRESSION "PASS: phase4 activation gradients match expected defaults"
             FAIL_REGULAR_EXPRESSION "FAIL:")
     add_test(
         NAME empty_collection_runtime_smoke

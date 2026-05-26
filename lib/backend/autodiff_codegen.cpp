@@ -1097,6 +1097,92 @@ llvm::Value* AutodiffCodegen::recordADNodeUnary(uint32_t op_type, llvm::Value* i
             }
             break;
 
+        // === Phase 4 activation functions (46-53) ===
+        case 46: // AD_NODE_ELU
+        case 53: // AD_NODE_CELU
+            {
+                llvm::Function* exp_func = getMathFunc("exp");
+                if (!exp_func) return nullptr;
+                llvm::Value* zero = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
+                llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
+                llvm::Value* exp_val = ctx_.builder().CreateCall(exp_func, {input_value});
+                llvm::Value* neg_val = ctx_.builder().CreateFSub(exp_val, one);
+                llvm::Value* is_positive = ctx_.builder().CreateFCmpOGT(input_value, zero);
+                result_value = ctx_.builder().CreateSelect(is_positive, input_value, neg_val);
+            }
+            break;
+        case 47: // AD_NODE_SELU
+            {
+                llvm::Function* exp_func = getMathFunc("exp");
+                if (!exp_func) return nullptr;
+                llvm::Value* zero = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
+                llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
+                llvm::Value* selu_lambda = llvm::ConstantFP::get(ctx_.doubleType(), 1.0507009873554804934193349852946);
+                llvm::Value* selu_alpha = llvm::ConstantFP::get(ctx_.doubleType(), 1.6732632423543772848170429916717);
+                llvm::Value* pos_val = ctx_.builder().CreateFMul(selu_lambda, input_value);
+                llvm::Value* exp_val = ctx_.builder().CreateCall(exp_func, {input_value});
+                llvm::Value* exp_minus_1 = ctx_.builder().CreateFSub(exp_val, one);
+                llvm::Value* neg_val = ctx_.builder().CreateFMul(selu_lambda,
+                    ctx_.builder().CreateFMul(selu_alpha, exp_minus_1));
+                llvm::Value* is_positive = ctx_.builder().CreateFCmpOGT(input_value, zero);
+                result_value = ctx_.builder().CreateSelect(is_positive, pos_val, neg_val);
+            }
+            break;
+        case 48: // AD_NODE_MISH
+            {
+                llvm::Function* exp_func = getMathFunc("exp");
+                llvm::Function* log_func = getMathFunc("log");
+                llvm::Function* tanh_func = getMathFunc("tanh");
+                if (!exp_func || !log_func || !tanh_func) return nullptr;
+                llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
+                llvm::Value* exp_val = ctx_.builder().CreateCall(exp_func, {input_value});
+                llvm::Value* softplus = ctx_.builder().CreateCall(log_func,
+                    {ctx_.builder().CreateFAdd(one, exp_val)});
+                llvm::Value* tanh_softplus = ctx_.builder().CreateCall(tanh_func, {softplus});
+                result_value = ctx_.builder().CreateFMul(input_value, tanh_softplus);
+            }
+            break;
+        case 49: // AD_NODE_HARDSWISH
+            {
+                llvm::Value* zero = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
+                llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
+                llvm::Value* three = llvm::ConstantFP::get(ctx_.doubleType(), 3.0);
+                llvm::Value* six = llvm::ConstantFP::get(ctx_.doubleType(), 6.0);
+                llvm::Value* x_plus_3 = ctx_.builder().CreateFAdd(input_value, three);
+                llvm::Value* divided = ctx_.builder().CreateFDiv(x_plus_3, six);
+                llvm::Value* clamped_low = ctx_.builder().CreateSelect(
+                    ctx_.builder().CreateFCmpOGT(divided, zero), divided, zero);
+                llvm::Value* hard_sigmoid = ctx_.builder().CreateSelect(
+                    ctx_.builder().CreateFCmpOLT(clamped_low, one), clamped_low, one);
+                result_value = ctx_.builder().CreateFMul(input_value, hard_sigmoid);
+            }
+            break;
+        case 50: // AD_NODE_HARDSIGMOID
+            {
+                llvm::Value* zero = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
+                llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
+                llvm::Value* three = llvm::ConstantFP::get(ctx_.doubleType(), 3.0);
+                llvm::Value* six = llvm::ConstantFP::get(ctx_.doubleType(), 6.0);
+                llvm::Value* x_plus_3 = ctx_.builder().CreateFAdd(input_value, three);
+                llvm::Value* divided = ctx_.builder().CreateFDiv(x_plus_3, six);
+                llvm::Value* clamped_low = ctx_.builder().CreateSelect(
+                    ctx_.builder().CreateFCmpOGT(divided, zero), divided, zero);
+                result_value = ctx_.builder().CreateSelect(
+                    ctx_.builder().CreateFCmpOLT(clamped_low, one), clamped_low, one);
+            }
+            break;
+        case 51: // AD_NODE_SOFTPLUS
+            {
+                llvm::Function* exp_func = getMathFunc("exp");
+                llvm::Function* log_func = getMathFunc("log");
+                if (!exp_func || !log_func) return nullptr;
+                llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
+                llvm::Value* exp_val = ctx_.builder().CreateCall(exp_func, {input_value});
+                result_value = ctx_.builder().CreateCall(log_func,
+                    {ctx_.builder().CreateFAdd(one, exp_val)});
+            }
+            break;
+
         // === Complete math functions (54-66) ===
         case 54: // AD_NODE_TAN
             {
@@ -7618,6 +7704,13 @@ void AutodiffCodegen::propagateGradient(llvm::Value* node_ptr) {
     llvm::BasicBlock* square_block = llvm::BasicBlock::Create(ctx_.context(), "grad_square", current_func);
     llvm::BasicBlock* max_block = llvm::BasicBlock::Create(ctx_.context(), "grad_max", current_func);
     llvm::BasicBlock* min_block = llvm::BasicBlock::Create(ctx_.context(), "grad_min", current_func);
+    llvm::BasicBlock* elu_block = llvm::BasicBlock::Create(ctx_.context(), "grad_elu", current_func);
+    llvm::BasicBlock* selu_block = llvm::BasicBlock::Create(ctx_.context(), "grad_selu", current_func);
+    llvm::BasicBlock* mish_block = llvm::BasicBlock::Create(ctx_.context(), "grad_mish", current_func);
+    llvm::BasicBlock* hardswish_block = llvm::BasicBlock::Create(ctx_.context(), "grad_hardswish", current_func);
+    llvm::BasicBlock* hardsigmoid_block = llvm::BasicBlock::Create(ctx_.context(), "grad_hardsigmoid", current_func);
+    llvm::BasicBlock* softplus_block = llvm::BasicBlock::Create(ctx_.context(), "grad_softplus", current_func);
+    llvm::BasicBlock* celu_block = llvm::BasicBlock::Create(ctx_.context(), "grad_celu", current_func);
 
     // Check for EXP (type=8)
     ctx_.builder().SetInsertPoint(check_exp);
@@ -8004,8 +8097,8 @@ void AutodiffCodegen::propagateGradient(llvm::Value* node_ptr) {
     // Check for MIN (type=45)
     ctx_.builder().SetInsertPoint(check_min);
     llvm::Value* is_min = ctx_.builder().CreateICmpEQ(node_type, llvm::ConstantInt::get(ctx_.int32Type(), 45));
-    llvm::BasicBlock* check_tan = llvm::BasicBlock::Create(ctx_.context(), "check_tan", current_func);
-    ctx_.builder().CreateCondBr(is_min, min_block, check_tan);
+    llvm::BasicBlock* check_elu = llvm::BasicBlock::Create(ctx_.context(), "check_elu", current_func);
+    ctx_.builder().CreateCondBr(is_min, min_block, check_elu);
 
     // MIN: dL/dx = dL/dz if x < y, dL/dy = dL/dz if y <= x
     ctx_.builder().SetInsertPoint(min_block);
@@ -8020,6 +8113,160 @@ void AutodiffCodegen::propagateGradient(llvm::Value* node_ptr) {
         accumulateGradient(input2, grad_input2);
     }
     ctx_.builder().CreateBr(done_block);
+
+    // ===== PHASE 4 ACTIVATION BACKWARD PASSES (types 46-53) =====
+
+    // ELU/CELU default alpha: dL/dx = dL/dz * (x > 0 ? 1 : exp(x))
+    auto emit_elu_like_grad = [&](llvm::BasicBlock* block) {
+        ctx_.builder().SetInsertPoint(block);
+        if (input1) {
+            llvm::Value* input_val = loadNodeValue(input1);
+            llvm::Function* exp_func = getMathFunc("exp");
+            if (exp_func) {
+                llvm::Value* zero = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
+                llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
+                llvm::Value* exp_val = ctx_.builder().CreateCall(exp_func, {input_val});
+                llvm::Value* is_positive = ctx_.builder().CreateFCmpOGT(input_val, zero);
+                llvm::Value* local_grad = ctx_.builder().CreateSelect(is_positive, one, exp_val);
+                llvm::Value* grad_input = ctx_.builder().CreateFMul(node_grad, local_grad);
+                accumulateGradient(input1, grad_input);
+            }
+        }
+        ctx_.builder().CreateBr(done_block);
+    };
+
+    ctx_.builder().SetInsertPoint(check_elu);
+    llvm::Value* is_elu = ctx_.builder().CreateICmpEQ(node_type, llvm::ConstantInt::get(ctx_.int32Type(), 46));
+    llvm::BasicBlock* check_selu = llvm::BasicBlock::Create(ctx_.context(), "check_selu", current_func);
+    ctx_.builder().CreateCondBr(is_elu, elu_block, check_selu);
+    emit_elu_like_grad(elu_block);
+
+    ctx_.builder().SetInsertPoint(check_selu);
+    llvm::Value* is_selu = ctx_.builder().CreateICmpEQ(node_type, llvm::ConstantInt::get(ctx_.int32Type(), 47));
+    llvm::BasicBlock* check_mish = llvm::BasicBlock::Create(ctx_.context(), "check_mish", current_func);
+    ctx_.builder().CreateCondBr(is_selu, selu_block, check_mish);
+
+    ctx_.builder().SetInsertPoint(selu_block);
+    if (input1) {
+        llvm::Value* input_val = loadNodeValue(input1);
+        llvm::Function* exp_func = getMathFunc("exp");
+        if (exp_func) {
+            llvm::Value* zero = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
+            llvm::Value* selu_lambda = llvm::ConstantFP::get(ctx_.doubleType(), 1.0507009873554804934193349852946);
+            llvm::Value* selu_alpha = llvm::ConstantFP::get(ctx_.doubleType(), 1.6732632423543772848170429916717);
+            llvm::Value* neg_grad = ctx_.builder().CreateFMul(selu_lambda,
+                ctx_.builder().CreateFMul(selu_alpha, ctx_.builder().CreateCall(exp_func, {input_val})));
+            llvm::Value* is_positive = ctx_.builder().CreateFCmpOGT(input_val, zero);
+            llvm::Value* local_grad = ctx_.builder().CreateSelect(is_positive, selu_lambda, neg_grad);
+            llvm::Value* grad_input = ctx_.builder().CreateFMul(node_grad, local_grad);
+            accumulateGradient(input1, grad_input);
+        }
+    }
+    ctx_.builder().CreateBr(done_block);
+
+    ctx_.builder().SetInsertPoint(check_mish);
+    llvm::Value* is_mish = ctx_.builder().CreateICmpEQ(node_type, llvm::ConstantInt::get(ctx_.int32Type(), 48));
+    llvm::BasicBlock* check_hardswish = llvm::BasicBlock::Create(ctx_.context(), "check_hardswish", current_func);
+    ctx_.builder().CreateCondBr(is_mish, mish_block, check_hardswish);
+
+    ctx_.builder().SetInsertPoint(mish_block);
+    if (input1) {
+        llvm::Value* input_val = loadNodeValue(input1);
+        llvm::Function* exp_func = getMathFunc("exp");
+        llvm::Function* log_func = getMathFunc("log");
+        llvm::Function* tanh_func = getMathFunc("tanh");
+        if (exp_func && log_func && tanh_func) {
+            llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
+            llvm::Value* neg_x = ctx_.builder().CreateFNeg(input_val);
+            llvm::Value* exp_neg = ctx_.builder().CreateCall(exp_func, {neg_x});
+            llvm::Value* sigma = ctx_.builder().CreateFDiv(one,
+                ctx_.builder().CreateFAdd(one, exp_neg));
+            llvm::Value* exp_x = ctx_.builder().CreateCall(exp_func, {input_val});
+            llvm::Value* softplus = ctx_.builder().CreateCall(log_func,
+                {ctx_.builder().CreateFAdd(one, exp_x)});
+            llvm::Value* tanh_sp = ctx_.builder().CreateCall(tanh_func, {softplus});
+            llvm::Value* tanh_sq = ctx_.builder().CreateFMul(tanh_sp, tanh_sp);
+            llvm::Value* sech_sq = ctx_.builder().CreateFSub(one, tanh_sq);
+            llvm::Value* x_sigma_sech = ctx_.builder().CreateFMul(input_val,
+                ctx_.builder().CreateFMul(sigma, sech_sq));
+            llvm::Value* mish_deriv = ctx_.builder().CreateFAdd(tanh_sp, x_sigma_sech);
+            llvm::Value* grad_input = ctx_.builder().CreateFMul(node_grad, mish_deriv);
+            accumulateGradient(input1, grad_input);
+        }
+    }
+    ctx_.builder().CreateBr(done_block);
+
+    ctx_.builder().SetInsertPoint(check_hardswish);
+    llvm::Value* is_hardswish = ctx_.builder().CreateICmpEQ(node_type, llvm::ConstantInt::get(ctx_.int32Type(), 49));
+    llvm::BasicBlock* check_hardsigmoid = llvm::BasicBlock::Create(ctx_.context(), "check_hardsigmoid", current_func);
+    ctx_.builder().CreateCondBr(is_hardswish, hardswish_block, check_hardsigmoid);
+
+    ctx_.builder().SetInsertPoint(hardswish_block);
+    if (input1) {
+        llvm::Value* input_val = loadNodeValue(input1);
+        llvm::Value* zero = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
+        llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
+        llvm::Value* neg_three = llvm::ConstantFP::get(ctx_.doubleType(), -3.0);
+        llvm::Value* three = llvm::ConstantFP::get(ctx_.doubleType(), 3.0);
+        llvm::Value* half = llvm::ConstantFP::get(ctx_.doubleType(), 0.5);
+        llvm::Value* third = llvm::ConstantFP::get(ctx_.doubleType(), 1.0 / 3.0);
+        llvm::Value* middle_grad = ctx_.builder().CreateFAdd(half,
+            ctx_.builder().CreateFMul(input_val, third));
+        llvm::Value* above = ctx_.builder().CreateFCmpOGE(input_val, three);
+        llvm::Value* below = ctx_.builder().CreateFCmpOLE(input_val, neg_three);
+        llvm::Value* not_above = ctx_.builder().CreateSelect(above, one, middle_grad);
+        llvm::Value* local_grad = ctx_.builder().CreateSelect(below, zero, not_above);
+        llvm::Value* grad_input = ctx_.builder().CreateFMul(node_grad, local_grad);
+        accumulateGradient(input1, grad_input);
+    }
+    ctx_.builder().CreateBr(done_block);
+
+    ctx_.builder().SetInsertPoint(check_hardsigmoid);
+    llvm::Value* is_hardsigmoid = ctx_.builder().CreateICmpEQ(node_type, llvm::ConstantInt::get(ctx_.int32Type(), 50));
+    llvm::BasicBlock* check_softplus = llvm::BasicBlock::Create(ctx_.context(), "check_softplus", current_func);
+    ctx_.builder().CreateCondBr(is_hardsigmoid, hardsigmoid_block, check_softplus);
+
+    ctx_.builder().SetInsertPoint(hardsigmoid_block);
+    if (input1) {
+        llvm::Value* input_val = loadNodeValue(input1);
+        llvm::Value* neg_three = llvm::ConstantFP::get(ctx_.doubleType(), -3.0);
+        llvm::Value* three = llvm::ConstantFP::get(ctx_.doubleType(), 3.0);
+        llvm::Value* sixth = llvm::ConstantFP::get(ctx_.doubleType(), 1.0 / 6.0);
+        llvm::Value* zero = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
+        llvm::Value* above_low = ctx_.builder().CreateFCmpOGT(input_val, neg_three);
+        llvm::Value* below_high = ctx_.builder().CreateFCmpOLT(input_val, three);
+        llvm::Value* in_linear = ctx_.builder().CreateAnd(above_low, below_high);
+        llvm::Value* local_grad = ctx_.builder().CreateSelect(in_linear, sixth, zero);
+        llvm::Value* grad_input = ctx_.builder().CreateFMul(node_grad, local_grad);
+        accumulateGradient(input1, grad_input);
+    }
+    ctx_.builder().CreateBr(done_block);
+
+    ctx_.builder().SetInsertPoint(check_softplus);
+    llvm::Value* is_softplus = ctx_.builder().CreateICmpEQ(node_type, llvm::ConstantInt::get(ctx_.int32Type(), 51));
+    llvm::BasicBlock* check_celu = llvm::BasicBlock::Create(ctx_.context(), "check_celu", current_func);
+    ctx_.builder().CreateCondBr(is_softplus, softplus_block, check_celu);
+
+    ctx_.builder().SetInsertPoint(softplus_block);
+    if (input1) {
+        llvm::Value* input_val = loadNodeValue(input1);
+        llvm::Function* exp_func = getMathFunc("exp");
+        if (exp_func) {
+            llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
+            llvm::Value* exp_neg = ctx_.builder().CreateCall(exp_func, {ctx_.builder().CreateFNeg(input_val)});
+            llvm::Value* sigma = ctx_.builder().CreateFDiv(one,
+                ctx_.builder().CreateFAdd(one, exp_neg));
+            llvm::Value* grad_input = ctx_.builder().CreateFMul(node_grad, sigma);
+            accumulateGradient(input1, grad_input);
+        }
+    }
+    ctx_.builder().CreateBr(done_block);
+
+    ctx_.builder().SetInsertPoint(check_celu);
+    llvm::Value* is_celu = ctx_.builder().CreateICmpEQ(node_type, llvm::ConstantInt::get(ctx_.int32Type(), 53));
+    llvm::BasicBlock* check_tan = llvm::BasicBlock::Create(ctx_.context(), "check_tan", current_func);
+    ctx_.builder().CreateCondBr(is_celu, celu_block, check_tan);
+    emit_elu_like_grad(celu_block);
 
     // ===== COMPLETE MATH FUNCTION BACKWARD PASSES (types 54-66) =====
     // All standard math functions with proper derivative computation
