@@ -676,6 +676,8 @@ llvm::Value* TensorCodegen::tensorGelu(const eshkol_operations_t* op) {
     llvm::BasicBlock* scalar_body = llvm::BasicBlock::Create(ctx_.context(), "gelu_scalar_body", current_func);
     llvm::BasicBlock* exit_block = llvm::BasicBlock::Create(ctx_.context(), "gelu_exit", current_func);
 
+    emitTensorADUnaryDispatch(src_elems, result_elems, total_elements, 16, exit_block, "gelu");
+
     llvm::Value* counter = builder.CreateAlloca(ctx_.int64Type(), nullptr, "gelu_i");
     builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), counter);
 
@@ -866,6 +868,8 @@ llvm::Value* TensorCodegen::tensorLeakyRelu(const eshkol_operations_t* op) {
     llvm::BasicBlock* scalar_body = llvm::BasicBlock::Create(ctx_.context(), "lrelu_scalar_body", current_func);
     llvm::BasicBlock* exit_block = llvm::BasicBlock::Create(ctx_.context(), "lrelu_exit", current_func);
 
+    emitTensorADUnaryDispatch(src_elems, result_elems, total_elements, 17, exit_block, "lrelu");
+
     llvm::Value* counter = builder.CreateAlloca(ctx_.int64Type(), nullptr, "lrelu_i");
     builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), counter);
 
@@ -955,6 +959,7 @@ llvm::Value* TensorCodegen::tensorSilu(const eshkol_operations_t* op) {
     }
 
     llvm::Value* tensor_val = codegenAST(&op->call_op.variables[0]);
+    if (!tensor_val) return nullptr;
     auto& builder = ctx_.builder();
 
     llvm::Value* arena_ptr = builder.CreateLoad(
@@ -998,6 +1003,8 @@ llvm::Value* TensorCodegen::tensorSilu(const eshkol_operations_t* op) {
     llvm::BasicBlock* loop_cond = llvm::BasicBlock::Create(ctx_.context(), "silu_cond", current_func);
     llvm::BasicBlock* loop_body = llvm::BasicBlock::Create(ctx_.context(), "silu_body", current_func);
     llvm::BasicBlock* exit_block = llvm::BasicBlock::Create(ctx_.context(), "silu_exit", current_func);
+
+    emitTensorADUnaryDispatch(src_elems, result_elems, total_elements, 18, exit_block, "silu");
 
     llvm::Value* counter = builder.CreateAlloca(ctx_.int64Type(), nullptr, "silu_i");
     builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), counter);

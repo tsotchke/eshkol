@@ -472,3 +472,45 @@
              (approx= (vector-ref g 1) 0.19661193324148185 1e-5))
         "PASS" "FAIL"))
   (display ": gradient through sigmoid tensor-sum matches sigmoid derivative") (newline))
+
+;; ============================================================
+;; Test 32: Gradient through GELU then tensor-sum
+;; The GELU implementation uses the standard tanh approximation.
+;; ============================================================
+(let* ((g (gradient
+            (lambda (x) (tensor-sum (gelu x)))
+            (tensor 2 0.0 1.0))))
+  (display
+    (if (and (= (vector-length g) 2)
+             (approx= (vector-ref g 0) 0.5 1e-6)
+             (approx= (vector-ref g 1) 1.06778 1e-4))
+        "PASS" "FAIL"))
+  (display ": gradient through gelu tensor-sum matches tanh approximation") (newline))
+
+;; ============================================================
+;; Test 33: Gradient through SiLU then tensor-sum
+;; SiLU'(x) = sigmoid(x) * (1 + x * (1 - sigmoid(x)))
+;; ============================================================
+(let* ((g (gradient
+            (lambda (x) (tensor-sum (silu x)))
+            (tensor 2 0.0 1.0))))
+  (display
+    (if (and (= (vector-length g) 2)
+             (approx= (vector-ref g 0) 0.5 1e-6)
+             (approx= (vector-ref g 1) 0.927671 1e-4))
+        "PASS" "FAIL"))
+  (display ": gradient through silu tensor-sum matches silu derivative") (newline))
+
+;; ============================================================
+;; Test 34: Gradient through leaky-relu then tensor-sum
+;; Default alpha is 0.01.
+;; ============================================================
+(let* ((g (gradient
+            (lambda (x) (tensor-sum (leaky-relu x)))
+            (tensor 2 -1.0 2.0))))
+  (display
+    (if (and (= (vector-length g) 2)
+             (approx= (vector-ref g 0) 0.01 1e-6)
+             (approx= (vector-ref g 1) 1.0 1e-6))
+        "PASS" "FAIL"))
+  (display ": gradient through leaky-relu tensor-sum matches default slope") (newline))
