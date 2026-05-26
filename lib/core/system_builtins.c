@@ -97,6 +97,7 @@ extern void* get_global_arena(void);
 extern void* arena_allocate(void* arena, size_t size);
 extern char* arena_allocate_string_with_header(void* arena, size_t length);
 extern void* arena_allocate_cons_with_header(void* arena);
+extern int eshkol_capability_runtime_allows(const char* capability);
 
 /* Tagged value layout MUST match LLVM IR: {i8, i8, i16, i32, i64} = 16 bytes.
  * The i32 is explicit padding — this matches the LLVM struct exactly so that
@@ -192,6 +193,12 @@ static const char* sys_extract_string(eshkol_sysbuiltin_value_t v) {
         return (const char*)(uintptr_t)v.data;
     }
     return NULL;
+}
+
+static int sys_require_capability(const char* capability) {
+    if (eshkol_capability_runtime_allows(capability)) return 1;
+    errno = EACCES;
+    return 0;
 }
 
 static int64_t sys_extract_int64(eshkol_sysbuiltin_value_t v) {
@@ -749,6 +756,7 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_path_normalize_v(eshkol_sysbuilt
 static eshkol_sysbuiltin_value_t eshkol_builtin_realpath_v(eshkol_sysbuiltin_value_t path_val) {
     const char* path = sys_extract_string(path_val);
     if (!path) return sys_make_null();
+    if (!sys_require_capability("file-read")) return sys_make_null();
 #ifndef _WIN32
     char resolved[PATH_MAX];
     if (realpath(path, resolved)) {
@@ -770,6 +778,7 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_realpath_v(eshkol_sysbuiltin_val
 static eshkol_sysbuiltin_value_t eshkol_builtin_file_stat_v(eshkol_sysbuiltin_value_t path_val) {
     const char* path = sys_extract_string(path_val);
     if (!path) return sys_make_null();
+    if (!sys_require_capability("file-read")) return sys_make_null();
 #ifndef _WIN32
     struct stat st;
     if (stat(path, &st) != 0) return sys_make_null();
@@ -789,6 +798,9 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_file_copy_v(eshkol_sysbuiltin_va
     const char* src = sys_extract_string(src_val);
     const char* dst = sys_extract_string(dst_val);
     if (!src || !dst) return sys_make_bool(0);
+    if (!sys_require_capability("file-read") || !sys_require_capability("file-write")) {
+        return sys_make_bool(0);
+    }
 #ifndef _WIN32
     /* TOCTOU hardening (#193): open via file descriptors with
      * O_NOFOLLOW + O_CLOEXEC so a symlink-swap attack between the
@@ -838,6 +850,7 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_file_rename_v(eshkol_sysbuiltin_
     const char* old_path = sys_extract_string(old_val);
     const char* new_path = sys_extract_string(new_val);
     if (!old_path || !new_path) return sys_make_bool(0);
+    if (!sys_require_capability("file-write")) return sys_make_bool(0);
 #ifndef _WIN32
     return sys_make_bool(rename(old_path, new_path) == 0);
 #else
@@ -880,6 +893,7 @@ static int mkdir_recursive_impl(const char* path) {
 static eshkol_sysbuiltin_value_t eshkol_builtin_mkdir_recursive_v(eshkol_sysbuiltin_value_t path_val) {
     const char* path = sys_extract_string(path_val);
     if (!path) return sys_make_bool(0);
+    if (!sys_require_capability("file-write")) return sys_make_bool(0);
     mkdir_recursive_impl(path);
     /* Check if it exists now */
 #ifndef _WIN32
@@ -894,6 +908,7 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_mkdir_recursive_v(eshkol_sysbuil
 static eshkol_sysbuiltin_value_t eshkol_builtin_mkdtemp_v(eshkol_sysbuiltin_value_t template_val) {
     const char* tmpl = sys_extract_string(template_val);
     if (!tmpl) return sys_make_null();
+    if (!sys_require_capability("file-write")) return sys_make_null();
 #ifndef _WIN32
     char* copy = strdup(tmpl);
     if (!copy) return sys_make_null();
@@ -945,6 +960,7 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_make_temp_file_v(
     const char* suffix = sys_extract_string(suffix_val);
     const char* dir = sys_temp_dir_or_default(sys_extract_string(dir_val));
     if (!prefix || !suffix || !dir || !*dir) return sys_make_bool(0);
+    if (!sys_require_capability("file-write")) return sys_make_bool(0);
     const char* sep = (dir[strlen(dir) - 1] == '/') ? "" : "/";
 #if !defined(_WIN32)
     struct timeval tv;
@@ -994,6 +1010,7 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_make_temp_dir_v(
     const char* prefix = sys_extract_string(prefix_val);
     const char* dir = sys_temp_dir_or_default(sys_extract_string(dir_val));
     if (!prefix || !dir || !*dir) return sys_make_bool(0);
+    if (!sys_require_capability("file-write")) return sys_make_bool(0);
     const char* sep = (dir[strlen(dir) - 1] == '/') ? "" : "/";
 #if !defined(_WIN32)
     struct timeval tv;
@@ -1075,6 +1092,7 @@ static int rmdir_recursive_impl(const char* path) {
 static eshkol_sysbuiltin_value_t eshkol_builtin_directory_delete_recursive_v(eshkol_sysbuiltin_value_t path_val) {
     const char* path = sys_extract_string(path_val);
     if (!path) return sys_make_bool(0);
+    if (!sys_require_capability("file-write")) return sys_make_bool(0);
     return sys_make_bool(rmdir_recursive_impl(path) == 0);
 }
 
@@ -1275,6 +1293,7 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_file_chmod_v(eshkol_sysbuiltin_v
                                                               eshkol_sysbuiltin_value_t mode_val) {
     const char* path = sys_extract_string(path_val);
     if (!path) return sys_make_bool(0);
+    if (!sys_require_capability("file-write")) return sys_make_bool(0);
 #ifndef _WIN32
     int mode = (int)(int64_t)mode_val.data;
     return sys_make_bool(chmod(path, (mode_t)mode) == 0);
@@ -1289,6 +1308,7 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_symlink_create_v(eshkol_sysbuilt
     const char* target = sys_extract_string(target_val);
     const char* link = sys_extract_string(link_val);
     if (!target || !link) return sys_make_bool(0);
+    if (!sys_require_capability("file-write")) return sys_make_bool(0);
 #ifndef _WIN32
     return sys_make_bool(symlink(target, link) == 0);
 #else
@@ -1299,6 +1319,7 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_symlink_create_v(eshkol_sysbuilt
 static eshkol_sysbuiltin_value_t eshkol_builtin_symlink_read_v(eshkol_sysbuiltin_value_t path_val) {
     const char* path = sys_extract_string(path_val);
     if (!path) return sys_make_null();
+    if (!sys_require_capability("file-read")) return sys_make_null();
 #ifndef _WIN32
     char buf[PATH_MAX];
     ssize_t len = readlink(path, buf, sizeof(buf) - 1);
@@ -1314,6 +1335,7 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_directory_walk_v(eshkol_sysbuilt
     /* Returns a flat list of all file paths under path (recursive BFS) */
     const char* path = sys_extract_string(path_val);
     if (!path) return sys_make_null();
+    if (!sys_require_capability("file-read")) return sys_make_null();
 #ifndef _WIN32
     /* BFS with arena-allocated directory queue (no stack overflow risk) */
     #define WALK_MAX_DIRS 4096
@@ -1397,6 +1419,7 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_directory_walk_v(eshkol_sysbuilt
 static eshkol_sysbuiltin_value_t eshkol_builtin_mkstemp_v(eshkol_sysbuiltin_value_t tmpl_val) {
     const char* tmpl = sys_extract_string(tmpl_val);
     if (!tmpl) return sys_make_null();
+    if (!sys_require_capability("file-write")) return sys_make_null();
 #ifndef _WIN32
     char* copy = strdup(tmpl);
     if (!copy) return sys_make_null();
@@ -1432,6 +1455,7 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_process_kill_v(eshkol_sysbuiltin
 static eshkol_sysbuiltin_value_t eshkol_builtin_file_mtime_v(eshkol_sysbuiltin_value_t path_val) {
     const char* path = sys_extract_string(path_val);
     if (!path) return sys_make_null();
+    if (!sys_require_capability("file-read")) return sys_make_null();
 #ifndef _WIN32
     struct stat st;
     if (stat(path, &st) == 0) {
@@ -1452,6 +1476,7 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_file_mtime_v(eshkol_sysbuiltin_v
 static eshkol_sysbuiltin_value_t eshkol_builtin_file_atime_v(eshkol_sysbuiltin_value_t path_val) {
     const char* path = sys_extract_string(path_val);
     if (!path) return sys_make_null();
+    if (!sys_require_capability("file-read")) return sys_make_null();
 #ifndef _WIN32
     struct stat st;
     if (stat(path, &st) == 0) {
@@ -2665,6 +2690,7 @@ static void sys_sha256_final(SysSha256* ctx, unsigned char out[32]) {
 static eshkol_sysbuiltin_value_t eshkol_builtin_sha256_file_v(eshkol_sysbuiltin_value_t path_val) {
     const char* path = sys_extract_string(path_val);
     if (!path) return sys_make_bool(0);
+    if (!sys_require_capability("file-read")) return sys_make_bool(0);
     FILE* f = fopen(path, "rb");
     if (!f) return sys_make_bool(0);
     SysSha256 ctx;
@@ -4604,6 +4630,7 @@ extern void eshkol_kb_load_tagged(void* arena,
 static eshkol_sysbuiltin_value_t eshkol_builtin_kb_save_v(eshkol_sysbuiltin_value_t path_val,
                                                            eshkol_sysbuiltin_value_t kb_val) {
     eshkol_sysbuiltin_value_t result = {0, 0, 0, 0, 0};
+    if (!sys_require_capability("file-write")) return sys_make_bool(0);
     void* arena = get_global_arena();
     eshkol_kb_save_tagged(arena, &path_val, &kb_val, &result);
     return result;
@@ -4611,6 +4638,7 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_kb_save_v(eshkol_sysbuiltin_valu
 
 static eshkol_sysbuiltin_value_t eshkol_builtin_kb_load_v(eshkol_sysbuiltin_value_t path_val) {
     eshkol_sysbuiltin_value_t result = {0, 0, 0, 0, 0};
+    if (!sys_require_capability("file-read")) return sys_make_null();
     void* arena = get_global_arena();
     eshkol_kb_load_tagged(arena, &path_val, &result);
     return result;
@@ -4650,6 +4678,7 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_tensor_token_estimate_v(eshkol_s
 static eshkol_sysbuiltin_value_t eshkol_builtin_file_mmap_v(eshkol_sysbuiltin_value_t path_val) {
     const char* path = sys_extract_string(path_val);
     if (!path) return sys_make_null();
+    if (!sys_require_capability("file-read")) return sys_make_null();
 #ifndef _WIN32
     int fd = open(path, O_RDONLY);
     if (fd < 0) return sys_make_null();
@@ -4741,6 +4770,7 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_onnx_export_tensor_v(
         eshkol_sysbuiltin_value_t tensor_val) {
     const char* path = sys_extract_string(path_val);
     if (!path || tensor_val.type != SYS_TYPE_HEAP_PTR) return sys_make_bool(0);
+    if (!sys_require_capability("file-write")) return sys_make_bool(0);
 
     /* Extract tensor data */
     void* t = (void*)(uintptr_t)tensor_val.data;
@@ -4799,6 +4829,7 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_tensor_save_v(eshkol_sysbuiltin_
                                                                eshkol_sysbuiltin_value_t tensor_val) {
     const char* path = sys_extract_string(path_val);
     if (!path || tensor_val.type != SYS_TYPE_HEAP_PTR) return sys_make_bool(0);
+    if (!sys_require_capability("file-write")) return sys_make_bool(0);
     eshkol_tensor_t_ffi* t = (eshkol_tensor_t_ffi*)(uintptr_t)tensor_val.data;
     if (!t || !t->elements) return sys_make_bool(0);
 #ifndef _WIN32
@@ -4831,6 +4862,7 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_tensor_save_v(eshkol_sysbuiltin_
 static eshkol_sysbuiltin_value_t eshkol_builtin_tensor_load_v(eshkol_sysbuiltin_value_t path_val) {
     const char* path = sys_extract_string(path_val);
     if (!path) return sys_make_null();
+    if (!sys_require_capability("file-read")) return sys_make_null();
 #ifndef _WIN32
     FILE* f = fopen(path, "rb");
     if (!f) return sys_make_null();
