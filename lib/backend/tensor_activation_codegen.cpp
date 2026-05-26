@@ -104,6 +104,8 @@ llvm::Value* TensorCodegen::tensorRelu(const eshkol_operations_t* op) {
     llvm::BasicBlock* scalar_body = llvm::BasicBlock::Create(ctx_.context(), "relu_scalar_body", current_func);
     llvm::BasicBlock* exit_block = llvm::BasicBlock::Create(ctx_.context(), "relu_exit", current_func);
 
+    emitTensorADUnaryDispatch(src_elems, result_elems, total_elements, 12, exit_block, "relu");
+
     // Counter
     llvm::Value* counter = builder.CreateAlloca(ctx_.int64Type(), nullptr, "relu_i");
     builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), counter);
@@ -243,6 +245,8 @@ llvm::Value* TensorCodegen::tensorSigmoid(const eshkol_operations_t* op) {
     llvm::BasicBlock* scalar_cond = llvm::BasicBlock::Create(ctx_.context(), "sig_scalar_cond", current_func);
     llvm::BasicBlock* scalar_body = llvm::BasicBlock::Create(ctx_.context(), "sig_scalar_body", current_func);
     llvm::BasicBlock* exit_block = llvm::BasicBlock::Create(ctx_.context(), "sig_exit", current_func);
+
+    emitTensorADUnaryDispatch(src_elems, result_elems, total_elements, 13, exit_block, "sig");
 
     llvm::Value* counter = builder.CreateAlloca(ctx_.int64Type(), nullptr, "sig_i");
     builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), counter);

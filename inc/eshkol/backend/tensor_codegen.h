@@ -1142,6 +1142,18 @@ private:
     llvm::Value* adNodeFromTensorElementBits(llvm::Value* elem_bits, const std::string& name);
 
     /**
+     * Emit an AD-mode unary element loop, then continue insertion in the
+     * generated numeric fallback block. Returns false when AD is unavailable
+     * or the operation has no AD node mapping.
+     */
+    bool emitTensorADUnaryDispatch(llvm::Value* src_elems,
+                                   llvm::Value* result_elems,
+                                   llvm::Value* total_elements,
+                                   uint32_t ad_op_type,
+                                   llvm::BasicBlock* exit_block,
+                                   const std::string& name);
+
+    /**
      * Coerce a numeric value to a runtime double.
      *
      * - tagged values: dispatches at runtime on type-tag (INT64 → SIToFP,
@@ -1211,7 +1223,8 @@ private:
      * @return Tagged tensor result
      */
     llvm::Value* emitTensorUnaryOp(llvm::Value* tensor_val, const std::string& op_name,
-                                   llvm::Intrinsic::ID intrinsic_id, bool use_fneg = false);
+                                   llvm::Intrinsic::ID intrinsic_id, bool use_fneg = false,
+                                   uint32_t ad_op_type = 0);
 
     /**
      * Attach LLVM loop vectorization/unroll metadata to a loop back-edge branch.

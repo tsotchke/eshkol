@@ -24,6 +24,7 @@
 
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
 
+#include <eshkol/backend/autodiff_codegen.h>
 #include <eshkol/logger.h>
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/Function.h>
@@ -1238,6 +1239,56 @@ llvm::Value* TensorCodegen::conv3d(const eshkol_operations_t* op) {
 // Tensor Unary Operations (tensor-neg, tensor-abs, tensor-sqrt, etc.)
 // ===================================================================
 
+bool TensorCodegen::emitTensorADUnaryDispatch(llvm::Value* src_elems,
+                                              llvm::Value* result_elems,
+                                              llvm::Value* total_elements,
+                                              uint32_t ad_op_type,
+                                              llvm::BasicBlock* exit_block,
+                                              const std::string& name) {
+    if (!autodiff_ || ad_op_type == 0 || !src_elems || !result_elems || !total_elements || !exit_block) {
+        return false;
+    }
+
+    auto& builder = ctx_.builder();
+    llvm::Function* current_func = builder.GetInsertBlock()->getParent();
+    llvm::Value* in_ad_mode = builder.CreateLoad(ctx_.int1Type(), ctx_.adModeActive());
+    llvm::BasicBlock* ad_path = llvm::BasicBlock::Create(ctx_.context(), name + "_ad_path", current_func);
+    llvm::BasicBlock* numeric_path = llvm::BasicBlock::Create(ctx_.context(), name + "_numeric_path", current_func);
+    builder.CreateCondBr(in_ad_mode, ad_path, numeric_path);
+
+    builder.SetInsertPoint(ad_path);
+    llvm::Value* ad_counter = builder.CreateAlloca(ctx_.int64Type(), nullptr, (name + "_ad_i").c_str());
+    builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), ad_counter);
+    llvm::BasicBlock* ad_cond = llvm::BasicBlock::Create(ctx_.context(), name + "_ad_cond", current_func);
+    llvm::BasicBlock* ad_body = llvm::BasicBlock::Create(ctx_.context(), name + "_ad_body", current_func);
+    llvm::BasicBlock* ad_exit = llvm::BasicBlock::Create(ctx_.context(), name + "_ad_exit", current_func);
+    builder.CreateBr(ad_cond);
+
+    builder.SetInsertPoint(ad_cond);
+    llvm::Value* ad_i = builder.CreateLoad(ctx_.int64Type(), ad_counter);
+    llvm::Value* ad_has_elem = builder.CreateICmpULT(ad_i, total_elements);
+    builder.CreateCondBr(ad_has_elem, ad_body, ad_exit);
+
+    builder.SetInsertPoint(ad_body);
+    llvm::Value* src_elem_ptr = builder.CreateGEP(ctx_.int64Type(), src_elems, ad_i);
+    llvm::Value* dst_elem_ptr = builder.CreateGEP(ctx_.int64Type(), result_elems, ad_i);
+    llvm::Value* elem_bits = builder.CreateLoad(ctx_.int64Type(), src_elem_ptr);
+    llvm::Value* elem_node = adNodeFromTensorElementBits(elem_bits, name + "_ad_elem");
+    llvm::Value* result_node = autodiff_->recordADNodeUnary(ad_op_type, elem_node);
+    llvm::Value* result_bits = builder.CreatePtrToInt(result_node, ctx_.int64Type());
+    builder.CreateStore(result_bits, dst_elem_ptr);
+
+    llvm::Value* next_ad_i = builder.CreateAdd(ad_i, llvm::ConstantInt::get(ctx_.int64Type(), 1));
+    builder.CreateStore(next_ad_i, ad_counter);
+    builder.CreateBr(ad_cond);
+
+    builder.SetInsertPoint(ad_exit);
+    builder.CreateBr(exit_block);
+
+    builder.SetInsertPoint(numeric_path);
+    return true;
+}
+
 /**
  * Generic SIMD+scalar unary loop.  Applies a single-operand math op to
  * every element of a tensor and returns a new tensor of the same shape.
@@ -1251,7 +1302,8 @@ llvm::Value* TensorCodegen::conv3d(const eshkol_operations_t* op) {
 llvm::Value* TensorCodegen::emitTensorUnaryOp(llvm::Value* tensor_val,
                                                const std::string& op_name,
                                                llvm::Intrinsic::ID intrinsic_id,
-                                               bool use_fneg) {
+                                               bool use_fneg,
+                                               uint32_t ad_op_type) {
     if (!tensor_val) return tagged_.packNull();
     auto& builder = ctx_.builder();
 
@@ -1308,6 +1360,8 @@ llvm::Value* TensorCodegen::emitTensorUnaryOp(llvm::Value* tensor_val,
     llvm::BasicBlock* scalar_cond = llvm::BasicBlock::Create(ctx_.context(), (op_name+"_scalar_cond").c_str(), current_func);
     llvm::BasicBlock* scalar_body = llvm::BasicBlock::Create(ctx_.context(), (op_name+"_scalar_body").c_str(), current_func);
     llvm::BasicBlock* exit_block  = llvm::BasicBlock::Create(ctx_.context(), (op_name+"_exit").c_str(),        current_func);
+
+    emitTensorADUnaryDispatch(src_elems, result_elems, total_elements, ad_op_type, exit_block, op_name);
 
     llvm::Value* counter = builder.CreateAlloca(ctx_.int64Type(), nullptr, (op_name + "_i").c_str());
     builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), counter);
@@ -1396,49 +1450,49 @@ llvm::Value* TensorCodegen::tensorNeg(const eshkol_operations_t* op) {
     if (op->call_op.num_vars != 1) { eshkol_error("tensor-neg requires 1 argument"); return nullptr; }
     llvm::Value* t = codegenAST(&op->call_op.variables[0]);
     if (!t) return nullptr;
-    return emitTensorUnaryOp(t, "tneg", llvm::Intrinsic::fabs /* unused */, /*use_fneg=*/true);
+    return emitTensorUnaryOp(t, "tneg", llvm::Intrinsic::fabs /* unused */, /*use_fneg=*/true, 11);
 }
 
 llvm::Value* TensorCodegen::tensorAbs(const eshkol_operations_t* op) {
     if (op->call_op.num_vars != 1) { eshkol_error("tensor-abs requires 1 argument"); return nullptr; }
     llvm::Value* t = codegenAST(&op->call_op.variables[0]);
     if (!t) return nullptr;
-    return emitTensorUnaryOp(t, "tabs", llvm::Intrinsic::fabs);
+    return emitTensorUnaryOp(t, "tabs", llvm::Intrinsic::fabs, false, 42);
 }
 
 llvm::Value* TensorCodegen::tensorSqrt(const eshkol_operations_t* op) {
     if (op->call_op.num_vars != 1) { eshkol_error("tensor-sqrt requires 1 argument"); return nullptr; }
     llvm::Value* t = codegenAST(&op->call_op.variables[0]);
     if (!t) return nullptr;
-    return emitTensorUnaryOp(t, "tsqrt", llvm::Intrinsic::sqrt);
+    return emitTensorUnaryOp(t, "tsqrt", llvm::Intrinsic::sqrt, false, 41);
 }
 
 llvm::Value* TensorCodegen::tensorExp(const eshkol_operations_t* op) {
     if (op->call_op.num_vars != 1) { eshkol_error("tensor-exp requires 1 argument"); return nullptr; }
     llvm::Value* t = codegenAST(&op->call_op.variables[0]);
     if (!t) return nullptr;
-    return emitTensorUnaryOp(t, "texp", llvm::Intrinsic::exp);
+    return emitTensorUnaryOp(t, "texp", llvm::Intrinsic::exp, false, 8);
 }
 
 llvm::Value* TensorCodegen::tensorLog(const eshkol_operations_t* op) {
     if (op->call_op.num_vars != 1) { eshkol_error("tensor-log requires 1 argument"); return nullptr; }
     llvm::Value* t = codegenAST(&op->call_op.variables[0]);
     if (!t) return nullptr;
-    return emitTensorUnaryOp(t, "tlog", llvm::Intrinsic::log);
+    return emitTensorUnaryOp(t, "tlog", llvm::Intrinsic::log, false, 9);
 }
 
 llvm::Value* TensorCodegen::tensorSin(const eshkol_operations_t* op) {
     if (op->call_op.num_vars != 1) { eshkol_error("tensor-sin requires 1 argument"); return nullptr; }
     llvm::Value* t = codegenAST(&op->call_op.variables[0]);
     if (!t) return nullptr;
-    return emitTensorUnaryOp(t, "tsin", llvm::Intrinsic::sin);
+    return emitTensorUnaryOp(t, "tsin", llvm::Intrinsic::sin, false, 6);
 }
 
 llvm::Value* TensorCodegen::tensorCos(const eshkol_operations_t* op) {
     if (op->call_op.num_vars != 1) { eshkol_error("tensor-cos requires 1 argument"); return nullptr; }
     llvm::Value* t = codegenAST(&op->call_op.variables[0]);
     if (!t) return nullptr;
-    return emitTensorUnaryOp(t, "tcos", llvm::Intrinsic::cos);
+    return emitTensorUnaryOp(t, "tcos", llvm::Intrinsic::cos, false, 7);
 }
 
 // ===================================================================
