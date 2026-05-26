@@ -15,6 +15,7 @@
 
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
 
+#include <eshkol/backend/autodiff_codegen.h>
 #include <eshkol/logger.h>
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/Function.h>
@@ -1095,6 +1096,151 @@ llvm::Value* TensorCodegen::conv2d(const eshkol_operations_t* op) {
     return tagged_.packHeapPtr(result_ptr);
 }
 
+bool TensorCodegen::emitTensorADNormalizeDispatch(llvm::Value* src_elems,
+                                                  llvm::Value* result_elems,
+                                                  llvm::Value* total_elements,
+                                                  llvm::Value* axis_len,
+                                                  llvm::Value* inner_stride,
+                                                  llvm::Value* gamma,
+                                                  llvm::Value* beta,
+                                                  llvm::Value* epsilon,
+                                                  llvm::BasicBlock* exit_block,
+                                                  const std::string& name) {
+    if (!autodiff_ || !src_elems || !result_elems || !total_elements ||
+        !axis_len || !inner_stride || !gamma || !beta || !epsilon || !exit_block) {
+        return false;
+    }
+
+    auto& builder = ctx_.builder();
+    llvm::Function* current_func = builder.GetInsertBlock()->getParent();
+    llvm::Value* in_ad_mode = builder.CreateLoad(ctx_.int1Type(), ctx_.adModeActive());
+    llvm::BasicBlock* ad_path = llvm::BasicBlock::Create(ctx_.context(), name + "_ad_path", current_func);
+    llvm::BasicBlock* numeric_path = llvm::BasicBlock::Create(ctx_.context(), name + "_numeric_path", current_func);
+    builder.CreateCondBr(in_ad_mode, ad_path, numeric_path);
+
+    builder.SetInsertPoint(ad_path);
+    llvm::Value* zero_i64 = llvm::ConstantInt::get(ctx_.int64Type(), 0);
+    llvm::Value* one_i64 = llvm::ConstantInt::get(ctx_.int64Type(), 1);
+    llvm::Value* group_count = builder.CreateUDiv(total_elements, axis_len);
+    llvm::Value* count_fp = builder.CreateUIToFP(axis_len, ctx_.doubleType());
+    llvm::Value* zero_node = autodiff_->createADConstant(llvm::ConstantFP::get(ctx_.doubleType(), 0.0));
+    llvm::Value* count_node = autodiff_->createADConstant(count_fp);
+    llvm::Value* gamma_node = autodiff_->createADConstant(gamma);
+    llvm::Value* beta_node = autodiff_->createADConstant(beta);
+    llvm::Value* epsilon_node = autodiff_->createADConstant(epsilon);
+
+    llvm::Value* group_i_alloca = builder.CreateAlloca(ctx_.int64Type(), nullptr, (name + "_group_i").c_str());
+    builder.CreateStore(zero_i64, group_i_alloca);
+    llvm::BasicBlock* group_cond = llvm::BasicBlock::Create(ctx_.context(), name + "_group_cond", current_func);
+    llvm::BasicBlock* group_body = llvm::BasicBlock::Create(ctx_.context(), name + "_group_body", current_func);
+    llvm::BasicBlock* group_done = llvm::BasicBlock::Create(ctx_.context(), name + "_group_done", current_func);
+    builder.CreateBr(group_cond);
+
+    builder.SetInsertPoint(group_cond);
+    llvm::Value* group_i = builder.CreateLoad(ctx_.int64Type(), group_i_alloca);
+    builder.CreateCondBr(builder.CreateICmpULT(group_i, group_count), group_body, group_done);
+
+    builder.SetInsertPoint(group_body);
+    llvm::Value* inner = builder.CreateURem(group_i, inner_stride);
+    llvm::Value* outer = builder.CreateUDiv(group_i, inner_stride);
+    llvm::Value* outer_stride = builder.CreateMul(axis_len, inner_stride);
+    llvm::Value* base = builder.CreateAdd(builder.CreateMul(outer, outer_stride), inner);
+
+    llvm::Value* sum_node_alloca = builder.CreateAlloca(ctx_.ptrType(), nullptr, (name + "_sum").c_str());
+    llvm::Value* k_alloca = builder.CreateAlloca(ctx_.int64Type(), nullptr, (name + "_k").c_str());
+    builder.CreateStore(zero_node, sum_node_alloca);
+    builder.CreateStore(zero_i64, k_alloca);
+
+    llvm::BasicBlock* mean_cond = llvm::BasicBlock::Create(ctx_.context(), name + "_mean_cond", current_func);
+    llvm::BasicBlock* mean_body = llvm::BasicBlock::Create(ctx_.context(), name + "_mean_body", current_func);
+    llvm::BasicBlock* mean_done = llvm::BasicBlock::Create(ctx_.context(), name + "_mean_done", current_func);
+    builder.CreateBr(mean_cond);
+
+    builder.SetInsertPoint(mean_cond);
+    llvm::Value* mean_k = builder.CreateLoad(ctx_.int64Type(), k_alloca);
+    builder.CreateCondBr(builder.CreateICmpULT(mean_k, axis_len), mean_body, mean_done);
+
+    builder.SetInsertPoint(mean_body);
+    llvm::Value* mean_index = builder.CreateAdd(base, builder.CreateMul(mean_k, inner_stride));
+    llvm::Value* mean_bits = builder.CreateLoad(ctx_.int64Type(),
+        builder.CreateGEP(ctx_.int64Type(), src_elems, mean_index));
+    llvm::Value* mean_elem_node = adNodeFromTensorElementBits(mean_bits, name + "_mean_elem");
+    llvm::Value* old_sum = builder.CreateLoad(ctx_.ptrType(), sum_node_alloca);
+    llvm::Value* new_sum = autodiff_->recordADNodeBinary(2, old_sum, mean_elem_node);
+    builder.CreateStore(new_sum, sum_node_alloca);
+    builder.CreateStore(builder.CreateAdd(mean_k, one_i64), k_alloca);
+    builder.CreateBr(mean_cond);
+
+    builder.SetInsertPoint(mean_done);
+    llvm::Value* final_sum = builder.CreateLoad(ctx_.ptrType(), sum_node_alloca);
+    llvm::Value* mean_node = autodiff_->recordADNodeBinary(5, final_sum, count_node);
+
+    llvm::Value* var_sum_alloca = builder.CreateAlloca(ctx_.ptrType(), nullptr, (name + "_var_sum").c_str());
+    builder.CreateStore(zero_node, var_sum_alloca);
+    builder.CreateStore(zero_i64, k_alloca);
+    llvm::BasicBlock* var_cond = llvm::BasicBlock::Create(ctx_.context(), name + "_var_cond", current_func);
+    llvm::BasicBlock* var_body = llvm::BasicBlock::Create(ctx_.context(), name + "_var_body", current_func);
+    llvm::BasicBlock* var_done = llvm::BasicBlock::Create(ctx_.context(), name + "_var_done", current_func);
+    builder.CreateBr(var_cond);
+
+    builder.SetInsertPoint(var_cond);
+    llvm::Value* var_k = builder.CreateLoad(ctx_.int64Type(), k_alloca);
+    builder.CreateCondBr(builder.CreateICmpULT(var_k, axis_len), var_body, var_done);
+
+    builder.SetInsertPoint(var_body);
+    llvm::Value* var_index = builder.CreateAdd(base, builder.CreateMul(var_k, inner_stride));
+    llvm::Value* var_bits = builder.CreateLoad(ctx_.int64Type(),
+        builder.CreateGEP(ctx_.int64Type(), src_elems, var_index));
+    llvm::Value* var_elem_node = adNodeFromTensorElementBits(var_bits, name + "_var_elem");
+    llvm::Value* centered_node = autodiff_->recordADNodeBinary(3, var_elem_node, mean_node);
+    llvm::Value* sq_node = autodiff_->recordADNodeBinary(4, centered_node, centered_node);
+    llvm::Value* old_var_sum = builder.CreateLoad(ctx_.ptrType(), var_sum_alloca);
+    llvm::Value* new_var_sum = autodiff_->recordADNodeBinary(2, old_var_sum, sq_node);
+    builder.CreateStore(new_var_sum, var_sum_alloca);
+    builder.CreateStore(builder.CreateAdd(var_k, one_i64), k_alloca);
+    builder.CreateBr(var_cond);
+
+    builder.SetInsertPoint(var_done);
+    llvm::Value* final_var_sum = builder.CreateLoad(ctx_.ptrType(), var_sum_alloca);
+    llvm::Value* var_node = autodiff_->recordADNodeBinary(5, final_var_sum, count_node);
+    llvm::Value* var_eps_node = autodiff_->recordADNodeBinary(2, var_node, epsilon_node);
+    llvm::Value* std_node = autodiff_->recordADNodeUnary(41, var_eps_node);
+
+    builder.CreateStore(zero_i64, k_alloca);
+    llvm::BasicBlock* norm_cond = llvm::BasicBlock::Create(ctx_.context(), name + "_norm_cond", current_func);
+    llvm::BasicBlock* norm_body = llvm::BasicBlock::Create(ctx_.context(), name + "_norm_body", current_func);
+    llvm::BasicBlock* norm_done = llvm::BasicBlock::Create(ctx_.context(), name + "_norm_done", current_func);
+    builder.CreateBr(norm_cond);
+
+    builder.SetInsertPoint(norm_cond);
+    llvm::Value* norm_k = builder.CreateLoad(ctx_.int64Type(), k_alloca);
+    builder.CreateCondBr(builder.CreateICmpULT(norm_k, axis_len), norm_body, norm_done);
+
+    builder.SetInsertPoint(norm_body);
+    llvm::Value* norm_index = builder.CreateAdd(base, builder.CreateMul(norm_k, inner_stride));
+    llvm::Value* norm_bits = builder.CreateLoad(ctx_.int64Type(),
+        builder.CreateGEP(ctx_.int64Type(), src_elems, norm_index));
+    llvm::Value* norm_elem_node = adNodeFromTensorElementBits(norm_bits, name + "_norm_elem");
+    llvm::Value* norm_centered = autodiff_->recordADNodeBinary(3, norm_elem_node, mean_node);
+    llvm::Value* normalized = autodiff_->recordADNodeBinary(5, norm_centered, std_node);
+    llvm::Value* scaled = autodiff_->recordADNodeBinary(4, normalized, gamma_node);
+    llvm::Value* shifted = autodiff_->recordADNodeBinary(2, scaled, beta_node);
+    builder.CreateStore(builder.CreatePtrToInt(shifted, ctx_.int64Type()),
+        builder.CreateGEP(ctx_.int64Type(), result_elems, norm_index));
+    builder.CreateStore(builder.CreateAdd(norm_k, one_i64), k_alloca);
+    builder.CreateBr(norm_cond);
+
+    builder.SetInsertPoint(norm_done);
+    builder.CreateStore(builder.CreateAdd(group_i, one_i64), group_i_alloca);
+    builder.CreateBr(group_cond);
+
+    builder.SetInsertPoint(group_done);
+    builder.CreateBr(exit_block);
+
+    builder.SetInsertPoint(numeric_path);
+    return true;
+}
+
 llvm::Value* TensorCodegen::batchNorm(const eshkol_operations_t* op) {
     // batch-norm: (batch-norm input gamma beta epsilon [axis])
     // Simplified batch normalization for inference
@@ -1144,6 +1290,83 @@ llvm::Value* TensorCodegen::batchNorm(const eshkol_operations_t* op) {
         auto* ptrTy = ctx_.ptrType();
         auto* i64Ty = ctx_.int64Type();
         auto* dblTy = ctx_.doubleType();
+
+        if (autodiff_) {
+            llvm::Function* current_func = builder.GetInsertBlock()->getParent();
+            llvm::BasicBlock* ad_done = llvm::BasicBlock::Create(ctx_.context(), "bn_axis_ad_done", current_func);
+            llvm::BasicBlock* merge_block = llvm::BasicBlock::Create(ctx_.context(), "bn_axis_merge", current_func);
+
+            llvm::Function* alloc_tensor = mem_.getArenaAllocateTensorWithHeader();
+            llvm::Function* arena_alloc = mem_.getArenaAllocate();
+            llvm::Value* result_ptr = builder.CreateCall(alloc_tensor, {arena}, "bn_axis_ad_result");
+            llvm::Value* dims_size = builder.CreateMul(rank,
+                llvm::ConstantInt::get(ctx_.int64Type(), sizeof(int64_t)));
+            llvm::Value* result_dims = builder.CreateCall(arena_alloc, {arena, dims_size}, "bn_axis_ad_dims");
+            builder.CreateMemCpy(result_dims, llvm::MaybeAlign(8), dims, llvm::MaybeAlign(8), dims_size);
+            llvm::Value* elems_size = builder.CreateMul(total,
+                llvm::ConstantInt::get(ctx_.int64Type(), sizeof(double)));
+            llvm::Value* result_elems = builder.CreateCall(arena_alloc, {arena, elems_size}, "bn_axis_ad_elems");
+
+            llvm::Value* is_negative_axis = builder.CreateICmpSLT(axis,
+                llvm::ConstantInt::get(ctx_.int64Type(), 0));
+            llvm::Value* normalized_axis = builder.CreateSelect(is_negative_axis,
+                builder.CreateAdd(axis, rank), axis);
+            llvm::Value* axis_len = builder.CreateLoad(ctx_.int64Type(),
+                builder.CreateGEP(ctx_.int64Type(), dims, normalized_axis));
+
+            llvm::Value* one_i64 = llvm::ConstantInt::get(ctx_.int64Type(), 1);
+            llvm::Value* inner_stride_alloca = builder.CreateAlloca(ctx_.int64Type(), nullptr, "bn_axis_inner_stride");
+            llvm::Value* stride_i_alloca = builder.CreateAlloca(ctx_.int64Type(), nullptr, "bn_axis_stride_i");
+            builder.CreateStore(one_i64, inner_stride_alloca);
+            builder.CreateStore(builder.CreateAdd(normalized_axis, one_i64), stride_i_alloca);
+            llvm::BasicBlock* stride_cond = llvm::BasicBlock::Create(ctx_.context(), "bn_axis_stride_cond", current_func);
+            llvm::BasicBlock* stride_body = llvm::BasicBlock::Create(ctx_.context(), "bn_axis_stride_body", current_func);
+            llvm::BasicBlock* stride_done = llvm::BasicBlock::Create(ctx_.context(), "bn_axis_stride_done", current_func);
+            builder.CreateBr(stride_cond);
+
+            builder.SetInsertPoint(stride_cond);
+            llvm::Value* stride_i = builder.CreateLoad(ctx_.int64Type(), stride_i_alloca);
+            builder.CreateCondBr(builder.CreateICmpULT(stride_i, rank), stride_body, stride_done);
+
+            builder.SetInsertPoint(stride_body);
+            llvm::Value* stride_dim = builder.CreateLoad(ctx_.int64Type(),
+                builder.CreateGEP(ctx_.int64Type(), dims, stride_i));
+            llvm::Value* old_stride = builder.CreateLoad(ctx_.int64Type(), inner_stride_alloca);
+            builder.CreateStore(builder.CreateMul(old_stride, stride_dim), inner_stride_alloca);
+            builder.CreateStore(builder.CreateAdd(stride_i, one_i64), stride_i_alloca);
+            builder.CreateBr(stride_cond);
+
+            builder.SetInsertPoint(stride_done);
+            llvm::Value* inner_stride = builder.CreateLoad(ctx_.int64Type(), inner_stride_alloca);
+            builder.CreateStore(result_dims, builder.CreateStructGEP(ttype, result_ptr, 0));
+            builder.CreateStore(rank, builder.CreateStructGEP(ttype, result_ptr, 1));
+            builder.CreateStore(result_elems, builder.CreateStructGEP(ttype, result_ptr, 2));
+            builder.CreateStore(total, builder.CreateStructGEP(ttype, result_ptr, 3));
+
+            emitTensorADNormalizeDispatch(elems, result_elems, total, axis_len,
+                inner_stride, gamma_d, beta_d, eps_d, ad_done, "bn_axis");
+
+            llvm::FunctionType* fn_type = llvm::FunctionType::get(ptrTy,
+                {ptrTy, ptrTy, i64Ty, ptrTy, i64Ty, i64Ty, dblTy, dblTy, dblTy}, false);
+            llvm::FunctionCallee callee = ctx_.module().getOrInsertFunction("eshkol_xla_normalize", fn_type);
+            llvm::Value* numeric_result = builder.CreateCall(callee,
+                {arena, elems, total, dims, rank, axis, gamma_d, beta_d, eps_d}, "bn_axis_numeric_result");
+            llvm::Value* numeric_packed = tagged_.packHeapPtr(numeric_result);
+            builder.CreateBr(merge_block);
+            llvm::BasicBlock* numeric_exit = builder.GetInsertBlock();
+
+            builder.SetInsertPoint(ad_done);
+            llvm::Value* ad_packed = tagged_.packHeapPtr(result_ptr);
+            builder.CreateBr(merge_block);
+            llvm::BasicBlock* ad_exit = builder.GetInsertBlock();
+
+            builder.SetInsertPoint(merge_block);
+            llvm::PHINode* result_phi = builder.CreatePHI(ctx_.taggedValueType(), 2, "bn_axis_result_phi");
+            result_phi->addIncoming(ad_packed, ad_exit);
+            result_phi->addIncoming(numeric_packed, numeric_exit);
+            return result_phi;
+        }
+
         llvm::FunctionType* fn_type = llvm::FunctionType::get(ptrTy,
             {ptrTy, ptrTy, i64Ty, ptrTy, i64Ty, i64Ty, dblTy, dblTy, dblTy}, false);
         llvm::FunctionCallee callee = ctx_.module().getOrInsertFunction("eshkol_xla_normalize", fn_type);
@@ -1223,8 +1446,13 @@ llvm::Value* TensorCodegen::batchNorm(const eshkol_operations_t* op) {
     llvm::Value* r_total_field = builder.CreateStructGEP(tensor_type, result_ptr, 3);
     builder.CreateStore(total_elements, r_total_field);
 
-    // First pass: compute mean
     llvm::Function* current_func = builder.GetInsertBlock()->getParent();
+    llvm::BasicBlock* exit_block = llvm::BasicBlock::Create(ctx_.context(), "bn_exit", current_func);
+    emitTensorADNormalizeDispatch(input_elems, result_elems, total_elements,
+        total_elements, llvm::ConstantInt::get(ctx_.int64Type(), 1),
+        gamma, beta, epsilon, exit_block, "bn");
+
+    // First pass: compute mean
     llvm::Value* mean = builder.CreateAlloca(ctx_.doubleType(), nullptr, "bn_mean");
     llvm::Value* var = builder.CreateAlloca(ctx_.doubleType(), nullptr, "bn_var");
     llvm::Value* sum = builder.CreateAlloca(ctx_.doubleType(), nullptr, "bn_sum");
@@ -1338,6 +1566,9 @@ llvm::Value* TensorCodegen::batchNorm(const eshkol_operations_t* op) {
     builder.CreateBr(norm_cond);
 
     builder.SetInsertPoint(norm_done);
+    builder.CreateBr(exit_block);
+
+    builder.SetInsertPoint(exit_block);
     return tagged_.packHeapPtr(result_ptr);
 }
 
@@ -1390,6 +1621,83 @@ llvm::Value* TensorCodegen::layerNorm(const eshkol_operations_t* op) {
         auto* ptrTy = ctx_.ptrType();
         auto* i64Ty = ctx_.int64Type();
         auto* dblTy = ctx_.doubleType();
+
+        if (autodiff_) {
+            llvm::Function* current_func = builder.GetInsertBlock()->getParent();
+            llvm::BasicBlock* ad_done = llvm::BasicBlock::Create(ctx_.context(), "ln_axis_ad_done", current_func);
+            llvm::BasicBlock* merge_block = llvm::BasicBlock::Create(ctx_.context(), "ln_axis_merge", current_func);
+
+            llvm::Function* alloc_tensor = mem_.getArenaAllocateTensorWithHeader();
+            llvm::Function* arena_alloc = mem_.getArenaAllocate();
+            llvm::Value* result_ptr = builder.CreateCall(alloc_tensor, {arena}, "ln_axis_ad_result");
+            llvm::Value* dims_size = builder.CreateMul(rank,
+                llvm::ConstantInt::get(ctx_.int64Type(), sizeof(int64_t)));
+            llvm::Value* result_dims = builder.CreateCall(arena_alloc, {arena, dims_size}, "ln_axis_ad_dims");
+            builder.CreateMemCpy(result_dims, llvm::MaybeAlign(8), dims, llvm::MaybeAlign(8), dims_size);
+            llvm::Value* elems_size = builder.CreateMul(total,
+                llvm::ConstantInt::get(ctx_.int64Type(), sizeof(double)));
+            llvm::Value* result_elems = builder.CreateCall(arena_alloc, {arena, elems_size}, "ln_axis_ad_elems");
+
+            llvm::Value* is_negative_axis = builder.CreateICmpSLT(axis,
+                llvm::ConstantInt::get(ctx_.int64Type(), 0));
+            llvm::Value* normalized_axis = builder.CreateSelect(is_negative_axis,
+                builder.CreateAdd(axis, rank), axis);
+            llvm::Value* axis_len = builder.CreateLoad(ctx_.int64Type(),
+                builder.CreateGEP(ctx_.int64Type(), dims, normalized_axis));
+
+            llvm::Value* one_i64 = llvm::ConstantInt::get(ctx_.int64Type(), 1);
+            llvm::Value* inner_stride_alloca = builder.CreateAlloca(ctx_.int64Type(), nullptr, "ln_axis_inner_stride");
+            llvm::Value* stride_i_alloca = builder.CreateAlloca(ctx_.int64Type(), nullptr, "ln_axis_stride_i");
+            builder.CreateStore(one_i64, inner_stride_alloca);
+            builder.CreateStore(builder.CreateAdd(normalized_axis, one_i64), stride_i_alloca);
+            llvm::BasicBlock* stride_cond = llvm::BasicBlock::Create(ctx_.context(), "ln_axis_stride_cond", current_func);
+            llvm::BasicBlock* stride_body = llvm::BasicBlock::Create(ctx_.context(), "ln_axis_stride_body", current_func);
+            llvm::BasicBlock* stride_done = llvm::BasicBlock::Create(ctx_.context(), "ln_axis_stride_done", current_func);
+            builder.CreateBr(stride_cond);
+
+            builder.SetInsertPoint(stride_cond);
+            llvm::Value* stride_i = builder.CreateLoad(ctx_.int64Type(), stride_i_alloca);
+            builder.CreateCondBr(builder.CreateICmpULT(stride_i, rank), stride_body, stride_done);
+
+            builder.SetInsertPoint(stride_body);
+            llvm::Value* stride_dim = builder.CreateLoad(ctx_.int64Type(),
+                builder.CreateGEP(ctx_.int64Type(), dims, stride_i));
+            llvm::Value* old_stride = builder.CreateLoad(ctx_.int64Type(), inner_stride_alloca);
+            builder.CreateStore(builder.CreateMul(old_stride, stride_dim), inner_stride_alloca);
+            builder.CreateStore(builder.CreateAdd(stride_i, one_i64), stride_i_alloca);
+            builder.CreateBr(stride_cond);
+
+            builder.SetInsertPoint(stride_done);
+            llvm::Value* inner_stride = builder.CreateLoad(ctx_.int64Type(), inner_stride_alloca);
+            builder.CreateStore(result_dims, builder.CreateStructGEP(ttype, result_ptr, 0));
+            builder.CreateStore(rank, builder.CreateStructGEP(ttype, result_ptr, 1));
+            builder.CreateStore(result_elems, builder.CreateStructGEP(ttype, result_ptr, 2));
+            builder.CreateStore(total, builder.CreateStructGEP(ttype, result_ptr, 3));
+
+            emitTensorADNormalizeDispatch(elems, result_elems, total, axis_len,
+                inner_stride, gamma_d, beta_d, eps_d, ad_done, "ln_axis");
+
+            llvm::FunctionType* fn_type = llvm::FunctionType::get(ptrTy,
+                {ptrTy, ptrTy, i64Ty, ptrTy, i64Ty, i64Ty, dblTy, dblTy, dblTy}, false);
+            llvm::FunctionCallee callee = ctx_.module().getOrInsertFunction("eshkol_xla_normalize", fn_type);
+            llvm::Value* numeric_result = builder.CreateCall(callee,
+                {arena, elems, total, dims, rank, axis, gamma_d, beta_d, eps_d}, "ln_axis_numeric_result");
+            llvm::Value* numeric_packed = tagged_.packHeapPtr(numeric_result);
+            builder.CreateBr(merge_block);
+            llvm::BasicBlock* numeric_exit = builder.GetInsertBlock();
+
+            builder.SetInsertPoint(ad_done);
+            llvm::Value* ad_packed = tagged_.packHeapPtr(result_ptr);
+            builder.CreateBr(merge_block);
+            llvm::BasicBlock* ad_exit = builder.GetInsertBlock();
+
+            builder.SetInsertPoint(merge_block);
+            llvm::PHINode* result_phi = builder.CreatePHI(ctx_.taggedValueType(), 2, "ln_axis_result_phi");
+            result_phi->addIncoming(ad_packed, ad_exit);
+            result_phi->addIncoming(numeric_packed, numeric_exit);
+            return result_phi;
+        }
+
         llvm::FunctionType* fn_type = llvm::FunctionType::get(ptrTy,
             {ptrTy, ptrTy, i64Ty, ptrTy, i64Ty, i64Ty, dblTy, dblTy, dblTy}, false);
         llvm::FunctionCallee callee = ctx_.module().getOrInsertFunction("eshkol_xla_normalize", fn_type);
@@ -1472,6 +1780,11 @@ llvm::Value* TensorCodegen::layerNorm(const eshkol_operations_t* op) {
     llvm::Value* feature_fp = builder.CreateSIToFP(feature_size, ctx_.doubleType());
 
     llvm::Function* current_func = builder.GetInsertBlock()->getParent();
+    llvm::BasicBlock* exit_block = llvm::BasicBlock::Create(ctx_.context(), "ln_exit", current_func);
+    emitTensorADNormalizeDispatch(input_elems, result_elems, total_elements,
+        feature_size, llvm::ConstantInt::get(ctx_.int64Type(), 1),
+        gamma, beta, epsilon, exit_block, "ln");
+
     llvm::Function* sqrt_func = ESHKOL_GET_INTRINSIC(
         &ctx_.module(), llvm::Intrinsic::sqrt, {ctx_.doubleType()});
 
@@ -1598,6 +1911,9 @@ llvm::Value* TensorCodegen::layerNorm(const eshkol_operations_t* op) {
     builder.CreateBr(batch_cond);
 
     builder.SetInsertPoint(batch_done);
+    builder.CreateBr(exit_block);
+
+    builder.SetInsertPoint(exit_block);
     return tagged_.packHeapPtr(result_ptr);
 }
 

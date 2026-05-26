@@ -711,3 +711,71 @@
              (approx= (vector-ref g-celu 1) 1.0 1e-6))
         "PASS" "FAIL"))
   (display ": phase4 activation gradients match expected defaults") (newline))
+
+;; ============================================================
+;; Test 45: Gradient through batch normalization
+;; f(x) = sum(batch-norm(x) * [1, 2, 3]), global normalization.
+;; ============================================================
+(let* ((c (tensor 3 1.0 2.0 3.0))
+       (g (gradient
+            (lambda (x)
+              (tensor-sum (tensor-mul (batch-norm x 1.0 0.0 0.0) c)))
+            (tensor 3 1.0 2.0 4.0))))
+  (display
+    (if (and (= (vector-length g) 3)
+             (approx= (vector-ref g 0) -0.11454053224818188 1e-5)
+             (approx= (vector-ref g 1) 0.1718107983722728 1e-5)
+             (approx= (vector-ref g 2) -0.05727026612409094 1e-5))
+        "PASS" "FAIL"))
+  (display ": gradient through batch-norm weighted tensor-sum matches closed form") (newline))
+
+;; ============================================================
+;; Test 46: Gradient through layer normalization
+;; f(x) = sum(layer-norm(reshape(x, 2, 3)) * weights), per-row normalization.
+;; ============================================================
+(let* ((c (tensor 2 3 1.0 2.0 3.0 1.0 2.0 3.0))
+       (g (gradient
+            (lambda (x)
+              (tensor-sum (tensor-mul (layer-norm (reshape x 2 3) 1.0 0.0 0.0) c)))
+            (tensor 6 1.0 2.0 4.0 2.0 4.0 5.0))))
+  (display
+    (if (and (= (vector-length g) 6)
+             (approx= (vector-ref g 0) -0.11454053224818188 1e-5)
+             (approx= (vector-ref g 1) 0.1718107983722728 1e-5)
+             (approx= (vector-ref g 2) -0.05727026612409094 1e-5)
+             (approx= (vector-ref g 3) 0.05727026612409094 1e-5)
+             (approx= (vector-ref g 4) -0.1718107983722728 1e-5)
+             (approx= (vector-ref g 5) 0.11454053224818188 1e-5))
+        "PASS" "FAIL"))
+  (display ": gradient through layer-norm weighted tensor-sum matches per-row closed form") (newline))
+
+;; ============================================================
+;; Test 47: Gradient through axis-aware normalization
+;; f(x) normalizes a 3x2 tensor down axis 0, exercising inner_stride=2.
+;; ============================================================
+(let* ((c (tensor 3 2 1.0 1.0 2.0 2.0 3.0 3.0))
+       (g-bn (gradient
+              (lambda (x)
+                (tensor-sum (tensor-mul (batch-norm (reshape x 3 2) 1.0 0.0 0.0 0) c)))
+              (tensor 6 1.0 2.0 2.0 4.0 4.0 5.0)))
+       (g-ln (gradient
+              (lambda (x)
+                (tensor-sum (tensor-mul (layer-norm (reshape x 3 2) 1.0 0.0 0.0 0) c)))
+              (tensor 6 1.0 2.0 2.0 4.0 4.0 5.0))))
+  (display
+    (if (and (= (vector-length g-bn) 6)
+             (= (vector-length g-ln) 6)
+             (approx= (vector-ref g-bn 0) -0.11454053224818188 1e-5)
+             (approx= (vector-ref g-bn 1) 0.05727026612409094 1e-5)
+             (approx= (vector-ref g-bn 2) 0.1718107983722728 1e-5)
+             (approx= (vector-ref g-bn 3) -0.1718107983722728 1e-5)
+             (approx= (vector-ref g-bn 4) -0.05727026612409094 1e-5)
+             (approx= (vector-ref g-bn 5) 0.11454053224818188 1e-5)
+             (approx= (vector-ref g-ln 0) -0.11454053224818188 1e-5)
+             (approx= (vector-ref g-ln 1) 0.05727026612409094 1e-5)
+             (approx= (vector-ref g-ln 2) 0.1718107983722728 1e-5)
+             (approx= (vector-ref g-ln 3) -0.1718107983722728 1e-5)
+             (approx= (vector-ref g-ln 4) -0.05727026612409094 1e-5)
+             (approx= (vector-ref g-ln 5) 0.11454053224818188 1e-5))
+        "PASS" "FAIL"))
+  (display ": gradient through axis-aware normalization matches strided closed form") (newline))

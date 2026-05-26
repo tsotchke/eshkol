@@ -1154,6 +1154,21 @@ private:
                                    const std::string& name);
 
     /**
+     * Emit an AD-mode normalization loop over groups along one axis, then
+     * continue insertion in the generated numeric fallback block.
+     */
+    bool emitTensorADNormalizeDispatch(llvm::Value* src_elems,
+                                       llvm::Value* result_elems,
+                                       llvm::Value* total_elements,
+                                       llvm::Value* axis_len,
+                                       llvm::Value* inner_stride,
+                                       llvm::Value* gamma,
+                                       llvm::Value* beta,
+                                       llvm::Value* epsilon,
+                                       llvm::BasicBlock* exit_block,
+                                       const std::string& name);
+
+    /**
      * Coerce a numeric value to a runtime double.
      *
      * - tagged values: dispatches at runtime on type-tag (INT64 → SIToFP,
