@@ -5,6 +5,8 @@
 ;; I/O capture, timeout, and lifecycle management.
 ;;
 
+(require core.capabilities)
+
 (provide process-spawn process-spawn-shell process-spawn-argv
          process-write-stdin process-close-stdin
          process-read-stdout process-read-stderr
@@ -52,20 +54,26 @@
    command: shell-compatible command string. The runtime layer may bypass the
    platform shell for simple commands where direct argv execution is equivalent.
    cwd: working directory."
+  (capability-require! 'subprocess command)
   (process-spawn-raw command cwd #f 0))
 
 (define (process-spawn-nostdin command cwd)
   "Spawn a legacy command string with stdin redirected to /dev/null. Faster than
    process-spawn + process-close-stdin when the caller never writes
    to stdin (hot path for run-command-capture)."
+  (capability-require! 'subprocess command)
   (process-spawn-raw command cwd #f PROCESS_SPAWN_STDIN_NULL))
 
 (define (process-spawn-shell command cwd)
   "Spawn a command through the platform shell. Returns process handle."
+  (capability-require! 'subprocess command)
+  (capability-require! 'shell command)
   (process-spawn-shell-raw command cwd 0))
 
 (define (process-spawn-shell-nostdin command cwd)
   "Spawn a shell command with stdin redirected to /dev/null."
+  (capability-require! 'subprocess command)
+  (capability-require! 'shell command)
   (process-spawn-shell-raw command cwd PROCESS_SPAWN_STDIN_NULL))
 
 (define (process-owned-c-string->string buf)
@@ -107,6 +115,7 @@
     ((null? argv) #f)
     ((not (list? argv)) #f)
     (else
+     (capability-require! 'subprocess argv)
      (process-argv-check-args argv)
      (let loop ((rest (cdr argv)) (packed (car argv)))
        (if (null? rest)
@@ -124,6 +133,7 @@
     ((null? argv) #f)
     ((not (list? argv)) #f)
     (else
+     (capability-require! 'subprocess argv)
      (process-argv-check-args argv)
      (let loop ((rest (cdr argv)) (packed (car argv)))
        (if (null? rest)

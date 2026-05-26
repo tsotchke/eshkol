@@ -1,0 +1,55 @@
+;; Capability policy checks for v1.3-evolve #149.
+
+(require stdlib)
+(require agent.subprocess)
+
+(define passed 0)
+(define failed 0)
+
+(define (check name ok)
+  (if ok
+      (begin
+        (set! passed (+ passed 1))
+        (display "PASS: ") (display name) (newline))
+      (begin
+        (set! failed (+ failed 1))
+        (display "FAIL: ") (display name) (newline))))
+
+(define (raises? thunk)
+  (let ((raised #f))
+    (guard (exn (#t (set! raised #t)))
+      (thunk))
+    raised))
+
+(display "=== capability policy suite ===") (newline)
+
+(capability-clear-policy!)
+(check "no policy allows subprocess by default"
+       (capability-allowed? 'subprocess))
+(check "no policy allows network by default"
+       (capability-allowed? 'network))
+
+(capability-install-policy! (list 'file-read))
+(check "active policy denies missing subprocess"
+       (not (capability-allowed? 'subprocess)))
+(check "active policy keeps listed capability allowed"
+       (capability-allowed? 'file-read))
+(check "denied subprocess shell raises before spawn"
+       (raises? (lambda () (process-spawn-shell "echo should-not-run" "."))))
+
+(capability-install-policy! (list 'subprocess))
+(check "shell requires explicit shell capability"
+       (raises? (lambda () (process-spawn-shell "echo should-not-run" "."))))
+
+(capability-install-policy! (list 'subprocess 'shell))
+(check "subprocess allow-list can permit shell"
+       (and (capability-allowed? 'subprocess)
+            (capability-allowed? 'shell)))
+
+(capability-clear-policy!)
+(check "clear policy restores no-policy allow"
+       (capability-allowed? 'shell))
+
+(display "Passed: ") (display passed) (newline)
+(display "Failed: ") (display failed) (newline)
+(if (> failed 0) (exit 1) (exit 0))

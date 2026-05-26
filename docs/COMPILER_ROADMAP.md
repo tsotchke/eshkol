@@ -230,7 +230,7 @@ Acceptance:
 | #154 | Extra AD ops (atan2, asin, acos, softmax, gelu, silu, sinh, cosh) | ✅ finite-difference coverage landed in v1.2.x |
 | #155 | Priority queues + sets + deques stdlib | ✅ landed in v1.2.x |
 | #147 | Structured logging (JSON-L + trace IDs) | core contracts tested; needs Noesis integration |
-| #149 | Capability / permission hooks | 3 days |
+| #149 | Capability / permission hooks | initial hosted allow-list hooks landed; core file-builtin hook remains |
 | #170 | Reflection primitives (`procedure-arity`, `record-fields`, `describe`) | ✅ landed in v1.2.x |
 | #171 | Memoization / LRU cache stdlib | ✅ landed in v1.2.x |
 | #172 | JSON Schema validation | ✅ landed in v1.2.x |
@@ -239,7 +239,8 @@ Acceptance:
 Phase 2 productionizes this surface:
 - Keep focused tests for `core.logging`, including JSON escaping, trace-id
   scoping, level filtering, port redirection, and path-string sinks.
-- Wire capability hooks into subprocess, FFI, file I/O, network stubs, and
+- Extend the initial `core.capabilities` allow-list hooks from subprocess,
+  shell, network, and agent FFI wrappers into core file I/O builtins and
   future HTTP handlers. Capabilities must be deny-by-default when a policy is
   active, but zero-overhead/no-policy by default.
 - Extend reflection docs and tests for user procedures, records, builtins,

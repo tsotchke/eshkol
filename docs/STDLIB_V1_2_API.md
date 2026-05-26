@@ -1770,7 +1770,7 @@ name:
 
 ## Appendix B: Infrastructure stdlib modules
 
-The v1.2 stdlib also ships eleven infrastructure-oriented modules that
+The v1.2 stdlib also ships twelve infrastructure-oriented modules that
 the main sections above only listed by name. The signatures below come
 directly from each module's `(provide …)` block (cited in the table).
 The "Auto-loaded" column says whether `(require stdlib)` pulls the
@@ -1783,6 +1783,7 @@ exact set of auto-loaded modules is the `(require …)` chain in
 | `core.merkle` | `lib/core/merkle.esk` | **No** — `(require core.merkle)` | Content hashing + Merkle proofs + CAS |
 | `core.metrics` | `lib/core/metrics.esk` | **No** — `(require core.metrics)` | Prometheus-style counters / gauges |
 | `core.logging` | `lib/core/logging.esk` | **No** — `(require core.logging)` | JSONL structured logging |
+| `core.capabilities` | `lib/core/capabilities.esk` | Yes | Hosted allow-list capability policy |
 | `core.collections` | `lib/core/collections.esk` | **No** — `(require core.collections)` | Priority queue, hash set, deque |
 | `core.channels` | `lib/core/channels.esk` | **No** — `(require core.channels)` | Go-style bounded channels |
 | `core.threads` | `lib/core/threads.esk` | **No** — `(require core.threads)` | POSIX-mutex / condvar / thread primitives |
@@ -2000,3 +2001,27 @@ Exports (`manifold.esk`):
 Manifold operations for Riemannian computation. The three constructors return tagged manifold values; `manifold-exp-map` / `manifold-log-map` / `manifold-distance` / `manifold-parallel-transport` / `manifold-curvature` are dispatched on the manifold type.
 
 The current v1.2 implementation is a placeholder layer — `manifold-dimension` and `manifold-type` return constants pending the native VM ops planned for v1.3-evolve. For actual gradient-descent-on-manifolds workflows, build on top of `core.manifold` directly together with `gradient` / `tensor-*` and the exact-numeric tower; a higher-level Riemannian-training API ships in v1.3-evolve along with the native VM ops.
+
+### B.12 `core.capabilities`
+
+```scheme
+(require core.capabilities)
+```
+
+Exports (`capabilities.esk`):
+
+```scheme
+(provide capability-install-policy!
+         capability-clear-policy!
+         capability-policy
+         capability-policy-active?
+         capability-allowed?
+         capability-require!)
+```
+
+Hosted capability policy for v1.3 production surfaces. With no installed
+policy (`#f`), checks allow by default so existing v1.2 code keeps running.
+Installing an allow-list activates deny-by-default behavior: any capability
+symbol not present in the list raises through `capability-require!`. Initial
+hooks cover agent subprocess/shell, HTTP/network, Unix-socket, and SQLite FFI
+entry points. Core file I/O builtins are still a follow-up hook.

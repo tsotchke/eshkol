@@ -2,6 +2,8 @@
 ;; sqlite.esk - SQLite3 FFI wrapper
 ;; Bindings to agent_sqlite.c
 ;;
+(require core.capabilities)
+
 (provide sqlite-exec-safe sqlite-open sqlite-close sqlite-exec
          sqlite-prepare sqlite-step sqlite-reset sqlite-finalize
          sqlite-bind-text sqlite-bind-int sqlite-bind-double sqlite-bind-null
@@ -41,6 +43,9 @@
 ;; High-level wrappers
 (define (sqlite-open path)
   "Open a database. Returns handle or -1 on error."
+  (capability-require! 'ffi 'sqlite-open)
+  (capability-require! 'file-read path)
+  (capability-require! 'file-write path)
   (sqlite-open-raw path))
 
 (define (sqlite-close handle) (sqlite-close-raw handle))
@@ -58,6 +63,7 @@
    If you MUST interpolate, the library provides no sanitizer — it is
    the caller's responsibility. Future versions may restrict
    sqlite-exec to a whitelist of statement kinds."
+  (capability-require! 'ffi 'sqlite-exec)
   (sqlite-exec-raw handle sql))
 
 (define (sqlite-exec-safe handle sql)
@@ -74,10 +80,13 @@
     ((or (string-contains sql "--")
          (string-contains sql "/*"))
      (error "sqlite-exec-safe: statement contains SQL comment — possible injection"))
-    (else (sqlite-exec-raw handle sql))))
+    (else
+     (capability-require! 'ffi 'sqlite-exec-safe)
+     (sqlite-exec-raw handle sql))))
 
 (define (sqlite-prepare handle sql)
   "Prepare a statement. Returns stmt handle or -1."
+  (capability-require! 'ffi 'sqlite-prepare)
   (sqlite-prepare-raw handle sql))
 
 (define (sqlite-step stmt) (sqlite-step-raw stmt))

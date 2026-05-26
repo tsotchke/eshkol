@@ -5,6 +5,8 @@
 ;; Links against libsemiclassical_qllm.
 ;;
 
+(require core.capabilities)
+
 (provide http-init http-shutdown http-has-ssl?
          http-get http-post http-request
          http-stream-open http-stream-next http-stream-done? http-stream-close
@@ -116,6 +118,7 @@
 
 (define (http-get url . timeout)
   "Perform HTTP GET. Returns (status-code . body-string) or #f on error."
+  (capability-require! 'network url)
   (http-check-url url)
   (let* ((timeout-ms (if (null? timeout) 30000 (car timeout)))
          (resp (http-get-raw url timeout-ms)))
@@ -131,6 +134,7 @@
    headers: list of (name . value) pairs
    body: string
    Returns: (status-code . body-string) or #f on error."
+  (capability-require! 'network url)
   (http-check-url url)
   (http-check-headers headers)
   (let* ((timeout-ms (if (null? timeout) 30000 (car timeout)))
@@ -161,6 +165,7 @@
 (define (http-stream-open url headers body . timeout)
   "Open an SSE streaming connection.
    Returns: stream handle (opaque pointer) or #f on error."
+  (capability-require! 'network url)
   (let ((timeout-ms (if (null? timeout) 30000 (car timeout))))
     ;; For now, use curl-based streaming as the FFI requires proper
     ;; header struct marshaling that isn't available yet
