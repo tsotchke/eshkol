@@ -713,7 +713,55 @@
   (display ": phase4 activation gradients match expected defaults") (newline))
 
 ;; ============================================================
-;; Test 45: Gradient through batch normalization
+;; Test 45: Gradients through normalization functions
+;; ============================================================
+(let* ((c1 (tensor 3 1.0 2.0 3.0))
+       (x1 (tensor 3 1.0 2.0 4.0))
+       (c2 (tensor 2 3 1.0 2.0 3.0 4.0 5.0 6.0))
+       (x2 (tensor 6 1.0 2.0 4.0 2.0 3.0 5.0))
+       (g-batch (gradient
+                  (lambda (x) (tensor-sum (tensor-mul (batch-norm x 1.0 0.0 0.00001) c1)))
+                  x1))
+       (g-layer (gradient
+                  (lambda (x) (tensor-sum (tensor-mul (layer-norm (reshape x 2 3) 1.0 0.0 0.00001) c2)))
+                  x2))
+       (g-batch-axis (gradient
+                       (lambda (x) (tensor-sum (tensor-mul (batch-norm (reshape x 2 3) 1.0 0.0 0.00001 1) c2)))
+                       x2))
+       (g-layer-axis0 (gradient
+                        (lambda (x) (tensor-sum (tensor-mul (layer-norm (reshape x 2 3) 1.0 0.0 0.00001 0) c2)))
+                        x2)))
+  (display
+    (if (and (= (vector-length g-batch) 3)
+             (approx= (vector-ref g-batch 0) -0.11454458203331674 1e-5)
+             (approx= (vector-ref g-batch 1) 0.17180914163860167 1e-5)
+             (approx= (vector-ref g-batch 2) -0.05726455960528467 1e-5)
+             (= (vector-length g-layer) 6)
+             (approx= (vector-ref g-layer 0) -0.11454458203331674 1e-5)
+             (approx= (vector-ref g-layer 1) 0.17180914163860167 1e-5)
+             (approx= (vector-ref g-layer 2) -0.05726455960528467 1e-5)
+             (approx= (vector-ref g-layer 3) -0.11454458203331674 1e-5)
+             (approx= (vector-ref g-layer 4) 0.17180914163860167 1e-5)
+             (approx= (vector-ref g-layer 5) -0.05726455960528467 1e-5)
+             (= (vector-length g-batch-axis) 6)
+             (approx= (vector-ref g-batch-axis 0) -0.11454458203331674 1e-5)
+             (approx= (vector-ref g-batch-axis 1) 0.17180914163860167 1e-5)
+             (approx= (vector-ref g-batch-axis 2) -0.05726455960528467 1e-5)
+             (approx= (vector-ref g-batch-axis 3) -0.11454458203331674 1e-5)
+             (approx= (vector-ref g-batch-axis 4) 0.17180914163860167 1e-5)
+             (approx= (vector-ref g-batch-axis 5) -0.05726455960528467 1e-5)
+             (= (vector-length g-layer-axis0) 6)
+             (approx= (vector-ref g-layer-axis0 0) -0.00011999280036023 1e-7)
+             (approx= (vector-ref g-layer-axis0 1) -0.00011999280036067 1e-7)
+             (approx= (vector-ref g-layer-axis0 2) -0.00011999280036023 1e-7)
+             (approx= (vector-ref g-layer-axis0 3) 0.00011999280036023 1e-7)
+             (approx= (vector-ref g-layer-axis0 4) 0.00011999280036067 1e-7)
+             (approx= (vector-ref g-layer-axis0 5) 0.00011999280036023 1e-7))
+        "PASS" "FAIL"))
+  (display ": normalization gradients match grouped AD formulas") (newline))
+
+;; ============================================================
+;; Test 46: Gradient through batch normalization
 ;; f(x) = sum(batch-norm(x) * [1, 2, 3]), global normalization.
 ;; ============================================================
 (let* ((c (tensor 3 1.0 2.0 3.0))
@@ -730,7 +778,7 @@
   (display ": gradient through batch-norm weighted tensor-sum matches closed form") (newline))
 
 ;; ============================================================
-;; Test 46: Gradient through layer normalization
+;; Test 47: Gradient through layer normalization
 ;; f(x) = sum(layer-norm(reshape(x, 2, 3)) * weights), per-row normalization.
 ;; ============================================================
 (let* ((c (tensor 2 3 1.0 2.0 3.0 1.0 2.0 3.0))
@@ -750,7 +798,7 @@
   (display ": gradient through layer-norm weighted tensor-sum matches per-row closed form") (newline))
 
 ;; ============================================================
-;; Test 47: Gradient through axis-aware normalization
+;; Test 48: Gradient through axis-aware normalization
 ;; f(x) normalizes a 3x2 tensor down axis 0, exercising inner_stride=2.
 ;; ============================================================
 (let* ((c (tensor 3 2 1.0 1.0 2.0 2.0 3.0 3.0))
