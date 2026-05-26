@@ -559,3 +559,75 @@
              (approx= (vector-ref g 2) 0.0 1e-6))
         "PASS" "FAIL"))
   (display ": gradient through tensor-min selects minimum element") (newline))
+
+;; ============================================================
+;; Test 38: Gradient through tensor-sum along an axis
+;; f(x) = sum(sum(reshape(x, 2, 3), axis=0)), gradient = all ones
+;; ============================================================
+(let* ((g (gradient
+            (lambda (x) (tensor-sum (tensor-sum (reshape x 2 3) 0)))
+            (tensor 6 1.0 2.0 3.0 4.0 5.0 6.0))))
+  (display
+    (if (and (= (vector-length g) 6)
+             (approx= (vector-ref g 0) 1.0 1e-6)
+             (approx= (vector-ref g 1) 1.0 1e-6)
+             (approx= (vector-ref g 2) 1.0 1e-6)
+             (approx= (vector-ref g 3) 1.0 1e-6)
+             (approx= (vector-ref g 4) 1.0 1e-6)
+             (approx= (vector-ref g 5) 1.0 1e-6))
+        "PASS" "FAIL"))
+  (display ": gradient through axis tensor-sum broadcasts upstream gradient") (newline))
+
+;; ============================================================
+;; Test 39: Gradient through tensor-mean along an axis
+;; f(x) = sum(mean(reshape(x, 2, 3), axis=0)), gradient = 1/2
+;; ============================================================
+(let* ((g (gradient
+            (lambda (x) (tensor-sum (tensor-mean (reshape x 2 3) 0)))
+            (tensor 6 1.0 2.0 3.0 4.0 5.0 6.0))))
+  (display
+    (if (and (= (vector-length g) 6)
+             (approx= (vector-ref g 0) 0.5 1e-6)
+             (approx= (vector-ref g 1) 0.5 1e-6)
+             (approx= (vector-ref g 2) 0.5 1e-6)
+             (approx= (vector-ref g 3) 0.5 1e-6)
+             (approx= (vector-ref g 4) 0.5 1e-6)
+             (approx= (vector-ref g 5) 0.5 1e-6))
+        "PASS" "FAIL"))
+  (display ": gradient through axis tensor-mean divides by axis length") (newline))
+
+;; ============================================================
+;; Test 40: Gradient through tensor-max along an axis
+;; f(x) = sum(max(reshape(x, 2, 3), axis=0))
+;; ============================================================
+(let* ((g (gradient
+            (lambda (x) (tensor-sum (tensor-max (reshape x 2 3) 0)))
+            (tensor 6 1.0 5.0 3.0 4.0 2.0 6.0))))
+  (display
+    (if (and (= (vector-length g) 6)
+             (approx= (vector-ref g 0) 0.0 1e-6)
+             (approx= (vector-ref g 1) 1.0 1e-6)
+             (approx= (vector-ref g 2) 0.0 1e-6)
+             (approx= (vector-ref g 3) 1.0 1e-6)
+             (approx= (vector-ref g 4) 0.0 1e-6)
+             (approx= (vector-ref g 5) 1.0 1e-6))
+        "PASS" "FAIL"))
+  (display ": gradient through axis tensor-max selects maxima") (newline))
+
+;; ============================================================
+;; Test 41: Gradient through tensor-min along an axis
+;; f(x) = sum(min(reshape(x, 2, 3), axis=1))
+;; ============================================================
+(let* ((g (gradient
+            (lambda (x) (tensor-sum (tensor-min (reshape x 2 3) 1)))
+            (tensor 6 1.0 5.0 3.0 4.0 2.0 6.0))))
+  (display
+    (if (and (= (vector-length g) 6)
+             (approx= (vector-ref g 0) 1.0 1e-6)
+             (approx= (vector-ref g 1) 0.0 1e-6)
+             (approx= (vector-ref g 2) 0.0 1e-6)
+             (approx= (vector-ref g 3) 0.0 1e-6)
+             (approx= (vector-ref g 4) 1.0 1e-6)
+             (approx= (vector-ref g 5) 0.0 1e-6))
+        "PASS" "FAIL"))
+  (display ": gradient through axis tensor-min selects minima") (newline))

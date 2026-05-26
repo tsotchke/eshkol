@@ -1508,6 +1508,183 @@ llvm::Value* TensorCodegen::emitAxisReduce(llvm::Value* tensor_val, llvm::Value*
     llvm::Value* adjusted = builder.CreateAdd(axis, src_num_dims);
     axis = builder.CreateSelect(is_negative, adjusted, axis);
 
+    if (autodiff_ && op_code >= 0 && op_code <= 3) {
+        llvm::Value* in_ad_mode = builder.CreateLoad(ctx_.int1Type(), ctx_.adModeActive());
+        llvm::Function* current_func = builder.GetInsertBlock()->getParent();
+        llvm::BasicBlock* ad_block = llvm::BasicBlock::Create(ctx_.context(), "axis_reduce_ad", current_func);
+        llvm::BasicBlock* numeric_block = llvm::BasicBlock::Create(ctx_.context(), "axis_reduce_numeric", current_func);
+        llvm::BasicBlock* merge_block = llvm::BasicBlock::Create(ctx_.context(), "axis_reduce_merge", current_func);
+        builder.CreateCondBr(in_ad_mode, ad_block, numeric_block);
+
+        builder.SetInsertPoint(ad_block);
+        llvm::Value* arena_ptr = builder.CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+        llvm::Function* arena_alloc = mem_.getArenaAllocate();
+        llvm::Function* alloc_tensor = mem_.getArenaAllocateTensorWithHeader();
+        llvm::Value* result_ptr = builder.CreateCall(alloc_tensor, {arena_ptr}, "axis_reduce_ad_tensor");
+
+        llvm::Value* one_i64 = llvm::ConstantInt::get(ctx_.int64Type(), 1);
+        llvm::Value* out_num_dims = builder.CreateSub(src_num_dims, one_i64);
+        llvm::Value* dims_bytes = builder.CreateMul(out_num_dims,
+            llvm::ConstantInt::get(ctx_.int64Type(), (int64_t)sizeof(int64_t)));
+        llvm::Value* result_dims = builder.CreateCall(arena_alloc, {arena_ptr, dims_bytes}, "axis_reduce_ad_dims");
+
+        llvm::Value* axis_len_ptr = builder.CreateGEP(ctx_.int64Type(), src_dims_ptr, axis);
+        llvm::Value* axis_len = builder.CreateLoad(ctx_.int64Type(), axis_len_ptr, "axis_reduce_len");
+        llvm::Value* out_total = builder.CreateUDiv(src_total, axis_len, "axis_reduce_out_total");
+        llvm::Value* elems_bytes = builder.CreateMul(out_total,
+            llvm::ConstantInt::get(ctx_.int64Type(), (int64_t)sizeof(int64_t)));
+        llvm::Value* result_elems = builder.CreateCall(arena_alloc, {arena_ptr, elems_bytes}, "axis_reduce_ad_elems");
+
+        llvm::Value* dim_i = builder.CreateAlloca(ctx_.int64Type(), nullptr, "axis_reduce_dim_i");
+        llvm::Value* dim_out = builder.CreateAlloca(ctx_.int64Type(), nullptr, "axis_reduce_dim_out");
+        builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), dim_i);
+        builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), dim_out);
+        llvm::BasicBlock* dim_cond = llvm::BasicBlock::Create(ctx_.context(), "axis_reduce_dim_cond", current_func);
+        llvm::BasicBlock* dim_body = llvm::BasicBlock::Create(ctx_.context(), "axis_reduce_dim_body", current_func);
+        llvm::BasicBlock* dim_store = llvm::BasicBlock::Create(ctx_.context(), "axis_reduce_dim_store", current_func);
+        llvm::BasicBlock* dim_next = llvm::BasicBlock::Create(ctx_.context(), "axis_reduce_dim_next", current_func);
+        llvm::BasicBlock* dim_done = llvm::BasicBlock::Create(ctx_.context(), "axis_reduce_dim_done", current_func);
+        builder.CreateBr(dim_cond);
+
+        builder.SetInsertPoint(dim_cond);
+        llvm::Value* d = builder.CreateLoad(ctx_.int64Type(), dim_i);
+        builder.CreateCondBr(builder.CreateICmpULT(d, src_num_dims), dim_body, dim_done);
+
+        builder.SetInsertPoint(dim_body);
+        builder.CreateCondBr(builder.CreateICmpEQ(d, axis), dim_next, dim_store);
+
+        builder.SetInsertPoint(dim_store);
+        llvm::Value* src_dim_val = builder.CreateLoad(ctx_.int64Type(),
+            builder.CreateGEP(ctx_.int64Type(), src_dims_ptr, d));
+        llvm::Value* out_d = builder.CreateLoad(ctx_.int64Type(), dim_out);
+        builder.CreateStore(src_dim_val, builder.CreateGEP(ctx_.int64Type(), result_dims, out_d));
+        builder.CreateStore(builder.CreateAdd(out_d, one_i64), dim_out);
+        builder.CreateBr(dim_next);
+
+        builder.SetInsertPoint(dim_next);
+        llvm::Value* next_d = builder.CreateAdd(d, one_i64);
+        builder.CreateStore(next_d, dim_i);
+        builder.CreateBr(dim_cond);
+
+        builder.SetInsertPoint(dim_done);
+
+        llvm::Value* inner_stride = builder.CreateAlloca(ctx_.int64Type(), nullptr, "axis_reduce_inner_stride");
+        builder.CreateStore(one_i64, inner_stride);
+        llvm::Value* stride_i = builder.CreateAlloca(ctx_.int64Type(), nullptr, "axis_reduce_stride_i");
+        builder.CreateStore(builder.CreateAdd(axis, one_i64), stride_i);
+        llvm::BasicBlock* stride_cond = llvm::BasicBlock::Create(ctx_.context(), "axis_reduce_stride_cond", current_func);
+        llvm::BasicBlock* stride_body = llvm::BasicBlock::Create(ctx_.context(), "axis_reduce_stride_body", current_func);
+        llvm::BasicBlock* stride_done = llvm::BasicBlock::Create(ctx_.context(), "axis_reduce_stride_done", current_func);
+        builder.CreateBr(stride_cond);
+
+        builder.SetInsertPoint(stride_cond);
+        llvm::Value* si = builder.CreateLoad(ctx_.int64Type(), stride_i);
+        builder.CreateCondBr(builder.CreateICmpULT(si, src_num_dims), stride_body, stride_done);
+
+        builder.SetInsertPoint(stride_body);
+        llvm::Value* dim_val = builder.CreateLoad(ctx_.int64Type(),
+            builder.CreateGEP(ctx_.int64Type(), src_dims_ptr, si));
+        llvm::Value* old_stride = builder.CreateLoad(ctx_.int64Type(), inner_stride);
+        builder.CreateStore(builder.CreateMul(old_stride, dim_val), inner_stride);
+        builder.CreateStore(builder.CreateAdd(si, one_i64), stride_i);
+        builder.CreateBr(stride_cond);
+
+        builder.SetInsertPoint(stride_done);
+
+        llvm::Value* out_i_alloca = builder.CreateAlloca(ctx_.int64Type(), nullptr, "axis_reduce_out_i");
+        builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), out_i_alloca);
+        llvm::BasicBlock* out_cond = llvm::BasicBlock::Create(ctx_.context(), "axis_reduce_out_cond", current_func);
+        llvm::BasicBlock* out_body = llvm::BasicBlock::Create(ctx_.context(), "axis_reduce_out_body", current_func);
+        llvm::BasicBlock* out_done = llvm::BasicBlock::Create(ctx_.context(), "axis_reduce_out_done", current_func);
+        builder.CreateBr(out_cond);
+
+        builder.SetInsertPoint(out_cond);
+        llvm::Value* out_i = builder.CreateLoad(ctx_.int64Type(), out_i_alloca);
+        builder.CreateCondBr(builder.CreateICmpULT(out_i, out_total), out_body, out_done);
+
+        builder.SetInsertPoint(out_body);
+        llvm::Value* stride = builder.CreateLoad(ctx_.int64Type(), inner_stride);
+        llvm::Value* inner = builder.CreateURem(out_i, stride);
+        llvm::Value* outer = builder.CreateUDiv(out_i, stride);
+        llvm::Value* outer_stride = builder.CreateMul(axis_len, stride);
+        llvm::Value* base = builder.CreateAdd(builder.CreateMul(outer, outer_stride), inner);
+
+        llvm::Value* first_bits = builder.CreateLoad(ctx_.int64Type(),
+            builder.CreateGEP(ctx_.int64Type(), src_elements_ptr, base));
+        llvm::Value* acc = builder.CreateAlloca(ctx_.ptrType(), nullptr, "axis_reduce_ad_acc");
+        builder.CreateStore(adNodeFromTensorElementBits(first_bits, "axis_reduce_ad_first"), acc);
+        llvm::Value* k_alloca = builder.CreateAlloca(ctx_.int64Type(), nullptr, "axis_reduce_k");
+        builder.CreateStore(one_i64, k_alloca);
+        llvm::BasicBlock* k_cond = llvm::BasicBlock::Create(ctx_.context(), "axis_reduce_k_cond", current_func);
+        llvm::BasicBlock* k_body = llvm::BasicBlock::Create(ctx_.context(), "axis_reduce_k_body", current_func);
+        llvm::BasicBlock* k_done = llvm::BasicBlock::Create(ctx_.context(), "axis_reduce_k_done", current_func);
+        builder.CreateBr(k_cond);
+
+        builder.SetInsertPoint(k_cond);
+        llvm::Value* k = builder.CreateLoad(ctx_.int64Type(), k_alloca);
+        builder.CreateCondBr(builder.CreateICmpULT(k, axis_len), k_body, k_done);
+
+        builder.SetInsertPoint(k_body);
+        llvm::Value* src_index = builder.CreateAdd(base, builder.CreateMul(k, stride));
+        llvm::Value* elem_bits = builder.CreateLoad(ctx_.int64Type(),
+            builder.CreateGEP(ctx_.int64Type(), src_elements_ptr, src_index));
+        llvm::Value* elem_node = adNodeFromTensorElementBits(elem_bits, "axis_reduce_ad_elem");
+        llvm::Value* old_acc = builder.CreateLoad(ctx_.ptrType(), acc);
+        uint32_t reduce_ad_op = 2;
+        if (op_code == 2) {
+            reduce_ad_op = 44;
+        } else if (op_code == 3) {
+            reduce_ad_op = 45;
+        }
+        llvm::Value* new_acc = autodiff_->recordADNodeBinary(reduce_ad_op, old_acc, elem_node);
+        builder.CreateStore(new_acc, acc);
+        builder.CreateStore(builder.CreateAdd(k, one_i64), k_alloca);
+        builder.CreateBr(k_cond);
+
+        builder.SetInsertPoint(k_done);
+        llvm::Value* final_node = builder.CreateLoad(ctx_.ptrType(), acc);
+        if (op_code == 1) {
+            llvm::Value* axis_len_fp = builder.CreateUIToFP(axis_len, ctx_.doubleType());
+            llvm::Value* axis_len_node = autodiff_->createADConstant(axis_len_fp);
+            final_node = autodiff_->recordADNodeBinary(5, final_node, axis_len_node);
+        }
+        llvm::Value* final_bits = builder.CreatePtrToInt(final_node, ctx_.int64Type());
+        builder.CreateStore(final_bits, builder.CreateGEP(ctx_.int64Type(), result_elems, out_i));
+        builder.CreateStore(builder.CreateAdd(out_i, one_i64), out_i_alloca);
+        builder.CreateBr(out_cond);
+
+        builder.SetInsertPoint(out_done);
+        builder.CreateStore(result_dims, builder.CreateStructGEP(tensor_type, result_ptr, 0));
+        builder.CreateStore(out_num_dims, builder.CreateStructGEP(tensor_type, result_ptr, 1));
+        builder.CreateStore(result_elems, builder.CreateStructGEP(tensor_type, result_ptr, 2));
+        builder.CreateStore(out_total, builder.CreateStructGEP(tensor_type, result_ptr, 3));
+        llvm::Value* ad_packed_result = tagged_.packHeapPtr(result_ptr);
+        builder.CreateBr(merge_block);
+        llvm::BasicBlock* ad_exit_block = builder.GetInsertBlock();
+
+        builder.SetInsertPoint(numeric_block);
+
+        llvm::Value* numeric_arena_ptr = builder.CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+        auto* ptrTy = ctx_.ptrType();
+        auto* i64Ty = ctx_.int64Type();
+        llvm::FunctionType* fn_type = llvm::FunctionType::get(ptrTy,
+            {ptrTy, ptrTy, i64Ty, ptrTy, i64Ty, i64Ty, i64Ty}, false);
+        llvm::FunctionCallee callee = ctx_.module().getOrInsertFunction("eshkol_xla_reduce", fn_type);
+        llvm::Value* numeric_result = builder.CreateCall(callee,
+            {numeric_arena_ptr, src_elements_ptr, src_total, src_dims_ptr, src_num_dims,
+             axis, llvm::ConstantInt::get(i64Ty, op_code)},
+            "axis_reduce_result");
+        llvm::Value* numeric_packed_result = tagged_.packHeapPtr(numeric_result);
+        builder.CreateBr(merge_block);
+        llvm::BasicBlock* numeric_exit_block = builder.GetInsertBlock();
+
+        builder.SetInsertPoint(merge_block);
+        llvm::PHINode* result_phi = builder.CreatePHI(ctx_.taggedValueType(), 2, "axis_reduce_result_phi");
+        result_phi->addIncoming(ad_packed_result, ad_exit_block);
+        result_phi->addIncoming(numeric_packed_result, numeric_exit_block);
+        return result_phi;
+    }
+
     // Load arena and declare runtime
     llvm::Value* arena_ptr = builder.CreateLoad(ctx_.ptrType(), ctx_.globalArena());
     auto* ptrTy = ctx_.ptrType();
