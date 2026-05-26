@@ -2,5 +2,5 @@
 
 (define-library (test parser unsupported-import)
   (export answer)
-  (import (only (scheme base) +))
+  (import (rename (scheme base) (+)))
   (begin (define answer 42)))

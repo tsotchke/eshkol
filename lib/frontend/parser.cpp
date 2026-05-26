@@ -9,6 +9,7 @@
 #include <eshkol/logger.h>
 
 #include <string.h>
+#include <algorithm>
 #include <cctype>
 #include <cmath>
 #include <functional>
@@ -3038,6 +3039,19 @@ static std::string join_r7rs_library_name(const std::vector<std::string>& parts)
     return out;
 }
 
+struct R7rsImportRename {
+    std::string from;
+    std::string to;
+};
+
+struct R7rsImportSpec {
+    std::string module;
+    std::vector<std::string> only;
+    std::vector<std::string> except;
+    std::vector<R7rsImportRename> renames;
+    std::string prefix;
+};
+
 static eshkol_ast_t make_require_ast(const std::vector<std::string>& modules,
                                      uint32_t line,
                                      uint32_t column) {
@@ -3051,6 +3065,37 @@ static eshkol_ast_t make_require_ast(const std::vector<std::string>& modules,
     for (size_t i = 0; i < modules.size(); i++) {
         ast.operation.require_op.module_names[i] = parser_copy_cstr(modules[i]);
     }
+    return ast;
+}
+
+static eshkol_ast_t make_define_alias_ast(const std::string& alias,
+                                          const std::string& source,
+                                          uint32_t line,
+                                          uint32_t column) {
+    eshkol_ast_t ast = {};
+    ast.type = ESHKOL_OP;
+    ast.line = line;
+    ast.column = column;
+    ast.operation.op = ESHKOL_DEFINE_OP;
+    ast.operation.define_op.name = parser_copy_cstr(alias);
+    ast.operation.define_op.value = new eshkol_ast_t;
+    *ast.operation.define_op.value = make_parser_var_ast(source.c_str(), line, column);
+    ast.operation.define_op.is_function = 0;
+    ast.operation.define_op.parameters = nullptr;
+    ast.operation.define_op.num_params = 0;
+    ast.operation.define_op.is_variadic = 0;
+    ast.operation.define_op.rest_param = nullptr;
+    ast.operation.define_op.is_external = 0;
+    ast.operation.define_op.return_type = nullptr;
+    ast.operation.define_op.param_types = nullptr;
+    ast.operation.define_op.link_section = nullptr;
+    ast.operation.define_op.alignment = 0;
+    ast.operation.define_op.has_alignment = 0;
+    ast.operation.define_op.is_used = 0;
+    ast.operation.define_op.is_weak = 0;
+    ast.operation.define_op.export_symbol = 0;
+    ast.operation.define_op.export_name = nullptr;
+    ast.operation.define_op.is_no_return = 0;
     return ast;
 }
 
@@ -3104,9 +3149,38 @@ static bool parse_r7rs_library_name(SchemeTokenizer& tokenizer,
     return true;
 }
 
+static bool is_r7rs_import_modifier(const std::string& value) {
+    return value == "only" || value == "except" ||
+           value == "prefix" || value == "rename";
+}
+
+static bool parse_r7rs_symbol_list_until_rparen(SchemeTokenizer& tokenizer,
+                                                const Token& form_token,
+                                                const char* context,
+                                                std::vector<std::string>* out) {
+    while (true) {
+        Token token = tokenizer.nextToken();
+        if (token.type == TOKEN_RPAREN) break;
+        if (token.type == TOKEN_EOF) {
+            PARSE_ERROR_AT(form_token, "unexpected end of input in %s", context);
+            return false;
+        }
+        if (token.type != TOKEN_SYMBOL) {
+            PARSE_ERROR_AT(token, "%s expects symbol names", context);
+            return false;
+        }
+        out->push_back(token.value);
+    }
+    if (out->empty()) {
+        PARSE_ERROR_AT(form_token, "%s expects at least one symbol", context);
+        return false;
+    }
+    return true;
+}
+
 static bool parse_r7rs_import_set_body(SchemeTokenizer& tokenizer,
                                        const Token& open_token,
-                                       std::string* out_module) {
+                                       R7rsImportSpec* out_spec) {
     Token first = tokenizer.nextToken();
     if (first.type == TOKEN_EOF) {
         PARSE_ERROR_AT(open_token, "unexpected end of input in import set");
@@ -3116,10 +3190,94 @@ static bool parse_r7rs_import_set_body(SchemeTokenizer& tokenizer,
         PARSE_ERROR_AT(first, "R7RS import set must begin with a library name symbol");
         return false;
     }
-    if (first.value == "only" || first.value == "except" ||
-        first.value == "prefix" || first.value == "rename") {
-        PARSE_ERROR_AT(first, "R7RS import modifiers are not supported yet");
-        return false;
+
+    if (is_r7rs_import_modifier(first.value)) {
+        Token nested_open = tokenizer.nextToken();
+        if (nested_open.type != TOKEN_LPAREN) {
+            PARSE_ERROR_AT(nested_open, "R7RS %s import requires a nested import set",
+                           first.value.c_str());
+            return false;
+        }
+
+        R7rsImportSpec nested;
+        if (!parse_r7rs_import_set_body(tokenizer, nested_open, &nested)) {
+            return false;
+        }
+
+        if (first.value == "only") {
+            std::vector<std::string> names;
+            if (!parse_r7rs_symbol_list_until_rparen(tokenizer, first,
+                                                     "R7RS only import",
+                                                     &names)) {
+                return false;
+            }
+            nested.only = names;
+            if (out_spec) *out_spec = nested;
+            return true;
+        }
+
+        if (first.value == "except") {
+            std::vector<std::string> names;
+            if (!parse_r7rs_symbol_list_until_rparen(tokenizer, first,
+                                                     "R7RS except import",
+                                                     &names)) {
+                return false;
+            }
+            nested.except.insert(nested.except.end(), names.begin(), names.end());
+            if (out_spec) *out_spec = nested;
+            return true;
+        }
+
+        if (first.value == "prefix") {
+            Token prefix = tokenizer.nextToken();
+            if (prefix.type != TOKEN_SYMBOL) {
+                PARSE_ERROR_AT(prefix, "R7RS prefix import expects a prefix symbol");
+                return false;
+            }
+            Token close = tokenizer.nextToken();
+            if (close.type != TOKEN_RPAREN) {
+                PARSE_ERROR_AT(close, "R7RS prefix import takes exactly one prefix");
+                return false;
+            }
+            if (nested.only.empty() && nested.renames.empty()) {
+                PARSE_ERROR_AT(prefix,
+                               "R7RS prefix import currently requires an explicit only or rename set");
+                return false;
+            }
+            nested.prefix = prefix.value + nested.prefix;
+            if (out_spec) *out_spec = nested;
+            return true;
+        }
+
+        std::vector<R7rsImportRename> renames;
+        while (true) {
+            Token pair_open = tokenizer.nextToken();
+            if (pair_open.type == TOKEN_RPAREN) break;
+            if (pair_open.type == TOKEN_EOF) {
+                PARSE_ERROR_AT(first, "unexpected end of input in R7RS rename import");
+                return false;
+            }
+            if (pair_open.type != TOKEN_LPAREN) {
+                PARSE_ERROR_AT(pair_open, "R7RS rename import expects parenthesized rename pairs");
+                return false;
+            }
+            Token from = tokenizer.nextToken();
+            Token to = tokenizer.nextToken();
+            Token pair_close = tokenizer.nextToken();
+            if (from.type != TOKEN_SYMBOL || to.type != TOKEN_SYMBOL ||
+                pair_close.type != TOKEN_RPAREN) {
+                PARSE_ERROR_AT(pair_open, "R7RS rename pairs must be (old new)");
+                return false;
+            }
+            renames.push_back({from.value, to.value});
+        }
+        if (renames.empty()) {
+            PARSE_ERROR_AT(first, "R7RS rename import expects at least one rename pair");
+            return false;
+        }
+        nested.renames.insert(nested.renames.end(), renames.begin(), renames.end());
+        if (out_spec) *out_spec = nested;
+        return true;
     }
 
     std::vector<std::string> parts;
@@ -3138,18 +3296,13 @@ static bool parse_r7rs_import_set_body(SchemeTokenizer& tokenizer,
         parts.push_back(token.value);
     }
 
-    if (parts.empty()) {
-        PARSE_ERROR_AT(open_token, "R7RS import set library name cannot be empty");
-        return false;
-    }
-
-    if (out_module) *out_module = join_r7rs_library_name(parts);
+    if (out_spec) out_spec->module = join_r7rs_library_name(parts);
     return true;
 }
 
 static bool parse_r7rs_import_sets(SchemeTokenizer& tokenizer,
                                    const Token& form_token,
-                                   std::vector<std::string>* modules) {
+                                   std::vector<R7rsImportSpec>* specs) {
     while (true) {
         Token token = tokenizer.nextToken();
         if (token.type == TOKEN_RPAREN) break;
@@ -3162,18 +3315,66 @@ static bool parse_r7rs_import_sets(SchemeTokenizer& tokenizer,
             return false;
         }
 
-        std::string module_name;
-        if (!parse_r7rs_import_set_body(tokenizer, token, &module_name)) {
+        R7rsImportSpec spec;
+        if (!parse_r7rs_import_set_body(tokenizer, token, &spec)) {
             return false;
         }
-        modules->push_back(module_name);
+        specs->push_back(spec);
     }
 
-    if (modules->empty()) {
+    if (specs->empty()) {
         PARSE_ERROR_AT(form_token, "R7RS import expects at least one library");
         return false;
     }
     return true;
+}
+
+static bool r7rs_name_is_excepted(const R7rsImportSpec& spec,
+                                  const std::string& name) {
+    return std::find(spec.except.begin(), spec.except.end(), name) != spec.except.end();
+}
+
+static void append_r7rs_import_forms(const std::vector<R7rsImportSpec>& specs,
+                                     std::vector<eshkol_ast_t>* forms,
+                                     uint32_t line,
+                                     uint32_t column) {
+    std::vector<std::string> modules;
+    for (const auto& spec : specs) {
+        modules.push_back(spec.module);
+    }
+    forms->push_back(make_require_ast(modules, line, column));
+
+    for (const auto& spec : specs) {
+        for (const auto& rename : spec.renames) {
+            if (r7rs_name_is_excepted(spec, rename.from)) continue;
+            forms->push_back(make_define_alias_ast(spec.prefix + rename.to,
+                                                   rename.from, line, column));
+        }
+
+        if (spec.prefix.empty()) continue;
+        for (const auto& name : spec.only) {
+            if (r7rs_name_is_excepted(spec, name)) continue;
+            bool renamed = false;
+            for (const auto& rename : spec.renames) {
+                if (rename.from == name) {
+                    renamed = true;
+                    break;
+                }
+            }
+            if (!renamed) {
+                forms->push_back(make_define_alias_ast(spec.prefix + name,
+                                                       name, line, column));
+            }
+        }
+    }
+}
+
+static eshkol_ast_t make_r7rs_import_ast(const std::vector<R7rsImportSpec>& specs,
+                                         uint32_t line,
+                                         uint32_t column) {
+    std::vector<eshkol_ast_t> forms;
+    append_r7rs_import_forms(specs, &forms, line, column);
+    return make_sequence_or_null_ast(forms, line, column);
 }
 
 static eshkol_ast_t parse_define_library_form(SchemeTokenizer& tokenizer,
@@ -3230,12 +3431,12 @@ static eshkol_ast_t parse_define_library_form(SchemeTokenizer& tokenizer,
             lowered_forms.push_back(make_provide_ast(exports, clause_name.line,
                                                      clause_name.column));
         } else if (clause_name.value == "import") {
-            std::vector<std::string> modules;
-            if (!parse_r7rs_import_sets(tokenizer, clause_name, &modules)) {
+            std::vector<R7rsImportSpec> specs;
+            if (!parse_r7rs_import_sets(tokenizer, clause_name, &specs)) {
                 return {.type = ESHKOL_INVALID};
             }
-            lowered_forms.push_back(make_require_ast(modules, clause_name.line,
-                                                     clause_name.column));
+            append_r7rs_import_forms(specs, &lowered_forms, clause_name.line,
+                                     clause_name.column);
         } else if (clause_name.value == "begin") {
             while (true) {
                 Token token = tokenizer.nextToken();
@@ -8332,13 +8533,13 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Legacy syntax: (import "path/to/file.esk")
             token = tokenizer.nextToken();
             if (token.type == TOKEN_LPAREN) {
-                std::vector<std::string> modules;
-                std::string first_module;
-                if (!parse_r7rs_import_set_body(tokenizer, token, &first_module)) {
+                std::vector<R7rsImportSpec> specs;
+                R7rsImportSpec first_spec;
+                if (!parse_r7rs_import_set_body(tokenizer, token, &first_spec)) {
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
-                modules.push_back(first_module);
+                specs.push_back(first_spec);
 
                 while (true) {
                     token = tokenizer.nextToken();
@@ -8353,14 +8554,14 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                         ast.type = ESHKOL_INVALID;
                         return ast;
                     }
-                    std::string module_name;
-                    if (!parse_r7rs_import_set_body(tokenizer, token, &module_name)) {
+                    R7rsImportSpec spec;
+                    if (!parse_r7rs_import_set_body(tokenizer, token, &spec)) {
                         ast.type = ESHKOL_INVALID;
                         return ast;
                     }
-                    modules.push_back(module_name);
+                    specs.push_back(spec);
                 }
-                return make_require_ast(modules, token.line, token.column);
+                return make_r7rs_import_ast(specs, token.line, token.column);
             }
             if (token.type != TOKEN_STRING) {
                 PARSE_ERROR_AT(token, "import requires a string path or R7RS library import set");

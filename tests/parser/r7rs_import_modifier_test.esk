@@ -1,0 +1,6 @@
+;;; Test valid R7RS import modifiers in parser coverage.
+
+(import (only (scheme base) +))
+
+(display "PASS: R7RS only import modifier parses")
+(newline)
