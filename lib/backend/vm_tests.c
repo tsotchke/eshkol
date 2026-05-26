@@ -703,6 +703,8 @@ static int run_source_tests(void) {
         "(define who \"vm\") (display \"hello ~{who}\")", "hello vm");
     source_test_expect("string-interpolation-expr",
         "(display \"sum=~{(+ 19 23)} literal=~~{x}\")", "sum=42 literal=~{x}");
+    source_test_expect("string-interpolation-string-expr",
+        "(display \"brace=~{(string-append \\\"}\\\" \\\"ok\\\")}\")", "brace=}ok");
 
     /* Higher-order functions — list output format varies; use smoke tests */
     source_test("map-square",    "(display (map (lambda (x) (* x x)) (list 1 2 3 4 5)))");

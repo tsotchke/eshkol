@@ -97,6 +97,9 @@
 (test-case "nested interpolation expression"
            "value=84"
            "value=~{(* (+ 19 23) 2)}")
+(test-case "interpolation expression string with brace"
+           "brace=}ok"
+           "brace=~{(string-append \"}\" \"ok\")}")
 
 ;; substring
 (test-case "substring start" "hel" (substring "hello" 0 3))

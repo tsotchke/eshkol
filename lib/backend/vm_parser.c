@@ -230,18 +230,35 @@ static Node* parse_string_literal(void) {
                     break;
                 }
 
-                if (append_char_buf(&expr_buf, &expr_len, &expr_cap, ch) != 0) {
+                char tracked = ch;
+                int consumed = 1;
+                if (ch == '\\' && src_ptr[1]) {
+                    consumed = 2;
+                    switch (src_ptr[1]) {
+                        case 'n': tracked = '\n'; break;
+                        case 't': tracked = '\t'; break;
+                        case '\\': tracked = '\\'; break;
+                        case '"': tracked = '"'; break;
+                        default: tracked = src_ptr[1]; break;
+                    }
+                }
+
+                if (append_char_buf(&expr_buf, &expr_len, &expr_cap, tracked) != 0) {
                     free(expr_buf); free(buf); free(parts); return NULL;
                 }
 
                 if (in_expr_string) {
-                    if (escaped) escaped = 0;
-                    else if (ch == '\\') escaped = 1;
-                    else if (ch == '"') in_expr_string = 0;
-                } else if (ch == '"') {
+                    if (escaped) {
+                        escaped = 0;
+                    } else if (tracked == '\\') {
+                        escaped = 1;
+                    } else if (tracked == '"') {
+                        in_expr_string = 0;
+                    }
+                } else if (tracked == '"') {
                     in_expr_string = 1;
                 }
-                src_ptr++;
+                src_ptr += consumed;
             }
 
             if (!closed) {

@@ -464,6 +464,20 @@ private:
                 bool escaped = false;
                 bool closed = false;
 
+                auto track_expr_char = [&](char ch) {
+                    if (in_expr_string) {
+                        if (escaped) {
+                            escaped = false;
+                        } else if (ch == '\\') {
+                            escaped = true;
+                        } else if (ch == '"') {
+                            in_expr_string = false;
+                        }
+                    } else if (ch == '"') {
+                        in_expr_string = true;
+                    }
+                };
+
                 while (pos < length) {
                     char c = input[pos];
                     if (!in_expr_string && c == '}') {
@@ -471,28 +485,32 @@ private:
                         break;
                     }
 
-                    expr_source += c;
-
-                    if (in_expr_string) {
-                        if (escaped) {
-                            escaped = false;
-                        } else if (c == '\\') {
-                            escaped = true;
-                        } else if (c == '"') {
-                            in_expr_string = false;
+                    size_t consumed = 1;
+                    char tracked = c;
+                    if (c == '\\' && pos + 1 < length) {
+                        char esc = input[pos + 1];
+                        consumed = 2;
+                        switch (esc) {
+                            case 'n': tracked = '\n'; break;
+                            case 't': tracked = '\t'; break;
+                            case 'r': tracked = '\r'; break;
+                            case '\\': tracked = '\\'; break;
+                            case '"': tracked = '"'; break;
+                            default: tracked = esc; break;
                         }
-                    } else if (c == '"') {
-                        in_expr_string = true;
                     }
+                    expr_source += tracked;
+                    track_expr_char(tracked);
 
-                    if (c == '\n') {
-                        line_++;
-                        pos++;
-                        line_start_ = pos;
-                        column_ = 1;
-                    } else {
-                        pos++;
-                        column_++;
+                    for (size_t j = 0; j < consumed; j++) {
+                        char raw = input[pos++];
+                        if (raw == '\n') {
+                            line_++;
+                            line_start_ = pos;
+                            column_ = 1;
+                        } else {
+                            column_++;
+                        }
                     }
                 }
 
