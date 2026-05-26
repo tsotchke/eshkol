@@ -1,0 +1,124 @@
+;; Structured logging tests for core.logging (#147).
+
+(require stdlib)
+(require core.logging)
+
+(define passed 0)
+(define failed 0)
+
+(define (check name ok)
+  (if ok
+      (begin
+        (set! passed (+ passed 1))
+        (display "PASS: ") (display name) (newline))
+      (begin
+        (set! failed (+ failed 1))
+        (display "FAIL: ") (display name) (newline))))
+
+(define (capture-log thunk)
+  (let ((p (open-output-string)))
+    (log-set-output! p)
+    (thunk)
+    (let ((out (get-output-string p)))
+      (log-set-output! #f)
+      out)))
+
+(define (read-first-line path)
+  (let ((p (open-input-file path)))
+    (let ((line (read-line p)))
+      (close-port p)
+      line)))
+
+(display "=== core.logging structured logging tests ===") (newline)
+
+(log-set-level! 'debug)
+
+(let ((line (capture-log
+              (lambda ()
+                (log-info "quoted \"line\"\nnext"
+                          (list (list "path" "C:\\tmp")
+                                (list "count" 2)
+                                (list "ok" #t)
+                                (list 'phase 'v1)))))))
+  (check "emits JSON object line" (and (string-starts-with? line "{")
+                                       (string-ends-with? line "\n")))
+  (check "includes timestamp field" (string-contains? line "\"ts\":"))
+  (check "includes info level" (string-contains? line "\"level\":\"info\""))
+  (check "escapes message quotes and newline"
+         (string-contains? line "\"msg\":\"quoted \\\"line\\\"\\nnext\""))
+  (check "escapes string field backslash"
+         (string-contains? line "\"path\":\"C:\\\\tmp\""))
+  (check "renders numeric field as JSON number"
+         (string-contains? line "\"count\":2"))
+  (check "renders boolean field as JSON boolean"
+         (string-contains? line "\"ok\":true"))
+  (check "accepts symbol field keys and values"
+         (string-contains? line "\"phase\":\"v1\"")))
+
+(let ((line (capture-log
+              (lambda ()
+                (log-warn "fallback"
+                          (list (list "payload" (list "a\"b" "c\\d"))))))))
+  (check "escapes fallback rendered values"
+         (and (string-contains? line "\"payload\":\"")
+              (string-contains? line "\\\"")
+              (string-contains? line "\\\\"))))
+
+(let ((filtered (capture-log
+                  (lambda ()
+                    (log-set-level! 'warn)
+                    (log-debug "drop-debug")
+                    (log-info "drop-info")
+                    (log-warn "keep-warn")
+                    (log-error "keep-error")))))
+  (check "filters below configured level"
+         (and (not (string-contains? filtered "drop-debug"))
+              (not (string-contains? filtered "drop-info"))))
+  (check "keeps warn and error at warn level"
+         (and (string-contains? filtered "keep-warn")
+              (string-contains? filtered "keep-error"))))
+
+(log-set-level! 'debug)
+
+(let ((traced (capture-log
+                (lambda ()
+                  (log-with-trace! "outer"
+                    (lambda ()
+                      (log-info "outer")
+                      (log-with-trace! "inner"
+                        (lambda () (log-info "inner")))
+                      (log-info "outer-again")))
+                  (log-info "after")))))
+  (check "adds trace ids inside trace scope"
+         (and (string-contains? traced "\"trace_id\":\"outer\"")
+              (string-contains? traced "\"trace_id\":\"inner\"")))
+  (check "restores trace id after normal scope"
+         (= (string-count traced "\"trace_id\"") 3)))
+
+(let ((restored (capture-log
+                  (lambda ()
+                    (guard (exn (#t #t))
+                      (log-with-trace! "boom"
+                        (lambda () (error "expected logging test error")))
+                      #f)
+                    (log-info "after-error")))))
+  (check "restores trace id after raised scope"
+         (= (string-count restored "\"trace_id\"") 0)))
+
+(let ((path "/tmp/eshkol_logging_test.jsonl"))
+  (log-set-output! path)
+  (log-error "file sink" (list (list "code" 7)))
+  (log-set-output! #f)
+  (let ((line (read-first-line path)))
+    (check "path string output sink writes JSON-L"
+           (and (string-contains? line "\"level\":\"error\"")
+                (string-contains? line "\"msg\":\"file sink\"")
+                (string-contains? line "\"code\":7")))))
+
+(log-set-level! 'info)
+(log-set-output! #f)
+
+(display "Passed: ") (display passed) (newline)
+(display "Failed: ") (display failed) (newline)
+
+(if (> failed 0) (exit 1) (exit 0))

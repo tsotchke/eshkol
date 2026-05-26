@@ -227,9 +227,9 @@ Acceptance:
 ### Noesis M1 (Hiereia production stack)
 | # | Item | Effort |
 |---|---|---|
-| #154 | Extra AD ops (atan2, asin, acos, softmax, gelu, silu, sinh, cosh) | 1-2 days remaining for full test coverage |
+| #154 | Extra AD ops (atan2, asin, acos, softmax, gelu, silu, sinh, cosh) | ✅ finite-difference coverage landed in v1.2.x |
 | #155 | Priority queues + sets + deques stdlib | ✅ landed in v1.2.x |
-| #147 | Structured logging (JSON-L + trace IDs) | implementation exists; needs tests, docs, Noesis integration |
+| #147 | Structured logging (JSON-L + trace IDs) | core contracts tested; needs Noesis integration |
 | #149 | Capability / permission hooks | 3 days |
 | #170 | Reflection primitives (`procedure-arity`, `record-fields`, `describe`) | ✅ landed in v1.2.x |
 | #171 | Memoization / LRU cache stdlib | ✅ landed in v1.2.x |
@@ -237,14 +237,14 @@ Acceptance:
 | #173 | PRNG seeding + deterministic replay | ✅ landed in v1.2.x |
 
 Phase 2 productionizes this surface:
-- Add focused tests for `core.logging`, including JSON escaping, trace-id
-  scoping, level filtering, and port redirection.
+- Keep focused tests for `core.logging`, including JSON escaping, trace-id
+  scoping, level filtering, port redirection, and path-string sinks.
 - Wire capability hooks into subprocess, FFI, file I/O, network stubs, and
   future HTTP handlers. Capabilities must be deny-by-default when a policy is
   active, but zero-overhead/no-policy by default.
 - Extend reflection docs and tests for user procedures, records, builtins,
   variadics, and imported functions.
-- Finish AD-op tests with finite-difference checks for every #154 op.
+- Keep #154 AD-op finite-difference checks in the stdlib/autodiff gates.
 - Keep collections as stdlib, not syntax: priority queues, sets, and deques
   should remain ordinary data structures.
 

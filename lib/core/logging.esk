@@ -20,7 +20,7 @@
 ;;;   (log-warn  msg [fields])
 ;;;   (log-error msg [fields])
 ;;;   (log-set-level! level)    ; 'debug / 'info / 'warn / 'error
-;;;   (log-set-output! port)    ; defaults to current-output-port
+;;;   (log-set-output! sink)    ; output port, path string, or #f for default
 ;;;   (log-with-trace! trace-id thunk) ; scope trace_id within thunk
 ;;;
 ;;; `fields` is an association list of (string . simple-value) pairs.
@@ -37,18 +37,36 @@
 ;; Internal state.
 (define *log-level* 'info)
 (define *log-output* #f)  ; lazily resolved to current-output-port
+(define *log-owned-output* #f)
 (define *log-trace-id* #f)
 
 (define (log-level) *log-level*)
-(define (log-output-port) *log-output*)
+(define (log-output-port) (log-target-port))
 
 (define (log-set-level! level)
   (if (memq level '(debug info warn error))
       (set! *log-level* level)
       (error "log-set-level!: invalid level" level)))
 
-(define (log-set-output! port)
-  (set! *log-output* port))
+(define (log-close-owned-output!)
+  (if *log-owned-output*
+      (begin
+        (close-port *log-output*)
+        (set! *log-output* #f)
+        (set! *log-owned-output* #f))))
+
+(define (log-set-output! sink)
+  (log-close-owned-output!)
+  (cond
+    ((eq? sink #f)
+     (set! *log-output* #f))
+    ((string? sink)
+     (set! *log-output* (open-output-file sink))
+     (set! *log-owned-output* #t))
+    ((output-port? sink)
+     (set! *log-output* sink))
+    (else
+     (error "log-set-output!: expected output port, path string, or #f" sink))))
 
 (define (log-level-priority lvl)
   (cond ((eq? lvl 'debug) 0)
@@ -63,10 +81,14 @@
 (define (log-with-trace! trace-id thunk)
   "Run `thunk` with *log-trace-id* bound to trace-id; restore after."
   (let ((prev *log-trace-id*))
-    (set! *log-trace-id* trace-id)
-    (let ((result (thunk)))
-      (set! *log-trace-id* prev)
-      result)))
+    (guard (e (#t
+               (begin
+                 (set! *log-trace-id* prev)
+                 (raise e))))
+      (dynamic-wind
+        (lambda () (set! *log-trace-id* trace-id))
+        thunk
+        (lambda () (set! *log-trace-id* prev))))))
 
 (define (log-target-port)
   (if *log-output* *log-output* (current-output-port)))
@@ -114,8 +136,8 @@
      (string-append "\"" (log-json-escape (symbol->string v)) "\""))
     (else
      (let ((p (open-output-string)))
-       (display "\"" p) (display v p) (display "\"" p)
-       (get-output-string p)))))
+       (write v p)
+       (string-append "\"" (log-json-escape (get-output-string p)) "\"")))))
 
 ;; Emit a field as "key":value — caller supplies the leading ,
 ;; (or nothing for first field).
@@ -133,7 +155,9 @@
 ;; proper list `("k" "." "v")` rather than a dotted pair, so quoted-
 ;; alist syntax doesn't work; (list "k" v) is the portable form.
 (define (log-field-key pair)
-  (cond ((pair? pair) (car pair))
+  (cond ((not (pair? pair)) (error "log: field is not a pair/list" pair))
+        ((string? (car pair)) (car pair))
+        ((symbol? (car pair)) (symbol->string (car pair)))
         (else (error "log: field is not a pair/list" pair))))
 
 (define (log-field-value pair)
