@@ -1872,6 +1872,7 @@ llvm::Value* TensorCodegen::tensorMean(const eshkol_operations_t* op) {
     llvm::Value* svec_total = ctx_.builder().CreateLoad(ctx_.doubleType(), svec_sum);
     llvm::Value* svec_len_fp = ctx_.builder().CreateSIToFP(svec_len, ctx_.doubleType());
     llvm::Value* svec_result = ctx_.builder().CreateFDiv(svec_total, svec_len_fp);
+    llvm::Value* svec_tagged_result = tagged_.packDouble(svec_result);
     ctx_.builder().CreateBr(mean_merge);
     llvm::BasicBlock* svec_exit_block = ctx_.builder().GetInsertBlock();
 
@@ -1901,6 +1902,54 @@ llvm::Value* TensorCodegen::tensorMean(const eshkol_operations_t* op) {
     // Accumulator and counter allocas - placed before XLA check so all paths can use them
     llvm::Value* sum = ctx_.builder().CreateAlloca(ctx_.doubleType(), nullptr, "mean_acc");
     llvm::Value* scalar_counter = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "mean_scalar_i");
+
+    llvm::Value* ad_mean_tagged_result = nullptr;
+    llvm::BasicBlock* ad_mean_exit_block = nullptr;
+    if (autodiff_) {
+        llvm::Value* in_ad_mode = ctx_.builder().CreateLoad(ctx_.int1Type(), ctx_.adModeActive());
+        llvm::BasicBlock* ad_mean_block = llvm::BasicBlock::Create(ctx_.context(), "tmean_ad", current_func);
+        llvm::BasicBlock* numeric_mean_block = llvm::BasicBlock::Create(ctx_.context(), "tmean_numeric", current_func);
+        ctx_.builder().CreateCondBr(in_ad_mode, ad_mean_block, numeric_mean_block);
+
+        ctx_.builder().SetInsertPoint(ad_mean_block);
+        llvm::Value* ad_acc = ctx_.builder().CreateAlloca(ctx_.ptrType(), nullptr, "tmean_ad_acc");
+        llvm::Value* ad_counter = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "tmean_ad_i");
+        llvm::Value* zero_node = autodiff_->createADConstant(llvm::ConstantFP::get(ctx_.doubleType(), 0.0));
+        ctx_.builder().CreateStore(zero_node, ad_acc);
+        ctx_.builder().CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), ad_counter);
+
+        llvm::BasicBlock* ad_loop_cond = llvm::BasicBlock::Create(ctx_.context(), "tmean_ad_cond", current_func);
+        llvm::BasicBlock* ad_loop_body = llvm::BasicBlock::Create(ctx_.context(), "tmean_ad_body", current_func);
+        llvm::BasicBlock* ad_loop_exit = llvm::BasicBlock::Create(ctx_.context(), "tmean_ad_exit", current_func);
+        ctx_.builder().CreateBr(ad_loop_cond);
+
+        ctx_.builder().SetInsertPoint(ad_loop_cond);
+        llvm::Value* ad_i = ctx_.builder().CreateLoad(ctx_.int64Type(), ad_counter);
+        llvm::Value* ad_has_elem = ctx_.builder().CreateICmpULT(ad_i, src_total);
+        ctx_.builder().CreateCondBr(ad_has_elem, ad_loop_body, ad_loop_exit);
+
+        ctx_.builder().SetInsertPoint(ad_loop_body);
+        llvm::Value* ad_elem_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), typed_src_elements, ad_i);
+        llvm::Value* ad_elem_bits = ctx_.builder().CreateLoad(ctx_.int64Type(), ad_elem_ptr);
+        llvm::Value* ad_elem_node = adNodeFromTensorElementBits(ad_elem_bits, "tmean_ad_elem");
+        llvm::Value* ad_old_acc = ctx_.builder().CreateLoad(ctx_.ptrType(), ad_acc);
+        llvm::Value* ad_new_acc = autodiff_->recordADNodeBinary(2, ad_old_acc, ad_elem_node);
+        ctx_.builder().CreateStore(ad_new_acc, ad_acc);
+        llvm::Value* ad_next_i = ctx_.builder().CreateAdd(ad_i, llvm::ConstantInt::get(ctx_.int64Type(), 1));
+        ctx_.builder().CreateStore(ad_next_i, ad_counter);
+        ctx_.builder().CreateBr(ad_loop_cond);
+
+        ctx_.builder().SetInsertPoint(ad_loop_exit);
+        llvm::Value* final_ad_sum = ctx_.builder().CreateLoad(ctx_.ptrType(), ad_acc);
+        llvm::Value* count_fp = ctx_.builder().CreateSIToFP(src_total, ctx_.doubleType());
+        llvm::Value* count_node = autodiff_->createADConstant(count_fp);
+        llvm::Value* final_ad_mean = autodiff_->recordADNodeBinary(5, final_ad_sum, count_node);
+        ad_mean_tagged_result = tagged_.packPtr(final_ad_mean, ESHKOL_VALUE_CALLABLE);
+        ctx_.builder().CreateBr(mean_merge);
+        ad_mean_exit_block = ctx_.builder().GetInsertBlock();
+
+        ctx_.builder().SetInsertPoint(numeric_mean_block);
+    }
 
 #ifdef ESHKOL_XLA_ENABLED
     // ===== XLA DISPATCH FOR LARGE TENSOR MEAN =====
@@ -2023,16 +2072,20 @@ llvm::Value* TensorCodegen::tensorMean(const eshkol_operations_t* op) {
     llvm::Value* total_sum = ctx_.builder().CreateLoad(ctx_.doubleType(), sum);
     llvm::Value* count_fp = ctx_.builder().CreateSIToFP(src_total, ctx_.doubleType());
     llvm::Value* tensor_result = ctx_.builder().CreateFDiv(total_sum, count_fp);
+    llvm::Value* tensor_tagged_result = tagged_.packDouble(tensor_result);
     ctx_.builder().CreateBr(mean_merge);
     llvm::BasicBlock* tensor_exit_block = ctx_.builder().GetInsertBlock();
 
     // === MERGE RESULTS ===
     ctx_.builder().SetInsertPoint(mean_merge);
-    llvm::PHINode* result_phi = ctx_.builder().CreatePHI(ctx_.doubleType(), 2, "mean_result");
-    result_phi->addIncoming(svec_result, svec_exit_block);
-    result_phi->addIncoming(tensor_result, tensor_exit_block);
+    llvm::PHINode* result_phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), ad_mean_exit_block ? 3 : 2, "mean_result");
+    result_phi->addIncoming(svec_tagged_result, svec_exit_block);
+    result_phi->addIncoming(tensor_tagged_result, tensor_exit_block);
+    if (ad_mean_exit_block && ad_mean_tagged_result) {
+        result_phi->addIncoming(ad_mean_tagged_result, ad_mean_exit_block);
+    }
 
-    return tagged_.packDouble(result_phi);
+    return result_phi;
 }
 
 } // namespace eshkol

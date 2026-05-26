@@ -17,6 +17,7 @@
 
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
 
+#include <eshkol/backend/autodiff_codegen.h>
 #include <eshkol/backend/cpu_features.h>
 #include <eshkol/logger.h>
 #include <llvm/IR/Constants.h>
@@ -466,6 +467,64 @@ llvm::Value* TensorCodegen::rawTensorArithmeticSIMD(llvm::Value* arg1, llvm::Val
     llvm::BasicBlock* scalar_cond = llvm::BasicBlock::Create(ctx_.context(), "scalar_cond", current_func);
     llvm::BasicBlock* scalar_body = llvm::BasicBlock::Create(ctx_.context(), "scalar_body", current_func);
     llvm::BasicBlock* final_exit = llvm::BasicBlock::Create(ctx_.context(), "final_exit", current_func);
+
+    uint32_t ad_op_type = 0;
+    if (operation == "add") {
+        ad_op_type = 2;  // AD_NODE_ADD
+    } else if (operation == "sub") {
+        ad_op_type = 3;  // AD_NODE_SUB
+    } else if (operation == "mul") {
+        ad_op_type = 4;  // AD_NODE_MUL
+    } else if (operation == "div") {
+        ad_op_type = 5;  // AD_NODE_DIV
+    } else if (operation == "pow") {
+        ad_op_type = 10; // AD_NODE_POW
+    } else if (operation == "max") {
+        ad_op_type = 44; // AD_NODE_MAX
+    } else if (operation == "min") {
+        ad_op_type = 45; // AD_NODE_MIN
+    }
+
+    if (autodiff_ && ad_op_type != 0) {
+        llvm::Value* in_ad_mode = builder.CreateLoad(ctx_.int1Type(), ctx_.adModeActive());
+        llvm::BasicBlock* ad_path = llvm::BasicBlock::Create(ctx_.context(), "arith_ad_path", current_func);
+        llvm::BasicBlock* numeric_path = llvm::BasicBlock::Create(ctx_.context(), "arith_numeric_path", current_func);
+        builder.CreateCondBr(in_ad_mode, ad_path, numeric_path);
+
+        builder.SetInsertPoint(ad_path);
+        llvm::Value* ad_counter = builder.CreateAlloca(ctx_.int64Type(), nullptr, "arith_ad_i");
+        builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), ad_counter);
+        llvm::BasicBlock* ad_cond = llvm::BasicBlock::Create(ctx_.context(), "arith_ad_cond", current_func);
+        llvm::BasicBlock* ad_body = llvm::BasicBlock::Create(ctx_.context(), "arith_ad_body", current_func);
+        llvm::BasicBlock* ad_exit = llvm::BasicBlock::Create(ctx_.context(), "arith_ad_exit", current_func);
+        builder.CreateBr(ad_cond);
+
+        builder.SetInsertPoint(ad_cond);
+        llvm::Value* ad_i = builder.CreateLoad(ctx_.int64Type(), ad_counter);
+        llvm::Value* ad_has_elem = builder.CreateICmpULT(ad_i, total_elements);
+        builder.CreateCondBr(ad_has_elem, ad_body, ad_exit);
+
+        builder.SetInsertPoint(ad_body);
+        llvm::Value* elem1_ptr = builder.CreateGEP(ctx_.int64Type(), typed_tensor1_elements_ptr, ad_i);
+        llvm::Value* elem2_ptr = builder.CreateGEP(ctx_.int64Type(), typed_tensor2_elements_ptr, ad_i);
+        llvm::Value* result_elem_ptr = builder.CreateGEP(ctx_.int64Type(), typed_result_elements_ptr, ad_i);
+        llvm::Value* elem1_bits = builder.CreateLoad(ctx_.int64Type(), elem1_ptr);
+        llvm::Value* elem2_bits = builder.CreateLoad(ctx_.int64Type(), elem2_ptr);
+        llvm::Value* elem1_node = adNodeFromTensorElementBits(elem1_bits, "arith_ad_lhs");
+        llvm::Value* elem2_node = adNodeFromTensorElementBits(elem2_bits, "arith_ad_rhs");
+        llvm::Value* result_node = autodiff_->recordADNodeBinary(ad_op_type, elem1_node, elem2_node);
+        llvm::Value* result_bits = builder.CreatePtrToInt(result_node, ctx_.int64Type());
+        builder.CreateStore(result_bits, result_elem_ptr);
+
+        llvm::Value* next_ad_i = builder.CreateAdd(ad_i, llvm::ConstantInt::get(ctx_.int64Type(), 1));
+        builder.CreateStore(next_ad_i, ad_counter);
+        builder.CreateBr(ad_cond);
+
+        builder.SetInsertPoint(ad_exit);
+        builder.CreateBr(final_exit);
+
+        builder.SetInsertPoint(numeric_path);
+    }
 
     // Scalar loop counter - always needed
     llvm::Value* scalar_counter = builder.CreateAlloca(ctx_.int64Type(), nullptr, "scalar_i");
