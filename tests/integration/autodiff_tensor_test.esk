@@ -15,6 +15,57 @@
 (define (tensor-length t)
   (vector-length t))
 
+;; Helper: copy a vector/tensor and perturb one element.
+(define (perturb-vector v idx delta)
+  (let ((n (vector-length v))
+        (out (make-vector (vector-length v) 0.0)))
+    (letrec ((loop (lambda (i)
+              (if (< i n)
+                  (begin
+                    (vector-set! out i
+                      (if (= i idx)
+                          (+ (vector-ref v i) delta)
+                          (vector-ref v i)))
+                    (loop (+ i 1)))
+                  out))))
+      (loop 0))))
+
+;; Helper: central finite difference for scalar functions of a vector/tensor.
+(define (finite-diff f x idx eps)
+  (/ (- (f (perturb-vector x idx eps))
+        (f (perturb-vector x idx (- eps))))
+     (* 2.0 eps)))
+
+;; Helper: check every reverse-mode partial against finite differences.
+(define (gradient-vector-matches-finite-diff? g f x eps tol)
+  (let ((n (vector-length g)))
+    (letrec ((loop (lambda (i)
+              (if (< i n)
+                  (if (approx= (vector-ref g i) (finite-diff f x i eps) tol)
+                      (loop (+ i 1))
+                      #f)
+                  #t))))
+      (loop 0))))
+
+;; Helper: central finite difference for 3-element tensor functions.
+(define (finite-diff3 f x0 x1 x2 idx eps)
+  (/ (- (f (tensor 3
+            (if (= idx 0) (+ x0 eps) x0)
+            (if (= idx 1) (+ x1 eps) x1)
+            (if (= idx 2) (+ x2 eps) x2)))
+        (f (tensor 3
+            (if (= idx 0) (- x0 eps) x0)
+            (if (= idx 1) (- x1 eps) x1)
+            (if (= idx 2) (- x2 eps) x2))))
+     (* 2.0 eps)))
+
+;; Helper: check a 3-element tensor gradient against finite differences.
+(define (gradient-vector-matches-finite-diff3? g f x0 x1 x2 eps tol)
+  (and (= (vector-length g) 3)
+       (approx= (vector-ref g 0) (finite-diff3 f x0 x1 x2 0 eps) tol)
+       (approx= (vector-ref g 1) (finite-diff3 f x0 x1 x2 1 eps) tol)
+       (approx= (vector-ref g 2) (finite-diff3 f x0 x1 x2 2 eps) tol)))
+
 ;; ============================================================
 ;; Test 1: Gradient of tensor-sum
 ;; f(x) = sum(x), gradient = [1, 1, 1]
@@ -483,7 +534,7 @@
   (display
     (if (and (= (vector-length g) 2)
              (approx= (vector-ref g 0) 0.5 1e-6)
-             (approx= (vector-ref g 1) 1.06778 1e-4))
+             (approx= (vector-ref g 1) 1.0829640838457826 1e-4))
         "PASS" "FAIL"))
   (display ": gradient through gelu tensor-sum matches tanh approximation") (newline))
 
@@ -852,3 +903,68 @@
              (approx= (vector-ref g 6) -0.12 1e-6))
         "PASS" "FAIL"))
   (display ": gradients through asin/acos/atan/atan2/sinh/cosh match closed forms") (newline))
+
+;; ============================================================
+;; Test 50: Finite-difference checks for #154 AD ops
+;; Covers asin, acos, atan, atan2, sinh, cosh, softmax, gelu, and silu.
+;; ============================================================
+(let* ((scalar-f (lambda (x)
+                   (+ (asin (vector-ref x 0))
+                      (acos (vector-ref x 1))
+                      (atan (vector-ref x 2))
+                      (sinh (vector-ref x 3))
+                      (cosh (vector-ref x 4))
+                      (atan2 (vector-ref x 5) (vector-ref x 6)))))
+       (softmax-weights (tensor 3 1.0 2.0 3.0))
+       (softmax-f (lambda (x)
+                    (tensor-sum (tensor-mul (softmax x) softmax-weights))))
+       (gelu-f (lambda (x) (tensor-sum (gelu x))))
+       (silu-f (lambda (x) (tensor-sum (silu x))))
+       (scalar-x (tensor 7 0.5 0.5 1.0 0.0 1.0 3.0 4.0))
+       (softmax-x (tensor 3 1.0 2.0 3.0))
+       (scalar-g (gradient
+                   (lambda (x)
+                     (+ (asin (vector-ref x 0))
+                        (acos (vector-ref x 1))
+                        (atan (vector-ref x 2))
+                        (sinh (vector-ref x 3))
+                        (cosh (vector-ref x 4))
+                        (atan2 (vector-ref x 5) (vector-ref x 6))))
+                   scalar-x))
+       (softmax-g (gradient
+                    (lambda (x)
+                      (tensor-sum (tensor-mul (softmax x) softmax-weights)))
+                    softmax-x))
+       (gelu-g (gradient
+                 (lambda (x) (tensor-sum (gelu x)))
+                 (tensor 3 -1.0 0.0 1.0)))
+       (silu-g (gradient
+                 (lambda (x) (tensor-sum (silu x)))
+                 (tensor 3 -1.0 0.0 1.0))))
+  (display
+    (if (and (gradient-vector-matches-finite-diff?
+               scalar-g
+               scalar-f
+               scalar-x
+               1e-5
+               1e-4)
+             (gradient-vector-matches-finite-diff3?
+               softmax-g
+               softmax-f
+               1.0 2.0 3.0
+               1e-5
+               1e-4)
+             (gradient-vector-matches-finite-diff3?
+               gelu-g
+               gelu-f
+               -1.0 0.0 1.0
+               1e-5
+               1e-4)
+             (gradient-vector-matches-finite-diff3?
+               silu-g
+               silu-f
+               -1.0 0.0 1.0
+               1e-5
+               1e-4))
+        "PASS" "FAIL"))
+  (display ": #154 AD ops match central finite differences") (newline))

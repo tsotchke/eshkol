@@ -2594,10 +2594,9 @@ llvm::Value* TensorCodegen::tensorSigmoidBackward(llvm::Value* sigmoid_output, l
 }
 
 llvm::Value* TensorCodegen::tensorGeluBackward(llvm::Value* input, llvm::Value* upstream_grad) {
-    // GELU backward using sigmoid approximation:
-    // gelu(x) ≈ x * σ(1.702x)
-    // gelu'(x) ≈ σ(1.702x) + 1.702x * σ(1.702x) * (1 - σ(1.702x))
-    //          = σ(1.702x) * (1 + 1.702x * (1 - σ(1.702x)))
+    // GELU backward for the tanh approximation used by tensorGelu:
+    // gelu(x) = 0.5*x*(1+tanh(u)), u = sqrt(2/pi)*(x + 0.044715*x^3)
+    // gelu'(x) = 0.5*(1+tanh(u)) + 0.5*x*(1-tanh(u)^2)*u'
 
     auto& builder = ctx_.builder();
 
@@ -2671,20 +2670,30 @@ llvm::Value* TensorCodegen::tensorGeluBackward(llvm::Value* input, llvm::Value* 
     llvm::Value* g_ptr = builder.CreateGEP(ctx_.doubleType(), g_elems, i);
     llvm::Value* g_i = builder.CreateLoad(ctx_.doubleType(), g_ptr);
 
-    // Compute σ(1.702x)
-    llvm::Value* coeff = llvm::ConstantFP::get(ctx_.doubleType(), 1.702);
+    llvm::Value* half = llvm::ConstantFP::get(ctx_.doubleType(), 0.5);
     llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
-    llvm::Value* scaled_x = builder.CreateFMul(coeff, x_i);
-    llvm::Value* neg_scaled = builder.CreateFNeg(scaled_x);
-    llvm::Value* exp_neg = builder.CreateCall(exp_func, {neg_scaled});
-    llvm::Value* denom = builder.CreateFAdd(one, exp_neg);
-    llvm::Value* sigma = builder.CreateFDiv(one, denom);
+    llvm::Value* two = llvm::ConstantFP::get(ctx_.doubleType(), 2.0);
+    llvm::Value* three = llvm::ConstantFP::get(ctx_.doubleType(), 3.0);
+    llvm::Value* sqrt_2_pi = llvm::ConstantFP::get(ctx_.doubleType(), 0.7978845608028654);
+    llvm::Value* coeff = llvm::ConstantFP::get(ctx_.doubleType(), 0.044715);
 
-    // gelu'(x) = σ * (1 + 1.702x * (1 - σ))
-    llvm::Value* one_minus_sigma = builder.CreateFSub(one, sigma);
-    llvm::Value* scaled_x_sigma_deriv = builder.CreateFMul(scaled_x, one_minus_sigma);
-    llvm::Value* inner = builder.CreateFAdd(one, scaled_x_sigma_deriv);
-    llvm::Value* gelu_deriv = builder.CreateFMul(sigma, inner);
+    llvm::Value* x_sq = builder.CreateFMul(x_i, x_i);
+    llvm::Value* x_cubed = builder.CreateFMul(x_sq, x_i);
+    llvm::Value* inner = builder.CreateFAdd(x_i, builder.CreateFMul(coeff, x_cubed));
+    llvm::Value* u = builder.CreateFMul(sqrt_2_pi, inner);
+    llvm::Value* exp_2u = builder.CreateCall(exp_func, {builder.CreateFMul(two, u)});
+    llvm::Value* tanh_u = builder.CreateFDiv(
+        builder.CreateFSub(exp_2u, one),
+        builder.CreateFAdd(exp_2u, one));
+    llvm::Value* tanh_sq = builder.CreateFMul(tanh_u, tanh_u);
+    llvm::Value* sech_sq = builder.CreateFSub(one, tanh_sq);
+    llvm::Value* inner_prime = builder.CreateFAdd(
+        one, builder.CreateFMul(three, builder.CreateFMul(coeff, x_sq)));
+    llvm::Value* u_prime = builder.CreateFMul(sqrt_2_pi, inner_prime);
+    llvm::Value* first = builder.CreateFMul(half, builder.CreateFAdd(one, tanh_u));
+    llvm::Value* second = builder.CreateFMul(
+        half, builder.CreateFMul(x_i, builder.CreateFMul(sech_sq, u_prime)));
+    llvm::Value* gelu_deriv = builder.CreateFAdd(first, second);
 
     // dx_i = g_i * gelu'(x)
     llvm::Value* dx_i = builder.CreateFMul(g_i, gelu_deriv);
