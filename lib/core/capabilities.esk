@@ -1,0 +1,43 @@
+;;; core/capabilities.esk
+;;;
+;;; Process-local capability policy for hosted/agent surfaces.
+;;;
+;;; Default policy is #f, meaning no checks and existing v1.2 programs keep
+;;; running unchanged. Installing an allow-list makes the policy active and
+;;; every capability not present in the list is denied by default.
+
+(provide capability-install-policy!
+         capability-clear-policy!
+         capability-policy
+         capability-policy-active?
+         capability-allowed?
+         capability-require!)
+
+(define *capability-allow-list* #f)
+
+(define (capability-policy) *capability-allow-list*)
+
+(define (capability-policy-active?)
+  (if *capability-allow-list* #t #f))
+
+(define (capability-install-policy! allow-list)
+  "Install an allow-list of capability symbols. Active policies deny by default."
+  (if (list? allow-list)
+      (set! *capability-allow-list* allow-list)
+      (error "capability-install-policy!: expected a list of symbols" allow-list)))
+
+(define (capability-clear-policy!)
+  "Clear the active policy. With no policy, capability checks allow by default."
+  (set! *capability-allow-list* #f))
+
+(define (capability-allowed? capability . _context)
+  "Return #t when CAPABILITY is allowed under the current policy."
+  (if (not *capability-allow-list*)
+      #t
+      (if (memq capability *capability-allow-list*) #t #f)))
+
+(define (capability-require! capability . context)
+  "Raise if CAPABILITY is denied; return #t otherwise."
+  (if (apply capability-allowed? capability context)
+      #t
+      (error "capability denied" capability)))

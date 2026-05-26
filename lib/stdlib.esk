@@ -37,6 +37,9 @@
 ;;; Files - atomic writes and path helpers
 (require core.files)
 
+;;; Hosted capability policy hooks
+(require core.capabilities)
+
 ;;; S-expression printer - handles dotted pairs and improper lists
 (require core.sexp)
 

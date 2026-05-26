@@ -16,6 +16,8 @@
 ;; only compiled when ESHKOL_BUILD_AGENT_FFI is on, which itself is
 ;; off by default on Windows.
 
+(require core.capabilities)
+
 (provide
   ;; HTTP server
   http-server-create http-server-port http-server-accept
@@ -57,6 +59,7 @@
   "Create an HTTP server bound to localhost:port.  Pass 0 to get a
    random available port.  Returns handle (>= 1) on success or -1 on
    failure (out of slots / bind failed)."
+  (capability-require! 'network port)
   (http-server-create-raw port))
 
 (define (http-server-port handle)
@@ -95,6 +98,7 @@
   "Connect to a Unix domain socket at the given path.  Returns the
    raw fd (>= 0) on success or -1 on failure.  Pair with (ws-wrap-fd)
    for an IPC channel that speaks WebSocket framing."
+  (capability-require! 'network path)
   (unix-socket-connect-raw path))
 
 ;; ── WebSocket API ───────────────────────────────────────────────────
