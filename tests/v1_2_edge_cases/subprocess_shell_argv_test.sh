@@ -26,6 +26,12 @@ cat > "$WORK/subprocess_api.esk" <<'EOF'
 (define passed 0)
 (define failed 0)
 
+(define (raises? thunk)
+  (let ((raised #f))
+    (guard (exn (#t (set! raised #t)))
+      (thunk))
+    raised))
+
 (define (check name actual expected)
   (if (equal? expected actual)
       (set! passed (+ passed 1))
@@ -34,6 +40,12 @@ cat > "$WORK/subprocess_api.esk" <<'EOF'
         (display " expected ") (display expected)
         (display ", got ") (display actual) (newline)
         (set! failed (+ failed 1)))))
+
+(capability-install-policy! (list 'subprocess))
+(check "shell denied without shell capability"
+       (raises? (lambda () (process-spawn-shell "echo should-not-run" ".")))
+       #t)
+(capability-clear-policy!)
 
 (define shell-result
   (run-command-capture "echo out; echo err >&2; exit 42" "." 5000 4096))

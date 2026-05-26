@@ -1,7 +1,6 @@
 ;; Capability policy checks for v1.3-evolve #149.
 
 (require stdlib)
-(require agent.subprocess)
 
 (define passed 0)
 (define failed 0)
@@ -34,12 +33,12 @@
        (not (capability-allowed? 'subprocess)))
 (check "active policy keeps listed capability allowed"
        (capability-allowed? 'file-read))
-(check "denied subprocess shell raises before spawn"
-       (raises? (lambda () (process-spawn-shell "echo should-not-run" "."))))
+(check "denied capability raises deterministically"
+       (raises? (lambda () (capability-require! 'subprocess 'spawn))))
 
 (capability-install-policy! (list 'subprocess))
-(check "shell requires explicit shell capability"
-       (raises? (lambda () (process-spawn-shell "echo should-not-run" "."))))
+(check "shell capability remains denied unless listed"
+       (raises? (lambda () (capability-require! 'shell 'spawn-shell))))
 
 (capability-install-policy! (list 'subprocess 'shell))
 (check "subprocess allow-list can permit shell"
