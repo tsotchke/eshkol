@@ -884,6 +884,135 @@ static eshkol_ast_t make_parser_call_ast(const char* name,
     return ast;
 }
 
+struct KeywordFormal {
+    std::string keyword;
+    std::string parameter;
+    uint32_t line;
+    uint32_t column;
+};
+
+static char* copy_parser_string(const std::string& value) {
+    char* out = new char[value.size() + 1];
+    if (out) memcpy(out, value.c_str(), value.size() + 1);
+    return out;
+}
+
+static std::string make_keyword_rest_name(uint32_t line, uint32_t column) {
+    return "__eshkol_kw_rest_" + std::to_string(line) + "_" +
+           std::to_string(column);
+}
+
+static bool has_keyword_formal(const std::vector<KeywordFormal>& formals,
+                               const std::string& keyword) {
+    for (const KeywordFormal& formal : formals) {
+        if (formal.keyword == keyword) return true;
+    }
+    return false;
+}
+
+static eshkol_ast_t make_parser_quoted_symbol_ast(const std::string& name,
+                                                  uint32_t line,
+                                                  uint32_t column) {
+    eshkol_ast_t sym_var = make_parser_var_ast(name.c_str(), line, column);
+
+    eshkol_ast_t ast = {};
+    ast.type = ESHKOL_OP;
+    ast.line = line;
+    ast.column = column;
+    ast.operation.op = ESHKOL_QUOTE_OP;
+    ast.operation.call_op.func = nullptr;
+    ast.operation.call_op.num_vars = 1;
+    ast.operation.call_op.variables = new eshkol_ast_t[1];
+    ast.operation.call_op.variables[0] = sym_var;
+    return ast;
+}
+
+static eshkol_ast_t make_keyword_allowed_list_ast(
+    const std::vector<KeywordFormal>& formals,
+    uint32_t line,
+    uint32_t column) {
+    std::vector<eshkol_ast_t> args;
+    args.reserve(formals.size());
+    for (const KeywordFormal& formal : formals) {
+        args.push_back(make_parser_quoted_symbol_ast(formal.keyword,
+                                                     formal.line,
+                                                     formal.column));
+    }
+    return make_parser_call_ast("list", args, line, column);
+}
+
+static eshkol_ast_t make_parser_binding_ast(const char* name,
+                                            eshkol_ast_t value,
+                                            uint32_t line,
+                                            uint32_t column) {
+    eshkol_ast_t binding = {};
+    binding.type = ESHKOL_CONS;
+    binding.line = line;
+    binding.column = column;
+    binding.cons_cell.car = new eshkol_ast_t;
+    *binding.cons_cell.car = make_parser_var_ast(name, line, column);
+    binding.cons_cell.cdr = new eshkol_ast_t;
+    *binding.cons_cell.cdr = value;
+    return binding;
+}
+
+static eshkol_ast_t wrap_keyword_formal_body(
+    const std::vector<KeywordFormal>& formals,
+    const char* rest_param,
+    eshkol_ast_t body,
+    bool validate_rest,
+    uint32_t line,
+    uint32_t column) {
+    if (formals.empty()) return body;
+
+    eshkol_ast_t ast = {};
+    ast.type = ESHKOL_OP;
+    ast.line = line;
+    ast.column = column;
+    ast.operation.op = ESHKOL_LET_OP;
+    ast.operation.let_op.num_bindings = formals.size();
+    ast.operation.let_op.bindings = new eshkol_ast_t[formals.size()];
+    ast.operation.let_op.name = nullptr;
+    ast.operation.let_op.binding_types = nullptr;
+
+    for (size_t i = 0; i < formals.size(); i++) {
+        const KeywordFormal& formal = formals[i];
+        std::vector<eshkol_ast_t> args;
+        args.push_back(make_parser_var_ast(rest_param, formal.line, formal.column));
+        args.push_back(make_parser_quoted_symbol_ast(formal.keyword,
+                                                     formal.line,
+                                                     formal.column));
+        eshkol_ast_t value =
+            make_parser_call_ast("__keyword-arg", args, formal.line, formal.column);
+        ast.operation.let_op.bindings[i] =
+            make_parser_binding_ast(formal.parameter.c_str(), value,
+                                    formal.line, formal.column);
+    }
+
+    if (validate_rest) {
+        std::vector<eshkol_ast_t> validation_args;
+        validation_args.push_back(make_parser_var_ast(rest_param, line, column));
+        validation_args.push_back(make_keyword_allowed_list_ast(formals, line, column));
+        eshkol_ast_t validation =
+            make_parser_call_ast("__keyword-args-validate", validation_args, line, column);
+
+        eshkol_ast_t sequence = {};
+        sequence.type = ESHKOL_OP;
+        sequence.line = line;
+        sequence.column = column;
+        sequence.operation.op = ESHKOL_SEQUENCE_OP;
+        sequence.operation.sequence_op.num_expressions = 2;
+        sequence.operation.sequence_op.expressions = new eshkol_ast_t[2];
+        sequence.operation.sequence_op.expressions[0] = validation;
+        sequence.operation.sequence_op.expressions[1] = body;
+        body = sequence;
+    }
+
+    ast.operation.let_op.body = new eshkol_ast_t;
+    *ast.operation.let_op.body = body;
+    return ast;
+}
+
 static bool is_blank_string(const std::string& value) {
     for (char c : value) {
         if (!std::isspace(static_cast<unsigned char>(c))) return false;
@@ -2499,7 +2628,10 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer);
 static eshkol_ast_t parse_vector_body(SchemeTokenizer& tokenizer);
 static eshkol_pattern_t* parse_pattern(SchemeTokenizer& tokenizer);
 
-static eshkol_ast_t parse_function_signature(SchemeTokenizer& tokenizer) {
+static eshkol_ast_t parse_function_signature(
+    SchemeTokenizer& tokenizer,
+    std::vector<KeywordFormal>* keyword_formals,
+    bool* generated_keyword_rest) {
     // Parse function signature: (func-name param1 param2 ...)
     // Or:                       (func-name param1 . rest)  - with rest parameter
     // Or:                       (func-name (x : int) (y : real))  - with inline type annotations
@@ -2513,6 +2645,7 @@ static eshkol_ast_t parse_function_signature(SchemeTokenizer& tokenizer) {
     signature.eshkol_func.rest_param = nullptr;
     signature.eshkol_func.param_types = nullptr;
     signature.eshkol_func.return_type = nullptr;
+    if (generated_keyword_rest) *generated_keyword_rest = false;
 
     Token token = tokenizer.nextToken();
 
@@ -2529,6 +2662,9 @@ static eshkol_ast_t parse_function_signature(SchemeTokenizer& tokenizer) {
     memcpy(signature.eshkol_func.id, token.value.c_str(), _len + 1); }
     signature.eshkol_func.is_lambda = 0;
 
+    const uint32_t signature_line = token.line;
+    const uint32_t signature_column = token.column;
+
     // Parse parameters
     while (true) {
         token = tokenizer.nextToken();
@@ -2537,6 +2673,31 @@ static eshkol_ast_t parse_function_signature(SchemeTokenizer& tokenizer) {
             PARSE_ERROR_AT(token, "unexpected end of input in function signature");
             signature.type = ESHKOL_INVALID;
             return signature;
+        }
+
+        if (token.type == TOKEN_KEYWORD) {
+            if (!keyword_formals) {
+                PARSE_ERROR_AT(token, "keyword formals are not valid here");
+                signature.type = ESHKOL_INVALID;
+                return signature;
+            }
+            if (has_keyword_formal(*keyword_formals, token.value)) {
+                PARSE_ERROR_AT(token, "duplicate keyword formal in function signature");
+                signature.type = ESHKOL_INVALID;
+                return signature;
+            }
+
+            Token param_token = tokenizer.nextToken();
+            if (param_token.type != TOKEN_SYMBOL || param_token.value == ".") {
+                PARSE_ERROR_AT(token, "keyword formal requires a parameter name");
+                signature.type = ESHKOL_INVALID;
+                return signature;
+            }
+
+            keyword_formals->push_back(
+                {token.value, param_token.value, token.line, token.column});
+            signature.eshkol_func.is_variadic = 1;
+            continue;
         }
 
         // Check for dotted rest parameter: (func-name x y . rest)
@@ -2625,6 +2786,15 @@ static eshkol_ast_t parse_function_signature(SchemeTokenizer& tokenizer) {
             signature.type = ESHKOL_INVALID;
             return signature;
         }
+    }
+
+    if (keyword_formals && !keyword_formals->empty() &&
+        !signature.eshkol_func.rest_param) {
+        std::string generated_rest =
+            make_keyword_rest_name(signature_line, signature_column);
+        signature.eshkol_func.is_variadic = 1;
+        signature.eshkol_func.rest_param = copy_parser_string(generated_rest);
+        if (generated_keyword_rest) *generated_keyword_rest = true;
     }
 
     // Set up parameter array
@@ -3131,7 +3301,11 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             if (token.type == TOKEN_LPAREN) {
                 // Function definition: (define (name params...) body)
                 // Or with return type: (define (name params...) : type body)
-                eshkol_ast_t func_signature = parse_function_signature(tokenizer);
+                std::vector<KeywordFormal> keyword_formals;
+                bool generated_keyword_rest = false;
+                eshkol_ast_t func_signature =
+                    parse_function_signature(tokenizer, &keyword_formals,
+                                             &generated_keyword_rest);
                 if (func_signature.type == ESHKOL_INVALID) {
                     ast.type = ESHKOL_INVALID;
                     return ast;
@@ -3209,6 +3383,13 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 }
 
                 eshkol_ast_t body = transformInternalDefinesToLetrec(body_expressions);
+
+                if (!keyword_formals.empty()) {
+                    body = wrap_keyword_formal_body(keyword_formals,
+                                                    func_signature.eshkol_func.rest_param,
+                                                    body, generated_keyword_rest,
+                                                    ast.line, ast.column);
+                }
                 
                 // Set up define operation for function
                 { size_t _len = strlen(func_signature.eshkol_func.id);
@@ -3538,6 +3719,8 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
 
             std::vector<eshkol_ast_t> params;
             std::vector<hott_type_expr_t*> param_types;
+            std::vector<KeywordFormal> keyword_formals;
+            bool generated_keyword_rest = false;
 
             if (token.type == TOKEN_SYMBOL) {
                 // Variadic lambda: (lambda args body)
@@ -3556,6 +3739,26 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                         PARSE_ERROR_AT(token, "unexpected end of input in lambda parameter list");
                         ast.type = ESHKOL_INVALID;
                         return ast;
+                    }
+
+                    if (token.type == TOKEN_KEYWORD) {
+                        if (has_keyword_formal(keyword_formals, token.value)) {
+                            PARSE_ERROR_AT(token, "duplicate keyword formal in lambda");
+                            ast.type = ESHKOL_INVALID;
+                            return ast;
+                        }
+
+                        Token param_token = tokenizer.nextToken();
+                        if (param_token.type != TOKEN_SYMBOL || param_token.value == ".") {
+                            PARSE_ERROR_AT(token, "keyword formal requires a parameter name");
+                            ast.type = ESHKOL_INVALID;
+                            return ast;
+                        }
+
+                        keyword_formals.push_back(
+                            {token.value, param_token.value, token.line, token.column});
+                        ast.operation.lambda_op.is_variadic = 1;
+                        continue;
                     }
 
                     // Check for dotted rest parameter: (x y . rest)
@@ -3644,6 +3847,14 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 return ast;
             }
 
+            if (!keyword_formals.empty() && !ast.operation.lambda_op.rest_param) {
+                std::string generated_rest =
+                    make_keyword_rest_name(ast.line, ast.column);
+                ast.operation.lambda_op.is_variadic = 1;
+                ast.operation.lambda_op.rest_param = copy_parser_string(generated_rest);
+                generated_keyword_rest = true;
+            }
+
             // Check for optional return type annotation: : type
             // Syntax: (lambda (params...) : type body)
             Token peek = tokenizer.peekToken();
@@ -3706,6 +3917,13 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
 
             // Transform internal defines to letrec (same as function define)
             eshkol_ast_t body = transformInternalDefinesToLetrec(body_expressions);
+
+            if (!keyword_formals.empty()) {
+                body = wrap_keyword_formal_body(keyword_formals,
+                                                ast.operation.lambda_op.rest_param,
+                                                body, generated_keyword_rest,
+                                                ast.line, ast.column);
+            }
             
             // Set up lambda operation
             ast.operation.lambda_op.num_params = params.size();

@@ -1,0 +1,45 @@
+;; keyword argument feature tests
+
+(define tests-passed 0)
+(define tests-failed 0)
+
+(define (check name ok)
+  (if ok
+      (begin
+        (set! tests-passed (+ tests-passed 1))
+        (display "PASS: ") (display name) (newline))
+      (begin
+        (set! tests-failed (+ tests-failed 1))
+        (display "FAIL: ") (display name) (newline))))
+
+(define (weighted x #:scale scale #:offset offset)
+  (+ (* x scale) offset))
+
+(check "function keyword arguments reorder by name"
+       (= (weighted 10 #:offset 2 #:scale 4) 42))
+
+(define kw-lambda
+  (lambda (#:left left #:right right)
+    (+ left right)))
+
+(check "lambda keyword arguments bind by name"
+       (= (kw-lambda #:right 23 #:left 19) 42))
+
+(define (mixed positional #:scale scale)
+  (+ positional scale))
+
+(check "positional and keyword arguments mix"
+       (= (mixed 19 #:scale 23) 42))
+
+(define (explicit-rest positional #:scale scale . rest)
+  (+ (* positional scale) (length rest)))
+
+(check "keyword formals can coexist with explicit rest args"
+       (= (explicit-rest 5 #:scale 2 #:extra 3) 14))
+
+(display "Passed: ") (display tests-passed) (newline)
+(display "Failed: ") (display tests-failed) (newline)
+
+(if (= tests-failed 0)
+    0
+    (error "keyword argument tests failed"))

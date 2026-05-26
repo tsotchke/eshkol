@@ -306,8 +306,8 @@ v2.0 ─────────────────────────
 
 - [ ] Full R7RS library system (`define-library` / `import` with renaming and prefixing)
 - [x] String interpolation (`~{expr}` within strings)
-- [ ] Named keyword arguments (`(f #:key value)`)
-- [ ] Pattern matching in `let` bindings (destructuring `let-match`)
+- [x] Named keyword arguments (`(f #:key value)`)
+- [x] Pattern matching in `let` bindings (destructuring `let-match`)
 - [ ] Profile-guided optimization (runtime profiling feeds codegen)
 - [ ] Whole-program optimization (cross-module inlining and dead code elimination)
 - [ ] **Native media handling, no vendoring**: replace `deps/stb/`

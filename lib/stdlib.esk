@@ -63,6 +63,35 @@
 ;;; JSON Schema validator (Draft 7 subset)
 (require core.json_schema)
 
+;;; Keyword-argument support for parser-lowered v1.3 keyword formals.
+;;; User calls like `(f #:scale 2)` reach the callee as a variadic tail
+;;; `(#:scale 2)`. The parser binds each named keyword formal through this
+;;; lookup helper at function/lambda entry.
+(define (__keyword-member? key keys)
+  (if (null? keys)
+      #f
+      (if (eq? key (car keys))
+          #t
+          (__keyword-member? key (cdr keys)))))
+
+(define (__keyword-args-validate args keys)
+  (if (null? args)
+      #t
+      (if (not (__keyword-member? (car args) keys))
+          (error "unexpected keyword argument")
+          (if (null? (cdr args))
+              (error "keyword argument missing value")
+              (__keyword-args-validate (cddr args) keys)))))
+
+(define (__keyword-arg args key)
+  (if (null? args)
+      (error "missing keyword argument")
+      (if (null? (cdr args))
+          (error "keyword argument missing value")
+          (if (eq? (car args) key)
+              (cadr args)
+              (__keyword-arg (cddr args) key)))))
+
 ;; Note: core.testing is NOT auto-loaded. User code that wants the
 ;; testing framework must (require core.testing) explicitly. Baking it
 ;; into stdlib.o triggers the symbol-renamer / external-decl path

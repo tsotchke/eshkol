@@ -1,0 +1,4 @@
+;;; Expected: Error
+
+(define (bad #:value first #:value second)
+  first)

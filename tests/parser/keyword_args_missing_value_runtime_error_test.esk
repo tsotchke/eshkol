@@ -1,0 +1,6 @@
+;;; Expected: Error
+
+(define (needs #:value value)
+  value)
+
+(needs #:value)
