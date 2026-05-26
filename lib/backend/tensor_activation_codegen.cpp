@@ -19,6 +19,7 @@
 
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
 
+#include <eshkol/backend/autodiff_codegen.h>
 #include <eshkol/logger.h>
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/Function.h>
@@ -383,6 +384,185 @@ llvm::Value* TensorCodegen::tensorSoftmax(const eshkol_operations_t* op) {
         llvm::Value* rank = builder.CreateLoad(ctx_.int64Type(), builder.CreateStructGEP(ttype, ptr, 1));
         llvm::Value* axis = tagged_.safeExtractInt64(axis_val);
 
+        if (autodiff_) {
+            llvm::Value* in_ad_mode = builder.CreateLoad(ctx_.int1Type(), ctx_.adModeActive());
+            llvm::BasicBlock* ad_path = llvm::BasicBlock::Create(ctx_.context(), "softmax_axis_ad_path", builder.GetInsertBlock()->getParent());
+            llvm::BasicBlock* numeric_path = llvm::BasicBlock::Create(ctx_.context(), "softmax_axis_numeric_path", builder.GetInsertBlock()->getParent());
+            llvm::BasicBlock* merge_block = llvm::BasicBlock::Create(ctx_.context(), "softmax_axis_merge", builder.GetInsertBlock()->getParent());
+            builder.CreateCondBr(in_ad_mode, ad_path, numeric_path);
+
+            builder.SetInsertPoint(ad_path);
+            llvm::Value* ad_arena = builder.CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+            llvm::Function* alloc_tensor = mem_.getArenaAllocateTensorWithHeader();
+            llvm::Function* arena_alloc = mem_.getArenaAllocate();
+            llvm::Value* result_ptr = builder.CreateCall(alloc_tensor, {ad_arena}, "softmax_axis_ad_result");
+
+            llvm::Value* dims_size = builder.CreateMul(rank,
+                llvm::ConstantInt::get(ctx_.int64Type(), sizeof(int64_t)));
+            llvm::Value* result_dims = builder.CreateCall(arena_alloc, {ad_arena, dims_size}, "softmax_axis_ad_dims");
+            builder.CreateMemCpy(result_dims, llvm::MaybeAlign(8), dims, llvm::MaybeAlign(8), dims_size);
+
+            llvm::Value* elems_size = builder.CreateMul(total,
+                llvm::ConstantInt::get(ctx_.int64Type(), sizeof(double)));
+            llvm::Value* result_elems = builder.CreateCall(arena_alloc, {ad_arena, elems_size}, "softmax_axis_ad_elems");
+
+            llvm::Value* one_i64 = llvm::ConstantInt::get(ctx_.int64Type(), 1);
+            llvm::Value* axis_len = builder.CreateLoad(ctx_.int64Type(),
+                builder.CreateGEP(ctx_.int64Type(), dims, axis));
+
+            llvm::Value* inner_stride = builder.CreateAlloca(ctx_.int64Type(), nullptr, "softmax_axis_inner_stride");
+            llvm::Value* stride_i_alloca = builder.CreateAlloca(ctx_.int64Type(), nullptr, "softmax_axis_stride_i");
+            builder.CreateStore(one_i64, inner_stride);
+            builder.CreateStore(builder.CreateAdd(axis, one_i64), stride_i_alloca);
+
+            llvm::Function* current_func = builder.GetInsertBlock()->getParent();
+            llvm::BasicBlock* stride_cond = llvm::BasicBlock::Create(ctx_.context(), "softmax_axis_stride_cond", current_func);
+            llvm::BasicBlock* stride_body = llvm::BasicBlock::Create(ctx_.context(), "softmax_axis_stride_body", current_func);
+            llvm::BasicBlock* stride_done = llvm::BasicBlock::Create(ctx_.context(), "softmax_axis_stride_done", current_func);
+            builder.CreateBr(stride_cond);
+
+            builder.SetInsertPoint(stride_cond);
+            llvm::Value* stride_i = builder.CreateLoad(ctx_.int64Type(), stride_i_alloca);
+            builder.CreateCondBr(builder.CreateICmpULT(stride_i, rank), stride_body, stride_done);
+
+            builder.SetInsertPoint(stride_body);
+            llvm::Value* stride_dim = builder.CreateLoad(ctx_.int64Type(),
+                builder.CreateGEP(ctx_.int64Type(), dims, stride_i));
+            llvm::Value* old_stride = builder.CreateLoad(ctx_.int64Type(), inner_stride);
+            builder.CreateStore(builder.CreateMul(old_stride, stride_dim), inner_stride);
+            builder.CreateStore(builder.CreateAdd(stride_i, one_i64), stride_i_alloca);
+            builder.CreateBr(stride_cond);
+
+            builder.SetInsertPoint(stride_done);
+            llvm::Value* group_count = builder.CreateUDiv(total, axis_len);
+            llvm::Value* group_i_alloca = builder.CreateAlloca(ctx_.int64Type(), nullptr, "softmax_axis_group_i");
+            builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), group_i_alloca);
+            llvm::BasicBlock* group_cond = llvm::BasicBlock::Create(ctx_.context(), "softmax_axis_group_cond", current_func);
+            llvm::BasicBlock* group_body = llvm::BasicBlock::Create(ctx_.context(), "softmax_axis_group_body", current_func);
+            llvm::BasicBlock* group_done = llvm::BasicBlock::Create(ctx_.context(), "softmax_axis_group_done", current_func);
+            builder.CreateBr(group_cond);
+
+            builder.SetInsertPoint(group_cond);
+            llvm::Value* group_i = builder.CreateLoad(ctx_.int64Type(), group_i_alloca);
+            builder.CreateCondBr(builder.CreateICmpULT(group_i, group_count), group_body, group_done);
+
+            builder.SetInsertPoint(group_body);
+            llvm::Value* stride = builder.CreateLoad(ctx_.int64Type(), inner_stride);
+            llvm::Value* inner = builder.CreateURem(group_i, stride);
+            llvm::Value* outer = builder.CreateUDiv(group_i, stride);
+            llvm::Value* outer_stride = builder.CreateMul(axis_len, stride);
+            llvm::Value* base = builder.CreateAdd(builder.CreateMul(outer, outer_stride), inner);
+
+            llvm::Value* first_bits = builder.CreateLoad(ctx_.int64Type(),
+                builder.CreateGEP(ctx_.int64Type(), elems, base));
+            llvm::Value* max_node_alloca = builder.CreateAlloca(ctx_.ptrType(), nullptr, "softmax_axis_ad_max");
+            builder.CreateStore(adNodeFromTensorElementBits(first_bits, "softmax_axis_ad_first"), max_node_alloca);
+
+            llvm::Value* k_alloca = builder.CreateAlloca(ctx_.int64Type(), nullptr, "softmax_axis_k");
+            builder.CreateStore(one_i64, k_alloca);
+            llvm::BasicBlock* max_cond = llvm::BasicBlock::Create(ctx_.context(), "softmax_axis_max_cond", current_func);
+            llvm::BasicBlock* max_body = llvm::BasicBlock::Create(ctx_.context(), "softmax_axis_max_body", current_func);
+            llvm::BasicBlock* max_done = llvm::BasicBlock::Create(ctx_.context(), "softmax_axis_max_done", current_func);
+            builder.CreateBr(max_cond);
+
+            builder.SetInsertPoint(max_cond);
+            llvm::Value* max_k = builder.CreateLoad(ctx_.int64Type(), k_alloca);
+            builder.CreateCondBr(builder.CreateICmpULT(max_k, axis_len), max_body, max_done);
+
+            builder.SetInsertPoint(max_body);
+            llvm::Value* max_index = builder.CreateAdd(base, builder.CreateMul(max_k, stride));
+            llvm::Value* max_bits = builder.CreateLoad(ctx_.int64Type(),
+                builder.CreateGEP(ctx_.int64Type(), elems, max_index));
+            llvm::Value* max_elem_node = adNodeFromTensorElementBits(max_bits, "softmax_axis_ad_max_elem");
+            llvm::Value* old_max = builder.CreateLoad(ctx_.ptrType(), max_node_alloca);
+            builder.CreateStore(autodiff_->recordADNodeBinary(44, old_max, max_elem_node), max_node_alloca);
+            builder.CreateStore(builder.CreateAdd(max_k, one_i64), k_alloca);
+            builder.CreateBr(max_cond);
+
+            builder.SetInsertPoint(max_done);
+            llvm::Value* sum_node_alloca = builder.CreateAlloca(ctx_.ptrType(), nullptr, "softmax_axis_ad_sum");
+            builder.CreateStore(autodiff_->createADConstant(llvm::ConstantFP::get(ctx_.doubleType(), 0.0)), sum_node_alloca);
+            builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), k_alloca);
+            llvm::BasicBlock* exp_cond = llvm::BasicBlock::Create(ctx_.context(), "softmax_axis_exp_cond", current_func);
+            llvm::BasicBlock* exp_body = llvm::BasicBlock::Create(ctx_.context(), "softmax_axis_exp_body", current_func);
+            llvm::BasicBlock* exp_done = llvm::BasicBlock::Create(ctx_.context(), "softmax_axis_exp_done", current_func);
+            builder.CreateBr(exp_cond);
+
+            builder.SetInsertPoint(exp_cond);
+            llvm::Value* exp_k = builder.CreateLoad(ctx_.int64Type(), k_alloca);
+            builder.CreateCondBr(builder.CreateICmpULT(exp_k, axis_len), exp_body, exp_done);
+
+            builder.SetInsertPoint(exp_body);
+            llvm::Value* exp_index = builder.CreateAdd(base, builder.CreateMul(exp_k, stride));
+            llvm::Value* elem_bits = builder.CreateLoad(ctx_.int64Type(),
+                builder.CreateGEP(ctx_.int64Type(), elems, exp_index));
+            llvm::Value* elem_node = adNodeFromTensorElementBits(elem_bits, "softmax_axis_ad_elem");
+            llvm::Value* max_node = builder.CreateLoad(ctx_.ptrType(), max_node_alloca);
+            llvm::Value* shifted_node = autodiff_->recordADNodeBinary(3, elem_node, max_node);
+            llvm::Value* exp_node = autodiff_->recordADNodeUnary(8, shifted_node);
+            llvm::Value* old_sum = builder.CreateLoad(ctx_.ptrType(), sum_node_alloca);
+            builder.CreateStore(autodiff_->recordADNodeBinary(2, old_sum, exp_node), sum_node_alloca);
+            builder.CreateStore(builder.CreatePtrToInt(exp_node, ctx_.int64Type()),
+                builder.CreateGEP(ctx_.int64Type(), result_elems, exp_index));
+            builder.CreateStore(builder.CreateAdd(exp_k, one_i64), k_alloca);
+            builder.CreateBr(exp_cond);
+
+            builder.SetInsertPoint(exp_done);
+            builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), k_alloca);
+            llvm::BasicBlock* norm_cond = llvm::BasicBlock::Create(ctx_.context(), "softmax_axis_norm_cond", current_func);
+            llvm::BasicBlock* norm_body = llvm::BasicBlock::Create(ctx_.context(), "softmax_axis_norm_body", current_func);
+            llvm::BasicBlock* norm_done = llvm::BasicBlock::Create(ctx_.context(), "softmax_axis_norm_done", current_func);
+            builder.CreateBr(norm_cond);
+
+            builder.SetInsertPoint(norm_cond);
+            llvm::Value* norm_k = builder.CreateLoad(ctx_.int64Type(), k_alloca);
+            builder.CreateCondBr(builder.CreateICmpULT(norm_k, axis_len), norm_body, norm_done);
+
+            builder.SetInsertPoint(norm_body);
+            llvm::Value* norm_index = builder.CreateAdd(base, builder.CreateMul(norm_k, stride));
+            llvm::Value* exp_bits = builder.CreateLoad(ctx_.int64Type(),
+                builder.CreateGEP(ctx_.int64Type(), result_elems, norm_index));
+            llvm::Value* exp_node_for_norm = adNodeFromTensorElementBits(exp_bits, "softmax_axis_ad_exp");
+            llvm::Value* denom_node = builder.CreateLoad(ctx_.ptrType(), sum_node_alloca);
+            llvm::Value* softmax_node = autodiff_->recordADNodeBinary(5, exp_node_for_norm, denom_node);
+            builder.CreateStore(builder.CreatePtrToInt(softmax_node, ctx_.int64Type()),
+                builder.CreateGEP(ctx_.int64Type(), result_elems, norm_index));
+            builder.CreateStore(builder.CreateAdd(norm_k, one_i64), k_alloca);
+            builder.CreateBr(norm_cond);
+
+            builder.SetInsertPoint(norm_done);
+            builder.CreateStore(builder.CreateAdd(group_i, one_i64), group_i_alloca);
+            builder.CreateBr(group_cond);
+
+            builder.SetInsertPoint(group_done);
+            builder.CreateStore(result_dims, builder.CreateStructGEP(ttype, result_ptr, 0));
+            builder.CreateStore(rank, builder.CreateStructGEP(ttype, result_ptr, 1));
+            builder.CreateStore(result_elems, builder.CreateStructGEP(ttype, result_ptr, 2));
+            builder.CreateStore(total, builder.CreateStructGEP(ttype, result_ptr, 3));
+            llvm::Value* ad_result = tagged_.packHeapPtr(result_ptr);
+            builder.CreateBr(merge_block);
+            llvm::BasicBlock* ad_exit = builder.GetInsertBlock();
+
+            builder.SetInsertPoint(numeric_path);
+            llvm::Value* numeric_arena = builder.CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+            auto* ptrTy = ctx_.ptrType();
+            auto* i64Ty = ctx_.int64Type();
+            llvm::FunctionType* fn_type = llvm::FunctionType::get(ptrTy,
+                {ptrTy, ptrTy, i64Ty, ptrTy, i64Ty, i64Ty}, false);
+            llvm::FunctionCallee callee = ctx_.module().getOrInsertFunction("eshkol_xla_softmax", fn_type);
+            llvm::Value* numeric_result = builder.CreateCall(callee,
+                {numeric_arena, elems, total, dims, rank, axis}, "softmax_axis_numeric_result");
+            llvm::Value* numeric_packed = tagged_.packHeapPtr(numeric_result);
+            builder.CreateBr(merge_block);
+            llvm::BasicBlock* numeric_exit = builder.GetInsertBlock();
+
+            builder.SetInsertPoint(merge_block);
+            llvm::PHINode* result_phi = builder.CreatePHI(ctx_.taggedValueType(), 2, "softmax_axis_result_phi");
+            result_phi->addIncoming(ad_result, ad_exit);
+            result_phi->addIncoming(numeric_packed, numeric_exit);
+            return result_phi;
+        }
+
         llvm::Value* arena = builder.CreateLoad(ctx_.ptrType(), ctx_.globalArena());
         auto* ptrTy = ctx_.ptrType();
         auto* i64Ty = ctx_.int64Type();
@@ -433,6 +613,97 @@ llvm::Value* TensorCodegen::tensorSoftmax(const eshkol_operations_t* op) {
         &ctx_.module(), llvm::Intrinsic::exp, {ctx_.doubleType()});
 
     llvm::Function* current_func = builder.GetInsertBlock()->getParent();
+    llvm::BasicBlock* exit_block = llvm::BasicBlock::Create(ctx_.context(), "sm_exit", current_func);
+
+    if (autodiff_) {
+        llvm::Value* in_ad_mode = builder.CreateLoad(ctx_.int1Type(), ctx_.adModeActive());
+        llvm::BasicBlock* ad_path = llvm::BasicBlock::Create(ctx_.context(), "sm_ad_path", current_func);
+        llvm::BasicBlock* numeric_path = llvm::BasicBlock::Create(ctx_.context(), "sm_numeric_path", current_func);
+        builder.CreateCondBr(in_ad_mode, ad_path, numeric_path);
+
+        builder.SetInsertPoint(ad_path);
+        llvm::Value* ad_counter = builder.CreateAlloca(ctx_.int64Type(), nullptr, "sm_ad_i");
+        llvm::Value* first_bits = builder.CreateLoad(ctx_.int64Type(),
+            builder.CreateGEP(ctx_.int64Type(), src_elems, llvm::ConstantInt::get(ctx_.int64Type(), 0)));
+        llvm::Value* max_node_alloca = builder.CreateAlloca(ctx_.ptrType(), nullptr, "sm_ad_max");
+        builder.CreateStore(adNodeFromTensorElementBits(first_bits, "sm_ad_max_first"), max_node_alloca);
+        builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 1), ad_counter);
+
+        llvm::BasicBlock* max_ad_cond = llvm::BasicBlock::Create(ctx_.context(), "sm_ad_max_cond", current_func);
+        llvm::BasicBlock* max_ad_body = llvm::BasicBlock::Create(ctx_.context(), "sm_ad_max_body", current_func);
+        llvm::BasicBlock* exp_ad_init = llvm::BasicBlock::Create(ctx_.context(), "sm_ad_exp_init", current_func);
+        builder.CreateBr(max_ad_cond);
+
+        builder.SetInsertPoint(max_ad_cond);
+        llvm::Value* max_i = builder.CreateLoad(ctx_.int64Type(), ad_counter);
+        builder.CreateCondBr(builder.CreateICmpULT(max_i, total_elements), max_ad_body, exp_ad_init);
+
+        builder.SetInsertPoint(max_ad_body);
+        llvm::Value* max_elem_bits = builder.CreateLoad(ctx_.int64Type(),
+            builder.CreateGEP(ctx_.int64Type(), src_elems, max_i));
+        llvm::Value* max_elem_node = adNodeFromTensorElementBits(max_elem_bits, "sm_ad_max_elem");
+        llvm::Value* old_max_node = builder.CreateLoad(ctx_.ptrType(), max_node_alloca);
+        llvm::Value* new_max_node = autodiff_->recordADNodeBinary(44, old_max_node, max_elem_node);
+        builder.CreateStore(new_max_node, max_node_alloca);
+        builder.CreateStore(builder.CreateAdd(max_i, llvm::ConstantInt::get(ctx_.int64Type(), 1)), ad_counter);
+        builder.CreateBr(max_ad_cond);
+
+        builder.SetInsertPoint(exp_ad_init);
+        llvm::Value* sum_node_alloca = builder.CreateAlloca(ctx_.ptrType(), nullptr, "sm_ad_sum");
+        builder.CreateStore(autodiff_->createADConstant(llvm::ConstantFP::get(ctx_.doubleType(), 0.0)), sum_node_alloca);
+        builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), ad_counter);
+
+        llvm::BasicBlock* exp_ad_cond = llvm::BasicBlock::Create(ctx_.context(), "sm_ad_exp_cond", current_func);
+        llvm::BasicBlock* exp_ad_body = llvm::BasicBlock::Create(ctx_.context(), "sm_ad_exp_body", current_func);
+        llvm::BasicBlock* norm_ad_init = llvm::BasicBlock::Create(ctx_.context(), "sm_ad_norm_init", current_func);
+        builder.CreateBr(exp_ad_cond);
+
+        builder.SetInsertPoint(exp_ad_cond);
+        llvm::Value* exp_i = builder.CreateLoad(ctx_.int64Type(), ad_counter);
+        builder.CreateCondBr(builder.CreateICmpULT(exp_i, total_elements), exp_ad_body, norm_ad_init);
+
+        builder.SetInsertPoint(exp_ad_body);
+        llvm::Value* elem_bits = builder.CreateLoad(ctx_.int64Type(),
+            builder.CreateGEP(ctx_.int64Type(), src_elems, exp_i));
+        llvm::Value* elem_node = adNodeFromTensorElementBits(elem_bits, "sm_ad_elem");
+        llvm::Value* max_node = builder.CreateLoad(ctx_.ptrType(), max_node_alloca);
+        llvm::Value* shifted_node = autodiff_->recordADNodeBinary(3, elem_node, max_node);
+        llvm::Value* exp_node = autodiff_->recordADNodeUnary(8, shifted_node);
+        llvm::Value* old_sum_node = builder.CreateLoad(ctx_.ptrType(), sum_node_alloca);
+        llvm::Value* new_sum_node = autodiff_->recordADNodeBinary(2, old_sum_node, exp_node);
+        builder.CreateStore(new_sum_node, sum_node_alloca);
+        builder.CreateStore(builder.CreatePtrToInt(exp_node, ctx_.int64Type()),
+            builder.CreateGEP(ctx_.int64Type(), result_elems, exp_i));
+        builder.CreateStore(builder.CreateAdd(exp_i, llvm::ConstantInt::get(ctx_.int64Type(), 1)), ad_counter);
+        builder.CreateBr(exp_ad_cond);
+
+        builder.SetInsertPoint(norm_ad_init);
+        builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), ad_counter);
+        llvm::BasicBlock* norm_ad_cond = llvm::BasicBlock::Create(ctx_.context(), "sm_ad_norm_cond", current_func);
+        llvm::BasicBlock* norm_ad_body = llvm::BasicBlock::Create(ctx_.context(), "sm_ad_norm_body", current_func);
+        llvm::BasicBlock* norm_ad_done = llvm::BasicBlock::Create(ctx_.context(), "sm_ad_norm_done", current_func);
+        builder.CreateBr(norm_ad_cond);
+
+        builder.SetInsertPoint(norm_ad_cond);
+        llvm::Value* norm_i = builder.CreateLoad(ctx_.int64Type(), ad_counter);
+        builder.CreateCondBr(builder.CreateICmpULT(norm_i, total_elements), norm_ad_body, norm_ad_done);
+
+        builder.SetInsertPoint(norm_ad_body);
+        llvm::Value* exp_bits = builder.CreateLoad(ctx_.int64Type(),
+            builder.CreateGEP(ctx_.int64Type(), result_elems, norm_i));
+        llvm::Value* exp_node_for_norm = adNodeFromTensorElementBits(exp_bits, "sm_ad_exp_node");
+        llvm::Value* denom_node = builder.CreateLoad(ctx_.ptrType(), sum_node_alloca);
+        llvm::Value* softmax_node = autodiff_->recordADNodeBinary(5, exp_node_for_norm, denom_node);
+        builder.CreateStore(builder.CreatePtrToInt(softmax_node, ctx_.int64Type()),
+            builder.CreateGEP(ctx_.int64Type(), result_elems, norm_i));
+        builder.CreateStore(builder.CreateAdd(norm_i, llvm::ConstantInt::get(ctx_.int64Type(), 1)), ad_counter);
+        builder.CreateBr(norm_ad_cond);
+
+        builder.SetInsertPoint(norm_ad_done);
+        builder.CreateBr(exit_block);
+
+        builder.SetInsertPoint(numeric_path);
+    }
 
     // Pass 1: Find maximum element
     llvm::BasicBlock* max_cond = llvm::BasicBlock::Create(ctx_.context(), "sm_max_cond", current_func);
@@ -560,7 +831,6 @@ llvm::Value* TensorCodegen::tensorSoftmax(const eshkol_operations_t* op) {
     llvm::BasicBlock* norm_simd_body = llvm::BasicBlock::Create(ctx_.context(), "sm_norm_simd_body", current_func);
     llvm::BasicBlock* norm_scalar_cond = llvm::BasicBlock::Create(ctx_.context(), "sm_norm_scalar_cond", current_func);
     llvm::BasicBlock* norm_scalar_body = llvm::BasicBlock::Create(ctx_.context(), "sm_norm_scalar_body", current_func);
-    llvm::BasicBlock* exit_block = llvm::BasicBlock::Create(ctx_.context(), "sm_exit", current_func);
 
     builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), counter);
     builder.CreateBr(norm_simd_cond);
