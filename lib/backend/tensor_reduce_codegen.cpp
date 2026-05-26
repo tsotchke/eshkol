@@ -802,6 +802,115 @@ llvm::Value* TensorCodegen::tensorDot(const eshkol_operations_t* op) {
 
     ctx_.builder().SetInsertPoint(shape_ok_bb);
 
+    // Allocate the result tensor and element storage before dispatch. Numeric
+    // matmul writes double bit patterns here; AD-mode matmul writes AD node
+    // pointers in the same int64 element slots.
+    llvm::Value* c_total = ctx_.builder().CreateMul(a_rows, b_cols);
+    llvm::Value* dot_arena_ptr = ctx_.builder().CreateLoad(
+        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Function* alloc_tensor_func = mem_.getArenaAllocateTensorWithHeader();
+    llvm::Value* c_tensor_ptr = ctx_.builder().CreateCall(alloc_tensor_func, {dot_arena_ptr}, "dot_tensor");
+    llvm::Function* arena_alloc = mem_.getArenaAllocate();
+    llvm::Value* c_elements_size = ctx_.builder().CreateMul(c_total,
+        llvm::ConstantInt::get(ctx_.int64Type(), 8));
+    llvm::Value* c_elements_ptr = ctx_.builder().CreateCall(arena_alloc,
+        {dot_arena_ptr, c_elements_size}, "dot_elems");
+
+    llvm::BasicBlock* matmul_data_ready = nullptr;
+    if (autodiff_) {
+        llvm::Value* in_ad_mode = ctx_.builder().CreateLoad(ctx_.int1Type(), ctx_.adModeActive());
+        llvm::BasicBlock* ad_matmul_block = llvm::BasicBlock::Create(
+            ctx_.context(), "matmul_ad", current_func);
+        llvm::BasicBlock* numeric_matmul_block = llvm::BasicBlock::Create(
+            ctx_.context(), "matmul_numeric", current_func);
+        matmul_data_ready = llvm::BasicBlock::Create(
+            ctx_.context(), "matmul_data_ready", current_func);
+        ctx_.builder().CreateCondBr(in_ad_mode, ad_matmul_block, numeric_matmul_block);
+
+        ctx_.builder().SetInsertPoint(ad_matmul_block);
+
+        llvm::Value* row_idx = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "matmul_ad_i");
+        ctx_.builder().CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), row_idx);
+        llvm::BasicBlock* row_cond = llvm::BasicBlock::Create(ctx_.context(), "matmul_ad_i_cond", current_func);
+        llvm::BasicBlock* row_body = llvm::BasicBlock::Create(ctx_.context(), "matmul_ad_i_body", current_func);
+        llvm::BasicBlock* row_exit = llvm::BasicBlock::Create(ctx_.context(), "matmul_ad_i_exit", current_func);
+        ctx_.builder().CreateBr(row_cond);
+
+        ctx_.builder().SetInsertPoint(row_cond);
+        llvm::Value* row = ctx_.builder().CreateLoad(ctx_.int64Type(), row_idx);
+        llvm::Value* row_has_work = ctx_.builder().CreateICmpULT(row, a_rows);
+        ctx_.builder().CreateCondBr(row_has_work, row_body, row_exit);
+
+        ctx_.builder().SetInsertPoint(row_body);
+        llvm::Value* col_idx = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "matmul_ad_j");
+        ctx_.builder().CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), col_idx);
+        llvm::BasicBlock* col_cond = llvm::BasicBlock::Create(ctx_.context(), "matmul_ad_j_cond", current_func);
+        llvm::BasicBlock* col_body = llvm::BasicBlock::Create(ctx_.context(), "matmul_ad_j_body", current_func);
+        llvm::BasicBlock* col_exit = llvm::BasicBlock::Create(ctx_.context(), "matmul_ad_j_exit", current_func);
+        ctx_.builder().CreateBr(col_cond);
+
+        ctx_.builder().SetInsertPoint(col_cond);
+        llvm::Value* col = ctx_.builder().CreateLoad(ctx_.int64Type(), col_idx);
+        llvm::Value* col_has_work = ctx_.builder().CreateICmpULT(col, b_cols);
+        ctx_.builder().CreateCondBr(col_has_work, col_body, col_exit);
+
+        ctx_.builder().SetInsertPoint(col_body);
+        llvm::Value* acc = ctx_.builder().CreateAlloca(ctx_.ptrType(), nullptr, "matmul_ad_acc");
+        llvm::Value* zero_node = autodiff_->createADConstant(llvm::ConstantFP::get(ctx_.doubleType(), 0.0));
+        ctx_.builder().CreateStore(zero_node, acc);
+        llvm::Value* k_idx = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "matmul_ad_k");
+        ctx_.builder().CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), k_idx);
+        llvm::BasicBlock* k_cond = llvm::BasicBlock::Create(ctx_.context(), "matmul_ad_k_cond", current_func);
+        llvm::BasicBlock* k_body = llvm::BasicBlock::Create(ctx_.context(), "matmul_ad_k_body", current_func);
+        llvm::BasicBlock* k_exit = llvm::BasicBlock::Create(ctx_.context(), "matmul_ad_k_exit", current_func);
+        ctx_.builder().CreateBr(k_cond);
+
+        ctx_.builder().SetInsertPoint(k_cond);
+        llvm::Value* kk = ctx_.builder().CreateLoad(ctx_.int64Type(), k_idx);
+        llvm::Value* k_has_work = ctx_.builder().CreateICmpULT(kk, a_cols);
+        ctx_.builder().CreateCondBr(k_has_work, k_body, k_exit);
+
+        ctx_.builder().SetInsertPoint(k_body);
+        llvm::Value* a_row_offset = ctx_.builder().CreateMul(row, a_cols);
+        llvm::Value* a_index = ctx_.builder().CreateAdd(a_row_offset, kk);
+        llvm::Value* b_row_offset = ctx_.builder().CreateMul(kk, b_cols);
+        llvm::Value* b_index = ctx_.builder().CreateAdd(b_row_offset, col);
+        llvm::Value* a_elem_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), typed_a_elements_ptr, a_index);
+        llvm::Value* b_elem_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), typed_b_elements_ptr, b_index);
+        llvm::Value* a_bits = ctx_.builder().CreateLoad(ctx_.int64Type(), a_elem_ptr);
+        llvm::Value* b_bits = ctx_.builder().CreateLoad(ctx_.int64Type(), b_elem_ptr);
+        llvm::Value* a_node = adNodeFromTensorElementBits(a_bits, "matmul_ad_a");
+        llvm::Value* b_node = adNodeFromTensorElementBits(b_bits, "matmul_ad_b");
+        llvm::Value* product_node = autodiff_->recordADNodeBinary(4, a_node, b_node);
+        llvm::Value* old_acc = ctx_.builder().CreateLoad(ctx_.ptrType(), acc);
+        llvm::Value* new_acc = autodiff_->recordADNodeBinary(2, old_acc, product_node);
+        ctx_.builder().CreateStore(new_acc, acc);
+        llvm::Value* next_k = ctx_.builder().CreateAdd(kk, llvm::ConstantInt::get(ctx_.int64Type(), 1));
+        ctx_.builder().CreateStore(next_k, k_idx);
+        ctx_.builder().CreateBr(k_cond);
+
+        ctx_.builder().SetInsertPoint(k_exit);
+        llvm::Value* final_node = ctx_.builder().CreateLoad(ctx_.ptrType(), acc);
+        llvm::Value* final_node_bits = ctx_.builder().CreatePtrToInt(final_node, ctx_.int64Type());
+        llvm::Value* c_row_offset = ctx_.builder().CreateMul(row, b_cols);
+        llvm::Value* c_index = ctx_.builder().CreateAdd(c_row_offset, col);
+        llvm::Value* c_elem_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), c_elements_ptr, c_index);
+        ctx_.builder().CreateStore(final_node_bits, c_elem_ptr);
+        llvm::Value* next_col = ctx_.builder().CreateAdd(col, llvm::ConstantInt::get(ctx_.int64Type(), 1));
+        ctx_.builder().CreateStore(next_col, col_idx);
+        ctx_.builder().CreateBr(col_cond);
+
+        ctx_.builder().SetInsertPoint(col_exit);
+        llvm::Value* next_row = ctx_.builder().CreateAdd(row, llvm::ConstantInt::get(ctx_.int64Type(), 1));
+        ctx_.builder().CreateStore(next_row, row_idx);
+        ctx_.builder().CreateBr(row_cond);
+
+        ctx_.builder().SetInsertPoint(row_exit);
+        ctx_.builder().CreateBr(matmul_data_ready);
+
+        ctx_.builder().SetInsertPoint(numeric_matmul_block);
+    }
+
     // Track XLA path state for PHI node construction
     llvm::Value* xla_packed_result = nullptr;
     llvm::BasicBlock* xla_exit_block = nullptr;
@@ -832,21 +941,6 @@ llvm::Value* TensorCodegen::tensorDot(const eshkol_operations_t* op) {
 #endif
 
     // === MATMUL VIA BLAS RUNTIME (replaces inline triple-nested loop) ===
-    llvm::Value* c_total = ctx_.builder().CreateMul(a_rows, b_cols);
-
-    // Allocate result tensor
-    llvm::Value* dot_arena_ptr = ctx_.builder().CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
-    llvm::Function* alloc_tensor_func = mem_.getArenaAllocateTensorWithHeader();
-    llvm::Value* c_tensor_ptr = ctx_.builder().CreateCall(alloc_tensor_func, {dot_arena_ptr}, "dot_tensor");
-
-    // Allocate result elements (M*N doubles stored as int64 bitpatterns)
-    llvm::Function* arena_alloc = mem_.getArenaAllocate();
-    llvm::Value* c_elements_size = ctx_.builder().CreateMul(c_total,
-        llvm::ConstantInt::get(ctx_.int64Type(), 8));
-    llvm::Value* c_elements_ptr = ctx_.builder().CreateCall(arena_alloc,
-        {dot_arena_ptr, c_elements_size}, "dot_elems");
-
     // Call eshkol_matmul_f64(A_elems, B_elems, C_elems, M, K, N)
     // Tensor elements are int64 bitpatterns of doubles — same bytes, just reinterpret pointer
     auto* matmul_ft = llvm::FunctionType::get(ctx_.voidType(),
@@ -860,6 +954,10 @@ llvm::Value* TensorCodegen::tensorDot(const eshkol_operations_t* op) {
     ctx_.builder().CreateCall(matmul_fn,
         {typed_a_elements_ptr, typed_b_elements_ptr, c_elements_ptr,
          a_rows, a_cols, b_cols});
+    if (matmul_data_ready) {
+        ctx_.builder().CreateBr(matmul_data_ready);
+        ctx_.builder().SetInsertPoint(matmul_data_ready);
+    }
 
     // === RESULT SHAPE CONTRACTION (PEP 465) ===
     // Determine result ndim and shape:
