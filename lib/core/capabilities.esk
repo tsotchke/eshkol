@@ -13,26 +13,53 @@
          capability-allowed?
          capability-require!)
 
-(define *capability-allow-list* #f)
+(extern void capability-runtime-clear-raw :real eshkol_capability_runtime_clear)
+(extern void capability-runtime-begin-install-raw :real eshkol_capability_runtime_begin_install)
+(extern void capability-runtime-allow-raw ptr :real eshkol_capability_runtime_allow)
 
-(define (capability-policy) *capability-allow-list*)
+(define *capability-policy-active* #f)
+(define *capability-allow-list* '())
+
+(define (capability-policy)
+  (if *capability-policy-active* *capability-allow-list* #f))
 
 (define (capability-policy-active?)
-  (if *capability-allow-list* #t #f))
+  *capability-policy-active*)
+
+(define (capability-symbol-list? allow-list)
+  (if (null? allow-list)
+      #t
+      (if (symbol? (car allow-list))
+          (capability-symbol-list? (cdr allow-list))
+          #f)))
+
+(define (capability-sync-runtime! allow-list)
+  (capability-runtime-begin-install-raw)
+  (let loop ((remaining allow-list))
+    (if (null? remaining)
+        #t
+        (begin
+          (capability-runtime-allow-raw (symbol->string (car remaining)))
+          (loop (cdr remaining))))))
 
 (define (capability-install-policy! allow-list)
   "Install an allow-list of capability symbols. Active policies deny by default."
-  (if (list? allow-list)
-      (set! *capability-allow-list* allow-list)
+  (if (and (list? allow-list) (capability-symbol-list? allow-list))
+      (begin
+        (set! *capability-policy-active* #t)
+        (set! *capability-allow-list* allow-list)
+        (capability-sync-runtime! allow-list))
       (error "capability-install-policy!: expected a list of symbols" allow-list)))
 
 (define (capability-clear-policy!)
   "Clear the active policy. With no policy, capability checks allow by default."
-  (set! *capability-allow-list* #f))
+  (set! *capability-policy-active* #f)
+  (set! *capability-allow-list* '())
+  (capability-runtime-clear-raw))
 
 (define (capability-allowed? capability . _context)
   "Return #t when CAPABILITY is allowed under the current policy."
-  (if (not *capability-allow-list*)
+  (if (not *capability-policy-active*)
       #t
       (if (memq capability *capability-allow-list*) #t #f)))
 

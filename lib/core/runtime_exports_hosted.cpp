@@ -22,6 +22,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <unordered_set>
 
 #ifdef _WIN32
 #include <Windows.h>
@@ -42,6 +43,10 @@ constexpr std::uint64_t kDrand48Mask = (1ULL << 48) - 1;
 
 std::mutex g_drand48_mutex;
 std::uint64_t g_drand48_state = 0x1234ABCD330EULL;
+
+std::mutex g_capability_mutex;
+bool g_capability_policy_active = false;
+std::unordered_set<std::string> g_capability_allow_list;
 
 #ifdef _WIN32
 struct windows_dirent_shim {
@@ -100,6 +105,45 @@ std::filesystem::path normalize_runtime_path(std::string_view raw_path) {
 #endif
 
     return std::filesystem::path(std::string(raw_path));
+}
+
+bool runtime_capability_allows(const char* capability) {
+    if (capability == nullptr || capability[0] == '\0') {
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(g_capability_mutex);
+    if (!g_capability_policy_active) {
+        return true;
+    }
+    return g_capability_allow_list.find(capability) != g_capability_allow_list.end();
+}
+
+bool runtime_file_mode_allows(const char* mode) {
+    if (mode == nullptr || mode[0] == '\0') {
+        return false;
+    }
+
+    bool needs_read = mode[0] == 'r';
+    bool needs_write = mode[0] == 'w' || mode[0] == 'a';
+    for (const char* p = mode; *p; ++p) {
+        if (*p == '+') {
+            needs_read = true;
+            needs_write = true;
+        }
+    }
+
+    if (needs_read && !runtime_capability_allows("file-read")) {
+        return false;
+    }
+    if (needs_write && !runtime_capability_allows("file-write")) {
+        return false;
+    }
+    return true;
+}
+
+void deny_file_capability() {
+    errno = EACCES;
 }
 
 } // namespace
@@ -263,9 +307,49 @@ extern "C" int eshkol_usleep(std::uint32_t usec) {
     return 0;
 }
 
+extern "C" void eshkol_capability_runtime_clear() {
+    std::lock_guard<std::mutex> lock(g_capability_mutex);
+    g_capability_policy_active = false;
+    g_capability_allow_list.clear();
+}
+
+extern "C" void eshkol_capability_runtime_begin_install() {
+    std::lock_guard<std::mutex> lock(g_capability_mutex);
+    g_capability_policy_active = true;
+    g_capability_allow_list.clear();
+}
+
+extern "C" void eshkol_capability_runtime_allow(const char* capability) {
+    if (capability == nullptr || capability[0] == '\0') {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(g_capability_mutex);
+    if (g_capability_policy_active) {
+        g_capability_allow_list.insert(capability);
+    }
+}
+
+extern "C" int eshkol_capability_runtime_is_active() {
+    std::lock_guard<std::mutex> lock(g_capability_mutex);
+    return g_capability_policy_active ? 1 : 0;
+}
+
+extern "C" int eshkol_capability_runtime_allows(const char* capability) {
+    return runtime_capability_allows(capability) ? 1 : 0;
+}
+
+extern "C" int eshkol_capability_runtime_allows_file_mode(const char* mode) {
+    return runtime_file_mode_allows(mode) ? 1 : 0;
+}
+
 extern "C" FILE* eshkol_fopen(const char* path, const char* mode) {
     if (path == nullptr || mode == nullptr) {
         errno = EINVAL;
+        return nullptr;
+    }
+    if (!runtime_file_mode_allows(mode)) {
+        deny_file_capability();
         return nullptr;
     }
 
@@ -287,6 +371,13 @@ extern "C" int eshkol_access(const char* path, int mode) {
         errno = EINVAL;
         return -1;
     }
+    const bool needs_write = (mode & 2) != 0;
+    const bool needs_read = !needs_write || ((mode & 4) != 0);
+    if ((needs_read && !runtime_capability_allows("file-read")) ||
+        (needs_write && !runtime_capability_allows("file-write"))) {
+        deny_file_capability();
+        return -1;
+    }
 
     const auto normalized = normalize_runtime_path(path);
 #ifdef _WIN32
@@ -301,6 +392,10 @@ extern "C" int eshkol_remove(const char* path) {
         errno = EINVAL;
         return -1;
     }
+    if (!runtime_capability_allows("file-write")) {
+        deny_file_capability();
+        return -1;
+    }
 
     const auto normalized = normalize_runtime_path(path);
     return std::remove(normalized.string().c_str());
@@ -309,6 +404,10 @@ extern "C" int eshkol_remove(const char* path) {
 extern "C" int eshkol_rename(const char* old_path, const char* new_path) {
     if (old_path == nullptr || new_path == nullptr) {
         errno = EINVAL;
+        return -1;
+    }
+    if (!runtime_capability_allows("file-write")) {
+        deny_file_capability();
         return -1;
     }
 
@@ -320,6 +419,10 @@ extern "C" int eshkol_rename(const char* old_path, const char* new_path) {
 extern "C" int eshkol_mkdir(const char* path, int mode) {
     if (path == nullptr) {
         errno = EINVAL;
+        return -1;
+    }
+    if (!runtime_capability_allows("file-write")) {
+        deny_file_capability();
         return -1;
     }
 
@@ -337,6 +440,10 @@ extern "C" int eshkol_rmdir(const char* path) {
         errno = EINVAL;
         return -1;
     }
+    if (!runtime_capability_allows("file-write")) {
+        deny_file_capability();
+        return -1;
+    }
 
     const auto normalized = normalize_runtime_path(path);
 #ifdef _WIN32
@@ -349,6 +456,10 @@ extern "C" int eshkol_rmdir(const char* path) {
 extern "C" int eshkol_chdir(const char* path) {
     if (path == nullptr) {
         errno = EINVAL;
+        return -1;
+    }
+    if (!runtime_capability_allows("file-read")) {
+        deny_file_capability();
         return -1;
     }
 
@@ -365,6 +476,10 @@ extern "C" int eshkol_stat(const char* path, void* buf) {
         errno = EINVAL;
         return -1;
     }
+    if (!runtime_capability_allows("file-read")) {
+        deny_file_capability();
+        return -1;
+    }
 
     const auto normalized = normalize_runtime_path(path);
     return ::stat(normalized.string().c_str(), static_cast<struct stat*>(buf));
@@ -373,6 +488,10 @@ extern "C" int eshkol_stat(const char* path, void* buf) {
 extern "C" void* eshkol_opendir(const char* path) {
     if (path == nullptr) {
         errno = EINVAL;
+        return nullptr;
+    }
+    if (!runtime_capability_allows("file-read")) {
+        deny_file_capability();
         return nullptr;
     }
 

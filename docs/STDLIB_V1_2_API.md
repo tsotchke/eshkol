@@ -2024,4 +2024,6 @@ policy (`#f`), checks allow by default so existing v1.2 code keeps running.
 Installing an allow-list activates deny-by-default behavior: any capability
 symbol not present in the list raises through `capability-require!`. Initial
 hooks cover agent subprocess/shell, HTTP/network, Unix-socket, and SQLite FFI
-entry points. Core file I/O builtins are still a follow-up hook.
+entry points. The hosted runtime also mirrors the active allow-list so core
+file I/O builtins require `file-read` for metadata/read paths and `file-write`
+for write/delete/rename paths.

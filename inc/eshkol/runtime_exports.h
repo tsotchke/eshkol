@@ -60,6 +60,12 @@ int eshkol_rmdir(const char* path);
 int eshkol_chdir(const char* path);
 int eshkol_stat(const char* path, void* buf);
 void* eshkol_opendir(const char* path);
+void eshkol_capability_runtime_clear();
+void eshkol_capability_runtime_begin_install();
+void eshkol_capability_runtime_allow(const char* capability);
+int eshkol_capability_runtime_is_active();
+int eshkol_capability_runtime_allows(const char* capability);
+int eshkol_capability_runtime_allows_file_mode(const char* mode);
 
 }
 

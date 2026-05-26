@@ -708,6 +708,12 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_SYMBOL(eshkol_access);
     ADD_SYMBOL(eshkol_remove);
     ADD_SYMBOL(eshkol_rename);
+    ADD_SYMBOL(eshkol_capability_runtime_clear);
+    ADD_SYMBOL(eshkol_capability_runtime_begin_install);
+    ADD_SYMBOL(eshkol_capability_runtime_allow);
+    ADD_SYMBOL(eshkol_capability_runtime_is_active);
+    ADD_SYMBOL(eshkol_capability_runtime_allows);
+    ADD_SYMBOL(eshkol_capability_runtime_allows_file_mode);
     ADD_SYMBOL(eshkol_mkdir);
     ADD_SYMBOL(eshkol_rmdir);
     ADD_SYMBOL(eshkol_chdir);

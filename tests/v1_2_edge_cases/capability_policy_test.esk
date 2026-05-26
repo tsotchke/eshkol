@@ -36,6 +36,48 @@
 (check "denied capability raises deterministically"
        (raises? (lambda () (capability-require! 'subprocess 'spawn))))
 
+(define file-policy-path "/tmp/eshkol_capability_file_policy.txt")
+
+(capability-clear-policy!)
+(if (file-exists? file-policy-path) (delete-file file-policy-path) #f)
+(check "no policy allows file writes by default"
+       (write-file file-policy-path "hello"))
+
+(capability-install-policy! '())
+(check "empty active policy is deny-by-default"
+       (and (capability-policy-active?)
+            (not (capability-allowed? 'file-read))
+            (not (capability-allowed? 'file-write))))
+(check "file metadata requires file-read"
+       (not (file-exists? file-policy-path)))
+(check "read-file requires file-read"
+       (not (read-file file-policy-path)))
+(check "file-size requires file-read"
+       (not (file-size file-policy-path)))
+(check "write-file requires file-write"
+       (not (write-file file-policy-path "blocked")))
+
+(capability-install-policy! (list 'file-read))
+(check "file-read allows metadata and read-file"
+       (and (file-exists? file-policy-path)
+            (string=? (read-file file-policy-path) "hello")))
+(check "file-read alone still denies write-file"
+       (not (write-file file-policy-path "blocked")))
+
+(capability-install-policy! (list 'file-write))
+(check "file-write allows write-file"
+       (write-file file-policy-path "updated"))
+(check "file-write alone still denies metadata"
+       (not (file-exists? file-policy-path)))
+
+(capability-install-policy! (list 'file-read))
+(check "file-read observes updated file contents"
+       (string=? (read-file file-policy-path) "updated"))
+
+(capability-install-policy! (list 'file-write))
+(check "file-write allows delete-file cleanup"
+       (delete-file file-policy-path))
+
 (capability-install-policy! (list 'subprocess))
 (check "shell capability remains denied unless listed"
        (raises? (lambda () (capability-require! 'shell 'spawn-shell))))
