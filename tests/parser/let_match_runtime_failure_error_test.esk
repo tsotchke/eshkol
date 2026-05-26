@@ -1,0 +1,4 @@
+;;; Expected: Error
+
+(let-match (((list a b) (list 1)))
+  (+ a b))

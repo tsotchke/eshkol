@@ -1,0 +1,4 @@
+;;; Expected: Error
+
+(let-match ((x 1 2))
+  x)

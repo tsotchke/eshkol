@@ -1,0 +1,43 @@
+;; let-match feature tests
+
+(define tests-passed 0)
+(define tests-failed 0)
+
+(define (check name ok)
+  (if ok
+      (begin
+        (set! tests-passed (+ tests-passed 1))
+        (display "PASS: ") (display name) (newline))
+      (begin
+        (set! tests-failed (+ tests-failed 1))
+        (display "FAIL: ") (display name) (newline))))
+
+(check "variable pattern"
+       (= (let-match ((x 41)) (+ x 1)) 42))
+
+(check "list destructuring"
+       (= (let-match (((list a b) (list 19 23))) (+ a b)) 42))
+
+(check "nested cons destructuring"
+       (= (let-match (((cons head tail) (list 10 20 30)))
+            (+ head (car tail)))
+          30))
+
+(check "sequential bindings can see previous patterns"
+       (= (let-match ((x 20)
+                      ((list a b) (list x (+ x 2))))
+            (+ a b))
+          42))
+
+(check "multiple body expressions return last value"
+       (= (let-match ((x 40))
+            (+ x 1)
+            (+ x 2))
+          42))
+
+(display "Passed: ") (display tests-passed) (newline)
+(display "Failed: ") (display tests-failed) (newline)
+
+(if (= tests-failed 0)
+    0
+    (error "let-match tests failed"))

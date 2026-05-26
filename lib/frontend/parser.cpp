@@ -2811,6 +2811,161 @@ static eshkol_pattern_t* parse_pattern(SchemeTokenizer& tokenizer) {
 
 // ===== END PATTERN MATCHING HELPER =====
 
+struct LetMatchBinding {
+    eshkol_pattern_t* pattern;
+    eshkol_ast_t expr;
+};
+
+static eshkol_pattern_t* make_wildcard_pattern() {
+    eshkol_pattern_t* pattern = new eshkol_pattern_t;
+    pattern->type = PATTERN_WILDCARD;
+    return pattern;
+}
+
+static eshkol_ast_t make_sequence_or_null_ast(const std::vector<eshkol_ast_t>& exprs,
+                                              uint32_t line,
+                                              uint32_t column) {
+    if (exprs.empty()) {
+        eshkol_ast_t ast = {};
+        ast.line = line;
+        ast.column = column;
+        eshkol_ast_make_null(&ast);
+        return ast;
+    }
+    if (exprs.size() == 1) {
+        return exprs[0];
+    }
+
+    eshkol_ast_t ast = {};
+    ast.type = ESHKOL_OP;
+    ast.line = line;
+    ast.column = column;
+    ast.operation.op = ESHKOL_SEQUENCE_OP;
+    ast.operation.sequence_op.num_expressions = exprs.size();
+    ast.operation.sequence_op.expressions = new eshkol_ast_t[exprs.size()];
+    for (size_t i = 0; i < exprs.size(); i++) {
+        ast.operation.sequence_op.expressions[i] = exprs[i];
+    }
+    return ast;
+}
+
+static eshkol_ast_t make_let_match_failure_ast(uint32_t line, uint32_t column) {
+    std::vector<eshkol_ast_t> args;
+    args.push_back(make_parser_string_ast("let-match pattern failed", line, column));
+    return make_parser_call_ast("error", args, line, column);
+}
+
+static eshkol_ast_t build_let_match_ast(const std::vector<LetMatchBinding>& bindings,
+                                        size_t index,
+                                        eshkol_ast_t body,
+                                        uint32_t line,
+                                        uint32_t column) {
+    if (index >= bindings.size()) {
+        return body;
+    }
+
+    eshkol_ast_t success =
+        build_let_match_ast(bindings, index + 1, body, line, column);
+    eshkol_ast_t failure = make_let_match_failure_ast(line, column);
+
+    eshkol_ast_t ast = {};
+    ast.type = ESHKOL_OP;
+    ast.line = line;
+    ast.column = column;
+    ast.operation.op = ESHKOL_MATCH_OP;
+    ast.operation.match_op.expr = new eshkol_ast_t;
+    *ast.operation.match_op.expr = bindings[index].expr;
+    ast.operation.match_op.num_clauses = 2;
+    ast.operation.match_op.clauses = new eshkol_match_clause_t[2];
+
+    ast.operation.match_op.clauses[0].pattern = bindings[index].pattern;
+    ast.operation.match_op.clauses[0].guard = nullptr;
+    ast.operation.match_op.clauses[0].body = new eshkol_ast_t;
+    *ast.operation.match_op.clauses[0].body = success;
+
+    ast.operation.match_op.clauses[1].pattern = make_wildcard_pattern();
+    ast.operation.match_op.clauses[1].guard = nullptr;
+    ast.operation.match_op.clauses[1].body = new eshkol_ast_t;
+    *ast.operation.match_op.clauses[1].body = failure;
+    return ast;
+}
+
+static eshkol_ast_t parse_let_match_form(SchemeTokenizer& tokenizer,
+                                         const Token& form_token) {
+    std::vector<LetMatchBinding> bindings;
+
+    Token token = tokenizer.nextToken();
+    if (token.type != TOKEN_LPAREN) {
+        PARSE_ERROR_AT(form_token,
+                       "let-match requires a binding list: (let-match ((pattern expr) ...) body ...)");
+        return {.type = ESHKOL_INVALID};
+    }
+
+    while (true) {
+        token = tokenizer.nextToken();
+        if (token.type == TOKEN_RPAREN) break;
+        if (token.type == TOKEN_EOF) {
+            PARSE_ERROR_AT(form_token, "unexpected end of input in let-match bindings");
+            return {.type = ESHKOL_INVALID};
+        }
+        if (token.type != TOKEN_LPAREN) {
+            PARSE_ERROR_AT(token, "let-match binding must be a list: (pattern expr)");
+            return {.type = ESHKOL_INVALID};
+        }
+
+        LetMatchBinding binding;
+        binding.pattern = parse_pattern(tokenizer);
+        if (!binding.pattern || binding.pattern->type == PATTERN_INVALID) {
+            PARSE_ERROR_AT(token, "invalid pattern in let-match binding");
+            return {.type = ESHKOL_INVALID};
+        }
+
+        Token expr_start = tokenizer.nextToken();
+        if (expr_start.type == TOKEN_RPAREN || expr_start.type == TOKEN_EOF) {
+            PARSE_ERROR_AT(token, "let-match binding requires an expression");
+            return {.type = ESHKOL_INVALID};
+        }
+        tokenizer.pushBack(expr_start);
+        binding.expr = parse_expression(tokenizer);
+        if (binding.expr.type == ESHKOL_INVALID) {
+            return binding.expr;
+        }
+
+        Token close = tokenizer.nextToken();
+        if (close.type != TOKEN_RPAREN) {
+            PARSE_ERROR_AT(close, "let-match binding takes exactly one expression");
+            return {.type = ESHKOL_INVALID};
+        }
+
+        bindings.push_back(binding);
+    }
+
+    std::vector<eshkol_ast_t> body_exprs;
+    while (true) {
+        token = tokenizer.nextToken();
+        if (token.type == TOKEN_RPAREN) break;
+        if (token.type == TOKEN_EOF) {
+            PARSE_ERROR_AT(form_token, "unexpected end of input in let-match body");
+            return {.type = ESHKOL_INVALID};
+        }
+        tokenizer.pushBack(token);
+        eshkol_ast_t body_expr = parse_expression(tokenizer);
+        if (body_expr.type == ESHKOL_INVALID) {
+            return body_expr;
+        }
+        body_exprs.push_back(body_expr);
+    }
+
+    if (body_exprs.empty()) {
+        PARSE_ERROR_AT(form_token, "let-match body cannot be empty");
+        return {.type = ESHKOL_INVALID};
+    }
+
+    eshkol_ast_t body =
+        make_sequence_or_null_ast(body_exprs, form_token.line, form_token.column);
+    return build_let_match_ast(bindings, 0, body, form_token.line, form_token.column);
+}
+
 static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
     eshkol_ast_t ast = {};  // Zero-initialize all fields
     ast.type = ESHKOL_OP;
@@ -2914,6 +3069,10 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
     if (token.type == TOKEN_SYMBOL) {
         std::string first_symbol = token.value;  // Store the function name
         ast.operation.op = get_operator_type(token.value);
+
+        if (first_symbol == "let-match") {
+            return parse_let_match_form(tokenizer, token);
+        }
 
         // R7RS (delay expr) → (%make-lazy-promise (lambda () expr))
         // (delay-force expr) → (%make-lazy-promise-force (lambda () expr))
