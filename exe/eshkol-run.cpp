@@ -1447,9 +1447,29 @@ static void load_file_asts(const std::string& filepath, std::vector<eshkol_ast_t
     read_file.close();
 }
 
+static void flatten_top_level_sequences(std::vector<eshkol_ast_t>& asts)
+{
+    std::vector<eshkol_ast_t> flattened;
+    flattened.reserve(asts.size());
+
+    for (auto& ast : asts) {
+        if (ast.type == ESHKOL_OP && ast.operation.op == ESHKOL_SEQUENCE_OP) {
+            for (uint64_t i = 0; i < ast.operation.sequence_op.num_expressions; i++) {
+                flattened.push_back(ast.operation.sequence_op.expressions[i]);
+            }
+        } else {
+            flattened.push_back(ast);
+        }
+    }
+
+    asts = std::move(flattened);
+}
+
 // Process import statements in ASTs and load referenced files
 static void process_imports(std::vector<eshkol_ast_t>& asts, const std::string& base_dir, bool debug_mode)
 {
+    flatten_top_level_sequences(asts);
+
     std::vector<eshkol_ast_t> new_asts;
     std::vector<eshkol_ast_t> imported_asts;
 
@@ -2240,6 +2260,8 @@ static void process_requires(std::vector<eshkol_ast_t>& asts, const std::string&
     if (g_lib_dir.empty()) {
         g_lib_dir = find_lib_dir();
     }
+
+    flatten_top_level_sequences(asts);
 
     std::vector<eshkol_ast_t> new_asts;
     std::vector<eshkol_ast_t> required_asts;

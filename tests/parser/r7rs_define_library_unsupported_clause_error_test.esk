@@ -1,0 +1,4 @@
+;;; Expected: Error
+
+(define-library (test bad)
+  (include "missing.scm"))

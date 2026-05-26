@@ -1,0 +1,3 @@
+;;; Expected: Error
+
+(import (only (scheme base) +))

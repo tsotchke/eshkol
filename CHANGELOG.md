@@ -17,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `#:scale scale`, plus `let-match` destructuring bindings for day-to-day
   pattern binding.
 
+- Added the first v1.3 R7RS library surface: simple `(import (scheme base))`
+  and `(define-library ... (export ...) (import ...) (begin ...))` forms now
+  lower onto the existing module loader.
+
 ## [1.2.3-scale] - 2026-05-25
 
 Packaging closeout for the v1.2 line. This patch supersedes the unpublished

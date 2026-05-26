@@ -1,0 +1,7 @@
+;;; R7RS `(scheme base)` maps to the existing stdlib module.
+
+(import (scheme base))
+
+(display "Testing R7RS scheme base import: ")
+(display (length (iota 5)))
+(newline)
