@@ -603,8 +603,9 @@ Execute: `eshkol-run gradient.esk -o gradient && ./gradient`
   `(define (scale x #:factor factor) (* x factor))`
 - **Pattern matching** with algebraic data type support
 - **Module system** with dependency resolution, package manager (`eshkol-pkg`),
-  and R7RS `(import ...)` / `(define-library ...)` forms, including `only`,
-  `except`, `rename`, and explicit-prefix imports
+  and R7RS `(import ...)` / `(define-library ...)` forms. R7RS import-set
+  modifiers (`only`, `except`, `rename`, and explicit prefixes) lower through
+  the existing module loader and alias machinery.
 - **Exception handling** via `guard`/`raise` with typed exception hierarchies
 - **Multiple return values** with destructuring assignment
 - **Hash tables** with generic key/value types and O(1) average access
