@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   can embed `~{expr}` forms, each expression is formatted with display
   semantics, and `~~{` preserves a literal interpolation opener.
 
+- Added v1.3 keyword formal support for function and lambda parameters such as
+  `#:scale scale`, plus `let-match` destructuring bindings for day-to-day
+  pattern binding.
+
 ## [1.2.3-scale] - 2026-05-25
 
 Packaging closeout for the v1.2 line. This patch supersedes the unpublished

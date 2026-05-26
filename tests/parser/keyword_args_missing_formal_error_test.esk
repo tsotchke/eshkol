@@ -1,0 +1,3 @@
+;;; Expected: Error
+
+(define (bad #:scale) 0)
