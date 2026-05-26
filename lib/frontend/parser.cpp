@@ -3019,6 +3019,248 @@ static eshkol_ast_t make_sequence_or_null_ast(const std::vector<eshkol_ast_t>& e
     return ast;
 }
 
+static char* parser_copy_cstr(const std::string& value) {
+    char* out = new char[value.size() + 1];
+    if (out) memcpy(out, value.c_str(), value.size() + 1);
+    return out;
+}
+
+static std::string join_r7rs_library_name(const std::vector<std::string>& parts) {
+    if (parts.size() == 2 && parts[0] == "scheme" && parts[1] == "base") {
+        return "stdlib";
+    }
+
+    std::string out;
+    for (size_t i = 0; i < parts.size(); i++) {
+        if (i > 0) out += ".";
+        out += parts[i];
+    }
+    return out;
+}
+
+static eshkol_ast_t make_require_ast(const std::vector<std::string>& modules,
+                                     uint32_t line,
+                                     uint32_t column) {
+    eshkol_ast_t ast = {};
+    ast.type = ESHKOL_OP;
+    ast.line = line;
+    ast.column = column;
+    ast.operation.op = ESHKOL_REQUIRE_OP;
+    ast.operation.require_op.num_modules = modules.size();
+    ast.operation.require_op.module_names = new char*[modules.size()];
+    for (size_t i = 0; i < modules.size(); i++) {
+        ast.operation.require_op.module_names[i] = parser_copy_cstr(modules[i]);
+    }
+    return ast;
+}
+
+static eshkol_ast_t make_provide_ast(const std::vector<std::string>& exports,
+                                     uint32_t line,
+                                     uint32_t column) {
+    eshkol_ast_t ast = {};
+    ast.type = ESHKOL_OP;
+    ast.line = line;
+    ast.column = column;
+    ast.operation.op = ESHKOL_PROVIDE_OP;
+    ast.operation.provide_op.num_exports = exports.size();
+    ast.operation.provide_op.export_names = new char*[exports.size()];
+    for (size_t i = 0; i < exports.size(); i++) {
+        ast.operation.provide_op.export_names[i] = parser_copy_cstr(exports[i]);
+    }
+    return ast;
+}
+
+static bool parse_r7rs_library_name(SchemeTokenizer& tokenizer,
+                                    const Token& form_token,
+                                    std::string* out_name,
+                                    const char* context) {
+    Token open = tokenizer.nextToken();
+    if (open.type != TOKEN_LPAREN) {
+        PARSE_ERROR_AT(open, "%s requires a parenthesized library name", context);
+        return false;
+    }
+
+    std::vector<std::string> parts;
+    while (true) {
+        Token token = tokenizer.nextToken();
+        if (token.type == TOKEN_RPAREN) break;
+        if (token.type == TOKEN_EOF) {
+            PARSE_ERROR_AT(form_token, "unexpected end of input in %s library name", context);
+            return false;
+        }
+        if (token.type != TOKEN_SYMBOL) {
+            PARSE_ERROR_AT(token, "%s library name parts must be symbols", context);
+            return false;
+        }
+        parts.push_back(token.value);
+    }
+
+    if (parts.empty()) {
+        PARSE_ERROR_AT(open, "%s library name cannot be empty", context);
+        return false;
+    }
+
+    if (out_name) *out_name = join_r7rs_library_name(parts);
+    return true;
+}
+
+static bool parse_r7rs_import_set_body(SchemeTokenizer& tokenizer,
+                                       const Token& open_token,
+                                       std::string* out_module) {
+    Token first = tokenizer.nextToken();
+    if (first.type == TOKEN_EOF) {
+        PARSE_ERROR_AT(open_token, "unexpected end of input in import set");
+        return false;
+    }
+    if (first.type != TOKEN_SYMBOL) {
+        PARSE_ERROR_AT(first, "R7RS import set must begin with a library name symbol");
+        return false;
+    }
+    if (first.value == "only" || first.value == "except" ||
+        first.value == "prefix" || first.value == "rename") {
+        PARSE_ERROR_AT(first, "R7RS import modifiers are not supported yet");
+        return false;
+    }
+
+    std::vector<std::string> parts;
+    parts.push_back(first.value);
+    while (true) {
+        Token token = tokenizer.nextToken();
+        if (token.type == TOKEN_RPAREN) break;
+        if (token.type == TOKEN_EOF) {
+            PARSE_ERROR_AT(open_token, "unexpected end of input in import set");
+            return false;
+        }
+        if (token.type != TOKEN_SYMBOL) {
+            PARSE_ERROR_AT(token, "R7RS import set library names must contain only symbols");
+            return false;
+        }
+        parts.push_back(token.value);
+    }
+
+    if (parts.empty()) {
+        PARSE_ERROR_AT(open_token, "R7RS import set library name cannot be empty");
+        return false;
+    }
+
+    if (out_module) *out_module = join_r7rs_library_name(parts);
+    return true;
+}
+
+static bool parse_r7rs_import_sets(SchemeTokenizer& tokenizer,
+                                   const Token& form_token,
+                                   std::vector<std::string>* modules) {
+    while (true) {
+        Token token = tokenizer.nextToken();
+        if (token.type == TOKEN_RPAREN) break;
+        if (token.type == TOKEN_EOF) {
+            PARSE_ERROR_AT(form_token, "unexpected end of input in R7RS import");
+            return false;
+        }
+        if (token.type != TOKEN_LPAREN) {
+            PARSE_ERROR_AT(token, "R7RS import expects library import sets");
+            return false;
+        }
+
+        std::string module_name;
+        if (!parse_r7rs_import_set_body(tokenizer, token, &module_name)) {
+            return false;
+        }
+        modules->push_back(module_name);
+    }
+
+    if (modules->empty()) {
+        PARSE_ERROR_AT(form_token, "R7RS import expects at least one library");
+        return false;
+    }
+    return true;
+}
+
+static eshkol_ast_t parse_define_library_form(SchemeTokenizer& tokenizer,
+                                             const Token& form_token) {
+    std::string library_name;
+    if (!parse_r7rs_library_name(tokenizer, form_token, &library_name,
+                                 "define-library")) {
+        return {.type = ESHKOL_INVALID};
+    }
+    (void)library_name;
+
+    std::vector<eshkol_ast_t> lowered_forms;
+    while (true) {
+        Token clause_open = tokenizer.nextToken();
+        if (clause_open.type == TOKEN_RPAREN) break;
+        if (clause_open.type == TOKEN_EOF) {
+            PARSE_ERROR_AT(form_token, "unexpected end of input in define-library");
+            return {.type = ESHKOL_INVALID};
+        }
+        if (clause_open.type != TOKEN_LPAREN) {
+            PARSE_ERROR_AT(clause_open, "define-library clauses must be parenthesized");
+            return {.type = ESHKOL_INVALID};
+        }
+
+        Token clause_name = tokenizer.nextToken();
+        if (clause_name.type != TOKEN_SYMBOL) {
+            PARSE_ERROR_AT(clause_name, "define-library clause name must be a symbol");
+            return {.type = ESHKOL_INVALID};
+        }
+
+        if (clause_name.value == "export") {
+            std::vector<std::string> exports;
+            while (true) {
+                Token token = tokenizer.nextToken();
+                if (token.type == TOKEN_RPAREN) break;
+                if (token.type == TOKEN_EOF) {
+                    PARSE_ERROR_AT(clause_name, "unexpected end of input in define-library export");
+                    return {.type = ESHKOL_INVALID};
+                }
+                if (token.type == TOKEN_LPAREN) {
+                    PARSE_ERROR_AT(token, "R7RS export renaming is not supported yet");
+                    return {.type = ESHKOL_INVALID};
+                }
+                if (token.type != TOKEN_SYMBOL) {
+                    PARSE_ERROR_AT(token, "define-library export names must be symbols");
+                    return {.type = ESHKOL_INVALID};
+                }
+                exports.push_back(token.value);
+            }
+            if (exports.empty()) {
+                PARSE_ERROR_AT(clause_name, "define-library export expects at least one symbol");
+                return {.type = ESHKOL_INVALID};
+            }
+            lowered_forms.push_back(make_provide_ast(exports, clause_name.line,
+                                                     clause_name.column));
+        } else if (clause_name.value == "import") {
+            std::vector<std::string> modules;
+            if (!parse_r7rs_import_sets(tokenizer, clause_name, &modules)) {
+                return {.type = ESHKOL_INVALID};
+            }
+            lowered_forms.push_back(make_require_ast(modules, clause_name.line,
+                                                     clause_name.column));
+        } else if (clause_name.value == "begin") {
+            while (true) {
+                Token token = tokenizer.nextToken();
+                if (token.type == TOKEN_RPAREN) break;
+                if (token.type == TOKEN_EOF) {
+                    PARSE_ERROR_AT(clause_name, "unexpected end of input in define-library begin");
+                    return {.type = ESHKOL_INVALID};
+                }
+                tokenizer.pushBack(token);
+                eshkol_ast_t expr = parse_expression(tokenizer);
+                if (expr.type == ESHKOL_INVALID) {
+                    return expr;
+                }
+                lowered_forms.push_back(expr);
+            }
+        } else {
+            PARSE_ERROR_AT(clause_name, "unsupported define-library clause '%s'",
+                           clause_name.value.c_str());
+            return {.type = ESHKOL_INVALID};
+        }
+    }
+
+    return make_sequence_or_null_ast(lowered_forms, form_token.line, form_token.column);
+}
+
 static eshkol_ast_t make_let_match_failure_ast(uint32_t line, uint32_t column) {
     std::vector<eshkol_ast_t> args;
     args.push_back(make_parser_string_ast("let-match pattern failed", line, column));
@@ -3242,6 +3484,10 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
 
         if (first_symbol == "let-match") {
             return parse_let_match_form(tokenizer, token);
+        }
+
+        if (first_symbol == "define-library") {
+            return parse_define_library_form(tokenizer, token);
         }
 
         // R7RS (delay expr) → (%make-lazy-promise (lambda () expr))
@@ -8085,8 +8331,39 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
         } else if (ast.operation.op == ESHKOL_IMPORT_OP) {
             // Legacy syntax: (import "path/to/file.esk")
             token = tokenizer.nextToken();
+            if (token.type == TOKEN_LPAREN) {
+                std::vector<std::string> modules;
+                std::string first_module;
+                if (!parse_r7rs_import_set_body(tokenizer, token, &first_module)) {
+                    ast.type = ESHKOL_INVALID;
+                    return ast;
+                }
+                modules.push_back(first_module);
+
+                while (true) {
+                    token = tokenizer.nextToken();
+                    if (token.type == TOKEN_RPAREN) break;
+                    if (token.type == TOKEN_EOF) {
+                        PARSE_ERROR_AT(token, "unexpected end of input in R7RS import");
+                        ast.type = ESHKOL_INVALID;
+                        return ast;
+                    }
+                    if (token.type != TOKEN_LPAREN) {
+                        PARSE_ERROR_AT(token, "R7RS import expects library import sets");
+                        ast.type = ESHKOL_INVALID;
+                        return ast;
+                    }
+                    std::string module_name;
+                    if (!parse_r7rs_import_set_body(tokenizer, token, &module_name)) {
+                        ast.type = ESHKOL_INVALID;
+                        return ast;
+                    }
+                    modules.push_back(module_name);
+                }
+                return make_require_ast(modules, token.line, token.column);
+            }
             if (token.type != TOKEN_STRING) {
-                PARSE_ERROR_AT(token, "import requires a string path as argument");
+                PARSE_ERROR_AT(token, "import requires a string path or R7RS library import set");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }

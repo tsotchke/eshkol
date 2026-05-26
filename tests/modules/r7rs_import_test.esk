@@ -1,0 +1,7 @@
+;;; R7RS import surface for existing dotted module names.
+
+(import (test modules mod_a))
+
+(display "Testing R7RS import func-a(5): ")
+(display (func-a 5))
+(newline)

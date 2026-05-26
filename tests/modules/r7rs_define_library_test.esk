@@ -1,0 +1,12 @@
+;;; R7RS define-library surface lowers to existing require/provide forms.
+
+(define-library (test r7rs inline)
+  (import (test modules mod_b))
+  (export r7rs-inline-value)
+  (begin
+    (define (r7rs-inline-value x)
+      (+ (func-b x) 1))))
+
+(display "Testing R7RS define-library inline import: ")
+(display (r7rs-inline-value 5))
+(newline)
