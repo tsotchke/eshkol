@@ -1,0 +1,6 @@
+;;; Expected: Error
+
+(define-library (test parser unsupported-import)
+  (export answer)
+  (import (only (scheme base) +))
+  (begin (define answer 42)))
