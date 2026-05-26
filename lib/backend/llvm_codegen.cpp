@@ -25718,6 +25718,141 @@ private:
         Value* c_elems_field = builder->CreateStructGEP(tensor_type, result_ptr, 2);
         Value* c_elems = builder->CreateLoad(builder->getPtrTy(), c_elems_field);
 
+        BasicBlock* after_matmul_compute = nullptr;
+        if (autodiff_) {
+            GlobalVariable* ad_mode = ctx_->adModeActive();
+            if (ad_mode) {
+                Value* ad_enabled = builder->CreateLoad(builder->getInt1Ty(), ad_mode);
+                BasicBlock* ad_compute = BasicBlock::Create(*context, "matmul_ad_compute", current_func);
+                BasicBlock* numeric_compute = BasicBlock::Create(*context, "matmul_numeric_compute", current_func);
+                after_matmul_compute = BasicBlock::Create(*context, "matmul_after_compute", current_func);
+                builder->CreateCondBr(ad_enabled, ad_compute, numeric_compute);
+
+                auto adNodeFromBits = [&](Value* elem_bits, const std::string& name) -> Value* {
+                    BasicBlock* check_large = BasicBlock::Create(*context, name + "_check_large", current_func);
+                    BasicBlock* const_small = BasicBlock::Create(*context, name + "_const_small", current_func);
+                    BasicBlock* const_double = BasicBlock::Create(*context, name + "_const_double", current_func);
+                    BasicBlock* existing_node = BasicBlock::Create(*context, name + "_existing_node", current_func);
+                    BasicBlock* merge = BasicBlock::Create(*context, name + "_merge", current_func);
+
+                    Value* is_small = builder->CreateICmpULT(elem_bits,
+                        ConstantInt::get(int64_type, 1000));
+                    builder->CreateCondBr(is_small, const_small, check_large);
+
+                    builder->SetInsertPoint(const_small);
+                    Value* small_as_double = builder->CreateSIToFP(elem_bits, double_type);
+                    Value* small_node = autodiff_->createADConstant(small_as_double);
+                    builder->CreateBr(merge);
+                    BasicBlock* const_small_exit = builder->GetInsertBlock();
+
+                    builder->SetInsertPoint(check_large);
+                    Value* exponent_mask = ConstantInt::get(int64_type, 0x7FF0000000000000ULL);
+                    Value* exponent_bits = builder->CreateAnd(elem_bits, exponent_mask);
+                    Value* has_exponent = builder->CreateICmpNE(exponent_bits,
+                        ConstantInt::get(int64_type, 0));
+                    Value* no_exponent = builder->CreateNot(has_exponent);
+                    Value* non_zero = builder->CreateICmpNE(elem_bits,
+                        ConstantInt::get(int64_type, 0));
+                    Value* below_pointer_ceiling = builder->CreateICmpULT(elem_bits,
+                        ConstantInt::get(int64_type, 0x0001000000000000ULL));
+                    Value* pointer_like = builder->CreateAnd(no_exponent,
+                        builder->CreateAnd(non_zero, below_pointer_ceiling));
+                    builder->CreateCondBr(pointer_like, existing_node, const_double);
+
+                    builder->SetInsertPoint(const_double);
+                    Value* double_value = builder->CreateBitCast(elem_bits, double_type);
+                    Value* double_node = autodiff_->createADConstant(double_value);
+                    builder->CreateBr(merge);
+                    BasicBlock* const_double_exit = builder->GetInsertBlock();
+
+                    builder->SetInsertPoint(existing_node);
+                    Value* ptr_node = builder->CreateIntToPtr(elem_bits, builder->getPtrTy());
+                    builder->CreateBr(merge);
+                    BasicBlock* existing_node_exit = builder->GetInsertBlock();
+
+                    builder->SetInsertPoint(merge);
+                    PHINode* node_phi = builder->CreatePHI(builder->getPtrTy(), 3, name + "_node");
+                    node_phi->addIncoming(small_node, const_small_exit);
+                    node_phi->addIncoming(double_node, const_double_exit);
+                    node_phi->addIncoming(ptr_node, existing_node_exit);
+                    return node_phi;
+                };
+
+                builder->SetInsertPoint(ad_compute);
+                Value* row_idx = builder->CreateAlloca(int64_type, nullptr, "matmul_ad_i");
+                builder->CreateStore(ConstantInt::get(int64_type, 0), row_idx);
+                BasicBlock* row_cond = BasicBlock::Create(*context, "matmul_ad_i_cond", current_func);
+                BasicBlock* row_body = BasicBlock::Create(*context, "matmul_ad_i_body", current_func);
+                BasicBlock* row_exit = BasicBlock::Create(*context, "matmul_ad_i_exit", current_func);
+                builder->CreateBr(row_cond);
+
+                builder->SetInsertPoint(row_cond);
+                Value* row = builder->CreateLoad(int64_type, row_idx);
+                builder->CreateCondBr(builder->CreateICmpULT(row, M), row_body, row_exit);
+
+                builder->SetInsertPoint(row_body);
+                Value* col_idx = builder->CreateAlloca(int64_type, nullptr, "matmul_ad_j");
+                builder->CreateStore(ConstantInt::get(int64_type, 0), col_idx);
+                BasicBlock* col_cond = BasicBlock::Create(*context, "matmul_ad_j_cond", current_func);
+                BasicBlock* col_body = BasicBlock::Create(*context, "matmul_ad_j_body", current_func);
+                BasicBlock* col_exit = BasicBlock::Create(*context, "matmul_ad_j_exit", current_func);
+                builder->CreateBr(col_cond);
+
+                builder->SetInsertPoint(col_cond);
+                Value* col = builder->CreateLoad(int64_type, col_idx);
+                builder->CreateCondBr(builder->CreateICmpULT(col, N), col_body, col_exit);
+
+                builder->SetInsertPoint(col_body);
+                Value* acc = builder->CreateAlloca(builder->getPtrTy(), nullptr, "matmul_ad_acc");
+                Value* zero_node = autodiff_->createADConstant(ConstantFP::get(double_type, 0.0));
+                builder->CreateStore(zero_node, acc);
+                Value* k_idx = builder->CreateAlloca(int64_type, nullptr, "matmul_ad_k");
+                builder->CreateStore(ConstantInt::get(int64_type, 0), k_idx);
+                BasicBlock* k_cond = BasicBlock::Create(*context, "matmul_ad_k_cond", current_func);
+                BasicBlock* k_body = BasicBlock::Create(*context, "matmul_ad_k_body", current_func);
+                BasicBlock* k_exit = BasicBlock::Create(*context, "matmul_ad_k_exit", current_func);
+                builder->CreateBr(k_cond);
+
+                builder->SetInsertPoint(k_cond);
+                Value* kk = builder->CreateLoad(int64_type, k_idx);
+                builder->CreateCondBr(builder->CreateICmpULT(kk, K), k_body, k_exit);
+
+                builder->SetInsertPoint(k_body);
+                Value* a_index = builder->CreateAdd(builder->CreateMul(row, K), kk);
+                Value* b_index = builder->CreateAdd(builder->CreateMul(kk, N), col);
+                Value* a_elem_ptr = builder->CreateGEP(int64_type, a_elems, a_index);
+                Value* b_elem_ptr = builder->CreateGEP(int64_type, b_elems, b_index);
+                Value* a_bits = builder->CreateLoad(int64_type, a_elem_ptr);
+                Value* b_bits = builder->CreateLoad(int64_type, b_elem_ptr);
+                Value* a_node = adNodeFromBits(a_bits, "matmul_ad_a");
+                Value* b_node = adNodeFromBits(b_bits, "matmul_ad_b");
+                Value* product = autodiff_->recordADNodeBinary(4, a_node, b_node);
+                Value* old_acc = builder->CreateLoad(builder->getPtrTy(), acc);
+                Value* new_acc = autodiff_->recordADNodeBinary(2, old_acc, product);
+                builder->CreateStore(new_acc, acc);
+                builder->CreateStore(builder->CreateAdd(kk, ConstantInt::get(int64_type, 1)), k_idx);
+                builder->CreateBr(k_cond);
+
+                builder->SetInsertPoint(k_exit);
+                Value* final_node = builder->CreateLoad(builder->getPtrTy(), acc);
+                Value* final_node_bits = builder->CreatePtrToInt(final_node, int64_type);
+                Value* c_index = builder->CreateAdd(builder->CreateMul(row, N), col);
+                Value* c_elem_ptr = builder->CreateGEP(int64_type, c_elems, c_index);
+                builder->CreateStore(final_node_bits, c_elem_ptr);
+                builder->CreateStore(builder->CreateAdd(col, ConstantInt::get(int64_type, 1)), col_idx);
+                builder->CreateBr(col_cond);
+
+                builder->SetInsertPoint(col_exit);
+                builder->CreateStore(builder->CreateAdd(row, ConstantInt::get(int64_type, 1)), row_idx);
+                builder->CreateBr(row_cond);
+
+                builder->SetInsertPoint(row_exit);
+                builder->CreateBr(after_matmul_compute);
+
+                builder->SetInsertPoint(numeric_compute);
+            }
+        }
+
         // Declare and call eshkol_matmul_dispatch runtime function (GPU-aware dispatch)
         Function* matmul_func = module->getFunction("eshkol_matmul_dispatch");
         if (!matmul_func) {
@@ -25736,10 +25871,14 @@ private:
 
         // Call the runtime matmul dispatch (routes to GPU or CPU BLAS)
         builder->CreateCall(matmul_func, {a_elems, b_elems, c_elems, M, K, N});
+        if (after_matmul_compute) {
+            builder->CreateBr(after_matmul_compute);
+            builder->SetInsertPoint(after_matmul_compute);
+        }
 
         // Record on AD tape if autodiff mode is active
         GlobalVariable* ad_mode = ctx_->adModeActive();
-        if (ad_mode) {
+        if (autodiff_ && ad_mode && !after_matmul_compute) {
             Value* ad_enabled = builder->CreateLoad(builder->getInt1Ty(), ad_mode);
 
             Function* current_func = builder->GetInsertBlock()->getParent();

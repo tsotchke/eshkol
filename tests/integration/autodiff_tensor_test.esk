@@ -312,3 +312,74 @@
              (approx= (vector-ref g 3) 1.0 1e-6))
         "PASS" "FAIL"))
   (display ": gradient of 2x2 tensor-sum covers all elements") (newline))
+
+;; ============================================================
+;; Test 22: Gradient through matmul with a constant matrix
+;; f(X) = sum(X * C), C = [[1, 2], [3, 4]]
+;; gradient rows are the row-sums of C: [3, 7]
+;; ============================================================
+(let* ((c (tensor 2 2 1.0 2.0 3.0 4.0))
+       (g (gradient
+            (lambda (x) (tensor-sum (matmul x c)))
+            (tensor 2 2 10.0 20.0 30.0 40.0))))
+  (display
+    (if (and (= (vector-length g) 4)
+             (approx= (vector-ref g 0) 3.0 1e-6)
+             (approx= (vector-ref g 1) 7.0 1e-6)
+             (approx= (vector-ref g 2) 3.0 1e-6)
+             (approx= (vector-ref g 3) 7.0 1e-6))
+        "PASS" "FAIL"))
+  (display ": gradient through matmul covers matrix elements") (newline))
+
+;; ============================================================
+;; Test 23: Gradient through matrix tensor-dot
+;; f(X) = sum(tensor-dot(X, C)), C = [[1, 2], [3, 4]]
+;; gradient rows are the row-sums of C: [3, 7]
+;; ============================================================
+(let* ((c (tensor 2 2 1.0 2.0 3.0 4.0))
+       (g (gradient
+            (lambda (x) (tensor-sum (tensor-dot x c)))
+            (tensor 2 2 10.0 20.0 30.0 40.0))))
+  (display
+    (if (and (= (vector-length g) 4)
+             (approx= (vector-ref g 0) 3.0 1e-6)
+             (approx= (vector-ref g 1) 7.0 1e-6)
+             (approx= (vector-ref g 2) 3.0 1e-6)
+             (approx= (vector-ref g 3) 7.0 1e-6))
+        "PASS" "FAIL"))
+  (display ": gradient through matrix tensor-dot covers matrix elements") (newline))
+
+;; ============================================================
+;; Test 24: Gradient through matmul then tensor-sum
+;; f(A) = sum(A * b), where b = [[10], [20]]
+;; gradient wrt each row of A is b^T, flattened as [10, 20, 10, 20]
+;; ============================================================
+(let* ((b (tensor 2 1 10.0 20.0))
+       (g (gradient
+            (lambda (a) (tensor-sum (matmul a b)))
+            (tensor 2 2 1.0 2.0 3.0 4.0))))
+  (display
+    (if (and (= (vector-length g) 4)
+             (approx= (vector-ref g 0) 10.0 1e-6)
+             (approx= (vector-ref g 1) 20.0 1e-6)
+             (approx= (vector-ref g 2) 10.0 1e-6)
+             (approx= (vector-ref g 3) 20.0 1e-6))
+        "PASS" "FAIL"))
+  (display ": gradient through matmul tensor-sum matches right operand") (newline))
+
+;; ============================================================
+;; Test 25: Gradient through 2D tensor-dot then tensor-sum
+;; Same function as Test 24, but through the tensor-dot lowering path.
+;; ============================================================
+(let* ((b (tensor 2 1 10.0 20.0))
+       (g (gradient
+            (lambda (a) (tensor-sum (tensor-dot a b)))
+            (tensor 2 2 1.0 2.0 3.0 4.0))))
+  (display
+    (if (and (= (vector-length g) 4)
+             (approx= (vector-ref g 0) 10.0 1e-6)
+             (approx= (vector-ref g 1) 20.0 1e-6)
+             (approx= (vector-ref g 2) 10.0 1e-6)
+             (approx= (vector-ref g 3) 20.0 1e-6))
+        "PASS" "FAIL"))
+  (display ": gradient through 2D tensor-dot tensor-sum matches right operand") (newline))

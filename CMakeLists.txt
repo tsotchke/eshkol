@@ -1689,7 +1689,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     )
     set_tests_properties(autodiff_tensor_reductions_runtime_smoke
         PROPERTIES
-            PASS_REGULAR_EXPRESSION "PASS: gradient of scaled dot product = scaled basis vector"
+            PASS_REGULAR_EXPRESSION "PASS: gradient through 2D tensor-dot tensor-sum matches right operand"
             FAIL_REGULAR_EXPRESSION "FAIL:")
     add_test(
         NAME empty_collection_runtime_smoke
