@@ -7894,27 +7894,42 @@ void AutodiffCodegen::propagateGradient(llvm::Value* node_ptr) {
     llvm::BasicBlock* check_leaky_relu = llvm::BasicBlock::Create(ctx_.context(), "check_leaky_relu", current_func);
     ctx_.builder().CreateCondBr(is_gelu, gelu_block, check_leaky_relu);
 
-    // GELU: approximate derivative using sigmoid approximation
-    // gelu(x) ≈ x * σ(1.702x), so gelu'(x) ≈ σ(1.702x) + 1.702x * σ(1.702x) * (1 - σ(1.702x))
+    // GELU: derivative of the tanh approximation used by the forward path.
+    // gelu(x) = 0.5*x*(1+tanh(u)), u = sqrt(2/pi)*(x + 0.044715*x^3)
+    // gelu'(x) = 0.5*(1+tanh(u)) + 0.5*x*(1-tanh(u)^2)*u'
     ctx_.builder().SetInsertPoint(gelu_block);
     if (input1) {
         llvm::Value* input_val = loadNodeValue(input1);
         llvm::Function* exp_func = getMathFunc("exp");
         if (exp_func) {
-            llvm::Value* coeff = llvm::ConstantFP::get(ctx_.doubleType(), 1.702);
+            llvm::Value* half = llvm::ConstantFP::get(ctx_.doubleType(), 0.5);
             llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
+            llvm::Value* two = llvm::ConstantFP::get(ctx_.doubleType(), 2.0);
+            llvm::Value* three = llvm::ConstantFP::get(ctx_.doubleType(), 3.0);
+            llvm::Value* sqrt_2_pi = llvm::ConstantFP::get(ctx_.doubleType(), 0.7978845608028654);
+            llvm::Value* coeff = llvm::ConstantFP::get(ctx_.doubleType(), 0.044715);
 
-            llvm::Value* scaled_x = ctx_.builder().CreateFMul(coeff, input_val);
-            llvm::Value* neg_scaled = ctx_.builder().CreateFNeg(scaled_x);
-            llvm::Value* exp_neg = ctx_.builder().CreateCall(exp_func, {neg_scaled});
-            llvm::Value* denom = ctx_.builder().CreateFAdd(one, exp_neg);
-            llvm::Value* sigma = ctx_.builder().CreateFDiv(one, denom);
-
-            llvm::Value* one_minus_sigma = ctx_.builder().CreateFSub(one, sigma);
-            llvm::Value* sigma_deriv = ctx_.builder().CreateFMul(sigma, one_minus_sigma);
-            llvm::Value* scaled_sigma_deriv = ctx_.builder().CreateFMul(coeff, sigma_deriv);
-            llvm::Value* x_times_deriv = ctx_.builder().CreateFMul(input_val, scaled_sigma_deriv);
-            llvm::Value* gelu_deriv = ctx_.builder().CreateFAdd(sigma, x_times_deriv);
+            llvm::Value* x_sq = ctx_.builder().CreateFMul(input_val, input_val);
+            llvm::Value* x_cubed = ctx_.builder().CreateFMul(x_sq, input_val);
+            llvm::Value* inner = ctx_.builder().CreateFAdd(
+                input_val, ctx_.builder().CreateFMul(coeff, x_cubed));
+            llvm::Value* u = ctx_.builder().CreateFMul(sqrt_2_pi, inner);
+            llvm::Value* exp_2u = ctx_.builder().CreateCall(
+                exp_func, {ctx_.builder().CreateFMul(two, u)});
+            llvm::Value* tanh_u = ctx_.builder().CreateFDiv(
+                ctx_.builder().CreateFSub(exp_2u, one),
+                ctx_.builder().CreateFAdd(exp_2u, one));
+            llvm::Value* tanh_sq = ctx_.builder().CreateFMul(tanh_u, tanh_u);
+            llvm::Value* sech_sq = ctx_.builder().CreateFSub(one, tanh_sq);
+            llvm::Value* inner_prime = ctx_.builder().CreateFAdd(
+                one, ctx_.builder().CreateFMul(three, ctx_.builder().CreateFMul(coeff, x_sq)));
+            llvm::Value* u_prime = ctx_.builder().CreateFMul(sqrt_2_pi, inner_prime);
+            llvm::Value* first = ctx_.builder().CreateFMul(
+                half, ctx_.builder().CreateFAdd(one, tanh_u));
+            llvm::Value* second = ctx_.builder().CreateFMul(
+                half, ctx_.builder().CreateFMul(
+                    input_val, ctx_.builder().CreateFMul(sech_sq, u_prime)));
+            llvm::Value* gelu_deriv = ctx_.builder().CreateFAdd(first, second);
             llvm::Value* grad_input = ctx_.builder().CreateFMul(node_grad, gelu_deriv);
             accumulateGradient(input1, grad_input);
         }
@@ -9435,9 +9450,7 @@ llvm::Value* AutodiffCodegen::dualSigmoid(llvm::Value* dual) {
     return createDualNumber(sigma_a, deriv);
 }
 
-// GELU: Gaussian Error Linear Unit
-// Approximation: gelu(x) ≈ x * σ(1.702 * x)
-// d/dx[x * σ(1.702*x)] = σ(1.702*x) + x * 1.702 * σ(1.702*x) * (1 - σ(1.702*x))
+// GELU: Gaussian Error Linear Unit using the tanh approximation used by tensorGelu.
 llvm::Value* AutodiffCodegen::dualGelu(llvm::Value* dual) {
     if (!dual) return nullptr;
 
@@ -9447,25 +9460,37 @@ llvm::Value* AutodiffCodegen::dualGelu(llvm::Value* dual) {
     llvm::Function* exp_func = getMathFunc("exp");
     if (!exp_func) return nullptr;
 
+    llvm::Value* half = llvm::ConstantFP::get(ctx_.doubleType(), 0.5);
     llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
-    llvm::Value* coeff = llvm::ConstantFP::get(ctx_.doubleType(), 1.702);
+    llvm::Value* two = llvm::ConstantFP::get(ctx_.doubleType(), 2.0);
+    llvm::Value* three = llvm::ConstantFP::get(ctx_.doubleType(), 3.0);
+    llvm::Value* sqrt_2_pi = llvm::ConstantFP::get(ctx_.doubleType(), 0.7978845608028654);
+    llvm::Value* coeff = llvm::ConstantFP::get(ctx_.doubleType(), 0.044715);
 
-    // σ(1.702 * a)
-    llvm::Value* scaled_a = ctx_.builder().CreateFMul(coeff, a);
-    llvm::Value* neg_scaled_a = ctx_.builder().CreateFNeg(scaled_a);
-    llvm::Value* exp_neg = ctx_.builder().CreateCall(exp_func, {neg_scaled_a});
-    llvm::Value* denom = ctx_.builder().CreateFAdd(one, exp_neg);
-    llvm::Value* sigma = ctx_.builder().CreateFDiv(one, denom);
+    llvm::Value* a_sq = ctx_.builder().CreateFMul(a, a);
+    llvm::Value* a_cubed = ctx_.builder().CreateFMul(a_sq, a);
+    llvm::Value* inner = ctx_.builder().CreateFAdd(
+        a, ctx_.builder().CreateFMul(coeff, a_cubed));
+    llvm::Value* u = ctx_.builder().CreateFMul(sqrt_2_pi, inner);
+    llvm::Value* exp_2u = ctx_.builder().CreateCall(
+        exp_func, {ctx_.builder().CreateFMul(two, u)});
+    llvm::Value* tanh_u = ctx_.builder().CreateFDiv(
+        ctx_.builder().CreateFSub(exp_2u, one),
+        ctx_.builder().CreateFAdd(exp_2u, one));
 
-    // Value: a * σ(1.702 * a)
-    llvm::Value* value = ctx_.builder().CreateFMul(a, sigma);
+    llvm::Value* value = ctx_.builder().CreateFMul(
+        half, ctx_.builder().CreateFMul(a, ctx_.builder().CreateFAdd(one, tanh_u)));
 
-    // Derivative: a' * (σ(1.702*a) + a * 1.702 * σ(1.702*a) * (1 - σ(1.702*a)))
-    llvm::Value* one_minus_sigma = ctx_.builder().CreateFSub(one, sigma);
-    llvm::Value* sigma_deriv = ctx_.builder().CreateFMul(sigma, one_minus_sigma);
-    llvm::Value* scaled_sigma_deriv = ctx_.builder().CreateFMul(coeff, sigma_deriv);
-    llvm::Value* a_times_scaled = ctx_.builder().CreateFMul(a, scaled_sigma_deriv);
-    llvm::Value* total_deriv = ctx_.builder().CreateFAdd(sigma, a_times_scaled);
+    llvm::Value* tanh_sq = ctx_.builder().CreateFMul(tanh_u, tanh_u);
+    llvm::Value* sech_sq = ctx_.builder().CreateFSub(one, tanh_sq);
+    llvm::Value* inner_prime = ctx_.builder().CreateFAdd(
+        one, ctx_.builder().CreateFMul(three, ctx_.builder().CreateFMul(coeff, a_sq)));
+    llvm::Value* u_prime = ctx_.builder().CreateFMul(sqrt_2_pi, inner_prime);
+    llvm::Value* first = ctx_.builder().CreateFMul(
+        half, ctx_.builder().CreateFAdd(one, tanh_u));
+    llvm::Value* second = ctx_.builder().CreateFMul(
+        half, ctx_.builder().CreateFMul(a, ctx_.builder().CreateFMul(sech_sq, u_prime)));
+    llvm::Value* total_deriv = ctx_.builder().CreateFAdd(first, second);
     llvm::Value* deriv = ctx_.builder().CreateFMul(a_prime, total_deriv);
 
     return createDualNumber(value, deriv);

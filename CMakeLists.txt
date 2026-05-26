@@ -1689,7 +1689,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     )
     set_tests_properties(autodiff_tensor_reductions_runtime_smoke
         PROPERTIES
-            PASS_REGULAR_EXPRESSION "PASS: gradients through asin/acos/atan/atan2/sinh/cosh match closed forms"
+            PASS_REGULAR_EXPRESSION "PASS: #154 AD ops match central finite differences"
             FAIL_REGULAR_EXPRESSION "FAIL:")
     add_test(
         NAME empty_collection_runtime_smoke
