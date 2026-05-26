@@ -514,3 +514,48 @@
              (approx= (vector-ref g 1) 1.0 1e-6))
         "PASS" "FAIL"))
   (display ": gradient through leaky-relu tensor-sum matches default slope") (newline))
+
+;; ============================================================
+;; Test 35: Gradient through tensor-scale then tensor-sum
+;; f(x) = sum(3 * x), gradient = [3, 3, 3]
+;; ============================================================
+(let* ((g (gradient
+            (lambda (x) (tensor-sum (tensor-scale x 3.0)))
+            (tensor 3 1.0 2.0 3.0))))
+  (display
+    (if (and (= (vector-length g) 3)
+             (approx= (vector-ref g 0) 3.0 1e-6)
+             (approx= (vector-ref g 1) 3.0 1e-6)
+             (approx= (vector-ref g 2) 3.0 1e-6))
+        "PASS" "FAIL"))
+  (display ": gradient through tensor-scale tensor-sum matches scale") (newline))
+
+;; ============================================================
+;; Test 36: Gradient through tensor-max
+;; Gradient flows to the maximum element.
+;; ============================================================
+(let* ((g (gradient
+            (lambda (x) (tensor-max x))
+            (tensor 3 1.0 3.0 2.0))))
+  (display
+    (if (and (= (vector-length g) 3)
+             (approx= (vector-ref g 0) 0.0 1e-6)
+             (approx= (vector-ref g 1) 1.0 1e-6)
+             (approx= (vector-ref g 2) 0.0 1e-6))
+        "PASS" "FAIL"))
+  (display ": gradient through tensor-max selects maximum element") (newline))
+
+;; ============================================================
+;; Test 37: Gradient through tensor-min
+;; Gradient flows to the minimum element.
+;; ============================================================
+(let* ((g (gradient
+            (lambda (x) (tensor-min x))
+            (tensor 3 1.0 3.0 2.0))))
+  (display
+    (if (and (= (vector-length g) 3)
+             (approx= (vector-ref g 0) 1.0 1e-6)
+             (approx= (vector-ref g 1) 0.0 1e-6)
+             (approx= (vector-ref g 2) 0.0 1e-6))
+        "PASS" "FAIL"))
+  (display ": gradient through tensor-min selects minimum element") (newline))

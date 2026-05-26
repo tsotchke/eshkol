@@ -369,6 +369,54 @@ llvm::Value* TensorCodegen::tensorMin(const eshkol_operations_t* op) {
     llvm::Value* total = builder.CreateLoad(ctx_.int64Type(), total_field);
 
     llvm::Function* current_func = builder.GetInsertBlock()->getParent();
+    llvm::BasicBlock* min_merge = llvm::BasicBlock::Create(ctx_.context(), "min_merge", current_func);
+
+    llvm::Value* ad_tagged_result = nullptr;
+    llvm::BasicBlock* ad_exit_block = nullptr;
+    if (autodiff_) {
+        llvm::Value* in_ad_mode = builder.CreateLoad(ctx_.int1Type(), ctx_.adModeActive());
+        llvm::BasicBlock* ad_block = llvm::BasicBlock::Create(ctx_.context(), "min_ad", current_func);
+        llvm::BasicBlock* numeric_block = llvm::BasicBlock::Create(ctx_.context(), "min_numeric", current_func);
+        builder.CreateCondBr(in_ad_mode, ad_block, numeric_block);
+
+        builder.SetInsertPoint(ad_block);
+        llvm::Value* ad_first_elem_ptr = builder.CreateGEP(ctx_.int64Type(), elems_ptr,
+            llvm::ConstantInt::get(ctx_.int64Type(), 0));
+        llvm::Value* ad_first_bits = builder.CreateLoad(ctx_.int64Type(), ad_first_elem_ptr);
+        llvm::Value* ad_acc = builder.CreateAlloca(ctx_.ptrType(), nullptr, "min_ad_acc");
+        llvm::Value* ad_first_node = adNodeFromTensorElementBits(ad_first_bits, "min_ad_first");
+        builder.CreateStore(ad_first_node, ad_acc);
+
+        llvm::Value* ad_idx = builder.CreateAlloca(ctx_.int64Type(), nullptr, "min_ad_i");
+        builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 1), ad_idx);
+        llvm::BasicBlock* ad_cond = llvm::BasicBlock::Create(ctx_.context(), "min_ad_cond", current_func);
+        llvm::BasicBlock* ad_body = llvm::BasicBlock::Create(ctx_.context(), "min_ad_body", current_func);
+        llvm::BasicBlock* ad_done = llvm::BasicBlock::Create(ctx_.context(), "min_ad_done", current_func);
+        builder.CreateBr(ad_cond);
+
+        builder.SetInsertPoint(ad_cond);
+        llvm::Value* ad_i = builder.CreateLoad(ctx_.int64Type(), ad_idx);
+        llvm::Value* ad_has_elem = builder.CreateICmpULT(ad_i, total);
+        builder.CreateCondBr(ad_has_elem, ad_body, ad_done);
+
+        builder.SetInsertPoint(ad_body);
+        llvm::Value* ad_elem_ptr = builder.CreateGEP(ctx_.int64Type(), elems_ptr, ad_i);
+        llvm::Value* ad_elem_bits = builder.CreateLoad(ctx_.int64Type(), ad_elem_ptr);
+        llvm::Value* ad_elem_node = adNodeFromTensorElementBits(ad_elem_bits, "min_ad_elem");
+        llvm::Value* ad_old_acc = builder.CreateLoad(ctx_.ptrType(), ad_acc);
+        llvm::Value* ad_new_acc = autodiff_->recordADNodeBinary(45, ad_old_acc, ad_elem_node);
+        builder.CreateStore(ad_new_acc, ad_acc);
+        builder.CreateStore(builder.CreateAdd(ad_i, llvm::ConstantInt::get(ctx_.int64Type(), 1)), ad_idx);
+        builder.CreateBr(ad_cond);
+
+        builder.SetInsertPoint(ad_done);
+        llvm::Value* final_ad_min = builder.CreateLoad(ctx_.ptrType(), ad_acc);
+        ad_tagged_result = tagged_.packPtr(final_ad_min, ESHKOL_VALUE_CALLABLE);
+        builder.CreateBr(min_merge);
+        ad_exit_block = builder.GetInsertBlock();
+
+        builder.SetInsertPoint(numeric_block);
+    }
 
     // Initialize min with first element
     llvm::Value* first_elem_ptr = builder.CreateGEP(ctx_.int64Type(), elems_ptr,
@@ -405,7 +453,17 @@ llvm::Value* TensorCodegen::tensorMin(const eshkol_operations_t* op) {
 
     builder.SetInsertPoint(loop_done);
     llvm::Value* result = builder.CreateLoad(ctx_.doubleType(), min_val);
-    return tagged_.packDouble(result);
+    llvm::Value* tagged_result = tagged_.packDouble(result);
+    builder.CreateBr(min_merge);
+    llvm::BasicBlock* numeric_exit_block = builder.GetInsertBlock();
+
+    builder.SetInsertPoint(min_merge);
+    llvm::PHINode* result_phi = builder.CreatePHI(ctx_.taggedValueType(), ad_exit_block ? 2 : 1, "min_result");
+    result_phi->addIncoming(tagged_result, numeric_exit_block);
+    if (ad_exit_block && ad_tagged_result) {
+        result_phi->addIncoming(ad_tagged_result, ad_exit_block);
+    }
+    return result_phi;
 }
 
 llvm::Value* TensorCodegen::tensorMax(const eshkol_operations_t* op) {
@@ -437,6 +495,54 @@ llvm::Value* TensorCodegen::tensorMax(const eshkol_operations_t* op) {
     llvm::Value* total = builder.CreateLoad(ctx_.int64Type(), total_field);
 
     llvm::Function* current_func = builder.GetInsertBlock()->getParent();
+    llvm::BasicBlock* max_merge = llvm::BasicBlock::Create(ctx_.context(), "max_merge", current_func);
+
+    llvm::Value* ad_tagged_result = nullptr;
+    llvm::BasicBlock* ad_exit_block = nullptr;
+    if (autodiff_) {
+        llvm::Value* in_ad_mode = builder.CreateLoad(ctx_.int1Type(), ctx_.adModeActive());
+        llvm::BasicBlock* ad_block = llvm::BasicBlock::Create(ctx_.context(), "max_ad", current_func);
+        llvm::BasicBlock* numeric_block = llvm::BasicBlock::Create(ctx_.context(), "max_numeric", current_func);
+        builder.CreateCondBr(in_ad_mode, ad_block, numeric_block);
+
+        builder.SetInsertPoint(ad_block);
+        llvm::Value* ad_first_elem_ptr = builder.CreateGEP(ctx_.int64Type(), elems_ptr,
+            llvm::ConstantInt::get(ctx_.int64Type(), 0));
+        llvm::Value* ad_first_bits = builder.CreateLoad(ctx_.int64Type(), ad_first_elem_ptr);
+        llvm::Value* ad_acc = builder.CreateAlloca(ctx_.ptrType(), nullptr, "max_ad_acc");
+        llvm::Value* ad_first_node = adNodeFromTensorElementBits(ad_first_bits, "max_ad_first");
+        builder.CreateStore(ad_first_node, ad_acc);
+
+        llvm::Value* ad_idx = builder.CreateAlloca(ctx_.int64Type(), nullptr, "max_ad_i");
+        builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 1), ad_idx);
+        llvm::BasicBlock* ad_cond = llvm::BasicBlock::Create(ctx_.context(), "max_ad_cond", current_func);
+        llvm::BasicBlock* ad_body = llvm::BasicBlock::Create(ctx_.context(), "max_ad_body", current_func);
+        llvm::BasicBlock* ad_done = llvm::BasicBlock::Create(ctx_.context(), "max_ad_done", current_func);
+        builder.CreateBr(ad_cond);
+
+        builder.SetInsertPoint(ad_cond);
+        llvm::Value* ad_i = builder.CreateLoad(ctx_.int64Type(), ad_idx);
+        llvm::Value* ad_has_elem = builder.CreateICmpULT(ad_i, total);
+        builder.CreateCondBr(ad_has_elem, ad_body, ad_done);
+
+        builder.SetInsertPoint(ad_body);
+        llvm::Value* ad_elem_ptr = builder.CreateGEP(ctx_.int64Type(), elems_ptr, ad_i);
+        llvm::Value* ad_elem_bits = builder.CreateLoad(ctx_.int64Type(), ad_elem_ptr);
+        llvm::Value* ad_elem_node = adNodeFromTensorElementBits(ad_elem_bits, "max_ad_elem");
+        llvm::Value* ad_old_acc = builder.CreateLoad(ctx_.ptrType(), ad_acc);
+        llvm::Value* ad_new_acc = autodiff_->recordADNodeBinary(44, ad_old_acc, ad_elem_node);
+        builder.CreateStore(ad_new_acc, ad_acc);
+        builder.CreateStore(builder.CreateAdd(ad_i, llvm::ConstantInt::get(ctx_.int64Type(), 1)), ad_idx);
+        builder.CreateBr(ad_cond);
+
+        builder.SetInsertPoint(ad_done);
+        llvm::Value* final_ad_max = builder.CreateLoad(ctx_.ptrType(), ad_acc);
+        ad_tagged_result = tagged_.packPtr(final_ad_max, ESHKOL_VALUE_CALLABLE);
+        builder.CreateBr(max_merge);
+        ad_exit_block = builder.GetInsertBlock();
+
+        builder.SetInsertPoint(numeric_block);
+    }
 
     llvm::Value* first_elem_ptr = builder.CreateGEP(ctx_.int64Type(), elems_ptr,
         llvm::ConstantInt::get(ctx_.int64Type(), 0));
@@ -472,7 +578,17 @@ llvm::Value* TensorCodegen::tensorMax(const eshkol_operations_t* op) {
 
     builder.SetInsertPoint(loop_done);
     llvm::Value* result = builder.CreateLoad(ctx_.doubleType(), max_val);
-    return tagged_.packDouble(result);
+    llvm::Value* tagged_result = tagged_.packDouble(result);
+    builder.CreateBr(max_merge);
+    llvm::BasicBlock* numeric_exit_block = builder.GetInsertBlock();
+
+    builder.SetInsertPoint(max_merge);
+    llvm::PHINode* result_phi = builder.CreatePHI(ctx_.taggedValueType(), ad_exit_block ? 2 : 1, "max_result");
+    result_phi->addIncoming(tagged_result, numeric_exit_block);
+    if (ad_exit_block && ad_tagged_result) {
+        result_phi->addIncoming(ad_tagged_result, ad_exit_block);
+    }
+    return result_phi;
 }
 
 llvm::Value* TensorCodegen::tensorArgmin(const eshkol_operations_t* op) {
@@ -1586,6 +1702,43 @@ llvm::Value* TensorCodegen::tensorScale(const eshkol_operations_t* op) {
     llvm::BasicBlock* scalar_cond = llvm::BasicBlock::Create(ctx_.context(), "tscale_scalar_cond", current_func);
     llvm::BasicBlock* scalar_body = llvm::BasicBlock::Create(ctx_.context(), "tscale_scalar_body", current_func);
     llvm::BasicBlock* exit_block  = llvm::BasicBlock::Create(ctx_.context(), "tscale_exit",        current_func);
+
+    if (autodiff_) {
+        llvm::Value* in_ad_mode = builder.CreateLoad(ctx_.int1Type(), ctx_.adModeActive());
+        llvm::BasicBlock* ad_path = llvm::BasicBlock::Create(ctx_.context(), "tscale_ad_path", current_func);
+        llvm::BasicBlock* numeric_path = llvm::BasicBlock::Create(ctx_.context(), "tscale_numeric_path", current_func);
+        builder.CreateCondBr(in_ad_mode, ad_path, numeric_path);
+
+        builder.SetInsertPoint(ad_path);
+        llvm::Value* scalar_node = autodiff_->createADConstant(scalar_d);
+        llvm::Value* ad_counter = builder.CreateAlloca(ctx_.int64Type(), nullptr, "tscale_ad_i");
+        builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), ad_counter);
+        llvm::BasicBlock* ad_cond = llvm::BasicBlock::Create(ctx_.context(), "tscale_ad_cond", current_func);
+        llvm::BasicBlock* ad_body = llvm::BasicBlock::Create(ctx_.context(), "tscale_ad_body", current_func);
+        llvm::BasicBlock* ad_done = llvm::BasicBlock::Create(ctx_.context(), "tscale_ad_done", current_func);
+        builder.CreateBr(ad_cond);
+
+        builder.SetInsertPoint(ad_cond);
+        llvm::Value* ad_i = builder.CreateLoad(ctx_.int64Type(), ad_counter);
+        llvm::Value* ad_has_elem = builder.CreateICmpULT(ad_i, total_elements);
+        builder.CreateCondBr(ad_has_elem, ad_body, ad_done);
+
+        builder.SetInsertPoint(ad_body);
+        llvm::Value* src_elem_ptr = builder.CreateGEP(ctx_.int64Type(), src_elems, ad_i);
+        llvm::Value* dst_elem_ptr = builder.CreateGEP(ctx_.int64Type(), result_elems, ad_i);
+        llvm::Value* elem_bits = builder.CreateLoad(ctx_.int64Type(), src_elem_ptr);
+        llvm::Value* elem_node = adNodeFromTensorElementBits(elem_bits, "tscale_ad_elem");
+        llvm::Value* result_node = autodiff_->recordADNodeBinary(4, elem_node, scalar_node);
+        llvm::Value* result_bits = builder.CreatePtrToInt(result_node, ctx_.int64Type());
+        builder.CreateStore(result_bits, dst_elem_ptr);
+        builder.CreateStore(builder.CreateAdd(ad_i, llvm::ConstantInt::get(ctx_.int64Type(), 1)), ad_counter);
+        builder.CreateBr(ad_cond);
+
+        builder.SetInsertPoint(ad_done);
+        builder.CreateBr(exit_block);
+
+        builder.SetInsertPoint(numeric_path);
+    }
 
     llvm::Value* counter = builder.CreateAlloca(ctx_.int64Type(), nullptr, "tscale_i");
     builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), counter);

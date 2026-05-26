@@ -1689,7 +1689,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     )
     set_tests_properties(autodiff_tensor_reductions_runtime_smoke
         PROPERTIES
-            PASS_REGULAR_EXPRESSION "PASS: gradient through leaky-relu tensor-sum matches default slope"
+            PASS_REGULAR_EXPRESSION "PASS: gradient through tensor-min selects minimum element"
             FAIL_REGULAR_EXPRESSION "FAIL:")
     add_test(
         NAME empty_collection_runtime_smoke
