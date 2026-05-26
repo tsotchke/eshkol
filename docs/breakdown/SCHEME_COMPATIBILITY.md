@@ -26,7 +26,7 @@
 
 Eshkol is a **compiled Scheme-family language** that implements approximately 95% of the R7RS-small standard while extending it with automatic differentiation, tensor computing, a consciousness engine, GPU acceleration, and other scientific computing capabilities. The compiler translates R7RS programs to native code via LLVM, producing standalone binaries with no runtime interpreter overhead.
 
-The R7RS-small standard defines 244 standard procedures and ~30 special forms. Eshkol implements 232 of these procedures and all essential special forms. The missing procedures are concentrated in a small set of error introspection functions (`error-object?`, `error-object-message`, `error-object-irritants`), one arithmetic function (`exact-integer-sqrt`), and the R7RS library system syntax (`define-library`/`import`/`export`), which is replaced by the `require`/`provide` module system.
+The R7RS-small standard defines 244 standard procedures and ~30 special forms. Eshkol implements 232 of these procedures and all essential special forms. The missing procedures are concentrated in a small set of error introspection functions (`error-object?`, `error-object-message`, `error-object-irritants`) and one arithmetic function (`exact-integer-sqrt`). R7RS `define-library` and `import` forms lower through the existing `require`/`provide` module system, with strict library isolation still tracked as future module-privacy work.
 
 Most well-formed R7RS Scheme programs compile and run in Eshkol without modification.
 
@@ -55,7 +55,7 @@ Most well-formed R7RS Scheme programs compile and run in Eshkol without modifica
 | **4.2.9** Case-lambda | `case-lambda` | ✅ | Macro-transformed to variadic dispatch |
 | **4.3** Macros | `define-syntax`, `syntax-rules`, `let-syntax`, `letrec-syntax` | ✅ | Hygienic; `syntax-case` not supported |
 | **5.1** Programs | Top-level expressions | ✅ | |
-| **5.2** Import | `import` | ⚠️ | Uses `require` instead; see [Module System](#module-system) |
+| **5.2** Import | `import` | ⚠️ | Lowers to `require`; `only`/`except`/`rename`/`prefix` import sets are parsed, with strict hiding still limited |
 | **5.3** Variable definitions | `define`, `define-values` | ✅ | Internal defines → `letrec*` |
 | **5.4** Syntax definitions | `define-syntax` | ✅ | |
 | **5.5** Record type definitions | `define-record-type` | ✅ | See [Records](#records) |
@@ -657,7 +657,7 @@ The runtime functions `eshkol_eval` and `eshkol_eval_env` handle the actual comp
 
 ## Module System
 
-Eshkol uses `require`/`provide` instead of R7RS `define-library`/`import`/`export`. This is a deliberate design choice: the `require`/`provide` system integrates with precompiled stdlib objects and LLVM's `LinkOnceODRLinkage` for efficient linking.
+Eshkol's native module system is `require`/`provide`. R7RS `define-library` and `import` forms are accepted as compatibility syntax and lower to that same module graph. This keeps module loading integrated with precompiled stdlib objects and LLVM's `LinkOnceODRLinkage` for efficient linking.
 
 ```scheme
 ;; Import a module
@@ -665,6 +665,11 @@ Eshkol uses `require`/`provide` instead of R7RS `define-library`/`import`/`expor
 (require core.list.transform)         ; specific sub-module
 (require math)                        ; math library
 (require signal)                      ; signal processing
+
+;; R7RS compatibility forms lower to require/provide plus aliases
+(import (only (scheme base) +))
+(import (rename (test modules mod_b) (func-b double-b)))
+(import (prefix (only (test modules mod_b) func-b) b-))
 
 ;; Export symbols
 (provide my-function my-variable)

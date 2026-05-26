@@ -78,7 +78,7 @@ These are planned features, not deficiencies in the current release:
 
 | Feature | Target | Current Alternative |
 |---------|--------|-------------------|
-| `define-library` / R7RS import with renaming | v1.3 | `require`/`provide` module system |
+| Full R7RS library export filtering semantics | v1.3 | `define-library` and R7RS `import` forms, including `only`/`except`/`rename`/`prefix`, lower through the existing `require`/`provide` module system |
 | Visual debugger UI | v1.3 | GDB/LLDB on the DWARF data already emitted by `-g`; `--dump-ir` for IR-level inspection |
 | Full C callbacks from foreign threads | v1.3 | `extern` C function calls (in-thread) work; native HTTP, SQLite, subprocess, fs-watch FFI surfaces shipped in v1.2 |
 | Python bindings | v1.3 | File I/O or subprocess interop |

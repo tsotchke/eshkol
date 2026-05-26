@@ -72,7 +72,7 @@ No. Visit [eshkol.ai](https://eshkol.ai) for a browser-based REPL that runs enti
 
 Yes, Eshkol implements a substantial subset of R7RS Scheme including: `lambda`, `define`, `let`/`let*`/`letrec`, `if`/`cond`/`case`/`when`/`unless`, `call/cc`, `dynamic-wind`, `guard`/`raise`, `values`/`call-with-values`, `syntax-rules`, `do`, tail call optimization, and the full numeric tower (integers, rationals, reals, complex numbers).
 
-Some R7RS features are extended: the `define-library` system is planned for v1.3, and the type system adds HoTT-based gradual typing beyond what R7RS specifies.
+Some R7RS features are extended: `define-library` and R7RS `import` forms lower through Eshkol's existing module system, including `only`, `except`, `rename`, and `prefix` import sets. The type system adds HoTT-based gradual typing beyond what R7RS specifies.
 
 ### What does "homoiconic" mean?
 
