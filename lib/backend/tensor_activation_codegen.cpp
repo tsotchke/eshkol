@@ -1386,6 +1386,8 @@ llvm::Value* TensorCodegen::tensorElu(const eshkol_operations_t* op) {
     llvm::BasicBlock* elu_merge = llvm::BasicBlock::Create(ctx_.context(), "elu_merge", current_func);
     llvm::BasicBlock* exit_block = llvm::BasicBlock::Create(ctx_.context(), "elu_exit", current_func);
 
+    emitTensorADUnaryDispatch(src_elems, result_elems, total_elements, 46, exit_block, "elu");
+
     llvm::Value* counter = builder.CreateAlloca(ctx_.int64Type(), nullptr, "elu_i");
     builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), counter);
     builder.CreateBr(loop_cond);
@@ -1502,6 +1504,8 @@ llvm::Value* TensorCodegen::tensorSelu(const eshkol_operations_t* op) {
     llvm::BasicBlock* selu_neg = llvm::BasicBlock::Create(ctx_.context(), "selu_neg", current_func);
     llvm::BasicBlock* selu_merge = llvm::BasicBlock::Create(ctx_.context(), "selu_merge", current_func);
     llvm::BasicBlock* exit_block = llvm::BasicBlock::Create(ctx_.context(), "selu_exit", current_func);
+
+    emitTensorADUnaryDispatch(src_elems, result_elems, total_elements, 47, exit_block, "selu");
 
     llvm::Value* counter = builder.CreateAlloca(ctx_.int64Type(), nullptr, "selu_i");
     builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), counter);
@@ -1628,6 +1632,8 @@ llvm::Value* TensorCodegen::tensorMish(const eshkol_operations_t* op) {
     llvm::BasicBlock* mish_merge = llvm::BasicBlock::Create(ctx_.context(), "mish_merge", current_func);
     llvm::BasicBlock* exit_block = llvm::BasicBlock::Create(ctx_.context(), "mish_exit", current_func);
 
+    emitTensorADUnaryDispatch(src_elems, result_elems, total_elements, 48, exit_block, "mish");
+
     llvm::Value* counter = builder.CreateAlloca(ctx_.int64Type(), nullptr, "mish_i");
     builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), counter);
     builder.CreateBr(loop_cond);
@@ -1736,6 +1742,8 @@ llvm::Value* TensorCodegen::tensorHardSwish(const eshkol_operations_t* op) {
     llvm::BasicBlock* loop_body = llvm::BasicBlock::Create(ctx_.context(), "hswish_body", current_func);
     llvm::BasicBlock* exit_block = llvm::BasicBlock::Create(ctx_.context(), "hswish_exit", current_func);
 
+    emitTensorADUnaryDispatch(src_elems, result_elems, total_elements, 49, exit_block, "hswish");
+
     llvm::Value* counter = builder.CreateAlloca(ctx_.int64Type(), nullptr, "hswish_i");
     builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), counter);
     builder.CreateBr(loop_cond);
@@ -1832,6 +1840,8 @@ llvm::Value* TensorCodegen::tensorHardSigmoid(const eshkol_operations_t* op) {
     llvm::BasicBlock* loop_cond = llvm::BasicBlock::Create(ctx_.context(), "hsigmoid_cond", current_func);
     llvm::BasicBlock* loop_body = llvm::BasicBlock::Create(ctx_.context(), "hsigmoid_body", current_func);
     llvm::BasicBlock* exit_block = llvm::BasicBlock::Create(ctx_.context(), "hsigmoid_exit", current_func);
+
+    emitTensorADUnaryDispatch(src_elems, result_elems, total_elements, 50, exit_block, "hsigmoid");
 
     llvm::Value* counter = builder.CreateAlloca(ctx_.int64Type(), nullptr, "hsigmoid_i");
     builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), counter);
@@ -1952,6 +1962,8 @@ llvm::Value* TensorCodegen::tensorSoftplus(const eshkol_operations_t* op) {
     llvm::BasicBlock* sp_normal = llvm::BasicBlock::Create(ctx_.context(), "sp_normal", current_func);
     llvm::BasicBlock* sp_merge = llvm::BasicBlock::Create(ctx_.context(), "sp_merge", current_func);
     llvm::BasicBlock* exit_block = llvm::BasicBlock::Create(ctx_.context(), "sp_exit", current_func);
+
+    emitTensorADUnaryDispatch(src_elems, result_elems, total_elements, 51, exit_block, "sp");
 
     llvm::Value* counter = builder.CreateAlloca(ctx_.int64Type(), nullptr, "sp_i");
     builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), counter);
@@ -2197,6 +2209,8 @@ llvm::Value* TensorCodegen::tensorCelu(const eshkol_operations_t* op) {
     llvm::BasicBlock* loop_cond = llvm::BasicBlock::Create(ctx_.context(), "celu_cond", current_func);
     llvm::BasicBlock* loop_body = llvm::BasicBlock::Create(ctx_.context(), "celu_body", current_func);
     llvm::BasicBlock* exit_block = llvm::BasicBlock::Create(ctx_.context(), "celu_exit", current_func);
+
+    emitTensorADUnaryDispatch(src_elems, result_elems, total_elements, 53, exit_block, "celu");
 
     llvm::Value* counter = builder.CreateAlloca(ctx_.int64Type(), nullptr, "celu_i");
     builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), counter);
