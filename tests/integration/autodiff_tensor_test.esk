@@ -827,3 +827,28 @@
              (approx= (vector-ref g-ln 5) 0.11454053224818188 1e-5))
         "PASS" "FAIL"))
   (display ": gradient through axis-aware normalization matches strided closed form") (newline))
+
+;; ============================================================
+;; Test 49: Gradients through remaining #154 scalar math ops
+;; Covers asin, acos, atan, atan2, sinh, and cosh.
+;; ============================================================
+(let* ((g (gradient
+            (lambda (x)
+              (+ (asin (vector-ref x 0))
+                 (acos (vector-ref x 1))
+                 (atan (vector-ref x 2))
+                 (sinh (vector-ref x 3))
+                 (cosh (vector-ref x 4))
+                 (atan2 (vector-ref x 5) (vector-ref x 6))))
+            (tensor 7 0.5 0.5 1.0 0.0 1.0 3.0 4.0))))
+  (display
+    (if (and (= (vector-length g) 7)
+             (approx= (vector-ref g 0) 1.1547005383792517 1e-5)
+             (approx= (vector-ref g 1) -1.1547005383792517 1e-5)
+             (approx= (vector-ref g 2) 0.5 1e-6)
+             (approx= (vector-ref g 3) 1.0 1e-6)
+             (approx= (vector-ref g 4) 1.1752011936438014 1e-5)
+             (approx= (vector-ref g 5) 0.16 1e-6)
+             (approx= (vector-ref g 6) -0.12 1e-6))
+        "PASS" "FAIL"))
+  (display ": gradients through asin/acos/atan/atan2/sinh/cosh match closed forms") (newline))

@@ -1689,7 +1689,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     )
     set_tests_properties(autodiff_tensor_reductions_runtime_smoke
         PROPERTIES
-            PASS_REGULAR_EXPRESSION "PASS: phase4 activation gradients match expected defaults"
+            PASS_REGULAR_EXPRESSION "PASS: gradients through asin/acos/atan/atan2/sinh/cosh match closed forms"
             FAIL_REGULAR_EXPRESSION "FAIL:")
     add_test(
         NAME empty_collection_runtime_smoke
