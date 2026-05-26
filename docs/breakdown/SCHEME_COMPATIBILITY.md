@@ -76,7 +76,7 @@ Most well-formed R7RS Scheme programs compile and run in Eshkol without modifica
 
 ### Compliance Statistics
 
-- **Special forms and derived expressions**: 28/30 (93%) — missing `define-library`, `import`
+- **Special forms and derived expressions**: 30/30 (supported subset for R7RS libraries)
 - **Standard procedures**: 232/244 (95%) — missing 12 procedures
 - **Overall R7RS-small compliance**: ~95%
 
@@ -964,9 +964,7 @@ Compile to WebAssembly with 73 DOM/Canvas/Event API bindings:
 | `error-object-message` | 6.11 | Missing | Use string operations on the error value directly |
 | `error-object-irritants` | 6.11 | Missing | |
 | `exact-integer-sqrt` | 6.2.6 | Missing | Use `(inexact->exact (floor (sqrt n)))` as workaround |
-| `define-library` | 5.6 | Missing | Use `require`/`provide` module system |
-| `import` (R7RS syntax) | 5.2 | Missing | Use `require` |
-| `export` (R7RS syntax) | 5.6 | Missing | Use `provide` |
+| Full R7RS library isolation | 5.6 | Limited | `define-library`, `import`, `export`, `only`, `except`, `rename`, and explicit-prefix imports lower to the existing `require`/`provide` module graph; strict hiding remains future module-privacy work |
 | Multi-shot continuations | 6.10 | Limited | `call/cc` is single-shot (setjmp/longjmp) |
 | `syntax-case` | — | Missing | Only `syntax-rules` supported (sufficient for most macros) |
 | `char-ci=?` etc. | 6.6 | Missing | Case-insensitive character comparison |
