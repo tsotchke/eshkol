@@ -631,3 +631,38 @@
              (approx= (vector-ref g 5) 0.0 1e-6))
         "PASS" "FAIL"))
   (display ": gradient through axis tensor-min selects minima") (newline))
+
+;; ============================================================
+;; Test 42: Gradient through global softmax
+;; f(x) = sum(softmax(x) * [1, 2, 3])
+;; ============================================================
+(let* ((c (tensor 3 1.0 2.0 3.0))
+       (g (gradient
+            (lambda (x) (tensor-sum (tensor-mul (softmax x) c)))
+            (tensor 3 1.0 2.0 3.0))))
+  (display
+    (if (and (= (vector-length g) 3)
+             (approx= (vector-ref g 0) -0.14181709360981218 1e-5)
+             (approx= (vector-ref g 1) -0.1407703574696302 1e-5)
+             (approx= (vector-ref g 2) 0.2825874510794421 1e-5))
+        "PASS" "FAIL"))
+  (display ": gradient through softmax tensor-sum matches coupled Jacobian") (newline))
+
+;; ============================================================
+;; Test 43: Gradient through axis softmax
+;; f(x) = sum(softmax(reshape(x, 2, 3), axis=1) * c)
+;; ============================================================
+(let* ((c (tensor 2 3 1.0 2.0 3.0 4.0 5.0 6.0))
+       (g (gradient
+            (lambda (x) (tensor-sum (tensor-mul (softmax (reshape x 2 3) 1) c)))
+            (tensor 6 1.0 2.0 3.0 4.0 5.0 6.0))))
+  (display
+    (if (and (= (vector-length g) 6)
+             (approx= (vector-ref g 0) -0.14181709360981218 1e-5)
+             (approx= (vector-ref g 1) -0.1407703574696302 1e-5)
+             (approx= (vector-ref g 2) 0.2825874510794421 1e-5)
+             (approx= (vector-ref g 3) -0.14181709360981218 1e-5)
+             (approx= (vector-ref g 4) -0.1407703574696302 1e-5)
+             (approx= (vector-ref g 5) 0.2825874510794421 1e-5))
+        "PASS" "FAIL"))
+  (display ": gradient through axis softmax tensor-sum matches row Jacobians") (newline))
