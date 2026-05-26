@@ -293,8 +293,8 @@ llvm::Function* AutodiffCodegen::getMathFunc(const std::string& name) {
 
     // Declare the function
     std::vector<llvm::Type*> args = {ctx_.doubleType()};
-    // pow takes 2 args
-    if (name == "pow") {
+    // pow and atan2 take 2 args
+    if (name == "pow" || name == "atan2") {
         args.push_back(ctx_.doubleType());
     }
 
@@ -895,6 +895,13 @@ llvm::Value* AutodiffCodegen::recordADNodeBinary(uint32_t op_type, llvm::Value* 
                 // min(a, b) = a if a < b else b
                 llvm::Value* cmp = ctx_.builder().CreateFCmpOLT(left_value, right_value);
                 result_value = ctx_.builder().CreateSelect(cmp, left_value, right_value);
+            }
+            break;
+        case AD_NODE_ATAN2:
+            {
+                llvm::Function* atan2_func = getMathFunc("atan2");
+                if (!atan2_func) return nullptr;
+                result_value = ctx_.builder().CreateCall(atan2_func, {left_value, right_value});
             }
             break;
         default:
@@ -8285,6 +8292,7 @@ void AutodiffCodegen::propagateGradient(llvm::Value* node_ptr) {
     llvm::BasicBlock* log2_block = llvm::BasicBlock::Create(ctx_.context(), "grad_log2", current_func);
     llvm::BasicBlock* exp2_block = llvm::BasicBlock::Create(ctx_.context(), "grad_exp2", current_func);
     llvm::BasicBlock* cbrt_block = llvm::BasicBlock::Create(ctx_.context(), "grad_cbrt", current_func);
+    llvm::BasicBlock* atan2_block = llvm::BasicBlock::Create(ctx_.context(), "grad_atan2", current_func);
 
     // --- TAN (type=54): dL/dx = dL/dz * (1 + tan²(x)) = dL/dz / cos²(x) ---
     ctx_.builder().SetInsertPoint(check_tan);
@@ -8512,8 +8520,8 @@ void AutodiffCodegen::propagateGradient(llvm::Value* node_ptr) {
     // --- CBRT (type=66): dL/dx = dL/dz / (3 * cbrt(x)²) ---
     ctx_.builder().SetInsertPoint(check_cbrt);
     llvm::Value* is_cbrt = ctx_.builder().CreateICmpEQ(node_type, llvm::ConstantInt::get(ctx_.int32Type(), 66));
-    llvm::BasicBlock* check_conv2d = llvm::BasicBlock::Create(ctx_.context(), "check_conv2d", current_func);
-    ctx_.builder().CreateCondBr(is_cbrt, cbrt_block, check_conv2d);
+    llvm::BasicBlock* check_atan2 = llvm::BasicBlock::Create(ctx_.context(), "check_atan2", current_func);
+    ctx_.builder().CreateCondBr(is_cbrt, cbrt_block, check_atan2);
 
     ctx_.builder().SetInsertPoint(cbrt_block);
     if (input1) {
@@ -8525,6 +8533,31 @@ void AutodiffCodegen::propagateGradient(llvm::Value* node_ptr) {
         llvm::Value* denom = ctx_.builder().CreateFMul(three, cbrt_sq);
         llvm::Value* grad_input = ctx_.builder().CreateFDiv(node_grad, denom);
         accumulateGradient(input1, grad_input);
+    }
+    ctx_.builder().CreateBr(done_block);
+
+    // --- ATAN2 (binary): atan2(y, x)
+    // d/dy = x / (x² + y²), d/dx = -y / (x² + y²)
+    ctx_.builder().SetInsertPoint(check_atan2);
+    llvm::Value* is_atan2 = ctx_.builder().CreateICmpEQ(
+        node_type, llvm::ConstantInt::get(ctx_.int32Type(), AD_NODE_ATAN2));
+    llvm::BasicBlock* check_conv2d = llvm::BasicBlock::Create(ctx_.context(), "check_conv2d", current_func);
+    ctx_.builder().CreateCondBr(is_atan2, atan2_block, check_conv2d);
+
+    ctx_.builder().SetInsertPoint(atan2_block);
+    if (input1 && input2) {
+        llvm::Value* y_val = loadNodeValue(input1);
+        llvm::Value* x_val = loadNodeValue(input2);
+        llvm::Value* x_sq = ctx_.builder().CreateFMul(x_val, x_val);
+        llvm::Value* y_sq = ctx_.builder().CreateFMul(y_val, y_val);
+        llvm::Value* denom = ctx_.builder().CreateFAdd(x_sq, y_sq);
+        llvm::Value* grad_y = ctx_.builder().CreateFMul(
+            node_grad, ctx_.builder().CreateFDiv(x_val, denom));
+        llvm::Value* neg_y = ctx_.builder().CreateFNeg(y_val);
+        llvm::Value* grad_x = ctx_.builder().CreateFMul(
+            node_grad, ctx_.builder().CreateFDiv(neg_y, denom));
+        accumulateGradient(input1, grad_y);
+        accumulateGradient(input2, grad_x);
     }
     ctx_.builder().CreateBr(done_block);
 
@@ -9239,6 +9272,13 @@ llvm::Value* AutodiffCodegen::recordADNodeBinaryOnTape(llvm::Value* tape_ptr, ui
                 // min(a, b) = a if a < b else b
                 llvm::Value* cmp = ctx_.builder().CreateFCmpOLT(left_value, right_value);
                 result_value = ctx_.builder().CreateSelect(cmp, left_value, right_value);
+            }
+            break;
+        case AD_NODE_ATAN2:
+            {
+                llvm::Function* atan2_func = getMathFunc("atan2");
+                if (!atan2_func) return nullptr;
+                result_value = ctx_.builder().CreateCall(atan2_func, {left_value, right_value});
             }
             break;
         default:

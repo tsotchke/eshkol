@@ -729,6 +729,7 @@ typedef enum {
     AD_NODE_TENSOR_EMBEDDING,          // Sparse update backward
     AD_NODE_TENSOR_CROSS_ENTROPY,      // Numerically stable backward
     AD_NODE_FRECHET_MEAN,              // Riemannian center of mass backward
+    AD_NODE_ATAN2,                     // Binary atan2(y, x) backward
 
     // Sentinel for bounds checking
     AD_NODE_TYPE_COUNT

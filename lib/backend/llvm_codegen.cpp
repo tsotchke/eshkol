@@ -18056,6 +18056,11 @@ private:
         if (func_name == "atan2") {
             Value* arg1_base = getBaseType(getTaggedValueType(arg1));
             Value* arg2_base = getBaseType(getTaggedValueType(arg2));
+            Value* arg1_is_ad = builder->CreateICmpEQ(arg1_base,
+                ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
+            Value* arg2_is_ad = builder->CreateICmpEQ(arg2_base,
+                ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
+            Value* any_ad = builder->CreateOr(arg1_is_ad, arg2_is_ad);
             Value* arg1_is_dual = builder->CreateICmpEQ(arg1_base,
                 ConstantInt::get(int8_type, ESHKOL_VALUE_DUAL_NUMBER));
             Value* arg2_is_dual = builder->CreateICmpEQ(arg2_base,
@@ -18063,9 +18068,51 @@ private:
             Value* any_dual = builder->CreateOr(arg1_is_dual, arg2_is_dual);
 
             Function* outer_func = builder->GetInsertBlock()->getParent();
+            BasicBlock* ad_bb = BasicBlock::Create(*context, "atan2_ad", outer_func);
+            BasicBlock* check_dual_bb = BasicBlock::Create(*context, "atan2_check_dual", outer_func);
             BasicBlock* dual_bb = BasicBlock::Create(*context, "atan2_dual", outer_func);
             BasicBlock* normal_bb = BasicBlock::Create(*context, "atan2_normal", outer_func);
             BasicBlock* merge_bb = BasicBlock::Create(*context, "atan2_merge", outer_func);
+            builder->CreateCondBr(any_ad, ad_bb, check_dual_bb);
+
+            auto as_ad_node = [&](Value* tagged, Value* base, const std::string& prefix) -> Value* {
+                Function* func = builder->GetInsertBlock()->getParent();
+                BasicBlock* callable_bb = BasicBlock::Create(*context, prefix + "_callable", func);
+                BasicBlock* numeric_bb = BasicBlock::Create(*context, prefix + "_numeric", func);
+                BasicBlock* node_merge = BasicBlock::Create(*context, prefix + "_merge", func);
+                Value* is_callable = builder->CreateICmpEQ(base,
+                    ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
+                builder->CreateCondBr(is_callable, callable_bb, numeric_bb);
+
+                builder->SetInsertPoint(callable_bb);
+                Value* ptr_int = unpackInt64FromTaggedValue(tagged);
+                Value* node_ptr = builder->CreateIntToPtr(ptr_int, PointerType::getUnqual(*context));
+                builder->CreateBr(node_merge);
+                BasicBlock* callable_exit = builder->GetInsertBlock();
+
+                builder->SetInsertPoint(numeric_bb);
+                Value* numeric = extractDoubleFromTagged(tagged);
+                Value* const_node = autodiff_->createADConstant(numeric);
+                builder->CreateBr(node_merge);
+                BasicBlock* numeric_exit = builder->GetInsertBlock();
+
+                builder->SetInsertPoint(node_merge);
+                PHINode* phi = builder->CreatePHI(ptr_type, 2, prefix + "_node");
+                phi->addIncoming(node_ptr, callable_exit);
+                phi->addIncoming(const_node, numeric_exit);
+                return phi;
+            };
+
+            builder->SetInsertPoint(ad_bb);
+            Value* y_node = as_ad_node(arg1, arg1_base, "atan2_y_ad");
+            Value* x_node = as_ad_node(arg2, arg2_base, "atan2_x_ad");
+            Value* ad_result_node = autodiff_->recordADNodeBinary(AD_NODE_ATAN2, y_node, x_node);
+            Value* ad_result_int = builder->CreatePtrToInt(ad_result_node, int64_type);
+            Value* ad_tagged = packPtrToTaggedValue(ad_result_int, ESHKOL_VALUE_CALLABLE);
+            BasicBlock* ad_exit = builder->GetInsertBlock();
+            builder->CreateBr(merge_bb);
+
+            builder->SetInsertPoint(check_dual_bb);
             builder->CreateCondBr(any_dual, dual_bb, normal_bb);
 
             builder->SetInsertPoint(dual_bb);
@@ -18103,7 +18150,8 @@ private:
             builder->CreateBr(merge_bb);
 
             builder->SetInsertPoint(merge_bb);
-            PHINode* phi = builder->CreatePHI(tagged_value_type, 2, "atan2_result");
+            PHINode* phi = builder->CreatePHI(tagged_value_type, 3, "atan2_result");
+            phi->addIncoming(ad_tagged, ad_exit);
             phi->addIncoming(dual_tagged, dual_exit);
             phi->addIncoming(normal_tagged, normal_exit);
             return phi;
