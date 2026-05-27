@@ -231,6 +231,7 @@ Acceptance:
 | #155 | Priority queues + sets + deques stdlib | ✅ landed in v1.2.x |
 | #147 | Structured logging (JSON-L + trace IDs) | core contracts tested; needs Noesis integration |
 | #149 | Capability / permission hooks | hosted allow-list hooks landed for agent surfaces and core file I/O |
+| #150 | Resource limits (CPU / memory / wall-time) | hosted env initialization, accounting, and watchdog primitives tested |
 | #170 | Reflection primitives (`procedure-arity`, `record-fields`, `describe`) | ✅ landed in v1.2.x |
 | #171 | Memoization / LRU cache stdlib | ✅ landed in v1.2.x |
 | #172 | JSON Schema validation | ✅ landed in v1.2.x |
@@ -240,8 +241,11 @@ Phase 2 productionizes this surface:
 - Keep focused tests for `core.logging`, including JSON escaping, trace-id
   scoping, level filtering, port redirection, and path-string sinks.
 - Keep `core.capabilities` coverage on subprocess, shell, network, agent FFI
-  wrappers, and core file I/O. Future HTTP handlers should use the same
-  deny-by-default active policy while preserving no-policy compatibility.
+  wrappers, env access, generated file ports, and core file I/O. Future HTTP
+  handlers should use the same deny-by-default active policy while preserving
+  no-policy compatibility.
+- Keep hosted `resource_limits` coverage for env initialization, heap/stack
+  accounting, tensor/string validators, and wall-time watchdog interrupts.
 - Extend reflection docs and tests for user procedures, records, builtins,
   variadics, and imported functions.
 - Keep #154 AD-op finite-difference checks in the stdlib/autodiff gates.
@@ -252,6 +256,8 @@ Acceptance:
 - Noesis Hiereia can produce structured JSON-L logs with trace IDs.
 - Noesis can install a capability policy and prove a denied subprocess/FFI/file
   operation fails deterministically.
+- Hosted binaries can initialize resource limits from the environment and prove
+  a deliberate wall-time limit requests a runtime interrupt.
 - Extra AD ops pass numerical-gradient checks in JIT and AOT where applicable.
 
 ### Dev experience (original v1.3 roadmap)

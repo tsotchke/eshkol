@@ -2019,6 +2019,52 @@ static llvm::Function* getOrDeclareStderrStream(CodegenContext& ctx) {
     );
 }
 
+static llvm::Value* packFilePortOrFalse(CodegenContext& ctx,
+                                         TaggedValueCodegen& tagged,
+                                         llvm::Value* file_ptr,
+                                         uint8_t port_type,
+                                         const char* name) {
+    llvm::Function* current_func = ctx.builder().GetInsertBlock()->getParent();
+    llvm::Value* is_null = ctx.builder().CreateICmpEQ(
+        file_ptr, llvm::ConstantPointerNull::get(ctx.ptrType()),
+        std::string(name) + "_is_null");
+
+    llvm::BasicBlock* null_block = llvm::BasicBlock::Create(
+        ctx.context(), std::string(name) + "_null", current_func);
+    llvm::BasicBlock* port_block = llvm::BasicBlock::Create(
+        ctx.context(), std::string(name) + "_port", current_func);
+    llvm::BasicBlock* merge_block = llvm::BasicBlock::Create(
+        ctx.context(), std::string(name) + "_merge", current_func);
+
+    ctx.builder().CreateCondBr(is_null, null_block, port_block);
+
+    ctx.builder().SetInsertPoint(null_block);
+    llvm::Value* false_val = tagged.packBool(
+        llvm::ConstantInt::getFalse(ctx.context()));
+    ctx.builder().CreateBr(merge_block);
+    llvm::BasicBlock* null_exit = ctx.builder().GetInsertBlock();
+
+    ctx.builder().SetInsertPoint(port_block);
+    llvm::Value* file_ptr_int = ctx.builder().CreatePtrToInt(file_ptr, ctx.int64Type());
+    llvm::Value* port_val = llvm::UndefValue::get(ctx.taggedValueType());
+    port_val = ctx.builder().CreateInsertValue(port_val,
+        llvm::ConstantInt::get(ctx.int8Type(), port_type), {0});
+    port_val = ctx.builder().CreateInsertValue(port_val,
+        llvm::ConstantInt::get(ctx.int8Type(), 0), {1});
+    port_val = ctx.builder().CreateInsertValue(port_val,
+        llvm::ConstantInt::get(ctx.int16Type(), 0), {2});
+    port_val = ctx.builder().CreateInsertValue(port_val, file_ptr_int, {4});
+    ctx.builder().CreateBr(merge_block);
+    llvm::BasicBlock* port_exit = ctx.builder().GetInsertBlock();
+
+    ctx.builder().SetInsertPoint(merge_block);
+    llvm::PHINode* result = ctx.builder().CreatePHI(ctx.taggedValueType(), 2,
+        std::string(name) + "_result");
+    result->addIncoming(false_val, null_exit);
+    result->addIncoming(port_val, port_exit);
+    return result;
+}
+
 llvm::Value* StringIOCodegen::openInputFile(const eshkol_operations_t* op) {
     if (!codegen_typed_ast_callback_ || !typed_to_tagged_callback_) {
         eshkol_warn("StringIOCodegen::openInputFile - callbacks not set");
@@ -2048,21 +2094,8 @@ llvm::Value* StringIOCodegen::openInputFile(const eshkol_operations_t* op) {
     llvm::Value* mode = createString("r");
     llvm::Value* file_ptr = ctx_.builder().CreateCall(fopen_func, {filename_ptr, mode});
 
-    // Convert FILE* to i64 for storage in tagged value
-    llvm::Value* file_ptr_int = ctx_.builder().CreatePtrToInt(file_ptr, ctx_.int64Type());
-
-    // Pack as a tagged value with a special "port" type
-    // We'll use ESHKOL_VALUE_HEAP_PTR + 0x10 flag to indicate it's a port
-    llvm::Value* result = llvm::UndefValue::get(ctx_.taggedValueType());
-    result = ctx_.builder().CreateInsertValue(result,
-        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR | 0x10), {0}); // type = port
-    result = ctx_.builder().CreateInsertValue(result,
-        llvm::ConstantInt::get(ctx_.int8Type(), 0), {1}); // flags
-    result = ctx_.builder().CreateInsertValue(result,
-        llvm::ConstantInt::get(ctx_.int16Type(), 0), {2}); // reserved
-    result = ctx_.builder().CreateInsertValue(result, file_ptr_int, {4}); // data = FILE* at index 4
-
-    return result;
+    return packFilePortOrFalse(ctx_, tagged_, file_ptr,
+        ESHKOL_VALUE_HEAP_PTR | 0x10, "open_input_file");
 }
 
 // Shared body for open-output-file (mode="w") and
@@ -2106,20 +2139,10 @@ llvm::Value* StringIOCodegen::openOutputFileImpl(const eshkol_operations_t* op,
     llvm::Value* mode = createString(mode_str);
     llvm::Value* file_ptr = ctx_.builder().CreateCall(fopen_func, {filename_ptr, mode});
 
-    llvm::Value* file_ptr_int = ctx_.builder().CreatePtrToInt(file_ptr, ctx_.int64Type());
-
     // Pack as a tagged value with output port type.
     // NOTE: Use 0x40 instead of 0x20 because CONS_PTR=32=0x20, so 32|0x20=32!
-    llvm::Value* result = llvm::UndefValue::get(ctx_.taggedValueType());
-    result = ctx_.builder().CreateInsertValue(result,
-        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR | 0x40), {0});
-    result = ctx_.builder().CreateInsertValue(result,
-        llvm::ConstantInt::get(ctx_.int8Type(), 0), {1});
-    result = ctx_.builder().CreateInsertValue(result,
-        llvm::ConstantInt::get(ctx_.int16Type(), 0), {2});
-    result = ctx_.builder().CreateInsertValue(result, file_ptr_int, {4});
-
-    return result;
+    return packFilePortOrFalse(ctx_, tagged_, file_ptr,
+        ESHKOL_VALUE_HEAP_PTR | 0x40, "open_output_file");
 }
 
 llvm::Value* StringIOCodegen::readLine(const eshkol_operations_t* op) {
@@ -2876,20 +2899,10 @@ llvm::Value* StringIOCodegen::openBinaryInputFile(const eshkol_operations_t* op)
     llvm::Value* mode = createString("rb");
     llvm::Value* file_ptr = ctx_.builder().CreateCall(fopen_func, {filename_ptr, mode});
 
-    llvm::Value* file_ptr_int = ctx_.builder().CreatePtrToInt(file_ptr, ctx_.int64Type());
-
     // Pack as binary input port: HEAP_PTR | INPUT_FLAG | BINARY_FLAG
-    llvm::Value* result = llvm::UndefValue::get(ctx_.taggedValueType());
-    result = ctx_.builder().CreateInsertValue(result,
-        llvm::ConstantInt::get(ctx_.int8Type(),
-            ESHKOL_VALUE_HEAP_PTR | ESHKOL_PORT_INPUT_FLAG | ESHKOL_PORT_BINARY_FLAG), {0});
-    result = ctx_.builder().CreateInsertValue(result,
-        llvm::ConstantInt::get(ctx_.int8Type(), 0), {1});
-    result = ctx_.builder().CreateInsertValue(result,
-        llvm::ConstantInt::get(ctx_.int16Type(), 0), {2});
-    result = ctx_.builder().CreateInsertValue(result, file_ptr_int, {4});
-
-    return result;
+    return packFilePortOrFalse(ctx_, tagged_, file_ptr,
+        ESHKOL_VALUE_HEAP_PTR | ESHKOL_PORT_INPUT_FLAG | ESHKOL_PORT_BINARY_FLAG,
+        "open_binary_input_file");
 }
 
 llvm::Value* StringIOCodegen::openBinaryOutputFile(const eshkol_operations_t* op) {
@@ -2917,20 +2930,10 @@ llvm::Value* StringIOCodegen::openBinaryOutputFile(const eshkol_operations_t* op
     llvm::Value* mode = createString("wb");
     llvm::Value* file_ptr = ctx_.builder().CreateCall(fopen_func, {filename_ptr, mode});
 
-    llvm::Value* file_ptr_int = ctx_.builder().CreatePtrToInt(file_ptr, ctx_.int64Type());
-
     // Pack as binary output port: HEAP_PTR | OUTPUT_FLAG | BINARY_FLAG
-    llvm::Value* result = llvm::UndefValue::get(ctx_.taggedValueType());
-    result = ctx_.builder().CreateInsertValue(result,
-        llvm::ConstantInt::get(ctx_.int8Type(),
-            ESHKOL_VALUE_HEAP_PTR | ESHKOL_PORT_OUTPUT_FLAG | ESHKOL_PORT_BINARY_FLAG), {0});
-    result = ctx_.builder().CreateInsertValue(result,
-        llvm::ConstantInt::get(ctx_.int8Type(), 0), {1});
-    result = ctx_.builder().CreateInsertValue(result,
-        llvm::ConstantInt::get(ctx_.int16Type(), 0), {2});
-    result = ctx_.builder().CreateInsertValue(result, file_ptr_int, {4});
-
-    return result;
+    return packFilePortOrFalse(ctx_, tagged_, file_ptr,
+        ESHKOL_VALUE_HEAP_PTR | ESHKOL_PORT_OUTPUT_FLAG | ESHKOL_PORT_BINARY_FLAG,
+        "open_binary_output_file");
 }
 
 llvm::Value* StringIOCodegen::readU8(const eshkol_operations_t* op) {

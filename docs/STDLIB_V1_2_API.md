@@ -2022,8 +2022,9 @@ Exports (`capabilities.esk`):
 Hosted capability policy for v1.3 production surfaces. With no installed
 policy (`#f`), checks allow by default so existing v1.2 code keeps running.
 Installing an allow-list activates deny-by-default behavior: any capability
-symbol not present in the list raises through `capability-require!`. Initial
-hooks cover agent subprocess/shell, HTTP/network, Unix-socket, and SQLite FFI
-entry points. The hosted runtime also mirrors the active allow-list so core
-file I/O builtins require `file-read` for metadata/read paths and `file-write`
-for write/delete/rename paths.
+symbol not present in the list raises through `capability-require!`. Hooks
+cover agent subprocess/shell, HTTP/network, Unix-socket, SQLite FFI, hosted
+environment reads/writes, and generated file-port opens. The hosted runtime
+also mirrors the active allow-list so core file I/O builtins require
+`file-read` for metadata/read paths and `file-write` for write/delete/rename
+paths.

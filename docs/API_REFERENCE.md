@@ -4314,9 +4314,12 @@ Eshkol behavior can be configured via environment variables. None are required â
 | `ESHKOL_PATH` | (none) | Library search path |
 | `ESHKOL_STACK_SIZE` | (system) | Runtime stack size |
 | `ESHKOL_MAX_HEAP` | (default) | Maximum heap allocation |
-| `ESHKOL_TIMEOUT_MS` | (none) | Execution timeout in milliseconds |
+| `ESHKOL_TIMEOUT_MS` | (none) | Execution timeout in milliseconds; hosted runtime starts a watchdog when set |
 | `ESHKOL_MAX_STACK` | (default) | Maximum stack depth |
-| `ESHKOL_ENFORCE_LIMITS` | off | Enforce resource limits |
+| `ESHKOL_MAX_TENSOR_ELEMS` | (default) | Maximum tensor element count |
+| `ESHKOL_MAX_STRING_LEN` | (default) | Maximum string length |
+| `ESHKOL_ENFORCE_LIMITS` | on for limit API | Request runtime interrupts on hard heap/timeout limits |
+| `ESHKOL_LIMIT_WARNINGS` | on | Emit soft-limit warnings |
 
 ### Logging & Debug
 

@@ -5,6 +5,9 @@
 ;;; Default policy is #f, meaning no checks and existing v1.2 programs keep
 ;;; running unchanged. Installing an allow-list makes the policy active and
 ;;; every capability not present in the list is denied by default.
+;;;
+;;; Core hosted capabilities include file-read, file-write, env-read,
+;;; env-write, subprocess, shell, and network.
 
 (provide capability-install-policy!
          capability-clear-policy!

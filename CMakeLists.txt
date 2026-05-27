@@ -1716,6 +1716,18 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/runtime
     add_test(NAME runtime_shutdown_hooks_test COMMAND runtime_shutdown_hooks_test)
 endif()
 
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/resource_limits_test.cpp")
+    add_executable(resource_limits_test tests/core/resource_limits_test.cpp)
+    target_compile_features(resource_limits_test PRIVATE cxx_std_17)
+    target_include_directories(resource_limits_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    eshkol_target_llvm_includes(resource_limits_test)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(resource_limits_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(resource_limits_test PRIVATE eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+    add_test(NAME resource_limits_test COMMAND resource_limits_test)
+endif()
+
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/runtime_signal_handlers_test.cpp")
     add_executable(runtime_signal_handlers_test tests/core/runtime_signal_handlers_test.cpp)
     target_compile_features(runtime_signal_handlers_test PRIVATE cxx_std_17)
