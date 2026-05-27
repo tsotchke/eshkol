@@ -10,6 +10,7 @@ the v1.3-evolve milestone across the mesh
 | File / dir | Purpose |
 |---|---|
 | `tasks/ESH-NNNN.json` | One spec per parallelizable v1.3 work item. Schema mirrors QGTL: id, title, status, priority, workstream, owner, goal, file_globs, next_actions, acceptance, blocked_by, verification, commit. |
+| `tasks/EKR-NNNN.json` | Eshkol Kernel / platform-runtime work items that must stay synchronized with public `master` while the long-running platform branch is reviewed in small slices. |
 | `claims/` | Active claims by agents picking up tasks. One file per active claim, named `<agent>__<task-id>.json`. |
 | `events.jsonl` | Append-only ledger of swarm events: claim, finish, decision_recorded, evidence_refreshed, etc. |
 | `decisions.md` | Architectural decisions locked in for v1.3. Anything that affects multiple tasks goes here so parallel work respects shared design. |
@@ -48,6 +49,12 @@ the v1.3-evolve milestone across the mesh
    `v1.3-evolve` completion oracle to confirm the criterion flipped to
    PASS.
 
+7. **Eshkol Kernel tasks use the same public ledger, not a separate
+   replacement ledger.** `EKR-*` tasks are additive platform/runtime slices.
+   They should be claimed and reviewed from branches based on public
+   `origin/master`, with private or company remotes used only as explicit
+   secondary remotes.
+
 ## Running the swarm
 
 ```sh
@@ -71,10 +78,12 @@ ls .swarm/claims/
 ## Hard rules
 
 - **Every multi-agent task starts with ICC preflight.** Run
-  `scripts/swarm_agent_preflight.sh --task ESH-NNNN` before dispatching
+  `scripts/swarm_agent_preflight.sh --task ESH-NNNN` or
+  `scripts/swarm_agent_preflight.sh --task EKR-NNNN` before dispatching
   or starting work. In ICC-enabled environments this delegates to
-  `icc agent-preflight --repo eshkol_lang --task-id ESH-NNNN
-  --require-swarm --require-swarm-task`; stale tsotchke mirrors, missing
+  `icc agent-preflight --repo eshkol_lang --task-id ESH-NNNN --require-swarm --require-swarm-task`
+  or `icc agent-preflight --repo eshkol_lang --task-id EKR-NNNN --require-swarm --require-swarm-task`;
+  stale tsotchke mirrors, missing
   task metadata, active path conflicts, and dirty/untracked work block
   the task.
 - **Before any destructive git operation, snapshot first.** Use

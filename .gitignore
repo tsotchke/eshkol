@@ -10,6 +10,7 @@ dist/
 
 # Tool artifacts
 .codex_edit_access
+__pycache__/
 
 # Proprietary / unreleased
 lib/tsotchke/

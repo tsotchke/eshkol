@@ -1,0 +1,35 @@
+{
+  "id": "EKR-0005",
+  "title": "Freestanding build artifact hygiene",
+  "status": "pending",
+  "priority": "medium",
+  "workstream": "build-hygiene",
+  "owner": null,
+  "preferred_backend": "codex",
+  "preferred_node": "atlas",
+  "max_cost_usd": 2.0,
+  "goal": "Keep generated freestanding, QEMU, and build-kernel artifacts out of tracked source while preserving the commands needed to reproduce them.",
+  "file_globs": [
+    ".gitignore",
+    "scripts/build_x86_64_qemu_bsp_elf.sh",
+    "scripts/build_x86_64_qemu_bsp_bootloader.sh",
+    "docs/platform/IMPLEMENTATION_WORKFLOW.md",
+    "docs/platform/TEST_AND_CI_PLAN.md"
+  ],
+  "next_actions": [
+    "Audit generated artifacts produced by focused platform builds.",
+    "Patch ignore rules only for generated files, not source or manifests.",
+    "Document the expected build output locations."
+  ],
+  "acceptance": [
+    "Focused platform builds do not leave unrelated untracked artifacts.",
+    "Tracked assembly, linker scripts, manifests, and docs remain visible to git.",
+    "The implementation workflow names the relevant build directories."
+  ],
+  "blocked_by": [],
+  "verification": [
+    "cmake --build build-kernel-verify --target x86_64_qemu_bsp_surface_test -- -j8",
+    "git status --short",
+    "git diff --check"
+  ]
+}

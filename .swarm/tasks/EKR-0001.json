@@ -1,0 +1,37 @@
+{
+  "id": "EKR-0001",
+  "title": "Sleep-control field query surface",
+  "status": "pending",
+  "priority": "high",
+  "workstream": "platform-bsp",
+  "owner": null,
+  "preferred_backend": "codex",
+  "preferred_node": "atlas",
+  "max_cost_usd": 3.0,
+  "goal": "Expose a narrow optional kernel-bootstrap query for live sleep-control field bits so downstream consumers do not mask raw sleep-control bytes themselves.",
+  "file_globs": [
+    "platform/bsp/x86_64_qemu_pc/kernel_bootstrap.h",
+    "platform/bsp/x86_64_qemu_pc/kernel_bootstrap.cpp",
+    "platform/bsp/x86_64_qemu_pc/host_smoke_main.cpp",
+    "platform/bsp/x86_64_qemu_pc/bsp.manifest",
+    "tests/platform/x86_64_qemu_bsp_surface_test.cpp",
+    "docs/platform/*"
+  ],
+  "next_actions": [
+    "Add the public sleep-control field query API and internal FADT-backed helper.",
+    "Emit a deterministic host-smoke marker for the raw live field value.",
+    "Extend the BSP surface test, manifest marker, and platform docs."
+  ],
+  "acceptance": [
+    "The host smoke proves the field query value and readiness marker.",
+    "The BSP surface test requires the API, implementation marker, and manifest marker.",
+    "Platform docs describe the new narrow consumer surface."
+  ],
+  "blocked_by": [],
+  "verification": [
+    "cmake --build build-kernel-verify --target x86_64_qemu_bsp_surface_test -- -j8",
+    "ctest --test-dir build-kernel-verify -R x86_64_qemu_bsp_surface_test --output-on-failure",
+    "env ESHKOL_BSP_HOST_SMOKE_BUILD_DIR=build-kernel-verify ESHKOL_BSP_HOST_SMOKE_JOBS=8 scripts/run_x86_64_qemu_bsp_host_smoke.sh",
+    "git diff --check"
+  ]
+}

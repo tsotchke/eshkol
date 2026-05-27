@@ -1,0 +1,34 @@
+{
+  "id": "EKR-0006",
+  "title": "Bootloader handoff smoke stabilization",
+  "status": "pending",
+  "priority": "medium",
+  "workstream": "platform-boot",
+  "owner": null,
+  "preferred_backend": "codex",
+  "preferred_node": "atlas",
+  "max_cost_usd": 3.0,
+  "goal": "Stabilize the bootloader-to-kernel handoff smoke path so failures distinguish image build, loader, serial marker, and kernel bootstrap causes.",
+  "file_globs": [
+    "platform/bsp/x86_64_qemu_pc/bootloader/*",
+    "platform/bsp/x86_64_qemu_pc/boot_media.*",
+    "scripts/run_x86_64_qemu_bsp_bootloader_smoke.sh",
+    "scripts/qemu_smoke_wait_for_serial_marker.sh",
+    "docs/platform/TEST_AND_CI_PLAN.md"
+  ],
+  "next_actions": [
+    "Run the bootloader smoke and capture the first failing phase if any.",
+    "Improve diagnostics for one ambiguous failure mode.",
+    "Record the expected marker and reproduction command in docs or smoke output."
+  ],
+  "acceptance": [
+    "Bootloader smoke failures identify the failing phase.",
+    "Successful runs produce a stable serial marker.",
+    "The change is covered by a focused shell or CTest validation."
+  ],
+  "blocked_by": [],
+  "verification": [
+    "scripts/run_x86_64_qemu_bsp_bootloader_smoke.sh",
+    "git diff --check"
+  ]
+}

@@ -1,0 +1,34 @@
+{
+  "id": "EKR-0004",
+  "title": "Platform runtime timebase regression matrix",
+  "status": "pending",
+  "priority": "medium",
+  "workstream": "runtime-timebase",
+  "owner": null,
+  "preferred_backend": "codex",
+  "preferred_node": "atlas",
+  "max_cost_usd": 3.0,
+  "goal": "Turn the platform runtime timebase branch into a repeatable focused regression matrix for timer, sleep, and handoff state.",
+  "file_globs": [
+    "platform/bsp/x86_64_qemu_pc/runtime_bootstrap.cpp",
+    "platform/bsp/x86_64_qemu_pc/runtime_entry.cpp",
+    "platform/bsp/x86_64_qemu_pc/host_smoke_main.cpp",
+    "docs/platform/TEST_AND_CI_PLAN.md",
+    "docs/platform/SYNC_INTEGRATION_MAP.md"
+  ],
+  "next_actions": [
+    "List the focused timer, sleep, and runtime bootstrap probes currently covered.",
+    "Find one missing regression case that can be expressed without private infrastructure.",
+    "Add the regression and document the expected smoke marker."
+  ],
+  "acceptance": [
+    "The matrix has named checks tied to commands or CTest targets.",
+    "At least one missing high-value timebase regression is closed.",
+    "The branch stays green under the focused platform validation set."
+  ],
+  "blocked_by": [],
+  "verification": [
+    "ctest --test-dir build-kernel-verify -R 'x86_64_qemu|runtime' --output-on-failure",
+    "git diff --check"
+  ]
+}

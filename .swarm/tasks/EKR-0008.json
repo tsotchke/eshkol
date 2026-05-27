@@ -1,0 +1,34 @@
+{
+  "id": "EKR-0008",
+  "title": "Platform documentation sync pass",
+  "status": "pending",
+  "priority": "low",
+  "workstream": "platform-docs",
+  "owner": null,
+  "preferred_backend": "codex",
+  "preferred_node": "atlas",
+  "max_cost_usd": 2.0,
+  "goal": "Keep platform README, decisions, workstreams, and handoff docs synchronized with the implemented BSP/runtime surface.",
+  "file_globs": [
+    "docs/platform/README.md",
+    "docs/platform/DECISIONS.md",
+    "docs/platform/WORKSTREAMS.md",
+    "docs/platform/KERNEL_HANDOFF.md",
+    "platform/bsp/x86_64_qemu_pc/README.md"
+  ],
+  "next_actions": [
+    "Find one stale platform claim by comparing docs to implementation.",
+    "Patch the stale text or add a decision entry for an intentional direction change.",
+    "Run focused docs/status validation."
+  ],
+  "acceptance": [
+    "Docs describe the current implementation without overclaiming unimplemented surfaces.",
+    "Any new decision is dated and scoped.",
+    "Swarm status remains valid after the docs pass."
+  ],
+  "blocked_by": [],
+  "verification": [
+    "python3 scripts/eshkol_swarm_status.py --write-status",
+    "git diff --check"
+  ]
+}

@@ -1,0 +1,34 @@
+{
+  "id": "EKR-0002",
+  "title": "BSP host and QEMU smoke evidence refresh",
+  "status": "pending",
+  "priority": "high",
+  "workstream": "platform-validation",
+  "owner": null,
+  "preferred_backend": "codex",
+  "preferred_node": "atlas",
+  "max_cost_usd": 3.0,
+  "goal": "Refresh the focused x86_64 QEMU PC BSP host and boot smoke evidence for the current platform-runtime branch.",
+  "file_globs": [
+    "scripts/run_x86_64_qemu_bsp_host_smoke.sh",
+    "scripts/show_x86_64_qemu_bsp_host_smoke.sh",
+    "scripts/run_x86_64_qemu_bsp_qemu_smoke.sh",
+    "docs/platform/SYNC_INTEGRATION_MAP.md",
+    ".swarm/events.jsonl"
+  ],
+  "next_actions": [
+    "Run the focused host smoke against the current build directory.",
+    "Run or document the exact QEMU boot smoke status.",
+    "Record sanitized evidence and any blockers in the swarm event log."
+  ],
+  "acceptance": [
+    "Host smoke evidence references the current git head.",
+    "QEMU smoke evidence is refreshed or a blocker is recorded with the missing dependency.",
+    "No private host, path, or network details are added to public docs."
+  ],
+  "blocked_by": [],
+  "verification": [
+    "env ESHKOL_BSP_HOST_SMOKE_BUILD_DIR=build-kernel-verify ESHKOL_BSP_HOST_SMOKE_JOBS=8 scripts/run_x86_64_qemu_bsp_host_smoke.sh",
+    "scripts/run_x86_64_qemu_bsp_qemu_smoke.sh"
+  ]
+}

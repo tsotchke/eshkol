@@ -1,0 +1,35 @@
+{
+  "id": "EKR-0003",
+  "title": "Kernel handoff ABI audit",
+  "status": "pending",
+  "priority": "high",
+  "workstream": "platform-abi",
+  "owner": null,
+  "preferred_backend": "codex",
+  "preferred_node": "atlas",
+  "max_cost_usd": 3.0,
+  "goal": "Audit the kernel handoff and bootstrap ABI docs against the current x86_64 QEMU PC BSP implementation before the v1.8 platform line advances.",
+  "file_globs": [
+    "docs/platform/KERNEL_HANDOFF.md",
+    "docs/platform/BSP_CONTRACT.md",
+    "docs/platform/ARCHITECTURE.md",
+    "platform/bsp/x86_64_qemu_pc/kernel_bootstrap.h",
+    "platform/bsp/x86_64_qemu_pc/boot_info.h",
+    "platform/bsp/x86_64_qemu_pc/bsp.manifest"
+  ],
+  "next_actions": [
+    "Compare public headers and manifest exports with the handoff documentation.",
+    "Identify missing narrow consumer surfaces or stale claims.",
+    "Patch docs or implementation in the smallest coherent slice."
+  ],
+  "acceptance": [
+    "Documented ABI surfaces match exported headers and manifest markers.",
+    "Any intentional gaps are captured as follow-up swarm tasks.",
+    "Focused BSP surface validation remains green."
+  ],
+  "blocked_by": [],
+  "verification": [
+    "ctest --test-dir build-kernel-verify -R x86_64_qemu_bsp_surface_test --output-on-failure",
+    "git diff --check"
+  ]
+}

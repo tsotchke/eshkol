@@ -1,0 +1,34 @@
+{
+  "id": "EKR-0007",
+  "title": "Platform v1.8 completion oracle wiring",
+  "status": "pending",
+  "priority": "medium",
+  "workstream": "release-oracles",
+  "owner": null,
+  "preferred_backend": "codex",
+  "preferred_node": "atlas",
+  "max_cost_usd": 3.0,
+  "goal": "Define a sanitized platform v1.8 completion oracle that can be fed by local BSP, runtime, and documentation evidence.",
+  "file_globs": [
+    ".icc/production-audit.yaml",
+    "docs/platform/MILESTONES_AND_EXIT_CRITERIA.md",
+    "docs/platform/ROADMAP_ALIGNMENT.md",
+    "docs/platform/SYNC_INTEGRATION_MAP.md",
+    ".swarm/*"
+  ],
+  "next_actions": [
+    "Map the current platform exit criteria to concrete local probes.",
+    "Add or document one missing oracle event source.",
+    "Keep private machine topology out of oracle artifacts."
+  ],
+  "acceptance": [
+    "The v1.8 platform oracle has named criteria and evidence commands.",
+    "One missing evidence gap is closed or explicitly blocked.",
+    "Swarm status names any remaining release blockers."
+  ],
+  "blocked_by": [],
+  "verification": [
+    "python3 scripts/eshkol_swarm_status.py --write-status",
+    "git diff --check"
+  ]
+}
