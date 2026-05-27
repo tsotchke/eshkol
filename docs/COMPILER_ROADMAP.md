@@ -342,8 +342,8 @@ Phase 1 networking deliverables:
   verification controls, and explicit failure diagnostics.
 - HTTP server: keep the initial standard route helpers and custom route
   dispatcher for `/health`, `/ready`, `/metrics`, and Noesis-style tool
-  endpoints, then add richer request/response records, chunked/body-size
-  limits, and graceful close.
+  endpoints, plus the shared 10 MiB body-size preflight. Next add richer
+  request/response records, chunked-body handling, and graceful close.
 - HTTP client can remain libcurl-backed initially, but the public Eshkol API
   should not expose libcurl-specific handles.
 - WebSocket server: upgrade handshake, text/binary frames, close/ping/pong,

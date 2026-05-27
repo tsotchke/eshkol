@@ -21,6 +21,10 @@
 (define missing-request "GET /missing HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
 (define post-request
   "POST /tools/run?trace=abc HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nX-Trace:  abc  \r\n\r\n{\"ok\":true}")
+(define oversized-request
+  "POST /tools/run HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 10485761\r\n\r\n")
+(define invalid-length-request
+  "POST /tools/run HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: nope\r\n\r\n")
 (define bad-request "not-a-request")
 
 (display "=== HTTP server routing helpers ===") (newline)
@@ -43,8 +47,15 @@
        (string=? (http-request-header post-request "x-trace") "abc"))
 (check "returns #f for missing headers"
        (eq? (http-request-header post-request "missing") #f))
+(check "parses content length"
+       (= (http-request-content-length
+            "POST /x HTTP/1.1\r\nContent-Length: 12\r\n\r\nhello") 12))
+(check "invalid content length returns #f"
+       (eq? (http-request-content-length invalid-length-request) #f))
 (check "extracts request body"
        (string=? (http-request-body post-request) "{\"ok\":true}"))
+(check "detects oversized declared body"
+       (http-request-body-too-large? oversized-request))
 
 (define tool-routes
   (list
@@ -70,6 +81,14 @@
 (let ((response (http-route-request "GET /boom HTTP/1.1\r\n\r\n" tool-routes)))
   (check "handler exception becomes 500 response"
          (= (http-response-status response) 500)))
+
+(let ((response (http-route-request oversized-request tool-routes)))
+  (check "router rejects oversized request before handler"
+         (= (http-response-status response) 413)))
+
+(let ((response (http-route-request invalid-length-request tool-routes)))
+  (check "router rejects invalid content length before handler"
+         (= (http-response-status response) 400)))
 
 (let ((response (http-route-request health-request tool-routes)))
   (check "router falls back to standard routes"
@@ -122,6 +141,12 @@
          (= (car response) 400))
   (check "invalid request body is Bad Request"
          (string=? (caddr response) "Bad Request\n")))
+
+(let ((response (http-standard-response oversized-request)))
+  (check "standard routes reject oversized bodies"
+         (= (http-response-status response) 413))
+  (check "standard oversized response body is Payload Too Large"
+         (string=? (http-response-body response) "Payload Too Large\n")))
 
 (display "Passed: ") (display passed) (newline)
 (display "Failed: ") (display failed) (newline)
