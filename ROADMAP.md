@@ -304,22 +304,29 @@ v2.0 ─────────────────────────
 
 **Focus:** Make the language a joy to use day-to-day.
 
-- [ ] Full R7RS library system (`define-library` / `import` with renaming and prefixing)
+- [~] Full R7RS library system: `define-library` exports work end-to-end;
+      `(rename (m) (a b))` import works.  `(prefix (m) p-)` currently
+      requires an explicit `only` or `rename` clause — bare prefix
+      over the module's whole export list is the remaining gap.
 - [x] String interpolation (`~{expr}` within strings)
 - [x] Named keyword arguments (`(f #:key value)`)
 - [x] Pattern matching in `let` bindings (destructuring `let-match`)
-- [ ] Profile-guided optimization (runtime profiling feeds codegen)
+- [~] Profile-guided optimization — build-time scaffold landed:
+      `cmake -DESHKOL_PGO=generate` instruments, `-DESHKOL_PGO=use
+      -DESHKOL_PGO_PROFILE=<merged.profdata>` consumes.  Workload
+      selection + canonical merge step (the "what do we train on?"
+      side) is the remaining gap; the codegen-side machinery is ready.
 - [ ] Whole-program optimization (cross-module inlining and dead code elimination)
 - [ ] **Native media handling, no vendoring**: replace `deps/stb/`
       image I/O with native platform APIs (CoreGraphics on macOS,
       system libpng/libjpeg/libwebp on Linux, GDI+ on Windows).
       Going forward the project does not vendor third-party media
       decoders.
-- [ ] AD `input2` plumbing for conv2d / batchnorm / layernorm / matmul
-      / attention backward passes (forward-pass tape-node creation
-      currently leaves `input2` null; the backward kernels in
-      `lib/backend/tensor_backward.cpp` already gate on
-      `if (node->input2) ...`).
+- [x] AD `input2` plumbing for `tensor-matmul` — verified by
+      `gradient` smoke probe: gradient flows to the kernel side
+      (input2). Conv2d / batchnorm / layernorm / attention forward
+      sites still leave `input2` null in their tape nodes and are
+      tracked separately.
 
 ---
 

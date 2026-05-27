@@ -222,9 +222,10 @@ oracles:
   # ─────────────────────────────────────────────────────────────────
   # v1.3-evolve readiness — tracks the v1.3 roadmap items in
   # ROADMAP.md.  Mirrors the v1.2 oracle's shape: each line item that
-  # has a real source-tree implementation gets a runtime_event probe
-  # via scripts/run_icc_smoke.sh; items that are still planned stay
-  # absent from the probe set and so report FAIL until they ship.
+  # has a source-tree contract gets a runtime_event probe via
+  # scripts/run_icc_smoke.sh.  Shipped items must emit PASS; planned
+  # items may remain as explicit FAIL probes until their implementation
+  # lands.
   #
   # The three "[x]" items already in v1.3-evolve (string interpolation,
   # named keyword arguments, let-match) get smoke probes that pin
