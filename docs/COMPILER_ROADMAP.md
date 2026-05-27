@@ -570,10 +570,10 @@ embedded-agent variant.
 | — | Distributed training primitives (all-reduce, DDP) | 1 week |
 
 Initial stdlib substrate landed early: `core.distributed` provides Lamport
-clocks, vector clocks, state-based G-Counter / PN-Counter CRDTs, OR-Set, and
-LWW register/map CRDTs. The remaining v1.8 work is richer sequence CRDT
-coverage (RGA), wire-format integration, and networked replication over the
-v1.4 socket / MessagePack substrate.
+clocks, vector clocks, state-based G-Counter / PN-Counter CRDTs, OR-Set, LWW
+register/map CRDTs, and an RGA-style ordered sequence. The remaining v1.8 work
+is wire-format integration and networked replication over the v1.4 socket /
+MessagePack substrate.
 
 ---
 

@@ -159,6 +159,33 @@
        (eq? (lww-map-ref (lww-map-merge lm-combined lm-combined) 'owner)
             'alice))
 
+(define rga-one (rga-append (make-rga) 'a 'alpha))
+(define rga-alpha-id (rga-last-id rga-one))
+(define rga-two (rga-append rga-one 'a 'beta))
+(define rga-beta-id (rga-last-id rga-two))
+(define rga-deleted (rga-delete rga-two rga-alpha-id))
+(define rga-delete-merged (rga-merge rga-two rga-deleted))
+(define rga-after-delete (rga-append rga-deleted 'a 'gamma))
+(define rga-left (rga-insert-after (make-rga) 'a (rga-root-id) 'left))
+(define rga-right (rga-insert-after (make-rga) 'b (rga-root-id) 'right))
+(define rga-concurrent (rga-merge rga-right rga-left))
+
+(check "rga append preserves sequence order"
+       (equal? (rga-values rga-two) (list 'alpha 'beta)))
+(check "rga last id follows visible tail"
+       (equal? rga-beta-id (rga-last-id rga-two)))
+(check "rga delete hides tombstoned entry"
+       (equal? (rga-values rga-deleted) (list 'beta)))
+(check "rga delete wins after merge"
+       (equal? (rga-values rga-delete-merged) (list 'beta)))
+(check "rga append after delete uses visible tail"
+       (equal? (rga-values rga-after-delete) (list 'beta 'gamma)))
+(check "rga concurrent inserts converge deterministically"
+       (equal? (rga-values rga-concurrent) (list 'left 'right)))
+(check "rga merge is idempotent"
+       (equal? (rga-values (rga-merge rga-concurrent rga-concurrent))
+               (list 'left 'right)))
+
 (display "---") (newline)
 (display "Total: ") (display (+ pass fail))
 (display ", PASS: ") (display pass)

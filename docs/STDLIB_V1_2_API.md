@@ -1799,7 +1799,7 @@ exact set of auto-loaded modules is the `(require …)` chain in
 | `core.files` | `lib/core/files.esk` | Yes | Path-component helpers + atomic-write |
 | `core.testing` | `lib/core/testing.esk` | **No** — `(require core.testing)` | `check-*` assertions + `run-tests` |
 | `core.manifold` | `lib/core/manifold.esk` | **No** — `(require core.manifold)` | Manifold operations (placeholders pending native VM ops) |
-| `core.distributed` | `lib/core/distributed.esk` | **No** — `(require core.distributed)` | Lamport/vector clocks, counters, OR-Set, LWW register/map |
+| `core.distributed` | `lib/core/distributed.esk` | **No** — `(require core.distributed)` | Lamport/vector clocks, counters, OR-Set, LWW register/map, RGA sequence |
 
 ### B.1 `core.merkle`
 
@@ -2110,7 +2110,10 @@ Exports (`distributed.esk`):
   lww-register-writer lww-register-deleted? lww-register-present?
   lww-register-set lww-register-delete lww-register-merge
   make-lww-map lww-map-entries lww-map-set lww-map-remove lww-map-ref
-  lww-map-contains? lww-map-visible-entries lww-map-merge)
+  lww-map-contains? lww-map-visible-entries lww-map-merge
+  make-rga rga-root-id rga-entries rga-clock rga-entry-id
+  rga-entry-prev rga-entry-value rga-entry-deleted? rga-insert-after
+  rga-append rga-delete rga-values rga-last-id rga-merge)
 ```
 
 Pure value-level distributed-systems substrate for the v1.8/M4 track. Lamport
@@ -2120,4 +2123,6 @@ clocks provide scalar event ordering. Vector clocks are alists of
 operation is pairwise-max, so merges are commutative, associative, and
 idempotent. OR-Set tracks observed add dots so removes do not erase unseen
 concurrent adds. LWW registers and maps use monotonic timestamps plus
-canonical writer/value tie-breaks so equal-timestamp merges converge.
+canonical writer/value tie-breaks so equal-timestamp merges converge. The RGA
+sequence stores insert-after links and tombstones, preserving deterministic
+visible order across concurrent inserts and delete merges.
