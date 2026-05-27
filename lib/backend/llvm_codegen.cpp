@@ -22770,14 +22770,15 @@ private:
             builder->CreateStore(new_values[i], tco_ctx.param_allocas[i]);
         }
 
-        // Create dummy value BEFORE the branch (can't add instructions after terminator)
-        Value* dummy = packNullToTaggedValue();
+        // Create unreachable sentinel BEFORE the branch (can't add instructions
+        // after terminator). Caller never observes this value — the block ends
+        // with the unconditional jump back to the loop header.
+        Value* unreachable_sentinel = packNullToTaggedValue();
 
         // Jump back to loop header
         builder->CreateBr(tco_ctx.loop_header);
 
-        // Return the dummy value (this block is now terminated, caller won't use the value)
-        return dummy;
+        return unreachable_sentinel;
     }
     // ===== END TAIL CALL OPTIMIZATION SUPPORT =====
 

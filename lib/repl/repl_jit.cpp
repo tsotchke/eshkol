@@ -2256,8 +2256,8 @@ static std::vector<eshkol_ast_t> parseAllAstsFromString(const std::string& conte
                 stream.get();
             } else if (c == ';') {
                 // Skip comment line
-                std::string dummy;
-                std::getline(stream, dummy);
+                std::string discarded_line;
+                std::getline(stream, discarded_line);
             } else {
                 break;
             }
