@@ -25,6 +25,7 @@
         "lib/backend/tensor_activation_codegen.cpp",
         "lib/backend/parallel_llvm_codegen.cpp",
         "lib/backend/tensor_transformer_codegen.cpp",
+        "lib/backend/tensor_reduce_codegen.cpp",
         "scripts/icc_traces/sdnc_vm-traces.jsonl",
         "lib/backend/arithmetic_codegen.cpp",
         "lib/backend/collection_codegen.cpp",
