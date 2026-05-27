@@ -2053,14 +2053,27 @@ Exports (`http_server.esk`):
          http-request-version
          http-request-header
          http-request-body
+         http-response
+         http-response?
+         http-response-status
+         http-response-content-type
+         http-response-body
+         http-route
+         http-route-request
          http-standard-response
+         http-server-respond-response
          http-server-respond-standard)
 ```
 
 Small routing helpers for the hosted HTTP server builtins. The parser extracts
 the request line, method, request target, query-stripped path, query string,
 HTTP version, headers, and body from raw HTTP request text returned by
-`http-server-accept`. `http-standard-response` returns `(status content-type
-body)` for `/health`, `/ready`, and `/metrics`; unknown routes return 404 and
-malformed request lines return 400.
-`http-server-respond-standard` sends that response through `http-server-respond`.
+`http-server-accept`. Responses are `(status content-type body)` tuples with
+accessors. `http-route` creates `(method path handler)` route tuples;
+`http-route-request` dispatches exact method/path matches to handlers and
+converts handler exceptions or malformed handler returns to 500 responses.
+If no custom route matches, it falls back to `http-standard-response`, which
+serves `/health`, `/ready`, and `/metrics`; unknown routes return 404 and
+malformed request lines return 400. `http-server-respond-response` and
+`http-server-respond-standard` send those responses through
+`http-server-respond`.

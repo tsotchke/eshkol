@@ -152,7 +152,7 @@ cat > "$WORK/http_server.esk" <<'EOF'
 
 ;; ── Server replies, client joins, both shut down ───────────────────
 (if (and (number? client-pid) (> client-pid 0) request)
-    (http-server-respond-standard srv request)
+    (http-server-respond-response srv (http-route-request request '()))
     #f)
 
 (if (and (number? client-pid) (> client-pid 0) (not request))
