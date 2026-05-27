@@ -328,7 +328,7 @@ misbehaving work without taking down the process.
 |---|---|---|---|
 | #145 | HTTP server (build on `inc/eshkol/http_request_utils.h`) | 1 week | M1 |
 | #146 | WebSocket server | 3 days | M1 |
-| #148 | Prometheus metrics primitive + `/metrics` endpoint | core primitive tested; `/metrics` endpoint waits on #145 | M1 |
+| #148 | Prometheus metrics primitive + `/metrics` endpoint | core primitive plus standard `/metrics` response helper tested | M1 |
 | #150 | Resource limits (CPU / memory / wall-time) | 2 days | M1 |
 | #161 | TCP / UDP sockets | 1 week | M4 |
 | — | TLS server (OpenSSL / mbedTLS wrap) | 3 days | M4 |
@@ -340,7 +340,8 @@ Phase 1 networking deliverables:
 - UDP sockets: bind, sendto, recvfrom, multicast-safe option surface later.
 - TLS wrapper: server and client contexts, certificate/key loading, peer
   verification controls, and explicit failure diagnostics.
-- HTTP server: routing, request/response records, header/body access,
+- HTTP server: keep the initial standard route helpers for `/health`, `/ready`,
+  and `/metrics`, then add request/response records, header/body access,
   chunked/body-size limits, graceful close, and handler exceptions that become
   5xx responses rather than process aborts.
 - HTTP client can remain libcurl-backed initially, but the public Eshkol API
@@ -392,10 +393,10 @@ Acceptance:
 | #175 | Content-addressable storage + Merkle trees | 1-2 days | M2 |
 
 Phase 3 observability and limits:
-- Promote the existing metrics primitive into a real `/metrics` endpoint.
+- Keep the existing metrics primitive available through the standard `/metrics`
+  response helper, then promote it into the full HTTP server endpoint loop.
 - Keep counters/gauges with stable names, label validation, Prometheus escaping,
-  and reset semantics covered in `core.metrics`; expose them through `/metrics`
-  once #145 lands.
+  and reset semantics covered in `core.metrics`.
 - Route structured logs through the WebSocket log stream with trace-id filters.
 - Enforce resource limits per request: CPU/wall-time, memory, tensor elements,
   string/body sizes, subprocess count, and file/network capability policy.

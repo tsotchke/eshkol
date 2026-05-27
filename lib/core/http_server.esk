@@ -1,0 +1,84 @@
+;;; core/http_server.esk
+;;;
+;;; Small HTTP routing helpers for the hosted loopback server builtins.
+;;; The low-level server primitives remain the generated builtins:
+;;;   http-server-create, http-server-accept, http-server-respond, ...
+
+(require core.strings)
+(require core.metrics)
+
+(provide http-request-line
+         http-request-method
+         http-request-target
+         http-request-path
+         http-standard-response
+         http-server-respond-standard)
+
+(define (http-first-line request)
+  (if (string? request)
+      (let ((crlf (string-index request "\r\n")))
+        (if (>= crlf 0)
+            (substring request 0 crlf)
+            (let ((lf (string-index request "\n")))
+              (if (>= lf 0)
+                  (substring request 0 lf)
+                  request))))
+      ""))
+
+(define (http-request-line request)
+  (http-first-line request))
+
+(define (http-request-method request)
+  (let* ((line (http-first-line request))
+         (sp (string-index line " ")))
+    (if (< sp 0)
+        ""
+        (substring line 0 sp))))
+
+(define (http-request-target request)
+  (let* ((line (http-first-line request))
+         (first (string-index line " ")))
+    (if (< first 0)
+        ""
+        (let* ((start (+ first 1))
+               (rest (substring line start (string-length line)))
+               (second-rel (string-index rest " ")))
+          (if (< second-rel 0)
+              rest
+              (substring line start (+ start second-rel)))))))
+
+(define (http-request-path request)
+  (let* ((target (http-request-target request))
+         (query (string-index target "?")))
+    (if (< query 0)
+        target
+        (substring target 0 query))))
+
+(define (http-response status content-type body)
+  (list status content-type body))
+
+(define (http-standard-response request . ready)
+  "Return (status content-type body) for built-in health/ready/metrics routes."
+  (let ((ready? (if (null? ready) #t (car ready)))
+        (method (http-request-method request))
+        (path (http-request-path request)))
+    (cond
+      ((or (string=? method "") (string=? path ""))
+       (http-response 400 "text/plain" "Bad Request\n"))
+      ((string=? path "/health")
+       (http-response 200 "text/plain" "OK\n"))
+      ((string=? path "/ready")
+       (if ready?
+           (http-response 200 "text/plain" "READY\n")
+           (http-response 500 "text/plain" "NOT READY\n")))
+      ((string=? path "/metrics")
+       (http-response 200 "text/plain; version=0.0.4" (metrics-render)))
+      (else
+       (http-response 404 "text/plain" "Not Found\n")))))
+
+(define (http-server-respond-standard handle request . ready)
+  "Respond through http-server-respond using http-standard-response."
+  (let* ((ready? (if (null? ready) #t (car ready)))
+         (response (http-standard-response request ready?)))
+    (http-server-respond handle (car response) (cadr response) (caddr response))
+    #t))

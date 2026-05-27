@@ -1,0 +1,86 @@
+;; Standard HTTP routing helpers for #145/#148.
+
+(require stdlib)
+(require core.http_server)
+
+(define passed 0)
+(define failed 0)
+
+(define (check name ok)
+  (if ok
+      (begin
+        (set! passed (+ passed 1))
+        (display "PASS: ") (display name) (newline))
+      (begin
+        (set! failed (+ failed 1))
+        (display "FAIL: ") (display name) (newline))))
+
+(define health-request "GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+(define ready-request "GET /ready HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+(define metrics-request "GET /metrics?format=prom HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+(define missing-request "GET /missing HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+(define bad-request "not-a-request")
+
+(display "=== HTTP server routing helpers ===") (newline)
+
+(check "extracts request line"
+       (string=? (http-request-line health-request) "GET /health HTTP/1.1"))
+(check "extracts method"
+       (string=? (http-request-method health-request) "GET"))
+(check "extracts target"
+       (string=? (http-request-target metrics-request) "/metrics?format=prom"))
+(check "strips query string for path"
+       (string=? (http-request-path metrics-request) "/metrics"))
+
+(let ((response (http-standard-response health-request)))
+  (check "health route returns 200"
+         (= (car response) 200))
+  (check "health route returns text/plain"
+         (string=? (cadr response) "text/plain"))
+  (check "health route body is OK"
+         (string=? (caddr response) "OK\n")))
+
+(let ((response (http-standard-response ready-request #t)))
+  (check "ready true returns 200"
+         (= (car response) 200))
+  (check "ready true body is READY"
+         (string=? (caddr response) "READY\n")))
+
+(let ((response (http-standard-response ready-request #f)))
+  (check "ready false returns 500"
+         (= (car response) 500))
+  (check "ready false body is NOT READY"
+         (string=? (caddr response) "NOT READY\n")))
+
+(define requests-total
+  (make-counter "eshkol_http_routing_test_total"
+                "HTTP routing helper requests"
+                '("path")))
+(counter-inc! requests-total '("/metrics"))
+
+(let ((response (http-standard-response metrics-request)))
+  (check "metrics route returns 200"
+         (= (car response) 200))
+  (check "metrics route content type is prometheus text"
+         (string=? (cadr response) "text/plain; version=0.0.4"))
+  (check "metrics route includes HELP line"
+         (string-contains? (caddr response) "# HELP eshkol_http_routing_test_total"))
+  (check "metrics route includes label value"
+         (string-contains? (caddr response) "path=\"/metrics\"")))
+
+(let ((response (http-standard-response missing-request)))
+  (check "unknown route returns 404"
+         (= (car response) 404))
+  (check "unknown route body is Not Found"
+         (string=? (caddr response) "Not Found\n")))
+
+(let ((response (http-standard-response bad-request)))
+  (check "invalid request returns 400"
+         (= (car response) 400))
+  (check "invalid request body is Bad Request"
+         (string=? (caddr response) "Bad Request\n")))
+
+(display "Passed: ") (display passed) (newline)
+(display "Failed: ") (display failed) (newline)
+
+(if (> failed 0) (exit 1) (exit 0))

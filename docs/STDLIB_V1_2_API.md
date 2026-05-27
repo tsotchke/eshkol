@@ -1776,7 +1776,7 @@ name:
 
 ## Appendix B: Infrastructure stdlib modules
 
-The v1.2 stdlib also ships twelve infrastructure-oriented modules that
+The v1.2 stdlib also ships thirteen infrastructure-oriented modules that
 the main sections above only listed by name. The signatures below come
 directly from each module's `(provide …)` block (cited in the table).
 The "Auto-loaded" column says whether `(require stdlib)` pulls the
@@ -1788,6 +1788,7 @@ exact set of auto-loaded modules is the `(require …)` chain in
 |---|---|---|---|
 | `core.merkle` | `lib/core/merkle.esk` | **No** — `(require core.merkle)` | Content hashing + Merkle proofs + CAS |
 | `core.metrics` | `lib/core/metrics.esk` | **No** — `(require core.metrics)` | Prometheus-style counters / gauges |
+| `core.http_server` | `lib/core/http_server.esk` | **No** — `(require core.http_server)` | Standard HTTP request parsing + health/ready/metrics responses |
 | `core.logging` | `lib/core/logging.esk` | **No** — `(require core.logging)` | JSONL structured logging |
 | `core.capabilities` | `lib/core/capabilities.esk` | Yes | Hosted allow-list capability policy |
 | `core.collections` | `lib/core/collections.esk` | **No** — `(require core.collections)` | Priority queue, hash set, deque |
@@ -2034,3 +2035,27 @@ environment reads/writes, and generated file-port opens. The hosted runtime
 also mirrors the active allow-list so core file I/O builtins require
 `file-read` for metadata/read paths and `file-write` for write/delete/rename
 paths.
+
+### B.13 `core.http_server`
+
+```scheme
+(require core.http_server)
+```
+
+Exports (`http_server.esk`):
+
+```scheme
+(provide http-request-line
+         http-request-method
+         http-request-target
+         http-request-path
+         http-standard-response
+         http-server-respond-standard)
+```
+
+Small routing helpers for the hosted HTTP server builtins. The parser extracts
+the request line, method, request target, and query-stripped path from raw HTTP
+request text returned by `http-server-accept`. `http-standard-response` returns
+`(status content-type body)` for `/health`, `/ready`, and `/metrics`; unknown
+routes return 404 and malformed request lines return 400.
+`http-server-respond-standard` sends that response through `http-server-respond`.
