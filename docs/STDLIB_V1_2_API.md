@@ -1858,7 +1858,7 @@ Exports (`logging.esk`):
          log-level log-output-port)
 ```
 
-JSON-Lines structured logging. Each call emits a single line with `level`, `ts` (ISO-8601), and any additional key/value pairs the caller passes. `log-set-output!` accepts an output port, a path string, or `#f` to return to `current-output-port`; path-string sinks are closed when the sink is changed again. `log-set-level!` thresholds at `'debug` / `'info` / `'warn` / `'error`. `log-with-trace!` enables a `trace_id` field that propagates through nested calls and is restored after normal returns or raised errors — useful for request-scoped logging.
+JSON-Lines structured logging. Each call emits a single line with `level`, `ts` (ISO-8601), and any additional key/value pairs the caller passes. User fields may not reuse the reserved logger keys `ts`, `level`, `msg`, or `trace_id`. `log-set-output!` accepts an output port, a path string, or `#f` to return to `current-output-port`; path-string sinks are closed when the sink is changed again. `log-set-level!` thresholds at `'debug` / `'info` / `'warn` / `'error`. `log-with-trace!` enables a `trace_id` field that propagates through nested calls and is restored after normal returns or raised errors — useful for request-scoped logging.
 
 ### B.4 `core.collections`
 

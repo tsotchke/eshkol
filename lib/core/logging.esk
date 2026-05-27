@@ -148,6 +148,12 @@
   (display "\":" port)
   (display (log-json-value value) port))
 
+(define (log-reserved-field-key? key)
+  (or (string=? key "ts")
+      (string=? key "level")
+      (string=? key "msg")
+      (string=? key "trace_id")))
+
 ;; Each `field` is either:
 ;;   a cons cell   (key . value)   — construct with (cons "k" v)
 ;;   a 2-list      ("k" v)          — construct with (list "k" v)
@@ -155,10 +161,14 @@
 ;; proper list `("k" "." "v")` rather than a dotted pair, so quoted-
 ;; alist syntax doesn't work; (list "k" v) is the portable form.
 (define (log-field-key pair)
-  (cond ((not (pair? pair)) (error "log: field is not a pair/list" pair))
-        ((string? (car pair)) (car pair))
-        ((symbol? (car pair)) (symbol->string (car pair)))
-        (else (error "log: field is not a pair/list" pair))))
+  (let ((key
+          (cond ((not (pair? pair)) (error "log: field is not a pair/list" pair))
+                ((string? (car pair)) (car pair))
+                ((symbol? (car pair)) (symbol->string (car pair)))
+                (else (error "log: field is not a pair/list" pair)))))
+    (if (log-reserved-field-key? key)
+        (error "log: field key is reserved" key)
+        key)))
 
 (define (log-field-value pair)
   (cond
