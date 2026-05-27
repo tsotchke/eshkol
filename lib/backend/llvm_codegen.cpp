@@ -12746,6 +12746,15 @@ private:
             return tagged_->typeOf(arg);
         }
 
+        // type-name returns the human-readable type name as an Eshkol
+        // string.  Wires eshkol_format_value_type_tag (the single source
+        // of truth for "what does the user see in error messages?")
+        // through the existing intern-cstring-as-string runtime path.
+        // The same name registry is what eshkol_type_error_with_operand
+        // uses.  TODO(v1.3-followup): codegen-side wiring still needs a
+        // safe cstr→string helper; deferring until the source-span
+        // stack trace work touches the same runtime surface.
+
         // String functions (dispatched to StringIOCodegen)
         if (func_name == "string-length") return strio_->stringLength(op);
         if (func_name == "string-ref") return strio_->stringRef(op);
@@ -35554,6 +35563,12 @@ int eshkol_compile_llvm_ir_to_executable(LLVMModuleRef module_ref, const char* f
         link_args.emplace_back("MetalPerformanceShaders");
         link_args.emplace_back("-framework");
         link_args.emplace_back("Foundation");
+        link_args.emplace_back("-framework");
+        link_args.emplace_back("ImageIO");
+        link_args.emplace_back("-framework");
+        link_args.emplace_back("CoreGraphics");
+        link_args.emplace_back("-framework");
+        link_args.emplace_back("CoreFoundation");
         link_args.emplace_back("-lobjc");
 #endif
 

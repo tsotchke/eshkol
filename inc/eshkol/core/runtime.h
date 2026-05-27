@@ -22,6 +22,18 @@
 extern "C" {
 #endif
 
+/* Forward declaration for tagged-value helpers that need it.
+ * Full definition lives in inc/eshkol/eshkol.h. */
+typedef struct eshkol_tagged_value eshkol_tagged_value_t;
+
+#ifdef __cplusplus
+}
+#endif
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 // ============================================================================
 // Runtime State
 // ============================================================================
@@ -147,6 +159,36 @@ uint32_t eshkol_runtime_get_operation_count(void);
 // - proc_name: Name of the procedure that encountered the error
 // - expected_type: The type that was expected (e.g., "number", "pair")
 void eshkol_type_error(const char* proc_name, const char* expected_type);
+
+/*
+ * Map a tagged value's runtime type to a human-readable type name.
+ * Single source of truth for "what does the user see?" type-name
+ * reporting in error messages.  Returns a static string; never NULL.
+ *
+ * Type names use the canonical Eshkol/Scheme spellings:
+ *   "integer", "rational", "bignum", "double", "complex", "dual-number",
+ *   "symbol", "string", "character", "boolean",
+ *   "pair", "vector", "tensor", "procedure", "continuation", "ad-node",
+ *   "environment", "hash-table", "port", "promise", "prng", "null",
+ *   "logic-var", "substitution", "fact", "knowledge-base",
+ *   "factor-graph", "workspace", "bytevector", "record", "exception",
+ *   "heap-object", "unknown-type".
+ *
+ * Implemented in lib/core/runtime_errors_hosted.cpp.
+ */
+const char* eshkol_format_value_type_tag(eshkol_tagged_value_t v);
+
+/*
+ * Raise a type error reporting the operand's actual runtime type
+ * alongside the expected one.  Produces:
+ *   "Type error in <proc>: expected <expected>, got <actual>"
+ * Generated codegen sites that have the operand in scope should call
+ * this instead of eshkol_type_error so users see the concrete operand
+ * type ("got string") rather than guessing which operand was wrong.
+ */
+void eshkol_type_error_with_operand(const char* proc_name,
+                                    const char* expected_type,
+                                    eshkol_tagged_value_t actual);
 
 // Report a type error with actual type and abort
 // - proc_name: Name of the procedure that encountered the error
