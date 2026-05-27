@@ -244,8 +244,9 @@ Phase 2 productionizes this surface:
   wrappers, env access, generated file ports, and core file I/O. Future HTTP
   handlers should use the same deny-by-default active policy while preserving
   no-policy compatibility.
-- Keep hosted `resource_limits` coverage for env initialization, heap/stack
-  accounting, tensor/string validators, and wall-time watchdog interrupts.
+- Keep hosted `resource_limits` coverage for env initialization, malformed-env
+  fallback, heap/stack accounting, tensor/string validators, and wall-time
+  watchdog interrupts.
 - Extend reflection docs and tests for user procedures, records, builtins,
   variadics, and imported functions.
 - Keep #154 AD-op finite-difference checks in the stdlib/autodiff gates.

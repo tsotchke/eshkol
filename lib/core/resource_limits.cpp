@@ -16,8 +16,12 @@
 #include <atomic>
 #include <mutex>
 #include <chrono>
+#include <cerrno>
+#include <cctype>
 #include <cstdlib>
 #include <cstring>
+#include <cmath>
+#include <limits>
 #include <thread>
 
 namespace {
@@ -65,40 +69,104 @@ std::atomic<eshkol_limit_error_t> g_last_error{ESHKOL_LIMIT_OK};
 // Helper Functions
 // ============================================================================
 
-// Parse size with K/M/G suffix
-size_t parse_size(const char* str) {
-    if (!str || !*str) return 0;
-
-    char* end = nullptr;
-    double value = strtod(str, &end);
-    if (end == str) return 0;
-
-    // Check for suffix
-    if (end && *end) {
-        switch (*end) {
-            case 'K': case 'k':
-                value *= 1024;
-                break;
-            case 'M': case 'm':
-                value *= 1024 * 1024;
-                break;
-            case 'G': case 'g':
-                value *= 1024 * 1024 * 1024;
-                break;
-        }
+const char* skip_space(const char* cursor) {
+    while (cursor && *cursor &&
+           std::isspace(static_cast<unsigned char>(*cursor))) {
+        ++cursor;
     }
-
-    return static_cast<size_t>(value);
+    return cursor;
 }
 
-// Parse boolean
-bool parse_bool(const char* str) {
-    if (!str) return false;
-    return (strcmp(str, "true") == 0 ||
-            strcmp(str, "TRUE") == 0 ||
-            strcmp(str, "1") == 0 ||
-            strcmp(str, "yes") == 0 ||
-            strcmp(str, "YES") == 0);
+// Parse size with optional K/M/G suffix. Invalid values keep the caller's
+// fallback so malformed hosted env vars cannot silently disable limits.
+size_t parse_size_or_default(const char* str, size_t fallback) {
+    if (!str) return fallback;
+
+    const char* start = skip_space(str);
+    if (!*start) return fallback;
+
+    errno = 0;
+    char* end = nullptr;
+    double value = strtod(start, &end);
+    if (end == start || errno == ERANGE || !std::isfinite(value) || value < 0.0) {
+        return fallback;
+    }
+
+    end = const_cast<char*>(skip_space(end));
+
+    double multiplier = 1.0;
+    if (*end) {
+        switch (*end) {
+            case 'K': case 'k':
+                multiplier = 1024.0;
+                break;
+            case 'M': case 'm':
+                multiplier = 1024.0 * 1024.0;
+                break;
+            case 'G': case 'g':
+                multiplier = 1024.0 * 1024.0 * 1024.0;
+                break;
+            default:
+                return fallback;
+        }
+        ++end;
+        if (*end == 'B' || *end == 'b') {
+            ++end;
+        }
+        end = const_cast<char*>(skip_space(end));
+    }
+
+    if (*end) {
+        return fallback;
+    }
+
+    const double bytes = value * multiplier;
+    if (!std::isfinite(bytes) ||
+        bytes > static_cast<double>(std::numeric_limits<size_t>::max())) {
+        return fallback;
+    }
+
+    return static_cast<size_t>(bytes);
+}
+
+uint64_t parse_u64_or_default(const char* str, uint64_t fallback) {
+    if (!str) return fallback;
+
+    const char* start = skip_space(str);
+    if (!*start || *start == '-') return fallback;
+
+    errno = 0;
+    char* end = nullptr;
+    unsigned long long value = strtoull(start, &end, 10);
+    if (end == start || errno == ERANGE) {
+        return fallback;
+    }
+
+    end = const_cast<char*>(skip_space(end));
+    if (*end) {
+        return fallback;
+    }
+
+    return static_cast<uint64_t>(value);
+}
+
+bool parse_bool_or_default(const char* str, bool fallback) {
+    if (!str) return fallback;
+    if (strcmp(str, "true") == 0 ||
+        strcmp(str, "TRUE") == 0 ||
+        strcmp(str, "1") == 0 ||
+        strcmp(str, "yes") == 0 ||
+        strcmp(str, "YES") == 0) {
+        return true;
+    }
+    if (strcmp(str, "false") == 0 ||
+        strcmp(str, "FALSE") == 0 ||
+        strcmp(str, "0") == 0 ||
+        strcmp(str, "no") == 0 ||
+        strcmp(str, "NO") == 0) {
+        return false;
+    }
+    return fallback;
 }
 
 // Update peak usage
@@ -134,7 +202,7 @@ eshkol_resource_limits_t eshkol_init_limits_from_env(void) {
     // ESHKOL_MAX_HEAP
     const char* max_heap = std::getenv("ESHKOL_MAX_HEAP");
     if (max_heap) {
-        limits.max_heap_bytes = parse_size(max_heap);
+        limits.max_heap_bytes = parse_size_or_default(max_heap, limits.max_heap_bytes);
         limits.heap_soft_limit_bytes = (limits.max_heap_bytes * ESHKOL_HEAP_SOFT_LIMIT_PERCENT) / 100;
         eshkol_debug("Max heap from env: %zu bytes", limits.max_heap_bytes);
     }
@@ -142,42 +210,42 @@ eshkol_resource_limits_t eshkol_init_limits_from_env(void) {
     // ESHKOL_TIMEOUT_MS
     const char* timeout = std::getenv("ESHKOL_TIMEOUT_MS");
     if (timeout) {
-        limits.max_execution_time_ms = static_cast<uint64_t>(atoll(timeout));
+        limits.max_execution_time_ms = parse_u64_or_default(timeout, limits.max_execution_time_ms);
         eshkol_debug("Timeout from env: %llu ms", (unsigned long long)limits.max_execution_time_ms);
     }
 
     // ESHKOL_MAX_STACK
     const char* max_stack = std::getenv("ESHKOL_MAX_STACK");
     if (max_stack) {
-        limits.max_stack_depth = static_cast<size_t>(atoll(max_stack));
+        limits.max_stack_depth = parse_size_or_default(max_stack, limits.max_stack_depth);
         eshkol_debug("Max stack from env: %zu", limits.max_stack_depth);
     }
 
     // ESHKOL_MAX_TENSOR_ELEMS
     const char* max_tensor = std::getenv("ESHKOL_MAX_TENSOR_ELEMS");
     if (max_tensor) {
-        limits.max_tensor_elements = parse_size(max_tensor);
+        limits.max_tensor_elements = parse_size_or_default(max_tensor, limits.max_tensor_elements);
         eshkol_debug("Max tensor elements from env: %zu", limits.max_tensor_elements);
     }
 
     // ESHKOL_MAX_STRING_LEN
     const char* max_string = std::getenv("ESHKOL_MAX_STRING_LEN");
     if (max_string) {
-        limits.max_string_length = parse_size(max_string);
+        limits.max_string_length = parse_size_or_default(max_string, limits.max_string_length);
         eshkol_debug("Max string length from env: %zu", limits.max_string_length);
     }
 
     // ESHKOL_ENFORCE_LIMITS
     const char* enforce = std::getenv("ESHKOL_ENFORCE_LIMITS");
     if (enforce) {
-        limits.enforce_hard_limits = parse_bool(enforce);
+        limits.enforce_hard_limits = parse_bool_or_default(enforce, limits.enforce_hard_limits);
         eshkol_debug("Enforce limits from env: %s", limits.enforce_hard_limits ? "true" : "false");
     }
 
     // ESHKOL_LIMIT_WARNINGS
     const char* warnings = std::getenv("ESHKOL_LIMIT_WARNINGS");
     if (warnings) {
-        limits.enable_warnings = parse_bool(warnings);
+        limits.enable_warnings = parse_bool_or_default(warnings, limits.enable_warnings);
         eshkol_debug("Limit warnings from env: %s", limits.enable_warnings ? "true" : "false");
     }
 
