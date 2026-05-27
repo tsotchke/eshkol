@@ -15,6 +15,12 @@
         (set! failed (+ failed 1))
         (display "FAIL: ") (display name) (newline))))
 
+(define (raises? thunk)
+  (let ((raised #f))
+    (guard (exn (#t (set! raised #t)))
+      (thunk))
+    raised))
+
 (define (capture-log thunk)
   (let ((p (open-output-string)))
     (log-set-output! p)
@@ -63,6 +69,13 @@
          (and (string-contains? line "\"payload\":\"")
               (string-contains? line "\\\"")
               (string-contains? line "\\\\"))))
+
+(check "rejects reserved field keys"
+       (raises? (lambda ()
+                  (capture-log
+                    (lambda ()
+                      (log-info "reserved"
+                                (list (list "level" "override"))))))))
 
 (let ((filtered (capture-log
                   (lambda ()
