@@ -1,0 +1,38 @@
+{
+  "id": "ESH-0015",
+  "title": "Persistent JIT cache (warm-worker mode productized)",
+  "status": "pending",
+  "priority": "low",
+  "workstream": "developer-experience",
+  "owner": null,
+  "preferred_backend": "claude",
+  "preferred_node": "atlas",
+  "max_cost_usd": 3.00,
+  "goal": "Productize the existing `eshkol-repl --machine` warm-worker mode into a persistent JIT cache so `eshkol-run -r` cold-start drops from ~2s to sub-100ms. Cache stdlib.bc + compiled-form artifacts keyed by content hash of the input source + every stdlib module + LLVM version.",
+  "file_globs": [
+    "exe/eshkol-run.cpp",
+    "lib/repl/repl_jit.cpp",
+    "lib/repl/repl_cache.cpp",
+    "lib/repl/repl_cache.h",
+    "tests/v1_3_edge_cases/jit_cache_test.sh"
+  ],
+  "next_actions": [
+    "lib/repl/repl_cache.cpp: cache key = SHA-256(input.esk + every (require …) chain + stdlib.bc mtime + LLVM version + Eshkol git hash).",
+    "On eshkol-run -r: if cache hit at $HOME/.cache/eshkol/jit/<key>.o exists, dlopen it and skip the full JIT compile.",
+    "On cache miss: full JIT, then write the resulting object to the cache before exec.",
+    "GC: cache entries older than 30 days OR cache size > 1 GiB get evicted on the next miss (LRU).",
+    "tests/v1_3_edge_cases/jit_cache_test.sh: time the second invocation of the same file; assert it's at least 5x faster than the first."
+  ],
+  "acceptance": [
+    "Second invocation of an identical .esk file takes < 200ms wall-clock.",
+    "Source edit invalidates the cache (key includes content hash).",
+    "stdlib edit invalidates all entries that transitively depend on it.",
+    "Cache size respects the GiB ceiling."
+  ],
+  "blocked_by": [],
+  "verification": [
+    "bash tests/v1_3_edge_cases/jit_cache_test.sh",
+    "bash scripts/run_icc_smoke.sh"
+  ],
+  "ux_payoff": "REPL feels instantaneous instead of like a small wait. Iteration speed for agent code (which uses -r heavily) goes up 5-10x."
+}

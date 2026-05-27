@@ -1,0 +1,39 @@
+{
+  "id": "ESH-0007",
+  "title": "Native image I/O — macOS via CoreGraphics + ImageIO",
+  "status": "pending",
+  "priority": "high",
+  "workstream": "media-vendoring-removal",
+  "owner": null,
+  "preferred_backend": "claude",
+  "preferred_node": "atlas",
+  "max_cost_usd": 3.00,
+  "goal": "Implement the macOS backend for the image-I/O dispatch table defined in ESH-0006. Uses CGImageSource (read), CGImageDestination (write), and CoreGraphics bitmap contexts (resize). Native to the platform; no third-party libraries.",
+  "file_globs": [
+    "lib/core/image_io_darwin.mm",
+    "CMakeLists.txt"
+  ],
+  "next_actions": [
+    "lib/core/image_io_darwin.mm: implement the three function-pointer slots (read, write, resize) defined in lib/core/image_io_platform.h.",
+    "Read: CGImageSourceCreateWithURL + CGImageSourceCreateImageAtIndex + CGImageGetWidth/Height + CGContextDrawImage into a uint8_t* buffer.",
+    "Write: CGImageDestinationCreateWithURL + CGImageDestinationAddImage + CGImageDestinationFinalize. Format selected via UTI (kUTTypePNG, kUTTypeJPEG, etc.).",
+    "Resize: CGContext at the target dimensions + CGContextDrawImage(rect, src).",
+    "Wire into CMakeLists.txt: APPLE branch links CoreGraphics and ImageIO frameworks; selects this .mm file instead of stb_image.",
+    "Add tests/v1_3_edge_cases/image_io_darwin_test.esk: read a small PNG fixture, assert shape; round-trip write+re-read with checksum equality; resize 16x16 to 8x8 and verify pixel count."
+  ],
+  "acceptance": [
+    "lib/core/image_io_darwin.mm provides read/write/resize matching the contract in ESH-0006.",
+    "macOS build links only CoreGraphics + ImageIO (no deps/stb).",
+    "image_io_darwin_test passes on atlas + enki.",
+    "ICC `native_image_io_darwin_works` probe PASS."
+  ],
+  "blocked_by": ["ESH-0006"],
+  "verification": [
+    "test -f lib/core/image_io_darwin.mm",
+    "cd build && cmake --build . --target eshkol-run",
+    "./build/eshkol-run tests/v1_3_edge_cases/image_io_darwin_test.esk -o /tmp/esh0007 && /tmp/esh0007",
+    "bash scripts/run_icc_smoke.sh"
+  ],
+  "platform": "darwin",
+  "node_targets": ["atlas", "enki"]
+}

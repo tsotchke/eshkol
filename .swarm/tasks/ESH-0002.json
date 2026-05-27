@@ -1,0 +1,37 @@
+{
+  "id": "ESH-0002",
+  "title": "core.sicp-streams — MIT-style stream aliases on existing SRFI-41 substrate",
+  "status": "pending",
+  "priority": "high",
+  "workstream": "r7rs-sicp-parity",
+  "owner": null,
+  "preferred_backend": "codex",
+  "preferred_node": "atlas",
+  "max_cost_usd": 2.00,
+  "goal": "Add a `lib/core/sicp_streams.esk` stdlib module exporting the MIT-style stream operators that SICP §3.5 assumes are pre-defined. The substrate already exists in `core.streams` (SRFI-41); this module just provides the SICP-named aliases plus `cons-stream` as a syntax-rules macro. With this module loaded, every SICP §3.5 example should compile and run unchanged.",
+  "file_globs": [
+    "lib/core/sicp_streams.esk",
+    "lib/stdlib.esk",
+    "lib/backend/llvm_codegen.cpp",
+    "tests/v1_3_edge_cases/sicp_streams_test.esk"
+  ],
+  "next_actions": [
+    "Create lib/core/sicp_streams.esk with: cons-stream (syntax-rules macro), stream-car, stream-cdr, stream-null?, the-empty-stream, stream-ref, stream-map (variadic for multi-stream argstreams), stream-filter, stream-for-each, stream-enumerate-interval, display-stream, display-line, integers-starting-from, integers (= integers-starting-from 1).",
+    "Wire the module into lib/stdlib.esk via (require core.sicp-streams).",
+    "Add `function_return_types` and known-builtins entries in llvm_codegen.cpp for any new toplevel exports (likely zero new; everything desugars to existing primitives).",
+    "Add tests/v1_3_edge_cases/sicp_streams_test.esk covering: SICP exercise 3.50 (variadic stream-map), 3.52 (stream-filter with memoizing delay), sieve-of-Eratosthenes from §3.5.2 producing the 50th prime (233), and the integral procedure from §3.5.4."
+  ],
+  "acceptance": [
+    "All SICP §3.5 code snippets in the test file compile and produce the expected output.",
+    "(stream-ref primes 50) == 233 (sieve-of-Eratosthenes from §3.5.2).",
+    "(stream-ref no-sevens 100) == 117 (integers not divisible by 7).",
+    "Variadic stream-map matches SICP exercise 3.50."
+  ],
+  "blocked_by": [],
+  "verification": [
+    "./build/eshkol-run tests/v1_3_edge_cases/sicp_streams_test.esk -o /tmp/esh0002 && /tmp/esh0002",
+    "bash scripts/run_icc_smoke.sh",
+    "grep -q sicp_streams_works scripts/icc_traces/eshkol_smoke.jsonl"
+  ],
+  "ux_payoff": "Unlocks the entire 'SICP-reproducible in Eshkol' claim. After this lands, SICP chapter 3 streams content runs without modification."
+}

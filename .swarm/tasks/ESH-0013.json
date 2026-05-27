@@ -1,0 +1,42 @@
+{
+  "id": "ESH-0013",
+  "title": "eshkol-fmt + eshkol-doc + (help foo) — developer tooling triad",
+  "status": "pending",
+  "priority": "medium",
+  "workstream": "developer-experience",
+  "owner": null,
+  "preferred_backend": "qwen",
+  "preferred_node": "atlas",
+  "max_cost_usd": 3.00,
+  "goal": "Three small developer-tooling features that together raise the day-to-day pleasure of using Eshkol substantially: eshkol-fmt (formatter), eshkol-doc (Markdown reference from `(provide …)` graph + docstrings), and (help foo) REPL reflection. The substrate already exists — procedure-arity, describe, the parser walker — these tasks bind it into user-facing commands.",
+  "file_globs": [
+    "exe/eshkol-fmt.cpp",
+    "exe/eshkol-doc.cpp",
+    "lib/repl/repl_help.cpp",
+    "CMakeLists.txt",
+    "tests/v1_3_edge_cases/eshkol_fmt_test.sh",
+    "tests/v1_3_edge_cases/eshkol_doc_test.sh",
+    "tests/v1_3_edge_cases/repl_help_test.esk"
+  ],
+  "next_actions": [
+    "eshkol-fmt: read an .esk file, parse with the existing parser, reprint via a canonical indent/spacing walker. Idempotent: fmt twice == fmt once. Preserves comments and string interpolation segments. CLI flags: --check, --write, --stdout.",
+    "eshkol-doc: walk the module graph reachable from a given root .esk file. For each (provide …) target, emit a Markdown section with the procedure's signature (via procedure-arity), docstring (parsed from leading `;;@` line block immediately above the define), and any (define-test …) examples.",
+    "(help foo): REPL command that calls (describe foo) + (procedure-arity foo) + a docstring lookup. Renders in the REPL with ANSI color when isatty(stdout).",
+    "CMakeLists.txt: add executable targets eshkol-fmt and eshkol-doc; install alongside eshkol-run.",
+    "tests: eshkol_fmt_test.sh round-trips 5 representative files; eshkol_doc_test.sh verifies generated Markdown contains every export of core.list; repl_help_test.esk asserts (help map) produces a non-empty string containing 'arity'."
+  ],
+  "acceptance": [
+    "eshkol-fmt foo.esk > foo.fmt.esk; eshkol-fmt foo.fmt.esk == foo.fmt.esk (idempotent).",
+    "eshkol-doc lib/stdlib.esk produces a Markdown file referencing every stdlib export.",
+    "(help map) inside a REPL session prints the arity, parameter names, and the docstring."
+  ],
+  "blocked_by": [],
+  "verification": [
+    "cd build && cmake --build . --target eshkol-fmt eshkol-doc",
+    "bash tests/v1_3_edge_cases/eshkol_fmt_test.sh",
+    "bash tests/v1_3_edge_cases/eshkol_doc_test.sh",
+    "./build/eshkol-run tests/v1_3_edge_cases/repl_help_test.esk -o /tmp/esh0013 && /tmp/esh0013",
+    "bash scripts/run_icc_smoke.sh"
+  ],
+  "ux_payoff": "Three of the most-asked-for ergonomic features. eshkol-fmt joins the modern-language tooling baseline; eshkol-doc makes the stdlib browsable; (help foo) makes the REPL self-documenting."
+}

@@ -1,0 +1,43 @@
+{
+  "id": "ESH-0010",
+  "title": "ESHKOL_VALUE_HANDLE lifecycle states + runtime warn-mode linear check",
+  "status": "pending",
+  "priority": "medium",
+  "workstream": "v1.4-foundation",
+  "owner": null,
+  "preferred_backend": "claude",
+  "preferred_node": "atlas",
+  "max_cost_usd": 4.00,
+  "goal": "Introduce a new tagged-value subtype ESHKOL_VALUE_HANDLE that wraps resources with explicit lifecycle states {open, borrowed, closed}. File ports, SQLite handles, subprocess pids all become handles. Runtime warns (not errors) on double-close or use-after-close for v1.3; compile-time enforcement waits for v1.9 dependent linear types. Pre-builds the v1.4 socket-safety story.",
+  "file_globs": [
+    "inc/eshkol/core/runtime.h",
+    "inc/eshkol/core/handle.h",
+    "lib/core/runtime_handle.cpp",
+    "lib/core/runtime_string_ports_hosted.cpp",
+    "lib/core/agent_sqlite.c",
+    "lib/core/agent_subprocess.c",
+    "lib/backend/llvm_codegen.cpp",
+    "tests/v1_3_edge_cases/handle_lifecycle_test.esk"
+  ],
+  "next_actions": [
+    "Define HEAP_SUBTYPE_HANDLE (new subtype value) in inc/eshkol/core/runtime.h alongside the other subtypes.",
+    "Define struct eshkol_handle_t { kind: HANDLE_KIND_FILE_PORT|HANDLE_KIND_SQLITE|HANDLE_KIND_SUBPROCESS|HANDLE_KIND_SOCKET (reserved), state: STATE_OPEN|STATE_BORROWED|STATE_CLOSED, native_handle: void*, source_span: span_t } in inc/eshkol/core/handle.h.",
+    "lib/core/runtime_handle.cpp: handle-make, handle-borrow (transitions open→borrowed), handle-release (borrowed→open), handle-close (open→closed), handle-state, handle-kind. Each transition warns on illegal state via eshkol_warn_at with the source span.",
+    "Refactor file ports (lib/core/runtime_string_ports_hosted.cpp), SQLite handles (lib/core/agent_sqlite.c), and subprocess pids (lib/core/agent_subprocess.c) to wrap their native resources in handles.",
+    "Add tests/v1_3_edge_cases/handle_lifecycle_test.esk: open/close round-trip, double-close warns, use-after-close warns, borrow/release pairing."
+  ],
+  "acceptance": [
+    "(handle? port) => #t for any file port.",
+    "Double-close of a file port emits a warning containing the close site source span.",
+    "Use-after-close of a SQLite statement emits a warning.",
+    "Existing v1.2 file/SQLite/subprocess code keeps working unchanged (no API-breaking behavior changes; warnings are advisory)."
+  ],
+  "blocked_by": [],
+  "verification": [
+    "./build/eshkol-run tests/v1_3_edge_cases/handle_lifecycle_test.esk -o /tmp/esh0010 && /tmp/esh0010",
+    "bash scripts/run_v1_2_edge_cases_tests.sh",
+    "bash scripts/run_icc_smoke.sh",
+    "grep -q handle_lifecycle_works scripts/icc_traces/eshkol_smoke.jsonl"
+  ],
+  "v1_4_payoff": "When v1.4 introduces sockets, they slot in as HANDLE_KIND_SOCKET with the same lifecycle discipline. No new infrastructure needed."
+}

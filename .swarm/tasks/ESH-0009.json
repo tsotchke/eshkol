@@ -1,0 +1,39 @@
+{
+  "id": "ESH-0009",
+  "title": "Native image I/O — Windows via GDI+",
+  "status": "pending",
+  "priority": "high",
+  "workstream": "media-vendoring-removal",
+  "owner": null,
+  "preferred_backend": "claude",
+  "preferred_node": "jack-blupc",
+  "max_cost_usd": 3.00,
+  "goal": "Implement the Windows backend for the image-I/O dispatch table defined in ESH-0006. Uses GDI+ Image / Bitmap / Graphics — native to Windows, ships with the OS, requires only Gdiplus.lib.",
+  "file_globs": [
+    "lib/core/image_io_windows.cpp",
+    "CMakeLists.txt"
+  ],
+  "next_actions": [
+    "lib/core/image_io_windows.cpp: implement the three function-pointer slots using GDI+ Image::FromFile / Bitmap::LockBits / Graphics::DrawImage.",
+    "Read: Gdiplus::Image::FromFile + LockBits to extract a uint8_t* buffer.",
+    "Write: Bitmap from buffer + Save with the appropriate CLSID (PNG / JPEG / BMP / WebP — verify WebP CLSID availability; fall back to PNG conversion if not present).",
+    "Resize: Bitmap dst + Graphics::DrawImage(src, dstRect).",
+    "Wire into CMakeLists.txt: WIN32 branch links Gdiplus.lib and selects this .cpp file.",
+    "Add tests/v1_3_edge_cases/image_io_windows_test.esk: same shape as the Darwin/Linux tests."
+  ],
+  "acceptance": [
+    "lib/core/image_io_windows.cpp provides read/write/resize matching the contract.",
+    "Windows build links Gdiplus.lib; no deps/stb.",
+    "image_io_windows_test passes on jack-blupc.",
+    "ICC `native_image_io_windows_works` probe PASS."
+  ],
+  "blocked_by": ["ESH-0006"],
+  "verification": [
+    "test -f lib/core/image_io_windows.cpp",
+    "ssh jack-blupc 'cd src/eshkol && cmake --build build-jack-msys-ucrt --target eshkol-run'",
+    "ssh jack-blupc 'cd src/eshkol && ./build-jack-msys-ucrt/eshkol-run.exe tests/v1_3_edge_cases/image_io_windows_test.esk -o /tmp/esh0009 && /tmp/esh0009'",
+    "bash scripts/run_icc_smoke.sh"
+  ],
+  "platform": "windows",
+  "node_targets": ["jack-blupc"]
+}
