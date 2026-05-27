@@ -99,7 +99,9 @@ static void append_space_separated_link_args(const char* raw_args,
     if (!raw_args || !*raw_args) {
         return;
     }
-    std::stringstream stream(raw_args);
+    std::string normalized(raw_args);
+    std::replace(normalized.begin(), normalized.end(), ';', ' ');
+    std::stringstream stream(normalized);
     std::string item;
     while (stream >> item) {
         link_args.emplace_back(item);
