@@ -50,6 +50,37 @@ goals:
     reason: model serialization, image I/O, per-thread arenas, error messages — all the v1.2 roadmap items shipped, just need the gating audit and the release artifacts
     tags: [release, milestone]
 
+  - id: v1.3-native-image-io
+    priority: high
+    goal: Replace deps/stb image I/O with native platform APIs (CoreGraphics on macOS, libpng/libjpeg/libwebp on Linux, GDI+ on Windows) and remove deps/stb from the tree
+    reason: "Last remaining v1.3-evolve oracle FAIL (native_image_io_no_stb). Eshkol's policy is to not vendor third-party media decoders; v1.3 commits to native-only.  Touches lib/core/image_io.c plus CMake find_package() additions per platform."
+    tags: [v1.3, media, vendoring]
+
+  - id: v1.3-r7rs-bare-prefix-import
+    priority: medium
+    goal: Implement `(import (prefix (m) p-))` over a module's whole export list, not just over an explicit `only` or `rename` clause
+    reason: "Last gap in the R7RS library system v1.3-evolve item. Requires deferring alias creation past parser-time (parser.cpp:3242), or adding a runtime form that the require resolver expands using the module's export list."
+    tags: [v1.3, r7rs, modules, parser]
+
+  - id: v1.3-input2-conv-batchnorm-layernorm-attention
+    priority: medium
+    goal: Wire `input2` into the AD tape nodes created by the conv2d / batchnorm / layernorm / attention forward sites so gradient flows to both operands
+    reason: "tensor-matmul already does this (verified by ICC matmul_kernel_grad_nonzero probe). The other four kernels emit tape nodes but leave `input2` null; the backward kernels in lib/backend/tensor_backward.cpp already gate on `if (node->input2)`."
+    tags: [v1.3, autodiff, codegen]
+
+  - id: v1.3-pgo-workload-and-merge
+    priority: low
+    goal: Pick a canonical PGO training workload + script the llvm-profdata merge step so `cmake -DESHKOL_PGO=use` is one-shot reproducible
+    reason: "Build scaffold landed (cmake -DESHKOL_PGO=generate/use). What's missing is the documented sequence of `eshkol-run` invocations that produces a representative profile (probably v1_2 edge-case suite + the smoke harness + a couple of canonical examples)."
+    tags: [v1.3, pgo, release-tooling]
+
+  - id: v1.3-release-cut
+    priority: low
+    goal: All v1.3-evolve oracle criteria green; cut the v1.3-evolve release
+    depends_on: [v1.3-native-image-io]
+    reason: "Foundation landed: ICC oracle + production-audit profile + smoke probes + regression tests + PGO scaffold + ROADMAP audit (commit 7feeba03). 9/10 PASS, 1 WARN. The remaining WARN is the deps/stb removal."
+    tags: [v1.3, release, milestone]
+
   - id: agent-side-migration
     priority: medium
     goal: Update eshkol-agent to use the new HTTP/subprocess contracts instead of the legacy "explicit unavailable" wrappers
