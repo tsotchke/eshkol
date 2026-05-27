@@ -1869,16 +1869,22 @@ llvm::Value* ArithmeticCodegen::compare(llvm::Value* left, llvm::Value* right,
     // R7RS: Error if not both numbers
     ctx_.builder().CreateCondBr(both_numbers, numeric_path, type_error_path);
 
-    // Type error path
+    // Type error path — emit "Type error in <op>: expected number, got <actual>"
+    // using eshkol_type_error_with_operand so the user sees the concrete
+    // operand type rather than guessing which side was wrong. Pick the side
+    // that's NOT a number; if both are non-number, prefer the left (so the
+    // error is deterministic).
     ctx_.builder().SetInsertPoint(type_error_path);
-    llvm::Function* type_error_func = ctx_.module().getFunction("eshkol_type_error");
-    if (!type_error_func) {
-        llvm::FunctionType* error_type = llvm::FunctionType::get(
+    llvm::Function* type_error_op_func = ctx_.module().getFunction("eshkol_type_error_with_operand");
+    if (!type_error_op_func) {
+        llvm::FunctionType* error_op_type = llvm::FunctionType::get(
             ctx_.builder().getVoidTy(),
-            {ctx_.builder().getPtrTy(), ctx_.builder().getPtrTy()},
+            {ctx_.builder().getPtrTy(),                // proc_name
+             ctx_.builder().getPtrTy(),                // expected_type
+             ctx_.taggedValueType()},                  // actual operand
             false);
-        type_error_func = llvm::Function::Create(error_type, llvm::Function::ExternalLinkage,
-            "eshkol_type_error", &ctx_.module());
+        type_error_op_func = llvm::Function::Create(error_op_type, llvm::Function::ExternalLinkage,
+            "eshkol_type_error_with_operand", &ctx_.module());
     }
     std::string op_name = (operation == "eq") ? "=" :
                           (operation == "lt") ? "<" :
@@ -1886,7 +1892,11 @@ llvm::Value* ArithmeticCodegen::compare(llvm::Value* left, llvm::Value* right,
                           (operation == "le") ? "<=" : ">=";
     llvm::Value* proc_name = ctx_.builder().CreateGlobalString(op_name, "cmp_proc_name");
     llvm::Value* expected_type = ctx_.builder().CreateGlobalString("number", "cmp_expected_type");
-    ctx_.builder().CreateCall(type_error_func, {proc_name, expected_type});
+    // Choose the operand to report: the left side if it's not numeric,
+    // else the right side. Both are guaranteed non-numeric for at least
+    // one branch since both_numbers is false here.
+    llvm::Value* offending = ctx_.builder().CreateSelect(left_is_number, right, left, "cmp_offending");
+    ctx_.builder().CreateCall(type_error_op_func, {proc_name, expected_type, offending});
     llvm::Value* error_result = tagged_.packBool(ctx_.builder().getFalse());
     ctx_.builder().CreateBr(merge);
     llvm::BasicBlock* error_exit = ctx_.builder().GetInsertBlock();
