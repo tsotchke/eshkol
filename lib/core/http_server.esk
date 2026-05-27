@@ -224,6 +224,14 @@
      (http-response 413 "text/plain" "Payload Too Large\n"))
     (else #f)))
 
+(define (http-standard-path? path)
+  (or (string=? path "/health")
+      (string=? path "/ready")
+      (string=? path "/metrics")))
+
+(define (http-standard-method-allowed? method)
+  (string=? method "GET"))
+
 (define (http-standard-response request . ready)
   "Return (status content-type body) for built-in health/ready/metrics routes."
   (let ((ready? (if (null? ready) #t (car ready)))
@@ -234,6 +242,9 @@
       ((or (string=? method "") (string=? path ""))
        (http-response 400 "text/plain" "Bad Request\n"))
       (preflight preflight)
+      ((and (http-standard-path? path)
+            (not (http-standard-method-allowed? method)))
+       (http-response 405 "text/plain" "Method Not Allowed\n"))
       ((string=? path "/health")
        (http-response 200 "text/plain" "OK\n"))
       ((string=? path "/ready")

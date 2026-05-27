@@ -18,6 +18,8 @@
 (define health-request "GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
 (define ready-request "GET /ready HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
 (define metrics-request "GET /metrics?format=prom HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+(define post-metrics-request "POST /metrics HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 0\r\n\r\n")
+(define delete-health-request "DELETE /health HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
 (define missing-request "GET /missing HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
 (define post-request
   "POST /tools/run?trace=abc HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nX-Trace:  abc  \r\n\r\n{\"ok\":true}")
@@ -129,6 +131,16 @@
          (string-contains? (http-response-body response) "# HELP eshkol_http_routing_test_total"))
   (check "metrics route includes label value"
          (string-contains? (http-response-body response) "path=\"/metrics\"")))
+
+(let ((response (http-standard-response post-metrics-request)))
+  (check "metrics route rejects non-GET method"
+         (= (http-response-status response) 405))
+  (check "method rejection body is explicit"
+         (string=? (http-response-body response) "Method Not Allowed\n")))
+
+(let ((response (http-route-request delete-health-request tool-routes)))
+  (check "router fallback rejects non-GET standard route"
+         (= (http-response-status response) 405)))
 
 (let ((response (http-standard-response missing-request)))
   (check "unknown route returns 404"
