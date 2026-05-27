@@ -998,3 +998,24 @@
              (approx= g-ln-beta 6.0 1e-6))
         "PASS" "FAIL"))
   (display ": gradients through normalization gamma/beta parameters match closed forms") (newline))
+
+;; ============================================================
+;; Test 52: Gradient through conv2d kernel operand
+;; f(k) = sum(conv2d(image, reshape(k, 2, 2), stride=1))
+;; ============================================================
+(let* ((image (tensor 3 3
+                      1.0 2.0 3.0
+                      4.0 5.0 6.0
+                      7.0 8.0 9.0))
+       (g (gradient
+            (lambda (k)
+              (tensor-sum (conv2d image (reshape k 2 2) 1)))
+            (tensor 4 1.0 1.0 1.0 1.0))))
+  (display
+    (if (and (= (vector-length g) 4)
+             (approx= (vector-ref g 0) 12.0 1e-6)
+             (approx= (vector-ref g 1) 16.0 1e-6)
+             (approx= (vector-ref g 2) 24.0 1e-6)
+             (approx= (vector-ref g 3) 28.0 1e-6))
+        "PASS" "FAIL"))
+  (display ": gradient through conv2d kernel operand matches patch sums") (newline))
