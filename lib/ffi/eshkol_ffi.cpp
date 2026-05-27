@@ -183,8 +183,8 @@ extern "C" int eshkol_ffi_eval(eshkol_ffi_context_t* ctx,
             if (std::isspace(c)) {
                 stream.get();
             } else if (c == ';') {
-                std::string dummy;
-                std::getline(stream, dummy);
+                std::string discarded_line;
+                std::getline(stream, discarded_line);
             } else {
                 break;
             }

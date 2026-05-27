@@ -441,14 +441,14 @@ static int vm_macro_match(const MacroNode* pattern, const MacroNode* input,
         } else {
             /* Literal repeated pattern (number/string): each must match */
             for (int i = 0; i < repeat_count; i++) {
-                MacroBindings dummy;
-                macro_bindings_init(&dummy);
+                MacroBindings trial_bindings;
+                macro_bindings_init(&trial_bindings);
                 if (!vm_macro_match(repeat_pattern, input->children[prefix_len + i],
-                                    &dummy, literals, n_literals)) {
-                    macro_bindings_cleanup(&dummy);
+                                    &trial_bindings, literals, n_literals)) {
+                    macro_bindings_cleanup(&trial_bindings);
                     return 0;
                 }
-                macro_bindings_cleanup(&dummy);
+                macro_bindings_cleanup(&trial_bindings);
             }
             return 1;
         }
