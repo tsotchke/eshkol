@@ -1,7 +1,7 @@
 {
   "id": "ESH-0012",
   "title": "AD input2 plumbing for conv2d / batchnorm / layernorm / attention forward sites",
-  "status": "active",
+  "status": "done",
   "priority": "medium",
   "workstream": "v1.5-foundation",
   "owner": null,
