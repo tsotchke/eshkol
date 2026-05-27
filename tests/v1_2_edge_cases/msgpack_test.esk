@@ -1,0 +1,92 @@
+;;; msgpack_test.esk — v1.8 wire-format substrate regression
+;;;
+;;; Locks down the initial pure-stdlib MessagePack subset used by
+;;; distributed-state replication: null, booleans, 32-bit-range exact
+;;; integers, UTF-8 strings, bytevector binary payloads, list arrays, and
+;;; explicit maps.
+
+(require core.testing)
+(require core.list.query)
+(require core.msgpack)
+
+(reset-tests!)
+
+(define (bytevector=? a b)
+  (and (bytevector? a)
+       (bytevector? b)
+       (= (bytevector-length a) (bytevector-length b))
+       (let loop ((i 0))
+         (if (= i (bytevector-length a))
+             #t
+             (and (= (bytevector-u8-ref a i) (bytevector-u8-ref b i))
+                  (loop (+ i 1)))))))
+
+(define (check-bytevector actual expected)
+  (check-true (bytevector=? actual expected)))
+
+(register-test "null and booleans use MessagePack singleton markers"
+  (lambda ()
+    (check-bytevector (msgpack-encode (msgpack-null)) (bytevector 192))
+    (check-bytevector (msgpack-encode #f) (bytevector 194))
+    (check-bytevector (msgpack-encode #t) (bytevector 195))
+    (check-true (msgpack-null? (msgpack-decode (bytevector 192))))
+    (check-false (msgpack-decode (bytevector 194)))
+    (check-true (msgpack-decode (bytevector 195)))))
+
+(register-test "exact integers choose canonical small-width encodings"
+  (lambda ()
+    (check-bytevector (msgpack-encode 127) (bytevector 127))
+    (check-bytevector (msgpack-encode 200) (bytevector 204 200))
+    (check-bytevector (msgpack-encode 300) (bytevector 205 1 44))
+    (check-bytevector (msgpack-encode 65536) (bytevector 206 0 1 0 0))
+    (check-bytevector (msgpack-encode -1) (bytevector 255))
+    (check-bytevector (msgpack-encode -40) (bytevector 208 216))
+    (check-bytevector (msgpack-encode -300) (bytevector 209 254 212))
+    (check-equal? (msgpack-decode (bytevector 127)) 127)
+    (check-equal? (msgpack-decode (bytevector 204 200)) 200)
+    (check-equal? (msgpack-decode (bytevector 205 1 44)) 300)
+    (check-equal? (msgpack-decode (bytevector 206 0 1 0 0)) 65536)
+    (check-equal? (msgpack-decode (bytevector 255)) -1)
+    (check-equal? (msgpack-decode (bytevector 208 216)) -40)
+    (check-equal? (msgpack-decode (bytevector 209 254 212)) -300)))
+
+(register-test "strings and bytevectors round-trip through str/bin families"
+  (lambda ()
+    (check-bytevector (msgpack-encode "hi") (bytevector 162 104 105))
+    (check-equal? (msgpack-decode (bytevector 162 104 105)) "hi")
+    (check-equal? (msgpack-decode (msgpack-encode "hello lambda")) "hello lambda")
+    (let ((payload (bytevector 0 255 1 2)))
+      (check-bytevector (msgpack-encode payload)
+                        (bytevector 196 4 0 255 1 2))
+      (check-bytevector (msgpack-decode (msgpack-encode payload))
+                        payload))))
+
+(register-test "lists encode as arrays and unsupported vectors raise"
+  (lambda ()
+    (check-bytevector (msgpack-encode (list 1 "a" #f))
+                      (bytevector 147 1 161 97 194))
+    (check-equal? (msgpack-decode (bytevector 147 1 161 97 194))
+                  (list 1 "a" #f))
+    (check-raises (lambda () (msgpack-encode #(1 2 3))))))
+
+(register-test "explicit maps preserve key/value entries"
+  (lambda ()
+    (let* ((wire (msgpack-encode
+                   (msgpack-map
+                     (list (list "node" "atlas")
+                           (list "clock" 7)))))
+           (decoded (msgpack-decode wire))
+           (entries (msgpack-map-entries decoded)))
+      (check-true (msgpack-map? decoded))
+      (check-equal? (length entries) 2)
+      (check-equal? (car entries) (list "node" "atlas"))
+      (check-equal? (cadr entries) (list "clock" 7)))))
+
+(register-test "prefix decode returns cursor and full decode rejects trailing data"
+  (lambda ()
+    (let ((decoded (msgpack-decode-prefix (bytevector 1 2))))
+      (check-equal? (car decoded) 1)
+      (check-equal? (cadr decoded) 1))
+    (check-raises (lambda () (msgpack-decode (bytevector 1 2))))))
+
+(run-tests)

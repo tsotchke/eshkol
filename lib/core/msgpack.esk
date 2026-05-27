@@ -1,0 +1,276 @@
+;;; core/msgpack.esk
+;;;
+;;; Initial MessagePack wire-format substrate for the v1.8 distributed track.
+;;; This pure stdlib layer intentionally starts with the deterministic value
+;;; subset needed for CRDT/state replication: null, booleans, exact integers
+;;; through signed/unsigned 32-bit encodings, UTF-8 strings, binary
+;;; bytevectors, list arrays, and explicit maps.
+;;;
+;;; (require core.msgpack)
+
+(require core.list.query)
+(require core.list.transform)
+
+(provide
+  msgpack-null msgpack-null?
+  msgpack-map msgpack-map? msgpack-map-entries
+  msgpack-encode msgpack-decode msgpack-decode-prefix
+  msgpack-bytes->bytevector msgpack-bytevector->bytes)
+
+(define (msgpack-null) 'msgpack-null)
+
+(define (msgpack-null? value)
+  (eq? value 'msgpack-null))
+
+(define (msgpack-map entries)
+  (vector 'msgpack-map entries))
+
+(define (msgpack-map? value)
+  (and (vector? value)
+       (= (vector-length value) 2)
+       (eq? (vector-ref value 0) 'msgpack-map)))
+
+(define (msgpack-map-entries value)
+  (if (msgpack-map? value)
+      (vector-ref value 1)
+      (error "msgpack-map-entries: expected msgpack-map" value)))
+
+(define (msgpack-require-byte who b)
+  (if (and (integer? b) (>= b 0) (<= b 255))
+      b
+      (error who "expected byte in [0,255]" b)))
+
+(define (msgpack-bytes->bytevector bytes)
+  (let* ((len (length bytes))
+         (bv (make-bytevector len 0)))
+    (let loop ((i 0) (rest bytes))
+      (if (null? rest)
+          bv
+          (begin
+            (bytevector-u8-set! bv i (msgpack-require-byte "msgpack-bytes->bytevector" (car rest)))
+            (loop (+ i 1) (cdr rest)))))))
+
+(define (msgpack-bytevector->bytes bv)
+  (let ((len (bytevector-length bv)))
+    (let loop ((i 0) (acc '()))
+      (if (= i len)
+          (reverse acc)
+          (loop (+ i 1) (cons (bytevector-u8-ref bv i) acc))))))
+
+(define (msgpack-u16-bytes n)
+  (list (quotient n 256)
+        (remainder n 256)))
+
+(define (msgpack-u32-bytes n)
+  (let* ((b1 (quotient n 16777216))
+         (r1 (remainder n 16777216))
+         (b2 (quotient r1 65536))
+         (r2 (remainder r1 65536))
+         (b3 (quotient r2 256))
+         (b4 (remainder r2 256)))
+    (list b1 b2 b3 b4)))
+
+(define (msgpack-read-u16 bv pos)
+  (+ (* (bytevector-u8-ref bv pos) 256)
+     (bytevector-u8-ref bv (+ pos 1))))
+
+(define (msgpack-read-u32 bv pos)
+  (+ (* (bytevector-u8-ref bv pos) 16777216)
+     (* (bytevector-u8-ref bv (+ pos 1)) 65536)
+     (* (bytevector-u8-ref bv (+ pos 2)) 256)
+     (bytevector-u8-ref bv (+ pos 3))))
+
+(define (msgpack-encode-int n)
+  (cond
+    ((and (>= n 0) (<= n 127))
+     (list n))
+    ((and (>= n 0) (<= n 255))
+     (list 204 n))
+    ((and (>= n 0) (<= n 65535))
+     (cons 205 (msgpack-u16-bytes n)))
+    ((and (>= n 0) (<= n 4294967295))
+     (cons 206 (msgpack-u32-bytes n)))
+    ((and (>= n -32) (< n 0))
+     (list (+ 256 n)))
+    ((and (>= n -128) (< n -32))
+     (list 208 (+ 256 n)))
+    ((and (>= n -32768) (< n -128))
+     (cons 209 (msgpack-u16-bytes (+ 65536 n))))
+    ((and (>= n -2147483648) (< n -32768))
+     (cons 210 (msgpack-u32-bytes (+ 4294967296 n))))
+    (else
+     (error "msgpack-encode: integer outside supported 32-bit wire range" n))))
+
+(define (msgpack-encode-bin-bytes payload-bytes)
+  (let ((len (length payload-bytes)))
+    (cond
+      ((<= len 255)
+       (append (list 196 len) payload-bytes))
+      ((<= len 65535)
+       (append (cons 197 (msgpack-u16-bytes len)) payload-bytes))
+      (else
+       (error "msgpack-encode: bin payload too large for current substrate" len)))))
+
+(define (msgpack-encode-string str)
+  (let* ((utf8 (string->utf8 str))
+         (payload (msgpack-bytevector->bytes utf8))
+         (len (length payload)))
+    (cond
+      ((<= len 31)
+       (append (list (+ 160 len)) payload))
+      ((<= len 255)
+       (append (list 217 len) payload))
+      ((<= len 65535)
+       (append (cons 218 (msgpack-u16-bytes len)) payload))
+      (else
+       (error "msgpack-encode: string payload too large for current substrate" len)))))
+
+(define (msgpack-encode-array-elements values)
+  (if (null? values)
+      '()
+      (append (msgpack-encode-value (car values))
+              (msgpack-encode-array-elements (cdr values)))))
+
+(define (msgpack-encode-array values)
+  (let ((len (length values)))
+    (cond
+      ((<= len 15)
+       (append (list (+ 144 len))
+               (msgpack-encode-array-elements values)))
+      ((<= len 65535)
+       (append (cons 220 (msgpack-u16-bytes len))
+               (msgpack-encode-array-elements values)))
+      (else
+       (error "msgpack-encode: array too large for current substrate" len)))))
+
+(define (msgpack-encode-map-entry entry)
+  (if (and (pair? entry) (pair? (cdr entry)) (null? (cddr entry)))
+      (append (msgpack-encode-value (car entry))
+              (msgpack-encode-value (cadr entry)))
+      (error "msgpack-encode: map entries must be two-element lists" entry)))
+
+(define (msgpack-encode-map-entries entries)
+  (if (null? entries)
+      '()
+      (append (msgpack-encode-map-entry (car entries))
+              (msgpack-encode-map-entries (cdr entries)))))
+
+(define (msgpack-encode-map-value value)
+  (let* ((entries (msgpack-map-entries value))
+         (len (length entries)))
+    (cond
+      ((<= len 15)
+       (append (list (+ 128 len))
+               (msgpack-encode-map-entries entries)))
+      ((<= len 65535)
+       (append (cons 222 (msgpack-u16-bytes len))
+               (msgpack-encode-map-entries entries)))
+      (else
+       (error "msgpack-encode: map too large for current substrate" len)))))
+
+(define (msgpack-encode-value value)
+  (cond
+    ((msgpack-null? value) (list 192))
+    ((boolean? value) (if value (list 195) (list 194)))
+    ((integer? value) (msgpack-encode-int value))
+    ((string? value) (msgpack-encode-string value))
+    ((bytevector? value) (msgpack-encode-bin-bytes (msgpack-bytevector->bytes value)))
+    ((msgpack-map? value) (msgpack-encode-map-value value))
+    ((list? value) (msgpack-encode-array value))
+    (else (error "msgpack-encode: unsupported value" value))))
+
+(define (msgpack-encode value)
+  (msgpack-bytes->bytevector (msgpack-encode-value value)))
+
+(define (msgpack-decode-bin bv pos len)
+  (list (bytevector-copy bv pos (+ pos len)) (+ pos len)))
+
+(define (msgpack-decode-string bv pos len)
+  (list (utf8->string (bytevector-copy bv pos (+ pos len))) (+ pos len)))
+
+(define (msgpack-decode-array-elements bv pos count acc)
+  (if (= count 0)
+      (list (reverse acc) pos)
+      (let* ((decoded (msgpack-decode-at bv pos))
+             (value (car decoded))
+             (next-pos (cadr decoded)))
+        (msgpack-decode-array-elements
+          bv
+          next-pos
+          (- count 1)
+          (cons value acc)))))
+
+(define (msgpack-decode-map-entries bv pos count acc)
+  (if (= count 0)
+      (list (msgpack-map (reverse acc)) pos)
+      (let* ((key-decoded (msgpack-decode-at bv pos))
+             (key (car key-decoded))
+             (value-decoded (msgpack-decode-at bv (cadr key-decoded)))
+             (value (car value-decoded))
+             (next-pos (cadr value-decoded)))
+        (msgpack-decode-map-entries
+          bv
+          next-pos
+          (- count 1)
+          (cons (list key value) acc)))))
+
+(define (msgpack-decode-at bv pos)
+  (let ((tag (bytevector-u8-ref bv pos))
+        (next (+ pos 1)))
+    (cond
+      ((<= tag 127)
+       (list tag next))
+      ((and (>= tag 128) (<= tag 143))
+       (msgpack-decode-map-entries bv next (- tag 128) '()))
+      ((and (>= tag 144) (<= tag 159))
+       (msgpack-decode-array-elements bv next (- tag 144) '()))
+      ((and (>= tag 160) (<= tag 191))
+       (msgpack-decode-string bv next (- tag 160)))
+      ((= tag 192)
+       (list (msgpack-null) next))
+      ((= tag 194)
+       (list #f next))
+      ((= tag 195)
+       (list #t next))
+      ((= tag 196)
+       (msgpack-decode-bin bv (+ next 1) (bytevector-u8-ref bv next)))
+      ((= tag 197)
+       (msgpack-decode-bin bv (+ next 2) (msgpack-read-u16 bv next)))
+      ((= tag 204)
+       (list (bytevector-u8-ref bv next) (+ next 1)))
+      ((= tag 205)
+       (list (msgpack-read-u16 bv next) (+ next 2)))
+      ((= tag 206)
+       (list (msgpack-read-u32 bv next) (+ next 4)))
+      ((= tag 208)
+       (let ((v (bytevector-u8-ref bv next)))
+         (list (if (>= v 128) (- v 256) v) (+ next 1))))
+      ((= tag 209)
+       (let ((v (msgpack-read-u16 bv next)))
+         (list (if (>= v 32768) (- v 65536) v) (+ next 2))))
+      ((= tag 210)
+       (let ((v (msgpack-read-u32 bv next)))
+         (list (if (>= v 2147483648) (- v 4294967296) v) (+ next 4))))
+      ((= tag 217)
+       (msgpack-decode-string bv (+ next 1) (bytevector-u8-ref bv next)))
+      ((= tag 218)
+       (msgpack-decode-string bv (+ next 2) (msgpack-read-u16 bv next)))
+      ((= tag 220)
+       (msgpack-decode-array-elements bv (+ next 2) (msgpack-read-u16 bv next) '()))
+      ((= tag 222)
+       (msgpack-decode-map-entries bv (+ next 2) (msgpack-read-u16 bv next) '()))
+      ((>= tag 224)
+       (list (- tag 256) next))
+      (else
+       (error "msgpack-decode: unsupported type marker" tag)))))
+
+(define (msgpack-decode-prefix bv)
+  (msgpack-decode-at bv 0))
+
+(define (msgpack-decode bv)
+  (let* ((decoded (msgpack-decode-at bv 0))
+         (value (car decoded))
+         (next-pos (cadr decoded)))
+    (if (= next-pos (bytevector-length bv))
+        value
+        (error "msgpack-decode: trailing bytes after one object" next-pos))))
