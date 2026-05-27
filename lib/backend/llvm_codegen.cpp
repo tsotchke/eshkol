@@ -464,6 +464,54 @@ namespace {
         return out;
     }
 
+    static void seedTypeCheckerWithReplFunctions(
+        eshkol::hott::TypeChecker& type_checker,
+        eshkol::hott::TypeEnvironment& type_env) {
+        struct ReplFunctionType {
+            std::string name;
+            size_t arity;
+            bool is_variadic;
+        };
+
+        std::vector<ReplFunctionType> functions;
+        {
+            std::lock_guard<std::mutex> lock(g_repl_mutex);
+            if (!g_repl_mode_enabled) {
+                return;
+            }
+
+            functions.reserve(g_repl_function_arities.size());
+            for (const auto& [name, arity] : g_repl_function_arities) {
+                if (g_repl_user_variable_names.find(name) !=
+                    g_repl_user_variable_names.end()) {
+                    continue;
+                }
+
+                size_t fixed_arity = arity;
+                bool is_variadic = false;
+                auto variadic_it = g_repl_variadic_functions.find(name);
+                if (variadic_it != g_repl_variadic_functions.end() &&
+                    variadic_it->second.second) {
+                    fixed_arity = variadic_it->second.first;
+                    is_variadic = true;
+                }
+
+                functions.push_back({name, fixed_arity, is_variadic});
+            }
+        }
+
+        for (const auto& fn : functions) {
+            std::vector<eshkol::hott::TypeId> params(
+                fn.arity, eshkol::hott::BuiltinTypes::Value);
+            type_checker.context().bind(
+                fn.name,
+                type_env.makeFunctionType(
+                    params,
+                    eshkol::hott::BuiltinTypes::Value,
+                    fn.is_variadic));
+        }
+    }
+
     /* REPL LAST-VALUE CAPTURE
      *
      * Bug (2026-05-08, qLLM bridge): top-level expressions evaluated by the
@@ -2056,6 +2104,7 @@ public:
                 const eshkol_config_t* cfg = eshkol_config_get();
                 eshkol::hott::TypeChecker type_checker(type_env,
                     cfg->strict_types, cfg->unsafe_mode);
+                seedTypeCheckerWithReplFunctions(type_checker, type_env);
 
                 // Type check all top-level forms (definitions AND expressions)
                 // Note: const_cast is safe here because we're intentionally annotating

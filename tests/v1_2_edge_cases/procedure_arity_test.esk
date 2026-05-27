@@ -1,4 +1,3 @@
-;; mode: jit
 ;; procedure-arity reflection — task #170 (partial: arity only).
 
 (require stdlib)
@@ -19,8 +18,10 @@
 (define (three a b c) (+ a b c))
 (define (four a b c d) (+ a b c d))
 (define (variadic . rest) (length rest))
+(define (leading-variadic head . rest) (+ head (length rest)))
 (define lmb-1 (lambda (x) x))
 (define lmb-2 (lambda (x y) (* x y)))
+(define imported-fold-left fold-left)
 
 (check "zero-arg arity = 0"        (= (procedure-arity zero) 0))
 (check "one-arg arity = 1"         (= (procedure-arity one) 1))
@@ -28,8 +29,13 @@
 (check "three-arg arity = 3"       (= (procedure-arity three) 3))
 (check "four-arg arity = 4"        (= (procedure-arity four) 4))
 (check "variadic fixed-arity = 0"  (= (procedure-arity variadic) 0))
+(check "leading variadic fixed-arity = 1" (= (procedure-arity leading-variadic) 1))
 (check "lambda 1-arg arity"        (= (procedure-arity lmb-1) 1))
 (check "lambda 2-arg arity"        (= (procedure-arity lmb-2) 2))
+(check "builtin car arity = 1"     (= (procedure-arity car) 1))
+(check "builtin + arity = 2"       (= (procedure-arity +) 2))
+(check "imported fold-left arity = 3" (= (procedure-arity fold-left) 3))
+(check "aliased imported arity = 3" (= (procedure-arity imported-fold-left) 3))
 
 ;; Inline lambda
 (check "inline lambda arity"       (= (procedure-arity (lambda (a b c) a)) 3))

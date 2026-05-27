@@ -1,4 +1,3 @@
-;; mode: jit
 ;; describe + type-name reflection helpers — task #170 (final piece).
 
 (require stdlib)
@@ -28,6 +27,7 @@
 (check "describe symbol"    (string=? (describe 'foo) "symbol: foo"))
 (check "describe vector size" (string=? (describe (vector 1 2 3)) "vector[3]"))
 (check "describe procedure arity" (string=? (describe (lambda (a b) a)) "procedure: arity=2"))
+(check "describe builtin arity" (string=? (describe car) "procedure: arity=1"))
 
 (display "---") (newline)
 (display "Total: ") (display (+ pass fail))

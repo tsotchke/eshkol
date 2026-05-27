@@ -247,8 +247,8 @@ Phase 2 productionizes this surface:
 - Keep hosted `resource_limits` coverage for env initialization, malformed-env
   fallback, heap/stack accounting, tensor/string validators, and wall-time
   watchdog interrupts.
-- Extend reflection docs and tests for user procedures, records, builtins,
-  variadics, and imported functions.
+- Keep reflection docs and tests for user procedures, deferred record-field
+  status, builtins, variadics, and imported functions.
 - Keep #154 AD-op finite-difference checks in the stdlib/autodiff gates.
 - Keep collections as stdlib, not syntax: priority queues, sets, and deques
   should remain ordinary data structures.
