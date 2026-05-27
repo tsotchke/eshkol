@@ -1776,7 +1776,7 @@ name:
 
 ## Appendix B: Infrastructure stdlib modules
 
-The current stdlib also ships fourteen infrastructure-oriented modules that
+The current stdlib also ships fifteen infrastructure-oriented modules that
 the main sections above only listed by name. The signatures below come
 directly from each module's `(provide …)` block (cited in the table).
 The "Auto-loaded" column says whether `(require stdlib)` pulls the
@@ -1800,6 +1800,7 @@ exact set of auto-loaded modules is the `(require …)` chain in
 | `core.testing` | `lib/core/testing.esk` | **No** — `(require core.testing)` | `check-*` assertions + `run-tests` |
 | `core.manifold` | `lib/core/manifold.esk` | **No** — `(require core.manifold)` | Manifold operations (placeholders pending native VM ops) |
 | `core.distributed` | `lib/core/distributed.esk` | **No** — `(require core.distributed)` | Lamport/vector clocks, counters, OR-Set, LWW register/map, RGA sequence |
+| `core.msgpack` | `lib/core/msgpack.esk` | **No** — `(require core.msgpack)` | MessagePack bytevector encoder/decoder substrate |
 
 ### B.1 `core.merkle`
 
@@ -2126,3 +2127,33 @@ concurrent adds. LWW registers and maps use monotonic timestamps plus
 canonical writer/value tie-breaks so equal-timestamp merges converge. The RGA
 sequence stores insert-after links and tombstones, preserving deterministic
 visible order across concurrent inserts and delete merges.
+
+### B.15 `core.msgpack`
+
+```scheme
+(require core.msgpack)
+```
+
+Exports (`msgpack.esk`):
+
+```scheme
+(provide
+  msgpack-null msgpack-null?
+  msgpack-map msgpack-map? msgpack-map-entries
+  msgpack-encode msgpack-decode msgpack-decode-prefix
+  msgpack-bytes->bytevector msgpack-bytevector->bytes)
+```
+
+Initial MessagePack wire-format substrate for the v1.8 distributed track.
+`msgpack-encode` returns a bytevector and `msgpack-decode` consumes exactly one
+object from a bytevector, raising on trailing bytes. `msgpack-decode-prefix`
+returns `(value next-index)` for stream framing. The supported deterministic
+subset is MessagePack nil via `(msgpack-null)`, booleans, exact integers through
+the signed/unsigned 32-bit encodings, UTF-8 strings, binary bytevectors, list
+arrays, and explicit maps created with `(msgpack-map entries)`.
+
+Maps decode back to the explicit map wrapper so alists are not confused with
+arrays. Array decode returns lists. Arbitrary vectors are intentionally not an
+encode surface yet; vector numeric-slot lowering is tracked separately, so the
+wire-format module avoids a lossy vector path until that compiler/runtime
+boundary is fixed.

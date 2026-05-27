@@ -571,9 +571,12 @@ embedded-agent variant.
 
 Initial stdlib substrate landed early: `core.distributed` provides Lamport
 clocks, vector clocks, state-based G-Counter / PN-Counter CRDTs, OR-Set, LWW
-register/map CRDTs, and an RGA-style ordered sequence. The remaining v1.8 work
-is wire-format integration and networked replication over the v1.4 socket /
-MessagePack substrate.
+register/map CRDTs, and an RGA-style ordered sequence. The first wire-format
+substrate also landed early: `core.msgpack` provides bytevector MessagePack
+encode/decode for null, booleans, exact 32-bit-range integers, UTF-8 strings,
+binary bytevectors, list arrays, and explicit maps. The remaining v1.8 work is
+networked replication over the v1.4 socket layer plus broader MessagePack /
+Proto3 coverage.
 
 ---
 
