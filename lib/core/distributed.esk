@@ -8,6 +8,7 @@
 ;;; (require core.distributed)
 
 (require core.list.search)
+(require core.sexp)
 
 (provide
   ;; Lamport clocks
@@ -21,7 +22,15 @@
   make-g-counter g-counter-counts g-counter-inc g-counter-value
   g-counter-merge
   make-pn-counter pn-counter-positive pn-counter-negative pn-counter-inc
-  pn-counter-dec pn-counter-value pn-counter-merge)
+  pn-counter-dec pn-counter-value pn-counter-merge
+  ;; state-based sets and registers
+  make-or-set or-set-adds or-set-removes or-set-clock or-set-add
+  or-set-remove or-set-member? or-set-elements or-set-merge
+  make-lww-register lww-register-value lww-register-timestamp
+  lww-register-writer lww-register-deleted? lww-register-present?
+  lww-register-set lww-register-delete lww-register-merge
+  make-lww-map lww-map-entries lww-map-set lww-map-remove lww-map-ref
+  lww-map-contains? lww-map-visible-entries lww-map-merge)
 
 (define (distributed-max a b)
   (if (> a b) a b))
@@ -35,6 +44,32 @@
   (if (< amount 0)
       (error who "expected a non-negative amount" amount)
       amount))
+
+(define (distributed-default maybe-value fallback)
+  (if (null? maybe-value)
+      fallback
+      (car maybe-value)))
+
+(define (distributed-cons-unique value values)
+  (if (member? value values)
+      values
+      (cons value values)))
+
+(define (distributed-list-union a b)
+  (if (null? b)
+      a
+      (distributed-list-union
+        (distributed-cons-unique (car b) a)
+        (cdr b))))
+
+(define (distributed-key value)
+  (sexp->canonical-string value))
+
+(define (distributed-key<? a b)
+  (string<? (distributed-key a) (distributed-key b)))
+
+(define (distributed-key>? a b)
+  (string<? (distributed-key b) (distributed-key a)))
 
 ;; ---------------------------------------------------------------------------
 ;; Lamport clocks
@@ -209,3 +244,220 @@
   (vector 'pn-counter
           (g-counter-merge (pn-counter-positive a) (pn-counter-positive b))
           (g-counter-merge (pn-counter-negative a) (pn-counter-negative b))))
+
+;; ---------------------------------------------------------------------------
+;; Observed-remove set CRDT
+;;
+;; Representation: #(or-set adds removals clock)
+;;
+;; Adds are (value dot) entries. Removals are dots. A value is visible when at
+;; least one of its add dots has not been observed by the removal set.
+;; ---------------------------------------------------------------------------
+
+(define (make-or-set)
+  (vector 'or-set '() '() (vector-clock-empty)))
+
+(define (or-set-adds set)
+  (vector-ref set 1))
+
+(define (or-set-removes set)
+  (vector-ref set 2))
+
+(define (or-set-clock set)
+  (vector-ref set 3))
+
+(define (or-set-entry-value entry)
+  (car entry))
+
+(define (or-set-entry-dot entry)
+  (cadr entry))
+
+(define (or-set-active-dot? dot removals)
+  (not (member? dot removals)))
+
+(define (or-set-active-dots-for adds removals value)
+  (cond
+    ((null? adds) '())
+    ((and (equal? (or-set-entry-value (car adds)) value)
+          (or-set-active-dot? (or-set-entry-dot (car adds)) removals))
+     (cons (or-set-entry-dot (car adds))
+           (or-set-active-dots-for (cdr adds) removals value)))
+    (else
+     (or-set-active-dots-for (cdr adds) removals value))))
+
+(define (or-set-add set node value)
+  (let* ((clock (vector-clock-tick (or-set-clock set) node))
+         (dot (list node (vector-clock-ref clock node)))
+         (entry (list value dot)))
+    (vector 'or-set
+            (distributed-cons-unique entry (or-set-adds set))
+            (or-set-removes set)
+            clock)))
+
+(define (or-set-remove set value)
+  (vector 'or-set
+          (or-set-adds set)
+          (distributed-list-union
+            (or-set-removes set)
+            (or-set-active-dots-for (or-set-adds set)
+                                    (or-set-removes set)
+                                    value))
+          (or-set-clock set)))
+
+(define (or-set-member? set value)
+  (not (null? (or-set-active-dots-for (or-set-adds set)
+                                      (or-set-removes set)
+                                      value))))
+
+(define (or-set-elements-loop adds removals seen)
+  (cond
+    ((null? adds) seen)
+    ((and (or-set-active-dot? (or-set-entry-dot (car adds)) removals)
+          (not (member? (or-set-entry-value (car adds)) seen)))
+     (or-set-elements-loop (cdr adds)
+                           removals
+                           (cons (or-set-entry-value (car adds)) seen)))
+    (else
+     (or-set-elements-loop (cdr adds) removals seen))))
+
+(define (or-set-elements set)
+  (or-set-elements-loop (or-set-adds set) (or-set-removes set) '()))
+
+(define (or-set-merge a b)
+  (vector 'or-set
+          (distributed-list-union (or-set-adds a) (or-set-adds b))
+          (distributed-list-union (or-set-removes a) (or-set-removes b))
+          (vector-clock-merge (or-set-clock a) (or-set-clock b))))
+
+;; ---------------------------------------------------------------------------
+;; Last-writer-wins register and map CRDTs
+;;
+;; Timestamps should be monotonic per writer. Writer and value tie-breaks use
+;; canonical S-expression strings so equal-timestamp merges converge.
+;; ---------------------------------------------------------------------------
+
+(define (make-lww-register value timestamp writer)
+  (vector 'lww-register value timestamp writer #f))
+
+(define (lww-register-value register)
+  (vector-ref register 1))
+
+(define (lww-register-timestamp register)
+  (vector-ref register 2))
+
+(define (lww-register-writer register)
+  (vector-ref register 3))
+
+(define (lww-register-deleted? register)
+  (vector-ref register 4))
+
+(define (lww-register-present? register)
+  (not (lww-register-deleted? register)))
+
+(define (lww-register-set register value timestamp writer)
+  (make-lww-register value timestamp writer))
+
+(define (lww-register-delete register timestamp writer)
+  (vector 'lww-register #f timestamp writer #t))
+
+(define (lww-register-newer? a b)
+  (cond
+    ((> (lww-register-timestamp a) (lww-register-timestamp b)) #t)
+    ((< (lww-register-timestamp a) (lww-register-timestamp b)) #f)
+    ((distributed-key>? (lww-register-writer a) (lww-register-writer b)) #t)
+    ((distributed-key<? (lww-register-writer a) (lww-register-writer b)) #f)
+    ((and (lww-register-deleted? a)
+          (not (lww-register-deleted? b))) #t)
+    ((and (not (lww-register-deleted? a))
+          (lww-register-deleted? b)) #f)
+    ((distributed-key>? (lww-register-value a) (lww-register-value b)) #t)
+    (else #f)))
+
+(define (lww-register-merge a b)
+  (if (lww-register-newer? b a) b a))
+
+(define (make-lww-map)
+  (vector 'lww-map '()))
+
+(define (lww-map-entries map)
+  (vector-ref map 1))
+
+(define (lww-map-entry-ref entries key)
+  (cond
+    ((null? entries) #f)
+    ((equal? (caar entries) key) (car entries))
+    (else (lww-map-entry-ref (cdr entries) key))))
+
+(define (lww-map-entry-set entries key register)
+  (cond
+    ((null? entries) (list (list key register)))
+    ((equal? (caar entries) key)
+     (cons (list key register) (cdr entries)))
+    (else
+     (cons (car entries)
+           (lww-map-entry-set (cdr entries) key register)))))
+
+(define (lww-map-set map key value timestamp writer)
+  (vector 'lww-map
+          (lww-map-entry-set (lww-map-entries map)
+                             key
+                             (make-lww-register value timestamp writer))))
+
+(define (lww-map-remove map key timestamp writer)
+  (vector 'lww-map
+          (lww-map-entry-set (lww-map-entries map)
+                             key
+                             (lww-register-delete
+                               (make-lww-register #f timestamp writer)
+                               timestamp
+                               writer))))
+
+(define (lww-map-ref map key . default)
+  (let ((entry (lww-map-entry-ref (lww-map-entries map) key)))
+    (if entry
+        (let ((register (cadr entry)))
+          (if (lww-register-present? register)
+              (lww-register-value register)
+              (distributed-default default #f)))
+        (distributed-default default #f))))
+
+(define (lww-map-contains? map key)
+  (let ((entry (lww-map-entry-ref (lww-map-entries map) key)))
+    (if entry
+        (lww-register-present? (cadr entry))
+        #f)))
+
+(define (lww-map-visible-entries-loop entries acc)
+  (cond
+    ((null? entries) acc)
+    ((lww-register-present? (cadr (car entries)))
+     (lww-map-visible-entries-loop
+       (cdr entries)
+       (cons (list (car (car entries))
+                   (lww-register-value (cadr (car entries))))
+             acc)))
+    (else
+     (lww-map-visible-entries-loop (cdr entries) acc))))
+
+(define (lww-map-visible-entries map)
+  (lww-map-visible-entries-loop (lww-map-entries map) '()))
+
+(define (lww-map-merge-entries entries acc)
+  (if (null? entries)
+      acc
+      (let* ((entry (car entries))
+             (key (car entry))
+             (register (cadr entry))
+             (existing (lww-map-entry-ref acc key))
+             (merged-register
+               (if existing
+                   (lww-register-merge (cadr existing) register)
+                   register)))
+        (lww-map-merge-entries
+          (cdr entries)
+          (lww-map-entry-set acc key merged-register)))))
+
+(define (lww-map-merge a b)
+  (vector 'lww-map
+          (lww-map-merge-entries (lww-map-entries b)
+                                 (lww-map-entries a))))

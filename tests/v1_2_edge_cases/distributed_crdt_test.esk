@@ -92,6 +92,73 @@
 (check "pn-counter rejects negative decrement"
        (raises? (lambda () (pn-counter-dec (make-pn-counter) 'a -1))))
 
+(define os-a (or-set-add (make-or-set) 'a 'task))
+(define os-b (or-set-add (make-or-set) 'b 'task))
+(define os-merged (or-set-merge os-a os-b))
+(define os-a-removed (or-set-remove os-a 'task))
+(define os-unseen-add-survives (or-set-merge os-a-removed os-b))
+(define os-all-removed (or-set-remove os-merged 'task))
+(define os-with-other (or-set-add os-all-removed 'a 'other))
+
+(check "or-set add makes value visible"
+       (or-set-member? os-a 'task))
+(check "or-set add advances writer vector clock"
+       (= (vector-clock-ref (or-set-clock os-a) 'a) 1))
+(check "or-set merge preserves concurrent add"
+       (or-set-member? os-merged 'task))
+(check "or-set observed remove hides observed dot"
+       (not (or-set-member? os-a-removed 'task)))
+(check "or-set remove does not erase unseen concurrent add"
+       (or-set-member? os-unseen-add-survives 'task))
+(check "or-set remove after merge erases all observed dots"
+       (not (or-set-member? os-all-removed 'task)))
+(check "or-set elements return visible values only"
+       (and (or-set-member? os-with-other 'other)
+            (not (or-set-member? os-with-other 'task))))
+(check "or-set merge is idempotent for visibility"
+       (or-set-member? (or-set-merge os-merged os-merged) 'task))
+
+(define lww-old (make-lww-register 'old 1 'a))
+(define lww-new (lww-register-set lww-old 'new 2 'a))
+(define lww-merged (lww-register-merge lww-old lww-new))
+(define lww-writer-a (make-lww-register 'writer-a 3 'a))
+(define lww-writer-b (make-lww-register 'writer-b 3 'b))
+(define lww-tie (lww-register-merge lww-writer-a lww-writer-b))
+(define lww-tie-rev (lww-register-merge lww-writer-b lww-writer-a))
+(define lww-deleted (lww-register-delete lww-new 4 'a))
+
+(check "lww-register newer timestamp wins"
+       (eq? (lww-register-value lww-merged) 'new))
+(check "lww-register writer tie-break converges"
+       (and (eq? (lww-register-value lww-tie) 'writer-b)
+            (eq? (lww-register-value lww-tie-rev) 'writer-b)))
+(check "lww-register delete produces tombstone"
+       (and (lww-register-deleted? lww-deleted)
+            (not (lww-register-present? lww-deleted))))
+(check "lww-register tombstone wins by timestamp"
+       (not (lww-register-present?
+              (lww-register-merge lww-new lww-deleted))))
+
+(define lm-a (lww-map-set (make-lww-map) 'mode 'draft 1 'a))
+(define lm-b (lww-map-set (make-lww-map) 'mode 'final 2 'b))
+(define lm-merged (lww-map-merge lm-a lm-b))
+(define lm-removed (lww-map-remove lm-merged 'mode 3 'a))
+(define lm-with-owner (lww-map-set lm-removed 'owner 'alice 2 'a))
+(define lm-with-priority (lww-map-set (make-lww-map) 'priority 5 1 'b))
+(define lm-combined (lww-map-merge lm-with-owner lm-with-priority))
+
+(check "lww-map newer entry wins"
+       (eq? (lww-map-ref lm-merged 'mode) 'final))
+(check "lww-map remove hides key"
+       (and (not (lww-map-contains? lm-removed 'mode))
+            (eq? (lww-map-ref lm-removed 'mode 'missing) 'missing)))
+(check "lww-map merge keeps independent keys"
+       (and (eq? (lww-map-ref lm-combined 'owner) 'alice)
+            (= (lww-map-ref lm-combined 'priority) 5)))
+(check "lww-map merge is idempotent"
+       (eq? (lww-map-ref (lww-map-merge lm-combined lm-combined) 'owner)
+            'alice))
+
 (display "---") (newline)
 (display "Total: ") (display (+ pass fail))
 (display ", PASS: ") (display pass)
