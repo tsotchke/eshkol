@@ -1,0 +1,38 @@
+{
+  "id": "ESH-0008",
+  "title": "Native image I/O — Linux via libpng + libjpeg-turbo + libwebp",
+  "status": "pending",
+  "priority": "high",
+  "workstream": "media-vendoring-removal",
+  "owner": null,
+  "preferred_backend": "codex",
+  "preferred_node": "cosbox",
+  "max_cost_usd": 3.00,
+  "goal": "Implement the Linux backend for the image-I/O dispatch table defined in ESH-0006. Uses system libpng (PNG), libjpeg-turbo (JPEG/BMP), and libwebp (WebP). Auto-detected via pkg-config. Native to the platform.",
+  "file_globs": [
+    "lib/core/image_io_linux.c",
+    "CMakeLists.txt"
+  ],
+  "next_actions": [
+    "lib/core/image_io_linux.c: implement the three function-pointer slots using libpng (png_read_image / png_write_image), libjpeg-turbo (jpeg_read_scanlines / jpeg_write_scanlines), and libwebp (WebPDecodeRGBA / WebPEncodeRGBA).",
+    "Use libswscale or a simple bilinear resampler for resize (no GLU/freeimage dependency — keep the dependency surface minimal).",
+    "Wire into CMakeLists.txt: LINUX branch pkg_check_modules(PNG libpng) + pkg_check_modules(JPEG libjpeg) + pkg_check_modules(WEBP libwebp). Link the three libs.",
+    "Add tests/v1_3_edge_cases/image_io_linux_test.esk: same shape as the Darwin test (read PNG, round-trip JPEG, resize verification)."
+  ],
+  "acceptance": [
+    "lib/core/image_io_linux.c provides read/write/resize matching the contract.",
+    "Linux build links libpng + libjpeg + libwebp via pkg-config; no deps/stb.",
+    "image_io_linux_test passes on cosbox AND old-donkey (x86_64) AND xavier (aarch64).",
+    "ICC `native_image_io_linux_works` probe PASS."
+  ],
+  "blocked_by": ["ESH-0006"],
+  "verification": [
+    "test -f lib/core/image_io_linux.c",
+    "pkg-config --exists libpng && pkg-config --exists libjpeg && pkg-config --exists libwebp",
+    "cd build && cmake --build . --target eshkol-run",
+    "./build/eshkol-run tests/v1_3_edge_cases/image_io_linux_test.esk -o /tmp/esh0008 && /tmp/esh0008",
+    "bash scripts/run_icc_smoke.sh"
+  ],
+  "platform": "linux",
+  "node_targets": ["cosbox", "old-donkey", "xavier"]
+}

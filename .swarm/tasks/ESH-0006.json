@@ -1,0 +1,44 @@
+{
+  "id": "ESH-0006",
+  "title": "Native image I/O — replace deps/stb with platform APIs (macOS coordinator + Linux + Windows)",
+  "status": "pending",
+  "priority": "high",
+  "workstream": "media-vendoring-removal",
+  "owner": null,
+  "preferred_backend": "claude",
+  "preferred_node": "atlas",
+  "max_cost_usd": 6.00,
+  "goal": "Establish the Eshkol-side image-I/O contract that the three per-platform implementation tasks (ESH-0007 macOS, ESH-0008 Linux, ESH-0009 Windows) will conform to. Defines the C API (image_read, image_write, image_resize, image_format), the tensor shape conventions (HWC vs CHW), the supported formats (PNG, JPEG, BMP, WebP), the error reporting model, and the CMake find_package() integration points. After this lands, the three platform tasks are unblocked.",
+  "file_globs": [
+    "inc/eshkol/core/image_io.h",
+    "lib/core/image_io.c",
+    "lib/core/image_io_platform.h",
+    "CMakeLists.txt",
+    "cmake/FindImageIO.cmake",
+    "docs/breakdown/IMAGE_IO.md"
+  ],
+  "next_actions": [
+    "Define inc/eshkol/core/image_io.h with the public C API: eshkol_image_read(path, *width, *height, *channels) returning a uint8_t* + format enum; eshkol_image_write(path, data, w, h, ch, format); eshkol_image_resize(src, src_w, src_h, dst_w, dst_h, ch).",
+    "Define lib/core/image_io_platform.h with a dispatch table populated by each platform implementation: { read, write, resize }.",
+    "Convert lib/core/image_io.c to delegate to the platform table, removing every #include of deps/stb/*.",
+    "Add cmake/FindImageIO.cmake selecting between platform backends: APPLE → CoreGraphics/ImageIO framework, LINUX → pkg-config libpng + libjpeg + libwebp, WIN32 → GDI+ (Gdiplus.lib).",
+    "Document the contract in docs/breakdown/IMAGE_IO.md: shape conventions, format support matrix, error reporting.",
+    "Keep deps/stb/ as a fallback ONLY behind -DESHKOL_USE_STB_FALLBACK=ON (gated, defaults OFF) so we can A/B during the rollout."
+  ],
+  "acceptance": [
+    "lib/core/image_io.c contains zero references to deps/stb/.",
+    "CMake build succeeds on macOS, Linux, Windows with platform backend auto-detected.",
+    "Existing image_io tests in tests/v1_2_edge_cases pass without modification on the platform where their implementation lands.",
+    "ICC `native_image_io_no_stb` smoke probe flips from FAIL to PASS."
+  ],
+  "blocked_by": [],
+  "verification": [
+    "grep -L 'deps/stb' lib/core/image_io.c || (echo 'still references stb'; exit 1)",
+    "cd build && cmake --build . --target eshkol-run",
+    "bash scripts/run_v1_2_edge_cases_tests.sh",
+    "bash scripts/run_icc_smoke.sh",
+    "grep -q '\"native_image_io_no_stb\".*PASS' scripts/icc_traces/eshkol_smoke.jsonl"
+  ],
+  "ux_payoff": "Removes a vendored 17kLOC third-party dependency. Once all three per-platform tasks land, deps/stb/ can be deleted entirely.",
+  "downstream_tasks": ["ESH-0007", "ESH-0008", "ESH-0009"]
+}

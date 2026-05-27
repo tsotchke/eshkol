@@ -1,0 +1,44 @@
+{
+  "id": "ESH-0011",
+  "title": "Portable event-loop primitive (epoll / kqueue / IOCP)",
+  "status": "pending",
+  "priority": "medium",
+  "workstream": "v1.4-foundation",
+  "owner": null,
+  "preferred_backend": "codex",
+  "preferred_node": "cosbox",
+  "max_cost_usd": 4.00,
+  "goal": "Introduce a portable event-loop primitive that wraps epoll on Linux, kqueue on macOS/BSD, and IOCP on Windows. Internally used by file ports, SQLite I/O, subprocess wait, and timers. Public surface stays minimal: make-event-loop, event-loop-add-fd!, event-loop-remove-fd!, event-loop-poll, event-loop-close. v1.4 sockets will register their fds against the same loop.",
+  "file_globs": [
+    "inc/eshkol/core/event_loop.h",
+    "lib/core/event_loop_kqueue.c",
+    "lib/core/event_loop_epoll.c",
+    "lib/core/event_loop_iocp.c",
+    "lib/core/event_loop.c",
+    "CMakeLists.txt",
+    "tests/v1_3_edge_cases/event_loop_test.esk"
+  ],
+  "next_actions": [
+    "Define inc/eshkol/core/event_loop.h: opaque eshkol_event_loop_t*, eshkol_event_loop_create(int max_events), eshkol_event_loop_add(loop, fd, events, user_data), eshkol_event_loop_remove(loop, fd), eshkol_event_loop_poll(loop, timeout_ms, &out_events, &n_events), eshkol_event_loop_close(loop).",
+    "lib/core/event_loop.c: platform dispatch table; per-platform implementation files implement the dispatch entries.",
+    "lib/core/event_loop_kqueue.c: macOS/BSD implementation via kqueue/kevent.",
+    "lib/core/event_loop_epoll.c: Linux implementation via epoll_create1/epoll_ctl/epoll_wait.",
+    "lib/core/event_loop_iocp.c: Windows implementation via CreateIoCompletionPort / GetQueuedCompletionStatus.",
+    "Wire into CMakeLists.txt: select platform file based on APPLE/LINUX/WIN32.",
+    "Add tests/v1_3_edge_cases/event_loop_test.esk: create loop, add a pipe fd, write to its other end, poll, verify the read end is reported readable."
+  ],
+  "acceptance": [
+    "(make-event-loop 64) returns a valid event-loop handle.",
+    "Pipe read+write fd round-trip via event-loop-poll completes within timeout.",
+    "event-loop-close releases the underlying kqueue/epoll/iocp resource.",
+    "ICC `event_loop_works` probe PASS on Darwin AND Linux AND Windows."
+  ],
+  "blocked_by": [],
+  "verification": [
+    "./build/eshkol-run tests/v1_3_edge_cases/event_loop_test.esk -o /tmp/esh0011 && /tmp/esh0011",
+    "ssh cosbox 'cd src/eshkol && ./build/eshkol-run tests/v1_3_edge_cases/event_loop_test.esk -o /tmp/esh0011 && /tmp/esh0011'",
+    "ssh jack-blupc 'cd src/eshkol && cmake --build build-jack-msys-ucrt --target eshkol-run && ./build-jack-msys-ucrt/eshkol-run.exe tests/v1_3_edge_cases/event_loop_test.esk -o /tmp/esh0011 && /tmp/esh0011'",
+    "bash scripts/run_icc_smoke.sh"
+  ],
+  "v1_4_payoff": "v1.4 sockets register their accept/read fds against this loop. v1.4 async I/O is a thin layer on top. v1.4 fibers + channels also schedule against this loop."
+}

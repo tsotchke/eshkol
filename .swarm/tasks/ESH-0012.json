@@ -1,0 +1,40 @@
+{
+  "id": "ESH-0012",
+  "title": "AD input2 plumbing for conv2d / batchnorm / layernorm / attention forward sites",
+  "status": "pending",
+  "priority": "medium",
+  "workstream": "v1.5-foundation",
+  "owner": null,
+  "preferred_backend": "claude",
+  "preferred_node": "atlas",
+  "max_cost_usd": 4.00,
+  "goal": "tensor-matmul already populates input2 (verified by ICC matmul_kernel_grad_nonzero probe). The other four kernel-style ops emit AD tape nodes with input2=null, so the backward kernel's `if (node->input2) accumulate_kernel_grad(...)` guard never fires. Wire input2 at each of the four forward sites so gradient flows through both operands. Pre-builds v1.5 LSTM/GRU and differentiable-logic kernels.",
+  "file_globs": [
+    "lib/backend/tensor_conv_codegen.cpp",
+    "lib/backend/tensor_norm_codegen.cpp",
+    "lib/backend/tensor_attention_codegen.cpp",
+    "lib/backend/tensor_backward.cpp",
+    "tests/v1_3_edge_cases/ad_input2_test.esk"
+  ],
+  "next_actions": [
+    "lib/backend/tensor_conv_codegen.cpp: at the conv2d forward site, after the result tensor is built and the tape node allocated, set node->input2 = kernel_tensor before emitting the result.",
+    "Same for batchnorm (input2 = gamma), layernorm (input2 = gamma), and the four attention sites (each with the appropriate paired operand).",
+    "Verify that lib/backend/tensor_backward.cpp's existing `if (node->input2) eshkol_accumulate_tensor_grad(...)` paths fire correctly: run with a dummy upstream gradient and confirm the second-operand grad lands.",
+    "Add tests/v1_3_edge_cases/ad_input2_test.esk: numerical-gradient check for each of the four ops against finite differences. tolerance 1e-5."
+  ],
+  "acceptance": [
+    "gradient of (lambda (k) (tensor-sum (conv2d image k stride))) w.r.t. k matches finite-difference within 1e-5.",
+    "Same for batchnorm w.r.t. gamma.",
+    "Same for layernorm w.r.t. gamma.",
+    "Same for the attention forward op w.r.t. its key/value tensors.",
+    "Existing examples/neural_xor.esk still produces final loss < 0.001 (no regression on matmul AD path).",
+    "ICC `ad_input2_conv2d_grad_works`, `ad_input2_batchnorm_grad_works`, `ad_input2_layernorm_grad_works`, `ad_input2_attention_grad_works` probes all PASS."
+  ],
+  "blocked_by": [],
+  "verification": [
+    "./build/eshkol-run tests/v1_3_edge_cases/ad_input2_test.esk -o /tmp/esh0012 && /tmp/esh0012",
+    "./build/eshkol-run examples/neural_xor.esk -o /tmp/xor && /tmp/xor",
+    "bash scripts/run_icc_smoke.sh"
+  ],
+  "v1_5_payoff": "v1.5 LSTM/GRU cells differentiate end-to-end. v1.5 differentiable-logic kernels (soft unification, weighted rules) build on the same tensor-backward dispatch."
+}

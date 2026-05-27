@@ -1,0 +1,42 @@
+{
+  "id": "ESH-0001",
+  "title": "Operand-type-aware error messages — runtime type-check sites",
+  "status": "pending",
+  "priority": "high",
+  "workstream": "developer-experience",
+  "owner": null,
+  "preferred_backend": "claude",
+  "preferred_node": "atlas",
+  "max_cost_usd": 3.00,
+  "goal": "Every runtime type-check failure currently emits `Type error in <op>: expected <expected>`. Extend each site to also include the actual operand type tag in human-readable form: `Type error in <: expected number, got string`. The operand value is already in scope at every check site; the missing piece is a small helper `eshkol_format_value_type_tag(tagged_value_t)` that returns one of the canonical type names ('integer', 'rational', 'bignum', 'double', 'complex', 'dual-number', 'symbol', 'string', 'character', 'boolean', 'pair', 'vector', 'tensor', 'procedure', 'continuation', 'environment', 'hash-table', 'port', 'handle', 'null', 'logic-var', 'substitution', 'fact', 'knowledge-base', 'factor-graph', 'workspace').",
+  "file_globs": [
+    "lib/backend/arithmetic_codegen.cpp",
+    "lib/backend/llvm_codegen.cpp",
+    "lib/backend/tensor_*_codegen.cpp",
+    "lib/backend/string_io_codegen.cpp",
+    "lib/core/runtime_errors_hosted.cpp",
+    "lib/core/runtime_operations_hosted.cpp",
+    "inc/eshkol/core/runtime.h",
+    "tests/v1_3_edge_cases/operand_type_in_error_test.esk"
+  ],
+  "next_actions": [
+    "Add `eshkol_format_value_type_tag(tagged_value_t v) -> const char*` to lib/core/runtime_errors_hosted.cpp.",
+    "Audit every `eshkol_raise(..., \"Type error in <op>: expected <T>\")` call site and rewrite to include the operand type via the new helper.",
+    "Add tests/v1_3_edge_cases/operand_type_in_error_test.esk covering: int < string, string + boolean, vector-ref on a number, car on a vector, +/* /min/max with mismatched types, comparison ops, predicates that demand specific types.",
+    "Update docs/breakdown/SCHEME_COMPATIBILITY.md's 'Error messages' section to show the new format."
+  ],
+  "acceptance": [
+    "Every type-error message in tests/v1_3_edge_cases/operand_type_in_error_test.esk includes the actual operand type as `got <type-name>`.",
+    "No type-error message regresses to its previous unhelpful form.",
+    "scripts/run_v1_2_edge_cases_tests.sh and scripts/run_v1_3_edge_cases_tests.sh both pass 100%."
+  ],
+  "blocked_by": [],
+  "verification": [
+    "cd build && cmake --build . --target eshkol-run",
+    "./build/eshkol-run tests/v1_3_edge_cases/operand_type_in_error_test.esk -o /tmp/esh0001 && /tmp/esh0001",
+    "bash scripts/run_v1_2_edge_cases_tests.sh",
+    "bash scripts/run_icc_smoke.sh",
+    "python3 ~/Desktop/infinite_context_coder/scripts/codebase_tool.py production-audit --repo eshkol_lang --target v1.3-release --trace-dir scripts/icc_traces"
+  ],
+  "ux_payoff": "Highest UX-per-LOC win in v1.3. Every developer who hits a type error today gets a concrete next step instead of guessing which operand was wrong."
+}

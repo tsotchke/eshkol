@@ -1,0 +1,44 @@
+{
+  "id": "ESH-0005",
+  "title": "SICP smoke harness — 6 canonical exercises as ICC oracle probes",
+  "status": "pending",
+  "priority": "high",
+  "workstream": "r7rs-sicp-parity",
+  "owner": null,
+  "preferred_backend": "claude",
+  "preferred_node": "atlas",
+  "max_cost_usd": 4.00,
+  "goal": "Add 6 canonical SICP exercises as runnable Eshkol files + corresponding ICC smoke probes. Once they all pass, 'Eshkol reproduces SICP' becomes a mechanically-checkable claim. The 6 are deliberately chosen to stress the language features SICP relies on most heavily.",
+  "file_globs": [
+    "tests/v1_3_edge_cases/sicp/sieve_of_eratosthenes_test.esk",
+    "tests/v1_3_edge_cases/sicp/metacircular_eval_test.esk",
+    "tests/v1_3_edge_cases/sicp/lazy_evaluator_test.esk",
+    "tests/v1_3_edge_cases/sicp/amb_multiple_dwelling_test.esk",
+    "tests/v1_3_edge_cases/sicp/query_same_supervisor_test.esk",
+    "tests/v1_3_edge_cases/sicp/register_machine_fib_test.esk",
+    "scripts/run_icc_smoke.sh",
+    ".icc/completion-oracles.yaml"
+  ],
+  "next_actions": [
+    "tests/v1_3_edge_cases/sicp/sieve_of_eratosthenes_test.esk: §3.5.2. (require core.sicp-streams). Define sieve via stream-filter recursion. Assert (stream-ref primes 50) == 233.",
+    "tests/v1_3_edge_cases/sicp/metacircular_eval_test.esk: §4.1. Copy SICP's eval+apply+env code verbatim. Assert (eval '(+ 1 2) the-global-environment) inside the metacircular evaluator returns 3.",
+    "tests/v1_3_edge_cases/sicp/lazy_evaluator_test.esk: §4.2. SICP's lazy interpreter. Assert (try (* 1 (/ 1 0)) 5) returns 5 (lazy short-circuit).",
+    "tests/v1_3_edge_cases/sicp/amb_multiple_dwelling_test.esk: §4.3. SICP's CPS amb evaluator. Assert (multiple-dwelling) produces ((baker 3) (cooper 2) (fletcher 4) (miller 5) (smith 1)).",
+    "tests/v1_3_edge_cases/sicp/query_same_supervisor_test.esk: §4.4. SICP's query system on a small KB. Assert that (job ?x (computer programmer)) over Eva Lu Ator's company KB returns the expected set.",
+    "tests/v1_3_edge_cases/sicp/register_machine_fib_test.esk: §5.2. SICP's register-machine simulator running iterative-fib for n=10. Assert result == 55.",
+    "Add a `sicp_smoke_complete` ICC probe in scripts/run_icc_smoke.sh that runs all 6 and exits 0 only if all pass.",
+    "Add a `sicp-reproduces` ICC oracle in .icc/completion-oracles.yaml gated on the smoke probe."
+  ],
+  "acceptance": [
+    "All 6 SICP exercise files compile and produce the expected output.",
+    "Each test prints PASS/FAIL on its own; the harness rolls them up.",
+    "ICC oracle `sicp-reproduces` flips to complete with all 6 probes PASS."
+  ],
+  "blocked_by": ["ESH-0002"],
+  "verification": [
+    "for t in tests/v1_3_edge_cases/sicp/*.esk; do ./build/eshkol-run $t -o /tmp/sicp_test && /tmp/sicp_test || exit 1; done",
+    "bash scripts/run_icc_smoke.sh",
+    "python3 ~/Desktop/infinite_context_coder/scripts/codebase_tool.py completion-oracle --repo eshkol_lang --target sicp-reproduces --trace-dir scripts/icc_traces"
+  ],
+  "ux_payoff": "Turns 'we can reproduce SICP in Eshkol' from a claim into a verifiable property of every commit."
+}

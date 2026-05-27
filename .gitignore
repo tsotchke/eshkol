@@ -135,3 +135,4 @@ CMakeFiles/
 /install_manifest.txt
 notes/
 scripts/icc_traces/
+.swarm/runtime/

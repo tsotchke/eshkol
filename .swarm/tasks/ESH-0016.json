@@ -1,0 +1,38 @@
+{
+  "id": "ESH-0016",
+  "title": "Channel API on the work-stealing thread pool (v1.4 concurrency foundation)",
+  "status": "pending",
+  "priority": "medium",
+  "workstream": "v1.4-foundation",
+  "owner": null,
+  "preferred_backend": "codex",
+  "preferred_node": "cosbox",
+  "max_cost_usd": 3.00,
+  "goal": "Add a CSP-style channel primitive on top of the existing work-stealing thread pool. Public surface: make-channel, channel-send!, channel-receive!, channel-close!, channel-closed?. Bounded and unbounded variants. Backed by the existing thread pool — sends block when bounded buffer is full; receives block when empty.",
+  "file_globs": [
+    "inc/eshkol/core/channel.h",
+    "lib/core/runtime_channel.cpp",
+    "lib/backend/llvm_codegen.cpp",
+    "tests/v1_3_edge_cases/channel_test.esk"
+  ],
+  "next_actions": [
+    "Define ESHKOL_VALUE_CHANNEL as a new tagged-value subtype (HEAP_SUBTYPE_CHANNEL).",
+    "lib/core/runtime_channel.cpp: implement make-channel (capacity), channel-send! (blocking or non-blocking), channel-receive! (blocking or non-blocking, returns either value or the EOF-object on closed), channel-close!.",
+    "Use the existing per-thread arena for channel buffer storage; lock-free SPSC ring for capacity=1 channels; mutex+condvar for bounded; concurrent linked queue for unbounded.",
+    "Wire builtins in lib/backend/llvm_codegen.cpp.",
+    "Add tests/v1_3_edge_cases/channel_test.esk: producer/consumer over a bounded channel between two threads via parallel-execute; verify FIFO order and back-pressure."
+  ],
+  "acceptance": [
+    "(let ((ch (make-channel 1))) (channel-send! ch 42) (channel-receive! ch)) => 42",
+    "Producer / consumer in parallel across 1000 sends maintains FIFO order.",
+    "Closed channel: send raises; receive returns EOF object after draining buffer.",
+    "Bounded channel with capacity 0 is the synchronous-rendezvous variant (sender blocks until receiver ready)."
+  ],
+  "blocked_by": [],
+  "verification": [
+    "./build/eshkol-run tests/v1_3_edge_cases/channel_test.esk -o /tmp/esh0016 && /tmp/esh0016",
+    "bash scripts/run_parallel_tests.sh",
+    "bash scripts/run_icc_smoke.sh"
+  ],
+  "v1_4_payoff": "v1.4 channels are the spec for inter-fiber communication. v1.4 fibers schedule against the same primitive."
+}

@@ -1,0 +1,45 @@
+{
+  "id": "ESH-0003",
+  "title": "R7RS final-mile: raise-continuable, error-object? family, exact-integer-sqrt, char-ci=? family",
+  "status": "pending",
+  "priority": "high",
+  "workstream": "r7rs-sicp-parity",
+  "owner": null,
+  "preferred_backend": "codex",
+  "preferred_node": "atlas",
+  "max_cost_usd": 4.00,
+  "goal": "Close the four genuinely-missing R7RS-small items called out in docs/breakdown/SCHEME_COMPATIBILITY.md. Each is a small focused implementation with a corresponding regression test. After this lands, Eshkol claims true R7RS-small parity (up from the current 95% / 232 of 244 procedures).",
+  "file_globs": [
+    "lib/backend/llvm_codegen.cpp",
+    "lib/backend/string_io_codegen.cpp",
+    "lib/core/runtime_exceptions_hosted.cpp",
+    "lib/core/bignum.cpp",
+    "lib/core/runtime_*.cpp",
+    "inc/eshkol/core/runtime.h",
+    "docs/breakdown/SCHEME_COMPATIBILITY.md",
+    "tests/v1_3_edge_cases/r7rs_final_mile_test.esk"
+  ],
+  "next_actions": [
+    "raise-continuable (R7RS 6.11): extend the exception machinery so a handler invoked via with-exception-handler can return a value that becomes the result of the raise call. Currently raise unwinds; raise-continuable should not unwind on handler return.",
+    "error-object? / error-object-message / error-object-irritants (R7RS 6.11): wrap raised values in a tagged error-object struct (HEAP_SUBTYPE_ERROR_OBJECT) with message + irritants list. (error msg . irritants) constructs one; (raise <other-value>) does not wrap.",
+    "exact-integer-sqrt (R7RS 6.2.6): Newton iteration on bignums. Returns (values q r) where n = q*q + r and r < 2q+1. The numeric tower already handles bignum; just need the algorithm.",
+    "char-ci=? / char-ci<? / char-ci>? / char-ci<=? / char-ci>=? / string-ci=? / string-ci<? / string-ci>? / string-ci<=? / string-ci>=? (R7RS 6.6 + 6.7): fold-case + compare. char-foldcase already exists; build the predicates on top.",
+    "Update docs/breakdown/SCHEME_COMPATIBILITY.md's 'Known Limitations' table — flip each row from Missing to Supported, remove the workaround column."
+  ],
+  "acceptance": [
+    "(raise-continuable 'err) inside a handler that returns 'recovered yields 'recovered (not exception propagation).",
+    "(error-object? (with-exception-handler (lambda (e) e) (lambda () (error \"fail\" 1 2 3)))) => #t.",
+    "(error-object-message <obj>) => \"fail\"; (error-object-irritants <obj>) => (1 2 3).",
+    "(exact-integer-sqrt (expt 10 50)) returns the exact square root + zero remainder.",
+    "(char-ci=? #\\A #\\a) => #t; (string-ci=? \"FOO\" \"foo\") => #t.",
+    "docs/breakdown/SCHEME_COMPATIBILITY.md no longer lists these in the Missing column."
+  ],
+  "blocked_by": [],
+  "verification": [
+    "./build/eshkol-run tests/v1_3_edge_cases/r7rs_final_mile_test.esk -o /tmp/esh0003 && /tmp/esh0003",
+    "bash scripts/run_v1_2_edge_cases_tests.sh",
+    "bash scripts/run_icc_smoke.sh",
+    "grep -q r7rs_final_mile_works scripts/icc_traces/eshkol_smoke.jsonl"
+  ],
+  "ux_payoff": "Lets Eshkol claim TRUE R7RS-small parity (244/244 procedures). Removes a recurring sharp edge: every Scheme programmer who reaches for error-object-message finds it missing today."
+}
