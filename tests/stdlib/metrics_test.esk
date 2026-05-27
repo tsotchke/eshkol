@@ -31,11 +31,19 @@
                 (list "path" "method")))
 (define inflight
   (make-gauge "eshkol_inflight" "In-flight requests" (list "state")))
+(define latency
+  (make-histogram "eshkol_request_duration_seconds"
+                  "Request latency seconds"
+                  (list "path" "method")
+                  (list 0.1 0.5 1.0)))
 
 (counter-inc! req-total (list "/quote\"line\nnext" "C:\\tmp"))
 (counter-add! req-total (list "/quote\"line\nnext" "C:\\tmp") 2)
 (gauge-set! inflight (list "busy") 5)
 (gauge-dec! inflight (list "busy"))
+(histogram-observe! latency (list "/tool" "POST") 0.05)
+(histogram-observe! latency (list "/tool" "POST") 0.7)
+(histogram-observe! latency (list "/tool" "POST") 2.0)
 
 (let ((rendered (metrics-render)))
   (check "renders counter help with escapes"
@@ -47,7 +55,24 @@
          (string-contains? rendered
                            "eshkol_requests_total{path=\"/quote\\\"line\\nnext\",method=\"C:\\\\tmp\"} 3"))
   (check "renders gauge value"
-         (string-contains? rendered "eshkol_inflight{state=\"busy\"} 4")))
+         (string-contains? rendered "eshkol_inflight{state=\"busy\"} 4"))
+  (check "renders histogram type"
+         (string-contains? rendered "# TYPE eshkol_request_duration_seconds histogram"))
+  (check "renders histogram finite bucket with labels"
+         (string-contains? rendered
+                           "eshkol_request_duration_seconds_bucket{path=\"/tool\",method=\"POST\",le=\"0.1\"} 1"))
+  (check "renders histogram cumulative bucket"
+         (string-contains? rendered
+                           "eshkol_request_duration_seconds_bucket{path=\"/tool\",method=\"POST\",le=\"1\"} 2"))
+  (check "renders histogram infinity bucket"
+         (string-contains? rendered
+                           "eshkol_request_duration_seconds_bucket{path=\"/tool\",method=\"POST\",le=\"+Inf\"} 3"))
+  (check "renders histogram count"
+         (string-contains? rendered
+                           "eshkol_request_duration_seconds_count{path=\"/tool\",method=\"POST\"} 3"))
+  (check "renders histogram sum"
+         (string-contains? rendered
+                           "eshkol_request_duration_seconds_sum{path=\"/tool\",method=\"POST\"} 2.75")))
 
 (check "counter rejects decrement"
        (raises? (lambda () (counter-add! req-total (list "/" "GET") -1))))
@@ -57,6 +82,22 @@
        (raises? (lambda () (make-gauge "eshkol_bad" "bad" (list "bad-label")))))
 (check "label arity validation rejects missing label"
        (raises? (lambda () (counter-inc! req-total (list "/only-one")))))
+(check "histogram exports bucket bounds"
+       (equal? (histogram-buckets latency) (list 0.1 0.5 1.0)))
+(check "histogram rejects unsorted buckets"
+       (raises? (lambda () (make-histogram "eshkol_bad_histogram" "bad" '()
+                                           (list 1.0 0.5)))))
+(check "histogram rejects nonnumeric bucket"
+       (raises? (lambda () (make-histogram "eshkol_bad_histogram_2" "bad" '()
+                                           (list 0.5 'slow)))))
+(check "histogram rejects nonnumeric observations"
+       (raises? (lambda () (histogram-observe! latency
+                                               (list "/tool" "POST")
+                                               'slow))))
+(check "histogram label arity validation rejects missing label"
+       (raises? (lambda () (histogram-observe! latency
+                                               (list "/only-path")
+                                               0.2))))
 
 (metrics-reset!)
 
@@ -64,7 +105,10 @@
   (check "reset clears counter samples"
          (not (string-contains? after-reset "eshkol_requests_total{")))
   (check "reset keeps gauge samples"
-         (string-contains? after-reset "eshkol_inflight{state=\"busy\"} 4")))
+         (string-contains? after-reset "eshkol_inflight{state=\"busy\"} 4"))
+  (check "reset clears histogram samples"
+         (not (string-contains? after-reset
+                                "eshkol_request_duration_seconds_bucket{"))))
 
 (display "Passed: ") (display passed) (newline)
 (display "Failed: ") (display failed) (newline)
