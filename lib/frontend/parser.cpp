@@ -3062,8 +3062,43 @@ static eshkol_ast_t make_require_ast(const std::vector<std::string>& modules,
     ast.operation.op = ESHKOL_REQUIRE_OP;
     ast.operation.require_op.num_modules = modules.size();
     ast.operation.require_op.module_names = new char*[modules.size()];
+    ast.operation.require_op.import_prefixes = new char*[modules.size()];
+    ast.operation.require_op.import_except_names = new char**[modules.size()];
+    ast.operation.require_op.num_import_except_names = new uint64_t[modules.size()];
     for (size_t i = 0; i < modules.size(); i++) {
         ast.operation.require_op.module_names[i] = parser_copy_cstr(modules[i]);
+        ast.operation.require_op.import_prefixes[i] = nullptr;
+        ast.operation.require_op.import_except_names[i] = nullptr;
+        ast.operation.require_op.num_import_except_names[i] = 0;
+    }
+    return ast;
+}
+
+static eshkol_ast_t make_r7rs_require_ast(const std::vector<R7rsImportSpec>& specs,
+                                          uint32_t line,
+                                          uint32_t column) {
+    std::vector<std::string> modules;
+    modules.reserve(specs.size());
+    for (const auto& spec : specs) {
+        modules.push_back(spec.module);
+    }
+
+    eshkol_ast_t ast = make_require_ast(modules, line, column);
+    for (size_t i = 0; i < specs.size(); i++) {
+        const auto& spec = specs[i];
+        const bool defer_prefix_all =
+            !spec.prefix.empty() && spec.only.empty() && spec.renames.empty();
+        if (!defer_prefix_all) continue;
+
+        ast.operation.require_op.import_prefixes[i] = parser_copy_cstr(spec.prefix);
+        if (!spec.except.empty()) {
+            ast.operation.require_op.num_import_except_names[i] = spec.except.size();
+            ast.operation.require_op.import_except_names[i] = new char*[spec.except.size()];
+            for (size_t j = 0; j < spec.except.size(); j++) {
+                ast.operation.require_op.import_except_names[i][j] =
+                    parser_copy_cstr(spec.except[j]);
+            }
+        }
     }
     return ast;
 }
@@ -3239,11 +3274,6 @@ static bool parse_r7rs_import_set_body(SchemeTokenizer& tokenizer,
                 PARSE_ERROR_AT(close, "R7RS prefix import takes exactly one prefix");
                 return false;
             }
-            if (nested.only.empty() && nested.renames.empty()) {
-                PARSE_ERROR_AT(prefix,
-                               "R7RS prefix import currently requires an explicit only or rename set");
-                return false;
-            }
             nested.prefix = prefix.value + nested.prefix;
             if (out_spec) *out_spec = nested;
             return true;
@@ -3338,11 +3368,7 @@ static void append_r7rs_import_forms(const std::vector<R7rsImportSpec>& specs,
                                      std::vector<eshkol_ast_t>* forms,
                                      uint32_t line,
                                      uint32_t column) {
-    std::vector<std::string> modules;
-    for (const auto& spec : specs) {
-        modules.push_back(spec.module);
-    }
-    forms->push_back(make_require_ast(modules, line, column));
+    forms->push_back(make_r7rs_require_ast(specs, line, column));
 
     for (const auto& spec : specs) {
         for (const auto& rename : spec.renames) {
@@ -8626,10 +8652,16 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             // Allocate and copy module names
             ast.operation.require_op.num_modules = modules.size();
             ast.operation.require_op.module_names = new char*[modules.size()];
+            ast.operation.require_op.import_prefixes = new char*[modules.size()];
+            ast.operation.require_op.import_except_names = new char**[modules.size()];
+            ast.operation.require_op.num_import_except_names = new uint64_t[modules.size()];
             for (size_t i = 0; i < modules.size(); i++) {
                 { size_t _len = modules[i].length();
                 ast.operation.require_op.module_names[i] = new char[_len + 1];
                 memcpy(ast.operation.require_op.module_names[i], modules[i].c_str(), _len + 1); }
+                ast.operation.require_op.import_prefixes[i] = nullptr;
+                ast.operation.require_op.import_except_names[i] = nullptr;
+                ast.operation.require_op.num_import_except_names[i] = 0;
             }
 
             return ast;

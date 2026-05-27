@@ -670,6 +670,7 @@ Eshkol's native module system is `require`/`provide`. R7RS `define-library` and 
 (import (only (scheme base) +))
 (import (rename (test modules mod_b) (func-b double-b)))
 (import (prefix (only (test modules mod_b) func-b) b-))
+(import (prefix (test modules mod_b) mod-b-))
 
 ;; Export symbols
 (provide my-function my-variable)
@@ -969,7 +970,7 @@ Compile to WebAssembly with 73 DOM/Canvas/Event API bindings:
 | `error-object-message` | 6.11 | Missing | Use string operations on the error value directly |
 | `error-object-irritants` | 6.11 | Missing | |
 | `exact-integer-sqrt` | 6.2.6 | Missing | Use `(inexact->exact (floor (sqrt n)))` as workaround |
-| Full R7RS library isolation | 5.6 | Limited | `define-library`, `import`, `export`, `only`, `except`, `rename`, and explicit-prefix imports lower to the existing `require`/`provide` module graph; strict hiding remains future module-privacy work |
+| Full R7RS library isolation | 5.6 | Limited | `define-library`, `import`, `export`, `only`, `except`, `rename`, explicit-prefix imports, and bare-prefix imports over provided exports lower to the existing `require`/`provide` module graph; strict hiding remains future module-privacy work |
 | Multi-shot continuations | 6.10 | Limited | `call/cc` is single-shot (setjmp/longjmp) |
 | `syntax-case` | — | Missing | Only `syntax-rules` supported (sufficient for most macros) |
 | `char-ci=?` etc. | 6.6 | Missing | Case-insensitive character comparison |

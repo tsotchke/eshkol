@@ -56,12 +56,6 @@ goals:
     reason: "Last remaining v1.3-evolve oracle FAIL (native_image_io_no_stb). Eshkol's policy is to not vendor third-party media decoders; v1.3 commits to native-only.  Touches lib/core/image_io.c plus CMake find_package() additions per platform."
     tags: [v1.3, media, vendoring]
 
-  - id: v1.3-r7rs-bare-prefix-import
-    priority: medium
-    goal: Implement `(import (prefix (m) p-))` over a module's whole export list, not just over an explicit `only` or `rename` clause
-    reason: "Last gap in the R7RS library system v1.3-evolve item. Requires deferring alias creation past parser-time (parser.cpp:3242), or adding a runtime form that the require resolver expands using the module's export list."
-    tags: [v1.3, r7rs, modules, parser]
-
   - id: v1.3-input2-conv-batchnorm-layernorm-attention
     priority: medium
     goal: Wire `input2` into the AD tape nodes created by the conv2d / batchnorm / layernorm / attention forward sites so gradient flows to both operands
