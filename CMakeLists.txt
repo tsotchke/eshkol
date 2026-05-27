@@ -96,6 +96,36 @@ include(CTest)
 include(GNUInstallDirs)
 include(FindPkgConfig)
 
+# Native image I/O backends: macOS uses ImageIO/CoreGraphics, Windows uses
+# GDI+, and Linux uses distro codec libraries.
+if(APPLE)
+    find_library(ESHKOL_IMAGEIO_FRAMEWORK ImageIO REQUIRED)
+    find_library(ESHKOL_COREGRAPHICS_FRAMEWORK CoreGraphics REQUIRED)
+    find_library(ESHKOL_COREFOUNDATION_FRAMEWORK CoreFoundation REQUIRED)
+    add_compile_definitions(ESHKOL_IMAGE_IO_APPLE=1)
+    list(APPEND ESHKOL_EXTRA_LINK_LIBS
+        "-framework ImageIO"
+        "-framework CoreGraphics"
+        "-framework CoreFoundation")
+    message(STATUS "Image I/O: Apple ImageIO/CoreGraphics")
+elseif(WIN32)
+    add_compile_definitions(ESHKOL_IMAGE_IO_GDIPLUS=1)
+    list(APPEND ESHKOL_EXTRA_LINK_LIBS Gdiplus.lib)
+    message(STATUS "Image I/O: Windows GDI+")
+else()
+    find_package(PNG REQUIRED)
+    find_package(JPEG REQUIRED)
+    pkg_check_modules(WEBP REQUIRED libwebp)
+
+    add_compile_definitions(
+        ESHKOL_IMAGE_IO_LIBPNG=1
+        ESHKOL_IMAGE_IO_LIBJPEG=1
+        ESHKOL_IMAGE_IO_LIBWEBP=1)
+    include_directories(SYSTEM ${PNG_INCLUDE_DIRS} ${JPEG_INCLUDE_DIRS} ${WEBP_INCLUDE_DIRS})
+    list(APPEND ESHKOL_EXTRA_LINK_LIBS PNG::PNG JPEG::JPEG ${WEBP_LDFLAGS})
+    message(STATUS "Image I/O: libpng/libjpeg/libwebp")
+endif()
+
 # Set C standard
 set(CMAKE_C_STANDARD 17)
 set(CMAKE_CXX_STANDARD 20)
@@ -1174,8 +1204,9 @@ message(STATUS
   "code=${ESHKOL_VM_MAX_CODE}"
 )
 
-# Image I/O (stb_image — single-header, MIT/public domain)
+# Image I/O (native platform/system codec backends)
 list(APPEND LIB_SRC lib/core/image_io.c)
+set_source_files_properties(lib/core/image_io.c PROPERTIES LANGUAGE CXX)
 
 # C FFI (stable embedding API)
 list(APPEND LIB_SRC lib/ffi/eshkol_ffi.cpp)
@@ -1776,6 +1807,19 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
                 TIMEOUT 300
                 PASS_REGULAR_EXPRESSION "PASS: ad_input2_test"
                 FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    endif()
+    if(NOT WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/v1_3_edge_cases/jit_cache_test.sh")
+        add_test(
+            NAME v1_3_jit_cache_runtime_smoke
+            COMMAND bash
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/v1_3_edge_cases/jit_cache_test.sh"
+                    $<TARGET_FILE:eshkol-run>
+        )
+        set_tests_properties(v1_3_jit_cache_runtime_smoke
+            PROPERTIES
+                TIMEOUT 120
+                PASS_REGULAR_EXPRESSION "PASS: jit_cache_test"
+                FAIL_REGULAR_EXPRESSION "FAIL:")
     endif()
 endif()
 

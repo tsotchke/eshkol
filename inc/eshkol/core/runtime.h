@@ -190,6 +190,35 @@ void eshkol_type_error_with_operand(const char* proc_name,
                                     const char* expected_type,
                                     eshkol_tagged_value_t actual);
 
+/* ============================================================================
+ * Source-Span Stack Traces (v1.3)
+ *
+ * Codegen pushes a frame at every Eshkol function entry; pops at exit.
+ * The exception machinery walks the stack and renders it before the
+ * runtime error message, so users see Eshkol-level frames instead of
+ * raw C unwinds.
+ *
+ *   Traceback (most recent call last):
+ *     File "scripts/agent.esk", line 142, in (agent-handle-request)
+ *     File "scripts/agent.esk", line 89, in (route-message)
+ *   Type error in <: expected number, got string
+ *
+ * All names + file paths are static C strings emitted as globals by
+ * codegen, so push/pop is trivial (no allocation).  Thread-local; cap
+ * at 256 frames.  Overflow records a single ".. truncated .." marker.
+ * ============================================================================
+ */
+
+void eshkol_frame_push(const char* function_name,
+                       const char* source_file,
+                       uint32_t source_line,
+                       uint32_t source_column);
+void eshkol_frame_pop(void);
+uint32_t eshkol_frame_stack_depth(void);
+void eshkol_frame_print_trace(void* fp);          /* FILE*; pass NULL → stderr */
+void eshkol_frame_print_trace_stderr(void);
+void eshkol_frame_stack_reset(void);              /* call at REPL prompt boundary */
+
 // Report a type error with actual type and abort
 // - proc_name: Name of the procedure that encountered the error
 // - expected_type: The type that was expected
