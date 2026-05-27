@@ -14,7 +14,10 @@
          http-request-query
          http-request-version
          http-request-header
+         http-request-content-length
          http-request-body
+         http-request-body-too-large?
+         http-max-request-body-size
          http-response
          http-response?
          http-response-status
@@ -25,6 +28,8 @@
          http-standard-response
          http-server-respond-response
          http-server-respond-standard)
+
+(define http-max-request-body-size 10485760)
 
 (define (http-first-line request)
   (if (string? request)
@@ -126,6 +131,35 @@
                 (string-trim (substring line (+ colon 1) (string-length line)))
                 (loop (cdr rest))))))))
 
+(define (http-decimal-digit? c)
+  (let ((n (char->integer c)))
+    (and (>= n 48) (<= n 57))))
+
+(define (http-unsigned-decimal? s)
+  (and (> (string-length s) 0)
+       (let loop ((i 0))
+         (if (>= i (string-length s))
+             #t
+             (and (http-decimal-digit? (string-ref s i))
+                  (loop (+ i 1)))))))
+
+(define (http-parse-content-length raw)
+  (if (string? raw)
+      (let ((trimmed (string-trim raw)))
+        (if (http-unsigned-decimal? trimmed)
+            (string->number trimmed)
+            #f))
+      #f))
+
+(define (http-request-content-length request)
+  "Return numeric Content-Length, or #f if absent or invalid."
+  (let ((raw (http-request-header request "content-length")))
+    (if raw (http-parse-content-length raw) #f)))
+
+(define (http-request-content-length-invalid? request)
+  (let ((raw (http-request-header request "content-length")))
+    (and raw (eq? (http-parse-content-length raw) #f))))
+
 (define (http-request-body request)
   (if (string? request)
       (let ((start (http-body-start-index request)))
@@ -133,6 +167,12 @@
             (substring request start (string-length request))
             ""))
       ""))
+
+(define (http-request-body-too-large? request)
+  (let ((declared (http-request-content-length request))
+        (actual (string-length (http-request-body request))))
+    (or (and declared (> declared http-max-request-body-size))
+        (> actual http-max-request-body-size))))
 
 (define (http-response status content-type body)
   (list status content-type body))
@@ -176,14 +216,24 @@
           response
           (http-response 500 "text/plain" "Internal Server Error\n")))))
 
+(define (http-request-preflight-response request)
+  (cond
+    ((http-request-content-length-invalid? request)
+     (http-response 400 "text/plain" "Bad Request\n"))
+    ((http-request-body-too-large? request)
+     (http-response 413 "text/plain" "Payload Too Large\n"))
+    (else #f)))
+
 (define (http-standard-response request . ready)
   "Return (status content-type body) for built-in health/ready/metrics routes."
   (let ((ready? (if (null? ready) #t (car ready)))
         (method (http-request-method request))
-        (path (http-request-path request)))
+        (path (http-request-path request))
+        (preflight (http-request-preflight-response request)))
     (cond
       ((or (string=? method "") (string=? path ""))
        (http-response 400 "text/plain" "Bad Request\n"))
+      (preflight preflight)
       ((string=? path "/health")
        (http-response 200 "text/plain" "OK\n"))
       ((string=? path "/ready")
@@ -199,15 +249,18 @@
   "Route REQUEST through custom route tuples, falling back to standard routes."
   (let ((ready? (if (null? ready) #t (car ready)))
         (method (http-request-method request))
-        (path (http-request-path request)))
-    (let loop ((remaining routes))
-      (cond
-        ((null? remaining)
-         (http-standard-response request ready?))
-        ((http-route-match? (car remaining) method path)
-         (http-call-handler (http-route-handler (car remaining)) request))
-        (else
-         (loop (cdr remaining)))))))
+        (path (http-request-path request))
+        (preflight (http-request-preflight-response request)))
+    (if preflight
+        preflight
+        (let loop ((remaining routes))
+          (cond
+            ((null? remaining)
+             (http-standard-response request ready?))
+            ((http-route-match? (car remaining) method path)
+             (http-call-handler (http-route-handler (car remaining)) request))
+            (else
+             (loop (cdr remaining))))))))
 
 (define (http-server-respond-response handle response)
   "Respond through http-server-respond using a response tuple."

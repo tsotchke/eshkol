@@ -2052,7 +2052,10 @@ Exports (`http_server.esk`):
          http-request-query
          http-request-version
          http-request-header
+         http-request-content-length
          http-request-body
+         http-request-body-too-large?
+         http-max-request-body-size
          http-response
          http-response?
          http-response-status
@@ -2068,14 +2071,18 @@ Exports (`http_server.esk`):
 Small routing helpers for the hosted HTTP server builtins. The parser extracts
 the request line, method, request target, query-stripped path, query string,
 HTTP version, headers, and body from raw HTTP request text returned by
-`http-server-accept`. Responses are `(status content-type body)` tuples with
-accessors. `http-route` creates `(method path handler)` route tuples;
+`http-server-accept`. `http-request-content-length` parses valid decimal
+`Content-Length` headers, and `http-request-body-too-large?` checks the 10 MiB
+`http-max-request-body-size` cap. Responses are `(status content-type body)`
+tuples with accessors. `http-route` creates `(method path handler)` route tuples;
 `http-route-request` dispatches exact method/path matches to handlers and
 converts handler exceptions or malformed handler returns to 500 responses.
 If no custom route matches, it falls back to `http-standard-response`, which
 serves `/health`, `/ready`, and `/metrics`; unknown routes return 404 and
-malformed request lines return 400. `http-server-respond-response` and
-`http-server-respond-standard` send those responses through
+malformed request lines return 400. Invalid `Content-Length` returns 400 and
+oversized request bodies return 413 before custom handlers run.
+`http-server-respond-response` and `http-server-respond-standard` send those
+responses through
 `http-server-respond`.
 
 ### B.14 `core.distributed`
