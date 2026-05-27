@@ -3,6 +3,7 @@
 (import (only (test modules mod_b) func-b))
 (import (rename (test modules mod_b) (func-b double-b)))
 (import (prefix (only (test modules mod_b) func-b) b-))
+(import (prefix (test modules mod_b) all-b-))
 (import (except (test modules mod_b) not-a-real-export))
 
 (define failures 0)
@@ -26,6 +27,7 @@
 (check "only import exposes func-b" 12 (func-b 6))
 (check "rename import alias" 14 (double-b 7))
 (check "prefix import alias" 16 (b-func-b 8))
+(check "bare prefix import aliases module exports" 20 (all-b-func-b 10))
 (check "except import still loads module" 18 (func-b 9))
 
 (if (= failures 0)

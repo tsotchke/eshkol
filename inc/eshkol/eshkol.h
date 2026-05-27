@@ -1564,6 +1564,9 @@ typedef struct eshkol_operation {
 	       struct {
 	           char **module_names;              // Array of symbolic module names (e.g., "data.json")
 	           uint64_t num_modules;             // Number of modules to require
+	           char **import_prefixes;           // Optional R7RS bare-prefix aliases per module
+	           char ***import_except_names;       // Optional R7RS except lists per module
+	           uint64_t *num_import_except_names; // Lengths for import_except_names entries
 	       } require_op;
 	       struct {
 	           char **export_names;              // Array of exported symbol names

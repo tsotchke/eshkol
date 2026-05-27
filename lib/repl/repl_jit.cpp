@@ -73,6 +73,77 @@ static llvm::Module* module_from_ref(LLVMModuleRef module_ref) {
     return reinterpret_cast<llvm::Module*>(module_ref);
 }
 
+static char* repl_copy_ast_cstr(const std::string& value) {
+    char* out = new char[value.size() + 1];
+    if (out) {
+        memcpy(out, value.c_str(), value.size() + 1);
+    }
+    return out;
+}
+
+static eshkol_ast_t repl_make_var_ast(const std::string& name,
+                                      uint32_t line,
+                                      uint32_t column) {
+    eshkol_ast_t ast = {};
+    ast.type = ESHKOL_VAR;
+    ast.line = line;
+    ast.column = column;
+    ast.variable.id = repl_copy_ast_cstr(name);
+    ast.variable.data = nullptr;
+    return ast;
+}
+
+static eshkol_ast_t repl_make_define_alias_ast(const std::string& alias,
+                                               const std::string& source,
+                                               uint32_t line,
+                                               uint32_t column) {
+    eshkol_ast_t ast = {};
+    ast.type = ESHKOL_OP;
+    ast.line = line;
+    ast.column = column;
+    ast.operation.op = ESHKOL_DEFINE_OP;
+    ast.operation.define_op.name = repl_copy_ast_cstr(alias);
+    ast.operation.define_op.value = new eshkol_ast_t;
+    *ast.operation.define_op.value = repl_make_var_ast(source, line, column);
+    return ast;
+}
+
+static void append_repl_r7rs_prefix_aliases(const eshkol_ast_t& require_ast,
+                                            uint64_t module_index,
+                                            const std::unordered_set<std::string>& exports,
+                                            std::vector<eshkol_ast_t>& out) {
+    const auto& require_op = require_ast.operation.require_op;
+    if (!require_op.import_prefixes ||
+        module_index >= require_op.num_modules ||
+        !require_op.import_prefixes[module_index] ||
+        require_op.import_prefixes[module_index][0] == '\0') {
+        return;
+    }
+
+    std::unordered_set<std::string> excepts;
+    if (require_op.import_except_names &&
+        require_op.num_import_except_names &&
+        require_op.import_except_names[module_index]) {
+        for (uint64_t i = 0; i < require_op.num_import_except_names[module_index]; i++) {
+            const char* name = require_op.import_except_names[module_index][i];
+            if (name) {
+                excepts.insert(name);
+            }
+        }
+    }
+
+    std::vector<std::string> sorted_exports(exports.begin(), exports.end());
+    std::sort(sorted_exports.begin(), sorted_exports.end());
+    const std::string prefix = require_op.import_prefixes[module_index];
+    for (const auto& exported : sorted_exports) {
+        if (excepts.count(exported) > 0) continue;
+        out.push_back(repl_make_define_alias_ast(prefix + exported,
+                                                 exported,
+                                                 require_ast.line,
+                                                 require_ast.column));
+    }
+}
+
 // ===== EXTERN DECLARATIONS FOR RUNTIME SYMBOLS =====
 // These are defined in runtime.cpp with extern "C" linkage
 extern "C" {
@@ -2075,8 +2146,11 @@ bool ReplJITContext::loadModule(const std::string& module_name, bool allow_preco
         }
     }
 
-    // Store module exports for visibility checking
-    module_exports_[module_name] = exported_symbols;
+    // Store the importable surface for deferred R7RS prefix aliases.
+    // Modules without provide keep historical REPL visibility: defined
+    // symbols are importable.
+    module_exports_[module_name] = has_provide ? exported_symbols : defined_symbols;
+    module_exports_[module_path] = module_exports_[module_name];
 
     // Mark private symbols (defined but not exported) - only if module has provide.
     // Delay registering them with codegen until after the module finishes compiling
@@ -2818,9 +2892,18 @@ void* ReplJITContext::execute(eshkol_ast_t* ast) {
         // Handle (require module.name ...)
         // Use loadModule which now does proper two-pass batch loading
         if (ast->operation.op == ESHKOL_REQUIRE_OP) {
+            std::vector<eshkol_ast_t> alias_asts;
             for (size_t i = 0; i < ast->operation.require_op.num_modules; i++) {
                 std::string module_name = ast->operation.require_op.module_names[i];
-                loadModule(module_name);
+                if (loadModule(module_name)) {
+                    auto exports_it = module_exports_.find(module_name);
+                    if (exports_it != module_exports_.end()) {
+                        append_repl_r7rs_prefix_aliases(*ast, i, exports_it->second, alias_asts);
+                    }
+                }
+            }
+            if (!alias_asts.empty()) {
+                executeBatch(alias_asts, true);
             }
             return nullptr;
         }

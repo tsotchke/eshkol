@@ -407,6 +407,14 @@ public:
         return it->second.count(symbol) > 0;
     }
 
+    std::set<std::string> exportsFor(const std::string& module_name) const {
+        auto it = module_exports.find(module_name);
+        if (it == module_exports.end()) {
+            return {};
+        }
+        return it->second;
+    }
+
     // Get the private (mangled) name for a symbol
     static std::string getPrivateName(const std::string& module_name, const std::string& symbol) {
         // Convert module name to safe identifier: test.modules.mod_a -> __test_modules_mod_a__
@@ -1852,6 +1860,75 @@ static std::set<std::string> collect_defined_symbols(const std::vector<eshkol_as
     return defined;
 }
 
+static char* copy_ast_cstr(const std::string& value) {
+    char* out = new char[value.size() + 1];
+    if (out) {
+        memcpy(out, value.c_str(), value.size() + 1);
+    }
+    return out;
+}
+
+static eshkol_ast_t make_runtime_var_ast(const std::string& name,
+                                         uint32_t line,
+                                         uint32_t column) {
+    eshkol_ast_t ast = {};
+    ast.type = ESHKOL_VAR;
+    ast.line = line;
+    ast.column = column;
+    ast.variable.id = copy_ast_cstr(name);
+    ast.variable.data = nullptr;
+    return ast;
+}
+
+static eshkol_ast_t make_runtime_define_alias_ast(const std::string& alias,
+                                                  const std::string& source,
+                                                  uint32_t line,
+                                                  uint32_t column) {
+    eshkol_ast_t ast = {};
+    ast.type = ESHKOL_OP;
+    ast.line = line;
+    ast.column = column;
+    ast.operation.op = ESHKOL_DEFINE_OP;
+    ast.operation.define_op.name = copy_ast_cstr(alias);
+    ast.operation.define_op.value = new eshkol_ast_t;
+    *ast.operation.define_op.value = make_runtime_var_ast(source, line, column);
+    return ast;
+}
+
+static void append_r7rs_prefix_aliases_for_module(const eshkol_ast_t& require_ast,
+                                                  uint64_t module_index,
+                                                  const std::set<std::string>& exports,
+                                                  std::vector<eshkol_ast_t>& out) {
+    const auto& require_op = require_ast.operation.require_op;
+    if (!require_op.import_prefixes ||
+        module_index >= require_op.num_modules ||
+        !require_op.import_prefixes[module_index] ||
+        require_op.import_prefixes[module_index][0] == '\0') {
+        return;
+    }
+
+    std::set<std::string> excepts;
+    if (require_op.import_except_names &&
+        require_op.num_import_except_names &&
+        require_op.import_except_names[module_index]) {
+        for (uint64_t i = 0; i < require_op.num_import_except_names[module_index]; i++) {
+            const char* name = require_op.import_except_names[module_index][i];
+            if (name) {
+                excepts.insert(name);
+            }
+        }
+    }
+
+    const std::string prefix = require_op.import_prefixes[module_index];
+    for (const auto& exported : exports) {
+        if (excepts.count(exported) > 0) continue;
+        out.push_back(make_runtime_define_alias_ast(prefix + exported,
+                                                    exported,
+                                                    require_ast.line,
+                                                    require_ast.column));
+    }
+}
+
 // Forward declaration for recursive reference updating
 static void update_ast_references(eshkol_ast_t* ast,
                                   const std::map<std::string, std::string>& rename_map);
@@ -2304,6 +2381,11 @@ static void process_requires(std::vector<eshkol_ast_t>& asts, const std::string&
 
                     // Collect module exports BEFORE processing requires (process_requires may modify ASTs)
                     std::set<std::string> module_exports = collect_module_exports(module_asts);
+                    std::set<std::string> module_defined_symbols = collect_defined_symbols(module_asts);
+                    std::set<std::string> r7rs_alias_sources =
+                        module_exports.empty() ? module_defined_symbols : module_exports;
+                    // Register the importable surface for later duplicate import sets.
+                    g_symbol_table.registerModuleExports(module_name, r7rs_alias_sources);
                     if (debug_mode) {
                         std::string exp_str;
                         for (const auto& e : module_exports) {
@@ -2363,6 +2445,7 @@ static void process_requires(std::vector<eshkol_ast_t>& asts, const std::string&
                             }
                         }
                     }
+                    append_r7rs_prefix_aliases_for_module(ast, i, r7rs_alias_sources, required_asts);
                     continue;
                 }
 
@@ -2405,14 +2488,20 @@ static void process_requires(std::vector<eshkol_ast_t>& asts, const std::string&
 
                 // Skip if module was already loaded (detected by load_file_asts)
                 if (module_asts.empty()) {
+                    append_r7rs_prefix_aliases_for_module(
+                        ast, i, g_symbol_table.exportsFor(module_name), required_asts);
+                    g_loading_modules.erase(norm_path);
                     continue;
                 }
 
                 // Collect exports from this module BEFORE processing sub-modules
                 std::set<std::string> exports = collect_module_exports(module_asts);
+                std::set<std::string> defined_symbols = collect_defined_symbols(module_asts);
+                std::set<std::string> r7rs_alias_sources =
+                    exports.empty() ? defined_symbols : exports;
 
-                // Register exports in the symbol table
-                g_symbol_table.registerModuleExports(module_name, exports);
+                // Register the importable surface for later duplicate import sets.
+                g_symbol_table.registerModuleExports(module_name, r7rs_alias_sources);
 
                 if (debug_mode && !exports.empty()) {
                     std::string exp_str;
@@ -2457,6 +2546,7 @@ static void process_requires(std::vector<eshkol_ast_t>& asts, const std::string&
                 for (auto& module_ast : module_asts) {
                     required_asts.push_back(module_ast);
                 }
+                append_r7rs_prefix_aliases_for_module(ast, i, r7rs_alias_sources, required_asts);
 
                 // Remove from loading stack (module fully processed)
                 g_loading_modules.erase(norm_path);
@@ -3121,6 +3211,9 @@ int main(int argc, char **argv)
         req_ast.operation.require_op.num_modules = 1;
         req_ast.operation.require_op.module_names = (char**)malloc(sizeof(char*));
         req_ast.operation.require_op.module_names[0] = strdup("stdlib");
+        req_ast.operation.require_op.import_prefixes = nullptr;
+        req_ast.operation.require_op.import_except_names = nullptr;
+        req_ast.operation.require_op.num_import_except_names = nullptr;
         req_ast.line = 0;
         req_ast.column = 0;
         asts.insert(asts.begin(), req_ast);
