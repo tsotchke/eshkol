@@ -11,6 +11,10 @@
          http-request-method
          http-request-target
          http-request-path
+         http-request-query
+         http-request-version
+         http-request-header
+         http-request-body
          http-standard-response
          http-server-respond-standard)
 
@@ -47,12 +51,80 @@
               rest
               (substring line start (+ start second-rel)))))))
 
+(define (http-request-version request)
+  (let* ((line (http-first-line request))
+         (first (string-index line " ")))
+    (if (< first 0)
+        ""
+        (let* ((start (+ first 1))
+               (rest (substring line start (string-length line)))
+               (second-rel (string-index rest " ")))
+          (if (< second-rel 0)
+              ""
+              (substring rest (+ second-rel 1) (string-length rest)))))))
+
 (define (http-request-path request)
   (let* ((target (http-request-target request))
          (query (string-index target "?")))
     (if (< query 0)
         target
         (substring target 0 query))))
+
+(define (http-request-query request)
+  (let* ((target (http-request-target request))
+         (query (string-index target "?")))
+    (if (< query 0)
+        ""
+        (substring target (+ query 1) (string-length target)))))
+
+(define (http-header-end-index request)
+  (let ((crlf (string-index request "\r\n\r\n")))
+    (if (>= crlf 0)
+        crlf
+        (string-index request "\n\n"))))
+
+(define (http-body-start-index request)
+  (let ((crlf (string-index request "\r\n\r\n")))
+    (if (>= crlf 0)
+        (+ crlf 4)
+        (let ((lf (string-index request "\n\n")))
+          (if (>= lf 0) (+ lf 2) -1)))))
+
+(define (http-request-head request)
+  (if (string? request)
+      (let ((end (http-header-end-index request)))
+        (if (>= end 0)
+            (substring request 0 end)
+            request))
+      ""))
+
+(define (http-header-name->string name)
+  (cond ((string? name) name)
+        ((symbol? name) (symbol->string name))
+        (else "")))
+
+(define (http-request-header request name)
+  "Return a header value by name, or #f if absent."
+  (let ((wanted (string-downcase (http-header-name->string name)))
+        (lines (string-split-ordered (http-request-head request) "\n")))
+    (let loop ((rest (if (null? lines) '() (cdr lines))))
+      (if (null? rest)
+          #f
+          (let* ((line (string-trim-right (car rest)))
+                 (colon (string-index line ":")))
+            (if (and (>= colon 0)
+                     (string=? (string-downcase (substring line 0 colon))
+                               wanted))
+                (string-trim (substring line (+ colon 1) (string-length line)))
+                (loop (cdr rest))))))))
+
+(define (http-request-body request)
+  (if (string? request)
+      (let ((start (http-body-start-index request)))
+        (if (>= start 0)
+            (substring request start (string-length request))
+            ""))
+      ""))
 
 (define (http-response status content-type body)
   (list status content-type body))
