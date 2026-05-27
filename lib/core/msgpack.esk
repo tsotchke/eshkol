@@ -57,6 +57,13 @@
           (reverse acc)
           (loop (+ i 1) (cons (bytevector-u8-ref bv i) acc))))))
 
+(define (msgpack-require-available bv pos n)
+  (if (and (>= pos 0)
+           (>= n 0)
+           (<= (+ pos n) (bytevector-length bv)))
+      #t
+      (error "msgpack-decode: truncated input" pos)))
+
 (define (msgpack-u16-bytes n)
   (list (quotient n 256)
         (remainder n 256)))
@@ -71,10 +78,12 @@
     (list b1 b2 b3 b4)))
 
 (define (msgpack-read-u16 bv pos)
+  (msgpack-require-available bv pos 2)
   (+ (* (bytevector-u8-ref bv pos) 256)
      (bytevector-u8-ref bv (+ pos 1))))
 
 (define (msgpack-read-u32 bv pos)
+  (msgpack-require-available bv pos 4)
   (+ (* (bytevector-u8-ref bv pos) 16777216)
      (* (bytevector-u8-ref bv (+ pos 1)) 65536)
      (* (bytevector-u8-ref bv (+ pos 2)) 256)
@@ -183,9 +192,11 @@
   (msgpack-bytes->bytevector (msgpack-encode-value value)))
 
 (define (msgpack-decode-bin bv pos len)
+  (msgpack-require-available bv pos len)
   (list (bytevector-copy bv pos (+ pos len)) (+ pos len)))
 
 (define (msgpack-decode-string bv pos len)
+  (msgpack-require-available bv pos len)
   (list (utf8->string (bytevector-copy bv pos (+ pos len))) (+ pos len)))
 
 (define (msgpack-decode-array-elements bv pos count acc)
@@ -215,6 +226,7 @@
           (cons (list key value) acc)))))
 
 (define (msgpack-decode-at bv pos)
+  (msgpack-require-available bv pos 1)
   (let ((tag (bytevector-u8-ref bv pos))
         (next (+ pos 1)))
     (cond
@@ -233,16 +245,19 @@
       ((= tag 195)
        (list #t next))
       ((= tag 196)
+       (msgpack-require-available bv next 1)
        (msgpack-decode-bin bv (+ next 1) (bytevector-u8-ref bv next)))
       ((= tag 197)
        (msgpack-decode-bin bv (+ next 2) (msgpack-read-u16 bv next)))
       ((= tag 204)
+       (msgpack-require-available bv next 1)
        (list (bytevector-u8-ref bv next) (+ next 1)))
       ((= tag 205)
        (list (msgpack-read-u16 bv next) (+ next 2)))
       ((= tag 206)
        (list (msgpack-read-u32 bv next) (+ next 4)))
       ((= tag 208)
+       (msgpack-require-available bv next 1)
        (let ((v (bytevector-u8-ref bv next)))
          (list (if (>= v 128) (- v 256) v) (+ next 1))))
       ((= tag 209)
@@ -252,6 +267,7 @@
        (let ((v (msgpack-read-u32 bv next)))
          (list (if (>= v 2147483648) (- v 4294967296) v) (+ next 4))))
       ((= tag 217)
+       (msgpack-require-available bv next 1)
        (msgpack-decode-string bv (+ next 1) (bytevector-u8-ref bv next)))
       ((= tag 218)
        (msgpack-decode-string bv (+ next 2) (msgpack-read-u16 bv next)))
