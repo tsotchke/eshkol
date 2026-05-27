@@ -314,8 +314,9 @@ probe native_image_io_no_stb 'image-read uses platform APIs, not bundled deps/st
 
 probe pgo_pipeline_works 'cmake -DESHKOL_PGO=generate/use supports a profile-guided binary' \
     'cd "$REPO_ROOT";
-     ## v1.3 commits to a PGO build option.  Until that lands, this
-     ## probe FAILs: no -DESHKOL_PGO option is wired in CMakeLists.
+     ## v1.3 commits to a PGO build option.  This lightweight smoke
+     ## confirms the configure surface is wired without running a full
+     ## instrument/merge/use cycle on every ICC probe.
      if grep -qE "ESHKOL_PGO|fprofile-(generate|use)" CMakeLists.txt 2>/dev/null; then
         exit 0;
      fi;
