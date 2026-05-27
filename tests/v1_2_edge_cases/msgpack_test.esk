@@ -89,4 +89,14 @@
       (check-equal? (cadr decoded) 1))
     (check-raises (lambda () (msgpack-decode (bytevector 1 2))))))
 
+(register-test "decoder rejects truncated frames"
+  (lambda ()
+    (check-raises (lambda () (msgpack-decode (bytevector))))
+    (check-raises (lambda () (msgpack-decode (bytevector 204))))
+    (check-raises (lambda () (msgpack-decode (bytevector 205 1))))
+    (check-raises (lambda () (msgpack-decode (bytevector 196 4 1 2))))
+    (check-raises (lambda () (msgpack-decode (bytevector 217 3 65))))
+    (check-raises (lambda () (msgpack-decode (bytevector 147 1 2))))
+    (check-raises (lambda () (msgpack-decode (bytevector 129 161 97))))))
+
 (run-tests)
