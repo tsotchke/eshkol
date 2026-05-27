@@ -46,6 +46,21 @@ profiles:
       warn_on:
         low: 0
 
+  # v1.3 release gate — same strictness as v1.2 (even mediums fail).
+  # Used during the v1.2 → v1.3 iteration to gate every "is v1.3 ready
+  # yet?" check. See .icc/completion-oracles.yaml::v1.3-evolve for the
+  # criteria.
+  - name: v1.3-release
+    targets: [v1.3-release, v1.3, release-1.3, evolve, v1.3-evolve]
+    required_artifacts: [index, memory, architecture, git-history]
+    presets: [shell-hardening]
+    verdict:
+      fail_on:
+        high: 0
+        medium: 0
+      warn_on:
+        low: 0
+
   # Per-PR sanity gate — only fails on highs. Lets in-flight medium-severity
   # findings through during the development loop.
   - name: no-regression

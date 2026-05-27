@@ -1,0 +1,73 @@
+;; v1_3_smoke_features_test.esk — Smoke test for the three v1.3-evolve
+;; "[x]" feature items (per ROADMAP.md): string interpolation, named
+;; keyword arguments, and let-match destructuring.
+;;
+;; ICC's v1.3-evolve oracle (.icc/completion-oracles.yaml) has a
+;; runtime_event criterion for each.  This file is the regression
+;; pin: if any of these three breaks in a future refactor, this
+;; test fails before the smoke harness even runs and before any
+;; downstream agent code notices.
+
+(define passed 0)
+(define failed 0)
+(define (check name cond)
+  (if cond
+      (begin (display "PASS: ") (display name) (newline)
+             (set! passed (+ passed 1)))
+      (begin (display "FAIL: ") (display name) (newline)
+             (set! failed (+ failed 1)))))
+
+;; ─── String interpolation ──────────────────────────────────────────
+;; "…~{expr}…" parses inside a normal string literal and the embedded
+;; expression evaluates in the surrounding lexical scope.  See
+;; lib/frontend/parser.cpp::parse_string_interpolation_expr.
+(define n 42)
+(check "interpolation embeds a variable"
+       (string=? "n=42" "n=~{n}"))
+(check "interpolation embeds an arithmetic expression"
+       (string=? "1764" "~{(* n n)}"))
+(check "multi-segment interpolation preserves leading/trailing text"
+       (string=? "n=42 squared=1764" "n=~{n} squared=~{(* n n)}"))
+
+;; ─── Named keyword arguments ───────────────────────────────────────
+;; `(f #:k v)` reorders by name.  See
+;; lib/frontend/parser.cpp::__keyword-arg.
+(define (weighted x #:scale s #:offset o) (+ (* x s) o))
+
+(check "keyword args reorder freely"
+       (= (weighted 10 #:offset 2 #:scale 4) 42))
+(check "keyword args in defined order also work"
+       (= (weighted 10 #:scale 4 #:offset 2) 42))
+
+(define mixed-kw
+  (lambda (positional #:scale s)
+    (+ positional s)))
+(check "positional + keyword formals mix"
+       (= (mixed-kw 19 #:scale 23) 42))
+
+;; ─── let-match ─────────────────────────────────────────────────────
+;; Destructuring `let` with `(list a b ...)` and `(cons head tail)`
+;; patterns.  See tests/features/let_match_test.esk.
+(check "let-match variable binding"
+       (= (let-match ((x 41)) (+ x 1)) 42))
+
+(check "let-match list destructuring"
+       (= (let-match (((list a b) (list 19 23))) (+ a b)) 42))
+
+(check "let-match nested cons"
+       (= (let-match (((cons head tail) (list 10 20 30)))
+            (+ head (car tail)))
+          30))
+
+(check "let-match sequential pattern bindings"
+       (= (let-match ((x 20)
+                      ((list a b) (list x (+ x 2))))
+            (+ a b))
+          42))
+
+;; ─── Summary ───────────────────────────────────────────────────────
+(display "Results: ") (display passed) (display " passed, ")
+(display failed) (display " failed") (newline)
+(if (= failed 0)
+    (begin (display "PASS: v1_3_smoke_features_test") (newline) (exit 0))
+    (begin (display "FAIL: v1_3_smoke_features_test") (newline) (exit 1)))

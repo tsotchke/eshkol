@@ -220,6 +220,96 @@ oracles:
         action: classify_or_replace_each_stub
 
   # ─────────────────────────────────────────────────────────────────
+  # v1.3-evolve readiness — tracks the v1.3 roadmap items in
+  # ROADMAP.md.  Mirrors the v1.2 oracle's shape: each line item that
+  # has a real source-tree implementation gets a runtime_event probe
+  # via scripts/run_icc_smoke.sh; items that are still planned stay
+  # absent from the probe set and so report FAIL until they ship.
+  #
+  # The three "[x]" items already in v1.3-evolve (string interpolation,
+  # named keyword arguments, let-match) get smoke probes that pin
+  # their behavior so a regression downstream surfaces immediately.
+  # ─────────────────────────────────────────────────────────────────
+  - name: v1.3-evolve
+    aliases: [v1.3, release-1.3, evolve]
+    requires:
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["string_interpolation_works"]
+          event_values: ["PASS"]
+        severity: high
+        label: '"…~{expr}…" parses and evaluates the embedded expression'
+        action: ./scripts/run_icc_smoke.sh
+
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["keyword_args_work"]
+          event_values: ["PASS"]
+        severity: high
+        label: '(f #:k v) bind by name and reorder freely'
+        action: ./scripts/run_icc_smoke.sh
+
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["let_match_destructures"]
+          event_values: ["PASS"]
+        severity: high
+        label: '(let-match (((list a b) (list 1 2))) …) destructures and binds'
+        action: ./scripts/run_icc_smoke.sh
+
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["define_library_import_works"]
+          event_values: ["PASS"]
+        severity: high
+        label: '(define-library …) + (import …) round-trip works in a single file'
+        action: ./scripts/run_icc_smoke.sh
+
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["matmul_kernel_grad_nonzero"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'gradient flows through tensor-matmul to the kernel (input2) side'
+        action: ./scripts/run_icc_smoke.sh
+
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["native_image_io_no_stb"]
+          event_values: ["PASS"]
+        severity: medium
+        label: 'image-read uses platform APIs, not bundled deps/stb'
+        action: ./scripts/run_icc_smoke.sh
+
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["pgo_pipeline_works"]
+          event_values: ["PASS"]
+        severity: medium
+        label: 'cmake -DESHKOL_PGO=generate/use supports a profile-guided binary'
+        action: ./scripts/run_icc_smoke.sh
+
+      - test_evidence: true
+        severity: high
+        label: 'v1.3 edge-case tests are indexed and runnable'
+        action: cd build && cmake --build . && ctest -R v1_3
+
+      - no_contract_gap:
+          - missing_expected_contract_kind
+          - flag_without_contract
+        severity: high
+        label: 'All v1.3 features have wired contracts (plan ↔ test ↔ runtime)'
+        action: regenerate_contract_graph
+
+      - no_stubbed_paths:
+          - production_fallback
+          - synthetic_model_only
+          - not_exercised_by_real_smoke
+        severity: high
+        label: 'No silent fallbacks in v1.3 production paths'
+        action: classify_or_replace_each_stub
+
+  # ─────────────────────────────────────────────────────────────────
   # SDNC paper reproducibility — the headline claim from
   #   "The Self-Differentiating Neural Computer: Computable Transformers
   #    via Analytical Weight Construction" (tsotchke 2026).
