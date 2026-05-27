@@ -968,3 +968,33 @@
                1e-4))
         "PASS" "FAIL"))
   (display ": #154 AD ops match central finite differences") (newline))
+
+;; ============================================================
+;; Test 51: Gradients through normalization scalar parameters
+;; f(gamma/beta) = sum(norm(x, gamma, beta) * weights)
+;; ============================================================
+(let* ((x (tensor 3 1.0 2.0 4.0))
+       (c (tensor 3 1.0 2.0 3.0))
+       (g-bn-gamma (gradient
+                    (lambda (gamma)
+                      (tensor-sum (tensor-mul (batch-norm x gamma 0.0 0.00001) c)))
+                    1.0))
+       (g-ln-gamma (gradient
+                    (lambda (gamma)
+                      (tensor-sum (tensor-mul (layer-norm x gamma 0.0 0.00001) c)))
+                    1.0))
+       (g-bn-beta (gradient
+                   (lambda (beta)
+                     (tensor-sum (tensor-mul (batch-norm x 1.0 beta 0.00001) c)))
+                   0.0))
+       (g-ln-beta (gradient
+                   (lambda (beta)
+                     (tensor-sum (tensor-mul (layer-norm x 1.0 beta 0.00001) c)))
+                   0.0)))
+  (display
+    (if (and (approx= g-bn-gamma 2.4053434457631693 1e-5)
+             (approx= g-ln-gamma 2.4053434457631693 1e-5)
+             (approx= g-bn-beta 6.0 1e-6)
+             (approx= g-ln-beta 6.0 1e-6))
+        "PASS" "FAIL"))
+  (display ": gradients through normalization gamma/beta parameters match closed forms") (newline))

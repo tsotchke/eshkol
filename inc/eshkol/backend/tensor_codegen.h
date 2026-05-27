@@ -1163,8 +1163,11 @@ private:
                                        llvm::Value* axis_len,
                                        llvm::Value* inner_stride,
                                        llvm::Value* gamma,
+                                       llvm::Value* gamma_source,
                                        llvm::Value* beta,
+                                       llvm::Value* beta_source,
                                        llvm::Value* epsilon,
+                                       llvm::Value* epsilon_source,
                                        llvm::BasicBlock* exit_block,
                                        const std::string& name);
 

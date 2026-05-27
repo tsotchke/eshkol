@@ -1102,8 +1102,11 @@ bool TensorCodegen::emitTensorADNormalizeDispatch(llvm::Value* src_elems,
                                                   llvm::Value* axis_len,
                                                   llvm::Value* inner_stride,
                                                   llvm::Value* gamma,
+                                                  llvm::Value* gamma_source,
                                                   llvm::Value* beta,
+                                                  llvm::Value* beta_source,
                                                   llvm::Value* epsilon,
+                                                  llvm::Value* epsilon_source,
                                                   llvm::BasicBlock* exit_block,
                                                   const std::string& name) {
     if (!autodiff_ || !src_elems || !result_elems || !total_elements ||
@@ -1125,9 +1128,50 @@ bool TensorCodegen::emitTensorADNormalizeDispatch(llvm::Value* src_elems,
     llvm::Value* count_fp = builder.CreateUIToFP(axis_len, ctx_.doubleType());
     llvm::Value* zero_node = autodiff_->createADConstant(llvm::ConstantFP::get(ctx_.doubleType(), 0.0));
     llvm::Value* count_node = autodiff_->createADConstant(count_fp);
-    llvm::Value* gamma_node = autodiff_->createADConstant(gamma);
-    llvm::Value* beta_node = autodiff_->createADConstant(beta);
-    llvm::Value* epsilon_node = autodiff_->createADConstant(epsilon);
+    auto scalarToADNode = [&](llvm::Value* source, llvm::Value* numeric,
+                              const std::string& node_name) -> llvm::Value* {
+        if (!source || source->getType() != ctx_.taggedValueType()) {
+            return autodiff_->createADConstant(numeric);
+        }
+
+        llvm::BasicBlock* callable_block = llvm::BasicBlock::Create(
+            ctx_.context(), node_name + "_callable", current_func);
+        llvm::BasicBlock* ad_block = llvm::BasicBlock::Create(
+            ctx_.context(), node_name + "_ad", current_func);
+        llvm::BasicBlock* const_block = llvm::BasicBlock::Create(
+            ctx_.context(), node_name + "_const", current_func);
+        llvm::BasicBlock* merge_block = llvm::BasicBlock::Create(
+            ctx_.context(), node_name + "_merge", current_func);
+
+        llvm::Value* type_tag = tagged_.getType(source);
+        llvm::Value* base_type = tagged_.getBaseType(type_tag);
+        llvm::Value* is_callable = builder.CreateICmpEQ(base_type,
+            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CALLABLE));
+        builder.CreateCondBr(is_callable, callable_block, const_block);
+
+        builder.SetInsertPoint(callable_block);
+        llvm::Value* is_ad = tagged_.checkCallableSubtype(source, CALLABLE_SUBTYPE_AD_NODE);
+        builder.CreateCondBr(is_ad, ad_block, const_block);
+
+        builder.SetInsertPoint(ad_block);
+        llvm::Value* ad_node = tagged_.unpackPtr(source);
+        builder.CreateBr(merge_block);
+        llvm::BasicBlock* ad_exit = builder.GetInsertBlock();
+
+        builder.SetInsertPoint(const_block);
+        llvm::Value* const_node = autodiff_->createADConstant(numeric);
+        builder.CreateBr(merge_block);
+        llvm::BasicBlock* const_exit = builder.GetInsertBlock();
+
+        builder.SetInsertPoint(merge_block);
+        llvm::PHINode* phi = builder.CreatePHI(ctx_.ptrType(), 2, node_name + "_node");
+        phi->addIncoming(ad_node, ad_exit);
+        phi->addIncoming(const_node, const_exit);
+        return phi;
+    };
+    llvm::Value* gamma_node = scalarToADNode(gamma_source, gamma, name + "_gamma");
+    llvm::Value* beta_node = scalarToADNode(beta_source, beta, name + "_beta");
+    llvm::Value* epsilon_node = scalarToADNode(epsilon_source, epsilon, name + "_epsilon");
 
     llvm::Value* group_i_alloca = builder.CreateAlloca(ctx_.int64Type(), nullptr, (name + "_group_i").c_str());
     builder.CreateStore(zero_i64, group_i_alloca);
@@ -1344,7 +1388,8 @@ llvm::Value* TensorCodegen::batchNorm(const eshkol_operations_t* op) {
             builder.CreateStore(total, builder.CreateStructGEP(ttype, result_ptr, 3));
 
             emitTensorADNormalizeDispatch(elems, result_elems, total, axis_len,
-                inner_stride, gamma_d, beta_d, eps_d, ad_done, "bn_axis");
+                inner_stride, gamma_d, gamma_val, beta_d, beta_val, eps_d, eps_arg,
+                ad_done, "bn_axis");
 
             llvm::FunctionType* fn_type = llvm::FunctionType::get(ptrTy,
                 {ptrTy, ptrTy, i64Ty, ptrTy, i64Ty, i64Ty, dblTy, dblTy, dblTy}, false);
@@ -1450,7 +1495,7 @@ llvm::Value* TensorCodegen::batchNorm(const eshkol_operations_t* op) {
     llvm::BasicBlock* exit_block = llvm::BasicBlock::Create(ctx_.context(), "bn_exit", current_func);
     emitTensorADNormalizeDispatch(input_elems, result_elems, total_elements,
         total_elements, llvm::ConstantInt::get(ctx_.int64Type(), 1),
-        gamma, beta, epsilon, exit_block, "bn");
+        gamma, gamma_val, beta, beta_val, epsilon, eps_arg, exit_block, "bn");
 
     // First pass: compute mean
     llvm::Value* mean = builder.CreateAlloca(ctx_.doubleType(), nullptr, "bn_mean");
@@ -1675,7 +1720,8 @@ llvm::Value* TensorCodegen::layerNorm(const eshkol_operations_t* op) {
             builder.CreateStore(total, builder.CreateStructGEP(ttype, result_ptr, 3));
 
             emitTensorADNormalizeDispatch(elems, result_elems, total, axis_len,
-                inner_stride, gamma_d, beta_d, eps_d, ad_done, "ln_axis");
+                inner_stride, gamma_d, gamma_val, beta_d, beta_val, eps_d, eps_arg,
+                ad_done, "ln_axis");
 
             llvm::FunctionType* fn_type = llvm::FunctionType::get(ptrTy,
                 {ptrTy, ptrTy, i64Ty, ptrTy, i64Ty, i64Ty, dblTy, dblTy, dblTy}, false);
@@ -1783,7 +1829,7 @@ llvm::Value* TensorCodegen::layerNorm(const eshkol_operations_t* op) {
     llvm::BasicBlock* exit_block = llvm::BasicBlock::Create(ctx_.context(), "ln_exit", current_func);
     emitTensorADNormalizeDispatch(input_elems, result_elems, total_elements,
         feature_size, llvm::ConstantInt::get(ctx_.int64Type(), 1),
-        gamma, beta, epsilon, exit_block, "ln");
+        gamma, gamma_val, beta, beta_val, epsilon, eps_arg, exit_block, "ln");
 
     llvm::Function* sqrt_func = ESHKOL_GET_INTRINSIC(
         &ctx_.module(), llvm::Intrinsic::sqrt, {ctx_.doubleType()});
