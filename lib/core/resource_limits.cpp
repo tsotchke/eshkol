@@ -26,8 +26,22 @@ namespace {
 // Global State
 // ============================================================================
 
+eshkol_resource_limits_t make_default_limits() {
+    eshkol_resource_limits_t limits{};
+    limits.max_heap_bytes = ESHKOL_DEFAULT_MAX_HEAP_BYTES;
+    limits.heap_soft_limit_bytes =
+        (ESHKOL_DEFAULT_MAX_HEAP_BYTES * ESHKOL_HEAP_SOFT_LIMIT_PERCENT) / 100;
+    limits.max_execution_time_ms = ESHKOL_DEFAULT_TIMEOUT_MS;
+    limits.max_stack_depth = ESHKOL_DEFAULT_MAX_STACK_DEPTH;
+    limits.max_tensor_elements = ESHKOL_DEFAULT_MAX_TENSOR_ELEMENTS;
+    limits.max_string_length = ESHKOL_DEFAULT_MAX_STRING_LENGTH;
+    limits.enforce_hard_limits = true;
+    limits.enable_warnings = true;
+    return limits;
+}
+
 // Active resource limits
-eshkol_resource_limits_t g_limits;
+eshkol_resource_limits_t g_limits = make_default_limits();
 std::mutex g_limits_mutex;
 
 // Memory tracking
@@ -42,6 +56,7 @@ thread_local size_t t_stack_depth = 0;
 std::atomic<bool> g_timer_active{false};
 std::chrono::steady_clock::time_point g_timer_start;
 std::atomic<uint64_t> g_timer_timeout_ms{0};
+std::atomic<uint64_t> g_timer_generation{0};
 
 // Last error
 std::atomic<eshkol_limit_error_t> g_last_error{ESHKOL_LIMIT_OK};
@@ -110,16 +125,7 @@ extern "C" {
 // ----------------------------------------------------------------------------
 
 eshkol_resource_limits_t eshkol_get_default_limits(void) {
-    return {
-        .max_heap_bytes = ESHKOL_DEFAULT_MAX_HEAP_BYTES,
-        .heap_soft_limit_bytes = (ESHKOL_DEFAULT_MAX_HEAP_BYTES * ESHKOL_HEAP_SOFT_LIMIT_PERCENT) / 100,
-        .max_execution_time_ms = ESHKOL_DEFAULT_TIMEOUT_MS,
-        .max_stack_depth = ESHKOL_DEFAULT_MAX_STACK_DEPTH,
-        .max_tensor_elements = ESHKOL_DEFAULT_MAX_TENSOR_ELEMENTS,
-        .max_string_length = ESHKOL_DEFAULT_MAX_STRING_LENGTH,
-        .enforce_hard_limits = true,
-        .enable_warnings = true
-    };
+    return make_default_limits();
 }
 
 eshkol_resource_limits_t eshkol_init_limits_from_env(void) {
@@ -184,6 +190,11 @@ void eshkol_set_limits(const eshkol_resource_limits_t* limits) {
 
     std::lock_guard<std::mutex> lock(g_limits_mutex);
     g_limits = *limits;
+    if (g_limits.max_heap_bytes > 0 && g_limits.heap_soft_limit_bytes == 0) {
+        g_limits.heap_soft_limit_bytes =
+            (g_limits.max_heap_bytes * ESHKOL_HEAP_SOFT_LIMIT_PERCENT) / 100;
+    }
+    g_soft_limit_warned.store(false, std::memory_order_relaxed);
 
     eshkol_info("Resource limits configured: heap=%zuMB, timeout=%llums, stack=%zu",
                 g_limits.max_heap_bytes / (1024 * 1024),
@@ -202,11 +213,43 @@ const eshkol_resource_limits_t* eshkol_get_limits(void) {
 bool eshkol_track_allocation(size_t bytes) {
     if (bytes == 0) return true;
 
-    size_t current = g_heap_usage.fetch_add(bytes, std::memory_order_relaxed) + bytes;
+    size_t previous = g_heap_usage.load(std::memory_order_relaxed);
+    size_t current = 0;
+
+    for (;;) {
+        if (bytes > SIZE_MAX - previous) {
+            g_last_error.store(ESHKOL_LIMIT_HEAP_HARD, std::memory_order_relaxed);
+            if (g_limits.enforce_hard_limits) {
+                eshkol_error("Heap accounting overflow: current=%zu, requested=%zu",
+                             previous, bytes);
+                eshkol_runtime_request_interrupt(ESHKOL_SHUTDOWN_MEMORY);
+            }
+            return false;
+        }
+
+        current = previous + bytes;
+        if (g_limits.max_heap_bytes > 0 && current > g_limits.max_heap_bytes) {
+            g_last_error.store(ESHKOL_LIMIT_HEAP_HARD, std::memory_order_relaxed);
+            if (g_limits.enforce_hard_limits) {
+                eshkol_error("Heap limit exceeded: %zuMB > %zuMB",
+                             current / (1024 * 1024),
+                             g_limits.max_heap_bytes / (1024 * 1024));
+                eshkol_runtime_request_interrupt(ESHKOL_SHUTDOWN_MEMORY);
+            }
+            return false;
+        }
+
+        if (g_heap_usage.compare_exchange_weak(previous, current,
+                                               std::memory_order_relaxed)) {
+            break;
+        }
+    }
+
     update_peak(current);
 
     // Check soft limit
     if (g_limits.enable_warnings &&
+        g_limits.max_heap_bytes > 0 &&
         current >= g_limits.heap_soft_limit_bytes &&
         !g_soft_limit_warned.exchange(true, std::memory_order_relaxed)) {
         eshkol_warn("Heap usage at %zu%% of limit (%zuMB / %zuMB)",
@@ -216,25 +259,20 @@ bool eshkol_track_allocation(size_t bytes) {
         g_last_error.store(ESHKOL_LIMIT_HEAP_SOFT, std::memory_order_relaxed);
     }
 
-    // Check hard limit
-    if (current > g_limits.max_heap_bytes) {
-        g_last_error.store(ESHKOL_LIMIT_HEAP_HARD, std::memory_order_relaxed);
-
-        if (g_limits.enforce_hard_limits) {
-            eshkol_error("Heap limit exceeded: %zuMB > %zuMB",
-                         current / (1024 * 1024),
-                         g_limits.max_heap_bytes / (1024 * 1024));
-            eshkol_runtime_request_interrupt(ESHKOL_SHUTDOWN_MEMORY);
-            return false;
-        }
-    }
-
     return true;
 }
 
 void eshkol_track_deallocation(size_t bytes) {
     if (bytes == 0) return;
-    g_heap_usage.fetch_sub(bytes, std::memory_order_relaxed);
+
+    size_t current = g_heap_usage.load(std::memory_order_relaxed);
+    for (;;) {
+        size_t next = (bytes >= current) ? 0 : (current - bytes);
+        if (g_heap_usage.compare_exchange_weak(current, next,
+                                               std::memory_order_relaxed)) {
+            return;
+        }
+    }
 }
 
 size_t eshkol_get_heap_usage(void) {
@@ -247,6 +285,9 @@ size_t eshkol_get_peak_heap_usage(void) {
 
 bool eshkol_is_near_memory_limit(void) {
     size_t current = g_heap_usage.load(std::memory_order_relaxed);
+    if (g_limits.max_heap_bytes == 0) {
+        return false;
+    }
     size_t threshold = (g_limits.max_heap_bytes * 90) / 100;  // 90% of limit
     return current >= threshold;
 }
@@ -264,9 +305,9 @@ bool eshkol_stack_push(void) {
         if (g_limits.enforce_hard_limits) {
             eshkol_error("Stack overflow: depth %zu > limit %zu",
                          t_stack_depth, g_limits.max_stack_depth);
-            t_stack_depth--;
-            return false;
         }
+        t_stack_depth--;
+        return false;
     }
 
     return true;
@@ -287,16 +328,39 @@ size_t eshkol_get_stack_depth(void) {
 // ----------------------------------------------------------------------------
 
 void eshkol_start_timer(uint64_t timeout_ms) {
+    const uint64_t generation =
+        g_timer_generation.fetch_add(1, std::memory_order_acq_rel) + 1;
+    const uint64_t effective_timeout =
+        timeout_ms > 0 ? timeout_ms : g_limits.max_execution_time_ms;
+
     g_timer_start = std::chrono::steady_clock::now();
-    g_timer_timeout_ms.store(timeout_ms > 0 ? timeout_ms : g_limits.max_execution_time_ms,
-                              std::memory_order_release);
+    g_timer_timeout_ms.store(effective_timeout, std::memory_order_release);
     g_timer_active.store(true, std::memory_order_release);
     eshkol_debug("Execution timer started: %llu ms",
                  (unsigned long long)g_timer_timeout_ms.load());
+
+    if (effective_timeout > 0 && g_limits.enforce_hard_limits) {
+        std::thread([generation, effective_timeout]() {
+            std::this_thread::sleep_for(
+                std::chrono::milliseconds(effective_timeout));
+
+            if (g_timer_generation.load(std::memory_order_acquire) != generation ||
+                !g_timer_active.load(std::memory_order_acquire)) {
+                return;
+            }
+
+            g_last_error.store(ESHKOL_LIMIT_TIMEOUT, std::memory_order_relaxed);
+            g_timer_active.store(false, std::memory_order_release);
+            eshkol_error("Execution timeout: %llums limit exceeded",
+                         (unsigned long long)effective_timeout);
+            eshkol_runtime_request_interrupt(ESHKOL_SHUTDOWN_TIMEOUT);
+        }).detach();
+    }
 }
 
 void eshkol_stop_timer(void) {
     g_timer_active.store(false, std::memory_order_release);
+    g_timer_generation.fetch_add(1, std::memory_order_acq_rel);
     eshkol_debug("Execution timer stopped");
 }
 
@@ -319,6 +383,7 @@ bool eshkol_is_timed_out(void) {
         if (g_limits.enforce_hard_limits) {
             eshkol_error("Execution timeout: %lld ms >= %llu ms limit",
                          (long long)elapsed, (unsigned long long)timeout);
+            g_timer_active.store(false, std::memory_order_release);
             eshkol_runtime_request_interrupt(ESHKOL_SHUTDOWN_TIMEOUT);
         }
         return true;
@@ -443,6 +508,7 @@ void eshkol_reset_resource_tracking(void) {
     g_soft_limit_warned.store(false, std::memory_order_relaxed);
     t_stack_depth = 0;
     g_timer_active.store(false, std::memory_order_relaxed);
+    g_timer_generation.fetch_add(1, std::memory_order_acq_rel);
     g_last_error.store(ESHKOL_LIMIT_OK, std::memory_order_relaxed);
     eshkol_debug("Resource tracking reset");
 }

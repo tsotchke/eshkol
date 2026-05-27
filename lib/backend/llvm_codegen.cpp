@@ -3055,16 +3055,16 @@ private:
         // SYSTEM & ENVIRONMENT FUNCTIONS (from stdlib.h, unistd.h)
         // ============================================================================
 
-        // getenv: char* getenv(const char* name) - get environment variable
+        // getenv: char* eshkol_getenv(const char* name)
         std::vector<Type*> getenv_args;
         getenv_args.push_back(PointerType::get(*context, 0));  // name
         FunctionType* getenv_type = FunctionType::get(
             PointerType::get(*context, 0), getenv_args, false);
         Function* getenv_func = Function::Create(
-            getenv_type, Function::ExternalLinkage, "getenv", module.get());
+            getenv_type, Function::ExternalLinkage, eshkol::runtime::getenv_symbol, module.get());
         function_table["getenv"] = getenv_func;
 
-        // setenv: int setenv(const char* name, const char* value, int overwrite)
+        // setenv: int eshkol_setenv(const char* name, const char* value, int overwrite)
         std::vector<Type*> setenv_args;
         setenv_args.push_back(PointerType::get(*context, 0));  // name
         setenv_args.push_back(PointerType::get(*context, 0));  // value
@@ -3072,16 +3072,16 @@ private:
         FunctionType* setenv_type = FunctionType::get(
             int32_type, setenv_args, false);
         Function* setenv_func = Function::Create(
-            setenv_type, Function::ExternalLinkage, "setenv", module.get());
+            setenv_type, Function::ExternalLinkage, eshkol::runtime::setenv_symbol, module.get());
         function_table["setenv"] = setenv_func;
 
-        // unsetenv: int unsetenv(const char* name)
+        // unsetenv: int eshkol_unsetenv(const char* name)
         std::vector<Type*> unsetenv_args;
         unsetenv_args.push_back(PointerType::get(*context, 0));  // name
         FunctionType* unsetenv_type = FunctionType::get(
             int32_type, unsetenv_args, false);
         Function* unsetenv_func = Function::Create(
-            unsetenv_type, Function::ExternalLinkage, "unsetenv", module.get());
+            unsetenv_type, Function::ExternalLinkage, eshkol::runtime::unsetenv_symbol, module.get());
         function_table["unsetenv"] = unsetenv_func;
 
         // system: int system(const char* command)

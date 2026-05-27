@@ -7,11 +7,13 @@
  */
 
 #include <eshkol/core/runtime.h>
+#include <eshkol/core/resource_limits.h>
 #include <eshkol/logger.h>
 
 #include "runtime_hosted_internal.h"
 
 #include <atomic>
+#include <cstdlib>
 #include <cstdio>
 
 namespace {
@@ -63,6 +65,11 @@ int eshkol_runtime_init(void) {
     // runtime init runs before user-level Eshkol code.
     setvbuf(stdout, NULL, _IONBF, 0);
 
+    eshkol_resource_limits_t limits = eshkol_init_limits_from_env();
+    if (std::getenv("ESHKOL_TIMEOUT_MS") && limits.max_execution_time_ms > 0) {
+        eshkol_start_timer(limits.max_execution_time_ms);
+    }
+
     eshkol_runtime_init_signals();
 
     eshkol_info("Eshkol runtime initialized");
@@ -103,6 +110,7 @@ void eshkol_runtime_shutdown(eshkol_shutdown_reason_t reason) {
     }
 
     eshkol::runtime_hosted::run_shutdown_hooks(reason);
+    eshkol_stop_timer();
     eshkol_runtime_restore_signals();
 
     g_runtime_state.store(ESHKOL_RUNTIME_TERMINATED, std::memory_order_release);

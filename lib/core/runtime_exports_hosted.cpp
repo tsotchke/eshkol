@@ -146,6 +146,10 @@ void deny_file_capability() {
     errno = EACCES;
 }
 
+void deny_capability() {
+    errno = EACCES;
+}
+
 } // namespace
 
 extern "C" FILE* eshkol_stdout_stream() {
@@ -269,6 +273,10 @@ extern "C" char* eshkol_getenv(const char* name) {
     if (name == nullptr || name[0] == '\0') {
         return nullptr;
     }
+    if (!runtime_capability_allows("env-read")) {
+        deny_capability();
+        return nullptr;
+    }
 
     return std::getenv(name);
 }
@@ -276,6 +284,10 @@ extern "C" char* eshkol_getenv(const char* name) {
 extern "C" int eshkol_setenv(const char* name, const char* value, int overwrite) {
     if (name == nullptr || name[0] == '\0' || value == nullptr) {
         errno = EINVAL;
+        return -1;
+    }
+    if (!runtime_capability_allows("env-write")) {
+        deny_capability();
         return -1;
     }
 
@@ -292,6 +304,10 @@ extern "C" int eshkol_setenv(const char* name, const char* value, int overwrite)
 extern "C" int eshkol_unsetenv(const char* name) {
     if (name == nullptr || name[0] == '\0') {
         errno = EINVAL;
+        return -1;
+    }
+    if (!runtime_capability_allows("env-write")) {
+        deny_capability();
         return -1;
     }
 

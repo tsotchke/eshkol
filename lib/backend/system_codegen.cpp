@@ -30,6 +30,17 @@ llvm::Function* getOrDeclareRuntimeFuncAllPtr(CodegenContext& ctx, llvm::Module*
 static llvm::Value* callPtrRuntime(CodegenContext& ctx, llvm::Function* f,
                                    llvm::ArrayRef<llvm::Value*> args);
 
+static llvm::Value* runtimeCapabilityAllowed(CodegenContext& ctx, const char* capability) {
+    llvm::FunctionType* fn_type = llvm::FunctionType::get(
+        ctx.int32Type(), {ctx.ptrType()}, false);
+    llvm::FunctionCallee callee = ctx.module().getOrInsertFunction(
+        "eshkol_capability_runtime_allows", fn_type);
+    llvm::Value* capability_name = ctx.builder().CreateGlobalStringPtr(capability);
+    llvm::Value* allowed = ctx.builder().CreateCall(callee, {capability_name});
+    return ctx.builder().CreateICmpNE(
+        allowed, llvm::ConstantInt::get(ctx.int32Type(), 0));
+}
+
 SystemCodegen::SystemCodegen(CodegenContext& ctx, TaggedValueCodegen& tagged, MemoryCodegen& mem,
                              std::unordered_map<std::string, llvm::Function*>& function_table)
     : ctx_(ctx)
@@ -69,6 +80,25 @@ llvm::Value* SystemCodegen::getenv(const eshkol_operations_t* op) {
     // Extract string pointer
     llvm::Value* name_ptr = extractStringPtr(name_arg);
 
+    llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::BasicBlock* denied_block = llvm::BasicBlock::Create(
+        ctx_.context(), "getenv_capability_denied", current_func);
+    llvm::BasicBlock* call_block = llvm::BasicBlock::Create(
+        ctx_.context(), "getenv_capability_allowed", current_func);
+    llvm::BasicBlock* final_merge_block = llvm::BasicBlock::Create(
+        ctx_.context(), "getenv_capability_merge", current_func);
+
+    llvm::Value* capability_ok = runtimeCapabilityAllowed(ctx_, "env-read");
+    ctx_.builder().CreateCondBr(capability_ok, call_block, denied_block);
+
+    ctx_.builder().SetInsertPoint(denied_block);
+    llvm::Value* denied_val = tagged_.packBool(
+        llvm::ConstantInt::getFalse(ctx_.context()));
+    ctx_.builder().CreateBr(final_merge_block);
+    llvm::BasicBlock* denied_exit = ctx_.builder().GetInsertBlock();
+
+    ctx_.builder().SetInsertPoint(call_block);
+
     // Call getenv
     llvm::Value* result = ctx_.builder().CreateCall(getenv_func, {name_ptr});
 
@@ -76,7 +106,6 @@ llvm::Value* SystemCodegen::getenv(const eshkol_operations_t* op) {
     llvm::Value* is_null = ctx_.builder().CreateICmpEQ(result,
         llvm::ConstantPointerNull::get(ctx_.ptrType()));
 
-    llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
     llvm::BasicBlock* null_block = llvm::BasicBlock::Create(ctx_.context(), "getenv_null", current_func);
     llvm::BasicBlock* valid_block = llvm::BasicBlock::Create(ctx_.context(), "getenv_valid", current_func);
     llvm::BasicBlock* merge_block = llvm::BasicBlock::Create(ctx_.context(), "getenv_merge", current_func);
@@ -134,7 +163,15 @@ llvm::Value* SystemCodegen::getenv(const eshkol_operations_t* op) {
     phi->addIncoming(false_val, null_block);
     phi->addIncoming(string_val, valid_exit);
 
-    return phi;
+    ctx_.builder().CreateBr(final_merge_block);
+    llvm::BasicBlock* getenv_exit = ctx_.builder().GetInsertBlock();
+
+    ctx_.builder().SetInsertPoint(final_merge_block);
+    llvm::PHINode* final_phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2);
+    final_phi->addIncoming(denied_val, denied_exit);
+    final_phi->addIncoming(phi, getenv_exit);
+
+    return final_phi;
 }
 
 llvm::Value* SystemCodegen::setenv(const eshkol_operations_t* op) {
@@ -160,6 +197,25 @@ llvm::Value* SystemCodegen::setenv(const eshkol_operations_t* op) {
     llvm::Value* name_ptr = extractStringPtr(name_arg);
     llvm::Value* value_ptr = extractStringPtr(value_arg);
 
+    llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::BasicBlock* denied_block = llvm::BasicBlock::Create(
+        ctx_.context(), "setenv_capability_denied", current_func);
+    llvm::BasicBlock* call_block = llvm::BasicBlock::Create(
+        ctx_.context(), "setenv_capability_allowed", current_func);
+    llvm::BasicBlock* merge_block = llvm::BasicBlock::Create(
+        ctx_.context(), "setenv_capability_merge", current_func);
+
+    llvm::Value* capability_ok = runtimeCapabilityAllowed(ctx_, "env-write");
+    ctx_.builder().CreateCondBr(capability_ok, call_block, denied_block);
+
+    ctx_.builder().SetInsertPoint(denied_block);
+    llvm::Value* denied_val = tagged_.packBool(
+        llvm::ConstantInt::getFalse(ctx_.context()));
+    ctx_.builder().CreateBr(merge_block);
+    llvm::BasicBlock* denied_exit = ctx_.builder().GetInsertBlock();
+
+    ctx_.builder().SetInsertPoint(call_block);
+
     // Call setenv(name, value, 1) - overwrite=1
     llvm::Value* result = ctx_.builder().CreateCall(setenv_func, {
         name_ptr, value_ptr, llvm::ConstantInt::get(ctx_.int32Type(), 1)
@@ -167,7 +223,15 @@ llvm::Value* SystemCodegen::setenv(const eshkol_operations_t* op) {
 
     // Return #t if result == 0, #f otherwise
     llvm::Value* success = ctx_.builder().CreateICmpEQ(result, llvm::ConstantInt::get(ctx_.int32Type(), 0));
-    return tagged_.packBool(success);
+    llvm::Value* success_val = tagged_.packBool(success);
+    ctx_.builder().CreateBr(merge_block);
+    llvm::BasicBlock* call_exit = ctx_.builder().GetInsertBlock();
+
+    ctx_.builder().SetInsertPoint(merge_block);
+    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2);
+    phi->addIncoming(denied_val, denied_exit);
+    phi->addIncoming(success_val, call_exit);
+    return phi;
 }
 
 llvm::Value* SystemCodegen::unsetenv(const eshkol_operations_t* op) {
@@ -191,12 +255,39 @@ llvm::Value* SystemCodegen::unsetenv(const eshkol_operations_t* op) {
     // Extract string pointer
     llvm::Value* name_ptr = extractStringPtr(name_arg);
 
+    llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::BasicBlock* denied_block = llvm::BasicBlock::Create(
+        ctx_.context(), "unsetenv_capability_denied", current_func);
+    llvm::BasicBlock* call_block = llvm::BasicBlock::Create(
+        ctx_.context(), "unsetenv_capability_allowed", current_func);
+    llvm::BasicBlock* merge_block = llvm::BasicBlock::Create(
+        ctx_.context(), "unsetenv_capability_merge", current_func);
+
+    llvm::Value* capability_ok = runtimeCapabilityAllowed(ctx_, "env-write");
+    ctx_.builder().CreateCondBr(capability_ok, call_block, denied_block);
+
+    ctx_.builder().SetInsertPoint(denied_block);
+    llvm::Value* denied_val = tagged_.packBool(
+        llvm::ConstantInt::getFalse(ctx_.context()));
+    ctx_.builder().CreateBr(merge_block);
+    llvm::BasicBlock* denied_exit = ctx_.builder().GetInsertBlock();
+
+    ctx_.builder().SetInsertPoint(call_block);
+
     // Call unsetenv
     llvm::Value* result = ctx_.builder().CreateCall(unsetenv_func, {name_ptr});
 
     // Return #t if result == 0, #f otherwise
     llvm::Value* success = ctx_.builder().CreateICmpEQ(result, llvm::ConstantInt::get(ctx_.int32Type(), 0));
-    return tagged_.packBool(success);
+    llvm::Value* success_val = tagged_.packBool(success);
+    ctx_.builder().CreateBr(merge_block);
+    llvm::BasicBlock* call_exit = ctx_.builder().GetInsertBlock();
+
+    ctx_.builder().SetInsertPoint(merge_block);
+    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2);
+    phi->addIncoming(denied_val, denied_exit);
+    phi->addIncoming(success_val, call_exit);
+    return phi;
 }
 
 // =========================================================================

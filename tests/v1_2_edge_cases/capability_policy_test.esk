@@ -1,6 +1,7 @@
 ;; Capability policy checks for v1.3-evolve #149.
 
 (require stdlib)
+(require core.capabilities)
 
 (define passed 0)
 (define failed 0)
@@ -34,53 +35,134 @@
 (check "active policy keeps listed capability allowed"
        (capability-allowed? 'file-read))
 (check "denied capability raises deterministically"
-       (raises? (lambda () (capability-require! 'subprocess 'spawn))))
+       (raises? (lambda () (capability-require! 'subprocess))))
 
 (define file-policy-path "/tmp/eshkol_capability_file_policy.txt")
+(define dir-policy-path "/tmp/eshkol_capability_dir_policy")
+(define env-policy-name "ESHKOL_CAPABILITY_POLICY_TEST")
+
+(define (valid-input-port? value)
+  (if (input-port? value)
+      (begin (close-port value) #t)
+      #f))
+
+(define (valid-output-port? value)
+  (if (output-port? value)
+      (begin (close-port value) #t)
+      #f))
+
+(define (valid-binary-port? value)
+  (if (binary-port? value)
+      (begin (close-port value) #t)
+      #f))
 
 (capability-clear-policy!)
 (if (file-exists? file-policy-path) (delete-file file-policy-path) #f)
+(if (directory-exists? dir-policy-path) (delete-directory dir-policy-path) #f)
 (check "no policy allows file writes by default"
        (write-file file-policy-path "hello"))
+(check "no policy allows env writes by default"
+       (setenv env-policy-name "default"))
+(check "no policy allows env reads by default"
+       (string=? (getenv env-policy-name) "default"))
 
 (capability-install-policy! '())
 (check "empty active policy is deny-by-default"
        (and (capability-policy-active?)
             (not (capability-allowed? 'file-read))
-            (not (capability-allowed? 'file-write))))
+            (not (capability-allowed? 'file-write))
+            (not (capability-allowed? 'env-read))
+            (not (capability-allowed? 'env-write))))
 (check "file metadata requires file-read"
        (not (file-exists? file-policy-path)))
 (check "read-file requires file-read"
        (not (read-file file-policy-path)))
 (check "file-size requires file-read"
        (not (file-size file-policy-path)))
+(check "open-input-file requires file-read"
+       (not (open-input-file file-policy-path)))
+(check "open-binary-input-file requires file-read"
+       (not (open-binary-input-file file-policy-path)))
 (check "write-file requires file-write"
        (not (write-file file-policy-path "blocked")))
+(check "open-output-file requires file-write"
+       (not (open-output-file file-policy-path)))
+(check "open-output-file-append requires file-write"
+       (not (open-output-file-append file-policy-path)))
+(check "open-binary-output-file requires file-write"
+       (not (open-binary-output-file file-policy-path)))
+(check "directory metadata requires file-read"
+       (not (directory-exists? "/tmp")))
+(check "make-directory requires file-write"
+       (not (make-directory dir-policy-path)))
+(check "getenv requires env-read"
+       (not (getenv env-policy-name)))
+(check "setenv requires env-write"
+       (not (setenv env-policy-name "blocked")))
+(check "unsetenv requires env-write"
+       (not (unsetenv env-policy-name)))
 
 (capability-install-policy! (list 'file-read))
 (check "file-read allows metadata and read-file"
        (and (file-exists? file-policy-path)
             (string=? (read-file file-policy-path) "hello")))
+(check "file-read allows open-input-file"
+       (valid-input-port? (open-input-file file-policy-path)))
+(check "file-read allows open-binary-input-file"
+       (valid-binary-port? (open-binary-input-file file-policy-path)))
 (check "file-read alone still denies write-file"
        (not (write-file file-policy-path "blocked")))
+(check "file-read alone still denies open-output-file"
+       (not (open-output-file file-policy-path)))
 
 (capability-install-policy! (list 'file-write))
+(check "file-write allows open-output-file"
+       (valid-output-port? (open-output-file file-policy-path)))
+(check "file-write allows open-output-file-append"
+       (valid-output-port? (open-output-file-append file-policy-path)))
+(check "file-write allows open-binary-output-file"
+       (valid-binary-port? (open-binary-output-file file-policy-path)))
 (check "file-write allows write-file"
        (write-file file-policy-path "updated"))
 (check "file-write alone still denies metadata"
        (not (file-exists? file-policy-path)))
+(check "file-write allows make-directory"
+       (make-directory dir-policy-path))
+(check "file-write alone still denies directory metadata"
+       (not (directory-exists? dir-policy-path)))
+(check "file-write allows env neither read nor write"
+       (and (not (getenv env-policy-name))
+            (not (setenv env-policy-name "file-write-only"))))
 
 (capability-install-policy! (list 'file-read))
 (check "file-read observes updated file contents"
        (string=? (read-file file-policy-path) "updated"))
+(check "file-read allows directory metadata"
+       (directory-exists? dir-policy-path))
 
 (capability-install-policy! (list 'file-write))
 (check "file-write allows delete-file cleanup"
        (delete-file file-policy-path))
+(check "file-write allows delete-directory cleanup"
+       (delete-directory dir-policy-path))
+
+(capability-install-policy! (list 'env-read))
+(check "env-read allows getenv"
+       (string=? (getenv env-policy-name) "default"))
+(check "env-read alone still denies setenv"
+       (not (setenv env-policy-name "blocked")))
+
+(capability-install-policy! (list 'env-write))
+(check "env-write allows setenv"
+       (setenv env-policy-name "updated"))
+(check "env-write alone still denies getenv"
+       (not (getenv env-policy-name)))
+(check "env-write allows unsetenv cleanup"
+       (unsetenv env-policy-name))
 
 (capability-install-policy! (list 'subprocess))
 (check "shell capability remains denied unless listed"
-       (raises? (lambda () (capability-require! 'shell 'spawn-shell))))
+       (raises? (lambda () (capability-require! 'shell))))
 
 (capability-install-policy! (list 'subprocess 'shell))
 (check "subprocess allow-list can permit shell"
