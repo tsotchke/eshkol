@@ -46,13 +46,42 @@
 (check "extracts request body"
        (string=? (http-request-body post-request) "{\"ok\":true}"))
 
+(define tool-routes
+  (list
+    (http-route "POST" "/tools/run"
+                (lambda (request)
+                  (http-response 200
+                                 "application/json"
+                                 (string-append "{\"query\":\""
+                                                (http-request-query request)
+                                                "\"}"))))
+    (http-route "GET" "/boom"
+                (lambda (request)
+                  (error "expected route failure")))))
+
+(let ((response (http-route-request post-request tool-routes)))
+  (check "custom route returns handler status"
+         (= (http-response-status response) 200))
+  (check "custom route returns handler content type"
+         (string=? (http-response-content-type response) "application/json"))
+  (check "custom route receives request details"
+         (string-contains? (http-response-body response) "trace=abc")))
+
+(let ((response (http-route-request "GET /boom HTTP/1.1\r\n\r\n" tool-routes)))
+  (check "handler exception becomes 500 response"
+         (= (http-response-status response) 500)))
+
+(let ((response (http-route-request health-request tool-routes)))
+  (check "router falls back to standard routes"
+         (= (http-response-status response) 200)))
+
 (let ((response (http-standard-response health-request)))
   (check "health route returns 200"
-         (= (car response) 200))
+         (= (http-response-status response) 200))
   (check "health route returns text/plain"
-         (string=? (cadr response) "text/plain"))
+         (string=? (http-response-content-type response) "text/plain"))
   (check "health route body is OK"
-         (string=? (caddr response) "OK\n")))
+         (string=? (http-response-body response) "OK\n")))
 
 (let ((response (http-standard-response ready-request #t)))
   (check "ready true returns 200"
@@ -74,13 +103,13 @@
 
 (let ((response (http-standard-response metrics-request)))
   (check "metrics route returns 200"
-         (= (car response) 200))
+         (= (http-response-status response) 200))
   (check "metrics route content type is prometheus text"
-         (string=? (cadr response) "text/plain; version=0.0.4"))
+         (string=? (http-response-content-type response) "text/plain; version=0.0.4"))
   (check "metrics route includes HELP line"
-         (string-contains? (caddr response) "# HELP eshkol_http_routing_test_total"))
+         (string-contains? (http-response-body response) "# HELP eshkol_http_routing_test_total"))
   (check "metrics route includes label value"
-         (string-contains? (caddr response) "path=\"/metrics\"")))
+         (string-contains? (http-response-body response) "path=\"/metrics\"")))
 
 (let ((response (http-standard-response missing-request)))
   (check "unknown route returns 404"

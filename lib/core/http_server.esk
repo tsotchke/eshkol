@@ -15,7 +15,15 @@
          http-request-version
          http-request-header
          http-request-body
+         http-response
+         http-response?
+         http-response-status
+         http-response-content-type
+         http-response-body
+         http-route
+         http-route-request
          http-standard-response
+         http-server-respond-response
          http-server-respond-standard)
 
 (define (http-first-line request)
@@ -129,6 +137,45 @@
 (define (http-response status content-type body)
   (list status content-type body))
 
+(define (http-response? response)
+  (and (pair? response)
+       (pair? (cdr response))
+       (pair? (cddr response))))
+
+(define (http-response-status response)
+  (car response))
+
+(define (http-response-content-type response)
+  (cadr response))
+
+(define (http-response-body response)
+  (caddr response))
+
+(define (http-route method path handler)
+  "Create a route tuple: METHOD, PATH, HANDLER."
+  (list method path handler))
+
+(define (http-route-method route)
+  (car route))
+
+(define (http-route-path route)
+  (cadr route))
+
+(define (http-route-handler route)
+  (caddr route))
+
+(define (http-route-match? route method path)
+  (and (pair? route)
+       (string=? (http-route-method route) method)
+       (string=? (http-route-path route) path)))
+
+(define (http-call-handler handler request)
+  (guard (exn (#t (http-response 500 "text/plain" "Internal Server Error\n")))
+    (let ((response (handler request)))
+      (if (http-response? response)
+          response
+          (http-response 500 "text/plain" "Internal Server Error\n")))))
+
 (define (http-standard-response request . ready)
   "Return (status content-type body) for built-in health/ready/metrics routes."
   (let ((ready? (if (null? ready) #t (car ready)))
@@ -148,9 +195,30 @@
       (else
        (http-response 404 "text/plain" "Not Found\n")))))
 
+(define (http-route-request request routes . ready)
+  "Route REQUEST through custom route tuples, falling back to standard routes."
+  (let ((ready? (if (null? ready) #t (car ready)))
+        (method (http-request-method request))
+        (path (http-request-path request)))
+    (let loop ((remaining routes))
+      (cond
+        ((null? remaining)
+         (http-standard-response request ready?))
+        ((http-route-match? (car remaining) method path)
+         (http-call-handler (http-route-handler (car remaining)) request))
+        (else
+         (loop (cdr remaining)))))))
+
+(define (http-server-respond-response handle response)
+  "Respond through http-server-respond using a response tuple."
+  (http-server-respond handle
+                       (http-response-status response)
+                       (http-response-content-type response)
+                       (http-response-body response))
+  #t)
+
 (define (http-server-respond-standard handle request . ready)
   "Respond through http-server-respond using http-standard-response."
   (let* ((ready? (if (null? ready) #t (car ready)))
          (response (http-standard-response request ready?)))
-    (http-server-respond handle (car response) (cadr response) (caddr response))
-    #t))
+    (http-server-respond-response handle response)))

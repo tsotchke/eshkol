@@ -340,10 +340,10 @@ Phase 1 networking deliverables:
 - UDP sockets: bind, sendto, recvfrom, multicast-safe option surface later.
 - TLS wrapper: server and client contexts, certificate/key loading, peer
   verification controls, and explicit failure diagnostics.
-- HTTP server: keep the initial standard route helpers for `/health`, `/ready`,
-  and `/metrics`, then add request/response records, header/body access,
-  chunked/body-size limits, graceful close, and handler exceptions that become
-  5xx responses rather than process aborts.
+- HTTP server: keep the initial standard route helpers and custom route
+  dispatcher for `/health`, `/ready`, `/metrics`, and Noesis-style tool
+  endpoints, then add richer request/response records, chunked/body-size
+  limits, and graceful close.
 - HTTP client can remain libcurl-backed initially, but the public Eshkol API
   should not expose libcurl-specific handles.
 - WebSocket server: upgrade handshake, text/binary frames, close/ping/pong,
