@@ -251,6 +251,76 @@ probe example_agent_compiles "examples/agent.esk compiles" \
     'cd "$REPO_ROOT" && test -f examples/agent.esk &&
      "$ESHKOL_RUN" examples/agent.esk -o /tmp/icc_selene.bin >/dev/null 2>&1'
 
+# ───────────────────────────────────────────────────────────────────
+# v1.3-evolve probes — see .icc/completion-oracles.yaml::v1.3-evolve.
+# ───────────────────────────────────────────────────────────────────
+
+probe string_interpolation_works '"…~{expr}…" parses and evaluates the embedded expression' \
+    'tmp=$(mktemp).esk;
+     cat > "$tmp" <<EOF
+(define n 42)
+(define s "n=~{n} squared=~{(* n n)}")
+(if (string=? s "n=42 squared=1764") (exit 0) (exit 1))
+EOF
+     "$ESHKOL_RUN" -r "$tmp" 2>&1; rc=$?; rm -f "$tmp"; exit $rc'
+
+probe keyword_args_work '(f #:k v) bind by name and reorder freely' \
+    'tmp=$(mktemp).esk;
+     cat > "$tmp" <<EOF
+(define (weighted x #:scale s #:offset o) (+ (* x s) o))
+(if (= (weighted 10 #:offset 2 #:scale 4) 42) (exit 0) (exit 1))
+EOF
+     "$ESHKOL_RUN" -r "$tmp" 2>&1; rc=$?; rm -f "$tmp"; exit $rc'
+
+probe let_match_destructures '(let-match (((list a b) (list 1 2))) …) destructures and binds' \
+    'tmp=$(mktemp).esk;
+     cat > "$tmp" <<EOF
+(define r (let-match (((list a b) (list 19 23))) (+ a b)))
+(if (= r 42) (exit 0) (exit 1))
+EOF
+     "$ESHKOL_RUN" -r "$tmp" 2>&1; rc=$?; rm -f "$tmp"; exit $rc'
+
+probe define_library_import_works '(define-library …) + (import …) round-trip works in a single file' \
+    'tmp=$(mktemp).esk;
+     cat > "$tmp" <<EOF
+(define-library (smoke v1_3) (export greet) (begin (define (greet who) (string-append "hi " who))))
+(import (smoke v1_3))
+(if (string=? (greet "world") "hi world") (exit 0) (exit 1))
+EOF
+     "$ESHKOL_RUN" -r "$tmp" 2>&1; rc=$?; rm -f "$tmp"; exit $rc'
+
+probe matmul_kernel_grad_nonzero 'gradient flows through tensor-matmul to the kernel side (input2)' \
+    'tmp=$(mktemp).esk;
+     cat > "$tmp" <<EOF
+;; f = sum(X @ K). df/dK_lm = sum_i X[i][l]
+;; X = [[1,2],[3,4]] → df/dK = [[4,4],[6,6]]
+(define X (reshape #(1.0 2.0 3.0 4.0) 2 2))
+(define (f params) (tensor-sum (tensor-matmul X (reshape params 2 2))))
+(define g (gradient f #(1.0 0.0 0.0 1.0)))
+(if (and (= (vector-ref g 0) 4.0) (= (vector-ref g 1) 4.0)
+         (= (vector-ref g 2) 6.0) (= (vector-ref g 3) 6.0))
+    (exit 0) (exit 1))
+EOF
+     "$ESHKOL_RUN" -r "$tmp" 2>&1; rc=$?; rm -f "$tmp"; exit $rc'
+
+probe native_image_io_no_stb 'image-read uses platform APIs, not bundled deps/stb' \
+    'cd "$REPO_ROOT";
+     ## v1.3 commits to removing deps/stb in favour of native platform
+     ## media APIs.  Until that lands, this probe FAILs: deps/stb is
+     ## still vendored and image_io.c still includes its headers.
+     if grep -q "deps/stb" lib/core/image_io.c 2>/dev/null; then exit 1; fi;
+     if [ -d deps/stb ]; then exit 1; fi;
+     exit 0'
+
+probe pgo_pipeline_works 'cmake -DESHKOL_PGO=generate/use supports a profile-guided binary' \
+    'cd "$REPO_ROOT";
+     ## v1.3 commits to a PGO build option.  Until that lands, this
+     ## probe FAILs: no -DESHKOL_PGO option is wired in CMakeLists.
+     if grep -qE "ESHKOL_PGO|fprofile-(generate|use)" CMakeLists.txt 2>/dev/null; then
+        exit 0;
+     fi;
+     exit 1'
+
 echo
 echo "Trace written: $TRACE_FILE"
 echo "Run: python3 ~/Desktop/infinite_context_coder/scripts/codebase_tool.py \\"

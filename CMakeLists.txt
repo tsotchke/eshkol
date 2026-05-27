@@ -185,6 +185,55 @@ if(ESHKOL_ENABLE_MSAN)
     add_compile_definitions(ESHKOL_SANITIZER_BUILD=1)
 endif()
 
+# ===== Profile-Guided Optimization (v1.3-evolve) =====
+# Two-phase build:
+#   1. `cmake -DESHKOL_PGO=generate -DCMAKE_BUILD_TYPE=Release`
+#      builds the compiler/runtime instrumented to emit profile data
+#      via `-fprofile-instr-generate=<dir>/eshkol-%p.profraw`.
+#   2. Run a representative workload (typically the v1.2 edge-case
+#      tests + the smoke harness + a couple of canonical examples).
+#   3. `llvm-profdata merge` the raw files into a single profile.
+#   4. `cmake -DESHKOL_PGO=use -DESHKOL_PGO_PROFILE=<merged.profdata>
+#         -DCMAKE_BUILD_TYPE=Release` rebuilds using the profile.
+#
+# The default (OFF / unset) is the existing non-PGO build path.
+set(ESHKOL_PGO "OFF" CACHE STRING
+    "Profile-Guided Optimization mode: OFF (default), generate (instrument), or use (consume profile)")
+set_property(CACHE ESHKOL_PGO PROPERTY STRINGS OFF generate use)
+set(ESHKOL_PGO_PROFILE "" CACHE FILEPATH
+    "Path to the merged .profdata file when ESHKOL_PGO=use")
+set(ESHKOL_PGO_RAW_DIR "${CMAKE_BINARY_DIR}/pgo-raw" CACHE PATH
+    "Directory where instrumented binaries write .profraw files")
+
+if(NOT ESHKOL_PGO STREQUAL "OFF")
+    if(NOT (CMAKE_CXX_COMPILER_ID MATCHES "Clang|AppleClang"))
+        message(WARNING "PGO support is currently clang-only; ESHKOL_PGO ignored.")
+    elseif(ESHKOL_PGO STREQUAL "generate")
+        message(STATUS "PGO: instrumentation phase (writes .profraw to ${ESHKOL_PGO_RAW_DIR})")
+        file(MAKE_DIRECTORY "${ESHKOL_PGO_RAW_DIR}")
+        add_compile_options(-fprofile-instr-generate=${ESHKOL_PGO_RAW_DIR}/eshkol-%p.profraw)
+        add_link_options(-fprofile-instr-generate=${ESHKOL_PGO_RAW_DIR}/eshkol-%p.profraw)
+        add_compile_definitions(ESHKOL_PGO_INSTRUMENTED=1)
+    elseif(ESHKOL_PGO STREQUAL "use")
+        if(NOT ESHKOL_PGO_PROFILE)
+            message(FATAL_ERROR "ESHKOL_PGO=use requires -DESHKOL_PGO_PROFILE=<merged.profdata>")
+        endif()
+        if(NOT EXISTS "${ESHKOL_PGO_PROFILE}")
+            message(FATAL_ERROR "ESHKOL_PGO_PROFILE not found: ${ESHKOL_PGO_PROFILE}")
+        endif()
+        message(STATUS "PGO: consumption phase (reading ${ESHKOL_PGO_PROFILE})")
+        # -Wno-profile-instr-out-of-date keeps the build alive when the
+        # profile is captured against a slightly different source tree.
+        add_compile_options(-fprofile-instr-use=${ESHKOL_PGO_PROFILE}
+                            -Wno-profile-instr-out-of-date
+                            -Wno-profile-instr-unprofiled)
+        add_link_options(-fprofile-instr-use=${ESHKOL_PGO_PROFILE})
+        add_compile_definitions(ESHKOL_PGO_OPTIMIZED=1)
+    else()
+        message(FATAL_ERROR "ESHKOL_PGO must be OFF, generate, or use (got '${ESHKOL_PGO}')")
+    endif()
+endif()
+
 if(ESHKOL_ENABLE_LSAN)
     # LSan standalone — only valid when NOT combined with ASan (ASan
     # enables LSan automatically). Useful on Linux for leak-only CI.
@@ -1702,6 +1751,19 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 300
             PASS_REGULAR_EXPRESSION "TEST: Empty collection edge cases"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/v1_3_edge_cases/v1_3_smoke_features_test.esk")
+        add_test(
+            NAME v1_3_smoke_features_runtime_smoke
+            COMMAND $<TARGET_FILE:eshkol-run>
+                    -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/v1_3_edge_cases/v1_3_smoke_features_test.esk"
+                    -L"${CMAKE_CURRENT_BINARY_DIR}"
+        )
+        set_tests_properties(v1_3_smoke_features_runtime_smoke
+            PROPERTIES
+                TIMEOUT 300
+                PASS_REGULAR_EXPRESSION "PASS: v1_3_smoke_features_test"
+                FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    endif()
 endif()
 
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/runtime_shutdown_hooks_test.cpp")
