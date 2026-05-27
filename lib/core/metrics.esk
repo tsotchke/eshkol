@@ -62,6 +62,89 @@
 (define (metric-kind  m) (vector-ref m 3))
 (define (metric-state m) (vector-ref m 4))
 
+(define (metric-name-start-char? c)
+  (let ((n (char->integer c)))
+    (or (and (>= n 65) (<= n 90))
+        (and (>= n 97) (<= n 122))
+        (= n 95)
+        (= n 58))))
+
+(define (metric-name-char? c)
+  (let ((n (char->integer c)))
+    (or (metric-name-start-char? c)
+        (and (>= n 48) (<= n 57)))))
+
+(define (label-name-start-char? c)
+  (let ((n (char->integer c)))
+    (or (and (>= n 65) (<= n 90))
+        (and (>= n 97) (<= n 122))
+        (= n 95))))
+
+(define (label-name-char? c)
+  (let ((n (char->integer c)))
+    (or (label-name-start-char? c)
+        (and (>= n 48) (<= n 57)))))
+
+(define (valid-identifier? s start-ok? rest-ok?)
+  (and (string? s)
+       (> (string-length s) 0)
+       (start-ok? (string-ref s 0))
+       (let loop ((i 1))
+         (if (>= i (string-length s))
+             #t
+             (and (rest-ok? (string-ref s i))
+                  (loop (+ i 1)))))))
+
+(define (valid-metric-name? name)
+  (valid-identifier? name metric-name-start-char? metric-name-char?))
+
+(define (valid-label-name? name)
+  (valid-identifier? name label-name-start-char? label-name-char?))
+
+(define (validate-metric-name! name)
+  (if (valid-metric-name? name)
+      #t
+      (error "metric name must match [a-zA-Z_:][a-zA-Z0-9_:]*" name)))
+
+(define (validate-label-keys! keys)
+  (let loop ((rest keys))
+    (cond
+      ((null? rest) #t)
+      ((valid-label-name? (car rest)) (loop (cdr rest)))
+      (else (error "metric label name must match [a-zA-Z_][a-zA-Z0-9_]*"
+                   (car rest))))))
+
+(define (validate-label-vals! m label-vals)
+  (if (= (length (metric-labels m)) (length label-vals))
+      #t
+      (error "metric label value count does not match label keys"
+             (metric-name m))))
+
+(define (metrics-escape-help s)
+  (let loop ((i 0) (out ""))
+    (if (>= i (string-length s))
+        out
+        (let ((code (char->integer (string-ref s i))))
+          (loop (+ i 1)
+                (string-append
+                  out
+                  (cond ((= code 92) "\\\\")
+                        ((= code 10) "\\n")
+                        (else (substring s i (+ i 1))))))))))
+
+(define (metrics-escape-label-value s)
+  (let loop ((i 0) (out ""))
+    (if (>= i (string-length s))
+        out
+        (let ((code (char->integer (string-ref s i))))
+          (loop (+ i 1)
+                (string-append
+                  out
+                  (cond ((= code 92) "\\\\")
+                        ((= code 34) "\\\"")
+                        ((= code 10) "\\n")
+                        (else (substring s i (+ i 1))))))))))
+
 ;; Build a stable string key from a list of label values. Prometheus
 ;; label sets are unordered in the spec but our caller's responsible
 ;; for passing them in the same order as declared; join with \x1f
@@ -86,6 +169,8 @@
 ;; ---------------------------------------------------------------------------
 
 (define (make-counter name help label-keys)
+  (validate-metric-name! name)
+  (validate-label-keys! label-keys)
   (let ((m (vector name help label-keys 'counter (make-hash-table))))
     (metrics-register! m)
     m))
@@ -96,22 +181,27 @@
 (define (counter-add! m label-vals n)
   (if (< n 0)
       (error "counter-add!: counters only increment" (metric-name m) n)
-      (let* ((key (labels->key label-vals))
-             (state (metric-state m))
-             (cur (if (hash-table-contains? state key)
-                      (hash-table-ref state key) 0)))
-        (hash-table-set! state key (+ cur n)))))
+      (begin
+        (validate-label-vals! m label-vals)
+        (let* ((key (labels->key label-vals))
+               (state (metric-state m))
+               (cur (if (hash-table-contains? state key)
+                        (hash-table-ref state key) 0)))
+          (hash-table-set! state key (+ cur n))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Gauge — arbitrary value, can go up or down.
 ;; ---------------------------------------------------------------------------
 
 (define (make-gauge name help label-keys)
+  (validate-metric-name! name)
+  (validate-label-keys! label-keys)
   (let ((m (vector name help label-keys 'gauge (make-hash-table))))
     (metrics-register! m)
     m))
 
 (define (gauge-set! m label-vals v)
+  (validate-label-vals! m label-vals)
   (hash-table-set! (metric-state m) (labels->key label-vals) v))
 
 (define (gauge-inc! m label-vals)
@@ -121,6 +211,7 @@
   (gauge-add! m label-vals -1))
 
 (define (gauge-add! m label-vals n)
+  (validate-label-vals! m label-vals)
   (let* ((key (labels->key label-vals))
          (state (metric-state m))
          (cur (if (hash-table-contains? state key)
@@ -136,6 +227,8 @@
 ;; ---------------------------------------------------------------------------
 
 (define (make-histogram name help label-keys buckets)
+  (validate-metric-name! name)
+  (validate-label-keys! label-keys)
   (let ((m (vector name
                    help
                    label-keys
@@ -151,6 +244,7 @@
 (define (histogram-kind-symbol m) 'histogram)
 
 (define (histogram-observe! m label-vals value)
+  (validate-label-vals! m label-vals)
   (let* ((key (labels->key label-vals))
          (state (metric-state m))
          (buckets (histogram-buckets m))
@@ -194,7 +288,7 @@
         (help (metric-help m))
         (kind (metric-kind m)))
     (display "# HELP " port) (display name port)
-    (display " " port) (display help port) (newline port)
+    (display " " port) (display (metrics-escape-help help) port) (newline port)
     (display "# TYPE " port) (display name port) (display " " port)
     (cond
       ((eq? kind 'counter) (display "counter" port))
@@ -222,7 +316,7 @@
      (if (not first?) (display "," port))
      (display (car keys) port)
      (display "=\"" port)
-     (display (label->string (car vals)) port)
+     (display (metrics-escape-label-value (label->string (car vals))) port)
      (display "\"" port)
      (render-labels-text-helper port (cdr keys) (cdr vals) #f))))
 
@@ -254,7 +348,9 @@
   (let ((idx (string-index s sep)))
     (if (and idx (>= idx 0))
         (cons (substring s 0 idx)
-              (split-on-sep (substring s (+ idx 1) (string-length s)) sep))
+              (split-on-sep (substring s (+ idx (string-length sep))
+                                        (string-length s))
+                            sep))
         (list s))))
 
 (define (render-histogram port m)

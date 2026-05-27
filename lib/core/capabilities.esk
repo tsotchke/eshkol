@@ -68,6 +68,6 @@
 
 (define (capability-require! capability . context)
   "Raise if CAPABILITY is denied; return #t otherwise."
-  (if (apply capability-allowed? capability context)
+  (if (capability-allowed? capability)
       #t
       (error "capability denied" capability)))

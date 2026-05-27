@@ -1,0 +1,72 @@
+;; Prometheus metrics tests for core.metrics (#148).
+
+(require stdlib)
+(require core.metrics)
+
+(define passed 0)
+(define failed 0)
+
+(define (check name ok)
+  (if ok
+      (begin
+        (set! passed (+ passed 1))
+        (display "PASS: ") (display name) (newline))
+      (begin
+        (set! failed (+ failed 1))
+        (display "FAIL: ") (display name) (newline))))
+
+(define (raises? thunk)
+  (let ((raised #f))
+    (guard (exn (#t (set! raised #t)))
+      (thunk))
+    raised))
+
+(display "=== core.metrics Prometheus tests ===") (newline)
+
+(metrics-reset!)
+
+(define req-total
+  (make-counter "eshkol_requests_total"
+                "Total \\ requests\nline"
+                (list "path" "method")))
+(define inflight
+  (make-gauge "eshkol_inflight" "In-flight requests" (list "state")))
+
+(counter-inc! req-total (list "/quote\"line\nnext" "C:\\tmp"))
+(counter-add! req-total (list "/quote\"line\nnext" "C:\\tmp") 2)
+(gauge-set! inflight (list "busy") 5)
+(gauge-dec! inflight (list "busy"))
+
+(let ((rendered (metrics-render)))
+  (check "renders counter help with escapes"
+         (string-contains? rendered
+                           "# HELP eshkol_requests_total Total \\\\ requests\\nline"))
+  (check "renders counter type"
+         (string-contains? rendered "# TYPE eshkol_requests_total counter"))
+  (check "renders counter value with escaped labels"
+         (string-contains? rendered
+                           "eshkol_requests_total{path=\"/quote\\\"line\\nnext\",method=\"C:\\\\tmp\"} 3"))
+  (check "renders gauge value"
+         (string-contains? rendered "eshkol_inflight{state=\"busy\"} 4")))
+
+(check "counter rejects decrement"
+       (raises? (lambda () (counter-add! req-total (list "/" "GET") -1))))
+(check "metric name validation rejects invalid start"
+       (raises? (lambda () (make-counter "9bad_total" "bad" '()))))
+(check "label name validation rejects hyphen"
+       (raises? (lambda () (make-gauge "eshkol_bad" "bad" (list "bad-label")))))
+(check "label arity validation rejects missing label"
+       (raises? (lambda () (counter-inc! req-total (list "/only-one")))))
+
+(metrics-reset!)
+
+(let ((after-reset (metrics-render)))
+  (check "reset clears counter samples"
+         (not (string-contains? after-reset "eshkol_requests_total{")))
+  (check "reset keeps gauge samples"
+         (string-contains? after-reset "eshkol_inflight{state=\"busy\"} 4")))
+
+(display "Passed: ") (display passed) (newline)
+(display "Failed: ") (display failed) (newline)
+
+(if (> failed 0) (exit 1) (exit 0))

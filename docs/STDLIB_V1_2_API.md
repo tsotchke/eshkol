@@ -1839,7 +1839,7 @@ Exports (`metrics.esk`):
          metric-name metric-help metric-kind)
 ```
 
-Counters are monotonically non-decreasing; gauges can move in either direction. `metrics-register!` adds a metric to the global registry; `metrics-render` produces a Prometheus exposition-format string suitable for HTTP `GET /metrics`.
+Counters are monotonically non-decreasing; gauges can move in either direction. Metric names and label names are validated against the Prometheus identifier shape, label arity is checked on update, and `metrics-render` escapes HELP text and label values for Prometheus exposition format. `metrics-register!` adds a metric to the global registry; `metrics-render` produces a string suitable for HTTP `GET /metrics`.
 
 Internally a histogram type is implemented but not exported pending the label-key reconstruction edge case mentioned at `metrics.esk`.
 
