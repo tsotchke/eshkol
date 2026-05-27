@@ -58,6 +58,7 @@ make eshkol-swarm-status
 ls .swarm/tasks/ | sort
 
 # Submit a task via tsotchke-chan
+scripts/swarm_agent_preflight.sh --task ESH-0001
 tsotchke-chan ask "$(cat .swarm/tasks/ESH-0001.json)" \
     --repo /Users/tyr/Desktop/eshkol \
     --max-cost 5.00 \
@@ -69,6 +70,18 @@ ls .swarm/claims/
 
 ## Hard rules
 
+- **Every multi-agent task starts with ICC preflight.** Run
+  `scripts/swarm_agent_preflight.sh --task ESH-NNNN` before dispatching
+  or starting work. In ICC-enabled environments this delegates to
+  `icc agent-preflight --repo eshkol_lang --task-id ESH-NNNN
+  --require-swarm --require-swarm-task`; stale tsotchke mirrors, missing
+  task metadata, active path conflicts, and dirty/untracked work block
+  the task.
+- **Before any destructive git operation, snapshot first.** Use
+  `scripts/swarm_agent_preflight.sh --task ESH-NNNN --snapshot` or make
+  a normal commit. Do not rely on `git stash --include-untracked` as the
+  only preservation path; ignored files and failed stashes can still
+  lose work.
 - **Do not commit code that bypasses the ICC oracle.** Every PR / direct
   commit must pass `python3 ~/Desktop/infinite_context_coder/scripts/codebase_tool.py production-audit --repo eshkol_lang --target v1.3-release --trace-dir scripts/icc_traces`.
 - **Architectural-coherence work stays on atlas/the main thread.**

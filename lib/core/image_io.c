@@ -4,8 +4,8 @@
  *
  * This file keeps the historical .c path for build-system compatibility, but
  * CMake compiles it as C++ so the runtime can call platform/system image APIs.
- * It uses ImageIO/CoreGraphics on macOS, GDI+ on Windows, and libpng on
- * Linux/Unix. No vendored image decoder is used.
+ * It uses ImageIO/CoreGraphics on macOS, GDI+ on Windows, and libpng/libjpeg/
+ * libwebp on Linux/Unix. No vendored image decoder is used.
  */
 
 #include "../../inc/eshkol/core/image_io.h"
@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <cstdlib>
 #include <limits>
 #include <string>
 #include <vector>
@@ -37,6 +38,16 @@
 
 #if defined(ESHKOL_IMAGE_IO_LIBPNG)
 #include <png.h>
+#endif
+
+#if defined(ESHKOL_IMAGE_IO_LIBJPEG)
+#include <setjmp.h>
+#include <jpeglib.h>
+#endif
+
+#if defined(ESHKOL_IMAGE_IO_LIBWEBP)
+#include <webp/decode.h>
+#include <webp/encode.h>
 #endif
 
 namespace {
@@ -538,8 +549,255 @@ bool write_png_native(const char* path, const uint8_t* pixels, int w, int h, int
     return true;
 }
 
+bool read_file_bytes(const char* path, std::vector<uint8_t>* out) {
+    if (!path || !out) return false;
+    FILE* fp = eshkol_fopen(path, "rb");
+    if (!fp) return false;
+    if (fseek(fp, 0, SEEK_END) != 0) {
+        fclose(fp);
+        return false;
+    }
+    const long size = ftell(fp);
+    if (size < 0) {
+        fclose(fp);
+        return false;
+    }
+    if (fseek(fp, 0, SEEK_SET) != 0) {
+        fclose(fp);
+        return false;
+    }
+    out->resize(static_cast<size_t>(size));
+    const size_t bytes_read = out->empty() ? 0 : fread(out->data(), 1, out->size(), fp);
+    fclose(fp);
+    return bytes_read == out->size();
+}
+
+#if defined(ESHKOL_IMAGE_IO_LIBJPEG)
+
+struct JpegErrorManager {
+    jpeg_error_mgr pub;
+    jmp_buf jump_buffer;
+};
+
+void jpeg_error_exit(j_common_ptr cinfo) {
+    auto* err = reinterpret_cast<JpegErrorManager*>(cinfo->err);
+    longjmp(err->jump_buffer, 1);
+}
+
+double* read_jpeg_native(const char* path, int* out_w, int* out_h, int* out_c) {
+    FILE* fp = eshkol_fopen(path, "rb");
+    if (!fp) return nullptr;
+
+    jpeg_decompress_struct cinfo;
+    memset(&cinfo, 0, sizeof(cinfo));
+    JpegErrorManager jerr;
+    cinfo.err = jpeg_std_error(&jerr.pub);
+    jerr.pub.error_exit = jpeg_error_exit;
+    bool cinfo_created = false;
+    uint8_t* pixels = nullptr;
+
+    if (setjmp(jerr.jump_buffer)) {
+        if (pixels) free(pixels);
+        if (cinfo_created) jpeg_destroy_decompress(&cinfo);
+        fclose(fp);
+        return nullptr;
+    }
+
+    jpeg_create_decompress(&cinfo);
+    cinfo_created = true;
+    jpeg_stdio_src(&cinfo, fp);
+    jpeg_read_header(&cinfo, TRUE);
+    cinfo.out_color_space = JCS_RGB;
+    jpeg_start_decompress(&cinfo);
+
+    const int w = static_cast<int>(cinfo.output_width);
+    const int h = static_cast<int>(cinfo.output_height);
+    const int channels = 3;
+    if (!valid_dimensions(w, h, channels) || cinfo.output_components != channels) {
+        jpeg_destroy_decompress(&cinfo);
+        fclose(fp);
+        return nullptr;
+    }
+
+    const size_t pixel_count = static_cast<size_t>(w) * static_cast<size_t>(h);
+    pixels = static_cast<uint8_t*>(malloc(pixel_count * static_cast<size_t>(channels)));
+    if (!pixels) {
+        jpeg_destroy_decompress(&cinfo);
+        fclose(fp);
+        return nullptr;
+    }
+    const size_t stride = static_cast<size_t>(w) * static_cast<size_t>(channels);
+    while (cinfo.output_scanline < cinfo.output_height) {
+        JSAMPROW row[1] = {
+            pixels + static_cast<size_t>(cinfo.output_scanline) * stride
+        };
+        jpeg_read_scanlines(&cinfo, row, 1);
+    }
+
+    jpeg_finish_decompress(&cinfo);
+    jpeg_destroy_decompress(&cinfo);
+    fclose(fp);
+
+    double* result = bytes_to_arena_doubles(pixels, w, h, channels);
+    free(pixels);
+    if (!result) return nullptr;
+    *out_w = w;
+    *out_h = h;
+    *out_c = channels;
+    return result;
+}
+
+bool write_jpeg_native(const char* path, const uint8_t* pixels, int w, int h, int channels) {
+    if (!pixels || !valid_dimensions(w, h, channels) ||
+        !(channels == 1 || channels == 3 || channels == 4)) {
+        return false;
+    }
+
+    FILE* fp = eshkol_fopen(path, "wb");
+    if (!fp) return false;
+
+    jpeg_compress_struct cinfo;
+    memset(&cinfo, 0, sizeof(cinfo));
+    JpegErrorManager jerr;
+    cinfo.err = jpeg_std_error(&jerr.pub);
+    jerr.pub.error_exit = jpeg_error_exit;
+    bool cinfo_created = false;
+    uint8_t* rgb_row = nullptr;
+
+    if (setjmp(jerr.jump_buffer)) {
+        if (rgb_row) free(rgb_row);
+        if (cinfo_created) jpeg_destroy_compress(&cinfo);
+        fclose(fp);
+        return false;
+    }
+
+    jpeg_create_compress(&cinfo);
+    cinfo_created = true;
+    jpeg_stdio_dest(&cinfo, fp);
+    cinfo.image_width = static_cast<JDIMENSION>(w);
+    cinfo.image_height = static_cast<JDIMENSION>(h);
+    cinfo.input_components = channels == 1 ? 1 : 3;
+    cinfo.in_color_space = channels == 1 ? JCS_GRAYSCALE : JCS_RGB;
+    jpeg_set_defaults(&cinfo);
+    jpeg_set_quality(&cinfo, 90, TRUE);
+    jpeg_start_compress(&cinfo, TRUE);
+
+    const size_t src_stride = static_cast<size_t>(w) * static_cast<size_t>(channels);
+    const size_t rgb_stride = static_cast<size_t>(w) * 3u;
+    if (channels == 4) {
+        rgb_row = static_cast<uint8_t*>(malloc(rgb_stride));
+        if (!rgb_row) {
+            jpeg_destroy_compress(&cinfo);
+            fclose(fp);
+            return false;
+        }
+    }
+    while (cinfo.next_scanline < cinfo.image_height) {
+        const uint8_t* row_data = pixels + static_cast<size_t>(cinfo.next_scanline) * src_stride;
+        if (channels == 4) {
+            for (int x = 0; x < w; ++x) {
+                const size_t src = static_cast<size_t>(x) * 4u;
+                const size_t dst = static_cast<size_t>(x) * 3u;
+                rgb_row[dst + 0] = row_data[src + 0];
+                rgb_row[dst + 1] = row_data[src + 1];
+                rgb_row[dst + 2] = row_data[src + 2];
+            }
+            row_data = rgb_row;
+        }
+        JSAMPROW row[1] = {const_cast<JSAMPROW>(row_data)};
+        jpeg_write_scanlines(&cinfo, row, 1);
+    }
+
+    jpeg_finish_compress(&cinfo);
+    if (rgb_row) free(rgb_row);
+    jpeg_destroy_compress(&cinfo);
+    fclose(fp);
+    return true;
+}
+
+#endif
+
+#if defined(ESHKOL_IMAGE_IO_LIBWEBP)
+
+double* read_webp_native(const char* path, int* out_w, int* out_h, int* out_c) {
+    std::vector<uint8_t> encoded;
+    if (!read_file_bytes(path, &encoded) || encoded.empty()) return nullptr;
+
+    WebPBitstreamFeatures features;
+    if (WebPGetFeatures(encoded.data(), encoded.size(), &features) != VP8_STATUS_OK) {
+        return nullptr;
+    }
+    const bool has_alpha = features.has_alpha != 0;
+    const int channels = has_alpha ? 4 : 3;
+    if (!valid_dimensions(features.width, features.height, channels)) return nullptr;
+
+    int w = 0;
+    int h = 0;
+    uint8_t* decoded = has_alpha
+        ? WebPDecodeRGBA(encoded.data(), encoded.size(), &w, &h)
+        : WebPDecodeRGB(encoded.data(), encoded.size(), &w, &h);
+    if (!decoded || w != features.width || h != features.height) {
+        if (decoded) WebPFree(decoded);
+        return nullptr;
+    }
+
+    double* result = bytes_to_arena_doubles(decoded, w, h, channels);
+    WebPFree(decoded);
+    if (!result) return nullptr;
+    *out_w = w;
+    *out_h = h;
+    *out_c = channels;
+    return result;
+}
+
+bool write_webp_native(const char* path, const uint8_t* pixels, int w, int h, int channels) {
+    if (!pixels || !valid_dimensions(w, h, channels) ||
+        !(channels == 1 || channels == 3 || channels == 4)) {
+        return false;
+    }
+
+    const uint8_t* source = pixels;
+    int webp_channels = channels;
+    std::vector<uint8_t> rgb;
+    if (channels == 1) {
+        rgb.resize(static_cast<size_t>(w) * static_cast<size_t>(h) * 3u);
+        const size_t count = static_cast<size_t>(w) * static_cast<size_t>(h);
+        for (size_t i = 0; i < count; ++i) {
+            rgb[i * 3u + 0u] = pixels[i];
+            rgb[i * 3u + 1u] = pixels[i];
+            rgb[i * 3u + 2u] = pixels[i];
+        }
+        source = rgb.data();
+        webp_channels = 3;
+    }
+
+    uint8_t* encoded = nullptr;
+    size_t encoded_size = 0;
+    if (webp_channels == 4) {
+        encoded_size = WebPEncodeRGBA(source, w, h, w * 4, 90.0f, &encoded);
+    } else {
+        encoded_size = WebPEncodeRGB(source, w, h, w * 3, 90.0f, &encoded);
+    }
+    if (!encoded || encoded_size == 0) {
+        if (encoded) WebPFree(encoded);
+        return false;
+    }
+
+    FILE* fp = eshkol_fopen(path, "wb");
+    if (!fp) {
+        WebPFree(encoded);
+        return false;
+    }
+    const size_t written = fwrite(encoded, 1, encoded_size, fp);
+    fclose(fp);
+    WebPFree(encoded);
+    return written == encoded_size;
+}
+
+#endif
+
 double* read_image_native(const char* path, int* out_w, int* out_h, int* out_c) {
-    uint8_t sig[8] = {0};
+    uint8_t sig[12] = {0};
     FILE* fp = eshkol_fopen(path, "rb");
     if (!fp) return nullptr;
     const size_t n = fread(sig, 1, sizeof(sig), fp);
@@ -548,16 +806,38 @@ double* read_image_native(const char* path, int* out_w, int* out_h, int* out_c) 
     if (n >= 8 && memcmp(sig, png_sig, 8) == 0) {
         return read_png_native(path, out_w, out_h, out_c);
     }
+#if defined(ESHKOL_IMAGE_IO_LIBJPEG)
+    if (n >= 3 && sig[0] == 0xff && sig[1] == 0xd8 && sig[2] == 0xff) {
+        return read_jpeg_native(path, out_w, out_h, out_c);
+    }
+#endif
+#if defined(ESHKOL_IMAGE_IO_LIBWEBP)
+    if (n >= 12 && memcmp(sig, "RIFF", 4) == 0 && memcmp(sig + 8, "WEBP", 4) == 0) {
+        return read_webp_native(path, out_w, out_h, out_c);
+    }
+#endif
     return nullptr;
 }
 
 int write_image_native(const char* path, const double* data,
                        int w, int h, int channels, const char* format) {
     const std::string fmt = lower_ascii(format ? format : "png");
-    if (!(fmt.empty() || fmt == "png")) return -1;
     std::vector<uint8_t> pixels;
     if (!tensor_to_bytes(data, w, h, channels, &pixels)) return -1;
-    return write_png_native(path, pixels.data(), w, h, channels) ? 0 : -1;
+    if (fmt.empty() || fmt == "png") {
+        return write_png_native(path, pixels.data(), w, h, channels) ? 0 : -1;
+    }
+#if defined(ESHKOL_IMAGE_IO_LIBJPEG)
+    if (fmt == "jpg" || fmt == "jpeg") {
+        return write_jpeg_native(path, pixels.data(), w, h, channels) ? 0 : -1;
+    }
+#endif
+#if defined(ESHKOL_IMAGE_IO_LIBWEBP)
+    if (fmt == "webp") {
+        return write_webp_native(path, pixels.data(), w, h, channels) ? 0 : -1;
+    }
+#endif
+    return -1;
 }
 
 #else
