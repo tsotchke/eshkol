@@ -1799,7 +1799,7 @@ exact set of auto-loaded modules is the `(require …)` chain in
 | `core.files` | `lib/core/files.esk` | Yes | Path-component helpers + atomic-write |
 | `core.testing` | `lib/core/testing.esk` | **No** — `(require core.testing)` | `check-*` assertions + `run-tests` |
 | `core.manifold` | `lib/core/manifold.esk` | **No** — `(require core.manifold)` | Manifold operations (placeholders pending native VM ops) |
-| `core.distributed` | `lib/core/distributed.esk` | **No** — `(require core.distributed)` | Lamport clocks, vector clocks, G-Counter, PN-Counter |
+| `core.distributed` | `lib/core/distributed.esk` | **No** — `(require core.distributed)` | Lamport/vector clocks, counters, OR-Set, LWW register/map |
 
 ### B.1 `core.merkle`
 
@@ -2097,7 +2097,14 @@ Exports (`distributed.esk`):
   make-g-counter g-counter-counts g-counter-inc g-counter-value
   g-counter-merge
   make-pn-counter pn-counter-positive pn-counter-negative pn-counter-inc
-  pn-counter-dec pn-counter-value pn-counter-merge)
+  pn-counter-dec pn-counter-value pn-counter-merge
+  make-or-set or-set-adds or-set-removes or-set-clock or-set-add
+  or-set-remove or-set-member? or-set-elements or-set-merge
+  make-lww-register lww-register-value lww-register-timestamp
+  lww-register-writer lww-register-deleted? lww-register-present?
+  lww-register-set lww-register-delete lww-register-merge
+  make-lww-map lww-map-entries lww-map-set lww-map-remove lww-map-ref
+  lww-map-contains? lww-map-visible-entries lww-map-merge)
 ```
 
 Pure value-level distributed-systems substrate for the v1.8/M4 track. Lamport
@@ -2105,4 +2112,6 @@ clocks provide scalar event ordering. Vector clocks are alists of
 `(node counter)` entries and compare as `'before`, `'after`, `'equal`, or
 `'concurrent`. The G-Counter and PN-Counter are state-based CRDTs whose merge
 operation is pairwise-max, so merges are commutative, associative, and
-idempotent.
+idempotent. OR-Set tracks observed add dots so removes do not erase unseen
+concurrent adds. LWW registers and maps use monotonic timestamps plus
+canonical writer/value tie-breaks so equal-timestamp merges converge.
