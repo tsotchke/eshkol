@@ -27,6 +27,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         llvm-21-dev \
         ninja-build \
         pkg-config \
+        libpng-dev \
+        libjpeg-dev \
+        libwebp-dev \
         python3 \
         python3-pip \
         wget \

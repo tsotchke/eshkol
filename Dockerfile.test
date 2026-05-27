@@ -3,6 +3,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y \
     wget gnupg cmake ninja-build g++ \
     libreadline-dev pkg-config libssl-dev libncurses-dev libopenblas-dev \
+    libpng-dev libjpeg-dev libwebp-dev \
     && wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc \
     && echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-21 main" >> /etc/apt/sources.list.d/llvm.list \
     && apt-get update && apt-get install -y llvm-21 llvm-21-dev \

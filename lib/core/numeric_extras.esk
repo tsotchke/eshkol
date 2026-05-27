@@ -1,0 +1,43 @@
+;;; lib/core/numeric_extras.esk — R7RS 6.2.6 numeric helpers
+;;;
+;;; Pure-Scheme implementations of the R7RS numeric procedures that
+;;; Eshkol previously had marked "Missing" in
+;;; docs/breakdown/SCHEME_COMPATIBILITY.md.  Each is defined on top of
+;;; the existing numeric tower (int64, bignum, rational, double,
+;;; complex), so we get bignum support transparently.
+
+(provide exact-integer-sqrt)
+
+;;; (exact-integer-sqrt k)  →  s r
+;;;
+;;; For an exact non-negative integer k, returns two values s and r
+;;; such that k = s*s + r and k < (s+1)*(s+1).  Works for both fixnum
+;;; and bignum inputs.
+;;;
+;;; Implementation: Newton iteration starting from k itself (an upper
+;;; bound).  Converges quadratically; ~log₂(log₂(k)) iterations
+;;; suffice in practice.  Termination test follows the classic
+;;; "x_{n+1} >= x_n" stopping condition (Knuth TAOCP 4.5.2 §1.5).
+;;;
+;;; R7RS edge cases:
+;;;   (exact-integer-sqrt 0) ⇒ values 0 0
+;;;   (exact-integer-sqrt 1) ⇒ values 1 0
+;;;   (exact-integer-sqrt 2) ⇒ values 1 1
+;;;   (exact-integer-sqrt 4) ⇒ values 2 0
+;;;   (exact-integer-sqrt 5) ⇒ values 2 1
+;;;   (exact-integer-sqrt (expt 10 50)) returns the exact root + 0
+(define (exact-integer-sqrt k)
+  (cond
+    ((< k 0)
+     (error "exact-integer-sqrt: argument must be non-negative" k))
+    ((= k 0)
+     (values 0 0))
+    ((< k 4)
+     ;; k ∈ {1, 2, 3} → s = 1, r = k - 1
+     (values 1 (- k 1)))
+    (else
+     (let loop ((x k))
+       (let* ((y (quotient (+ x (quotient k x)) 2)))
+         (if (>= y x)
+             (values x (- k (* x x)))
+             (loop y)))))))

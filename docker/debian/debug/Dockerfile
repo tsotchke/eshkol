@@ -23,6 +23,10 @@ RUN apt-get install -y \
     llvm-21-dev \
     libreadline-dev \
     libopenblas-dev \
+    pkg-config \
+    libpng-dev \
+    libjpeg-dev \
+    libwebp-dev \
     dpkg-dev \
     file \
     gdb \

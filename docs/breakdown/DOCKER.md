@@ -9,7 +9,7 @@
 
 Eshkol provides five Docker images for building the compiler in different configurations. These images are primarily used by the release CI pipeline to produce platform-specific artifacts, but they are also useful for local development and testing.
 
-All images are based on Debian or Ubuntu and include LLVM 21, CMake, Ninja, and the necessary system libraries.
+All images are based on Debian or Ubuntu and include LLVM 21, CMake, Ninja, and the necessary system libraries, including libpng/libjpeg/libwebp for native Linux image I/O.
 
 ---
 
@@ -30,7 +30,7 @@ docker build -f docker/cuda/Dockerfile -t eshkol-cuda .
 
 **GPU requirements:** NVIDIA GPU with compute capability 7.0+ and CUDA 12.4 compatible drivers.
 
-**Additional packages:** `libopenblas-dev` (CPU BLAS fallback), `curl`, `dpkg-dev`, `file`.
+**Additional packages:** `libopenblas-dev` (CPU BLAS fallback), `libpng-dev`, `libjpeg-dev`, `libwebp-dev`, `curl`, `dpkg-dev`, `file`.
 
 ---
 
@@ -47,7 +47,7 @@ Debug build of Eshkol on Debian 12 (Bookworm). Includes `gdb` for debugging.
 docker build -f docker/debian/debug/Dockerfile -t eshkol-debug .
 ```
 
-**Additional packages:** `gdb`, `libopenblas-dev`.
+**Additional packages:** `gdb`, `libopenblas-dev`, `libpng-dev`, `libjpeg-dev`, `libwebp-dev`, `pkg-config`.
 
 **Notes:** LLVM 21 is installed from the `bookworm` LLVM repository (not `jammy`).
 
@@ -66,7 +66,7 @@ Release build matching the GitHub Actions CI environment. Despite the directory 
 docker build -f docker/debian/release/Dockerfile -t eshkol-release .
 ```
 
-**Additional packages:** `libopenblas-dev`, `curl`, `pkg-config`, `dpkg-dev`, `file`.
+**Additional packages:** `libopenblas-dev`, `libpng-dev`, `libjpeg-dev`, `libwebp-dev`, `curl`, `pkg-config`, `dpkg-dev`, `file`.
 
 ---
 
@@ -100,7 +100,7 @@ Builds Eshkol with StableHLO/MLIR support for XLA tensor operations. Includes ML
 docker build -f docker/xla/Dockerfile -t eshkol-xla .
 ```
 
-**Additional packages:** `mlir-21-tools`, `libmlir-21-dev`, `libopenblas-dev`, `curl`, `pkg-config`.
+**Additional packages:** `mlir-21-tools`, `libmlir-21-dev`, `libopenblas-dev`, `libpng-dev`, `libjpeg-dev`, `libwebp-dev`, `curl`, `pkg-config`.
 
 ---
 
@@ -123,7 +123,7 @@ docker run --rm -v "$(pwd):/work" -w /work eshkol-paper
 docker run --rm -it -v "$(pwd):/work" -w /work eshkol-paper bash
 ```
 
-**Additional packages:** `clang-21`, `llvm-21`, `llvm-21-dev`, `cmake`, `ninja-build`, `pkg-config`, `python3`, `python3-pip`, `numpy==1.26.4`.
+**Additional packages:** `clang-21`, `llvm-21`, `llvm-21-dev`, `cmake`, `ninja-build`, `pkg-config`, `libpng-dev`, `libjpeg-dev`, `libwebp-dev`, `python3`, `python3-pip`, `numpy==1.26.4`.
 
 ---
 

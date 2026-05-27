@@ -716,9 +716,10 @@ hardening, perf, and correctness fixes.
   `arena_merge_to_parent()`. Parallel workers allocate in their own
   arenas without contention; results flushed into the parent arena on
   join.
-- **Image I/O** (stb_image vendored in `deps/stb/`). `image-read`,
-  `image-write`, `image-to-grayscale`, `image-resize` load/save PNG,
-  JPEG, BMP as `(height, width, channels)` tensors.
+- **Image I/O** (native platform/system codec backend: ImageIO/CoreGraphics,
+  system libpng/libjpeg/libwebp, or GDI+). `image-read`, `image-write`,
+  `image-to-grayscale`, `image-resize` load/save images as
+  `(height, width, channels)` tensors.
 - **CSV/DataFrame** (`lib/core/data/csv.esk`). Column-typed CSV loader
   with type inference; select, filter, group-by, join operations.
 - **Terminal plotting** (`lib/core/plot.esk`). `sparkline`,

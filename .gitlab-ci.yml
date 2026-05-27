@@ -45,7 +45,7 @@ variables:
     - wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
     - echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-${ESHKOL_REQUIRED_LLVM_MAJOR} main" | tee /etc/apt/sources.list.d/llvm.list
     - apt-get update
-    - apt-get install -y cmake ninja-build llvm-${ESHKOL_REQUIRED_LLVM_MAJOR} llvm-${ESHKOL_REQUIRED_LLVM_MAJOR}-dev clang-${ESHKOL_REQUIRED_LLVM_MAJOR} libreadline-dev pkg-config build-essential libssl-dev libncurses-dev git python3
+    - apt-get install -y cmake ninja-build llvm-${ESHKOL_REQUIRED_LLVM_MAJOR} llvm-${ESHKOL_REQUIRED_LLVM_MAJOR}-dev clang-${ESHKOL_REQUIRED_LLVM_MAJOR} libreadline-dev pkg-config build-essential libssl-dev libncurses-dev libpng-dev libjpeg-dev libwebp-dev git python3
     - ln -sf /usr/bin/llvm-config-${ESHKOL_REQUIRED_LLVM_MAJOR} /usr/bin/llvm-config
     - ln -sf /usr/bin/clang-${ESHKOL_REQUIRED_LLVM_MAJOR} /usr/bin/clang
     - ln -sf /usr/bin/clang++-${ESHKOL_REQUIRED_LLVM_MAJOR} /usr/bin/clang++

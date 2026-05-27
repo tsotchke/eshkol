@@ -151,6 +151,9 @@ install_deps() {
         libreadline-dev
         libsqlite3-dev
         libssl-dev
+        libpng-dev
+        libjpeg-dev
+        libwebp-dev
         ninja-build
         pkg-config
         python3
@@ -191,6 +194,9 @@ EOF
         "libclang-common-${LLVM_VERSION}-dev" \
         "libclang1-${LLVM_VERSION}" \
         "libllvm${LLVM_VERSION}" \
+        "libpng-dev" \
+        "libjpeg-dev" \
+        "libwebp-dev" \
         "lld-${LLVM_VERSION}" \
         "ninja-build"
 }

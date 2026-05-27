@@ -319,11 +319,14 @@ probe ad_input2_attention_grad_works 'gradient flows through scaled-dot-attentio
     '"$ESHKOL_RUN" -r "$REPO_ROOT/tests/v1_3_edge_cases/ad_input2_test.esk" -L"$REPO_ROOT/build" 2>&1 |
      grep -q "PASS: ad_input2_attention_grad_works"'
 
+probe jit_cache_hit_invalidates 'eshkol-run -r persistent cache hits and source edits invalidate' \
+    'bash "$REPO_ROOT/tests/v1_3_edge_cases/jit_cache_test.sh" "$ESHKOL_RUN"'
+
 probe native_image_io_no_stb 'image-read uses platform APIs, not bundled deps/stb' \
     'cd "$REPO_ROOT";
      ## v1.3 commits to removing deps/stb in favour of native platform
-     ## media APIs.  Until that lands, this probe FAILs: deps/stb is
-     ## still vendored and image_io.c still includes its headers.
+     ## media APIs. This probe fails if the vendored tree or direct include
+     ## path comes back.
      if grep -q "deps/stb" lib/core/image_io.c 2>/dev/null; then exit 1; fi;
      if [ -d deps/stb ]; then exit 1; fi;
      exit 0'

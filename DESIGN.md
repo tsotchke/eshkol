@@ -302,7 +302,7 @@ The LLVM and VM backends share the same language semantics but use independent v
 
 **v1.2.0-scale** -- COMPLETE. Production-readiness: model serialization, stable C ABI + Python bindings, per-thread arenas, 512 MB main-thread stack, image I/O, plotting stdlib, actionable error markers, JSON Schema validator, R7RS-compliant stdlib redefines, --wasm self-contained emit, AD scalar derivative on inline lambdas, 62-test edge-case suite, ASan/UBSan CI lane, 7 hardening fixes.
 
-**v1.3-evolve** -- Next. Native media (replace `deps/stb/`), AD `input2` plumbing for non-matmul tensor ops, true module-private internals, TSan/MSan CI lanes, spec-doc generator (`eshkol-doc`), R7RS `define-library` / `import` with renaming + prefixing, string interpolation, named keyword arguments, profile-guided optimization.
+**v1.3-evolve** -- Next. Native media (ImageIO/CoreGraphics, system libpng/libjpeg/libwebp, GDI+), AD `input2` plumbing for non-matmul tensor ops, true module-private internals, TSan/MSan CI lanes, spec-doc generator (`eshkol-doc`), R7RS `define-library` / `import` with renaming + prefixing, string interpolation, named keyword arguments, profile-guided optimization.
 
 ---
 

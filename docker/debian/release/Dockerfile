@@ -29,6 +29,9 @@ RUN apt-get install -y \
     pkg-config \
     libssl-dev \
     libncurses-dev \
+    libpng-dev \
+    libjpeg-dev \
+    libwebp-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy source

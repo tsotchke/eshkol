@@ -87,10 +87,10 @@ artifact matrix:
 - **Per-thread arenas** — concurrent code paths
   (parallel-map workers, thread-pool tasks) now use thread-local
   arena slots so allocation in one worker never stomps another's.
-- **Image I/O** — PNG/JPEG/BMP read/write/resize for vision
-  pipelines.  `deps/stb/` is the current backend; v1.3+ replaces it
-  with native platform APIs (CoreGraphics on macOS, system
-  libpng/libjpeg on Linux, GDI+ on Windows).
+- **Image I/O** — PNG/JPEG/WebP/BMP read/write/resize for vision
+  pipelines, backed by native platform/system codec APIs
+  (ImageIO/CoreGraphics on macOS, system libpng/libjpeg/libwebp on
+  Linux, GDI+ on Windows).
 - **Plotting stdlib** — inline matplotlib-style charts via PNG output
   for notebook-style workflows.
 
@@ -220,9 +220,10 @@ artifact matrix:
 
 ## Carry-forward to v1.3
 
-- **Native media stack** — replace `deps/stb/` with CoreGraphics /
-  libpng+libjpeg / GDI+ on the three host platforms so we stop
-  vendoring third-party media code.
+- **Native media stack** — use ImageIO/CoreGraphics, system
+  libpng/libjpeg/libwebp, and GDI+ on the three host platforms so the
+  active image backend does not rely on vendored third-party media
+  code.
 - **AD `input2` plumbing for non-matmul tensor ops** — the
   backward kernels for conv2d / batchnorm / layernorm / attention
   / multi-head-attention exist; the forward implementations need

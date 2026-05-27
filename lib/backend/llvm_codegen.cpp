@@ -12971,6 +12971,12 @@ private:
         if (func_name == "char>?") return strio_->charCompare(op, "gt");
         if (func_name == "char<=?") return strio_->charCompare(op, "le");
         if (func_name == "char>=?") return strio_->charCompare(op, "ge");
+        // R7RS 6.6 — case-insensitive character comparison
+        if (func_name == "char-ci=?")  return strio_->charCiCompare(op, "eq");
+        if (func_name == "char-ci<?")  return strio_->charCiCompare(op, "lt");
+        if (func_name == "char-ci>?")  return strio_->charCiCompare(op, "gt");
+        if (func_name == "char-ci<=?") return strio_->charCiCompare(op, "le");
+        if (func_name == "char-ci>=?") return strio_->charCiCompare(op, "ge");
         // Character case conversion (R7RS)
         if (func_name == "char-upcase" || func_name == "char-downcase") {
             TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);

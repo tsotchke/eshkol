@@ -385,7 +385,7 @@ simulates an 83-instruction bytecode VM with native reverse-mode AD.
 ### v1.2 Toolchain and Stdlib
 
 - **JSON Schema validation** (Draft 7 subset): `(json-schema-valid? schema value)` for experiment-manifest enforcement.
-- **Image I/O** (vendored stb_image / stb_image_write): `(image-read)`, `(image-write)`, `(image-resize)`, `(image-to-grayscale)` returning tensors of shape `(H W C)`.
+- **Image I/O** (native ImageIO/CoreGraphics, GDI+, or system libpng/libjpeg/libwebp): `(image-read)`, `(image-write)`, `(image-resize)`, `(image-to-grayscale)` returning tensors of shape `(H W C)`.
 - **CSV/DataFrame extensions**: `(read-csv)` with type inference, column selection, filter, group-by.
 - **Terminal plotting** (pure stdlib): `(sparkline list)`, `(bar-chart pairs)` via Unicode block characters — zero dependencies.
 - **Source-located error messages**: `file.esk:line:col: error: …` with caret + underline for the failing span.

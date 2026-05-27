@@ -5129,7 +5129,7 @@ void eshkol_builtin_fg_update_cpt(sv_t* out, const sv_t* a, const sv_t* b, const
     eshkol_fg_update_cpt_tagged(arena, a, b, c);
     out->type = SYS_TYPE_BOOL; out->flags = 0; out->reserved = 0; out->padding = 0; out->data = 1;
 }
-/* Image I/O — wraps C functions from image_io.c */
+/* Image I/O — wraps native backend functions from image_io.c */
 extern double* eshkol_image_read(const char* path, int* w, int* h, int* c);
 extern int eshkol_image_write(const char* path, const double* data, int w, int h, int c, const char* fmt);
 extern double* eshkol_image_to_grayscale(const double* data, int w, int h, int channels);
@@ -5139,11 +5139,11 @@ extern void* arena_allocate_tensor_full(void* arena, uint64_t ndims, uint64_t to
 void eshkol_builtin_image_read_sret(sv_t* out, const sv_t* path_tv) {
     const char* path = sys_extract_string(*path_tv);
     if (!path) { *out = sys_make_null(); return; }
+    if (!sys_require_capability("file-read")) { *out = sys_make_null(); return; }
     int w, h, c;
-    /* eshkol_image_read returns ARENA-allocated storage (see image_io.c —
-     * the stb_image malloc result is freed internally and data copied into
-     * the global arena before return). Do NOT free() the returned pointer;
-     * doing so corrupts the arena free list. The arena reclaims it. */
+    /* eshkol_image_read returns ARENA-allocated storage. Do NOT free() the
+     * returned pointer; doing so corrupts the arena free list. The arena
+     * reclaims it. */
     double* data = eshkol_image_read(path, &w, &h, &c);
     if (!data) { *out = sys_make_null(); return; }
     /* Create tensor (h, w, c) */
@@ -5167,6 +5167,7 @@ void eshkol_builtin_image_write_sret(sv_t* out, const sv_t* path_tv, const sv_t*
     const char* path = sys_extract_string(*path_tv);
     const char* fmt = sys_extract_string(*fmt_tv);
     if (!path || tensor_tv->type != SYS_TYPE_HEAP_PTR) { *out = sys_make_bool(0); return; }
+    if (!sys_require_capability("file-write")) { *out = sys_make_bool(0); return; }
     void* t = (void*)(uintptr_t)tensor_tv->data;
     if (!t) { *out = sys_make_bool(0); return; }
     uint64_t* dims = *((uint64_t**)((char*)t + 0));

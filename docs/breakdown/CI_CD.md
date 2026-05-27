@@ -60,9 +60,9 @@ The release workflow still builds hosted Windows x86-64 packages.
 
 1. **Checkout** the repository
 2. **Install dependencies:**
-   - Linux: LLVM 21 from apt.llvm.org, CMake, Ninja, readline, pkg-config
-   - macOS: LLVM 21, CMake, Ninja, readline via Homebrew
-   - Windows: Visual Studio 2022 + ClangCL, official LLVM 21 SDK archive, native CMake
+   - Linux: LLVM 21 from apt.llvm.org, CMake, Ninja, readline, pkg-config, libpng/libjpeg/libwebp
+   - macOS: LLVM 21, CMake, Ninja, readline via Homebrew; image I/O uses ImageIO/CoreGraphics
+   - Windows: Visual Studio 2022 + ClangCL, official LLVM 21 SDK archive, native CMake; image I/O uses GDI+
 3. **Configure** with CMake (Ninja on Linux/macOS, Visual Studio generator on Windows)
 4. **Build** in parallel
 5. **Run tests** via the lane-appropriate suite:
@@ -227,9 +227,10 @@ All CI and release jobs share the same dependency set:
 | Ninja | latest | Build generator |
 | readline | latest | REPL line editing |
 | pkg-config | latest | Library discovery |
+| libpng/libjpeg/libwebp | distro packages | Native Linux image I/O backend |
 | OpenBLAS | latest | Linear algebra (Linux Docker builds) |
 
-On macOS, LLVM 21 is installed via Homebrew (`brew install llvm@21`). On Linux, LLVM 21 is installed from the official LLVM apt repository at `apt.llvm.org`. On Windows, the CI downloads the official LLVM 21 SDK archive and points `LLVM_DIR` at its CMake package.
+On macOS, LLVM 21 is installed via Homebrew (`brew install llvm@21`) and image I/O uses the system ImageIO/CoreGraphics frameworks. On Linux, LLVM 21 is installed from the official LLVM apt repository at `apt.llvm.org`, with `libpng-dev`, `libjpeg-dev`, and `libwebp-dev` for native image I/O. On Windows, the CI downloads the official LLVM 21 SDK archive and points `LLVM_DIR` at its CMake package; image I/O uses GDI+.
 
 ---
 

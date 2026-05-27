@@ -215,6 +215,13 @@ public:
      */
     llvm::Value* charCompare(const eshkol_operations_t* op, const std::string& cmp_type);
 
+    /**
+     * Case-insensitive character comparison (R7RS 6.6): char-ci=?,
+     * char-ci<?, char-ci>?, char-ci<=?, char-ci>=?.  Each operand is
+     * fold-cased before comparison; ASCII-only fold for v1.3.
+     */
+    llvm::Value* charCiCompare(const eshkol_operations_t* op, const std::string& cmp_type);
+
     // === I/O Operations ===
 
     /**

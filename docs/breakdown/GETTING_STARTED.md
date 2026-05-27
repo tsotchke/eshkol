@@ -20,6 +20,8 @@ Eshkol requires:
 - **C++20 compiler** (GCC 11+, Clang 14+, or Apple Clang 15+)
 - **Ninja** (recommended build tool)
 - **Git** (for source checkout)
+- **Native image codecs** (Linux: `libpng-dev`, `libjpeg-dev`,
+  `libwebp-dev`; macOS uses system ImageIO/CoreGraphics frameworks)
 
 ### Building from Source
 
@@ -53,7 +55,9 @@ sudo apt-get install -y \
     llvm-21-dev \
     clang-21 \
     cmake ninja-build \
-    build-essential
+    build-essential \
+    pkg-config \
+    libpng-dev libjpeg-dev libwebp-dev
 
 # Build Eshkol
 cmake -B build -DCMAKE_BUILD_TYPE=Release
@@ -63,7 +67,8 @@ cmake --build build -j$(nproc)
 #### macOS
 
 ```bash
-# Install dependencies via Homebrew
+# Install dependencies via Homebrew.
+# Image I/O uses macOS ImageIO/CoreGraphics system frameworks.
 brew install llvm@21 cmake ninja
 
 # Build Eshkol
