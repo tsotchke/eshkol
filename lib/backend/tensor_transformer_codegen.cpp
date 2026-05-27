@@ -16,6 +16,7 @@
 
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
 
+#include <eshkol/backend/autodiff_codegen.h>
 #include <eshkol/logger.h>
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/Function.h>
@@ -155,6 +156,7 @@ llvm::Value* TensorCodegen::scaledDotProductAttention(const eshkol_operations_t*
         &ctx_.module(), llvm::Intrinsic::exp, {ctx_.doubleType()});
 
     llvm::Function* current_func = builder.GetInsertBlock()->getParent();
+    llvm::BasicBlock* finalize = llvm::BasicBlock::Create(ctx_.context(), "attn_finalize", current_func);
 
     // === ALLOCATE ALL LOOP VARIABLES UPFRONT ===
     llvm::Value* batch_idx = builder.CreateAlloca(ctx_.int64Type(), nullptr, "batch_idx");
@@ -167,6 +169,337 @@ llvm::Value* TensorCodegen::scaledDotProductAttention(const eshkol_operations_t*
     llvm::Value* max_val = builder.CreateAlloca(ctx_.doubleType(), nullptr, "max_val");
     llvm::Value* sum_exp = builder.CreateAlloca(ctx_.doubleType(), nullptr, "sum_exp");
     llvm::Value* out_sum = builder.CreateAlloca(ctx_.doubleType(), nullptr, "out_sum");
+
+    if (autodiff_) {
+        llvm::Value* in_ad_mode = builder.CreateLoad(ctx_.int1Type(), ctx_.adModeActive());
+        llvm::BasicBlock* ad_path = llvm::BasicBlock::Create(ctx_.context(), "attn_ad_path", current_func);
+        llvm::BasicBlock* numeric_path = llvm::BasicBlock::Create(ctx_.context(), "attn_numeric_path", current_func);
+        builder.CreateCondBr(in_ad_mode, ad_path, numeric_path);
+
+        builder.SetInsertPoint(ad_path);
+        llvm::Value* ad_zero_i64 = llvm::ConstantInt::get(ctx_.int64Type(), 0);
+        llvm::Value* ad_one_i64 = llvm::ConstantInt::get(ctx_.int64Type(), 1);
+        llvm::Value* zero_node = autodiff_->createADConstant(llvm::ConstantFP::get(ctx_.doubleType(), 0.0));
+        llvm::Value* scale_node = autodiff_->createADConstant(scale);
+
+        llvm::Value* ad_mask_elems = nullptr;
+        if (mask_val) {
+            llvm::Value* mask_ptr_int = tagged_.unpackInt64(mask_val);
+            llvm::Value* mask_ptr = builder.CreateIntToPtr(mask_ptr_int, ctx_.ptrType());
+            llvm::Value* mask_elems_field = builder.CreateStructGEP(tensor_type, mask_ptr, 2);
+            ad_mask_elems = builder.CreateLoad(ctx_.ptrType(), mask_elems_field);
+        }
+
+        llvm::Value* ad_b_alloca = builder.CreateAlloca(ctx_.int64Type(), nullptr, "attn_ad_b");
+        llvm::Value* ad_i_alloca = builder.CreateAlloca(ctx_.int64Type(), nullptr, "attn_ad_i");
+        llvm::Value* ad_j_alloca = builder.CreateAlloca(ctx_.int64Type(), nullptr, "attn_ad_j");
+        llvm::Value* ad_k_alloca = builder.CreateAlloca(ctx_.int64Type(), nullptr, "attn_ad_k");
+        llvm::Value* ad_row_alloca = builder.CreateAlloca(ctx_.int64Type(), nullptr, "attn_ad_row");
+        llvm::Value* ad_col_alloca = builder.CreateAlloca(ctx_.int64Type(), nullptr, "attn_ad_col");
+        llvm::Value* ad_acc_alloca = builder.CreateAlloca(ctx_.ptrType(), nullptr, "attn_ad_acc");
+
+        llvm::BasicBlock* ad_score_batch_cond = llvm::BasicBlock::Create(ctx_.context(), "attn_ad_score_batch_cond", current_func);
+        llvm::BasicBlock* ad_score_batch_body = llvm::BasicBlock::Create(ctx_.context(), "attn_ad_score_batch_body", current_func);
+        llvm::BasicBlock* ad_softmax_init = llvm::BasicBlock::Create(ctx_.context(), "attn_ad_softmax_init", current_func);
+        builder.CreateStore(ad_zero_i64, ad_b_alloca);
+        builder.CreateBr(ad_score_batch_cond);
+
+        builder.SetInsertPoint(ad_score_batch_cond);
+        llvm::Value* ad_b = builder.CreateLoad(ctx_.int64Type(), ad_b_alloca);
+        builder.CreateCondBr(builder.CreateICmpULT(ad_b, batch_size), ad_score_batch_body, ad_softmax_init);
+
+        builder.SetInsertPoint(ad_score_batch_body);
+        llvm::Value* ad_q_batch_offset = builder.CreateMul(ad_b, builder.CreateMul(seq_q, d_k));
+        llvm::Value* ad_k_batch_offset = builder.CreateMul(ad_b, builder.CreateMul(seq_k, d_k));
+        llvm::Value* ad_scores_batch_offset = builder.CreateMul(ad_b, builder.CreateMul(seq_q, seq_k));
+
+        llvm::BasicBlock* ad_score_i_cond = llvm::BasicBlock::Create(ctx_.context(), "attn_ad_score_i_cond", current_func);
+        llvm::BasicBlock* ad_score_i_body = llvm::BasicBlock::Create(ctx_.context(), "attn_ad_score_i_body", current_func);
+        llvm::BasicBlock* ad_score_batch_next = llvm::BasicBlock::Create(ctx_.context(), "attn_ad_score_batch_next", current_func);
+        builder.CreateStore(ad_zero_i64, ad_i_alloca);
+        builder.CreateBr(ad_score_i_cond);
+
+        builder.SetInsertPoint(ad_score_i_cond);
+        llvm::Value* ad_i = builder.CreateLoad(ctx_.int64Type(), ad_i_alloca);
+        builder.CreateCondBr(builder.CreateICmpULT(ad_i, seq_q), ad_score_i_body, ad_score_batch_next);
+
+        builder.SetInsertPoint(ad_score_i_body);
+        llvm::BasicBlock* ad_score_j_cond = llvm::BasicBlock::Create(ctx_.context(), "attn_ad_score_j_cond", current_func);
+        llvm::BasicBlock* ad_score_j_body = llvm::BasicBlock::Create(ctx_.context(), "attn_ad_score_j_body", current_func);
+        llvm::BasicBlock* ad_score_i_next = llvm::BasicBlock::Create(ctx_.context(), "attn_ad_score_i_next", current_func);
+        builder.CreateStore(ad_zero_i64, ad_j_alloca);
+        builder.CreateBr(ad_score_j_cond);
+
+        builder.SetInsertPoint(ad_score_j_cond);
+        llvm::Value* ad_j = builder.CreateLoad(ctx_.int64Type(), ad_j_alloca);
+        builder.CreateCondBr(builder.CreateICmpULT(ad_j, seq_k), ad_score_j_body, ad_score_i_next);
+
+        builder.SetInsertPoint(ad_score_j_body);
+        llvm::BasicBlock* ad_dot_cond = llvm::BasicBlock::Create(ctx_.context(), "attn_ad_dot_cond", current_func);
+        llvm::BasicBlock* ad_dot_body = llvm::BasicBlock::Create(ctx_.context(), "attn_ad_dot_body", current_func);
+        llvm::BasicBlock* ad_dot_done = llvm::BasicBlock::Create(ctx_.context(), "attn_ad_dot_done", current_func);
+        builder.CreateStore(zero_node, ad_acc_alloca);
+        builder.CreateStore(ad_zero_i64, ad_k_alloca);
+        builder.CreateBr(ad_dot_cond);
+
+        builder.SetInsertPoint(ad_dot_cond);
+        llvm::Value* ad_kk = builder.CreateLoad(ctx_.int64Type(), ad_k_alloca);
+        builder.CreateCondBr(builder.CreateICmpULT(ad_kk, d_k), ad_dot_body, ad_dot_done);
+
+        builder.SetInsertPoint(ad_dot_body);
+        ad_kk = builder.CreateLoad(ctx_.int64Type(), ad_k_alloca);
+        ad_i = builder.CreateLoad(ctx_.int64Type(), ad_i_alloca);
+        ad_j = builder.CreateLoad(ctx_.int64Type(), ad_j_alloca);
+        llvm::Value* ad_q_idx = builder.CreateAdd(ad_q_batch_offset,
+            builder.CreateAdd(builder.CreateMul(ad_i, d_k), ad_kk));
+        llvm::Value* ad_k_idx = builder.CreateAdd(ad_k_batch_offset,
+            builder.CreateAdd(builder.CreateMul(ad_j, d_k), ad_kk));
+        llvm::Value* ad_q_bits = builder.CreateLoad(ctx_.int64Type(),
+            builder.CreateGEP(ctx_.int64Type(), q_elems, ad_q_idx));
+        llvm::Value* ad_k_bits = builder.CreateLoad(ctx_.int64Type(),
+            builder.CreateGEP(ctx_.int64Type(), k_elems, ad_k_idx));
+        llvm::Value* ad_q_node = adNodeFromTensorElementBits(ad_q_bits, "attn_ad_q");
+        llvm::Value* ad_k_node = adNodeFromTensorElementBits(ad_k_bits, "attn_ad_k");
+        llvm::Value* ad_product = autodiff_->recordADNodeBinary(4, ad_q_node, ad_k_node);
+        llvm::Value* ad_old_acc = builder.CreateLoad(ctx_.ptrType(), ad_acc_alloca);
+        llvm::Value* ad_new_acc = autodiff_->recordADNodeBinary(2, ad_old_acc, ad_product);
+        builder.CreateStore(ad_new_acc, ad_acc_alloca);
+        builder.CreateStore(builder.CreateAdd(ad_kk, ad_one_i64), ad_k_alloca);
+        builder.CreateBr(ad_dot_cond);
+
+        builder.SetInsertPoint(ad_dot_done);
+        llvm::Value* ad_score_node = autodiff_->recordADNodeBinary(5,
+            builder.CreateLoad(ctx_.ptrType(), ad_acc_alloca), scale_node);
+        if (mask_val) {
+            ad_i = builder.CreateLoad(ctx_.int64Type(), ad_i_alloca);
+            ad_j = builder.CreateLoad(ctx_.int64Type(), ad_j_alloca);
+            llvm::Value* ad_mask_idx = builder.CreateAdd(builder.CreateMul(ad_i, seq_k), ad_j);
+            llvm::Value* ad_mask_bits = builder.CreateLoad(ctx_.int64Type(),
+                builder.CreateGEP(ctx_.int64Type(), ad_mask_elems, ad_mask_idx));
+            llvm::Value* ad_mask_node = adNodeFromTensorElementBits(ad_mask_bits, "attn_ad_mask");
+            ad_score_node = autodiff_->recordADNodeBinary(2, ad_score_node, ad_mask_node);
+        }
+        ad_i = builder.CreateLoad(ctx_.int64Type(), ad_i_alloca);
+        ad_j = builder.CreateLoad(ctx_.int64Type(), ad_j_alloca);
+        llvm::Value* ad_scores_idx = builder.CreateAdd(ad_scores_batch_offset,
+            builder.CreateAdd(builder.CreateMul(ad_i, seq_k), ad_j));
+        builder.CreateStore(builder.CreatePtrToInt(ad_score_node, ctx_.int64Type()),
+            builder.CreateGEP(ctx_.int64Type(), scores_ptr, ad_scores_idx));
+        builder.CreateStore(builder.CreateAdd(ad_j, ad_one_i64), ad_j_alloca);
+        builder.CreateBr(ad_score_j_cond);
+
+        builder.SetInsertPoint(ad_score_i_next);
+        ad_i = builder.CreateLoad(ctx_.int64Type(), ad_i_alloca);
+        builder.CreateStore(builder.CreateAdd(ad_i, ad_one_i64), ad_i_alloca);
+        builder.CreateBr(ad_score_i_cond);
+
+        builder.SetInsertPoint(ad_score_batch_next);
+        ad_b = builder.CreateLoad(ctx_.int64Type(), ad_b_alloca);
+        builder.CreateStore(builder.CreateAdd(ad_b, ad_one_i64), ad_b_alloca);
+        builder.CreateBr(ad_score_batch_cond);
+
+        builder.SetInsertPoint(ad_softmax_init);
+        llvm::BasicBlock* ad_sm_batch_cond = llvm::BasicBlock::Create(ctx_.context(), "attn_ad_sm_batch_cond", current_func);
+        llvm::BasicBlock* ad_sm_batch_body = llvm::BasicBlock::Create(ctx_.context(), "attn_ad_sm_batch_body", current_func);
+        llvm::BasicBlock* ad_output_init = llvm::BasicBlock::Create(ctx_.context(), "attn_ad_output_init", current_func);
+        builder.CreateStore(ad_zero_i64, ad_b_alloca);
+        builder.CreateBr(ad_sm_batch_cond);
+
+        builder.SetInsertPoint(ad_sm_batch_cond);
+        llvm::Value* ad_sm_b = builder.CreateLoad(ctx_.int64Type(), ad_b_alloca);
+        builder.CreateCondBr(builder.CreateICmpULT(ad_sm_b, batch_size), ad_sm_batch_body, ad_output_init);
+
+        builder.SetInsertPoint(ad_sm_batch_body);
+        llvm::Value* ad_sm_batch_offset = builder.CreateMul(ad_sm_b, builder.CreateMul(seq_q, seq_k));
+        llvm::BasicBlock* ad_sm_row_cond = llvm::BasicBlock::Create(ctx_.context(), "attn_ad_sm_row_cond", current_func);
+        llvm::BasicBlock* ad_sm_row_body = llvm::BasicBlock::Create(ctx_.context(), "attn_ad_sm_row_body", current_func);
+        llvm::BasicBlock* ad_sm_batch_next = llvm::BasicBlock::Create(ctx_.context(), "attn_ad_sm_batch_next", current_func);
+        builder.CreateStore(ad_zero_i64, ad_row_alloca);
+        builder.CreateBr(ad_sm_row_cond);
+
+        builder.SetInsertPoint(ad_sm_row_cond);
+        llvm::Value* ad_row = builder.CreateLoad(ctx_.int64Type(), ad_row_alloca);
+        builder.CreateCondBr(builder.CreateICmpULT(ad_row, seq_q), ad_sm_row_body, ad_sm_batch_next);
+
+        builder.SetInsertPoint(ad_sm_row_body);
+        llvm::Value* ad_row_offset = builder.CreateAdd(ad_sm_batch_offset, builder.CreateMul(ad_row, seq_k));
+        llvm::Value* ad_first_score_bits = builder.CreateLoad(ctx_.int64Type(),
+            builder.CreateGEP(ctx_.int64Type(), scores_ptr, ad_row_offset));
+        llvm::Value* ad_max_alloca = builder.CreateAlloca(ctx_.ptrType(), nullptr, "attn_ad_max");
+        builder.CreateStore(adNodeFromTensorElementBits(ad_first_score_bits, "attn_ad_first_score"), ad_max_alloca);
+        llvm::BasicBlock* ad_max_cond = llvm::BasicBlock::Create(ctx_.context(), "attn_ad_max_cond", current_func);
+        llvm::BasicBlock* ad_max_body = llvm::BasicBlock::Create(ctx_.context(), "attn_ad_max_body", current_func);
+        llvm::BasicBlock* ad_exp_init = llvm::BasicBlock::Create(ctx_.context(), "attn_ad_exp_init", current_func);
+        builder.CreateStore(ad_one_i64, ad_col_alloca);
+        builder.CreateBr(ad_max_cond);
+
+        builder.SetInsertPoint(ad_max_cond);
+        llvm::Value* ad_col = builder.CreateLoad(ctx_.int64Type(), ad_col_alloca);
+        builder.CreateCondBr(builder.CreateICmpULT(ad_col, seq_k), ad_max_body, ad_exp_init);
+
+        builder.SetInsertPoint(ad_max_body);
+        ad_col = builder.CreateLoad(ctx_.int64Type(), ad_col_alloca);
+        llvm::Value* ad_score_idx = builder.CreateAdd(ad_row_offset, ad_col);
+        llvm::Value* ad_score_bits = builder.CreateLoad(ctx_.int64Type(),
+            builder.CreateGEP(ctx_.int64Type(), scores_ptr, ad_score_idx));
+        llvm::Value* ad_score_node_for_max = adNodeFromTensorElementBits(ad_score_bits, "attn_ad_score_max");
+        llvm::Value* ad_old_max = builder.CreateLoad(ctx_.ptrType(), ad_max_alloca);
+        builder.CreateStore(autodiff_->recordADNodeBinary(44, ad_old_max, ad_score_node_for_max), ad_max_alloca);
+        builder.CreateStore(builder.CreateAdd(ad_col, ad_one_i64), ad_col_alloca);
+        builder.CreateBr(ad_max_cond);
+
+        builder.SetInsertPoint(ad_exp_init);
+        llvm::Value* ad_sum_alloca = builder.CreateAlloca(ctx_.ptrType(), nullptr, "attn_ad_sum");
+        builder.CreateStore(zero_node, ad_sum_alloca);
+        builder.CreateStore(ad_zero_i64, ad_col_alloca);
+        llvm::BasicBlock* ad_exp_cond = llvm::BasicBlock::Create(ctx_.context(), "attn_ad_exp_cond", current_func);
+        llvm::BasicBlock* ad_exp_body = llvm::BasicBlock::Create(ctx_.context(), "attn_ad_exp_body", current_func);
+        llvm::BasicBlock* ad_norm_init = llvm::BasicBlock::Create(ctx_.context(), "attn_ad_norm_init", current_func);
+        builder.CreateBr(ad_exp_cond);
+
+        builder.SetInsertPoint(ad_exp_cond);
+        ad_col = builder.CreateLoad(ctx_.int64Type(), ad_col_alloca);
+        builder.CreateCondBr(builder.CreateICmpULT(ad_col, seq_k), ad_exp_body, ad_norm_init);
+
+        builder.SetInsertPoint(ad_exp_body);
+        ad_col = builder.CreateLoad(ctx_.int64Type(), ad_col_alloca);
+        llvm::Value* ad_exp_idx = builder.CreateAdd(ad_row_offset, ad_col);
+        llvm::Value* ad_exp_bits = builder.CreateLoad(ctx_.int64Type(),
+            builder.CreateGEP(ctx_.int64Type(), scores_ptr, ad_exp_idx));
+        llvm::Value* ad_exp_score_node = adNodeFromTensorElementBits(ad_exp_bits, "attn_ad_exp_score");
+        llvm::Value* ad_shifted = autodiff_->recordADNodeBinary(3, ad_exp_score_node,
+            builder.CreateLoad(ctx_.ptrType(), ad_max_alloca));
+        llvm::Value* ad_exp_node = autodiff_->recordADNodeUnary(8, ad_shifted);
+        llvm::Value* ad_old_sum = builder.CreateLoad(ctx_.ptrType(), ad_sum_alloca);
+        builder.CreateStore(autodiff_->recordADNodeBinary(2, ad_old_sum, ad_exp_node), ad_sum_alloca);
+        builder.CreateStore(builder.CreatePtrToInt(ad_exp_node, ctx_.int64Type()),
+            builder.CreateGEP(ctx_.int64Type(), scores_ptr, ad_exp_idx));
+        builder.CreateStore(builder.CreateAdd(ad_col, ad_one_i64), ad_col_alloca);
+        builder.CreateBr(ad_exp_cond);
+
+        builder.SetInsertPoint(ad_norm_init);
+        builder.CreateStore(ad_zero_i64, ad_col_alloca);
+        llvm::BasicBlock* ad_norm_cond = llvm::BasicBlock::Create(ctx_.context(), "attn_ad_norm_cond", current_func);
+        llvm::BasicBlock* ad_norm_body = llvm::BasicBlock::Create(ctx_.context(), "attn_ad_norm_body", current_func);
+        llvm::BasicBlock* ad_sm_row_next = llvm::BasicBlock::Create(ctx_.context(), "attn_ad_sm_row_next", current_func);
+        builder.CreateBr(ad_norm_cond);
+
+        builder.SetInsertPoint(ad_norm_cond);
+        ad_col = builder.CreateLoad(ctx_.int64Type(), ad_col_alloca);
+        builder.CreateCondBr(builder.CreateICmpULT(ad_col, seq_k), ad_norm_body, ad_sm_row_next);
+
+        builder.SetInsertPoint(ad_norm_body);
+        ad_col = builder.CreateLoad(ctx_.int64Type(), ad_col_alloca);
+        llvm::Value* ad_norm_idx = builder.CreateAdd(ad_row_offset, ad_col);
+        llvm::Value* ad_norm_bits = builder.CreateLoad(ctx_.int64Type(),
+            builder.CreateGEP(ctx_.int64Type(), scores_ptr, ad_norm_idx));
+        llvm::Value* ad_exp_for_norm = adNodeFromTensorElementBits(ad_norm_bits, "attn_ad_exp_norm");
+        llvm::Value* ad_softmax_node = autodiff_->recordADNodeBinary(5, ad_exp_for_norm,
+            builder.CreateLoad(ctx_.ptrType(), ad_sum_alloca));
+        builder.CreateStore(builder.CreatePtrToInt(ad_softmax_node, ctx_.int64Type()),
+            builder.CreateGEP(ctx_.int64Type(), scores_ptr, ad_norm_idx));
+        builder.CreateStore(builder.CreateAdd(ad_col, ad_one_i64), ad_col_alloca);
+        builder.CreateBr(ad_norm_cond);
+
+        builder.SetInsertPoint(ad_sm_row_next);
+        ad_row = builder.CreateLoad(ctx_.int64Type(), ad_row_alloca);
+        builder.CreateStore(builder.CreateAdd(ad_row, ad_one_i64), ad_row_alloca);
+        builder.CreateBr(ad_sm_row_cond);
+
+        builder.SetInsertPoint(ad_sm_batch_next);
+        ad_sm_b = builder.CreateLoad(ctx_.int64Type(), ad_b_alloca);
+        builder.CreateStore(builder.CreateAdd(ad_sm_b, ad_one_i64), ad_b_alloca);
+        builder.CreateBr(ad_sm_batch_cond);
+
+        builder.SetInsertPoint(ad_output_init);
+        llvm::BasicBlock* ad_out_batch_cond = llvm::BasicBlock::Create(ctx_.context(), "attn_ad_out_batch_cond", current_func);
+        llvm::BasicBlock* ad_out_batch_body = llvm::BasicBlock::Create(ctx_.context(), "attn_ad_out_batch_body", current_func);
+        builder.CreateStore(ad_zero_i64, ad_b_alloca);
+        builder.CreateBr(ad_out_batch_cond);
+
+        builder.SetInsertPoint(ad_out_batch_cond);
+        llvm::Value* ad_out_b = builder.CreateLoad(ctx_.int64Type(), ad_b_alloca);
+        builder.CreateCondBr(builder.CreateICmpULT(ad_out_b, batch_size), ad_out_batch_body, finalize);
+
+        builder.SetInsertPoint(ad_out_batch_body);
+        llvm::Value* ad_attn_batch_offset = builder.CreateMul(ad_out_b, builder.CreateMul(seq_q, seq_k));
+        llvm::Value* ad_v_batch_offset = builder.CreateMul(ad_out_b, builder.CreateMul(seq_k, d_v));
+        llvm::Value* ad_out_batch_offset = builder.CreateMul(ad_out_b, builder.CreateMul(seq_q, d_v));
+        llvm::BasicBlock* ad_out_i_cond = llvm::BasicBlock::Create(ctx_.context(), "attn_ad_out_i_cond", current_func);
+        llvm::BasicBlock* ad_out_i_body = llvm::BasicBlock::Create(ctx_.context(), "attn_ad_out_i_body", current_func);
+        llvm::BasicBlock* ad_out_batch_next = llvm::BasicBlock::Create(ctx_.context(), "attn_ad_out_batch_next", current_func);
+        builder.CreateStore(ad_zero_i64, ad_i_alloca);
+        builder.CreateBr(ad_out_i_cond);
+
+        builder.SetInsertPoint(ad_out_i_cond);
+        ad_i = builder.CreateLoad(ctx_.int64Type(), ad_i_alloca);
+        builder.CreateCondBr(builder.CreateICmpULT(ad_i, seq_q), ad_out_i_body, ad_out_batch_next);
+
+        builder.SetInsertPoint(ad_out_i_body);
+        llvm::BasicBlock* ad_out_j_cond = llvm::BasicBlock::Create(ctx_.context(), "attn_ad_out_j_cond", current_func);
+        llvm::BasicBlock* ad_out_j_body = llvm::BasicBlock::Create(ctx_.context(), "attn_ad_out_j_body", current_func);
+        llvm::BasicBlock* ad_out_i_next = llvm::BasicBlock::Create(ctx_.context(), "attn_ad_out_i_next", current_func);
+        builder.CreateStore(ad_zero_i64, ad_j_alloca);
+        builder.CreateBr(ad_out_j_cond);
+
+        builder.SetInsertPoint(ad_out_j_cond);
+        ad_j = builder.CreateLoad(ctx_.int64Type(), ad_j_alloca);
+        builder.CreateCondBr(builder.CreateICmpULT(ad_j, d_v), ad_out_j_body, ad_out_i_next);
+
+        builder.SetInsertPoint(ad_out_j_body);
+        llvm::BasicBlock* ad_out_k_cond = llvm::BasicBlock::Create(ctx_.context(), "attn_ad_out_k_cond", current_func);
+        llvm::BasicBlock* ad_out_k_body = llvm::BasicBlock::Create(ctx_.context(), "attn_ad_out_k_body", current_func);
+        llvm::BasicBlock* ad_out_k_done = llvm::BasicBlock::Create(ctx_.context(), "attn_ad_out_k_done", current_func);
+        builder.CreateStore(zero_node, ad_acc_alloca);
+        builder.CreateStore(ad_zero_i64, ad_k_alloca);
+        builder.CreateBr(ad_out_k_cond);
+
+        builder.SetInsertPoint(ad_out_k_cond);
+        llvm::Value* ad_ok = builder.CreateLoad(ctx_.int64Type(), ad_k_alloca);
+        builder.CreateCondBr(builder.CreateICmpULT(ad_ok, seq_k), ad_out_k_body, ad_out_k_done);
+
+        builder.SetInsertPoint(ad_out_k_body);
+        ad_ok = builder.CreateLoad(ctx_.int64Type(), ad_k_alloca);
+        ad_i = builder.CreateLoad(ctx_.int64Type(), ad_i_alloca);
+        ad_j = builder.CreateLoad(ctx_.int64Type(), ad_j_alloca);
+        llvm::Value* ad_attn_idx = builder.CreateAdd(ad_attn_batch_offset,
+            builder.CreateAdd(builder.CreateMul(ad_i, seq_k), ad_ok));
+        llvm::Value* ad_v_idx = builder.CreateAdd(ad_v_batch_offset,
+            builder.CreateAdd(builder.CreateMul(ad_ok, d_v), ad_j));
+        llvm::Value* ad_attn_bits = builder.CreateLoad(ctx_.int64Type(),
+            builder.CreateGEP(ctx_.int64Type(), scores_ptr, ad_attn_idx));
+        llvm::Value* ad_v_bits = builder.CreateLoad(ctx_.int64Type(),
+            builder.CreateGEP(ctx_.int64Type(), v_elems, ad_v_idx));
+        llvm::Value* ad_attn_node = adNodeFromTensorElementBits(ad_attn_bits, "attn_ad_weight");
+        llvm::Value* ad_v_node = adNodeFromTensorElementBits(ad_v_bits, "attn_ad_v");
+        llvm::Value* ad_out_product = autodiff_->recordADNodeBinary(4, ad_attn_node, ad_v_node);
+        llvm::Value* ad_out_old_acc = builder.CreateLoad(ctx_.ptrType(), ad_acc_alloca);
+        builder.CreateStore(autodiff_->recordADNodeBinary(2, ad_out_old_acc, ad_out_product), ad_acc_alloca);
+        builder.CreateStore(builder.CreateAdd(ad_ok, ad_one_i64), ad_k_alloca);
+        builder.CreateBr(ad_out_k_cond);
+
+        builder.SetInsertPoint(ad_out_k_done);
+        ad_i = builder.CreateLoad(ctx_.int64Type(), ad_i_alloca);
+        ad_j = builder.CreateLoad(ctx_.int64Type(), ad_j_alloca);
+        llvm::Value* ad_output_idx = builder.CreateAdd(ad_out_batch_offset,
+            builder.CreateAdd(builder.CreateMul(ad_i, d_v), ad_j));
+        builder.CreateStore(builder.CreatePtrToInt(builder.CreateLoad(ctx_.ptrType(), ad_acc_alloca), ctx_.int64Type()),
+            builder.CreateGEP(ctx_.int64Type(), output_elems, ad_output_idx));
+        builder.CreateStore(builder.CreateAdd(ad_j, ad_one_i64), ad_j_alloca);
+        builder.CreateBr(ad_out_j_cond);
+
+        builder.SetInsertPoint(ad_out_i_next);
+        ad_i = builder.CreateLoad(ctx_.int64Type(), ad_i_alloca);
+        builder.CreateStore(builder.CreateAdd(ad_i, ad_one_i64), ad_i_alloca);
+        builder.CreateBr(ad_out_i_cond);
+
+        builder.SetInsertPoint(ad_out_batch_next);
+        ad_out_b = builder.CreateLoad(ctx_.int64Type(), ad_b_alloca);
+        builder.CreateStore(builder.CreateAdd(ad_out_b, ad_one_i64), ad_b_alloca);
+        builder.CreateBr(ad_out_batch_cond);
+
+        builder.SetInsertPoint(numeric_path);
+    }
 
     // === Compute Q @ K^T / sqrt(d_k) + mask ===
     llvm::BasicBlock* batch_cond = llvm::BasicBlock::Create(ctx_.context(), "attn_batch_cond", current_func);
@@ -427,7 +760,6 @@ llvm::Value* TensorCodegen::scaledDotProductAttention(const eshkol_operations_t*
 
     llvm::BasicBlock* out_batch_cond = llvm::BasicBlock::Create(ctx_.context(), "out_batch_cond", current_func);
     llvm::BasicBlock* out_batch_body = llvm::BasicBlock::Create(ctx_.context(), "out_batch_body", current_func);
-    llvm::BasicBlock* finalize = llvm::BasicBlock::Create(ctx_.context(), "attn_finalize", current_func);
 
     builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), batch_idx);
     builder.CreateBr(out_batch_cond);

@@ -1019,3 +1019,32 @@
              (approx= (vector-ref g 3) 28.0 1e-6))
         "PASS" "FAIL"))
   (display ": gradient through conv2d kernel operand matches patch sums") (newline))
+
+;; ============================================================
+;; Test 53: Gradients through scaled-dot-attention K and V operands
+;; f(k/v) = sum(scaled-dot-attention(Q, K, V))
+;; ============================================================
+(let* ((q (tensor 2 2 1.0 0.0 0.0 1.0))
+       (k0 (tensor 2 2 1.0 0.0 0.0 1.0))
+       (v0 (tensor 2 2 1.0 2.0 3.0 4.0))
+       (g-k (gradient
+              (lambda (k)
+                (tensor-sum (scaled-dot-attention q (reshape k 2 2) v0)))
+              (tensor 4 1.0 0.0 0.0 1.0)))
+       (g-v (gradient
+              (lambda (v)
+                (tensor-sum (scaled-dot-attention q k0 (reshape v 2 2))))
+              (tensor 4 1.0 2.0 3.0 4.0))))
+  (display
+    (if (and (= (vector-length g-k) 4)
+             (= (vector-length g-v) 4)
+             (approx= (vector-ref g-k 0) -0.6255943919567615 1e-5)
+             (approx= (vector-ref g-k 1) -0.6255943919567615 1e-5)
+             (approx= (vector-ref g-k 2) 0.6255943919567615 1e-5)
+             (approx= (vector-ref g-k 3) 0.6255943919567615 1e-5)
+             (approx= (vector-ref g-v 0) 1.0 1e-6)
+             (approx= (vector-ref g-v 1) 1.0 1e-6)
+             (approx= (vector-ref g-v 2) 1.0 1e-6)
+             (approx= (vector-ref g-v 3) 1.0 1e-6))
+        "PASS" "FAIL"))
+  (display ": scaled-dot-attention K/V gradients match closed forms") (newline))
