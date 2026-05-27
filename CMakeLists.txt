@@ -1764,6 +1764,19 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
                 PASS_REGULAR_EXPRESSION "PASS: v1_3_smoke_features_test"
                 FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     endif()
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/v1_3_edge_cases/ad_input2_test.esk")
+        add_test(
+            NAME v1_3_ad_input2_runtime_smoke
+            COMMAND $<TARGET_FILE:eshkol-run>
+                    -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/v1_3_edge_cases/ad_input2_test.esk"
+                    -L"${CMAKE_CURRENT_BINARY_DIR}"
+        )
+        set_tests_properties(v1_3_ad_input2_runtime_smoke
+            PROPERTIES
+                TIMEOUT 300
+                PASS_REGULAR_EXPRESSION "PASS: ad_input2_test"
+                FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    endif()
 endif()
 
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/runtime_shutdown_hooks_test.cpp")

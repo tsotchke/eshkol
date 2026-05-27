@@ -276,6 +276,38 @@ oracles:
 
       - runtime_event:
           event_kinds: [eshkol_smoke]
+          event_names: ["ad_input2_conv2d_grad_works"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'gradient flows through conv2d to the kernel operand'
+        action: ./scripts/run_icc_smoke.sh
+
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["ad_input2_batchnorm_grad_works"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'gradient flows through batch-norm to the gamma operand'
+        action: ./scripts/run_icc_smoke.sh
+
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["ad_input2_layernorm_grad_works"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'gradient flows through layer-norm to the gamma operand'
+        action: ./scripts/run_icc_smoke.sh
+
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["ad_input2_attention_grad_works"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'gradient flows through scaled-dot-attention to K/V operands'
+        action: ./scripts/run_icc_smoke.sh
+
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
           event_names: ["native_image_io_no_stb"]
           event_values: ["PASS"]
         severity: medium

@@ -35,7 +35,7 @@ The compiler differentiates through arbitrary Eshkol code — no framework, no g
 | **[newton_method.esk](newton_method.esk)** | Newton's root finder in 15 lines using `derivative`. Cube root, square root, the Dottie number, and a quintic root — each converges in 4–5 iterations | 70 |
 | **[symbolic_diff.esk](symbolic_diff.esk)** | Three modes of AD (`diff` / `derivative` / `gradient`) agree to machine precision on `sin(x²) + 3x`. The symbolic mode prints its rewritten AST | 87 |
 | **[differentiable_physics.esk](differentiable_physics.esk)** | Optimise a projectile launch angle by differentiating *through* a recursive Euler integrator with linear drag. Converges to the high-arc 68° solution in 200 steps with final error 1.3e-8 | 95 |
-| **[neural_xor.esk](neural_xor.esk)** | Two-layer MLP (2 → 4 hidden tanh → 1 sigmoid) learns XOR by full-batch gradient descent in 1,000 epochs. Loss 1.10 → 0.001 | 123 |
+| **[neural_xor.esk](neural_xor.esk)** | Two-layer MLP (2 → 4 hidden tanh → 1 sigmoid) learns XOR by full-batch gradient descent in 1,500 epochs. Loss 1.10 → <0.001 | 123 |
 
 ## Parallelism and performance
 
