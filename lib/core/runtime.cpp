@@ -3,7 +3,7 @@
  *
  * SPDX-License-Identifier: MIT
  *
- * Runtime interrupt flag definition + readable accessor.
+ * Runtime interrupt flag definition + non-inline readable accessor.
  *
  * The flag itself is declared `extern volatile sig_atomic_t` in
  * inc/eshkol/core/runtime.h.  Signal handlers in
@@ -18,11 +18,9 @@
 volatile sig_atomic_t g_eshkol_interrupt_flag = 0;
 
 /*
- * Programmatic reset for the interrupt flag.  Useful when an
- * interactive REPL absorbs a SIGINT and then wants to continue
- * accepting new input without inheriting the previous interrupt
- * state.  Naming mirrors `eshkol_runtime_interrupt_requested()`.
+ * Non-inline reader for tools and FFI surfaces that cannot use the
+ * header-only `eshkol_runtime_interrupt_requested()` helper.
  */
-extern "C" void eshkol_runtime_clear_interrupt_flag(void) {
-    g_eshkol_interrupt_flag = 0;
+extern "C" bool eshkol_runtime_interrupt_flag_is_set(void) {
+    return g_eshkol_interrupt_flag != 0;
 }
