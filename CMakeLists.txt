@@ -284,6 +284,7 @@ set(ESHKOL_BUILD_BACKEND ON)
 # for every build mode; hosted runtime code includes it before the lite/XLA
 # target graph is assembled.
 set(ESHKOL_HOST_RUNTIME_LINK_ARGS "")
+set(ESHKOL_HOST_LLVM_LINK_ARGS "")
 set(ESHKOL_HOST_AGENT_FFI_LINK_ARGS "")
 set(ESHKOL_GENERATED_INCLUDE_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
 file(MAKE_DIRECTORY "${ESHKOL_GENERATED_INCLUDE_DIR}/eshkol")
@@ -528,6 +529,16 @@ else()
     separate_arguments(LLVM_LIBS_LIST UNIX_COMMAND "${LLVM_LIBS}")
     separate_arguments(LLVM_SYSTEM_LIBS_LIST UNIX_COMMAND "${LLVM_SYSTEM_LIBS}")
 endif()
+
+set(ESHKOL_HOST_LLVM_LINK_ARGS "")
+foreach(_llvm_lib_dir IN LISTS LLVM_LIBRARY_DIRS)
+    list(APPEND ESHKOL_HOST_LLVM_LINK_ARGS "-L${_llvm_lib_dir}")
+endforeach()
+foreach(_llvm_link_arg IN LISTS LLVM_LDFLAGS_LIST LLVM_LIBS_LIST LLVM_SYSTEM_LIBS_LIST)
+    if(NOT "${_llvm_link_arg}" STREQUAL "")
+        list(APPEND ESHKOL_HOST_LLVM_LINK_ARGS "${_llvm_link_arg}")
+    endif()
+endforeach()
 
 # Keep LLVM's defines and unwind flags, but let the project control language mode
 # and exception support.

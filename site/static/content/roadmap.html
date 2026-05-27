@@ -400,11 +400,11 @@ concurrent memory allocation)</label></li>
 main-thread stack on Darwin/Linux/Windows (linker flags wired into both
 single-step and compiled-files link paths); 100K-frame recursion-depth
 check with typed exception</label></li>
-<li><label><input type="checkbox" checked="" />Image I/O (PNG/JPEG/BMP
-read/write/resize) — current backend is stb_image under
-<code>deps/stb/</code>; v1.3+ will replace with native platform APIs
-(CoreGraphics on macOS, system libpng/libjpeg on Linux, GDI+ on Windows)
-so we stop vendoring third-party media decoders</label></li>
+<li><label><input type="checkbox" checked="" />Image I/O
+(PNG/JPEG/WebP/BMP read/write/resize) — backed by native
+platform/system codec APIs (ImageIO/CoreGraphics on macOS, system
+libpng/libjpeg/libwebp on Linux, GDI+ on Windows) so the active backend
+no longer depends on vendored third-party media decoders</label></li>
 <li><label><input type="checkbox" checked="" />CSV/DataFrame (tabular
 data loading for ML pipelines)</label></li>
 <li><label><input type="checkbox" checked="" />Improved error messages
@@ -472,10 +472,10 @@ bindings (destructuring <code>let-match</code>)</label></li>
 profiling feeds codegen)</label></li>
 <li><label><input type="checkbox" />Whole-program optimization
 (cross-module inlining and dead code elimination)</label></li>
-<li><label><input type="checkbox" /><strong>Native media handling, no
-vendoring</strong>: replace <code>deps/stb/</code> image I/O with native
-platform APIs (CoreGraphics on macOS, system libpng/libjpeg/libwebp on
-Linux, GDI+ on Windows). Going forward the project does not vendor
+<li><label><input type="checkbox" checked="" /><strong>Native media
+handling, no vendoring</strong>: image I/O uses native platform/system
+codec APIs (ImageIO/CoreGraphics on macOS, system libpng/libjpeg/libwebp
+on Linux, GDI+ on Windows). Going forward the project does not vendor
 third-party media decoders.</label></li>
 <li><label><input type="checkbox" />AD <code>input2</code> plumbing for
 conv2d / batchnorm / layernorm / matmul / attention backward passes

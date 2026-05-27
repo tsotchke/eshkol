@@ -33,6 +33,9 @@ RUN apt-get install -y \
     pkg-config \
     libssl-dev \
     libncurses-dev \
+    libpng-dev \
+    libjpeg-dev \
+    libwebp-dev \
     python3 \
     && rm -rf /var/lib/apt/lists/*
 

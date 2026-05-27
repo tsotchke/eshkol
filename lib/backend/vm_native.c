@@ -11247,7 +11247,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
 #undef TENSOR_FILE_MAGIC
 
     /* ══════════════════════════════════════════════════════════════════════
-     * Image I/O (1850-1859) — stb_image based
+     * Image I/O (1850-1859) — native platform/system codec based
      * ══════════════════════════════════════════════════════════════════════ */
 
     case 1850: { /* image-read(path) → tensor (H,W,C) or #f */

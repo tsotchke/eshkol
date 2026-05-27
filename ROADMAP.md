@@ -248,11 +248,11 @@ v2.0 ─────────────────────────
       (linker flags wired into both single-step and compiled-files
       link paths); 100K-frame recursion-depth check with typed
       exception
-- [x] Image I/O (PNG/JPEG/BMP read/write/resize) — current backend is
-      stb_image under `deps/stb/`; v1.3+ will replace with native
-      platform APIs (CoreGraphics on macOS, system libpng/libjpeg on
-      Linux, GDI+ on Windows) so we stop vendoring third-party media
-      decoders
+- [x] Image I/O (PNG/JPEG/WebP/BMP read/write/resize) — backed by
+      native platform/system codec APIs (ImageIO/CoreGraphics on
+      macOS, system libpng/libjpeg/libwebp on Linux, GDI+ on
+      Windows) so the active backend no longer depends on vendored
+      third-party media decoders
 - [x] CSV/DataFrame (tabular data loading for ML pipelines)
 - [x] Improved error messages with file:line:col + caret underlines
       (preserves newlines in stripped comments + cumulative file-line
@@ -317,8 +317,8 @@ v2.0 ─────────────────────────
       selection + canonical merge step (the "what do we train on?"
       side) is the remaining gap; the codegen-side machinery is ready.
 - [ ] Whole-program optimization (cross-module inlining and dead code elimination)
-- [ ] **Native media handling, no vendoring**: replace `deps/stb/`
-      image I/O with native platform APIs (CoreGraphics on macOS,
+- [x] **Native media handling, no vendoring**: image I/O uses native
+      platform/system codec APIs (ImageIO/CoreGraphics on macOS,
       system libpng/libjpeg/libwebp on Linux, GDI+ on Windows).
       Going forward the project does not vendor third-party media
       decoders.

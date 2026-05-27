@@ -47,7 +47,7 @@ continuity.
 | Model serialization (`.eshkol-model`) | ✅ | `lib/core/model_io.cpp`; ESKB-extended binary format; per-tensor metadata + name map |
 | C FFI header + Python bindings | ✅ | `inc/eshkol/eshkol_ffi.h`; `bindings/python/eshkol_module.cpp`; pybind11; numpy zero-copy |
 | Per-thread arenas | ✅ | `arena_create_thread_local`, `arena_merge_to_parent`; v1.2 edge-case `parallel_arena_test.esk` |
-| Image I/O (PNG/JPEG/BMP) | ✅ | `image-read`/`-write`/`-resize`/`-to-grayscale` (current backend: `deps/stb/`; **v1.3+ will replace with native platform APIs** so we stop vendoring third-party media code) |
+| Image I/O (PNG/JPEG/WebP/BMP) | ✅ | `image-read`/`-write`/`-resize`/`-to-grayscale` use native platform/system codec APIs: ImageIO/CoreGraphics on macOS, system libpng/libjpeg/libwebp on Linux, and GDI+ on Windows. |
 | CSV/DataFrame | ✅ | `core.data.csv` extended with type inference + select/filter/group-by/join |
 | Improved error messages | ✅ | `file:line:col: error:` with caret underlines |
 | Terminal plotting | ✅ | `(sparkline ...)` and `(bar-chart ...)` in pure-Eshkol stdlib |
@@ -64,12 +64,11 @@ continuity.
 
 ### Known carry-forward to v1.3
 
-- **Native media handling, no vendoring.** v1.2 ships image I/O via
-  `deps/stb/{stb_image,stb_image_write,stb_image_resize2}.h` because
-  v1.1 was already on that path.  v1.3 should replace this with
-  native platform APIs (CoreGraphics on macOS, system libpng /
-  libjpeg / libwebp on Linux, GDI+ on Windows), and going forward
-  Eshkol should not vendor third-party media decoders at all.
+- **Native media handling, no vendoring.** Image I/O is aligned on
+  native platform/system codec APIs: ImageIO/CoreGraphics on macOS,
+  system libpng / libjpeg / libwebp on Linux, and GDI+ on Windows.
+  Going forward Eshkol should not vendor third-party media decoders
+  at all.
 - **AD `input2` plumbing for conv2d / batchnorm / layernorm / matmul /
   attention backward passes** — backward kernels in
   `lib/backend/tensor_backward.cpp` already gate gradient

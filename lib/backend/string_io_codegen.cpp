@@ -2732,6 +2732,61 @@ llvm::Value* StringIOCodegen::charCompare(const eshkol_operations_t* op, const s
     return tagged_.packBool(result);
 }
 
+/*
+ * R7RS case-insensitive character comparisons.  Each operand is
+ * folded to its case-equivalent (lowercase for ASCII) before
+ * comparison.  Matches the semantics in R7RS 6.6: the result of
+ * (char-ci=? c1 c2) is equivalent to
+ * (char=? (char-foldcase c1) (char-foldcase c2)) for the supported
+ * code-point range.
+ *
+ * Note: ASCII-only fold for v1.3; full Unicode case folding waits
+ * for v1.4's Unicode normalization work.  Documented in
+ * docs/breakdown/SCHEME_COMPATIBILITY.md.
+ */
+llvm::Value* StringIOCodegen::charCiCompare(const eshkol_operations_t* op, const std::string& cmp_type) {
+    if (!codegen_ast_callback_) {
+        eshkol_warn("StringIOCodegen::charCiCompare - callbacks not set");
+        return tagged_.packNull();
+    }
+
+    if (op->call_op.num_vars != 2) {
+        eshkol_warn("Case-insensitive character comparison requires exactly 2 arguments");
+        return nullptr;
+    }
+
+    llvm::Value* char1_arg = codegen_ast_callback_(&op->call_op.variables[0], callback_context_);
+    llvm::Value* char2_arg = codegen_ast_callback_(&op->call_op.variables[1], callback_context_);
+    if (!char1_arg || !char2_arg) return nullptr;
+
+    llvm::Value* char1_val = tagged_.unpackInt64(char1_arg);
+    llvm::Value* char2_val = tagged_.unpackInt64(char2_arg);
+
+    // Fold each operand: if ASCII uppercase, add 32; else keep.
+    auto fold = [&](llvm::Value* v) -> llvm::Value* {
+        llvm::Value* ch = ctx_.builder().CreateTrunc(v, ctx_.int8Type());
+        llvm::Value* ge_A = ctx_.builder().CreateICmpUGE(ch, llvm::ConstantInt::get(ctx_.int8Type(), 'A'));
+        llvm::Value* le_Z = ctx_.builder().CreateICmpULE(ch, llvm::ConstantInt::get(ctx_.int8Type(), 'Z'));
+        llvm::Value* is_upper = ctx_.builder().CreateAnd(ge_A, le_Z);
+        llvm::Value* downed = ctx_.builder().CreateAdd(ch, llvm::ConstantInt::get(ctx_.int8Type(), 32));
+        llvm::Value* folded = ctx_.builder().CreateSelect(is_upper, downed, ch);
+        return ctx_.builder().CreateZExt(folded, ctx_.int64Type());
+    };
+
+    llvm::Value* fc1 = fold(char1_val);
+    llvm::Value* fc2 = fold(char2_val);
+
+    llvm::Value* result;
+    if (cmp_type == "eq")      result = ctx_.builder().CreateICmpEQ(fc1, fc2);
+    else if (cmp_type == "lt") result = ctx_.builder().CreateICmpSLT(fc1, fc2);
+    else if (cmp_type == "gt") result = ctx_.builder().CreateICmpSGT(fc1, fc2);
+    else if (cmp_type == "le") result = ctx_.builder().CreateICmpSLE(fc1, fc2);
+    else if (cmp_type == "ge") result = ctx_.builder().CreateICmpSGE(fc1, fc2);
+    else                       result = llvm::ConstantInt::getFalse(ctx_.context());
+
+    return tagged_.packBool(result);
+}
+
 // Helper to build read-char / peek-char common logic
 // Returns tagged char or EOF object
 static llvm::Value* buildReadCharCommon(CodegenContext& ctx, TaggedValueCodegen& tagged,

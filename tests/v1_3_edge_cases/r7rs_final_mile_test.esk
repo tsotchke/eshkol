@@ -1,0 +1,71 @@
+;; r7rs_final_mile_test.esk — ESH-0003 regression: small R7RS gaps
+;;
+;; Covers the R7RS items that were marked "Missing" in
+;; docs/breakdown/SCHEME_COMPATIBILITY.md before v1.3:
+;;
+;;   - char-ci=? family (R7RS 6.6 case-insensitive char compare)
+;;   - exact-integer-sqrt (R7RS 6.2.6 exact integer square root)
+;;
+;; Pins each function against the spec's canonical cases plus
+;; a few edge cases (bignum input).
+
+(require core.numeric_extras)
+
+(define passed 0)
+(define failed 0)
+(define (check name cond)
+  (if cond
+      (begin (display "PASS: ") (display name) (newline)
+             (set! passed (+ passed 1)))
+      (begin (display "FAIL: ") (display name) (newline)
+             (set! failed (+ failed 1)))))
+
+;; --- char-ci=? / char-ci<? / char-ci>? / char-ci<=? / char-ci>=? ---
+(check "char-ci=? Aa"      (char-ci=? #\A #\a))
+(check "char-ci=? AA"      (char-ci=? #\A #\A))
+(check "char-ci=? not Ab"  (not (char-ci=? #\A #\b)))
+(check "char-ci<? Ab"      (char-ci<? #\A #\b))
+(check "char-ci<? not AB"  (not (char-ci<? #\A #\B)))
+(check "char-ci<? not Ba"  (not (char-ci<? #\B #\a)))
+(check "char-ci>? Ca"      (char-ci>? #\C #\a))
+(check "char-ci<=? Aa"     (char-ci<=? #\A #\a))
+(check "char-ci>=? Aa"     (char-ci>=? #\A #\a))
+(check "char-ci=? digits"  (char-ci=? #\5 #\5))
+(check "char-ci=? mixed"   (not (char-ci=? #\A #\1)))
+
+;; --- exact-integer-sqrt ---
+;; Verify each result one component at a time so we don't depend on `and`
+;; or `call-with-values` inside macros (which currently has a codegen
+;; quirk under REPL mode — unrelated to this work).
+(define (eisqrt-s k) (call-with-values (lambda () (exact-integer-sqrt k))
+                       (lambda (s r) s)))
+(define (eisqrt-r k) (call-with-values (lambda () (exact-integer-sqrt k))
+                       (lambda (s r) r)))
+
+(check "eisqrt 0 → s=0"   (= (eisqrt-s 0)   0))
+(check "eisqrt 0 → r=0"   (= (eisqrt-r 0)   0))
+(check "eisqrt 1 → s=1"   (= (eisqrt-s 1)   1))
+(check "eisqrt 2 → s=1"   (= (eisqrt-s 2)   1))
+(check "eisqrt 2 → r=1"   (= (eisqrt-r 2)   1))
+(check "eisqrt 3 → s=1"   (= (eisqrt-s 3)   1))
+(check "eisqrt 3 → r=2"   (= (eisqrt-r 3)   2))
+(check "eisqrt 4 → s=2"   (= (eisqrt-s 4)   2))
+(check "eisqrt 9 → s=3"   (= (eisqrt-s 9)   3))
+(check "eisqrt 10 → s=3"  (= (eisqrt-s 10)  3))
+(check "eisqrt 10 → r=1"  (= (eisqrt-r 10)  1))
+(check "eisqrt 100 → s=10" (= (eisqrt-s 100) 10))
+(check "eisqrt 1000000 → s=1000" (= (eisqrt-s 1000000) 1000))
+
+;; Bignum input: 10^20 fits in bignum.  s = 10^10, r = 0.
+(check "eisqrt 10^20 → s=10^10" (= (eisqrt-s (expt 10 20)) (expt 10 10)))
+(check "eisqrt 10^20 → r=0"     (= (eisqrt-r (expt 10 20)) 0))
+;; 10^20 + 1 same s, r = 1
+(check "eisqrt 10^20+1 → s=10^10" (= (eisqrt-s (+ (expt 10 20) 1)) (expt 10 10)))
+(check "eisqrt 10^20+1 → r=1"     (= (eisqrt-r (+ (expt 10 20) 1)) 1))
+
+;; --- Summary ---
+(display "Results: ") (display passed) (display " passed, ")
+(display failed) (display " failed") (newline)
+(if (= failed 0)
+    (begin (display "PASS: r7rs_final_mile_test") (newline) (exit 0))
+    (begin (display "FAIL: r7rs_final_mile_test") (newline) (exit 1)))

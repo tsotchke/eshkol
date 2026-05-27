@@ -1,7 +1,7 @@
 {
   "id": "ESH-0015",
   "title": "Persistent JIT cache (warm-worker mode productized)",
-  "status": "pending",
+  "status": "active",
   "priority": "low",
   "workstream": "developer-experience",
   "owner": null,

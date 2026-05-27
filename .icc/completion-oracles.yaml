@@ -308,6 +308,14 @@ oracles:
 
       - runtime_event:
           event_kinds: [eshkol_smoke]
+          event_names: ["jit_cache_hit_invalidates"]
+          event_values: ["PASS"]
+        severity: medium
+        label: 'eshkol-run -r persistent cache hits and source edits invalidate'
+        action: ./scripts/run_icc_smoke.sh
+
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
           event_names: ["native_image_io_no_stb"]
           event_values: ["PASS"]
         severity: medium

@@ -1,17 +1,17 @@
 ;; Task #107: image I/O round-trip test.
 ;;
-;; Regression: image-read/image-to-grayscale previously called free() on
-;; arena-allocated memory from image_io.c, corrupting the global arena and
-;; causing crashes on subsequent allocations. This test exercises the
-;; full pipeline (write → read → grayscale → write) to ensure the arena
-;; stays healthy.
+;; Regression: image-read/image-to-grayscale crossed an ownership boundary
+;; incorrectly and corrupted arena-backed runtime storage. The native image
+;; backends differ by platform, so this test keeps PNG as the required
+;; round-trip and treats extra formats as optional probes.
 
 (require stdlib)
 
-(display "=== v1.2 Image I/O arena-safety test ===") (newline)
+(display "=== v1.2 native image I/O portability test ===") (newline)
 
 (define pass-count 0)
 (define fail-count 0)
+(define skip-count 0)
 (define (check name cond)
   (if cond
       (begin (set! pass-count (+ pass-count 1))
@@ -19,32 +19,153 @@
       (begin (set! fail-count (+ fail-count 1))
              (display "FAIL: ") (display name) (newline))))
 
-;; Build a 4x4x3 RGB tensor filled with mid-grey (0.5).
-;; make-tensor takes (shape-list fill-value) and returns a tensor of the
-;; given shape; it dispatches through the shape+fill path in TensorCodegen.
-(define test-tensor (make-tensor (list 4 4 3) 0.5))
+(define (skip name reason)
+  (set! skip-count (+ skip-count 1))
+  (display "SKIP: ") (display name)
+  (display " (") (display reason) (display ")") (newline))
 
-(define path "/tmp/eshkol_img_test.png")
+(define (approx= a b tol)
+  (<= (abs (- a b)) tol))
 
-;; Write the test tensor as PNG.
-(check "image-write to PNG"
-       (image-write path test-tensor "png"))
+(define (in-unit-range? x)
+  (and (number? x)
+       (>= x -0.01)
+       (<= x 1.01)))
 
-;; Read it back. tensor-shape returns a list like (4 4 3).
-(define img (image-read path))
+(define (shape-hw? shape h w)
+  (and (pair? shape)
+       (pair? (cdr shape))
+       (= (car shape) h)
+       (= (car (cdr shape)) w)))
+
+(define (shape-color? shape h w)
+  (and (shape-hw? shape h w)
+       (pair? (cdr (cdr shape)))
+       (>= (car (cdr (cdr shape))) 3)))
+
+(define (set-rgb! tensor row col r g b)
+  (tensor-set! tensor row col 0 r)
+  (tensor-set! tensor row col 1 g)
+  (tensor-set! tensor row col 2 b))
+
+(define (pixel-rgb-approx? tensor row col r g b tol)
+  (and (approx= (tensor-ref tensor row col 0) r tol)
+       (approx= (tensor-ref tensor row col 1) g tol)
+       (approx= (tensor-ref tensor row col 2) b tol)))
+
+;; Build a small RGB tensor with distinct primary-color samples. PNG should
+;; preserve these values within one 8-bit quantization step on every backend.
+(define test-tensor (make-tensor (list 4 4 3) 0.0))
+(set-rgb! test-tensor 0 0 1.0 0.0 0.0)
+(set-rgb! test-tensor 0 1 0.0 1.0 0.0)
+(set-rgb! test-tensor 1 0 0.0 0.0 1.0)
+(set-rgb! test-tensor 1 1 1.0 1.0 1.0)
+(set-rgb! test-tensor 2 2 0.25 0.5 0.75)
+
+(define temp-root (temp-directory))
+(define path (if (string? temp-root)
+                 (make-temp-file "eshkol-img-native-" ".png" temp-root)
+                 #f))
+(define gray-path (if (string? temp-root)
+                      (make-temp-file "eshkol-img-native-gray-" ".png" temp-root)
+                      #f))
+
+(check "temp directory available" (string? temp-root))
+(check "temp PNG path available" (string? path))
+
+;; PNG is the required portable format across ImageIO, GDI+, and the Linux
+;; libpng path.
+(check "image-write RGB PNG"
+       (and (string? path)
+            (image-write path test-tensor "png")))
+(check "PNG output is non-empty"
+       (and (string? path)
+            (number? (file-size path))
+            (> (file-size path) 0)))
+
+(define img (if (string? path) (image-read path) #f))
+(define img-shape (if (tensor? img) (tensor-shape img) '()))
 (check "image-read returns a tensor" (tensor? img))
-(check "image-read shape is (4 4 3)"
-       (equal? (tensor-shape img) (list 4 4 3)))
+(check "image-read shape has 4x4 RGB-compatible data"
+       (shape-color? img-shape 4 4))
+(check "PNG preserves red channel ordering"
+       (and (tensor? img)
+            (shape-color? img-shape 4 4)
+            (pixel-rgb-approx? img 0 0 1.0 0.0 0.0 0.01)))
+(check "PNG preserves green channel ordering"
+       (and (tensor? img)
+            (shape-color? img-shape 4 4)
+            (pixel-rgb-approx? img 0 1 0.0 1.0 0.0 0.01)))
+(check "PNG preserves blue channel ordering"
+       (and (tensor? img)
+            (shape-color? img-shape 4 4)
+            (pixel-rgb-approx? img 1 0 0.0 0.0 1.0 0.01)))
+(check "PNG preserves mixed quantized sample"
+       (and (tensor? img)
+            (shape-color? img-shape 4 4)
+            (pixel-rgb-approx? img 2 2 0.25 0.5 0.75 0.01)))
 
 ;; Convert to grayscale.
 (define gray (image-to-grayscale img))
+(define gray-shape (if (tensor? gray) (tensor-shape gray) '()))
 (check "image-to-grayscale returns a tensor" (tensor? gray))
 (check "grayscale shape is (4 4)"
-       (equal? (tensor-shape gray) (list 4 4)))
+       (equal? gray-shape (list 4 4)))
+(check "grayscale red luminance is BT.709"
+       (and (tensor? gray)
+            (approx= (tensor-ref gray 0 0) 0.2126 0.02)))
+(check "grayscale green luminance is BT.709"
+       (and (tensor? gray)
+            (approx= (tensor-ref gray 0 1) 0.7152 0.02)))
+(check "grayscale white luminance is near one"
+       (and (tensor? gray)
+            (approx= (tensor-ref gray 1 1) 1.0 0.02)))
+
+;; Exercise writing the derived 2D tensor without assuming whether a backend
+;; reads grayscale PNGs back as 1, 3, or 4 channels.
+(check "temp grayscale PNG path available" (string? gray-path))
+(check "image-write grayscale PNG"
+       (and (string? gray-path)
+            (tensor? gray)
+            (image-write gray-path gray "png")))
+(define gray-img (if (string? gray-path) (image-read gray-path) #f))
+(define gray-img-shape (if (tensor? gray-img) (tensor-shape gray-img) '()))
+(check "grayscale PNG read returns a tensor" (tensor? gray-img))
+(check "grayscale PNG read keeps 4x4 dimensions"
+       (shape-hw? gray-img-shape 4 4))
+
+(define (optional-format-round-trip label fmt suffix)
+  (let ((optional-path (if (string? temp-root)
+                           (make-temp-file "eshkol-img-native-optional-" suffix temp-root)
+                           #f)))
+    (if (not (string? optional-path))
+        (skip label "no temp path")
+        (let ((wrote (image-write optional-path test-tensor fmt)))
+          (if wrote
+              (let* ((round-trip (image-read optional-path))
+                     (round-trip-shape (if (tensor? round-trip)
+                                           (tensor-shape round-trip)
+                                           '())))
+                (check (string-append label " read returns a tensor")
+                       (tensor? round-trip))
+                (check (string-append label " read keeps RGB-compatible shape")
+                       (shape-color? round-trip-shape 4 4))
+                (check (string-append label " samples are normalized")
+                       (and (tensor? round-trip)
+                            (shape-color? round-trip-shape 4 4)
+                            (in-unit-range? (tensor-ref round-trip 0 0 0))
+                            (in-unit-range? (tensor-ref round-trip 0 1 1))
+                            (in-unit-range? (tensor-ref round-trip 1 0 2)))))
+              (skip label "format not available on this backend"))
+          (delete-file optional-path)))))
+
+;; These formats depend on OS codecs or optional libraries. They are useful
+;; when present, but absence must not fail the cross-platform edge suite.
+(optional-format-round-trip "optional JPEG round-trip" "jpeg" ".jpg")
+(optional-format-round-trip "optional WebP round-trip" "webp" ".webp")
 
 ;; After all the above calls, the arena has been exercised heavily.
-;; Allocate more objects to ensure it's still healthy (regression for
-;; the free()-on-arena corruption).
+;; Allocate more objects to catch invalid ownership/free regressions.
 (define big-list '())
 (let loop ((i 0))
   (if (< i 200)
@@ -58,11 +179,14 @@
        (equal? (car (car big-list)) 199))
 
 ;; Cleanup
-(delete-file path)
+(if (string? path) (delete-file path))
+(if (string? gray-path) (delete-file gray-path))
 
 (newline)
 (display "=== Summary ===") (newline)
 (display "Passed: ") (display pass-count) (newline)
+(display "Skipped: ") (display skip-count) (newline)
 (display "Failed: ") (display fail-count) (newline)
 (display (if (= fail-count 0) "RESULT: ALL PASS" "RESULT: FAILURES DETECTED"))
 (newline)
+(if (> fail-count 0) (exit 1) #t)

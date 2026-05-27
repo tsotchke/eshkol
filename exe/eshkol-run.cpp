@@ -12,9 +12,13 @@
 #include <eshkol/backend/vm.h>
 #include <eshkol/build_config.h>
 #include <eshkol/platform_runtime.h>
+#include <eshkol/pkg/subprocess.h>
 
 #include <eshkol/llvm_backend.h>
 #include "../lib/repl/repl_jit.h"
+
+#include <llvm/Config/llvm-config.h>
+#include <llvm/Support/SHA256.h>
 
 #include <stdio.h>
 #include <stdint.h>
@@ -35,6 +39,10 @@
 #include <sstream>
 #include <cstring>
 #include <cstdlib>
+#include <cctype>
+#include <array>
+#include <chrono>
+#include <optional>
 
 static constexpr char eshkol_path_separator =
 #ifdef _WIN32
@@ -85,6 +93,375 @@ static void append_host_runtime_link_args(std::vector<std::string>& link_args) {
     }
 #endif
 }
+
+static void append_space_separated_link_args(const char* raw_args,
+                                             std::vector<std::string>& link_args) {
+    if (!raw_args || !*raw_args) {
+        return;
+    }
+    std::stringstream stream(raw_args);
+    std::string item;
+    while (stream >> item) {
+        link_args.emplace_back(item);
+    }
+}
+
+static void append_host_llvm_link_args(std::vector<std::string>& link_args) {
+    append_space_separated_link_args(ESHKOL_HOST_LLVM_LINK_ARGS, link_args);
+}
+
+namespace {
+
+bool envFlagEnabled(const char* name) {
+    const char* value = std::getenv(name);
+    if (!value || !*value) {
+        return false;
+    }
+    std::string lowered(value);
+    std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    return lowered != "0" && lowered != "false" && lowered != "off" && lowered != "no";
+}
+
+bool envFlagDisabled(const char* name) {
+    const char* value = std::getenv(name);
+    if (!value || !*value) {
+        return false;
+    }
+    std::string lowered(value);
+    std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    return lowered == "0" || lowered == "false" || lowered == "off" || lowered == "no";
+}
+
+void jitCacheTrace(const char* status, const std::string& detail) {
+    if (envFlagEnabled("ESHKOL_JIT_CACHE_TRACE")) {
+        std::fprintf(stderr, "[jit-cache] %s %s\n", status, detail.c_str());
+    }
+}
+
+std::string readFileBytes(const std::filesystem::path& path) {
+    std::ifstream input(path, std::ios::binary);
+    if (!input.is_open()) {
+        return {};
+    }
+    return std::string(std::istreambuf_iterator<char>(input),
+                       std::istreambuf_iterator<char>());
+}
+
+void hashUpdate(llvm::SHA256& hash, const std::string& label, const std::string& value) {
+    hash.update(llvm::StringRef(label.data(), label.size()));
+    hash.update(llvm::StringRef("\0", 1));
+    hash.update(llvm::StringRef(value.data(), value.size()));
+    hash.update(llvm::StringRef("\0", 1));
+}
+
+std::string sha256Hex(llvm::SHA256& hash) {
+    std::array<uint8_t, 32> digest = hash.final();
+    static constexpr char hex[] = "0123456789abcdef";
+    std::string out;
+    out.reserve(digest.size() * 2);
+    for (uint8_t byte : digest) {
+        out.push_back(hex[(byte >> 4) & 0x0f]);
+        out.push_back(hex[byte & 0x0f]);
+    }
+    return out;
+}
+
+std::string fileMetadataFingerprint(const std::filesystem::path& path) {
+    std::error_code ec;
+    if (!std::filesystem::exists(path, ec)) {
+        return "missing:" + path.string();
+    }
+    const auto size = std::filesystem::file_size(path, ec);
+    const auto mtime = std::filesystem::last_write_time(path, ec);
+    const auto mtime_count =
+        static_cast<long long>(mtime.time_since_epoch().count());
+    return path.string() + "|" + std::to_string(size) + "|" +
+           std::to_string(mtime_count);
+}
+
+std::filesystem::path resolveSelfPath(const char* argv0) {
+    std::error_code ec;
+    if (argv0 && *argv0) {
+        std::filesystem::path candidate(argv0);
+        if (candidate.is_relative()) {
+            candidate = std::filesystem::current_path(ec) / candidate;
+        }
+        auto canonical = std::filesystem::weakly_canonical(candidate, ec);
+        if (!ec && !canonical.empty()) {
+            return canonical;
+        }
+        return candidate;
+    }
+    return {};
+}
+
+std::filesystem::path findBuildArtifact(const std::string& name,
+                                        const std::filesystem::path& self_path) {
+    auto cwd = std::filesystem::current_path();
+    auto exe_dir = self_path.empty() ? std::filesystem::path{} : self_path.parent_path();
+    std::vector<std::filesystem::path> candidates;
+    if (!exe_dir.empty()) {
+        candidates.push_back(exe_dir / name);
+        candidates.push_back(exe_dir / "../lib" / name);
+        candidates.push_back(exe_dir / "../lib/eshkol" / name);
+    }
+    candidates.push_back(cwd / name);
+    candidates.push_back(cwd / "build" / name);
+    candidates.push_back(cwd / "build-verify" / name);
+    candidates.push_back(cwd.parent_path() / "build" / name);
+    candidates.push_back(cwd.parent_path() / "build-verify" / name);
+
+#ifndef _WIN32
+    candidates.emplace_back("/usr/local/lib/eshkol/" + name);
+    candidates.emplace_back("/usr/lib/eshkol/" + name);
+#endif
+
+    std::error_code ec;
+    for (const auto& candidate : candidates) {
+        if (std::filesystem::exists(candidate, ec)) {
+            auto canonical = std::filesystem::weakly_canonical(candidate, ec);
+            return ec ? candidate : canonical;
+        }
+    }
+    return {};
+}
+
+std::filesystem::path jitCacheRoot() {
+    if (const char* explicit_dir = std::getenv("ESHKOL_JIT_CACHE_DIR")) {
+        if (*explicit_dir) {
+            return std::filesystem::path(explicit_dir);
+        }
+    }
+#ifdef _WIN32
+    if (const char* local_app_data = std::getenv("LOCALAPPDATA")) {
+        if (*local_app_data) {
+            return std::filesystem::path(local_app_data) / "eshkol" / "jit";
+        }
+    }
+#else
+    if (const char* xdg_cache_home = std::getenv("XDG_CACHE_HOME")) {
+        if (*xdg_cache_home) {
+            return std::filesystem::path(xdg_cache_home) / "eshkol" / "jit";
+        }
+    }
+    if (const char* home = std::getenv("HOME")) {
+        if (*home) {
+            return std::filesystem::path(home) / ".cache" / "eshkol" / "jit";
+        }
+    }
+#endif
+    return std::filesystem::temp_directory_path() / "eshkol" / "jit";
+}
+
+void pruneJitCache(const std::filesystem::path& root) {
+    static constexpr uintmax_t max_cache_bytes = 1024ull * 1024ull * 1024ull;
+    static constexpr auto max_age = std::chrono::hours(24 * 30);
+
+    std::error_code ec;
+    if (!std::filesystem::exists(root, ec)) {
+        return;
+    }
+
+    struct Entry {
+        std::filesystem::path path;
+        uintmax_t size;
+        std::filesystem::file_time_type mtime;
+    };
+
+    std::vector<Entry> entries;
+    uintmax_t total_size = 0;
+    const auto now = std::filesystem::file_time_type::clock::now();
+
+    for (const auto& dir_entry : std::filesystem::directory_iterator(root, ec)) {
+        if (ec) break;
+        if (!dir_entry.is_regular_file(ec)) {
+            continue;
+        }
+        const auto path = dir_entry.path();
+        const auto size = dir_entry.file_size(ec);
+        const auto mtime = dir_entry.last_write_time(ec);
+        if (ec) {
+            ec.clear();
+            continue;
+        }
+        if (now - mtime > max_age) {
+            std::filesystem::remove(path, ec);
+            ec.clear();
+            continue;
+        }
+        total_size += size;
+        entries.push_back({path, size, mtime});
+    }
+
+    if (total_size <= max_cache_bytes) {
+        return;
+    }
+
+    std::sort(entries.begin(), entries.end(), [](const Entry& a, const Entry& b) {
+        return a.mtime < b.mtime;
+    });
+    for (const auto& entry : entries) {
+        if (total_size <= max_cache_bytes) {
+            break;
+        }
+        if (std::filesystem::remove(entry.path, ec)) {
+            total_size = entry.size > total_size ? 0 : total_size - entry.size;
+        }
+        ec.clear();
+    }
+}
+
+std::string makeJitRunCacheKey(const std::filesystem::path& source_path,
+                               const std::filesystem::path& self_path,
+                               uint8_t no_stdlib,
+                               uint8_t strict_types,
+                               uint8_t unsafe_mode,
+                               int opt_level,
+                               const char* target_triple,
+                               const std::vector<char*>& linked_libs,
+                               const std::vector<char*>& lib_paths,
+                               const std::vector<char*>& include_paths) {
+    llvm::SHA256 hash;
+    std::error_code ec;
+    auto canonical_source = std::filesystem::weakly_canonical(source_path, ec);
+    if (ec) {
+        canonical_source = source_path;
+    }
+
+    hashUpdate(hash, "schema", "eshkol-run-cache-v1");
+    hashUpdate(hash, "source-path", canonical_source.string());
+    hashUpdate(hash, "source-bytes", readFileBytes(source_path));
+    hashUpdate(hash, "eshkol-version", ESHKOL_VER);
+    hashUpdate(hash, "llvm-version", LLVM_VERSION_STRING);
+    hashUpdate(hash, "self", fileMetadataFingerprint(self_path));
+    hashUpdate(hash, "no-stdlib", std::to_string(no_stdlib));
+    hashUpdate(hash, "strict-types", std::to_string(strict_types));
+    hashUpdate(hash, "unsafe", std::to_string(unsafe_mode));
+    hashUpdate(hash, "opt-level", std::to_string(opt_level));
+    hashUpdate(hash, "target-triple", target_triple ? target_triple : "");
+
+    const auto stdlib_bc = findBuildArtifact("stdlib.bc", self_path);
+    const auto stdlib_o = findBuildArtifact("stdlib.o", self_path);
+    hashUpdate(hash, "stdlib.bc", stdlib_bc.empty() ? "missing" : fileMetadataFingerprint(stdlib_bc));
+    hashUpdate(hash, "stdlib.o", stdlib_o.empty() ? "missing" : fileMetadataFingerprint(stdlib_o));
+
+    for (char* path : include_paths) hashUpdate(hash, "include-path", path ? path : "");
+    for (char* path : lib_paths) hashUpdate(hash, "lib-path", path ? path : "");
+    for (char* lib : linked_libs) hashUpdate(hash, "linked-lib", lib ? lib : "");
+
+    return sha256Hex(hash);
+}
+
+std::optional<int> tryRunFromPersistentJitCache(const char* argv0,
+                                                const std::string& filepath,
+                                                uint8_t no_stdlib,
+                                                uint8_t strict_types,
+                                                uint8_t unsafe_mode,
+                                                int opt_level,
+                                                const char* target_triple,
+                                                const std::vector<char*>& linked_libs,
+                                                const std::vector<char*>& lib_paths,
+                                                const std::vector<char*>& include_paths) {
+    if (envFlagDisabled("ESHKOL_JIT_CACHE")) {
+        jitCacheTrace("bypass", "disabled");
+        return std::nullopt;
+    }
+
+    std::filesystem::path source_path(filepath);
+    std::error_code ec;
+    if (!std::filesystem::exists(source_path, ec) || !std::filesystem::is_regular_file(source_path, ec)) {
+        return std::nullopt;
+    }
+
+    auto self_path = resolveSelfPath(argv0);
+    if (self_path.empty() || !std::filesystem::exists(self_path, ec)) {
+        jitCacheTrace("bypass", "self-not-found");
+        return std::nullopt;
+    }
+
+    const auto cache_dir = jitCacheRoot();
+    std::filesystem::create_directories(cache_dir, ec);
+    if (ec) {
+        jitCacheTrace("bypass", "mkdir-failed");
+        return std::nullopt;
+    }
+
+    const std::string key = makeJitRunCacheKey(source_path, self_path, no_stdlib,
+                                              strict_types, unsafe_mode, opt_level,
+                                              target_triple, linked_libs, lib_paths,
+                                              include_paths);
+    const auto cached_binary =
+        cache_dir / ("run-" + key + std::string(ESHKOL_HOST_EXECUTABLE_SUFFIX));
+
+    if (std::filesystem::exists(cached_binary, ec)) {
+        jitCacheTrace("hit", key);
+        return eshkol::pkg::run_subprocess({cached_binary.string()});
+    }
+
+    jitCacheTrace("miss", key);
+    pruneJitCache(cache_dir);
+
+    const auto stamp = std::to_string(
+        std::chrono::steady_clock::now().time_since_epoch().count());
+    const auto temp_binary = cache_dir / (cached_binary.filename().string() + ".tmp-" + stamp);
+
+    std::vector<std::string> compile_args;
+    compile_args.push_back(self_path.string());
+    if (no_stdlib) compile_args.emplace_back("-n");
+    if (strict_types) compile_args.emplace_back("--strict-types");
+    if (unsafe_mode) compile_args.emplace_back("--unsafe");
+    if (opt_level != 0) {
+        compile_args.emplace_back("-O");
+        compile_args.push_back(std::to_string(opt_level));
+    }
+    if (target_triple && *target_triple) {
+        compile_args.emplace_back("--target");
+        compile_args.emplace_back(target_triple);
+    }
+    for (char* path : include_paths) {
+        compile_args.emplace_back("-I");
+        compile_args.emplace_back(path ? path : "");
+    }
+    for (char* path : lib_paths) {
+        compile_args.emplace_back("-L");
+        compile_args.emplace_back(path ? path : "");
+    }
+    for (char* lib : linked_libs) {
+        compile_args.emplace_back("-l");
+        compile_args.emplace_back(lib ? lib : "");
+    }
+    compile_args.push_back(source_path.string());
+    compile_args.emplace_back("-o");
+    compile_args.push_back(temp_binary.string());
+
+    int compile_status = eshkol::pkg::run_subprocess(compile_args);
+    if (compile_status != 0) {
+        std::filesystem::remove(temp_binary, ec);
+        jitCacheTrace("compile-failed", std::to_string(compile_status));
+        return std::nullopt;
+    }
+
+    std::filesystem::rename(temp_binary, cached_binary, ec);
+    if (ec) {
+        std::filesystem::remove(cached_binary, ec);
+        ec.clear();
+        std::filesystem::rename(temp_binary, cached_binary, ec);
+    }
+    if (ec) {
+        std::filesystem::remove(temp_binary, ec);
+        jitCacheTrace("store-failed", key);
+        return std::nullopt;
+    }
+
+    jitCacheTrace("store", key);
+    return eshkol::pkg::run_subprocess({cached_binary.string()});
+}
+
+} // namespace
 
 #ifdef _WIN32
 enum {
@@ -2929,6 +3306,16 @@ int main(int argc, char **argv)
             print_help(1);
         }
 
+        if (argc - optind == 1 && !debug_mode && !dump_ast && !dump_ir) {
+            if (auto cached_status = tryRunFromPersistentJitCache(
+                    argv[0], argv[optind], no_stdlib, strict_types, unsafe_mode,
+                    opt_level, target_triple, linked_libs, lib_paths, include_paths)) {
+                return *cached_status;
+            }
+        } else {
+            jitCacheTrace("bypass", "multi-file-or-debug");
+        }
+
         // Initialize runtime system
         if (eshkol_runtime_init() != 0) {
             eshkol_error("Failed to initialize runtime system");
@@ -3673,10 +4060,17 @@ int main(int argc, char **argv)
         link_args.emplace_back("MetalPerformanceShaders");
         link_args.emplace_back("-framework");
         link_args.emplace_back("Foundation");
+        link_args.emplace_back("-framework");
+        link_args.emplace_back("ImageIO");
+        link_args.emplace_back("-framework");
+        link_args.emplace_back("CoreGraphics");
+        link_args.emplace_back("-framework");
+        link_args.emplace_back("CoreFoundation");
         link_args.emplace_back("-lobjc");  // Objective-C runtime
 #endif
 
         append_host_runtime_link_args(link_args);
+        append_host_llvm_link_args(link_args);
 
         // #248: Splice agent-FFI link args when the user's source has
         // any (require agent.…). Empty when the build wasn't

@@ -154,6 +154,7 @@ jobs:
             libreadline-dev pkg-config \
             libssl-dev libncurses-dev \
             libpcre2-dev libsqlite3-dev \
+            libpng-dev libjpeg-dev libwebp-dev \
             git python3
           # eshkol's codegen passes -fuse-ld=lld for AArch64 Linux
           # (GNU ld 2.38 hits range/erratum bugs on the big static

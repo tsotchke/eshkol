@@ -118,6 +118,7 @@ jobs:
             libreadline-dev pkg-config \
             libssl-dev libncurses-dev \
             libpcre2-dev libsqlite3-dev \
+            libpng-dev libjpeg-dev libwebp-dev \
             git python3
           # Keep release builds aligned with CI: generated AArch64
           # executables use -fuse-ld=lld, which resolves unversioned
