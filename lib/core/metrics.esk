@@ -31,15 +31,9 @@
 
 (provide make-counter counter-inc! counter-add!
          make-gauge gauge-set! gauge-inc! gauge-dec!
+         make-histogram histogram-observe! histogram-buckets
          metrics-register! metrics-render metrics-reset!
          metric-name metric-help metric-kind)
-
-;; make-histogram + histogram-observe! are defined below but not
-;; currently exported — the render path on multi-label histograms
-;; has an open edge case with label-key reconstruction from the
-;; flat key. Counter + gauge cover the common /metrics endpoint
-;; use cases; histograms will ship once #145 (HTTP server) lands
-;; and we can iterate against real scrape output.
 
 ;; ---------------------------------------------------------------------------
 ;; Global registry. Each metric registers itself on creation; render
@@ -119,6 +113,22 @@
       #t
       (error "metric label value count does not match label keys"
              (metric-name m))))
+
+(define (validate-histogram-buckets! buckets)
+  (let loop ((rest buckets) (previous #f))
+    (cond
+      ((null? rest) #t)
+      ((not (number? (car rest)))
+       (error "histogram bucket must be numeric" (car rest)))
+      ((and previous (<= (car rest) previous))
+       (error "histogram buckets must be strictly increasing" buckets))
+      (else
+       (loop (cdr rest) (car rest))))))
+
+(define (validate-histogram-value! value)
+  (if (number? value)
+      #t
+      (error "histogram observation must be numeric" value)))
 
 (define (metrics-escape-help s)
   (let loop ((i 0) (out ""))
@@ -229,6 +239,7 @@
 (define (make-histogram name help label-keys buckets)
   (validate-metric-name! name)
   (validate-label-keys! label-keys)
+  (validate-histogram-buckets! buckets)
   (let ((m (vector name
                    help
                    label-keys
@@ -245,6 +256,7 @@
 
 (define (histogram-observe! m label-vals value)
   (validate-label-vals! m label-vals)
+  (validate-histogram-value! value)
   (let* ((key (labels->key label-vals))
          (state (metric-state m))
          (buckets (histogram-buckets m))

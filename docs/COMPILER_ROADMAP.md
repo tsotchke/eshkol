@@ -328,7 +328,7 @@ misbehaving work without taking down the process.
 |---|---|---|---|
 | #145 | HTTP server (build on `inc/eshkol/http_request_utils.h`) | 1 week | M1 |
 | #146 | WebSocket server | 3 days | M1 |
-| #148 | Prometheus metrics primitive + `/metrics` endpoint | core primitive plus standard `/metrics` response helper tested | M1 |
+| #148 | Prometheus metrics primitive + `/metrics` endpoint | counters, gauges, histograms, and standard `/metrics` helper tested | M1 |
 | #150 | Resource limits (CPU / memory / wall-time) | 2 days | M1 |
 | #161 | TCP / UDP sockets | 1 week | M4 |
 | — | TLS server (OpenSSL / mbedTLS wrap) | 3 days | M4 |
@@ -395,8 +395,9 @@ Acceptance:
 Phase 3 observability and limits:
 - Keep the existing metrics primitive available through the standard `/metrics`
   response helper, then promote it into the full HTTP server endpoint loop.
-- Keep counters/gauges with stable names, label validation, Prometheus escaping,
-  and reset semantics covered in `core.metrics`.
+- Keep counters, gauges, and histograms with stable names, label validation,
+  Prometheus escaping, cumulative bucket rendering, and reset semantics covered
+  in `core.metrics`.
 - Route structured logs through the WebSocket log stream with trace-id filters.
 - Enforce resource limits per request: CPU/wall-time, memory, tensor elements,
   string/body sizes, subprocess count, and file/network capability policy.

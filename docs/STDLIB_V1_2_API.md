@@ -1787,7 +1787,7 @@ exact set of auto-loaded modules is the `(require …)` chain in
 | Module | File | Auto-loaded? | Public surface |
 |---|---|---|---|
 | `core.merkle` | `lib/core/merkle.esk` | **No** — `(require core.merkle)` | Content hashing + Merkle proofs + CAS |
-| `core.metrics` | `lib/core/metrics.esk` | **No** — `(require core.metrics)` | Prometheus-style counters / gauges |
+| `core.metrics` | `lib/core/metrics.esk` | **No** — `(require core.metrics)` | Prometheus-style counters / gauges / histograms |
 | `core.http_server` | `lib/core/http_server.esk` | **No** — `(require core.http_server)` | Standard HTTP request parsing + health/ready/metrics responses |
 | `core.logging` | `lib/core/logging.esk` | **No** — `(require core.logging)` | JSONL structured logging |
 | `core.capabilities` | `lib/core/capabilities.esk` | Yes | Hosted allow-list capability policy |
@@ -1843,13 +1843,12 @@ Exports (`metrics.esk`):
 ```scheme
 (provide make-counter counter-inc! counter-add!
          make-gauge gauge-set! gauge-inc! gauge-dec!
+         make-histogram histogram-observe! histogram-buckets
          metrics-register! metrics-render metrics-reset!
          metric-name metric-help metric-kind)
 ```
 
-Counters are monotonically non-decreasing; gauges can move in either direction. Metric names and label names are validated against the Prometheus identifier shape, label arity is checked on update, and `metrics-render` escapes HELP text and label values for Prometheus exposition format. `metrics-register!` adds a metric to the global registry; `metrics-render` produces a string suitable for HTTP `GET /metrics`.
-
-Internally a histogram type is implemented but not exported pending the label-key reconstruction edge case mentioned at `metrics.esk`.
+Counters are monotonically non-decreasing; gauges can move in either direction. Histograms validate strictly increasing numeric buckets and render cumulative `_bucket`, `_count`, and `_sum` samples. Metric names and label names are validated against the Prometheus identifier shape, label arity is checked on update, and `metrics-render` escapes HELP text and label values for Prometheus exposition format. `metrics-register!` adds a metric to the global registry; `metrics-render` produces a string suitable for HTTP `GET /metrics`.
 
 ### B.3 `core.logging`
 
