@@ -568,6 +568,12 @@ embedded-agent variant.
 | — | Distributed multi-agent gradient sync | 1 week |
 | — | Distributed training primitives (all-reduce, DDP) | 1 week |
 
+Initial stdlib substrate landed early: `core.distributed` provides Lamport
+clocks, vector clocks, and state-based G-Counter / PN-Counter CRDTs. The
+remaining v1.8 work is richer CRDT coverage (OR-Set/RGA/map registers),
+wire-format integration, and networked replication over the v1.4 socket /
+MessagePack substrate.
+
 ---
 
 ## v1.9 — "types" (December 2026)

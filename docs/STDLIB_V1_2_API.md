@@ -1776,7 +1776,7 @@ name:
 
 ## Appendix B: Infrastructure stdlib modules
 
-The v1.2 stdlib also ships thirteen infrastructure-oriented modules that
+The current stdlib also ships fourteen infrastructure-oriented modules that
 the main sections above only listed by name. The signatures below come
 directly from each module's `(provide …)` block (cited in the table).
 The "Auto-loaded" column says whether `(require stdlib)` pulls the
@@ -1799,6 +1799,7 @@ exact set of auto-loaded modules is the `(require …)` chain in
 | `core.files` | `lib/core/files.esk` | Yes | Path-component helpers + atomic-write |
 | `core.testing` | `lib/core/testing.esk` | **No** — `(require core.testing)` | `check-*` assertions + `run-tests` |
 | `core.manifold` | `lib/core/manifold.esk` | **No** — `(require core.manifold)` | Manifold operations (placeholders pending native VM ops) |
+| `core.distributed` | `lib/core/distributed.esk` | **No** — `(require core.distributed)` | Lamport clocks, vector clocks, G-Counter, PN-Counter |
 
 ### B.1 `core.merkle`
 
@@ -2077,3 +2078,31 @@ serves `/health`, `/ready`, and `/metrics`; unknown routes return 404 and
 malformed request lines return 400. `http-server-respond-response` and
 `http-server-respond-standard` send those responses through
 `http-server-respond`.
+
+### B.14 `core.distributed`
+
+```scheme
+(require core.distributed)
+```
+
+Exports (`distributed.esk`):
+
+```scheme
+(provide
+  lamport-zero lamport-tick lamport-merge lamport-recv lamport-before?
+  vector-clock-empty vector-clock-ref vector-clock-set vector-clock-tick
+  vector-clock-merge vector-clock-compare vector-clock-before?
+  vector-clock-after? vector-clock-concurrent? vector-clock-equal?
+  vector-clock-nodes
+  make-g-counter g-counter-counts g-counter-inc g-counter-value
+  g-counter-merge
+  make-pn-counter pn-counter-positive pn-counter-negative pn-counter-inc
+  pn-counter-dec pn-counter-value pn-counter-merge)
+```
+
+Pure value-level distributed-systems substrate for the v1.8/M4 track. Lamport
+clocks provide scalar event ordering. Vector clocks are alists of
+`(node counter)` entries and compare as `'before`, `'after`, `'equal`, or
+`'concurrent`. The G-Counter and PN-Counter are state-based CRDTs whose merge
+operation is pairwise-max, so merges are commutative, associative, and
+idempotent.
