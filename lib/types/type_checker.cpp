@@ -573,7 +573,7 @@ bool Context::checkLinearConstraints() const {
 // ============================================================================
 
 TypeChecker::TypeChecker(TypeEnvironment& env, bool strict_types, bool unsafe_mode)
-    : env_(env), strict_types_(strict_types), unsafe_mode_(unsafe_mode) {}
+    : strict_types_(strict_types), unsafe_mode_(unsafe_mode), env_(env) {}
 
 // Helper to store inferred type in AST and return result
 static TypeCheckResult storeAndReturn(eshkol_ast_t* expr, TypeCheckResult result) {
@@ -589,6 +589,47 @@ static TypeCheckResult errorAt(const eshkol_ast_t* expr, const std::string& msg)
         return TypeCheckResult::error(msg, expr->line, expr->column);
     }
     return TypeCheckResult::error(msg);
+}
+
+static void bindKnownProcedure(Context& ctx,
+                               TypeEnvironment& env,
+                               const char* name,
+                               size_t arity,
+                               bool is_variadic = false) {
+    std::vector<TypeId> params(arity, BuiltinTypes::Value);
+    ctx.bind(name, env.makeFunctionType(params, BuiltinTypes::Value, is_variadic));
+}
+
+static bool requireNamesModule(const eshkol_operation& op, const char* module_name) {
+    for (uint64_t i = 0; i < op.require_op.num_modules; ++i) {
+        const char* candidate = op.require_op.module_names[i];
+        if (candidate && std::strcmp(candidate, module_name) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void bindKnownRequireExports(Context& ctx,
+                                    TypeEnvironment& env,
+                                    const eshkol_operation& op) {
+    const bool imports_stdlib = requireNamesModule(op, "stdlib");
+    const bool imports_higher_order =
+        imports_stdlib || requireNamesModule(op, "core.list.higher_order");
+
+    if (imports_higher_order) {
+        bindKnownProcedure(ctx, env, "map1", 2);
+        bindKnownProcedure(ctx, env, "map2", 3);
+        bindKnownProcedure(ctx, env, "map3", 4);
+        bindKnownProcedure(ctx, env, "fold", 3);
+        bindKnownProcedure(ctx, env, "fold-left", 3);
+        bindKnownProcedure(ctx, env, "foldl", 3);
+        bindKnownProcedure(ctx, env, "fold-right", 3);
+        bindKnownProcedure(ctx, env, "foldr", 3);
+        bindKnownProcedure(ctx, env, "for-each", 2);
+        bindKnownProcedure(ctx, env, "any", 2);
+        bindKnownProcedure(ctx, env, "every", 2);
+    }
 }
 
 TypeCheckResult TypeChecker::synthesize(eshkol_ast_t* expr) {
@@ -815,7 +856,6 @@ TypeCheckResult TypeChecker::synthesizeOperation(eshkol_ast_t* expr) {
         // Side-effect operations — return Null (void)
         case ESHKOL_SET_OP:
         case ESHKOL_IMPORT_OP:
-        case ESHKOL_REQUIRE_OP:
         case ESHKOL_PROVIDE_OP:
         case ESHKOL_KB_ASSERT_OP:
         case ESHKOL_FG_ADD_FACTOR_OP:
@@ -823,6 +863,10 @@ TypeCheckResult TypeChecker::synthesizeOperation(eshkol_ast_t* expr) {
         case ESHKOL_DEFINE_SYNTAX_OP:
         case ESHKOL_DEFINE_RECORD_TYPE_OP:
         case ESHKOL_TYPE_ANNOTATION_OP:
+            return TypeCheckResult::ok(BuiltinTypes::Null);
+
+        case ESHKOL_REQUIRE_OP:
+            bindKnownRequireExports(ctx_, env_, expr->operation);
             return TypeCheckResult::ok(BuiltinTypes::Null);
 
         // Calculus operations — return Function (closures over differentiated functions)

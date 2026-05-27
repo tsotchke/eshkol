@@ -281,29 +281,35 @@ is fixed (regression-tested by
 - For lists, `(length value)` is invoked. On a circular list this loops
   forever; `describe` is *not* safe to call on shared mutable cons cycles.
 - For procedures, `procedure-arity` returns the *fixed* parameter count.
-  Variadic procedures defined with rest args return `0` (the rest portion is
-  not counted) — see `tests/v1_2_edge_cases/procedure_arity_test.esk:30`.
+  Variadic procedures count only parameters before the rest argument, so
+  `(lambda rest ...)` returns `0` while `(lambda (head . rest) ...)` returns
+  `1`.
 
 ### `(procedure-arity proc)` → integer
 
 Codegen builtin (`lib/backend/llvm_codegen.cpp`). Returns the fixed parameter
 count of any procedure value: top-level definitions, named lambdas, inline
-lambdas, and stdlib builtins all answer correctly. Variadic procedures return
-the number of *fixed* parameters before the rest argument (the variadic
-`. rest` portion is not counted).
+lambdas, stdlib builtins, imported functions, and aliases all answer
+correctly. Variadic procedures return the number of *fixed* parameters before
+the rest argument (the variadic `. rest` portion is not counted).
 
 ```scheme
 (define (zero) 42)
 (define (one x) x)
 (define (two a b) (+ a b))
 (define (variadic . rest) (length rest))
+(define (leading-variadic head . rest) (+ head (length rest)))
+(define imported-fold-left fold-left)
 
 (procedure-arity zero)                    ; → 0
 (procedure-arity one)                     ; → 1
 (procedure-arity two)                     ; → 2
 (procedure-arity variadic)                ; → 0
+(procedure-arity leading-variadic)        ; → 1
 (procedure-arity (lambda (a b c) a))      ; → 3
 (procedure-arity car)                     ; → 1
+(procedure-arity fold-left)               ; → 3
+(procedure-arity imported-fold-left)      ; → 3
 ```
 
 ### `record-fields` — deferred
