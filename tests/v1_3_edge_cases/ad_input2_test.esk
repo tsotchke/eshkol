@@ -1,0 +1,108 @@
+;; ad_input2_test.esk -- v1.3/v1.5 tensor AD second-operand probes.
+;;
+;; These checks pin gradients through kernel-style tensor operands:
+;; conv2d kernel, normalization gamma, and scaled-dot-attention K/V.
+
+(require stdlib)
+
+(define passed 0)
+(define failed 0)
+
+(define (approx= a b tol)
+  (< (abs (- a b)) tol))
+
+(define (check name cond)
+  (if cond
+      (begin
+        (display "PASS: ") (display name) (newline)
+        (set! passed (+ passed 1)))
+      (begin
+        (display "FAIL: ") (display name) (newline)
+        (set! failed (+ failed 1)))))
+
+(define (perturb-vector v idx delta)
+  (let ((n (vector-length v))
+        (out (make-vector (vector-length v) 0.0)))
+    (letrec ((loop
+              (lambda (i)
+                (if (< i n)
+                    (begin
+                      (vector-set! out i
+                        (if (= i idx)
+                            (+ (vector-ref v i) delta)
+                            (vector-ref v i)))
+                      (loop (+ i 1)))
+                    out))))
+      (loop 0))))
+
+(define (finite-diff f x idx eps)
+  (/ (- (f (perturb-vector x idx eps))
+        (f (perturb-vector x idx (- eps))))
+     (* 2.0 eps)))
+
+(define (gradient-matches-finite-diff? g f x eps tol)
+  (let ((n (vector-length g)))
+    (letrec ((loop
+              (lambda (i)
+                (if (< i n)
+                    (if (approx= (vector-ref g i) (finite-diff f x i eps) tol)
+                        (loop (+ i 1))
+                        #f)
+                    #t))))
+      (loop 0))))
+
+(define (finite-diff-scalar f x eps)
+  (/ (- (f (+ x eps)) (f (- x eps))) (* 2.0 eps)))
+
+;; conv2d: f(k) = sum(conv2d(image, reshape(k, 2, 2), stride=1)).
+(let* ((image (tensor 3 3
+                      1.0 2.0 3.0
+                      4.0 5.0 6.0
+                      7.0 8.0 9.0))
+       (k0 (tensor 4 1.0 1.0 1.0 1.0))
+       (loss (lambda (k)
+               (tensor-sum (conv2d image (reshape k 2 2) 1))))
+       (g (gradient loss k0)))
+  (check "ad_input2_conv2d_grad_works"
+         (and (= (vector-length g) 4)
+              (gradient-matches-finite-diff? g loss k0 1e-4 1e-3))))
+
+;; batch-norm / layer-norm: scalar gamma should remain an AD input.
+(let* ((x (tensor 3 1.0 2.0 4.0))
+       (weights (tensor 3 1.0 2.0 3.0))
+       (bn-loss (lambda (gamma)
+                  (tensor-sum
+                    (tensor-mul (batch-norm x gamma 0.0 0.00001) weights))))
+       (ln-loss (lambda (gamma)
+                  (tensor-sum
+                    (tensor-mul (layer-norm x gamma 0.0 0.00001) weights))))
+       (g-bn (gradient bn-loss 1.0))
+       (g-ln (gradient ln-loss 1.0)))
+  (check "ad_input2_batchnorm_grad_works"
+         (approx= g-bn (finite-diff-scalar bn-loss 1.0 1e-4) 1e-3))
+  (check "ad_input2_layernorm_grad_works"
+         (approx= g-ln (finite-diff-scalar ln-loss 1.0 1e-4) 1e-3)))
+
+;; scaled-dot-attention: K and V are both differentiable operands.
+(let* ((q (tensor 2 2 1.0 0.0 0.0 1.0))
+       (k0 (tensor 4 1.0 0.0 0.0 1.0))
+       (v0 (tensor 4 1.0 2.0 3.0 4.0))
+       (k-loss (lambda (k)
+                 (tensor-sum
+                   (scaled-dot-attention q (reshape k 2 2) (reshape v0 2 2)))))
+       (v-loss (lambda (v)
+                 (tensor-sum
+                   (scaled-dot-attention q (reshape k0 2 2) (reshape v 2 2)))))
+       (g-k (gradient k-loss k0))
+       (g-v (gradient v-loss v0)))
+  (check "ad_input2_attention_grad_works"
+         (and (= (vector-length g-k) 4)
+              (= (vector-length g-v) 4)
+              (gradient-matches-finite-diff? g-k k-loss k0 1e-4 1e-3)
+              (gradient-matches-finite-diff? g-v v-loss v0 1e-4 1e-3))))
+
+(display "Results: ") (display passed) (display " passed, ")
+(display failed) (display " failed") (newline)
+(if (= failed 0)
+    (begin (display "PASS: ad_input2_test") (newline) (exit 0))
+    (begin (display "FAIL: ad_input2_test") (newline) (exit 1)))

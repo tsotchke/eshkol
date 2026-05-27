@@ -303,6 +303,22 @@ probe matmul_kernel_grad_nonzero 'gradient flows through tensor-matmul to the ke
 EOF
      "$ESHKOL_RUN" -r "$tmp" 2>&1; rc=$?; rm -f "$tmp"; exit $rc'
 
+probe ad_input2_conv2d_grad_works 'gradient flows through conv2d to the kernel operand' \
+    '"$ESHKOL_RUN" -r "$REPO_ROOT/tests/v1_3_edge_cases/ad_input2_test.esk" -L"$REPO_ROOT/build" 2>&1 |
+     grep -q "PASS: ad_input2_conv2d_grad_works"'
+
+probe ad_input2_batchnorm_grad_works 'gradient flows through batch-norm to gamma' \
+    '"$ESHKOL_RUN" -r "$REPO_ROOT/tests/v1_3_edge_cases/ad_input2_test.esk" -L"$REPO_ROOT/build" 2>&1 |
+     grep -q "PASS: ad_input2_batchnorm_grad_works"'
+
+probe ad_input2_layernorm_grad_works 'gradient flows through layer-norm to gamma' \
+    '"$ESHKOL_RUN" -r "$REPO_ROOT/tests/v1_3_edge_cases/ad_input2_test.esk" -L"$REPO_ROOT/build" 2>&1 |
+     grep -q "PASS: ad_input2_layernorm_grad_works"'
+
+probe ad_input2_attention_grad_works 'gradient flows through scaled-dot-attention to K/V operands' \
+    '"$ESHKOL_RUN" -r "$REPO_ROOT/tests/v1_3_edge_cases/ad_input2_test.esk" -L"$REPO_ROOT/build" 2>&1 |
+     grep -q "PASS: ad_input2_attention_grad_works"'
+
 probe native_image_io_no_stb 'image-read uses platform APIs, not bundled deps/stb' \
     'cd "$REPO_ROOT";
      ## v1.3 commits to removing deps/stb in favour of native platform

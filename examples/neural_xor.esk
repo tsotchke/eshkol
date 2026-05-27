@@ -7,7 +7,7 @@
 ;; under a thousand steps with a small network.
 ;;
 ;; Architecture:    2 inputs -> 4 hidden (tanh) -> 1 output (sigmoid)
-;; Training:        full-batch gradient descent for 1000 epochs
+;; Training:        full-batch gradient descent for 1500 epochs
 ;; Loss:            mean squared error over the four XOR rows
 ;;
 ;; All weights live in a single parameter vector so we can call
@@ -99,7 +99,7 @@
 (newline)
 (display "Training:") (newline)
 
-(define trained (train initial-params 0.5 1000))
+(define trained (train initial-params 0.5 1500))
 
 (newline)
 (display "Final loss:   ") (display (mse trained)) (newline)
@@ -119,5 +119,5 @@
   xor-data)
 (newline)
 (display "The compiler differentiated through three matmuls, four tanh") (newline)
-(display "calls, and a sigmoid in 1,000 gradient steps. No framework, no") (newline)
+(display "calls, and a sigmoid in 1,500 gradient steps. No framework, no") (newline)
 (display "graph object, no Python.") (newline)
