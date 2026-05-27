@@ -1,0 +1,101 @@
+;; v1.8/M4 distributed clock + CRDT substrate.
+
+(require core.distributed)
+
+(define pass 0)
+(define fail 0)
+
+(define (check name ok)
+  (if ok
+      (begin
+        (set! pass (+ pass 1))
+        (display "PASS: ")
+        (display name)
+        (newline))
+      (begin
+        (set! fail (+ fail 1))
+        (display "FAIL: ")
+        (display name)
+        (newline))))
+
+(define (raises? thunk)
+  (let ((raised #f))
+    (guard (exn (#t (set! raised #t)))
+      (thunk))
+    raised))
+
+(display "=== distributed clocks + CRDTs ===") (newline)
+
+(check "lamport zero" (= (lamport-zero) 0))
+(check "lamport tick defaults to one" (= (lamport-tick 4) 5))
+(check "lamport recv advances past remote" (= (lamport-recv 2 7) 8))
+(check "lamport before predicate" (lamport-before? 3 4))
+(check "lamport rejects negative tick"
+       (raises? (lambda () (lamport-tick 3 -1))))
+
+(define vc0 (vector-clock-empty))
+(define vc-a1 (vector-clock-tick vc0 'a))
+(define vc-a3 (vector-clock-tick vc-a1 'a 2))
+(define vc-b1 (vector-clock-tick vc0 'b))
+(define vc-ab (vector-clock-merge vc-a3 vc-b1))
+(define vc-ab-copy (vector-clock-merge vc-b1 vc-a3))
+
+(check "vector-clock missing node is zero"
+       (= (vector-clock-ref vc0 'missing) 0))
+(check "vector-clock tick records node"
+       (= (vector-clock-ref vc-a3 'a) 3))
+(check "vector-clock merge preserves left node"
+       (= (vector-clock-ref vc-ab 'a) 3))
+(check "vector-clock merge preserves right node"
+       (= (vector-clock-ref vc-ab 'b) 1))
+(check "vector-clock before relation"
+       (vector-clock-before? vc-a3 vc-ab))
+(check "vector-clock after relation"
+       (vector-clock-after? vc-ab vc-a3))
+(check "vector-clock concurrent relation"
+       (vector-clock-concurrent? vc-a3 vc-b1))
+(check "vector-clock merge is commutative by comparison"
+       (vector-clock-equal? vc-ab vc-ab-copy))
+(check "vector-clock rejects negative tick"
+       (raises? (lambda () (vector-clock-tick vc0 'a -1))))
+
+(define gc-a (g-counter-inc (make-g-counter) 'a 2))
+(define gc-b (g-counter-inc (make-g-counter) 'b 5))
+(define gc-merged (g-counter-merge gc-a gc-b))
+(define gc-idempotent (g-counter-merge gc-merged gc-a))
+
+(check "g-counter value sums per-node counts"
+       (= (g-counter-value gc-merged) 7))
+(check "g-counter merge is idempotent"
+       (= (g-counter-value gc-idempotent) 7))
+(check "g-counter rejects negative increment"
+       (raises? (lambda () (g-counter-inc (make-g-counter) 'a -1))))
+
+(define pn-a
+  (pn-counter-dec
+    (pn-counter-inc (make-pn-counter) 'a 5)
+    'a
+    1))
+(define pn-b
+  (pn-counter-dec
+    (pn-counter-inc (make-pn-counter) 'b 3)
+    'b
+    4))
+(define pn-merged (pn-counter-merge pn-a pn-b))
+
+(check "pn-counter local value"
+       (= (pn-counter-value pn-a) 4))
+(check "pn-counter merged value"
+       (= (pn-counter-value pn-merged) 3))
+(check "pn-counter merge is idempotent"
+       (= (pn-counter-value (pn-counter-merge pn-merged pn-a)) 3))
+(check "pn-counter rejects negative decrement"
+       (raises? (lambda () (pn-counter-dec (make-pn-counter) 'a -1))))
+
+(display "---") (newline)
+(display "Total: ") (display (+ pass fail))
+(display ", PASS: ") (display pass)
+(display ", FAIL: ") (display fail)
+(newline)
+
+(if (> fail 0) (exit 1) (exit 0))

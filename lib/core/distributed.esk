@@ -1,0 +1,211 @@
+;;; core/distributed.esk
+;;;
+;;; Pure stdlib distributed-systems helpers for the v1.8/M4 track.
+;;; These are value-level data structures, intentionally independent of
+;;; sockets or async I/O so they can back local simulations now and networked
+;;; replication later.
+;;;
+;;; (require core.distributed)
+
+(require core.list.search)
+
+(provide
+  ;; Lamport clocks
+  lamport-zero lamport-tick lamport-merge lamport-recv lamport-before?
+  ;; vector clocks
+  vector-clock-empty vector-clock-ref vector-clock-set vector-clock-tick
+  vector-clock-merge vector-clock-compare vector-clock-before?
+  vector-clock-after? vector-clock-concurrent? vector-clock-equal?
+  vector-clock-nodes
+  ;; state-based counters
+  make-g-counter g-counter-counts g-counter-inc g-counter-value
+  g-counter-merge
+  make-pn-counter pn-counter-positive pn-counter-negative pn-counter-inc
+  pn-counter-dec pn-counter-value pn-counter-merge)
+
+(define (distributed-max a b)
+  (if (> a b) a b))
+
+(define (distributed-amount maybe-amount)
+  (if (null? maybe-amount)
+      1
+      (car maybe-amount)))
+
+(define (distributed-require-nonnegative who amount)
+  (if (< amount 0)
+      (error who "expected a non-negative amount" amount)
+      amount))
+
+;; ---------------------------------------------------------------------------
+;; Lamport clocks
+;; ---------------------------------------------------------------------------
+
+(define (lamport-zero) 0)
+
+(define (lamport-tick clock . amount)
+  (+ clock (distributed-require-nonnegative
+             "lamport-tick"
+             (distributed-amount amount))))
+
+(define (lamport-merge a b)
+  (distributed-max a b))
+
+(define (lamport-recv local remote)
+  (+ (lamport-merge local remote) 1))
+
+(define (lamport-before? a b)
+  (< a b))
+
+;; ---------------------------------------------------------------------------
+;; Vector clocks
+;;
+;; Representation: alist of (node counter). Nodes are compared with equal? so
+;; symbols, strings, and small numeric IDs all work.
+;; ---------------------------------------------------------------------------
+
+(define (vector-clock-empty) '())
+
+(define (vector-clock-ref clock node)
+  (let ((entry (assoc node clock)))
+    (if entry (cadr entry) 0)))
+
+(define (vector-clock-set clock node counter)
+  (if (null? clock)
+      (list (list node counter))
+      (if (equal? node (caar clock))
+          (cons (list node counter) (cdr clock))
+          (cons (car clock)
+                (vector-clock-set (cdr clock) node counter)))))
+
+(define (vector-clock-tick clock node . amount)
+  (let ((delta (distributed-require-nonnegative
+                 "vector-clock-tick"
+                 (distributed-amount amount))))
+    (vector-clock-set clock node (+ (vector-clock-ref clock node) delta))))
+
+(define (vector-clock-merge a b)
+  (if (null? b)
+      a
+      (let* ((entry (car b))
+             (node (car entry))
+             (count (cadr entry))
+             (merged-count (distributed-max (vector-clock-ref a node) count)))
+        (vector-clock-merge
+          (vector-clock-set a node merged-count)
+          (cdr b)))))
+
+(define (vector-clock-nodes clock)
+  (if (null? clock)
+      '()
+      (cons (caar clock) (vector-clock-nodes (cdr clock)))))
+
+(define (vector-clock-node-union a b)
+  (if (null? b)
+      a
+      (if (member? (car b) a)
+          (vector-clock-node-union a (cdr b))
+          (vector-clock-node-union (cons (car b) a) (cdr b)))))
+
+(define (vector-clock-compare-nodes nodes a b saw-less saw-greater)
+  (if (null? nodes)
+      (cond
+        ((and saw-less saw-greater) 'concurrent)
+        (saw-less 'before)
+        (saw-greater 'after)
+        (else 'equal))
+      (let* ((node (car nodes))
+             (av (vector-clock-ref a node))
+             (bv (vector-clock-ref b node)))
+        (vector-clock-compare-nodes
+          (cdr nodes)
+          a
+          b
+          (or saw-less (< av bv))
+          (or saw-greater (> av bv))))))
+
+(define (vector-clock-compare a b)
+  (vector-clock-compare-nodes
+    (vector-clock-node-union (vector-clock-nodes a) (vector-clock-nodes b))
+    a
+    b
+    #f
+    #f))
+
+(define (vector-clock-before? a b)
+  (eq? (vector-clock-compare a b) 'before))
+
+(define (vector-clock-after? a b)
+  (eq? (vector-clock-compare a b) 'after))
+
+(define (vector-clock-concurrent? a b)
+  (eq? (vector-clock-compare a b) 'concurrent))
+
+(define (vector-clock-equal? a b)
+  (eq? (vector-clock-compare a b) 'equal))
+
+;; ---------------------------------------------------------------------------
+;; State-based counter CRDTs
+;;
+;; G-Counter: grow-only per-node vector of increments.
+;; PN-Counter: pair of G-Counters, one for increments and one for decrements.
+;; Merge is pairwise max and is commutative, associative, and idempotent.
+;; ---------------------------------------------------------------------------
+
+(define (make-g-counter)
+  (vector 'g-counter (vector-clock-empty)))
+
+(define (g-counter-counts counter)
+  (vector-ref counter 1))
+
+(define (g-counter-inc counter node . amount)
+  (let ((delta (distributed-require-nonnegative
+                 "g-counter-inc"
+                 (distributed-amount amount))))
+    (vector 'g-counter
+            (vector-clock-tick (g-counter-counts counter) node delta))))
+
+(define (vector-clock-sum clock)
+  (if (null? clock)
+      0
+      (+ (cadar clock) (vector-clock-sum (cdr clock)))))
+
+(define (g-counter-value counter)
+  (vector-clock-sum (g-counter-counts counter)))
+
+(define (g-counter-merge a b)
+  (vector 'g-counter
+          (vector-clock-merge (g-counter-counts a) (g-counter-counts b))))
+
+(define (make-pn-counter)
+  (vector 'pn-counter (make-g-counter) (make-g-counter)))
+
+(define (pn-counter-positive counter)
+  (vector-ref counter 1))
+
+(define (pn-counter-negative counter)
+  (vector-ref counter 2))
+
+(define (pn-counter-inc counter node . amount)
+  (let ((delta (distributed-require-nonnegative
+                 "pn-counter-inc"
+                 (distributed-amount amount))))
+    (vector 'pn-counter
+            (g-counter-inc (pn-counter-positive counter) node delta)
+            (pn-counter-negative counter))))
+
+(define (pn-counter-dec counter node . amount)
+  (let ((delta (distributed-require-nonnegative
+                 "pn-counter-dec"
+                 (distributed-amount amount))))
+    (vector 'pn-counter
+            (pn-counter-positive counter)
+            (g-counter-inc (pn-counter-negative counter) node delta))))
+
+(define (pn-counter-value counter)
+  (- (g-counter-value (pn-counter-positive counter))
+     (g-counter-value (pn-counter-negative counter))))
+
+(define (pn-counter-merge a b)
+  (vector 'pn-counter
+          (g-counter-merge (pn-counter-positive a) (pn-counter-positive b))
+          (g-counter-merge (pn-counter-negative a) (pn-counter-negative b))))
