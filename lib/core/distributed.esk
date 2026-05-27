@@ -8,6 +8,7 @@
 ;;; (require core.distributed)
 
 (require core.list.search)
+(require core.list.transform)
 (require core.sexp)
 
 (provide
@@ -30,7 +31,10 @@
   lww-register-writer lww-register-deleted? lww-register-present?
   lww-register-set lww-register-delete lww-register-merge
   make-lww-map lww-map-entries lww-map-set lww-map-remove lww-map-ref
-  lww-map-contains? lww-map-visible-entries lww-map-merge)
+  lww-map-contains? lww-map-visible-entries lww-map-merge
+  make-rga rga-root-id rga-entries rga-clock rga-entry-id
+  rga-entry-prev rga-entry-value rga-entry-deleted? rga-insert-after
+  rga-append rga-delete rga-values rga-last-id rga-merge)
 
 (define (distributed-max a b)
   (if (> a b) a b))
@@ -62,6 +66,11 @@
         (distributed-cons-unique (car b) a)
         (cdr b))))
 
+(define (distributed-list-append a b)
+  (if (null? a)
+      b
+      (cons (car a) (distributed-list-append (cdr a) b))))
+
 (define (distributed-key value)
   (sexp->canonical-string value))
 
@@ -70,6 +79,12 @@
 
 (define (distributed-key>? a b)
   (string<? (distributed-key b) (distributed-key a)))
+
+(define (distributed-list-last values fallback)
+  (cond
+    ((null? values) fallback)
+    ((null? (cdr values)) (car values))
+    (else (distributed-list-last (cdr values) fallback))))
 
 ;; ---------------------------------------------------------------------------
 ;; Lamport clocks
@@ -461,3 +476,179 @@
   (vector 'lww-map
           (lww-map-merge-entries (lww-map-entries b)
                                  (lww-map-entries a))))
+
+;; ---------------------------------------------------------------------------
+;; RGA-style sequence CRDT
+;;
+;; Representation: #(rga entries clock)
+;;
+;; Entries are (id prev-id value deleted?). Inserts reference the previous
+;; entry's id. Deletes mark tombstones so stale replicas cannot reintroduce
+;; removed elements during merge.
+;; ---------------------------------------------------------------------------
+
+(define (rga-root-id)
+  (list 'rga-root 0))
+
+(define (make-rga)
+  (vector 'rga '() (vector-clock-empty)))
+
+(define (rga-entries rga)
+  (vector-ref rga 1))
+
+(define (rga-clock rga)
+  (vector-ref rga 2))
+
+(define (rga-entry-id entry)
+  (car entry))
+
+(define (rga-entry-prev entry)
+  (cadr entry))
+
+(define (rga-entry-value entry)
+  (caddr entry))
+
+(define (rga-entry-deleted? entry)
+  (cadddr entry))
+
+(define (rga-id-node id)
+  (car id))
+
+(define (rga-id-counter id)
+  (cadr id))
+
+(define (rga-make-entry id prev value deleted?)
+  (list id prev value deleted?))
+
+(define (rga-entry-ref entries id)
+  (cond
+    ((null? entries) #f)
+    ((equal? (rga-entry-id (car entries)) id) (car entries))
+    (else (rga-entry-ref (cdr entries) id))))
+
+(define (rga-merge-entry a b)
+  (rga-make-entry
+    (rga-entry-id a)
+    (rga-entry-prev a)
+    (rga-entry-value a)
+    (or (rga-entry-deleted? a) (rga-entry-deleted? b))))
+
+(define (rga-entry-set entries entry)
+  (cond
+    ((null? entries) (list entry))
+    ((equal? (rga-entry-id (car entries)) (rga-entry-id entry))
+     (cons (rga-merge-entry (car entries) entry) (cdr entries)))
+    (else
+     (cons (car entries)
+           (rga-entry-set (cdr entries) entry)))))
+
+(define (rga-entry-delete entries id)
+  (cond
+    ((null? entries) '())
+    ((equal? (rga-entry-id (car entries)) id)
+     (cons (rga-make-entry (rga-entry-id (car entries))
+                           (rga-entry-prev (car entries))
+                           (rga-entry-value (car entries))
+                           #t)
+           (cdr entries)))
+    (else
+     (cons (car entries) (rga-entry-delete (cdr entries) id)))))
+
+(define (rga-id<? a b)
+  (cond
+    ((< (rga-id-counter a) (rga-id-counter b)) #t)
+    ((> (rga-id-counter a) (rga-id-counter b)) #f)
+    (else
+     (distributed-key<? (rga-id-node a) (rga-id-node b)))))
+
+(define (rga-entry<? a b)
+  (rga-id<? (rga-entry-id a) (rga-entry-id b)))
+
+(define (rga-insert-entry-sorted entry sorted)
+  (cond
+    ((null? sorted) (list entry))
+    ((rga-entry<? entry (car sorted)) (cons entry sorted))
+    (else
+     (cons (car sorted)
+           (rga-insert-entry-sorted entry (cdr sorted))))))
+
+(define (rga-sort-entries entries)
+  (if (null? entries)
+      '()
+      (rga-insert-entry-sorted (car entries)
+                               (rga-sort-entries (cdr entries)))))
+
+(define (rga-children entries parent-id)
+  (cond
+    ((null? entries) '())
+    ((equal? (rga-entry-prev (car entries)) parent-id)
+     (cons (car entries) (rga-children (cdr entries) parent-id)))
+    (else
+     (rga-children (cdr entries) parent-id))))
+
+(define (rga-values-from-children entries children)
+  (if (null? children)
+      '()
+      (distributed-list-append
+        (if (rga-entry-deleted? (car children))
+            '()
+            (list (rga-entry-value (car children))))
+        (distributed-list-append
+          (rga-values-from entries (rga-entry-id (car children)))
+          (rga-values-from-children entries (cdr children))))))
+
+(define (rga-values-from entries parent-id)
+  (rga-values-from-children
+    entries
+    (rga-sort-entries (rga-children entries parent-id))))
+
+(define (rga-ids-from-children entries children)
+  (if (null? children)
+      '()
+      (distributed-list-append
+        (if (rga-entry-deleted? (car children))
+            '()
+            (list (rga-entry-id (car children))))
+        (distributed-list-append
+          (rga-ids-from entries (rga-entry-id (car children)))
+          (rga-ids-from-children entries (cdr children))))))
+
+(define (rga-ids-from entries parent-id)
+  (rga-ids-from-children
+    entries
+    (rga-sort-entries (rga-children entries parent-id))))
+
+(define (rga-insert-after rga node prev-id value)
+  (let* ((clock (vector-clock-tick (rga-clock rga) node))
+         (id (list node (vector-clock-ref clock node)))
+         (entry (rga-make-entry id prev-id value #f)))
+    (vector 'rga
+            (rga-entry-set (rga-entries rga) entry)
+            clock)))
+
+(define (rga-values rga)
+  (rga-values-from (rga-entries rga) (rga-root-id)))
+
+(define (rga-last-id rga)
+  (distributed-list-last
+    (rga-ids-from (rga-entries rga) (rga-root-id))
+    (rga-root-id)))
+
+(define (rga-append rga node value)
+  (rga-insert-after rga node (rga-last-id rga) value))
+
+(define (rga-delete rga id)
+  (vector 'rga
+          (rga-entry-delete (rga-entries rga) id)
+          (rga-clock rga)))
+
+(define (rga-merge-entries entries acc)
+  (if (null? entries)
+      acc
+      (rga-merge-entries (cdr entries)
+                         (rga-entry-set acc (car entries)))))
+
+(define (rga-merge a b)
+  (vector 'rga
+          (rga-merge-entries (rga-entries b) (rga-entries a))
+          (vector-clock-merge (rga-clock a) (rga-clock b))))
