@@ -4321,6 +4321,10 @@ Eshkol behavior can be configured via environment variables. None are required â
 | `ESHKOL_ENFORCE_LIMITS` | on for limit API | Request runtime interrupts on hard heap/timeout limits |
 | `ESHKOL_LIMIT_WARNINGS` | on | Emit soft-limit warnings |
 
+Malformed runtime-limit values are ignored and preserve the default limit. Size
+variables accept optional `K`, `M`, or `G` suffixes, with an optional trailing
+`B`.
+
 ### Logging & Debug
 
 | Variable | Default | Description |

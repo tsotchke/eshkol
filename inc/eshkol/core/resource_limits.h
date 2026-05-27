@@ -74,7 +74,9 @@ typedef struct eshkol_resource_limits {
 // Environment Variables
 // ============================================================================
 
-// ESHKOL_MAX_HEAP          - Max heap in bytes (supports K/M/G suffix)
+// Numeric env vars are parsed strictly; malformed or negative values keep the
+// default for that field.
+// ESHKOL_MAX_HEAP          - Max heap in bytes (supports K/M/G/KB/MB/GB suffix)
 // ESHKOL_TIMEOUT_MS        - Execution timeout in milliseconds
 // ESHKOL_MAX_STACK         - Max stack depth
 // ESHKOL_MAX_TENSOR_ELEMS  - Max tensor elements

@@ -32,6 +32,10 @@ The configuration system is defined in `inc/eshkol/core/config.h` (unified confi
 | `ESHKOL_ENFORCE_LIMITS` | `true` | When `true`, hard limit violations terminate the process. When `false`, errors are returned. |
 | `ESHKOL_LIMIT_WARNINGS` | `true` | When `true`, log warnings when soft limits are approached. |
 
+Malformed runtime-limit values are ignored and leave the documented default in
+place. Size variables accept optional `K`, `M`, or `G` suffixes, with an optional
+trailing `B`.
+
 ### Stack Size
 
 | Variable | Default | Description |

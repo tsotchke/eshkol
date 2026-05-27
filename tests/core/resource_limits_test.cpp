@@ -47,7 +47,7 @@ int main() {
         return fail("active stack limit was not default-initialized");
     }
 
-    set_env("ESHKOL_MAX_HEAP", "64K");
+    set_env("ESHKOL_MAX_HEAP", "64KB");
     set_env("ESHKOL_TIMEOUT_MS", "25");
     set_env("ESHKOL_MAX_STACK", "3");
     set_env("ESHKOL_MAX_TENSOR_ELEMS", "7");
@@ -66,6 +66,48 @@ int main() {
     if (env_limits.max_string_length != 9) return fail("env string parse mismatch");
     if (!env_limits.enforce_hard_limits) return fail("env enforce parse mismatch");
     if (env_limits.enable_warnings) return fail("env warnings parse mismatch");
+
+    unset_env("ESHKOL_MAX_HEAP");
+    unset_env("ESHKOL_TIMEOUT_MS");
+    unset_env("ESHKOL_MAX_STACK");
+    unset_env("ESHKOL_MAX_TENSOR_ELEMS");
+    unset_env("ESHKOL_MAX_STRING_LEN");
+    unset_env("ESHKOL_ENFORCE_LIMITS");
+    unset_env("ESHKOL_LIMIT_WARNINGS");
+
+    set_env("ESHKOL_MAX_HEAP", "64bad");
+    set_env("ESHKOL_TIMEOUT_MS", "-25");
+    set_env("ESHKOL_MAX_STACK", "");
+    set_env("ESHKOL_MAX_TENSOR_ELEMS", "nan");
+    set_env("ESHKOL_MAX_STRING_LEN", "9 trailing");
+    set_env("ESHKOL_ENFORCE_LIMITS", "maybe");
+    set_env("ESHKOL_LIMIT_WARNINGS", "sometimes");
+
+    env_limits = eshkol_init_limits_from_env();
+    if (env_limits.max_heap_bytes != defaults.max_heap_bytes) {
+        return fail("invalid env heap did not preserve default");
+    }
+    if (env_limits.heap_soft_limit_bytes != defaults.heap_soft_limit_bytes) {
+        return fail("invalid env heap soft limit did not preserve default");
+    }
+    if (env_limits.max_execution_time_ms != defaults.max_execution_time_ms) {
+        return fail("invalid env timeout did not preserve default");
+    }
+    if (env_limits.max_stack_depth != defaults.max_stack_depth) {
+        return fail("invalid env stack did not preserve default");
+    }
+    if (env_limits.max_tensor_elements != defaults.max_tensor_elements) {
+        return fail("invalid env tensor limit did not preserve default");
+    }
+    if (env_limits.max_string_length != defaults.max_string_length) {
+        return fail("invalid env string limit did not preserve default");
+    }
+    if (env_limits.enforce_hard_limits != defaults.enforce_hard_limits) {
+        return fail("invalid env enforce flag did not preserve default");
+    }
+    if (env_limits.enable_warnings != defaults.enable_warnings) {
+        return fail("invalid env warning flag did not preserve default");
+    }
 
     unset_env("ESHKOL_MAX_HEAP");
     unset_env("ESHKOL_TIMEOUT_MS");
