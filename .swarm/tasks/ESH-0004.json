@@ -1,13 +1,13 @@
 {
   "id": "ESH-0004",
-  "title": "(the-environment) — compile-time form that materializes the lexical scope",
-  "status": "pending",
+  "title": "(the-environment) \u2014 compile-time form that materializes the lexical scope",
+  "status": "active",
   "priority": "medium",
   "workstream": "r7rs-sicp-parity",
   "owner": null,
   "preferred_backend": "claude",
   "preferred_node": "atlas",
-  "max_cost_usd": 3.00,
+  "max_cost_usd": 3.0,
   "goal": "Implement MIT Scheme's (the-environment) form. Returns a first-class environment value containing every lexically-visible binding (locals + globals via parent pointer). Compiles to a call to a new runtime helper eshkol_make_local_env(name1, val1, ..., parent_env) where the parser enumerates the in-scope names. (eval expr (the-environment)) then evaluates expr in that lexical scope. Decision locked in .swarm/decisions.md: compile-time form, not a runtime procedure; locals walk first then fall through to interaction-environment.",
   "file_globs": [
     "lib/frontend/parser.cpp",
@@ -27,7 +27,7 @@
   "acceptance": [
     "(let ((x 1) (y 2)) (eval '(+ x y) (the-environment))) => 3",
     "(let ((x 10)) (let ((env (the-environment))) (let ((x 99)) (eval 'x env)))) => 10 (lexical, not dynamic)",
-    "(define (mk) (let ((secret 42)) (the-environment))) — calling (eval 'secret (mk)) returns 42",
+    "(define (mk) (let ((secret 42)) (the-environment))) \u2014 calling (eval 'secret (mk)) returns 42",
     "Globals reachable: (eval '(+ 1 2) (let () (the-environment))) => 3",
     "Snapshot semantics: (eval '(set! x 5) <captured-env>) does NOT mutate the surrounding lexical x."
   ],
@@ -37,5 +37,5 @@
     "bash scripts/run_icc_smoke.sh",
     "grep -q the_environment_works scripts/icc_traces/eshkol_smoke.jsonl"
   ],
-  "ux_payoff": "Unlocks the embedded-scripting / REPL-in-context / DSL-hosting pattern — currently impossible to write idiomatically in Eshkol."
+  "ux_payoff": "Unlocks the embedded-scripting / REPL-in-context / DSL-hosting pattern \u2014 currently impossible to write idiomatically in Eshkol."
 }

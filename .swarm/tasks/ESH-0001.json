@@ -1,13 +1,13 @@
 {
   "id": "ESH-0001",
-  "title": "Operand-type-aware error messages — runtime type-check sites",
-  "status": "pending",
+  "title": "Operand-type-aware error messages \u2014 runtime type-check sites",
+  "status": "active",
   "priority": "high",
   "workstream": "developer-experience",
   "owner": null,
   "preferred_backend": "claude",
   "preferred_node": "atlas",
-  "max_cost_usd": 3.00,
+  "max_cost_usd": 3.0,
   "goal": "Every runtime type-check failure currently emits `Type error in <op>: expected <expected>`. Extend each site to also include the actual operand type tag in human-readable form: `Type error in <: expected number, got string`. The operand value is already in scope at every check site; the missing piece is a small helper `eshkol_format_value_type_tag(tagged_value_t)` that returns one of the canonical type names ('integer', 'rational', 'bignum', 'double', 'complex', 'dual-number', 'symbol', 'string', 'character', 'boolean', 'pair', 'vector', 'tensor', 'procedure', 'continuation', 'environment', 'hash-table', 'port', 'handle', 'null', 'logic-var', 'substitution', 'fact', 'knowledge-base', 'factor-graph', 'workspace').",
   "file_globs": [
     "lib/backend/arithmetic_codegen.cpp",

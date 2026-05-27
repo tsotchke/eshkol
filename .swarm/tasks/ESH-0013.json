@@ -1,14 +1,14 @@
 {
   "id": "ESH-0013",
-  "title": "eshkol-fmt + eshkol-doc + (help foo) — developer tooling triad",
-  "status": "pending",
+  "title": "eshkol-fmt + eshkol-doc + (help foo) \u2014 developer tooling triad",
+  "status": "active",
   "priority": "medium",
   "workstream": "developer-experience",
   "owner": null,
   "preferred_backend": "qwen",
   "preferred_node": "atlas",
-  "max_cost_usd": 3.00,
-  "goal": "Three small developer-tooling features that together raise the day-to-day pleasure of using Eshkol substantially: eshkol-fmt (formatter), eshkol-doc (Markdown reference from `(provide …)` graph + docstrings), and (help foo) REPL reflection. The substrate already exists — procedure-arity, describe, the parser walker — these tasks bind it into user-facing commands.",
+  "max_cost_usd": 3.0,
+  "goal": "Three small developer-tooling features that together raise the day-to-day pleasure of using Eshkol substantially: eshkol-fmt (formatter), eshkol-doc (Markdown reference from `(provide \u2026)` graph + docstrings), and (help foo) REPL reflection. The substrate already exists \u2014 procedure-arity, describe, the parser walker \u2014 these tasks bind it into user-facing commands.",
   "file_globs": [
     "exe/eshkol-fmt.cpp",
     "exe/eshkol-doc.cpp",
@@ -20,7 +20,7 @@
   ],
   "next_actions": [
     "eshkol-fmt: read an .esk file, parse with the existing parser, reprint via a canonical indent/spacing walker. Idempotent: fmt twice == fmt once. Preserves comments and string interpolation segments. CLI flags: --check, --write, --stdout.",
-    "eshkol-doc: walk the module graph reachable from a given root .esk file. For each (provide …) target, emit a Markdown section with the procedure's signature (via procedure-arity), docstring (parsed from leading `;;@` line block immediately above the define), and any (define-test …) examples.",
+    "eshkol-doc: walk the module graph reachable from a given root .esk file. For each (provide \u2026) target, emit a Markdown section with the procedure's signature (via procedure-arity), docstring (parsed from leading `;;@` line block immediately above the define), and any (define-test \u2026) examples.",
     "(help foo): REPL command that calls (describe foo) + (procedure-arity foo) + a docstring lookup. Renders in the REPL with ANSI color when isatty(stdout).",
     "CMakeLists.txt: add executable targets eshkol-fmt and eshkol-doc; install alongside eshkol-run.",
     "tests: eshkol_fmt_test.sh round-trips 5 representative files; eshkol_doc_test.sh verifies generated Markdown contains every export of core.list; repl_help_test.esk asserts (help map) produces a non-empty string containing 'arity'."

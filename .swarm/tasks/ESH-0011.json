@@ -1,13 +1,13 @@
 {
   "id": "ESH-0011",
   "title": "Portable event-loop primitive (epoll / kqueue / IOCP)",
-  "status": "pending",
+  "status": "active",
   "priority": "medium",
   "workstream": "v1.4-foundation",
   "owner": null,
   "preferred_backend": "codex",
   "preferred_node": "cosbox",
-  "max_cost_usd": 4.00,
+  "max_cost_usd": 4.0,
   "goal": "Introduce a portable event-loop primitive that wraps epoll on Linux, kqueue on macOS/BSD, and IOCP on Windows. Internally used by file ports, SQLite I/O, subprocess wait, and timers. Public surface stays minimal: make-event-loop, event-loop-add-fd!, event-loop-remove-fd!, event-loop-poll, event-loop-close. v1.4 sockets will register their fds against the same loop.",
   "file_globs": [
     "inc/eshkol/core/event_loop.h",
