@@ -1,13 +1,13 @@
 {
   "id": "ESH-0012",
   "title": "AD input2 plumbing for conv2d / batchnorm / layernorm / attention forward sites",
-  "status": "pending",
+  "status": "active",
   "priority": "medium",
   "workstream": "v1.5-foundation",
   "owner": null,
   "preferred_backend": "claude",
   "preferred_node": "atlas",
-  "max_cost_usd": 4.00,
+  "max_cost_usd": 4.0,
   "goal": "tensor-matmul already populates input2 (verified by ICC matmul_kernel_grad_nonzero probe). The other four kernel-style ops emit AD tape nodes with input2=null, so the backward kernel's `if (node->input2) accumulate_kernel_grad(...)` guard never fires. Wire input2 at each of the four forward sites so gradient flows through both operands. Pre-builds v1.5 LSTM/GRU and differentiable-logic kernels.",
   "file_globs": [
     "lib/backend/tensor_conv_codegen.cpp",

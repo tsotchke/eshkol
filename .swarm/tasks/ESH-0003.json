@@ -1,13 +1,13 @@
 {
   "id": "ESH-0003",
   "title": "R7RS final-mile: raise-continuable, error-object? family, exact-integer-sqrt, char-ci=? family",
-  "status": "pending",
+  "status": "active",
   "priority": "high",
   "workstream": "r7rs-sicp-parity",
   "owner": null,
   "preferred_backend": "codex",
   "preferred_node": "atlas",
-  "max_cost_usd": 4.00,
+  "max_cost_usd": 4.0,
   "goal": "Close the four genuinely-missing R7RS-small items called out in docs/breakdown/SCHEME_COMPATIBILITY.md. Each is a small focused implementation with a corresponding regression test. After this lands, Eshkol claims true R7RS-small parity (up from the current 95% / 232 of 244 procedures).",
   "file_globs": [
     "lib/backend/llvm_codegen.cpp",
@@ -24,7 +24,7 @@
     "error-object? / error-object-message / error-object-irritants (R7RS 6.11): wrap raised values in a tagged error-object struct (HEAP_SUBTYPE_ERROR_OBJECT) with message + irritants list. (error msg . irritants) constructs one; (raise <other-value>) does not wrap.",
     "exact-integer-sqrt (R7RS 6.2.6): Newton iteration on bignums. Returns (values q r) where n = q*q + r and r < 2q+1. The numeric tower already handles bignum; just need the algorithm.",
     "char-ci=? / char-ci<? / char-ci>? / char-ci<=? / char-ci>=? / string-ci=? / string-ci<? / string-ci>? / string-ci<=? / string-ci>=? (R7RS 6.6 + 6.7): fold-case + compare. char-foldcase already exists; build the predicates on top.",
-    "Update docs/breakdown/SCHEME_COMPATIBILITY.md's 'Known Limitations' table — flip each row from Missing to Supported, remove the workaround column."
+    "Update docs/breakdown/SCHEME_COMPATIBILITY.md's 'Known Limitations' table \u2014 flip each row from Missing to Supported, remove the workaround column."
   ],
   "acceptance": [
     "(raise-continuable 'err) inside a handler that returns 'recovered yields 'recovered (not exception propagation).",

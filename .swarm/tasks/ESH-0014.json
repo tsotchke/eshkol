@@ -1,14 +1,14 @@
 {
   "id": "ESH-0014",
   "title": "Strict module privacy + bare-prefix import (full R7RS library hygiene)",
-  "status": "pending",
+  "status": "active",
   "priority": "medium",
   "workstream": "r7rs-sicp-parity",
   "owner": null,
   "preferred_backend": "claude",
   "preferred_node": "atlas",
-  "max_cost_usd": 3.00,
-  "goal": "Close the last two gaps in R7RS library support: (1) strict module privacy — bindings not in `(provide …)` are actually inaccessible from importers (currently `(provide …)` is informational); (2) `(import (prefix (m) p-))` over a module's whole export list (currently requires an explicit `only`/`rename`). Both gaps share the same architectural fix: defer alias creation past parser-time to require-resolution time when the module's full export list is known.",
+  "max_cost_usd": 3.0,
+  "goal": "Close the last two gaps in R7RS library support: (1) strict module privacy \u2014 bindings not in `(provide \u2026)` are actually inaccessible from importers (currently `(provide \u2026)` is informational); (2) `(import (prefix (m) p-))` over a module's whole export list (currently requires an explicit `only`/`rename`). Both gaps share the same architectural fix: defer alias creation past parser-time to require-resolution time when the module's full export list is known.",
   "file_globs": [
     "lib/frontend/parser.cpp",
     "exe/eshkol-run.cpp",
@@ -18,16 +18,16 @@
     "docs/breakdown/SCHEME_COMPATIBILITY.md"
   ],
   "next_actions": [
-    "Extend the require-resolution pipeline (exe/eshkol-run.cpp::process_requires) to enumerate each module's exports at load time. Currently process_requires loads the file; add a step that walks its top-level (provide …) form and exposes the export list to downstream alias creation.",
+    "Extend the require-resolution pipeline (exe/eshkol-run.cpp::process_requires) to enumerate each module's exports at load time. Currently process_requires loads the file; add a step that walks its top-level (provide \u2026) form and exposes the export list to downstream alias creation.",
     "Remove the `R7RS prefix import currently requires an explicit only or rename set` guard at lib/frontend/parser.cpp:3242. Replace with a deferred 'prefix-all-exports' directive that the require-resolver applies after loading.",
-    "Strict privacy: bindings not in (provide …) get a unique internal name (linkage-mangled or renamed in the imported module's local symbol table) so importers can't reach them by their bare original name. Existing top-level identity within the defining module is preserved.",
-    "tests/v1_3_edge_cases/prefix_import_test.esk: (import (prefix (m1) m1-)) over a module with 3 exports — verify all three are accessible as m1-name.",
+    "Strict privacy: bindings not in (provide \u2026) get a unique internal name (linkage-mangled or renamed in the imported module's local symbol table) so importers can't reach them by their bare original name. Existing top-level identity within the defining module is preserved.",
+    "tests/v1_3_edge_cases/prefix_import_test.esk: (import (prefix (m1) m1-)) over a module with 3 exports \u2014 verify all three are accessible as m1-name.",
     "tests/v1_3_edge_cases/module_privacy_test.esk: a module with (provide foo) but not bar; verify the importer can call foo but a reference to bar fails with 'unbound variable'.",
-    "Update docs/breakdown/SCHEME_COMPATIBILITY.md: section §5.2 import — flip from ⚠️ to ✅, drop the 'strict hiding still limited' caveat."
+    "Update docs/breakdown/SCHEME_COMPATIBILITY.md: section \u00a75.2 import \u2014 flip from \u26a0\ufe0f to \u2705, drop the 'strict hiding still limited' caveat."
   ],
   "acceptance": [
     "(import (prefix (m1) m1-)) makes every export of m1 accessible as m1-name with no explicit only/rename required.",
-    "A binding defined in m1 but not in m1's (provide …) is unreachable from the importer (calling it raises unbound-variable).",
+    "A binding defined in m1 but not in m1's (provide \u2026) is unreachable from the importer (calling it raises unbound-variable).",
     "Existing v1.2 (require core.list.transform) and friends still work unchanged.",
     "tests/modules/* suite still 5/5."
   ],

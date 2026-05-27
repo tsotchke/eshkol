@@ -1,14 +1,14 @@
 {
   "id": "ESH-0016",
   "title": "Channel API on the work-stealing thread pool (v1.4 concurrency foundation)",
-  "status": "pending",
+  "status": "active",
   "priority": "medium",
   "workstream": "v1.4-foundation",
   "owner": null,
   "preferred_backend": "codex",
   "preferred_node": "cosbox",
-  "max_cost_usd": 3.00,
-  "goal": "Add a CSP-style channel primitive on top of the existing work-stealing thread pool. Public surface: make-channel, channel-send!, channel-receive!, channel-close!, channel-closed?. Bounded and unbounded variants. Backed by the existing thread pool — sends block when bounded buffer is full; receives block when empty.",
+  "max_cost_usd": 3.0,
+  "goal": "Add a CSP-style channel primitive on top of the existing work-stealing thread pool. Public surface: make-channel, channel-send!, channel-receive!, channel-close!, channel-closed?. Bounded and unbounded variants. Backed by the existing thread pool \u2014 sends block when bounded buffer is full; receives block when empty.",
   "file_globs": [
     "inc/eshkol/core/channel.h",
     "lib/core/runtime_channel.cpp",
