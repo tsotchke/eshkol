@@ -84,6 +84,9 @@ void eshkol_runtime_restore_signals(void);
 // Returns: true if interrupt requested, false otherwise
 static inline bool eshkol_runtime_interrupt_requested(void);
 
+// Non-inline interrupt flag reader for FFI/tooling surfaces
+bool eshkol_runtime_interrupt_flag_is_set(void);
+
 // Request an interrupt (thread-safe)
 // - reason: Why interrupt is requested
 void eshkol_runtime_request_interrupt(eshkol_shutdown_reason_t reason);

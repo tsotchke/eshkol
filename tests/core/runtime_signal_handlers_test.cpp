@@ -26,6 +26,9 @@ int main() {
     if (eshkol_runtime_interrupt_requested()) {
         return fail("interrupt was set before signal delivery");
     }
+    if (eshkol_runtime_interrupt_flag_is_set()) {
+        return fail("non-inline interrupt accessor was set before signal delivery");
+    }
 
     if (std::raise(SIGTERM) != 0) {
         return fail("failed to raise SIGTERM");
@@ -34,10 +37,16 @@ int main() {
     if (!eshkol_runtime_interrupt_requested()) {
         return fail("SIGTERM handler did not set interrupt flag");
     }
+    if (!eshkol_runtime_interrupt_flag_is_set()) {
+        return fail("non-inline interrupt accessor did not observe SIGTERM");
+    }
 
     eshkol_runtime_clear_interrupt();
     if (eshkol_runtime_interrupt_requested()) {
         return fail("interrupt flag did not clear");
+    }
+    if (eshkol_runtime_interrupt_flag_is_set()) {
+        return fail("non-inline interrupt accessor did not observe clear");
     }
 
     eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_REQUESTED);
