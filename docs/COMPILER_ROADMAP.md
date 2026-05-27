@@ -341,8 +341,8 @@ Phase 1 networking deliverables:
 - TLS wrapper: server and client contexts, certificate/key loading, peer
   verification controls, and explicit failure diagnostics.
 - HTTP server: keep the initial standard route helpers and custom route
-  dispatcher for `/health`, `/ready`, `/metrics`, and Noesis-style tool
-  endpoints, plus the shared 10 MiB body-size preflight. Next add richer
+  dispatcher for GET-only `/health`, `/ready`, `/metrics`, and Noesis-style
+  tool endpoints, plus the shared 10 MiB body-size preflight. Next add richer
   request/response records, chunked-body handling, and graceful close.
 - HTTP client can remain libcurl-backed initially, but the public Eshkol API
   should not expose libcurl-specific handles.

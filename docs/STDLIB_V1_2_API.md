@@ -2079,9 +2079,10 @@ tuples with accessors. `http-route` creates `(method path handler)` route tuples
 `http-route-request` dispatches exact method/path matches to handlers and
 converts handler exceptions or malformed handler returns to 500 responses.
 If no custom route matches, it falls back to `http-standard-response`, which
-serves `/health`, `/ready`, and `/metrics`; unknown routes return 404 and
-malformed request lines return 400. Invalid `Content-Length` returns 400 and
-oversized request bodies return 413 before custom handlers run.
+serves `GET /health`, `GET /ready`, and `GET /metrics`; other methods on those
+standard paths return 405, unknown routes return 404, and malformed request
+lines return 400. Invalid `Content-Length` returns 400 and oversized request
+bodies return 413 before custom handlers run.
 `http-server-respond-response` and `http-server-respond-standard` send those
 responses through
 `http-server-respond`.
