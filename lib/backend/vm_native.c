@@ -5291,11 +5291,26 @@ static void vm_dispatch_native(VM* vm, int fid) {
     /* ══════════════════════════════════════════════════════════════════════
      * Inference Operations (520-526)
      * ══════════════════════════════════════════════════════════════════════ */
-    case 520: { /* make-factor-graph(num_vars, var_dims_list) */
+    case 520: { /* make-factor-graph(num_vars, var_dims) */
         Value dims_val = vm_pop(vm), nvars_val = vm_pop(vm);
         int nv = (int)as_number(nvars_val);
         int var_dims[64]; int nd = 0;
-        if (dims_val.type == VAL_PAIR) {
+        /* var_dims may be a `#(2 2 2)` tensor (canonical Eshkol API,
+         * matching the native LLVM runtime), a `(2 2 2)` list, or a
+         * bare scalar.  The VM previously only read the list/scalar
+         * forms, so a tensor collapsed to nd=1 and num_vars was clamped
+         * down to 1 — every multi-variable factor graph silently became
+         * single-variable, leaving inference and free-energy degenerate. */
+        if (dims_val.as.ptr >= 0 && dims_val.type != VAL_PAIR &&
+            vm->heap.objects[dims_val.as.ptr] &&
+            vm->heap.objects[dims_val.as.ptr]->type == HEAP_TENSOR) {
+            VmTensor* dt = (VmTensor*)vm->heap.objects[dims_val.as.ptr]->opaque.ptr;
+            if (dt && dt->data) {
+                int dn = (int)dt->total;
+                for (int i = 0; i < dn && nd < 64; i++)
+                    var_dims[nd++] = (int)dt->data[i];
+            }
+        } else if (dims_val.type == VAL_PAIR) {
             Value cur = dims_val;
             while (cur.type == VAL_PAIR && nd < 64) {
                 var_dims[nd++] = (int)as_number(vm->heap.objects[cur.as.ptr]->cons.car);
@@ -5318,12 +5333,29 @@ static void vm_dispatch_native(VM* vm, int fid) {
         if (fg_val.as.ptr >= 0 && vm->heap.objects[fg_val.as.ptr]->type == HEAP_FACTOR_GRAPH) {
             VmFactorGraph* fg = (VmFactorGraph*)vm->heap.objects[fg_val.as.ptr]->opaque.ptr;
             if (fg) {
-                /* Extract var_indices from list */
+                /* Extract var_indices from either a tensor `#(0 1)` or a
+                 * list `(0 1)`.  The canonical Eshkol API (and the native
+                 * LLVM runtime) passes var indices as a `#(...)` tensor;
+                 * the VM previously only read the list form, so factors
+                 * added with tensor indices were silently dropped
+                 * (n_vars stayed 0), leaving beliefs uniform and
+                 * free-energy at ~0. */
                 int var_idx[8], n_vars = 0;
-                Value cur = vars;
-                while (cur.type == VAL_PAIR && n_vars < 8) {
-                    var_idx[n_vars++] = (int)as_number(vm->heap.objects[cur.as.ptr]->cons.car);
-                    cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
+                if (vars.as.ptr >= 0 && vars.type != VAL_PAIR &&
+                    vm->heap.objects[vars.as.ptr] &&
+                    vm->heap.objects[vars.as.ptr]->type == HEAP_TENSOR) {
+                    VmTensor* vt = (VmTensor*)vm->heap.objects[vars.as.ptr]->opaque.ptr;
+                    if (vt && vt->data) {
+                        int vn = (int)vt->total;
+                        for (int i = 0; i < vn && n_vars < 8; i++)
+                            var_idx[n_vars++] = (int)vt->data[i];
+                    }
+                } else {
+                    Value cur = vars;
+                    while (cur.type == VAL_PAIR && n_vars < 8) {
+                        var_idx[n_vars++] = (int)as_number(vm->heap.objects[cur.as.ptr]->cons.car);
+                        cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
+                    }
                 }
                 /* Extract CPT data from tensor or list */
                 double* cpt_data = NULL;
@@ -5376,17 +5408,35 @@ static void vm_dispatch_native(VM* vm, int fid) {
         if (fg_val.as.ptr >= 0 && vm->heap.objects[fg_val.as.ptr]->type == HEAP_FACTOR_GRAPH) {
             VmFactorGraph* fg = (VmFactorGraph*)vm->heap.objects[fg_val.as.ptr]->opaque.ptr;
             if (fg) {
-                /* Parse observations: list of (var_idx, state) pairs */
+                /* Parse observations.  Canonical Eshkol form is a flat
+                 * `#(var state)` tensor (one observation) or an even-length
+                 * `#(v0 s0 v1 s1 ...)` tensor (several), matching the native
+                 * LLVM runtime; `#()` means no evidence.  A list of
+                 * (var . state) pairs is still accepted for back-compat. */
                 int obs_pairs[32][2], n_obs = 0;
-                Value cur = obs;
-                while (cur.type == VAL_PAIR && n_obs < 32) {
-                    Value pair = vm->heap.objects[cur.as.ptr]->cons.car;
-                    if (pair.type == VAL_PAIR) {
-                        obs_pairs[n_obs][0] = (int)as_number(vm->heap.objects[pair.as.ptr]->cons.car);
-                        obs_pairs[n_obs][1] = (int)as_number(vm->heap.objects[vm->heap.objects[pair.as.ptr]->cons.cdr.as.ptr]->cons.car);
-                        n_obs++;
+                if (obs.as.ptr >= 0 && obs.type != VAL_PAIR &&
+                    vm->heap.objects[obs.as.ptr] &&
+                    vm->heap.objects[obs.as.ptr]->type == HEAP_TENSOR) {
+                    VmTensor* ot = (VmTensor*)vm->heap.objects[obs.as.ptr]->opaque.ptr;
+                    if (ot && ot->data) {
+                        int total = (int)ot->total;
+                        for (int i = 0; i + 1 < total && n_obs < 32; i += 2) {
+                            obs_pairs[n_obs][0] = (int)ot->data[i];
+                            obs_pairs[n_obs][1] = (int)ot->data[i + 1];
+                            n_obs++;
+                        }
                     }
-                    cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
+                } else {
+                    Value cur = obs;
+                    while (cur.type == VAL_PAIR && n_obs < 32) {
+                        Value pair = vm->heap.objects[cur.as.ptr]->cons.car;
+                        if (pair.type == VAL_PAIR) {
+                            obs_pairs[n_obs][0] = (int)as_number(vm->heap.objects[pair.as.ptr]->cons.car);
+                            obs_pairs[n_obs][1] = (int)as_number(vm->heap.objects[vm->heap.objects[pair.as.ptr]->cons.cdr.as.ptr]->cons.car);
+                            n_obs++;
+                        }
+                        cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
+                    }
                 }
                 double fe = vm_free_energy(fg, (const double*)obs_pairs, n_obs);
                 vm_push(vm, FLOAT_VAL(fe));
@@ -11486,38 +11536,24 @@ static void vm_dispatch_native(VM* vm, int fid) {
         break;
     }
 
-    case 1830: { /* tensor-from-stack(count, v1, v2, ..., vN) → tensor
+    case 1830: { /* tensor-from-stack(v0, v1, ..., vN-1, count) → tensor
                   * Internal: compiler emits this for all-numeric #(...) literals.
-                  * Stack: [count, val0, val1, ..., valN-1] (count pushed first) */
-        /* Pop values in reverse (valN-1 is TOS) */
-        int n = 0;
-        /* We need to find the count on the stack. The compiler pushes:
-         * CONST(count), CONST(v0), CONST(v1), ..., CONST(vN-1), NATIVE_CALL
-         * So TOS-0 through TOS-(N-1) are values, TOS-N is count. */
-        /* Strategy: peek backwards to find the int count */
+                  * Stack layout (bottom → top): [val0, val1, ..., valN-1, count].
+                  * The count is the top-of-stack and is popped first, so the
+                  * element count is exact (no stack-distance heuristic — that
+                  * mis-fired on literals like #(2 2 2) where an element value
+                  * equalled its distance from TOS). */
         double vals[1024];
-        int found = 0;
-        for (int try_n = 0; try_n < 1024 && try_n < vm->sp; try_n++) {
-            int count_pos = vm->sp - try_n - 1;
-            if (count_pos >= 0 && vm->stack[count_pos].type == VAL_INT) {
-                int candidate = (int)vm->stack[count_pos].as.i;
-                if (candidate == try_n && candidate >= 0 && candidate < 1024) {
-                    n = candidate;
-                    found = 1;
-                    break;
-                }
-            }
-        }
-        if (found && n > 0) {
-            /* Pop the n values */
+        Value count_val = vm_pop(vm);
+        int n = (count_val.type == VAL_INT) ? (int)count_val.as.i
+                                            : (int)as_number(count_val);
+        if (n < 0 || n > 1024) { vm_push(vm, NIL_VAL); break; }
+        if (n > 0) {
             for (int i = n - 1; i >= 0; i--)
                 vals[i] = as_number(vm_pop(vm));
-            vm_pop(vm); /* pop count */
             int64_t shape[1] = { n };
             VmTensor* t = vm_tensor_from_data(&vm->heap.regions, vals, shape, 1);
             if (t) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_TENSOR, VAL_TENSOR, t); break; }
-        } else if (found && n == 0) {
-            vm_pop(vm); /* pop count */
         }
         vm_push(vm, NIL_VAL);
         break;
