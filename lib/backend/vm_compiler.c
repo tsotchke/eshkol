@@ -1638,10 +1638,17 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
             if (node->children[i]->type != N_NUMBER) { all_numeric = 0; break; }
         }
         if (all_numeric) {
-            /* Tensor path: push count, then each value, call tensor-from-stack */
-            chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(n_elems)));
+            /* Tensor path: push each value, then the count LAST (as TOS),
+             * then call tensor-from-stack.  The count must be the
+             * top-of-stack so the native can pop it deterministically —
+             * an earlier convention pushed count first and had the native
+             * guess it back via a stack-distance heuristic, which
+             * mis-fired whenever an element value equalled its distance
+             * from TOS (e.g. #(2 2 2) → guessed n=2, built a 2-element
+             * tensor from garbage and corrupted the stack). */
             for (int i = 1; i < node->n_children; i++)
                 compile_expr(c, node->children[i], 0);
+            chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(n_elems)));
             chunk_emit(c, OP_NATIVE_CALL, 1830); /* tensor-from-stack */
         } else {
             for (int i = 1; i < node->n_children; i++) compile_expr(c, node->children[i], 0);
