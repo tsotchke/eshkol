@@ -15,6 +15,9 @@
  *   - Thread-safe session ID generation
  *   - Partial-send loop for large responses
  *   - Increased listen backlog (SOMAXCONN)
+ *   - Loopback bind by default; public binds require a compile token
+ *   - Optional exact-origin CORS (no wildcard)
+ *   - JSON-only /compile requests to block simple cross-site form posts
  */
 
 #include "eshkol/eshkol.h"
@@ -25,6 +28,8 @@
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <algorithm>
+#include <cctype>
 #include <cstring>
 #include <cstdlib>
 #include <unordered_map>
@@ -128,6 +133,43 @@ bool send_all(socket_handle_t sock, const std::string& data) {
     return true;
 }
 
+bool parse_bind_address(const std::string& host, in_addr& addr) {
+    if (host == "localhost") {
+        addr.s_addr = htonl(INADDR_LOOPBACK);
+        return true;
+    }
+
+#ifdef _WIN32
+    return InetPtonA(AF_INET, host.c_str(), &addr) == 1;
+#else
+    return inet_pton(AF_INET, host.c_str(), &addr) == 1;
+#endif
+}
+
+bool is_loopback_address(const in_addr& addr) {
+    const uint32_t host_order = ntohl(addr.s_addr);
+    return (host_order & 0xff000000u) == 0x7f000000u;
+}
+
+bool is_safe_header_value(const std::string& value) {
+    if (value.empty()) return false;
+    for (unsigned char ch : value) {
+        if (ch < 0x20 || ch == 0x7f) return false;
+    }
+    return true;
+}
+
+bool constant_time_equals(const std::string& a, const std::string& b) {
+    const size_t max_len = std::max(a.size(), b.size());
+    unsigned char diff = static_cast<unsigned char>(a.size() ^ b.size());
+    for (size_t i = 0; i < max_len; ++i) {
+        const unsigned char ac = i < a.size() ? static_cast<unsigned char>(a[i]) : 0;
+        const unsigned char bc = i < b.size() ? static_cast<unsigned char>(b[i]) : 0;
+        diff |= static_cast<unsigned char>(ac ^ bc);
+    }
+    return diff == 0;
+}
+
 } // namespace
 
 static std::atomic<bool> g_running{true};
@@ -135,6 +177,10 @@ static socket_handle_t g_server_socket = k_invalid_socket;
 
 // Connection limiter — prevents unbounded thread creation under load.
 static std::atomic<int> g_active_connections{0};
+
+static std::string g_bind_host = "127.0.0.1";
+static std::string g_compile_token;
+static std::string g_cors_origin;
 
 // Thread-safe session ID generator.
 std::string generate_session_id() {
@@ -160,9 +206,11 @@ std::string build_response(int status, const std::string& content_type,
     switch (status) {
         case 200: status_text = "OK"; break;
         case 400: status_text = "Bad Request"; break;
+        case 401: status_text = "Unauthorized"; break;
         case 403: status_text = "Forbidden"; break;
         case 404: status_text = "Not Found"; break;
         case 413: status_text = "Payload Too Large"; break;
+        case 415: status_text = "Unsupported Media Type"; break;
         case 500: status_text = "Internal Server Error"; break;
         case 503: status_text = "Service Unavailable"; break;
         default: status_text = "Unknown"; break;
@@ -171,9 +219,12 @@ std::string build_response(int status, const std::string& content_type,
     response << "HTTP/1.1 " << status << " " << status_text << "\r\n";
     response << "Content-Type: " << content_type << "\r\n";
     response << "Content-Length: " << body.size() << "\r\n";
-    response << "Access-Control-Allow-Origin: *\r\n";
-    response << "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n";
-    response << "Access-Control-Allow-Headers: Content-Type\r\n";
+    if (!g_cors_origin.empty()) {
+        response << "Access-Control-Allow-Origin: " << g_cors_origin << "\r\n";
+        response << "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n";
+        response << "Access-Control-Allow-Headers: Content-Type, Authorization, X-Eshkol-Compile-Token\r\n";
+        response << "Vary: Origin\r\n";
+    }
     response << "Connection: close\r\n";
     response << "\r\n";
 
@@ -346,6 +397,44 @@ HttpRequest parse_request(const std::string& raw) {
     }
 
     return req;
+}
+
+bool is_json_content_type(const HttpRequest& req) {
+    auto it = req.headers.find("content-type");
+    if (it == req.headers.end()) return false;
+    std::string value = it->second;
+    std::transform(value.begin(), value.end(), value.begin(),
+                   [](unsigned char c) { return std::tolower(c); });
+    const size_t parameter_start = value.find(';');
+    if (parameter_start != std::string::npos) {
+        value = value.substr(0, parameter_start);
+    }
+    while (!value.empty() && (value.front() == ' ' || value.front() == '\t')) {
+        value.erase(0, 1);
+    }
+    while (!value.empty() && (value.back() == ' ' || value.back() == '\t')) {
+        value.pop_back();
+    }
+    return value == "application/json";
+}
+
+std::string compile_request_token(const HttpRequest& req) {
+    auto token_it = req.headers.find("x-eshkol-compile-token");
+    if (token_it != req.headers.end()) return token_it->second;
+
+    auto auth_it = req.headers.find("authorization");
+    if (auth_it != req.headers.end()) {
+        const std::string prefix = "Bearer ";
+        if (auth_it->second.compare(0, prefix.size(), prefix) == 0) {
+            return auth_it->second.substr(prefix.size());
+        }
+    }
+    return "";
+}
+
+bool compile_request_authorized(const HttpRequest& req) {
+    if (g_compile_token.empty()) return true;
+    return constant_time_equals(compile_request_token(req), g_compile_token);
 }
 
 // Extract JSON string value (simple parser)
@@ -539,13 +628,17 @@ void handle_client(socket_handle_t client_socket) {
         std::string code = get_json_string(req.body, "code");
         std::string session_id = get_json_string(req.body, "session_id");
 
-        if (session_id.empty()) {
-            session_id = generate_session_id();
-        }
-
-        if (code.empty()) {
+        if (!is_json_content_type(req)) {
+            response = build_response(415, "application/json",
+                json_error("POST /compile requires Content-Type: application/json"));
+        } else if (!compile_request_authorized(req)) {
+            response = build_response(401, "application/json", json_error("Unauthorized"));
+        } else if (code.empty()) {
             response = build_response(400, "application/json", json_error("Missing 'code' field"));
         } else {
+            if (session_id.empty()) {
+                session_id = generate_session_id();
+            }
             std::string result = compile_to_wasm(code, session_id);
             response = build_response(200, "application/json", result);
         }
@@ -581,17 +674,36 @@ void print_usage() {
     std::cout << "Usage: eshkol-server [options]\n"
               << "Options:\n"
               << "  --port <port>      Port to listen on (default: 8080)\n"
+              << "  --host <addr>      IPv4 address to bind (default: 127.0.0.1)\n"
+              << "  --public           Bind 0.0.0.0 (requires a compile token)\n"
+              << "  --compile-token <token>\n"
+              << "                     Require token for POST /compile\n"
+              << "                     (or set ESHKOL_SERVER_TOKEN)\n"
+              << "  --cors-origin <origin>\n"
+              << "                     Allow CORS for one exact origin (no wildcard)\n"
               << "  --web-dir <path>   Directory to serve static files from\n"
               << "  --help             Show this help message\n";
 }
 
 int main(int argc, char** argv) {
     int port = 8080;
+    const char* env_token = std::getenv("ESHKOL_SERVER_TOKEN");
+    if (env_token && env_token[0] != '\0') {
+        g_compile_token = env_token;
+    }
 
     // Parse arguments
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--port") == 0 && i + 1 < argc) {
             port = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--host") == 0 && i + 1 < argc) {
+            g_bind_host = argv[++i];
+        } else if (strcmp(argv[i], "--public") == 0) {
+            g_bind_host = "0.0.0.0";
+        } else if (strcmp(argv[i], "--compile-token") == 0 && i + 1 < argc) {
+            g_compile_token = argv[++i];
+        } else if (strcmp(argv[i], "--cors-origin") == 0 && i + 1 < argc) {
+            g_cors_origin = argv[++i];
         } else if (strcmp(argv[i], "--web-dir") == 0 && i + 1 < argc) {
             g_web_dir = argv[++i];
         } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
@@ -614,6 +726,26 @@ int main(int argc, char** argv) {
 
     if (!init_socket_runtime()) {
         std::cerr << "Failed to initialize socket runtime\n";
+        return 1;
+    }
+
+    in_addr bind_addr{};
+    if (!parse_bind_address(g_bind_host, bind_addr)) {
+        std::cerr << "Invalid --host value '" << g_bind_host
+                  << "'; expected an IPv4 address or localhost\n";
+        shutdown_socket_runtime();
+        return 1;
+    }
+    if (!is_loopback_address(bind_addr) && g_compile_token.empty()) {
+        std::cerr << "Refusing to expose /compile on " << g_bind_host
+                  << " without --compile-token or ESHKOL_SERVER_TOKEN\n";
+        shutdown_socket_runtime();
+        return 1;
+    }
+    if (!g_cors_origin.empty() &&
+        (g_cors_origin == "*" || !is_safe_header_value(g_cors_origin))) {
+        std::cerr << "Invalid --cors-origin; use one exact safe origin, not '*'\n";
+        shutdown_socket_runtime();
         return 1;
     }
 
@@ -646,7 +778,7 @@ int main(int argc, char** argv) {
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = INADDR_ANY;
+    addr.sin_addr = bind_addr;
     addr.sin_port = htons(port);
 
     if (bind(g_server_socket, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
@@ -664,9 +796,15 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    std::cout << "Eshkol WASM Server running on http://localhost:" << port << "\n";
+    std::cout << "Eshkol WASM Server running on http://" << g_bind_host << ":" << port << "\n";
     if (!g_web_dir.empty()) {
         std::cout << "Serving static files from: " << g_web_dir << "\n";
+    }
+    if (!g_compile_token.empty()) {
+        std::cout << "POST /compile requires Authorization: Bearer <token>\n";
+    }
+    if (!g_cors_origin.empty()) {
+        std::cout << "CORS allowed origin: " << g_cors_origin << "\n";
     }
     std::cout << "Press Ctrl+C to stop\n";
 
