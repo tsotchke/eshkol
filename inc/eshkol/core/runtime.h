@@ -186,9 +186,13 @@ const char* eshkol_format_value_type_tag(eshkol_tagged_value_t v);
  * this instead of eshkol_type_error so users see the concrete operand
  * type ("got string") rather than guessing which operand was wrong.
  */
+/* `actual` is passed by pointer: a 16-byte tagged-value struct passed by
+ * value does not survive the LLVM-IR → C ABI boundary reliably (it arrives
+ * zeroed, formatting as "null"). Codegen stores the operand to an alloca and
+ * passes its address. */
 void eshkol_type_error_with_operand(const char* proc_name,
                                     const char* expected_type,
-                                    eshkol_tagged_value_t actual);
+                                    const eshkol_tagged_value_t* actual);
 
 /* ============================================================================
  * Source-Span Stack Traces (v1.3)

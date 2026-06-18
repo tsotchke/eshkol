@@ -1875,28 +1875,15 @@ llvm::Value* ArithmeticCodegen::compare(llvm::Value* left, llvm::Value* right,
     // that's NOT a number; if both are non-number, prefer the left (so the
     // error is deterministic).
     ctx_.builder().SetInsertPoint(type_error_path);
-    llvm::Function* type_error_op_func = ctx_.module().getFunction("eshkol_type_error_with_operand");
-    if (!type_error_op_func) {
-        llvm::FunctionType* error_op_type = llvm::FunctionType::get(
-            ctx_.builder().getVoidTy(),
-            {ctx_.builder().getPtrTy(),                // proc_name
-             ctx_.builder().getPtrTy(),                // expected_type
-             ctx_.taggedValueType()},                  // actual operand
-            false);
-        type_error_op_func = llvm::Function::Create(error_op_type, llvm::Function::ExternalLinkage,
-            "eshkol_type_error_with_operand", &ctx_.module());
-    }
     std::string op_name = (operation == "eq") ? "=" :
                           (operation == "lt") ? "<" :
                           (operation == "gt") ? ">" :
                           (operation == "le") ? "<=" : ">=";
-    llvm::Value* proc_name = ctx_.builder().CreateGlobalString(op_name, "cmp_proc_name");
-    llvm::Value* expected_type = ctx_.builder().CreateGlobalString("number", "cmp_expected_type");
     // Choose the operand to report: the left side if it's not numeric,
     // else the right side. Both are guaranteed non-numeric for at least
     // one branch since both_numbers is false here.
     llvm::Value* offending = ctx_.builder().CreateSelect(left_is_number, right, left, "cmp_offending");
-    ctx_.builder().CreateCall(type_error_op_func, {proc_name, expected_type, offending});
+    emitOperandTypeError(op_name.c_str(), "number", offending);
     llvm::Value* error_result = tagged_.packBool(ctx_.builder().getFalse());
     ctx_.builder().CreateBr(merge);
     llvm::BasicBlock* error_exit = ctx_.builder().GetInsertBlock();
@@ -2655,14 +2642,48 @@ void ArithmeticCodegen::guardHeapOperandsNumeric(llvm::Value* left,
     llvm::Value* all_ok = ctx_.builder().CreateAnd(l_ok, r_ok);
     ctx_.builder().CreateCondBr(all_ok, ok_blk, type_err_blk);
 
-    // Type error branch — non-returning
+    // Type error branch — non-returning. Report the concrete operand type via
+    // eshkol_type_error_with_operand ("expected …, got <actual-type>") instead
+    // of a generic message. Pick the offending side: the left operand if it
+    // failed its check, else the right (at least one is non-numeric here).
     ctx_.builder().SetInsertPoint(type_err_blk);
-    std::string msg = std::string(op_name) +
-        ": operand is not a number, vector, or tensor";
-    emitTypeError(msg.c_str());
+    llvm::Value* arith_offending =
+        ctx_.builder().CreateSelect(l_ok, right, left, "arith_offending");
+    emitOperandTypeError(op_name, "number, vector, or tensor", arith_offending);
+    // eshkol_type_error_with_operand raises (non-returning); keep the block
+    // well-formed with an unreachable terminator.
+    ctx_.builder().CreateUnreachable();
 
     // Continue in ok_blk
     ctx_.builder().SetInsertPoint(ok_blk);
+}
+
+void ArithmeticCodegen::emitOperandTypeError(const char* proc_name,
+                                             const char* expected_type,
+                                             llvm::Value* offending) {
+    auto& b = ctx_.builder();
+    llvm::Function* fn = ctx_.module().getFunction("eshkol_type_error_with_operand");
+    if (!fn) {
+        // void eshkol_type_error_with_operand(const char*, const char*,
+        //                                     const eshkol_tagged_value_t*)
+        llvm::FunctionType* ft = llvm::FunctionType::get(
+            b.getVoidTy(),
+            {b.getPtrTy(), b.getPtrTy(), b.getPtrTy()},
+            false);
+        fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+            "eshkol_type_error_with_operand", &ctx_.module());
+    }
+    // Pass the operand by pointer: a 16-byte tagged-value struct passed by
+    // value arrives zeroed across the LLVM-IR → C ABI boundary (formats as
+    // "null"). Store to an alloca and hand over its address.
+    if (offending->getType() != ctx_.taggedValueType()) {
+        offending = tagged_.packInt64(offending, true);
+    }
+    llvm::Value* slot = b.CreateAlloca(ctx_.taggedValueType(), nullptr, "operand_err_slot");
+    b.CreateStore(offending, slot);
+    llvm::Value* proc = b.CreateGlobalString(proc_name, "operr_proc");
+    llvm::Value* exp = b.CreateGlobalString(expected_type, "operr_expected");
+    b.CreateCall(fn, {proc, exp, slot});
 }
 
 void ArithmeticCodegen::emitTypeError(const char* message) {
