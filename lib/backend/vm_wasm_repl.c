@@ -24,6 +24,15 @@ void repl_init(void) {
 }
 
 EMSCRIPTEN_KEEPALIVE
+void repl_reset(void) {
+    if (g_session) {
+        repl_session_destroy(g_session);
+        g_session = NULL;
+    }
+    repl_init();
+}
+
+EMSCRIPTEN_KEEPALIVE
 const char* repl_eval(const char* source) {
     if (!g_session) repl_init();
     if (!g_session) return "ERROR: VM init failed";
