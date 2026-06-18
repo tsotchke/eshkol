@@ -1,0 +1,30 @@
+;; tensor_norm_test.esk — regression for the GPU-LLM brief §5 norm(tensor) SIGSEGV.
+;;
+;; norm dispatched on ESHKOL_VALUE_HEAP_PTR alone, but a tensor #(...) is
+;; also a HEAP_PTR (subtype TENSOR). A tensor was therefore read down the
+;; scheme-vector path as 16-byte tagged values → OOB → SIGSEGV. Fixed by
+;; routing only HEAP_SUBTYPE_VECTOR down the scheme-vector path; tensors
+;; take the tensor path.
+
+(define passed 0)
+(define failed 0)
+(define (check name got want)
+  (if (= got want)
+      (begin (set! passed (+ passed 1)) (display "PASS: ") (display name) (newline))
+      (begin (set! failed (+ failed 1)) (display "FAIL: ") (display name)
+             (display " got=") (display got) (display " want=") (display want) (newline))))
+
+;; tensor literals (the crashing case)
+(check "norm tensor 3-4-12"  (norm #(3.0 4.0 12.0)) 13)
+(check "norm tensor 1-2-2"   (norm #(1.0 2.0 2.0))  3)
+(check "norm tensor unit"    (norm #(1.0))          1)
+;; cross-check against the (sqrt (tensor-dot v v)) identity
+(define v #(5.0 12.0))
+(check "norm == sqrt(dot)"   (norm v) (sqrt (tensor-dot v v)))
+;; scheme heterogeneous vector path still works
+(check "norm scheme-vector"  (norm (vector 3.0 4.0)) 5)
+
+(display "Results: ") (display passed) (display " passed, ") (display failed) (display " failed") (newline)
+(if (= failed 0)
+    (begin (display "PASS: tensor_norm_test") (newline) (exit 0))
+    (begin (display "FAIL: tensor_norm_test") (newline) (exit 1)))
