@@ -20,6 +20,8 @@
 #include <llvm/IR/Intrinsics.h>
 #include <llvm/Config/llvm-config.h>
 #include <eshkol/logger.h>
+#include <cstdio>
+#include <cstdint>
 
 // LLVM VERSION COMPATIBILITY
 #if LLVM_VERSION_MAJOR >= 21
@@ -2696,6 +2698,10 @@ void ArithmeticCodegen::emitOperandTypeError(const char* proc_name,
                                              const char* expected_type,
                                              llvm::Value* offending) {
     auto& b = ctx_.builder();
+    // Record the failing expression's source location so the runtime formatter
+    // can prefix the message with "file:line:col:". Covers both arithmetic and
+    // comparison type errors since both route through here.
+    emitSetErrorLocation();
     llvm::Function* fn = ctx_.module().getFunction("eshkol_type_error_with_operand");
     if (!fn) {
         // void eshkol_type_error_with_operand(const char*, const char*,
@@ -2720,6 +2726,35 @@ void ArithmeticCodegen::emitOperandTypeError(const char* proc_name,
     b.CreateCall(fn, {proc, exp, slot});
 }
 
+void ArithmeticCodegen::emitSetErrorLocation() {
+    uint32_t line = ctx_.currentSourceLine();
+    if (line == 0) {
+        return;  // No source location known — leave any prior location as-is.
+    }
+    uint32_t column = ctx_.currentSourceColumn();
+    const std::string& file = ctx_.currentSourceFile();
+
+    llvm::Function* set_loc_func = ctx_.module().getFunction("eshkol_set_error_location");
+    if (!set_loc_func) {
+        llvm::FunctionType* set_loc_type = llvm::FunctionType::get(
+            ctx_.builder().getVoidTy(),
+            {ctx_.builder().getPtrTy(),   // file
+             ctx_.int32Type(),            // line
+             ctx_.int32Type()},           // column
+            false);
+        set_loc_func = llvm::Function::Create(set_loc_type,
+            llvm::Function::ExternalLinkage, "eshkol_set_error_location", &ctx_.module());
+    }
+
+    llvm::Value* file_str = file.empty()
+        ? static_cast<llvm::Value*>(llvm::ConstantPointerNull::get(ctx_.builder().getPtrTy()))
+        : static_cast<llvm::Value*>(ctx_.builder().CreateGlobalString(file, "err_loc_file"));
+    ctx_.builder().CreateCall(set_loc_func, {
+        file_str,
+        llvm::ConstantInt::get(ctx_.int32Type(), line),
+        llvm::ConstantInt::get(ctx_.int32Type(), column)});
+}
+
 void ArithmeticCodegen::emitTypeError(const char* message) {
     llvm::Function* make_exc_func = ctx_.module().getFunction("eshkol_make_exception_with_header");
     if (!make_exc_func) {
@@ -2742,7 +2777,28 @@ void ArithmeticCodegen::emitTypeError(const char* message) {
         raise_func->setDoesNotReturn();
     }
 
-    llvm::Value* error_msg = ctx_.builder().CreateGlobalString(message);
+    // Prefix the message with the failing expression's source location
+    // ("file:line:col: ") when known. The location is a codegen-time
+    // constant, so we bake it straight into the message global.
+    std::string full_message;
+    uint32_t line = ctx_.currentSourceLine();
+    if (line > 0) {
+        const std::string& file = ctx_.currentSourceFile();
+        char prefix[320];
+        uint32_t column = ctx_.currentSourceColumn();
+        if (column > 0) {
+            std::snprintf(prefix, sizeof(prefix), "%s:%u:%u: ",
+                          file.empty() ? "<unknown>" : file.c_str(), line, column);
+        } else {
+            std::snprintf(prefix, sizeof(prefix), "%s:%u: ",
+                          file.empty() ? "<unknown>" : file.c_str(), line);
+        }
+        full_message = std::string(prefix) + message;
+    } else {
+        full_message = message;
+    }
+
+    llvm::Value* error_msg = ctx_.builder().CreateGlobalString(full_message);
     llvm::Value* exc = ctx_.builder().CreateCall(make_exc_func, {
         llvm::ConstantInt::get(ctx_.int32Type(), ESHKOL_EXCEPTION_TYPE_ERROR),
         error_msg
