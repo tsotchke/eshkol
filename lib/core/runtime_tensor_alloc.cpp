@@ -43,6 +43,7 @@ eshkol_tensor_t* arena_allocate_tensor_with_header(arena_t* arena) {
     tensor->num_dimensions = 0;
     tensor->elements = nullptr;
     tensor->total_elements = 0;
+    tensor->dtype = ESHKOL_TENSOR_DTYPE_F64;  // default precision
 
     return tensor;
 }

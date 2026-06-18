@@ -3164,10 +3164,11 @@ int main(int argc, char **argv)
 #else
             printf("xla=off\n");
 #endif
-            /* Tensor element dtypes this build supports. f64 is always
-             * present; the GPU-LLM dtype work (brief §1) flips the others
-             * on as it lands, so deploys can gate on e.g. 'dtypes=.*f16'. */
-            printf("tensor-dtypes=f64\n");
+            /* Tensor element dtypes this build supports (brief §1, ESH-0020).
+             * Storage is f64 bit patterns; dtype records logical precision and
+             * tensor-cast applies precision reduction. Deploys can gate on
+             * e.g. 'tensor-dtypes=.*f16'. */
+            printf("tensor-dtypes=f64,f32,f16,bf16,i8\n");
             return 0;
         }
         case 259:

@@ -15,6 +15,8 @@
  */
 #include <eshkol/backend/tensor_codegen.h>
 
+#include <cstring>
+
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
 
 #include <eshkol/logger.h>
@@ -186,7 +188,137 @@ llvm::Value* TensorCodegen::tensor(const eshkol_operations_t* op) {
     return tagged_.packHeapPtr(tensor_ptr);
 }
 
+namespace {
+
+// Read the name of a quoted-symbol argument. `'f16` parses to an
+// ESHKOL_QUOTE_OP wrapping a variable node; a bare symbol literal is
+// ESHKOL_SYMBOL. Returns nullptr if the node is not symbol-like.
+const char* extract_symbol_arg_name(const eshkol_ast_t* node) {
+    if (!node) return nullptr;
+    const eshkol_ast_t* inner = node;
+    if (node->type == ESHKOL_OP &&
+        node->operation.op == ESHKOL_QUOTE_OP &&
+        node->operation.call_op.num_vars >= 1 &&
+        node->operation.call_op.variables) {
+        inner = &node->operation.call_op.variables[0];
+    }
+    if (inner->type == ESHKOL_VAR && inner->variable.id) return inner->variable.id;
+    if (inner->type == ESHKOL_SYMBOL && inner->str_val.ptr) return inner->str_val.ptr;
+    return nullptr;
+}
+
+// Map a dtype symbol name to its eshkol_tensor_dtype_t code, or -1 if unknown.
+int64_t dtype_code_for_name(const char* name) {
+    if (!name) return -1;
+    if (std::strcmp(name, "f64") == 0)  return 0;
+    if (std::strcmp(name, "f32") == 0)  return 1;
+    if (std::strcmp(name, "f16") == 0)  return 2;
+    if (std::strcmp(name, "bf16") == 0) return 3;
+    if (std::strcmp(name, "i8") == 0)   return 4;
+    return -1;
+}
+
+}  // namespace
+
+// Apply a dtype code to an already-built tensor value in place (reduces element
+// precision + records the dtype). Returns the same tagged tensor value.
+llvm::Value* TensorCodegen::applyDtypeToTensor(llvm::Value* tensor_val,
+                                               int64_t dtype_code) {
+    auto& builder = ctx_.builder();
+    llvm::Value* ptr_int = tagged_.unpackInt64(tensor_val);
+    llvm::Value* ptr = builder.CreateIntToPtr(ptr_int, ctx_.ptrType());
+    llvm::Function* fn = ctx_.module().getFunction("eshkol_tensor_apply_dtype");
+    if (!fn) {
+        llvm::FunctionType* ft = llvm::FunctionType::get(
+            ctx_.ptrType(), {ctx_.ptrType(), ctx_.int64Type()}, false);
+        fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+                                    "eshkol_tensor_apply_dtype", &ctx_.module());
+    }
+    builder.CreateCall(fn, {ptr, llvm::ConstantInt::get(ctx_.int64Type(), dtype_code)});
+    return tensor_val;
+}
+
+// (tensor-dtype t) -> symbol naming the tensor's element dtype.
+llvm::Value* TensorCodegen::tensorDtype(const eshkol_operations_t* op) {
+    if (op->call_op.num_vars != 1) {
+        eshkol_error("tensor-dtype requires exactly 1 argument");
+        return nullptr;
+    }
+    auto& builder = ctx_.builder();
+    llvm::Value* t = codegenAST(&op->call_op.variables[0]);
+    if (!t) return nullptr;
+    llvm::Value* ptr_int = tagged_.unpackInt64(t);
+    llvm::Value* ptr = builder.CreateIntToPtr(ptr_int, ctx_.ptrType());
+    llvm::Function* fn = ctx_.module().getFunction("eshkol_tensor_dtype_symbol");
+    if (!fn) {
+        llvm::FunctionType* ft = llvm::FunctionType::get(
+            ctx_.ptrType(), {ctx_.ptrType()}, false);
+        fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+                                    "eshkol_tensor_dtype_symbol", &ctx_.module());
+    }
+    llvm::Value* sym = builder.CreateCall(fn, {ptr});
+    return tagged_.packHeapPtr(sym);
+}
+
+// (tensor-cast t 'dtype) -> new tensor with elements cast through that dtype.
+llvm::Value* TensorCodegen::tensorCast(const eshkol_operations_t* op) {
+    if (op->call_op.num_vars != 2) {
+        eshkol_error("tensor-cast requires 2 arguments: (tensor-cast t 'dtype)");
+        return nullptr;
+    }
+    int64_t code = dtype_code_for_name(extract_symbol_arg_name(&op->call_op.variables[1]));
+    if (code < 0) {
+        eshkol_error("tensor-cast dtype must be one of f64/f32/f16/bf16/i8");
+        return nullptr;
+    }
+    auto& builder = ctx_.builder();
+    llvm::Value* t = codegenAST(&op->call_op.variables[0]);
+    if (!t) return nullptr;
+    llvm::Value* arena_ptr = builder.CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+    llvm::Value* ptr_int = tagged_.unpackInt64(t);
+    llvm::Value* ptr = builder.CreateIntToPtr(ptr_int, ctx_.ptrType());
+    llvm::Function* fn = ctx_.module().getFunction("eshkol_tensor_cast_alloc");
+    if (!fn) {
+        llvm::FunctionType* ft = llvm::FunctionType::get(
+            ctx_.ptrType(), {ctx_.ptrType(), ctx_.ptrType(), ctx_.int64Type()}, false);
+        fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+                                    "eshkol_tensor_cast_alloc", &ctx_.module());
+    }
+    llvm::Value* result = builder.CreateCall(
+        fn, {arena_ptr, ptr, llvm::ConstantInt::get(ctx_.int64Type(), code)});
+    return tagged_.packHeapPtr(result);
+}
+
+// make-tensor wrapper: strips an optional trailing `:dtype 'sym` keyword, builds
+// the tensor via makeTensorImpl, then applies the requested dtype.
 llvm::Value* TensorCodegen::makeTensor(const eshkol_operations_t* op) {
+    int64_t dtype_code = -1;
+    uint32_t positional = op->call_op.num_vars;
+    for (uint32_t i = 0; i + 1 < op->call_op.num_vars; i++) {
+        const eshkol_ast_t* a = &op->call_op.variables[i];
+        if (a->type == ESHKOL_VAR && a->variable.id &&
+            std::strcmp(a->variable.id, ":dtype") == 0) {
+            int64_t code = dtype_code_for_name(
+                extract_symbol_arg_name(&op->call_op.variables[i + 1]));
+            if (code < 0) {
+                eshkol_error("make-tensor :dtype expects one of f64/f32/f16/bf16/i8");
+                return nullptr;
+            }
+            dtype_code = code;
+            positional = i;  // keyword args are trailing
+            break;
+        }
+    }
+    if (dtype_code < 0) return makeTensorImpl(op);
+
+    eshkol_operations_t eff = *op;
+    eff.call_op.num_vars = positional;
+    llvm::Value* t = makeTensorImpl(&eff);
+    if (!t) return nullptr;
+    return applyDtypeToTensor(t, dtype_code);
+}
+
+llvm::Value* TensorCodegen::makeTensorImpl(const eshkol_operations_t* op) {
     // make-tensor: Two modes:
     //   (make-tensor shape fill_value) - create tensor with given shape filled with fill_value
     //   (make-tensor e1 e2 e3 ...)    - create 1D tensor from elements (falls back to tensor())
