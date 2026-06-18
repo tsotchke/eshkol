@@ -1,0 +1,64 @@
+;; ESH-0020 — tensor dtype system regression test.
+;; Storage stays f64; dtype is metadata; tensor-cast applies precision reduction.
+
+;; 1. Default dtype is f64.
+(display "dtype-default: ")
+(display (tensor-dtype (make-tensor '(4) 1.0)))
+(newline)
+
+;; 2. make-tensor with :dtype keyword records the requested dtype.
+(display "dtype-f32: ")
+(display (tensor-dtype (make-tensor '(4) 1.0 :dtype 'f32)))
+(newline)
+
+(display "dtype-f16: ")
+(display (tensor-dtype (make-tensor '(4) 2.0 :dtype 'f16)))
+(newline)
+
+(display "dtype-bf16: ")
+(display (tensor-dtype (make-tensor '(2) 1.0 :dtype 'bf16)))
+(newline)
+
+(display "dtype-i8: ")
+(display (tensor-dtype (make-tensor '(2) 3.0 :dtype 'i8)))
+(newline)
+
+;; 3. tensor-cast sets the dtype and round-trips exactly-representable values.
+(define t (make-tensor '(3) 1.0))
+(define t16 (tensor-cast t 'f16))
+(display "cast-dtype: ")
+(display (tensor-dtype t16))
+(newline)
+
+;; 1.0 and 0.5 are exactly representable in f16, so they survive the round-trip.
+(define h (tensor-cast (make-tensor '(1) 0.5) 'f16))
+(display "f16-exact-0.5: ")
+(display (tensor-ref h 0))
+(newline)
+
+;; i8 cast rounds/clamps to integer range: 3.7 -> 4.
+(define q (tensor-cast (make-tensor '(1) 3.7) 'i8))
+(display "i8-round-3.7: ")
+(display (tensor-ref q 0))
+(newline)
+
+;; 4. Original f64 tensor is unchanged by casting (tensor-cast allocates fresh).
+(display "orig-dtype-after-cast: ")
+(display (tensor-dtype t))
+(newline)
+
+;; 5. f16 loses precision for a non-representable value (sanity: not equal to f64).
+(define p (tensor-cast (make-tensor '(1) 3.14159265358979) 'f16))
+(display "f16-pi-lossy: ")
+(display (if (= (tensor-ref p 0) 3.14159265358979) "FAIL-no-loss" "ok-lossy"))
+(newline)
+
+;; 6. dtype propagates through elementwise arithmetic (binary promotion).
+(define ah (make-tensor '(4) 2.0 :dtype 'f16))
+(define bh (make-tensor '(4) 3.0 :dtype 'f16))
+(define cf (make-tensor '(4) 1.0 :dtype 'f32))
+(define df (make-tensor '(4) 1.0))  ; f64
+(display "prop-f16+f16: ") (display (tensor-dtype (tensor-add ah bh))) (newline)
+(display "prop-f16*f32: ") (display (tensor-dtype (tensor-mul ah cf))) (newline)
+(display "prop-f16+f64: ") (display (tensor-dtype (tensor-add ah df))) (newline)
+(display "prop-value:   ") (display (tensor-ref (tensor-add ah bh) 0)) (newline)

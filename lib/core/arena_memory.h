@@ -398,20 +398,35 @@ eshkol_shared_header_t* shared_get_header(void* ptr);
 // ===== TENSOR MEMORY MANAGEMENT =====
 // N-dimensional numeric tensor with arena allocation
 
+// Tensor element dtype tags (ESH-0020). Storage is always f64 bit patterns in
+// `elements`; the dtype records the logical element precision so matmul/cast can
+// dispatch and so casting can apply the appropriate precision reduction. f64 is
+// the default (0) so existing tensors and all existing code are unaffected.
+typedef enum eshkol_tensor_dtype {
+    ESHKOL_TENSOR_DTYPE_F64  = 0,  // double (default)
+    ESHKOL_TENSOR_DTYPE_F32  = 1,  // IEEE single
+    ESHKOL_TENSOR_DTYPE_F16  = 2,  // IEEE half
+    ESHKOL_TENSOR_DTYPE_BF16 = 3,  // bfloat16
+    ESHKOL_TENSOR_DTYPE_I8   = 4   // signed 8-bit integer
+} eshkol_tensor_dtype_t;
+
 // Tensor structure for multi-dimensional arrays
 // Must match LLVM TypeSystem tensor_type layout:
-// Fields are all 8 bytes for natural alignment (32 bytes total)
+// Fields are all 8 bytes for natural alignment (40 bytes total)
 // NOTE: elements stored as int64_t bit patterns of doubles for compatibility
 typedef struct eshkol_tensor {
     uint64_t* dimensions;     // idx 0: Pointer to dimension sizes array
     uint64_t  num_dimensions; // idx 1: Number of dimensions (rank)
     int64_t*  elements;       // idx 2: Element data (doubles stored as int64 bits)
     uint64_t  total_elements; // idx 3: Product of all dimensions
+    uint64_t  dtype;          // idx 4: eshkol_tensor_dtype_t (0 = f64 default)
 } eshkol_tensor_t;
 
-// Compile-time size validation
-ESHKOL_STATIC_ASSERT(sizeof(eshkol_tensor_t) == 32,
-                     "Tensor struct must be 32 bytes for optimal alignment");
+// Compile-time size validation. Field indices 0-3 are unchanged from the
+// original 32-byte layout, so every existing GEP into a tensor remains valid;
+// dtype is appended at idx 4.
+ESHKOL_STATIC_ASSERT(sizeof(eshkol_tensor_t) == 40,
+                     "Tensor struct must be 40 bytes (4 core fields + dtype)");
 
 // Allocate tensor with object header (for consolidated HEAP_PTR type)
 // Returns pointer to tensor data (header is at offset -8)

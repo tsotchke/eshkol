@@ -15248,6 +15248,8 @@ private:
         // MIGRATED: tensor-shape, tensor-length - now delegated to TensorCodegen
         if (func_name == "tensor-shape") return tensor_->tensorShape(op);
         if (func_name == "tensor-length") return tensor_->tensorLength(op);
+        if (func_name == "tensor-dtype") return tensor_->tensorDtype(op);
+        if (func_name == "tensor-cast") return tensor_->tensorCast(op);
         if (func_name == "tensor-save") return logic_workspace_->codegenTensorSave(op);
         if (func_name == "tensor-load") return logic_workspace_->codegenTensorLoad(op);
         if (func_name == "model-save") return logic_workspace_->codegenModelSave(op);
@@ -25840,6 +25842,11 @@ private:
         PHINode* result_ptr = builder->CreatePHI(builder->getPtrTy(), 2, "result_ptr");
         result_ptr->addIncoming(result_ptr_2d, res_2d_exit);
         result_ptr->addIncoming(result_ptr_1d, res_1d_exit);
+
+        // Propagate element dtype from the operands onto the result tensor so
+        // matmul on f16/bf16 inputs keeps its logical precision (the signal a
+        // future GPU GEMM path dispatches on). f64 stays the default.
+        tensor_->emitDtypePropagateBinary(result_ptr, ptr_a, ptr_b);
 
         // Get result element pointer
         Value* c_elems_field = builder->CreateStructGEP(tensor_type, result_ptr, 2);

@@ -1557,6 +1557,9 @@ llvm::Value* TensorCodegen::emitTensorUnaryOp(llvm::Value* tensor_val,
     builder.CreateStore(total_elements,
         builder.CreateStructGEP(tensor_type, result_ptr, 3));
 
+    // Unary elementwise op preserves the operand's dtype.
+    emitDtypePropagateUnary(result_ptr, tensor_ptr);
+
     return tagged_.packHeapPtr(result_ptr);
 }
 
@@ -1807,6 +1810,9 @@ llvm::Value* TensorCodegen::tensorScale(const eshkol_operations_t* op) {
         builder.CreateStructGEP(tensor_type, result_ptr, 2));
     builder.CreateStore(total_elements,
         builder.CreateStructGEP(tensor_type, result_ptr, 3));
+
+    // Unary elementwise op preserves the operand's dtype.
+    emitDtypePropagateUnary(result_ptr, tensor_ptr);
 
     return tagged_.packHeapPtr(result_ptr);
 }

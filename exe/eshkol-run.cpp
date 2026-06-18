@@ -358,6 +358,38 @@ std::string makeJitRunCacheKey(const std::filesystem::path& source_path,
     return sha256Hex(hash);
 }
 
+// `-r` runs a single file through the persistent AOT cache for speed. That is
+// only semantically equivalent to true in-process JIT execution when the
+// program does NOT need the live JIT at runtime. `eval`/`compile` resolve their
+// argument by spinning up a ReplJITContext via the eval bridge, which is only
+// linked into eshkol-run itself — never into a cached standalone AOT binary. So
+// a program that calls eval/compile must bypass the cache and fall through to
+// the in-process ReplJITContext path. Detect those builtins with a whole-word
+// scan (false positives merely forfeit the cache; correctness is preserved).
+bool sourceRequiresInProcessJit(const std::string& source) {
+    auto is_ident_char = [](unsigned char c) -> bool {
+        // R7RS/Eshkol identifier characters that can neighbour a builtin name.
+        return std::isalnum(c) || std::strchr("-_?!*/+<>=.:$%&~^@", c) != nullptr;
+    };
+    static const char* kJitBuiltins[] = {"eval", "compile"};
+    for (const char* needle : kJitBuiltins) {
+        const size_t nlen = std::strlen(needle);
+        size_t pos = 0;
+        while ((pos = source.find(needle, pos)) != std::string::npos) {
+            const bool left_ok =
+                (pos == 0) || !is_ident_char((unsigned char)source[pos - 1]);
+            const size_t after = pos + nlen;
+            const bool right_ok =
+                (after >= source.size()) || !is_ident_char((unsigned char)source[after]);
+            if (left_ok && right_ok) {
+                return true;
+            }
+            pos = after;
+        }
+    }
+    return false;
+}
+
 std::optional<int> tryRunFromPersistentJitCache(const char* argv0,
                                                 const std::string& filepath,
                                                 uint8_t no_stdlib,
@@ -376,6 +408,14 @@ std::optional<int> tryRunFromPersistentJitCache(const char* argv0,
     std::filesystem::path source_path(filepath);
     std::error_code ec;
     if (!std::filesystem::exists(source_path, ec) || !std::filesystem::is_regular_file(source_path, ec)) {
+        return std::nullopt;
+    }
+
+    // Programs that use eval/compile need the in-process JIT bridge, which a
+    // cached standalone AOT binary does not have. Bypass the cache so `-r`
+    // honours its "interpret without compiling" contract for them.
+    if (sourceRequiresInProcessJit(readFileBytes(source_path))) {
+        jitCacheTrace("bypass", "needs-in-process-jit");
         return std::nullopt;
     }
 
@@ -3164,10 +3204,11 @@ int main(int argc, char **argv)
 #else
             printf("xla=off\n");
 #endif
-            /* Tensor element dtypes this build supports. f64 is always
-             * present; the GPU-LLM dtype work (brief §1) flips the others
-             * on as it lands, so deploys can gate on e.g. 'dtypes=.*f16'. */
-            printf("tensor-dtypes=f64\n");
+            /* Tensor element dtypes this build supports (brief §1, ESH-0020).
+             * Storage is f64 bit patterns; dtype records logical precision and
+             * tensor-cast applies precision reduction. Deploys can gate on
+             * e.g. 'tensor-dtypes=.*f16'. */
+            printf("tensor-dtypes=f64,f32,f16,bf16,i8\n");
             return 0;
         }
         case 259:
