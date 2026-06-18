@@ -295,6 +295,7 @@ class EshkolRepl {
                 eshkol_type_error: () => { throw new Error('Eshkol type error (WASM stub)'); },
                 eshkol_tensor_result_dtype_binary: (r) => r,
                 eshkol_tensor_result_dtype_unary: (r) => r,
+                eshkol_type_error_with_operand: () => { throw new Error('Eshkol type error (WASM stub)'); },
                 eshkol_deep_equal: (a, b) => false,
                 eshkol_display_value: (val) => {},
 
