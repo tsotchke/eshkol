@@ -10597,7 +10597,10 @@ private:
         if (current_function) {
             // CRITICAL FIX: Check if we're in __global_init temp function OR REPL mode
             // If so, use GlobalVariable instead of AllocaInst so definitions survive function execution!
-            bool is_global_init = (current_function->getName() == "__global_init");
+            llvm::StringRef current_function_name = current_function->getName();
+            bool is_global_init =
+                current_function_name == "__global_init" ||
+                current_function_name.starts_with("__eshkol_lib_init_chunk_");
             bool is_repl_eval = g_repl_mode_enabled;  // In REPL mode, always use globals
 
             // For functions (lambdas), store as int64 pointer
@@ -26188,10 +26191,23 @@ private:
         Value* src_val = codegenAST(&op->call_op.variables[0]);
         if (!src_val) return nullptr;
 
-        // Check type
+        // Check type. NB: a tensor #(...) is ALSO an ESHKOL_VALUE_HEAP_PTR
+        // (with HEAP_SUBTYPE_TENSOR), so dispatching on HEAP_PTR alone would
+        // mis-route a tensor down the scheme-vector path and read its 8-byte
+        // double elements as 16-byte tagged values → out-of-bounds → SIGSEGV
+        // (the norm(tensor) crash from the GPU-LLM brief §5). Only a true
+        // heterogeneous vector (HEAP_SUBTYPE_VECTOR) takes the scheme-vector
+        // path; tensors and everything else take the tensor path. getObjectSubtype
+        // is a pure GEP+load (no basic blocks), so it is safe to compute here
+        // before the conditional branch.
         Value* val_type = getTaggedValueType(src_val);
-        Value* is_scheme_vector = builder->CreateICmpEQ(val_type,
+        Value* norm_is_heap = builder->CreateICmpEQ(val_type,
             ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
+        Value* norm_ptr_int = unpackInt64FromTaggedValue(src_val);
+        Value* norm_subtype = getObjectSubtype(norm_ptr_int);
+        Value* norm_is_vec_subtype = builder->CreateICmpEQ(norm_subtype,
+            ConstantInt::get(int8_type, HEAP_SUBTYPE_VECTOR));
+        Value* is_scheme_vector = builder->CreateAnd(norm_is_heap, norm_is_vec_subtype);
 
         Function* current_func = builder->GetInsertBlock()->getParent();
         BasicBlock* scheme_vec_bb = BasicBlock::Create(*context, "norm_svec", current_func);
