@@ -187,7 +187,7 @@ static void eshkol_parallel_workers_lazy_resolve() {
 // Backward-compat: if older stdlib.o packs only the type byte (bits 8-15
 // zero), reconstruction yields flags=0 — same as the buggy old behaviour, no
 // regression. New stdlib.o + new LLVM correctly carries flags.
-struct llvm_parallel_map_task {
+struct eshkol_parallel_map_task {
     uint64_t closure_ptr;   // offset 0: pointer to closure struct (from fn.data.ptr_val)
     uint64_t item_type;     // offset 8: type byte | (flags byte << 8)
     uint64_t item_data;     // offset 16: data field (raw_val)
@@ -196,7 +196,7 @@ struct llvm_parallel_map_task {
 
 // Task data for parallel fold (binary closure).
 // arg1_type and arg2_type both pack {type, flags} the same way as above.
-struct llvm_parallel_fold_task {
+struct eshkol_parallel_fold_task {
     uint64_t closure_ptr;   // offset 0: pointer to closure struct
     uint64_t arg1_type;     // offset 8: type byte | (flags byte << 8)
     uint64_t arg1_data;     // offset 16: first arg data
@@ -206,7 +206,7 @@ struct llvm_parallel_fold_task {
 };
 
 // Task data for parallel execute (nullary closure / thunk)
-struct llvm_parallel_execute_task {
+struct eshkol_parallel_execute_task {
     uint64_t closure_ptr;   // offset 0: pointer to closure struct (from fn.data.ptr_val)
     uint64_t closure_type;  // offset 8: type field (i64-extended from i8)
     uint64_t closure_flags; // offset 16: flags field (i64-extended from i8)
@@ -219,7 +219,7 @@ struct llvm_parallel_execute_task {
 //
 // Builds on the existing thread-pool execute worker (g_parallel_execute_worker)
 // to give `(future thunk)` true concurrent kickoff: at future-creation time
-// we allocate a llvm_parallel_execute_task pointing at a result slot stored
+// we allocate an eshkol_parallel_execute_task pointing at a result slot stored
 // in the lazy_future, submit it to the global pool, and stash the resulting
 // eshkol_future_t in the lazy_future's `pool_future` field.  `force` then
 // checks `is_async`; if set, it calls `join_async` which future_get's the
@@ -229,7 +229,7 @@ struct llvm_parallel_execute_task {
 // Layout of lazy_future async fields (lib/backend/thread_pool.cpp):
 //   pool_future          → eshkol_future_t* (NULL = lazy)
 //   async_result_slot    → eshkol_tagged_value_t* the worker writes
-//   async_task           → llvm_parallel_execute_task* owned by lazy_future
+//   async_task           → eshkol_parallel_execute_task* owned by lazy_future
 
 // Mirror of the lazy_future struct in lib/backend/thread_pool.cpp.
 // Kept here as a shadow because parallel_codegen.cpp doesn't have a
@@ -265,7 +265,7 @@ extern "C" uint8_t eshkol_lazy_future_submit_async(
     // Allocate result slot + task on the heap; lazy_future owns them.
     auto* slot = new eshkol_tagged_value_t{};
     slot->type = ESHKOL_VALUE_NULL;
-    auto* task = new llvm_parallel_execute_task{
+    auto* task = new eshkol_parallel_execute_task{
         closure_ptr,
         static_cast<uint64_t>(closure_type),
         static_cast<uint64_t>(closure_flags),
@@ -297,7 +297,7 @@ extern "C" void eshkol_lazy_future_join_async(void* lf_void) {
     }
     lf->forced = 1;
     future_release(fut);
-    delete static_cast<llvm_parallel_execute_task*>(lf->async_task);
+    delete static_cast<eshkol_parallel_execute_task*>(lf->async_task);
     delete slot;
     lf->pool_future = nullptr;
     lf->async_task = nullptr;
@@ -468,7 +468,7 @@ void eshkol_parallel_map(
         eshkol_debug("parallel-map: sequential path for small list");
         for (size_t i = 0; i < n; ++i) {
             // Pack task data (decomposed to i64 fields)
-            llvm_parallel_map_task task;
+            eshkol_parallel_map_task task;
             task.closure_ptr = fn.data.ptr_val;
             task.item_type = static_cast<uint64_t>(items[i].type)
                            | (static_cast<uint64_t>(items[i].flags) << 8);
@@ -491,7 +491,7 @@ void eshkol_parallel_map(
     }
 
     // Create task data (decomposed to i64 fields - no struct-by-value ABI!)
-    std::vector<llvm_parallel_map_task> tasks(n);
+    std::vector<eshkol_parallel_map_task> tasks(n);
     std::vector<eshkol_future_t*> futures(n);
 
     for (size_t i = 0; i < n; ++i) {
@@ -731,7 +731,7 @@ void eshkol_parallel_filter(
     if (n < 4) {
         eshkol_debug("parallel-filter: sequential path for small list");
         for (size_t i = 0; i < n; ++i) {
-            llvm_parallel_map_task task;
+            eshkol_parallel_map_task task;
             task.closure_ptr = pred.data.ptr_val;
             task.item_type = static_cast<uint64_t>(items[i].type)
                            | (static_cast<uint64_t>(items[i].flags) << 8);
@@ -760,7 +760,7 @@ void eshkol_parallel_filter(
     }
 
     // Create task data (same struct as map - predicate is a unary function)
-    std::vector<llvm_parallel_map_task> tasks(n);
+    std::vector<eshkol_parallel_map_task> tasks(n);
     std::vector<eshkol_future_t*> futures(n);
 
     for (size_t i = 0; i < n; ++i) {
@@ -864,7 +864,7 @@ void eshkol_parallel_execute(
     // For a single thunk, execute sequentially (no parallelism benefit)
     if (n == 1) {
         eshkol_debug("parallel-execute: sequential path for single thunk");
-        llvm_parallel_execute_task task;
+        eshkol_parallel_execute_task task;
         task.closure_ptr = thunks_ptr[0].data.ptr_val;
         task.closure_type = static_cast<uint64_t>(thunks_ptr[0].type);
         task.closure_flags = static_cast<uint64_t>(thunks_ptr[0].flags);
@@ -879,7 +879,7 @@ void eshkol_parallel_execute(
         // Fallback to sequential execution
         eshkol_warn("parallel-execute: no thread pool, falling back to sequential");
         for (size_t i = 0; i < n; ++i) {
-            llvm_parallel_execute_task task;
+            eshkol_parallel_execute_task task;
             task.closure_ptr = thunks_ptr[i].data.ptr_val;
             task.closure_type = static_cast<uint64_t>(thunks_ptr[i].type);
             task.closure_flags = static_cast<uint64_t>(thunks_ptr[i].flags);
@@ -890,7 +890,7 @@ void eshkol_parallel_execute(
     }
 
     // Create task data and submit to thread pool
-    std::vector<llvm_parallel_execute_task> tasks(n);
+    std::vector<eshkol_parallel_execute_task> tasks(n);
     std::vector<eshkol_future_t*> futures(n);
 
     for (size_t i = 0; i < n; ++i) {

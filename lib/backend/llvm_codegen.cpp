@@ -35481,46 +35481,56 @@ int eshkol_compile_llvm_ir_to_executable(LLVMModuleRef module_ref, const char* f
         }
 
         std::filesystem::path runtime_lib_path;
-        const auto runtime_library_name = eshkol::platform::static_library_name("eshkol-static");
+        const std::vector<std::string> runtime_library_names = {
+            eshkol::platform::static_library_name("eshkol-runtime"),
+            eshkol::platform::static_library_name("eshkol-static"),
+        };
         auto exe_dir = eshkol::platform::executable_directory();
 
-        if (const char* env_lib = std::getenv("ESHKOL_LIB_DIR")) {
-            auto env_path = std::filesystem::path(env_lib) / runtime_library_name;
-            if (std::filesystem::exists(env_path)) {
-                runtime_lib_path = env_path;
-            }
-        }
-
-        if (runtime_lib_path.empty() && !exe_dir.empty()) {
-            std::vector<std::filesystem::path> candidates = {
-                exe_dir / runtime_library_name,
-                exe_dir / "../lib" / runtime_library_name,
-                exe_dir / "../lib/eshkol" / runtime_library_name,
-            };
-            for (const auto& candidate : candidates) {
-                if (std::filesystem::exists(candidate)) {
-                    runtime_lib_path = candidate;
+        for (const auto& runtime_library_name : runtime_library_names) {
+            if (const char* env_lib = std::getenv("ESHKOL_LIB_DIR")) {
+                auto env_path = std::filesystem::path(env_lib) / runtime_library_name;
+                if (std::filesystem::exists(env_path)) {
+                    runtime_lib_path = env_path;
                     break;
                 }
             }
-        }
 
-        if (runtime_lib_path.empty() && !cwd.empty()) {
-            std::vector<std::filesystem::path> candidates = {
-                cwd / runtime_library_name,
-                cwd / "build" / runtime_library_name,
-                cwd.parent_path() / "build" / runtime_library_name,
-            };
-            for (const auto& candidate : candidates) {
-                if (std::filesystem::exists(candidate)) {
-                    runtime_lib_path = candidate;
-                    break;
+            if (runtime_lib_path.empty() && !exe_dir.empty()) {
+                std::vector<std::filesystem::path> candidates = {
+                    exe_dir / runtime_library_name,
+                    exe_dir / "../lib" / runtime_library_name,
+                    exe_dir / "../lib/eshkol" / runtime_library_name,
+                };
+                for (const auto& candidate : candidates) {
+                    if (std::filesystem::exists(candidate)) {
+                        runtime_lib_path = candidate;
+                        break;
+                    }
                 }
+            }
+
+            if (runtime_lib_path.empty() && !cwd.empty()) {
+                std::vector<std::filesystem::path> candidates = {
+                    cwd / runtime_library_name,
+                    cwd / "build" / runtime_library_name,
+                    cwd.parent_path() / "build" / runtime_library_name,
+                };
+                for (const auto& candidate : candidates) {
+                    if (std::filesystem::exists(candidate)) {
+                        runtime_lib_path = candidate;
+                        break;
+                    }
+                }
+            }
+
+            if (!runtime_lib_path.empty()) {
+                break;
             }
         }
 
         if (!runtime_lib_path.empty()) {
-            // libeshkol-static.a contains a global constructor —
+            // libeshkol-runtime.a contains a global constructor —
             // __eshkol_init_parallel_workers — registered into
             // llvm.global_ctors by parallel_llvm_codegen.cpp. The
             // constructor calls __eshkol_register_parallel_workers
@@ -35578,7 +35588,7 @@ int eshkol_compile_llvm_ir_to_executable(LLVMModuleRef module_ref, const char* f
             }
         } else {
             link_args.emplace_back(
-                (std::filesystem::path("build") / eshkol::platform::static_library_name("eshkol-static")).generic_string()
+                (std::filesystem::path("build") / eshkol::platform::static_library_name("eshkol-runtime")).generic_string()
             );
             eshkol_debug("WARNING: Could not resolve runtime library path, falling back to build directory");
         }
