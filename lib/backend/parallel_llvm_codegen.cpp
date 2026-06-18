@@ -871,7 +871,7 @@ void ParallelCodegen::generateMapWorker() {
     // type=1,flags=0 instead of type=1,flags=EXACT_FLAG. Arithmetic dispatch
     // then falls through to the wrong branch and the worker crashes with
     // "+: operand is not a number, vector, or tensor". See
-    // parallel_codegen.cpp's llvm_parallel_map_task struct comment.
+    // parallel_codegen.cpp's eshkol_parallel_map_task struct comment.
     llvm::Value* item = llvm::UndefValue::get(ctx_.taggedValueType());
     item = ctx_.builder().CreateInsertValue(item,
         ctx_.builder().CreateTrunc(item_type, ctx_.int8Type()), {0});  // type
@@ -988,7 +988,7 @@ void ParallelCodegen::generateFoldWorker() {
 
     // Build arg1 tagged value — extract type (low byte) AND flags (next byte)
     // from the packed arg1_type i64. See parallel_codegen.cpp's
-    // llvm_parallel_fold_task struct comment for the encoding rationale.
+    // eshkol_parallel_fold_task struct comment for the encoding rationale.
     llvm::Value* arg1 = llvm::UndefValue::get(ctx_.taggedValueType());
     arg1 = ctx_.builder().CreateInsertValue(arg1,
         ctx_.builder().CreateTrunc(arg1_type, ctx_.int8Type()), {0});
@@ -1106,7 +1106,7 @@ void ParallelCodegen::generateFilterWorker() {
         ctx_.builder().CreateStructGEP(task_type, task, 3), "result_ptr_i64");
 
     // item_type packs {type byte, flags byte} — same encoding as map task.
-    // See parallel_codegen.cpp's llvm_parallel_map_task struct comment.
+    // See parallel_codegen.cpp's eshkol_parallel_map_task struct comment.
     llvm::Value* item = llvm::UndefValue::get(ctx_.taggedValueType());
     item = ctx_.builder().CreateInsertValue(item,
         ctx_.builder().CreateTrunc(item_type, ctx_.int8Type()), {0});
