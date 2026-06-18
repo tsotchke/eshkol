@@ -8353,6 +8353,12 @@ private:
         if (ast->line > 0) {
             current_source_line = ast->line;
             current_source_column = ast->column;
+            // Mirror into CodegenContext so sub-codegens (e.g. ArithmeticCodegen)
+            // can emit a "file:line:col:" prefix on runtime type errors.
+            if (ctx_) {
+                ctx_->setCurrentSourceLocation(g_source_filepath,
+                                               ast->line, ast->column);
+            }
         }
 
         // DWARF DEBUG INFO: Set source location on builder for subsequent instructions

@@ -3439,6 +3439,19 @@ int main(int argc, char **argv)
                 eshkol_info("JIT running: %s", filepath.c_str());
             }
 
+            // Set source context so runtime type errors carry a
+            // "file:line:col:" prefix (v1.3 source-span errors), matching
+            // the AOT path. Read the file text once for diagnostics.
+            {
+                std::ifstream src_stream(filepath);
+                if (src_stream.is_open()) {
+                    std::string src_text(
+                        (std::istreambuf_iterator<char>(src_stream)),
+                        std::istreambuf_iterator<char>());
+                    eshkol_set_source_context(filepath.c_str(), src_text.c_str());
+                }
+            }
+
             // Architectural fix for the per-form JIT module boundary class:
             //
             // Previously this loop compiled and executed each top-level form

@@ -150,6 +150,7 @@ extern "C" {
     void eshkol_type_error(const char* proc_name, const char* expected_type);
     void eshkol_type_error_with_value(const char* proc_name, const char* expected_type,
                                        const char* actual_type);
+    void eshkol_set_error_location(const char* file, uint32_t line, uint32_t column);
     int64_t eshkol_shapes_equal(const int64_t* shape_a, const int64_t* shape_b, int64_t rank);
     void eshkol_batch_matmul_f64(const double* a, const double* b, double* c,
                                   int64_t batch, int64_t M, int64_t K, int64_t N);
@@ -1014,6 +1015,12 @@ void ReplJITContext::registerRuntimeSymbols() {
     };
     symbols[ES.intern("eshkol_type_error_with_value")] = {
         orc::ExecutorAddr::fromPtr((void*)&::eshkol_type_error_with_value),
+        JITSymbolFlags::Callable | JITSymbolFlags::Exported
+    };
+    // Source-span error location (v1.3): set right before a type error is
+    // raised so the formatter can prefix "file:line:col:".
+    symbols[ES.intern("eshkol_set_error_location")] = {
+        orc::ExecutorAddr::fromPtr((void*)&::eshkol_set_error_location),
         JITSymbolFlags::Callable | JITSymbolFlags::Exported
     };
 

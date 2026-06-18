@@ -298,6 +298,15 @@ private:
     llvm::Value* isADNode(llvm::Value* operand, llvm::Value* base_type);
 
     /**
+     * Emit a call to eshkol_set_error_location() using the codegen's current
+     * source location (file:line:col), so the runtime error formatter can
+     * prefix the message with the failing expression's source position.
+     * No-op (emits nothing) when no line is known. Only call this on a branch
+     * that is about to raise a type error — it must not touch the hot path.
+     */
+    void emitSetErrorLocation();
+
+    /**
      * Emit code to raise a divide-by-zero exception.
      * Creates an exception object and calls eshkol_raise().
      */
