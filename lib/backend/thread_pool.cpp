@@ -709,11 +709,16 @@ void thread_pool_destroy(eshkol_thread_pool_t* pool) {
 // Global thread pool singleton
 static std::mutex g_global_pool_mutex;
 static eshkol_thread_pool_t* g_global_pool = nullptr;
+static bool g_global_pool_atexit_registered = false;
 
 eshkol_thread_pool_t* thread_pool_global(void) {
     std::lock_guard<std::mutex> lock(g_global_pool_mutex);
     if (!g_global_pool) {
         g_global_pool = thread_pool_create_default();
+        if (g_global_pool && !g_global_pool_atexit_registered) {
+            std::atexit(thread_pool_global_shutdown);
+            g_global_pool_atexit_registered = true;
+        }
     }
     return g_global_pool;
 }

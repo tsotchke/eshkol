@@ -107,6 +107,11 @@ static void append_space_separated_link_args(const char* raw_args,
     std::stringstream stream(normalized);
     std::string item;
     while (stream >> item) {
+#ifdef __APPLE__
+        if (item == "-lc++" || item == "-lc++abi") {
+            continue;
+        }
+#endif
         link_args.emplace_back(item);
     }
 }
@@ -4378,7 +4383,6 @@ int main(int argc, char **argv)
         link_args.emplace_back("CoreGraphics");
         link_args.emplace_back("-framework");
         link_args.emplace_back("CoreFoundation");
-        link_args.emplace_back("-lobjc");  // Objective-C runtime
 #endif
 
         append_host_runtime_link_args(link_args);
@@ -4446,14 +4450,12 @@ int main(int argc, char **argv)
         // Add output
         link_args.emplace_back("-o");
         link_args.emplace_back(output);
-#ifndef _WIN32
+#if !defined(_WIN32) && !defined(__APPLE__)
         link_args.emplace_back("-lm");
-#  ifndef __APPLE__
         // libdl: see lib/backend/llvm_codegen.cpp for rationale
         // (dlsym fallback for parallel-worker registration on
         // platforms where the global ctor doesn't fire).
         link_args.emplace_back("-ldl");
-#  endif
 #endif
 
         std::string link_cmd;

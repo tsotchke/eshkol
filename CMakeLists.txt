@@ -29,6 +29,16 @@ endif()
 set(ESHKOL_HOST_CXX_COMPILER "${ESHKOL_HOST_CXX_COMPILER}" CACHE FILEPATH
     "C++ compiler driver used by eshkol-run when linking generated programs" FORCE)
 
+if(APPLE AND EXISTS "/usr/bin/c++" AND
+   (NOT ESHKOL_HOST_CXX_COMPILER_EXPLICIT OR
+    ESHKOL_HOST_CXX_COMPILER MATCHES "/Library/Developer/CommandLineTools/usr/bin/c\\+\\+$"))
+    # Generated executable links run outside CMake's full driver context.
+    # The CLT-internal c++ path can fail to locate libc++; the xcrun shim
+    # preserves Apple's SDK lookup behavior.
+    set(ESHKOL_HOST_CXX_COMPILER "/usr/bin/c++" CACHE FILEPATH
+        "C++ compiler driver used by eshkol-run when linking generated programs" FORCE)
+endif()
+
 if(ESHKOL_USING_MSVC AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
     # Visual Studio's ClangCL toolset drives lld-link directly, so compiler-rt
     # builtins do not get auto-added the way they would through the Clang driver.
@@ -398,7 +408,7 @@ else()
 
     eshkol_find_lite_llvm()
 
-    if(WIN32)
+    if(WIN32 AND NOT MINGW)
         set(ESHKOL_LLVM_USE_CMAKE_PACKAGE TRUE)
         find_package(LibXml2 QUIET)
         set(ESHKOL_WINDOWS_LLVM_HAS_LIBXML2 FALSE)
