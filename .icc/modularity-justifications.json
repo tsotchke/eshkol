@@ -32,7 +32,8 @@
         "lib/backend/collection_codegen.cpp",
         "lib/backend/vm_compiler.c",
         "CMakeLists.txt",
-        "lib/types/type_checker.cpp"
+        "lib/types/type_checker.cpp",
+        "references/r7rs.pdf"
       ],
       "status": "temporary_legacy_boundary",
       "task_id": "eshkol-v1.8-modular-boundaries",
