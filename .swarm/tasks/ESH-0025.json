@@ -1,0 +1,16 @@
+{
+  "id": "ESH-0025",
+  "title": "Quantized tensors q4_0/q8_0 + GPU dequant GEMM + GGUF mmap load",
+  "campaign": "gpu-llm",
+  "brief": "ESHKOL_LANGUAGE_UPDATE_BRIEF.md §3",
+  "status": "pending",
+  "priority": "critical",
+  "preferred_backend": "codex",
+  "preferred_node": "old-donkey",
+  "needs_gpu": true,
+  "goal": "Kimi is GGUF Q4_0 (experts, 97%) / Q8_0 (attn/shared/head). Add q4_0/q8_0 tensor dtypes (GGUF block layout: q4_0=18B/32 weights = f16 scale + 16 packed nibbles; q8_0=34B/32 = f16 scale + 32 int8). GPU dequant kernels (q4_0->f16) + quantized GEMV/GEMM (dequant-in-kernel or dequant-then-cuBLAS), argmax-equal vs CPU reference. Load from mmap'd GGUF tensor (FFI byte buffer + offset) without full copy.",
+  "file_globs": ["lib/core/runtime_tensor_alloc.cpp","lib/backend/gpu/*.cu","lib/core/quant_gguf.c","inc/eshkol/core/runtime.h"],
+  "acceptance": ["q4_0 tensor loads from a GGUF block buffer","q4_0->f16 dequant matches llama.cpp reference","quantized GEMM argmax-equal vs f64 reference on fixed input"],
+  "verification": ["ssh old-donkey 'cd src/eshkol && ./build-cuda/eshkol-run -r /tmp/q4_gemm.esk'"],
+  "blocked_by": ["ESH-0021"]
+}

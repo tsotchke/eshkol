@@ -1,0 +1,16 @@
+{
+  "id": "ESH-0027",
+  "title": "Toolchain: out-of-the-box CUDA build on modern glibc + runtime/compiler lib split",
+  "campaign": "gpu-llm",
+  "brief": "ESHKOL_LANGUAGE_UPDATE_BRIEF.md §5",
+  "status": "pending",
+  "priority": "high",
+  "preferred_backend": "codex",
+  "preferred_node": "old-donkey",
+  "needs_gpu": true,
+  "goal": "(1) CUDA 13.1 on glibc 2.43 fails: CUDA crt/math_functions.h declares rsqrt/rsqrtf without the noexcept glibc 2.43 requires (~lines 629/653 and __func__ macro decls ~6046/6072). CMake should detect glibc>=2.43 + CUDA and apply -D shims / compat header so -DESHKOL_GPU_ENABLED=ON builds out of the box. Default CMAKE_CUDA_HOST_COMPILER to gcc<=14 when system gcc is 15/16 (nvcc 13.x rejects gcc-15). (2) Separate libeshkol-runtime (no LLVM) from the compiler lib so compiled a.out never needs LLVM at link (stale build-cuda leaked llvm::BasicBlock symbols into the runtime link).",
+  "file_globs": ["CMakeLists.txt","cmake/*.cmake"],
+  "acceptance": ["fresh -DESHKOL_GPU_ENABLED=ON build on glibc 2.43 + CUDA 13.1 succeeds with no manual header patch","compiled a.out links without any llvm symbols (nm a.out | grep -c llvm == 0)"],
+  "verification": ["ssh old-donkey 'cd src/eshkol && rm -rf build-cuda-fresh && cmake -B build-cuda-fresh -DESHKOL_GPU_ENABLED=ON && cmake --build build-cuda-fresh -j'"],
+  "blocked_by": []
+}

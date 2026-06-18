@@ -1,0 +1,16 @@
+{
+  "id": "ESH-0028",
+  "title": "Autodiff over GPU/f16 tensors + fused activations + native Poincare ops",
+  "campaign": "gpu-llm",
+  "brief": "ESHKOL_LANGUAGE_UPDATE_BRIEF.md §6",
+  "status": "pending",
+  "priority": "medium",
+  "preferred_backend": "claude",
+  "preferred_node": "old-donkey",
+  "needs_gpu": true,
+  "goal": "Keep Eshkol's edge: autodiff (gradient/jacobian/div/curl/laplacian) over GPU/f16 tensors so ORC/curvature routing priors + a self-speculative draft head can be learned on-device. Fused GPU activations (silu/gelu/sigmoid/softmax). Native differentiable Poincare/hyperbolic distance (today hand-rolled from tensor-dot/acosh).",
+  "file_globs": ["lib/backend/autodiff_codegen.cpp","lib/backend/tensor_activation_codegen.cpp","lib/core/runtime_autodiff.cpp"],
+  "acceptance": ["gradient through an f16 GPU matmul matches f64 finite-difference within tolerance","(poincare-distance a b) native + differentiable","fused silu/gelu GPU kernels match elementwise reference"],
+  "verification": ["ssh old-donkey 'cd src/eshkol && ./build-cuda/eshkol-run -r /tmp/gpu_autodiff.esk'"],
+  "blocked_by": ["ESH-0021"]
+}
