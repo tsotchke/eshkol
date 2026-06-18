@@ -238,6 +238,36 @@ llvm::Value* TensorCodegen::applyDtypeToTensor(llvm::Value* tensor_val,
     return tensor_val;
 }
 
+// Set result_ptr's dtype from two input tensor pointers (binary op promotion).
+// All three are raw tensor pointers (not tagged values).
+void TensorCodegen::emitDtypePropagateBinary(llvm::Value* result_ptr,
+                                             llvm::Value* a_ptr,
+                                             llvm::Value* b_ptr) {
+    auto& builder = ctx_.builder();
+    llvm::Function* fn = ctx_.module().getFunction("eshkol_tensor_result_dtype_binary");
+    if (!fn) {
+        llvm::FunctionType* ft = llvm::FunctionType::get(
+            ctx_.ptrType(), {ctx_.ptrType(), ctx_.ptrType(), ctx_.ptrType()}, false);
+        fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+                                    "eshkol_tensor_result_dtype_binary", &ctx_.module());
+    }
+    builder.CreateCall(fn, {result_ptr, a_ptr, b_ptr});
+}
+
+// Set result_ptr's dtype from a single input tensor pointer (unary op / view).
+void TensorCodegen::emitDtypePropagateUnary(llvm::Value* result_ptr,
+                                            llvm::Value* a_ptr) {
+    auto& builder = ctx_.builder();
+    llvm::Function* fn = ctx_.module().getFunction("eshkol_tensor_result_dtype_unary");
+    if (!fn) {
+        llvm::FunctionType* ft = llvm::FunctionType::get(
+            ctx_.ptrType(), {ctx_.ptrType(), ctx_.ptrType()}, false);
+        fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+                                    "eshkol_tensor_result_dtype_unary", &ctx_.module());
+    }
+    builder.CreateCall(fn, {result_ptr, a_ptr});
+}
+
 // (tensor-dtype t) -> symbol naming the tensor's element dtype.
 llvm::Value* TensorCodegen::tensorDtype(const eshkol_operations_t* op) {
     if (op->call_op.num_vars != 1) {

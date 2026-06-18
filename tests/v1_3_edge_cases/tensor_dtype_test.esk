@@ -52,3 +52,13 @@
 (display "f16-pi-lossy: ")
 (display (if (= (tensor-ref p 0) 3.14159265358979) "FAIL-no-loss" "ok-lossy"))
 (newline)
+
+;; 6. dtype propagates through elementwise arithmetic (binary promotion).
+(define ah (make-tensor '(4) 2.0 :dtype 'f16))
+(define bh (make-tensor '(4) 3.0 :dtype 'f16))
+(define cf (make-tensor '(4) 1.0 :dtype 'f32))
+(define df (make-tensor '(4) 1.0))  ; f64
+(display "prop-f16+f16: ") (display (tensor-dtype (tensor-add ah bh))) (newline)
+(display "prop-f16*f32: ") (display (tensor-dtype (tensor-mul ah cf))) (newline)
+(display "prop-f16+f64: ") (display (tensor-dtype (tensor-add ah df))) (newline)
+(display "prop-value:   ") (display (tensor-ref (tensor-add ah bh) 0)) (newline)

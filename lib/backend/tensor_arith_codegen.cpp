@@ -278,6 +278,8 @@ llvm::Value* TensorCodegen::rawTensorArithmetic(llvm::Value* arg1, llvm::Value* 
 
     // Loop exit - pack tensor result as consolidated HEAP_PTR
     ctx_.builder().SetInsertPoint(loop_exit);
+    // Propagate element dtype from the operands (binary promotion).
+    emitDtypePropagateBinary(typed_result_tensor_ptr, tensor1_ptr, tensor2_ptr);
     return tagged_.packHeapPtr(typed_result_tensor_ptr);
 }
 
@@ -656,6 +658,7 @@ llvm::Value* TensorCodegen::rawTensorArithmeticSIMD(llvm::Value* arg1, llvm::Val
 
     // Final exit from SIMD fast path - store result and branch to merge
     builder.SetInsertPoint(final_exit);
+    emitDtypePropagateBinary(typed_result_tensor_ptr, tensor1_ptr, tensor2_ptr);
     builder.CreateStore(tagged_.packHeapPtr(typed_result_tensor_ptr), shared_result);
     builder.CreateBr(arith_done);
 

@@ -689,6 +689,13 @@ public:
     /** Apply a dtype code to an already-built tensor value (in place). */
     llvm::Value* applyDtypeToTensor(llvm::Value* tensor_val, int64_t dtype_code);
 
+    /** Set result tensor's dtype from two input tensor ptrs (binary promotion). */
+    void emitDtypePropagateBinary(llvm::Value* result_ptr, llvm::Value* a_ptr,
+                                  llvm::Value* b_ptr);
+
+    /** Set result tensor's dtype from one input tensor ptr (unary op). */
+    void emitDtypePropagateUnary(llvm::Value* result_ptr, llvm::Value* a_ptr);
+
     /** (tensor-dtype t) -> symbol naming the element dtype. */
     llvm::Value* tensorDtype(const eshkol_operations_t* op);
 

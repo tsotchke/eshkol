@@ -202,6 +202,43 @@ void* eshkol_tensor_cast_alloc(void* arena, void* tensor_ptr, int64_t dtype) {
     return dst;
 }
 
+// Promote two dtype codes to the result dtype of a binary tensor op.
+// Rule (precision-preserving): f64 dominates; then f32; mixed 16-bit
+// (f16+bf16) widen to f32 to avoid silent cross-format loss; equal dtypes are
+// preserved; i8 combined with any float yields that float. This lets matmul/
+// elementwise ops keep the logical precision flowing toward the GPU dispatch.
+static int64_t promote_dtype(uint64_t a, uint64_t b) {
+    if (a == b) return (int64_t)a;
+    if (a == ESHKOL_TENSOR_DTYPE_F64 || b == ESHKOL_TENSOR_DTYPE_F64)
+        return ESHKOL_TENSOR_DTYPE_F64;
+    if (a == ESHKOL_TENSOR_DTYPE_F32 || b == ESHKOL_TENSOR_DTYPE_F32)
+        return ESHKOL_TENSOR_DTYPE_F32;
+    // Remaining combinations are among {f16, bf16, i8}, all distinct here.
+    // f16 vs bf16 -> f32; i8 vs (f16|bf16) -> the float dtype.
+    if (a == ESHKOL_TENSOR_DTYPE_I8) return (int64_t)b;
+    if (b == ESHKOL_TENSOR_DTYPE_I8) return (int64_t)a;
+    return ESHKOL_TENSOR_DTYPE_F32;  // f16 vs bf16
+}
+
+// Set a result tensor's dtype from two input tensors (binary op). Null inputs
+// are treated as f64. Returns the result pointer for chaining.
+void* eshkol_tensor_result_dtype_binary(void* result, void* a, void* b) {
+    if (!result) return result;
+    uint64_t da = a ? reinterpret_cast<eshkol_tensor_t*>(a)->dtype : ESHKOL_TENSOR_DTYPE_F64;
+    uint64_t db = b ? reinterpret_cast<eshkol_tensor_t*>(b)->dtype : ESHKOL_TENSOR_DTYPE_F64;
+    reinterpret_cast<eshkol_tensor_t*>(result)->dtype =
+        (uint64_t)promote_dtype(da, db);
+    return result;
+}
+
+// Set a result tensor's dtype from a single input tensor (unary op / view).
+void* eshkol_tensor_result_dtype_unary(void* result, void* a) {
+    if (!result) return result;
+    reinterpret_cast<eshkol_tensor_t*>(result)->dtype =
+        a ? reinterpret_cast<eshkol_tensor_t*>(a)->dtype : ESHKOL_TENSOR_DTYPE_F64;
+    return result;
+}
+
 // Map a dtype symbol name to its code (used by codegen when the dtype name is
 // only known as a runtime string). Returns f64 for unknown names.
 int64_t eshkol_tensor_dtype_from_name(const char* name) {
