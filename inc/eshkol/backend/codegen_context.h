@@ -239,6 +239,20 @@ public:
     llvm::GlobalVariable* outerAdNodeDepth() { return outer_ad_node_depth_; }
     void setOuterAdNodeDepth(llvm::GlobalVariable* var) { outer_ad_node_depth_ = var; }
 
+    // === Current Source Location (for runtime error prefixes, v1.3) ===
+    // The main codegen keeps these in sync with the AST node it is lowering
+    // (file path + the failing expression's line/column). Sub-codegens such
+    // as ArithmeticCodegen read them to emit a runtime error-location call
+    // so type errors carry a "file:line:col:" prefix.
+    const std::string& currentSourceFile() const { return current_source_file_; }
+    uint32_t currentSourceLine() const { return current_source_line_; }
+    uint32_t currentSourceColumn() const { return current_source_column_; }
+    void setCurrentSourceLocation(const std::string& file, uint32_t line, uint32_t column) {
+        current_source_file_ = file;
+        current_source_line_ = line;
+        current_source_column_ = column;
+    }
+
     // === Mode Flags ===
 
     bool isLibraryMode() const { return library_mode_; }
@@ -335,6 +349,11 @@ private:
     llvm::GlobalVariable* gradient_x_degree_ = nullptr;
     llvm::GlobalVariable* outer_ad_node_stack_ = nullptr;
     llvm::GlobalVariable* outer_ad_node_depth_ = nullptr;
+
+    // Current source location (for runtime error "file:line:col:" prefixes)
+    std::string current_source_file_;
+    uint32_t current_source_line_ = 0;
+    uint32_t current_source_column_ = 0;
 
     // Mode flags
     bool library_mode_ = false;

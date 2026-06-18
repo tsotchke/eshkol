@@ -194,6 +194,18 @@ void eshkol_type_error_with_operand(const char* proc_name,
                                     const char* expected_type,
                                     const eshkol_tagged_value_t* actual);
 
+/*
+ * Source location for the *next* runtime error (v1.3 source-span errors).
+ *
+ * Codegen emits eshkol_set_error_location(file, line, col) on the type-error
+ * branch immediately before raising; the error formatter prepends a
+ * "file:line:col:" prefix to the message. `file` must be a stable C string
+ * (codegen emits a global). Thread-local. Cleared automatically is not
+ * required — the location is overwritten at the next error site.
+ */
+void eshkol_set_error_location(const char* file, uint32_t line, uint32_t column);
+void eshkol_clear_error_location(void);
+
 /* ============================================================================
  * Source-Span Stack Traces (v1.3)
  *
