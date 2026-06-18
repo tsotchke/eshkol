@@ -640,6 +640,7 @@ static struct option long_options[] = {
     {"target", required_argument, nullptr, 261},
     {"require-vm-entry", required_argument, nullptr, 262},
     {"require-vm-entry-zero-arg", required_argument, nullptr, 263},
+    {"features", no_argument, nullptr, 264},
     {0, 0, 0, 0}
 };
 
@@ -3124,6 +3125,51 @@ int main(int argc, char **argv)
         case 258:
             printf("Eshkol Compiler v%s\n", ESHKOL_VER);
             return 0;
+        case 264: {
+            /* Authoritative capability introspection (GPU-LLM brief §5).
+             * Machine-parseable KEY=VALUE lines so a mesh deploy can assert
+             * a build has the capabilities a workload needs BEFORE scheduling
+             * it — the version-drift failure (old-donkey shipped a build
+             * without gpu-matmul) becomes a one-line precondition check:
+             *   eshkol-run --features | grep -q '^gpu=on'
+             * Values are compile-time facts about THIS binary. */
+            printf("version=%s\n", ESHKOL_VER);
+#if defined(ESHKOL_LLVM_BACKEND_ENABLED)
+            printf("llvm-backend=on\n");
+#else
+            printf("llvm-backend=off\n");
+#endif
+#if defined(ESHKOL_GPU_ENABLED)
+            printf("gpu=on\n");
+#else
+            printf("gpu=off\n");
+#endif
+#if defined(ESHKOL_GPU_METAL_ENABLED)
+            printf("gpu-metal=on\n");
+#else
+            printf("gpu-metal=off\n");
+#endif
+#if defined(ESHKOL_GPU_CUDA_ENABLED) || defined(ESHKOL_GPU_CUDA)
+            printf("gpu-cuda=on\n");
+#else
+            printf("gpu-cuda=off\n");
+#endif
+#if defined(ESHKOL_BLAS_ENABLED)
+            printf("blas=on\n");
+#else
+            printf("blas=off\n");
+#endif
+#if defined(ESHKOL_XLA_ENABLED)
+            printf("xla=on\n");
+#else
+            printf("xla=off\n");
+#endif
+            /* Tensor element dtypes this build supports. f64 is always
+             * present; the GPU-LLM dtype work (brief §1) flips the others
+             * on as it lands, so deploys can gate on e.g. 'dtypes=.*f16'. */
+            printf("tensor-dtypes=f64\n");
+            return 0;
+        }
         case 259:
             compile_only = 1;
             break;
