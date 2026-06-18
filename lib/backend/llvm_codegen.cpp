@@ -26012,15 +26012,22 @@ private:
                 builder->getPtrTy(),   // C
                 int64_type,            // M
                 int64_type,            // K
-                int64_type             // N
+                int64_type,            // N
+                builder->getInt32Ty()  // dtype (eshkol_tensor_dtype_t)
             };
             FunctionType* func_type = FunctionType::get(builder->getVoidTy(), params, false);
             matmul_func = Function::Create(func_type, Function::ExternalLinkage,
                                            "eshkol_matmul_dispatch", module.get());
         }
 
-        // Call the runtime matmul dispatch (routes to GPU or CPU BLAS)
-        builder->CreateCall(matmul_func, {a_elems, b_elems, c_elems, M, K, N});
+        // Result dtype (set by dtype propagation, ESH-0020) routes f16/bf16
+        // operands to the cuBLAS GemmEx tensor-core path (ESH-0021).
+        Value* mm_dtype_i64 = builder->CreateLoad(int64_type,
+            builder->CreateStructGEP(tensor_type, result_ptr, 4));
+        Value* mm_dtype = builder->CreateTrunc(mm_dtype_i64, builder->getInt32Ty());
+
+        // Call the runtime matmul dispatch (routes to GPU GemmEx / GPU / CPU BLAS)
+        builder->CreateCall(matmul_func, {a_elems, b_elems, c_elems, M, K, N, mm_dtype});
         if (after_matmul_compute) {
             builder->CreateBr(after_matmul_compute);
             builder->SetInsertPoint(after_matmul_compute);

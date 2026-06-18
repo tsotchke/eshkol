@@ -460,8 +460,11 @@ int eshkol_gpu_layernorm_backward_f64(
  * @param K Columns of A / Rows of B
  * @param N Columns of B and C
  */
+/* dtype is the result tensor's element dtype (eshkol_tensor_dtype_t code:
+ * 0=f64, 1=f32, 2=f16, 3=bf16, 4=i8). f16/bf16 take the cuBLAS GemmEx
+ * tensor-core path on CUDA (ESH-0021); other dtypes use the f64 dispatch. */
 void eshkol_matmul_dispatch(const double* A, const double* B, double* C,
-                             uint64_t M, uint64_t K, uint64_t N);
+                             uint64_t M, uint64_t K, uint64_t N, int32_t dtype);
 
 #ifdef __cplusplus
 }
