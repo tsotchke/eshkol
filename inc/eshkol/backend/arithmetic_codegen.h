@@ -251,6 +251,13 @@ public:
      */
     void emitTypeError(const char* message);
 
+    /* Raise a type error naming the offending operand's runtime type
+     * ("expected <expected>, got <actual-type>"). `offending` must be a
+     * tagged value; it is stored to an alloca and passed by pointer (a
+     * 16-byte struct by value does not survive the C ABI boundary). */
+    void emitOperandTypeError(const char* proc_name, const char* expected_type,
+                              llvm::Value* offending);
+
     /**
      * Convert operand to dual number (promote constants to dual with zero tangent).
      * Public so other codegen modules can route non-arithmetic ops — modulo,
