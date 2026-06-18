@@ -18,7 +18,66 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cstdint>
+
+/*
+ * Current error source location (v1.3 source-span errors).
+ *
+ * Codegen emits a call to eshkol_set_error_location(file, line, col) on the
+ * type-error branch immediately before raising, so the formatter can prefix
+ * the message with "file:line:col:". Thread-local so concurrent workers don't
+ * clobber one another. The file pointer is a static global string emitted by
+ * codegen (stable for the program's lifetime); we hold the pointer, not a copy.
+ *
+ * Hot paths never touch this: it is only written on an error branch that is
+ * about to abort, and only read inside the error formatter.
+ */
+#ifdef __clang__
+#  define ESHKOL_TLS __thread
+#elif defined(__GNUC__)
+#  define ESHKOL_TLS __thread
+#elif defined(_MSC_VER)
+#  define ESHKOL_TLS __declspec(thread)
+#else
+#  define ESHKOL_TLS
+#endif
+
+static ESHKOL_TLS const char* g_error_loc_file = nullptr;
+static ESHKOL_TLS uint32_t g_error_loc_line = 0;
+static ESHKOL_TLS uint32_t g_error_loc_column = 0;
+
 extern "C" {
+
+void eshkol_set_error_location(const char* file, uint32_t line, uint32_t column) {
+    g_error_loc_file = file;
+    g_error_loc_line = line;
+    g_error_loc_column = column;
+}
+
+void eshkol_clear_error_location(void) {
+    g_error_loc_file = nullptr;
+    g_error_loc_line = 0;
+    g_error_loc_column = 0;
+}
+
+/* Render the current "file:line:col: " prefix into `buf`. Returns the number
+ * of bytes written (0 if no location is set). The trailing space is included
+ * so callers can concatenate the message directly. */
+static size_t eshkol_format_error_location_prefix(char* buf, size_t buflen) {
+    if (g_error_loc_line == 0 || buflen == 0) {
+        return 0;
+    }
+    int n;
+    const char* file = g_error_loc_file ? g_error_loc_file : "<unknown>";
+    if (g_error_loc_column > 0) {
+        n = std::snprintf(buf, buflen, "%s:%u:%u: ",
+                          file, g_error_loc_line, g_error_loc_column);
+    } else {
+        n = std::snprintf(buf, buflen, "%s:%u: ", file, g_error_loc_line);
+    }
+    if (n < 0) return 0;
+    return (size_t)n < buflen ? (size_t)n : buflen - 1;
+}
 
 void eshkol_runtime_fatal(eshkol_exception_type_t type, const char* fmt, ...) {
     char buf[512];
@@ -51,13 +110,18 @@ void eshkol_type_error(const char* proc_name, const char* expected_type) {
 
 void eshkol_type_error_with_value(const char* proc_name, const char* expected_type,
                                   const char* actual_type) {
-    eshkol_error("Type error in %s: expected %s, got %s",
+    char prefix[320];
+    eshkol_format_error_location_prefix(prefix, sizeof(prefix));
+
+    eshkol_error("%sType error in %s: expected %s, got %s",
+                 prefix,
                  proc_name ? proc_name : "<unknown>",
                  expected_type ? expected_type : "<type>",
                  actual_type ? actual_type : "<unknown>");
 
     eshkol_runtime_fatal(ESHKOL_EXCEPTION_TYPE_ERROR,
-                         "Type error in %s: expected %s, got %s",
+                         "%sType error in %s: expected %s, got %s",
+                         prefix,
                          proc_name ? proc_name : "<unknown>",
                          expected_type ? expected_type : "<type>",
                          actual_type ? actual_type : "<unknown>");
