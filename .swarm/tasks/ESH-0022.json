@@ -1,0 +1,16 @@
+{
+  "id": "ESH-0022",
+  "title": "Expose gpu-matmul/gpu-elementwise/gpu-softmax/gpu-reduce/gpu-transpose as real builtins (LLVM + VM)",
+  "campaign": "gpu-llm",
+  "brief": "ESHKOL_LANGUAGE_UPDATE_BRIEF.md §2 Problem A",
+  "status": "pending",
+  "priority": "critical",
+  "preferred_backend": "codex",
+  "preferred_node": "old-donkey",
+  "needs_gpu": true,
+  "goal": "gpu-matmul/gpu-elementwise/gpu-softmax/gpu-reduce/gpu-transpose are documented in ESHKOL_QUICK_REFERENCE.md but are 'Unknown function' in both the LLVM-compiled and VM paths. Wire them as real builtins in both paths, dispatching to the existing vm_gpu_dispatch ops / Metal+CUDA kernels.",
+  "file_globs": ["lib/backend/llvm_codegen.cpp","lib/backend/vm_compiler.c","lib/backend/vm_native.c","docs/ESHKOL_QUICK_REFERENCE.md"],
+  "acceptance": ["(gpu-matmul A B) works in -r AND compiled (no 'Unknown function')","each of the 5 gpu-* builtins resolves in both paths","docs match reality"],
+  "verification": ["./build/eshkol-run -r /tmp/gpu_builtins.esk","./build/eshkol-run /tmp/gpu_builtins.esk -o /tmp/gb && /tmp/gb"],
+  "blocked_by": []
+}

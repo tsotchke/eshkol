@@ -1,0 +1,16 @@
+{
+  "id": "ESH-0026",
+  "title": "Persistent GPU runtime / server mode + C ABI FFI + gpu-buffer handles",
+  "campaign": "gpu-llm",
+  "brief": "ESHKOL_LANGUAGE_UPDATE_BRIEF.md §4",
+  "status": "pending",
+  "priority": "high",
+  "preferred_backend": "codex",
+  "preferred_node": "old-donkey",
+  "needs_gpu": true,
+  "goal": "Per-token decode can't pay stdlib.bc reload + CUDA ctx init each call. Provide ANY of: (a) persistent server mode that loads stdlib + holds the CUDA context once then accepts many eval requests (socket/stdin loop); (b) clean extern C ABI so a C++ MoE worker calls an Eshkol-compiled GPU GEMM/FFN as a linked fn; (c) gpu-buffer handles surviving across calls so resident expert weights aren't re-uploaded per token.",
+  "file_globs": ["lib/repl/repl_jit.cpp","exe/eshkol-run.cpp","lib/ffi/eshkol_ffi.cpp","inc/eshkol/eshkol_ffi.h"],
+  "acceptance": ["a warm server answers >=1000 GEMM eval requests with no per-call stdlib reload","a gpu-buffer handle survives across N eval calls (weights uploaded once)"],
+  "verification": ["ssh old-donkey 'cd src/eshkol && ./scripts/bench_persistent_decode.sh'"],
+  "blocked_by": ["ESH-0023"]
+}

@@ -1,0 +1,16 @@
+{
+  "id": "ESH-0023",
+  "title": "GPU dispatch in the AOT-compiled path (not VM-only)",
+  "campaign": "gpu-llm",
+  "brief": "ESHKOL_LANGUAGE_UPDATE_BRIEF.md §2 Problem B",
+  "status": "pending",
+  "priority": "critical",
+  "preferred_backend": "codex",
+  "preferred_node": "old-donkey",
+  "needs_gpu": true,
+  "goal": "An AOT-compiled binary (eshkol-run file.esk -> a.out) runs matmul on CPU BLAS even in the CUDA build (peak GPU ~11%); only VM/JIT (-r) dispatches to GPU. Make the cost-model GPU dispatch available to compiled binaries so production inference (which compiles) uses the GPU.",
+  "file_globs": ["lib/backend/tensor_codegen.cpp","lib/backend/llvm_codegen.cpp","lib/core/runtime_tensor_math.cpp"],
+  "acceptance": ["compiled a.out doing a 1024x1024 matmul shows GPU util >50% on RTX 3050","compiled and -r produce identical results"],
+  "verification": ["ssh old-donkey 'cd src/eshkol && ./build-cuda/eshkol-run /tmp/mm.esk -o /tmp/mm && nvidia-smi dmon -c 3 & /tmp/mm'"],
+  "blocked_by": ["ESH-0022"]
+}
