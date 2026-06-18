@@ -118,6 +118,7 @@
               try {
                 window._vmOutput = '';
                 window._vmStderr = '';
+                window._eshkolVM.ccall('repl_reset', null, [], []);
                 window._eshkolVM.cwrap('repl_eval', 'string', ['string'])(code);
                 if (window._vmStderr) {
                   output.textContent = window._vmStderr.replace(/^WARNING: /gm, 'error: ');

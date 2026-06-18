@@ -50,8 +50,10 @@ echo &#39;(display &quot;Hello, Eshkol!&quot;)&#39; &gt; hello.esk
 eshkol-run hello.esk -o hello
 ./hello</code></pre>
 <p><strong>Requirements</strong>: LLVM 21, C++20 compiler, CMake 3.14+,
-Ninja <strong>Platforms</strong>: Linux, macOS (x86-64, ARM64), Windows
-(native x86-64)</p>
+Ninja, native image codecs on Linux (<code>libpng-dev</code>,
+<code>libjpeg-dev</code>, <code>libwebp-dev</code>; macOS uses
+ImageIO/CoreGraphics) <strong>Platforms</strong>: Linux, macOS (x86-64,
+ARM64), Windows (native x86-64)</p>
 <p><strong>Web REPL</strong>: Visit <a
 href="https://eshkol.ai">eshkol.ai</a> for an interactive Eshkol
 environment without installation — includes a full REPL, tutorials, and

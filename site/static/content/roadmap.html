@@ -401,10 +401,10 @@ main-thread stack on Darwin/Linux/Windows (linker flags wired into both
 single-step and compiled-files link paths); 100K-frame recursion-depth
 check with typed exception</label></li>
 <li><label><input type="checkbox" checked="" />Image I/O
-(PNG/JPEG/WebP/BMP read/write/resize) — backed by native
-platform/system codec APIs (ImageIO/CoreGraphics on macOS, system
-libpng/libjpeg/libwebp on Linux, GDI+ on Windows) so the active backend
-no longer depends on vendored third-party media decoders</label></li>
+(PNG/JPEG/WebP/BMP read/write/resize) — backed by native platform/system
+codec APIs (ImageIO/CoreGraphics on macOS, system libpng/libjpeg/libwebp
+on Linux, GDI+ on Windows) so the active backend no longer depends on
+vendored third-party media decoders</label></li>
 <li><label><input type="checkbox" checked="" />CSV/DataFrame (tabular
 data loading for ML pipelines)</label></li>
 <li><label><input type="checkbox" checked="" />Improved error messages
@@ -425,6 +425,12 @@ tracked as v1.3 carry-forward.</label></li>
 regression suite (62 tests) wired into <code>run_all_tests.sh</code> and
 a new <code>linux-x64-asan-ubsan</code> CI lane. Includes 3 shell-style
 tests for compile-time diagnostics.</label></li>
+<li><label><input type="checkbox" checked="" />Tagged release artifact
+contract: the GitHub release workflow validates the full 16-asset
+platform matrix before publishing (Linux x64/ARM64 lite/XLA/CUDA, macOS
+arm64/x64 lite/XLA, Windows x64/ARM64 lite/XLA/CUDA) and emits
+<code>SHA256SUMS.txt</code>; published as the <code>v1.2.3-scale</code>
+packaging closeout.</label></li>
 <li><label><input type="checkbox" checked="" />Stdlib correctness: user
 <code>(define (foo …))</code> after <code>(require     stdlib)</code>
 cleanly shadows stdlib’s <code>foo</code> at link time (LinkOnceODR
@@ -458,18 +464,25 @@ fixes (HIGH), 36 silent-swallow sites surfaced (HIGH), ReDoS protection
 PLANNED</h2>
 <p><strong>Focus:</strong> Make the language a joy to use
 day-to-day.</p>
-<ul class="task-list">
-<li><label><input type="checkbox" />Full R7RS library system
-(<code>define-library</code> / <code>import</code> with renaming and
-prefixing)</label></li>
-<li><label><input type="checkbox" />String interpolation
+<ul>
+<li>[~] Full R7RS library system: <code>define-library</code> exports
+work end-to-end; <code>(rename (m) (a b))</code> import works.
+<code>(prefix (m) p-)</code> currently requires an explicit
+<code>only</code> or <code>rename</code> clause — bare prefix over the
+module’s whole export list is the remaining gap.</li>
+<li><label><input type="checkbox" checked="" />String interpolation
 (<code>~{expr}</code> within strings)</label></li>
-<li><label><input type="checkbox" />Named keyword arguments
+<li><label><input type="checkbox" checked="" />Named keyword arguments
 (<code>(f #:key value)</code>)</label></li>
-<li><label><input type="checkbox" />Pattern matching in <code>let</code>
-bindings (destructuring <code>let-match</code>)</label></li>
-<li><label><input type="checkbox" />Profile-guided optimization (runtime
-profiling feeds codegen)</label></li>
+<li><label><input type="checkbox" checked="" />Pattern matching in
+<code>let</code> bindings (destructuring
+<code>let-match</code>)</label></li>
+<li>[~] Profile-guided optimization — build-time scaffold landed:
+<code>cmake -DESHKOL_PGO=generate</code> instruments,
+<code>-DESHKOL_PGO=use     -DESHKOL_PGO_PROFILE=&lt;merged.profdata&gt;</code>
+consumes. Workload selection + canonical merge step (the “what do we
+train on?” side) is the remaining gap; the codegen-side machinery is
+ready.</li>
 <li><label><input type="checkbox" />Whole-program optimization
 (cross-module inlining and dead code elimination)</label></li>
 <li><label><input type="checkbox" checked="" /><strong>Native media
@@ -477,12 +490,12 @@ handling, no vendoring</strong>: image I/O uses native platform/system
 codec APIs (ImageIO/CoreGraphics on macOS, system libpng/libjpeg/libwebp
 on Linux, GDI+ on Windows). Going forward the project does not vendor
 third-party media decoders.</label></li>
-<li><label><input type="checkbox" />AD <code>input2</code> plumbing for
-conv2d / batchnorm / layernorm / matmul / attention backward passes
-(forward-pass tape-node creation currently leaves <code>input2</code>
-null; the backward kernels in
-<code>lib/backend/tensor_backward.cpp</code> already gate on
-<code>if (node-&gt;input2) ...</code>).</label></li>
+<li><label><input type="checkbox" checked="" />AD <code>input2</code>
+plumbing for <code>tensor-matmul</code> — verified by
+<code>gradient</code> smoke probe: gradient flows to the kernel side
+(input2). Conv2d / batchnorm / layernorm / attention forward sites still
+leave <code>input2</code> null in their tape nodes and are tracked
+separately.</label></li>
 </ul>
 <hr />
 <h2 id="v1.4-connection-july-2026---planned">v1.4-connection (July 2026)
