@@ -334,6 +334,7 @@ static const BuiltinDef BUILTINS[] = {
     {"tensor-transpose", 416, 1}, {"transpose", 416, 1},
     {"flatten", 420, 1}, {"zeros", 417, 1}, {"ones", 418, 1},
     {"arange", 419, 1},
+    {"tensor-dtype", 421, 1}, {"tensor-cast", 422, 2},
     {"matmul", 440, 2}, {"gpu-matmul", 440, 2},
     {"tensor-add", 441, 2}, {"tensor-sub", 442, 2},
     {"tensor-mul", 443, 2}, {"tensor-div", 444, 2},

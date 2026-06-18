@@ -72,6 +72,7 @@ static VmTensor* vm_tensor_binary_op(VmRegionStack* rs, const VmTensor* a,
 
     VmTensor* out = vm_tensor_new(rs, out_shape, out_dims);
     if (!out) return NULL;
+    out->dtype = vm_tensor_promote_dtype(a, b);
 
     for (int64_t i = 0; i < out->total; i++) {
         int64_t ai = vm_broadcast_src_index(i, out_shape, out_dims,
@@ -127,6 +128,7 @@ static VmTensor* vm_tensor_unary_op(VmRegionStack* rs, const VmTensor* t, VmUnar
 
     VmTensor* out = vm_tensor_new(rs, t->shape, t->n_dims);
     if (!out) return NULL;
+    out->dtype = t->dtype;
 
     /* Handle non-contiguous source */
     int64_t expected_strides[VM_TENSOR_MAX_DIMS];
@@ -191,6 +193,7 @@ static VmTensor* vm_tensor_scale(VmRegionStack* rs, const VmTensor* t, double s)
     if (!t) return NULL;
     VmTensor* out = vm_tensor_new(rs, t->shape, t->n_dims);
     if (!out) return NULL;
+    out->dtype = t->dtype;
     for (int64_t i = 0; i < out->total; i++) {
         out->data[i] = t->data[i] * s;
     }
@@ -212,6 +215,7 @@ static VmTensor* vm_tensor_matmul(VmRegionStack* rs, const VmTensor* a, const Vm
     int64_t out_shape[2] = { M, N };
     VmTensor* out = vm_tensor_zeros(rs, out_shape, 2);
     if (!out) return NULL;
+    out->dtype = vm_tensor_promote_dtype(a, b);
 
     for (int64_t i = 0; i < M; i++) {
         for (int64_t k = 0; k < K; k++) {
@@ -236,6 +240,7 @@ static VmTensor* vm_tensor_batch_matmul(VmRegionStack* rs, const VmTensor* a, co
     int64_t out_shape[3] = { B, M, N };
     VmTensor* out = vm_tensor_zeros(rs, out_shape, 3);
     if (!out) return NULL;
+    out->dtype = vm_tensor_promote_dtype(a, b);
 
     for (int64_t batch = 0; batch < B; batch++) {
         const double* a_ptr = a->data + batch * M * K;
@@ -300,6 +305,7 @@ static VmTensor* vm_tensor_reduce(VmRegionStack* rs, const VmTensor* t,
 
     VmTensor* out = vm_tensor_new(rs, out_shape, out_dims);
     if (!out) return NULL;
+    out->dtype = t->dtype;
 
     /* Initialize based on op */
     for (int64_t i = 0; i < out->total; i++) {
@@ -463,6 +469,7 @@ static VmTensor* vm_tensor_softmax(VmRegionStack* rs, const VmTensor* t, int axi
 
     VmTensor* out = vm_tensor_new(rs, t->shape, t->n_dims);
     if (!out) return NULL;
+    out->dtype = t->dtype;
 
     /* Copy source data, respecting non-contiguous strides */
     {
@@ -603,6 +610,7 @@ static VmTensor* vm_tensor_conv2d(VmRegionStack* rs, const VmTensor* input,
     int64_t out_shape[4] = { batch, out_c, oH, oW };
     VmTensor* out = vm_tensor_zeros(rs, out_shape, 4);
     if (!out) return NULL;
+    out->dtype = vm_tensor_promote_dtype(input, kernel);
 
     /* Strides for 4D indexing (contiguous, row-major) */
     int64_t in_s0 = in_c * H * W, in_s1 = H * W, in_s2 = W;
@@ -653,6 +661,7 @@ static VmTensor* vm_tensor_maxpool2d(VmRegionStack* rs, const VmTensor* input,
     int64_t out_shape[4] = { batch, chans, oH, oW };
     VmTensor* out = vm_tensor_new(rs, out_shape, 4);
     if (!out) return NULL;
+    out->dtype = input->dtype;
 
     int64_t in_s0 = chans * H * W, in_s1 = H * W, in_s2 = W;
     int64_t o_s0 = chans * oH * oW, o_s1 = oH * oW, o_s2 = oW;
@@ -691,6 +700,7 @@ static VmTensor* vm_tensor_layer_norm(VmRegionStack* rs, const VmTensor* t,
 
     VmTensor* out = vm_tensor_new(rs, t->shape, t->n_dims);
     if (!out) return NULL;
+    out->dtype = t->dtype;
 
     int64_t last_dim = t->shape[t->n_dims - 1];
     int64_t n_slices = t->total / last_dim;
@@ -769,6 +779,7 @@ static VmTensor* vm_tensor_concat(VmRegionStack* rs, const VmTensor* a,
 
     VmTensor* out = vm_tensor_new(rs, out_shape, a->n_dims);
     if (!out) return NULL;
+    out->dtype = vm_tensor_promote_dtype(a, b);
 
     /* Copy elements: iterate output, map to source */
     int64_t indices[VM_TENSOR_MAX_DIMS];
@@ -805,6 +816,7 @@ static VmTensor* vm_tensor_outer(VmRegionStack* rs, const VmTensor* a, const VmT
     int64_t out_shape[2] = { M, N };
     VmTensor* out = vm_tensor_new(rs, out_shape, 2);
     if (!out) return NULL;
+    out->dtype = vm_tensor_promote_dtype(a, b);
 
     for (int64_t i = 0; i < M; i++) {
         for (int64_t j = 0; j < N; j++) {
@@ -823,6 +835,7 @@ static VmTensor* vm_tensor_clamp(VmRegionStack* rs, const VmTensor* t, double lo
     if (!t) return NULL;
     VmTensor* out = vm_tensor_new(rs, t->shape, t->n_dims);
     if (!out) return NULL;
+    out->dtype = t->dtype;
     for (int64_t i = 0; i < t->total; i++) {
         double v = t->data[i];
         if (v < lo) v = lo;
