@@ -2,15 +2,33 @@
   "id": "ESH-0020",
   "title": "Tensor dtype system: f16/bf16/f32/f64/i8 element types",
   "campaign": "gpu-llm",
-  "brief": "ESHKOL_LANGUAGE_UPDATE_BRIEF.md §1",
-  "status": "pending",
+  "brief": "ESHKOL_LANGUAGE_UPDATE_BRIEF.md \u00a71",
+  "status": "done",
   "priority": "critical",
   "preferred_backend": "codex",
   "preferred_node": "atlas",
   "needs_gpu": false,
   "goal": "Add a real tensor element-dtype system. Today tensors are f64-only, forcing GPU matmul down a ~10x-too-slow f64-softfloat path. Add element dtypes f16, bf16, f32, f64 (default), i8. Surface: (make-tensor dims val :dtype 'f16), (tensor-cast t 'f16), (tensor-dtype t). Store dtype in the tensor header; keep f64 the default so all existing code is unaffected. matmul/tensor-* dispatch on dtype.",
-  "file_globs": ["lib/core/runtime_tensor_alloc.cpp","lib/backend/tensor_codegen.cpp","lib/backend/tensor_arith_codegen.cpp","lib/frontend/parser.cpp","inc/eshkol/core/runtime.h","tests/v1_3_edge_cases/tensor_dtype_test.esk"],
-  "acceptance": ["(tensor-dtype (make-tensor '(4) 1.0)) => 'f64","(tensor-dtype (make-tensor '(4) 1.0 :dtype 'f32)) => 'f32","(tensor-cast t 'f16) round-trips values within f16 precision","existing f64 tensor tests unchanged","--features reports tensor-dtypes=f64,f32,f16,bf16,i8"],
-  "verification": ["./build/eshkol-run -r tests/v1_3_edge_cases/tensor_dtype_test.esk","bash scripts/run_v1_2_edge_cases_tests.sh"],
-  "blocked_by": []
+  "file_globs": [
+    "lib/core/runtime_tensor_alloc.cpp",
+    "lib/backend/tensor_codegen.cpp",
+    "lib/backend/tensor_arith_codegen.cpp",
+    "lib/frontend/parser.cpp",
+    "inc/eshkol/core/runtime.h",
+    "tests/v1_3_edge_cases/tensor_dtype_test.esk"
+  ],
+  "acceptance": [
+    "(tensor-dtype (make-tensor '(4) 1.0)) => 'f64",
+    "(tensor-dtype (make-tensor '(4) 1.0 :dtype 'f32)) => 'f32",
+    "(tensor-cast t 'f16) round-trips values within f16 precision",
+    "existing f64 tensor tests unchanged",
+    "--features reports tensor-dtypes=f64,f32,f16,bf16,i8"
+  ],
+  "verification": [
+    "./build/eshkol-run -r tests/v1_3_edge_cases/tensor_dtype_test.esk",
+    "bash scripts/run_v1_2_edge_cases_tests.sh"
+  ],
+  "blocked_by": [],
+  "completed_by": "atlas:local",
+  "commit": "c689c02d"
 }
