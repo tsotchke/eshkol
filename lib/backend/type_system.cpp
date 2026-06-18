@@ -129,10 +129,11 @@ void TypeSystem::createStructTypes() {
     //     uint64_t total_elements;  // product of all dimensions
     // }
     std::vector<llvm::Type*> tensor_fields;
-    tensor_fields.push_back(ptr_type);     // dimensions
-    tensor_fields.push_back(int64_type);   // num_dimensions
-    tensor_fields.push_back(ptr_type);     // elements
-    tensor_fields.push_back(int64_type);   // total_elements
+    tensor_fields.push_back(ptr_type);     // idx 0: dimensions
+    tensor_fields.push_back(int64_type);   // idx 1: num_dimensions
+    tensor_fields.push_back(ptr_type);     // idx 2: elements
+    tensor_fields.push_back(int64_type);   // idx 3: total_elements
+    tensor_fields.push_back(int64_type);   // idx 4: dtype (eshkol_tensor_dtype_t)
     tensor_type = llvm::StructType::create(context, tensor_fields, "tensor");
 }
 

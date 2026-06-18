@@ -15248,6 +15248,8 @@ private:
         // MIGRATED: tensor-shape, tensor-length - now delegated to TensorCodegen
         if (func_name == "tensor-shape") return tensor_->tensorShape(op);
         if (func_name == "tensor-length") return tensor_->tensorLength(op);
+        if (func_name == "tensor-dtype") return tensor_->tensorDtype(op);
+        if (func_name == "tensor-cast") return tensor_->tensorCast(op);
         if (func_name == "tensor-save") return logic_workspace_->codegenTensorSave(op);
         if (func_name == "tensor-load") return logic_workspace_->codegenTensorLoad(op);
         if (func_name == "model-save") return logic_workspace_->codegenModelSave(op);
