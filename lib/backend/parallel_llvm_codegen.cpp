@@ -2483,6 +2483,19 @@ llvm::Value* ParallelCodegen::force(const eshkol_operations_t* op) {
             "eshkol_lazy_future_set_result_ptr", &ctx_.module());
     }
 
+    llvm::Function* join_async_func = ctx_.module().getFunction("eshkol_lazy_future_join_async");
+    if (!join_async_func) {
+        llvm::FunctionType* join_type = llvm::FunctionType::get(
+            ctx_.builder().getVoidTy(), {ctx_.ptrType()}, false);
+        join_async_func = llvm::Function::Create(join_type, llvm::Function::ExternalLinkage,
+            "eshkol_lazy_future_join_async", &ctx_.module());
+    }
+
+    // Eager futures submit callable thunks to the global pool at creation time.
+    // Join that worker first; if submission failed, the helper is a no-op and
+    // the normal lazy inline evaluation path below still runs.
+    ctx_.builder().CreateCall(join_async_func, {future_ptr});
+
     // Create basic blocks for branching
     llvm::BasicBlock* check_bb = ctx_.builder().GetInsertBlock();
     llvm::BasicBlock* eval_bb = llvm::BasicBlock::Create(llvm_ctx, "force_eval", current_func);

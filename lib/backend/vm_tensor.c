@@ -16,11 +16,19 @@
 
 #include "vm_numeric.h"
 #include <math.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
 /* ── Max dimensions ── */
 #define VM_TENSOR_MAX_DIMS 8
+
+/* ── Tensor dtypes ── */
+#define VM_TENSOR_DTYPE_F64  0
+#define VM_TENSOR_DTYPE_F32  1
+#define VM_TENSOR_DTYPE_F16  2
+#define VM_TENSOR_DTYPE_BF16 3
+#define VM_TENSOR_DTYPE_I8   4
 
 /* ── Tensor ── */
 typedef struct {
@@ -30,9 +38,124 @@ typedef struct {
     double*  data;         /* arena-allocated */
     int64_t  total;        /* total number of elements */
     int      owns_data;    /* 1 = owns data (allocated), 0 = view (shared) */
+    int      dtype;        /* VM_TENSOR_DTYPE_* metadata; data stays double-backed */
 } VmTensor;
 
 /* ── Internal helpers ── */
+
+static int vm_tensor_normalize_dtype(int dtype) {
+    switch (dtype) {
+        case VM_TENSOR_DTYPE_F64:
+        case VM_TENSOR_DTYPE_F32:
+        case VM_TENSOR_DTYPE_F16:
+        case VM_TENSOR_DTYPE_BF16:
+        case VM_TENSOR_DTYPE_I8:
+            return dtype;
+        default:
+            return VM_TENSOR_DTYPE_F64;
+    }
+}
+
+static const char* vm_tensor_dtype_name(int dtype) {
+    switch (vm_tensor_normalize_dtype(dtype)) {
+        case VM_TENSOR_DTYPE_F32:  return "f32";
+        case VM_TENSOR_DTYPE_F16:  return "f16";
+        case VM_TENSOR_DTYPE_BF16: return "bf16";
+        case VM_TENSOR_DTYPE_I8:   return "i8";
+        case VM_TENSOR_DTYPE_F64:
+        default:                   return "f64";
+    }
+}
+
+static int vm_tensor_dtype_from_name(const char* name) {
+    if (!name) return VM_TENSOR_DTYPE_F64;
+    while (*name == '\'' || *name == ':' || *name == '#') name++;
+    if (strcmp(name, "f32") == 0) return VM_TENSOR_DTYPE_F32;
+    if (strcmp(name, "f16") == 0) return VM_TENSOR_DTYPE_F16;
+    if (strcmp(name, "bf16") == 0) return VM_TENSOR_DTYPE_BF16;
+    if (strcmp(name, "i8") == 0) return VM_TENSOR_DTYPE_I8;
+    return VM_TENSOR_DTYPE_F64;
+}
+
+static int vm_tensor_promote_dtype(const VmTensor* a, const VmTensor* b) {
+    int ad = a ? vm_tensor_normalize_dtype(a->dtype) : VM_TENSOR_DTYPE_F64;
+    int bd = b ? vm_tensor_normalize_dtype(b->dtype) : VM_TENSOR_DTYPE_F64;
+    if (ad == bd) return ad;
+    if (ad == VM_TENSOR_DTYPE_F64 || bd == VM_TENSOR_DTYPE_F64) return VM_TENSOR_DTYPE_F64;
+    if (ad == VM_TENSOR_DTYPE_F32 || bd == VM_TENSOR_DTYPE_F32) return VM_TENSOR_DTYPE_F32;
+    if (ad == VM_TENSOR_DTYPE_BF16 || bd == VM_TENSOR_DTYPE_BF16) return VM_TENSOR_DTYPE_BF16;
+    if (ad == VM_TENSOR_DTYPE_F16 || bd == VM_TENSOR_DTYPE_F16) return VM_TENSOR_DTYPE_F16;
+    return VM_TENSOR_DTYPE_I8;
+}
+
+static uint16_t vm_tensor_float_to_half_bits(float value) {
+    union { float f; uint32_t u; } in;
+    in.f = value;
+    uint32_t sign = (in.u >> 16) & 0x8000u;
+    int32_t exp = (int32_t)((in.u >> 23) & 0xffu) - 127 + 15;
+    uint32_t mant = in.u & 0x7fffffu;
+
+    if (exp <= 0) {
+        if (exp < -10) return (uint16_t)sign;
+        mant = (mant | 0x800000u) >> (uint32_t)(1 - exp);
+        return (uint16_t)(sign | ((mant + 0x1000u) >> 13));
+    }
+    if (exp >= 31) {
+        return (uint16_t)(sign | 0x7c00u | (mant ? 0x0200u : 0u));
+    }
+    return (uint16_t)(sign | ((uint32_t)exp << 10) | ((mant + 0x1000u) >> 13));
+}
+
+static float vm_tensor_half_bits_to_float(uint16_t bits) {
+    uint32_t sign = ((uint32_t)bits & 0x8000u) << 16;
+    uint32_t exp = ((uint32_t)bits >> 10) & 0x1fu;
+    uint32_t mant = (uint32_t)bits & 0x03ffu;
+    uint32_t out;
+
+    if (exp == 0) {
+        if (mant == 0) {
+            out = sign;
+        } else {
+            exp = 1;
+            while ((mant & 0x0400u) == 0) {
+                mant <<= 1;
+                exp--;
+            }
+            mant &= 0x03ffu;
+            out = sign | ((exp + 127 - 15) << 23) | (mant << 13);
+        }
+    } else if (exp == 31) {
+        out = sign | 0x7f800000u | (mant << 13);
+    } else {
+        out = sign | ((exp + 127 - 15) << 23) | (mant << 13);
+    }
+
+    union { uint32_t u; float f; } result;
+    result.u = out;
+    return result.f;
+}
+
+static double vm_tensor_quantize_value(double value, int dtype) {
+    switch (vm_tensor_normalize_dtype(dtype)) {
+        case VM_TENSOR_DTYPE_F32:
+            return (double)(float)value;
+        case VM_TENSOR_DTYPE_F16:
+            return (double)vm_tensor_half_bits_to_float(vm_tensor_float_to_half_bits((float)value));
+        case VM_TENSOR_DTYPE_BF16: {
+            union { float f; uint32_t u; } conv;
+            conv.f = (float)value;
+            conv.u &= 0xffff0000u;
+            return (double)conv.f;
+        }
+        case VM_TENSOR_DTYPE_I8:
+            if (value > 127.0) return 127.0;
+            if (value < -128.0) return -128.0;
+            return nearbyint(value);
+        case VM_TENSOR_DTYPE_F64:
+        default:
+            return value;
+    }
+}
 
 /* Compute row-major strides from shape. Returns total element count. */
 static int64_t vm_tensor_compute_strides(const int64_t* shape, int n_dims, int64_t* strides) {
@@ -89,6 +212,7 @@ static VmTensor* vm_tensor_new(VmRegionStack* rs, const int64_t* shape, int n_di
     if (!t->data) return NULL;
     memset(t->data, 0, (size_t)t->total * sizeof(double));
     t->owns_data = 1;
+    t->dtype = VM_TENSOR_DTYPE_F64;
 
     return t;
 }
@@ -156,6 +280,7 @@ static VmTensor* vm_tensor_reshape(VmRegionStack* rs, const VmTensor* t,
     v->total = vm_tensor_compute_strides(new_shape, new_dims, v->strides);
     v->data = t->data;   /* shared data */
     v->owns_data = 0;
+    v->dtype = t->dtype;
 
     return v;
 }
@@ -180,6 +305,7 @@ static VmTensor* vm_tensor_transpose(VmRegionStack* rs, const VmTensor* t) {
     v->data = t->data;
     v->total = t->total;
     v->owns_data = 0;
+    v->dtype = t->dtype;
 
     return v;
 }
@@ -232,6 +358,7 @@ static VmTensor* vm_tensor_copy(VmRegionStack* rs, const VmTensor* t) {
     memcpy(c->shape, t->shape, (size_t)t->n_dims * sizeof(int64_t));
     c->total = vm_tensor_compute_strides(t->shape, t->n_dims, c->strides);
     c->owns_data = 1;
+    c->dtype = t->dtype;
 
     c->data = (double*)vm_alloc(rs, (size_t)c->total * sizeof(double));
     if (!c->data) return NULL;
@@ -340,8 +467,38 @@ static VmTensor* vm_tensor_slice(VmRegionStack* rs, const VmTensor* t, int64_t i
     v->data = t->data + index * t->strides[0];
     v->total = t->total / t->shape[0];
     v->owns_data = 0;
+    v->dtype = t->dtype;
 
     return v;
+}
+
+static VmTensor* vm_tensor_cast_dtype(VmRegionStack* rs, const VmTensor* src, int dtype) {
+    if (!src) return NULL;
+    VmTensor* out = vm_tensor_new(rs, src->shape, src->n_dims);
+    if (!out) return NULL;
+    out->dtype = vm_tensor_normalize_dtype(dtype);
+    int64_t expected_strides[VM_TENSOR_MAX_DIMS];
+    vm_tensor_compute_strides(src->shape, src->n_dims, expected_strides);
+    int is_contiguous = 1;
+    for (int i = 0; i < src->n_dims; i++) {
+        if (src->strides[i] != expected_strides[i]) {
+            is_contiguous = 0;
+            break;
+        }
+    }
+    if (is_contiguous) {
+        for (int64_t i = 0; i < out->total; i++) {
+            out->data[i] = vm_tensor_quantize_value(src->data[i], out->dtype);
+        }
+    } else {
+        int64_t indices[VM_TENSOR_MAX_DIMS];
+        for (int64_t i = 0; i < out->total; i++) {
+            vm_tensor_unravel(i, src->shape, src->n_dims, indices);
+            int64_t src_off = vm_tensor_flat_offset(src, indices, src->n_dims);
+            out->data[i] = vm_tensor_quantize_value(src->data[src_off], out->dtype);
+        }
+    }
+    return out;
 }
 
 /* ── Self-Test ── */

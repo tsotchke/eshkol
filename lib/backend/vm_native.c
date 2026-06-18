@@ -4939,6 +4939,40 @@ static void vm_dispatch_native(VM* vm, int fid) {
         VM_PUSH_TENSOR(vm, out);
         break;
     }
+    case 421: { /* tensor-dtype(tensor) -> symbol name */
+        Value t_val = vm_pop(vm);
+        if (!is_heap_type(vm, t_val, HEAP_TENSOR)) { vm_push(vm, NIL_VAL); break; }
+        VmTensor* t = (VmTensor*)vm->heap.objects[t_val.as.ptr]->opaque.ptr;
+        if (!t) { vm_push(vm, NIL_VAL); break; }
+        vm_push(vm, vm_string_value(vm, vm_tensor_dtype_name(t->dtype), -1));
+        break;
+    }
+    case 422: { /* tensor-cast(tensor, dtype) */
+        Value dtype_val = vm_pop(vm), t_val = vm_pop(vm);
+        if (!is_heap_type(vm, t_val, HEAP_TENSOR)) { vm_push(vm, NIL_VAL); break; }
+        VmTensor* t = (VmTensor*)vm->heap.objects[t_val.as.ptr]->opaque.ptr;
+        VmString* dtype_name = vm_value_as_string(vm, dtype_val);
+        if (!t || !dtype_name) { vm_push(vm, NIL_VAL); break; }
+        VmTensor* out = vm_tensor_cast_dtype(&vm->heap.regions, t,
+                                             vm_tensor_dtype_from_name(dtype_name->data));
+        if (!out) { vm_push(vm, NIL_VAL); break; }
+        VM_PUSH_TENSOR(vm, out);
+        break;
+    }
+    case 423: { /* make-tensor(shape, fill, dtype) */
+        Value dtype_val = vm_pop(vm), fill = vm_pop(vm), shape_val = vm_pop(vm);
+        int64_t shape[8]; int n_dims = vm_extract_shape(vm, shape_val, shape, 8);
+        VmString* dtype_name = vm_value_as_string(vm, dtype_val);
+        if (n_dims == 0 || !dtype_name) { vm_push(vm, NIL_VAL); break; }
+        VmTensor* t = vm_tensor_fill(&vm->heap.regions, shape, n_dims, as_number(fill));
+        if (!t) { vm_push(vm, NIL_VAL); break; }
+        t->dtype = vm_tensor_dtype_from_name(dtype_name->data);
+        for (int64_t i = 0; i < t->total; i++) {
+            t->data[i] = vm_tensor_quantize_value(t->data[i], t->dtype);
+        }
+        VM_PUSH_TENSOR(vm, t);
+        break;
+    }
 
     /* ══════════════════════════════════════════════════════════════════════
      * Tensor Operations (440-469)
@@ -4952,6 +4986,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
         VmTensor* out = vm_gpu_try_matmul(&vm->heap.regions, a, b);
         if (!out) out = vm_tensor_matmul(&vm->heap.regions, a, b);
         if (!out) { vm_push(vm, NIL_VAL); break; }
+        out->dtype = vm_tensor_promote_dtype(a, b);
         VM_PUSH_TENSOR(vm, out);
         break;
     }
@@ -4975,6 +5010,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
             case 447: out = vm_tensor_minimum(&vm->heap.regions, a, b); break;
         }
         if (!out) { vm_push(vm, NIL_VAL); break; }
+        out->dtype = vm_tensor_promote_dtype(a, b);
         VM_PUSH_TENSOR(vm, out);
         break;
     }
@@ -5035,7 +5071,10 @@ static void vm_dispatch_native(VM* vm, int fid) {
             if (!isnan(gpu_result)) {
                 int64_t shape[1] = {1};
                 out = vm_tensor_zeros(&vm->heap.regions, shape, 1);
-                if (out) out->data[0] = gpu_result;
+                if (out) {
+                    out->data[0] = gpu_result;
+                    out->dtype = t->dtype;
+                }
             }
         }
         if (!out) switch (fid) {
@@ -5094,6 +5133,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
             case 468: out = vm_tensor_gelu(&vm->heap.regions, t); break;
         }
         if (!out) { vm_push(vm, NIL_VAL); break; }
+        out->dtype = t->dtype;
         VM_PUSH_TENSOR(vm, out);
         break;
     }
@@ -9286,6 +9326,12 @@ static void vm_dispatch_native(VM* vm, int fid) {
         else if (a.type == VAL_BOOL) result = (a.as.b == b.as.b);
         else if (a.type == VAL_INT) result = (a.as.i == b.as.i);
         else if (a.type == VAL_FLOAT) result = (a.as.f == b.as.f);
+        else if (a.type == VAL_STRING) {
+            VmString* as = vm_value_as_string(vm, a);
+            VmString* bs = vm_value_as_string(vm, b);
+            result = (as && bs && as->byte_len == bs->byte_len &&
+                      memcmp(as->data, bs->data, (size_t)as->byte_len) == 0);
+        }
         else if (a.type == VAL_PAIR) {
             /* Simple shallow equality for pairs */
             result = (a.as.ptr == b.as.ptr);

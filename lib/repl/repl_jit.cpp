@@ -1575,6 +1575,9 @@ void ReplJITContext::addModule(std::unique_ptr<Module> module, std::unique_ptr<L
         std::cerr << "[REPL] LLJIT DataLayout: " << jit_->getDataLayout().getStringRepresentation() << std::endl;
     }
 
+    Function* parallel_init = module->getFunction("__eshkol_init_parallel_workers");
+    bool has_parallel_initializer = parallel_init && !parallel_init->isDeclaration();
+
     // Wrap module with its OWN context (each module gets its own ThreadSafeContext).
     // This is LLVM's recommended ORC JIT pattern — module and context must match.
     auto ts_ctx = orc::ThreadSafeContext(std::move(module_context));
@@ -1595,6 +1598,22 @@ void ReplJITContext::addModule(std::unique_ptr<Module> module, std::unique_ptr<L
         err_stream << err;
         std::cerr << "Failed to add module to JIT: " << err_msg << std::endl;
         throw std::runtime_error("Failed to add module to JIT");
+    }
+
+    // ORC does not reliably run this Eshkol-specific worker-registration
+    // initializer for REPL snippets. If the just-added module generated
+    // parallel-map workers, register them before the entry function runs.
+    if (has_parallel_initializer) {
+        if (auto pw_init = jit_->lookup("__eshkol_init_parallel_workers")) {
+            using PWInitFn = void (*)(void);
+            auto fn = reinterpret_cast<PWInitFn>(pw_init->getValue());
+            fn();
+        } else {
+            consumeError(pw_init.takeError());
+            std::cerr << "[REPL] Warning: module defines __eshkol_init_parallel_workers "
+                         "but the symbol could not be resolved after JIT add."
+                      << std::endl;
+        }
     }
 
     // Register the tracker for every top-level symbol this module defines so
