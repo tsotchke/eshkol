@@ -83,6 +83,14 @@ from <code>apt.llvm.org</code></li>
 <li>Ensure <code>llvm-config</code> is in your PATH on macOS/Linux, or
 set <code>LLVM_DIR</code> on native Windows</li>
 </ul></li>
+<li><strong>Native image I/O codecs</strong>
+<ul>
+<li>On macOS: ImageIO/CoreGraphics are system frameworks; no extra codec
+package is required</li>
+<li>On Linux:
+<code>sudo apt install pkg-config libpng-dev libjpeg-dev libwebp-dev</code></li>
+<li>On Windows: the native backend uses GDI+</li>
+</ul></li>
 <li><strong>Git</strong>
 <ul>
 <li>On macOS: <code>brew install git</code></li>

@@ -3855,6 +3855,11 @@ existing</li>
 required — all have sensible defaults.</p>
 <h3 id="core">Core</h3>
 <table>
+<colgroup>
+<col style="width: 31%" />
+<col style="width: 28%" />
+<col style="width: 40%" />
+</colgroup>
 <thead>
 <tr>
 <th>Variable</th>
@@ -3881,7 +3886,8 @@ required — all have sensible defaults.</p>
 <tr>
 <td><code>ESHKOL_TIMEOUT_MS</code></td>
 <td>(none)</td>
-<td>Execution timeout in milliseconds</td>
+<td>Execution timeout in milliseconds; hosted runtime starts a watchdog
+when set</td>
 </tr>
 <tr>
 <td><code>ESHKOL_MAX_STACK</code></td>
@@ -3889,12 +3895,30 @@ required — all have sensible defaults.</p>
 <td>Maximum stack depth</td>
 </tr>
 <tr>
+<td><code>ESHKOL_MAX_TENSOR_ELEMS</code></td>
+<td>(default)</td>
+<td>Maximum tensor element count</td>
+</tr>
+<tr>
+<td><code>ESHKOL_MAX_STRING_LEN</code></td>
+<td>(default)</td>
+<td>Maximum string length</td>
+</tr>
+<tr>
 <td><code>ESHKOL_ENFORCE_LIMITS</code></td>
-<td>off</td>
-<td>Enforce resource limits</td>
+<td>on for limit API</td>
+<td>Request runtime interrupts on hard heap/timeout limits</td>
+</tr>
+<tr>
+<td><code>ESHKOL_LIMIT_WARNINGS</code></td>
+<td>on</td>
+<td>Emit soft-limit warnings</td>
 </tr>
 </tbody>
 </table>
+<p>Malformed runtime-limit values are ignored and preserve the default
+limit. Size variables accept optional <code>K</code>, <code>M</code>, or
+<code>G</code> suffixes, with an optional trailing <code>B</code>.</p>
 <h3 id="logging-debug">Logging &amp; Debug</h3>
 <table>
 <thead>
