@@ -1839,18 +1839,52 @@ llvm::Value* ArithmeticCodegen::compare(llvm::Value* left, llvm::Value* right,
     // (Strict R7RS would reject CHAR; we follow the looser Lisp tradition
     // here because the alternative is a stdlib-wide audit and silent
     // error in real programs.)
+    // A heap pointer only counts as a number when its subtype is a numeric one
+    // (bignum or rational). Strings, vectors, pairs, etc. are also HEAP_PTR but
+    // are NOT numbers — treating them as numbers sent them down the double path
+    // where extractAsDouble coerces them to 0.0, so (= "a" 3) wrongly returned
+    // #f instead of raising. Read the subtype via a select-guarded address so a
+    // non-heap operand never dereferences a garbage pointer.
+    //
+    // The sentinel byte MUST be an entry-block alloca: compare() is frequently
+    // codegen'd inside a loop body (e.g. (>= j N) in a hot do-loop), and an
+    // alloca in the loop body re-allocates every iteration → stack overflow.
+    // Hoisting it to the entry block allocates exactly once per function.
+    llvm::Function* cmp_fn = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::IRBuilder<> entry_builder(&cmp_fn->getEntryBlock(),
+                                    cmp_fn->getEntryBlock().begin());
+    llvm::Value* nh_dummy = entry_builder.CreateAlloca(ctx_.int8Type(), nullptr, "nh_dummy");
+    // 0xFF is not a valid numeric subtype, so a non-heap operand reads a
+    // non-numeric sentinel and is correctly rejected.
+    entry_builder.CreateStore(llvm::ConstantInt::get(ctx_.int8Type(), 0xFF), nh_dummy);
+    auto numericHeap = [&](llvm::Value* tagged, llvm::Value* is_heap) -> llvm::Value* {
+        auto& b = ctx_.builder();
+        llvm::Value* ptr = tagged_.unpackPtr(tagged);
+        llvm::Value* hdr = b.CreateGEP(ctx_.int8Type(), ptr,
+            llvm::ConstantInt::get(ctx_.int64Type(), -8));
+        llvm::Value* addr = b.CreateSelect(is_heap, hdr, nh_dummy);
+        llvm::Value* sub = b.CreateLoad(ctx_.int8Type(), addr, "nh_subtype");
+        llvm::Value* is_bn = b.CreateICmpEQ(sub,
+            llvm::ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_BIGNUM));
+        llvm::Value* is_rat = b.CreateICmpEQ(sub,
+            llvm::ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_RATIONAL));
+        return b.CreateAnd(is_heap, b.CreateOr(is_bn, is_rat));
+    };
+    llvm::Value* left_is_numeric_heap = numericHeap(left, left_is_heap);
+    llvm::Value* right_is_numeric_heap = numericHeap(right, right_is_heap);
+
     llvm::Value* left_is_number = ctx_.builder().CreateOr(
         ctx_.builder().CreateOr(
             ctx_.builder().CreateOr(
                 ctx_.builder().CreateOr(left_is_double, left_is_int),
-                ctx_.builder().CreateOr(left_is_heap, left_is_callable)),
+                ctx_.builder().CreateOr(left_is_numeric_heap, left_is_callable)),
             left_is_char),
         left_is_dual);
     llvm::Value* right_is_number = ctx_.builder().CreateOr(
         ctx_.builder().CreateOr(
             ctx_.builder().CreateOr(
                 ctx_.builder().CreateOr(right_is_double, right_is_int),
-                ctx_.builder().CreateOr(right_is_heap, right_is_callable)),
+                ctx_.builder().CreateOr(right_is_numeric_heap, right_is_callable)),
             right_is_char),
         right_is_dual);
     llvm::Value* both_numbers = ctx_.builder().CreateAnd(left_is_number, right_is_number);
@@ -1875,28 +1909,15 @@ llvm::Value* ArithmeticCodegen::compare(llvm::Value* left, llvm::Value* right,
     // that's NOT a number; if both are non-number, prefer the left (so the
     // error is deterministic).
     ctx_.builder().SetInsertPoint(type_error_path);
-    llvm::Function* type_error_op_func = ctx_.module().getFunction("eshkol_type_error_with_operand");
-    if (!type_error_op_func) {
-        llvm::FunctionType* error_op_type = llvm::FunctionType::get(
-            ctx_.builder().getVoidTy(),
-            {ctx_.builder().getPtrTy(),                // proc_name
-             ctx_.builder().getPtrTy(),                // expected_type
-             ctx_.taggedValueType()},                  // actual operand
-            false);
-        type_error_op_func = llvm::Function::Create(error_op_type, llvm::Function::ExternalLinkage,
-            "eshkol_type_error_with_operand", &ctx_.module());
-    }
     std::string op_name = (operation == "eq") ? "=" :
                           (operation == "lt") ? "<" :
                           (operation == "gt") ? ">" :
                           (operation == "le") ? "<=" : ">=";
-    llvm::Value* proc_name = ctx_.builder().CreateGlobalString(op_name, "cmp_proc_name");
-    llvm::Value* expected_type = ctx_.builder().CreateGlobalString("number", "cmp_expected_type");
     // Choose the operand to report: the left side if it's not numeric,
     // else the right side. Both are guaranteed non-numeric for at least
     // one branch since both_numbers is false here.
     llvm::Value* offending = ctx_.builder().CreateSelect(left_is_number, right, left, "cmp_offending");
-    ctx_.builder().CreateCall(type_error_op_func, {proc_name, expected_type, offending});
+    emitOperandTypeError(op_name.c_str(), "number", offending);
     llvm::Value* error_result = tagged_.packBool(ctx_.builder().getFalse());
     ctx_.builder().CreateBr(merge);
     llvm::BasicBlock* error_exit = ctx_.builder().GetInsertBlock();
@@ -2655,14 +2676,48 @@ void ArithmeticCodegen::guardHeapOperandsNumeric(llvm::Value* left,
     llvm::Value* all_ok = ctx_.builder().CreateAnd(l_ok, r_ok);
     ctx_.builder().CreateCondBr(all_ok, ok_blk, type_err_blk);
 
-    // Type error branch — non-returning
+    // Type error branch — non-returning. Report the concrete operand type via
+    // eshkol_type_error_with_operand ("expected …, got <actual-type>") instead
+    // of a generic message. Pick the offending side: the left operand if it
+    // failed its check, else the right (at least one is non-numeric here).
     ctx_.builder().SetInsertPoint(type_err_blk);
-    std::string msg = std::string(op_name) +
-        ": operand is not a number, vector, or tensor";
-    emitTypeError(msg.c_str());
+    llvm::Value* arith_offending =
+        ctx_.builder().CreateSelect(l_ok, right, left, "arith_offending");
+    emitOperandTypeError(op_name, "number, vector, or tensor", arith_offending);
+    // eshkol_type_error_with_operand raises (non-returning); keep the block
+    // well-formed with an unreachable terminator.
+    ctx_.builder().CreateUnreachable();
 
     // Continue in ok_blk
     ctx_.builder().SetInsertPoint(ok_blk);
+}
+
+void ArithmeticCodegen::emitOperandTypeError(const char* proc_name,
+                                             const char* expected_type,
+                                             llvm::Value* offending) {
+    auto& b = ctx_.builder();
+    llvm::Function* fn = ctx_.module().getFunction("eshkol_type_error_with_operand");
+    if (!fn) {
+        // void eshkol_type_error_with_operand(const char*, const char*,
+        //                                     const eshkol_tagged_value_t*)
+        llvm::FunctionType* ft = llvm::FunctionType::get(
+            b.getVoidTy(),
+            {b.getPtrTy(), b.getPtrTy(), b.getPtrTy()},
+            false);
+        fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+            "eshkol_type_error_with_operand", &ctx_.module());
+    }
+    // Pass the operand by pointer: a 16-byte tagged-value struct passed by
+    // value arrives zeroed across the LLVM-IR → C ABI boundary (formats as
+    // "null"). Store to an alloca and hand over its address.
+    if (offending->getType() != ctx_.taggedValueType()) {
+        offending = tagged_.packInt64(offending, true);
+    }
+    llvm::Value* slot = b.CreateAlloca(ctx_.taggedValueType(), nullptr, "operand_err_slot");
+    b.CreateStore(offending, slot);
+    llvm::Value* proc = b.CreateGlobalString(proc_name, "operr_proc");
+    llvm::Value* exp = b.CreateGlobalString(expected_type, "operr_expected");
+    b.CreateCall(fn, {proc, exp, slot});
 }
 
 void ArithmeticCodegen::emitTypeError(const char* message) {
