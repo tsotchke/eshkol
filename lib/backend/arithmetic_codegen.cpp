@@ -1845,16 +1845,24 @@ llvm::Value* ArithmeticCodegen::compare(llvm::Value* left, llvm::Value* right,
     // where extractAsDouble coerces them to 0.0, so (= "a" 3) wrongly returned
     // #f instead of raising. Read the subtype via a select-guarded address so a
     // non-heap operand never dereferences a garbage pointer.
+    //
+    // The sentinel byte MUST be an entry-block alloca: compare() is frequently
+    // codegen'd inside a loop body (e.g. (>= j N) in a hot do-loop), and an
+    // alloca in the loop body re-allocates every iteration → stack overflow.
+    // Hoisting it to the entry block allocates exactly once per function.
+    llvm::Function* cmp_fn = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::IRBuilder<> entry_builder(&cmp_fn->getEntryBlock(),
+                                    cmp_fn->getEntryBlock().begin());
+    llvm::Value* nh_dummy = entry_builder.CreateAlloca(ctx_.int8Type(), nullptr, "nh_dummy");
+    // 0xFF is not a valid numeric subtype, so a non-heap operand reads a
+    // non-numeric sentinel and is correctly rejected.
+    entry_builder.CreateStore(llvm::ConstantInt::get(ctx_.int8Type(), 0xFF), nh_dummy);
     auto numericHeap = [&](llvm::Value* tagged, llvm::Value* is_heap) -> llvm::Value* {
         auto& b = ctx_.builder();
         llvm::Value* ptr = tagged_.unpackPtr(tagged);
         llvm::Value* hdr = b.CreateGEP(ctx_.int8Type(), ptr,
             llvm::ConstantInt::get(ctx_.int64Type(), -8));
-        llvm::Value* dummy = b.CreateAlloca(ctx_.int8Type(), nullptr, "nh_dummy");
-        // 0xFF is not a valid numeric subtype, so a non-heap operand reads a
-        // non-numeric sentinel and is correctly rejected.
-        b.CreateStore(llvm::ConstantInt::get(ctx_.int8Type(), 0xFF), dummy);
-        llvm::Value* addr = b.CreateSelect(is_heap, hdr, dummy);
+        llvm::Value* addr = b.CreateSelect(is_heap, hdr, nh_dummy);
         llvm::Value* sub = b.CreateLoad(ctx_.int8Type(), addr, "nh_subtype");
         llvm::Value* is_bn = b.CreateICmpEQ(sub,
             llvm::ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_BIGNUM));
