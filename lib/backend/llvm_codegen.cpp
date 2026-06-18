@@ -17625,6 +17625,16 @@ private:
             return nullptr;
         }
 
+        // Only optimize NUMERIC comparisons. If either operand has a known
+        // non-numeric type (string, char, symbol, …), the fast int/float path
+        // below would coerce its raw value (e.g. a string pointer's bits) into
+        // a number and silently return a wrong #f. Fall through to the
+        // polymorphic path so compare() raises a proper type error instead.
+        if (!isNumericType(ctx_->hottTypes(), left.hott_type) ||
+            !isNumericType(ctx_->hottTypes(), right.hott_type)) {
+            return nullptr;
+        }
+
         // SAFETY CHECK: Don't optimize if values are tagged_value structs
         // These require runtime dispatch to extract the actual value
         if (left.llvm_value->getType() == tagged_value_type ||

@@ -131,9 +131,18 @@ const char* eshkol_format_value_type_tag(eshkol_tagged_value_t v) {
  */
 void eshkol_type_error_with_operand(const char* proc_name,
                                     const char* expected_type,
-                                    eshkol_tagged_value_t actual) {
+                                    const eshkol_tagged_value_t* actual) {
+    eshkol_tagged_value_t val;
+    if (actual) {
+        val = *actual;
+    } else {
+        val.type = ESHKOL_VALUE_NULL;
+        val.flags = 0;
+        val.reserved = 0;
+        val.data.int_val = 0;
+    }
     eshkol_type_error_with_value(proc_name, expected_type,
-                                 eshkol_format_value_type_tag(actual));
+                                 eshkol_format_value_type_tag(val));
 }
 
 }  // extern "C"
