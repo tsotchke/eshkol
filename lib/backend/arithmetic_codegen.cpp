@@ -1839,18 +1839,44 @@ llvm::Value* ArithmeticCodegen::compare(llvm::Value* left, llvm::Value* right,
     // (Strict R7RS would reject CHAR; we follow the looser Lisp tradition
     // here because the alternative is a stdlib-wide audit and silent
     // error in real programs.)
+    // A heap pointer only counts as a number when its subtype is a numeric one
+    // (bignum or rational). Strings, vectors, pairs, etc. are also HEAP_PTR but
+    // are NOT numbers — treating them as numbers sent them down the double path
+    // where extractAsDouble coerces them to 0.0, so (= "a" 3) wrongly returned
+    // #f instead of raising. Read the subtype via a select-guarded address so a
+    // non-heap operand never dereferences a garbage pointer.
+    auto numericHeap = [&](llvm::Value* tagged, llvm::Value* is_heap) -> llvm::Value* {
+        auto& b = ctx_.builder();
+        llvm::Value* ptr = tagged_.unpackPtr(tagged);
+        llvm::Value* hdr = b.CreateGEP(ctx_.int8Type(), ptr,
+            llvm::ConstantInt::get(ctx_.int64Type(), -8));
+        llvm::Value* dummy = b.CreateAlloca(ctx_.int8Type(), nullptr, "nh_dummy");
+        // 0xFF is not a valid numeric subtype, so a non-heap operand reads a
+        // non-numeric sentinel and is correctly rejected.
+        b.CreateStore(llvm::ConstantInt::get(ctx_.int8Type(), 0xFF), dummy);
+        llvm::Value* addr = b.CreateSelect(is_heap, hdr, dummy);
+        llvm::Value* sub = b.CreateLoad(ctx_.int8Type(), addr, "nh_subtype");
+        llvm::Value* is_bn = b.CreateICmpEQ(sub,
+            llvm::ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_BIGNUM));
+        llvm::Value* is_rat = b.CreateICmpEQ(sub,
+            llvm::ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_RATIONAL));
+        return b.CreateAnd(is_heap, b.CreateOr(is_bn, is_rat));
+    };
+    llvm::Value* left_is_numeric_heap = numericHeap(left, left_is_heap);
+    llvm::Value* right_is_numeric_heap = numericHeap(right, right_is_heap);
+
     llvm::Value* left_is_number = ctx_.builder().CreateOr(
         ctx_.builder().CreateOr(
             ctx_.builder().CreateOr(
                 ctx_.builder().CreateOr(left_is_double, left_is_int),
-                ctx_.builder().CreateOr(left_is_heap, left_is_callable)),
+                ctx_.builder().CreateOr(left_is_numeric_heap, left_is_callable)),
             left_is_char),
         left_is_dual);
     llvm::Value* right_is_number = ctx_.builder().CreateOr(
         ctx_.builder().CreateOr(
             ctx_.builder().CreateOr(
                 ctx_.builder().CreateOr(right_is_double, right_is_int),
-                ctx_.builder().CreateOr(right_is_heap, right_is_callable)),
+                ctx_.builder().CreateOr(right_is_numeric_heap, right_is_callable)),
             right_is_char),
         right_is_dual);
     llvm::Value* both_numbers = ctx_.builder().CreateAnd(left_is_number, right_is_number);
