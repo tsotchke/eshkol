@@ -25843,6 +25843,11 @@ private:
         result_ptr->addIncoming(result_ptr_2d, res_2d_exit);
         result_ptr->addIncoming(result_ptr_1d, res_1d_exit);
 
+        // Propagate element dtype from the operands onto the result tensor so
+        // matmul on f16/bf16 inputs keeps its logical precision (the signal a
+        // future GPU GEMM path dispatches on). f64 stays the default.
+        tensor_->emitDtypePropagateBinary(result_ptr, ptr_a, ptr_b);
+
         // Get result element pointer
         Value* c_elems_field = builder->CreateStructGEP(tensor_type, result_ptr, 2);
         Value* c_elems = builder->CreateLoad(builder->getPtrTy(), c_elems_field);
