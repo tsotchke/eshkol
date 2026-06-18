@@ -82,6 +82,21 @@
 #include "eshkol/backend/vm_limits.h"
 #include "eshkol/backend/vm.h"
 
+#ifdef ESHKOL_VM_WASM
+/* The VM networking natives reference POSIX socket and fd declarations.
+ * Emscripten provides these headers in its sysroot; include them for the
+ * browser REPL unity build. */
+#include <unistd.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <sys/time.h>
+#include <poll.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <netdb.h>
+#endif
+
 #if defined(_WIN32) || defined(ESHKOL_VM_WASM)
 typedef void regex_t;
 #endif
@@ -381,7 +396,7 @@ static const BuiltinDef BUILTINS[] = {
      * ═══════════════════════════════════════════════════════════════ */
     {"logic-var?", 501, 1}, {"unify", 502, 3}, {"walk", 503, 2},
     {"make-substitution", 505, 0}, {"substitution?", 506, 1},
-    {"make-fact", 507, 1}, {"fact?", 508, 1},
+    {"_make-fact1", 507, 1}, {"fact?", 508, 1},
     {"make-kb", 509, 0}, {"kb?", 510, 1},
     {"kb-assert!", 511, 2}, {"kb-query", 512, 2},
     {"_make-fg2", 520, 2}, {"factor-graph?", 521, 1},
@@ -1041,6 +1056,7 @@ static void compile_source_to_chunk_with_options(const char* source,
             "(define (format fmt . args) (_format-list fmt args))\n"
             "(define (emit! emitter event . args) (_emit-event emitter event args))\n"
             "(define (make-list n val) (let loop ((i 0) (acc (list))) (if (= i n) acc (loop (+ i 1) (cons val acc)))))\n"
+            "(define (make-fact . args) (_make-fact1 (if (and (not (null? args)) (null? (cdr args)) (pair? (car args))) (car args) args)))\n"
             "(define (make-factor-graph n . rest) (if (null? rest) (_make-fg2 n (make-list n 2)) (_make-fg2 n (car rest))))\n"
             "(define (tensor-sum t . args) (if (null? args) (_tensor-reduce-sum t -1) (_tensor-reduce-sum t (car args))))\n"
             "(define (tensor-mean t . args) (if (null? args) (_tensor-reduce-mean t -1) (_tensor-reduce-mean t (car args))))\n"

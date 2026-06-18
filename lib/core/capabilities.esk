@@ -24,10 +24,10 @@
 (define *capability-allow-list* '())
 
 (define (capability-policy)
-  (if *capability-policy-active* *capability-allow-list* #f))
+  (if (eq? *capability-policy-active* #t) *capability-allow-list* #f))
 
 (define (capability-policy-active?)
-  *capability-policy-active*)
+  (eq? *capability-policy-active* #t))
 
 (define (capability-symbol-list? allow-list)
   (if (null? allow-list)
@@ -62,7 +62,7 @@
 
 (define (capability-allowed? capability . _context)
   "Return #t when CAPABILITY is allowed under the current policy."
-  (if (not *capability-policy-active*)
+  (if (not (eq? *capability-policy-active* #t))
       #t
       (if (memq capability *capability-allow-list*) #t #f)))
 

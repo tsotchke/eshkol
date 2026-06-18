@@ -3674,6 +3674,44 @@ static int vm_kb_fact_predicate_matches(VM* vm, VmFact* fact, Value predicate) {
     return vm_values_equal_deep(vm, obj->cons.car, predicate, 0);
 }
 
+static int vm_kb_pattern_is_logic_var(VM* vm, Value value) {
+    if (!vm || value.type != VAL_STRING || !is_valid_heap_ptr(vm, value.as.ptr))
+        return 0;
+    HeapObject* obj = vm->heap.objects[value.as.ptr];
+    if (!obj || obj->type != HEAP_STRING || !obj->opaque.ptr) return 0;
+    VmString* s = (VmString*)obj->opaque.ptr;
+    return s && s->byte_len > 0 && s->data && s->data[0] == '?';
+}
+
+static int vm_kb_datums_match(VM* vm, Value pattern, Value fact) {
+    if (pattern.type == VAL_NIL) return 1;
+
+    if (pattern.type == VAL_PAIR && fact.type == VAL_PAIR) {
+        Value pc = pattern;
+        Value fc = fact;
+        while (pc.type == VAL_PAIR && fc.type == VAL_PAIR) {
+            if (!is_valid_heap_ptr(vm, pc.as.ptr) || !is_valid_heap_ptr(vm, fc.as.ptr))
+                return 0;
+            HeapObject* po = vm->heap.objects[pc.as.ptr];
+            HeapObject* fo = vm->heap.objects[fc.as.ptr];
+            if (!po || !fo || po->type != HEAP_CONS || fo->type != HEAP_CONS)
+                return 0;
+
+            Value pe = po->cons.car;
+            Value fe = fo->cons.car;
+            if (!vm_kb_pattern_is_logic_var(vm, pe) &&
+                !vm_values_equal_deep(vm, pe, fe, 0))
+                return 0;
+
+            pc = po->cons.cdr;
+            fc = fo->cons.cdr;
+        }
+        return pc.type == VAL_NIL && fc.type == VAL_NIL;
+    }
+
+    return vm_values_equal_deep(vm, pattern, fact, 0);
+}
+
 static int vm_query_terminal_cursor(int* row, int* col) {
     if (row) *row = 0;
     if (col) *col = 0;
@@ -5215,15 +5253,13 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 VmFact* f = (VmFact*)vm_alloc(&vm->heap.regions, sizeof(VmFact));
                 if (f) {
                     memset(f, 0, sizeof(VmFact));
-                    /* Store the raw Scheme value as datum_ptr */
-                    if (fact_val.as.ptr >= 0 && vm->heap.objects[fact_val.as.ptr]->type == HEAP_FACT) {
+                    Value datum;
+                    if (vm_kb_extract_fact_datum(vm, fact_val, &datum) &&
+                        datum.type == VAL_PAIR && is_valid_heap_ptr(vm, datum.as.ptr)) {
                         f->has_datum = 1;
-                        f->datum_ptr = vm->heap.objects[fact_val.as.ptr]->cons.car.as.ptr;
-                    } else if (fact_val.type == VAL_PAIR) {
-                        f->has_datum = 1;
-                        f->datum_ptr = fact_val.as.ptr;
+                        f->datum_ptr = datum.as.ptr;
+                        kb_obj->facts[kb_obj->n_facts++] = f;
                     }
-                    kb_obj->facts[kb_obj->n_facts++] = f;
                 }
             }
         }
@@ -5232,46 +5268,18 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 512: { /* kb-query(kb, pattern) → list of matching facts */
         Value pattern = vm_pop(vm), kb_val = vm_pop(vm);
+        Value pattern_datum;
+        int has_pattern = vm_kb_extract_fact_datum(vm, pattern, &pattern_datum);
+        if (!has_pattern) pattern_datum = pattern;
         if (kb_val.as.ptr >= 0 && vm->heap.objects[kb_val.as.ptr]->type == HEAP_KB) {
             VmKnowledgeBase* kb_obj = (VmKnowledgeBase*)vm->heap.objects[kb_val.as.ptr]->opaque.ptr;
             if (kb_obj) {
                 Value result = NIL_VAL;
                 for (int i = kb_obj->n_facts - 1; i >= 0; i--) {
                     VmFact* f = kb_obj->facts[i];
-                    if (!f || !f->has_datum) continue;
-                    Value fact_datum = PAIR_VAL(f->datum_ptr);
-                    int matches = 1;
-                    if (pattern.type == VAL_PAIR && fact_datum.type == VAL_PAIR) {
-                        Value pc = pattern, fc = fact_datum;
-                        while (pc.type == VAL_PAIR && fc.type == VAL_PAIR) {
-                            Value pe = vm->heap.objects[pc.as.ptr]->cons.car;
-                            Value fe = vm->heap.objects[fc.as.ptr]->cons.car;
-                            /* Check if pattern element is a logic variable (?x) */
-                            int is_var = 0;
-                            if (pe.type == VAL_STRING && pe.as.ptr >= 0) {
-                                VmString* ps = (VmString*)vm->heap.objects[pe.as.ptr]->opaque.ptr;
-                                if (ps && ps->byte_len > 0 && ps->data[0] == '?') is_var = 1;
-                            }
-                            if (!is_var) {
-                                /* Must match exactly */
-                                if (pe.type != fe.type) { matches = 0; break; }
-                                if (pe.type == VAL_INT && pe.as.i != fe.as.i) { matches = 0; break; }
-                                if (pe.type == VAL_STRING && pe.as.ptr >= 0 && fe.as.ptr >= 0) {
-                                    VmString* a = (VmString*)vm->heap.objects[pe.as.ptr]->opaque.ptr;
-                                    VmString* b = (VmString*)vm->heap.objects[fe.as.ptr]->opaque.ptr;
-                                    if (a && b && (a->byte_len != b->byte_len || memcmp(a->data, b->data, a->byte_len) != 0))
-                                        { matches = 0; break; }
-                                }
-                            }
-                            pc = vm->heap.objects[pc.as.ptr]->cons.cdr;
-                            fc = vm->heap.objects[fc.as.ptr]->cons.cdr;
-                        }
-                    } else if (pattern.type == VAL_NIL) {
-                        matches = 1; /* empty pattern matches everything */
-                    } else {
-                        matches = 1; /* non-list pattern: return all */
-                    }
-                    if (matches) {
+                    Value fact_datum;
+                    if (!vm_kb_stored_fact_datum(vm, f, &fact_datum)) continue;
+                    if (vm_kb_datums_match(vm, pattern_datum, fact_datum)) {
                         int32_t p = heap_alloc(&vm->heap);
                         if (p < 0) break;
                         vm->heap.objects[p]->type = HEAP_CONS;

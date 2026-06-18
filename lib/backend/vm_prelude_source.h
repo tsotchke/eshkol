@@ -104,6 +104,7 @@ static const char* const ESHKOL_VM_PRELUDE_SOURCE =
     "(define (format fmt . args) (_format-list fmt args))\n"
     "(define (emit! emitter event . args) (_emit-event emitter event args))\n"
     "(define (make-list n val) (let loop ((i 0) (acc (list))) (if (= i n) acc (loop (+ i 1) (cons val acc)))))\n"
+    "(define (make-fact . args) (_make-fact1 (if (and (not (null? args)) (null? (cdr args)) (pair? (car args))) (car args) args)))\n"
     "(define (make-factor-graph n . rest) (if (null? rest) (_make-fg2 n (make-list n 2)) (_make-fg2 n (car rest))))\n"
     /* ── Tensor reduction wrappers ────────────────────────────────────── */
     "(define (tensor-sum t . args) (if (null? args) (_tensor-reduce-sum t -1) (_tensor-reduce-sum t (car args))))\n"

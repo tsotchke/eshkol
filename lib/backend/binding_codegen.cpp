@@ -12,6 +12,7 @@
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
 
 #include <eshkol/logger.h>
+#include <llvm/ADT/StringRef.h>
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/Instructions.h>
 #include <cctype>
@@ -260,8 +261,11 @@ Value* BindingCodegen::define(const eshkol_operations_t* op) {
     // FIX FOR RECURSIVE DEFINES: Pre-declare binding for lambda expressions
     // so the lambda can reference itself (like letrec does)
     Function* current = getCurrentFunction(current_function_);
-    bool is_global_init = current && current->getName() == "__global_init";
-    bool is_lib_init = current && current->getName() == "__eshkol_lib_init__";
+    llvm::StringRef current_name = current ? current->getName() : llvm::StringRef();
+    bool is_global_init = current && current_name == "__global_init";
+    bool is_lib_init = current &&
+        (current_name == "__eshkol_lib_init__" ||
+         current_name.starts_with("__eshkol_lib_init_chunk_"));
     bool is_repl = isReplMode(repl_mode_);
     bool is_main = current && current->getName() == "main";
     const std::string var_storage_name = bindingStorageName(var_name, is_repl);

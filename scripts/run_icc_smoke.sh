@@ -37,6 +37,14 @@ if [ ! -x "$ESHKOL_RUN" ]; then
     exit 2
 fi
 
+if [ -z "${ESHKOL_JIT_CACHE_DIR:-}" ]; then
+    ESHKOL_ICC_JIT_CACHE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/eshkol-icc-jit-cache.XXXXXX")
+    export ESHKOL_JIT_CACHE_DIR="$ESHKOL_ICC_JIT_CACHE_DIR"
+    trap 'rm -rf "$ESHKOL_ICC_JIT_CACHE_DIR"' EXIT
+else
+    mkdir -p "$ESHKOL_JIT_CACHE_DIR"
+fi
+
 # Emit one trace line as a JSON-L event with explicit `kind`. ICC's
 # runtime_evidence parser was extended (2026-05-07) to recognize records
 # carrying an explicit `kind` field as pre-shaped events, instead of
@@ -196,7 +204,7 @@ probe error_messages_have_source_locations "Diagnostic includes line:col" \
 probe per_thread_arena_works "parallel-map across 8 workers completes" \
     'tmp=$(mktemp).esk;
      cat > "$tmp" <<EOF
-(require core.parallel)
+(require core.threads)
 (let ((r (parallel-map (lambda (x) (* x x)) (list 1 2 3 4 5 6 7 8))))
   (if (equal? r (list 1 4 9 16 25 36 49 64)) (exit 0) (exit 1)))
 EOF

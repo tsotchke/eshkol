@@ -1,4 +1,18 @@
 static void compile_expr_impl(FuncChunk* c, Node* node, int tail);
+static void compile_expr(FuncChunk* c, Node* node, int tail);
+
+static void compile_symbol_literal(FuncChunk* c, const char* symbol) {
+    int len = symbol ? (int)strlen(symbol) : 0;
+    int n_packs = (len + 7) / 8;
+    chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(len)));
+    for (int p = 0; p < n_packs; p++) {
+        int64_t pack = 0;
+        for (int b = 0; b < 8 && p * 8 + b < len; b++)
+            pack |= ((int64_t)(unsigned char)symbol[p * 8 + b]) << (b * 8);
+        chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(pack)));
+    }
+    chunk_emit(c, OP_NATIVE_CALL, 100);
+}
 
 static void compile_quasiquote(FuncChunk* c, Node* node) {
     if (!node) { chunk_emit(c, OP_NIL, 0); return; }
@@ -18,16 +32,7 @@ static void compile_quasiquote(FuncChunk* c, Node* node) {
     }
     /* Atom: symbol — quote as string */
     if (node->type == N_SYMBOL) {
-        int len = (int)strlen(node->symbol);
-        int n_packs = (len + 7) / 8;
-        chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(len)));
-        for (int p = 0; p < n_packs; p++) {
-            int64_t pack = 0;
-            for (int b = 0; b < 8 && p * 8 + b < len; b++)
-                pack |= ((int64_t)(unsigned char)node->symbol[p * 8 + b]) << (b * 8);
-            chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(pack)));
-        }
-        chunk_emit(c, OP_NATIVE_CALL, 100);
+        compile_symbol_literal(c, node->symbol);
         return;
     }
     /* Atom: string */
@@ -1520,8 +1525,12 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
                 }
             }
         }
-        fprintf(stderr, "WARNING: undefined variable '%s'\n", node->symbol);
-        chunk_emit(c, OP_NIL, 0);
+        if (node->symbol[0] == '?') {
+            compile_symbol_literal(c, node->symbol);
+        } else {
+            fprintf(stderr, "WARNING: undefined variable '%s'\n", node->symbol);
+            chunk_emit(c, OP_NIL, 0);
+        }
         return;
     }
 
