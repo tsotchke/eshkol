@@ -136,3 +136,6 @@ CMakeFiles/
 notes/
 scripts/icc_traces/
 .swarm/runtime/
+node_modules/
+package.json
+package-lock.json
