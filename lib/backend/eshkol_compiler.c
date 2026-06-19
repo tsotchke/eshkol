@@ -4843,7 +4843,12 @@ static void execute_chunk(FuncChunk* chunk) {
                 if (s.type != VAL_STRING) { PUSH(s); break; }
                 int n = (int)AS_NUM(n_v);
                 int slen = heap[s.as.ptr].string.len;
-                int rlen = slen * n; if (rlen > 255) rlen = 255;
+                /* P1: guard negative n (rlen<0 → OOB write at data[rlen]),
+                   slen==0 (i%slen div-by-zero), and slen*n int overflow. The
+                   inline string.data buffer is 256 bytes, so clamp rlen to 255. */
+                if (n < 0 || slen <= 0) { PUSH(s); break; }
+                int64_t rlen64 = (int64_t)slen * (int64_t)n;
+                int rlen = rlen64 > 255 ? 255 : (int)rlen64;
                 int32_t ptr = HALLOC(); if (ptr < 0) break;
                 heap[ptr].type = HEAP_STRING; heap[ptr].string.len = rlen;
                 for (int i = 0; i < rlen; i++) heap[ptr].string.data[i] = heap[s.as.ptr].string.data[i % slen];

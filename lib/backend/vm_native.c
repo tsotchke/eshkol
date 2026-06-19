@@ -9909,11 +9909,18 @@ static void vm_dispatch_native(VM* vm, int fid) {
             VmString* s = (VmString*)vm->heap.objects[s_val.as.ptr]->opaque.ptr;
             int n = (int)as_number(n_val);
             if (s && n > 0 && n < 10000 && s->byte_len > 0) {
-                int total = s->byte_len * n;
-                char* buf = (char*)vm_alloc(&vm->heap.regions, (size_t)(total + 1));
-                if (buf) { for (int i = 0; i < n; i++) memcpy(buf + i * s->byte_len, s->data, s->byte_len); buf[total] = 0;
-                    VmString* r = vm_string_from_cstr(&vm->heap.regions, buf);
-                    if (r) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, r); break; } } }
+                /* P1: byte_len * n overflows int32 for a large string even with
+                   n < 10000 (byte_len can be ~2^31), giving an undersized alloc
+                   then a memcpy overflow. Compute in int64 and bound to 64 MiB. */
+                int64_t total64 = (int64_t)s->byte_len * (int64_t)n;
+                if (total64 > 0 && total64 <= (int64_t)64 * 1024 * 1024) {
+                    int total = (int)total64;
+                    char* buf = (char*)vm_alloc(&vm->heap.regions, (size_t)(total + 1));
+                    if (buf) { for (int i = 0; i < n; i++) memcpy(buf + i * s->byte_len, s->data, s->byte_len); buf[total] = 0;
+                        VmString* r = vm_string_from_cstr(&vm->heap.regions, buf);
+                        if (r) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, r); break; } }
+                }
+            }
         }
         vm_push(vm, s_val); break; }
     case 907: { /* string-trim */
