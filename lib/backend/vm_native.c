@@ -5178,7 +5178,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 502: { /* unify(subst, a, b) — bind a to b in substitution (copy-on-extend) */
         Value b_val = vm_pop(vm), a_val = vm_pop(vm), s_val = vm_pop(vm);
-        if (s_val.as.ptr >= 0 && vm->heap.objects[s_val.as.ptr]->type == HEAP_SUBST) {
+        if (is_heap_type(vm, s_val, HEAP_SUBST)) {
             VmSubstitution* subst = (VmSubstitution*)vm->heap.objects[s_val.as.ptr]->opaque.ptr;
             if (subst && a_val.type == VAL_INT) {
                 /* Treat a_val as logic var ID, bind it to b_val */
@@ -5224,7 +5224,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 503: { /* walk(term, subst) */
         Value subst_val = vm_pop(vm), term_val = vm_pop(vm);
         /* Walk resolves variables through substitution chains */
-        if (subst_val.as.ptr >= 0 && vm->heap.objects[subst_val.as.ptr]->type == HEAP_SUBST) {
+        if (is_heap_type(vm, subst_val, HEAP_SUBST)) {
             VmSubstitution* s = (VmSubstitution*)vm->heap.objects[subst_val.as.ptr]->opaque.ptr;
             if (s && term_val.type == VAL_INT) {
                 /* Check if term is a var_id that has a binding */
@@ -5251,7 +5251,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 504: { /* walk-deep — recursive walk through substitution chains */
         Value subst_val = vm_pop(vm), term_val = vm_pop(vm);
         /* Walk repeatedly until term no longer resolves */
-        if (subst_val.as.ptr >= 0 && vm->heap.objects[subst_val.as.ptr]->type == HEAP_SUBST) {
+        if (is_heap_type(vm, subst_val, HEAP_SUBST)) {
             VmSubstitution* s = (VmSubstitution*)vm->heap.objects[subst_val.as.ptr]->opaque.ptr;
             Value resolved = term_val;
             int depth = 0;
@@ -5295,7 +5295,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 511: { /* kb-assert!(kb, fact) — store fact in the KB */
         Value fact_val = vm_pop(vm), kb_val = vm_pop(vm);
-        if (kb_val.as.ptr >= 0 && vm->heap.objects[kb_val.as.ptr]->type == HEAP_KB) {
+        if (is_heap_type(vm, kb_val, HEAP_KB)) {
             VmKnowledgeBase* kb_obj = (VmKnowledgeBase*)vm->heap.objects[kb_val.as.ptr]->opaque.ptr;
             if (kb_obj && kb_obj->n_facts < kb_obj->capacity) {
                 VmFact* f = (VmFact*)vm_alloc(&vm->heap.regions, sizeof(VmFact));
@@ -5319,7 +5319,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
         Value pattern_datum;
         int has_pattern = vm_kb_extract_fact_datum(vm, pattern, &pattern_datum);
         if (!has_pattern) pattern_datum = pattern;
-        if (kb_val.as.ptr >= 0 && vm->heap.objects[kb_val.as.ptr]->type == HEAP_KB) {
+        if (is_heap_type(vm, kb_val, HEAP_KB)) {
             VmKnowledgeBase* kb_obj = (VmKnowledgeBase*)vm->heap.objects[kb_val.as.ptr]->opaque.ptr;
             if (kb_obj) {
                 Value result = NIL_VAL;
@@ -5386,7 +5386,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 522: { /* fg-add-factor!(fg, var_indices, cpt) */
         Value cpt = vm_pop(vm), vars = vm_pop(vm), fg_val = vm_pop(vm);
-        if (fg_val.as.ptr >= 0 && vm->heap.objects[fg_val.as.ptr]->type == HEAP_FACTOR_GRAPH) {
+        if (is_heap_type(vm, fg_val, HEAP_FACTOR_GRAPH)) {
             VmFactorGraph* fg = (VmFactorGraph*)vm->heap.objects[fg_val.as.ptr]->opaque.ptr;
             if (fg) {
                 /* Extract var_indices from either a tensor `#(0 1)` or a
@@ -5415,7 +5415,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 }
                 /* Extract CPT data from tensor or list */
                 double* cpt_data = NULL;
-                if (cpt.as.ptr >= 0 && vm->heap.objects[cpt.as.ptr]->type == HEAP_TENSOR) {
+                if (is_heap_type(vm, cpt, HEAP_TENSOR)) {
                     VmTensor* t = (VmTensor*)vm->heap.objects[cpt.as.ptr]->opaque.ptr;
                     if (t) cpt_data = t->data;
                 }
@@ -5436,7 +5436,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 523: { /* fg-infer!(fg, max_iters, tolerance) */
         Value tol = vm_pop(vm), iters = vm_pop(vm), fg_val = vm_pop(vm);
-        if (fg_val.as.ptr >= 0 && vm->heap.objects[fg_val.as.ptr]->type == HEAP_FACTOR_GRAPH) {
+        if (is_heap_type(vm, fg_val, HEAP_FACTOR_GRAPH)) {
             VmFactorGraph* fg = (VmFactorGraph*)vm->heap.objects[fg_val.as.ptr]->opaque.ptr;
             if (fg) {
                 int converged = vm_fg_infer(&vm->heap.regions, fg, (int)as_number(iters), as_number(tol));
@@ -5449,9 +5449,9 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 524: { /* fg-update-cpt!(fg, factor_idx, new_cpt_tensor) */
         Value cpt = vm_pop(vm), idx = vm_pop(vm), fg_val = vm_pop(vm);
-        if (fg_val.as.ptr >= 0 && vm->heap.objects[fg_val.as.ptr]->type == HEAP_FACTOR_GRAPH) {
+        if (is_heap_type(vm, fg_val, HEAP_FACTOR_GRAPH)) {
             VmFactorGraph* fg = (VmFactorGraph*)vm->heap.objects[fg_val.as.ptr]->opaque.ptr;
-            if (fg && cpt.as.ptr >= 0 && vm->heap.objects[cpt.as.ptr]->type == HEAP_TENSOR) {
+            if (fg && is_heap_type(vm, cpt, HEAP_TENSOR)) {
                 VmTensor* t = (VmTensor*)vm->heap.objects[cpt.as.ptr]->opaque.ptr;
                 if (t) vm_fg_update_cpt(fg, (int)as_number(idx), t->data, (int)t->total);
             }
@@ -5461,7 +5461,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 525: { /* free-energy(fg, observations) */
         Value obs = vm_pop(vm), fg_val = vm_pop(vm);
-        if (fg_val.as.ptr >= 0 && vm->heap.objects[fg_val.as.ptr]->type == HEAP_FACTOR_GRAPH) {
+        if (is_heap_type(vm, fg_val, HEAP_FACTOR_GRAPH)) {
             VmFactorGraph* fg = (VmFactorGraph*)vm->heap.objects[fg_val.as.ptr]->opaque.ptr;
             if (fg) {
                 /* Parse observations.  Canonical Eshkol form is a flat
@@ -5504,7 +5504,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 526: { /* expected-free-energy(fg, action_var, action_state) */
         Value state = vm_pop(vm), var = vm_pop(vm), fg_val = vm_pop(vm);
-        if (fg_val.as.ptr >= 0 && vm->heap.objects[fg_val.as.ptr]->type == HEAP_FACTOR_GRAPH) {
+        if (is_heap_type(vm, fg_val, HEAP_FACTOR_GRAPH)) {
             VmFactorGraph* fg = (VmFactorGraph*)vm->heap.objects[fg_val.as.ptr]->opaque.ptr;
             if (fg) {
                 double efe = vm_expected_free_energy(&vm->heap.regions, fg, (int)as_number(var), (int)as_number(state));
@@ -5521,7 +5521,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
                  * After observing, re-run fg-infer! to propagate the evidence.
                  * Ref: Standard factor graph evidence clamping (Kschischang et al. 2001). */
         Value state_val = vm_pop(vm), var_val = vm_pop(vm), fg_val = vm_pop(vm);
-        if (fg_val.as.ptr >= 0 && vm->heap.objects[fg_val.as.ptr]->type == HEAP_FACTOR_GRAPH) {
+        if (is_heap_type(vm, fg_val, HEAP_FACTOR_GRAPH)) {
             VmFactorGraph* fg = (VmFactorGraph*)vm->heap.objects[fg_val.as.ptr]->opaque.ptr;
             if (fg) {
                 int var_id = (int)as_number(var_val);
@@ -5568,7 +5568,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 542: { /* ws-register!(ws, name, closure) */
         Value closure = vm_pop(vm), name_val = vm_pop(vm), ws_val = vm_pop(vm);
-        if (ws_val.as.ptr >= 0 && vm->heap.objects[ws_val.as.ptr]->type == HEAP_WORKSPACE) {
+        if (is_heap_type(vm, ws_val, HEAP_WORKSPACE)) {
             VmWorkspace* ws = (VmWorkspace*)vm->heap.objects[ws_val.as.ptr]->opaque.ptr;
             if (ws) {
                 const char* name = "module";
@@ -5589,7 +5589,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 543: { /* ws-step!(ws) — invoke module closures via closure bridge */
         Value ws_val = vm_pop(vm);
-        if (ws_val.as.ptr >= 0 && vm->heap.objects[ws_val.as.ptr]->type == HEAP_WORKSPACE) {
+        if (is_heap_type(vm, ws_val, HEAP_WORKSPACE)) {
             VmWorkspace* ws = (VmWorkspace*)vm->heap.objects[ws_val.as.ptr]->opaque.ptr;
             if (ws && ws->content) {
                 /* Build content tensor */
@@ -5640,7 +5640,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 544: { /* ws-get-content */
         Value ws_val = vm_pop(vm);
-        if (ws_val.as.ptr >= 0 && vm->heap.objects[ws_val.as.ptr]->type == HEAP_WORKSPACE) {
+        if (is_heap_type(vm, ws_val, HEAP_WORKSPACE)) {
             VmWorkspace* ws = (VmWorkspace*)vm->heap.objects[ws_val.as.ptr]->opaque.ptr;
             if (ws && ws->content) {
                 /* Return content as tensor */
@@ -5662,8 +5662,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 545: { /* ws-set-content!(ws, tensor) */
         Value tensor_val = vm_pop(vm), ws_val = vm_pop(vm);
-        if (ws_val.as.ptr >= 0 && vm->heap.objects[ws_val.as.ptr]->type == HEAP_WORKSPACE &&
-            tensor_val.as.ptr >= 0 && vm->heap.objects[tensor_val.as.ptr]->type == HEAP_TENSOR) {
+        if (is_heap_type(vm, ws_val, HEAP_WORKSPACE) &&
+            is_heap_type(vm, tensor_val, HEAP_TENSOR)) {
             VmWorkspace* ws = (VmWorkspace*)vm->heap.objects[ws_val.as.ptr]->opaque.ptr;
             VmTensor* t = (VmTensor*)vm->heap.objects[tensor_val.as.ptr]->opaque.ptr;
             if (ws && t && t->data) {
@@ -5679,7 +5679,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 546: { /* ws-get-dim */
         Value ws_val = vm_pop(vm);
-        if (ws_val.as.ptr >= 0 && vm->heap.objects[ws_val.as.ptr]->type == HEAP_WORKSPACE) {
+        if (is_heap_type(vm, ws_val, HEAP_WORKSPACE)) {
             VmWorkspace* ws = (VmWorkspace*)vm->heap.objects[ws_val.as.ptr]->opaque.ptr;
             vm_push(vm, INT_VAL(ws ? ws->dim : 0));
         } else {
@@ -5689,7 +5689,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 547: { /* ws-get-step-count */
         Value ws_val = vm_pop(vm);
-        if (ws_val.as.ptr >= 0 && vm->heap.objects[ws_val.as.ptr]->type == HEAP_WORKSPACE) {
+        if (is_heap_type(vm, ws_val, HEAP_WORKSPACE)) {
             VmWorkspace* ws = (VmWorkspace*)vm->heap.objects[ws_val.as.ptr]->opaque.ptr;
             vm_push(vm, INT_VAL(ws ? ws->step_count : 0));
         } else {
@@ -8225,7 +8225,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 651: { /* multi-value-ref(mv, idx) — extract from multi-value container */
         Value idx = vm_pop(vm), mv = vm_pop(vm);
-        if (mv.as.ptr >= 0 && vm->heap.objects[mv.as.ptr]->type == HEAP_MULTI_VALUE) {
+        if (is_heap_type(vm, mv, HEAP_MULTI_VALUE)) {
             VmMultiValue* mvobj = (VmMultiValue*)vm->heap.objects[mv.as.ptr]->opaque.ptr;
             int i = (int)as_number(idx);
             if (mvobj && i >= 0 && i < mvobj->count) {
@@ -8275,7 +8275,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 661: { /* hash-ref(ht, key, default) */
         Value dflt = vm_pop(vm), key = vm_pop(vm), ht_val = vm_pop(vm);
-        if (ht_val.as.ptr >= 0 && vm->heap.objects[ht_val.as.ptr]->type == HEAP_HASH) {
+        if (is_heap_type(vm, ht_val, HEAP_HASH)) {
             VmHashTable* ht = (VmHashTable*)vm->heap.objects[ht_val.as.ptr]->opaque.ptr;
             void* result = vm_ht_ref(ht, (void*)(uintptr_t)key.as.i, (void*)(uintptr_t)dflt.as.i);
             vm_push(vm, INT_VAL((int64_t)(intptr_t)result));
@@ -8284,7 +8284,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 662: { /* hash-set!(ht, key, value) */
         Value val = vm_pop(vm), key = vm_pop(vm), ht_val = vm_pop(vm);
-        if (ht_val.as.ptr >= 0 && vm->heap.objects[ht_val.as.ptr]->type == HEAP_HASH) {
+        if (is_heap_type(vm, ht_val, HEAP_HASH)) {
             VmHashTable* ht = (VmHashTable*)vm->heap.objects[ht_val.as.ptr]->opaque.ptr;
             vm_ht_set(&vm->heap.regions, ht, (void*)(uintptr_t)key.as.i, (void*)(uintptr_t)val.as.i);
         }
@@ -8293,7 +8293,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 663: { /* hash-delete!(ht, key) */
         Value key = vm_pop(vm), ht_val = vm_pop(vm);
-        if (ht_val.as.ptr >= 0 && vm->heap.objects[ht_val.as.ptr]->type == HEAP_HASH) {
+        if (is_heap_type(vm, ht_val, HEAP_HASH)) {
             VmHashTable* ht = (VmHashTable*)vm->heap.objects[ht_val.as.ptr]->opaque.ptr;
             vm_ht_remove(ht, (void*)(uintptr_t)key.as.i);
         }
@@ -8302,7 +8302,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 664: { /* hash-has-key?(ht, key) */
         Value key = vm_pop(vm), ht_val = vm_pop(vm);
-        if (ht_val.as.ptr >= 0 && vm->heap.objects[ht_val.as.ptr]->type == HEAP_HASH) {
+        if (is_heap_type(vm, ht_val, HEAP_HASH)) {
             VmHashTable* ht = (VmHashTable*)vm->heap.objects[ht_val.as.ptr]->opaque.ptr;
             vm_push(vm, BOOL_VAL(vm_ht_has_key(ht, (void*)(uintptr_t)key.as.i)));
         } else vm_push(vm, BOOL_VAL(0));
@@ -8310,7 +8310,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 665: { /* hash-keys */
         Value ht_val = vm_pop(vm);
-        if (ht_val.as.ptr >= 0 && vm->heap.objects[ht_val.as.ptr]->type == HEAP_HASH) {
+        if (is_heap_type(vm, ht_val, HEAP_HASH)) {
             VmHashTable* ht = (VmHashTable*)vm->heap.objects[ht_val.as.ptr]->opaque.ptr;
             if (ht) {
                 Value result = NIL_VAL;
@@ -8333,7 +8333,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 666: { /* hash-values */
         Value ht_val = vm_pop(vm);
-        if (ht_val.as.ptr >= 0 && vm->heap.objects[ht_val.as.ptr]->type == HEAP_HASH) {
+        if (is_heap_type(vm, ht_val, HEAP_HASH)) {
             VmHashTable* ht = (VmHashTable*)vm->heap.objects[ht_val.as.ptr]->opaque.ptr;
             if (ht) {
                 Value result = NIL_VAL;
@@ -8356,7 +8356,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 667: { /* hash-count */
         Value ht_val = vm_pop(vm);
-        if (ht_val.as.ptr >= 0 && vm->heap.objects[ht_val.as.ptr]->type == HEAP_HASH) {
+        if (is_heap_type(vm, ht_val, HEAP_HASH)) {
             VmHashTable* ht = (VmHashTable*)vm->heap.objects[ht_val.as.ptr]->opaque.ptr;
             vm_push(vm, INT_VAL(ht ? vm_ht_count(ht) : 0));
         } else vm_push(vm, INT_VAL(0));
@@ -8364,7 +8364,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 668: { /* hash-table-copy(ht) — shallow copy of hash table */
         Value ht_val = vm_pop(vm);
-        if (ht_val.as.ptr >= 0 && vm->heap.objects[ht_val.as.ptr]->type == HEAP_HASH) {
+        if (is_heap_type(vm, ht_val, HEAP_HASH)) {
             VmHashTable* ht = (VmHashTable*)vm->heap.objects[ht_val.as.ptr]->opaque.ptr;
             if (ht) {
                 VmHashTable* copy = vm_ht_make(&vm->heap.regions);
@@ -8379,7 +8379,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 669: { /* hash-clear! */
         Value ht_val = vm_pop(vm);
-        if (ht_val.as.ptr >= 0 && vm->heap.objects[ht_val.as.ptr]->type == HEAP_HASH) {
+        if (is_heap_type(vm, ht_val, HEAP_HASH)) {
             VmHashTable* ht = (VmHashTable*)vm->heap.objects[ht_val.as.ptr]->opaque.ptr;
             if (ht) vm_ht_clear(ht);
         }
@@ -8405,7 +8405,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 681: { /* bytevector-length */
         Value bv_val = vm_pop(vm);
-        if (bv_val.as.ptr >= 0 && vm->heap.objects[bv_val.as.ptr]->type == HEAP_BYTEVECTOR) {
+        if (is_heap_type(vm, bv_val, HEAP_BYTEVECTOR)) {
             VmBytevector* bv = (VmBytevector*)vm->heap.objects[bv_val.as.ptr]->opaque.ptr;
             vm_push(vm, INT_VAL(vm_bv_length(bv)));
         } else vm_push(vm, INT_VAL(0));
@@ -8413,7 +8413,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 682: { /* bytevector-u8-ref(bv, k) */
         Value k = vm_pop(vm), bv_val = vm_pop(vm);
-        if (bv_val.as.ptr >= 0 && vm->heap.objects[bv_val.as.ptr]->type == HEAP_BYTEVECTOR) {
+        if (is_heap_type(vm, bv_val, HEAP_BYTEVECTOR)) {
             VmBytevector* bv = (VmBytevector*)vm->heap.objects[bv_val.as.ptr]->opaque.ptr;
             vm_push(vm, INT_VAL(vm_bv_u8_ref(bv, (int)as_number(k))));
         } else vm_push(vm, INT_VAL(0));
@@ -8421,7 +8421,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 683: { /* bytevector-u8-set!(bv, k, byte) */
         Value byte = vm_pop(vm), k = vm_pop(vm), bv_val = vm_pop(vm);
-        if (bv_val.as.ptr >= 0 && vm->heap.objects[bv_val.as.ptr]->type == HEAP_BYTEVECTOR) {
+        if (is_heap_type(vm, bv_val, HEAP_BYTEVECTOR)) {
             VmBytevector* bv = (VmBytevector*)vm->heap.objects[bv_val.as.ptr]->opaque.ptr;
             vm_bv_u8_set(bv, (int)as_number(k), (int)as_number(byte));
         }
@@ -8430,9 +8430,9 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 684: { /* bytevector-append(a, b) */
         Value b_val = vm_pop(vm), a_val = vm_pop(vm);
-        VmBytevector* a = (a_val.as.ptr >= 0 && vm->heap.objects[a_val.as.ptr]->type == HEAP_BYTEVECTOR)
+        VmBytevector* a = (is_heap_type(vm, a_val, HEAP_BYTEVECTOR))
             ? (VmBytevector*)vm->heap.objects[a_val.as.ptr]->opaque.ptr : NULL;
-        VmBytevector* b = (b_val.as.ptr >= 0 && vm->heap.objects[b_val.as.ptr]->type == HEAP_BYTEVECTOR)
+        VmBytevector* b = (is_heap_type(vm, b_val, HEAP_BYTEVECTOR))
             ? (VmBytevector*)vm->heap.objects[b_val.as.ptr]->opaque.ptr : NULL;
         if (a && b) {
             VmBytevector* r = vm_bv_append(&vm->heap.regions, a, b);
@@ -8443,8 +8443,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 685: { /* bytevector-copy!(to, at, from) — copy bytes from src into dst */
         Value from_val = vm_pop(vm), at_val = vm_pop(vm), to_val = vm_pop(vm);
-        if (to_val.as.ptr >= 0 && vm->heap.objects[to_val.as.ptr]->type == HEAP_BYTEVECTOR &&
-            from_val.as.ptr >= 0 && vm->heap.objects[from_val.as.ptr]->type == HEAP_BYTEVECTOR) {
+        if (is_heap_type(vm, to_val, HEAP_BYTEVECTOR) &&
+            is_heap_type(vm, from_val, HEAP_BYTEVECTOR)) {
             VmBytevector* to_bv = (VmBytevector*)vm->heap.objects[to_val.as.ptr]->opaque.ptr;
             VmBytevector* from_bv = (VmBytevector*)vm->heap.objects[from_val.as.ptr]->opaque.ptr;
             int at = (int)as_number(at_val);
@@ -8465,7 +8465,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 687: { /* bytevector-copy(bv) */
         Value bv_val = vm_pop(vm);
-        if (bv_val.as.ptr >= 0 && vm->heap.objects[bv_val.as.ptr]->type == HEAP_BYTEVECTOR) {
+        if (is_heap_type(vm, bv_val, HEAP_BYTEVECTOR)) {
             VmBytevector* bv = (VmBytevector*)vm->heap.objects[bv_val.as.ptr]->opaque.ptr;
             VmBytevector* r = vm_bv_copy(&vm->heap.regions, bv, 0, bv->len);
             if (r) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_BYTEVECTOR, VAL_BYTEVECTOR, r); break; }
@@ -8475,7 +8475,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 688: { /* utf8->string(bv) */
         Value bv_val = vm_pop(vm);
-        if (bv_val.as.ptr >= 0 && vm->heap.objects[bv_val.as.ptr]->type == HEAP_BYTEVECTOR) {
+        if (is_heap_type(vm, bv_val, HEAP_BYTEVECTOR)) {
             VmBytevector* bv = (VmBytevector*)vm->heap.objects[bv_val.as.ptr]->opaque.ptr;
             if (bv) {
                 VmString* s = vm_string_new(&vm->heap.regions, (const char*)bv->data, bv->len);
@@ -8526,7 +8526,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 701: { /* parameter-ref */
         Value p_val = vm_pop(vm);
-        if (p_val.as.ptr >= 0 && vm->heap.objects[p_val.as.ptr]->type == HEAP_PARAMETER) {
+        if (is_heap_type(vm, p_val, HEAP_PARAMETER)) {
             VmParameter* p = (VmParameter*)vm->heap.objects[p_val.as.ptr]->opaque.ptr;
             void* v = vm_param_ref(p);
             vm_push(vm, INT_VAL((int64_t)(intptr_t)v));
@@ -8535,7 +8535,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 702: { /* parameterize-push(param, value) */
         Value val = vm_pop(vm), p_val = vm_pop(vm);
-        if (p_val.as.ptr >= 0 && vm->heap.objects[p_val.as.ptr]->type == HEAP_PARAMETER) {
+        if (is_heap_type(vm, p_val, HEAP_PARAMETER)) {
             VmParameter* p = (VmParameter*)vm->heap.objects[p_val.as.ptr]->opaque.ptr;
             vm_param_push(&vm->heap.regions, p, (void*)(uintptr_t)val.as.i);
         }
@@ -8544,7 +8544,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 703: { /* parameterize-pop(param) */
         Value p_val = vm_pop(vm);
-        if (p_val.as.ptr >= 0 && vm->heap.objects[p_val.as.ptr]->type == HEAP_PARAMETER) {
+        if (is_heap_type(vm, p_val, HEAP_PARAMETER)) {
             VmParameter* p = (VmParameter*)vm->heap.objects[p_val.as.ptr]->opaque.ptr;
             vm_param_pop(p);
         }
@@ -8571,7 +8571,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 711: { /* error-message */
         Value e_val = vm_pop(vm);
-        if (e_val.as.ptr >= 0 && vm->heap.objects[e_val.as.ptr]->type == HEAP_ERROR) {
+        if (is_heap_type(vm, e_val, HEAP_ERROR)) {
             VmError* e = (VmError*)vm->heap.objects[e_val.as.ptr]->opaque.ptr;
             VmString* s = vm_string_from_cstr(&vm->heap.regions, e ? e->message : "");
             if (s) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, s); break; }
@@ -8581,7 +8581,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 712: { /* error-type */
         Value e_val = vm_pop(vm);
-        if (e_val.as.ptr >= 0 && vm->heap.objects[e_val.as.ptr]->type == HEAP_ERROR) {
+        if (is_heap_type(vm, e_val, HEAP_ERROR)) {
             VmError* e = (VmError*)vm->heap.objects[e_val.as.ptr]->opaque.ptr;
             VmString* s = vm_string_from_cstr(&vm->heap.regions, e ? e->type : "");
             if (s) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, s); break; }
@@ -11111,7 +11111,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
 
     case 1800: { /* kb-count(kb) → integer (number of facts) */
         Value kb_val = vm_pop(vm);
-        if (kb_val.as.ptr >= 0 && vm->heap.objects[kb_val.as.ptr]->type == HEAP_KB) {
+        if (is_heap_type(vm, kb_val, HEAP_KB)) {
             VmKnowledgeBase* kb = (VmKnowledgeBase*)vm->heap.objects[kb_val.as.ptr]->opaque.ptr;
             if (kb) { vm_push(vm, INT_VAL(kb->n_facts)); break; }
         }
@@ -11122,7 +11122,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 1801: { /* kb-retract!(kb, fact) -> #t or #f
                   * Remove first structurally matching fact from KB. */
         Value fact_val = vm_pop(vm), kb_val = vm_pop(vm);
-        if (kb_val.as.ptr >= 0 && vm->heap.objects[kb_val.as.ptr]->type == HEAP_KB) {
+        if (is_heap_type(vm, kb_val, HEAP_KB)) {
             VmKnowledgeBase* kb = (VmKnowledgeBase*)vm->heap.objects[kb_val.as.ptr]->opaque.ptr;
             Value target_datum;
             int has_target_datum = vm_kb_extract_fact_datum(vm, fact_val, &target_datum);
@@ -11147,7 +11147,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 1802: { /* kb-count-predicate(kb, predicate) -> integer */
         Value predicate = vm_pop(vm), kb_val = vm_pop(vm);
         int count = 0;
-        if (kb_val.as.ptr >= 0 && vm->heap.objects[kb_val.as.ptr]->type == HEAP_KB) {
+        if (is_heap_type(vm, kb_val, HEAP_KB)) {
             VmKnowledgeBase* kb = (VmKnowledgeBase*)vm->heap.objects[kb_val.as.ptr]->opaque.ptr;
             if (kb) {
                 for (int i = 0; i < kb->n_facts; i++)
@@ -11164,7 +11164,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
 
     case 1810: { /* fg-marginal(fg, var-idx) -> tensor of belief probabilities */
         Value idx_val = vm_pop(vm), fg_val = vm_pop(vm);
-        if (fg_val.as.ptr >= 0 && vm->heap.objects[fg_val.as.ptr]->type == HEAP_FACTOR_GRAPH) {
+        if (is_heap_type(vm, fg_val, HEAP_FACTOR_GRAPH)) {
             VmFactorGraph* fg = (VmFactorGraph*)vm->heap.objects[fg_val.as.ptr]->opaque.ptr;
             int var = (int)as_number(idx_val);
             if (fg && var >= 0 && var < fg->num_vars) {
@@ -11189,7 +11189,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
 
     case 1811: { /* fg-entropy(fg, var-idx) -> scalar entropy H = -sum p*log(p) */
         Value idx_val = vm_pop(vm), fg_val = vm_pop(vm);
-        if (fg_val.as.ptr >= 0 && vm->heap.objects[fg_val.as.ptr]->type == HEAP_FACTOR_GRAPH) {
+        if (is_heap_type(vm, fg_val, HEAP_FACTOR_GRAPH)) {
             VmFactorGraph* fg = (VmFactorGraph*)vm->heap.objects[fg_val.as.ptr]->opaque.ptr;
             int var = (int)as_number(idx_val);
             if (fg && var >= 0 && var < fg->num_vars) {
@@ -11209,7 +11209,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
 
     case 1812: { /* fg-total-entropy(fg) -> sum of variable marginal entropies */
         Value fg_val = vm_pop(vm);
-        if (fg_val.as.ptr >= 0 && vm->heap.objects[fg_val.as.ptr]->type == HEAP_FACTOR_GRAPH) {
+        if (is_heap_type(vm, fg_val, HEAP_FACTOR_GRAPH)) {
             VmFactorGraph* fg = (VmFactorGraph*)vm->heap.objects[fg_val.as.ptr]->opaque.ptr;
             if (fg) {
                 double entropy = 0.0;
