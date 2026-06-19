@@ -167,6 +167,37 @@ llvm::Value* TensorCodegen::tensorOperation(const eshkol_operations_t* op) {
     llvm::Value* arena_ptr = builder.CreateLoad(
         llvm::PointerType::get(context, 0), ctx_.globalArena());
 
+    // (tensor X) with a single argument: if X evaluates to a list or vector at
+    // runtime, unpack it element-by-element into a 1-D tensor (numpy-like).
+    // Otherwise this builds a 1-element tensor whose sole element is the
+    // collection pointer reinterpreted as a double (garbage, e.g.
+    // (tensor (list 1.0 2.0 3.0)) -> #(4.96e9)). Scalars still yield a 1-element
+    // tensor; an existing tensor passes through. eshkol_tensor_from_collection
+    // handles all three at runtime.
+    if (op->tensor_op.num_dimensions == 1 && op->tensor_op.total_elements == 1) {
+        llvm::Value* arg = codegenAST(&op->tensor_op.elements[0]);
+        if (arg) {
+            llvm::Value* arg_tagged;
+            if (arg->getType() == ctx_.taggedValueType()) arg_tagged = arg;
+            else if (arg->getType() == ctx_.doubleType()) arg_tagged = tagged_.packDouble(arg);
+            else if (arg->getType()->isIntegerTy(64)) arg_tagged = tagged_.packInt64(arg, true);
+            else arg_tagged = tagged_.packInt64(builder.CreateZExtOrTrunc(arg, ctx_.int64Type()), true);
+            llvm::Function* cur_fn = builder.GetInsertBlock()->getParent();
+            llvm::IRBuilder<> entryB(&cur_fn->getEntryBlock(), cur_fn->getEntryBlock().begin());
+            llvm::Value* slot = entryB.CreateAlloca(ctx_.taggedValueType(), nullptr, "tensorop_in");
+            builder.CreateStore(arg_tagged, slot);
+            llvm::Function* fn = ctx_.module().getFunction("eshkol_tensor_from_collection");
+            if (!fn) {
+                llvm::FunctionType* ft = llvm::FunctionType::get(
+                    ctx_.ptrType(), {ctx_.ptrType(), ctx_.ptrType()}, false);
+                fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+                    "eshkol_tensor_from_collection", &ctx_.module());
+            }
+            llvm::Value* tptr = builder.CreateCall(fn, {arena_ptr, slot});
+            return tagged_.packHeapPtr(tptr);
+        }
+    }
+
     // Allocate tensor with header using arena_allocate_tensor_with_header
     llvm::Function* alloc_tensor_func = mem_.getArenaAllocateTensorWithHeader();
     llvm::Value* typed_tensor_ptr = builder.CreateCall(alloc_tensor_func, {arena_ptr}, "tensor_ptr");
