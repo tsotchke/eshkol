@@ -2499,8 +2499,14 @@ llvm::Value* AutodiffCodegen::gradientHigherOrder(const eshkol_operations_t* op)
         results.push_back({ctx_.builder().GetInsertBlock(), dim_val});
     }
 
-    // Default case: unsupported dimension count, return null tensor
+    // Default case: dimension count beyond the switch's handled arities. The
+    // result tensor is still built with total_elements = dim_val below, but the
+    // per-dim cases never ran, so result_data would otherwise be uninitialized
+    // arena bytes (silent garbage). P1: zero-fill it so the returned gradient is
+    // defined (zeros) rather than leaking uninitialized memory.
     ctx_.builder().SetInsertPoint(switch_default);
+    ctx_.builder().CreateMemSet(result_data, ConstantInt::get(ctx_.int8Type(), 0),
+        result_size, llvm::MaybeAlign(8));
     ctx_.builder().CreateBr(grad_done);
     results.push_back({switch_default, ConstantInt::get(ctx_.int64Type(), 0)});
 
@@ -7279,8 +7285,16 @@ llvm::Value* AutodiffCodegen::directionalDerivative(const eshkol_operations_t* o
     
     // Get dimension n
     Value* grad_total_field = ctx_.builder().CreateStructGEP(ctx_.tensorType(), gradient_ptr, 3);
-    Value* n = ctx_.builder().CreateLoad(ctx_.int64Type(), grad_total_field);
-    
+    Value* n_grad = ctx_.builder().CreateLoad(ctx_.int64Type(), grad_total_field);
+    // P1: the dot-product loop below reads both grad[i] and dir[i] for i in
+    // [0, n). Bounding by the gradient length alone reads past the direction
+    // buffer when the caller passes a shorter direction vector. Clamp the loop
+    // to min(n_grad, n_dir) so neither side is read out of bounds.
+    Value* dir_total_field = ctx_.builder().CreateStructGEP(ctx_.tensorType(), direction_ptr, 3);
+    Value* n_dir = ctx_.builder().CreateLoad(ctx_.int64Type(), dir_total_field);
+    Value* n = ctx_.builder().CreateSelect(
+        ctx_.builder().CreateICmpULT(n_grad, n_dir), n_grad, n_dir);
+
     // Compute dot product: sum(grad[i] * dir[i])
     // current_func already defined above
     BasicBlock* dot_loop_cond = BasicBlock::Create(ctx_.context(), "dirderiv_dot_cond", current_func);
