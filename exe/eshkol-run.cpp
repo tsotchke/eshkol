@@ -2019,38 +2019,41 @@ static std::string find_stdlib_object(const std::vector<char*>& lib_paths)
     return eshkol::platform::find_first_existing(candidates);
 }
 
-// Find the runtime library (libeshkol-static.a)
+// Find the runtime library. Prefer the split runtime archive; fall back to the
+// historical aggregate archive for older build/install layouts.
 static std::string find_runtime_library(const std::vector<char*>& lib_paths)
 {
     auto cwd = eshkol::platform::current_directory();
     auto exe_dir = eshkol::platform::executable_directory();
-    const auto library_name = eshkol::platform::static_library_name("eshkol-static");
-
     std::vector<std::filesystem::path> candidates;
 
-    if (const char* env_lib = std::getenv("ESHKOL_LIB_DIR")) {
-        candidates.emplace_back(std::filesystem::path(env_lib) / library_name);
-    }
+    for (const char* logical_name : {"eshkol-runtime", "eshkol-static"}) {
+        const auto library_name = eshkol::platform::static_library_name(logical_name);
 
-    append_library_candidates(candidates, lib_paths, library_name);
+        if (const char* env_lib = std::getenv("ESHKOL_LIB_DIR")) {
+            candidates.emplace_back(std::filesystem::path(env_lib) / library_name);
+        }
 
-    candidates.insert(candidates.end(), {
-        exe_dir / library_name,
-        exe_dir / "../lib" / library_name,
-        exe_dir / "../lib/eshkol" / library_name,
-        cwd / library_name,
-        cwd / "build" / library_name,
-        cwd.parent_path() / "build" / library_name,
-    });
+        append_library_candidates(candidates, lib_paths, library_name);
+
+        candidates.insert(candidates.end(), {
+            exe_dir / library_name,
+            exe_dir / "../lib" / library_name,
+            exe_dir / "../lib/eshkol" / library_name,
+            cwd / library_name,
+            cwd / "build" / library_name,
+            cwd.parent_path() / "build" / library_name,
+        });
 
 #ifndef _WIN32
-    candidates.emplace_back("/usr/local/lib" / std::filesystem::path(library_name));
-    candidates.emplace_back("/usr/local/lib/eshkol" / std::filesystem::path(library_name));
-    candidates.emplace_back("/usr/lib" / std::filesystem::path(library_name));
-    candidates.emplace_back("/usr/lib/eshkol" / std::filesystem::path(library_name));
-    candidates.emplace_back("/opt/homebrew/lib" / std::filesystem::path(library_name));
-    candidates.emplace_back("/opt/homebrew/lib/eshkol" / std::filesystem::path(library_name));
+        candidates.emplace_back("/usr/local/lib" / std::filesystem::path(library_name));
+        candidates.emplace_back("/usr/local/lib/eshkol" / std::filesystem::path(library_name));
+        candidates.emplace_back("/usr/lib" / std::filesystem::path(library_name));
+        candidates.emplace_back("/usr/lib/eshkol" / std::filesystem::path(library_name));
+        candidates.emplace_back("/opt/homebrew/lib" / std::filesystem::path(library_name));
+        candidates.emplace_back("/opt/homebrew/lib/eshkol" / std::filesystem::path(library_name));
 #endif
+    }
 
     return eshkol::platform::find_first_existing(candidates);
 }
@@ -4128,12 +4131,12 @@ int main(int argc, char **argv)
             link_args.emplace_back("-L" + std::string(lib_path));
         }
 
-        // Add libeshkol-static.a (needed for arena functions)
+        // Add libeshkol-runtime.a (or legacy libeshkol-static.a) for runtime functions.
         std::string runtime_lib = find_runtime_library(lib_paths);
         if (!runtime_lib.empty()) {
             link_args.emplace_back(runtime_lib);
         } else {
-            eshkol_error("Could not find libeshkol-static.a");
+            eshkol_error("Could not find libeshkol-runtime.a or legacy libeshkol-static.a");
             eshkol_error("Searched: ./build/, /usr/local/lib/, /opt/homebrew/lib/, and relative to executable");
             eshkol_error("Please install Eshkol properly or build from source");
             return 1;

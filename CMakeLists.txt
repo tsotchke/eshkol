@@ -113,17 +113,35 @@ elseif(WIN32)
     list(APPEND ESHKOL_EXTRA_LINK_LIBS Gdiplus.lib)
     message(STATUS "Image I/O: Windows GDI+")
 else()
-    find_package(PNG REQUIRED)
-    find_package(JPEG REQUIRED)
-    pkg_check_modules(WEBP REQUIRED libwebp)
+    find_package(PNG QUIET)
+    if(PNG_FOUND)
+        find_package(JPEG QUIET)
+        pkg_check_modules(WEBP QUIET libwebp)
 
-    add_compile_definitions(
-        ESHKOL_IMAGE_IO_LIBPNG=1
-        ESHKOL_IMAGE_IO_LIBJPEG=1
-        ESHKOL_IMAGE_IO_LIBWEBP=1)
-    include_directories(SYSTEM ${PNG_INCLUDE_DIRS} ${JPEG_INCLUDE_DIRS} ${WEBP_INCLUDE_DIRS})
-    list(APPEND ESHKOL_EXTRA_LINK_LIBS PNG::PNG JPEG::JPEG ${WEBP_LDFLAGS})
-    message(STATUS "Image I/O: libpng/libjpeg/libwebp")
+        add_compile_definitions(ESHKOL_IMAGE_IO_LIBPNG=1)
+        include_directories(SYSTEM ${PNG_INCLUDE_DIRS})
+        list(APPEND ESHKOL_EXTRA_LINK_LIBS PNG::PNG)
+
+        set(_eshkol_image_io_backends "libpng")
+        if(JPEG_FOUND)
+            add_compile_definitions(ESHKOL_IMAGE_IO_LIBJPEG=1)
+            include_directories(SYSTEM ${JPEG_INCLUDE_DIRS})
+            list(APPEND ESHKOL_EXTRA_LINK_LIBS JPEG::JPEG)
+            list(APPEND _eshkol_image_io_backends "libjpeg")
+        endif()
+        if(WEBP_FOUND)
+            add_compile_definitions(ESHKOL_IMAGE_IO_LIBWEBP=1)
+            include_directories(SYSTEM ${WEBP_INCLUDE_DIRS})
+            list(APPEND ESHKOL_EXTRA_LINK_LIBS ${WEBP_LDFLAGS})
+            list(APPEND _eshkol_image_io_backends "libwebp")
+        endif()
+        string(JOIN "/" _eshkol_image_io_backend_label ${_eshkol_image_io_backends})
+        message(STATUS "Image I/O: ${_eshkol_image_io_backend_label}")
+    else()
+        message(STATUS
+            "Image I/O: native codec backends disabled "
+            "(install libpng-dev/libjpeg-dev/libwebp-dev to enable Linux image read/write)")
+    endif()
 endif()
 
 # Set C standard
@@ -868,6 +886,25 @@ if(ESHKOL_GPU_ENABLED)
         # Try CUDA on Linux/Windows
         find_package(CUDAToolkit QUIET)
         if(CUDAToolkit_FOUND)
+            if((NOT DEFINED CMAKE_CUDA_HOST_COMPILER OR "${CMAKE_CUDA_HOST_COMPILER}" STREQUAL "") AND
+               CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND
+               CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 15)
+                find_program(ESHKOL_CUDA_HOST_COMPILER_CANDIDATE
+                    NAMES g++-14 gcc-14 g++-13 gcc-13 g++-12 gcc-12
+                )
+                if(ESHKOL_CUDA_HOST_COMPILER_CANDIDATE)
+                    set(CMAKE_CUDA_HOST_COMPILER "${ESHKOL_CUDA_HOST_COMPILER_CANDIDATE}"
+                        CACHE FILEPATH "Host compiler used by nvcc" FORCE)
+                    message(STATUS
+                        "CUDA: system GNU ${CMAKE_CXX_COMPILER_VERSION} detected; "
+                        "using host compiler ${CMAKE_CUDA_HOST_COMPILER}")
+                else()
+                    message(WARNING
+                        "CUDA: system GNU ${CMAKE_CXX_COMPILER_VERSION} may be unsupported by nvcc; "
+                        "install gcc-14/g++-14 or set CMAKE_CUDA_HOST_COMPILER explicitly.")
+                endif()
+            endif()
+
             set(GPU_FOUND TRUE)
             set(GPU_LIBRARIES CUDA::cudart CUDA::cublas)
             if(TARGET CUDA::cublasLt)
@@ -894,6 +931,45 @@ if(ESHKOL_GPU_ENABLED)
                     string(APPEND CMAKE_CUDA_FLAGS " -U_GNU_SOURCE")
                     set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS}" CACHE STRING
                         "Flags used by the CUDA compiler" FORCE)
+                endif()
+                execute_process(
+                    COMMAND getconf GNU_LIBC_VERSION
+                    OUTPUT_VARIABLE _eshkol_glibc_version_raw
+                    OUTPUT_STRIP_TRAILING_WHITESPACE
+                    ERROR_QUIET
+                )
+                if(_eshkol_glibc_version_raw MATCHES "glibc[ ]+([0-9]+\\.[0-9]+)")
+                    set(_eshkol_glibc_version "${CMAKE_MATCH_1}")
+                    if(_eshkol_glibc_version VERSION_GREATER_EQUAL 2.43)
+                        set(ESHKOL_CUDA_GLIBC_COMPAT_HEADER
+                            "${CMAKE_BINARY_DIR}/eshkol_cuda_glibc_compat.h")
+                        file(WRITE "${ESHKOL_CUDA_GLIBC_COMPAT_HEADER}" [=[
+#pragma once
+/*
+ * CUDA/glibc compatibility pre-include.
+ *
+ * CUDA 13.x point releases and glibc 2.43 have disagreed about a few
+ * IEC-60559 math declarations in crt/math_functions.h. Keep this header
+ * intentionally narrow: it is force-included only for CUDA compilation and
+ * gives us a stable CMake-controlled shim point without patching CUDA's
+ * installation headers.
+ */
+#if defined(__CUDACC__) && defined(__GLIBC__) && defined(__GLIBC_MINOR__)
+#  if (__GLIBC__ > 2) || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 43)
+#    ifndef __STDC_WANT_IEC_60559_FUNCS_EXT__
+#      define __STDC_WANT_IEC_60559_FUNCS_EXT__ 1
+#    endif
+#  endif
+#endif
+]=])
+                        if(NOT CMAKE_CUDA_FLAGS MATCHES "eshkol_cuda_glibc_compat\\.h")
+                            string(APPEND CMAKE_CUDA_FLAGS " -include ${ESHKOL_CUDA_GLIBC_COMPAT_HEADER}")
+                            set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS}" CACHE STRING
+                                "Flags used by the CUDA compiler" FORCE)
+                        endif()
+                        message(STATUS
+                            "CUDA: glibc ${_eshkol_glibc_version} compatibility shim enabled")
+                    endif()
                 endif()
             endif()
             enable_language(CUDA)
@@ -1247,8 +1323,8 @@ else()
     set(ESHKOL_EXE_COMPILE_FLAGS -fPIE)
 endif()
 
-# Runtime stratification starts here. These are internal source-set boundaries
-# only; `eshkol-static` remains the delivered aggregate archive for now.
+# Runtime stratification starts here. `eshkol-runtime` is the archive linked
+# into generated programs; `eshkol-static` remains the compiler/tool aggregate.
 set(ESHKOL_RUNTIME_CORE_SRC
   lib/core/ad_tape_builtins.c
   lib/core/bignum.cpp
@@ -1306,6 +1382,39 @@ list(REMOVE_ITEM LIB_SRC
 
 set(ESHKOL_NON_RUNTIME_SRC ${LIB_SRC})
 
+set(ESHKOL_BACKEND_RUNTIME_SRC
+  lib/backend/blas_backend.cpp
+  lib/backend/cpu_features.cpp
+  lib/backend/parallel_codegen.cpp
+  lib/backend/tensor_backward.cpp
+)
+
+set(ESHKOL_RUNTIME_SUPPORT_SRC
+  lib/bridge/tensor_backward.cpp
+  lib/core/image_io.c
+  lib/core/inference.cpp
+  lib/core/kb_persistence.cpp
+  lib/core/logic.cpp
+  lib/core/logic_builtins.cpp
+  lib/core/merkle.c
+  lib/core/model_io.cpp
+  lib/core/onnx_export.c
+  lib/core/printer.cpp
+  lib/core/prng.cpp
+  lib/core/runtime_arena_cpp.cpp
+  lib/core/runtime_frame_trace.cpp
+  lib/core/symbol_intern.cpp
+  lib/core/threads.c
+  lib/core/workspace.cpp
+  lib/quantum/quantum_rng.c
+  lib/quantum/quantum_rng_wrapper.c
+)
+
+list(REMOVE_ITEM ESHKOL_NON_RUNTIME_SRC
+  ${ESHKOL_BACKEND_RUNTIME_SRC}
+  ${ESHKOL_RUNTIME_SUPPORT_SRC}
+)
+
 list(LENGTH ESHKOL_RUNTIME_CORE_SRC ESHKOL_RUNTIME_CORE_SRC_COUNT)
 list(LENGTH ESHKOL_RUNTIME_HOSTED_SRC ESHKOL_RUNTIME_HOSTED_SRC_COUNT)
 message(STATUS
@@ -1344,15 +1453,24 @@ endfunction()
 
 add_library(eshkol-runtime-core-obj OBJECT ${ESHKOL_RUNTIME_CORE_SRC})
 add_library(eshkol-runtime-hosted-obj OBJECT ${ESHKOL_RUNTIME_HOSTED_SRC})
+add_library(eshkol-backend-runtime-obj OBJECT ${ESHKOL_BACKEND_RUNTIME_SRC})
+add_library(eshkol-runtime-support-obj OBJECT ${ESHKOL_RUNTIME_SUPPORT_SRC})
 set(ESHKOL_VM_UNITY_OBJECTS)
 if(ESHKOL_VM_UNITY_SRC)
     add_library(eshkol-vm-unity-obj OBJECT ${ESHKOL_VM_UNITY_SRC})
     set(ESHKOL_VM_UNITY_OBJECTS $<TARGET_OBJECTS:eshkol-vm-unity-obj>)
 endif()
+set(ESHKOL_GPU_RUNTIME_OBJECTS)
+if(GPU_SOURCES)
+    add_library(eshkol-gpu-runtime-obj OBJECT ${GPU_SOURCES})
+    set(ESHKOL_GPU_RUNTIME_OBJECTS $<TARGET_OBJECTS:eshkol-gpu-runtime-obj>)
+endif()
 
 foreach(_eshkol_runtime_obj_target IN ITEMS
     eshkol-runtime-core-obj
     eshkol-runtime-hosted-obj
+    eshkol-backend-runtime-obj
+    eshkol-runtime-support-obj
 )
     eshkol_apply_common_compile_settings(${_eshkol_runtime_obj_target})
 endforeach()
@@ -1360,14 +1478,37 @@ if(TARGET eshkol-vm-unity-obj)
     eshkol_apply_common_compile_settings(eshkol-vm-unity-obj)
     eshkol_apply_vm_limit_definitions(eshkol-vm-unity-obj)
 endif()
+if(TARGET eshkol-gpu-runtime-obj)
+    eshkol_apply_common_compile_settings(eshkol-gpu-runtime-obj)
+    if(CUDAToolkit_FOUND)
+        target_include_directories(eshkol-gpu-runtime-obj SYSTEM PRIVATE ${CUDAToolkit_INCLUDE_DIRS})
+    endif()
+endif()
 
-# Create static library for executables. Its object sources are now grouped
-# internally, but the public aggregate archive and link behavior stay unchanged.
-add_library(eshkol-static STATIC
-  ${ESHKOL_NON_RUNTIME_SRC}
+set(ESHKOL_RUNTIME_OBJECTS
   $<TARGET_OBJECTS:eshkol-runtime-core-obj>
   $<TARGET_OBJECTS:eshkol-runtime-hosted-obj>
+  $<TARGET_OBJECTS:eshkol-backend-runtime-obj>
+  $<TARGET_OBJECTS:eshkol-runtime-support-obj>
+  ${ESHKOL_GPU_RUNTIME_OBJECTS}
   ${ESHKOL_VM_UNITY_OBJECTS}
+)
+
+add_library(eshkol-runtime STATIC
+  ${ESHKOL_RUNTIME_OBJECTS}
+)
+target_include_directories(
+  eshkol-runtime
+  PUBLIC
+    ${ESHKOL_BUILD_INTERFACE_INCLUDE_DIRS}
+)
+
+# Create static library for compiler/tools. The generated-program runtime is
+# split into libeshkol-runtime.a so user binaries no longer force-load LLVM
+# compiler objects.
+add_library(eshkol-static STATIC
+  ${ESHKOL_NON_RUNTIME_SRC}
+  ${ESHKOL_RUNTIME_OBJECTS}
 )
 target_include_directories(
   eshkol-static
@@ -1402,6 +1543,7 @@ endif()
 
 # Link BLAS libraries if available
 if(ESHKOL_BLAS_ENABLED AND BLAS_LIBRARIES)
+    target_link_libraries(eshkol-runtime PUBLIC ${BLAS_LIBRARIES})
     target_link_libraries(eshkol-static PUBLIC ${BLAS_LIBRARIES})
 endif()
 
@@ -1414,18 +1556,15 @@ if(ESHKOL_XLA_ENABLED AND MLIR_AVAILABLE AND MLIR_LIBRARIES)
     endif()
 endif()
 
-# Add GPU sources (Metal on macOS, CUDA on Linux, or stub for no-GPU builds)
-if(GPU_SOURCES)
-    target_sources(eshkol-static PRIVATE ${GPU_SOURCES})
-endif()
 if(GPU_FOUND AND GPU_LIBRARIES)
+    target_link_libraries(eshkol-runtime PUBLIC ${GPU_LIBRARIES})
     target_link_libraries(eshkol-static PUBLIC ${GPU_LIBRARIES})
     message(STATUS "Linking GPU libraries: ${GPU_LIBRARIES}")
 endif()
 # Metal shader embedding: gpu_memory.mm includes the generated .inc file
-if(TARGET metal_sf64_shader)
-    add_dependencies(eshkol-static metal_sf64_shader)
-    target_include_directories(eshkol-static PRIVATE ${CMAKE_BINARY_DIR})
+if(TARGET metal_sf64_shader AND TARGET eshkol-gpu-runtime-obj)
+    add_dependencies(eshkol-gpu-runtime-obj metal_sf64_shader)
+    target_include_directories(eshkol-gpu-runtime-obj PRIVATE ${CMAKE_BINARY_DIR})
 endif()
 
 # For each executable inside the executable files create the executable with LLVM backend.
@@ -1455,6 +1594,9 @@ foreach (exe ${EXE_SRC})
   endif()
   
   target_link_libraries(${exename} PUBLIC eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+  if(exename STREQUAL "eshkol-run")
+      add_dependencies(${exename} eshkol-runtime)
+  endif()
 endforeach ()
 
 # ===== Pre-compiled Standard Library =====
