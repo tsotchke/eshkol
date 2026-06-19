@@ -2219,6 +2219,41 @@ llvm::Value* AutodiffCodegen::codegenDerivativeMonolith(const eshkol_operations_
 }
 
 
+// Robustly determine the differentiable (value) arity of a resolved gradient
+// target function. The gradient call sites below decide whether to pass the
+// whole dual vector as ONE argument (vector-input functions) or to unpack N
+// individual dual elements (multi-parameter functions). They originally relied
+// solely on function_arity_table_, but that lookup is unreliable: a reverse-mode
+// variant is regenerated on every gradient call (e.g. g-sum-sq__rv393) and its
+// base key may never be registered, so the lookup returns 0/1 and a 2-arg
+// function gets called with a single arg — LLVM rejects it with "Incorrect
+// number of arguments passed to called function!".
+//
+// The concrete llvm::Function signature is the source of truth. Captures are
+// appended last by resolveGradientCaptures and carry a "captured_" name prefix,
+// so the leading non-capture params are exactly the differentiable value params:
+//   - no captures      -> every LLVM param is a value param (use getNumParams)
+//   - captures present  -> trust the arity table (which excludes captures), and
+//                          fall back to the leading non-capture count if the
+//                          table missed.
+static uint64_t adResolveValueArity(llvm::Function* func_ptr, uint64_t table_arity) {
+    if (!func_ptr) return table_arity;
+    uint64_t leading_non_capture = 0;
+    bool saw_capture = false;
+    for (auto& arg : func_ptr->args()) {
+        if (std::string(arg.getName()).rfind("captured_", 0) == 0) { saw_capture = true; break; }
+        ++leading_non_capture;
+    }
+    if (!saw_capture) {
+        // No captures: every LLVM parameter is a differentiable value parameter.
+        return func_ptr->getFunctionType()->getNumParams();
+    }
+    // Captures present: the arity table excludes captures and is authoritative;
+    // fall back to the leading non-capture param count only when it missed.
+    return table_arity ? table_arity : leading_non_capture;
+}
+
+
 llvm::Value* AutodiffCodegen::gradientHigherOrder(const eshkol_operations_t* op) {
     using namespace llvm;
 
@@ -3143,8 +3178,43 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
     Value* grad_subtype = ctx_.builder().CreateLoad(ctx_.int8Type(), grad_header_ptr);
     Value* is_vec_subtype_grad = ctx_.builder().CreateICmpEQ(grad_subtype, ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_VECTOR));
     Value* is_tensor_subtype_grad = ctx_.builder().CreateICmpEQ(grad_subtype, ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_TENSOR));
+    Value* is_cons_subtype_grad = ctx_.builder().CreateICmpEQ(grad_subtype, ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_CONS));
+    BasicBlock* grad_check_cons = BasicBlock::Create(ctx_.context(), "grad_check_cons", current_func);
+    BasicBlock* grad_list_to_svec = BasicBlock::Create(ctx_.context(), "grad_list_to_svec", current_func);
     BasicBlock* grad_check_tensor = BasicBlock::Create(ctx_.context(), "grad_check_tensor", current_func);
-    ctx_.builder().CreateCondBr(is_vec_subtype_grad, scheme_vector_input, grad_check_tensor);
+    ctx_.builder().CreateCondBr(is_vec_subtype_grad, scheme_vector_input, grad_check_cons);
+
+    // A (list …) input is a cons cell (HEAP_SUBTYPE_CONS): convert it to a
+    // Scheme vector so it goes through the same path as a (vector …) input.
+    // Without this, a multi-parameter gradient on a list crashed — the cons
+    // cell fell through to the vector path and was misread as [length][elems].
+    ctx_.builder().SetInsertPoint(grad_check_cons);
+    ctx_.builder().CreateCondBr(is_cons_subtype_grad, grad_list_to_svec, grad_check_tensor);
+
+    ctx_.builder().SetInsertPoint(grad_list_to_svec);
+    {
+        // Entry-block alloca for the list head so a gradient inside a runtime
+        // loop doesn't re-allocate each iteration.
+        llvm::IRBuilder<> entryB(&current_func->getEntryBlock(),
+                                 current_func->getEntryBlock().begin());
+        Value* list_slot = entryB.CreateAlloca(ctx_.taggedValueType(), nullptr, "grad_list_head");
+        ctx_.builder().CreateStore(vector_val, list_slot);
+        Value* l2s_arena = ctx_.builder().CreateLoad(
+            PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
+        llvm::Function* l2s_fn = ctx_.module().getFunction("eshkol_list_to_svec");
+        if (!l2s_fn) {
+            llvm::FunctionType* l2s_ty = llvm::FunctionType::get(
+                ctx_.builder().getPtrTy(),
+                {ctx_.builder().getPtrTy(), ctx_.builder().getPtrTy()}, false);
+            l2s_fn = llvm::Function::Create(l2s_ty, llvm::Function::ExternalLinkage,
+                "eshkol_list_to_svec", &ctx_.module());
+        }
+        Value* svec_from_list = ctx_.builder().CreateCall(l2s_fn, {l2s_arena, list_slot});
+        Value* svec_from_list_int = ctx_.builder().CreatePtrToInt(svec_from_list, ctx_.int64Type());
+        Value* svec_from_list_tagged = tagged_.packPtr(svec_from_list_int, ESHKOL_VALUE_HEAP_PTR);
+        ctx_.builder().CreateStore(svec_from_list_tagged, svec_input_ptr);
+        ctx_.builder().CreateBr(scheme_vector_input);
+    }
 
     // Check for TENSOR subtype — convert to Scheme vector ONLY for multi-param functions.
     // For single-param functions, tensor input works correctly with reverse-mode AD.
@@ -3399,6 +3469,9 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
         if (svec_arity_it != function_arity_table_->end()) {
             svec_func_arity = svec_arity_it->second;
         }
+        // Trust the resolved function signature over the (regeneration-fragile)
+        // arity table so multi-param functions are not called with one arg.
+        svec_func_arity = adResolveValueArity(func_ptr, svec_func_arity);
         if (svec_func_arity > 1) {
             // Multi-param: unpack dual vector elements as individual tagged value args
             for (uint64_t p = 0; p < svec_func_arity; p++) {
@@ -3851,6 +3924,9 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
         if (scalar_arity_it != function_arity_table_->end()) {
             scalar_func_arity = scalar_arity_it->second;
         }
+        // Trust the resolved function signature over the (regeneration-fragile)
+        // arity table so multi-param functions are not called with one arg.
+        scalar_func_arity = adResolveValueArity(func_ptr, scalar_func_arity);
         if (scalar_func_arity > 1) {
             // Multi-param function on scalar path: pass all AD nodes as individual args
             for (uint64_t p = 0; p < scalar_func_arity; p++) {
@@ -3920,6 +3996,9 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
     if (arity_it != function_arity_table_->end()) {
         func_arity = arity_it->second;
     }
+    // Trust the resolved function signature over the (regeneration-fragile)
+    // arity table so multi-param functions are not called with one arg.
+    func_arity = adResolveValueArity(func_ptr, func_arity);
 
     if (func_arity > 1) {
         // Multi-parameter function: unpack AD tensor elements as individual tagged args
