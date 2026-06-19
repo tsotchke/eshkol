@@ -73,6 +73,41 @@ void eshkol_list_reverse_tagged(arena_t* arena,
     }
 }
 
+// Convert a tagged cons-list to a Scheme vector (HEAP_SUBTYPE_VECTOR) so the
+// gradient/jacobian dispatch can treat a (list …) input identically to a
+// (vector …) input. Multi-parameter reverse/forward-mode gradient previously
+// SIGSEGV'd on a list input because the cons cell fell through to the vector
+// path and was misread as [length][elements]. Returns the vector DATA pointer
+// (length at offset 0, 16-byte tagged elements at offset 8; header with
+// HEAP_SUBTYPE_VECTOR at -8), or nullptr on failure. The list head is passed
+// by pointer (ABI-safe: avoids 16-byte struct-by-value across the C boundary).
+void* eshkol_list_to_svec(arena_t* arena, const eshkol_tagged_value_t* head_tv) {
+    if (!arena || !head_tv) return nullptr;
+
+    int64_t n = 0;
+    eshkol_tagged_value_t cur = *head_tv;
+    while (tagged_is_cons(&cur)) {
+        n++;
+        cur = ((arena_tagged_cons_cell_t*)(uintptr_t)cur.data.ptr_val)->cdr;
+    }
+
+    void* vec = arena_allocate_vector_with_header(arena, (size_t)n);
+    if (!vec) return nullptr;
+    *(int64_t*)vec = n;  // length at offset 0
+    eshkol_tagged_value_t* elems =
+        (eshkol_tagged_value_t*)((char*)vec + sizeof(int64_t));
+
+    cur = *head_tv;
+    int64_t i = 0;
+    while (tagged_is_cons(&cur) && i < n) {
+        arena_tagged_cons_cell_t* cell =
+            (arena_tagged_cons_cell_t*)(uintptr_t)cur.data.ptr_val;
+        elems[i++] = cell->car;
+        cur = cell->cdr;
+    }
+    return vec;
+}
+
 // ===== STACK OVERFLOW PROTECTION =====
 
 // Per-thread recursion depth counter.
