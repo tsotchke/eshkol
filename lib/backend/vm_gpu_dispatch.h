@@ -145,6 +145,29 @@ static inline VmTensor* vm_gpu_try_softmax(VmRegionStack* rs, const VmTensor* t)
     return (rc == 0) ? out : NULL;
 }
 
+/* GPU transpose */
+extern int eshkol_gpu_transpose_f64(void* in, void* out, uint64_t rows, uint64_t cols);
+
+static inline VmTensor* vm_gpu_try_transpose(VmRegionStack* rs, const VmTensor* t) {
+    if (!vm_gpu_should_dispatch(t->total)) return NULL;
+    if (t->n_dims != 2) return NULL;
+
+    int64_t rows = t->shape[0];
+    int64_t cols = t->shape[1];
+    int64_t out_shape[2] = { cols, rows };
+    VmTensor* out = vm_tensor_zeros(rs, out_shape, 2);
+    if (!out) return NULL;
+
+    VmGpuBuf bi, bo;
+    if (eshkol_gpu_wrap_host(t->data, t->total*8, &bi) != 0 ||
+        eshkol_gpu_wrap_host(out->data, out->total*8, &bo) != 0) return NULL;
+
+    int rc = eshkol_gpu_transpose_f64(&bi, &bo, rows, cols);
+    if (rc == 0 && bo.host != (void*)out->data) memcpy(out->data, bo.host, out->total*8);
+    eshkol_gpu_free(&bi); eshkol_gpu_free(&bo);
+    return (rc == 0) ? out : NULL;
+}
+
 #else
 /* No GPU — all try functions return NULL, fall to CPU */
 static inline VmTensor* vm_gpu_try_matmul(VmRegionStack* rs, const VmTensor* a, const VmTensor* b) {
@@ -157,6 +180,9 @@ static inline double vm_gpu_try_reduce(const VmTensor* t, int op) {
     (void)t; (void)op; return NAN;
 }
 static inline VmTensor* vm_gpu_try_softmax(VmRegionStack* rs, const VmTensor* t) {
+    (void)rs; (void)t; return NULL;
+}
+static inline VmTensor* vm_gpu_try_transpose(VmRegionStack* rs, const VmTensor* t) {
     (void)rs; (void)t; return NULL;
 }
 #endif

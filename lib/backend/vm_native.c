@@ -3943,6 +3943,21 @@ int eshkol_vm_host_push_double(VM* vm, double value) {
     return (!vm->error && vm->sp == before + 1) ? 0 : -1;
 }
 
+static int vm_closure_native_id(VM* vm, Value fn) {
+    if (!vm || fn.type != VAL_CLOSURE || fn.as.ptr < 0 || fn.as.ptr >= vm->heap.capacity) return -1;
+    HeapObject* cl = vm->heap.objects[fn.as.ptr];
+    if (!cl || cl->type != HEAP_CLOSURE) return -1;
+    int pc = cl->closure.func_pc;
+    if (pc < 0 || pc >= vm->code_len) return -1;
+
+    for (int i = 0; i < 8 && pc + i < vm->code_len; i++) {
+        Instr ins = vm->code[pc + i];
+        if (ins.op == OP_NATIVE_CALL) return ins.operand;
+        if (ins.op == OP_RETURN) break;
+    }
+    return -1;
+}
+
 static void vm_dispatch_native(VM* vm, int fid) {
     vm_timers_poll_due(vm);
     if (fid >= ESHKOL_VM_HOST_NATIVE_BASE) {
@@ -4884,7 +4899,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
         Value t_val = vm_pop(vm);
         VmTensor* t = (VmTensor*)vm->heap.objects[t_val.as.ptr]->opaque.ptr;
         if (!t) { vm_push(vm, NIL_VAL); break; }
-        VmTensor* out = vm_tensor_transpose(&vm->heap.regions, t);
+        VmTensor* out = vm_gpu_try_transpose(&vm->heap.regions, t);
+        if (!out) out = vm_tensor_transpose(&vm->heap.regions, t);
         if (!out) { vm_push(vm, NIL_VAL); break; }
         VM_PUSH_TENSOR(vm, out);
         break;
@@ -5088,6 +5104,38 @@ static void vm_dispatch_native(VM* vm, int fid) {
         VmTensor* out = vm_tensor_swish(&vm->heap.regions, t);
         if (!out) { vm_push(vm, NIL_VAL); break; }
         VM_PUSH_TENSOR(vm, out);
+        break;
+    }
+    case 470: { /* gpu-elementwise(fn, a, b) */
+        Value b = vm_pop(vm), a = vm_pop(vm), fn = vm_pop(vm);
+        int native_id = vm_closure_native_id(vm, fn);
+        int target = -1;
+        switch (native_id) {
+            case 142: case 441: target = 441; break;
+            case 143: case 442: target = 442; break;
+            case 144: case 443: target = 443; break;
+            case 145: case 444: target = 444; break;
+        }
+        if (target < 0) { vm_push(vm, NIL_VAL); break; }
+        vm_push(vm, a);
+        vm_push(vm, b);
+        vm_dispatch_native(vm, target);
+        break;
+    }
+    case 471: { /* gpu-reduce(fn, tensor) */
+        Value t = vm_pop(vm), fn = vm_pop(vm);
+        int native_id = vm_closure_native_id(vm, fn);
+        int target = -1;
+        switch (native_id) {
+            case 457: target = 457; break;
+            case 458: target = 458; break;
+            case 459: target = 459; break;
+            case 460: target = 460; break;
+        }
+        if (target < 0) { vm_push(vm, NIL_VAL); break; }
+        vm_push(vm, t);
+        vm_push(vm, INT_VAL(-1));
+        vm_dispatch_native(vm, target);
         break;
     }
 

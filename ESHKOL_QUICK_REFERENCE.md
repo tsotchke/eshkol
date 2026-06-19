@@ -265,10 +265,14 @@
 
 ;; Explicit GPU operations
 (gpu-matmul A B)               ;; force GPU matrix multiply
-(gpu-elementwise f A B)        ;; element-wise operation on GPU
-(gpu-reduce f M)               ;; GPU reduction
+(gpu-elementwise * A B)        ;; binary element-wise GPU op: + - * /
+(gpu-reduce + M)               ;; full-tensor GPU reduction: + mean max min
 (gpu-softmax v)                ;; softmax on GPU
 (gpu-transpose M)              ;; GPU transpose
+
+;; Explicit GPU forms use the same tensor result shapes as matmul,
+;; tensor-add/sub/mul/div, tensor-sum/mean/max/min, softmax, and transpose.
+;; They fall back to CPU when the selected backend is unavailable or too small.
 
 ;; Backends: SIMD | Apple Accelerate AMX (~1.1 TFLOPS)
 ;;           | Metal (macOS, sf64) | CUDA (Linux, native f64)

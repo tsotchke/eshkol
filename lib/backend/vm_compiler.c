@@ -82,6 +82,22 @@ static void compile_expr(FuncChunk* c, Node* node, int tail) {
     compile_depth--;
 }
 
+static int gpu_elementwise_native_id(Node* fn) {
+    if (is_sym(fn, "+") || is_sym(fn, "add") || is_sym(fn, "add2") || is_sym(fn, "tensor-add")) return 441;
+    if (is_sym(fn, "-") || is_sym(fn, "sub") || is_sym(fn, "sub2") || is_sym(fn, "tensor-sub")) return 442;
+    if (is_sym(fn, "*") || is_sym(fn, "mul") || is_sym(fn, "mul2") || is_sym(fn, "tensor-mul")) return 443;
+    if (is_sym(fn, "/") || is_sym(fn, "div") || is_sym(fn, "div2") || is_sym(fn, "tensor-div")) return 444;
+    return -1;
+}
+
+static int gpu_reduce_native_id(Node* fn) {
+    if (is_sym(fn, "+") || is_sym(fn, "sum") || is_sym(fn, "tensor-sum") || is_sym(fn, "_tensor-reduce-sum")) return 457;
+    if (is_sym(fn, "mean") || is_sym(fn, "tensor-mean") || is_sym(fn, "_tensor-reduce-mean")) return 458;
+    if (is_sym(fn, "max") || is_sym(fn, "tensor-max") || is_sym(fn, "_tensor-reduce-max")) return 459;
+    if (is_sym(fn, "min") || is_sym(fn, "tensor-min") || is_sym(fn, "_tensor-reduce-min")) return 460;
+    return -1;
+}
+
 
 /* ═══ Extracted compilation sub-functions ═══ */
 
@@ -1537,6 +1553,41 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
     if (node->type != N_LIST || node->n_children == 0) { chunk_emit(c, OP_NIL, 0); return; }
 
     Node* head = node->children[0];
+
+    if (is_sym(head, "gpu-matmul") && node->n_children == 3) {
+        compile_expr(c, node->children[1], 0);
+        compile_expr(c, node->children[2], 0);
+        chunk_emit(c, OP_NATIVE_CALL, 440);
+        return;
+    }
+    if (is_sym(head, "gpu-elementwise") && node->n_children == 4) {
+        int native_id = gpu_elementwise_native_id(node->children[1]);
+        if (native_id >= 0) {
+            compile_expr(c, node->children[2], 0);
+            compile_expr(c, node->children[3], 0);
+            chunk_emit(c, OP_NATIVE_CALL, native_id);
+            return;
+        }
+    }
+    if (is_sym(head, "gpu-reduce") && node->n_children == 3) {
+        int native_id = gpu_reduce_native_id(node->children[1]);
+        if (native_id >= 0) {
+            compile_expr(c, node->children[2], 0);
+            chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(-1)));
+            chunk_emit(c, OP_NATIVE_CALL, native_id);
+            return;
+        }
+    }
+    if (is_sym(head, "gpu-softmax") && node->n_children == 2) {
+        compile_expr(c, node->children[1], 0);
+        chunk_emit(c, OP_NATIVE_CALL, 463);
+        return;
+    }
+    if (is_sym(head, "gpu-transpose") && node->n_children == 2) {
+        compile_expr(c, node->children[1], 0);
+        chunk_emit(c, OP_NATIVE_CALL, 416);
+        return;
+    }
 
     /* ── Constant Folding ── */
     /* If all operands are compile-time constants, evaluate at compile time */
