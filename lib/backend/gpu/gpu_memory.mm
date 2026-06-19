@@ -3487,7 +3487,10 @@ int eshkol_gpu_should_use(size_t num_elements) {
 }
 
 void eshkol_matmul_dispatch(const double* A, const double* B, double* C,
-                             uint64_t M, uint64_t K, uint64_t N) {
+                             uint64_t M, uint64_t K, uint64_t N, int32_t /*dtype*/) {
+    // dtype currently ignored on Metal (no f16 tensor-core GEMM path yet; a
+    // Metal-shader f16 GEMM is a separate follow-up). Storage is already f64
+    // precision-reduced for the logical dtype, so the f64 path stays correct.
     // Lazy GPU init — ensures g_active_backend is set before threshold check
     if (!g_gpu_initialized.load(std::memory_order_acquire)) {
         eshkol_gpu_init();
