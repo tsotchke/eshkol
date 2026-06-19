@@ -1044,7 +1044,9 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_make_temp_dir_v(
 }
 
 static int rmdir_recursive_impl(const char* path) {
-    static int depth = 0;
+    /* P2: thread-local so concurrent rmdir-recursive (parallel-map/execute)
+       don't race on a shared depth counter. */
+    static _Thread_local int depth = 0;
     if (++depth > 100) { --depth; return -1; }
 #ifndef _WIN32
     DIR* d = opendir(path);
