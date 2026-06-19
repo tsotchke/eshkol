@@ -162,6 +162,17 @@ public:
     llvm::Value* tensorArithmeticInternal(llvm::Value* left, llvm::Value* right, const std::string& operation);
 
     /**
+     * Emit axis-reduce via eshkol_xla_reduce runtime.
+     * Used by tensor-sum, tensor-mean, tensor-min, tensor-max, and explicit
+     * GPU reduction aliases.
+     * @param tensor_val Tagged tensor value
+     * @param axis_val Tagged axis value
+     * @param op_code XLA reduce op: SUM=0, MEAN=1, MAX=2, MIN=3, PROD=4
+     * @return Tagged tensor result (reduced along axis)
+     */
+    llvm::Value* emitAxisReduce(llvm::Value* tensor_val, llvm::Value* axis_val, int64_t op_code);
+
+    /**
      * Dot product / matrix multiplication: (tensor-dot A B)
      * @param op The operation AST node
      * @return Result tensor or scalar
@@ -1139,16 +1150,6 @@ private:
     void* callback_context_ = nullptr;
 
     // === Internal Helpers ===
-
-    /**
-     * Emit axis-reduce via eshkol_xla_reduce runtime.
-     * Used by tensor-sum, tensor-mean, tensor-min, tensor-max with optional axis argument.
-     * @param tensor_val Tagged tensor value
-     * @param axis_val Tagged axis value
-     * @param op_code XLA reduce op: SUM=0, MEAN=1, MAX=2, MIN=3, PROD=4
-     * @return Tagged tensor result (reduced along axis)
-     */
-    llvm::Value* emitAxisReduce(llvm::Value* tensor_val, llvm::Value* axis_val, int64_t op_code);
 
     /**
      * Convert a raw tensor element slot to an AD node pointer.

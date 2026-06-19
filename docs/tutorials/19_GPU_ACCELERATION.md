@@ -54,11 +54,16 @@ occupancy-aware kernel configuration:
 (define result (gpu-matmul A B))
 
 ;; Element-wise GPU operations
-(define scaled (gpu-elementwise (lambda (x) (* x 2.0)) A))
+(define scaled (gpu-elementwise * A B))
 (define reduced (gpu-reduce + M))
 (define soft (gpu-softmax logits))
 (define transposed (gpu-transpose M))
 ```
+
+`gpu-elementwise` accepts the binary operators `+`, `-`, `*`, and `/`.
+`gpu-reduce` accepts `+`, `mean`, `max`, and `min` and reduces across the full
+tensor. These forms use GPU dispatch when profitable and fall back to the CPU
+tensor implementation otherwise.
 
 ---
 

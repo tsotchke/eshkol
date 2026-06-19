@@ -15228,6 +15228,52 @@ private:
             builder->SetInsertPoint(done_bb);
             return packPtrToTaggedValue(new_vec, ESHKOL_VALUE_HEAP_PTR);
         }
+        if (func_name == "gpu-matmul") return codegenMatmul(op);
+        if (func_name == "gpu-softmax") return tensor_->tensorSoftmax(op);
+        if (func_name == "gpu-transpose") return tensor_->transpose(op);
+        if (func_name == "gpu-elementwise") {
+            if (op->call_op.num_vars != 3 || op->call_op.variables[0].type != ESHKOL_VAR ||
+                !op->call_op.variables[0].variable.id) {
+                eshkol_error("gpu-elementwise requires (gpu-elementwise <+|-|*|/> A B)");
+                return nullptr;
+            }
+            const std::string gpu_op = op->call_op.variables[0].variable.id;
+            std::string tensor_op;
+            if (gpu_op == "+" || gpu_op == "add" || gpu_op == "add2" || gpu_op == "tensor-add") tensor_op = "add";
+            else if (gpu_op == "-" || gpu_op == "sub" || gpu_op == "sub2" || gpu_op == "tensor-sub") tensor_op = "sub";
+            else if (gpu_op == "*" || gpu_op == "mul" || gpu_op == "mul2" || gpu_op == "tensor-mul") tensor_op = "mul";
+            else if (gpu_op == "/" || gpu_op == "div" || gpu_op == "div2" || gpu_op == "tensor-div") tensor_op = "div";
+            else {
+                eshkol_error("gpu-elementwise supports +, -, *, and /");
+                return nullptr;
+            }
+            Value* left = codegenAST(&op->call_op.variables[1]);
+            Value* right = codegenAST(&op->call_op.variables[2]);
+            if (!left || !right) return nullptr;
+            return tensor_->tensorArithmeticInternal(left, right, tensor_op);
+        }
+        if (func_name == "gpu-reduce") {
+            if (op->call_op.num_vars != 2 || op->call_op.variables[0].type != ESHKOL_VAR ||
+                !op->call_op.variables[0].variable.id) {
+                eshkol_error("gpu-reduce requires (gpu-reduce <+|mean|max|min> tensor)");
+                return nullptr;
+            }
+            const std::string reduce_op = op->call_op.variables[0].variable.id;
+            int64_t op_code = -1;
+            if (reduce_op == "+" || reduce_op == "sum" || reduce_op == "tensor-sum") op_code = 0;
+            else if (reduce_op == "mean" || reduce_op == "tensor-mean") op_code = 1;
+            else if (reduce_op == "max" || reduce_op == "tensor-max") op_code = 2;
+            else if (reduce_op == "min" || reduce_op == "tensor-min") op_code = 3;
+            else {
+                eshkol_error("gpu-reduce supports +, mean, max, and min");
+                return nullptr;
+            }
+            Value* tensor_val = codegenAST(&op->call_op.variables[1]);
+            if (!tensor_val) return nullptr;
+            Value* axis = packInt64ToTaggedValue(ConstantInt::get(int64_type, -1), true);
+            return tensor_->emitAxisReduce(tensor_val, axis, op_code);
+        }
+
         // MIGRATED: Tensor arithmetic - now delegated to TensorCodegen
         if (func_name == "tensor-add") return tensor_->tensorArithmetic(op, "add");
         if (func_name == "tensor-sub") return tensor_->tensorArithmetic(op, "sub");
@@ -35488,46 +35534,56 @@ int eshkol_compile_llvm_ir_to_executable(LLVMModuleRef module_ref, const char* f
         }
 
         std::filesystem::path runtime_lib_path;
-        const auto runtime_library_name = eshkol::platform::static_library_name("eshkol-static");
+        const std::vector<std::string> runtime_library_names = {
+            eshkol::platform::static_library_name("eshkol-runtime"),
+            eshkol::platform::static_library_name("eshkol-static"),
+        };
         auto exe_dir = eshkol::platform::executable_directory();
 
-        if (const char* env_lib = std::getenv("ESHKOL_LIB_DIR")) {
-            auto env_path = std::filesystem::path(env_lib) / runtime_library_name;
-            if (std::filesystem::exists(env_path)) {
-                runtime_lib_path = env_path;
-            }
-        }
-
-        if (runtime_lib_path.empty() && !exe_dir.empty()) {
-            std::vector<std::filesystem::path> candidates = {
-                exe_dir / runtime_library_name,
-                exe_dir / "../lib" / runtime_library_name,
-                exe_dir / "../lib/eshkol" / runtime_library_name,
-            };
-            for (const auto& candidate : candidates) {
-                if (std::filesystem::exists(candidate)) {
-                    runtime_lib_path = candidate;
+        for (const auto& runtime_library_name : runtime_library_names) {
+            if (const char* env_lib = std::getenv("ESHKOL_LIB_DIR")) {
+                auto env_path = std::filesystem::path(env_lib) / runtime_library_name;
+                if (std::filesystem::exists(env_path)) {
+                    runtime_lib_path = env_path;
                     break;
                 }
             }
-        }
 
-        if (runtime_lib_path.empty() && !cwd.empty()) {
-            std::vector<std::filesystem::path> candidates = {
-                cwd / runtime_library_name,
-                cwd / "build" / runtime_library_name,
-                cwd.parent_path() / "build" / runtime_library_name,
-            };
-            for (const auto& candidate : candidates) {
-                if (std::filesystem::exists(candidate)) {
-                    runtime_lib_path = candidate;
-                    break;
+            if (runtime_lib_path.empty() && !exe_dir.empty()) {
+                std::vector<std::filesystem::path> candidates = {
+                    exe_dir / runtime_library_name,
+                    exe_dir / "../lib" / runtime_library_name,
+                    exe_dir / "../lib/eshkol" / runtime_library_name,
+                };
+                for (const auto& candidate : candidates) {
+                    if (std::filesystem::exists(candidate)) {
+                        runtime_lib_path = candidate;
+                        break;
+                    }
                 }
+            }
+
+            if (runtime_lib_path.empty() && !cwd.empty()) {
+                std::vector<std::filesystem::path> candidates = {
+                    cwd / runtime_library_name,
+                    cwd / "build" / runtime_library_name,
+                    cwd.parent_path() / "build" / runtime_library_name,
+                };
+                for (const auto& candidate : candidates) {
+                    if (std::filesystem::exists(candidate)) {
+                        runtime_lib_path = candidate;
+                        break;
+                    }
+                }
+            }
+
+            if (!runtime_lib_path.empty()) {
+                break;
             }
         }
 
         if (!runtime_lib_path.empty()) {
-            // libeshkol-static.a contains a global constructor —
+            // libeshkol-runtime.a contains a global constructor —
             // __eshkol_init_parallel_workers — registered into
             // llvm.global_ctors by parallel_llvm_codegen.cpp. The
             // constructor calls __eshkol_register_parallel_workers
@@ -35585,7 +35641,7 @@ int eshkol_compile_llvm_ir_to_executable(LLVMModuleRef module_ref, const char* f
             }
         } else {
             link_args.emplace_back(
-                (std::filesystem::path("build") / eshkol::platform::static_library_name("eshkol-static")).generic_string()
+                (std::filesystem::path("build") / eshkol::platform::static_library_name("eshkol-runtime")).generic_string()
             );
             eshkol_debug("WARNING: Could not resolve runtime library path, falling back to build directory");
         }

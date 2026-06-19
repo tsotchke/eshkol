@@ -591,11 +591,15 @@ The cost model uses measured peak throughput:
 ```scheme
 ;; Force GPU execution for specific operations
 (gpu-matmul A B)                    ;; GPU matrix multiply
-(gpu-elementwise * A B)             ;; Element-wise on GPU
-(gpu-reduce + M)                    ;; Reduction on GPU
+(gpu-elementwise * A B)             ;; Element-wise GPU op: + - * /
+(gpu-reduce + M)                    ;; Full-tensor GPU reduction: + mean max min
 (gpu-softmax v)                     ;; Softmax on GPU
 (gpu-transpose M)                   ;; Transpose on GPU
 ```
+
+Explicit GPU operations are aliases over the tensor runtime dispatch path.
+They return the same shapes as the corresponding tensor operations and fall
+back to CPU when the selected GPU backend is unavailable.
 
 ### Metal Backend (macOS)
 
