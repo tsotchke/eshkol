@@ -338,8 +338,10 @@ int eshkol_gpu_normalize_f64(EshkolGPUBuffer* in, EshkolGPUBuffer* out,
 // ===== Runtime Integration =====
 
 void eshkol_matmul_dispatch(const double* A, const double* B, double* C,
-                             uint64_t M, uint64_t K, uint64_t N) {
-    // GPU not available — dispatch directly to BLAS/SIMD via eshkol_matmul_f64
+                             uint64_t M, uint64_t K, uint64_t N, int32_t /*dtype*/) {
+    // GPU not available — dispatch directly to BLAS/SIMD via eshkol_matmul_f64.
+    // dtype is ignored (no tensor-core path without a GPU); storage is already
+    // f64 precision-reduced for the logical dtype, so this stays correct.
     eshkol_matmul_f64(A, B, C, M, K, N);
 }
 

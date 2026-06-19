@@ -26,6 +26,8 @@
 #define ESHKOL_GPU_CUDA_AVAILABLE 1
 #include <cuda_runtime.h>
 #include <cublas_v2.h>
+#include <cuda_fp16.h>
+#include <vector>
 
 // Forward declarations for real CUDA kernel launchers (in gpu_cuda_kernels.cu)
 extern "C" int cuda_launch_elementwise_f64(const double* a, const double* b, double* out,
@@ -247,6 +249,55 @@ static int cuda_matmul_f32(EshkolGPUBuffer* A, EshkolGPUBuffer* B, EshkolGPUBuff
 
     cudaStreamSynchronize(g_cuda_stream);
     return (status == CUBLAS_STATUS_SUCCESS) ? 0 : -1;
+}
+
+// f16 cuBLAS GemmEx (tensor cores) — the GPU-LLM fast path (ESH-0021).
+// Tensor storage is f64 bit patterns even for f16-dtype tensors, so we convert
+// f64 -> half on the host (CUDA __float2half is host-callable), run GemmEx with
+// 16F operands and 32F accumulate (the standard LLM combo), then convert the
+// f16 result back to f64. Mirrors cuda_matmul_f32's column-major swap: row-major
+// C = A·B is computed as cuBLAS column-major C^T(N×M) = B^T·A^T.
+// Returns 0 on success; any failure returns -1 so the caller falls back to f64.
+static int cuda_matmul_f16_from_f64(const double* A, const double* B, double* C,
+                                    uint64_t M, uint64_t K, uint64_t N) {
+    if (!g_cublas_handle || !A || !B || !C) return -1;
+    const size_t aN = (size_t)M * K, bN = (size_t)K * N, cN = (size_t)M * N;
+
+    std::vector<__half> hA(aN), hB(bN), hC(cN);
+    for (size_t i = 0; i < aN; i++) hA[i] = __float2half((float)A[i]);
+    for (size_t i = 0; i < bN; i++) hB[i] = __float2half((float)B[i]);
+
+    __half *dA = nullptr, *dB = nullptr, *dC = nullptr;
+    int rc = -1;
+    do {
+        if (cudaMalloc(&dA, aN * sizeof(__half)) != cudaSuccess) break;
+        if (cudaMalloc(&dB, bN * sizeof(__half)) != cudaSuccess) break;
+        if (cudaMalloc(&dC, cN * sizeof(__half)) != cudaSuccess) break;
+        if (cudaMemcpy(dA, hA.data(), aN * sizeof(__half), cudaMemcpyHostToDevice) != cudaSuccess) break;
+        if (cudaMemcpy(dB, hB.data(), bN * sizeof(__half), cudaMemcpyHostToDevice) != cudaSuccess) break;
+
+        const float alpha = 1.0f, beta = 0.0f;
+        cublasStatus_t st = cublasGemmEx(
+            g_cublas_handle, CUBLAS_OP_N, CUBLAS_OP_N,
+            (int)N, (int)M, (int)K,
+            &alpha,
+            dB, CUDA_R_16F, (int)N,
+            dA, CUDA_R_16F, (int)K,
+            &beta,
+            dC, CUDA_R_16F, (int)N,
+            CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP);
+        if (st != CUBLAS_STATUS_SUCCESS) break;
+        if (cudaStreamSynchronize(g_cuda_stream) != cudaSuccess) break;
+        if (cudaMemcpy(hC.data(), dC, cN * sizeof(__half), cudaMemcpyDeviceToHost) != cudaSuccess) break;
+
+        for (size_t i = 0; i < cN; i++) C[i] = (double)__half2float(hC[i]);
+        rc = 0;
+    } while (0);
+
+    if (dA) cudaFree(dA);
+    if (dB) cudaFree(dB);
+    if (dC) cudaFree(dC);
+    return rc;
 }
 
 static int cuda_wrap_host(void* host_ptr, size_t size_bytes, EshkolGPUBuffer* out) {
@@ -532,8 +583,19 @@ int eshkol_gpu_should_use(size_t num_elements) {
 }
 
 void eshkol_matmul_dispatch(const double* A, const double* B, double* C,
-                             uint64_t M, uint64_t K, uint64_t N) {
+                             uint64_t M, uint64_t K, uint64_t N, int32_t dtype) {
     size_t num_elements = M * N;
+
+    // GPU-LLM fast path (ESH-0021): f16/bf16-dtype operands go through cuBLAS
+    // GemmEx (16F operands, 32F accumulate, tensor cores). Tensor-core GEMM
+    // wins even at modest sizes, so this bypasses the f64 element threshold.
+    // dtype codes: 2=f16, 3=bf16 (see eshkol_tensor_dtype_t).
+    if ((dtype == 2 || dtype == 3) && g_active_backend == ESHKOL_GPU_CUDA) {
+        if (cuda_matmul_f16_from_f64(A, B, C, M, K, N) == 0) {
+            return;
+        }
+        // GemmEx failed — fall through to the f64 path below.
+    }
 
     if (eshkol_gpu_should_use(num_elements)) {
         EshkolGPUBuffer buf_a{};
