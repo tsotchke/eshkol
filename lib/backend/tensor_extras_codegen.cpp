@@ -1885,18 +1885,28 @@ llvm::Value* TensorCodegen::batchMatmul(const eshkol_operations_t* op) {
         llvm::ConstantInt::get(ctx_.int64Type(), (int64_t)sizeof(double)));
     llvm::Value* result_elems = builder.CreateCall(arena_alloc, {arena_ptr, elems_bytes}, "bmm_elems");
 
-    // Call C runtime: void eshkol_batch_matmul_f64(
+    // Propagate element dtype to the result so f16/bf16 batched matmul takes
+    // the cublasGemmStridedBatched tensor-core path (ESH-0024).
+    emitDtypePropagateBinary(result_ptr, a_ptr, b_ptr);
+    llvm::Type* tt_bmm = ctx_.tensorType();
+    llvm::Value* bmm_dtype = builder.CreateTrunc(
+        builder.CreateLoad(ctx_.int64Type(),
+            builder.CreateStructGEP(tt_bmm, result_ptr, 4)),
+        ctx_.int32Type());
+
+    // Call C runtime: void eshkol_batch_matmul_dispatch(
     //     const double* a, const double* b, double* c,
-    //     int64_t batch, int64_t M, int64_t K, int64_t N)
+    //     int64_t batch, int64_t M, int64_t K, int64_t N, int32_t dtype)
     auto* bmm_ft = llvm::FunctionType::get(ctx_.voidType(),
         {ctx_.ptrType(), ctx_.ptrType(), ctx_.ptrType(),
-         ctx_.int64Type(), ctx_.int64Type(), ctx_.int64Type(), ctx_.int64Type()}, false);
-    llvm::Function* bmm_fn = ctx_.module().getFunction("eshkol_batch_matmul_f64");
+         ctx_.int64Type(), ctx_.int64Type(), ctx_.int64Type(), ctx_.int64Type(),
+         ctx_.int32Type()}, false);
+    llvm::Function* bmm_fn = ctx_.module().getFunction("eshkol_batch_matmul_dispatch");
     if (!bmm_fn) {
         bmm_fn = llvm::Function::Create(bmm_ft, llvm::Function::ExternalLinkage,
-            "eshkol_batch_matmul_f64", &ctx_.module());
+            "eshkol_batch_matmul_dispatch", &ctx_.module());
     }
-    builder.CreateCall(bmm_fn, {a_elems, b_elems, result_elems, batch, M_dim, K_dim, N_dim});
+    builder.CreateCall(bmm_fn, {a_elems, b_elems, result_elems, batch, M_dim, K_dim, N_dim, bmm_dtype});
 
     // Populate result tensor struct
     llvm::Type* tensor_type = ctx_.tensorType();

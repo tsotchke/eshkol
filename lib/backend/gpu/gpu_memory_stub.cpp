@@ -345,6 +345,17 @@ void eshkol_matmul_dispatch(const double* A, const double* B, double* C,
     eshkol_matmul_f64(A, B, C, M, K, N);
 }
 
+extern "C" void eshkol_batch_matmul_f64(const double*, const double*, double*,
+                                        int64_t, int64_t, int64_t, int64_t);
+
+void eshkol_batch_matmul_dispatch(const double* a, const double* b, double* c,
+                                  int64_t batch, int64_t M, int64_t K, int64_t N,
+                                  int32_t /*dtype*/) {
+    // No GPU — CPU batched f64 path (dtype ignored; storage already
+    // precision-reduced for the logical dtype).
+    eshkol_batch_matmul_f64(a, b, c, batch, M, K, N);
+}
+
 // ===== Backward Pass GPU Stubs =====
 
 int eshkol_gpu_conv2d_backward_input_f64(
