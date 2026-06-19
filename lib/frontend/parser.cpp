@@ -801,7 +801,36 @@ private:
                 errno = 0;
                 char* endptr = nullptr;
                 long long val = std::strtoll(raw.c_str(), &endptr, radix);
-                std::string value = std::to_string((int64_t)val);
+                std::string value;
+                if (errno == ERANGE) {
+                    // P1-22: the literal overflows int64. strtoll would silently
+                    // clamp to INT64_MAX; instead convert the radix digits to an
+                    // exact decimal string (string-bigint: dec = dec*radix + d) so
+                    // the downstream ESHKOL_BIGNUM_LITERAL path builds a correct
+                    // arbitrary-precision integer.
+                    bool neg = !raw.empty() && raw[0] == '-';
+                    size_t di = (!raw.empty() && (raw[0] == '-' || raw[0] == '+')) ? 1 : 0;
+                    std::vector<uint8_t> dec(1, 0);  // decimal digits, least-significant first
+                    for (; di < raw.size(); di++) {
+                        char c = raw[di];
+                        int dv;
+                        if (c >= '0' && c <= '9') dv = c - '0';
+                        else if (c >= 'a' && c <= 'f') dv = c - 'a' + 10;
+                        else if (c >= 'A' && c <= 'F') dv = c - 'A' + 10;
+                        else break;
+                        int carry = dv;
+                        for (size_t k = 0; k < dec.size(); k++) {
+                            int p = dec[k] * radix + carry;
+                            dec[k] = (uint8_t)(p % 10);
+                            carry = p / 10;
+                        }
+                        while (carry) { dec.push_back((uint8_t)(carry % 10)); carry /= 10; }
+                    }
+                    if (neg) value.push_back('-');
+                    for (size_t k = dec.size(); k-- > 0;) value.push_back((char)('0' + dec[k]));
+                } else {
+                    value = std::to_string((int64_t)val);
+                }
                 return {TOKEN_NUMBER, value, start, tok_line, tok_col};
             }
         }
