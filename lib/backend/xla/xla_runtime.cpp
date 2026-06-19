@@ -816,12 +816,15 @@ extern "C" void* eshkol_xla_transpose(
     const int64_t* perm) {
 
     if (!data || rank <= 0) return nullptr;
+    if (rank > 16) return nullptr;  // P1: out_shape[16] is a fixed stack array
 
     // Compute transposed shape and total elements
     uint64_t total = 1;
     uint64_t out_shape[16];
     for (int64_t i = 0; i < rank; i++) {
-        out_shape[i] = shape[perm[i]];
+        const int64_t p = perm[i];
+        if (p < 0 || p >= rank) return nullptr;  // P1: validate permutation index ∈ [0,rank)
+        out_shape[i] = shape[p];
         total *= out_shape[i];
     }
 
@@ -893,6 +896,7 @@ extern "C" void* eshkol_xla_broadcast(
     int64_t tgt_rank) {
 
     if (!data || tgt_rank <= 0) return nullptr;
+    if (tgt_rank > 16 || src_rank > 16) return nullptr;  // P1: tgt_strides[16]/src_strides[16] stack arrays
 
     uint64_t total = 1;
     for (int64_t i = 0; i < tgt_rank; i++) total *= tgt_shape[i];
@@ -952,12 +956,17 @@ extern "C" void* eshkol_xla_slice(
     const int64_t* strides) {
 
     if (!data || rank <= 0) return nullptr;
+    if (rank > 16) return nullptr;  // P1: out_shape[16] is a fixed stack array
 
     // Compute output shape
     uint64_t out_shape[16];
     uint64_t total = 1;
     for (int64_t i = 0; i < rank; i++) {
         int64_t stride = strides ? strides[i] : 1;
+        // P2: reject degenerate/out-of-range slice params — stride<=0 (div-by-zero),
+        // negative starts, limits<starts (unsigned underflow), or limits past the dim.
+        if (stride <= 0 || starts[i] < 0 || limits[i] < starts[i] ||
+            static_cast<uint64_t>(limits[i]) > shape[i]) return nullptr;
         out_shape[i] = static_cast<uint64_t>((limits[i] - starts[i] + stride - 1) / stride);
         total *= out_shape[i];
     }
