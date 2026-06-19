@@ -2553,6 +2553,17 @@ llvm::Value* ArithmeticCodegen::quotient(llvm::Value* dividend, llvm::Value* div
     }
 
     llvm::Value* truncated = ctx_.builder().CreateCall(trunc_func, {div_result}, "trunc_result");
+    // P1: FPToSI of a double outside [INT64_MIN, INT64_MAX] is undefined behavior
+    // (poison value returned as a valid int). Clamp to the representable range so
+    // the conversion is always defined.
+    {
+        llvm::Value* qd_max = llvm::ConstantFP::get(ctx_.doubleType(), 9223372036854774784.0);
+        llvm::Value* qd_min = llvm::ConstantFP::get(ctx_.doubleType(), -9223372036854775808.0);
+        truncated = ctx_.builder().CreateSelect(
+            ctx_.builder().CreateFCmpOGT(truncated, qd_max), qd_max,
+            ctx_.builder().CreateSelect(
+                ctx_.builder().CreateFCmpOLT(truncated, qd_min), qd_min, truncated));
+    }
     llvm::Value* dbl_as_int = ctx_.builder().CreateFPToSI(truncated, ctx_.int64Type(), "quot_int");
     llvm::Value* dbl_tagged = tagged_.packInt64(dbl_as_int, true);
     ctx_.builder().CreateBr(merge);
