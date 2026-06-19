@@ -250,7 +250,7 @@ public:
                     column_ += 2;
                     return {TOKEN_ARROW, "->", pos - 2, tok_line, tok_col};
                 }
-                if (std::isdigit(ch) || (ch == '-' && pos + 1 < length && std::isdigit(input[pos + 1]))) {
+                if (std::isdigit((unsigned char)ch) || (ch == '-' && pos + 1 < length && std::isdigit((unsigned char)input[pos + 1]))) {
                     return readNumber();
                 } else if (ch == '#') {
                     return readBoolean();
@@ -259,7 +259,7 @@ public:
                     // R7RS special float literals: +inf.0, -inf.0, +nan.0, -nan.0
                     size_t start_pos = pos;
                     std::string value;
-                    while (pos < length && !std::isspace(input[pos]) &&
+                    while (pos < length && !std::isspace((unsigned char)input[pos]) &&
                            input[pos] != '(' && input[pos] != ')' &&
                            input[pos] != '\'' && input[pos] != '"') {
                         value += input[pos++];
@@ -283,7 +283,7 @@ private:
     void skipWhitespace() {
         while (pos < length) {
             // Skip whitespace
-            if (std::isspace(input[pos])) {
+            if (std::isspace((unsigned char)input[pos])) {
                 if (input[pos] == '\n') {
                     line_++;
                     pos++;
@@ -557,7 +557,7 @@ private:
         }
 
         // Read integer or decimal part
-        while (pos < length && (std::isdigit(input[pos]) || input[pos] == '.')) {
+        while (pos < length && (std::isdigit((unsigned char)input[pos]) || input[pos] == '.')) {
             value += input[pos++];
             column_++;
         }
@@ -566,10 +566,10 @@ private:
         // Only if we haven't seen a decimal point and next char is '/'
         if (pos < length && input[pos] == '/' &&
             value.find('.') == std::string::npos &&
-            pos + 1 < length && std::isdigit(input[pos + 1])) {
+            pos + 1 < length && std::isdigit((unsigned char)input[pos + 1])) {
             value += input[pos++]; // consume '/'
             column_++;
-            while (pos < length && std::isdigit(input[pos])) {
+            while (pos < length && std::isdigit((unsigned char)input[pos])) {
                 value += input[pos++];
                 column_++;
             }
@@ -586,7 +586,7 @@ private:
                 column_++;
             }
             // Read exponent digits
-            while (pos < length && std::isdigit(input[pos])) {
+            while (pos < length && std::isdigit((unsigned char)input[pos])) {
                 value += input[pos++];
                 column_++;
             }
@@ -819,7 +819,7 @@ private:
         uint32_t tok_col = column_;
         std::string value;
 
-        while (pos < length && !std::isspace(input[pos]) &&
+        while (pos < length && !std::isspace((unsigned char)input[pos]) &&
                input[pos] != '(' && input[pos] != ')' &&
                input[pos] != '\'' && input[pos] != '"' &&
                input[pos] != ':') {  // Stop at colon for type annotations
@@ -1651,7 +1651,7 @@ static bool parse_extern_var_modifier_tail(SchemeTokenizer& tokenizer,
 static hott_type_expr_t* parsePrimitiveType(const std::string& name) {
     // Check for primitive types (case-insensitive)
     std::string lower = name;
-    for (auto& c : lower) c = std::tolower(c);
+    for (auto& c : lower) c = std::tolower((unsigned char)c);
 
     if (lower == "integer" || lower == "int" || lower == "int64") {
         return hott_make_integer_type();
@@ -1748,7 +1748,7 @@ static hott_type_expr_t* parseTypeExpression(SchemeTokenizer& tokenizer) {
         if (first.type == TOKEN_SYMBOL) {
             std::string type_name = first.value;
             std::string lower = type_name;
-            for (auto& c : lower) c = std::tolower(c);
+            for (auto& c : lower) c = std::tolower((unsigned char)c);
 
             if (lower == "list") {
                 // (list element-type)
@@ -9619,7 +9619,7 @@ eshkol_ast_t eshkol_parse_next_ast_from_stream(std::istream &in_stream)
                 if (bracket_depth == 0 && found_expression) {
                     break; // Complete expression found
                 }
-            } else if (!std::isspace(c) && bracket_depth == 0) {
+            } else if (!std::isspace((unsigned char)c) && bracket_depth == 0) {
                 // Reader prefix chars (' ` , #) modify the next expression —
                 // don't treat them as standalone atoms, continue to read what follows.
                 if (c == '\'' || c == '`' || c == ',' || c == '#') {
