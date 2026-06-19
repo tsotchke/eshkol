@@ -13,6 +13,7 @@
 #include "arena_memory.h"
 
 #include <cstdint>
+#include <cstring>
 
 extern "C" {
 
@@ -102,10 +103,74 @@ void* eshkol_list_to_svec(arena_t* arena, const eshkol_tagged_value_t* head_tv) 
     while (tagged_is_cons(&cur) && i < n) {
         arena_tagged_cons_cell_t* cell =
             (arena_tagged_cons_cell_t*)(uintptr_t)cur.data.ptr_val;
-        elems[i++] = cell->car;
+        eshkol_tagged_value_t e = cell->car;
+        // The AD svec path reads each element as a double; promote exact
+        // integers so (gradient f (list 1 2)) behaves like (list 1.0 2.0).
+        if (e.type != ESHKOL_VALUE_DOUBLE) {
+            double d = (double)e.data.int_val;
+            e.type = ESHKOL_VALUE_DOUBLE;
+            e.data.double_val = d;
+        }
+        elems[i++] = e;
         cur = cell->cdr;
     }
     return vec;
+}
+
+// Extract up to `max_n` scalar doubles from an AD operator input that may be a
+// Scheme vector (HEAP_SUBTYPE_VECTOR, 16-byte tagged elements), a cons list, or
+// a tensor (HEAP_SUBTYPE_TENSOR, 8-byte double bit patterns). Writes them into
+// `out` and returns the count. Used by the multi-parameter finite-difference
+// hessian/laplacian/directional-derivative paths, which need the point as a
+// plain double array to call an N-ary function without constructing AD nodes
+// (reverse-mode AD nodes passed as separate args crash function dispatch).
+int64_t eshkol_ad_extract_doubles(const eshkol_tagged_value_t* input,
+                                  double* out, int64_t max_n) {
+    if (!input || !out || max_n <= 0) return 0;
+
+    // Tensor: header subtype TENSOR, elements are int64 bit patterns of doubles.
+    if (input->type == ESHKOL_VALUE_HEAP_PTR && input->data.ptr_val) {
+        const auto* hdr = ESHKOL_GET_HEADER((void*)(uintptr_t)input->data.ptr_val);
+        if (hdr && hdr->subtype == HEAP_SUBTYPE_TENSOR) {
+            // eshkol_tensor_t: dimensions(0) num_dims(8) elements(16) total(24)
+            char* t = (char*)(uintptr_t)input->data.ptr_val;
+            int64_t total = *(int64_t*)(t + 24);
+            const int64_t* elems = *(const int64_t**)(t + 16);
+            int64_t n = total < max_n ? total : max_n;
+            for (int64_t i = 0; i < n && elems; i++) {
+                double d; std::memcpy(&d, &elems[i], sizeof(double));
+                out[i] = d;
+            }
+            return elems ? n : 0;
+        }
+        if (hdr && hdr->subtype == HEAP_SUBTYPE_VECTOR) {
+            // Scheme vector: [length:8][16-byte tagged elements].
+            char* v = (char*)(uintptr_t)input->data.ptr_val;
+            int64_t len = *(int64_t*)v;
+            const eshkol_tagged_value_t* elems =
+                (const eshkol_tagged_value_t*)(v + sizeof(int64_t));
+            int64_t n = len < max_n ? len : max_n;
+            for (int64_t i = 0; i < n; i++) {
+                const eshkol_tagged_value_t* e = &elems[i];
+                if (e->type == ESHKOL_VALUE_DOUBLE) { double d; std::memcpy(&d, &e->data, sizeof(double)); out[i] = d; }
+                else out[i] = (double)e->data.int_val;
+            }
+            return n;
+        }
+    }
+    // Cons list.
+    eshkol_tagged_value_t cur = *input;
+    int64_t i = 0;
+    while (tagged_is_cons(&cur) && i < max_n) {
+        arena_tagged_cons_cell_t* cell =
+            (arena_tagged_cons_cell_t*)(uintptr_t)cur.data.ptr_val;
+        const eshkol_tagged_value_t* e = &cell->car;
+        if (e->type == ESHKOL_VALUE_DOUBLE) { double d; std::memcpy(&d, &e->data, sizeof(double)); out[i] = d; }
+        else out[i] = (double)e->data.int_val;
+        i++;
+        cur = cell->cdr;
+    }
+    return i;
 }
 
 // ===== STACK OVERFLOW PROTECTION =====
