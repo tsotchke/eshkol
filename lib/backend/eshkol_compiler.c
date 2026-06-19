@@ -1021,20 +1021,28 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
             /* Read and parse the file */
             FILE* mf = fopen(path, "r");
             if (!mf) {
-                /* Try alternative path: replace ALL dots with slashes */
+                /* P2: convert module-name dots to slashes BEFORE appending the
+                   .esk extension. The old loop replaced ALL dots including the
+                   extension's (foo.bar -> foo/bar/esk), yielding an unopenable
+                   path and a silent module-not-found. */
                 char alt[512];
-                snprintf(alt, sizeof(alt), "%s.esk", mod_name);
-                for (char* p = alt; *p; p++) if (*p == '.') *p = '/';
+                size_t ai = 0;
+                for (const char* p = mod_name; *p && ai < sizeof(alt) - 5; p++) {
+                    alt[ai++] = (*p == '.') ? '/' : *p;
+                }
+                alt[ai] = '\0';
+                strncat(alt, ".esk", sizeof(alt) - ai - 1);
                 mf = fopen(alt, "r");
             }
             if (mf) {
                 fseek(mf, 0, SEEK_END);
                 long len = ftell(mf);
                 fseek(mf, 0, SEEK_SET);
-                char* src = (char*)malloc(len + 1);
+                /* P1: guard ftell<0 (pipe/FIFO) — malloc(0)+fread((size_t)-1) overflows. */
+                char* src = (len >= 0) ? (char*)malloc((size_t)len + 1) : NULL;
                 if (src) {
-                    fread(src, 1, len, mf);
-                    src[len] = '\0';
+                    size_t nread = fread(src, 1, (size_t)len, mf);
+                    src[nread] = '\0';
                     fclose(mf);
                     /* Parse and compile all top-level forms */
                     const char* saved_src = src_ptr;
