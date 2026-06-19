@@ -1,0 +1,34 @@
+;;; GGUF q4_0/q8_0 dequant builtin tests (ESH-0025b)
+(define pass-count 0)
+(define fail-count 0)
+(define (check name got expect)
+  (if (= got expect)
+      (begin (set! pass-count (+ pass-count 1)) (display "PASS: ") (display name) (newline))
+      (begin (set! fail-count (+ fail-count 1))
+             (display "FAIL: ") (display name) (display " got ") (display got)
+             (display " expect ") (display expect) (newline))))
+
+;; q8_0: 2-byte f16 scale + 32 int8.  d=1.0 = 0x3C00 (LE 0x00,0x3C)
+(define bv8 (make-bytevector 34 0))
+(bytevector-u8-set! bv8 1 #x3C)
+(bytevector-u8-set! bv8 2 5)
+(bytevector-u8-set! bv8 3 10)
+(bytevector-u8-set! bv8 4 100)
+(define t8 (dequant-q8_0 bv8 32))
+(check "q8_0 d=1 q[0]=5"   (tensor-ref t8 0) 5)
+(check "q8_0 d=1 q[1]=10"  (tensor-ref t8 1) 10)
+(check "q8_0 d=1 q[2]=100" (tensor-ref t8 2) 100)
+(bytevector-u8-set! bv8 1 #x40)   ; d=2.0
+(define t8b (dequant-q8_0 bv8 32))
+(check "q8_0 d=2 q[0]=10"  (tensor-ref t8b 0) 10)
+(check "q8_0 d=2 q[2]=200" (tensor-ref t8b 2) 200)
+
+;; q4_0: 2-byte d + 16 packed-nibble bytes.  x[j]=d*((qs&0xF)-8), x[j+16]=d*((qs>>4)-8)
+(define bv4 (make-bytevector 18 0))
+(bytevector-u8-set! bv4 1 #x3C)   ; d=1.0
+(bytevector-u8-set! bv4 2 #x3C)   ; low=12 -> x0=4 ; high=3 -> x16=-5
+(define t4 (dequant-q4_0 bv4 32))
+(check "q4_0 low nibble x[0]=4"   (tensor-ref t4 0) 4)
+(check "q4_0 high nibble x[16]=-5" (tensor-ref t4 16) -5)
+
+(display "=== dequant: ")(display pass-count)(display " passed, ")(display fail-count)(display " failed ===")(newline)
