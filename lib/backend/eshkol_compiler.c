@@ -3925,9 +3925,19 @@ static void execute_chunk(FuncChunk* chunk) {
             int count = ins.operand;
             int32_t ptr = HALLOC(); if (ptr < 0) break;
             heap[ptr].type = HEAP_VECTOR;
-            heap[ptr].vector.len = count;
-            for (int i = count - 1; i >= 0; i--)
-                heap[ptr].vector.items[i] = POP();
+            /* P0: vector.items[] is a fixed 64-slot inline array. `count` comes
+               straight from the instruction operand, so a vector/struct literal
+               with >64 elements would write past items[] into the next heap
+               object. Clamp the stored count to capacity; still POP the full
+               count so the operand stack stays balanced. */
+            const int cap = (int)(sizeof(heap[ptr].vector.items) /
+                                  sizeof(heap[ptr].vector.items[0]));
+            int stored = count > cap ? cap : count;
+            heap[ptr].vector.len = stored;
+            for (int i = count - 1; i >= 0; i--) {
+                Value v = POP();
+                if (i < stored) heap[ptr].vector.items[i] = v;
+            }
             PUSH(((Value){.type=VAL_VECTOR,.as.ptr=ptr}));
             break;
         }

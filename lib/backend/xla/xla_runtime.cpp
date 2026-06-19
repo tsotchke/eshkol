@@ -187,6 +187,10 @@ extern "C" void* eshkol_xla_elementwise(
     }
 
     // CPU fallback
+    // P0: binary ops (ADD/SUB/MUL/DIV, op_code 0-3) dereference b_data; the GPU
+    // path above already treats b_data as nullable, so guard the CPU path too
+    // rather than dereferencing NULL.
+    if (op_code <= 3 && !b_data) return nullptr;
     switch (op_code) {
         case 0: // ADD
             for (int64_t i = 0; i < total_elements; i++) out[i] = a_data[i] + b_data[i];
