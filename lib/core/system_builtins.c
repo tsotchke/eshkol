@@ -864,7 +864,7 @@ static int mkdir_recursive_impl(const char* path) {
     struct stat st;
     if (stat(path, &st) == 0) return 0; /* exists */
     char tmp[PATH_MAX];
-    strncpy(tmp, path, sizeof(tmp) - 1);
+    strncpy(tmp, path, sizeof(tmp) - 1); tmp[sizeof(tmp) - 1] = '\0';  /* P2: strncpy need not NUL-terminate */
     tmp[sizeof(tmp) - 1] = '\0';
     for (char* p = tmp + 1; *p; p++) {
         if (*p == '/') {
@@ -877,7 +877,7 @@ static int mkdir_recursive_impl(const char* path) {
 #else
     /* Windows: use SHCreateDirectoryExA or manual loop */
     char tmp[MAX_PATH];
-    strncpy(tmp, path, sizeof(tmp) - 1);
+    strncpy(tmp, path, sizeof(tmp) - 1); tmp[sizeof(tmp) - 1] = '\0';  /* P2: strncpy need not NUL-terminate */
     for (char* p = tmp + 1; *p; p++) {
         if (*p == '\\' || *p == '/') {
             char saved = *p;
