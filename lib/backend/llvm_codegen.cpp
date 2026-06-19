@@ -11915,6 +11915,7 @@ private:
         }
         // R7RS floor-quotient: floor(a/b), handling negative divisors correctly
         if (func_name == "floor-quotient") {
+            if (op->call_op.num_vars != 2) { eshkol_error("floor-quotient requires 2 arguments"); return nullptr; }  // P2: avoid host OOB on variables[1]
             TypedValue a_tv = codegenTypedAST(&op->call_op.variables[0]);
             TypedValue b_tv = codegenTypedAST(&op->call_op.variables[1]);
             if (!a_tv.llvm_value || !b_tv.llvm_value) return nullptr;
@@ -11940,6 +11941,7 @@ private:
         }
         // R7RS floor-remainder: a - b * floor-quotient(a, b)
         if (func_name == "floor-remainder") {
+            if (op->call_op.num_vars != 2) { eshkol_error("floor-remainder requires 2 arguments"); return nullptr; }  // P2: avoid host OOB on variables[1]
             TypedValue a_tv = codegenTypedAST(&op->call_op.variables[0]);
             TypedValue b_tv = codegenTypedAST(&op->call_op.variables[1]);
             if (!a_tv.llvm_value || !b_tv.llvm_value) return nullptr;
@@ -11964,6 +11966,7 @@ private:
         }
         // R7RS floor/: returns (values floor-quotient floor-remainder)
         if (func_name == "floor/") {
+            if (op->call_op.num_vars != 2) { eshkol_error("floor/ requires 2 arguments"); return nullptr; }  // P2: avoid host OOB on variables[1]
             // Compute both quotient and remainder
             TypedValue a_tv = codegenTypedAST(&op->call_op.variables[0]);
             TypedValue b_tv = codegenTypedAST(&op->call_op.variables[1]);

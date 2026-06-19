@@ -107,7 +107,10 @@ void* eshkol_list_to_svec(arena_t* arena, const eshkol_tagged_value_t* head_tv) 
         // The AD svec path reads each element as a double; promote exact
         // integers so (gradient f (list 1 2)) behaves like (list 1.0 2.0).
         if (e.type != ESHKOL_VALUE_DOUBLE) {
-            double d = (double)e.data.int_val;
+            // P2: an integer promotes to its value; a HEAP_PTR (bignum/rational/
+            // other) must NOT have its pointer bits reinterpreted as a double —
+            // use 0.0 rather than garbage.
+            double d = (e.type == ESHKOL_VALUE_HEAP_PTR) ? 0.0 : (double)e.data.int_val;
             e.type = ESHKOL_VALUE_DOUBLE;
             e.data.double_val = d;
         }
@@ -153,7 +156,7 @@ int64_t eshkol_ad_extract_doubles(const eshkol_tagged_value_t* input,
             for (int64_t i = 0; i < n; i++) {
                 const eshkol_tagged_value_t* e = &elems[i];
                 if (e->type == ESHKOL_VALUE_DOUBLE) { double d; std::memcpy(&d, &e->data, sizeof(double)); out[i] = d; }
-                else out[i] = (double)e->data.int_val;
+                else out[i] = (e->type == ESHKOL_VALUE_HEAP_PTR) ? 0.0 : (double)e->data.int_val;  // P2: no pointer-bits-as-double
             }
             return n;
         }
