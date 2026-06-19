@@ -1677,6 +1677,8 @@ public:
         function_return_types["bytevector-u8-ref"] = BuiltinTypes::Int64;
         function_return_types["bytevector-copy"] = BuiltinTypes::Value;
         function_return_types["bytevector-append"] = BuiltinTypes::Value;
+        function_return_types["dequant-q4_0"] = BuiltinTypes::Tensor;
+        function_return_types["dequant-q8_0"] = BuiltinTypes::Tensor;
         function_return_types["bytevector?"] = BuiltinTypes::Boolean;
         function_return_types["utf8->string"] = BuiltinTypes::String;
         function_return_types["string->utf8"] = BuiltinTypes::Value;
@@ -14748,6 +14750,54 @@ private:
             return packNullToTaggedValue();
         }
 
+        if (func_name == "dequant-q4_0" || func_name == "dequant-q8_0") {
+            // (dequant-q4_0 bytevector n) / (dequant-q8_0 bytevector n)
+            // Dequantize n weights of GGUF q4_0/q8_0 blocks (held in a
+            // bytevector) into a 1-D f64 tensor — lets Eshkol consume Kimi's
+            // quantized weights directly, feeding the f16 GemmEx path.
+            if (op->call_op.num_vars != 2) {
+                eshkol_error("%s requires (bytevector count)", func_name.c_str());
+                return nullptr;
+            }
+            TypedValue bv_tv = codegenTypedAST(&op->call_op.variables[0]);
+            TypedValue n_tv  = codegenTypedAST(&op->call_op.variables[1]);
+            if (!bv_tv.llvm_value || !n_tv.llvm_value) return nullptr;
+            Value* bv = typedValueToTaggedValue(bv_tv);
+            Value* n  = unpackInt64FromTaggedValue(typedValueToTaggedValue(n_tv));
+            Value* bv_ptr = builder->CreateIntToPtr(
+                builder->CreateExtractValue(bv, {4}), PointerType::getUnqual(*context));
+            // Bytevector data lives after the 8-byte length header.
+            Value* blocks = builder->CreateGEP(int8_type, bv_ptr,
+                ConstantInt::get(int64_type, 8));
+
+            Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+            Value* tensor = builder->CreateCall(mem->getArenaAllocateTensorWithHeader(), {arena_ptr});
+            // 1-D dims = [n]
+            Value* dims = builder->CreateCall(mem->getArenaAllocate(),
+                {arena_ptr, ConstantInt::get(int64_type, sizeof(uint64_t))});
+            builder->CreateStore(n, dims);
+            builder->CreateStore(dims, builder->CreateStructGEP(tensor_type, tensor, 0));
+            builder->CreateStore(ConstantInt::get(int64_type, 1),
+                builder->CreateStructGEP(tensor_type, tensor, 1));
+            builder->CreateStore(n, builder->CreateStructGEP(tensor_type, tensor, 3));
+            // elements: n int64 (double bit patterns)
+            Value* elems_size = builder->CreateMul(n, ConstantInt::get(int64_type, sizeof(int64_t)));
+            Value* elems = builder->CreateCall(mem->getArenaAllocate(), {arena_ptr, elems_size});
+            builder->CreateStore(elems, builder->CreateStructGEP(tensor_type, tensor, 2));
+            // void eshkol_dequant_q4_0/q8_0(const uint8_t* blocks, int64_t* out, int64_t n)
+            const char* rt = (func_name == "dequant-q4_0") ? "eshkol_dequant_q4_0"
+                                                           : "eshkol_dequant_q8_0";
+            Function* deq = module->getFunction(rt);
+            if (!deq) {
+                FunctionType* ft = FunctionType::get(builder->getVoidTy(),
+                    {PointerType::getUnqual(*context), PointerType::getUnqual(*context), int64_type}, false);
+                deq = Function::Create(ft, Function::ExternalLinkage, rt, module.get());
+            }
+            builder->CreateCall(deq, {blocks, elems, n});
+            Value* t_int = builder->CreatePtrToInt(tensor, int64_type);
+            return packPtrToTaggedValue(t_int, ESHKOL_VALUE_HEAP_PTR);
+        }
+
         if (func_name == "bytevector?") {
             TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
             if (!tv.llvm_value) return nullptr;
@@ -22238,6 +22288,7 @@ private:
             "bytevector-u8-ref", "bytevector-u8-set!",
             "bytevector-copy", "bytevector-copy!", "bytevector-append",
             "bytevector?", "utf8->string", "string->utf8",
+            "dequant-q4_0", "dequant-q8_0",
             // System
             "exit", "emergency-exit", "command-line",
             "getenv", "get-environment-variable",
