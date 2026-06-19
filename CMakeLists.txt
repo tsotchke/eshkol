@@ -558,13 +558,85 @@ else()
     separate_arguments(LLVM_SYSTEM_LIBS_LIST UNIX_COMMAND "${LLVM_SYSTEM_LIBS}")
 endif()
 
+function(eshkol_resolve_host_link_arg item out_var)
+    set(_eshkol_host_link_arg "")
+
+    if(NOT "${item}" STREQUAL "")
+        if(TARGET "${item}")
+            if(WIN32)
+                foreach(_prop
+                    IMPORTED_IMPLIB_RELEASE
+                    IMPORTED_IMPLIB_RELWITHDEBINFO
+                    IMPORTED_IMPLIB_MINSIZEREL
+                    IMPORTED_IMPLIB_DEBUG
+                    IMPORTED_IMPLIB
+                    IMPORTED_LOCATION_RELEASE
+                    IMPORTED_LOCATION_RELWITHDEBINFO
+                    IMPORTED_LOCATION_MINSIZEREL
+                    IMPORTED_LOCATION_DEBUG
+                    IMPORTED_LOCATION
+                )
+                    if("${_eshkol_host_link_arg}" STREQUAL "")
+                        get_target_property(_candidate "${item}" ${_prop})
+                        if(_candidate AND NOT _candidate MATCHES "-NOTFOUND$")
+                            set(_eshkol_host_link_arg "${_candidate}")
+                        endif()
+                    endif()
+                endforeach()
+            else()
+                foreach(_prop
+                    IMPORTED_LOCATION_RELEASE
+                    IMPORTED_LOCATION_RELWITHDEBINFO
+                    IMPORTED_LOCATION_MINSIZEREL
+                    IMPORTED_LOCATION_DEBUG
+                    IMPORTED_LOCATION
+                )
+                    if("${_eshkol_host_link_arg}" STREQUAL "")
+                        get_target_property(_candidate "${item}" ${_prop})
+                        if(_candidate AND NOT _candidate MATCHES "-NOTFOUND$")
+                            set(_eshkol_host_link_arg "${_candidate}")
+                        endif()
+                    endif()
+                endforeach()
+            endif()
+        else()
+            set(_eshkol_host_link_arg "${item}")
+            if(WIN32 AND
+               NOT _eshkol_host_link_arg MATCHES "^[-/]" AND
+               NOT _eshkol_host_link_arg MATCHES "[/\\\\]" AND
+               NOT _eshkol_host_link_arg MATCHES "\\.(a|so|dylib|lib)$")
+                set(_eshkol_found_lib "")
+                foreach(_llvm_lib_dir IN LISTS LLVM_LIBRARY_DIRS)
+                    foreach(_suffix IN ITEMS ".lib" ".a")
+                        if("${_eshkol_found_lib}" STREQUAL "" AND
+                           EXISTS "${_llvm_lib_dir}/${_eshkol_host_link_arg}${_suffix}")
+                            set(_eshkol_found_lib "${_llvm_lib_dir}/${_eshkol_host_link_arg}${_suffix}")
+                        endif()
+                    endforeach()
+                endforeach()
+                if(NOT "${_eshkol_found_lib}" STREQUAL "")
+                    set(_eshkol_host_link_arg "${_eshkol_found_lib}")
+                endif()
+            endif()
+        endif()
+    endif()
+
+    if(NOT "${_eshkol_host_link_arg}" STREQUAL "")
+        file(TO_CMAKE_PATH "${_eshkol_host_link_arg}" _eshkol_host_link_arg)
+    endif()
+    set(${out_var} "${_eshkol_host_link_arg}" PARENT_SCOPE)
+endfunction()
+
 set(ESHKOL_HOST_LLVM_LINK_ARGS "")
 foreach(_llvm_lib_dir IN LISTS LLVM_LIBRARY_DIRS)
     list(APPEND ESHKOL_HOST_LLVM_LINK_ARGS "-L${_llvm_lib_dir}")
 endforeach()
 foreach(_llvm_link_arg IN LISTS LLVM_LDFLAGS_LIST LLVM_LIBS_LIST LLVM_SYSTEM_LIBS_LIST)
     if(NOT "${_llvm_link_arg}" STREQUAL "")
-        list(APPEND ESHKOL_HOST_LLVM_LINK_ARGS "${_llvm_link_arg}")
+        eshkol_resolve_host_link_arg("${_llvm_link_arg}" _eshkol_host_llvm_link_arg)
+        if(NOT "${_eshkol_host_llvm_link_arg}" STREQUAL "")
+            list(APPEND ESHKOL_HOST_LLVM_LINK_ARGS "${_eshkol_host_llvm_link_arg}")
+        endif()
     endif()
 endforeach()
 
