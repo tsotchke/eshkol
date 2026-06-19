@@ -3526,6 +3526,16 @@ void eshkol_matmul_dispatch(const double* A, const double* B, double* C,
     eshkol_matmul_f64(A, B, C, M, K, N);
 }
 
+void eshkol_batch_matmul_dispatch(const double* a, const double* b, double* c,
+                                  int64_t batch, int64_t M, int64_t K, int64_t N,
+                                  int32_t /*dtype*/) {
+    // Metal: no f16 tensor-core batched GEMM path yet (follow-up); use the CPU
+    // batched f64 path. dtype ignored (storage already precision-reduced).
+    extern void eshkol_batch_matmul_f64(const double*, const double*, double*,
+                                        int64_t, int64_t, int64_t, int64_t);
+    eshkol_batch_matmul_f64(a, b, c, batch, M, K, N);
+}
+
 int eshkol_gpu_elementwise_f64(EshkolGPUBuffer* a, EshkolGPUBuffer* b,
                                 EshkolGPUBuffer* out, uint64_t n,
                                 EshkolElementwiseOp op) {

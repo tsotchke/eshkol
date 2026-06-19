@@ -300,6 +300,56 @@ static int cuda_matmul_f16_from_f64(const double* A, const double* B, double* C,
     return rc;
 }
 
+// Batched f16 cuBLAS GemmEx (tensor cores) — the MoE multi-expert win
+// (ESH-0024). Computes `batch` independent row-major GEMMs C[b]=A[b]·B[b] in a
+// single cublasGemmStridedBatchedEx launch (16F operands, 32F accumulate),
+// beating one launch per expert. Same f64<->half conversion + column-major swap
+// as cuda_matmul_f16_from_f64. Returns 0 on success, -1 on failure (caller
+// falls back to the CPU batched f64 path).
+static int cuda_batch_matmul_f16_from_f64(const double* a, const double* b, double* c,
+                                          int64_t batch, int64_t M, int64_t K, int64_t N) {
+    if (!g_cublas_handle || !a || !b || !c || batch <= 0) return -1;
+    const size_t aN = (size_t)batch * M * K;
+    const size_t bN = (size_t)batch * K * N;
+    const size_t cN = (size_t)batch * M * N;
+
+    std::vector<__half> hA(aN), hB(bN), hC(cN);
+    for (size_t i = 0; i < aN; i++) hA[i] = __float2half((float)a[i]);
+    for (size_t i = 0; i < bN; i++) hB[i] = __float2half((float)b[i]);
+
+    __half *dA = nullptr, *dB = nullptr, *dC = nullptr;
+    int rc = -1;
+    do {
+        if (cudaMalloc(&dA, aN * sizeof(__half)) != cudaSuccess) break;
+        if (cudaMalloc(&dB, bN * sizeof(__half)) != cudaSuccess) break;
+        if (cudaMalloc(&dC, cN * sizeof(__half)) != cudaSuccess) break;
+        if (cudaMemcpy(dA, hA.data(), aN * sizeof(__half), cudaMemcpyHostToDevice) != cudaSuccess) break;
+        if (cudaMemcpy(dB, hB.data(), bN * sizeof(__half), cudaMemcpyHostToDevice) != cudaSuccess) break;
+
+        const float alpha = 1.0f, beta = 0.0f;
+        cublasStatus_t st = cublasGemmStridedBatchedEx(
+            g_cublas_handle, CUBLAS_OP_N, CUBLAS_OP_N,
+            (int)N, (int)M, (int)K,
+            &alpha,
+            dB, CUDA_R_16F, (int)N, (long long)(K * N),
+            dA, CUDA_R_16F, (int)K, (long long)(M * K),
+            &beta,
+            dC, CUDA_R_16F, (int)N, (long long)(M * N),
+            (int)batch, CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP);
+        if (st != CUBLAS_STATUS_SUCCESS) break;
+        if (cudaStreamSynchronize(g_cuda_stream) != cudaSuccess) break;
+        if (cudaMemcpy(hC.data(), dC, cN * sizeof(__half), cudaMemcpyDeviceToHost) != cudaSuccess) break;
+
+        for (size_t i = 0; i < cN; i++) c[i] = (double)__half2float(hC[i]);
+        rc = 0;
+    } while (0);
+
+    if (dA) cudaFree(dA);
+    if (dB) cudaFree(dB);
+    if (dC) cudaFree(dC);
+    return rc;
+}
+
 static int cuda_wrap_host(void* host_ptr, size_t size_bytes, EshkolGPUBuffer* out) {
     cudaError_t err = cudaHostRegister(host_ptr, size_bytes, cudaHostRegisterMapped);
     if (err == cudaSuccess) {
@@ -622,6 +672,24 @@ void eshkol_matmul_dispatch(const double* A, const double* B, double* C,
 
     extern void eshkol_matmul_f64(const double*, const double*, double*, uint64_t, uint64_t, uint64_t);
     eshkol_matmul_f64(A, B, C, M, K, N);
+}
+
+extern "C" void eshkol_batch_matmul_f64(const double*, const double*, double*,
+                                        int64_t, int64_t, int64_t, int64_t);
+
+// Batched matmul dispatch (ESH-0024). f16/bf16 + CUDA → strided GemmEx (one
+// launch for all `batch` GEMMs); else the CPU batched f64 path. dtype codes:
+// 2=f16, 3=bf16.
+void eshkol_batch_matmul_dispatch(const double* a, const double* b, double* c,
+                                  int64_t batch, int64_t M, int64_t K, int64_t N,
+                                  int32_t dtype) {
+    if ((dtype == 2 || dtype == 3) && g_active_backend == ESHKOL_GPU_CUDA) {
+        if (cuda_batch_matmul_f16_from_f64(a, b, c, batch, M, K, N) == 0) {
+            return;
+        }
+        // GemmStridedBatched failed — fall through to the f64 path.
+    }
+    eshkol_batch_matmul_f64(a, b, c, batch, M, K, N);
 }
 
 int eshkol_gpu_elementwise_f64(EshkolGPUBuffer* a, EshkolGPUBuffer* b,

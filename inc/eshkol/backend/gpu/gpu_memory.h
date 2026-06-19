@@ -466,6 +466,13 @@ int eshkol_gpu_layernorm_backward_f64(
 void eshkol_matmul_dispatch(const double* A, const double* B, double* C,
                              uint64_t M, uint64_t K, uint64_t N, int32_t dtype);
 
+/* Batched matmul dispatch (ESH-0024): `batch` independent GEMMs C[b]=A[b]·B[b].
+ * f16/bf16 take the cublasGemmStridedBatched tensor-core path on CUDA (one
+ * launch for all experts); other dtypes use the CPU batched f64 path. */
+void eshkol_batch_matmul_dispatch(const double* a, const double* b, double* c,
+                                  int64_t batch, int64_t M, int64_t K, int64_t N,
+                                  int32_t dtype);
+
 #ifdef __cplusplus
 }
 #endif
