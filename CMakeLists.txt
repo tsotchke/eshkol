@@ -1415,6 +1415,18 @@ list(REMOVE_ITEM ESHKOL_NON_RUNTIME_SRC
   ${ESHKOL_RUNTIME_SUPPORT_SRC}
 )
 
+# xla_runtime.cpp defines the runtime dispatch (eshkol_xla_elementwise/transpose
+# /…) that generated code calls. It must live in the slim eshkol-runtime archive
+# so AOT user binaries resolve those symbols — the runtime stratification
+# otherwise leaves all of lib/backend/xla/ in eshkol-static only, breaking the
+# XLA-build AOT link of the .esk tests. It has no MLIR codegen dependencies.
+# Move it out of NON_RUNTIME so it isn't double-compiled into eshkol-static.
+set(ESHKOL_XLA_RUNTIME_SRC "")
+if(ESHKOL_XLA_ENABLED)
+  set(ESHKOL_XLA_RUNTIME_SRC lib/backend/xla/xla_runtime.cpp)
+  list(REMOVE_ITEM ESHKOL_NON_RUNTIME_SRC ${ESHKOL_XLA_RUNTIME_SRC})
+endif()
+
 list(LENGTH ESHKOL_RUNTIME_CORE_SRC ESHKOL_RUNTIME_CORE_SRC_COUNT)
 list(LENGTH ESHKOL_RUNTIME_HOSTED_SRC ESHKOL_RUNTIME_HOSTED_SRC_COUNT)
 message(STATUS
@@ -1465,6 +1477,11 @@ if(GPU_SOURCES)
     add_library(eshkol-gpu-runtime-obj OBJECT ${GPU_SOURCES})
     set(ESHKOL_GPU_RUNTIME_OBJECTS $<TARGET_OBJECTS:eshkol-gpu-runtime-obj>)
 endif()
+set(ESHKOL_XLA_RUNTIME_OBJECTS)
+if(ESHKOL_XLA_RUNTIME_SRC)
+    add_library(eshkol-xla-runtime-obj OBJECT ${ESHKOL_XLA_RUNTIME_SRC})
+    set(ESHKOL_XLA_RUNTIME_OBJECTS $<TARGET_OBJECTS:eshkol-xla-runtime-obj>)
+endif()
 
 foreach(_eshkol_runtime_obj_target IN ITEMS
     eshkol-runtime-core-obj
@@ -1484,6 +1501,10 @@ if(TARGET eshkol-gpu-runtime-obj)
         target_include_directories(eshkol-gpu-runtime-obj SYSTEM PRIVATE ${CUDAToolkit_INCLUDE_DIRS})
     endif()
 endif()
+if(TARGET eshkol-xla-runtime-obj)
+    eshkol_apply_common_compile_settings(eshkol-xla-runtime-obj)
+    eshkol_target_llvm_includes(eshkol-xla-runtime-obj)
+endif()
 
 set(ESHKOL_RUNTIME_OBJECTS
   $<TARGET_OBJECTS:eshkol-runtime-core-obj>
@@ -1491,6 +1512,7 @@ set(ESHKOL_RUNTIME_OBJECTS
   $<TARGET_OBJECTS:eshkol-backend-runtime-obj>
   $<TARGET_OBJECTS:eshkol-runtime-support-obj>
   ${ESHKOL_GPU_RUNTIME_OBJECTS}
+  ${ESHKOL_XLA_RUNTIME_OBJECTS}
   ${ESHKOL_VM_UNITY_OBJECTS}
 )
 
