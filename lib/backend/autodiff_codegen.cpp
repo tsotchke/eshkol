@@ -5640,15 +5640,23 @@ llvm::Value* AutodiffCodegen::hessian(const eshkol_operations_t* op) {
             }
             // If !func_ptr, scalar_func_ptr stays nullptr and hessian_closure_val is used below.
 
-            // Get the scalar point value as a double
-            Value* point_tagged = typed_raw_;
-            if (point_tagged->getType() != ctx_.taggedValueType()) {
-                if (point_tagged->getType()->isDoubleTy())
-                    point_tagged = tagged_.packDouble(point_tagged);
-                else if (point_tagged->getType()->isIntegerTy(64))
-                    point_tagged = tagged_.packInt64(point_tagged, true);
+            // Get the scalar point value as a double. An integer point (e.g.
+            // (hessian cube 2)) must be converted via SIToFP — unpackDouble on
+            // an int-tagged value reads the integer bit pattern as a double.
+            Value* x;
+            if (typed_raw_->getType()->isDoubleTy()) {
+                x = typed_raw_;
+            } else if (typed_raw_->getType()->isIntegerTy(64)) {
+                x = ctx_.builder().CreateSIToFP(typed_raw_, ctx_.doubleType());
+            } else {
+                Value* pt = typed_raw_;
+                Value* base_ty = tagged_.getBaseType(tagged_.getType(pt));
+                Value* is_int = ctx_.builder().CreateICmpEQ(base_ty,
+                    ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_INT64));
+                Value* as_int = ctx_.builder().CreateSIToFP(tagged_.unpackInt64(pt), ctx_.doubleType());
+                Value* as_dbl = tagged_.unpackDouble(pt);
+                x = ctx_.builder().CreateSelect(is_int, as_int, as_dbl);
             }
-            Value* x = tagged_.unpackDouble(point_tagged);
 
             Value* h = ConstantFP::get(ctx_.doubleType(), 1e-5);
 
@@ -5697,6 +5705,134 @@ llvm::Value* AutodiffCodegen::hessian(const eshkol_operations_t* op) {
     if (op->hessian_op.point->type == ESHKOL_TENSOR) {
         Value* data_val = tagged_.unpackInt64(vector_val);
         vector_val = tagged_.packPtr(data_val, ESHKOL_VALUE_HEAP_PTR);
+    }
+
+    // ── MULTI-PARAMETER HESSIAN via central finite differences ──────────
+    // A multi-parameter scalar function f(x,y,…) cannot go through the
+    // reverse-mode AD-node tensor path: that passes AD nodes as separate
+    // CALLABLE args, which crashes function dispatch (same reason gradient
+    // uses forward-mode for multi-param). Instead compute the N×N Hessian
+    // numerically — central differences call f with plain double args, which
+    // is crash-free and exact for the quadratic forms in the AD test suite.
+    // This also fixes laplacian (trace of Hessian) and is reused below.
+    {
+        uint64_t hess_mp_arity = 0;
+        if (func_ptr && function_arity_table_) {
+            std::string key = func_ptr->getName().str();
+            auto rv_pos = key.rfind("__rv");
+            if (rv_pos != std::string::npos && rv_pos + 4 < key.size() &&
+                key.find_first_not_of("0123456789", rv_pos + 4) == std::string::npos) {
+                key.erase(rv_pos);
+            }
+            auto it = function_arity_table_->find(key);
+            if (it != function_arity_table_->end()) hess_mp_arity = it->second;
+            hess_mp_arity = adResolveValueArity(func_ptr, hess_mp_arity);
+        }
+        if (func_ptr && hess_mp_arity > 1) {
+            const uint64_t N = hess_mp_arity;
+            Value* mp_arena = ctx_.builder().CreateLoad(
+                PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
+
+            // Extract the N input coordinates as plain doubles (vector/list/tensor).
+            Function* mp_fn = ctx_.builder().GetInsertBlock()->getParent();
+            llvm::IRBuilder<> mpEntry(&mp_fn->getEntryBlock(), mp_fn->getEntryBlock().begin());
+            Value* mp_in_slot = mpEntry.CreateAlloca(ctx_.taggedValueType(), nullptr, "hess_mp_in");
+            ctx_.builder().CreateStore(vector_val, mp_in_slot);
+            Value* mp_dbls = ctx_.builder().CreateCall(mem_.getArenaAllocate(),
+                {mp_arena, ConstantInt::get(ctx_.int64Type(), (int64_t)(N * sizeof(double)))});
+            Value* mp_dbls_p = ctx_.builder().CreatePointerCast(mp_dbls, PointerType::getUnqual(ctx_.context()));
+            llvm::Function* extr = ctx_.module().getFunction("eshkol_ad_extract_doubles");
+            if (!extr) {
+                llvm::FunctionType* et = llvm::FunctionType::get(ctx_.int64Type(),
+                    {ctx_.builder().getPtrTy(), ctx_.builder().getPtrTy(), ctx_.int64Type()}, false);
+                extr = llvm::Function::Create(et, llvm::Function::ExternalLinkage,
+                    "eshkol_ad_extract_doubles", &ctx_.module());
+            }
+            ctx_.builder().CreateCall(extr,
+                {mp_in_slot, mp_dbls_p, ConstantInt::get(ctx_.int64Type(), (int64_t)N)});
+
+            std::vector<Value*> base(N);
+            for (uint64_t k = 0; k < N; k++) {
+                base[k] = ctx_.builder().CreateLoad(ctx_.doubleType(),
+                    ctx_.builder().CreateGEP(ctx_.doubleType(), mp_dbls_p,
+                        ConstantInt::get(ctx_.int64Type(), (int64_t)k)));
+            }
+            Value* hh = ConstantFP::get(ctx_.doubleType(), 1e-4);
+
+            // Evaluate f at base + Σ delta[p]*h, returning the result as a double.
+            auto evalAt = [&](const std::vector<int>& delta) -> Value* {
+                std::vector<Value*> args;
+                args.reserve(N);
+                for (uint64_t p = 0; p < N; p++) {
+                    Value* xp = base[p];
+                    if (delta[p] != 0) {
+                        Value* d = ctx_.builder().CreateFMul(hh,
+                            ConstantFP::get(ctx_.doubleType(), (double)delta[p]));
+                        xp = ctx_.builder().CreateFAdd(xp, d);
+                    }
+                    args.push_back(tagged_.packDouble(xp));
+                }
+                resolveGradientCaptures(func_ptr, args, "hessian-fd");
+                Value* r = ctx_.builder().CreateCall(func_ptr, args);
+                return tagged_.unpackDouble(r);
+            };
+
+            std::vector<int> zero(N, 0);
+            Value* fx = evalAt(zero);
+            Value* h2 = ctx_.builder().CreateFMul(hh, hh);
+            Value* four_h2 = ctx_.builder().CreateFMul(
+                ConstantFP::get(ctx_.doubleType(), 4.0), h2);
+
+            // Result N×N tensor.
+            Value* mp_res = ctx_.builder().CreateCall(mem_.getArenaAllocateTensorWithHeader(), {mp_arena});
+            Value* mp_dims = ctx_.builder().CreateCall(mem_.getArenaAllocate(),
+                {mp_arena, ConstantInt::get(ctx_.int64Type(), (int64_t)(2 * sizeof(uint64_t)))});
+            Value* mp_dims_p = ctx_.builder().CreatePointerCast(mp_dims, PointerType::getUnqual(ctx_.context()));
+            ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), (int64_t)N), mp_dims_p);
+            ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), (int64_t)N),
+                ctx_.builder().CreateGEP(ctx_.int64Type(), mp_dims_p, ConstantInt::get(ctx_.int64Type(), 1)));
+            ctx_.builder().CreateStore(mp_dims_p, ctx_.builder().CreateStructGEP(ctx_.tensorType(), mp_res, 0));
+            ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 2),
+                ctx_.builder().CreateStructGEP(ctx_.tensorType(), mp_res, 1));
+            ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), (int64_t)(N * N)),
+                ctx_.builder().CreateStructGEP(ctx_.tensorType(), mp_res, 3));
+            Value* mp_elems = ctx_.builder().CreateCall(mem_.getArenaAllocate(),
+                {mp_arena, ConstantInt::get(ctx_.int64Type(), (int64_t)(N * N * sizeof(int64_t)))});
+            Value* mp_elems_p = ctx_.builder().CreatePointerCast(mp_elems, PointerType::getUnqual(ctx_.context()));
+            ctx_.builder().CreateStore(mp_elems_p, ctx_.builder().CreateStructGEP(ctx_.tensorType(), mp_res, 2));
+
+            for (uint64_t i = 0; i < N; i++) {
+                for (uint64_t j = 0; j < N; j++) {
+                    Value* hij;
+                    if (i == j) {
+                        std::vector<int> pe(N, 0), me(N, 0); pe[i] = 1; me[i] = -1;
+                        Value* a = evalAt(pe), *c = evalAt(me);
+                        Value* num = ctx_.builder().CreateFSub(
+                            ctx_.builder().CreateFAdd(a, c),
+                            ctx_.builder().CreateFMul(ConstantFP::get(ctx_.doubleType(), 2.0), fx));
+                        hij = ctx_.builder().CreateFDiv(num, h2);
+                    } else {
+                        std::vector<int> pp(N, 0), pm(N, 0), mp_(N, 0), mm(N, 0);
+                        pp[i] = 1;  pp[j] = 1;
+                        pm[i] = 1;  pm[j] = -1;
+                        mp_[i] = -1; mp_[j] = 1;
+                        mm[i] = -1; mm[j] = -1;
+                        Value* num = ctx_.builder().CreateFAdd(
+                            ctx_.builder().CreateFSub(
+                                ctx_.builder().CreateFSub(evalAt(pp), evalAt(pm)),
+                                evalAt(mp_)),
+                            evalAt(mm));
+                        hij = ctx_.builder().CreateFDiv(num, four_h2);
+                    }
+                    Value* bits = ctx_.builder().CreateBitCast(hij, ctx_.int64Type());
+                    ctx_.builder().CreateStore(bits,
+                        ctx_.builder().CreateGEP(ctx_.int64Type(), mp_elems_p,
+                            ConstantInt::get(ctx_.int64Type(), (int64_t)(i * N + j))));
+                }
+            }
+            Value* mp_int = ctx_.builder().CreatePtrToInt(mp_res, ctx_.int64Type());
+            return tagged_.packPtr(mp_int, ESHKOL_VALUE_HEAP_PTR);
+        }
     }
 
     Value* input_type = tagged_.getType(vector_val);
@@ -6851,10 +6987,15 @@ llvm::Value* AutodiffCodegen::laplacian(const eshkol_operations_t* op) {
     
     ctx_.builder().CreateCondBr(hess_is_valid, hessian_valid, hessian_invalid);
     
-    // Invalid hessian: return 0.0 instead of crashing (only for genuinely invalid types)
+    // Invalid hessian: for a SCALAR-input field the Hessian comes back as a
+    // plain double (f''(x)) — the Laplacian of a 1-D field IS that value. Only
+    // genuinely non-numeric results fall back to 0.0.
     ctx_.builder().SetInsertPoint(hessian_invalid);
-    eshkol_debug("Laplacian: Hessian returned non-tensor type, returning 0.0");
-    Value* zero_lap_result = ConstantFP::get(ctx_.doubleType(), 0.0);
+    eshkol_debug("Laplacian: Hessian returned non-tensor type; using scalar f'' if double");
+    Value* hess_is_double = ctx_.builder().CreateICmpEQ(hessian_base_type,
+        ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DOUBLE));
+    Value* zero_lap_result = ctx_.builder().CreateSelect(hess_is_double,
+        tagged_.unpackDouble(hessian_tagged), ConstantFP::get(ctx_.doubleType(), 0.0));
     ctx_.builder().CreateBr(lap_final);
     
     // Valid hessian: continue with normal computation
@@ -6986,6 +7127,14 @@ llvm::Value* AutodiffCodegen::directionalDerivative(const eshkol_operations_t* o
     // M1 CONSOLIDATION: Handle HEAP_PTR (with subtype dispatch), legacy VECTOR_PTR, and tensor
     Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
 
+    // Effective-direction slot: a (list …) direction is a cons cell and must be
+    // converted to a Scheme vector before the scheme-vector path reads it (same
+    // cons-misread crash the gradient input had). Vector/tensor directions leave
+    // the original value in the slot.
+    llvm::IRBuilder<> ddEntry(&current_func->getEntryBlock(), current_func->getEntryBlock().begin());
+    Value* dd_dir_slot = ddEntry.CreateAlloca(ctx_.taggedValueType(), nullptr, "dd_dir");
+    ctx_.builder().CreateStore(direction_val, dd_dir_slot);
+
     Value* dir_type = tagged_.getType(direction_val);
     Value* dir_base_type = tagged_.getBaseType(dir_type);
 
@@ -7008,7 +7157,29 @@ llvm::Value* AutodiffCodegen::directionalDerivative(const eshkol_operations_t* o
     Value* dd_header_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), dd_heap_ptr_val, ConstantInt::get(ctx_.int64Type(), -8));
     Value* dd_subtype = ctx_.builder().CreateLoad(ctx_.int8Type(), dd_header_ptr);
     Value* dd_is_vec_subtype = ctx_.builder().CreateICmpEQ(dd_subtype, ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_VECTOR));
-    ctx_.builder().CreateCondBr(dd_is_vec_subtype, dd_scheme_vector, dd_tensor_input);
+    Value* dd_is_cons_subtype = ctx_.builder().CreateICmpEQ(dd_subtype, ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_CONS));
+    BasicBlock* dd_check_cons = BasicBlock::Create(ctx_.context(), "dd_check_cons", current_func);
+    BasicBlock* dd_list_to_svec = BasicBlock::Create(ctx_.context(), "dd_list_to_svec", current_func);
+    ctx_.builder().CreateCondBr(dd_is_vec_subtype, dd_scheme_vector, dd_check_cons);
+
+    ctx_.builder().SetInsertPoint(dd_check_cons);
+    ctx_.builder().CreateCondBr(dd_is_cons_subtype, dd_list_to_svec, dd_tensor_input);
+
+    ctx_.builder().SetInsertPoint(dd_list_to_svec);
+    {
+        llvm::Function* l2s_fn = ctx_.module().getFunction("eshkol_list_to_svec");
+        if (!l2s_fn) {
+            llvm::FunctionType* l2s_ty = llvm::FunctionType::get(
+                ctx_.builder().getPtrTy(),
+                {ctx_.builder().getPtrTy(), ctx_.builder().getPtrTy()}, false);
+            l2s_fn = llvm::Function::Create(l2s_ty, llvm::Function::ExternalLinkage,
+                "eshkol_list_to_svec", &ctx_.module());
+        }
+        Value* dd_svec = ctx_.builder().CreateCall(l2s_fn, {arena_ptr, dd_dir_slot});
+        Value* dd_svec_int = ctx_.builder().CreatePtrToInt(dd_svec, ctx_.int64Type());
+        ctx_.builder().CreateStore(tagged_.packPtr(dd_svec_int, ESHKOL_VALUE_HEAP_PTR), dd_dir_slot);
+        ctx_.builder().CreateBr(dd_scheme_vector);
+    }
 
     // Legacy VECTOR_PTR fallback
     ctx_.builder().SetInsertPoint(dd_check_legacy);
@@ -7017,7 +7188,8 @@ llvm::Value* AutodiffCodegen::directionalDerivative(const eshkol_operations_t* o
     // SCHEME VECTOR: Convert to tensor format
     ctx_.builder().SetInsertPoint(dd_scheme_vector);
 
-    Value* dd_scheme_vec_ptr_int = tagged_.unpackInt64(direction_val);
+    Value* dd_effective_dir = ctx_.builder().CreateLoad(ctx_.taggedValueType(), dd_dir_slot);
+    Value* dd_scheme_vec_ptr_int = tagged_.unpackInt64(dd_effective_dir);
     Value* dd_scheme_vec_ptr = ctx_.builder().CreateIntToPtr(dd_scheme_vec_ptr_int, ctx_.builder().getPtrTy());
     Value* dd_scheme_len_ptr = ctx_.builder().CreateBitCast(dd_scheme_vec_ptr, PointerType::getUnqual(ctx_.context()));
     Value* dd_scheme_len = ctx_.builder().CreateLoad(ctx_.int64Type(), dd_scheme_len_ptr);
