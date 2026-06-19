@@ -2926,6 +2926,7 @@ static eshkol_pattern_t* parse_pattern(SchemeTokenizer& tokenizer) {
                 while (true) {
                     Token peek_end = tokenizer.nextToken();
                     if (peek_end.type == TOKEN_RPAREN) break;
+                    if (peek_end.type == TOKEN_EOF) break;  // P1: unterminated (or …) → don't spin on EOF
                     tokenizer.pushBack(peek_end);
                     eshkol_pattern_t* sub_pat = parse_pattern(tokenizer);
                     if (sub_pat) {
@@ -2950,6 +2951,7 @@ static eshkol_pattern_t* parse_pattern(SchemeTokenizer& tokenizer) {
                 int depth = 1;
                 while (depth > 0) {
                     token = tokenizer.nextToken();
+                    if (token.type == TOKEN_EOF) break;  // P1: unbalanced list → don't spin on EOF
                     if (token.type == TOKEN_LPAREN) depth++;
                     else if (token.type == TOKEN_RPAREN) depth--;
                 }
@@ -2968,6 +2970,7 @@ static eshkol_pattern_t* parse_pattern(SchemeTokenizer& tokenizer) {
             int depth = 1;
             while (depth > 0) {
                 token = tokenizer.nextToken();
+                if (token.type == TOKEN_EOF) break;  // P1: unbalanced list → don't spin on EOF
                 if (token.type == TOKEN_LPAREN) depth++;
                 else if (token.type == TOKEN_RPAREN) depth--;
             }
