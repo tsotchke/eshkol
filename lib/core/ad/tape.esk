@@ -37,6 +37,7 @@
          record-op! record-fd-op!
          tape-add tape-sub tape-mul tape-div
          tape-sin tape-cos tape-exp tape-log tape-neg
+         tape-square tape-sqrt tape-tanh tape-sigmoid tape-relu tape-pow
          tape-gradient tape-snapshot tape-restore)
 
 ;; ── Internal list helpers ──
@@ -185,6 +186,37 @@
   (let ((av (node-value a)))
     (record-op! t (list a) (- av)
                 (lambda (g) (list (- g))))))
+
+(define (tape-square t a)
+  (let ((av (node-value a)))
+    (record-op! t (list a) (* av av)
+                (lambda (g) (list (* g 2.0 av))))))
+
+(define (tape-sqrt t a)
+  (let* ((av (node-value a)) (ov (sqrt av)))
+    (record-op! t (list a) ov
+                (lambda (g) (list (/ g (* 2.0 ov)))))))   ; d/da sqrt = 1/(2*out)
+
+(define (tape-tanh t a)
+  (let* ((av (node-value a)) (ov (tanh av)))
+    (record-op! t (list a) ov
+                (lambda (g) (list (* g (- 1.0 (* ov ov))))))))  ; 1 - tanh^2
+
+(define (tape-sigmoid t a)
+  (let* ((av (node-value a)) (ov (/ 1.0 (+ 1.0 (exp (- av))))))
+    (record-op! t (list a) ov
+                (lambda (g) (list (* g ov (- 1.0 ov)))))))  ; out*(1-out)
+
+(define (tape-relu t a)
+  (let ((av (node-value a)))
+    (record-op! t (list a) (if (> av 0.0) av 0.0)
+                (lambda (g) (list (if (> av 0.0) g 0.0))))))
+
+;; tape-pow: a^p for a CONSTANT exponent p (a is a node, p a number).
+(define (tape-pow t a p)
+  (let ((av (node-value a)))
+    (record-op! t (list a) (expt av p)
+                (lambda (g) (list (* g p (expt av (- p 1.0))))))))
 
 ;; ── Reverse pass ──
 ;; Distribute a list of input-grads onto a list of input-nodes (pairwise).
