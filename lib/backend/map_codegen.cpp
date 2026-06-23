@@ -19,6 +19,17 @@ using namespace llvm;
 
 namespace eshkol {
 
+// True if `v` is a named-let / TCO loop-variable alloca (named "<name>_tco").
+// codegenLambda captures such allocas BY VALUE (its is_let_alloca gate excludes
+// the "_tco" suffix), so map's capture setup must load the value rather than
+// pack the alloca address — see bug-RR.
+static bool isTcoLoopAlloca(Value* v) {
+    AllocaInst* a = dyn_cast_or_null<AllocaInst>(v);
+    if (!a) return false;
+    std::string name = a->getName().str();
+    return name.size() >= 4 && name.compare(name.size() - 4, 4, "_tco") == 0;
+}
+
 MapCodegen::MapCodegen(CodegenContext& ctx, TaggedValueCodegen& tagged)
     : ctx_(ctx), tagged_(tagged) {}
 
@@ -423,7 +434,20 @@ void MapCodegen::loadCapturedValues(
             bool needs_ptr_packing = isa<AllocaInst>(storage) || isa<GlobalVariable>(storage) ||
                 (storage->getType()->isPointerTy() && !isa<Argument>(storage));
 
-            if (needs_ptr_packing) {
+            if (isTcoLoopAlloca(storage)) {
+                // bug-RR: TCO loop-var allocas (named "<v>_tco") are captured BY VALUE by
+                // codegenLambda (its is_let_alloca gate excludes "_tco" → single-load body).
+                // Pack the *value*, not the alloca address — otherwise the lambda returns
+                // the pointer (garbage). Mirrors the value-capture convention exactly.
+                Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+                IRBuilder<> entry_builder(&current_func->getEntryBlock(), current_func->getEntryBlock().begin());
+                AllocaInst* temp_alloca = entry_builder.CreateAlloca(ctx_.taggedValueType(), nullptr, var_name + "_capture_storage");
+                Value* loaded = ctx_.builder().CreateLoad(ctx_.taggedValueType(), storage, var_name + "_val");
+                ctx_.builder().CreateStore(loaded, temp_alloca);
+                args.push_back(temp_alloca);
+                eshkol_debug("Map: value-captured TCO loop var '%s' for lambda '%s'",
+                            var_name.c_str(), lambda_name.c_str());
+            } else if (needs_ptr_packing) {
                 Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
                 IRBuilder<> entry_builder(&current_func->getEntryBlock(), current_func->getEntryBlock().begin());
                 AllocaInst* temp_alloca = entry_builder.CreateAlloca(ctx_.taggedValueType(), nullptr, var_name + "_capture_storage");
@@ -467,7 +491,18 @@ void MapCodegen::loadCapturedValues(
                 bool needs_ptr_packing = isa<AllocaInst>(var_storage) || isa<GlobalVariable>(var_storage) ||
                     (var_storage->getType()->isPointerTy() && !isa<Argument>(var_storage));
 
-                if (needs_ptr_packing) {
+                if (isTcoLoopAlloca(var_storage)) {
+                    // bug-RR: TCO loop-var alloca captured BY VALUE by codegenLambda — load
+                    // the value, don't pack the address (see found-path above).
+                    Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+                    IRBuilder<> entry_builder(&current_func->getEntryBlock(), current_func->getEntryBlock().begin());
+                    AllocaInst* temp_alloca = entry_builder.CreateAlloca(ctx_.taggedValueType(), nullptr, var_name + "_capture_storage");
+                    Value* loaded = ctx_.builder().CreateLoad(ctx_.taggedValueType(), var_storage, var_name + "_val");
+                    ctx_.builder().CreateStore(loaded, temp_alloca);
+                    args.push_back(temp_alloca);
+                    eshkol_debug("Map: value-captured TCO loop var '%s' for lambda '%s'",
+                                var_name.c_str(), lambda_name.c_str());
+                } else if (needs_ptr_packing) {
                     Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
                     IRBuilder<> entry_builder(&current_func->getEntryBlock(), current_func->getEntryBlock().begin());
                     AllocaInst* temp_alloca = entry_builder.CreateAlloca(ctx_.taggedValueType(), nullptr, var_name + "_capture_storage");
