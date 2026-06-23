@@ -3959,10 +3959,14 @@ int main(int argc, char **argv)
                 fseek(eskb_src_f, 0, SEEK_END);
                 long eskb_len = ftell(eskb_src_f);
                 fseek(eskb_src_f, 0, SEEK_SET);
-                char* eskb_source = (char*)malloc(eskb_len + 1);
+                /* P1: ftell returns -1 on a pipe/FIFO/error; malloc(-1+1)=malloc(0)
+                   then fread(.., (size_t)-1, ..) is a massive heap overflow. Guard
+                   the length and NUL-terminate at the actual bytes read. */
+                if (eskb_len < 0) { fclose(eskb_src_f); eskb_src_f = NULL; }
+                char* eskb_source = eskb_src_f ? (char*)malloc((size_t)eskb_len + 1) : NULL;
                 if (eskb_source) {
-                    fread(eskb_source, 1, eskb_len, eskb_src_f);
-                    eskb_source[eskb_len] = 0;
+                    size_t eskb_nread = fread(eskb_source, 1, (size_t)eskb_len, eskb_src_f);
+                    eskb_source[eskb_nread] = 0;
                     fclose(eskb_src_f);
                     int eskb_result = eshkol_emit_eskb(eskb_source, eskb_output_path);
                     if (eskb_result == 0) {

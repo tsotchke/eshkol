@@ -11901,20 +11901,32 @@ private:
                 FunctionType::get(PointerType::getUnqual(*context),
                     {PointerType::getUnqual(*context), int64_type}, false));
             Value* mv = builder->CreateCall(alloc_mv, {arena_ptr, ConstantInt::get(int64_type, 2)});
-            // Store values
-            builder->CreateStore(q, mv);
-            Value* second = builder->CreateGEP(tagged_value_type, mv, ConstantInt::get(int64_type, 1));
-            builder->CreateStore(r, second);
+            // P1: multi-value layout is [count@0][val0@8][val1@24] (see codegenValues).
+            // The old code stored val0 at offset 0 (clobbering count) and val1 at
+            // offset 16 (mid-slot), corrupting the result and arity dispatch.
+            Value* mv_v0 = builder->CreateGEP(builder->getInt8Ty(), mv,
+                ConstantInt::get(int64_type, sizeof(size_t)));
+            builder->CreateStore(ensureTaggedValue(q), builder->CreatePointerCast(mv_v0, ptr_type));
+            Value* mv_v1 = builder->CreateGEP(builder->getInt8Ty(), mv,
+                ConstantInt::get(int64_type, sizeof(size_t) + sizeof(eshkol_tagged_value_t)));
+            builder->CreateStore(ensureTaggedValue(r), builder->CreatePointerCast(mv_v1, ptr_type));
             // Return as MULTI_VALUE heap ptr
             return packPtrToTaggedValue(mv, ESHKOL_VALUE_HEAP_PTR);
         }
         // R7RS floor-quotient: floor(a/b), handling negative divisors correctly
         if (func_name == "floor-quotient") {
+            if (op->call_op.num_vars != 2) { eshkol_error("floor-quotient requires 2 arguments"); return nullptr; }  // P2: avoid host OOB on variables[1]
             TypedValue a_tv = codegenTypedAST(&op->call_op.variables[0]);
             TypedValue b_tv = codegenTypedAST(&op->call_op.variables[1]);
             if (!a_tv.llvm_value || !b_tv.llvm_value) return nullptr;
             Value* a = safeExtractInt64(typedValueToTaggedValue(a_tv));
             Value* b = safeExtractInt64(typedValueToTaggedValue(b_tv));
+            // P1: avoid UB SDiv/SRem on b==0 and INT64_MIN/-1 (sanitize divisor to 1).
+            b = builder->CreateSelect(builder->CreateOr(
+                    builder->CreateICmpEQ(b, ConstantInt::get(int64_type, 0)),
+                    builder->CreateAnd(builder->CreateICmpEQ(a, ConstantInt::get(int64_type, INT64_MIN)),
+                                       builder->CreateICmpEQ(b, ConstantInt::get(int64_type, -1)))),
+                ConstantInt::get(int64_type, 1), b);
             // floor division: q = a/b, adjust if signs differ and remainder != 0
             Value* q = builder->CreateSDiv(a, b);
             Value* r = builder->CreateSRem(a, b);
@@ -11929,11 +11941,18 @@ private:
         }
         // R7RS floor-remainder: a - b * floor-quotient(a, b)
         if (func_name == "floor-remainder") {
+            if (op->call_op.num_vars != 2) { eshkol_error("floor-remainder requires 2 arguments"); return nullptr; }  // P2: avoid host OOB on variables[1]
             TypedValue a_tv = codegenTypedAST(&op->call_op.variables[0]);
             TypedValue b_tv = codegenTypedAST(&op->call_op.variables[1]);
             if (!a_tv.llvm_value || !b_tv.llvm_value) return nullptr;
             Value* a = safeExtractInt64(typedValueToTaggedValue(a_tv));
             Value* b = safeExtractInt64(typedValueToTaggedValue(b_tv));
+            // P1: avoid UB SRem on b==0 and INT64_MIN/-1 (sanitize divisor to 1).
+            b = builder->CreateSelect(builder->CreateOr(
+                    builder->CreateICmpEQ(b, ConstantInt::get(int64_type, 0)),
+                    builder->CreateAnd(builder->CreateICmpEQ(a, ConstantInt::get(int64_type, INT64_MIN)),
+                                       builder->CreateICmpEQ(b, ConstantInt::get(int64_type, -1)))),
+                ConstantInt::get(int64_type, 1), b);
             // floor remainder: r = a%b, adjust if signs differ and r != 0
             Value* r = builder->CreateSRem(a, b);
             Value* r_nonzero = builder->CreateICmpNE(r, ConstantInt::get(int64_type, 0));
@@ -11947,12 +11966,19 @@ private:
         }
         // R7RS floor/: returns (values floor-quotient floor-remainder)
         if (func_name == "floor/") {
+            if (op->call_op.num_vars != 2) { eshkol_error("floor/ requires 2 arguments"); return nullptr; }  // P2: avoid host OOB on variables[1]
             // Compute both quotient and remainder
             TypedValue a_tv = codegenTypedAST(&op->call_op.variables[0]);
             TypedValue b_tv = codegenTypedAST(&op->call_op.variables[1]);
             if (!a_tv.llvm_value || !b_tv.llvm_value) return nullptr;
             Value* a = safeExtractInt64(typedValueToTaggedValue(a_tv));
             Value* b = safeExtractInt64(typedValueToTaggedValue(b_tv));
+            // P1: avoid UB SDiv/SRem on b==0 and INT64_MIN/-1 (sanitize divisor to 1).
+            b = builder->CreateSelect(builder->CreateOr(
+                    builder->CreateICmpEQ(b, ConstantInt::get(int64_type, 0)),
+                    builder->CreateAnd(builder->CreateICmpEQ(a, ConstantInt::get(int64_type, INT64_MIN)),
+                                       builder->CreateICmpEQ(b, ConstantInt::get(int64_type, -1)))),
+                ConstantInt::get(int64_type, 1), b);
             Value* q = builder->CreateSDiv(a, b);
             Value* r = builder->CreateSRem(a, b);
             Value* r_nonzero = builder->CreateICmpNE(r, ConstantInt::get(int64_type, 0));
@@ -11972,9 +11998,13 @@ private:
                 FunctionType::get(PointerType::getUnqual(*context),
                     {PointerType::getUnqual(*context), int64_type}, false));
             Value* mv = builder->CreateCall(alloc_mv, {arena_ptr, ConstantInt::get(int64_type, 2)});
-            builder->CreateStore(tq, mv);
-            Value* second = builder->CreateGEP(tagged_value_type, mv, ConstantInt::get(int64_type, 1));
-            builder->CreateStore(tr, second);
+            // P1: same multi-value layout fix as truncate/ — [count@0][val0@8][val1@24].
+            Value* mv_v0 = builder->CreateGEP(builder->getInt8Ty(), mv,
+                ConstantInt::get(int64_type, sizeof(size_t)));
+            builder->CreateStore(ensureTaggedValue(tq), builder->CreatePointerCast(mv_v0, ptr_type));
+            Value* mv_v1 = builder->CreateGEP(builder->getInt8Ty(), mv,
+                ConstantInt::get(int64_type, sizeof(size_t) + sizeof(eshkol_tagged_value_t)));
+            builder->CreateStore(ensureTaggedValue(tr), builder->CreatePointerCast(mv_v1, ptr_type));
             return packPtrToTaggedValue(mv, ESHKOL_VALUE_HEAP_PTR);
         }
         if (func_name == "gcd") return codegenGCD(op);
