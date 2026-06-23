@@ -250,7 +250,7 @@ public:
                     column_ += 2;
                     return {TOKEN_ARROW, "->", pos - 2, tok_line, tok_col};
                 }
-                if (std::isdigit(ch) || (ch == '-' && pos + 1 < length && std::isdigit(input[pos + 1]))) {
+                if (std::isdigit((unsigned char)ch) || (ch == '-' && pos + 1 < length && std::isdigit((unsigned char)input[pos + 1]))) {
                     return readNumber();
                 } else if (ch == '#') {
                     return readBoolean();
@@ -259,7 +259,7 @@ public:
                     // R7RS special float literals: +inf.0, -inf.0, +nan.0, -nan.0
                     size_t start_pos = pos;
                     std::string value;
-                    while (pos < length && !std::isspace(input[pos]) &&
+                    while (pos < length && !std::isspace((unsigned char)input[pos]) &&
                            input[pos] != '(' && input[pos] != ')' &&
                            input[pos] != '\'' && input[pos] != '"') {
                         value += input[pos++];
@@ -283,7 +283,7 @@ private:
     void skipWhitespace() {
         while (pos < length) {
             // Skip whitespace
-            if (std::isspace(input[pos])) {
+            if (std::isspace((unsigned char)input[pos])) {
                 if (input[pos] == '\n') {
                     line_++;
                     pos++;
@@ -557,7 +557,7 @@ private:
         }
 
         // Read integer or decimal part
-        while (pos < length && (std::isdigit(input[pos]) || input[pos] == '.')) {
+        while (pos < length && (std::isdigit((unsigned char)input[pos]) || input[pos] == '.')) {
             value += input[pos++];
             column_++;
         }
@@ -566,10 +566,10 @@ private:
         // Only if we haven't seen a decimal point and next char is '/'
         if (pos < length && input[pos] == '/' &&
             value.find('.') == std::string::npos &&
-            pos + 1 < length && std::isdigit(input[pos + 1])) {
+            pos + 1 < length && std::isdigit((unsigned char)input[pos + 1])) {
             value += input[pos++]; // consume '/'
             column_++;
-            while (pos < length && std::isdigit(input[pos])) {
+            while (pos < length && std::isdigit((unsigned char)input[pos])) {
                 value += input[pos++];
                 column_++;
             }
@@ -586,7 +586,7 @@ private:
                 column_++;
             }
             // Read exponent digits
-            while (pos < length && std::isdigit(input[pos])) {
+            while (pos < length && std::isdigit((unsigned char)input[pos])) {
                 value += input[pos++];
                 column_++;
             }
@@ -801,7 +801,36 @@ private:
                 errno = 0;
                 char* endptr = nullptr;
                 long long val = std::strtoll(raw.c_str(), &endptr, radix);
-                std::string value = std::to_string((int64_t)val);
+                std::string value;
+                if (errno == ERANGE) {
+                    // P1-22: the literal overflows int64. strtoll would silently
+                    // clamp to INT64_MAX; instead convert the radix digits to an
+                    // exact decimal string (string-bigint: dec = dec*radix + d) so
+                    // the downstream ESHKOL_BIGNUM_LITERAL path builds a correct
+                    // arbitrary-precision integer.
+                    bool neg = !raw.empty() && raw[0] == '-';
+                    size_t di = (!raw.empty() && (raw[0] == '-' || raw[0] == '+')) ? 1 : 0;
+                    std::vector<uint8_t> dec(1, 0);  // decimal digits, least-significant first
+                    for (; di < raw.size(); di++) {
+                        char c = raw[di];
+                        int dv;
+                        if (c >= '0' && c <= '9') dv = c - '0';
+                        else if (c >= 'a' && c <= 'f') dv = c - 'a' + 10;
+                        else if (c >= 'A' && c <= 'F') dv = c - 'A' + 10;
+                        else break;
+                        int carry = dv;
+                        for (size_t k = 0; k < dec.size(); k++) {
+                            int p = dec[k] * radix + carry;
+                            dec[k] = (uint8_t)(p % 10);
+                            carry = p / 10;
+                        }
+                        while (carry) { dec.push_back((uint8_t)(carry % 10)); carry /= 10; }
+                    }
+                    if (neg) value.push_back('-');
+                    for (size_t k = dec.size(); k-- > 0;) value.push_back((char)('0' + dec[k]));
+                } else {
+                    value = std::to_string((int64_t)val);
+                }
                 return {TOKEN_NUMBER, value, start, tok_line, tok_col};
             }
         }
@@ -819,7 +848,7 @@ private:
         uint32_t tok_col = column_;
         std::string value;
 
-        while (pos < length && !std::isspace(input[pos]) &&
+        while (pos < length && !std::isspace((unsigned char)input[pos]) &&
                input[pos] != '(' && input[pos] != ')' &&
                input[pos] != '\'' && input[pos] != '"' &&
                input[pos] != ':') {  // Stop at colon for type annotations
@@ -1651,7 +1680,7 @@ static bool parse_extern_var_modifier_tail(SchemeTokenizer& tokenizer,
 static hott_type_expr_t* parsePrimitiveType(const std::string& name) {
     // Check for primitive types (case-insensitive)
     std::string lower = name;
-    for (auto& c : lower) c = std::tolower(c);
+    for (auto& c : lower) c = std::tolower((unsigned char)c);
 
     if (lower == "integer" || lower == "int" || lower == "int64") {
         return hott_make_integer_type();
@@ -1748,7 +1777,7 @@ static hott_type_expr_t* parseTypeExpression(SchemeTokenizer& tokenizer) {
         if (first.type == TOKEN_SYMBOL) {
             std::string type_name = first.value;
             std::string lower = type_name;
-            for (auto& c : lower) c = std::tolower(c);
+            for (auto& c : lower) c = std::tolower((unsigned char)c);
 
             if (lower == "list") {
                 // (list element-type)
@@ -2926,6 +2955,7 @@ static eshkol_pattern_t* parse_pattern(SchemeTokenizer& tokenizer) {
                 while (true) {
                     Token peek_end = tokenizer.nextToken();
                     if (peek_end.type == TOKEN_RPAREN) break;
+                    if (peek_end.type == TOKEN_EOF) break;  // P1: unterminated (or …) → don't spin on EOF
                     tokenizer.pushBack(peek_end);
                     eshkol_pattern_t* sub_pat = parse_pattern(tokenizer);
                     if (sub_pat) {
@@ -2950,6 +2980,7 @@ static eshkol_pattern_t* parse_pattern(SchemeTokenizer& tokenizer) {
                 int depth = 1;
                 while (depth > 0) {
                     token = tokenizer.nextToken();
+                    if (token.type == TOKEN_EOF) break;  // P1: unbalanced list → don't spin on EOF
                     if (token.type == TOKEN_LPAREN) depth++;
                     else if (token.type == TOKEN_RPAREN) depth--;
                 }
@@ -2968,6 +2999,7 @@ static eshkol_pattern_t* parse_pattern(SchemeTokenizer& tokenizer) {
             int depth = 1;
             while (depth > 0) {
                 token = tokenizer.nextToken();
+                if (token.type == TOKEN_EOF) break;  // P1: unbalanced list → don't spin on EOF
                 if (token.type == TOKEN_LPAREN) depth++;
                 else if (token.type == TOKEN_RPAREN) depth--;
             }
@@ -9616,7 +9648,7 @@ eshkol_ast_t eshkol_parse_next_ast_from_stream(std::istream &in_stream)
                 if (bracket_depth == 0 && found_expression) {
                     break; // Complete expression found
                 }
-            } else if (!std::isspace(c) && bracket_depth == 0) {
+            } else if (!std::isspace((unsigned char)c) && bracket_depth == 0) {
                 // Reader prefix chars (' ` , #) modify the next expression —
                 // don't treat them as standalone atoms, continue to read what follows.
                 if (c == '\'' || c == '`' || c == ',' || c == '#') {

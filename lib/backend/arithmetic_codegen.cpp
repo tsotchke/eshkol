@@ -2367,6 +2367,19 @@ llvm::Value* ArithmeticCodegen::remainder(llvm::Value* dividend, llvm::Value* di
 
     // Safe integer remainder
     ctx_.builder().SetInsertPoint(int_safe_bb);
+    // Audit M4 (P0): INT64_MIN % -1 is undefined behavior in LLVM (SIGFPE on
+    // x86). The mathematical remainder is 0, and SRem(x, 1) == 0, so sanitize
+    // the divisor to 1 in exactly that case — no UB op is ever emitted and the
+    // result is correct. All other inputs are unchanged.
+    {
+        llvm::Value* rem_is_min = ctx_.builder().CreateICmpEQ(a_int,
+            llvm::ConstantInt::get(ctx_.int64Type(), INT64_MIN));
+        llvm::Value* rem_is_neg1 = ctx_.builder().CreateICmpEQ(b_int,
+            llvm::ConstantInt::get(ctx_.int64Type(), -1));
+        b_int = ctx_.builder().CreateSelect(
+            ctx_.builder().CreateAnd(rem_is_min, rem_is_neg1),
+            llvm::ConstantInt::get(ctx_.int64Type(), 1), b_int);
+    }
     llvm::Value* int_result = ctx_.builder().CreateSRem(a_int, b_int, "srem_result");
     llvm::Value* int_tagged = tagged_.packInt64(int_result, true);
     ctx_.builder().CreateBr(merge);
@@ -2505,6 +2518,19 @@ llvm::Value* ArithmeticCodegen::quotient(llvm::Value* dividend, llvm::Value* div
 
     // Safe integer division
     ctx_.builder().SetInsertPoint(int_safe_bb);
+    // Audit M4 (P0): INT64_MIN / -1 is undefined behavior in LLVM (SIGFPE on
+    // x86; the true quotient 2^63 is unrepresentable). Sanitize the divisor to 1
+    // in that single case so no UB op is emitted; SDiv(INT64_MIN, 1) == INT64_MIN,
+    // the defined 2's-complement wrapped result. All other inputs unchanged.
+    {
+        llvm::Value* q_is_min = ctx_.builder().CreateICmpEQ(a_int,
+            llvm::ConstantInt::get(ctx_.int64Type(), INT64_MIN));
+        llvm::Value* q_is_neg1 = ctx_.builder().CreateICmpEQ(b_int,
+            llvm::ConstantInt::get(ctx_.int64Type(), -1));
+        b_int = ctx_.builder().CreateSelect(
+            ctx_.builder().CreateAnd(q_is_min, q_is_neg1),
+            llvm::ConstantInt::get(ctx_.int64Type(), 1), b_int);
+    }
     llvm::Value* int_result = ctx_.builder().CreateSDiv(a_int, b_int, "sdiv_result");
     llvm::Value* int_tagged = tagged_.packInt64(int_result, true);
     ctx_.builder().CreateBr(merge);
@@ -2527,6 +2553,17 @@ llvm::Value* ArithmeticCodegen::quotient(llvm::Value* dividend, llvm::Value* div
     }
 
     llvm::Value* truncated = ctx_.builder().CreateCall(trunc_func, {div_result}, "trunc_result");
+    // P1: FPToSI of a double outside [INT64_MIN, INT64_MAX] is undefined behavior
+    // (poison value returned as a valid int). Clamp to the representable range so
+    // the conversion is always defined.
+    {
+        llvm::Value* qd_max = llvm::ConstantFP::get(ctx_.doubleType(), 9223372036854774784.0);
+        llvm::Value* qd_min = llvm::ConstantFP::get(ctx_.doubleType(), -9223372036854775808.0);
+        truncated = ctx_.builder().CreateSelect(
+            ctx_.builder().CreateFCmpOGT(truncated, qd_max), qd_max,
+            ctx_.builder().CreateSelect(
+                ctx_.builder().CreateFCmpOLT(truncated, qd_min), qd_min, truncated));
+    }
     llvm::Value* dbl_as_int = ctx_.builder().CreateFPToSI(truncated, ctx_.int64Type(), "quot_int");
     llvm::Value* dbl_tagged = tagged_.packInt64(dbl_as_int, true);
     ctx_.builder().CreateBr(merge);
