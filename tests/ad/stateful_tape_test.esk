@@ -71,6 +71,29 @@
 ;; current-tape is #f outside any with-tape
 (check "current-tape #f outside scope" (if (current-tape) 1.0 0.0) 0.0)
 
+;; tensor-valued custom op: dot(a,b) over embeddings; grad_a = b, grad_b = a.
+(define (scale-vec s v)
+  (let* ((n (vector-length v)) (r (make-vector n 0.0)))
+    (let loop ((i 0)) (if (< i n) (begin (vector-set! r i (* s (vector-ref v i))) (loop (+ i 1)))))
+    r))
+(define (vdot a b)
+  (let ((n (vector-length a)))
+    (let loop ((i 0) (s 0.0)) (if (< i n) (loop (+ i 1) (+ s (* (vector-ref a i) (vector-ref b i)))) s))))
+(define gv
+  (with-tape "tensor"
+    (lambda ()
+      (let* ((t (current-tape))
+             (a (tape-input t (vector 1.0 2.0 3.0)))
+             (b (tape-input t (vector 4.0 5.0 6.0)))
+             (av (node-value a)) (bv (node-value b))
+             (out (record-op! t (list a b) (vdot av bv)
+                    (lambda (gr) (list (scale-vec gr bv) (scale-vec gr av))))))
+        (tape-gradient t out (list a b))))))
+(check "tensor custom grad_a[0]" (vector-ref (car gv) 0)  4.0)
+(check "tensor custom grad_a[2]" (vector-ref (car gv) 2)  6.0)
+(check "tensor custom grad_b[0]" (vector-ref (cadr gv) 0) 1.0)
+(check "tensor custom grad_b[2]" (vector-ref (cadr gv) 2) 3.0)
+
 ;; snapshot / restore
 (define ts (make-tape))
 (define nx (tape-input ts 3.0))
