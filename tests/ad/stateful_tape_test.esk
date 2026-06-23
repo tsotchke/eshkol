@@ -1,0 +1,84 @@
+;; Stateful AD tape with custom-op backward closures (TAPE feature).
+;; Acceptance: a scalar loss routes through builtin AND custom ops; gradients are
+;; correct (verified against finite differences) and snapshot/restore replays.
+
+(require core.ad.tape)
+
+(define pass-count 0)
+(define fail-count 0)
+(define (approx= a b) (< (abs (- a b)) 1e-4))
+(define (check name got expect)
+  (if (approx= got expect)
+      (begin (set! pass-count (+ pass-count 1))
+             (display "PASS: ")(display name)(newline))
+      (begin (set! fail-count (+ fail-count 1))
+             (display "FAIL: ")(display name)
+             (display " got ")(display got)(display " expect ")(display expect)(newline))))
+
+(define (softplus v) (log (+ 1.0 (exp v))))
+(define (sigmoid v)  (/ 1.0 (+ 1.0 (exp (- v)))))
+
+;; loss(x,y) = softplus(x*y) + y*y  — builtin mul/add + CUSTOM softplus
+(define (tape-grad x0 y0)
+  (with-tape "loss"
+    (lambda ()
+      (let* ((t (current-tape))
+             (x (tape-input t x0))
+             (y (tape-input t y0))
+             (m (tape-mul t x y))
+             (s (let ((mv (node-value m)))
+                  (record-op! t (list m) (softplus mv)
+                              (lambda (g) (list (* g (sigmoid mv)))))))
+             (y2 (tape-mul t y y))
+             (loss (tape-add t s y2)))
+        (tape-gradient t loss (list x y))))))
+
+(define (loss-fn x y) (+ (softplus (* x y)) (* y y)))
+(define (fd-x x y) (/ (- (loss-fn (+ x 1e-6) y) (loss-fn (- x 1e-6) y)) 2e-6))
+(define (fd-y x y) (/ (- (loss-fn x (+ y 1e-6)) (loss-fn x (- y 1e-6))) 2e-6))
+
+(define g (tape-grad 1.5 0.5))
+(check "custom-op grad x vs finite-diff" (car g)  (fd-x 1.5 0.5))
+(check "custom-op grad y vs finite-diff" (cadr g) (fd-y 1.5 0.5))
+
+;; builtin-only sanity: grad of x^2 + y^2 at (3,4) = (6,8)
+(define gb
+  (with-tape "b"
+    (lambda ()
+      (let* ((t (current-tape))
+             (x (tape-input t 3.0))
+             (y (tape-input t 4.0))
+             (f (tape-add t (tape-mul t x x) (tape-mul t y y))))
+        (tape-gradient t f (list x y))))))
+(check "builtin grad x" (car gb) 6.0)
+(check "builtin grad y" (cadr gb) 8.0)
+
+;; multi-input custom op: sqdist(a,b) = (a-b)^2 -> grad (2(a-b), -2(a-b))
+(define gm
+  (with-tape "m"
+    (lambda ()
+      (let* ((t (current-tape))
+             (a (tape-input t 5.0))
+             (b (tape-input t 2.0))
+             (d (let ((av (node-value a)) (bv (node-value b)))
+                  (record-op! t (list a b) (* (- av bv) (- av bv))
+                              (lambda (gr) (list (* gr 2.0 (- av bv))
+                                                 (* gr -2.0 (- av bv))))))))
+        (tape-gradient t d (list a b))))))
+(check "multi-input custom grad a" (car gm)  6.0)
+(check "multi-input custom grad b" (cadr gm) -6.0)
+
+;; current-tape is #f outside any with-tape
+(check "current-tape #f outside scope" (if (current-tape) 1.0 0.0) 0.0)
+
+;; snapshot / restore
+(define ts (make-tape))
+(define nx (tape-input ts 3.0))
+(define snap (tape-snapshot ts))
+(vector-set! nx 0 99.0)
+(tape-restore ts snap)
+(check "snapshot/restore" (node-value nx) 3.0)
+
+(newline)
+(display "Passed: ")(display pass-count)(newline)
+(display "Failed: ")(display fail-count)(newline)
