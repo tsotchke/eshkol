@@ -50,13 +50,30 @@
       (cons (f (car lst)) (tape-map1 f (cdr lst)))
       '()))
 
+;; ── Value helpers ──
+;; A tape VALUE (and its gradient) is either a number (scalar) or a vector of
+;; numbers (a tensor / embedding). All grad arithmetic goes through these so the
+;; tape handles scalar and tensor nodes uniformly — needed for embedding/encoder
+;; custom ops whose inputs and adjoints are vectors.
+(define (val-zero-like v)
+  (if (vector? v) (make-vector (vector-length v) 0.0) 0.0))
+(define (val-add a b)
+  (if (vector? a)
+      (let* ((n (vector-length a)) (r (make-vector n 0.0)))
+        (let loop ((i 0))
+          (if (< i n)
+              (begin (vector-set! r i (+ (vector-ref a i) (vector-ref b i)))
+                     (loop (+ i 1)))))
+        r)
+      (+ a b)))
+
 ;; ── Node ──
-;; A node is a mutable 2-slot vector: #(value grad). Created via the tape so it
-;; is registered for gradient zeroing.
+;; A node is a mutable 2-slot vector: #(value grad). value/grad may be scalars or
+;; vectors. Created via the tape so it is registered for gradient zeroing.
 (define (node-value n) (vector-ref n 0))
 (define (node-grad n) (vector-ref n 1))
 (define (node-grad-set! n g) (vector-set! n 1 g))
-(define (node-grad-add! n g) (vector-set! n 1 (+ (vector-ref n 1) g)))
+(define (node-grad-add! n g) (vector-set! n 1 (val-add (vector-ref n 1) g)))
 
 ;; ── Tape ──
 ;; A tape is a mutable 2-slot vector: #(ops nodes), each a list built by
@@ -76,8 +93,8 @@
   out)
 
 ;; Leaf nodes (gradient targets / constants).
-(define (tape-input t value) (tape-register-node! t (vector value 0.0)))
-(define (tape-const t value) (tape-register-node! t (vector value 0.0)))
+(define (tape-input t value) (tape-register-node! t (vector value (val-zero-like value))))
+(define (tape-const t value) (tape-register-node! t (vector value (val-zero-like value))))
 
 ;; ── Custom op ──
 ;; inputs   : list of input nodes
@@ -86,7 +103,7 @@
 ;;            The closure captures whatever forward context it needs.
 ;; Returns the new output node.
 (define (record-op! t inputs out-value backward)
-  (let ((out (tape-register-node! t (vector out-value 0.0))))
+  (let ((out (tape-register-node! t (vector out-value (val-zero-like out-value)))))
     (tape-record! t out inputs backward)
     out))
 
@@ -145,9 +162,10 @@
         (node-grad-add! (car ins) (car grads))
         (tape-distribute! (cdr ins) (cdr grads)))))
 
-;; Zero every node's gradient (so gradient can be called repeatedly).
+;; Zero every node's gradient (so gradient can be called repeatedly). The zero
+;; matches the node's value shape (0.0 for scalars, a zero vector for tensors).
 (define (tape-zero-grads! t)
-  (tape-for-each (lambda (n) (node-grad-set! n 0.0)) (tape-nodes t)))
+  (tape-for-each (lambda (n) (node-grad-set! n (val-zero-like (node-value n)))) (tape-nodes t)))
 
 ;; tape-gradient: reverse-mode from `output`, then read gradients at `targets`.
 ;; `targets` is a list of nodes; returns a list of gradients in the same order.
@@ -160,7 +178,8 @@
              (ins (cadr op))
              (backward (caddr op))
              (g (node-grad out)))
-        (if (not (= g 0.0))
+        ;; process tensor adjoints unconditionally; skip only zero scalars
+        (if (or (vector? g) (not (= g 0.0)))
             (tape-distribute! ins (backward g)))))
     (tape-ops t))            ; reverse-chronological (prepended) = reverse topo order
   (tape-map1 node-grad targets))
