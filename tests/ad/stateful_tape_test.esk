@@ -120,6 +120,45 @@
 (tape-restore ts snap)
 (check "snapshot/restore" (node-value nx) 3.0)
 
+;; builtin activation ops + their backward rules
+(define (op1-grad opf x0)
+  (with-tape "op"
+    (lambda ()
+      (let* ((t (current-tape)) (x (tape-input t x0)) (o (opf t x)))
+        (car (tape-gradient t o (list x)))))))
+(check "tape-square grad (2x at 3)"  (op1-grad tape-square 3.0)  6.0)
+(check "tape-sqrt grad (1/2sqrt at 4)" (op1-grad tape-sqrt 4.0)  0.25)
+(check "tape-tanh grad (1-tanh^2 at 0)" (op1-grad tape-tanh 0.0) 1.0)
+(check "tape-sigmoid grad (.25 at 0)" (op1-grad tape-sigmoid 0.0) 0.25)
+(check "tape-relu grad (1 at 2)"     (op1-grad tape-relu 2.0)    1.0)
+(check "tape-relu grad (0 at -2)"    (op1-grad tape-relu -2.0)   0.0)
+
+;; end-to-end learning: gradient descent fits y = w*x + b to y = 2x + 1
+(define lr 0.03)
+(define (gd-of x0 y0 wv bv)
+  (with-tape "fit"
+    (lambda ()
+      (let* ((t (current-tape))
+             (wn (tape-input t wv)) (bn (tape-input t bv))
+             (pred (tape-add t (tape-mul t wn (tape-const t x0)) bn))
+             (loss (tape-square t (tape-sub t pred (tape-const t y0)))))
+        (tape-gradient t loss (list wn bn))))))
+(define fit
+  (let ((xs (list 0.0 1.0 2.0 3.0)) (ys (list 1.0 3.0 5.0 7.0)))
+    (let train ((i 0) (w 0.0) (b 0.0))
+      (if (>= i 400)
+          (list w b)
+          (let ((grads (let loop ((xl xs) (yl ys) (dw 0.0) (db 0.0))
+                         (if (pair? xl)
+                             (let ((g (gd-of (car xl) (car yl) w b)))
+                               (loop (cdr xl) (cdr yl) (+ dw (car g)) (+ db (cadr g))))
+                             (list dw db)))))
+            (train (+ i 1)
+                   (- w (* lr (car grads)))
+                   (- b (* lr (cadr grads)))))))))
+(check "trained w -> 2" (car fit)  2.0)
+(check "trained b -> 1" (cadr fit) 1.0)
+
 (newline)
 (display "Passed: ")(display pass-count)(newline)
 (display "Failed: ")(display fail-count)(newline)
