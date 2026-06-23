@@ -20,7 +20,32 @@
          ad-add ad-sub ad-mul ad-div
          ad-sin ad-cos ad-exp ad-log ad-sqrt
          ad-neg ad-abs ad-relu ad-sigmoid ad-tanh
-         ad-backward ad-gradient ad-node-value)
+         ad-backward ad-gradient ad-node-value
+         with-tape current-tape tape-gradient)
+
+;; ── Dynamic "current tape" (with-tape / current-tape) ──
+;; Opens a fresh tape, binds it as the current tape for the dynamic extent of
+;; `thunk`, and restores the previous current tape afterward. Higher-level ops
+;; (and record-op!, once added) record onto (current-tape). `name` is retained
+;; for debugging / snapshot labelling.
+(define *eshkol-current-tape* #f)
+
+(define (current-tape) *eshkol-current-tape*)
+
+(define (with-tape name thunk)
+  (let ((prev *eshkol-current-tape*)
+        (tape (ad-tape-new)))
+    (set! *eshkol-current-tape* tape)
+    (let ((result (thunk)))
+      (set! *eshkol-current-tape* prev)
+      result)))
+
+;; tape-gradient: run reverse mode from `output` on `tape`, then read the
+;; accumulated gradient at each target node. `targets` is a list of node ids;
+;; returns a list of gradients in the same order.
+(define (tape-gradient tape output targets)
+  (ad-backward tape output)
+  (map (lambda (t) (ad-gradient tape t)) targets))
 
 ;; Note: ad-value is exposed as a codegen builtin alias for ad-node-value
 ;; (see llvm_codegen.cpp). This gives the user-facing name `ad-value`
