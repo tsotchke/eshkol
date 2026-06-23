@@ -86,6 +86,35 @@ static bool extract_doubles_from_vector(const eshkol_tagged_value_t* tv,
     return true;
 }
 
+/* Read numeric elements from a tensor (#(…)) OR a Scheme vector ((vector …)) as
+ * doubles into out[0..max-1]; returns the count read (0 if neither / empty).
+ * Lets the FG builtins accept runtime-constructed vectors, not only tensor
+ * literals (bug-QQ-2). INT64 elements promote to double. */
+static uint32_t fg_read_numeric(const eshkol_tagged_value_t* tv, double* out, uint32_t max) {
+    if (!tv || tv->type != ESHKOL_VALUE_HEAP_PTR || !tv->data.ptr_val) return 0;
+    void* ptr = (void*)(uintptr_t)tv->data.ptr_val;
+    eshkol_object_header_t* hdr = ESHKOL_GET_HEADER(ptr);
+    if (hdr->subtype == HEAP_SUBTYPE_TENSOR) {
+        tensor_layout_t* t = (tensor_layout_t*)ptr;
+        uint32_t n = (t->total_elements < (uint64_t)max) ? (uint32_t)t->total_elements : max;
+        for (uint32_t i = 0; i < n; i++) out[i] = tensor_get(t, i);
+        return n;
+    }
+    if (hdr->subtype == HEAP_SUBTYPE_VECTOR) {
+        int64_t length = *(int64_t*)ptr;
+        if (length <= 0) return 0;
+        uint32_t n = ((uint64_t)length < (uint64_t)max) ? (uint32_t)length : max;
+        eshkol_tagged_value_t* elems = (eshkol_tagged_value_t*)((uint8_t*)ptr + 8);
+        for (uint32_t i = 0; i < n; i++) {
+            uint8_t et = elems[i].type & 0x0F;
+            out[i] = (et == ESHKOL_VALUE_DOUBLE) ? elems[i].data.double_val
+                   : (et == ESHKOL_VALUE_INT64) ? (double)elems[i].data.int_val : 0.0;
+        }
+        return n;
+    }
+    return 0;
+}
+
 /* ===== Log-Space Arithmetic ===== */
 
 static const double LOG_ZERO = -1e30;  /* Approximate -infinity for log-space */
@@ -654,17 +683,15 @@ void eshkol_make_factor_graph_tagged(arena_t* arena,
         return;
     }
 
-    /* Extract var_dims from tensor */
-    tensor_layout_t* dims_tensor = extract_tensor(var_dims_tv);
-    if (!dims_tensor || dims_tensor->total_elements < num_vars) {
+    /* Extract var_dims from a tensor (#(…)) OR a runtime vector ((vector …)). */
+    double* dims_buf = (double*)alloca(num_vars * sizeof(double));
+    if (fg_read_numeric(var_dims_tv, dims_buf, num_vars) < num_vars) {
         result->type = ESHKOL_VALUE_NULL;
         return;
     }
-
-    /* Convert tensor doubles to uint32_t array */
     uint32_t* var_dims = (uint32_t*)alloca(num_vars * sizeof(uint32_t));
     for (uint32_t i = 0; i < num_vars; i++) {
-        var_dims[i] = (uint32_t)tensor_get(dims_tensor, i);
+        var_dims[i] = (uint32_t)dims_buf[i];
     }
 
     eshkol_factor_graph_t* fg = eshkol_make_factor_graph(arena, num_vars, var_dims);
@@ -692,14 +719,14 @@ void eshkol_fg_add_factor_tagged(arena_t* arena,
     if (fg_tv->type != ESHKOL_VALUE_HEAP_PTR || !fg_tv->data.ptr_val) return;
     eshkol_factor_graph_t* fg = (eshkol_factor_graph_t*)fg_tv->data.ptr_val;
 
-    /* Extract var_indices from tensor */
-    tensor_layout_t* idx_tensor = extract_tensor(var_indices_tv);
-    if (!idx_tensor) return;
-    uint32_t num_vars = (uint32_t)idx_tensor->total_elements;
+    /* Extract var_indices from a tensor (#(…)) OR a runtime vector ((vector …)). */
+    double idx_buf[32];
+    uint32_t num_vars = fg_read_numeric(var_indices_tv, idx_buf, 32);
+    if (num_vars == 0) return;
 
     uint32_t* var_indices = (uint32_t*)alloca(num_vars * sizeof(uint32_t));
     for (uint32_t i = 0; i < num_vars; i++) {
-        var_indices[i] = (uint32_t)tensor_get(idx_tensor, i);
+        var_indices[i] = (uint32_t)idx_buf[i];
     }
 
     /* Build dims array from the factor graph's var_dims */
