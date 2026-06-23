@@ -94,6 +94,24 @@
 (check "tensor custom grad_b[0]" (vector-ref (cadr gv) 0) 1.0)
 (check "tensor custom grad_b[2]" (vector-ref (cadr gv) 2) 3.0)
 
+;; finite-difference custom op: differentiate an arbitrary scalar fn with no
+;; hand-written backward, mixed with a builtin op. loss = (x^2*y + sin x) + y*y.
+(define (fn vals)
+  (let ((x (car vals)) (y (cadr vals)))
+    (+ (* (* x x) y) (sin x))))
+(define gfd
+  (with-tape "fd"
+    (lambda ()
+      (let* ((t (current-tape))
+             (x (tape-input t 2.0))
+             (y (tape-input t 3.0))
+             (fo (record-fd-op! t (list x y) fn))
+             (yy (tape-mul t y y))
+             (loss (tape-add t fo yy)))
+        (tape-gradient t loss (list x y))))))
+(check "fd-op grad x (2xy+cos x)" (car gfd)  (+ 12.0 (cos 2.0)))
+(check "fd-op+builtin grad y (x^2+2y)" (cadr gfd) 10.0)
+
 ;; snapshot / restore
 (define ts (make-tape))
 (define nx (tape-input ts 3.0))

@@ -34,7 +34,7 @@
          ;; stateful op-recording tape + custom ops
          with-tape current-tape make-tape
          tape-input tape-const node-value node-grad
-         record-op!
+         record-op! record-fd-op!
          tape-add tape-sub tape-mul tape-div
          tape-sin tape-cos tape-exp tape-log tape-neg
          tape-gradient tape-snapshot tape-restore)
@@ -106,6 +106,38 @@
   (let ((out (tape-register-node! t (vector out-value (val-zero-like out-value)))))
     (tape-record! t out inputs backward)
     out))
+
+;; ── Finite-difference custom op ──
+;; record-fd-op! records a custom op whose backward is computed by CENTRAL finite
+;; differences on `fwd`, so ANY scalar function of the inputs (free-energy, a BP
+;; step, a geodesic distance, …) is differentiable on the tape WITHOUT a
+;; hand-written backward. `fwd` takes the list of input VALUES (scalars) and
+;; returns a scalar. Returns the output node. Use when an analytic backward is
+;; unavailable or not worth deriving; prefer record-op! with an exact backward
+;; when you have one.
+(define tape-fd-eps 1.0e-6)
+
+(define (tape-reverse lst)
+  (let loop ((l lst) (acc '()))
+    (if (pair? l) (loop (cdr l) (cons (car l) acc)) acc)))
+
+(define (tape-list-set lst i v)   ; functional update of element i
+  (if (= i 0)
+      (cons v (cdr lst))
+      (cons (car lst) (tape-list-set (cdr lst) (- i 1) v))))
+
+(define (record-fd-op! t inputs fwd)
+  (let* ((vals (tape-map1 node-value inputs))
+         (out-val (fwd vals)))
+    (record-op! t inputs out-val
+      (lambda (g)
+        (let loop ((i 0) (vs vals) (acc '()))
+          (if (pair? vs)
+              (let* ((vp (tape-list-set vals i (+ (car vs) tape-fd-eps)))
+                     (vm (tape-list-set vals i (- (car vs) tape-fd-eps)))
+                     (d  (/ (- (fwd vp) (fwd vm)) (* 2.0 tape-fd-eps))))
+                (loop (+ i 1) (cdr vs) (cons (* g d) acc)))
+              (tape-reverse acc)))))))
 
 ;; ── Builtin ops (recorded with their backward rules) ──
 (define (tape-add t a b)
