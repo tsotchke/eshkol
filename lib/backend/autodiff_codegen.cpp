@@ -2769,6 +2769,53 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
                 // Get tagged_value size
                 uint64_t tagged_size = ctx_.module().getDataLayout().getTypeAllocSize(ctx_.taggedValueType());
 
+                // bug-OO: normalize a cons-list point ((list …)) to a Scheme vector so the
+                // vector/tensor/scalar dispatch below handles it. A raw cons cell would
+                // otherwise fall through to the scalar path (n=1) → wrong gradient. Mirrors
+                // the cons→svec conversion in the direct-named gradient path.
+                {
+                    Value* pre_base = tagged_.getBaseType(tagged_.getType(point_val));
+                    Value* pre_is_heap = ctx_.builder().CreateICmpEQ(pre_base,
+                        ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
+                    BasicBlock* pre_entry = ctx_.builder().GetInsertBlock();
+                    BasicBlock* pre_check = BasicBlock::Create(ctx_.context(), "grad_pt_check_cons", current_func);
+                    BasicBlock* pre_conv = BasicBlock::Create(ctx_.context(), "grad_pt_list2svec", current_func);
+                    BasicBlock* pre_done = BasicBlock::Create(ctx_.context(), "grad_pt_done", current_func);
+                    ctx_.builder().CreateCondBr(pre_is_heap, pre_check, pre_done);
+
+                    ctx_.builder().SetInsertPoint(pre_check);
+                    Value* pre_ptr = tagged_.unpackPtr(point_val);
+                    Value* pre_hdr = ctx_.builder().CreateGEP(ctx_.int8Type(), pre_ptr, ConstantInt::get(ctx_.int64Type(), -8));
+                    Value* pre_sub = ctx_.builder().CreateLoad(ctx_.int8Type(), pre_hdr);
+                    Value* pre_is_cons = ctx_.builder().CreateICmpEQ(pre_sub,
+                        ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_CONS));
+                    ctx_.builder().CreateCondBr(pre_is_cons, pre_conv, pre_done);
+
+                    ctx_.builder().SetInsertPoint(pre_conv);
+                    llvm::IRBuilder<> preEntryB(&current_func->getEntryBlock(), current_func->getEntryBlock().begin());
+                    Value* pre_slot = preEntryB.CreateAlloca(ctx_.taggedValueType(), nullptr, "grad_pt_list_head");
+                    ctx_.builder().CreateStore(point_val, pre_slot);
+                    llvm::Function* l2s = ctx_.module().getFunction("eshkol_list_to_svec");
+                    if (!l2s) {
+                        llvm::FunctionType* l2s_ty = llvm::FunctionType::get(ctx_.builder().getPtrTy(),
+                            {ctx_.builder().getPtrTy(), ctx_.builder().getPtrTy()}, false);
+                        l2s = llvm::Function::Create(l2s_ty, llvm::Function::ExternalLinkage,
+                            "eshkol_list_to_svec", &ctx_.module());
+                    }
+                    Value* pre_svec = ctx_.builder().CreateCall(l2s, {arena_ptr, pre_slot});
+                    Value* pre_svec_tagged = tagged_.packPtr(
+                        ctx_.builder().CreatePtrToInt(pre_svec, ctx_.int64Type()), ESHKOL_VALUE_HEAP_PTR);
+                    BasicBlock* pre_conv_exit = ctx_.builder().GetInsertBlock();
+                    ctx_.builder().CreateBr(pre_done);
+
+                    ctx_.builder().SetInsertPoint(pre_done);
+                    PHINode* pt_phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 3);
+                    pt_phi->addIncoming(point_val, pre_entry);          // not heap → unchanged
+                    pt_phi->addIncoming(point_val, pre_check);          // heap, not cons → unchanged
+                    pt_phi->addIncoming(pre_svec_tagged, pre_conv_exit); // cons → converted svec
+                    point_val = pt_phi;
+                }
+
                 // Check input type - handle Scheme vector (HEAP_PTR with HEAP_SUBTYPE_VECTOR), tensor (TENSOR_PTR), or scalar
                 // M1 Migration: Use consolidated HEAP_PTR type with subtype dispatch
                 Value* input_type = tagged_.getType(point_val);
@@ -2977,9 +3024,60 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
                     ctx_.builder().CreatePtrToInt(dual_vec, ctx_.int64Type()),
                     ESHKOL_VALUE_HEAP_PTR);
 
-                // Call function via closure dispatch
-                std::vector<Value*> call_args = {dual_vec_tagged};
-                Value* call_result = closure_call_callback_(closure_val, call_args, "autodiff", callback_context_);
+                // Call function via closure dispatch.
+                // bug-OO: a runtime function value may be a multi-arg scalar function
+                // (e.g. (lambda (x y) ...)) rather than a single vectorized arg. The
+                // direct-named path knows the arity at compile time and unpacks; here we
+                // only have a runtime closure, so read its declared input arity (byte at
+                // offset 33 of the callable struct — see codegenClosureCall) and, for
+                // arity k>1, pass the k dual elements as k separate scalar args. Arity 1
+                // (or unknown/variadic) keeps the vectorized single-arg form. Without this
+                // a multi-arg f was called with one vector arg, leaving its remaining
+                // params uninitialised → SIGSEGV.
+                Value* clo_ptr_i64 = tagged_.unpackInt64(closure_val);
+                Value* clo_ptr = ctx_.builder().CreateIntToPtr(clo_ptr_i64, ctx_.ptrType());
+                Value* clo_arity_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), clo_ptr,
+                    ConstantInt::get(ctx_.int64Type(), 33));
+                Value* clo_arity = ctx_.builder().CreateZExt(
+                    ctx_.builder().CreateLoad(ctx_.int8Type(), clo_arity_ptr), ctx_.int64Type());
+
+                const int GRAD_MAX_ARITY = 8;
+                BasicBlock* gcall_default = BasicBlock::Create(ctx_.context(), "grad_call_vec", current_func);
+                BasicBlock* gcall_merge = BasicBlock::Create(ctx_.context(), "grad_call_merge", current_func);
+                SwitchInst* gcall_sw = ctx_.builder().CreateSwitch(clo_arity, gcall_default, GRAD_MAX_ARITY);
+
+                std::vector<std::pair<BasicBlock*, Value*>> gcall_variants;
+                for (int k = 1; k <= GRAD_MAX_ARITY; k++) {
+                    BasicBlock* case_bb = BasicBlock::Create(ctx_.context(),
+                        "grad_call_a" + std::to_string(k), current_func);
+                    gcall_sw->addCase(ConstantInt::get(ctx_.int64Type(), k), case_bb);
+                    ctx_.builder().SetInsertPoint(case_bb);
+                    std::vector<Value*> cargs;
+                    if (k == 1) {
+                        cargs.push_back(dual_vec_tagged);  // vectorized single-arg function
+                    } else {
+                        for (int j = 0; j < k; j++) {
+                            Value* ep = ctx_.builder().CreateGEP(ctx_.taggedValueType(), dual_elems_typed,
+                                ConstantInt::get(ctx_.int64Type(), j));
+                            cargs.push_back(ctx_.builder().CreateLoad(ctx_.taggedValueType(), ep));
+                        }
+                    }
+                    Value* r = closure_call_callback_(closure_val, cargs, "autodiff", callback_context_);
+                    BasicBlock* cexit = ctx_.builder().GetInsertBlock();  // closure call may add blocks
+                    ctx_.builder().CreateBr(gcall_merge);
+                    gcall_variants.push_back({cexit, r});
+                }
+                // Default (arity 0 / variadic / unreadable): vectorized fallback.
+                ctx_.builder().SetInsertPoint(gcall_default);
+                Value* gdef_r = closure_call_callback_(closure_val,
+                    std::vector<Value*>{dual_vec_tagged}, "autodiff", callback_context_);
+                BasicBlock* gdef_exit = ctx_.builder().GetInsertBlock();
+                ctx_.builder().CreateBr(gcall_merge);
+                gcall_variants.push_back({gdef_exit, gdef_r});
+
+                ctx_.builder().SetInsertPoint(gcall_merge);
+                PHINode* call_result = ctx_.builder().CreatePHI(ctx_.taggedValueType(), gcall_variants.size());
+                for (auto& cv : gcall_variants) call_result->addIncoming(cv.second, cv.first);
 
                 // CONSTANT RESULT FIX: Check if result is a dual number before unpacking
                 // If function returns a constant (not using its argument), it won't be dual
