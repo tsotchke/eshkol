@@ -1,0 +1,48 @@
+;; FE-AD: differentiable variational free energy via the stateful tape.
+;; Demonstrates that a factor graph's free energy is differentiable w.r.t. its CPT
+;; parameters using record-fd-op! — the learning gate for the active-inference /
+;; consciousness layer (v1.5-intelligence). The gradient routes through BP
+;; reconvergence, which has no closed-form backward here, so the finite-difference
+;; custom op is exactly the right tool.
+
+(require core.ad.tape)
+
+(define pass-count 0)
+(define fail-count 0)
+(define (approx= a b) (< (abs (- a b)) 1e-2))
+(define (check name got expect)
+  (if (approx= got expect)
+      (begin (set! pass-count (+ pass-count 1)) (display "PASS: ")(display name)(newline))
+      (begin (set! fail-count (+ fail-count 1))
+             (display "FAIL: ")(display name)(display " got ")(display got)
+             (display " expect ")(display expect)(newline))))
+
+(define fg (make-factor-graph 2 #(2 2)))
+(fg-add-factor! fg #(0) #(-0.3567 -1.2040))
+(fg-add-factor! fg #(0 1) #(-0.1054 -2.3026 -1.6094 -0.2231))
+(define obs #(#(0 0)))
+
+;; forward: set CPT[0,0]=p, reconverge belief propagation, return free energy
+(define (fe-of vals)
+  (fg-update-cpt! fg 0 (vector (car vals) -1.2040))
+  (fg-infer! fg 30)
+  (free-energy fg obs))
+
+(define g
+  (with-tape "free-energy"
+    (lambda ()
+      (let* ((t (current-tape))
+             (p (tape-input t -0.3567))
+             (out (record-fd-op! t (list p) fe-of)))
+        (tape-gradient t out (list p))))))
+
+;; coarse-scale central difference for an independent reference
+(define (fe-at p) (begin (fg-update-cpt! fg 0 (vector p -1.2040)) (fg-infer! fg 30) (free-energy fg obs)))
+(define ref (/ (- (fe-at -0.3467) (fe-at -0.3667)) 0.02))
+
+(check "dFE/dCPT is nonzero" (if (> (abs (car g)) 0.1) 1.0 0.0) 1.0)
+(check "dFE/dCPT matches finite differences" (car g) ref)
+
+(newline)
+(display "Passed: ")(display pass-count)(newline)
+(display "Failed: ")(display fail-count)(newline)
