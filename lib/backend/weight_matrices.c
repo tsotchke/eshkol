@@ -2,7 +2,7 @@
  * @file weight_matrices.c
  * @brief Universal Eshkol VM interpreter compiled into transformer weights.
  *
- * Full ISA implementation (83 opcodes: 64 base + 19 AD, d_model=256).
+ * Full ISA implementation (84 opcodes: 65 base + 19 AD, d_model=256).
  * Opcode numbering matches eshkol_compiler.c canonical enum.
  *
  * Three execution modes verified against each other:
@@ -127,7 +127,12 @@ typedef enum {
     /* AD ops delegated to C (transcendentals / division) */
     OP_AD_DIV=79, OP_AD_POW=80, OP_AD_SIN=81, OP_AD_COS=82,
 
-    OP_COUNT=83
+    /* Base stack op appended after the AD band (base band 0-63 is full).
+     * SWAP exchanges the top two stack registers (TOS<->SOS). It is a base
+     * stack op, NOT an AD op — no AD range check (<= OP_AD_SQRT) sees it. */
+    OP_SWAP=83,
+
+    OP_COUNT=84
 } OpCode;
 
 typedef struct { OpCode op; int operand; } Instr;
@@ -493,6 +498,9 @@ static void execute_step(const State* cur, const Instr* prog, int n_instr, State
         break;
     case OP_DUP:    next->s[S_R3]=r2; next->s[S_R2]=sos; next->s[S_SOS]=tos; next->s[S_DEPTH]=cur->s[S_DEPTH]+1; next->s[S_PC]=pc+1;
         next->s[S_TYPE_R3]=tt_r2; next->s[S_TYPE_R2]=tt_sos; next->s[S_TYPE_SOS]=tt_tos; /* TOS type stays */
+        break;
+    case OP_SWAP:   next->s[S_TOS]=sos; next->s[S_SOS]=tos; next->s[S_PC]=pc+1; /* depth, R2, R3 unchanged */
+        next->s[S_TYPE_TOS]=tt_sos; next->s[S_TYPE_SOS]=tt_tos;
         break;
     case OP_GET_LOCAL:
         addr=(int)operand;
@@ -1407,6 +1415,9 @@ static void layer3_ffn(const float x[D], float out[D]) {
     out[S_TYPE_TOS]+=g*(tsos-ttos); out[S_TYPE_SOS]+=g*(tr2-tsos); out[S_TYPE_R2]+=g*(tr3-tr2); out[S_TYPE_R3]+=g*(TYPE_NUMBER-tr3);
     /* OP_DUP (6) */  g=indicator(op,6)*alive; out[S_PC]+=g; out[S_SOS]+=g*(tos-sos); out[S_R2]+=g*(sos-r2); out[S_R3]+=g*(r2-r3); out[S_DEPTH]+=g;
     out[S_TYPE_SOS]+=g*(ttos-tsos); out[S_TYPE_R2]+=g*(tsos-tr2); out[S_TYPE_R3]+=g*(tr2-tr3);
+    /* OP_SWAP (83): exchange TOS<->SOS (value + type); depth, R2, R3 unchanged */
+    g=indicator(op,83)*alive; out[S_PC]+=g; out[S_TOS]+=g*(sos-tos); out[S_SOS]+=g*(tos-sos);
+    out[S_TYPE_TOS]+=g*(tsos-ttos); out[S_TYPE_SOS]+=g*(ttos-tsos);
     /* OP_ADD (7) */  g=indicator(op,7)*alive; out[S_PC]+=g; out[S_TOS]+=g*sos; out[S_SOS]+=g*(r2-sos); out[S_R2]+=g*(r3-r2); out[S_R3]+=g*(-r3); out[S_DEPTH]+=g*(-1);
     out[S_TYPE_TOS]+=g*(TYPE_NUMBER-ttos); out[S_TYPE_SOS]+=g*(tr2-tsos); out[S_TYPE_R2]+=g*(tr3-tr2); out[S_TYPE_R3]+=g*(TYPE_NUMBER-tr3);
     /* OP_SUB (8) */  g=indicator(op,8)*alive; out[S_PC]+=g; out[S_TOS]+=g*(sos-2*tos); out[S_SOS]+=g*(r2-sos); out[S_R2]+=g*(r3-r2); out[S_R3]+=g*(-r3); out[S_DEPTH]+=g*(-1);
@@ -3438,6 +3449,15 @@ static int add_type_dup(InterpreterWeights* w, int L, int n, int op_id) {
     return n;
 }
 
+/* Exchange the type tags of TOS and SOS (R2/R3 type tags unchanged). */
+static int add_type_swap(InterpreterWeights* w, int L, int n, int op_id) {
+    n = add_gated_pair(w, L, n, op_id, S_TYPE_SOS,1,S_TYPE_TOS,-1,-1,0,-1,0,
+                       0, S_TYPE_TOS, 1.0f);
+    n = add_gated_pair(w, L, n, op_id, S_TYPE_TOS,1,S_TYPE_SOS,-1,-1,0,-1,0,
+                       0, S_TYPE_SOS, 1.0f);
+    return n;
+}
+
 static int add_type_binary_result(InterpreterWeights* w, int L, int n,
                                   int op_id, float result_type) {
     n = add_gated_pair(w, L, n, op_id, S_TYPE_TOS,-1,-1,0,-1,0,-1,0,
@@ -3880,6 +3900,12 @@ static void generate_weights(InterpreterWeights* w) {
         n = add_gated_pair(w,L,n, 6, S_R2,1,S_R3,-1,-1,0,-1,0, 0, S_R3, 1.0f);
         n = add_gated_pair(w,L,n, 6, -1,0,-1,0,-1,0,-1,0, 1.0f, S_DEPTH, 1.0f);
         n = add_type_dup(w,L,n, 6);
+
+        /* OP_SWAP (83): exchange TOS<->SOS, PC++; depth, R2, R3 unchanged */
+        n = add_gated_pair(w,L,n, 83, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
+        n = add_gated_pair(w,L,n, 83, S_SOS,1,S_TOS,-1,-1,0,-1,0, 0, S_TOS, 1.0f);
+        n = add_gated_pair(w,L,n, 83, S_TOS,1,S_SOS,-1,-1,0,-1,0, 0, S_SOS, 1.0f);
+        n = add_type_swap(w,L,n, 83);
 
         /* OP_ADD (7): TOS+=SOS, shift up, depth--, PC++ */
         n = add_gated_pair(w,L,n, 7, -1,0,-1,0,-1,0,-1,0, 1.0f, S_PC, 1.0f);
@@ -5595,6 +5621,10 @@ int main(int argc, char** argv) {
       test("(3+5)*2", p, 7, 16); }
     { Instr p[]={{OP_CONST,10},{OP_CONST,7},{OP_SUB,0},{OP_PRINT,0},{OP_HALT,0}};
       test("10-7", p, 5, 3); }
+    /* SWAP exchanges TOS<->SOS. After CONST 3, CONST 5: TOS=5, SOS=3 → SUB= -2.
+     * With SWAP first: TOS=3, SOS=5 → SUB = SOS-TOS = 2. Reveals stack order. */
+    { Instr p[]={{OP_CONST,3},{OP_CONST,5},{OP_SWAP,0},{OP_SUB,0},{OP_PRINT,0},{OP_HALT,0}};
+      test("swap then 5-3", p, 6, 2); }
     /* mem[0]=42: SET_LOCAL takes operand as address, TOS as value */
     { Instr p[]={{OP_CONST,42},{OP_SET_LOCAL,0},{OP_GET_LOCAL,0},{OP_PRINT,0},{OP_HALT,0}};
       test("mem[0]=42", p, 5, 42); }
