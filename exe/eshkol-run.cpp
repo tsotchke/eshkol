@@ -2079,20 +2079,10 @@ static bool requires_stdlib(const std::vector<eshkol_ast_t>& asts)
 // link command so symbols like qllm_http_get / eshkol_sqlite_* /
 // qllm_process_* resolve in the produced binary. Programs that don't
 // touch agent.* don't pay the libcurl/sqlite/pcre2 link cost.
-static bool requires_agent_ffi(const std::vector<eshkol_ast_t>& asts)
-{
-    for (const auto& ast : asts) {
-        if (ast.type == ESHKOL_OP && ast.operation.op == ESHKOL_REQUIRE_OP) {
-            for (uint64_t i = 0; i < ast.operation.require_op.num_modules; i++) {
-                std::string module_name = ast.operation.require_op.module_names[i];
-                if (module_name.find("agent.") == 0) {
-                    return true;
-                }
-            }
-        }
-    }
-    return false;
-}
+// Defined after resolve_module_path / g_lib_dir (it now follows transitive
+// requires through resolved module files, so it needs both).
+static bool requires_agent_ffi(const std::vector<eshkol_ast_t>& asts,
+                               const std::string& base_dir);
 
 // Find the library base directory (lib/)
 static std::string find_lib_dir()
@@ -2224,6 +2214,68 @@ static std::string resolve_module_path(const std::string& module_name, const std
 
 // Global library directory (cached)
 static std::string g_lib_dir;
+
+// Does a module source file (or anything it transitively `require`s) pull in an
+// agent.* module? Text-scans `(require …)` clauses and recurses into resolved
+// module files. This is how a faculty like core.memory — which uses sha256 via
+// (require agent.crypto) INTERNALLY — gets the agent-FFI link args spliced into
+// an AOT build of a program that only requires core.memory (not agent.* directly).
+// A false positive merely links a few extra libs; correctness is preserved.
+static bool file_requires_agent_ffi(const std::string& path,
+                                    std::set<std::string>& visited)
+{
+    std::error_code ec;
+    std::string canon = std::filesystem::weakly_canonical(path, ec).string();
+    if (canon.empty()) canon = path;
+    if (!visited.insert(canon).second) return false;
+
+    std::string text = readFileBytes(std::filesystem::path(path));
+    if (text.empty()) return false;
+    std::string base_dir = std::filesystem::path(path).parent_path().string();
+    if (base_dir.empty()) base_dir = ".";
+
+    size_t pos = 0;
+    while ((pos = text.find("(require", pos)) != std::string::npos) {
+        pos += 8;  // past "(require"
+        size_t close = text.find(')', pos);
+        if (close == std::string::npos) break;
+        std::string clause = text.substr(pos, close - pos);
+        pos = close;
+        // Tokenise the require clause on whitespace; strip stray quote/paren chars.
+        std::stringstream ts(clause);
+        std::string tok;
+        while (ts >> tok) {
+            while (!tok.empty() && (tok.front() == '(' || tok.front() == '\'' ||
+                                    tok.front() == '"'))
+                tok.erase(tok.begin());
+            while (!tok.empty() && (tok.back() == ')' || tok.back() == '"'))
+                tok.pop_back();
+            if (tok.empty()) continue;
+            if (tok.rfind("agent.", 0) == 0) return true;
+            std::string mp = resolve_module_path(tok, base_dir, g_lib_dir);
+            if (!mp.empty() && file_requires_agent_ffi(mp, visited)) return true;
+        }
+    }
+    return false;
+}
+
+static bool requires_agent_ffi(const std::vector<eshkol_ast_t>& asts,
+                               const std::string& base_dir)
+{
+    if (g_lib_dir.empty()) g_lib_dir = find_lib_dir();
+    std::set<std::string> visited;
+    for (const auto& ast : asts) {
+        if (ast.type == ESHKOL_OP && ast.operation.op == ESHKOL_REQUIRE_OP) {
+            for (uint64_t i = 0; i < ast.operation.require_op.num_modules; i++) {
+                std::string module_name = ast.operation.require_op.module_names[i];
+                if (module_name.rfind("agent.", 0) == 0) return true;
+                std::string mp = resolve_module_path(module_name, base_dir, g_lib_dir);
+                if (!mp.empty() && file_requires_agent_ffi(mp, visited)) return true;
+            }
+        }
+    }
+    return false;
+}
 
 // Recursively discover all modules that a library requires.
 // Used to mark all sub-modules of a pre-compiled library as pre-compiled.
@@ -3773,7 +3825,12 @@ int main(int argc, char **argv)
     // (require agent.…) into the inlined module ASTs, after which the
     // top-level require op is gone and the AST scanner can no longer
     // tell agent-using programs from plain ones.
-    bool needs_agent_ffi = requires_agent_ffi(asts);
+    std::string agent_scan_base_dir = ".";
+    if (!source_files.empty()) {
+        std::string p = std::filesystem::path(source_files[0]).parent_path().string();
+        if (!p.empty()) agent_scan_base_dir = p;
+    }
+    bool needs_agent_ffi = requires_agent_ffi(asts, agent_scan_base_dir);
 
     for (const auto &source_file : source_files) {
         std::filesystem::path source_path(source_file);
