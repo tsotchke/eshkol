@@ -1642,8 +1642,15 @@ static llvm::Value* callArenaTaggedFunc(CodegenContext& ctx, TaggedValueCodegen&
     std::vector<llvm::Value*> call_args;
     call_args.push_back(arena);
     for (auto* a : args) {
+        // CRITICAL: ensure each argument is a tagged value before storing into a
+        // tagged-value slot. Literal ints/doubles come back from the codegen
+        // callback as raw i64/double; storing those untagged would scribble the
+        // value's low byte into the tagged_value type field (observed as
+        // make-dnc-memory seeing N=0/W=0 from literal args). Mirrors how
+        // codegenMakeWorkspace wraps every arg with ensureTagged().
+        llvm::Value* tv = tagged.ensureTagged(a);
         llvm::Value* slot = builder.CreateAlloca(ctx.taggedValueType());
-        builder.CreateStore(a, slot);
+        builder.CreateStore(tv, slot);
         call_args.push_back(slot);
     }
     call_args.push_back(result_ptr);
@@ -1688,6 +1695,18 @@ llvm::Value* SystemCodegen::method_name(const eshkol_operations_t* op) { \
     return callArenaTaggedFunc(ctx_, tagged_, c_func_name, 1, {a}); \
 }
 
+#define CE_FOUR_ARG(method_name, c_func_name) \
+llvm::Value* SystemCodegen::method_name(const eshkol_operations_t* op) { \
+    if (op->call_op.num_vars != 4) return tagged_.packNull(); \
+    if (!codegen_ast_callback_) return tagged_.packNull(); \
+    llvm::Value* a = codegen_ast_callback_(&op->call_op.variables[0], callback_context_); \
+    llvm::Value* b = codegen_ast_callback_(&op->call_op.variables[1], callback_context_); \
+    llvm::Value* c = codegen_ast_callback_(&op->call_op.variables[2], callback_context_); \
+    llvm::Value* d = codegen_ast_callback_(&op->call_op.variables[3], callback_context_); \
+    if (!a || !b || !c || !d) return tagged_.packNull(); \
+    return callArenaTaggedFunc(ctx_, tagged_, c_func_name, 4, {a, b, c, d}); \
+}
+
 /* Logic engine */
 CE_ZERO_ARG(makeSubstitution, "eshkol_make_substitution_tagged")
 CE_ZERO_ARG(makeKbBuiltin, "eshkol_make_kb_tagged")
@@ -1709,9 +1728,29 @@ CE_TWO_ARG(makeWorkspaceBuiltin, "eshkol_make_workspace_tagged")
 CE_THREE_ARG(wsRegisterBuiltin, "eshkol_ws_register_tagged")
 CE_ONE_ARG(wsStepBuiltin, "eshkol_ws_step_tagged")
 
+/* Differentiable external memory (core.dnc) */
+CE_TWO_ARG(dncMakeBuiltin, "eshkol_dnc_make_tagged")
+CE_THREE_ARG(dncContentAddressBuiltin, "eshkol_dnc_content_address_tagged")
+CE_THREE_ARG(dncLocAddressBuiltin, "eshkol_dnc_loc_address_tagged")
+CE_TWO_ARG(dncReadBuiltin, "eshkol_dnc_read_tagged")
+CE_FOUR_ARG(dncWriteBuiltin, "eshkol_dnc_write_tagged")
+CE_TWO_ARG(dncAllocWeightsBuiltin, "eshkol_dnc_alloc_weights_tagged")
+CE_FOUR_ARG(dncReadGradBuiltin, "eshkol_dnc_read_grad_tagged")
+CE_ONE_ARG(dncPredBuiltin, "eshkol_dnc_pred_tagged")
+
+/* SDNC weight-program (core.sdnc) */
+CE_ONE_ARG(sdncProgramBuiltin, "eshkol_sdnc_program_tagged")
+CE_TWO_ARG(sdncRunBuiltin, "eshkol_sdnc_run_tagged")
+CE_THREE_ARG(sdncWeightGradBuiltin, "eshkol_sdnc_weight_grad_tagged")
+CE_ONE_ARG(sdncParamsBuiltin, "eshkol_sdnc_params_tagged")
+CE_TWO_ARG(sdncSetParamsBuiltin, "eshkol_sdnc_set_params_tagged")
+CE_FOUR_ARG(sdncImproveBuiltin, "eshkol_sdnc_improve_tagged")
+CE_ONE_ARG(sdncPredBuiltin, "eshkol_sdnc_pred_tagged")
+
 #undef CE_ZERO_ARG
 #undef CE_ONE_ARG
 #undef CE_TWO_ARG
+#undef CE_FOUR_ARG
 #undef CE_THREE_ARG
 
 /* Reverse-mode AD tape — all use sret pattern from system_builtins */

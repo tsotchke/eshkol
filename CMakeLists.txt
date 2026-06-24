@@ -1391,9 +1391,11 @@ set(ESHKOL_BACKEND_RUNTIME_SRC
 
 set(ESHKOL_RUNTIME_SUPPORT_SRC
   lib/bridge/tensor_backward.cpp
+  lib/core/dnc_api.c
   lib/core/image_io.c
   lib/core/inference.cpp
   lib/core/kb_persistence.cpp
+  lib/core/sdnc_api.c
   lib/core/logic.cpp
   lib/core/logic_builtins.cpp
   lib/core/merkle.c
