@@ -540,6 +540,16 @@ void ReplJITContext::initializeJIT() {
     }
     // Ensure PIC relocation model (matches stdlib.o compilation)
     jtmb->setRelocationModel(Reloc::PIC_);
+    // CRITICAL (ARM64 -r at scale): stdlib.bc is large (~58 MB of IR). When JITLink
+    // maps the compiled object it can land >128 MB from the runtime symbols that live
+    // in the main eshkol-run executable (e.g. ___eshkol_init_parallel_workers), which
+    // exceeds the AArch64 Branch26 (±128 MB) PC-relative `bl` range. JITLink then aborts
+    // with "relocation target ... out of range of Branch26PCRel fixup" — even a bare
+    // program that pulls in stdlib fails to materialize. The LARGE code model emits far
+    // calls as absolute movz/movk into a scratch reg + `blr` (no Branch26), so every
+    // call reaches any address regardless of how far apart the JIT places objects.
+    // (Small/Medium only affect data; code branch range needs Large.)
+    jtmb->setCodeModel(CodeModel::Large);
     // CRITICAL: Match the batch compiler's optimization level (CodeGenOptLevel::None = -O0).
     // JITTargetMachineBuilder::detectHost() defaults to CodeGenOptLevel::Default (-O2),
     // which causes LLVM to generate different struct argument stack layouts on ARM64.
