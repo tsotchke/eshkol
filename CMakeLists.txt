@@ -2635,6 +2635,19 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/lib/backend/weight_matrices.c")
     endif()
 endif()
 
+# ===== SDNC de-risking experiment: differentiable external memory head ========
+# Standalone prototype (its own main()) for a differentiable NTM/DNC-style
+# external memory addressing head — the keystone primitive that will later let
+# the SDNC lift its bounded 16-cell in-state arena to unbounded external memory
+# while staying differentiable. Not compiled into libeshkol-static.
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/lib/backend/diff_memory_prototype.c")
+    add_executable(diff_memory_prototype lib/backend/diff_memory_prototype.c)
+    target_link_libraries(diff_memory_prototype PRIVATE m)
+    set_target_properties(diff_memory_prototype PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/tools
+    )
+endif()
+
 # ===== XLA Integration Tests =====
 if(ESHKOL_XLA_ENABLED AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/xla/xla_codegen_test.cpp")
     message(STATUS "Building XLA integration tests")
