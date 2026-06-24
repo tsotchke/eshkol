@@ -19,7 +19,8 @@
 (require core.ad.tape)
 
 (provide make-embedding-table emb-dim embed!
-         vdot soft-unify soft-unify-loss soft-unify-train!)
+         vdot soft-unify soft-unify-loss soft-unify-train!
+         kb-attention kb-retrieve)
 
 ;; ── small self-contained vector helpers (core module: no stdlib map/for-each) ──
 (define (ns-make-vec n init) (make-vector n init))
@@ -28,6 +29,10 @@
   (let ((n (vector-length a)))
     (let loop ((i 0) (s 0.0))
       (if (< i n) (loop (+ i 1) (+ s (* (vector-ref a i) (vector-ref b i)))) s))))
+
+(define (ns-reverse lst)
+  (let loop ((l lst) (acc '()))
+    (if (pair? l) (loop (cdr l) (cons (car l) acc)) acc)))
 
 (define (ns-scale s v)
   (let* ((n (vector-length v)) (r (make-vector n 0.0)))
@@ -116,3 +121,35 @@
           (ns-sub! va (ns-scale lr (car grads)))
           (ns-sub! vb (ns-scale lr (cadr grads)))
           (node-value loss))))))
+
+;; ── attention over a knowledge base (neural query over symbolic facts) ──
+;; A differentiable retrieval: the query attends over the fact KEYS by embedding
+;; similarity (softmax over scaled dot products). As the embeddings are trained
+;; (soft-unify-train!), the query routes to related keys — a neural query
+;; mechanism over a symbolic store. `keys` is a list of symbols, `query` a symbol;
+;; returns an alist (key . attention-weight) summing to 1.
+(define (kb-attention tbl keys query)
+  (let* ((q (embed! tbl query))
+         (scale (/ 1.0 (sqrt (exact->inexact (emb-dim tbl)))))
+         (raw (let loop ((ks keys) (acc '()))
+                (if (pair? ks)
+                    (loop (cdr ks) (cons (* scale (vdot q (embed! tbl (car ks)))) acc))
+                    (ns-reverse acc))))
+         (mx (let loop ((xs raw) (m -1.0e30))
+               (if (pair? xs) (loop (cdr xs) (if (> (car xs) m) (car xs) m)) m)))
+         (exps (let loop ((xs raw) (acc '()))
+                 (if (pair? xs) (loop (cdr xs) (cons (exp (- (car xs) mx)) acc)) (ns-reverse acc))))
+         (sum (let loop ((xs exps) (s 0.0)) (if (pair? xs) (loop (cdr xs) (+ s (car xs))) s))))
+    (let loop ((ks keys) (es exps) (acc '()))
+      (if (and (pair? ks) (pair? es))
+          (loop (cdr ks) (cdr es) (cons (cons (car ks) (/ (car es) sum)) acc))
+          (ns-reverse acc)))))
+
+;; argmax retrieval: the key the query attends to most
+(define (kb-retrieve tbl keys query)
+  (let loop ((aw (kb-attention tbl keys query)) (best #f) (bw -1.0))
+    (if (pair? aw)
+        (if (> (cdr (car aw)) bw)
+            (loop (cdr aw) (car (car aw)) (cdr (car aw)))
+            (loop (cdr aw) best bw))
+        best)))

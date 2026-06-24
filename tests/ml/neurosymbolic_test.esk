@@ -31,6 +31,15 @@
 (check "learned: cat does NOT unify with rock (<0.1)" (< s-rock 0.1))
 (check "learned: feline ranks above rock" (> s-fel s-rock))
 
+;; attention over a KB: query 'cat should attend most to 'feline (the learned match)
+(define kb (list 'feline 'rock 'water))
+(define aw (kb-attention tbl kb 'cat))
+(define (aw-weight k) (let loop ((a aw)) (if (pair? a) (if (eq? (car (car a)) k) (cdr (car a)) (loop (cdr a))) 0.0)))
+(define wsum (let loop ((a aw) (s 0.0)) (if (pair? a) (loop (cdr a) (+ s (cdr (car a)))) s)))
+(check "kb-attention weights sum to 1" (< (abs (- wsum 1.0)) 1e-6))
+(check "kb-attention: feline outranks rock" (> (aw-weight 'feline) (aw-weight 'rock)))
+(check "kb-retrieve cat -> feline" (eq? (kb-retrieve tbl kb 'cat) 'feline))
+
 ;; loss decreases under training (gradient actually descends)
 (define tbl2 (make-embedding-table 8))
 (define l-first (soft-unify-train! tbl2 'a 'b 1.0 0.5))
