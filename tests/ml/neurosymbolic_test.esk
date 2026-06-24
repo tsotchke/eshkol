@@ -1,0 +1,52 @@
+;; v1.5-intelligence: differentiable symbol embeddings + soft unification.
+;; Gradients flow through the soft match into learnable embeddings, so contrastive
+;; training makes related symbols unify (→1) and unrelated symbols not (→0).
+
+(require core.ml.neurosymbolic)
+
+(define pass-count 0)
+(define fail-count 0)
+(define (check name ok)
+  (if ok
+      (begin (set! pass-count (+ pass-count 1)) (display "PASS: ")(display name)(newline))
+      (begin (set! fail-count (+ fail-count 1)) (display "FAIL: ")(display name)(newline))))
+
+(define tbl (make-embedding-table 8))
+
+;; soft-unify is a confidence in [0,1]
+(define s0 (soft-unify tbl 'cat 'feline))
+(check "soft-unify in [0,1]" (and (>= s0 0.0) (<= s0 1.0)))
+
+;; contrastive training: cat~feline (target 1), cat!~rock (target 0)
+(let loop ((i 0))
+  (if (< i 200)
+      (begin
+        (soft-unify-train! tbl 'cat 'feline 1.0 0.5)
+        (soft-unify-train! tbl 'cat 'rock 0.0 0.5)
+        (loop (+ i 1)))))
+
+(define s-fel (soft-unify tbl 'cat 'feline))
+(define s-rock (soft-unify tbl 'cat 'rock))
+(check "learned: cat unifies with feline (>0.9)" (> s-fel 0.9))
+(check "learned: cat does NOT unify with rock (<0.1)" (< s-rock 0.1))
+(check "learned: feline ranks above rock" (> s-fel s-rock))
+
+;; attention over a KB: query 'cat should attend most to 'feline (the learned match)
+(define kb (list 'feline 'rock 'water))
+(define aw (kb-attention tbl kb 'cat))
+(define (aw-weight k) (let loop ((a aw)) (if (pair? a) (if (eq? (car (car a)) k) (cdr (car a)) (loop (cdr a))) 0.0)))
+(define wsum (let loop ((a aw) (s 0.0)) (if (pair? a) (loop (cdr a) (+ s (cdr (car a)))) s)))
+(check "kb-attention weights sum to 1" (< (abs (- wsum 1.0)) 1e-6))
+(check "kb-attention: feline outranks rock" (> (aw-weight 'feline) (aw-weight 'rock)))
+(check "kb-retrieve cat -> feline" (eq? (kb-retrieve tbl kb 'cat) 'feline))
+
+;; loss decreases under training (gradient actually descends)
+(define tbl2 (make-embedding-table 8))
+(define l-first (soft-unify-train! tbl2 'a 'b 1.0 0.5))
+(let loop ((i 0)) (if (< i 100) (begin (soft-unify-train! tbl2 'a 'b 1.0 0.5) (loop (+ i 1)))))
+(define l-last (soft-unify-loss tbl2 'a 'b 1.0))
+(check "soft-unify loss decreases under training" (< l-last l-first))
+
+(newline)
+(display "Passed: ")(display pass-count)(newline)
+(display "Failed: ")(display fail-count)(newline)
