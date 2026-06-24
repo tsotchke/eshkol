@@ -1369,6 +1369,23 @@ static eshkol_op_t get_operator_type(const std::string& op) {
     if (op == "kb-assert!") return ESHKOL_KB_ASSERT_OP;
     if (op == "kb-query") return ESHKOL_KB_QUERY_OP;
     if (op == "kb-query-prefix") return ESHKOL_KB_QUERY_PREFIX_OP;
+    // Differentiable external memory (core.dnc)
+    if (op == "make-dnc-memory") return ESHKOL_DNC_MAKE_OP;
+    if (op == "dnc-content-address") return ESHKOL_DNC_CONTENT_ADDR_OP;
+    if (op == "dnc-loc-address") return ESHKOL_DNC_LOC_ADDR_OP;
+    if (op == "dnc-read") return ESHKOL_DNC_READ_OP;
+    if (op == "dnc-write!") return ESHKOL_DNC_WRITE_OP;
+    if (op == "dnc-alloc-weights") return ESHKOL_DNC_ALLOC_WEIGHTS_OP;
+    if (op == "dnc-read-grad") return ESHKOL_DNC_READ_GRAD_OP;
+    if (op == "dnc-memory?") return ESHKOL_DNC_PRED_OP;
+    // SDNC weight-program (core.sdnc)
+    if (op == "sdnc-program") return ESHKOL_SDNC_PROGRAM_OP;
+    if (op == "sdnc-run") return ESHKOL_SDNC_RUN_OP;
+    if (op == "sdnc-weight-grad") return ESHKOL_SDNC_WEIGHT_GRAD_OP;
+    if (op == "sdnc-params") return ESHKOL_SDNC_PARAMS_OP;
+    if (op == "sdnc-set-params!") return ESHKOL_SDNC_SET_PARAMS_OP;
+    if (op == "sdnc-improve!") return ESHKOL_SDNC_IMPROVE_OP;
+    if (op == "sdnc?") return ESHKOL_SDNC_PRED_OP;
     if (op == "logic-var?") return ESHKOL_LOGIC_VAR_PRED_OP;
     if (op == "substitution?") return ESHKOL_SUBSTITUTION_PRED_OP;
     if (op == "kb?") return ESHKOL_KB_PRED_OP;
@@ -9253,7 +9270,8 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             ast.operation.call_op.variables = new eshkol_ast_t[1];
             ast.operation.call_op.variables[0] = elements[0];
         } else if ((ast.operation.op >= ESHKOL_UNIFY_OP && ast.operation.op <= ESHKOL_WORKSPACE_PRED_OP) ||
-                    ast.operation.op == ESHKOL_KB_QUERY_PREFIX_OP) {
+                    ast.operation.op == ESHKOL_KB_QUERY_PREFIX_OP ||
+                    (ast.operation.op >= ESHKOL_DNC_MAKE_OP && ast.operation.op <= ESHKOL_SDNC_PRED_OP)) {
             // Neuro-symbolic consciousness engine operations
             // All use call_op structure: func=nullptr, variables=arguments
             // kb-query-prefix sits outside the contiguous UNIFY_OP..WORKSPACE_PRED_OP

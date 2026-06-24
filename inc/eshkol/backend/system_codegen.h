@@ -385,6 +385,25 @@ public:
     llvm::Value* wsRegisterBuiltin(const eshkol_operations_t* op);
     llvm::Value* wsStepBuiltin(const eshkol_operations_t* op);
 
+    /* Differentiable external memory (core.dnc) */
+    llvm::Value* dncMakeBuiltin(const eshkol_operations_t* op);
+    llvm::Value* dncContentAddressBuiltin(const eshkol_operations_t* op);
+    llvm::Value* dncLocAddressBuiltin(const eshkol_operations_t* op);
+    llvm::Value* dncReadBuiltin(const eshkol_operations_t* op);
+    llvm::Value* dncWriteBuiltin(const eshkol_operations_t* op);
+    llvm::Value* dncAllocWeightsBuiltin(const eshkol_operations_t* op);
+    llvm::Value* dncReadGradBuiltin(const eshkol_operations_t* op);
+    llvm::Value* dncPredBuiltin(const eshkol_operations_t* op);
+
+    /* SDNC weight-program (core.sdnc) */
+    llvm::Value* sdncProgramBuiltin(const eshkol_operations_t* op);
+    llvm::Value* sdncRunBuiltin(const eshkol_operations_t* op);
+    llvm::Value* sdncWeightGradBuiltin(const eshkol_operations_t* op);
+    llvm::Value* sdncParamsBuiltin(const eshkol_operations_t* op);
+    llvm::Value* sdncSetParamsBuiltin(const eshkol_operations_t* op);
+    llvm::Value* sdncImproveBuiltin(const eshkol_operations_t* op);
+    llvm::Value* sdncPredBuiltin(const eshkol_operations_t* op);
+
     /* Reverse-mode AD tape */
     llvm::Value* adTapeNew(const eshkol_operations_t* op);
     llvm::Value* adTapeRelease(const eshkol_operations_t* op);

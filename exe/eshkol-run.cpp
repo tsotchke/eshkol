@@ -2662,6 +2662,21 @@ static void update_ast_references(eshkol_ast_t* ast,
                 case ESHKOL_MAKE_WORKSPACE_OP:
                 case ESHKOL_WS_REGISTER_OP:
                 case ESHKOL_WS_STEP_OP:
+                case ESHKOL_DNC_MAKE_OP:
+                case ESHKOL_DNC_CONTENT_ADDR_OP:
+                case ESHKOL_DNC_LOC_ADDR_OP:
+                case ESHKOL_DNC_READ_OP:
+                case ESHKOL_DNC_WRITE_OP:
+                case ESHKOL_DNC_ALLOC_WEIGHTS_OP:
+                case ESHKOL_DNC_READ_GRAD_OP:
+                case ESHKOL_DNC_PRED_OP:
+                case ESHKOL_SDNC_PROGRAM_OP:
+                case ESHKOL_SDNC_RUN_OP:
+                case ESHKOL_SDNC_WEIGHT_GRAD_OP:
+                case ESHKOL_SDNC_PARAMS_OP:
+                case ESHKOL_SDNC_SET_PARAMS_OP:
+                case ESHKOL_SDNC_IMPROVE_OP:
+                case ESHKOL_SDNC_PRED_OP:
                     // Consciousness-engine ops use call_op semantics — they
                     // codegen as direct function calls with the same arg
                     // shape as ESHKOL_CALL_OP.
