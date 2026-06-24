@@ -2024,9 +2024,12 @@ bool ReplJITContext::loadStdlib() {
                 for (char& c : triple)
                     if (c == '/' || c == '\\' || c == ':') c = '_';
                 std::filesystem::path bc_fs(bc_path);
+                // Bump the version tag whenever the emit config below changes
+                // (code model, sections, opt level) so an existing cached object
+                // built with a different config is not reused.
                 std::filesystem::path cache_o =
                     bc_fs.parent_path() /
-                    ("stdlib-jit-" + llvm::utohexstr(content_hash) + "-" + triple + ".o");
+                    ("stdlib-jit-v2-" + llvm::utohexstr(content_hash) + "-" + triple + ".o");
 
                 std::error_code ec;
                 bool have_obj = std::filesystem::exists(cache_o, ec);
@@ -2039,6 +2042,16 @@ bool ReplJITContext::loadStdlib() {
                         if (emit_jtmb) {
                             emit_jtmb->setRelocationModel(Reloc::PIC_);
                             emit_jtmb->setCodeModel(CodeModel::Large);
+                            // Emit each function/global into its own section. The
+                            // large code model is incomplete for AArch64 on ELF/COFF
+                            // (it works on Mach-O), so a 100 MB+ stdlib .text still
+                            // emits `bl` (Branch26) for intra-.text calls that exceed
+                            // the ±128 MB range. With per-function sections, JITLink
+                            // places each function independently and inserts Branch26
+                            // range-extension stubs for out-of-range calls — the
+                            // format-agnostic Branch26 fix (ELF/COFF/Mach-O alike).
+                            emit_jtmb->getOptions().FunctionSections = true;
+                            emit_jtmb->getOptions().DataSections = true;
 #if LLVM_VERSION_MAJOR >= 18
                             emit_jtmb->setCodeGenOptLevel(CodeGenOptLevel::None);
 #else
