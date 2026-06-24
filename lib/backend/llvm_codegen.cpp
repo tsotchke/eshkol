@@ -934,6 +934,13 @@ private:
     // This is set by BindingCodegen::letrec before generating lambda bindings and cleared after
     std::set<std::string> letrec_excluded_capture_names;
 
+    // CLOSURE-OVER-NAMED-LET-LOOPVAR FIX: Set of free vars that codegenNamedLet
+    // arena-moved because they are set!-mutated inside the loop body. When
+    // codegenLambda later captures one of these (it sees the arena pointer as a
+    // pointer-typed Argument `..._cap`), it must POINTER-PASS rather than
+    // by-value load so the mutation is shared.
+    std::set<std::string> mutable_loop_captures_;
+
     // VARIADIC FUNCTION TRACKING: Maps function name to (fixed_param_count, is_variadic)
     // For variadic functions, when calling, extra args beyond fixed_param_count are packaged into a list
     std::unordered_map<std::string, std::pair<uint64_t, bool>> variadic_function_info;
@@ -22947,6 +22954,57 @@ private:
 
     // Helper function to find free variables in a lambda body
     // bound_vars tracks all variable names bound by enclosing lambdas (for nested closure support)
+    // CLOSURE-OVER-NAMED-LET-LOOPVAR FIX: Returns true iff `var` is the target of
+    // a SET_OP anywhere in the AST subtree `ast`. Mirrors the recursion structure
+    // of findFreeVariablesImpl. Uses `default: return false;` so any unhandled op
+    // type only makes the fix incomplete (a missed set! → by-value capture, the
+    // pre-existing behavior), never incorrect.
+    bool astSetsVar(const eshkol_ast_t* ast, const std::string& var) {
+        if (!ast) return false;
+        if (ast->type != ESHKOL_OP) return false;
+        const eshkol_operations_t* op = &ast->operation;
+        switch (op->op) {
+            case ESHKOL_SET_OP:
+                if (op->set_op.name && var == op->set_op.name) return true;
+                return astSetsVar(op->set_op.value, var);
+            case ESHKOL_CALL_OP:
+            case ESHKOL_IF_OP:
+            case ESHKOL_COND_OP: {
+                if (op->call_op.func && astSetsVar(op->call_op.func, var)) return true;
+                for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
+                    if (astSetsVar(&op->call_op.variables[i], var)) return true;
+                }
+                return false;
+            }
+            case ESHKOL_SEQUENCE_OP:
+            case ESHKOL_AND_OP:
+            case ESHKOL_OR_OP:
+                for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++) {
+                    if (astSetsVar(&op->sequence_op.expressions[i], var)) return true;
+                }
+                return false;
+            case ESHKOL_LET_OP:
+            case ESHKOL_LET_STAR_OP:
+            case ESHKOL_LETREC_OP:
+            case ESHKOL_LETREC_STAR_OP: {
+                for (uint64_t i = 0; i < op->let_op.num_bindings; i++) {
+                    const eshkol_ast_t* binding = &op->let_op.bindings[i];
+                    if (binding->type == ESHKOL_CONS && binding->cons_cell.cdr &&
+                        astSetsVar(binding->cons_cell.cdr, var)) {
+                        return true;
+                    }
+                }
+                return astSetsVar(op->let_op.body, var);
+            }
+            case ESHKOL_LAMBDA_OP:
+                return astSetsVar(op->lambda_op.body, var);
+            case ESHKOL_DEFINE_OP:
+                return astSetsVar(op->define_op.value, var);
+            default:
+                return false;
+        }
+    }
+
     void findFreeVariablesImpl(const eshkol_ast_t* ast,
                           const std::unordered_map<std::string, Value*>& current_scope,
                           const eshkol_ast_t* parameters, uint64_t num_params,
@@ -23956,6 +24014,18 @@ private:
                         // GlobalVariable: closure contains pointer (packed as int64)
                         was_alloca_capture = true;
                         eshkol_debug("GlobalVariable capture detected for %s", var_name.c_str());
+                    } else if (mutable_loop_captures_.count(var_name) &&
+                               isa<Argument>(outer_it->second) &&
+                               outer_it->second->getType()->isPointerTy()) {
+                        // CLOSURE-OVER-NAMED-LET-LOOPVAR FIX: outer scope is the
+                        // named-let loop function, and this var is the pointer-typed
+                        // `<fv>_cap` Argument that codegenNamedLet arena-moved (it is
+                        // set!-mutated in the loop body). The capture-creation side
+                        // pointer-passes it (ptrtoint into the env slot), so the body
+                        // must dereference: unpack the env slot's int64 back to a
+                        // pointer and store/load through it, sharing the arena storage.
+                        was_alloca_capture = true;
+                        eshkol_debug("Named-let loopvar pointer capture detected for %s", var_name.c_str());
                     }
                 }
 
@@ -24447,8 +24517,17 @@ private:
                             }
                         } else if (var_value->getType()->isPointerTy()) {
                             // This is a pointer to a captured variable (from mutable capture fix)
-                            // Load the tagged value from the pointer
-                            captured_val = builder->CreateLoad(tagged_value_type, var_value);
+                            if (mutable_loop_captures_.count(var_name)) {
+                                // CLOSURE-OVER-NAMED-LET-LOOPVAR FIX: this pointer Argument
+                                // (`<fv>_cap`) refers to arena storage codegenNamedLet moved
+                                // because the var is set!-mutated in the loop body. Pointer-pass
+                                // it so the mutation is shared, not by-value snapshot it.
+                                captured_val = packInt64ToTaggedValue(
+                                    builder->CreatePtrToInt(var_value, int64_type), true);
+                            } else {
+                                // Load the tagged value from the pointer
+                                captured_val = builder->CreateLoad(tagged_value_type, var_value);
+                            }
                         } else {
                             // Function parameters are already loaded
                             captured_val = var_value;
@@ -25001,6 +25080,12 @@ private:
         int current_counter = named_let_counter++;
         std::vector<Value*> capture_outer_ptrs;
         capture_outer_ptrs.reserve(free_vars.size());
+        // CLOSURE-OVER-NAMED-LET-LOOPVAR FIX: fv -> arena storage for set!-mutated
+        // captures we arena-moved. Re-applied to symbol_table after the named-let's
+        // symbol_table restore so the enclosing scope's later reads of the var hit
+        // the shared arena storage (where the loop-body closure's set! landed),
+        // not the now-stale stack alloca.
+        std::vector<std::pair<std::string, Value*>> arena_moved_captures;
         for (const std::string& fv : free_vars) {
             Value* outer_val = nullptr;
 
@@ -25052,6 +25137,29 @@ private:
                     ConstantPointerNull::get(PointerType::getUnqual(*context)));
                 eshkol_warn("Named let '%s': free var '%s' missing from outer symbol table",
                             loop_name.c_str(), fv.c_str());
+                continue;
+            }
+
+            // CLOSURE-OVER-NAMED-LET-LOOPVAR FIX: If `fv` is a stack alloca AND it
+            // is set!-mutated inside the loop body, passing the stack alloca pointer
+            // is unsafe (it dangles if a body closure escapes g) and, worse, a body
+            // closure capturing `fv` sees the loop's pointer-typed `_cap` Argument and
+            // by-value-loads it — losing the mutation. Arena-move it first, then
+            // pointer-pass the arena storage. Record it so codegenLambda's pointer
+            // Argument branch pointer-passes instead of by-value loading.
+            if (isa<AllocaInst>(outer_val) && astSetsVar(op->let_op.body, fv)) {
+                Value* arena_ptr = builder->CreateLoad(
+                    PointerType::getUnqual(*context), global_arena);
+                Value* arena_storage = builder->CreateCall(
+                    getArenaAllocateFunc(), {arena_ptr, sizeConst(16)});
+                builder->CreateStore(
+                    builder->CreateLoad(tagged_value_type, outer_val), arena_storage);
+                symbol_table[fv] = arena_storage;
+                mutable_loop_captures_.insert(fv);
+                arena_moved_captures.push_back({fv, arena_storage});
+                capture_outer_ptrs.push_back(arena_storage);
+                eshkol_debug("Named let '%s': arena-moved set!-mutated capture '%s'",
+                             loop_name.c_str(), fv.c_str());
                 continue;
             }
 
@@ -25282,6 +25390,16 @@ private:
         symbol_table = prev_symbols;
         symbol_table[loop_name + "_func"] = loop_func;
         function_table[loop_name] = loop_func;
+
+        // CLOSURE-OVER-NAMED-LET-LOOPVAR FIX: the restore above reverts the
+        // symbol_table to the pre-named-let snapshot, dropping the arena-storage
+        // rebindings we installed for set!-mutated captures. Re-apply them so the
+        // enclosing scope's later reads of those vars use the shared arena storage
+        // (where the loop body's closure set! mutations landed), not the stale
+        // stack alloca.
+        for (const auto& moved : arena_moved_captures) {
+            symbol_table[moved.first] = moved.second;
+        }
 
         // NESTED NAMED LET FIX: Restore outer TCO context after body generation
         // This ensures nested named lets don't corrupt the outer's TCO state
