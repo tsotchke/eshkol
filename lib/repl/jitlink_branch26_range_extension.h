@@ -45,9 +45,12 @@
 // therefore always within +/-128 MB of every call site in that section. (If a
 // single section ever exceeded 128 MB the stub could itself fall out of range,
 // but no individual Eshkol function approaches that; the pathology is the
-// aggregate .text size, which per-section placement defuses.) This is
-// format-agnostic: it works for ELF, COFF and Mach-O alike, and depends only on
-// the AArch64 JITLink edge kinds, not on any object-format specifics.
+// aggregate .text size, which per-section placement defuses.) The technique
+// depends only on the AArch64 JITLink edge kinds, but is applied ONLY on the
+// object formats where the large code model is incomplete -- ELF and COFF.
+// Mach-O (Apple arm64) is excluded: there CodeModel::Large already emits
+// correct far calls, and the Mach-O arm64 link pipeline's own stub/GOT builders
+// make an extra veneer pass redundant (and observably deadlock-prone).
 //
 // The pass runs in PostPrunePasses (before memory allocation), which is the only
 // phase where new stub blocks can still be given memory by the allocator -- the
@@ -85,10 +88,25 @@ public:
   void modifyPassConfig(llvm::orc::MaterializationResponsibility &,
                         llvm::jitlink::LinkGraph &G,
                         llvm::jitlink::PassConfiguration &Config) override {
-    // Only aarch64 needs this -- other targets either have working far-call
-    // code models or JITLink range extension.
-    if (G.getTargetTriple().getArch() != llvm::Triple::aarch64 &&
-        G.getTargetTriple().getArch() != llvm::Triple::aarch64_be)
+    const llvm::Triple &TT = G.getTargetTriple();
+
+    // Only aarch64 needs branch range extension at all -- other targets either
+    // have working far-call code models or native JITLink range extension.
+    if (TT.getArch() != llvm::Triple::aarch64 &&
+        TT.getArch() != llvm::Triple::aarch64_be)
+      return;
+
+    // Restrict to object formats where the AArch64 large code model is
+    // INCOMPLETE: ELF and COFF. On Mach-O (Apple arm64) `CodeModel::Large`
+    // already emits far calls correctly (movz/movk + blr, no Branch26), so the
+    // veneer is unnecessary there -- and worse, the Mach-O arm64 JITLink link
+    // pipeline runs its own PostPrune stub/GOT builders whose materialization
+    // our extra pass perturbs, wedging in-process JIT materialization
+    // (lookupLinkerMangled -> pthread_cond_wait). ELF/COFF are the real,
+    // tested problem scope (xavier = arm64-Linux/ELF). Gate on object format,
+    // not just arch.
+    if (TT.getObjectFormat() != llvm::Triple::ELF &&
+        TT.getObjectFormat() != llvm::Triple::COFF)
       return;
 
     // Escape hatch for debugging / measuring.
