@@ -1840,11 +1840,7 @@ llvm::Value* CollectionCodegen::vectorSet(const eshkol_operations_t* op) {
     llvm::Value* tagged_val = typed_to_tagged_callback_(val_typed, callback_context_);
     if (!idx_tagged || !tagged_val) return nullptr;
 
-    // Extract vector pointer
-    llvm::Value* vec_ptr_int = tagged_.unpackInt64(vec_arg);
-    llvm::Value* vec_ptr = ctx_.builder().CreateIntToPtr(vec_ptr_int, ctx_.ptrType());
-
-    // Extract index
+    // Extract index (shared by both paths)
     llvm::Value* idx = idx_tagged;
     if (idx->getType() == ctx_.taggedValueType()) {
         idx = tagged_.unpackInt64(idx);
@@ -1856,21 +1852,33 @@ llvm::Value* CollectionCodegen::vectorSet(const eshkol_operations_t* op) {
         }
     }
 
-    // Bounds check: load vector length and validate index
-    llvm::Value* vec_len = ctx_.builder().CreateLoad(ctx_.int64Type(), vec_ptr, "vset_len");
-    llvm::Value* idx_negative = ctx_.builder().CreateICmpSLT(idx,
-        llvm::ConstantInt::get(ctx_.int64Type(), 0));
-    llvm::Value* idx_too_large = ctx_.builder().CreateICmpSGE(idx, vec_len);
-    llvm::Value* out_of_bounds = ctx_.builder().CreateOr(idx_negative, idx_too_large);
+    // Detect tensor vs Scheme vector via header subtype (mirror vectorRef).
+    // A tensor (HEAP_SUBTYPE_TENSOR) stores homogeneous doubles in a separate
+    // elements buffer (8-byte stride), NOT inline 16-byte tagged values. Without
+    // this dispatch, vector-set! on a builtin-returned tensor scribbled a 16-byte
+    // tagged value into 8-byte slots, corrupting it (display became garbage).
+    llvm::Value* vec_base_type = tagged_.getBaseType(tagged_.getType(vec_arg));
+    llvm::Value* is_heap_ptr = ctx_.builder().CreateICmpEQ(vec_base_type,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
 
     llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
-    llvm::BasicBlock* bounds_ok = llvm::BasicBlock::Create(ctx_.context(), "vset_ok", current_func);
-    llvm::BasicBlock* bounds_fail = llvm::BasicBlock::Create(ctx_.context(), "vset_fail", current_func);
-    ctx_.builder().CreateCondBr(out_of_bounds, bounds_fail, bounds_ok);
+    llvm::BasicBlock* vset_check_subtype = llvm::BasicBlock::Create(ctx_.context(), "vset_check_subtype", current_func);
+    llvm::BasicBlock* vset_tensor = llvm::BasicBlock::Create(ctx_.context(), "vset_tensor", current_func);
+    llvm::BasicBlock* vset_vector = llvm::BasicBlock::Create(ctx_.context(), "vset_vector", current_func);
+    llvm::BasicBlock* vset_merge = llvm::BasicBlock::Create(ctx_.context(), "vset_merge", current_func);
+    ctx_.builder().CreateCondBr(is_heap_ptr, vset_check_subtype, vset_vector);
 
-    // Bounds check failure: emit runtime error
-    ctx_.builder().SetInsertPoint(bounds_fail);
-    {
+    ctx_.builder().SetInsertPoint(vset_check_subtype);
+    llvm::Value* vptr_sub = ctx_.builder().CreateIntToPtr(tagged_.unpackInt64(vec_arg), ctx_.ptrType());
+    llvm::Value* vset_header = ctx_.builder().CreateGEP(ctx_.int8Type(), vptr_sub,
+        llvm::ConstantInt::get(ctx_.int64Type(), -8));
+    llvm::Value* vset_subtype = ctx_.builder().CreateLoad(ctx_.int8Type(), vset_header);
+    llvm::Value* vset_is_tensor = ctx_.builder().CreateICmpEQ(vset_subtype,
+        llvm::ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_TENSOR));
+    ctx_.builder().CreateCondBr(vset_is_tensor, vset_tensor, vset_vector);
+
+    // Shared bounds-failure emitter
+    auto emit_oob = [&](const char* msg) {
         llvm::Function* raise_func = ctx_.module().getFunction("eshkol_raise");
         if (!raise_func) {
             llvm::FunctionType* raise_type = llvm::FunctionType::get(
@@ -1886,26 +1894,65 @@ llvm::Value* CollectionCodegen::vectorSet(const eshkol_operations_t* op) {
             make_exc_func = llvm::Function::Create(make_type, llvm::Function::ExternalLinkage,
                 "eshkol_make_exception_with_header", &ctx_.module());
         }
-        llvm::Value* err_msg = ctx_.builder().CreateGlobalString(
-            "vector-set!: index out of bounds");
+        llvm::Value* err_msg = ctx_.builder().CreateGlobalString(msg);
         llvm::Value* exc_type = llvm::ConstantInt::get(ctx_.builder().getInt32Ty(), ESHKOL_EXCEPTION_ERROR);
         llvm::Value* exception = ctx_.builder().CreateCall(make_exc_func, {exc_type, err_msg});
         ctx_.builder().CreateCall(raise_func, {exception});
         ctx_.builder().CreateUnreachable();
+    };
+
+    // ===== TENSOR PATH: store a double into elements_ptr[idx] (8-byte) =====
+    ctx_.builder().SetInsertPoint(vset_tensor);
+    {
+        llvm::Value* tptr = ctx_.builder().CreateIntToPtr(tagged_.unpackInt64(vec_arg), ctx_.ptrType());
+        llvm::Value* elems_field = ctx_.builder().CreateStructGEP(ctx_.tensorType(), tptr, 2);
+        llvm::Value* elems_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), elems_field);
+        llvm::Value* total_field = ctx_.builder().CreateStructGEP(ctx_.tensorType(), tptr, 3);
+        llvm::Value* total_elems = ctx_.builder().CreateLoad(ctx_.int64Type(), total_field);
+
+        llvm::Value* t_oob = ctx_.builder().CreateOr(
+            ctx_.builder().CreateICmpSLT(idx, llvm::ConstantInt::get(ctx_.int64Type(), 0)),
+            ctx_.builder().CreateICmpSGE(idx, total_elems));
+        llvm::BasicBlock* t_ok = llvm::BasicBlock::Create(ctx_.context(), "vset_tensor_ok", current_func);
+        llvm::BasicBlock* t_fail = llvm::BasicBlock::Create(ctx_.context(), "vset_tensor_fail", current_func);
+        ctx_.builder().CreateCondBr(t_oob, t_fail, t_ok);
+        ctx_.builder().SetInsertPoint(t_fail);
+        emit_oob("vector-set!: index out of bounds (tensor)");
+        ctx_.builder().SetInsertPoint(t_ok);
+
+        // Tensors store doubles as int64 bitpatterns.
+        llvm::Value* t_elem_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), elems_ptr, idx);
+        llvm::Value* v_double = tagged_.unpackDouble(tagged_val);
+        llvm::Value* v_bits = ctx_.builder().CreateBitCast(v_double, ctx_.int64Type());
+        ctx_.builder().CreateStore(v_bits, t_elem_ptr);
+        ctx_.builder().CreateBr(vset_merge);
     }
 
-    // Bounds OK: proceed with element store
-    ctx_.builder().SetInsertPoint(bounds_ok);
+    // ===== VECTOR PATH: store a 16-byte tagged value inline =====
+    ctx_.builder().SetInsertPoint(vset_vector);
+    {
+        llvm::Value* vec_ptr = ctx_.builder().CreateIntToPtr(tagged_.unpackInt64(vec_arg), ctx_.ptrType());
+        llvm::Value* vec_len = ctx_.builder().CreateLoad(ctx_.int64Type(), vec_ptr, "vset_len");
+        llvm::Value* v_oob = ctx_.builder().CreateOr(
+            ctx_.builder().CreateICmpSLT(idx, llvm::ConstantInt::get(ctx_.int64Type(), 0)),
+            ctx_.builder().CreateICmpSGE(idx, vec_len));
+        llvm::BasicBlock* v_ok = llvm::BasicBlock::Create(ctx_.context(), "vset_vec_ok", current_func);
+        llvm::BasicBlock* v_fail = llvm::BasicBlock::Create(ctx_.context(), "vset_vec_fail", current_func);
+        ctx_.builder().CreateCondBr(v_oob, v_fail, v_ok);
+        ctx_.builder().SetInsertPoint(v_fail);
+        emit_oob("vector-set!: index out of bounds");
+        ctx_.builder().SetInsertPoint(v_ok);
 
-    // Get pointer to elements (after length field)
-    llvm::Value* elem_base = ctx_.builder().CreateGEP(ctx_.int8Type(), vec_ptr,
-        llvm::ConstantInt::get(ctx_.int64Type(), 8));
-    llvm::Value* elem_base_typed = ctx_.builder().CreatePointerCast(elem_base, ctx_.ptrType());
+        llvm::Value* elem_base = ctx_.builder().CreateGEP(ctx_.int8Type(), vec_ptr,
+            llvm::ConstantInt::get(ctx_.int64Type(), 8));
+        llvm::Value* elem_base_typed = ctx_.builder().CreatePointerCast(elem_base, ctx_.ptrType());
+        llvm::Value* elem_ptr = ctx_.builder().CreateGEP(ctx_.taggedValueType(), elem_base_typed, idx);
+        ctx_.builder().CreateStore(tagged_val, elem_ptr);
+        ctx_.builder().CreateBr(vset_merge);
+    }
 
-    llvm::Value* elem_ptr = ctx_.builder().CreateGEP(ctx_.taggedValueType(), elem_base_typed, idx);
-    ctx_.builder().CreateStore(tagged_val, elem_ptr);
-
-    // Return the vector
+    ctx_.builder().SetInsertPoint(vset_merge);
+    // Return the vector/tensor
     return vec_arg;
 }
 
