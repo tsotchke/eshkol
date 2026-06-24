@@ -35924,6 +35924,26 @@ int eshkol_compile_llvm_ir_to_executable(LLVMModuleRef module_ref, const char* f
 #endif
             eshkol_debug("Linking with library: %s", runtime_lib_path.string().c_str());
 
+            // Also link agent FFI library if available (terminal, crypto, regex, sqlite)
+            auto agent_ffi_path = runtime_lib_path.parent_path() /
+                eshkol::platform::static_library_name("eshkol-agent-ffi");
+            if (std::filesystem::exists(agent_ffi_path)) {
+                link_args.emplace_back(agent_ffi_path.generic_string());
+                eshkol_debug("Linking agent FFI: %s", agent_ffi_path.string().c_str());
+                // Agent FFI dependencies
+#ifdef __APPLE__
+                link_args.emplace_back("-lncurses");
+                link_args.emplace_back("-framework");
+                link_args.emplace_back("Security");
+                link_args.emplace_back("-framework");
+                link_args.emplace_back("CoreFoundation");
+#else
+                link_args.emplace_back("-lncurses");
+#endif
+                // Optional: PCRE2 and SQLite3 (if available on system)
+                link_args.emplace_back("-lpcre2-8");
+                link_args.emplace_back("-lsqlite3");
+            }
         } else {
             link_args.emplace_back(
                 (std::filesystem::path("build") / eshkol::platform::static_library_name("eshkol-runtime")).generic_string()
