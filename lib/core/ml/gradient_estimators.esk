@@ -1,0 +1,191 @@
+;;
+;; core.ml.gradient_estimators — Gradient estimators for discrete operations,
+;; built on the stateful reverse-mode AD tape (core.ad.tape).
+;;
+;; Discrete operations (argmax, sampling a category, rounding) are not
+;; differentiable: their derivative is zero almost everywhere. To still train
+;; through them we use BIASED-but-USEFUL gradient estimators that substitute a
+;; surrogate backward pass:
+;;
+;;   * Gumbel-Softmax (Concrete) relaxation — replace a hard categorical sample
+;;     with a temperature-controlled soft one-hot:  softmax((logits+g)/tau).
+;;     As tau -> 0 it approaches a one-hot; gradients flow to the logits.
+;;
+;;   * Straight-Through estimator — forward emits the HARD value (one-hot /
+;;     round), backward pretends the op was the identity, so the upstream
+;;     gradient passes straight through unchanged.
+;;
+;; Everything is recorded on the stateful tape via record-op!, so a loss can
+;; route through these estimators together with builtin tape ops and reverse
+;; mode flows through all of them.
+;;
+;; Example:
+;;   (with-tape "g" (lambda ()
+;;     (let* ((t   (current-tape))
+;;            (lg  (tape-input t (vector 1.0 2.0 0.5)))
+;;            (p   (gumbel-softmax-det t lg 0.5 (vector 0.1 -0.2 0.3))))
+;;       (tape-gradient t (some-scalar-loss t p) (list lg)))))
+;;
+
+(provide gumbel-softmax gumbel-softmax-det
+         straight-through straight-through-round straight-through-onehot
+         categorical-pick argmax-onehot softmax
+         sample-gumbel-noise)
+
+;; ── Internal list/vector helpers ──
+;; Self-contained: this is a core module loaded BEFORE the list stdlib, so we
+;; must not use for-each / map at the top level (AOT would fail with
+;; "Unknown function: for-each"). Mirror tape.esk's recursion pattern.
+
+(define (ge-vec-of x)
+  ;; Coerce a list OR a vector of numbers into a fresh vector of doubles.
+  (if (vector? x)
+      x
+      (let loop ((l x) (n 0))            ; first pass: count
+        (if (pair? l)
+            (loop (cdr l) (+ n 1))
+            (let ((r (make-vector n 0.0)))
+              (let fill ((l2 x) (i 0))    ; second pass: fill
+                (if (pair? l2)
+                    (begin (vector-set! r i (exact->inexact (car l2)))
+                           (fill (cdr l2) (+ i 1)))
+                    r)))))))
+
+(define (ge-vec-copy v)
+  (let* ((n (vector-length v)) (r (make-vector n 0.0)))
+    (let loop ((i 0))
+      (if (< i n)
+          (begin (vector-set! r i (vector-ref v i)) (loop (+ i 1)))
+          r))))
+
+;; ── softmax (numerically stable) ──
+(define (softmax v)
+  (let* ((vv (ge-vec-of v))
+         (n  (vector-length vv)))
+    (if (= n 0)
+        (make-vector 0 0.0)
+        (let ((mx (let loop ((i 1) (m (vector-ref vv 0)))
+                    (if (< i n)
+                        (loop (+ i 1) (if (> (vector-ref vv i) m) (vector-ref vv i) m))
+                        m))))
+          (let* ((ex (make-vector n 0.0))
+                 (sum (let loop ((i 0) (s 0.0))
+                        (if (< i n)
+                            (let ((e (exp (- (vector-ref vv i) mx))))
+                              (vector-set! ex i e)
+                              (loop (+ i 1) (+ s e)))
+                            s))))
+            (let loop ((i 0))
+              (if (< i n)
+                  (begin (vector-set! ex i (/ (vector-ref ex i) sum)) (loop (+ i 1)))
+                  ex)))))))
+
+;; ── argmax index of a list/vector of numbers ──
+;; categorical-pick: the HARD decision — index of the largest entry.
+(define (categorical-pick probs)
+  (let* ((vv (ge-vec-of probs))
+         (n  (vector-length vv)))
+    (let loop ((i 1) (best 0) (bv (if (> n 0) (vector-ref vv 0) 0.0)))
+      (if (< i n)
+          (if (> (vector-ref vv i) bv)
+              (loop (+ i 1) i (vector-ref vv i))
+              (loop (+ i 1) best bv))
+          best))))
+
+;; argmax-onehot: a hard one-hot vector with a 1.0 at the argmax position.
+(define (argmax-onehot probs)
+  (let* ((vv (ge-vec-of probs))
+         (n  (vector-length vv))
+         (k  (categorical-pick vv))
+         (r  (make-vector n 0.0)))
+    (if (> n 0) (vector-set! r k 1.0))
+    r))
+
+;; ── Gumbel noise ──
+;; g = -log(-log(u)),  u ~ Uniform(0,1).  Tests pass explicit noise for
+;; determinism; this is provided for stochastic use.
+(define ge-eps 1.0e-20)
+(define (sample-gumbel-noise n)
+  (let ((r (make-vector n 0.0)))
+    (let loop ((i 0))
+      (if (< i n)
+          (let ((u (random)))            ; (random) -> double in [0,1)
+            (vector-set! r i (- (log (+ (- (log (+ u ge-eps))) ge-eps))))
+            (loop (+ i 1)))
+          r))))
+
+;; ── Gumbel-Softmax (Concrete) relaxation ──
+;;
+;; y_i = softmax_i( (logits + noise) / tau )
+;;
+;; Recorded as ONE custom op on the tape so gradients flow to the logits node.
+;; The forward output is the soft one-hot vector; the backward is the softmax
+;; Jacobian-vector product scaled by 1/tau:
+;;
+;;   z = (logits + g) / tau ;  y = softmax(z)
+;;   dL/dlogits = (1/tau) * J_softmax^T(z) . dL/dy
+;;             = (1/tau) * y ⊙ (dL/dy - <y, dL/dy>)
+;;
+;; `logits-node` is a tape node whose value is a list/vector of logits.
+;; `tau` is the temperature (> 0). `noise` is an explicit Gumbel-noise vector.
+(define (gumbel-softmax-det t logits-node tau noise)
+  (let* ((lv  (ge-vec-of (node-value logits-node)))
+         (nz  (ge-vec-of noise))
+         (n   (vector-length lv))
+         (z   (make-vector n 0.0)))
+    (let loop ((i 0))
+      (if (< i n)
+          (begin
+            (vector-set! z i (/ (+ (vector-ref lv i) (vector-ref nz i)) tau))
+            (loop (+ i 1)))))
+    (let ((y (softmax z)))
+      (record-op! t (list logits-node) y
+        (lambda (g)
+          ;; g is dL/dy (a vector). Return (list dL/dlogits).
+          (let* ((gy (ge-vec-of g))
+                 (dot (let dl ((i 0) (s 0.0))
+                        (if (< i n)
+                            (dl (+ i 1) (+ s (* (vector-ref y i) (vector-ref gy i))))
+                            s)))
+                 (out (make-vector n 0.0)))
+            (let dl ((i 0))
+              (if (< i n)
+                  (begin
+                    (vector-set! out i
+                      (* (/ 1.0 tau)
+                         (vector-ref y i)
+                         (- (vector-ref gy i) dot)))
+                    (dl (+ i 1)))))
+            (list out)))))))
+
+;; Stochastic variant: draws fresh Gumbel noise internally.
+(define (gumbel-softmax t logits-node tau)
+  (let ((n (vector-length (ge-vec-of (node-value logits-node)))))
+    (gumbel-softmax-det t logits-node tau (sample-gumbel-noise n))))
+
+;; ── Straight-Through estimator ──
+;;
+;; Forward emits the HARD value; backward is the identity (gradient passes
+;; through unchanged). This is the canonical ST estimator.
+;;
+;;   forward:  out = hard(x)
+;;   backward: dL/dx = dL/dout
+;;
+;; `est-node` is the tape node carrying the SOFT/continuous value; `hard-value`
+;; is the precomputed hard output (same shape — scalar or vector). The returned
+;; node has the hard value but routes gradient straight to est-node.
+(define (straight-through t est-node hard-value)
+  (record-op! t (list est-node) hard-value
+    (lambda (g) (list g))))
+
+;; straight-through-round: ST on scalar rounding.  Forward = (round x),
+;; backward = identity. Records a tape node from a scalar node x-node.
+(define (straight-through-round t x-node)
+  (straight-through t x-node (round (node-value x-node))))
+
+;; straight-through-onehot: ST on categorical argmax.  Forward = hard one-hot
+;; of the (soft) probability node; backward routes the gradient back to the
+;; soft probs unchanged. This is how you train through a discrete sample while
+;; keeping a usable gradient.
+(define (straight-through-onehot t probs-node)
+  (straight-through t probs-node (argmax-onehot (node-value probs-node))))

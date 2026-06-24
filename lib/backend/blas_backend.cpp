@@ -766,13 +766,29 @@ void eshkol_matmul_f64(const double* A, const double* B, double* C,
         return;
     }
 
-    // Small to super-massive matrices (17 - 1B elements): cBLAS
+    // Small to super-massive matrices: cBLAS
     // cBLAS (Apple Accelerate AMX) achieves 1100+ GFLOPS even at 225M elements.
     // GPU (sf64 softfloat) only used when cBLAS is computationally infeasible
     // — matrices ~31600×31600 and larger (1B+ output elements).
 #ifdef ESHKOL_BLAS_ENABLED
+    // BLAS threshold (ESHKOL_BLAS_THRESHOLD env var, default 64): below this
+    // element count, BLAS dispatch overhead is not worth it — use the SIMD
+    // (falling back to scalar) path instead. This makes the threshold the
+    // forward path actually honors, mirroring the backward dispatch, and lets
+    // the env var force the non-BLAS fallback for benchmarking/diagnostics.
+    // NOTE: must stay inside ESHKOL_BLAS_ENABLED — blas_get_threshold() only
+    // exists when BLAS is compiled in (namespace eshkol::blas is guarded). In
+    // lite builds (e.g. linux/windows-arm64-lite) BLAS is off, so referencing it
+    // outside the guard breaks the build ("blas_get_threshold is not a member").
+    const uint64_t blas_threshold =
+        static_cast<uint64_t>(eshkol::blas::blas_get_threshold());
     if (output_elements < g_gpu_matmul_threshold) {
-        eshkol::blas::matmul(A, B, C, M, K, N);
+        if (output_elements < blas_threshold) {
+            // Below the BLAS threshold — SIMD (with scalar fallback) is cheaper.
+            matmul_simd(A, B, C, M, K, N);
+        } else {
+            eshkol::blas::matmul(A, B, C, M, K, N);
+        }
         return;
     }
 #else
