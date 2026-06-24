@@ -35,6 +35,9 @@
 #include <vector>
 #include <set>
 #include <map>
+#if defined(__APPLE__)
+#include <mach-o/dyld.h>  // _dyld_image_count/_dyld_get_image_name — child lib search path
+#endif
 #include <algorithm>
 #include <sstream>
 #include <cstring>
@@ -390,6 +393,101 @@ bool sourceRequiresInProcessJit(const std::string& source) {
     return false;
 }
 
+// A persistent run-cache AOT binary is a normal dynamically-linked executable:
+// it needs its whole shared-library closure (libLLVM, libstdc++/libc++, zlib,
+// libffi, …) at exec time. On systems where those libraries live OUTSIDE the
+// default loader search path — Nix (/nix/store), Homebrew, custom prefixes — the
+// child dies with "libX.so.NN: cannot open shared object file". eshkol-run itself
+// has ALREADY resolved that exact closure (it links the same way), so the robust,
+// platform-independent fix is to hand the child the directories the PARENT
+// actually loaded its libraries from, rather than guessing per-library.
+//
+// We seed from the build-time LLVM -L dirs, then add every directory the running
+// process has a shared library mapped from (/proc/self/maps on Linux, the dyld
+// image list on macOS). Prepended to the platform loader var for any child we
+// spawn (the run-cache binary).
+static void ensureChildLibrarySearchPath() {
+    static bool done = false;
+    if (done) return;
+    done = true;
+
+    std::vector<std::string> order;          // preserve insertion order
+    std::set<std::string> seen;
+    auto add_dir = [&](std::string d) {
+        if (d.empty()) return;
+        while (d.size() > 1 && d.back() == '/') d.pop_back();
+        if (seen.insert(d).second) order.push_back(d);
+    };
+
+    // 1) LLVM lib dirs from the build-time link args.
+    {
+        const std::string link_args = ESHKOL_HOST_LLVM_LINK_ARGS;
+        size_t pos = 0;
+        while (pos <= link_args.size()) {
+            size_t semi = link_args.find(';', pos);
+            std::string tok = link_args.substr(
+                pos, semi == std::string::npos ? std::string::npos : semi - pos);
+            if (tok.rfind("-L", 0) == 0 && tok.size() > 2) add_dir(tok.substr(2));
+            if (semi == std::string::npos) break;
+            pos = semi + 1;
+        }
+    }
+
+    // 2) Every directory the parent process actually loaded a library from.
+#if defined(__linux__)
+    {
+        std::ifstream maps("/proc/self/maps");
+        std::string line;
+        while (std::getline(maps, line)) {
+            size_t slash = line.find('/');
+            if (slash == std::string::npos) continue;
+            std::string path = line.substr(slash);
+            if (path.find(".so") == std::string::npos) continue;
+            size_t last = path.find_last_of('/');
+            if (last != std::string::npos && last > 0) add_dir(path.substr(0, last));
+        }
+    }
+#elif defined(__APPLE__)
+    {
+        uint32_t n = _dyld_image_count();
+        for (uint32_t i = 0; i < n; i++) {
+            const char* nm = _dyld_get_image_name(i);
+            if (!nm) continue;
+            std::string p(nm);
+            if (p.find(".dylib") == std::string::npos) continue;
+            size_t last = p.find_last_of('/');
+            if (last != std::string::npos && last > 0) add_dir(p.substr(0, last));
+        }
+    }
+#endif
+
+    if (order.empty()) return;
+
+#if defined(__APPLE__)
+    const char* var = "DYLD_LIBRARY_PATH";
+    const char sep = ':';
+#elif defined(_WIN32)
+    const char* var = "PATH";
+    const char sep = ';';
+#else
+    const char* var = "LD_LIBRARY_PATH";
+    const char sep = ':';
+#endif
+    std::string combined;
+    for (const auto& d : order) {
+        if (!combined.empty()) combined += sep;
+        combined += d;
+    }
+    if (const char* existing = std::getenv(var)) {
+        if (existing[0] != '\0') { combined += sep; combined += existing; }
+    }
+#if defined(_WIN32)
+    _putenv_s(var, combined.c_str());
+#else
+    setenv(var, combined.c_str(), 1);
+#endif
+}
+
 std::optional<int> tryRunFromPersistentJitCache(const char* argv0,
                                                 const std::string& filepath,
                                                 uint8_t no_stdlib,
@@ -404,6 +502,8 @@ std::optional<int> tryRunFromPersistentJitCache(const char* argv0,
         jitCacheTrace("bypass", "disabled");
         return std::nullopt;
     }
+    // Ensure any cached/freshly-built run binary we exec can find libLLVM.
+    ensureChildLibrarySearchPath();
 
     std::filesystem::path source_path(filepath);
     std::error_code ec;
@@ -2100,19 +2200,35 @@ static std::string find_lib_dir()
     auto cwd = eshkol::platform::current_directory();
     auto exe_dir = eshkol::platform::executable_directory();
 
+    // Executable-relative first: stdlib + core.* belong to the Eshkol install,
+    // not to the cwd. A downstream project (run from its own cwd) may have its
+    // OWN lib/ that would otherwise shadow Eshkol's — which breaks stdlib
+    // submodule discovery (collect_all_submodules parses <lib>/stdlib.esk), so
+    // e.g. (require core.manifold) is not recognised as precompiled and AOT
+    // tries to source-resolve it and fails. That makes the -r run-cache fall
+    // back to the in-process JIT every run.
     std::vector<std::filesystem::path> candidates = {
-        cwd / "lib",
-        cwd.parent_path() / "lib",
-        cwd / "share/eshkol/lib",
         exe_dir / "lib",
         exe_dir / "../lib",
         exe_dir / "../share/eshkol/lib",
+        cwd / "lib",
+        cwd.parent_path() / "lib",
+        cwd / "share/eshkol/lib",
     };
 
 #ifndef _WIN32
     candidates.emplace_back("/usr/local/share/eshkol/lib");
     candidates.emplace_back("/usr/share/eshkol/lib");
 #endif
+
+    // The Eshkol lib is the one that actually carries stdlib.esk. Prefer the
+    // first candidate that has it (skips a downstream project's unrelated lib/).
+    for (const auto& c : candidates) {
+        std::error_code ec;
+        if (std::filesystem::exists(c / "stdlib.esk", ec)) {
+            return c.string();
+        }
+    }
 
     return eshkol::platform::find_first_existing(candidates);
 }
@@ -2164,6 +2280,21 @@ static std::string resolve_module_path(const std::string& module_name, const std
     std::filesystem::path current_path = std::filesystem::path(base_dir) / path_part;
     if (std::filesystem::exists(current_path)) {
         return std::filesystem::canonical(current_path).string();
+    }
+
+    // Try the cwd / project root. A dotted module like `src.core.encoder.x` is
+    // rooted at the project, not at the requiring file's directory — so a file in
+    // tests/gates/ that (require src.core...) must resolve against ./src/..., not
+    // tests/gates/src/.... The in-process JIT resolver already searches cwd; match
+    // it here so the AOT path (and thus the -r persistent run-cache) resolves the
+    // SAME modules. Without this, any program whose required user module is found
+    // by the JIT but not by AOT falls back to in-process JIT on every run — slow,
+    // and on arm64 Linux/Windows it also hits the AArch64 Branch26 JIT limit.
+    if (base_dir != ".") {
+        std::filesystem::path cwd_path = std::filesystem::path(".") / path_part;
+        if (std::filesystem::exists(cwd_path)) {
+            return std::filesystem::canonical(cwd_path).string();
+        }
     }
 
     // Try library directory
