@@ -1,27 +1,276 @@
 ;;
-;; core.ad.tape — Reverse-mode automatic differentiation via Wengert tape
+;; core.ad.tape — Reverse-mode automatic differentiation
 ;;
-;; Usage:
-;;   (define tape (ad-tape-new))
-;;   (define x (ad-var tape 2.0))
-;;   (define y (ad-mul tape x x))    ; y = x^2
-;;   (ad-backward tape y)            ; propagate gradients
-;;   (ad-gradient tape x)            ; => 4.0 (dy/dx = 2x = 4)
+;; Two layers:
 ;;
-;; The tape records the computation graph during the forward pass.
-;; ad-backward runs reverse-mode differentiation from the output node.
-;; ad-gradient reads the accumulated gradient for any input variable.
+;; 1. Low-level Wengert tape (codegen builtins, fast, builtin ops only):
+;;      (define tape (ad-tape-new))
+;;      (define x (ad-var tape 2.0))
+;;      (define y (ad-mul tape x x))    ; y = x^2
+;;      (ad-backward tape y)
+;;      (ad-gradient tape x)            ; => 4.0
 ;;
-;; Operations: ad-add, ad-sub, ad-mul, ad-div, ad-sin, ad-cos,
-;;   ad-exp, ad-log, ad-sqrt, ad-neg, ad-abs, ad-relu, ad-sigmoid, ad-tanh
+;; 2. Stateful op-recording tape with CUSTOM ops (this file, pure Scheme):
+;;      (with-tape "loss" (lambda ()
+;;        (let* ((t (current-tape))
+;;               (x (tape-input t 3.0))
+;;               (y (tape-mul t x x))               ; builtin op (recorded)
+;;               (z (record-op! t (list y) (f (node-value y))   ; CUSTOM op
+;;                     (lambda (g) (list (* g (df (node-value y))))))))
+;;          (tape-gradient t z (list x)))))
+;;
+;; The stateful tape records every op with an explicit backward CLOSURE, so a
+;; loss can route through builtin AND hand-written custom ops on one tape, and
+;; reverse-mode flows through all of them. This is what unblocks differentiating
+;; reasoning ops (soft-unify, bp-message, encoder-forward, …) whose backward
+;; passes are not plain builtin compositions.
 ;;
 
 (provide ad-tape-new ad-const ad-var
          ad-add ad-sub ad-mul ad-div
          ad-sin ad-cos ad-exp ad-log ad-sqrt
          ad-neg ad-abs ad-relu ad-sigmoid ad-tanh
-         ad-backward ad-gradient ad-node-value)
+         ad-backward ad-gradient ad-node-value
+         ;; stateful op-recording tape + custom ops
+         with-tape current-tape make-tape
+         tape-input tape-const node-value node-grad
+         record-op! record-fd-op!
+         tape-add tape-sub tape-mul tape-div
+         tape-sin tape-cos tape-exp tape-log tape-neg
+         tape-square tape-sqrt tape-tanh tape-sigmoid tape-relu tape-pow
+         tape-gradient tape-snapshot tape-restore)
+
+;; ── Internal list helpers ──
+;; Self-contained (this is a core module loaded before the list stdlib, so we
+;; don't depend on for-each / map being available).
+(define (tape-for-each f lst)
+  (if (pair? lst)
+      (begin (f (car lst)) (tape-for-each f (cdr lst)))))
+(define (tape-map1 f lst)
+  (if (pair? lst)
+      (cons (f (car lst)) (tape-map1 f (cdr lst)))
+      '()))
+
+;; ── Value helpers ──
+;; A tape VALUE (and its gradient) is either a number (scalar) or a vector of
+;; numbers (a tensor / embedding). All grad arithmetic goes through these so the
+;; tape handles scalar and tensor nodes uniformly — needed for embedding/encoder
+;; custom ops whose inputs and adjoints are vectors.
+(define (val-zero-like v)
+  (if (vector? v) (make-vector (vector-length v) 0.0) 0.0))
+(define (val-add a b)
+  (if (vector? a)
+      (let* ((n (vector-length a)) (r (make-vector n 0.0)))
+        (let loop ((i 0))
+          (if (< i n)
+              (begin (vector-set! r i (+ (vector-ref a i) (vector-ref b i)))
+                     (loop (+ i 1)))))
+        r)
+      (+ a b)))
+
+;; ── Node ──
+;; A node is a mutable 2-slot vector: #(value grad). value/grad may be scalars or
+;; vectors. Created via the tape so it is registered for gradient zeroing.
+(define (node-value n) (vector-ref n 0))
+(define (node-grad n) (vector-ref n 1))
+(define (node-grad-set! n g) (vector-set! n 1 g))
+(define (node-grad-add! n g) (vector-set! n 1 (val-add (vector-ref n 1) g)))
+
+;; ── Tape ──
+;; A tape is a mutable 2-slot vector: #(ops nodes), each a list built by
+;; prepending (so `ops` is in reverse-chronological order — exactly the reverse
+;; topological order needed for the backward pass).
+;; An op is a list: (output-node input-nodes backward-closure).
+(define (make-tape) (vector '() '()))
+(define (tape-ops t) (vector-ref t 0))
+(define (tape-nodes t) (vector-ref t 1))
+
+(define (tape-register-node! t n)
+  (vector-set! t 1 (cons n (vector-ref t 1)))
+  n)
+
+(define (tape-record! t out ins backward)
+  (vector-set! t 0 (cons (list out ins backward) (vector-ref t 0)))
+  out)
+
+;; Leaf nodes (gradient targets / constants).
+(define (tape-input t value) (tape-register-node! t (vector value (val-zero-like value))))
+(define (tape-const t value) (tape-register-node! t (vector value (val-zero-like value))))
+
+;; ── Custom op ──
+;; inputs   : list of input nodes
+;; out-value: the forward output value (already computed)
+;; backward : (lambda (grad-out) -> list-of-input-grads), same length/order as inputs.
+;;            The closure captures whatever forward context it needs.
+;; Returns the new output node.
+(define (record-op! t inputs out-value backward)
+  (let ((out (tape-register-node! t (vector out-value (val-zero-like out-value)))))
+    (tape-record! t out inputs backward)
+    out))
+
+;; ── Finite-difference custom op ──
+;; record-fd-op! records a custom op whose backward is computed by CENTRAL finite
+;; differences on `fwd`, so ANY scalar function of the inputs (free-energy, a BP
+;; step, a geodesic distance, …) is differentiable on the tape WITHOUT a
+;; hand-written backward. `fwd` takes the list of input VALUES (scalars) and
+;; returns a scalar. Returns the output node. Use when an analytic backward is
+;; unavailable or not worth deriving; prefer record-op! with an exact backward
+;; when you have one.
+(define tape-fd-eps 1.0e-6)
+
+(define (tape-reverse lst)
+  (let loop ((l lst) (acc '()))
+    (if (pair? l) (loop (cdr l) (cons (car l) acc)) acc)))
+
+(define (tape-list-set lst i v)   ; functional update of element i
+  (if (= i 0)
+      (cons v (cdr lst))
+      (cons (car lst) (tape-list-set (cdr lst) (- i 1) v))))
+
+(define (record-fd-op! t inputs fwd)
+  (let* ((vals (tape-map1 node-value inputs))
+         (out-val (fwd vals)))
+    (record-op! t inputs out-val
+      (lambda (g)
+        (let loop ((i 0) (vs vals) (acc '()))
+          (if (pair? vs)
+              (let* ((vp (tape-list-set vals i (+ (car vs) tape-fd-eps)))
+                     (vm (tape-list-set vals i (- (car vs) tape-fd-eps)))
+                     (d  (/ (- (fwd vp) (fwd vm)) (* 2.0 tape-fd-eps))))
+                (loop (+ i 1) (cdr vs) (cons (* g d) acc)))
+              (tape-reverse acc)))))))
+
+;; ── Builtin ops (recorded with their backward rules) ──
+(define (tape-add t a b)
+  (let ((av (node-value a)) (bv (node-value b)))
+    (record-op! t (list a b) (+ av bv)
+                (lambda (g) (list g g)))))
+
+(define (tape-sub t a b)
+  (let ((av (node-value a)) (bv (node-value b)))
+    (record-op! t (list a b) (- av bv)
+                (lambda (g) (list g (- g))))))
+
+(define (tape-mul t a b)
+  (let ((av (node-value a)) (bv (node-value b)))
+    (record-op! t (list a b) (* av bv)
+                (lambda (g) (list (* g bv) (* g av))))))
+
+(define (tape-div t a b)
+  (let ((av (node-value a)) (bv (node-value b)))
+    (record-op! t (list a b) (/ av bv)
+                (lambda (g) (list (/ g bv)
+                                  (- (/ (* g av) (* bv bv))))))))
+
+(define (tape-sin t a)
+  (let ((av (node-value a)))
+    (record-op! t (list a) (sin av)
+                (lambda (g) (list (* g (cos av)))))))
+
+(define (tape-cos t a)
+  (let ((av (node-value a)))
+    (record-op! t (list a) (cos av)
+                (lambda (g) (list (* g (- (sin av))))))))
+
+(define (tape-exp t a)
+  (let ((av (node-value a)))
+    (record-op! t (list a) (exp av)
+                (lambda (g) (list (* g (exp av)))))))
+
+(define (tape-log t a)
+  (let ((av (node-value a)))
+    (record-op! t (list a) (log av)
+                (lambda (g) (list (/ g av))))))
+
+(define (tape-neg t a)
+  (let ((av (node-value a)))
+    (record-op! t (list a) (- av)
+                (lambda (g) (list (- g))))))
+
+(define (tape-square t a)
+  (let ((av (node-value a)))
+    (record-op! t (list a) (* av av)
+                (lambda (g) (list (* g 2.0 av))))))
+
+(define (tape-sqrt t a)
+  (let* ((av (node-value a)) (ov (sqrt av)))
+    (record-op! t (list a) ov
+                (lambda (g) (list (/ g (* 2.0 ov)))))))   ; d/da sqrt = 1/(2*out)
+
+(define (tape-tanh t a)
+  (let* ((av (node-value a)) (ov (tanh av)))
+    (record-op! t (list a) ov
+                (lambda (g) (list (* g (- 1.0 (* ov ov))))))))  ; 1 - tanh^2
+
+(define (tape-sigmoid t a)
+  (let* ((av (node-value a)) (ov (/ 1.0 (+ 1.0 (exp (- av))))))
+    (record-op! t (list a) ov
+                (lambda (g) (list (* g ov (- 1.0 ov)))))))  ; out*(1-out)
+
+(define (tape-relu t a)
+  (let ((av (node-value a)))
+    (record-op! t (list a) (if (> av 0.0) av 0.0)
+                (lambda (g) (list (if (> av 0.0) g 0.0))))))
+
+;; tape-pow: a^p for a CONSTANT exponent p (a is a node, p a number).
+(define (tape-pow t a p)
+  (let ((av (node-value a)))
+    (record-op! t (list a) (expt av p)
+                (lambda (g) (list (* g p (expt av (- p 1.0))))))))
+
+;; ── Reverse pass ──
+;; Distribute a list of input-grads onto a list of input-nodes (pairwise).
+(define (tape-distribute! ins grads)
+  (if (and (pair? ins) (pair? grads))
+      (begin
+        (node-grad-add! (car ins) (car grads))
+        (tape-distribute! (cdr ins) (cdr grads)))))
+
+;; Zero every node's gradient (so gradient can be called repeatedly). The zero
+;; matches the node's value shape (0.0 for scalars, a zero vector for tensors).
+(define (tape-zero-grads! t)
+  (tape-for-each (lambda (n) (node-grad-set! n (val-zero-like (node-value n)))) (tape-nodes t)))
+
+;; tape-gradient: reverse-mode from `output`, then read gradients at `targets`.
+;; `targets` is a list of nodes; returns a list of gradients in the same order.
+(define (tape-gradient t output targets)
+  (tape-zero-grads! t)
+  (node-grad-set! output 1.0)
+  (tape-for-each
+    (lambda (op)
+      (let* ((out (car op))
+             (ins (cadr op))
+             (backward (caddr op))
+             (g (node-grad out)))
+        ;; process tensor adjoints unconditionally; skip only zero scalars
+        (if (or (vector? g) (not (= g 0.0)))
+            (tape-distribute! ins (backward g)))))
+    (tape-ops t))            ; reverse-chronological (prepended) = reverse topo order
+  (tape-map1 node-grad targets))
+
+;; ── snapshot / restore ──
+;; Capture the current node VALUES (for replay); restore writes them back.
+(define (tape-snapshot t)
+  (tape-map1 node-value (tape-nodes t)))
+
+(define (tape-restore t snapshot)
+  (let loop ((ns (tape-nodes t)) (vs snapshot))
+    (if (and (pair? ns) (pair? vs))
+        (begin
+          (vector-set! (car ns) 0 (car vs))
+          (loop (cdr ns) (cdr vs)))))
+  t)
+
+;; ── Dynamic "current tape" (with-tape / current-tape) ──
+(define *eshkol-current-tape* #f)
+(define (current-tape) *eshkol-current-tape*)
+(define (with-tape name thunk)
+  (let ((prev *eshkol-current-tape*)
+        (tape (make-tape)))
+    (set! *eshkol-current-tape* tape)
+    (let ((result (thunk)))
+      (set! *eshkol-current-tape* prev)
+      result)))
 
 ;; Note: ad-value is exposed as a codegen builtin alias for ad-node-value
-;; (see llvm_codegen.cpp). This gives the user-facing name `ad-value`
-;; alongside the historical internal name `ad-node-value`.
+;; (see llvm_codegen.cpp).
