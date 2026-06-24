@@ -1594,6 +1594,23 @@ public:
         function_return_types["make-workspace"] = BuiltinTypes::Value;
         function_return_types["ws-register!"] = BuiltinTypes::Boolean;
         function_return_types["ws-step!"] = BuiltinTypes::Value;
+        // Differentiable external memory (core.dnc)
+        function_return_types["make-dnc-memory"] = BuiltinTypes::Value;
+        function_return_types["dnc-content-address"] = BuiltinTypes::Value;
+        function_return_types["dnc-loc-address"] = BuiltinTypes::Value;
+        function_return_types["dnc-read"] = BuiltinTypes::Value;
+        function_return_types["dnc-write!"] = BuiltinTypes::Value;
+        function_return_types["dnc-alloc-weights"] = BuiltinTypes::Value;
+        function_return_types["dnc-read-grad"] = BuiltinTypes::Value;
+        function_return_types["dnc-memory?"] = BuiltinTypes::Boolean;
+        // SDNC weight-program (core.sdnc)
+        function_return_types["sdnc-program"] = BuiltinTypes::Value;
+        function_return_types["sdnc-run"] = BuiltinTypes::Value;
+        function_return_types["sdnc-weight-grad"] = BuiltinTypes::Value;
+        function_return_types["sdnc-params"] = BuiltinTypes::Value;
+        function_return_types["sdnc-set-params!"] = BuiltinTypes::Value;
+        function_return_types["sdnc-improve!"] = BuiltinTypes::Value;
+        function_return_types["sdnc?"] = BuiltinTypes::Boolean;
         // Reverse-mode AD tape
         function_return_types["ad-tape-new"] = BuiltinTypes::Value;
         function_return_types["ad-tape-release"] = BuiltinTypes::Value;
@@ -9331,6 +9348,21 @@ private:
             {ESHKOL_MAKE_WORKSPACE_OP,      "make-workspace"},
             {ESHKOL_WS_REGISTER_OP,         "ws-register!"},
             {ESHKOL_WS_STEP_OP,             "ws-step!"},
+            {ESHKOL_DNC_MAKE_OP,            "make-dnc-memory"},
+            {ESHKOL_DNC_CONTENT_ADDR_OP,    "dnc-content-address"},
+            {ESHKOL_DNC_LOC_ADDR_OP,        "dnc-loc-address"},
+            {ESHKOL_DNC_READ_OP,            "dnc-read"},
+            {ESHKOL_DNC_WRITE_OP,           "dnc-write!"},
+            {ESHKOL_DNC_ALLOC_WEIGHTS_OP,   "dnc-alloc-weights"},
+            {ESHKOL_DNC_READ_GRAD_OP,       "dnc-read-grad"},
+            {ESHKOL_DNC_PRED_OP,            "dnc-memory?"},
+            {ESHKOL_SDNC_PROGRAM_OP,        "sdnc-program"},
+            {ESHKOL_SDNC_RUN_OP,            "sdnc-run"},
+            {ESHKOL_SDNC_WEIGHT_GRAD_OP,    "sdnc-weight-grad"},
+            {ESHKOL_SDNC_PARAMS_OP,         "sdnc-params"},
+            {ESHKOL_SDNC_SET_PARAMS_OP,     "sdnc-set-params!"},
+            {ESHKOL_SDNC_IMPROVE_OP,        "sdnc-improve!"},
+            {ESHKOL_SDNC_PRED_OP,           "sdnc?"},
         };
         return m;
     }
@@ -9733,6 +9765,36 @@ private:
                 return logic_workspace_->codegenWSRegister(op);
             case ESHKOL_WS_STEP_OP:
                 return logic_workspace_->codegenWSStep(op);
+            case ESHKOL_DNC_MAKE_OP:
+                return system_->dncMakeBuiltin(op);
+            case ESHKOL_DNC_CONTENT_ADDR_OP:
+                return system_->dncContentAddressBuiltin(op);
+            case ESHKOL_DNC_LOC_ADDR_OP:
+                return system_->dncLocAddressBuiltin(op);
+            case ESHKOL_DNC_READ_OP:
+                return system_->dncReadBuiltin(op);
+            case ESHKOL_DNC_WRITE_OP:
+                return system_->dncWriteBuiltin(op);
+            case ESHKOL_DNC_ALLOC_WEIGHTS_OP:
+                return system_->dncAllocWeightsBuiltin(op);
+            case ESHKOL_DNC_READ_GRAD_OP:
+                return system_->dncReadGradBuiltin(op);
+            case ESHKOL_DNC_PRED_OP:
+                return system_->dncPredBuiltin(op);
+            case ESHKOL_SDNC_PROGRAM_OP:
+                return system_->sdncProgramBuiltin(op);
+            case ESHKOL_SDNC_RUN_OP:
+                return system_->sdncRunBuiltin(op);
+            case ESHKOL_SDNC_WEIGHT_GRAD_OP:
+                return system_->sdncWeightGradBuiltin(op);
+            case ESHKOL_SDNC_PARAMS_OP:
+                return system_->sdncParamsBuiltin(op);
+            case ESHKOL_SDNC_SET_PARAMS_OP:
+                return system_->sdncSetParamsBuiltin(op);
+            case ESHKOL_SDNC_IMPROVE_OP:
+                return system_->sdncImproveBuiltin(op);
+            case ESHKOL_SDNC_PRED_OP:
+                return system_->sdncPredBuiltin(op);
             case ESHKOL_FACT_PRED_OP:
                 return codegenFactPred(op);
             case ESHKOL_FACTOR_GRAPH_PRED_OP:
@@ -22392,6 +22454,11 @@ private:
             "make-factor-graph", "fg-add-factor!", "fg-infer!",
             "free-energy", "expected-free-energy",
             "make-workspace", "ws-register!", "ws-step!",
+            "make-dnc-memory", "dnc-content-address", "dnc-loc-address",
+            "dnc-read", "dnc-write!", "dnc-alloc-weights", "dnc-read-grad",
+            "dnc-memory?",
+            "sdnc-program", "sdnc-run", "sdnc-weight-grad", "sdnc-params",
+            "sdnc-set-params!", "sdnc-improve!", "sdnc?",
             "ad-tape-new", "ad-tape-release", "ad-const", "ad-var",
             "ad-add", "ad-sub", "ad-mul", "ad-div",
             "ad-sin", "ad-cos", "ad-exp", "ad-log", "ad-sqrt",
@@ -23514,6 +23581,21 @@ private:
                     case ESHKOL_MAKE_WORKSPACE_OP:
                     case ESHKOL_WS_REGISTER_OP:
                     case ESHKOL_WS_STEP_OP:
+                    case ESHKOL_DNC_MAKE_OP:
+                    case ESHKOL_DNC_CONTENT_ADDR_OP:
+                    case ESHKOL_DNC_LOC_ADDR_OP:
+                    case ESHKOL_DNC_READ_OP:
+                    case ESHKOL_DNC_WRITE_OP:
+                    case ESHKOL_DNC_ALLOC_WEIGHTS_OP:
+                    case ESHKOL_DNC_READ_GRAD_OP:
+                    case ESHKOL_DNC_PRED_OP:
+                    case ESHKOL_SDNC_PROGRAM_OP:
+                    case ESHKOL_SDNC_RUN_OP:
+                    case ESHKOL_SDNC_WEIGHT_GRAD_OP:
+                    case ESHKOL_SDNC_PARAMS_OP:
+                    case ESHKOL_SDNC_SET_PARAMS_OP:
+                    case ESHKOL_SDNC_IMPROVE_OP:
+                    case ESHKOL_SDNC_PRED_OP:
                     case ESHKOL_MAKE_PARAMETER_OP:    // call_op holding the init expr (parse-transformed)
                     case ESHKOL_EXTERN_OP:
                         for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
