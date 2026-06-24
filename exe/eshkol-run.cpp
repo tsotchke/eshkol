@@ -2100,19 +2100,35 @@ static std::string find_lib_dir()
     auto cwd = eshkol::platform::current_directory();
     auto exe_dir = eshkol::platform::executable_directory();
 
+    // Executable-relative first: stdlib + core.* belong to the Eshkol install,
+    // not to the cwd. A downstream project (run from its own cwd) may have its
+    // OWN lib/ that would otherwise shadow Eshkol's — which breaks stdlib
+    // submodule discovery (collect_all_submodules parses <lib>/stdlib.esk), so
+    // e.g. (require core.manifold) is not recognised as precompiled and AOT
+    // tries to source-resolve it and fails. That makes the -r run-cache fall
+    // back to the in-process JIT every run.
     std::vector<std::filesystem::path> candidates = {
-        cwd / "lib",
-        cwd.parent_path() / "lib",
-        cwd / "share/eshkol/lib",
         exe_dir / "lib",
         exe_dir / "../lib",
         exe_dir / "../share/eshkol/lib",
+        cwd / "lib",
+        cwd.parent_path() / "lib",
+        cwd / "share/eshkol/lib",
     };
 
 #ifndef _WIN32
     candidates.emplace_back("/usr/local/share/eshkol/lib");
     candidates.emplace_back("/usr/share/eshkol/lib");
 #endif
+
+    // The Eshkol lib is the one that actually carries stdlib.esk. Prefer the
+    // first candidate that has it (skips a downstream project's unrelated lib/).
+    for (const auto& c : candidates) {
+        std::error_code ec;
+        if (std::filesystem::exists(c / "stdlib.esk", ec)) {
+            return c.string();
+        }
+    }
 
     return eshkol::platform::find_first_existing(candidates);
 }
@@ -2164,6 +2180,21 @@ static std::string resolve_module_path(const std::string& module_name, const std
     std::filesystem::path current_path = std::filesystem::path(base_dir) / path_part;
     if (std::filesystem::exists(current_path)) {
         return std::filesystem::canonical(current_path).string();
+    }
+
+    // Try the cwd / project root. A dotted module like `src.core.encoder.x` is
+    // rooted at the project, not at the requiring file's directory — so a file in
+    // tests/gates/ that (require src.core...) must resolve against ./src/..., not
+    // tests/gates/src/.... The in-process JIT resolver already searches cwd; match
+    // it here so the AOT path (and thus the -r persistent run-cache) resolves the
+    // SAME modules. Without this, any program whose required user module is found
+    // by the JIT but not by AOT falls back to in-process JIT on every run — slow,
+    // and on arm64 Linux/Windows it also hits the AArch64 Branch26 JIT limit.
+    if (base_dir != ".") {
+        std::filesystem::path cwd_path = std::filesystem::path(".") / path_part;
+        if (std::filesystem::exists(cwd_path)) {
+            return std::filesystem::canonical(cwd_path).string();
+        }
     }
 
     // Try library directory
