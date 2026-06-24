@@ -36095,34 +36095,35 @@ extern "C" {
 // WebAssembly target initialization flag
 static bool g_wasm_target_initialized = false;
 
-// Check if WebAssembly target is available at compile time by checking Targets.def
-// When building with StableHLO's LLVM (ESHKOL_XLA_FULL_MLIR), we need to check
-// what targets were configured. The lite build uses system LLVM17 which includes all targets.
-#ifdef ESHKOL_XLA_FULL_MLIR
-// StableHLO/MLIR LLVM build - WebAssembly target only available if CI is configured with it
-#define ESHKOL_HAS_WASM_TARGET 0
-#else
-// System LLVM17 includes all standard targets including WebAssembly
-#define ESHKOL_HAS_WASM_TARGET 1
-#endif
-
 static bool initialize_wasm_target() {
     if (g_wasm_target_initialized) return true;
 
-#if ESHKOL_HAS_WASM_TARGET
-    // Initialize WebAssembly target
-    LLVMInitializeWebAssemblyTargetInfo();
-    LLVMInitializeWebAssemblyTarget();
-    LLVMInitializeWebAssemblyTargetMC();
-    LLVMInitializeWebAssemblyAsmPrinter();
+    // Initialize every target this LLVM was actually built with, using the
+    // always-declared C++ TargetSelect API. We deliberately do NOT call the
+    // per-target C symbols (LLVMInitializeWebAssembly*) here: those are only
+    // declared when the WebAssembly target was compiled into LLVM, so calling
+    // them unconditionally fails to build against a reduced-target LLVM (some
+    // distro/MSYS2 packages configure only e.g. AArch64;ARM;RISCV;X86, and
+    // StableHLO/XLA LLVM builds may omit WebAssembly too). InitializeAll* is a
+    // no-op for targets not present and idempotent if already called elsewhere.
+    InitializeAllTargetInfos();
+    InitializeAllTargets();
+    InitializeAllTargetMCs();
+    InitializeAllAsmParsers();
+    InitializeAllAsmPrinters();
+
+    // Confirm WebAssembly is genuinely available in this build rather than
+    // assuming it from the build flavor. The downstream wasm emit path also
+    // looks the target up, but checking here gives a precise error early.
+    std::string lookup_error;
+    if (!TargetRegistry::lookupTarget("wasm32-unknown-unknown", lookup_error)) {
+        eshkol_error("WebAssembly target not available in this LLVM build "
+                     "(configured targets do not include WebAssembly): %s",
+                     lookup_error.c_str());
+        return false;
+    }
     g_wasm_target_initialized = true;
     return true;
-#else
-    // WebAssembly target not available in this LLVM build
-    // XLA builds using StableHLO LLVM need CI to enable WebAssembly target
-    eshkol_error("WebAssembly target not available. XLA build needs LLVM with WebAssembly enabled.");
-    return false;
-#endif
 }
 
 int eshkol_compile_llvm_ir_to_wasm(LLVMModuleRef module_ref, uint8_t** output_buffer, size_t* output_size) {
