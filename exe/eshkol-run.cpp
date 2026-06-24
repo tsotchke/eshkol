@@ -390,6 +390,59 @@ bool sourceRequiresInProcessJit(const std::string& source) {
     return false;
 }
 
+// The persistent run-cache AOT binary dynamically links libLLVM (through the
+// eshkol runtime, via ESHKOL_HOST_LLVM_LINK_ARGS). On ELF/nix it can have no
+// usable rpath to libLLVM, so it dies at exec with
+// "libLLVM.so.NN: cannot open shared object file". eshkol-run itself already
+// resolves libLLVM (it's linked the same way), so make any child we spawn find
+// it too: prepend the LLVM lib dir(s) — parsed from the build-time link args —
+// to the loader search path. macOS resolves via the dylib install_name and
+// Windows via PATH, but doing it everywhere is harmless and robust.
+static void ensureLLVMRuntimeSearchPathForChildren() {
+    static bool done = false;
+    if (done) return;
+    done = true;
+
+    const std::string link_args = ESHKOL_HOST_LLVM_LINK_ARGS;
+    std::vector<std::string> dirs;
+    size_t pos = 0;
+    while (pos <= link_args.size()) {
+        size_t semi = link_args.find(';', pos);
+        std::string tok = link_args.substr(
+            pos, semi == std::string::npos ? std::string::npos : semi - pos);
+        if (tok.rfind("-L", 0) == 0 && tok.size() > 2) {
+            dirs.push_back(tok.substr(2));
+        }
+        if (semi == std::string::npos) break;
+        pos = semi + 1;
+    }
+    if (dirs.empty()) return;
+
+#if defined(__APPLE__)
+    const char* var = "DYLD_LIBRARY_PATH";
+    const char sep = ':';
+#elif defined(_WIN32)
+    const char* var = "PATH";
+    const char sep = ';';
+#else
+    const char* var = "LD_LIBRARY_PATH";
+    const char sep = ':';
+#endif
+    std::string combined;
+    for (const auto& d : dirs) {
+        if (!combined.empty()) combined += sep;
+        combined += d;
+    }
+    if (const char* existing = std::getenv(var)) {
+        if (existing[0] != '\0') { combined += sep; combined += existing; }
+    }
+#if defined(_WIN32)
+    _putenv_s(var, combined.c_str());
+#else
+    setenv(var, combined.c_str(), 1);
+#endif
+}
+
 std::optional<int> tryRunFromPersistentJitCache(const char* argv0,
                                                 const std::string& filepath,
                                                 uint8_t no_stdlib,
@@ -404,6 +457,8 @@ std::optional<int> tryRunFromPersistentJitCache(const char* argv0,
         jitCacheTrace("bypass", "disabled");
         return std::nullopt;
     }
+    // Ensure any cached/freshly-built run binary we exec can find libLLVM.
+    ensureLLVMRuntimeSearchPathForChildren();
 
     std::filesystem::path source_path(filepath);
     std::error_code ec;
