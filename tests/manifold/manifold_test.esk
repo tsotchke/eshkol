@@ -1,0 +1,43 @@
+;; core.manifold — Euclidean / Poincaré / spherical geometry + full DG surface.
+;; Verifies geodesics, exp/log roundtrip, and curvature closed forms vs analytic.
+(require core.manifold)
+(define pass 0)(define fail 0)
+(define (approx= a b) (< (abs (- a b)) 1e-4))
+(define (check nm ok) (if ok (begin (set! pass (+ pass 1))(display "PASS: ")(display nm)(newline))
+                            (begin (set! fail (+ fail 1))(display "FAIL: ")(display nm)(newline))))
+
+(define H (make-hyperbolic-manifold 3))
+(define E (make-euclidean-manifold 3))
+(define S (make-spherical-manifold 3))
+(define a #(0.1 0.2 0.0))(define b #(0.3 -0.1 0.0))
+
+;; geodesic distance vs analytic Poincaré
+(define na 0.05)(define nb 0.10)
+(define d2 (+ 0.04 0.09))
+(define arg (+ 1.0 (/ (* 2.0 d2) (* (- 1.0 na)(- 1.0 nb)))))
+(check "Poincaré distance = analytic" (approx= (manifold-distance H a b) (log (+ arg (sqrt (- (* arg arg) 1.0))))))
+(check "Euclidean distance = L2" (approx= (manifold-distance E a b) (sqrt 0.13)))
+;; exp/log roundtrip
+(define v #(0.05 -0.03 0.02))
+(define rt (manifold-log-map H a (manifold-exp-map H a v)))
+(check "Poincaré exp/log roundtrip" (and (approx= (vector-ref rt 0) 0.05) (approx= (vector-ref rt 1) -0.03)))
+;; curvature closed forms
+(check "scalar curvature E=0"  (approx= (manifold-scalar-curvature E) 0.0))
+(check "scalar curvature H=-6" (approx= (manifold-scalar-curvature H) -6.0))
+(check "scalar curvature S=+6" (approx= (manifold-scalar-curvature S) 6.0))
+;; Christoffel: euclidean zero, hyperbolic closed form + symmetry
+(check "Euclidean Christoffel = 0" (approx= (christoffel-symbol E a 0 1 0) 0.0))
+(define lam (/ 2.0 (- 1.0 na)))
+(check "Hyperbolic Γ^0_00 = λ x0" (approx= (christoffel-symbol H a 0 0 0) (* lam 0.1)))
+(check "Christoffel symmetric in lower idx" (approx= (christoffel-symbol H a 2 0 1) (christoffel-symbol H a 2 1 0)))
+;; metric + Ricci (Einstein) + Riemann (constant curvature)
+(check "metric g_00 = λ²" (approx= (metric-component H a 0 0) (* lam lam)))
+(check "Ricci_00 = -(n-1) g_00" (approx= (ricci-component H a 0 0) (* -2.0 lam lam)))
+(check "Riemann R_0101 = -λ⁴" (approx= (riemann-component H a 0 1 0 1) (- (* lam lam lam lam))))
+;; materializers (incl. parallel path at dim>=48)
+(define Hbig (make-hyperbolic-manifold 50))
+(define xb (make-vector 50 0.01))
+(check "parallel metric materialize" (> (vector-ref (vector-ref (manifold-metric Hbig xb) 0) 0) 0.0))
+(check "Christoffel tensor materialize" (= (vector-length (manifold-christoffel H a)) 3))
+
+(newline)(display "Passed: ")(display pass)(newline)(display "Failed: ")(display fail)(newline)
