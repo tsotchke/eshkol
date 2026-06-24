@@ -35,6 +35,9 @@
 #include <vector>
 #include <set>
 #include <map>
+#if defined(__APPLE__)
+#include <mach-o/dyld.h>  // _dyld_image_count/_dyld_get_image_name — child lib search path
+#endif
 #include <algorithm>
 #include <sstream>
 #include <cstring>
@@ -390,33 +393,75 @@ bool sourceRequiresInProcessJit(const std::string& source) {
     return false;
 }
 
-// The persistent run-cache AOT binary dynamically links libLLVM (through the
-// eshkol runtime, via ESHKOL_HOST_LLVM_LINK_ARGS). On ELF/nix it can have no
-// usable rpath to libLLVM, so it dies at exec with
-// "libLLVM.so.NN: cannot open shared object file". eshkol-run itself already
-// resolves libLLVM (it's linked the same way), so make any child we spawn find
-// it too: prepend the LLVM lib dir(s) — parsed from the build-time link args —
-// to the loader search path. macOS resolves via the dylib install_name and
-// Windows via PATH, but doing it everywhere is harmless and robust.
-static void ensureLLVMRuntimeSearchPathForChildren() {
+// A persistent run-cache AOT binary is a normal dynamically-linked executable:
+// it needs its whole shared-library closure (libLLVM, libstdc++/libc++, zlib,
+// libffi, …) at exec time. On systems where those libraries live OUTSIDE the
+// default loader search path — Nix (/nix/store), Homebrew, custom prefixes — the
+// child dies with "libX.so.NN: cannot open shared object file". eshkol-run itself
+// has ALREADY resolved that exact closure (it links the same way), so the robust,
+// platform-independent fix is to hand the child the directories the PARENT
+// actually loaded its libraries from, rather than guessing per-library.
+//
+// We seed from the build-time LLVM -L dirs, then add every directory the running
+// process has a shared library mapped from (/proc/self/maps on Linux, the dyld
+// image list on macOS). Prepended to the platform loader var for any child we
+// spawn (the run-cache binary).
+static void ensureChildLibrarySearchPath() {
     static bool done = false;
     if (done) return;
     done = true;
 
-    const std::string link_args = ESHKOL_HOST_LLVM_LINK_ARGS;
-    std::vector<std::string> dirs;
-    size_t pos = 0;
-    while (pos <= link_args.size()) {
-        size_t semi = link_args.find(';', pos);
-        std::string tok = link_args.substr(
-            pos, semi == std::string::npos ? std::string::npos : semi - pos);
-        if (tok.rfind("-L", 0) == 0 && tok.size() > 2) {
-            dirs.push_back(tok.substr(2));
+    std::vector<std::string> order;          // preserve insertion order
+    std::set<std::string> seen;
+    auto add_dir = [&](std::string d) {
+        if (d.empty()) return;
+        while (d.size() > 1 && d.back() == '/') d.pop_back();
+        if (seen.insert(d).second) order.push_back(d);
+    };
+
+    // 1) LLVM lib dirs from the build-time link args.
+    {
+        const std::string link_args = ESHKOL_HOST_LLVM_LINK_ARGS;
+        size_t pos = 0;
+        while (pos <= link_args.size()) {
+            size_t semi = link_args.find(';', pos);
+            std::string tok = link_args.substr(
+                pos, semi == std::string::npos ? std::string::npos : semi - pos);
+            if (tok.rfind("-L", 0) == 0 && tok.size() > 2) add_dir(tok.substr(2));
+            if (semi == std::string::npos) break;
+            pos = semi + 1;
         }
-        if (semi == std::string::npos) break;
-        pos = semi + 1;
     }
-    if (dirs.empty()) return;
+
+    // 2) Every directory the parent process actually loaded a library from.
+#if defined(__linux__)
+    {
+        std::ifstream maps("/proc/self/maps");
+        std::string line;
+        while (std::getline(maps, line)) {
+            size_t slash = line.find('/');
+            if (slash == std::string::npos) continue;
+            std::string path = line.substr(slash);
+            if (path.find(".so") == std::string::npos) continue;
+            size_t last = path.find_last_of('/');
+            if (last != std::string::npos && last > 0) add_dir(path.substr(0, last));
+        }
+    }
+#elif defined(__APPLE__)
+    {
+        uint32_t n = _dyld_image_count();
+        for (uint32_t i = 0; i < n; i++) {
+            const char* nm = _dyld_get_image_name(i);
+            if (!nm) continue;
+            std::string p(nm);
+            if (p.find(".dylib") == std::string::npos) continue;
+            size_t last = p.find_last_of('/');
+            if (last != std::string::npos && last > 0) add_dir(p.substr(0, last));
+        }
+    }
+#endif
+
+    if (order.empty()) return;
 
 #if defined(__APPLE__)
     const char* var = "DYLD_LIBRARY_PATH";
@@ -429,7 +474,7 @@ static void ensureLLVMRuntimeSearchPathForChildren() {
     const char sep = ':';
 #endif
     std::string combined;
-    for (const auto& d : dirs) {
+    for (const auto& d : order) {
         if (!combined.empty()) combined += sep;
         combined += d;
     }
@@ -458,7 +503,7 @@ std::optional<int> tryRunFromPersistentJitCache(const char* argv0,
         return std::nullopt;
     }
     // Ensure any cached/freshly-built run binary we exec can find libLLVM.
-    ensureLLVMRuntimeSearchPathForChildren();
+    ensureChildLibrarySearchPath();
 
     std::filesystem::path source_path(filepath);
     std::error_code ec;
