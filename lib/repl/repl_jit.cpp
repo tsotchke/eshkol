@@ -37,6 +37,10 @@
 #include <llvm/MC/TargetRegistry.h>              // For TargetRegistry
 #include <llvm/Target/TargetMachine.h>           // For TargetMachine
 #include <llvm/TargetParser/Host.h>              // For sys::getHostCPUName/Features
+#include <llvm/IR/LegacyPassManager.h>           // For emitting stdlib.bc -> object
+#include <llvm/Support/xxhash.h>                 // For content-hashing stdlib.bc
+#include <llvm/Support/FileSystem.h>             // For atomic cache writes
+#include <llvm/ADT/StringExtras.h>               // For utohexstr
 
 #include <iostream>
 #include <fstream>
@@ -540,6 +544,16 @@ void ReplJITContext::initializeJIT() {
     }
     // Ensure PIC relocation model (matches stdlib.o compilation)
     jtmb->setRelocationModel(Reloc::PIC_);
+    // CRITICAL (ARM64 -r at scale): stdlib.bc is large (~58 MB of IR). When JITLink
+    // maps the compiled object it can land >128 MB from the runtime symbols that live
+    // in the main eshkol-run executable (e.g. ___eshkol_init_parallel_workers), which
+    // exceeds the AArch64 Branch26 (±128 MB) PC-relative `bl` range. JITLink then aborts
+    // with "relocation target ... out of range of Branch26PCRel fixup" — even a bare
+    // program that pulls in stdlib fails to materialize. The LARGE code model emits far
+    // calls as absolute movz/movk into a scratch reg + `blr` (no Branch26), so every
+    // call reaches any address regardless of how far apart the JIT places objects.
+    // (Small/Medium only affect data; code branch range needs Large.)
+    jtmb->setCodeModel(CodeModel::Large);
     // CRITICAL: Match the batch compiler's optimization level (CodeGenOptLevel::None = -O0).
     // JITTargetMachineBuilder::detectHost() defaults to CodeGenOptLevel::Default (-O2),
     // which causes LLVM to generate different struct argument stack layouts on ARM64.
@@ -1985,6 +1999,117 @@ bool ReplJITContext::loadStdlib() {
             consumeError(pw_init.takeError());
         }
     };
+
+    // === Fast path #0: cached, JIT-ABI-matched stdlib OBJECT ===
+    // SelectionDAG codegen of the ~55 MB stdlib IR dominates every COLD `-r` run
+    // (~58 s, profiler-confirmed) and is repeated whenever the per-program
+    // run-cache is forfeited — e.g. any program that `(require ...)`s an edited
+    // user module. We emit the stdlib object ONCE (keyed on stdlib.bc content +
+    // target triple) and `addObjectFile` it on every later run: no IR parse, no
+    // cross-context clone, no SelectionDAG.
+    //
+    // Why this is ABI-safe where the legacy AOT stdlib.o was not: we emit with
+    // the EXACT TargetMachine config the JIT uses for user code (host CPU, PIC,
+    // CodeModel::Large, CodeGenOptLevel::None). The historic 3-arg corruption
+    // came from an OptLevel/scalarization mismatch vs the JIT — matching it here
+    // removes that boundary. And addObjectFile -> JITLink inserts AArch64
+    // Branch26 range-extension stubs, the cross-platform fix (Mach-O/ELF/COFF)
+    // for "relocation target out of range" once stdlib outgrows ±128 MB.
+    {
+        std::string bc_path = findStdlibBitcode();
+        if (!bc_path.empty()) {
+            if (auto bc_buf = MemoryBuffer::getFile(bc_path)) {
+                uint64_t content_hash = llvm::xxh3_64bits((*bc_buf)->getBuffer());
+                std::string triple = llvm::sys::getProcessTriple();
+                for (char& c : triple)
+                    if (c == '/' || c == '\\' || c == ':') c = '_';
+                std::filesystem::path bc_fs(bc_path);
+                // Bump the version tag whenever the emit config below changes
+                // (code model, sections, opt level) so an existing cached object
+                // built with a different config is not reused.
+                std::filesystem::path cache_o =
+                    bc_fs.parent_path() /
+                    ("stdlib-jit-v2-" + llvm::utohexstr(content_hash) + "-" + triple + ".o");
+
+                std::error_code ec;
+                bool have_obj = std::filesystem::exists(cache_o, ec);
+                if (!have_obj) {
+                    auto emit_ctx = std::make_unique<LLVMContext>();
+                    auto emit_mod =
+                        parseBitcodeFile((*bc_buf)->getMemBufferRef(), *emit_ctx);
+                    if (emit_mod) {
+                        auto emit_jtmb = orc::JITTargetMachineBuilder::detectHost();
+                        if (emit_jtmb) {
+                            emit_jtmb->setRelocationModel(Reloc::PIC_);
+                            emit_jtmb->setCodeModel(CodeModel::Large);
+                            // Emit each function/global into its own section. The
+                            // large code model is incomplete for AArch64 on ELF/COFF
+                            // (it works on Mach-O), so a 100 MB+ stdlib .text still
+                            // emits `bl` (Branch26) for intra-.text calls that exceed
+                            // the ±128 MB range. With per-function sections, JITLink
+                            // places each function independently and inserts Branch26
+                            // range-extension stubs for out-of-range calls — the
+                            // format-agnostic Branch26 fix (ELF/COFF/Mach-O alike).
+                            emit_jtmb->getOptions().FunctionSections = true;
+                            emit_jtmb->getOptions().DataSections = true;
+#if LLVM_VERSION_MAJOR >= 18
+                            emit_jtmb->setCodeGenOptLevel(CodeGenOptLevel::None);
+#else
+                            emit_jtmb->setCodeGenOptLevel(CodeGenOpt::None);
+#endif
+                            if (auto emit_tm = emit_jtmb->createTargetMachine()) {
+                                (*emit_mod)->setDataLayout(
+                                    (*emit_tm)->createDataLayout());
+                                (*emit_mod)->setTargetTriple(
+                                    (*emit_tm)->getTargetTriple());
+                                std::filesystem::path tmp_o = cache_o;
+                                tmp_o += ".tmp";
+                                std::error_code wec;
+                                raw_fd_ostream os(tmp_o.string(), wec,
+                                                  sys::fs::OF_None);
+                                if (!wec) {
+                                    legacy::PassManager pm;
+                                    if (!(*emit_tm)->addPassesToEmitFile(
+                                            pm, os, nullptr,
+                                            CodeGenFileType::ObjectFile)) {
+                                        pm.run(**emit_mod);
+                                        os.flush();
+                                        os.close();
+                                        std::filesystem::rename(tmp_o, cache_o, ec);
+                                        have_obj = !ec &&
+                                                   std::filesystem::exists(cache_o, ec);
+                                    }
+                                }
+                            } else {
+                                consumeError(emit_tm.takeError());
+                            }
+                        } else {
+                            consumeError(emit_jtmb.takeError());
+                        }
+                    } else {
+                        consumeError(emit_mod.takeError());
+                    }
+                }
+
+                if (have_obj) {
+                    if (auto obj_buf = MemoryBuffer::getFile(cache_o.string())) {
+                        auto& dylib = jit_->getMainJITDylib();
+                        if (auto err =
+                                jit_->addObjectFile(dylib, std::move(*obj_buf))) {
+                            consumeError(std::move(err));  // fall through to IR path
+                        } else {
+                            registerStdlibSymbols();
+                            run_stdlib_initializers(cache_o.string());
+                            std::cerr << "[REPL] Loaded stdlib from cached object: "
+                                      << cache_o.string() << std::endl;
+                            stdlib_loaded_ = true;
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     // Preferred fast path: load precompiled stdlib.bc as an ORC IR module.
     // Eshkol's internal function ABI passes tagged values by LLVM aggregate
