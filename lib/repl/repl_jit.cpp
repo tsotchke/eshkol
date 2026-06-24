@@ -540,6 +540,18 @@ void ReplJITContext::initializeJIT() {
     }
     // Ensure PIC relocation model (matches stdlib.o compilation)
     jtmb->setRelocationModel(Reloc::PIC_);
+    // CRITICAL: Use the Large code model on AArch64 so JIT-linked stdlib.bc
+    // (hundreds of functions, >128 MB span once materialised) does not overflow
+    // the ±128 MB Branch26 (BL/B) PC-relative range. The AOT batch compiler
+    // already selects CodeModel::Large for AArch64 (see llvm_codegen.cpp); the
+    // JIT must match or cross-function calls into stdlib fail to materialise
+    // ("relocation target ... is out of range of Branch26PCRel fixup").
+    {
+        const llvm::Triple& jt = jtmb->getTargetTriple();
+        if (jt.isAArch64()) {
+            jtmb->setCodeModel(llvm::CodeModel::Large);
+        }
+    }
     // CRITICAL: Match the batch compiler's optimization level (CodeGenOptLevel::None = -O0).
     // JITTargetMachineBuilder::detectHost() defaults to CodeGenOptLevel::Default (-O2),
     // which causes LLVM to generate different struct argument stack layouts on ARM64.
