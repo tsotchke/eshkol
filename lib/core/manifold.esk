@@ -1,33 +1,248 @@
 ;;
-;; core.manifold — Riemannian manifold operations
+;; core.manifold — Riemannian manifolds for geometric ML (Euclidean / Poincaré / sphere)
 ;;
-;; Provides constructors and operations for geometric manifolds:
-;;   Euclidean, Hyperbolic (Poincaré), Spherical
-;;
+;; Provides constructors and operations for:
+;;   Euclidean (flat, K=0), Hyperbolic Poincaré ball (K=-1), Spherical (K=+1)
 ;; Operations: exponential map, logarithmic map, geodesic distance,
-;;   parallel transport, curvature tensor, Christoffel symbols
+;;   parallel transport, curvature.
 ;;
-;; These wrap the native VM geometric operations (IDs 804+).
-;; Requires the geometric manifold runtime (qLLM or built-in).
+;; Pure-Scheme implementation on the core math builtins so it works under both
+;; the REPL/JIT and AOT paths (no native-builtin dependency). The Poincaré
+;; formulas are the standard K=-1 ball model — they agree with the GRR/qLLM dylib
+;; geometry (qllm_ffi_* / adaptive_*) up to convention; the dylib is the source of
+;; truth, this mirrors its analytic forms.
+;;
+;;   (define E (make-euclidean-manifold 16))
+;;   (define H (make-hyperbolic-manifold 16))        ; Poincaré ball, K=-1
+;;   (manifold-distance H a b)                        ; geodesic distance
+;;   (manifold-exp-map H base tangent)                ; move along a geodesic
+;;   (manifold-log-map H base point)                  ; inverse of exp
+;; A Euclidean×Poincaré PRODUCT manifold = one factor of each; apply per factor
+;; and combine distances in quadrature: sqrt(dE^2 + dH^2).
 ;;
 
 (provide make-euclidean-manifold make-hyperbolic-manifold make-spherical-manifold
          manifold-exp-map manifold-log-map manifold-distance
          manifold-parallel-transport manifold-curvature
-         manifold-dimension manifold-type)
+         manifold-dimension manifold-type
+         ;; full differential-geometry surface
+         metric-component manifold-metric manifold-metric-inverse
+         christoffel-symbol manifold-christoffel
+         manifold-sectional-curvature manifold-scalar-curvature
+         ricci-component manifold-ricci
+         riemann-component)
+
+;; ── self-contained vector helpers (core module: no stdlib map/for-each) ──
+(define (mf-dot a b)
+  (let ((n (vector-length a)))
+    (let loop ((i 0) (s 0.0))
+      (if (< i n) (loop (+ i 1) (+ s (* (vector-ref a i) (vector-ref b i)))) s))))
+(define (mf-norm2 a) (mf-dot a a))
+(define (mf-norm a) (sqrt (mf-norm2 a)))
+(define (mf-zeros n) (make-vector n 0.0))
+(define (mf-axpy! out s a)          ; out += s*a
+  (let ((n (vector-length a)))
+    (let loop ((i 0)) (if (< i n) (begin (vector-set! out i (+ (vector-ref out i) (* s (vector-ref a i)))) (loop (+ i 1)))))
+    out))
+(define (mf-scale s a)
+  (let* ((n (vector-length a)) (r (make-vector n 0.0)))
+    (let loop ((i 0)) (if (< i n) (begin (vector-set! r i (* s (vector-ref a i))) (loop (+ i 1)))))
+    r))
+(define (mf-sub a b)
+  (let* ((n (vector-length a)) (r (make-vector n 0.0)))
+    (let loop ((i 0)) (if (< i n) (begin (vector-set! r i (- (vector-ref a i) (vector-ref b i))) (loop (+ i 1)))))
+    r))
+(define (mf-neg a) (mf-scale -1.0 a))
+
+;; robust scalar helpers (don't depend on atanh/acosh builtins)
+(define (mf-arccosh x) (let ((y (if (< x 1.0) 1.0 x))) (log (+ y (sqrt (- (* y y) 1.0))))))
+(define (mf-atanh x)   (* 0.5 (log (/ (+ 1.0 x) (- 1.0 x)))))
+(define mf-eps 1.0e-12)
+
+;; ── manifold object: #(type dim) ──
+(define (make-euclidean-manifold dim) (vector 'euclidean dim))
+(define (make-hyperbolic-manifold dim) (vector 'hyperbolic dim))   ; Poincaré ball, K=-1
+(define (make-spherical-manifold dim) (vector 'spherical dim))
+(define (manifold-type m) (vector-ref m 0))
+(define (manifold-dimension m) (vector-ref m 1))
+(define (manifold-curvature m)
+  (let ((t (manifold-type m)))
+    (cond ((eq? t 'hyperbolic) -1.0) ((eq? t 'spherical) 1.0) (else 0.0))))
+
+;; ── Möbius addition (Poincaré ball, c=1):  x ⊕ y ──
+(define (mf-mobius-add x y)
+  (let* ((xy (mf-dot x y)) (x2 (mf-norm2 x)) (y2 (mf-norm2 y))
+         (c1 (+ 1.0 (* 2.0 xy) y2))
+         (c2 (- 1.0 x2))
+         (den (+ 1.0 (* 2.0 xy) (* x2 y2)))
+         (n (vector-length x)) (r (make-vector n 0.0)))
+    (let loop ((i 0))
+      (if (< i n)
+          (begin (vector-set! r i (/ (+ (* c1 (vector-ref x i)) (* c2 (vector-ref y i))) den)) (loop (+ i 1)))))
+    r))
+
+;; ── geodesic distance ──
+(define (manifold-distance m a b)
+  (let ((t (manifold-type m)))
+    (cond
+      ((eq? t 'hyperbolic)
+       (let* ((na (mf-norm2 a)) (nb (mf-norm2 b))
+              (d (mf-sub a b)) (d2 (mf-norm2 d))
+              (arg (+ 1.0 (/ (* 2.0 d2) (* (- 1.0 na) (- 1.0 nb))))))
+         (mf-arccosh arg)))
+      ((eq? t 'spherical)
+       (let* ((na (mf-norm a)) (nb (mf-norm b))
+              (c (/ (mf-dot a b) (* (max na mf-eps) (max nb mf-eps))))
+              (cc (cond ((> c 1.0) 1.0) ((< c -1.0) -1.0) (else c))))
+         (acos cc)))
+      (else (mf-norm (mf-sub a b))))))   ; euclidean
+
+;; ── exponential map: move from `base` along tangent `v` ──
+(define (manifold-exp-map m base v)
+  (let ((t (manifold-type m)))
+    (cond
+      ((eq? t 'hyperbolic)
+       (let ((vn (mf-norm v)))
+         (if (< vn mf-eps) base
+             (let* ((lam (/ 2.0 (- 1.0 (mf-norm2 base))))
+                    (factor (/ (tanh (* 0.5 lam vn)) vn)))
+               (mf-mobius-add base (mf-scale factor v))))))
+      ((eq? t 'spherical)
+       (let ((vn (mf-norm v)))
+         (if (< vn mf-eps) base
+             (let ((r (make-vector (vector-length base) 0.0)))
+               (mf-axpy! r (cos vn) base)
+               (mf-axpy! r (/ (sin vn) vn) v)
+               r))))
+      (else (let ((r (make-vector (vector-length base) 0.0))) ; euclidean: base + v
+              (mf-axpy! r 1.0 base) (mf-axpy! r 1.0 v) r)))))
+
+;; ── logarithmic map: tangent at `base` pointing to `p` (inverse of exp) ──
+(define (manifold-log-map m base p)
+  (let ((t (manifold-type m)))
+    (cond
+      ((eq? t 'hyperbolic)
+       (let* ((y (mf-mobius-add (mf-neg base) p)) (yn (mf-norm y)))
+         (if (< yn mf-eps) (mf-zeros (vector-length base))
+             (let* ((lam (/ 2.0 (- 1.0 (mf-norm2 base))))
+                    (factor (/ (* (/ 2.0 lam) (mf-atanh yn)) yn)))
+               (mf-scale factor y)))))
+      ((eq? t 'spherical)
+       (let* ((c (mf-dot base p))
+              (cc (cond ((> c 1.0) 1.0) ((< c -1.0) -1.0) (else c)))
+              (theta (acos cc)) (s (sin theta)))
+         (if (< s mf-eps) (mf-zeros (vector-length base))
+             (let ((r (make-vector (vector-length base) 0.0)))    ; theta/sin(theta) * (p - cos(theta)*base)
+               (mf-axpy! r 1.0 p) (mf-axpy! r (- cc) base)
+               (mf-scale (/ theta s) r)))))
+      (else (mf-sub p base)))))   ; euclidean: p - base
+
+;; ── parallel transport of tangent `v` from `base-a` to `base-b` ──
+;; Euclidean: identity. Hyperbolic/spherical: gyrovector / projection transport
+;; (good enough for first-order encoder use; exact gyro-transport is a refinement).
+(define (manifold-parallel-transport m base-a base-b v)
+  (let ((t (manifold-type m)))
+    (cond
+      ((eq? t 'euclidean) v)
+      ((eq? t 'hyperbolic)
+       ;; PT_{a->b}(v) = (lam_a / lam_b) * gyr[b,-a] v ; first-order: rescale by lam ratio
+       (let ((lam-a (/ 2.0 (- 1.0 (mf-norm2 base-a))))
+             (lam-b (/ 2.0 (- 1.0 (mf-norm2 base-b)))))
+         (mf-scale (/ lam-a lam-b) v)))
+      (else ;; spherical: remove component along base-b
+       (let ((r (make-vector (vector-length v) 0.0)) (c (mf-dot v base-b)))
+         (mf-axpy! r 1.0 v) (mf-axpy! r (- c) base-b) r)))))
 
 ;; ═══════════════════════════════════════════════════════════════
-;; Constructors
+;; Full differential-geometry surface
+;;
+;; All three spaces are conformally flat: g_ij = λ(x)² δ_ij with
+;;   euclidean  λ = 1            (K=0)
+;;   hyperbolic λ = 2/(1-‖x‖²)   (K=-1, Poincaré ball)
+;;   spherical  λ = 2/(1+‖x‖²)   (K=+1, stereographic)
+;; so the connection/curvature have exact closed forms (no numeric
+;; differentiation) — production-grade and O(1) per component.
 ;; ═══════════════════════════════════════════════════════════════
 
-;; These are native builtins — the names map to VM native IDs.
-;; When compiled via LLVM, they resolve through the codegen dispatch.
+(define (mf-kron i j) (if (= i j) 1.0 0.0))
+(define (mf-iota n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+;; parallel materialization above this outer-dimension; serial below (avoids
+;; thread overhead for the small dims an encoder typically uses).
+(define mf-parallel-threshold 48)
 
-;; Manifold type queries
-(define (manifold-dimension m)
-  "Return the dimension of a manifold."
-  (if m 0 0))  ;; placeholder — actual impl in native
+;; conformal factor λ(x)
+(define (mf-lambda m x)
+  (let ((t (manifold-type m)))
+    (cond ((eq? t 'hyperbolic) (/ 2.0 (- 1.0 (mf-norm2 x))))
+          ((eq? t 'spherical)  (/ 2.0 (+ 1.0 (mf-norm2 x))))
+          (else 1.0))))
+;; ∂_i ln λ  given precomputed λ:  hyperbolic = λ x_i, spherical = -λ x_i, euclidean = 0
+(define (mf-dlnlambda m x lam i)
+  (let ((t (manifold-type m)))
+    (cond ((eq? t 'hyperbolic) (* lam (vector-ref x i)))
+          ((eq? t 'spherical)  (* (- lam) (vector-ref x i)))
+          (else 0.0))))
 
-(define (manifold-type m)
-  "Return the type of a manifold as a symbol."
-  (if m 'unknown 'unknown))  ;; placeholder
+;; ── metric tensor ──
+(define (metric-component m x i j)
+  (let ((lam (mf-lambda m x))) (* lam lam (mf-kron i j))))
+(define (manifold-metric m x)
+  (let* ((n (manifold-dimension m)) (lam (mf-lambda m x)) (l2 (* lam lam)))
+    (mf-build-matrix n (lambda (i j) (if (= i j) l2 0.0)))))
+(define (manifold-metric-inverse m x)
+  (let* ((n (manifold-dimension m)) (lam (mf-lambda m x)) (inv (/ 1.0 (* lam lam))))
+    (mf-build-matrix n (lambda (i j) (if (= i j) inv 0.0)))))
+
+;; ── Christoffel symbols Γ^k_ij = δ_ik ∂_j lnλ + δ_jk ∂_i lnλ − δ_ij ∂_k lnλ ──
+(define (christoffel-symbol m x i j k)
+  (let* ((lam (mf-lambda m x))
+         (gi (mf-dlnlambda m x lam i))
+         (gj (mf-dlnlambda m x lam j))
+         (gk (mf-dlnlambda m x lam k)))
+    (- (+ (* (mf-kron i k) gj) (* (mf-kron j k) gi)) (* (mf-kron i j) gk))))
+;; full Γ as n × n × n (index order [k][i][j]); parallel over k for large n
+(define (manifold-christoffel m x)
+  (let ((n (manifold-dimension m)))
+    (mf-build-rank3 n (lambda (k i j) (christoffel-symbol m x i j k)))))
+
+;; ── curvature (constant-curvature closed forms) ──
+(define (manifold-sectional-curvature m) (manifold-curvature m))
+(define (manifold-scalar-curvature m)
+  (let ((n (manifold-dimension m)) (kk (manifold-curvature m)))
+    (* kk (exact->inexact n) (- (exact->inexact n) 1.0))))   ; R = K·n(n−1)
+;; Einstein: Ric_ij = K (n−1) g_ij
+(define (ricci-component m x i j)
+  (let ((n (manifold-dimension m)) (kk (manifold-curvature m)))
+    (* kk (- (exact->inexact n) 1.0) (metric-component m x i j))))
+(define (manifold-ricci m x)
+  (let ((n (manifold-dimension m)))
+    (mf-build-matrix n (lambda (i j) (ricci-component m x i j)))))
+;; Riemann (constant curvature): R_ijkl = K (g_ik g_jl − g_il g_jk)
+(define (riemann-component m x i j k l)
+  (let ((kk (manifold-curvature m)))
+    (* kk (- (* (metric-component m x i k) (metric-component m x j l))
+             (* (metric-component m x i l) (metric-component m x j k))))))
+
+;; ── matrix / rank-3 builders (parallel over the outer index for large dim) ──
+(define (mf-build-row n f i)
+  (let ((row (make-vector n 0.0)))
+    (let loop ((j 0)) (if (< j n) (begin (vector-set! row j (f i j)) (loop (+ j 1)))))
+    row))
+(define (mf-build-matrix n f)
+  (if (>= n mf-parallel-threshold)
+      (list->vector (parallel-map (lambda (i) (mf-build-row n f i)) (mf-iota n)))
+      (let ((mat (make-vector n 0)))
+        (let loop ((i 0)) (if (< i n) (begin (vector-set! mat i (mf-build-row n f i)) (loop (+ i 1)))))
+        mat)))
+(define (mf-build-slice n f k)
+  (mf-build-matrix-inner n (lambda (i j) (f k i j))))
+(define (mf-build-matrix-inner n g)
+  (let ((mat (make-vector n 0)))
+    (let loop ((i 0)) (if (< i n) (begin (vector-set! mat i (mf-build-row n g i)) (loop (+ i 1)))))
+    mat))
+(define (mf-build-rank3 n f)
+  (if (>= n mf-parallel-threshold)
+      (list->vector (parallel-map (lambda (k) (mf-build-slice n f k)) (mf-iota n)))
+      (let ((t (make-vector n 0)))
+        (let loop ((k 0)) (if (< k n) (begin (vector-set! t k (mf-build-slice n f k)) (loop (+ k 1)))))
+        t)))
