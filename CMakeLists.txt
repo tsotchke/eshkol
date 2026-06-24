@@ -551,6 +551,15 @@ endif()
 set(ESHKOL_HOST_LLVM_LINK_ARGS "")
 foreach(_llvm_lib_dir IN LISTS LLVM_LIBRARY_DIRS)
     list(APPEND ESHKOL_HOST_LLVM_LINK_ARGS "-L${_llvm_lib_dir}")
+    # Also bake an RPATH so AOT-compiled programs (which link libLLVM through
+    # these args, incl. the -r persistent run-cache binary) can find libLLVM.so
+    # at runtime. On ELF (Linux/*nix — including Nix-store library paths) a -L
+    # alone leaves NO runtime search path, so the cached run binary dies with
+    # "libLLVM.so.NN: cannot open shared object file". macOS resolves via the
+    # dylib's absolute install_name and Windows via PATH, so this is ELF-only.
+    if(NOT APPLE AND NOT WIN32 AND NOT ESHKOL_USING_MSVC)
+        list(APPEND ESHKOL_HOST_LLVM_LINK_ARGS "-Wl,-rpath,${_llvm_lib_dir}")
+    endif()
 endforeach()
 foreach(_llvm_link_arg IN LISTS LLVM_LDFLAGS_LIST LLVM_LIBS_LIST LLVM_SYSTEM_LIBS_LIST)
     if(NOT "${_llvm_link_arg}" STREQUAL "")
