@@ -1,0 +1,15 @@
+;;; Regression: cwd-relative (load "subdir/.../file.esk") from the repo root
+;;; must resolve WITHOUT mangling the path. On v1.2.3-scale this produced:
+;;;   - doubled extension:  dep_mod.esk -> dep_mod.esk.esk
+;;;   - dot->slash mangling: dep_mod.esk -> dep_mod/esk.esk
+;;; and then silently fell back to the interpreter under AOT. Fixed on master.
+;;; (Noesis NOESIS_TO_ESHKOL_link_and_loadpath_2026-06-24, issue #2.)
+;;;
+;;; Run from the repo root: eshkol-run -r tests/load/load_relative_subdir_test.esk
+(load "tests/load/fixtures/dep_mod.esk")
+
+(define pass (= (dep-answer) 42))
+(display (if pass "PASS: cwd-relative subdir load (no .esk.esk / dot-slash mangle)"
+                  "FAIL: cwd-relative subdir load"))
+(newline)
+(if (not pass) (exit 1))

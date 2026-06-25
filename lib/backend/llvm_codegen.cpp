@@ -34,7 +34,9 @@
 #include <eshkol/logger.h>
 #include <eshkol/platform_runtime.h>
 #include <eshkol/runtime_exports.h>
+#include <eshkol/pkg/subprocess.h>
 #include "../core/arena_memory.h"
+#include <cstdlib>
 
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
 
@@ -42,6 +44,20 @@ namespace eshkol { class CodegenContext; }
 extern "C" void eshkol_register_tensorcore_builtins(eshkol::CodegenContext*);
 
 namespace {
+
+// Bounded wait for the AOT native link. Mirrors eshkol-run.cpp: a hung linker
+// must never wedge the process. 0 = unbounded; ESHKOL_LINK_TIMEOUT_SECONDS
+// overrides the 5-minute default.
+unsigned int link_subprocess_timeout_seconds() {
+    if (const char* raw = std::getenv("ESHKOL_LINK_TIMEOUT_SECONDS")) {
+        char* end = nullptr;
+        long parsed = std::strtol(raw, &end, 10);
+        if (end && *end == '\0' && parsed >= 0) {
+            return static_cast<unsigned int>(parsed);
+        }
+    }
+    return 300;
+}
 
 void append_host_runtime_link_args(std::vector<std::string>& link_args) {
 #ifdef _WIN32
@@ -35958,6 +35974,15 @@ int eshkol_compile_llvm_ir_to_executable(LLVMModuleRef module_ref, const char* f
         link_args.emplace_back("CoreGraphics");
         link_args.emplace_back("-framework");
         link_args.emplace_back("CoreFoundation");
+        // Resolve libobjc portably via the macOS SDK lib dir (see
+        // eshkol-run.cpp): a bare -lobjc misses the default search path on a
+        // freshly-built binary on a non-builder host.
+        {
+            const std::string sdk_lib = eshkol::platform::macos_sdk_lib_dir();
+            if (!sdk_lib.empty()) {
+                link_args.emplace_back("-L" + sdk_lib);
+            }
+        }
         link_args.emplace_back("-lobjc");
 #endif
 
@@ -36026,11 +36051,20 @@ int eshkol_compile_llvm_ir_to_executable(LLVMModuleRef module_ref, const char* f
         }
 
         eshkol_info("Linking executable: %s", link_cmd.c_str());
-        int result = eshkol::platform::run_command(link_args);
+        // Shell-free, killable link with a bounded wait so a hung linker fails
+        // fast instead of blocking forever.
+        int result = eshkol::pkg::run_subprocess(
+            link_args, nullptr, link_subprocess_timeout_seconds());
 
         // Clean up temporary object file
         std::remove(temp_obj.c_str());
 
+        if (result == eshkol::pkg::SUBPROCESS_TIMEOUT) {
+            eshkol_error("Linking timed out after %u seconds and was aborted "
+                         "(set ESHKOL_LINK_TIMEOUT_SECONDS to adjust)",
+                         link_subprocess_timeout_seconds());
+            return -1;
+        }
         if (result != 0) {
             eshkol_error("Linking failed with exit code %d", result);
             return -1;
@@ -36095,34 +36129,35 @@ extern "C" {
 // WebAssembly target initialization flag
 static bool g_wasm_target_initialized = false;
 
-// Check if WebAssembly target is available at compile time by checking Targets.def
-// When building with StableHLO's LLVM (ESHKOL_XLA_FULL_MLIR), we need to check
-// what targets were configured. The lite build uses system LLVM17 which includes all targets.
-#ifdef ESHKOL_XLA_FULL_MLIR
-// StableHLO/MLIR LLVM build - WebAssembly target only available if CI is configured with it
-#define ESHKOL_HAS_WASM_TARGET 0
-#else
-// System LLVM17 includes all standard targets including WebAssembly
-#define ESHKOL_HAS_WASM_TARGET 1
-#endif
-
 static bool initialize_wasm_target() {
     if (g_wasm_target_initialized) return true;
 
-#if ESHKOL_HAS_WASM_TARGET
-    // Initialize WebAssembly target
-    LLVMInitializeWebAssemblyTargetInfo();
-    LLVMInitializeWebAssemblyTarget();
-    LLVMInitializeWebAssemblyTargetMC();
-    LLVMInitializeWebAssemblyAsmPrinter();
+    // Initialize every target this LLVM was actually built with, using the
+    // always-declared C++ TargetSelect API. We deliberately do NOT call the
+    // per-target C symbols (LLVMInitializeWebAssembly*) here: those are only
+    // declared when the WebAssembly target was compiled into LLVM, so calling
+    // them unconditionally fails to build against a reduced-target LLVM (some
+    // distro/MSYS2 packages configure only e.g. AArch64;ARM;RISCV;X86, and
+    // StableHLO/XLA LLVM builds may omit WebAssembly too). InitializeAll* is a
+    // no-op for targets not present and idempotent if already called elsewhere.
+    InitializeAllTargetInfos();
+    InitializeAllTargets();
+    InitializeAllTargetMCs();
+    InitializeAllAsmParsers();
+    InitializeAllAsmPrinters();
+
+    // Confirm WebAssembly is genuinely available in this build rather than
+    // assuming it from the build flavor. The downstream wasm emit path also
+    // looks the target up, but checking here gives a precise error early.
+    std::string lookup_error;
+    if (!TargetRegistry::lookupTarget("wasm32-unknown-unknown", lookup_error)) {
+        eshkol_error("WebAssembly target not available in this LLVM build "
+                     "(configured targets do not include WebAssembly): %s",
+                     lookup_error.c_str());
+        return false;
+    }
     g_wasm_target_initialized = true;
     return true;
-#else
-    // WebAssembly target not available in this LLVM build
-    // XLA builds using StableHLO LLVM need CI to enable WebAssembly target
-    eshkol_error("WebAssembly target not available. XLA build needs LLVM with WebAssembly enabled.");
-    return false;
-#endif
 }
 
 int eshkol_compile_llvm_ir_to_wasm(LLVMModuleRef module_ref, uint8_t** output_buffer, size_t* output_size) {
