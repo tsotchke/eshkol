@@ -111,8 +111,113 @@ static void append_space_separated_link_args(const char* raw_args,
     }
 }
 
+#if !defined(_WIN32)
+// Run a fixed, trusted command and capture its trimmed stdout. Returns empty on
+// any failure. Used only for runtime toolchain probes (xcrun, llvm-config) with
+// no user-controlled input, so popen() is safe here.
+static std::string captureCommandOutput(const std::string& command) {
+    FILE* pipe = popen(command.c_str(), "r");
+    if (!pipe) {
+        return {};
+    }
+    std::string output;
+    char buffer[512];
+    while (std::fgets(buffer, sizeof(buffer), pipe)) {
+        output += buffer;
+    }
+    int status = pclose(pipe);
+    if (status != 0) {
+        return {};
+    }
+    while (!output.empty() &&
+           (output.back() == '\n' || output.back() == '\r' || output.back() == ' ')) {
+        output.pop_back();
+    }
+    return output;
+}
+
+// Resolve the LLVM library directory at RUNTIME rather than trusting the
+// absolute Homebrew Cellar path baked into ESHKOL_HOST_LLVM_LINK_ARGS at build
+// time. That baked path (e.g. /opt/homebrew/Cellar/llvm/21.1.7/lib) does not
+// exist on a host whose LLVM is a different patch/prefix, so the link fails
+// with "search path '...' not found" / "library 'LLVM-NN' not found" and the
+// binary can't JIT off-builder (Noesis hit this copying atlas's binary to enki).
+//
+// We try `llvm-config --libdir` (and the versioned `llvm-config-NN`) from PATH,
+// then common prefixes. Returns empty if nothing resolves, in which case the
+// caller falls back to the baked path. The result is cached.
+static const std::string& resolveLlvmLibDir() {
+    static const std::string cached = [] {
+        const std::string major = std::to_string(LLVM_VERSION_MAJOR);
+        std::vector<std::string> probes = {
+            "llvm-config-" + major + " --libdir 2>/dev/null",
+            "llvm-config --libdir 2>/dev/null",
+        };
+        for (const auto& cmd : probes) {
+            std::string dir = captureCommandOutput(cmd);
+            std::error_code ec;
+            if (!dir.empty() && std::filesystem::is_directory(dir, ec)) {
+                return dir;
+            }
+        }
+        // Known prefixes as a last resort before the baked path.
+        std::vector<std::string> candidates = {
+            "/opt/homebrew/opt/llvm/lib",
+            "/opt/homebrew/opt/llvm@" + major + "/lib",
+            "/usr/local/opt/llvm/lib",
+            "/usr/local/opt/llvm@" + major + "/lib",
+            "/usr/lib/llvm-" + major + "/lib",
+        };
+        for (const auto& dir : candidates) {
+            std::error_code ec;
+            if (std::filesystem::is_directory(dir, ec)) {
+                return dir;
+            }
+        }
+        return std::string{};
+    }();
+    return cached;
+}
+#endif
+
 static void append_host_llvm_link_args(std::vector<std::string>& link_args) {
+#if defined(_WIN32)
     append_space_separated_link_args(ESHKOL_HOST_LLVM_LINK_ARGS, link_args);
+#else
+    // Prepend a runtime-resolved LLVM -L (and rpath on ELF) so the libdir is
+    // searched BEFORE the build-time absolute Cellar path baked into
+    // ESHKOL_HOST_LLVM_LINK_ARGS. This makes a binary built on one host link
+    // against the LLVM present on a different host (different patch/prefix).
+    // The baked args are still spliced afterwards as a fallback.
+    const std::string& runtime_libdir = resolveLlvmLibDir();
+    if (!runtime_libdir.empty()) {
+        link_args.emplace_back("-L" + runtime_libdir);
+#  if !defined(__APPLE__)
+        // ELF: a -L alone leaves no runtime search path; add an rpath so the
+        // resulting binary can find libLLVM.so at run time (mirrors CMake).
+        link_args.emplace_back("-Wl,-rpath," + runtime_libdir);
+#  endif
+    }
+    append_space_separated_link_args(ESHKOL_HOST_LLVM_LINK_ARGS, link_args);
+#endif
+}
+
+// Bounded wait for the native link / cached-compile subprocesses. A hung `ld`
+// (e.g. a misconfigured search path on a non-builder host) must never wedge the
+// process: on expiry the child is killed and the caller fails fast — to the
+// interpreter for the `-r` JIT path, or to a clean link error for AOT. 0 means
+// "unbounded"; ESHKOL_LINK_TIMEOUT_SECONDS overrides the default. The default is
+// generous because a legitimate link of the 58 MB stdlib can take tens of
+// seconds on a cold host.
+static unsigned int link_subprocess_timeout_seconds() {
+    if (const char* raw = std::getenv("ESHKOL_LINK_TIMEOUT_SECONDS")) {
+        char* end = nullptr;
+        long parsed = std::strtol(raw, &end, 10);
+        if (end && *end == '\0' && parsed >= 0) {
+            return static_cast<unsigned int>(parsed);
+        }
+    }
+    return 300; // 5 minutes
 }
 
 namespace {
@@ -580,7 +685,19 @@ std::optional<int> tryRunFromPersistentJitCache(const char* argv0,
     compile_args.emplace_back("-o");
     compile_args.push_back(temp_binary.string());
 
-    int compile_status = eshkol::pkg::run_subprocess(compile_args);
+    // Bound the cached-binary build. The child runs the full AOT compile +
+    // native link; if its linker hangs (the child bounds its own link too, but
+    // belt-and-suspenders here covers any other stall), kill it and return
+    // nullopt so the caller fails fast to the interpreter rather than wedging
+    // the whole `-r` invocation. This is the architectural guarantee Noesis
+    // asked for: a JIT-link problem must never hang, only fall back.
+    int compile_status = eshkol::pkg::run_subprocess(
+        compile_args, nullptr, link_subprocess_timeout_seconds());
+    if (compile_status == eshkol::pkg::SUBPROCESS_TIMEOUT) {
+        std::filesystem::remove(temp_binary, ec);
+        jitCacheTrace("compile-timeout", std::to_string(link_subprocess_timeout_seconds()));
+        return std::nullopt;
+    }
     if (compile_status != 0) {
         std::filesystem::remove(temp_binary, ec);
         jitCacheTrace("compile-failed", std::to_string(compile_status));
@@ -4378,6 +4495,15 @@ int main(int argc, char **argv)
         link_args.emplace_back("CoreGraphics");
         link_args.emplace_back("-framework");
         link_args.emplace_back("CoreFoundation");
+        // Add the macOS SDK lib dir so `-lobjc` resolves portably (libobjc.tbd
+        // lives in <sdk>/usr/lib). Resolved at runtime, never hardcoded, so a
+        // freshly-built binary links on any mac regardless of the builder host.
+        {
+            const std::string sdk_lib = eshkol::platform::macos_sdk_lib_dir();
+            if (!sdk_lib.empty()) {
+                link_args.emplace_back("-L" + sdk_lib);
+            }
+        }
         link_args.emplace_back("-lobjc");  // Objective-C runtime
 #endif
 
@@ -4465,7 +4591,12 @@ int main(int argc, char **argv)
         }
 
         eshkol_info("Linking object files: %s", link_cmd.c_str());
-        int result = eshkol::platform::run_command(link_args);
+        // Use the shell-free, killable subprocess launcher with a bounded wait.
+        // A hung linker (e.g. an unresolved -L search path on a non-builder
+        // host) would otherwise block forever via std::system(); the timeout
+        // turns that into a reported link failure instead of an infinite hang.
+        int result = eshkol::pkg::run_subprocess(
+            link_args, nullptr, link_subprocess_timeout_seconds());
 
         // Clean up temp object files (mkstemp-created files in TMPDIR)
         for (const auto &compiled_file : compiled_files) {
@@ -4475,6 +4606,13 @@ int main(int argc, char **argv)
             }
         }
 
+        if (result == eshkol::pkg::SUBPROCESS_TIMEOUT) {
+            eshkol_error("Linking timed out after %u seconds and was aborted "
+                         "(set ESHKOL_LINK_TIMEOUT_SECONDS to adjust)",
+                         link_subprocess_timeout_seconds());
+            eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
+            return 1;
+        }
         if (result != 0) {
             eshkol_error("Linking failed with exit code %d", result);
             eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
