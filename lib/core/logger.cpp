@@ -36,6 +36,7 @@
 #endif
 
 #include <mutex>
+#include <atomic>
 #include <string>
 #include <ctime>
 #include <cstring>
@@ -62,7 +63,17 @@
 // ============================================================================
 
 static std::mutex g_log_mutex;
-static eshkol_logger_t g_max_level = ESHKOL_NOTICE;
+// Atomic so the hot-path level check (the early-return in every eshkol_printf /
+// eshkol_log_with_location) needs NO lock. This matters for correctness, not
+// just speed: arena_create() emits an eshkol_debug() on every arena creation,
+// including each worker thread's first-touch arena in eshkol_thread_init_worker.
+// When N worker threads start concurrently (cold parallel-map), having them all
+// take g_log_mutex purely to read the level was the first concurrent lock of a
+// statically-initialized std::mutex from multiple threads at once — which races
+// the platform's lazy first-lock initialization on Darwin and intermittently
+// threw "mutex lock failed: Invalid argument" (SIGABRT). A suppressed log must
+// not lock at all.
+static std::atomic<eshkol_logger_t> g_max_level{ESHKOL_NOTICE};
 static eshkol_log_format_t g_log_format = ESHKOL_LOG_TEXT;
 static FILE* g_log_file = nullptr;
 static bool g_color_enabled = true;
@@ -276,13 +287,11 @@ static void output_json(eshkol_logger_t level, const char* msg,
 extern "C" {
 
 void eshkol_set_logger_level(eshkol_logger_t level) {
-    std::lock_guard<std::mutex> lock(g_log_mutex);
-    g_max_level = level;
+    g_max_level.store(level, std::memory_order_relaxed);
 }
 
 eshkol_logger_t eshkol_get_logger_level(void) {
-    std::lock_guard<std::mutex> lock(g_log_mutex);
-    return g_max_level;
+    return g_max_level.load(std::memory_order_relaxed);
 }
 
 void eshkol_set_log_format(eshkol_log_format_t format) {
@@ -331,10 +340,8 @@ void eshkol_set_timestamps(bool enabled) {
 }
 
 void eshkol_printf(eshkol_logger_t level, const char* msg, ...) {
-    {
-        std::lock_guard<std::mutex> lock(g_log_mutex);
-        if (level > g_max_level) return;
-    }
+    // Lock-free fast path: a suppressed log must take no lock (see g_max_level).
+    if (level > g_max_level.load(std::memory_order_relaxed)) return;
 
     va_list ap;
     va_start(ap, msg);
@@ -363,10 +370,8 @@ void eshkol_log_with_location(eshkol_logger_t level,
                                int line,
                                const char* func,
                                const char* msg, ...) {
-    {
-        std::lock_guard<std::mutex> lock(g_log_mutex);
-        if (level > g_max_level) return;
-    }
+    // Lock-free fast path: a suppressed log must take no lock (see g_max_level).
+    if (level > g_max_level.load(std::memory_order_relaxed)) return;
 
     va_list ap;
     va_start(ap, msg);
@@ -408,10 +413,8 @@ void eshkol_log_with_location(eshkol_logger_t level,
 }
 
 void eshkol_log_structured(eshkol_logger_t level, const char* msg, ...) {
-    {
-        std::lock_guard<std::mutex> lock(g_log_mutex);
-        if (level > g_max_level) return;
-    }
+    // Lock-free fast path: a suppressed log must take no lock (see g_max_level).
+    if (level > g_max_level.load(std::memory_order_relaxed)) return;
 
     va_list ap;
     va_start(ap, msg);
@@ -475,10 +478,8 @@ void eshkol_log_close(void) {
 }
 
 void eshkol_stacktrace(eshkol_logger_t level) {
-    {
-        std::lock_guard<std::mutex> lock(g_log_mutex);
-        if (level > g_max_level) return;
-    }
+    // Lock-free fast path: a suppressed log must take no lock (see g_max_level).
+    if (level > g_max_level.load(std::memory_order_relaxed)) return;
 
 #if defined(_WIN32)
     std::lock_guard<std::mutex> lock(g_log_mutex);
