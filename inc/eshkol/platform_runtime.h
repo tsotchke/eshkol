@@ -30,6 +30,11 @@ std::string llc_executable();
 std::string executable_suffix();
 std::string static_library_name(std::string_view stem);
 std::vector<std::string> host_runtime_link_args();
+// On macOS, the resolved SDK library directory (<sdk>/usr/lib) discovered at
+// runtime via `xcrun --show-sdk-path`. Adding it to the linker search path lets
+// a bare `-lobjc` resolve on any mac, not just the builder. Empty on non-macOS
+// or when xcrun is unavailable.
+std::string macos_sdk_lib_dir();
 std::filesystem::path with_executable_suffix(const std::filesystem::path& path);
 std::string shell_quote(std::string_view argument);
 int run_command(const std::vector<std::string>& arguments);
