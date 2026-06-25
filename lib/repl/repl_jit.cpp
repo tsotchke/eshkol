@@ -20,7 +20,9 @@
 #include <llvm/ExecutionEngine/Orc/Core.h>
 #include <llvm/ExecutionEngine/Orc/ThreadSafeModule.h>
 #include <llvm/ExecutionEngine/Orc/RTDyldObjectLinkingLayer.h>
+#include <llvm/ExecutionEngine/Orc/ObjectLinkingLayer.h>  // JITLink-based layer (for Branch26 plugin)
 #include <llvm/ExecutionEngine/SectionMemoryManager.h>
+#include "jitlink_branch26_range_extension.h"  // AArch64 Branch26 range-extension plugin
 #include <llvm/IR/LLVMContext.h>
 #include <llvm/IR/Module.h>
 #include <llvm/IR/IRBuilder.h>
@@ -602,6 +604,21 @@ void ReplJITContext::initializeJIT() {
 
     jit_ = std::move(*jit_or_err);
 
+    // AArch64 Branch26 range-extension (cross-platform far-call fix for the
+    // in-process JIT path used by eval/compile). When the >128 MB stdlib is
+    // JIT-linked on arm64-ELF/COFF, intra-object `bl`/`b` (Branch26PCRel,
+    // +/-128 MB) can land out of range; LLVM 21 JITLink has no automatic branch
+    // range extension for aarch64 and the AArch64 large code model is incomplete
+    // outside Mach-O. This plugin veneers every Branch26 edge through an inline
+    // absolute-jump stub placed in the caller's own section. No-op off aarch64.
+    // The default LLJIT object layer on aarch64 IS the JITLink ObjectLinkingLayer
+    // (the Branch26 error is a JITLink diagnostic); guard the cast for safety on
+    // platforms/configs that fall back to RTDyld (where this fix is unnecessary).
+    if (auto *OLL = llvm::dyn_cast<llvm::orc::ObjectLinkingLayer>(
+            &jit_->getObjLinkingLayer())) {
+        OLL->addPlugin(std::make_shared<eshkol::Branch26RangeExtensionPlugin>());
+    }
+
     // Install a custom error reporter that suppresses "became defunct" messages.
     // These fire during JIT teardown when a resource tracker is invalidated while
     // modules are still registered — the computation already completed successfully,
@@ -809,6 +826,23 @@ void ReplJITContext::registerRuntimeSymbols() {
         orc::ExecutorAddr::fromPtr((void*)&::snprintf),
         JITSymbolFlags::Callable | JITSymbolFlags::Exported
     };
+
+#ifdef _WIN32
+    // LLVM's optimizer can fuse adjacent sin()/cos() calls in JIT-compiled
+    // stdlib bitcode into a single `sincos` libcall. On UCRT `sincos` lives in
+    // libucrt but is not pulled into the host exe (no host C++ code calls it),
+    // so it is absent from the PE export table and GetForCurrentProcess cannot
+    // find it — JIT fails with "Symbols not found: [ sincos ]". Register the
+    // CRT implementation directly so the JIT resolves it.
+    {
+        extern void sincos(double, double*, double*);
+        symbols[ES.intern("sincos")] = {
+            orc::ExecutorAddr::fromPtr(reinterpret_cast<void*>(
+                static_cast<void(*)(double, double*, double*)>(&::sincos))),
+            JITSymbolFlags::Callable | JITSymbolFlags::Exported
+        };
+    }
+#endif
 
 #if !defined(_WIN32)
     // ===== OPTIONAL AGENT FFI EXPORTS =====
