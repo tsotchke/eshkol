@@ -1,0 +1,2 @@
+;; Fixture loaded by a cwd-relative (load ...) from a subdir path.
+(define (dep-answer) 42)

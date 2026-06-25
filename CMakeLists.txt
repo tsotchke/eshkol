@@ -1574,6 +1574,18 @@ if(LLVM_LIBRARY_DIRS)
     target_link_directories(eshkol-static PRIVATE ${LLVM_LIBRARY_DIRS})
 endif()
 
+# Propagate the runtime's transitive system link deps (Apple ImageIO/CoreGraphics/
+# CoreFoundation for image_io.c, Windows Gdiplus/Advapi32/Ntdll, libpng/jpeg/webp,
+# clang builtins) to the static/runtime libraries' PUBLIC interface. Previously
+# these lived only on the eshkol-run/eshkol-repl executables, so a downstream
+# consumer linking libeshkol-static.a directly (e.g. libnoesis-core) hit
+# "Undefined symbols: _CGImageDestinationCreateWithURL ..." and had to re-declare
+# the frameworks itself. The library should own its transitive link deps.
+if(ESHKOL_EXTRA_LINK_LIBS)
+    target_link_libraries(eshkol-runtime PUBLIC ${ESHKOL_EXTRA_LINK_LIBS})
+    target_link_libraries(eshkol-static PUBLIC ${ESHKOL_EXTRA_LINK_LIBS})
+endif()
+
 # Link BLAS libraries if available
 if(ESHKOL_BLAS_ENABLED AND BLAS_LIBRARIES)
     target_link_libraries(eshkol-runtime PUBLIC ${BLAS_LIBRARIES})
