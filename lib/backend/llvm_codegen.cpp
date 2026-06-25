@@ -34,7 +34,9 @@
 #include <eshkol/logger.h>
 #include <eshkol/platform_runtime.h>
 #include <eshkol/runtime_exports.h>
+#include <eshkol/pkg/subprocess.h>
 #include "../core/arena_memory.h"
+#include <cstdlib>
 
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
 
@@ -42,6 +44,20 @@ namespace eshkol { class CodegenContext; }
 extern "C" void eshkol_register_tensorcore_builtins(eshkol::CodegenContext*);
 
 namespace {
+
+// Bounded wait for the AOT native link. Mirrors eshkol-run.cpp: a hung linker
+// must never wedge the process. 0 = unbounded; ESHKOL_LINK_TIMEOUT_SECONDS
+// overrides the 5-minute default.
+unsigned int link_subprocess_timeout_seconds() {
+    if (const char* raw = std::getenv("ESHKOL_LINK_TIMEOUT_SECONDS")) {
+        char* end = nullptr;
+        long parsed = std::strtol(raw, &end, 10);
+        if (end && *end == '\0' && parsed >= 0) {
+            return static_cast<unsigned int>(parsed);
+        }
+    }
+    return 300;
+}
 
 void append_host_runtime_link_args(std::vector<std::string>& link_args) {
 #ifdef _WIN32
@@ -35958,6 +35974,15 @@ int eshkol_compile_llvm_ir_to_executable(LLVMModuleRef module_ref, const char* f
         link_args.emplace_back("CoreGraphics");
         link_args.emplace_back("-framework");
         link_args.emplace_back("CoreFoundation");
+        // Resolve libobjc portably via the macOS SDK lib dir (see
+        // eshkol-run.cpp): a bare -lobjc misses the default search path on a
+        // freshly-built binary on a non-builder host.
+        {
+            const std::string sdk_lib = eshkol::platform::macos_sdk_lib_dir();
+            if (!sdk_lib.empty()) {
+                link_args.emplace_back("-L" + sdk_lib);
+            }
+        }
         link_args.emplace_back("-lobjc");
 #endif
 
@@ -36026,11 +36051,20 @@ int eshkol_compile_llvm_ir_to_executable(LLVMModuleRef module_ref, const char* f
         }
 
         eshkol_info("Linking executable: %s", link_cmd.c_str());
-        int result = eshkol::platform::run_command(link_args);
+        // Shell-free, killable link with a bounded wait so a hung linker fails
+        // fast instead of blocking forever.
+        int result = eshkol::pkg::run_subprocess(
+            link_args, nullptr, link_subprocess_timeout_seconds());
 
         // Clean up temporary object file
         std::remove(temp_obj.c_str());
 
+        if (result == eshkol::pkg::SUBPROCESS_TIMEOUT) {
+            eshkol_error("Linking timed out after %u seconds and was aborted "
+                         "(set ESHKOL_LINK_TIMEOUT_SECONDS to adjust)",
+                         link_subprocess_timeout_seconds());
+            return -1;
+        }
         if (result != 0) {
             eshkol_error("Linking failed with exit code %d", result);
             return -1;

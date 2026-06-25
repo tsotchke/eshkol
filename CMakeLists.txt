@@ -1893,6 +1893,16 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/pkg/eshkol_pkg.cpp")
             COMMAND eshkol-pkg-command-injection-test $<TARGET_FILE:eshkol-pkg>
         )
     endif()
+
+    if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/pkg/subprocess_timeout_test.cpp")
+        add_executable(eshkol-pkg-subprocess-timeout-test tests/pkg/subprocess_timeout_test.cpp)
+        target_compile_features(eshkol-pkg-subprocess-timeout-test PRIVATE cxx_std_17)
+        target_include_directories(eshkol-pkg-subprocess-timeout-test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+        add_test(
+            NAME eshkol-pkg-subprocess-timeout
+            COMMAND eshkol-pkg-subprocess-timeout-test
+        )
+    endif()
 endif()
 
 # ===== LSP Server =====
