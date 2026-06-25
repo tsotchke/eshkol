@@ -810,6 +810,23 @@ void ReplJITContext::registerRuntimeSymbols() {
         JITSymbolFlags::Callable | JITSymbolFlags::Exported
     };
 
+#ifdef _WIN32
+    // LLVM's optimizer can fuse adjacent sin()/cos() calls in JIT-compiled
+    // stdlib bitcode into a single `sincos` libcall. On UCRT `sincos` lives in
+    // libucrt but is not pulled into the host exe (no host C++ code calls it),
+    // so it is absent from the PE export table and GetForCurrentProcess cannot
+    // find it — JIT fails with "Symbols not found: [ sincos ]". Register the
+    // CRT implementation directly so the JIT resolves it.
+    {
+        extern void sincos(double, double*, double*);
+        symbols[ES.intern("sincos")] = {
+            orc::ExecutorAddr::fromPtr(reinterpret_cast<void*>(
+                static_cast<void(*)(double, double*, double*)>(&::sincos))),
+            JITSymbolFlags::Callable | JITSymbolFlags::Exported
+        };
+    }
+#endif
+
 #if !defined(_WIN32)
     // ===== OPTIONAL AGENT FFI EXPORTS =====
     // Agent FFI modules are optional at configure time and their symbols
