@@ -1,0 +1,113 @@
+;; ESH-0069 — Tensor-op type-safety guard regression suite.
+;;
+;; Every tensor op routes its primary operand through the centralized
+;; TensorCodegen::unpackTensorOperandChecked helper (runtime:
+;; eshkol_tensor_operand_checked). That helper:
+;;   - returns the data pointer for a genuine tensor (zero-copy),
+;;   - coerces a homogeneous numeric vector to a 1-D tensor,
+;;   - otherwise raises a CATCHABLE type error (eshkol_type_error_with_operand)
+;;     instead of misreading the struct and SIGSEGV-ing.
+;;
+;; Before this fix, (softmax (vector 1.0 2.0 3.0)) and (softmax "x") segfaulted.
+;; This suite asserts: (a) wrong-typed operands raise a guardable error and do
+;; NOT crash, (b) homogeneous numeric vectors coerce, (c) valid tensors still
+;; compute correctly. Runs under both -r (JIT) and AOT.
+
+(require stdlib)
+
+(display "=== ESH-0069 Tensor Type-Guard Suite ===") (newline)
+
+(define pass-count 0)
+(define fail-count 0)
+
+(define (check name cond)
+  (if cond
+      (begin (set! pass-count (+ pass-count 1))
+             (display "PASS: ") (display name) (newline))
+      (begin (set! fail-count (+ fail-count 1))
+             (display "FAIL: ") (display name) (newline))))
+
+;; Valid tensors used throughout.
+(define t4 (reshape (vector 1.0 2.0 3.0 4.0) 4))      ; 1-D, 4 elements
+(define m22 (reshape (vector 1.0 2.0 3.0 4.0) 2 2))   ; 2-D, 2x2
+
+;; ---------------------------------------------------------------------------
+;; (1) VALID tensor inputs still produce correct results
+;; ---------------------------------------------------------------------------
+(check "valid: tensor-length t4 = 4"        (= (tensor-length t4) 4))
+(check "valid: tensor-sum t4 = 10"          (= (tensor-sum t4) 10.0))
+(check "valid: relu returns a tensor"       (tensor? (relu t4)))
+(check "valid: softmax returns a tensor"    (tensor? (softmax t4)))
+(check "valid: sigmoid returns a tensor"    (tensor? (sigmoid t4)))
+(check "valid: gelu returns a tensor"       (tensor? (gelu t4)))
+(check "valid: transpose returns a tensor"  (tensor? (transpose m22)))
+(check "valid: flatten returns a tensor"    (tensor? (flatten m22)))
+(check "valid: matmul returns a tensor"     (tensor? (matmul m22 m22)))
+
+;; ---------------------------------------------------------------------------
+;; (2) Homogeneous numeric vectors are coerced (no crash, correct shape)
+;; ---------------------------------------------------------------------------
+(check "coerce: softmax (vector ...) -> tensor"  (tensor? (softmax (vector 1.0 2.0 3.0))))
+(check "coerce: relu (vector ...) -> tensor"     (tensor? (relu (vector -1.0 2.0 -3.0))))
+(check "coerce: tensor-length (vector 1 2 3)=3"  (= (tensor-length (vector 1.0 2.0 3.0)) 3))
+
+;; ---------------------------------------------------------------------------
+;; (3) Non-tensor operands raise a CATCHABLE type error (NOT a segfault).
+;;     guard returns #t when the body raised; #f when it completed normally.
+;; ---------------------------------------------------------------------------
+;; Activation family (unary)
+(check "reject: relu on string"          (guard (exn (#t #t)) (relu "x") #f))
+(check "reject: sigmoid on string"       (guard (exn (#t #t)) (sigmoid "x") #f))
+(check "reject: softmax on string"       (guard (exn (#t #t)) (softmax "x") #f))
+(check "reject: softmax on int"          (guard (exn (#t #t)) (softmax 5) #f))
+(check "reject: gelu on string"          (guard (exn (#t #t)) (gelu "x") #f))
+(check "reject: leaky-relu on string"    (guard (exn (#t #t)) (leaky-relu "x") #f))
+(check "reject: silu on string"          (guard (exn (#t #t)) (silu "x") #f))
+(check "reject: elu on string"           (guard (exn (#t #t)) (elu "x") #f))
+(check "reject: selu on string"          (guard (exn (#t #t)) (selu "x") #f))
+(check "reject: mish on string"          (guard (exn (#t #t)) (mish "x") #f))
+(check "reject: softplus on string"      (guard (exn (#t #t)) (softplus "x") #f))
+(check "reject: gelu on non-numeric vec" (guard (exn (#t #t)) (gelu (vector "a" "b")) #f))
+
+;; Reductions / statistics
+(check "reject: tensor-sum on string"    (guard (exn (#t #t)) (tensor-sum "x") #f))
+(check "reject: tensor-mean on string"   (guard (exn (#t #t)) (tensor-mean "x") #f))
+(check "reject: tensor-min on string"    (guard (exn (#t #t)) (tensor-min "x") #f))
+(check "reject: tensor-max on string"    (guard (exn (#t #t)) (tensor-max "x") #f))
+(check "reject: tensor-argmin on string" (guard (exn (#t #t)) (tensor-argmin "x") #f))
+(check "reject: tensor-argmax on string" (guard (exn (#t #t)) (tensor-argmax "x") #f))
+(check "reject: tensor-var on string"    (guard (exn (#t #t)) (tensor-var "x") #f))
+(check "reject: tensor-std on string"    (guard (exn (#t #t)) (tensor-std "x") #f))
+
+;; Shape ops
+(check "reject: transpose on string"     (guard (exn (#t #t)) (transpose "x") #f))
+(check "reject: flatten on string"       (guard (exn (#t #t)) (flatten "x") #f))
+(check "reject: squeeze on string"       (guard (exn (#t #t)) (squeeze "x") #f))
+(check "reject: reshape on string"       (guard (exn (#t #t)) (reshape "x" 2) #f))
+(check "reject: tensor-shape on string"  (guard (exn (#t #t)) (tensor-shape "x") #f))
+(check "reject: tensor-length on string" (guard (exn (#t #t)) (tensor-length "x") #f))
+
+;; Convolution / pooling / normalization (string in the input position)
+(check "reject: max-pool2d on string"    (guard (exn (#t #t)) (max-pool2d "x" 2 2) #f))
+(check "reject: avg-pool2d on string"    (guard (exn (#t #t)) (avg-pool2d "x" 2 2) #f))
+(check "reject: conv1d on string"        (guard (exn (#t #t)) (conv1d "x" "y" 1) #f))
+(check "reject: conv2d on string"        (guard (exn (#t #t)) (conv2d "x" "y" 1) #f))
+
+;; Linear algebra / binary / access
+(check "reject: matmul lhs string"       (guard (exn (#t #t)) (matmul "x" m22) #f))
+(check "reject: matmul rhs string"       (guard (exn (#t #t)) (matmul m22 "x") #f))
+(check "reject: tensor-dot string"       (guard (exn (#t #t)) (tensor-dot "x" t4) #f))
+(check "reject: tensor-add string"       (guard (exn (#t #t)) (tensor-add "x" t4) #f))
+(check "reject: tensor-scale string"     (guard (exn (#t #t)) (tensor-scale "x" 2.0) #f))
+(check "reject: tensor-get string"       (guard (exn (#t #t)) (tensor-get "x" 0) #f))
+(check "reject: tensor->vector string"   (guard (exn (#t #t)) (tensor->vector "x") #f))
+
+;; ---------------------------------------------------------------------------
+;; Summary
+;; ---------------------------------------------------------------------------
+(newline)
+(display "Passed: ") (display pass-count) (newline)
+(display "Failed: ") (display fail-count) (newline)
+(if (= fail-count 0)
+    (begin (display "ALL TESTS PASSED") (newline))
+    (begin (display "SOME TESTS FAILED") (newline)))
