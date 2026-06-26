@@ -35690,9 +35690,17 @@ int eshkol_compile_llvm_ir_to_object(LLVMModuleRef module_ref, const char* filen
         //     per ABI). Range overflow doesn't bite there.
         std::optional<llvm::CodeModel::Model> code_model;
 #if LLVM_VERSION_MAJOR >= 21
-        const bool use_large_aarch64_code_model = object_triple.getArch() == Triple::aarch64 &&
-                                                  !object_triple.isOSWindows();
+        // LLVM 21's AArch64 COFF backend supports the Large code model
+        // (movk/movz + COFF base relocations for absolute 64-bit addresses).
+        // windows-arm64 needs it for the SAME reason Linux/macOS ARM64 do:
+        // libeshkol-static + user code exceeds the ±128 MiB BL/ADRP reach, and
+        // on COFF the small model makes lld-link insert range-extension thunks
+        // that fail to converge ("adding thunks hasn't converged after 10
+        // passes"). Large eliminates the range-limited branches entirely.
+        const bool use_large_aarch64_code_model = object_triple.getArch() == Triple::aarch64;
 #else
+        // Pre-21 toolchains: keep Windows on the default model — the AArch64
+        // COFF Large code model is not reliably supported there.
         const bool use_large_aarch64_code_model = object_triple.getArch() == Triple::aarch64 &&
                                                   !object_triple.isOSWindows();
 #endif
