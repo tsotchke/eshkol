@@ -196,6 +196,19 @@ public:
     llvm::GlobalVariable* globalArena() { return global_arena_; }
     void setGlobalArena(llvm::GlobalVariable* arena) { global_arena_ = arena; }
 
+    /**
+     * Single accessor for "the arena that allocations should currently target".
+     *
+     * Every allocating codegen site is expected to read the live arena pointer
+     * through this slot rather than baking in __global_arena directly. Today the
+     * slot IS the __global_arena GlobalVariable: (with-region ...) and parallel
+     * workers temporarily overwrite its stored value with a region / per-thread
+     * sub-arena so that all ~200 arena_allocate* sites transparently retarget,
+     * and restore it on exit. Funneling through one accessor keeps any future
+     * allocating op from re-baking the region / thread bypass (ESH-0039).
+     */
+    llvm::GlobalVariable* currentArenaPtr() { return global_arena_; }
+
     /** Get/set arena scope depth */
     size_t arenaScopeDepth() const { return arena_scope_depth_; }
     void setArenaScopeDepth(size_t depth) { arena_scope_depth_ = depth; }
