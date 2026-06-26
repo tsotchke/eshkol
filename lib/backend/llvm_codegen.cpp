@@ -19080,16 +19080,32 @@ private:
         return builder->CreateOr(is_double, is_complex);
     }
 
-    // Conditionally coerce an exact tagged value to its inexact (double)
+    // Conditionally coerce an EXACT tagged value to its inexact (double)
     // representation. When `cond` is false the value is returned unchanged;
-    // when true an already-inexact value is left as-is and an exact one is
-    // converted via extractAsDouble (the single exact->inexact path).
+    // when true an exact int64/bignum/rational is converted via extractAsDouble
+    // (the single exact->inexact path).
+    //
+    // Crucially the coercion only fires for *genuinely exact* results
+    // (INT64 / HEAP_PTR bignum / rational). A DUAL number (forward-mode AD)
+    // is already an inexact float carrying a tangent — routing it through
+    // extractAsDouble would strip the derivative and break AD through min/max.
+    // DOUBLE and COMPLEX are already inexact, so leaving them untouched is
+    // both correct and avoids needless work.
     Value* coerceToInexactIf(Value* result, Value* cond) {
+        // Restrict contagion to exact results; duals/doubles/complex pass through.
+        Value* base = getBaseType(getTaggedValueType(result));
+        Value* is_int = builder->CreateICmpEQ(base,
+            ConstantInt::get(int8_type, ESHKOL_VALUE_INT64));
+        Value* is_heap = builder->CreateICmpEQ(base,
+            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
+        Value* result_is_exact = builder->CreateOr(is_int, is_heap);
+        Value* do_coerce = builder->CreateAnd(cond, result_is_exact);
+
         Function* mf = builder->GetInsertBlock()->getParent();
         BasicBlock* coerce_bb = BasicBlock::Create(*context, "contagion_coerce", mf);
         BasicBlock* keep_bb = BasicBlock::Create(*context, "contagion_keep", mf);
         BasicBlock* merge_bb = BasicBlock::Create(*context, "contagion_merge", mf);
-        builder->CreateCondBr(cond, coerce_bb, keep_bb);
+        builder->CreateCondBr(do_coerce, coerce_bb, keep_bb);
 
         builder->SetInsertPoint(coerce_bb);
         // extractAsDouble is an identity for doubles and a faithful conversion
