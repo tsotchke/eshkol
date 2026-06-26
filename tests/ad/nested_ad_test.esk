@@ -1,0 +1,27 @@
+;;; tests/ad/nested_ad_test.esk
+;;; ESH-0067: true nested/higher-order AD via perturbation tagging (4-component
+;;; jet {primal,e1,e2,e1e2}). Previously these used central-difference numerical
+;;; diff -> perturbation confusion (0/garbage) + finite-diff hessian noise.
+(define pass 0)(define fail 0)
+(define (approx= a b) (< (abs (- a b)) 1e-9))
+(define (chk label v) (display "  [")(display (if v "PASS" "FAIL"))(display "] ")(display label)(newline)
+  (if v (set! pass (+ pass 1)) (set! fail (+ fail 1))))
+
+;; nested derivative whose inner point depends on the outer var (perturbation confusion cases)
+(chk "d/dx(d/dy x*y) = 1" (approx= (derivative (lambda (x) (derivative (lambda (y) (* x y)) 2.0)) 5.0) 1.0))
+(chk "d2/dx2(x^3)@2 = 12" (approx= (derivative (lambda (x) (derivative (lambda (y) (* y y y)) x)) 2.0) 12.0))
+(chk "d/dx(x*d/dy(y^2)@x)@1 = 4" (approx= (derivative (lambda (x) (* x (derivative (lambda (y) (* y y)) x))) 1.0) 4.0))
+
+;; hessian must be EXACT (off-diagonal exactly 0, no finite-diff epsilon)
+(define h (hessian (lambda (x y) (+ (* x x x) (* y y))) (list 2.0 1.0)))
+(chk "hessian diag [0][0] = 12" (approx= (tensor-ref h 0 0) 12.0))
+(chk "hessian off-diag [0][1] = 0 (exact)" (= (tensor-ref h 0 1) 0.0))
+(chk "hessian off-diag [1][0] = 0 (exact)" (= (tensor-ref h 1 0) 0.0))
+(chk "hessian diag [1][1] = 2" (approx= (tensor-ref h 1 1) 2.0))
+
+;; single-level AD unregressed
+(chk "deriv x^2 @3 = 6" (approx= (derivative (lambda (x) (* x x)) 3.0) 6.0))
+(chk "deriv sin @0 = 1" (approx= (derivative sin 0.0) 1.0))
+(chk "gradient (x^2+y^2) @(3,4) car = 6" (approx= (vector-ref (gradient (lambda (x y) (+ (* x x) (* y y))) (list 3.0 4.0)) 0) 6.0))
+
+(display "Passed: ")(display pass)(newline)(display "Failed: ")(display fail)(newline)
