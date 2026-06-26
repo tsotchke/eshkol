@@ -1,0 +1,87 @@
+;; SICP Chapter 1 — Higher-order procedures, recursion/iteration, Newton's method.
+;; Self-checking: prints "PASS: <name>" / "FAIL: <name> ...".
+;; Covers: sqrt by Newton, fixed-point, average-damp, sum/product higher-order,
+;; Newton's method via numeric derivative, ackermann, fib (tree+iter), gcd.
+
+(define fails 0)
+(define (check name ok)
+  (if ok
+      (begin (display "PASS: ") (display name) (newline))
+      (begin (set! fails (+ fails 1))
+             (display "FAIL: ") (display name) (newline))))
+(define (close? a b) (< (abs (- a b)) 1e-4))
+
+;; ---- 1.1.7 sqrt by Newton's method (fixed iteration) ----
+(define (average x y) (/ (+ x y) 2.0))
+(define (sqrt-newton x)
+  (define (good-enough? g) (< (abs (- (* g g) x)) 1e-9))
+  (define (improve g) (average g (/ x g)))
+  (define (iter g) (if (good-enough? g) g (iter (improve g))))
+  (iter 1.0))
+(check "sqrt-newton-2" (close? (sqrt-newton 2.0) 1.4142135))
+(check "sqrt-newton-144" (close? (sqrt-newton 144.0) 12.0))
+
+;; ---- 1.3.3 fixed-point + average damping ----
+(define tolerance 1e-7)
+(define (fixed-point f first-guess)
+  (define (try guess)
+    (let ((next (f guess)))
+      (if (< (abs (- guess next)) tolerance) next (try next))))
+  (try first-guess))
+(define (average-damp f) (lambda (x) (average x (f x))))
+(define (sqrt-fp x) (fixed-point (average-damp (lambda (y) (/ x y))) 1.0))
+(check "fixed-point-sqrt-2" (close? (sqrt-fp 2.0) 1.4142135))
+;; golden ratio is fixed point of x -> 1 + 1/x
+(check "fixed-point-golden" (close? (fixed-point (lambda (x) (+ 1.0 (/ 1.0 x))) 1.0) 1.6180339))
+
+;; ---- 1.3.1 sum / product as higher-order ----
+(define (sum term a next b)
+  (if (> a b) 0 (+ (term a) (sum term (next a) next b))))
+(define (product term a next b)
+  (if (> a b) 1 (* (term a) (product term (next a) next b))))
+(define (inc n) (+ n 1))
+(define (identity x) x)
+(check "sum-1-to-10" (= (sum identity 1 inc 10) 55))
+(check "product-factorial-5" (= (product identity 1 inc 5) 120))
+;; integral of cube on [0,1] ~ 1/4 (Simpson-free, simple sum)
+(define (integral f a b dx)
+  (* dx (sum (lambda (x) (f x)) (+ a (/ dx 2.0)) (lambda (x) (+ x dx)) b)))
+(check "integral-cube" (close? (integral (lambda (x) (* x x x)) 0.0 1.0 0.001) 0.25))
+
+;; ---- 1.3.4 Newton's method via numeric derivative ----
+(define dx 1e-6)
+(define (deriv g) (lambda (x) (/ (- (g (+ x dx)) (g x)) dx)))
+(define (newton-transform g) (lambda (x) (- x (/ (g x) ((deriv g) x)))))
+(define (newtons-method g guess) (fixed-point (newton-transform g) guess))
+;; root of x^2 - 2 = sqrt 2
+(check "newtons-method-sqrt2"
+       (close? (newtons-method (lambda (x) (- (* x x) 2.0)) 1.0) 1.4142135))
+
+;; ---- 1.2.1 Ackermann ----
+(define (ackermann m n)
+  (cond ((= n 0) 0)
+        ((= m 0) (* 2 n))
+        ((= n 1) 2)
+        (else (ackermann (- m 1) (ackermann m (- n 1))))))
+(check "ackermann-1-10" (= (ackermann 1 10) 1024))
+(check "ackermann-2-4" (= (ackermann 2 4) 65536))
+(check "ackermann-3-3" (= (ackermann 3 3) 65536))
+
+;; ---- 1.2.2 Fibonacci: tree-recursive and iterative ----
+(define (fib-tree n) (if (< n 2) n (+ (fib-tree (- n 1)) (fib-tree (- n 2)))))
+(define (fib-iter n)
+  (define (loop a b count) (if (= count 0) b (loop (+ a b) a (- count 1))))
+  (loop 1 0 n))
+(check "fib-tree-15" (= (fib-tree 15) 610))
+(check "fib-iter-15" (= (fib-iter 15) 610))
+(check "fib-tree=iter-20" (= (fib-tree 20) (fib-iter 20)))
+
+;; ---- 1.2.5 GCD (Euclid, iterative) ----
+(define (gcd-e a b) (if (= b 0) a (gcd-e b (remainder a b))))
+(check "gcd-206-40" (= (gcd-e 206 40) 2))
+(check "gcd-1071-462" (= (gcd-e 1071 462) 21))
+
+(newline)
+(if (= fails 0)
+    (begin (display "ALL-PASS ch1_higher_order") (newline))
+    (begin (display "HAS-FAIL ch1_higher_order ") (display fails) (newline)))

@@ -1,0 +1,56 @@
+;; SICP Chapter 1.2.6 — Testing for primality.
+;; Trial-division prime? and the Fermat probabilistic test.
+
+(define fails 0)
+(define (check name ok)
+  (if ok (begin (display "PASS: ") (display name) (newline))
+      (begin (set! fails (+ fails 1)) (display "FAIL: ") (display name) (newline))))
+
+;; ---- deterministic trial division ----
+(define (square x) (* x x))
+(define (smallest-divisor n) (find-divisor n 2))
+(define (find-divisor n test)
+  (cond ((> (square test) n) n)
+        ((= 0 (remainder n test)) test)
+        (else (find-divisor n (+ test 1)))))
+(define (prime? n) (and (> n 1) (= n (smallest-divisor n))))
+
+(check "prime?-2"   (prime? 2))
+(check "prime?-17"  (prime? 17))
+(check "prime?-97"  (prime? 97))
+(check "prime?-561-not" (not (prime? 561)))   ; Carmichael, but not prime
+(check "prime?-100-not" (not (prime? 100)))
+(check "prime?-1-not"   (not (prime? 1)))
+
+;; count primes below 50
+(define (count-primes-below n)
+  (define (loop k acc) (if (>= k n) acc (loop (+ k 1) (if (prime? k) (+ acc 1) acc))))
+  (loop 2 0))
+(check "count-primes-below-50" (= (count-primes-below 50) 15))
+
+;; ---- Fermat test (1.2.6) ----
+(define (expmod base exp m)
+  (cond ((= exp 0) 1)
+        ((even? exp) (remainder (square (expmod base (/ exp 2) m)) m))
+        (else (remainder (* base (expmod base (- exp 1) m)) m))))
+(define (fermat-test n a) (= (expmod a n n) a))
+;; Fixed witnesses for determinism; only witnesses with 1 < a < n are meaningful.
+(define (fermat-witness n a) (if (< a n) (fermat-test n a) #t))
+(define (fermat-prime? n)
+  (and (fermat-witness n 2) (fermat-witness n 3)
+       (fermat-witness n 5) (fermat-witness n 7)))
+
+(check "fermat-7"  (fermat-prime? 7))
+(check "fermat-13" (fermat-prime? 13))
+(check "fermat-1009" (fermat-prime? 1009))
+(check "fermat-15-not"  (not (fermat-prime? 15)))
+(check "fermat-100-not" (not (fermat-prime? 100)))
+;; 561 = 3*11*17 is a Carmichael number. SICP introduces it (ex 1.27) precisely
+;; because it FOOLS the Fermat test for every base coprime to n — so a correct
+;; Fermat test reports it (wrongly) as prime. This documents that limitation.
+(check "fermat-561-carmichael-fools" (fermat-prime? 561))
+
+(newline)
+(if (= fails 0)
+    (begin (display "ALL-PASS ch1_primes") (newline))
+    (begin (display "HAS-FAIL ch1_primes ") (display fails) (newline)))
