@@ -8948,6 +8948,30 @@ private:
         // NOTE: abs and other unary math functions are now handled at the top of this function
         // with proper closure wrapping (before function_table check)
 
+        // Character case-conversion builtins as first-class functions.
+        // char-upcase / char-downcase / char-foldcase are normally inlined at
+        // the call site (codegenAST dispatch), so the bare symbol failed to
+        // resolve with "Undefined variable: char-upcase" when passed as a
+        // value — e.g. (string-map char-upcase "abc") or (map char-downcase …).
+        // Wrap each in a tagged_value -> tagged_value closure (arity 1).
+        if (var_name == "char-upcase" || var_name == "char-downcase" ||
+            var_name == "char-foldcase") {
+            Function* builtin_func = createBuiltinCharFunction(var_name);
+            if (builtin_func) {
+                Value* func_ptr_int = builder->CreatePtrToInt(builtin_func, intptr_type);
+                Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+                uint64_t packed_info = 0 | (1 << 16);  // no captures, arity=1
+                Value* packed_info_val = sizeConst(packed_info);
+                Value* sexpr_ptr = intPtrConst(0);
+                uint64_t return_type_info_val = CLOSURE_RETURN_SCALAR | (1 << 8);
+                Value* return_type_info = intPtrConst(return_type_info_val);
+                Value* closure_name = ConstantPointerNull::get(PointerType::getUnqual(*context));
+                Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureWithHeaderFunc(),
+                                                         {arena_ptr, func_ptr_int, packed_info_val, sexpr_ptr, return_type_info, closure_name});
+                return packPtrToTaggedValue(closure_ptr, ESHKOL_VALUE_CALLABLE);
+            }
+        }
+
         // eval as a first-class function (for (map eval sexps), etc.)
         // Generates a thunk that forwards to eshkol_eval_sret and wraps it in a closure.
         if (var_name == "eval") {
@@ -34001,6 +34025,56 @@ private:
         eshkol_debug("Created builtin predicate function: %s for predicate '%s'",
                     func_name.c_str(), pred_name.c_str());
 
+        return builtin_func;
+    }
+
+    // Create a tagged_value -> tagged_value wrapper for an ASCII character
+    // case-conversion builtin (char-upcase / char-downcase / char-foldcase)
+    // so it can be used as a first-class procedure. The body mirrors the
+    // inline codegen in codegenAST's char-upcase/char-downcase dispatch.
+    Function* createBuiltinCharFunction(const std::string& op_name) {
+        std::string func_name = "builtin_char_" + op_name;
+        for (char& c : func_name) { if (c == '-') c = '_'; }
+
+        auto existing_it = function_table.find(func_name);
+        if (existing_it != function_table.end()) {
+            return existing_it->second;
+        }
+
+        FunctionType* func_type = FunctionType::get(
+            tagged_value_type, {tagged_value_type}, false);
+        Function* builtin_func = Function::Create(
+            func_type, Function::ExternalLinkage, func_name, module.get());
+
+        IRBuilderBase::InsertPoint old_point = builder->saveIP();
+        BasicBlock* entry = BasicBlock::Create(*context, "entry", builtin_func);
+        builder->SetInsertPoint(entry);
+
+        Value* arg = &*builtin_func->arg_begin();
+        Value* ch = builder->CreateTrunc(unpackInt64FromTaggedValue(arg), int8_type);
+        Value* result;
+        if (op_name == "char-upcase") {
+            // 'a'..'z' -> subtract 32
+            Value* ge = builder->CreateICmpUGE(ch, ConstantInt::get(int8_type, 'a'));
+            Value* le = builder->CreateICmpULE(ch, ConstantInt::get(int8_type, 'z'));
+            Value* in_range = builder->CreateAnd(ge, le);
+            Value* conv = builder->CreateSub(ch, ConstantInt::get(int8_type, 32));
+            result = builder->CreateSelect(in_range, conv, ch);
+        } else {
+            // char-downcase / char-foldcase: 'A'..'Z' -> add 32 (ASCII identical)
+            Value* ge = builder->CreateICmpUGE(ch, ConstantInt::get(int8_type, 'A'));
+            Value* le = builder->CreateICmpULE(ch, ConstantInt::get(int8_type, 'Z'));
+            Value* in_range = builder->CreateAnd(ge, le);
+            Value* conv = builder->CreateAdd(ch, ConstantInt::get(int8_type, 32));
+            result = builder->CreateSelect(in_range, conv, ch);
+        }
+        builder->CreateRet(packCharToTaggedValue(builder->CreateZExt(result, int64_type)));
+
+        if (old_point.isSet()) {
+            builder->restoreIP(old_point);
+        }
+
+        registerContextFunction(func_name, builtin_func);
         return builtin_func;
     }
 

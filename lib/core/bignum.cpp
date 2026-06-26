@@ -951,7 +951,10 @@ void eshkol_bignum_pow_tagged(arena_t* arena,
 
 /* ===== String Conversion ===== */
 
-void eshkol_string_to_number_tagged(arena_t* arena, const char* str,
+/* Parse a base-10 number (int64 / bignum / double / rational) from an
+ * already-whitespace-trimmed, prefix-stripped string. Internal helper.
+ * `start` must be non-NULL and non-empty. */
+static void eshkol_s2n_decimal(arena_t* arena, const char* start,
     eshkol_tagged_value_t* result) {
     /* R7RS: string->number returns #f if the string is not a valid number.
      * #f is represented as ESHKOL_VALUE_BOOL with data = 0. */
@@ -960,19 +963,6 @@ void eshkol_string_to_number_tagged(arena_t* arena, const char* str,
     false_val.flags = 0;
     false_val.reserved = 0;
     false_val.data.int_val = 0;
-
-    if (!str || !result) {
-        if (result) *result = false_val;
-        return;
-    }
-
-    /* Skip leading whitespace */
-    const char* start = str;
-    while (*start == ' ' || *start == '\t') start++;
-    if (*start == '\0') {
-        *result = false_val;
-        return;
-    }
 
     /* Scan for syntax markers: '/' (rational), '.', 'e'/'E' (float) */
     bool is_float = false;
@@ -1054,6 +1044,116 @@ void eshkol_string_to_number_tagged(arena_t* arena, const char* str,
 
     /* Not a valid number */
     *result = false_val;
+}
+
+/* Parse an integer (optional sign) or rational a/b in a non-decimal radix
+ * (2..36) from an already-trimmed, prefix-stripped string. R7RS: with an
+ * explicit non-decimal radix only exact integers and rationals are valid
+ * (no decimal-point / exponent floats). */
+static void eshkol_s2n_radix_int(arena_t* arena, const char* start, int radix,
+    eshkol_tagged_value_t* result) {
+    eshkol_tagged_value_t false_val = {};
+    false_val.type = ESHKOL_VALUE_BOOL;
+    false_val.flags = 0;
+    false_val.reserved = 0;
+    false_val.data.int_val = 0;
+
+    /* Locate an optional rational separator '/'. */
+    const char* slash = nullptr;
+    for (const char* q = start; *q; ++q) {
+        if (*q == '/') { slash = q; break; }
+    }
+
+    if (slash) {
+        /* Rational num/denom — both parsed in this radix. */
+        char* endptr = nullptr;
+        errno = 0;
+        long long num = strtoll(start, &endptr, radix);
+        if (endptr != slash || endptr == start || errno == ERANGE) {
+            *result = false_val;
+            return;
+        }
+        errno = 0;
+        long long denom = strtoll(slash + 1, &endptr, radix);
+        while (*endptr == ' ' || *endptr == '\t') endptr++;
+        if (endptr == slash + 1 || *endptr != '\0' || errno == ERANGE || denom == 0) {
+            *result = false_val;
+            return;
+        }
+        void* rat = eshkol_rational_create((void*)arena, (int64_t)num, (int64_t)denom);
+        if (rat) {
+            *result = eshkol_make_ptr((uint64_t)(void*)rat, ESHKOL_VALUE_HEAP_PTR);
+            result->flags = ESHKOL_VALUE_EXACT_FLAG;
+            return;
+        }
+        *result = false_val;
+        return;
+    }
+
+    /* Plain integer — MUST consume the entire string. */
+    char* endptr = nullptr;
+    errno = 0;
+    long long val = strtoll(start, &endptr, radix);
+    while (*endptr == ' ' || *endptr == '\t') endptr++;
+    if (endptr == start || *endptr != '\0' || errno == ERANGE) {
+        *result = false_val;
+        return;
+    }
+    *result = eshkol_make_int64((int64_t)val, true);
+}
+
+/* R7RS 6.2.6: (string->number string radix). Honors an explicit radix of
+ * 2/8/10/16 (any 2..36 accepted), and the #b/#o/#d/#x prefixes (which
+ * override the radix argument). Returns #f for malformed input. */
+void eshkol_string_to_number_radix_tagged(arena_t* arena, const char* str,
+    int64_t radix, eshkol_tagged_value_t* result) {
+    eshkol_tagged_value_t false_val = {};
+    false_val.type = ESHKOL_VALUE_BOOL;
+    false_val.flags = 0;
+    false_val.reserved = 0;
+    false_val.data.int_val = 0;
+
+    if (!str || !result) {
+        if (result) *result = false_val;
+        return;
+    }
+
+    /* Skip leading whitespace */
+    const char* start = str;
+    while (*start == ' ' || *start == '\t') start++;
+    if (*start == '\0') {
+        *result = false_val;
+        return;
+    }
+
+    /* Radix prefix #b/#o/#d/#x overrides the radix argument (R7RS 7.1.1). */
+    if (start[0] == '#' && start[1] != '\0') {
+        char c = (char)(start[1] | 0x20); /* lowercase */
+        if      (c == 'b') radix = 2;
+        else if (c == 'o') radix = 8;
+        else if (c == 'd') radix = 10;
+        else if (c == 'x') radix = 16;
+        else { *result = false_val; return; } /* #e/#i and unknown: unsupported here */
+        start += 2;
+        if (*start == '\0') { *result = false_val; return; }
+    }
+
+    if (radix < 2 || radix > 36) {
+        *result = false_val;
+        return;
+    }
+
+    if (radix == 10) {
+        eshkol_s2n_decimal(arena, start, result);
+    } else {
+        eshkol_s2n_radix_int(arena, start, (int)radix, result);
+    }
+}
+
+void eshkol_string_to_number_tagged(arena_t* arena, const char* str,
+    eshkol_tagged_value_t* result) {
+    /* 1-arg form: default radix 10, with #b/#o/#d/#x prefix support. */
+    eshkol_string_to_number_radix_tagged(arena, str, 10, result);
 }
 
 /* ===== Display ===== */

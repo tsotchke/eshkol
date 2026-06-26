@@ -1,0 +1,123 @@
+;; String Edge-Case Tests (ESH-0066)
+;; Regression coverage for two R7RS string ops fixed in this change:
+;;   (1) string-map must BUILD and RETURN a string (R7RS 6.7), and accept
+;;       a first-class char builtin such as char-upcase as its proc.
+;;   (2) string->number must honor the optional radix argument (R7RS 6.2.6)
+;;       and the #b/#o/#d/#x prefixes.
+;; Plus regression guards for the already-correct string ops.
+
+;; Test counter
+(define tests-passed 0)
+(define tests-failed 0)
+
+(define (test-case name expected actual)
+  (if (equal? expected actual)
+      (begin
+        (set! tests-passed (+ tests-passed 1))
+        (display "PASS: ") (display name) (display "\n"))
+      (begin
+        (set! tests-failed (+ tests-failed 1))
+        (display "FAIL: ") (display name)
+        (display " (expected ") (display expected)
+        (display ", got ") (display actual) (display ")\n"))))
+
+(display "=== STRING EDGE-CASE TESTS (ESH-0066) ===\n\n")
+
+;; ============================================================================
+;; Test: string-map (R7RS 6.7) — returns a string
+;; ============================================================================
+
+(display "--- string-map ---\n")
+
+;; ROOT BUG #1: char-upcase as a first-class proc; result must be "ABC".
+(test-case "string-map char-upcase" "ABC" (string-map char-upcase "abc"))
+(test-case "string-map char-downcase" "abc" (string-map char-downcase "ABC"))
+(test-case "string-map char-foldcase" "abc" (string-map char-foldcase "ABC"))
+;; identity via lambda
+(test-case "string-map identity" "hello" (string-map (lambda (c) c) "hello"))
+;; lambda wrapping a char builtin
+(test-case "string-map lambda upcase" "HELLO"
+           (string-map (lambda (c) (char-upcase c)) "hello"))
+;; empty string maps to empty string
+(test-case "string-map empty" "" (string-map char-upcase ""))
+;; result is a string (length preserved)
+(test-case "string-map length" 5 (string-length (string-map char-upcase "world")))
+
+;; char-upcase as a first-class value beyond string-map (map over a list)
+(test-case "map char-upcase list" (list #\A #\B)
+           (map char-upcase (list #\a #\b)))
+
+;; ============================================================================
+;; Test: string->number with radix (R7RS 6.2.6)
+;; ============================================================================
+
+(display "\n--- string->number radix ---\n")
+
+;; ROOT BUG #2: the 2-arg radix form was ignored.
+(test-case "s2n ff base 16" 255 (string->number "ff" 16))
+(test-case "s2n 1010 base 2" 10 (string->number "1010" 2))
+(test-case "s2n 777 base 8" 511 (string->number "777" 8))
+(test-case "s2n FF uppercase base 16" 255 (string->number "FF" 16))
+(test-case "s2n base 10 explicit" 42 (string->number "42" 10))
+;; invalid digit for radix -> #f
+(test-case "s2n z base 16 invalid" #f (string->number "z" 16))
+(test-case "s2n 2 base 2 invalid" #f (string->number "2" 2))
+(test-case "s2n empty radix" #f (string->number "" 16))
+;; negative numbers in a radix
+(test-case "s2n -ff base 16" -255 (string->number "-ff" 16))
+
+;; # prefixes (1-arg form) — radix from the literal prefix
+(test-case "s2n #xff prefix" 255 (string->number "#xff"))
+(test-case "s2n #b1010 prefix" 10 (string->number "#b1010"))
+(test-case "s2n #o777 prefix" 511 (string->number "#o777"))
+(test-case "s2n #d42 prefix" 42 (string->number "#d42"))
+
+;; ============================================================================
+;; Regression guards: already-correct string ops must be unaffected
+;; ============================================================================
+
+(display "\n--- regression guards ---\n")
+
+;; string->number 1-arg base 10 (unchanged path)
+(test-case "s2n plain int" 123 (string->number "123"))
+(test-case "s2n plain float" 3.5 (string->number "3.5"))
+(test-case "s2n not a number" #f (string->number "abc"))
+
+;; string-for-each still iterates (and is distinct from string-map)
+(define sfe-count 0)
+(string-for-each (lambda (c) (set! sfe-count (+ sfe-count 1))) "abcd")
+(test-case "string-for-each count" 4 sfe-count)
+
+;; substring: full, empty (start=end), and ordinary range
+(test-case "substring full" "hello" (substring "hello" 0 5))
+(test-case "substring empty" "" (substring "hello" 2 2))
+(test-case "substring range" "ell" (substring "hello" 1 4))
+
+;; string-ref, string-reverse, char-upcase scalar
+(test-case "string-ref" #\e (string-ref "hello" 1))
+(test-case "string-reverse" "olleh" (string-reverse "hello"))
+(test-case "char-upcase scalar" #\A (char-upcase #\a))
+
+;; number->string with radix (already correct)
+(test-case "number->string base 16" "ff" (number->string 255 16))
+(test-case "number->string base 2" "1010" (number->string 10 2))
+
+;; make-string fill + string-copy range
+(test-case "make-string fill" "aaa" (make-string 3 #\a))
+(test-case "string-copy range" "ell" (string-copy "hello" 1 4))
+
+;; round-trip: number->string then string->number with the same radix
+(test-case "radix round-trip"
+           255 (string->number (number->string 255 16) 16))
+
+;; ============================================================================
+;; Summary
+;; ============================================================================
+
+(display "\n=== Results ===\n")
+(display "Passed: ") (display tests-passed) (newline)
+(display "Failed: ") (display tests-failed) (newline)
+
+(if (= tests-failed 0)
+    (display "All tests passed!\n")
+    (display "Some tests failed!\n"))

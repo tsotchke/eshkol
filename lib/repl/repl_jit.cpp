@@ -1115,6 +1115,7 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_SYMBOL(eshkol_bignum_is_even);
     ADD_SYMBOL(eshkol_bignum_is_odd);
     ADD_SYMBOL(eshkol_string_to_number_tagged);
+    ADD_SYMBOL(eshkol_string_to_number_radix_tagged);
     ADD_SYMBOL(eshkol_rational_create);
     ADD_SYMBOL(eshkol_rational_to_double);
     ADD_SYMBOL(eshkol_rational_to_string);
