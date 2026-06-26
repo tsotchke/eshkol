@@ -835,10 +835,16 @@ void ReplJITContext::registerRuntimeSymbols() {
     // find it — JIT fails with "Symbols not found: [ sincos ]". Register the
     // CRT implementation directly so the JIT resolves it.
     {
-        extern void sincos(double, double*, double*);
+        // Provide `sincos` ourselves rather than depending on the platform CRT
+        // exporting it: `sincos` is a nonstandard GNU/BSD extension that UCRT64
+        // (MSYS2/clang) declares in <math.h> but MSVC / windows-arm64 does NOT
+        // (`&::sincos` failed to compile there — no global `sincos`). A local
+        // shim resolves the JIT's fused sin+cos libcall on every Windows
+        // toolchain without relying on a nonstandard CRT symbol.
+        static void (*const jit_sincos)(double, double*, double*) =
+            [](double x, double* s, double* c) { *s = std::sin(x); *c = std::cos(x); };
         symbols[ES.intern("sincos")] = {
-            orc::ExecutorAddr::fromPtr(reinterpret_cast<void*>(
-                static_cast<void(*)(double, double*, double*)>(&::sincos))),
+            orc::ExecutorAddr::fromPtr(reinterpret_cast<void*>(jit_sincos)),
             JITSymbolFlags::Callable | JITSymbolFlags::Exported
         };
     }
