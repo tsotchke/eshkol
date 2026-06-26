@@ -39,33 +39,113 @@ AutodiffCodegen::AutodiffCodegen(CodegenContext& ctx, TaggedValueCodegen& tagged
 
 // ===== DUAL NUMBER OPERATIONS (Forward-mode AD) =====
 // Fully implemented - these are self-contained and don't depend on AST codegen
+//
+// SECOND-ORDER / NESTED forward-mode AD.
+// ----------------------------------------------------------------------
+// A dual number is a 4-component truncated bivariate Taylor jet
+//     v = f0 + f1*e1 + f2*e2 + f3*e1*e2      (e1^2 = e2^2 = 0)
+// stored as the LLVM struct {primal, d1, d2, d12}.  Each `derivative`
+// nesting level (and each of the two arguments a Hessian differentiates
+// w.r.t.) is tagged with a distinct perturbation e1 or e2 — this is the
+// standard cure for "perturbation confusion".  Single-level AD only ever
+// touches f0/f1, so the representation is backward-compatible: a plain
+// {primal, tangent} dual is just {primal, tangent, 0, 0}.
+//
+// Arithmetic on these jets is exact and finite (no recursion, no finite
+// differences); the closed forms are implemented below.
+
+namespace {
+
+// Read component `idx` (0=primal,1=e1,2=e2,3=e1e2) of a dual struct value.
+inline llvm::Value* dualField(CodegenContext& ctx, llvm::Value* dual, unsigned idx) {
+    return ctx.builder().CreateExtractValue(dual, {idx});
+}
+
+// Build a 4-component dual struct value from its components.
+inline llvm::Value* makeDual4(CodegenContext& ctx,
+                              llvm::Value* f0, llvm::Value* f1,
+                              llvm::Value* f2, llvm::Value* f3) {
+    llvm::Value* d = llvm::UndefValue::get(ctx.dualNumberType());
+    auto& b = ctx.builder();
+    d = b.CreateInsertValue(d, f0, {0});
+    d = b.CreateInsertValue(d, f1, {1});
+    d = b.CreateInsertValue(d, f2, {2});
+    d = b.CreateInsertValue(d, f3, {3});
+    return d;
+}
+
+// Apply a scalar unary function g (with value g(a)=fa, g'(a)=fpa, g''(a)=fppa
+// evaluated at the dual's primal) to a dual, propagating BOTH perturbation
+// slots and the mixed second-order term exactly:
+//   g(u) = g(a) + g'(a)(d1 e1 + d2 e2 + d12 e1e2)
+//                + g''(a)(d1 d2) e1e2      (the only surviving 2nd-order term)
+inline llvm::Value* dualUnaryChain(CodegenContext& ctx, llvm::Value* dual,
+                                   llvm::Value* fa, llvm::Value* fpa, llvm::Value* fppa) {
+    auto& b = ctx.builder();
+    llvm::Value* d1 = b.CreateExtractValue(dual, {1});
+    llvm::Value* d2 = b.CreateExtractValue(dual, {2});
+    llvm::Value* d12 = b.CreateExtractValue(dual, {3});
+    llvm::Value* o1 = b.CreateFMul(fpa, d1);
+    llvm::Value* o2 = b.CreateFMul(fpa, d2);
+    llvm::Value* o3 = b.CreateFAdd(b.CreateFMul(fpa, d12),
+                                   b.CreateFMul(fppa, b.CreateFMul(d1, d2)));
+    return makeDual4(ctx, fa, o1, o2, o3);
+}
+
+} // anonymous namespace
+
+// Perturbation-tagging nesting depth for user-written nested `derivative`.
+// Depth 0 (outermost) tags with e1 (slot 1); depth 1 (one level of nesting)
+// tags with e2 (slot 2).  The 4-component jet supports two simultaneous live
+// perturbations, i.e. up to 2 levels of forward-over-forward nesting exactly.
+// Tracked as a file-static (thread-local for REPL/JIT thread-safety) so no
+// header/ABI change is needed.
+static thread_local int g_ad_deriv_depth = 0;
 
 llvm::Value* AutodiffCodegen::createDualNumber(llvm::Value* primal, llvm::Value* tangent) {
     if (!primal || !tangent) return nullptr;
+    // {primal, tangent(e1), 0(e2), 0(e1e2)} — single-level seed.  The e2/e1e2
+    // slots MUST be explicitly zeroed (a 4-field alloca would leave them
+    // uninitialised → garbage second derivatives).
+    llvm::Value* zero = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
+    return makeDual4(ctx_, primal, tangent, zero, zero);
+}
 
-    // Create alloca for dual number at function entry
-    llvm::IRBuilderBase::InsertPoint saved_ip = ctx_.builder().saveIP();
-    llvm::Function* func = ctx_.builder().GetInsertBlock()->getParent();
-    if (func && !func->empty()) {
-        llvm::BasicBlock& entry = func->getEntryBlock();
-        ctx_.builder().SetInsertPoint(&entry, entry.begin());
+// Seed a fresh forward-mode perturbation for a `derivative` at nesting `depth`.
+// The point may already be a dual (when this derivative is nested and its point
+// depends on the outer variable); we PRESERVE its components and set this
+// level's slot to 1.0.  depth 0 -> slot e1 (field 1); depth 1 -> slot e2
+// (field 2).  Two simultaneous perturbations (=> 2 levels of forward-over-
+// forward nesting) are exact; deeper nesting is flagged explicitly — the
+// 4-component jet cannot carry a 3rd independent perturbation, so it aliases
+// onto e2 rather than silently returning a wrong-but-plausible number.
+llvm::Value* AutodiffCodegen::seedDerivativeInput(llvm::Value* point_tagged, int depth) {
+    llvm::Value* base = safeUnpackDualFromTagged(point_tagged); // {p,d1,d2,d12}
+    unsigned slot = (depth <= 0) ? 1u : 2u;
+    if (depth >= 2) {
+        eshkol_warn("nested `derivative` depth %d exceeds exact 2-level forward AD; "
+                    "this level's perturbation is aliased onto e2 (approximate)", depth);
     }
+    llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
+    llvm::Value* seeded = ctx_.builder().CreateInsertValue(base, one, {slot});
+    return packDualToTagged(seeded);
+}
 
-    llvm::Value* dual_ptr = ctx_.builder().CreateAlloca(ctx_.dualNumberType(), nullptr, "dual");
-
-    // Restore insertion point for the actual stores
-    ctx_.builder().restoreIP(saved_ip);
-
-    // Store primal in field 0
-    llvm::Value* primal_ptr = ctx_.builder().CreateStructGEP(ctx_.dualNumberType(), dual_ptr, 0);
-    ctx_.builder().CreateStore(primal, primal_ptr);
-
-    // Store tangent in field 1
-    llvm::Value* tangent_ptr = ctx_.builder().CreateStructGEP(ctx_.dualNumberType(), dual_ptr, 1);
-    ctx_.builder().CreateStore(tangent, tangent_ptr);
-
-    // Load and return the dual number struct
-    return ctx_.builder().CreateLoad(ctx_.dualNumberType(), dual_ptr);
+// Extract the derivative of a lambda result w.r.t. THIS level's perturbation.
+//   depth 0 : scalar tangent (field 1), packed as a double.
+//   depth>=1: the e2-slice as a dual {a2, a12, 0, 0} (tagged DUAL_NUMBER) so an
+//             enclosing derivative reads its e1 coefficient (= the mixed term).
+// safeUnpack handles a non-dual scalar result (constant fn, literal branch).
+llvm::Value* AutodiffCodegen::extractDerivativeResult(llvm::Value* result_tagged, int depth) {
+    llvm::Value* rd = safeUnpackDualFromTagged(result_tagged); // {a0,a1,a2,a12}
+    if (depth <= 0) {
+        return tagged_.packDouble(dualField(ctx_, rd, 1));
+    }
+    // d/de2 (a0 + a1 e1 + a2 e2 + a12 e1e2) = a2 + a12 e1
+    llvm::Value* zero = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
+    llvm::Value* sliced = makeDual4(ctx_, dualField(ctx_, rd, 2), dualField(ctx_, rd, 3),
+                                    zero, zero);
+    return packDualToTagged(sliced);
 }
 
 llvm::Value* AutodiffCodegen::getDualPrimal(llvm::Value* dual) {
@@ -105,8 +185,8 @@ llvm::Value* AutodiffCodegen::packDualToTagged(llvm::Value* dual) {
     llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), arena_global);
 
     // Allocate space for dual number on the heap (arena)
-    // dual_number is 16 bytes (two doubles)
-    llvm::Value* size = llvm::ConstantInt::get(ctx_.sizeType(), 16);
+    // dual_number is 32 bytes (four doubles: primal, d1, d2, d12)
+    llvm::Value* size = llvm::ConstantInt::get(ctx_.sizeType(), 32);
     llvm::Function* alloc_func = mem_.getArenaAllocate();
     if (!alloc_func) {
         eshkol_warn("packDualToTagged: arena_allocate not found");
@@ -183,9 +263,11 @@ llvm::Value* AutodiffCodegen::safeUnpackDualFromTagged(llvm::Value* tagged_val) 
         llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DOUBLE));
     llvm::Value* primal_final = ctx_.builder().CreateSelect(is_double, primal_bc, primal_si, "sudft_primal");
     llvm::Value* synth_dual = llvm::UndefValue::get(ctx_.dualNumberType());
+    llvm::Value* synth_zero = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
     synth_dual = ctx_.builder().CreateInsertValue(synth_dual, primal_final, {0});
-    synth_dual = ctx_.builder().CreateInsertValue(synth_dual,
-        llvm::ConstantFP::get(ctx_.doubleType(), 0.0), {1});
+    synth_dual = ctx_.builder().CreateInsertValue(synth_dual, synth_zero, {1});
+    synth_dual = ctx_.builder().CreateInsertValue(synth_dual, synth_zero, {2});
+    synth_dual = ctx_.builder().CreateInsertValue(synth_dual, synth_zero, {3});
     llvm::BasicBlock* scalar_exit = ctx_.builder().GetInsertBlock();
     ctx_.builder().CreateBr(merge_bb);
 
@@ -196,82 +278,66 @@ llvm::Value* AutodiffCodegen::safeUnpackDualFromTagged(llvm::Value* tagged_val) 
     return phi;
 }
 
-// Dual arithmetic: (a, a') + (b, b') = (a+b, a'+b')
+// Dual arithmetic (4-component jets). Each is the exact truncated-Taylor
+// rule for v = f0 + f1 e1 + f2 e2 + f3 e1e2.
+
+// (a + b): componentwise.
 llvm::Value* AutodiffCodegen::dualAdd(llvm::Value* dual_a, llvm::Value* dual_b) {
     if (!dual_a || !dual_b) return nullptr;
-
-    llvm::Value* a = getDualPrimal(dual_a);
-    llvm::Value* a_prime = getDualTangent(dual_a);
-    llvm::Value* b = getDualPrimal(dual_b);
-    llvm::Value* b_prime = getDualTangent(dual_b);
-
-    // Value: a + b
-    llvm::Value* value = ctx_.builder().CreateFAdd(a, b);
-
-    // Derivative: a' + b'
-    llvm::Value* deriv = ctx_.builder().CreateFAdd(a_prime, b_prime);
-
-    return createDualNumber(value, deriv);
+    auto& b = ctx_.builder();
+    llvm::Value* r0 = b.CreateFAdd(dualField(ctx_, dual_a, 0), dualField(ctx_, dual_b, 0));
+    llvm::Value* r1 = b.CreateFAdd(dualField(ctx_, dual_a, 1), dualField(ctx_, dual_b, 1));
+    llvm::Value* r2 = b.CreateFAdd(dualField(ctx_, dual_a, 2), dualField(ctx_, dual_b, 2));
+    llvm::Value* r3 = b.CreateFAdd(dualField(ctx_, dual_a, 3), dualField(ctx_, dual_b, 3));
+    return makeDual4(ctx_, r0, r1, r2, r3);
 }
 
-// Dual arithmetic: (a, a') - (b, b') = (a-b, a'-b')
+// (a - b): componentwise.
 llvm::Value* AutodiffCodegen::dualSub(llvm::Value* dual_a, llvm::Value* dual_b) {
     if (!dual_a || !dual_b) return nullptr;
-
-    llvm::Value* a = getDualPrimal(dual_a);
-    llvm::Value* a_prime = getDualTangent(dual_a);
-    llvm::Value* b = getDualPrimal(dual_b);
-    llvm::Value* b_prime = getDualTangent(dual_b);
-
-    // Value: a - b
-    llvm::Value* value = ctx_.builder().CreateFSub(a, b);
-
-    // Derivative: a' - b'
-    llvm::Value* deriv = ctx_.builder().CreateFSub(a_prime, b_prime);
-
-    return createDualNumber(value, deriv);
+    auto& b = ctx_.builder();
+    llvm::Value* r0 = b.CreateFSub(dualField(ctx_, dual_a, 0), dualField(ctx_, dual_b, 0));
+    llvm::Value* r1 = b.CreateFSub(dualField(ctx_, dual_a, 1), dualField(ctx_, dual_b, 1));
+    llvm::Value* r2 = b.CreateFSub(dualField(ctx_, dual_a, 2), dualField(ctx_, dual_b, 2));
+    llvm::Value* r3 = b.CreateFSub(dualField(ctx_, dual_a, 3), dualField(ctx_, dual_b, 3));
+    return makeDual4(ctx_, r0, r1, r2, r3);
 }
 
-// Dual arithmetic: (a, a') * (b, b') = (a*b, a'*b + a*b') - product rule
+// (a * b): bilinear product rule, keeping the mixed e1e2 cross term.
+//   r0 = a0 b0
+//   r1 = a1 b0 + a0 b1
+//   r2 = a2 b0 + a0 b2
+//   r3 = a3 b0 + a1 b2 + a2 b1 + a0 b3
 llvm::Value* AutodiffCodegen::dualMul(llvm::Value* dual_a, llvm::Value* dual_b) {
     if (!dual_a || !dual_b) return nullptr;
-
-    llvm::Value* a = getDualPrimal(dual_a);
-    llvm::Value* a_prime = getDualTangent(dual_a);
-    llvm::Value* b = getDualPrimal(dual_b);
-    llvm::Value* b_prime = getDualTangent(dual_b);
-
-    // Value: a * b
-    llvm::Value* value = ctx_.builder().CreateFMul(a, b);
-
-    // Derivative: a' * b + a * b' (product rule)
-    llvm::Value* term1 = ctx_.builder().CreateFMul(a_prime, b);
-    llvm::Value* term2 = ctx_.builder().CreateFMul(a, b_prime);
-    llvm::Value* deriv = ctx_.builder().CreateFAdd(term1, term2);
-
-    return createDualNumber(value, deriv);
+    auto& b = ctx_.builder();
+    llvm::Value* a0 = dualField(ctx_, dual_a, 0), *a1 = dualField(ctx_, dual_a, 1),
+                *a2 = dualField(ctx_, dual_a, 2), *a3 = dualField(ctx_, dual_a, 3);
+    llvm::Value* b0 = dualField(ctx_, dual_b, 0), *b1 = dualField(ctx_, dual_b, 1),
+                *b2 = dualField(ctx_, dual_b, 2), *b3 = dualField(ctx_, dual_b, 3);
+    llvm::Value* r0 = b.CreateFMul(a0, b0);
+    llvm::Value* r1 = b.CreateFAdd(b.CreateFMul(a1, b0), b.CreateFMul(a0, b1));
+    llvm::Value* r2 = b.CreateFAdd(b.CreateFMul(a2, b0), b.CreateFMul(a0, b2));
+    llvm::Value* r3 = b.CreateFAdd(
+        b.CreateFAdd(b.CreateFMul(a3, b0), b.CreateFMul(a1, b2)),
+        b.CreateFAdd(b.CreateFMul(a2, b1), b.CreateFMul(a0, b3)));
+    return makeDual4(ctx_, r0, r1, r2, r3);
 }
 
-// Dual arithmetic: (a, a') / (b, b') = (a/b, (a'*b - a*b')/b²) - quotient rule
+// (a / b) = a * (1/b). Reciprocal is the unary jet of g(x)=1/x with
+//   g(b0)=1/b0, g'=-1/b0^2, g''=2/b0^3 — exact second order.
 llvm::Value* AutodiffCodegen::dualDiv(llvm::Value* dual_a, llvm::Value* dual_b) {
     if (!dual_a || !dual_b) return nullptr;
-
-    llvm::Value* a = getDualPrimal(dual_a);
-    llvm::Value* a_prime = getDualTangent(dual_a);
-    llvm::Value* b = getDualPrimal(dual_b);
-    llvm::Value* b_prime = getDualTangent(dual_b);
-
-    // Value: a / b
-    llvm::Value* value = ctx_.builder().CreateFDiv(a, b);
-
-    // Derivative: (a' * b - a * b') / b²
-    llvm::Value* numerator_term1 = ctx_.builder().CreateFMul(a_prime, b);
-    llvm::Value* numerator_term2 = ctx_.builder().CreateFMul(a, b_prime);
-    llvm::Value* numerator = ctx_.builder().CreateFSub(numerator_term1, numerator_term2);
-    llvm::Value* denominator = ctx_.builder().CreateFMul(b, b);
-    llvm::Value* deriv = ctx_.builder().CreateFDiv(numerator, denominator);
-
-    return createDualNumber(value, deriv);
+    auto& bld = ctx_.builder();
+    llvm::Value* b0 = dualField(ctx_, dual_b, 0);
+    llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
+    llvm::Value* inv = bld.CreateFDiv(one, b0);
+    llvm::Value* inv2 = bld.CreateFMul(inv, inv);
+    llvm::Value* fpa = bld.CreateFNeg(inv2);                       // -1/b0^2
+    llvm::Value* two = llvm::ConstantFP::get(ctx_.doubleType(), 2.0);
+    llvm::Value* fppa = bld.CreateFMul(two, bld.CreateFMul(inv2, inv)); // 2/b0^3
+    llvm::Value* recip = dualUnaryChain(ctx_, dual_b, inv, fpa, fppa);
+    return dualMul(dual_a, recip);
 }
 
 // ===== DUAL NUMBER MATH OPERATIONS =====
@@ -311,478 +377,357 @@ llvm::Function* AutodiffCodegen::getMathFunc(const std::string& name) {
     return func;
 }
 
-// Sine: sin(a, a') = (sin(a), a' * cos(a))
-// Chain rule: d/dx[sin(f(x))] = cos(f(x)) * f'(x)
+// Unary dual math: each computes the scalar function value g(a), first
+// derivative g'(a) and second derivative g''(a) at the primal a, then defers
+// to dualUnaryChain which propagates both perturbation slots + the mixed
+// second-order term exactly. (a = primal = field 0.)
+
 llvm::Value* AutodiffCodegen::dualSin(llvm::Value* dual) {
     if (!dual) return nullptr;
-
-    llvm::Value* a = getDualPrimal(dual);
-    llvm::Value* a_prime = getDualTangent(dual);
-
+    llvm::Value* a = dualField(ctx_, dual, 0);
     llvm::Function* sin_func = getMathFunc("sin");
     llvm::Function* cos_func = getMathFunc("cos");
     if (!sin_func || !cos_func) return nullptr;
-
-    // Value: sin(a)
-    llvm::Value* value = ctx_.builder().CreateCall(sin_func, {a});
-
-    // Derivative: a' * cos(a)
-    llvm::Value* cos_a = ctx_.builder().CreateCall(cos_func, {a});
-    llvm::Value* deriv = ctx_.builder().CreateFMul(a_prime, cos_a);
-
-    return createDualNumber(value, deriv);
+    llvm::Value* sa = ctx_.builder().CreateCall(sin_func, {a});
+    llvm::Value* ca = ctx_.builder().CreateCall(cos_func, {a});
+    // g=sin, g'=cos, g''=-sin
+    return dualUnaryChain(ctx_, dual, sa, ca, ctx_.builder().CreateFNeg(sa));
 }
 
-// Cosine: cos(a, a') = (cos(a), -a' * sin(a))
-// Chain rule: d/dx[cos(f(x))] = -sin(f(x)) * f'(x)
 llvm::Value* AutodiffCodegen::dualCos(llvm::Value* dual) {
     if (!dual) return nullptr;
-
-    llvm::Value* a = getDualPrimal(dual);
-    llvm::Value* a_prime = getDualTangent(dual);
-
+    llvm::Value* a = dualField(ctx_, dual, 0);
     llvm::Function* sin_func = getMathFunc("sin");
     llvm::Function* cos_func = getMathFunc("cos");
     if (!sin_func || !cos_func) return nullptr;
-
-    // Value: cos(a)
-    llvm::Value* value = ctx_.builder().CreateCall(cos_func, {a});
-
-    // Derivative: -a' * sin(a)
-    llvm::Value* sin_a = ctx_.builder().CreateCall(sin_func, {a});
-    llvm::Value* neg_sin_a = ctx_.builder().CreateFNeg(sin_a);
-    llvm::Value* deriv = ctx_.builder().CreateFMul(a_prime, neg_sin_a);
-
-    return createDualNumber(value, deriv);
+    llvm::Value* sa = ctx_.builder().CreateCall(sin_func, {a});
+    llvm::Value* ca = ctx_.builder().CreateCall(cos_func, {a});
+    // g=cos, g'=-sin, g''=-cos
+    return dualUnaryChain(ctx_, dual, ca, ctx_.builder().CreateFNeg(sa),
+                          ctx_.builder().CreateFNeg(ca));
 }
 
-// Exponential: exp(a, a') = (exp(a), a' * exp(a))
-// Chain rule: d/dx[exp(f(x))] = exp(f(x)) * f'(x)
 llvm::Value* AutodiffCodegen::dualExp(llvm::Value* dual) {
     if (!dual) return nullptr;
-
-    llvm::Value* a = getDualPrimal(dual);
-    llvm::Value* a_prime = getDualTangent(dual);
-
+    llvm::Value* a = dualField(ctx_, dual, 0);
     llvm::Function* exp_func = getMathFunc("exp");
     if (!exp_func) return nullptr;
-
-    // Value: exp(a)
-    llvm::Value* exp_a = ctx_.builder().CreateCall(exp_func, {a});
-
-    // Derivative: a' * exp(a)
-    llvm::Value* deriv = ctx_.builder().CreateFMul(a_prime, exp_a);
-
-    return createDualNumber(exp_a, deriv);
+    llvm::Value* ea = ctx_.builder().CreateCall(exp_func, {a});
+    // g=g'=g''=exp(a)
+    return dualUnaryChain(ctx_, dual, ea, ea, ea);
 }
 
-// Logarithm: log(a, a') = (log(a), a'/a)
-// Chain rule: d/dx[log(f(x))] = f'(x)/f(x)
 llvm::Value* AutodiffCodegen::dualLog(llvm::Value* dual) {
     if (!dual) return nullptr;
-
-    llvm::Value* a = getDualPrimal(dual);
-    llvm::Value* a_prime = getDualTangent(dual);
-
+    llvm::Value* a = dualField(ctx_, dual, 0);
     llvm::Function* log_func = getMathFunc("log");
     if (!log_func) return nullptr;
-
-    // Value: log(a)
-    llvm::Value* value = ctx_.builder().CreateCall(log_func, {a});
-
-    // Derivative: a' / a
-    llvm::Value* deriv = ctx_.builder().CreateFDiv(a_prime, a);
-
-    return createDualNumber(value, deriv);
+    auto& b = ctx_.builder();
+    llvm::Value* la = b.CreateCall(log_func, {a});
+    llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
+    llvm::Value* fpa = b.CreateFDiv(one, a);                 // 1/a
+    llvm::Value* fppa = b.CreateFNeg(b.CreateFMul(fpa, fpa)); // -1/a^2
+    return dualUnaryChain(ctx_, dual, la, fpa, fppa);
 }
 
-// Tangent: tan(a, a') = (tan(a), a' * sec²(a)) = (tan(a), a' * (1 + tan²(a)))
-// Chain rule: d/dx[tan(f(x))] = sec²(f(x)) * f'(x)
 llvm::Value* AutodiffCodegen::dualTan(llvm::Value* dual) {
     if (!dual) return nullptr;
-
-    llvm::Value* a = getDualPrimal(dual);
-    llvm::Value* a_prime = getDualTangent(dual);
-
+    llvm::Value* a = dualField(ctx_, dual, 0);
     llvm::Function* tan_func = getMathFunc("tan");
     if (!tan_func) return nullptr;
-
-    // Value: tan(a)
-    llvm::Value* tan_a = ctx_.builder().CreateCall(tan_func, {a});
-
-    // Derivative: a' * (1 + tan²(a)) = a' * sec²(a)
-    llvm::Value* tan_sq = ctx_.builder().CreateFMul(tan_a, tan_a);
+    auto& b = ctx_.builder();
+    llvm::Value* ta = b.CreateCall(tan_func, {a});
     llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
-    llvm::Value* sec_sq = ctx_.builder().CreateFAdd(one, tan_sq);
-    llvm::Value* deriv = ctx_.builder().CreateFMul(a_prime, sec_sq);
-
-    return createDualNumber(tan_a, deriv);
+    llvm::Value* sec2 = b.CreateFAdd(one, b.CreateFMul(ta, ta));  // 1+tan^2 = sec^2
+    // g'=sec^2, g''=2 tan sec^2
+    llvm::Value* two = llvm::ConstantFP::get(ctx_.doubleType(), 2.0);
+    llvm::Value* fppa = b.CreateFMul(two, b.CreateFMul(ta, sec2));
+    return dualUnaryChain(ctx_, dual, ta, sec2, fppa);
 }
 
-// Square root: sqrt(a, a') = (sqrt(a), a' / (2 * sqrt(a)))
-// Chain rule: d/dx[sqrt(f(x))] = f'(x) / (2 * sqrt(f(x)))
 llvm::Value* AutodiffCodegen::dualSqrt(llvm::Value* dual) {
     if (!dual) return nullptr;
-
-    llvm::Value* a = getDualPrimal(dual);
-    llvm::Value* a_prime = getDualTangent(dual);
-
+    llvm::Value* a = dualField(ctx_, dual, 0);
     llvm::Function* sqrt_func = getMathFunc("sqrt");
     if (!sqrt_func) return nullptr;
-
-    // Value: sqrt(a)
-    llvm::Value* sqrt_a = ctx_.builder().CreateCall(sqrt_func, {a});
-
-    // Derivative: a' / (2 * sqrt(a))
+    auto& b = ctx_.builder();
+    llvm::Value* s = b.CreateCall(sqrt_func, {a});
     llvm::Value* two = llvm::ConstantFP::get(ctx_.doubleType(), 2.0);
-    llvm::Value* two_sqrt_a = ctx_.builder().CreateFMul(two, sqrt_a);
-    llvm::Value* deriv = ctx_.builder().CreateFDiv(a_prime, two_sqrt_a);
-
-    return createDualNumber(sqrt_a, deriv);
+    llvm::Value* four = llvm::ConstantFP::get(ctx_.doubleType(), 4.0);
+    llvm::Value* fpa = b.CreateFDiv(llvm::ConstantFP::get(ctx_.doubleType(), 1.0),
+                                    b.CreateFMul(two, s));            // 1/(2*sqrt)
+    // g'' = -1/(4 a^{3/2}) = -1/(4*a*sqrt)
+    llvm::Value* fppa = b.CreateFNeg(b.CreateFDiv(
+        llvm::ConstantFP::get(ctx_.doubleType(), 1.0),
+        b.CreateFMul(four, b.CreateFMul(a, s))));
+    return dualUnaryChain(ctx_, dual, s, fpa, fppa);
 }
 
-// Power: (a, a')^(b, b') = (a^b, a^b * (b' * log(a) + b * a'/a))
-// General power rule for both base and exponent being functions
+// Power. (a^b). For a CONSTANT exponent (the common (pow x n) case) this is a
+// unary jet of g(x)=x^b with g'=b x^{b-1}, g''=b(b-1) x^{b-2} — exact and
+// valid for negative base. For a non-constant (dual) exponent we compose
+// exp(b*log(a)) over the 4-component jets (exact for a>0; matches the prior
+// behaviour, which already required log(a)).
 llvm::Value* AutodiffCodegen::dualPow(llvm::Value* dual_base, llvm::Value* dual_exp) {
     if (!dual_base || !dual_exp) return nullptr;
-
-    llvm::Value* a = getDualPrimal(dual_base);
-    llvm::Value* a_prime = getDualTangent(dual_base);
-    llvm::Value* b = getDualPrimal(dual_exp);
-    llvm::Value* b_prime = getDualTangent(dual_exp);
-
+    auto& bld = ctx_.builder();
     llvm::Function* pow_func = getMathFunc("pow");
-    llvm::Function* log_func = getMathFunc("log");
-    if (!pow_func || !log_func) return nullptr;
+    if (!pow_func) return nullptr;
 
-    // Value: a^b
-    llvm::Value* value = ctx_.builder().CreateCall(pow_func, {a, b});
+    llvm::Value* a = dualField(ctx_, dual_base, 0);
+    llvm::Value* bexp = dualField(ctx_, dual_exp, 0);
 
-    // Derivative: a^b * (b' * log(a) + b * a'/a)
-    llvm::Value* log_a = ctx_.builder().CreateCall(log_func, {a});
-    llvm::Value* term1 = ctx_.builder().CreateFMul(b_prime, log_a);
-    llvm::Value* term2 = ctx_.builder().CreateFMul(b, ctx_.builder().CreateFDiv(a_prime, a));
-    llvm::Value* sum = ctx_.builder().CreateFAdd(term1, term2);
-    llvm::Value* deriv = ctx_.builder().CreateFMul(value, sum);
+    // Detect a constant exponent at runtime: e1/e2/e1e2 slots all zero.
+    llvm::Value* e1 = dualField(ctx_, dual_exp, 1);
+    llvm::Value* e2 = dualField(ctx_, dual_exp, 2);
+    llvm::Value* e12 = dualField(ctx_, dual_exp, 3);
+    llvm::Value* zero = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
+    llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
 
-    return createDualNumber(value, deriv);
+    // --- constant-exponent jet (exact, negative-base safe) ---
+    llvm::Value* value = bld.CreateCall(pow_func, {a, bexp});      // a^b
+    llvm::Value* bm1 = bld.CreateFSub(bexp, one);
+    llvm::Value* bm2 = bld.CreateFSub(bexp, llvm::ConstantFP::get(ctx_.doubleType(), 2.0));
+    llvm::Value* gpa = bld.CreateFMul(bexp, bld.CreateCall(pow_func, {a, bm1}));   // b a^{b-1}
+    llvm::Value* gppa = bld.CreateFMul(bld.CreateFMul(bexp, bm1),
+                                       bld.CreateCall(pow_func, {a, bm2}));        // b(b-1) a^{b-2}
+    llvm::Value* const_jet = dualUnaryChain(ctx_, dual_base, value, gpa, gppa);
+
+    // --- general dual-exponent jet: exp(b * log(a)) ---
+    llvm::Value* log_base = dualLog(dual_base);          // 4-comp log
+    llvm::Value* t = dualMul(dual_exp, log_base);        // b*log(a)
+    llvm::Value* gen_jet = dualExp(t);                   // exp(...) = a^b (a>0)
+    // Replace its primal with pow(a,b) for negative-base parity with prior code.
+    gen_jet = bld.CreateInsertValue(gen_jet, value, {0});
+
+    // Select per-component between the constant- and general-exponent jets.
+    llvm::Value* exp_is_const =
+        bld.CreateAnd(bld.CreateAnd(bld.CreateFCmpOEQ(e1, zero), bld.CreateFCmpOEQ(e2, zero)),
+                      bld.CreateFCmpOEQ(e12, zero));
+    llvm::Value* r0 = bld.CreateSelect(exp_is_const, dualField(ctx_, const_jet, 0), dualField(ctx_, gen_jet, 0));
+    llvm::Value* r1 = bld.CreateSelect(exp_is_const, dualField(ctx_, const_jet, 1), dualField(ctx_, gen_jet, 1));
+    llvm::Value* r2 = bld.CreateSelect(exp_is_const, dualField(ctx_, const_jet, 2), dualField(ctx_, gen_jet, 2));
+    llvm::Value* r3 = bld.CreateSelect(exp_is_const, dualField(ctx_, const_jet, 3), dualField(ctx_, gen_jet, 3));
+    return makeDual4(ctx_, r0, r1, r2, r3);
 }
 
-// Arc sine: asin(a, a') = (asin(a), a' / sqrt(1 - a²))
-// Chain rule: d/dx[asin(f(x))] = f'(x) / sqrt(1 - f(x)²)
 llvm::Value* AutodiffCodegen::dualAsin(llvm::Value* dual) {
     if (!dual) return nullptr;
-
-    llvm::Value* a = getDualPrimal(dual);
-    llvm::Value* a_prime = getDualTangent(dual);
-
+    llvm::Value* a = dualField(ctx_, dual, 0);
     llvm::Function* asin_func = getMathFunc("asin");
     llvm::Function* sqrt_func = getMathFunc("sqrt");
     if (!asin_func || !sqrt_func) return nullptr;
-
-    // Value: asin(a)
-    llvm::Value* value = ctx_.builder().CreateCall(asin_func, {a});
-
-    // Derivative: a' / sqrt(1 - a²)
+    auto& b = ctx_.builder();
+    llvm::Value* va = b.CreateCall(asin_func, {a});
     llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
-    llvm::Value* a_sq = ctx_.builder().CreateFMul(a, a);
-    llvm::Value* one_minus_a_sq = ctx_.builder().CreateFSub(one, a_sq);
-    llvm::Value* sqrt_term = ctx_.builder().CreateCall(sqrt_func, {one_minus_a_sq});
-    llvm::Value* deriv = ctx_.builder().CreateFDiv(a_prime, sqrt_term);
-
-    return createDualNumber(value, deriv);
+    llvm::Value* t = b.CreateFSub(one, b.CreateFMul(a, a));      // 1-a^2
+    llvm::Value* r = b.CreateCall(sqrt_func, {t});
+    llvm::Value* fpa = b.CreateFDiv(one, r);                     // 1/sqrt(1-a^2)
+    llvm::Value* fppa = b.CreateFDiv(a, b.CreateFMul(t, r));     // a/(1-a^2)^{3/2}
+    return dualUnaryChain(ctx_, dual, va, fpa, fppa);
 }
 
-// Arc cosine: acos(a, a') = (acos(a), -a' / sqrt(1 - a²))
-// Chain rule: d/dx[acos(f(x))] = -f'(x) / sqrt(1 - f(x)²)
 llvm::Value* AutodiffCodegen::dualAcos(llvm::Value* dual) {
     if (!dual) return nullptr;
-
-    llvm::Value* a = getDualPrimal(dual);
-    llvm::Value* a_prime = getDualTangent(dual);
-
+    llvm::Value* a = dualField(ctx_, dual, 0);
     llvm::Function* acos_func = getMathFunc("acos");
     llvm::Function* sqrt_func = getMathFunc("sqrt");
     if (!acos_func || !sqrt_func) return nullptr;
-
-    // Value: acos(a)
-    llvm::Value* value = ctx_.builder().CreateCall(acos_func, {a});
-
-    // Derivative: -a' / sqrt(1 - a²)
+    auto& b = ctx_.builder();
+    llvm::Value* va = b.CreateCall(acos_func, {a});
     llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
-    llvm::Value* a_sq = ctx_.builder().CreateFMul(a, a);
-    llvm::Value* one_minus_a_sq = ctx_.builder().CreateFSub(one, a_sq);
-    llvm::Value* sqrt_term = ctx_.builder().CreateCall(sqrt_func, {one_minus_a_sq});
-    llvm::Value* neg_a_prime = ctx_.builder().CreateFNeg(a_prime);
-    llvm::Value* deriv = ctx_.builder().CreateFDiv(neg_a_prime, sqrt_term);
-
-    return createDualNumber(value, deriv);
+    llvm::Value* t = b.CreateFSub(one, b.CreateFMul(a, a));
+    llvm::Value* r = b.CreateCall(sqrt_func, {t});
+    llvm::Value* fpa = b.CreateFNeg(b.CreateFDiv(one, r));       // -1/sqrt(1-a^2)
+    llvm::Value* fppa = b.CreateFNeg(b.CreateFDiv(a, b.CreateFMul(t, r))); // -a/(1-a^2)^{3/2}
+    return dualUnaryChain(ctx_, dual, va, fpa, fppa);
 }
 
-// Arc tangent: atan(a, a') = (atan(a), a' / (1 + a²))
-// Chain rule: d/dx[atan(f(x))] = f'(x) / (1 + f(x)²)
 llvm::Value* AutodiffCodegen::dualAtan(llvm::Value* dual) {
     if (!dual) return nullptr;
-
-    llvm::Value* a = getDualPrimal(dual);
-    llvm::Value* a_prime = getDualTangent(dual);
-
+    llvm::Value* a = dualField(ctx_, dual, 0);
     llvm::Function* atan_func = getMathFunc("atan");
     if (!atan_func) return nullptr;
-
-    // Value: atan(a)
-    llvm::Value* value = ctx_.builder().CreateCall(atan_func, {a});
-
-    // Derivative: a' / (1 + a²)
+    auto& b = ctx_.builder();
+    llvm::Value* va = b.CreateCall(atan_func, {a});
     llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
-    llvm::Value* a_sq = ctx_.builder().CreateFMul(a, a);
-    llvm::Value* one_plus_a_sq = ctx_.builder().CreateFAdd(one, a_sq);
-    llvm::Value* deriv = ctx_.builder().CreateFDiv(a_prime, one_plus_a_sq);
-
-    return createDualNumber(value, deriv);
+    llvm::Value* u = b.CreateFAdd(one, b.CreateFMul(a, a));      // 1+a^2
+    llvm::Value* fpa = b.CreateFDiv(one, u);
+    llvm::Value* two = llvm::ConstantFP::get(ctx_.doubleType(), 2.0);
+    llvm::Value* fppa = b.CreateFNeg(b.CreateFDiv(b.CreateFMul(two, a),
+                                                  b.CreateFMul(u, u)));  // -2a/(1+a^2)^2
+    return dualUnaryChain(ctx_, dual, va, fpa, fppa);
 }
 
-// Absolute value: abs(a, a') = (|a|, a' * sign(a))
-// Note: derivative is undefined at 0, we use 0 there
 llvm::Value* AutodiffCodegen::dualAbs(llvm::Value* dual) {
     if (!dual) return nullptr;
-
-    llvm::Value* a = getDualPrimal(dual);
-    llvm::Value* a_prime = getDualTangent(dual);
-
+    llvm::Value* a = dualField(ctx_, dual, 0);
     llvm::Function* fabs_func = getMathFunc("fabs");
     if (!fabs_func) return nullptr;
-
-    // Value: |a|
-    llvm::Value* abs_a = ctx_.builder().CreateCall(fabs_func, {a});
-
-    // Sign: sign(a) = a / |a| (handles a=0 by returning 0)
+    auto& b = ctx_.builder();
+    llvm::Value* abs_a = b.CreateCall(fabs_func, {a});
     llvm::Value* zero = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
-    llvm::Value* is_zero = ctx_.builder().CreateFCmpOEQ(a, zero);
-    llvm::Value* sign = ctx_.builder().CreateSelect(
-        is_zero, zero, ctx_.builder().CreateFDiv(a, abs_a));
-
-    llvm::Value* deriv = ctx_.builder().CreateFMul(a_prime, sign);
-
-    return createDualNumber(abs_a, deriv);
+    llvm::Value* is_zero = b.CreateFCmpOEQ(a, zero);
+    llvm::Value* sign = b.CreateSelect(is_zero, zero, b.CreateFDiv(a, abs_a));
+    // g'=sign, g''=0 (a.e.)
+    return dualUnaryChain(ctx_, dual, abs_a, sign, zero);
 }
 
-// Negation: -(a, a') = (-a, -a')
 llvm::Value* AutodiffCodegen::dualNeg(llvm::Value* dual) {
     if (!dual) return nullptr;
-
-    llvm::Value* a = getDualPrimal(dual);
-    llvm::Value* a_prime = getDualTangent(dual);
-
-    // Value: -a
-    llvm::Value* value = ctx_.builder().CreateFNeg(a);
-
-    // Derivative: -a'
-    llvm::Value* deriv = ctx_.builder().CreateFNeg(a_prime);
-
-    return createDualNumber(value, deriv);
+    auto& b = ctx_.builder();
+    llvm::Value* r0 = b.CreateFNeg(dualField(ctx_, dual, 0));
+    llvm::Value* r1 = b.CreateFNeg(dualField(ctx_, dual, 1));
+    llvm::Value* r2 = b.CreateFNeg(dualField(ctx_, dual, 2));
+    llvm::Value* r3 = b.CreateFNeg(dualField(ctx_, dual, 3));
+    return makeDual4(ctx_, r0, r1, r2, r3);
 }
 
-// Hyperbolic sine: sinh(a, a') = (sinh(a), a' * cosh(a))
-// Chain rule: d/dx[sinh(f(x))] = cosh(f(x)) * f'(x)
 llvm::Value* AutodiffCodegen::dualSinh(llvm::Value* dual) {
     if (!dual) return nullptr;
-
-    llvm::Value* a = getDualPrimal(dual);
-    llvm::Value* a_prime = getDualTangent(dual);
-
+    llvm::Value* a = dualField(ctx_, dual, 0);
     llvm::Function* sinh_func = getMathFunc("sinh");
     llvm::Function* cosh_func = getMathFunc("cosh");
     if (!sinh_func || !cosh_func) return nullptr;
-
-    llvm::Value* sinh_a = ctx_.builder().CreateCall(sinh_func, {a});
-    llvm::Value* cosh_a = ctx_.builder().CreateCall(cosh_func, {a});
-    llvm::Value* deriv = ctx_.builder().CreateFMul(a_prime, cosh_a);
-
-    return createDualNumber(sinh_a, deriv);
+    llvm::Value* sa = ctx_.builder().CreateCall(sinh_func, {a});
+    llvm::Value* ca = ctx_.builder().CreateCall(cosh_func, {a});
+    // g=sinh, g'=cosh, g''=sinh
+    return dualUnaryChain(ctx_, dual, sa, ca, sa);
 }
 
-// Hyperbolic cosine: cosh(a, a') = (cosh(a), a' * sinh(a))
-// Chain rule: d/dx[cosh(f(x))] = sinh(f(x)) * f'(x)
 llvm::Value* AutodiffCodegen::dualCosh(llvm::Value* dual) {
     if (!dual) return nullptr;
-
-    llvm::Value* a = getDualPrimal(dual);
-    llvm::Value* a_prime = getDualTangent(dual);
-
+    llvm::Value* a = dualField(ctx_, dual, 0);
     llvm::Function* sinh_func = getMathFunc("sinh");
     llvm::Function* cosh_func = getMathFunc("cosh");
     if (!sinh_func || !cosh_func) return nullptr;
-
-    llvm::Value* cosh_a = ctx_.builder().CreateCall(cosh_func, {a});
-    llvm::Value* sinh_a = ctx_.builder().CreateCall(sinh_func, {a});
-    llvm::Value* deriv = ctx_.builder().CreateFMul(a_prime, sinh_a);
-
-    return createDualNumber(cosh_a, deriv);
+    llvm::Value* sa = ctx_.builder().CreateCall(sinh_func, {a});
+    llvm::Value* ca = ctx_.builder().CreateCall(cosh_func, {a});
+    // g=cosh, g'=sinh, g''=cosh
+    return dualUnaryChain(ctx_, dual, ca, sa, ca);
 }
 
-// Hyperbolic tangent: tanh(a, a') = (tanh(a), a' * (1 - tanh²(a))) = (tanh(a), a' * sech²(a))
-// Chain rule: d/dx[tanh(f(x))] = sech²(f(x)) * f'(x)
 llvm::Value* AutodiffCodegen::dualTanh(llvm::Value* dual) {
     if (!dual) return nullptr;
-
-    llvm::Value* a = getDualPrimal(dual);
-    llvm::Value* a_prime = getDualTangent(dual);
-
+    llvm::Value* a = dualField(ctx_, dual, 0);
     llvm::Function* tanh_func = getMathFunc("tanh");
     if (!tanh_func) return nullptr;
-
-    // Value: tanh(a)
-    llvm::Value* tanh_a = ctx_.builder().CreateCall(tanh_func, {a});
-
-    // Derivative: a' * (1 - tanh²(a))
-    llvm::Value* tanh_sq = ctx_.builder().CreateFMul(tanh_a, tanh_a);
+    auto& b = ctx_.builder();
+    llvm::Value* ta = b.CreateCall(tanh_func, {a});
     llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
-    llvm::Value* sech_sq = ctx_.builder().CreateFSub(one, tanh_sq);
-    llvm::Value* deriv = ctx_.builder().CreateFMul(a_prime, sech_sq);
-
-    return createDualNumber(tanh_a, deriv);
+    llvm::Value* sech2 = b.CreateFSub(one, b.CreateFMul(ta, ta));  // 1-tanh^2
+    llvm::Value* two = llvm::ConstantFP::get(ctx_.doubleType(), 2.0);
+    llvm::Value* fppa = b.CreateFNeg(b.CreateFMul(two, b.CreateFMul(ta, sech2))); // -2 tanh sech^2
+    return dualUnaryChain(ctx_, dual, ta, sech2, fppa);
 }
 
 llvm::Value* AutodiffCodegen::dualAsinh(llvm::Value* dual) {
     if (!dual) return nullptr;
-    llvm::Value* a = getDualPrimal(dual);
-    llvm::Value* a_prime = getDualTangent(dual);
-
+    llvm::Value* a = dualField(ctx_, dual, 0);
     llvm::Function* asinh_func = getMathFunc("asinh");
     llvm::Function* sqrt_func = getMathFunc("sqrt");
     if (!asinh_func || !sqrt_func) return nullptr;
-
-    // Value: asinh(a)
-    llvm::Value* asinh_a = ctx_.builder().CreateCall(asinh_func, {a});
-
-    // Derivative: a' / sqrt(1 + a²)
+    auto& b = ctx_.builder();
+    llvm::Value* va = b.CreateCall(asinh_func, {a});
     llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
-    llvm::Value* a_sq = ctx_.builder().CreateFMul(a, a);
-    llvm::Value* under = ctx_.builder().CreateFAdd(one, a_sq);
-    llvm::Value* sqrt_under = ctx_.builder().CreateCall(sqrt_func, {under});
-    llvm::Value* deriv = ctx_.builder().CreateFDiv(a_prime, sqrt_under);
-
-    return createDualNumber(asinh_a, deriv);
+    llvm::Value* u = b.CreateFAdd(one, b.CreateFMul(a, a));    // a^2+1
+    llvm::Value* r = b.CreateCall(sqrt_func, {u});
+    llvm::Value* fpa = b.CreateFDiv(one, r);
+    llvm::Value* fppa = b.CreateFNeg(b.CreateFDiv(a, b.CreateFMul(u, r))); // -a/(a^2+1)^{3/2}
+    return dualUnaryChain(ctx_, dual, va, fpa, fppa);
 }
 
 llvm::Value* AutodiffCodegen::dualAcosh(llvm::Value* dual) {
     if (!dual) return nullptr;
-    llvm::Value* a = getDualPrimal(dual);
-    llvm::Value* a_prime = getDualTangent(dual);
-
+    llvm::Value* a = dualField(ctx_, dual, 0);
     llvm::Function* acosh_func = getMathFunc("acosh");
     llvm::Function* sqrt_func = getMathFunc("sqrt");
     if (!acosh_func || !sqrt_func) return nullptr;
-
-    // Value: acosh(a)
-    llvm::Value* acosh_a = ctx_.builder().CreateCall(acosh_func, {a});
-
-    // Derivative: a' / sqrt(a² - 1)
+    auto& b = ctx_.builder();
+    llvm::Value* va = b.CreateCall(acosh_func, {a});
     llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
-    llvm::Value* a_sq = ctx_.builder().CreateFMul(a, a);
-    llvm::Value* under = ctx_.builder().CreateFSub(a_sq, one);
-    llvm::Value* sqrt_under = ctx_.builder().CreateCall(sqrt_func, {under});
-    llvm::Value* deriv = ctx_.builder().CreateFDiv(a_prime, sqrt_under);
-
-    return createDualNumber(acosh_a, deriv);
+    llvm::Value* u = b.CreateFSub(b.CreateFMul(a, a), one);    // a^2-1
+    llvm::Value* r = b.CreateCall(sqrt_func, {u});
+    llvm::Value* fpa = b.CreateFDiv(one, r);
+    llvm::Value* fppa = b.CreateFNeg(b.CreateFDiv(a, b.CreateFMul(u, r))); // -a/(a^2-1)^{3/2}
+    return dualUnaryChain(ctx_, dual, va, fpa, fppa);
 }
 
 llvm::Value* AutodiffCodegen::dualAtanh(llvm::Value* dual) {
     if (!dual) return nullptr;
-    llvm::Value* a = getDualPrimal(dual);
-    llvm::Value* a_prime = getDualTangent(dual);
-
+    llvm::Value* a = dualField(ctx_, dual, 0);
     llvm::Function* atanh_func = getMathFunc("atanh");
     if (!atanh_func) return nullptr;
-
-    // Value: atanh(a)
-    llvm::Value* atanh_a = ctx_.builder().CreateCall(atanh_func, {a});
-
-    // Derivative: a' / (1 - a²)
+    auto& b = ctx_.builder();
+    llvm::Value* va = b.CreateCall(atanh_func, {a});
     llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
-    llvm::Value* a_sq = ctx_.builder().CreateFMul(a, a);
-    llvm::Value* denom = ctx_.builder().CreateFSub(one, a_sq);
-    llvm::Value* deriv = ctx_.builder().CreateFDiv(a_prime, denom);
-
-    return createDualNumber(atanh_a, deriv);
+    llvm::Value* u = b.CreateFSub(one, b.CreateFMul(a, a));    // 1-a^2
+    llvm::Value* fpa = b.CreateFDiv(one, u);
+    llvm::Value* two = llvm::ConstantFP::get(ctx_.doubleType(), 2.0);
+    llvm::Value* fppa = b.CreateFDiv(b.CreateFMul(two, a), b.CreateFMul(u, u)); // 2a/(1-a^2)^2
+    return dualUnaryChain(ctx_, dual, va, fpa, fppa);
 }
 
 llvm::Value* AutodiffCodegen::dualLog10(llvm::Value* dual) {
     if (!dual) return nullptr;
-    llvm::Value* a = getDualPrimal(dual);
-    llvm::Value* a_prime = getDualTangent(dual);
-
+    llvm::Value* a = dualField(ctx_, dual, 0);
     llvm::Function* log10_func = getMathFunc("log10");
     if (!log10_func) return nullptr;
-
-    // Value: log10(a)
-    llvm::Value* log10_a = ctx_.builder().CreateCall(log10_func, {a});
-
-    // Derivative: a' / (a * ln(10))
+    auto& b = ctx_.builder();
+    llvm::Value* va = b.CreateCall(log10_func, {a});
     llvm::Value* ln10 = llvm::ConstantFP::get(ctx_.doubleType(), 2.302585092994046);
-    llvm::Value* a_times_ln10 = ctx_.builder().CreateFMul(a, ln10);
-    llvm::Value* deriv = ctx_.builder().CreateFDiv(a_prime, a_times_ln10);
-
-    return createDualNumber(log10_a, deriv);
+    llvm::Value* ac = b.CreateFMul(a, ln10);
+    llvm::Value* fpa = b.CreateFDiv(llvm::ConstantFP::get(ctx_.doubleType(), 1.0), ac); // 1/(a ln10)
+    llvm::Value* fppa = b.CreateFNeg(b.CreateFDiv(
+        llvm::ConstantFP::get(ctx_.doubleType(), 1.0), b.CreateFMul(b.CreateFMul(a, a), ln10))); // -1/(a^2 ln10)
+    return dualUnaryChain(ctx_, dual, va, fpa, fppa);
 }
 
 llvm::Value* AutodiffCodegen::dualLog2(llvm::Value* dual) {
     if (!dual) return nullptr;
-    llvm::Value* a = getDualPrimal(dual);
-    llvm::Value* a_prime = getDualTangent(dual);
-
+    llvm::Value* a = dualField(ctx_, dual, 0);
     llvm::Function* log2_func = getMathFunc("log2");
     if (!log2_func) return nullptr;
-
-    // Value: log2(a)
-    llvm::Value* log2_a = ctx_.builder().CreateCall(log2_func, {a});
-
-    // Derivative: a' / (a * ln(2))
+    auto& b = ctx_.builder();
+    llvm::Value* va = b.CreateCall(log2_func, {a});
     llvm::Value* ln2 = llvm::ConstantFP::get(ctx_.doubleType(), 0.6931471805599453);
-    llvm::Value* a_times_ln2 = ctx_.builder().CreateFMul(a, ln2);
-    llvm::Value* deriv = ctx_.builder().CreateFDiv(a_prime, a_times_ln2);
-
-    return createDualNumber(log2_a, deriv);
+    llvm::Value* ac = b.CreateFMul(a, ln2);
+    llvm::Value* fpa = b.CreateFDiv(llvm::ConstantFP::get(ctx_.doubleType(), 1.0), ac);
+    llvm::Value* fppa = b.CreateFNeg(b.CreateFDiv(
+        llvm::ConstantFP::get(ctx_.doubleType(), 1.0), b.CreateFMul(b.CreateFMul(a, a), ln2)));
+    return dualUnaryChain(ctx_, dual, va, fpa, fppa);
 }
 
 llvm::Value* AutodiffCodegen::dualExp2(llvm::Value* dual) {
     if (!dual) return nullptr;
-    llvm::Value* a = getDualPrimal(dual);
-    llvm::Value* a_prime = getDualTangent(dual);
-
+    llvm::Value* a = dualField(ctx_, dual, 0);
     llvm::Function* exp2_func = getMathFunc("exp2");
     if (!exp2_func) return nullptr;
-
-    // Value: exp2(a) = 2^a
-    llvm::Value* exp2_a = ctx_.builder().CreateCall(exp2_func, {a});
-
-    // Derivative: a' * 2^a * ln(2)
+    auto& b = ctx_.builder();
+    llvm::Value* va = b.CreateCall(exp2_func, {a});               // 2^a
     llvm::Value* ln2 = llvm::ConstantFP::get(ctx_.doubleType(), 0.6931471805599453);
-    llvm::Value* exp2_times_ln2 = ctx_.builder().CreateFMul(exp2_a, ln2);
-    llvm::Value* deriv = ctx_.builder().CreateFMul(a_prime, exp2_times_ln2);
-
-    return createDualNumber(exp2_a, deriv);
+    llvm::Value* fpa = b.CreateFMul(va, ln2);                     // 2^a ln2
+    llvm::Value* fppa = b.CreateFMul(fpa, ln2);                   // 2^a ln2^2
+    return dualUnaryChain(ctx_, dual, va, fpa, fppa);
 }
 
 llvm::Value* AutodiffCodegen::dualCbrt(llvm::Value* dual) {
     if (!dual) return nullptr;
-    llvm::Value* a = getDualPrimal(dual);
-    llvm::Value* a_prime = getDualTangent(dual);
-
+    llvm::Value* a = dualField(ctx_, dual, 0);
     llvm::Function* cbrt_func = getMathFunc("cbrt");
     if (!cbrt_func) return nullptr;
-
-    // Value: cbrt(a)
-    llvm::Value* cbrt_a = ctx_.builder().CreateCall(cbrt_func, {a});
-
-    // Derivative: a' / (3 * cbrt(a)²)
+    auto& b = ctx_.builder();
+    llvm::Value* c = b.CreateCall(cbrt_func, {a});               // a^{1/3}
+    llvm::Value* c2 = b.CreateFMul(c, c);
     llvm::Value* three = llvm::ConstantFP::get(ctx_.doubleType(), 3.0);
-    llvm::Value* cbrt_sq = ctx_.builder().CreateFMul(cbrt_a, cbrt_a);
-    llvm::Value* denom = ctx_.builder().CreateFMul(three, cbrt_sq);
-    llvm::Value* deriv = ctx_.builder().CreateFDiv(a_prime, denom);
-
-    return createDualNumber(cbrt_a, deriv);
+    llvm::Value* fpa = b.CreateFDiv(llvm::ConstantFP::get(ctx_.doubleType(), 1.0),
+                                    b.CreateFMul(three, c2));      // 1/(3 a^{2/3})
+    // g'' = -2/9 a^{-5/3} = -2/(9 c^5)
+    llvm::Value* c5 = b.CreateFMul(b.CreateFMul(c2, c2), c);
+    llvm::Value* nine = llvm::ConstantFP::get(ctx_.doubleType(), 9.0);
+    llvm::Value* two = llvm::ConstantFP::get(ctx_.doubleType(), 2.0);
+    llvm::Value* fppa = b.CreateFNeg(b.CreateFDiv(two, b.CreateFMul(nine, c5)));
+    return dualUnaryChain(ctx_, dual, c, fpa, fppa);
 }
 
 // Helper to get arena pointer from global
@@ -1648,33 +1593,18 @@ llvm::Value* AutodiffCodegen::derivativeHigherOrder(const eshkol_operations_t* o
                     // Load the captured function closure
                     Value* f_closure = ctx_.builder().CreateLoad(ctx_.taggedValueType(), captured_f_ptr);
 
-                    // HIGHER-ORDER DERIVATIVE FIX: Use numerical differentiation (central difference)
-                    // instead of forward-mode AD. This works for ANY function, including derivatives.
-                    // Forward-mode AD doesn't work here because the captured function (e.g., df4)
-                    // expects a plain double, not a dual number.
-                    //
-                    // Central difference formula: f'(x) ≈ (f(x+h) - f(x-h)) / (2h)
+                    // Forward-mode AD: seed a dual {x, 1, 0, 0} and call the
+                    // captured closure with it. The closure body threads dual
+                    // arithmetic at runtime (dispatch on the DUAL_NUMBER tag),
+                    // so the tangent of the result is exactly f'(x) — no
+                    // finite-difference step / epsilon error.
                     Value* x = tagged_.unpackDouble(x_tagged);
-                    Value* h = ConstantFP::get(ctx_.doubleType(), 1e-8);  // Small step for numerical derivative
-                    Value* two_h = ConstantFP::get(ctx_.doubleType(), 2e-8);
-
-                    // Compute f(x + h)
-                    Value* x_plus_h = ctx_.builder().CreateFAdd(x, h);
-                    Value* x_plus_h_tagged = tagged_.packDouble(x_plus_h);
-                    std::vector<Value*> call_args_plus = {x_plus_h_tagged};
-                    Value* f_plus = closure_call_callback_(f_closure, call_args_plus, "derivative-plus", callback_context_);
-                    Value* f_plus_val = tagged_.unpackDouble(f_plus);
-
-                    // Compute f(x - h)
-                    Value* x_minus_h = ctx_.builder().CreateFSub(x, h);
-                    Value* x_minus_h_tagged = tagged_.packDouble(x_minus_h);
-                    std::vector<Value*> call_args_minus = {x_minus_h_tagged};
-                    Value* f_minus = closure_call_callback_(f_closure, call_args_minus, "derivative-minus", callback_context_);
-                    Value* f_minus_val = tagged_.unpackDouble(f_minus);
-
-                    // Compute derivative: (f(x+h) - f(x-h)) / (2h)
-                    Value* diff = ctx_.builder().CreateFSub(f_plus_val, f_minus_val);
-                    Value* derivative_val = ctx_.builder().CreateFDiv(diff, two_h);
+                    Value* one_seed = ConstantFP::get(ctx_.doubleType(), 1.0);
+                    Value* x_seed_tagged = packDualToTagged(createDualNumber(x, one_seed));
+                    std::vector<Value*> call_args_ad = {x_seed_tagged};
+                    Value* f_ad = closure_call_callback_(f_closure, call_args_ad, "derivative-ad", callback_context_);
+                    Value* f_ad_dual = safeUnpackDualFromTagged(f_ad);
+                    Value* derivative_val = getDualTangent(f_ad_dual);
                     Value* result_tagged = tagged_.packDouble(derivative_val);
                     ctx_.builder().CreateRet(result_tagged);
 
@@ -1915,35 +1845,42 @@ llvm::Value* AutodiffCodegen::codegenDerivativeMonolith(const eshkol_operations_
 
     eshkol_info("Computing derivative using forward-mode AD (dual numbers)");
 
-    // Get evaluation point - must be a scalar double
-    Value* x = codegen_ast_callback_(op->derivative_op.point, callback_context_);
-    if (!x) {
+    // Perturbation-tagging nesting depth for THIS derivative (set by an
+    // enclosing derivative while it compiled our lambda body, if any).
+    int my_depth = g_ad_deriv_depth;
+
+    // Evaluate the point. When this derivative is lexically NESTED inside
+    // another and the inner evaluation point depends on the outer variable
+    // (e.g. (derivative (lambda (x) (derivative (lambda (y) ...) x)) 2.0)),
+    // `point_raw` is itself a dual number carrying the OUTER perturbation. We
+    // MUST preserve that — the old code stripped it via unpackDouble, which is
+    // exactly the perturbation-confusion bug.
+    Value* point_raw = codegen_ast_callback_(op->derivative_op.point, callback_context_);
+    if (!point_raw) {
         eshkol_error("Failed to evaluate derivative point");
         return nullptr;
     }
-
-    // Convert x to double if it's an integer or tagged_value
-    if (x->getType()->isIntegerTy()) {
-        x = ctx_.builder().CreateSIToFP(x, ctx_.doubleType());
-    } else if (x->getType() == ctx_.taggedValueType()) {
-        // Handle computed values that return tagged_value_t
-        // Extract the double from the data field
-        x = tagged_.unpackDouble(x);
-    } else if (!x->getType()->isDoubleTy()) {
+    Value* point_tagged;
+    if (point_raw->getType()->isIntegerTy()) {
+        point_tagged = tagged_.packDouble(ctx_.builder().CreateSIToFP(point_raw, ctx_.doubleType()));
+    } else if (point_raw->getType()->isDoubleTy()) {
+        point_tagged = tagged_.packDouble(point_raw);
+    } else if (point_raw->getType() == ctx_.taggedValueType()) {
+        point_tagged = point_raw;
+    } else {
         eshkol_error("derivative point must be numeric (int64 or double)");
         return nullptr;
     }
 
-    // Create dual number with seed derivative = 1.0
-    // This means: "we're computing the derivative with respect to this input"
-    Value* one = ConstantFP::get(ctx_.doubleType(), 1.0);
-    Value* x_dual = createDualNumber(x, one);
+    // Seed a fresh perturbation in THIS level's slot, preserving any
+    // perturbation the point already carries.
+    Value* x_dual_tagged = seedDerivativeInput(point_tagged, my_depth);
 
-    // Pack dual number into tagged_value for function call
-    Value* x_dual_tagged = packDualToTagged(x_dual);
-
-    // Get the function to differentiate
+    // Get the function to differentiate. Compile its body one nesting level
+    // deeper so any derivative inside it tags with the NEXT perturbation slot.
+    g_ad_deriv_depth = my_depth + 1;
     Value* func = resolve_lambda_callback_(op->derivative_op.function, 0, callback_context_);
+    g_ad_deriv_depth = my_depth;
 
     // RUNTIME FUNCTION PARAMETER FIX: If resolveLambdaFunction returns nullptr,
     // check if this is a function parameter (runtime closure) and use codegenClosureCall
@@ -1995,11 +1932,10 @@ llvm::Value* AutodiffCodegen::codegenDerivativeMonolith(const eshkol_operations_
                     std::vector<Value*> call_args = {x_dual_tagged};
                     Value* result = closure_call_callback_(var_value, call_args, "derivative", callback_context_);
 
-                    // Unpack result and extract derivative
-                    Value* result_dual = unpackDualFromTagged(result);
-                    Value* value = getDualPrimal(result_dual);
-                    Value* derivative = getDualTangent(result_dual);
-                    return tagged_.packDouble(derivative);
+                    // Extract the derivative w.r.t. this nesting level's
+                    // perturbation slot (scalar at depth 0, a dual slice when
+                    // nested so an enclosing derivative can read it).
+                    return extractDerivativeResult(result, my_depth);
                 }
                 // Check if it's a pointer to closure (mutable capture)
                 if (isa<Argument>(var_value) && var_value->getType()->isPointerTy()) {
@@ -2008,11 +1944,10 @@ llvm::Value* AutodiffCodegen::codegenDerivativeMonolith(const eshkol_operations_
                     std::vector<Value*> call_args = {x_dual_tagged};
                     Value* result = closure_call_callback_(loaded_val, call_args, "derivative", callback_context_);
 
-                    // Unpack result and extract derivative
-                    Value* result_dual = unpackDualFromTagged(result);
-                    Value* value = getDualPrimal(result_dual);
-                    Value* derivative = getDualTangent(result_dual);
-                    return tagged_.packDouble(derivative);
+                    // Extract the derivative w.r.t. this nesting level's
+                    // perturbation slot (scalar at depth 0, a dual slice when
+                    // nested so an enclosing derivative can read it).
+                    return extractDerivativeResult(result, my_depth);
                 }
                 // Check if it's an AllocaInst (local variable holding a closure)
                 if (isa<AllocaInst>(var_value) && var_value->getType()->isPointerTy()) {
@@ -2023,11 +1958,7 @@ llvm::Value* AutodiffCodegen::codegenDerivativeMonolith(const eshkol_operations_
                         std::vector<Value*> call_args = {x_dual_tagged};
                         Value* result = closure_call_callback_(loaded_val, call_args, "derivative", callback_context_);
 
-                        // Unpack result and extract derivative
-                        Value* result_dual = unpackDualFromTagged(result);
-                        Value* value = getDualPrimal(result_dual);
-                    Value* derivative = getDualTangent(result_dual);
-                        return tagged_.packDouble(derivative);
+                        return extractDerivativeResult(result, my_depth);
                     }
                 }
                 // Check if it's a LoadInst (already loaded closure value)
@@ -2036,11 +1967,10 @@ llvm::Value* AutodiffCodegen::codegenDerivativeMonolith(const eshkol_operations_
                     std::vector<Value*> call_args = {x_dual_tagged};
                     Value* result = closure_call_callback_(var_value, call_args, "derivative", callback_context_);
 
-                    // Unpack result and extract derivative
-                    Value* result_dual = unpackDualFromTagged(result);
-                    Value* value = getDualPrimal(result_dual);
-                    Value* derivative = getDualTangent(result_dual);
-                    return tagged_.packDouble(derivative);
+                    // Extract the derivative w.r.t. this nesting level's
+                    // perturbation slot (scalar at depth 0, a dual slice when
+                    // nested so an enclosing derivative can read it).
+                    return extractDerivativeResult(result, my_depth);
                 }
                 // Check if it's a GlobalVariable (letrec captured function)
                 if (isa<GlobalVariable>(var_value)) {
@@ -2050,11 +1980,10 @@ llvm::Value* AutodiffCodegen::codegenDerivativeMonolith(const eshkol_operations_
                     std::vector<Value*> call_args = {x_dual_tagged};
                     Value* result = closure_call_callback_(loaded_val, call_args, "derivative", callback_context_);
 
-                    // Unpack result and extract derivative
-                    Value* result_dual = unpackDualFromTagged(result);
-                    Value* value = getDualPrimal(result_dual);
-                    Value* derivative = getDualTangent(result_dual);
-                    return tagged_.packDouble(derivative);
+                    // Extract the derivative w.r.t. this nesting level's
+                    // perturbation slot (scalar at depth 0, a dual slice when
+                    // nested so an enclosing derivative can read it).
+                    return extractDerivativeResult(result, my_depth);
                 }
             }
         }
@@ -2201,21 +2130,13 @@ llvm::Value* AutodiffCodegen::codegenDerivativeMonolith(const eshkol_operations_
     // The function will automatically use dual arithmetic, propagating derivatives
     Value* result_tagged = ctx_.builder().CreateCall(func_ptr, deriv_call_args);
 
-    // Unpack result from tagged_value.  Use the safe variant: a lambda
-    // body that doesn't depend on x (constant fn, predicate-driven
-    // branch with literal branches, etc.) returns a non-dual scalar,
-    // which the plain unpack would deref as a heap pointer and crash.
-    // safeUnpackDualFromTagged returns {primal, 0.0} in that case.
-    Value* result_dual = safeUnpackDualFromTagged(result_tagged);
+    eshkol_debug("Derivative operator: extracting derivative component");
 
-    // Extract derivative component from result
-    Value* value = getDualPrimal(result_dual);
-                    Value* derivative = getDualTangent(result_dual);
-
-    eshkol_debug("Derivative operator: extracted derivative component");
-
-    // Return derivative as tagged_value for consistent handling in arithmetic
-    return tagged_.packDouble(derivative);
+    // Extract the derivative w.r.t. this nesting level's perturbation slot.
+    // At depth 0 this is the scalar derivative; when nested it is a dual slice
+    // carrying the outer perturbation so the enclosing derivative can read it.
+    // safeUnpack inside handles a non-dual scalar result (constant fn etc.).
+    return extractDerivativeResult(result_tagged, my_depth);
 }
 
 
@@ -5762,35 +5683,24 @@ llvm::Value* AutodiffCodegen::hessian(const eshkol_operations_t* op) {
                 x = ctx_.builder().CreateSelect(is_int, as_int, as_dbl);
             }
 
-            Value* h = ConstantFP::get(ctx_.doubleType(), 1e-5);
+            // EXACT f''(x) via forward-over-forward AD: seed BOTH perturbation
+            // slots on the single input, x_jet = {x, 1, 1, 0}. Then
+            //   f(x_jet) = f(x) + f'(x)(e1+e2) + f''(x) e1e2
+            // and the mixed (e1e2) component IS f''(x) — no finite-difference
+            // step, machine precision.
+            Value* one = ConstantFP::get(ctx_.doubleType(), 1.0);
+            Value* zero = ConstantFP::get(ctx_.doubleType(), 0.0);
+            Value* x_jet = packDualToTagged(makeDual4(ctx_, x, one, one, zero));
 
-            // Function calls: f(x+h), f(x), f(x-h) — dispatch to func_ptr or closure
-            Value* xph = tagged_.packDouble(ctx_.builder().CreateFAdd(x, h));
-            Value* xv  = tagged_.packDouble(x);
-            Value* xmh = tagged_.packDouble(ctx_.builder().CreateFSub(x, h));
-
-            Value* fxph, *fx, *fxmh;
+            Value* fres;
             if (scalar_func_ptr) {
-                fxph = ctx_.builder().CreateCall(scalar_func_ptr, {xph});
-                fx   = ctx_.builder().CreateCall(scalar_func_ptr, {xv});
-                fxmh = ctx_.builder().CreateCall(scalar_func_ptr, {xmh});
+                fres = ctx_.builder().CreateCall(scalar_func_ptr, {x_jet});
             } else {
-                fxph = closure_call_callback_(hessian_closure_val, {xph}, "hessian-scalar-xph", callback_context_);
-                fx   = closure_call_callback_(hessian_closure_val, {xv},  "hessian-scalar-x",   callback_context_);
-                fxmh = closure_call_callback_(hessian_closure_val, {xmh}, "hessian-scalar-xmh", callback_context_);
+                fres = closure_call_callback_(hessian_closure_val, {x_jet}, "hessian-scalar", callback_context_);
             }
 
-            Value* a = tagged_.unpackDouble(fxph);
-            Value* b = tagged_.unpackDouble(fx);
-            Value* c = tagged_.unpackDouble(fxmh);
-
-            // f''(x) = (a - 2b + c) / h²
-            Value* h2 = ctx_.builder().CreateFMul(h, h);
-            Value* numer = ctx_.builder().CreateFSub(
-                ctx_.builder().CreateFAdd(a, c),
-                ctx_.builder().CreateFMul(ConstantFP::get(ctx_.doubleType(), 2.0), b));
-            Value* result = ctx_.builder().CreateFDiv(numer, h2);
-
+            Value* fres_dual = safeUnpackDualFromTagged(fres);
+            Value* result = dualField(ctx_, fres_dual, 3);   // f''(x) = mixed term
             return tagged_.packDouble(result);
         }
     }
@@ -5811,7 +5721,7 @@ llvm::Value* AutodiffCodegen::hessian(const eshkol_operations_t* op) {
         vector_val = tagged_.packPtr(data_val, ESHKOL_VALUE_HEAP_PTR);
     }
 
-    // ── MULTI-PARAMETER HESSIAN via central finite differences ──────────
+    // ── MULTI-PARAMETER HESSIAN via exact forward-over-forward AD ───────
     // A multi-parameter scalar function f(x,y,…) cannot go through the
     // reverse-mode AD-node tensor path: that passes AD nodes as separate
     // CALLABLE args, which crashes function dispatch (same reason gradient
@@ -5861,31 +5771,27 @@ llvm::Value* AutodiffCodegen::hessian(const eshkol_operations_t* op) {
                     ctx_.builder().CreateGEP(ctx_.doubleType(), mp_dbls_p,
                         ConstantInt::get(ctx_.int64Type(), (int64_t)k)));
             }
-            Value* hh = ConstantFP::get(ctx_.doubleType(), 1e-4);
+            Value* one = ConstantFP::get(ctx_.doubleType(), 1.0);
+            Value* zerod = ConstantFP::get(ctx_.doubleType(), 0.0);
 
-            // Evaluate f at base + Σ delta[p]*h, returning the result as a double.
-            auto evalAt = [&](const std::vector<int>& delta) -> Value* {
+            // EXACT mixed partial d^2 f / d x_i d x_j via forward-over-forward
+            // AD: seed perturbation e1 on argument i and e2 on argument j (both
+            // on argument i when i==j), evaluate f ONCE on the 4-component jets,
+            // and read the mixed (e1e2) component of the result. No finite
+            // differences -> off-diagonals of separable functions are EXACTLY 0.
+            auto evalDual2 = [&](uint64_t i, uint64_t j) -> Value* {
                 std::vector<Value*> args;
                 args.reserve(N);
                 for (uint64_t p = 0; p < N; p++) {
-                    Value* xp = base[p];
-                    if (delta[p] != 0) {
-                        Value* d = ctx_.builder().CreateFMul(hh,
-                            ConstantFP::get(ctx_.doubleType(), (double)delta[p]));
-                        xp = ctx_.builder().CreateFAdd(xp, d);
-                    }
-                    args.push_back(tagged_.packDouble(xp));
+                    Value* d1 = (p == i) ? one : zerod;
+                    Value* d2 = (p == j) ? one : zerod;
+                    args.push_back(packDualToTagged(makeDual4(ctx_, base[p], d1, d2, zerod)));
                 }
-                resolveGradientCaptures(func_ptr, args, "hessian-fd");
+                resolveGradientCaptures(func_ptr, args, "hessian-ad");
                 Value* r = ctx_.builder().CreateCall(func_ptr, args);
-                return tagged_.unpackDouble(r);
+                Value* rd = safeUnpackDualFromTagged(r);
+                return dualField(ctx_, rd, 3);   // mixed second-order term
             };
-
-            std::vector<int> zero(N, 0);
-            Value* fx = evalAt(zero);
-            Value* h2 = ctx_.builder().CreateFMul(hh, hh);
-            Value* four_h2 = ctx_.builder().CreateFMul(
-                ConstantFP::get(ctx_.doubleType(), 4.0), h2);
 
             // Result N×N tensor.
             Value* mp_res = ctx_.builder().CreateCall(mem_.getArenaAllocateTensorWithHeader(), {mp_arena});
@@ -5907,27 +5813,7 @@ llvm::Value* AutodiffCodegen::hessian(const eshkol_operations_t* op) {
 
             for (uint64_t i = 0; i < N; i++) {
                 for (uint64_t j = 0; j < N; j++) {
-                    Value* hij;
-                    if (i == j) {
-                        std::vector<int> pe(N, 0), me(N, 0); pe[i] = 1; me[i] = -1;
-                        Value* a = evalAt(pe), *c = evalAt(me);
-                        Value* num = ctx_.builder().CreateFSub(
-                            ctx_.builder().CreateFAdd(a, c),
-                            ctx_.builder().CreateFMul(ConstantFP::get(ctx_.doubleType(), 2.0), fx));
-                        hij = ctx_.builder().CreateFDiv(num, h2);
-                    } else {
-                        std::vector<int> pp(N, 0), pm(N, 0), mp_(N, 0), mm(N, 0);
-                        pp[i] = 1;  pp[j] = 1;
-                        pm[i] = 1;  pm[j] = -1;
-                        mp_[i] = -1; mp_[j] = 1;
-                        mm[i] = -1; mm[j] = -1;
-                        Value* num = ctx_.builder().CreateFAdd(
-                            ctx_.builder().CreateFSub(
-                                ctx_.builder().CreateFSub(evalAt(pp), evalAt(pm)),
-                                evalAt(mp_)),
-                            evalAt(mm));
-                        hij = ctx_.builder().CreateFDiv(num, four_h2);
-                    }
+                    Value* hij = evalDual2(i, j);
                     Value* bits = ctx_.builder().CreateBitCast(hij, ctx_.int64Type());
                     ctx_.builder().CreateStore(bits,
                         ctx_.builder().CreateGEP(ctx_.int64Type(), mp_elems_p,
@@ -9791,26 +9677,21 @@ llvm::Value* AutodiffCodegen::dualRelu(llvm::Value* dual) {
 // Chain rule: d/dx[σ(f(x))] = σ(f(x)) * (1 - σ(f(x))) * f'(x)
 llvm::Value* AutodiffCodegen::dualSigmoid(llvm::Value* dual) {
     if (!dual) return nullptr;
-
-    llvm::Value* a = getDualPrimal(dual);
-    llvm::Value* a_prime = getDualTangent(dual);
-
+    llvm::Value* a = dualField(ctx_, dual, 0);
     llvm::Function* exp_func = getMathFunc("exp");
     if (!exp_func) return nullptr;
-
+    auto& b = ctx_.builder();
     // σ(a) = 1 / (1 + exp(-a))
-    llvm::Value* neg_a = ctx_.builder().CreateFNeg(a);
-    llvm::Value* exp_neg_a = ctx_.builder().CreateCall(exp_func, {neg_a});
+    llvm::Value* exp_neg_a = b.CreateCall(exp_func, {b.CreateFNeg(a)});
     llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
-    llvm::Value* denom = ctx_.builder().CreateFAdd(one, exp_neg_a);
-    llvm::Value* sigma_a = ctx_.builder().CreateFDiv(one, denom);
-
-    // Derivative: a' * σ(a) * (1 - σ(a))
-    llvm::Value* one_minus_sigma = ctx_.builder().CreateFSub(one, sigma_a);
-    llvm::Value* sigma_deriv = ctx_.builder().CreateFMul(sigma_a, one_minus_sigma);
-    llvm::Value* deriv = ctx_.builder().CreateFMul(a_prime, sigma_deriv);
-
-    return createDualNumber(sigma_a, deriv);
+    llvm::Value* sigma_a = b.CreateFDiv(one, b.CreateFAdd(one, exp_neg_a));
+    // g'  = σ(1-σ);  g'' = σ(1-σ)(1-2σ)
+    llvm::Value* oms = b.CreateFSub(one, sigma_a);
+    llvm::Value* fpa = b.CreateFMul(sigma_a, oms);
+    llvm::Value* two = llvm::ConstantFP::get(ctx_.doubleType(), 2.0);
+    llvm::Value* one_minus_2s = b.CreateFSub(one, b.CreateFMul(two, sigma_a));
+    llvm::Value* fppa = b.CreateFMul(fpa, one_minus_2s);
+    return dualUnaryChain(ctx_, dual, sigma_a, fpa, fppa);
 }
 
 // GELU: Gaussian Error Linear Unit using the tanh approximation used by tensorGelu.
