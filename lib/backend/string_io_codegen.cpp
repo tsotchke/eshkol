@@ -631,8 +631,10 @@ llvm::Value* StringIOCodegen::stringToNumber(const eshkol_operations_t* op) {
         return tagged_.packNull();
     }
 
-    if (op->call_op.num_vars != 1) {
-        eshkol_warn("string->number requires exactly 1 argument");
+    // R7RS 6.2.6: (string->number string [radix]). The optional radix arg
+    // selects the base for the 2-arg form.
+    if (op->call_op.num_vars < 1 || op->call_op.num_vars > 2) {
+        eshkol_warn("string->number requires 1 or 2 arguments");
         return nullptr;
     }
 
@@ -644,11 +646,26 @@ llvm::Value* StringIOCodegen::stringToNumber(const eshkol_operations_t* op) {
     llvm::Value* ptr_int = tagged_.unpackInt64(str_arg);
     llvm::Value* str_ptr = ctx_.builder().CreateIntToPtr(ptr_int, ctx_.ptrType());
 
-    // Call eshkol_string_to_number_tagged(arena, str, result_ptr) which handles
-    // int64, bignum (for overflow), and double parsing
     llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
     llvm::Value* result_alloca = ctx_.builder().CreateAlloca(ctx_.taggedValueType());
 
+    if (op->call_op.num_vars == 2) {
+        // 2-arg form: pass the radix to the radix-aware runtime parser, which
+        // also handles #b/#o/#d/#x prefixes and rationals.
+        llvm::Value* radix_arg = codegen_ast_callback_(&op->call_op.variables[1], callback_context_);
+        if (!radix_arg) return nullptr;
+        llvm::Value* radix_i64 = tagged_.unpackInt64(radix_arg);
+
+        llvm::FunctionType* s2nr_type = llvm::FunctionType::get(ctx_.voidType(),
+            {ctx_.ptrType(), ctx_.ptrType(), ctx_.int64Type(), ctx_.ptrType()}, false);
+        llvm::FunctionCallee s2nr_fn = ctx_.module().getOrInsertFunction(
+            "eshkol_string_to_number_radix_tagged", s2nr_type);
+        ctx_.builder().CreateCall(s2nr_fn, {arena_ptr, str_ptr, radix_i64, result_alloca});
+        return ctx_.builder().CreateLoad(ctx_.taggedValueType(), result_alloca);
+    }
+
+    // 1-arg form: eshkol_string_to_number_tagged(arena, str, result_ptr) handles
+    // int64, bignum (for overflow), double, rational, and #-prefix parsing.
     llvm::FunctionType* s2n_type = llvm::FunctionType::get(ctx_.voidType(),
         {ctx_.ptrType(), ctx_.ptrType(), ctx_.ptrType()}, false);
     llvm::FunctionCallee s2n_fn = ctx_.module().getOrInsertFunction("eshkol_string_to_number_tagged", s2n_type);
