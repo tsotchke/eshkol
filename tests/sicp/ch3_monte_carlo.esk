@@ -1,0 +1,58 @@
+;; SICP Chapter 3.1.2 — Monte Carlo simulation.
+;; Estimate pi via the Cesaro test (P(gcd(a,b)=1) -> 6/pi^2) and via
+;; random points in the unit square. Uses a self-contained LCG so the
+;; result is DETERMINISTIC and the assertion is stable.
+
+(define fails 0)
+(define (check name ok)
+  (if ok (begin (display "PASS: ") (display name) (newline))
+      (begin (set! fails (+ fails 1)) (display "FAIL: ") (display name) (newline))))
+
+;; deterministic linear congruential generator (so the test is reproducible)
+(define rng-state 1)
+(define (next-rand!)
+  (set! rng-state (modulo (+ (* 1103515245 rng-state) 12345) 2147483648))
+  rng-state)
+(define (rand-int n) (modulo (next-rand!) n))
+
+(define (gcd-e a b) (if (= b 0) a (gcd-e b (remainder a b))))
+
+;; 3.1.2 monte-carlo: run an experiment `trials` times, return fraction passed.
+;; NOTE: SICP writes the loop as
+;;   (cond ((= remaining 0) ...) ((experiment) (iter ... (+ passed 1))) (else (iter ...)))
+;; In Eshkol that form is NOT tail-call-optimized — a closure call in a cond
+;; *test* defeats TCO of the following self-call and overflows the stack at a
+;; few thousand trials (SIGILL). See gap report. Let-binding the experiment
+;; result first keeps the self-call in clean tail position and is TCO-safe.
+(define (monte-carlo trials experiment)
+  (define (iter remaining passed)
+    (if (= remaining 0)
+        (/ passed trials)
+        (let ((hit (experiment)))
+          (iter (- remaining 1) (if hit (+ passed 1) passed)))))
+  (iter trials 0))
+
+(define (cesaro-test) (= (gcd-e (rand-int 1000000) (rand-int 1000000)) 1))
+(define (estimate-pi trials) (sqrt (/ 6.0 (monte-carlo trials cesaro-test))))
+
+(define est (estimate-pi 20000))
+(display "  cesaro pi estimate = ") (display est) (newline)
+;; Loose band: the Cesaro test is very sensitive to RNG quality and a simple
+;; LCG with mod-1e6 reduction is mildly correlated, so the estimate lands near
+;; ~2.7-3.3 rather than tightly on pi. We assert the machinery produces a
+;; plausible estimate; the area method below is the accurate demonstration.
+(check "cesaro-pi-plausible" (and (> est 2.5) (< est 3.6)))
+
+;; area method: fraction of random points within the unit circle * 4 ~ pi
+(set! rng-state 42)
+(define (rand-unit) (/ (rand-int 1000000) 1000000.0))
+(define (in-circle?) (let ((x (- (* 2.0 (rand-unit)) 1.0)) (y (- (* 2.0 (rand-unit)) 1.0)))
+                       (<= (+ (* x x) (* y y)) 1.0)))
+(define area-pi (* 4.0 (monte-carlo 20000 in-circle?)))
+(display "  area pi estimate   = ") (display area-pi) (newline)
+(check "area-pi-near-3.14" (< (abs (- area-pi 3.14159)) 0.1))
+
+(newline)
+(if (= fails 0)
+    (begin (display "ALL-PASS ch3_monte_carlo") (newline))
+    (begin (display "HAS-FAIL ch3_monte_carlo ") (display fails) (newline)))

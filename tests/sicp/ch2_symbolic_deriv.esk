@@ -1,0 +1,62 @@
+;; SICP Chapter 2.3.2 — Symbolic differentiation.
+;; Expressions are lists; uses quote, eq?, pair?, symbol? and list construction.
+
+(define fails 0)
+(define (check name ok)
+  (if ok (begin (display "PASS: ") (display name) (newline))
+      (begin (set! fails (+ fails 1)) (display "FAIL: ") (display name) (newline))))
+
+(define (variable? x) (symbol? x))
+(define (same-variable? v1 v2) (and (variable? v1) (variable? v2) (eq? v1 v2)))
+(define (=number? exp num) (and (number? exp) (= exp num)))
+
+(define (make-sum a1 a2)
+  (cond ((=number? a1 0) a2)
+        ((=number? a2 0) a1)
+        ((and (number? a1) (number? a2)) (+ a1 a2))
+        (else (list '+ a1 a2))))
+(define (make-product m1 m2)
+  (cond ((or (=number? m1 0) (=number? m2 0)) 0)
+        ((=number? m1 1) m2)
+        ((=number? m2 1) m1)
+        ((and (number? m1) (number? m2)) (* m1 m2))
+        (else (list '* m1 m2))))
+
+(define (sum? x) (and (pair? x) (eq? (car x) '+)))
+(define (addend s) (cadr s))
+(define (augend s) (caddr s))
+(define (product? x) (and (pair? x) (eq? (car x) '*)))
+(define (multiplier p) (cadr p))
+(define (multiplicand p) (caddr p))
+
+(define (deriv exp var)
+  (cond ((number? exp) 0)
+        ((variable? exp) (if (same-variable? exp var) 1 0))
+        ((sum? exp) (make-sum (deriv (addend exp) var) (deriv (augend exp) var)))
+        ((product? exp)
+         (make-sum (make-product (multiplier exp) (deriv (multiplicand exp) var))
+                   (make-product (deriv (multiplier exp) var) (multiplicand exp))))
+        (else (error "unknown expression type -- DERIV" exp))))
+
+;; d/dx (x + 3) = 1
+(check "d(x+3)/dx" (equal? (deriv '(+ x 3) 'x) 1))
+;; d/dx (x*y) = y
+(check "d(x*y)/dx" (equal? (deriv '(* x y) 'x) 'y))
+;; d/dx (x*y*(x+3))  with nested products = SICP's example
+;; (* (* x y) (+ x 3)) -> (+ (* x y) (* y (+ x 3)))
+(check "d(x*y*(x+3))/dx"
+       (equal? (deriv '(* (* x y) (+ x 3)) 'x)
+               '(+ (* x y) (* y (+ x 3)))))
+;; d/dx (x + x) = 2  (because make-sum folds numbers; deriv gives (+ 1 1) -> 2)
+(check "d(x+x)/dx" (equal? (deriv '(+ x x) 'x) 2))
+;; d/dx (x*x) = (+ x x)
+(check "d(x*x)/dx" (equal? (deriv '(* x x) 'x) '(+ x x)))
+;; constant
+(check "d(7)/dx" (equal? (deriv 7 'x) 0))
+;; wrt different var: d/dy (x*y) = x
+(check "d(x*y)/dy" (equal? (deriv '(* x y) 'y) 'x))
+
+(newline)
+(if (= fails 0)
+    (begin (display "ALL-PASS ch2_symbolic_deriv") (newline))
+    (begin (display "HAS-FAIL ch2_symbolic_deriv ") (display fails) (newline)))
