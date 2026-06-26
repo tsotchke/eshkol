@@ -12,6 +12,7 @@
  */
 
 #include "vm_tensor.c"
+#include "tensor_conv_kernel.h"  /* shared conv2d numerics (ESH-0068) */
 #include <float.h>
 
 /* ══════════════════════════════════════════════════════════════════════════════
@@ -577,57 +578,74 @@ static double vm_tensor_bce_loss(const VmTensor* pred, const VmTensor* target) {
  *  Convolution
  * ══════════════════════════════════════════════════════════════════════════════*/
 
-/* 473: Conv2d — naive implementation (no padding, stride=1).
- *   Input:  [batch, in_channels, H, W]
- *   Kernel: [out_channels, in_channels, kH, kW]
- *   Output: [batch, out_channels, H-kH+1, W-kW+1]
+/* 473: Conv2d — canonical NCHW cross-correlation with stride + zero-padding.
+ *   Input:  [batch, in_channels, H, W]      (rank-4 NCHW), or
+ *           [..., H, W]                      (rank-2 single-plane form)
+ *   Kernel: [out_channels, in_channels, kH, kW]   (rank-4), or [kH, kW] (rank-2)
+ *   Output: [batch, out_channels, oH, oW]    with oH/oW per eshkol_conv_out_dim
+ *
+ * Numerics are computed by eshkol_conv2d_kernel (tensor_conv_kernel.h), the
+ * SAME shared kernel the LLVM codegen runtime calls via eshkol_rt_conv2d, so
+ * the VM and the -r / AOT paths are guaranteed bit-identical (ESH-0068). The
+ * shape interpretation mirrors eshkol_rt_conv2d exactly.
  */
 static VmTensor* vm_tensor_conv2d(VmRegionStack* rs, const VmTensor* input,
-                                  const VmTensor* kernel) {
+                                  const VmTensor* kernel,
+                                  int64_t stride, int64_t pad) {
     if (!input || !kernel) return NULL;
-    if (input->n_dims != 4 || kernel->n_dims != 4) return NULL;
-    if (input->shape[1] != kernel->shape[1]) return NULL;  /* in_channels must match */
+    if (stride <= 0) stride = 1;
+    if (pad < 0) pad = 0;
 
-    int64_t batch = input->shape[0];
-    int64_t in_c  = input->shape[1];
-    int64_t H     = input->shape[2];
-    int64_t W     = input->shape[3];
-    int64_t out_c = kernel->shape[0];
-    int64_t kH    = kernel->shape[2];
-    int64_t kW    = kernel->shape[3];
+    int in_nd = input->n_dims;
+    int k_nd  = kernel->n_dims;
+    if (in_nd < 2 || k_nd < 2) return NULL;
 
-    int64_t oH = H - kH + 1;
-    int64_t oW = W - kW + 1;
+    int64_t H  = input->shape[in_nd - 2];
+    int64_t W  = input->shape[in_nd - 1];
+    int64_t kH = kernel->shape[k_nd - 2];
+    int64_t kW = kernel->shape[k_nd - 1];
+
+    int64_t oH = eshkol_conv_out_dim(H, kH, stride, pad);
+    int64_t oW = eshkol_conv_out_dim(W, kW, stride, pad);
     if (oH <= 0 || oW <= 0) return NULL;
 
-    int64_t out_shape[4] = { batch, out_c, oH, oW };
-    VmTensor* out = vm_tensor_zeros(rs, out_shape, 4);
+    int64_t batch, in_c, out_c;
+    int out_nd;
+    int64_t out_shape[VM_TENSOR_MAX_DIMS];
+
+    if (k_nd >= 4) {
+        /* Full NCHW. */
+        out_c = kernel->shape[0];
+        in_c  = kernel->shape[1];
+        int64_t in_channels = (in_nd >= 3) ? input->shape[in_nd - 3] : 1;
+        if (in_channels != in_c) return NULL;  /* in_channels must match */
+        batch = 1;
+        for (int i = 0; i < in_nd - 3; i++) batch *= input->shape[i];
+        out_nd = (in_nd - 3) + 3;
+        if (out_nd > VM_TENSOR_MAX_DIMS) return NULL;
+        int lead = in_nd - 3;
+        for (int i = 0; i < lead; i++) out_shape[i] = input->shape[i];
+        out_shape[lead]     = out_c;
+        out_shape[lead + 1] = oH;
+        out_shape[lead + 2] = oW;
+    } else {
+        /* Single-plane / depth-wise: rank-2 kernel, in_c = out_c = 1. */
+        out_c = 1;
+        in_c  = 1;
+        batch = 1;
+        for (int i = 0; i < in_nd - 2; i++) batch *= input->shape[i];
+        out_nd = in_nd;
+        for (int i = 0; i < in_nd - 2; i++) out_shape[i] = input->shape[i];
+        out_shape[in_nd - 2] = oH;
+        out_shape[in_nd - 1] = oW;
+    }
+
+    VmTensor* out = vm_tensor_zeros(rs, out_shape, out_nd);
     if (!out) return NULL;
 
-    /* Strides for 4D indexing (contiguous, row-major) */
-    int64_t in_s0 = in_c * H * W, in_s1 = H * W, in_s2 = W;
-    int64_t k_s0 = in_c * kH * kW, k_s1 = kH * kW, k_s2 = kW;
-    int64_t o_s0 = out_c * oH * oW, o_s1 = oH * oW, o_s2 = oW;
-
-    for (int64_t b = 0; b < batch; b++) {
-        for (int64_t oc = 0; oc < out_c; oc++) {
-            for (int64_t oh = 0; oh < oH; oh++) {
-                for (int64_t ow = 0; ow < oW; ow++) {
-                    double sum = 0.0;
-                    for (int64_t ic = 0; ic < in_c; ic++) {
-                        for (int64_t kh = 0; kh < kH; kh++) {
-                            for (int64_t kw = 0; kw < kW; kw++) {
-                                double iv = input->data[b*in_s0 + ic*in_s1 + (oh+kh)*in_s2 + (ow+kw)];
-                                double kv = kernel->data[oc*k_s0 + ic*k_s1 + kh*k_s2 + kw];
-                                sum += iv * kv;
-                            }
-                        }
-                    }
-                    out->data[b*o_s0 + oc*o_s1 + oh*o_s2 + ow] = sum;
-                }
-            }
-        }
-    }
+    eshkol_conv2d_kernel(input->data, batch, in_c, H, W,
+                         kernel->data, out_c, kH, kW,
+                         stride, pad, out->data);
     return out;
 }
 
@@ -1160,7 +1178,7 @@ int main(void) {
         int64_t k_shape[] = { 1, 1, 2, 2 };
         VmTensor* kernel = vm_tensor_from_data(&rs, k_data, k_shape, 4);
 
-        VmTensor* out = vm_tensor_conv2d(&rs, input, kernel);
+        VmTensor* out = vm_tensor_conv2d(&rs, input, kernel, 1, 0);
         assert(out != NULL);
         assert(out->shape[0] == 1 && out->shape[1] == 1);
         assert(out->shape[2] == 2 && out->shape[3] == 2);
