@@ -15,6 +15,35 @@
 
 #include <cstdio>
 #include <cstring>
+#include <cmath>
+
+// ===== R7RS FLONUM EXTERNAL REPRESENTATION =====
+// Single source of truth for rendering an IEEE double as text. R7RS (6.2.6 /
+// 7.1.1) mandates the special external representations +inf.0 / -inf.0 /
+// +nan.0 for the non-finite flonums; plain "%g" (which prints "inf"/"nan")
+// is NOT readable back by the reader. Every double-formatting site — display,
+// write, number->string, logic-term printing — routes through this so the
+// representation is consistent everywhere it matters.
+//
+// Finite values keep the existing "%g" shortest-round-trip-ish convention to
+// avoid perturbing the large body of existing output.
+extern "C" int eshkol_format_double(char* buf, size_t n, double v) {
+    if (std::isnan(v)) {
+        return snprintf(buf, n, "+nan.0");
+    }
+    if (std::isinf(v)) {
+        return snprintf(buf, n, v < 0.0 ? "-inf.0" : "+inf.0");
+    }
+    return snprintf(buf, n, "%g", v);
+}
+
+// Convenience wrapper: print a double to a FILE* in R7RS external form.
+// Typed as void* in the public header so eshkol.h need not pull in <cstdio>.
+extern "C" void eshkol_fprint_double(void* file, double v) {
+    char tmp[64];
+    eshkol_format_double(tmp, sizeof(tmp), v);
+    fputs(tmp, file ? (FILE*)file : stdout);
+}
 
 // ===== UNIFIED DISPLAY IMPLEMENTATION =====
 // Single source of truth for displaying all Eshkol values
@@ -305,7 +334,7 @@ void eshkol_display_value_opts(const eshkol_tagged_value_t* value, eshkol_displa
             break;
 
         case ESHKOL_VALUE_DOUBLE:
-            fprintf(get_output(opts), "%g", value->data.double_val);
+            eshkol_fprint_double(get_output(opts), value->data.double_val);
             break;
 
         case ESHKOL_VALUE_BOOL:
@@ -364,14 +393,33 @@ void eshkol_display_value_opts(const eshkol_tagged_value_t* value, eshkol_displa
             if (parts) {
                 double re = parts[0];
                 double im = parts[1];
+                FILE* cf = get_output(opts);
+                char rbuf[64];
                 if (im == 0.0) {
-                    fprintf(get_output(opts), "%g", re);
-                } else if (re == 0.0) {
-                    fprintf(get_output(opts), "%gi", im);
-                } else if (im < 0.0) {
-                    fprintf(get_output(opts), "%g%gi", re, im);
+                    // Purely real complex: print just the real part.
+                    eshkol_format_double(rbuf, sizeof(rbuf), re);
+                    fputs(rbuf, cf);
                 } else {
-                    fprintf(get_output(opts), "%g+%gi", re, im);
+                    // R7RS external repr: <real>±<imag>i, with the real part
+                    // omitted when it is zero and the ±i shorthand for ±1.
+                    if (re != 0.0) {
+                        eshkol_format_double(rbuf, sizeof(rbuf), re);
+                        fputs(rbuf, cf);
+                    }
+                    if (im == 1.0) {
+                        fputs("+i", cf);
+                    } else if (im == -1.0) {
+                        fputs("-i", cf);
+                    } else {
+                        char ibuf[64];
+                        eshkol_format_double(ibuf, sizeof(ibuf), im);
+                        // Guarantee an explicit sign on the imaginary part.
+                        if (ibuf[0] != '+' && ibuf[0] != '-') {
+                            fputc('+', cf);
+                        }
+                        fputs(ibuf, cf);
+                        fputc('i', cf);
+                    }
                 }
             } else {
                 fprintf(get_output(opts), "0");
@@ -624,7 +672,7 @@ static void display_tensor_recursive(FILE* out, const eshkol_tensor_t* tensor,
             int64_t bits = tensor->elements[offset + i];
             double value;
             memcpy(&value, &bits, sizeof(double));
-            fprintf(out, "%g", value);
+            eshkol_fprint_double(out, value);
         }
         fprintf(out, ")");
         return;
