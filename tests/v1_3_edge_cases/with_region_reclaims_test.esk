@@ -1,0 +1,111 @@
+;; with_region_reclaims_test.esk — ESH-0039 regression pin.
+;;
+;; (with-region ...) must actually RECLAIM the allocations made in its body.
+;; Before ESH-0039 the LLVM backend emitted every arena_allocate* against the
+;; global arena GlobalVariable, so a (with-region 'j (make-vector 1000 i)) loop
+;; leaked every vector into the never-freed global arena -> RSS climbed ~4GB per
+;; epoch -> jetsam/OOM (exit 137) on Noesis training. The runtime region
+;; machinery (region_create / region_pop -> region_destroy) was correct but was
+;; never targeted by codegen.
+;;
+;; The fix routes body allocations into the region's arena (codegenWithRegion
+;; overwrites the single currentArenaPtr() slot with region->arena for the body
+;; and restores it after region_pop), so region_pop frees the body garbage.
+;;
+;; This .esk file verifies CORRECTNESS / lifetime invariants. The BOUNDED-RSS
+;; assertion (the actual OOM fix) is checked by the companion harness
+;; with_region_reclaims_test.sh, which compares peak RSS of the region loop
+;; against the no-region baseline.
+
+(define passed 0)
+(define failed 0)
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin (display "PASS: ") (display name) (newline)
+             (set! passed (+ passed 1)))
+      (begin (display "FAIL: ") (display name)
+             (display " expected=") (display expected)
+             (display " actual=") (display actual) (newline)
+             (set! failed (+ failed 1)))))
+
+;; ─── 1. The result of a region body escapes correctly ───────────────────────
+;; region_escape copies the body's result value into the parent/global arena
+;; before the region is destroyed, so it stays valid afterwards.
+(define escaped
+  (with-region 'r1
+    (+ 40 2)))
+(check "region body result escapes (scalar)" 42 escaped)
+
+(define escaped-vec
+  (with-region 'r2
+    (let ((v (make-vector 3 7)))
+      (vector-set! v 1 11)
+      v)))
+(check "region body result escapes (vector elem 0)" 7 (vector-ref escaped-vec 0))
+(check "region body result escapes (vector elem 1)" 11 (vector-ref escaped-vec 1))
+
+;; ─── 2. Reclaim: a big loop of region allocations must complete ──────────────
+;; Each iteration allocates a 1000-element vector inside a region that is then
+;; popped. Pre-fix this OOM'd; post-fix the region arena is freed each pop so
+;; the loop runs in bounded memory. We only assert it RUNS to completion and
+;; returns the sentinel (RSS boundedness is the .sh harness's job).
+(define (region-vec-loop i n)
+  (if (>= i n)
+      'done
+      (begin
+        (with-region 'j
+          (make-vector 1000 i))
+        (region-vec-loop (+ i 1) n))))
+(check "region make-vector loop reclaims and completes" 'done
+       (region-vec-loop 0 50000))
+
+;; ─── 3. Reclaim: cons-churn inside a region ─────────────────────────────────
+;; Build and discard large lists inside regions; must complete without growing
+;; unbounded. Returns the last computed length so we also confirm correctness.
+(define (build-list i acc)
+  (if (>= i 0)
+      (build-list (- i 1) (cons i acc))
+      acc))
+(define (cons-churn-loop i n last-len)
+  (if (>= i n)
+      last-len
+      (cons-churn-loop
+        (+ i 1) n
+        (with-region 'churn
+          (length (build-list 500 '()))))))
+(check "region cons-churn loop reclaims and completes" 501
+       (cons-churn-loop 0 50000 0))
+
+;; ─── 4. Boundary: outer hash-table mutations inside a region survive pop ─────
+;; The hash table is created OUTSIDE the region (its home arena is the global
+;; arena). Mutating it inside a region must NOT place its backing store in the
+;; region arena (which region_pop would free). We insert enough keys to force a
+;; resize while inside the region, then read them back AFTER the region is gone.
+(define ht (make-hash-table))
+(hash-set! ht 'pre 1)            ; mutate before any region
+
+(with-region 'mut
+  (let loop ((k 0))
+    (if (< k 100)
+        (begin
+          (hash-set! ht k (* k 10))   ; forces several resizes inside the region
+          (loop (+ k 1)))
+        'ok)))
+
+;; After region_pop: the table and all entries must still be intact.
+(check "outer-hash key set BEFORE region survives" 1 (hash-ref ht 'pre 'missing))
+(check "outer-hash key set INSIDE region survives (low)"  0   (hash-ref ht 0 'missing))
+(check "outer-hash key set INSIDE region survives (mid)"  500 (hash-ref ht 50 'missing))
+(check "outer-hash key set INSIDE region survives (high)" 990 (hash-ref ht 99 'missing))
+(check "outer-hash count survives region_pop" 101 (hash-count ht))
+
+;; Further mutation after the region must still work (table not corrupted).
+(hash-set! ht 'post 2)
+(check "outer-hash mutable after region_pop" 2 (hash-ref ht 'post 'missing))
+
+;; ─── Summary ────────────────────────────────────────────────────────────────
+(display "Results: ") (display passed) (display " passed, ")
+(display failed) (display " failed") (newline)
+(if (= failed 0)
+    (begin (display "PASS: with_region_reclaims_test") (newline) (exit 0))
+    (begin (display "FAIL: with_region_reclaims_test") (newline) (exit 1)))
