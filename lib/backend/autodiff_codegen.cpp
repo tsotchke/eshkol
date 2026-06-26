@@ -20,6 +20,7 @@
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/Intrinsics.h>
 #include <llvm/Config/llvm-config.h>
+#include <unordered_set>
 
 // LLVM VERSION COMPATIBILITY
 #if LLVM_VERSION_MAJOR >= 21
@@ -94,13 +95,12 @@ inline llvm::Value* dualUnaryChain(CodegenContext& ctx, llvm::Value* dual,
 
 } // anonymous namespace
 
-// Perturbation-tagging nesting depth for user-written nested `derivative`.
-// Depth 0 (outermost) tags with e1 (slot 1); depth 1 (one level of nesting)
-// tags with e2 (slot 2).  The 4-component jet supports two simultaneous live
-// perturbations, i.e. up to 2 levels of forward-over-forward nesting exactly.
-// Tracked as a file-static (thread-local for REPL/JIT thread-safety) so no
-// header/ABI change is needed.
-static thread_local int g_ad_deriv_depth = 0;
+// ESH-0070: perturbation-level tagging is now a RUNTIME counter
+// (ctx_.adPertLevel()), pushed/popped around each forward-mode call — see
+// seedForwardAndPush / popAndExtractForward. The previous compile-time
+// file-static depth could not see across a function-call / named-let TCO
+// boundary, so a gradient/derivative reached through a called function
+// clobbered the outer perturbation. Slot: level 0 -> e1, level 1 -> e2.
 
 llvm::Value* AutodiffCodegen::createDualNumber(llvm::Value* primal, llvm::Value* tangent) {
     if (!primal || !tangent) return nullptr;
@@ -146,6 +146,102 @@ llvm::Value* AutodiffCodegen::extractDerivativeResult(llvm::Value* result_tagged
     llvm::Value* sliced = makeDual4(ctx_, dualField(ctx_, rd, 2), dualField(ctx_, rd, 3),
                                     zero, zero);
     return packDualToTagged(sliced);
+}
+
+// ===== ESH-0070: runtime-level forward-mode perturbation tagging =====
+// The perturbation level is a runtime counter (ctx_.adPertLevel()), pushed and
+// popped around each forward-mode derivative/gradient CALL. This is what makes
+// nesting across a function-call / named-let TCO boundary correct: the inner
+// derivative reads the level the OUTER one left live and therefore seeds a
+// distinct perturbation slot (e2) instead of clobbering the outer's (e1).
+// Compile-time lexical depth could not see across the call boundary; a runtime
+// push/pop around the call is, by construction, invariant under TCO re-entry.
+
+llvm::Value* AutodiffCodegen::adPertLevelLoad() {
+    llvm::GlobalVariable* g = ctx_.adPertLevel();
+    if (!g) return llvm::ConstantInt::get(ctx_.int64Type(), 0);
+    return ctx_.builder().CreateLoad(ctx_.int64Type(), g, "pert_level");
+}
+
+void AutodiffCodegen::adPertLevelStore(llvm::Value* level) {
+    llvm::GlobalVariable* g = ctx_.adPertLevel();
+    if (!g) return;
+    ctx_.builder().CreateStore(level, g);
+}
+
+llvm::Value* AutodiffCodegen::seedForwardAndPush(llvm::Value* point_tagged,
+                                                 llvm::Value** out_level) {
+    auto& b = ctx_.builder();
+    llvm::Value* level = adPertLevelLoad();
+    if (out_level) *out_level = level;
+
+    // Push: the callee body runs one perturbation level deeper.
+    adPertLevelStore(b.CreateAdd(level, llvm::ConstantInt::get(ctx_.int64Type(), 1)));
+
+    // Seed slot = (level == 0) ? e1(field 1) : e2(field 2), preserving the
+    // components the point already carries (so the outer perturbation survives).
+    llvm::Value* base = safeUnpackDualFromTagged(point_tagged); // {p,d1,d2,d12}
+    llvm::Value* is_l0 = b.CreateICmpEQ(level, llvm::ConstantInt::get(ctx_.int64Type(), 0));
+    llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
+
+    llvm::Function* fn = b.GetInsertBlock()->getParent();
+    llvm::BasicBlock* l0bb = llvm::BasicBlock::Create(ctx_.context(), "fwd_seed_e1", fn);
+    llvm::BasicBlock* l1bb = llvm::BasicBlock::Create(ctx_.context(), "fwd_seed_e2", fn);
+    llvm::BasicBlock* mbb  = llvm::BasicBlock::Create(ctx_.context(), "fwd_seed_merge", fn);
+    b.CreateCondBr(is_l0, l0bb, l1bb);
+
+    b.SetInsertPoint(l0bb);
+    llvm::Value* s0 = b.CreateInsertValue(base, one, {1});
+    b.CreateBr(mbb);
+    llvm::BasicBlock* l0e = b.GetInsertBlock();
+
+    b.SetInsertPoint(l1bb);
+    llvm::Value* s1 = b.CreateInsertValue(base, one, {2});
+    b.CreateBr(mbb);
+    llvm::BasicBlock* l1e = b.GetInsertBlock();
+
+    b.SetInsertPoint(mbb);
+    llvm::PHINode* seeded = b.CreatePHI(ctx_.dualNumberType(), 2, "fwd_seeded");
+    seeded->addIncoming(s0, l0e);
+    seeded->addIncoming(s1, l1e);
+    return packDualToTagged(seeded);
+}
+
+llvm::Value* AutodiffCodegen::popAndExtractForward(llvm::Value* result_tagged,
+                                                   llvm::Value* level) {
+    auto& b = ctx_.builder();
+    // Pop: restore the level the outer context expects.
+    adPertLevelStore(level);
+
+    llvm::Value* rd = safeUnpackDualFromTagged(result_tagged); // {a0,a1,a2,a12}
+    llvm::Value* is_l0 = b.CreateICmpEQ(level, llvm::ConstantInt::get(ctx_.int64Type(), 0));
+    llvm::Value* zero = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
+
+    llvm::Function* fn = b.GetInsertBlock()->getParent();
+    llvm::BasicBlock* x0bb = llvm::BasicBlock::Create(ctx_.context(), "fwd_ex_scalar", fn);
+    llvm::BasicBlock* x1bb = llvm::BasicBlock::Create(ctx_.context(), "fwd_ex_slice", fn);
+    llvm::BasicBlock* mbb  = llvm::BasicBlock::Create(ctx_.context(), "fwd_ex_merge", fn);
+    b.CreateCondBr(is_l0, x0bb, x1bb);
+
+    // level 0: scalar derivative = tangent (e1 component), packed as a double.
+    b.SetInsertPoint(x0bb);
+    llvm::Value* scalar_res = tagged_.packDouble(dualField(ctx_, rd, 1));
+    b.CreateBr(mbb);
+    llvm::BasicBlock* x0e = b.GetInsertBlock();
+
+    // nested: d/de2 (...) = a2 + a12 e1, returned as a dual so an enclosing
+    // derivative/gradient reads its e1 coefficient (= the mixed 2nd-order term).
+    b.SetInsertPoint(x1bb);
+    llvm::Value* slice = packDualToTagged(
+        makeDual4(ctx_, dualField(ctx_, rd, 2), dualField(ctx_, rd, 3), zero, zero));
+    b.CreateBr(mbb);
+    llvm::BasicBlock* x1e = b.GetInsertBlock();
+
+    b.SetInsertPoint(mbb);
+    llvm::PHINode* res = b.CreatePHI(ctx_.taggedValueType(), 2, "fwd_extracted");
+    res->addIncoming(scalar_res, x0e);
+    res->addIncoming(slice, x1e);
+    return res;
 }
 
 llvm::Value* AutodiffCodegen::getDualPrimal(llvm::Value* dual) {
@@ -1845,9 +1941,12 @@ llvm::Value* AutodiffCodegen::codegenDerivativeMonolith(const eshkol_operations_
 
     eshkol_info("Computing derivative using forward-mode AD (dual numbers)");
 
-    // Perturbation-tagging nesting depth for THIS derivative (set by an
-    // enclosing derivative while it compiled our lambda body, if any).
-    int my_depth = g_ad_deriv_depth;
+    // ESH-0070: perturbation level is now a RUNTIME counter (see
+    // seedForwardAndPush / popAndExtractForward). pert_level holds this
+    // derivative's pre-push level, set by seedForwardAndPush below and consumed
+    // by popAndExtractForward at every return. This works whether the inner
+    // derivative is lexically nested OR reached through a function call.
+    Value* pert_level = nullptr;
 
     // Evaluate the point. When this derivative is lexically NESTED inside
     // another and the inner evaluation point depends on the outer variable
@@ -1872,15 +1971,13 @@ llvm::Value* AutodiffCodegen::codegenDerivativeMonolith(const eshkol_operations_
         return nullptr;
     }
 
-    // Seed a fresh perturbation in THIS level's slot, preserving any
-    // perturbation the point already carries.
-    Value* x_dual_tagged = seedDerivativeInput(point_tagged, my_depth);
+    // Seed a fresh perturbation in THIS level's slot (preserving any the point
+    // already carries) and PUSH the runtime perturbation level so the callee
+    // body — and any derivative/gradient reached through it — tags the NEXT slot.
+    Value* x_dual_tagged = seedForwardAndPush(point_tagged, &pert_level);
 
-    // Get the function to differentiate. Compile its body one nesting level
-    // deeper so any derivative inside it tags with the NEXT perturbation slot.
-    g_ad_deriv_depth = my_depth + 1;
+    // Get the function to differentiate.
     Value* func = resolve_lambda_callback_(op->derivative_op.function, 0, callback_context_);
-    g_ad_deriv_depth = my_depth;
 
     // RUNTIME FUNCTION PARAMETER FIX: If resolveLambdaFunction returns nullptr,
     // check if this is a function parameter (runtime closure) and use codegenClosureCall
@@ -1935,7 +2032,7 @@ llvm::Value* AutodiffCodegen::codegenDerivativeMonolith(const eshkol_operations_
                     // Extract the derivative w.r.t. this nesting level's
                     // perturbation slot (scalar at depth 0, a dual slice when
                     // nested so an enclosing derivative can read it).
-                    return extractDerivativeResult(result, my_depth);
+                    return popAndExtractForward(result, pert_level);
                 }
                 // Check if it's a pointer to closure (mutable capture)
                 if (isa<Argument>(var_value) && var_value->getType()->isPointerTy()) {
@@ -1947,7 +2044,7 @@ llvm::Value* AutodiffCodegen::codegenDerivativeMonolith(const eshkol_operations_
                     // Extract the derivative w.r.t. this nesting level's
                     // perturbation slot (scalar at depth 0, a dual slice when
                     // nested so an enclosing derivative can read it).
-                    return extractDerivativeResult(result, my_depth);
+                    return popAndExtractForward(result, pert_level);
                 }
                 // Check if it's an AllocaInst (local variable holding a closure)
                 if (isa<AllocaInst>(var_value) && var_value->getType()->isPointerTy()) {
@@ -1958,7 +2055,7 @@ llvm::Value* AutodiffCodegen::codegenDerivativeMonolith(const eshkol_operations_
                         std::vector<Value*> call_args = {x_dual_tagged};
                         Value* result = closure_call_callback_(loaded_val, call_args, "derivative", callback_context_);
 
-                        return extractDerivativeResult(result, my_depth);
+                        return popAndExtractForward(result, pert_level);
                     }
                 }
                 // Check if it's a LoadInst (already loaded closure value)
@@ -1970,7 +2067,7 @@ llvm::Value* AutodiffCodegen::codegenDerivativeMonolith(const eshkol_operations_
                     // Extract the derivative w.r.t. this nesting level's
                     // perturbation slot (scalar at depth 0, a dual slice when
                     // nested so an enclosing derivative can read it).
-                    return extractDerivativeResult(result, my_depth);
+                    return popAndExtractForward(result, pert_level);
                 }
                 // Check if it's a GlobalVariable (letrec captured function)
                 if (isa<GlobalVariable>(var_value)) {
@@ -1983,7 +2080,7 @@ llvm::Value* AutodiffCodegen::codegenDerivativeMonolith(const eshkol_operations_
                     // Extract the derivative w.r.t. this nesting level's
                     // perturbation slot (scalar at depth 0, a dual slice when
                     // nested so an enclosing derivative can read it).
-                    return extractDerivativeResult(result, my_depth);
+                    return popAndExtractForward(result, pert_level);
                 }
             }
         }
@@ -2136,7 +2233,7 @@ llvm::Value* AutodiffCodegen::codegenDerivativeMonolith(const eshkol_operations_
     // At depth 0 this is the scalar derivative; when nested it is a dual slice
     // carrying the outer perturbation so the enclosing derivative can read it.
     // safeUnpack inside handles a non-dual scalar result (constant fn etc.).
-    return extractDerivativeResult(result_tagged, my_depth);
+    return popAndExtractForward(result_tagged, pert_level);
 }
 
 
@@ -2173,6 +2270,98 @@ static uint64_t adResolveValueArity(llvm::Function* func_ptr, uint64_t table_ari
     // fall back to the leading non-capture param count only when it missed.
     return table_arity ? table_arity : leading_non_capture;
 }
+
+// ESH-0070: is `name` a TENSOR-VALUED builtin — one whose computation flows
+// values through a tensor (so a scalar forward-mode dual seeded on the input
+// cannot carry its perturbation through it; only the reverse-mode tape can)?
+// Deliberately EXCLUDES scalar activations/elementwise math (relu/sigmoid/gelu/
+// exp/log/…): those have exact forward-mode duals and frequently appear inside
+// nested gradients, so they must keep the forward path.
+static bool adIsTensorValuedBuiltin(const char* cname) {
+    if (!cname) return false;
+    std::string n(cname);
+    if (n.rfind("tensor", 0) == 0) return true;   // tensor-*, tensor
+    if (n.rfind("gpu-", 0) == 0) return true;      // gpu-matmul / gpu-softmax / …
+    static const std::unordered_set<std::string> tset = {
+        "batch-norm", "layer-norm", "make-tensor",
+        "conv1d", "conv2d", "conv3d", "matmul", "batch-matmul",
+        "max-pool2d", "avg-pool2d", "multi-head-attention", "scaled-dot-attention",
+        "embedding", "rotary-embedding", "flatten", "reshape", "softmax",
+        "cross-entropy-loss", "binary-cross-entropy-loss",
+        "contrastive-loss", "cosine-embedding-loss"
+    };
+    return tset.count(n) != 0;
+}
+
+// ESH-0070: does this SOURCE subtree flow values through a tensor op? Scanned on
+// the AST (not the emitted IR) so it is NOT confused by tensor allocations that
+// an inline nested gradient's own machinery emits. Mirrors astSetsVar's
+// recursion; `default: return false` keeps unhandled ops on the forward path
+// (correct for scalar code, and the reverse path is only required for genuine
+// tensor pipelines).
+static bool adAstUsesTensorOps(const eshkol_ast_t* ast) {
+    if (!ast) return false;
+    if (ast->type == ESHKOL_CONS) {
+        return adAstUsesTensorOps(ast->cons_cell.car) ||
+               adAstUsesTensorOps(ast->cons_cell.cdr);
+    }
+    if (ast->type != ESHKOL_OP) return false;
+    const eshkol_operations_t* op = &ast->operation;
+    if (op->op == ESHKOL_TENSOR_OP) return true;
+    switch (op->op) {
+        case ESHKOL_CALL_OP:
+        case ESHKOL_IF_OP:
+        case ESHKOL_COND_OP: {
+            const eshkol_ast_t* f = op->call_op.func;
+            if (f && f->type == ESHKOL_VAR && adIsTensorValuedBuiltin(f->variable.id)) return true;
+            if (f && adAstUsesTensorOps(f)) return true;
+            for (uint64_t i = 0; i < op->call_op.num_vars; i++)
+                if (adAstUsesTensorOps(&op->call_op.variables[i])) return true;
+            return false;
+        }
+        case ESHKOL_SEQUENCE_OP:
+        case ESHKOL_AND_OP:
+        case ESHKOL_OR_OP:
+            for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++)
+                if (adAstUsesTensorOps(&op->sequence_op.expressions[i])) return true;
+            return false;
+        case ESHKOL_LET_OP:
+        case ESHKOL_LET_STAR_OP:
+        case ESHKOL_LETREC_OP:
+        case ESHKOL_LETREC_STAR_OP: {
+            for (uint64_t i = 0; i < op->let_op.num_bindings; i++)
+                if (adAstUsesTensorOps(&op->let_op.bindings[i])) return true;
+            return adAstUsesTensorOps(op->let_op.body);
+        }
+        case ESHKOL_LAMBDA_OP:
+            return adAstUsesTensorOps(op->lambda_op.body);
+        case ESHKOL_DEFINE_OP:
+            return adAstUsesTensorOps(op->define_op.value);
+        default:
+            return false;
+    }
+}
+
+// ESH-0070: IR-level tensor check, used only when the differentiated function is
+// referenced by NAME (a VAR — e.g. (gradient bn-loss 1.0)) so its source AST is
+// not reachable from the gradient op. A named, single-level function's emitted
+// IR contains tensor runtime calls iff it genuinely flows values through tensors
+// (it has no INLINE nested-gradient machinery to contaminate the scan — that
+// only happens for inline-lambda bodies, which take the AST path above).
+static bool adFunctionUsesTensors(llvm::Function* func_ptr) {
+    if (!func_ptr || func_ptr->isDeclaration()) return false;
+    for (auto& bb : *func_ptr) {
+        for (auto& inst : bb) {
+            auto* call = llvm::dyn_cast<llvm::CallBase>(&inst);
+            if (!call) continue;
+            llvm::Function* callee = call->getCalledFunction();
+            if (!callee) continue;
+            if (callee->getName().contains("tensor")) return true;
+        }
+    }
+    return false;
+}
+
 
 
 llvm::Value* AutodiffCodegen::gradientHigherOrder(const eshkol_operations_t* op) {
@@ -3085,6 +3274,81 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
         vector_val = tagged_.packInt64(vector_val_raw, true); // Pack other types
     }
     
+    // ════════════════════════════════════════════════════════════════════
+    // ESH-0070: forward-mode jet fast path for SCALAR single-variable gradient.
+    //
+    // For an arity-1 function at a SCALAR (or dual, when nested) point, the
+    // gradient IS the derivative, so we compute it with the exact forward-mode
+    // 4-jet — the same machinery `derivative` uses — instead of the reverse-mode
+    // tape + the degree/value-ratio "double backward" reconstruction further
+    // below. That reconstruction is exact only for pure monomials; for anything
+    // with +/- terms a NESTED gradient produced garbage that compounded with
+    // each named-let iteration (the Noesis blow-up). Forward mode is exact for
+    // 2-level nesting, allocates O(1) (no per-op tape node — fixes the per-call
+    // leak), and the runtime perturbation level (seedForwardAndPush) makes the
+    // nesting correct across the named-let / function-call boundary.
+    //
+    // A VECTOR point (arity-1 functions like (lambda (v) (dot v v)), or any
+    // multi-parameter function) keeps the existing reverse-mode vector path.
+    // The scalar-vs-vector decision is made at RUNTIME on the point's tag, so a
+    // bare-variable point ((gradient log x) vs (gradient f vec)) is handled
+    // correctly either way.
+    // ════════════════════════════════════════════════════════════════════
+    BasicBlock* grad_unified_exit = nullptr;
+    AllocaInst* grad_result_slot = nullptr;
+    {
+        uint64_t fwd_arity = 0;
+        std::string fwd_key = func_ptr->getName().str();
+        auto fwd_rv = fwd_key.rfind("__rv");
+        if (fwd_rv != std::string::npos && fwd_rv + 4 < fwd_key.size() &&
+            fwd_key.find_first_not_of("0123456789", fwd_rv + 4) == std::string::npos) {
+            fwd_key.erase(fwd_rv);
+        }
+        auto fwd_ait = function_arity_table_->find(fwd_key);
+        if (fwd_ait != function_arity_table_->end()) fwd_arity = fwd_ait->second;
+        fwd_arity = adResolveValueArity(func_ptr, fwd_arity);
+
+        // Only a SCALAR single-variable function takes the forward path. A body
+        // that flows the input through a tensor op (batch-norm/layer-norm/…) has
+        // no scalar forward-mode dual and must use the reverse-mode tape. Decided
+        // from the SOURCE AST (not the emitted IR), so it is not confused by
+        // tensor allocations an inline nested gradient's own machinery emits. A
+        // vector-valued point is still handled at runtime below (reverse branch),
+        // so this only needs to catch the scalar-point-through-tensor case.
+        bool fn_uses_tensors = adAstUsesTensorOps(op->gradient_op.function) ||
+            (op->gradient_op.function->type == ESHKOL_VAR && adFunctionUsesTensors(func_ptr));
+        if (fwd_arity == 1 && !fn_uses_tensors) {
+            Function* cur_fn = ctx_.builder().GetInsertBlock()->getParent();
+            grad_result_slot = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "grad_fwd_result");
+            BasicBlock* grad_fwd_jet = BasicBlock::Create(ctx_.context(), "grad_fwd_jet", cur_fn);
+            BasicBlock* grad_reverse_entry = BasicBlock::Create(ctx_.context(), "grad_reverse_entry", cur_fn);
+            grad_unified_exit = BasicBlock::Create(ctx_.context(), "grad_unified_exit", cur_fn);
+
+            // Use forward mode when the point is a scalar (DOUBLE/INT64) or an
+            // existing dual (nested gradient carrying an outer perturbation).
+            Value* fwd_bt = tagged_.getBaseType(tagged_.getType(vector_val));
+            Value* fwd_is_d = ctx_.builder().CreateICmpEQ(fwd_bt, ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DOUBLE));
+            Value* fwd_is_i = ctx_.builder().CreateICmpEQ(fwd_bt, ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_INT64));
+            Value* fwd_is_dual = ctx_.builder().CreateICmpEQ(fwd_bt, ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DUAL_NUMBER));
+            Value* use_fwd = ctx_.builder().CreateOr(ctx_.builder().CreateOr(fwd_is_d, fwd_is_i), fwd_is_dual);
+            ctx_.builder().CreateCondBr(use_fwd, grad_fwd_jet, grad_reverse_entry);
+
+            // ---- forward-mode jet path ----
+            ctx_.builder().SetInsertPoint(grad_fwd_jet);
+            Value* fwd_level = nullptr;
+            Value* fwd_seed = seedForwardAndPush(vector_val, &fwd_level);
+            std::vector<Value*> fwd_args = {fwd_seed};
+            resolveGradientCaptures(func_ptr, fwd_args, "fwd-jet");
+            Value* fwd_call = ctx_.builder().CreateCall(func_ptr, fwd_args);
+            Value* fwd_res = popAndExtractForward(fwd_call, fwd_level);
+            ctx_.builder().CreateStore(fwd_res, grad_result_slot);
+            ctx_.builder().CreateBr(grad_unified_exit);
+
+            // ---- reverse-mode vector path: the rest of this function ----
+            ctx_.builder().SetInsertPoint(grad_reverse_entry);
+        }
+    }
+
     // Alloca for effective svec input (updated by tensor→svec conversion)
     Value* svec_input_ptr = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "svec_input");
     ctx_.builder().CreateStore(vector_val, svec_input_ptr);
@@ -4499,6 +4763,15 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
     PHINode* final_phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2, "grad_final_result");
     final_phi->addIncoming(scalar_result, scalar_extract_exit);
     final_phi->addIncoming(result_phi, grad_done);
+
+    // ESH-0070: if the forward-mode jet fast path was set up, merge the two
+    // paths (forward scalar result vs reverse-mode vector result) here.
+    if (grad_unified_exit) {
+        ctx_.builder().CreateStore(final_phi, grad_result_slot);
+        ctx_.builder().CreateBr(grad_unified_exit);
+        ctx_.builder().SetInsertPoint(grad_unified_exit);
+        return ctx_.builder().CreateLoad(ctx_.taggedValueType(), grad_result_slot);
+    }
 
     return final_phi;
 }
@@ -7510,7 +7783,13 @@ void AutodiffCodegen::resolveGradientCaptures(
 
         std::string capture_key = lambda_name + "_capture_" + var_name;
 
-        // Search order: capture key in global → local, then raw name in global → local
+        // Search order: capture key (global → local), then raw name LOCAL → global.
+        // ESH-0070: the raw-name LOOKUP MUST prefer the LOCAL symbol table so it
+        // resolves the SAME storage the lambda itself captured. Inside a named-let
+        // loop the free var `a` is bound locally to the carry pointer `%a_cap`
+        // (which lexically shadows the top-level global `@a`); the lambda captured
+        // that local pointer. The old global-first order found `@a` instead, so
+        // the gradient handed the lambda a capture in the wrong (packed) ABI.
         Value* storage = nullptr;
         auto it = global_symbol_table_->find(capture_key);
         if (it != global_symbol_table_->end() && it->second) {
@@ -7520,12 +7799,12 @@ void AutodiffCodegen::resolveGradientCaptures(
             if (it != symbol_table_->end() && it->second) {
                 storage = it->second;
             } else {
-                it = global_symbol_table_->find(var_name);
-                if (it != global_symbol_table_->end() && it->second) {
+                it = symbol_table_->find(var_name);
+                if (it != symbol_table_->end() && it->second) {
                     storage = it->second;
                 } else {
-                    it = symbol_table_->find(var_name);
-                    if (it != symbol_table_->end() && it->second) {
+                    it = global_symbol_table_->find(var_name);
+                    if (it != global_symbol_table_->end() && it->second) {
                         storage = it->second;
                     }
                 }
@@ -7553,6 +7832,34 @@ void AutodiffCodegen::resolveGradientCaptures(
         }
 
         if (storage) {
+            // ESH-0070: named-let loop carries (#224) bind a free variable to a
+            // pointer Argument named "<var>_cap" (see llvm_codegen.cpp
+            // codegenNamedLet). A lambda compiled inside that loop captures the
+            // variable through that direct pointer, so its `captured_<var>` param
+            // is loaded DIRECTLY (single indirection). Passing the usual
+            // {INT64, ptrtoint(storage)} double-indirection slot here made the
+            // lambda read the *address* as the value → garbage gradients that
+            // compounded each loop iteration (the Noesis named-let blow-up).
+            // When storage IS that carry pointer, forward it as-is.
+            if (auto* arg = llvm::dyn_cast<llvm::Argument>(storage)) {
+                if (arg->getType()->isPointerTy() &&
+                    arg->getName() == (var_name + "_cap")) {
+                    call_args.push_back(storage);
+                    continue;
+                }
+            }
+            if (!storage->getType()->isPointerTy()) {
+                // Value-typed capture (e.g. a function passed as a tagged_value
+                // parameter and captured by the gradient's lambda, as in
+                // (lambda (y) (gradient f y))). PtrToInt on a struct is invalid;
+                // funnel the value through a temp slot so the lambda's single
+                // `load captured_<var>` reads it directly. Mirrors the
+                // derivative() capture handling (ESH-0070).
+                Value* val_temp = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "grad_cap_val");
+                ctx_.builder().CreateStore(storage, val_temp);
+                call_args.push_back(val_temp);
+                continue;
+            }
             Value* ptr_int = ctx_.builder().CreatePtrToInt(storage, ctx_.int64Type());
             Value* packed = tagged_.packInt64(ptr_int, true);
             Value* temp = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "grad_cap");
