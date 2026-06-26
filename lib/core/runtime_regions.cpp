@@ -66,6 +66,7 @@ void eshkol_thread_init_worker(size_t arena_size_hint) {
     }
     __ad_tape_depth = 0;
     __outer_ad_node_depth = 0;
+    __ad_pert_level = 0;
 
     __outer_ad_node_storage = nullptr;
     __outer_ad_node_to_inner = nullptr;
@@ -93,6 +94,7 @@ void eshkol_thread_shutdown_worker(void) {
     }
     __ad_tape_depth = 0;
     __outer_ad_node_depth = 0;
+    __ad_pert_level = 0;
 
     __outer_ad_node_storage = nullptr;
     __outer_ad_node_to_inner = nullptr;

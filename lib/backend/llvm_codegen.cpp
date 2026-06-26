@@ -987,6 +987,7 @@ private:
     static const size_t MAX_TAPE_DEPTH = 32; // Support up to 32 levels of nesting
     GlobalVariable* ad_tape_stack;  // Array of tape pointers [MAX_TAPE_DEPTH]
     GlobalVariable* ad_tape_depth;  // Current stack depth (0 = no active gradient)
+    GlobalVariable* ad_pert_level;  // ESH-0070 forward-mode perturbation level (runtime)
 
     // DOUBLE BACKWARD: Storage for outer AD node when in nested gradient
     // Used to connect inner gradient's result to outer's computation graph
@@ -1992,6 +1993,15 @@ public:
                     nullptr, // External - defined in arena_memory.cpp
                     "__ad_tape_depth"
                 );
+                // ESH-0070: forward-mode perturbation level (external for REPL)
+                ad_pert_level = new GlobalVariable(
+                    *module,
+                    int64_type,
+                    false,
+                    GlobalValue::ExternalLinkage,
+                    nullptr, // External - defined in runtime_autodiff.cpp
+                    "__ad_pert_level"
+                );
 
                 // DOUBLE BACKWARD: Create outer AD node storage globals (external for REPL)
                 outer_ad_node_storage = new GlobalVariable(
@@ -2072,6 +2082,15 @@ public:
                     GlobalValue::InternalLinkage,
                     ConstantInt::get(int64_type, 0),
                     "__ad_tape_depth"
+                );
+                // ESH-0070: forward-mode perturbation level (internal with zero init)
+                ad_pert_level = new GlobalVariable(
+                    *module,
+                    int64_type,
+                    false,
+                    GlobalValue::InternalLinkage,
+                    ConstantInt::get(int64_type, 0),
+                    "__ad_pert_level"
                 );
 
                 // DOUBLE BACKWARD: Create outer AD node storage globals (internal with null init)
@@ -3426,6 +3445,7 @@ private:
         ctx_->setCurrentAdTape(current_ad_tape);
         ctx_->setAdTapeStack(ad_tape_stack);
         ctx_->setAdTapeDepth(ad_tape_depth);
+        ctx_->setAdPertLevel(ad_pert_level);
         ctx_->setOuterAdNodeStorage(outer_ad_node_storage);
         ctx_->setOuterAdNodeToInner(outer_ad_node_to_inner);
         ctx_->setOuterGradAccumulator(outer_grad_accumulator);
@@ -18493,8 +18513,12 @@ private:
             Value* num = builder->CreateFSub(num_y, num_x, "atan2_num");
             Value* tangent_d = builder->CreateFDiv(num, denom, "atan2_tangent");
             Value* result_dual = UndefValue::get(ctx_->dualNumberType());
+            Value* atan2_dzero = ConstantFP::get(double_type, 0.0);
             result_dual = builder->CreateInsertValue(result_dual, primal_d, {0});
             result_dual = builder->CreateInsertValue(result_dual, tangent_d, {1});
+            // 2nd-order dual: zero e2 / e1e2 slots (avoid poison).
+            result_dual = builder->CreateInsertValue(result_dual, atan2_dzero, {2});
+            result_dual = builder->CreateInsertValue(result_dual, atan2_dzero, {3});
             Value* dual_tagged = autodiff_->packDualToTagged(result_dual);
             BasicBlock* dual_exit = builder->GetInsertBlock();
             builder->CreateBr(merge_bb);
@@ -18569,8 +18593,12 @@ private:
         Value* l_dual = arith_->convertToDual(arg1, arg1_is_dual, l_dbl_for_dual);
         Value* l_tangent = builder->CreateExtractValue(l_dual, {1}, "mod_l_tangent");
         Value* result_dual = UndefValue::get(ctx_->dualNumberType());
+        Value* mod_dzero = ConstantFP::get(double_type, 0.0);
         result_dual = builder->CreateInsertValue(result_dual, mod_primal, {0});
         result_dual = builder->CreateInsertValue(result_dual, l_tangent, {1});
+        // 2nd-order dual: zero e2 / e1e2 slots (avoid poison).
+        result_dual = builder->CreateInsertValue(result_dual, mod_dzero, {2});
+        result_dual = builder->CreateInsertValue(result_dual, mod_dzero, {3});
         Value* mod_dual_tagged = autodiff_->packDualToTagged(result_dual);
         BasicBlock* dual_exit_mod = builder->GetInsertBlock();
         builder->CreateBr(mod_outer_merge);
@@ -18816,6 +18844,9 @@ private:
             Value* dual_struct = UndefValue::get(ctx_->dualNumberType());
             dual_struct = builder->CreateInsertValue(dual_struct, dual_result_dbl, {0});
             dual_struct = builder->CreateInsertValue(dual_struct, ConstantFP::get(double_type, 0.0), {1});
+            // 2nd-order dual: zero e2 / e1e2 slots (avoid poison).
+            dual_struct = builder->CreateInsertValue(dual_struct, ConstantFP::get(double_type, 0.0), {2});
+            dual_struct = builder->CreateInsertValue(dual_struct, ConstantFP::get(double_type, 0.0), {3});
             Value* dual_tagged = autodiff_->packDualToTagged(dual_struct);
             BasicBlock* dual_gcd_exit = builder->GetInsertBlock();
             builder->CreateBr(gcd_outer_merge);
@@ -18952,6 +18983,9 @@ private:
             Value* dual_struct = UndefValue::get(ctx_->dualNumberType());
             dual_struct = builder->CreateInsertValue(dual_struct, dual_result_dbl, {0});
             dual_struct = builder->CreateInsertValue(dual_struct, ConstantFP::get(double_type, 0.0), {1});
+            // 2nd-order dual: zero e2 / e1e2 slots (avoid poison).
+            dual_struct = builder->CreateInsertValue(dual_struct, ConstantFP::get(double_type, 0.0), {2});
+            dual_struct = builder->CreateInsertValue(dual_struct, ConstantFP::get(double_type, 0.0), {3});
             Value* dual_tagged = autodiff_->packDualToTagged(dual_struct);
             BasicBlock* dual_lcm_exit = builder->GetInsertBlock();
             builder->CreateBr(lcm_outer_merge);

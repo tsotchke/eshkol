@@ -229,6 +229,15 @@ public:
     llvm::GlobalVariable* adTapeDepth() { return ad_tape_depth_; }
     void setAdTapeDepth(llvm::GlobalVariable* var) { ad_tape_depth_ = var; }
 
+    // ESH-0070: runtime forward-mode perturbation level. Counts the number of
+    // forward-mode derivative/gradient operations currently live on the call
+    // stack so that a nested derivative — whether lexically nested OR reached
+    // through a function call / named-let TCO loop — seeds a DISTINCT
+    // perturbation slot (e1 at level 0, e2 at level 1). Pushed/popped at
+    // runtime around each forward-mode call, so it is invariant under TCO.
+    llvm::GlobalVariable* adPertLevel() { return ad_pert_level_; }
+    void setAdPertLevel(llvm::GlobalVariable* var) { ad_pert_level_ = var; }
+
     // Double backward support
     llvm::GlobalVariable* outerAdNodeStorage() { return outer_ad_node_storage_; }
     void setOuterAdNodeStorage(llvm::GlobalVariable* var) { outer_ad_node_storage_ = var; }
@@ -355,6 +364,7 @@ private:
     llvm::GlobalVariable* current_ad_tape_ = nullptr;
     llvm::GlobalVariable* ad_tape_stack_ = nullptr;
     llvm::GlobalVariable* ad_tape_depth_ = nullptr;
+    llvm::GlobalVariable* ad_pert_level_ = nullptr;  // ESH-0070 forward-mode perturbation level
     llvm::GlobalVariable* outer_ad_node_storage_ = nullptr;
     llvm::GlobalVariable* outer_ad_node_to_inner_ = nullptr;
     llvm::GlobalVariable* outer_grad_accumulator_ = nullptr;
