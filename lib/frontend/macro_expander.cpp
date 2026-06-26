@@ -196,6 +196,7 @@ eshkol_ast_t MacroExpander::expandNode(const eshkol_ast_t& ast) {
             case ESHKOL_LET_OP:
             case ESHKOL_LET_STAR_OP:
             case ESHKOL_LETREC_OP:
+            case ESHKOL_LETREC_STAR_OP:
                 if (op->let_op.num_bindings > 0 && op->let_op.bindings) {
                     eshkol_ast_t* new_bindings = new eshkol_ast_t[op->let_op.num_bindings];
                     for (uint64_t i = 0; i < op->let_op.num_bindings; i++) {
@@ -595,6 +596,7 @@ bool MacroExpander::findRepeatedBinding(const eshkol_ast_t& ast,
         case ESHKOL_LET_OP:
         case ESHKOL_LET_STAR_OP:
         case ESHKOL_LETREC_OP:
+        case ESHKOL_LETREC_STAR_OP:
             for (uint64_t i = 0; i < op->let_op.num_bindings; i++) {
                 if (findRepeatedBinding(op->let_op.bindings[i], bindings, binding_name)) {
                     return true;
@@ -762,6 +764,7 @@ eshkol_ast_t MacroExpander::substituteBindingsAtIndex(const eshkol_ast_t& ast,
         case ESHKOL_LET_OP:
         case ESHKOL_LET_STAR_OP:
         case ESHKOL_LETREC_OP:
+        case ESHKOL_LETREC_STAR_OP:
             if (op->let_op.num_bindings > 0 && op->let_op.bindings) {
                 op->let_op.bindings = new eshkol_ast_t[op->let_op.num_bindings];
                 for (uint64_t i = 0; i < ast.operation.let_op.num_bindings; i++) {
@@ -1024,6 +1027,7 @@ eshkol_ast_t MacroExpander::substituteBindings(const eshkol_ast_t& ast,
             case ESHKOL_LET_OP:
             case ESHKOL_LET_STAR_OP:
             case ESHKOL_LETREC_OP:
+            case ESHKOL_LETREC_STAR_OP:
                 if (op->let_op.num_bindings > 0 && op->let_op.bindings) {
                     eshkol_ast_t* new_bindings = new eshkol_ast_t[op->let_op.num_bindings];
                     for (uint64_t i = 0; i < op->let_op.num_bindings; i++) {
