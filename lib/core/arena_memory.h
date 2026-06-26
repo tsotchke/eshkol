@@ -59,11 +59,25 @@ struct arena {
     size_t alignment;              // Memory alignment requirement
     void* mutex;                   // Optional mutex for thread-safe access (platform-specific)
     bool thread_safe;              // Whether this arena uses mutex locking
+    bool bounded;                  // ESH-0039/v1.8: if set, allocation NEVER grows
+                                   // the arena (no new-block malloc); requests that
+                                   // overflow the fixed capacity return NULL instead.
 };
 
 // Arena management functions
 arena_t* arena_create(size_t default_block_size);
 arena_t* arena_create_threadsafe(size_t default_block_size);  // Thread-safe variant with mutex
+
+/* ESH-0039 / v1.8 embedded seam: bounded, no-grow arena.
+ *
+ * Creates an arena with a single fixed-capacity block. Allocation never mallocs
+ * a new block: once the capacity is exhausted, arena_allocate* returns NULL.
+ * This is the signature the v1.8 embedded / bounded-memory target needs so that
+ * a region (or a worker subarena) can be given a hard memory ceiling. The hosted
+ * implementation still malloc()s the single backing block once; a freestanding
+ * build can swap the backing buffer without changing this contract. */
+arena_t* arena_create_bounded(size_t capacity);
+
 void arena_destroy(arena_t* arena);
 
 // Thread-safety control
@@ -461,6 +475,11 @@ typedef struct eshkol_hash_table {
     eshkol_tagged_value_t* keys;          // Array of keys (tagged values)
     eshkol_tagged_value_t* values;        // Array of values (tagged values)
     uint8_t* status;                      // Entry status array (EMPTY/OCCUPIED/DELETED)
+    arena_t* home_arena;                  // ESH-0039: arena the table was created in.
+                                          // Resize re-allocates the backing arrays here
+                                          // (NOT the transient region arena that happens
+                                          // to be active during a set!) so a table created
+                                          // outside a (with-region ...) survives region_pop.
 } eshkol_hash_table_t;
 
 // Initial capacity for new hash tables

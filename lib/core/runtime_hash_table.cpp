@@ -230,6 +230,7 @@ eshkol_hash_table_t* arena_allocate_hash_table(arena_t* arena, size_t initial_ca
     table->capacity = initial_capacity;
     table->size = 0;
     table->tombstones = 0;
+    table->home_arena = arena;  // ESH-0039: remember where the table lives
 
     return table;
 }
@@ -279,6 +280,7 @@ eshkol_hash_table_t* arena_hash_table_create_with_header(arena_t* arena) {
     table->capacity = initial_capacity;
     table->size = 0;
     table->tombstones = 0;
+    table->home_arena = arena;  // ESH-0039: remember where the table lives
 
     return table;
 }
@@ -323,6 +325,12 @@ struct hash_table_lock_guard {
 };
 
 static bool hash_table_resize(arena_t* arena, eshkol_hash_table_t* table, size_t new_capacity) {
+    // ESH-0039: grow the backing arrays in the arena the table was BORN in, not
+    // whatever transient region arena is active during this set!. Otherwise a
+    // table created outside a (with-region ...) would have its arrays reallocated
+    // into the region arena and freed (corrupted) at region_pop.
+    if (table->home_arena) arena = table->home_arena;
+
     eshkol_tagged_value_t* new_keys = (eshkol_tagged_value_t*)
         arena_allocate_zeroed(arena, sizeof(eshkol_tagged_value_t) * new_capacity);
     eshkol_tagged_value_t* new_values = (eshkol_tagged_value_t*)
