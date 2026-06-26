@@ -1225,6 +1225,7 @@ void ReplJITContext::registerRuntimeSymbols() {
     // These are thread_local — must use ADD_TLS_SYMBOL (mangled name) so the JIT can resolve them.
     ADD_TLS_SYMBOL(__ad_tape_stack);
     ADD_TLS_SYMBOL(__ad_tape_depth);
+    ADD_TLS_SYMBOL(__ad_pert_level);  // ESH-0070 forward-mode perturbation level
     ADD_TLS_SYMBOL(__outer_ad_node_storage);
     ADD_TLS_SYMBOL(__outer_ad_node_to_inner);
     ADD_TLS_SYMBOL(__outer_grad_accumulator);

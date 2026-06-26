@@ -987,6 +987,7 @@ private:
     static const size_t MAX_TAPE_DEPTH = 32; // Support up to 32 levels of nesting
     GlobalVariable* ad_tape_stack;  // Array of tape pointers [MAX_TAPE_DEPTH]
     GlobalVariable* ad_tape_depth;  // Current stack depth (0 = no active gradient)
+    GlobalVariable* ad_pert_level;  // ESH-0070 forward-mode perturbation level (runtime)
 
     // DOUBLE BACKWARD: Storage for outer AD node when in nested gradient
     // Used to connect inner gradient's result to outer's computation graph
@@ -1992,6 +1993,15 @@ public:
                     nullptr, // External - defined in arena_memory.cpp
                     "__ad_tape_depth"
                 );
+                // ESH-0070: forward-mode perturbation level (external for REPL)
+                ad_pert_level = new GlobalVariable(
+                    *module,
+                    int64_type,
+                    false,
+                    GlobalValue::ExternalLinkage,
+                    nullptr, // External - defined in runtime_autodiff.cpp
+                    "__ad_pert_level"
+                );
 
                 // DOUBLE BACKWARD: Create outer AD node storage globals (external for REPL)
                 outer_ad_node_storage = new GlobalVariable(
@@ -2072,6 +2082,15 @@ public:
                     GlobalValue::InternalLinkage,
                     ConstantInt::get(int64_type, 0),
                     "__ad_tape_depth"
+                );
+                // ESH-0070: forward-mode perturbation level (internal with zero init)
+                ad_pert_level = new GlobalVariable(
+                    *module,
+                    int64_type,
+                    false,
+                    GlobalValue::InternalLinkage,
+                    ConstantInt::get(int64_type, 0),
+                    "__ad_pert_level"
                 );
 
                 // DOUBLE BACKWARD: Create outer AD node storage globals (internal with null init)
@@ -3426,6 +3445,7 @@ private:
         ctx_->setCurrentAdTape(current_ad_tape);
         ctx_->setAdTapeStack(ad_tape_stack);
         ctx_->setAdTapeDepth(ad_tape_depth);
+        ctx_->setAdPertLevel(ad_pert_level);
         ctx_->setOuterAdNodeStorage(outer_ad_node_storage);
         ctx_->setOuterAdNodeToInner(outer_ad_node_to_inner);
         ctx_->setOuterGradAccumulator(outer_grad_accumulator);
