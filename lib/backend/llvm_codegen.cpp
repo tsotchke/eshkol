@@ -26066,9 +26066,22 @@ private:
             builder->CreateBr(merge_bb);
 
             // Plain tensor path (not callable)
+            // ESH-0069: route the plain (non-AD) operand through the centralized
+            // type-checked unpack so a vector/int/string raises a catchable type
+            // error (or a numeric vector is coerced) instead of segfaulting on a
+            // misread struct.
             builder->SetInsertPoint(plain_bb);
-            Value* plain_ptr_int = unpackInt64FromTaggedValue(input);
-            Value* plain_ptr = builder->CreateIntToPtr(plain_ptr_int, builder->getPtrTy());
+            Value* mm_slot = builder->CreateAlloca(tagged_value_type, nullptr, "mm_operand_slot");
+            builder->CreateStore(input, mm_slot);
+            Function* mm_chk = module->getFunction("eshkol_tensor_operand_checked");
+            if (!mm_chk) {
+                FunctionType* mm_chk_ty = FunctionType::get(
+                    builder->getPtrTy(), {builder->getPtrTy(), builder->getPtrTy()}, false);
+                mm_chk = Function::Create(mm_chk_ty, Function::ExternalLinkage,
+                                          "eshkol_tensor_operand_checked", module.get());
+            }
+            Value* mm_name = builder->CreateGlobalString("matmul", "mm_op_name");
+            Value* plain_ptr = builder->CreateCall(mm_chk, {mm_slot, mm_name});
             BasicBlock* plain_exit = builder->GetInsertBlock();
             builder->CreateBr(merge_bb);
 

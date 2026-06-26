@@ -75,8 +75,7 @@ llvm::Value* TensorCodegen::maxPool2d(const eshkol_operations_t* op) {
         llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
 
     // Unpack input tensor
-    llvm::Value* input_ptr_int = tagged_.unpackInt64(input_val);
-    llvm::Value* input_ptr = builder.CreateIntToPtr(input_ptr_int, ctx_.ptrType());
+    llvm::Value* input_ptr = unpackTensorOperandChecked(input_val, "max-pool2d");
     llvm::Type* tensor_type = ctx_.tensorType();
 
     // Load input tensor properties
@@ -368,8 +367,7 @@ llvm::Value* TensorCodegen::avgPool2d(const eshkol_operations_t* op) {
     llvm::Value* arena_ptr = builder.CreateLoad(
         llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
 
-    llvm::Value* input_ptr_int = tagged_.unpackInt64(input_val);
-    llvm::Value* input_ptr = builder.CreateIntToPtr(input_ptr_int, ctx_.ptrType());
+    llvm::Value* input_ptr = unpackTensorOperandChecked(input_val, "avg-pool2d");
     llvm::Type* tensor_type = ctx_.tensorType();
 
     llvm::Value* dims_field = builder.CreateStructGEP(tensor_type, input_ptr, 0);
@@ -645,8 +643,7 @@ llvm::Value* TensorCodegen::conv1d(const eshkol_operations_t* op) {
     llvm::Type* tensor_type = ctx_.tensorType();
 
     // Unpack input tensor
-    llvm::Value* input_ptr_int = tagged_.unpackInt64(input_val);
-    llvm::Value* input_ptr = builder.CreateIntToPtr(input_ptr_int, ctx_.ptrType());
+    llvm::Value* input_ptr = unpackTensorOperandChecked(input_val, "conv1d");
     llvm::Value* in_dims_field = builder.CreateStructGEP(tensor_type, input_ptr, 0);
     llvm::Value* in_dims = builder.CreateLoad(ctx_.ptrType(), in_dims_field);
     llvm::Value* in_ndim_field = builder.CreateStructGEP(tensor_type, input_ptr, 1);
@@ -665,8 +662,7 @@ llvm::Value* TensorCodegen::conv1d(const eshkol_operations_t* op) {
     llvm::Value* batch_size = builder.CreateSDiv(in_total, in_len);
 
     // Unpack kernel tensor (1D)
-    llvm::Value* kernel_ptr_int = tagged_.unpackInt64(kernel_val);
-    llvm::Value* kernel_ptr = builder.CreateIntToPtr(kernel_ptr_int, ctx_.ptrType());
+    llvm::Value* kernel_ptr = unpackTensorOperandChecked(kernel_val, "conv1d");
     llvm::Value* k_total_field = builder.CreateStructGEP(tensor_type, kernel_ptr, 3);
     llvm::Value* k_len = builder.CreateLoad(ctx_.int64Type(), k_total_field);
     llvm::Value* k_elems_field = builder.CreateStructGEP(tensor_type, kernel_ptr, 2);
@@ -863,8 +859,7 @@ llvm::Value* TensorCodegen::conv2d(const eshkol_operations_t* op) {
     llvm::Type* tensor_type = ctx_.tensorType();
 
     // Unpack input tensor
-    llvm::Value* input_ptr_int = tagged_.unpackInt64(input_val);
-    llvm::Value* input_ptr = builder.CreateIntToPtr(input_ptr_int, ctx_.ptrType());
+    llvm::Value* input_ptr = unpackTensorOperandChecked(input_val, "conv2d");
     llvm::Value* in_dims_field = builder.CreateStructGEP(tensor_type, input_ptr, 0);
     llvm::Value* in_dims = builder.CreateLoad(ctx_.ptrType(), in_dims_field);
     llvm::Value* in_ndim_field = builder.CreateStructGEP(tensor_type, input_ptr, 1);
@@ -886,8 +881,7 @@ llvm::Value* TensorCodegen::conv2d(const eshkol_operations_t* op) {
     llvm::Value* batch_size = builder.CreateSDiv(in_total, spatial_in);
 
     // Unpack kernel tensor (2D: kH x kW)
-    llvm::Value* kernel_ptr_int = tagged_.unpackInt64(kernel_val);
-    llvm::Value* kernel_ptr = builder.CreateIntToPtr(kernel_ptr_int, ctx_.ptrType());
+    llvm::Value* kernel_ptr = unpackTensorOperandChecked(kernel_val, "conv2d");
     llvm::Value* k_dims_field = builder.CreateStructGEP(tensor_type, kernel_ptr, 0);
     llvm::Value* k_dims = builder.CreateLoad(ctx_.ptrType(), k_dims_field);
     llvm::Value* k_ndim_field = builder.CreateStructGEP(tensor_type, kernel_ptr, 1);
@@ -1474,8 +1468,7 @@ llvm::Value* TensorCodegen::batchNorm(const eshkol_operations_t* op) {
     llvm::Type* tensor_type = ctx_.tensorType();
 
     // Unpack input tensor
-    llvm::Value* input_ptr_int = tagged_.unpackInt64(input_val);
-    llvm::Value* input_ptr = builder.CreateIntToPtr(input_ptr_int, ctx_.ptrType());
+    llvm::Value* input_ptr = unpackTensorOperandChecked(input_val, "batch-norm");
     llvm::Value* in_dims_field = builder.CreateStructGEP(tensor_type, input_ptr, 0);
     llvm::Value* in_dims = builder.CreateLoad(ctx_.ptrType(), in_dims_field);
     llvm::Value* in_ndim_field = builder.CreateStructGEP(tensor_type, input_ptr, 1);
@@ -1804,8 +1797,7 @@ llvm::Value* TensorCodegen::layerNorm(const eshkol_operations_t* op) {
     llvm::Type* tensor_type = ctx_.tensorType();
 
     // Unpack input tensor
-    llvm::Value* input_ptr_int = tagged_.unpackInt64(input_val);
-    llvm::Value* input_ptr = builder.CreateIntToPtr(input_ptr_int, ctx_.ptrType());
+    llvm::Value* input_ptr = unpackTensorOperandChecked(input_val, "layer-norm");
     llvm::Value* in_dims_field = builder.CreateStructGEP(tensor_type, input_ptr, 0);
     llvm::Value* in_dims = builder.CreateLoad(ctx_.ptrType(), in_dims_field);
     llvm::Value* in_ndim_field = builder.CreateStructGEP(tensor_type, input_ptr, 1);
