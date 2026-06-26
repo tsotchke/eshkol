@@ -1,7 +1,7 @@
 ;;; core/list/transform.esk
 ;;; List transformation functions
 
-(provide take drop append reverse filter unzip partition list-copy)
+(provide take drop take-right drop-right append reverse filter unzip partition list-copy)
 ;;; Note: remove is kept as a builtin for performance
 
 ;;; take: Return first n elements of a list
@@ -15,6 +15,14 @@
   (if (or (<= n 0) (null? lst))
       lst
       (drop (cdr lst) (- n 1))))
+
+;;; take-right: Return the last n elements of a list (SRFI-1).
+(define (take-right lst n)
+  (drop lst (- (length lst) n)))
+
+;;; drop-right: Return all but the last n elements of a list (SRFI-1).
+(define (drop-right lst n)
+  (take lst (- (length lst) n)))
 
 ;;; append: Concatenate any number of lists (R7RS §6.4)
 ;;; (append)           => ()
