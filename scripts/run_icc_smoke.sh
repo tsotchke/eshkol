@@ -349,6 +349,23 @@ probe pgo_pipeline_works 'cmake -DESHKOL_PGO=generate/use supports a profile-gui
      fi;
      exit 1'
 
+# ───────────────────────────────────────────────────────────────────
+# R7RS string-op edge cases (ESH-0066): string-map returns a string and
+# accepts first-class char builtins; string->number honors a radix. The
+# suite runs under BOTH -r (JIT) and AOT and must report zero failures.
+# ───────────────────────────────────────────────────────────────────
+probe string_edge_ops_r7rs 'string-map returns a string; string->number honors radix (-r + AOT)' \
+    'cd "$REPO_ROOT";
+     t="tests/string/string_edge_test.esk";
+     rout=$("$ESHKOL_RUN" -r "$t" 2>&1) || exit 1;
+     printf "%s" "$rout" | grep -qE "^FAIL:|Failed:[[:space:]]+[1-9]" && exit 1;
+     bin="/tmp/icc_string_edge.bin"; rm -f "$bin";
+     "$ESHKOL_RUN" "$t" -o "$bin" >/dev/null 2>&1 || exit 1;
+     aout=$("$bin" 2>&1) || exit 1;
+     printf "%s" "$aout" | grep -qE "^FAIL:|Failed:[[:space:]]+[1-9]" && exit 1;
+     rm -f "$bin";
+     exit 0'
+
 echo
 echo "Trace written: $TRACE_FILE"
 echo "Run: python3 ~/Desktop/infinite_context_coder/scripts/codebase_tool.py \\"
