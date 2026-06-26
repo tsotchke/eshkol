@@ -10035,6 +10035,33 @@ private:
             builder->SetInsertPoint(tco_loop_bb);
         }
 
+        // ASSIGNMENT CONVERSION (ESH-0074): box set!-mutated parameters.
+        // Function parameters arrive as by-value Arguments. A parameter that is
+        // set!-mutated needs a mutable cell (alloca) so that (a) set! has a
+        // storage location to write to, and (b) any closures that capture it
+        // share ONE cell — the existing let-bound-alloca capture machinery
+        // (arena-move + multi-closure sharing) then applies automatically.
+        // This generalizes PR #50 (named-let loopvar) to all captured,
+        // set!-mutated bindings (make-counter, make-account sibling closures).
+        // Skip when TCO already promoted parameters to *_tco allocas (the
+        // self-recursive / named-let path keeps its own loopvar handling).
+        if (!use_tco && op->define_op.parameters && op->define_op.value) {
+            auto box_arg_it = function->arg_begin();
+            for (uint64_t i = 0; i < op->define_op.num_params && box_arg_it != function->arg_end(); ++i, ++box_arg_it) {
+                if (op->define_op.parameters[i].type == ESHKOL_VAR &&
+                    op->define_op.parameters[i].variable.id) {
+                    std::string pname = op->define_op.parameters[i].variable.id;
+                    if (astSetsVar(op->define_op.value, pname)) {
+                        AllocaInst* box = builder->CreateAlloca(tagged_value_type, nullptr, pname);
+                        builder->CreateStore(&(*box_arg_it), box);
+                        symbol_table[pname] = box;
+                        eshkol_debug("Assignment conversion: boxed set!-mutated param %s in %s",
+                                     pname.c_str(), func_name);
+                    }
+                }
+            }
+        }
+
         // RECURSIVE SHADOWING FIX: Register _func key BEFORE generating body
         // This allows recursive calls to shadow builtins (e.g., user's flatten vs tensor flatten)
         // The shadowing check at line 8120-8166 looks for func_name + "_func" in symbol tables
@@ -24237,6 +24264,27 @@ private:
             // Branch from entry to loop body
             builder->CreateBr(tco_loop_bb);
             builder->SetInsertPoint(tco_loop_bb);
+        }
+
+        // ASSIGNMENT CONVERSION (ESH-0074): box set!-mutated lambda parameters.
+        // Same rationale as codegenFunctionDefinition: a lambda parameter that is
+        // set!-mutated needs a mutable cell so set! works and so nested closures
+        // capturing it share ONE cell. Skip when TCO already promoted params to
+        // *_tco allocas (use_binding_tco re-binds params above).
+        if (!use_binding_tco && op->lambda_op.parameters && op->lambda_op.body) {
+            auto box_arg_it = lambda_func->arg_begin();
+            for (uint64_t i = 0; i < op->lambda_op.num_params && box_arg_it != lambda_func->arg_end(); ++i, ++box_arg_it) {
+                if (op->lambda_op.parameters[i].type == ESHKOL_VAR &&
+                    op->lambda_op.parameters[i].variable.id) {
+                    std::string pname = op->lambda_op.parameters[i].variable.id;
+                    if (astSetsVar(op->lambda_op.body, pname)) {
+                        AllocaInst* box = builder->CreateAlloca(tagged_value_type, nullptr, pname);
+                        builder->CreateStore(&(*box_arg_it), box);
+                        symbol_table[pname] = box;
+                        eshkol_debug("Assignment conversion: boxed set!-mutated lambda param %s", pname.c_str());
+                    }
+                }
+            }
         }
 
         // Generate lambda body

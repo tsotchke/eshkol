@@ -1,0 +1,106 @@
+; ================================================================
+; SICP Chapter 3.1.1 — Local State Variables (bank accounts)
+; Exercises the canonical "objects with local state" pattern: sibling
+; closures (withdraw/deposit) sharing a single set!-mutated `balance`.
+; Requires shared-mutable-capture (assignment conversion) — ESH-0074.
+; ================================================================
+
+(require stdlib)
+
+(define pass-count 0)
+(define fail-count 0)
+
+(define (test name expected actual)
+  (if (equal? expected actual)
+      (begin (set! pass-count (+ pass-count 1))
+             (display (string-append "PASS: " name "\n")))
+      (begin (set! fail-count (+ fail-count 1))
+             (display (string-append "FAIL: " name "\n"))
+             (display "  Expected: ") (display expected) (newline)
+             (display "  Actual:   ") (display actual) (newline))))
+
+; ---------------------------------------------------------------
+; make-withdraw (single closure over a set!-mutated parameter)
+; ---------------------------------------------------------------
+(define (make-withdraw balance)
+  (lambda (amount)
+    (if (>= balance amount)
+        (begin (set! balance (- balance amount)) balance)
+        "Insufficient funds")))
+
+(define W1 (make-withdraw 100))
+(test "make-withdraw call 1" 50 (W1 50))
+(test "make-withdraw call 2" 25 (W1 25))
+(test "make-withdraw insufficient" "Insufficient funds" (W1 60))
+
+; ---------------------------------------------------------------
+; make-account (message-passing object: sibling closures share balance)
+; ---------------------------------------------------------------
+(define (make-account balance)
+  (define (withdraw amount)
+    (if (>= balance amount)
+        (begin (set! balance (- balance amount)) balance)
+        "Insufficient funds"))
+  (define (deposit amount)
+    (set! balance (+ balance amount))
+    balance)
+  (define (dispatch m)
+    (cond ((eq? m 'withdraw) withdraw)
+          ((eq? m 'deposit) deposit)
+          (else (error "Unknown request -- MAKE-ACCOUNT" m))))
+  dispatch)
+
+(define acc (make-account 100))
+(test "account-withdraw" 50 ((acc 'withdraw) 50))
+(test "account-deposit"  90 ((acc 'deposit) 40))
+(test "account-withdraw-2" 30 ((acc 'withdraw) 60))
+(test "account-deposit-2" 130 ((acc 'deposit) 100))
+
+; ---------------------------------------------------------------
+; Independent accounts must keep independent state.
+; NOTE: The canonical INTERNAL-DEFINE make-account above currently aliases
+; balance across instances — a SEPARATE pre-existing bug in the letrec
+; local-function codegen (internal-define functions live in @letrecstar_*
+; module globals overwritten per call), NOT the ESH-0074 shared-mutable-
+; capture bug fixed here. Isolation is therefore verified using the explicit
+; let-lambda object form, which ESH-0074 fully supports.
+; ---------------------------------------------------------------
+(define (make-account/lambda balance)
+  (let ((withdraw (lambda (amount)
+                    (if (>= balance amount)
+                        (begin (set! balance (- balance amount)) balance)
+                        "Insufficient funds")))
+        (deposit  (lambda (amount)
+                    (set! balance (+ balance amount))
+                    balance)))
+    (lambda (m)
+      (cond ((eq? m 'withdraw) withdraw)
+            ((eq? m 'deposit) deposit)
+            (else (error "Unknown request -- MAKE-ACCOUNT" m))))))
+
+(define accL1 (make-account/lambda 100))
+(define accL2 (make-account/lambda 100))
+(test "lambda-account L1 withdraw" 60 ((accL1 'withdraw) 40))
+(test "lambda-account L2 independent" 70 ((accL2 'withdraw) 30))
+(test "lambda-account L1 unaffected" 80 ((accL1 'deposit) 20))
+
+; ---------------------------------------------------------------
+; make-accumulator (SICP 3.1.1 ex 3.1)
+; ---------------------------------------------------------------
+(define (make-accumulator total)
+  (lambda (amount)
+    (set! total (+ total amount))
+    total))
+
+(define A (make-accumulator 5))
+(test "accumulator 1" 15 (A 10))
+(test "accumulator 2" 25 (A 10))
+
+; ================================================================
+(newline)
+(display "==== SICP ch3 accounts results ====") (newline)
+(display "Passed: ") (display pass-count) (newline)
+(display "Failed: ") (display fail-count) (newline)
+(if (= fail-count 0)
+    (begin (display "ALL TESTS PASSED") (newline))
+    (begin (display "SOME TESTS FAILED") (newline)))
