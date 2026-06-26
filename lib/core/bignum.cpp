@@ -907,9 +907,12 @@ void eshkol_bignum_pow_tagged(arena_t* arena,
         return;
     }
 
-    /* Check if both operands are exact integers (INT64 or HEAP_PTR bignum) */
+    /* Check if both operands are exact integers (INT64 or genuine bignum).
+     * Use ESHKOL_IS_BIGNUM (subtype-checked) rather than a bare HEAP_PTR test
+     * so a rational base is NOT misread as a bignum — it falls to the inexact
+     * double path instead of producing garbage. */
     bool base_is_int = (base->type == ESHKOL_VALUE_INT64);
-    bool base_is_bignum = (base->type == ESHKOL_VALUE_HEAP_PTR && base->data.ptr_val != 0);
+    bool base_is_bignum = ESHKOL_IS_BIGNUM(*base);
     bool exp_is_int = (exponent->type == ESHKOL_VALUE_INT64);
 
     /* Only use exact path if base is exact integer and exponent is non-negative int */
@@ -937,6 +940,42 @@ void eshkol_bignum_pow_tagged(arena_t* arena,
             result->flags = ESHKOL_VALUE_EXACT_FLAG;
         }
         return;
+    }
+
+    /* R7RS exactness: an exact integer base raised to a NEGATIVE exact integer
+     * exponent yields an EXACT RATIONAL 1/base^|n| (e.g. (expt 2 -2) => 1/4),
+     * NOT an inexact double. Falls through to the inexact double path on
+     * overflow (denominator does not fit int64) — the rational substrate is
+     * currently int64/int64. */
+    if ((base_is_int || base_is_bignum) && exp_is_int && exponent->data.int_val < 0) {
+        /* |exponent|, overflow-safe even for INT64_MIN (unsigned negation) */
+        uint64_t mag = (uint64_t)0 - (uint64_t)exponent->data.int_val;
+
+        eshkol_bignum_t* bn_base = base_is_bignum
+            ? (eshkol_bignum_t*)(void*)base->data.ptr_val
+            : eshkol_bignum_from_int64(arena, base->data.int_val);
+        if (bn_base) {
+            eshkol_bignum_t* p = eshkol_bignum_pow(arena, bn_base, mag);
+            int64_t denom;
+            if (p && eshkol_bignum_fits_int64(p, &denom)) {
+                if (denom == 0) {
+                    /* (expt 0 -n): 1/0 is undefined. */
+                    eshkol_exception_t* exc = eshkol_make_exception(
+                        ESHKOL_EXCEPTION_DIVIDE_BY_ZERO,
+                        "expt: 0 raised to a negative power");
+                    eshkol_raise(exc);
+                    *result = eshkol_make_int64(0, true);
+                    return;
+                }
+                /* eshkol_rational_create normalises the sign and GCD-reduces,
+                 * so 1/(-8) becomes -1/8 and 1/4 stays 1/4. */
+                void* rat = eshkol_rational_create(arena, 1, denom);
+                *result = eshkol_make_ptr((uint64_t)(void*)rat, ESHKOL_VALUE_HEAP_PTR);
+                result->flags = ESHKOL_VALUE_EXACT_FLAG;
+                return;
+            }
+        }
+        /* overflow: fall through to inexact double pow() below */
     }
 
     /* Fallback: convert both to double and use pow() */
