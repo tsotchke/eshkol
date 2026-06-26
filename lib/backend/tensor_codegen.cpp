@@ -144,6 +144,70 @@ void TensorCodegen::attachLoopMetadata(llvm::BranchInst* backEdge,
     backEdge->setMetadata(llvm::LLVMContext::MD_loop, loopMD);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// ESH-0069: Centralized, type-checked tensor-operand unpack.
+//
+// Single choke point that every tensor op routes its primary operand through,
+// replacing the historical `IntToPtr(unpackInt64(v))` that blindly reinterpreted
+// any operand as an eshkol_tensor_t* (segfaulting on a vector/int/string). The
+// actual validation/coercion/error logic lives in the runtime helper
+// `eshkol_tensor_operand_checked`, so there is exactly one source of truth and
+// the per-op codegen stays a single call.
+// ─────────────────────────────────────────────────────────────────────────────
+llvm::Value* TensorCodegen::unpackTensorOperandChecked(llvm::Value* tensor_val,
+                                                       const char* op_name) {
+    auto& b = ctx_.builder();
+
+    // Record the current source location so the runtime error formatter can
+    // prefix the message with "file:line:col:" (matches the arithmetic path).
+    uint32_t line = ctx_.currentSourceLine();
+    if (line != 0) {
+        llvm::Function* set_loc = ctx_.module().getFunction("eshkol_set_error_location");
+        if (!set_loc) {
+            llvm::FunctionType* ft = llvm::FunctionType::get(
+                b.getVoidTy(),
+                {ctx_.ptrType(), ctx_.int32Type(), ctx_.int32Type()},
+                false);
+            set_loc = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+                                             "eshkol_set_error_location", &ctx_.module());
+        }
+        const std::string& file = ctx_.currentSourceFile();
+        llvm::Value* file_str = file.empty()
+            ? static_cast<llvm::Value*>(llvm::ConstantPointerNull::get(ctx_.ptrType()))
+            : static_cast<llvm::Value*>(b.CreateGlobalString(file, "tensor_err_file"));
+        b.CreateCall(set_loc, {
+            file_str,
+            llvm::ConstantInt::get(ctx_.int32Type(), line),
+            llvm::ConstantInt::get(ctx_.int32Type(), ctx_.currentSourceColumn())});
+    }
+
+    // The operand must arrive as a 16-byte tagged value; store it to an alloca
+    // and hand the runtime helper its address (a by-value tagged-value struct
+    // zeroes across the IR→C ABI boundary).
+    if (tensor_val->getType() != ctx_.taggedValueType()) {
+        // A raw (untagged) scalar — e.g. an integer literal operand. Tag it as
+        // an INT64 (matching tensorArithmeticInternal / emitOperandTypeError);
+        // the runtime helper then reports a clean type error rather than
+        // dereferencing the value as a heap pointer. Never pack as a heap ptr:
+        // ESHKOL_GET_HEADER on a small integer would read out of bounds.
+        tensor_val = tagged_.packInt64(tensor_val, true);
+    }
+    llvm::Value* slot = b.CreateAlloca(ctx_.taggedValueType(), nullptr, "tensor_operand_slot");
+    b.CreateStore(tensor_val, slot);
+
+    llvm::Function* fn = ctx_.module().getFunction("eshkol_tensor_operand_checked");
+    if (!fn) {
+        // void* eshkol_tensor_operand_checked(const eshkol_tagged_value_t*, const char*)
+        llvm::FunctionType* ft = llvm::FunctionType::get(
+            ctx_.ptrType(), {ctx_.ptrType(), ctx_.ptrType()}, false);
+        fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+                                    "eshkol_tensor_operand_checked", &ctx_.module());
+    }
+    llvm::Value* name = b.CreateGlobalString(op_name ? op_name : "tensor-op",
+                                             "tensor_op_name");
+    return b.CreateCall(fn, {slot, name}, "tensor_ptr_checked");
+}
+
 // Note: All tensor implementations are complex and depend on:
 // - AST code generation for nested expressions
 // - Autodiff integration (dual numbers, AD nodes)
@@ -329,9 +393,8 @@ llvm::Value* TensorCodegen::tensorGet(const eshkol_operations_t* op) {
 
     const uint64_t num_indices = op->call_op.num_vars - 1;
 
-    // Extract tensor pointer
-    llvm::Value* tensor_ptr_int = tagged_.safeExtractInt64(tensor_val);
-    llvm::Value* tensor_ptr = ctx_.builder().CreateIntToPtr(tensor_ptr_int, ctx_.ptrType());
+    // Extract tensor pointer (type-checked: ESH-0069)
+    llvm::Value* tensor_ptr = unpackTensorOperandChecked(tensor_val, "tensor-get");
 
     // Load tensor metadata
     llvm::StructType* tensor_type = ctx_.tensorType();
@@ -676,11 +739,9 @@ llvm::Value* TensorCodegen::tensorSet(const eshkol_operations_t* op) {
     llvm::Value* new_value = codegenAST(&op->call_op.variables[op->call_op.num_vars - 1]);
     if (!tensor_val || !new_value) return nullptr;
 
-    // Extract the tensor pointer from the tagged value
-    llvm::Value* tensor_ptr_int = tagged_.safeExtractInt64(tensor_val);
-
+    // Extract the tensor pointer from the tagged value (type-checked: ESH-0069)
     llvm::StructType* tensor_type = ctx_.tensorType();
-    llvm::Value* tensor_ptr = ctx_.builder().CreateIntToPtr(tensor_ptr_int, ctx_.ptrType());
+    llvm::Value* tensor_ptr = unpackTensorOperandChecked(tensor_val, "tensor-set!");
 
     // Calculate linear index from multi-dimensional indices
     llvm::Value* linear_index = llvm::ConstantInt::get(ctx_.int64Type(), 0);
@@ -835,7 +896,7 @@ llvm::Value* TensorCodegen::tensorSet(const eshkol_operations_t* op) {
     llvm::Value* val_bits = ctx_.builder().CreateBitCast(val_double, ctx_.int64Type());
     ctx_.builder().CreateStore(val_bits, elem_ptr);
 
-    return tensor_ptr_int; // Return the tensor
+    return tagged_.packHeapPtr(tensor_ptr); // Return the (validated) tensor
 }
 
 // Shared codegen for tensor-rect-fill! / tensor-disk-fill!. Both
@@ -1116,9 +1177,8 @@ llvm::Value* TensorCodegen::tensorToVector(const eshkol_operations_t* op) {
     llvm::Value* arena_ptr = builder.CreateLoad(
         llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
 
-    // Unpack tensor
-    llvm::Value* tensor_ptr_int = tagged_.unpackInt64(tensor_val);
-    llvm::Value* tensor_ptr = builder.CreateIntToPtr(tensor_ptr_int, ctx_.ptrType());
+    // Unpack tensor (type-checked: ESH-0069)
+    llvm::Value* tensor_ptr = unpackTensorOperandChecked(tensor_val, "tensor->vector");
 
     // Get tensor fields
     llvm::Type* tensor_type = ctx_.tensorType();
@@ -1193,8 +1253,7 @@ llvm::Value* TensorCodegen::tensorVar(const eshkol_operations_t* op) {
     llvm::Value* tensor_val = codegenAST(&op->call_op.variables[0]);
     auto& builder = ctx_.builder();
 
-    llvm::Value* tensor_ptr_int = tagged_.unpackInt64(tensor_val);
-    llvm::Value* tensor_ptr = builder.CreateIntToPtr(tensor_ptr_int, ctx_.ptrType());
+    llvm::Value* tensor_ptr = unpackTensorOperandChecked(tensor_val, "tensor-var");
     llvm::Type* tensor_type = ctx_.tensorType();
 
     llvm::Value* elems_field = builder.CreateStructGEP(tensor_type, tensor_ptr, 2);

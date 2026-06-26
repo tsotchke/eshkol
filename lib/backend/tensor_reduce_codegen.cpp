@@ -325,6 +325,19 @@ llvm::Value* TensorCodegen::tensorArithmeticInternal(llvm::Value* arg1, llvm::Va
     // === TENSOR PATH ===
     ctx_.builder().SetInsertPoint(tensor_path);
 
+    // ESH-0069: validate/coerce both operands ONCE here so every downstream
+    // path (XLA, SIMD, scalar) receives a genuine tensor. A non-tensor,
+    // non-numeric-vector operand raises a catchable type error instead of
+    // segfaulting when rawTensorArithmetic* reinterprets it as a struct; a
+    // homogeneous numeric vector is coerced to a 1-D tensor.
+    {
+        std::string arith_name = "tensor-" + operation;
+        llvm::Value* a1_ptr = unpackTensorOperandChecked(arg1, arith_name.c_str());
+        llvm::Value* a2_ptr = unpackTensorOperandChecked(arg2, arith_name.c_str());
+        arg1 = tagged_.packHeapPtr(a1_ptr);
+        arg2 = tagged_.packHeapPtr(a2_ptr);
+    }
+
 #ifdef ESHKOL_XLA_ENABLED
     // ===== XLA DISPATCH FOR LARGE TENSORS =====
     // Dispatch hierarchy: XLA (≥100K elements) → SIMD → scalar
@@ -481,10 +494,8 @@ llvm::Value* TensorCodegen::tensorDot(const eshkol_operations_t* op) {
 
     // === TENSOR PATH ===
     ctx_.builder().SetInsertPoint(tensor_block);
-    llvm::Value* tensor_a_ptr_int = tagged_.unpackInt64(val_a);
-    llvm::Value* tensor_a_ptr = ctx_.builder().CreateIntToPtr(tensor_a_ptr_int, ctx_.ptrType());
-    llvm::Value* tensor_b_ptr_int = tagged_.unpackInt64(val_b);
-    llvm::Value* tensor_b_ptr = ctx_.builder().CreateIntToPtr(tensor_b_ptr_int, ctx_.ptrType());
+    llvm::Value* tensor_a_ptr = unpackTensorOperandChecked(val_a, "tensor-dot");
+    llvm::Value* tensor_b_ptr = unpackTensorOperandChecked(val_b, "tensor-dot");
 
     llvm::StructType* tensor_type = ctx_.tensorType();
 
@@ -1068,9 +1079,6 @@ llvm::Value* TensorCodegen::tensorApply(const eshkol_operations_t* op) {
     llvm::Value* tensor_val = codegenAST(&op->call_op.variables[0]);
     if (!tensor_val) return nullptr;
 
-    // Extract the tensor pointer from the tagged value
-    llvm::Value* tensor_ptr_int = tagged_.safeExtractInt64(tensor_val);
-
     // Get function to apply — supports named arithmetic/math functions
     eshkol_ast_t* func_ast = &op->call_op.variables[1];
     if (func_ast->type != ESHKOL_VAR) {
@@ -1081,7 +1089,7 @@ llvm::Value* TensorCodegen::tensorApply(const eshkol_operations_t* op) {
     std::string func_name = func_ast->variable.id;
 
     llvm::StructType* tensor_type = ctx_.tensorType();
-    llvm::Value* tensor_ptr = ctx_.builder().CreateIntToPtr(tensor_ptr_int, ctx_.ptrType());
+    llvm::Value* tensor_ptr = unpackTensorOperandChecked(tensor_val, "tensor-apply");
 
     // Create result tensor with same dimensions using arena
     llvm::Value* apply_arena_ptr = ctx_.builder().CreateLoad(
@@ -1281,8 +1289,7 @@ llvm::Value* TensorCodegen::tensorReduceAll(const eshkol_operations_t* op) {
 
     // === TENSOR PATH ===
     ctx_.builder().SetInsertPoint(tensor_block);
-    llvm::Value* tensor_ptr_int = tagged_.unpackInt64(src_val);
-    llvm::Value* tensor_ptr = ctx_.builder().CreateIntToPtr(tensor_ptr_int, ctx_.ptrType());
+    llvm::Value* tensor_ptr = unpackTensorOperandChecked(src_val, "tensor-reduce-all");
 
     llvm::StructType* tensor_type = ctx_.tensorType();
     llvm::Value* elements_field_ptr = ctx_.builder().CreateStructGEP(tensor_type, tensor_ptr, 2);
@@ -1438,9 +1445,8 @@ llvm::Value* TensorCodegen::tensorReduceWithDim(const eshkol_operations_t* op) {
         op_code = 0;
     }
 
-    // Extract tensor pointer
-    llvm::Value* tensor_ptr_int = tagged_.safeExtractInt64(tensor_val);
-    llvm::Value* tensor_ptr = ctx_.builder().CreateIntToPtr(tensor_ptr_int, ctx_.ptrType());
+    // Extract tensor pointer (type-checked: ESH-0069)
+    llvm::Value* tensor_ptr = unpackTensorOperandChecked(tensor_val, "tensor-reduce");
 
     llvm::StructType* tensor_type = ctx_.tensorType();
 
@@ -1488,8 +1494,7 @@ llvm::Value* TensorCodegen::emitAxisReduce(llvm::Value* tensor_val, llvm::Value*
     // Returns a tagged tensor pointer (reduced along the given axis).
     auto& builder = ctx_.builder();
 
-    llvm::Value* tensor_ptr_int = tagged_.safeExtractInt64(tensor_val);
-    llvm::Value* tensor_ptr = builder.CreateIntToPtr(tensor_ptr_int, ctx_.ptrType());
+    llvm::Value* tensor_ptr = unpackTensorOperandChecked(tensor_val, "tensor-reduce-axis");
     llvm::StructType* tensor_type = ctx_.tensorType();
 
     // Extract tensor fields
@@ -1776,8 +1781,7 @@ llvm::Value* TensorCodegen::tensorSum(const eshkol_operations_t* op) {
 
     // === TENSOR PATH ===
     ctx_.builder().SetInsertPoint(tensor_block);
-    llvm::Value* src_ptr_int = tagged_.unpackInt64(src_val);
-    llvm::Value* src_ptr = ctx_.builder().CreateIntToPtr(src_ptr_int, ctx_.ptrType());
+    llvm::Value* src_ptr = unpackTensorOperandChecked(src_val, "tensor-sum");
 
     llvm::Value* src_elements_field_ptr = ctx_.builder().CreateStructGEP(tensor_type, src_ptr, 2);
     llvm::Value* src_elements_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), src_elements_field_ptr);
@@ -2055,8 +2059,7 @@ llvm::Value* TensorCodegen::tensorMean(const eshkol_operations_t* op) {
 
     // === TENSOR PATH ===
     ctx_.builder().SetInsertPoint(tensor_block);
-    llvm::Value* src_ptr_int = tagged_.unpackInt64(src_val);
-    llvm::Value* src_ptr = ctx_.builder().CreateIntToPtr(src_ptr_int, ctx_.ptrType());
+    llvm::Value* src_ptr = unpackTensorOperandChecked(src_val, "tensor-mean");
 
     llvm::Value* src_elements_field_ptr = ctx_.builder().CreateStructGEP(tensor_type, src_ptr, 2);
     llvm::Value* src_elements_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), src_elements_field_ptr);
