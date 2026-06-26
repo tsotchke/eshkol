@@ -310,6 +310,7 @@ extern thread_local uint64_t __region_stack_depth;
 #define ESHKOL_ARENA_MAX_TAPE_DEPTH 32
 extern thread_local ad_tape_t* __ad_tape_stack[ESHKOL_ARENA_MAX_TAPE_DEPTH];
 extern thread_local uint64_t __ad_tape_depth;
+extern thread_local uint64_t __ad_pert_level;  // ESH-0070 forward-mode perturbation level
 extern thread_local void* __outer_ad_node_storage;
 extern thread_local void* __outer_ad_node_to_inner;
 extern thread_local void* __outer_grad_accumulator;
