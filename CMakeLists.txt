@@ -1469,6 +1469,9 @@ set(ESHKOL_BACKEND_RUNTIME_SRC
   lib/backend/cpu_features.cpp
   lib/backend/parallel_codegen.cpp
   lib/backend/tensor_backward.cpp
+  # Shared conv2d forward kernel (eshkol_rt_conv2d) the generated code calls;
+  # must live in the slim runtime archive so AOT user binaries resolve it.
+  lib/backend/tensor_conv_kernel.cpp
 )
 
 set(ESHKOL_RUNTIME_SUPPORT_SRC
