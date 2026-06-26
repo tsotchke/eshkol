@@ -18442,8 +18442,12 @@ private:
             Value* num = builder->CreateFSub(num_y, num_x, "atan2_num");
             Value* tangent_d = builder->CreateFDiv(num, denom, "atan2_tangent");
             Value* result_dual = UndefValue::get(ctx_->dualNumberType());
+            Value* atan2_dzero = ConstantFP::get(double_type, 0.0);
             result_dual = builder->CreateInsertValue(result_dual, primal_d, {0});
             result_dual = builder->CreateInsertValue(result_dual, tangent_d, {1});
+            // 2nd-order dual: zero e2 / e1e2 slots (avoid poison).
+            result_dual = builder->CreateInsertValue(result_dual, atan2_dzero, {2});
+            result_dual = builder->CreateInsertValue(result_dual, atan2_dzero, {3});
             Value* dual_tagged = autodiff_->packDualToTagged(result_dual);
             BasicBlock* dual_exit = builder->GetInsertBlock();
             builder->CreateBr(merge_bb);
@@ -18518,8 +18522,12 @@ private:
         Value* l_dual = arith_->convertToDual(arg1, arg1_is_dual, l_dbl_for_dual);
         Value* l_tangent = builder->CreateExtractValue(l_dual, {1}, "mod_l_tangent");
         Value* result_dual = UndefValue::get(ctx_->dualNumberType());
+        Value* mod_dzero = ConstantFP::get(double_type, 0.0);
         result_dual = builder->CreateInsertValue(result_dual, mod_primal, {0});
         result_dual = builder->CreateInsertValue(result_dual, l_tangent, {1});
+        // 2nd-order dual: zero e2 / e1e2 slots (avoid poison).
+        result_dual = builder->CreateInsertValue(result_dual, mod_dzero, {2});
+        result_dual = builder->CreateInsertValue(result_dual, mod_dzero, {3});
         Value* mod_dual_tagged = autodiff_->packDualToTagged(result_dual);
         BasicBlock* dual_exit_mod = builder->GetInsertBlock();
         builder->CreateBr(mod_outer_merge);
@@ -18765,6 +18773,9 @@ private:
             Value* dual_struct = UndefValue::get(ctx_->dualNumberType());
             dual_struct = builder->CreateInsertValue(dual_struct, dual_result_dbl, {0});
             dual_struct = builder->CreateInsertValue(dual_struct, ConstantFP::get(double_type, 0.0), {1});
+            // 2nd-order dual: zero e2 / e1e2 slots (avoid poison).
+            dual_struct = builder->CreateInsertValue(dual_struct, ConstantFP::get(double_type, 0.0), {2});
+            dual_struct = builder->CreateInsertValue(dual_struct, ConstantFP::get(double_type, 0.0), {3});
             Value* dual_tagged = autodiff_->packDualToTagged(dual_struct);
             BasicBlock* dual_gcd_exit = builder->GetInsertBlock();
             builder->CreateBr(gcd_outer_merge);
@@ -18901,6 +18912,9 @@ private:
             Value* dual_struct = UndefValue::get(ctx_->dualNumberType());
             dual_struct = builder->CreateInsertValue(dual_struct, dual_result_dbl, {0});
             dual_struct = builder->CreateInsertValue(dual_struct, ConstantFP::get(double_type, 0.0), {1});
+            // 2nd-order dual: zero e2 / e1e2 slots (avoid poison).
+            dual_struct = builder->CreateInsertValue(dual_struct, ConstantFP::get(double_type, 0.0), {2});
+            dual_struct = builder->CreateInsertValue(dual_struct, ConstantFP::get(double_type, 0.0), {3});
             Value* dual_tagged = autodiff_->packDualToTagged(dual_struct);
             BasicBlock* dual_lcm_exit = builder->GetInsertBlock();
             builder->CreateBr(lcm_outer_merge);

@@ -90,6 +90,15 @@ public:
     // stays in the current block.
     llvm::Value* safeUnpackDualFromTagged(llvm::Value* tagged);
 
+    // Nested forward-mode AD (perturbation tagging by nesting depth).
+    // seedDerivativeInput: build the dual argument for a `derivative` at the
+    //   given nesting depth, preserving any perturbation the point already
+    //   carries (so an inner derivative does not strip the outer one).
+    // extractDerivativeResult: pull the derivative w.r.t. this level's slot —
+    //   a scalar at depth 0, a dual slice when nested.
+    llvm::Value* seedDerivativeInput(llvm::Value* point_tagged, int depth);
+    llvm::Value* extractDerivativeResult(llvm::Value* result_tagged, int depth);
+
     /**
      * Add two dual numbers: (a + b, a' + b')
      * @param left Left dual number
