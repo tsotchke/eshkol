@@ -330,6 +330,7 @@ class EshkolRuntime {
                 eshkol_tensor_result_dtype_binary: (r) => r,
                 eshkol_tensor_result_dtype_unary: (r) => r,
                 eshkol_type_error_with_operand: () => { throw new Error('Eshkol type error (WASM stub)'); },
+                eshkol_tensor_operand_checked: () => 0,
                 eshkol_set_error_location: () => {},
                 eshkol_lambda_registry_init: () => {},
                 eshkol_lambda_registry_add: () => {},
