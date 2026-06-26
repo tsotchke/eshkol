@@ -28508,6 +28508,27 @@ private:
         // Call region_push to make this the current region
         builder->CreateCall(region_push_fn, {region});
 
+        // ESH-0039: Route ALL body allocations into the region's arena.
+        //
+        // Every allocating codegen site loads the live arena pointer from the
+        // single currentArenaPtr() slot (the __global_arena GlobalVariable). The
+        // runtime's region machinery (region_create / region_pop ->
+        // region_destroy) is correct, but codegen never pointed allocations at
+        // the region arena, so body cons / make-vector / etc. landed in the
+        // global arena and region_pop freed an empty region -> unbounded RSS
+        // growth (Noesis OOM, exit 137).
+        //
+        // Fix: temporarily overwrite the current-arena slot with region->arena
+        // for the duration of the body, then restore the previous value after
+        // region_pop. region->arena is the FIRST field of eshkol_region_t, so it
+        // lives at offset 0 of the region pointer returned by region_create.
+        GlobalVariable* arena_slot = ctx_ ? ctx_->currentArenaPtr() : global_arena;
+        Value* saved_arena = builder->CreateLoad(
+            PointerType::getUnqual(*context), arena_slot, "saved_arena_before_region");
+        Value* region_arena = builder->CreateLoad(
+            PointerType::getUnqual(*context), region, "region_arena");
+        builder->CreateStore(region_arena, arena_slot);
+
         // Evaluate body expressions - last one is the result
         Value* result = nullptr;
         for (uint64_t i = 0; i < op->with_region_op.num_body_exprs; i++) {
@@ -28533,6 +28554,12 @@ private:
 
         // Call region_pop (this destroys the region and frees all its memory)
         builder->CreateCall(region_pop_fn, {});
+
+        // ESH-0039: Restore the previous arena slot now that the region is gone.
+        // Allocations after the region must NOT target the (now-freed) region
+        // arena. region_escape above already copied the result into the parent /
+        // global arena (region_escape is slot-independent), so it survives.
+        builder->CreateStore(saved_arena, arena_slot);
 
         if (!result) {
             result = packNullToTaggedValue();
