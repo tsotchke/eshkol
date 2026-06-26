@@ -1,0 +1,23 @@
+;;; core/alist.esk
+;;; Association-list helpers (structural, equal?-keyed via assoc).
+;;; Fills the eshkol-agent stdlib gap (alist-ref / alist-ref-or / alist-set
+;;; were redefined locally across several modules — see ESH-0063).
+
+(provide alist-ref alist-ref-or alist-set)
+
+;;; alist-ref: value for key, or raise if absent.
+(define (alist-ref alist key)
+  (let ((p (assoc key alist)))
+    (if p (cdr p) (error "alist-ref: key not found" key))))
+
+;;; alist-ref-or: value for key, or default if absent.
+(define (alist-ref-or alist key default)
+  (let ((p (assoc key alist)))
+    (if p (cdr p) default)))
+
+;;; alist-set: functional update — replace the binding for key if present,
+;;; otherwise append it. Returns a new alist; the input is not mutated.
+(define (alist-set alist key value)
+  (cond ((null? alist) (list (cons key value)))
+        ((equal? (car (car alist)) key) (cons (cons key value) (cdr alist)))
+        (else (cons (car alist) (alist-set (cdr alist) key value)))))
