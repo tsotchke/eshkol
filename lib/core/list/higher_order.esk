@@ -1,7 +1,17 @@
 ;;; core/list/higher_order.esk
 ;;; Higher-order list functions
 
-(provide map1 map2 map3 fold fold-left foldl fold-right foldr for-each any every)
+(provide map1 map2 map3 fold fold-left foldl fold-right foldr for-each any every filter-map)
+
+;;; filter-map: Apply fn to each element, keep the non-#f results (SRFI-1).
+;;; (filter-map (lambda (x) (if (odd? x) (* x x) #f)) '(1 2 3)) => (1 9)
+(define (filter-map fn lst)
+  (if (null? lst)
+      '()
+      (let ((v (fn (car lst))))
+        (if v
+            (cons v (filter-map fn (cdr lst)))
+            (filter-map fn (cdr lst))))))
 
 ;;; map1: Apply proc to each element of a single list
 ;;; (map1 double '(1 2 3)) => (2 4 6)
