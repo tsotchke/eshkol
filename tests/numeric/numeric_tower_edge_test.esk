@@ -1,0 +1,148 @@
+; Numeric-tower R7RS conformance edge cases (ESH-0065)
+;
+; Covers the four root gaps fixed in this change plus regression guards for
+; the numeric-tower behaviour that was already correct:
+;   1. (sqrt -4) / (sqrt -1) promote a negative EXACT real to the complex
+;      domain instead of returning NaN (R7RS 6.2.6).
+;   2. max/min apply inexactness CONTAGION: any inexact argument makes the
+;      result inexact.
+;   3. exact base ^ negative exact-integer exponent yields an exact rational.
+;   4. number->string / display emit +inf.0 / -inf.0 / +nan.0.
+
+(require stdlib)
+
+(display "TEST: Numeric tower R7RS edge cases") (newline)
+
+; ─── 1. sqrt of a negative EXACT real promotes to complex ──────────────────
+; (sqrt -4) => +2.0i : real part 0, imaginary part 2.0
+(display (if (= (real-part (sqrt -4)) 0.0) "PASS" "FAIL"))
+(display ": (sqrt -4) real-part is 0.0") (newline)
+(display (if (= (imag-part (sqrt -4)) 2.0) "PASS" "FAIL"))
+(display ": (sqrt -4) imag-part is 2.0 (complex +2.0i, not NaN)") (newline)
+(display (if (not (nan? (imag-part (sqrt -4)))) "PASS" "FAIL"))
+(display ": (sqrt -4) is not NaN") (newline)
+
+; (sqrt -1) => +i : imaginary part 1.0
+(display (if (= (imag-part (sqrt -1)) 1.0) "PASS" "FAIL"))
+(display ": (sqrt -1) imag-part is 1.0 (complex +i)") (newline)
+(display (if (= (real-part (sqrt -1)) 0.0) "PASS" "FAIL"))
+(display ": (sqrt -1) real-part is 0.0") (newline)
+
+; (sqrt -9) => +3.0i
+(display (if (= (imag-part (sqrt -9)) 3.0) "PASS" "FAIL"))
+(display ": (sqrt -9) imag-part is 3.0") (newline)
+
+; Positive sqrt is unaffected (stays a real)
+(display (if (= (sqrt 16) 4.0) "PASS" "FAIL"))
+(display ": (sqrt 16) = 4.0 (real path intact)") (newline)
+
+; log of a negative EXACT real promotes to complex: log(-1) = 0 + pi i
+(display (if (< (abs (- (imag-part (log -1)) 3.141592653589793)) 1e-12) "PASS" "FAIL"))
+(display ": (log -1) imag-part is pi (complex)") (newline)
+
+; ─── 2. max/min inexactness contagion ──────────────────────────────────────
+; (max 1 2.0) => 2.0 (inexact, because one argument is inexact)
+(display (if (= (max 1 2.0) 2.0) "PASS" "FAIL"))
+(display ": (max 1 2.0) = 2.0") (newline)
+(display (if (inexact? (max 1 2.0)) "PASS" "FAIL"))
+(display ": (max 1 2.0) is inexact (contagion)") (newline)
+
+; (min 1.0 2) => 1.0 (inexact)
+(display (if (= (min 1.0 2) 1.0) "PASS" "FAIL"))
+(display ": (min 1.0 2) = 1.0") (newline)
+(display (if (inexact? (min 1.0 2)) "PASS" "FAIL"))
+(display ": (min 1.0 2) is inexact (contagion)") (newline)
+
+; Contagion also fires when the inexact arg is NOT the one selected.
+(display (if (inexact? (max 5 1.0)) "PASS" "FAIL"))
+(display ": (max 5 1.0) is inexact even though 5 is selected") (newline)
+(display (if (inexact? (min 0.0 7)) "PASS" "FAIL"))
+(display ": (min 0.0 7) is inexact even though 0.0 is selected") (newline)
+
+; All-exact stays exact.
+(display (if (exact? (max 3 5)) "PASS" "FAIL"))
+(display ": (max 3 5) is exact (no inexact args)") (newline)
+(display (if (exact? (min 3 5)) "PASS" "FAIL"))
+(display ": (min 3 5) is exact (no inexact args)") (newline)
+
+; ─── 3. exact base ^ negative exact integer = exact rational ───────────────
+; (expt 2 -2) => 1/4 (exact)
+(display (if (= (expt 2 -2) 1/4) "PASS" "FAIL"))
+(display ": (expt 2 -2) = 1/4") (newline)
+(display (if (exact? (expt 2 -2)) "PASS" "FAIL"))
+(display ": (expt 2 -2) is exact") (newline)
+(display (if (rational? (expt 2 -2)) "PASS" "FAIL"))
+(display ": (expt 2 -2) is rational") (newline)
+
+; (expt 3 -2) => 1/9 ; (expt 2 -3) => 1/8
+(display (if (= (expt 3 -2) 1/9) "PASS" "FAIL"))
+(display ": (expt 3 -2) = 1/9") (newline)
+(display (if (= (expt 2 -3) 1/8) "PASS" "FAIL"))
+(display ": (expt 2 -3) = 1/8") (newline)
+
+; Negative base sign discipline: (expt -2 -2) = 1/4 ; (expt -2 -3) = -1/8
+(display (if (= (expt -2 -2) 1/4) "PASS" "FAIL"))
+(display ": (expt -2 -2) = 1/4") (newline)
+(display (if (= (expt -2 -3) -1/8) "PASS" "FAIL"))
+(display ": (expt -2 -3) = -1/8") (newline)
+
+; Non-negative exact expt still exact integer (regression guard).
+(display (if (= (expt 2 10) 1024) "PASS" "FAIL"))
+(display ": (expt 2 10) = 1024 (exact)") (newline)
+(display (if (exact? (expt 2 10)) "PASS" "FAIL"))
+(display ": (expt 2 10) is exact") (newline)
+
+; ─── 4. number->string / display of inf / -inf / nan ───────────────────────
+(display (if (string=? (number->string (/ 1.0 0.0)) "+inf.0") "PASS" "FAIL"))
+(display ": (number->string (/ 1.0 0.0)) = \"+inf.0\"") (newline)
+(display (if (string=? (number->string (/ -1.0 0.0)) "-inf.0") "PASS" "FAIL"))
+(display ": (number->string (/ -1.0 0.0)) = \"-inf.0\"") (newline)
+(display (if (string=? (number->string +nan.0) "+nan.0") "PASS" "FAIL"))
+(display ": (number->string +nan.0) = \"+nan.0\"") (newline)
+(display (if (string=? (number->string +inf.0) "+inf.0") "PASS" "FAIL"))
+(display ": (number->string +inf.0) = \"+inf.0\"") (newline)
+; finite doubles keep their ordinary representation (no regression)
+(display (if (string=? (number->string 3.5) "3.5") "PASS" "FAIL"))
+(display ": (number->string 3.5) = \"3.5\" (finite unchanged)") (newline)
+
+; Visible display of an infinity (eyeball line; should read +inf.0)
+(display "display of (/ 1.0 0.0): ") (display (/ 1.0 0.0)) (newline)
+
+; ─── Regression guards: already-correct numeric-tower behaviour ────────────
+; int64 -> bignum overflow promotion
+(display (if (= (expt 2 64) 18446744073709551616) "PASS" "FAIL"))
+(display ": (expt 2 64) bignum overflow exact") (newline)
+(display (if (> (expt 2 100) 0) "PASS" "FAIL"))
+(display ": (expt 2 100) positive bignum") (newline)
+
+; banker's rounding (round half to even)
+(display (if (= (round 2.5) 2.0) "PASS" "FAIL"))
+(display ": (round 2.5) = 2.0 (round half to even)") (newline)
+(display (if (= (round 3.5) 4.0) "PASS" "FAIL"))
+(display ": (round 3.5) = 4.0 (round half to even)") (newline)
+(display (if (= (round 0.5) 0.0) "PASS" "FAIL"))
+(display ": (round 0.5) = 0.0 (round half to even)") (newline)
+
+; rational reduction
+(display (if (= 2/4 1/2) "PASS" "FAIL"))
+(display ": 2/4 reduces to 1/2") (newline)
+(display (if (= (numerator 6/9) 2) "PASS" "FAIL"))
+(display ": (numerator 6/9) = 2 (reduced)") (newline)
+(display (if (= (denominator 6/9) 3) "PASS" "FAIL"))
+(display ": (denominator 6/9) = 3 (reduced)") (newline)
+
+; modulo / remainder sign conventions
+(display (if (= (modulo -7 3) 2) "PASS" "FAIL"))
+(display ": (modulo -7 3) = 2") (newline)
+(display (if (= (remainder -7 3) -1) "PASS" "FAIL"))
+(display ": (remainder -7 3) = -1") (newline)
+(display (if (= (modulo 7 -3) -2) "PASS" "FAIL"))
+(display ": (modulo 7 -3) = -2") (newline)
+
+; bignum bitwise
+(display (if (= (bitwise-and 12 10) 8) "PASS" "FAIL"))
+(display ": (bitwise-and 12 10) = 8") (newline)
+(display (if (= (bitwise-or 12 10) 14) "PASS" "FAIL"))
+(display ": (bitwise-or 12 10) = 14") (newline)
+
+(display "DONE: numeric tower edge cases") (newline)

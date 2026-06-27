@@ -319,7 +319,7 @@ echo ""
 # Test: Health Check
 printf "Testing %-45s " "health endpoint"
 HEALTH=$(http_get "http://localhost:$PORT/health" 2>/dev/null || echo "")
-if echo "$HEALTH" | grep -q '"status":"ok"'; then
+if grep -q '"status":"ok"' <<< "$HEALTH"; then
     log_pass "health check"
 else
     log_fail "health check: $HEALTH"
@@ -329,7 +329,7 @@ fi
 printf "Testing %-45s " "invalid Content-Length handling"
 RAW_REQUEST=$'POST /compile HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: abc\r\n\r\n{"code":"(define x 1)"}'
 RESULT=$(http_raw_request "127.0.0.1" "$PORT" "$RAW_REQUEST" 2>/dev/null || echo "")
-if echo "$RESULT" | grep -q "400 Bad Request" && kill -0 "$SERVER_PID" 2>/dev/null; then
+if grep -q "400 Bad Request" <<< "$RESULT" && kill -0 "$SERVER_PID" 2>/dev/null; then
     log_pass "invalid Content-Length"
 else
     log_fail "invalid Content-Length: $RESULT"
@@ -339,7 +339,7 @@ fi
 printf "Testing %-45s " "compile simple function"
 RESULT=$(http_post_json "http://localhost:$PORT/compile" \
     '{"code":"(define (square x) (* x x))","session_id":"test1"}' 2>/dev/null || echo "")
-if echo "$RESULT" | grep -q '"success":true'; then
+if grep -q '"success":true' <<< "$RESULT"; then
     log_pass "simple compile"
 else
     log_fail "simple compile: $RESULT"
@@ -349,7 +349,7 @@ fi
 printf "Testing %-45s " "compile with web externals"
 RESULT=$(http_post_json "http://localhost:$PORT/compile" \
     '{"code":"(extern i32 web-get-body :real web_get_body)\n(define (test) (web-get-body))","session_id":"test2"}' 2>/dev/null || echo "")
-if echo "$RESULT" | grep -q '"success":true'; then
+if grep -q '"success":true' <<< "$RESULT"; then
     log_pass "web externals"
 else
     log_fail "web externals: $RESULT"
@@ -359,7 +359,7 @@ fi
 printf "Testing %-45s " "compile math functions"
 RESULT=$(http_post_json "http://localhost:$PORT/compile" \
     '{"code":"(define (circle-area r) (* 3.14159 (* r r)))","session_id":"test3"}' 2>/dev/null || echo "")
-if echo "$RESULT" | grep -q '"success":true'; then
+if grep -q '"success":true' <<< "$RESULT"; then
     log_pass "math functions"
 else
     log_fail "math functions: $RESULT"
@@ -369,7 +369,7 @@ fi
 printf "Testing %-45s " "error handling"
 RESULT=$(http_post_json "http://localhost:$PORT/compile" \
     '{"code":"(define incomplete","session_id":"test4"}' 2>/dev/null || echo "")
-if echo "$RESULT" | grep -q '"success":false'; then
+if grep -q '"success":false' <<< "$RESULT"; then
     log_pass "error handling"
 else
     log_fail "expected error for invalid code"
@@ -378,7 +378,7 @@ fi
 # Test: Static file serving - index.html
 printf "Testing %-45s " "static: index.html"
 RESULT=$(http_get "http://localhost:$PORT/" 2>/dev/null || echo "")
-if echo "$RESULT" | grep -q "Eshkol REPL"; then
+if grep -q "Eshkol REPL" <<< "$RESULT"; then
     log_pass "index.html"
 else
     log_fail "index.html not served"
@@ -387,7 +387,7 @@ fi
 # Test: Static file serving - style.css
 printf "Testing %-45s " "static: style.css"
 RESULT=$(http_get "http://localhost:$PORT/style.css" 2>/dev/null || echo "")
-if echo "$RESULT" | grep -q "Eshkol REPL Styles"; then
+if grep -q "Eshkol REPL Styles" <<< "$RESULT"; then
     log_pass "style.css"
 else
     log_fail "style.css not served"
@@ -396,7 +396,7 @@ fi
 # Test: Static file serving - eshkol-repl.js
 printf "Testing %-45s " "static: eshkol-repl.js"
 RESULT=$(http_get "http://localhost:$PORT/eshkol-repl.js" 2>/dev/null || echo "")
-if echo "$RESULT" | grep -q "class EshkolRepl"; then
+if grep -q "class EshkolRepl" <<< "$RESULT"; then
     log_pass "eshkol-repl.js"
 else
     log_fail "eshkol-repl.js not served"
@@ -406,7 +406,7 @@ fi
 printf "Testing %-45s " "WASM binary response"
 RESULT=$(http_post_json "http://localhost:$PORT/compile" \
     '{"code":"(define x 42)","session_id":"test5"}' 2>/dev/null || echo "")
-if echo "$RESULT" | grep -q '"wasm":"AGFzbQ'; then
+if grep -q '"wasm":"AGFzbQ' <<< "$RESULT"; then
     log_pass "WASM binary (base64)"
 else
     log_fail "no valid WASM in response"
@@ -416,7 +416,7 @@ fi
 printf "Testing %-45s " "multiple definitions"
 RESULT=$(http_post_json "http://localhost:$PORT/compile" \
     '{"code":"(define a 1)\n(define b 2)\n(define (add x y) (+ x y))","session_id":"test6"}' 2>/dev/null || echo "")
-if echo "$RESULT" | grep -q '"success":true'; then
+if grep -q '"success":true' <<< "$RESULT"; then
     log_pass "multiple definitions"
 else
     log_fail "multiple definitions: $RESULT"
@@ -425,7 +425,7 @@ fi
 # Test: 404 handling
 printf "Testing %-45s " "404 handling"
 RESULT=$(http_get "http://localhost:$PORT/nonexistent" 2>/dev/null || echo "")
-if echo "$RESULT" | grep -qi "not found\|404"; then
+if grep -qi "not found\|404" <<< "$RESULT"; then
     log_pass "404 handling"
 else
     log_fail "404 not handled correctly"
@@ -435,7 +435,7 @@ fi
 printf "Testing %-45s " "session ID in response"
 RESULT=$(http_post_json "http://localhost:$PORT/compile" \
     '{"code":"(define y 0)","session_id":"mysession"}' 2>/dev/null || echo "")
-if echo "$RESULT" | grep -q '"session_id":"mysession"'; then
+if grep -q '"session_id":"mysession"' <<< "$RESULT"; then
     log_pass "session ID"
 else
     log_fail "session ID not returned"

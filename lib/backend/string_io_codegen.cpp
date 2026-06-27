@@ -762,6 +762,19 @@ llvm::Value* StringIOCodegen::numberToString(const eshkol_operations_t* op) {
     // Get snprintf function
     llvm::Function* snprintf_func = ctx_.funcs().getSnprintf();
 
+    // R7RS flonum formatter: int eshkol_format_double(char* buf, size_t n,
+    // double v). Emits +inf.0 / -inf.0 / +nan.0 for non-finite flonums and
+    // "%g" otherwise — the single source of truth shared with display/write.
+    llvm::Module* n2s_mod = ctx_.builder().GetInsertBlock()->getParent()->getParent();
+    llvm::Function* format_double_func = n2s_mod->getFunction("eshkol_format_double");
+    if (!format_double_func) {
+        llvm::FunctionType* fd_ft = llvm::FunctionType::get(
+            llvm::Type::getInt32Ty(ctx_.context()),
+            {ctx_.ptrType(), ctx_.sizeType(), ctx_.doubleType()}, false);
+        format_double_func = llvm::Function::Create(fd_ft,
+            llvm::Function::ExternalLinkage, "eshkol_format_double", n2s_mod);
+    }
+
     llvm::Value* raw_val = tv->llvm_value;
 
     // For tagged values, we need runtime type checking since the value
@@ -828,9 +841,8 @@ llvm::Value* StringIOCodegen::numberToString(const eshkol_operations_t* op) {
         // Format as double
         ctx_.builder().SetInsertPoint(double_block);
         llvm::Value* double_val = ctx_.builder().CreateBitCast(data_i64, ctx_.doubleType());
-        llvm::Value* fmt_double = createString("%g");
         llvm::Value* dbl_written = ctx_.builder().CreateCall(
-            snprintf_func, {buf, buf_size, fmt_double, double_val});
+            format_double_func, {buf, buf_size, double_val});
         truncate_header(dbl_written);
         ctx_.builder().CreateBr(merge_block);
         llvm::BasicBlock* double_exit = ctx_.builder().GetInsertBlock();
@@ -862,9 +874,8 @@ llvm::Value* StringIOCodegen::numberToString(const eshkol_operations_t* op) {
             } else if (!raw_val->getType()->isDoubleTy()) {
                 double_val = ctx_.builder().CreateSIToFP(raw_val, ctx_.doubleType());
             }
-            llvm::Value* fmt = createString("%g");
             llvm::Value* written = ctx_.builder().CreateCall(
-                snprintf_func, {buf, buf_size, fmt, double_val});
+                format_double_func, {buf, buf_size, double_val});
             truncate_header(written);
         } else {
             // Format as integer
