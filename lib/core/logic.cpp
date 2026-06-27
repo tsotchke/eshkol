@@ -17,6 +17,9 @@
 #include <atomic>
 #include <mutex>
 
+/* eshkol_fprint_double (R7RS flonum external representation +inf.0/-inf.0/
+ * +nan.0) is declared in <eshkol/eshkol.h>, included above. */
+
 /* ===== Logic Variable Registry ===== */
 
 /* Global variable name registry. Thread-safe via mutex (protects g_var_names array)
@@ -861,7 +864,7 @@ extern "C" void eshkol_display_substitution(const eshkol_substitution_t* s, void
                 fprintf(f, "%lld", (long long)term->data.int_val);
                 break;
             case ESHKOL_VALUE_DOUBLE:
-                fprintf(f, "%g", term->data.double_val);
+                eshkol_fprint_double(f, term->data.double_val);
                 break;
             case ESHKOL_VALUE_BOOL:
                 fprintf(f, "%s", term->data.int_val ? "#t" : "#f");
@@ -919,7 +922,7 @@ extern "C" void eshkol_display_fact(const eshkol_fact_t* fact, void* file) {
                 fprintf(f, "%lld", (long long)arg->data.int_val);
                 break;
             case ESHKOL_VALUE_DOUBLE:
-                fprintf(f, "%g", arg->data.double_val);
+                eshkol_fprint_double(f, arg->data.double_val);
                 break;
             case ESHKOL_VALUE_BOOL:
                 fprintf(f, "%s", arg->data.int_val ? "#t" : "#f");

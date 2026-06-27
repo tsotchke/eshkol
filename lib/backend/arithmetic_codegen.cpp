@@ -2048,11 +2048,14 @@ llvm::Value* ArithmeticCodegen::pow(llvm::Value* base, llvm::Value* exponent) {
         llvm::Value* base_is_exact = ctx_.builder().CreateOr(base_is_int, base_is_heap);
         llvm::Value* exp_is_int = ctx_.builder().CreateICmpEQ(exp_base,
             llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_INT64));
-        llvm::Value* both_exact_int = ctx_.builder().CreateAnd(base_is_exact, exp_is_int);
-        llvm::Value* exp_val = tagged_.unpackInt64(exponent);
-        llvm::Value* exp_non_neg = ctx_.builder().CreateICmpSGE(exp_val,
-            llvm::ConstantInt::get(ctx_.int64Type(), 0));
-        llvm::Value* use_exact = ctx_.builder().CreateAnd(both_exact_int, exp_non_neg);
+        // R7RS exactness preservation for integer exponentiation. We route to
+        // the exact runtime whenever both operands are exact integers,
+        // REGARDLESS of the exponent's sign:
+        //   * non-negative exponent -> exact integer (int64 / bignum)
+        //   * negative exponent     -> exact rational 1/base^|n|  (e.g. 2^-2 = 1/4)
+        // eshkol_bignum_pow_tagged owns the sign discipline and the rational
+        // construction; it falls back to an inexact double only on overflow.
+        llvm::Value* use_exact = ctx_.builder().CreateAnd(base_is_exact, exp_is_int);
         ctx_.builder().CreateCondBr(use_exact, exact_path, regular_path);
 
         // Exact integer exponentiation via runtime

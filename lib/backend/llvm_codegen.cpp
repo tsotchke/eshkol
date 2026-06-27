@@ -18268,6 +18268,66 @@ private:
             reg_phi->addIncoming(tagged_regular_result, rational_exit);
             reg_phi->addIncoming(float_result, float_exit);
             tagged_regular_result = reg_phi;
+        } else if (func_name == "sqrt" || func_name == "log") {
+            // R7RS 6.2.6 numeric-tower promotion: the square root (and natural
+            // log) of a NEGATIVE EXACT real is not a real number — it promotes
+            // into the complex domain instead of producing an IEEE NaN:
+            //     (sqrt -4) => +2.0i        (log -1) => 0+pi i
+            // Promotion is exactness-aware: an inexact (double) negative keeps
+            // IEEE semantics (NaN / -inf) so the documented floating-point
+            // behaviour and the infinity/NaN regression suite are preserved.
+            // This is the single architectural site where the real->complex
+            // domain boundary lives for these unary functions.
+            Value* arg_is_int = builder->CreateICmpEQ(arg_base_type,
+                ConstantInt::get(int8_type, ESHKOL_VALUE_INT64));
+            Value* arg_is_heap = builder->CreateICmpEQ(arg_base_type,
+                ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
+            Value* arg_is_exact = builder->CreateOr(arg_is_int, arg_is_heap);
+            // extractAsDouble handles int64 / double / bignum / rational and
+            // may create internal blocks — call it before branching.
+            Value* arg_double = arith_->extractAsDouble(arg_tagged);
+            Value* is_negative = builder->CreateFCmpOLT(arg_double,
+                ConstantFP::get(double_type, 0.0));
+            Value* promote = builder->CreateAnd(arg_is_exact, is_negative);
+
+            Function* mf = builder->GetInsertBlock()->getParent();
+            BasicBlock* promote_bb = BasicBlock::Create(*context, (func_name + "_promote_complex").c_str(), mf);
+            BasicBlock* real_bb = BasicBlock::Create(*context, (func_name + "_real_domain").c_str(), mf);
+            BasicBlock* promo_merge = BasicBlock::Create(*context, (func_name + "_promo_merge").c_str(), mf);
+            builder->CreateCondBr(promote, promote_bb, real_bb);
+
+            // Complex-promotion path: x < 0, so |x| = -x.
+            builder->SetInsertPoint(promote_bb);
+            Value* abs_arg = builder->CreateFNeg(arg_double, "abs_arg");
+            Value* cx_re;
+            Value* cx_im;
+            if (func_name == "sqrt") {
+                // sqrt(-|x|) = 0 + sqrt(|x|) i
+                cx_re = ConstantFP::get(double_type, 0.0);
+                cx_im = builder->CreateCall(function_table["sqrt"], {abs_arg}, "promote_sqrt");
+            } else {
+                // log(-|x|) = log(|x|) + pi i  (principal branch)
+                cx_re = builder->CreateCall(function_table["log"], {abs_arg}, "promote_log");
+                cx_im = ConstantFP::get(double_type, 3.14159265358979323846);
+            }
+            Value* promoted_complex = createComplexNumber(cx_re, cx_im);
+            Value* promoted_tagged = packComplexToTagged(promoted_complex);
+            builder->CreateBr(promo_merge);
+            BasicBlock* promote_exit = builder->GetInsertBlock();
+
+            // Real-domain path: ordinary libm computation (non-negative input,
+            // or an inexact double which keeps IEEE NaN/inf behaviour).
+            builder->SetInsertPoint(real_bb);
+            Value* real_result = builder->CreateCall(function_table[func_name], {arg_double}, (func_name + "_real").c_str());
+            Value* real_tagged = packDoubleToTaggedValue(real_result);
+            builder->CreateBr(promo_merge);
+            BasicBlock* real_exit = builder->GetInsertBlock();
+
+            builder->SetInsertPoint(promo_merge);
+            PHINode* promo_phi = builder->CreatePHI(tagged_value_type, 2, (func_name + "_promo_result").c_str());
+            promo_phi->addIncoming(promoted_tagged, promote_exit);
+            promo_phi->addIncoming(real_tagged, real_exit);
+            tagged_regular_result = promo_phi;
         } else {
             // Non-rounding functions: always compute on double
             Value* arg_is_double = builder->CreateICmpEQ(arg_base_type,
@@ -19042,11 +19102,20 @@ private:
         if (!result) return nullptr;
         result = ensureTaggedValue(result);
 
+        // R7RS inexactness CONTAGION: "if any argument is inexact, then the
+        // result will also be inexact" (R7RS 6.2.6, max/min note). min/max
+        // SELECT one of their operands rather than computing a new value, so a
+        // chosen exact operand must still be coerced to inexact when *any*
+        // argument was inexact. Track inexactness across the whole reduction.
+        Value* any_inexact = isInexactTagged(result);
+
         // Fold min/max across all arguments using polymorphic arithmetic
         for (uint64_t i = 1; i < op->call_op.num_vars; i++) {
             Value* arg = codegenAST(&op->call_op.variables[i]);
             if (!arg) return nullptr;
             arg = ensureTaggedValue(arg);
+
+            any_inexact = builder->CreateOr(any_inexact, isInexactTagged(arg));
 
             if (is_min) {
                 result = arith_->min(result, arg);
@@ -19055,7 +19124,67 @@ private:
             }
         }
 
-        return result;  // Return tagged value (preserves bignum/int/double type)
+        // Apply contagion: coerce the (possibly exact) selected result to
+        // inexact when any argument along the way was inexact.
+        return coerceToInexactIf(result, any_inexact);
+    }
+
+    // R7RS exactness probe: a value is inexact iff it is a flonum (DOUBLE) or
+    // a complex number (always inexact in Eshkol). int64 / bignum / rational
+    // are exact. Returns an i1.
+    Value* isInexactTagged(Value* tagged) {
+        Value* base = getBaseType(getTaggedValueType(tagged));
+        Value* is_double = builder->CreateICmpEQ(base,
+            ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
+        Value* is_complex = builder->CreateICmpEQ(base,
+            ConstantInt::get(int8_type, ESHKOL_VALUE_COMPLEX));
+        return builder->CreateOr(is_double, is_complex);
+    }
+
+    // Conditionally coerce an EXACT tagged value to its inexact (double)
+    // representation. When `cond` is false the value is returned unchanged;
+    // when true an exact int64/bignum/rational is converted via extractAsDouble
+    // (the single exact->inexact path).
+    //
+    // Crucially the coercion only fires for *genuinely exact* results
+    // (INT64 / HEAP_PTR bignum / rational). A DUAL number (forward-mode AD)
+    // is already an inexact float carrying a tangent — routing it through
+    // extractAsDouble would strip the derivative and break AD through min/max.
+    // DOUBLE and COMPLEX are already inexact, so leaving them untouched is
+    // both correct and avoids needless work.
+    Value* coerceToInexactIf(Value* result, Value* cond) {
+        // Restrict contagion to exact results; duals/doubles/complex pass through.
+        Value* base = getBaseType(getTaggedValueType(result));
+        Value* is_int = builder->CreateICmpEQ(base,
+            ConstantInt::get(int8_type, ESHKOL_VALUE_INT64));
+        Value* is_heap = builder->CreateICmpEQ(base,
+            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
+        Value* result_is_exact = builder->CreateOr(is_int, is_heap);
+        Value* do_coerce = builder->CreateAnd(cond, result_is_exact);
+
+        Function* mf = builder->GetInsertBlock()->getParent();
+        BasicBlock* coerce_bb = BasicBlock::Create(*context, "contagion_coerce", mf);
+        BasicBlock* keep_bb = BasicBlock::Create(*context, "contagion_keep", mf);
+        BasicBlock* merge_bb = BasicBlock::Create(*context, "contagion_merge", mf);
+        builder->CreateCondBr(do_coerce, coerce_bb, keep_bb);
+
+        builder->SetInsertPoint(coerce_bb);
+        // extractAsDouble is an identity for doubles and a faithful conversion
+        // for int64/bignum/rational — exactly the exact->inexact coercion.
+        Value* as_double = arith_->extractAsDouble(result);
+        Value* coerced = packDoubleToTaggedValue(as_double);
+        builder->CreateBr(merge_bb);
+        BasicBlock* coerce_exit = builder->GetInsertBlock();
+
+        builder->SetInsertPoint(keep_bb);
+        builder->CreateBr(merge_bb);
+        BasicBlock* keep_exit = builder->GetInsertBlock();
+
+        builder->SetInsertPoint(merge_bb);
+        PHINode* phi = builder->CreatePHI(tagged_value_type, 2, "contagion_result");
+        phi->addIncoming(coerced, coerce_exit);
+        phi->addIncoming(result, keep_exit);
+        return phi;
     }
 
     // MIGRATED: Delegates to ArithmeticCodegen

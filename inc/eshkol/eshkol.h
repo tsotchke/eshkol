@@ -1082,6 +1082,12 @@ static inline eshkol_display_opts_t eshkol_display_default_opts(void) {
     return opts;
 }
 
+// R7RS flonum external representation (+inf.0 / -inf.0 / +nan.0). Single
+// source of truth shared by display/write/number->string/logic printing.
+// Defined in runtime_display_hosted.cpp.
+int  eshkol_format_double(char* buf, size_t n, double v);
+void eshkol_fprint_double(void* file, double v);
+
 // Main display functions (implemented in arena_memory.cpp)
 void eshkol_display_value(const eshkol_tagged_value_t* value);
 void eshkol_display_value_opts(const eshkol_tagged_value_t* value, eshkol_display_opts_t* opts);
