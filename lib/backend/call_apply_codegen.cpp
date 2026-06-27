@@ -265,6 +265,20 @@ Value* CallApplyCodegen::apply(const eshkol_operations_t* op) {
             }
         }
 
+        // Comparison / equality / unary-predicate builtins (=, <, >, <=, >=,
+        // eq?, eqv?, equal?, even?, …). These are codegen-inline at direct
+        // call sites and have no module function by their raw name, so apply
+        // missed them and returned () (and, for =, the SICP metacircular
+        // evaluator's (apply = …) silently took every base case). Resolve the
+        // first-class wrapper Function* and apply it like any user function so
+        // the result is a proper boolean.
+        if (get_builtin_predicate_callback_) {
+            if (llvm::Function* wrapper =
+                    get_builtin_predicate_callback_(func_name, callback_context_)) {
+                return applyUserFunction(wrapper, list_int);
+            }
+        }
+
         // Then ask the main codegen to emit a REPL forward-reference
         // indirect call (__repl_fwd_<name>). This is exactly what
         // direct calls do for cross-batch / cross-load functions —
