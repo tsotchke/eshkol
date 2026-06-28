@@ -767,6 +767,8 @@ namespace ControlFlowCallbacks {
     static bool isSelfTailRecursiveWrapper(const void* lambda_op, const char* func_name, void* context);
     // Wrapper for getting builtin arithmetic functions (for CallApplyCodegen)
     static llvm::Function* getBuiltinArithmeticWrapper(const std::string& op, void* context);
+    // Wrapper for resolving comparison/equality/predicate builtins (for apply)
+    static llvm::Function* getBuiltinPredicateWrapper(const std::string& name, void* context);
     // Wrapper for applying tensor/vector builtin functions
     static llvm::Value* applyBuiltinWrapper(const std::string& func_name, const std::vector<llvm::Value*>& args, llvm::Value* arg_count, void* context);
     // Bug P (2026-04-23): wrapper for forward-ref apply (cross-file user defines)
@@ -799,6 +801,7 @@ class EshkolLLVMCodeGen {
     friend void ControlFlowCallbacks::popFunctionContextWrapper(void* context);
     friend bool ControlFlowCallbacks::isSelfTailRecursiveWrapper(const void* lambda_op, const char* func_name, void* context);
     friend llvm::Function* ControlFlowCallbacks::getBuiltinArithmeticWrapper(const std::string& op, void* context);
+    friend llvm::Function* ControlFlowCallbacks::getBuiltinPredicateWrapper(const std::string& name, void* context);
     friend llvm::Value* ControlFlowCallbacks::applyBuiltinWrapper(const std::string& func_name, const std::vector<llvm::Value*>& args, llvm::Value* arg_count, void* context);
     friend llvm::Value* ControlFlowCallbacks::applyForwardRefWrapper(const std::string& func_name, llvm::Value* list_int, void* context);
     friend llvm::Value* ControlFlowCallbacks::closureCallWithInfoWrapper(llvm::Value* closure, const std::vector<llvm::Value*>& args, const char* info, void* context);
@@ -3535,6 +3538,7 @@ private:
         call_apply_->setGetConsAccessorCallback(ControlFlowCallbacks::getConsAccessorWrapper);
         call_apply_->setCreateConsCallback(ControlFlowCallbacks::consCreateWrapper);
         call_apply_->setGetBuiltinArithmeticCallback(ControlFlowCallbacks::getBuiltinArithmeticWrapper);
+        call_apply_->setGetBuiltinPredicateCallback(ControlFlowCallbacks::getBuiltinPredicateWrapper);
         call_apply_->setApplyBuiltinCallback(ControlFlowCallbacks::applyBuiltinWrapper);
         call_apply_->setApplyForwardRefCallback(ControlFlowCallbacks::applyForwardRefWrapper);
         eshkol_debug("Created CallApplyCodegen with callbacks");
@@ -8961,6 +8965,27 @@ private:
                 Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureWithHeaderFunc(),
                                                          {arena_ptr, func_ptr_int, packed_info_val, sexpr_ptr, return_type_info, closure_name});
                 // Pack as CALLABLE (subtype CLOSURE is in header)
+                return packPtrToTaggedValue(closure_ptr, ESHKOL_VALUE_CALLABLE);
+            }
+        }
+
+        // Identity/equality predicates as first-class functions - wrap in closure.
+        // eq? / eqv? / equal? are normally codegen-inline (codegenEq/Eqv/Equal),
+        // so the bare symbol had no callable closure: `(car (list eq?))` and
+        // `(apply eq? …)` failed. Wrap each as an arity-2 boolean-returning closure.
+        if (var_name == "eq?" || var_name == "eqv?" || var_name == "equal?") {
+            Function* builtin_func = createBuiltinEqualityFunction(var_name);
+            if (builtin_func) {
+                Value* func_ptr_int = builder->CreatePtrToInt(builtin_func, intptr_type);
+                Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+                uint64_t packed_info = 0 | (2 << 16);  // no captures, arity=2
+                Value* packed_info_val = sizeConst(packed_info);
+                Value* sexpr_ptr = intPtrConst(0);
+                uint64_t return_type_info_val = CLOSURE_RETURN_SCALAR | (2 << 8);
+                Value* return_type_info = intPtrConst(return_type_info_val);
+                Value* closure_name = ConstantPointerNull::get(PointerType::getUnqual(*context));
+                Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureWithHeaderFunc(),
+                                                         {arena_ptr, func_ptr_int, packed_info_val, sexpr_ptr, return_type_info, closure_name});
                 return packPtrToTaggedValue(closure_ptr, ESHKOL_VALUE_CALLABLE);
             }
         }
@@ -22043,7 +22068,12 @@ private:
 
         Value* arg1 = typedValueToTaggedValue(tv1);
         Value* arg2 = typedValueToTaggedValue(tv2);
+        return emitEqTagged(arg1, arg2);
+    }
 
+    // eq? logic operating on two already-tagged values (shared by codegenEq and
+    // the first-class / apply'd eq? wrapper). Returns a packed boolean.
+    Value* emitEqTagged(Value* arg1, Value* arg2) {
         // Get types
         Value* type1 = getTaggedValueType(arg1);
         Value* type2 = getTaggedValueType(arg2);
@@ -22104,7 +22134,12 @@ private:
 
         Value* arg1 = typedValueToTaggedValue(tv1);
         Value* arg2 = typedValueToTaggedValue(tv2);
+        return emitEqvTagged(arg1, arg2);
+    }
 
+    // eqv? logic operating on two already-tagged values (shared by codegenEqv and
+    // the first-class / apply'd eqv? wrapper). Returns a packed boolean.
+    Value* emitEqvTagged(Value* arg1, Value* arg2) {
         // Get types
         Value* type1 = getTaggedValueType(arg1);
         Value* type2 = getTaggedValueType(arg2);
@@ -22204,7 +22239,12 @@ private:
 
         Value* arg1 = typedValueToTaggedValue(tv1);
         Value* arg2 = typedValueToTaggedValue(tv2);
+        return emitEqualTagged(arg1, arg2);
+    }
 
+    // equal? logic operating on two already-tagged values (shared by codegenEqual
+    // and the first-class / apply'd equal? wrapper). Returns a packed boolean.
+    Value* emitEqualTagged(Value* arg1, Value* arg2) {
         // Use the runtime deep equality function for all comparisons
         // This handles all edge cases: nested lists, empty lists (NULL vs CONS_PTR with null), etc.
         Value* arg1_ptr = builder->CreateAlloca(tagged_value_type, nullptr, "equal_arg1");
@@ -32844,6 +32884,12 @@ private:
                 return createBuiltinComparisonFunction(func_name);
             }
 
+            // Handle identity/equality predicates as first-class functions
+            // (for map/filter/apply with eq?/eqv?/equal?).
+            if (func_name == "eq?" || func_name == "eqv?" || func_name == "equal?") {
+                return createBuiltinEqualityFunction(func_name);
+            }
+
             // Handle predicates as first-class functions (for filter, etc.)
             if (func_name == "even?" || func_name == "odd?" || func_name == "zero?" ||
                 func_name == "positive?" || func_name == "negative?" || func_name == "null?" ||
@@ -34119,8 +34165,12 @@ private:
             eshkol_error("Unknown comparison operation: %s", operation.c_str());
             cmp_result = ConstantInt::get(int1_type, 0);
         }
-        Value* int_result = builder->CreateZExt(cmp_result, int64_type);
-        Value* dbl_tagged_result = packInt64ToTaggedValue(int_result, true);
+        // R7RS comparison predicates must yield a proper boolean (#t/#f), not
+        // the raw int 0/1.  The bignum path above already returns ESHKOL_VALUE_BOOL
+        // (eshkol_bignum_compare_tagged); pack the double path as a boolean too so
+        // first-class / apply'd use of =, <, >, <=, >= returns #t/#f.  (Direct
+        // call sites are unaffected — they go through ArithmeticCodegen::compare.)
+        Value* dbl_tagged_result = packBoolToTaggedValue(cmp_result);
         builder->CreateBr(cmp_done);
         BasicBlock* dbl_exit = builder->GetInsertBlock();
 
@@ -34143,6 +34193,57 @@ private:
         eshkol_debug("Created builtin comparison function: %s for operation '%s'",
                     func_name.c_str(), operation.c_str());
 
+        return builtin_func;
+    }
+
+    // Create a (tagged_value, tagged_value) -> tagged_value wrapper for an
+    // identity/equality predicate (eq?, eqv?, equal?) so it can be used as a
+    // first-class value or via apply. These are normally codegen-inline
+    // (codegenEq/Eqv/Equal); without a wrapper, `(car (list eq?))` and
+    // `(apply eq? …)` had no callable closure. The body delegates to the same
+    // emitEq*Tagged helpers the inline path uses, so semantics stay identical.
+    Function* createBuiltinEqualityFunction(const std::string& pred_name) {
+        std::string func_name = "builtin_eqpred_" + pred_name;
+        for (char& c : func_name) {
+            if (c == '?') c = 'Q';
+            else if (c == '=') c = 'E';
+        }
+
+        auto existing_it = function_table.find(func_name);
+        if (existing_it != function_table.end()) {
+            return existing_it->second;
+        }
+
+        std::vector<Type*> param_types = {tagged_value_type, tagged_value_type};
+        FunctionType* func_type = FunctionType::get(tagged_value_type, param_types, false);
+        Function* builtin_func = Function::Create(
+            func_type, Function::ExternalLinkage, func_name, module.get());
+
+        IRBuilderBase::InsertPoint old_point = builder->saveIP();
+        BasicBlock* entry = BasicBlock::Create(*context, "entry", builtin_func);
+        builder->SetInsertPoint(entry);
+
+        auto arg_it = builtin_func->arg_begin();
+        Value* arg1 = &*arg_it++;
+        Value* arg2 = &*arg_it;
+
+        Value* result;
+        if (pred_name == "eq?") {
+            result = emitEqTagged(arg1, arg2);
+        } else if (pred_name == "eqv?") {
+            result = emitEqvTagged(arg1, arg2);
+        } else {  // equal?
+            result = emitEqualTagged(arg1, arg2);
+        }
+        builder->CreateRet(result);
+
+        if (old_point.isSet()) {
+            builder->restoreIP(old_point);
+        }
+
+        registerContextFunction(func_name, builtin_func);
+        eshkol_debug("Created builtin equality function: %s for predicate '%s'",
+                    func_name.c_str(), pred_name.c_str());
         return builtin_func;
     }
 
@@ -35411,6 +35512,23 @@ namespace ControlFlowCallbacks {
     llvm::Function* getBuiltinArithmeticWrapper(const std::string& op, void* context) {
         auto* codegen = static_cast<EshkolLLVMCodeGen*>(context);
         return codegen->createBuiltinArithmeticFunction(op, 2);
+    }
+
+    llvm::Function* getBuiltinPredicateWrapper(const std::string& name, void* context) {
+        auto* codegen = static_cast<EshkolLLVMCodeGen*>(context);
+        if (name == "<" || name == ">" || name == "<=" || name == ">=" || name == "=") {
+            return codegen->createBuiltinComparisonFunction(name);
+        }
+        if (name == "eq?" || name == "eqv?" || name == "equal?") {
+            return codegen->createBuiltinEqualityFunction(name);
+        }
+        if (name == "even?" || name == "odd?" || name == "zero?" ||
+            name == "positive?" || name == "negative?" || name == "null?" ||
+            name == "pair?" || name == "nan?" || name == "infinite?" ||
+            name == "finite?") {
+            return codegen->createBuiltinPredicateFunction(name);
+        }
+        return nullptr;
     }
 
     llvm::Value* applyForwardRefWrapper(const std::string& func_name, llvm::Value* list_int, void* context) {
