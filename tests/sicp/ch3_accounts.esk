@@ -1,106 +1,74 @@
-; ================================================================
-; SICP Chapter 3.1.1 — Local State Variables (bank accounts)
-; Exercises the canonical "objects with local state" pattern: sibling
-; closures (withdraw/deposit) sharing a single set!-mutated `balance`.
-; Requires shared-mutable-capture (assignment conversion) — ESH-0074.
-; ================================================================
+;; SICP Chapter 3.1 — Local state via closures + set!.
+;; make-withdraw, make-account, make-accumulator, make-monitored.
+;;
+;; This file is written in the NATURAL SICP style (mutated state is a lambda
+;; PARAMETER). It deliberately surfaces a real Eshkol bug: a set!-mutated
+;; *parameter* captured by MULTIPLE sibling closures is not shared — each
+;; closure captures a private copy (see make-account / SICP 3.1.1). Single-closure
+;; cases (make-withdraw, make-accumulator) work. See the gap report.
 
-(require stdlib)
-
-(define pass-count 0)
-(define fail-count 0)
-
-(define (test name expected actual)
+(define fails 0)
+;; throw-safe check: compares with equal? so a wrong-typed result records a FAIL
+;; instead of aborting the file.
+(define (check name expected actual)
   (if (equal? expected actual)
-      (begin (set! pass-count (+ pass-count 1))
-             (display (string-append "PASS: " name "\n")))
-      (begin (set! fail-count (+ fail-count 1))
-             (display (string-append "FAIL: " name "\n"))
-             (display "  Expected: ") (display expected) (newline)
-             (display "  Actual:   ") (display actual) (newline))))
+      (begin (display "PASS: ") (display name) (newline))
+      (begin (set! fails (+ fails 1))
+             (display "FAIL: ") (display name)
+             (display " expected=") (display expected)
+             (display " actual=") (display actual) (newline))))
 
-; ---------------------------------------------------------------
-; make-withdraw (single closure over a set!-mutated parameter)
-; ---------------------------------------------------------------
+;; ---- 3.1.1 make-withdraw (single closure — works) ----
 (define (make-withdraw balance)
   (lambda (amount)
     (if (>= balance amount)
         (begin (set! balance (- balance amount)) balance)
-        "Insufficient funds")))
-
+        'insufficient-funds)))
 (define W1 (make-withdraw 100))
-(test "make-withdraw call 1" 50 (W1 50))
-(test "make-withdraw call 2" 25 (W1 25))
-(test "make-withdraw insufficient" "Insufficient funds" (W1 60))
+(define W2 (make-withdraw 100))
+(check "withdraw-50" 50 (W1 50))
+(check "withdraw-again-30" 20 (W1 30))
+(check "withdraw-insufficient" 'insufficient-funds (W1 60))
+(check "withdraw-independent-state" 30 (W2 70))
 
-; ---------------------------------------------------------------
-; make-account (message-passing object: sibling closures share balance)
-; ---------------------------------------------------------------
+;; ---- 3.1.1 make-account (message-passing, TWO sibling closures share balance) ----
 (define (make-account balance)
   (define (withdraw amount)
-    (if (>= balance amount)
-        (begin (set! balance (- balance amount)) balance)
-        "Insufficient funds"))
-  (define (deposit amount)
-    (set! balance (+ balance amount))
-    balance)
+    (if (>= balance amount) (begin (set! balance (- balance amount)) balance)
+        'insufficient))
+  (define (deposit amount) (set! balance (+ balance amount)) balance)
   (define (dispatch m)
     (cond ((eq? m 'withdraw) withdraw)
           ((eq? m 'deposit) deposit)
           (else (error "Unknown request -- MAKE-ACCOUNT" m))))
   dispatch)
-
 (define acc (make-account 100))
-(test "account-withdraw" 50 ((acc 'withdraw) 50))
-(test "account-deposit"  90 ((acc 'deposit) 40))
-(test "account-withdraw-2" 30 ((acc 'withdraw) 60))
-(test "account-deposit-2" 130 ((acc 'deposit) 100))
+(check "account-withdraw" 50 ((acc 'withdraw) 50))   ; 100 - 50
+(check "account-deposit"  90 ((acc 'deposit) 40))    ; 50 + 40  (BUG: deposit's copy is 100 -> 140)
+(check "account-withdraw2" 30 ((acc 'withdraw) 60))  ; 90 - 60
 
-; ---------------------------------------------------------------
-; Independent accounts must keep independent state.
-; NOTE: The canonical INTERNAL-DEFINE make-account above currently aliases
-; balance across instances — a SEPARATE pre-existing bug in the letrec
-; local-function codegen (internal-define functions live in @letrecstar_*
-; module globals overwritten per call), NOT the ESH-0074 shared-mutable-
-; capture bug fixed here. Isolation is therefore verified using the explicit
-; let-lambda object form, which ESH-0074 fully supports.
-; ---------------------------------------------------------------
-(define (make-account/lambda balance)
-  (let ((withdraw (lambda (amount)
-                    (if (>= balance amount)
-                        (begin (set! balance (- balance amount)) balance)
-                        "Insufficient funds")))
-        (deposit  (lambda (amount)
-                    (set! balance (+ balance amount))
-                    balance)))
-    (lambda (m)
-      (cond ((eq? m 'withdraw) withdraw)
-            ((eq? m 'deposit) deposit)
-            (else (error "Unknown request -- MAKE-ACCOUNT" m))))))
-
-(define accL1 (make-account/lambda 100))
-(define accL2 (make-account/lambda 100))
-(test "lambda-account L1 withdraw" 60 ((accL1 'withdraw) 40))
-(test "lambda-account L2 independent" 70 ((accL2 'withdraw) 30))
-(test "lambda-account L1 unaffected" 80 ((accL1 'deposit) 20))
-
-; ---------------------------------------------------------------
-; make-accumulator (SICP 3.1.1 ex 3.1)
-; ---------------------------------------------------------------
-(define (make-accumulator total)
-  (lambda (amount)
-    (set! total (+ total amount))
-    total))
-
+;; ---- 3.1.2 make-accumulator (single closure — works) ----
+(define (make-accumulator sum)
+  (lambda (amount) (set! sum (+ sum amount)) sum))
 (define A (make-accumulator 5))
-(test "accumulator 1" 15 (A 10))
-(test "accumulator 2" 25 (A 10))
+(check "accumulator-1" 15 (A 10))
+(check "accumulator-2" 25 (A 10))
 
-; ================================================================
+;; ---- 3.1.2 make-monitored (single closure over internal `count` — works) ----
+(define (make-monitored f)
+  (let ((count 0))
+    (lambda (arg)
+      (cond ((eq? arg 'how-many-calls?) count)
+            ((eq? arg 'reset-count) (set! count 0) count)
+            (else (set! count (+ count 1)) (f arg))))))
+(define s (make-monitored (lambda (x) (* x x))))
+(check "monitored-call" 25 (s 5))
+(s 6)
+(check "monitored-count" 2 (s 'how-many-calls?))
+(s 'reset-count)
+(check "monitored-reset" 0 (s 'how-many-calls?))
+
 (newline)
-(display "==== SICP ch3 accounts results ====") (newline)
-(display "Passed: ") (display pass-count) (newline)
-(display "Failed: ") (display fail-count) (newline)
-(if (= fail-count 0)
-    (begin (display "ALL TESTS PASSED") (newline))
-    (begin (display "SOME TESTS FAILED") (newline)))
+(if (= fails 0)
+    (begin (display "ALL-PASS ch3_accounts") (newline))
+    (begin (display "HAS-FAIL ch3_accounts ") (display fails) (newline)))

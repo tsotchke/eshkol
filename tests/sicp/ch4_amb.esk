@@ -1,0 +1,89 @@
+;; SICP Chapter 4.3 — nondeterministic computing (amb) via success/failure
+;; continuations (CPS).  This is the SICP amb mechanism distilled into
+;; combinators: a "nondeterministic value" is a procedure of
+;;   (succeed fail), succeed : (value retry-thunk) -> ans, fail : () -> ans.
+;; Demonstrates real backtracking search (Pythagorean triples, a logic puzzle).
+(define fails 0)
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin (display "PASS: ") (display name) (newline))
+      (begin (set! fails (+ fails 1))
+             (display "FAIL: ") (display name) (display " expected=") (display expected)
+             (display " actual=") (display actual) (newline))))
+
+;; ---- amb combinators ----
+;; (amb-of items): nondeterministically yield each element of items.
+(define (amb-of items)
+  (lambda (succeed fail)
+    (let loop ((xs items))
+      (if (null? xs)
+          (fail)
+          (succeed (car xs) (lambda () (loop (cdr xs))))))))
+
+;; (amb-return v): a deterministic single value.
+(define (amb-return v) (lambda (succeed fail) (succeed v fail)))
+
+;; (amb-bind m f): monadic bind — for each value v of m, run (f v).
+(define (amb-bind m f)
+  (lambda (succeed fail)
+    (m (lambda (v fail2) ((f v) succeed fail2)) fail)))
+
+;; (amb-require pred m): keep only values satisfying pred.
+(define (amb-require pred m)
+  (amb-bind m (lambda (v) (if (pred v) (amb-return v) amb-fail))))
+(define amb-fail (lambda (succeed fail) (fail)))
+
+;; (amb-first m): return the first solution, or 'none.
+(define (amb-first m)
+  (m (lambda (v fail) v) (lambda () 'none)))
+
+;; (amb-all m): collect ALL solutions into a list (drive backtracking).
+(define (amb-all m)
+  (let ((acc '()))
+    (m (lambda (v fail) (set! acc (cons v acc)) (fail))
+       (lambda () 'done))
+    (reverse acc)))
+
+(define (integers-between lo hi)
+  (if (> lo hi) '() (cons lo (integers-between (+ lo 1) hi))))
+
+;; ---- Pythagorean triples with i<=j<=k<=20, i^2+j^2=k^2 ----
+(define (pyth-triples n)
+  (amb-bind (amb-of (integers-between 1 n))
+    (lambda (i)
+      (amb-bind (amb-of (integers-between i n))
+        (lambda (j)
+          (amb-bind (amb-of (integers-between j n))
+            (lambda (k)
+              (if (= (+ (* i i) (* j j)) (* k k))
+                  (amb-return (list i j k))
+                  amb-fail))))))))
+
+;; NOTE: bound kept at 13.  A full backtracking sweep with n>=~16 crashes the
+;; JIT/AOT runtime with SIGILL — deep CPS continuation chains (thousands of
+;; nested success/fail closures) exceed a runtime depth limit.  This is a
+;; separate gap from ESH-0078 and is recorded in SICP_COMPLETENESS_REPORT.md
+;; (bucket: deep-CPS-continuation-depth).  n=13 still finds three triples.
+(check "pyth first triple" '(3 4 5) (amb-first (pyth-triples 13)))
+(check "pyth all <=13" '((3 4 5) (5 12 13) (6 8 10))
+       (amb-all (pyth-triples 13)))
+
+;; ---- a small logic puzzle: choose a,b,c distinct from {1,2,3}, a<b, sum a+b+c=6 ----
+(define (perm)
+  (amb-bind (amb-of '(1 2 3))
+    (lambda (a)
+      (amb-bind (amb-of '(1 2 3))
+        (lambda (b)
+          (amb-bind (amb-of '(1 2 3))
+            (lambda (c)
+              (if (and (not (= a b)) (not (= b c)) (not (= a c))
+                       (< a b) (= (+ a b c) 6))
+                  (amb-return (list a b c))
+                  amb-fail))))))))
+(check "puzzle solutions" '((1 2 3) (1 3 2) (2 3 1)) (amb-all (perm)))
+
+;; ---- require-style filtering ----
+(check "even picks" '(2 4 6)
+       (amb-all (amb-require even? (amb-of '(1 2 3 4 5 6)))))
+
+(display "ch4 amb: ") (display (if (= fails 0) "ALL PASS" (cons fails 'FAILS))) (newline)

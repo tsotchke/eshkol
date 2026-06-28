@@ -1,0 +1,62 @@
+;; SICP Chapter 3.3.3 — Mutable tables built on set-car!/set-cdr! and assoc.
+;; One-dimensional and two-dimensional tables.
+
+(define fails 0)
+(define (check name ok)
+  (if ok (begin (display "PASS: ") (display name) (newline))
+      (begin (set! fails (+ fails 1)) (display "FAIL: ") (display name) (newline))))
+
+;; ---- 1-D table ----
+(define (make-table) (list '*table*))
+(define (lookup key table)
+  (let ((record (assoc key (cdr table))))
+    (if record (cdr record) #f)))
+(define (insert! key value table)
+  (let ((record (assoc key (cdr table))))
+    (if record
+        (set-cdr! record value)
+        (set-cdr! table (cons (cons key value) (cdr table)))))
+  'ok)
+
+(define t (make-table))
+(insert! 'a 1 t)
+(insert! 'b 2 t)
+(check "table-lookup-a" (= (lookup 'a t) 1))
+(check "table-lookup-b" (= (lookup 'b t) 2))
+(check "table-lookup-missing" (eq? (lookup 'z t) #f))
+(insert! 'a 99 t)                       ; update existing
+(check "table-update" (= (lookup 'a t) 99))
+
+;; ---- 2-D table (3.3.3) ----
+(define (make-table2) (list '*table*))
+(define (lookup2 k1 k2 table)
+  (let ((subtable (assoc k1 (cdr table))))
+    (if subtable
+        (let ((record (assoc k2 (cdr subtable))))
+          (if record (cdr record) #f))
+        #f)))
+(define (insert2! k1 k2 value table)
+  (let ((subtable (assoc k1 (cdr table))))
+    (if subtable
+        (let ((record (assoc k2 (cdr subtable))))
+          (if record (set-cdr! record value)
+              (set-cdr! subtable (cons (cons k2 value) (cdr subtable)))))
+        (set-cdr! table (cons (list k1 (cons k2 value)) (cdr table)))))
+  'ok)
+
+(define m (make-table2))
+(insert2! 'math '+ 43 m)
+(insert2! 'math '- 45 m)
+(insert2! 'letters 'a 97 m)
+(check "table2-math+" (= (lookup2 'math '+ m) 43))
+(check "table2-math-" (= (lookup2 'math '- m) 45))
+(check "table2-letters-a" (= (lookup2 'letters 'a m) 97))
+(check "table2-missing-row" (eq? (lookup2 'greek 'alpha m) #f))
+(check "table2-missing-col" (eq? (lookup2 'math '* m) #f))
+(insert2! 'math '+ 100 m)               ; update
+(check "table2-update" (= (lookup2 'math '+ m) 100))
+
+(newline)
+(if (= fails 0)
+    (begin (display "ALL-PASS ch3_tables") (newline))
+    (begin (display "HAS-FAIL ch3_tables ") (display fails) (newline)))
