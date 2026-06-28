@@ -36016,7 +36016,12 @@ int eshkol_compile_llvm_ir_to_executable(LLVMModuleRef module_ref, const char* f
         // keeping it small enough that small-model BL/ADRP range-extension
         // thunks converge (avoids the AArch64-COFF Large-model SEH breakage).
         // Paired with FunctionSections/DataSections in the object emit above.
-        if (target_triple.getArch() == llvm::Triple::aarch64) {
+#if LLVM_VERSION_MAJOR >= 21
+        const Triple executable_triple = unwrap(module_ref)->getTargetTriple();
+#else
+        const Triple executable_triple(unwrap(module_ref)->getTargetTriple());
+#endif
+        if (executable_triple.getArch() == llvm::Triple::aarch64) {
             link_args.emplace_back("-Xlinker");
             link_args.emplace_back("/OPT:REF");
             link_args.emplace_back("-Xlinker");
