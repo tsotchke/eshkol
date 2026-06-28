@@ -9,7 +9,7 @@ bin && bin`) and emits ICC `sicp_smoke` trace events consumed by
 
 Platform: macOS arm64, LLVM 21. Runs guarded with `perl -e 'alarm N; exec @ARGV'`
 (macOS has no `timeout`). Verified on master after the recent correctness fixes
-(merge through PR #84).
+(merge through PR #86).
 
 ## Summary
 
@@ -18,12 +18,12 @@ Platform: macOS arm64, LLVM 21. Runs guarded with `perl -e 'alarm N; exec @ARGV'
 | ch1 (building abstractions w/ procedures) | 3 | 3/3 | 3/3 | full |
 | ch2 (building abstractions w/ data)       | 9 | 9/9 | 9/9 | full incl. data-directed / message-passing (2.4-2.5) |
 | ch3 (modularity, objects, state)          | 5 | 5/5 | 5/5 | mutable state, streams (infinite/sieve/signal), tables, queue |
-| ch4 (metalinguistic abstraction)          | 3 | 2/3 + 1 xfail | 2/3 + 1 xfail | working metacircular + amb; raw metacircular XFAIL (ESH-0078) |
+| ch4 (metalinguistic abstraction)          | 3 | 3/3 | 3/3 | metacircular evaluator + amb |
 | ch5 (computing with register machines)    | 1 | 1/1 | 1/1 | register-machine simulator (fact + GCD) |
-| repro (codegen-gap probe)                 | 1 | xfail | xfail | ESH-0078 demonstrator (passes only when bug is fixed) |
+| repro (codegen-gap probe)                 | 1 | PASS | PASS | first-class predicate regression probe |
 
-**Gate probes (non-xfail): 20/20 PASS under both -r and AOT.**
-**XFAIL (documented gaps): `ch4_metacircular`, `repro_esh0078_firstclass_predicate`.**
+**Gate probes: 22/22 PASS under both -r and AOT.**
+**XFAIL (documented gaps): none.**
 
 ## Per-program detail
 
@@ -58,17 +58,17 @@ Platform: macOS arm64, LLVM 21. Runs guarded with `perl -e 'alarm N; exec @ARGV'
 ### Chapter 4 — metalinguistic abstraction
 | Program | -r | AOT | checks | Notes |
 |---------|----|----|--------|-------|
-| ch4_metacircular_full.esk | PASS | PASS | 8 | **full metacircular eval/apply running non-trivial programs**: recursive factorial, 2^n accumulator, tree-recursive Fibonacci, list length/sum, define+set! state. Uses boolean-normalizing primitive wrappers to sidestep ESH-0078 (see below). |
+| ch4_metacircular_full.esk | PASS | PASS | 8 | **full metacircular eval/apply running non-trivial programs**: recursive factorial, 2^n accumulator, tree-recursive Fibonacci, list length/sum, define+set! state. |
 | ch4_amb.esk | PASS | PASS | 4 | **nondeterministic `amb`** via CPS success/failure continuations: Pythagorean triples + a logic puzzle + require-filtering with real backtracking (4.3). |
-| ch4_metacircular.esk | **XFAIL** | **XFAIL** | 5/6 | The "textbook" metacircular evaluator that binds raw builtins (`=`,`<`) as first-class env values. `recursive-fact` returns **1** not 120 — root-caused below (ESH-0078). |
+| ch4_metacircular.esk | PASS | PASS | 6/6 | The "textbook" metacircular evaluator that binds raw builtins (`=`,`<`) as first-class env values. `recursive-fact` now returns 120 after ESH-0079 / PR #86. |
 
 **Query system (4.4): OUT OF SCOPE for this corpus.** A full logic/query interpreter
 (pattern matching + unification + a stream-of-frames driver) is a large subsystem;
 it is not included here. Eshkol already ships a native logic/unification engine
 (`unify`, `kb-assert!`, `kb-query`) which covers the underlying capability, but a
 SICP-faithful 4.4 query evaluator running on top of the metacircular evaluator is
-deferred (blocked in part by ESH-0078 + deep-CPS-depth, since it leans on both
-first-class predicates and deep backtracking).
+deferred. The first-class predicate blocker is fixed; the remaining concern is
+deep backtracking/CPS depth.
 
 ### Chapter 5 — register machines
 | Program | -r | AOT | checks | Notes |
@@ -77,11 +77,10 @@ first-class predicates and deep backtracking).
 
 **Explicit-control evaluator (5.4) and the SICP compiler (5.5): OUT OF SCOPE.**
 The register-machine *simulator* core (5.2) is implemented and exercised. Running
-the explicit-control evaluator program on top of it (5.4) would re-enter the same
-first-class-predicate territory as ch4 and is deferred to a follow-up once
-ESH-0078 lands.
+the explicit-control evaluator program on top of it (5.4), and the compiler in
+5.5, is deferred as corpus expansion work.
 
-## Root-cause: ch4 metacircular recursion gap — **ESH-0078**
+## Root-cause: ch4 metacircular recursion gap — **fixed by ESH-0079 / PR #86**
 
 **Symptom.** In the textbook metacircular evaluator (`ch4_metacircular.esk`),
 `(meval '(fact 5) e)` returns **1** instead of 120. For
@@ -103,16 +102,16 @@ looks correct).
 
 **Root cause.** A builtin **comparison / equality / type predicate**, when
 invoked as a **first-class value** (extracted from a list/env and called
-indirectly, OR applied via `apply`), returns the **raw integer `0`/`1`** (and in
+indirectly, OR applied via `apply`), returned the **raw integer `0`/`1`** (and in
 some paths `'()`) instead of a boolean `#f`/`#t`. **Direct named calls are
 fine.** Minimal repro (`tests/sicp/repro_esh0078_firstclass_predicate.esk`):
 
 ```
 (define cmp (car (list =)))
 (= 2 0)            ; => #f      (direct call: correct)
-(cmp 2 0)          ; => 0       (BUG: indirect first-class call)
-(apply = (list 2 0)) ; => 0     (BUG: apply path; also warns "apply: Unknown function: =")
-(eq? (cmp 2 0) #f) ; => #f      (BUG: should be #t)
+(cmp 2 0)          ; used to return 0; now => #f
+(apply = (list 2 0)) ; used to return 0/(); now => #f
+(eq? (cmp 2 0) #f) ; now => #t
 ```
 
 Because R7RS treats **only `#f`** as false, the interpreter's `(if (not (eq?
@@ -125,12 +124,10 @@ codegen packs as a boolean tagged value but the generic/indirect call trampoline
 leaves unpacked). `equal?`/`null?` additionally report "apply: Unknown function"
 via the `apply` path.
 
-**Bucket: ESH-0078 — first-class / indirect / `apply` invocation of builtin
-predicates returns an unpacked integer instead of a boolean tagged value
-(do NOT fix here; codegen ticket).** Workaround used by `ch4_metacircular_full`
-and `ch5_register_machine`: bind comparison ops to boolean-normalizing wrapper
-lambdas (`(lambda (a b) (if (= a b) #t #f))`) whose bodies use direct named
-calls and return a real boolean.
+**Fixed by ESH-0079 / PR #86.** First-class comparison/equality predicate calls
+and `apply` now pack predicate results as booleans. `ch4_metacircular_full` and
+`ch5_register_machine` still use boolean-normalizing wrapper lambdas, but the raw
+textbook evaluator and minimal repro are now passing regression probes.
 
 ## Secondary gap: deep CPS continuation depth (amb)
 
@@ -149,13 +146,12 @@ is well within limits.
   stream chapter (infinite streams, sieve, signal-processing) all pass on -r and
   AOT.
 - **ch4: the metacircular evaluator runs real non-trivial recursive programs**
-  (factorial, Fibonacci, accumulators) once the ESH-0078 first-class-predicate
-  bug is worked around; the unmodified textbook evaluator is kept as an honest
-  XFAIL probe. `amb`/nondeterminism works for moderate searches. The **query
+  (factorial, Fibonacci, accumulators), and the unmodified textbook evaluator is
+  part of the passing gate. `amb`/nondeterminism works for moderate searches. The **query
   system (4.4) is out of scope** for now.
 - **ch5: the register-machine simulator (5.2) is implemented and passes.** The
   **explicit-control evaluator (5.4) and the SICP compiler (5.5) are out of
-  scope** and deferred behind ESH-0078.
+  scope** and deferred as corpus expansion work.
 
 ## How to run
 

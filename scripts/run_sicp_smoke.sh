@@ -8,9 +8,7 @@
 #                           .icc/completion-oracles.yaml::sicp-completeness
 #
 # A program PASSES a mode when the run exits 0, prints no "^FAIL:" line, and
-# prints no nonzero failure summary. Known-failing probes (the unmodified
-# metacircular evaluator, ch4_metacircular.esk, and the ESH-0078 repro) are
-# expected to FAIL and are tagged xfail — they do not fail the gate.
+# prints no nonzero failure summary.
 #
 # Usage: scripts/run_sicp_smoke.sh [--no-aot]
 set -u
@@ -20,6 +18,9 @@ TRACE_DIR="$REPO_ROOT/scripts/icc_traces"
 TRACE_FILE="$TRACE_DIR/sicp_smoke.jsonl"
 mkdir -p "$TRACE_DIR"
 : "${TRACE_FILE:?}"; : > "$TRACE_FILE"
+: "${ESHKOL_JIT_CACHE_DIR:=${TMPDIR:-/tmp}/eshkol-sicp-jit-cache}"
+export ESHKOL_JIT_CACHE_DIR
+mkdir -p "$ESHKOL_JIT_CACHE_DIR"
 
 ESHKOL_RUN="$REPO_ROOT/build/eshkol-run"
 if [ ! -x "$ESHKOL_RUN" ]; then
@@ -36,7 +37,6 @@ run_guarded() { perl -e 'alarm shift; exec @ARGV' "$1" "${@:2}"; }
 # Programs that are EXPECTED to fail (documented gaps, not gate regressions).
 is_xfail() {
     case "$1" in
-        ch4_metacircular|repro_esh0078_firstclass_predicate) return 0 ;;
         *) return 1 ;;
     esac
 }
