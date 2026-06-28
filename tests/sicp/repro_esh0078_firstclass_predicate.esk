@@ -1,0 +1,29 @@
+;; ESH-0078 minimal repro: a builtin comparison/equality/type predicate, when
+;; invoked as a FIRST-CLASS value (extracted from a data structure, or applied
+;; via `apply`), returns the raw integer 0/1 (or '()) instead of a boolean
+;; #f/#t.  Direct named calls work correctly.  This is the root cause of the
+;; metacircular-evaluator recursion gap (ch4_metacircular.esk): the interpreter
+;; stores `=`/`<` as first-class environment values, so `(= n 0)` evaluates to
+;; 0, and `(if (not (eq? 0 #f)) ...)` always takes the then/base branch -> all
+;; non-tail recursion collapses to the base case.
+;;
+;; Expected (R7RS): every line below should print #f / #t (a boolean).
+;; Actual: the indirect forms print 0 / 1 (or ()), demonstrating the bug.
+(define prims (list =))
+(define cmp (car prims))
+
+(display "direct   (= 2 0)            => ") (display (= 2 0)) (newline)            ; #f  (correct)
+(display "indirect (cmp 2 0)         => ") (display (cmp 2 0)) (newline)           ; BUG: 0
+(display "apply    (apply = '(2 0))  => ") (display (apply = (list 2 0))) (newline); BUG: 0
+(display "indirect (cmp 2 2)         => ") (display (cmp 2 2)) (newline)           ; BUG: 1
+(display "eq? test (eq? (cmp 2 0) #f)=> ") (display (eq? (cmp 2 0) #f)) (newline)  ; BUG: #f (should be #t)
+
+;; the resulting downstream failure: `if` over an indirect predicate
+(define (truthy? x) (if (not (eq? x #f)) 'then 'else))
+(display "if-branch on indirect false => ")
+(display (truthy? (cmp 2 0))) (newline)   ; BUG: prints 'then (because 0 is not eq? #f)
+
+;; self-check: PASS only if the bug is FIXED (i.e. indirect call returns #f)
+(if (eq? (cmp 2 0) #f)
+    (begin (display "PASS: ESH-0078 fixed") (newline))
+    (begin (display "FAIL: ESH-0078 present (indirect predicate returns non-boolean)") (newline)))
