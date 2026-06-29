@@ -11,15 +11,21 @@ if [ ! -x "$VM" ]; then
     exit 2
 fi
 
-OUT_TMP="${TMPDIR:-/tmp}/eshkol_vm_standalone_tests.log"
+OUT_TMP="$(mktemp "${TMPDIR:-/tmp}/eshkol_vm_standalone_tests.XXXXXX.log")"
+cleanup_output() {
+    rm -f -- "$OUT_TMP"
+}
+trap cleanup_output EXIT
 
 echo "========================================="
 echo "  Eshkol Bytecode VM Standalone Tests"
 echo "========================================="
 echo ""
 
+set +e
 ESHKOL_VM_NO_DISASM=1 "$VM" >"$OUT_TMP" 2>&1
 rc=$?
+set -e
 
 if [ "$rc" -eq 0 ]; then
     if grep -q "Source tests: " "$OUT_TMP"; then
