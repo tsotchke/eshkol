@@ -2256,6 +2256,24 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         return;
     }
 
+    /* New tensor dtype constructor syntax:
+     *   (make-tensor dims fill :dtype 'f32)
+     *
+     * The generic builtins table is fixed-arity, so the optional dtype spelling
+     * needs a VM compiler lowering while the two-argument form remains a normal
+     * first-class builtin call. */
+    if (is_sym(head, "make-tensor") && node->n_children == 5 &&
+        node->children[3]->type == N_SYMBOL &&
+        (strcmp(node->children[3]->symbol, ":dtype") == 0 ||
+         strcmp(node->children[3]->symbol, "#:dtype") == 0 ||
+         strcmp(node->children[3]->symbol, "dtype") == 0)) {
+        compile_expr(c, node->children[1], 0);
+        compile_expr(c, node->children[2], 0);
+        compile_expr(c, node->children[4], 0);
+        chunk_emit(c, OP_NATIVE_CALL, 423);
+        return;
+    }
+
     /* =========================================================================
      * All functions from here to the syntax-forms block below are handled
      * via the BUILTINS table (emit_builtin_preamble creates first-class

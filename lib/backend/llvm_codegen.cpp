@@ -36,6 +36,7 @@
 #include <eshkol/runtime_exports.h>
 #include <eshkol/pkg/subprocess.h>
 #include "../core/arena_memory.h"
+#include <sstream>
 #include <cstdlib>
 
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
@@ -100,6 +101,29 @@ void append_host_runtime_link_args(std::vector<std::string>& link_args) {
         link_args.emplace_back(runtime_arg);
     }
 #endif
+}
+
+void append_configured_link_args(const char* raw_args,
+                                 std::vector<std::string>& link_args) {
+    if (!raw_args || !*raw_args) {
+        return;
+    }
+    std::string normalized(raw_args);
+    std::replace(normalized.begin(), normalized.end(), ';', ' ');
+    std::stringstream stream(normalized);
+    std::string item;
+    while (stream >> item) {
+#ifdef __APPLE__
+        if (item == "-lc++" || item == "-lc++abi") {
+            continue;
+        }
+#endif
+        link_args.emplace_back(item);
+    }
+}
+
+void append_host_llvm_link_args(std::vector<std::string>& link_args) {
+    append_configured_link_args(ESHKOL_HOST_LLVM_LINK_ARGS, link_args);
 }
 
 } // namespace
@@ -36402,6 +36426,8 @@ int eshkol_compile_llvm_ir_to_executable(LLVMModuleRef module_ref, const char* f
             eshkol_debug("WARNING: Could not resolve runtime library path, falling back to build directory");
         }
 
+        append_host_llvm_link_args(link_args);
+
         // Add linked libraries
         if (linked_libs && num_linked_libs > 0) {
             for (size_t i = 0; i < num_linked_libs; i++) {
@@ -36503,18 +36529,14 @@ int eshkol_compile_llvm_ir_to_executable(LLVMModuleRef module_ref, const char* f
 
         link_args.emplace_back("-o");
         link_args.emplace_back(output_path.generic_string());
-#ifndef _WIN32
+#if !defined(_WIN32) && !defined(__APPLE__)
         link_args.emplace_back("-lm");
         // libdl: parallel_codegen.cpp uses dlsym(RTLD_DEFAULT, …)
         // for lazy LLVM-worker symbol resolution (Linux AArch64 +
         // lld doesn't run the .ctors / .init_array entries that
         // would normally register them at startup, see comment in
         // parallel_codegen.cpp::eshkol_parallel_workers_lazy_resolve).
-#  ifdef __APPLE__
-        // dlsym is in libc on macOS; no -ldl needed
-#  else
         link_args.emplace_back("-ldl");
-#  endif
 #endif
 
         std::string link_cmd;
