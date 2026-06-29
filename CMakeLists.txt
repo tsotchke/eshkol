@@ -2214,6 +2214,21 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
                 PASS_REGULAR_EXPRESSION "PASS: jit_cache_test"
                 FAIL_REGULAR_EXPRESSION "FAIL:")
     endif()
+    if(NOT WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/static_link_getenv_capability_test.sh")
+        add_test(
+            NAME static_link_getenv_capability_test
+            COMMAND bash
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/static_link_getenv_capability_test.sh"
+                    $<TARGET_FILE:eshkol-run>
+                    "${CMAKE_CURRENT_SOURCE_DIR}"
+                    "${CMAKE_CURRENT_BINARY_DIR}"
+        )
+        set_tests_properties(static_link_getenv_capability_test
+            PROPERTIES
+                TIMEOUT 300
+                PASS_REGULAR_EXPRESSION "PASS: static_link_getenv_capability_test"
+                FAIL_REGULAR_EXPRESSION "FAIL:")
+    endif()
 endif()
 
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/runtime_shutdown_hooks_test.cpp")
