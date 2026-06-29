@@ -6721,65 +6721,85 @@ private:
         builder->restoreIP(saved_ip);
         builder->SetInsertPoint(variadic_bb);
 
-        // Build rest list from call_args starting after fixed_params
-        // We need to iterate and cons each arg. Start with null, then cons each from right to left
-        Value* rest_list = packPtrToTaggedValue(
-            ConstantInt::get(int64_type, 0), ESHKOL_VALUE_NULL);
-
-        // For now, we build the list by consing all args (no fixed params handling yet)
-        // This is a simplification - full implementation would handle fixed params
-        for (int64_t i = call_args.size() - 1; i >= 0; i--) {
-            // Allocate cons cell with object header (consolidated pointer format)
-            Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
-            Value* cons_cell = builder->CreateCall(getArenaAllocateConsWithHeaderFunc(), {arena_ptr});
-
-            // Set car to arg, cdr to rest_list using pre-allocated allocas
-            Value* arg_val = call_args[i];
-            builder->CreateStore(arg_val, arg_ptrs[i]);
-            builder->CreateCall(getTaggedConsSetTaggedValueFunc(),
-                {cons_cell, ConstantInt::get(int1_type, 0), arg_ptrs[i]}); // car
-
-            builder->CreateStore(rest_list, rest_ptrs[i]);
-            builder->CreateCall(getTaggedConsSetTaggedValueFunc(),
-                {cons_cell, ConstantInt::get(int1_type, 1), rest_ptrs[i]}); // cdr
-
-            // Update rest_list to point to new cons cell (consolidated HEAP_PTR format)
-            Value* cons_int = builder->CreatePtrToInt(cons_cell, int64_type);
-            rest_list = packPtrToTaggedValue(cons_int, ESHKOL_VALUE_HEAP_PTR);
-        }
-
-        // Now generate switch for variadic closure call (with captures)
+        // Generate a dispatch table for variadic closure calls. The closure
+        // metadata supplies fixed_params dynamically, but the LLVM function
+        // type must be concrete. Specialize on fixed_params and capture count:
+        // (fixed args..., rest-list, capture-ptrs...) -> tagged_value.
+        const int MAX_VARIADIC_FIXED = 16;
         const int MAX_CAPTURES = 32;
         BasicBlock* variadic_switch_default = BasicBlock::Create(*context, "var_cap_default", current_func);
-        SwitchInst* var_sw = builder->CreateSwitch(num_captures, variadic_switch_default, MAX_CAPTURES + 1);
+        Value* fixed_params_clamped = builder->CreateSelect(
+            builder->CreateICmpUGT(fixed_params, ConstantInt::get(int64_type, MAX_VARIADIC_FIXED)),
+            ConstantInt::get(int64_type, MAX_VARIADIC_FIXED),
+            fixed_params,
+            "fixed_params_clamped");
+        Value* variadic_dispatch_idx = builder->CreateAdd(
+            builder->CreateMul(fixed_params_clamped, ConstantInt::get(int64_type, MAX_CAPTURES + 1)),
+            num_captures,
+            "variadic_dispatch_idx");
+        SwitchInst* var_sw = builder->CreateSwitch(
+            variadic_dispatch_idx,
+            variadic_switch_default,
+            (MAX_VARIADIC_FIXED + 1) * (MAX_CAPTURES + 1));
         std::vector<std::pair<BasicBlock*, Value*>> variadic_results;
 
-        for (int cap_count = 0; cap_count <= MAX_CAPTURES; cap_count++) {
-            BasicBlock* case_bb = BasicBlock::Create(*context,
-                "var_cap_" + std::to_string(cap_count), current_func);
-            var_sw->addCase(ConstantInt::get(int64_type, cap_count), case_bb);
-            builder->SetInsertPoint(case_bb);
+        for (int fixed_count = 0; fixed_count <= MAX_VARIADIC_FIXED; fixed_count++) {
+            for (int cap_count = 0; cap_count <= MAX_CAPTURES; cap_count++) {
+                int case_idx = fixed_count * (MAX_CAPTURES + 1) + cap_count;
+                BasicBlock* case_bb = BasicBlock::Create(*context,
+                    "var_fixed_" + std::to_string(fixed_count) + "_cap_" + std::to_string(cap_count),
+                    current_func);
+                var_sw->addCase(ConstantInt::get(int64_type, case_idx), case_bb);
+                builder->SetInsertPoint(case_bb);
 
-            // For variadic: args are (rest_list, captures...)
-            std::vector<Value*> full_args;
-            full_args.push_back(rest_list);  // The packaged rest list
-            for (int i = 0; i < cap_count; i++) {
-                Value* cap_ptr = builder->CreateGEP(tagged_value_type, captures_typed,
-                    ConstantInt::get(int64_type, i));
-                full_args.push_back(cap_ptr);
+                Value* rest_list = packPtrToTaggedValue(
+                    ConstantInt::get(int64_type, 0), ESHKOL_VALUE_NULL);
+                for (int64_t i = (int64_t)call_args.size() - 1; i >= fixed_count; i--) {
+                    Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+                    Value* cons_cell = builder->CreateCall(getArenaAllocateConsWithHeaderFunc(), {arena_ptr});
+
+                    builder->CreateStore(call_args[(size_t)i], arg_ptrs[(size_t)i]);
+                    builder->CreateCall(getTaggedConsSetTaggedValueFunc(),
+                        {cons_cell, ConstantInt::get(int1_type, 0), arg_ptrs[(size_t)i]});
+
+                    builder->CreateStore(rest_list, rest_ptrs[(size_t)i]);
+                    builder->CreateCall(getTaggedConsSetTaggedValueFunc(),
+                        {cons_cell, ConstantInt::get(int1_type, 1), rest_ptrs[(size_t)i]});
+
+                    Value* cons_int = builder->CreatePtrToInt(cons_cell, int64_type);
+                    rest_list = packPtrToTaggedValue(cons_int, ESHKOL_VALUE_HEAP_PTR);
+                }
+
+                std::vector<Value*> full_args;
+                for (int i = 0; i < fixed_count; i++) {
+                    if ((size_t)i < call_args.size()) {
+                        full_args.push_back(call_args[(size_t)i]);
+                    } else {
+                        full_args.push_back(packPtrToTaggedValue(
+                            ConstantInt::get(int64_type, 0), ESHKOL_VALUE_NULL));
+                    }
+                }
+                full_args.push_back(rest_list);
+                for (int i = 0; i < cap_count; i++) {
+                    Value* cap_ptr = builder->CreateGEP(tagged_value_type, captures_typed,
+                        ConstantInt::get(int64_type, i));
+                    full_args.push_back(cap_ptr);
+                }
+
+                std::vector<Type*> param_types;
+                for (int i = 0; i < fixed_count; i++) {
+                    param_types.push_back(tagged_value_type);
+                }
+                param_types.push_back(tagged_value_type);
+                for (int i = 0; i < cap_count; i++) {
+                    param_types.push_back(PointerType::getUnqual(*context));
+                }
+                FunctionType* func_type = FunctionType::get(tagged_value_type, param_types, false);
+
+                Value* result = builder->CreateCall(func_type, actual_func_ptr, full_args);
+                builder->CreateBr(merge_bb);
+                variadic_results.push_back({builder->GetInsertBlock(), result});
             }
-
-            // Function type: (tagged_value, pointer...) -> tagged_value
-            std::vector<Type*> param_types;
-            param_types.push_back(tagged_value_type);  // rest list
-            for (int i = 0; i < cap_count; i++) {
-                param_types.push_back(PointerType::getUnqual(*context));
-            }
-            FunctionType* func_type = FunctionType::get(tagged_value_type, param_types, false);
-
-            Value* result = builder->CreateCall(func_type, actual_func_ptr, full_args);
-            builder->CreateBr(merge_bb);
-            variadic_results.push_back({builder->GetInsertBlock(), result});
         }
 
         builder->SetInsertPoint(variadic_switch_default);
@@ -12031,8 +12051,16 @@ private:
                 current_function) {
                 FunctionType* self_type = current_function->getFunctionType();
                 uint64_t supplied_args = op->call_op.num_vars;
+                unsigned leading_value_params = 0;
+                for (unsigned i = 0; i < self_type->getNumParams(); i++) {
+                    if (self_type->getParamType(i) != tagged_value_type) {
+                        break;
+                    }
+                    leading_value_params++;
+                }
                 if (self_type->getReturnType() == tagged_value_type &&
-                    self_type->getNumParams() >= supplied_args) {
+                    self_type->getNumParams() >= supplied_args &&
+                    supplied_args == leading_value_params) {
                     std::vector<Value*> self_args;
                     self_args.reserve(self_type->getNumParams());
 
