@@ -87,6 +87,23 @@ uint64_t hash_tagged_value(const eshkol_tagged_value_t* value) {
                         hash ^= fnv1a_hash_u64(limbs[i]);
                         hash *= FNV_PRIME;
                     }
+                } else if (subtype == HEAP_SUBTYPE_CONS) {
+                    // Structural hash of a pair: combine hash(car) and hash(cdr)
+                    // recursively, so equal lists/pairs hash equal (ESH-0064).
+                    arena_tagged_cons_cell_t* cell =
+                        (arena_tagged_cons_cell_t*)value->data.ptr_val;
+                    eshkol_tagged_value_t car = arena_tagged_cons_get_tagged_value(cell, false);
+                    eshkol_tagged_value_t cdr = arena_tagged_cons_get_tagged_value(cell, true);
+                    hash ^= hash_tagged_value(&car); hash *= FNV_PRIME;
+                    hash ^= hash_tagged_value(&cdr); hash *= FNV_PRIME;
+                } else if (subtype == HEAP_SUBTYPE_VECTOR) {
+                    // Structural hash of a heterogeneous vector: [len:i64][elems...].
+                    int64_t len = *(int64_t*)(uintptr_t)value->data.ptr_val;
+                    eshkol_tagged_value_t* elems =
+                        (eshkol_tagged_value_t*)((uint8_t*)(uintptr_t)value->data.ptr_val + 8);
+                    for (int64_t i = 0; i < len; i++) {
+                        hash ^= hash_tagged_value(&elems[i]); hash *= FNV_PRIME;
+                    }
                 } else {
                     hash ^= fnv1a_hash_u64(value->data.ptr_val);
                 }
@@ -152,6 +169,34 @@ bool hash_keys_equal(const eshkol_tagged_value_t* a, const eshkol_tagged_value_t
                                              (const eshkol_bignum_t*)b->data.ptr_val) == 0;
             }
 
+            if (subtype_a == HEAP_SUBTYPE_CONS) {
+                // Structural pair equality, recursing through hash_keys_equal so
+                // hash and equality stay consistent (ESH-0064). Compound keys
+                // (e.g. SICP data-directed (op . type) keys) now match by value.
+                arena_tagged_cons_cell_t* ca = (arena_tagged_cons_cell_t*)a->data.ptr_val;
+                arena_tagged_cons_cell_t* cb = (arena_tagged_cons_cell_t*)b->data.ptr_val;
+                eshkol_tagged_value_t car_a = arena_tagged_cons_get_tagged_value(ca, false);
+                eshkol_tagged_value_t car_b = arena_tagged_cons_get_tagged_value(cb, false);
+                if (!hash_keys_equal(&car_a, &car_b)) return false;
+                eshkol_tagged_value_t cdr_a = arena_tagged_cons_get_tagged_value(ca, true);
+                eshkol_tagged_value_t cdr_b = arena_tagged_cons_get_tagged_value(cb, true);
+                return hash_keys_equal(&cdr_a, &cdr_b);
+            }
+
+            if (subtype_a == HEAP_SUBTYPE_VECTOR) {
+                int64_t len_a = *(int64_t*)(uintptr_t)a->data.ptr_val;
+                int64_t len_b = *(int64_t*)(uintptr_t)b->data.ptr_val;
+                if (len_a != len_b) return false;
+                eshkol_tagged_value_t* ea =
+                    (eshkol_tagged_value_t*)((uint8_t*)(uintptr_t)a->data.ptr_val + 8);
+                eshkol_tagged_value_t* eb =
+                    (eshkol_tagged_value_t*)((uint8_t*)(uintptr_t)b->data.ptr_val + 8);
+                for (int64_t i = 0; i < len_a; i++) {
+                    if (!hash_keys_equal(&ea[i], &eb[i])) return false;
+                }
+                return true;
+            }
+
             return a->data.ptr_val == b->data.ptr_val;
         }
 
@@ -185,6 +230,7 @@ eshkol_hash_table_t* arena_allocate_hash_table(arena_t* arena, size_t initial_ca
     table->capacity = initial_capacity;
     table->size = 0;
     table->tombstones = 0;
+    table->home_arena = arena;  // ESH-0039: remember where the table lives
 
     return table;
 }
@@ -234,6 +280,7 @@ eshkol_hash_table_t* arena_hash_table_create_with_header(arena_t* arena) {
     table->capacity = initial_capacity;
     table->size = 0;
     table->tombstones = 0;
+    table->home_arena = arena;  // ESH-0039: remember where the table lives
 
     return table;
 }
@@ -278,6 +325,12 @@ struct hash_table_lock_guard {
 };
 
 static bool hash_table_resize(arena_t* arena, eshkol_hash_table_t* table, size_t new_capacity) {
+    // ESH-0039: grow the backing arrays in the arena the table was BORN in, not
+    // whatever transient region arena is active during this set!. Otherwise a
+    // table created outside a (with-region ...) would have its arrays reallocated
+    // into the region arena and freed (corrupted) at region_pop.
+    if (table->home_arena) arena = table->home_arena;
+
     eshkol_tagged_value_t* new_keys = (eshkol_tagged_value_t*)
         arena_allocate_zeroed(arena, sizeof(eshkol_tagged_value_t) * new_capacity);
     eshkol_tagged_value_t* new_values = (eshkol_tagged_value_t*)

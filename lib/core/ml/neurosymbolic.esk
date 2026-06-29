@@ -1,0 +1,155 @@
+;;
+;; core.ml.neurosymbolic — differentiable symbol embeddings + soft unification
+;;
+;; v1.5-intelligence: the neuro-symbolic bridge. The consciousness engine's
+;; `unify` is exact (boolean). Soft unification replaces that hard match with a
+;; DIFFERENTIABLE similarity in [0,1], computed over learnable per-symbol
+;; embedding vectors — gradients flow back through the match into the embeddings,
+;; so a system can LEARN which symbols should unify (cat≈feline, cat≉rock) rather
+;; than only test syntactic identity.
+;;
+;; Built on core.ad.tape: the embeddings are parameters, each soft-unify is a tape
+;; forward (dot → sigmoid), and tape-gradient + SGD update the embeddings.
+;;
+;;   (define tbl (make-embedding-table 8))
+;;   (soft-unify-train! tbl 'cat 'feline 1.0 0.5)   ; learn: cat unifies with feline
+;;   (soft-unify tbl 'cat 'feline)                  ; => rising toward 1.0
+;;
+
+(require core.ad.tape)
+
+(provide make-embedding-table emb-dim embed!
+         vdot soft-unify soft-unify-loss soft-unify-train!
+         kb-attention kb-retrieve)
+
+;; ── small self-contained vector helpers (core module: no stdlib map/for-each) ──
+(define (ns-make-vec n init) (make-vector n init))
+
+(define (vdot a b)
+  (let ((n (vector-length a)))
+    (let loop ((i 0) (s 0.0))
+      (if (< i n) (loop (+ i 1) (+ s (* (vector-ref a i) (vector-ref b i)))) s))))
+
+(define (ns-reverse lst)
+  (let loop ((l lst) (acc '()))
+    (if (pair? l) (loop (cdr l) (cons (car l) acc)) acc)))
+
+(define (ns-scale s v)
+  (let* ((n (vector-length v)) (r (make-vector n 0.0)))
+    (let loop ((i 0)) (if (< i n) (begin (vector-set! r i (* s (vector-ref v i))) (loop (+ i 1)))))
+    r))
+
+;; in-place: a[i] -= b[i]
+(define (ns-sub! a b)
+  (let ((n (vector-length a)))
+    (let loop ((i 0))
+      (if (< i n) (begin (vector-set! a i (- (vector-ref a i) (vector-ref b i))) (loop (+ i 1)))))
+    a))
+
+;; ── embedding table ──
+;; A table is #(dim entries) where entries is a mutable alist (sym . vector),
+;; held in slot 1 and grown by prepending. Embeddings init to small, symbol-
+;; deterministic values (no RNG dependency) so distinct symbols start distinct.
+(define (make-embedding-table dim) (vector dim '()))
+(define (emb-dim tbl) (vector-ref tbl 0))
+
+(define (ns-assq sym alist)
+  (if (pair? alist)
+      (if (eq? (car (car alist)) sym) (car alist) (ns-assq sym (cdr alist)))
+      #f))
+
+;; deterministic small init from a symbol-derived seed
+(define (ns-init dim seed)
+  (let ((v (make-vector dim 0.0)))
+    (let loop ((i 0) (s seed))
+      (if (< i dim)
+          (let ((s2 (modulo (+ (* s 1103515245) 12345) 2147483648)))
+            (vector-set! v i (- (/ (exact->inexact (modulo s2 2000)) 1000.0) 1.0))
+            (loop (+ i 1) s2))))
+    v))
+
+;; ensure `sym` has an embedding; return its (mutable) vector
+(define (embed! tbl sym)
+  (let ((hit (ns-assq sym (vector-ref tbl 1))))
+    (if hit
+        (cdr hit)
+        (let* ((dim (emb-dim tbl))
+               ;; seed from a cheap hash of the symbol's printed form
+               (seed (let ((s (symbol->string sym)))
+                       (let loop ((i 0) (h 5381))
+                         (if (< i (string-length s))
+                             (loop (+ i 1) (+ (* h 33) (char->integer (string-ref s i))))
+                             (modulo h 2147483648)))))
+               (v (ns-init dim seed)))
+          (vector-set! tbl 1 (cons (cons sym v) (vector-ref tbl 1)))
+          v))))
+
+;; ── soft unification ──
+;; soft-unify confidence = sigmoid(<emb a, emb b> / sqrt(dim)) in [0,1].
+(define (soft-unify tbl a b)
+  (let* ((va (embed! tbl a)) (vb (embed! tbl b))
+         (scale (/ 1.0 (sqrt (exact->inexact (emb-dim tbl)))))
+         (z (* scale (vdot va vb))))
+    (/ 1.0 (+ 1.0 (exp (- z))))))
+
+;; squared-error loss between soft-unify(a,b) and a target confidence
+(define (soft-unify-loss tbl a b target)
+  (let ((c (soft-unify tbl a b)))
+    (* (- c target) (- c target))))
+
+;; ── one differentiable training step (gradients flow through the match) ──
+;; Pushes soft-unify(a,b) toward `target` by SGD on both embeddings, via the tape.
+;; Returns the loss before the update.
+(define (soft-unify-train! tbl a b target lr)
+  (let* ((va (embed! tbl a)) (vb (embed! tbl b))
+         (dim (emb-dim tbl))
+         (scale (/ 1.0 (sqrt (exact->inexact dim)))))
+    (with-tape "soft-unify"
+      (lambda ()
+        (let* ((t (current-tape))
+               (na (tape-input t va))    ; tensor (vector) nodes — learnable
+               (nb (tape-input t vb))
+               ;; custom op: scaled dot product. backward: d/da = scale*g*b, d/db = scale*g*a
+               (dot (record-op! t (list na nb) (* scale (vdot va vb))
+                      (lambda (g) (list (ns-scale (* scale g) vb)
+                                        (ns-scale (* scale g) va)))))
+               (conf (tape-sigmoid t dot))                 ; in [0,1]
+               (err  (tape-sub t conf (tape-const t target)))
+               (loss (tape-square t err))
+               (grads (tape-gradient t loss (list na nb))))
+          ;; SGD: emb -= lr * grad   (grads are vectors)
+          (ns-sub! va (ns-scale lr (car grads)))
+          (ns-sub! vb (ns-scale lr (cadr grads)))
+          (node-value loss))))))
+
+;; ── attention over a knowledge base (neural query over symbolic facts) ──
+;; A differentiable retrieval: the query attends over the fact KEYS by embedding
+;; similarity (softmax over scaled dot products). As the embeddings are trained
+;; (soft-unify-train!), the query routes to related keys — a neural query
+;; mechanism over a symbolic store. `keys` is a list of symbols, `query` a symbol;
+;; returns an alist (key . attention-weight) summing to 1.
+(define (kb-attention tbl keys query)
+  (let* ((q (embed! tbl query))
+         (scale (/ 1.0 (sqrt (exact->inexact (emb-dim tbl)))))
+         (raw (let loop ((ks keys) (acc '()))
+                (if (pair? ks)
+                    (loop (cdr ks) (cons (* scale (vdot q (embed! tbl (car ks)))) acc))
+                    (ns-reverse acc))))
+         (mx (let loop ((xs raw) (m -1.0e30))
+               (if (pair? xs) (loop (cdr xs) (if (> (car xs) m) (car xs) m)) m)))
+         (exps (let loop ((xs raw) (acc '()))
+                 (if (pair? xs) (loop (cdr xs) (cons (exp (- (car xs) mx)) acc)) (ns-reverse acc))))
+         (sum (let loop ((xs exps) (s 0.0)) (if (pair? xs) (loop (cdr xs) (+ s (car xs))) s))))
+    (let loop ((ks keys) (es exps) (acc '()))
+      (if (and (pair? ks) (pair? es))
+          (loop (cdr ks) (cdr es) (cons (cons (car ks) (/ (car es) sum)) acc))
+          (ns-reverse acc)))))
+
+;; argmax retrieval: the key the query attends to most
+(define (kb-retrieve tbl keys query)
+  (let loop ((aw (kb-attention tbl keys query)) (best #f) (bw -1.0))
+    (if (pair? aw)
+        (if (> (cdr (car aw)) bw)
+            (loop (cdr aw) (car (car aw)) (cdr (car aw)))
+            (loop (cdr aw) best bw))
+        best)))

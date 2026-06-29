@@ -1,0 +1,74 @@
+;; SICP Chapter 3.5 — Streams.
+;; cons-stream/delay/force, infinite streams (integers, fibs), the sieve of
+;; Eratosthenes for primes, partial sums, and the pi (Leibniz) stream.
+
+(define fails 0)
+(define (check name ok)
+  (if ok (begin (display "PASS: ") (display name) (newline))
+      (begin (set! fails (+ fails 1)) (display "FAIL: ") (display name) (newline))))
+(define (close? a b) (< (abs (- a b)) 1e-9))
+
+;; ---- stream primitives (3.5.1) ----
+(define-syntax cons-stream (syntax-rules () ((_ a b) (cons a (delay b)))))
+(define (stream-car s) (car s))
+(define (stream-cdr s) (force (cdr s)))
+(define the-empty-stream '())
+(define (stream-null? s) (null? s))
+(define (stream-ref s n) (if (= n 0) (stream-car s) (stream-ref (stream-cdr s) (- n 1))))
+(define (stream-map proc s)
+  (if (stream-null? s) the-empty-stream
+      (cons-stream (proc (stream-car s)) (stream-map proc (stream-cdr s)))))
+(define (stream-take s n)
+  (if (= n 0) '() (cons (stream-car s) (stream-take (stream-cdr s) (- n 1)))))
+(define (stream-filter pred s)
+  (cond ((stream-null? s) the-empty-stream)
+        ((pred (stream-car s)) (cons-stream (stream-car s) (stream-filter pred (stream-cdr s))))
+        (else (stream-filter pred (stream-cdr s)))))
+(define (add-streams s1 s2)
+  (cond ((stream-null? s1) s2)
+        ((stream-null? s2) s1)
+        (else (cons-stream (+ (stream-car s1) (stream-car s2))
+                           (add-streams (stream-cdr s1) (stream-cdr s2))))))
+(define (scale-stream s factor)
+  (stream-map (lambda (x) (* x factor)) s))
+
+;; ---- integers from n ----
+(define (integers-from n) (cons-stream n (integers-from (+ n 1))))
+(define integers (integers-from 1))
+(check "stream-ref-integers" (= (stream-ref integers 10) 11))
+(check "stream-take-integers" (equal? (stream-take integers 5) '(1 2 3 4 5)))
+(check "stream-map-square" (equal? (stream-take (stream-map (lambda (x) (* x x)) integers) 4)
+                                   '(1 4 9 16)))
+
+;; ---- implicit (self-referential) integers via add-streams (3.5.2) ----
+(define ones (cons-stream 1 ones))
+(define ints2 (cons-stream 1 (add-streams ones ints2)))
+(check "implicit-integers" (equal? (stream-take ints2 5) '(1 2 3 4 5)))
+
+;; ---- Fibonacci stream (3.5.2) ----
+(define fibs (cons-stream 0 (cons-stream 1 (add-streams (stream-cdr fibs) fibs))))
+(check "fib-stream" (equal? (stream-take fibs 10) '(0 1 1 2 3 5 8 13 21 34)))
+
+;; ---- sieve of Eratosthenes for primes (3.5.2) ----
+(define (sieve s)
+  (cons-stream (stream-car s)
+               (sieve (stream-filter (lambda (x) (not (= 0 (remainder x (stream-car s)))))
+                                     (stream-cdr s)))))
+(define primes (sieve (integers-from 2)))
+(check "prime-stream" (equal? (stream-take primes 8) '(2 3 5 7 11 13 17 19)))
+(check "prime-ref-20" (= (stream-ref primes 20) 73))  ; 21st prime
+
+;; ---- partial sums (ex 3.55) ----
+(define (partial-sums s) (cons-stream (stream-car s) (add-streams (stream-cdr s) (partial-sums s))))
+(check "partial-sums" (equal? (stream-take (partial-sums integers) 5) '(1 3 6 10 15)))
+
+;; ---- pi stream via Leibniz series (3.5.3) ----
+(define (pi-summands n) (cons-stream (/ 1.0 n) (stream-map - (pi-summands (+ n 2)))))
+(define pi-stream (scale-stream (partial-sums (pi-summands 1)) 4.0))
+;; converges slowly; the 1000th partial sum is within ~1e-3 of pi
+(check "pi-stream-converges" (< (abs (- (stream-ref pi-stream 1000) 3.14159265)) 1e-2))
+
+(newline)
+(if (= fails 0)
+    (begin (display "ALL-PASS ch3_streams") (newline))
+    (begin (display "HAS-FAIL ch3_streams ") (display fails) (newline)))

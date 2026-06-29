@@ -103,8 +103,24 @@ arena_t* arena_create(size_t default_block_size) {
     arena->alignment = DEFAULT_ALIGNMENT;
     arena->mutex = nullptr;
     arena->thread_safe = false;
+    arena->bounded = false;
 
     eshkol_debug("Created arena with default block size %zu", default_block_size);
+    return arena;
+}
+
+// ESH-0039 / v1.8: bounded, no-grow arena.
+// Single fixed-capacity block; allocation never grows the arena. When the
+// capacity is exhausted, arena_allocate* returns NULL (see the `bounded` guard
+// in arena_allocate_aligned) rather than malloc'ing a new block. This is the
+// embedded / hard-ceiling seam for v1.8; the hosted impl simply reuses
+// arena_create for the one-shot backing block.
+arena_t* arena_create_bounded(size_t capacity) {
+    if (capacity < 1024) capacity = 1024;
+    arena_t* arena = arena_create(capacity);
+    if (!arena) return nullptr;
+    arena->bounded = true;
+    eshkol_debug("Created bounded arena with capacity %zu", capacity);
     return arena;
 }
 
@@ -124,6 +140,7 @@ arena_t* arena_create_threadsafe(size_t default_block_size) {
 
     arena->mutex = mutex;
     arena->thread_safe = true;
+    arena->bounded = false;
 
     eshkol_debug("Created thread-safe arena with default block size %zu", default_block_size);
     return arena;
@@ -202,6 +219,14 @@ void* arena_allocate_aligned(arena_t* arena, size_t size, size_t alignment) {
     size_t current_used = align_block_offset(block, block->used, alignment);
 
     if (current_used + aligned_size > block->size) {
+        // ESH-0039 / v1.8: bounded arenas never grow — a request that overflows
+        // the fixed capacity fails instead of malloc'ing a new block.
+        if (arena->bounded) {
+            eshkol_warn("Bounded arena exhausted: request %zu bytes exceeds remaining capacity",
+                        aligned_size);
+            arena_unlock(arena);
+            return nullptr;
+        }
         // Need a new block
         size_t min_block_size = aligned_size + alignment - 1;
         size_t new_block_size = (min_block_size > arena->default_block_size) ?

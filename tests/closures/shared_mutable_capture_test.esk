@@ -1,0 +1,180 @@
+; ================================================================
+; Shared Mutable Capture Test Suite (ESH-0074)
+; A variable that is BOTH set!-mutated AND captured by two or more
+; closures must reference ONE shared mutable cell (assignment
+; conversion). Covers function-parameter and lambda-parameter
+; binding sites, nested and escaping closures, plus regression
+; guards for single-closure set! and the PR #50 named-let cases.
+; ================================================================
+
+(require stdlib)
+
+(define pass-count 0)
+(define fail-count 0)
+
+(define (test name expected actual)
+  (if (equal? expected actual)
+      (begin (set! pass-count (+ pass-count 1))
+             (display (string-append "PASS: " name "\n")))
+      (begin (set! fail-count (+ fail-count 1))
+             (display (string-append "FAIL: " name "\n"))
+             (display "  Expected: ") (display expected) (newline)
+             (display "  Actual:   ") (display actual) (newline))))
+
+; ================================================================
+; Section 1: make-counter — sibling lambdas over a set!-mutated param
+; ================================================================
+
+(define (make-counter n)
+  (cons (lambda () (set! n (+ n 1)) n)   ; inc
+        (lambda () n)))                    ; read
+
+(define c (make-counter 0))
+((car c))
+((car c))
+(test "make-counter: read sees both increments" 2 ((cdr c)))
+
+; Independent instances must not share state
+(define c2 (make-counter 100))
+((car c2))
+(test "make-counter: instance isolation (c still 2)" 2 ((cdr c)))
+(test "make-counter: instance isolation (c2 = 101)" 101 ((cdr c2)))
+
+; ================================================================
+; Section 2: make-account (SICP 3.1.1) — sibling internal-define
+;            closures over a shared set!-mutated parameter
+; ================================================================
+
+(define (make-account balance)
+  (define (withdraw amount)
+    (if (>= balance amount)
+        (begin (set! balance (- balance amount)) balance)
+        "Insufficient funds"))
+  (define (deposit amount)
+    (set! balance (+ balance amount))
+    balance)
+  (define (dispatch m)
+    (cond ((eq? m 'withdraw) withdraw)
+          ((eq? m 'deposit) deposit)
+          (else (error "Unknown request" m))))
+  dispatch)
+
+(define acc (make-account 100))
+(test "account-withdraw" 50 ((acc 'withdraw) 50))
+(test "account-deposit"  90 ((acc 'deposit) 40))
+(test "account-withdraw-2" 30 ((acc 'withdraw) 60))
+(test "account-deposit-2" 130 ((acc 'deposit) 100))
+
+; NOTE on cross-instance isolation of INTERNAL-DEFINE objects:
+; Two `make-account` instances built with *internal defines* currently alias
+; each other because internal-define functions (withdraw/deposit) are stored
+; in module-level globals (@letrecstar_*) that each call overwrites, and the
+; returned dispatcher captures the global's address. That is a SEPARATE,
+; pre-existing bug in the letrec local-function codegen path
+; (lib/backend/binding_codegen.cpp) — NOT the set!-mutated-shared-capture bug
+; (ESH-0074) fixed here. Instance isolation IS exercised below for the
+; constructs ESH-0074 covers: make-counter (param + sibling lambdas) and the
+; explicit let-lambda object form.
+
+; Explicit let-lambda object form: instance isolation works
+(define (make-account/lambda balance)
+  (let ((withdraw (lambda (amount) (set! balance (- balance amount)) balance))
+        (deposit  (lambda (amount) (set! balance (+ balance amount)) balance)))
+    (lambda (m)
+      (cond ((eq? m 'withdraw) withdraw)
+            ((eq? m 'deposit) deposit)))))
+
+(define la1 (make-account/lambda 100))
+(define la2 (make-account/lambda 100))
+(test "lambda-account la1 withdraw" 90 ((la1 'withdraw) 10))
+(test "lambda-account la2 isolated" 80 ((la2 'withdraw) 20))
+(test "lambda-account la1 unaffected" 91 ((la1 'deposit) 1))
+
+; ================================================================
+; Section 3: nested-closure-shared — inner closure mutates a var the
+;            outer closure also reads; both share the cell
+; ================================================================
+
+(define (make-nested x)
+  (lambda ()
+    (cons (lambda () (set! x (+ x 10)) x)
+          (lambda () x))))
+
+(define mk (make-nested 5))
+(define pair (mk))
+((car pair))
+((car pair))
+(test "nested-closure-shared" 25 ((cdr pair)))
+
+; ================================================================
+; Section 4: escaping-closure-shared — closures returned/stored and
+;            invoked after the defining frame has returned
+; ================================================================
+
+(define (make-pair-ops init)
+  (let ((get (lambda () init))
+        (set (lambda (v) (set! init v) init)))
+    (cons get set)))
+
+(define ops (make-pair-ops 7))
+(test "escaping-closure initial" 7 ((car ops)))
+((cdr ops) 42)
+(test "escaping-closure after set via sibling" 42 ((car ops)))
+
+; ================================================================
+; Section 5: REGRESSION — single-closure set! capture (must still work)
+; ================================================================
+
+(define (make-withdraw balance)
+  (lambda (amount)
+    (if (>= balance amount)
+        (begin (set! balance (- balance amount)) balance)
+        "Insufficient funds")))
+
+(define w (make-withdraw 100))
+(test "single-closure set! call 1" 60 (w 40))
+(test "single-closure set! call 2" 30 (w 30))
+
+(define (make-accumulator total)
+  (lambda (amount)
+    (set! total (+ total amount))
+    total))
+
+(define a (make-accumulator 5))
+(test "make-accumulator 1" 15 (a 10))
+(test "make-accumulator 2" 25 (a 10))
+
+; ================================================================
+; Section 6: REGRESSION — plain set! on a (non-captured) parameter
+; ================================================================
+
+(define (set-param x)
+  (set! x 5)
+  x)
+(test "set! on plain param" 5 (set-param 1))
+
+; ================================================================
+; Section 7: REGRESSION — named-let loop var captured in body (PR #50)
+; ================================================================
+
+(define (collect-closures)
+  (let loop ((i 0) (acc '()))
+    (if (>= i 3)
+        (reverse acc)
+        (loop (+ i 1) (cons (lambda () i) acc)))))
+
+(define cls (collect-closures))
+(test "named-let captured loopvar 0" 0 ((car cls)))
+(test "named-let captured loopvar 1" 1 ((car (cdr cls))))
+(test "named-let captured loopvar 2" 2 ((car (cdr (cdr cls)))))
+
+; ================================================================
+; Summary
+; ================================================================
+(newline)
+(display "==== Shared Mutable Capture Test Results ====") (newline)
+(display "Passed: ") (display pass-count) (newline)
+(display "Failed: ") (display fail-count) (newline)
+(if (= fail-count 0)
+    (begin (display "ALL TESTS PASSED") (newline))
+    (begin (display "SOME TESTS FAILED") (newline)))

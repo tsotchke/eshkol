@@ -18,6 +18,7 @@
 #include <cmath>
 #include <atomic>
 #include <mutex>
+#include <unistd.h>
 #include <dispatch/dispatch.h>
 
 // ============================================================================
@@ -96,6 +97,79 @@ static id<MTLComputePipelineState> g_matmul_f32_simd_128_pipeline = nil;
 // g_matmul_ozaki_pipeline removed — Ozaki-I replaced by Ozaki-II (g_matmul_ozaki_gemm_pipeline)
 static id<MTLLibrary> g_metal_library = nil;
 static bool g_metal_unified_memory = false;
+
+// GPU-wedge guard.
+//
+// `waitUntilCompleted` blocks forever if the GPU command never completes. On
+// Apple Silicon (AGXMetalG14X) the whole compute queue can get wedged by an
+// earlier interrupted/timed-out command buffer; the *next* process's GPU init
+// warmup — the first `waitUntilCompleted` it issues — then hangs indefinitely
+// in __psynch_cvwait inside metal_init(), freezing the entire process with no
+// recovery and no CPU fallback (observed: matmul on macOS hangs forever).
+//
+// Fix: never wait unbounded. Every GPU submission uses metal_wait_bounded(),
+// which waits with a deadline. On timeout the GPU is marked wedged; all
+// subsequent matmul dispatches skip the GPU and use the CPU fallback that
+// eshkol_matmul_dispatch already implements. Timeout (seconds) is tunable via
+// ESHKOL_GPU_WAIT_TIMEOUT (default 10s; <=0 restores legacy unbounded wait).
+static std::atomic<bool> g_metal_gpu_wedged{false};
+
+static double metal_gpu_wait_timeout(void) {
+    static std::atomic<double> cached{-1.0};
+    double v = cached.load(std::memory_order_acquire);
+    if (v < 0.0) {
+        v = 10.0;  // default 10s — generous for large GEMMs, short enough to recover
+        if (const char* env = std::getenv("ESHKOL_GPU_WAIT_TIMEOUT")) {
+            double parsed = atof(env);
+            v = parsed;  // <=0 means "wait unbounded" (legacy behavior)
+        }
+        cached.store(v, std::memory_order_release);
+    }
+    return v;
+}
+
+// Bounded wait for an ALREADY-COMMITTED command buffer. Returns true if the
+// command buffer reached Completed within the timeout, false on timeout/error.
+// On timeout the GPU is flagged wedged so future dispatches avoid it.
+//
+// NOTE: this is called *after* [cmd commit], so we cannot use
+// addCompletedHandler (Metal asserts "Completed handler provided after commit
+// call"). Instead we poll [cmd status] against a deadline. Polling the status
+// is allowed post-commit and lets the same helper wrap every existing
+// "commit; waitUntilCompleted; check status" site without reordering.
+static bool metal_wait_bounded(id<MTLCommandBuffer> cmd) {
+    double timeout_s = metal_gpu_wait_timeout();
+    if (timeout_s <= 0.0) {
+        // Legacy unbounded wait (opt-in via ESHKOL_GPU_WAIT_TIMEOUT<=0).
+        [cmd waitUntilCompleted];
+        return [cmd status] == MTLCommandBufferStatusCompleted;
+    }
+
+    dispatch_time_t deadline =
+        dispatch_time(DISPATCH_TIME_NOW, (int64_t)(timeout_s * NSEC_PER_SEC));
+    // Poll at 1ms granularity: negligible latency for short GEMMs, bounded
+    // total wait for a wedged/hung queue. The GPU runs asynchronously; we only
+    // spin on the CPU observing the command-buffer status.
+    const useconds_t poll_us = 1000;  // 1ms
+    for (;;) {
+        MTLCommandBufferStatus st = [cmd status];
+        if (st == MTLCommandBufferStatusCompleted) return true;
+        if (st == MTLCommandBufferStatusError) return false;
+        if (dispatch_time(DISPATCH_TIME_NOW, 0) >= deadline) {
+            // Timed out: the GPU did not complete. Abandon the in-flight buffer
+            // (do NOT block on it) and steer everything to the CPU fallback.
+            bool already = g_metal_gpu_wedged.exchange(true, std::memory_order_release);
+            if (!already) {
+                fprintf(stderr,
+                        "[GPU] command buffer did not complete within %.1fs — GPU "
+                        "marked unavailable, falling back to CPU for matmul. "
+                        "(tune via ESHKOL_GPU_WAIT_TIMEOUT)\n", timeout_s);
+            }
+            return false;
+        }
+        usleep(poll_us);
+    }
+}
 
 // GPU precision tier: 0=exact (sf64), 1=high (df64), 2=fast (f32), 3=ml (fp24)
 static int g_metal_precision_tier = 0;
@@ -1280,7 +1354,14 @@ static int metal_init(void) {
                         threadsPerThreadgroup:MTLSizeMake(g_sf64_tg, g_sf64_tg, 1)];
                 [warmup_enc endEncoding];
                 [warmup_cmd commit];
-                [warmup_cmd waitUntilCompleted];
+                // Bounded wait: if the queue is wedged (e.g. by a prior
+                // interrupted command buffer) this would otherwise hang
+                // metal_init() forever in __psynch_cvwait. On timeout the GPU
+                // is flagged unavailable and dispatch falls back to the CPU.
+                if (!metal_wait_bounded(warmup_cmd)) {
+                    eshkol_error("Metal: GPU warmup did not complete — disabling "
+                                 "GPU matmul, using CPU fallback");
+                }
                 warmup_buf = nil;  // release
             }
         }
@@ -1602,7 +1683,12 @@ static int metal_matmul_dispatch_one(id<MTLBuffer> buf_a, id<MTLBuffer> buf_b,
             threadsPerThreadgroup:MTLSizeMake(g_sf64_tg, g_sf64_tg, 1)];
     [enc endEncoding];
     [cmd commit];
-    [cmd waitUntilCompleted];
+    if (!metal_wait_bounded(cmd)) {
+        // Timed out (GPU wedged) — flagged inside metal_wait_bounded; caller
+        // falls back to CPU.
+        fprintf(stderr, "[GPU] sf64 matmul timed out (M=%u K=%u N=%u)\n", M, K, N);
+        return -3;
+    }
 
     if ([cmd status] == MTLCommandBufferStatusCompleted) {
         double gpu_ms = ([cmd GPUEndTime] - [cmd GPUStartTime]) * 1000.0;
@@ -1656,7 +1742,10 @@ static int metal_matmul_dispatch_f32_simd(id<MTLBuffer> buf_a, id<MTLBuffer> buf
             threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
     [enc endEncoding];
     [cmd commit];
-    [cmd waitUntilCompleted];
+    if (!metal_wait_bounded(cmd)) {
+        fprintf(stderr, "[GPU] f32_simd matmul timed out (M=%u K=%u N=%u)\n", M, K, N);
+        return -3;
+    }
 
     if ([cmd status] == MTLCommandBufferStatusCompleted) {
         double gpu_ms = ([cmd GPUEndTime] - [cmd GPUStartTime]) * 1000.0;
@@ -1750,7 +1839,7 @@ static int metal_matmul_sf64_dispatch(EshkolGPUBuffer* A, EshkolGPUBuffer* B, Es
                     threadsPerThreadgroup:MTLSizeMake(g_sf64_tg, g_sf64_tg, 1)];
             [enc endEncoding];
             [cmd commit];
-            [cmd waitUntilCompleted];
+            metal_wait_bounded(cmd);  // bounded; non-Completed routes to fallback below
 
             if ([cmd status] == MTLCommandBufferStatusCompleted) {
                 double gpu_ms = ([cmd GPUEndTime] - [cmd GPUStartTime]) * 1000.0;
@@ -1822,7 +1911,7 @@ static int metal_matmul_df64_dispatch(EshkolGPUBuffer* A, EshkolGPUBuffer* B, Es
                     threadsPerThreadgroup:MTLSizeMake(g_sf64_tg, g_sf64_tg, 1)];
             [enc endEncoding];
             [cmd commit];
-            [cmd waitUntilCompleted];
+            metal_wait_bounded(cmd);  // bounded; non-Completed routes to fallback below
 
             int result = -4;
             if ([cmd status] == MTLCommandBufferStatusCompleted) {
@@ -1928,7 +2017,7 @@ static int metal_matmul_df64_dispatch(EshkolGPUBuffer* A, EshkolGPUBuffer* B, Es
         }
 
         [cmd commit];
-        [cmd waitUntilCompleted];
+        metal_wait_bounded(cmd);  // bounded; non-Completed routes to fallback below
 
         int result = -4;
         if ([cmd status] == MTLCommandBufferStatusCompleted) {
@@ -2063,7 +2152,7 @@ static int metal_matmul_f32_simd_full_dispatch(EshkolGPUBuffer* A, EshkolGPUBuff
 
         // Single commit+wait for the entire pipeline
         [cmd commit];
-        [cmd waitUntilCompleted];
+        metal_wait_bounded(cmd);  // bounded; non-Completed routes to fallback below
 
         int result = -4;
         if ([cmd status] == MTLCommandBufferStatusCompleted) {
@@ -2174,7 +2263,7 @@ static int metal_matmul_fp24_dispatch(EshkolGPUBuffer* A, EshkolGPUBuffer* B, Es
         }
 
         [cmd commit];
-        [cmd waitUntilCompleted];
+        metal_wait_bounded(cmd);  // bounded; non-Completed routes to fallback below
 
         int result = -1;
         if ([cmd status] == MTLCommandBufferStatusCompleted) {
@@ -2272,9 +2361,9 @@ static int metal_matmul_fp53_dispatch(EshkolGPUBuffer* A, EshkolGPUBuffer* B, Es
             [enc endEncoding];
 
             [cmd commit];
-            [cmd waitUntilCompleted];
+            bool fp53_ok = metal_wait_bounded(cmd);
 
-            if ([cmd status] != MTLCommandBufferStatusCompleted) {
+            if (!fp53_ok || [cmd status] != MTLCommandBufferStatusCompleted) {
                 NSError* err = [cmd error];
                 fprintf(stderr, "[GPU] fp53 matmul error (code=%ld): %s\n",
                         (long)[err code], err ? [[err localizedDescription] UTF8String] : "unknown");
@@ -3483,6 +3572,11 @@ size_t eshkol_gpu_get_threshold(void) {
 }
 
 int eshkol_gpu_should_use(size_t num_elements) {
+#if ESHKOL_GPU_METAL_AVAILABLE
+    // Once the Metal queue has wedged (a prior dispatch timed out), never touch
+    // the GPU again this process — go straight to the CPU path to avoid hangs.
+    if (g_metal_gpu_wedged.load(std::memory_order_acquire)) return 0;
+#endif
     return (g_active_backend != ESHKOL_GPU_NONE && num_elements >= g_gpu_threshold) ? 1 : 0;
 }
 

@@ -35,6 +35,9 @@
 #include <vector>
 #include <set>
 #include <map>
+#if defined(__APPLE__)
+#include <mach-o/dyld.h>  // _dyld_image_count/_dyld_get_image_name — child lib search path
+#endif
 #include <algorithm>
 #include <sstream>
 #include <cstring>
@@ -108,8 +111,113 @@ static void append_space_separated_link_args(const char* raw_args,
     }
 }
 
+#if !defined(_WIN32)
+// Run a fixed, trusted command and capture its trimmed stdout. Returns empty on
+// any failure. Used only for runtime toolchain probes (xcrun, llvm-config) with
+// no user-controlled input, so popen() is safe here.
+static std::string captureCommandOutput(const std::string& command) {
+    FILE* pipe = popen(command.c_str(), "r");
+    if (!pipe) {
+        return {};
+    }
+    std::string output;
+    char buffer[512];
+    while (std::fgets(buffer, sizeof(buffer), pipe)) {
+        output += buffer;
+    }
+    int status = pclose(pipe);
+    if (status != 0) {
+        return {};
+    }
+    while (!output.empty() &&
+           (output.back() == '\n' || output.back() == '\r' || output.back() == ' ')) {
+        output.pop_back();
+    }
+    return output;
+}
+
+// Resolve the LLVM library directory at RUNTIME rather than trusting the
+// absolute Homebrew Cellar path baked into ESHKOL_HOST_LLVM_LINK_ARGS at build
+// time. That baked path (e.g. /opt/homebrew/Cellar/llvm/21.1.7/lib) does not
+// exist on a host whose LLVM is a different patch/prefix, so the link fails
+// with "search path '...' not found" / "library 'LLVM-NN' not found" and the
+// binary can't JIT off-builder (Noesis hit this copying atlas's binary to enki).
+//
+// We try `llvm-config --libdir` (and the versioned `llvm-config-NN`) from PATH,
+// then common prefixes. Returns empty if nothing resolves, in which case the
+// caller falls back to the baked path. The result is cached.
+static const std::string& resolveLlvmLibDir() {
+    static const std::string cached = [] {
+        const std::string major = std::to_string(LLVM_VERSION_MAJOR);
+        std::vector<std::string> probes = {
+            "llvm-config-" + major + " --libdir 2>/dev/null",
+            "llvm-config --libdir 2>/dev/null",
+        };
+        for (const auto& cmd : probes) {
+            std::string dir = captureCommandOutput(cmd);
+            std::error_code ec;
+            if (!dir.empty() && std::filesystem::is_directory(dir, ec)) {
+                return dir;
+            }
+        }
+        // Known prefixes as a last resort before the baked path.
+        std::vector<std::string> candidates = {
+            "/opt/homebrew/opt/llvm/lib",
+            "/opt/homebrew/opt/llvm@" + major + "/lib",
+            "/usr/local/opt/llvm/lib",
+            "/usr/local/opt/llvm@" + major + "/lib",
+            "/usr/lib/llvm-" + major + "/lib",
+        };
+        for (const auto& dir : candidates) {
+            std::error_code ec;
+            if (std::filesystem::is_directory(dir, ec)) {
+                return dir;
+            }
+        }
+        return std::string{};
+    }();
+    return cached;
+}
+#endif
+
 static void append_host_llvm_link_args(std::vector<std::string>& link_args) {
+#if defined(_WIN32)
     append_space_separated_link_args(ESHKOL_HOST_LLVM_LINK_ARGS, link_args);
+#else
+    // Prepend a runtime-resolved LLVM -L (and rpath on ELF) so the libdir is
+    // searched BEFORE the build-time absolute Cellar path baked into
+    // ESHKOL_HOST_LLVM_LINK_ARGS. This makes a binary built on one host link
+    // against the LLVM present on a different host (different patch/prefix).
+    // The baked args are still spliced afterwards as a fallback.
+    const std::string& runtime_libdir = resolveLlvmLibDir();
+    if (!runtime_libdir.empty()) {
+        link_args.emplace_back("-L" + runtime_libdir);
+#  if !defined(__APPLE__)
+        // ELF: a -L alone leaves no runtime search path; add an rpath so the
+        // resulting binary can find libLLVM.so at run time (mirrors CMake).
+        link_args.emplace_back("-Wl,-rpath," + runtime_libdir);
+#  endif
+    }
+    append_space_separated_link_args(ESHKOL_HOST_LLVM_LINK_ARGS, link_args);
+#endif
+}
+
+// Bounded wait for the native link / cached-compile subprocesses. A hung `ld`
+// (e.g. a misconfigured search path on a non-builder host) must never wedge the
+// process: on expiry the child is killed and the caller fails fast — to the
+// interpreter for the `-r` JIT path, or to a clean link error for AOT. 0 means
+// "unbounded"; ESHKOL_LINK_TIMEOUT_SECONDS overrides the default. The default is
+// generous because a legitimate link of the 58 MB stdlib can take tens of
+// seconds on a cold host.
+static unsigned int link_subprocess_timeout_seconds() {
+    if (const char* raw = std::getenv("ESHKOL_LINK_TIMEOUT_SECONDS")) {
+        char* end = nullptr;
+        long parsed = std::strtol(raw, &end, 10);
+        if (end && *end == '\0' && parsed >= 0) {
+            return static_cast<unsigned int>(parsed);
+        }
+    }
+    return 300; // 5 minutes
 }
 
 namespace {
@@ -390,6 +498,101 @@ bool sourceRequiresInProcessJit(const std::string& source) {
     return false;
 }
 
+// A persistent run-cache AOT binary is a normal dynamically-linked executable:
+// it needs its whole shared-library closure (libLLVM, libstdc++/libc++, zlib,
+// libffi, …) at exec time. On systems where those libraries live OUTSIDE the
+// default loader search path — Nix (/nix/store), Homebrew, custom prefixes — the
+// child dies with "libX.so.NN: cannot open shared object file". eshkol-run itself
+// has ALREADY resolved that exact closure (it links the same way), so the robust,
+// platform-independent fix is to hand the child the directories the PARENT
+// actually loaded its libraries from, rather than guessing per-library.
+//
+// We seed from the build-time LLVM -L dirs, then add every directory the running
+// process has a shared library mapped from (/proc/self/maps on Linux, the dyld
+// image list on macOS). Prepended to the platform loader var for any child we
+// spawn (the run-cache binary).
+static void ensureChildLibrarySearchPath() {
+    static bool done = false;
+    if (done) return;
+    done = true;
+
+    std::vector<std::string> order;          // preserve insertion order
+    std::set<std::string> seen;
+    auto add_dir = [&](std::string d) {
+        if (d.empty()) return;
+        while (d.size() > 1 && d.back() == '/') d.pop_back();
+        if (seen.insert(d).second) order.push_back(d);
+    };
+
+    // 1) LLVM lib dirs from the build-time link args.
+    {
+        const std::string link_args = ESHKOL_HOST_LLVM_LINK_ARGS;
+        size_t pos = 0;
+        while (pos <= link_args.size()) {
+            size_t semi = link_args.find(';', pos);
+            std::string tok = link_args.substr(
+                pos, semi == std::string::npos ? std::string::npos : semi - pos);
+            if (tok.rfind("-L", 0) == 0 && tok.size() > 2) add_dir(tok.substr(2));
+            if (semi == std::string::npos) break;
+            pos = semi + 1;
+        }
+    }
+
+    // 2) Every directory the parent process actually loaded a library from.
+#if defined(__linux__)
+    {
+        std::ifstream maps("/proc/self/maps");
+        std::string line;
+        while (std::getline(maps, line)) {
+            size_t slash = line.find('/');
+            if (slash == std::string::npos) continue;
+            std::string path = line.substr(slash);
+            if (path.find(".so") == std::string::npos) continue;
+            size_t last = path.find_last_of('/');
+            if (last != std::string::npos && last > 0) add_dir(path.substr(0, last));
+        }
+    }
+#elif defined(__APPLE__)
+    {
+        uint32_t n = _dyld_image_count();
+        for (uint32_t i = 0; i < n; i++) {
+            const char* nm = _dyld_get_image_name(i);
+            if (!nm) continue;
+            std::string p(nm);
+            if (p.find(".dylib") == std::string::npos) continue;
+            size_t last = p.find_last_of('/');
+            if (last != std::string::npos && last > 0) add_dir(p.substr(0, last));
+        }
+    }
+#endif
+
+    if (order.empty()) return;
+
+#if defined(__APPLE__)
+    const char* var = "DYLD_LIBRARY_PATH";
+    const char sep = ':';
+#elif defined(_WIN32)
+    const char* var = "PATH";
+    const char sep = ';';
+#else
+    const char* var = "LD_LIBRARY_PATH";
+    const char sep = ':';
+#endif
+    std::string combined;
+    for (const auto& d : order) {
+        if (!combined.empty()) combined += sep;
+        combined += d;
+    }
+    if (const char* existing = std::getenv(var)) {
+        if (existing[0] != '\0') { combined += sep; combined += existing; }
+    }
+#if defined(_WIN32)
+    _putenv_s(var, combined.c_str());
+#else
+    setenv(var, combined.c_str(), 1);
+#endif
+}
+
 std::optional<int> tryRunFromPersistentJitCache(const char* argv0,
                                                 const std::string& filepath,
                                                 uint8_t no_stdlib,
@@ -404,6 +607,8 @@ std::optional<int> tryRunFromPersistentJitCache(const char* argv0,
         jitCacheTrace("bypass", "disabled");
         return std::nullopt;
     }
+    // Ensure any cached/freshly-built run binary we exec can find libLLVM.
+    ensureChildLibrarySearchPath();
 
     std::filesystem::path source_path(filepath);
     std::error_code ec;
@@ -480,7 +685,19 @@ std::optional<int> tryRunFromPersistentJitCache(const char* argv0,
     compile_args.emplace_back("-o");
     compile_args.push_back(temp_binary.string());
 
-    int compile_status = eshkol::pkg::run_subprocess(compile_args);
+    // Bound the cached-binary build. The child runs the full AOT compile +
+    // native link; if its linker hangs (the child bounds its own link too, but
+    // belt-and-suspenders here covers any other stall), kill it and return
+    // nullopt so the caller fails fast to the interpreter rather than wedging
+    // the whole `-r` invocation. This is the architectural guarantee Noesis
+    // asked for: a JIT-link problem must never hang, only fall back.
+    int compile_status = eshkol::pkg::run_subprocess(
+        compile_args, nullptr, link_subprocess_timeout_seconds());
+    if (compile_status == eshkol::pkg::SUBPROCESS_TIMEOUT) {
+        std::filesystem::remove(temp_binary, ec);
+        jitCacheTrace("compile-timeout", std::to_string(link_subprocess_timeout_seconds()));
+        return std::nullopt;
+    }
     if (compile_status != 0) {
         std::filesystem::remove(temp_binary, ec);
         jitCacheTrace("compile-failed", std::to_string(compile_status));
@@ -2079,20 +2296,10 @@ static bool requires_stdlib(const std::vector<eshkol_ast_t>& asts)
 // link command so symbols like qllm_http_get / eshkol_sqlite_* /
 // qllm_process_* resolve in the produced binary. Programs that don't
 // touch agent.* don't pay the libcurl/sqlite/pcre2 link cost.
-static bool requires_agent_ffi(const std::vector<eshkol_ast_t>& asts)
-{
-    for (const auto& ast : asts) {
-        if (ast.type == ESHKOL_OP && ast.operation.op == ESHKOL_REQUIRE_OP) {
-            for (uint64_t i = 0; i < ast.operation.require_op.num_modules; i++) {
-                std::string module_name = ast.operation.require_op.module_names[i];
-                if (module_name.find("agent.") == 0) {
-                    return true;
-                }
-            }
-        }
-    }
-    return false;
-}
+// Defined after resolve_module_path / g_lib_dir (it now follows transitive
+// requires through resolved module files, so it needs both).
+static bool requires_agent_ffi(const std::vector<eshkol_ast_t>& asts,
+                               const std::string& base_dir);
 
 // Find the library base directory (lib/)
 static std::string find_lib_dir()
@@ -2100,19 +2307,35 @@ static std::string find_lib_dir()
     auto cwd = eshkol::platform::current_directory();
     auto exe_dir = eshkol::platform::executable_directory();
 
+    // Executable-relative first: stdlib + core.* belong to the Eshkol install,
+    // not to the cwd. A downstream project (run from its own cwd) may have its
+    // OWN lib/ that would otherwise shadow Eshkol's — which breaks stdlib
+    // submodule discovery (collect_all_submodules parses <lib>/stdlib.esk), so
+    // e.g. (require core.manifold) is not recognised as precompiled and AOT
+    // tries to source-resolve it and fails. That makes the -r run-cache fall
+    // back to the in-process JIT every run.
     std::vector<std::filesystem::path> candidates = {
-        cwd / "lib",
-        cwd.parent_path() / "lib",
-        cwd / "share/eshkol/lib",
         exe_dir / "lib",
         exe_dir / "../lib",
         exe_dir / "../share/eshkol/lib",
+        cwd / "lib",
+        cwd.parent_path() / "lib",
+        cwd / "share/eshkol/lib",
     };
 
 #ifndef _WIN32
     candidates.emplace_back("/usr/local/share/eshkol/lib");
     candidates.emplace_back("/usr/share/eshkol/lib");
 #endif
+
+    // The Eshkol lib is the one that actually carries stdlib.esk. Prefer the
+    // first candidate that has it (skips a downstream project's unrelated lib/).
+    for (const auto& c : candidates) {
+        std::error_code ec;
+        if (std::filesystem::exists(c / "stdlib.esk", ec)) {
+            return c.string();
+        }
+    }
 
     return eshkol::platform::find_first_existing(candidates);
 }
@@ -2164,6 +2387,21 @@ static std::string resolve_module_path(const std::string& module_name, const std
     std::filesystem::path current_path = std::filesystem::path(base_dir) / path_part;
     if (std::filesystem::exists(current_path)) {
         return std::filesystem::canonical(current_path).string();
+    }
+
+    // Try the cwd / project root. A dotted module like `src.core.encoder.x` is
+    // rooted at the project, not at the requiring file's directory — so a file in
+    // tests/gates/ that (require src.core...) must resolve against ./src/..., not
+    // tests/gates/src/.... The in-process JIT resolver already searches cwd; match
+    // it here so the AOT path (and thus the -r persistent run-cache) resolves the
+    // SAME modules. Without this, any program whose required user module is found
+    // by the JIT but not by AOT falls back to in-process JIT on every run — slow,
+    // and on arm64 Linux/Windows it also hits the AArch64 Branch26 JIT limit.
+    if (base_dir != ".") {
+        std::filesystem::path cwd_path = std::filesystem::path(".") / path_part;
+        if (std::filesystem::exists(cwd_path)) {
+            return std::filesystem::canonical(cwd_path).string();
+        }
     }
 
     // Try library directory
@@ -2224,6 +2462,68 @@ static std::string resolve_module_path(const std::string& module_name, const std
 
 // Global library directory (cached)
 static std::string g_lib_dir;
+
+// Does a module source file (or anything it transitively `require`s) pull in an
+// agent.* module? Text-scans `(require …)` clauses and recurses into resolved
+// module files. This is how a faculty like core.memory — which uses sha256 via
+// (require agent.crypto) INTERNALLY — gets the agent-FFI link args spliced into
+// an AOT build of a program that only requires core.memory (not agent.* directly).
+// A false positive merely links a few extra libs; correctness is preserved.
+static bool file_requires_agent_ffi(const std::string& path,
+                                    std::set<std::string>& visited)
+{
+    std::error_code ec;
+    std::string canon = std::filesystem::weakly_canonical(path, ec).string();
+    if (canon.empty()) canon = path;
+    if (!visited.insert(canon).second) return false;
+
+    std::string text = readFileBytes(std::filesystem::path(path));
+    if (text.empty()) return false;
+    std::string base_dir = std::filesystem::path(path).parent_path().string();
+    if (base_dir.empty()) base_dir = ".";
+
+    size_t pos = 0;
+    while ((pos = text.find("(require", pos)) != std::string::npos) {
+        pos += 8;  // past "(require"
+        size_t close = text.find(')', pos);
+        if (close == std::string::npos) break;
+        std::string clause = text.substr(pos, close - pos);
+        pos = close;
+        // Tokenise the require clause on whitespace; strip stray quote/paren chars.
+        std::stringstream ts(clause);
+        std::string tok;
+        while (ts >> tok) {
+            while (!tok.empty() && (tok.front() == '(' || tok.front() == '\'' ||
+                                    tok.front() == '"'))
+                tok.erase(tok.begin());
+            while (!tok.empty() && (tok.back() == ')' || tok.back() == '"'))
+                tok.pop_back();
+            if (tok.empty()) continue;
+            if (tok.rfind("agent.", 0) == 0) return true;
+            std::string mp = resolve_module_path(tok, base_dir, g_lib_dir);
+            if (!mp.empty() && file_requires_agent_ffi(mp, visited)) return true;
+        }
+    }
+    return false;
+}
+
+static bool requires_agent_ffi(const std::vector<eshkol_ast_t>& asts,
+                               const std::string& base_dir)
+{
+    if (g_lib_dir.empty()) g_lib_dir = find_lib_dir();
+    std::set<std::string> visited;
+    for (const auto& ast : asts) {
+        if (ast.type == ESHKOL_OP && ast.operation.op == ESHKOL_REQUIRE_OP) {
+            for (uint64_t i = 0; i < ast.operation.require_op.num_modules; i++) {
+                std::string module_name = ast.operation.require_op.module_names[i];
+                if (module_name.rfind("agent.", 0) == 0) return true;
+                std::string mp = resolve_module_path(module_name, base_dir, g_lib_dir);
+                if (!mp.empty() && file_requires_agent_ffi(mp, visited)) return true;
+            }
+        }
+    }
+    return false;
+}
 
 // Recursively discover all modules that a library requires.
 // Used to mark all sub-modules of a pre-compiled library as pre-compiled.
@@ -2662,6 +2962,21 @@ static void update_ast_references(eshkol_ast_t* ast,
                 case ESHKOL_MAKE_WORKSPACE_OP:
                 case ESHKOL_WS_REGISTER_OP:
                 case ESHKOL_WS_STEP_OP:
+                case ESHKOL_DNC_MAKE_OP:
+                case ESHKOL_DNC_CONTENT_ADDR_OP:
+                case ESHKOL_DNC_LOC_ADDR_OP:
+                case ESHKOL_DNC_READ_OP:
+                case ESHKOL_DNC_WRITE_OP:
+                case ESHKOL_DNC_ALLOC_WEIGHTS_OP:
+                case ESHKOL_DNC_READ_GRAD_OP:
+                case ESHKOL_DNC_PRED_OP:
+                case ESHKOL_SDNC_PROGRAM_OP:
+                case ESHKOL_SDNC_RUN_OP:
+                case ESHKOL_SDNC_WEIGHT_GRAD_OP:
+                case ESHKOL_SDNC_PARAMS_OP:
+                case ESHKOL_SDNC_SET_PARAMS_OP:
+                case ESHKOL_SDNC_IMPROVE_OP:
+                case ESHKOL_SDNC_PRED_OP:
                     // Consciousness-engine ops use call_op semantics — they
                     // codegen as direct function calls with the same arg
                     // shape as ESHKOL_CALL_OP.
@@ -3773,7 +4088,12 @@ int main(int argc, char **argv)
     // (require agent.…) into the inlined module ASTs, after which the
     // top-level require op is gone and the AST scanner can no longer
     // tell agent-using programs from plain ones.
-    bool needs_agent_ffi = requires_agent_ffi(asts);
+    std::string agent_scan_base_dir = ".";
+    if (!source_files.empty()) {
+        std::string p = std::filesystem::path(source_files[0]).parent_path().string();
+        if (!p.empty()) agent_scan_base_dir = p;
+    }
+    bool needs_agent_ffi = requires_agent_ffi(asts, agent_scan_base_dir);
 
     for (const auto &source_file : source_files) {
         std::filesystem::path source_path(source_file);
@@ -3959,10 +4279,14 @@ int main(int argc, char **argv)
                 fseek(eskb_src_f, 0, SEEK_END);
                 long eskb_len = ftell(eskb_src_f);
                 fseek(eskb_src_f, 0, SEEK_SET);
-                char* eskb_source = (char*)malloc(eskb_len + 1);
+                /* P1: ftell returns -1 on a pipe/FIFO/error; malloc(-1+1)=malloc(0)
+                   then fread(.., (size_t)-1, ..) is a massive heap overflow. Guard
+                   the length and NUL-terminate at the actual bytes read. */
+                if (eskb_len < 0) { fclose(eskb_src_f); eskb_src_f = NULL; }
+                char* eskb_source = eskb_src_f ? (char*)malloc((size_t)eskb_len + 1) : NULL;
                 if (eskb_source) {
-                    fread(eskb_source, 1, eskb_len, eskb_src_f);
-                    eskb_source[eskb_len] = 0;
+                    size_t eskb_nread = fread(eskb_source, 1, (size_t)eskb_len, eskb_src_f);
+                    eskb_source[eskb_nread] = 0;
                     fclose(eskb_src_f);
                     int eskb_result = eshkol_emit_eskb(eskb_source, eskb_output_path);
                     if (eskb_result == 0) {
@@ -4171,6 +4495,15 @@ int main(int argc, char **argv)
         link_args.emplace_back("CoreGraphics");
         link_args.emplace_back("-framework");
         link_args.emplace_back("CoreFoundation");
+        // Add the macOS SDK lib dir so `-lobjc` resolves portably (libobjc.tbd
+        // lives in <sdk>/usr/lib). Resolved at runtime, never hardcoded, so a
+        // freshly-built binary links on any mac regardless of the builder host.
+        {
+            const std::string sdk_lib = eshkol::platform::macos_sdk_lib_dir();
+            if (!sdk_lib.empty()) {
+                link_args.emplace_back("-L" + sdk_lib);
+            }
+        }
         link_args.emplace_back("-lobjc");  // Objective-C runtime
 #endif
 
@@ -4258,7 +4591,12 @@ int main(int argc, char **argv)
         }
 
         eshkol_info("Linking object files: %s", link_cmd.c_str());
-        int result = eshkol::platform::run_command(link_args);
+        // Use the shell-free, killable subprocess launcher with a bounded wait.
+        // A hung linker (e.g. an unresolved -L search path on a non-builder
+        // host) would otherwise block forever via std::system(); the timeout
+        // turns that into a reported link failure instead of an infinite hang.
+        int result = eshkol::pkg::run_subprocess(
+            link_args, nullptr, link_subprocess_timeout_seconds());
 
         // Clean up temp object files (mkstemp-created files in TMPDIR)
         for (const auto &compiled_file : compiled_files) {
@@ -4268,6 +4606,13 @@ int main(int argc, char **argv)
             }
         }
 
+        if (result == eshkol::pkg::SUBPROCESS_TIMEOUT) {
+            eshkol_error("Linking timed out after %u seconds and was aborted "
+                         "(set ESHKOL_LINK_TIMEOUT_SECONDS to adjust)",
+                         link_subprocess_timeout_seconds());
+            eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
+            return 1;
+        }
         if (result != 0) {
             eshkol_error("Linking failed with exit code %d", result);
             eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);

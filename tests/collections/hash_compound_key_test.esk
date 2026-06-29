@@ -1,0 +1,43 @@
+;;; tests/collections/hash_compound_key_test.esk
+;;; ESH-0064: hash tables must match compound (cons/list/vector) keys by
+;;; structural equality, not pointer identity. Was broken (only strings/bignums
+;;; were structural); found via the SICP data-directed-programming corpus.
+(define pass 0)(define fail 0)
+(define (chk label v)
+  (display "  [") (display (if v "PASS" "FAIL")) (display "] ") (display label) (newline)
+  (if v (set! pass (+ pass 1)) (set! fail (+ fail 1))))
+
+(define t (make-hash-table))
+
+;; cons key — two freshly-consed equal keys must match
+(hash-set! t (cons 'area 'circle) 314)
+(chk "cons key matches by value" (= (hash-ref t (cons 'area 'circle) -1) 314))
+(chk "different cons key misses" (eq? (hash-ref t (cons 'area 'square) 'NF) 'NF))
+
+;; list key (nested)
+(hash-set! t (list 1 2 3) 'abc)
+(chk "list key matches by value" (eq? (hash-ref t (list 1 2 3) 'NF) 'abc))
+(chk "different list key misses" (eq? (hash-ref t (list 1 2) 'NF) 'NF))
+
+;; vector key
+(hash-set! t (vector 7 8) 'vv)
+(chk "vector key matches by value" (eq? (hash-ref t (vector 7 8) 'NF) 'vv))
+
+;; nested compound key
+(hash-set! t (cons (list 'a 'b) "x") 99)
+(chk "nested compound key matches" (= (hash-ref t (cons (list 'a 'b) "x") -1) 99))
+
+;; string/scalar keys still work (no regression)
+(hash-set! t "str" 1)
+(chk "string key still works" (= (hash-ref t "str" -1) 1))
+(hash-set! t 42 'forty-two)
+(chk "int key still works" (eq? (hash-ref t 42 'NF) 'forty-two))
+
+;; SICP data-directed put/get pattern
+(define (put op type item) (hash-set! t (cons op type) item))
+(define (get op type) (hash-ref t (cons op type) #f))
+(put 'mul 'matrix (lambda (a b) (* a b)))
+(chk "SICP data-directed get returns stored proc" (= ((get 'mul 'matrix) 6 7) 42))
+
+(display "Passed: ")(display pass)(newline)
+(display "Failed: ")(display fail)(newline)

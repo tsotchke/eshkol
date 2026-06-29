@@ -1,0 +1,80 @@
+;;; tests/memory/memory_test.esk — core.memory v0 (event-log faculty)
+;;; Verifies: hash-chain integrity + tamper detection, CRDT merge laws
+;;; (commutative / idempotent / associative / lossless), causal vs concurrent
+;;; clocks, and LWW value folding. Must pass identically under -r and AOT.
+(require stdlib)
+(require core.distributed)   ; vector-clock-before? for the clock assertions
+(require core.memory)
+
+(define pc (vector 0 0))     ; (passed failed) — vector counter (set!-free at top level)
+(define (chk label v)
+  (display "  [") (display (if v "PASS" "FAIL")) (display "] ") (display label) (newline)
+  (if v (vector-set! pc 0 (+ 1 (vector-ref pc 0)))
+        (vector-set! pc 1 (+ 1 (vector-ref pc 1)))))
+
+;; set equality over event-id lists (avoids depending on a sort)
+(define (subset? xs ys) (or (null? xs) (and (member (car xs) ys) (subset? (cdr xs) ys))))
+(define (set-equal? xs ys) (and (= (length xs) (length ys)) (subset? xs ys) (subset? ys xs)))
+(define (event-ids log) (map memory-event-id (memory-events log)))
+
+(define (run)
+  (display "=== CORE.MEMORY v0 GATE ===") (newline)
+
+  ;; --- 1. append + integrity ---
+  (define la (make-memory-log (quote node-A)))
+  (memory-append! la (quote episodic) (quote (saw cat)))
+  (memory-append! la (quote fact)     (quote (cat is-a animal)))
+  (memory-append! la (quote value)    (cons (quote mood) 0.7))
+  (chk "append 3 events" (= (length (memory-events la)) 3))
+  (chk "verify-chain on clean log = #t" (eq? (memory-verify-chain la) #t))
+
+  ;; --- 2. tamper detection (same id, mutated payload) ---
+  (let* ((good (car (memory-events la)))
+         (tampered (list (quote mem-ev-v1)
+                         (memory-event-id good) (memory-event-prev good)
+                         (memory-event-vclock good) (memory-event-node good)
+                         (memory-event-type good) (quote TAMPERED)))
+         (vr (memory-verify-events (list tampered))))
+    (chk "tamper detected -> (offending . hash-mismatch)"
+         (and (pair? vr) (eq? (cdr vr) (quote hash-mismatch)))))
+
+  ;; --- 3. CRDT merge laws ---
+  ;; NB: merges are computed INLINE inside each (chk ...), not bound with an
+  ;; internal (define m (memory-merge ...)), because an internal define's
+  ;; initializer is evaluated before the later (memory-append!) statements run —
+  ;; which would merge still-empty logs. Inline keeps them at check-time.
+  (define lb (make-memory-log (quote node-B)))
+  (memory-append! lb (quote episodic) (quote (heard dog)))
+  (memory-append! lb (quote fact)     (quote (dog is-a animal)))
+  (define lc (make-memory-log (quote node-C)))
+  (memory-append! lc (quote observation) (quote (weather sunny)))
+  (chk "merge commutative (same id set)"
+       (set-equal? (event-ids (memory-merge la lb)) (event-ids (memory-merge lb la))))
+  (chk "merge lossless (|a|+|b| events)"
+       (= (length (memory-events (memory-merge la lb)))
+          (+ (length (memory-events la)) (length (memory-events lb)))))
+  (chk "merge idempotent (merge(a,a) == a)"
+       (set-equal? (event-ids (memory-merge la la)) (event-ids la)))
+  (chk "merge associative"
+       (set-equal? (event-ids (memory-merge (memory-merge la lb) lc))
+                   (event-ids (memory-merge la (memory-merge lb lc)))))
+  (chk "merged log still verifies (content-integrity survives interleave)"
+       (eq? (memory-verify-chain (memory-merge la lb)) #t))
+
+  ;; --- 4. causal vs concurrent clocks ---
+  (let ((a1 (memory-event-vclock (car (memory-events la))))
+        (a2 (memory-event-vclock (cadr (memory-events la))))
+        (b1 (memory-event-vclock (car (memory-events lb)))))
+    (chk "causal: a1 before a2" (vector-clock-before? a1 a2))
+    (chk "concurrent: A-event and B-event unordered"
+         (and (not (vector-clock-before? a1 b1)) (not (vector-clock-before? b1 a1)))))
+
+  ;; --- 5. LWW value fold (last write wins) ---
+  (memory-append! la (quote value) (cons (quote mood) 0.9))
+  (chk "fold-lww picks last value (0.9)" (= (memory-fold-lww la (quote mood)) 0.9))
+  (chk "fold-lww missing key = #f" (eq? (memory-fold-lww la (quote nonexistent)) #f))
+
+  (display "Passed: ") (display (vector-ref pc 0)) (newline)
+  (display "Failed: ") (display (vector-ref pc 1)) (newline))
+
+(run)

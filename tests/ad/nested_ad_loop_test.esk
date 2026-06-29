@@ -1,0 +1,89 @@
+;;; tests/ad/nested_ad_loop_test.esk
+;;; ESH-0070: iterated higher-order AD — differentiating a function whose body
+;;; is a named-let (let loop) tail-recursion that itself calls `gradient`.
+;;;
+;;; Before this fix, the OUTER gradient drove the inner `gradient` through the
+;;; reverse-mode "double backward" monomial-reconstruction heuristic (exact only
+;;; for pure x^n), AND an inline lambda's global capture was resolved in the
+;;; wrong ABI inside a named-let loop. Result: garbage that COMPOUNDED with the
+;;; iteration count k (3.48e36 -> 1.8e51 -> ... -> SIGSEGV/SIGBUS), even though
+;;; the mathematically-identical straight-line code was exact.
+;;;
+;;; The fix: scalar single-variable `gradient` uses the exact forward-mode 4-jet
+;;; (like `derivative`); the perturbation level is a RUNTIME counter pushed/popped
+;;; around each call (invariant under TCO, correct across the function-call /
+;;; named-let boundary); named-let loop carries (#224) are forwarded to the
+;;; gradient lambda in the correct single-indirection capture ABI.
+
+(define pass 0)(define fail 0)
+(define (approx= a b tol) (< (abs (- a b)) tol))
+(define (chk label v) (display "  [")(display (if v "PASS" "FAIL"))(display "] ")(display label)(newline)
+  (if v (set! pass (+ pass 1)) (set! fail (+ fail 1))))
+
+(define a 8.0) (define t 5.0)
+
+;; L(x) = a*(x-t)^2 ;  L'(x) = 2a(x-t)
+;; post-loop(m,k): k gradient-descent steps w_{i+1} = w_i - m*0.05*L'(w_i) from w_0=0,
+;; then returns L(w_k). We differentiate post-loop w.r.t. m — a meta-gradient
+;; through an iterated loop that itself calls `gradient`.
+(define (post-loop m k)
+  (let loop ((w 0.0) (i 0))
+    (if (>= i k)
+        (let ((d (- w t))) (* a (* d d)))
+        (let ((g (gradient (lambda (x) (let ((d (- x t))) (* a (* d d)))) w)))
+          (loop (- w (* m 0.05 g)) (+ i 1))))))
+
+;; Mathematically-identical straight-line k=1 reference: KNOWN exact = -307.2
+(define (post m)
+  (let ((d (- (- 0.0 (* m 0.05 (gradient (lambda (x) (let ((d (- x t))) (* a (* d d)))) 0.0))) t)))
+    (* a (* d d))))
+
+;; ---- central finite difference of post-loop'(m) for cross-checking AD ----
+(define (fd-post-loop m k)
+  (let ((h 1e-5))
+    (/ (- (post-loop (+ m h) k) (post-loop (- m h) k)) (* 2.0 h))))
+
+(define m0 0.05)
+
+;; (a) k=1 equals the straight-line reference, exactly -307.2
+(chk "named-let k=1 == straight-line == -307.2"
+     (and (approx= (gradient (lambda (m) (post-loop m 1)) m0) -307.2 1e-6)
+          (approx= (gradient (lambda (m) (post m)) m0) -307.2 1e-6)))
+
+;; (b) k=2..5 finite and matching finite-difference (no compounding blow-up)
+(chk "named-let k=2 matches finite-difference"
+     (approx= (gradient (lambda (m) (post-loop m 2)) m0) (fd-post-loop m0 2) 1e-3))
+(chk "named-let k=3 matches finite-difference"
+     (approx= (gradient (lambda (m) (post-loop m 3)) m0) (fd-post-loop m0 3) 1e-3))
+(chk "named-let k=4 matches finite-difference"
+     (approx= (gradient (lambda (m) (post-loop m 4)) m0) (fd-post-loop m0 4) 1e-3))
+(chk "named-let k=5 matches finite-difference"
+     (approx= (gradient (lambda (m) (post-loop m 5)) m0) (fd-post-loop m0 5) 1e-3))
+
+;; (c) a ~25-step iterated loop-nested gradient completes (no SIGSEGV/SIGBUS),
+;;     and stays finite + agrees with finite-difference.
+(define g25 (gradient (lambda (m) (post-loop m 25)) 0.02))
+(chk "25-step iterated loop-nested gradient is finite"
+     (and (= g25 g25) (< (abs g25) 1e30)))
+(chk "25-step iterated loop-nested gradient matches finite-difference"
+     (approx= g25 (fd-post-loop 0.02 25) 1e-2))
+
+;; (d) gradient-of-gradient of a (plain) named-let loop. poly-loop computes x^n
+;;     by iteration; the 2nd derivative of x^4 is 12x^2 = 48 at x=2. This is
+;;     genuine forward-over-forward (2 live perturbations) THROUGH a TCO loop —
+;;     exactly the case the runtime perturbation level + jet make exact.
+;;     (NB: differentiating TWICE a loop that ITSELF calls gradient would need a
+;;     3rd simultaneous perturbation, beyond the 2-slot jet — flagged, not silent.)
+(define (poly-loop x n)
+  (let loop ((acc 1.0) (i 0)) (if (>= i n) acc (loop (* acc x) (+ i 1)))))
+(chk "gradient-of-gradient of plain loop: d2/dx2 (x^4 via loop) @2 = 48"
+     (approx= (gradient (lambda (y) (gradient (lambda (x) (poly-loop x 4)) y)) 2.0) 48.0 1e-6))
+
+;; (e) pure nested gradient sanity (the coordinator bisection table): x^4 -> 588,
+;;     (x+0)^2 -> 2 — exercising the forward-mode jet directly.
+(chk "nested grad x^4 @7 = 588"
+     (approx= (gradient (lambda (y) (gradient (lambda (x) (let ((u (* x x))) (* u u))) y)) 7.0) 588.0 1e-6))
+(chk "nested grad (x+0)^2 @7 = 2 (affine term, was 0)"
+     (approx= (gradient (lambda (y) (gradient (lambda (x) (* (+ x 0.0) (+ x 0.0))) y)) 7.0) 2.0 1e-9))
+
+(display "Passed: ")(display pass)(newline)(display "Failed: ")(display fail)(newline)

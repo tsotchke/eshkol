@@ -1,0 +1,30 @@
+;;
+;; core.dnc — differentiable external memory (NTM/DNC head)
+;;
+;; A learnable external memory bank (N rows x W cols) that can be read and
+;; written with gradients, addressed by content (cosine + softmax) and by
+;; location, with a temperature knob (beta): bit-exact at high beta (verified
+;; addressable store) and smooth/differentiable at low beta (learning).
+;;
+;; All operations below are native builtins (HEAP_SUBTYPE_DNC handle); the math
+;; mirrors lib/backend/diff_memory_prototype.c byte-for-byte (the C oracle).
+;; Vectors are Eshkol #(...) float vectors.
+;;
+;;   (make-dnc-memory N W)              -> mem   N x W bank, zeroed, usage=0
+;;   (dnc-content-address mem key beta) -> #(..) length-N softmax(beta*cos)
+;;   (dnc-loc-address addr beta N)      -> #(..) length-N indicator bump
+;;   (dnc-read mem wvec)                -> #(..) length-W weighted row
+;;   (dnc-write! mem wvec erase add)    -> mem   NTM erase/add write
+;;   (dnc-alloc-weights mem beta)       -> #(..) length-N least-used weights
+;;   (dnc-read-grad mem key target beta)-> (dkey . dmem) exact gradient
+;;   (dnc-memory? x)                    -> bool
+;;
+
+(provide make-dnc-memory
+         dnc-content-address
+         dnc-loc-address
+         dnc-read
+         dnc-write!
+         dnc-alloc-weights
+         dnc-read-grad
+         dnc-memory?)

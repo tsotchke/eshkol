@@ -1,0 +1,254 @@
+;; core.ml.gradient_estimators — gradient estimators for discrete operations.
+;; Acceptance:
+;;   * gumbel-softmax output sums to 1 and lies in [0,1].
+;;   * gradient of a loss through gumbel-softmax matches central finite
+;;     differences (rel err < 1e-2) for a fixed noise vector.
+;;   * straight-through forward == hard value, AND a training loop that uses ST
+;;     in the forward and the soft gradient in the backward DECREASES the loss.
+;;   * end-to-end: learn logits so gumbel-softmax concentrates on a target class.
+
+(require core.ad.tape)
+(require core.ml.gradient_estimators)
+
+(define pass-count 0)
+(define fail-count 0)
+(define (approx= a b) (< (abs (- a b)) 1e-4))
+(define (check-bool name ok)
+  (if ok
+      (begin (set! pass-count (+ pass-count 1))
+             (display "PASS: ")(display name)(newline))
+      (begin (set! fail-count (+ fail-count 1))
+             (display "FAIL: ")(display name)(newline))))
+(define (check name got expect)
+  (check-bool (string-append name
+                (if (approx= got expect) ""
+                    (string-append " got " (number->string got)
+                                   " expect " (number->string expect))))
+              (approx= got expect)))
+
+;; ── helpers ──
+(define (vsum v)
+  (let ((n (vector-length v)))
+    (let loop ((i 0) (s 0.0))
+      (if (< i n) (loop (+ i 1) (+ s (vector-ref v i))) s))))
+
+(define (vin-range? v lo hi)
+  (let ((n (vector-length v)))
+    (let loop ((i 0))
+      (if (< i n)
+          (if (and (>= (vector-ref v i) lo) (<= (vector-ref v i) hi))
+              (loop (+ i 1))
+              #f)
+          #t))))
+
+(define noise (vector 0.10 -0.20 0.30 0.05))
+(define tau 0.5)
+(define target (vector 0.0 0.0 1.0 0.0))
+
+;; ── vector helpers ──
+(define (vcopy v)
+  (let* ((n (vector-length v)) (r (make-vector n 0.0)))
+    (let loop ((i 0)) (if (< i n) (begin (vector-set! r i (vector-ref v i)) (loop (+ i 1))) r))))
+(define (vsub a b)
+  (let* ((n (vector-length a)) (r (make-vector n 0.0)))
+    (let loop ((i 0)) (if (< i n) (begin (vector-set! r i (- (vector-ref a i) (vector-ref b i))) (loop (+ i 1))) r))))
+(define (vdot a b)
+  (let ((n (vector-length a)))
+    (let loop ((i 0) (s 0.0)) (if (< i n) (loop (+ i 1) (+ s (* (vector-ref a i) (vector-ref b i)))) s))))
+(define (vscale s v)
+  (let* ((n (vector-length v)) (r (make-vector n 0.0)))
+    (let loop ((i 0)) (if (< i n) (begin (vector-set! r i (* s (vector-ref v i))) (loop (+ i 1))) r))))
+
+;; ============================================================
+;; 1. gumbel-softmax output is a valid distribution
+;; ============================================================
+(define p0
+  (with-tape "p"
+    (lambda ()
+      (let* ((t  (current-tape))
+             (lg (tape-input t (vector 1.0 2.0 0.5 0.0)))
+             (gs (gumbel-softmax-det t lg tau noise)))
+        (node-value gs)))))
+(check "gumbel-softmax sums to 1" (vsum p0) 1.0)
+(check-bool "gumbel-softmax entries in [0,1]" (vin-range? p0 0.0 1.0))
+
+;; ============================================================
+;; 2. GRADIENT CHECK vs central finite differences
+;;    L = 0.5 * sum (p_i - target_i)^2 ,  p = gumbel-softmax(logits)
+;; ============================================================
+
+;; soft loss on a raw logit vector (no tape) — for finite differences
+(define (gs-soft logits)
+  (let* ((n (vector-length logits))
+         (z (make-vector n 0.0)))
+    (let loop ((i 0))
+      (if (< i n)
+          (begin (vector-set! z i (/ (+ (vector-ref logits i) (vector-ref noise i)) tau))
+                 (loop (+ i 1)))))
+    (softmax z)))
+
+(define (loss-of logits)
+  (let* ((p (gs-soft logits))
+         (n (vector-length p)))
+    (let loop ((i 0) (s 0.0))
+      (if (< i n)
+          (let ((d (- (vector-ref p i) (vector-ref target i))))
+            (loop (+ i 1) (+ s (* 0.5 d d))))
+          s))))
+
+;; tape gradient of the same loss w.r.t. logits
+(define logits0 (vector 1.0 2.0 0.5 0.0))
+(define tape-grad
+  (with-tape "gc"
+    (lambda ()
+      (let* ((t   (current-tape))
+             (lg  (tape-input t (vcopy logits0)))
+             (p   (gumbel-softmax-det t lg tau noise))
+             ;; loss = 0.5 * sum (p - target)^2, built from custom op
+             (tn  (tape-const t target))
+             (dvec (record-op! t (list p) (vsub (node-value p) target)
+                     (lambda (g) (list g))))  ; d(p-target)/dp = I
+             (loss (record-op! t (list dvec)
+                     (let ((d (node-value dvec)))
+                       (* 0.5 (vdot d d)))
+                     (lambda (g) (list (vscale g (node-value dvec)))))))
+        (car (tape-gradient t loss (list lg)))))))
+
+;; central finite-difference gradient of loss-of at logits0
+(define fd-eps 1.0e-5)
+(define (fd-grad-i i)
+  (let* ((lp (vcopy logits0)) (lm (vcopy logits0)))
+    (vector-set! lp i (+ (vector-ref lp i) fd-eps))
+    (vector-set! lm i (- (vector-ref lm i) fd-eps))
+    (/ (- (loss-of lp) (loss-of lm)) (* 2.0 fd-eps))))
+
+(define (rel-err a b)
+  (let ((d (abs (- a b))) (m (max (abs a) (abs b))))
+    (if (< m 1e-9) d (/ d m))))
+
+(check-bool "grad[0] vs finite-diff (rel<1e-2)" (< (rel-err (vector-ref tape-grad 0) (fd-grad-i 0)) 1e-2))
+(check-bool "grad[1] vs finite-diff (rel<1e-2)" (< (rel-err (vector-ref tape-grad 1) (fd-grad-i 1)) 1e-2))
+(check-bool "grad[2] vs finite-diff (rel<1e-2)" (< (rel-err (vector-ref tape-grad 2) (fd-grad-i 2)) 1e-2))
+(check-bool "grad[3] vs finite-diff (rel<1e-2)" (< (rel-err (vector-ref tape-grad 3) (fd-grad-i 3)) 1e-2))
+
+;; ============================================================
+;; 3. straight-through: forward == hard value
+;; ============================================================
+(define st-fwd
+  (with-tape "st"
+    (lambda ()
+      (let* ((t  (current-tape))
+             (x  (tape-input t (vector 0.1 0.7 0.2)))
+             (st (straight-through-onehot t x)))
+        (node-value st)))))
+(check "ST forward is hard one-hot at argmax (idx1=1)" (vector-ref st-fwd 1) 1.0)
+(check "ST forward hard one-hot (idx0=0)" (vector-ref st-fwd 0) 0.0)
+(check "ST forward hard one-hot (idx2=0)" (vector-ref st-fwd 2) 0.0)
+
+;; scalar ST round forward
+(define st-round
+  (with-tape "str"
+    (lambda ()
+      (let* ((t (current-tape)) (x (tape-input t 2.3)))
+        (node-value (straight-through-round t x))))))
+(check "ST-round forward == round(2.3)=2" st-round 2.0)
+
+;; ============================================================
+;; 3b. straight-through training: gradient flows -> loss decreases
+;;     We train a SOFT logit vector through softmax->straight-through one-hot.
+;;     Forward uses the HARD one-hot; backward uses the soft gradient.
+;;     loss = 0.5 * sum (onehot - target)^2 ; gradient flows via ST.
+;; ============================================================
+(define (st-step logits)
+  (with-tape "stt"
+    (lambda ()
+      (let* ((t   (current-tape))
+             (lg  (tape-input t (vcopy logits)))
+             ;; soft probabilities (differentiable)
+             (sp  (record-op! t (list lg) (softmax (node-value lg))
+                    (lambda (g)
+                      (let* ((y (softmax (node-value lg)))
+                             (gy g)
+                             (n (vector-length y))
+                             (dot (let dl ((i 0) (s 0.0))
+                                    (if (< i n) (dl (+ i 1) (+ s (* (vector-ref y i) (vector-ref gy i)))) s)))
+                             (out (make-vector n 0.0)))
+                        (let dl ((i 0))
+                          (if (< i n)
+                              (begin (vector-set! out i (* (vector-ref y i) (- (vector-ref gy i) dot))) (dl (+ i 1)))))
+                        (list out)))))
+             ;; straight-through: forward = hard one-hot, backward = identity to sp
+             (hard (straight-through-onehot t sp))
+             (dvec (record-op! t (list hard) (vsub (node-value hard) target)
+                     (lambda (g) (list g))))
+             (loss (record-op! t (list dvec)
+                     (let ((d (node-value dvec))) (* 0.5 (vdot d d)))
+                     (lambda (g) (list (vscale g (node-value dvec)))))))
+        (list (node-value loss) (car (tape-gradient t loss (list lg))))))))
+
+(define st-train
+  (let ((lr 0.5))
+    (let loop ((i 0) (logits (vector 0.2 0.5 0.1 0.0)) (first-loss -1.0) (last-loss 0.0))
+      (if (>= i 60)
+          (list first-loss last-loss logits)
+          (let* ((r    (st-step logits))
+                 (loss (car r))
+                 (grad (cadr r))
+                 (new  (let* ((n (vector-length logits)) (o (make-vector n 0.0)))
+                         (let g ((j 0))
+                           (if (< j n)
+                               (begin (vector-set! o j (- (vector-ref logits j) (* lr (vector-ref grad j)))) (g (+ j 1)))
+                               o)))))
+            (loop (+ i 1) new (if (< first-loss 0.0) loss first-loss) loss))))))
+
+(check-bool "ST training: loss decreases (first > last)"
+            (> (car st-train) (cadr st-train)))
+(check-bool "ST training: argmax becomes target (class 2)"
+            (= (categorical-pick (caddr st-train)) 2))
+
+;; ============================================================
+;; 4. end-to-end: learn logits so gumbel-softmax concentrates on target class
+;;    loss = 0.5 * sum (gs(logits) - target)^2
+;; ============================================================
+(define (gs-step logits)
+  (with-tape "e2e"
+    (lambda ()
+      (let* ((t    (current-tape))
+             (lg   (tape-input t (vcopy logits)))
+             (p    (gumbel-softmax-det t lg tau noise))
+             (dvec (record-op! t (list p) (vsub (node-value p) target)
+                     (lambda (g) (list g))))
+             (loss (record-op! t (list dvec)
+                     (let ((d (node-value dvec))) (* 0.5 (vdot d d)))
+                     (lambda (g) (list (vscale g (node-value dvec)))))))
+        (list (node-value loss) (car (tape-gradient t loss (list lg))) (node-value p))))))
+
+(define gs-train
+  (let ((lr 2.0))
+    (let loop ((i 0) (logits (vector 0.0 0.0 0.0 0.0)) (first-loss -1.0) (last-loss 0.0) (lastp target))
+      (if (>= i 200)
+          (list first-loss last-loss lastp)
+          (let* ((r    (gs-step logits))
+                 (loss (car r))
+                 (grad (cadr r))
+                 (p    (caddr r))
+                 (new  (let* ((n (vector-length logits)) (o (make-vector n 0.0)))
+                         (let g ((j 0))
+                           (if (< j n)
+                               (begin (vector-set! o j (- (vector-ref logits j) (* lr (vector-ref grad j)))) (g (+ j 1)))
+                               o)))))
+            (loop (+ i 1) new (if (< first-loss 0.0) loss first-loss) loss p))))))
+
+(check-bool "gumbel-softmax e2e: loss decreases (first > last)"
+            (> (car gs-train) (cadr gs-train)))
+(check-bool "gumbel-softmax e2e: distribution concentrates on target (class 2)"
+            (= (categorical-pick (caddr gs-train)) 2))
+(check-bool "gumbel-softmax e2e: p[target] > 0.8"
+            (> (vector-ref (caddr gs-train) 2) 0.8))
+
+;; ── categorical-pick sanity ──
+(check "categorical-pick argmax" (exact->inexact (categorical-pick (vector 0.1 0.9 0.3 0.2))) 1.0)
+
+(newline)
+(display "Passed: ")(display pass-count)(newline)
+(display "Failed: ")(display fail-count)(newline)

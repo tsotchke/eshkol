@@ -107,7 +107,10 @@ void* eshkol_list_to_svec(arena_t* arena, const eshkol_tagged_value_t* head_tv) 
         // The AD svec path reads each element as a double; promote exact
         // integers so (gradient f (list 1 2)) behaves like (list 1.0 2.0).
         if (e.type != ESHKOL_VALUE_DOUBLE) {
-            double d = (double)e.data.int_val;
+            // P2: an integer promotes to its value; a HEAP_PTR (bignum/rational/
+            // other) must NOT have its pointer bits reinterpreted as a double —
+            // use 0.0 rather than garbage.
+            double d = (e.type == ESHKOL_VALUE_HEAP_PTR) ? 0.0 : (double)e.data.int_val;
             e.type = ESHKOL_VALUE_DOUBLE;
             e.data.double_val = d;
         }
@@ -115,6 +118,75 @@ void* eshkol_list_to_svec(arena_t* arena, const eshkol_tagged_value_t* head_tv) 
         cur = cell->cdr;
     }
     return vec;
+}
+
+// Build a 1-D tensor from a single (tensor X) argument: a list or Scheme vector
+// is unpacked element-by-element (numpy-like), an existing tensor is returned
+// as-is, and any scalar becomes a 1-element tensor. Without this, (tensor (list
+// 1 2 3)) made a 1-element tensor whose sole element was the list pointer's bits
+// reinterpreted as a double (garbage). Returns the tensor pointer or nullptr.
+void* eshkol_tensor_from_collection(arena_t* arena, const eshkol_tagged_value_t* input) {
+    if (!arena || !input) return nullptr;
+
+    if (input->type == ESHKOL_VALUE_HEAP_PTR && input->data.ptr_val) {
+        const auto* hdr = ESHKOL_GET_HEADER((void*)(uintptr_t)input->data.ptr_val);
+        if (hdr && hdr->subtype == HEAP_SUBTYPE_TENSOR) {
+            return (void*)(uintptr_t)input->data.ptr_val;  // already a tensor
+        }
+        if (hdr && hdr->subtype == HEAP_SUBTYPE_VECTOR) {
+            char* v = (char*)(uintptr_t)input->data.ptr_val;
+            int64_t len = *(int64_t*)v;
+            if (len < 0) len = 0;
+            const eshkol_tagged_value_t* elems =
+                (const eshkol_tagged_value_t*)(v + sizeof(int64_t));
+            eshkol_tensor_t* t = arena_allocate_tensor_full(arena, 1, (uint64_t)len);
+            if (!t) return nullptr;
+            if (t->dimensions) t->dimensions[0] = (uint64_t)len;
+            for (int64_t i = 0; i < len; i++) {
+                const eshkol_tagged_value_t* e = &elems[i];
+                double d = (e->type == ESHKOL_VALUE_DOUBLE) ? e->data.double_val
+                         : (e->type == ESHKOL_VALUE_HEAP_PTR) ? 0.0
+                         : (double)e->data.int_val;
+                std::memcpy(&t->elements[i], &d, sizeof(double));
+            }
+            return t;
+        }
+    }
+
+    if (tagged_is_cons(input)) {
+        int64_t n = 0;
+        eshkol_tagged_value_t cur = *input;
+        while (tagged_is_cons(&cur)) {
+            n++;
+            cur = ((arena_tagged_cons_cell_t*)(uintptr_t)cur.data.ptr_val)->cdr;
+        }
+        eshkol_tensor_t* t = arena_allocate_tensor_full(arena, 1, (uint64_t)n);
+        if (!t) return nullptr;
+        if (t->dimensions) t->dimensions[0] = (uint64_t)n;
+        cur = *input;
+        int64_t i = 0;
+        while (tagged_is_cons(&cur) && i < n) {
+            arena_tagged_cons_cell_t* cell =
+                (arena_tagged_cons_cell_t*)(uintptr_t)cur.data.ptr_val;
+            const eshkol_tagged_value_t* e = &cell->car;
+            double d = (e->type == ESHKOL_VALUE_DOUBLE) ? e->data.double_val
+                     : (e->type == ESHKOL_VALUE_HEAP_PTR) ? 0.0
+                     : (double)e->data.int_val;
+            std::memcpy(&t->elements[i++], &d, sizeof(double));
+            cur = cell->cdr;
+        }
+        return t;
+    }
+
+    // Scalar -> 1-element tensor.
+    eshkol_tensor_t* t = arena_allocate_tensor_full(arena, 1, 1);
+    if (!t) return nullptr;
+    if (t->dimensions) t->dimensions[0] = 1;
+    double d = (input->type == ESHKOL_VALUE_DOUBLE) ? input->data.double_val
+             : (input->type == ESHKOL_VALUE_HEAP_PTR) ? 0.0
+             : (double)input->data.int_val;
+    std::memcpy(&t->elements[0], &d, sizeof(double));
+    return t;
 }
 
 // Extract up to `max_n` scalar doubles from an AD operator input that may be a
@@ -153,7 +225,7 @@ int64_t eshkol_ad_extract_doubles(const eshkol_tagged_value_t* input,
             for (int64_t i = 0; i < n; i++) {
                 const eshkol_tagged_value_t* e = &elems[i];
                 if (e->type == ESHKOL_VALUE_DOUBLE) { double d; std::memcpy(&d, &e->data, sizeof(double)); out[i] = d; }
-                else out[i] = (double)e->data.int_val;
+                else out[i] = (e->type == ESHKOL_VALUE_HEAP_PTR) ? 0.0 : (double)e->data.int_val;  // P2: no pointer-bits-as-double
             }
             return n;
         }

@@ -1,0 +1,38 @@
+;;; tests/macros/macro_in_nested_define_test.esk
+;;; ESH-0062: a top-level define-syntax macro must be usable inside internal
+;;; (nested) define bodies. Was broken — transformInternalDefinesToLetrec emits
+;;; ESHKOL_LETREC_STAR_OP, which the MacroExpander's recursion switch did not
+;;; handle, so macros inside internal-define bodies were never expanded
+;;; ("Unknown function"). Found via the SICP stream corpus (cons-stream in a
+;;; helper). let/lambda/begin bodies were unaffected.
+(define pass 0)(define fail 0)
+(define (chk label v)
+  (display "  [") (display (if v "PASS" "FAIL")) (display "] ") (display label) (newline)
+  (if v (set! pass (+ pass 1)) (set! fail (+ fail 1))))
+
+(define-syntax sq (syntax-rules () ((_ x) (* x x))))
+
+;; macro in an internal define's VALUE
+(define (a) (define z (sq 5)) z)
+(chk "macro in internal-define value" (= (a) 25))
+
+;; macro in an internal define's FUNCTION body
+(define (b) (define (inner y) (sq y)) (inner 6))
+(chk "macro in internal-define fn body" (= (b) 36))
+
+;; the SICP trigger: cons-stream (a macro) inside a nested helper define
+(define-syntax cons-stream (syntax-rules () ((_ h t) (cons h (delay t)))))
+(define (ints n) (cons-stream n (ints (+ n 1))))
+(define (sref s n) (if (= n 0) (car s) (sref (force (cdr s)) (- n 1))))
+(define (partial-sums s)
+  (define (rec s acc) (cons-stream (+ acc (car s)) (rec (force (cdr s)) (+ acc (car s)))))
+  (rec s 0))
+(chk "cons-stream in internal-define helper" (= (sref (partial-sums (ints 1)) 4) 15))
+
+;; control: macro in a flat body / let / lambda still works
+(define (c y) (sq y))
+(chk "macro in flat fn body (control)" (= (c 7) 49))
+(chk "macro in let body (control)" (= (let ((y 8)) (sq y)) 64))
+
+(display "Passed: ")(display pass)(newline)
+(display "Failed: ")(display fail)(newline)

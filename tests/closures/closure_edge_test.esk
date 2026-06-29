@@ -271,7 +271,9 @@
 (counter1)
 (counter1)
 (counter2)
-(test "independent closures" 3 (counter1))
+;; counter1 called 3 times (->1,2,3); this 4th call yields 4.
+;; counter2 called once (->1); this 2nd call yields 2. (They stay independent.)
+(test "independent closures" 4 (counter1))
 (test "independent closures (other)" 2 (counter2))
 
 ; Test 34: Closure in conditional
