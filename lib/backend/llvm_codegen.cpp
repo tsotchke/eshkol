@@ -8709,12 +8709,15 @@ private:
         };
 
         auto loadFromCurrentFunctionCapture = [&](bool capture_is_storage_ptr) -> Value* {
-            if (!current_function) {
+            Function* active_function = builder->GetInsertBlock()
+                ? builder->GetInsertBlock()->getParent()
+                : current_function;
+            if (!active_function) {
                 return nullptr;
             }
 
             const std::string named_let_capture_name = var_name + "_cap";
-            for (auto& arg : current_function->args()) {
+            for (auto& arg : active_function->args()) {
                 if (arg.getName() == named_let_capture_name && arg.getType()->isPointerTy()) {
                     Value* loaded = builder->CreateLoad(tagged_value_type, &arg, var_name + ".named_let_cap");
                     return emitUseAfterMoveCheck(loaded, var_name);
@@ -8722,7 +8725,7 @@ private:
             }
 
             const std::string closure_capture_name = "captured_" + var_name;
-            for (auto& arg : current_function->args()) {
+            for (auto& arg : active_function->args()) {
                 if (arg.getName() != closure_capture_name) {
                     continue;
                 }
@@ -8750,9 +8753,14 @@ private:
         auto sym_it = symbol_table.find(var_name);
         if (sym_it != symbol_table.end() && sym_it->second) {
             Value* sym_val = sym_it->second;
+            bool sym_val_is_stale_instruction = false;
             if (Instruction* inst = dyn_cast<Instruction>(sym_val)) {
                 Function* owner = inst->getFunction();
-                if (current_function && owner && owner != current_function) {
+                Function* active_function = builder->GetInsertBlock()
+                    ? builder->GetInsertBlock()->getParent()
+                    : current_function;
+                if (active_function && owner && owner != active_function) {
+                    sym_val_is_stale_instruction = true;
                     if (Value* captured = loadFromCurrentFunctionCapture(true)) {
                         eshkol_debug("codegenVariable: resolved stale instruction for %s through current captures",
                                      var_name.c_str());
@@ -8761,7 +8769,7 @@ private:
                     eshkol_debug("codegenVariable: skipping stale instruction for %s from function %s (current: %s)",
                                  var_name.c_str(),
                                  owner->getName().str().c_str(),
-                                 current_function->getName().str().c_str());
+                                 active_function->getName().str().c_str());
                     // Fall through to current function args and global lookups.
                 } else {
                     // If it's an alloca (TCO parameter), load from it
@@ -8804,10 +8812,13 @@ private:
             if (isa<Argument>(sym_val)) {
                 Argument* arg = cast<Argument>(sym_val);
                 Function* arg_parent = arg->getParent();
-                if (current_function && arg_parent != current_function) {
+                Function* active_function = builder->GetInsertBlock()
+                    ? builder->GetInsertBlock()->getParent()
+                    : current_function;
+                if (active_function && arg_parent != active_function) {
                     // Stale Argument from another function - skip it and fall through to other lookups
                     eshkol_debug("codegenVariable: skipping stale Argument %s from function %s (current: %s)",
-                               var_name.c_str(), arg_parent->getName().str().c_str(), current_function->getName().str().c_str());
+                               var_name.c_str(), arg_parent->getName().str().c_str(), active_function->getName().str().c_str());
                     // Fall through to check current_function->args() instead
                 } else {
                     // Argument belongs to current function - safe to return
@@ -8815,12 +8826,17 @@ private:
                 }
             } else {
                 // Otherwise return the value directly
-                return sym_val;
+                if (!sym_val_is_stale_instruction) {
+                    return sym_val;
+                }
             }
         }
 
-        if (current_function) {
-            for (auto& arg : current_function->args()) {
+        Function* active_function = builder->GetInsertBlock()
+            ? builder->GetInsertBlock()->getParent()
+            : current_function;
+        if (active_function) {
+            for (auto& arg : active_function->args()) {
                 if (arg.getName() == var_name) {
                     return &arg;
                 }
@@ -8828,7 +8844,7 @@ private:
             // CLOSURE CAPTURE FIX: Check for captured arguments (prefixed with "captured_")
             // Nested lambdas receive captured variables as arguments with this naming convention
             std::string captured_name = "captured_" + var_name;
-            for (auto& arg : current_function->args()) {
+            for (auto& arg : active_function->args()) {
                 if (arg.getName() == captured_name) {
                     // If it's a pointer type, load the value from the capture storage
                     if (arg.getType()->isPointerTy()) {
@@ -9607,9 +9623,10 @@ private:
          * shadowable-OP name like `walk` is bound by an enclosing
          * letrec (Noesis Bug M), the scoped-key check above misses it
          * — we have to accept the bare symbol_table entry too. Limit
-         * the check to values that are plausibly callable (Function,
-         * AllocaInst holding a pointer/closure, Argument, or
-         * GlobalVariable). */
+         * the check to values that are plausibly callable storage. Closure
+         * capture promotion can rewrite a local letrec cell from an AllocaInst
+         * to arena storage (a pointer-producing instruction), and that storage
+         * must still shadow the builtin. */
         {
             auto it = symbol_table.find(name);
             if (it != symbol_table.end() && it->second) {
@@ -9617,7 +9634,8 @@ private:
                 if (llvm::isa<llvm::Function>(v) ||
                     llvm::isa<llvm::AllocaInst>(v) ||
                     llvm::isa<llvm::Argument>(v) ||
-                    llvm::isa<llvm::GlobalVariable>(v)) {
+                    llvm::isa<llvm::GlobalVariable>(v) ||
+                    v->getType()->isPointerTy()) {
                     return true;
                 }
             }
@@ -15953,9 +15971,51 @@ private:
             }
 
             if (var_check) {
+                auto loadCallableForPrecheckFromCurrentCapture = [&]() -> Value* {
+                    Function* active_function = builder->GetInsertBlock()
+                        ? builder->GetInsertBlock()->getParent()
+                        : current_function;
+                    if (!active_function) {
+                        return nullptr;
+                    }
+
+                    const std::string closure_capture_name = "captured_" + func_name;
+                    for (auto& arg : active_function->args()) {
+                        if (arg.getName() != closure_capture_name || !arg.getType()->isPointerTy()) {
+                            continue;
+                        }
+
+                        Value* slot_value = builder->CreateLoad(
+                            tagged_value_type, &arg, func_name + ".precheck_capture_slot");
+                        Value* storage_int = unpackInt64FromTaggedValue(slot_value);
+                        Value* storage = builder->CreateIntToPtr(
+                            storage_int, PointerType::getUnqual(*context),
+                            func_name + ".precheck_capture_storage");
+                        return builder->CreateLoad(
+                            tagged_value_type, storage, func_name + ".precheck_capture");
+                    }
+
+                    return nullptr;
+                };
+
                 // Load the actual value to check its type
                 Value* actual_value = nullptr;
-                if (isa<GlobalVariable>(var_check)) {
+                bool var_check_is_stale_instruction = false;
+                if (Instruction* inst = dyn_cast<Instruction>(var_check)) {
+                    Function* owner = inst->getFunction();
+                    Function* active_function = builder->GetInsertBlock()
+                        ? builder->GetInsertBlock()->getParent()
+                        : current_function;
+                    var_check_is_stale_instruction = active_function && owner && owner != active_function;
+                    if (var_check_is_stale_instruction) {
+                        actual_value = loadCallableForPrecheckFromCurrentCapture();
+                    }
+                }
+
+                if (!actual_value && var_check_is_stale_instruction) {
+                    eshkol_debug("Skipping callable precheck for stale storage %s from an outer function",
+                                 func_name.c_str());
+                } else if (isa<GlobalVariable>(var_check)) {
                     GlobalVariable* gv = cast<GlobalVariable>(var_check);
                     actual_value = builder->CreateLoad(gv->getValueType(), var_check);
                 } else if (isa<AllocaInst>(var_check)) {
@@ -16358,19 +16418,22 @@ private:
                 Value* func_val = var_value;
 
                 auto loadCallableFromCurrentCapture = [&]() -> Value* {
-                    if (!current_function) {
+                    Function* active_function = builder->GetInsertBlock()
+                        ? builder->GetInsertBlock()->getParent()
+                        : current_function;
+                    if (!active_function) {
                         return nullptr;
                     }
 
                     const std::string named_let_capture_name = func_name + "_cap";
-                    for (auto& arg : current_function->args()) {
+                    for (auto& arg : active_function->args()) {
                         if (arg.getName() == named_let_capture_name && arg.getType()->isPointerTy()) {
                             return builder->CreateLoad(tagged_value_type, &arg, func_name + ".named_let_callable");
                         }
                     }
 
                     const std::string closure_capture_name = "captured_" + func_name;
-                    for (auto& arg : current_function->args()) {
+                    for (auto& arg : active_function->args()) {
                         if (arg.getName() != closure_capture_name || !arg.getType()->isPointerTy()) {
                             continue;
                         }
@@ -16390,7 +16453,10 @@ private:
 
                 if (Instruction* inst = dyn_cast<Instruction>(func_val)) {
                     Function* owner = inst->getFunction();
-                    if (current_function && owner && owner != current_function) {
+                    Function* active_function = builder->GetInsertBlock()
+                        ? builder->GetInsertBlock()->getParent()
+                        : current_function;
+                    if (active_function && owner && owner != active_function) {
                         if (Value* captured_callable = loadCallableFromCurrentCapture()) {
                             func_val = captured_callable;
                             eshkol_debug("codegenCall: resolved stale callable storage for %s through current captures",
@@ -17510,19 +17576,22 @@ private:
                 // Load the closure tagged value (or use directly if Argument)
                 Value* closure_tagged = nullptr;
                 auto loadClosureTaggedFromCurrentCapture = [&]() -> Value* {
-                    if (!current_function) {
+                    Function* active_function = builder->GetInsertBlock()
+                        ? builder->GetInsertBlock()->getParent()
+                        : current_function;
+                    if (!active_function) {
                         return nullptr;
                     }
 
                     const std::string named_let_capture_name = func_name + "_cap";
-                    for (auto& arg : current_function->args()) {
+                    for (auto& arg : active_function->args()) {
                         if (arg.getName() == named_let_capture_name && arg.getType()->isPointerTy()) {
                             return builder->CreateLoad(tagged_value_type, &arg, func_name + ".named_let_closure");
                         }
                     }
 
                     const std::string closure_capture_name = "captured_" + func_name;
-                    for (auto& arg : current_function->args()) {
+                    for (auto& arg : active_function->args()) {
                         if (arg.getName() != closure_capture_name || !arg.getType()->isPointerTy()) {
                             continue;
                         }
@@ -17541,7 +17610,10 @@ private:
 
                 if (Instruction* inst = dyn_cast<Instruction>(closure_var)) {
                     Function* owner = inst->getFunction();
-                    if (current_function && owner && owner != current_function) {
+                    Function* active_function = builder->GetInsertBlock()
+                        ? builder->GetInsertBlock()->getParent()
+                        : current_function;
+                    if (active_function && owner && owner != active_function) {
                         closure_tagged = loadClosureTaggedFromCurrentCapture();
                         if (closure_tagged) {
                             eshkol_debug("Closure call to %s: loaded stale closure storage through current captures",
@@ -23644,6 +23716,11 @@ private:
         if (ast->type != ESHKOL_OP) return false;
 
         const eshkol_operations_t* op = &ast->operation;
+        auto shadow_it = userShadowableOps().find(op->op);
+        if (shadow_it != userShadowableOps().end() && var == shadow_it->second) {
+            return true;
+        }
+
         switch (op->op) {
             case ESHKOL_SET_OP:
                 return (op->set_op.name && var == op->set_op.name) ||
@@ -23676,6 +23753,52 @@ private:
             case ESHKOL_DEFINE_OP:
                 return (op->define_op.name && var == op->define_op.name) ||
                        astReferencesVar(op->define_op.value, var);
+            case ESHKOL_UNIFY_OP:
+            case ESHKOL_MAKE_SUBST_OP:
+            case ESHKOL_WALK_OP:
+            case ESHKOL_MAKE_FACT_OP:
+            case ESHKOL_MAKE_KB_OP:
+            case ESHKOL_KB_ASSERT_OP:
+            case ESHKOL_KB_QUERY_OP:
+            case ESHKOL_KB_QUERY_PREFIX_OP:
+            case ESHKOL_LOGIC_VAR_PRED_OP:
+            case ESHKOL_SUBSTITUTION_PRED_OP:
+            case ESHKOL_KB_PRED_OP:
+            case ESHKOL_FACT_PRED_OP:
+            case ESHKOL_FACTOR_GRAPH_PRED_OP:
+            case ESHKOL_WORKSPACE_PRED_OP:
+            case ESHKOL_MAKE_FACTOR_GRAPH_OP:
+            case ESHKOL_FG_ADD_FACTOR_OP:
+            case ESHKOL_FG_INFER_OP:
+            case ESHKOL_FG_UPDATE_CPT_OP:
+            case ESHKOL_FG_OBSERVE_OP:
+            case ESHKOL_FREE_ENERGY_OP:
+            case ESHKOL_EXPECTED_FREE_ENERGY_OP:
+            case ESHKOL_MAKE_WORKSPACE_OP:
+            case ESHKOL_WS_REGISTER_OP:
+            case ESHKOL_WS_STEP_OP:
+            case ESHKOL_DNC_MAKE_OP:
+            case ESHKOL_DNC_CONTENT_ADDR_OP:
+            case ESHKOL_DNC_LOC_ADDR_OP:
+            case ESHKOL_DNC_READ_OP:
+            case ESHKOL_DNC_WRITE_OP:
+            case ESHKOL_DNC_ALLOC_WEIGHTS_OP:
+            case ESHKOL_DNC_READ_GRAD_OP:
+            case ESHKOL_DNC_PRED_OP:
+            case ESHKOL_SDNC_PROGRAM_OP:
+            case ESHKOL_SDNC_RUN_OP:
+            case ESHKOL_SDNC_WEIGHT_GRAD_OP:
+            case ESHKOL_SDNC_PARAMS_OP:
+            case ESHKOL_SDNC_SET_PARAMS_OP:
+            case ESHKOL_SDNC_IMPROVE_OP:
+            case ESHKOL_SDNC_PRED_OP:
+            case ESHKOL_MAKE_PARAMETER_OP:
+            case ESHKOL_EXTERN_OP:
+                if (astReferencesVar(op->call_op.func, var)) return true;
+                for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
+                    if (astReferencesVar(&op->call_op.variables[i], var)) return true;
+                }
+                return false;
             default:
                 return false;
         }
@@ -24207,6 +24330,9 @@ private:
                     case ESHKOL_SDNC_PRED_OP:
                     case ESHKOL_MAKE_PARAMETER_OP:    // call_op holding the init expr (parse-transformed)
                     case ESHKOL_EXTERN_OP:
+                        if (op->call_op.func) {
+                            findFreeVariablesImpl(op->call_op.func, current_scope, parameters, num_params, free_vars, bound_vars);
+                        }
                         for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
                             findFreeVariablesImpl(&op->call_op.variables[i], current_scope, parameters, num_params, free_vars, bound_vars);
                         }
