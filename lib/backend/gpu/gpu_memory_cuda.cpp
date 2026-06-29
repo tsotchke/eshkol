@@ -261,9 +261,19 @@ static int cuda_matmul_f32(EshkolGPUBuffer* A, EshkolGPUBuffer* B, EshkolGPUBuff
 static int cuda_matmul_f16_from_f64(const double* A, const double* B, double* C,
                                     uint64_t M, uint64_t K, uint64_t N) {
     if (!g_cublas_handle || !A || !B || !C) return -1;
+    // P1: cuBLAS takes the dims and leading dimensions as int; reject sizes that
+    // would silently truncate on the (int) casts below (wrong-shape GEMM).
+    if (M > (uint64_t)0x7fffffff || K > (uint64_t)0x7fffffff || N > (uint64_t)0x7fffffff) return -1;
     const size_t aN = (size_t)M * K, bN = (size_t)K * N, cN = (size_t)M * N;
 
-    std::vector<__half> hA(aN), hB(bN), hC(cN);
+    // P1: these host-side half buffers can throw std::bad_alloc for large GEMMs.
+    // This function is reached across an extern "C" boundary, where an uncaught
+    // C++ exception is undefined behavior (std::terminate) instead of the
+    // documented "-1 → CPU f64 fallback". Catch and return -1.
+    std::vector<__half> hA, hB, hC;
+    try {
+        hA.resize(aN); hB.resize(bN); hC.resize(cN);
+    } catch (...) { return -1; }
     for (size_t i = 0; i < aN; i++) hA[i] = __float2half((float)A[i]);
     for (size_t i = 0; i < bN; i++) hB[i] = __float2half((float)B[i]);
 
@@ -309,11 +319,17 @@ static int cuda_matmul_f16_from_f64(const double* A, const double* B, double* C,
 static int cuda_batch_matmul_f16_from_f64(const double* a, const double* b, double* c,
                                           int64_t batch, int64_t M, int64_t K, int64_t N) {
     if (!g_cublas_handle || !a || !b || !c || batch <= 0) return -1;
+    // P1: cuBLAS strided-batched takes int dims; reject sizes that truncate.
+    if (M > 0x7fffffff || K > 0x7fffffff || N > 0x7fffffff || batch > 0x7fffffff) return -1;
     const size_t aN = (size_t)batch * M * K;
     const size_t bN = (size_t)batch * K * N;
     const size_t cN = (size_t)batch * M * N;
 
-    std::vector<__half> hA(aN), hB(bN), hC(cN);
+    // P1: catch std::bad_alloc — uncaught across the extern "C" boundary is UB.
+    std::vector<__half> hA, hB, hC;
+    try {
+        hA.resize(aN); hB.resize(bN); hC.resize(cN);
+    } catch (...) { return -1; }
     for (size_t i = 0; i < aN; i++) hA[i] = __float2half((float)a[i]);
     for (size_t i = 0; i < bN; i++) hB[i] = __float2half((float)b[i]);
 
@@ -635,6 +651,16 @@ int eshkol_gpu_should_use(size_t num_elements) {
 void eshkol_matmul_dispatch(const double* A, const double* B, double* C,
                              uint64_t M, uint64_t K, uint64_t N, int32_t dtype) {
     size_t num_elements = M * N;
+
+    // Lazy GPU init: the (matmul ...) codegen path reaches this dispatcher
+    // directly, but unlike the BLAS dispatcher (eshkol_matmul_f64) it never
+    // primed the backend. Without this, g_active_backend stays ESHKOL_GPU_NONE
+    // forever and both the f16/bf16 tensor-core fast path and the f64 GPU path
+    // are unreachable from the language. eshkol_gpu_init() is idempotent
+    // (double-checked lock), so this is a one-time cost on the first matmul.
+    if (g_active_backend == ESHKOL_GPU_NONE) {
+        eshkol_gpu_init();
+    }
 
     // GPU-LLM fast path (ESH-0021): f16/bf16-dtype operands go through cuBLAS
     // GemmEx (16F operands, 32F accumulate, tensor cores). Tensor-core GEMM
@@ -966,6 +992,8 @@ int eshkol_gpu_conv2d_backward_input_f64(
     uint64_t stride_h, uint64_t stride_w,
     uint64_t channels_in, uint64_t channels_out, uint64_t batch_size) {
     if (g_active_backend != ESHKOL_GPU_CUDA) return -1;
+    if (!grad_out || !kernel_weights || !grad_input ||  // P1: guard null buffers/device ptrs
+        !grad_out->device_ptr || !kernel_weights->device_ptr || !grad_input->device_ptr) return -1;
     return cuda_conv2d_backward_input_f64(
         (const double*)grad_out->device_ptr,
         (const double*)kernel_weights->device_ptr,
@@ -984,6 +1012,8 @@ int eshkol_gpu_conv2d_backward_kernel_f64(
     uint64_t stride_h, uint64_t stride_w,
     uint64_t channels_in, uint64_t channels_out, uint64_t batch_size) {
     if (g_active_backend != ESHKOL_GPU_CUDA) return -1;
+    if (!grad_out || !saved_input || !grad_kernel ||  // P1: guard null buffers/device ptrs
+        !grad_out->device_ptr || !saved_input->device_ptr || !grad_kernel->device_ptr) return -1;
     return cuda_conv2d_backward_kernel_f64(
         (const double*)grad_out->device_ptr,
         (const double*)saved_input->device_ptr,
@@ -1002,6 +1032,11 @@ int eshkol_gpu_batchnorm_backward_f64(
     EshkolGPUBuffer* grad_beta,
     uint64_t batch_size, uint64_t feature_size) {
     if (g_active_backend != ESHKOL_GPU_CUDA) return -1;
+    if (!grad_out || !saved_input || !saved_mean || !saved_inv_std || !saved_gamma ||
+        !grad_input || !grad_gamma || !grad_beta ||  // P1: guard null buffers/device ptrs
+        !grad_out->device_ptr || !saved_input->device_ptr || !saved_mean->device_ptr ||
+        !saved_inv_std->device_ptr || !saved_gamma->device_ptr || !grad_input->device_ptr ||
+        !grad_gamma->device_ptr || !grad_beta->device_ptr) return -1;
     return cuda_batchnorm_backward_f64(
         (const double*)grad_out->device_ptr,
         (const double*)saved_input->device_ptr,
@@ -1022,6 +1057,10 @@ int eshkol_gpu_layernorm_backward_f64(
     EshkolGPUBuffer* grad_input,
     uint64_t num_samples, uint64_t feature_size) {
     if (g_active_backend != ESHKOL_GPU_CUDA) return -1;
+    if (!grad_out || !saved_input || !saved_mean || !saved_inv_std || !saved_gamma ||
+        !grad_input ||  // P1: guard null buffers/device ptrs
+        !grad_out->device_ptr || !saved_input->device_ptr || !saved_mean->device_ptr ||
+        !saved_inv_std->device_ptr || !saved_gamma->device_ptr || !grad_input->device_ptr) return -1;
     return cuda_layernorm_backward_f64(
         (const double*)grad_out->device_ptr,
         (const double*)saved_input->device_ptr,

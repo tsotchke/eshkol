@@ -110,16 +110,18 @@ extern "C" void* eshkol_xla_matmul(
     int gpu_should = eshkol_gpu_should_use(M * N);
     if (gpu_should) {
         EshkolGPUBuffer buf_a, buf_b, buf_c;
-        if (eshkol_gpu_wrap_host((void*)a_data, M * K * sizeof(double), &buf_a) == 0 &&
-            eshkol_gpu_wrap_host((void*)b_data, K * N * sizeof(double), &buf_b) == 0 &&
-            eshkol_gpu_wrap_host((void*)out, M * N * sizeof(double), &buf_c) == 0) {
-            if (eshkol_gpu_matmul_f64(&buf_a, &buf_b, &buf_c, M, K, N) == 0) {
-                eshkol_gpu_free(&buf_a);
-                eshkol_gpu_free(&buf_b);
-                eshkol_gpu_free(&buf_c);
-                return result;
-            }
-        }
+        // P1: free every successfully-wrapped buffer on ALL exit paths. The old
+        // short-circuit &&-chain leaked buf_a when buf_b's wrap failed, and
+        // leaked all three when the matmul itself failed before falling back.
+        bool wa = eshkol_gpu_wrap_host((void*)a_data, M * K * sizeof(double), &buf_a) == 0;
+        bool wb = wa && eshkol_gpu_wrap_host((void*)b_data, K * N * sizeof(double), &buf_b) == 0;
+        bool wc = wb && eshkol_gpu_wrap_host((void*)out, M * N * sizeof(double), &buf_c) == 0;
+        bool done = wa && wb && wc &&
+            eshkol_gpu_matmul_f64(&buf_a, &buf_b, &buf_c, M, K, N) == 0;
+        if (wc) eshkol_gpu_free(&buf_c);
+        if (wb) eshkol_gpu_free(&buf_b);
+        if (wa) eshkol_gpu_free(&buf_a);
+        if (done) return result;
     }
     // CPU fallback (BLAS/SIMD)
     eshkol_matmul_f64(a_data, b_data, out, M, K, N);
@@ -167,26 +169,26 @@ extern "C" void* eshkol_xla_elementwise(
     if (eshkol_gpu_should_use(n) && op_code >= 0 && op_code < xla_elemwise_count) {
         int gpu_op = xla_to_gpu_elemwise[op_code];
         EshkolGPUBuffer buf_a, buf_b, buf_c;
-        bool gpu_ok = eshkol_gpu_wrap_host((void*)a_data, n * sizeof(double), &buf_a) == 0;
-        if (gpu_ok && b_data && op_code <= 3) {
-            gpu_ok = eshkol_gpu_wrap_host((void*)b_data, n * sizeof(double), &buf_b) == 0;
-        }
-        if (gpu_ok) {
-            gpu_ok = eshkol_gpu_wrap_host((void*)out, n * sizeof(double), &buf_c) == 0;
-        }
-        if (gpu_ok) {
-            EshkolGPUBuffer* bp = (b_data && op_code <= 3) ? &buf_b : nullptr;
-            if (eshkol_gpu_elementwise_f64(&buf_a, bp, &buf_c, n,
-                    static_cast<EshkolElementwiseOp>(gpu_op)) == 0) {
-                eshkol_gpu_free(&buf_a);
-                if (b_data && op_code <= 3) eshkol_gpu_free(&buf_b);
-                eshkol_gpu_free(&buf_c);
-                return result;
-            }
-        }
+        // P1: free every wrapped buffer on ALL paths (partial-wrap failure and
+        // kernel failure both previously leaked the buffers before CPU fallback).
+        const bool need_b = (b_data && op_code <= 3);
+        bool wa = eshkol_gpu_wrap_host((void*)a_data, n * sizeof(double), &buf_a) == 0;
+        bool wb = wa && need_b && eshkol_gpu_wrap_host((void*)b_data, n * sizeof(double), &buf_b) == 0;
+        bool wc = wa && (!need_b || wb) &&
+            eshkol_gpu_wrap_host((void*)out, n * sizeof(double), &buf_c) == 0;
+        bool done = wc && eshkol_gpu_elementwise_f64(&buf_a, need_b ? &buf_b : nullptr, &buf_c, n,
+                        static_cast<EshkolElementwiseOp>(gpu_op)) == 0;
+        if (wc) eshkol_gpu_free(&buf_c);
+        if (wb) eshkol_gpu_free(&buf_b);
+        if (wa) eshkol_gpu_free(&buf_a);
+        if (done) return result;
     }
 
     // CPU fallback
+    // P0: binary ops (ADD/SUB/MUL/DIV, op_code 0-3) dereference b_data; the GPU
+    // path above already treats b_data as nullable, so guard the CPU path too
+    // rather than dereferencing NULL.
+    if (op_code <= 3 && !b_data) return nullptr;
     switch (op_code) {
         case 0: // ADD
             for (int64_t i = 0; i < total_elements; i++) out[i] = a_data[i] + b_data[i];
@@ -260,15 +262,15 @@ extern "C" void* eshkol_xla_reduce(
         if (eshkol_gpu_should_use(n) && op_code >= 0 && op_code <= 4) {
             static const int xla_to_gpu_reduce[] = {0, 4, 3, 2, 1};
             EshkolGPUBuffer buf_in, buf_out;
-            if (eshkol_gpu_wrap_host((void*)data, n * sizeof(double), &buf_in) == 0 &&
-                eshkol_gpu_wrap_host((void*)out, sizeof(double), &buf_out) == 0) {
-                if (eshkol_gpu_reduce_f64(&buf_in, &buf_out, n,
-                        static_cast<EshkolReduceOp>(xla_to_gpu_reduce[op_code])) == 0) {
-                    eshkol_gpu_free(&buf_in);
-                    eshkol_gpu_free(&buf_out);
-                    return result;
-                }
-            }
+            // P1: free every wrapped buffer on all paths (partial-wrap / kernel
+            // failure previously leaked before CPU fallback).
+            bool wi = eshkol_gpu_wrap_host((void*)data, n * sizeof(double), &buf_in) == 0;
+            bool wo = wi && eshkol_gpu_wrap_host((void*)out, sizeof(double), &buf_out) == 0;
+            bool done = wo && eshkol_gpu_reduce_f64(&buf_in, &buf_out, n,
+                            static_cast<EshkolReduceOp>(xla_to_gpu_reduce[op_code])) == 0;
+            if (wo) eshkol_gpu_free(&buf_out);
+            if (wi) eshkol_gpu_free(&buf_in);
+            if (done) return result;
         }
 
         // CPU fallback
@@ -812,12 +814,15 @@ extern "C" void* eshkol_xla_transpose(
     const int64_t* perm) {
 
     if (!data || rank <= 0) return nullptr;
+    if (rank > 16) return nullptr;  // P1: out_shape[16] is a fixed stack array
 
     // Compute transposed shape and total elements
     uint64_t total = 1;
     uint64_t out_shape[16];
     for (int64_t i = 0; i < rank; i++) {
-        out_shape[i] = shape[perm[i]];
+        const int64_t p = perm[i];
+        if (p < 0 || p >= rank) return nullptr;  // P1: validate permutation index ∈ [0,rank)
+        out_shape[i] = shape[p];
         total *= out_shape[i];
     }
 
@@ -889,6 +894,7 @@ extern "C" void* eshkol_xla_broadcast(
     int64_t tgt_rank) {
 
     if (!data || tgt_rank <= 0) return nullptr;
+    if (tgt_rank > 16 || src_rank > 16) return nullptr;  // P1: tgt_strides[16]/src_strides[16] stack arrays
 
     uint64_t total = 1;
     for (int64_t i = 0; i < tgt_rank; i++) total *= tgt_shape[i];
@@ -948,12 +954,17 @@ extern "C" void* eshkol_xla_slice(
     const int64_t* strides) {
 
     if (!data || rank <= 0) return nullptr;
+    if (rank > 16) return nullptr;  // P1: out_shape[16] is a fixed stack array
 
     // Compute output shape
     uint64_t out_shape[16];
     uint64_t total = 1;
     for (int64_t i = 0; i < rank; i++) {
         int64_t stride = strides ? strides[i] : 1;
+        // P2: reject degenerate/out-of-range slice params — stride<=0 (div-by-zero),
+        // negative starts, limits<starts (unsigned underflow), or limits past the dim.
+        if (stride <= 0 || starts[i] < 0 || limits[i] < starts[i] ||
+            static_cast<uint64_t>(limits[i]) > shape[i]) return nullptr;
         out_shape[i] = static_cast<uint64_t>((limits[i] - starts[i] + stride - 1) / stride);
         total *= out_shape[i];
     }

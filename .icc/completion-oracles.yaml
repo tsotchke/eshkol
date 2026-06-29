@@ -415,3 +415,284 @@ oracles:
         severity: medium
         label: examples/agent.esk compiles end-to-end
         action: ./build/eshkol-run examples/agent.esk -o /tmp/selene
+
+  # ─────────────────────────────────────────────────────────────────
+  # SICP-completeness gate (ESH-0005) — the v1.3-evolve release gate
+  # for "support ALL of SICP". Each program in tests/sicp/ self-checks
+  # (PASS:/FAIL:) and is run under BOTH the JIT (-r) and AOT by
+  # scripts/run_sicp_smoke.sh, which writes kind:"sicp_smoke" events to
+  # scripts/icc_traces/sicp_smoke.jsonl. Probe ids are sicp_<file>_<mode>.
+  #
+  # ch4_metacircular and repro_esh0078_firstclass_predicate are XFAIL
+  # (they document the ESH-0078 first-class-predicate codegen gap) and
+  # are intentionally NOT required below.
+  # ─────────────────────────────────────────────────────────────────
+  - name: sicp-completeness
+    aliases: [sicp, esh-0005, sicp-gate]
+    requires:
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch1_higher_order_r"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP ch1_higher_order passes under r
+        action: ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch1_higher_order_aot"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP ch1_higher_order passes under aot
+        action: ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch1_primes_r"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP ch1_primes passes under r
+        action: ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch1_primes_aot"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP ch1_primes passes under aot
+        action: ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch1_newton_r"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP ch1_newton passes under r
+        action: ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch1_newton_aot"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP ch1_newton passes under aot
+        action: ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch2_rational_r"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP ch2_rational passes under r
+        action: ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch2_rational_aot"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP ch2_rational passes under aot
+        action: ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch2_interval_r"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP ch2_interval passes under r
+        action: ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch2_interval_aot"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP ch2_interval passes under aot
+        action: ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch2_sequences_r"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP ch2_sequences passes under r
+        action: ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch2_sequences_aot"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP ch2_sequences passes under aot
+        action: ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch2_sets_r"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP ch2_sets passes under r
+        action: ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch2_sets_aot"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP ch2_sets passes under aot
+        action: ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch2_huffman_r"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP ch2_huffman passes under r
+        action: ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch2_huffman_aot"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP ch2_huffman passes under aot
+        action: ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch2_picture_r"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP ch2_picture passes under r
+        action: ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch2_picture_aot"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP ch2_picture passes under aot
+        action: ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch2_symbolic_deriv_r"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP ch2_symbolic_deriv passes under r
+        action: ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch2_symbolic_deriv_aot"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP ch2_symbolic_deriv passes under aot
+        action: ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch2_generic_r"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP ch2_generic passes under r
+        action: ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch2_generic_aot"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP ch2_generic passes under aot
+        action: ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch3_accounts_r"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP ch3_accounts passes under r
+        action: ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch3_accounts_aot"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP ch3_accounts passes under aot
+        action: ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch3_monte_carlo_r"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP ch3_monte_carlo passes under r
+        action: ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch3_monte_carlo_aot"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP ch3_monte_carlo passes under aot
+        action: ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch3_streams_r"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP ch3_streams passes under r
+        action: ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch3_streams_aot"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP ch3_streams passes under aot
+        action: ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch3_tables_r"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP ch3_tables passes under r
+        action: ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch3_tables_aot"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP ch3_tables passes under aot
+        action: ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch3_queue_r"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP ch3_queue passes under r
+        action: ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch3_queue_aot"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP ch3_queue passes under aot
+        action: ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch4_metacircular_full_r"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP ch4_metacircular_full passes under r
+        action: ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch4_metacircular_full_aot"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP ch4_metacircular_full passes under aot
+        action: ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch4_amb_r"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP ch4_amb passes under r
+        action: ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch4_amb_aot"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP ch4_amb passes under aot
+        action: ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch5_register_machine_r"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP ch5_register_machine passes under r
+        action: ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch5_register_machine_aot"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP ch5_register_machine passes under aot
+        action: ./scripts/run_sicp_smoke.sh

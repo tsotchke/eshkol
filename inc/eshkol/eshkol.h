@@ -357,7 +357,9 @@ typedef enum {
     HEAP_SUBTYPE_PROMISE         = 18,  // Lazy promise (delay/force with memoization)
     HEAP_SUBTYPE_RATIONAL        = 19,  // Exact rational number (numerator/denominator)
     HEAP_SUBTYPE_PRNG            = 20,  // Isolated pseudo-random number generator state
-    // Reserved: 21-255 for future heap types
+    HEAP_SUBTYPE_DNC             = 21,  // Differentiable external memory (NTM/DNC head)
+    HEAP_SUBTYPE_SDNC            = 22,  // SDNC weight-program handle (bytecode-VM-as-transformer θ)
+    // Reserved: 23-255 for future heap types
 } heap_subtype_t;
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -1080,6 +1082,12 @@ static inline eshkol_display_opts_t eshkol_display_default_opts(void) {
     return opts;
 }
 
+// R7RS flonum external representation (+inf.0 / -inf.0 / +nan.0). Single
+// source of truth shared by display/write/number->string/logic printing.
+// Defined in runtime_display_hosted.cpp.
+int  eshkol_format_double(char* buf, size_t n, double v);
+void eshkol_fprint_double(void* file, double v);
+
 // Main display functions (implemented in arena_memory.cpp)
 void eshkol_display_value(const eshkol_tagged_value_t* value);
 void eshkol_display_value_opts(const eshkol_tagged_value_t* value, eshkol_display_opts_t* opts);
@@ -1464,6 +1472,23 @@ typedef enum {
     ESHKOL_INCLUDE_OP,               // (include "file" ...) - transformed at parse time
     ESHKOL_SYNTAX_ERROR_OP,          // (syntax-error "msg" datum ...) - handled at parse time
     ESHKOL_KB_QUERY_PREFIX_OP,       // (kb-query-prefix kb pattern) -> list of substs (pattern arity ≤ fact arity)
+    // ===== Differentiable external memory (core.dnc) — appended to preserve ABI =====
+    ESHKOL_DNC_MAKE_OP,              // (make-dnc-memory N W) -> mem opaque handle
+    ESHKOL_DNC_CONTENT_ADDR_OP,     // (dnc-content-address mem key beta) -> length-N wvec
+    ESHKOL_DNC_LOC_ADDR_OP,         // (dnc-loc-address addr beta N) -> length-N wvec
+    ESHKOL_DNC_READ_OP,             // (dnc-read mem wvec) -> length-W row
+    ESHKOL_DNC_WRITE_OP,            // (dnc-write! mem wvec erase add) -> mem
+    ESHKOL_DNC_ALLOC_WEIGHTS_OP,    // (dnc-alloc-weights mem beta) -> length-N wvec
+    ESHKOL_DNC_READ_GRAD_OP,        // (dnc-read-grad mem key target beta) -> (dkey . dmem)
+    ESHKOL_DNC_PRED_OP,             // (dnc-memory? x) -> bool
+    // ===== SDNC weight-program θ (core.sdnc) — appended to preserve ABI =====
+    ESHKOL_SDNC_PROGRAM_OP,         // (sdnc-program name) -> θ opaque handle
+    ESHKOL_SDNC_RUN_OP,             // (sdnc-run θ input) -> output vector
+    ESHKOL_SDNC_WEIGHT_GRAD_OP,     // (sdnc-weight-grad θ input target) -> flat ∂L/∂weights
+    ESHKOL_SDNC_PARAMS_OP,          // (sdnc-params θ) -> vector of flattened trainable weights
+    ESHKOL_SDNC_SET_PARAMS_OP,      // (sdnc-set-params! θ vec) -> θ
+    ESHKOL_SDNC_IMPROVE_OP,         // (sdnc-improve! θ data steps lr) -> θ
+    ESHKOL_SDNC_PRED_OP,            // (sdnc? x) -> bool
 } eshkol_op_t;
 
 struct eshkol_ast;

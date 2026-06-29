@@ -59,14 +59,29 @@ void TypeSystem::createStructTypes() {
     tagged_value_fields.push_back(int64_type);  // Field 4: data union (offset 8, 8 bytes)
     tagged_value_type = llvm::StructType::create(context, tagged_value_fields, "eshkol_tagged_value");
 
-    // Dual number struct type for forward-mode automatic differentiation
+    // Dual number struct type for forward-mode automatic differentiation.
+    //
+    // SECOND-ORDER / NESTED AD: the dual carries two independent
+    // perturbation slots plus their mixed (cross) term, encoding a truncated
+    // bivariate Taylor expansion
+    //   v = primal + d1*e1 + d2*e2 + d12*e1*e2   (with e1^2 = e2^2 = 0)
+    // This is what makes 2-level nested `derivative` and EXACT Hessians
+    // possible: perturbation tagging maps nesting depth -> slot index.
+    // The first two fields (primal, d1) are UNCHANGED, so all single-level
+    // forward-mode AD and the C runtime view of the struct (which reads only
+    // value/derivative at offsets 0 and 8) keep working bit-compatibly; the
+    // d2/d12 slots default to 0 for first-order use.
     // struct eshkol_dual_number {
-    //     double value;       // f(x)
-    //     double derivative;  // f'(x)
+    //     double value;       // f0: primal  f(x)
+    //     double derivative;  // f1: d/de1   (single-level tangent)
+    //     double d2;          // f2: d/de2   (second perturbation slot)
+    //     double d12;         // f3: d2/de1 de2 (mixed second-order term)
     // }
     std::vector<llvm::Type*> dual_fields;
-    dual_fields.push_back(double_type);  // value
-    dual_fields.push_back(double_type);  // derivative
+    dual_fields.push_back(double_type);  // value  (primal)
+    dual_fields.push_back(double_type);  // derivative (slot e1)
+    dual_fields.push_back(double_type);  // slot e2
+    dual_fields.push_back(double_type);  // mixed e1*e2
     dual_number_type = llvm::StructType::create(context, dual_fields, "dual_number");
 
     // Complex number struct type for signal processing and complex analysis

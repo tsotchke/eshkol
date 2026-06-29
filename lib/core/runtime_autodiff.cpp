@@ -39,6 +39,9 @@ void debug_print_ptr(const char* context, void* ptr) {
 thread_local ad_tape_t* __ad_tape_stack[ESHKOL_ARENA_MAX_TAPE_DEPTH] = {nullptr};
 thread_local uint64_t __ad_tape_depth = 0;
 
+// ESH-0070: runtime forward-mode perturbation level (see codegen_context.h).
+thread_local uint64_t __ad_pert_level = 0;
+
 thread_local void* __outer_ad_node_storage = nullptr;
 thread_local void* __outer_ad_node_to_inner = nullptr;
 thread_local void* __outer_grad_accumulator = nullptr;

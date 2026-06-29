@@ -1,0 +1,95 @@
+;;; core.sdnc — SDNC weight-program builtins acceptance test.
+;;;
+;;; Exercises the pure-Eshkol SDNC API that exposes the bytecode-VM-as-
+;;; transformer weight-program θ (kernels mirror lib/backend/weight_matrices.c
+;;; in lib/core/sdnc_core.h):
+;;;
+;;;   (sdnc-program name)               -> θ opaque handle
+;;;   (sdnc-run θ input)                -> #(...) D-dim forward output
+;;;   (sdnc-weight-grad θ input target) -> #(...) flat dL/dWEIGHTS
+;;;   (sdnc-params θ) / (sdnc-set-params! θ vec)
+;;;   (sdnc-improve! θ data steps lr)   -> θ
+;;;
+;;; Spec must-haves: sdnc-weight-grad length == sdnc-params length;
+;;; sdnc-run deterministic; one sdnc-improve! run shows loss decrease.
+;;; Must pass under both `eshkol-run -r FILE` (JIT) and AOT.
+
+(define pass-count 0)
+(define fail-count 0)
+(define (check name ok)
+  (if ok
+      (begin (set! pass-count (+ pass-count 1))
+             (display "  ok   ") (display name) (newline))
+      (begin (set! fail-count (+ fail-count 1))
+             (display "  FAIL ") (display name) (newline))))
+
+(define (sqnorm v)
+  (let ((n (vector-length v)))
+    (let loop ((i 0) (acc 0.0))
+      (if (< i n)
+          (loop (+ i 1) (+ acc (* (vector-ref v i) (vector-ref v i))))
+          (* 0.5 acc)))))
+
+(define (vsub a b)
+  (let* ((n (vector-length a)) (out (make-vector n 0.0)))
+    (let loop ((i 0))
+      (if (< i n)
+          (begin (vector-set! out i (- (vector-ref a i) (vector-ref b i))) (loop (+ i 1)))
+          out))))
+
+;; 1. sdnc-program returns a handle
+(define t (sdnc-program "fib"))
+(check "sdnc-program returns a handle" (not (eq? t #f)))
+(check "sdnc? on program" (sdnc? t))
+(check "sdnc? on non-program" (not (sdnc? 42)))
+
+;; 2. sdnc-params is a long vector
+(define p0 (sdnc-params t))
+(check "sdnc-params is a vector" (vector? p0))
+(check "sdnc-params length > 1000" (> (vector-length p0) 1000))
+
+;; 3. roundtrip set-params! / params
+(sdnc-set-params! t p0)
+(define p1 (sdnc-params t))
+(check "roundtrip length matches" (= (vector-length p0) (vector-length p1)))
+(check "roundtrip entry 0"   (= (vector-ref p0 0) (vector-ref p1 0)))
+(check "roundtrip entry 100" (= (vector-ref p0 100) (vector-ref p1 100)))
+
+;; 4. sdnc-run is deterministic and D-dim
+(define input (make-vector 256 0.0))
+(vector-set! input 0 1.0)
+(vector-set! input 1 0.5)
+(define out-a (sdnc-run t input))
+(define out-b (sdnc-run t input))
+(check "sdnc-run output length == 256" (= (vector-length out-a) 256))
+(check "sdnc-run deterministic (run twice equal)"
+       (= (sqnorm (vsub out-a out-b)) 0.0))
+
+;; copy a (possibly tensor) vector into a fresh mutable make-vector buffer
+(define (vcopy src)
+  (let* ((n (vector-length src)) (out (make-vector n 0.0)))
+    (let loop ((i 0))
+      (if (< i n)
+          (begin (vector-set! out i (vector-ref src i)) (loop (+ i 1)))
+          out))))
+
+;; 5. sdnc-weight-grad length == sdnc-params length (the key invariant)
+(define target (vcopy (sdnc-run t input)))   ; reachable target = forward(input)
+(vector-set! target 0 (+ (vector-ref target 0) 0.5))  ; nudge so loss > 0
+(vector-set! target 5 (+ (vector-ref target 5) 0.5))
+(define g (sdnc-weight-grad t input target))
+(check "sdnc-weight-grad is a vector" (vector? g))
+(check "sdnc-weight-grad length == sdnc-params length"
+       (= (vector-length g) (vector-length p0)))
+
+;; 6. one sdnc-improve! run shows loss decrease.
+(define (loss-now) (sqnorm (vsub (sdnc-run t input) target)))
+(define loss-before (loss-now))
+(sdnc-improve! t (cons input target) 30 0.01)
+(define loss-after (loss-now))
+(display "  loss: ") (display loss-before) (display " -> ") (display loss-after) (newline)
+(check "sdnc-improve! decreases loss" (< loss-after loss-before))
+
+(newline)
+(display "Passed: ") (display pass-count)
+(display " / Failed: ") (display fail-count) (newline)

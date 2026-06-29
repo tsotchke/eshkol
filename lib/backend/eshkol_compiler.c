@@ -1021,20 +1021,28 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
             /* Read and parse the file */
             FILE* mf = fopen(path, "r");
             if (!mf) {
-                /* Try alternative path: replace ALL dots with slashes */
+                /* P2: convert module-name dots to slashes BEFORE appending the
+                   .esk extension. The old loop replaced ALL dots including the
+                   extension's (foo.bar -> foo/bar/esk), yielding an unopenable
+                   path and a silent module-not-found. */
                 char alt[512];
-                snprintf(alt, sizeof(alt), "%s.esk", mod_name);
-                for (char* p = alt; *p; p++) if (*p == '.') *p = '/';
+                size_t ai = 0;
+                for (const char* p = mod_name; *p && ai < sizeof(alt) - 5; p++) {
+                    alt[ai++] = (*p == '.') ? '/' : *p;
+                }
+                alt[ai] = '\0';
+                strncat(alt, ".esk", sizeof(alt) - ai - 1);
                 mf = fopen(alt, "r");
             }
             if (mf) {
                 fseek(mf, 0, SEEK_END);
                 long len = ftell(mf);
                 fseek(mf, 0, SEEK_SET);
-                char* src = (char*)malloc(len + 1);
+                /* P1: guard ftell<0 (pipe/FIFO) — malloc(0)+fread((size_t)-1) overflows. */
+                char* src = (len >= 0) ? (char*)malloc((size_t)len + 1) : NULL;
                 if (src) {
-                    fread(src, 1, len, mf);
-                    src[len] = '\0';
+                    size_t nread = fread(src, 1, (size_t)len, mf);
+                    src[nread] = '\0';
                     fclose(mf);
                     /* Parse and compile all top-level forms */
                     const char* saved_src = src_ptr;
@@ -3925,9 +3933,19 @@ static void execute_chunk(FuncChunk* chunk) {
             int count = ins.operand;
             int32_t ptr = HALLOC(); if (ptr < 0) break;
             heap[ptr].type = HEAP_VECTOR;
-            heap[ptr].vector.len = count;
-            for (int i = count - 1; i >= 0; i--)
-                heap[ptr].vector.items[i] = POP();
+            /* P0: vector.items[] is a fixed 64-slot inline array. `count` comes
+               straight from the instruction operand, so a vector/struct literal
+               with >64 elements would write past items[] into the next heap
+               object. Clamp the stored count to capacity; still POP the full
+               count so the operand stack stays balanced. */
+            const int cap = (int)(sizeof(heap[ptr].vector.items) /
+                                  sizeof(heap[ptr].vector.items[0]));
+            int stored = count > cap ? cap : count;
+            heap[ptr].vector.len = stored;
+            for (int i = count - 1; i >= 0; i--) {
+                Value v = POP();
+                if (i < stored) heap[ptr].vector.items[i] = v;
+            }
             PUSH(((Value){.type=VAL_VECTOR,.as.ptr=ptr}));
             break;
         }
@@ -4833,7 +4851,12 @@ static void execute_chunk(FuncChunk* chunk) {
                 if (s.type != VAL_STRING) { PUSH(s); break; }
                 int n = (int)AS_NUM(n_v);
                 int slen = heap[s.as.ptr].string.len;
-                int rlen = slen * n; if (rlen > 255) rlen = 255;
+                /* P1: guard negative n (rlen<0 → OOB write at data[rlen]),
+                   slen==0 (i%slen div-by-zero), and slen*n int overflow. The
+                   inline string.data buffer is 256 bytes, so clamp rlen to 255. */
+                if (n < 0 || slen <= 0) { PUSH(s); break; }
+                int64_t rlen64 = (int64_t)slen * (int64_t)n;
+                int rlen = rlen64 > 255 ? 255 : (int)rlen64;
                 int32_t ptr = HALLOC(); if (ptr < 0) break;
                 heap[ptr].type = HEAP_STRING; heap[ptr].string.len = rlen;
                 for (int i = 0; i < rlen; i++) heap[ptr].string.data[i] = heap[s.as.ptr].string.data[i % slen];

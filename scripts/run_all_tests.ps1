@@ -671,9 +671,20 @@ function Invoke-SimpleCompileRunSuite {
 }
 
 function Invoke-MemorySuite {
+    param(
+        [string[]]$IncludeNames = @(),
+        [string[]]$ExcludeNames = @()
+    )
+
     Write-Section "Eshkol Memory Test Suite"
     $suite = New-SuiteState "memory"
     $files = Get-TestFiles -ProjectRoot $script:ProjectRoot -Patterns @("tests/memory/*.esk")
+    if ($IncludeNames.Count -gt 0) {
+        $files = @($files | Where-Object { $IncludeNames -contains (Split-Path -Leaf $_) })
+    }
+    if ($ExcludeNames.Count -gt 0) {
+        $files = @($files | Where-Object { $ExcludeNames -notcontains (Split-Path -Leaf $_) })
+    }
 
     foreach ($testFile in $files) {
         $testName = Split-Path -Leaf $testFile
@@ -842,9 +853,20 @@ function Invoke-ParserSuite {
 }
 
 function Invoke-TypesystemSuite {
+    param(
+        [string[]]$IncludeNames = @(),
+        [string[]]$ExcludeNames = @()
+    )
+
     Write-Section "Eshkol Type System Test Suite"
     $suite = New-SuiteState "typesystem"
     $files = Get-TestFiles -ProjectRoot $script:ProjectRoot -Patterns @("tests/typesystem/*.esk")
+    if ($IncludeNames.Count -gt 0) {
+        $files = @($files | Where-Object { $IncludeNames -contains (Split-Path -Leaf $_) })
+    }
+    if ($ExcludeNames.Count -gt 0) {
+        $files = @($files | Where-Object { $ExcludeNames -notcontains (Split-Path -Leaf $_) })
+    }
 
     foreach ($testFile in $files) {
         $testName = Split-Path -Leaf $testFile
@@ -1482,41 +1504,55 @@ switch ($Mode) {
         $suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "gpu" -Title "Eshkol GPU Test Suite" -Patterns @("tests/gpu/*.esk") -FailRegex "^FAIL:|Failed:\s+[1-9]"
     }
     "windows-lite" {
+        # This mode is intentionally a bounded hosted-runner smoke suite.
+        # Full feature/category coverage remains on the Unix matrix and local
+        # Windows verifier; hosted ARM64 validates representative portable
+        # surfaces so platform regressions are caught without 2-hour jobs.
         $suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "features" -Title "Eshkol Windows Feature Smoke Suite" -Patterns @("tests/features/*.esk") -RuntimeErrorRegex "error:" -IncludeNames @(
             "bitwise_ops_test.esk",
             "bytevector_test.esk",
-            "char_predicates_test.esk",
-            "data_encoding_test.esk",
             "exception_test.esk",
-            "hott_return_types.esk",
-            "r7rs_wave2_test.esk",
             "r7rs_wave3_test.esk",
-            "trig_hyperbolic_test.esk",
             "type_predicates_test.esk"
         )
-        $suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "stdlib" -Title "Eshkol Windows Stdlib Smoke Suite" -Patterns @("tests/stdlib/*.esk") -RuntimeErrorRegex "error:"
-        $suiteResults += Invoke-MemorySuite
-        $suiteResults += Invoke-ModulesSuite
+        $suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "stdlib" -Title "Eshkol Windows Stdlib Smoke Suite" -Patterns @("tests/stdlib/*.esk") -RuntimeErrorRegex "error:" -IncludeNames @(
+            "atomic_file_test.esk",
+            "logging_test.esk",
+            "metrics_test.esk",
+            "minimal_test.esk",
+            "strings_closure_test.esk"
+        )
+        $suiteResults += Invoke-MemorySuite -IncludeNames @(
+            "double_move.esk",
+            "region_simple_test.esk",
+            "use_after_move.esk",
+            "valid_ownership.esk"
+        )
+        $suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "modules" -Title "Eshkol Windows Modules Smoke Suite" -Patterns @("tests/modules/*.esk") -IncludeNames @(
+            "cycle_test.esk",
+            "module_test.esk",
+            "r7rs_define_library_test.esk",
+            "r7rs_import_test.esk",
+            "visibility_test.esk"
+        )
         $suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "types" -Title "Eshkol Windows Type Smoke Suite" -Patterns @("tests/types/*.esk") -RuntimeErrorRegex "error:" -IncludeNames @(
             "comprehensive_type_test.esk",
-            "hash_table_types_test.esk",
-            "hott_integration_test.esk",
             "hott_type_system_test.esk",
             "symbol_ops_test.esk",
             "type_predicate_matrix_test.esk"
         )
-        $suiteResults += Invoke-TypesystemSuite
+        $suiteResults += Invoke-TypesystemSuite -IncludeNames @(
+            "arity_mismatch_test.esk",
+            "backward_inference_test.esk",
+            "no_false_positive_test.esk",
+            "type_mismatch_strict_test.esk",
+            "unsafe_suppresses_test.esk"
+        )
         $suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "autodiff" -Title "Eshkol Windows Autodiff Smoke Suite" -Patterns @("tests/autodiff/*.esk") -RuntimeErrorRegex "error:" -IncludeNames @(
             "autodiff_edge_test.esk",
-            "debug_gradient_only.esk",
-            "debug_minimal.esk",
             "gradient_scalar_test.esk",
-            "phase0_diff_fixes.esk",
-            "phase2_forward_test.esk",
             "phase3_real_ad_test.esk",
             "simple_diff_test.esk",
-            "test_gradient_direct.esk",
-            "test_simple_multiply.esk",
             "validation_01_type_detection.esk"
         )
         $suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "system" -Title "Eshkol Windows System Smoke Suite" -Patterns @("tests/system/*.esk") -IncludeNames @(
@@ -1527,13 +1563,9 @@ switch ($Mode) {
         )
         $suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "examples" -Title "Eshkol Windows Examples Smoke Suite" -Patterns @("examples/*.esk") -IncludeNames @(
             "autodiff.esk",
-            "bayesian_diagnosis.esk",
-            "gradient_descent_demo.esk",
             "hello.esk",
             "monte_carlo_pi.esk",
-            "newton_method.esk",
-            "streaming_stats.esk",
-            "symbolic_diff.esk"
+            "streaming_stats.esk"
         )
         $suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "parallel" -Title "Eshkol Windows Parallel Smoke Suite" -Patterns @("tests/parallel/*.esk") -FailRegex "^FAIL:|Failed:\s+[1-9]" -IncludeNames @(
             "parallel_execute_test.esk",

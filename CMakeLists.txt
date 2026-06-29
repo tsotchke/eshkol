@@ -551,10 +551,47 @@ endif()
 set(ESHKOL_HOST_LLVM_LINK_ARGS "")
 foreach(_llvm_lib_dir IN LISTS LLVM_LIBRARY_DIRS)
     list(APPEND ESHKOL_HOST_LLVM_LINK_ARGS "-L${_llvm_lib_dir}")
+    # Also bake an RPATH so AOT-compiled programs (which link libLLVM through
+    # these args, incl. the -r persistent run-cache binary) can find libLLVM.so
+    # at runtime. On ELF (Linux/*nix — including Nix-store library paths) a -L
+    # alone leaves NO runtime search path, so the cached run binary dies with
+    # "libLLVM.so.NN: cannot open shared object file". macOS resolves via the
+    # dylib's absolute install_name and Windows via PATH, so this is ELF-only.
+    if(NOT APPLE AND NOT WIN32 AND NOT ESHKOL_USING_MSVC)
+        list(APPEND ESHKOL_HOST_LLVM_LINK_ARGS "-Wl,-rpath,${_llvm_lib_dir}")
+    endif()
 endforeach()
+# In CMake-package mode, LLVM_LIBS_LIST holds CMake target / component names
+# (e.g. "LLVMSupport", "LLVMX86CodeGen") rather than file paths or -l flags.
+# These are baked into ESHKOL_HOST_LLVM_LINK_ARGS, which the `-r` persistent
+# run-cache passes verbatim to the compiler driver when linking the cached AOT
+# binary. The MinGW/GNU driver then treats each bare name as a filename and
+# fails: "clang++: error: no such file or directory: 'LLVMSupport'". Resolve
+# each component name to its concrete archive path so the run-cache link works.
+# (MSVC/ClangCL keeps the legacy behaviour; its run-cache path is unaffected.)
+function(eshkol_resolve_llvm_lib_arg out_var lib_arg)
+    set(${out_var} "${lib_arg}" PARENT_SCOPE)
+    if(NOT ESHKOL_LLVM_USE_CMAKE_PACKAGE OR ESHKOL_USING_MSVC)
+        return()
+    endif()
+    # Already a path or a flag? leave it.
+    if(lib_arg MATCHES "[/\\]" OR lib_arg MATCHES "^-")
+        return()
+    endif()
+    foreach(_dir IN LISTS LLVM_LIBRARY_DIRS)
+        foreach(_cand "${_dir}/lib${lib_arg}.a" "${_dir}/${lib_arg}.lib" "${_dir}/lib${lib_arg}.dll.a")
+            if(EXISTS "${_cand}")
+                set(${out_var} "${_cand}" PARENT_SCOPE)
+                return()
+            endif()
+        endforeach()
+    endforeach()
+endfunction()
+
 foreach(_llvm_link_arg IN LISTS LLVM_LDFLAGS_LIST LLVM_LIBS_LIST LLVM_SYSTEM_LIBS_LIST)
     if(NOT "${_llvm_link_arg}" STREQUAL "")
-        list(APPEND ESHKOL_HOST_LLVM_LINK_ARGS "${_llvm_link_arg}")
+        eshkol_resolve_llvm_lib_arg(_llvm_link_arg_resolved "${_llvm_link_arg}")
+        list(APPEND ESHKOL_HOST_LLVM_LINK_ARGS "${_llvm_link_arg_resolved}")
     endif()
 endforeach()
 
@@ -589,6 +626,51 @@ function(eshkol_target_llvm_includes target_name)
         target_compile_options(${target_name} PRIVATE
             $<$<COMPILE_LANGUAGE:C,CXX>:${ESHKOL_LLVM_INCLUDE_OPTIONS}>)
     endif()
+endfunction()
+
+# ===== Windows (MinGW/MSYS2) runtime symbol export for the in-process JIT =====
+# Generates a .def listing the Eshkol runtime namespace from the runtime
+# archives and links the given executable against it, so
+# DynamicLibrarySearchGenerator::GetForCurrentProcess can resolve host symbols
+# (the PE equivalent of --export-dynamic). See cmake/gen_runtime_def.cmake for
+# the rationale (PE 65535-export cap rules out --export-all-symbols).
+function(eshkol_windows_export_runtime target_name)
+    if(NOT WIN32 OR ESHKOL_USING_MSVC)
+        return()
+    endif()
+
+    # Locate an nm for symbol discovery (prefer llvm-nm shipped with the SDK).
+    if(NOT ESHKOL_RUNTIME_DEF_NM)
+        find_program(ESHKOL_RUNTIME_DEF_NM
+            NAMES llvm-nm llvm-nm.exe nm nm.exe
+            HINTS "${ESHKOL_LLVM_ROOT}/bin")
+    endif()
+    if(NOT ESHKOL_RUNTIME_DEF_NM)
+        message(WARNING
+            "eshkol_windows_export_runtime: no nm found; ${target_name} runtime "
+            "symbols will not be exported and `-r` JIT lookups will fail.")
+        return()
+    endif()
+
+    set(_def_file "${CMAKE_BINARY_DIR}/${target_name}_runtime_exports.def")
+    add_custom_command(
+        OUTPUT "${_def_file}"
+        COMMAND "${CMAKE_COMMAND}"
+                "-DARCHIVES=$<TARGET_FILE:eshkol-static>;$<TARGET_FILE:eshkol-runtime>;$<TARGET_FILE:eshkol-repl-lib>"
+                "-DNM=${ESHKOL_RUNTIME_DEF_NM}"
+                "-DOUTPUT=${_def_file}"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/gen_runtime_def.cmake"
+        DEPENDS eshkol-static eshkol-runtime eshkol-repl-lib
+                "${CMAKE_CURRENT_SOURCE_DIR}/cmake/gen_runtime_def.cmake"
+        COMMENT "Generating Eshkol runtime export .def for ${target_name}"
+        VERBATIM)
+
+    add_custom_target(${target_name}_runtime_def DEPENDS "${_def_file}")
+    add_dependencies(${target_name} ${target_name}_runtime_def)
+
+    # Passing a .def as a linker input makes the GNU driver export exactly its
+    # EXPORTS list (and nothing else).
+    target_link_options(${target_name} PRIVATE "${_def_file}")
 endfunction()
 
 # Debug output for troubleshooting
@@ -1387,13 +1469,18 @@ set(ESHKOL_BACKEND_RUNTIME_SRC
   lib/backend/cpu_features.cpp
   lib/backend/parallel_codegen.cpp
   lib/backend/tensor_backward.cpp
+  # Shared conv2d forward kernel (eshkol_rt_conv2d) the generated code calls;
+  # must live in the slim runtime archive so AOT user binaries resolve it.
+  lib/backend/tensor_conv_kernel.cpp
 )
 
 set(ESHKOL_RUNTIME_SUPPORT_SRC
   lib/bridge/tensor_backward.cpp
+  lib/core/dnc_api.c
   lib/core/image_io.c
   lib/core/inference.cpp
   lib/core/kb_persistence.cpp
+  lib/core/sdnc_api.c
   lib/core/logic.cpp
   lib/core/logic_builtins.cpp
   lib/core/merkle.c
@@ -1561,6 +1648,18 @@ endif()
 # Add library directories if found
 if(LLVM_LIBRARY_DIRS)
     target_link_directories(eshkol-static PRIVATE ${LLVM_LIBRARY_DIRS})
+endif()
+
+# Propagate the runtime's transitive system link deps (Apple ImageIO/CoreGraphics/
+# CoreFoundation for image_io.c, Windows Gdiplus/Advapi32/Ntdll, libpng/jpeg/webp,
+# clang builtins) to the static/runtime libraries' PUBLIC interface. Previously
+# these lived only on the eshkol-run/eshkol-repl executables, so a downstream
+# consumer linking libeshkol-static.a directly (e.g. libnoesis-core) hit
+# "Undefined symbols: _CGImageDestinationCreateWithURL ..." and had to re-declare
+# the frameworks itself. The library should own its transitive link deps.
+if(ESHKOL_EXTRA_LINK_LIBS)
+    target_link_libraries(eshkol-runtime PUBLIC ${ESHKOL_EXTRA_LINK_LIBS})
+    target_link_libraries(eshkol-static PUBLIC ${ESHKOL_EXTRA_LINK_LIBS})
 endif()
 
 # Link BLAS libraries if available
@@ -1773,19 +1872,31 @@ if(REPL_SRC)
     if(APPLE)
       target_link_options(eshkol-repl PRIVATE
         "-Wl,-force_load" "$<TARGET_FILE:eshkol-static>")
-    elseif(WIN32)
-      # Native Windows links the needed runtime objects directly via
+    elseif(WIN32 AND ESHKOL_USING_MSVC)
+      # ClangCL/MSVC links the needed runtime objects directly via
       # eshkol-repl-lib's references and explicit JIT symbol registration.
+    elseif(WIN32)
+      # MSYS2/MinGW GNU driver: whole-archive the runtime so every object
+      # (incl. JIT-only-referenced runtime helpers) is pulled into the exe,
+      # matching the macOS -force_load / Linux --whole-archive behaviour.
+      target_link_options(eshkol-repl PRIVATE
+        "-Wl,--whole-archive" "$<TARGET_FILE:eshkol-static>" "-Wl,--no-whole-archive")
     else()
       target_link_options(eshkol-repl PRIVATE
         "-Wl,--whole-archive" "$<TARGET_FILE:eshkol-static>" "-Wl,--no-whole-archive")
     endif()
 
-    # Export all symbols for JIT symbol resolution
+    # Export the runtime symbols so the in-process JIT can resolve host symbols
+    # via DynamicLibrarySearchGenerator::GetForCurrentProcess.
     if(APPLE)
       target_link_options(eshkol-repl PRIVATE "-Wl,-export_dynamic")
+    elseif(WIN32 AND ESHKOL_USING_MSVC)
+      # No export-dynamic equivalent is required for the ClangCL/MSVC REPL path.
     elseif(WIN32)
-      # No export-dynamic equivalent is required for the native Windows REPL path.
+      # PE/COFF: export only the bounded Eshkol runtime namespace via a
+      # generated .def (--export-all-symbols overflows the 65535 PE export
+      # limit because the exe statically links all of LLVM).
+      eshkol_windows_export_runtime(eshkol-repl)
     else()
       target_link_options(eshkol-repl PRIVATE "-Wl,--export-dynamic")
     endif()
@@ -1832,9 +1943,22 @@ if(REPL_SRC)
     # 512MB stack for deep recursion (main thread stack set at link time on macOS)
     target_link_options(eshkol-run PRIVATE "-Wl,-stack_size,0x20000000")
     target_link_options(eshkol-run PRIVATE "-Wl,-bind_at_load")
-  elseif(WIN32)
-    # Native Windows uses the REPL/JIT symbol registration path and does not
+  elseif(WIN32 AND ESHKOL_USING_MSVC)
+    # ClangCL/MSVC uses the REPL/JIT symbol registration path and does not
     # accept GNU ld options here.
+  elseif(WIN32)
+    # MSYS2/MinGW GNU driver: mirror the macOS/Linux path so the in-process
+    # JIT (used by `-r` and -e/--eval) can resolve every host runtime symbol.
+    # whole-archive pulls in the full runtime closure (incl. eval_bridge
+    # overrides + JIT-only helpers); the generated .def exports exactly the
+    # Eshkol runtime namespace so GetForCurrentProcess resolves them. PE does
+    # not export symbols by default — see cmake/gen_runtime_def.cmake.
+    target_link_options(eshkol-run PRIVATE
+      "-Wl,--whole-archive"
+      "$<TARGET_FILE:eshkol-static>"
+      "$<TARGET_FILE:eshkol-repl-lib>"
+      "-Wl,--no-whole-archive")
+    eshkol_windows_export_runtime(eshkol-run)
   else()
     target_link_options(eshkol-run PRIVATE
       "-Wl,--whole-archive"
@@ -1880,6 +2004,16 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/pkg/eshkol_pkg.cpp")
         add_test(
             NAME eshkol-pkg-command-injection
             COMMAND eshkol-pkg-command-injection-test $<TARGET_FILE:eshkol-pkg>
+        )
+    endif()
+
+    if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/pkg/subprocess_timeout_test.cpp")
+        add_executable(eshkol-pkg-subprocess-timeout-test tests/pkg/subprocess_timeout_test.cpp)
+        target_compile_features(eshkol-pkg-subprocess-timeout-test PRIVATE cxx_std_17)
+        target_include_directories(eshkol-pkg-subprocess-timeout-test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+        add_test(
+            NAME eshkol-pkg-subprocess-timeout
+            COMMAND eshkol-pkg-subprocess-timeout-test
         )
     endif()
 endif()
@@ -2643,6 +2777,19 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/lib/backend/weight_matrices.c")
             PASS_REGULAR_EXPRESSION "Results: [0-9]+ passed, 0 failed"
         )
     endif()
+endif()
+
+# ===== SDNC de-risking experiment: differentiable external memory head ========
+# Standalone prototype (its own main()) for a differentiable NTM/DNC-style
+# external memory addressing head — the keystone primitive that will later let
+# the SDNC lift its bounded 16-cell in-state arena to unbounded external memory
+# while staying differentiable. Not compiled into libeshkol-static.
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/lib/backend/diff_memory_prototype.c")
+    add_executable(diff_memory_prototype lib/backend/diff_memory_prototype.c)
+    target_link_libraries(diff_memory_prototype PRIVATE m)
+    set_target_properties(diff_memory_prototype PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/tools
+    )
 endif()
 
 # ===== XLA Integration Tests =====

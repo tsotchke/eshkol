@@ -1,0 +1,43 @@
+;; GPU GEMM verification on Jetson Xavier (sm_72), forced GPU dispatch via
+;; ESHKOL_GPU_THRESHOLD=1. Numerical correctness vs closed-form + nanosecond timing.
+
+(define (ones-vec n)
+  (let loop ((i 0) (acc '()))
+    (if (= i n) (list->vector (reverse acc))
+        (loop (+ i 1) (cons 1.0 acc)))))
+
+;; ---- Correctness: A(NxK)=1.0, B(KxN)=1.0  =>  C[i][j] = K ----
+(define N 1024)
+(define K 1024)
+(define A (reshape (ones-vec (* N K)) N K))
+(define B (reshape (ones-vec (* K N)) K N))
+
+(define C (matmul A B))
+(define ok
+  (and (= (tensor-get C 0 0)       1024.0)
+       (= (tensor-get C 0 1023)    1024.0)
+       (= (tensor-get C 1023 0)    1024.0)
+       (= (tensor-get C 512 512)   1024.0)
+       (= (tensor-get C 1023 1023) 1024.0)))
+(if ok
+    (display "PASS: GPU GEMM 1024x1024 numerically correct (all entries = K = 1024)")
+    (display "FAIL: GPU GEMM 1024x1024 incorrect"))
+(newline)
+
+;; ---- Timing with nanosecond jiffies; FLOPs = 2*N*K*N per GEMM ----
+(define reps 50)
+(define t0 (current-jiffy))
+(let loop ((i 0))
+  (if (< i reps)
+      (begin (matmul A B) (loop (+ i 1)))
+      #t))
+(define t1 (current-jiffy))
+(define ns (- t1 t0))                       ;; total nanoseconds
+(define per-ns (/ ns reps))                 ;; ns per GEMM
+(define per-ms (/ per-ns 1.0e6))
+(define flops (* 2.0 (* N (* K N))))        ;; 2*N*K*N
+(define gflops (/ flops (/ per-ns 1.0e9)))  ;; flops / seconds, then /1e9
+(display "GEMM 1024x1024x1024  reps=") (display reps)
+(display "  per_ms=") (display per-ms)
+(display "  GFLOPS=") (display (/ gflops 1.0e9))
+(newline)

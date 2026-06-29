@@ -1,0 +1,125 @@
+;;; lib/core/memory.esk — append-only, content-addressed, CRDT-merged event log
+;;;
+;;; core.memory v0: an in-memory event-log faculty for a distributed intelligence,
+;;; composed entirely from existing, verified core primitives:
+;;;   - sha256                  (agent.crypto)      — content-addressing
+;;;   - sexp->canonical-string  (core.sexp/stdlib)  — stable canonical rendering
+;;;   - RGA / LWW / vector-clock (core.distributed) — the CRDT layer
+;;;
+;;; An event is immutable and content-addressed: its id is the sha256 of the
+;;; canonical rendering of its body (everything except the id). The body embeds
+;;; the prev-hash, so the log is also a hash chain — tampering any field breaks
+;;; the id. The log itself is an RGA (a convergent, append-only ordered-sequence
+;;; CRDT), so two nodes can append independently and `memory-merge` is
+;;; conflict-free (commutative, idempotent, associative) with dedup-by-id inherent
+;;; to the RGA.
+;;;
+;;; Identity (soul) and episodic (anamnesis) memory become event *types* in one
+;;; log. Durable content-addressed storage (core.merkle CAS), fsync, and network
+;;; fan-out (git/Syncthing) are step 2; this v0 is pure in-memory and works under
+;;; both `eshkol-run -r` (JIT) and AOT.
+
+(require stdlib)
+(require agent.crypto)        ; sha256
+(require core.distributed)    ; make-rga rga-append rga-values rga-merge,
+                              ; make-lww-register lww-register-set/-value,
+                              ; vector-clock-empty/-tick/-merge/-compare
+(require core.merkle)         ; make-cas-with-hash — durable CAS, wired in step 2
+
+(provide
+  make-memory-log
+  memory-append!
+  memory-events
+  memory-merge
+  memory-verify-chain
+  memory-verify-events
+  memory-fold-lww
+  memory-event?
+  memory-event-id memory-event-prev memory-event-vclock
+  memory-event-node memory-event-type memory-event-payload)
+
+;; ===== Event: (mem-ev-v1 id prev-hash vclock node type payload) =====
+(define (memory-event? ev)
+  (and (pair? ev) (eq? (car ev) (quote mem-ev-v1))))
+(define (memory-event-id ev)      (list-ref ev 1))
+(define (memory-event-prev ev)    (list-ref ev 2))
+(define (memory-event-vclock ev)  (list-ref ev 3))
+(define (memory-event-node ev)    (list-ref ev 4))
+(define (memory-event-type ev)    (list-ref ev 5))
+(define (memory-event-payload ev) (list-ref ev 6))
+
+;; Content hash = sha256 of the canonical rendering of the body sans id.
+;; (Same pattern as hiereia/soul.esk's hash-chain; the canonicalizer is the one
+;; shared core.sexp implementation, so soul and memory can never drift.)
+(define (event-content-hash node prev vclock type payload)
+  (sha256 (sexp->canonical-string (list node prev vclock type payload))))
+
+;; ===== Log: #(mem-log node-id rga vclock prev-hash) [mutable] =====
+(define (make-memory-log node-id)
+  (vector (quote mem-log) node-id (make-rga) (vector-clock-empty) #f))
+(define (ml-node l)   (vector-ref l 1))
+(define (ml-rga l)    (vector-ref l 2))
+(define (ml-vclock l) (vector-ref l 3))
+(define (ml-prev l)   (vector-ref l 4))
+
+;; Append an experience-event: tick the vclock, hash+chain, RGA-append.
+(define (memory-append! log type payload)
+  (let* ((node (ml-node log))
+         (vc   (vector-clock-tick (ml-vclock log) node))
+         (prev (ml-prev log))
+         (id   (event-content-hash node prev vc type payload))
+         (ev   (list (quote mem-ev-v1) id prev vc node type payload)))
+    (vector-set! log 2 (rga-append (ml-rga log) node ev))
+    (vector-set! log 3 vc)
+    (vector-set! log 4 id)
+    ev))
+
+;; Ordered list of events (RGA convergent order).
+(define (memory-events log) (rga-values (ml-rga log)))
+
+;; Conflict-free merge: RGA union (dedup-by-id inherent) + vclock merge.
+;; Commutative, idempotent, associative; loses no event.
+(define (memory-merge a b)
+  (let ((m (make-memory-log (ml-node a))))
+    (vector-set! m 2 (rga-merge (ml-rga a) (ml-rga b)))
+    (vector-set! m 3 (vector-clock-merge (ml-vclock a) (ml-vclock b)))
+    m))
+
+;; Integrity: recompute every event's id from its body; tampering any field
+;; (incl. prev-hash) changes the recompute and is caught. Works on single-node
+;; AND merged logs (content-integrity is independent of interleave order).
+;; Returns #t, or (offending-event . reason).
+(define (memory-verify-events events)
+  (if (null? events)
+      #t
+      (let* ((ev (car events))
+             (recomputed (event-content-hash (memory-event-node ev)
+                                             (memory-event-prev ev)
+                                             (memory-event-vclock ev)
+                                             (memory-event-type ev)
+                                             (memory-event-payload ev))))
+        (cond
+          ((not (memory-event? ev))                          (cons ev (quote not-an-event)))
+          ((not (string? (memory-event-id ev)))              (cons ev (quote no-id)))
+          ((not (string=? recomputed (memory-event-id ev)))  (cons ev (quote hash-mismatch)))
+          (else (memory-verify-events (cdr events)))))))
+
+(define (memory-verify-chain log)
+  (memory-verify-events (memory-events log)))
+
+;; Fold 'value-type events for `key` into an LWW register; payload = (key . value).
+;; Append order is the LWW timestamp (events are totally ordered, incl. post-merge).
+(define (memory-fold-lww log key)
+  (let loop ((evs (memory-events log)) (ts 0) (reg #f))
+    (if (null? evs)
+        (if reg (lww-register-value reg) #f)
+        (let ((ev (car evs)))
+          (if (and (eq? (memory-event-type ev) (quote value))
+                   (pair? (memory-event-payload ev))
+                   (equal? (car (memory-event-payload ev)) key))
+              (let ((v (cdr (memory-event-payload ev))))
+                (loop (cdr evs) (+ ts 1)
+                      (if reg
+                          (lww-register-set reg v ts (memory-event-node ev))
+                          (make-lww-register v ts (memory-event-node ev)))))
+              (loop (cdr evs) (+ ts 1) reg))))))

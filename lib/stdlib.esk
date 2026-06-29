@@ -37,6 +37,9 @@
 ;;; Strings - extended string utilities
 (require core.strings)
 
+;;; Alists - association-list helpers (alist-ref / alist-ref-or / alist-set)
+(require core.alist)
+
 ;;; Files - atomic writes and path helpers
 (require core.files)
 
@@ -107,6 +110,9 @@
 ;;; Signal Processing - FFT/IFFT and FIR/IIR filters, windowing, Butterworth design
 (require signal.fft)
 (require signal.filters)
+
+;;; Riemannian geometry - Euclidean / Poincaré / spherical manifolds + full DG surface
+(require core.manifold)
 
 ;;; Machine Learning - optimization algorithms (gradient descent, Adam, L-BFGS, CG)
 (require ml.optimization)

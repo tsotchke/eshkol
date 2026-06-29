@@ -1,0 +1,102 @@
+;; SICP Chapter 4.1 — metacircular evaluator running NON-TRIVIAL programs:
+;; recursive factorial, Fibonacci, list accumulate, and higher-order map —
+;; all interpreted by eval/apply.
+;;
+;; NOTE: the base environment binds comparison primitives (=, <) to
+;; boolean-NORMALIZING wrapper lambdas, e.g. (lambda (a b) (if (= a b) #t #f)).
+;; This is REQUIRED to work around ESH-0078: a builtin comparison/predicate
+;; invoked as a first-class value (via apply or an extracted procedure value)
+;; returns the raw integer 0/1 instead of a boolean #f/#t.  Direct named calls
+;; are fine, so the wrappers (whose bodies use direct named calls and return a
+;; real boolean) restore correct truthiness for the interpreter's `if`.
+;; The unmodified evaluator probe lives in ch4_metacircular.esk and FAILS on
+;; recursive-fact for exactly this reason.
+(define fails 0)
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin (display "PASS: ") (display name) (newline))
+      (begin (set! fails (+ fails 1))
+             (display "FAIL: ") (display name) (display " expected=") (display expected)
+             (display " actual=") (display actual) (newline))))
+
+(define (tagged? exp tag) (and (pair? exp) (eq? (car exp) tag)))
+(define (lookup var env)
+  (if (null? env) (error "unbound" var)
+      (let loop ((vars (caar env)) (vals (cdar env)))
+        (cond ((null? vars) (lookup var (cdr env)))
+              ((eq? (car vars) var) (car vals))
+              (else (loop (cdr vars) (cdr vals)))))))
+(define (define-var! var val env)
+  (set-car! (car env) (cons var (caar env)))
+  (set-cdr! (car env) (cons val (cdar env))))
+(define (set-var! var val env)
+  (let loop ((vars (caar env)) (vals (cdar env)))
+    (cond ((null? vars) (set-var! var val (cdr env)))
+          ((eq? (car vars) var) (set-car! vals val))
+          (else (loop (cdr vars) (cdr vals))))))
+
+(define (meval exp env)
+  (cond ((number? exp) exp)
+        ((boolean? exp) exp)
+        ((symbol? exp) (lookup exp env))
+        ((tagged? exp 'quote) (cadr exp))
+        ((tagged? exp 'if) (if (not (eq? (meval (cadr exp) env) #f))
+                               (meval (caddr exp) env)
+                               (if (null? (cdddr exp)) 'ok (meval (cadddr exp) env))))
+        ((tagged? exp 'define) (define-var! (cadr exp) (meval (caddr exp) env) env) 'ok)
+        ((tagged? exp 'set!) (set-var! (cadr exp) (meval (caddr exp) env) env) 'ok)
+        ((tagged? exp 'lambda) (list 'closure (cadr exp) (caddr exp) env))
+        ((tagged? exp 'begin) (let loop ((es (cdr exp)) (r 'ok))
+                                (if (null? es) r (loop (cdr es) (meval (car es) env)))))
+        (else (mapply (meval (car exp) env)
+                      (map (lambda (a) (meval a env)) (cdr exp))))))
+(define (mapply proc args)
+  (cond ((procedure? proc) (apply proc args))
+        ((tagged? proc 'closure)
+         (meval (caddr proc)
+                (cons (cons (cadr proc) args) (cadddr proc))))
+        (else (error "not-applicable" proc))))
+
+;; base env: arithmetic + boolean-normalizing comparison wrappers (see note).
+(define (base-env)
+  (list (cons (list '+ '- '* '= '< '> 'cons 'car 'cdr 'null?)
+              (list +
+                    -
+                    *
+                    (lambda (a b) (if (= a b) #t #f))
+                    (lambda (a b) (if (< a b) #t #f))
+                    (lambda (a b) (if (> a b) #t #f))
+                    cons car cdr
+                    (lambda (x) (if (null? x) #t #f))))))
+
+(define e (base-env))
+
+;; --- recursive factorial (non-tail) ---
+(meval '(define fact (lambda (n) (if (= n 0) 1 (* n (fact (- n 1)))))) e)
+(check "fact 5"  120 (meval '(fact 5) e))
+(check "fact 8"  40320 (meval '(fact 8) e))
+
+;; --- accumulating doubler g(n)=2^n (the exact (* 2 _) pattern) ---
+(meval '(define g (lambda (n) (if (= n 0) 1 (* 2 (g (- n 1)))))) e)
+(check "g 10 = 1024" 1024 (meval '(g 10) e))
+
+;; --- naive recursive Fibonacci (tree recursion) ---
+(meval '(define fib (lambda (n)
+                      (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))) e)
+(check "fib 10" 55 (meval '(fib 10) e))
+
+;; --- list length & sum via interpreted recursion over a quoted list ---
+(meval '(define len (lambda (xs) (if (null? xs) 0 (+ 1 (len (cdr xs)))))) e)
+(check "len" 4 (meval '(len (quote (a b c d))) e))
+(meval '(define sum (lambda (xs) (if (null? xs) 0 (+ (car xs) (sum (cdr xs)))))) e)
+(check "sum" 15 (meval '(sum (quote (1 2 3 4 5))) e))
+
+;; --- mutable counter via define + set! threaded through the interpreter ---
+(meval '(define counter 0) e)
+(meval '(set! counter (+ counter 1)) e)
+(meval '(set! counter (+ counter 1)) e)
+(meval '(set! counter (+ counter 1)) e)
+(check "set!-state" 3 (meval 'counter e))
+
+(display "ch4 metacircular full: ")
+(display (if (= fails 0) "ALL PASS" (cons fails 'FAILS))) (newline)

@@ -1,0 +1,90 @@
+;; SICP Chapter 2.3.4 — Huffman encoding trees.
+
+(define fails 0)
+(define (check name ok)
+  (if ok (begin (display "PASS: ") (display name) (newline))
+      (begin (set! fails (+ fails 1)) (display "FAIL: ") (display name) (newline))))
+
+;; leaves
+(define (make-leaf symbol weight) (list 'leaf symbol weight))
+(define (leaf? object) (eq? (car object) 'leaf))
+(define (symbol-leaf x) (cadr x))
+(define (weight-leaf x) (caddr x))
+;; trees
+(define (make-code-tree left right)
+  (list left right (append (symbols left) (symbols right))
+        (+ (weight left) (weight right))))
+(define (left-branch tree) (car tree))
+(define (right-branch tree) (cadr tree))
+(define (symbols tree) (if (leaf? tree) (list (symbol-leaf tree)) (caddr tree)))
+(define (weight tree) (if (leaf? tree) (weight-leaf tree) (cadddr tree)))
+
+;; decoding
+(define (decode bits tree)
+  (define (decode-1 bits current-branch)
+    (if (null? bits) '()
+        (let ((next-branch (choose-branch (car bits) current-branch)))
+          (if (leaf? next-branch)
+              (cons (symbol-leaf next-branch) (decode-1 (cdr bits) tree))
+              (decode-1 (cdr bits) next-branch)))))
+  (decode-1 bits tree))
+(define (choose-branch bit branch)
+  (cond ((= bit 0) (left-branch branch))
+        ((= bit 1) (right-branch branch))
+        (else (error "bad bit -- CHOOSE-BRANCH" bit))))
+
+;; ordered insertion into a weight-ordered set of trees
+(define (adjoin-set x set)
+  (cond ((null? set) (list x))
+        ((< (weight x) (weight (car set))) (cons x set))
+        (else (cons (car set) (adjoin-set x (cdr set))))))
+(define (make-leaf-set pairs)
+  (if (null? pairs) '()
+      (let ((pair (car pairs)))
+        (adjoin-set (make-leaf (car pair) (cadr pair)) (make-leaf-set (cdr pairs))))))
+
+;; encoding (2.68)
+(define (element-of? x lst)
+  (cond ((null? lst) #f) ((eq? x (car lst)) #t) (else (element-of? x (cdr lst)))))
+(define (encode-symbol sym tree)
+  (if (leaf? tree) '()
+      (cond ((element-of? sym (symbols (left-branch tree)))
+             (cons 0 (encode-symbol sym (left-branch tree))))
+            ((element-of? sym (symbols (right-branch tree)))
+             (cons 1 (encode-symbol sym (right-branch tree))))
+            (else (error "symbol not in tree" sym)))))
+(define (encode message tree)
+  (if (null? message) '()
+      (append (encode-symbol (car message) tree) (encode (cdr message) tree))))
+
+;; greedy Huffman generation (2.69)
+(define (successive-merge leaves)
+  (if (null? (cdr leaves)) (car leaves)
+      (successive-merge
+       (adjoin-set (make-code-tree (car leaves) (cadr leaves)) (cddr leaves)))))
+(define (generate-huffman-tree pairs) (successive-merge (make-leaf-set pairs)))
+
+;; SICP sample tree (2.3.4)
+(define sample-tree
+  (make-code-tree (make-leaf 'A 4)
+                  (make-code-tree (make-leaf 'B 2)
+                                  (make-code-tree (make-leaf 'D 1) (make-leaf 'C 1)))))
+(define sample-message '(0 1 1 0 0 1 0 1 0 1 1 1 0))
+(check "decode-sample" (equal? (decode sample-message sample-tree) '(A D A B B C A)))
+;; round-trip: encode then decode is identity
+(check "encode-decode-roundtrip"
+       (equal? (decode (encode '(A D A B B C A) sample-tree) sample-tree) '(A D A B B C A)))
+;; the sample message is exactly the encoding of A D A B B C A
+(check "encode-matches-sample"
+       (equal? (encode '(A D A B B C A) sample-tree) sample-message))
+
+;; generated tree from frequencies; A is most frequent -> shortest code (1 bit)
+(define gen (generate-huffman-tree '((A 8) (B 3) (C 1) (D 1) (E 1) (F 1) (G 1) (H 1))))
+(check "generated-A-shortest" (= (length (encode-symbol 'A gen)) 1))
+(check "generated-roundtrip"
+       (equal? (decode (encode '(A B A C A) gen) gen) '(A B A C A)))
+
+(newline)
+(if (= fails 0)
+    (begin (display "ALL-PASS ch2_huffman") (newline))
+    (begin (display "HAS-FAIL ch2_huffman ") (display fails) (newline)))

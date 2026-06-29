@@ -1,0 +1,94 @@
+;; SICP Chapter 2.4-2.5 — tagged data, generic operations via data-directed
+;; dispatch (an operation/type table), and message passing.
+(define fails 0)
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin (display "PASS: ") (display name) (newline))
+      (begin (set! fails (+ fails 1))
+             (display "FAIL: ") (display name) (display " expected=") (display expected)
+             (display " actual=") (display actual) (newline))))
+
+;; ---- tagged data ----
+(define (attach-tag tag contents) (cons tag contents))
+(define (type-tag datum) (car datum))
+(define (contents datum) (cdr datum))
+
+;; ---- operation/type table as an assoc list held in a box (a pair) ----
+(define op-table (list '*table*))
+(define (put op type proc)
+  (set-cdr! op-table (cons (list op type proc) (cdr op-table))))
+(define (get op type)
+  (let loop ((es (cdr op-table)))
+    (cond ((null? es) #f)
+          ((and (eq? (car (car es)) op) (equal? (cadr (car es)) type))
+           (caddr (car es)))
+          (else (loop (cdr es))))))
+
+;; ---- rectangular complex numbers ----
+(define (install-rectangular)
+  (define (make-rec r i) (attach-tag 'rect (cons r i)))
+  (define (real-part z) (car (contents z)))
+  (define (imag-part z) (cdr (contents z)))
+  (define (magnitude z)
+    (sqrt (+ (* (real-part z) (real-part z)) (* (imag-part z) (imag-part z)))))
+  (put 'real-part '(rect) real-part)
+  (put 'imag-part '(rect) imag-part)
+  (put 'magnitude '(rect) magnitude)
+  (put 'make 'rect make-rec)
+  'done)
+
+;; ---- polar complex numbers ----
+(define (install-polar)
+  (define (make-pol m a) (attach-tag 'polar (cons m a)))
+  (define (magnitude z) (car (contents z)))
+  (define (angle z) (cdr (contents z)))
+  (define (real-part z) (* (magnitude z) (cos (angle z))))
+  (define (imag-part z) (* (magnitude z) (sin (angle z))))
+  (put 'real-part '(polar) real-part)
+  (put 'imag-part '(polar) imag-part)
+  (put 'magnitude '(polar) magnitude)
+  (put 'make 'polar make-pol)
+  'done)
+
+(install-rectangular)
+(install-polar)
+
+;; generic dispatcher
+(define (apply-generic op arg)
+  (let ((proc (get op (list (type-tag arg)))))
+    (if proc (proc arg) (error "no method" op))))
+(define (real-part z) (apply-generic 'real-part z))
+(define (imag-part z) (apply-generic 'imag-part z))
+(define (magnitude z) (apply-generic 'magnitude z))
+
+(define z1 ((get 'make 'rect) 3.0 4.0))
+(define z2 ((get 'make 'polar) 5.0 0.0))
+(check "rect magnitude"   5.0 (magnitude z1))
+(check "rect real-part"   3.0 (real-part z1))
+(check "polar magnitude"  5.0 (magnitude z2))
+(check "polar real-part"  5.0 (real-part z2))
+
+;; ---- generic arithmetic with type-coercion-free same-type ops ----
+(define (install-scheme-number)
+  (put 'add '(num num) (lambda (a b) (attach-tag 'num (+ (contents a) (contents b)))))
+  (put 'mul '(num num) (lambda (a b) (attach-tag 'num (* (contents a) (contents b)))))
+  'done)
+(install-scheme-number)
+(define (make-num n) (attach-tag 'num n))
+(define (gadd a b) ((get 'add (list (type-tag a) (type-tag b))) a b))
+(define (gmul a b) ((get 'mul (list (type-tag a) (type-tag b))) a b))
+(check "generic add" 7 (contents (gadd (make-num 3) (make-num 4))))
+(check "generic mul" 12 (contents (gmul (make-num 3) (make-num 4))))
+
+;; ---- message passing (closures as objects, SICP 2.4.3) ----
+(define (make-from-real-imag x y)
+  (lambda (msg)
+    (cond ((eq? msg 'real-part) x)
+          ((eq? msg 'imag-part) y)
+          ((eq? msg 'magnitude) (sqrt (+ (* x x) (* y y))))
+          (else (error "unknown op" msg)))))
+(define obj (make-from-real-imag 3.0 4.0))
+(check "msg-pass real" 3.0 (obj 'real-part))
+(check "msg-pass mag"  5.0 (obj 'magnitude))
+
+(display "ch2 generic: ") (display (if (= fails 0) "ALL PASS" (cons fails 'FAILS))) (newline)

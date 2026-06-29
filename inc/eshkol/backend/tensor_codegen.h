@@ -1293,6 +1293,25 @@ private:
 
 public:
     /**
+     * Centralized, type-checked tensor-operand unpack (ESH-0069).
+     *
+     * Replaces the ad-hoc `IntToPtr(unpackInt64(v))` that every tensor op used
+     * to reinterpret its operand as an eshkol_tensor_t* without validation —
+     * which segfaulted when handed a vector/int/string. This emits a call to
+     * the runtime `eshkol_tensor_operand_checked`, which:
+     *   - returns the data pointer if the operand is already a tensor,
+     *   - coerces a homogeneous numeric vector to a fresh 1-D tensor,
+     *   - otherwise raises a clean, catchable type error (never segfaults).
+     *
+     * @param tensor_val The tagged operand value (from codegenAST).
+     * @param op_name    User-facing op name, used only for the error message.
+     * @return An i8* pointing at the validated tensor struct (eshkol_tensor_t*).
+     */
+    llvm::Value* unpackTensorOperandChecked(llvm::Value* tensor_val,
+                                            const char* op_name);
+
+public:
+    /**
      * Set callbacks for AST code generation.
      */
     void setCodegenCallbacks(

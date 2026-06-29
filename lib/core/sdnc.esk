@@ -1,0 +1,30 @@
+;;
+;; core.sdnc — SDNC weight-program (bytecode-VM-as-transformer θ)
+;;
+;; Exposes a trainable weight-program θ so programs can do geometric recursive
+;; self-improvement on real SDNC weights from .esk: a genuine transformer
+;; forward (sdnc-run) and exact weight-gradient (sdnc-weight-grad), plus the
+;; flat trainable parameter vector (sdnc-params / sdnc-set-params!) so an
+;; external optimizer can drive it.
+;;
+;; The weight kernels (forward / backward_through_weights / SGD step) mirror
+;; lib/backend/weight_matrices.c byte-for-byte (see lib/core/sdnc_core.h).
+;; Vectors are Eshkol #(...) float vectors.
+;;
+;;   (sdnc-program name)               -> θ      named, reproducible weight set
+;;   (sdnc-run θ input)                -> #(..)  D-dim forward output
+;;   (sdnc-weight-grad θ input target) -> #(..)  flat dL/dWEIGHTS
+;;                                                (= (sdnc-params θ) length)
+;;   (sdnc-params θ)                   -> #(..)  flattened trainable weights
+;;   (sdnc-set-params! θ vec)          -> θ      write weights back
+;;   (sdnc-improve! θ data steps lr)   -> θ      SGD on weights, returns θ
+;;   (sdnc? x)                         -> bool
+;;
+
+(provide sdnc-program
+         sdnc-run
+         sdnc-weight-grad
+         sdnc-params
+         sdnc-set-params!
+         sdnc-improve!
+         sdnc?)

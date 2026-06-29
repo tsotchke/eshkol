@@ -864,7 +864,7 @@ static int mkdir_recursive_impl(const char* path) {
     struct stat st;
     if (stat(path, &st) == 0) return 0; /* exists */
     char tmp[PATH_MAX];
-    strncpy(tmp, path, sizeof(tmp) - 1);
+    strncpy(tmp, path, sizeof(tmp) - 1); tmp[sizeof(tmp) - 1] = '\0';  /* P2: strncpy need not NUL-terminate */
     tmp[sizeof(tmp) - 1] = '\0';
     for (char* p = tmp + 1; *p; p++) {
         if (*p == '/') {
@@ -877,7 +877,7 @@ static int mkdir_recursive_impl(const char* path) {
 #else
     /* Windows: use SHCreateDirectoryExA or manual loop */
     char tmp[MAX_PATH];
-    strncpy(tmp, path, sizeof(tmp) - 1);
+    strncpy(tmp, path, sizeof(tmp) - 1); tmp[sizeof(tmp) - 1] = '\0';  /* P2: strncpy need not NUL-terminate */
     for (char* p = tmp + 1; *p; p++) {
         if (*p == '\\' || *p == '/') {
             char saved = *p;
@@ -1044,7 +1044,9 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_make_temp_dir_v(
 }
 
 static int rmdir_recursive_impl(const char* path) {
-    static int depth = 0;
+    /* P2: thread-local so concurrent rmdir-recursive (parallel-map/execute)
+       don't race on a shared depth counter. */
+    static _Thread_local int depth = 0;
     if (++depth > 100) { --depth; return -1; }
 #ifndef _WIN32
     DIR* d = opendir(path);
@@ -1055,7 +1057,11 @@ static int rmdir_recursive_impl(const char* path) {
         char child[PATH_MAX];
         snprintf(child, sizeof(child), "%s/%s", path, ent->d_name);
         struct stat st;
-        if (stat(child, &st) == 0 && S_ISDIR(st.st_mode)) {
+        /* P1: lstat (not stat) so a symlink is NOT followed — otherwise a
+           symlink to a directory outside the target tree would be recursed into
+           and its contents deleted. S_ISLNK falls to unlink(), which removes the
+           link itself, never its target. */
+        if (lstat(child, &st) == 0 && S_ISDIR(st.st_mode)) {
             rmdir_recursive_impl(child);
         } else {
             unlink(child);
@@ -1550,12 +1556,17 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_path_relative_v(eshkol_sysbuilti
 
     char buf[PATH_MAX];
     buf[0] = '\0';
+    /* P1: up_count is derived from the number of '/' in `from` and is otherwise
+       unbounded; each iteration appends up to 3 chars ("/.."), so an adversarial
+       deep path would overflow buf[PATH_MAX] via strcat. Reject paths that can't
+       be represented, and use bounded appends for the remainder. */
+    if (up_count < 0 || (size_t)up_count * 3 + 2 >= sizeof(buf)) return sys_make_null();
     for (int i = 0; i < up_count; i++) {
         strcat(buf, i > 0 ? "/.." : "..");
     }
     if (to[last_sep]) {
-        if (buf[0]) strcat(buf, "/");
-        strcat(buf, to + last_sep);
+        if (buf[0]) strncat(buf, "/", sizeof(buf) - strlen(buf) - 1);
+        strncat(buf, to + last_sep, sizeof(buf) - strlen(buf) - 1);
     }
     if (buf[0] == '\0') strcpy(buf, ".");
     return sys_make_string(buf);
