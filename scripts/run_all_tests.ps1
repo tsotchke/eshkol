@@ -853,9 +853,20 @@ function Invoke-ParserSuite {
 }
 
 function Invoke-TypesystemSuite {
+    param(
+        [string[]]$IncludeNames = @(),
+        [string[]]$ExcludeNames = @()
+    )
+
     Write-Section "Eshkol Type System Test Suite"
     $suite = New-SuiteState "typesystem"
     $files = Get-TestFiles -ProjectRoot $script:ProjectRoot -Patterns @("tests/typesystem/*.esk")
+    if ($IncludeNames.Count -gt 0) {
+        $files = @($files | Where-Object { $IncludeNames -contains (Split-Path -Leaf $_) })
+    }
+    if ($ExcludeNames.Count -gt 0) {
+        $files = @($files | Where-Object { $ExcludeNames -notcontains (Split-Path -Leaf $_) })
+    }
 
     foreach ($testFile in $files) {
         $testName = Split-Path -Leaf $testFile
@@ -1530,7 +1541,7 @@ switch ($Mode) {
             "symbol_ops_test.esk",
             "type_predicate_matrix_test.esk"
         )
-        $suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "typesystem" -Title "Eshkol Windows Type System Smoke Suite" -Patterns @("tests/typesystem/*.esk") -IncludeNames @(
+        $suiteResults += Invoke-TypesystemSuite -IncludeNames @(
             "arity_mismatch_test.esk",
             "backward_inference_test.esk",
             "no_false_positive_test.esk",
