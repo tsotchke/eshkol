@@ -21,7 +21,7 @@ trap 'rm -rf "$WORK"' EXIT
 
 cat > "$WORK/subprocess_api.esk" <<'EOF'
 (require stdlib)
-(load "lib/agent/subprocess.esk")
+(require agent.subprocess)
 
 (define passed 0)
 (define failed 0)
@@ -41,6 +41,22 @@ cat > "$WORK/subprocess_api.esk" <<'EOF'
         (display ", got ") (display actual) (newline)
         (set! failed (+ failed 1)))))
 
+(define (capture-spawn proc)
+  (if proc
+      (begin
+        (process-close-stdin proc)
+        (process-wait proc 5000)
+        (let ((stdout (process-read-all-stdout proc 4096))
+              (stderr (process-read-all-stderr proc 4096))
+              (code (process-exit-code proc)))
+          (process-destroy proc)
+          (list (cons 'exit-code code)
+                (cons 'stdout stdout)
+                (cons 'stderr stderr))))
+      (list (cons 'exit-code -999)
+            (cons 'stdout "")
+            (cons 'stderr "spawn failed"))))
+
 (capability-install-policy! (list 'subprocess))
 (check "shell denied without shell capability"
        (raises? (lambda () (process-spawn-shell "echo should-not-run" ".")))
@@ -50,8 +66,24 @@ cat > "$WORK/subprocess_api.esk" <<'EOF'
 (define shell-result
   (run-command-capture "echo out; echo err >&2; exit 42" "." 5000 4096))
 
+(define shell-pipeline
+  (run-command-capture "printf 'left\nright\n' | grep right" "." 5000 4096))
+
+(define shell-redirection
+  (run-command-capture "echo hidden >/dev/null; echo visible" "." 5000 4096))
+
 (define argv-result
   (run-argv-capture (list "/bin/echo" "literal;not-shell") "." 5000 4096))
+
+(define argv-metachars
+  (run-argv-capture (list "/bin/echo" "literal|pipe" "literal>redir" "exit 42")
+                    "." 5000 4096))
+
+(define legacy-simple
+  (capture-spawn (process-spawn "echo legacy-simple" ".")))
+
+(define legacy-shell-compatible
+  (capture-spawn (process-spawn "echo legacy-shell; exit 42" ".")))
 
 (define shell-builtin
   (process-spawn-shell "cd" "."))
@@ -66,11 +98,45 @@ cat > "$WORK/subprocess_api.esk" <<'EOF'
           code))
       -999))
 
+(define read-once-proc
+  (process-spawn-shell "printf owned-buffer" "."))
+
+(define read-once-first
+  (if read-once-proc
+      (begin
+        (process-close-stdin read-once-proc)
+        (process-wait read-once-proc 5000)
+        (process-read-all-stdout read-once-proc 4096))
+      "spawn failed"))
+
+(define read-once-second
+  (if read-once-proc
+      (let ((s (process-read-all-stdout read-once-proc 4096)))
+        (process-destroy read-once-proc)
+        s)
+      "spawn failed"))
+
 (check "shell exit code" (cdr (assoc 'exit-code shell-result)) 42)
 (check "shell stdout" (cdr (assoc 'stdout shell-result)) "out\n")
 (check "shell stderr" (cdr (assoc 'stderr shell-result)) "err\n")
+(check "shell pipeline" (cdr (assoc 'stdout shell-pipeline)) "right\n")
+(check "shell redirection" (cdr (assoc 'stdout shell-redirection)) "visible\n")
 (check "argv does not use shell" (cdr (assoc 'stdout argv-result)) "literal;not-shell\n")
+(check "argv keeps metacharacters literal"
+       (cdr (assoc 'stdout argv-metachars))
+       "literal|pipe literal>redir exit 42\n")
+(check "legacy process-spawn simple command"
+       (cdr (assoc 'stdout legacy-simple))
+       "legacy-simple\n")
+(check "legacy process-spawn shell-compatible command"
+       (cdr (assoc 'exit-code legacy-shell-compatible))
+       42)
+(check "legacy process-spawn shell-compatible stdout"
+       (cdr (assoc 'stdout legacy-shell-compatible))
+       "legacy-shell\n")
 (check "explicit shell runs shell builtins" shell-builtin-code 0)
+(check "read-all copies owned buffer before free" read-once-first "owned-buffer")
+(check "read-all second call is empty after ownership transfer" read-once-second "")
 
 (if (> failed 0)
     (exit 1)
