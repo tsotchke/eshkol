@@ -29,6 +29,16 @@ endif()
 set(ESHKOL_HOST_CXX_COMPILER "${ESHKOL_HOST_CXX_COMPILER}" CACHE FILEPATH
     "C++ compiler driver used by eshkol-run when linking generated programs" FORCE)
 
+if(APPLE AND EXISTS "/usr/bin/c++" AND
+   (NOT ESHKOL_HOST_CXX_COMPILER_EXPLICIT OR
+    ESHKOL_HOST_CXX_COMPILER MATCHES "/Library/Developer/CommandLineTools/usr/bin/c\\+\\+$"))
+    # Generated executable links run outside CMake's full driver context.
+    # The CLT-internal c++ path can fail to locate libc++; the xcrun shim
+    # preserves Apple's SDK lookup behavior.
+    set(ESHKOL_HOST_CXX_COMPILER "/usr/bin/c++" CACHE FILEPATH
+        "C++ compiler driver used by eshkol-run when linking generated programs" FORCE)
+endif()
+
 if(ESHKOL_USING_MSVC AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
     # Visual Studio's ClangCL toolset drives lld-link directly, so compiler-rt
     # builtins do not get auto-added the way they would through the Clang driver.
@@ -398,7 +408,7 @@ else()
 
     eshkol_find_lite_llvm()
 
-    if(WIN32)
+    if(WIN32 AND NOT MINGW)
         set(ESHKOL_LLVM_USE_CMAKE_PACKAGE TRUE)
         find_package(LibXml2 QUIET)
         set(ESHKOL_WINDOWS_LLVM_HAS_LIBXML2 FALSE)
@@ -548,6 +558,75 @@ else()
     separate_arguments(LLVM_SYSTEM_LIBS_LIST UNIX_COMMAND "${LLVM_SYSTEM_LIBS}")
 endif()
 
+function(eshkol_resolve_host_link_arg item out_var)
+    set(_eshkol_host_link_arg "")
+
+    if(NOT "${item}" STREQUAL "")
+        if(TARGET "${item}")
+            if(WIN32)
+                foreach(_prop
+                    IMPORTED_IMPLIB_RELEASE
+                    IMPORTED_IMPLIB_RELWITHDEBINFO
+                    IMPORTED_IMPLIB_MINSIZEREL
+                    IMPORTED_IMPLIB_DEBUG
+                    IMPORTED_IMPLIB
+                    IMPORTED_LOCATION_RELEASE
+                    IMPORTED_LOCATION_RELWITHDEBINFO
+                    IMPORTED_LOCATION_MINSIZEREL
+                    IMPORTED_LOCATION_DEBUG
+                    IMPORTED_LOCATION
+                )
+                    if("${_eshkol_host_link_arg}" STREQUAL "")
+                        get_target_property(_candidate "${item}" ${_prop})
+                        if(_candidate AND NOT _candidate MATCHES "-NOTFOUND$")
+                            set(_eshkol_host_link_arg "${_candidate}")
+                        endif()
+                    endif()
+                endforeach()
+            else()
+                foreach(_prop
+                    IMPORTED_LOCATION_RELEASE
+                    IMPORTED_LOCATION_RELWITHDEBINFO
+                    IMPORTED_LOCATION_MINSIZEREL
+                    IMPORTED_LOCATION_DEBUG
+                    IMPORTED_LOCATION
+                )
+                    if("${_eshkol_host_link_arg}" STREQUAL "")
+                        get_target_property(_candidate "${item}" ${_prop})
+                        if(_candidate AND NOT _candidate MATCHES "-NOTFOUND$")
+                            set(_eshkol_host_link_arg "${_candidate}")
+                        endif()
+                    endif()
+                endforeach()
+            endif()
+        else()
+            set(_eshkol_host_link_arg "${item}")
+            if(WIN32 AND
+               NOT _eshkol_host_link_arg MATCHES "^[-/]" AND
+               NOT _eshkol_host_link_arg MATCHES "[/\\\\]" AND
+               NOT _eshkol_host_link_arg MATCHES "\\.(a|so|dylib|lib)$")
+                set(_eshkol_found_lib "")
+                foreach(_llvm_lib_dir IN LISTS LLVM_LIBRARY_DIRS)
+                    foreach(_suffix IN ITEMS ".lib" ".a")
+                        if("${_eshkol_found_lib}" STREQUAL "" AND
+                           EXISTS "${_llvm_lib_dir}/${_eshkol_host_link_arg}${_suffix}")
+                            set(_eshkol_found_lib "${_llvm_lib_dir}/${_eshkol_host_link_arg}${_suffix}")
+                        endif()
+                    endforeach()
+                endforeach()
+                if(NOT "${_eshkol_found_lib}" STREQUAL "")
+                    set(_eshkol_host_link_arg "${_eshkol_found_lib}")
+                endif()
+            endif()
+        endif()
+    endif()
+
+    if(NOT "${_eshkol_host_link_arg}" STREQUAL "")
+        file(TO_CMAKE_PATH "${_eshkol_host_link_arg}" _eshkol_host_link_arg)
+    endif()
+    set(${out_var} "${_eshkol_host_link_arg}" PARENT_SCOPE)
+endfunction()
+
 set(ESHKOL_HOST_LLVM_LINK_ARGS "")
 foreach(_llvm_lib_dir IN LISTS LLVM_LIBRARY_DIRS)
     list(APPEND ESHKOL_HOST_LLVM_LINK_ARGS "-L${_llvm_lib_dir}")
@@ -590,8 +669,11 @@ endfunction()
 
 foreach(_llvm_link_arg IN LISTS LLVM_LDFLAGS_LIST LLVM_LIBS_LIST LLVM_SYSTEM_LIBS_LIST)
     if(NOT "${_llvm_link_arg}" STREQUAL "")
-        eshkol_resolve_llvm_lib_arg(_llvm_link_arg_resolved "${_llvm_link_arg}")
-        list(APPEND ESHKOL_HOST_LLVM_LINK_ARGS "${_llvm_link_arg_resolved}")
+        eshkol_resolve_host_link_arg("${_llvm_link_arg}" _eshkol_host_llvm_link_arg)
+        if(NOT "${_eshkol_host_llvm_link_arg}" STREQUAL "")
+            eshkol_resolve_llvm_lib_arg(_eshkol_host_llvm_link_arg_resolved "${_eshkol_host_llvm_link_arg}")
+            list(APPEND ESHKOL_HOST_LLVM_LINK_ARGS "${_eshkol_host_llvm_link_arg_resolved}")
+        endif()
     endif()
 endforeach()
 

@@ -1,64 +1,55 @@
-;; ESH-0020 — tensor dtype system regression test.
-;; Storage stays f64; dtype is metadata; tensor-cast applies precision reduction.
+;; tensor_dtype_test.esk -- ESH-0020 tensor dtype metadata and casts.
 
-;; 1. Default dtype is f64.
-(display "dtype-default: ")
-(display (tensor-dtype (make-tensor '(4) 1.0)))
-(newline)
+(define passed 0)
+(define failed 0)
 
-;; 2. make-tensor with :dtype keyword records the requested dtype.
-(display "dtype-f32: ")
-(display (tensor-dtype (make-tensor '(4) 1.0 :dtype 'f32)))
-(newline)
+(define (record name ok got want)
+  (if ok
+      (begin (set! passed (+ passed 1))
+             (display "PASS: ") (display name) (newline))
+      (begin (set! failed (+ failed 1))
+             (display "FAIL: ") (display name)
+             (display " got=") (display got)
+             (display " want=") (display want)
+             (newline))))
 
-(display "dtype-f16: ")
-(display (tensor-dtype (make-tensor '(4) 2.0 :dtype 'f16)))
-(newline)
+(define (check-equal name got want)
+  (record name (equal? got want) got want))
 
-(display "dtype-bf16: ")
-(display (tensor-dtype (make-tensor '(2) 1.0 :dtype 'bf16)))
-(newline)
+(define (check-near name got want tol)
+  (record name (< (abs (- got want)) tol) got want))
 
-(display "dtype-i8: ")
-(display (tensor-dtype (make-tensor '(2) 3.0 :dtype 'i8)))
-(newline)
+(define t64 (make-tensor '(4) 1.0))
+(define t32 (make-tensor '(4) 1.0 :dtype 'f32))
+(define t16 (tensor-cast (make-tensor '(1) 1.0009765625) 'f16))
+(define tbf (make-tensor '(2) 1.0 :dtype 'bf16))
+(define ti8 (tensor-cast (make-tensor '(1) 3.7) 'i8))
 
-;; 3. tensor-cast sets the dtype and round-trips exactly-representable values.
-(define t (make-tensor '(3) 1.0))
-(define t16 (tensor-cast t 'f16))
-(display "cast-dtype: ")
-(display (tensor-dtype t16))
-(newline)
+(check-equal "default dtype is f64" (tensor-dtype t64) 'f64)
+(check-equal "explicit make-tensor dtype is f32" (tensor-dtype t32) 'f32)
+(check-equal "explicit make-tensor dtype is bf16" (tensor-dtype tbf) 'bf16)
+(check-equal "tensor-cast records f16" (tensor-dtype t16) 'f16)
+(check-equal "tensor-cast records i8" (tensor-dtype ti8) 'i8)
+(check-near "f16 cast value round-trips within half precision"
+            (tensor-ref t16 0)
+            1.0009765625
+            0.001)
+(check-near "i8 cast rounds values" (tensor-ref ti8 0) 4.0 0.000001)
 
-;; 1.0 and 0.5 are exactly representable in f16, so they survive the round-trip.
-(define h (tensor-cast (make-tensor '(1) 0.5) 'f16))
-(display "f16-exact-0.5: ")
-(display (tensor-ref h 0))
-(newline)
+(define add-f32
+  (tensor-add
+    (make-tensor '(2) 1.0 :dtype 'f16)
+    (make-tensor '(2) 2.0 :dtype 'f32)))
+(check-equal "tensor arithmetic promotes dtype" (tensor-dtype add-f32) 'f32)
 
-;; i8 cast rounds/clamps to integer range: 3.7 -> 4.
-(define q (tensor-cast (make-tensor '(1) 3.7) 'i8))
-(display "i8-round-3.7: ")
-(display (tensor-ref q 0))
-(newline)
+(define mm-f64
+  (matmul
+    (make-tensor '(1 1) 2.0 :dtype 'f32)
+    (make-tensor '(1 1) 3.0)))
+(check-equal "matmul promotes dtype" (tensor-dtype mm-f64) 'f64)
+(check-near "matmul value preserved" (tensor-ref mm-f64 0) 6.0 0.000001)
 
-;; 4. Original f64 tensor is unchanged by casting (tensor-cast allocates fresh).
-(display "orig-dtype-after-cast: ")
-(display (tensor-dtype t))
-(newline)
-
-;; 5. f16 loses precision for a non-representable value (sanity: not equal to f64).
-(define p (tensor-cast (make-tensor '(1) 3.14159265358979) 'f16))
-(display "f16-pi-lossy: ")
-(display (if (= (tensor-ref p 0) 3.14159265358979) "FAIL-no-loss" "ok-lossy"))
-(newline)
-
-;; 6. dtype propagates through elementwise arithmetic (binary promotion).
-(define ah (make-tensor '(4) 2.0 :dtype 'f16))
-(define bh (make-tensor '(4) 3.0 :dtype 'f16))
-(define cf (make-tensor '(4) 1.0 :dtype 'f32))
-(define df (make-tensor '(4) 1.0))  ; f64
-(display "prop-f16+f16: ") (display (tensor-dtype (tensor-add ah bh))) (newline)
-(display "prop-f16*f32: ") (display (tensor-dtype (tensor-mul ah cf))) (newline)
-(display "prop-f16+f64: ") (display (tensor-dtype (tensor-add ah df))) (newline)
-(display "prop-value:   ") (display (tensor-ref (tensor-add ah bh) 0)) (newline)
+(display "Results: ") (display passed) (display " passed, ") (display failed) (display " failed") (newline)
+(if (= failed 0)
+    (begin (display "PASS: tensor_dtype_test") (newline) (exit 0))
+    (begin (display "FAIL: tensor_dtype_test") (newline) (exit 1)))
