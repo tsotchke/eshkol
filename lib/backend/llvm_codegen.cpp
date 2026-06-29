@@ -152,6 +152,7 @@ void append_host_llvm_link_args(std::vector<std::string>& link_args) {
 #include <llvm/Transforms/Scalar.h>
 #include <llvm/Transforms/Scalar/GVN.h>
 #include <llvm/Transforms/Utils/ModuleUtils.h>
+#include <llvm/ADT/SmallString.h>
 #include <llvm/ADT/StringMap.h>
 #include <llvm/IR/GlobalValue.h>
 #include <llvm/Config/llvm-config.h>
@@ -378,6 +379,24 @@ static void optimizeModule(llvm::Module& module, llvm::TargetMachine* TM, bool i
 #endif
 
 using namespace llvm;
+
+struct ScopedObjectTempFile {
+    std::string path;
+    bool keep = false;
+
+    explicit ScopedObjectTempFile(std::string temp_path)
+        : path(std::move(temp_path)) {}
+
+    ~ScopedObjectTempFile() {
+        if (!keep && !path.empty()) {
+            (void)sys::fs::remove(path);
+        }
+    }
+
+    void dismiss() {
+        keep = true;
+    }
+};
 
 // Global storage for LLVM contexts to ensure proper lifetime management
 struct EshkolLLVMModule {
@@ -36210,36 +36229,68 @@ int eshkol_compile_llvm_ir_to_object(LLVMModuleRef module_ref, const char* filen
         // Run LLVM optimization passes before codegen (respects -O level)
         optimizeModule(*module, target_machine.get());
 
-        // Open output file
-        std::error_code ec;
-        raw_fd_ostream dest(filename, ec, sys::fs::OF_None);
+        // Emit to a same-directory temporary file first. LLVM opens the output
+        // before running the backend, so direct final-path emission can publish
+        // a 0-byte object if codegen/fixups fail.
+        SmallString<256> temp_path;
+        int temp_fd = -1;
+        std::string temp_model = std::string(filename) + ".tmp-%%%%%%";
+        std::error_code ec =
+            sys::fs::createUniqueFile(temp_model, temp_fd, temp_path, sys::fs::OF_None);
         if (ec) {
-            eshkol_error("Failed to open object file %s: %s", filename, ec.message().c_str());
+            eshkol_error("Failed to open temporary object file for %s: %s",
+                         filename, ec.message().c_str());
             return -1;
         }
+
+        std::string temp_filename = temp_path.str().str();
+        ScopedObjectTempFile temp_cleanup(temp_filename);
+        raw_fd_ostream dest(temp_fd, true);
+        temp_fd = -1;
 
         // Create pass manager and emit object file
         legacy::PassManager pass_manager;
         if (target_machine->addPassesToEmitFile(pass_manager, dest, nullptr,
                                               ESHKOL_CODEGEN_FILETYPE)) {
             eshkol_error("Target machine cannot emit object files");
+            dest.close();
+            if (dest.has_error()) {
+                dest.clear_error();
+            }
             return -1;
         }
 
         pass_manager.run(*module);
         dest.flush();
+        dest.close();
+        if (dest.has_error()) {
+            std::error_code write_ec = dest.error();
+            eshkol_error("Failed to write object file %s: %s",
+                         filename, write_ec.message().c_str());
+            dest.clear_error();
+            return -1;
+        }
 
         // Check if output file is empty (indicates silent failure)
-        dest.close();
-        std::ifstream check_file(filename, std::ios::ate | std::ios::binary);
-        if (check_file.good()) {
-            auto size = check_file.tellg();
-            check_file.close();
-            if (size == 0) {
-                eshkol_error("Object file generation produced empty file - module may be invalid");
-                return -1;
-            }
+        uint64_t object_size = 0;
+        ec = sys::fs::file_size(temp_filename, object_size);
+        if (ec) {
+            eshkol_error("Failed to stat temporary object file %s: %s",
+                         temp_filename.c_str(), ec.message().c_str());
+            return -1;
         }
+        if (object_size == 0) {
+            eshkol_error("Object file generation produced empty file - module may be invalid");
+            return -1;
+        }
+
+        ec = sys::fs::rename(temp_filename, filename);
+        if (ec) {
+            eshkol_error("Failed to publish object file %s: %s",
+                         filename, ec.message().c_str());
+            return -1;
+        }
+        temp_cleanup.dismiss();
 
         eshkol_info("Successfully generated object file: %s", filename);
         return 0;
