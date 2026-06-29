@@ -6725,12 +6725,14 @@ private:
         // metadata supplies fixed_params dynamically, but the LLVM function
         // type must be concrete. Specialize on fixed_params and capture count:
         // (fixed args..., rest-list, capture-ptrs...) -> tagged_value.
-        const int MAX_VARIADIC_FIXED = 16;
+        const int MAX_VARIADIC_FIXED_LIMIT = 16;
         const int MAX_CAPTURES = 32;
+        const int max_variadic_fixed =
+            std::min<int>(MAX_VARIADIC_FIXED_LIMIT, (int)call_args.size());
         BasicBlock* variadic_switch_default = BasicBlock::Create(*context, "var_cap_default", current_func);
         Value* fixed_params_clamped = builder->CreateSelect(
-            builder->CreateICmpUGT(fixed_params, ConstantInt::get(int64_type, MAX_VARIADIC_FIXED)),
-            ConstantInt::get(int64_type, MAX_VARIADIC_FIXED),
+            builder->CreateICmpUGT(fixed_params, ConstantInt::get(int64_type, max_variadic_fixed)),
+            ConstantInt::get(int64_type, max_variadic_fixed),
             fixed_params,
             "fixed_params_clamped");
         Value* variadic_dispatch_idx = builder->CreateAdd(
@@ -6740,10 +6742,10 @@ private:
         SwitchInst* var_sw = builder->CreateSwitch(
             variadic_dispatch_idx,
             variadic_switch_default,
-            (MAX_VARIADIC_FIXED + 1) * (MAX_CAPTURES + 1));
+            (max_variadic_fixed + 1) * (MAX_CAPTURES + 1));
         std::vector<std::pair<BasicBlock*, Value*>> variadic_results;
 
-        for (int fixed_count = 0; fixed_count <= MAX_VARIADIC_FIXED; fixed_count++) {
+        for (int fixed_count = 0; fixed_count <= max_variadic_fixed; fixed_count++) {
             for (int cap_count = 0; cap_count <= MAX_CAPTURES; cap_count++) {
                 int case_idx = fixed_count * (MAX_CAPTURES + 1) + cap_count;
                 BasicBlock* case_bb = BasicBlock::Create(*context,
