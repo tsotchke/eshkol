@@ -325,12 +325,6 @@ static void optimizeModule(llvm::Module& module, llvm::TargetMachine* TM, bool i
 
     auto opt_level = getPassBuilderOptLevel();
 
-    // For WASM targets, always run at least mem2reg even at -O0.
-    // WASM has a hard limit on local count (~50,000) that native targets don't.
-    // Without mem2reg, each tagged value pack/unpack creates an alloca that
-    // becomes a WASM local, easily exceeding the limit for non-trivial programs.
-    if (opt_level == llvm::OptimizationLevel::O0 && !is_wasm) return;
-
     llvm::PassBuilder PB(TM);
 
     llvm::LoopAnalysisManager LAM;
@@ -345,10 +339,17 @@ static void optimizeModule(llvm::Module& module, llvm::TargetMachine* TM, bool i
     PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
 
     if (opt_level == llvm::OptimizationLevel::O0) {
-        // WASM at -O0: run minimal passes (mem2reg + simplifycfg) to reduce local count
-        llvm::ModulePassManager MPM = PB.buildPerModuleDefaultPipeline(llvm::OptimizationLevel::O1);
+        llvm::ModulePassManager MPM;
+        const char* cleanup_pipeline = is_wasm
+            ? "default<O1>"
+            : "function(sroa,early-cse,instcombine<no-verify-fixpoint>,simplifycfg)";
+        if (auto err = PB.parsePassPipeline(MPM, cleanup_pipeline)) {
+            llvm::consumeError(std::move(err));
+            eshkol_warn("Failed to parse LLVM O0 cleanup pipeline; continuing without cleanup");
+            return;
+        }
         MPM.run(module, MAM);
-        eshkol_info("Applied minimal LLVM optimization passes for WASM target");
+        eshkol_info("Applied LLVM O0 cleanup passes");
     } else {
         llvm::ModulePassManager MPM = PB.buildPerModuleDefaultPipeline(opt_level);
         MPM.run(module, MAM);

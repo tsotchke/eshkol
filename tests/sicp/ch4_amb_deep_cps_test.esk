@@ -1,0 +1,67 @@
+;; SICP Chapter 4.3 — ESH-0080 deep CPS/backtracking regression.
+;;
+;; This mirrors ch4_amb.esk, but raises the pythagorean search bound from 13
+;; to 20. Before ESH-0080, the deeper success/failure continuation chain
+;; crashed native O0 JIT/AOT with SIGILL.
+
+(define fails 0)
+
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin (display "PASS: ") (display name) (newline))
+      (begin (set! fails (+ fails 1))
+             (display "FAIL: ") (display name)
+             (display " expected=") (display expected)
+             (display " actual=") (display actual) (newline))))
+
+(define (amb-of items)
+  (lambda (succeed fail)
+    (let loop ((xs items))
+      (if (null? xs)
+          (fail)
+          (succeed (car xs) (lambda () (loop (cdr xs))))))))
+
+(define (amb-return v)
+  (lambda (succeed fail) (succeed v fail)))
+
+(define (amb-bind m f)
+  (lambda (succeed fail)
+    (m (lambda (v fail2) ((f v) succeed fail2)) fail)))
+
+(define (amb-require pred m)
+  (amb-bind m (lambda (v) (if (pred v) (amb-return v) amb-fail))))
+
+(define amb-fail (lambda (succeed fail) (fail)))
+
+(define (amb-first m)
+  (m (lambda (v fail) v) (lambda () 'none)))
+
+(define (amb-all m)
+  (let ((acc '()))
+    (m (lambda (v fail) (set! acc (cons v acc)) (fail))
+       (lambda () 'done))
+    (reverse acc)))
+
+(define (integers-between lo hi)
+  (if (> lo hi) '() (cons lo (integers-between (+ lo 1) hi))))
+
+(define (pyth-triples n)
+  (amb-bind (amb-of (integers-between 1 n))
+    (lambda (i)
+      (amb-bind (amb-of (integers-between i n))
+        (lambda (j)
+          (amb-bind (amb-of (integers-between j n))
+            (lambda (k)
+              (if (= (+ (* i i) (* j j)) (* k k))
+                  (amb-return (list i j k))
+                  amb-fail))))))))
+
+(check "pyth first triple <=20" '(3 4 5) (amb-first (pyth-triples 20)))
+(check "pyth all <=20"
+       '((3 4 5) (5 12 13) (6 8 10) (8 15 17) (9 12 15) (12 16 20))
+       (amb-all (pyth-triples 20)))
+
+(display "ch4 amb deep cps: ")
+(display (if (= fails 0) "ALL PASS" (cons fails 'FAILS)))
+(newline)
+(if (> fails 0) (exit 1) (exit 0))
