@@ -671,9 +671,20 @@ function Invoke-SimpleCompileRunSuite {
 }
 
 function Invoke-MemorySuite {
+    param(
+        [string[]]$IncludeNames = @(),
+        [string[]]$ExcludeNames = @()
+    )
+
     Write-Section "Eshkol Memory Test Suite"
     $suite = New-SuiteState "memory"
     $files = Get-TestFiles -ProjectRoot $script:ProjectRoot -Patterns @("tests/memory/*.esk")
+    if ($IncludeNames.Count -gt 0) {
+        $files = @($files | Where-Object { $IncludeNames -contains (Split-Path -Leaf $_) })
+    }
+    if ($ExcludeNames.Count -gt 0) {
+        $files = @($files | Where-Object { $ExcludeNames -notcontains (Split-Path -Leaf $_) })
+    }
 
     foreach ($testFile in $files) {
         $testName = Split-Path -Leaf $testFile
@@ -1494,8 +1505,17 @@ switch ($Mode) {
             "trig_hyperbolic_test.esk",
             "type_predicates_test.esk"
         )
-        $suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "stdlib" -Title "Eshkol Windows Stdlib Smoke Suite" -Patterns @("tests/stdlib/*.esk") -RuntimeErrorRegex "error:"
-        $suiteResults += Invoke-MemorySuite
+        # Keep the hosted Windows ARM64 lite lane focused on portable smoke
+        # coverage. These probes currently require runtime surfaces that are
+        # not linked in the lite Windows AOT path.
+        $suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "stdlib" -Title "Eshkol Windows Stdlib Smoke Suite" -Patterns @("tests/stdlib/*.esk") -RuntimeErrorRegex "error:" -ExcludeNames @(
+            "csv_comprehensive_test.esk",
+            "v12_ad_tape_test.esk",
+            "v12_consciousness_test.esk"
+        )
+        $suiteResults += Invoke-MemorySuite -ExcludeNames @(
+            "memory_test.esk"
+        )
         $suiteResults += Invoke-ModulesSuite
         $suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "types" -Title "Eshkol Windows Type Smoke Suite" -Patterns @("tests/types/*.esk") -RuntimeErrorRegex "error:" -IncludeNames @(
             "comprehensive_type_test.esk",
