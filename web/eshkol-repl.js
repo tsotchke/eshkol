@@ -8,8 +8,9 @@
  */
 
 class EshkolRepl {
-    constructor(serverUrl = 'http://localhost:8080') {
+    constructor(serverUrl = 'http://localhost:8080', compileToken = null) {
         this.serverUrl = serverUrl;
+        this.compileToken = compileToken;
         this.sessionId = null;
         this.modules = [];      // Compiled WASM modules
         this.instances = [];    // Instantiated modules
@@ -28,6 +29,14 @@ class EshkolRepl {
         // Callback registry for event handlers
         this.callbacks = new Map();
         this.nextCallbackId = 1;
+    }
+
+    /**
+     * Set or clear the compile token used for authenticated /compile requests.
+     * @param {string|null} token - Token value, or null/empty to disable auth
+     */
+    setCompileToken(token) {
+        this.compileToken = token || null;
     }
 
     /**
@@ -115,12 +124,17 @@ class EshkolRepl {
      */
     async compile(code) {
         try {
+            const headers = {
+                'Content-Type': 'application/json'
+            };
+            if (this.compileToken) {
+                headers.Authorization = `Bearer ${this.compileToken}`;
+            }
+
             const response = await fetch(`${this.serverUrl}/compile`, {
                 method: 'POST',
                 mode: 'cors',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
+                headers,
                 body: JSON.stringify({
                     code: code,
                     session_id: this.sessionId

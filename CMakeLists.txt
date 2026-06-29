@@ -2711,6 +2711,16 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/do
     )
 endif()
 
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/eshkol_server_security_surface_test.cpp")
+    add_executable(eshkol_server_security_surface_test
+        tests/toolchain/eshkol_server_security_surface_test.cpp)
+    target_compile_features(eshkol_server_security_surface_test PRIVATE cxx_std_17)
+    add_test(
+        NAME eshkol_server_security_surface_test
+        COMMAND eshkol_server_security_surface_test "${CMAKE_CURRENT_SOURCE_DIR}"
+    )
+endif()
+
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/macos_build_surface_test.cpp")
     add_executable(macos_build_surface_test
         tests/toolchain/macos_build_surface_test.cpp)
