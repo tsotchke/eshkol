@@ -1,11 +1,9 @@
 ;; SICP Chapter 3.1 — Local state via closures + set!.
 ;; make-withdraw, make-account, make-accumulator, make-monitored.
 ;;
-;; This file is written in the NATURAL SICP style (mutated state is a lambda
-;; PARAMETER). It deliberately surfaces a real Eshkol bug: a set!-mutated
-;; *parameter* captured by MULTIPLE sibling closures is not shared — each
-;; closure captures a private copy (see make-account / SICP 3.1.1). Single-closure
-;; cases (make-withdraw, make-accumulator) work. See the gap report.
+;; This file is written in the NATURAL SICP style: mutated state is held in
+;; closure-captured parameters and local variables, including message-passing
+;; objects built from internal defines.
 
 (define fails 0)
 ;; throw-safe check: compares with equal? so a wrong-typed result records a FAIL
@@ -44,8 +42,14 @@
   dispatch)
 (define acc (make-account 100))
 (check "account-withdraw" 50 ((acc 'withdraw) 50))   ; 100 - 50
-(check "account-deposit"  90 ((acc 'deposit) 40))    ; 50 + 40  (BUG: deposit's copy is 100 -> 140)
+(check "account-deposit"  90 ((acc 'deposit) 40))    ; 50 + 40
 (check "account-withdraw2" 30 ((acc 'withdraw) 60))  ; 90 - 60
+
+(define acc1 (make-account 100))
+(define acc2 (make-account 50))
+(check "account-instance acc1 withdraw" 90 ((acc1 'withdraw) 10))
+(check "account-instance acc2 isolated withdraw" 45 ((acc2 'withdraw) 5))
+(check "account-instance acc1 unaffected deposit" 100 ((acc1 'deposit) 10))
 
 ;; ---- 3.1.2 make-accumulator (single closure — works) ----
 (define (make-accumulator sum)
