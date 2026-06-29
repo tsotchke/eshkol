@@ -11,7 +11,7 @@ if [ ! -x "$RUN" ]; then
     exit 0
 fi
 
-if [ ! -x /bin/sh ] || [ ! -x /bin/echo ]; then
+if [ ! -x /bin/sh ] || [ ! -x /bin/echo ] || [ ! -x /bin/sleep ] || [ ! -x /bin/kill ]; then
     echo "SKIP: POSIX shell tools unavailable"
     exit 0
 fi
@@ -116,6 +116,67 @@ cat > "$WORK/subprocess_api.esk" <<'EOF'
         s)
       "spawn failed"))
 
+(define wait-exit-proc
+  (process-spawn-shell "exit 7" "."))
+
+(define wait-exit-result
+  (if wait-exit-proc
+      (process-wait wait-exit-proc 5000)
+      -999))
+
+(define wait-exit-code
+  (if wait-exit-proc
+      (let ((code (process-exit-code wait-exit-proc)))
+        (process-destroy wait-exit-proc)
+        code)
+      -999))
+
+(define timeout-proc
+  (process-spawn-argv (list "/bin/sleep" "5") "."))
+
+(define timeout-pid
+  (if timeout-proc (process-pid timeout-proc) 0))
+
+(define timeout-wait
+  (if timeout-proc (process-wait timeout-proc 100) -999))
+
+(define timeout-running
+  (if timeout-proc (process-running? timeout-proc) #f))
+
+(define timeout-kill-wait
+  (if timeout-proc
+      (begin
+        (process-kill timeout-proc)
+        (process-wait timeout-proc 5000))
+      -999))
+
+(define timeout-exit-code
+  (if timeout-proc
+      (let ((code (process-exit-code timeout-proc)))
+        (process-destroy timeout-proc)
+        code)
+      -999))
+
+(define argv-timeout-result
+  (run-argv-capture (list "/bin/sleep" "5") "." 100 4096))
+
+(define destroy-proc
+  (process-spawn-argv (list "/bin/sleep" "30") "."))
+
+(define destroy-pid
+  (if destroy-proc (process-pid destroy-proc) 0))
+
+(when destroy-proc
+  (process-destroy destroy-proc))
+
+(define destroy-kill-check
+  (if (> destroy-pid 0)
+      (run-argv-capture (list "/bin/kill" "-0" (number->string destroy-pid))
+                        "." 5000 4096)
+      (list (cons 'exit-code -999)
+            (cons 'stdout "")
+            (cons 'stderr "spawn failed"))))
+
 (check "shell exit code" (cdr (assoc 'exit-code shell-result)) 42)
 (check "shell stdout" (cdr (assoc 'stdout shell-result)) "out\n")
 (check "shell stderr" (cdr (assoc 'stderr shell-result)) "err\n")
@@ -137,6 +198,19 @@ cat > "$WORK/subprocess_api.esk" <<'EOF'
 (check "explicit shell runs shell builtins" shell-builtin-code 0)
 (check "read-all copies owned buffer before free" read-once-first "owned-buffer")
 (check "read-all second call is empty after ownership transfer" read-once-second "")
+(check "process-wait returns exited sentinel" wait-exit-result 0)
+(check "process-exit-code preserves nonzero status" wait-exit-code 7)
+(check "process-pid returns positive pid" (> timeout-pid 0) #t)
+(check "process-wait returns timeout sentinel" timeout-wait 1)
+(check "process-running? remains true after timeout" timeout-running #t)
+(check "process-wait after process-kill exits" timeout-kill-wait 0)
+(check "process-exit-code reports signal status" timeout-exit-code 143)
+(check "run-argv-capture timeout exit code"
+       (cdr (assoc 'exit-code argv-timeout-result))
+       124)
+(check "process-destroy kills running child"
+       (cdr (assoc 'exit-code destroy-kill-check))
+       1)
 
 (if (> failed 0)
     (exit 1)
