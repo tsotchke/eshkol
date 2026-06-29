@@ -1,0 +1,57 @@
+;; SICP Chapter 2.1 — Rational-number arithmetic package (constructed from pairs).
+;; Uses make-rat / numer / denom built on cons, with gcd reduction.
+
+(define fails 0)
+(define (check name ok)
+  (if ok (begin (display "PASS: ") (display name) (newline))
+      (begin (set! fails (+ fails 1)) (display "FAIL: ") (display name) (newline))))
+
+(define (gcd-e a b) (if (= b 0) a (gcd-e b (remainder a b))))
+(define (make-rat n d)
+  (let ((g (gcd-e (abs n) (abs d))))
+    (if (< d 0) (cons (/ (- n) g) (/ (- d) g))
+        (cons (/ n g) (/ d g)))))
+(define (numer x) (car x))
+(define (denom x) (cdr x))
+(define (add-rat x y)
+  (make-rat (+ (* (numer x) (denom y)) (* (numer y) (denom x)))
+            (* (denom x) (denom y))))
+(define (sub-rat x y)
+  (make-rat (- (* (numer x) (denom y)) (* (numer y) (denom x)))
+            (* (denom x) (denom y))))
+(define (mul-rat x y)
+  (make-rat (* (numer x) (numer y)) (* (denom x) (denom y))))
+(define (div-rat x y)
+  (make-rat (* (numer x) (denom y)) (* (denom x) (numer y))))
+(define (equal-rat? x y)
+  (= (* (numer x) (denom y)) (* (numer y) (denom x))))
+
+(define one-half (make-rat 1 2))
+(define one-third (make-rat 1 3))
+
+;; 1/2 + 1/3 = 5/6
+(let ((r (add-rat one-half one-third)))
+  (check "add 1/2+1/3 numer" (= (numer r) 5))
+  (check "add 1/2+1/3 denom" (= (denom r) 6)))
+;; 1/2 * 1/3 = 1/6
+(let ((r (mul-rat one-half one-third)))
+  (check "mul 1/2*1/3 numer" (= (numer r) 1))
+  (check "mul 1/2*1/3 denom" (= (denom r) 6)))
+;; reduction: 6/8 -> 3/4
+(let ((r (make-rat 6 8)))
+  (check "reduce 6/8" (and (= (numer r) 3) (= (denom r) 4))))
+;; negative normalization: 1/-2 -> -1/2
+(let ((r (make-rat 1 -2)))
+  (check "neg-denom-normalized" (and (= (numer r) -1) (= (denom r) 2))))
+;; 1/3 + 1/3 + 1/3 = 1
+(check "thirds-sum-to-one"
+       (equal-rat? (add-rat (add-rat one-third one-third) one-third) (make-rat 1 1)))
+;; sub: 1/2 - 1/3 = 1/6
+(check "sub 1/2-1/3" (equal-rat? (sub-rat one-half one-third) (make-rat 1 6)))
+;; div: (1/2)/(1/3) = 3/2
+(check "div (1/2)/(1/3)" (equal-rat? (div-rat one-half one-third) (make-rat 3 2)))
+
+(newline)
+(if (= fails 0)
+    (begin (display "ALL-PASS ch2_rational") (newline))
+    (begin (display "HAS-FAIL ch2_rational ") (display fails) (newline)))

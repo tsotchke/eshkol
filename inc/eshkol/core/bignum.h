@@ -154,6 +154,12 @@ void eshkol_bignum_pow_tagged(arena_t* arena,
 void eshkol_string_to_number_tagged(arena_t* arena, const char* str,
     eshkol_tagged_value_t* result);
 
+/* Parse a string to a tagged number in an explicit radix (R7RS 6.2.6,
+ * (string->number string radix)). Radix 2..36; #b/#o/#d/#x prefixes
+ * override `radix`. Result is #f for malformed input. */
+void eshkol_string_to_number_radix_tagged(arena_t* arena, const char* str,
+    int64_t radix, eshkol_tagged_value_t* result);
+
 /* ===== Display ===== */
 
 /* Write decimal representation to file (for display/write) */

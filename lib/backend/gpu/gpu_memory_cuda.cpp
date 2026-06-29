@@ -652,6 +652,16 @@ void eshkol_matmul_dispatch(const double* A, const double* B, double* C,
                              uint64_t M, uint64_t K, uint64_t N, int32_t dtype) {
     size_t num_elements = M * N;
 
+    // Lazy GPU init: the (matmul ...) codegen path reaches this dispatcher
+    // directly, but unlike the BLAS dispatcher (eshkol_matmul_f64) it never
+    // primed the backend. Without this, g_active_backend stays ESHKOL_GPU_NONE
+    // forever and both the f16/bf16 tensor-core fast path and the f64 GPU path
+    // are unreachable from the language. eshkol_gpu_init() is idempotent
+    // (double-checked lock), so this is a one-time cost on the first matmul.
+    if (g_active_backend == ESHKOL_GPU_NONE) {
+        eshkol_gpu_init();
+    }
+
     // GPU-LLM fast path (ESH-0021): f16/bf16-dtype operands go through cuBLAS
     // GemmEx (16F operands, 32F accumulate, tensor cores). Tensor-core GEMM
     // wins even at modest sizes, so this bypasses the f64 element threshold.

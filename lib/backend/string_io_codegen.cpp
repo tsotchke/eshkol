@@ -631,8 +631,10 @@ llvm::Value* StringIOCodegen::stringToNumber(const eshkol_operations_t* op) {
         return tagged_.packNull();
     }
 
-    if (op->call_op.num_vars != 1) {
-        eshkol_warn("string->number requires exactly 1 argument");
+    // R7RS 6.2.6: (string->number string [radix]). The optional radix arg
+    // selects the base for the 2-arg form.
+    if (op->call_op.num_vars < 1 || op->call_op.num_vars > 2) {
+        eshkol_warn("string->number requires 1 or 2 arguments");
         return nullptr;
     }
 
@@ -644,11 +646,26 @@ llvm::Value* StringIOCodegen::stringToNumber(const eshkol_operations_t* op) {
     llvm::Value* ptr_int = tagged_.unpackInt64(str_arg);
     llvm::Value* str_ptr = ctx_.builder().CreateIntToPtr(ptr_int, ctx_.ptrType());
 
-    // Call eshkol_string_to_number_tagged(arena, str, result_ptr) which handles
-    // int64, bignum (for overflow), and double parsing
     llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
     llvm::Value* result_alloca = ctx_.builder().CreateAlloca(ctx_.taggedValueType());
 
+    if (op->call_op.num_vars == 2) {
+        // 2-arg form: pass the radix to the radix-aware runtime parser, which
+        // also handles #b/#o/#d/#x prefixes and rationals.
+        llvm::Value* radix_arg = codegen_ast_callback_(&op->call_op.variables[1], callback_context_);
+        if (!radix_arg) return nullptr;
+        llvm::Value* radix_i64 = tagged_.unpackInt64(radix_arg);
+
+        llvm::FunctionType* s2nr_type = llvm::FunctionType::get(ctx_.voidType(),
+            {ctx_.ptrType(), ctx_.ptrType(), ctx_.int64Type(), ctx_.ptrType()}, false);
+        llvm::FunctionCallee s2nr_fn = ctx_.module().getOrInsertFunction(
+            "eshkol_string_to_number_radix_tagged", s2nr_type);
+        ctx_.builder().CreateCall(s2nr_fn, {arena_ptr, str_ptr, radix_i64, result_alloca});
+        return ctx_.builder().CreateLoad(ctx_.taggedValueType(), result_alloca);
+    }
+
+    // 1-arg form: eshkol_string_to_number_tagged(arena, str, result_ptr) handles
+    // int64, bignum (for overflow), double, rational, and #-prefix parsing.
     llvm::FunctionType* s2n_type = llvm::FunctionType::get(ctx_.voidType(),
         {ctx_.ptrType(), ctx_.ptrType(), ctx_.ptrType()}, false);
     llvm::FunctionCallee s2n_fn = ctx_.module().getOrInsertFunction("eshkol_string_to_number_tagged", s2n_type);
@@ -745,6 +762,19 @@ llvm::Value* StringIOCodegen::numberToString(const eshkol_operations_t* op) {
     // Get snprintf function
     llvm::Function* snprintf_func = ctx_.funcs().getSnprintf();
 
+    // R7RS flonum formatter: int eshkol_format_double(char* buf, size_t n,
+    // double v). Emits +inf.0 / -inf.0 / +nan.0 for non-finite flonums and
+    // "%g" otherwise — the single source of truth shared with display/write.
+    llvm::Module* n2s_mod = ctx_.builder().GetInsertBlock()->getParent()->getParent();
+    llvm::Function* format_double_func = n2s_mod->getFunction("eshkol_format_double");
+    if (!format_double_func) {
+        llvm::FunctionType* fd_ft = llvm::FunctionType::get(
+            llvm::Type::getInt32Ty(ctx_.context()),
+            {ctx_.ptrType(), ctx_.sizeType(), ctx_.doubleType()}, false);
+        format_double_func = llvm::Function::Create(fd_ft,
+            llvm::Function::ExternalLinkage, "eshkol_format_double", n2s_mod);
+    }
+
     llvm::Value* raw_val = tv->llvm_value;
 
     // For tagged values, we need runtime type checking since the value
@@ -811,9 +841,8 @@ llvm::Value* StringIOCodegen::numberToString(const eshkol_operations_t* op) {
         // Format as double
         ctx_.builder().SetInsertPoint(double_block);
         llvm::Value* double_val = ctx_.builder().CreateBitCast(data_i64, ctx_.doubleType());
-        llvm::Value* fmt_double = createString("%g");
         llvm::Value* dbl_written = ctx_.builder().CreateCall(
-            snprintf_func, {buf, buf_size, fmt_double, double_val});
+            format_double_func, {buf, buf_size, double_val});
         truncate_header(dbl_written);
         ctx_.builder().CreateBr(merge_block);
         llvm::BasicBlock* double_exit = ctx_.builder().GetInsertBlock();
@@ -845,9 +874,8 @@ llvm::Value* StringIOCodegen::numberToString(const eshkol_operations_t* op) {
             } else if (!raw_val->getType()->isDoubleTy()) {
                 double_val = ctx_.builder().CreateSIToFP(raw_val, ctx_.doubleType());
             }
-            llvm::Value* fmt = createString("%g");
             llvm::Value* written = ctx_.builder().CreateCall(
-                snprintf_func, {buf, buf_size, fmt, double_val});
+                format_double_func, {buf, buf_size, double_val});
             truncate_header(written);
         } else {
             // Format as integer

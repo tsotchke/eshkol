@@ -1,0 +1,157 @@
+;; SICP Chapter 5.2 — a register-machine simulator.
+;; Implements the data-directed simulator core: registers (mutable a-list),
+;; an operation table, a flat instruction sequence with symbolic labels, a
+;; program counter, and the test/branch/goto/assign instruction set.  Runs the
+;; iterative-factorial machine and Euclid's GCD machine from the book.
+;;
+;; NOTE: comparison ops in the op-table are boolean-normalizing wrappers
+;; ((lambda (a b) (if (= a b) #t #f))) to work around ESH-0078 (a builtin
+;; predicate invoked as a first-class value returns 0/1, not #f/#t).
+(define fails 0)
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin (display "PASS: ") (display name) (newline))
+      (begin (set! fails (+ fails 1))
+             (display "FAIL: ") (display name) (display " expected=") (display expected)
+             (display " actual=") (display actual) (newline))))
+
+;; ---- register file: a-list of (name . value), mutated with set-cdr! ----
+(define (make-regs names)
+  (map (lambda (n) (cons n 0)) names))
+(define (reg-cell regs name)
+  (let loop ((rs regs))
+    (cond ((null? rs) (error "no register" name))
+          ((eq? (caar rs) name) (car rs))
+          (else (loop (cdr rs))))))
+(define (get-reg regs name) (cdr (reg-cell regs name)))
+(define (set-reg! regs name v) (set-cdr! (reg-cell regs name) v))
+
+;; ---- operation table ----
+(define (op-lookup ops name)
+  (let loop ((os ops))
+    (cond ((null? os) (error "no op" name))
+          ((eq? (caar os) name) (cdar os))
+          (else (loop (cdr os))))))
+
+;; ---- label table: maps a label symbol to its index in the instr vector ----
+(define (build-labels instrs)
+  (let loop ((is instrs) (i 0) (acc '()))
+    (cond ((null? is) (reverse acc))
+          ((symbol? (car is)) (loop (cdr is) (+ i 1) (cons (cons (car is) i) acc)))
+          (else (loop (cdr is) (+ i 1) acc)))))
+(define (label-index labels name)
+  (let loop ((ls labels))
+    (cond ((null? ls) (error "no label" name))
+          ((eq? (caar ls) name) (cdar ls))
+          (else (loop (cdr ls))))))
+
+;; instrs as a vector for O(1) pc indexing
+(define (list->vec lst)
+  (let* ((n (length lst)) (v (make-vector n)))
+    (let loop ((i 0) (xs lst))
+      (if (null? xs) v (begin (vector-set! v i (car xs)) (loop (+ i 1) (cdr xs)))))))
+
+;; evaluate an operand: (const v) | (reg r)
+(define (eval-operand op regs)
+  (cond ((eq? (car op) 'const) (cadr op))
+        ((eq? (car op) 'reg) (get-reg regs (cadr op)))
+        (else (error "bad operand" op))))
+
+;; evaluate (op name arg...) form -> applies the op proc to operand values
+(define (eval-opexp form regs ops)
+  (let ((proc (op-lookup ops (cadr form)))
+        (vals (map (lambda (a) (eval-operand a regs)) (cddr form))))
+    (apply proc vals)))
+
+;; ---- the machine loop ----
+(define (run-machine reg-names ops instrs)
+  (let ((regs (make-regs reg-names))
+        (labels (build-labels instrs))
+        (code (list->vec instrs))
+        (n (length instrs)))
+    (let run ((pc 0) (flag #f))
+      (if (>= pc n)
+          regs                                  ; halted
+          (let ((ins (vector-ref code pc)))
+            (cond
+              ((symbol? ins) (run (+ pc 1) flag))          ; label, skip
+              ((eq? (car ins) 'assign)
+               ;; (assign reg <expr>)
+               (let ((target (cadr ins)) (expr (caddr ins)))
+                 (set-reg! regs target
+                           (cond ((eq? (car expr) 'const) (cadr expr))
+                                 ((eq? (car expr) 'reg) (get-reg regs (cadr expr)))
+                                 ((eq? (car expr) 'op) (eval-opexp expr regs ops))
+                                 (else (error "bad assign" expr))))
+                 (run (+ pc 1) flag)))
+              ((eq? (car ins) 'test)
+               (run (+ pc 1) (eval-opexp (cadr ins) regs ops)))
+              ((eq? (car ins) 'branch)
+               (if (not (eq? flag #f))
+                   (run (label-index labels (cadr (cadr ins))) flag)
+                   (run (+ pc 1) flag)))
+              ((eq? (car ins) 'goto)
+               (let ((dest (cadr ins)))
+                 (if (eq? (car dest) 'label)
+                     (run (label-index labels (cadr dest)) flag)
+                     (run (get-reg regs (cadr dest)) flag))))
+              (else (error "bad instruction" ins))))))))
+
+;; standard ops
+(define ops
+  (list (cons '* *) (cons '+ +) (cons '- -)
+        (cons '= (lambda (a b) (if (= a b) #t #f)))
+        (cons '> (lambda (a b) (if (> a b) #t #f)))
+        (cons 'rem (lambda (a b) (remainder a b)))))
+
+;; ---- iterative factorial machine (SICP 5.2) ----
+;; product <- 1; counter <- 1
+;; loop: test (> counter n) -> done; product <- product*counter; counter++; goto loop
+;; n is baked in as a constant for each run.
+(define (run-fact n)
+  (let ((regs
+         (run-machine
+          '(n product counter)
+          ops
+          (list
+           (list 'assign 'n (list 'const n))
+           '(assign product (const 1))
+           '(assign counter (const 1))
+           'loop
+           '(test (op > (reg counter) (reg n)))
+           '(branch (label done))
+           '(assign product (op * (reg product) (reg counter)))
+           '(assign counter (op + (reg counter) (const 1)))
+           '(goto (label loop))
+           'done))))
+    (get-reg regs 'product)))
+
+(check "regmachine fact 5"  120  (run-fact 5))
+(check "regmachine fact 0"  1    (run-fact 0))
+(check "regmachine fact 6"  720  (run-fact 6))
+
+;; ---- Euclid's GCD machine (SICP 5.1) ----
+;; gcd-loop: test (= b 0); branch done; t <- a rem b; a <- b; b <- t; goto loop
+(define (run-gcd a b)
+  (let ((regs
+         (run-machine
+          '(a b t)
+          ops
+          (list
+           (list 'assign 'a (list 'const a))
+           (list 'assign 'b (list 'const b))
+           'gcd-loop
+           '(test (op = (reg b) (const 0)))
+           '(branch (label gcd-done))
+           '(assign t (op rem (reg a) (reg b)))
+           '(assign a (reg b))
+           '(assign b (reg t))
+           '(goto (label gcd-loop))
+           'gcd-done))))
+    (get-reg regs 'a)))
+
+(check "regmachine gcd 206 40" 2  (run-gcd 206 40))
+(check "regmachine gcd 1071 462" 21 (run-gcd 1071 462))
+
+(display "ch5 register machine: ")
+(display (if (= fails 0) "ALL PASS" (cons fails 'FAILS))) (newline)

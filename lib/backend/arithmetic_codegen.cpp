@@ -2048,11 +2048,14 @@ llvm::Value* ArithmeticCodegen::pow(llvm::Value* base, llvm::Value* exponent) {
         llvm::Value* base_is_exact = ctx_.builder().CreateOr(base_is_int, base_is_heap);
         llvm::Value* exp_is_int = ctx_.builder().CreateICmpEQ(exp_base,
             llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_INT64));
-        llvm::Value* both_exact_int = ctx_.builder().CreateAnd(base_is_exact, exp_is_int);
-        llvm::Value* exp_val = tagged_.unpackInt64(exponent);
-        llvm::Value* exp_non_neg = ctx_.builder().CreateICmpSGE(exp_val,
-            llvm::ConstantInt::get(ctx_.int64Type(), 0));
-        llvm::Value* use_exact = ctx_.builder().CreateAnd(both_exact_int, exp_non_neg);
+        // R7RS exactness preservation for integer exponentiation. We route to
+        // the exact runtime whenever both operands are exact integers,
+        // REGARDLESS of the exponent's sign:
+        //   * non-negative exponent -> exact integer (int64 / bignum)
+        //   * negative exponent     -> exact rational 1/base^|n|  (e.g. 2^-2 = 1/4)
+        // eshkol_bignum_pow_tagged owns the sign discipline and the rational
+        // construction; it falls back to an inexact double only on overflow.
+        llvm::Value* use_exact = ctx_.builder().CreateAnd(base_is_exact, exp_is_int);
         ctx_.builder().CreateCondBr(use_exact, exact_path, regular_path);
 
         // Exact integer exponentiation via runtime
@@ -2313,8 +2316,12 @@ llvm::Value* ArithmeticCodegen::remainder(llvm::Value* dividend, llvm::Value* di
     llvm::Value* rem_l_dual = convertToDual(dividend, dividend_is_dual, rem_l_dbl_for_dual);
     llvm::Value* rem_l_tangent = ctx_.builder().CreateExtractValue(rem_l_dual, {1}, "rem_l_tangent");
     llvm::Value* rem_result_dual = llvm::UndefValue::get(ctx_.dualNumberType());
+    llvm::Value* rem_zero = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
     rem_result_dual = ctx_.builder().CreateInsertValue(rem_result_dual, rem_primal, {0});
     rem_result_dual = ctx_.builder().CreateInsertValue(rem_result_dual, rem_l_tangent, {1});
+    // 2nd-order dual: zero the e2 / e1e2 slots (avoid poison).
+    rem_result_dual = ctx_.builder().CreateInsertValue(rem_result_dual, rem_zero, {2});
+    rem_result_dual = ctx_.builder().CreateInsertValue(rem_result_dual, rem_zero, {3});
     llvm::Value* rem_dual_tagged = autodiff_.packDualToTagged(rem_result_dual);
     llvm::BasicBlock* dual_rem_exit = ctx_.builder().GetInsertBlock();
     ctx_.builder().CreateBr(outer_rem_merge);
@@ -2466,6 +2473,9 @@ llvm::Value* ArithmeticCodegen::quotient(llvm::Value* dividend, llvm::Value* div
     llvm::Value* q_dual = llvm::UndefValue::get(ctx_.dualNumberType());
     q_dual = ctx_.builder().CreateInsertValue(q_dual, q_primal, {0});
     q_dual = ctx_.builder().CreateInsertValue(q_dual, q_zero_tangent, {1});
+    // 2nd-order dual: zero the e2 / e1e2 slots (avoid poison).
+    q_dual = ctx_.builder().CreateInsertValue(q_dual, q_zero_tangent, {2});
+    q_dual = ctx_.builder().CreateInsertValue(q_dual, q_zero_tangent, {3});
     llvm::Value* q_dual_tagged = autodiff_.packDualToTagged(q_dual);
     llvm::BasicBlock* dual_quot_exit = ctx_.builder().GetInsertBlock();
     ctx_.builder().CreateBr(outer_quot_merge);

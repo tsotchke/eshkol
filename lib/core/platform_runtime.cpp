@@ -339,6 +339,40 @@ std::vector<std::string> host_runtime_link_args() {
     return args;
 }
 
+std::string macos_sdk_lib_dir() {
+#ifdef __APPLE__
+    static const std::string cached = [] {
+        // Trusted fixed command, no user input — popen is safe.
+        FILE* pipe = popen("xcrun --show-sdk-path 2>/dev/null", "r");
+        if (!pipe) {
+            return std::string{};
+        }
+        std::string out;
+        char buffer[512];
+        while (std::fgets(buffer, sizeof(buffer), pipe)) {
+            out += buffer;
+        }
+        int status = pclose(pipe);
+        while (!out.empty() &&
+               (out.back() == '\n' || out.back() == '\r' || out.back() == ' ')) {
+            out.pop_back();
+        }
+        if (status != 0 || out.empty()) {
+            return std::string{};
+        }
+        std::filesystem::path lib_dir = std::filesystem::path(out) / "usr" / "lib";
+        std::error_code ec;
+        if (!std::filesystem::is_directory(lib_dir, ec)) {
+            return std::string{};
+        }
+        return lib_dir.string();
+    }();
+    return cached;
+#else
+    return {};
+#endif
+}
+
 std::filesystem::path with_executable_suffix(const std::filesystem::path& path) {
     if (path.empty()) {
         return {};

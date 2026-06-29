@@ -3,6 +3,7 @@
 ;; Bindings to agent_sqlite.c
 ;;
 (require core.capabilities)
+(require core.strings)        ; string-contains (SQL-injection guard in sqlite-exec-safe)
 
 (provide sqlite-exec-safe sqlite-open sqlite-close sqlite-exec
          sqlite-prepare sqlite-step sqlite-reset sqlite-finalize

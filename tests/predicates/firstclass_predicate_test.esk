@@ -1,0 +1,119 @@
+; ================================================================
+; First-class / apply'd predicate booleans (ESH-0079)
+; ----------------------------------------------------------------
+; A builtin equality/identity predicate (=, eq?, eqv?, equal?) invoked
+; as a FIRST-CLASS value (extracted from a list) or via `apply` used to
+; return the raw integer 0/1 (or () for apply) instead of #f/#t.
+; DIRECT named calls were correct, and the comparison wrapper for `<`
+; happened to be coerced to a boolean downstream while `=` was not.
+; Since only #f is falsy in Scheme, a `0` result is TRUTHY, silently
+; breaking higher-order predicate use (filter/map/apply) and the SICP
+; ch4 metacircular evaluator.
+;
+; Root cause: createBuiltinComparisonFunction packed the (common) double
+; path as INT64 (0/1) while its bignum path returned ESHKOL_VALUE_BOOL;
+; and eq?/eqv?/equal? had no first-class wrapper at all, so the apply
+; path returned () ("Unknown function").
+;
+; This test exercises =, eq?, eqv?, equal?, <, >, <=, >= each:
+;   (a) direct named call
+;   (b) first-class (extracted from a list)
+;   (c) via apply
+; plus a higher-order filter/apply-with-= case. Booleans only.
+; ================================================================
+
+(require stdlib)
+
+(define pass-count 0)
+(define fail-count 0)
+
+(define (test name expected actual)
+  (if (equal? expected actual)
+      (begin (set! pass-count (+ pass-count 1))
+             (display (string-append "PASS: " name "\n")))
+      (begin (set! fail-count (+ fail-count 1))
+             (display (string-append "FAIL: " name "\n"))
+             (display "  Expected: ") (display expected) (newline)
+             (display "  Actual:   ") (display actual) (newline))))
+
+; First-class extractions (from a list)
+(define fc=  (car (list =)))
+(define fc<  (car (list <)))
+(define fc>  (car (list >)))
+(define fc<= (car (list <=)))
+(define fc>= (car (list >=)))
+(define fc-eq?    (car (list eq?)))
+(define fc-eqv?   (car (list eqv?)))
+(define fc-equal? (car (list equal?)))
+
+; ---------------------------------------------------------------
+; = (numeric equality)
+; ---------------------------------------------------------------
+(test "= direct true"   #t (= 2 2))
+(test "= direct false"  #f (= 2 0))
+(test "= fc true"       #t (fc= 2 2))
+(test "= fc false"      #f (fc= 2 0))
+(test "= apply true"    #t (apply = (list 2 2)))
+(test "= apply false"   #f (apply = (list 2 0)))
+; the bug surfaced as a truthy 0 — assert the result is a real boolean
+(test "= fc is boolean (not 0)" #t (eq? (fc= 2 0) #f))
+
+; ---------------------------------------------------------------
+; < > <= >=  (comparison — must not regress)
+; ---------------------------------------------------------------
+(test "< direct"  #t (< 1 2))
+(test "< fc"      #t (fc< 1 2))
+(test "< fc false" #f (fc< 2 1))
+(test "< apply"   #t (apply < (list 1 2)))
+(test "> direct"  #t (> 2 1))
+(test "> fc"      #t (fc> 2 1))
+(test "> apply"   #f (apply > (list 1 2)))
+(test "<= fc"     #t (fc<= 2 2))
+(test "<= apply"  #t (apply <= (list 2 2)))
+(test ">= fc"     #f (fc>= 1 2))
+(test ">= apply"  #t (apply >= (list 2 2)))
+
+; ---------------------------------------------------------------
+; eq? eqv? equal?  (identity / equality predicates)
+; ---------------------------------------------------------------
+(test "eq? direct"   #t (eq? 'a 'a))
+(test "eq? fc true"  #t (fc-eq? 'a 'a))
+(test "eq? fc false" #f (fc-eq? 'a 'b))
+(test "eq? apply"    #t (apply eq? (list 'a 'a)))
+
+(test "eqv? direct"   #t (eqv? 2 2))
+(test "eqv? fc true"  #t (fc-eqv? 2 2))
+(test "eqv? fc false" #f (fc-eqv? 2 3))
+(test "eqv? apply"    #t (apply eqv? (list 2 2)))
+
+(test "equal? direct"   #t (equal? (list 1 2) (list 1 2)))
+(test "equal? fc true"  #t (fc-equal? (list 1 2) (list 1 2)))
+(test "equal? fc false" #f (fc-equal? (list 1 2) (list 1 3)))
+(test "equal? apply"    #t (apply equal? (list (list 1 2) (list 1 2))))
+
+; ---------------------------------------------------------------
+; Higher-order use: filter / apply with =
+; ---------------------------------------------------------------
+(test "filter with first-class ="
+      (list 2 2)
+      (filter (lambda (x) (fc= x 2)) (list 1 2 2 3)))
+(test "filter with apply'd ="
+      (list 2 2)
+      (filter (lambda (x) (apply = (list x 2))) (list 1 2 2 3)))
+
+; SICP ch4 metacircular shape: primitive = applied via apply, tested vs #f
+(define (apply-primitive op args) (apply op args))
+(define (fact n)
+  (if (not (eq? (apply-primitive = (list n 0)) #f))
+      1
+      (* n (fact (- n 1)))))
+(test "SICP metacircular fact 5" 120 (fact 5))
+
+; ================================================================
+(newline)
+(display "==== first-class predicate results ====") (newline)
+(display "Passed: ") (display pass-count) (newline)
+(display "Failed: ") (display fail-count) (newline)
+(if (= fail-count 0)
+    (begin (display "ALL TESTS PASSED") (newline))
+    (begin (display "SOME TESTS FAILED") (newline)))

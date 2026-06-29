@@ -1,0 +1,56 @@
+;; SICP Chapter 2.2.3 — Sequences as conventional interfaces.
+;; map / filter / accumulate, and signal-flow pipelines built from them.
+
+(define fails 0)
+(define (check name ok)
+  (if ok (begin (display "PASS: ") (display name) (newline))
+      (begin (set! fails (+ fails 1)) (display "FAIL: ") (display name) (newline))))
+
+(define (accumulate op initial seq)
+  (if (null? seq) initial
+      (op (car seq) (accumulate op initial (cdr seq)))))
+(define (my-filter pred seq)
+  (cond ((null? seq) '())
+        ((pred (car seq)) (cons (car seq) (my-filter pred (cdr seq))))
+        (else (my-filter pred (cdr seq)))))
+(define (my-map f seq)
+  (if (null? seq) '() (cons (f (car seq)) (my-map f (cdr seq)))))
+(define (enumerate-interval lo hi)
+  (if (> lo hi) '() (cons lo (enumerate-interval (+ lo 1) hi))))
+(define (square x) (* x x))
+
+(check "accumulate-sum"  (= (accumulate + 0 '(1 2 3 4 5)) 15))
+(check "accumulate-prod" (= (accumulate * 1 '(1 2 3 4)) 24))
+(check "accumulate-cons" (equal? (accumulate cons '() '(1 2 3)) '(1 2 3)))
+(check "filter-odd" (equal? (my-filter odd? '(1 2 3 4 5)) '(1 3 5)))
+(check "map-square" (equal? (my-map square '(1 2 3)) '(1 4 9)))
+(check "enum-interval" (equal? (enumerate-interval 2 5) '(2 3 4 5)))
+
+;; sum of squares of even numbers in [1..10]  -> 4+16+36+64+100 = 220
+(check "sum-sq-evens"
+       (= (accumulate + 0 (my-map square (my-filter even? (enumerate-interval 1 10)))) 220))
+
+;; SICP "list-fib-squares" style pipeline: squares of odd numbers 1..10 summed
+(check "sum-sq-odds"
+       (= (accumulate + 0 (my-map square (my-filter odd? (enumerate-interval 1 10)))) 165))
+
+;; nested map: flatmap to build ordered pairs (i,j) with i<j, j<=4
+;; NOTE: SICP writes (accumulate append '() ...). Passing `append` itself as a
+;; first-class value to accumulate is miscompiled in Eshkol (append-as-value bug,
+;; see gap report) — a 2-arg wrapper is used here to express the same algorithm.
+(define (append2 a b) (append a b))
+(define (flatmap f seq) (accumulate append2 '() (my-map f seq)))
+(define pairs
+  (flatmap (lambda (i) (my-map (lambda (j) (list i j)) (enumerate-interval 1 (- i 1))))
+           (enumerate-interval 1 4)))
+(check "flatmap-pairs" (equal? pairs '((2 1) (3 1) (3 2) (4 1) (4 2) (4 3))))
+
+;; Horner's rule via accumulate (ex 2.34): eval 1 + 3x + 5x^3 at x=2 -> 1+6+40 = 47
+(define (horner-eval x coeffs)
+  (accumulate (lambda (c higher) (+ c (* x higher))) 0 coeffs))
+(check "horner-eval" (= (horner-eval 2 '(1 3 0 5)) 47))
+
+(newline)
+(if (= fails 0)
+    (begin (display "ALL-PASS ch2_sequences") (newline))
+    (begin (display "HAS-FAIL ch2_sequences ") (display fails) (newline)))

@@ -90,6 +90,31 @@ public:
     // stays in the current block.
     llvm::Value* safeUnpackDualFromTagged(llvm::Value* tagged);
 
+    // Nested forward-mode AD (perturbation tagging by nesting depth).
+    // seedDerivativeInput: build the dual argument for a `derivative` at the
+    //   given nesting depth, preserving any perturbation the point already
+    //   carries (so an inner derivative does not strip the outer one).
+    // extractDerivativeResult: pull the derivative w.r.t. this level's slot —
+    //   a scalar at depth 0, a dual slice when nested.
+    llvm::Value* seedDerivativeInput(llvm::Value* point_tagged, int depth);
+    llvm::Value* extractDerivativeResult(llvm::Value* result_tagged, int depth);
+
+    // ESH-0070: RUNTIME-level forward-mode perturbation tagging. Unlike the
+    // compile-time `int depth` variants above, the perturbation level is read
+    // from a runtime global (ctx_.adPertLevel()) so nesting works whether the
+    // inner derivative/gradient is lexically nested OR reached through a
+    // function call / named-let TCO loop (the loop carry is differentiated
+    // exactly, with no compounding blow-up). slot = (level==0) ? e1 : e2.
+    llvm::Value* adPertLevelLoad();                    // current live level (i64)
+    void         adPertLevelStore(llvm::Value* level); // set level
+    // Seed THIS level's perturbation slot to 1.0 (preserving any the point
+    // already carries) and PUSH the level (store level+1) for the callee body.
+    // Returns the seeded dual (tagged) and writes the pre-push level to *out_level.
+    llvm::Value* seedForwardAndPush(llvm::Value* point_tagged, llvm::Value** out_level);
+    // POP (restore `level`) and extract the derivative w.r.t. this level's slot:
+    // a scalar double at level 0, the e2-slice dual when nested.
+    llvm::Value* popAndExtractForward(llvm::Value* result_tagged, llvm::Value* level);
+
     /**
      * Add two dual numbers: (a + b, a' + b')
      * @param left Left dual number
