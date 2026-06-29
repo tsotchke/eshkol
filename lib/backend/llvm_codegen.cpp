@@ -36132,18 +36132,34 @@ int eshkol_compile_llvm_ir_to_object(LLVMModuleRef module_ref, const char* filen
         //   - x86_64 / others: leave at default (nullopt → small/medium
         //     per ABI). Range overflow doesn't bite there.
         std::optional<llvm::CodeModel::Model> code_model;
-#if LLVM_VERSION_MAJOR >= 21
-        const bool use_large_aarch64_code_model = object_triple.getArch() == Triple::aarch64 &&
-                                                  !object_triple.isOSWindows();
-#else
-        const bool use_large_aarch64_code_model = object_triple.getArch() == Triple::aarch64 &&
-                                                  !object_triple.isOSWindows();
-#endif
+        // AArch64 Linux/macOS use the Large code model to escape the ±128 MiB
+        // BL/ADRP reach limit (libeshkol-static + user code exceed it).
+        //
+        // windows-arm64 deliberately does NOT: the AArch64-COFF Large model
+        // emits prologues whose size the SEH (.seh_*) unwind directives don't
+        // match ("Incorrect size for <fn> prologue"), and even if it linked it
+        // would corrupt Eshkol's exception handling — `_setjmpex`/`longjmp` on
+        // Windows unwind via SEH, so wrong .pdata/.xdata breaks raise/guard.
+        // Instead windows-arm64 keeps the small model (correct SEH) and shrinks
+        // the binary below the thunk-convergence threshold via function/data
+        // sections + /OPT:REF dead-stripping (see the linker flags below).
+        const bool object_is_aarch64_windows =
+            object_triple.getArch() == Triple::aarch64 && object_triple.isOSWindows();
+        const bool use_large_aarch64_code_model =
+            object_triple.getArch() == Triple::aarch64 && !object_triple.isOSWindows();
         if (use_large_aarch64_code_model) {
             code_model = llvm::CodeModel::Large;
         }
 
         TargetOptions target_options;
+        if (object_is_aarch64_windows) {
+            // Emit each function/datum in its own COFF section so lld-link's
+            // /OPT:REF can dead-strip everything the small test binary doesn't
+            // transitively reference — keeping it small enough that small-model
+            // BL/ADRP thunks converge (no Large model needed → SEH stays valid).
+            target_options.FunctionSections = true;
+            target_options.DataSections = true;
+        }
         auto codegen_opt = getCodeGenOptLevel();
         const bool use_host_cpu_features = (object_triple_str == g_cached_target_triple);
         const std::string cpu_name = use_host_cpu_features ? g_cached_cpu_name : "generic";
@@ -36438,6 +36454,22 @@ int eshkol_compile_llvm_ir_to_executable(LLVMModuleRef module_ref, const char* f
 #else
         link_args.emplace_back("-Xlinker");
         link_args.emplace_back("/STACK:536870912");
+        // windows-arm64: dead-strip unreferenced function/data sections so the
+        // statically-linked stdlib/runtime is pruned to what the binary uses,
+        // keeping it small enough that small-model BL/ADRP range-extension
+        // thunks converge (avoids the AArch64-COFF Large-model SEH breakage).
+        // Paired with FunctionSections/DataSections in the object emit above.
+#if LLVM_VERSION_MAJOR >= 21
+        const Triple executable_triple = unwrap(module_ref)->getTargetTriple();
+#else
+        const Triple executable_triple(unwrap(module_ref)->getTargetTriple());
+#endif
+        if (executable_triple.getArch() == llvm::Triple::aarch64) {
+            link_args.emplace_back("-Xlinker");
+            link_args.emplace_back("/OPT:REF");
+            link_args.emplace_back("-Xlinker");
+            link_args.emplace_back("/OPT:ICF");
+        }
 #endif
 #elif defined(__linux__)
         link_args.emplace_back("-Wl,-z,stack-size=536870912");
