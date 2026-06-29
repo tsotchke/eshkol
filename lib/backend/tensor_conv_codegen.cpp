@@ -75,8 +75,7 @@ llvm::Value* TensorCodegen::maxPool2d(const eshkol_operations_t* op) {
         llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
 
     // Unpack input tensor
-    llvm::Value* input_ptr_int = tagged_.unpackInt64(input_val);
-    llvm::Value* input_ptr = builder.CreateIntToPtr(input_ptr_int, ctx_.ptrType());
+    llvm::Value* input_ptr = unpackTensorOperandChecked(input_val, "max-pool2d");
     llvm::Type* tensor_type = ctx_.tensorType();
 
     // Load input tensor properties
@@ -368,8 +367,7 @@ llvm::Value* TensorCodegen::avgPool2d(const eshkol_operations_t* op) {
     llvm::Value* arena_ptr = builder.CreateLoad(
         llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
 
-    llvm::Value* input_ptr_int = tagged_.unpackInt64(input_val);
-    llvm::Value* input_ptr = builder.CreateIntToPtr(input_ptr_int, ctx_.ptrType());
+    llvm::Value* input_ptr = unpackTensorOperandChecked(input_val, "avg-pool2d");
     llvm::Type* tensor_type = ctx_.tensorType();
 
     llvm::Value* dims_field = builder.CreateStructGEP(tensor_type, input_ptr, 0);
@@ -645,8 +643,7 @@ llvm::Value* TensorCodegen::conv1d(const eshkol_operations_t* op) {
     llvm::Type* tensor_type = ctx_.tensorType();
 
     // Unpack input tensor
-    llvm::Value* input_ptr_int = tagged_.unpackInt64(input_val);
-    llvm::Value* input_ptr = builder.CreateIntToPtr(input_ptr_int, ctx_.ptrType());
+    llvm::Value* input_ptr = unpackTensorOperandChecked(input_val, "conv1d");
     llvm::Value* in_dims_field = builder.CreateStructGEP(tensor_type, input_ptr, 0);
     llvm::Value* in_dims = builder.CreateLoad(ctx_.ptrType(), in_dims_field);
     llvm::Value* in_ndim_field = builder.CreateStructGEP(tensor_type, input_ptr, 1);
@@ -665,8 +662,7 @@ llvm::Value* TensorCodegen::conv1d(const eshkol_operations_t* op) {
     llvm::Value* batch_size = builder.CreateSDiv(in_total, in_len);
 
     // Unpack kernel tensor (1D)
-    llvm::Value* kernel_ptr_int = tagged_.unpackInt64(kernel_val);
-    llvm::Value* kernel_ptr = builder.CreateIntToPtr(kernel_ptr_int, ctx_.ptrType());
+    llvm::Value* kernel_ptr = unpackTensorOperandChecked(kernel_val, "conv1d");
     llvm::Value* k_total_field = builder.CreateStructGEP(tensor_type, kernel_ptr, 3);
     llvm::Value* k_len = builder.CreateLoad(ctx_.int64Type(), k_total_field);
     llvm::Value* k_elems_field = builder.CreateStructGEP(tensor_type, kernel_ptr, 2);
@@ -863,8 +859,7 @@ llvm::Value* TensorCodegen::conv2d(const eshkol_operations_t* op) {
     llvm::Type* tensor_type = ctx_.tensorType();
 
     // Unpack input tensor
-    llvm::Value* input_ptr_int = tagged_.unpackInt64(input_val);
-    llvm::Value* input_ptr = builder.CreateIntToPtr(input_ptr_int, ctx_.ptrType());
+    llvm::Value* input_ptr = unpackTensorOperandChecked(input_val, "conv2d");
     llvm::Value* in_dims_field = builder.CreateStructGEP(tensor_type, input_ptr, 0);
     llvm::Value* in_dims = builder.CreateLoad(ctx_.ptrType(), in_dims_field);
     llvm::Value* in_ndim_field = builder.CreateStructGEP(tensor_type, input_ptr, 1);
@@ -886,8 +881,7 @@ llvm::Value* TensorCodegen::conv2d(const eshkol_operations_t* op) {
     llvm::Value* batch_size = builder.CreateSDiv(in_total, spatial_in);
 
     // Unpack kernel tensor (2D: kH x kW)
-    llvm::Value* kernel_ptr_int = tagged_.unpackInt64(kernel_val);
-    llvm::Value* kernel_ptr = builder.CreateIntToPtr(kernel_ptr_int, ctx_.ptrType());
+    llvm::Value* kernel_ptr = unpackTensorOperandChecked(kernel_val, "conv2d");
     llvm::Value* k_dims_field = builder.CreateStructGEP(tensor_type, kernel_ptr, 0);
     llvm::Value* k_dims = builder.CreateLoad(ctx_.ptrType(), k_dims_field);
     llvm::Value* k_ndim_field = builder.CreateStructGEP(tensor_type, kernel_ptr, 1);
@@ -987,6 +981,11 @@ llvm::Value* TensorCodegen::conv2d(const eshkol_operations_t* op) {
     llvm::Value* r_total_field = builder.CreateStructGEP(tensor_type, result_ptr, 3);
     builder.CreateStore(out_total, r_total_field);
 
+    // Slot holding the tensor pointer returned to the caller. The AD path uses
+    // the pre-allocated `result_ptr`; the numeric path uses the shape-correct
+    // tensor allocated by the shared runtime kernel eshkol_rt_conv2d.
+    llvm::Value* result_slot = builder.CreateAlloca(ctx_.ptrType(), nullptr, "c2_result_slot");
+
     llvm::BasicBlock* exit_block = llvm::BasicBlock::Create(ctx_.context(), "c2_exit", current_func);
 
     if (autodiff_) {
@@ -1081,121 +1080,52 @@ llvm::Value* TensorCodegen::conv2d(const eshkol_operations_t* op) {
         builder.CreateBr(ad_batch_cond);
 
         builder.SetInsertPoint(ad_batch_done);
+        builder.CreateStore(result_ptr, result_slot);
         builder.CreateBr(exit_block);
 
         builder.SetInsertPoint(numeric_path);
     }
 
-    // Nested loops: batch -> output spatial position -> kernel
-    llvm::BasicBlock* batch_cond = llvm::BasicBlock::Create(ctx_.context(), "c2_batch_cond", current_func);
-    llvm::BasicBlock* batch_body = llvm::BasicBlock::Create(ctx_.context(), "c2_batch_body", current_func);
-    llvm::BasicBlock* loop_cond = llvm::BasicBlock::Create(ctx_.context(), "c2_loop_cond", current_func);
-    llvm::BasicBlock* loop_body = llvm::BasicBlock::Create(ctx_.context(), "c2_loop_body", current_func);
-    llvm::BasicBlock* kernel_loop_cond = llvm::BasicBlock::Create(ctx_.context(), "c2_kernel_cond", current_func);
-    llvm::BasicBlock* kernel_loop_body = llvm::BasicBlock::Create(ctx_.context(), "c2_kernel_body", current_func);
-    llvm::BasicBlock* kernel_done = llvm::BasicBlock::Create(ctx_.context(), "c2_kernel_done", current_func);
-    llvm::BasicBlock* loop_done = llvm::BasicBlock::Create(ctx_.context(), "c2_loop_done", current_func);
-    llvm::BasicBlock* batch_done = llvm::BasicBlock::Create(ctx_.context(), "c2_batch_done", current_func);
+    // === Numeric forward path (ESH-0068) ===
+    // Delegate to the shared C kernel eshkol_rt_conv2d (tensor_conv_kernel.cpp /
+    // tensor_conv_kernel.h), the SAME kernel the embedded VM calls, so -r / AOT
+    // / VM conv2d can never diverge again. This replaces the former inline IR
+    // loops, which read the kernel's FIRST two dims (k_dims[0], k_dims[1]) as
+    // the spatial extent — correct for a bare 2-D kernel but wrong for a rank-4
+    // NCHW kernel [out_c, in_c, kH, kW] — and which never summed over
+    // in_channels nor produced out_channels. The shared kernel implements the
+    // canonical NCHW cross-correlation with stride + zero-padding.
+    //
+    // Optional 4th argument: symmetric zero-padding (default 0).
+    llvm::Value* pad = llvm::ConstantInt::get(ctx_.int64Type(), 0);
+    if (op->call_op.num_vars >= 4) {
+        llvm::Value* pad_arg = codegenAST(&op->call_op.variables[3]);
+        if (pad_arg) {
+            if (pad_arg->getType() == ctx_.taggedValueType()) {
+                pad = tagged_.unpackInt64(pad_arg);
+            } else if (pad_arg->getType()->isIntegerTy(64)) {
+                pad = pad_arg;
+            } else {
+                pad = builder.CreateSExtOrTrunc(pad_arg, ctx_.int64Type());
+            }
+        }
+    }
 
-    llvm::Value* bi = builder.CreateAlloca(ctx_.int64Type(), nullptr, "c2_bi");
-    llvm::Value* out_spatial_idx = builder.CreateAlloca(ctx_.int64Type(), nullptr, "c2_out_idx");
-    llvm::Value* sum = builder.CreateAlloca(ctx_.doubleType(), nullptr, "c2_sum");
-    llvm::Value* k_idx = builder.CreateAlloca(ctx_.int64Type(), nullptr, "c2_k_idx");
-
-    builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), bi);
-    builder.CreateBr(batch_cond);
-
-    // Batch loop
-    builder.SetInsertPoint(batch_cond);
-    llvm::Value* curr_bi = builder.CreateLoad(ctx_.int64Type(), bi);
-    llvm::Value* batch_cmp = builder.CreateICmpSLT(curr_bi, batch_size);
-    builder.CreateCondBr(batch_cmp, batch_body, batch_done);
-
-    builder.SetInsertPoint(batch_body);
-    llvm::Value* in_batch_offset = builder.CreateMul(curr_bi, spatial_in);
-    llvm::Value* out_batch_offset = builder.CreateMul(curr_bi, spatial_out);
-    builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), out_spatial_idx);
-    builder.CreateBr(loop_cond);
-
-    // Output spatial loop
-    builder.SetInsertPoint(loop_cond);
-    llvm::Value* curr_out = builder.CreateLoad(ctx_.int64Type(), out_spatial_idx);
-    llvm::Value* loop_cmp = builder.CreateICmpSLT(curr_out, spatial_out);
-    builder.CreateCondBr(loop_cmp, loop_body, loop_done);
-
-    builder.SetInsertPoint(loop_body);
-    curr_out = builder.CreateLoad(ctx_.int64Type(), out_spatial_idx);
-    llvm::Value* out_row = builder.CreateSDiv(curr_out, out_w);
-    llvm::Value* out_col = builder.CreateSRem(curr_out, out_w);
-
-    builder.CreateStore(llvm::ConstantFP::get(ctx_.doubleType(), 0.0), sum);
-    builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), k_idx);
-    builder.CreateBr(kernel_loop_cond);
-
-    // Kernel loop
-    builder.SetInsertPoint(kernel_loop_cond);
-    llvm::Value* curr_k = builder.CreateLoad(ctx_.int64Type(), k_idx);
-    llvm::Value* k_cmp = builder.CreateICmpSLT(curr_k, k_total);
-    builder.CreateCondBr(k_cmp, kernel_loop_body, kernel_done);
-
-    builder.SetInsertPoint(kernel_loop_body);
-    curr_k = builder.CreateLoad(ctx_.int64Type(), k_idx);
-    curr_out = builder.CreateLoad(ctx_.int64Type(), out_spatial_idx);
-    curr_bi = builder.CreateLoad(ctx_.int64Type(), bi);
-    in_batch_offset = builder.CreateMul(curr_bi, spatial_in);
-    out_row = builder.CreateSDiv(curr_out, out_w);
-    out_col = builder.CreateSRem(curr_out, out_w);
-
-    llvm::Value* k_row = builder.CreateSDiv(curr_k, k_w);
-    llvm::Value* k_col = builder.CreateSRem(curr_k, k_w);
-
-    llvm::Value* in_row = builder.CreateAdd(builder.CreateMul(out_row, stride), k_row);
-    llvm::Value* in_col = builder.CreateAdd(builder.CreateMul(out_col, stride), k_col);
-    llvm::Value* in_spatial = builder.CreateAdd(builder.CreateMul(in_row, in_w), in_col);
-    llvm::Value* in_linear = builder.CreateAdd(in_batch_offset, in_spatial);
-
-    llvm::Value* in_ptr = builder.CreateGEP(ctx_.int64Type(), input_elems, in_linear);
-    llvm::Value* in_bits = builder.CreateLoad(ctx_.int64Type(), in_ptr);
-    llvm::Value* in_val = builder.CreateBitCast(in_bits, ctx_.doubleType());
-
-    llvm::Value* k_ptr = builder.CreateGEP(ctx_.int64Type(), kernel_elems, curr_k);
-    llvm::Value* k_bits = builder.CreateLoad(ctx_.int64Type(), k_ptr);
-    llvm::Value* k_val = builder.CreateBitCast(k_bits, ctx_.doubleType());
-
-    llvm::Value* prod = builder.CreateFMul(in_val, k_val);
-    llvm::Value* curr_sum = builder.CreateLoad(ctx_.doubleType(), sum);
-    llvm::Value* new_sum = builder.CreateFAdd(curr_sum, prod);
-    builder.CreateStore(new_sum, sum);
-
-    llvm::Value* next_k = builder.CreateAdd(curr_k, llvm::ConstantInt::get(ctx_.int64Type(), 1));
-    builder.CreateStore(next_k, k_idx);
-    builder.CreateBr(kernel_loop_cond);
-
-    builder.SetInsertPoint(kernel_done);
-    curr_out = builder.CreateLoad(ctx_.int64Type(), out_spatial_idx);
-    curr_bi = builder.CreateLoad(ctx_.int64Type(), bi);
-    out_batch_offset = builder.CreateMul(curr_bi, spatial_out);
-    llvm::Value* out_linear = builder.CreateAdd(out_batch_offset, curr_out);
-    llvm::Value* res_ptr = builder.CreateGEP(ctx_.int64Type(), result_elems, out_linear);
-    llvm::Value* final_sum = builder.CreateLoad(ctx_.doubleType(), sum);
-    llvm::Value* sum_bits = builder.CreateBitCast(final_sum, ctx_.int64Type());
-    builder.CreateStore(sum_bits, res_ptr);
-
-    llvm::Value* next_out = builder.CreateAdd(curr_out, llvm::ConstantInt::get(ctx_.int64Type(), 1));
-    builder.CreateStore(next_out, out_spatial_idx);
-    builder.CreateBr(loop_cond);
-
-    builder.SetInsertPoint(loop_done);
-    curr_bi = builder.CreateLoad(ctx_.int64Type(), bi);
-    llvm::Value* next_bi = builder.CreateAdd(curr_bi, llvm::ConstantInt::get(ctx_.int64Type(), 1));
-    builder.CreateStore(next_bi, bi);
-    builder.CreateBr(batch_cond);
-
-    builder.SetInsertPoint(batch_done);
+    llvm::FunctionType* conv_fn_ty = llvm::FunctionType::get(
+        ctx_.ptrType(),
+        {ctx_.ptrType(), ctx_.ptrType(), ctx_.ptrType(),
+         ctx_.int64Type(), ctx_.int64Type()},
+        false);
+    llvm::FunctionCallee conv_fn =
+        ctx_.module().getOrInsertFunction("eshkol_rt_conv2d", conv_fn_ty);
+    llvm::Value* numeric_result = builder.CreateCall(
+        conv_fn, {arena_ptr, input_ptr, kernel_ptr, stride, pad}, "conv2d_rt");
+    builder.CreateStore(numeric_result, result_slot);
     builder.CreateBr(exit_block);
 
     builder.SetInsertPoint(exit_block);
-    return tagged_.packHeapPtr(result_ptr);
+    llvm::Value* final_result = builder.CreateLoad(ctx_.ptrType(), result_slot);
+    return tagged_.packHeapPtr(final_result);
 }
 
 bool TensorCodegen::emitTensorADNormalizeDispatch(llvm::Value* src_elems,
@@ -1538,8 +1468,7 @@ llvm::Value* TensorCodegen::batchNorm(const eshkol_operations_t* op) {
     llvm::Type* tensor_type = ctx_.tensorType();
 
     // Unpack input tensor
-    llvm::Value* input_ptr_int = tagged_.unpackInt64(input_val);
-    llvm::Value* input_ptr = builder.CreateIntToPtr(input_ptr_int, ctx_.ptrType());
+    llvm::Value* input_ptr = unpackTensorOperandChecked(input_val, "batch-norm");
     llvm::Value* in_dims_field = builder.CreateStructGEP(tensor_type, input_ptr, 0);
     llvm::Value* in_dims = builder.CreateLoad(ctx_.ptrType(), in_dims_field);
     llvm::Value* in_ndim_field = builder.CreateStructGEP(tensor_type, input_ptr, 1);
@@ -1868,8 +1797,7 @@ llvm::Value* TensorCodegen::layerNorm(const eshkol_operations_t* op) {
     llvm::Type* tensor_type = ctx_.tensorType();
 
     // Unpack input tensor
-    llvm::Value* input_ptr_int = tagged_.unpackInt64(input_val);
-    llvm::Value* input_ptr = builder.CreateIntToPtr(input_ptr_int, ctx_.ptrType());
+    llvm::Value* input_ptr = unpackTensorOperandChecked(input_val, "layer-norm");
     llvm::Value* in_dims_field = builder.CreateStructGEP(tensor_type, input_ptr, 0);
     llvm::Value* in_dims = builder.CreateLoad(ctx_.ptrType(), in_dims_field);
     llvm::Value* in_ndim_field = builder.CreateStructGEP(tensor_type, input_ptr, 1);

@@ -1,0 +1,106 @@
+;;; conv_correctness_test.esk — exact, hand-computed conv2d forward checks (ESH-0068)
+;;;
+;;; Every expected value below is computed by hand from the canonical conv2d
+;;; contract: NCHW cross-correlation, accumulating over (in_channels, kH, kW),
+;;; preserving leading batch/channel dims, with stride and symmetric zero-pad.
+;;;
+;;; The same numerics back the embedded VM (vm_tensor_conv2d) and the LLVM
+;;; codegen runtime (eshkol_rt_conv2d) through the ONE shared kernel
+;;; eshkol_conv2d_kernel (lib/backend/tensor_conv_kernel.h), so a passing run
+;;; here is simultaneously a codegen==VM cross-check: both are asserted equal to
+;;; the hand-computed reference. (The VM path's own conv2d self-test in
+;;; lib/backend/vm_tensor_ops.c asserts the identical [[6,8],[12,14]] reference
+;;; used by the "asymmetric" case here.)
+
+(define pass 0)
+(define fail 0)
+
+(define (approx= a b) (< (abs (- a b)) 1e-9))
+
+(define (check name cond)
+  (if cond
+      (begin (set! pass (+ pass 1)) (display "PASS: ") (display name) (newline))
+      (begin (set! fail (+ fail 1)) (display "FAIL: ") (display name) (newline))))
+
+;; Compare a tensor's flat elements (row-major) against a list of expected vals.
+(define (flat-matches? t expected)
+  (let loop ((i 0) (xs expected))
+    (cond ((null? xs) #t)
+          ((approx= (tensor-ref t i) (car xs)) (loop (+ i 1) (cdr xs)))
+          (else #f))))
+
+(define (conv-case name t exp-shape exp-flat)
+  (check name (and (equal? (tensor-shape t) exp-shape)
+                   (flat-matches? t exp-flat))))
+
+;; ── Case 1: 4D NCHW, 3x3 ones (x) 2x2 ones, stride 1 → (1 1 2 2) all 4 ──
+;; The exact regression that motivated ESH-0068.
+(conv-case "conv2d_4d_ones_3x3_k2x2_s1"
+      (conv2d (tensor 1 1 3 3  1.0 1.0 1.0  1.0 1.0 1.0  1.0 1.0 1.0)
+              (tensor 1 1 2 2  1.0 1.0  1.0 1.0)
+              1)
+      '(1 1 2 2)
+      '(4.0 4.0 4.0 4.0))
+
+;; ── Case 2: 2D single-plane form (backward compat): 3x3 ones (x) 2x2 ones ──
+(conv-case "conv2d_2d_ones_3x3_k2x2_s1"
+      (conv2d (tensor 3 3  1.0 1.0 1.0  1.0 1.0 1.0  1.0 1.0 1.0)
+              (tensor 2 2  1.0 1.0  1.0 1.0)
+              1)
+      '(2 2)
+      '(4.0 4.0 4.0 4.0))
+
+;; ── Case 3: asymmetric kernel [[1,0],[0,1]] on [[1..9]] → [[6,8],[12,14]] ──
+;; out[0,0]=1*1+5*1=6  out[0,1]=2*1+6*1=8  out[1,0]=4+8=12  out[1,1]=5+9=14
+(conv-case "conv2d_asymmetric_kernel"
+      (conv2d (tensor 1 1 3 3  1.0 2.0 3.0  4.0 5.0 6.0  7.0 8.0 9.0)
+              (tensor 1 1 2 2  1.0 0.0  0.0 1.0)
+              1)
+      '(1 1 2 2)
+      '(6.0 8.0 12.0 14.0))
+
+;; ── Case 4: multi-channel input (in_c=2), summed over channels ──
+;; ch0=[[1,2],[3,4]] ch1=[[5,6],[7,8]], kernel all ones over both channels.
+;; out = (1+2+3+4) + (5+6+7+8) = 10 + 26 = 36
+(conv-case "conv2d_multichannel_in"
+      (conv2d (tensor 1 2 2 2  1.0 2.0 3.0 4.0  5.0 6.0 7.0 8.0)
+              (tensor 1 2 2 2  1.0 1.0 1.0 1.0  1.0 1.0 1.0 1.0)
+              1)
+      '(1 1 1 1)
+      '(36.0))
+
+;; ── Case 5: multiple output channels (out_c=2) ──
+;; input [[1,2],[3,4]]; kernel oc0=all-ones, oc1=[[1,0],[0,0]]
+;; out_c0 = 1+2+3+4 = 10 ; out_c1 = 1*1 = 1
+(conv-case "conv2d_multichannel_out"
+      (conv2d (tensor 1 1 2 2  1.0 2.0 3.0 4.0)
+              (tensor 2 1 2 2  1.0 1.0 1.0 1.0  1.0 0.0 0.0 0.0)
+              1)
+      '(1 2 1 1)
+      '(10.0 1.0))
+
+;; ── Case 6: stride 2 over a 4x4 input ──
+;; [[1..4],[5..8],[9..12],[13..16]] (x) 2x2 ones, stride 2:
+;; (0,0)=1+2+5+6=14  (0,2)=3+4+7+8=22  (2,0)=9+10+13+14=46  (2,2)=11+12+15+16=54
+(conv-case "conv2d_stride2"
+      (conv2d (tensor 1 1 4 4  1.0 2.0 3.0 4.0  5.0 6.0 7.0 8.0
+                              9.0 10.0 11.0 12.0  13.0 14.0 15.0 16.0)
+              (tensor 1 1 2 2  1.0 1.0  1.0 1.0)
+              2)
+      '(1 1 2 2)
+      '(14.0 22.0 46.0 54.0))
+
+;; ── Case 7: padding=1 (3x3 ones (x) 3x3 ones, stride 1, pad 1) → (1 1 3 3) ──
+;; corners overlap 2x2=4 ones, edges 2x3=6, center 3x3=9.
+(conv-case "conv2d_pad1"
+      (conv2d (tensor 1 1 3 3  1.0 1.0 1.0  1.0 1.0 1.0  1.0 1.0 1.0)
+              (tensor 1 1 3 3  1.0 1.0 1.0  1.0 1.0 1.0  1.0 1.0 1.0)
+              1 1)
+      '(1 1 3 3)
+      '(4.0 6.0 4.0  6.0 9.0 6.0  4.0 6.0 4.0))
+
+(display "Results: ") (display pass) (display " passed, ")
+(display fail) (display " failed") (newline)
+(if (= fail 0)
+    (begin (display "PASS: conv_correctness_test") (newline) (exit 0))
+    (begin (display "FAIL: conv_correctness_test") (newline) (exit 1)))

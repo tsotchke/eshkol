@@ -24,9 +24,19 @@
  *   126 — execvp returned with EACCES / similar
  *   127 — execvp returned with ENOENT (program not found)
  *   128+sig — child died via signal sig (POSIX only)
+ *   124 — child exceeded the caller-supplied timeout and was killed
+ *         (matches GNU coreutils `timeout(1)`)
  *
  * Both the production code and tests share this single implementation so
  * security-relevant fixes only have to be made in one place.
+ *
+ * Timeouts
+ * --------
+ * `run_subprocess` accepts an optional `timeout_seconds`. The default (0)
+ * preserves the historical unbounded wait. A positive value bounds the wait:
+ * on expiry the child is killed and SUBPROCESS_TIMEOUT (124) is returned, so a
+ * stuck downstream tool (e.g. a hung `ld` on a misconfigured host) can never
+ * wedge the parent — the caller fails fast instead of blocking forever.
  */
 
 #ifndef ESHKOL_PKG_SUBPROCESS_H
@@ -43,12 +53,17 @@
 #  include <windows.h>
 #else
 #  include <cerrno>
+#  include <csignal>
+#  include <ctime>
 #  include <sys/types.h>
 #  include <sys/wait.h>
 #  include <unistd.h>
 #endif
 
 namespace eshkol::pkg {
+
+// Returned when a bounded wait expires and the child is killed.
+constexpr int SUBPROCESS_TIMEOUT = 124;
 
 #ifdef _WIN32
 
@@ -108,7 +123,8 @@ inline std::wstring build_windows_command_line(const std::vector<std::string>& a
 // platform — all elements are passed verbatim, so manifest data can never
 // inject commands.
 inline int run_subprocess(const std::vector<std::string>& args,
-                          const std::filesystem::path* cwd = nullptr) {
+                          const std::filesystem::path* cwd = nullptr,
+                          unsigned int timeout_seconds = 0) {
     if (args.empty()) {
         return 1;
     }
@@ -146,7 +162,18 @@ inline int run_subprocess(const std::vector<std::string>& args,
         return static_cast<int>(GetLastError());
     }
 
-    WaitForSingleObject(process_info.hProcess, INFINITE);
+    const DWORD wait_ms =
+        timeout_seconds == 0 ? INFINITE : timeout_seconds * 1000u;
+    DWORD wait_result = WaitForSingleObject(process_info.hProcess, wait_ms);
+    if (wait_result == WAIT_TIMEOUT) {
+        // Stuck child: terminate it and report a bounded-wait timeout so the
+        // caller can fail fast rather than block forever.
+        TerminateProcess(process_info.hProcess, 1);
+        WaitForSingleObject(process_info.hProcess, INFINITE);
+        CloseHandle(process_info.hThread);
+        CloseHandle(process_info.hProcess);
+        return SUBPROCESS_TIMEOUT;
+    }
     DWORD exit_code = 1;
     GetExitCodeProcess(process_info.hProcess, &exit_code);
     CloseHandle(process_info.hThread);
@@ -173,9 +200,45 @@ inline int run_subprocess(const std::vector<std::string>& args,
     }
 
     int status = 0;
-    while (waitpid(pid, &status, 0) < 0) {
-        if (errno != EINTR) {
-            return errno;
+    if (timeout_seconds == 0) {
+        // Historical unbounded wait.
+        while (waitpid(pid, &status, 0) < 0) {
+            if (errno != EINTR) {
+                return errno;
+            }
+        }
+    } else {
+        // Bounded wait: poll with WNOHANG until the child exits or the deadline
+        // passes, then SIGKILL a stuck child and reap it. Polling (rather than
+        // SIGCHLD/alarm) keeps this header free of process-wide signal state,
+        // which matters because run_subprocess is called from a long-lived host
+        // process that installs its own handlers.
+        const struct timespec poll_interval = {0, 10 * 1000 * 1000}; // 10ms
+        const auto deadline =
+            std::time(nullptr) + static_cast<std::time_t>(timeout_seconds);
+        bool timed_out = false;
+        for (;;) {
+            pid_t r = waitpid(pid, &status, WNOHANG);
+            if (r == pid) {
+                break; // child exited
+            }
+            if (r < 0) {
+                if (errno == EINTR) continue;
+                return errno;
+            }
+            // r == 0: still running.
+            if (std::time(nullptr) >= deadline) {
+                timed_out = true;
+                break;
+            }
+            nanosleep(&poll_interval, nullptr);
+        }
+        if (timed_out) {
+            kill(pid, SIGKILL);
+            // Reap so we don't leak a zombie.
+            while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {
+            }
+            return SUBPROCESS_TIMEOUT;
         }
     }
 

@@ -1,0 +1,68 @@
+;; SICP Chapter 2.2.4 — Picture language: the DATA ABSTRACTION layer.
+;;
+;; NOTE ON SCOPE: SICP's picture language ultimately renders by calling a
+;; primitive (draw-line) against a graphics device. Eshkol has no windowing /
+;; line-drawing primitive in this environment, so the *painter rendering* part
+;; is out of scope (documented in the gap report). What IS fully testable — and
+;; is the substance of 2.2.4 as a study of closure and higher-order abstraction —
+;; is the vector/frame algebra and the frame-coordinate-map. We exercise that.
+
+(define fails 0)
+(define (check name ok)
+  (if ok (begin (display "PASS: ") (display name) (newline))
+      (begin (set! fails (+ fails 1)) (display "FAIL: ") (display name) (newline))))
+(define (close? a b) (< (abs (- a b)) 1e-9))
+
+;; ---- vectors (ex 2.46) ----
+(define (make-vect x y) (cons x y))
+(define (xcor-vect v) (car v))
+(define (ycor-vect v) (cdr v))
+(define (add-vect a b) (make-vect (+ (xcor-vect a) (xcor-vect b)) (+ (ycor-vect a) (ycor-vect b))))
+(define (sub-vect a b) (make-vect (- (xcor-vect a) (xcor-vect b)) (- (ycor-vect a) (ycor-vect b))))
+(define (scale-vect s v) (make-vect (* s (xcor-vect v)) (* s (ycor-vect v))))
+
+(let ((v (add-vect (make-vect 1.0 2.0) (make-vect 3.0 4.0))))
+  (check "add-vect" (and (close? (xcor-vect v) 4.0) (close? (ycor-vect v) 6.0))))
+(let ((v (scale-vect 2.0 (make-vect 3.0 5.0))))
+  (check "scale-vect" (and (close? (xcor-vect v) 6.0) (close? (ycor-vect v) 10.0))))
+(let ((v (sub-vect (make-vect 5.0 7.0) (make-vect 2.0 3.0))))
+  (check "sub-vect" (and (close? (xcor-vect v) 3.0) (close? (ycor-vect v) 4.0))))
+
+;; ---- frames (ex 2.47) + frame-coord-map (2.2.4) ----
+(define (make-frame origin edge1 edge2) (list origin edge1 edge2))
+(define (origin-frame f) (car f))
+(define (edge1-frame f) (cadr f))
+(define (edge2-frame f) (caddr f))
+(define (frame-coord-map frame)
+  (lambda (v)
+    (add-vect (origin-frame frame)
+              (add-vect (scale-vect (xcor-vect v) (edge1-frame frame))
+                        (scale-vect (ycor-vect v) (edge2-frame frame))))))
+
+(define unit-frame (make-frame (make-vect 0.0 0.0) (make-vect 1.0 0.0) (make-vect 0.0 1.0)))
+(let ((m (frame-coord-map unit-frame)))
+  ;; identity on the unit frame
+  (let ((p (m (make-vect 0.3 0.7))))
+    (check "coord-map-identity" (and (close? (xcor-vect p) 0.3) (close? (ycor-vect p) 0.7)))))
+
+;; a shifted/scaled frame: origin (1,1), edges (2,0) and (0,3)
+(define shifted (make-frame (make-vect 1.0 1.0) (make-vect 2.0 0.0) (make-vect 0.0 3.0)))
+(let ((m (frame-coord-map shifted)))
+  (let ((p (m (make-vect 0.5 0.5))))      ; -> (1+1, 1+1.5) = (2, 2.5)
+    (check "coord-map-affine" (and (close? (xcor-vect p) 2.0) (close? (ycor-vect p) 2.5))))
+  (let ((p (m (make-vect 0.0 0.0))))      ; origin maps to frame origin
+    (check "coord-map-origin" (and (close? (xcor-vect p) 1.0) (close? (ycor-vect p) 1.0)))))
+
+;; ---- segments as a pair of vectors (data abstraction only; no draw) ----
+(define (make-segment s e) (cons s e))
+(define (start-segment s) (car s))
+(define (end-segment s) (cdr s))
+(define seg (make-segment (make-vect 0.0 0.0) (make-vect 1.0 1.0)))
+(check "segment-endpoints"
+       (and (close? (xcor-vect (end-segment seg)) 1.0)
+            (close? (ycor-vect (start-segment seg)) 0.0)))
+
+(newline)
+(if (= fails 0)
+    (begin (display "ALL-PASS ch2_picture") (newline))
+    (begin (display "HAS-FAIL ch2_picture ") (display fails) (newline)))

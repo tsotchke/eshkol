@@ -55,17 +55,61 @@
   (/ (- (f (+ x eps)) (f (- x eps))) (* 2.0 eps)))
 
 ;; conv2d: f(k) = sum(conv2d(image, reshape(k, 2, 2), stride=1)).
+;; NON-SCALAR operand (a 2x2 kernel over a 3x3 image), checked at TIGHT
+;; tolerance against BOTH the analytic gradient AND central finite differences.
+;; The exact gradient is hand-computed: dL/dK[r,c] = sum_{oh,ow} image[oh+r,ow+c]
+;;   K[0,0]: 1+2+4+5 = 12   K[0,1]: 2+3+5+6 = 16
+;;   K[1,0]: 4+5+7+8 = 24   K[1,1]: 5+6+8+9 = 28
+;; The old gate used scalar-ish inputs at 1e-3, which is exactly why the broken
+;; forward 4-D conv2d (ESH-0068) slipped past — see tests/ml/conv_correctness_test.esk.
+(define (vec-approx= g expected tol)
+  (and (= (vector-length g) (length expected))
+       (let loop ((i 0) (xs expected))
+         (cond ((null? xs) #t)
+               ((approx= (vector-ref g i) (car xs) tol) (loop (+ i 1) (cdr xs)))
+               (else #f)))))
+
 (let* ((image (tensor 3 3
                       1.0 2.0 3.0
                       4.0 5.0 6.0
                       7.0 8.0 9.0))
        (k0 (tensor 4 1.0 1.0 1.0 1.0))
+       ;; forward value with all-ones kernel = per-window sums = [12 16 24 28],
+       ;; total 80 — a hand-computed forward exact check.
+       (fwd (conv2d image (reshape k0 2 2) 1))
        (loss (lambda (k)
                (tensor-sum (conv2d image (reshape k 2 2) 1))))
        (g (gradient loss k0)))
+  (check "ad_input2_conv2d_forward_exact"
+         (and (equal? (tensor-shape fwd) '(2 2))
+              (approx= (tensor-ref fwd 0) 12.0 1e-9)
+              (approx= (tensor-ref fwd 1) 16.0 1e-9)
+              (approx= (tensor-ref fwd 2) 24.0 1e-9)
+              (approx= (tensor-ref fwd 3) 28.0 1e-9)
+              (approx= (tensor-sum fwd) 80.0 1e-9)))
   (check "ad_input2_conv2d_grad_works"
          (and (= (vector-length g) 4)
-              (gradient-matches-finite-diff? g loss k0 1e-4 1e-3))))
+              ;; exact analytic gradient (tight) ...
+              (vec-approx= g '(12.0 16.0 24.0 28.0) 1e-6)
+              ;; ... and central finite differences at tightened tolerance.
+              (gradient-matches-finite-diff? g loss k0 1e-4 1e-4))))
+
+;; conv2d with an ASYMMETRIC kernel — guards against index transposition in the
+;; forward/backward (a symmetric all-ones kernel cannot catch a row/col swap).
+;; loss(k) = sum(conv2d(image, k)); dL/dK[r,c] is still the window-position sum,
+;; independent of k's values, so the analytic gradient is again [12 16 24 28].
+(let* ((image (tensor 3 3
+                      1.0 2.0 3.0
+                      4.0 5.0 6.0
+                      7.0 8.0 9.0))
+       (k0 (tensor 4 1.0 2.0 3.0 4.0))
+       (loss (lambda (k)
+               (tensor-sum (conv2d image (reshape k 2 2) 1))))
+       (g (gradient loss k0)))
+  (check "ad_input2_conv2d_asymmetric_grad"
+         (and (= (vector-length g) 4)
+              (vec-approx= g '(12.0 16.0 24.0 28.0) 1e-6)
+              (gradient-matches-finite-diff? g loss k0 1e-4 1e-4))))
 
 ;; batch-norm / layer-norm: scalar gamma should remain an AD input.
 (let* ((x (tensor 3 1.0 2.0 4.0))

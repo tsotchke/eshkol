@@ -222,6 +222,18 @@ public:
     }
 
     /**
+     * Callback type for resolving a comparison / equality / unary predicate
+     * builtin (=, <, >, <=, >=, eq?, eqv?, equal?, even?, …) to its first-class
+     * wrapper Function* (tagged_value… -> tagged_value). Returns nullptr if the
+     * name has no such wrapper. Used by apply so `(apply = …)` / `(apply eq? …)`
+     * return proper booleans instead of falling through to "Unknown function".
+     */
+    using GetBuiltinPredicateCallback = llvm::Function* (*)(const std::string& name, void* context);
+    void setGetBuiltinPredicateCallback(GetBuiltinPredicateCallback callback) {
+        get_builtin_predicate_callback_ = callback;
+    }
+
+    /**
      * Callback type for applying builtin functions with runtime argument list.
      * Used for tensor/vector functions that need special handling in apply.
      * @param func_name Name of the builtin function (rand, randn, zeros, ones, etc.)
@@ -285,6 +297,8 @@ private:
 
     // Builtin arithmetic callback
     GetBuiltinArithmeticCallback get_builtin_arithmetic_callback_ = nullptr;
+    // Builtin comparison/equality/predicate wrapper resolver (for apply)
+    GetBuiltinPredicateCallback get_builtin_predicate_callback_ = nullptr;
 
     // Apply builtin callback for tensor/vector functions
     ApplyBuiltinCallback apply_builtin_callback_ = nullptr;

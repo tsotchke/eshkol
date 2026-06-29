@@ -59,8 +59,7 @@ llvm::Value* TensorCodegen::tensorRelu(const eshkol_operations_t* op) {
         llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
 
     // Unpack tensor
-    llvm::Value* tensor_ptr_int = tagged_.unpackInt64(tensor_val);
-    llvm::Value* tensor_ptr = builder.CreateIntToPtr(tensor_ptr_int, ctx_.ptrType());
+    llvm::Value* tensor_ptr = unpackTensorOperandChecked(tensor_val, "relu");
     llvm::Type* tensor_type = ctx_.tensorType();
 
     // Get tensor dimensions and elements
@@ -203,8 +202,7 @@ llvm::Value* TensorCodegen::tensorSigmoid(const eshkol_operations_t* op) {
         llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
 
     // Unpack tensor
-    llvm::Value* tensor_ptr_int = tagged_.unpackInt64(tensor_val);
-    llvm::Value* tensor_ptr = builder.CreateIntToPtr(tensor_ptr_int, ctx_.ptrType());
+    llvm::Value* tensor_ptr = unpackTensorOperandChecked(tensor_val, "sigmoid");
     llvm::Type* tensor_type = ctx_.tensorType();
 
     // Get tensor dimensions and elements
@@ -581,8 +579,7 @@ llvm::Value* TensorCodegen::tensorSoftmax(const eshkol_operations_t* op) {
         llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
 
     // Unpack tensor
-    llvm::Value* tensor_ptr_int = tagged_.unpackInt64(tensor_val);
-    llvm::Value* tensor_ptr = builder.CreateIntToPtr(tensor_ptr_int, ctx_.ptrType());
+    llvm::Value* tensor_ptr = unpackTensorOperandChecked(tensor_val, "softmax");
     llvm::Type* tensor_type = ctx_.tensorType();
 
     // Get tensor properties
@@ -902,8 +899,7 @@ llvm::Value* TensorCodegen::tensorGelu(const eshkol_operations_t* op) {
         llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
 
     // Unpack tensor
-    llvm::Value* tensor_ptr_int = tagged_.unpackInt64(tensor_val);
-    llvm::Value* tensor_ptr = builder.CreateIntToPtr(tensor_ptr_int, ctx_.ptrType());
+    llvm::Value* tensor_ptr = unpackTensorOperandChecked(tensor_val, "gelu");
     llvm::Type* tensor_type = ctx_.tensorType();
 
     // Get tensor properties
@@ -1098,8 +1094,7 @@ llvm::Value* TensorCodegen::tensorLeakyRelu(const eshkol_operations_t* op) {
         llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
 
     // Unpack tensor
-    llvm::Value* tensor_ptr_int = tagged_.unpackInt64(tensor_val);
-    llvm::Value* tensor_ptr = builder.CreateIntToPtr(tensor_ptr_int, ctx_.ptrType());
+    llvm::Value* tensor_ptr = unpackTensorOperandChecked(tensor_val, "leaky-relu");
     llvm::Type* tensor_type = ctx_.tensorType();
 
     // Get tensor properties
@@ -1235,8 +1230,7 @@ llvm::Value* TensorCodegen::tensorSilu(const eshkol_operations_t* op) {
     llvm::Value* arena_ptr = builder.CreateLoad(
         llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
 
-    llvm::Value* tensor_ptr_int = tagged_.unpackInt64(tensor_val);
-    llvm::Value* tensor_ptr = builder.CreateIntToPtr(tensor_ptr_int, ctx_.ptrType());
+    llvm::Value* tensor_ptr = unpackTensorOperandChecked(tensor_val, "silu");
     llvm::Type* tensor_type = ctx_.tensorType();
 
     llvm::Value* dims_field = builder.CreateStructGEP(tensor_type, tensor_ptr, 0);
@@ -1346,8 +1340,7 @@ llvm::Value* TensorCodegen::tensorElu(const eshkol_operations_t* op) {
     llvm::Value* arena_ptr = builder.CreateLoad(
         llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
 
-    llvm::Value* tensor_ptr_int = tagged_.unpackInt64(tensor_val);
-    llvm::Value* tensor_ptr = builder.CreateIntToPtr(tensor_ptr_int, ctx_.ptrType());
+    llvm::Value* tensor_ptr = unpackTensorOperandChecked(tensor_val, "elu");
     llvm::Type* tensor_type = ctx_.tensorType();
 
     llvm::Value* dims_field = builder.CreateStructGEP(tensor_type, tensor_ptr, 0);
@@ -1462,8 +1455,7 @@ llvm::Value* TensorCodegen::tensorSelu(const eshkol_operations_t* op) {
     llvm::Value* arena_ptr = builder.CreateLoad(
         llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
 
-    llvm::Value* tensor_ptr_int = tagged_.unpackInt64(tensor_val);
-    llvm::Value* tensor_ptr = builder.CreateIntToPtr(tensor_ptr_int, ctx_.ptrType());
+    llvm::Value* tensor_ptr = unpackTensorOperandChecked(tensor_val, "selu");
     llvm::Type* tensor_type = ctx_.tensorType();
 
     llvm::Value* dims_field = builder.CreateStructGEP(tensor_type, tensor_ptr, 0);
@@ -1581,8 +1573,7 @@ llvm::Value* TensorCodegen::tensorMish(const eshkol_operations_t* op) {
     llvm::Value* arena_ptr = builder.CreateLoad(
         llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
 
-    llvm::Value* tensor_ptr_int = tagged_.unpackInt64(tensor_val);
-    llvm::Value* tensor_ptr = builder.CreateIntToPtr(tensor_ptr_int, ctx_.ptrType());
+    llvm::Value* tensor_ptr = unpackTensorOperandChecked(tensor_val, "mish");
     llvm::Type* tensor_type = ctx_.tensorType();
 
     llvm::Value* dims_field = builder.CreateStructGEP(tensor_type, tensor_ptr, 0);
@@ -1711,8 +1702,7 @@ llvm::Value* TensorCodegen::tensorHardSwish(const eshkol_operations_t* op) {
     llvm::Value* arena_ptr = builder.CreateLoad(
         llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
 
-    llvm::Value* tensor_ptr_int = tagged_.unpackInt64(tensor_val);
-    llvm::Value* tensor_ptr = builder.CreateIntToPtr(tensor_ptr_int, ctx_.ptrType());
+    llvm::Value* tensor_ptr = unpackTensorOperandChecked(tensor_val, "hard-swish");
     llvm::Type* tensor_type = ctx_.tensorType();
 
     llvm::Value* dims_field = builder.CreateStructGEP(tensor_type, tensor_ptr, 0);
@@ -1810,8 +1800,7 @@ llvm::Value* TensorCodegen::tensorHardSigmoid(const eshkol_operations_t* op) {
     llvm::Value* arena_ptr = builder.CreateLoad(
         llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
 
-    llvm::Value* tensor_ptr_int = tagged_.unpackInt64(tensor_val);
-    llvm::Value* tensor_ptr = builder.CreateIntToPtr(tensor_ptr_int, ctx_.ptrType());
+    llvm::Value* tensor_ptr = unpackTensorOperandChecked(tensor_val, "hard-sigmoid");
     llvm::Type* tensor_type = ctx_.tensorType();
 
     llvm::Value* dims_field = builder.CreateStructGEP(tensor_type, tensor_ptr, 0);
@@ -1918,8 +1907,7 @@ llvm::Value* TensorCodegen::tensorSoftplus(const eshkol_operations_t* op) {
     llvm::Value* arena_ptr = builder.CreateLoad(
         llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
 
-    llvm::Value* tensor_ptr_int = tagged_.unpackInt64(tensor_val);
-    llvm::Value* tensor_ptr = builder.CreateIntToPtr(tensor_ptr_int, ctx_.ptrType());
+    llvm::Value* tensor_ptr = unpackTensorOperandChecked(tensor_val, "softplus");
     llvm::Type* tensor_type = ctx_.tensorType();
 
     llvm::Value* dims_field = builder.CreateStructGEP(tensor_type, tensor_ptr, 0);
@@ -2046,8 +2034,7 @@ llvm::Value* TensorCodegen::tensorDropout(const eshkol_operations_t* op) {
     llvm::Value* arena_ptr = builder.CreateLoad(
         llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
 
-    llvm::Value* tensor_ptr_int = tagged_.unpackInt64(tensor_val);
-    llvm::Value* tensor_ptr = builder.CreateIntToPtr(tensor_ptr_int, ctx_.ptrType());
+    llvm::Value* tensor_ptr = unpackTensorOperandChecked(tensor_val, "dropout");
     llvm::Type* tensor_type = ctx_.tensorType();
 
     llvm::Value* dims_field = builder.CreateStructGEP(tensor_type, tensor_ptr, 0);
@@ -2173,8 +2160,7 @@ llvm::Value* TensorCodegen::tensorCelu(const eshkol_operations_t* op) {
     llvm::Value* arena_ptr = builder.CreateLoad(
         llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
 
-    llvm::Value* tensor_ptr_int = tagged_.unpackInt64(tensor_val);
-    llvm::Value* tensor_ptr = builder.CreateIntToPtr(tensor_ptr_int, ctx_.ptrType());
+    llvm::Value* tensor_ptr = unpackTensorOperandChecked(tensor_val, "celu");
     llvm::Type* tensor_type = ctx_.tensorType();
 
     llvm::Value* dims_field = builder.CreateStructGEP(tensor_type, tensor_ptr, 0);
