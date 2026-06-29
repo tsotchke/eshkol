@@ -667,40 +667,63 @@ Value* BindingCodegen::letrec(const eshkol_operations_t* op) {
         is_lambda.push_back(binding_is_lambda);
     }
 
-    // LETREC REFACTOR: Add all names to exclusion set so findFreeVariables won't capture them
-    // But we DO add them to symbol_table so recursive calls can resolve
-    if (letrec_excluded_capture_names_) {
+    Function* current_func = getCurrentFunction(current_function_);
+    bool use_local_storage = current_func != nullptr;
+
+    // Top-level letrec keeps the historical global-cell path. Local letrec
+    // needs per-activation cells so closures returned from different calls do
+    // not race through one module-level slot.
+    if (!use_local_storage && letrec_excluded_capture_names_) {
         for (const std::string& name : var_names) {
             letrec_excluded_capture_names_->insert(name);
             eshkol_debug("letrec: added %s to exclusion set", name.c_str());
         }
     }
 
-    // Phase 1: Create GlobalVariables for all bindings
-    // GlobalVariables are used because nested lambdas need cross-function access.
-    // NOTE: We do NOT create forward declarations for lambda bindings.
-    // Forward declarations don't work correctly when lambdas have captures (different signatures).
-    // Instead, recursive calls will use codegenClosureCall which loads from the GlobalVariable.
-    std::vector<GlobalVariable*> globals;
+    // Phase 1: Create storage for all bindings.
+    //
+    // Top-level/global letrec still uses module globals. Local letrec uses
+    // activation-local cells. If a local lambda captures one of these cells,
+    // codegenLambda's existing closure-escape logic moves that cell to arena
+    // storage and rewrites symbol_table_[name] to the arena pointer. Later
+    // stores intentionally consult symbol_table_ again so they write the final
+    // per-instance storage, not the original stack alloca.
+    std::vector<Value*> binding_storage;
     static int letrec_global_counter = 0;
 
     for (size_t i = 0; i < var_names.size(); i++) {
         const std::string& var_name = var_names[i];
 
-        // Create global variable for storing the closure
-        std::string global_name = "letrec_" + var_name + "_" + std::to_string(letrec_global_counter++);
-        GlobalVariable* global = new GlobalVariable(
-            ctx_.module(),
-            ctx_.taggedValueType(),
-            false,  // not constant
-            GlobalValue::InternalLinkage,
-            UndefValue::get(ctx_.taggedValueType()),
-            global_name
-        );
+        Value* storage = nullptr;
+        if (use_local_storage) {
+            AllocaInst* local = ctx_.builder().CreateAlloca(
+                ctx_.taggedValueType(),
+                nullptr,
+                var_name + "_letrec"
+            );
+            local->setAlignment(Align(16));
+            ctx_.builder().CreateStore(
+                ConstantAggregateZero::get(ctx_.taggedValueType()),
+                local
+            );
+            storage = local;
+            eshkol_debug("letrec: created local storage for %s", var_name.c_str());
+        } else {
+            std::string global_name = "letrec_" + var_name + "_" + std::to_string(letrec_global_counter++);
+            GlobalVariable* global = new GlobalVariable(
+                ctx_.module(),
+                ctx_.taggedValueType(),
+                false,
+                GlobalValue::InternalLinkage,
+                UndefValue::get(ctx_.taggedValueType()),
+                global_name
+            );
+            storage = global;
+            eshkol_debug("letrec: created global %s for %s", global_name.c_str(), var_name.c_str());
+        }
 
-        globals.push_back(global);
-        (*symbol_table_)[var_name] = global;
-        eshkol_debug("letrec: created global %s for %s", global_name.c_str(), var_name.c_str());
+        binding_storage.push_back(storage);
+        (*symbol_table_)[var_name] = storage;
 
         // NOTE: We deliberately do NOT register var_name_func here.
         // This forces codegenCall to use codegenClosureCall for recursive calls,
@@ -742,6 +765,14 @@ Value* BindingCodegen::letrec(const eshkol_operations_t* op) {
                 tco_context_.loop_header = nullptr;  // Will be set during lambda body generation
             }
         }
+        bool use_local_recursive_context = use_local_storage && !use_tco;
+        if (use_local_recursive_context) {
+            tco_context_.func_name = var_names[i];
+            tco_context_.enabled = false;
+            tco_context_.param_allocas.clear();
+            tco_context_.param_names.clear();
+            tco_context_.loop_header = nullptr;
+        }
 
         // Evaluate lambda (codegen will check TCO context)
         void* typed_ptr = codegen_typed_ast_callback_(val_ast, callback_context_);
@@ -750,6 +781,8 @@ Value* BindingCodegen::letrec(const eshkol_operations_t* op) {
         if (use_tco) {
             tco_context_.enabled = false;
             tco_context_.func_name = "";
+        } else if (use_local_recursive_context) {
+            tco_context_ = saved_tco;
         }
 
         if (!typed_ptr) {
@@ -777,18 +810,22 @@ Value* BindingCodegen::letrec(const eshkol_operations_t* op) {
     // This ensures non-lambda bindings that contain lambdas calling these lambdas work correctly
     for (size_t j = 0; j < lambda_values.size(); j++) {
         size_t i = lambda_indices[j];
-        ctx_.builder().CreateStore(lambda_values[j], globals[i]);
+        Value* storage = binding_storage[i];
+        auto storage_it = symbol_table_->find(var_names[i]);
+        if (storage_it != symbol_table_->end() && storage_it->second &&
+            !isa<Function>(storage_it->second)) {
+            storage = storage_it->second;
+        }
+        ctx_.builder().CreateStore(lambda_values[j], storage);
         eshkol_debug("letrec: stored lambda %s", var_names[i].c_str());
     }
 
-    // CRITICAL: Register lambda bindings IMMEDIATELY after storing values
-    // This must happen BEFORE evaluating non-lambda bindings because those bindings
-    // may contain operations (like gradient/derivative) that need to resolve the lambda functions.
-    // Example: (define f (lambda ...)) (define grad (gradient f point))
-    // When evaluating grad, resolveLambdaFunction needs f_func to be registered.
+    // Register top-level/global lambda bindings immediately after storing values.
+    // Local letrec closures must be called through their per-activation storage
+    // cell, not a raw _func alias, otherwise captures are bypassed.
     for (size_t j = 0; j < lambda_indices.size(); j++) {
         size_t i = lambda_indices[j];
-        if (!lambda_names[j].empty()) {
+        if (!use_local_storage && !lambda_names[j].empty()) {
             registerLambdaBinding(var_names[i], lambda_names[j]);
             eshkol_debug("letrec: registered lambda binding %s -> %s", var_names[i].c_str(), lambda_names[j].c_str());
         }
@@ -818,12 +855,18 @@ Value* BindingCodegen::letrec(const eshkol_operations_t* op) {
         Value* tagged_val = static_cast<Value*>(typed_to_tagged_callback_(typed_ptr, callback_context_));
 
         // Store immediately so subsequent non-lambda bindings can reference it
-        ctx_.builder().CreateStore(tagged_val, globals[i]);
+        Value* storage = binding_storage[i];
+        auto storage_it = symbol_table_->find(var_names[i]);
+        if (storage_it != symbol_table_->end() && storage_it->second &&
+            !isa<Function>(storage_it->second)) {
+            storage = storage_it->second;
+        }
+        ctx_.builder().CreateStore(tagged_val, storage);
         eshkol_debug("letrec: stored non-lambda %s", var_names[i].c_str());
     }
 
     // Phase 4: Clear exclusion set
-    if (letrec_excluded_capture_names_) {
+    if (!use_local_storage && letrec_excluded_capture_names_) {
         for (const std::string& name : var_names) {
             letrec_excluded_capture_names_->erase(name);
         }
@@ -1034,34 +1077,58 @@ Value* BindingCodegen::letrecStar(const eshkol_operations_t* op) {
         }
     }
 
-    // Add all names to exclusion set (for recursive reference handling)
-    if (letrec_excluded_capture_names_) {
+    Function* current_func = getCurrentFunction(current_function_);
+    bool use_local_storage = current_func != nullptr;
+
+    // Top-level letrec* keeps the historical global-cell path. Local letrec*
+    // must use per-activation cells so internal-define closures returned from
+    // separate calls do not share one module-level slot.
+    if (!use_local_storage && letrec_excluded_capture_names_) {
         for (const std::string& name : var_names) {
             letrec_excluded_capture_names_->insert(name);
             eshkol_debug("letrec*: added %s to exclusion set", name.c_str());
         }
     }
 
-    // Create GlobalVariables for all bindings upfront (enables mutual recursion)
-    std::vector<GlobalVariable*> globals;
+    // Create storage for all bindings upfront (enables mutual recursion).
+    // Local storage may be rewritten to arena storage by codegenLambda when a
+    // closure captures it, so stores below re-read symbol_table_[name].
+    std::vector<Value*> binding_storage;
     static int letrec_star_global_counter = 0;
 
     for (size_t i = 0; i < var_names.size(); i++) {
         const std::string& var_name = var_names[i];
 
-        std::string global_name = "letrecstar_" + var_name + "_" + std::to_string(letrec_star_global_counter++);
-        GlobalVariable* global = new GlobalVariable(
-            ctx_.module(),
-            ctx_.taggedValueType(),
-            false,
-            GlobalValue::InternalLinkage,
-            Constant::getNullValue(ctx_.taggedValueType()),
-            global_name
-        );
+        Value* storage = nullptr;
+        if (use_local_storage) {
+            AllocaInst* local = ctx_.builder().CreateAlloca(
+                ctx_.taggedValueType(),
+                nullptr,
+                var_name + "_letrecstar"
+            );
+            local->setAlignment(Align(16));
+            ctx_.builder().CreateStore(
+                ConstantAggregateZero::get(ctx_.taggedValueType()),
+                local
+            );
+            storage = local;
+            eshkol_debug("letrec*: created local storage for %s", var_name.c_str());
+        } else {
+            std::string global_name = "letrecstar_" + var_name + "_" + std::to_string(letrec_star_global_counter++);
+            GlobalVariable* global = new GlobalVariable(
+                ctx_.module(),
+                ctx_.taggedValueType(),
+                false,
+                GlobalValue::InternalLinkage,
+                Constant::getNullValue(ctx_.taggedValueType()),
+                global_name
+            );
+            storage = global;
+            eshkol_debug("letrec*: created global %s for %s", global_name.c_str(), var_name.c_str());
+        }
 
-        globals.push_back(global);
-        (*symbol_table_)[var_name] = global;
-        eshkol_debug("letrec*: created global %s for %s", global_name.c_str(), var_name.c_str());
+        binding_storage.push_back(storage);
+        (*symbol_table_)[var_name] = storage;
     }
 
     // Evaluate and store bindings left-to-right (key difference from letrec)
@@ -1092,6 +1159,14 @@ Value* BindingCodegen::letrecStar(const eshkol_operations_t* op) {
                 tco_context_.param_names.clear();
             }
         }
+        bool use_local_recursive_context = use_local_storage && is_lambda && !use_tco;
+        if (use_local_recursive_context) {
+            tco_context_.func_name = var_name;
+            tco_context_.enabled = false;
+            tco_context_.param_allocas.clear();
+            tco_context_.param_names.clear();
+            tco_context_.loop_header = nullptr;
+        }
 
         // Evaluate value (can see ALL bindings, and VALUES of previous bindings)
         void* typed_ptr = codegen_typed_ast_callback_(val_ast, callback_context_);
@@ -1100,6 +1175,8 @@ Value* BindingCodegen::letrecStar(const eshkol_operations_t* op) {
         if (use_tco) {
             tco_context_.enabled = false;
             tco_context_.func_name = "";
+        } else if (use_local_recursive_context) {
+            tco_context_ = saved_tco;
         }
 
         if (!typed_ptr) {
@@ -1110,18 +1187,26 @@ Value* BindingCodegen::letrecStar(const eshkol_operations_t* op) {
         Value* tagged_val = static_cast<Value*>(typed_to_tagged_callback_(typed_ptr, callback_context_));
 
         // Store immediately (key for letrec* left-to-right semantics)
-        ctx_.builder().CreateStore(tagged_val, globals[i]);
+        Value* storage = binding_storage[i];
+        auto storage_it = symbol_table_->find(var_name);
+        if (storage_it != symbol_table_->end() && storage_it->second &&
+            !isa<Function>(storage_it->second)) {
+            storage = storage_it->second;
+        }
+        ctx_.builder().CreateStore(tagged_val, storage);
         eshkol_debug("letrec*: stored %s", var_name.c_str());
 
-        // Register lambda binding immediately so subsequent bindings can use it
-        if (is_lambda && last_generated_lambda_name_ && !last_generated_lambda_name_->empty()) {
+        // Register top-level/global lambda bindings immediately so subsequent
+        // bindings can use them. Local letrec* closures must stay indirect
+        // through their activation-local storage cell.
+        if (!use_local_storage && is_lambda && last_generated_lambda_name_ && !last_generated_lambda_name_->empty()) {
             registerLambdaBinding(var_name, *last_generated_lambda_name_);
             eshkol_debug("letrec*: registered lambda binding %s -> %s", var_name.c_str(), last_generated_lambda_name_->c_str());
         }
     }
 
     // Clear exclusion set
-    if (letrec_excluded_capture_names_) {
+    if (!use_local_storage && letrec_excluded_capture_names_) {
         for (const std::string& name : var_names) {
             letrec_excluded_capture_names_->erase(name);
         }

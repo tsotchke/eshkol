@@ -65,16 +65,13 @@
 (test "account-withdraw-2" 30 ((acc 'withdraw) 60))
 (test "account-deposit-2" 130 ((acc 'deposit) 100))
 
-; NOTE on cross-instance isolation of INTERNAL-DEFINE objects:
-; Two `make-account` instances built with *internal defines* currently alias
-; each other because internal-define functions (withdraw/deposit) are stored
-; in module-level globals (@letrecstar_*) that each call overwrites, and the
-; returned dispatcher captures the global's address. That is a SEPARATE,
-; pre-existing bug in the letrec local-function codegen path
-; (lib/backend/binding_codegen.cpp) — NOT the set!-mutated-shared-capture bug
-; (ESH-0074) fixed here. Instance isolation IS exercised below for the
-; constructs ESH-0074 covers: make-counter (param + sibling lambdas) and the
-; explicit let-lambda object form.
+; Regression for ESH-0075: internal-define/letrec* function objects must be
+; per account instance, not module-level globals overwritten by later calls.
+(define acc1 (make-account 100))
+(define acc2 (make-account 50))
+(test "account-instance acc1 withdraw" 90 ((acc1 'withdraw) 10))
+(test "account-instance acc2 isolated withdraw" 45 ((acc2 'withdraw) 5))
+(test "account-instance acc1 unaffected deposit" 100 ((acc1 'deposit) 10))
 
 ; Explicit let-lambda object form: instance isolation works
 (define (make-account/lambda balance)
