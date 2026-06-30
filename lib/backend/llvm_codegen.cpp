@@ -393,7 +393,11 @@ static void optimizeModule(llvm::Module& module, llvm::TargetMachine* TM, bool i
 #include <cctype>
 #include <stack>
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <cstdio>
 #include <mutex>
+#include <thread>
 #ifdef __APPLE__
 #include <mach-o/dyld.h>  /* _NSGetExecutablePath */
 #endif
@@ -441,6 +445,239 @@ static std::string g_debug_source_directory;
 // Source text + filepath for structured error messages with caret display
 static std::string g_source_text;
 static std::string g_source_filepath;
+
+struct AotModuleStats {
+    uint64_t functions = 0;
+    uint64_t definitions = 0;
+    uint64_t globals = 0;
+    uint64_t basic_blocks = 0;
+    uint64_t instructions = 0;
+};
+
+static bool env_flag_enabled(const char* name) {
+    const char* raw = std::getenv(name);
+    return raw && raw[0] != '\0' && std::strcmp(raw, "0") != 0 &&
+           std::strcmp(raw, "false") != 0 && std::strcmp(raw, "FALSE") != 0;
+}
+
+static unsigned int object_emit_timeout_seconds() {
+    const char* raw = std::getenv("ESHKOL_OBJECT_EMIT_TIMEOUT_SECONDS");
+    if (!raw || raw[0] == '\0') {
+        return 0;
+    }
+
+    char* end = nullptr;
+    long parsed = std::strtol(raw, &end, 10);
+    if (end && *end == '\0' && parsed >= 0) {
+        return static_cast<unsigned int>(parsed);
+    }
+
+    eshkol_warn("Ignoring invalid ESHKOL_OBJECT_EMIT_TIMEOUT_SECONDS=%s", raw);
+    return 0;
+}
+
+static AotModuleStats collect_aot_module_stats(const Module& module) {
+    AotModuleStats stats;
+    for (const Function& function : module) {
+        stats.functions++;
+        if (function.isDeclaration()) {
+            continue;
+        }
+        stats.definitions++;
+        for (const BasicBlock& block : function) {
+            stats.basic_blocks++;
+            stats.instructions += static_cast<uint64_t>(block.size());
+        }
+    }
+    for (auto it = module.global_begin(); it != module.global_end(); ++it) {
+        stats.globals++;
+    }
+    return stats;
+}
+
+static void print_object_emit_context(const char* prefix,
+                                      const char* phase,
+                                      const char* note,
+                                      unsigned int timeout_seconds,
+                                      const std::string& module_id,
+                                      const char* source,
+                                      const AotModuleStats& stats,
+                                      const char* output_filename,
+                                      const std::string& temp_filename,
+                                      const std::string& target_triple,
+                                      const std::string& cpu_name,
+                                      int optimization_level,
+                                      long long elapsed_ms = -1) {
+    const char* output = output_filename ? output_filename : "unknown";
+    const char* temp = temp_filename.empty() ? "none" : temp_filename.c_str();
+    const char* target = target_triple.empty() ? "unknown" : target_triple.c_str();
+    const char* cpu = cpu_name.empty() ? "unknown" : cpu_name.c_str();
+
+    std::fprintf(stderr,
+                 "%s phase=%s timeout_seconds=%u elapsed_ms=%lld source=%s "
+                 "module=%s output=%s temp=%s target=%s cpu=%s opt=-O%d "
+                 "functions=%llu definitions=%llu globals=%llu "
+                 "basic_blocks=%llu instructions=%llu note=%s\n",
+                 prefix,
+                 phase ? phase : "unknown",
+                 timeout_seconds,
+                 elapsed_ms,
+                 source,
+                 module_id.empty() ? "unknown" : module_id.c_str(),
+                 output,
+                 temp,
+                 target,
+                 cpu,
+                 optimization_level,
+                 static_cast<unsigned long long>(stats.functions),
+                 static_cast<unsigned long long>(stats.definitions),
+                 static_cast<unsigned long long>(stats.globals),
+                 static_cast<unsigned long long>(stats.basic_blocks),
+                 static_cast<unsigned long long>(stats.instructions),
+                 note ? note : "");
+    std::fflush(stderr);
+}
+
+static void trace_object_emit_phase(const char* phase,
+                                    const char* event,
+                                    const Module& module,
+                                    const char* output_filename,
+                                    const std::string& temp_filename,
+                                    const std::string& target_triple,
+                                    const std::string& cpu_name,
+                                    long long elapsed_ms = -1) {
+    if (!env_flag_enabled("ESHKOL_AOT_PHASE_TRACE")) {
+        return;
+    }
+    AotModuleStats stats = collect_aot_module_stats(module);
+    std::string module_id = module.getModuleIdentifier();
+    const char* source = g_source_filepath.empty() ? "unknown" : g_source_filepath.c_str();
+    std::string prefix = std::string("ESH-0088: AOT object emission ") +
+                         (event ? event : "trace");
+    print_object_emit_context(prefix.c_str(),
+                              phase,
+                              "phase trace",
+                              object_emit_timeout_seconds(),
+                              module_id,
+                              source,
+                              stats,
+                              output_filename,
+                              temp_filename,
+                              target_triple,
+                              cpu_name,
+                              g_optimization_level,
+                              elapsed_ms);
+}
+
+class ScopedObjectEmitWatchdog {
+public:
+    ScopedObjectEmitWatchdog(unsigned int timeout_seconds,
+                             const Module& module,
+                             const char* output_filename,
+                             std::string temp_filename,
+                             std::string target_triple,
+                             std::string cpu_name)
+        : timeout_seconds_(timeout_seconds),
+          module_id_(module.getModuleIdentifier()),
+          source_(g_source_filepath.empty() ? "unknown" : g_source_filepath),
+          stats_(collect_aot_module_stats(module)),
+          output_filename_(output_filename ? output_filename : ""),
+          temp_filename_(std::move(temp_filename)),
+          target_triple_(std::move(target_triple)),
+          cpu_name_(std::move(cpu_name)),
+          optimization_level_(g_optimization_level),
+          start_(std::chrono::steady_clock::now()) {
+        if (timeout_seconds_ == 0) {
+            return;
+        }
+        thread_ = std::thread([this]() { run(); });
+    }
+
+    ~ScopedObjectEmitWatchdog() {
+        finish();
+    }
+
+    void set_phase(const char* phase, const char* note) {
+        if (timeout_seconds_ == 0) {
+            return;
+        }
+        std::lock_guard<std::mutex> lock(mutex_);
+        phase_ = phase ? phase : "unknown";
+        note_ = note ? note : "";
+    }
+
+    void finish() {
+        if (timeout_seconds_ == 0) {
+            return;
+        }
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            done_ = true;
+        }
+        cv_.notify_all();
+        if (thread_.joinable()) {
+            thread_.join();
+        }
+        timeout_seconds_ = 0;
+    }
+
+private:
+    void run() {
+        std::unique_lock<std::mutex> lock(mutex_);
+        const bool completed = cv_.wait_for(
+            lock,
+            std::chrono::seconds(timeout_seconds_),
+            [this]() { return done_; });
+        if (completed) {
+            return;
+        }
+
+        const std::string phase = phase_;
+        const std::string note = note_;
+        lock.unlock();
+
+        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - start_);
+        print_object_emit_context(
+            "ESH-0088: LLVM object emission watchdog timed out",
+            phase.c_str(),
+            note.empty()
+                ? "stalled inside LLVM backend object emission; final object was not published"
+                : note.c_str(),
+            timeout_seconds_,
+            module_id_,
+            source_.c_str(),
+            stats_,
+            output_filename_.c_str(),
+            temp_filename_,
+            target_triple_,
+            cpu_name_,
+            optimization_level_,
+            elapsed.count());
+
+        if (!temp_filename_.empty()) {
+            std::remove(temp_filename_.c_str());
+        }
+        std::_Exit(124);
+    }
+
+    unsigned int timeout_seconds_ = 0;
+    std::string module_id_;
+    std::string source_;
+    AotModuleStats stats_;
+    std::string output_filename_;
+    std::string temp_filename_;
+    std::string target_triple_;
+    std::string cpu_name_;
+    int optimization_level_ = 0;
+    std::chrono::steady_clock::time_point start_;
+    std::mutex mutex_;
+    std::condition_variable cv_;
+    bool done_ = false;
+    std::string phase_ = "setup";
+    std::string note_ = "";
+    std::thread thread_;
+};
 
 // Emit a codegen error with source location from an AST node.
 // Falls back to plain eshkol_error if no source location available.
@@ -36777,7 +37014,15 @@ int eshkol_compile_llvm_ir_to_object(LLVMModuleRef module_ref, const char* filen
         module->setDataLayout(target_machine->createDataLayout());
 
         // Run LLVM optimization passes before codegen (respects -O level)
+        auto phase_start = std::chrono::steady_clock::now();
+        trace_object_emit_phase("optimizeModule", "begin", *module, filename,
+                                std::string(), object_triple_str, cpu_name);
         optimizeModule(*module, target_machine.get());
+        auto phase_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - phase_start);
+        trace_object_emit_phase("optimizeModule", "end", *module, filename,
+                                std::string(), object_triple_str, cpu_name,
+                                phase_elapsed.count());
 
         // Emit to a same-directory temporary file first. LLVM opens the output
         // before running the backend, so direct final-path emission can publish
@@ -36798,8 +37043,23 @@ int eshkol_compile_llvm_ir_to_object(LLVMModuleRef module_ref, const char* filen
         raw_fd_ostream dest(temp_fd, true);
         temp_fd = -1;
 
+        const unsigned int emit_timeout_seconds = object_emit_timeout_seconds();
+        ScopedObjectEmitWatchdog emit_watchdog(
+            emit_timeout_seconds,
+            *module,
+            filename,
+            temp_filename,
+            object_triple_str,
+            cpu_name);
+
         // Create pass manager and emit object file
         legacy::PassManager pass_manager;
+        emit_watchdog.set_phase(
+            "addPassesToEmitFile",
+            "stalled while constructing LLVM backend emission passes; final object was not published");
+        phase_start = std::chrono::steady_clock::now();
+        trace_object_emit_phase("addPassesToEmitFile", "begin", *module, filename,
+                                temp_filename, object_triple_str, cpu_name);
         if (target_machine->addPassesToEmitFile(pass_manager, dest, nullptr,
                                               ESHKOL_CODEGEN_FILETYPE)) {
             eshkol_error("Target machine cannot emit object files");
@@ -36809,8 +37069,29 @@ int eshkol_compile_llvm_ir_to_object(LLVMModuleRef module_ref, const char* filen
             }
             return -1;
         }
+        phase_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - phase_start);
+        trace_object_emit_phase("addPassesToEmitFile", "end", *module, filename,
+                                temp_filename, object_triple_str, cpu_name,
+                                phase_elapsed.count());
 
+        emit_watchdog.set_phase(
+            "pass_manager.run",
+            "stalled inside LLVM backend codegen/MC/fixup emission; final object was not published; set ESHKOL_OBJECT_EMIT_TIMEOUT_SECONDS=0 to disable watchdog");
+        phase_start = std::chrono::steady_clock::now();
+        trace_object_emit_phase("pass_manager.run", "begin", *module, filename,
+                                temp_filename, object_triple_str, cpu_name);
         pass_manager.run(*module);
+        phase_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - phase_start);
+        trace_object_emit_phase("pass_manager.run", "end", *module, filename,
+                                temp_filename, object_triple_str, cpu_name,
+                                phase_elapsed.count());
+        emit_watchdog.finish();
+
+        phase_start = std::chrono::steady_clock::now();
+        trace_object_emit_phase("flush_close", "begin", *module, filename,
+                                temp_filename, object_triple_str, cpu_name);
         dest.flush();
         dest.close();
         if (dest.has_error()) {
@@ -36820,9 +37101,17 @@ int eshkol_compile_llvm_ir_to_object(LLVMModuleRef module_ref, const char* filen
             dest.clear_error();
             return -1;
         }
+        phase_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - phase_start);
+        trace_object_emit_phase("flush_close", "end", *module, filename,
+                                temp_filename, object_triple_str, cpu_name,
+                                phase_elapsed.count());
 
         // Check if output file is empty (indicates silent failure)
         uint64_t object_size = 0;
+        phase_start = std::chrono::steady_clock::now();
+        trace_object_emit_phase("stat_temp_object", "begin", *module, filename,
+                                temp_filename, object_triple_str, cpu_name);
         ec = sys::fs::file_size(temp_filename, object_size);
         if (ec) {
             eshkol_error("Failed to stat temporary object file %s: %s",
@@ -36833,7 +37122,15 @@ int eshkol_compile_llvm_ir_to_object(LLVMModuleRef module_ref, const char* filen
             eshkol_error("Object file generation produced empty file - module may be invalid");
             return -1;
         }
+        phase_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - phase_start);
+        trace_object_emit_phase("stat_temp_object", "end", *module, filename,
+                                temp_filename, object_triple_str, cpu_name,
+                                phase_elapsed.count());
 
+        phase_start = std::chrono::steady_clock::now();
+        trace_object_emit_phase("publish_object", "begin", *module, filename,
+                                temp_filename, object_triple_str, cpu_name);
         ec = sys::fs::rename(temp_filename, filename);
         if (ec) {
             eshkol_error("Failed to publish object file %s: %s",
@@ -36841,6 +37138,11 @@ int eshkol_compile_llvm_ir_to_object(LLVMModuleRef module_ref, const char* filen
             return -1;
         }
         temp_cleanup.dismiss();
+        phase_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - phase_start);
+        trace_object_emit_phase("publish_object", "end", *module, filename,
+                                temp_filename, object_triple_str, cpu_name,
+                                phase_elapsed.count());
 
         eshkol_info("Successfully generated object file: %s", filename);
         return 0;
