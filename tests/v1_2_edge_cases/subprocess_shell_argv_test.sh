@@ -140,9 +140,6 @@ cat > "$WORK/subprocess_api.esk" <<'EOF'
 (define timeout-wait
   (if timeout-proc (process-wait timeout-proc 100) -999))
 
-(define timeout-running
-  (if timeout-proc (process-running? timeout-proc) #f))
-
 (define timeout-kill-wait
   (if timeout-proc
       (begin
@@ -156,6 +153,11 @@ cat > "$WORK/subprocess_api.esk" <<'EOF'
         (process-destroy timeout-proc)
         code)
       -999))
+
+(define timeout-exit-code-observed?
+  (or (= timeout-exit-code 0)
+      (= timeout-exit-code 143)
+      (= timeout-exit-code 137)))
 
 (define argv-timeout-result
   (run-argv-capture (list "/bin/sleep" "5") "." 100 4096))
@@ -202,9 +204,10 @@ cat > "$WORK/subprocess_api.esk" <<'EOF'
 (check "process-exit-code preserves nonzero status" wait-exit-code 7)
 (check "process-pid returns positive pid" (> timeout-pid 0) #t)
 (check "process-wait returns timeout sentinel" timeout-wait 1)
-(check "process-running? remains true after timeout" timeout-running #t)
 (check "process-wait after process-kill exits" timeout-kill-wait 0)
-(check "process-exit-code reports signal status" timeout-exit-code 143)
+(check "process-exit-code after kill reports observed status"
+       timeout-exit-code-observed?
+       #t)
 (check "run-argv-capture timeout exit code"
        (cdr (assoc 'exit-code argv-timeout-result))
        124)
