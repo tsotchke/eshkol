@@ -163,6 +163,9 @@ public:
     /** Get or create an interned string global (legacy, no header) */
     llvm::GlobalVariable* internString(const std::string& str);
 
+    /** Get or create an interned C string pointer (legacy, no header) */
+    llvm::Value* internCString(const std::string& str);
+
     /** Check if a string is already interned */
     llvm::GlobalVariable* lookupInternedString(const std::string& str);
 
