@@ -1,0 +1,48 @@
+;; ESH-0081: tensor shape dimensions and reduction axes are structural integer
+;; metadata. AD dual values must raise catchable type errors instead of being
+;; detached or silently coerced.
+
+(require stdlib)
+
+(display "TEST: AD structural integer guards") (newline)
+
+(display
+  (if (guard (exn (#t #t))
+        (gradient
+          (lambda (d)
+            (tensor-sum (reshape (vector 1.0 2.0) (list (vector-ref d 0)))))
+          (vector 2.0))
+        #f)
+      "PASS" "FAIL"))
+(display ": AD dual reshape list dimension raises catchable type error") (newline)
+
+(display
+  (if (guard (exn (#t #t))
+        (gradient
+          (lambda (d)
+            (tensor-sum (reshape (vector 1.0 2.0) (vector-ref d 0))))
+          (vector 2.0))
+        #f)
+      "PASS" "FAIL"))
+(display ": AD dual reshape direct dimension raises catchable type error") (newline)
+
+(display
+  (if (guard (exn (#t #t))
+        (gradient
+          (lambda (d)
+            (tensor-sum (reshape (vector 1.0 2.0) 1 (vector-ref d 0))))
+          (vector 2.0))
+        #f)
+      "PASS" "FAIL"))
+(display ": AD dual reshape multi dimension raises catchable type error") (newline)
+
+(display
+  (if (guard (exn (#t #t))
+        (gradient
+          (lambda (d)
+            (tensor-sum (tensor-sum (reshape (vector 1.0 2.0) 1 2)
+                                    (vector-ref d 0))))
+          (vector 1.0))
+        #f)
+      "PASS" "FAIL"))
+(display ": AD dual tensor reduction axis raises catchable type error") (newline)
