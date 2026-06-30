@@ -2217,6 +2217,32 @@ TypeCheckResult TypeChecker::synthesizeDefine(eshkol_ast_t* expr) {
         return errorAt(expr, "Define without name");
     }
 
+    if (def.is_external) {
+        if (def.is_function) {
+            std::vector<TypeId> param_types;
+            for (size_t i = 0; i < def.num_params; i++) {
+                if (def.parameters && def.parameters[i].type == ESHKOL_VAR &&
+                    def.parameters[i].variable.id) {
+                    TypeId param_type = BuiltinTypes::Value;
+                    if (def.param_types && def.param_types[i]) {
+                        param_type = resolveType(def.param_types[i]);
+                    }
+                    param_types.push_back(param_type);
+                }
+            }
+
+            TypeId return_type = def.return_type
+                ? resolveType(def.return_type)
+                : BuiltinTypes::Value;
+            TypeId func_type = env_.makeFunctionType(param_types, return_type,
+                                                      def.is_variadic);
+            ctx_.bind(def.name, func_type);
+        } else {
+            ctx_.bind(def.name, BuiltinTypes::Value);
+        }
+        return TypeCheckResult::ok(BuiltinTypes::Null);
+    }
+
     TypeCheckResult value_type = TypeCheckResult::ok(BuiltinTypes::Value);
 
     if (def.is_function) {
