@@ -1,0 +1,17 @@
+{
+  "id": "ESH-0051",
+  "title": "SICP 5.1-5.2 recursive register-machine programs",
+  "status": "pending",
+  "priority": "high",
+  "workstream": "r7rs-sicp-parity",
+  "owner": null,
+  "preferred_backend": "codex",
+  "preferred_node": "atlas",
+  "max_cost_usd": 5.0,
+  "goal": "Add tests/sicp/ch5_register_machine_recursive.esk covering recursive factorial, Fibonacci, count-leaves or equivalent recursive machines on top of the simulator.",
+  "file_globs": ["tests/sicp/ch5_register_machine_recursive.esk", "tests/sicp/ch5_register_machine*.esk", "scripts/run_sicp_smoke.sh", ".icc/completion-oracles.yaml"],
+  "acceptance": ["Probe passes under -r", "Probe passes under AOT", "ICC observes sicp_ch5_register_machine_recursive_r and sicp_ch5_register_machine_recursive_aot PASS"],
+  "blocked_by": ["ESH-0050"],
+  "verification": ["./scripts/run_sicp_smoke.sh", "/Users/tyr/Desktop/infinite_context_coder/bin/icc completion-oracle --repo eshkol_lang --target sicp-completeness --trace-dir scripts/icc_traces --format json"],
+  "ux_payoff": "Proves the register-machine simulator handles non-tail recursive controller programs, not only iterative machines."
+}

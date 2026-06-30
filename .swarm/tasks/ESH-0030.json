@@ -1,0 +1,39 @@
+{
+  "id": "ESH-0030",
+  "title": "SICP 4.4 logic query evaluator",
+  "status": "pending",
+  "priority": "high",
+  "workstream": "r7rs-sicp-parity",
+  "owner": null,
+  "preferred_backend": "codex",
+  "preferred_node": "atlas",
+  "max_cost_usd": 7.0,
+  "goal": "Implement the SICP 4.4 query system as a runnable Eshkol probe: pattern matching, unification, rules, frames, stream-of-frames evaluation, and canonical company-database queries.",
+  "file_globs": [
+    "tests/sicp/ch4_query_system.esk",
+    "tests/sicp/ch4_metacircular*.esk",
+    "scripts/run_sicp_smoke.sh",
+    ".icc/completion-oracles.yaml"
+  ],
+  "next_actions": [
+    "Add tests/sicp/ch4_query_system.esk with a compact SICP-faithful query evaluator.",
+    "Implement query variables, pattern matching, frame extension, unification, and rule application.",
+    "Implement stream-of-frames query evaluation for simple-query, and, or, not, lisp-value if included, and rule expansion.",
+    "Load a small version of the SICP company database and assert canonical queries such as computer programmers, same supervisors, and rule-derived relationships.",
+    "Add beyond-book bounded backtracking checks only after the book examples are stable."
+  ],
+  "acceptance": [
+    "tests/sicp/ch4_query_system.esk exists and self-checks the SICP 4.4 query system.",
+    "The probe passes under ./build/eshkol-run -r.",
+    "The probe passes under AOT compile/run.",
+    "ICC sicp-completeness observes sicp_ch4_query_system_r and sicp_ch4_query_system_aot as PASS."
+  ],
+  "blocked_by": [],
+  "verification": [
+    "./build/eshkol-run -r tests/sicp/ch4_query_system.esk",
+    "./build/eshkol-run tests/sicp/ch4_query_system.esk -o /tmp/ch4_query_system && /tmp/ch4_query_system",
+    "./scripts/run_sicp_smoke.sh",
+    "/Users/tyr/Desktop/infinite_context_coder/bin/icc completion-oracle --repo eshkol_lang --target sicp-completeness --trace-dir scripts/icc_traces --format json"
+  ],
+  "ux_payoff": "Turns SICP's logic programming chapter into executable release evidence and stress-tests unification/backtracking behavior."
+}

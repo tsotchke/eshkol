@@ -1,0 +1,40 @@
+{
+  "id": "ESH-0032",
+  "title": "SICP 5.4 explicit-control evaluator",
+  "status": "pending",
+  "priority": "high",
+  "workstream": "r7rs-sicp-parity",
+  "owner": null,
+  "preferred_backend": "codex",
+  "preferred_node": "atlas",
+  "max_cost_usd": 7.0,
+  "goal": "Run the SICP 5.4 explicit-control evaluator program on top of the existing register-machine simulator and make it a passing JIT/AOT SICP gate probe.",
+  "file_globs": [
+    "tests/sicp/ch5_explicit_control_evaluator.esk",
+    "tests/sicp/ch5_register_machine.esk",
+    "tests/sicp/ch4_metacircular*.esk",
+    "scripts/run_sicp_smoke.sh",
+    ".icc/completion-oracles.yaml"
+  ],
+  "next_actions": [
+    "Add tests/sicp/ch5_explicit_control_evaluator.esk reusing the existing register-machine simulator patterns.",
+    "Encode the explicit-control evaluator controller with registers, stack operations, primitive application, environment operations, and eval/apply dispatch.",
+    "Run representative evaluator programs: self-evaluating expressions, primitive calls, definitions, conditionals, lambda application, and recursion.",
+    "Keep the program bounded and sourceful when a simulator operation is missing.",
+    "Avoid depending on native shortcuts that skip the register-machine evaluator path."
+  ],
+  "acceptance": [
+    "tests/sicp/ch5_explicit_control_evaluator.esk exists and self-checks the SICP 5.4 evaluator.",
+    "The probe passes under ./build/eshkol-run -r.",
+    "The probe passes under AOT compile/run.",
+    "ICC sicp-completeness observes sicp_ch5_explicit_control_evaluator_r and sicp_ch5_explicit_control_evaluator_aot as PASS."
+  ],
+  "blocked_by": [],
+  "verification": [
+    "./build/eshkol-run -r tests/sicp/ch5_explicit_control_evaluator.esk",
+    "./build/eshkol-run tests/sicp/ch5_explicit_control_evaluator.esk -o /tmp/ch5_explicit_control_evaluator && /tmp/ch5_explicit_control_evaluator",
+    "./scripts/run_sicp_smoke.sh",
+    "/Users/tyr/Desktop/infinite_context_coder/bin/icc completion-oracle --repo eshkol_lang --target sicp-completeness --trace-dir scripts/icc_traces --format json"
+  ],
+  "ux_payoff": "Proves Eshkol can host SICP's evaluator at the register-machine level, not only as direct high-level interpreter code."
+}
