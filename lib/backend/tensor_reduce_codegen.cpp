@@ -44,6 +44,114 @@
 
 namespace eshkol {
 
+namespace {
+
+void emitStructuralIntErrorLocation(CodegenContext& ctx) {
+    uint32_t line = ctx.currentSourceLine();
+    if (line == 0) {
+        return;
+    }
+
+    llvm::Function* set_loc_fn = ctx.module().getFunction("eshkol_set_error_location");
+    if (!set_loc_fn) {
+        llvm::FunctionType* ft = llvm::FunctionType::get(
+            ctx.builder().getVoidTy(),
+            {ctx.builder().getPtrTy(), ctx.int32Type(), ctx.int32Type()},
+            false);
+        set_loc_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+            "eshkol_set_error_location", &ctx.module());
+    }
+
+    const std::string& file = ctx.currentSourceFile();
+    llvm::Value* file_val = file.empty()
+        ? static_cast<llvm::Value*>(llvm::ConstantPointerNull::get(ctx.builder().getPtrTy()))
+        : static_cast<llvm::Value*>(ctx.builder().CreateGlobalString(file, "axis_int_file"));
+    ctx.builder().CreateCall(set_loc_fn, {
+        file_val,
+        llvm::ConstantInt::get(ctx.int32Type(), line),
+        llvm::ConstantInt::get(ctx.int32Type(), ctx.currentSourceColumn())});
+}
+
+llvm::Value* extractStructuralIntOrRaise(CodegenContext& ctx,
+                                         TaggedValueCodegen& tagged,
+                                         llvm::Value* value,
+                                         const char* proc_name,
+                                         const char* expected_type) {
+    if (!value) {
+        return llvm::ConstantInt::get(ctx.int64Type(), 0);
+    }
+
+    llvm::Type* value_type = value->getType();
+    if (value_type->isIntegerTy(64)) {
+        return value;
+    }
+    if (value_type->isIntegerTy()) {
+        return ctx.builder().CreateSExtOrTrunc(value, ctx.int64Type());
+    }
+
+    if (value_type != ctx.taggedValueType()) {
+        llvm::Function* func = ctx.builder().GetInsertBlock()->getParent();
+        llvm::BasicBlock* err_block = llvm::BasicBlock::Create(
+            ctx.context(), "axis_type_error", func);
+        ctx.builder().CreateBr(err_block);
+        ctx.builder().SetInsertPoint(err_block);
+        emitStructuralIntErrorLocation(ctx);
+
+        llvm::Function* type_error_fn = ctx.module().getFunction("eshkol_type_error");
+        if (!type_error_fn) {
+            llvm::FunctionType* ft = llvm::FunctionType::get(
+                ctx.builder().getVoidTy(),
+                {ctx.builder().getPtrTy(), ctx.builder().getPtrTy()},
+                false);
+            type_error_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+                "eshkol_type_error", &ctx.module());
+            type_error_fn->setDoesNotReturn();
+        }
+
+        llvm::Value* proc = ctx.builder().CreateGlobalString(proc_name, "axis_int_proc");
+        llvm::Value* expected = ctx.builder().CreateGlobalString(expected_type, "axis_int_expected");
+        ctx.builder().CreateCall(type_error_fn, {proc, expected});
+        ctx.builder().CreateUnreachable();
+        return llvm::ConstantInt::get(ctx.int64Type(), 0);
+    }
+
+    llvm::Value* type_tag = tagged.getType(value);
+    llvm::Value* base_type = tagged.getBaseType(type_tag);
+    llvm::Value* is_int = ctx.builder().CreateICmpEQ(base_type,
+        llvm::ConstantInt::get(ctx.int8Type(), ESHKOL_VALUE_INT64));
+
+    llvm::Function* func = ctx.builder().GetInsertBlock()->getParent();
+    llvm::BasicBlock* ok_block = llvm::BasicBlock::Create(
+        ctx.context(), "axis_int_ok", func);
+    llvm::BasicBlock* err_block = llvm::BasicBlock::Create(
+        ctx.context(), "axis_type_error", func);
+    ctx.builder().CreateCondBr(is_int, ok_block, err_block);
+
+    ctx.builder().SetInsertPoint(err_block);
+    emitStructuralIntErrorLocation(ctx);
+    llvm::Function* type_error_fn = ctx.module().getFunction("eshkol_type_error_with_operand");
+    if (!type_error_fn) {
+        llvm::FunctionType* ft = llvm::FunctionType::get(
+            ctx.builder().getVoidTy(),
+            {ctx.builder().getPtrTy(), ctx.builder().getPtrTy(), ctx.builder().getPtrTy()},
+            false);
+        type_error_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+            "eshkol_type_error_with_operand", &ctx.module());
+        type_error_fn->setDoesNotReturn();
+    }
+    llvm::Value* slot = ctx.builder().CreateAlloca(ctx.taggedValueType(), nullptr, "axis_err_slot");
+    ctx.builder().CreateStore(value, slot);
+    llvm::Value* proc = ctx.builder().CreateGlobalString(proc_name, "axis_int_proc");
+    llvm::Value* expected = ctx.builder().CreateGlobalString(expected_type, "axis_int_expected");
+    ctx.builder().CreateCall(type_error_fn, {proc, expected, slot});
+    ctx.builder().CreateUnreachable();
+
+    ctx.builder().SetInsertPoint(ok_block);
+    return tagged.unpackInt64(value);
+}
+
+} // namespace
+
 llvm::Value* TensorCodegen::adNodeFromTensorElementBits(llvm::Value* elem_bits, const std::string& name) {
     if (!autodiff_ || !elem_bits) {
         return nullptr;
@@ -1464,7 +1572,8 @@ llvm::Value* TensorCodegen::tensorReduceWithDim(const eshkol_operations_t* op) {
     llvm::Value* src_num_dims = ctx_.builder().CreateLoad(ctx_.int64Type(), src_num_dims_field_ptr);
 
     // Handle negative axis: if axis < 0, axis += rank
-    llvm::Value* axis_val = tagged_.safeExtractInt64(dimension_value);
+    llvm::Value* axis_val = extractStructuralIntOrRaise(
+        ctx_, tagged_, dimension_value, "tensor-reduce", "integer axis");
     llvm::Value* is_negative = ctx_.builder().CreateICmpSLT(axis_val, llvm::ConstantInt::get(ctx_.int64Type(), 0));
     llvm::Value* adjusted_axis = ctx_.builder().CreateAdd(axis_val, src_num_dims);
     axis_val = ctx_.builder().CreateSelect(is_negative, adjusted_axis, axis_val);
@@ -1508,7 +1617,8 @@ llvm::Value* TensorCodegen::emitAxisReduce(llvm::Value* tensor_val, llvm::Value*
         builder.CreateStructGEP(tensor_type, tensor_ptr, 1));
 
     // Handle negative axis: if axis < 0, axis += rank
-    llvm::Value* axis = tagged_.safeExtractInt64(axis_val);
+    llvm::Value* axis = extractStructuralIntOrRaise(
+        ctx_, tagged_, axis_val, "tensor-reduce-axis", "integer axis");
     llvm::Value* is_negative = builder.CreateICmpSLT(axis, llvm::ConstantInt::get(ctx_.int64Type(), 0));
     llvm::Value* adjusted = builder.CreateAdd(axis, src_num_dims);
     axis = builder.CreateSelect(is_negative, adjusted, axis);
