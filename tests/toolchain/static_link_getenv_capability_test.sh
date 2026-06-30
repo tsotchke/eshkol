@@ -100,6 +100,22 @@ cat > "$WORK_TMP/getenv_denied.esk" <<'ESK'
       (exit 0)))
 ESK
 
+cat > "$WORK_TMP/getenv_missing_allowed.esk" <<'ESK'
+(require stdlib)
+(require core.capabilities)
+
+(capability-install-policy! (list 'env-read))
+(define got (getenv "ESHKOL_STATIC_LINK_GETENV_MISSING_PROBE"))
+
+(if got
+    (begin
+      (display "FAIL: static link missing getenv returned value") (newline)
+      (exit 1))
+    (begin
+      (display "PASS: static link missing getenv returns false") (newline)
+      (exit 0)))
+ESK
+
 path_separator() {
     case "$(uname -s)" in
         MINGW*|MSYS*|CYGWIN*) printf ';' ;;
@@ -226,18 +242,35 @@ run_probe() {
 
 ALLOWED_OBJ="$WORK_TMP/getenv_allowed.o"
 DENIED_OBJ="$WORK_TMP/getenv_denied.o"
+MISSING_OBJ="$WORK_TMP/getenv_missing_allowed.o"
 ALLOWED_EXE="$WORK_TMP/getenv_allowed${EXE_SUFFIX}"
 DENIED_EXE="$WORK_TMP/getenv_denied${EXE_SUFFIX}"
+MISSING_EXE="$WORK_TMP/getenv_missing_allowed${EXE_SUFFIX}"
 
 compile_probe "$WORK_TMP/getenv_allowed.esk" "$ALLOWED_OBJ" "$WORK_TMP/compile_allowed.log"
 compile_probe "$WORK_TMP/getenv_denied.esk" "$DENIED_OBJ" "$WORK_TMP/compile_denied.log"
+compile_probe "$WORK_TMP/getenv_missing_allowed.esk" "$MISSING_OBJ" "$WORK_TMP/compile_missing.log"
 
 link_probe "$ALLOWED_OBJ" "$ALLOWED_EXE" "$WORK_TMP/link_allowed.log"
 link_probe "$DENIED_OBJ" "$DENIED_EXE" "$WORK_TMP/link_denied.log"
+link_probe "$MISSING_OBJ" "$MISSING_EXE" "$WORK_TMP/link_missing.log"
 
 run_probe "$ALLOWED_EXE" "PASS: static link getenv reads set var" "$WORK_TMP/run_allowed.log"
 run_probe "$DENIED_EXE" "PASS: static link capability policy denies getenv" "$WORK_TMP/run_denied.log"
+run_probe "$MISSING_EXE" "PASS: static link missing getenv returns false" "$WORK_TMP/run_missing.log"
+
+if ! grep -q "capability denied: env-read" "$WORK_TMP/run_denied.log"; then
+    echo "--- denied run log ---" >&2
+    sed -n '1,160p' "$WORK_TMP/run_denied.log" >&2
+    fail "denied getenv did not emit env-read diagnostic"
+fi
+if grep -q "capability denied:" "$WORK_TMP/run_missing.log"; then
+    echo "--- missing run log ---" >&2
+    sed -n '1,160p' "$WORK_TMP/run_missing.log" >&2
+    fail "allowed missing getenv emitted a denial diagnostic"
+fi
 
 cat "$WORK_TMP/run_allowed.log"
 cat "$WORK_TMP/run_denied.log"
+cat "$WORK_TMP/run_missing.log"
 echo "PASS: static_link_getenv_capability_test"

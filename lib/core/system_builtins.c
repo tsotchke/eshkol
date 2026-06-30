@@ -98,6 +98,7 @@ extern void* arena_allocate(void* arena, size_t size);
 extern char* arena_allocate_string_with_header(void* arena, size_t length);
 extern void* arena_allocate_cons_with_header(void* arena);
 extern int eshkol_capability_runtime_allows(const char* capability);
+extern void eshkol_capability_runtime_deny(const char* capability);
 
 /* Tagged value layout MUST match LLVM IR: {i8, i8, i16, i32, i64} = 16 bytes.
  * The i32 is explicit padding — this matches the LLVM struct exactly so that
@@ -197,7 +198,7 @@ static const char* sys_extract_string(eshkol_sysbuiltin_value_t v) {
 
 static int sys_require_capability(const char* capability) {
     if (eshkol_capability_runtime_allows(capability)) return 1;
-    errno = EACCES;
+    eshkol_capability_runtime_deny(capability);
     return 0;
 }
 
