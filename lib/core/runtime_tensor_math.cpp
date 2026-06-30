@@ -16,6 +16,10 @@
 // These helpers are called from LLVM-generated code through extern "C" names.
 // They operate on raw double arrays in row-major order.
 
+extern "C" void eshkol_type_error_with_operand(const char* proc_name,
+                                                const char* expected_type,
+                                                const eshkol_tagged_value_t* actual);
+
 // LU decomposition with partial pivoting (in-place).
 // A is n x n row-major, piv[i] stores the row swapped with row i.
 // Returns the sign of the permutation (+1 or -1), or 0 if singular.
@@ -364,7 +368,12 @@ extern "C" int64_t eshkol_cons_list_to_dims(
         (const arena_tagged_cons_cell_t*)cons_ptr;
 
     while (current != NULL && count < max_dims) {
-        dims_out[count] = arena_tagged_cons_get_int64(current, false);
+        if (current->car.type != ESHKOL_VALUE_INT64) {
+            eshkol_type_error_with_operand("reshape", "integer dimension", &current->car);
+            return count;
+        }
+
+        dims_out[count] = current->car.data.int_val;
         count++;
 
         uint8_t cdr_type = arena_tagged_cons_get_type(current, true);

@@ -1477,6 +1477,108 @@ llvm::Value* TensorCodegen::reshape(const eshkol_operations_t* op) {
     llvm::Value* final_ndim = nullptr;
     llvm::Value* final_total = nullptr;
 
+    auto extract_structural_int = [&](llvm::Value* value,
+                                      const char* proc_name,
+                                      const char* expected_type) -> llvm::Value* {
+        auto set_error_location = [&]() {
+            uint32_t line = ctx_.currentSourceLine();
+            if (line == 0) {
+                return;
+            }
+
+            llvm::Function* set_loc_fn = ctx_.module().getFunction("eshkol_set_error_location");
+            if (!set_loc_fn) {
+                llvm::FunctionType* ft = llvm::FunctionType::get(
+                    ctx_.builder().getVoidTy(),
+                    {ctx_.builder().getPtrTy(), ctx_.int32Type(), ctx_.int32Type()},
+                    false);
+                set_loc_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+                    "eshkol_set_error_location", &ctx_.module());
+            }
+
+            const std::string& file = ctx_.currentSourceFile();
+            llvm::Value* file_val = file.empty()
+                ? static_cast<llvm::Value*>(llvm::ConstantPointerNull::get(ctx_.builder().getPtrTy()))
+                : static_cast<llvm::Value*>(ctx_.builder().CreateGlobalString(file, "struct_int_file"));
+            ctx_.builder().CreateCall(set_loc_fn, {
+                file_val,
+                llvm::ConstantInt::get(ctx_.int32Type(), line),
+                llvm::ConstantInt::get(ctx_.int32Type(), ctx_.currentSourceColumn())});
+        };
+
+        if (!value) {
+            return llvm::ConstantInt::get(ctx_.int64Type(), 0);
+        }
+
+        llvm::Type* value_type = value->getType();
+        if (value_type->isIntegerTy(64)) {
+            return value;
+        }
+        if (value_type->isIntegerTy()) {
+            return ctx_.builder().CreateSExtOrTrunc(value, ctx_.int64Type());
+        }
+
+        if (value_type != ctx_.taggedValueType()) {
+            llvm::Function* func = ctx_.builder().GetInsertBlock()->getParent();
+            llvm::BasicBlock* err_block = llvm::BasicBlock::Create(
+                ctx_.context(), "reshape_dim_type_error", func);
+            ctx_.builder().CreateBr(err_block);
+            ctx_.builder().SetInsertPoint(err_block);
+            set_error_location();
+
+            llvm::Function* type_error_fn = ctx_.module().getFunction("eshkol_type_error");
+            if (!type_error_fn) {
+                llvm::FunctionType* ft = llvm::FunctionType::get(
+                    ctx_.builder().getVoidTy(),
+                    {ctx_.builder().getPtrTy(), ctx_.builder().getPtrTy()},
+                    false);
+                type_error_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+                    "eshkol_type_error", &ctx_.module());
+                type_error_fn->setDoesNotReturn();
+            }
+
+            llvm::Value* proc = ctx_.builder().CreateGlobalString(proc_name, "struct_int_proc");
+            llvm::Value* expected = ctx_.builder().CreateGlobalString(expected_type, "struct_int_expected");
+            ctx_.builder().CreateCall(type_error_fn, {proc, expected});
+            ctx_.builder().CreateUnreachable();
+            return llvm::ConstantInt::get(ctx_.int64Type(), 0);
+        }
+
+        llvm::Value* type_tag = tagged_.getType(value);
+        llvm::Value* base_type = tagged_.getBaseType(type_tag);
+        llvm::Value* is_int = ctx_.builder().CreateICmpEQ(base_type,
+            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_INT64));
+
+        llvm::Function* func = ctx_.builder().GetInsertBlock()->getParent();
+        llvm::BasicBlock* ok_block = llvm::BasicBlock::Create(
+            ctx_.context(), "reshape_dim_int_ok", func);
+        llvm::BasicBlock* err_block = llvm::BasicBlock::Create(
+            ctx_.context(), "reshape_dim_type_error", func);
+        ctx_.builder().CreateCondBr(is_int, ok_block, err_block);
+
+        ctx_.builder().SetInsertPoint(err_block);
+        set_error_location();
+        llvm::Function* type_error_fn = ctx_.module().getFunction("eshkol_type_error_with_operand");
+        if (!type_error_fn) {
+            llvm::FunctionType* ft = llvm::FunctionType::get(
+                ctx_.builder().getVoidTy(),
+                {ctx_.builder().getPtrTy(), ctx_.builder().getPtrTy(), ctx_.builder().getPtrTy()},
+                false);
+            type_error_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+                "eshkol_type_error_with_operand", &ctx_.module());
+            type_error_fn->setDoesNotReturn();
+        }
+        llvm::Value* slot = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "reshape_dim_err_slot");
+        ctx_.builder().CreateStore(value, slot);
+        llvm::Value* proc = ctx_.builder().CreateGlobalString(proc_name, "struct_int_proc");
+        llvm::Value* expected = ctx_.builder().CreateGlobalString(expected_type, "struct_int_expected");
+        ctx_.builder().CreateCall(type_error_fn, {proc, expected, slot});
+        ctx_.builder().CreateUnreachable();
+
+        ctx_.builder().SetInsertPoint(ok_block);
+        return tagged_.unpackInt64(value);
+    };
+
     // Get source tensor properties (needed for all paths)
     llvm::Value* src_elements_field_ptr = ctx_.builder().CreateStructGEP(tensor_type, src_ptr, 2);
     llvm::Value* src_elements_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), src_elements_field_ptr);
@@ -1565,6 +1667,28 @@ llvm::Value* TensorCodegen::reshape(const eshkol_operations_t* op) {
             list_to_dims_fn = llvm::Function::Create(list_to_dims_ft,
                 llvm::Function::ExternalLinkage, "eshkol_cons_list_to_dims", &ctx_.module());
         }
+        {
+            uint32_t line = ctx_.currentSourceLine();
+            if (line != 0) {
+                llvm::Function* set_loc_fn = ctx_.module().getFunction("eshkol_set_error_location");
+                if (!set_loc_fn) {
+                    llvm::FunctionType* set_loc_ft = llvm::FunctionType::get(
+                        ctx_.builder().getVoidTy(),
+                        {ctx_.builder().getPtrTy(), ctx_.int32Type(), ctx_.int32Type()},
+                        false);
+                    set_loc_fn = llvm::Function::Create(set_loc_ft, llvm::Function::ExternalLinkage,
+                        "eshkol_set_error_location", &ctx_.module());
+                }
+                const std::string& file = ctx_.currentSourceFile();
+                llvm::Value* file_val = file.empty()
+                    ? static_cast<llvm::Value*>(llvm::ConstantPointerNull::get(ctx_.builder().getPtrTy()))
+                    : static_cast<llvm::Value*>(ctx_.builder().CreateGlobalString(file, "reshape_list_file"));
+                ctx_.builder().CreateCall(set_loc_fn, {
+                    file_val,
+                    llvm::ConstantInt::get(ctx_.int32Type(), line),
+                    llvm::ConstantInt::get(ctx_.int32Type(), ctx_.currentSourceColumn())});
+            }
+        }
         llvm::Value* list_ndim = ctx_.builder().CreateCall(
             list_to_dims_fn,
             {cons_ptr, list_dims_array, llvm::ConstantInt::get(ctx_.int64Type(), 16)},
@@ -1586,10 +1710,8 @@ llvm::Value* TensorCodegen::reshape(const eshkol_operations_t* op) {
 
         // SINGLE PATH: Treat as 1D reshape
         ctx_.builder().SetInsertPoint(single_path);
-        llvm::Value* single_dim = dim_arg;
-        if (single_dim->getType() == ctx_.taggedValueType()) {
-            single_dim = tagged_.unpackInt64(single_dim);
-        }
+        llvm::Value* single_dim = extract_structural_int(
+            dim_arg, "reshape", "integer dimension");
         // Allocate 1-element dims array
         llvm::Value* single_arena = ctx_.builder().CreateLoad(
             llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
@@ -1638,9 +1760,7 @@ llvm::Value* TensorCodegen::reshape(const eshkol_operations_t* op) {
         for (uint64_t i = 1; i < op->call_op.num_vars; i++) {
             llvm::Value* dim = codegenAST(&op->call_op.variables[i]);
             if (!dim) return nullptr;
-            if (dim->getType() == ctx_.taggedValueType()) {
-                dim = tagged_.unpackInt64(dim);
-            }
+            dim = extract_structural_int(dim, "reshape", "integer dimension");
             llvm::Value* dim_slot = ctx_.builder().CreateGEP(
                 ctx_.int64Type(), multi_dims_array,
                 llvm::ConstantInt::get(ctx_.int64Type(), i - 1));

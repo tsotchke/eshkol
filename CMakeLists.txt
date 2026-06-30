@@ -2165,6 +2165,17 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             PASS_REGULAR_EXPRESSION "PASS: scaled-dot-attention K/V gradients match closed forms"
             FAIL_REGULAR_EXPRESSION "FAIL:")
     add_test(
+        NAME ad_structural_int_guard_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/ad_structural_int_guard_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(ad_structural_int_guard_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: AD dual tensor reduction axis raises catchable type error"
+            FAIL_REGULAR_EXPRESSION "FAIL:|Attempted to get int64 from non-int-storage cell|LLVM module verification failed|fatal signal")
+    add_test(
         NAME empty_collection_runtime_smoke
         COMMAND $<TARGET_FILE:eshkol-run>
                 -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/collections/empty_collection_test.esk"
