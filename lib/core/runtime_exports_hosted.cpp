@@ -47,6 +47,7 @@ std::uint64_t g_drand48_state = 0x1234ABCD330EULL;
 std::mutex g_capability_mutex;
 bool g_capability_policy_active = false;
 std::unordered_set<std::string> g_capability_allow_list;
+std::unordered_set<std::string> g_capability_denials_reported;
 
 #ifdef _WIN32
 struct windows_dirent_shim {
@@ -119,9 +120,9 @@ bool runtime_capability_allows(const char* capability) {
     return g_capability_allow_list.find(capability) != g_capability_allow_list.end();
 }
 
-bool runtime_file_mode_allows(const char* mode) {
+const char* runtime_file_mode_missing_capability(const char* mode) {
     if (mode == nullptr || mode[0] == '\0') {
-        return false;
+        return "file-read";
     }
 
     bool needs_read = mode[0] == 'r';
@@ -134,20 +135,36 @@ bool runtime_file_mode_allows(const char* mode) {
     }
 
     if (needs_read && !runtime_capability_allows("file-read")) {
-        return false;
+        return "file-read";
     }
     if (needs_write && !runtime_capability_allows("file-write")) {
-        return false;
+        return "file-write";
     }
-    return true;
+    return nullptr;
 }
 
-void deny_file_capability() {
-    errno = EACCES;
+bool runtime_file_mode_allows(const char* mode) {
+    return runtime_file_mode_missing_capability(mode) == nullptr;
 }
 
-void deny_capability() {
+void report_capability_denied(const char* capability) {
     errno = EACCES;
+    const char* name = (capability != nullptr && capability[0] != '\0')
+        ? capability
+        : "unknown";
+
+    bool should_report = false;
+    {
+        std::lock_guard<std::mutex> lock(g_capability_mutex);
+        should_report = g_capability_denials_reported.insert(name).second;
+    }
+    if (should_report) {
+        std::fprintf(stderr, "capability denied: %s\n", name);
+    }
+}
+
+void deny_capability(const char* capability) {
+    report_capability_denied(capability);
 }
 
 } // namespace
@@ -274,7 +291,7 @@ extern "C" char* eshkol_getenv(const char* name) {
         return nullptr;
     }
     if (!runtime_capability_allows("env-read")) {
-        deny_capability();
+        deny_capability("env-read");
         return nullptr;
     }
 
@@ -287,7 +304,7 @@ extern "C" int eshkol_setenv(const char* name, const char* value, int overwrite)
         return -1;
     }
     if (!runtime_capability_allows("env-write")) {
-        deny_capability();
+        deny_capability("env-write");
         return -1;
     }
 
@@ -307,7 +324,7 @@ extern "C" int eshkol_unsetenv(const char* name) {
         return -1;
     }
     if (!runtime_capability_allows("env-write")) {
-        deny_capability();
+        deny_capability("env-write");
         return -1;
     }
 
@@ -359,13 +376,17 @@ extern "C" int eshkol_capability_runtime_allows_file_mode(const char* mode) {
     return runtime_file_mode_allows(mode) ? 1 : 0;
 }
 
+extern "C" void eshkol_capability_runtime_deny(const char* capability) {
+    deny_capability(capability);
+}
+
 extern "C" FILE* eshkol_fopen(const char* path, const char* mode) {
     if (path == nullptr || mode == nullptr) {
         errno = EINVAL;
         return nullptr;
     }
-    if (!runtime_file_mode_allows(mode)) {
-        deny_file_capability();
+    if (const char* missing = runtime_file_mode_missing_capability(mode)) {
+        deny_capability(missing);
         return nullptr;
     }
 
@@ -389,9 +410,12 @@ extern "C" int eshkol_access(const char* path, int mode) {
     }
     const bool needs_write = (mode & 2) != 0;
     const bool needs_read = !needs_write || ((mode & 4) != 0);
-    if ((needs_read && !runtime_capability_allows("file-read")) ||
-        (needs_write && !runtime_capability_allows("file-write"))) {
-        deny_file_capability();
+    if (needs_read && !runtime_capability_allows("file-read")) {
+        deny_capability("file-read");
+        return -1;
+    }
+    if (needs_write && !runtime_capability_allows("file-write")) {
+        deny_capability("file-write");
         return -1;
     }
 
@@ -409,7 +433,7 @@ extern "C" int eshkol_remove(const char* path) {
         return -1;
     }
     if (!runtime_capability_allows("file-write")) {
-        deny_file_capability();
+        deny_capability("file-write");
         return -1;
     }
 
@@ -423,7 +447,7 @@ extern "C" int eshkol_rename(const char* old_path, const char* new_path) {
         return -1;
     }
     if (!runtime_capability_allows("file-write")) {
-        deny_file_capability();
+        deny_capability("file-write");
         return -1;
     }
 
@@ -438,7 +462,7 @@ extern "C" int eshkol_mkdir(const char* path, int mode) {
         return -1;
     }
     if (!runtime_capability_allows("file-write")) {
-        deny_file_capability();
+        deny_capability("file-write");
         return -1;
     }
 
@@ -457,7 +481,7 @@ extern "C" int eshkol_rmdir(const char* path) {
         return -1;
     }
     if (!runtime_capability_allows("file-write")) {
-        deny_file_capability();
+        deny_capability("file-write");
         return -1;
     }
 
@@ -475,7 +499,7 @@ extern "C" int eshkol_chdir(const char* path) {
         return -1;
     }
     if (!runtime_capability_allows("file-read")) {
-        deny_file_capability();
+        deny_capability("file-read");
         return -1;
     }
 
@@ -493,7 +517,7 @@ extern "C" int eshkol_stat(const char* path, void* buf) {
         return -1;
     }
     if (!runtime_capability_allows("file-read")) {
-        deny_file_capability();
+        deny_capability("file-read");
         return -1;
     }
 
@@ -507,7 +531,7 @@ extern "C" void* eshkol_opendir(const char* path) {
         return nullptr;
     }
     if (!runtime_capability_allows("file-read")) {
-        deny_file_capability();
+        deny_capability("file-read");
         return nullptr;
     }
 

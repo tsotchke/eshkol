@@ -66,6 +66,7 @@ void eshkol_capability_runtime_allow(const char* capability);
 int eshkol_capability_runtime_is_active();
 int eshkol_capability_runtime_allows(const char* capability);
 int eshkol_capability_runtime_allows_file_mode(const char* mode);
+void eshkol_capability_runtime_deny(const char* capability);
 
 }
 
