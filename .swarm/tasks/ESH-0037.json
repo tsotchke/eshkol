@@ -1,0 +1,39 @@
+{
+  "id": "ESH-0037",
+  "title": "SICP 3.4 concurrency, serializers, and account exchange",
+  "status": "pending",
+  "priority": "high",
+  "workstream": "r7rs-sicp-parity",
+  "owner": null,
+  "preferred_backend": "codex",
+  "preferred_node": "atlas",
+  "max_cost_usd": 5.0,
+  "goal": "Implement a bounded SICP 3.4 concurrency probe covering serializers, serialized account operations, exchange, and the book's correctness hazards without making the release gate nondeterministic.",
+  "file_globs": [
+    "tests/sicp/ch3_concurrency.esk",
+    "tests/sicp/ch3_accounts.esk",
+    "scripts/run_sicp_smoke.sh",
+    ".icc/completion-oracles.yaml"
+  ],
+  "next_actions": [
+    "Add tests/sicp/ch3_concurrency.esk.",
+    "Implement a deterministic serializer model suitable for JIT/AOT tests.",
+    "Cover serialized deposits/withdrawals and serialized account exchange.",
+    "Model or simulate interleaving hazards in a bounded deterministic way so the test proves the SICP semantics without flaky timing.",
+    "Include clear PASS/FAIL checks for protected balance invariants and deadlock-avoidance ordering if implemented."
+  ],
+  "acceptance": [
+    "tests/sicp/ch3_concurrency.esk exists and self-checks SICP 3.4.",
+    "The probe passes under ./build/eshkol-run -r.",
+    "The probe passes under AOT compile/run.",
+    "ICC sicp-completeness observes sicp_ch3_concurrency_r and sicp_ch3_concurrency_aot as PASS."
+  ],
+  "blocked_by": [],
+  "verification": [
+    "./build/eshkol-run -r tests/sicp/ch3_concurrency.esk",
+    "./build/eshkol-run tests/sicp/ch3_concurrency.esk -o /tmp/ch3_concurrency && /tmp/ch3_concurrency",
+    "./scripts/run_sicp_smoke.sh",
+    "/Users/tyr/Desktop/infinite_context_coder/bin/icc completion-oracle --repo eshkol_lang --target sicp-completeness --trace-dir scripts/icc_traces --format json"
+  ],
+  "ux_payoff": "Covers SICP's concurrency chapter while keeping the release gate deterministic and repeatable."
+}

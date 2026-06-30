@@ -1,0 +1,38 @@
+{
+  "id": "ESH-0036",
+  "title": "SICP 3.3.5 constraint-propagation system",
+  "status": "pending",
+  "priority": "high",
+  "workstream": "r7rs-sicp-parity",
+  "owner": null,
+  "preferred_backend": "codex",
+  "preferred_node": "atlas",
+  "max_cost_usd": 5.0,
+  "goal": "Implement the SICP 3.3.5 constraint-propagation system as a runnable Eshkol probe, including connectors, constraints, probes, adders, multipliers, constants, and Celsius/Fahrenheit conversion.",
+  "file_globs": [
+    "tests/sicp/ch3_constraints.esk",
+    "tests/sicp/ch3_accounts.esk",
+    "scripts/run_sicp_smoke.sh",
+    ".icc/completion-oracles.yaml"
+  ],
+  "next_actions": [
+    "Add tests/sicp/ch3_constraints.esk.",
+    "Implement connectors with informant tracking, has-value?, get-value, set-value!, forget-value!, connect, and message dispatch.",
+    "Implement adder, multiplier, constant, probe, averager if useful, and the Celsius/Fahrenheit converter network.",
+    "Assert propagation in both directions, forgetting/retraction behavior, and contradiction handling."
+  ],
+  "acceptance": [
+    "tests/sicp/ch3_constraints.esk exists and self-checks SICP 3.3.5.",
+    "The probe passes under ./build/eshkol-run -r.",
+    "The probe passes under AOT compile/run.",
+    "ICC sicp-completeness observes sicp_ch3_constraints_r and sicp_ch3_constraints_aot as PASS."
+  ],
+  "blocked_by": [],
+  "verification": [
+    "./build/eshkol-run -r tests/sicp/ch3_constraints.esk",
+    "./build/eshkol-run tests/sicp/ch3_constraints.esk -o /tmp/ch3_constraints && /tmp/ch3_constraints",
+    "./scripts/run_sicp_smoke.sh",
+    "/Users/tyr/Desktop/infinite_context_coder/bin/icc completion-oracle --repo eshkol_lang --target sicp-completeness --trace-dir scripts/icc_traces --format json"
+  ],
+  "ux_payoff": "Covers SICP's constraint network model and exercises stateful message-passing objects beyond queues/accounts."
+}

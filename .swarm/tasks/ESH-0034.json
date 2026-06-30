@@ -1,0 +1,40 @@
+{
+  "id": "ESH-0034",
+  "title": "SICP full-book section/example coverage manifest",
+  "status": "done",
+  "priority": "high",
+  "workstream": "r7rs-sicp-parity",
+  "owner": null,
+  "preferred_backend": "codex",
+  "preferred_node": "atlas",
+  "max_cost_usd": 4.0,
+  "goal": "Create and maintain a literal coverage manifest proving that the SICP gate maps the entire book to executable evidence, not only the currently known major subsystem gaps.",
+  "file_globs": [
+    "SICP_COMPLETENESS_REPORT.md",
+    "tests/sicp/*.esk",
+    "scripts/run_sicp_smoke.sh",
+    ".icc/completion-oracles.yaml",
+    ".swarm/tasks/ESH-0005.json"
+  ],
+  "next_actions": [
+    "Audit SICP chapter by chapter and add a section/example coverage manifest to SICP_COMPLETENESS_REPORT.md.",
+    "For each section and example family, record the runnable tests/sicp/*.esk evidence that covers it or the exact ESH blocker that must create it.",
+    "Make the manifest distinguish book-required coverage from beyond-book stress coverage.",
+    "Update .icc/completion-oracles.yaml if the manifest exposes missing runnable probes beyond ESH-0029 through ESH-0033; current manifest-required extras are ESH-0035 through ESH-0037.",
+    "Keep the manifest in sync with scripts/run_sicp_smoke.sh so a green gate cannot hide an untracked omission."
+  ],
+  "acceptance": [
+    "SICP_COMPLETENESS_REPORT.md contains a section/example coverage manifest for the full book.",
+    "Every manifest row has runnable evidence or a named open ESH task.",
+    "Every named book-required blocker has a corresponding ICC criterion or a documented reason why it is covered by an existing criterion.",
+    "scripts/run_sicp_smoke.sh and ICC sicp-completeness cannot pass while a manifest-required runnable probe is missing."
+  ],
+  "blocked_by": [],
+  "verification": [
+    "rg -n \"Full-Book Coverage Manifest|ESH-0029|ESH-0030|ESH-0031|ESH-0032|ESH-0033|ESH-0035|ESH-0036|ESH-0037\" SICP_COMPLETENESS_REPORT.md",
+    "./scripts/run_sicp_smoke.sh",
+    "/Users/tyr/Desktop/infinite_context_coder/bin/icc completion-oracle --repo eshkol_lang --target sicp-completeness --trace-dir scripts/icc_traces --format json"
+  ],
+  "status_note": "Initial full-book section/example coverage manifest is in SICP_COMPLETENESS_REPORT.md. It exposed additional required blockers ESH-0035 through ESH-0051 for Chapter 2 picture/generic gaps, Chapter 3 mutable/circuit/constraint/concurrency/stream gaps, Chapter 4 analyzer/derived/ambeval/parser gaps, and Chapter 5 stack/recursive-machine gaps.",
+  "ux_payoff": "Prevents a misleading SICP claim by requiring explicit evidence for every part of the book before v1.3 can ship."
+}

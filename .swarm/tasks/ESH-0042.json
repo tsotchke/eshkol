@@ -1,0 +1,17 @@
+{
+  "id": "ESH-0042",
+  "title": "SICP 3.5 accelerated streams and tableaux",
+  "status": "pending",
+  "priority": "high",
+  "workstream": "r7rs-sicp-parity",
+  "owner": null,
+  "preferred_backend": "codex",
+  "preferred_node": "atlas",
+  "max_cost_usd": 4.0,
+  "goal": "Add tests/sicp/ch3_stream_acceleration.esk covering Euler transform, accelerated sequences, tableaux, and convergence checks from SICP 3.5.",
+  "file_globs": ["tests/sicp/ch3_stream_acceleration.esk", "tests/sicp/ch3_streams.esk", "scripts/run_sicp_smoke.sh", ".icc/completion-oracles.yaml"],
+  "acceptance": ["Probe passes under -r", "Probe passes under AOT", "ICC observes sicp_ch3_stream_acceleration_r and sicp_ch3_stream_acceleration_aot PASS"],
+  "blocked_by": [],
+  "verification": ["./scripts/run_sicp_smoke.sh", "/Users/tyr/Desktop/infinite_context_coder/bin/icc completion-oracle --repo eshkol_lang --target sicp-completeness --trace-dir scripts/icc_traces --format json"],
+  "ux_payoff": "Exercises lazy streams beyond basic enumeration and filtering."
+}

@@ -1,0 +1,17 @@
+{
+  "id": "ESH-0048",
+  "title": "SICP 4.3 ambeval evaluator and driver",
+  "status": "pending",
+  "priority": "high",
+  "workstream": "r7rs-sicp-parity",
+  "owner": null,
+  "preferred_backend": "codex",
+  "preferred_node": "atlas",
+  "max_cost_usd": 7.0,
+  "goal": "Add tests/sicp/ch4_amb_evaluator.esk covering the book's ambeval evaluator and driver-loop semantics, not only direct CPS amb combinators.",
+  "file_globs": ["tests/sicp/ch4_amb_evaluator.esk", "tests/sicp/ch4_amb.esk", "scripts/run_sicp_smoke.sh", ".icc/completion-oracles.yaml"],
+  "acceptance": ["Probe passes under -r", "Probe passes under AOT", "ICC observes sicp_ch4_amb_evaluator_r and sicp_ch4_amb_evaluator_aot PASS"],
+  "blocked_by": [],
+  "verification": ["./scripts/run_sicp_smoke.sh", "/Users/tyr/Desktop/infinite_context_coder/bin/icc completion-oracle --repo eshkol_lang --target sicp-completeness --trace-dir scripts/icc_traces --format json"],
+  "ux_payoff": "Makes nondeterministic evaluation SICP-faithful instead of only capability-equivalent."
+}

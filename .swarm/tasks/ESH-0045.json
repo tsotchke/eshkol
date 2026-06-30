@@ -1,0 +1,17 @@
+{
+  "id": "ESH-0045",
+  "title": "SICP 3.5 random streams and Monte Carlo streams",
+  "status": "pending",
+  "priority": "high",
+  "workstream": "r7rs-sicp-parity",
+  "owner": null,
+  "preferred_backend": "codex",
+  "preferred_node": "atlas",
+  "max_cost_usd": 4.0,
+  "goal": "Add tests/sicp/ch3_stream_random_monte_carlo.esk covering random-number streams, Cesaro/Monte Carlo stream estimates, deterministic seeding, and bounded stream sampling.",
+  "file_globs": ["tests/sicp/ch3_stream_random_monte_carlo.esk", "tests/sicp/ch3_streams.esk", "tests/sicp/ch3_monte_carlo.esk", "scripts/run_sicp_smoke.sh", ".icc/completion-oracles.yaml"],
+  "acceptance": ["Probe passes under -r", "Probe passes under AOT", "ICC observes sicp_ch3_stream_random_monte_carlo_r and sicp_ch3_stream_random_monte_carlo_aot PASS"],
+  "blocked_by": [],
+  "verification": ["./scripts/run_sicp_smoke.sh", "/Users/tyr/Desktop/infinite_context_coder/bin/icc completion-oracle --repo eshkol_lang --target sicp-completeness --trace-dir scripts/icc_traces --format json"],
+  "ux_payoff": "Completes the random-stream Monte Carlo material without flaky nondeterminism."
+}

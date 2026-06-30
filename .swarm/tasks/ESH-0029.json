@@ -1,0 +1,39 @@
+{
+  "id": "ESH-0029",
+  "title": "SICP 4.2 lazy evaluator / normal-order evaluator",
+  "status": "pending",
+  "priority": "high",
+  "workstream": "r7rs-sicp-parity",
+  "owner": null,
+  "preferred_backend": "codex",
+  "preferred_node": "atlas",
+  "max_cost_usd": 5.0,
+  "goal": "Implement the SICP 4.2 lazy evaluator as a runnable Eshkol probe so the full-book SICP gate covers normal-order evaluation, delayed operands, thunk forcing, and memoization under both JIT and AOT.",
+  "file_globs": [
+    "tests/sicp/ch4_lazy_evaluator.esk",
+    "tests/sicp/ch4_metacircular*.esk",
+    "scripts/run_sicp_smoke.sh",
+    ".icc/completion-oracles.yaml"
+  ],
+  "next_actions": [
+    "Add tests/sicp/ch4_lazy_evaluator.esk using the existing metacircular evaluator style where practical.",
+    "Represent delayed operands as thunks carrying expression and environment.",
+    "Implement force-it and actual-value behavior, including memoized thunks if following the memoizing evaluator.",
+    "Cover canonical SICP lazy behavior: a branch can avoid forcing an erroring expression, delayed arguments are forced only when needed, and repeated force respects the selected memoization semantics.",
+    "Emit clear PASS/FAIL output compatible with scripts/run_sicp_smoke.sh."
+  ],
+  "acceptance": [
+    "tests/sicp/ch4_lazy_evaluator.esk exists and self-checks the SICP 4.2 lazy evaluator.",
+    "The probe passes under ./build/eshkol-run -r.",
+    "The probe passes under AOT compile/run.",
+    "ICC sicp-completeness observes sicp_ch4_lazy_evaluator_r and sicp_ch4_lazy_evaluator_aot as PASS."
+  ],
+  "blocked_by": [],
+  "verification": [
+    "./build/eshkol-run -r tests/sicp/ch4_lazy_evaluator.esk",
+    "./build/eshkol-run tests/sicp/ch4_lazy_evaluator.esk -o /tmp/ch4_lazy_evaluator && /tmp/ch4_lazy_evaluator",
+    "./scripts/run_sicp_smoke.sh",
+    "/Users/tyr/Desktop/infinite_context_coder/bin/icc completion-oracle --repo eshkol_lang --target sicp-completeness --trace-dir scripts/icc_traces --format json"
+  ],
+  "ux_payoff": "Makes normal-order evaluation a real Eshkol capability instead of a documentation claim."
+}

@@ -154,6 +154,44 @@ pleasant to build with, explicit enough for downstream build systems, and
 stable enough for Noesis M1 single-agent production work before networking
 lands in v1.4.
 
+The v1.3 sprint also has a hard SICP release gate: Eshkol must support 100% of
+the entire book, not a representative subset. ESH-0005 owns the gate; the
+missing full-book systems and the literal coverage manifest are dispatchable
+sprint tasks:
+
+- ESH-0035: SICP 3.3.4 digital-circuit simulator.
+- ESH-0036: SICP 3.3.5 constraint-propagation system.
+- ESH-0037: SICP 3.4 concurrency, serializers, and account exchange.
+- ESH-0038: SICP 2.2.4 picture-language painters/combinators.
+- ESH-0039: SICP 2.5 generic arithmetic tower/coercion.
+- ESH-0040: SICP 2.5.3 polynomial arithmetic.
+- ESH-0041: SICP 3.3.1 mutable-pair sharing/cycles examples.
+- ESH-0042: SICP 3.5 accelerated streams/tableaux.
+- ESH-0043: SICP 3.5 power-series streams.
+- ESH-0044: SICP 3.5 stream integrators/signal systems.
+- ESH-0045: SICP 3.5 random streams / Monte Carlo streams.
+- ESH-0046: SICP 4.1.7 analyzing evaluator.
+- ESH-0047: SICP 4.1 derived forms in the metacircular evaluator.
+- ESH-0048: SICP 4.3 `ambeval` evaluator/driver.
+- ESH-0049: SICP 4.3 nondeterministic natural-language parser.
+- ESH-0050: SICP 5.1-5.2 stack operations and stack statistics.
+- ESH-0051: SICP 5.1-5.2 recursive register-machine programs.
+- ESH-0029: SICP 4.2 lazy evaluator / normal-order evaluator.
+- ESH-0030: SICP 4.4 logic query system.
+- ESH-0031: SICP 5.3 storage allocation and garbage-collector model.
+- ESH-0032: SICP 5.4 explicit-control evaluator.
+- ESH-0033: SICP 5.5 compiler targeting the register-machine simulator.
+- ESH-0034: section/example coverage manifest proving no book content is
+  silently omitted.
+
+The release cannot pass until `scripts/run_sicp_smoke.sh` exits 0 without
+`--allow-incomplete`, and the `sicp-completeness` ICC oracle observes PASS for
+every SICP probe under both JIT (`-r`) and AOT. The SICP report must also map
+every section/example family to executable evidence or an explicit still-open
+blocker. Passing the book is the floor: the same gate also carries beyond-book
+stress for deep CPS/backtracking, JIT/AOT parity, no stale XFAILs, and
+bounded/sourceful failure behavior.
+
 Several items originally planned for v1.3 landed during v1.2.x Noesis closeout:
 LRU/memoization (#171), JSON Schema validation (#172), deterministic PRNG
 seeding (#173), SRFI-41 streams (#174), collections (#155), and reflection's
@@ -305,10 +343,12 @@ Acceptance:
 - SQLite migration tests run in an isolated temp database and leave no artifacts.
 
 **Exit criterion for v1.3**: Noesis M1 single-agent production surface usable
-(minus production HTTP server and async networking — those come in v1.4).
-All R7RS polish items shipped or explicitly demoted with rationale. Debugger,
-profiler, object-build contract docs, structured logging tests, and capability
-policy hooks are available for bench work.
+(minus production HTTP server and async networking — those come in v1.4), and
+the full-book SICP gate complete. All R7RS polish items shipped or explicitly
+demoted with rationale. Debugger, profiler, object-build contract docs,
+structured logging tests, and capability policy hooks are available for bench
+work. `scripts/run_sicp_smoke.sh` must pass without `--allow-incomplete`, and
+ICC `sicp-completeness` must report complete.
 
 ---
 

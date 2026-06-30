@@ -418,14 +418,12 @@ oracles:
 
   # ─────────────────────────────────────────────────────────────────
   # SICP-completeness gate (ESH-0005) — the v1.3-evolve release gate
-  # for "support ALL of SICP". Each program in tests/sicp/ self-checks
-  # (PASS:/FAIL:) and is run under BOTH the JIT (-r) and AOT by
-  # scripts/run_sicp_smoke.sh, which writes kind:"sicp_smoke" events to
-  # scripts/icc_traces/sicp_smoke.jsonl. Probe ids are sicp_<file>_<mode>.
-  #
-  # ch4_metacircular and repro_esh0078_firstclass_predicate are XFAIL
-  # (they document the ESH-0078 first-class-predicate codegen gap) and
-  # are intentionally NOT required below.
+  # for "support 100% of the entire SICP book, then do better". Each
+  # implemented program in tests/sicp/ self-checks (PASS:/FAIL:) and is
+  # run under BOTH the JIT (-r) and AOT by scripts/run_sicp_smoke.sh,
+  # which writes kind:"sicp_smoke" events to scripts/icc_traces/sicp_smoke.jsonl.
+  # Probe ids are sicp_<file>_<mode>. Missing full-book systems are emitted
+  # as hard FAIL events by the smoke script until their runnable files exist.
   # ─────────────────────────────────────────────────────────────────
   - name: sicp-completeness
     aliases: [sicp, esh-0005, sicp-gate]
@@ -558,6 +556,20 @@ oracles:
         action: ./scripts/run_sicp_smoke.sh
       - runtime_event:
           event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch2_picture_painters_r"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP 2.2.4 picture painters/combinators pass under r
+        action: implement tests/sicp/ch2_picture_painters.esk and run ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch2_picture_painters_aot"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP 2.2.4 picture painters/combinators pass under aot
+        action: implement tests/sicp/ch2_picture_painters.esk and run ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
           event_names: ["sicp_ch2_symbolic_deriv_r"]
           event_values: ["PASS"]
         severity: high
@@ -584,6 +596,34 @@ oracles:
         severity: high
         label: SICP ch2_generic passes under aot
         action: ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch2_generic_tower_coercion_r"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP 2.5 generic tower/coercion passes under r
+        action: implement tests/sicp/ch2_generic_tower_coercion.esk and run ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch2_generic_tower_coercion_aot"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP 2.5 generic tower/coercion passes under aot
+        action: implement tests/sicp/ch2_generic_tower_coercion.esk and run ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch2_polynomial_arithmetic_r"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP 2.5.3 polynomial arithmetic passes under r
+        action: implement tests/sicp/ch2_polynomial_arithmetic.esk and run ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch2_polynomial_arithmetic_aot"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP 2.5.3 polynomial arithmetic passes under aot
+        action: implement tests/sicp/ch2_polynomial_arithmetic.esk and run ./scripts/run_sicp_smoke.sh
       - runtime_event:
           event_kinds: [sicp_smoke]
           event_names: ["sicp_ch3_accounts_r"]
@@ -628,6 +668,62 @@ oracles:
         action: ./scripts/run_sicp_smoke.sh
       - runtime_event:
           event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch3_stream_acceleration_r"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP 3.5 accelerated streams/tableaux pass under r
+        action: implement tests/sicp/ch3_stream_acceleration.esk and run ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch3_stream_acceleration_aot"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP 3.5 accelerated streams/tableaux pass under aot
+        action: implement tests/sicp/ch3_stream_acceleration.esk and run ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch3_stream_power_series_r"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP 3.5 power series streams pass under r
+        action: implement tests/sicp/ch3_stream_power_series.esk and run ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch3_stream_power_series_aot"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP 3.5 power series streams pass under aot
+        action: implement tests/sicp/ch3_stream_power_series.esk and run ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch3_stream_signal_systems_r"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP 3.5 signal systems streams pass under r
+        action: implement tests/sicp/ch3_stream_signal_systems.esk and run ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch3_stream_signal_systems_aot"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP 3.5 signal systems streams pass under aot
+        action: implement tests/sicp/ch3_stream_signal_systems.esk and run ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch3_stream_random_monte_carlo_r"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP 3.5 random/Monte Carlo streams pass under r
+        action: implement tests/sicp/ch3_stream_random_monte_carlo.esk and run ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch3_stream_random_monte_carlo_aot"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP 3.5 random/Monte Carlo streams pass under aot
+        action: implement tests/sicp/ch3_stream_random_monte_carlo.esk and run ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
           event_names: ["sicp_ch3_tables_r"]
           event_values: ["PASS"]
         severity: high
@@ -654,6 +750,62 @@ oracles:
         severity: high
         label: SICP ch3_queue passes under aot
         action: ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch3_mutable_pairs_cycles_r"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP 3.3.1 mutable pair sharing/cycles pass under r
+        action: implement tests/sicp/ch3_mutable_pairs_cycles.esk and run ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch3_mutable_pairs_cycles_aot"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP 3.3.1 mutable pair sharing/cycles pass under aot
+        action: implement tests/sicp/ch3_mutable_pairs_cycles.esk and run ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch3_digital_circuit_r"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP 3.3.4 digital-circuit simulator passes under r
+        action: implement tests/sicp/ch3_digital_circuit.esk and run ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch3_digital_circuit_aot"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP 3.3.4 digital-circuit simulator passes under aot
+        action: implement tests/sicp/ch3_digital_circuit.esk and run ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch3_constraints_r"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP 3.3.5 constraint-propagation system passes under r
+        action: implement tests/sicp/ch3_constraints.esk and run ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch3_constraints_aot"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP 3.3.5 constraint-propagation system passes under aot
+        action: implement tests/sicp/ch3_constraints.esk and run ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch3_concurrency_r"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP 3.4 concurrency and serializers pass under r
+        action: implement tests/sicp/ch3_concurrency.esk and run ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch3_concurrency_aot"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP 3.4 concurrency and serializers pass under aot
+        action: implement tests/sicp/ch3_concurrency.esk and run ./scripts/run_sicp_smoke.sh
       - runtime_event:
           event_kinds: [sicp_smoke]
           event_names: ["sicp_ch4_metacircular_full_r"]
@@ -684,6 +836,118 @@ oracles:
         action: ./scripts/run_sicp_smoke.sh
       - runtime_event:
           event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch4_metacircular_r"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP ch4_metacircular textbook evaluator passes under r
+        action: ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch4_metacircular_aot"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP ch4_metacircular textbook evaluator passes under aot
+        action: ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch4_analyzing_evaluator_r"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP 4.1.7 analyzing evaluator passes under r
+        action: implement tests/sicp/ch4_analyzing_evaluator.esk and run ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch4_analyzing_evaluator_aot"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP 4.1.7 analyzing evaluator passes under aot
+        action: implement tests/sicp/ch4_analyzing_evaluator.esk and run ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch4_metacircular_derived_forms_r"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP 4.1 derived forms pass under r
+        action: implement tests/sicp/ch4_metacircular_derived_forms.esk and run ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch4_metacircular_derived_forms_aot"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP 4.1 derived forms pass under aot
+        action: implement tests/sicp/ch4_metacircular_derived_forms.esk and run ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch4_amb_deep_cps_test_r"]
+          event_values: ["PASS"]
+        severity: high
+        label: Beyond-book deep amb/CPS stress passes under r
+        action: ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch4_amb_deep_cps_test_aot"]
+          event_values: ["PASS"]
+        severity: high
+        label: Beyond-book deep amb/CPS stress passes under aot
+        action: ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch4_amb_evaluator_r"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP 4.3 ambeval evaluator/driver passes under r
+        action: implement tests/sicp/ch4_amb_evaluator.esk and run ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch4_amb_evaluator_aot"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP 4.3 ambeval evaluator/driver passes under aot
+        action: implement tests/sicp/ch4_amb_evaluator.esk and run ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch4_amb_parser_r"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP 4.3 nondeterministic parser passes under r
+        action: implement tests/sicp/ch4_amb_parser.esk and run ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch4_amb_parser_aot"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP 4.3 nondeterministic parser passes under aot
+        action: implement tests/sicp/ch4_amb_parser.esk and run ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch4_lazy_evaluator_r"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP 4.2 lazy evaluator passes under r
+        action: implement tests/sicp/ch4_lazy_evaluator.esk and run ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch4_lazy_evaluator_aot"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP 4.2 lazy evaluator passes under aot
+        action: implement tests/sicp/ch4_lazy_evaluator.esk and run ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch4_query_system_r"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP 4.4 query evaluator passes under r
+        action: implement tests/sicp/ch4_query_system.esk and run ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch4_query_system_aot"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP 4.4 query evaluator passes under aot
+        action: implement tests/sicp/ch4_query_system.esk and run ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
           event_names: ["sicp_ch5_register_machine_r"]
           event_values: ["PASS"]
         severity: high
@@ -695,4 +959,88 @@ oracles:
           event_values: ["PASS"]
         severity: high
         label: SICP ch5_register_machine passes under aot
+        action: ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch5_register_machine_stack_r"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP 5.1-5.2 register-machine stack ops pass under r
+        action: implement tests/sicp/ch5_register_machine_stack.esk and run ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch5_register_machine_stack_aot"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP 5.1-5.2 register-machine stack ops pass under aot
+        action: implement tests/sicp/ch5_register_machine_stack.esk and run ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch5_register_machine_recursive_r"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP 5.1-5.2 recursive register machines pass under r
+        action: implement tests/sicp/ch5_register_machine_recursive.esk and run ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch5_register_machine_recursive_aot"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP 5.1-5.2 recursive register machines pass under aot
+        action: implement tests/sicp/ch5_register_machine_recursive.esk and run ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch5_storage_gc_r"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP 5.3 storage allocation / GC model passes under r
+        action: implement tests/sicp/ch5_storage_gc.esk and run ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch5_storage_gc_aot"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP 5.3 storage allocation / GC model passes under aot
+        action: implement tests/sicp/ch5_storage_gc.esk and run ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch5_explicit_control_evaluator_r"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP 5.4 explicit-control evaluator passes under r
+        action: implement tests/sicp/ch5_explicit_control_evaluator.esk and run ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch5_explicit_control_evaluator_aot"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP 5.4 explicit-control evaluator passes under aot
+        action: implement tests/sicp/ch5_explicit_control_evaluator.esk and run ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch5_compiler_r"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP 5.5 compiler passes under r
+        action: implement tests/sicp/ch5_compiler.esk and run ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_ch5_compiler_aot"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP 5.5 compiler passes under aot
+        action: implement tests/sicp/ch5_compiler.esk and run ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_repro_esh0078_firstclass_predicate_r"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP first-class predicate regression repro passes under r
+        action: ./scripts/run_sicp_smoke.sh
+      - runtime_event:
+          event_kinds: [sicp_smoke]
+          event_names: ["sicp_repro_esh0078_firstclass_predicate_aot"]
+          event_values: ["PASS"]
+        severity: high
+        label: SICP first-class predicate regression repro passes under aot
         action: ./scripts/run_sicp_smoke.sh

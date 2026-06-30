@@ -1,0 +1,17 @@
+{
+  "id": "ESH-0044",
+  "title": "SICP 3.5 stream integrators and signal systems",
+  "status": "pending",
+  "priority": "high",
+  "workstream": "r7rs-sicp-parity",
+  "owner": null,
+  "preferred_backend": "codex",
+  "preferred_node": "atlas",
+  "max_cost_usd": 4.0,
+  "goal": "Add tests/sicp/ch3_stream_signal_systems.esk covering stream integrators, ODE/signal-processing examples, smoothing, and zero-crossing behavior from SICP 3.5.",
+  "file_globs": ["tests/sicp/ch3_stream_signal_systems.esk", "tests/sicp/ch3_streams.esk", "scripts/run_sicp_smoke.sh", ".icc/completion-oracles.yaml"],
+  "acceptance": ["Probe passes under -r", "Probe passes under AOT", "ICC observes sicp_ch3_stream_signal_systems_r and sicp_ch3_stream_signal_systems_aot PASS"],
+  "blocked_by": [],
+  "verification": ["./scripts/run_sicp_smoke.sh", "/Users/tyr/Desktop/infinite_context_coder/bin/icc completion-oracle --repo eshkol_lang --target sicp-completeness --trace-dir scripts/icc_traces --format json"],
+  "ux_payoff": "Makes the stream/signal claim concrete instead of relying on a partial stream smoke."
+}

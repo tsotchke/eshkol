@@ -1,0 +1,38 @@
+{
+  "id": "ESH-0035",
+  "title": "SICP 3.3.4 digital-circuit simulator",
+  "status": "pending",
+  "priority": "high",
+  "workstream": "r7rs-sicp-parity",
+  "owner": null,
+  "preferred_backend": "codex",
+  "preferred_node": "atlas",
+  "max_cost_usd": 5.0,
+  "goal": "Implement the SICP 3.3.4 digital-circuit simulator as a runnable Eshkol probe, including wires, agenda scheduling, primitive gates, compound circuits, and propagation behavior.",
+  "file_globs": [
+    "tests/sicp/ch3_digital_circuit.esk",
+    "tests/sicp/ch3_queue.esk",
+    "scripts/run_sicp_smoke.sh",
+    ".icc/completion-oracles.yaml"
+  ],
+  "next_actions": [
+    "Add tests/sicp/ch3_digital_circuit.esk.",
+    "Implement make-wire, get-signal, set-signal!, add-action!, after-delay, propagate, and the agenda/queue machinery needed by the simulator.",
+    "Implement inverter, and-gate, or-gate, half-adder, and full-adder examples.",
+    "Assert deterministic propagation results and event ordering for representative circuits."
+  ],
+  "acceptance": [
+    "tests/sicp/ch3_digital_circuit.esk exists and self-checks SICP 3.3.4.",
+    "The probe passes under ./build/eshkol-run -r.",
+    "The probe passes under AOT compile/run.",
+    "ICC sicp-completeness observes sicp_ch3_digital_circuit_r and sicp_ch3_digital_circuit_aot as PASS."
+  ],
+  "blocked_by": [],
+  "verification": [
+    "./build/eshkol-run -r tests/sicp/ch3_digital_circuit.esk",
+    "./build/eshkol-run tests/sicp/ch3_digital_circuit.esk -o /tmp/ch3_digital_circuit && /tmp/ch3_digital_circuit",
+    "./scripts/run_sicp_smoke.sh",
+    "/Users/tyr/Desktop/infinite_context_coder/bin/icc completion-oracle --repo eshkol_lang --target sicp-completeness --trace-dir scripts/icc_traces --format json"
+  ],
+  "ux_payoff": "Covers SICP's event-driven simulation system and stress-tests mutable queues plus scheduled effects."
+}
