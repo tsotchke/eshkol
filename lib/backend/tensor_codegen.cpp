@@ -174,7 +174,7 @@ llvm::Value* TensorCodegen::unpackTensorOperandChecked(llvm::Value* tensor_val,
         const std::string& file = ctx_.currentSourceFile();
         llvm::Value* file_str = file.empty()
             ? static_cast<llvm::Value*>(llvm::ConstantPointerNull::get(ctx_.ptrType()))
-            : static_cast<llvm::Value*>(b.CreateGlobalString(file, "tensor_err_file"));
+            : ctx_.internCString(file);
         b.CreateCall(set_loc, {
             file_str,
             llvm::ConstantInt::get(ctx_.int32Type(), line),
@@ -203,8 +203,7 @@ llvm::Value* TensorCodegen::unpackTensorOperandChecked(llvm::Value* tensor_val,
         fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
                                     "eshkol_tensor_operand_checked", &ctx_.module());
     }
-    llvm::Value* name = b.CreateGlobalString(op_name ? op_name : "tensor-op",
-                                             "tensor_op_name");
+    llvm::Value* name = ctx_.internCString(op_name ? op_name : "tensor-op");
     return b.CreateCall(fn, {slot, name}, "tensor_ptr_checked");
 }
 
