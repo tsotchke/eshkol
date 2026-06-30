@@ -855,8 +855,11 @@ int write_image_native(const char*, const double*, int, int, int, const char*) {
 } // namespace
 
 double* eshkol_image_read(const char* path, int* out_w, int* out_h, int* out_c) {
-    if (!path || !out_w || !out_h || !out_c ||
-        eshkol_capability_runtime_allows("file-read") == 0) {
+    if (!path || !out_w || !out_h || !out_c) {
+        return nullptr;
+    }
+    if (eshkol_capability_runtime_allows("file-read") == 0) {
+        eshkol_capability_runtime_deny("file-read");
         return nullptr;
     }
     return read_image_native(path, out_w, out_h, out_c);
@@ -864,8 +867,11 @@ double* eshkol_image_read(const char* path, int* out_w, int* out_h, int* out_c) 
 
 int eshkol_image_write(const char* path, const double* data,
                        int w, int h, int channels, const char* format) {
-    if (!path || !data || !valid_dimensions(w, h, channels) ||
-        eshkol_capability_runtime_allows("file-write") == 0) {
+    if (!path || !data || !valid_dimensions(w, h, channels)) {
+        return -1;
+    }
+    if (eshkol_capability_runtime_allows("file-write") == 0) {
+        eshkol_capability_runtime_deny("file-write");
         return -1;
     }
     return write_image_native(path, data, w, h, channels, format);
