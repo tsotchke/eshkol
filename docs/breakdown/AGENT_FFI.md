@@ -866,6 +866,33 @@ collided with the "1=timeout" sentinel, so every legitimate
 non-zero exit was misreported as a 124 timeout (Noesis v5
 audit BUG A, see comment at `:1249-1259`).
 
+#### Read-all buffer ownership and cleanup
+
+`qllm_process_read_all_stdout` and
+`qllm_process_read_all_stderr` return malloc-owned C strings.
+Native callers must release those pointers with
+`qllm_process_free_buffer`. The Eshkol wrappers do this
+automatically: `process-read-stdout`, `process-read-stderr`,
+`process-read-all-stdout`, and `process-read-all-stderr` copy
+the C string with `ptr->string`, then immediately call
+`qllm_process_free_buffer` before returning the Eshkol string.
+
+The drain buffers attached to the process handle have a single
+transfer point. A successful read-all call copies any drained
+bytes into the returned malloc buffer and clears the handle's
+internal buffer, so a second read-all call returns an empty
+string rather than the same pointer. If the caller never reads
+a stream, `qllm_process_destroy` frees the still-attached
+drain buffer.
+
+`qllm_process_destroy` is also the final native cleanup boundary
+for the child process itself. If the child is still running,
+destroy terminates and reaps it before closing pipes and freeing
+the handle. Callers that need graceful application-level
+shutdown should call `process-kill`/`process-wait` explicitly
+before `process-destroy`; destroying a live handle is cleanup,
+not a protocol negotiation step.
+
 #### Eshkol surface — `lib/agent/subprocess.esk`
 
 | Function | Wraps | Notes |
@@ -885,7 +912,7 @@ audit BUG A, see comment at `:1249-1259`).
 | `(process-exit-code proc)` | `qllm_process_exit_code` | |
 | `(process-pid proc)` | `qllm_process_pid` | live PID for trace/observability |
 | `(process-kill proc [signal])` | `qllm_process_kill` | default SIGTERM (15) |
-| `(process-destroy proc)` | `qllm_process_destroy` | frees handle |
+| `(process-destroy proc)` | `qllm_process_destroy` | terminates/reaps live child, frees handle |
 | `(run-command command [cwd] [timeout-ms])` | shell convenience | returns exit code |
 | `(run-command-capture command [cwd] [timeout-ms] [max-output])` | shell convenience | returns alist |
 | `(run-argv argv [cwd] [timeout-ms])` | argv convenience | returns exit code |
@@ -897,6 +924,18 @@ On timeout the exit code is 124 (matches GNU coreutils
 `timeout(1)` convention) and stderr is suffixed with
 `"\n[Process timed out after Ns]"`
 (`subprocess.esk`).
+
+`process-spawn-shell`, `run-command`, and `run-command-capture`
+are the shell surfaces: use them only when the command string
+intentionally depends on pipes, redirection, globbing,
+variable expansion, shell builtins, or compound shell syntax.
+`process-spawn-argv`, `run-argv`, and `run-argv-capture` are
+the argv-safe surfaces: arguments are passed positionally and
+shell metacharacters stay literal. `process-spawn` remains the
+legacy command-string entrypoint for compatibility; callers
+must not rely on it as a guaranteed shell because the runtime
+may bypass the shell for simple commands where direct argv
+execution is equivalent.
 
 `process-spawn-argv` enforces the argv invariants via
 `process-argv-check-args` (`subprocess.esk`): every

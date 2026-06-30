@@ -150,12 +150,14 @@
   (process-close-stdin-raw proc))
 
 (define (process-read-stdout proc max-bytes)
-  "Read available stdout. Returns string or empty string."
+  "Read available stdout. Returns string or empty string.
+   The native buffer is copied into Eshkol space and freed before return."
   (process-owned-c-string->string
     (process-read-all-stdout-raw proc max-bytes #f)))
 
 (define (process-read-stderr proc max-bytes)
-  "Read available stderr. Returns string or empty string."
+  "Read available stderr. Returns string or empty string.
+   The native buffer is copied into Eshkol space and freed before return."
   (process-owned-c-string->string
     (process-read-all-stderr-raw proc max-bytes #f)))
 
@@ -193,7 +195,7 @@
   (process-kill-raw proc (if (null? signal) 15 (car signal))))
 
 (define (process-destroy proc)
-  "Free all process resources. Kills process if still running."
+  "Free all process resources. Terminates and reaps the child if still running."
   (process-destroy-raw proc))
 
 ;; ============================================================================

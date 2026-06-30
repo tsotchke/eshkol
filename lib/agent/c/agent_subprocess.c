@@ -1501,19 +1501,59 @@ int64_t qllm_process_pid(eshkol_subprocess_t* proc) {
 void qllm_process_destroy(eshkol_subprocess_t* proc) {
     if (!proc) return;
 #ifndef _WIN32
+    check_exit_status(proc);
+    if (!proc->exited && proc->pid > 0) {
+        int status = 0;
+        pid_t r;
+
+        /* process-destroy is a cleanup boundary: callers that still need
+         * graceful shutdown should signal/wait explicitly before destroying
+         * the handle. Here we first give SIGTERM a short chance, then force
+         * SIGKILL so the native handle cannot orphan a live child. */
+        (void)kill((pid_t)proc->pid, SIGTERM);
+        for (int i = 0; i < 50; i++) {
+            r = waitpid((pid_t)proc->pid, &status, WNOHANG);
+            if (r == proc->pid) {
+                proc->exited = 1;
+                if (WIFEXITED(status)) proc->exit_code = WEXITSTATUS(status);
+                else if (WIFSIGNALED(status)) proc->exit_code = 128 + WTERMSIG(status);
+                break;
+            }
+            if (r < 0 && errno != EINTR) {
+                proc->exited = 1;
+                break;
+            }
+            const struct timespec ts = {0, 10 * 1000 * 1000};
+            nanosleep(&ts, NULL);
+        }
+        if (!proc->exited) {
+            (void)kill((pid_t)proc->pid, SIGKILL);
+            do { r = waitpid((pid_t)proc->pid, &status, 0); }
+            while (r < 0 && errno == EINTR);
+            if (r == proc->pid) {
+                proc->exited = 1;
+                if (WIFEXITED(status)) proc->exit_code = WEXITSTATUS(status);
+                else if (WIFSIGNALED(status)) proc->exit_code = 128 + WTERMSIG(status);
+            }
+        }
+    }
     if (proc->stdin_fd >= 0) close(proc->stdin_fd);
     if (proc->stdout_fd >= 0) close(proc->stdout_fd);
     if (proc->stderr_fd >= 0) close(proc->stderr_fd);
-    /* Reap zombie if not yet waited */
-    if (!proc->exited) {
-        int status;
-        waitpid((pid_t)proc->pid, &status, WNOHANG);
-    }
     /* Free any pipe-drain buffers that the wait loop accumulated but the
      * caller never asked for (read_all_* would have transferred them). */
     if (proc->stdout_buf) free(proc->stdout_buf);
     if (proc->stderr_buf) free(proc->stderr_buf);
 #else
+    check_exit_status(proc);
+    if (proc->hProcess && !proc->exited) {
+        DWORD code = 0;
+        if (GetExitCodeProcess(proc->hProcess, &code) && code == STILL_ACTIVE) {
+            TerminateProcess(proc->hProcess, 1);
+            WaitForSingleObject(proc->hProcess, 5000);
+        }
+        check_exit_status(proc);
+    }
     if (proc->stdin_write) CloseHandle(proc->stdin_write);
     if (proc->stdout_read) CloseHandle(proc->stdout_read);
     if (proc->stderr_read) CloseHandle(proc->stderr_read);
