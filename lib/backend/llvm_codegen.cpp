@@ -2523,18 +2523,24 @@ public:
             
             // Step 1: Create function declarations FIRST (including nested functions)
             for (size_t i = 0; i < num_asts_to_use; i++) {
+                bool is_external_define =
+                    asts_to_use[i].type == ESHKOL_OP &&
+                    asts_to_use[i].operation.op == ESHKOL_DEFINE_OP &&
+                    asts_to_use[i].operation.define_op.is_external;
                 if (asts_to_use[i].type == ESHKOL_OP && asts_to_use[i].operation.op == ESHKOL_DEFINE_OP) {
                     if (asts_to_use[i].operation.define_op.is_function) {
                         // Create function declaration for top-level function
                         createFunctionDeclaration(&asts_to_use[i]);
                         // Also recursively declare any nested functions inside this function
-                        if (asts_to_use[i].operation.define_op.value) {
+                        if (!is_external_define && asts_to_use[i].operation.define_op.value) {
                             declareNestedFunctions(asts_to_use[i].operation.define_op.value);
                         }
                     }
                 }
                 // Also check for nested functions in non-function top-level expressions
-                declareNestedFunctions(&asts_to_use[i]);
+                if (!is_external_define) {
+                    declareNestedFunctions(&asts_to_use[i]);
+                }
             }
             eshkol_debug("Created all function declarations (including nested)");
 
@@ -4464,6 +4470,7 @@ private:
             // Look for (define var (lambda ...)) patterns
             if (asts[i].type == ESHKOL_OP &&
                 asts[i].operation.op == ESHKOL_DEFINE_OP &&
+                !asts[i].operation.define_op.is_external &&
                 !asts[i].operation.define_op.is_function) {
 
                 const char* var_name = asts[i].operation.define_op.name;
