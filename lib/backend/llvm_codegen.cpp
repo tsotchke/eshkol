@@ -6760,65 +6760,88 @@ private:
         builder->restoreIP(saved_ip);
         builder->SetInsertPoint(variadic_bb);
 
-        // Build rest list from call_args starting after fixed_params
-        // We need to iterate and cons each arg. Start with null, then cons each from right to left
-        Value* rest_list = packPtrToTaggedValue(
-            ConstantInt::get(int64_type, 0), ESHKOL_VALUE_NULL);
-
-        // For now, we build the list by consing all args (no fixed params handling yet)
-        // This is a simplification - full implementation would handle fixed params
-        for (int64_t i = call_args.size() - 1; i >= 0; i--) {
-            // Allocate cons cell with object header (consolidated pointer format)
-            Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
-            Value* cons_cell = builder->CreateCall(getArenaAllocateConsWithHeaderFunc(), {arena_ptr});
-
-            // Set car to arg, cdr to rest_list using pre-allocated allocas
-            Value* arg_val = call_args[i];
-            builder->CreateStore(arg_val, arg_ptrs[i]);
-            builder->CreateCall(getTaggedConsSetTaggedValueFunc(),
-                {cons_cell, ConstantInt::get(int1_type, 0), arg_ptrs[i]}); // car
-
-            builder->CreateStore(rest_list, rest_ptrs[i]);
-            builder->CreateCall(getTaggedConsSetTaggedValueFunc(),
-                {cons_cell, ConstantInt::get(int1_type, 1), rest_ptrs[i]}); // cdr
-
-            // Update rest_list to point to new cons cell (consolidated HEAP_PTR format)
-            Value* cons_int = builder->CreatePtrToInt(cons_cell, int64_type);
-            rest_list = packPtrToTaggedValue(cons_int, ESHKOL_VALUE_HEAP_PTR);
-        }
-
-        // Now generate switch for variadic closure call (with captures)
-        const int MAX_CAPTURES = 32;
+        // Generate a dispatch table for variadic closure calls. The closure
+        // metadata supplies fixed_params dynamically, but the LLVM function
+        // type must be concrete. Specialize on fixed_params first so the rest
+        // list is built once per fixed-arity arm, then specialize only the
+        // final call by capture count.
+        const int MAX_VARIADIC_FIXED_LIMIT = 16;
+        const int MAX_CLOSURE_DISPATCH_CAPTURES = 16;
+        const int max_variadic_fixed =
+            std::min<int>(MAX_VARIADIC_FIXED_LIMIT, (int)call_args.size());
         BasicBlock* variadic_switch_default = BasicBlock::Create(*context, "var_cap_default", current_func);
-        SwitchInst* var_sw = builder->CreateSwitch(num_captures, variadic_switch_default, MAX_CAPTURES + 1);
+        SwitchInst* var_fixed_sw = builder->CreateSwitch(
+            fixed_params,
+            variadic_switch_default,
+            max_variadic_fixed + 1);
         std::vector<std::pair<BasicBlock*, Value*>> variadic_results;
 
-        for (int cap_count = 0; cap_count <= MAX_CAPTURES; cap_count++) {
-            BasicBlock* case_bb = BasicBlock::Create(*context,
-                "var_cap_" + std::to_string(cap_count), current_func);
-            var_sw->addCase(ConstantInt::get(int64_type, cap_count), case_bb);
-            builder->SetInsertPoint(case_bb);
+        for (int fixed_count = 0; fixed_count <= max_variadic_fixed; fixed_count++) {
+            BasicBlock* fixed_bb = BasicBlock::Create(*context,
+                "var_fixed_" + std::to_string(fixed_count), current_func);
+            var_fixed_sw->addCase(ConstantInt::get(int64_type, fixed_count), fixed_bb);
+            builder->SetInsertPoint(fixed_bb);
 
-            // For variadic: args are (rest_list, captures...)
-            std::vector<Value*> full_args;
-            full_args.push_back(rest_list);  // The packaged rest list
-            for (int i = 0; i < cap_count; i++) {
-                Value* cap_ptr = builder->CreateGEP(tagged_value_type, captures_typed,
-                    ConstantInt::get(int64_type, i));
-                full_args.push_back(cap_ptr);
+            Value* rest_list = packPtrToTaggedValue(
+                ConstantInt::get(int64_type, 0), ESHKOL_VALUE_NULL);
+            for (int64_t i = (int64_t)call_args.size() - 1; i >= fixed_count; i--) {
+                Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+                Value* cons_cell = builder->CreateCall(getArenaAllocateConsWithHeaderFunc(), {arena_ptr});
+
+                builder->CreateStore(call_args[(size_t)i], arg_ptrs[(size_t)i]);
+                builder->CreateCall(getTaggedConsSetTaggedValueFunc(),
+                    {cons_cell, ConstantInt::get(int1_type, 0), arg_ptrs[(size_t)i]});
+
+                builder->CreateStore(rest_list, rest_ptrs[(size_t)i]);
+                builder->CreateCall(getTaggedConsSetTaggedValueFunc(),
+                    {cons_cell, ConstantInt::get(int1_type, 1), rest_ptrs[(size_t)i]});
+
+                Value* cons_int = builder->CreatePtrToInt(cons_cell, int64_type);
+                rest_list = packPtrToTaggedValue(cons_int, ESHKOL_VALUE_HEAP_PTR);
             }
 
-            // Function type: (tagged_value, pointer...) -> tagged_value
-            std::vector<Type*> param_types;
-            param_types.push_back(tagged_value_type);  // rest list
-            for (int i = 0; i < cap_count; i++) {
-                param_types.push_back(PointerType::getUnqual(*context));
-            }
-            FunctionType* func_type = FunctionType::get(tagged_value_type, param_types, false);
+            SwitchInst* var_cap_sw = builder->CreateSwitch(
+                num_captures,
+                variadic_switch_default,
+                MAX_CLOSURE_DISPATCH_CAPTURES + 1);
 
-            Value* result = builder->CreateCall(func_type, actual_func_ptr, full_args);
-            builder->CreateBr(merge_bb);
-            variadic_results.push_back({builder->GetInsertBlock(), result});
+            for (int cap_count = 0; cap_count <= MAX_CLOSURE_DISPATCH_CAPTURES; cap_count++) {
+                BasicBlock* case_bb = BasicBlock::Create(*context,
+                    "var_fixed_" + std::to_string(fixed_count) + "_cap_" + std::to_string(cap_count),
+                    current_func);
+                var_cap_sw->addCase(ConstantInt::get(int64_type, cap_count), case_bb);
+                builder->SetInsertPoint(case_bb);
+
+                std::vector<Value*> full_args;
+                for (int i = 0; i < fixed_count; i++) {
+                    if ((size_t)i < call_args.size()) {
+                        full_args.push_back(call_args[(size_t)i]);
+                    } else {
+                        full_args.push_back(packPtrToTaggedValue(
+                            ConstantInt::get(int64_type, 0), ESHKOL_VALUE_NULL));
+                    }
+                }
+                full_args.push_back(rest_list);
+                for (int i = 0; i < cap_count; i++) {
+                    Value* cap_ptr = builder->CreateGEP(tagged_value_type, captures_typed,
+                        ConstantInt::get(int64_type, i));
+                    full_args.push_back(cap_ptr);
+                }
+
+                std::vector<Type*> param_types;
+                for (int i = 0; i < fixed_count; i++) {
+                    param_types.push_back(tagged_value_type);
+                }
+                param_types.push_back(tagged_value_type);
+                for (int i = 0; i < cap_count; i++) {
+                    param_types.push_back(PointerType::getUnqual(*context));
+                }
+                FunctionType* func_type = FunctionType::get(tagged_value_type, param_types, false);
+
+                Value* result = builder->CreateCall(func_type, actual_func_ptr, full_args);
+                builder->CreateBr(merge_bb);
+                variadic_results.push_back({builder->GetInsertBlock(), result});
+            }
         }
 
         builder->SetInsertPoint(variadic_switch_default);
@@ -6836,20 +6859,26 @@ private:
         // On ARM64 this "works" due to ABI differences, but crashes on x86_64.
 
         // Pre-allocate padded argument array at function entry
-        // Note: Keep this small to avoid generating too many switch cases (MAX_CALL_ARGS * MAX_CAPTURES)
-        const int MAX_CALL_ARGS = 16;  // Maximum supported regular arguments for arity-mismatched calls
+        // Note: Keep this small to avoid generating too many switch cases.
+        // Correct calls only need the static call-site arity; the extra cushion
+        // preserves the existing partial-application/Y-combinator padding path
+        // without emitting the full 16x32 worst-case matrix at every call site.
+        const int MAX_CALL_ARGS_LIMIT = 16;
+        const int max_call_args = std::min<int>(
+            MAX_CALL_ARGS_LIMIT,
+            std::max<int>((int)call_args.size(), 4));
         IRBuilderBase::InsertPoint saved_ip_nonvar = builder->saveIP();
         builder->SetInsertPoint(&entry_block, entry_block.begin());
 
         // Alloca array for padded arguments
-        ArrayType* padded_args_type = ArrayType::get(tagged_value_type, MAX_CALL_ARGS);
+        ArrayType* padded_args_type = ArrayType::get(tagged_value_type, max_call_args);
         Value* padded_args_array = builder->CreateAlloca(padded_args_type, nullptr, "padded_args");
 
         builder->restoreIP(saved_ip_nonvar);
         builder->SetInsertPoint(non_variadic_bb);
 
         // Store actual call_args into array
-        for (size_t i = 0; i < call_args.size() && i < MAX_CALL_ARGS; i++) {
+        for (size_t i = 0; i < call_args.size() && i < (size_t)max_call_args; i++) {
             Value* slot_ptr = builder->CreateGEP(padded_args_type, padded_args_array,
                 {ConstantInt::get(int64_type, 0), ConstantInt::get(int64_type, i)});
             builder->CreateStore(call_args[i], slot_ptr);
@@ -6857,7 +6886,7 @@ private:
 
         // Fill remaining slots with undefined (null) values for arity mismatch handling
         Value* undef_val = packNullToTaggedValue();
-        for (size_t i = call_args.size(); i < MAX_CALL_ARGS; i++) {
+        for (size_t i = call_args.size(); i < (size_t)max_call_args; i++) {
             Value* slot_ptr = builder->CreateGEP(padded_args_type, padded_args_array,
                 {ConstantInt::get(int64_type, 0), ConstantInt::get(int64_type, i)});
             builder->CreateStore(undef_val, slot_ptr);
@@ -6869,27 +6898,27 @@ private:
         Value* actual_arg_count = builder->CreateSelect(use_fixed, fixed_params, call_args_count,
             "actual_arg_count");
 
-        // Clamp to MAX_CALL_ARGS to prevent overflow
+        // Clamp to this call site's emitted argument arms to prevent overflow
         Value* is_overflow = builder->CreateICmpUGT(actual_arg_count,
-            ConstantInt::get(int64_type, MAX_CALL_ARGS));
+            ConstantInt::get(int64_type, max_call_args));
         Value* clamped_arg_count = builder->CreateSelect(is_overflow,
-            ConstantInt::get(int64_type, MAX_CALL_ARGS), actual_arg_count);
+            ConstantInt::get(int64_type, max_call_args), actual_arg_count);
 
-        // Generate nested switch on (clamped_arg_count * (MAX_CAPTURES+1) + num_captures)
+        // Generate nested switch on (clamped_arg_count * (MAX_CLOSURE_DISPATCH_CAPTURES+1) + num_captures)
         // This handles all combinations of argument count and capture count
         BasicBlock* nonvar_switch_default = BasicBlock::Create(*context, "cap_default", current_func);
         Value* dispatch_idx = builder->CreateAdd(
-            builder->CreateMul(clamped_arg_count, ConstantInt::get(int64_type, MAX_CAPTURES + 1)),
+            builder->CreateMul(clamped_arg_count, ConstantInt::get(int64_type, MAX_CLOSURE_DISPATCH_CAPTURES + 1)),
             num_captures);
         SwitchInst* sw = builder->CreateSwitch(dispatch_idx, nonvar_switch_default,
-            (MAX_CALL_ARGS + 1) * (MAX_CAPTURES + 1));
+            (max_call_args + 1) * (MAX_CLOSURE_DISPATCH_CAPTURES + 1));
 
         // Note: results vector is declared earlier (before arithmetic check)
 
         // Generate a case for each (arg_count, capture_count) combination
-        for (int arg_count = 0; arg_count <= MAX_CALL_ARGS; arg_count++) {
-            for (int cap_count = 0; cap_count <= MAX_CAPTURES; cap_count++) {
-                int case_idx = arg_count * (MAX_CAPTURES + 1) + cap_count;
+        for (int arg_count = 0; arg_count <= max_call_args; arg_count++) {
+            for (int cap_count = 0; cap_count <= MAX_CLOSURE_DISPATCH_CAPTURES; cap_count++) {
+                int case_idx = arg_count * (MAX_CLOSURE_DISPATCH_CAPTURES + 1) + cap_count;
                 BasicBlock* case_bb = BasicBlock::Create(*context,
                     "args_" + std::to_string(arg_count) + "_cap_" + std::to_string(cap_count), current_func);
                 sw->addCase(ConstantInt::get(int64_type, case_idx), case_bb);
@@ -8725,11 +8754,83 @@ private:
             return loaded;
         };
 
+        auto loadFromCurrentFunctionCapture = [&](bool capture_is_storage_ptr) -> Value* {
+            Function* active_function = builder->GetInsertBlock()
+                ? builder->GetInsertBlock()->getParent()
+                : current_function;
+            if (!active_function) {
+                return nullptr;
+            }
+
+            const std::string named_let_capture_name = var_name + "_cap";
+            for (auto& arg : active_function->args()) {
+                if (arg.getName() == named_let_capture_name && arg.getType()->isPointerTy()) {
+                    Value* loaded = builder->CreateLoad(tagged_value_type, &arg, var_name + ".named_let_cap");
+                    return emitUseAfterMoveCheck(loaded, var_name);
+                }
+            }
+
+            const std::string closure_capture_name = "captured_" + var_name;
+            for (auto& arg : active_function->args()) {
+                if (arg.getName() != closure_capture_name) {
+                    continue;
+                }
+                if (!arg.getType()->isPointerTy()) {
+                    return &arg;
+                }
+
+                Value* slot_value = builder->CreateLoad(tagged_value_type, &arg, var_name + ".captured_slot");
+                if (!capture_is_storage_ptr) {
+                    return emitUseAfterMoveCheck(slot_value, var_name);
+                }
+
+                Value* storage_int = unpackInt64FromTaggedValue(slot_value);
+                Value* storage = builder->CreateIntToPtr(
+                    storage_int, PointerType::getUnqual(*context), var_name + ".captured_storage");
+                Value* loaded = builder->CreateLoad(tagged_value_type, storage, var_name + ".captured_load");
+                return emitUseAfterMoveCheck(loaded, var_name);
+            }
+
+            return nullptr;
+        };
+
         // TCO FIX: Check symbol_table FIRST for parameters that might be overridden with allocas
         // This is essential for TCO where we need to load from allocas, not use the original arguments
         auto sym_it = symbol_table.find(var_name);
         if (sym_it != symbol_table.end() && sym_it->second) {
             Value* sym_val = sym_it->second;
+            bool sym_val_is_stale_instruction = false;
+            if (Instruction* inst = dyn_cast<Instruction>(sym_val)) {
+                Function* owner = inst->getFunction();
+                Function* active_function = builder->GetInsertBlock()
+                    ? builder->GetInsertBlock()->getParent()
+                    : current_function;
+                if (active_function && owner && owner != active_function) {
+                    sym_val_is_stale_instruction = true;
+                    if (Value* captured = loadFromCurrentFunctionCapture(true)) {
+                        eshkol_debug("codegenVariable: resolved stale instruction for %s through current captures",
+                                     var_name.c_str());
+                        return captured;
+                    }
+                    eshkol_debug("codegenVariable: skipping stale instruction for %s from function %s (current: %s)",
+                                 var_name.c_str(),
+                                 owner->getName().str().c_str(),
+                                 active_function->getName().str().c_str());
+                    // Fall through to current function args and global lookups.
+                } else {
+                    // If it's an alloca (TCO parameter), load from it
+                    if (isa<AllocaInst>(sym_val)) {
+                        return loadTrackedValue(sym_val);
+                    }
+                    // MUTABLE CAPTURE FIX: If it's any other pointer (e.g., IntToPtr
+                    // result from unpacking an alloca pointer stored in closure env),
+                    // load from it.
+                    if (sym_val->getType()->isPointerTy()) {
+                        Value* loaded = builder->CreateLoad(tagged_value_type, sym_val, var_name + ".load");
+                        return emitUseAfterMoveCheck(loaded, var_name);
+                    }
+                }
+            } else {
             // If it's an alloca (TCO parameter), load from it
             if (isa<AllocaInst>(sym_val)) {
                 return loadTrackedValue(sym_val);
@@ -8750,16 +8851,20 @@ private:
                 Value* loaded = builder->CreateLoad(tagged_value_type, sym_val, var_name + ".load");
                 return emitUseAfterMoveCheck(loaded, var_name);
             }
+            }
             // CROSS-FUNCTION ARGUMENT FIX: If sym_val is an Argument, verify it belongs to the current function
             // Stale symbol_table entries from previous function compilations could reference Arguments
             // from other functions, which causes LLVM verification errors
             if (isa<Argument>(sym_val)) {
                 Argument* arg = cast<Argument>(sym_val);
                 Function* arg_parent = arg->getParent();
-                if (current_function && arg_parent != current_function) {
+                Function* active_function = builder->GetInsertBlock()
+                    ? builder->GetInsertBlock()->getParent()
+                    : current_function;
+                if (active_function && arg_parent != active_function) {
                     // Stale Argument from another function - skip it and fall through to other lookups
                     eshkol_debug("codegenVariable: skipping stale Argument %s from function %s (current: %s)",
-                               var_name.c_str(), arg_parent->getName().str().c_str(), current_function->getName().str().c_str());
+                               var_name.c_str(), arg_parent->getName().str().c_str(), active_function->getName().str().c_str());
                     // Fall through to check current_function->args() instead
                 } else {
                     // Argument belongs to current function - safe to return
@@ -8767,12 +8872,17 @@ private:
                 }
             } else {
                 // Otherwise return the value directly
-                return sym_val;
+                if (!sym_val_is_stale_instruction) {
+                    return sym_val;
+                }
             }
         }
 
-        if (current_function) {
-            for (auto& arg : current_function->args()) {
+        Function* active_function = builder->GetInsertBlock()
+            ? builder->GetInsertBlock()->getParent()
+            : current_function;
+        if (active_function) {
+            for (auto& arg : active_function->args()) {
                 if (arg.getName() == var_name) {
                     return &arg;
                 }
@@ -8780,7 +8890,7 @@ private:
             // CLOSURE CAPTURE FIX: Check for captured arguments (prefixed with "captured_")
             // Nested lambdas receive captured variables as arguments with this naming convention
             std::string captured_name = "captured_" + var_name;
-            for (auto& arg : current_function->args()) {
+            for (auto& arg : active_function->args()) {
                 if (arg.getName() == captured_name) {
                     // If it's a pointer type, load the value from the capture storage
                     if (arg.getType()->isPointerTy()) {
@@ -9559,9 +9669,10 @@ private:
          * shadowable-OP name like `walk` is bound by an enclosing
          * letrec (Noesis Bug M), the scoped-key check above misses it
          * — we have to accept the bare symbol_table entry too. Limit
-         * the check to values that are plausibly callable (Function,
-         * AllocaInst holding a pointer/closure, Argument, or
-         * GlobalVariable). */
+         * the check to values that are plausibly callable storage. Closure
+         * capture promotion can rewrite a local letrec cell from an AllocaInst
+         * to arena storage (a pointer-producing instruction), and that storage
+         * must still shadow the builtin. */
         {
             auto it = symbol_table.find(name);
             if (it != symbol_table.end() && it->second) {
@@ -9569,7 +9680,8 @@ private:
                 if (llvm::isa<llvm::Function>(v) ||
                     llvm::isa<llvm::AllocaInst>(v) ||
                     llvm::isa<llvm::Argument>(v) ||
-                    llvm::isa<llvm::GlobalVariable>(v)) {
+                    llvm::isa<llvm::GlobalVariable>(v) ||
+                    v->getType()->isPointerTy()) {
                     return true;
                 }
             }
@@ -11990,6 +12102,84 @@ private:
                 return tco_result;  // Tail call generated as jump
             }
             // If codegenTailCall returns nullptr, fall through to normal call
+        }
+
+        // Local letrec/letrec* lambda bindings are represented by per-activation
+        // closure cells. While generating the lambda body, a self-recursive call
+        // cannot load that outer cell directly because it belongs to the parent
+        // function. If TCO declined this call (for example a recursive call in
+        // argument/non-tail position), call the current LLVM function directly
+        // and forward any capture pointer parameters already passed to it.
+        if (binding_) {
+            auto& recursive_ctx = binding_->getTCOContext();
+            if (!recursive_ctx.func_name.empty() &&
+                recursive_ctx.func_name == func_name &&
+                current_function) {
+                FunctionType* self_type = current_function->getFunctionType();
+                uint64_t supplied_args = op->call_op.num_vars;
+                unsigned leading_value_params = 0;
+                for (unsigned i = 0; i < self_type->getNumParams(); i++) {
+                    if (self_type->getParamType(i) != tagged_value_type) {
+                        break;
+                    }
+                    leading_value_params++;
+                }
+                if (self_type->getReturnType() == tagged_value_type &&
+                    self_type->getNumParams() >= supplied_args &&
+                    supplied_args == leading_value_params) {
+                    std::vector<Value*> self_args;
+                    self_args.reserve(self_type->getNumParams());
+
+                    for (uint64_t i = 0; i < supplied_args; i++) {
+                        Value* arg = codegenAST(&op->call_op.variables[i]);
+                        if (builder->GetInsertBlock()->getTerminator()) {
+                            return UndefValue::get(tagged_value_type);
+                        }
+                        if (!arg) {
+                            arg = packNullToTaggedValue();
+                        }
+
+                        Type* expected_type = self_type->getParamType((unsigned)i);
+                        if (expected_type == tagged_value_type && arg->getType() != tagged_value_type) {
+                            if (arg->getType()->isIntegerTy(64)) {
+                                TypedValue tv = detectValueType(arg);
+                                arg = typedValueToTaggedValue(tv);
+                            } else if (arg->getType()->isDoubleTy()) {
+                                arg = packDoubleToTaggedValue(arg);
+                            } else if (arg->getType()->isPointerTy()) {
+                                if (isa<Function>(arg)) {
+                                    arg = packPtrToTaggedValue(arg, ESHKOL_VALUE_CALLABLE);
+                                } else {
+                                    arg = packPtrToTaggedValue(arg, ESHKOL_VALUE_HEAP_PTR);
+                                }
+                            } else {
+                                TypedValue tv = detectValueType(arg);
+                                arg = typedValueToTaggedValue(tv);
+                            }
+                        }
+                        self_args.push_back(arg);
+                    }
+
+                    unsigned param_index = 0;
+                    for (auto& self_arg : current_function->args()) {
+                        if (param_index++ < supplied_args) {
+                            continue;
+                        }
+                        if (self_args.size() >= self_type->getNumParams()) {
+                            break;
+                        }
+                        self_args.push_back(&self_arg);
+                    }
+
+                    if (self_args.size() == self_type->getNumParams()) {
+                        eshkol_debug("Local letrec self-call to %s via current function %s",
+                                     func_name.c_str(),
+                                     current_function->getName().str().c_str());
+                        return builder->CreateCall(current_function, self_args,
+                                                   func_name + "_self_result");
+                    }
+                }
+            }
         }
 
         // USER-DEFINED FUNCTION SHADOWING: Check if this function name is user-defined
@@ -15827,9 +16017,51 @@ private:
             }
 
             if (var_check) {
+                auto loadCallableForPrecheckFromCurrentCapture = [&]() -> Value* {
+                    Function* active_function = builder->GetInsertBlock()
+                        ? builder->GetInsertBlock()->getParent()
+                        : current_function;
+                    if (!active_function) {
+                        return nullptr;
+                    }
+
+                    const std::string closure_capture_name = "captured_" + func_name;
+                    for (auto& arg : active_function->args()) {
+                        if (arg.getName() != closure_capture_name || !arg.getType()->isPointerTy()) {
+                            continue;
+                        }
+
+                        Value* slot_value = builder->CreateLoad(
+                            tagged_value_type, &arg, func_name + ".precheck_capture_slot");
+                        Value* storage_int = unpackInt64FromTaggedValue(slot_value);
+                        Value* storage = builder->CreateIntToPtr(
+                            storage_int, PointerType::getUnqual(*context),
+                            func_name + ".precheck_capture_storage");
+                        return builder->CreateLoad(
+                            tagged_value_type, storage, func_name + ".precheck_capture");
+                    }
+
+                    return nullptr;
+                };
+
                 // Load the actual value to check its type
                 Value* actual_value = nullptr;
-                if (isa<GlobalVariable>(var_check)) {
+                bool var_check_is_stale_instruction = false;
+                if (Instruction* inst = dyn_cast<Instruction>(var_check)) {
+                    Function* owner = inst->getFunction();
+                    Function* active_function = builder->GetInsertBlock()
+                        ? builder->GetInsertBlock()->getParent()
+                        : current_function;
+                    var_check_is_stale_instruction = active_function && owner && owner != active_function;
+                    if (var_check_is_stale_instruction) {
+                        actual_value = loadCallableForPrecheckFromCurrentCapture();
+                    }
+                }
+
+                if (!actual_value && var_check_is_stale_instruction) {
+                    eshkol_debug("Skipping callable precheck for stale storage %s from an outer function",
+                                 func_name.c_str());
+                } else if (isa<GlobalVariable>(var_check)) {
                     GlobalVariable* gv = cast<GlobalVariable>(var_check);
                     actual_value = builder->CreateLoad(gv->getValueType(), var_check);
                 } else if (isa<AllocaInst>(var_check)) {
@@ -15893,12 +16125,18 @@ private:
         // This ensures letrec/let bindings shadow global functions (e.g., local 'partition'
         // shadows global 'partition' from stdlib)
         Function* callee = nullptr;
+        bool local_callable_storage_shadows_global = false;
+        auto local_callable_it = symbol_table.find(func_name);
+        if (local_callable_it != symbol_table.end() && local_callable_it->second &&
+            !isa<Function>(local_callable_it->second)) {
+            local_callable_storage_shadows_global = true;
+        }
 
         // Step 1: Check LOCAL symbol table first (for letrec/let bindings with _func)
         // SCOPED LOOKUP FIX: First try scoped version (current_func.name_func) to handle
         // nested functions with the same name in different outer functions.
         std::string func_key = func_name + "_func";
-        if (current_function) {
+        if (!local_callable_storage_shadows_global && current_function) {
             std::string scoped_key = current_function->getName().str() + "." + func_key;
             auto scoped_it = symbol_table.find(scoped_key);
             if (scoped_it != symbol_table.end() && scoped_it->second && isa<Function>(scoped_it->second)) {
@@ -15908,7 +16146,7 @@ private:
         }
 
         // If not found with scoped key, try unscoped
-        if (!callee) {
+        if (!local_callable_storage_shadows_global && !callee) {
             auto func_it = symbol_table.find(func_key);
             eshkol_debug("Looking for %s in symbol_table: %s",
                         func_key.c_str(),
@@ -15970,9 +16208,16 @@ private:
             }
         }
 
-        // Step 2: Check global function_table if not found locally
-        if (!callee) {
-            callee = function_table[func_name];
+        // Step 2: Check global function_table if not found locally. A local
+        // variable binding in call position must shadow any same-named global
+        // helper; otherwise local letrec closures such as `mul` can briefly
+        // resolve to the global arithmetic helper before the closure-call
+        // fallback gets a chance to load the activation-local cell.
+        if (!callee && !local_callable_storage_shadows_global) {
+            auto ft_it = function_table.find(func_name);
+            if (ft_it != function_table.end()) {
+                callee = ft_it->second;
+            }
         }
 
         // REPL HOT RELOAD: For cross-module calls to a previously-defined REPL
@@ -15986,7 +16231,7 @@ private:
         // fall through and let the closure-call path on the variable's storage
         // produce a runtime error if the user actually tries to invoke a non-
         // procedure value.
-        if (!callee && g_repl_mode_enabled) {
+        if (!callee && !local_callable_storage_shadows_global && g_repl_mode_enabled) {
             bool is_repl_user_func;
             bool is_repl_user_var;
             bool repl_is_variadic = false;
@@ -16153,16 +16398,18 @@ private:
 
         // Step 3: Check global symbol table and REPL context if still not found
         if (!callee) {
-            auto global_func_it = global_symbol_table.find(func_key);
-            if (global_func_it != global_symbol_table.end() && global_func_it->second && isa<Function>(global_func_it->second)) {
-                callee = cast<Function>(global_func_it->second);
+            if (!local_callable_storage_shadows_global) {
+                auto global_func_it = global_symbol_table.find(func_key);
+                if (global_func_it != global_symbol_table.end() && global_func_it->second && isa<Function>(global_func_it->second)) {
+                    callee = cast<Function>(global_func_it->second);
+                }
             }
 
             // REPL MODE: Try resolving from global REPL context
-            if (!callee) {
+            if (!callee && !local_callable_storage_shadows_global) {
                 callee = tryResolveReplFunction(func_name);
             }
-            if (!callee) {
+            if (!callee && !local_callable_storage_shadows_global) {
                 callee = tryResolveReplFunction(func_key);
 
                 // CRITICAL FIX: Only do variable fallback if we STILL haven't found the function
@@ -16215,6 +16462,57 @@ private:
             // Before trying to match lambdas by arity, check if we need an indirect call
             if (var_value) {
                 Value* func_val = var_value;
+
+                auto loadCallableFromCurrentCapture = [&]() -> Value* {
+                    Function* active_function = builder->GetInsertBlock()
+                        ? builder->GetInsertBlock()->getParent()
+                        : current_function;
+                    if (!active_function) {
+                        return nullptr;
+                    }
+
+                    const std::string named_let_capture_name = func_name + "_cap";
+                    for (auto& arg : active_function->args()) {
+                        if (arg.getName() == named_let_capture_name && arg.getType()->isPointerTy()) {
+                            return builder->CreateLoad(tagged_value_type, &arg, func_name + ".named_let_callable");
+                        }
+                    }
+
+                    const std::string closure_capture_name = "captured_" + func_name;
+                    for (auto& arg : active_function->args()) {
+                        if (arg.getName() != closure_capture_name || !arg.getType()->isPointerTy()) {
+                            continue;
+                        }
+
+                        Value* slot_value = builder->CreateLoad(
+                            tagged_value_type, &arg, func_name + ".captured_callable_slot");
+                        Value* storage_int = unpackInt64FromTaggedValue(slot_value);
+                        Value* storage = builder->CreateIntToPtr(
+                            storage_int, PointerType::getUnqual(*context),
+                            func_name + ".captured_callable_storage");
+                        return builder->CreateLoad(
+                            tagged_value_type, storage, func_name + ".captured_callable");
+                    }
+
+                    return nullptr;
+                };
+
+                if (Instruction* inst = dyn_cast<Instruction>(func_val)) {
+                    Function* owner = inst->getFunction();
+                    Function* active_function = builder->GetInsertBlock()
+                        ? builder->GetInsertBlock()->getParent()
+                        : current_function;
+                    if (active_function && owner && owner != active_function) {
+                        if (Value* captured_callable = loadCallableFromCurrentCapture()) {
+                            func_val = captured_callable;
+                            eshkol_debug("codegenCall: resolved stale callable storage for %s through current captures",
+                                         func_name.c_str());
+                        } else {
+                            eshkol_debug("codegenCall: stale callable storage for %s from function %s has no current capture",
+                                         func_name.c_str(), owner->getName().str().c_str());
+                        }
+                    }
+                }
 
                 // CLOSURE FIX: Handle LoadInst - this is a loaded captured value from closure environment
                 // The captured value is a CLOSURE_PTR tagged_value, so use codegenClosureCall to handle it properly
@@ -17323,7 +17621,54 @@ private:
             if (closure_var) {
                 // Load the closure tagged value (or use directly if Argument)
                 Value* closure_tagged = nullptr;
-                if (isa<AllocaInst>(closure_var)) {
+                auto loadClosureTaggedFromCurrentCapture = [&]() -> Value* {
+                    Function* active_function = builder->GetInsertBlock()
+                        ? builder->GetInsertBlock()->getParent()
+                        : current_function;
+                    if (!active_function) {
+                        return nullptr;
+                    }
+
+                    const std::string named_let_capture_name = func_name + "_cap";
+                    for (auto& arg : active_function->args()) {
+                        if (arg.getName() == named_let_capture_name && arg.getType()->isPointerTy()) {
+                            return builder->CreateLoad(tagged_value_type, &arg, func_name + ".named_let_closure");
+                        }
+                    }
+
+                    const std::string closure_capture_name = "captured_" + func_name;
+                    for (auto& arg : active_function->args()) {
+                        if (arg.getName() != closure_capture_name || !arg.getType()->isPointerTy()) {
+                            continue;
+                        }
+                        Value* slot_value = builder->CreateLoad(
+                            tagged_value_type, &arg, func_name + ".captured_closure_slot");
+                        Value* storage_int = unpackInt64FromTaggedValue(slot_value);
+                        Value* storage = builder->CreateIntToPtr(
+                            storage_int, PointerType::getUnqual(*context),
+                            func_name + ".captured_closure_storage");
+                        return builder->CreateLoad(
+                            tagged_value_type, storage, func_name + ".captured_closure");
+                    }
+
+                    return nullptr;
+                };
+
+                if (Instruction* inst = dyn_cast<Instruction>(closure_var)) {
+                    Function* owner = inst->getFunction();
+                    Function* active_function = builder->GetInsertBlock()
+                        ? builder->GetInsertBlock()->getParent()
+                        : current_function;
+                    if (active_function && owner && owner != active_function) {
+                        closure_tagged = loadClosureTaggedFromCurrentCapture();
+                        if (closure_tagged) {
+                            eshkol_debug("Closure call to %s: loaded stale closure storage through current captures",
+                                         func_name.c_str());
+                        }
+                    }
+                }
+
+                if (!closure_tagged && isa<AllocaInst>(closure_var)) {
                     closure_tagged = builder->CreateLoad(
                         dyn_cast<AllocaInst>(closure_var)->getAllocatedType(), closure_var);
                 } else if (isa<GlobalVariable>(closure_var)) {
@@ -23405,6 +23750,106 @@ private:
         }
     }
 
+    bool astReferencesVar(const eshkol_ast_t* ast, const std::string& var) {
+        if (!ast) return false;
+        if (ast->type == ESHKOL_VAR) {
+            return ast->variable.id && var == ast->variable.id;
+        }
+        if (ast->type == ESHKOL_CONS) {
+            return astReferencesVar(ast->cons_cell.car, var) ||
+                   astReferencesVar(ast->cons_cell.cdr, var);
+        }
+        if (ast->type != ESHKOL_OP) return false;
+
+        const eshkol_operations_t* op = &ast->operation;
+        auto shadow_it = userShadowableOps().find(op->op);
+        if (shadow_it != userShadowableOps().end() && var == shadow_it->second) {
+            return true;
+        }
+
+        switch (op->op) {
+            case ESHKOL_SET_OP:
+                return (op->set_op.name && var == op->set_op.name) ||
+                       astReferencesVar(op->set_op.value, var);
+            case ESHKOL_CALL_OP:
+            case ESHKOL_IF_OP:
+            case ESHKOL_COND_OP:
+                if (astReferencesVar(op->call_op.func, var)) return true;
+                for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
+                    if (astReferencesVar(&op->call_op.variables[i], var)) return true;
+                }
+                return false;
+            case ESHKOL_SEQUENCE_OP:
+            case ESHKOL_AND_OP:
+            case ESHKOL_OR_OP:
+                for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++) {
+                    if (astReferencesVar(&op->sequence_op.expressions[i], var)) return true;
+                }
+                return false;
+            case ESHKOL_LET_OP:
+            case ESHKOL_LET_STAR_OP:
+            case ESHKOL_LETREC_OP:
+            case ESHKOL_LETREC_STAR_OP:
+                for (uint64_t i = 0; i < op->let_op.num_bindings; i++) {
+                    if (astReferencesVar(&op->let_op.bindings[i], var)) return true;
+                }
+                return astReferencesVar(op->let_op.body, var);
+            case ESHKOL_LAMBDA_OP:
+                return astReferencesVar(op->lambda_op.body, var);
+            case ESHKOL_DEFINE_OP:
+                return (op->define_op.name && var == op->define_op.name) ||
+                       astReferencesVar(op->define_op.value, var);
+            case ESHKOL_UNIFY_OP:
+            case ESHKOL_MAKE_SUBST_OP:
+            case ESHKOL_WALK_OP:
+            case ESHKOL_MAKE_FACT_OP:
+            case ESHKOL_MAKE_KB_OP:
+            case ESHKOL_KB_ASSERT_OP:
+            case ESHKOL_KB_QUERY_OP:
+            case ESHKOL_KB_QUERY_PREFIX_OP:
+            case ESHKOL_LOGIC_VAR_PRED_OP:
+            case ESHKOL_SUBSTITUTION_PRED_OP:
+            case ESHKOL_KB_PRED_OP:
+            case ESHKOL_FACT_PRED_OP:
+            case ESHKOL_FACTOR_GRAPH_PRED_OP:
+            case ESHKOL_WORKSPACE_PRED_OP:
+            case ESHKOL_MAKE_FACTOR_GRAPH_OP:
+            case ESHKOL_FG_ADD_FACTOR_OP:
+            case ESHKOL_FG_INFER_OP:
+            case ESHKOL_FG_UPDATE_CPT_OP:
+            case ESHKOL_FG_OBSERVE_OP:
+            case ESHKOL_FREE_ENERGY_OP:
+            case ESHKOL_EXPECTED_FREE_ENERGY_OP:
+            case ESHKOL_MAKE_WORKSPACE_OP:
+            case ESHKOL_WS_REGISTER_OP:
+            case ESHKOL_WS_STEP_OP:
+            case ESHKOL_DNC_MAKE_OP:
+            case ESHKOL_DNC_CONTENT_ADDR_OP:
+            case ESHKOL_DNC_LOC_ADDR_OP:
+            case ESHKOL_DNC_READ_OP:
+            case ESHKOL_DNC_WRITE_OP:
+            case ESHKOL_DNC_ALLOC_WEIGHTS_OP:
+            case ESHKOL_DNC_READ_GRAD_OP:
+            case ESHKOL_DNC_PRED_OP:
+            case ESHKOL_SDNC_PROGRAM_OP:
+            case ESHKOL_SDNC_RUN_OP:
+            case ESHKOL_SDNC_WEIGHT_GRAD_OP:
+            case ESHKOL_SDNC_PARAMS_OP:
+            case ESHKOL_SDNC_SET_PARAMS_OP:
+            case ESHKOL_SDNC_IMPROVE_OP:
+            case ESHKOL_SDNC_PRED_OP:
+            case ESHKOL_MAKE_PARAMETER_OP:
+            case ESHKOL_EXTERN_OP:
+                if (astReferencesVar(op->call_op.func, var)) return true;
+                for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
+                    if (astReferencesVar(&op->call_op.variables[i], var)) return true;
+                }
+                return false;
+            default:
+                return false;
+        }
+    }
+
     void findFreeVariablesImpl(const eshkol_ast_t* ast,
                           const std::unordered_map<std::string, Value*>& current_scope,
                           const eshkol_ast_t* parameters, uint64_t num_params,
@@ -23931,6 +24376,9 @@ private:
                     case ESHKOL_SDNC_PRED_OP:
                     case ESHKOL_MAKE_PARAMETER_OP:    // call_op holding the init expr (parse-transformed)
                     case ESHKOL_EXTERN_OP:
+                        if (op->call_op.func) {
+                            findFreeVariablesImpl(op->call_op.func, current_scope, parameters, num_params, free_vars, bound_vars);
+                        }
                         for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
                             findFreeVariablesImpl(&op->call_op.variables[i], current_scope, parameters, num_params, free_vars, bound_vars);
                         }
@@ -24080,6 +24528,40 @@ private:
             }
         }
 
+        auto is_lambda_param = [&](const std::string& name) -> bool {
+            if (op->lambda_op.parameters) {
+                for (uint64_t i = 0; i < op->lambda_op.num_params; i++) {
+                    if (op->lambda_op.parameters[i].type == ESHKOL_VAR &&
+                        op->lambda_op.parameters[i].variable.id &&
+                        name == op->lambda_op.parameters[i].variable.id) {
+                        return true;
+                    }
+                }
+            }
+            return op->lambda_op.is_variadic && op->lambda_op.rest_param &&
+                   name == op->lambda_op.rest_param;
+        };
+
+        for (const auto& entry : symbol_table) {
+            if (!entry.second || isa<Function>(entry.second) || is_lambda_param(entry.first)) {
+                continue;
+            }
+            AllocaInst* alloca = dyn_cast<AllocaInst>(entry.second);
+            if (!alloca) {
+                continue;
+            }
+            std::string storage_name = alloca->getName().str();
+            bool is_local_letrec_cell =
+                storage_name.find("_letrec") != std::string::npos;
+            if (is_local_letrec_cell &&
+                astReferencesVar(op->lambda_op.body, entry.first) &&
+                std::find(free_vars.begin(), free_vars.end(), entry.first) == free_vars.end()) {
+                free_vars.push_back(entry.first);
+                eshkol_debug("Lambda %s added referenced local letrec cell capture: %s",
+                             lambda_name.c_str(), entry.first.c_str());
+            }
+        }
+
         // REPL HOT RELOAD: top-level user-defined functions and variables are
         // NOT captured by closures. They are looked up dynamically through the
         // host-owned slot at every call site (see __repl_fwd_<name> for
@@ -24107,6 +24589,48 @@ private:
             g_repl_lambda_captures[lambda_name] = free_vars;
         }
 
+        auto capturePointerTagFromCurrentFunction = [&](const std::string& name) -> Value* {
+            Function* current_func = builder->GetInsertBlock()
+                ? builder->GetInsertBlock()->getParent()
+                : nullptr;
+            if (!current_func) {
+                return nullptr;
+            }
+
+            const std::string named_let_capture_name = name + "_cap";
+            for (auto& arg : current_func->args()) {
+                if (arg.getName() == named_let_capture_name && arg.getType()->isPointerTy()) {
+                    Value* ptr_int = builder->CreatePtrToInt(&arg, int64_type);
+                    return packInt64ToTaggedValue(ptr_int, true);
+                }
+            }
+
+            const std::string closure_capture_name = "captured_" + name;
+            for (auto& arg : current_func->args()) {
+                if (arg.getName() == closure_capture_name && arg.getType()->isPointerTy()) {
+                    return builder->CreateLoad(tagged_value_type, &arg, name + "_capture_ptr_tag");
+                }
+            }
+
+            return nullptr;
+        };
+
+        auto staleInstructionCaptureTag = [&](Value* value, const std::string& name) -> Value* {
+            Instruction* inst = dyn_cast_or_null<Instruction>(value);
+            Function* current_func = builder->GetInsertBlock()
+                ? builder->GetInsertBlock()->getParent()
+                : nullptr;
+            if (!inst || !current_func || inst->getFunction() == current_func) {
+                return nullptr;
+            }
+            Value* capture_tag = capturePointerTagFromCurrentFunction(name);
+            if (capture_tag) {
+                eshkol_debug("Lambda %s: forwarding stale capture pointer for %s",
+                             lambda_name.c_str(), name.c_str());
+            }
+            return capture_tag;
+        };
+
         for (const std::string& var_name : free_vars) {
             Value* var_value = nullptr;
             Value* captured_val = nullptr;
@@ -24127,7 +24651,9 @@ private:
             if (var_value) {
                 // Load actual value from storage location
                 captured_val = var_value;
-                if (isa<AllocaInst>(var_value)) {
+                if (Value* stale_tag = staleInstructionCaptureTag(var_value, var_name)) {
+                    captured_val = stale_tag;
+                } else if (isa<AllocaInst>(var_value)) {
                     captured_val = builder->CreateLoad(
                         dyn_cast<AllocaInst>(var_value)->getAllocatedType(), var_value);
                 } else if (isa<GlobalVariable>(var_value)) {
@@ -24792,6 +25318,9 @@ private:
                 }
 
                 if (var_value) {
+                    if (Value* stale_tag = staleInstructionCaptureTag(var_value, var_name)) {
+                        captured_val = stale_tag;
+                    } else {
                     // MUTABLE CAPTURE FIX: For let-bound variables (allocas), store a POINTER
                     // to the alloca in the closure environment instead of the VALUE.
                     // This ensures both the lambda and the outer scope access the same storage,
@@ -24979,6 +25508,7 @@ private:
                         eshkol_debug("Re-capturing mutable pointer for nested lambda: %s", var_name.c_str());
                     } else {
                         captured_val = var_value;
+                    }
                     }
                 }
 

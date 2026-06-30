@@ -2840,6 +2840,13 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
                     gv = cur_gv;
                 }
                 closure_val = ctx_.builder().CreateLoad(gv->getValueType(), gv);
+            } else if (var_value && isa<AllocaInst>(var_value) && var_value->getType()->isPointerTy()) {
+                AllocaInst* alloca = cast<AllocaInst>(var_value);
+                if (alloca->getAllocatedType() == ctx_.taggedValueType()) {
+                    closure_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), var_value);
+                }
+            } else if (var_value && isa<LoadInst>(var_value) && var_value->getType() == ctx_.taggedValueType()) {
+                closure_val = var_value;
             }
 
             // Step 2: Shared forward-mode gradient computation
