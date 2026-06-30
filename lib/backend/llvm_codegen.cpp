@@ -6723,54 +6723,55 @@ private:
 
         // Generate a dispatch table for variadic closure calls. The closure
         // metadata supplies fixed_params dynamically, but the LLVM function
-        // type must be concrete. Specialize on fixed_params and capture count:
-        // (fixed args..., rest-list, capture-ptrs...) -> tagged_value.
+        // type must be concrete. Specialize on fixed_params first so the rest
+        // list is built once per fixed-arity arm, then specialize only the
+        // final call by capture count.
         const int MAX_VARIADIC_FIXED_LIMIT = 16;
         const int MAX_CAPTURES = 32;
         const int max_variadic_fixed =
             std::min<int>(MAX_VARIADIC_FIXED_LIMIT, (int)call_args.size());
         BasicBlock* variadic_switch_default = BasicBlock::Create(*context, "var_cap_default", current_func);
-        Value* fixed_params_clamped = builder->CreateSelect(
-            builder->CreateICmpUGT(fixed_params, ConstantInt::get(int64_type, max_variadic_fixed)),
-            ConstantInt::get(int64_type, max_variadic_fixed),
+        SwitchInst* var_fixed_sw = builder->CreateSwitch(
             fixed_params,
-            "fixed_params_clamped");
-        Value* variadic_dispatch_idx = builder->CreateAdd(
-            builder->CreateMul(fixed_params_clamped, ConstantInt::get(int64_type, MAX_CAPTURES + 1)),
-            num_captures,
-            "variadic_dispatch_idx");
-        SwitchInst* var_sw = builder->CreateSwitch(
-            variadic_dispatch_idx,
             variadic_switch_default,
-            (max_variadic_fixed + 1) * (MAX_CAPTURES + 1));
+            max_variadic_fixed + 1);
         std::vector<std::pair<BasicBlock*, Value*>> variadic_results;
 
         for (int fixed_count = 0; fixed_count <= max_variadic_fixed; fixed_count++) {
+            BasicBlock* fixed_bb = BasicBlock::Create(*context,
+                "var_fixed_" + std::to_string(fixed_count), current_func);
+            var_fixed_sw->addCase(ConstantInt::get(int64_type, fixed_count), fixed_bb);
+            builder->SetInsertPoint(fixed_bb);
+
+            Value* rest_list = packPtrToTaggedValue(
+                ConstantInt::get(int64_type, 0), ESHKOL_VALUE_NULL);
+            for (int64_t i = (int64_t)call_args.size() - 1; i >= fixed_count; i--) {
+                Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+                Value* cons_cell = builder->CreateCall(getArenaAllocateConsWithHeaderFunc(), {arena_ptr});
+
+                builder->CreateStore(call_args[(size_t)i], arg_ptrs[(size_t)i]);
+                builder->CreateCall(getTaggedConsSetTaggedValueFunc(),
+                    {cons_cell, ConstantInt::get(int1_type, 0), arg_ptrs[(size_t)i]});
+
+                builder->CreateStore(rest_list, rest_ptrs[(size_t)i]);
+                builder->CreateCall(getTaggedConsSetTaggedValueFunc(),
+                    {cons_cell, ConstantInt::get(int1_type, 1), rest_ptrs[(size_t)i]});
+
+                Value* cons_int = builder->CreatePtrToInt(cons_cell, int64_type);
+                rest_list = packPtrToTaggedValue(cons_int, ESHKOL_VALUE_HEAP_PTR);
+            }
+
+            SwitchInst* var_cap_sw = builder->CreateSwitch(
+                num_captures,
+                variadic_switch_default,
+                MAX_CAPTURES + 1);
+
             for (int cap_count = 0; cap_count <= MAX_CAPTURES; cap_count++) {
-                int case_idx = fixed_count * (MAX_CAPTURES + 1) + cap_count;
                 BasicBlock* case_bb = BasicBlock::Create(*context,
                     "var_fixed_" + std::to_string(fixed_count) + "_cap_" + std::to_string(cap_count),
                     current_func);
-                var_sw->addCase(ConstantInt::get(int64_type, case_idx), case_bb);
+                var_cap_sw->addCase(ConstantInt::get(int64_type, cap_count), case_bb);
                 builder->SetInsertPoint(case_bb);
-
-                Value* rest_list = packPtrToTaggedValue(
-                    ConstantInt::get(int64_type, 0), ESHKOL_VALUE_NULL);
-                for (int64_t i = (int64_t)call_args.size() - 1; i >= fixed_count; i--) {
-                    Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
-                    Value* cons_cell = builder->CreateCall(getArenaAllocateConsWithHeaderFunc(), {arena_ptr});
-
-                    builder->CreateStore(call_args[(size_t)i], arg_ptrs[(size_t)i]);
-                    builder->CreateCall(getTaggedConsSetTaggedValueFunc(),
-                        {cons_cell, ConstantInt::get(int1_type, 0), arg_ptrs[(size_t)i]});
-
-                    builder->CreateStore(rest_list, rest_ptrs[(size_t)i]);
-                    builder->CreateCall(getTaggedConsSetTaggedValueFunc(),
-                        {cons_cell, ConstantInt::get(int1_type, 1), rest_ptrs[(size_t)i]});
-
-                    Value* cons_int = builder->CreatePtrToInt(cons_cell, int64_type);
-                    rest_list = packPtrToTaggedValue(cons_int, ESHKOL_VALUE_HEAP_PTR);
-                }
 
                 std::vector<Value*> full_args;
                 for (int i = 0; i < fixed_count; i++) {
