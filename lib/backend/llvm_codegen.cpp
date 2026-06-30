@@ -213,6 +213,14 @@ static llvm::OptimizationLevel getPassBuilderOptLevel() {
     }
 }
 
+static llvm::Triple getModuleTargetTriple(const llvm::Module& module) {
+#if LLVM_VERSION_MAJOR >= 21
+    return module.getTargetTriple();
+#else
+    return llvm::Triple(module.getTargetTriple());
+#endif
+}
+
 /* Coerce mismatched integer call-argument types to match each callee's
  * declared parameter type.  Necessary on the wasm32 target where many
  * arena_allocate callsites across backend codegen files emit
@@ -326,12 +334,6 @@ static void optimizeModule(llvm::Module& module, llvm::TargetMachine* TM, bool i
 
     auto opt_level = getPassBuilderOptLevel();
 
-    // For WASM targets, always run at least mem2reg even at -O0.
-    // WASM has a hard limit on local count (~50,000) that native targets don't.
-    // Without mem2reg, each tagged value pack/unpack creates an alloca that
-    // becomes a WASM local, easily exceeding the limit for non-trivial programs.
-    if (opt_level == llvm::OptimizationLevel::O0 && !is_wasm) return;
-
     llvm::PassBuilder PB(TM);
 
     llvm::LoopAnalysisManager LAM;
@@ -346,10 +348,28 @@ static void optimizeModule(llvm::Module& module, llvm::TargetMachine* TM, bool i
     PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
 
     if (opt_level == llvm::OptimizationLevel::O0) {
-        // WASM at -O0: run minimal passes (mem2reg + simplifycfg) to reduce local count
-        llvm::ModulePassManager MPM = PB.buildPerModuleDefaultPipeline(llvm::OptimizationLevel::O1);
+        const llvm::Triple module_triple = getModuleTargetTriple(module);
+        const bool is_windows_arm64 =
+            module_triple.getArch() == llvm::Triple::aarch64 &&
+            module_triple.isOSWindows();
+        if (!is_wasm && is_windows_arm64) {
+            // The native cleanup pipeline is needed for deep CPS on the Unix
+            // targets, but it can exceed the Windows ARM64 lite smoke compile
+            // budget on AD-heavy modules before the linker is reached.
+            eshkol_info("Skipped LLVM O0 cleanup passes for Windows ARM64 target");
+            return;
+        }
+        llvm::ModulePassManager MPM;
+        const char* cleanup_pipeline = is_wasm
+            ? "default<O1>"
+            : "function(sroa,early-cse,instcombine<no-verify-fixpoint>,simplifycfg)";
+        if (auto err = PB.parsePassPipeline(MPM, cleanup_pipeline)) {
+            llvm::consumeError(std::move(err));
+            eshkol_warn("Failed to parse LLVM O0 cleanup pipeline; continuing without cleanup");
+            return;
+        }
         MPM.run(module, MAM);
-        eshkol_info("Applied minimal LLVM optimization passes for WASM target");
+        eshkol_info("Applied LLVM O0 cleanup passes");
     } else {
         llvm::ModulePassManager MPM = PB.buildPerModuleDefaultPipeline(opt_level);
         MPM.run(module, MAM);
