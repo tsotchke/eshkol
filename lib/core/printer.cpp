@@ -33,6 +33,11 @@ static const char* type_to_string(eshkol_type_t type) {
         case ESHKOL_FUNC: return "FUNC";
         case ESHKOL_VAR: return "VAR";
         case ESHKOL_OP: return "OP";
+        case ESHKOL_CONS: return "CONS";
+        case ESHKOL_NULL: return "NULL";
+        case ESHKOL_TENSOR: return "TENSOR";
+        case ESHKOL_CHAR: return "CHAR";
+        case ESHKOL_BOOL: return "BOOL";
         case ESHKOL_BIGNUM_LITERAL: return "BIGNUM_LITERAL";
         case ESHKOL_SYMBOL: return "SYMBOL";
         default: return "UNKNOWN";
@@ -269,6 +274,44 @@ static void print_operation(const eshkol_operations_t *op, int indent) {
                 }
             }
             break;
+
+        case ESHKOL_LET_OP:
+        case ESHKOL_LET_STAR_OP:
+        case ESHKOL_LETREC_OP:
+        case ESHKOL_LETREC_STAR_OP:
+            if (op->let_op.name) {
+                print_indent(indent + 1);
+                printf("Name: %s\n", op->let_op.name);
+            }
+            print_indent(indent + 1);
+            printf("Bindings (%llu):\n", (unsigned long long)op->let_op.num_bindings);
+            if (op->let_op.bindings && op->let_op.num_bindings > 0) {
+                for (uint64_t i = 0; i < op->let_op.num_bindings; i++) {
+                    const eshkol_ast_t* binding = &op->let_op.bindings[i];
+                    print_indent(indent + 2);
+                    printf("Binding[%llu]:\n", (unsigned long long)i);
+                    if (binding->type == ESHKOL_CONS) {
+                        if (binding->cons_cell.car) {
+                            print_indent(indent + 3);
+                            printf("Variable:\n");
+                            eshkol_ast_pretty_print(binding->cons_cell.car, indent + 4);
+                        }
+                        if (binding->cons_cell.cdr) {
+                            print_indent(indent + 3);
+                            printf("Value:\n");
+                            eshkol_ast_pretty_print(binding->cons_cell.cdr, indent + 4);
+                        }
+                    } else {
+                        eshkol_ast_pretty_print(binding, indent + 3);
+                    }
+                }
+            }
+            if (op->let_op.body) {
+                print_indent(indent + 1);
+                printf("Body:\n");
+                eshkol_ast_pretty_print(op->let_op.body, indent + 2);
+            }
+            break;
             
         case ESHKOL_ADD_OP:
         case ESHKOL_SUB_OP:
@@ -279,16 +322,8 @@ static void print_operation(const eshkol_operations_t *op, int indent) {
             break;
             
         default:
-            // Print generic operation info with arguments if available
-            if (op->call_op.variables && op->call_op.num_vars > 0) {
-                print_indent(indent + 1);
-                printf("Arguments (%llu):\n", (unsigned long long)op->call_op.num_vars);
-                for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
-                    print_indent(indent + 2);
-                    printf("Arg[%llu]:\n", (unsigned long long)i);
-                    eshkol_ast_pretty_print(&op->call_op.variables[i], indent + 3);
-                }
-            }
+            print_indent(indent + 1);
+            printf("(No detailed printer for this operation)\n");
             break;
     }
 }
@@ -371,6 +406,34 @@ void eshkol_ast_pretty_print(const eshkol_ast_t *ast, int indent) {
             print_indent(indent + 1);
             printf("Value: %s (symbol)\n",
                    ast->str_val.ptr ? ast->str_val.ptr : "(null)");
+            break;
+
+        case ESHKOL_CONS:
+            if (ast->cons_cell.car) {
+                print_indent(indent + 1);
+                printf("Car:\n");
+                eshkol_ast_pretty_print(ast->cons_cell.car, indent + 2);
+            }
+            if (ast->cons_cell.cdr) {
+                print_indent(indent + 1);
+                printf("Cdr:\n");
+                eshkol_ast_pretty_print(ast->cons_cell.cdr, indent + 2);
+            }
+            break;
+
+        case ESHKOL_NULL:
+            print_indent(indent + 1);
+            printf("Value: ()\n");
+            break;
+
+        case ESHKOL_CHAR:
+            print_indent(indent + 1);
+            printf("Value: %u (char)\n", ast->uint32_val);
+            break;
+
+        case ESHKOL_BOOL:
+            print_indent(indent + 1);
+            printf("Value: %s\n", ast->uint8_val ? "#t" : "#f");
             break;
 
         case ESHKOL_VAR:
