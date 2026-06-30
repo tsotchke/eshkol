@@ -2926,6 +2926,42 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
                     point_val = pt_phi;
                 }
 
+                AllocaInst* rt_result_slot = ctx_.builder().CreateAlloca(
+                    ctx_.taggedValueType(), nullptr, "grad_rt_result");
+
+                Value* rt_point_base = tagged_.getBaseType(tagged_.getType(point_val));
+                Value* rt_point_is_double = ctx_.builder().CreateICmpEQ(rt_point_base,
+                    ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DOUBLE));
+                Value* rt_point_is_int = ctx_.builder().CreateICmpEQ(rt_point_base,
+                    ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_INT64));
+                Value* rt_point_is_dual = ctx_.builder().CreateICmpEQ(rt_point_base,
+                    ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DUAL_NUMBER));
+                Value* rt_point_is_scalar = ctx_.builder().CreateOr(
+                    ctx_.builder().CreateOr(rt_point_is_double, rt_point_is_int), rt_point_is_dual);
+
+                BasicBlock* grad_rt_scalar_fwd = BasicBlock::Create(
+                    ctx_.context(), "grad_rt_scalar_fwd", current_func);
+                BasicBlock* grad_rt_collection = BasicBlock::Create(
+                    ctx_.context(), "grad_rt_collection", current_func);
+                BasicBlock* grad_rt_done = BasicBlock::Create(
+                    ctx_.context(), "grad_rt_done", current_func);
+                ctx_.builder().CreateCondBr(rt_point_is_scalar, grad_rt_scalar_fwd, grad_rt_collection);
+
+                ctx_.builder().SetInsertPoint(grad_rt_scalar_fwd);
+                Value* rt_fwd_level = nullptr;
+                Value* rt_fwd_seed = seedForwardAndPush(point_val, &rt_fwd_level);
+                Value* rt_fwd_call = closure_call_callback_(closure_val,
+                    std::vector<Value*>{rt_fwd_seed}, "autodiff", callback_context_);
+                if (!rt_fwd_call) {
+                    eshkol_error("gradient: failed to call runtime scalar function");
+                    return nullptr;
+                }
+                Value* rt_fwd_result = popAndExtractForward(rt_fwd_call, rt_fwd_level);
+                ctx_.builder().CreateStore(rt_fwd_result, rt_result_slot);
+                ctx_.builder().CreateBr(grad_rt_done);
+
+                ctx_.builder().SetInsertPoint(grad_rt_collection);
+
                 // Check input type - handle Scheme vector (HEAP_PTR with HEAP_SUBTYPE_VECTOR), tensor (TENSOR_PTR), or scalar
                 // M1 Migration: Use consolidated HEAP_PTR type with subtype dispatch
                 Value* input_type = tagged_.getType(point_val);
@@ -3232,7 +3268,12 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
 
                 ctx_.builder().SetInsertPoint(dim_end);
                 Value* result_int = ctx_.builder().CreatePtrToInt(typed_result, ctx_.int64Type());
-                return tagged_.packPtr(result_int, ESHKOL_VALUE_HEAP_PTR);
+                Value* result_tagged = tagged_.packPtr(result_int, ESHKOL_VALUE_HEAP_PTR);
+                ctx_.builder().CreateStore(result_tagged, rt_result_slot);
+                ctx_.builder().CreateBr(grad_rt_done);
+
+                ctx_.builder().SetInsertPoint(grad_rt_done);
+                return ctx_.builder().CreateLoad(ctx_.taggedValueType(), rt_result_slot);
             } // end if (closure_val)
 
         }

@@ -238,6 +238,22 @@
          ;; comparison no longer signals a type error.
          (and (number? g) (not (eqv? g +inf.0)) (not (eqv? g -inf.0)))))
 
+;; ─── Case 6 ────────────────────────────────────────────────────────
+;; A gradient target that is a function parameter takes the runtime
+;; closure path.  That scalar path must preserve an outer perturbation
+;; level when nested, not rebuild a fixed e1-only dual.
+(define (shifted-cubic x) (+ (* x x x) x))
+(define (gradient-through-function-parameter f x) (gradient f x))
+
+(check "gradient through runtime function parameter at scalar point"
+       (< (abs (- (gradient-through-function-parameter shifted-cubic 2.0) 13.0)) 1e-10))
+(check "nested derivative of runtime function-parameter gradient"
+       (< (abs (- (derivative
+                    (lambda (x) (gradient-through-function-parameter shifted-cubic x))
+                    2.0)
+                  12.0))
+          1e-10))
+
 ;; ─── Summary ───────────────────────────────────────────────────────
 (display "Results: ") (display passed) (display " passed, ")
 (display failed) (display " failed") (newline)
