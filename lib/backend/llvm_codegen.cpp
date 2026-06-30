@@ -212,6 +212,14 @@ static llvm::OptimizationLevel getPassBuilderOptLevel() {
     }
 }
 
+static llvm::Triple getModuleTargetTriple(const llvm::Module& module) {
+#if LLVM_VERSION_MAJOR >= 21
+    return module.getTargetTriple();
+#else
+    return llvm::Triple(module.getTargetTriple());
+#endif
+}
+
 /* Coerce mismatched integer call-argument types to match each callee's
  * declared parameter type.  Necessary on the wasm32 target where many
  * arena_allocate callsites across backend codegen files emit
@@ -339,6 +347,17 @@ static void optimizeModule(llvm::Module& module, llvm::TargetMachine* TM, bool i
     PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
 
     if (opt_level == llvm::OptimizationLevel::O0) {
+        const llvm::Triple module_triple = getModuleTargetTriple(module);
+        const bool is_windows_arm64 =
+            module_triple.getArch() == llvm::Triple::aarch64 &&
+            module_triple.isOSWindows();
+        if (!is_wasm && is_windows_arm64) {
+            // The native cleanup pipeline is needed for deep CPS on the Unix
+            // targets, but it can exceed the Windows ARM64 lite smoke compile
+            // budget on AD-heavy modules before the linker is reached.
+            eshkol_info("Skipped LLVM O0 cleanup passes for Windows ARM64 target");
+            return;
+        }
         llvm::ModulePassManager MPM;
         const char* cleanup_pipeline = is_wasm
             ? "default<O1>"
