@@ -127,6 +127,11 @@ llvm::GlobalVariable* CodegenContext::internString(const std::string& str) {
     return global_str;
 }
 
+llvm::Value* CodegenContext::internCString(const std::string& str) {
+    llvm::GlobalVariable* global_str = internString(str);
+    return builder_.CreatePointerCast(global_str, llvm::PointerType::get(context_, 0));
+}
+
 llvm::GlobalVariable* CodegenContext::lookupInternedString(const std::string& str) {
     auto it = interned_strings_.find(str);
     return (it != interned_strings_.end()) ? it->second : nullptr;
