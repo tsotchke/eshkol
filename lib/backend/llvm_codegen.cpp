@@ -6727,7 +6727,7 @@ private:
         // list is built once per fixed-arity arm, then specialize only the
         // final call by capture count.
         const int MAX_VARIADIC_FIXED_LIMIT = 16;
-        const int MAX_CAPTURES = 32;
+        const int MAX_CLOSURE_DISPATCH_CAPTURES = 16;
         const int max_variadic_fixed =
             std::min<int>(MAX_VARIADIC_FIXED_LIMIT, (int)call_args.size());
         BasicBlock* variadic_switch_default = BasicBlock::Create(*context, "var_cap_default", current_func);
@@ -6764,9 +6764,9 @@ private:
             SwitchInst* var_cap_sw = builder->CreateSwitch(
                 num_captures,
                 variadic_switch_default,
-                MAX_CAPTURES + 1);
+                MAX_CLOSURE_DISPATCH_CAPTURES + 1);
 
-            for (int cap_count = 0; cap_count <= MAX_CAPTURES; cap_count++) {
+            for (int cap_count = 0; cap_count <= MAX_CLOSURE_DISPATCH_CAPTURES; cap_count++) {
                 BasicBlock* case_bb = BasicBlock::Create(*context,
                     "var_fixed_" + std::to_string(fixed_count) + "_cap_" + std::to_string(cap_count),
                     current_func);
@@ -6820,20 +6820,26 @@ private:
         // On ARM64 this "works" due to ABI differences, but crashes on x86_64.
 
         // Pre-allocate padded argument array at function entry
-        // Note: Keep this small to avoid generating too many switch cases (MAX_CALL_ARGS * MAX_CAPTURES)
-        const int MAX_CALL_ARGS = 16;  // Maximum supported regular arguments for arity-mismatched calls
+        // Note: Keep this small to avoid generating too many switch cases.
+        // Correct calls only need the static call-site arity; the extra cushion
+        // preserves the existing partial-application/Y-combinator padding path
+        // without emitting the full 16x32 worst-case matrix at every call site.
+        const int MAX_CALL_ARGS_LIMIT = 16;
+        const int max_call_args = std::min<int>(
+            MAX_CALL_ARGS_LIMIT,
+            std::max<int>((int)call_args.size(), 4));
         IRBuilderBase::InsertPoint saved_ip_nonvar = builder->saveIP();
         builder->SetInsertPoint(&entry_block, entry_block.begin());
 
         // Alloca array for padded arguments
-        ArrayType* padded_args_type = ArrayType::get(tagged_value_type, MAX_CALL_ARGS);
+        ArrayType* padded_args_type = ArrayType::get(tagged_value_type, max_call_args);
         Value* padded_args_array = builder->CreateAlloca(padded_args_type, nullptr, "padded_args");
 
         builder->restoreIP(saved_ip_nonvar);
         builder->SetInsertPoint(non_variadic_bb);
 
         // Store actual call_args into array
-        for (size_t i = 0; i < call_args.size() && i < MAX_CALL_ARGS; i++) {
+        for (size_t i = 0; i < call_args.size() && i < (size_t)max_call_args; i++) {
             Value* slot_ptr = builder->CreateGEP(padded_args_type, padded_args_array,
                 {ConstantInt::get(int64_type, 0), ConstantInt::get(int64_type, i)});
             builder->CreateStore(call_args[i], slot_ptr);
@@ -6841,7 +6847,7 @@ private:
 
         // Fill remaining slots with undefined (null) values for arity mismatch handling
         Value* undef_val = packNullToTaggedValue();
-        for (size_t i = call_args.size(); i < MAX_CALL_ARGS; i++) {
+        for (size_t i = call_args.size(); i < (size_t)max_call_args; i++) {
             Value* slot_ptr = builder->CreateGEP(padded_args_type, padded_args_array,
                 {ConstantInt::get(int64_type, 0), ConstantInt::get(int64_type, i)});
             builder->CreateStore(undef_val, slot_ptr);
@@ -6853,27 +6859,27 @@ private:
         Value* actual_arg_count = builder->CreateSelect(use_fixed, fixed_params, call_args_count,
             "actual_arg_count");
 
-        // Clamp to MAX_CALL_ARGS to prevent overflow
+        // Clamp to this call site's emitted argument arms to prevent overflow
         Value* is_overflow = builder->CreateICmpUGT(actual_arg_count,
-            ConstantInt::get(int64_type, MAX_CALL_ARGS));
+            ConstantInt::get(int64_type, max_call_args));
         Value* clamped_arg_count = builder->CreateSelect(is_overflow,
-            ConstantInt::get(int64_type, MAX_CALL_ARGS), actual_arg_count);
+            ConstantInt::get(int64_type, max_call_args), actual_arg_count);
 
-        // Generate nested switch on (clamped_arg_count * (MAX_CAPTURES+1) + num_captures)
+        // Generate nested switch on (clamped_arg_count * (MAX_CLOSURE_DISPATCH_CAPTURES+1) + num_captures)
         // This handles all combinations of argument count and capture count
         BasicBlock* nonvar_switch_default = BasicBlock::Create(*context, "cap_default", current_func);
         Value* dispatch_idx = builder->CreateAdd(
-            builder->CreateMul(clamped_arg_count, ConstantInt::get(int64_type, MAX_CAPTURES + 1)),
+            builder->CreateMul(clamped_arg_count, ConstantInt::get(int64_type, MAX_CLOSURE_DISPATCH_CAPTURES + 1)),
             num_captures);
         SwitchInst* sw = builder->CreateSwitch(dispatch_idx, nonvar_switch_default,
-            (MAX_CALL_ARGS + 1) * (MAX_CAPTURES + 1));
+            (max_call_args + 1) * (MAX_CLOSURE_DISPATCH_CAPTURES + 1));
 
         // Note: results vector is declared earlier (before arithmetic check)
 
         // Generate a case for each (arg_count, capture_count) combination
-        for (int arg_count = 0; arg_count <= MAX_CALL_ARGS; arg_count++) {
-            for (int cap_count = 0; cap_count <= MAX_CAPTURES; cap_count++) {
-                int case_idx = arg_count * (MAX_CAPTURES + 1) + cap_count;
+        for (int arg_count = 0; arg_count <= max_call_args; arg_count++) {
+            for (int cap_count = 0; cap_count <= MAX_CLOSURE_DISPATCH_CAPTURES; cap_count++) {
+                int case_idx = arg_count * (MAX_CLOSURE_DISPATCH_CAPTURES + 1) + cap_count;
                 BasicBlock* case_bb = BasicBlock::Create(*context,
                     "args_" + std::to_string(arg_count) + "_cap_" + std::to_string(cap_count), current_func);
                 sw->addCase(ConstantInt::get(int64_type, case_idx), case_bb);
