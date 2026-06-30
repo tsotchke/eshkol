@@ -41,6 +41,15 @@ static llvm::Value* runtimeCapabilityAllowed(CodegenContext& ctx, const char* ca
         allowed, llvm::ConstantInt::get(ctx.int32Type(), 0));
 }
 
+static void runtimeCapabilityDeny(CodegenContext& ctx, const char* capability) {
+    llvm::FunctionType* fn_type = llvm::FunctionType::get(
+        ctx.voidType(), {ctx.ptrType()}, false);
+    llvm::FunctionCallee callee = ctx.module().getOrInsertFunction(
+        "eshkol_capability_runtime_deny", fn_type);
+    llvm::Value* capability_name = ctx.builder().CreateGlobalStringPtr(capability);
+    ctx.builder().CreateCall(callee, {capability_name});
+}
+
 SystemCodegen::SystemCodegen(CodegenContext& ctx, TaggedValueCodegen& tagged, MemoryCodegen& mem,
                              std::unordered_map<std::string, llvm::Function*>& function_table)
     : ctx_(ctx)
@@ -92,6 +101,7 @@ llvm::Value* SystemCodegen::getenv(const eshkol_operations_t* op) {
     ctx_.builder().CreateCondBr(capability_ok, call_block, denied_block);
 
     ctx_.builder().SetInsertPoint(denied_block);
+    runtimeCapabilityDeny(ctx_, "env-read");
     llvm::Value* denied_val = tagged_.packBool(
         llvm::ConstantInt::getFalse(ctx_.context()));
     ctx_.builder().CreateBr(final_merge_block);
@@ -209,6 +219,7 @@ llvm::Value* SystemCodegen::setenv(const eshkol_operations_t* op) {
     ctx_.builder().CreateCondBr(capability_ok, call_block, denied_block);
 
     ctx_.builder().SetInsertPoint(denied_block);
+    runtimeCapabilityDeny(ctx_, "env-write");
     llvm::Value* denied_val = tagged_.packBool(
         llvm::ConstantInt::getFalse(ctx_.context()));
     ctx_.builder().CreateBr(merge_block);
@@ -267,6 +278,7 @@ llvm::Value* SystemCodegen::unsetenv(const eshkol_operations_t* op) {
     ctx_.builder().CreateCondBr(capability_ok, call_block, denied_block);
 
     ctx_.builder().SetInsertPoint(denied_block);
+    runtimeCapabilityDeny(ctx_, "env-write");
     llvm::Value* denied_val = tagged_.packBool(
         llvm::ConstantInt::getFalse(ctx_.context()));
     ctx_.builder().CreateBr(merge_block);
