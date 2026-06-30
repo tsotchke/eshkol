@@ -2768,8 +2768,8 @@ void ArithmeticCodegen::emitOperandTypeError(const char* proc_name,
     }
     llvm::Value* slot = b.CreateAlloca(ctx_.taggedValueType(), nullptr, "operand_err_slot");
     b.CreateStore(offending, slot);
-    llvm::Value* proc = b.CreateGlobalString(proc_name, "operr_proc");
-    llvm::Value* exp = b.CreateGlobalString(expected_type, "operr_expected");
+    llvm::Value* proc = ctx_.internCString(proc_name);
+    llvm::Value* exp = ctx_.internCString(expected_type);
     b.CreateCall(fn, {proc, exp, slot});
 }
 
@@ -2795,7 +2795,7 @@ void ArithmeticCodegen::emitSetErrorLocation() {
 
     llvm::Value* file_str = file.empty()
         ? static_cast<llvm::Value*>(llvm::ConstantPointerNull::get(ctx_.builder().getPtrTy()))
-        : static_cast<llvm::Value*>(ctx_.builder().CreateGlobalString(file, "err_loc_file"));
+        : ctx_.internCString(file);
     ctx_.builder().CreateCall(set_loc_func, {
         file_str,
         llvm::ConstantInt::get(ctx_.int32Type(), line),
