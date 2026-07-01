@@ -1,0 +1,383 @@
+;; SICP Chapter 3.3.5 - Constraint propagation.
+;;
+;; This probe follows the book's connector/constraint architecture: connectors
+;; remember an informant, constraints propagate values in either direction, and
+;; retractions notify dependent constraints.  SICP signals contradictions with
+;; `error`; this self-checking probe records contradictions instead so the file
+;; can continue and report deterministic PASS/FAIL results.  The contradiction
+;; checks below verify that the old value is preserved until its informant
+;; retracts it.
+
+(define fails 0)
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin (display "PASS: ") (display name) (newline))
+      (begin (set! fails (+ fails 1))
+             (display "FAIL: ") (display name)
+             (display " expected=") (display expected)
+             (display " actual=") (display actual)
+             (newline))))
+
+(define (not-bool x) (if x #f #t))
+
+(define (reverse-list xs)
+  (define (iter rest acc)
+    (if (null? rest)
+        acc
+        (iter (cdr rest) (cons (car rest) acc))))
+  (iter xs '()))
+
+(define (length-list xs)
+  (if (null? xs)
+      0
+      (+ 1 (length-list (cdr xs)))))
+
+(define (member-eq? item xs)
+  (cond ((null? xs) #f)
+        ((eq? item (car xs)) #t)
+        (else (member-eq? item (cdr xs)))))
+
+(define contradiction-count 0)
+(define contradiction-log '())
+(define (record-contradiction! old-value new-value)
+  (set! contradiction-count (+ contradiction-count 1))
+  (set! contradiction-log (cons (list old-value new-value) contradiction-log))
+  'contradiction)
+
+;; Constraint objects are pairs whose car is a readable name and whose cdr is
+;; the message handler.  Connectors compare the pair identity, avoiding reliance
+;; on procedure equality for the SICP `for-each-except` step.
+(define (make-constraint name handler) (cons name handler))
+(define (constraint-handler constraint) (cdr constraint))
+(define (tell-constraint constraint message)
+  ((constraint-handler constraint) message))
+
+(define (for-each-except exception procedure constraints)
+  (cond ((null? constraints) 'done)
+        ((eq? exception (car constraints))
+         (for-each-except exception procedure (cdr constraints)))
+        (else
+         (procedure (car constraints))
+         (for-each-except exception procedure (cdr constraints)))))
+
+(define (inform-about-value constraint)
+  (tell-constraint constraint 'I-have-a-value))
+(define (inform-about-no-value constraint)
+  (tell-constraint constraint 'I-lost-my-value))
+
+(define (make-connector)
+  (let ((value 0)
+        (informant #f)
+        (constraints '()))
+    (define (set-my-value newval setter)
+      (cond ((not-bool informant)
+             (set! value newval)
+             (set! informant setter)
+             (for-each-except setter inform-about-value constraints)
+             'ok)
+            ((equal? value newval) 'ignored)
+            (else
+             (record-contradiction! value newval))))
+    (define (forget-my-value retractor)
+      (if (eq? retractor informant)
+          (begin
+            (set! informant #f)
+            (for-each-except retractor inform-about-no-value constraints)
+            'ok)
+          'ignored))
+    (define (connect new-constraint)
+      (begin
+        (if (not-bool (member-eq? new-constraint constraints))
+            (set! constraints (cons new-constraint constraints))
+            'ignored)
+        (if informant
+            (inform-about-value new-constraint)
+            'ok)
+        'ok))
+    (define (dispatch request)
+      (cond ((eq? request 'has-value?) (if informant #t #f))
+            ((eq? request 'value) value)
+            ((eq? request 'set-value!) set-my-value)
+            ((eq? request 'forget) forget-my-value)
+            ((eq? request 'connect) connect)
+            ((eq? request 'informant) informant)
+            (else (error "Unknown operation -- CONNECTOR" request))))
+    dispatch))
+
+(define (has-value? connector) (connector 'has-value?))
+(define (get-value connector) (connector 'value))
+(define (set-value! connector value informant)
+  ((connector 'set-value!) value informant))
+(define (forget-value! connector retractor)
+  ((connector 'forget) retractor))
+(define (connect connector constraint)
+  ((connector 'connect) constraint))
+
+(define (adder a1 a2 sum)
+  (let ((me #f))
+    (define (process-new-value)
+      (cond ((and (has-value? a1) (has-value? a2))
+             (set-value! sum (+ (get-value a1) (get-value a2)) me))
+            ((and (has-value? a1) (has-value? sum))
+             (set-value! a2 (- (get-value sum) (get-value a1)) me))
+            ((and (has-value? a2) (has-value? sum))
+             (set-value! a1 (- (get-value sum) (get-value a2)) me))
+            (else 'ignored)))
+    (define (process-forget-value)
+      (forget-value! sum me)
+      (forget-value! a1 me)
+      (forget-value! a2 me)
+      (process-new-value))
+    (set! me
+          (make-constraint
+           'adder
+           (lambda (request)
+             (cond ((eq? request 'I-have-a-value) (process-new-value))
+                   ((eq? request 'I-lost-my-value) (process-forget-value))
+                   (else (error "Unknown request -- ADDER" request))))))
+    (connect a1 me)
+    (connect a2 me)
+    (connect sum me)
+    me))
+
+(define (multiplier m1 m2 product)
+  (let ((me #f))
+    (define (process-new-value)
+      (cond ((and (has-value? m1) (= (get-value m1) 0))
+             (set-value! product 0 me))
+            ((and (has-value? m2) (= (get-value m2) 0))
+             (set-value! product 0 me))
+            ((and (has-value? m1) (has-value? m2))
+             (set-value! product (* (get-value m1) (get-value m2)) me))
+            ((and (has-value? product)
+                  (has-value? m1)
+                  (not-bool (= (get-value m1) 0)))
+             (set-value! m2 (/ (get-value product) (get-value m1)) me))
+            ((and (has-value? product)
+                  (has-value? m2)
+                  (not-bool (= (get-value m2) 0)))
+             (set-value! m1 (/ (get-value product) (get-value m2)) me))
+            (else 'ignored)))
+    (define (process-forget-value)
+      (forget-value! product me)
+      (forget-value! m1 me)
+      (forget-value! m2 me)
+      (process-new-value))
+    (set! me
+          (make-constraint
+           'multiplier
+           (lambda (request)
+             (cond ((eq? request 'I-have-a-value) (process-new-value))
+                   ((eq? request 'I-lost-my-value) (process-forget-value))
+                   (else (error "Unknown request -- MULTIPLIER" request))))))
+    (connect m1 me)
+    (connect m2 me)
+    (connect product me)
+    me))
+
+(define (constant value connector)
+  (let ((me #f))
+    (set! me
+          (make-constraint
+           'constant
+           (lambda (request) 'ignored)))
+    (connect connector me)
+    (set-value! connector value me)
+    me))
+
+;; Probe-like observation constraint.  It records state inside the program
+;; instead of depending on the textual order in which `probe` would print.
+(define (make-observer name connector)
+  (let ((known? #f)
+        (last-value 0)
+        (events '()))
+    (define (record-value)
+      (set! known? #t)
+      (set! last-value (get-value connector))
+      (set! events (cons (list name 'value last-value) events))
+      'ok)
+    (define (record-forget)
+      (set! known? #f)
+      (set! events (cons (list name 'forgotten) events))
+      'ok)
+    (let ((me #f))
+      (set! me
+            (make-constraint
+             name
+             (lambda (request)
+               (cond ((eq? request 'I-have-a-value) (record-value))
+                     ((eq? request 'I-lost-my-value) (record-forget))
+                     ((eq? request 'known?) known?)
+                     ((eq? request 'last-value) last-value)
+                     ((eq? request 'event-count) (length-list events))
+                     ((eq? request 'events) (reverse-list events))
+                     (else (error "Unknown request -- OBSERVER" request))))))
+      (connect connector me)
+      me)))
+
+(define (observer-known? observer) (tell-constraint observer 'known?))
+(define (observer-last-value observer) (tell-constraint observer 'last-value))
+(define (observer-event-count observer) (tell-constraint observer 'event-count))
+(define (observer-events observer) (tell-constraint observer 'events))
+
+(define (celsius-fahrenheit-converter c f)
+  (let ((u (make-connector))
+        (v (make-connector))
+        (w (make-connector))
+        (x (make-connector))
+        (y (make-connector)))
+    (multiplier c w u)
+    (multiplier v x u)
+    (adder v y f)
+    (constant 9 w)
+    (constant 5 x)
+    (constant 32 y)
+    0))
+
+;; ---- connectors, informants, retraction, and observation ----
+(define direct (make-connector))
+(define direct-observer (make-observer 'direct direct))
+(check "connector initially empty" #f (has-value? direct))
+(check "observer initially unknown" #f (observer-known? direct-observer))
+(check "connector accepts source value" 'ok (set-value! direct 10 'user))
+(check "connector has source value" '(#t 10)
+       (list (has-value? direct) (get-value direct)))
+(check "observer records value" '(#t 10 1)
+       (list (observer-known? direct-observer)
+             (observer-last-value direct-observer)
+             (observer-event-count direct-observer)))
+(check "same value from another source ignored" 'ignored
+       (set-value! direct 10 'other-source))
+(check "same value does not notify observer" 1
+       (observer-event-count direct-observer))
+(check "wrong retractor ignored" 'ignored
+       (forget-value! direct 'other-source))
+(check "wrong retractor keeps value" '(#t 10 1)
+       (list (has-value? direct)
+             (get-value direct)
+             (observer-event-count direct-observer)))
+(check "right retractor forgets" 'ok (forget-value! direct 'user))
+(check "observer records forget" '((direct value 10) (direct forgotten))
+       (observer-events direct-observer))
+(check "retraction permits new informant" 'ok
+       (set-value! direct 25 'other-source))
+(check "new informant value visible" 25 (get-value direct))
+(check "new informant can retract" 'ok
+       (forget-value! direct 'other-source))
+
+;; ---- contradiction edge case ----
+(define before-conflicts contradiction-count)
+(define conflict (make-connector))
+(check "conflict source sets value" 'ok
+       (set-value! conflict 10 'alpha))
+(check "conflicting source records contradiction" 'contradiction
+       (set-value! conflict 11 'beta))
+(check "contradiction count increments" (+ before-conflicts 1)
+       contradiction-count)
+(check "contradiction preserves old value" '(#t 10)
+       (list (has-value? conflict) (get-value conflict)))
+(check "contradicting source cannot retract" 'ignored
+       (forget-value! conflict 'beta))
+(check "original source retracts after contradiction" 'ok
+       (forget-value! conflict 'alpha))
+(check "new value accepted after retraction" 'ok
+       (set-value! conflict 11 'beta))
+(check "new contradiction value visible" 11 (get-value conflict))
+
+;; ---- adder ----
+(define add-a (make-connector))
+(define add-b (make-connector))
+(define add-sum (make-connector))
+(adder add-a add-b add-sum)
+(set-value! add-a 5 'add-a-user)
+(set-value! add-b 7 'add-b-user)
+(check "adder forward propagation" '(#t 12)
+       (list (has-value? add-sum) (get-value add-sum)))
+(check "adder source retraction accepted" 'ok
+       (forget-value! add-a 'add-a-user))
+(check "adder retracts dependent sum" #f (has-value? add-sum))
+(check "adder leaves unrelated source" '(#t 7)
+       (list (has-value? add-b) (get-value add-b)))
+(check "adder accepts sum from user" 'ok
+       (set-value! add-sum 20 'sum-user))
+(check "adder solves missing addend" '(#t 13)
+       (list (has-value? add-a) (get-value add-a)))
+
+;; ---- multiplier ----
+(define mul-a (make-connector))
+(define mul-b (make-connector))
+(define mul-product (make-connector))
+(multiplier mul-a mul-b mul-product)
+(set-value! mul-a 6 'mul-a-user)
+(set-value! mul-product 42 'product-user)
+(check "multiplier solves missing factor" '(#t 7)
+       (list (has-value? mul-b) (get-value mul-b)))
+(check "product retraction accepted" 'ok
+       (forget-value! mul-product 'product-user))
+(check "product retraction clears computed factor" #f
+       (has-value? mul-b))
+(check "product retraction leaves source factor" '(#t 6)
+       (list (has-value? mul-a) (get-value mul-a)))
+(check "multiplier accepts new source factor" 'ok
+       (set-value! mul-b 8 'mul-b-user))
+(check "multiplier recomputes product" '(#t 48)
+       (list (has-value? mul-product) (get-value mul-product)))
+
+(define mul-x (make-connector))
+(define mul-y (make-connector))
+(define mul-z (make-connector))
+(multiplier mul-x mul-y mul-z)
+(set-value! mul-y 5 'mul-y-user)
+(set-value! mul-z 30 'mul-z-user)
+(check "multiplier solves other factor" '(#t 6)
+       (list (has-value? mul-x) (get-value mul-x)))
+
+(define zero-a (make-connector))
+(define zero-b (make-connector))
+(define zero-product (make-connector))
+(multiplier zero-a zero-b zero-product)
+(set-value! zero-a 0 'zero-user)
+(check "multiplier zero factor sets product" '(#t 0)
+       (list (has-value? zero-product) (get-value zero-product)))
+(set-value! zero-b 123 'zero-b-user)
+(check "zero product remains stable" 0 (get-value zero-product))
+
+;; ---- constant ----
+(define const-x (make-connector))
+(constant 32 const-x)
+(check "constant sets connector" '(#t 32)
+       (list (has-value? const-x) (get-value const-x)))
+(check "constant ignores user retraction" 'ignored
+       (forget-value! const-x 'ordinary-user))
+(check "constant remains after ignored retraction" '(#t 32)
+       (list (has-value? const-x) (get-value const-x)))
+
+;; ---- Celsius/Fahrenheit converter ----
+(define celsius (make-connector))
+(define fahrenheit (make-connector))
+(celsius-fahrenheit-converter celsius fahrenheit)
+(define celsius-observer (make-observer 'celsius celsius))
+(define fahrenheit-observer (make-observer 'fahrenheit fahrenheit))
+(check "set Celsius input" 'ok (set-value! celsius 25 'c-user))
+(check "Celsius to Fahrenheit" '(#t 77)
+       (list (has-value? fahrenheit) (get-value fahrenheit)))
+(check "Fahrenheit observer sees propagated value" '(#t 77)
+       (list (observer-known? fahrenheit-observer)
+             (observer-last-value fahrenheit-observer)))
+(check "forget Celsius input" 'ok (forget-value! celsius 'c-user))
+(check "converter retraction clears Fahrenheit" #f
+       (has-value? fahrenheit))
+(check "Fahrenheit observer sees retraction" #f
+       (observer-known? fahrenheit-observer))
+(check "set Fahrenheit input" 'ok
+       (set-value! fahrenheit 212 'f-user))
+(check "Fahrenheit to Celsius" '(#t 100)
+       (list (has-value? celsius) (get-value celsius)))
+(check "Celsius observer records both directions"
+       '((celsius value 25) (celsius forgotten) (celsius value 100))
+       (observer-events celsius-observer))
+
+(newline)
+(if (= fails 0)
+    (begin (display "ALL-PASS ch3_constraints") (newline))
+    (begin (display "HAS-FAIL ch3_constraints ") (display fails) (newline)))
