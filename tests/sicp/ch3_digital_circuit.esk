@@ -1,0 +1,275 @@
+;; SICP Chapter 3.3.4 - A simulator for digital circuits.
+;;
+;; The SICP agenda stores same-time actions in per-time queues.  This probe uses
+;; an equivalent flat, time-sorted agenda that preserves FIFO order for events
+;; with the same time.  That keeps the event-order behavior deterministic while
+;; staying inside the Scheme subset already used by the SICP probes.
+
+(define fails 0)
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin (display "PASS: ") (display name) (newline))
+      (begin (set! fails (+ fails 1))
+             (display "FAIL: ") (display name)
+             (display " expected=") (display expected)
+             (display " actual=") (display actual)
+             (newline))))
+
+(define (not-bool x) (if x #f #t))
+
+(define (reverse-list xs)
+  (define (iter rest acc)
+    (if (null? rest)
+        acc
+        (iter (cdr rest) (cons (car rest) acc))))
+  (iter xs '()))
+
+(define (add-to-end xs x)
+  (if (null? xs)
+      (list x)
+      (cons (car xs) (add-to-end (cdr xs) x))))
+
+;; ---- agenda ----
+(define (make-agenda) (cons 0 '()))
+(define the-agenda (make-agenda))
+(define (reset-agenda!) (set! the-agenda (make-agenda)) 'ok)
+(define (current-time) (car the-agenda))
+(define (set-current-time! time) (set-car! the-agenda time))
+(define (event-time event) (car event))
+(define (event-action event) (cdr event))
+(define (make-event time action) (cons time action))
+(define (agenda-events) (cdr the-agenda))
+(define (set-agenda-events! events) (set-cdr! the-agenda events))
+(define (empty-agenda?) (null? (agenda-events)))
+(define (first-agenda-item) (car (agenda-events)))
+(define (remove-first-agenda-item!)
+  (set-agenda-events! (cdr (agenda-events)))
+  'ok)
+
+(define (insert-event events new-event)
+  (cond ((null? events) (list new-event))
+        ((< (event-time new-event) (event-time (car events)))
+         (cons new-event events))
+        (else
+         (cons (car events) (insert-event (cdr events) new-event)))))
+
+(define (add-to-agenda! time action)
+  (set-agenda-events! (insert-event (agenda-events) (make-event time action)))
+  'ok)
+
+(define (after-delay delay action)
+  (add-to-agenda! (+ delay (current-time)) action))
+
+(define (propagate)
+  (if (empty-agenda?)
+      'done
+      (let ((first-item (first-agenda-item)))
+        (set-current-time! (event-time first-item))
+        (remove-first-agenda-item!)
+        ((event-action first-item))
+        (propagate))))
+
+;; ---- wires ----
+(define (call-each procedures)
+  (if (null? procedures)
+      'done
+      (begin ((car procedures))
+             (call-each (cdr procedures)))))
+
+(define (make-wire)
+  (let ((signal-value 0)
+        (action-procedures '()))
+    (define (set-my-signal! new-value)
+      (if (not-bool (= signal-value new-value))
+          (begin (set! signal-value new-value)
+                 (call-each action-procedures))
+          'done))
+    (define (accept-action-procedure! proc)
+      (set! action-procedures (add-to-end action-procedures proc))
+      (proc))
+    (define (dispatch m)
+      (cond ((eq? m 'get-signal) signal-value)
+            ((eq? m 'set-signal!) set-my-signal!)
+            ((eq? m 'add-action!) accept-action-procedure!)
+            (else (error "Unknown operation -- WIRE" m))))
+    dispatch))
+
+(define (get-signal wire) (wire 'get-signal))
+(define (set-signal! wire value) ((wire 'set-signal!) value))
+(define (add-action! wire action) ((wire 'add-action!) action))
+
+;; ---- gates ----
+(define inverter-delay 2)
+(define and-gate-delay 3)
+(define or-gate-delay 5)
+
+(define (logical-not s)
+  (cond ((= s 0) 1)
+        ((= s 1) 0)
+        (else (error "Invalid signal -- LOGICAL-NOT" s))))
+
+(define (logical-and a b)
+  (if (and (= a 1) (= b 1)) 1 0))
+
+(define (logical-or a b)
+  (if (or (= a 1) (= b 1)) 1 0))
+
+(define (inverter input output)
+  (define (invert-input)
+    (let ((new-value (logical-not (get-signal input))))
+      (after-delay inverter-delay
+                   (lambda () (set-signal! output new-value)))))
+  (add-action! input invert-input)
+  'ok)
+
+(define (and-gate a1 a2 output)
+  (define (and-action-procedure)
+    (let ((new-value (logical-and (get-signal a1) (get-signal a2))))
+      (after-delay and-gate-delay
+                   (lambda () (set-signal! output new-value)))))
+  (add-action! a1 and-action-procedure)
+  (add-action! a2 and-action-procedure)
+  'ok)
+
+(define (or-gate a1 a2 output)
+  (define (or-action-procedure)
+    (let ((new-value (logical-or (get-signal a1) (get-signal a2))))
+      (after-delay or-gate-delay
+                   (lambda () (set-signal! output new-value)))))
+  (add-action! a1 or-action-procedure)
+  (add-action! a2 or-action-procedure)
+  'ok)
+
+;; ---- adders ----
+(define (half-adder a b s c)
+  (let ((d (make-wire))
+        (e (make-wire)))
+    (begin
+      (or-gate a b d)
+      (and-gate a b c)
+      (inverter c e)
+      (and-gate d e s)
+      0)))
+
+(define (full-adder a b c-in sum c-out)
+  (let ((s (make-wire))
+        (c1 (make-wire))
+        (c2 (make-wire)))
+    (begin
+      (half-adder b c-in s c1)
+      (half-adder a s sum c2)
+      (or-gate c1 c2 c-out)
+      0)))
+
+;; ---- direct wire and agenda checks ----
+(reset-agenda!)
+(define wire-log '())
+(define wire-probe (make-wire))
+(add-action! wire-probe (lambda () (set! wire-log (cons (get-signal wire-probe) wire-log))))
+(check "wire action runs when installed" '(0) wire-log)
+(set-signal! wire-probe 1)
+(check "wire action runs after signal change" '(1 0) wire-log)
+(set-signal! wire-probe 1)
+(check "repeated signal set is ignored" '(1 0) wire-log)
+
+(reset-agenda!)
+(define order-log '())
+(define (record! item) (set! order-log (cons item order-log)))
+(after-delay 5 (lambda () (record! 'first-at-5)))
+(after-delay 2 (lambda () (record! 'at-2)))
+(after-delay 5 (lambda () (record! 'second-at-5)))
+(propagate)
+(check "agenda time order and same-time FIFO"
+       '(at-2 first-at-5 second-at-5)
+       (reverse-list order-log))
+(check "agenda advances to final event time" 5 (current-time))
+
+;; ---- primitive gates and propagation delays ----
+(reset-agenda!)
+(define inv-in (make-wire))
+(define inv-out (make-wire))
+(inverter inv-in inv-out)
+(propagate)
+(check "inverter initial output" 1 (get-signal inv-out))
+(define inv-t0 (current-time))
+(set-signal! inv-in 1)
+(propagate)
+(check "inverter output after input high" 0 (get-signal inv-out))
+(check "inverter propagation delay" inverter-delay (- (current-time) inv-t0))
+(define inv-t1 (current-time))
+(set-signal! inv-in 1)
+(propagate)
+(check "same signal does not schedule gate event" inv-t1 (current-time))
+
+(reset-agenda!)
+(define and-a (make-wire))
+(define and-b (make-wire))
+(define and-out (make-wire))
+(and-gate and-a and-b and-out)
+(propagate)
+(define and-t0 (current-time))
+(set-signal! and-a 1)
+(set-signal! and-b 1)
+(propagate)
+(check "and-gate both high" 1 (get-signal and-out))
+(check "and-gate propagation delay" and-gate-delay (- (current-time) and-t0))
+
+(reset-agenda!)
+(define or-a (make-wire))
+(define or-b (make-wire))
+(define or-out (make-wire))
+(or-gate or-a or-b or-out)
+(propagate)
+(define or-t0 (current-time))
+(set-signal! or-a 1)
+(propagate)
+(check "or-gate one high" 1 (get-signal or-out))
+(check "or-gate propagation delay" or-gate-delay (- (current-time) or-t0))
+
+;; ---- composed circuits ----
+(define (run-half-adder a-value b-value)
+  (reset-agenda!)
+  (let ((a (make-wire))
+        (b (make-wire))
+        (s (make-wire))
+        (c (make-wire)))
+    (half-adder a b s c)
+    (set-signal! a a-value)
+    (set-signal! b b-value)
+    (propagate)
+    (list (get-signal s) (get-signal c) (current-time))))
+
+(check "half-adder 0+0" '(0 0 5) (run-half-adder 0 0))
+(check "half-adder 1+0" '(1 0 8) (run-half-adder 1 0))
+(check "half-adder 0+1" '(1 0 8) (run-half-adder 0 1))
+(check "half-adder 1+1" '(0 1 8) (run-half-adder 1 1))
+
+(define (run-full-adder a-value b-value c-value)
+  (reset-agenda!)
+  (let ((a (make-wire))
+        (b (make-wire))
+        (c-in (make-wire))
+        (sum (make-wire))
+        (c-out (make-wire)))
+    (full-adder a b c-in sum c-out)
+    (set-signal! a a-value)
+    (set-signal! b b-value)
+    (set-signal! c-in c-value)
+    (propagate)
+    (list (get-signal sum) (get-signal c-out))))
+
+(check "full-adder truth table"
+       '((0 0) (1 0) (1 0) (0 1) (1 0) (0 1) (0 1) (1 1))
+       (list (run-full-adder 0 0 0)
+             (run-full-adder 0 0 1)
+             (run-full-adder 0 1 0)
+             (run-full-adder 0 1 1)
+             (run-full-adder 1 0 0)
+             (run-full-adder 1 0 1)
+             (run-full-adder 1 1 0)
+             (run-full-adder 1 1 1)))
+
+(newline)
+(if (= fails 0)
+    (begin (display "ALL-PASS ch3_digital_circuit") (newline))
+    (begin (display "HAS-FAIL ch3_digital_circuit ") (display fails) (newline)))
