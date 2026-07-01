@@ -1,0 +1,231 @@
+;; SICP Chapter 4.3.2 - nondeterministic natural-language parser.
+;;
+;; This keeps the textbook grammar shape but represents parser state
+;; explicitly.  A parser returns an amb value whose successful values are
+;; (tree rest-of-input), so backtracking restores input position naturally.
+
+(define fails 0)
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin (display "PASS: ") (display name) (newline))
+      (begin (set! fails (+ fails 1))
+             (display "FAIL: ") (display name)
+             (display " expected=") (display expected)
+             (display " actual=") (display actual)
+             (newline))))
+
+;; ---- amb combinators ----
+(define amb-fail (lambda (succeed fail) (fail)))
+
+(define (amb-return value)
+  (lambda (succeed fail) (succeed value fail)))
+
+(define (amb-bind m f)
+  (lambda (succeed fail)
+    (m (lambda (value fail2) ((f value) succeed fail2)) fail)))
+
+(define (amb-append left right)
+  (lambda (succeed fail)
+    (left succeed (lambda () (right succeed fail)))))
+
+(define (amb-take m limit)
+  (let ((acc '())
+        (remaining limit))
+    (if (= remaining 0)
+        'done
+        (m (lambda (value fail)
+             (set! acc (cons value acc))
+             (set! remaining (- remaining 1))
+             (if (= remaining 0) 'done (fail)))
+           (lambda () 'done)))
+    (reverse acc)))
+
+;; ---- grammar vocabulary ----
+(define articles '(article the a))
+(define nouns '(noun student professor class cat telescope))
+(define verbs '(verb studies lectures eats sleeps))
+(define prepositions '(prep for to in by with))
+
+(define (member-eq? item xs)
+  (cond ((null? xs) #f)
+        ((eq? item (car xs)) #t)
+        (else (member-eq? item (cdr xs)))))
+
+(define (parse-result tree rest) (list tree rest))
+(define (result-tree result) (car result))
+(define (result-rest result) (cadr result))
+
+(define (parse-word word-list tokens)
+  (if (and (not (null? tokens))
+           (member-eq? (car tokens) (cdr word-list)))
+      (amb-return
+       (parse-result (list (car word-list) (car tokens))
+                     (cdr tokens)))
+      amb-fail))
+
+(define (parse-simple-noun-phrase tokens)
+  (amb-bind (parse-word articles tokens)
+    (lambda (article-result)
+      (amb-bind (parse-word nouns (result-rest article-result))
+        (lambda (noun-result)
+          (amb-return
+           (parse-result
+            (list 'simple-noun-phrase
+                  (result-tree article-result)
+                  (result-tree noun-result))
+            (result-rest noun-result))))))))
+
+(define (parse-prepositional-phrase tokens)
+  (amb-bind (parse-word prepositions tokens)
+    (lambda (prep-result)
+      (amb-bind (parse-noun-phrase (result-rest prep-result))
+        (lambda (noun-phrase-result)
+          (amb-return
+           (parse-result
+            (list 'prep-phrase
+                  (result-tree prep-result)
+                  (result-tree noun-phrase-result))
+            (result-rest noun-phrase-result))))))))
+
+(define (extend-noun-phrase noun-phrase tokens)
+  (amb-bind (parse-prepositional-phrase tokens)
+    (lambda (prep-result)
+      (let ((extended
+             (list 'noun-phrase
+                   noun-phrase
+                   (result-tree prep-result))))
+        (amb-append
+         (amb-return (parse-result extended (result-rest prep-result)))
+         (extend-noun-phrase extended (result-rest prep-result)))))))
+
+(define (parse-noun-phrase tokens)
+  (amb-bind (parse-simple-noun-phrase tokens)
+    (lambda (simple-result)
+      (amb-append
+       (amb-return simple-result)
+       (extend-noun-phrase (result-tree simple-result)
+                           (result-rest simple-result))))))
+
+(define (extend-verb-phrase verb-phrase tokens)
+  (amb-bind (parse-prepositional-phrase tokens)
+    (lambda (prep-result)
+      (let ((extended
+             (list 'verb-phrase
+                   verb-phrase
+                   (result-tree prep-result))))
+        (amb-append
+         (amb-return (parse-result extended (result-rest prep-result)))
+         (extend-verb-phrase extended (result-rest prep-result)))))))
+
+(define (parse-verb-phrase tokens)
+  (amb-bind (parse-word verbs tokens)
+    (lambda (verb-result)
+      (amb-append
+       (amb-return verb-result)
+       (extend-verb-phrase (result-tree verb-result)
+                           (result-rest verb-result))))))
+
+(define (parse-sentence tokens)
+  (amb-bind (parse-noun-phrase tokens)
+    (lambda (subject-result)
+      (amb-bind (parse-verb-phrase (result-rest subject-result))
+        (lambda (verb-result)
+          (amb-return
+           (parse-result
+            (list 'sentence
+                  (result-tree subject-result)
+                  (result-tree verb-result))
+            (result-rest verb-result))))))))
+
+(define (complete parser tokens)
+  (amb-bind (parser tokens)
+    (lambda (result)
+      (if (null? (result-rest result))
+          (amb-return (result-tree result))
+          amb-fail))))
+
+(define (complete-parses parser tokens limit)
+  (amb-take (complete parser tokens) limit))
+
+(define (sentence-parses tokens limit)
+  (complete-parses parse-sentence tokens limit))
+
+;; ---- focused parser checks ----
+(check "simple noun phrase"
+       '((simple-noun-phrase (article the) (noun professor)))
+       (complete-parses parse-noun-phrase '(the professor) 5))
+
+(check "noun phrase with preposition"
+       '((noun-phrase
+          (simple-noun-phrase (article the) (noun student))
+          (prep-phrase
+           (prep with)
+           (simple-noun-phrase (article the) (noun telescope)))))
+       (complete-parses parse-noun-phrase
+                        '(the student with the telescope)
+                        5))
+
+(check "verb phrase with preposition"
+       '((verb-phrase
+          (verb lectures)
+          (prep-phrase
+           (prep to)
+           (simple-noun-phrase (article the) (noun student)))))
+       (complete-parses parse-verb-phrase
+                        '(lectures to the student)
+                        5))
+
+(check "prepositional phrase"
+       '((prep-phrase
+          (prep in)
+          (simple-noun-phrase (article the) (noun class))))
+       (complete-parses parse-prepositional-phrase
+                        '(in the class)
+                        5))
+
+(check "ambiguous sentence backtracks"
+       '((sentence
+          (simple-noun-phrase (article the) (noun professor))
+          (verb-phrase
+           (verb-phrase
+            (verb lectures)
+            (prep-phrase
+             (prep to)
+             (simple-noun-phrase (article the) (noun student))))
+           (prep-phrase
+            (prep in)
+            (simple-noun-phrase (article the) (noun class)))))
+         (sentence
+          (simple-noun-phrase (article the) (noun professor))
+          (verb-phrase
+           (verb lectures)
+           (prep-phrase
+            (prep to)
+            (noun-phrase
+             (simple-noun-phrase (article the) (noun student))
+             (prep-phrase
+              (prep in)
+              (simple-noun-phrase (article the) (noun class))))))))
+       (sentence-parses
+        '(the professor lectures to the student in the class)
+        10))
+
+(check "bounded parse collection"
+       2
+       (length
+        (sentence-parses
+         '(the professor lectures to the student in the class with the telescope)
+         2)))
+
+(check "unknown word failure"
+       '()
+       (sentence-parses '(the professor explains) 5))
+
+(check "leftover input failure"
+       '()
+       (sentence-parses '(the professor lectures quickly) 5))
+
+(display "ch4 amb parser: ")
+(display (if (= fails 0) "ALL PASS" (cons fails 'FAILS)))
+(newline)
+(if (> fails 0) (exit 1) (exit 0))

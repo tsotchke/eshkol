@@ -1,0 +1,228 @@
+;; SICP Chapter 4.3 - ambeval and driver-loop retry semantics.
+;;
+;; This is a compact success/failure-continuation evaluator.  It supports the
+;; pieces needed for nondeterministic programs: quote, if, lambda, begin,
+;; define, application, amb, and require.  The driver state stores the failure
+;; continuation from each success so "try again" resumes the search.
+
+(define fails 0)
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin (display "PASS: ") (display name) (newline))
+      (begin (set! fails (+ fails 1))
+             (display "FAIL: ") (display name)
+             (display " expected=") (display expected)
+             (display " actual=") (display actual)
+             (newline))))
+
+(define (tagged? exp tag) (and (pair? exp) (eq? (car exp) tag)))
+(define (true? value) (not (eq? value #f)))
+
+;; ---- environment model ----
+(define (lookup var env)
+  (if (null? env)
+      (error "unbound" var)
+      (let loop ((vars (caar env)) (vals (cdar env)))
+        (cond ((null? vars) (lookup var (cdr env)))
+              ((eq? (car vars) var) (car vals))
+              (else (loop (cdr vars) (cdr vals)))))))
+
+(define (define-var! var val env)
+  (set-car! (car env) (cons var (caar env)))
+  (set-cdr! (car env) (cons val (cdar env)))
+  'ok)
+
+(define (extend-env vars vals env)
+  (cons (cons vars vals) env))
+
+(define (base-env)
+  (list (cons (list '+ '- '* '= '< '> 'cons 'car 'cdr 'null? 'list)
+              (list +
+                    -
+                    *
+                    (lambda (a b) (if (= a b) #t #f))
+                    (lambda (a b) (if (< a b) #t #f))
+                    (lambda (a b) (if (> a b) #t #f))
+                    cons
+                    car
+                    cdr
+                    (lambda (x) (if (null? x) #t #f))
+                    list))))
+
+;; ---- ambeval ----
+(define (eval-sequence exps env succeed fail)
+  (cond ((null? exps) (succeed 'ok fail))
+        ((null? (cdr exps)) (ambeval (car exps) env succeed fail))
+        (else
+         (ambeval (car exps)
+                  env
+                  (lambda (ignored fail2)
+                    (eval-sequence (cdr exps) env succeed fail2))
+                  fail))))
+
+(define (list-of-values exps env succeed fail)
+  (if (null? exps)
+      (succeed '() fail)
+      (ambeval (car exps)
+               env
+               (lambda (arg fail2)
+                 (list-of-values
+                  (cdr exps)
+                  env
+                  (lambda (args fail3)
+                    (succeed (cons arg args) fail3))
+                  fail2))
+               fail)))
+
+(define (mapply proc args succeed fail)
+  (cond ((procedure? proc)
+         (succeed (apply proc args) fail))
+        ((tagged? proc 'closure)
+         (eval-sequence (caddr proc)
+                        (extend-env (cadr proc) args (cadddr proc))
+                        succeed
+                        fail))
+        (else (error "not-applicable" proc))))
+
+(define (eval-amb choices env succeed fail)
+  (if (null? choices)
+      (fail)
+      (ambeval (car choices)
+               env
+               succeed
+               (lambda ()
+                 (eval-amb (cdr choices) env succeed fail)))))
+
+(define (eval-require exp env succeed fail)
+  (ambeval (cadr exp)
+           env
+           (lambda (predicate-value fail2)
+             (if (true? predicate-value)
+                 (succeed 'ok fail2)
+                 (fail2)))
+           fail))
+
+(define (ambeval exp env succeed fail)
+  (cond ((number? exp) (succeed exp fail))
+        ((boolean? exp) (succeed exp fail))
+        ((symbol? exp) (succeed (lookup exp env) fail))
+        ((tagged? exp 'quote) (succeed (cadr exp) fail))
+        ((tagged? exp 'if)
+         (ambeval (cadr exp)
+                  env
+                  (lambda (predicate-value fail2)
+                    (if (true? predicate-value)
+                        (ambeval (caddr exp) env succeed fail2)
+                        (ambeval (cadddr exp) env succeed fail2)))
+                  fail))
+        ((tagged? exp 'lambda)
+         (succeed (list 'closure (cadr exp) (cddr exp) env) fail))
+        ((tagged? exp 'begin)
+         (eval-sequence (cdr exp) env succeed fail))
+        ((tagged? exp 'define)
+         (ambeval (caddr exp)
+                  env
+                  (lambda (value fail2)
+                    (succeed (define-var! (cadr exp) value env) fail2))
+                  fail))
+        ((tagged? exp 'amb)
+         (eval-amb (cdr exp) env succeed fail))
+        ((tagged? exp 'require)
+         (eval-require exp env succeed fail))
+        (else
+         (ambeval (car exp)
+                  env
+                  (lambda (proc fail2)
+                    (list-of-values
+                     (cdr exp)
+                     env
+                     (lambda (args fail3)
+                       (mapply proc args succeed fail3))
+                     fail2))
+                  fail))))
+
+;; ---- retryable driver loop ----
+(define (driver-first exp env)
+  (ambeval exp
+           env
+           (lambda (value next-fail) (list 'value value next-fail))
+           (lambda () (list 'exhausted))))
+
+(define (driver-try-again state)
+  (if (eq? (car state) 'value)
+      ((caddr state))
+      (list 'exhausted)))
+
+(define (driver-state-status state) (car state))
+(define (driver-state-value state)
+  (if (eq? (car state) 'value) (cadr state) 'exhausted))
+
+(define (reverse-list xs)
+  (define (iter rest acc)
+    (if (null? rest)
+        acc
+        (iter (cdr rest) (cons (car rest) acc))))
+  (iter xs '()))
+
+(define (driver-values exp env limit)
+  (define (loop state remaining acc)
+    (cond ((= remaining 0) (reverse-list acc))
+          ((eq? (driver-state-status state) 'exhausted)
+           (reverse-list acc))
+          ((= remaining 1)
+           (reverse-list (cons (driver-state-value state) acc)))
+          (else
+           (loop (driver-try-again state)
+                 (- remaining 1)
+                 (cons (driver-state-value state) acc)))))
+  (loop (driver-first exp env) limit '()))
+
+(define e (base-env))
+
+(check "amb first success"
+       1
+       (driver-state-value (driver-first '(amb 1 2 3) e)))
+
+(check "bounded driver collection"
+       '(1 2)
+       (driver-values '(amb 1 2 3) e 2))
+
+(check "amb application argument cross-product"
+       '(11 21 12 22)
+       (driver-values '(+ (amb 1 2) (amb 10 20)) e 5))
+
+(define filtered-state
+  (driver-first
+   '((lambda (x)
+       (begin
+        (require (> x 1))
+        x))
+     (amb 1 2 3))
+   e))
+
+(check "require backtracks before first success"
+       2
+       (driver-state-value filtered-state))
+
+(define filtered-state-2 (driver-try-again filtered-state))
+(check "driver try-again resumes search"
+       3
+       (driver-state-value filtered-state-2))
+
+(check "driver reports exhaustion"
+       'exhausted
+       (driver-state-status (driver-try-again filtered-state-2)))
+
+(check "empty amb fails"
+       'exhausted
+       (driver-state-status (driver-first '(amb) e)))
+
+(check "require failure edge"
+       'exhausted
+       (driver-state-status
+        (driver-first '(begin (require #f) 99) e)))
+
+(display "ch4 amb evaluator: ")
+(display (if (= fails 0) "ALL PASS" (cons fails 'FAILS)))
+(newline)
+(if (> fails 0) (exit 1) (exit 0))
