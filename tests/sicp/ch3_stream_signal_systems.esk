@@ -1,0 +1,165 @@
+;; SICP Chapter 3.5.4 -- streams as signals.
+;;
+;; This smoke probe uses native delay/force streams, including the delayed
+;; integrator shape from SICP.  Every check observes a deterministic finite
+;; prefix so the full-book gate does not depend on unbounded stream demand.
+
+(define fails 0)
+(define (check name ok)
+  (if ok (begin (display "PASS: ") (display name) (newline))
+      (begin (set! fails (+ fails 1)) (display "FAIL: ") (display name) (newline))))
+
+(define (close-list? xs ys tolerance)
+  (cond ((and (null? xs) (null? ys)) #t)
+        ((or (null? xs) (null? ys)) #f)
+        ((< (abs (- (car xs) (car ys))) tolerance)
+         (close-list? (cdr xs) (cdr ys) tolerance))
+        (else #f)))
+
+;; ---- stream primitives (3.5.1) ----
+(define-syntax cons-stream (syntax-rules () ((_ a b) (cons a (delay b)))))
+(define (stream-car s) (car s))
+(define (stream-cdr s) (force (cdr s)))
+(define the-empty-stream '())
+(define (stream-null? s) (null? s))
+(define (stream-ref s n)
+  (if (= n 0) (stream-car s) (stream-ref (stream-cdr s) (- n 1))))
+(define (stream-take s n)
+  (if (or (= n 0) (stream-null? s))
+      '()
+      (cons (stream-car s) (stream-take (stream-cdr s) (- n 1)))))
+(define (stream-map proc s)
+  (if (stream-null? s)
+      the-empty-stream
+      (cons-stream (proc (stream-car s)) (stream-map proc (stream-cdr s)))))
+(define (stream-map2 proc s1 s2)
+  (if (or (stream-null? s1) (stream-null? s2))
+      the-empty-stream
+      (cons-stream (proc (stream-car s1) (stream-car s2))
+                   (stream-map2 proc (stream-cdr s1) (stream-cdr s2)))))
+(define (add-streams s1 s2)
+  (cond ((stream-null? s1) s2)
+        ((stream-null? s2) s1)
+        (else (cons-stream (+ (stream-car s1) (stream-car s2))
+                           (add-streams (stream-cdr s1) (stream-cdr s2))))))
+(define (scale-stream s factor)
+  (stream-map (lambda (x) (* x factor)) s))
+(define (list->stream xs)
+  (if (null? xs)
+      the-empty-stream
+      (cons-stream (car xs) (list->stream (cdr xs)))))
+
+;; ---- delayed integrals and integrators (3.5.4) ----
+(define ones (cons-stream 1.0 ones))
+
+(define (integral delayed-integrand initial-value dt)
+  (define int
+    (cons-stream initial-value
+                 (let ((integrand (force delayed-integrand)))
+                   (add-streams (scale-stream integrand dt) int))))
+  int)
+
+(define delayed-source-forces 0)
+(define delayed-source
+  (delay (begin
+           (set! delayed-source-forces (+ delayed-source-forces 1))
+           ones)))
+(define delayed-unity-integral (integral delayed-source 0.0 0.5))
+
+(check "delayed-integral-keeps-source-lazy"
+       (= delayed-source-forces 0))
+(check "delayed-integral-forces-source-on-tail"
+       (begin
+         (stream-cdr delayed-unity-integral)
+         (= delayed-source-forces 1)))
+(check "delayed-integral-memoizes-source"
+       (begin
+         (stream-cdr delayed-unity-integral)
+         (= delayed-source-forces 1)))
+(check "delayed-integral-unity-prefix"
+       (close-list? (stream-take delayed-unity-integral 5)
+                    '(0.0 0.5 1.0 1.5 2.0)
+                    1e-9))
+
+(define (solve f y0 dt)
+  (define y (integral (delay dy) y0 dt))
+  (define dy (stream-map f y))
+  y)
+
+(define euler-exp (solve (lambda (y) y) 1.0 0.1))
+(check "delayed-integrator-self-reference-prefix"
+       (close-list? (stream-take euler-exp 5)
+                    '(1.0 1.1 1.21 1.331 1.4641)
+                    1e-9))
+
+;; ---- RC and RLC signal systems (exercises 3.73 and 3.80) ----
+(define (RC R C dt)
+  (lambda (current v0)
+    (add-streams (scale-stream current R)
+                 (integral (delay (scale-stream current (/ 1.0 C))) v0 dt))))
+
+(define rc-response ((RC 5.0 2.0 0.5) ones 1.0))
+(check "rc-step-response-prefix"
+       (close-list? (stream-take rc-response 5)
+                    '(6.0 6.25 6.5 6.75 7.0)
+                    1e-9))
+
+(define (RLC R L C dt)
+  (lambda (vc0 il0)
+    (define vc (integral (delay dvc) vc0 dt))
+    (define il (integral (delay dil) il0 dt))
+    (define dvc (scale-stream il (/ -1.0 C)))
+    (define dil (add-streams (scale-stream vc (/ 1.0 L))
+                             (scale-stream il (/ (* -1.0 R) L))))
+    (cons vc il)))
+
+(define rlc-state ((RLC 1.0 1.0 1.0 0.1) 1.0 0.0))
+(define rlc-vc (car rlc-state))
+(define rlc-il (cdr rlc-state))
+(check "rlc-capacitor-voltage-prefix"
+       (close-list? (stream-take rlc-vc 5)
+                    '(1.0 1.0 0.99 0.971 0.944)
+                    1e-9))
+(check "rlc-inductor-current-prefix"
+       (close-list? (stream-take rlc-il 5)
+                    '(0.0 0.1 0.19 0.27 0.3401)
+                    1e-9))
+
+;; ---- zero crossings and smoothing (3.5.3-3.5.4 signal examples) ----
+;; Exact zero is treated as nonnegative, matching the SICP detector's >= tests.
+(define (sign-change-detector current previous)
+  (cond ((and (< previous 0) (>= current 0)) 1)
+        ((and (>= previous 0) (< current 0)) -1)
+        (else 0)))
+
+(define (make-zero-crossings input-stream)
+  (stream-map2 sign-change-detector input-stream (cons-stream 0 input-stream)))
+
+(define zero-edge-signal
+  (list->stream '(1.0 2.0 1.0 0.0 -1.0 -2.0 -1.0 0.0
+                  1.0 2.0 -1.0 0.0 -0.5 0.0 0.75)))
+(check "zero-crossings-exact-zero-edges"
+       (equal? (stream-take (make-zero-crossings zero-edge-signal) 15)
+               '(0 0 0 0 -1 0 0 1 0 0 -1 1 -1 1 0)))
+
+(define (average x y) (/ (+ x y) 2.0))
+(define (smooth s)
+  (if (or (stream-null? s) (stream-null? (stream-cdr s)))
+      the-empty-stream
+      (cons-stream (average (stream-car s) (stream-car (stream-cdr s)))
+                   (smooth (stream-cdr s)))))
+
+(define noisy-single-sample-flip (list->stream '(1.0 -1.0 1.0 1.0 1.0)))
+(define smoothed-flip (smooth noisy-single-sample-flip))
+(check "smooth-pairwise-average-prefix"
+       (close-list? (stream-take smoothed-flip 4)
+                    '(0.0 0.0 1.0 1.0)
+                    1e-9))
+(check "smoothed-zero-crossings-suppress-spike"
+       (equal? (stream-take (make-zero-crossings smoothed-flip) 4)
+               '(0 0 0 0)))
+
+(newline)
+(if (= fails 0)
+    (begin (display "ALL-PASS ch3_stream_signal_systems") (newline))
+    (begin (display "HAS-FAIL ch3_stream_signal_systems ") (display fails) (newline)))
