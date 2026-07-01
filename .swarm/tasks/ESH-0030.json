@@ -35,5 +35,6 @@
     "./scripts/run_sicp_smoke.sh",
     "/Users/tyr/Desktop/infinite_context_coder/bin/icc completion-oracle --repo eshkol_lang --target sicp-completeness --trace-dir scripts/icc_traces --format json"
   ],
+  "status_note": "Implemented on PR #103 as tests/sicp/ch4_query_system.esk. Focused JIT and AOT checks pass for frames, unification, rules with fresh variables, and/or/not, lisp-value, recursive outranked-by, and company-database queries. Awaiting full SICP smoke/ICC gate before marking done.",
   "ux_payoff": "Turns SICP's logic programming chapter into executable release evidence and stress-tests unification/backtracking behavior."
 }

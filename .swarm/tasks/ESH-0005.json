@@ -51,7 +51,7 @@
     "/Users/tyr/Desktop/infinite_context_coder/bin/icc readiness --repo eshkol_lang --target v1.3-evolve --trace-dir scripts/icc_traces --format json",
     "/Users/tyr/Desktop/infinite_context_coder/bin/icc completion-oracle --repo eshkol_lang --target sicp-completeness --trace-dir scripts/icc_traces"
   ],
-  "status_note": "Current implemented corpus is green but incomplete. The full-book release gate is intentionally red until every manifest-required blocker has a runnable probe under both JIT and AOT, including the newly exposed ESH-0038 through ESH-0051 coverage gaps. Existing implemented subset remains regression coverage, not sufficient release evidence.",
+  "status_note": "PR #102 made missing manifest-required SICP probes hard gate failures. PR #103 now carries all 22 required full-book probes, including the final ch4_query_system, ch5_storage_gc, ch5_explicit_control_evaluator, and ch5_compiler probes, each focused-verified under JIT and AOT. Remaining merge/release gate is the full scripts/run_sicp_smoke.sh corpus and ICC sicp-completeness evidence.",
   "ux_payoff": "Turns 'we can reproduce SICP in Eshkol' into a literal full-book property, then uses Eshkol's JIT/AOT and stress coverage to exceed the book examples.",
   "downstream_tasks": [
     "ESH-0029",

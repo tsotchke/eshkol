@@ -1,0 +1,371 @@
+;; SICP Chapter 5.4 - explicit-control evaluator.
+;; This probe runs a bounded evaluator with the book's evaluator registers
+;; (exp/env/val/proc/argl/unev/continue), explicit save/restore stack, and
+;; eval/apply dispatch labels.  It exercises self-evaluation, definitions,
+;; mutation, conditionals, compound procedures, lexical closures, and recursion.
+
+(define fails 0)
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin (display "PASS: ") (display name) (newline))
+      (begin (set! fails (+ fails 1))
+             (display "FAIL: ") (display name)
+             (display " expected=") (display expected)
+             (display " actual=") (display actual)
+             (newline))))
+
+(define (tagged? exp tag) (and (pair? exp) (eq? (car exp) tag)))
+(define (true? value) (not (eq? value #f)))
+
+;; ---- environment model ----
+(define (lookup-variable-value var env)
+  (if (null? env)
+      (error "unbound variable" var)
+      (let loop-frame ((vars (caar env)) (vals (cdar env)))
+        (cond ((null? vars) (lookup-variable-value var (cdr env)))
+              ((eq? (car vars) var) (car vals))
+              (else (loop-frame (cdr vars) (cdr vals)))))))
+
+(define (define-variable! var val env)
+  (set-car! (car env) (cons var (caar env)))
+  (set-cdr! (car env) (cons val (cdar env)))
+  'ok)
+
+(define (set-variable-value! var val env)
+  (let loop-env ((frames env))
+    (if (null? frames)
+        (error "unbound set!" var)
+        (let loop-frame ((vars (caar frames)) (vals (cdar frames)))
+          (cond ((null? vars) (loop-env (cdr frames)))
+                ((eq? (car vars) var) (begin (set-car! vals val) 'ok))
+                (else (loop-frame (cdr vars) (cdr vals))))))))
+
+(define (extend-environment vars vals base-env)
+  (cons (cons vars vals) base-env))
+
+;; ---- expression syntax ----
+(define (self-evaluating? exp) (or (number? exp) (boolean? exp) (string? exp)))
+(define (quoted? exp) (tagged? exp 'quote))
+(define (text-of-quotation exp) (cadr exp))
+(define (assignment? exp) (tagged? exp 'set!))
+(define (assignment-variable exp) (cadr exp))
+(define (assignment-value exp) (caddr exp))
+(define (definition? exp) (tagged? exp 'define))
+(define (make-lambda parameters body) (cons 'lambda (cons parameters body)))
+(define (definition-variable exp)
+  (if (symbol? (cadr exp)) (cadr exp) (caadr exp)))
+(define (definition-value exp)
+  (if (symbol? (cadr exp))
+      (caddr exp)
+      (make-lambda (cdadr exp) (cddr exp))))
+(define (lambda? exp) (tagged? exp 'lambda))
+(define (lambda-parameters exp) (cadr exp))
+(define (lambda-body exp) (cddr exp))
+(define (if? exp) (tagged? exp 'if))
+(define (if-predicate exp) (cadr exp))
+(define (if-consequent exp) (caddr exp))
+(define (if-alternative exp) (if (null? (cdddr exp)) 'ok (cadddr exp)))
+(define (begin? exp) (tagged? exp 'begin))
+(define (begin-actions exp) (cdr exp))
+(define (application? exp) (pair? exp))
+(define (operator exp) (car exp))
+(define (operands exp) (cdr exp))
+(define (no-operands? ops) (null? ops))
+(define (first-operand ops) (car ops))
+(define (rest-operands ops) (cdr ops))
+(define (last-operand? ops) (null? (cdr ops)))
+(define (empty-arglist) '())
+(define (adjoin-arg arg arglist) (append arglist (list arg)))
+
+(define (make-procedure parameters body env)
+  (list 'compound-procedure parameters body env))
+(define (compound-procedure? proc) (tagged? proc 'compound-procedure))
+(define (procedure-parameters proc) (cadr proc))
+(define (procedure-body proc) (caddr proc))
+(define (procedure-environment proc) (cadddr proc))
+
+;; ---- evaluator registers and stack ----
+(define exp-reg 'unassigned)
+(define env-reg 'unassigned)
+(define val-reg 'unassigned)
+(define proc-reg 'unassigned)
+(define argl-reg 'unassigned)
+(define unev-reg 'unassigned)
+(define continue-reg 'unassigned)
+
+(define stack-contents '())
+(define stack-depth 0)
+(define stack-max-depth 0)
+(define stack-pushes 0)
+
+(define (initialize-stack!)
+  (set! stack-contents '())
+  (set! stack-depth 0)
+  (set! stack-max-depth 0)
+  (set! stack-pushes 0)
+  'ok)
+
+(define (save! name value)
+  (set! stack-contents (cons (cons name value) stack-contents))
+  (set! stack-depth (+ stack-depth 1))
+  (if (> stack-depth stack-max-depth)
+      (set! stack-max-depth stack-depth))
+  (set! stack-pushes (+ stack-pushes 1))
+  'ok)
+
+(define (restore! name)
+  (let ((top stack-contents))
+    (cond ((null? top) (error "empty stack" name))
+          ((not (eq? (caar top) name))
+           (error "restore mismatch" (list name (caar top))))
+          (else
+           (set! stack-contents (cdr stack-contents))
+           (set! stack-depth (- stack-depth 1))
+           (cdar top)))))
+
+(define (primitive-procedure? proc) (procedure? proc))
+(define (apply-primitive-procedure proc args) (apply proc args))
+
+(define (apply-continuation)
+  (cond ((eq? continue-reg 'done) val-reg)
+        ((eq? continue-reg 'ev-if-decide) (ev-if-decide))
+        ((eq? continue-reg 'ev-assignment-1) (ev-assignment-1))
+        ((eq? continue-reg 'ev-definition-1) (ev-definition-1))
+        ((eq? continue-reg 'ev-sequence-continue) (ev-sequence-continue))
+        ((eq? continue-reg 'ev-appl-did-operator) (ev-appl-did-operator))
+        ((eq? continue-reg 'ev-appl-accumulate-arg) (ev-appl-accumulate-arg))
+        ((eq? continue-reg 'ev-appl-accum-last-arg) (ev-appl-accum-last-arg))
+        (else (error "bad continue label" continue-reg))))
+
+(define (eval-dispatch)
+  (cond ((self-evaluating? exp-reg)
+         (set! val-reg exp-reg)
+         (apply-continuation))
+        ((symbol? exp-reg)
+         (set! val-reg (lookup-variable-value exp-reg env-reg))
+         (apply-continuation))
+        ((quoted? exp-reg)
+         (set! val-reg (text-of-quotation exp-reg))
+         (apply-continuation))
+        ((lambda? exp-reg)
+         (set! val-reg (make-procedure (lambda-parameters exp-reg)
+                                       (lambda-body exp-reg)
+                                       env-reg))
+         (apply-continuation))
+        ((if? exp-reg) (ev-if))
+        ((assignment? exp-reg) (ev-assignment))
+        ((definition? exp-reg) (ev-definition))
+        ((begin? exp-reg)
+         (set! unev-reg (begin-actions exp-reg))
+         (ev-sequence))
+        ((application? exp-reg) (ev-application))
+        (else (error "unknown expression" exp-reg))))
+
+(define (ev-if)
+  (save! 'exp exp-reg)
+  (save! 'env env-reg)
+  (save! 'continue continue-reg)
+  (set! continue-reg 'ev-if-decide)
+  (set! exp-reg (if-predicate exp-reg))
+  (eval-dispatch))
+
+(define (ev-if-decide)
+  (set! continue-reg (restore! 'continue))
+  (set! env-reg (restore! 'env))
+  (set! exp-reg (restore! 'exp))
+  (if (true? val-reg)
+      (set! exp-reg (if-consequent exp-reg))
+      (set! exp-reg (if-alternative exp-reg)))
+  (eval-dispatch))
+
+(define (ev-assignment)
+  (save! 'exp exp-reg)
+  (save! 'env env-reg)
+  (save! 'continue continue-reg)
+  (set! continue-reg 'ev-assignment-1)
+  (set! exp-reg (assignment-value exp-reg))
+  (eval-dispatch))
+
+(define (ev-assignment-1)
+  (set! continue-reg (restore! 'continue))
+  (set! env-reg (restore! 'env))
+  (set! exp-reg (restore! 'exp))
+  (set-variable-value! (assignment-variable exp-reg) val-reg env-reg)
+  (set! val-reg 'ok)
+  (apply-continuation))
+
+(define (ev-definition)
+  (save! 'exp exp-reg)
+  (save! 'env env-reg)
+  (save! 'continue continue-reg)
+  (set! continue-reg 'ev-definition-1)
+  (set! exp-reg (definition-value exp-reg))
+  (eval-dispatch))
+
+(define (ev-definition-1)
+  (set! continue-reg (restore! 'continue))
+  (set! env-reg (restore! 'env))
+  (set! exp-reg (restore! 'exp))
+  (define-variable! (definition-variable exp-reg) val-reg env-reg)
+  (set! val-reg 'ok)
+  (apply-continuation))
+
+(define (ev-sequence)
+  (cond ((null? unev-reg)
+         (set! val-reg 'ok)
+         (apply-continuation))
+        ((last-operand? unev-reg)
+         (set! exp-reg (first-operand unev-reg))
+         (eval-dispatch))
+        (else
+         (save! 'unev unev-reg)
+         (save! 'env env-reg)
+         (save! 'continue continue-reg)
+         (set! continue-reg 'ev-sequence-continue)
+         (set! exp-reg (first-operand unev-reg))
+         (eval-dispatch))))
+
+(define (ev-sequence-continue)
+  (set! continue-reg (restore! 'continue))
+  (set! env-reg (restore! 'env))
+  (set! unev-reg (restore! 'unev))
+  (set! unev-reg (rest-operands unev-reg))
+  (ev-sequence))
+
+(define (ev-application)
+  (save! 'continue continue-reg)
+  (save! 'env env-reg)
+  (set! unev-reg (operands exp-reg))
+  (save! 'unev unev-reg)
+  (set! exp-reg (operator exp-reg))
+  (set! continue-reg 'ev-appl-did-operator)
+  (eval-dispatch))
+
+(define (ev-appl-did-operator)
+  (set! unev-reg (restore! 'unev))
+  (set! env-reg (restore! 'env))
+  (set! proc-reg val-reg)
+  (set! argl-reg (empty-arglist))
+  (if (no-operands? unev-reg)
+      (begin
+       (set! continue-reg (restore! 'continue))
+       (apply-dispatch))
+      (begin
+       (save! 'proc proc-reg)
+       (ev-appl-operand-loop))))
+
+(define (ev-appl-operand-loop)
+  (save! 'argl argl-reg)
+  (set! exp-reg (first-operand unev-reg))
+  (if (last-operand? unev-reg)
+      (begin
+       (set! continue-reg 'ev-appl-accum-last-arg)
+       (eval-dispatch))
+      (begin
+       (save! 'env env-reg)
+       (save! 'unev unev-reg)
+       (set! continue-reg 'ev-appl-accumulate-arg)
+       (eval-dispatch))))
+
+(define (ev-appl-accumulate-arg)
+  (set! unev-reg (restore! 'unev))
+  (set! env-reg (restore! 'env))
+  (set! argl-reg (restore! 'argl))
+  (set! argl-reg (adjoin-arg val-reg argl-reg))
+  (set! unev-reg (rest-operands unev-reg))
+  (ev-appl-operand-loop))
+
+(define (ev-appl-accum-last-arg)
+  (set! argl-reg (restore! 'argl))
+  (set! argl-reg (adjoin-arg val-reg argl-reg))
+  (set! proc-reg (restore! 'proc))
+  (set! continue-reg (restore! 'continue))
+  (apply-dispatch))
+
+(define (apply-dispatch)
+  (cond ((primitive-procedure? proc-reg)
+         (set! val-reg (apply-primitive-procedure proc-reg argl-reg))
+         (apply-continuation))
+        ((compound-procedure? proc-reg)
+         (set! unev-reg (procedure-body proc-reg))
+         (set! env-reg (extend-environment (procedure-parameters proc-reg)
+                                           argl-reg
+                                           (procedure-environment proc-reg)))
+         (ev-sequence))
+        (else (error "unknown procedure type" proc-reg))))
+
+(define (base-env)
+  (list (cons (list '+ '- '* '= '< '> 'cons 'car 'cdr 'null? 'list)
+              (list +
+                    -
+                    *
+                    (lambda (a b) (if (= a b) #t #f))
+                    (lambda (a b) (if (< a b) #t #f))
+                    (lambda (a b) (if (> a b) #t #f))
+                    cons
+                    car
+                    cdr
+                    (lambda (x) (if (null? x) #t #f))
+                    list))))
+
+(define (eceval exp env)
+  (initialize-stack!)
+  (set! exp-reg exp)
+  (set! env-reg env)
+  (set! continue-reg 'done)
+  (eval-dispatch))
+
+(define e (base-env))
+
+(check "ece self-eval" 42 (eceval 42 e))
+(check "ece quote" '(a b c) (eceval '(quote (a b c)) e))
+(check "ece primitive application" 17 (eceval '(+ (* 2 6) 5) e))
+(check "ece if false branch" 'no (eceval '(if (> 1 3) (quote yes) (quote no)) e))
+(check "ece lambda application" 81 (eceval '((lambda (x) (* x x)) 9) e))
+
+(check "ece define procedure sugar" 'ok (eceval '(define (square x) (* x x)) e))
+(check "ece defined procedure" 49 (eceval '(square 7) e))
+
+(check "ece define mutable counter" 'ok (eceval '(define counter 0) e))
+(check "ece begin/set! sequence"
+       2
+       (eceval '(begin
+                 (set! counter (+ counter 1))
+                 (set! counter (+ counter 1))
+                 counter)
+               e))
+(check "ece mutation persists in environment" 2 (eceval 'counter e))
+
+(check "ece lexical closure define"
+       'ok
+       (eceval '(define make-adder
+                  (lambda (x)
+                    (lambda (y) (+ x y))))
+               e))
+(check "ece lexical closure application" 15 (eceval '((make-adder 10) 5) e))
+
+(check "ece recursive factorial define"
+       'ok
+       (eceval '(define fact
+                  (lambda (n)
+                    (if (= n 0)
+                        1
+                        (* n (fact (- n 1))))))
+               e))
+(check "ece recursive factorial" 120 (eceval '(fact 5) e))
+(check "ece stack balanced after recursion" 0 stack-depth)
+(check "ece stack used for recursion" #t (> stack-pushes 0))
+(check "ece stack records nesting" #t (> stack-max-depth 0))
+
+(check "ece recursive list length define"
+       'ok
+       (eceval '(define len
+                  (lambda (xs)
+                    (if (null? xs)
+                        0
+                        (+ 1 (len (cdr xs))))))
+               e))
+(check "ece quoted data recursion" 4 (eceval '(len (quote (a b c d))) e))
+
+(display "ch5 explicit-control evaluator: ")
+(display (if (= fails 0) "ALL PASS" (cons fails 'FAILS))) (newline)

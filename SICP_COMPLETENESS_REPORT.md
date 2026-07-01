@@ -14,27 +14,30 @@ Platform: macOS arm64, LLVM 21. Runs guarded with `perl -e 'alarm N; exec @ARGV'
 
 ## Summary
 
-The current implemented subset is useful and should stay green, but it is not
-the release gate. The full-book gate is **red by design** until the missing
-systems below are implemented and pass in both execution modes.
+The manifest-required full-book probes are now present on this branch. The
+release gate is no longer allowed to pass a representative subset: every row in
+the full-book manifest below has a runnable `tests/sicp/*.esk` file, and the
+newly added probes have focused JIT and AOT verification. The full
+`scripts/run_sicp_smoke.sh` corpus remains the final gate/CI check.
 
 | Chapter | Programs | -r | AOT | Notes |
 |---------|----------|----|----|-------|
 | ch1 (building abstractions w/ procedures) | 3 | 3/3 | 3/3 | full |
-| ch2 (building abstractions w/ data)       | 8 implemented + 3 missing | 8/8 | 8/8 | core data/generic probes pass; painters, tower/coercion, and polynomials are required gaps |
-| ch3 (modularity, objects, state)          | 5 implemented + 8 missing | 5/5 | 5/5 | state/streams pass; mutable cycles, circuits, constraints, concurrency, and richer stream systems are required gaps |
-| ch4 (metalinguistic abstraction)          | 4 implemented + 6 missing | 4/4 | 4/4 | metacircular/amb capability probes pass; analyzer, derived forms, lazy, ambeval/parser, and query are required gaps |
-| ch5 (computing with register machines)    | 1 implemented + 5 missing | 1/1 | 1/1 | basic register-machine simulator passes; stack/recursive machines, GC, ECE, compiler are required gaps |
+| ch2 (building abstractions w/ data)       | 11 | focused PASS | focused PASS | includes painters, tower/coercion, and polynomials |
+| ch3 (modularity, objects, state)          | 13 | focused PASS | focused PASS | includes mutation/cycles, circuits, constraints, concurrency, and richer stream systems |
+| ch4 (metalinguistic abstraction)          | 10 | focused PASS | focused PASS | includes analyzer, derived forms, lazy, ambeval/parser, and query |
+| ch5 (computing with register machines)    | 6 | focused PASS | focused PASS | includes stack/recursive machines, storage/GC, ECE, and compiler |
 | repro (codegen-gap probe)                 | 1 | PASS | PASS | first-class predicate regression probe |
 
-**Implemented corpus probes: PASS under both -r and AOT.**
-**Full-book SICP gate: FAIL until the missing systems in the next section are
-implemented.**
+**Manifest-required corpus probes: present and focused-verified under both -r
+and AOT.**
+**Full-book SICP gate: must pass the full smoke harness before merge/release.**
 
-## Required Full-Book Gaps
+## Required Full-Book Probes
 
 These are not optional, not XFAIL, and not "out of scope" for the release gate.
-`scripts/run_sicp_smoke.sh` emits failing ICC events for each missing probe.
+`scripts/run_sicp_smoke.sh` emits failing ICC events for any missing or failing
+probe. On this branch, all required executable files exist.
 
 | Required probe | SICP section | Required executable file |
 |----------------|--------------|--------------------------|
@@ -64,9 +67,8 @@ These are not optional, not XFAIL, and not "out of scope" for the release gate.
 ## Full-Book Coverage Manifest
 
 This manifest is the release checklist. A row marked PASS must be backed by a
-runnable `tests/sicp/*.esk` probe under both JIT and AOT. A row marked BLOCKED
-must name the ESH task that adds the missing probe. The gate is not complete
-while any book-required row is BLOCKED.
+runnable `tests/sicp/*.esk` probe under both JIT and AOT. No book-required row
+is currently marked blocked on this branch.
 
 | Book section / example family | Evidence | Status |
 |-------------------------------|----------|--------|
@@ -75,41 +77,41 @@ while any book-required row is BLOCKED.
 | 1.3 Higher-order procedures | `ch1_higher_order.esk`, `ch1_newton.esk` | PASS |
 | 2.1 Data abstraction | `ch2_rational.esk`, `ch2_interval.esk` | PASS |
 | 2.2 Hierarchical data and closure properties | `ch2_sequences.esk`, `ch2_picture.esk` for list/tree/vector/frame mechanics | PASS |
-| 2.2.4 Picture-language painters/combinators/square-limit | `tests/sicp/ch2_picture_painters.esk` | BLOCKED: ESH-0038 |
+| 2.2.4 Picture-language painters/combinators/square-limit | `tests/sicp/ch2_picture_painters.esk` | PASS |
 | 2.3 Symbolic data | `ch2_symbolic_deriv.esk`, `ch2_sets.esk`, `ch2_huffman.esk` | PASS |
 | 2.4 Multiple representations for abstract data | `ch2_generic.esk` | PASS |
 | 2.5 Systems with generic operations, same-type dispatch | `ch2_generic.esk` | PASS |
-| 2.5 Generic tower/coercion | `tests/sicp/ch2_generic_tower_coercion.esk` | BLOCKED: ESH-0039 |
-| 2.5.3 Polynomial arithmetic / symbolic algebra | `tests/sicp/ch2_polynomial_arithmetic.esk` | BLOCKED: ESH-0040 |
+| 2.5 Generic tower/coercion | `tests/sicp/ch2_generic_tower_coercion.esk` | PASS |
+| 2.5.3 Polynomial arithmetic / symbolic algebra | `tests/sicp/ch2_polynomial_arithmetic.esk` | PASS |
 | 3.1 Assignment and local state | `ch3_accounts.esk`, `ch3_monte_carlo.esk` | PASS |
 | 3.2 Environment model of evaluation | `ch4_metacircular.esk`, `ch4_metacircular_full.esk` exercise environment frames through evaluator behavior | PASS |
 | 3.3.1 Mutable list structure used by queues/tables | `ch3_queue.esk`, `ch3_tables.esk` | PASS |
-| 3.3.1 Mutable pair sharing, append!, cycles, count-pairs examples | `tests/sicp/ch3_mutable_pairs_cycles.esk` | BLOCKED: ESH-0041 |
+| 3.3.1 Mutable pair sharing, append!, cycles, count-pairs examples | `tests/sicp/ch3_mutable_pairs_cycles.esk` | PASS |
 | 3.3.2 Queues | `ch3_queue.esk` | PASS |
 | 3.3.3 Tables | `ch3_tables.esk` | PASS |
-| 3.3.4 Digital-circuit simulator | `tests/sicp/ch3_digital_circuit.esk` | BLOCKED: ESH-0035 |
-| 3.3.5 Constraint propagation | `tests/sicp/ch3_constraints.esk` | BLOCKED: ESH-0036 |
-| 3.4 Concurrency, serializers, and account exchange | `tests/sicp/ch3_concurrency.esk` | BLOCKED: ESH-0037 |
+| 3.3.4 Digital-circuit simulator | `tests/sicp/ch3_digital_circuit.esk` | PASS |
+| 3.3.5 Constraint propagation | `tests/sicp/ch3_constraints.esk` | PASS |
+| 3.4 Concurrency, serializers, and account exchange | `tests/sicp/ch3_concurrency.esk` | PASS |
 | 3.5 Basic streams, infinite streams, sieve, partial sums | `ch3_streams.esk` | PASS |
-| 3.5 Accelerated streams / tableaux | `tests/sicp/ch3_stream_acceleration.esk` | BLOCKED: ESH-0042 |
-| 3.5 Power-series streams | `tests/sicp/ch3_stream_power_series.esk` | BLOCKED: ESH-0043 |
-| 3.5 Stream integrators, signal systems, zero crossings | `tests/sicp/ch3_stream_signal_systems.esk` | BLOCKED: ESH-0044 |
-| 3.5 Random streams / Monte Carlo streams | `tests/sicp/ch3_stream_random_monte_carlo.esk` | BLOCKED: ESH-0045 |
+| 3.5 Accelerated streams / tableaux | `tests/sicp/ch3_stream_acceleration.esk` | PASS |
+| 3.5 Power-series streams | `tests/sicp/ch3_stream_power_series.esk` | PASS |
+| 3.5 Stream integrators, signal systems, zero crossings | `tests/sicp/ch3_stream_signal_systems.esk` | PASS |
+| 3.5 Random streams / Monte Carlo streams | `tests/sicp/ch3_stream_random_monte_carlo.esk` | PASS |
 | 4.1 Metacircular evaluator core | `ch4_metacircular.esk`, `ch4_metacircular_full.esk` | PASS |
-| 4.1 Derived forms in the metacircular evaluator | `tests/sicp/ch4_metacircular_derived_forms.esk` | BLOCKED: ESH-0047 |
-| 4.1.7 Analyzing evaluator | `tests/sicp/ch4_analyzing_evaluator.esk` | BLOCKED: ESH-0046 |
-| 4.2 Lazy evaluator / normal order | `tests/sicp/ch4_lazy_evaluator.esk` | BLOCKED: ESH-0029 |
+| 4.1 Derived forms in the metacircular evaluator | `tests/sicp/ch4_metacircular_derived_forms.esk` | PASS |
+| 4.1.7 Analyzing evaluator | `tests/sicp/ch4_analyzing_evaluator.esk` | PASS |
+| 4.2 Lazy evaluator / normal order | `tests/sicp/ch4_lazy_evaluator.esk` | PASS |
 | 4.3 Nondeterministic primitives / direct CPS amb capability | `ch4_amb.esk`, `ch4_amb_deep_cps_test.esk` | PASS |
-| 4.3 `ambeval` evaluator and driver loop | `tests/sicp/ch4_amb_evaluator.esk` | BLOCKED: ESH-0048 |
-| 4.3 Nondeterministic natural-language parser | `tests/sicp/ch4_amb_parser.esk` | BLOCKED: ESH-0049 |
-| 4.4 Logic query system | `tests/sicp/ch4_query_system.esk` | BLOCKED: ESH-0030 |
+| 4.3 `ambeval` evaluator and driver loop | `tests/sicp/ch4_amb_evaluator.esk` | PASS |
+| 4.3 Nondeterministic natural-language parser | `tests/sicp/ch4_amb_parser.esk` | PASS |
+| 4.4 Logic query system | `tests/sicp/ch4_query_system.esk` | PASS |
 | 5.1 Designing register machines, basic controller execution | `ch5_register_machine.esk` | PASS |
-| 5.1-5.2 Stack operations/statistics | `tests/sicp/ch5_register_machine_stack.esk` | BLOCKED: ESH-0050 |
-| 5.1-5.2 Recursive register-machine programs | `tests/sicp/ch5_register_machine_recursive.esk` | BLOCKED: ESH-0051 |
+| 5.1-5.2 Stack operations/statistics | `tests/sicp/ch5_register_machine_stack.esk` | PASS |
+| 5.1-5.2 Recursive register-machine programs | `tests/sicp/ch5_register_machine_recursive.esk` | PASS |
 | 5.2 Register-machine simulator basic assign/test/branch/goto | `ch5_register_machine.esk` | PASS |
-| 5.3 Storage allocation and garbage collection | `tests/sicp/ch5_storage_gc.esk` | BLOCKED: ESH-0031 |
-| 5.4 Explicit-control evaluator | `tests/sicp/ch5_explicit_control_evaluator.esk` | BLOCKED: ESH-0032 |
-| 5.5 Compiler | `tests/sicp/ch5_compiler.esk` | BLOCKED: ESH-0033 |
+| 5.3 Storage allocation and garbage collection | `tests/sicp/ch5_storage_gc.esk` | PASS |
+| 5.4 Explicit-control evaluator | `tests/sicp/ch5_explicit_control_evaluator.esk` | PASS |
+| 5.5 Compiler | `tests/sicp/ch5_compiler.esk` | PASS |
 | Regression: first-class/apply predicate semantics needed by SICP evaluators | `repro_esh0078_firstclass_predicate.esk` | PASS |
 | Beyond-book stress: deeper nondeterministic continuation/backtracking path | `ch4_amb_deep_cps_test.esk` | PASS |
 
@@ -146,11 +148,10 @@ Passing the book is the floor. The Eshkol gate also requires:
 | ch2_symbolic_deriv.esk | PASS | PASS | 8 | symbolic differentiation (2.3.2) |
 | ch2_generic.esk | PASS | PASS | 12 | **tagged data, data-directed dispatch (op/type table), generic arithmetic, message passing (2.4-2.5)** |
 
-**Chapter 2 remaining book systems: REQUIRED and not yet implemented in this
-corpus.** The full-book gate must add full picture-language painters and
-combinators (2.2.4), generic arithmetic tower/coercion (2.5), and polynomial
-arithmetic/symbolic algebra (2.5.3). They are tracked as ESH-0038, ESH-0039,
-and ESH-0040.
+**Chapter 2 full-book systems are now represented in the corpus.** The gate
+includes full picture-language painters and combinators (2.2.4), generic
+arithmetic tower/coercion (2.5), and polynomial arithmetic/symbolic algebra
+(2.5.3), in addition to the original data-abstraction probes.
 
 ### Chapter 3 — state, streams
 | Program | -r | AOT | checks | Notes |
@@ -161,13 +162,12 @@ and ESH-0040.
 | ch3_tables.esk | PASS | PASS | 11 | 1-D and 2-D mutable tables (3.3.3) |
 | ch3_queue.esk | PASS | PASS | 9 | mutable queue with front/rear pointers, set-car!/set-cdr! (3.3.2) |
 
-**Chapter 3 remaining book systems: REQUIRED and not yet implemented in this
-corpus.** The full-book gate must add mutable pair sharing/cycle examples
-(3.3.1), the digital-circuit simulator (3.3.4), the constraint-propagation
-system (3.3.5), concurrency/serializers/account exchange (3.4), and richer
-stream systems from 3.5: acceleration/tableaux, power series, signal systems,
-and random Monte Carlo streams. They are tracked as ESH-0041, ESH-0035,
-ESH-0036, ESH-0037, and ESH-0042 through ESH-0045.
+**Chapter 3 full-book systems are now represented in the corpus.** The gate
+includes mutable pair sharing/cycle examples (3.3.1), the digital-circuit
+simulator (3.3.4), the constraint-propagation system (3.3.5),
+concurrency/serializers/account exchange (3.4), and richer stream systems from
+3.5: acceleration/tableaux, power series, signal systems, and random Monte
+Carlo streams.
 
 ### Chapter 4 — metalinguistic abstraction
 | Program | -r | AOT | checks | Notes |
@@ -177,26 +177,23 @@ ESH-0036, ESH-0037, and ESH-0042 through ESH-0045.
 | ch4_amb_deep_cps_test.esk | PASS | PASS | 2 | Beyond-book stress: raises the Pythagorean search bound to exercise deeper success/failure continuation chains. |
 | ch4_metacircular.esk | PASS | PASS | 6/6 | The "textbook" metacircular evaluator that binds raw builtins (`=`,`<`) as first-class env values. `recursive-fact` now returns 120 after ESH-0079 / PR #86. |
 
-**Chapter 4 remaining book systems: REQUIRED and not yet implemented in this
-corpus.** The full-book gate must add the analyzing evaluator (4.1.7), derived
-forms in the metacircular evaluator (4.1), the lazy evaluator (4.2), the
-SICP-faithful `ambeval` evaluator/driver and nondeterministic parser (4.3), and
-the query system (4.4). Eshkol already ships a native logic/unification engine
-(`unify`, `kb-assert!`, `kb-query`), but the full-book gate requires the
-SICP-faithful query evaluator: pattern matching, unification, rules, frames,
-stream-of-frames evaluation, and the canonical company-database queries.
+**Chapter 4 full-book systems are now represented in the corpus.** The gate
+includes the analyzing evaluator (4.1.7), derived forms in the metacircular
+evaluator (4.1), the lazy evaluator (4.2), the SICP-faithful `ambeval`
+evaluator/driver and nondeterministic parser (4.3), and the query system (4.4).
+The query probe implements pattern matching, unification, rules, frames,
+stream-of-frames evaluation, and canonical company-database queries.
 
 ### Chapter 5 — register machines
 | Program | -r | AOT | checks | Notes |
 |---------|----|----|--------|-------|
 | ch5_register_machine.esk | PASS | PASS | 5 | **register-machine simulator**: registers (mutable a-list), op table, label table, flat instruction vector + pc, the assign/test/branch/goto instruction set. Runs the iterative-factorial machine and Euclid's GCD machine (5.1-5.2). |
 
-**Chapter 5 remaining book systems: REQUIRED and not yet implemented in this
-corpus.** The register-machine *simulator* core (5.2) is implemented and
-exercised for iterative factorial and GCD, but the gate must add stack
-operations/statistics, recursive register-machine programs, storage
-allocation/GC (5.3), the explicit-control evaluator (5.4), and the compiler
-(5.5).
+**Chapter 5 full-book systems are now represented in the corpus.** The
+register-machine simulator core (5.2) is exercised for iterative factorial and
+GCD, and the gate also includes stack operations/statistics, recursive
+register-machine programs, storage allocation/GC (5.3), the explicit-control
+evaluator (5.4), and the compiler (5.5).
 
 ## Root-cause: ch4 metacircular recursion gap — **fixed by ESH-0079 / PR #86**
 
@@ -261,24 +258,19 @@ is well within limits.
 
 - **ch1: complete against the current manifest.** Procedures, processes, and
   higher-order procedures pass on -r and AOT.
-- **ch2: incomplete.** Data abstraction, symbolic data, same-type generic
-  operations, and message passing pass. Full picture-language painters
-  (ESH-0038), generic tower/coercion (ESH-0039), and polynomial arithmetic
-  (ESH-0040) are still required.
-- **ch3: incomplete.** Assignment/mutation, message-passing objects, Monte
-  Carlo state, tables/queues, and basic streams pass. Mutable sharing/cycles
-  (ESH-0041), digital circuits (ESH-0035), constraints (ESH-0036),
-  concurrency/serializers (ESH-0037), and richer stream systems (ESH-0042
-  through ESH-0045) are still required.
-- **ch4: incomplete.** The metacircular evaluator runs real non-trivial
-  recursive programs, and `amb`/nondeterminism passes the moderate and deep-CPS
-  probes. The analyzing evaluator (ESH-0046), derived forms (ESH-0047), lazy
-  evaluator (ESH-0029), full ambeval/parser coverage (ESH-0048/ESH-0049), and
-  query system (ESH-0030) are still required.
-- **ch5: incomplete.** The register-machine simulator (5.2) passes. Storage
-  stack/recursive-machine coverage (ESH-0050/ESH-0051), allocation/GC (5.3),
-  the explicit-control evaluator (5.4), and the SICP compiler (5.5) are still
-  required.
+- **ch2: manifest-complete.** Data abstraction, symbolic data, generic
+  operations, message passing, picture-language painters, tower/coercion, and
+  polynomial arithmetic all have runnable probes.
+- **ch3: manifest-complete.** Assignment/mutation, message-passing objects,
+  Monte Carlo state, tables/queues, mutable sharing/cycles, circuits,
+  constraints, concurrency/serializers, and the richer stream systems all have
+  runnable probes.
+- **ch4: manifest-complete.** The metacircular evaluator, derived forms,
+  analyzing evaluator, lazy evaluator, `amb`/ambeval/parser coverage, query
+  evaluator, and deep-CPS stress all have runnable probes.
+- **ch5: manifest-complete.** The register-machine simulator, stack and
+  recursive-machine coverage, storage allocation/GC, explicit-control
+  evaluator, and compiler all have runnable probes.
 
 ## How to run
 

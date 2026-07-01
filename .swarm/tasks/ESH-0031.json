@@ -35,5 +35,6 @@
     "./scripts/run_sicp_smoke.sh",
     "/Users/tyr/Desktop/infinite_context_coder/bin/icc completion-oracle --repo eshkol_lang --target sicp-completeness --trace-dir scripts/icc_traces --format json"
   ],
+  "status_note": "Implemented on PR #103 as tests/sicp/ch5_storage_gc.esk. Focused JIT and AOT checks pass for vector-modeled pair storage, mutation, copying GC, root sets, forwarding, sharing, cycles, compaction, and post-GC allocation. Awaiting full SICP smoke/ICC gate before marking done.",
   "ux_payoff": "Closes the book's explicit memory-model chapter and gives Eshkol a concrete simulator-level GC regression."
 }

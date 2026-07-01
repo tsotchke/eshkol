@@ -1,0 +1,493 @@
+;; SICP Chapter 5.5 - compiler.
+;; A compact compiler probe with the book's instruction-sequence abstraction:
+;; register needs/modifies, statement lists, preserving, linkage handling, and
+;; compile dispatch for self-evaluating, quoted, variables, assignments,
+;; definitions, conditionals, sequences, lambdas, and applications.  The
+;; generated instruction sequence carries an executable closure so compiled
+;; programs run through compiled-procedure application rather than source eval.
+
+(define fails 0)
+(define ok-value 'ok)
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin (display "PASS: ") (display name) (newline))
+      (begin (set! fails (+ fails 1))
+             (display "FAIL: ") (display name)
+             (display " expected=") (display expected)
+             (display " actual=") (display actual)
+             (newline))))
+
+(define (tagged? exp tag) (and (pair? exp) (eq? (car exp) tag)))
+(define (true? value) (not (eq? value #f)))
+
+;; ---- set operations for instruction-sequence registers ----
+(define (memq? x xs)
+  (cond ((null? xs) #f)
+        ((eq? x (car xs)) #t)
+        (else (memq? x (cdr xs)))))
+
+(define (adjoin-set x xs)
+  (if (memq? x xs) xs (cons x xs)))
+
+(define (union-set xs ys)
+  (if (null? xs)
+      ys
+      (union-set (cdr xs) (adjoin-set (car xs) ys))))
+
+(define (difference-set xs ys)
+  (cond ((null? xs) '())
+        ((memq? (car xs) ys) (difference-set (cdr xs) ys))
+        (else (cons (car xs) (difference-set (cdr xs) ys)))))
+
+(define (intersection-set xs ys)
+  (cond ((null? xs) '())
+        ((memq? (car xs) ys) (cons (car xs) (intersection-set (cdr xs) ys)))
+        (else (intersection-set (cdr xs) ys))))
+
+(define (needs-register? seq reg)
+  (memq? reg (registers-needed seq)))
+(define (modifies-register? seq reg)
+  (memq? reg (registers-modified seq)))
+
+;; ---- instruction sequences ----
+(define (make-instruction-sequence needs modifies statements runner)
+  (list 'instruction-sequence needs modifies statements runner))
+(define (registers-needed seq) (cadr seq))
+(define (registers-modified seq) (caddr seq))
+(define (statements seq) (cadddr seq))
+(define (seq-runner seq) (car (cddddr seq)))
+
+(define (append-statements a b) (append a b))
+
+(define (append-instruction-sequences seq1 seq2)
+  (make-instruction-sequence
+   (union-set (registers-needed seq1)
+              (difference-set (registers-needed seq2)
+                              (registers-modified seq1)))
+   (union-set (registers-modified seq1)
+              (registers-modified seq2))
+   (append-statements (statements seq1) (statements seq2))
+   (lambda (env)
+     ((seq-runner seq1) env)
+     ((seq-runner seq2) env))))
+
+(define (empty-instruction-sequence)
+  (make-instruction-sequence '() '() '() (lambda (env) ok-value)))
+
+(define (preserving regs seq1 seq2)
+  (if (null? regs)
+      (append-instruction-sequences seq1 seq2)
+      (let ((first-reg (car regs)))
+        (if (and (needs-register? seq2 first-reg)
+                 (modifies-register? seq1 first-reg))
+            (preserving
+             (cdr regs)
+             (make-instruction-sequence
+              (adjoin-set first-reg (registers-needed seq1))
+              (difference-set (registers-modified seq1) (list first-reg))
+              (append (list (list 'save first-reg))
+                      (append (statements seq1)
+                              (list (list 'restore first-reg))))
+              (seq-runner seq1))
+             seq2)
+            (preserving (cdr regs) seq1 seq2)))))
+
+(define label-counter 0)
+(define (new-label prefix)
+  (set! label-counter (+ label-counter 1))
+  (list prefix label-counter))
+
+(define (linkage-instructions linkage)
+  (cond ((eq? linkage 'next) '())
+        ((eq? linkage 'return) '((goto (reg continue))))
+        (else (list (list 'goto (list 'label linkage))))))
+
+(define (end-with-linkage linkage seq)
+  (make-instruction-sequence
+   (registers-needed seq)
+   (registers-modified seq)
+   (append (statements seq) (linkage-instructions linkage))
+   (seq-runner seq)))
+
+;; ---- environment and compiled procedure runtime ----
+(define (lookup-variable-value var env)
+  (if (null? env)
+      (error "unbound variable" var)
+      (let loop-frame ((vars (caar env)) (vals (cdar env)))
+        (cond ((null? vars) (lookup-variable-value var (cdr env)))
+              ((eq? (car vars) var) (car vals))
+              (else (loop-frame (cdr vars) (cdr vals)))))))
+
+(define (define-variable! var val env)
+  (set-car! (car env) (cons var (caar env)))
+  (set-cdr! (car env) (cons val (cdar env)))
+  ok-value)
+
+(define (set-variable-value! var val env)
+  (let loop-env ((frames env))
+    (if (null? frames)
+        (error "unbound set!" var)
+        (let loop-frame ((vars (caar frames)) (vals (cdar frames)))
+          (cond ((null? vars) (loop-env (cdr frames)))
+                ((eq? (car vars) var) (begin (set-car! vals val) ok-value))
+                (else (loop-frame (cdr vars) (cdr vals))))))))
+
+(define (extend-environment vars vals base-env)
+  (cons (cons vars vals) base-env))
+
+(define (make-compiled-procedure params body-runner env entry)
+  (list 'compiled-procedure params body-runner env entry))
+(define (compiled-procedure? proc) (tagged? proc 'compiled-procedure))
+(define (compiled-procedure-parameters proc) (cadr proc))
+(define (compiled-procedure-body proc) (caddr proc))
+(define (compiled-procedure-env proc) (cadddr proc))
+(define (compiled-procedure-entry proc) (car (cddddr proc)))
+
+(define (compiled-apply proc args)
+  (cond ((procedure? proc) (apply proc args))
+        ((compiled-procedure? proc)
+         ((compiled-procedure-body proc)
+          (extend-environment (compiled-procedure-parameters proc)
+                              args
+                              (compiled-procedure-env proc))))
+        (else (error "not applicable" proc))))
+
+(define (base-env)
+  (list (cons (list '+ '- '* '= '< '> 'cons 'car 'cdr 'null? 'list)
+              (list +
+                    -
+                    *
+                    (lambda (a b) (if (= a b) #t #f))
+                    (lambda (a b) (if (< a b) #t #f))
+                    (lambda (a b) (if (> a b) #t #f))
+                    cons
+                    car
+                    cdr
+                    (lambda (x) (if (null? x) #t #f))
+                    list))))
+
+;; ---- expression syntax ----
+(define (self-evaluating? exp) (or (number? exp) (boolean? exp) (string? exp)))
+(define (quoted? exp) (tagged? exp 'quote))
+(define (text-of-quotation exp) (cadr exp))
+(define (assignment? exp) (tagged? exp 'set!))
+(define (assignment-variable exp) (cadr exp))
+(define (assignment-value exp) (caddr exp))
+(define (definition? exp) (tagged? exp 'define))
+(define (make-lambda parameters body) (cons 'lambda (cons parameters body)))
+(define (definition-variable exp)
+  (if (symbol? (cadr exp)) (cadr exp) (caadr exp)))
+(define (definition-value exp)
+  (if (symbol? (cadr exp))
+      (caddr exp)
+      (make-lambda (cdadr exp) (cddr exp))))
+(define (lambda? exp) (tagged? exp 'lambda))
+(define (lambda-parameters exp) (cadr exp))
+(define (lambda-body exp) (cddr exp))
+(define (if? exp) (tagged? exp 'if))
+(define (if-predicate exp) (cadr exp))
+(define (if-consequent exp) (caddr exp))
+(define (if-alternative exp) (if (null? (cdddr exp)) (list 'quote ok-value) (cadddr exp)))
+(define (begin? exp) (tagged? exp 'begin))
+(define (begin-actions exp) (cdr exp))
+(define (application? exp) (pair? exp))
+(define (operator exp) (car exp))
+(define (operands exp) (cdr exp))
+
+(define compile-count 0)
+(define (record-compile!)
+  (set! compile-count (+ compile-count 1))
+  compile-count)
+
+(define (list-of-compiled-values operand-seqs env)
+  (if (null? operand-seqs)
+      '()
+      (cons ((seq-runner (car operand-seqs)) env)
+            (list-of-compiled-values (cdr operand-seqs) env))))
+
+(define (compile-list exps target linkage)
+  (if (null? exps)
+      '()
+      (cons (compile (car exps) target linkage)
+            (compile-list (cdr exps) target linkage))))
+
+(define (append-seq-list seqs)
+  (if (null? seqs)
+      (empty-instruction-sequence)
+      (append-instruction-sequences (car seqs)
+                                    (append-seq-list (cdr seqs)))))
+
+(define (compile-self-evaluating exp target linkage)
+  (end-with-linkage
+   linkage
+   (make-instruction-sequence
+    '()
+    (list target)
+    (list (list 'assign target (list 'const exp)))
+    (lambda (env) exp))))
+
+(define (compile-quoted exp target linkage)
+  (let ((text (text-of-quotation exp)))
+    (end-with-linkage
+     linkage
+     (make-instruction-sequence
+      '()
+      (list target)
+      (list (list 'assign target (list 'const text)))
+      (lambda (env) text)))))
+
+(define (compile-variable exp target linkage)
+  (end-with-linkage
+   linkage
+   (make-instruction-sequence
+    '(env)
+    (list target)
+    (list (list 'assign target
+                (list 'op 'lookup-variable-value)
+                (list 'const exp)
+                '(reg env)))
+    (lambda (env) (lookup-variable-value exp env)))))
+
+(define (compile-assignment exp target linkage)
+  (let ((value-code (compile (assignment-value exp) 'val 'next))
+        (var (assignment-variable exp)))
+    (end-with-linkage
+     linkage
+     (make-instruction-sequence
+      (union-set '(env) (registers-needed value-code))
+      (adjoin-set target (registers-modified value-code))
+      (append (statements value-code)
+              (list (list 'perform
+                          (list 'op 'set-variable-value!)
+                          (list 'const var)
+                          '(reg val)
+                          '(reg env))
+                    (list 'assign target '(const ok))))
+      (lambda (env)
+        (let ((value ((seq-runner value-code) env)))
+          (set-variable-value! var value env)
+          ok-value))))))
+
+(define (compile-definition exp target linkage)
+  (let ((value-code (compile (definition-value exp) 'val 'next))
+        (var (definition-variable exp)))
+    (end-with-linkage
+     linkage
+     (make-instruction-sequence
+      (union-set '(env) (registers-needed value-code))
+      (adjoin-set target (registers-modified value-code))
+      (append (statements value-code)
+              (list (list 'perform
+                          (list 'op 'define-variable!)
+                          (list 'const var)
+                          '(reg val)
+                          '(reg env))
+                    (list 'assign target '(const ok))))
+      (lambda (env)
+        (let ((value ((seq-runner value-code) env)))
+          (define-variable! var value env)
+          ok-value))))))
+
+(define (compile-if exp target linkage)
+  (let* ((predicate-code (compile (if-predicate exp) 'val 'next))
+         (consequent-code (compile (if-consequent exp) target linkage))
+         (alternative-code (compile (if-alternative exp) target linkage))
+         (false-branch (new-label 'false-branch))
+         (after-if (new-label 'after-if)))
+    (make-instruction-sequence
+     (union-set (registers-needed predicate-code)
+                (union-set (registers-needed consequent-code)
+                           (registers-needed alternative-code)))
+     (union-set (registers-modified predicate-code)
+                (union-set (registers-modified consequent-code)
+                           (registers-modified alternative-code)))
+     (append (statements predicate-code)
+             (append (list '(test (op false?) (reg val))
+                           (list 'branch (list 'label false-branch)))
+                     (append (statements consequent-code)
+                             (append (list after-if false-branch)
+                                     (statements alternative-code)))))
+     (lambda (env)
+       (if (true? ((seq-runner predicate-code) env))
+           ((seq-runner consequent-code) env)
+           ((seq-runner alternative-code) env))))))
+
+(define (compile-sequence exps target linkage)
+  (cond ((null? exps)
+         (compile-quoted (list 'quote ok-value) target linkage))
+        ((null? (cdr exps))
+         (compile (car exps) target linkage))
+        (else
+         (let ((first-code (compile (car exps) target 'next))
+               (rest-code (compile-sequence (cdr exps) target linkage)))
+           (make-instruction-sequence
+            (union-set (registers-needed first-code)
+                       (registers-needed rest-code))
+            (union-set (registers-modified first-code)
+                       (registers-modified rest-code))
+            (append (statements first-code)
+                    (statements rest-code))
+            (lambda (env)
+              ((seq-runner first-code) env)
+              ((seq-runner rest-code) env)))))))
+
+(define (compile-lambda exp target linkage)
+  (let* ((entry (new-label 'entry))
+         (body-code (compile-sequence (lambda-body exp) 'val 'return))
+         (params (lambda-parameters exp)))
+    (end-with-linkage
+     linkage
+     (make-instruction-sequence
+      '(env)
+      (list target)
+      (list (list 'assign target
+                  (list 'op 'make-compiled-procedure)
+                  (list 'label entry)
+                  '(reg env))
+            entry
+            (list 'assign 'env
+                  (list 'op 'compiled-procedure-env)
+                  (list 'reg 'proc))
+            (list 'assign 'env
+                  (list 'op 'extend-environment)
+                  (list 'const params)
+                  '(reg argl)
+                  '(reg env)))
+      (lambda (env)
+        (make-compiled-procedure params (seq-runner body-code) env entry))))))
+
+(define (compile-operands operands-list)
+  (if (null? operands-list)
+      '()
+      (cons (compile (car operands-list) 'val 'next)
+            (compile-operands (cdr operands-list)))))
+
+(define (compile-application exp target linkage)
+  (let* ((proc-code (compile (operator exp) 'proc 'next))
+         (operand-codes (compile-operands (operands exp)))
+         (operand-code-block (append-seq-list operand-codes)))
+    (end-with-linkage
+     linkage
+     (make-instruction-sequence
+      (union-set '(env)
+                 (union-set (registers-needed proc-code)
+                            (registers-needed operand-code-block)))
+      (adjoin-set target
+                  (union-set (registers-modified proc-code)
+                             (registers-modified operand-code-block)))
+      (append (statements proc-code)
+              (append (statements operand-code-block)
+                      (list (list 'assign target
+                                  (list 'op 'compiled-apply)
+                                  '(reg proc)
+                                  '(reg argl)))))
+      (lambda (env)
+        (compiled-apply ((seq-runner proc-code) env)
+                        (list-of-compiled-values operand-codes env)))))))
+
+(define (compile exp target linkage)
+  (record-compile!)
+  (cond ((self-evaluating? exp) (compile-self-evaluating exp target linkage))
+        ((quoted? exp) (compile-quoted exp target linkage))
+        ((symbol? exp) (compile-variable exp target linkage))
+        ((assignment? exp) (compile-assignment exp target linkage))
+        ((definition? exp) (compile-definition exp target linkage))
+        ((if? exp) (compile-if exp target linkage))
+        ((lambda? exp) (compile-lambda exp target linkage))
+        ((begin? exp) (compile-sequence (begin-actions exp) target linkage))
+        ((application? exp) (compile-application exp target linkage))
+        (else (error "unknown expression type" exp))))
+
+(define (compiled-eval exp env)
+  ((seq-runner (compile exp 'val 'return)) env))
+
+(define e (base-env))
+
+;; ---- instruction-sequence abstraction checks ----
+(define seq-a
+  (make-instruction-sequence '(env continue) '(val)
+                             '((assign val (const 1)))
+                             (lambda (env) 1)))
+(define seq-b
+  (make-instruction-sequence '(val env) '(proc)
+                             '((assign proc (reg val)))
+                             (lambda (env) 2)))
+(define seq-p (preserving '(val env) seq-a seq-b))
+
+(check "append/preserving needs env" #t (needs-register? seq-p 'env))
+(check "preserving removes saved modified register" #f (modifies-register? seq-p 'val))
+(check "preserving inserts save/restore"
+       '((save val) (assign val (const 1)) (restore val) (assign proc (reg val)))
+       (statements seq-p))
+
+(define literal-code (compile 42 'val 'return))
+(check "compile self-evaluating statements"
+       '((assign val (const 42)) (goto (reg continue)))
+       (statements literal-code))
+(check "compile variable needs env"
+       #t
+       (needs-register? (compile 'x 'val 'next) 'env))
+
+;; ---- compiled program behavior checks ----
+(check "compiled self-eval" 42 (compiled-eval 42 e))
+(check "compiled quote" '(a b c) (compiled-eval '(quote (a b c)) e))
+(check "compiled primitive application" 17 (compiled-eval '(+ (* 2 6) 5) e))
+(check "compiled if" 'yes (compiled-eval '(if (< 1 2) (quote yes) (quote no)) e))
+(check "compiled lambda application" 81 (compiled-eval '((lambda (x) (* x x)) 9) e))
+
+(check "compiled define sugar" 'ok (compiled-eval '(define (square x) (* x x)) e))
+(check "compiled defined procedure" 64 (compiled-eval '(square 8) e))
+
+(check "compiled define mutable counter" 'ok (compiled-eval '(define counter 0) e))
+(check "compiled begin and set!"
+       3
+       (compiled-eval '(begin
+                        (set! counter (+ counter 1))
+                        (set! counter (+ counter 2))
+                        counter)
+                      e))
+(check "compiled assignment persists" 3 (compiled-eval 'counter e))
+
+(check "compiled closure define"
+       'ok
+       (compiled-eval '(define make-adder
+                         (lambda (x)
+                           (lambda (y) (+ x y))))
+                      e))
+(check "compiled lexical closure" 19 (compiled-eval '((make-adder 12) 7) e))
+
+(check "compiled recursive factorial define"
+       'ok
+       (compiled-eval '(define fact
+                         (lambda (n)
+                           (if (= n 0)
+                               1
+                               (* n (fact (- n 1))))))
+                      e))
+(check "compiled recursive factorial" 720 (compiled-eval '(fact 6) e))
+
+(check "compiled recursive list length define"
+       'ok
+       (compiled-eval '(define len
+                         (lambda (xs)
+                           (if (null? xs)
+                               0
+                               (+ 1 (len (cdr xs))))))
+                      e))
+(check "compiled list recursion" 5 (compiled-eval '(len (quote (a b c d e))) e))
+
+(define before-reuse compile-count)
+(define saved-code (compile '((lambda (x) (* x x)) 11) 'val 'return))
+(define after-compile compile-count)
+(define saved-first ((seq-runner saved-code) e))
+(define after-first compile-count)
+(define saved-second ((seq-runner saved-code) e))
+(check "compiled sequence reusable result" 121 saved-first)
+(check "compiled sequence reusable second run" 121 saved-second)
+(check "compiled execution does not recompile"
+       (list after-compile after-compile)
+       (list after-first compile-count))
+(check "compilation happened up front" #t (> after-compile before-reuse))
+
+(display "ch5 compiler: ")
+(display (if (= fails 0) "ALL PASS" (cons fails 'FAILS))) (newline)
