@@ -1,0 +1,117 @@
+;; SICP Chapter 3.5.3 — Accelerated streams.
+;; Native cons-stream/delay/force streams, finite prefixes of the Leibniz pi
+;; stream, Euler transform, tableaux, and accelerated sequence convergence.
+
+(define fails 0)
+(define (check name ok)
+  (if ok (begin (display "PASS: ") (display name) (newline))
+      (begin (set! fails (+ fails 1)) (display "FAIL: ") (display name) (newline))))
+(define (square x) (* x x))
+(define (close? a b) (< (abs (- a b)) 1e-9))
+(define (near-pi? x tolerance) (< (abs (- x 3.14159265)) tolerance))
+
+(define (close-list? xs ys tolerance)
+  (cond ((and (null? xs) (null? ys)) #t)
+        ((or (null? xs) (null? ys)) #f)
+        ((< (abs (- (car xs) (car ys))) tolerance)
+         (close-list? (cdr xs) (cdr ys) tolerance))
+        (else #f)))
+
+;; ---- stream primitives (3.5.1) ----
+(define-syntax cons-stream (syntax-rules () ((_ a b) (cons a (delay b)))))
+(define (stream-car s) (car s))
+(define (stream-cdr s) (force (cdr s)))
+(define the-empty-stream '())
+(define (stream-null? s) (null? s))
+(define (stream-ref s n)
+  (if (= n 0) (stream-car s) (stream-ref (stream-cdr s) (- n 1))))
+(define (stream-map proc s)
+  (if (stream-null? s) the-empty-stream
+      (cons-stream (proc (stream-car s)) (stream-map proc (stream-cdr s)))))
+(define (stream-take s n)
+  (if (= n 0) '() (cons (stream-car s) (stream-take (stream-cdr s) (- n 1)))))
+(define (add-streams s1 s2)
+  (cond ((stream-null? s1) s2)
+        ((stream-null? s2) s1)
+        (else (cons-stream (+ (stream-car s1) (stream-car s2))
+                           (add-streams (stream-cdr s1) (stream-cdr s2))))))
+(define (scale-stream s factor)
+  (stream-map (lambda (x) (* x factor)) s))
+
+;; The probe uses the native delayed stream support in this codebase. These
+;; checks keep the delayed tail bounded and observable for smoke testing.
+(define delayed-tail-count 0)
+(define delayed-stream
+  (cons-stream 10
+               (begin
+                 (set! delayed-tail-count (+ delayed-tail-count 1))
+                 (cons-stream 20 the-empty-stream))))
+(check "cons-stream-leaves-tail-delayed" (= delayed-tail-count 0))
+(check "stream-car-selects-head" (= (stream-car delayed-stream) 10))
+(check "stream-cdr-forces-tail" (and (= (stream-car (stream-cdr delayed-stream)) 20)
+                                      (= delayed-tail-count 1)))
+(check "delay-force-memoizes-tail" (begin (stream-cdr delayed-stream)
+                                          (= delayed-tail-count 1)))
+
+;; ---- partial sums and pi stream (3.5.3) ----
+(define (integers-from n) (cons-stream n (integers-from (+ n 1))))
+(define integers (integers-from 1))
+(define (partial-sums s)
+  (cons-stream (stream-car s) (add-streams (stream-cdr s) (partial-sums s))))
+(check "partial-sums-prefix" (equal? (stream-take (partial-sums integers) 5)
+                                     '(1 3 6 10 15)))
+
+(define (pi-summands n)
+  (cons-stream (/ 1.0 n) (stream-map - (pi-summands (+ n 2)))))
+(define pi-stream (scale-stream (partial-sums (pi-summands 1)) 4.0))
+(check "pi-stream-prefix"
+       (close-list? (stream-take pi-stream 5)
+                    '(4.0 2.666666666666667 3.466666666666667 2.8952380952380956 3.3396825396825403)
+                    1e-9))
+(check "pi-stream-bounded-convergence" (near-pi? (stream-ref pi-stream 60) 0.02))
+
+;; ---- Euler transform and accelerated tableaux ----
+(define (euler-transform s)
+  (let ((s0 (stream-ref s 0))
+        (s1 (stream-ref s 1))
+        (s2 (stream-ref s 2)))
+    (cons-stream (- s2 (/ (square (- s2 s1))
+                          (+ s0 (* -2.0 s1) s2)))
+                 (euler-transform (stream-cdr s)))))
+
+(define euler-pi-stream (euler-transform pi-stream))
+(define raw-error (abs (- (stream-ref pi-stream 2) 3.14159265)))
+(define euler-error (abs (- (stream-ref euler-pi-stream 0) 3.14159265)))
+(check "euler-transform-prefix"
+       (close-list? (stream-take euler-pi-stream 4)
+                    '(3.166666666666667 3.1333333333333337 3.1452380952380956 3.13968253968254)
+                    1e-9))
+(check "euler-transform-improves-pi" (< euler-error raw-error))
+
+(define (make-tableau transform s)
+  (cons-stream s (make-tableau transform (transform s))))
+(define (accelerated-sequence transform s)
+  (stream-map stream-car (make-tableau transform s)))
+
+(define pi-tableau (make-tableau euler-transform pi-stream))
+(define accelerated-pi (accelerated-sequence euler-transform pi-stream))
+(check "tableau-first-row-is-source"
+       (close-list? (stream-take (stream-ref pi-tableau 0) 3)
+                    (stream-take pi-stream 3)
+                    1e-9))
+(check "tableau-second-row-is-euler"
+       (close-list? (stream-take (stream-ref pi-tableau 1) 3)
+                    (stream-take euler-pi-stream 3)
+                    1e-9))
+(check "accelerated-sequence-prefix"
+       (close-list? (stream-take accelerated-pi 4)
+                    '(4.0 3.166666666666667 3.142105263157895 3.141599357319005)
+                    1e-9))
+(check "accelerated-sequence-converges-fast"
+       (and (not (near-pi? (stream-ref pi-stream 8) 0.001))
+            (near-pi? (stream-ref accelerated-pi 3) 0.00001)))
+
+(newline)
+(if (= fails 0)
+    (begin (display "ALL-PASS ch3_stream_acceleration") (newline))
+    (begin (display "HAS-FAIL ch3_stream_acceleration ") (display fails) (newline)))

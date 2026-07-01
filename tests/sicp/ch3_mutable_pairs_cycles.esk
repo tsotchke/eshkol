@@ -1,0 +1,133 @@
+;; SICP Chapter 3.3.1 - Mutable list structure.
+;;
+;; ESH-0041: pair sharing, destructive append!, count-pairs pitfalls, and
+;; cdr-chain cycle detection.  Eshkol supports the needed mutators
+;; (set-car! and set-cdr!), so this probe exercises the real behavior.  Cyclic
+;; structures are inspected only with bounded or cycle-aware helpers; do not
+;; display them or pass them to equal?.
+
+(define fails 0)
+(define (check name ok)
+  (if ok
+      (begin (display "PASS: ") (display name) (newline))
+      (begin (set! fails (+ fails 1))
+             (display "FAIL: ") (display name) (newline))))
+
+(define (last-pair x)
+  (if (null? (cdr x))
+      x
+      (last-pair (cdr x))))
+
+(define (append! x y)
+  (if (null? x)
+      y
+      (begin (set-cdr! (last-pair x) y) x)))
+
+(define (bounded-take x n)
+  (cond ((= n 0) '())
+        ((not (pair? x)) '())
+        (else (cons (car x) (bounded-take (cdr x) (- n 1))))))
+
+(define (seen-pair? p seen)
+  (cond ((null? seen) #f)
+        ((eq? p (car seen)) #t)
+        (else (seen-pair? p (cdr seen)))))
+
+;; SICP's intentionally naive count-pairs from exercise 3.16.  It is safe for
+;; finite shared structures, but it must not be called on a cycle.
+(define (count-pairs x)
+  (if (not (pair? x))
+      0
+      (+ 1 (count-pairs (car x)) (count-pairs (cdr x)))))
+
+(define (count-distinct-pairs x)
+  (let ((seen '()))
+    (define (walk node)
+      (cond ((not (pair? node)) 0)
+            ((seen-pair? node seen) 0)
+            (else
+             (begin
+               (set! seen (cons node seen))
+               (+ 1 (walk (car node)) (walk (cdr node)))))))
+    (walk x)))
+
+;; Detects cycles in the cdr chain of a list, matching SICP 3.18/3.19.
+(define (contains-cdr-cycle? x)
+  (define (walk node seen)
+    (cond ((not (pair? node)) #f)
+          ((seen-pair? node seen) #t)
+          (else (walk (cdr node) (cons node seen)))))
+  (walk x '()))
+
+(define (make-cycle x)
+  (set-cdr! (last-pair x) x)
+  x)
+
+;; ---- shared mutable pairs ----
+(define shared-cell (list 'a 'b))
+(define both-ends-share (cons shared-cell shared-cell))
+(check "shared-pair-identity-before" (eq? (car both-ends-share) (cdr both-ends-share)))
+(set-car! (car both-ends-share) 'wow)
+(check "set-car!-visible-through-car" (equal? (car both-ends-share) '(wow b)))
+(check "set-car!-visible-through-cdr" (equal? (cdr both-ends-share) '(wow b)))
+
+(define shared-tail (list 'middle 'end))
+(define left-list (cons 'left shared-tail))
+(define right-list (cons 'right shared-tail))
+(set-car! shared-tail 'changed)
+(check "shared-tail-mutates-left" (equal? left-list '(left changed end)))
+(check "shared-tail-mutates-right" (equal? right-list '(right changed end)))
+(check "shared-tail-identity-left" (eq? (cdr left-list) shared-tail))
+(check "shared-tail-identity-right" (eq? (cdr right-list) shared-tail))
+
+;; ---- append versus append! ----
+(define append-x (list 'a 'b))
+(define append-y (list 'c 'd))
+(define append-z (append append-x append-y))
+(check "append-result" (equal? append-z '(a b c d)))
+(check "append-leaves-left-list" (equal? append-x '(a b)))
+(check "append-result-is-copy" (not (eq? append-z append-x)))
+(check "append-reuses-right-tail" (eq? (cdr (cdr append-z)) append-y))
+
+(define bang-x (list 'a 'b))
+(define bang-y (list 'c 'd))
+(define bang-z (append! bang-x bang-y))
+(check "append!-result" (equal? bang-z '(a b c d)))
+(check "append!-mutates-left-list" (equal? bang-x '(a b c d)))
+(check "append!-returns-left-identity" (eq? bang-z bang-x))
+(check "append!-grafts-right-tail" (eq? (cdr (cdr bang-x)) bang-y))
+(check "append!-empty-left-returns-right" (eq? (append! '() bang-y) bang-y))
+
+;; ---- count-pairs pitfalls from sharing ----
+(define count3 (list 'a 'b 'c))
+(check "count-pairs-normal-list" (= (count-pairs count3) 3))
+(check "count-distinct-normal-list" (= (count-distinct-pairs count3) 3))
+
+(define shared4 (cons 'x '()))
+(define spine4 (cons shared4 '()))
+(define count4 (cons shared4 spine4))
+(check "count-pairs-shared-once" (= (count-pairs count4) 4))
+(check "count-distinct-shared-once" (= (count-distinct-pairs count4) 3))
+
+(define shared7-leaf (cons 'x '()))
+(define shared7-mid (cons shared7-leaf shared7-leaf))
+(define count7 (cons shared7-mid shared7-mid))
+(check "count-pairs-shared-binary" (= (count-pairs count7) 7))
+(check "count-distinct-shared-binary" (= (count-distinct-pairs count7) 3))
+
+;; ---- cdr-chain cycles ----
+(define proper-cycle-source (list 'a 'b 'c))
+(define cyclic-list (make-cycle proper-cycle-source))
+(check "cycle-detected" (contains-cdr-cycle? cyclic-list))
+(check "cycle-prefix-bounded" (equal? (bounded-take cyclic-list 8) '(a b c a b c a b)))
+(check "cycle-distinct-count" (= (count-distinct-pairs cyclic-list) 3))
+
+(define acyclic-list (list 'a 'b 'c))
+(check "acyclic-not-cycle" (not (contains-cdr-cycle? acyclic-list)))
+(check "shared-tail-not-cycle" (not (contains-cdr-cycle? left-list)))
+(check "bounded-take-acyclic-stops" (equal? (bounded-take acyclic-list 8) '(a b c)))
+
+(newline)
+(if (= fails 0)
+    (begin (display "ALL-PASS ch3_mutable_pairs_cycles") (newline))
+    (begin (display "HAS-FAIL ch3_mutable_pairs_cycles ") (display fails) (newline)))

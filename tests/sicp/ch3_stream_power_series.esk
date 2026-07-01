@@ -1,0 +1,169 @@
+;; SICP Chapter 3.5.2 - Power series streams.
+;; Native cons-stream/delay/force streams are enough for this probe; all
+;; assertions force bounded coefficient prefixes only.
+
+(define fails 0)
+(define (check name ok)
+  (if ok (begin (display "PASS: ") (display name) (newline))
+      (begin (set! fails (+ fails 1)) (display "FAIL: ") (display name) (newline))))
+
+(define (close-list? xs ys tolerance)
+  (cond ((and (null? xs) (null? ys)) #t)
+        ((or (null? xs) (null? ys)) #f)
+        ((< (abs (- (car xs) (car ys))) tolerance)
+         (close-list? (cdr xs) (cdr ys) tolerance))
+        (else #f)))
+
+(define (raises? thunk)
+  (let ((raised #f))
+    (guard (exn (#t (set! raised #t)))
+      (thunk))
+    raised))
+
+;; ---- stream primitives ----
+(define-syntax cons-stream (syntax-rules () ((_ a b) (cons a (delay b)))))
+(define (stream-car s) (car s))
+(define (stream-cdr s) (force (cdr s)))
+(define the-empty-stream '())
+(define (stream-null? s) (null? s))
+(define (stream-take s n)
+  (if (or (= n 0) (stream-null? s))
+      '()
+      (cons (stream-car s) (stream-take (stream-cdr s) (- n 1)))))
+(define (stream-map proc s)
+  (if (stream-null? s)
+      the-empty-stream
+      (cons-stream (proc (stream-car s)) (stream-map proc (stream-cdr s)))))
+(define (list->stream xs)
+  (if (null? xs)
+      the-empty-stream
+      (cons-stream (car xs) (list->stream (cdr xs)))))
+
+;; ---- power-series operations ----
+(define (add-streams s1 s2)
+  (cond ((stream-null? s1) s2)
+        ((stream-null? s2) s1)
+        (else (cons-stream (+ (stream-car s1) (stream-car s2))
+                           (add-streams (stream-cdr s1) (stream-cdr s2))))))
+(define (scale-stream s factor)
+  (stream-map (lambda (x) (* x factor)) s))
+
+(define (mul-series s1 s2)
+  (cond ((or (stream-null? s1) (stream-null? s2)) the-empty-stream)
+        (else
+         (cons-stream (* (stream-car s1) (stream-car s2))
+                      (add-streams
+                       (scale-stream (stream-cdr s2) (stream-car s1))
+                       (mul-series (stream-cdr s1) s2))))))
+
+(define (invert-unit-series s)
+  (define inverse
+    (cons-stream 1
+                 (scale-stream (mul-series (stream-cdr s) inverse) -1)))
+  inverse)
+
+(define (divide-series numerator denominator)
+  (let ((denom-constant (stream-car denominator)))
+    (if (= denom-constant 0)
+        (error "Denominator constant is zero -- DIVIDE-SERIES" denominator)
+        (scale-stream
+         (mul-series numerator
+                     (invert-unit-series
+                      (scale-stream denominator (/ 1.0 denom-constant))))
+         (/ 1.0 denom-constant)))))
+
+(define (integrate-series s)
+  (define (integrate-from terms n)
+    (if (stream-null? terms)
+        the-empty-stream
+        (cons-stream (/ (stream-car terms) n)
+                     (integrate-from (stream-cdr terms) (+ n 1)))))
+  (integrate-from s 1))
+
+(define (deriv-series s)
+  (define (deriv-from terms n)
+    (if (stream-null? terms)
+        the-empty-stream
+        (cons-stream (* n (stream-car terms))
+                     (deriv-from (stream-cdr terms) (+ n 1)))))
+  (deriv-from (stream-cdr s) 1))
+
+;; ---- finite polynomial prefixes ----
+(define p (list->stream '(1 2 3 4)))
+(define q (list->stream '(5 -1 0 2)))
+(check "add-series-prefix" (equal? (stream-take (add-streams p q) 4)
+                                   '(6 1 3 6)))
+(check "scale-series-prefix" (equal? (stream-take (scale-stream p 3) 4)
+                                     '(3 6 9 12)))
+(check "mul-series-polynomial-prefix"
+       (equal? (stream-take (mul-series (list->stream '(1 2 3))
+                                        (list->stream '(4 0 5)))
+                            5)
+               '(4 8 17 10 15)))
+
+;; Empty streams model the zero polynomial edge without forcing a tail.
+(check "empty-zero-series-edge"
+       (and (equal? (stream-take (scale-stream the-empty-stream 7) 3) '())
+            (equal? (stream-take (mul-series the-empty-stream p) 3) '())))
+
+;; ---- inverses and division ----
+(define one-minus-x (list->stream '(1 -1)))
+(define one-plus-x (list->stream '(1 1)))
+(check "invert-unit-series-geometric"
+       (equal? (stream-take (invert-unit-series one-minus-x) 6)
+               '(1 1 1 1 1 1)))
+(check "invert-unit-series-alternating"
+       (equal? (stream-take (invert-unit-series one-plus-x) 6)
+               '(1 -1 1 -1 1 -1)))
+(check "divide-series-nonunit-denominator"
+       (close-list? (stream-take (divide-series (list->stream '(2 4))
+                                                (list->stream '(2 -2)))
+                                 6)
+                    '(1 3 3 3 3 3)
+                    1e-9))
+(check "divide-series-zero-denominator-edge"
+       (raises? (lambda () (divide-series (list->stream '(1 2))
+                                          (list->stream '(0 1))))))
+
+;; ---- exp, sine, and cosine series ----
+(define exp-series
+  (cons-stream 1 (integrate-series exp-series)))
+(define sine-series
+  (cons-stream 0 (integrate-series cosine-series)))
+(define cosine-series
+  (cons-stream 1 (scale-stream (integrate-series sine-series) -1)))
+
+(check "exp-series-prefix"
+       (close-list? (stream-take exp-series 6)
+                    '(1 1 0.5 0.16666666666666666 0.041666666666666664 0.008333333333333333)
+                    1e-9))
+(check "exp-derivative-identity"
+       (close-list? (stream-take (deriv-series exp-series) 6)
+                    (stream-take exp-series 6)
+                    1e-9))
+(check "sine-series-prefix"
+       (close-list? (stream-take sine-series 7)
+                    '(0 1 0 -0.16666666666666666 0 0.008333333333333333 0)
+                    1e-9))
+(check "cosine-series-prefix"
+       (close-list? (stream-take cosine-series 7)
+                    '(1 0 -0.5 0 0.041666666666666664 0 -0.001388888888888889)
+                    1e-9))
+(check "sin2-plus-cos2-identity"
+       (close-list? (stream-take (add-streams (mul-series sine-series sine-series)
+                                              (mul-series cosine-series cosine-series))
+                                 7)
+                    '(1 0 0 0 0 0 0)
+                    1e-9))
+(check "sine-cosine-derivative-identities"
+       (and (close-list? (stream-take (deriv-series sine-series) 6)
+                         (stream-take cosine-series 6)
+                         1e-9)
+            (close-list? (stream-take (deriv-series cosine-series) 6)
+                         (stream-take (scale-stream sine-series -1) 6)
+                         1e-9)))
+
+(newline)
+(if (= fails 0)
+    (begin (display "ALL-PASS ch3_stream_power_series") (newline))
+    (begin (display "HAS-FAIL ch3_stream_power_series ") (display fails) (newline)))

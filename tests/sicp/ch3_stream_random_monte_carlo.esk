@@ -1,0 +1,156 @@
+;; SICP Chapter 3.5.5 — Random streams and Monte Carlo streams.
+;; Self-contained deterministic probes for random-number streams, request
+;; driven reset/generate streams, Cesaro tests, and running Monte Carlo
+;; estimate streams.
+
+(define fails 0)
+(define (check name ok)
+  (if ok (begin (display "PASS: ") (display name) (newline))
+      (begin (set! fails (+ fails 1)) (display "FAIL: ") (display name) (newline))))
+
+(define (close-list? xs ys tolerance)
+  (cond ((and (null? xs) (null? ys)) #t)
+        ((or (null? xs) (null? ys)) #f)
+        ((< (abs (- (car xs) (car ys))) tolerance)
+         (close-list? (cdr xs) (cdr ys) tolerance))
+        (else #f)))
+
+;; ---- stream primitives (3.5.1) ----
+(define-syntax cons-stream (syntax-rules () ((_ a b) (cons a (delay b)))))
+(define (stream-car s) (car s))
+(define (stream-cdr s) (force (cdr s)))
+(define the-empty-stream '())
+(define (stream-null? s) (null? s))
+(define (stream-ref s n)
+  (if (= n 0) (stream-car s) (stream-ref (stream-cdr s) (- n 1))))
+(define (stream-map proc s)
+  (if (stream-null? s) the-empty-stream
+      (cons-stream (proc (stream-car s)) (stream-map proc (stream-cdr s)))))
+(define (stream-take s n)
+  (if (= n 0) '() (cons (stream-car s) (stream-take (stream-cdr s) (- n 1)))))
+(define (list->stream xs)
+  (if (null? xs) the-empty-stream
+      (cons-stream (car xs) (list->stream (cdr xs)))))
+
+;; ---- deterministic random streams (3.5.5) ----
+(define random-init 1)
+(define random-modulus 2147483648)
+(define (rand-update x)
+  (modulo (+ (* 1103515245 x) 12345) random-modulus))
+
+;; Textbook shape: random-numbers is defined in terms of itself by stream-map.
+(define random-numbers
+  (cons-stream random-init (stream-map rand-update random-numbers)))
+
+(define (random-stream-from seed)
+  (cons-stream seed (random-stream-from (rand-update seed))))
+
+(check "random-stream-prefix"
+       (equal? (stream-take random-numbers 8)
+               '(1 1103527590 377401575 662824084
+                   1147902781 2035015474 368800899 1508029952)))
+(check "same-seed-reproducible"
+       (equal? (stream-take (random-stream-from 7) 6)
+               (stream-take (random-stream-from 7) 6)))
+(check "different-seeds-diverge"
+       (not (equal? (stream-take (random-stream-from 7) 4)
+                    (stream-take (random-stream-from 8) 4))))
+
+;; Exercise 3.81 style request stream. A generate request advances and emits
+;; the next value; (reset seed) emits seed and makes later generates replay it.
+(define (requested-random-stream requests seed)
+  (if (stream-null? requests) the-empty-stream
+      (let ((request (stream-car requests)))
+        (cond ((eq? request 'generate)
+               (let ((next (rand-update seed)))
+                 (cons-stream next
+                              (requested-random-stream (stream-cdr requests)
+                                                       next))))
+              ((and (pair? request) (eq? (car request) 'reset))
+               (let ((new-seed (cadr request)))
+                 (cons-stream new-seed
+                              (requested-random-stream (stream-cdr requests)
+                                                       new-seed))))
+              (else
+               (cons-stream seed
+                            (requested-random-stream (stream-cdr requests)
+                                                     seed)))))))
+
+(define request-script
+  (list->stream (list 'generate
+                      'generate
+                      (list 'reset 1)
+                      'generate
+                      'generate
+                      (list 'reset 7)
+                      'generate
+                      'generate
+                      'generate)))
+(define requested-prefix
+  (stream-take (requested-random-stream request-script 1) 9))
+(check "request-stream-generate-reset-prefix"
+       (equal? requested-prefix
+               '(1103527590 377401575 1 1103527590 377401575
+                            7 1282168116 642666333 712265938)))
+(check "reset-replays-original-seed"
+       (equal? (stream-take (requested-random-stream
+                             (list->stream (list (list 'reset 1)
+                                                 'generate
+                                                 'generate))
+                             99)
+                            3)
+               '(1 1103527590 377401575)))
+
+;; ---- Cesaro and Monte Carlo streams (3.5.5) ----
+(define (gcd-e a b)
+  (if (= b 0) a (gcd-e b (remainder a b))))
+
+(define (map-successive-pairs f s)
+  (cons-stream (f (stream-car s) (stream-car (stream-cdr s)))
+               (map-successive-pairs f (stream-cdr (stream-cdr s)))))
+
+(define bounded-randoms
+  (stream-map (lambda (x) (modulo x 1000000)) random-numbers))
+(define cesaro-stream
+  (map-successive-pairs (lambda (r1 r2) (= (gcd-e r1 r2) 1))
+                        bounded-randoms))
+
+(check "bounded-random-prefix"
+       (equal? (stream-take bounded-randoms 10)
+               '(1 527590 401575 824084 902781
+                   15474 800899 29952 256185 517886)))
+(check "cesaro-successive-pairs-prefix"
+       (equal? (stream-take cesaro-stream 8)
+               '(#t #t #f #t #t #t #f #t)))
+
+(define (monte-carlo experiment-stream passed failed)
+  (define (next passed failed)
+    (cons-stream (/ passed (+ passed failed))
+                 (monte-carlo (stream-cdr experiment-stream)
+                              passed
+                              failed)))
+  (if (stream-car experiment-stream)
+      (next (+ passed 1) failed)
+      (next passed (+ failed 1))))
+
+(define cesaro-estimates (monte-carlo cesaro-stream 0 0))
+(check "monte-carlo-estimate-prefix"
+       (close-list? (stream-take cesaro-estimates 8)
+                    '(1.0 1.0 0.6666666666666666 0.75
+                          0.8 0.8333333333333334 0.7142857142857143 0.75)
+                    1e-9))
+
+(define pi-estimate-stream
+  (stream-map (lambda (p) (sqrt (/ 6.0 p))) cesaro-estimates))
+(check "cesaro-pi-estimate-prefix"
+       (close-list? (stream-take pi-estimate-stream 8)
+                    '(2.449489742783178 2.449489742783178 3.0
+                      2.8284271247461903 2.7386127875258306
+                      2.6832815729997477 2.898275349237888
+                      2.8284271247461903)
+                    1e-9))
+
+(newline)
+(if (= fails 0)
+    (begin (display "ALL-PASS ch3_stream_random_monte_carlo") (newline))
+    (begin (display "HAS-FAIL ch3_stream_random_monte_carlo ") (display fails) (newline)))

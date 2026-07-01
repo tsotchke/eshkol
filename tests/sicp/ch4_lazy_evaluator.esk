@@ -1,0 +1,218 @@
+;; SICP Chapter 4.2 -- lazy evaluator / normal-order evaluator.
+;;
+;; This is a compact metacircular probe for delay-it, force-it with memoization,
+;; actual-value, lazy compound-procedure application, and non-strict behavior.
+
+(define fails 0)
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin (display "PASS: ") (display name) (newline))
+      (begin (set! fails (+ fails 1))
+             (display "FAIL: ") (display name)
+             (display " expected=") (display expected)
+             (display " actual=") (display actual)
+             (newline))))
+
+(define (tagged? exp tag) (and (pair? exp) (eq? (car exp) tag)))
+(define (true? x) (not (eq? x #f)))
+
+;; ---- environment model ----
+(define (lookup var env)
+  (if (null? env)
+      (error "unbound" var)
+      (let loop ((vars (caar env)) (vals (cdar env)))
+        (cond ((null? vars) (lookup var (cdr env)))
+              ((eq? (car vars) var) (car vals))
+              (else (loop (cdr vars) (cdr vals)))))))
+
+(define (define-var! var val env)
+  (set-car! (car env) (cons var (caar env)))
+  (set-cdr! (car env) (cons val (cdar env)))
+  'ok)
+
+(define (set-var! var val env)
+  (let loop-env ((frames env))
+    (if (null? frames)
+        (error "unbound set!" var)
+        (let loop-frame ((vars (caar frames)) (vals (cdar frames)))
+          (cond ((null? vars) (loop-env (cdr frames)))
+                ((eq? (car vars) var) (begin (set-car! vals val) 'ok))
+                (else (loop-frame (cdr vars) (cdr vals))))))))
+
+(define (extend-env vars vals env) (cons (cons vars vals) env))
+
+;; ---- thunk machinery ----
+(define (delay-it exp env) (list 'thunk exp env))
+(define (thunk? obj) (tagged? obj 'thunk))
+(define (evaluated-thunk? obj) (tagged? obj 'evaluated-thunk))
+(define (thunk-exp thunk) (cadr thunk))
+(define (thunk-env thunk) (caddr thunk))
+(define (thunk-value thunk) (cadr thunk))
+
+(define (force-it obj)
+  (cond ((thunk? obj)
+         (let ((result (actual-value (thunk-exp obj) (thunk-env obj))))
+           (set-car! obj 'evaluated-thunk)
+           (set-car! (cdr obj) result)
+           (set-cdr! (cdr obj) '())
+           result))
+        ((evaluated-thunk? obj) (thunk-value obj))
+        (else obj)))
+
+(define (actual-value exp env) (force-it (meval exp env)))
+
+;; ---- expression helpers ----
+(define (definition-variable exp)
+  (if (symbol? (cadr exp)) (cadr exp) (caadr exp)))
+(define (definition-value exp)
+  (if (symbol? (cadr exp))
+      (caddr exp)
+      (cons 'lambda (cons (cdadr exp) (cddr exp)))))
+
+(define (eval-sequence exps env)
+  (cond ((null? exps) 'ok)
+        ((null? (cdr exps)) (meval (car exps) env))
+        (else (meval (car exps) env)
+              (eval-sequence (cdr exps) env))))
+
+(define (list-of-arg-values exps env)
+  (if (null? exps)
+      '()
+      (cons (actual-value (car exps) env)
+            (list-of-arg-values (cdr exps) env))))
+
+(define (list-of-delayed-args exps env)
+  (if (null? exps)
+      '()
+      (cons (delay-it (car exps) env)
+            (list-of-delayed-args (cdr exps) env))))
+
+(define (eval-and exps env)
+  (cond ((null? exps) #t)
+        ((null? (cdr exps)) (actual-value (car exps) env))
+        ((true? (actual-value (car exps) env)) (eval-and (cdr exps) env))
+        (else #f)))
+
+(define (eval-or exps env)
+  (if (null? exps)
+      #f
+      (let ((first-value (actual-value (car exps) env)))
+        (if (true? first-value) first-value (eval-or (cdr exps) env)))))
+
+;; ---- lazy evaluator ----
+(define (meval exp env)
+  (cond ((number? exp) exp)
+        ((boolean? exp) exp)
+        ((symbol? exp) (lookup exp env))
+        ((tagged? exp 'quote) (cadr exp))
+        ((tagged? exp 'if)
+         (if (true? (actual-value (cadr exp) env))
+             (meval (caddr exp) env)
+             (if (null? (cdddr exp)) 'ok (meval (cadddr exp) env))))
+        ((tagged? exp 'define)
+         (define-var! (definition-variable exp)
+                      (meval (definition-value exp) env)
+                      env))
+        ((tagged? exp 'set!) (set-var! (cadr exp) (meval (caddr exp) env) env))
+        ((tagged? exp 'lambda) (list 'closure (cadr exp) (cddr exp) env))
+        ((tagged? exp 'begin) (eval-sequence (cdr exp) env))
+        ((tagged? exp 'and) (eval-and (cdr exp) env))
+        ((tagged? exp 'or) (eval-or (cdr exp) env))
+        (else (mapply (actual-value (car exp) env) (cdr exp) env))))
+
+(define (mapply proc arg-exps env)
+  (cond ((procedure? proc) (apply proc (list-of-arg-values arg-exps env)))
+        ((tagged? proc 'closure)
+         (eval-sequence (caddr proc)
+                        (extend-env (cadr proc)
+                                    (list-of-delayed-args arg-exps env)
+                                    (cadddr proc))))
+        (else (error "not-applicable" proc))))
+
+;; Boolean-normalizing wrappers keep first-class predicate calls deterministic.
+(define (base-env)
+  (list (cons (list '+ '- '* '= '< '> 'cons 'car 'cdr 'null?)
+              (list +
+                    -
+                    *
+                    (lambda (a b) (if (= a b) #t #f))
+                    (lambda (a b) (if (< a b) #t #f))
+                    (lambda (a b) (if (> a b) #t #f))
+                    cons car cdr
+                    (lambda (x) (if (null? x) #t #f))))))
+
+(define e (base-env))
+
+;; ---- thunk construction and force-it memoization ----
+(define direct-thunk (delay-it '(+ 1 2) e))
+(check "delay-it constructs thunk" #t (thunk? direct-thunk))
+(check "delay-it stores expression" '(+ 1 2) (thunk-exp direct-thunk))
+(check "force-it computes thunk" 3 (force-it direct-thunk))
+(check "force-it memoizes tag" #t (evaluated-thunk? direct-thunk))
+(check "force-it returns cached value" 3 (force-it direct-thunk))
+
+(meval '(define force-count 0) e)
+(define counted-thunk
+  (delay-it '(begin (set! force-count (+ force-count 1)) force-count) e))
+(check "memoizing thunk first force" 1 (force-it counted-thunk))
+(check "memoizing thunk second force" 1 (force-it counted-thunk))
+(check "memoizing thunk side effect once" 1 (actual-value 'force-count e))
+
+;; ---- actual-value and lazy procedure application ----
+(define raw-result (meval '((lambda (x) x) (+ 20 22)) e))
+(check "compound application delays operand" #t (thunk? raw-result))
+(check "force-it forces delayed result" 42 (force-it raw-result))
+(check "actual-value forces application result"
+       42
+       (actual-value '((lambda (x) x) (+ 20 22)) e))
+
+(check "lazy procedure skips unused argument"
+       7
+       (actual-value '((lambda (x y) x) 7 missing-name) e))
+
+(check "strict primitive forces arguments"
+       15
+       (actual-value '((lambda (x) (+ x 5)) (+ 4 6)) e))
+
+;; ---- non-strict special forms and short-circuit behavior ----
+(meval '(define branch-side 0) e)
+(check "if skips unused consequent"
+       12
+       (actual-value '(if #f (begin (set! branch-side 99) 0) 12) e))
+(check "if unused branch had no effect" 0 (actual-value 'branch-side e))
+
+(check "and short-circuits false"
+       #f
+       (actual-value '(and #t #f (begin (set! branch-side 99) #t)) e))
+(check "and skipped later expression" 0 (actual-value 'branch-side e))
+
+(check "or short-circuits true"
+       'winner
+       (actual-value '(or #f (quote winner) (begin (set! branch-side 99) (quote loser))) e))
+(check "or skipped later expression" 0 (actual-value 'branch-side e))
+
+;; ---- mutation plus memoized lazy arguments ----
+(meval '(define ticks 0) e)
+(meval '(define use-twice (lambda (x) (+ x x))) e)
+(check "memoized argument reused in procedure body"
+       2
+       (actual-value '(use-twice (begin (set! ticks (+ ticks 1)) ticks)) e))
+(check "procedure argument forced once" 1 (actual-value 'ticks e))
+
+(meval '(define source 10) e)
+(meval '(define hold
+          ((lambda (x) (lambda () x))
+           (begin (set! source (+ source 1)) source)))
+       e)
+(check "closure forces captured thunk"
+       11
+       (actual-value '(hold) e))
+(meval '(set! source 99) e)
+(check "forced captured thunk stays memoized after mutation"
+       11
+       (actual-value '(hold) e))
+(check "outer mutation still applied separately" 99 (actual-value 'source e))
+
+(display "ch4 lazy evaluator: ")
+(display (if (= fails 0) "ALL PASS" (cons fails 'FAILS)))
+(newline)

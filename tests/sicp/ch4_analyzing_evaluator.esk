@@ -1,0 +1,188 @@
+;; SICP Chapter 4.1.7 -- separating syntactic analysis from execution.
+;;
+;; `analyze` compiles each expression into an execution procedure.  Closures
+;; store an analyzed body procedure, so procedure bodies are analyzed once and
+;; reused across applications.
+
+(define fails 0)
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin (display "PASS: ") (display name) (newline))
+      (begin (set! fails (+ fails 1))
+             (display "FAIL: ") (display name)
+             (display " expected=") (display expected)
+             (display " actual=") (display actual)
+             (newline))))
+
+(define analyze-count 0)
+(define (record-analyze!) (set! analyze-count (+ analyze-count 1)) analyze-count)
+(define (tagged? exp tag) (and (pair? exp) (eq? (car exp) tag)))
+(define (true? x) (not (eq? x #f)))
+
+;; ---- environment model ----
+(define (lookup var env)
+  (if (null? env) (error "unbound" var)
+      (let loop ((vars (caar env)) (vals (cdar env)))
+        (cond ((null? vars) (lookup var (cdr env)))
+              ((eq? (car vars) var) (car vals))
+              (else (loop (cdr vars) (cdr vals)))))))
+(define (define-var! var val env)
+  (set-car! (car env) (cons var (caar env)))
+  (set-cdr! (car env) (cons val (cdar env)))
+  'ok)
+(define (set-var! var val env)
+  (let loop-env ((frames env))
+    (if (null? frames)
+        (error "unbound set!" var)
+        (let loop-frame ((vars (caar frames)) (vals (cdar frames)))
+          (cond ((null? vars) (loop-env (cdr frames)))
+                ((eq? (car vars) var) (begin (set-car! vals val) 'ok))
+                (else (loop-frame (cdr vars) (cdr vals))))))))
+(define (extend-env vars vals env) (cons (cons vars vals) env))
+
+;; ---- analyzer helpers ----
+(define (definition-variable exp)
+  (if (symbol? (cadr exp)) (cadr exp) (caadr exp)))
+(define (make-lambda parameters body) (cons 'lambda (cons parameters body)))
+(define (definition-value exp)
+  (if (symbol? (cadr exp))
+      (caddr exp)
+      (make-lambda (cdadr exp) (cddr exp))))
+
+(define (analyze-list exps)
+  (if (null? exps) '()
+      (cons (analyze (car exps)) (analyze-list (cdr exps)))))
+
+(define (execute-sequence procs env)
+  (cond ((null? procs) 'ok)
+        ((null? (cdr procs)) ((car procs) env))
+        (else ((car procs) env)
+              (execute-sequence (cdr procs) env))))
+
+(define (analyze-sequence exps)
+  (let ((procs (analyze-list exps)))
+    (lambda (env) (execute-sequence procs env))))
+
+(define (execute-application proc arg-procs env)
+  (mapply proc (list-of-arg-values arg-procs env)))
+(define (list-of-arg-values arg-procs env)
+  (if (null? arg-procs) '()
+      (cons ((car arg-procs) env)
+            (list-of-arg-values (cdr arg-procs) env))))
+
+(define (analyze exp)
+  (record-analyze!)
+  (cond ((number? exp) (lambda (env) exp))
+        ((boolean? exp) (lambda (env) exp))
+        ((symbol? exp) (lambda (env) (lookup exp env)))
+        ((tagged? exp 'quote)
+         (let ((quoted (cadr exp))) (lambda (env) quoted)))
+        ((tagged? exp 'if)
+         (let ((pproc (analyze (cadr exp)))
+               (cproc (analyze (caddr exp)))
+               (aproc (if (null? (cdddr exp))
+                          (lambda (env) 'ok)
+                          (analyze (cadddr exp)))))
+           (lambda (env)
+             (if (true? (pproc env)) (cproc env) (aproc env)))))
+        ((tagged? exp 'lambda)
+         (let ((vars (cadr exp))
+               (body-proc (analyze-sequence (cddr exp))))
+           (lambda (env) (list 'analyzed-closure vars body-proc env))))
+        ((tagged? exp 'begin) (analyze-sequence (cdr exp)))
+        ((tagged? exp 'define)
+         (let ((var (definition-variable exp))
+               (vproc (analyze (definition-value exp))))
+           (lambda (env)
+             (define-var! var (vproc env) env))))
+        ((tagged? exp 'set!)
+         (let ((var (cadr exp))
+               (vproc (analyze (caddr exp))))
+           (lambda (env)
+             (set-var! var (vproc env) env))))
+        (else
+         (let ((fproc (analyze (car exp)))
+               (aprocs (analyze-list (cdr exp))))
+           (lambda (env)
+             (execute-application (fproc env) aprocs env))))))
+
+(define (mapply proc args)
+  (cond ((procedure? proc) (apply proc args))
+        ((tagged? proc 'analyzed-closure)
+         ((caddr proc) (extend-env (cadr proc) args (cadddr proc))))
+        (else (error "not-applicable" proc))))
+
+(define (aeval exp env) ((analyze exp) env))
+
+(define (base-env)
+  (list (cons (list '+ '- '* '= '< '> 'cons 'car 'cdr 'null?)
+              (list +
+                    -
+                    *
+                    (lambda (a b) (if (= a b) #t #f))
+                    (lambda (a b) (if (< a b) #t #f))
+                    (lambda (a b) (if (> a b) #t #f))
+                    cons car cdr
+                    (lambda (x) (if (null? x) #t #f))))))
+
+(define e (base-env))
+
+;; ---- behavior checks ----
+(check "self-eval" 42 (aeval '42 e))
+(check "primitive application" 9 (aeval '(+ 4 5) e))
+(check "if true branch" 'yes (aeval '(if (< 1 2) (quote yes) (quote no)) e))
+(check "if false branch" 'no (aeval '(if (> 1 2) (quote yes) (quote no)) e))
+
+(check "procedure define sugar"
+       'ok
+       (aeval '(define (square x) (* x x)) e))
+(check "analyzed procedure application" 81 (aeval '(square 9) e))
+
+(check "define mutable counter" 'ok (aeval '(define counter 0) e))
+(check "define sequenced procedure"
+       'ok
+       (aeval '(define (bump n)
+                 (set! counter (+ counter 1))
+                 (+ n counter))
+              e))
+(check "multi-expression analyzed body first call" 11 (aeval '(bump 10) e))
+(check "multi-expression analyzed body second call" 12 (aeval '(bump 10) e))
+(check "state threaded through analyzed evaluator" 2 (aeval 'counter e))
+
+(aeval '(define fact
+          (lambda (n)
+            (if (= n 0)
+                1
+                (* n (fact (- n 1))))))
+       e)
+(check "recursive factorial" 720 (aeval '(fact 6) e))
+
+(aeval '(define len
+          (lambda (xs)
+            (if (null? xs)
+                0
+                (+ 1 (len (cdr xs))))))
+       e)
+(check "quoted list recursion" 4 (aeval '(len (quote (a b c d))) e))
+
+;; Analysis is a separate phase: an analyzed expression procedure can execute
+;; repeatedly without incrementing analyze-count again.
+(define saved-count-before (begin (set! analyze-count 0) analyze-count))
+(define saved-proc (analyze '((lambda (x) (* x x)) 12)))
+(define saved-count-after-analyze analyze-count)
+(define first-run (saved-proc e))
+(define count-after-first-run analyze-count)
+(define second-run (saved-proc e))
+(check "analyze creates executable procedure" 144 first-run)
+(check "reusing analyzed procedure result" 144 second-run)
+(check "execution does not re-analyze"
+       (list saved-count-after-analyze saved-count-after-analyze)
+       (list count-after-first-run analyze-count))
+(check "analysis did happen once up front"
+       #t
+       (> saved-count-after-analyze saved-count-before))
+
+(newline)
+(if (= fails 0)
+    (begin (display "ALL-PASS ch4_analyzing_evaluator") (newline))
+    (begin (display "HAS-FAIL ch4_analyzing_evaluator ") (display fails) (newline)))

@@ -1,0 +1,307 @@
+;; SICP Chapter 4.4 - logic query evaluator.
+;; A compact evaluator for the book's query language: frames, pattern
+;; matching, unification, rule application with fresh variables, and/or/not,
+;; lisp-value predicates, and representative company-database queries.
+
+(define fails 0)
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin (display "PASS: ") (display name) (newline))
+      (begin (set! fails (+ fails 1))
+             (display "FAIL: ") (display name)
+             (display " expected=") (display expected)
+             (display " actual=") (display actual)
+             (newline))))
+
+(define (tagged? exp tag) (and (pair? exp) (eq? (car exp) tag)))
+(define (qvar name) (list 'qvar name))
+(define (qvar? exp) (tagged? exp 'qvar))
+(define (qvar-name exp) (cadr exp))
+(define failed-frame 'failed)
+(define (failed? frame) (eq? frame failed-frame))
+
+(define (append-list xs ys)
+  (if (null? xs) ys (cons (car xs) (append-list (cdr xs) ys))))
+
+(define (flatmap proc xs)
+  (if (null? xs)
+      '()
+      (append-list (proc (car xs)) (flatmap proc (cdr xs)))))
+
+(define (filter-list pred xs)
+  (cond ((null? xs) '())
+        ((pred (car xs)) (cons (car xs) (filter-list pred (cdr xs))))
+        (else (filter-list pred (cdr xs)))))
+
+(define (binding-in-frame var frame)
+  (let loop ((bindings frame))
+    (cond ((null? bindings) #f)
+          ((equal? (caar bindings) var) (car bindings))
+          (else (loop (cdr bindings))))))
+
+(define (binding-value binding) (cdr binding))
+
+(define (extend-frame var value frame)
+  (cons (cons var value) frame))
+
+(define (depends-on? exp var frame)
+  (cond ((qvar? exp)
+         (if (equal? exp var)
+             #t
+             (let ((binding (binding-in-frame exp frame)))
+               (if binding
+                   (depends-on? (binding-value binding) var frame)
+                   #f))))
+        ((pair? exp)
+         (or (depends-on? (car exp) var frame)
+             (depends-on? (cdr exp) var frame)))
+        (else #f)))
+
+(define (extend-if-consistent var value frame)
+  (let ((binding (binding-in-frame var frame)))
+    (cond (binding (unify-match (binding-value binding) value frame))
+          ((and (qvar? value) (binding-in-frame value frame))
+           (unify-match var (binding-value (binding-in-frame value frame)) frame))
+          ((depends-on? value var frame) failed-frame)
+          (else (extend-frame var value frame)))))
+
+(define (unify-match p1 p2 frame)
+  (cond ((failed? frame) failed-frame)
+        ((equal? p1 p2) frame)
+        ((qvar? p1) (extend-if-consistent p1 p2 frame))
+        ((qvar? p2) (extend-if-consistent p2 p1 frame))
+        ((and (pair? p1) (pair? p2))
+         (unify-match (cdr p1)
+                      (cdr p2)
+                      (unify-match (car p1) (car p2) frame)))
+        (else failed-frame)))
+
+(define (instantiate exp frame)
+  (cond ((qvar? exp)
+         (let ((binding (binding-in-frame exp frame)))
+           (if binding
+               (instantiate (binding-value binding) frame)
+               exp)))
+        ((pair? exp)
+         (cons (instantiate (car exp) frame)
+               (instantiate (cdr exp) frame)))
+        (else exp)))
+
+(define assertions
+  (list
+   '(address (Bitdiddle Ben) Slumerville)
+   '(job (Bitdiddle Ben) (computer wizard))
+   '(salary (Bitdiddle Ben) 60000)
+   '(address (Hacker Alyssa P) Cambridge)
+   '(job (Hacker Alyssa P) (computer programmer))
+   '(salary (Hacker Alyssa P) 40000)
+   '(supervisor (Hacker Alyssa P) (Bitdiddle Ben))
+   '(address (Fect Cy D) Cambridge)
+   '(job (Fect Cy D) (computer programmer))
+   '(salary (Fect Cy D) 35000)
+   '(supervisor (Fect Cy D) (Bitdiddle Ben))
+   '(address (Tweakit Lem E) Boston)
+   '(job (Tweakit Lem E) (computer technician))
+   '(salary (Tweakit Lem E) 25000)
+   '(supervisor (Tweakit Lem E) (Bitdiddle Ben))
+   '(address (Reasoner Louis) Slumerville)
+   '(job (Reasoner Louis) (computer programmer trainee))
+   '(salary (Reasoner Louis) 30000)
+   '(supervisor (Reasoner Louis) (Hacker Alyssa P))
+   '(address (Warbucks Oliver) Swellesley)
+   '(job (Warbucks Oliver) (administration big wheel))
+   '(salary (Warbucks Oliver) 150000)
+   '(supervisor (Bitdiddle Ben) (Warbucks Oliver))
+   '(supervisor (Scrooge Eben) (Warbucks Oliver))
+   '(job (Scrooge Eben) (accounting chief accountant))
+   '(salary (Scrooge Eben) 75000)))
+
+(define rule-counter 0)
+
+(define rules
+  (list
+   (list 'rule
+         (list 'same-supervisor (qvar 'person-1) (qvar 'person-2))
+         (list 'and
+               (list 'supervisor (qvar 'person-1) (qvar 'boss))
+               (list 'supervisor (qvar 'person-2) (qvar 'boss))
+               (list 'not
+                     (list 'lisp-value 'equal?
+                           (qvar 'person-1)
+                           (qvar 'person-2)))))
+   (list 'rule
+         (list 'outranked-by (qvar 'staff) (qvar 'boss))
+         (list 'or
+               (list 'supervisor (qvar 'staff) (qvar 'boss))
+               (list 'and
+                     (list 'supervisor (qvar 'staff) (qvar 'middle-manager))
+                     (list 'outranked-by (qvar 'middle-manager) (qvar 'boss)))))
+   (list 'rule
+         (list 'can-replace (qvar 'person-1) (qvar 'person-2))
+         (list 'and
+               (list 'job (qvar 'person-1) (qvar 'job-1))
+               (list 'job (qvar 'person-2) (qvar 'job-2))
+               (list 'or
+                     (list 'same (qvar 'job-1) (qvar 'job-2))
+                     (list 'can-do-job (qvar 'job-1) (qvar 'job-2)))
+               (list 'not
+                     (list 'lisp-value 'equal?
+                           (qvar 'person-1)
+                           (qvar 'person-2)))))
+   (list 'rule
+         (list 'same (qvar 'x) (qvar 'x))
+         '(always-true))
+   '(rule (can-do-job (computer wizard) (computer programmer)) (always-true))
+   '(rule (can-do-job (computer programmer) (computer programmer trainee)) (always-true))))
+
+(define (rename-exp exp tag)
+  (cond ((qvar? exp) (qvar (list (qvar-name exp) tag)))
+        ((pair? exp) (cons (rename-exp (car exp) tag)
+                           (rename-exp (cdr exp) tag)))
+        (else exp)))
+
+(define (fresh-rule rule)
+  (set! rule-counter (+ rule-counter 1))
+  (rename-exp rule rule-counter))
+
+(define (rule-conclusion rule) (cadr rule))
+(define (rule-body rule) (caddr rule))
+
+(define (predicate-lookup name)
+  (cond ((eq? name '=) (lambda (a b) (if (= a b) #t #f)))
+        ((eq? name '<) (lambda (a b) (if (< a b) #t #f)))
+        ((eq? name '>) (lambda (a b) (if (> a b) #t #f)))
+        ((eq? name 'equal?) (lambda (a b) (if (equal? a b) #t #f)))
+        (else (error "unknown lisp-value predicate" name))))
+
+(define (eval-lisp-value query frame)
+  (let ((proc (predicate-lookup (cadr query)))
+        (args (map (lambda (arg) (instantiate arg frame)) (cddr query))))
+    (if (apply proc args) (list frame) '())))
+
+(define (apply-assertion query frame assertion)
+  (let ((match (unify-match query assertion frame)))
+    (if (failed? match) '() (list match))))
+
+(define (apply-rule query frame rule)
+  (let* ((clean-rule (fresh-rule rule))
+         (match (unify-match query (rule-conclusion clean-rule) frame)))
+    (if (failed? match)
+        '()
+        (qeval (rule-body clean-rule) (list match)))))
+
+(define (simple-query query frames)
+  (flatmap
+   (lambda (frame)
+     (append-list
+      (flatmap (lambda (assertion) (apply-assertion query frame assertion))
+               assertions)
+      (flatmap (lambda (rule) (apply-rule query frame rule))
+               rules)))
+   frames))
+
+(define (qeval-and clauses frames)
+  (if (null? clauses)
+      frames
+      (qeval-and (cdr clauses) (qeval (car clauses) frames))))
+
+(define (qeval-or clauses frames)
+  (flatmap (lambda (clause) (qeval clause frames)) clauses))
+
+(define (qeval-not query frames)
+  (filter-list
+   (lambda (frame) (null? (qeval query (list frame))))
+   frames))
+
+(define (qeval query frames)
+  (cond ((tagged? query 'and) (qeval-and (cdr query) frames))
+        ((tagged? query 'or) (qeval-or (cdr query) frames))
+        ((tagged? query 'not) (qeval-not (cadr query) frames))
+        ((tagged? query 'lisp-value)
+         (flatmap (lambda (frame) (eval-lisp-value query frame)) frames))
+        ((tagged? query 'always-true) frames)
+        (else (simple-query query frames))))
+
+(define (query-frames query)
+  (set! rule-counter 0)
+  (qeval query (list '())))
+
+(define (query-values var query)
+  (map (lambda (frame) (instantiate var frame))
+       (query-frames query)))
+
+(define person (qvar 'person))
+(define boss (qvar 'boss))
+(define amount (qvar 'amount))
+(define p1 (qvar 'p1))
+(define p2 (qvar 'p2))
+
+(check "simple query finds programmers"
+       '((Hacker Alyssa P) (Fect Cy D))
+       (query-values person
+                     (list 'job person '(computer programmer))))
+
+(check "conjunction filters by salary"
+       '((Hacker Alyssa P) (Fect Cy D))
+       (query-values person
+                     (list 'and
+                           (list 'job person '(computer programmer))
+                           (list 'salary person amount)
+                           (list 'lisp-value '< amount 45000))))
+
+(check "disjunction combines departments"
+       '((Bitdiddle Ben) (Hacker Alyssa P) (Fect Cy D) (Tweakit Lem E) (Reasoner Louis) (Scrooge Eben))
+       (query-values person
+                     (list 'or
+                           (list 'job person '(computer wizard))
+                           (list 'job person '(computer programmer))
+                           (list 'job person '(computer technician))
+                           (list 'job person '(computer programmer trainee))
+                           (list 'job person '(accounting chief accountant)))))
+
+(check "not excludes same person under same supervisor"
+       '((Hacker Alyssa P) (Hacker Alyssa P) (Fect Cy D) (Fect Cy D) (Tweakit Lem E) (Tweakit Lem E) (Bitdiddle Ben) (Scrooge Eben))
+       (query-values p1
+                     (list 'same-supervisor p1 p2)))
+
+(check "rule derives same-supervisor pairs"
+       '(((Hacker Alyssa P) (Fect Cy D))
+         ((Hacker Alyssa P) (Tweakit Lem E))
+         ((Fect Cy D) (Hacker Alyssa P))
+         ((Fect Cy D) (Tweakit Lem E))
+         ((Tweakit Lem E) (Hacker Alyssa P))
+         ((Tweakit Lem E) (Fect Cy D))
+         ((Bitdiddle Ben) (Scrooge Eben))
+         ((Scrooge Eben) (Bitdiddle Ben)))
+       (query-values (list p1 p2)
+                     (list 'same-supervisor p1 p2)))
+
+(check "recursive outranked-by reaches transitive boss"
+       '((Bitdiddle Ben) (Scrooge Eben) (Hacker Alyssa P) (Fect Cy D) (Tweakit Lem E) (Reasoner Louis))
+       (query-values person
+                     (list 'outranked-by person '(Warbucks Oliver))))
+
+(check "query can bind boss through rule"
+       '((Hacker Alyssa P) (Bitdiddle Ben) (Warbucks Oliver))
+       (query-values boss
+                     (list 'outranked-by '(Reasoner Louis) boss)))
+
+(check "rule body can call another rule"
+       '((Hacker Alyssa P) (Fect Cy D))
+       (query-values person
+                     (list 'can-replace person '(Reasoner Louis))))
+
+(check "lisp-value compares scalar data"
+       '((Bitdiddle Ben) (Warbucks Oliver) (Scrooge Eben))
+       (query-values person
+                     (list 'and
+                           (list 'salary person amount)
+                           (list 'lisp-value '> amount 50000))))
+
+(check "failed query returns no frames"
+       '()
+       (query-values person
+                     (list 'job person '(oceanographer))))
+
+(display "ch4 query system: ")
+(display (if (= fails 0) "ALL PASS" (cons fails 'FAILS))) (newline)

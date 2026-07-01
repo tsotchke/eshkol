@@ -36,5 +36,6 @@
     "./scripts/run_sicp_smoke.sh",
     "/Users/tyr/Desktop/infinite_context_coder/bin/icc completion-oracle --repo eshkol_lang --target sicp-completeness --trace-dir scripts/icc_traces --format json"
   ],
+  "status_note": "Implemented on PR #103 as tests/sicp/ch5_compiler.esk. Focused JIT and AOT checks pass for instruction-sequence needs/modifies/statements, preserving/linkage, compile dispatch, compiled primitive calls, conditionals, definitions, mutation, closures, recursive factorial, and reusable compiled code. Awaiting full SICP smoke/ICC gate before marking done.",
   "ux_payoff": "Completes the book's compiler arc and proves Eshkol can express and run SICP's metacircular-to-machine compilation pipeline."
 }

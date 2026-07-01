@@ -1,0 +1,249 @@
+;; SICP Chapter 4.1 -- derived forms in the metacircular evaluator.
+;;
+;; This extends the compact evaluator used by the core ch4 probe with the
+;; textbook derived forms: cond, and, or, let, let*, letrec, procedure-definition
+;; sugar, and multi-expression procedure bodies.
+
+(define fails 0)
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin (display "PASS: ") (display name) (newline))
+      (begin (set! fails (+ fails 1))
+             (display "FAIL: ") (display name)
+             (display " expected=") (display expected)
+             (display " actual=") (display actual)
+             (newline))))
+
+(define (tagged? exp tag) (and (pair? exp) (eq? (car exp) tag)))
+(define (true? x) (not (eq? x #f)))
+
+;; ---- environment model ----
+(define (lookup var env)
+  (if (null? env) (error "unbound" var)
+      (let loop ((vars (caar env)) (vals (cdar env)))
+        (cond ((null? vars) (lookup var (cdr env)))
+              ((eq? (car vars) var) (car vals))
+              (else (loop (cdr vars) (cdr vals)))))))
+
+(define (define-var! var val env)
+  (set-car! (car env) (cons var (caar env)))
+  (set-cdr! (car env) (cons val (cdar env)))
+  'ok)
+
+(define (set-var! var val env)
+  (let loop-env ((frames env))
+    (if (null? frames)
+        (error "unbound set!" var)
+        (let loop-frame ((vars (caar frames)) (vals (cdar frames)))
+          (cond ((null? vars) (loop-env (cdr frames)))
+                ((eq? (car vars) var) (begin (set-car! vals val) 'ok))
+                (else (loop-frame (cdr vars) (cdr vals))))))))
+
+(define (extend-env vars vals env) (cons (cons vars vals) env))
+
+;; ---- expression helpers ----
+(define (sequence->exp seq)
+  (cond ((null? seq) 'ok)
+        ((null? (cdr seq)) (car seq))
+        (else (cons 'begin seq))))
+(define (make-if predicate consequent alternative)
+  (list 'if predicate consequent alternative))
+(define (make-lambda parameters body) (cons 'lambda (cons parameters body)))
+
+(define (definition-variable exp)
+  (if (symbol? (cadr exp)) (cadr exp) (caadr exp)))
+(define (definition-value exp)
+  (if (symbol? (cadr exp))
+      (caddr exp)
+      (make-lambda (cdadr exp) (cddr exp))))
+
+(define (cond-predicate clause) (car clause))
+(define (cond-actions clause) (cdr clause))
+(define (cond-else-clause? clause) (eq? (cond-predicate clause) 'else))
+(define (expand-cond-clauses clauses)
+  (if (null? clauses)
+      #f
+      (let ((first (car clauses))
+            (rest (cdr clauses)))
+        (if (cond-else-clause? first)
+            (if (null? rest)
+                (sequence->exp (cond-actions first))
+                (error "ELSE clause is not last -- COND->IF" clauses))
+            (make-if (cond-predicate first)
+                     (sequence->exp (cond-actions first))
+                     (expand-cond-clauses rest))))))
+(define (cond->if exp) (expand-cond-clauses (cdr exp)))
+
+(define (let-bindings exp) (cadr exp))
+(define (let-body exp) (cddr exp))
+(define (binding-variable binding) (car binding))
+(define (binding-value binding) (cadr binding))
+(define (binding-vars bindings)
+  (if (null? bindings) '()
+      (cons (binding-variable (car bindings)) (binding-vars (cdr bindings)))))
+(define (binding-values bindings)
+  (if (null? bindings) '()
+      (cons (binding-value (car bindings)) (binding-values (cdr bindings)))))
+(define (let->combination exp)
+  (cons (make-lambda (binding-vars (let-bindings exp)) (let-body exp))
+        (binding-values (let-bindings exp))))
+
+(define (let*->nested-lets exp)
+  (define (expand bindings body)
+    (if (null? bindings)
+        (cons 'let (cons '() body))
+        (list 'let (list (car bindings)) (expand (cdr bindings) body))))
+  (expand (let-bindings exp) (let-body exp)))
+
+(define (letrec-bindings exp) (cadr exp))
+(define (letrec-body exp) (cddr exp))
+(define (unassigned-bindings bindings)
+  (if (null? bindings) '()
+      (cons (list (binding-variable (car bindings)) (list 'quote '*unassigned*))
+            (unassigned-bindings (cdr bindings)))))
+(define (letrec-sets bindings)
+  (if (null? bindings) '()
+      (cons (list 'set! (binding-variable (car bindings)) (binding-value (car bindings)))
+            (letrec-sets (cdr bindings)))))
+(define (letrec->let exp)
+  (cons 'let
+        (cons (unassigned-bindings (letrec-bindings exp))
+              (append (letrec-sets (letrec-bindings exp)) (letrec-body exp)))))
+
+;; ---- evaluator ----
+(define (eval-sequence exps env)
+  (cond ((null? exps) 'ok)
+        ((null? (cdr exps)) (meval (car exps) env))
+        (else (meval (car exps) env)
+              (eval-sequence (cdr exps) env))))
+
+(define (list-of-values exps env)
+  (if (null? exps) '()
+      (cons (meval (car exps) env)
+            (list-of-values (cdr exps) env))))
+
+(define (eval-and exps env)
+  (cond ((null? exps) #t)
+        ((null? (cdr exps)) (meval (car exps) env))
+        ((true? (meval (car exps) env)) (eval-and (cdr exps) env))
+        (else #f)))
+
+(define (eval-or exps env)
+  (if (null? exps)
+      #f
+      (let ((first-value (meval (car exps) env)))
+        (if (true? first-value) first-value (eval-or (cdr exps) env)))))
+
+(define (meval exp env)
+  (cond ((number? exp) exp)
+        ((boolean? exp) exp)
+        ((symbol? exp) (lookup exp env))
+        ((tagged? exp 'quote) (cadr exp))
+        ((tagged? exp 'if)
+         (if (true? (meval (cadr exp) env))
+             (meval (caddr exp) env)
+             (if (null? (cdddr exp)) 'ok (meval (cadddr exp) env))))
+        ((tagged? exp 'define)
+         (define-var! (definition-variable exp)
+                      (meval (definition-value exp) env)
+                      env))
+        ((tagged? exp 'set!) (set-var! (cadr exp) (meval (caddr exp) env) env))
+        ((tagged? exp 'lambda) (list 'closure (cadr exp) (cddr exp) env))
+        ((tagged? exp 'begin) (eval-sequence (cdr exp) env))
+        ((tagged? exp 'cond) (meval (cond->if exp) env))
+        ((tagged? exp 'and) (eval-and (cdr exp) env))
+        ((tagged? exp 'or) (eval-or (cdr exp) env))
+        ((tagged? exp 'let) (meval (let->combination exp) env))
+        ((tagged? exp 'let*) (meval (let*->nested-lets exp) env))
+        ((tagged? exp 'letrec) (meval (letrec->let exp) env))
+        (else (mapply (meval (car exp) env)
+                      (list-of-values (cdr exp) env)))))
+
+(define (mapply proc args)
+  (cond ((procedure? proc) (apply proc args))
+        ((tagged? proc 'closure)
+         (eval-sequence (caddr proc)
+                        (extend-env (cadr proc) args (cadddr proc))))
+        (else (error "not-applicable" proc))))
+
+(define (base-env)
+  (list (cons (list '+ '- '* '= '< '> 'cons 'car 'cdr 'null?)
+              (list +
+                    -
+                    *
+                    (lambda (a b) (if (= a b) #t #f))
+                    (lambda (a b) (if (< a b) #t #f))
+                    (lambda (a b) (if (> a b) #t #f))
+                    cons car cdr
+                    (lambda (x) (if (null? x) #t #f))))))
+
+(define e (base-env))
+
+;; ---- derived-form checks ----
+(check "procedure define sugar"
+       'ok
+       (meval '(define (square x) (* x x)) e))
+(check "defined procedure from sugar" 49 (meval '(square 7) e))
+
+(check "lambda body sequence"
+       12
+       (meval '((lambda (x)
+                  (define y (+ x 1))
+                  (+ y y))
+                5)
+              e))
+
+(check "cond first true clause"
+       'small
+       (meval '(cond ((< 4 3) (quote impossible))
+                     ((< 4 5) (quote small))
+                     (else (quote large)))
+              e))
+(check "cond else sequence"
+       7
+       (meval '(cond ((< 9 3) 1)
+                     (else (define z 3) (+ z 4)))
+              e))
+
+(meval '(define side 0) e)
+(check "and short-circuits false"
+       #f
+       (meval '(and #t #f (begin (set! side 99) #t)) e))
+(check "and did not run later expression" 0 (meval 'side e))
+(check "and returns last true value" 5 (meval '(and #t 5) e))
+
+(check "or short-circuits true"
+       'winner
+       (meval '(or #f (quote winner) (begin (set! side 99) (quote loser))) e))
+(check "or did not run later expression" 0 (meval 'side e))
+(check "or empty is false" #f (meval '(or) e))
+
+(check "let lexical binding"
+       17
+       (meval '(let ((x 5) (y 12)) (+ x y)) e))
+(check "let does not leak binding"
+       0
+       (meval 'side e))
+(check "let* sequential binding"
+       11
+       (meval '(let* ((x 5) (y (+ x 1))) (+ x y)) e))
+
+(check "letrec mutual recursion"
+       #t
+       (meval '(letrec ((even? (lambda (n) (if (= n 0) #t (odd? (- n 1)))))
+                        (odd?  (lambda (n) (if (= n 0) #f (even? (- n 1))))))
+                 (and (even? 10) (odd? 11)))
+              e))
+
+(check "derived forms compose"
+       '(ok 15)
+       (meval '(let ((x 10))
+                 (cond ((and (> x 3) (< x 20))
+                        (cons (quote ok) (cons (+ x 5) (quote ()))))
+                       (else (cons (quote bad) (cons x (quote ()))))))
+              e))
+
+(newline)
+(if (= fails 0)
+    (begin (display "ALL-PASS ch4_metacircular_derived_forms") (newline))
+    (begin (display "HAS-FAIL ch4_metacircular_derived_forms ") (display fails) (newline)))

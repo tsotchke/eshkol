@@ -36,5 +36,6 @@
     "./scripts/run_sicp_smoke.sh",
     "/Users/tyr/Desktop/infinite_context_coder/bin/icc completion-oracle --repo eshkol_lang --target sicp-completeness --trace-dir scripts/icc_traces --format json"
   ],
+  "status_note": "Implemented on PR #103 as tests/sicp/ch5_explicit_control_evaluator.esk. Focused JIT and AOT checks pass for evaluator registers, save/restore stack, eval/apply dispatch, definitions, mutation, conditionals, closures, recursion, and stack-balance statistics. Awaiting full SICP smoke/ICC gate before marking done.",
   "ux_payoff": "Proves Eshkol can host SICP's evaluator at the register-machine level, not only as direct high-level interpreter code."
 }

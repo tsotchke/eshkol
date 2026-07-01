@@ -1,0 +1,223 @@
+;; SICP Chapter 3.4 -- Concurrency, serializers, and account exchange.
+;;
+;; This smoke probe tests the book's concurrency semantics deterministically:
+;; lost updates are modeled as explicit two-phase reads/writes, serializers are
+;; closures that enforce one active critical section, and account exchange is
+;; checked through balance invariants and ordered serializer acquisition.  It
+;; deliberately does not depend on OS scheduler timing.
+
+(define fails 0)
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin (display "PASS: ") (display name) (newline))
+      (begin (set! fails (+ fails 1))
+             (display "FAIL: ") (display name)
+             (display " expected=") (display expected)
+             (display " actual=") (display actual)
+             (newline))))
+
+(define serializer-events '())
+(define serializer-busy-count 0)
+(define (record-serializer-event! event)
+  (set! serializer-events (cons event serializer-events))
+  'ok)
+(define (reverse-list xs)
+  (define (iter rest acc)
+    (if (null? rest) acc (iter (cdr rest) (cons (car rest) acc))))
+  (iter xs '()))
+(define (serializer-log) (reverse-list serializer-events))
+
+;; A nonblocking serializer model.  SICP's mutex-backed serializer would block
+;; on reentry; this bounded probe records that the critical section was already
+;; held and returns 'serializer-busy instead of hanging the smoke gate.
+(define (make-serializer name)
+  (let ((locked #f)
+        (entries 0)
+        (max-depth 0))
+    (define (run thunk)
+      (if locked
+          (begin
+            (set! serializer-busy-count (+ serializer-busy-count 1))
+            (record-serializer-event! (list name 'busy))
+            'serializer-busy)
+          (begin
+            (set! locked #t)
+            (set! entries (+ entries 1))
+            (set! max-depth 1)
+            (record-serializer-event! (list name 'enter))
+            (let ((result (thunk)))
+              (record-serializer-event! (list name 'leave))
+              (set! locked #f)
+              result))))
+    (define (dispatch message)
+      (cond ((eq? message 'run) run)
+            ((eq? message 'locked?) locked)
+            ((eq? message 'entries) entries)
+            ((eq? message 'max-depth) max-depth)
+            ((eq? message 'name) name)
+            (else (error "Unknown request -- SERIALIZER" message))))
+    dispatch))
+
+(define (serialize serializer thunk) ((serializer 'run) thunk))
+(define (serializer-locked? serializer) (serializer 'locked?))
+(define (serializer-entry-count serializer) (serializer 'entries))
+
+;; ---- account objects with associated serializers ----
+(define (make-account-and-serializer id balance)
+  (let ((serializer (make-serializer id)))
+    (define (withdraw amount)
+      (if (>= balance amount)
+          (begin (set! balance (- balance amount)) balance)
+          'insufficient-funds))
+    (define (deposit amount)
+      (set! balance (+ balance amount))
+      balance)
+    (define (set-balance! new-balance)
+      (set! balance new-balance)
+      balance)
+    (define (dispatch message)
+      (cond ((eq? message 'withdraw) withdraw)
+            ((eq? message 'deposit) deposit)
+            ((eq? message 'balance) balance)
+            ((eq? message 'set-balance!) set-balance!)
+            ((eq? message 'serializer) serializer)
+            ((eq? message 'id) id)
+            (else (error "Unknown request -- ACCOUNT" message))))
+    dispatch))
+
+(define (account-id account) (account 'id))
+(define (account-balance account) (account 'balance))
+(define (account-serializer account) (account 'serializer))
+(define (account-withdraw account amount) ((account 'withdraw) amount))
+(define (account-deposit account amount) ((account 'deposit) amount))
+(define (account-set-balance! account amount) ((account 'set-balance!) amount))
+(define (total-balance accounts)
+  (if (null? accounts) 0
+      (+ (account-balance (car accounts)) (total-balance (cdr accounts)))))
+
+;; Two-phase unsafe operation used only to model the interleaving that SICP
+;; warns about: both plans read the same old balance before either writes.
+(define (make-unsafe-withdraw-plan account amount)
+  (let ((old-balance (account-balance account)))
+    (lambda ()
+      (if (>= old-balance amount)
+          (account-set-balance! account (- old-balance amount))
+          'insufficient-funds))))
+
+(define (serialized-withdraw account amount)
+  (serialize (account-serializer account)
+             (lambda () (account-withdraw account amount))))
+
+(define (transfer from to amount)
+  (account-withdraw from amount)
+  (account-deposit to amount)
+  'done)
+(define (serialized-transfer from to amount)
+  (serialize (account-serializer from)
+             (lambda ()
+               (serialize (account-serializer to)
+                          (lambda () (transfer from to amount))))))
+
+(define (swap-account-balances account1 account2)
+  (let ((difference (- (account-balance account1)
+                       (account-balance account2))))
+    (transfer account1 account2 difference)))
+
+;; The direct SICP composition serializes first account1, then account2.  That
+;; protects each exchange but can deadlock if two concurrent exchanges acquire
+;; the same serializers in opposite orders.  The ordered version below is the
+;; book's deadlock-avoidance refinement.
+(define (serialized-exchange account1 account2)
+  (serialize (account-serializer account1)
+             (lambda ()
+               (serialize (account-serializer account2)
+                          (lambda () (swap-account-balances account1 account2))))))
+
+(define (ordered-lock-order account1 account2)
+  (if (< (account-id account1) (account-id account2))
+      (list (account-id account1) (account-id account2))
+      (list (account-id account2) (account-id account1))))
+
+(define (ordered-serialized-exchange account1 account2)
+  (if (= (account-id account1) (account-id account2))
+      'same-account
+      (let ((first (if (< (account-id account1) (account-id account2)) account1 account2))
+            (second (if (< (account-id account1) (account-id account2)) account2 account1)))
+        (serialize (account-serializer first)
+                   (lambda ()
+                     (serialize (account-serializer second)
+                                (lambda () (swap-account-balances account1 account2))))))))
+
+;; ---- serializer behavior ----
+(define s (make-serializer 's))
+(check "serializer initially unlocked" #f (serializer-locked? s))
+(check "serializer locks during critical section"
+       '(#t 1)
+       (serialize s (lambda () (list (serializer-locked? s)
+                                     (serializer-entry-count s)))))
+(check "serializer unlocks after critical section" #f (serializer-locked? s))
+(check "serializer reentry is blocked, not run"
+       'serializer-busy
+       (serialize s (lambda () (serialize s (lambda () 'inner)))))
+(check "serializer records busy attempt" 1 serializer-busy-count)
+
+;; ---- lost update hazard versus serialized update ----
+(define race-account (make-account-and-serializer 1 100))
+(define unsafe-40 (make-unsafe-withdraw-plan race-account 40))
+(define unsafe-60 (make-unsafe-withdraw-plan race-account 60))
+(check "unsafe first write from stale read" 60 (unsafe-40))
+(check "unsafe second write loses first update" 40 (unsafe-60))
+(check "lost-update final balance demonstrates race" 40 (account-balance race-account))
+
+(define safe-account (make-account-and-serializer 2 100))
+(check "serialized withdraw first" 60 (serialized-withdraw safe-account 40))
+(check "serialized withdraw second" 0 (serialized-withdraw safe-account 60))
+(check "serialized withdraws preserve both updates" 0 (account-balance safe-account))
+
+;; ---- transfer and exchange invariants ----
+(define transfer-a (make-account-and-serializer 3 100))
+(define transfer-b (make-account-and-serializer 4 50))
+(check "transfer initial total" 150 (total-balance (list transfer-a transfer-b)))
+(check "serialized transfer result" 'done (serialized-transfer transfer-a transfer-b 30))
+(check "serialized transfer balances" '(70 80 150)
+       (list (account-balance transfer-a)
+             (account-balance transfer-b)
+             (total-balance (list transfer-a transfer-b))))
+
+(define exchange-a (make-account-and-serializer 5 100))
+(define exchange-b (make-account-and-serializer 6 40))
+(check "serialized exchange swaps balances" 'done (serialized-exchange exchange-a exchange-b))
+(check "exchange preserves total and swaps" '(40 100 140)
+       (list (account-balance exchange-a)
+             (account-balance exchange-b)
+             (total-balance (list exchange-a exchange-b))))
+(check "each account serializer entered once for exchange" '(1 1)
+       (list (serializer-entry-count (account-serializer exchange-a))
+             (serializer-entry-count (account-serializer exchange-b))))
+
+;; ---- deadlock-avoidance order ----
+(define order-a (make-account-and-serializer 10 10))
+(define order-b (make-account-and-serializer 20 90))
+(check "plain serialized-exchange lock order can disagree"
+       '((10 20) (20 10))
+       (list (list (account-id order-a) (account-id order-b))
+             (list (account-id order-b) (account-id order-a))))
+(check "ordered exchange lock order is stable both directions"
+       '((10 20) (10 20))
+       (list (ordered-lock-order order-a order-b)
+             (ordered-lock-order order-b order-a)))
+(check "ordered serialized exchange a->b" 'done
+       (ordered-serialized-exchange order-a order-b))
+(check "ordered serialized exchange b->a" 'done
+       (ordered-serialized-exchange order-b order-a))
+(check "double ordered exchange restores balances" '(10 90 100)
+       (list (account-balance order-a)
+             (account-balance order-b)
+             (total-balance (list order-a order-b))))
+(check "ordered exchange same account is no-op" 'same-account
+       (ordered-serialized-exchange order-a order-a))
+
+(newline)
+(if (= fails 0)
+    (begin (display "ALL-PASS ch3_concurrency") (newline))
+    (begin (display "HAS-FAIL ch3_concurrency ") (display fails) (newline)))

@@ -1,0 +1,357 @@
+;; SICP Chapter 2.5 — generic arithmetic tower and coercion.
+;;
+;; This is a self-contained data-directed arithmetic system in the style of
+;; SICP 2.5.  It deliberately names the tower operations `raise-one` and
+;; `drop-number` so the probe does not shadow Eshkol's built-in exception
+;; `raise` form or stdlib list `drop`.
+
+(define fails 0)
+(define (check name ok)
+  (if ok (begin (display "PASS: ") (display name) (newline))
+      (begin (set! fails (+ fails 1)) (display "FAIL: ") (display name) (newline))))
+(define (close? a b) (< (abs (- a b)) 1e-8))
+
+;; ---- data-directed operation and coercion tables ----
+(define op-table (list '*op-table*))
+(define (put op type proc)
+  (set-cdr! op-table (cons (list op type proc) (cdr op-table))))
+(define (get op type)
+  (let loop ((entries (cdr op-table)))
+    (cond ((null? entries) #f)
+          ((and (eq? (car (car entries)) op) (equal? (cadr (car entries)) type))
+           (caddr (car entries)))
+          (else (loop (cdr entries))))))
+
+(define coercion-table (list '*coercion-table*))
+(define (put-coercion from to proc)
+  (set-cdr! coercion-table (cons (list from to proc) (cdr coercion-table))))
+(define (get-coercion from to)
+  (let loop ((entries (cdr coercion-table)))
+    (cond ((null? entries) #f)
+          ((and (eq? (car (car entries)) from) (eq? (cadr (car entries)) to))
+           (caddr (car entries)))
+          (else (loop (cdr entries))))))
+
+(define (attach-tag tag contents) (cons tag contents))
+(define (type-tag datum) (car datum))
+(define (contents datum) (cdr datum))
+(define (tagged-as? tag datum) (and (pair? datum) (eq? (type-tag datum) tag)))
+
+(define (tower-rank tag)
+  (cond ((eq? tag 'scheme-number) 0)
+        ((eq? tag 'rational) 1)
+        ((eq? tag 'real) 2)
+        ((eq? tag 'complex) 3)
+        (else -1)))
+(define (next-type tag)
+  (cond ((eq? tag 'scheme-number) 'rational)
+        ((eq? tag 'rational) 'real)
+        ((eq? tag 'real) 'complex)
+        (else #f)))
+
+;; Constructors are ordinary generic-table entries.  They are defined before
+;; package installation because package methods refer to them through closures.
+(define (make-scheme-number n) ((get 'make 'scheme-number) n))
+(define (make-rational n d) ((get 'make 'rational) n d))
+(define (make-real n) ((get 'make 'real) n))
+(define (make-complex-from-real-imag r i) ((get 'make-from-real-imag 'complex) r i))
+(define (make-complex-from-mag-ang m a) ((get 'make-from-mag-ang 'complex) m a))
+(define (numer x) (car (contents x)))
+(define (denom x) (cdr (contents x)))
+
+(define (raise-one x)
+  (let ((target (next-type (type-tag x))))
+    (if target
+        (let ((proc (get-coercion (type-tag x) target)))
+          (if proc (proc x) (error "missing coercion" (list (type-tag x) target))))
+        #f)))
+(define (project-number x) (apply-generic1 'project x))
+(define (drop-number x)
+  (let ((projection (project-number x)))
+    (if (and projection (equ? (raise-one projection) x))
+        (drop-number projection)
+        x)))
+(define (dropping-op? op)
+  (or (eq? op 'add) (or (eq? op 'sub) (or (eq? op 'mul) (eq? op 'div)))))
+(define (finish-result op result)
+  (if (dropping-op? op) (drop-number result) result))
+
+(define (apply-generic1 op a)
+  (let ((proc (get op (list (type-tag a)))))
+    (if proc (proc a) (error "no unary method" (list op (type-tag a))))))
+(define (apply-generic2 op a b)
+  (let ((proc (get op (list (type-tag a) (type-tag b)))))
+    (if proc
+        (finish-result op (proc a b))
+        (let ((r1 (tower-rank (type-tag a)))
+              (r2 (tower-rank (type-tag b))))
+          (cond ((< r1 r2) (apply-generic2 op (raise-one a) b))
+                ((< r2 r1) (apply-generic2 op a (raise-one b)))
+                (else (error "no binary method" (list op (type-tag a) (type-tag b)))))))))
+
+(define (add x y) (apply-generic2 'add x y))
+(define (sub x y) (apply-generic2 'sub x y))
+(define (mul x y) (apply-generic2 'mul x y))
+(define (div x y) (apply-generic2 'div x y))
+(define (equ? x y) (apply-generic2 'equ? x y))
+(define (=zero? x) (apply-generic1 '=zero? x))
+(define (real-part z) (apply-generic1 'real-part z))
+(define (imag-part z) (apply-generic1 'imag-part z))
+(define (magnitude z) (apply-generic1 'magnitude z))
+
+;; ---- packages: scheme-number, rational, real ----
+(define (install-scheme-number-package)
+  (define (tag x) (attach-tag 'scheme-number x))
+  (put 'add '(scheme-number scheme-number) (lambda (x y) (tag (+ (contents x) (contents y)))))
+  (put 'sub '(scheme-number scheme-number) (lambda (x y) (tag (- (contents x) (contents y)))))
+  (put 'mul '(scheme-number scheme-number) (lambda (x y) (tag (* (contents x) (contents y)))))
+  (put 'div '(scheme-number scheme-number) (lambda (x y) (tag (/ (contents x) (contents y)))))
+  (put 'equ? '(scheme-number scheme-number) (lambda (x y) (= (contents x) (contents y))))
+  (put '=zero? '(scheme-number) (lambda (x) (= (contents x) 0)))
+  (put 'project '(scheme-number) (lambda (x) #f))
+  (put 'make 'scheme-number (lambda (x) (tag x)))
+  'done)
+
+(define (install-rational-package)
+  (define (gcd-e a b) (if (= b 0) a (gcd-e b (remainder a b))))
+  (define (make-rat n d)
+    (let ((g (gcd-e (abs n) (abs d))))
+      (if (< d 0)
+          (cons (/ (- n) g) (/ (- d) g))
+          (cons (/ n g) (/ d g)))))
+  (define (n x) (car x))
+  (define (d x) (cdr x))
+  (define (add-rat x y)
+    (make-rat (+ (* (n x) (d y)) (* (n y) (d x))) (* (d x) (d y))))
+  (define (sub-rat x y)
+    (make-rat (- (* (n x) (d y)) (* (n y) (d x))) (* (d x) (d y))))
+  (define (mul-rat x y) (make-rat (* (n x) (n y)) (* (d x) (d y))))
+  (define (div-rat x y) (make-rat (* (n x) (d y)) (* (d x) (n y))))
+  (define (tag x) (attach-tag 'rational x))
+  (put 'add '(rational rational) (lambda (x y) (tag (add-rat (contents x) (contents y)))))
+  (put 'sub '(rational rational) (lambda (x y) (tag (sub-rat (contents x) (contents y)))))
+  (put 'mul '(rational rational) (lambda (x y) (tag (mul-rat (contents x) (contents y)))))
+  (put 'div '(rational rational) (lambda (x y) (tag (div-rat (contents x) (contents y)))))
+  (put 'equ? '(rational rational)
+       (lambda (x y) (= (* (n (contents x)) (d (contents y))) (* (n (contents y)) (d (contents x))))))
+  (put '=zero? '(rational) (lambda (x) (= (n (contents x)) 0)))
+  (put 'project '(rational)
+       (lambda (x) (if (= (d (contents x)) 1) (make-scheme-number (n (contents x))) #f)))
+  (put 'make 'rational (lambda (n d) (tag (make-rat n d))))
+  'done)
+
+(define (install-real-package)
+  (define (tag x) (attach-tag 'real x))
+  (put 'add '(real real) (lambda (x y) (tag (+ (contents x) (contents y)))))
+  (put 'sub '(real real) (lambda (x y) (tag (- (contents x) (contents y)))))
+  (put 'mul '(real real) (lambda (x y) (tag (* (contents x) (contents y)))))
+  (put 'div '(real real) (lambda (x y) (tag (/ (contents x) (contents y)))))
+  (put 'equ? '(real real) (lambda (x y) (close? (contents x) (contents y))))
+  (put '=zero? '(real) (lambda (x) (close? (contents x) 0.0)))
+  (put 'project '(real)
+       (lambda (x) (if (integer? (contents x)) (make-rational (contents x) 1) #f)))
+  (put 'make 'real (lambda (x) (tag x)))
+  'done)
+
+;; ---- rectangular and polar representations under complex ----
+(define (install-rectangular-package)
+  (define (make-from-real-imag x y) (attach-tag 'rectangular (cons x y)))
+  (define (real-part-rect z) (car (contents z)))
+  (define (imag-part-rect z) (cdr (contents z)))
+  (define (magnitude-rect z)
+    (sqrt (+ (* (real-part-rect z) (real-part-rect z))
+             (* (imag-part-rect z) (imag-part-rect z)))))
+  (put 'real-part '(rectangular) real-part-rect)
+  (put 'imag-part '(rectangular) imag-part-rect)
+  (put 'magnitude '(rectangular) magnitude-rect)
+  (put 'make-from-real-imag 'rectangular make-from-real-imag)
+  'done)
+
+(define (install-polar-package)
+  (define (make-from-mag-ang m a) (attach-tag 'polar (cons m a)))
+  (define (magnitude-polar z) (car (contents z)))
+  (define (angle-polar z) (cdr (contents z)))
+  (define (real-part-polar z) (* (magnitude-polar z) (cos (angle-polar z))))
+  (define (imag-part-polar z) (* (magnitude-polar z) (sin (angle-polar z))))
+  (put 'real-part '(polar) real-part-polar)
+  (put 'imag-part '(polar) imag-part-polar)
+  (put 'magnitude '(polar) magnitude-polar)
+  (put 'angle '(polar) angle-polar)
+  (put 'make-from-mag-ang 'polar make-from-mag-ang)
+  'done)
+
+(define (install-complex-package)
+  (define (make-from-real-imag x y) ((get 'make-from-real-imag 'rectangular) x y))
+  (define (make-from-mag-ang m a) ((get 'make-from-mag-ang 'polar) m a))
+  (define (real-part-raw z) ((get 'real-part (list (type-tag z))) z))
+  (define (imag-part-raw z) ((get 'imag-part (list (type-tag z))) z))
+  (define (magnitude-raw z) ((get 'magnitude (list (type-tag z))) z))
+  (define (add-complex z1 z2)
+    (make-from-real-imag (+ (real-part-raw z1) (real-part-raw z2))
+                         (+ (imag-part-raw z1) (imag-part-raw z2))))
+  (define (sub-complex z1 z2)
+    (make-from-real-imag (- (real-part-raw z1) (real-part-raw z2))
+                         (- (imag-part-raw z1) (imag-part-raw z2))))
+  (define (mul-complex z1 z2)
+    (let ((a (real-part-raw z1))
+          (b (imag-part-raw z1))
+          (c (real-part-raw z2))
+          (d (imag-part-raw z2)))
+      (make-from-real-imag (- (* a c) (* b d))
+                           (+ (* a d) (* b c)))))
+  (define (div-complex z1 z2)
+    (let ((a (real-part-raw z1))
+          (b (imag-part-raw z1))
+          (c (real-part-raw z2))
+          (d (imag-part-raw z2)))
+      (let ((den (+ (* c c) (* d d))))
+        (make-from-real-imag (/ (+ (* a c) (* b d)) den)
+                             (/ (- (* b c) (* a d)) den)))))
+  (define (tag z) (attach-tag 'complex z))
+  (put 'add '(complex complex) (lambda (z1 z2) (tag (add-complex (contents z1) (contents z2)))))
+  (put 'sub '(complex complex) (lambda (z1 z2) (tag (sub-complex (contents z1) (contents z2)))))
+  (put 'mul '(complex complex) (lambda (z1 z2) (tag (mul-complex (contents z1) (contents z2)))))
+  (put 'div '(complex complex) (lambda (z1 z2) (tag (div-complex (contents z1) (contents z2)))))
+  (put 'equ? '(complex complex)
+       (lambda (z1 z2)
+         (and (close? (real-part-raw (contents z1)) (real-part-raw (contents z2)))
+              (close? (imag-part-raw (contents z1)) (imag-part-raw (contents z2))))))
+  (put '=zero? '(complex)
+       (lambda (z) (and (close? (real-part-raw (contents z)) 0.0)
+                        (close? (imag-part-raw (contents z)) 0.0))))
+  (put 'project '(complex)
+       (lambda (z)
+         (if (close? (imag-part-raw (contents z)) 0.0)
+             (make-real (real-part-raw (contents z)))
+             #f)))
+  (put 'real-part '(complex) (lambda (z) (real-part-raw (contents z))))
+  (put 'imag-part '(complex) (lambda (z) (imag-part-raw (contents z))))
+  (put 'magnitude '(complex) (lambda (z) (magnitude-raw (contents z))))
+  (put 'make-from-real-imag 'complex (lambda (x y) (tag (make-from-real-imag x y))))
+  (put 'make-from-mag-ang 'complex (lambda (m a) (tag (make-from-mag-ang m a))))
+  'done)
+
+(install-scheme-number-package)
+(install-rational-package)
+(install-real-package)
+(install-rectangular-package)
+(install-polar-package)
+(install-complex-package)
+
+(put-coercion 'scheme-number 'rational
+              (lambda (x) (make-rational (contents x) 1)))
+(put-coercion 'rational 'real
+              (lambda (x) (make-real (/ (numer x) (denom x)))))
+(put-coercion 'real 'complex
+              (lambda (x) (make-complex-from-real-imag (contents x) 0)))
+
+;; ---- tagged data and package sanity checks ----
+(define n2 (make-scheme-number 2))
+(define n3 (make-scheme-number 3))
+(define half (make-rational 1 2))
+(define third (make-rational 1 3))
+(define neg-half (make-rational 1 -2))
+(define two-thirds (make-rational 2 3))
+(define real-quarter (make-real (/ 1 4)))
+(define z34 (make-complex-from-real-imag 3 4))
+(define zpolar2 (make-complex-from-mag-ang 2 0.0))
+
+(check "tagged scheme-number" (and (tagged-as? 'scheme-number n2) (= (contents n2) 2)))
+(check "tagged rational reduction" (and (tagged-as? 'rational (make-rational 6 8))
+                                        (= (numer (make-rational 6 8)) 3)
+                                        (= (denom (make-rational 6 8)) 4)))
+(check "rational negative denominator normalized"
+       (and (= (numer neg-half) -1) (= (denom neg-half) 2)))
+(check "rectangular complex selectors"
+       (and (close? (real-part z34) 3.0)
+            (close? (imag-part z34) 4.0)
+            (close? (magnitude z34) 5.0)))
+(check "polar complex selectors"
+       (and (close? (real-part zpolar2) 2.0)
+            (close? (imag-part zpolar2) 0.0)
+            (close? (magnitude zpolar2) 2.0)))
+
+;; ---- same-type arithmetic ----
+(check "scheme add"
+       (and (tagged-as? 'scheme-number (add n2 n3)) (= (contents (add n2 n3)) 5)))
+(check "rational add"
+       (and (tagged-as? 'rational (add half third))
+            (= (numer (add half third)) 5)
+            (= (denom (add half third)) 6)))
+(check "rational mul"
+       (and (tagged-as? 'rational (mul half two-thirds))
+            (= (numer (mul half two-thirds)) 1)
+            (= (denom (mul half two-thirds)) 3)))
+(check "complex add stays complex when imaginary part remains"
+       (let ((z (add (make-complex-from-real-imag 1 2) (make-complex-from-real-imag 3 5))))
+         (and (tagged-as? 'complex z) (close? (real-part z) 4.0) (close? (imag-part z) 7.0))))
+(check "complex multiply rectangular/polar"
+       (let ((z (mul (make-complex-from-real-imag 0 1) zpolar2)))
+         (and (tagged-as? 'complex z) (close? (real-part z) 0.0) (close? (imag-part z) 2.0))))
+
+;; ---- tower raising, coercion, projection, and drop ----
+(check "raise scheme-number to rational"
+       (let ((x (raise-one n2)))
+         (and (tagged-as? 'rational x) (= (numer x) 2) (= (denom x) 1))))
+(check "raise rational to real"
+       (let ((x (raise-one half)))
+         (and (tagged-as? 'real x) (close? (contents x) 0.5))))
+(check "raise real to complex"
+       (let ((x (raise-one (make-real 7))))
+         (and (tagged-as? 'complex x) (close? (real-part x) 7.0) (close? (imag-part x) 0.0))))
+(check "project rational integer"
+       (let ((x (project-number (make-rational 8 4))))
+         (and (tagged-as? 'scheme-number x) (= (contents x) 2))))
+(check "project rational fraction is blocked"
+       (not (project-number half)))
+(check "project real integer"
+       (let ((x (project-number (make-real 5))))
+         (and (tagged-as? 'rational x) (= (numer x) 5) (= (denom x) 1))))
+(check "project complex with imaginary part is blocked"
+       (not (project-number (make-complex-from-real-imag 2 1))))
+(check "drop rational integer to scheme-number"
+       (let ((x (drop-number (make-rational 6 3))))
+         (and (tagged-as? 'scheme-number x) (= (contents x) 2))))
+(check "drop complex real integer through full tower"
+       (let ((x (drop-number (make-complex-from-real-imag 9 0))))
+         (and (tagged-as? 'scheme-number x) (= (contents x) 9))))
+
+;; ---- mixed-type arithmetic through the tower ----
+(check "mixed scheme+rational raises scheme to rational"
+       (let ((x (add n2 half)))
+         (and (tagged-as? 'rational x) (= (numer x) 5) (= (denom x) 2))))
+(check "mixed rational+real raises rational to real"
+       (let ((x (add half real-quarter)))
+         (and (tagged-as? 'real x) (close? (contents x) 0.75))))
+(check "mixed scheme+complex non-real result remains complex"
+       (let ((x (add n3 (make-complex-from-real-imag 1 2))))
+         (and (tagged-as? 'complex x) (close? (real-part x) 4.0) (close? (imag-part x) 2.0))))
+(check "mixed scheme+complex real result drops to scheme-number"
+       (let ((x (add n3 (make-complex-from-real-imag 4 0))))
+         (and (tagged-as? 'scheme-number x) (= (contents x) 7))))
+(check "mixed rational*complex integer drops to scheme-number"
+       (let ((x (mul half (make-complex-from-real-imag 6 0))))
+         (and (tagged-as? 'scheme-number x) (= (contents x) 3))))
+(check "mixed equality via raising"
+       (and (equ? (make-rational 4 2) (make-real 2))
+            (equ? (make-real 2) (make-complex-from-real-imag 2 0))))
+
+;; ---- edge predicates ----
+(check "zero predicates across tower"
+       (and (=zero? (make-scheme-number 0))
+            (=zero? (make-rational 0 5))
+            (=zero? (make-real 0))
+            (=zero? (make-complex-from-real-imag 0 0))))
+(check "nonzero complex predicate"
+       (not (=zero? (make-complex-from-real-imag 0 1))))
+(check "division retains rational fraction"
+       (let ((x (div (make-rational 3 4) (make-scheme-number 2))))
+         (and (tagged-as? 'rational x) (= (numer x) 3) (= (denom x) 8))))
+(check "subtraction across tower drops exact zero"
+       (let ((x (sub (make-complex-from-real-imag 5 0) (make-rational 10 2))))
+         (and (tagged-as? 'scheme-number x) (= (contents x) 0))))
+
+(newline)
+(if (= fails 0)
+    (begin (display "ALL-PASS ch2_generic_tower_coercion") (newline))
+    (begin (display "HAS-FAIL ch2_generic_tower_coercion ") (display fails) (newline)))
