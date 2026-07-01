@@ -1,0 +1,40 @@
+{
+  "id": "ESH-0033",
+  "title": "SICP 5.5 compiler targeting the register-machine simulator",
+  "status": "pending",
+  "priority": "high",
+  "workstream": "r7rs-sicp-parity",
+  "owner": null,
+  "preferred_backend": "codex",
+  "preferred_node": "atlas",
+  "max_cost_usd": 8.0,
+  "goal": "Implement a runnable SICP 5.5 compiler probe that compiles representative Scheme procedures into register-machine instruction sequences and executes them through the simulator.",
+  "file_globs": [
+    "tests/sicp/ch5_compiler.esk",
+    "tests/sicp/ch5_register_machine.esk",
+    "tests/sicp/ch5_explicit_control_evaluator.esk",
+    "scripts/run_sicp_smoke.sh",
+    ".icc/completion-oracles.yaml"
+  ],
+  "next_actions": [
+    "Add tests/sicp/ch5_compiler.esk with the SICP instruction-sequence representation.",
+    "Implement compile dispatch for self-evaluating expressions, quoted expressions, variables, assignments, definitions, conditionals, sequences, lambda, and applications.",
+    "Implement preserving, append-instruction-sequences, register-needed/modified tracking, and linkage handling.",
+    "Run compiled procedures through the existing register-machine simulator, including arithmetic, conditionals, lexical closures, and recursive factorial.",
+    "Add performance/robustness stress after the canonical compiler examples pass."
+  ],
+  "acceptance": [
+    "tests/sicp/ch5_compiler.esk exists and self-checks the SICP 5.5 compiler.",
+    "The probe passes under ./build/eshkol-run -r.",
+    "The probe passes under AOT compile/run.",
+    "ICC sicp-completeness observes sicp_ch5_compiler_r and sicp_ch5_compiler_aot as PASS."
+  ],
+  "blocked_by": [],
+  "verification": [
+    "./build/eshkol-run -r tests/sicp/ch5_compiler.esk",
+    "./build/eshkol-run tests/sicp/ch5_compiler.esk -o /tmp/ch5_compiler && /tmp/ch5_compiler",
+    "./scripts/run_sicp_smoke.sh",
+    "/Users/tyr/Desktop/infinite_context_coder/bin/icc completion-oracle --repo eshkol_lang --target sicp-completeness --trace-dir scripts/icc_traces --format json"
+  ],
+  "ux_payoff": "Completes the book's compiler arc and proves Eshkol can express and run SICP's metacircular-to-machine compilation pipeline."
+}

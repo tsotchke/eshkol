@@ -1,0 +1,39 @@
+{
+  "id": "ESH-0031",
+  "title": "SICP 5.3 storage allocation and GC model",
+  "status": "pending",
+  "priority": "high",
+  "workstream": "r7rs-sicp-parity",
+  "owner": null,
+  "preferred_backend": "codex",
+  "preferred_node": "atlas",
+  "max_cost_usd": 5.0,
+  "goal": "Implement the SICP 5.3 storage allocation and garbage-collector model as a runnable Eshkol probe, covering vector-modeled memory, pair allocation, free pointer behavior, root traversal, and relocation invariants.",
+  "file_globs": [
+    "tests/sicp/ch5_storage_gc.esk",
+    "tests/sicp/ch5_register_machine.esk",
+    "scripts/run_sicp_smoke.sh",
+    ".icc/completion-oracles.yaml"
+  ],
+  "next_actions": [
+    "Add tests/sicp/ch5_storage_gc.esk with the SICP memory-vector model for cons cells.",
+    "Model the-cars, the-cdrs, free pointer allocation, and pointer-tagged pair references.",
+    "Add allocation checks for list construction and mutation.",
+    "Implement a compact GC model sufficient to check root preservation, relocation, and free-space recovery.",
+    "Keep the probe deterministic and bounded so it runs under both JIT and AOT smoke guards."
+  ],
+  "acceptance": [
+    "tests/sicp/ch5_storage_gc.esk exists and self-checks the SICP 5.3 storage/GC model.",
+    "The probe passes under ./build/eshkol-run -r.",
+    "The probe passes under AOT compile/run.",
+    "ICC sicp-completeness observes sicp_ch5_storage_gc_r and sicp_ch5_storage_gc_aot as PASS."
+  ],
+  "blocked_by": [],
+  "verification": [
+    "./build/eshkol-run -r tests/sicp/ch5_storage_gc.esk",
+    "./build/eshkol-run tests/sicp/ch5_storage_gc.esk -o /tmp/ch5_storage_gc && /tmp/ch5_storage_gc",
+    "./scripts/run_sicp_smoke.sh",
+    "/Users/tyr/Desktop/infinite_context_coder/bin/icc completion-oracle --repo eshkol_lang --target sicp-completeness --trace-dir scripts/icc_traces --format json"
+  ],
+  "ux_payoff": "Closes the book's explicit memory-model chapter and gives Eshkol a concrete simulator-level GC regression."
+}

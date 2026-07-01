@@ -1,0 +1,17 @@
+{
+  "id": "ESH-0046",
+  "title": "SICP 4.1.7 analyzing evaluator",
+  "status": "pending",
+  "priority": "high",
+  "workstream": "r7rs-sicp-parity",
+  "owner": null,
+  "preferred_backend": "codex",
+  "preferred_node": "atlas",
+  "max_cost_usd": 6.0,
+  "goal": "Add tests/sicp/ch4_analyzing_evaluator.esk covering the analyze/eval split from SICP 4.1.7 and proving analyzed procedures run equivalent representative programs.",
+  "file_globs": ["tests/sicp/ch4_analyzing_evaluator.esk", "tests/sicp/ch4_metacircular*.esk", "scripts/run_sicp_smoke.sh", ".icc/completion-oracles.yaml"],
+  "acceptance": ["Probe passes under -r", "Probe passes under AOT", "ICC observes sicp_ch4_analyzing_evaluator_r and sicp_ch4_analyzing_evaluator_aot PASS"],
+  "blocked_by": [],
+  "verification": ["./scripts/run_sicp_smoke.sh", "/Users/tyr/Desktop/infinite_context_coder/bin/icc completion-oracle --repo eshkol_lang --target sicp-completeness --trace-dir scripts/icc_traces --format json"],
+  "ux_payoff": "Covers the evaluator optimization/analysis chapter rather than only direct metacircular eval."
+}
