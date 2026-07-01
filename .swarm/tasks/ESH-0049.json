@@ -1,0 +1,17 @@
+{
+  "id": "ESH-0049",
+  "title": "SICP 4.3 nondeterministic parser",
+  "status": "pending",
+  "priority": "high",
+  "workstream": "r7rs-sicp-parity",
+  "owner": null,
+  "preferred_backend": "codex",
+  "preferred_node": "atlas",
+  "max_cost_usd": 5.0,
+  "goal": "Add tests/sicp/ch4_amb_parser.esk covering the nondeterministic natural-language parser examples from SICP 4.3.",
+  "file_globs": ["tests/sicp/ch4_amb_parser.esk", "tests/sicp/ch4_amb*.esk", "scripts/run_sicp_smoke.sh", ".icc/completion-oracles.yaml"],
+  "acceptance": ["Probe passes under -r", "Probe passes under AOT", "ICC observes sicp_ch4_amb_parser_r and sicp_ch4_amb_parser_aot PASS"],
+  "blocked_by": [],
+  "verification": ["./scripts/run_sicp_smoke.sh", "/Users/tyr/Desktop/infinite_context_coder/bin/icc completion-oracle --repo eshkol_lang --target sicp-completeness --trace-dir scripts/icc_traces --format json"],
+  "ux_payoff": "Covers the parser application that stress-tests amb backtracking shape."
+}

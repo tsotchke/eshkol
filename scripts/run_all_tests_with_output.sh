@@ -40,6 +40,7 @@ TEST_SCRIPTS=(
     "run_system_tests_with_output.sh"
     "run_complex_tests_with_output.sh"
     "run_cpp_type_tests.sh"
+    "test_run_sicp_smoke_gate.sh"
 )
 
 echo ""
