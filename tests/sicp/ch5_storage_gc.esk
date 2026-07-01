@@ -1,0 +1,179 @@
+;; SICP Chapter 5.3 - storage allocation and garbage collection.
+;; Models the book's vector memory representation for pairs:
+;;   the-cars, the-cdrs, a free pointer, forwarding markers, and copying GC.
+;; This is a bounded executable probe, not Eshkol's production memory model.
+
+(define fails 0)
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin (display "PASS: ") (display name) (newline))
+      (begin (set! fails (+ fails 1))
+             (display "FAIL: ") (display name) (display " expected=") (display expected)
+             (display " actual=") (display actual) (newline))))
+
+(define memory-size 32)
+(define the-cars (make-vector memory-size))
+(define the-cdrs (make-vector memory-size))
+(define new-cars (make-vector memory-size))
+(define new-cdrs (make-vector memory-size))
+(define free-index 0)
+(define new-free-index 0)
+
+(define (ptr i) (list 'ptr i))
+(define (ptr? x) (and (pair? x) (eq? (car x) 'ptr)))
+(define (ptr-index p) (cadr p))
+
+(define (broken-heart new-index) (list 'broken-heart new-index))
+(define (broken-heart? x) (and (pair? x) (eq? (car x) 'broken-heart)))
+(define (broken-heart-index marker) (cadr marker))
+
+(define (reset-memory!)
+  (set! the-cars (make-vector memory-size))
+  (set! the-cdrs (make-vector memory-size))
+  (set! new-cars (make-vector memory-size))
+  (set! new-cdrs (make-vector memory-size))
+  (set! free-index 0)
+  (set! new-free-index 0)
+  "ok")
+
+(define (fresh-new-space!)
+  (set! new-cars (make-vector memory-size))
+  (set! new-cdrs (make-vector memory-size))
+  (set! new-free-index 0)
+  "ok")
+
+(define (allocate-pair! a d)
+  (if (>= free-index memory-size)
+      (error "storage exhausted" free-index)
+      (let ((i free-index))
+        (vector-set! the-cars i a)
+        (vector-set! the-cdrs i d)
+        (set! free-index (+ free-index 1))
+        (ptr i))))
+
+(define (cell-car p) (vector-ref the-cars (ptr-index p)))
+(define (cell-cdr p) (vector-ref the-cdrs (ptr-index p)))
+(define (set-cell-car! p v)
+  (vector-set! the-cars (ptr-index p) v)
+  "ok")
+(define (set-cell-cdr! p v)
+  (vector-set! the-cdrs (ptr-index p) v)
+  "ok")
+
+(define (relocate value)
+  (if (ptr? value)
+      (relocate-pointer (ptr-index value))
+      value))
+
+(define (relocate-pointer old-index)
+  (let ((old-car (vector-ref the-cars old-index)))
+    (if (broken-heart? old-car)
+        (ptr (broken-heart-index old-car))
+        (let ((new-index new-free-index)
+              (saved-car old-car)
+              (saved-cdr (vector-ref the-cdrs old-index)))
+          (set! new-free-index (+ new-free-index 1))
+          (vector-set! the-cars old-index (broken-heart new-index))
+          (vector-set! new-cars new-index 'pending-car)
+          (vector-set! new-cdrs new-index 'pending-cdr)
+          (vector-set! new-cars new-index (relocate saved-car))
+          (vector-set! new-cdrs new-index (relocate saved-cdr))
+          (ptr new-index)))))
+
+(define (install-new-space! relocated-root)
+  (set! the-cars new-cars)
+  (set! the-cdrs new-cdrs)
+  (set! new-cars (make-vector memory-size))
+  (set! new-cdrs (make-vector memory-size))
+  (set! free-index new-free-index)
+  (set! new-free-index 0)
+  relocated-root)
+
+(define (collect-root! root)
+  (fresh-new-space!)
+  (install-new-space! (relocate root)))
+
+(define (relocate-root-list roots)
+  (if (null? roots)
+      '()
+      (cons (relocate (car roots))
+            (relocate-root-list (cdr roots)))))
+
+(define (collect-roots! roots)
+  (fresh-new-space!)
+  (install-new-space! (relocate-root-list roots)))
+
+;; Basic storage allocation mirrors cons/car/cdr over the vector memory.
+(reset-memory!)
+(define p1 (allocate-pair! 'alpha 'omega))
+(check "allocate first pair pointer" 0 (ptr-index p1))
+(check "allocate advances free pointer" 1 free-index)
+(check "vector car selector" 'alpha (cell-car p1))
+(check "vector cdr selector" 'omega (cell-cdr p1))
+
+(set-cell-car! p1 'beta)
+(set-cell-cdr! p1 'tail)
+(check "set-car! writes vector slot" 'beta (cell-car p1))
+(check "set-cdr! writes vector slot" 'tail (cell-cdr p1))
+
+;; Collection drops unreachable cells and compacts live cells to index 0.
+(reset-memory!)
+(define live1 (allocate-pair! 'live 'root))
+(define garbage1 (allocate-pair! 'dead 'cell))
+(define moved1 (collect-root! live1))
+(check "gc compacts one live pair" 0 (ptr-index moved1))
+(check "gc drops unreachable pair" 1 free-index)
+(check "gc preserves live car" 'live (cell-car moved1))
+(check "gc preserves live cdr" 'root (cell-cdr moved1))
+
+;; Forwarding pointers preserve sharing: two fields pointing at the same old
+;; pair must point at the same copied pair after relocation.
+(reset-memory!)
+(define shared (allocate-pair! 'leaf 'done))
+(define root-shared (allocate-pair! shared shared))
+(define moved-shared (collect-root! root-shared))
+(define moved-left (cell-car moved-shared))
+(define moved-right (cell-cdr moved-shared))
+(check "gc preserves shared pointer identity" (ptr-index moved-left) (ptr-index moved-right))
+(check "gc copies shared object once" 2 free-index)
+(check "gc preserves shared payload" 'leaf (cell-car moved-left))
+
+;; Cyclic structures are copied by installing the forwarding marker before
+;; recursively relocating the fields.
+(reset-memory!)
+(define cycle (allocate-pair! 'cycle 'empty))
+(set-cell-cdr! cycle cycle)
+(define moved-cycle (collect-root! cycle))
+(check "gc preserves cycle car" 'cycle (cell-car moved-cycle))
+(check "gc preserves cycle self cdr" (ptr-index moved-cycle) (ptr-index (cell-cdr moved-cycle)))
+(check "gc counts cyclic object once" 1 free-index)
+
+;; Multiple roots are relocated together, so inter-root sharing is not lost.
+(reset-memory!)
+(define root-a (allocate-pair! 'a '()))
+(define root-b (allocate-pair! 'b root-a))
+(define garbage2 (allocate-pair! 'unused '()))
+(define moved-roots (collect-roots! (list root-a root-b)))
+(define moved-a (car moved-roots))
+(define moved-b (cadr moved-roots))
+(check "gc preserves first root" 'a (cell-car moved-a))
+(check "gc preserves second root" 'b (cell-car moved-b))
+(check "gc preserves cross-root pointer" (ptr-index moved-a) (ptr-index (cell-cdr moved-b)))
+(check "gc drops unreachable with root set" 2 free-index)
+
+;; Allocation after collection resumes at the compacted free pointer.
+(define post-gc (allocate-pair! 'new 'object))
+(check "allocation resumes after compacted live set" 2 (ptr-index post-gc))
+(check "free pointer advances after post-gc allocation" 3 free-index)
+
+;; Repeated roots for the same object also exercise the forwarding marker path.
+(reset-memory!)
+(define dup (allocate-pair! 'same 'cell))
+(define moved-dups (collect-roots! (list dup dup)))
+(check "gc duplicate roots share copy"
+       (ptr-index (car moved-dups))
+       (ptr-index (cadr moved-dups)))
+(check "gc duplicate roots copy once" 1 free-index)
+
+(display "ch5 storage gc: ")
+(display (if (= fails 0) "ALL PASS" (cons fails 'FAILS))) (newline)
