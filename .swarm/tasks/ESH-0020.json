@@ -30,5 +30,6 @@
   ],
   "blocked_by": [],
   "completed_by": "atlas:local",
-  "commit": "c689c02d"
+  "commit": "cb90af809a195b61d1260ba966752b5d0d5dab53",
+  "status_note": "MERGED #63 / cb90af809a195b61d1260ba966752b5d0d5dab53. Conflict resolution 9281aebe merged current master after #77/#28, preserving dtype VM/JIT additions, agent-FFI AOT link args, Windows ARM64 small-model/dead-strip link fixes, and macOS SDK -lobjc portability. PR verification was green before merge and local verification built eshkol-run and passed tensor_dtype_test 10/10 under -r and AOT, manifold_test 14/14, and stateful_tape_test 22/22. Post-merge master CI for cb90af80 exposed a macos-x64-lite standalone VM-suite failure with no individual failure printed because scripts/run_vm_tests.sh exited under set -e before dumping its captured log; #90 / c032cefde047187248650b7ec48f79c5fce0af6b is merged to print captured VM failure logs and use a mktemp log path."
 }
