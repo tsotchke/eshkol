@@ -1,0 +1,8 @@
+;; quasiquote / unquote / unquote-splicing
+(define x 42)
+(define xs '(1 2 3))
+(display `(a b ,x)) (newline)
+(display `(before ,@xs after)) (newline)
+(display `(1 ,(+ 1 1) ,(* 3 1))) (newline)
+(display `((nested ,x) (splice ,@xs))) (newline)
+(display `plain) (newline)

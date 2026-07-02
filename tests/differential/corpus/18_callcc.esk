@@ -1,0 +1,10 @@
+;; call/cc early exit
+(define (find-first-negative lst)
+  (call/cc
+    (lambda (return)
+      (for-each (lambda (x) (if (< x 0) (return x) #f)) lst)
+      'none)))
+(display (find-first-negative '(3 1 -4 1 -5))) (newline)
+(display (find-first-negative '(1 2 3))) (newline)
+(display (+ 1 (call/cc (lambda (k) (k 41))))) (newline)
+(display (call/cc (lambda (k) 99))) (newline)

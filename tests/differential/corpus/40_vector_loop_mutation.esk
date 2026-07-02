@@ -1,0 +1,17 @@
+;; vector mutation inside loops + closure over loop state
+(define v (make-vector 8 0))
+(let loop ((i 0))
+  (if (< i 8)
+      (begin
+        (vector-set! v i (* i i))
+        (loop (+ i 1)))
+      #f))
+(display v) (newline)
+(define fs '())
+(let loop ((i 0))
+  (if (< i 3)
+      (begin
+        (set! fs (cons (lambda () i) fs))
+        (loop (+ i 1)))
+      #f))
+(display (map (lambda (f) (f)) fs)) (newline)

@@ -1,0 +1,13 @@
+;; dynamic-wind ordering with normal and call/cc exits
+(dynamic-wind
+  (lambda () (display "before") (newline))
+  (lambda () (display "during") (newline))
+  (lambda () (display "after") (newline)))
+(display
+ (call/cc
+   (lambda (k)
+     (dynamic-wind
+       (lambda () (display "in") (newline))
+       (lambda () (k 'escaped) (display "unreached") (newline))
+       (lambda () (display "out") (newline))))))
+(newline)

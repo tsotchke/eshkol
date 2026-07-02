@@ -1,0 +1,12 @@
+;; and/or short-circuit with observable side effects
+(define log '())
+(define (note! x v) (set! log (cons x log)) v)
+(display (and (note! 'a #t) (note! 'b #f) (note! 'c #t))) (newline)
+(display (reverse log)) (newline)
+(set! log '())
+(display (or (note! 'd #f) (note! 'e 7) (note! 'f 9))) (newline)
+(display (reverse log)) (newline)
+(display (and)) (newline)
+(display (or)) (newline)
+(display (or #f '())) (newline)
+(display (not '())) (newline)

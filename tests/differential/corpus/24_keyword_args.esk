@@ -1,0 +1,10 @@
+;; keyword arguments
+(define (weighted x #:scale scale #:offset offset)
+  (+ (* x scale) offset))
+(display (weighted 10 #:offset 2 #:scale 4)) (newline)
+(display (weighted 10 #:scale 4 #:offset 2)) (newline)
+(define kw-lambda
+  (lambda (#:left left #:right right)
+    (- left right)))
+(display (kw-lambda #:right 23 #:left 19)) (newline)
+(display (kw-lambda #:left 23 #:right 19)) (newline)

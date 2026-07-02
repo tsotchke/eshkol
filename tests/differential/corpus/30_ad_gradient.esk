@@ -1,0 +1,11 @@
+;; automatic differentiation: gradient on vector input
+(define (f v)
+  (+ (* (vector-ref v 0) (vector-ref v 0))
+     (* (vector-ref v 1) (vector-ref v 1) (vector-ref v 1))))
+(define g (gradient f (vector 2.0 3.0)))
+(display (vector-ref g 0)) (newline)
+(display (vector-ref g 1)) (newline)
+(define (h v) (* (vector-ref v 0) (vector-ref v 1)))
+(define gh (gradient h (vector 4.0 5.0)))
+(display (vector-ref gh 0)) (newline)
+(display (vector-ref gh 1)) (newline)

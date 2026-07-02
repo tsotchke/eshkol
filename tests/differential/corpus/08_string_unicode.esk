@@ -1,0 +1,7 @@
+;; unicode content passes through byte-identically on every path
+(display "héllo wörld") (newline)
+(display (string-append "α" "β" "γ")) (newline)
+(display (string-length "héllo")) (newline)
+(display (string-length "αβγ")) (newline)
+(display "日本語テキスト") (newline)
+(display (string-append "mixed " "日本" " ascii")) (newline)

@@ -1,0 +1,12 @@
+;; string<->number edge radixes
+(display (string->number "255")) (newline)
+(display (string->number "ff" 16)) (newline)
+(display (string->number "-101" 2)) (newline)
+(display (string->number "777" 8)) (newline)
+(display (string->number "1e3")) (newline)
+(display (string->number "-2.5")) (newline)
+(display (string->number "not-a-number")) (newline)
+(display (number->string 255 16)) (newline)
+(display (number->string 255 2)) (newline)
+(display (number->string -42)) (newline)
+(display (string->number "123456789012345678901234567890")) (newline)

@@ -1,0 +1,14 @@
+;; named let loops, incl. nested
+(display
+ (let loop ((i 0) (acc 1))
+   (if (>= i 10) acc (loop (+ i 1) (* acc 2)))))
+(newline)
+(display
+ (let outer ((i 0) (total 0))
+   (if (>= i 5)
+       total
+       (outer (+ i 1)
+              (+ total
+                 (let inner ((j 0) (s 0))
+                   (if (>= j 4) s (inner (+ j 1) (+ s (* i j))))))))))
+(newline)

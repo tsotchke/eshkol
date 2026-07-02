@@ -1,0 +1,9 @@
+;; values / let-values
+(define (two) (values 7 9))
+(let-values (((a b) (two)))
+  (display (+ a b)) (newline)
+  (display (* a b)) (newline))
+(define (divmod a b) (values (quotient a b) (remainder a b)))
+(let-values (((q r) (divmod 17 5)))
+  (display q) (newline)
+  (display r) (newline))

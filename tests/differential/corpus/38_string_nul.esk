@@ -1,0 +1,6 @@
+;; strings with embedded NUL bytes
+(define s (string #\a (integer->char 0) #\b))
+(display (string-length s)) (newline)
+(display (char->integer (string-ref s 1))) (newline)
+(display (string-length (string-append s s))) (newline)
+(display (char->integer (string-ref (string-append s "c") 3))) (newline)
