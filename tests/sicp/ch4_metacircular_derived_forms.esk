@@ -1,0 +1,176 @@
+;; SICP 4.1.2 — derived expressions in the metacircular evaluator.
+;; cond, let, and, or, and named let are NOT primitive evaluator cases:
+;; each is lowered BY SYNTACTIC TRANSFORMATION into the kernel language
+;; (if / lambda / define / begin / quote / set!) and then re-evaluated.
+;;   cond      -> nested if chain (else clause -> final alternative)
+;;   let       -> ((lambda (vars...) body) inits...)
+;;   and       -> nested if, returning the last operand's value
+;;   or        -> (let ((t e1)) (if t t (or rest...)))  [value-returning]
+;;   named let -> ((lambda () (begin (define name (lambda vars body)) (name inits...))))
+;;
+;; NOTE: the base environment binds comparison primitives to boolean-normalizing
+;; wrapper lambdas — required to work around ESH-0078 (first-class builtin
+;; predicates return raw 0/1 instead of #f/#t). See ch4_metacircular_full.esk.
+(define fails 0)
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin (display "PASS: ") (display name) (newline))
+      (begin (set! fails (+ fails 1))
+             (display "FAIL: ") (display name) (display " expected=") (display expected)
+             (display " actual=") (display actual) (newline))))
+
+(define (tagged? exp tag) (and (pair? exp) (eq? (car exp) tag)))
+(define (lookup var env)
+  (if (null? env) (error "unbound" var)
+      (let loop ((vars (caar env)) (vals (cdar env)))
+        (cond ((null? vars) (lookup var (cdr env)))
+              ((eq? (car vars) var) (car vals))
+              (else (loop (cdr vars) (cdr vals)))))))
+(define (define-var! var val env)
+  (set-car! (car env) (cons var (caar env)))
+  (set-cdr! (car env) (cons val (cdar env))))
+(define (set-var! var val env)
+  (let loop ((vars (caar env)) (vals (cdar env)))
+    (cond ((null? vars) (set-var! var val (cdr env)))
+          ((eq? (car vars) var) (set-car! vals val))
+          (else (loop (cdr vars) (cdr vals))))))
+
+;; ---- syntactic transformations (SICP 4.1.2) ----
+(define (seq->exp seq)
+  (cond ((null? seq) (list 'quote 'ok))
+        ((null? (cdr seq)) (car seq))
+        (else (cons 'begin seq))))
+
+;; cond -> if chain
+(define (cond->if clauses)
+  (if (null? clauses)
+      (list 'quote 'cond-fell-through)
+      (let ((clause (car clauses)))
+        (if (eq? (car clause) 'else)
+            (seq->exp (cdr clause))
+            (list 'if (car clause)
+                  (seq->exp (cdr clause))
+                  (cond->if (cdr clauses)))))))
+
+;; let -> lambda application
+(define (let->exp exp)
+  (let ((bindings (cadr exp)) (body (cddr exp)))
+    (cons (list 'lambda (map (lambda (b) (car b)) bindings) (seq->exp body))
+          (map (lambda (b) (cadr b)) bindings))))
+
+;; named let -> define+call inside an applied thunk (letrec-style loop)
+(define (named-let->exp exp)
+  (let ((name (cadr exp)) (bindings (caddr exp)) (body (cdddr exp)))
+    (list (list 'lambda '()
+                (list 'begin
+                      (list 'define name
+                            (list 'lambda (map (lambda (b) (car b)) bindings)
+                                  (seq->exp body)))
+                      (cons name (map (lambda (b) (cadr b)) bindings)))))))
+
+;; and -> nested if (value of last operand when all true)
+(define (and->if args)
+  (cond ((null? args) #t)
+        ((null? (cdr args)) (car args))
+        (else (list 'if (car args) (and->if (cdr args)) #f))))
+
+;; or -> nested if via a let-bound temp (value-returning, single evaluation)
+(define (or->if args)
+  (cond ((null? args) #f)
+        ((null? (cdr args)) (car args))
+        (else (list 'let (list (list 'or-tmp-var (car args)))
+                    (list 'if 'or-tmp-var 'or-tmp-var (or->if (cdr args)))))))
+
+;; ---- kernel evaluator + derived-form dispatch ----
+(define (meval exp env)
+  (cond ((number? exp) exp)
+        ((boolean? exp) exp)
+        ((symbol? exp) (lookup exp env))
+        ((tagged? exp 'quote) (cadr exp))
+        ((tagged? exp 'if) (if (not (eq? (meval (cadr exp) env) #f))
+                               (meval (caddr exp) env)
+                               (if (null? (cdddr exp)) 'ok (meval (cadddr exp) env))))
+        ((tagged? exp 'define) (define-var! (cadr exp) (meval (caddr exp) env) env) 'ok)
+        ((tagged? exp 'set!) (set-var! (cadr exp) (meval (caddr exp) env) env) 'ok)
+        ((tagged? exp 'lambda) (list 'closure (cadr exp) (caddr exp) env))
+        ((tagged? exp 'begin) (let loop ((es (cdr exp)) (r 'ok))
+                                (if (null? es) r (loop (cdr es) (meval (car es) env)))))
+        ;; derived forms: transform, then evaluate the transformed expression
+        ((tagged? exp 'cond) (meval (cond->if (cdr exp)) env))
+        ((tagged? exp 'let) (meval (if (symbol? (cadr exp))
+                                       (named-let->exp exp)
+                                       (let->exp exp))
+                                   env))
+        ((tagged? exp 'and) (meval (and->if (cdr exp)) env))
+        ((tagged? exp 'or) (meval (or->if (cdr exp)) env))
+        (else (mapply (meval (car exp) env)
+                      (map (lambda (a) (meval a env)) (cdr exp))))))
+(define (mapply proc args)
+  (cond ((procedure? proc) (apply proc args))
+        ((tagged? proc 'closure)
+         (meval (caddr proc)
+                (cons (cons (cadr proc) args) (cadddr proc))))
+        (else (error "not-applicable" proc))))
+
+(define (base-env)
+  (list (cons (list '+ '- '* '= '< '> 'cons 'car 'cdr 'null?)
+              (list + - *
+                    (lambda (a b) (if (= a b) #t #f))
+                    (lambda (a b) (if (< a b) #t #f))
+                    (lambda (a b) (if (> a b) #t #f))
+                    cons car cdr
+                    (lambda (x) (if (null? x) #t #f))))))
+
+(define e (base-env))
+
+;; ---- pure transformation shape checks ----
+(check "and->if shape" '(if p q #f) (and->if '(p q)))
+(check "or->if shape" '(let ((or-tmp-var p)) (if or-tmp-var or-tmp-var q))
+       (or->if '(p q)))
+(check "let->exp shape" '((lambda (a) (+ a 1)) 2) (let->exp '(let ((a 2)) (+ a 1))))
+(check "cond->if shape" '(if c1 r1 (if c2 r2 r3))
+       (cond->if '((c1 r1) (c2 r2) (else r3))))
+
+;; ---- cond in the evaluated language ----
+(meval '(define x 2) e)
+(check "cond first clause" 'pos (meval '(cond ((> x 0) 'pos) (else 'neg)) e))
+(check "cond middle clause" 'two
+       (meval '(cond ((= x 1) 'one) ((= x 2) 'two) (else 'many)) e))
+(check "cond else clause" 'many
+       (meval '(cond ((= x 1) 'one) ((= x 9) 'nine) (else 'many)) e))
+(check "cond multi-expr body" 9
+       (meval '(cond ((> x 0) (define y 3) (* y y)) (else 0)) e))
+
+;; ---- let in the evaluated language ----
+(check "let simple" 7 (meval '(let ((a 3) (b 4)) (+ a b)) e))
+(check "let shadowing" 25 (meval '(let ((a 3)) (let ((a 5)) (* a a))) e))
+(check "let multi-expr body" 10 (meval '(let ((a 1)) (set! a (+ a 9)) a) e))
+(meval '(define fact (lambda (n) (if (= n 0) 1 (* n (fact (- n 1)))))) e)
+(check "let-bound fact" 120 (meval '(let ((n 5)) (fact n)) e))
+
+;; ---- and / or short-circuit + value semantics ----
+(check "and empty" #t (meval '(and) e))
+(check "and returns last value" 3 (meval '(and 1 2 3) e))
+(check "and stops at false" #f (meval '(and 1 #f 3) e))
+(meval '(define flag 0) e)
+(meval '(and #f (set! flag 1)) e)
+(check "and short-circuits side effect" 0 (meval 'flag e))
+(check "or empty" #f (meval '(or) e))
+(check "or all false" #f (meval '(or #f #f) e))
+(check "or returns first true value" 42 (meval '(or #f 42 (set! flag 2)) e))
+(check "or short-circuits side effect" 0 (meval 'flag e))
+(check "or first operand" 7 (meval '(or 7 (set! flag 3)) e))
+(check "or side effect still 0" 0 (meval 'flag e))
+
+;; ---- named let as letrec-style loop ----
+(check "named-let sum 1..10" 55
+       (meval '(let loop ((i 1) (acc 0))
+                 (if (> i 10) acc (loop (+ i 1) (+ acc i)))) e))
+(check "named-let fact" 120
+       (meval '(let f ((n 5)) (if (= n 0) 1 (* n (f (- n 1))))) e))
+(check "named-let list build" '(3 2 1)
+       (meval '(let loop ((i 1) (acc (quote ())))
+                 (if (> i 3) acc (loop (+ i 1) (cons i acc)))) e))
+
+(display "ch4 metacircular derived forms: ")
+(display (if (= fails 0) "ALL PASS" (cons fails 'FAILS))) (newline)

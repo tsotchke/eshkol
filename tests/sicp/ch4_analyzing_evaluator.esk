@@ -1,0 +1,134 @@
+;; SICP 4.1.7 — the analyzing evaluator.  `analyze` walks an expression ONCE
+;; and returns an execution procedure (a host closure taking only an
+;; environment); running the program is then pure execution with no further
+;; syntactic analysis.  A global analyze-count instruments `analyze` so the
+;; analysis/execution separation is directly observable.
+;;
+;; NOTE: the base environment binds comparison primitives to boolean-normalizing
+;; wrapper lambdas — required to work around ESH-0078 (first-class builtin
+;; predicates return raw 0/1 instead of #f/#t). See ch4_metacircular_full.esk.
+(define fails 0)
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin (display "PASS: ") (display name) (newline))
+      (begin (set! fails (+ fails 1))
+             (display "FAIL: ") (display name) (display " expected=") (display expected)
+             (display " actual=") (display actual) (newline))))
+
+(define (tagged? exp tag) (and (pair? exp) (eq? (car exp) tag)))
+(define (lookup var env)
+  (if (null? env) (error "unbound" var)
+      (let loop ((vars (caar env)) (vals (cdar env)))
+        (cond ((null? vars) (lookup var (cdr env)))
+              ((eq? (car vars) var) (car vals))
+              (else (loop (cdr vars) (cdr vals)))))))
+(define (define-var! var val env)
+  (set-car! (car env) (cons var (caar env)))
+  (set-cdr! (car env) (cons val (cdar env))))
+(define (set-var! var val env)
+  (let loop ((vars (caar env)) (vals (cdar env)))
+    (cond ((null? vars) (set-var! var val (cdr env)))
+          ((eq? (car vars) var) (set-car! vals val))
+          (else (loop (cdr vars) (cdr vals))))))
+
+;; ---- analyze: expression -> execution procedure (host closure over env) ----
+(define analyze-count 0)
+(define (analyze exp)
+  (set! analyze-count (+ analyze-count 1))
+  (cond ((number? exp) (lambda (env) exp))                       ; self-evaluating
+        ((boolean? exp) (lambda (env) exp))
+        ((symbol? exp) (lambda (env) (lookup exp env)))          ; variable
+        ((tagged? exp 'quote)
+         (let ((q (cadr exp))) (lambda (env) q)))
+        ((tagged? exp 'if)
+         (let ((pproc (analyze (cadr exp)))
+               (cproc (analyze (caddr exp)))
+               (aproc (if (null? (cdddr exp))
+                          (lambda (env) 'ok)
+                          (analyze (cadddr exp)))))
+           (lambda (env)
+             (if (not (eq? (pproc env) #f)) (cproc env) (aproc env)))))
+        ((tagged? exp 'lambda)
+         (let ((params (cadr exp)) (bproc (analyze (caddr exp))))
+           (lambda (env) (list 'closure params bproc env))))
+        ((tagged? exp 'define)
+         (let ((var (cadr exp)) (vproc (analyze (caddr exp))))
+           (lambda (env) (define-var! var (vproc env) env) 'ok)))
+        ((tagged? exp 'set!)
+         (let ((var (cadr exp)) (vproc (analyze (caddr exp))))
+           (lambda (env) (set-var! var (vproc env) env) 'ok)))
+        ((tagged? exp 'begin) (analyze-sequence (cdr exp)))
+        (else                                                    ; application
+         (let ((fproc (analyze (car exp)))
+               (aprocs (map analyze (cdr exp))))
+           (lambda (env)
+             (execute-application (fproc env)
+                                  (map (lambda (ap) (ap env)) aprocs)))))))
+
+(define (analyze-sequence exps)
+  (define (sequentially p1 p2) (lambda (env) (p1 env) (p2 env)))
+  (define (loop first rest)
+    (if (null? rest) first
+        (loop (sequentially first (car rest)) (cdr rest))))
+  (if (null? exps)
+      (lambda (env) 'ok)
+      (loop (analyze (car exps)) (map analyze (cdr exps)))))
+
+(define (execute-application proc args)
+  (cond ((procedure? proc) (apply proc args))
+        ((tagged? proc 'closure)
+         ((caddr proc)                      ; stored ANALYZED body — no re-analysis
+          (cons (cons (cadr proc) args) (cadddr proc))))
+        (else (error "not-applicable" proc))))
+
+(define (aeval exp env) ((analyze exp) env))
+
+(define (base-env)
+  (list (cons (list '+ '- '* '= '< '> 'cons 'car 'cdr 'null?)
+              (list + - *
+                    (lambda (a b) (if (= a b) #t #f))
+                    (lambda (a b) (if (< a b) #t #f))
+                    (lambda (a b) (if (> a b) #t #f))
+                    cons car cdr
+                    (lambda (x) (if (null? x) #t #f))))))
+(define e (base-env))
+
+;; ---- each analyzable expression type ----
+(check "self-eval number" 42 (aeval '42 e))
+(check "self-eval boolean" #t (aeval '#t e))
+(check "quote" 'hello (aeval '(quote hello) e))
+(check "quote list" '(1 2 3) (aeval '(quote (1 2 3)) e))
+(aeval '(define v 11) e)
+(check "variable" 11 (aeval 'v e))
+(check "if consequent" 'yes (aeval '(if (< 1 2) 'yes 'no) e))
+(check "if alternative" 'no (aeval '(if (< 2 1) 'yes 'no) e))
+(check "lambda + application" 36 (aeval '((lambda (x) (* x x)) 6) e))
+(aeval '(define counter 0) e)
+(aeval '(set! counter (+ counter 5)) e)
+(aeval '(set! counter (+ counter 5)) e)
+(check "define/set!" 10 (aeval 'counter e))
+(check "begin sequencing" 3
+       (aeval '(begin (set! counter 1) (set! counter (+ counter 2)) counter) e))
+(check "application of primitive" 12 (aeval '(+ 5 7) e))
+
+;; ---- recursive programs through the analyzed evaluator ----
+(aeval '(define fact (lambda (n) (if (= n 0) 1 (* n (fact (- n 1)))))) e)
+(define c0 analyze-count)
+(check "fact 5" 120 (aeval '(fact 5) e))
+;; analyzing '(fact 5) costs exactly 3 analyze calls (application, fact, 5);
+;; the 6 recursive executions of fact's body must trigger NO further analysis.
+(check "execution does not re-analyze" 3 (- analyze-count c0))
+(aeval '(define fib (lambda (n) (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))) e)
+(check "fib 10" 55 (aeval '(fib 10) e))
+
+;; ---- analysis/execution separation: analyze once, run at two arguments ----
+(define sq-exec (analyze '(lambda (x) (* x x))))   ; analysis happens HERE
+(define sq (sq-exec e))                            ; execution yields the closure
+(define c1 analyze-count)
+(check "analyzed sq at 3" 9 (execute-application sq (list 3)))
+(check "analyzed sq at 7" 49 (execute-application sq (list 7)))
+(check "no analysis during either run" c1 analyze-count)
+(check "analysis did happen" #t (> analyze-count 0))
+
+(display "ch4 analyzing evaluator: ")
+(display (if (= fails 0) "ALL PASS" (cons fails 'FAILS))) (newline)
