@@ -1,0 +1,9 @@
+;; first-class builtins via apply/map
+(require stdlib)
+(display (apply + '(1 2 3 4))) (newline)
+(display (apply max '(3 1 4 1 5))) (newline)
+(display (map (lambda (x) (* x x)) '(1 2 3 4))) (newline)
+(display (apply string-append '("a" "b" "c"))) (newline)
+(define plus +)
+(display (plus 20 22)) (newline)
+(display (map abs '(-1 2 -3))) (newline)

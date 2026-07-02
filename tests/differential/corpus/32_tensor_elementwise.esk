@@ -1,0 +1,9 @@
+;; tensor element access and mutation
+(define t #(1.0 2.0 3.0 4.0))
+(display (vector-ref t 0)) (newline)
+(display (vector-ref t 3)) (newline)
+(define m (reshape (vector 1.0 2.0 3.0 4.0 5.0 6.0) 2 3))
+(display (tensor-ref m 0 2)) (newline)
+(display (tensor-ref m 1 0)) (newline)
+(tensor-set! m 1 1 99.0)
+(display (tensor-ref m 1 1)) (newline)

@@ -1,0 +1,12 @@
+;; string operations
+(display (string-append "foo" "bar" "baz")) (newline)
+(display (string-length "hello world")) (newline)
+(display (substring "hello world" 6 11)) (newline)
+(display (string-upcase "MiXeD case")) (newline)
+(display (string-downcase "MiXeD case")) (newline)
+(display (string=? "abc" "abc")) (newline)
+(display (string<? "abc" "abd")) (newline)
+(display (string->symbol "hello")) (newline)
+(display (symbol->string 'world)) (newline)
+(display (string-ref "abcdef" 3)) (newline)
+(display (make-string 4 #\z)) (newline)

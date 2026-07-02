@@ -1,0 +1,12 @@
+;; character operations
+(display (char->integer #\A)) (newline)
+(display (integer->char 97)) (newline)
+(display (char-upcase #\a)) (newline)
+(display (char-downcase #\Z)) (newline)
+(display (char<? #\a #\b)) (newline)
+(display (char=? #\x #\x)) (newline)
+(display (char-alphabetic? #\5)) (newline)
+(display (char-numeric? #\5)) (newline)
+(display #\newline)
+(display #\space) (newline)
+(display #\tab) (newline)

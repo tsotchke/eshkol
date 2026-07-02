@@ -1,0 +1,16 @@
+;; syntax-rules macros
+(define-syntax my-if2
+  (syntax-rules ()
+    ((_ c t e) (cond (c t) (else e)))))
+(display (my-if2 (> 3 2) 'yes 'no)) (newline)
+(define-syntax swap-args
+  (syntax-rules ()
+    ((_ f a b) (f b a))))
+(display (swap-args - 3 10)) (newline)
+(define-syntax my-or2
+  (syntax-rules ()
+    ((_) #f)
+    ((_ e) e)
+    ((_ e1 e2 ...) (let ((t e1)) (if t t (my-or2 e2 ...))))))
+(display (my-or2 #f #f 7)) (newline)
+(display (my-or2)) (newline)
