@@ -1,0 +1,16 @@
+; FOUND by P4 stress harness 2026-07-02 (ledger ESH-0098). XKNOWN.
+;
+; stdlib (sort ...) recursion depth is O(n) in the list length
+; (lib/core/list/sort.esk). Sorting >= ~100k elements is impossible:
+;
+; Measured 2026-07-02 (master 2692ca63, JIT -r):
+;   n = 50000  -> sorts fine (pinned by data_sort_50k.esk)
+;   n = 99999  -> SIGILL (rc 132, NO diagnostic - raw stack blowout under
+;                 the depth guard's radar)
+;   n = 100001 -> "Unhandled exception: maximum recursion depth (100000)
+;                 exceeded" (rc 1 - at least diagnosable)
+(require stdlib)
+(define (build n acc)
+  (if (= n 0) acc (build (- n 1) (cons (modulo (* n 7919) 1000) acc))))
+(define sorted (sort (build 100000 '()) <))
+(display "OK ") (display (car sorted)) (newline)   ; expected "OK 0"

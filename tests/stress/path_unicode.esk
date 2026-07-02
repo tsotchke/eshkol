@@ -1,0 +1,9 @@
+; path_unicode.esk - unicode identifiers and string literals.
+(define café 42)
+(define λ-value (* café 2))
+(define 日本語変数 (+ λ-value 16))
+(define s "日本語テスト κόσμε ✓")
+(display "OK ")
+(display 日本語変数) (display " ")
+(display (string-length s)) (display " ")
+(display s) (newline)

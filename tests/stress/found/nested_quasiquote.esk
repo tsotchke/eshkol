@@ -1,0 +1,18 @@
+; FOUND by P4 stress harness 2026-07-02 (ledger ESH-0096). XKNOWN.
+;
+; NESTED quasiquote (level >= 2) collapses to (). Single-level quasiquote,
+; unquote and unquote-splicing are all fine.
+;
+; Measured 2026-07-02 (master 2692ca63), JIT and AOT:
+;   `(a ,(+ 1 1) c)      -> (a 2 c)            correct
+;   `(x ,@(list 1 2) y)  -> (x 1 2 y)          correct
+;   ``a                  -> ()                  WRONG, R7RS: (quasiquote a)
+;   `(a `(b ,(+ 1 1)))   -> (a ())              WRONG, R7RS:
+;                           (a (quasiquote (b (unquote (+ 1 1)))))
+(require stdlib)
+(define r `(a `(b ,(+ 1 1))))
+(define inner (car (cdr r)))
+; R7RS: inner = (quasiquote (b (unquote (+ 1 1)))), a 2-element list.
+(if (and (pair? inner) (= (length inner) 2))
+    (begin (display "OK nested-quasiquote") (newline))
+    (begin (display "FAIL inner=") (display inner) (newline)))

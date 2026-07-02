@@ -1,0 +1,10 @@
+; data_string_append_10mb.esk - string-append accumulation past 10 MB
+; (geometric doubling from 8 bytes; final length 16,777,216).
+(require stdlib)
+(define (grow s target)
+  (if (>= (string-length s) target) s (grow (string-append s s) target)))
+(define big (grow "abcdefgh" 10485760))
+(define mid (substring big 8388608 8388616))
+(if (and (= (string-length big) 16777216) (equal? mid "abcdefgh"))
+    (begin (display "OK 16777216") (newline))
+    (begin (display "FAIL ") (display (string-length big)) (newline)))

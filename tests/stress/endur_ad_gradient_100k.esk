@@ -1,0 +1,16 @@
+; endur_ad_gradient_100k.esk - 100,000 fresh (gradient ...) evaluations in a
+; loop. RSS must PLATEAU: the harness ceiling sits barely above the JIT
+; baseline (measured 234MB vs 222MB baseline on 2026-07-02), so any per-iter
+; AD-tape leak fails the run.
+; sum of d/dx x^2 at x = 1 + 1e-5*i, i in [0,100000) = 299999 (exact in fp).
+(require stdlib)
+(define (loop i acc)
+  (if (= i 100000)
+      acc
+      (let ((g (gradient (lambda (v) (* (vector-ref v 0) (vector-ref v 0)))
+                         (vector (+ 1.0 (* 0.00001 i))))))
+        (loop (+ i 1) (+ acc (vector-ref g 0))))))
+(define total (loop 0 0.0))
+(if (and (> total 299998.999) (< total 299999.001))
+    (begin (display "OK ad-endurance") (newline))
+    (begin (display "FAIL ") (display total) (newline)))

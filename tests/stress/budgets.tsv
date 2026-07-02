@@ -1,0 +1,70 @@
+# budgets.tsv - manifest for scripts/run_stress.sh (P4 extreme stress harness).
+# TAB-separated. Lines starting with # are comments.
+# Columns:
+#   file      path relative to tests/stress/ (generated/ files are produced by
+#             gen_stress_sources.sh; found/ files are XKNOWN minimal repros)
+#   mode      r | aot | both      (execution paths to test)
+#   class     run | jitcache | rep3
+#             run      - execute once per mode with budgets
+#             jitcache - r-only: 50 sequential -r runs against one shared JIT
+#                        cache dir; run 1 gets timeout_s (cold), runs 2..50 get
+#                        STRESS_WARM_CEILING_S (default 5s) each
+#             rep3     - run 3x per mode; all three stdouts must be identical
+#                        AND pass the normal budget checks (flake detector)
+#   timeout_s wall-clock ceiling per execution (AOT compile gets the same
+#             ceiling separately from the binary run)
+#   rss_r_mb  max resident set size ceiling for JIT -r runs (MB). JIT baseline
+#             is ~222MB on macOS arm64 (stdlib object + LLVM), so r ceilings
+#             sit above that floor by design.
+#   rss_aot_mb max RSS ceiling for the AOT binary run (MB; baseline ~28MB)
+#   quick     1 = included in --quick CI subset
+#   xknown    - or the ESH ledger id of the documented-open bug this row pins
+#             (failure -> XKNOWN, pass -> XPASS which FAILS the gate: stale
+#             xknown entries must be promoted to normal rows)
+#   expect    literal substring that must appear in stdout ("-" = no output
+#             requirement, exit code 0 still required)
+#
+# file	mode	class	timeout_s	rss_r_mb	rss_aot_mb	quick	xknown	expect
+rec_tco_1e8.esk	both	run	60	320	128	1	-	OK 100000000
+rec_deep_nontco_250k.esk	both	run	60	384	160	1	-	OK 250000
+rec_mutual.esk	both	run	60	384	160	1	-	OK ping 100000
+rec_dynamic_wind_10k.esk	both	run	60	384	160	1	-	OK 20000
+rec_cps_20k.esk	both	run	60	384	160	1	-	OK 451945
+generated/parser_nested_parens_10k.esk	both	run	120	768	512	1	-	OK 10000
+generated/parser_quoted_list_10k.esk	both	run	120	768	512	1	-	OK 9999
+generated/parser_defines_1mb.esk	both	run	300	1024	512	0	-	OK 32000
+generated/parser_quasiquote_deep.esk	both	run	120	768	512	1	-	OK 1000
+generated/path_nested_lets_1000.esk	both	run	120	768	512	1	-	OK 1001
+generated/path_identifier_10k.esk	both	run	60	384	160	1	-	OK 42
+parser_string_5k_escapes.esk	both	run	60	384	160	1	-	OK 3500 104
+data_list_1m.esk	both	run	120	1024	768	0	-	OK 1000000
+data_vector_100k.esk	both	run	60	384	256	1	-	OK vector-100k
+data_sort_50k.esk	both	run	120	768	512	0	-	OK sorted-50k
+data_hash_100k.esk	both	run	120	512	256	1	-	OK hash-200k-entries
+data_string_append_10mb.esk	both	run	120	512	256	0	-	OK 16777216
+data_tensor_matmul_1024.esk	both	run	180	768	512	0	-	OK matmul-1024
+endur_ad_gradient_100k.esk	both	run	180	320	192	0	-	OK ad-endurance
+endur_with_region_100k.esk	both	run	180	320	192	0	-	OK region-endurance
+jit_cache_probe.esk	r	jitcache	90	768	-	0	-	OK 6765
+par_map_8_heavy.esk	both	run	120	768	512	1	-	OK 600236
+par_serialized_counter_1600.esk	both	run	180	768	512	0	-	OK 1600
+par_spawn_join_100x.esk	both	rep3	120	768	512	1	-	OK 178200
+num_int64_boundary.esk	both	run	60	384	160	1	-	OK int64-boundary
+num_bignum_expt_1e1000.esk	both	run	60	384	160	1	-	OK bignum-1e1000
+num_rational_huge.esk	both	run	60	384	160	1	-	OK rational-huge
+num_inf_nan.esk	both	run	60	384	160	1	-	OK inf-nan
+num_exact_inexact.esk	both	run	60	384	160	1	-	OK exact-boundary
+num_div_zero.esk	both	run	60	384	160	1	-	OK div-zero
+path_empty.esk	both	run	60	384	160	1	-	-
+path_comments_only.esk	both	run	60	384	160	1	-	-
+path_unicode.esk	both	run	60	384	160	1	-	OK 100 14
+path_closures_10k.esk	both	run	120	768	512	1	-	OK closures-distinct
+found/closure_loop_global_set.esk	both	run	60	384	160	1	ESH-0094	OK 3
+found/quote_sugar_in_guard.esk	both	run	60	384	160	1	ESH-0095	OK quote-in-guard
+found/nested_quasiquote.esk	both	run	60	384	160	1	ESH-0096	OK nested-quasiquote
+found/list_length_1m.esk	both	run	120	1024	1024	0	ESH-0097	OK 1000000
+found/sort_100k.esk	both	run	120	1024	1024	0	ESH-0098	OK 0
+found/string_nul_long_literal.esk	both	run	60	384	160	1	ESH-0099	OK 300
+found/parallel_worker_loop_20k.esk	both	run	120	1024	1024	1	ESH-0100	OK
+found/serialized_counter_10k.esk	both	run	120	1024	1024	0	ESH-0094	OK 10000
+found/deep_recursion_270k_no_diagnostic.esk	both	run	60	1024	1024	0	ESH-0101	OK 300000

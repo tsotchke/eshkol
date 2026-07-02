@@ -1,0 +1,14 @@
+; data_list_1m.esk - build a 1,000,000-element list, reverse it, count it.
+; Counting uses fold-left (tail-safe). The stdlib (length ...) is non-tail
+; recursive and SIGILLs on lists this big - see found/list_length_1m.esk -
+; so the R7RS-shaped "length" half of this scenario is pinned there as XKNOWN.
+(require stdlib)
+(define (build n acc) (if (= n 0) acc (build (- n 1) (cons n acc))))
+(define l (build 1000000 '()))
+(define r (reverse l))
+(define count (fold-left (lambda (a x) (+ a 1)) 0 r))
+(define head-ok (= (car l) 1))
+(define rev-ok (= (car r) 1000000))
+(if (and head-ok rev-ok (= count 1000000))
+    (begin (display "OK 1000000") (newline))
+    (begin (display "FAIL count=") (display count) (newline)))

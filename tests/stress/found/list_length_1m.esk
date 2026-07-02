@@ -1,0 +1,17 @@
+; FOUND by P4 stress harness 2026-07-02 (ledger ESH-0097). XKNOWN.
+;
+; stdlib (length ...) - lib/core/list/query.esk:23 - is NON-tail recursive:
+;   (+ 1 (length (cdr lst)))
+; On big lists it blows the native stack and dies with SIGILL and NO
+; diagnostic. (filter ...) has the same shape and dies at 1M too. map,
+; reverse and fold-left are tail-safe and survive 1M.
+;
+; Measured 2026-07-02 (master 2692ca63, macOS arm64, JIT -r):
+;   (length 300k-list) -> 300000        OK
+;   (length 500k-list) -> SIGILL (rc 132, no message)
+;   (length 1M-list)   -> SIGILL
+;   (filter even? 1M-list) -> SIGILL
+(require stdlib)
+(define (build n acc) (if (= n 0) acc (build (- n 1) (cons n acc))))
+(define l (build 1000000 '()))
+(display "OK ") (display (length l)) (newline)   ; expected "OK 1000000"

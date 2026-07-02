@@ -1,0 +1,13 @@
+; rec_mutual.esk - mutual recursion, both flavors:
+;  (a) TCO mutual ping-pong 10^7 iterations (must be O(1) stack)
+;  (b) non-TCO mutual recursion to depth 100000 (under the ~270k blowout,
+;      see rec_deep_nontco_250k.esk)
+(define (ping n) (if (= n 0) 'ping (pong (- n 1))))
+(define (pong n) (if (= n 0) 'pong (ping (- n 1))))
+(define tco-res (ping 10000000))
+
+(define (even-steps n) (if (= n 0) 0 (+ 1 (odd-steps (- n 1)))))
+(define (odd-steps n) (if (= n 0) 0 (+ 1 (even-steps (- n 1)))))
+(define deep-res (even-steps 100000))
+
+(display "OK ") (display tco-res) (display " ") (display deep-res) (newline)

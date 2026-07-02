@@ -1,0 +1,14 @@
+; data_vector_100k.esk - 100,000-element vector: fill, vector-map, spot check.
+(require stdlib)
+(define n 100000)
+(define v (make-vector n 0))
+(define (fill i)
+  (if (= i n) 'done
+      (begin (vector-set! v i (modulo (* i 7919) n)) (fill (+ i 1)))))
+(fill 0)
+(define doubled (vector-map (lambda (x) (* x 2)) v))
+(define spot (vector-ref doubled 50000))   ; (50000*7919 mod 100000)*2 = 100000
+(define last (vector-ref doubled 99999))   ; (99999*7919 mod 100000)*2 = 384162
+(if (and (= spot 100000) (= last 384162))
+    (begin (display "OK vector-100k") (newline))
+    (begin (display "FAIL ") (display spot) (display " ") (display last) (newline)))

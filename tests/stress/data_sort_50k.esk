@@ -1,0 +1,18 @@
+; data_sort_50k.esk - sort a 50,000-element list (documented safe max).
+; stdlib sort recursion depth is O(n): 99,999 elements SIGILL, >=100,001
+; hit the "maximum recursion depth (100000) exceeded" guard - see
+; found/sort_100k.esk. 50k is comfortably inside the working range.
+(require stdlib)
+(define (build n acc)
+  (if (= n 0) acc (build (- n 1) (cons (modulo (* n 7919) 1000) acc))))
+(define sorted (sort (build 50000 '()) <))
+(define (walk-sorted l prev n)
+  (if (null? l)
+      n
+      (if (< (car l) prev)
+          -1
+          (walk-sorted (cdr l) (car l) (+ n 1)))))
+(define res (walk-sorted sorted -1 0))
+(if (= res 50000)
+    (begin (display "OK sorted-50k") (newline))
+    (begin (display "FAIL ") (display res) (newline)))

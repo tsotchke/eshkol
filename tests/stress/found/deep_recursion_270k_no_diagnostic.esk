@@ -1,0 +1,18 @@
+; FOUND by P4 stress harness 2026-07-02 (ledger ESH-0101). XKNOWN.
+;
+; Plain non-tail user recursion past ~270k frames dies with SIGILL and NO
+; diagnostic. The runtime depth guard (ESHKOL_MAX_RECURSION_DEPTH=100000 in
+; lib/core/runtime_list_helpers.cpp) never fires for this code path - it only
+; guards runtime list helpers - so the failure mode is a silent trap instead
+; of "maximum recursion depth exceeded".
+;
+; Measured 2026-07-02 (master 2692ca63, macOS arm64):
+;   depth 260000 -> OK (JIT and AOT)
+;   depth 270000 -> SIGILL rc 132, no output (JIT)
+;   depth 280000 -> SIGILL (AOT)
+; Passing depth is pinned by rec_deep_nontco_250k.esk. This file asserts the
+; aspirational behavior (either complete or diagnose); it XPASSes if stacks
+; grow or segmented/guarded recursion lands.
+(define (down n)
+  (if (= n 0) 0 (+ 1 (down (- n 1)))))
+(display "OK ") (display (down 300000)) (newline)

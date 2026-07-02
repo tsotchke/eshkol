@@ -1,0 +1,21 @@
+; FOUND by P4 stress harness 2026-07-02. XKNOWN - manifestation of
+; closure_loop_global_set.esk (ESH-0094) at the v1.3-spec scenario scale:
+; "16 workers x serialized counter to 10k (exact count)".
+;
+; Each worker loops 625 times incrementing a mutex-guarded global counter.
+; Because the incrementing closure is created inside the worker's named-let
+; loop, every mutation is dropped: counter stays 0 (not a race - it is 0
+; even with 1 worker, sequentially). Expected 10000.
+; ALSO subject to ESH-0100 if the loop count is raised past ~5k.
+(require stdlib)
+(require core.threads)
+(define m (make-mutex))
+(define counter 0)
+(define (worker w)
+  (let loop ((k 0))
+    (if (>= k 625)
+        w
+        (begin (with-mutex m (lambda () (set! counter (+ counter 1))))
+               (loop (+ k 1))))))
+(parallel-map worker (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16))
+(display "OK ") (display counter) (newline)   ; expected "OK 10000", prints "OK 0"
