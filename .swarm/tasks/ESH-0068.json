@@ -1,0 +1,40 @@
+{
+  "id": "ESH-0068",
+  "title": "conv2d codegen produces WRONG shape + values for kernels larger than 1x1",
+  "status": "in_review",
+  "priority": "high",
+  "workstream": "edge-case-campaign/ml",
+  "owner": null,
+  "preferred_backend": "claude",
+  "preferred_node": "atlas",
+  "max_cost_usd": 5.0,
+  "goal": "DEEP finding (ICC-scoped tensor/ML analysis). The codegen conv2d (TensorCodegen::conv2d, lib/backend/tensor_conv_codegen.cpp:833; used by -r and AOT) is BROKEN for any kernel bigger than 1x1. Rigorous controlled repro: input 1x1x3x3 of ones, kernel 1x1x2x2 of ones, stride 1 -> got shape (1 1 3 3) with values (((3 3 3)(2 2 2)(1 1 1))); CORRECT is shape (1 1 2 2) with all entries = 4.0. Both the OUTPUT SHAPE (it keeps the input HxW instead of (H-kH)/stride+1) and the VALUES are wrong. The 1x1-kernel case happens to work (output (((2 2 2)(2 2 2)(2 2 2))) for kernel [[2]] = scalar multiply), which is why nothing caught it. This slipped past the AD ad_input2_conv2d gate (scalar inputs at 1e-3 tolerance) and every smoke test. SEPARATELY: the VM conv2d (vm_tensor_conv2d, vm_tensor_ops.c:580) is a DIFFERENT impl (2-arg, naive, stride=1, no padding) whose code looks correct \u2014 so VM vs codegen conv2d also DIVERGE in signature (2-arg vs 3-arg) and behavior. conv2d is fundamental to CNNs / the v1.5 Odyssey world-model layer; this must be exact.",
+  "file_globs": [
+    "lib/backend/tensor_conv_codegen.cpp",
+    "lib/backend/vm_tensor_ops.c",
+    "lib/backend/tensor_backward.cpp",
+    "tests/ml/conv_correctness_test.esk",
+    "tests/v1_3_edge_cases/ad_input2_test.esk"
+  ],
+  "next_actions": [
+    "Fix TensorCodegen::conv2d: correct output dims ((H-kH)/stride+1, (W-kW)/stride+1) and the actual cross-correlation accumulation over (in_channels, kH, kW); preserve leading batch/channel dims.",
+    "Reconcile VM vs codegen conv2d: same signature (input, kernel, stride [, padding]) and same numeric result; make the VM path take stride too (or document the canonical surface) so -r/AOT/VM agree.",
+    "Strengthen the AD ad_input2_conv2d gate to use NON-scalar inputs at tight tolerance so a wrong forward/backward can no longer pass.",
+    "Add tests/ml/conv_correctness_test.esk with hand-computed exact expected values: 3x3 (x) 2x2 stride1 = 2x2 all 4; asymmetric kernel; multi-channel; stride 2; and (after fix) padding.",
+    "Also audit maxpool2d / avgpool / batchnorm / layernorm / attention FORWARD the same way (controlled exact cases) \u2014 the AD work showed their backward is approximate; verify the forward is exact."
+  ],
+  "acceptance": [
+    "(conv2d <1x1x3x3 ones> <1x1x2x2 ones> 1) => shape (1 1 2 2), all 4.0",
+    "asymmetric + multi-channel + stride-2 conv2d match hand-computed references exactly",
+    "VM and codegen conv2d give identical results for the same inputs",
+    "ad_input2_conv2d gate passes with non-scalar inputs at tight tolerance; AOT + -r"
+  ],
+  "blocked_by": [],
+  "verification": [
+    "./build/eshkol-run -r tests/ml/conv_correctness_test.esk",
+    "./build/eshkol-run tests/ml/conv_correctness_test.esk -o /tmp/esh0068 && /tmp/esh0068",
+    "bash scripts/run_icc_smoke.sh"
+  ],
+  "campaign_payoff": "conv2d is core to CNNs and the v1.5/Odyssey world model. A silently-wrong conv2d forward (passing the AD gate via loose scalar tolerance) is exactly the deep, high-impact class of bug the surface smoke tests miss.",
+  "status_note": "PR #80 \u2014 conv2d NCHW unified codegen+VM; 7/7 -r+AOT"
+}

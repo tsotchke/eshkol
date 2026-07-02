@@ -343,6 +343,28 @@ extern "C" {
     void qllm_process_destroy(void* proc) ESHKOL_OPTIONAL_AGENT_FFI;
     void qllm_process_free_buffer(char* buf) ESHKOL_OPTIONAL_AGENT_FFI;
 
+    void* qllm_ffi_linear_create(int64_t in_dim, int64_t out_dim)
+        ESHKOL_OPTIONAL_AGENT_FFI;
+    void qllm_ffi_linear_destroy(void* handle) ESHKOL_OPTIONAL_AGENT_FFI;
+    int32_t qllm_ffi_linear_set_weight(void* handle, int64_t out, int64_t in,
+                                       double value) ESHKOL_OPTIONAL_AGENT_FFI;
+    double qllm_ffi_linear_get_weight(void* handle, int64_t out, int64_t in)
+        ESHKOL_OPTIONAL_AGENT_FFI;
+    int32_t qllm_ffi_linear_set_input(void* handle, int64_t in, double value)
+        ESHKOL_OPTIONAL_AGENT_FFI;
+    int32_t qllm_ffi_linear_set_target(void* handle, int64_t out, double value)
+        ESHKOL_OPTIONAL_AGENT_FFI;
+    int32_t qllm_ffi_linear_forward(void* handle) ESHKOL_OPTIONAL_AGENT_FFI;
+    double qllm_ffi_linear_pred(void* handle, int64_t out) ESHKOL_OPTIONAL_AGENT_FFI;
+    double qllm_ffi_linear_loss(void* handle) ESHKOL_OPTIONAL_AGENT_FFI;
+    int32_t qllm_ffi_linear_backward(void* handle) ESHKOL_OPTIONAL_AGENT_FFI;
+    double qllm_ffi_linear_grad(void* handle, int64_t out, int64_t in)
+        ESHKOL_OPTIONAL_AGENT_FFI;
+    int32_t qllm_ffi_linear_sgd_step(void* handle, double lr)
+        ESHKOL_OPTIONAL_AGENT_FFI;
+    int32_t qllm_ffi_linear_train_step(void* handle, double lr)
+        ESHKOL_OPTIONAL_AGENT_FFI;
+
     int64_t eshkol_http_server_create(int32_t port) ESHKOL_OPTIONAL_AGENT_FFI;
     int32_t eshkol_http_server_port(int64_t handle) ESHKOL_OPTIONAL_AGENT_FFI;
     int32_t eshkol_http_server_accept(int64_t handle, char* buf, int32_t buf_size,
@@ -928,6 +950,20 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(qllm_process_kill);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(qllm_process_destroy);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(qllm_process_free_buffer);
+
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(qllm_ffi_linear_create);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(qllm_ffi_linear_destroy);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(qllm_ffi_linear_set_weight);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(qllm_ffi_linear_get_weight);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(qllm_ffi_linear_set_input);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(qllm_ffi_linear_set_target);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(qllm_ffi_linear_forward);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(qllm_ffi_linear_pred);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(qllm_ffi_linear_loss);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(qllm_ffi_linear_backward);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(qllm_ffi_linear_grad);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(qllm_ffi_linear_sgd_step);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(qllm_ffi_linear_train_step);
 
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_http_server_create);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_http_server_port);

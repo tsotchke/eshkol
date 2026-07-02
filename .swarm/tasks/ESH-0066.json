@@ -1,0 +1,35 @@
+{
+  "id": "ESH-0066",
+  "title": "String edge-case bugs: string-map returns (), string->number radix ignored",
+  "status": "done",
+  "priority": "medium",
+  "workstream": "edge-case-campaign/strings",
+  "owner": null,
+  "preferred_backend": "codex",
+  "preferred_node": "old-donkey",
+  "max_cost_usd": 3.0,
+  "goal": "Found by ESH-0053 string edge probing. Two R7RS string ops are broken: (1) (string-map char-upcase \"abc\") returns () instead of \"ABC\" \u2014 string-map does not build/return the mapped string (R7RS 6.7: string-map returns a string). (2) (string->number \"ff\" 16) returns () instead of 255 \u2014 the 2-arg radix form is ignored/unsupported (R7RS 6.2.6: (string->number string radix)). Confirmed CORRECT already: substring (start=end, full, OOB raises), string-ref, empty-string ops, string-reverse, char-upcase, number->string with radix, make-string fill, string-copy range, string-for-each.",
+  "file_globs": [
+    "lib/backend/string_io_codegen.cpp",
+    "lib/core/runtime_string*.c*",
+    "lib/backend/llvm_codegen.cpp",
+    "tests/string/string_edge_test.esk"
+  ],
+  "next_actions": [
+    "string-map: build and return a string from applying proc to each char (mirror string-for-each's traversal; multi-string variant if feasible). Currently yields ().",
+    "string->number: honor the optional radix argument (2/8/10/16) for the 2-arg form; (string->number \"ff\" 16) => 255, (string->number \"1010\" 2) => 10.",
+    "Add tests/string/string_edge_test.esk covering string-map (single + identity), string->number with each radix, and the already-correct cases as regression guards."
+  ],
+  "acceptance": [
+    "(string-map char-upcase \"abc\") => \"ABC\"",
+    "(string->number \"ff\" 16) => 255 ; (string->number \"1010\" 2) => 10 ; (string->number \"z\" 16) => #f",
+    "string-for-each + other string ops unaffected; AOT + -r"
+  ],
+  "blocked_by": [],
+  "verification": [
+    "./build/eshkol-run -r tests/string/string_edge_test.esk",
+    "bash scripts/run_icc_smoke.sh"
+  ],
+  "campaign_payoff": "Fixes two real R7RS string ops (string-map, string->number radix) needed for general correctness + SICP string exercises.",
+  "status_note": "MERGED #78"
+}

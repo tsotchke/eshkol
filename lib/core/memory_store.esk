@@ -1,0 +1,243 @@
+;;; lib/core/memory_store.esk — step 2 of core.memory: the DURABLE chain.
+;;;
+;;; core.memory v0 is the in-memory event log (content-addressed, hash-chained,
+;;; RGA-CRDT). This module makes it PERMANENT — the "first link" of Selene's
+;;; memory substrate (Selene/11-memory-substrate-decision.md):
+;;;
+;;;   T0 durability: every append is written to an append-only log file and
+;;;   fsync'd BEFORE the append returns. The event is on disk the moment it
+;;;   is acknowledged. (T1 peer fan-out and T2 Syncthing/git anti-entropy ride
+;;;   on top of the file's location in the replicated fabric.)
+;;;
+;;; Persistence format: one canonical s-expression per line — the SAME
+;;; canonical rendering the event ids are hashed over (core.sexp), so the file
+;;; IS the chain: replay re-parses each line and memory-verify-chain re-derives
+;;; every hash. A flipped bit anywhere breaks verification. No external DB —
+;;; event-sourcing EXPRESSED in Eshkol, as decided.
+;;;
+;;; Durability externs are fixed-arity libc only: variadic C functions (open)
+;;; are NOT safe through the FFI on ARM64 (variadic args go to the stack while
+;;; a fixed-signature extern passes them in registers — we hit this: open()'s
+;;; mode arrived as garbage and files were created unreadable). fopen/fwrite/
+;;; fflush/fileno/fsync/fclose are all fixed-arity.
+;;;
+;;; v1 payload contract (documented constraint, enforced by ingest layers):
+;;; payloads are alists of (symbol . string|integer). Strings must not contain
+;;; double-quotes or newlines — core.sexp's canonical rendering does not escape
+;;; them (sanitize at ingest with memory-store-sanitize).
+
+(require stdlib)
+(require core.memory)
+(require core.sexp)
+
+(provide make-memory-store
+         memory-store?
+         memory-store-log
+         memory-store-path
+         memory-store-open
+         memory-store-append!
+         memory-store-verify
+         memory-store-count
+         memory-store-head
+         memory-store-sanitize)
+
+;; ---- fixed-arity libc (ARM64-safe; see header) ----
+(extern ptr ms-fopen ptr ptr :real fopen)
+(extern i64 ms-fwrite ptr i64 i64 ptr :real fwrite)
+(extern i32 ms-fflush ptr :real fflush)
+(extern i32 ms-fileno ptr :real fileno)
+(extern i32 ms-fsync i32 :real fsync)
+(extern i32 ms-fclose ptr :real fclose)
+
+(define (ms-append-fsync! path line)
+  ;; T0: bytes hit the platter (or its cache-flush boundary) before we return.
+  (let ((f (ms-fopen path "a")))
+    (if (null-ptr? f)
+        #f
+        (begin
+          (ms-fwrite line 1 (string-length line) f)
+          (ms-fflush f)
+          (ms-fsync (ms-fileno f))
+          (ms-fclose f)
+          #t))))
+
+;; NULL from the FFI arrives as the empty list, not 0 (verified: fopen on a
+;; missing path returns () under eshkol-run).
+(define (null-ptr? p) (null? p))
+
+;; =====================================================================
+;; Parser for the canonical subset (inverse of sexp->canonical-string for
+;; everything an event contains: lists incl. dotted pairs, symbols,
+;; integers, unescaped strings, #t/#f).
+;; =====================================================================
+
+(define (ms-parse line)
+  (let ((r (ms-parse-at line 0 (string-length line))))
+    (if r (car r) #f)))
+
+;; returns (value . next-index) or #f
+(define (ms-parse-at s i n)
+  (let ((i (ms-skip-ws s i n)))
+    (if (>= i n) #f
+        (let ((c (string-ref s i)))
+          (cond
+            ((char=? c #\() (ms-parse-list s (+ i 1) n))
+            ((char=? c #\") (ms-parse-string s (+ i 1) n))
+            ((char=? c #\#) (ms-parse-hash s i n))
+            (else (ms-parse-atom s i n)))))))
+
+(define (ms-skip-ws s i n)
+  (if (and (< i n) (char=? (string-ref s i) #\space))
+      (ms-skip-ws s (+ i 1) n)
+      i))
+
+(define (ms-parse-list s i n)
+  ;; collects items until ) — handles " . tail" dotted pairs
+  (let loop ((i (ms-skip-ws s i n)) (acc (list)))
+    (cond
+      ((>= i n) #f)
+      ((char=? (string-ref s i) #\))
+       (cons (reverse acc) (+ i 1)))
+      ;; dotted tail: ". <val>)"
+      ((and (char=? (string-ref s i) #\.)
+            (< (+ i 1) n)
+            (char=? (string-ref s (+ i 1)) #\space))
+       (let ((r (ms-parse-at s (+ i 2) n)))
+         (if (not r) #f
+             (let ((j (ms-skip-ws s (cdr r) n)))
+               (if (and (< j n) (char=? (string-ref s j) #\)))
+                   (cons (ms-improper (reverse acc) (car r)) (+ j 1))
+                   #f)))))
+      (else
+       (let ((r (ms-parse-at s i n)))
+         (if (not r) #f
+             (loop (ms-skip-ws s (cdr r) n) (cons (car r) acc))))))))
+
+(define (ms-improper front tail)
+  ;; rebuild (a b . t) from front=(a b), tail=t
+  (if (null? front) tail
+      (cons (car front) (ms-improper (cdr front) tail))))
+
+(define (ms-parse-string s i n)
+  (let loop ((j i))
+    (cond
+      ((>= j n) #f)
+      ((char=? (string-ref s j) #\")
+       (cons (substring s i j) (+ j 1)))
+      (else (loop (+ j 1))))))
+
+(define (ms-parse-hash s i n)
+  ;; #t / #f (vectors do not appear in events)
+  (if (>= (+ i 1) n) #f
+      (let ((c (string-ref s (+ i 1))))
+        (cond
+          ((char=? c #\t) (cons #t (+ i 2)))
+          ((char=? c #\f) (cons #f (+ i 2)))
+          (else #f)))))
+
+(define (ms-atom-end s i n)
+  (if (or (>= i n)
+          (char=? (string-ref s i) #\space)
+          (char=? (string-ref s i) #\()
+          (char=? (string-ref s i) #\)))
+      i
+      (ms-atom-end s (+ i 1) n)))
+
+(define (ms-digit? c) (and (char>=? c #\0) (char<=? c #\9)))
+
+(define (ms-numeric-token? t)
+  (let ((n (string-length t)))
+    (and (> n 0)
+         (let ((start (if (char=? (string-ref t 0) #\-) 1 0)))
+           (and (> n start)
+                (ms-all-digits-or-dot t start n))))))
+
+(define (ms-all-digits-or-dot t i n)
+  (if (>= i n) #t
+      (let ((c (string-ref t i)))
+        (if (or (ms-digit? c) (char=? c #\.))
+            (ms-all-digits-or-dot t (+ i 1) n)
+            #f))))
+
+(define (ms-parse-atom s i n)
+  (let* ((e (ms-atom-end s i n))
+         (tok (substring s i e)))
+    (if (= (string-length tok) 0) #f
+        (cons (if (ms-numeric-token? tok)
+                  (string->number tok)
+                  (string->symbol tok))
+              e))))
+
+;; =====================================================================
+;; The store: #(mem-store log path)
+;; =====================================================================
+
+(define (make-memory-store log path) (vector (quote mem-store) log path))
+(define (memory-store? s)
+  (and (vector? s) (= (vector-length s) 3) (eq? (vector-ref s 0) (quote mem-store))))
+(define (memory-store-log s)  (vector-ref s 1))
+(define (memory-store-path s) (vector-ref s 2))
+
+;; Rebuild the in-memory log from persisted events (replay). The stored id,
+;; prev, vclock are TRUSTED ONLY until memory-store-verify re-derives them.
+(define (ms-replay-event! log ev)
+  (vector-set! log 2 (rga-append (ml-rga log) (ml-node log) ev))
+  (vector-set! log 3 (vector-clock-merge (ml-vclock log) (memory-event-vclock ev)))
+  (vector-set! log 4 (memory-event-id ev)))
+
+;; internal accessors mirrored from core.memory's log layout
+(define (ml-node l)   (vector-ref l 1))
+(define (ml-rga l)    (vector-ref l 2))
+(define (ml-vclock l) (vector-ref l 3))
+
+(define (memory-store-open node-id path)
+  ;; Open (or create) the durable chain at path. Replays existing events.
+  (let ((log (make-memory-log node-id))
+        (f   (ms-fopen path "r")))
+    (if (null-ptr? f)
+        (make-memory-store log path)          ;; fresh chain — no file yet
+        (begin
+          (ms-fclose f)
+          (let ((port (open-input-file path)))
+            (let loop ()
+              (let ((line (read-line port)))
+                (if (eof-object? line)
+                    (close-port port)
+                    (begin
+                      (if (> (string-length line) 0)
+                          (let ((ev (ms-parse line)))
+                            (if (and ev (memory-event? ev))
+                                (ms-replay-event! log ev)
+                                (begin (display "memory-store: UNPARSEABLE line skipped") (newline))))
+                          #t)
+                      (loop)))))
+            (make-memory-store log path))))))
+
+(define (memory-store-append! store type payload)
+  ;; Append to the in-memory chain, then persist with fsync (T0) before returning.
+  (let* ((ev   (memory-append! (memory-store-log store) type payload))
+         (line (string-append (sexp->canonical-string ev) "\n")))
+    (if (ms-append-fsync! (memory-store-path store) line)
+        ev
+        (begin (display "memory-store: DURABILITY FAILURE (append not persisted)") (newline) #f))))
+
+(define (memory-store-verify store)
+  ;; Full audit: re-derive every content hash + linkage from the replayed data.
+  (memory-verify-chain (memory-store-log store)))
+
+(define (memory-store-count store)
+  (length (memory-events (memory-store-log store))))
+
+(define (memory-store-head store)
+  (let ((evs (memory-events (memory-store-log store))))
+    (if (null? evs) #f (memory-event-id (list-ref evs (- (length evs) 1))))))
+
+;; v1 payload-string sanitizer (see header): strip double-quotes and newlines.
+(define (memory-store-sanitize str)
+  (let loop ((i 0) (n (string-length str)) (acc ""))
+    (if (>= i n) acc
+        (let ((c (string-ref str i)))
+          (loop (+ i 1) n
+                (if (or (char=? c #\") (char=? c #\newline))
+                    (string-append acc " ")
+                    (string-append acc (string c))))))))

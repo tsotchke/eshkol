@@ -2,15 +2,28 @@
   "id": "ESH-0021",
   "title": "Native GPU GEMM via cuBLAS GemmEx (f16/bf16 tensor cores) + f32 SGEMM",
   "campaign": "gpu-llm",
-  "brief": "ESHKOL_LANGUAGE_UPDATE_BRIEF.md §1+§2",
-  "status": "pending",
+  "brief": "ESHKOL_LANGUAGE_UPDATE_BRIEF.md \u00a71+\u00a72",
+  "status": "done",
   "priority": "critical",
   "preferred_backend": "codex",
   "preferred_node": "old-donkey",
   "needs_gpu": true,
   "goal": "matmul/gpu-matmul must dispatch on tensor dtype to the NATIVE GPU path: f16/bf16 -> cuBLAS GemmEx (tensor cores, f32 accumulate), f32 -> SGEMM, only f64 -> existing softfloat. Mixed-precision accumulate (f16 in, f32 accum). Target: MoE expert FFN (M=64 K=7168 N=2048) drops from 3.90 ms (f64 softfloat) to <0.5 ms (fp16 cuBLAS).",
-  "file_globs": ["lib/backend/gpu/gpu_memory.mm","lib/backend/gpu/*.cu","lib/backend/tensor_codegen.cpp"],
-  "acceptance": ["fp16 matmul of two #(...):dtype f16 tensors uses GemmEx (verify via nvprof/util)","moe_expert_ffn.esk in fp16 < 0.5 ms/expert on RTX 3050","argmax-equal vs f64 reference on a fixed seed"],
-  "verification": ["ssh old-donkey 'cd src/eshkol && ./build-cuda/eshkol-run -r computer_mesh/ops/kimi/eshkol/moe_expert_ffn.esk'"],
-  "blocked_by": ["ESH-0020"]
+  "file_globs": [
+    "lib/backend/gpu/gpu_memory.mm",
+    "lib/backend/gpu/*.cu",
+    "lib/backend/tensor_codegen.cpp"
+  ],
+  "acceptance": [
+    "fp16 matmul of two #(...):dtype f16 tensors uses GemmEx (verify via nvprof/util)",
+    "moe_expert_ffn.esk in fp16 < 0.5 ms/expert on RTX 3050",
+    "argmax-equal vs f64 reference on a fixed seed"
+  ],
+  "verification": [
+    "ssh old-donkey 'cd src/eshkol && ./build-cuda/eshkol-run -r computer_mesh/ops/kimi/eshkol/moe_expert_ffn.esk'"
+  ],
+  "blocked_by": [
+    "ESH-0020"
+  ],
+  "status_note": "MERGED #33"
 }

@@ -1,0 +1,21 @@
+{
+  "id": "ESH-0085",
+  "title": "Noesis v1.5 crypto symbol hygiene in JIT/static gates",
+  "status": "pending",
+  "priority": "medium",
+  "workstream": "v1.5-intelligence/noesis",
+  "goal": "Noesis recursive/session gates currently pass but print undefined crypto symbols for _eshkol_hmac_sha256, _eshkol_random_bytes, _eshkol_random_hex, and _eshkol_sha256. Make those symbols cleanly available or fail closed; release gates must not succeed with unresolved-symbol diagnostics.",
+  "file_globs": [
+    "lib/",
+    "/Users/tyr/Desktop/noesis/src/",
+    "/Users/tyr/Desktop/noesis/tests/gates/"
+  ],
+  "acceptance": [
+    "gate_v1_5_recursive and gate_v1_5_session produce no unresolved crypto symbol diagnostics",
+    "missing crypto linkage fails explicitly instead of being masked by fallback behavior",
+    "-r and AOT/static-link paths are covered where applicable"
+  ],
+  "blocked_by": [
+    "ESH-0082"
+  ]
+}

@@ -1,0 +1,99 @@
+;;; eagle_train.esk — native EAGLE feature-distillation training in Eshkol (no python, no torch).
+;;;
+;;; EAGLE-1 objective: learn next_h = W . h so a draft head predicts Kimi's NEXT hidden from the
+;;; current one. Gradients from Eshkol's NATIVE (derivative fn scalar) autodiff — the exact
+;;; construct nn_training.esk uses and that eshkol-run executes. Scalar-per-weight here (verifiable);
+;;; scales to [N,7168] by driving the qllm_ffi native linear backward bridge below.
+;;;
+;;; Run:  eshkol-run -r examples/eagle_train.esk
+
+(require stdlib)
+(require agent.eagle)
+
+;; head: pred = W . h ,  W = [[w00 w01],[w10 w11]] ,  h = (h0 h1)
+(define (pred0 w00 w01 h0 h1) (+ (* w00 h0) (* w01 h1)))
+(define (pred1 w10 w11 h0 h1) (+ (* w10 h0) (* w11 h1)))
+
+;; corpus rows: (h0 h1 next0 next1) — a fixed linear next_h = M.h the head must recover.
+(define corpus
+  (list (list 0.5 0.2 0.74 0.46)
+        (list 0.1 0.9 0.83 1.07)
+        (list 0.8 0.3 1.06 0.66)
+        (list 0.4 0.6 0.86 0.86)
+        (list 0.7 0.1 0.81 0.50)))
+
+;; total MSE as a function of the 4 weights (scalar-valued -> derivative works per weight)
+(define (loss w00 w01 w10 w11)
+  (fold (lambda (acc row)
+          (let* ((h0 (car row)) (h1 (cadr row)) (t0 (caddr row)) (t1 (cadddr row))
+                 (d0 (- (pred0 w00 w01 h0 h1) t0))
+                 (d1 (- (pred1 w10 w11 h0 h1) t1)))
+            (+ acc (* d0 d0) (* d1 d1))))
+        0.0 corpus))
+
+;; one SGD step: native scalar derivative for each weight (nn_training.esk idiom)
+(define (step w00 w01 w10 w11 lr)
+  (let ((g00 (derivative (lambda (x) (loss x   w01 w10 w11)) w00))
+        (g01 (derivative (lambda (x) (loss w00 x   w10 w11)) w01))
+        (g10 (derivative (lambda (x) (loss w00 w01 x   w11)) w10))
+        (g11 (derivative (lambda (x) (loss w00 w01 w10 x  )) w11)))
+    (list (- w00 (* lr g00)) (- w01 (* lr g01))
+          (- w10 (* lr g10)) (- w11 (* lr g11)))))
+
+(define (train w00 w01 w10 w11 lr epochs)
+  (let loop ((w00 w00) (w01 w01) (w10 w10) (w11 w11) (e 0))
+    (if (>= e epochs)
+        (list w00 w01 w10 w11)
+        (begin
+          (when (= 0 (modulo e 30))
+            (display "epoch ") (display e) (display "  loss ") (display (loss w00 w01 w10 w11)) (newline))
+          (let ((nw (step w00 w01 w10 w11 lr)))
+            (loop (car nw) (cadr nw) (caddr nw) (cadddr nw) (+ e 1)))))))
+
+(define (main)
+  (display "=== native Eshkol EAGLE feature-distillation (no python, no torch) ===") (newline)
+  (let ((wf (train 0.0 0.0 0.0 0.0 0.05 150)))
+    (display "final loss ") (display (loss (car wf) (cadr wf) (caddr wf) (cadddr wf))) (newline)
+    (display "learned W  ") (display wf) (newline)
+    (display "(loss -> ~0 => native-gradient EAGLE loop learns next_h = W.h, in Eshkol)") (newline))
+
+  (display "=== qllm_ffi native linear backward/SGD path ===") (newline)
+  (let ((layer (eagle-linear-create 2 2)))
+    (let loop ((e 0))
+      (if (>= e 150)
+          #t
+          (begin
+            (for-each
+             (lambda (row)
+               (eagle-linear-set-input! layer 0 (car row))
+               (eagle-linear-set-input! layer 1 (cadr row))
+               (eagle-linear-set-target! layer 0 (caddr row))
+               (eagle-linear-set-target! layer 1 (cadddr row))
+               (eagle-linear-train-step! layer 0.05))
+             corpus)
+            (when (= 0 (modulo e 30))
+              (eagle-linear-set-input! layer 0 0.5)
+              (eagle-linear-set-input! layer 1 0.2)
+              (eagle-linear-set-target! layer 0 0.74)
+              (eagle-linear-set-target! layer 1 0.46)
+              (eagle-linear-forward! layer)
+              (display "native epoch ") (display e) (display "  sample loss ")
+              (display (eagle-linear-loss layer)) (newline))
+            (loop (+ e 1)))))
+    (eagle-linear-set-input! layer 0 0.5)
+    (eagle-linear-set-input! layer 1 0.2)
+    (eagle-linear-set-target! layer 0 0.74)
+    (eagle-linear-set-target! layer 1 0.46)
+    (eagle-linear-forward! layer)
+    (eagle-linear-backward! layer)
+    (display "native final sample loss ") (display (eagle-linear-loss layer)) (newline)
+    (display "native learned W ")
+    (display (list (eagle-linear-weight layer 0 0)
+                   (eagle-linear-weight layer 0 1)
+                   (eagle-linear-weight layer 1 0)
+                   (eagle-linear-weight layer 1 1)))
+    (newline)
+    (display "native dW00 sample ") (display (eagle-linear-grad layer 0 0)) (newline)
+    (eagle-linear-destroy layer)))
+
+(main)
