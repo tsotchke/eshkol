@@ -1,0 +1,40 @@
+{
+  "id": "ESH-0065",
+  "title": "Numeric tower R7RS-correctness edge cases (sqrt-neg complex, max/min contagion, exact expt, inf display)",
+  "status": "in_review",
+  "priority": "medium",
+  "workstream": "edge-case-campaign/numeric",
+  "owner": null,
+  "preferred_backend": "codex",
+  "preferred_node": "cosbox",
+  "max_cost_usd": 4.0,
+  "goal": "Found by ESH-0052 numeric-tower edge probing. Four R7RS-correctness gaps (Eshkol already has the substrate to fix them): (1) (sqrt -4) returns nan, but R7RS 6.2.6 says a negative real sqrt returns a COMPLEX (+2i) \u2014 Eshkol has complex numbers, so sqrt must promote negatives to complex. (2) (max 1 2.0) returns exact 2, but R7RS requires inexactness CONTAGION: if any argument is inexact the result is inexact -> 2.0; same for min. (3) (expt 2 -2) returns inexact 0.25, but exact base + negative-exact exponent should give an exact rational 1/4. (4) (/ 1.0 0.0) prints `inf`; the R7RS external representation is `+inf.0` (and -inf.0 / +nan.0). Confirmed CORRECT already: int64->bignum overflow, expt bignum, modulo/remainder signs, banker's rounding, rational reduction, bignum bitwise, string->number rationals.",
+  "file_globs": [
+    "lib/backend/arithmetic_codegen.cpp",
+    "lib/core/runtime_arithmetic*.c*",
+    "lib/core/runtime_complex*.c*",
+    "lib/backend/string_io_codegen.cpp",
+    "tests/numeric/numeric_tower_edge_test.esk"
+  ],
+  "next_actions": [
+    "sqrt: when the operand is a negative real, return a complex result (sqrt(-x) = (* (sqrt x) i)) instead of nan.",
+    "max/min: apply inexactness contagion \u2014 if any argument is inexact, coerce the (exact-valued) result to inexact.",
+    "expt: exact base with negative exact integer exponent -> exact rational (1/base^|n|), not a double.",
+    "Number->string / display: emit +inf.0 / -inf.0 / +nan.0 for the infinities and NaN (R7RS external representation).",
+    "Add tests/numeric/numeric_tower_edge_test.esk covering all four + the already-correct cases as regression guards."
+  ],
+  "acceptance": [
+    "(sqrt -4) => +2.0i (a complex); (sqrt -1) => +i",
+    "(max 1 2.0) => 2.0 ; (min 1.0 2) => 1.0",
+    "(expt 2 -2) => 1/4 (exact)",
+    "(display (/ 1.0 0.0)) => +inf.0 ; NaN displays as +nan.0",
+    "all previously-correct numeric cases still pass; AOT + -r"
+  ],
+  "blocked_by": [],
+  "verification": [
+    "./build/eshkol-run -r tests/numeric/numeric_tower_edge_test.esk",
+    "bash scripts/run_icc_smoke.sh"
+  ],
+  "campaign_payoff": "Tightens R7RS numeric-tower conformance (sqrt-of-negative, inexactness contagion, exact expt, infinity/NaN printing) \u2014 all needed for ALL of SICP + general R7RS correctness.",
+  "status_note": "PR #82 \u2014 numeric tower R7RS; 43/43 -r+AOT"
+}

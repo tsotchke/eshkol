@@ -1,0 +1,35 @@
+{
+  "id": "ESH-0074",
+  "title": "set!-mutated variable captured by MULTIPLE closures is not shared \u2014 each closure gets a private copy",
+  "status": "done",
+  "priority": "critical",
+  "workstream": "edge-case-campaign/closures",
+  "owner": "deep-agent",
+  "goal": "Surfaced by the SICP-completeness gate (ESH-0005, ch3_accounts). A variable that is (a) mutated by set! and (b) captured by two or more closures is NOT shared: each closure captures a private copy, so one closure's set! is invisible to the others. This breaks SICP \u00a73.1.1 make-account (message-passing object with sibling withdraw/deposit closures over a shared `balance`) and the entire 'local state / objects' style. Single-closure set!-capture works (make-withdraw, make-accumulator) and the named-let loop case was fixed in PR #50 \u2014 this is the uncovered GENERAL case.",
+  "minimal_repro": "(define (make-counter n) (cons (lambda () (set! n (+ n 1)) n) (lambda () n))) (define c (make-counter 0)) ((car c)) ((car c)) (display ((cdr c)))  ;; prints 0, MUST print 2",
+  "root_cause": "Closure capture copies the captured value into each closure's environment (by value). For a set!-mutated captured variable this is wrong: all closures (and the enclosing frame) must reference ONE shared mutable cell. Standard fix = assignment conversion: a variable that is set!-mutated AND captured must be heap-boxed (allocated as a single cell), with all reads/writes (in the defining frame and every capturing closure) going through that cell. PR #50 did this narrowly for named-let loop captures (arena-move set!-mutated captures + pointer-pass); generalize it to ALL set!-mutated captured variables.",
+  "file_globs": [
+    "lib/backend/llvm_codegen.cpp",
+    "lib/backend/binding_codegen.cpp",
+    "lib/frontend/parser.cpp"
+  ],
+  "next_actions": [
+    "ICC-scope codegenLambda + the free-variable capture path + findFreeVariables + set! codegen. Identify where captured variables are materialized into the closure environment by value.",
+    "Detect variables that are BOTH set!-mutated AND captured by a closure (a mutated-captured set). Box them: allocate a single heap/arena cell at the defining binding; the defining frame and every capturing closure reference the same cell; set! writes through the cell; reads load through it.",
+    "Reuse/generalize the #50 mechanism (arena-move set!-mutated captures + gated pointer-pass) rather than a parallel path. Ensure it covers: internal-define sibling closures (make-account), explicit sibling lambdas (make-counter repro), nested closures, and lambdas escaping their defining frame.",
+    "NOTE: the ESH-0070 AD agent is concurrently editing llvm_codegen.cpp \u2014 keep changes localized to the closure-capture/set! region to minimize merge conflict; coordinate at integration."
+  ],
+  "acceptance": [
+    "make-counter repro prints 2; SICP ch3_accounts.esk make-account cases all PASS (account-deposit=90 etc.)",
+    "set!-mutated var shared across 2+ sibling closures, nested closures, and escaping closures \u2014 all observe one cell; -r AND AOT",
+    "no regression: single-closure set! (make-withdraw/accumulator), named-let loop captures (#50 tests), closure edge tests still pass"
+  ],
+  "blocked_by": [],
+  "verification": [
+    "./build/eshkol-run -r tests/sicp/ch3_accounts.esk",
+    "./build/eshkol-run -r tests/closures/* ; AOT too",
+    "bash scripts/run_icc_smoke.sh"
+  ],
+  "campaign_payoff": "Unblocks SICP ch3 (objects/local-state/message-passing) \u2014 a release-gate-critical swath \u2014 and fixes a fundamental closure-correctness hole. Found by the SICP-completeness gate within minutes of standing it up.",
+  "status_note": "MERGED #83"
+}

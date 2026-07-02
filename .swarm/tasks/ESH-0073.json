@@ -1,0 +1,26 @@
+{
+  "id": "ESH-0073",
+  "title": "windows-arm64 AOT: Large code model triggers LLVM aarch64-COFF SEH prologue-size mismatch",
+  "status": "done",
+  "priority": "medium",
+  "workstream": "platform/windows-arm64",
+  "goal": "windows-arm64 has been baseline-red through THREE layers. Fixed so far (PR #77): (1) sincos compile error (portable shim), (2) lld-link 'adding thunks hasn't converged after 10 passes' (enabled AArch64 Large code model for aarch64-windows on LLVM>=21, lib/backend/llvm_codegen.cpp ~35691). Now exposed layer 3: with the Large code model, object emission fails with `error: <unknown>:0: Incorrect size for <fn> prologue: 28 bytes of instructions in range, but .seh directives corresponding to 24 bytes` (e.g. json-parse-str). The Large code model emits longer prologues (movz/movk address materialization) but the SEH (.seh_*) unwind directives are computed for the small-model prologue size \u2014 an LLVM AArch64-COFF backend interaction.",
+  "file_globs": [
+    "lib/backend/llvm_codegen.cpp"
+  ],
+  "candidate_fixes": [
+    "Try winning the thunk problem WITHOUT Large code model by shrinking the AOT binary: enable dead-strip on the Windows AOT link (/OPT:REF,/OPT:ICF via lld-link) and/or -ffunction-sections + --gc-sections so the ~58MB stdlib is pruned below the thunk-convergence threshold. This avoids the SEH issue entirely (revert the Windows arm of the code-model change if so).",
+    "If keeping Large code model: investigate suppressing/recomputing SEH unwind for aarch64-COFF (TargetOptions), or upgrading the LLVM 21.x point release if a fix exists, or per-function frame-setup tweaks so prologue size matches the .seh directives.",
+    "Split the statically-linked stdlib so individual AOT test binaries don't each link all 58MB (architectural; biggest payoff, removes the size pressure that causes both thunk and SEH symptoms)."
+  ],
+  "acceptance": [
+    "windows-arm64-lite, -xla, -cuda all green in CI (no local arm64-windows machine \u2014 CI verifies)",
+    "no regression to the other 10 baseline-green lanes (macOS/linux x64+arm64)"
+  ],
+  "blocked_by": [],
+  "verification": [
+    "CI windows-arm64-* lanes on the PR"
+  ],
+  "campaign_payoff": "Closes the last baseline-red platform lane. windows-arm64 has been broken across sincos+thunk+SEH; layers 1-2 fixed, this is layer 3. Needs CI iteration (cannot test locally).",
+  "status_note": "MERGED #77 / 6d57ab8f8746d16088d641d5f63ca88e96c09903. Layer-3 fix reverted Large model (breaks _setjmpex SEH unwind on aarch64-COFF); small model + FunctionSections/DataSections + /OPT:REF,/OPT:ICF dead-strip shrinks below thunk threshold. Follow-up fixes: eb20ba7b derives executable_triple from module_ref before adding windows-arm64 /OPT flags; dfbb7885 excludes non-lite probes from hosted windows-lite; 28f98976 tightens hosted windows-lite to representative portable smoke coverage; 3a89fece switches hosted lite typesystem coverage to Invoke-TypesystemSuite with include filtering. Final CI run 28346720999 on 3a89fece: all lanes SUCCESS, including windows-arm64-lite, windows-arm64-xla, and windows-arm64-cuda."
+}
