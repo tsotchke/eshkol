@@ -1,0 +1,179 @@
+;; SICP 3.4 — concurrency: make-serializer built on core.threads' POSIX
+;; mutexes, serialized bank-account deposits/withdrawals, serialized-exchange
+;; preserving the total-balance invariant, plus ONE bounded true-concurrency
+;; check (parallel-map workers doing serialized increments on a shared cell).
+;;
+;; Serializers here wrap 1-argument procedures (all book account operations
+;; take one argument; exchange is adapted through a 1-arg trampoline).
+
+(require core.threads)
+
+(define fails 0)
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin (display "PASS: ") (display name) (newline))
+      (begin (set! fails (+ fails 1))
+             (display "FAIL: ") (display name)
+             (display " expected=") (display expected)
+             (display " actual=") (display actual) (newline))))
+
+;; ---- make-serializer (SICP 3.4.2), one mutex per serializer ----
+(define (make-serializer)
+  (let ((m (make-mutex)))
+    (lambda (p)
+      (lambda (x)
+        (with-mutex m (lambda () (p x)))))))
+
+;; serialization is semantically transparent for a single caller
+(define s0 (make-serializer))
+(define sq (s0 (lambda (x) (* x x))))
+(check "serializer-transparent" 25 (sq 5))
+(check "serializer-reusable" 49 (sq 7))
+(define cube (s0 (lambda (x) (* x x x))))     ; same serializer, second proc
+(check "serializer-second-proc" 27 (cube 3))
+
+;; two procedures in the SAME serializer set share one mutex; nested entry
+;; still works because core.threads mutexes are recursive (re-entrant).
+(define reentry ((s0 (lambda (x) (sq x)))
+                 6))
+(check "serializer-reentrant-nesting" 36 reentry)
+
+;; ---- serialized account (SICP 3.4.2 make-account) ----
+(define (make-account balance)
+  (define (withdraw amount)
+    (if (>= balance amount)
+        (begin (set! balance (- balance amount)) balance)
+        'insufficient-funds))
+  (define (deposit amount)
+    (set! balance (+ balance amount))
+    balance)
+  (let ((protected (make-serializer)))
+    (define (dispatch m)
+      (cond ((eq? m 'withdraw) (protected withdraw))
+            ((eq? m 'deposit) (protected deposit))
+            ((eq? m 'balance) balance)
+            (else (error "Unknown request -- MAKE-ACCOUNT" m))))
+    dispatch))
+
+(define acc (make-account 100))
+(check "acct-initial" 100 (acc 'balance))
+(check "acct-withdraw" 60 ((acc 'withdraw) 40))
+(check "acct-deposit" 90 ((acc 'deposit) 30))
+(check "acct-insufficient" 'insufficient-funds ((acc 'withdraw) 1000))
+(check "acct-balance-after" 90 (acc 'balance))
+
+;; ---- account exposing its serializer (SICP 3.4.2 make-account-and-serializer)
+(define (make-account-and-serializer balance)
+  (define (withdraw amount)
+    (if (>= balance amount)
+        (begin (set! balance (- balance amount)) balance)
+        'insufficient-funds))
+  (define (deposit amount)
+    (set! balance (+ balance amount))
+    balance)
+  (let ((balance-serializer (make-serializer)))
+    (define (dispatch m)
+      (cond ((eq? m 'withdraw) withdraw)
+            ((eq? m 'deposit) deposit)
+            ((eq? m 'balance) balance)
+            ((eq? m 'serializer) balance-serializer)
+            (else (error "Unknown request -- MAKE-ACCOUNT" m))))
+    dispatch))
+
+(define (deposit! account amount)
+  (let ((s (account 'serializer))
+        (d (account 'deposit)))
+    ((s d) amount)))
+(define (withdraw! account amount)
+  (let ((s (account 'serializer))
+        (w (account 'withdraw)))
+    ((s w) amount)))
+
+;; ---- exchange + serialized-exchange (SICP 3.4.2) ----
+;; KNOWN GAP: a quoted symbol as the tail of a let body inside a define
+;; miscompiles (repro: (define (f) (let ((x 1)) 'ok))), so 'done sits as the
+;; define's tail, outside the let. Same semantics.
+(define (exchange account1 account2)
+  (let ((difference (- (account1 'balance) (account2 'balance))))
+    ((account1 'withdraw) difference)
+    ((account2 'deposit) difference))
+  'done)
+
+;; Both serializers are acquired (nested) around the whole exchange; the
+;; 1-arg trampoline adapts the 2-account exchange to the 1-arg serializers.
+(define (serialized-exchange account1 account2)
+  (let ((serializer1 (account1 'serializer))
+        (serializer2 (account2 'serializer)))
+    ((serializer1 (serializer2 (lambda (ignored)
+                                 (exchange account1 account2))))
+     0)))
+
+(define a1 (make-account-and-serializer 10))
+(define a2 (make-account-and-serializer 20))
+(define a3 (make-account-and-serializer 30))
+(define (total-3) (+ (a1 'balance) (a2 'balance) (a3 'balance)))
+(check "exchange-total-before" 60 (total-3))
+
+(serialized-exchange a1 a2)          ; 10,20 -> 20,10
+(check "exchange-a1" 20 (a1 'balance))
+(check "exchange-a2" 10 (a2 'balance))
+(check "exchange-total-invariant-1" 60 (total-3))
+
+(serialized-exchange a2 a3)          ; 10,30 -> 30,10
+(check "exchange-a2b" 30 (a2 'balance))
+(check "exchange-a3" 10 (a3 'balance))
+(check "exchange-total-invariant-2" 60 (total-3))
+
+(serialized-exchange a3 a1)          ; 10,20 -> 20,10
+(check "exchange-a3b" 20 (a3 'balance))
+(check "exchange-a1b" 10 (a1 'balance))
+(check "exchange-total-invariant-3" 60 (total-3))
+
+;; serialized deposit/withdraw through the exposed serializer
+(deposit! a1 5)
+(withdraw! a1 3)
+(check "deposit!-withdraw!-through-serializer" 12 (a1 'balance))
+(check "exchange-total-after-dw" 62 (total-3))
+
+;; ---- ONE bounded true-concurrency check ----
+;; 8 parallel-map workers x 250 serialized increments on a shared cell must
+;; yield exactly 2000 — lost updates would make it smaller. The shared count
+;; lives in a one-slot vector (heap cell shared by pointer across threads).
+(define n-workers 8)
+(define n-iters 250)
+(define shared-cell (vector 0))
+(define count-serializer (make-serializer))
+(define serialized-inc
+  (count-serializer
+   (lambda (ignored)
+     (vector-set! shared-cell 0 (+ (vector-ref shared-cell 0) 1))
+     'done)))
+
+(define (worker i)
+  (let loop ((k 0))
+    (if (= k n-iters)
+        i
+        (begin (serialized-inc k)
+               (loop (+ k 1))))))
+
+(define worker-results (parallel-map worker (list 0 1 2 3 4 5 6 7)))
+(check "parallel-serialized-increments" (* n-workers n-iters)
+       (vector-ref shared-cell 0))
+(check "parallel-workers-all-returned" '(0 1 2 3 4 5 6 7) worker-results)
+
+;; and the same shape through account deposits: 4 workers x 100 serialized
+;; $1 deposits into one shared account = +400 exactly.
+(define shared-acct (make-account-and-serializer 100))
+(define (depositor i)
+  (let loop ((k 0))
+    (if (= k 100)
+        i
+        (begin (deposit! shared-acct 1)
+               (loop (+ k 1))))))
+(parallel-map depositor (list 0 1 2 3))
+(check "parallel-serialized-deposits" 500 (shared-acct 'balance))
+
+(newline)
+(if (= fails 0)
+    (begin (display "ALL-PASS ch3_concurrency") (newline))
+    (begin (display "HAS-FAIL ch3_concurrency ") (display fails) (newline)))
