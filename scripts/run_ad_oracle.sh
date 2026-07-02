@@ -130,7 +130,8 @@ BAD=""
 count_verdict() { # verdict file mode
     local v="$1" f="$2" mode="$3" pyv
     total+=1
-    emit_event "ad_oracle_${f%.esk}_${mode}" "$v" "$f $mode -> $v"
+    # filenames already carry the ad_oracle_ prefix
+    emit_event "${f%.esk}_${mode}" "$v" "$f $mode -> $v"
     case "$v" in
         PASS)   passed+=1;  pyv="PASSED" ;;
         XKNOWN) xknown+=1;  pyv="XFAIL" ;;
