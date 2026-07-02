@@ -8,7 +8,7 @@ if(POLICY CMP0091)
     cmake_policy(SET CMP0091 NEW)
 endif()
 
-set(ESHKOL_VERSION "1.2.3")
+set(ESHKOL_VERSION "1.2.4")
 
 project("Eshkol" VERSION ${ESHKOL_VERSION} LANGUAGES C CXX)
 
@@ -2986,6 +2986,7 @@ if(ESHKOL_BUILD_AGENT_FFI)
         # the core.threads primitives directly.
         foreach(_agent_extra_src
                 agent_compression.c     # zlib / gzip — compiles to stub w/o HAS_ZLIB
+                agent_eagle_training.c  # native EAGLE linear-head train step
                 agent_kb_io.c           # KB JSON persistence
                 agent_platform.c        # filesystem, time, mmap, glob, base64url, uuid
                 agent_poll.c            # IO multiplexing (poll/select)

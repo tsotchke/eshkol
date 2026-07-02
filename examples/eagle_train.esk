@@ -3,11 +3,12 @@
 ;;; EAGLE-1 objective: learn next_h = W . h so a draft head predicts Kimi's NEXT hidden from the
 ;;; current one. Gradients from Eshkol's NATIVE (derivative fn scalar) autodiff — the exact
 ;;; construct nn_training.esk uses and that eshkol-run executes. Scalar-per-weight here (verifiable);
-;;; scales to [N,7168] by swapping data + using the qllm_ffi tensor GEMV for the wide layer.
+;;; scales to [N,7168] by driving the qllm_ffi native linear backward bridge below.
 ;;;
 ;;; Run:  eshkol-run -r examples/eagle_train.esk
 
 (require stdlib)
+(require agent.eagle)
 
 ;; head: pred = W . h ,  W = [[w00 w01],[w10 w11]] ,  h = (h0 h1)
 (define (pred0 w00 w01 h0 h1) (+ (* w00 h0) (* w01 h1)))
@@ -54,6 +55,45 @@
   (let ((wf (train 0.0 0.0 0.0 0.0 0.05 150)))
     (display "final loss ") (display (loss (car wf) (cadr wf) (caddr wf) (cadddr wf))) (newline)
     (display "learned W  ") (display wf) (newline)
-    (display "(loss -> ~0 => native-gradient EAGLE loop learns next_h = W.h, in Eshkol)") (newline)))
+    (display "(loss -> ~0 => native-gradient EAGLE loop learns next_h = W.h, in Eshkol)") (newline))
+
+  (display "=== qllm_ffi native linear backward/SGD path ===") (newline)
+  (let ((layer (eagle-linear-create 2 2)))
+    (let loop ((e 0))
+      (if (>= e 150)
+          #t
+          (begin
+            (for-each
+             (lambda (row)
+               (eagle-linear-set-input! layer 0 (car row))
+               (eagle-linear-set-input! layer 1 (cadr row))
+               (eagle-linear-set-target! layer 0 (caddr row))
+               (eagle-linear-set-target! layer 1 (cadddr row))
+               (eagle-linear-train-step! layer 0.05))
+             corpus)
+            (when (= 0 (modulo e 30))
+              (eagle-linear-set-input! layer 0 0.5)
+              (eagle-linear-set-input! layer 1 0.2)
+              (eagle-linear-set-target! layer 0 0.74)
+              (eagle-linear-set-target! layer 1 0.46)
+              (eagle-linear-forward! layer)
+              (display "native epoch ") (display e) (display "  sample loss ")
+              (display (eagle-linear-loss layer)) (newline))
+            (loop (+ e 1)))))
+    (eagle-linear-set-input! layer 0 0.5)
+    (eagle-linear-set-input! layer 1 0.2)
+    (eagle-linear-set-target! layer 0 0.74)
+    (eagle-linear-set-target! layer 1 0.46)
+    (eagle-linear-forward! layer)
+    (eagle-linear-backward! layer)
+    (display "native final sample loss ") (display (eagle-linear-loss layer)) (newline)
+    (display "native learned W ")
+    (display (list (eagle-linear-weight layer 0 0)
+                   (eagle-linear-weight layer 0 1)
+                   (eagle-linear-weight layer 1 0)
+                   (eagle-linear-weight layer 1 1)))
+    (newline)
+    (display "native dW00 sample ") (display (eagle-linear-grad layer 0 0)) (newline)
+    (eagle-linear-destroy layer)))
 
 (main)
