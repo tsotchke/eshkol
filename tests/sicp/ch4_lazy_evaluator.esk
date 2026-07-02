@@ -1,0 +1,135 @@
+;; SICP 4.2 — lazy (normal-order) evaluator.  Compound procedures receive
+;; DELAYED operands: thunks (list 'thunk exp env) forced on demand by
+;; actual-value, with memoization (thunk mutated in place to
+;; (evaluated-thunk result) so the underlying expression runs at most once).
+;; Primitives are strict.  Covers the book's motivating cases:
+;;   * (try 0 (/ 1 0)) = 1 — the division is never performed
+;;   * unless as an ordinary PROCEDURE
+;;   * memoization observed via a side-effect counter forced exactly once
+;;   * an infinite lazy list built from cons-as-lambda (SICP 4.2.3)
+;;
+;; NOTE: base env binds comparison primitives to boolean-normalizing wrapper
+;; lambdas — ESH-0078 workaround, see ch4_metacircular_full.esk.
+(define fails 0)
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin (display "PASS: ") (display name) (newline))
+      (begin (set! fails (+ fails 1))
+             (display "FAIL: ") (display name) (display " expected=") (display expected)
+             (display " actual=") (display actual) (newline))))
+
+(define (tagged? exp tag) (and (pair? exp) (eq? (car exp) tag)))
+(define (lookup var env)
+  (if (null? env) (error "unbound" var)
+      (let loop ((vars (caar env)) (vals (cdar env)))
+        (cond ((null? vars) (lookup var (cdr env)))
+              ((eq? (car vars) var) (car vals))
+              (else (loop (cdr vars) (cdr vals)))))))
+(define (define-var! var val env)
+  (set-car! (car env) (cons var (caar env)))
+  (set-cdr! (car env) (cons val (cdar env))))
+(define (set-var! var val env)
+  (let loop ((vars (caar env)) (vals (cdar env)))
+    (cond ((null? vars) (set-var! var val (cdr env)))
+          ((eq? (car vars) var) (set-car! vals val))
+          (else (loop (cdr vars) (cdr vals))))))
+
+;; ---- thunks with memoization ----
+(define (delay-it exp env) (list 'thunk exp env))
+(define (thunk? obj) (tagged? obj 'thunk))
+(define (evaluated-thunk? obj) (tagged? obj 'evaluated-thunk))
+(define (force-it obj)
+  (cond ((thunk? obj)
+         (let ((result (actual-value (cadr obj) (caddr obj))))
+           (set-car! obj 'evaluated-thunk)   ; memoize: mutate thunk in place
+           (set-car! (cdr obj) result)
+           (set-cdr! (cdr obj) '())          ; drop exp/env so it can never rerun
+           result))
+        ((evaluated-thunk? obj) (cadr obj))
+        (else obj)))
+(define (actual-value exp env) (force-it (leval exp env)))
+
+;; ---- the lazy evaluator ----
+(define (leval exp env)
+  (cond ((number? exp) exp)
+        ((boolean? exp) exp)
+        ((symbol? exp) (lookup exp env))
+        ((tagged? exp 'quote) (cadr exp))
+        ((tagged? exp 'if)                   ; predicate is forced; branches lazy
+         (if (not (eq? (actual-value (cadr exp) env) #f))
+             (leval (caddr exp) env)
+             (if (null? (cdddr exp)) 'ok (leval (cadddr exp) env))))
+        ((tagged? exp 'define) (define-var! (cadr exp) (leval (caddr exp) env) env) 'ok)
+        ((tagged? exp 'set!) (set-var! (cadr exp) (leval (caddr exp) env) env) 'ok)
+        ((tagged? exp 'lambda) (list 'closure (cadr exp) (caddr exp) env))
+        ((tagged? exp 'begin) (let loop ((es (cdr exp)) (r 'ok))
+                                (if (null? es) r (loop (cdr es) (leval (car es) env)))))
+        (else (lapply (actual-value (car exp) env) (cdr exp) env))))
+(define (lapply proc operand-exps env)
+  (cond ((procedure? proc)                   ; primitives: strict (forced args)
+         (apply proc (map (lambda (a) (actual-value a env)) operand-exps)))
+        ((tagged? proc 'closure)             ; compound: DELAYED args
+         (leval (caddr proc)
+                (cons (cons (cadr proc)
+                            (map (lambda (a) (delay-it a env)) operand-exps))
+                      (cadddr proc))))
+        (else (error "not-applicable" proc))))
+
+(define (base-env)
+  (list (cons (list '+ '- '* '/ '= '< '> 'cons 'car 'cdr 'null?)
+              (list + - * /
+                    (lambda (a b) (if (= a b) #t #f))
+                    (lambda (a b) (if (< a b) #t #f))
+                    (lambda (a b) (if (> a b) #t #f))
+                    cons car cdr
+                    (lambda (x) (if (null? x) #t #f))))))
+(define e (base-env))
+
+;; ---- SICP 4.2.1: (try 0 (/ 1 0)) — the division must never run ----
+(leval '(define try (lambda (a b) (if (= a 0) 1 b))) e)
+(check "try 0 (/ 1 0) = 1" 1 (actual-value '(try 0 (/ 1 0)) e))
+(check "try 1 forces b" 7 (actual-value '(try 1 7) e))
+;; side-effect proof that the unused operand is truly never evaluated:
+(leval '(define ran 0) e)
+(check "try 0 with set! operand" 1 (actual-value '(try 0 (set! ran 1)) e))
+(check "unused operand never ran" 0 (actual-value 'ran e))
+
+;; ---- unless as an ordinary procedure (SICP 4.2.2) ----
+(leval '(define unless (lambda (condition usual exceptional)
+                         (if condition exceptional usual))) e)
+(check "unless takes exceptional lazily" 'safe
+       (actual-value '(unless (= 0 0) (/ 1 0) (quote safe)) e))
+(check "unless takes usual branch" 2
+       (actual-value '(unless (= 5 0) (/ 10 5) 999) e))
+
+;; ---- memoization: side-effect counter forced exactly once ----
+(leval '(define count 0) e)
+(leval '(define bump (lambda (ignored)
+                       (begin (set! count (+ count 1)) count))) e)
+(leval '(define twice (lambda (x) (+ x x))) e)
+;; x is referenced twice in (+ x x); with memoized thunks bump runs ONCE.
+(check "twice (bump 0) = 2" 2 (actual-value '(twice (bump 0)) e))
+(check "bump forced exactly once" 1 (actual-value 'count e))
+;; an argument that is never used forces nothing at all:
+(leval '(define const-9 (lambda (ignored) 9)) e)
+(check "unused arg not forced" 9 (actual-value '(const-9 (bump 0)) e))
+(check "counter still 1" 1 (actual-value 'count e))
+
+;; ---- infinite lazy list via cons-as-lambda (SICP 4.2.3) ----
+(leval '(define lcons (lambda (x y) (lambda (m) (m x y)))) e)
+(leval '(define lcar (lambda (z) (z (lambda (p q) p)))) e)
+(leval '(define lcdr (lambda (z) (z (lambda (p q) q)))) e)
+;; ints-from would loop forever under applicative order; lazily it terminates
+;; because the recursive call sits in a delayed operand position.
+(leval '(define ints-from (lambda (n) (lcons n (ints-from (+ n 1))))) e)
+(leval '(define ints (ints-from 1)) e)
+(check "lazy list 1st" 1 (actual-value '(lcar ints) e))
+(check "lazy list 2nd" 2 (actual-value '(lcar (lcdr ints)) e))
+(check "lazy list 3rd" 3 (actual-value '(lcar (lcdr (lcdr ints))) e))
+;; lazy map over the infinite list, sampled at the 3rd element
+(leval '(define lmap (lambda (f s) (lcons (f (lcar s)) (lmap f (lcdr s))))) e)
+(check "lazy map sample" 30
+       (actual-value '(lcar (lcdr (lcdr (lmap (lambda (k) (* 10 k)) ints)))) e))
+
+(display "ch4 lazy evaluator: ")
+(display (if (= fails 0) "ALL PASS" (cons fails 'FAILS))) (newline)
