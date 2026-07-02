@@ -1,0 +1,111 @@
+;; SICP 3.5.2 exercises 3.59-3.61 — power series as streams.
+;; integrate-series, exp-series (its own integral), mutually-recursive
+;; sine-series / cosine-series, mul-series, and the identity
+;; sin^2 x + cos^2 x = 1 checked coefficient-by-coefficient.
+
+(define fails 0)
+(define (check name ok)
+  (if ok (begin (display "PASS: ") (display name) (newline))
+      (begin (set! fails (+ fails 1)) (display "FAIL: ") (display name) (newline))))
+(define (close? a b) (< (abs (- a b)) 1e-12))
+
+;; ---- stream primitives (3.5.1) ----
+(define-syntax cons-stream (syntax-rules () ((_ a b) (cons a (delay b)))))
+(define (stream-car s) (car s))
+(define (stream-cdr s) (force (cdr s)))
+(define the-empty-stream '())
+(define (stream-null? s) (null? s))
+(define (stream-ref s n) (if (= n 0) (stream-car s) (stream-ref (stream-cdr s) (- n 1))))
+(define (stream-map proc s)
+  (if (stream-null? s) the-empty-stream
+      (cons-stream (proc (stream-car s)) (stream-map proc (stream-cdr s)))))
+(define (stream-take s n)
+  (if (= n 0) '() (cons (stream-car s) (stream-take (stream-cdr s) (- n 1)))))
+(define (add-streams s1 s2)
+  (cond ((stream-null? s1) s2)
+        ((stream-null? s2) s1)
+        (else (cons-stream (+ (stream-car s1) (stream-car s2))
+                           (add-streams (stream-cdr s1) (stream-cdr s2))))))
+(define (scale-stream s factor) (stream-map (lambda (x) (* x factor)) s))
+
+;; compare the first n coefficients of a series against a list, within 1e-12
+(define (coeffs-close? s expected)
+  (if (null? expected) #t
+      (and (close? (stream-car s) (car expected))
+           (coeffs-close? (stream-cdr s) (cdr expected)))))
+
+;; ---- ex 3.59a: integrate-series ----
+;; series a0 + a1 x + a2 x^2 + ...  ->  a0 x + (a1/2) x^2 + (a2/3) x^3 + ...
+;; (the constant term of the integral is supplied separately via cons-stream)
+(define (integrate-series s)
+  (define (iter s n)
+    (cons-stream (/ (stream-car s) n) (iter (stream-cdr s) (+ n 1.0))))
+  (iter s 1.0))
+
+;; integral of 1 + x + x^2 + ... has coefficients 1, 1/2, 1/3, 1/4, ...
+(define ones (cons-stream 1.0 ones))
+(check "integrate-ones"
+       (coeffs-close? (integrate-series ones)
+                      (list 1.0 0.5 0.3333333333333333 0.25 0.2)))
+
+;; ---- ex 3.59b: exp-series is its own integral ----
+(define exp-series (cons-stream 1.0 (integrate-series exp-series)))
+
+;; e^x = 1 + x + x^2/2 + x^3/6 + x^4/24 + x^5/120 + ...
+(check "exp-series-coeffs"
+       (coeffs-close? exp-series
+                      (list 1.0 1.0 0.5
+                            0.16666666666666666
+                            0.041666666666666664
+                            0.008333333333333333)))
+
+;; ---- mutually recursive sine / cosine series ----
+(define cosine-series (cons-stream 1.0 (scale-stream (integrate-series sine-series) -1.0)))
+(define sine-series (cons-stream 0.0 (integrate-series cosine-series)))
+
+;; sin x = x - x^3/6 + x^5/120 - ...
+(check "sine-series-coeffs"
+       (coeffs-close? sine-series
+                      (list 0.0 1.0 0.0
+                            -0.16666666666666666
+                            0.0
+                            0.008333333333333333)))
+;; cos x = 1 - x^2/2 + x^4/24 - ...
+(check "cosine-series-coeffs"
+       (coeffs-close? cosine-series
+                      (list 1.0 0.0 -0.5 0.0
+                            0.041666666666666664
+                            0.0)))
+
+;; ---- ex 3.60: mul-series ----
+(define (mul-series s1 s2)
+  (cons-stream (* (stream-car s1) (stream-car s2))
+               (add-streams (scale-stream (stream-cdr s2) (stream-car s1))
+                            (mul-series (stream-cdr s1) s2))))
+
+;; sin^2 x + cos^2 x = 1: coefficients 1, 0, 0, 0, 0, 0
+(define pythagorean
+  (add-streams (mul-series sine-series sine-series)
+               (mul-series cosine-series cosine-series)))
+(check "sin2-plus-cos2-is-one"
+       (coeffs-close? pythagorean (list 1.0 0.0 0.0 0.0 0.0 0.0)))
+
+;; ---- evaluating a truncated series ----
+(define (eval-series s x n)
+  (define (iter s xk k acc)
+    (if (= k n) acc
+        (iter (stream-cdr s) (* xk x) (+ k 1) (+ acc (* (stream-car s) xk)))))
+  (iter s 1.0 0 0.0))
+
+;; sum of the first 12 terms of exp-series at x=1 is within ~1/12! of e
+(define e 2.718281828459045)
+(check "exp-series-at-1-approx-e"
+       (< (abs (- (eval-series exp-series 1.0 12) e)) 1e-7))
+;; sine series at pi/6 -> 0.5
+(check "sine-series-at-pi-over-6"
+       (< (abs (- (eval-series sine-series 0.5235987755982988 12) 0.5)) 1e-9))
+
+(newline)
+(if (= fails 0)
+    (begin (display "ALL-PASS ch3_stream_power_series") (newline))
+    (begin (display "HAS-FAIL ch3_stream_power_series ") (display fails) (newline)))
