@@ -1,0 +1,187 @@
+;; SICP Chapter 5.3 — memory as vectors, and a stop-and-copy garbage collector.
+;; List structure lives in two vectors, the-cars/the-cdrs, addressed by a free
+;; pointer.  Pointers are typed tag.index pairs: (pair . i) indexes the
+;; vectors, (number . k) is an immediate, (empty . 0) is nil,
+;; (broken-heart . 0) marks an evacuated cell whose forwarding pointer sits in
+;; the old the-cdrs slot.  cons/car/cdr/pair? are implemented over
+;; vector-ref/vector-set!, then a stop-and-copy collector with root registers
+;; evacuates live cells into fresh semispace vectors.
+(define fails 0)
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin (display "PASS: ") (display name) (newline))
+      (begin (set! fails (+ fails 1))
+             (display "FAIL: ") (display name) (display " expected=") (display expected)
+             (display " actual=") (display actual) (newline))))
+
+;; SICP names the allocation register `free`, but a top-level (define free ...)
+;; collides with the libc symbol `free` under both JIT and AOT linking and the
+;; runtime SIGBUSes at teardown, so this file names it `freeptr`.
+(display "NOTE: global named `free` collides with libc free() (teardown SIGBUS); using `freeptr` — see (define free 0) minimal repro")
+(newline)
+
+;; ---- the memory ----
+(define mem-size 32)
+(define the-cars (make-vector mem-size 0))
+(define the-cdrs (make-vector mem-size 0))
+(define freeptr 0)
+
+;; ---- typed pointers ----
+(define (make-number k) (cons 'number k))
+(define nil-ptr (cons 'empty 0))
+(define (ptr-tag p) (car p))
+(define (ptr-idx p) (cdr p))
+(define (vpair? p) (eq? (ptr-tag p) 'pair))
+(define (vnumber? p) (eq? (ptr-tag p) 'number))
+(define (vnull? p) (eq? (ptr-tag p) 'empty))
+(define (vnum p)
+  (if (vnumber? p) (ptr-idx p) (error "not a number pointer" p)))
+
+;; ---- cons/car/cdr over the vectors (SICP 5.3.1) ----
+(define (vcons a d)
+  (if (>= freeptr mem-size) (error "memory exhausted" freeptr) #f)
+  (vector-set! the-cars freeptr a)
+  (vector-set! the-cdrs freeptr d)
+  (let ((p (cons 'pair freeptr)))
+    (set! freeptr (+ freeptr 1))
+    p))
+(define (vcar p)
+  (if (vpair? p) (vector-ref the-cars (ptr-idx p)) (error "vcar: not a pair" p)))
+(define (vcdr p)
+  (if (vpair? p) (vector-ref the-cdrs (ptr-idx p)) (error "vcdr: not a pair" p)))
+(define (vset-car! p v)
+  (if (vpair? p) (vector-set! the-cars (ptr-idx p) v) (error "vset-car!" p)))
+
+;; ---- stop-and-copy collector (SICP 5.3.2) ----
+;; Takes the list of root pointers (the machine's root registers); returns the
+;; relocated roots.  Evacuated old cells get a broken-heart in the-cars and
+;; the forwarding pointer in the-cdrs; a scan pointer sweeps new memory
+;; relocating everything it references; finally the semispaces are flipped.
+(define (gc roots)
+  (let ((new-cars (make-vector mem-size 0))
+        (new-cdrs (make-vector mem-size 0))
+        (new-free 0))
+    (define (relocate p)
+      (if (and (pair? p) (vpair? p))
+          (let ((old-i (ptr-idx p)))
+            (let ((old-car (vector-ref the-cars old-i)))
+              (if (and (pair? old-car) (eq? (ptr-tag old-car) 'broken-heart))
+                  (vector-ref the-cdrs old-i)          ; already moved: forward
+                  (let ((ni new-free))
+                    (vector-set! new-cars ni old-car)
+                    (vector-set! new-cdrs ni (vector-ref the-cdrs old-i))
+                    (set! new-free (+ new-free 1))
+                    (vector-set! the-cars old-i (cons 'broken-heart 0))
+                    (let ((np (cons 'pair ni)))
+                      (vector-set! the-cdrs old-i np)  ; forwarding pointer
+                      np)))))
+          p))                                          ; immediates move as-is
+    (let ((new-roots (map relocate roots)))
+      (let scan ((i 0))
+        (if (< i new-free)
+            (begin
+              (vector-set! new-cars i (relocate (vector-ref new-cars i)))
+              (vector-set! new-cdrs i (relocate (vector-ref new-cdrs i)))
+              (scan (+ i 1)))
+            #t))
+      ;; flip semispaces
+      (set! the-cars new-cars)
+      (set! the-cdrs new-cdrs)
+      (set! freeptr new-free)
+      new-roots)))
+
+;; ================= basic memory-model checks =================
+(define p1 (vcons (make-number 10) (make-number 20)))
+(check "vcons allocates at index 0" 0 (ptr-idx p1))
+(check "free pointer advanced" 1 freeptr)
+(check "vcar reads the-cars" 10 (vnum (vcar p1)))
+(check "vcdr reads the-cdrs" 20 (vnum (vcdr p1)))
+(check "vpair? on pair pointer" #t (vpair? p1))
+(check "vpair? on number pointer" #f (vpair? (make-number 5)))
+(check "vpair? on nil pointer" #f (vpair? nil-ptr))
+(vset-car! p1 (make-number 11))
+(check "vset-car! mutates cell" 11 (vnum (vcar p1)))
+
+;; a proper list (1 2 3) built in vector memory
+(define l3 (vcons (make-number 1)
+                  (vcons (make-number 2)
+                         (vcons (make-number 3) nil-ptr))))
+(check "list in vector memory: car" 1 (vnum (vcar l3)))
+(check "list in vector memory: cadr" 2 (vnum (vcar (vcdr l3))))
+(check "list in vector memory: caddr" 3 (vnum (vcar (vcdr (vcdr l3)))))
+(check "list in vector memory: null tail" #t (vnull? (vcdr (vcdr (vcdr l3)))))
+
+;; ================= GC scenario =================
+;; Rebuild memory from scratch so cell counts are exact.
+(set! the-cars (make-vector mem-size 0))
+(set! the-cdrs (make-vector mem-size 0))
+(set! freeptr 0)
+
+(define s  (vcons (make-number 1) (make-number 2)))  ; idx 0: shared cell
+(define g1 (vcons (make-number 7) (make-number 8)))  ; idx 1: garbage
+(define x  (vcons s s))                              ; idx 2: car and cdr share s
+(define g2 (vcons (make-number 9) g1))               ; idx 3: garbage (refs g1)
+(define y  (vcons (make-number 3) x))                ; idx 4: root
+
+(check "pre-GC free pointer = 5 cells" 5 freeptr)
+(check "pre-GC shared structure reads" 1 (vnum (vcar (vcar (vcdr y)))))
+
+;; collect with y as the sole root register
+(define new-roots (gc (list y)))
+(define y2 (car new-roots))
+
+;; live data intact after collection
+(check "post-GC root is a pair" #t (vpair? y2))
+(check "post-GC y car" 3 (vnum (vcar y2)))
+(define x2 (vcdr y2))
+(check "post-GC x reachable" #t (vpair? x2))
+(check "post-GC shared cell car" 1 (vnum (vcar (vcar x2))))
+(check "post-GC shared cell cdr" 2 (vnum (vcdr (vcar x2))))
+
+;; sharing preserved: x's car and cdr are the SAME new cell (single copy)
+(check "sharing preserved (one copy of shared cell)" #t
+       (equal? (vcar x2) (vcdr x2)))
+
+;; free pointer equals exact live-cell count: y, x, s = 3 (g1, g2 reclaimed)
+(check "post-GC free pointer = 3 live cells" 3 freeptr)
+
+;; breadth-first copy order: root y first, then x, then s
+(check "root copied to index 0" 0 (ptr-idx y2))
+(check "x copied to index 1" 1 (ptr-idx x2))
+(check "shared cell copied to index 2" 2 (ptr-idx (vcar x2)))
+
+;; allocation continues correctly after the flip
+(define z (vcons (make-number 42) y2))
+(check "post-GC allocation goes to index 3" 3 (ptr-idx z))
+(check "post-GC allocated cell readable" 42 (vnum (vcar z)))
+(check "post-GC allocated cell links live data" 3 (vnum (vcar (vcdr z))))
+
+;; second collection with extra root: everything now live stays live
+(define roots2 (gc (list z y2)))
+(check "second GC keeps 4 live cells" 4 freeptr)
+(check "second GC preserves data" 42 (vnum (vcar (car roots2))))
+(check "second GC shares y between roots" #t
+       (equal? (vcdr (car roots2)) (cadr roots2)))
+(check "second GC sharing under x still intact" #t
+       (let ((x3 (vcdr (cadr roots2))))
+         (equal? (vcar x3) (vcdr x3))))
+
+;; a cyclic structure survives collection (forwarding pointers stop the loop)
+(set! the-cars (make-vector mem-size 0))
+(set! the-cdrs (make-vector mem-size 0))
+(set! freeptr 0)
+(define c1 (vcons (make-number 1) nil-ptr))
+(define c2 (vcons (make-number 2) c1))
+;; close the cycle: cdr of c1 points back to c2
+(vector-set! the-cdrs (ptr-idx c1) c2)
+(define cyc-roots (gc (list c2)))
+(define c2n (car cyc-roots))
+(check "cycle: both cells survive" 2 freeptr)
+(check "cycle: c2 car" 2 (vnum (vcar c2n)))
+(check "cycle: c1 reachable" 1 (vnum (vcar (vcdr c2n))))
+(check "cycle: cdr of c1 points back to c2 (same cell)" #t
+       (equal? (vcdr (vcdr c2n)) c2n))
+
+(display "ch5 storage gc: ")
+(display (if (= fails 0) "ALL PASS" (cons fails 'FAILS))) (newline)
+(if (> fails 0) (error "failures" fails) #t)
