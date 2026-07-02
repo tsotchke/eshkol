@@ -1,0 +1,11 @@
+;; ESH-0095 minimal repro (found by the AD composition oracle, P3).
+;; laplacian with a TENSOR point SIGSEGVs; (vector ...) point works.
+;; Same family as the hessian repro: second-order AD ops crash on
+;; HEAP_SUBTYPE_TENSOR points while first-order ops handle them.
+;;
+;; Run: build/eshkol-run -r tests/ad_oracle/found/esh0095_laplacian_tensor_point_sigsegv.esk
+;; Expected: 2 twice. Actual: first display OK, then SIGSEGV.
+(display (laplacian (lambda (v) (* (vref v 0) (vref v 0))) (vector 1.0 2.0)))
+(newline)
+(display (laplacian (lambda (v) (* (vref v 0) (vref v 0))) (tensor 1.0 2.0)))
+(newline)
