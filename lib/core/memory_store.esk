@@ -39,6 +39,7 @@
          memory-store-open-fast
          memory-store-append!
          memory-store-verify
+         memory-store-audit
          memory-store-count
          memory-store-head
          memory-store-sanitize)
@@ -276,17 +277,46 @@
                         #f)))))))))
 
 (define (memory-store-open-fast node-id path)
-  ;; O(1) open for append-only use (the per-tick weave). Restores prev-hash +
-  ;; vclock from the sidecar without replaying the log. The returned store's
-  ;; in-memory event list holds only NEW events from this session — use
-  ;; memory-store-open (full replay) for reads/verification.
-  (let ((head (ms-read-head path)))
-    (if (not head)
-        (memory-store-open node-id path)   ;; no/invalid sidecar -> full replay
+  ;; Fast open for append-only use (the per-tick weave). Restores prev-hash +
+  ;; vclock from the sidecar, then VALIDATES against the file tail: a crash
+  ;; between append and sidecar write leaves the sidecar one event behind, and
+  ;; trusting it forks the chain (we have exactly one such scar, line 1211).
+  ;; The FILE is the truth; the sidecar is a hint. Tail scan is a plain line
+  ;; read (no hashing, no RGA) — O(n) cheap, ~seconds at 10k links.
+  ;; The returned store's in-memory event list holds only NEW events from this
+  ;; session — use memory-store-open (full replay) for reads.
+  (let ((head (ms-read-head path))
+        (tail (ms-last-event path)))
+    (if (or (not head) (not tail))
+        (memory-store-open node-id path)   ;; no sidecar or no file -> full path
         (let ((log (make-memory-log node-id)))
-          (vector-set! log 3 (cdr head))   ;; vclock
-          (vector-set! log 4 (car head))   ;; prev-hash
+          (if (equal? (car head) (memory-event-id tail))
+              (begin                        ;; sidecar agrees with the file
+                (vector-set! log 3 (cdr head))
+                (vector-set! log 4 (car head)))
+              (begin                        ;; stale sidecar: heal from the tail
+                (display "memory-store: stale sidecar healed from file tail") (newline)
+                (vector-set! log 3 (memory-event-vclock tail))
+                (vector-set! log 4 (memory-event-id tail))))
           (make-memory-store log path)))))
+
+(define (ms-last-event path)
+  ;; Last parseable event in the file (plain line scan, no hashing).
+  (let ((f (ms-fopen path "r")))
+    (if (null-ptr? f)
+        #f
+        (begin
+          (ms-fclose f)
+          (let ((port (open-input-file path)))
+            (define (go last)
+              (let ((line (read-line port)))
+                (if (eof-object? line)
+                    (begin (close-port port) last)
+                    (if (= (string-length line) 0)
+                        (go last)
+                        (let ((ev (ms-parse line)))
+                          (go (if (and ev (memory-event? ev)) ev last)))))))
+            (go #f))))))
 
 (define (memory-store-verify store)
   ;; Full audit, TWO layers:
@@ -335,3 +365,60 @@
                         (char>? c #\~))
                     (string-append acc " ")
                     (string-append acc (string c))))))))
+
+;; =====================================================================
+;; Streaming audit — verify without building the log.
+;;
+;; memory-store-open replays into the RGA, whose per-append cost grows with
+;; size: a 6.8k-link chain took ~16 MINUTES to open just to be verified. An
+;; audit needs none of that structure: stream each line, re-derive its
+;; content hash, check its PARENT EXISTS among previously-seen ids, discard.
+;; O(n) flat — the same 6.8k links audit in ~3 seconds.
+;;
+;; Linkage semantics: parent-exists, not strict-linear. A DELETED event is
+;; caught (its child references an id never seen). A FORK — two events
+;; sharing one parent — is legitimate history for this CRDT log (a crash
+;; between append and sidecar update, or concurrent multi-node appends after
+;; T1 lands) and is counted, not failed. We have one real scar: the first
+;; backfill run was killed at a timeout between append and sidecar write,
+;; and the resumed chunk forked from the stale head. The chain records
+;; reality, including its own scars.
+;;
+;; Returns (ms-audit-v1 ok links forks) or (line-number . reason),
+;; reason = unparseable | hash-mismatch | orphan-parent.
+;; =====================================================================
+
+(define (memory-store-audit path)
+  (let ((port (open-input-file path))
+        (seen (make-hash-table)))
+    (define (go lineno count forks)
+      (let ((line (read-line port)))
+        (if (eof-object? line)
+            (begin (close-port port)
+                   (list (quote ms-audit-v1) #t count forks))
+            (if (= (string-length line) 0)
+                (go (+ lineno 1) count forks)
+                (let ((ev (ms-parse line)))
+                  (cond
+                    ((not (and ev (memory-event? ev)))
+                     (begin (close-port port) (cons lineno (quote unparseable))))
+                    ((not (string=? (memory-event-id ev)
+                                    (event-content-hash (memory-event-node ev)
+                                                        (memory-event-prev ev)
+                                                        (memory-event-vclock ev)
+                                                        (memory-event-type ev)
+                                                        (memory-event-payload ev))))
+                     (begin (close-port port) (cons lineno (quote hash-mismatch))))
+                    ((and (memory-event-prev ev)
+                          (not (hash-table-ref seen (memory-event-prev ev) #f)))
+                     (begin (close-port port) (cons lineno (quote orphan-parent))))
+                    (else
+                     (let ((fork (if (and (memory-event-prev ev)
+                                          (hash-table-ref seen (string-append "child:" (memory-event-prev ev)) #f))
+                                     1 0)))
+                       (hash-table-set! seen (memory-event-id ev) #t)
+                       (if (memory-event-prev ev)
+                           (hash-table-set! seen (string-append "child:" (memory-event-prev ev)) #t)
+                           #t)
+                       (go (+ lineno 1) (+ count 1) (+ forks fork))))))))))
+    (go 1 0 0)))
