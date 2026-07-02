@@ -1,0 +1,83 @@
+;; SICP 3.5.5 — modularity of functional programs: streams of random numbers,
+;; the Cesaro coprimality experiment, monte-carlo as a stream of running
+;; ratios, and estimating pi.  Uses a DETERMINISTIC seeded Lehmer LCG
+;; (x' = 16807 x mod 2147483647) so every value below is exact and
+;; reproducible, not statistical.
+
+(define fails 0)
+(define (check name ok)
+  (if ok (begin (display "PASS: ") (display name) (newline))
+      (begin (set! fails (+ fails 1)) (display "FAIL: ") (display name) (newline))))
+(define (close? a b tol) (< (abs (- a b)) tol))
+
+;; ---- stream primitives (3.5.1) ----
+(define-syntax cons-stream (syntax-rules () ((_ a b) (cons a (delay b)))))
+(define (stream-car s) (car s))
+(define (stream-cdr s) (force (cdr s)))
+(define the-empty-stream '())
+(define (stream-null? s) (null? s))
+(define (stream-ref s n) (if (= n 0) (stream-car s) (stream-ref (stream-cdr s) (- n 1))))
+(define (stream-map proc s)
+  (if (stream-null? s) the-empty-stream
+      (cons-stream (proc (stream-car s)) (stream-map proc (stream-cdr s)))))
+(define (stream-take s n)
+  (if (= n 0) '() (cons (stream-car s) (stream-take (stream-cdr s) (- n 1)))))
+
+;; ---- deterministic random stream (Lehmer / Park-Miller LCG) ----
+(define (rand-update x) (remainder (* x 16807) 2147483647))
+(define random-seed 42)
+(define random-numbers
+  (cons-stream (rand-update random-seed)
+               (stream-map rand-update random-numbers)))
+
+;; determinism probe: the first three draws are exactly these
+(check "lcg-first"  (= (stream-ref random-numbers 0) 705894))
+(check "lcg-second" (= (stream-ref random-numbers 1) 1126542223))
+(check "lcg-third"  (= (stream-ref random-numbers 2) 1579310009))
+
+;; ---- Cesaro experiment: P(gcd(r1, r2) = 1) = 6/pi^2 ----
+(define (my-gcd a b) (if (= b 0) a (my-gcd b (remainder a b))))
+(define (map-successive-pairs f s)
+  (cons-stream (f (stream-car s) (stream-car (stream-cdr s)))
+               (map-successive-pairs f (stream-cdr (stream-cdr s)))))
+(define cesaro-stream
+  (map-successive-pairs (lambda (r1 r2) (= (my-gcd r1 r2) 1)) random-numbers))
+
+;; first trial: gcd(705894, 1126542223) — deterministic outcome
+(check "cesaro-first-trial-deterministic"
+       (eq? (stream-car cesaro-stream) (= (my-gcd 705894 1126542223) 1)))
+
+;; ---- monte-carlo as a stream of running ratios ----
+(define (monte-carlo experiment-stream passed failed)
+  (define (next passed failed)
+    (cons-stream (/ (* 1.0 passed) (+ passed failed))
+                 (monte-carlo (stream-cdr experiment-stream) passed failed)))
+  (if (stream-car experiment-stream)
+      (next (+ passed 1) failed)
+      (next passed (+ failed 1))))
+
+(define ratio-stream (monte-carlo cesaro-stream 0 0))
+;; running ratio is always a probability
+(define r100 (stream-ref ratio-stream 99))
+(check "ratio-is-probability" (and (>= r100 0.0) (<= r100 1.0)))
+
+;; ---- pi from the stream ----
+(define pi-estimate-stream
+  (stream-map (lambda (p) (sqrt (/ 6.0 p))) ratio-stream))
+
+(define pi 3.141592653589793)
+(define pi-after-2000 (stream-ref pi-estimate-stream 1999))
+
+;; the seeded LCG makes this EXACT: after 2000 trials the estimate is
+;; precisely this value (hard-coded from a reference run), and it lands
+;; inside the precomputed interval around pi
+(check "pi-estimate-exact-deterministic"
+       (close? pi-after-2000 3.1715415191530525 1e-12))
+(check "pi-estimate-in-interval"
+       (and (> pi-after-2000 3.10) (< pi-after-2000 3.20)))
+(check "pi-estimate-near-pi" (< (abs (- pi-after-2000 pi)) 0.05))
+
+(newline)
+(if (= fails 0)
+    (begin (display "ALL-PASS ch3_stream_random_monte_carlo") (newline))
+    (begin (display "HAS-FAIL ch3_stream_random_monte_carlo ") (display fails) (newline)))
