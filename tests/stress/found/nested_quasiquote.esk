@@ -1,4 +1,4 @@
-; FOUND by P4 stress harness 2026-07-02 (ledger ESH-0096). XKNOWN.
+; FOUND by P4 stress harness 2026-07-02 (ledger ESH-0107). XKNOWN.
 ;
 ; NESTED quasiquote (level >= 2) collapses to (). Single-level quasiquote,
 ; unquote and unquote-splicing are all fine.

@@ -1,4 +1,4 @@
-; FOUND by P4 stress harness 2026-07-02 (ledger ESH-0095). XKNOWN.
+; FOUND by P4 stress harness 2026-07-02 (ledger ESH-0106). XKNOWN.
 ;
 ; The quote reader-sugar 'sym ANYWHERE inside a (guard ...) form is compiled
 ; as a VARIABLE REFERENCE -> "Undefined variable: sym". The explicit

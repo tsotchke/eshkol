@@ -417,6 +417,85 @@ oracles:
         action: ./build/eshkol-run examples/agent.esk -o /tmp/selene
 
   # ─────────────────────────────────────────────────────────────────
+  # Stress-budget gate (adversarial campaign pillar P4) — every program
+  # in tests/stress/budgets.tsv runs under JIT (-r) and AOT with
+  # wall-time + max-RSS ceilings asserted by scripts/run_stress.sh,
+  # which writes kind:"stress_smoke" events to
+  # scripts/icc_traces/stress_smoke.jsonl. Probe ids are
+  # stress_<file>_<mode>; stress_suite_green is the whole-sweep verdict
+  # (any FAIL/CRASH/HANG/OVER-RSS or stale-XKNOWN XPASS flips it).
+  # Documented-open bugs (budgets.tsv xknown column -> ESH ledger ids)
+  # are XKNOWN and do not gate. Representative per-probe criteria below
+  # pin the highest-value regression classes directly.
+  # ─────────────────────────────────────────────────────────────────
+  - name: stress-budget
+    aliases: [stress, p4, stress-harness]
+    requires:
+      - runtime_event:
+          event_kinds: [stress_smoke]
+          event_names: ["stress_suite_green"]
+          event_values: ["PASS"]
+        severity: high
+        label: Full stress sweep green (all budgets met, no stale XKNOWN)
+        action: ./scripts/run_stress.sh
+      - runtime_event:
+          event_kinds: [stress_smoke]
+          event_names: ["stress_rec_tco_1e8_r"]
+          event_values: ["PASS"]
+        severity: high
+        label: 10^8-iteration tail call runs in O(1) stack under r
+        action: ./scripts/run_stress.sh
+      - runtime_event:
+          event_kinds: [stress_smoke]
+          event_names: ["stress_rec_tco_1e8_aot"]
+          event_values: ["PASS"]
+        severity: high
+        label: 10^8-iteration tail call runs in O(1) stack under aot
+        action: ./scripts/run_stress.sh
+      - runtime_event:
+          event_kinds: [stress_smoke]
+          event_names: ["stress_endur_with_region_100k_r"]
+          event_values: ["PASS"]
+        severity: high
+        label: 100k with-region allocations stay under the RSS ceiling (PR #81 class) under r
+        action: ./scripts/run_stress.sh
+      - runtime_event:
+          event_kinds: [stress_smoke]
+          event_names: ["stress_endur_with_region_100k_aot"]
+          event_values: ["PASS"]
+        severity: high
+        label: 100k with-region allocations stay under the RSS ceiling (PR #81 class) under aot
+        action: ./scripts/run_stress.sh
+      - runtime_event:
+          event_kinds: [stress_smoke]
+          event_names: ["stress_endur_ad_gradient_100k_r"]
+          event_values: ["PASS"]
+        severity: high
+        label: 100k-iteration gradient loop RSS plateaus under r
+        action: ./scripts/run_stress.sh
+      - runtime_event:
+          event_kinds: [stress_smoke]
+          event_names: ["stress_num_bignum_expt_1e1000_r"]
+          event_values: ["PASS"]
+        severity: medium
+        label: 10^1000 bignum expt + string round-trip under r
+        action: ./scripts/run_stress.sh
+      - runtime_event:
+          event_kinds: [stress_smoke]
+          event_names: ["stress_par_spawn_join_100x_r"]
+          event_values: ["PASS"]
+        severity: medium
+        label: 100x parallel spawn/join deterministic across 3 repetitions under r
+        action: ./scripts/run_stress.sh
+      - runtime_event:
+          event_kinds: [stress_smoke]
+          event_names: ["stress_jit_cache_probe_r"]
+          event_values: ["PASS"]
+        severity: medium
+        label: 50 sequential -r invocations stay under the warm-path ceiling
+        action: ./scripts/run_stress.sh
+
+  # ─────────────────────────────────────────────────────────────────
   # SICP-completeness gate (ESH-0005) — the v1.3-evolve release gate
   # for "support 100% of the entire SICP book, then do better". Each
   # implemented program in tests/sicp/ self-checks (PASS:/FAIL:) and is
