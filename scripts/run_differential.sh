@@ -104,14 +104,17 @@ emit_event() { # name value snippet
         "$(json_escape "$1")" "$(json_escape "$2")" "$(json_escape "$3")" >> "$TRACE_FILE"
 }
 
-# Normalize captured stdout: strip harness/compiler noise, keep program bytes.
+# Normalize captured stdout: strip harness/compiler noise lines, then drop
+# leading blank lines (the VM's source-mode banner emits one more "\n" than
+# its ESKB-mode banner; applied uniformly to every axis so pairs stay fair).
 # MUST stay in sync with normalize() in scripts/gen_differential.py.
 normalize() { # infile outfile
-    perl -ne 'print unless
+    perl -ne 'next if
         /^WARN/ or /^INFO:/ or /^DEBUG/ or
         /^\[ESKB\]/ or /^\s*\[compiled:/ or
         /^=== Eshkol VM/ or /^=== Execution complete ===/ or
-        /^remark:/ or /^warning: <unknown>/' "$1" > "$2"
+        /^remark:/ or /^warning: <unknown>/;
+        next if !$seen and /^\s*$/; $seen = 1; print' "$1" > "$2"
 }
 
 # run_axis <axis> <file> <outdir>  — writes <outdir>/<axis>.out (normalized)
